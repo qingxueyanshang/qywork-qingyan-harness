@@ -31,14 +31,18 @@ export type MediaKind = (typeof MEDIA_KINDS)[number]
 /**
  * 中转渠道的视频请求格式。请求字段、素材上传与任务查询由 `@qywork/ai` 按格式实现；
  * 型号的时长、画幅、素材上限与价格来自拉取时的渠道目录，保存在该型号的配置中（`ChannelVideoSpec`）。
+ * 图像只有 mumugofe 一种格式（`ChannelImageSpec`）。
  */
 export const VIDEO_CHANNELS = ['hongcheng', 'mumugofe'] as const
 export type VideoChannel = (typeof VIDEO_CHANNELS)[number]
 
-/** 渠道公布的价格。金额按渠道充值价与分组倍率折算，币种为渠道的计价币种。 */
+/**
+ * 渠道公布的价格。金额按渠道充值价与分组倍率折算，币种为渠道的计价币种。图像每次请求生成一张，按次即按张。
+ * 各分辨率档位单价不同时 `amount` 为「档位 → 金额」，键与规格的 `resolutions` 一致。
+ */
 export interface ChannelPrice {
   per: 'request' | 'second'
-  amount: number
+  amount: number | Record<string, number>
   currency: Currency
 }
 
@@ -61,13 +65,52 @@ export interface ChannelVideoSpec {
   maxAudios: number
   /** 参考素材先上传到渠道，请求中只发送地址；省略时内联发送（mumugofe）。 */
   publicUrls?: true
+  /** 参考图以表单文件随提交上传；省略时按 JSON 提交（mumugofe）。不能与 `publicUrls` 同时设置。 */
+  multipart?: true
+  /** 提交时同时发送与所选尺寸对应的分辨率档位 `resolution`：渠道按该字段出图与计价，不按尺寸推断（mumugofe）。 */
+  resolutionField?: true
   /** 省略表示价格不明。 */
   price?: ChannelPrice
 }
 
+/**
+ * 拉取模型时由渠道目录得到的图像型号规格，保存在该型号的配置中（mumugofe）。
+ * 尺寸与分辨率档位是两个独立参数，渠道分别计价与出图；只保存目录中的事实。
+ */
+export interface ChannelImageSpec {
+  channel: 'mumugofe'
+  /** 分辨率档位，如 `1K`；第一项为默认值。 */
+  resolutions: string[]
+  /** 像素尺寸 `宽x高`；第一项为默认值。 */
+  sizes: string[]
+  maxImages: number
+  /** 省略表示价格不明。 */
+  price?: ChannelPrice
+}
+
+/** 生成型号保存的渠道规格。类别由该型号的协议决定：`openai_videos` 为视频，`openai_images` 为图像。 */
+export type ChannelSpec = ChannelVideoSpec | ChannelImageSpec
+
 const isCount = (v: unknown) => Number.isInteger(v) && (v as number) >= 0
 const isTextList = (v: unknown) =>
   Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string' && x !== '')
+
+function channelPriceProblem(p: unknown, resolutions: string[]): string | null {
+  if (p === undefined) return null
+  const price = p as Partial<ChannelPrice> | null
+  const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0
+  const amount = price?.amount
+  return price &&
+    ['request', 'second'].includes(price.per as string) &&
+    (positive(amount) ||
+      (amount &&
+        typeof amount === 'object' &&
+        Object.keys(amount).length === resolutions.length &&
+        resolutions.every((r) => positive(amount[r])))) &&
+    ['USD', 'CNY'].includes(price.currency as string)
+    ? null
+    : 'price 必须包含 per（request 或 second）、amount（正数，或每个分辨率档位各一个正数）与 currency'
+}
 
 /** 配置中保存的渠道规格不合法时返回原因。配置写入前校验，不合法的规格不落盘。 */
 export function channelVideoSpecProblem(value: unknown): string | null {
@@ -97,16 +140,24 @@ export function channelVideoSpecProblem(value: unknown): string | null {
   if (!isCount(s.maxImages) || !isCount(s.maxVideos) || !isCount(s.maxAudios))
     return 'maxImages、maxVideos、maxAudios 必须是非负整数'
   if (s.publicUrls !== undefined && s.publicUrls !== true) return 'publicUrls 只能为 true'
-  const p = s.price
-  if (
-    p !== undefined &&
-    (!p ||
-      !['request', 'second'].includes(p.per) ||
-      !(Number.isFinite(p.amount) && p.amount > 0) ||
-      !['USD', 'CNY'].includes(p.currency))
-  )
-    return 'price 必须包含 per（request 或 second）、正数 amount 与 currency'
-  return null
+  if (s.multipart !== undefined && s.multipart !== true) return 'multipart 只能为 true'
+  if (s.multipart && s.publicUrls) return 'multipart 与 publicUrls 不能同时设置'
+  if (s.resolutionField !== undefined && s.resolutionField !== true)
+    return 'resolutionField 只能为 true'
+  return channelPriceProblem(s.price, s.resolutions as string[])
+}
+
+/** 配置中保存的图像渠道规格不合法时返回原因。 */
+export function channelImageSpecProblem(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return '不是对象'
+  const s = value as Partial<ChannelImageSpec>
+  if (s.channel !== 'mumugofe') return 'channel 必须是 mumugofe'
+  if (!isTextList(s.resolutions)) return 'resolutions 必须是非空字符串数组'
+  if (!isTextList(s.sizes) || !(s.sizes as string[]).every((v) => /^\d+x\d+$/.test(v)))
+    return 'sizes 必须是「宽x高」的非空数组'
+  if (!isCount(s.maxImages)) return 'maxImages 必须是非负整数'
+  if (s.price?.per === 'second') return '图像的 price 只能按次'
+  return channelPriceProblem(s.price, s.resolutions as string[])
 }
 
 /** 生成的产物类别。顺序即模型库页签顺序。 */

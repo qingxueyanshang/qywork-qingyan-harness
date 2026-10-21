@@ -376,8 +376,8 @@ export interface OffPeakDiscount {
    * 全天按空闲价。星期与小时必须同为 UTC：混用两个时区会在时段跨零点时错开一天。
    */
   peakWeekdaysUtc: readonly number[]
-  /** 单句说明，界面直接显示，不另行拼接。 */
-  note: string
+  /** 单句说明，模型库直接显示，不另行拼接。中转价格的折扣由计费公式折算，没有说明。 */
+  note?: string
 }
 
 /**
@@ -1766,6 +1766,8 @@ export interface SpecOverride {
    */
   cacheWrite?: number
   currency?: 'USD' | 'CNY'
+  /** 分时段折扣，替换目录中的折扣。中转价格按计费公式折算得到，模型库界面不编辑该项。 */
+  offPeak?: OffPeakDiscount
   /**
    * 思考相关的三项是用户明确维护的模型规格。端点探测只判定某条链路是否透传思考控制参数，
    * 不覆盖官方档位或默认思考行为。
@@ -1805,7 +1807,7 @@ export interface SpecOverride {
  * - **`catalogued` 只在覆盖中包含单价时才设为 true。** 若只修改显示名就标记为
  *   「已收录」，计价仍为 0 而提醒消失：账本继续显示 $0，且不再有任何提示。
  * - **覆盖改变币种时去掉目录中的长上下文档与时段折扣。** 二者的单价按目录币种填写，
- *   与覆盖后的币种混用会使长提示词按另一币种的数字记账。
+ *   与覆盖后的币种混用会使长提示词按另一币种的数字记账。覆盖中的时段折扣是系数，与币种无关，始终生效。
  */
 export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined): ModelSpec {
   if (!o) return spec
@@ -1827,6 +1829,7 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
     ...(o.cacheRouting ? { cacheRouting: o.cacheRouting } : {}),
     // `thinksByDefault` 是布尔值，`false` 是有效覆盖，只能按 `undefined` 判定缺省。
     ...(o.thinksByDefault !== undefined ? { thinksByDefault: o.thinksByDefault } : {}),
+    ...(o.offPeak ? { offPeak: o.offPeak } : {}),
     pricing: {
       ...spec.pricing,
       ...(o.input !== undefined ? { input: o.input } : {}),

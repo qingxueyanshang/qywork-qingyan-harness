@@ -82,7 +82,6 @@ export function addPulled(
       }
       continue
     }
-    if (model.unsupported) continue
     media[model.id] = { kind: model.kind, ...(model.spec ? { spec: model.spec } : {}) }
     const output = MEDIA_KIND_OUTPUT[model.kind]
     mediaDefaults[output] ??= { provider, model: model.id }
@@ -108,9 +107,9 @@ export function addPulled(
   }
 }
 
-/** 可选时长。没有渠道规格时为空串。 */
+/** 可选时长。没有渠道规格或是图像规格时为空串。 */
 export function durationSummary(model: PulledModel): string {
-  if (model.output === 'chat' || !model.spec) return ''
+  if (model.output === 'chat' || !model.spec || !('seconds' in model.spec)) return ''
   const { seconds } = model.spec
   const first = seconds[0]!
   const last = seconds[seconds.length - 1]!
@@ -120,23 +119,36 @@ export function durationSummary(model: PulledModel): string {
 /** 参考素材上限，写法与模型库表格相同。没有渠道规格时为空串。 */
 export function referenceSummary(model: PulledModel): string {
   if (model.output === 'chat' || !model.spec) return ''
-  const { maxImages, maxVideos, maxAudios } = model.spec
+  const s = model.spec
   return [
-    maxImages ? `图≤${maxImages}` : '',
-    maxVideos ? `视频≤${maxVideos}` : '',
-    maxAudios ? `音频≤${maxAudios}` : '',
+    s.maxImages ? `图≤${s.maxImages}` : '',
+    'maxVideos' in s && s.maxVideos ? `视频≤${s.maxVideos}` : '',
+    'maxAudios' in s && s.maxAudios ? `音频≤${s.maxAudios}` : '',
   ]
     .filter(Boolean)
     .join('、')
 }
 
-/** 价格摘要：对话为每百万 Token 的输入与输出，生成为每次或每秒。价格不明时为空串。 */
+/**
+ * 价格摘要：对话为每百万 Token 的输入与输出（有分时段折扣时为高峰价并注明折扣），
+ * 生成为每次、每秒或每张（按分辨率定价时逐档列出）。价格不明时为空串。
+ */
 export function priceSummary(model: PulledModel): string {
-  if (model.output === 'chat')
-    return model.price
-      ? `输入 ${formatMoney(model.price.input, model.price.currency)} · 输出 ${formatMoney(model.price.output, model.price.currency)} /百万`
+  if (model.output === 'chat') {
+    const price = model.price
+    if (!price) return ''
+    const discount = price.offPeak
+      ? ` · 空闲时段 ${Math.round(price.offPeak.rate * 100) / 10} 折`
       : ''
+    return `输入 ${formatMoney(price.input, price.currency)} · 输出 ${formatMoney(price.output, price.currency)} /百万${discount}`
+  }
   const price = model.spec?.price
   if (!price) return ''
-  return `${formatMoney(price.amount, price.currency)}/${price.per === 'request' ? '次' : '秒'}`
+  const unit = model.output === 'image' ? '张' : price.per === 'request' ? '次' : '秒'
+  if (typeof price.amount === 'number')
+    return `${formatMoney(price.amount, price.currency)}/${unit}`
+  const tiers = Object.entries(price.amount).map(
+    ([r, a]) => `${r} ${formatMoney(a, price.currency)}`,
+  )
+  return `${tiers.join(' · ')} /${unit}`
 }

@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import type { MediaCall } from '@qywork/agent'
 import { lookupMediaModel, mediaCatalog, mediaKindsOf, quoteMedia } from '@qywork/ai'
-import type { ChannelVideoSpec, MediaInputRole, MediaSpend } from '@qywork/core'
+import type { ChannelImageSpec, ChannelVideoSpec, MediaInputRole, MediaSpend } from '@qywork/core'
 import { listMediaModels, type QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
 import { buildTailNotes } from './prompt.ts'
@@ -25,6 +25,7 @@ const REMOVED_UPSCALED = '全能sd2.5(满血内置过脸30图超分1080P)'
 const REMOVED_FULL_REFERENCE = 'sd-25-30/10/1-1'
 const EXCLUSIVE = '专享sd2.5(30图10音/4-30秒/720p)'
 const FULL_PARAMS = '高质量sd2.5(满血全参/720P/按次)'
+const SD20_VIP = 'sd-2.0-vip'
 const range = (min: number) => Array.from({ length: 31 - min }, (_, i) => i + min)
 const mumugofe = (
   seconds: number[],
@@ -46,6 +47,20 @@ const SPECS: Record<string, ChannelVideoSpec> = {
   [SERIES_X]: mumugofe([30], { maxVideos: 0, maxAudios: 0, publicUrls: true }, 7),
   [EXCLUSIVE]: mumugofe(range(4), { maxVideos: 0, maxAudios: 10 }),
   [FULL_PARAMS]: mumugofe([30], { maxVideos: 10, maxAudios: 10 }),
+  // 2026-10-21 木木目录：表单上传，计费清单按请求中的 resolution 计价。
+  [SD20_VIP]: {
+    channel: 'mumugofe',
+    seconds: Array.from({ length: 12 }, (_, i) => i + 4),
+    ratios: ['16:9', '9:16'],
+    resolutions: ['720p', '1080p'],
+    sizes: { '720p': [1280, 720], '1080p': [1920, 1080] },
+    maxImages: 9,
+    maxVideos: 0,
+    maxAudios: 0,
+    multipart: true,
+    resolutionField: true,
+    price: { per: 'second', amount: { '720p': 0.676, '1080p': 1.56 }, currency: 'CNY' },
+  },
 }
 const specOf = (id: string) => lookupMediaModel(id, 'openai_videos', SPECS[id])
 const PROMPT = '雨后咖啡馆，一位成年女性坐下阅读。\n镜头缓慢后退，人物望向窗外微笑。'
@@ -53,6 +68,7 @@ const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
 const MP3 = new Uint8Array([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 0])
 const TASK = 'task_mumugofe_test'
+const IMAGE_TASK = 'task_mumugofe_image'
 /** 2026-10-10 实测任务接口的拒绝原因原文；同一任务的 `/videos/{id}` 只返回通用失败信息。 */
 const REJECTED =
   "版权保护拒绝（画面）：换掉参考素材或改提示词再试（跟时长无关）\n上游原话：For copyright protection, I can't show you the generated video. Use other references or edit the prompt and try again."
@@ -76,6 +92,21 @@ interface UploadedAsset {
 }
 let uploadResponse: ((body: UploadedAsset) => unknown) | undefined
 let uploadStatus: number
+/** 任务记录中的扣费额度与成片时长；省略时任务接口不返回该字段。 */
+let quota: number | undefined
+let duration: number | undefined
+let siteStatus: number
+let imageReply: 'task' | 'sync'
+
+/** 表单字段按名称收集：文本为字符串，文件为「文件名 · 字节数」。 */
+async function formFields(req: Request): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {}
+  for (const [key, value] of await req.formData()) {
+    const text = typeof value === 'string' ? value : `${value.name} · ${value.size}`
+    out[key] = [...(out[key] ?? []), text]
+  }
+  return out
+}
 
 beforeAll(() => {
   server = Bun.serve({
@@ -89,7 +120,13 @@ beforeAll(() => {
         auth: req.headers.get('authorization'),
         contentType: req.headers.get('content-type'),
         uploadHeader: req.headers.get('x-upload-secret'),
-        ...(req.method === 'POST' ? { body: await req.json() } : {}),
+        ...(req.method === 'POST'
+          ? {
+              body: req.headers.get('content-type')?.startsWith('multipart/form-data')
+                ? await formFields(req)
+                : await req.json(),
+            }
+          : {}),
         ...(req.method === 'PUT' ? { body: new Uint8Array(await req.arrayBuffer()) } : {}),
       })
       if (req.method === 'PUT' && path.startsWith('/v1/studio/assets/')) {
@@ -105,6 +142,30 @@ beforeAll(() => {
       }
       if (req.method === 'POST' && path === '/v1/videos')
         return Response.json({ id: TASK, status: 'queued', object: 'video' })
+      if (req.method === 'GET' && path === '/api/status')
+        return siteStatus === 200
+          ? Response.json({ success: true, data: { price: 7.3, quota_per_unit: 500000 } })
+          : new Response('unavailable', { status: siteStatus })
+      if (req.method === 'POST' && path === '/v1/images/generations')
+        return Response.json(
+          imageReply === 'task'
+            ? { task_id: IMAGE_TASK, status: 'queued' }
+            : {
+                created: 1,
+                data: [{ url: `http://127.0.0.1:${server.port}/generated/image.png` }],
+              },
+        )
+      if (req.method === 'GET' && path === `/v1/images/generations/tasks/${IMAGE_TASK}`)
+        return Response.json({
+          code: 'success',
+          data: {
+            task_id: IMAGE_TASK,
+            status: taskStatuses.shift() ?? 'completed',
+            data: [{ url: `http://127.0.0.1:${server.port}/generated/image.png` }],
+          },
+        })
+      if (req.method === 'GET' && path === '/generated/image.png')
+        return new Response(PNG, { headers: { 'content-type': 'image/png' } })
       if (req.method === 'GET' && path === `/v1/videos/${TASK}`)
         return Response.json({
           id: TASK,
@@ -131,7 +192,8 @@ beforeAll(() => {
             fail_reason: status === 'failed' ? REJECTED : '',
             progress: '100%',
             result_url: `http://127.0.0.1:${server.port}/v1/videos/${TASK}/content`,
-            data: { download_url: resultUrl },
+            ...(quota === undefined ? {} : { quota }),
+            data: { download_url: resultUrl, ...(duration === undefined ? {} : { duration }) },
           },
         })
       if (req.method === 'GET' && path === `/generated/${TASK}.mp4`)
@@ -151,6 +213,10 @@ beforeEach(() => {
   taskStatuses = []
   uploadResponse = undefined
   uploadStatus = 200
+  quota = undefined
+  duration = undefined
+  siteStatus = 200
+  imageReply = 'task'
   resultUrl = `http://127.0.0.1:${server.port}/generated/${TASK}.mp4`
 })
 
@@ -999,3 +1065,174 @@ test.each([false, true])(
   },
   10000,
 )
+
+test('任务记录中的扣费额度按站点充值价折算后记账，优先于单价', async () => {
+  quota = 256849
+  duration = 30
+  const spends: MediaSpend[] = []
+  const result = await makeMediaPort(config(EXCLUSIVE), (s) => spends.push(s)).generate(
+    call(),
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: true, model: EXCLUSIVE })
+  expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+    'POST /v1/videos',
+    `GET /v1/video/generations/${TASK}`,
+    'GET /api/status',
+    `GET /generated/${TASK}.mp4`,
+  ])
+  // 站点状态是公开接口，不携带令牌。
+  expect(seen.find((s) => s.path === '/api/status')?.auth).toBeNull()
+  // 2026-10-21 实测：专享版 30 秒任务的额度 256849 ÷ 500000 × 7.3 = ¥3.75。
+  expect(spends).toMatchObject([{ cost: 3.75, currency: 'CNY', quantity: 30 }])
+})
+
+test('站点状态无法读取时成片照常取回，金额按单价计算', async () => {
+  quota = 547945
+  siteStatus = 503
+  const spends: MediaSpend[] = []
+  const result = await makeMediaPort(config(), (s) => spends.push(s)).generate(call(), signal())
+  expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4 }] })
+  expect(spends).toMatchObject([{ cost: 7.5, currency: 'CNY' }])
+})
+
+test('表单上传型号：参考图放入 input_reference，分辨率随尺寸发送，报价按分辨率', async () => {
+  const spec = specOf(SD20_VIP)
+  expect(spec.inputs.transport).toBe('multipart')
+  const none = { images: 0, videos: 0 }
+  expect(quoteMedia(spec, { seconds: '10', size: '1920x1080' }, none)?.cost).toBeCloseTo(15.6)
+  expect(quoteMedia(spec, {}, none)?.cost).toBeCloseTo(2.704)
+  const inputs = [1, 2].map((n) => ({
+    role: 'reference' as const,
+    bytes: PNG,
+    mime: 'image/png',
+    path: `/ref-${n}.png`,
+  }))
+  const result = await makeMediaPort(config(SD20_VIP)).generate(
+    call({ inputs, params: { seconds: '10', size: '1920x1080' } }),
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: true, model: SD20_VIP })
+  expect(seen[0]?.contentType).toStartWith('multipart/form-data')
+  // 表单编码按 multipart/form-data 的规范把换行写为 CRLF。
+  expect(seen[0]?.body).toEqual({
+    model: [SD20_VIP],
+    prompt: [PROMPT.replaceAll('\n', '\r\n')],
+    seconds: ['10'],
+    size: ['1920x1080'],
+    resolution: ['1080p'],
+    input_reference: ['ref-1.png · 5', 'ref-2.png · 5'],
+  })
+})
+
+test('表单上传型号没有参考图时按 JSON 提交，默认尺寸对应 720p', async () => {
+  const result = await makeMediaPort(config(SD20_VIP)).generate(call(), signal())
+  expect(result).toMatchObject({ ok: true })
+  expect(seen[0]?.contentType).toContain('application/json')
+  expect(seen[0]?.body).toEqual({
+    model: SD20_VIP,
+    prompt: PROMPT,
+    seconds: '4',
+    size: '1280x720',
+    resolution: '720p',
+  })
+})
+
+// 与内置的 OpenAI 型号同名：保存的渠道规格必须先于内置目录。
+const IMAGE_MODEL = 'gpt-image-2.5-flare'
+const IMAGE_SPEC: ChannelImageSpec = {
+  channel: 'mumugofe',
+  resolutions: ['1K', '2K', '4K'],
+  sizes: ['1024x1024', '1536x1024', '3840x2160'],
+  maxImages: 10,
+  price: { per: 'request', amount: { '1K': 0.36, '2K': 0.52, '4K': 0.52 }, currency: 'CNY' },
+}
+const imageConfig = (): QyConfig => ({
+  providers: {
+    mumugofe: {
+      kind: 'openai_chat_completions',
+      apiKey: 'test-only-key',
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+      models: {},
+      media: { [IMAGE_MODEL]: { kind: 'openai_images', spec: IMAGE_SPEC } },
+    },
+  },
+  mediaDefaults: { image: { provider: 'mumugofe', model: IMAGE_MODEL } },
+})
+const imageCall = (over: Partial<MediaCall> = {}): MediaCall => ({
+  type: 'image',
+  prompt: PROMPT,
+  inputs: [],
+  params: {},
+  ...over,
+})
+
+test('图像型号使用保存的渠道规格：尺寸与分辨率两个参数，报价按分辨率', () => {
+  const spec = lookupMediaModel(IMAGE_MODEL, 'openai_images', IMAGE_SPEC)
+  expect(spec).toMatchObject({
+    vendor: 'Mumugofe',
+    imageFormat: 'mumugofe',
+    operations: ['generate', 'edit'],
+    inputs: { maxImages: 10, maxVideos: 0, transport: 'json' },
+  })
+  expect(spec.params.map((p) => [p.name, p.default])).toEqual([
+    ['size', '1024x1024'],
+    ['resolution', '1K'],
+  ])
+  expect(spec.params[0]?.shapes).toEqual([
+    { ratio: '1:1', value: '1024x1024' },
+    { ratio: '3:2', value: '1536x1024' },
+    { ratio: '16:9', value: '3840x2160' },
+  ])
+  const none = { images: 0, videos: 0 }
+  expect(quoteMedia(spec, { resolution: '2K' }, none)).toEqual({ cost: 0.52, currency: 'CNY' })
+  expect(lookupMediaModel(IMAGE_MODEL, 'openai_images').vendor).toBe('OpenAI')
+})
+
+test('图像：提交异步任务，查询后下载，按所选分辨率记账', async () => {
+  const spends: MediaSpend[] = []
+  const tasks: unknown[] = []
+  const result = await makeMediaPort(imageConfig(), (s) => spends.push(s)).generate(
+    imageCall({
+      inputs: [{ role: 'reference', bytes: PNG, mime: 'image/png', path: '/ref.png' }],
+      params: { resolution: '2K' },
+      onTask: async (task) => {
+        tasks.push(task)
+      },
+    }),
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: true, model: IMAGE_MODEL, files: [{ bytes: PNG }] })
+  expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+    'POST /v1/images/generations',
+    `GET /v1/images/generations/tasks/${IMAGE_TASK}`,
+    'GET /generated/image.png',
+  ])
+  expect(seen[0]?.body).toEqual({
+    model: IMAGE_MODEL,
+    prompt: PROMPT,
+    n: 1,
+    size: '1024x1024',
+    resolution: '2K',
+    response_format: 'url',
+    async: true,
+    images: [`data:image/png;base64,${Buffer.from(PNG).toString('base64')}`],
+  })
+  expect(tasks).toEqual([{ taskId: IMAGE_TASK, provider: 'mumugofe', model: IMAGE_MODEL }])
+  expect(spends).toMatchObject([{ cost: 0.52, currency: 'CNY', quantity: 1 }])
+})
+
+test('图像：直接出图的型号同步返回图片，不查询任务', async () => {
+  imageReply = 'sync'
+  const spends: MediaSpend[] = []
+  const result = await makeMediaPort(imageConfig(), (s) => spends.push(s)).generate(
+    imageCall(),
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: true, files: [{ bytes: PNG }] })
+  expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+    'POST /v1/images/generations',
+    'GET /generated/image.png',
+  ])
+  expect(spends).toMatchObject([{ cost: 0.36, currency: 'CNY', quantity: 1 }])
+})

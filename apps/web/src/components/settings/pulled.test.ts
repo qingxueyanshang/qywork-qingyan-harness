@@ -1,6 +1,6 @@
 /** 覆盖 `pulled.ts`：拉取结果刷新已添加型号、添加选定型号，以及两项摘要文字。 */
 import { expect, test } from 'bun:test'
-import type { ChannelVideoSpec } from '@qywork/core'
+import type { ChannelImageSpec, ChannelVideoSpec } from '@qywork/core'
 import type { PullResult, RedactedConfig } from '../../lib/store/index.ts'
 import {
   addPulled,
@@ -21,6 +21,13 @@ const SPEC: ChannelVideoSpec = {
   maxAudios: 0,
   publicUrls: true,
   price: { per: 'request', amount: 7, currency: 'CNY' },
+}
+const IMAGE: ChannelImageSpec = {
+  channel: 'mumugofe',
+  resolutions: ['1K', '2K'],
+  sizes: ['1024x1024'],
+  maxImages: 10,
+  price: { per: 'request', amount: { '1K': 0.36, '2K': 0.52 }, currency: 'CNY' },
 }
 const PRICE = { input: 1.8, output: 9, cacheRead: 0.18, cacheWrite: 2.25, currency: 'CNY' as const }
 
@@ -51,13 +58,7 @@ const RESULT: PullResult = {
     { id: 'deepseek-v4.1-flash', output: 'chat', known: false },
     { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', spec: SPEC },
     { id: 'seedance-2.5-deal', output: 'video', kind: 'openai_videos', spec: SPEC },
-    {
-      id: 'sd-2.0-vip',
-      output: 'video',
-      kind: 'openai_videos',
-      unsupported: '该型号按表单上传素材，当前未接入',
-    },
-    { id: 'gpt-image-2', output: 'image', kind: 'openai_images' },
+    { id: 'gpt-image-2', output: 'image', kind: 'openai_images', spec: IMAGE },
   ],
 }
 
@@ -87,7 +88,7 @@ test('型号列表不完整，不据此标记已下架', () => {
   expect(next).toBeNull()
 })
 
-test('添加：对话型号写价格与对应型号，生成型号写规格并补默认；不支持与已添加的跳过', () => {
+test('添加：对话型号写价格与对应型号，生成型号写规格并补默认；已添加的跳过', () => {
   const picks = RESULT.models.map((model) =>
     model.id === 'deepseek-v4.1-flash' ? { model, base: 'deepseek-flash' } : { model },
   )
@@ -101,9 +102,8 @@ test('添加：对话型号写价格与对应型号，生成型号写规格并�
   })
   expect(mumu.media).toMatchObject({
     'seedance-2.5-deal': { kind: 'openai_videos', spec: SPEC },
-    'gpt-image-2': { kind: 'openai_images' },
+    'gpt-image-2': { kind: 'openai_images', spec: IMAGE },
   })
-  expect(mumu.media).not.toHaveProperty('sd-2.0-vip')
   expect(next.mediaDefaults).toEqual({
     video: { provider: 'mumu', model: 'seedance-2.5-deal' },
     image: { provider: 'mumu', model: 'gpt-image-2' },
@@ -140,4 +140,33 @@ test('摘要：时长与素材上限、价格', () => {
   expect(priceSummary(RESULT.models[2]!)).toBe('¥7.00/次')
   expect(priceSummary(RESULT.models[0]!)).toBe('输入 ¥1.80 · 输出 ¥9.00 /百万')
   expect(priceSummary(RESULT.models[1]!)).toBe('')
+  const discounted = {
+    id: 'deepseek-v4.1-flash',
+    output: 'chat' as const,
+    known: false,
+    price: {
+      ...PRICE,
+      offPeak: { rate: 0.5, peakWindowsUtc: [[1, 4]] as [number, number][], peakWeekdaysUtc: [1] },
+    },
+  }
+  expect(priceSummary(discounted)).toBe('输入 ¥1.80 · 输出 ¥9.00 /百万 · 空闲时段 5 折')
+  const tiered = {
+    ...full,
+    spec: {
+      ...full.spec,
+      price: {
+        per: 'second' as const,
+        amount: { '480p': 0.4, '720p': 0.6 },
+        currency: 'CNY' as const,
+      },
+    },
+  }
+  expect(priceSummary(tiered)).toBe('480p ¥0.40 · 720p ¥0.60 /秒')
+  // 图像规格没有时长，参考素材只有图，价格按张。
+  const image = RESULT.models[4]!
+  expect([durationSummary(image), referenceSummary(image), priceSummary(image)]).toEqual([
+    '',
+    '图≤10',
+    '1K ¥0.36 · 2K ¥0.52 /张',
+  ])
 })

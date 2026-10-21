@@ -128,14 +128,13 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
           <For each={rows()}>
             {(m) => {
               const done = () => added(m.id)
-              const blocked = m.output !== 'chat' && m.unsupported
               return (
-                <div class="pull-row" classList={{ off: done() || !!blocked }}>
+                <div class="pull-row" classList={{ off: done() }}>
                   <label class="pull-pick">
                     <input
                       type="checkbox"
                       checked={done() || picked().has(m.id)}
-                      disabled={done() || !!blocked}
+                      disabled={done()}
                       onChange={(e) => toggle(m.id, e.currentTarget.checked)}
                     />
                     <span class="pull-id" title={m.id}>
@@ -143,17 +142,13 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                     </span>
                   </label>
                   {/* 各列的单元格始终存在：行按共用的列宽对齐，空单元格保留该列的位置。
-                      对应型号只在未添加时出现，与「已添加」「不支持」不会同时出现，共用最后一列。 */}
+                      对应型号只在未添加时出现，与「已添加」不会同时出现，共用最后一列。 */}
                   <span class="pull-cell">{durationSummary(m)}</span>
                   <span class="pull-cell">{referenceSummary(m)}</span>
                   <span class="pull-cell">{priceSummary(m)}</span>
                   <Show
                     when={m.output === 'chat' && !m.known && !done()}
-                    fallback={
-                      <span class="pull-cell" title={!done() && blocked ? blocked : undefined}>
-                        {done() ? '已添加' : blocked ? '不支持' : ''}
-                      </span>
-                    }
+                    fallback={<span class="pull-cell">{done() ? '已添加' : ''}</span>}
                   >
                     <select
                       class="pull-base"
@@ -182,7 +177,7 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
           取消
         </button>
         <button class="btn-primary" type="button" disabled={picked().size === 0} onClick={submit}>
-          {picked().size ? `添加 ${picked().size} 个` : '添加'}
+          添加
         </button>
       </div>
     </dialog>

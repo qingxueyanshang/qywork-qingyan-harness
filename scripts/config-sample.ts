@@ -73,6 +73,7 @@ export function sampleConfig(): QyConfig {
           cacheRead: 0.1,
           cacheWrite: 1.25,
           currency: pick(['USD', 'CNY'] as const, n + 1),
+          offPeak: { rate: 0.5, peakWindowsUtc: [[1, 4]], peakWeekdaysUtc: [1, 2, 3, 4, 5] },
         },
         delisted: true,
       }
@@ -93,6 +94,7 @@ export function sampleConfig(): QyConfig {
         chatReasoningProtocol: pick(CHAT_REASONING_PROTOCOLS, n),
         reasoningEcho: pick(REASONING_ECHOES, n),
         cacheRouting: pick(CACHE_ROUTINGS, n),
+        offPeak: { rate: 0.75, peakWindowsUtc: [[0, 12]], peakWeekdaysUtc: [0, 6] },
         base: pick(builtinCatalog(), n).id,
       }
       n++
@@ -109,16 +111,33 @@ export function sampleConfig(): QyConfig {
             channel,
             seconds: [4, 5, 30],
             ratios: ['16:9', '9:16'],
-            resolutions: ['720p'],
-            sizes: { '720p': [1280, 720] },
+            resolutions: ['480p', '720p'],
+            sizes: { '480p': [854, 480], '720p': [1280, 720] },
             maxImages: 30,
             maxVideos: c,
             maxAudios: 10,
-            publicUrls: true,
-            price: { per: pick(['request', 'second'] as const, c), amount: 7, currency: 'CNY' },
+            ...(c === 0 ? { publicUrls: true as const } : { multipart: true as const }),
+            ...(c === 1 ? { resolutionField: true as const } : {}),
+            price: {
+              per: pick(['request', 'second'] as const, c),
+              amount: c === 0 ? 7 : { '480p': 0.4, '720p': 0.6 },
+              currency: 'CNY',
+            },
           },
           ...(c === 0 ? { delisted: true as const } : {}),
         }
+      }
+    }
+    if ('media-openai_images' in media) {
+      media['channel-image'] = {
+        kind: 'openai_images',
+        spec: {
+          channel: 'mumugofe',
+          resolutions: ['1K', '2K'],
+          sizes: ['1024x1024', '1536x1024'],
+          maxImages: 10,
+          price: { per: 'request', amount: { '1K': 0.36, '2K': 0.52 }, currency: 'CNY' },
+        },
       }
     }
     providers[`sample-${kind}`] = {

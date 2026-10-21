@@ -73,30 +73,44 @@ test('木木：计费清单区分对话、图像与视频，视频带渠道规�
       price: { per: 'request', amount: 7, currency: 'CNY' },
     },
   })
-  // 按尺寸分档的型号价格不明，规格照常保存。
-  const dual = by.get('007系列/sd2.5(30图10音/480P/720P)')
-  expect(dual).toMatchObject({ output: 'video', spec: { resolutions: ['480p', '720p'] } })
-  expect(dual && 'spec' in dual && dual.spec?.price).toBeUndefined()
-  expect(by.get('sd-2.0-vip')).toEqual({
-    id: 'sd-2.0-vip',
+  // 按尺寸分档的型号按分辨率档位分别保存单价。
+  expect(by.get('007系列/sd2.5(30图10音/480P/720P)')).toMatchObject({
     output: 'video',
-    kind: 'openai_videos',
-    unsupported: '该型号按表单上传素材，当前未接入',
+    spec: {
+      resolutions: ['480p', '720p'],
+      price: { per: 'second', amount: { '480p': 0.4, '720p': 0.6 }, currency: 'CNY' },
+    },
   })
-  expect(by.get('gpt-image-2')).toEqual({
-    id: 'gpt-image-2',
+  // 表单上传；计费清单按请求中的 resolution 计价，规格标记提交时发送该字段，两档分别定价。
+  expect(by.get('sd-2.0-vip')).toMatchObject({
+    output: 'video',
+    spec: {
+      multipart: true,
+      resolutionField: true,
+      price: { per: 'second', amount: { '720p': 0.676, '1080p': 1.56 }, currency: 'CNY' },
+    },
+  })
+  // 渠道说明：每次生成 1 张，0.052 元。
+  expect(by.get('gpt-image-2')).toMatchObject({
     output: 'image',
     kind: 'openai_images',
+    spec: {
+      channel: 'mumugofe',
+      resolutions: ['1K', '2K', '4K'],
+      maxImages: 10,
+      price: { per: 'request', amount: 0.052, currency: 'CNY' },
+    },
   })
   expect(by.get('claude-sonnet-5-5')).toMatchObject({
     output: 'chat',
     known: true,
     price: { input: 1.8, output: 9, currency: 'CNY' },
   })
-  expect(by.get('deepseek-v4.1-flash')).toEqual({
+  expect(by.get('deepseek-v4.1-flash')).toMatchObject({
     id: 'deepseek-v4.1-flash',
     output: 'chat',
     known: false,
+    price: { input: 1.04, output: 4.16, offPeak: { rate: 0.5 } },
   })
   // 公开接口不携带凭证。
   expect(seen.every((s) => s.auth === null)).toBe(true)

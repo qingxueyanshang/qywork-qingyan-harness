@@ -5,7 +5,7 @@
  */
 
 import type {
-  ChannelVideoSpec,
+  ChannelSpec,
   Currency,
   MediaDiagnostic,
   MediaInputRole,
@@ -21,7 +21,7 @@ export interface MediaProfile {
   baseUrl?: string
   headers?: Record<string, string>
   /** 该型号配置中保存的渠道规格，见 `lookupMediaModel`。 */
-  spec?: ChannelVideoSpec
+  spec?: ChannelSpec
 }
 
 /** 输入文件。字节由调用方预先读取，适配器只负责按协议放入请求。用途的含义见 `MediaInputRole`。 */
@@ -58,7 +58,10 @@ export interface MediaUsage {
   imageTier?: string
   /** 计费秒数，口径以接口为准（百炼万相含输入视频时长）。 */
   seconds?: number
-  /** 输出视频分辨率，统一写为 `480p` / `720p` / `1080p` / `4k`。 */
+  /**
+   * 输出分辨率档位。视频统一写为 `480p` / `720p` / `1080p` / `4k`；中转渠道按目录中的档位写，
+   * 渠道按请求中的档位计价时取发送的值。
+   */
   resolution?: string
   /** 输出是否包含声音。 */
   audio?: boolean

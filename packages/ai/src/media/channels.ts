@@ -1,12 +1,13 @@
 /**
- * 中转渠道的视频型号：渠道目录条目 → 配置中保存的规格（`ChannelVideoSpec`）→ 生成规格。
+ * 中转渠道的视频与图像型号：渠道目录条目 → 配置中保存的规格（`ChannelVideoSpec`、`ChannelImageSpec`）→ 生成规格。
  *
  * 渠道格式（参数名、素材上传、提示词引用写法）在此处；型号名称、时长、画幅、素材上限与价格只来自拉取时的渠道目录，
  * 代码中不登记具体型号。目录字段缺失或取值不合法时返回 null，不补默认值：补出的上限会使画布开放渠道不接受的素材。
  */
 
-import type { ChannelPrice, ChannelVideoSpec } from '@qywork/core'
+import type { ChannelImageSpec, ChannelPrice, ChannelVideoSpec } from '@qywork/core'
 import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
+import type { MediaUsage } from './types.ts'
 
 const RANGE = /^(\d+)\s*-\s*(\d+)$/
 
@@ -57,19 +58,14 @@ export function hongchengVideoSpec(entry: Record<string, unknown>): ChannelVideo
   }
 }
 
-/** 木木目录不支持的素材传递方式。`multipart` 需要另一种请求结构，当前格式未实现。 */
-export type MumugofeUnsupported = { unsupported: string }
-
 /**
  * 木木目录（`/docs/typetale-models.json` 的 `models[]`）中的一条视频型号。
- * 目录只给出参考图数量，参考视频与参考音频按 0 处理；`transport` 为 `public_urls` 时素材先上传到渠道。
+ * 目录只给出参考图数量，参考视频与参考音频按 0 处理；`transport` 为 `public_urls` 时素材先上传到渠道，
+ * 为 `multipart` 时参考图以表单文件随提交上传。
  */
-export function mumugofeVideoSpec(
-  entry: Record<string, unknown>,
-): ChannelVideoSpec | MumugofeUnsupported | null {
+export function mumugofeVideoSpec(entry: Record<string, unknown>): ChannelVideoSpec | null {
   if (entry.kind !== 'video' || entry.protocol !== 'video_v1') return null
-  if (entry.transport === 'multipart') return { unsupported: '该型号按表单上传素材，当前未接入' }
-  if (entry.transport !== 'json' && entry.transport !== 'public_urls') return null
+  if (!['json', 'public_urls', 'multipart'].includes(entry.transport as string)) return null
   if (entry.duration_field !== 'seconds' || entry.duration_type !== 'string') return null
   if (entry.size_format !== 'pixels') return null
   const seconds = Array.isArray(entry.seconds)
@@ -107,7 +103,32 @@ export function mumugofeVideoSpec(
     maxVideos: 0,
     maxAudios: 0,
     ...(entry.transport === 'public_urls' ? { publicUrls: true as const } : {}),
+    ...(entry.transport === 'multipart' ? { multipart: true as const } : {}),
   }
+}
+
+/**
+ * 木木目录中的一条图像型号（`image_json_v1`）。目录给出最长边下限（`min_long_edge`）时去掉达不到下限的尺寸：
+ * 渠道拒绝这些尺寸。
+ */
+export function mumugofeImageSpec(entry: Record<string, unknown>): ChannelImageSpec | null {
+  if (entry.kind !== 'image' || entry.protocol !== 'image_json_v1' || entry.transport !== 'json')
+    return null
+  const resolutions = Array.isArray(entry.res)
+    ? entry.res.filter((r): r is string => typeof r === 'string' && r !== '')
+    : []
+  const minEdge = count(entry.min_long_edge) ?? 0
+  const sizes = Array.isArray(entry.sizes)
+    ? entry.sizes.filter(
+        (v): v is string =>
+          typeof v === 'string' &&
+          /^\d+x\d+$/.test(v) &&
+          Math.max(...v.split('x').map(Number)) >= minEdge,
+      )
+    : []
+  const maxImages = count(entry.refs)
+  if (!resolutions.length || !sizes.length || maxImages === null) return null
+  return { channel: 'mumugofe', resolutions, sizes, maxImages }
 }
 
 function secondsParam(seconds: readonly number[]): MediaParamSpec {
@@ -131,15 +152,35 @@ function secondsParam(seconds: readonly number[]): MediaParamSpec {
   }
 }
 
-function priceOf(price: ChannelPrice | undefined): MediaPrice | undefined {
+/**
+ * `resolutionOf` 按请求参数取分辨率档位。按档位定价时计量须带档位：任务查询未取得档位时，
+ * 账本中该次金额不明；发送前的报价按所选参数计算。
+ */
+function priceOf(
+  price: ChannelPrice | undefined,
+  resolutionOf: (params: Record<string, unknown>) => string | undefined,
+): MediaPrice | undefined {
   if (!price) return undefined
   const { amount, currency } = price
+  const rate = (u: MediaUsage) =>
+    typeof amount === 'number'
+      ? amount
+      : u.resolution === undefined
+        ? undefined
+        : amount[u.resolution]
+  const tier = (params: Record<string, unknown>): MediaUsage => {
+    const resolution = resolutionOf(params)
+    return resolution === undefined ? {} : { resolution }
+  }
   return price.per === 'request'
-    ? { currency, cost: () => amount, usageOf: () => ({}) }
+    ? { currency, cost: (u) => rate(u) ?? null, usageOf: tier }
     : {
         currency,
-        cost: (u) => (u.seconds === undefined ? null : u.seconds * amount),
-        usageOf: (params) => ({ seconds: Number(params.seconds) }),
+        cost: (u) => {
+          const r = rate(u)
+          return u.seconds === undefined || r === undefined ? null : u.seconds * r
+        },
+        usageOf: (params) => ({ ...tier(params), seconds: Number(params.seconds) }),
       }
 }
 
@@ -180,13 +221,25 @@ function hongchengParams(spec: ChannelVideoSpec): MediaParamSpec[] {
   ]
 }
 
-function mumugofeParams(spec: ChannelVideoSpec): MediaParamSpec[] {
-  const shapes = spec.resolutions.flatMap((r) =>
+/** 木木各分辨率档位、各画幅的像素尺寸，档位在前。 */
+function mumugofeSizes(spec: ChannelVideoSpec) {
+  return spec.resolutions.flatMap((resolution) =>
     spec.ratios.flatMap((ratio) => {
-      const value = sizeFor(ratio, spec.sizes![r]!)
-      return value ? [{ ratio, tier: r.toUpperCase(), value }] : []
+      const value = sizeFor(ratio, spec.sizes![resolution]!)
+      return value ? [{ ratio, resolution, value }] : []
     }),
   )
+}
+
+function mumugofeParams(
+  spec: ChannelVideoSpec,
+  sizes: ReturnType<typeof mumugofeSizes>,
+): MediaParamSpec[] {
+  const shapes = sizes.map(({ ratio, resolution, value }) => ({
+    ratio,
+    tier: resolution.toUpperCase(),
+    value,
+  }))
   return [
     secondsParam(spec.seconds),
     {
@@ -203,7 +256,14 @@ function mumugofeParams(spec: ChannelVideoSpec): MediaParamSpec[] {
 /** 保存的渠道规格对应的生成规格。只用于 `openai_videos` 协议：两个渠道都按该协议的任务接口提交与查询。 */
 export function channelMediaSpec(id: string, spec: ChannelVideoSpec): MediaModelSpec {
   const hongcheng = spec.channel === 'hongcheng'
-  const price = priceOf(spec.price)
+  const sizes = hongcheng ? [] : mumugofeSizes(spec)
+  const price = priceOf(spec.price, (params) =>
+    hongcheng
+      ? typeof params.resolution === 'string'
+        ? params.resolution
+        : undefined
+      : sizes.find((s) => s.value === params.size)?.resolution,
+  )
   return {
     id,
     displayName: id,
@@ -219,13 +279,66 @@ export function channelMediaSpec(id: string, spec: ChannelVideoSpec): MediaModel
       maxImages: spec.maxImages,
       maxVideos: spec.maxVideos,
       maxAudios: spec.maxAudios,
-      transport: 'json',
+      transport: spec.multipart ? 'multipart' : 'json',
       ...(spec.publicUrls ? { publicUrls: true } : {}),
     },
-    params: hongcheng ? hongchengParams(spec) : mumugofeParams(spec),
+    params: hongcheng ? hongchengParams(spec) : mumugofeParams(spec, sizes),
+    ...(spec.resolutionField
+      ? { resolutionBySize: Object.fromEntries(sizes.map((s) => [s.value, s.resolution])) }
+      : {}),
     ...(hongcheng
       ? { mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' } }
       : {}),
+    ...(price ? { price } : {}),
+    catalogued: true,
+  }
+}
+
+/** 约分后的宽高比，如 `1536x1024` 为 `3:2`。 */
+function ratioOf(size: string): string {
+  const [w, h] = size.split('x').map(Number) as [number, number]
+  const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a)
+  const g = gcd(w, h)
+  return `${w / g}:${h / g}`
+}
+
+/**
+ * 保存的图像渠道规格对应的生成规格。只用于 `openai_images` 协议，请求结构为 mumugofe（`imageFormat`）：
+ * 尺寸与分辨率档位分别发送，渠道按分辨率档位计价，每次生成一张。
+ */
+export function channelImageMediaSpec(id: string, spec: ChannelImageSpec): MediaModelSpec {
+  const price = priceOf(spec.price, (params) =>
+    typeof params.resolution === 'string' ? params.resolution : undefined,
+  )
+  return {
+    id,
+    displayName: id,
+    vendor: 'Mumugofe',
+    kind: 'openai_images',
+    imageFormat: 'mumugofe',
+    operations: spec.maxImages ? ['generate', 'edit'] : ['generate'],
+    inputs: { maxImages: spec.maxImages, maxVideos: 0, transport: 'json' },
+    params: [
+      {
+        name: 'size',
+        label: '尺寸',
+        type: 'string',
+        shapes: spec.sizes.map((value) => ({ ratio: ratioOf(value), value })),
+        default: spec.sizes[0]!,
+        description: `宽x高，可选 ${spec.sizes.join('、')}`,
+      },
+      {
+        name: 'resolution',
+        label: '分辨率',
+        type: 'enum',
+        values: spec.resolutions,
+        default: spec.resolutions[0]!,
+        description:
+          spec.resolutions.length === 1
+            ? `固定 ${spec.resolutions[0]}`
+            : `可选 ${spec.resolutions.join('、')}`,
+      },
+    ],
     ...(price ? { price } : {}),
     catalogued: true,
   }

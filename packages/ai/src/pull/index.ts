@@ -2,11 +2,13 @@
  * 拉取接口上的型号：中转的公开计费清单（New API 的 `/api/pricing`）优先，没有时退回 OpenAI 兼容的 `{base}/models`。
  *
  * 计费清单给出每个型号的接口类型，据此区分对话、图像与视频；价格按 `pricing.ts` 折算。
- * 视频型号再按渠道目录（hongcheng 工作台目录、木木目录）取得保存的规格；两个目录都没有该型号时不带规格，使用协议默认。
+ * 视频型号再按渠道目录（hongcheng 工作台目录、木木目录）、图像型号按木木目录取得保存的规格；
+ * 目录中没有该型号时不带规格，使用协议默认。
  * 只读：不写配置，写入由调用方经配置接口完成。
  */
 
 import {
+  type ChannelSpec,
   type ChannelVideoSpec,
   defaultMediaKind,
   MEDIA_KIND_OUTPUT,
@@ -16,12 +18,18 @@ import {
 } from '@qywork/core'
 import { lookupModel } from '../catalog.ts'
 import { findMediaModel } from '../media/catalog.ts'
-import { channelMediaSpec, hongchengVideoSpec, mumugofeVideoSpec } from '../media/channels.ts'
+import {
+  channelMediaSpec,
+  hongchengVideoSpec,
+  mumugofeImageSpec,
+  mumugofeVideoSpec,
+} from '../media/channels.ts'
 import { normalizeBaseUrl } from '../providers/openai-compat.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import {
   type ChatPrice,
   chatPriceOf,
+  imagePriceOf,
   type NewApiPricingEntry,
   type PriceBasis,
   priceBasis,
@@ -47,9 +55,7 @@ export type PulledModel =
       id: string
       output: MediaOutput
       kind: MediaKind
-      spec?: ChannelVideoSpec
-      /** 渠道目录中有该型号，但当前格式无法提交；此类型号不能添加。 */
-      unsupported?: string
+      spec?: ChannelSpec
     }
 
 export interface PullResult {
@@ -109,15 +115,23 @@ function listOf(body: unknown, key: string): Record<string, unknown>[] | undefin
   return Array.isArray(list) ? list.flatMap((e) => (record(e) ? [record(e)!] : [])) : undefined
 }
 
-/** 渠道规格对应的参数可选值，用于按公式逐一求价；时长单独传入。 */
-function choicesOf(id: string, spec: ChannelVideoSpec): Record<string, string[]> {
-  const choices: Record<string, string[]> = {}
-  for (const p of channelMediaSpec(id, spec).params) {
-    if (p.name === 'seconds') continue
-    const values = p.shapes?.flatMap((s) => (s.value === undefined ? [] : [s.value])) ?? p.values
-    if (values?.length) choices[p.name] = values.map(String)
+/**
+ * 渠道规格中各分辨率档位对应的参数可选值，用于按公式逐档求价；时长单独传入。
+ * 计量中的 `resolution` 取该档位：渠道按它计价时请求可能只发送尺寸。
+ */
+function tiersOf(id: string, spec: ChannelVideoSpec): Record<string, Record<string, string[]>> {
+  const tiers: Record<string, Record<string, string[]>> = {}
+  for (const resolution of spec.resolutions) {
+    const choices: Record<string, string[]> = {}
+    for (const p of channelMediaSpec(id, { ...spec, resolutions: [resolution] }).params) {
+      if (p.name === 'seconds') continue
+      const values = p.shapes?.flatMap((s) => (s.value === undefined ? [] : [s.value])) ?? p.values
+      if (values?.length) choices[p.name] = values.map(String)
+    }
+    choices.resolution ??= [resolution]
+    tiers[resolution] = choices
   }
-  return choices
+  return tiers
 }
 
 function videoOf(
@@ -132,12 +146,25 @@ function videoOf(
     : mumugofe
       ? mumugofeVideoSpec(mumugofe)
       : null
-  if (parsed && 'unsupported' in parsed)
-    return { id, output: 'video', kind: 'openai_videos', unsupported: parsed.unsupported }
   let spec = parsed ?? undefined
-  const price = spec && basis && videoPriceOf(entry, basis, spec.seconds, choicesOf(id, spec))
+  // 木木按请求中的 resolution 计价的型号，不传时渠道按默认档位出图，提交时须发送与尺寸对应的档位。
+  if (spec?.channel === 'mumugofe' && entry.billing_usage_schema?.resolution)
+    spec = { ...spec, resolutionField: true }
+  const price = spec && basis && videoPriceOf(entry, basis, spec.seconds, tiersOf(id, spec))
   if (spec && price) spec = { ...spec, price }
   return { id, output: 'video', kind: 'openai_videos', ...(spec ? { spec } : {}) }
+}
+
+function imageOf(
+  entry: NewApiPricingEntry,
+  basis: PriceBasis | null,
+  mumugofe: Record<string, unknown> | undefined,
+): PulledModel {
+  const id = entry.model_name
+  let spec = (mumugofe && mumugofeImageSpec(mumugofe)) || undefined
+  const price = spec && basis && imagePriceOf(entry, basis, spec.resolutions)
+  if (spec && price) spec = { ...spec, price }
+  return { id, output: 'image', kind: 'openai_images', ...(spec ? { spec } : {}) }
 }
 
 async function fromPricing(
@@ -173,7 +200,7 @@ async function fromPricing(
     if (types.includes('openai-video')) {
       models.set(id, videoOf(entry, basis, hongcheng.get(id), mumugofe.get(id)))
     } else if (types.includes('image-generation')) {
-      models.set(id, { id, output: 'image', kind: 'openai_images' })
+      models.set(id, imageOf(entry, basis, mumugofe.get(id)))
     } else if (types.some((t) => CHAT_ENDPOINTS.includes(t))) {
       const price = basis ? chatPriceOf(entry, basis) : undefined
       models.set(id, {

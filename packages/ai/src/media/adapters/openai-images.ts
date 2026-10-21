@@ -6,13 +6,18 @@
  * 结果位于 `b64_json`（GPT Image 只返回该字段）还是 `url`（百炼兼容只返回该字段），两者都读取。
  *
  * **不发送 `response_format`**：GPT Image 不接受该字段，发送后整个请求被拒绝；其余两家默认返回 url，直接读取即可。
+ *
+ * Mumugofe（`imageFormat`）另有一种结构：JSON 提交到 `/images/generations`，参考图为 `images` 中的数据地址，
+ * 请求异步任务并按 `/images/generations/tasks/{id}` 查询；直接出图的型号同步返回图片，没有任务号。
  */
 
 import { basename } from 'node:path'
+import { mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, postJson, sendJson } from '../http.ts'
+import { count, dataUri, defined, getJson, postJson, sendJson } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
+import { afterSubmit, failureDetail, pendingTask, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -33,6 +38,7 @@ export class OpenAIImagesAdapter implements MediaAdapter {
   ) {}
 
   async run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult> {
+    if (this.spec.imageFormat === 'mumugofe') return this.runMumugofe(req, opts)
     const { signal } = opts
     const base = normalizeBaseUrl(this.profile.baseUrl)
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
@@ -73,6 +79,98 @@ export class OpenAIImagesAdapter implements MediaAdapter {
   resumeImage(result: MediaImageResult, opts: MediaRunOptions): Promise<MediaResult> {
     return resolveImages(result, opts)
   }
+
+  /** 渠道按请求中的 `n` 与 `resolution` 计价：每次一张，计量取发送的分辨率档位。 */
+  private async runMumugofe(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult> {
+    const { signal } = opts
+    const base = normalizeBaseUrl(this.profile.baseUrl)
+    const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
+    const params = mediaParamValues(this.spec.params, req.params)
+    const usage: MediaUsage = {
+      images: 1,
+      ...(typeof params.resolution === 'string' ? { resolution: params.resolution } : {}),
+    }
+    let taskId = opts.resumeTaskId
+    if (!taskId) {
+      if (req.inputs.some((i) => i.role !== 'reference'))
+        throw new MediaError('该模型只接受参考图；未提交生成')
+      signal.throwIfAborted()
+      opts.onSubmit?.()
+      const body = await postJson(
+        `${base}/images/generations`,
+        {
+          model: this.profile.model,
+          prompt: req.prompt,
+          n: 1,
+          ...params,
+          response_format: 'url',
+          async: true,
+          ...(req.inputs.length ? { images: req.inputs.map((i) => dataUri(i.bytes, i.mime)) } : {}),
+        },
+        auth,
+        signal,
+        {
+          validate: (b) =>
+            mumugofeTaskId(b) || Array.isArray(b.data) ? undefined : '接口没有返回任务号或图片',
+        },
+      )
+      const id = mumugofeTaskId(body)
+      if (!id) return resolveImages(readImages(body, usage), opts)
+      taskId = id
+      await afterSubmit(id, signal, async () => opts.onTask?.(id))
+    }
+    const id = taskId
+    return afterSubmit(id, signal, async () => {
+      const done = await waitTask(() => checkMumugofe(base, id, auth, signal), opts)
+      return resolveImages({ ...done.result, usage }, opts)
+    })
+  }
+}
+
+/** Mumugofe 的响应可能把任务对象包在 `data` 中；`data` 为数组时是图片列表。 */
+function unwrap(body: Record<string, unknown>): Record<string, unknown> {
+  return body.data && typeof body.data === 'object' && !Array.isArray(body.data)
+    ? (body.data as Record<string, unknown>)
+    : body
+}
+
+function mumugofeTaskId(body: Record<string, unknown>): string | undefined {
+  const task = unwrap(body)
+  const id = task.task_id ?? task.id
+  return typeof id === 'string' && id.trim() ? id : undefined
+}
+
+async function checkMumugofe(
+  base: string,
+  taskId: string,
+  auth: Record<string, string>,
+  signal: AbortSignal,
+): Promise<TaskState<{ result: MediaImageResult }>> {
+  const body = await getJson(
+    `${base}/images/generations/tasks/${encodeURIComponent(taskId)}`,
+    auth,
+    signal,
+  )
+  const task = unwrap(body)
+  const status = String(task.status ?? '').toLowerCase()
+  if (['completed', 'succeeded', 'success'].includes(status))
+    return { state: 'done', result: readImages(task) }
+  if (['failed', 'failure', 'cancelled', 'canceled', 'rejected'].includes(status)) {
+    const error = (task.error ?? body.error) as { code?: unknown; message?: unknown } | undefined
+    return {
+      state: 'failed',
+      message: failureDetail(error?.code, error?.message ?? task.fail_reason, '任务失败'),
+    }
+  }
+  return pendingTask(status, [
+    'queued',
+    'pending',
+    'submitted',
+    'not_start',
+    'in_progress',
+    'processing',
+    'running',
+  ])
 }
 
 /**

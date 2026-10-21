@@ -14,12 +14,15 @@ import {
   findMediaModel,
   lookupModel,
   mediaKindsOf,
+  type OffPeakDiscount,
   type TransportCapabilities,
 } from '@qywork/ai'
 import {
   CACHE_ROUTINGS,
   type CacheRouting,
+  type ChannelSpec,
   type ChannelVideoSpec,
+  channelImageSpecProblem,
   channelVideoSpecProblem,
   EFFORT_ORDER,
   type EffortLevel,
@@ -216,10 +219,10 @@ export interface StoredMediaModel {
   /** 生成请求使用的协议。添加时默认取目录协议，保存后不随接口地址变化。 */
   kind: MediaKind
   /**
-   * 拉取模型时由渠道目录得到的规格，只用于 `openai_videos`。中转渠道的型号只在此处有规格，代码目录中没有；
-   * 每次拉取时按渠道目录更新。解析顺序见 `lookupMediaModel`。
+   * 拉取模型时由渠道目录得到的规格：`openai_videos` 保存视频规格，`openai_images` 保存图像规格。
+   * 中转渠道的型号只在此处有规格，代码目录中没有；每次拉取时按渠道目录更新。解析顺序见 `lookupMediaModel`。
    */
-  spec?: ChannelVideoSpec
+  spec?: ChannelSpec
   /** 上一次拉取时渠道的计费清单中已没有该型号。生成工具不再向它提交。 */
   delisted?: true
 }
@@ -279,6 +282,8 @@ export interface StoredCatalogEntry {
   /** 缓存写入价。只覆盖 5 分钟一档：`computeCost` 只按该档计算。 */
   cacheWrite?: number
   currency?: 'USD' | 'CNY'
+  /** 分时段折扣，替换目录中的折扣。接口价格（`ModelPrice`）经 `resolveModel` 合成到此处；模型库界面不编辑该项。 */
+  offPeak?: OffPeakDiscount
   thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
   thinksByDefault?: boolean
@@ -351,7 +356,33 @@ export interface ModelPrice {
   cacheRead: number
   cacheWrite: number
   currency: 'USD' | 'CNY'
+  /** 分时段折扣。此时四项单价是高峰价。 */
+  offPeak?: OffPeakDiscount
 }
+
+/** 分时段折扣不合法时返回 true。折扣直接参与计价：结构错误时计价抛出异常，取值越界时金额记错。 */
+function invalidOffPeak(value: unknown): boolean {
+  if (value === undefined) return false
+  const o = value as Partial<OffPeakDiscount> | null
+  const hour = (h: unknown) => typeof h === 'number' && h >= 0 && h <= 24
+  return !(
+    o &&
+    typeof o === 'object' &&
+    typeof o.rate === 'number' &&
+    o.rate >= 0 &&
+    o.rate < 1 &&
+    Array.isArray(o.peakWindowsUtc) &&
+    o.peakWindowsUtc.every(
+      (w) => Array.isArray(w) && w.length === 2 && hour(w[0]) && hour(w[1]) && w[0] < w[1],
+    ) &&
+    Array.isArray(o.peakWeekdaysUtc) &&
+    o.peakWeekdaysUtc.every((d) => Number.isInteger(d) && d >= 0 && d <= 6) &&
+    (o.note === undefined || typeof o.note === 'string')
+  )
+}
+
+const OFF_PEAK_RULE =
+  'offPeak 必须包含 0 到 1 之间的 rate、UTC 小时区间数组 peakWindowsUtc 与星期数组 peakWeekdaysUtc（0 为周日）'
 
 /**
  * 把接口层与模型配置项展开为一次请求所需的全部信息。
@@ -902,7 +933,7 @@ export interface ResolvedMediaModel {
   baseUrl?: string
   headers?: Record<string, string>
   /** 保存的渠道规格，取规格时传给 `lookupMediaModel`。 */
-  spec?: ChannelVideoSpec
+  spec?: ChannelSpec
   delisted?: true
 }
 
@@ -943,7 +974,7 @@ export interface MediaModelEntry {
   output: MediaOutput
   isDefault: boolean
   /** 保存的渠道规格，取规格时传给 `lookupMediaModel`。 */
-  spec?: ChannelVideoSpec
+  spec?: ChannelSpec
   delisted?: true
 }
 
@@ -1078,6 +1109,8 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         problems.push(
           `${name} / ${id} 的 price 必须包含非负数 input、output、cacheRead、cacheWrite 与 currency（USD 或 CNY）。`,
         )
+      } else if (price && invalidOffPeak(price.offPeak)) {
+        problems.push(`${name} / ${id} 的 price.${OFF_PEAK_RULE}。`)
       }
       if (m.delisted !== undefined && m.delisted !== true)
         problems.push(`${name} / ${id} 的 delisted 只能为 true。`)
@@ -1144,6 +1177,7 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
           `  在设置 → 模型中重新拉取并选择，或修改 ${configPath()} 中 "catalog" 下的 base。`,
       )
     }
+    if (invalidOffPeak(entry.offPeak)) problems.push(`模型库 "${key}" 的 ${OFF_PEAK_RULE}。`)
   }
 
   /*
@@ -1164,7 +1198,9 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         const problem =
           m.kind === 'openai_videos'
             ? channelVideoSpecProblem(m.spec)
-            : '只有 openai_videos 协议可以保存渠道规格'
+            : m.kind === 'openai_images'
+              ? channelImageSpecProblem(m.spec)
+              : '只有 openai_videos 与 openai_images 协议可以保存渠道规格'
         if (problem)
           problems.push(
             `${name} / ${id} 的渠道规格不合法：${problem}。\n` +

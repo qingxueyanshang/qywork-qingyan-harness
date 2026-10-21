@@ -8,6 +8,7 @@ import {
   lookupModel,
   type ModelSpec,
   type ProviderKind,
+  priceAt,
 } from '@qywork/ai'
 import type { MediaKind } from '@qywork/core'
 import {
@@ -405,12 +406,47 @@ test('保存的渠道规格不合法时阻止保存', () => {
     maxAudios: 0,
   }
   expect(bad(ok)).toEqual([])
-  expect(bad(ok, 'ark_videos')[0]).toContain('只有 openai_videos 协议可以保存渠道规格')
+  expect(bad(ok, 'ark_videos')[0]).toContain(
+    '只有 openai_videos 与 openai_images 协议可以保存渠道规格',
+  )
+  // 视频协议不接受图像规格，反之亦然。
+  expect(bad(ok, 'openai_images')[0]).toContain('sizes 必须是「宽x高」的非空数组')
+  expect(bad({ ...ok, multipart: true, publicUrls: true })[0]).toContain(
+    'multipart 与 publicUrls 不能同时设置',
+  )
+  expect(bad({ ...ok, resolutionField: 1 })[0]).toContain('resolutionField 只能为 true')
   expect(bad({ ...ok, channel: 'other' })[0]).toContain('channel 必须是')
   expect(bad({ ...ok, seconds: [10, 5] })[0]).toContain('seconds 必须是升序的正整数数组')
   expect(bad({ ...ok, sizes: {} })[0]).toContain('mumugofe 的每个分辨率档位都必须提供 sizes')
   expect(bad({ ...ok, price: { per: 'request', amount: 0, currency: 'CNY' } })[0]).toContain(
     'price 必须包含',
+  )
+  // 按分辨率定价时每个档位各有一个金额。
+  const two = {
+    ...ok,
+    resolutions: ['480p', '720p'],
+    sizes: { '480p': [854, 480], '720p': [1280, 720] },
+  }
+  const tiered = (amount: unknown) => ({
+    ...two,
+    price: { per: 'second', amount, currency: 'CNY' },
+  })
+  expect(bad(tiered({ '480p': 0.4, '720p': 0.6 }))).toEqual([])
+  expect(bad(tiered({ '480p': 0.4 }))[0]).toContain('price 必须包含')
+  expect(bad(tiered({ '480p': 0.4, '1080p': 0.6 }))[0]).toContain('price 必须包含')
+
+  const image = {
+    channel: 'mumugofe',
+    resolutions: ['1K', '2K'],
+    sizes: ['1024x1024'],
+    maxImages: 10,
+    price: { per: 'request', amount: { '1K': 0.36, '2K': 0.52 }, currency: 'CNY' },
+  }
+  expect(bad(image, 'openai_images')).toEqual([])
+  expect(bad(image)[0]).toContain('seconds 必须是升序的正整数数组')
+  expect(bad({ ...image, sizes: ['1K'] }, 'openai_images')[0]).toContain('sizes 必须是')
+  expect(bad({ ...image, price: { ...image.price, per: 'second' } }, 'openai_images')[0]).toContain(
+    '图像的 price 只能按次',
   )
 })
 
@@ -495,6 +531,33 @@ describe('模型解析', () => {
       price: { input: -1, output: 1, cacheRead: 0, cacheWrite: 0, currency: 'CNY' },
     }
     expect(diagnoseConfig(priced)[0]).toContain('price 必须包含非负数')
+  })
+
+  test('接口价格的分时段折扣替换模型库中的折扣，计价按该接口的高峰时段', () => {
+    const priced = structuredClone(two)
+    const offPeak = {
+      rate: 0.5,
+      peakWindowsUtc: [[12, 14]] as [number, number][],
+      peakWeekdaysUtc: [0, 1, 2, 3, 4, 5, 6],
+    }
+    priced.providers.mirror!.models['deepseek-v4-flash'] = {
+      price: {
+        input: 1.04,
+        output: 4.16,
+        cacheRead: 0.02,
+        cacheWrite: 0,
+        currency: 'CNY',
+        offPeak,
+      },
+    }
+    expect(diagnoseConfig(priced)).toEqual([])
+    const target = resolveModel(priced, { provider: 'mirror', model: 'deepseek-v4-flash' })!
+    const spec = buildAdapter({ ...target, apiKey: target.apiKey! }).spec
+    // 2026-10-21 是周三。模型库中 DeepSeek 的高峰含 UTC 02:00、不含 UTC 12:00，该接口相反。
+    expect(priceAt(spec, { now: Date.UTC(2026, 9, 21, 12) }).input).toBe(1.04)
+    expect(priceAt(spec, { now: Date.UTC(2026, 9, 21, 2) }).input).toBe(0.52)
+    priced.providers.mirror!.models['deepseek-v4-flash']!.price!.offPeak = { ...offPeak, rate: 2 }
+    expect(diagnoseConfig(priced)[0]).toContain('price.offPeak 必须包含')
   })
 
   test('对应型号必须在模型库中', () => {

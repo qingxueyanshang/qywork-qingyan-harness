@@ -6,6 +6,7 @@
  * 厂商扩展结构由目录声明，素材与参数按对应结构发送。
  */
 
+import { basename } from 'node:path'
 import { mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
@@ -30,15 +31,18 @@ import {
 import { arkVideoContent, ENDED } from './ark-videos.ts'
 import { dashScopeVideoPayload } from './dashscope.ts'
 import { hongchengVideoPayload } from './hongcheng.ts'
-import { uploadMumugofeReference } from './mumugofe.ts'
+import { mumugofeBilled, uploadMumugofeReference } from './mumugofe.ts'
 
-/** 按目录声明构造已核实的中转请求；未知型号只发送通用字段。 */
+/**
+ * 按目录声明构造已核实的中转请求；未知型号只发送通用字段。
+ * 返回 JSON 字段时由调用方补上 `model` 与 `prompt`；返回表单时表单已包含全部字段。
+ */
 async function payloadOf(
   req: MediaRequest,
   spec: MediaModelSpec,
   profile: MediaProfile,
   signal: AbortSignal,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | FormData> {
   switch (spec.videoFormat) {
     case 'mumugofe': {
       const images: string[] = []
@@ -57,6 +61,24 @@ async function payloadOf(
         if (input.role === 'audio' && sniffMime(input.bytes) !== 'audio/mpeg')
           throw new MediaError('该模型的参考音频仅支持 MP3，请先转换为 MP3；未提交生成')
       }
+      // 画布省略处于默认值的参数；该渠道仍显式发送目录中声明的时长和尺寸。
+      const params = mediaParamValues(spec.params, req.params)
+      const resolution = spec.resolutionBySize?.[String(params.size)]
+      const fields = resolution ? { ...params, resolution } : params
+      // 表单提交：参数为文本字段，参考图逐张放入同名文件字段 `input_reference`。没有参考素材时按 JSON 提交。
+      if (spec.inputs.transport === 'multipart' && req.inputs.length) {
+        const form = new FormData()
+        form.set('model', profile.model)
+        form.set('prompt', req.prompt)
+        for (const [key, value] of Object.entries(fields)) form.set(key, String(value))
+        for (const input of req.inputs)
+          form.append(
+            'input_reference',
+            new Blob([input.bytes], { type: input.mime }),
+            basename(input.path),
+          )
+        return form
+      }
       for (const input of req.inputs) {
         const value = spec.inputs.publicUrls
           ? await uploadMumugofeReference(
@@ -74,9 +96,8 @@ async function payloadOf(
           audios.push(value)
         }
       }
-      // 画布省略处于默认值的参数；该渠道仍显式发送目录中声明的时长和尺寸。
       return {
-        ...mediaParamValues(spec.params, req.params),
+        ...fields,
         ...(images.length ? { images } : {}),
         ...(videos.length ? { videos } : {}),
         ...(audios.length ? { audios } : {}),
@@ -119,7 +140,9 @@ export class OpenAIVideosAdapter implements MediaAdapter {
           : await payloadOf(req, this.spec, this.profile, signal)
       const submitted = await postTask(
         `${base}/videos`,
-        { model: this.profile.model, prompt: req.prompt, ...payload },
+        payload instanceof FormData
+          ? payload
+          : { model: this.profile.model, prompt: req.prompt, ...payload },
         auth,
         opts,
         (body) => body.id,
@@ -147,6 +170,7 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     if (this.spec.videoFormat === 'mumugofe') {
       // 任务失败时 `/videos/{id}` 只返回「The video generation task failed.」，拒绝原因（如版权保护拒绝）
       // 只在任务接口的 `fail_reason` 中。成功后按上游回执的下载直链取回，避免经过渠道的内容转发接口。
+      // 扣费取任务记录的 `quota`：各上游回执中的时长、尺寸字段不一致，常常缺失。
       const body = await getJson(
         `${base}/video/generations/${encodeURIComponent(taskId)}`,
         auth,
@@ -155,7 +179,8 @@ export class OpenAIVideosAdapter implements MediaAdapter {
       const task = (body.data ?? {}) as {
         status?: unknown
         fail_reason?: unknown
-        data?: { download_url?: unknown }
+        quota?: unknown
+        data?: { download_url?: unknown; duration?: unknown }
       }
       const status = String(task.status ?? '').toLowerCase()
       if (status === 'success') {
@@ -163,7 +188,13 @@ export class OpenAIVideosAdapter implements MediaAdapter {
         const url = typeof value === 'string' ? URL.parse(value) : null
         if (!url || !['https:', 'http:'].includes(url.protocol) || url.username || url.password)
           throw new MediaError('任务成功但未返回有效成片地址')
-        return { state: 'done', url: url.href }
+        const quota = typeof task.quota === 'number' && task.quota > 0 ? task.quota : undefined
+        const billed = quota === undefined ? undefined : await mumugofeBilled(base, quota, signal)
+        return {
+          state: 'done',
+          url: url.href,
+          usage: defined<MediaUsage>({ seconds: count(task.data?.duration), billed }),
+        }
       }
       if (status === 'failure') {
         return { state: 'failed', message: failureDetail(undefined, task.fail_reason, '任务失败') }

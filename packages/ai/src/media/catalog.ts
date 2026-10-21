@@ -19,6 +19,8 @@
  */
 
 import {
+  type ChannelImageSpec,
+  type ChannelSpec,
   type ChannelVideoSpec,
   type Currency,
   MEDIA_KIND_OUTPUT,
@@ -29,7 +31,7 @@ import {
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import { QWEN_AUDIO_MODELS } from './catalog-qwen-audio.ts'
-import { channelMediaSpec } from './channels.ts'
+import { channelImageMediaSpec, channelMediaSpec } from './channels.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
 
 /**
@@ -157,6 +159,13 @@ export interface MediaModelSpec {
   mappings?: Partial<Record<MediaKind, MediaMapping>>
   /** 通用视频端点中厂商扩展字段的请求结构。 */
   videoFormat?: 'dashscope' | 'ark' | 'veo' | 'kling-omni' | 'mumugofe' | 'hongcheng'
+  /** 通用图像端点中渠道的请求结构：mumugofe 以 JSON 提交、按任务查询结果。 */
+  imageFormat?: 'mumugofe'
+  /**
+   * 随尺寸一并发送的分辨率档位：键为 `size` 的取值，值为请求中 `resolution` 的取值。
+   * 只在渠道按请求中的分辨率出图与计价、不按尺寸推断时声明。
+   */
+  resolutionBySize?: Readonly<Record<string, string>>
   /** 百炼新音频端点及输入结构；省略时使用原有 Qwen-TTS 多模态端点。 */
   speechFormat?: 'qwen-audio-tts' | 'qwen-audio-next'
 }
@@ -1606,20 +1615,19 @@ export function mediaKindsOf(spec: MediaModelSpec): MediaKind[] {
 }
 
 /**
- * 模型在指定协议上的规格。顺序唯一：同协议的目录条目 → 配置中保存的渠道规格 → 已登记的协议映射 → 协议默认。
+ * 模型在指定协议上的规格。顺序唯一：配置中保存的渠道规格 → 同协议的目录条目 → 已登记的协议映射 → 协议默认。
  *
- * `saved` 是拉取时由渠道目录得到、保存在该型号配置中的规格（`StoredMediaModel.spec`），只用于 `openai_videos`。
+ * `saved` 是拉取时由渠道目录得到、保存在该型号配置中的规格（`StoredMediaModel.spec`），用于 `openai_videos` 与
+ * `openai_images`；配置校验保证视频协议保存视频规格、图像协议保存图像规格。保存的规格先于目录：中转的型号可与内置型号同名
+ * （如 gpt-image-2），请求结构与价格以渠道为准。
  * 生成工具、画布、提示词与适配器都经由本函数取得规格，调用方必须传入同一份保存的规格，否则各处参数不一致。
  * 没有映射的组合使用协议默认，不继承无法正确序列化的原生参数、输入能力或官方单价。
  */
-export function lookupMediaModel(
-  id: string,
-  kind: MediaKind,
-  saved?: ChannelVideoSpec,
-): MediaModelSpec {
+export function lookupMediaModel(id: string, kind: MediaKind, saved?: ChannelSpec): MediaModelSpec {
+  if (saved && kind === 'openai_videos') return channelMediaSpec(id, saved as ChannelVideoSpec)
+  if (saved && kind === 'openai_images') return channelImageMediaSpec(id, saved as ChannelImageSpec)
   const exact = SEEDS.find((m) => m.id === id && m.kind === kind)
   if (exact) return exact
-  if (saved && kind === 'openai_videos') return channelMediaSpec(id, saved)
   const base = PROTOCOL_DEFAULTS[kind]
   const byId = SEEDS.find(
     (m) => m.id === id && MEDIA_KIND_OUTPUT[m.kind] === MEDIA_KIND_OUTPUT[kind],
