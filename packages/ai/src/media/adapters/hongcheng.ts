@@ -42,6 +42,11 @@ export async function uploadHongchengReference(
   return uploaded
 }
 
+/**
+ * 参考素材同时写入顶层字段与 `metadata.__workbench_refs`：渠道网关对部分线路丢弃顶层的参考素材字段，
+ * 由参考透传服务按 `__workbench_refs`（含本次的 `trace_id`）把素材交给上游。只写顶层字段时，
+ * 这些线路的任务以「提示词引用的参考素材缺失」失败。`duration` 为整数秒，与 `seconds` 同时发送。
+ */
 export async function hongchengVideoPayload(
   req: MediaRequest,
   spec: MediaModelSpec,
@@ -50,20 +55,39 @@ export async function hongchengVideoPayload(
   signal: AbortSignal,
 ): Promise<Record<string, unknown>> {
   const references: Record<string, string[]> = {}
+  const bridged: Record<string, string[]> = {}
   const fields = {
-    reference: 'reference_images',
-    video: 'reference_videos',
-    audio: 'reference_audios',
-  }
+    reference: ['reference_images', 'reference_image_urls'],
+    video: ['reference_videos', 'reference_video_urls'],
+    audio: ['reference_audios', 'reference_audio_urls'],
+  } as const
   for (const input of req.inputs) {
     if (!(input.role in fields)) throw new MediaError('该模型不支持首尾帧输入；未提交生成')
   }
   for (const input of req.inputs) {
-    const field = fields[input.role as keyof typeof fields]
+    const [field, bridge] = fields[input.role as keyof typeof fields]
     const uploaded = await uploadHongchengReference(input, base, auth, signal)
     references[field] ??= []
     references[field].push(uploaded)
+    bridged[bridge] ??= []
+    bridged[bridge].push(uploaded)
   }
   const params = mediaParamValues(spec.params, req.params)
-  return { ...params, ratio: params.aspect_ratio, ...references }
+  const shape = {
+    resolution: params.resolution,
+    aspect_ratio: params.aspect_ratio,
+    ratio: params.aspect_ratio,
+  }
+  return {
+    ...params,
+    ...shape,
+    duration: Number(params.seconds),
+    ...references,
+    metadata: {
+      __workbench_passthrough: shape,
+      ...(req.inputs.length
+        ? { __workbench_refs: { ...bridged, trace_id: `ref-${crypto.randomUUID()}` } }
+        : {}),
+    },
+  }
 }

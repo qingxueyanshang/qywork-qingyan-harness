@@ -207,9 +207,11 @@ test.each(MODELS)(
       model: id,
       prompt: call().prompt,
       seconds: defaultSeconds,
+      duration: Number(defaultSeconds),
       resolution,
       aspect_ratio: '16:9',
       ratio: '16:9',
+      metadata: { __workbench_passthrough: { resolution, aspect_ratio: '16:9', ratio: '16:9' } },
     })
     expect(spends[0]).toMatchObject({ quantity: 5, currency: 'CNY' })
     expect(spends[0]?.cost).toBeCloseTo(perRequest ? rate : 5 * rate, 10)
@@ -254,9 +256,13 @@ test.each(['', '/v1'])('默认参数提交并按接口回报秒数计量，地�
     model: MODEL,
     prompt: call().prompt,
     seconds: '5',
+    duration: 5,
     resolution: '720p',
     aspect_ratio: '16:9',
     ratio: '16:9',
+    metadata: {
+      __workbench_passthrough: { resolution: '720p', aspect_ratio: '16:9', ratio: '16:9' },
+    },
   })
   expect(spends[0]).toMatchObject({ quantity: 5, cost: 2.1, currency: 'CNY' })
   expect(seen.every((entry) => entry.auth === 'Bearer test-only-key')).toBe(true)
@@ -289,16 +295,29 @@ test.each(MODELS)(
     expect(seen.slice(0, references.length).every((entry) => entry.xhr === 'XMLHttpRequest')).toBe(
       true,
     )
+    const images = ['https://assets.example/1', 'https://assets.example/2']
+    const videos = maxVideos ? ['https://assets.example/4'] : []
+    const audios = ['https://assets.example/3']
     expect(seen[references.length]?.body).toEqual({
       model: id,
       prompt: call().prompt,
       seconds: '30',
+      duration: 30,
       resolution,
       aspect_ratio: '9:16',
       ratio: '9:16',
-      reference_images: ['https://assets.example/1', 'https://assets.example/2'],
-      ...(maxVideos ? { reference_videos: ['https://assets.example/4'] } : {}),
-      reference_audios: ['https://assets.example/3'],
+      reference_images: images,
+      ...(maxVideos ? { reference_videos: videos } : {}),
+      reference_audios: audios,
+      metadata: {
+        __workbench_passthrough: { resolution, aspect_ratio: '9:16', ratio: '9:16' },
+        __workbench_refs: {
+          reference_image_urls: images,
+          ...(maxVideos ? { reference_video_urls: videos } : {}),
+          reference_audio_urls: audios,
+          trace_id: expect.stringMatching(/^ref-[0-9a-f-]{36}$/),
+        },
+      },
     })
     expect(tasks).toEqual([{ provider: 'hongcheng', model: id, taskId: 'task_hongcheng' }])
   },

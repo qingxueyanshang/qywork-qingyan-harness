@@ -401,7 +401,10 @@ hongcheng 与木木的型号不再写在代码中，模型库也不列出。代�
 
 - **hongcheng**（Base URL：`https://hongcheng.lol`）：素材先上传到 `/refhost/upload`，
   再将公网地址通过 `reference_images`、`reference_videos`、`reference_audios` 提交到 `/v1/videos`；
-  参数为 `seconds`、`aspect_ratio`（同时发送 `ratio`）与 `resolution`，提示词以 `@Image1`、`@Video1`、`@Audio1` 引用素材。
+  同一组地址另写入 `metadata.__workbench_refs`（`reference_image_urls` 等，附本次的 `trace_id`），分辨率与画幅写入
+  `metadata.__workbench_passthrough`：渠道网关对部分线路丢弃顶层的参考素材字段，由参考透传服务按这份 metadata 交给上游。
+  2026-10-21 鸿呈seedance-2.5-GG-ndwx-6 只发顶层字段时，两次均以「提示词引用的参考素材缺失」失败。
+  参数为 `seconds`、`duration`（整数秒）、`aspect_ratio`（同时发送 `ratio`）与 `resolution`，提示词以 `@Image1`、`@Video1`、`@Audio1` 引用素材。
   按秒型号的报价按所选时长计算，生成费用按接口回报秒数计量；缺少回报时长时不推算费用。
 - **木木**（Base URL：`https://api.mumugofe.com/v1`）：使用 `/videos` 提交、`/video/generations/{id}` 查询、
   成功响应中的 `data.data.download_url` 直链下载，接口凭证不携带到外部成片地址。`seconds` 使用字符串整数，尺寸为 `宽x高`。
