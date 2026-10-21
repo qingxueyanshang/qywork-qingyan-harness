@@ -436,12 +436,6 @@ test('拉取模型：打开即刷新已添加型号，勾选后写入规格与�
     models: [
       { id: 'deepseek-v4.1-flash', output: 'chat', known: false },
       { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', spec },
-      {
-        id: 'sd-2.0-vip',
-        output: 'video',
-        kind: 'openai_videos',
-        unsupported: '该型号按表单上传素材，当前未接入',
-      },
     ],
   }
   let stored: RedactedConfig = {
@@ -515,7 +509,7 @@ test('拉取模型：打开即刷新已添加型号，勾选后写入规格与�
 
     const dialog = document.querySelector<HTMLElement>('.pull-dialog')!
     const tabs = () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('.lib-tab'))
-    expect(tabs().map((b) => b.textContent)).toEqual(['对话 1', '视频 2'])
+    expect(tabs().map((b) => b.textContent)).toEqual(['对话 1', '视频 1'])
     const base = dialog.querySelector<HTMLSelectElement>(
       'select[aria-label="对应型号 deepseek-v4.1-flash"]',
     )!
@@ -536,13 +530,12 @@ test('拉取模型：打开即刷新已添加型号，勾选后写入规格与�
     check('deepseek-v4.1-flash').dispatchEvent(new Event('change', { bubbles: true }))
 
     fire(tabs()[1]!, 'click')
-    expect(check('sd-2.0-vip').disabled).toBe(true)
     expect(dialog.textContent).toContain('¥7.00/次')
     check('X-SD25-301010').checked = true
     check('X-SD25-301010').dispatchEvent(new Event('change', { bubbles: true }))
 
     const add = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
-      (b) => b.textContent === '添加 2 个',
+      (b) => b.textContent === '添加',
     )!
     fire(add, 'click')
     expect(

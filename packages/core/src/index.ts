@@ -105,8 +105,11 @@ export {
 } from './domain/ids.ts'
 // 生成模型的协议与类别：配置校验、目录、设置页共用
 export {
+  type ChannelImageSpec,
   type ChannelPrice,
+  type ChannelSpec,
   type ChannelVideoSpec,
+  channelImageSpecProblem,
   channelVideoSpecProblem,
   defaultMediaKind,
   GENERATE_OUTPUTS,

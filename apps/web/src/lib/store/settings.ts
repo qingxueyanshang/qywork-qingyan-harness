@@ -7,7 +7,7 @@
 
 import type {
   Attachment,
-  ChannelVideoSpec,
+  ChannelSpec,
   Conversation,
   EffortLevel,
   MediaKind,
@@ -62,7 +62,7 @@ export interface RedactedModel {
 export interface RedactedMediaModel {
   kind: MediaKind
   /** 拉取时由渠道目录得到的规格。 */
-  spec?: ChannelVideoSpec
+  spec?: ChannelSpec
   delisted?: true
 }
 
@@ -73,6 +73,8 @@ export interface ChatPrice {
   cacheRead: number
   cacheWrite: number
   currency: 'USD' | 'CNY'
+  /** 分时段折扣。此时四项单价是高峰价。 */
+  offPeak?: { rate: number; peakWindowsUtc: [number, number][]; peakWeekdaysUtc: number[] }
 }
 
 /** 接口的对外结构：明文 key 不离开服务进程，只返回是否已设置。 */
@@ -470,8 +472,7 @@ export type PulledModel =
       id: string
       output: MediaOutput
       kind: MediaKind
-      spec?: ChannelVideoSpec
-      unsupported?: string
+      spec?: ChannelSpec
     }
 
 export interface PullResult {

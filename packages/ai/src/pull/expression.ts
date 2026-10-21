@@ -1,8 +1,8 @@
 /**
  * New API 分档计费公式（`/api/pricing` 中 `billing_mode: tiered_expr` 的 `billing_expr`）的求值。
  *
- * 支持的语法：数字、双引号字符串、`+ - * /`、比较、`&& ||`、三元、括号，函数 `tier(名称, 值)` 与 `u(计量名)`，
- * 以及调用方给出的变量（对话为 `p c cr cc len`）。其余函数（如按时段打折的 `weekday`、`hour`）与未给出的变量
+ * 支持的语法：数字、双引号字符串、`+ - * /`、比较、`&& ||`、三元、括号，函数 `tier(名称, 值)`、`u(计量名)`、
+ * `weekday(时区)`、`hour(时区)`，以及调用方给出的变量（对话为 `p c cr cc len`）。其余函数与未给出的变量
  * 在求值到时抛出 `UnsupportedBilling`：此时价格不明，不按部分结果折算。
  * 三元与 `&& ||` 只对选中的分支求值，未选中分支中的不支持项不影响结果。
  */
@@ -133,74 +133,114 @@ function parse(src: string): Node {
   return root
 }
 
-/**
- * 对公式求值。`vars` 是公式中直接引用的变量，`usage` 是 `u("名称")` 取得的计量。
- * 结果必须是有限数字，否则抛出 `UnsupportedBilling`。
- */
-export function evaluateBilling(
-  expr: string,
-  vars: Readonly<Record<string, number>>,
-  usage: Readonly<Record<string, number | string>> = {},
-): number {
-  const num = (v: Value): number => {
-    if (typeof v !== 'number') throw new UnsupportedBilling('运算对象不是数字')
-    return v
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const formats = new Map<string, Intl.DateTimeFormat>()
+
+/** 时刻 `at` 在时区 `zone` 的星期（0 = 周日）与小时（0–23）。 */
+function localTime(at: number, zone: string): { weekday: number; hour: number } {
+  let format = formats.get(zone)
+  if (!format) {
+    try {
+      format = new Intl.DateTimeFormat('en-US', {
+        timeZone: zone,
+        weekday: 'short',
+        hour: 'numeric',
+        hourCycle: 'h23',
+      })
+    } catch {
+      throw new UnsupportedBilling(`不支持时区 ${zone}`)
+    }
+    formats.set(zone, format)
   }
-  const run = (n: Node): Value => {
-    switch (n.k) {
-      case 'lit':
-        return n.v
-      case 'var': {
-        const v = vars[n.name]
-        if (v === undefined) throw new UnsupportedBilling(`不支持变量 ${n.name}`)
-        return v
-      }
-      case 'neg':
-        return -num(run(n.a))
-      case 'if':
-        return run(n.cond) ? run(n.a) : run(n.b)
-      case 'call': {
-        if (n.name === 'tier' && n.args.length === 2) return run(n.args[1]!)
-        if (n.name === 'u' && n.args.length === 1) {
-          const key = run(n.args[0]!)
-          const v = typeof key === 'string' ? usage[key] : undefined
-          if (v === undefined) throw new UnsupportedBilling(`缺少计量 ${String(key)}`)
+  const parts = format.formatToParts(at)
+  return {
+    weekday: WEEKDAYS.indexOf(parts.find((p) => p.type === 'weekday')!.value),
+    hour: Number(parts.find((p) => p.type === 'hour')!.value),
+  }
+}
+
+/** 编译后的公式。`at` 是计费时刻（毫秒时间戳），省略时 `weekday` 与 `hour` 不支持。 */
+export type Billing = (
+  vars: Readonly<Record<string, number>>,
+  usage?: Readonly<Record<string, number | string>>,
+  at?: number,
+) => number
+
+/**
+ * 编译公式，语法错误时抛出 `UnsupportedBilling`。返回的函数对公式求值：`vars` 是公式中直接引用的变量，
+ * `usage` 是 `u("名称")` 取得的计量；结果必须是有限数字，否则抛出 `UnsupportedBilling`。
+ */
+export function compileBilling(expr: string): Billing {
+  const root = parse(expr)
+  return (vars, usage = {}, at) => {
+    const num = (v: Value): number => {
+      if (typeof v !== 'number') throw new UnsupportedBilling('运算对象不是数字')
+      return v
+    }
+    const clock = (name: 'weekday' | 'hour', arg: Node): number => {
+      const zone = run(arg)
+      if (at === undefined || typeof zone !== 'string')
+        throw new UnsupportedBilling(`不支持函数 ${name}`)
+      return localTime(at, zone)[name]
+    }
+    const run = (n: Node): Value => {
+      switch (n.k) {
+        case 'lit':
+          return n.v
+        case 'var': {
+          const v = vars[n.name]
+          if (v === undefined) throw new UnsupportedBilling(`不支持变量 ${n.name}`)
           return v
         }
-        throw new UnsupportedBilling(`不支持函数 ${n.name}`)
-      }
-      case 'bin': {
-        if (n.op === '&&') return Boolean(run(n.a)) && Boolean(run(n.b))
-        if (n.op === '||') return Boolean(run(n.a)) || Boolean(run(n.b))
-        const a = run(n.a)
-        const b = run(n.b)
-        switch (n.op) {
-          case '==':
-            return a === b
-          case '!=':
-            return a !== b
-          case '<':
-            return num(a) < num(b)
-          case '<=':
-            return num(a) <= num(b)
-          case '>':
-            return num(a) > num(b)
-          case '>=':
-            return num(a) >= num(b)
-          case '+':
-            return num(a) + num(b)
-          case '-':
-            return num(a) - num(b)
-          case '*':
-            return num(a) * num(b)
-          default:
-            return num(a) / num(b)
+        case 'neg':
+          return -num(run(n.a))
+        case 'if':
+          return run(n.cond) ? run(n.a) : run(n.b)
+        case 'call': {
+          if (n.name === 'tier' && n.args.length === 2) return run(n.args[1]!)
+          if (n.name === 'u' && n.args.length === 1) {
+            const key = run(n.args[0]!)
+            const v = typeof key === 'string' ? usage[key] : undefined
+            if (v === undefined) throw new UnsupportedBilling(`缺少计量 ${String(key)}`)
+            return v
+          }
+          if ((n.name === 'weekday' || n.name === 'hour') && n.args.length === 1)
+            return clock(n.name, n.args[0]!)
+          throw new UnsupportedBilling(`不支持函数 ${n.name}`)
+        }
+        case 'bin': {
+          if (n.op === '&&') return Boolean(run(n.a)) && Boolean(run(n.b))
+          if (n.op === '||') return Boolean(run(n.a)) || Boolean(run(n.b))
+          const a = run(n.a)
+          const b = run(n.b)
+          switch (n.op) {
+            case '==':
+              return a === b
+            case '!=':
+              return a !== b
+            case '<':
+              return num(a) < num(b)
+            case '<=':
+              return num(a) <= num(b)
+            case '>':
+              return num(a) > num(b)
+            case '>=':
+              return num(a) >= num(b)
+            case '+':
+              return num(a) + num(b)
+            case '-':
+              return num(a) - num(b)
+            case '*':
+              return num(a) * num(b)
+            default:
+              return num(a) / num(b)
+          }
         }
       }
     }
+    const result = run(root)
+    if (typeof result !== 'number' || !Number.isFinite(result))
+      throw new UnsupportedBilling('结果不是数字')
+    return result
   }
-  const result = run(parse(expr))
-  if (typeof result !== 'number' || !Number.isFinite(result))
-    throw new UnsupportedBilling('结果不是数字')
-  return result
 }
