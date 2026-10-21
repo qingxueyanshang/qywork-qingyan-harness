@@ -24,6 +24,7 @@ import { condenseMessage, IMAGES_OMITTED } from '../compaction.ts'
 import { AgentLoop } from '../index.ts'
 import type { SinkPort, ToolContextBase } from '../registry.ts'
 import { ToolRegistry } from '../registry.ts'
+import { IMAGES_REDUCED } from './request.ts'
 import type { LoopPersistence } from './types.ts'
 
 function persistence(): LoopPersistence {
@@ -195,26 +196,30 @@ test('总量在上限内时更早批次的图片均保留在请求中', async ()
   expect(imagesIn(adapter.seen[0])).toEqual(['FIRSTA', 'FIRSTB', 'SECONDA', 'SECONDB'])
 })
 
-/** 超过上限时从最早的一批起整批替换为信封，最后一批（尚未得到响应）始终保留。 */
-test('超过上限时最早的批次替换为 images_omitted 信封，最后一批保留', async () => {
+/** 超过上限时从最早的一批起整批缩小为缩略图，信封标记 images_reduced；最后一批（尚未得到响应）始终保留原图。 */
+test('超过上限时最早的批次缩小为缩略图，最后一批保留原图', async () => {
   const adapter = capturingAdapter()
   await askOnce(
     adapter,
     persistence(),
     [
       USER,
-      ...bigWave('pr_1', 'one', 1.9),
-      ...bigWave('pr_2', 'two', 1.9),
-      ...bigWave('pr_3', 'three', 1.9),
-      ...bigWave('pr_4', 'four', 1.9),
+      ...bigWave('pr_1', 'one', 1.8),
+      ...bigWave('pr_2', 'two', 1.8),
+      ...bigWave('pr_3', 'three', 1.8),
+      ...bigWave('pr_4', 'four', 1.8),
     ],
     'rn_evict',
   )
-  // 第 3 张使总量达到约 5.7 MB，换出前两张后降至 1.9 MB；第 4 张之后为 3.8 MB，未再超过上限。
+  // 第 3 张使总量达到约 5.4 MB，前两张缩小后降至约 1.9 MB；第 4 张之后约 3.7 MB，未再超过上限。
+  // 夹具字节不是可解码的图片，缩小的两张替换为说明，原图只剩后两张。
   expect(imagesIn(adapter.seen[0]).map(tagOf)).toEqual(['three', 'four'])
   const tools = (adapter.seen[0]?.messages ?? []).filter((m) => m.role === 'tool')
   for (const t of tools.slice(0, 2)) {
-    expect(JSON.parse(String(t.content))).toMatchObject({ images_omitted: IMAGES_OMITTED })
+    const text = (t.content as ContentBlock[])[0]
+    expect(JSON.parse(text?.type === 'text' ? text.text : '')).toMatchObject({
+      images_reduced: IMAGES_REDUCED,
+    })
   }
 })
 
@@ -297,12 +302,12 @@ function storedShot(
 
 /**
  * 原始失败形状：历史中的工具图片在装配时全部解码为 base64（实测一条会话 526 MB），而请求只携带约 5 MB。
- * 引用形态下只有未被换出的图片在发送前读取正文。
+ * 引用形态下只在发送前读取请求中的图片：原图，以及缩小为缩略图的那些的原图。
  */
-test('正文库中的工具图片：发送前只读取保留在请求中的那些', async () => {
+test('正文库中的工具图片：发送前只读取请求中保留的那些', async () => {
   const MB = 1024 * 1024
   const tags = ['one', 'two', 'three', 'four']
-  const bodies = new Map(tags.map((t, i) => [`rs_${t}`, Buffer.alloc(Math.round(1.9 * MB), i + 1)]))
+  const bodies = new Map(tags.map((t, i) => [`rs_${t}`, Buffer.alloc(Math.round(1.8 * MB), i + 1)]))
   const sink = blobSink(bodies)
   const adapter = capturingAdapter()
   await askOnce(
@@ -319,8 +324,8 @@ test('正文库中的工具图片：发送前只读取保留在请求中的那�
     undefined,
     sink,
   )
-  // 换出边界与 base64 形态相同：前两张换出，后两张保留。
-  expect(sink.reads).toEqual(['rs_three', 'rs_four'])
+  // 换出边界与 base64 形态相同：前两张缩小，读取原图后生成缩略图；后两张保留原图。
+  expect(sink.reads).toEqual(['rs_one', 'rs_two', 'rs_three', 'rs_four'])
   expect(imagesIn(adapter.seen[0])).toEqual([
     bodies.get('rs_three')!.toString('base64'),
     bodies.get('rs_four')!.toString('base64'),

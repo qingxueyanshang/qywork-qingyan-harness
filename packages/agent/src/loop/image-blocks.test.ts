@@ -2,7 +2,8 @@
  * 图像块的两种形态。
  *
  * 覆盖范围：`loop/request.ts` 的 `toolResultContent` / `materialize` / `breakdownOf` 的
- * tool 分支、`mediaBytes` / `evictedMedia` / `omitImages` 的按字节预算换出、`payloadSnapshotOf` 的请求体字节数，以及
+ * tool 分支、`mediaBytes` / `thumbnailBytes` / `evictedMedia` / `omitImages` 的按字节预算换出与缩略图、
+ * `thumbnail.ts` 的 `thumbnailOf`、`payloadSnapshotOf` 的请求体字节数，以及
  * `compaction.ts` 的 `condenseMessage` 对块数组的处置。
  *
  * 本文件锁定三类不报错的失败：图片跨轮次出现两种形态、收纳无法移除图片、
@@ -16,18 +17,24 @@ import { join } from 'node:path'
 import type { ContentBlock, WireMessage } from '@qywork/ai'
 import { condenseMessage, IMAGES_OMITTED } from '../compaction.ts'
 import {
+  ATTACHMENT_IMAGES_REDUCED,
   ATTACHMENT_MEDIA_OMITTED,
   envelopeResult,
   evictedMedia,
+  IMAGES_REDUCED,
   MEDIA_RETAIN_HIGH_BYTES,
   MEDIA_RETAIN_LOW_BYTES,
+  type MediaLevel,
   materialize,
   mediaBytes,
   omitImages,
   payloadSnapshotOf,
+  THUMBNAIL_RETAIN_BYTES,
+  thumbnailBytes,
   toolResultContent,
   videoDelivery,
 } from './request.ts'
+import { THUMBNAIL_BYTES, THUMBNAIL_EDGE } from './thumbnail.ts'
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -425,7 +432,7 @@ describe('换出的媒体替换为说明', () => {
 
   /** 信封保留 `result`，只移除图像块并添加标记；模型据此得知图片已不在请求中。 */
   test('带图片的工具结果替换为 images_omitted 信封，保留 result', () => {
-    const out = omitImages(withImage())
+    const out = omitImages(withImage(), 'omitted')
     expect(typeof out.content).toBe('string')
     const env = JSON.parse(out.content as string) as Record<string, unknown>
     expect(env.images_omitted).toBe(IMAGES_OMITTED)
@@ -439,7 +446,10 @@ describe('换出的媒体替换为说明', () => {
    * 端点收到请求不等于模型读取了图片。标记写明此前已发送、现已移出以及取回方式。
    */
   test('省略标记只陈述传输事实并给出取回方式', () => {
-    const env = JSON.parse(omitImages(withImage()).content as string) as Record<string, unknown>
+    const env = JSON.parse(omitImages(withImage(), 'omitted').content as string) as Record<
+      string,
+      unknown
+    >
     expect(env.images_omitted).toContain('此前已随请求发送给你')
     expect(env.images_omitted).toContain('现已从请求中移出')
     expect(env.images_omitted).toContain('read_history')
@@ -456,7 +466,7 @@ describe('换出的媒体替换为说明', () => {
         { type: 'text', text: '看看这张图\n（附件 a.jpg：D:/x/a.jpg）' },
       ],
     }
-    const out = omitImages(user)
+    const out = omitImages(user, 'omitted')
     expect(out.content).toEqual([
       { type: 'text', text: ATTACHMENT_MEDIA_OMITTED },
       { type: 'text', text: '看看这张图\n（附件 a.jpg：D:/x/a.jpg）' },
@@ -466,18 +476,19 @@ describe('换出的媒体替换为说明', () => {
   /** 投影在每次请求时执行：无媒体时必须返回原引用，有媒体时产物必须逐字稳定，否则前缀缓存全部失效。 */
   test('无媒体原引用返回，有媒体两次产物逐字相同', () => {
     const plain: WireMessage = { role: 'tool', toolCallId: 'c2', content: envelope }
-    expect(omitImages(plain)).toBe(plain)
+    expect(omitImages(plain, 'omitted')).toBe(plain)
     const user: WireMessage = { role: 'user', content: 'x' }
-    expect(omitImages(user)).toBe(user)
-    expect(omitImages(withImage()).content).toBe(omitImages(withImage()).content)
+    expect(omitImages(user, 'omitted')).toBe(user)
+    expect(omitImages(withImage(), 'omitted').content).toBe(
+      omitImages(withImage(), 'omitted').content,
+    )
   })
 
   /** 换出后的信封再次收纳后仍带标记，两条路径的产物结构相同。 */
   test('省略后的信封经收纳仍标 images_omitted', () => {
-    const env = JSON.parse(condenseMessage(omitImages(withImage())).content as string) as Record<
-      string,
-      unknown
-    >
+    const env = JSON.parse(
+      condenseMessage(omitImages(withImage(), 'omitted')).content as string,
+    ) as Record<string, unknown>
     expect(env.images_omitted).toBe(IMAGES_OMITTED)
   })
 })
@@ -562,14 +573,21 @@ describe('媒体按字节预算换出', () => {
     expect(evictedMedia(steps([MB, MB, MB]), CAPS).size).toBe(0)
   })
 
-  /** 超过上限时从最早的消息起整条换出，直到不超过下限：一次换出较多内容可减少前缀变化的次数。 */
-  test('超过上限时从最早的整批换出，降到下限以内', () => {
+  /** 已发送媒体在请求中的字节：原图按 `mediaBytes`，缩略图按 `thumbnailBytes`，替换为说明的记 0。 */
+  const retained = (messages: WireMessage[], levels: Map<number, MediaLevel>): number =>
+    messages.reduce((n, m, i) => {
+      const level = levels.get(i)
+      if (level === 'omitted') return n
+      return n + (level === 'thumbnail' ? thumbnailBytes(m, CAPS) : mediaBytes(m, CAPS))
+    }, 0)
+
+  /** 超过上限时从最早的消息起整条缩小，直到不超过下限：一次换出较多内容可减少前缀变化的次数。 */
+  test('超过上限时从最早的整批缩小为缩略图，降到下限以内', () => {
     const messages = steps([MB, MB, MB, MB, MB, MB])
     const evicted = evictedMedia(messages, CAPS)
-    // 第 6 张使总量达到 6 MB（> 5 MB），换出最早的四张，剩余 2 MB。
-    expect([...evicted]).toEqual([1, 3, 5, 7])
-    const left = messages.reduce((n, m, i) => n + (evicted.has(i) ? 0 : mediaBytes(m, CAPS)), 0)
-    expect(left).toBeLessThanOrEqual(MEDIA_RETAIN_LOW_BYTES)
+    // 第 6 张使总量达到 6 MB（> 5 MB），最早的五张缩小为各 64 KB 的缩略图，第 6 张在保护区内。
+    expect([...evicted]).toEqual([1, 3, 5, 7, 9].map((i) => [i, 'thumbnail']))
+    expect(retained(messages, evicted)).toBeLessThanOrEqual(MEDIA_RETAIN_LOW_BYTES)
   })
 
   /** 最后一条 assistant 之后的媒体尚未随任何已得到响应的请求发出，单张超过上限也不换出。 */
@@ -577,27 +595,210 @@ describe('媒体按字节预算换出', () => {
     const messages = [...steps([MB, MB]), call('big'), result('big', 6 * MB)]
     const evicted = evictedMedia(messages, CAPS)
     expect(evicted.has(messages.length - 1)).toBe(false)
-    expect([...evicted]).toEqual([1, 3])
+    expect([...evicted]).toEqual([
+      [1, 'thumbnail'],
+      [3, 'thumbnail'],
+    ])
   })
 
   /** 用户消息携带的附件同样计入，第一次请求（没有 assistant）时全部保留。 */
   test('附件计入同一预算；尚无 assistant 时不换出任何图片', () => {
     const user: WireMessage = { role: 'user', content: [shot(5 * MB), { type: 'text', text: 'x' }] }
     expect(evictedMedia([user], CAPS).size).toBe(0)
-    expect([...evictedMedia([user, call('c0'), result('c0', MB)], CAPS)]).toEqual([0])
+    expect([...evictedMedia([user, call('c0'), result('c0', MB)], CAPS)]).toEqual([
+      [0, 'thumbnail'],
+    ])
   })
 
-  /** 追加消息只会增加换出项，已换出的不会恢复：前缀只在换出时变化。 */
+  /** 视频没有缩略图：含视频的消息整条替换为说明。 */
+  test('含视频的消息换出时替换为说明', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
+    const path = join(dir, 'clip.mp4')
+    await writeFile(path, new Uint8Array(4 * MB))
+    const video: WireMessage = {
+      role: 'user',
+      content: [
+        { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } },
+        shot(MB / 2),
+      ],
+    }
+    expect(thumbnailBytes(video, CAPS)).toBe(0)
+    expect([...evictedMedia([video, call('c0'), result('c0', 2 * MB)], CAPS)]).toEqual([
+      [0, 'omitted'],
+    ])
+  })
+
+  /** 缩略图只在其合计超过上限时从最早的一批起替换为说明；剩余缩略图合计不超过上限。 */
+  test('缩略图合计超过上限时从最早的起移出', () => {
+    const messages = steps(Array.from({ length: 60 }, () => MB))
+    const evicted = evictedMedia(messages, CAPS)
+    const omitted = [...evicted].filter(([, level]) => level === 'omitted').map(([i]) => i)
+    const reduced = [...evicted].filter(([, level]) => level === 'thumbnail').map(([i]) => i)
+    expect(omitted.length).toBeGreaterThan(0)
+    expect(Math.max(...omitted)).toBeLessThan(Math.min(...reduced))
+    expect(reduced.length * THUMBNAIL_BYTES).toBeLessThanOrEqual(THUMBNAIL_RETAIN_BYTES)
+  })
+
+  /**
+   * 复现的失败形状：3 张样图与 20 页渲染图（约 4.6 MB）同时在请求中，随后取回一张约 1 MB 的局部放大图。
+   * 换出曾把这 23 张整张移出，模型只能逐张取回原图，取回的原图又使其余画面被移出。
+   * 缩小为缩略图之后，任何一步都没有画面被移出。
+   */
+  test('样图与 20 页之后取回局部放大图，较早的画面全部保留为缩略图', () => {
+    const KB = 1024
+    const batch = (id: string, sizes: number[]): WireMessage => ({
+      role: 'tool',
+      toolCallId: id,
+      content: [{ type: 'text', text: envelope }, ...sizes.map(shot)],
+    })
+    const pages = Array.from({ length: 5 }, () => 200 * KB)
+    const messages: WireMessage[] = []
+    for (let i = 0; i < 3; i++) messages.push(call(`s${i}`), batch(`s${i}`, [240 * KB]))
+    for (let i = 0; i < 4; i++) messages.push(call(`p${i}`), batch(`p${i}`, pages))
+    messages.push(call('zoom'), batch('zoom', [MB]))
+    for (let i = 0; i < 3; i++) messages.push(call(`r${i}`), batch(`r${i}`, [MB]))
+    for (let n = 1; n <= messages.length; n++) {
+      const evicted = evictedMedia(messages.slice(0, n), CAPS)
+      expect([...evicted.values()]).not.toContain('omitted')
+    }
+    const evicted = evictedMedia(messages, CAPS)
+    for (let i = 1; i < 14; i += 2) expect(evicted.get(i)).toBe('thumbnail')
+  })
+
+  /** 追加消息只会使媒体继续缩小或移出，不会恢复：前缀只在换出时变化。 */
   test('同一历史结果相同，追加消息不会恢复已换出的媒体', () => {
-    const sizes = [MB, 2 * MB, MB, 3 * MB, MB, MB, 2 * MB, MB]
-    let previous = new Set<number>()
+    const rank = { thumbnail: 1, omitted: 2 } as const
+    const sizes = [MB, 2 * MB, MB, 3 * MB, MB, MB, 2 * MB, MB, ...Array(40).fill(MB)]
+    let previous = new Map<number, MediaLevel>()
     for (let n = 1; n <= sizes.length; n++) {
       const messages = steps(sizes.slice(0, n))
       const evicted = evictedMedia(messages, CAPS)
       expect([...evictedMedia(messages, CAPS)]).toEqual([...evicted])
-      for (const i of previous) expect(evicted.has(i)).toBe(true)
+      for (const [i, level] of previous) {
+        expect(rank[evicted.get(i)!]).toBeGreaterThanOrEqual(rank[level])
+      }
       previous = evicted
     }
+  })
+})
+
+describe('换出的图片缩小为缩略图', () => {
+  const withImage = (): WireMessage => ({
+    role: 'tool',
+    toolCallId: 'c1',
+    content: [
+      { type: 'text', text: envelope },
+      { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'QUJD' } },
+    ],
+  })
+
+  /** 信封加入 `images_reduced`，图片块保留原引用并标记 `thumbnail`，由发送前物化缩小。 */
+  test('工具结果的信封标记 images_reduced，图片块标记 thumbnail', () => {
+    const out = omitImages(withImage(), 'thumbnail')
+    const [text, image] = out.content as ContentBlock[]
+    const env = JSON.parse((text as { text: string }).text) as Record<string, unknown>
+    expect(env.images_reduced).toBe(IMAGES_REDUCED)
+    expect(env.result).toEqual({ lines: 1 })
+    expect(image).toEqual({
+      type: 'image',
+      mimeType: 'image/png',
+      source: { kind: 'base64', data: 'QUJD' },
+      thumbnail: true,
+    })
+    expect(omitImages(withImage(), 'thumbnail')).toEqual(out)
+  })
+
+  test('用户消息的附件图片标记 thumbnail，正文前加一行说明', () => {
+    const user: WireMessage = {
+      role: 'user',
+      content: [
+        { type: 'image', mimeType: 'image/jpeg', source: { kind: 'base64', data: 'QUJD' } },
+        { type: 'text', text: '（附件 a.jpg：D:/x/a.jpg）' },
+      ],
+    }
+    expect(omitImages(user, 'thumbnail').content).toEqual([
+      { type: 'text', text: ATTACHMENT_IMAGES_REDUCED },
+      {
+        type: 'image',
+        mimeType: 'image/jpeg',
+        source: { kind: 'base64', data: 'QUJD' },
+        thumbnail: true,
+      },
+      { type: 'text', text: '（附件 a.jpg：D:/x/a.jpg）' },
+    ])
+  })
+
+  /** 压缩收纳缩略图形态的工具结果时与原图形态相同：丢弃图片并标记 `images_omitted`。 */
+  test('缩略图形态经收纳后标 images_omitted', () => {
+    const env = JSON.parse(
+      condenseMessage(omitImages(withImage(), 'thumbnail')).content as string,
+    ) as Record<string, unknown>
+    expect(env.images_omitted).toBe(IMAGES_OMITTED)
+    expect(env.images_reduced).toBeUndefined()
+  })
+
+  /** 缩略图位于缓存断点之前，每次请求重新物化，字节必须相同；适配器不会收到 `thumbnail` 字段。 */
+  test('物化后长边为缩略图尺寸，两次输出逐字相同', async () => {
+    const photon = await import('@silvia-odwyer/photon-node')
+    const width = 1568
+    const height = 882
+    const pixels = new Uint8Array(width * height * 4)
+    for (let i = 0; i < pixels.length; i += 4) {
+      const x = (i / 4) % width
+      const y = Math.floor(i / 4 / width)
+      pixels[i] = (x * 7) % 256
+      pixels[i + 1] = (y * 5) % 256
+      pixels[i + 2] = ((x ^ y) * 3) % 256
+      pixels[i + 3] = 255
+    }
+    const original = new photon.PhotonImage(pixels, width, height).get_bytes_jpeg(90)
+    const message: WireMessage = {
+      role: 'tool',
+      toolCallId: 'c1',
+      content: [
+        { type: 'text', text: envelope },
+        {
+          type: 'image',
+          mimeType: 'image/jpeg',
+          source: { kind: 'base64', data: Buffer.from(original).toString('base64') },
+          thumbnail: true,
+        },
+      ],
+    }
+    const send = async () => {
+      const out = await materialize(req([message]), media(true), null)
+      return (out.messages[0]!.content as ContentBlock[])[1]!
+    }
+    const first = await send()
+    expect(first).not.toHaveProperty('thumbnail')
+    expect(first.type === 'image' && first.mimeType).toBe('image/jpeg')
+    const data = first.type === 'image' && first.source.kind === 'base64' ? first.source.data : ''
+    const bytes = Buffer.from(data, 'base64')
+    expect(bytes.length).toBeLessThan(original.length)
+    const decoded = photon.PhotonImage.new_from_byteslice(new Uint8Array(bytes))
+    expect([decoded.get_width(), decoded.get_height()]).toEqual([THUMBNAIL_EDGE, 432])
+    expect(await send()).toEqual(first)
+  })
+
+  test('原图无法解码时替换为说明', async () => {
+    const message: WireMessage = {
+      role: 'tool',
+      toolCallId: 'c1',
+      content: [
+        { type: 'text', text: envelope },
+        {
+          type: 'image',
+          mimeType: 'image/png',
+          source: { kind: 'base64', data: 'QUJD' },
+          thumbnail: true,
+        },
+      ],
+    }
+    const out = await materialize(req([message]), media(true), null)
+    expect((out.messages[0]!.content as ContentBlock[])[1]).toEqual({
+      type: 'text',
+      text: '［图片：无法生成缩略图，此图片未发送］',
+    })
   })
 })
 
@@ -628,4 +829,5 @@ test('正文库引用与等价的 base64 计入相同的媒体字节与请求体
 /** 移出说明中写给模型的容量必须与实际上限一致：说明写错时，模型按错误的容量安排对比。 */
 test('移出说明中的容量与保留上限一致', () => {
   expect(IMAGES_OMITTED).toContain(`约 ${MEDIA_RETAIN_HIGH_BYTES / 1024 / 1024} MB`)
+  expect(IMAGES_OMITTED).toContain(`约 ${THUMBNAIL_RETAIN_BYTES / 1024 / 1024} MB`)
 })

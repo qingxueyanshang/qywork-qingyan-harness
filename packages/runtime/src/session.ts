@@ -1533,7 +1533,7 @@ function stepRecord(st: Step): HistoryStep {
  *
  * 每一轮的图片都进入内容块，按与工具图片相同的规则缩放编码（`tools` 的 `shrinkImage`）；视频进入路径块，
  * 发送前由 `materialize` 读取字节。去留不在此处决定：保留的媒体超过上限时，由装配
- * （`agent` 的 `evictedMedia`）将最早的整批替换为说明。每个附件都在正文中保留一行名称与路径，
+ * （`agent` 的 `evictedMedia`）将最早的整批缩小为缩略图或替换为说明。每个附件都在正文中保留一行名称与路径，
  * 媒体被换出之后模型依据这一行找到原文件。
  *
  * 路径不按工作区裁决。`resolveInWorkspace` 的边界约束的是模型：它拦截模型自行构造

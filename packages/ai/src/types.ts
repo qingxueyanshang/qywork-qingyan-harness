@@ -238,7 +238,11 @@ export type VideoSource = MediaSource
  */
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; mimeType: string; source: ImageSource }
+  /**
+   * `thumbnail` 只在请求装配中出现：换出把较早的图片标记为缩略图（`agent` 的 `omitImages`），
+   * `materialize` 据此生成缩略图字节并去掉该字段，适配器不会收到它。
+   */
+  | { type: 'image'; mimeType: string; source: ImageSource; thumbnail?: true }
   | { type: 'video'; mimeType: string; source: VideoSource }
 
 /**
