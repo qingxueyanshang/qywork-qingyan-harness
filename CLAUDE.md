@@ -521,7 +521,8 @@ sidecar 这一步拦截的是只在打包时才暴露的失败（例如 Bun 升�
   全程未告知用户）。这样做也不会新增暴露面：`full` 下能用 shell 读到的内容，本来同样能读到。
 - **模式内的边界必须两侧一致。** 文件工具与 shell 使用**同一份根目录清单**：
   `auto` 下文件工具经由 `resolveInWorkspace`、shell 经由 `policy.ts` 的
-  `literalOutsideHome`，两处都从 `workspaceRoot + additionalDirectories` 读取。
+  `outsideWrite`，两处都从 `workspaceRoot + additionalDirectories` 读取。
+  shell 一侧按写入目标判定，与文件工具的写入判定相同：只读取工作区外文件、写入工作区内的命令不拒绝。
   添加新边界前先确认「shell 一侧能否拦截同一操作」：只在一侧生效的边界不是边界，
   而是给模型提供了一条绕行路径。
 - **凭证剥离与模式无关。** `scrubEnv` 在两种模式下行为相同：它不是裁决，

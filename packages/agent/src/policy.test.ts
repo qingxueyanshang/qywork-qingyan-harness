@@ -125,6 +125,73 @@ describe('工作区外的写入与删除', () => {
     }
   })
 
+  /**
+   * 判定写入目标，而不是命令中出现的路径。
+   *
+   * 以下命令只读取工作区外的文件、写入工作区内，取自会话账本中被拒绝的实际命令：复制附件、
+   * Python 代码中的 `.mkdir()` 与 `>` 比较、读取系统字体、`2>/dev/null` 与 `2>&1`。
+   */
+  test('只读取工作区外文件、写入工作区内的命令放行', () => {
+    const attachment = join(homedir(), 'Desktop', '附件', '定稿.pptx').replace(/\\/g, '/')
+    for (const cmd of [
+      `python -c "from pathlib import Path; import shutil; src=Path('${attachment}'); dst=Path('原稿/定稿.pptx'); dst.parent.mkdir(parents=True,exist_ok=True); assert not dst.exists(), '目标已存在'; shutil.copy2(src,dst)" && python scripts/extract.py --pptx "原稿/定稿.pptx" --out "build/pages.json"`,
+      `mkdir -p "素材/人物" && cp "${attachment}" "素材/人物/定稿.pptx"`,
+      `cp -t 原稿 "${attachment}"`,
+      `Copy-Item -LiteralPath '${attachment}' -Destination '原稿\\定稿.pptx'`,
+      "python - <<'PY'\nout.mkdir(exist_ok=True)\nfont=ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',20)\nif a>1.25*b: print(a)\nPY",
+      'ls "$HOME/Desktop" 2>/dev/null | head -20',
+      'ffmpeg -version 2>&1 | head -1; ls C:/Windows/Fonts/msyh.ttc 2>&1',
+      'Get-Content $HOME\\.gitconfig 2>$null',
+      'for f in *.tmp; do rm "$f"; done',
+    ]) {
+      expect(kind(cmd)).toBe('allow')
+    }
+  })
+
+  /** 复制的来源只被读取，目标被写入；移动会删除来源，来源与目标都是写入目标。 */
+  test('复制与移动按目标判定，切换到工作区外后的相对路径按工作区外判定', () => {
+    const desktop = join(homedir(), 'Desktop').replace(/\\/g, '/')
+    for (const cmd of [
+      `cp docs/a.pptx "${desktop}/"`,
+      `Copy-Item docs/a.pptx -Destination '${desktop}'`,
+      `Copy-Item -Destination '${desktop}' -Path docs/a.pptx`,
+      `mv "${desktop}/a.pptx" docs/`,
+      `cd "${desktop}" && rm -rf build`,
+      'cd ~/x; echo a > f',
+    ]) {
+      expect(kind(cmd)).toBe('deny')
+    }
+  })
+
+  test('写入目标无法从命令文本确定且命令涉及工作区外时拒绝', () => {
+    for (const cmd of [
+      'for f in ~/x/*; do rm "$f"; done',
+      'Get-ChildItem $env:APPDATA | Remove-Item',
+      'ls ~/x | xargs rm',
+      "find ~/x -name '*.tmp' -exec rm {} \\;",
+      'Copy-Item a.txt (Join-Path $HOME x)',
+    ]) {
+      expect(kind(cmd)).toBe('deny')
+    }
+  })
+
+  test('交给 shell 的内联脚本与 heredoc 按命令解析', () => {
+    for (const cmd of [
+      'bash <<EOF\nrm ~/x\nEOF',
+      'bash -lc "rm ~/x"',
+      'powershell -NoProfile -Exec Bypass -Command "Remove-Item ~/x"',
+      'echo "$(rm ~/x)"',
+    ]) {
+      expect(kind(cmd)).toBe('deny')
+    }
+  })
+
+  test('拒绝理由指明写入目标与放开该位置的设置项', () => {
+    expect(d('cp a.txt ~/b.txt').reason).toBe(
+      '写入目标 ~/b.txt 位于工作区之外，且未列入「设置 → 权限 → 工作区之外额外可读写的目录」',
+    )
+  })
+
   /** 工作区内的删除不拦截：工作区是 agent 的工作对象，且有 git 可以恢复。 */
   test('工作区内的删除不拦截', () => {
     expect(kind('rm -rf dist')).toBe('allow')
@@ -293,7 +360,7 @@ describe('PowerShell 写法', () => {
   /**
    * `.qy/` 与 `.agents/` 在 PowerShell 写法中同样不拦截，这是有意设计。
    *
-   * 理由与 POSIX 一侧相同（见 `policy.ts` 中 `OUTSIDE_LOCATION` 下方的注释）：
+   * 理由与 POSIX 一侧相同（见 `policy.ts` 中 `OUTSIDE_SYMBOL_RE` 下方的注释）：
    * 模型已有 `run_command`，为自身添加工具不会获得新能力；
    * `.agents/memory/` 本应由 `write_memory` 写入，shell 拦截而工具不拦截会形成两套规则。
    * `Set-Content .qy\mcp.json` 与 `echo x > .qy/mcp.json` 是同一操作，
