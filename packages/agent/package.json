@@ -9,6 +9,7 @@
   "dependencies": {
     "@qywork/ai": "workspace:*",
     "@qywork/core": "workspace:*",
-    "@qywork/store": "workspace:*"
+    "@qywork/store": "workspace:*",
+    "@silvia-odwyer/photon-node": "0.3.4"
   }
 }

@@ -6,15 +6,15 @@
  * 断言针对适配器收到的请求，按 Anthropic 的缓存规则计算每一步命中到哪一条消息。
  *
  * 检查两项：图片保留在请求中时，每一步命中上一步的全部内容；媒体超过保留上限时，只有换出的那一步
- * 改写一次前缀，之后恢复整段命中。
+ * 改写一次前缀，之后恢复整段命中：缩略图每次物化的字节相同。
  */
 
 import { expect, test } from 'bun:test'
-import type { LlmAdapter, WireMessage } from '@qywork/ai'
-import { IMAGES_OMITTED } from '../compaction.ts'
+import type { ContentBlock, LlmAdapter, WireMessage } from '@qywork/ai'
 import { ToolRegistry } from '../registry.ts'
 import { baseCtx, call, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts'
 import { AgentLoop } from './index.ts'
+import { IMAGES_REDUCED } from './request.ts'
 
 /** 1×1 的 PNG。 */
 const PNG =
@@ -120,18 +120,33 @@ test('工具每一步返回一张图：图片保留在请求中，每一步命�
   }
 })
 
-/** 解码后约 1.5 MB 的图片：第 4 张使总量超过 5 MB，换出前三张。 */
-const LARGE = () => 'A'.repeat(2 * 1024 * 1024)
+/** 约 1.5 MB 的噪声 PNG（无法压缩）：第 4 张使总量超过 5 MB，前三张缩小为缩略图。 */
+const LARGE_PNG = await (async () => {
+  const photon = await import('@silvia-odwyer/photon-node')
+  const width = 700
+  const height = 560
+  const pixels = new Uint8Array(width * height * 4)
+  let seed = 1
+  for (let i = 0; i < pixels.length; i++) {
+    seed = (seed * 1103515245 + 12345) >>> 0
+    pixels[i] = (i & 3) === 3 ? 255 : seed >>> 24
+  }
+  return Buffer.from(new photon.PhotonImage(pixels, width, height).get_bytes()).toString('base64')
+})()
+const LARGE = () => LARGE_PNG
 
 test('媒体超过保留上限：只有换出的那一步改写前缀，之后恢复整段命中', async () => {
   const seen = await shootSteps(5, LARGE)
   expect(seen).toHaveLength(5)
   const tools = (seen[4] ?? []).filter((m) => m.role === 'tool')
-  expect(tools.map(hasImage)).toEqual([false, false, false, true])
+  expect(tools.map(hasImage)).toEqual([true, true, true, true])
   for (const m of tools.slice(0, 3)) {
-    expect((JSON.parse(String(m.content)) as { images_omitted?: string }).images_omitted).toBe(
-      IMAGES_OMITTED,
-    )
+    const [text, image] = m.content as ContentBlock[]
+    const env = JSON.parse(text?.type === 'text' ? text.text : '') as { images_reduced?: string }
+    expect(env.images_reduced).toBe(IMAGES_REDUCED)
+    const data = image?.type === 'image' && image.source.kind === 'base64' ? image.source.data : ''
+    expect(data.length).toBeGreaterThan(0)
+    expect(data.length).toBeLessThan(LARGE_PNG.length)
   }
   const changes = seen.slice(1).map((cur, k) => firstChange(seen[k]!, cur))
   const rewrites = changes.filter((at, k) => at < seen[k]!.length)

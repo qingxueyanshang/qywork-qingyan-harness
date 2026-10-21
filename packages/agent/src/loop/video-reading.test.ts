@@ -39,7 +39,7 @@ describe('工具结果中的视频块', () => {
         { videos: [VIDEO] },
       ),
     }
-    const omitted = omitImages(message)
+    const omitted = omitImages(message, 'omitted')
     expect(typeof omitted.content).toBe('string')
     expect(JSON.parse(omitted.content as string).images_omitted).toContain('图像或视频')
   })

@@ -29,6 +29,7 @@ import { emptyBreakdown } from '@qywork/core'
 import { isStoredToolImage } from '@qywork/store'
 import { IMAGES_OMITTED } from '../compaction.ts'
 import type { SinkPort, ToolOutcome } from '../registry.ts'
+import { THUMBNAIL_BYTES, THUMBNAIL_EDGE, thumbnailOf } from './thumbnail.ts'
 
 /** 与装配的请求一同写入请求账；之后修改模型设置不会改写本次申报。 */
 export function requestConfiguration(
@@ -435,15 +436,23 @@ export function videosOf(
 /**
  * 请求中携带的媒体（工具结果与用户消息中的图像、视频块）的字节上限，以及超限后换出的目标值。
  *
- * 媒体保留在请求中前缀才不变：移出一次图片，`replayReasoning` 就会剥离其后的全部原生推理，
- * 模型既看不到图片，也失去看图时得出的判断，只能反复重新读取。全部常驻又会使长任务的请求体超过端点上限
- * （实测 98 张图、50 MB 被 413 拒绝），中转服务的响应头时间也随请求体增长（实测小于 1 MB 约 3–5 秒，
- * 3–6 MB 约 11–15 秒）。
+ * 媒体保留在请求中前缀才不变：换出一次图片，`replayReasoning` 就会剥离其后的全部原生推理。
+ * 全部常驻又会使长任务的请求体超过端点上限（实测 98 张图、50 MB 被 413 拒绝），中转服务的响应头时间也随请求体增长
+ * （实测小于 1 MB 约 3–5 秒，3–6 MB 约 11–15 秒）。
  * 超限时整批换出至下限，不要改为每次只换出最早的一张：换出会改变前缀，逐张换出会使前缀每一步都变化。
  * 上限在 2–8 MB 之间实测识别质量无差别：越小换出越频繁，每次换出都使缓存重新计算一次；越大则长任务后段请求越慢。
  */
 export const MEDIA_RETAIN_HIGH_BYTES = 5 * 1024 * 1024
 export const MEDIA_RETAIN_LOW_BYTES = 2 * 1024 * 1024
+
+/**
+ * 缩略图合计的上限，按 `thumbnailBytes` 的估算值计（`evictedMedia` 第 2 步）。
+ *
+ * 约 48 张。实测一次逐页审阅 20 页幻灯片的任务共有 40 张不同的图片，按估算值合计约 2.5 MB；
+ * 取 2 MB 时最早的样图与第一组页面被移出。换出之后请求中的媒体不超过本值加保护区，距上限仍有约 2 MB，
+ * 不要再调高：余量越小换出越频繁。
+ */
+export const THUMBNAIL_RETAIN_BYTES = 3 * 1024 * 1024
 
 /** 路径视频在本轮的发送方式：内联字节、上传后发送地址，或不直接发送、替换为指向 `read_file` 抽帧的说明。 */
 export type VideoDelivery = 'inline' | 'upload' | 'frames'
@@ -465,48 +474,72 @@ export function videoDelivery(
 }
 
 /**
- * 一条消息中媒体块实际写入请求体的字节数。base64 按解码后的长度计，正文库引用按记录的字节数计；路径视频按 `videoDelivery`：
+ * 一个媒体块实际写入请求体的字节数。base64 按解码后的长度计，正文库引用按记录的字节数计；路径视频按 `videoDelivery`：
  * 内联的按文件大小计，上传后发送地址的与不直接发送的记 0。不发送的图片（模型不接受图片）记 0，无法读取的文件记 0。
  *
  * 不要改为一律按文件大小计：上传后发送地址的大视频会被计为数十 MB，在下一步即被换出，模型只能看到一次。
  */
+function blockBytes(b: ContentBlock, caps: InputMediaCapabilities): number {
+  if (b.type !== 'image' && b.type !== 'video') return 0
+  if (b.type === 'image' && caps.image === false) return 0
+  if (b.type === 'video' && !caps.video) return 0
+  if (b.source.kind === 'base64') return Math.floor((b.source.data.length * 3) / 4)
+  if (b.source.kind === 'resource') return b.source.bytes
+  if (b.source.kind !== 'path') return 0
+  let size = 0
+  try {
+    size = statSync(b.source.path).size
+  } catch {
+    // 文件已不存在：`materialize` 会将其替换为一行说明，不计媒体字节。
+    return 0
+  }
+  return b.type === 'image' || videoDelivery(size, caps) === 'inline' ? size : 0
+}
+
+/** 一条消息中媒体块实际写入请求体的字节数，逐块按 `blockBytes` 计。 */
 export function mediaBytes(m: WireMessage, caps: InputMediaCapabilities): number {
   if (typeof m.content === 'string' || !m.content) return 0
   let total = 0
-  for (const b of m.content) {
-    if (b.type !== 'image' && b.type !== 'video') continue
-    if (b.type === 'image' && caps.image === false) continue
-    if (b.type === 'video' && !caps.video) continue
-    if (b.source.kind === 'base64') total += Math.floor((b.source.data.length * 3) / 4)
-    else if (b.source.kind === 'resource') total += b.source.bytes
-    else if (b.source.kind === 'path') {
-      let size = 0
-      try {
-        size = statSync(b.source.path).size
-      } catch {
-        // 文件已不存在：`materialize` 会将其替换为一行说明，不计媒体字节。
-        continue
-      }
-      if (b.type === 'image' || videoDelivery(size, caps) === 'inline') total += size
-    }
-  }
+  for (const b of m.content) total += blockBytes(b, caps)
   return total
 }
 
 /**
- * 计算本次请求中哪些消息的媒体替换为说明，返回下标集合，交给 `omitImages`。
+ * 一条消息的图片缩小为缩略图后在换出预算中计入的字节数：每张按 `THUMBNAIL_BYTES` 估算，原图更小时按原图计。
+ * 消息含视频时为 0：视频没有缩略图，这条消息整体替换为说明。
+ */
+export function thumbnailBytes(m: WireMessage, caps: InputMediaCapabilities): number {
+  if (typeof m.content === 'string' || !m.content) return 0
+  if (m.content.some((b) => b.type === 'video')) return 0
+  let total = 0
+  for (const b of m.content) total += Math.min(blockBytes(b, caps), THUMBNAIL_BYTES)
+  return total
+}
+
+/** 换出后一条消息的媒体形态：图片缩小为缩略图，或媒体整体替换为说明。 */
+export type MediaLevel = 'thumbnail' | 'omitted'
+
+/**
+ * 计算本次请求中哪些消息的媒体缩小为缩略图、哪些替换为说明，返回下标到形态的映射，交给 `omitImages`。
  *
- * 按消息顺序累计媒体字节；累计超过上限时，从最早仍携带媒体的消息起整条换出，直到降至下限以下。
+ * 按消息顺序累计媒体字节，缩略图按 `thumbnailBytes` 计入。累计超过上限时：
+ * 1. 从最早仍为原图的消息起整条缩小为缩略图，直到总量降至下限以下；`thumbnailBytes` 为 0 的消息替换为说明。
+ * 2. 缩略图合计超过 `THUMBNAIL_RETAIN_BYTES` 时，从最早的缩略图起替换为说明，直到不超过该值。
+ *
+ * 第 2 步只按缩略图合计判断，不要改为按总量判断：刚取回的原图位于保护区内无法换出，按总量判断时
+ * 一次 1 MB 的局部放大图即可使较早的缩略图被移出，模型完全看不到这些画面，只能逐张取回原图，
+ * 取回的原图又使其余画面被缩小或移出。
+ *
  * 最后一条 assistant 消息之后的媒体不换出：它们尚未随任何一次得到响应的请求发出。
  * 工具成功后的请求被拒绝、在新的 run 中继续执行时，这批图片仍在该区段内，因此无需另行记录送达凭证。
  *
- * 结果只依赖消息序列与本轮的媒体发送方式：同一历史、同一模型每次得到相同结果，追加消息只会增加换出、
- * 不会恢复已换出的媒体。换模型会改变发送方式，换出集合随之重新计算，前缀在该次请求中改变。
+ * 结果只依赖消息序列与本轮的媒体发送方式：同一历史、同一模型每次得到相同结果，追加消息只会使媒体继续缩小或移出，
+ * 不会恢复原图。换模型会改变发送方式，换出结果随之重新计算，前缀在该次请求中改变。
  */
 export function evictedMedia(
   messages: readonly WireMessage[],
   caps: InputMediaCapabilities,
-): Set<number> {
+): Map<number, MediaLevel> {
   let protectFrom = 0
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]!.role === 'assistant') {
@@ -514,43 +547,82 @@ export function evictedMedia(
       break
     }
   }
-  const evicted = new Set<number>()
-  const mounted: { index: number; bytes: number }[] = []
+  const levels = new Map<number, MediaLevel>()
+  const originals: { index: number; bytes: number }[] = []
+  const thumbnails: { index: number; bytes: number }[] = []
   let total = 0
+  let reduced = 0
   messages.forEach((m, index) => {
     const bytes = mediaBytes(m, caps)
     if (!bytes) return
-    mounted.push({ index, bytes })
+    originals.push({ index, bytes })
     total += bytes
     if (total <= MEDIA_RETAIN_HIGH_BYTES) return
-    while (total > MEDIA_RETAIN_LOW_BYTES && mounted.length && mounted[0]!.index < protectFrom) {
-      const out = mounted.shift()!
-      evicted.add(out.index)
+    while (
+      total > MEDIA_RETAIN_LOW_BYTES &&
+      originals.length &&
+      originals[0]!.index < protectFrom
+    ) {
+      const out = originals.shift()!
+      const thumb = thumbnailBytes(messages[out.index]!, caps)
+      total -= out.bytes - thumb
+      if (!thumb) {
+        levels.set(out.index, 'omitted')
+        continue
+      }
+      levels.set(out.index, 'thumbnail')
+      thumbnails.push({ index: out.index, bytes: thumb })
+      reduced += thumb
+    }
+    while (reduced > THUMBNAIL_RETAIN_BYTES) {
+      const out = thumbnails.shift()!
+      levels.set(out.index, 'omitted')
+      reduced -= out.bytes
       total -= out.bytes
     }
   })
-  return evicted
+  return levels
 }
 
 /** 用户消息的附件媒体被换出后替换成的说明。路径位于同一条消息的附件说明中。 */
 export const ATTACHMENT_MEDIA_OMITTED =
   '（本条消息附带的图片或视频此前已随请求发送给你，现已从请求中移出；需要时按本条消息附件说明中的路径读取。）'
 
+/** 用户消息的附件图片缩小为缩略图后加在正文前的说明。 */
+export const ATTACHMENT_IMAGES_REDUCED = `（本条消息附带的图片此前已按原尺寸随请求发送给你，现为长边 ${THUMBNAIL_EDGE} 像素的缩略图；需要原尺寸的细节时按本条消息附件说明中的路径读取。）`
+
 /**
- * 将一条消息的媒体替换为说明，用于 `evictedMedia` 选中的消息。
+ * 工具结果的图片缩小为缩略图后信封中 `images_reduced` 的值。
  *
- * - 工具结果：替换为只有信封的形态，信封中的 `images_omitted` 注明图片已发送过（`IMAGES_OMITTED`），
+ * 写明这是缩略图与原图的取回方式：缺少说明时模型会把缩略图当作原图，把看不清的细线、描边、小字判为不存在。
+ */
+export const IMAGES_REDUCED = `此图像此前已按原尺寸随请求发送给你，现为长边 ${THUMBNAIL_EDGE} 像素的缩略图（请求中的图像与视频合计超过约 ${MEDIA_RETAIN_HIGH_BYTES / 1024 / 1024} MB 时，较早的图片从最早的一批起缩小）。需要原尺寸的细节时，用 read_file 的 region 截取局部，或通过 read_history 按 call_id 取回原图；取回的原图计入同一上限。`
+
+/**
+ * 按 `evictedMedia` 的结果改写一条消息的媒体。
+ *
+ * - `thumbnail`：图片块标记 `thumbnail`，由 `materialize` 生成缩略图字节。工具结果的信封中加入
+ *   `images_reduced`（`IMAGES_REDUCED`），用户消息在正文前加一行 `ATTACHMENT_IMAGES_REDUCED`。
+ * - `omitted`：工具结果替换为只有信封的形态，信封中的 `images_omitted` 注明图片已发送过（`IMAGES_OMITTED`），
  *   与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）。模型据此字段得知图片已不在请求中，
- *   缺少该字段时会认为图片仍然可见。`result` 保留，只移除媒体块。
- * - 用户消息：媒体块替换为一行 `ATTACHMENT_MEDIA_OMITTED`，正文不变。
+ *   缺少该字段时会认为图片仍然可见。`result` 保留，只移除媒体块。用户消息的媒体块替换为一行
+ *   `ATTACHMENT_MEDIA_OMITTED`，正文不变。
  *
  * 输出必须逐字稳定，且无媒体时返回原引用：投影在每次构造请求时都会执行，输出不稳定会使缓存
  * 断点之前的字节每次都变化。
  */
-export function omitImages(m: WireMessage): WireMessage {
+export function omitImages(m: WireMessage, level: MediaLevel): WireMessage {
   if (typeof m.content === 'string' || !m.content) return m
   if (!m.content.some((b) => b.type === 'image' || b.type === 'video')) return m
+  const reduce = (b: ContentBlock): ContentBlock =>
+    b.type === 'image' ? { ...b, thumbnail: true } : b
   if (m.role === 'user') {
+    if (level === 'thumbnail') {
+      return {
+        ...m,
+        content: [{ type: 'text', text: ATTACHMENT_IMAGES_REDUCED }, ...m.content.map(reduce)],
+      }
+    }
     const rest = m.content.filter((b) => b.type !== 'image' && b.type !== 'video')
     return { ...m, content: [{ type: 'text', text: ATTACHMENT_MEDIA_OMITTED }, ...rest] }
   }
@@ -562,6 +634,13 @@ export function omitImages(m: WireMessage): WireMessage {
     env = JSON.parse(text.text) as Record<string, unknown>
   } catch {
     return m
+  }
+  if (level === 'thumbnail') {
+    const marked = JSON.stringify({ ...env, images_reduced: IMAGES_REDUCED })
+    return {
+      ...m,
+      content: m.content.map((b) => (b === text ? { type: 'text', text: marked } : reduce(b))),
+    }
   }
   return { ...m, content: JSON.stringify({ ...env, images_omitted: IMAGES_OMITTED }) }
 }
@@ -628,7 +707,8 @@ export interface InputMediaCapabilities {
 }
 
 /**
- * 将 path 与 resource 形态的图片和视频块转换为临时 base64，交给适配器。已换出的媒体此前已替换为说明，不读取。
+ * 将 path 与 resource 形态的图片和视频块转换为临时 base64，交给适配器。标记为缩略图的图片转换为缩略图字节；
+ * 已替换为说明的媒体不读取。
  *
  * 只生成副本，不得修改原对象。原地修改会同时造成两个错误：
  *
@@ -699,10 +779,17 @@ async function loadBlock(
     return note(`当前模型或接口不接受原生视频输入，此视频未发送${next}`)
   }
 
+  // 换出时标记为缩略图的图片（`omitImages`）：读取原图字节后缩小，标记不传给适配器。
+  if (b.type === 'image' && b.thumbnail) {
+    const original = await sourceBytes(b.source, sink)
+    if (!original) return note('已不存在')
+    const thumb = await thumbnailOf(original, b.mimeType)
+    if (!thumb) return note('无法生成缩略图，此图片未发送')
+    return { type: 'image', mimeType: thumb.mime, source: { kind: 'base64', data: thumb.data } }
+  }
   if (b.source.kind === 'resource') {
-    const { resourceId, bytes } = b.source
-    const body = sink?.read(resourceId, 0, bytes) ?? null
-    if (body?.byteLength !== bytes) return note('已不存在')
+    const body = await sourceBytes(b.source, sink)
+    if (!body) return note('已不存在')
     return { ...b, source: { kind: 'base64', data: Buffer.from(body).toString('base64') } }
   }
   if (b.source.kind !== 'path') return b
@@ -725,4 +812,15 @@ async function loadBlock(
     ...b,
     source: { kind: 'base64', data: bytes.toString('base64') },
   }
+}
+
+/** 媒体块的原始字节。正文库中已不存在、长度与记录不符或文件无法读取时返回 null。 */
+async function sourceBytes(source: ImageSource, sink: SinkPort | null): Promise<Uint8Array | null> {
+  if (source.kind === 'base64') return Buffer.from(source.data, 'base64')
+  if (source.kind === 'resource') {
+    const body = sink?.read(source.resourceId, 0, source.bytes) ?? null
+    return body?.byteLength === source.bytes ? body : null
+  }
+  if (source.kind === 'path') return readFile(source.path).catch(() => null)
+  return null
 }

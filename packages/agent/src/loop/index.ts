@@ -271,13 +271,16 @@ export class AgentLoop {
       assembledRaw[lastCall] = { ...assembledRaw[lastCall]!, cacheBreakpoint: true }
     /*
      * 媒体去留：工具结果与附件中的图像、视频保留在之后的请求中，保留的总字节超过上限时，
-     * 从最早的一批起整批替换为说明（`evictedMedia`）。不要改为「每一步只保留最后一批」：每移除一次图片，
-     * 请求前缀就会变化，`replayReasoning` 随之剥离其后全部原生推理，模型既看不到图片，也失去查看图片时得出的
-     * 判断，只能反复取回，实测因连续无进展被循环保护判定失败。
+     * 从最早的一批起整批缩小为缩略图，缩略图合计超过下限时再替换为说明（`evictedMedia`）。
+     * 不要改为「每一步只保留最后一批」：每换出一次图片，请求前缀就会变化，`replayReasoning` 随之剥离其后全部
+     * 原生推理，模型失去查看图片时得出的判断，只能反复取回，实测因连续无进展被循环保护判定失败。
      */
     const evicted = evictedMedia(assembledRaw, this.mediaCapabilities(run))
     const scoped = evicted.size
-      ? assembledRaw.map((m, i) => (evicted.has(i) ? omitImages(m) : m))
+      ? assembledRaw.map((m, i) => {
+          const level = evicted.get(i)
+          return level ? omitImages(m, level) : m
+        })
       : assembledRaw
     const projected = this.compaction.project(scoped)
     const tools = registry.schemas()
