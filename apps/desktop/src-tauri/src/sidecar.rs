@@ -5,7 +5,8 @@
 //!
 //! 两个易错点：
 //!
-//! 1. **必须等 sidecar 输出令牌后再创建窗口。** 否则 WebView 先加载且无法取得令牌，
+//! 1. **必须等 sidecar 输出令牌后再创建主窗口。** 等待期间显示可取消的启动窗口。
+//!    否则业务 WebView 先加载且无法取得令牌，
 //!    会先短暂显示「未配对」再自行恢复，与启动失败无法区分。
 //! 2. **退出时必须确实终止子进程。** Windows 上父进程结束不会终止子进程；
 //!    残留的 `qy serve` 会占用端口和 SQLite 的 WAL 锁，导致下次无法启动。
@@ -19,7 +20,6 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::mpsc::Receiver;
 
-const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const RESTART_MAX_DELAY_MS: u64 = 15_000;
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
 /// 启动失败对话框中附带的 stderr 长度。远小于 `STDERR_TAIL_BYTES`：MessageBox 不支持滚动，
@@ -187,7 +187,10 @@ fn kill_current(handle: &SidecarHandle) {
 ///
 /// stderr 在转发的同时累积到 `tail`：握手失败时这段输出是唯一能说明原因的证据，
 /// 而 release 下没有控制台，转发的输出不可见。
-async fn await_handshake(rx: &mut Receiver<CommandEvent>, tail: &mut String) -> Result<SidecarInfo> {
+async fn await_handshake(
+    rx: &mut Receiver<CommandEvent>,
+    tail: &mut String,
+) -> Result<SidecarInfo> {
     let mut token: Option<String> = None;
     let mut port: Option<u16> = None;
 
@@ -196,11 +199,15 @@ async fn await_handshake(rx: &mut Receiver<CommandEvent>, tail: &mut String) -> 
             CommandEvent::Stdout(line) => {
                 let text = String::from_utf8_lossy(&line);
                 for raw in text.lines() {
-                    if let Some(v) = raw.trim().strip_prefix("QYWORK_TOKEN=") {
+                    if let Some(v) = raw
+                        .trim()
+                        .strip_prefix("QYWORK_TOKEN=")
+                        .filter(|v| !v.is_empty())
+                    {
                         token = Some(v.to_string());
                     }
                     if let Some(v) = raw.trim().strip_prefix("QYWORK_PORT=") {
-                        port = v.parse().ok();
+                        port = v.parse::<u16>().ok().filter(|p| *p != 0);
                     }
                 }
                 if let (Some(t), Some(p)) = (&token, port) {
@@ -229,16 +236,6 @@ async fn await_handshake(rx: &mut Receiver<CommandEvent>, tail: &mut String) -> 
         }
     }
     Err(anyhow!("qy serve 输出结束但未输出令牌"))
-}
-
-async fn handshake_with_timeout(
-    rx: &mut Receiver<CommandEvent>,
-    tail: &mut String,
-) -> Result<SidecarInfo> {
-    match tokio::time::timeout(HANDSHAKE_TIMEOUT, await_handshake(rx, tail)).await {
-        Ok(result) => result,
-        Err(_) => Err(anyhow!("qy serve 启动超过 20 秒仍未输出令牌")),
-    }
 }
 
 /**
@@ -337,7 +334,7 @@ fn supervise(
                         if !hold_child(&handle, child) {
                             return;
                         }
-                        match handshake_with_timeout(&mut next_rx, &mut stderr_tail).await {
+                        match await_handshake(&mut next_rx, &mut stderr_tail).await {
                             Ok(next) if next.port == info.port && next.token == info.token => {
                                 log::info!("qy serve 已在原端点恢复 :{}", info.port);
                                 rx = next_rx;
@@ -376,6 +373,8 @@ pub async fn spawn(
     workspace: &str,
     host_key: Option<&str>,
 ) -> Result<SidecarInfo> {
+    let started_at = std::time::Instant::now();
+    log::info!("开始启动 qy serve，等待就绪回执");
     let (mut rx, child) = spawn_process(app, 0, None, workspace, None, host_key)?;
     let pid = child.pid();
 
@@ -384,22 +383,17 @@ pub async fn spawn(
         return Err(anyhow!("应用已经开始退出，取消启动 qy serve"));
     }
 
-    /*
-     * 握手必须设置时限。
-     *
-     * **不能写成不带时限的 `while rx.recv().await`**：该循环只在取得两个 KV、进程
-     * Terminated 或流关闭时退出。qy 已启动但停滞在输出令牌之前（server 初始化阻塞、
-     * 端口探测无响应）时，该循环**永不返回**，而主窗口在它之后才创建
-     * （`lib.rs` 的 `build_main_window`），因此 qywork.exe 与 qy.exe 均在后台
-     * 运行而桌面上没有窗口。
-     *
-     * 20 秒：冷启动需读取配置、打开 SQLite、并可能预热扩展，因此留出比预估更宽裕的时间；
-     * 误判的代价（中止一次很慢的启动）远小于漏判的代价（无提示地停滞）。
-     */
+    // 后台就绪回执是唯一成功判据；慢启动不等于失败，不能按固定时长杀掉仍在启动的进程。
+    // lib.rs 在等待之前创建可关闭的启动窗口，并保持事件循环运行；关闭时通过 shutdown
+    // 终止子进程。真实失败仍由退出事件、读取错误或通道关闭立即报告。
     let mut tail = String::new();
-    match handshake_with_timeout(&mut rx, &mut tail).await {
+    match await_handshake(&mut rx, &mut tail).await {
         Ok(info) => {
-            log::info!("qy serve 已启动 pid={pid} port={}", info.port);
+            log::info!(
+                "qy serve 已就绪 pid={pid} port={} elapsedMs={}",
+                info.port,
+                started_at.elapsed().as_millis()
+            );
             supervise(app.clone(), info.clone(), rx, host_key.map(str::to_owned));
             Ok(info)
         }
@@ -423,12 +417,17 @@ pub fn shutdown(app: &AppHandle) {
     shutdown_handle(&app.state::<SidecarHandle>());
 }
 
+/// 启动取消与进程监督共用同一终态，取消后不再创建主窗口或显示失败对话框。
+pub fn stopping(app: &AppHandle) -> bool {
+    app.state::<SidecarHandle>().0.lock().stopping
+}
+
 /// 安装期间由更新所有者禁止恢复；安装启动失败后仍复用原监督器。
 pub fn stop_for_update(app: &AppHandle) {
     kill_current(&app.state::<SidecarHandle>());
 }
 
-/// 同上，但直接接收句柄：握手超时路径上尚无可用的 app state 引用。
+/// 同上，但直接接收句柄，退出与取消启动共用该清理路径。
 fn shutdown_handle(handle: &SidecarHandle) {
     let child = {
         let mut state = handle.0.lock();
@@ -511,7 +510,88 @@ pub fn write_last_workspace(path: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_stderr_tail, from_env, STDERR_TAIL_BYTES};
+    use super::{
+        append_stderr_tail, await_handshake, from_env, shutdown_handle, SidecarHandle,
+        STDERR_TAIL_BYTES,
+    };
+    use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
+    use tokio::sync::mpsc;
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_start_waits_for_both_ready_fields_instead_of_killing_after_twenty_seconds() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let waiting =
+            tokio::spawn(async move { await_handshake(&mut rx, &mut String::new()).await });
+        tokio::time::advance(std::time::Duration::from_secs(45)).await;
+        assert!(!waiting.is_finished(), "慢启动仍应等待后台就绪");
+        tx.send(CommandEvent::Stdout(b"QYWORK_TOKEN=test-token".to_vec()))
+            .await
+            .unwrap();
+        tokio::time::advance(std::time::Duration::from_secs(45)).await;
+        assert!(!waiting.is_finished(), "令牌与端口缺一不可");
+        tx.send(CommandEvent::Stdout(b"QYWORK_PORT=56884".to_vec()))
+            .await
+            .unwrap();
+        let info = waiting.await.unwrap().unwrap();
+        assert_eq!(info.token, "test-token");
+        assert_eq!(info.port, 56884);
+    }
+
+    #[tokio::test]
+    async fn invalid_or_incomplete_endpoint_is_not_ready() {
+        for output in [
+            "QYWORK_TOKEN=\nQYWORK_PORT=56884",
+            "QYWORK_TOKEN=t\nQYWORK_PORT=0",
+            "QYWORK_TOKEN=t\nQYWORK_PORT=bad",
+            "QYWORK_TOKEN=t",
+        ] {
+            let (tx, mut rx) = mpsc::channel(1);
+            tx.send(CommandEvent::Stdout(output.as_bytes().to_vec()))
+                .await
+                .unwrap();
+            drop(tx);
+            assert!(await_handshake(&mut rx, &mut String::new()).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn real_exit_fails_immediately_and_keeps_stderr() {
+        let (tx, mut rx) = mpsc::channel(3);
+        tx.send(CommandEvent::Stderr("账本打开失败".as_bytes().to_vec()))
+            .await
+            .unwrap();
+        tx.send(CommandEvent::Terminated(TerminatedPayload {
+            code: Some(1),
+            signal: None,
+        }))
+        .await
+        .unwrap();
+        let mut tail = String::new();
+        let error = await_handshake(&mut rx, &mut tail).await.unwrap_err();
+        assert!(error.to_string().contains("code=Some(1)"));
+        assert_eq!(tail, "账本打开失败");
+    }
+
+    #[tokio::test]
+    async fn output_error_is_a_failure_even_if_process_has_not_exited() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send(CommandEvent::Error("pipe closed".into()))
+            .await
+            .unwrap();
+        let error = await_handshake(&mut rx, &mut String::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("pipe closed"));
+    }
+
+    #[test]
+    fn cancellation_is_terminal_and_idempotent() {
+        let handle = SidecarHandle::default();
+        shutdown_handle(&handle);
+        shutdown_handle(&handle);
+        assert!(handle.0.lock().stopping);
+        assert!(handle.0.lock().child.is_none());
+    }
 
     /// 端口上没有进程监听时也不能改用其他后端：外壳可能在 dev.ts 重启 sidecar 的间隙中启动。
     #[test]

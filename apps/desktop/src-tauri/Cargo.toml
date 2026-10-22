@@ -49,6 +49,10 @@ portable-pty = "0.9"
 # 见 lib.rs 的 `ShellLog`。log 已在依赖树中。
 log = "0.4"
 
+[dev-dependencies]
+# 虚拟时间覆盖超过旧 20 秒阈值的慢启动，无需让回归测试实际等待。
+tokio = { version = "1", features = ["test-util"] }
+
 # 只有 Windows 需要：无装饰窗口的投影需自行向 DWM 申请，见 lib.rs 的
 # `extend_frame_for_shadow`。版本与 tauri 传递依赖中的版本一致（0.61），
 # 否则同一套 Win32 类型会编译出两份，`hwnd()` 的返回值类型不一致。

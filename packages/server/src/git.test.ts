@@ -10,7 +10,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { currentBranch, switchTo } from './git.ts'
+import { setCommandRunner, startCommandRunner } from '@qywork/tools'
+import { branches, currentBranch, gitDir, switchTo } from './git.ts'
 
 async function repoWithCommit(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qy-git-'))
@@ -72,6 +73,32 @@ describe('本机未安装 git', () => {
       process.env.PATH = prev
     }
   })
+})
+
+test('经命令 runner 读取和切换分支，缺失 Git 时仍返回空状态', async () => {
+  const dir = await repoWithCommit()
+  const empty = await mkdtemp(join(tmpdir(), 'qy-runner-nopath-'))
+  Bun.spawnSync(['git', 'branch', 'dev'], { cwd: dir })
+  const runner = startCommandRunner([
+    process.execPath,
+    '-e',
+    'import { runCommandRunner } from "@qywork/tools"; runCommandRunner()',
+  ])
+  const prev = process.env.PATH
+  setCommandRunner(runner)
+  try {
+    expect(await currentBranch(dir)).toBe('main')
+    expect(await gitDir(dir)).toBeTruthy()
+    expect((await branches(dir)).map((b) => b.name)).toEqual(['dev', 'main'])
+    expect((await switchTo(dir, 'dev')).ok).toBe(true)
+    expect(await currentBranch(dir)).toBe('dev')
+    process.env.PATH = empty
+    expect(await currentBranch(dir)).toBeNull()
+  } finally {
+    process.env.PATH = prev
+    setCommandRunner(null)
+    runner.stop()
+  }
 })
 
 /**
