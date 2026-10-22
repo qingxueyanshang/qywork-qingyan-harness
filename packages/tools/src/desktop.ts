@@ -125,8 +125,8 @@ const WINDOW_SHAPE_ACTIONS: readonly DesktopActionKind[] = [
 /**
  * 序列接受的动作。
  *
- * 包括指针与键盘动作：worker 在每次派发前把目标窗口切回前台，因此后续步骤的前台前置条件
- * 仍然成立。指定控件的 `type_text` 要求该控件持有键盘焦点，焦点由前一步的 click
+ * 包括指针与键盘动作：worker 在每次派发前按目标窗口的投递方式重新准备窗口，因此后续步骤的
+ * 前置条件仍然成立。指定控件的 `type_text` 要求该控件持有键盘焦点，焦点由前一步的 click
  * 取得：激活窗口不改变控件焦点。
  */
 const SEQUENCE_ACTIONS: readonly DesktopActionKind[] = ACTIONS.filter(
@@ -137,7 +137,7 @@ const POINTER_ACTIONS: readonly DesktopActionKind[] = ['click', 'hover', 'drag',
 /**
  * 可以不指定控件、直接投递给窗口的动作。
  *
- * 键盘输入的目标是系统焦点所在位置，不是某个被指定的控件。自绘界面不暴露业务控件，
+ * 键盘输入的目标是目标窗口内焦点所在的位置，不是某个被指定的控件。自绘界面不暴露业务控件，
  * 无法提供持有焦点的控件；只接受控件等于对这类应用关闭整条键盘输入路径。
  */
 const WINDOW_TARGET_ACTIONS: readonly DesktopActionKind[] = ['type_text', 'press_key']
@@ -160,7 +160,7 @@ const WINDOW_STATES: readonly DesktopWindowState[] = ['normal', 'minimized', 'ma
 const MAX_CLICK_COUNT = 2
 /** 一次滚轮操作的最大格数。 */
 const MAX_WHEEL_AMOUNT = 20
-/** 一次输入的最大字数。更长的文本分多次发送，前台在中途变化时才能及时停止。 */
+/** 一次输入的最大字数。更长的文本分多次发送，接收窗口在中途变化时才能及时停止。 */
 const MAX_TEXT_LENGTH = 4000
 /** 拖拽偏移与窗口坐标的取值上界。用于拦截明显越界的请求，实际上界由屏幕与窗口能力决定。 */
 const MAX_SCREEN_COORD = 100_000
@@ -1461,7 +1461,8 @@ export const desktopActTool: ToolSpec = {
     '后台动作 invoke / set_value / set_range_value / select / add_to_selection / remove_from_selection / ' +
     'set_toggle / expand / collapse / scroll / scroll_into_view / realize_item / select_text 经控件接口发出。' +
     '前台动作 click / hover / drag / wheel / type_text / press_key / activate / set_window_state / ' +
-    'move_window / resize_window / close_window 使用真实输入或窗口接口，要求 foregroundEnabled 为 true。' +
+    'move_window / resize_window / close_window 使用指针、键盘或窗口接口，要求 foregroundEnabled 为 true；' +
+    '指针与键盘动作执行前无需 activate。' +
     '为 false 时应说明前台操作已关闭并等待用户开启；动作表中没有某个动作表示该控件不提供它，不能据此推断开关状态。' +
     '恢复或置前窗口直接使用 activate，它会恢复最小化窗口并将其置前；set_window_state 只用于指定窗口状态，不能据此确认窗口已在前台。' +
     'type_text 指定控件时要求该控件此刻持有键盘焦点，先 click 该控件；自绘界面不提供控件，输入投递给窗口。' +

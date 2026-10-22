@@ -1,5 +1,5 @@
 //! Windows 后端（`Uia`）：UI Automation 负责窗口发现、控件树读取、后台语义动作与有界等待，
-//! 前台输入由 `foreground` 负责，图像采集由 `capture` 负责。
+//! 指针、键盘与窗口动作由 `foreground` 负责，图像采集由 `capture` 负责。
 //!
 //! 五条边界：
 //!
@@ -404,6 +404,7 @@ impl Backend for Uia {
             ..Select::default()
         };
         let reread = || self.read_tree(window, &scope, bounds, fg);
+        let foreground_before = foreground::foreground_window();
         // 前台准备可能已经还原窗口或改变焦点。请求的输入仍未派发，但观察必须重读。
         let refused = |reason| {
             let observed = if action.foreground_only() {
@@ -456,7 +457,14 @@ impl Backend for Uia {
                     Err(TARGET_BLOCKED.to_owned()),
                 )
             }
-            called => (called, reread()),
+            called => {
+                let observed = reread();
+                // 在重读之后核对：目标应用异步请求成为前台时，此时已经生效。
+                (
+                    foreground::note_foreground(window, foreground_before, action, called),
+                    observed,
+                )
+            }
         }
     }
 
@@ -655,6 +663,12 @@ impl Uia {
             truncated_by: Vec::new(),
             collected: Vec::new(),
             seen: HashSet::new(),
+            // 前台模式关闭时不读取焦点，也不列出键盘动作。
+            focus_window: if fields.foreground {
+                sink::thread_focus(HWND(window as *mut c_void)).map(|h| h.0 as i64)
+            } else {
+                None
+            },
         };
         let mut path = root_path.to_vec();
         // 根节点无法读取即整体失败：没有根节点，本次观察不成立。
@@ -757,6 +771,7 @@ impl Uia {
                         let node = self.read_cached_node(
                             &located.element,
                             &located.path,
+                            None,
                             Fields {
                                 value: true,
                                 state: true,
@@ -813,6 +828,7 @@ impl Uia {
         &self,
         element: &IUIAutomationElement,
         path: &[usize],
+        focus_window: Option<i64>,
         fields: Fields,
     ) -> Result<Node, Failure> {
         let control_type = unsafe { element.CachedControlType() }.map_err(uia("读取控件类型"))?;
@@ -953,7 +969,15 @@ impl Uia {
         let bounds = unsafe { element.CachedBoundingRectangle() }.map_err(uia("读取包围盒"))?;
         let rect = bounding_box(bounds);
 
-        let focused = cached_flag(element, UIA_HasKeyboardFocusPropertyId)?.unwrap_or(false);
+        let focused = holds_focus(
+            cached_flag(element, UIA_HasKeyboardFocusPropertyId)?.unwrap_or(false),
+            if fields.foreground {
+                cached_native_window(element)?
+            } else {
+                None
+            },
+            focus_window,
+        );
         if fields.foreground {
             // 指针动作只列在有可视位置且当前位于可视区内的控件上：没有包围盒则无法确定
             // 落点，可视区外的控件在该坐标上是遮挡在其前方的另一个控件。
@@ -966,10 +990,10 @@ impl Uia {
             // （输入该窗口）。自绘界面无法提供持有焦点的控件，只列前者等于对这类界面关闭整条
             // 键盘路径。路径为空时才是窗口元素自身，子树读取的根节点带有其在整个窗口中的下标。
             //
-            // 不要给窗口根添加「当前是系统前台窗口」的条件：定位前 `foreground::prepare` 先将
-            // 目标窗口提升到前台再核对。添加该条件后，桌面这类没有 WindowPattern、无法先
-            // activate 的窗口永远无法获得键盘动作，Win+I 这类系统快捷键只能借用户正在使用的
-            // 窗口发出。
+            // 不要给窗口根添加「当前是系统前台窗口」的条件：一般窗口经窗口消息接收按键，不需要
+            // 前台；系统输入窗口由定位前的 `foreground::prepare` 提升到前台再核对。添加该条件后，
+            // 桌面这类没有 WindowPattern、无法先 activate 的窗口永远无法获得键盘动作，Win+I 这类
+            // 系统快捷键只能借用户正在使用的窗口发出。
             if focused || path.is_empty() {
                 actions.push(NodeAction::foreground("type_text"));
                 actions.push(NodeAction::foreground("press_key"));
@@ -1024,6 +1048,15 @@ fn expand_name(state: i32) -> &'static str {
     } else {
         "unknown"
     }
+}
+
+/// 控件是否持有键盘焦点：UIA 报告持有，或控件自身的窗口是目标窗口所属线程的焦点窗口。
+///
+/// 后一项不能省略：UIA 报告的是系统前台线程的焦点，目标窗口不在前台时，后台点击之后 UIA 仍报告
+/// 无焦点，而按键实际发往目标线程的焦点窗口（`sink::focus_of`）。观察中的 `focused` 与派发前的
+/// 核对都经由本函数，两处判定一致。
+pub fn holds_focus(uia: bool, native: Option<i64>, focus_window: Option<i64>) -> bool {
+    uia || native.zip(focus_window).is_some_and(|(own, focus)| own == focus)
 }
 
 /// 元素自身的窗口句柄。只有对应一个 OS 窗口的元素具有该句柄，其余返回 `None`。只读取缓存。
@@ -1152,6 +1185,8 @@ fn build_cache(
 /// 前台模式关闭时不请求任何一项：这些属性只服务于前台动作表，而此时不列出任何前台动作。
 const FOREGROUND_PROPERTIES: &[::windows::Win32::UI::Accessibility::UIA_PROPERTY_ID] = &[
     UIA_HasKeyboardFocusPropertyId,
+    // 与目标线程的焦点窗口比对，见 `holds_focus`。
+    UIA_NativeWindowHandlePropertyId,
     UIA_IsWindowPatternAvailablePropertyId,
     UIA_IsTransformPatternAvailablePropertyId,
 ];
@@ -1182,6 +1217,8 @@ struct Walk<'a> {
     collected: Vec<Collected>,
     /// 本次遍历已输出的 RuntimeId。只在本次遍历内有效：RuntimeId 在不同时刻可能被复用。
     seen: HashSet<String>,
+    /// 目标窗口所属线程的焦点窗口，见 `holds_focus`。前台模式关闭时为 `None`。
+    focus_window: Option<i64>,
 }
 
 impl Walk<'_> {
@@ -1218,7 +1255,9 @@ impl Walk<'_> {
         if !first_sighting(&mut self.seen, &runtime_id(element)?) {
             return Ok(());
         }
-        let mut node = self.backend.read_cached_node(element, path, self.fields)?;
+        let mut node = self
+            .backend
+            .read_cached_node(element, path, self.focus_window, self.fields)?;
         node.depth = depth;
         self.visited += 1;
         let index = self.collected.len();
@@ -2503,6 +2542,17 @@ fn selection_state(multiple: bool, required: bool, names: Vec<String>, total: us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 原始失败形状：后台点击记事本的编辑框之后 UIA 仍报告无焦点，带 ref 的输入被拒绝。
+    /// 控件自身窗口是目标线程的焦点窗口时视为持有焦点；没有自身窗口的控件只看 UIA。
+    #[test]
+    fn a_control_whose_window_has_the_thread_focus_holds_the_focus() {
+        assert!(holds_focus(true, None, None));
+        assert!(holds_focus(false, Some(42), Some(42)));
+        assert!(!holds_focus(false, Some(42), Some(7)));
+        assert!(!holds_focus(false, None, Some(42)));
+        assert!(!holds_focus(false, Some(42), None));
+    }
 
     #[test]
     fn toggle_state_maps_to_the_uia_constants() {

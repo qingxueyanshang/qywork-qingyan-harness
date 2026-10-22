@@ -497,7 +497,7 @@ impl ActionSpec {
         )
     }
 
-    /// 该动作使用真实指针或键盘投递，因此要求目标窗口当前位于系统前台。
+    /// 该动作使用指针或键盘投递，定位前须按目标窗口的投递方式准备窗口：需要前台的窗口先提升到前台。
     ///
     /// 窗口动作（激活、状态、移动、缩放、关闭）不在其中：它们经由 Win32 与 UIA 接口发出，
     /// 无论目标窗口是否位于前台都可以执行。
@@ -523,8 +523,8 @@ impl ActionSpec {
 
     /// 该动作可以不指定目标，直接投递给窗口。只有键盘输入支持。
     ///
-    /// 键盘输入发往系统焦点所在位置，而不是某个指定的控件；前台窗口即目标窗口时，
-    /// 焦点必然位于该窗口内。自绘界面不暴露业务控件，无法提供持有焦点的控件，
+    /// 键盘输入发往目标窗口内焦点所在的位置，而不是某个指定的控件。
+    /// 自绘界面不暴露业务控件，无法提供持有焦点的控件，
     /// 缺少本条规则时其整条键盘路径不可用。
     pub const fn targets_window(&self) -> bool {
         matches!(self, Self::TypeText { .. } | Self::PressKey { .. })
@@ -1270,7 +1270,7 @@ pub fn classify_input(sent: u32, requested: u32) -> (Dispatch, Option<String>) {
         return (
             Dispatch::NotDispatched,
             Some(format!(
-                "input_blocked: {requested} 个输入事件均未进入系统输入队列，\
+                "input_blocked: {requested} 个输入事件均未送达目标窗口，\
                  目标窗口的进程完整性可能高于 qywork"
             )),
         );
