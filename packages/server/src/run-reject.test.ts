@@ -108,11 +108,33 @@ function trace(): string[] {
   })
 }
 
+/** 等待当前会话的收尾广播，不以固定时长推断后台准备已经完成。 */
+function waitForIdle(conversationId: ConversationId): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const id = `reject-idle-${conversationId}`
+    const timer = setTimeout(() => {
+      unsubscribe()
+      reject(new Error(`会话未在限时内结束：${JSON.stringify(trace())}`))
+    }, 5_000)
+    const unsubscribe = bus.subscribe({
+      id,
+      origin: 'cli',
+      conversations: new Set([conversationId]),
+      send: (frame) => {
+        if (frame.event.type !== 'conversation.busy' || frame.event.busy) return
+        clearTimeout(timer)
+        unsubscribe()
+        resolve()
+      },
+    })
+  })
+}
+
 test('未配置 key：装配 adapter 时抛出，忙闲状态恢复为空闲', async () => {
   const cv = conversation()
+  const idle = waitForIdle(cv)
   await startRun(cv, '你好', undefined, deps(config('')))
-  // 拒绝在后台异步流程中结束，等待其执行完毕后再读取序列。
-  await Bun.sleep(200)
+  await idle
 
   expect(trace()).toEqual(['busy=true', 'run.error no_api_key runId=""', 'busy=false'])
   expect(runs.hasRun(cv)).toBe(false)
@@ -178,8 +200,9 @@ test('会话被另一个进程占用：返回错误并指明占用方，该错�
     expect(JSON.parse(text.trim()).ok).toBe(true)
     events = []
 
+    const idle = waitForIdle(cv)
     await startRun(cv, '你好', undefined, deps(config('sk-fake')))
-    await Bun.sleep(300)
+    await idle
 
     expect(trace()).toEqual(['busy=true', 'run.error internal_error runId=""', 'busy=false'])
     const error = events.map((f) => f.event).find((e) => e.type === 'run.error')
@@ -217,8 +240,9 @@ test('会话装配抛错：占位随之释放，下一条消息照常启动轮�
   expect(runs.hasRun(cv)).toBe(false)
 
   events = []
+  const idle = waitForIdle(cv)
   await startRun(cv, '再来一次', undefined, deps(config('')))
-  await Bun.sleep(200)
+  await idle
   expect(trace()).toEqual(['busy=true', 'run.error no_api_key runId=""', 'busy=false'])
 })
 

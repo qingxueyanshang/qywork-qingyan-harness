@@ -302,7 +302,11 @@ mod tests {
 
     #[test]
     fn event_probe_filters_other_apps_and_correlates_signature_events() {
+        // 本例只验证事件筛选；真实系统签名查询由上一个测试覆盖，不依赖其冷启动耗时。
         let fixture = r#"
+function Get-AuthenticodeSignature {
+    [pscustomobject]@{ Status = 'NotSigned'; SignerCertificate = $null }
+}
 function Get-WinEvent {
     foreach ($entry in @(@(3077, 'qy', '\Device\HarddiskVolume3\Apps\qywork\qy.exe', ''), @(3089, 'qy', '', ''), @(3077, 'dll', 'C:\Apps\qywork\dependency.dll', 'C:\Apps\qywork\qy.exe'), @(3089, 'dll', '', ''), @(3077, 'other', 'C:\Other\qy.exe', 'C:\Other\parent.exe'))) {
         $item = [pscustomobject]@{ Id = $entry[0]; TimeCreated = [DateTime]::Now; Xml = "<Event><System><Correlation ActivityID='$($entry[1])'/></System><EventData><Data Name='FileName'>$($entry[2])</Data><Data Name='ProcessName'>$($entry[3])</Data><Data Name='PolicyName'>Test policy</Data></EventData></Event>" }
