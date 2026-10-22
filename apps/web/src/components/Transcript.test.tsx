@@ -95,8 +95,11 @@ async function resetStore() {
   })
 }
 
-function resize(target: Element) {
-  resizeCallbacks.get(target)?.([], {} as ResizeObserver)
+function resize(target: Element, height = 0) {
+  resizeCallbacks.get(target)?.(
+    [{ target, contentRect: { height } } as ResizeObserverEntry],
+    {} as ResizeObserver,
+  )
 }
 
 // 覆盖历史重建、主/子会话状态判断与会话流末尾的呈现，不依赖实时 run.started 的残留。
@@ -1484,12 +1487,12 @@ describe('子会话与主会话共用流式外壳', () => {
 const CV = 'cv_prose'
 
 describe('定稿的正文不随会话流的增长重建', () => {
-  test('用户长消息按实际高度判断折叠，并可在右下角展开和收起', async () => {
+  test('用户消息不强制布局，按观察到的正文高度折叠并随宽度变化恢复', async () => {
     const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
     Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
       configurable: true,
       get() {
-        return this.textContent && this.textContent.length > 100 ? 240 : 20
+        throw new Error('挂载用户消息时不得同步读取布局')
       },
     })
 
@@ -1518,10 +1521,10 @@ describe('定稿的正文不随会话流的增长重建', () => {
     })
 
     const { render } = await import('solid-js/web')
-    const { Transcript } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./Transcript.tsx')
     const host = document.createElement('div')
     document.body.append(host)
-    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+    const dispose = render(() => <TranscriptRows items={store.transcript()} />, host)
 
     try {
       const bubbles = host.querySelectorAll('.bubble')
@@ -1529,6 +1532,9 @@ describe('定稿的正文不随会话流的增长重建', () => {
       expect(bubbles[0]?.classList.contains('collapsible')).toBe(false)
 
       const longBubble = bubbles[1] as HTMLElement
+      const copy = longBubble.querySelector('.user-bubble-copy')!
+      resize(bubbles[0]!.querySelector('.user-bubble-copy')!, 20)
+      resize(copy, 240)
       const toggle = longBubble.querySelector('.user-bubble-toggle') as HTMLButtonElement
       expect(longBubble.classList.contains('collapsible')).toBe(true)
       expect(toggle.textContent).toContain('展开全部')
@@ -1544,6 +1550,15 @@ describe('定稿的正文不随会话流的增长重建', () => {
       await Promise.resolve()
       expect(longBubble.classList.contains('expanded')).toBe(false)
       expect(toggle.textContent).toContain('展开全部')
+
+      toggle.click()
+      resize(copy, 80)
+      expect(longBubble.classList.contains('expanded')).toBe(false)
+      expect(longBubble.querySelector('.user-bubble-toggle')).toBeNull()
+      resize(copy, 240)
+      expect(longBubble.querySelector('.user-bubble-toggle')?.textContent).toContain('展开全部')
+      expect(longBubble.querySelector('.user-bubble-copy')).toBe(copy)
+      expect(copy.textContent).toBe('这是一条需要收敛的长消息。'.repeat(12))
     } finally {
       dispose()
       host.remove()
@@ -2059,6 +2074,22 @@ describe('行的 DOM 不随投影重建', () => {
       const after = [...host.querySelectorAll('.wf-edges path')]
       expect(after).toHaveLength(paths.length)
       expect(after.every((p, i) => p === paths[i])).toBe(true)
+
+      // 状态变化不依赖几何测量；未发生尺寸变化时，连线仍应立即停止动画。
+      for (const element of [box, ...nodes]) {
+        Object.defineProperty(element, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => {
+            throw new Error('进度更新不得强制布局')
+          },
+        })
+      }
+      setItems([wf({ a: { phase: 'done', label: 'glm · 第 2 轮' } })])
+      await Promise.resolve()
+      expect(host.querySelectorAll('.wf-edges path.live')).toHaveLength(0)
+      setItems([wf({ a: { phase: 'working', label: 'glm · 第 3 轮' } })])
+      await Promise.resolve()
+      expect(host.querySelectorAll('.wf-edges path.live').length).toBeGreaterThan(0)
     } finally {
       dispose()
     }

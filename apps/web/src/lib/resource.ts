@@ -1,4 +1,40 @@
-import type { Resource } from 'solid-js'
+import {
+  type Accessor,
+  createEffect,
+  createSignal,
+  onCleanup,
+  type Resource,
+  untrack,
+} from 'solid-js'
+
+/** 合并同一对象的连续失效；切换对象立即生效，持续更新时每个窗口仍取一次最新值。 */
+export function createRefreshKey<K, R>(
+  scope: Accessor<K>,
+  revision: Accessor<R>,
+  interval = 250,
+): Accessor<{ scope: K; revision: R }> {
+  const [key, setKey] = createSignal({ scope: scope(), revision: revision() })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cancel = () => {
+    clearTimeout(timer)
+    timer = undefined
+  }
+  createEffect(() => {
+    const next = { scope: scope(), revision: revision() }
+    const previous = untrack(key)
+    if (next.scope !== previous.scope) {
+      cancel()
+      setKey(next)
+    } else if (next.revision !== previous.revision && timer === undefined) {
+      timer = setTimeout(() => {
+        timer = undefined
+        setKey({ scope: scope(), revision: revision() })
+      }, interval)
+    }
+  })
+  onCleanup(cancel)
+  return key
+}
 
 /**
  * 读取 resource 的值：尚未取得时返回 `undefined`，出错时也返回 `undefined`，从不抛出。

@@ -340,6 +340,48 @@ describe('消息高水位', () => {
 })
 
 describe('会话历史分页', () => {
+  test('步骤密集的轮次收缩分页，超出预算的单轮仍完整保留且逐页无遗漏', () => {
+    const { store, ws } = fresh()
+    try {
+      const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+      const expected: string[] = []
+      for (const [index, count] of [10, 250, 110, 110].entries()) {
+        const user = appendMessage(store, {
+          conversationId: conv.id,
+          role: 'user',
+          content: `轮次 ${index}`,
+        })
+        const run = createRun(store, {
+          conversationId: conv.id,
+          workspaceId: ws.id,
+          model: 'm',
+          clientRequestId: `dense-${index}`,
+          userMessageId: user.id,
+          messageIdUpperBound: user.id,
+          contextSnapshot: [],
+        })
+        for (let seq = 1; seq <= count; seq++) {
+          expected.push(
+            appendStep(store, { runId: run.id, seq, kind: 'text', content: `${index}:${seq}` }).id,
+          )
+        }
+      }
+      const seen: string[] = []
+      const sizes: number[] = []
+      let before: MessageId | null = null
+      do {
+        const page = listConversationHistoryPage(store, conv.id, { limit: 10, before })
+        sizes.push(page.steps.length)
+        seen.unshift(...page.steps.map((step) => step.id))
+        before = page.nextCursor
+      } while (before)
+      expect(sizes).toEqual([110, 110, 250, 10])
+      expect(seen).toEqual(expected)
+    } finally {
+      store.close()
+    }
+  })
+
   test('按完整用户轮次分页并批量返回 run/step，页间不重复不遗漏', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })

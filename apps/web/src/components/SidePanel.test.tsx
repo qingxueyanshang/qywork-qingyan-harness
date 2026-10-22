@@ -119,6 +119,48 @@ test('右键菜单不改变文件树的伸展规则，只有文件预览参与�
   }
 })
 
+test('连续文件失效合并为一次读取，并显示最后的文件树', async () => {
+  const store = await import('../lib/store/index.ts')
+  const originalApi = store.client.api
+  let calls = 0
+  store.client.api = async <T,>(path: string): Promise<T> => {
+    if (!path.startsWith('/api/files/tree')) return {} as T
+    calls += 1
+    return {
+      nodes: [
+        {
+          name: `版本-${store.state.fileVersion}.txt`,
+          path: 'final.txt',
+          kind: 'file',
+          size: 1,
+          mtime: store.state.fileVersion,
+        },
+      ],
+    } as T
+  }
+  restoreApi = () => {
+    store.client.api = originalApi
+  }
+  store.setWorkspace({ id: 'ws_batch_files', root: 'C:/work', name: 'work' })
+  store.setSidePanel('files')
+  const { render } = await import('solid-js/web')
+  const { default: SidePanel } = await import('./SidePanel.tsx')
+  const host = document.createElement('div')
+  document.body.append(host)
+  dispose = render(SidePanel, host)
+  await waitFor(
+    () => host.textContent?.includes('版本-0.txt') === true,
+    () => host.textContent ?? '',
+  )
+  for (let i = 1; i <= 10; i++) store.setState('fileVersion', i)
+  expect(calls).toBe(1)
+  await waitFor(
+    () => host.textContent?.includes('版本-10.txt') === true,
+    () => host.textContent ?? '',
+  )
+  expect(calls).toBe(2)
+})
+
 async function waitFor(done: () => boolean, detail: () => string) {
   for (let i = 0; i < 100; i += 1) {
     if (done()) return

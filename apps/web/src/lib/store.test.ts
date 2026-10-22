@@ -116,6 +116,7 @@ const {
   transcript,
   view,
   viewOf,
+  workspace,
 } = await import('./store/index.ts')
 const { flushSession } = await import('./session.ts')
 
@@ -202,7 +203,24 @@ test('刷新恢复压缩后继续更新同一进度条，旧快照不覆盖新�
 })
 
 describe('激活项目复用服务端返回的会话列表', () => {
-  test('新项目不追加会话列表请求与第二次创建请求', async () => {
+  test('激活项目一次更新工作区与会话，不追加列表请求与第二次创建请求', async () => {
+    const { createEffect, createRoot } = await import('solid-js')
+    setWorkspace({ id: 'ws_before', name: '原项目', root: 'C:/ws/before' })
+    setState({
+      activeConversation: 'cv_before',
+      conversations: [{ id: 'cv_before', workspaceId: 'ws_before' }] as never,
+    })
+    const selections: unknown[] = []
+    const dispose = createRoot((dispose) => {
+      createEffect(() => {
+        selections.push({
+          workspace: workspace()?.id,
+          conversation: state.activeConversation,
+          conversations: state.conversations.map((c) => c.id),
+        })
+      })
+      return dispose
+    })
     const calls: string[] = []
     const invokes: string[] = []
     const apiBefore = client.api
@@ -261,6 +279,7 @@ describe('激活项目复用服务端返回的会话列表', () => {
     try {
       await activateWorkspace({ name: '空项目' })
     } finally {
+      dispose()
       ;(client as unknown as { api: typeof client.api }).api = apiBefore
       delete g.__TAURI_INTERNALS__
     }
@@ -270,6 +289,10 @@ describe('激活项目复用服务端返回的会话列表', () => {
     expect(calls).not.toContain('GET /api/conversations')
     expect(calls).not.toContain('POST /api/conversations')
     expect(invokes).toEqual(['remember_workspace'])
+    expect(selections).toEqual([
+      { workspace: 'ws_before', conversation: 'cv_before', conversations: ['cv_before'] },
+      { workspace: 'ws_created', conversation: 'cv_created', conversations: ['cv_created'] },
+    ])
   })
 })
 
@@ -2457,6 +2480,59 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
     expect(state.activeConversation).toBe('cv_b')
     expect(transcript().map((item) => item.text)).toEqual(['这是 B'])
     expect(viewOf('cv_b').history.error).toBeNull()
+  })
+
+  test('辅助请求未返回时正文已可见，切换后的迟到快照不得覆盖当前会话', async () => {
+    const apiBefore = client.api
+    let finishQueue!: (value: { queue: unknown[] }) => void
+    let queueSignal: AbortSignal | null | undefined
+    const queue = new Promise<{ queue: unknown[] }>((resolve) => {
+      finishQueue = resolve
+    })
+    ;(client as unknown as { api: (path: string, init?: RequestInit) => Promise<unknown> }).api =
+      async (path, init) => {
+        if (path.includes('/history'))
+          return {
+            messages: [
+              {
+                id: path,
+                role: 'user',
+                content: path.includes('cv_fast_a') ? 'A 的正文' : 'B 的正文',
+                attachments: [],
+                createdAt: 1,
+              },
+            ],
+            runs: [],
+            steps: [],
+            todos: [],
+            workflowStarts: [],
+            nextCursor: path.includes('before=') ? null : 'ms_older',
+            live: NO_LIVE,
+          }
+        if (path.includes('/cv_fast_a/queue')) {
+          queueSignal = init?.signal
+          return queue
+        }
+        if (path.endsWith('/queue')) return { queue: [] }
+        if (path.endsWith('/goal')) return { goal: null }
+        return { context: null }
+      }
+    try {
+      const first = selectConversation('cv_fast_a')
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+      expect(transcript().map((item) => item.text)).toEqual(['A 的正文'])
+      expect(viewOf('cv_fast_a').history.loading).toBeNull()
+      await loadOlderConversation('cv_fast_a')
+      expect(queueSignal?.aborted).toBe(false)
+      await selectConversation('cv_fast_b')
+      finishQueue({ queue: [{ id: 'stale', content: '旧队列' }] })
+      await first
+      expect(transcript().map((item) => item.text)).toEqual(['B 的正文'])
+      expect(state.followUps).toEqual([])
+    } finally {
+      finishQueue({ queue: [] })
+      ;(client as unknown as { api: typeof client.api }).api = apiBefore
+    }
   })
 })
 

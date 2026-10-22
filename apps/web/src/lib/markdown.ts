@@ -3,9 +3,8 @@
  *
  * 四项设计取舍，前两项是实测约束：
  *
- * 1. 流式期关闭语言自动检测。highlight.js 的自动检测会把每个代码块与全部
- *    已注册语言逐一评分，模型每产出一个 token 就重新执行一次，长代码块会导致界面无响应。
- *    因此增长中的末段只高亮显式标注了语言的块，定稿后再整段重新渲染并开启自动检测。
+ * 1. 只高亮明确标注了语言的代码块。自动检测会遍历已注册语言，实测约 1.5 万字符的
+ *    单个代码块需要 52–130ms，历史挂载与回复定稿都会阻塞主线程。未标注的代码按原文显示。
  * 2. 必须净化。结果原样写入 innerHTML，而模型输出不可信：模型读取的可能是其他
  *    仓库的 README，`<img onerror>` 这类注入是现实威胁。
  *
@@ -67,7 +66,7 @@ function ensureHljs(): void {
     })
 }
 
-/** 纯文本块的 language-text 是自动检测的噪声，不显示角标。 */
+/** 纯文本块不显示语言角标。 */
 const PLAIN_LANGS = new Set(['text', 'plaintext', 'txt', 'plain', ''])
 
 const WHITELIST = {
@@ -114,42 +113,28 @@ marked.use({
   },
 })
 
-export interface RenderOptions {
-  /** true 表示内容仍在增长：跳过语言自动检测（见文件头第 1 项）。 */
-  streaming?: boolean
-}
-
 /**
  * 创建渲染器。
  *
  * 每次渲染都新建：`Parser` 会把当次的 options 设置到 `marked.Renderer` 上，
  * 跨调用复用会使两次渲染共享可变状态。
  */
-function makeRenderer(opts: RenderOptions, ready: boolean): Renderer {
+function makeRenderer(ready: boolean): Renderer {
   const renderer = new Renderer()
 
   renderer.code = ({ text, lang }) => {
     const language = (lang ?? '').trim().toLowerCase()
-    // 存在代码块时才加载高亮库。没有代码块的会话不承担这 200 kB 的开销。
-    ensureHljs()
+    // 未指定语言或纯文本不需要高亮库。
+    if (language && !PLAIN_LANGS.has(language)) ensureHljs()
 
     let highlighted = escapeHtml(text)
-    let shownLang = language
-
-    if (ready && hljs) {
-      if (language && hljs.getLanguage(language)) {
-        highlighted = hljs.highlight(text, { language, ignoreIllegals: true }).value
-      } else if (!opts.streaming && text.length < 20_000) {
-        // 自动检测只在定稿后执行，并设长度上限：超长代码块的检测开销没有收益。
-        const auto = hljs.highlightAuto(text)
-        highlighted = auto.value
-        shownLang = auto.language ?? ''
-      }
+    if (ready && hljs && language && !PLAIN_LANGS.has(language) && hljs.getLanguage(language)) {
+      highlighted = hljs.highlight(text, { language, ignoreIllegals: true }).value
     }
 
     const badge =
-      shownLang && !PLAIN_LANGS.has(shownLang)
-        ? `<span class="code-lang">${escapeHtml(shownLang)}</span>`
+      language && !PLAIN_LANGS.has(language)
+        ? `<span class="code-lang">${escapeHtml(language)}</span>`
         : ''
     // 横向滚动由 pre 承担，角标与复制按钮位于外层 div。
     // 不要把它们移入 pre：pre 是滚动容器，绝对定位的子元素会随代码一起滚出可视区域，
@@ -203,12 +188,12 @@ function finish(raw: string): string {
   })
 }
 
-/** 整段渲染。定稿时使用：不受增量渲染已知偏差的影响，并开启语言自动检测。 */
-export function renderMarkdown(source: string, opts: RenderOptions = {}): string {
+/** 整段渲染。定稿时使用，纠正增量渲染的已知偏差。 */
+export function renderMarkdown(source: string): string {
   if (!source) return ''
   // 读取一次信号，使库加载完成后本次渲染自动失效并重新执行。
   const ready = hljsReady()
-  const renderer = makeRenderer(opts, ready)
+  const renderer = makeRenderer(ready)
   return finish(marked.parse(source, { renderer, async: false }) as string)
 }
 
@@ -280,7 +265,7 @@ export function createStreamRenderer(): StreamRenderer {
         reset = true
       }
 
-      const renderer = makeRenderer({ streaming: true }, ready)
+      const renderer = makeRenderer(ready)
       const lexer = new Lexer(marked.defaults)
       Object.assign(lexer.tokens.links, structuredClone(links))
       const tokens = lexer.lex(text.slice(prefixLen))

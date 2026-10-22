@@ -657,8 +657,29 @@ export function listConversationHistoryPage(
         )
         .all(conversationId, limit + 1)
 
-  const hasMore = rows.length > limit
-  const selected = rows.slice(0, limit)
+  // 用户轮次的步骤数差异很大：仅限制十条消息仍可能一次返回上千步。
+  // 按已落库的 step_count 收缩本页，始终保留至少一轮且不拆开同一轮的工具记录。
+  const candidates = rows.slice(0, limit)
+  const counts = candidates.length
+    ? store.db
+        .query<{ user_message_id: string; steps: number }, string[]>(
+          `SELECT user_message_id, SUM(step_count) AS steps FROM runs
+           WHERE conversation_id = ? AND user_message_id IN (${candidates.map(() => '?').join(',')})
+           GROUP BY user_message_id`,
+        )
+        .all(conversationId, ...candidates.map((row) => row.id))
+    : []
+  const byMessage = new Map(counts.map((row) => [row.user_message_id, row.steps]))
+  let stepCount = 0
+  let take = 0
+  for (const row of candidates) {
+    const next = stepCount + (byMessage.get(row.id) ?? 0)
+    if (take > 0 && next > 200) break
+    stepCount = next
+    take += 1
+  }
+  const selected = candidates.slice(0, take)
+  const hasMore = rows.length > selected.length
   const oldest = selected.at(-1)?.id ?? null
   const messages = selected.toReversed().map(rowToMessage)
 
