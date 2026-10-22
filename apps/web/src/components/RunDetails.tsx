@@ -9,7 +9,7 @@ import type {
 } from '@qywork/core'
 import { formatCosts, formatMoney, MEDIA_OUTPUT_UNIT, runCosts } from '@qywork/core'
 import { createMemo, createResource, For, Show } from 'solid-js'
-import { loaded } from '../lib/resource.ts'
+import { createRefreshKey, loaded } from '../lib/resource.ts'
 import { sessionSignal } from '../lib/session.ts'
 import { compact, requestOutcome, stopReasonLabel } from '../lib/step-view.ts'
 import { client, ledgerRevision, openSettings, state } from '../lib/store/index.ts'
@@ -28,29 +28,18 @@ import { LoadState } from './settings/LoadState.tsx'
  * 非轮次的条目，因此合计与清单一致，无需另加说明差额的文字。
  */
 export default function RunDetails() {
-  /*
-   * 重取判据必须按值去重，不能直接使用每次新建的对象字面量。
-   *
-   * `createResource` 把 source 包进 memo 并按 `===` 比较，对象字面量每次都不相等，
-   * `ledgerRevision()` 的「未变化则不重取」因此失效：其他会话每开始执行一次、某一轮的
-   * 金额每原地更新一次（各分量均未变化），两张表都会各重取一次。同文件另外两处的判据是
-   * 字符串，本身按值比较。
-   */
-  const key = createMemo(
-    () => ({ id: state.activeConversation, rev: ledgerRevision() }),
-    undefined,
-    { equals: (a, b) => a.id === b.id && a.rev === b.rev },
-  )
+  // 步骤与用量仍以原账本进度为准，只合并同一会话的连续刷新；切换会话不等待。
+  const key = createRefreshKey(() => state.activeConversation, ledgerRevision)
 
   const [runData, { refetch: refetchRuns }] = createResource(key, async (k) =>
-    k.id === null
+    k.scope === null
       ? { runs: [] as Run[], childRuns: [] as ConversationRunsResponse['childRuns'] }
-      : await client.api<ConversationRunsResponse>(`/api/conversations/${k.id}/runs`),
+      : await client.api<ConversationRunsResponse>(`/api/conversations/${k.scope}/runs`),
   )
   const [ledger, { refetch: refetchLedger }] = createResource(key, async (k) =>
-    k.id === null
+    k.scope === null
       ? { totals: emptyTotals(), entries: [] as UsageLedgerRow[] }
-      : await client.api<ConversationUsageResponse>(`/api/conversations/${k.id}/usage`),
+      : await client.api<ConversationUsageResponse>(`/api/conversations/${k.scope}/usage`),
   )
 
   // 使用 `loaded()` 而不是 `data()`：后者出错时 `throw`，而本应用没有 `ErrorBoundary`。
@@ -122,6 +111,7 @@ export default function RunDetails() {
                     {(r) => (
                       <RunRow
                         run={r}
+                        revision={key().revision}
                         name={row.name}
                         open={picked() === r.id}
                         onPick={() => setPicked((cur) => (cur === r.id ? null : r.id))}
@@ -133,7 +123,7 @@ export default function RunDetails() {
             </ul>
           </Show>
         </Show>
-        <LedgerLink />
+        <LedgerLink revision={key().revision} />
       </div>
     </div>
   )
@@ -226,7 +216,13 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
  * 模型名与步数耗时不放入展开区：放入后同一轮会有两个标题。
  * 展开区只放需要展开才查看的内容：逐请求明细。
  */
-function RunRow(props: { run: Run; name: string; open: boolean; onPick: () => void }) {
+function RunRow(props: {
+  run: Run
+  revision: string
+  name: string
+  open: boolean
+  onPick: () => void
+}) {
   const r = () => props.run
   const mark = () => runMark(r())
   /** 执行完毕后才显示耗时。运行中的轮次由「进行中」标记表示，不重复显示耗时。 */
@@ -256,7 +252,7 @@ function RunRow(props: { run: Run; name: string; open: boolean; onPick: () => vo
         <span class="run-money">{runCost(r())}</span>
       </button>
       <Show when={props.open}>
-        <RequestLedger run={props.run} />
+        <RequestLedger run={props.run} revision={props.revision} />
       </Show>
     </li>
   )
@@ -301,11 +297,11 @@ function ExtraRow(props: { entry: UsageLedgerRow }) {
  * **列序与中转站后台一致。** 请求编号之后是账单字段：
  * 输入 → 输出 → 命中 → 写入 → 金额 → 结果，便于逐行对照。
  */
-function RequestLedger(props: { run: Run }) {
+function RequestLedger(props: { run: Run; revision: string }) {
   // 执行完毕的轮次不会再有新请求，判据中不包含账本修订号，否则每写入一步都会
   // 重取一张不再变化的表。
   const [data] = createResource(
-    () => `${props.run.id}:${props.run.finishedAt === null ? ledgerRevision() : ''}`,
+    () => `${props.run.id}:${props.run.finishedAt === null ? props.revision : ''}`,
     () => client.api<{ requests: ProviderRequest[] }>(`/api/runs/${props.run.id}/requests`),
   )
   const requests = () => loaded(data)?.requests ?? []
@@ -393,9 +389,10 @@ function RequestLedger(props: { run: Run }) {
  * 它是近期费用的入口，明细在设置的「用量」页。该行不显示加载态与错误态：
  * 取得数值之前显示 `N/A`，行高保持不变；完整的加载态与错误态在「用量」页中显示。
  */
-function LedgerLink() {
-  const [data] = createResource(ledgerRevision, () =>
-    client.api<{ totals: { cost: Record<string, number> } }>('/api/usage?days=30'),
+function LedgerLink(props: { revision: string }) {
+  const [data] = createResource(
+    () => props.revision,
+    () => client.api<{ totals: { cost: Record<string, number> } }>('/api/usage?days=30'),
   )
   const cost = () => {
     const c = loaded(data)?.totals.cost

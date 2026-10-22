@@ -53,6 +53,67 @@ function run(id: string, cost: number, currency: 'USD' | 'CNY') {
 }
 
 describe('运行页', () => {
+  test('连续十步合并刷新三张表，最后的运行步数仍显示', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    const calls: string[] = []
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path,
+    ) => {
+      calls.push(path)
+      if (path.endsWith('/runs'))
+        return {
+          runs: [{ ...run('rn_batch', 1, 'USD'), stepCount: store.transcript().length }],
+          childRuns: [],
+        }
+      return {
+        totals: {
+          entries: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: null,
+          cacheWriteTokens: null,
+          reasoningTokens: 0,
+          cost: {},
+        },
+        entries: [],
+      }
+    }
+    restoreApi = () => {
+      store.client.api = originalApi
+    }
+    store.setState({
+      activeConversation: 'cv_batch',
+      connection: 'ready',
+      busyConversations: [],
+      lastRunId: null,
+    })
+    store.openView('cv_batch')
+    const { render } = await import('solid-js/web')
+    const { default: RunDetails } = await import('./RunDetails.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(RunDetails, host)
+    await waitFor(
+      () => host.querySelectorAll('.run-row').length === 1,
+      () => host.textContent ?? '',
+    )
+    calls.length = 0
+    for (let i = 0; i < 10; i++)
+      store.setState('views', 'cv_batch', 'transcript', (items) => [
+        ...items,
+        { id: `step-${i}`, kind: 'thinking' as const, text: '' },
+      ])
+    expect(calls).toHaveLength(0)
+    await waitFor(
+      () => host.textContent?.includes('10 步') === true,
+      () => host.textContent ?? '',
+    )
+    expect(calls.filter((path) => path.endsWith('/runs'))).toHaveLength(1)
+    expect(calls.filter((path) => path.endsWith('/usage'))).toHaveLength(1)
+    expect(calls.filter((path) => path.startsWith('/api/usage?'))).toHaveLength(1)
+  })
+
   test('子会话的轮次计入清单与合计，行上显示角色 id', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api

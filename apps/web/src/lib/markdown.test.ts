@@ -5,15 +5,13 @@
  * `innerHTML`，而输入是模型输出（可能复述其他仓库的 README）。
  * 一次白名单改动即可使 `<img onerror>` 重新生效，而界面上没有任何异常。
  *
- * 此处不测试高亮相关的分支：`highlight.js` 异步按需加载，强行测试只能测到测试桩。
- *
  * 但不得假设它尚未加载完成。加载完成的时刻取决于同一进程中其他模块的加载耗时，
  * 断言中写死未高亮分支的形状，增加一个测试预载就会失败。涉及转义的两条测试先用
  * `unspan()` 去除高亮生成的标记再断言，两个分支下都成立。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { createStreamRenderer, renderMarkdown } from './markdown.ts'
+import { createStreamRenderer, highlightReady, renderMarkdown } from './markdown.ts'
 
 /** 去除高亮生成的 `<span>`。转义测试针对实体本身，不针对正文被拆分成几段。 */
 const unspan = (html: string) => html.replace(/<\/?span[^>]*>/g, '')
@@ -190,9 +188,23 @@ describe('边界输入', () => {
     expect(() => renderMarkdown('```js\nconst a = 1')).not.toThrow()
   })
 
-  test('流式与定稿两种模式对同一段纯文本给出同样的结果', () => {
+  test('流式与定稿对同一段纯文本给出同样的结果', () => {
     const src = '# 标题\n\n一段话。'
-    expect(renderMarkdown(src, { streaming: true })).toBe(renderMarkdown(src))
+    const chunk = createStreamRenderer().push(src)
+    expect(chunk.settled + chunk.live).toBe(renderMarkdown(src))
+  })
+
+  test('高亮库就绪后仍不推测未标注代码的语言，明确标注的代码保留高亮', async () => {
+    const code = 'const result = items.map(item => item.value + 1);'
+    const fence = (language: string) => `\`\`\`${language}\n${code}\n\`\`\``
+    renderMarkdown(fence('javascript'))
+    for (let i = 0; i < 100 && !highlightReady(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    expect(highlightReady()).toBe(true)
+    expect(renderMarkdown(fence('javascript'))).toContain('hljs-keyword')
+    expect(renderMarkdown(fence(''))).not.toContain('<span')
+    expect(renderMarkdown(fence('text'))).not.toContain('<span')
   })
 })
 
@@ -228,7 +240,7 @@ describe('增量渲染与整段渲染一致', () => {
         const chunk = stream.push(doc.slice(0, i))
         if (chunk.reset) settledHtml = ''
         settledHtml += chunk.settled
-        expect(settledHtml + chunk.live).toBe(renderMarkdown(doc.slice(0, i), { streaming: true }))
+        expect(settledHtml + chunk.live).toBe(renderMarkdown(doc.slice(0, i)))
       }
     })
   }
@@ -256,7 +268,7 @@ describe('增量渲染与整段渲染一致', () => {
     stream.push('第一段\n\n第二段\n\n第三段\n')
     const chunk = stream.push('另一份\n')
     expect(chunk.reset).toBe(true)
-    expect(chunk.settled + chunk.live).toBe(renderMarkdown('另一份\n', { streaming: true }))
+    expect(chunk.settled + chunk.live).toBe(renderMarkdown('另一份\n'))
   })
 
   /** 不完整的 def 不得占用引用表：marked 的引用表以先写入者为准，被占用后补全的 def 无法写入。 */
@@ -270,7 +282,7 @@ describe('增量渲染与整段渲染一致', () => {
       if (chunk.reset) settledHtml = ''
       settledHtml += chunk.settled
       whole = settledHtml + chunk.live
-      expect(whole).toBe(renderMarkdown(doc.slice(0, i), { streaming: true }))
+      expect(whole).toBe(renderMarkdown(doc.slice(0, i)))
     }
     expect(whole).toContain('href="https://example.com"')
   })

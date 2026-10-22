@@ -6,6 +6,7 @@
  */
 
 import type { Attachment, Conversation, EffortLevel, PermissionMode } from '@qywork/core'
+import { batch } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { ApiError } from '../client.ts'
 import { readSession, writeSession } from '../session.ts'
@@ -63,8 +64,7 @@ function conversationKey(): string {
  * 顺序不能调换：先修改活动项目，再获取数据。`client.api` 按当前活动项目
  * 拼接 `?ws=`，顺序颠倒时取回的仍是上一个项目的会话。
  *
- * 必须清空会话选择：该 id 属于上一个项目，保留会使界面订阅一条
- * 在新项目中不存在的会话。
+ * 项目与会话选择在同一批更新中切换，避免面板在新项目下先渲染旧会话或空会话。
  *
  * 打开的文件同样须清空，理由相同：它是上一个项目中的相对路径。保留时新项目中
  * 通常没有该文件，面板会显示无法取得内容的空白区域，而旁边的文件树已属于新项目。
@@ -79,11 +79,12 @@ export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
   const { workspace: ws, conversations } = await addWorkspace(input)
   const first = conversations[0]
   if (!first) throw new Error('项目没有可用会话')
-  setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
-  setOpenFile(null)
-  setState({ conversations, activeConversation: null, followUps: [], fileChanges: [], git: null })
-  syncViews()
-  await selectConversation(first.id)
+  await batch(() => {
+    setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
+    setOpenFile(null)
+    setState({ conversations, git: null })
+    return selectConversation(first.id)
+  })
   // 桌面端记录最后打开的目录，下次启动时据此回到该项目。
   // 落盘失败不阻断切换：只影响下次启动的默认项目。
   if (isDesktopShell()) await rememberWorkspace(ws.rootPath).catch(() => {})

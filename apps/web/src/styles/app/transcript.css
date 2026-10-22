@@ -10,7 +10,7 @@
      .sidebar-scroll 受同一约束。 */
   min-height: 0;
   overflow-y: auto;
-  /* 展开思考时由共享滚动状态机决定是否跟随，不使用浏览器自身的滚动锚定。 */
+  /* 初始跟随底部；回看时由共享滚动状态开启浏览器锚定，补偿屏幕外条目的高度变化。 */
   overflow-anchor: none;
 }
 
@@ -36,6 +36,13 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* 保留完整 DOM 与浏览器查找能力，只跳过屏幕外条目的布局和绘制。
+   auto 记住实际高度，回看与折叠后沿用浏览器测得的尺寸，不另建高度缓存。 */
+.conversation-stream-inner > :is(.row, .fold, .wf-card, .run-strip) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 80px;
 }
 
 .transcript-inner {
@@ -143,11 +150,12 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.bubble.collapsible .user-bubble-copy {
+/* 裁剪外层，正文保留自然高度，ResizeObserver 可直接取得排版后的完整高度。 */
+.user-bubble-viewport {
   max-height: var(--user-message-preview-height);
   overflow: hidden;
 }
-.bubble.collapsible.expanded .user-bubble-copy {
+.bubble.expanded .user-bubble-viewport {
   max-height: none;
 }
 .user-bubble-toggle {

@@ -875,7 +875,11 @@ function foldRunState(ev: AgentEvent): void {
     case 'goal':
       // 整体替换：事件携带账本更新后的完整快照（revision 单调递增），
       // 按字段合并会在此处形成第二种目标状态。
-      setState('goal', ev.goal)
+      setState(
+        produce((s) => {
+          s.goal = ev.goal
+        }),
+      )
       return
 
     case 'run.started':
@@ -905,16 +909,20 @@ function foldRunState(ev: AgentEvent): void {
       return
 
     case 'context':
-      setState('context', {
-        source: ev.source,
-        tokens: ev.tokens,
-        limit: ev.limit,
-        percent: ev.percent,
-        compactAt: ev.compactAt,
-        breakdown: ev.breakdown,
-        omitted: ev.omitted,
-        unmeasuredVideos: ev.unmeasuredVideos ?? 0,
-      })
+      setState(
+        produce((s) => {
+          s.context = {
+            source: ev.source,
+            tokens: ev.tokens,
+            limit: ev.limit,
+            percent: ev.percent,
+            compactAt: ev.compactAt,
+            breakdown: ev.breakdown,
+            omitted: ev.omitted,
+            unmeasuredVideos: ev.unmeasuredVideos ?? 0,
+          }
+        }),
+      )
       return
 
     case 'git.state':
@@ -1045,9 +1053,7 @@ function mergeHistoryItems(items: TranscriptItem[], current: TranscriptItem[]): 
   return [...merged, ...current.filter((item) => !known.has(item.id))]
 }
 
-// 600 轮、16.9 MiB 量级会话的实测：每页 30 轮时首屏虽能在 400ms 内显示第一行，
-// 但后续 Markdown 挂载仍占用主线程约 2.8s，快速切换到下一条会话时需要等待。每页 10 轮可将单页
-// 控制在约 300 KiB；历史记录完整保留，只缩小向前加载的粒度。
+// 每页最多十轮；服务端还按步骤预算收缩轮次数，避免工具密集的会话一次加载过多记录。
 const HISTORY_PAGE_SIZE = 10
 const HISTORY_TIMEOUT_MS = 15_000
 
@@ -1514,12 +1520,22 @@ createRoot(() => createEffect(syncViews))
 export async function reloadActiveConversation(): Promise<void> {
   const id = state.activeConversation
   if (!id) return
-  // 整段重新拉取之前丢弃积压内容而不是 flush：积压文字属于重新拉取之前的
-  // transcript，flush 只会在新投影的末尾多出一段没有归属的正文。
   discardPace()
   activeHistoryLease?.controller.abort()
   const lease = beginHistoryLoad(id)
   activeHistoryLease = lease
+  // 新视图没有属于自己的辅助快照，不能暂时显示上一个会话的数据。
+  if (state.views[id]?.history.loading === 'unloaded') {
+    setState({ context: null, goal: null, todos: [] })
+  }
+  const initialContext = state.context
+  const initialGoal = state.goal
+  const initialQueue = state.followUps
+  const initialQueueLength = initialQueue.length
+  const current = () =>
+    state.activeConversation === id &&
+    activeHistoryLease === lease &&
+    !lease.controller.signal.aborted
   setState('views', id, 'history', {
     loading: 'initial',
     nextCursor: null,
@@ -1527,100 +1543,83 @@ export async function reloadActiveConversation(): Promise<void> {
   })
 
   try {
-    const [folded, ctx, goal, queue] = await Promise.all([
-      fetchConversationPage(id, null, lease.controller.signal),
-      // 上下文面板由账本即时计算，不要直接设置 `s.context = null`：否则刷新或
-      // 切换会话后面板为空，而用户回看时才需要查询上下文的占用构成。
-      // 拉取失败不影响会话本身能否打开，降级为不显示面板。
+    // 四份投影并行读取、分别发布。正文只依赖历史，辅助接口缓慢或失败不阻挡它。
+    // 共用本次加载租约：切换会话、重试与超时仍从同一个出口取消全部请求。
+    await Promise.all([
+      fetchConversationPage(id, null, lease.controller.signal).then((folded) => {
+        if (!current()) return
+        const items = foldPage(folded)
+        // 正文已可翻页，后续的历史请求不应取消尚在读取的辅助快照。
+        if (historyLoads.get(id) === lease) historyLoads.delete(id)
+        setState(
+          produce((s) => {
+            const v = s.views[id]
+            if (!v) return
+            if (restoreLive(v, folded.live, folded.runs)) s.lastRunId = folded.live.runId
+            v.transcript = mergeHistoryItems(items, v.transcript)
+            v.history = { loading: null, nextCursor: folded.nextCursor, error: null }
+            v.error = null
+            // 待办仍由 steps 的同一账本投影恢复。
+            s.todos = folded.todos
+          }),
+        )
+      }),
       client
         .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`, {
           signal: lease.controller.signal,
         })
         .then((r) => r.context)
-        .catch(() => null),
-      // 目标同理且更为重要：自动继续标记不落盘，进程重启后账本中处于 active
-      // 的目标不会自动继续执行，只能等待用户点击继续。此处不读取时，界面上
-      // 无法显示存在一个已暂停的目标，用户会认为出现了故障。
+        .catch(() => null)
+        .then((ctx) => {
+          // 请求期间已有实时事件写入时，较早发起的快照不得覆盖该投影。
+          if (!current() || state.context !== initialContext) return
+          setState(
+            produce((s) => {
+              s.context = ctx
+                ? {
+                    tokens: ctx.total,
+                    source: ctx.source,
+                    limit: ctx.limit,
+                    percent: ctx.percent,
+                    compactAt: ctx.compactAt,
+                    breakdown: ctx.breakdown,
+                    omitted: ctx.omitted,
+                    unmeasuredVideos: 0,
+                  }
+                : null
+            }),
+          )
+        }),
       client
         .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`, {
           signal: lease.controller.signal,
         })
         .then((r) => r.goal)
-        .catch(() => null),
-      // 排队中的跟进消息。它只存在于服务端进程中，刷新与重连后卡片完全依靠本次拉取重建；
-      // 与 `queue.changed` 同源（都读取 `RunManager`），快照与增量不会不一致。
+        .catch(() => null)
+        .then((goal) => {
+          if (current() && state.goal === initialGoal)
+            setState(
+              produce((s) => {
+                s.goal = goal
+              }),
+            )
+        }),
       client
         .api<{ queue: FollowUp[] }>(`/api/conversations/${id}/queue`, {
           signal: lease.controller.signal,
         })
         .then((r) => r.queue)
-        .catch(() => []),
+        .catch(() => [])
+        .then((queue) => {
+          if (
+            current() &&
+            state.followUps === initialQueue &&
+            state.followUps.length === initialQueueLength
+          ) {
+            setState('followUps', queue)
+          }
+        }),
     ])
-
-    const { runs } = folded
-    const items = foldPage(folded)
-
-    // 较慢的请求不得写入。快速连续点击 A→B 时，两次重新拉取并发进行，后返回者覆盖先返回者，
-    // 导致标题与订阅属于 B、正文却属于 A。这与信封携带 conversationId 所解决的
-    // 「切换会话后内容仍属于上一条会话」是同一问题，出现在 REST 投影路径上。
-    if (state.activeConversation !== id || canceledByNewerRequest(lease)) return
-
-    /*
-     * run 作用域的状态一律从此处派生，不依赖事件残留。
-     *
-     * 这些字段（lastRunId / todos / context）只有当前会话的一份，
-     * 没有所属会话这一维度。切换会话时若只重置正文流，它们会连同上一条会话的
-     * run 一起留在界面上；而上一条会话的表在切换时即被撤销（`dropView`），
-     * 其 run 的 `run.finished` 在结构上不可能再到达，
-     * 因此这些字段永远不会被清除。
-     *
-     * 所以不在 `selectConversation` 中维护一份「需要重置的字段」清单：
-     * 每新增一个字段，该清单就可能遗漏一次。真源是 runs 表，而此处本身就在拉取它。
-     *
-     * 「是否在运行」不在此列：`busyConversations` 本身带有会话维度，
-     * 切换会话即读取另一项，无需重置。运行中的轮次与实时读数只取历史页附带的快照
-     * （`restoreLive`），不按 runs 表的状态列推断。
-     */
-    setState(
-      produce((s) => {
-        const v = s.views[id]
-        // 快照比已到达的事件旧时整体不写入，本轮编号保留由 `run.started` 写入的值。
-        if (!v || restoreLive(v, folded.live, runs)) s.lastRunId = folded.live.runId
-        if (v) {
-          // 按 id 合并实时事件，压缩进度不可因较早的快照而回退。
-          v.transcript = mergeHistoryItems(items, v.transcript)
-          v.history = { loading: null, nextCursor: folded.nextCursor, error: null }
-          // 报错正文随收尾条显示，重新投影后收尾条已携带它（见 `foldTranscript`）。
-          v.error = null
-        }
-        s.followUps = queue
-        // 待办从同一份 steps 账本投影得到，不新增持久化路径。
-        // 若只存在于 WS 事件中，刷新或切换会话后再切回就会丢失。`write_todos` step
-        // 提交整表，之后明确绑定的成功 `subagent` step 更新单项；历史接口已按此
-        // 顺序折叠为当前快照，此处只接收，不在前端重新推算。
-        s.todos = folded.todos
-        // 目标有独立的账本（`goal_events`），因此直接读取，不像待办那样从
-        // steps 反推：反推会为目标状态形成第二个真源。
-        s.goal = goal
-        // 上下文不从 steps 推算：它有独立的账本（`provider_requests`），
-        // 不是 run 内的易失投影。
-        // 新会话显示 0%，而不是不显示面板：后端未发送任何请求时也知道窗口大小。
-        // 只有本次拉取失败（上方 catch 返回 null）时才降级为不显示。
-        s.context = ctx
-          ? {
-              tokens: ctx.total,
-              source: ctx.source,
-              limit: ctx.limit,
-              percent: ctx.percent,
-              compactAt: ctx.compactAt,
-              breakdown: ctx.breakdown,
-              omitted: ctx.omitted,
-              // 读取的是账本中的读数，不对应正在发送的请求，因此没有未计入的视频。
-              unmeasuredVideos: 0,
-            }
-          : null
-      }),
-    )
   } catch (error) {
     if (canceledByNewerRequest(lease)) return
     if (state.activeConversation === id) {

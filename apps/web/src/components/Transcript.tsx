@@ -150,6 +150,10 @@ export function createConversationScroll(conversationId: () => string | null) {
   let scroller!: HTMLDivElement
   let inner!: HTMLDivElement
   const [pinned, setPinned] = createSignal(true)
+  // 跟随底部时只由本组件定位；回看时让浏览器补偿屏幕外条目完成布局后的高度变化。
+  createEffect(() => {
+    if (scroller) scroller.style.overflowAnchor = pinned() ? 'none' : 'auto'
+  })
   let scrollIntent = false
   let scrollbarDrag = false
   /**
@@ -539,8 +543,8 @@ function liveStatus(now: number, conversationId: string): string {
 /**
  * assistant 正文。
  *
- * 只有运行中的最后一条按流式渲染（`createStreamRenderer`，关闭语言自动检测）；
- * 定稿后整段重新渲染一次并开启检测，同时纠正增量渲染的已知偏差。
+ * 只有运行中的最后一条按流式渲染（`createStreamRenderer`）；
+ * 定稿后整段重新渲染一次，纠正增量解析的已知偏差。
  *
  * 不要在此处再加一层限速。正文写入 store 的节奏已由 `stream-pace.ts` 确定：每 50ms 一档，
  * 每档按上游流速释放若干字符。在此之上再加一个定时器时，两级叠加的结果是：首次变化设置
@@ -602,7 +606,7 @@ function Prose(props: { item: TranscriptItem }) {
      *
      * 定稿时文本长度通常不变：末档的文字在 `run.finished` 之前已写入 store，
      * 因此 `gate` 写入相同的值，信号不通知。只依赖 `gate` 时整段重新渲染不会发生，
-     * 而语言自动检测与增量渲染已知偏差的纠正都依赖这次重新渲染。
+     * 而增量渲染已知偏差的纠正依赖这次重新渲染。
      * `streaming()` 不会每档变化：它读取末项 id，向末项追加文本不改变 id。
      */
     const live = streaming()
@@ -1086,15 +1090,14 @@ function UserBubble(props: { text: string }) {
   const [collapsible, setCollapsible] = createSignal(false)
   const [expanded, setExpanded] = createSignal(false)
 
-  const measure = () => {
-    const next = copy.scrollHeight > USER_MESSAGE_PREVIEW_HEIGHT + 1
-    setCollapsible(next)
-    if (!next) setExpanded(false)
-  }
-
   onMount(() => {
-    measure()
-    const observer = new ResizeObserver(measure)
+    // 观察未裁剪正文的布局结果，避免挂载每条消息时同步读取高度并强制布局。
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry) return
+      const next = entry.contentRect.height > USER_MESSAGE_PREVIEW_HEIGHT + 1
+      setCollapsible(next)
+      if (!next) setExpanded(false)
+    })
     observer.observe(copy)
     onCleanup(() => observer.disconnect())
   })
@@ -1107,8 +1110,10 @@ function UserBubble(props: { text: string }) {
       classList={{ collapsible: collapsible(), expanded: expanded() }}
       style={{ '--user-message-preview-height': `${USER_MESSAGE_PREVIEW_HEIGHT}px` }}
     >
-      <div id={copyId} class="user-bubble-copy" ref={copy}>
-        {props.text}
+      <div id={copyId} class="user-bubble-viewport">
+        <div class="user-bubble-copy" ref={copy}>
+          {props.text}
+        </div>
       </div>
       <Show when={collapsible()}>
         <button
@@ -1431,7 +1436,17 @@ function DelegateCard(props: { item: TranscriptItem }) {
    * 绘制时用 `<Index>` 按位置复用 `<path>`：每次测量都生成新数组，`<For>` 会替换
    * 全部节点，虚线动画随之从头开始；进度事件较多时连线持续闪动。
    */
-  const [edges, setEdges] = createSignal<{ d: string; live: boolean }[]>([])
+  const [segments, setSegments] = createSignal<
+    (Omit<WorkflowEdgeSegment, 'live'> & { node: GraphNode })[]
+  >([])
+  const edges = createMemo(() =>
+    mergeWorkflowEdgeSegments(
+      segments().map(({ node, ...segment }) => ({
+        ...segment,
+        live: stateOf(node)?.phase === 'working',
+      })),
+    ),
+  )
   let box!: HTMLDivElement
   const refs = new Map<string, HTMLElement>()
 
@@ -1440,27 +1455,24 @@ function DelegateCard(props: { item: TranscriptItem }) {
     const b = box.getBoundingClientRect()
     // 偏移半像素：1px 的描边绘制在整数坐标上会跨越两个物理像素，显示为两条颜色减半的线。
     const at = (v: number) => Math.round(v) + 0.5
-    const segments: WorkflowEdgeSegment[] = []
+    const measured: (Omit<WorkflowEdgeSegment, 'live'> & { node: GraphNode })[] = []
     const g = graph()
     for (const n of g.nodes) {
       const to = refs.get(n.key)
       if (!to) continue
       const sources = n.needs.map((d) => refs.get(d)).filter((el): el is HTMLElement => !!el)
       if (sources.length === 0) continue
-      // 这一组边是否显示流动动画，取决于其汇入的节点是否在运行。
-      const phase = stateOf(n)?.phase
-      const live = phase === 'working'
       const t = to.getBoundingClientRect()
       if (g.horizontal) {
         // 三个节点横向排列时，每条边只连接一对节点：从左侧节点右边缘中点到右侧节点左边缘中点的直线。
         const r = sources[0]!.getBoundingClientRect()
         const y = at(t.top + t.height / 2 - b.top)
-        segments.push({
+        measured.push({
           axis: 'horizontal',
           fixed: y,
           from: at(r.right - b.left),
           to: at(t.left - b.left),
-          live,
+          node: n,
         })
         continue
       }
@@ -1477,33 +1489,27 @@ function DelegateCard(props: { item: TranscriptItem }) {
        * 就会在拐角处形成台阶，连线显得偏斜。共用之后，通向下游的竖线始终是直线。
        */
       for (const [i, r] of rects.entries()) {
-        segments.push({
+        measured.push({
           axis: 'vertical',
           fixed: xs[i]!,
           from: at(r.bottom - b.top),
           to: bus,
-          live,
+          node: n,
         })
       }
       const left = Math.min(...xs, tx)
       const right = Math.max(...xs, tx)
       if (right > left) {
-        segments.push({ axis: 'horizontal', fixed: bus, from: left, to: right, live })
+        measured.push({ axis: 'horizontal', fixed: bus, from: left, to: right, node: n })
       }
-      segments.push({ axis: 'vertical', fixed: tx, from: bus, to: ty, live })
+      measured.push({ axis: 'vertical', fixed: tx, from: bus, to: ty, node: n })
     }
-    setEdges(mergeWorkflowEdgeSegments(segments))
+    setSegments(measured)
   }
 
   const ro = new ResizeObserver(() => measure())
   onCleanup(() => ro.disconnect())
-  // 节点状态变化（执行完毕后增加耗时字段）会改变宽度，需要重新测量。
-  createEffect(() => {
-    props.item.nodes
-    props.item.outcome
-    props.item.workflow
-    queueMicrotask(measure)
-  })
+  // 几何位置只在排版完成后测量；执行状态直接更新连线样式，不触发同步布局。
 
   /**
    * 容器本身也需要观察。拖动面板时节点随等宽列一同缩放，容器与节点的观察结果

@@ -16,7 +16,7 @@ import {
   Switch,
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
-import { loaded } from '../lib/resource.ts'
+import { createRefreshKey, loaded } from '../lib/resource.ts'
 import { MAP_CODEC, SET_CODEC, sessionSignal } from '../lib/session.ts'
 import { clamp, diffFrom, firstString } from '../lib/step-view.ts'
 import {
@@ -598,9 +598,13 @@ interface TreeCtx {
 const parentDir = (path: string) => path.split('/').slice(0, -1).join('/')
 
 function FileBrowser() {
+  const refreshKey = createRefreshKey(
+    () => (state.connection === 'ready' ? workspace()?.id : undefined),
+    () => state.fileVersion,
+  )
   const treeSource = () => {
-    const id = workspace()?.id
-    return state.connection === 'ready' && id ? `${id}:${state.fileVersion}` : (false as const)
+    const { scope, revision } = refreshKey()
+    return scope ? `${scope}:${revision}` : (false as const)
   }
   const [tree, { refetch }] = createResource(
     // 连接未就绪时不发送必然失败的请求；恢复为 ready 后同一资源自动重取。
@@ -957,7 +961,7 @@ function FileBrowser() {
       <Show when={openFile()} keyed>
         {(path) => (
           <Suspense fallback={<div class="preview" />}>
-            <FileView path={path} refresh={manualRefresh() + state.fileVersion} />
+            <FileView path={path} refresh={manualRefresh() + refreshKey().revision} />
           </Suspense>
         )}
       </Show>
