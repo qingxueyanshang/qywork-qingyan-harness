@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>qywork 正在启动</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; --bg: #fafaf9; --fg: #252522; --muted: #6e6e65; --track: #e0e0da; --accent: #696b54; }
+      body { margin: 0; min-height: 100vh; display: grid; place-content: center; text-align: center; background: var(--bg); color: var(--fg); }
+      .spinner { width: 24px; height: 24px; margin: 0 auto 16px; border: 3px solid var(--track); border-top-color: var(--accent); border-radius: 50%; animation: spin 1.2s linear infinite; }
+      h1 { margin: 0 0 10px; font-size: 18px; font-weight: 600; }
+      p { margin: 0; font-size: 13px; line-height: 1.8; color: var(--muted); }
+      @media (prefers-color-scheme: dark) { :root { --bg: #20201f; --fg: #eeeee9; --muted: #b5b5aa; --track: #484840; --accent: #c2c5a1; } }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+    </style>
+  </head>
+  <body>
+    <main role="status">
+      <div class="spinner" aria-hidden="true"></div>
+      <h1>正在启动 qywork</h1>
+      <p>启动完成后将自动打开。<br />关闭此窗口可取消启动。</p>
+    </main>
+  </body>
+</html>

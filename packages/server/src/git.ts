@@ -12,29 +12,30 @@
  * index.lock，否则用户在终端中执行 `git commit` 会随机失败。
  */
 
-import { collectProcess } from '@qywork/tools'
+import { collectProcess, type ProcessLike, spawnGuarded } from '@qywork/tools'
 
 async function git(
   cwd: string,
   args: string[],
   timeoutMs = 15_000,
 ): Promise<{ ok: boolean; out: string; err: string }> {
-  // 显式写出三条流的类型：使用 `ReturnType<typeof Bun.spawn>` 会退化为默认泛型，
-  // `proc.stdout` 变为 `number | ReadableStream | undefined`，下方读取流的代码无法通过编译。
-  let proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
+  // Windows 创建进程本身可能阻塞数秒。复用 serve 在监听端口前创建的 runner，
+  // 避免 Git 探测阻塞就绪回执与 HTTP；同时避免 Git 子进程继承服务端监听句柄。
+  let proc: ProcessLike
   try {
-    proc = Bun.spawn(['git', '--no-optional-locks', ...args], {
-      cwd,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      stdin: 'ignore',
-      env: { ...process.env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
-    })
+    proc = (
+      await spawnGuarded({
+        argv: ['git', '--no-optional-locks', ...args],
+        cwd,
+        policy: null,
+        env: { ...process.env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
+      })
+    ).proc
   } catch (e) {
     /*
      * **本机未安装 git。**
      *
-     * `Bun.spawn` 未找到可执行文件时**同步抛出**，而广播分支名的几处都是
+     * 创建进程时未找到可执行文件会抛出错误（runner 会转交该错误），而广播分支名的几处都是
      * `void publishGitState(...)` 形式的浮动 promise：不捕获时，在没有 git 的机器上
      * 每次广播都产生一个未捕获的拒绝，启动时即输出大量调用栈。实测（把 PATH 裁剪到只剩
      * System32 后启动一次服务）得到的正是这一形状。

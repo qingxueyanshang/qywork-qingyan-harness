@@ -230,25 +230,8 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
         .center()
         .initialization_script(script);
 
-    // 保留 wry 默认禁用项；语音识别使用既有服务端点，以避免新服务的连接失败。
-    // 开发构建下由 `QYWORK_WEBVIEW_DEBUG_PORT` 为主窗口开启调试端口，自动化测试经 CDP 连接。
-    // 发布构建（`tauri build` 启用 `custom-protocol`）经条件编译不包含此段。
-    // 不能改用 WebView2 的 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量：此处已经由接口传入参数，该环境变量会被忽略。
     #[cfg(windows)]
-    let window = {
-        let args = String::from(
-            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msSpeechRecognitionServiceUseCetoService",
-        );
-        #[cfg(not(feature = "custom-protocol"))]
-        let args = match std::env::var("QYWORK_WEBVIEW_DEBUG_PORT")
-            .ok()
-            .and_then(|p| p.parse::<u16>().ok())
-        {
-            Some(port) => format!("{args} --remote-debugging-port={port}"),
-            None => args,
-        };
-        window.additional_browser_args(&args)
-    };
+    let window = window.additional_browser_args(&shell_browser_args());
     let window = window.build()?;
 
     // `build()` 返回 Ok 不代表窗口存在：运行时把创建失败写入日志后仍返回 Ok。
@@ -272,6 +255,74 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
     #[cfg(windows)]
     extend_frame_for_shadow(&window);
 
+    Ok(())
+}
+
+/// 共用用户数据目录的 WebView 必须使用完全相同的环境参数，否则 WebView2 返回
+/// ERROR_INVALID_STATE (0x8007139F)。启动窗口与主窗口都从此处取得参数。
+#[cfg(windows)]
+fn shell_browser_args() -> String {
+    // 保留 wry 默认禁用项；语音识别使用既有服务端点。
+    let args = String::from(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msSpeechRecognitionServiceUseCetoService",
+    );
+    // 只在开发构建中开启 CDP；发布构建不包含调试端口。
+    #[cfg(not(feature = "custom-protocol"))]
+    let args = match std::env::var("QYWORK_WEBVIEW_DEBUG_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+    {
+        Some(port) => format!("{args} --remote-debugging-port={port}"),
+        None => args,
+    };
+    args
+}
+
+/// 先给出可取消的等待窗口。业务页面仍只在取得后台就绪回执后加载。
+fn build_startup_window(app: &AppHandle) -> tauri::Result<()> {
+    let window = WebviewWindowBuilder::new(app, "startup", WebviewUrl::App("startup.html".into()))
+        .title("qywork 正在启动")
+        .inner_size(420.0, 190.0)
+        .resizable(false)
+        .maximizable(false)
+        .center();
+    #[cfg(windows)]
+    let window = window.additional_browser_args(&shell_browser_args());
+    let window = window.build()?;
+    if window.is_visible().is_err() {
+        let reason = LAST_ERROR
+            .lock()
+            .take()
+            .unwrap_or_else(|| "运行时未给出原因".to_owned());
+        return Err(anyhow::anyhow!("启动窗口创建失败：{reason}").into());
+    }
+    Ok(())
+}
+
+/// 在主线程完成窗口交接，避免用户取消与主窗口创建交错；窗口创建也不能阻塞异步运行时。
+fn finish_startup(
+    app: &AppHandle,
+    info: sidecar::SidecarInfo,
+    host_key: Option<String>,
+) -> anyhow::Result<()> {
+    // 业务页面首帧即需要令牌，因此在创建主窗口时注入，不能先加载再异步补充。
+    // tauri.conf.json 的 app.windows 保持为空，窗口只由外壳创建一次。
+    let script = sidecar::init_script(&info);
+    build_main_window(app, &script)?;
+    #[cfg(desktop)]
+    build_tray(app)?;
+    updater::start(app, &info);
+
+    // 宿主必须在主窗口之后启动：Windows 的浏览器宿主把子 WebView 附加在主窗口下。
+    if let Some(key) = host_key {
+        #[cfg(desktop)]
+        browser::start(app, info.port, key.clone());
+        desktop::start(app, info.port, key);
+    }
+    if let Some(window) = app.get_webview_window("startup") {
+        // destroy 不触发 CloseRequested，避免把成功交接当作用户取消。
+        window.destroy()?;
+    }
     Ok(())
 }
 
@@ -527,57 +578,48 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let workspace = resolve_workspace();
-
             let host_key = host_key();
-            let started = tauri::async_runtime::block_on(async move {
+            if let Err(error) = build_startup_window(&handle) {
+                fatal_exit(&error);
+            }
+            // setup 必须返回，让启动窗口可以重绘、关闭。后台创建进程或等待回执再慢，
+            // 都不占用 UI 线程；关闭窗口通过 SidecarHandle 的 stopping 终态取消启动。
+            tauri::async_runtime::spawn(async move {
                 // 后端与页面必须来自同一次构建。devUrl 模式下页面是 Vite 中的源码，
                 // 后端只能是 dev.ts 从同一源码树启动的进程；`bin/qy` 是上一次
                 // build:agent 的产物，在此处 spawn 它会使源码页面连接上一次构建的后端。
                 // release 下页面与 `bin/qy` 由 tauri:build 一次生成，只 spawn，不读取环境变量。
                 let info = if tauri::is_dev() {
-                    let existing = sidecar::from_env().ok_or_else(|| {
+                    sidecar::from_env().ok_or_else(|| {
                         anyhow::anyhow!(
                             "开发模式缺少 QYWORK_TOKEN / QYWORK_PORT，请通过 bun run dev 启动"
                         )
-                    })?;
-                    log::info!("复用 dev.ts 的 sidecar :{}", existing.port);
-                    existing
+                    })
                 } else {
                     // 空串表示未显式指定，由服务端决定打开哪个项目。
                     let arg = workspace
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    sidecar::spawn(&handle, &arg, host_key.as_deref()).await?
+                    sidecar::spawn(&handle, &arg, host_key.as_deref()).await
                 };
-
-                // 令牌经由初始化脚本注入，而不是等待前端调用命令：
-                // 连接层在首帧即需要令牌，延迟取得会先渲染出「未配对」。
-                //
-                // 窗口只在此处创建，tauri.conf.json 的 `app.windows` 必须为空：
-                // 两处都声明会触发 "a webview with label `main` already exists" 的 panic，
-                // 而 panic 会绕过退出清理，使 qy sidecar 成为孤儿进程。
-                let script = sidecar::init_script(&info);
-                updater::start(&handle, &info);
-
-                build_main_window(&handle, &script)?;
-                #[cfg(desktop)]
-                build_tray(&handle)?;
-
-                // 宿主必须在主窗口之后启动：Windows 的浏览器宿主把子 WebView 附加在主窗口下。
-                if let Some(key) = host_key {
-                    #[cfg(desktop)]
-                    browser::start(&handle, info.port, key.clone());
-                    desktop::start(&handle, info.port, key);
+                let ui = handle.clone();
+                if let Err(error) = handle.run_on_main_thread(move || {
+                    if sidecar::stopping(&ui) {
+                        return;
+                    }
+                    if let Err(error) = info.and_then(|info| finish_startup(&ui, info, host_key)) {
+                        // 主窗口、托盘创建失败时也必须收回已启动的 sidecar。
+                        sidecar::shutdown(&ui);
+                        fatal_exit(error.as_ref());
+                    }
+                }) {
+                    if !sidecar::stopping(&handle) {
+                        sidecar::shutdown(&handle);
+                        fatal_exit(&error);
+                    }
                 }
-
-                Ok::<(), Box<dyn std::error::Error>>(())
             });
-
-            // 错误就地转为对话框：返回 Err 会导致 tauri panic，见 `fatal_exit`。
-            if let Err(e) = started {
-                fatal_exit(e.as_ref());
-            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -585,6 +627,13 @@ pub fn run() {
             // 进程只经由托盘菜单「退出」结束。
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                if window.label() == "startup" {
+                    log::info!("用户取消启动");
+                    // 立即标记 stopping，晚到的就绪回执或创建结果不能再打开主窗口。
+                    sidecar::shutdown(window.app_handle());
+                    window.app_handle().exit(0);
+                    return;
+                }
                 log::info!("主窗口隐藏到托盘");
                 if let Err(e) = window.hide() {
                     log::error!("主窗口隐藏失败：{e}");

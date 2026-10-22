@@ -272,6 +272,20 @@ async function runExec(args: string[]): Promise<number> {
 // ───────────────────────── serve ─────────────────────────
 
 async function runServe(args: string[]): Promise<number> {
+  const startedAt = performance.now()
+  let stageAt = startedAt
+  let stage = '读取配置'
+  const startupStage = (next: string): void => {
+    const now = performance.now()
+    log.info('startup', '启动阶段完成', {
+      stage,
+      durationMs: Math.round(now - stageAt),
+      elapsedMs: Math.round(now - startedAt),
+      next,
+    })
+    stage = next
+    stageAt = now
+  }
   const flags = parseFlags(args)
   /*
    * **是否给出 `--cwd` 对应两种语义，不能合并为一个默认值。**
@@ -295,6 +309,7 @@ async function runServe(args: string[]): Promise<number> {
    * 这一行是 sidecar 退出后唯一记录原因的日志。
    */
   setLogSink(fileLogSink(join(configDir(), 'logs')))
+  log.info('startup', '开始启动', { stage, pid: process.pid })
   const die = (kind: string, reason: unknown): void => {
     log.error('process', `${kind}，进程退出`, {
       error: reason instanceof Error ? (reason.stack ?? reason.message) : String(reason),
@@ -304,6 +319,7 @@ async function runServe(args: string[]): Promise<number> {
   process.on('uncaughtException', (err) => die('未捕获异常', err))
   process.on('unhandledRejection', (reason) => die('未处理的 Promise 拒绝', reason))
   const config = await loadConfig()
+  startupStage('打开账本')
 
   // serve 与 exec 相反：配置有问题时**仍然启动**。
   //
@@ -318,6 +334,7 @@ async function runServe(args: string[]): Promise<number> {
   ]
 
   const store = new Store({ path: dataPath(), owner: 'serve' })
+  startupStage('创建命令进程')
   const previousProcessExit = processExitObservationFromEnv(process.env)
   // 上次退出的现场信息只使用一次。runner 与之后的命令都不需要继承这段 stderr。
   for (const name of [
@@ -345,6 +362,7 @@ async function runServe(args: string[]): Promise<number> {
     ? [process.execPath, Bun.main, 'runner']
     : [process.execPath, 'runner']
   setCommandRunner(startCommandRunner(runnerArgv))
+  startupStage('启动服务')
 
   const handle = serve({
     store,
@@ -366,6 +384,7 @@ async function runServe(args: string[]): Promise<number> {
     ...(process.env.QYWORK_UPDATE_KEY ? { updateHostKey: process.env.QYWORK_UPDATE_KEY } : {}),
     ...(previousProcessExit ? { previousProcessExit } : {}),
   })
+  startupStage('发送就绪回执')
 
   // 父进程监视。
   //
@@ -386,6 +405,7 @@ async function runServe(args: string[]): Promise<number> {
     process.stdout.write(`QYWORK_TOKEN=${handle.token}\n`)
     process.stdout.write(`QYWORK_PORT=${handle.port}\n`)
   }
+  startupStage('就绪')
 
   const local = `http://127.0.0.1:${handle.port}`
   log.info('serve', '已启动', {
