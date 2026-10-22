@@ -96,6 +96,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     tool: 'desktop_windows',
     line:
       '- 电脑控制：已有桌面窗口及其内容属于用户。操作本机应用应使用 desktop_windows → desktop_observe → desktop_act，不得通过 run_command 截图或注入鼠标、键盘事件。' +
+      '执行命令、启动应用优先使用 run_command；任务针对已打开终端中正在运行的程序（等待输入的提示、需要停止的服务、已登录的远程会话），或用户指定该终端窗口时，才用电脑控制操作终端。' +
       '操作前，应依据最新观察确认目标。系统窗口标题仅用于识别窗口，不作为当前页面或会话的确认依据。' +
       '桌面结果中的 foregroundEnabled 表示当前前台操作开关；为 false 时只使用可用的后台动作，任务必须使用前台操作时说明限制并等待用户开启，不得重试或自行更改设置。' +
       '前台操作开启且自绘界面缺少可操作控件时，使用观察结果附带的截图定位。同一窗口内的连续动作使用 desktop_act_sequence。' +

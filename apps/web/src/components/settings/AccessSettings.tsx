@@ -118,13 +118,13 @@ export function AccessSettings() {
 
           {/* 电脑控制单独一张卡片：它管理的不是路径，而是 agent 能否操作本机上的其他应用。
                 整组的开关不在本页，位于「模块 → 电脑控制」的分组标题，同一开关只放一处。
-                本页保留会占用真实鼠标键盘的前台操作开关，以及本机当前的实际状态。 */}
+                本页保留模拟鼠标键盘的前台操作开关，以及本机当前的实际状态。 */}
           <section class="settings-block">
             <h3 class="settings-block-head">电脑控制</h3>
             <div class="setting-rows">
-              {/* 该提示是边界而非说明：界面上没有第二处能说明开启后 agent 会占用
-                    鼠标键盘。关闭时桌面工具仍可用，但只保留不占用鼠标键盘的操作。 */}
-              <Row label="前台操作" hint="使用真实鼠标键盘，执行时会中断当前操作">
+              {/* 该提示是边界而非说明：界面上没有第二处能说明开启后 agent 会模拟
+                    鼠标键盘并可能切换前台窗口。关闭时桌面工具仍可用，但只保留经控件接口发出的操作。 */}
+              <Row label="前台操作" hint="模拟鼠标键盘，执行时可能切换前台窗口">
                 <OnOff
                   on={c().desktopForeground !== false}
                   onPick={(on) => void patchConfig({ desktopForeground: on })}

@@ -121,8 +121,8 @@ const FOREGROUND_POINTER: ReadonlySet<string> = new Set(['click', 'hover', 'drag
 /**
  * 可以不指定目标、直接投递给窗口的动作。
  *
- * 键盘输入发往系统焦点所在位置，而不是某个指定的控件。准入判定在 worker 一侧
- * （前台窗口即目标窗口且窗口未被禁用），这里不拦截。
+ * 键盘输入发往目标窗口的焦点所在位置，而不是某个指定的控件。准入判定在 worker 一侧
+ * （目标窗口未被禁用；需要前台的窗口还要求前台窗口即目标窗口），这里不拦截。
  */
 const WINDOW_TARGET: ReadonlySet<string> = new Set(['type_text', 'press_key'])
 /**
@@ -857,8 +857,8 @@ export class DesktopCoordinator {
    * 经由与按图像重新截取相同的换算与代际核对路径，失效的 `imageRef` 在本地即拒绝，
    * 不发送任何帧。
    *
-   * 两者都不提供时目标是窗口本身，只有键盘输入可以这样发送：它发往系统焦点所在位置，
-   * 准入由 worker 按「前台窗口即目标窗口」判定。
+   * 两者都不提供时目标是窗口本身，只有键盘输入可以这样发送：它发往目标窗口的焦点所在位置，
+   * 准入由 worker 判定。
    */
   #aim(
     lease: Lease,

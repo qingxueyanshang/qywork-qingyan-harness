@@ -421,6 +421,17 @@ describe('能力段', () => {
     expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('内置浏览器')
   })
 
+  /**
+   * 原始失败形状：模型往用户已打开的 cmd 窗口输入「Docker Desktop」，又在 Windows Terminal 中按 Win+R，
+   * 都是为了启动应用，最后用 run_command 的 `start` 才成功。电脑控制一行写明执行命令与启动应用的工具，
+   * 以及需要操作终端窗口的情形。
+   */
+  test('电脑控制一行写明执行命令与启动应用优先使用 run_command，以及操作终端窗口的情形', () => {
+    const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows']))
+    expect(prompt).toContain('执行命令、启动应用优先使用 run_command')
+    expect(prompt).toContain('任务针对已打开终端中正在运行的程序')
+  })
+
   test('没有桌面工具时不提及桌面工具', () => {
     const prompt = buildSystemPrompt(new Set(['run_command']))
     expect(prompt).not.toContain('desktop_windows')

@@ -1,25 +1,27 @@
-//! 前台接管：指针、键盘与窗口操作。
+//! 前台操作：指针、键盘与窗口动作。只在请求启用前台模式时执行；前台模式关闭时，准入判定在
+//! `protocol::admit` 中拒绝请求，不发出任何系统调用。
 //!
 //! 七条边界：
 //!
-//! 1. **本模块的每个动作都会占用用户的前台**，因此只在请求启用前台模式时执行；前台模式
-//!    关闭时，准入判定在 `protocol::admit` 中拒绝请求，不发出任何系统调用。
+//! 1. **指针与键盘按目标窗口的投递方式执行**（`sink::delivery`）。窗口消息不切换前台，也不移动
+//!    用户的指针；系统输入（UWP 与 XAML 窗口）在定位前先将目标窗口提升到前台（`prepare`，由后端在
+//!    定位前调用）。同一个动作只使用一种方式，不在失败后改用另一种。
 //! 2. **落点在派发时重新计算。** 重新定位控件、读取当前包围盒、核对落点属于目标窗口，
 //!    三步缺一不可：观察时记录的包围盒在控件移动之后指向其他位置。按控件定位时，
-//!    落点位于控件所在的、目标窗口拥有的弹出窗口上，同样视为属于目标。
+//!    落点位于控件所在的、目标窗口拥有的弹出窗口上，同样视为属于目标。落点所在的顶层窗口，
+//!    消息投递时只在目标窗口及其拥有的弹出窗口中查找，系统输入时取屏幕上实际最上层的窗口。
 //! 3. **按下的键在按下时登记，任何中止路径都释放。** 登记与释放由 `input::Hold` 负责，
 //!    本模块不直接编写释放调用。
-//! 4. **指针与键盘输入在定位前先将目标窗口提升到前台**（`prepare`，由后端在定位前调用），
-//!    再读取控件与几何并做派发核对：指针核对落点属于目标窗口，键盘核对前台窗口是
-//!    目标窗口且该窗口未被禁用。指定了控件时还核对该控件持有键盘焦点，焦点不在该控件上即
-//!    拒绝：激活窗口不等于更改控件焦点，本模块不替用户更改焦点。未指定控件时以窗口为目标。
-//!    带 `meta`（Windows 徽标键）的组合键例外：它发给系统，不提升目标窗口，改为提升任务栏
-//!    （`system_shortcut`）。
-//! 5. **中途前台改变时立即停止**，如实返回已发出的数量，执行事实记为 `unknown`，不向另一个
+//! 4. **接收窗口必须可用。** 被模态对话框禁用的窗口不处理真实输入，同步发送的消息却同样会被
+//!    其窗口过程处理，因此消息投递在派发前核对；系统输入还核对前台窗口是目标窗口。
+//!    指定了控件时还核对该控件持有键盘焦点，焦点不在该控件上即拒绝：本模块不替用户更改焦点。
+//!    未指定控件时以窗口为目标。带 `meta`（Windows 徽标键）的组合键例外：它发给系统，
+//!    不经过目标窗口，改为提升任务栏（`system_shortcut`）。
+//! 5. **中途接收窗口失效时立即停止**，如实返回已发出的数量，执行事实记为 `unknown`，不向另一个
 //!    窗口继续输入。本条适用于动作进行期间，不适用于派发前。
 //! 6. **窗口动作的生效证据按动作分别读取**（前台窗口、显示状态、窗口矩形），
 //!    不沿用后台模式的三项证据：激活本身就会改变前台，「同进程出现新的顶层窗口」无法证明激活生效。
-//! 7. **文字按接收窗口选择投递方式，不按字符选择**：一般窗口投递字符消息，UWP 的 `CoreWindow`
+//! 7. **文字的投递方式与该窗口的指针、按键相同，不按字符选择**：一般窗口发送字符消息，系统输入窗口
 //!    注入 Unicode 键盘事件（`sink.rs`）。两种方式都不修改剪贴板，对字符集也没有限制。
 
 use std::ffi::c_void;
@@ -35,16 +37,19 @@ use ::windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId}
 use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
-    FindWindowW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed,
-    SendMessageTimeoutW, SetForegroundWindow,
-    ShowWindow, WindowFromPoint, GA_ROOT, GA_ROOTOWNER, GUITHREADINFO, HTCAPTION,
-    SMTO_ABORTIFHUNG, SM_CXVIRTUALSCREEN, WM_NCHITTEST,
-    SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
+    FindWindowW, GetWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
+    IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible, IsZoomed, SendMessageTimeoutW,
+    SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT, GA_ROOTOWNER, GUITHREADINFO,
+    GWL_EXSTYLE, GW_HWNDPREV, HTCAPTION, SMTO_ABORTIFHUNG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE, WM_NCHITTEST,
+    WS_EX_TRANSPARENT,
 };
 
-use super::sink::{post_text, CharSink, SystemCharSink, SystemSink};
-use super::{current_pattern, defer, dispatch_call, CallWatch, StateWatch};
+use super::sink::{
+    belongs_to, delivery, focus_of, post_text, thread_focus, wheel_reaches, Delivery,
+    MessageCharSink, MessageSink, SystemCharSink, SystemSink,
+};
+use super::{current_pattern, defer, dispatch_call, holds_focus, CallWatch, StateWatch};
 use crate::backend::{confirm, lands_on_target, settled, Attempt, Outcome};
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::input::{drag_path, key_stroke, wheel_of, Event, Hold, Sink};
@@ -89,26 +94,40 @@ pub fn perform(
     aim: Aim,
     stop: &dyn Fn() -> bool,
 ) -> Attempt {
-    let sink = SystemSink;
     if let ActionSpec::PressKey { key, modifiers } = action {
         if modifiers.contains(&Modifier::Meta) {
-            return system_shortcut(&sink, key, modifiers);
+            return system_shortcut(&SystemSink, key, modifiers);
         }
     }
+    let delivery = delivery(window);
     match action {
-        ActionSpec::Click { button, count } => click(window, &sink, aim, *button, *count),
-        ActionSpec::Hover => hover(window, &sink, aim),
-        ActionSpec::Drag { .. } => drag(window, &sink, aim, stop),
-        ActionSpec::Wheel { direction, amount } => {
-            wheel(window, &sink, aim, wheel_of(*direction, *amount))
-        }
-        ActionSpec::TypeText { text } => match keyboard_target(window, element) {
+        ActionSpec::Click { button, count } => pointer(window, aim, delivery, |sink, at| {
+            click(sink, at.anchor, *button, *count)
+        }),
+        ActionSpec::Hover => pointer(window, aim, delivery, |sink, at| hover(sink, at.anchor)),
+        ActionSpec::Drag { .. } => pointer(window, aim, delivery, |sink, at| {
+            drag(window, sink, at, aim.destination, stop)
+        }),
+        ActionSpec::Wheel { direction, amount } => pointer(window, aim, delivery, |sink, at| {
+            if delivery == Delivery::Messages && !wheel_reaches(at.top, at.anchor) {
+                return Attempt::Refused(format!(
+                    "wheel_unreachable: {},{} · 该位置被其他窗口覆盖，Chromium 内核的应用不处理此处的滚轮 · \
+                     改用 scroll 或 press_key page_down",
+                    at.anchor.x, at.anchor.y
+                ));
+            }
+            wheel(sink, at.anchor, wheel_of(*direction, *amount))
+        }),
+        ActionSpec::TypeText { text } => match keyboard_target(window, element, delivery) {
             Err(reason) => Attempt::Refused(reason),
-            Ok(()) => type_text(window, &SystemCharSink, text),
+            Ok(()) => type_text(window, delivery, text),
         },
-        ActionSpec::PressKey { key, modifiers } => match keyboard_target(window, element) {
+        ActionSpec::PressKey { key, modifiers } => match keyboard_target(window, element, delivery) {
             Err(reason) => Attempt::Refused(reason),
-            Ok(()) => press_key(&sink, key, modifiers),
+            Ok(()) => match delivery {
+                Delivery::Messages => press_key(&MessageSink::new(window), key, modifiers),
+                Delivery::SystemInput => press_key(&SystemSink, key, modifiers),
+            },
         },
         ActionSpec::Activate => activate(window),
         ActionSpec::SetWindowState { state } => match element {
@@ -174,14 +193,42 @@ pub fn check_generation(window: i64, expected: &str) -> Result<(), String> {
 
 // ── 指针 ──
 
-fn click(window: i64, sink: &dyn Sink, aim: Aim, button: MouseButton, count: u32) -> Attempt {
+/// 一次指针动作经核对的落点，以及接收它的顶层窗口：目标窗口，或按控件定位时控件所在的弹出窗口。
+#[derive(Debug, Clone, Copy)]
+struct Landing {
+    anchor: ScreenPoint,
+    top: i64,
+}
+
+/// 按投递方式核对落点、选择投递端，然后执行一个指针动作。
+fn pointer(
+    window: i64,
+    aim: Aim,
+    delivery: Delivery,
+    act: impl FnOnce(&dyn Sink, Landing) -> Attempt,
+) -> Attempt {
+    match delivery {
+        Delivery::Messages => match message_landing(window, aim) {
+            Ok(at) => act(&MessageSink::new(at.top), at),
+            Err(reason) => Attempt::Refused(reason),
+        },
+        Delivery::SystemInput => match landing(window, aim) {
+            Ok(anchor) => act(
+                &SystemSink,
+                Landing {
+                    anchor,
+                    top: window,
+                },
+            ),
+            Err(reason) => Attempt::Refused(reason),
+        },
+    }
+}
+
+fn click(sink: &dyn Sink, anchor: ScreenPoint, button: MouseButton, count: u32) -> Attempt {
     if count == 0 || count > 2 {
         return Attempt::Refused(format!("invalid_count: {count}，只接受 1 或 2"));
     }
-    let anchor = match landing(window, aim) {
-        Ok(point) => point,
-        Err(reason) => return Attempt::Refused(reason),
-    };
     let mut events = vec![Event::Move { to: anchor }];
     for _ in 0..count {
         events.push(Event::Button { button, down: true });
@@ -194,20 +241,12 @@ fn click(window: i64, sink: &dyn Sink, aim: Aim, button: MouseButton, count: u32
     settle(sink.send(&events), &events)
 }
 
-fn hover(window: i64, sink: &dyn Sink, aim: Aim) -> Attempt {
-    let anchor = match landing(window, aim) {
-        Ok(point) => point,
-        Err(reason) => return Attempt::Refused(reason),
-    };
+fn hover(sink: &dyn Sink, anchor: ScreenPoint) -> Attempt {
     let events = [Event::Move { to: anchor }];
     settle(sink.send(&events), &events)
 }
 
-fn wheel(window: i64, sink: &dyn Sink, aim: Aim, wheel: (i32, bool)) -> Attempt {
-    let anchor = match landing(window, aim) {
-        Ok(point) => point,
-        Err(reason) => return Attempt::Refused(reason),
-    };
+fn wheel(sink: &dyn Sink, anchor: ScreenPoint, wheel: (i32, bool)) -> Attempt {
     // 滚轮事件发往指针下方的窗口，因此先将指针移到目标上。
     let events = [
         Event::Move { to: anchor },
@@ -222,16 +261,19 @@ fn wheel(window: i64, sink: &dyn Sink, aim: Aim, wheel: (i32, bool)) -> Attempt 
 /// 按下 → 分段移动 → 抬起。
 ///
 /// 取消、目标窗口消失与落点失效都从中途返回，`Hold` 在每一条路径上释放本次按下的左键。
-fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Attempt {
-    let anchor = match landing(window, aim) {
-        Ok(point) => point,
-        Err(reason) => return Attempt::Refused(reason),
-    };
-    let Some(destination) = aim.destination else {
+fn drag(
+    window: i64,
+    sink: &dyn Sink,
+    at: Landing,
+    destination: Option<ScreenPoint>,
+    stop: &dyn Fn() -> bool,
+) -> Attempt {
+    let anchor = at.anchor;
+    let Some(destination) = destination else {
         return Attempt::Refused("missing_target: 拖拽没有终点".to_owned());
     };
-    // 终点同样必须位于目标窗口内：拖到其他窗口上等于把本次释放交给另一个应用。
-    match window_rect(window) {
+    // 终点同样必须位于接收窗口内：拖到其他窗口上等于把本次释放交给另一个应用。
+    match window_rect(at.top) {
         Err(reason) => return Attempt::Refused(reason),
         Ok(rect) if !rect.contains(destination) => {
             return Attempt::Refused(format!(
@@ -257,7 +299,7 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
         return Attempt::Called(Outcome::returned(
             Dispatch::NotDispatched,
             Some(
-                "input_blocked: 按下事件未进入输入队列，指针已位于起点".to_owned(),
+                "input_blocked: 按下事件未送达，指针已位于起点".to_owned(),
             ),
         ));
     }
@@ -289,7 +331,8 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
     Attempt::Called(Outcome::returned(dispatch, reason))
 }
 
-/// 计算本次指针动作的屏幕落点，并核对该位置属于本次动作，判据见 `lands_on_target`。
+/// 系统输入的落点：计算屏幕落点，并核对屏幕上该位置实际最上层的窗口属于本次动作，判据见
+/// `lands_on_target`。
 ///
 /// 目标窗口不在前台的情形由 `prepare` 在定位前处理；执行到此处仍被遮挡时，遮挡方是
 /// 置顶窗口或其他窗口，如实拒绝。
@@ -333,6 +376,92 @@ fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
     Ok(anchor)
 }
 
+/// 消息投递的落点：判据与系统输入相同（`lands_on_target`），但落点所在的顶层窗口只在目标窗口及其
+/// 拥有的弹出窗口中查找（`owned_window_at`）。其他应用的窗口覆盖在上方不影响投递；目标自身的
+/// 下拉框或对话框覆盖控件时仍然拒绝，因为真实点击会落在它们上面。
+fn message_landing(window: i64, aim: Aim) -> Result<Landing, String> {
+    let anchor = aim
+        .anchor
+        .ok_or("missing_target: 指针动作没有落点")?;
+    let rect = window_rect(window)?;
+    if !rect.contains(anchor) {
+        return Err(format!(
+            "point_outside_window: {},{}",
+            anchor.x, anchor.y
+        ));
+    }
+    let top = owned_window_at(window, anchor);
+    // SAFETY: 句柄来自本次查找。
+    let owner = unsafe { GetAncestor(HWND(top as *mut c_void), GA_ROOTOWNER) };
+    // SAFETY: 句柄来自本次定位，窗口已关闭时返回空句柄，与任何落点都不相等。
+    let control_root = aim
+        .host
+        .map(|host| unsafe { GetAncestor(HWND(host as *mut c_void), GA_ROOT) }.0 as i64);
+    if !lands_on_target(window, top, owner.0 as i64, control_root) {
+        return Err(format!(
+            "occluded: {},{} · 目标窗口自身的弹出窗口覆盖该位置",
+            anchor.x, anchor.y
+        ));
+    }
+    message_target(top)?;
+    Ok(Landing { anchor, top })
+}
+
+/// 目标窗口及其拥有的弹出窗口中，覆盖该屏幕点的最上层一个；都不覆盖时为目标窗口本身。
+///
+/// 沿 z 序从目标窗口向上查找。跳过不可见、最小化与鼠标穿透（`WS_EX_TRANSPARENT`）的窗口：
+/// 真实点击同样穿过它们。不要跳过分层窗口：Qt 与 Chromium 的菜单、下拉框多为分层窗口，
+/// 跳过后点击会落到菜单下方的控件上。
+fn owned_window_at(window: i64, at: ScreenPoint) -> i64 {
+    let target = HWND(window as *mut c_void);
+    let mut found = window;
+    // SAFETY: 只读查询；沿 z 序向上逐个取得句柄，到达顶端返回错误时停止。
+    let mut above = unsafe { GetWindow(target, GW_HWNDPREV) };
+    while let Ok(next) = above {
+        if next.is_invalid() {
+            break;
+        }
+        if belongs_to(next, target) && accepts_clicks(next) {
+            if let Ok(frame) = super::capture::window_frame(next) {
+                if frame.visible.contains(at) {
+                    found = next.0 as i64;
+                }
+            }
+        }
+        // SAFETY: 同上。
+        above = unsafe { GetWindow(next, GW_HWNDPREV) };
+    }
+    found
+}
+
+/// 窗口可见、未最小化，且不是鼠标穿透窗口。
+fn accepts_clicks(hwnd: HWND) -> bool {
+    // SAFETY: 三项都是只读查询。
+    unsafe {
+        IsWindowVisible(hwnd).as_bool()
+            && !IsIconic(hwnd).as_bool()
+            && GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT.0 == 0
+    }
+}
+
+/// 接收消息的顶层窗口必须可用且有响应。
+///
+/// 被模态对话框禁用的窗口不处理真实输入，但同步发送的消息同样会被其窗口过程处理，不核对即可
+/// 绕过对话框。无响应的窗口在发送时以超时返回，与「已送达、仍在处理」无法区分，必须在发送前排除。
+fn message_target(top: i64) -> Result<(), String> {
+    let hwnd = HWND(top as *mut c_void);
+    // SAFETY: 两项都是只读查询。
+    unsafe {
+        if !IsWindowEnabled(hwnd).as_bool() {
+            return Err("window_disabled: 目标窗口已禁用".to_owned());
+        }
+        if IsHungAppWindow(hwnd).as_bool() {
+            return Err("target_hung: 目标窗口无响应".to_owned());
+        }
+    }
+    Ok(())
+}
+
 /// 一批事件发送完毕后的执行事实。
 fn settle(sent: u32, events: &[Event]) -> Attempt {
     let requested = u32::try_from(events.len()).unwrap_or(u32::MAX);
@@ -348,35 +477,74 @@ fn blocked(requested: u32) -> Attempt {
 
 // ── 键盘 ──
 
-/// 键盘输入的前置条件。目标窗口不在前台的情形由 `prepare` 在定位前处理。
+/// 键盘输入的前置条件。系统输入时目标窗口不在前台的情形由 `prepare` 在定位前处理。
 ///
-/// 以下两项适用于所有键盘输入：目标窗口是系统前台窗口，且该窗口未被禁用。
-/// **未指定控件时以窗口为目标**，判定到此结束：键盘输入发往系统焦点所在位置，
-/// 前台窗口是目标窗口时焦点必然位于该窗口内；自绘界面不暴露业务控件，
-/// 要求指定一个持有焦点的控件等于对这类界面关闭整条键盘路径。
+/// 目标窗口必须未被禁用且有响应（`message_target`）；系统输入还要求目标窗口是系统前台窗口。
+/// **未指定控件时以窗口为目标**，判定到此结束：按键发往目标窗口所属线程的焦点所在位置；
+/// 自绘界面不暴露业务控件，要求指定一个持有焦点的控件等于对这类界面关闭整条键盘路径。
 ///
 /// 指定了控件时增加一项条件：该控件当前持有键盘焦点。焦点读取的是实时属性而不是观察时的缓存，
 /// 焦点在观察与动作之间被用户更改时，按缓存判定会把输入发给另一个控件。
 /// **焦点不在目标上即拒绝**，不替用户夺取焦点。
-fn keyboard_target(window: i64, element: Option<&IUIAutomationElement>) -> Result<(), String> {
-    foreground_ok(window)?;
-    // SAFETY: 句柄由调用方核对过归属。
-    if !unsafe { IsWindowEnabled(HWND(window as *mut c_void)) }.as_bool() {
-        return Err("window_disabled: 目标窗口已禁用".to_owned());
+fn keyboard_target(
+    window: i64,
+    element: Option<&IUIAutomationElement>,
+    delivery: Delivery,
+) -> Result<(), String> {
+    if delivery == Delivery::SystemInput {
+        foreground_ok(window)?;
     }
+    message_target(window)?;
     let Some(element) = element else {
         return Ok(());
     };
     // SAFETY: 实时属性查询，跨进程调用的上界由 UIA 的连接超时保证。
-    let focused = unsafe { element.CurrentHasKeyboardFocus() }
+    let uia = unsafe { element.CurrentHasKeyboardFocus() }
         .map_err(|e| format!("读取键盘焦点失败 {e}"))?
         .as_bool();
-    if !focused {
+    // SAFETY: 同上；没有自身窗口的控件返回空句柄。
+    let native = unsafe { element.CurrentNativeWindowHandle() }
+        .ok()
+        .filter(|h| !h.0.is_null())
+        .map(|h| h.0 as i64);
+    let focus_window = thread_focus(HWND(window as *mut c_void)).map(|h| h.0 as i64);
+    if !holds_focus(uia, native, focus_window) {
         return Err(
             "not_focused: 该控件没有键盘焦点 · 请先对该控件执行 click".to_owned(),
         );
     }
     Ok(())
+}
+
+/// 消息投递的指针与键盘动作之后核对前台：目标窗口在动作之后成为前台时，在回执中注明。
+///
+/// 窗口消息本身不改变前台，但目标应用可能在处理点击时请求成为前台；用户空闲超过系统的前台锁时限
+/// （默认 200 秒）后，系统准许该请求，本模块无法阻止，只能如实告知调用方。
+pub fn note_foreground(window: i64, before: i64, action: &ActionSpec, attempt: Attempt) -> Attempt {
+    let Attempt::Called(mut outcome) = attempt else {
+        return attempt;
+    };
+    if !action.takes_input() || delivery(window) != Delivery::Messages {
+        return Attempt::Called(outcome);
+    }
+    let after = foreground_window();
+    let owned = after != 0
+        && belongs_to(HWND(after as *mut c_void), HWND(window as *mut c_void));
+    outcome.reason = foreground_note(outcome.reason.take(), before != after && owned);
+    Attempt::Called(outcome)
+}
+
+const FOREGROUND_TAKEN: &str = "foreground_taken: 目标应用在动作之后成为前台窗口";
+
+/// 前台在动作之后转到目标窗口时，把说明追加在原有原因之后；否则原样返回。
+fn foreground_note(reason: Option<String>, taken: bool) -> Option<String> {
+    if !taken {
+        return reason;
+    }
+    Some(match reason {
+        Some(reason) => format!("{reason} · {FOREGROUND_TAKEN}"),
+        None => FOREGROUND_TAKEN.to_owned(),
+    })
 }
 
 /// 系统前台窗口的句柄。
@@ -393,17 +561,24 @@ fn foreground_ok(window: i64) -> Result<(), String> {
     Err(format!("not_foreground: {at}"))
 }
 
-/// 输入文字。所有字符的处理方式相同，投递方式只由接收窗口决定（`SystemCharSink`）。
+/// 输入文字。所有字符的处理方式相同，投递方式与该窗口的指针、按键相同。
 ///
-/// 每一批之前重新确定接收窗口（`text_target`），前台或焦点发生变化时立即停止，并如实返回
-/// 已发送的数量；不向其他窗口继续投递。
-fn type_text(window: i64, chars: &dyn CharSink, text: &str) -> Attempt {
+/// 每一批之前重新确定接收窗口（`message_text_target` / `text_target`），接收窗口失效时立即停止，
+/// 并如实返回已发送的数量；不向其他窗口继续投递。
+fn type_text(window: i64, delivery: Delivery, text: &str) -> Attempt {
     if text.is_empty() {
         return Attempt::Refused("empty_text: 文字为空".to_owned());
     }
-    let out = post_text(chars, text, TEXT_BATCH_UNITS, &|| text_target(window));
+    let out = match delivery {
+        Delivery::Messages => post_text(&MessageCharSink, text, TEXT_BATCH_UNITS, &|| {
+            message_text_target(window)
+        }),
+        Delivery::SystemInput => {
+            post_text(&SystemCharSink, text, TEXT_BATCH_UNITS, &|| text_target(window))
+        }
+    };
     let (dispatch, reason) = classify_input(out.sent, out.requested);
-    // 中途停止时原因由 `text_target` 给出，不保留 `classify_input` 中关于 UIPI 的推测：
+    // 中途停止时原因由接收窗口的核对给出，不保留 `classify_input` 中关于 UIPI 的推测：
     // 本次停止的成因可以核实，无需推测。
     let reason = match out.interrupted {
         Some(note) => Some(format!("{note} · 已发送 {} / {} 个字符", out.sent, out.requested)),
@@ -412,7 +587,14 @@ fn type_text(window: i64, chars: &dyn CharSink, text: &str) -> Attempt {
     Attempt::Called(Outcome::returned(dispatch, reason))
 }
 
-/// 确定本批文字的接收窗口。
+/// 消息投递时本批文字的接收窗口：目标窗口所属线程的焦点窗口（`focus_of`），没有焦点控件时由
+/// 目标窗口自身接收。每批之前重新核对目标窗口仍可接收（`message_target`）。
+fn message_text_target(window: i64) -> Result<i64, String> {
+    message_target(window)?;
+    Ok(focus_of(HWND(window as *mut c_void)).0 as i64)
+}
+
+/// 系统输入时本批文字的接收窗口。
 ///
 /// 前台窗口必须仍是目标窗口，接收窗口取系统前台线程的焦点窗口；没有焦点控件时
 /// 由目标窗口自身接收（自绘界面属于这种情形）。**焦点窗口必须属于目标窗口**：焦点在两批
@@ -489,12 +671,23 @@ fn system_shortcut(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attemp
 
 // ── 窗口 ──
 
-/// 定位前准备前台窗口。还原最小化窗口会改变控件位置，调用方必须在此后重新定位、
-/// 读取包围盒并核对截图几何。失败也可能已经还原窗口，不能据此保留旧观察。
+/// 定位前准备目标窗口：系统输入将目标窗口提升到前台，还原最小化窗口会改变控件位置，调用方必须在此后
+/// 重新定位、读取包围盒并核对截图几何。失败也可能已经还原窗口，不能据此保留旧观察。
+///
+/// 消息投递不改变窗口的显示状态。不要在这里还原最小化的窗口：消息点击会使目标线程把该窗口设为
+/// 活动窗口，此后无论用 `SW_SHOWNOACTIVATE` 还是 `SetWindowPlacement` 还原，它都会成为前台窗口。
+/// 最小化的窗口照常接收按键消息；它没有可按坐标操作的界面，指针动作在此拒绝。
 pub fn prepare(window: i64, action: &ActionSpec) -> Result<(), String> {
     if !action.takes_input()
         || matches!(action, ActionSpec::PressKey { modifiers, .. } if modifiers.contains(&Modifier::Meta))
     {
+        return Ok(());
+    }
+    if delivery(window) == Delivery::Messages {
+        // SAFETY: 只读查询。
+        if action.takes_point() && unsafe { IsIconic(HWND(window as *mut c_void)) }.as_bool() {
+            return Err("window_minimized: 窗口已最小化，指针动作需要先恢复窗口".to_owned());
+        }
         return Ok(());
     }
     if foreground_window() == window {
@@ -506,6 +699,7 @@ pub fn prepare(window: i64, action: &ActionSpec) -> Result<(), String> {
         Raised::Refused => Err("foreground_lock: 前台锁拒绝了本次激活，前台窗口未改变".to_owned()),
     }
 }
+
 
 /// 一次前台提升的结果。
 enum Raised {
@@ -842,5 +1036,25 @@ pub fn virtual_desktop() -> ScreenRect {
             width: GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1),
             height: GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 前台转到目标窗口时追加说明，保留原有原因；未转到时原样返回。
+    #[test]
+    fn the_receipt_notes_when_the_target_took_the_foreground() {
+        assert_eq!(foreground_note(None, false), None);
+        assert_eq!(
+            foreground_note(Some("input_partial".to_owned()), false).as_deref(),
+            Some("input_partial")
+        );
+        assert_eq!(foreground_note(None, true).as_deref(), Some(FOREGROUND_TAKEN));
+        assert_eq!(
+            foreground_note(Some("input_partial".to_owned()), true),
+            Some(format!("input_partial · {FOREGROUND_TAKEN}"))
+        );
     }
 }

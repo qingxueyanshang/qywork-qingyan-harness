@@ -93,7 +93,7 @@ export type DesktopDispatch =
  * `scroll_into_view` 是 ScrollItemPattern，`realize_item` 是 ItemContainerPattern 加
  * VirtualizedItemPattern，`select_text` 是 TextPattern。
  *
- * 其余动作由原始输入与窗口接口发出，只在前台操作配置启用时可用：
+ * 其余动作由指针、键盘事件与窗口接口发出，只在前台操作配置启用时可用：
  * `click` / `hover` / `drag` / `wheel` 是指针事件，`type_text` / `press_key` 是键盘事件，
  * `activate` 是系统前台窗口接口，`set_window_state` / `close_window` 是 WindowPattern，
  * `move_window` / `resize_window` 是 TransformPattern。
@@ -199,7 +199,8 @@ export type DesktopAction =
  * 动作的投递方式。
  *
  * `background` 经控件模式发出，不切换前台、不移动指针、不设置焦点。
- * `foreground` 经原始输入或前台窗口接口发出，会改变前台窗口或真实输入状态。
+ * `foreground` 经指针、键盘事件或窗口接口发出，效果等同于用户操作；是否切换前台窗口由宿主按平台与
+ * 目标窗口决定。
  * 前台操作配置关闭时，这些动作不在动作表中；配置缺省值由服务端决定。
  *
  * 后台失败不会自动升级为前台。两种投递方式各自是否可用由控件与模式决定，
@@ -626,8 +627,8 @@ export interface DesktopRequestFrame {
    * 目标控件引用，取自同一次观察。
    *
    * `act` 的目标有三种写法：`ref`、`point`、两者都不提供。第三种仅键盘输入
-   * （`type_text` / `press_key`）可用，此时目标是窗口本身：键盘输入发往系统焦点
-   * 所在位置，自绘界面无法给出持有焦点的控件。其余动作两者都不提供时拒绝。
+   * （`type_text` / `press_key`）可用，此时目标是窗口本身：键盘输入发往目标窗口内
+   * 焦点所在的位置，自绘界面无法给出持有焦点的控件。其余动作两者都不提供时拒绝。
    */
   ref?: string
   /**
