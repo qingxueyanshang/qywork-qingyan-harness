@@ -1,12 +1,13 @@
 /**
- * 语音合成：两个语音适配器与按文件头识别格式。
+ * 语音合成：三个语音适配器与按文件头识别格式。
  *
- * 覆盖范围：`media/adapters/openai-speech.ts`、`media/adapters/dashscope.ts` 的 `DashScopeSpeechAdapter`
- * 实际发出的请求与响应的解析方式，`media/http.ts` 的 `sniffMime` 对音视频文件头的识别。
+ * 覆盖范围：`media/adapters/openai-speech.ts`、`media/adapters/dashscope.ts` 的 `DashScopeSpeechAdapter`、
+ * `media/adapters/minimax.ts` 实际发出的请求与响应的解析方式，`media/http.ts` 的 `sniffMime` 对音视频文件头的识别，
+ * `catalog-minimax-audio.ts` 的单价。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
-import { activeMediaParams } from '@qywork/core'
+import { activeMediaParams, defaultMediaKind } from '@qywork/core'
 import { lookupMediaModel, mediaCost, quoteMedia } from './catalog.ts'
 import { sniffMime } from './http.ts'
 import { buildMediaAdapter } from './index.ts'
@@ -132,6 +133,81 @@ describe('dashscope_speech', () => {
     )
     expect(out.files[0]).toEqual({ bytes: WAV, mime: 'audio/wav' })
     expect(seen[0]?.json?.input).toMatchObject({ voice: 'Cherry' })
+  })
+})
+
+describe('minimax_speech', () => {
+  const adapter = (model = 'speech-2.8-hd') =>
+    buildMediaAdapter({ kind: 'minimax_speech', model, apiKey: 'sk', baseUrl: `${origin()}/v1` })
+  const ok = (bytes: Uint8Array, extra: Record<string, unknown> = {}) =>
+    Response.json({
+      data: { audio: Buffer.from(bytes).toString('hex'), status: 2 },
+      extra_info: { audio_format: 'mp3', usage_characters: 26, ...extra },
+      trace_id: 't',
+      base_resp: { status_code: 0, status_msg: 'success' },
+    })
+
+  test('参数按接口结构放入 voice_setting 与 audio_setting，hex 音频解码，按 usage_characters 计价', async () => {
+    reply = () => ok(MP3)
+    const out = await adapter().run(
+      {
+        operation: 'speech',
+        prompt: '今天是不是很开心呀(laughs)',
+        inputs: [],
+        params: {
+          voice_id: 'female-tianmei',
+          speed: 1.2,
+          emotion: 'happy',
+          format: 'mp3',
+          sample_rate: 32000,
+          language_boost: 'auto',
+        },
+      },
+      signal(),
+    )
+    expect(seen[0]).toEqual({
+      path: '/v1/t2a_v2',
+      json: {
+        model: 'speech-2.8-hd',
+        text: '今天是不是很开心呀(laughs)',
+        stream: false,
+        voice_setting: { voice_id: 'female-tianmei', speed: 1.2, emotion: 'happy' },
+        audio_setting: { format: 'mp3', sample_rate: 32000 },
+        language_boost: 'auto',
+      },
+    })
+    expect(out.files).toEqual([{ bytes: MP3, mime: 'audio/mpeg' }])
+    expect(out.usage).toEqual({ characters: 26 })
+    // HD 每万字符 ¥3.5。
+    expect(mediaCost(lookupMediaModel('speech-2.8-hd', 'minimax_speech'), out.usage!)).toEqual({
+      cost: 0.0091,
+      currency: 'CNY',
+    })
+  })
+
+  test('未指定音色时发送目录中的默认音色，不发送空的 audio_setting', async () => {
+    reply = () => ok(WAV, { audio_format: 'wav' })
+    const out = await adapter('speech-2.8-turbo').run(
+      { operation: 'speech', prompt: 'x', inputs: [], params: {} },
+      signal(),
+    )
+    expect(seen[0]?.json?.voice_setting).toEqual({ voice_id: 'male-qn-qingse' })
+    expect(seen[0]?.json).not.toHaveProperty('audio_setting')
+    expect(out.files[0]?.mime).toBe('audio/wav')
+  })
+
+  test('HTTP 200 而 base_resp.status_code 非 0 时报告接口原文', async () => {
+    reply = () =>
+      Response.json({ base_resp: { status_code: 1004, status_msg: 'invalid api key' }, data: null })
+    await expect(
+      adapter().run({ operation: 'speech', prompt: 'x', inputs: [], params: {} }, signal()),
+    ).rejects.toThrow('接口拒绝生成：1004：invalid api key')
+  })
+
+  test('MiniMax 官方地址上的语音默认使用 minimax_speech', () => {
+    expect(defaultMediaKind('audio', 'https://api.minimax.cn/v1')).toBe('minimax_speech')
+    expect(defaultMediaKind('audio', 'https://api.minimax.io/v1')).toBe('minimax_speech')
+    expect(defaultMediaKind('audio', 'https://ai.apii.cn/')).toBe('openai_speech')
   })
 })
 

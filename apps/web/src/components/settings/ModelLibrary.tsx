@@ -33,6 +33,7 @@ export const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
   xai_videos: 'xAI',
   openai_speech: 'OpenAI 兼容',
   dashscope_speech: '百炼',
+  minimax_speech: 'MiniMax',
 }
 
 const OPERATION_LABEL: Record<MediaOperationName, string> = {

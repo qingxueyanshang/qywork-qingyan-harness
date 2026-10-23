@@ -11,6 +11,7 @@ import {
 } from './adapters/dashscope.ts'
 import { GeminiMediaAdapter, VeoVideosAdapter } from './adapters/google.ts'
 import { KlingVideosAdapter } from './adapters/kling.ts'
+import { MiniMaxSpeechAdapter } from './adapters/minimax.ts'
 import { OpenAIImagesAdapter } from './adapters/openai-images.ts'
 import { OpenAISpeechAdapter } from './adapters/openai-speech.ts'
 import { OpenAIVideosAdapter } from './adapters/openai-videos.ts'
@@ -46,5 +47,7 @@ export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {
       return new OpenAISpeechAdapter(profile, spec)
     case 'dashscope_speech':
       return new DashScopeSpeechAdapter(profile, spec)
+    case 'minimax_speech':
+      return new MiniMaxSpeechAdapter(profile, spec)
   }
 }

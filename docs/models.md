@@ -373,6 +373,21 @@ Flash 读取 `input_tokens` / `output_tokens` 计价；Next 官方响应目前�
 不发送 `input_fidelity`。价格与 2.5 系列相同：文字输入 $5、图片输入 $8、图片输出 $30，每百万 Token。
 依据：[模型页](https://developers.openai.com/api/docs/models/gpt-image-2)、[图片生成](https://developers.openai.com/api/docs/guides/image-generation)、[价格](https://developers.openai.com/api/docs/pricing)。
 
+2026-10-22 新增 MiniMax 语音合成，接入方式「MiniMax」（`minimax_speech`），非流式 `POST {Base URL}/t2a_v2`：
+
+| 模型 ID | 输入与控制 | 原价（元/万字符） |
+|---|---|---|
+| `speech-2.8-hd` | 文本（含语气词标签与停顿标记）、327 个系统音色、语速、音量、音调、情绪、语种增强；输出 MP3/WAV/FLAC | 3.5 |
+| `speech-2.8-turbo` | 同上 | 2.0 |
+
+Base URL 填 `https://api.minimax.cn/v1`（华北 `https://api-bj.minimaxi.com/v1`，海外 `https://api.minimax.io/v1`）；
+这些地址上按名称添加的语音型号默认使用该接入方式。参数平铺填写，请求时按接口结构放入 `voice_setting` 与 `audio_setting`；
+音频以 hex 返回，按 `extra_info.usage_characters` 计价（1 个汉字计 2 个字符）。HTTP 200 而 `base_resp.status_code` 非 0 时
+报告接口原文。文本最多 10000 字符；情绪 `fluent`、`whisper` 只对 Speech 2.6 生效，未列出。粤语音色须将 `language_boost` 设为
+`Chinese,Yue`。不提供声音复刻、音色设计与流式输出；音乐生成的付费接口自 2026-08-20 起不再面向新用户提供，未接入。
+已覆盖本地请求捕获、hex 解码、错误码与计费回归，尚未进行真实云端生成。
+依据：[同步语音合成 HTTP](https://platform.minimaxi.com/docs/api-reference/speech-t2a-http)、[接入地址](https://platform.minimaxi.com/docs/guides/speech-t2a-websocket)、[系统音色](https://platform.minimaxi.com/docs/faq/system-voice-id)、[价格](https://platform.minimaxi.com/docs/pricing/overview)。
+
 集梦渠道及 `Seedance 2.5 720p` 已于 2026-10-13 移除，不再提供模型目录、协议选择、生成或任务取回。
 加载旧配置时移除该渠道的模型及对应默认引用，混合接口中的其他模型和凭证保留。
 该渠道专用的影币计价与展示已一并移除。
