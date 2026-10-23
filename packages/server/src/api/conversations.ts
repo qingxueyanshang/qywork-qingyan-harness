@@ -117,7 +117,7 @@ export interface ModelsResponse {
    * 输入框的模型选择只读取 `providers`，无需逐行排除。
    */
   media: MediaModelRow[]
-  /** 内置生成目录，供模型库的生成类页签使用。只收录各厂商的最新一代模型。 */
+  /** 内置生成目录，供模型库的生成类页签使用。收录范围见 `@qywork/ai` 的生成目录。 */
   mediaLibrary: MediaLibraryModel[]
 }
 

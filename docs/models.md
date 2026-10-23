@@ -368,6 +368,11 @@ Flash 读取 `input_tokens` / `output_tokens` 计价；Next 官方响应目前�
 已覆盖本地请求捕获、参考音频、参数联动、下载与费用回归，尚未进行这两个型号的真实云端生成。
 依据：[Flash 型号与价格](https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-tts-flash)、[Flash HTTP API](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-http-api)、[新版音色](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list)、[Next 型号与价格](https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-tts-next)、[Next API](https://help.aliyun.com/zh/model-studio/audio-generation-api)。
 
+2026-10-22 补充 `gpt-image-2`：中转站仍普遍提供。生成与修改，最多 16 张参考图，尺寸约束与 2.5 系列相同；
+质量为 `low` / `medium` / `high` / `auto`（没有 `xhigh`、`max`）；透明背景已停用，背景只提供 `opaque` / `auto`；
+不发送 `input_fidelity`。价格与 2.5 系列相同：文字输入 $5、图片输入 $8、图片输出 $30，每百万 Token。
+依据：[模型页](https://developers.openai.com/api/docs/models/gpt-image-2)、[图片生成](https://developers.openai.com/api/docs/guides/image-generation)、[价格](https://developers.openai.com/api/docs/pricing)。
+
 集梦渠道及 `Seedance 2.5 720p` 已于 2026-10-13 移除，不再提供模型目录、协议选择、生成或任务取回。
 加载旧配置时移除该渠道的模型及对应默认引用，混合接口中的其他模型和凭证保留。
 该渠道专用的影币计价与展示已一并移除。

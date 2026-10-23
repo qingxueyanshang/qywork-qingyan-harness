@@ -4,7 +4,8 @@
  * 按「模型 id × 协议」精确匹配，或使用该模型已声明的协议映射；其他组合使用协议默认规格。
  * 字段与对话目录不同：生成模型没有上下文窗口与思考档位，只有操作与参数表。
  *
- * 只收录官方模型，各厂商当前最新一代。中转渠道的型号不在此登记：拉取时由渠道目录生成规格并保存在配置中（`channels.ts`）。
+ * 只收录官方模型：各厂商当前最新一代，以及中转站仍普遍提供的上一代（gpt-image-2）。
+ * 中转渠道的型号不在此登记：拉取时由渠道目录生成规格并保存在配置中（`channels.ts`）。
  * 未收录的型号仍可经接口调用，使用协议默认的参数表。
  *
  * 参数使用接口自身的字段名，不做跨厂商统一。生成质量 `quality` 与分辨率 `size` 分别声明；
@@ -285,7 +286,7 @@ function perMillionOutputTokens(
 }
 
 // ── 价格（2026-09-26 核对官方价格页，均为原价，不计限时折扣与免费额度）──
-// OpenAI「Pricing」图像生成：GPT Image 2.5 文字输入 $5、图片输入 $8、图片输出 $30，每百万 token；
+// OpenAI「Pricing」图像生成：GPT Image 2 与 2.5 文字输入 $5、图片输入 $8、图片输出 $30，每百万 token（2026-10-22 核对 2）；
 // Images API 不计缓存输入。
 const gptImagePrice: MediaPrice = {
   currency: 'USD',
@@ -445,6 +446,14 @@ const gptImageParams: readonly MediaParamSpec[] = [
     description: '背景；transparent 须搭配 png 或 webp',
   },
 ]
+// GPT Image 2（2026-10-22 核对图像生成指南与模型页）：尺寸约束与 2.5 相同；质量只到 high；
+// 透明背景已停用，请求 transparent 时接口返回 400；不接受 input_fidelity。
+const gptImage2Params: readonly MediaParamSpec[] = gptImageParams.map((p) => {
+  if (p.name === 'quality') return { ...p, values: ['low', 'medium', 'high', 'auto'] }
+  if (p.name !== 'background') return p
+  const { rules: _rules, ...rest } = p
+  return { ...rest, values: ['opaque', 'auto'], description: '背景' }
+})
 
 // ── 火山方舟 Seedream 5.0（2026-09-25 核对方舟「图片生成 API」与模型列表）──
 const seedreamParams: readonly MediaParamSpec[] = [
@@ -1175,6 +1184,16 @@ const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: 
 const SEEDS: readonly MediaModelSpec[] = [
   ...GOOGLE_XAI_MODELS,
   ...QWEN_AUDIO_MODELS,
+  spec(
+    'gpt-image-2',
+    'GPT Image 2',
+    'OpenAI',
+    'openai_images',
+    IMAGE_OPERATIONS,
+    { maxImages: 16, maxVideos: 0, transport: 'multipart' },
+    gptImage2Params,
+    gptImagePrice,
+  ),
   spec(
     'gpt-image-2.5-flare',
     'GPT Image 2.5 Flare',
