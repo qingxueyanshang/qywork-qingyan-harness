@@ -5,11 +5,11 @@
  */
 
 import type {
-  ChannelSpec,
   Currency,
   MediaDiagnostic,
   MediaInputRole,
   MediaKind,
+  StoredMediaSpec,
 } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation } from './catalog.ts'
 
@@ -20,8 +20,8 @@ export interface MediaProfile {
   apiKey: string
   baseUrl?: string
   headers?: Record<string, string>
-  /** 该型号配置中保存的渠道规格，见 `lookupMediaModel`。 */
-  spec?: ChannelSpec
+  /** 该型号配置中保存的规格（渠道规格或对应型号），见 `lookupMediaModel`。 */
+  spec?: StoredMediaSpec
 }
 
 /** 输入文件。字节由调用方预先读取，适配器只负责按协议放入请求。用途的含义见 `MediaInputRole`。 */

@@ -2,7 +2,7 @@
  * 设置页里的生成模型：接口页添加、默认、删除，以及模型库的类别页签。
  *
  * 覆盖范围：`ModelSettings.tsx` 的 `addModel` 分流、生成模型行、`removeMediaModel` 与 `withMediaDefaults`；
- * `ModelLibrary.tsx` 的类别页签、未知单价显示与 `MediaTable`；`PullDialog.tsx` 的拉取、刷新与添加。
+ * `ModelLibrary.tsx` 的类别页签、未知单价显示与 `MediaTable`；`PullDialog.tsx` 的拉取、刷新、对应型号与添加。
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -328,6 +328,197 @@ test('生成模型默认取目录协议，接入方式可独立保存，删除�
   }
 })
 
+const SUNBURST: MediaLibraryModel = {
+  id: 'gpt-image-2.5-sunburst',
+  label: 'GPT Image 2.5 Sunburst',
+  vendor: 'OpenAI',
+  kind: 'openai_images',
+  kinds: ['openai_images'],
+  output: 'image',
+  operations: ['generate', 'edit'],
+  maxImages: 16,
+  maxVideos: 0,
+  params: [],
+}
+
+/** 中转接口与配置读写的桩：`/api/models` 返回给定的生成目录与对话模型库，配置保存在 `stored` 中。 */
+function relayApi(
+  store: typeof import('../../lib/store/index.ts'),
+  state: { stored: RedactedConfig },
+  pull?: PullResult,
+) {
+  store.client.api = async <T,>(path: string, init?: RequestInit) => {
+    if (path === '/api/models')
+      return {
+        providers: [],
+        media: [],
+        mediaLibrary: [SUNBURST],
+        library: [
+          {
+            id: 'deepseek',
+            displayName: 'DeepSeek',
+            models: [{ id: 'deepseek-flash', label: 'DeepSeek Flash' }],
+          },
+        ],
+      } as T
+    if (path === '/api/models/pull' && pull) return pull as T
+    if (path === '/api/config' && init?.method === 'PUT') {
+      state.stored = (JSON.parse(String(init.body)) as { config: RedactedConfig }).config
+      return { ok: true } as T
+    }
+    if (path === '/api/config')
+      return {
+        path: 'config.json',
+        config: state.stored,
+        version: 'v',
+        notices: [],
+        problems: [],
+        defaultEnvAllowList: [],
+      } as T
+    throw new Error(`unexpected ${path}`)
+  }
+}
+
+const relayConfig = (): RedactedConfig => ({
+  providers: {
+    apii: {
+      kind: 'openai_chat_completions',
+      baseUrl: 'https://ai.apii.cn/',
+      hasApiKey: true,
+      models: {},
+    },
+  },
+})
+
+test('手动添加目录 id 加后缀的名称：识别为生成型号并保存对应型号', async () => {
+  const { render } = await import('solid-js/web')
+  const store = await import('../../lib/store/index.ts')
+  const { config, configBusy, reloadConfig } = await import('./configStore.ts')
+  const { ModelSettings } = await import('./ModelSettings.tsx')
+  const state = { stored: relayConfig() }
+  relayApi(store, state)
+  await reloadConfig()
+  await store.reloadModelCatalog()
+
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <ModelSettings />, host as unknown as HTMLElement)
+  try {
+    fire(
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
+        (b) => b.textContent === 'apii',
+      )!,
+      'click',
+    )
+    const input = host.querySelector<HTMLInputElement>('.model-row.add input')!
+    input.value = 'gpt-image-2.5-sunburst-4k'
+    fire(input, 'keydown', { key: 'Enter' })
+    expect(await until(() => !configBusy())).toBe(true)
+    expect(state.stored.providers.apii?.media).toEqual({
+      'gpt-image-2.5-sunburst-4k': {
+        kind: 'openai_images',
+        spec: { base: 'gpt-image-2.5-sunburst' },
+      },
+    })
+    expect(state.stored.providers.apii?.models).toEqual({})
+    expect(config()?.mediaDefaults?.image).toEqual({
+      provider: 'apii',
+      model: 'gpt-image-2.5-sunburst-4k',
+    })
+    // 对应型号不是渠道规格：行上仍是接入方式下拉框。
+    const row = Array.from(host.querySelectorAll<HTMLElement>('.model-row')).find((r) =>
+      r.textContent?.includes('gpt-image-2.5-sunburst-4k'),
+    )!
+    expect(
+      row.querySelector('select[aria-label="接入方式 gpt-image-2.5-sunburst-4k"]'),
+    ).not.toBeNull()
+  } finally {
+    dispose()
+    host.remove()
+  }
+})
+
+test('拉取模型：带后缀的生成型号预选对应型号，改选生成型号后移到该类别页签', async () => {
+  const { render } = await import('solid-js/web')
+  const store = await import('../../lib/store/index.ts')
+  const { configBusy, reloadConfig } = await import('./configStore.ts')
+  const { ModelSettings } = await import('./ModelSettings.tsx')
+  const state = { stored: relayConfig() }
+  relayApi(store, state, {
+    source: 'models',
+    models: [
+      {
+        id: 'gpt-image-2.5-sunburst-4k',
+        output: 'image',
+        kind: 'openai_images',
+        known: false,
+        base: 'gpt-image-2.5-sunburst',
+      },
+      { id: 'banana-pro', output: 'chat', known: false },
+    ],
+  })
+  await reloadConfig()
+  await store.reloadModelCatalog()
+
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <ModelSettings />, host as unknown as HTMLElement)
+  try {
+    fire(
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
+        (b) => b.textContent === 'apii',
+      )!,
+      'click',
+    )
+    fire(host.querySelector<HTMLButtonElement>('.pull-open')!, 'click')
+    expect(await until(() => !!document.querySelector('.pull-dialog .pull-row'))).toBe(true)
+    const dialog = document.querySelector<HTMLElement>('.pull-dialog')!
+    const tabs = () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('.lib-tab'))
+    expect(tabs().map((b) => b.textContent)).toEqual(['对话 1', '图像 1'])
+    const select = (id: string) =>
+      dialog.querySelector<HTMLSelectElement>(`select[aria-label="对应型号 ${id}"]`)!
+    // 对应型号的可选项：对话模型库在前，生成目录在后。
+    expect(Array.from(select('banana-pro').options, (o) => o.value)).toEqual([
+      '',
+      'deepseek-flash',
+      'gpt-image-2.5-sunburst',
+    ])
+    select('banana-pro').value = 'gpt-image-2.5-sunburst'
+    select('banana-pro').dispatchEvent(new Event('change', { bubbles: true }))
+    // 对话页签已空，显示图像页签。
+    expect(tabs().map((b) => [b.textContent, b.classList.contains('active')])).toEqual([
+      ['图像 2', true],
+    ])
+    expect(select('gpt-image-2.5-sunburst-4k').value).toBe('gpt-image-2.5-sunburst')
+    for (const row of dialog.querySelectorAll<HTMLElement>('.pull-row')) {
+      const box = row.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    fire(
+      Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
+        (b) => b.textContent === '添加',
+      )!,
+      'click',
+    )
+    expect(
+      await until(() => !configBusy() && !!state.stored.providers.apii?.media?.['banana-pro']),
+    ).toBe(true)
+    expect(state.stored.providers.apii?.media).toEqual({
+      'gpt-image-2.5-sunburst-4k': {
+        kind: 'openai_images',
+        spec: { base: 'gpt-image-2.5-sunburst' },
+      },
+      'banana-pro': { kind: 'openai_images', spec: { base: 'gpt-image-2.5-sunburst' } },
+    })
+    expect(state.stored.providers.apii?.models).toEqual({})
+    expect(state.stored.catalog).toBeUndefined()
+  } finally {
+    dispose()
+    host.remove()
+  }
+})
+
 test('模型库按类别分页签；生成类一张表，厂商是一列，参数由行末按钮展开到下一整行', async () => {
   const { render } = await import('solid-js/web')
   const { ModelLibrary } = await import('./ModelLibrary.tsx')
@@ -435,7 +626,7 @@ test('拉取模型：打开即刷新已添加型号，勾选后写入规格与�
     source: 'pricing',
     models: [
       { id: 'deepseek-v4.1-flash', output: 'chat', known: false },
-      { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', spec },
+      { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', known: true, spec },
     ],
   }
   let stored: RedactedConfig = {

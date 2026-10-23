@@ -10,14 +10,13 @@
 import {
   type ChannelSpec,
   type ChannelVideoSpec,
-  defaultMediaKind,
-  MEDIA_KIND_OUTPUT,
+  identifyMediaModel,
   type MediaKind,
   type MediaOutput,
   type ProviderKind,
 } from '@qywork/core'
 import { lookupModel } from '../catalog.ts'
-import { findMediaModel } from '../media/catalog.ts'
+import { mediaCatalog } from '../media/catalog.ts'
 import {
   channelMediaSpec,
   hongchengVideoSpec,
@@ -55,6 +54,10 @@ export type PulledModel =
       id: string
       output: MediaOutput
       kind: MediaKind
+      /** 生成目录中有同名型号，或有渠道规格。 */
+      known: boolean
+      /** 名称是目录 id 加后缀时对应的目录 id，见 `identifyMediaModel`。 */
+      base?: string
       spec?: ChannelSpec
     }
 
@@ -134,11 +137,28 @@ function tiersOf(id: string, spec: ChannelVideoSpec): Record<string, Record<stri
   return tiers
 }
 
+/**
+ * 计费清单中的生成型号是否已收录：有渠道规格，或名称与同类别的目录 id 完全一致。
+ * 名称是同类别的目录 id 加后缀时给出对应型号。
+ */
+function catalogFields(
+  id: string,
+  output: MediaOutput,
+  spec: ChannelSpec | undefined,
+  baseUrl: string,
+): { known: boolean; base?: string } {
+  if (spec) return { known: true }
+  const hit = identifyMediaModel(id, mediaCatalog(), baseUrl)
+  if (!hit || hit.output !== output) return { known: false }
+  return hit.base ? { known: false, base: hit.base } : { known: true }
+}
+
 function videoOf(
   entry: NewApiPricingEntry,
   basis: PriceBasis | null,
   hongcheng: Record<string, unknown> | undefined,
   mumugofe: Record<string, unknown> | undefined,
+  baseUrl: string,
 ): PulledModel {
   const id = entry.model_name
   const parsed = hongcheng
@@ -152,19 +172,32 @@ function videoOf(
     spec = { ...spec, resolutionField: true }
   const price = spec && basis && videoPriceOf(entry, basis, spec.seconds, tiersOf(id, spec))
   if (spec && price) spec = { ...spec, price }
-  return { id, output: 'video', kind: 'openai_videos', ...(spec ? { spec } : {}) }
+  return {
+    id,
+    output: 'video',
+    kind: 'openai_videos',
+    ...catalogFields(id, 'video', spec, baseUrl),
+    ...(spec ? { spec } : {}),
+  }
 }
 
 function imageOf(
   entry: NewApiPricingEntry,
   basis: PriceBasis | null,
   mumugofe: Record<string, unknown> | undefined,
+  baseUrl: string,
 ): PulledModel {
   const id = entry.model_name
   let spec = (mumugofe && mumugofeImageSpec(mumugofe)) || undefined
   const price = spec && basis && imagePriceOf(entry, basis, spec.resolutions)
   if (spec && price) spec = { ...spec, price }
-  return { id, output: 'image', kind: 'openai_images', ...(spec ? { spec } : {}) }
+  return {
+    id,
+    output: 'image',
+    kind: 'openai_images',
+    ...catalogFields(id, 'image', spec, baseUrl),
+    ...(spec ? { spec } : {}),
+  }
 }
 
 async function fromPricing(
@@ -198,9 +231,9 @@ async function fromPricing(
     if (models.has(id)) continue
     const types = entry.supported_endpoint_types ?? []
     if (types.includes('openai-video')) {
-      models.set(id, videoOf(entry, basis, hongcheng.get(id), mumugofe.get(id)))
+      models.set(id, videoOf(entry, basis, hongcheng.get(id), mumugofe.get(id), target.baseUrl))
     } else if (types.includes('image-generation')) {
-      models.set(id, imageOf(entry, basis, mumugofe.get(id)))
+      models.set(id, imageOf(entry, basis, mumugofe.get(id), target.baseUrl))
     } else if (types.some((t) => CHAT_ENDPOINTS.includes(t))) {
       const price = basis ? chatPriceOf(entry, basis) : undefined
       models.set(id, {
@@ -214,14 +247,19 @@ async function fromPricing(
   return { source: 'pricing', models: [...models.values()] }
 }
 
-/** 型号列表接口只有名称：生成目录中有的按目录归类，其余作为对话型号。 */
+/** 型号列表接口只有名称：按名称识别生成模型（`identifyMediaModel`），其余作为对话型号。 */
 function fromModelList(ids: string[], target: PullTarget): PullResult {
   const models = [...new Set(ids)].map((id): PulledModel => {
-    const media = findMediaModel(id)
+    const media = identifyMediaModel(id, mediaCatalog(), target.baseUrl)
     if (!media)
       return { id, output: 'chat', known: lookupModel(id, target.kind).catalogued !== false }
-    const output = MEDIA_KIND_OUTPUT[media.kind]
-    return { id, output, kind: defaultMediaKind(output, target.baseUrl, media.kind) }
+    return {
+      id,
+      output: media.output,
+      kind: media.kind,
+      known: !media.base,
+      ...(media.base ? { base: media.base } : {}),
+    }
   })
   return { source: 'models', models }
 }

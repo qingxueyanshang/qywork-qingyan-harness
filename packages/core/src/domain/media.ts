@@ -91,6 +91,22 @@ export interface ChannelImageSpec {
 /** 生成型号保存的渠道规格。类别由该型号的协议决定：`openai_videos` 为视频，`openai_images` 为图像。 */
 export type ChannelSpec = ChannelVideoSpec | ChannelImageSpec
 
+/**
+ * 型号对应的生成目录条目：中转站的自定义名称（如 `gpt-image-2.5-sunburst-4k`）按该条目取得参数表与能力，
+ * 请求中仍发送自定义名称。不继承目录单价：中转站的价格与官方不同。
+ */
+export interface MediaBaseSpec {
+  base: string
+}
+
+/** 生成型号保存的规格来源：渠道规格，或对应的目录型号。两者互斥，保存在同一字段（`spec`）中。 */
+export type StoredMediaSpec = ChannelSpec | MediaBaseSpec
+
+/** 保存的规格是渠道规格时返回它；对应型号或未保存时返回 undefined。 */
+export function channelSpecOf(spec: StoredMediaSpec | undefined): ChannelSpec | undefined {
+  return spec && 'channel' in spec ? spec : undefined
+}
+
 const isCount = (v: unknown) => Number.isInteger(v) && (v as number) >= 0
 const isTextList = (v: unknown) =>
   Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string' && x !== '')
@@ -328,4 +344,34 @@ export function defaultMediaKind(
     case 'audio':
       return dashScope ? 'dashscope_speech' : 'openai_speech'
   }
+}
+
+/** 名称与目录 id 之间允许的分隔符：中转站在官方名称后追加的分辨率、版本或日期后缀以此开头。 */
+const SUFFIX_SEPARATORS = ['-', '.', '_']
+
+/**
+ * 按名称识别生成模型。与目录 id 完全一致时使用目录协议；目录 id 之后带分隔符与后缀时（中转站的自定义名称，
+ * 如 `gpt-image-2.5-sunburst-4k`），`base` 为该目录 id，协议按接口地址取默认值：中转站以自身的接口格式提供该名称，
+ * 不一定提供目录协议（如 Gemini 原生接口）。多个目录 id 都是前缀时取最长的一个；都不成立时返回 undefined。
+ *
+ * 拉取模型与手动添加共用此函数：两处各写一份时，同一个名称在两处可能识别为不同类别。
+ */
+export function identifyMediaModel(
+  id: string,
+  catalog: readonly { id: string; kind: MediaKind }[],
+  baseUrl: string | undefined,
+): { output: MediaOutput; kind: MediaKind; base?: string } | undefined {
+  const exact = catalog.find((m) => m.id === id)
+  if (exact) {
+    const output = MEDIA_KIND_OUTPUT[exact.kind]
+    return { output, kind: defaultMediaKind(output, baseUrl, exact.kind) }
+  }
+  let base: { id: string; kind: MediaKind } | undefined
+  for (const m of catalog) {
+    if (!id.startsWith(m.id) || !SUFFIX_SEPARATORS.includes(id.charAt(m.id.length))) continue
+    if (!base || m.id.length > base.id.length) base = m
+  }
+  if (!base) return undefined
+  const output = MEDIA_KIND_OUTPUT[base.kind]
+  return { output, kind: defaultMediaKind(output, baseUrl), base: base.id }
 }

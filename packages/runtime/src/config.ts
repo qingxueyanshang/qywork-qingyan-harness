@@ -20,7 +20,6 @@ import {
 import {
   CACHE_ROUTINGS,
   type CacheRouting,
-  type ChannelSpec,
   type ChannelVideoSpec,
   channelImageSpecProblem,
   channelVideoSpecProblem,
@@ -37,6 +36,7 @@ import {
   type ProviderKind,
   REASONING_ECHOES,
   type ReasoningEcho,
+  type StoredMediaSpec,
   THINKING_MODES,
   type ThinkingMode,
   TOOL_SCHEMA_MODES,
@@ -220,10 +220,11 @@ export interface StoredMediaModel {
   /** 生成请求使用的协议。添加时默认取目录协议，保存后不随接口地址变化。 */
   kind: MediaKind
   /**
-   * 拉取模型时由渠道目录得到的规格：`openai_videos` 保存视频规格，`openai_images` 保存图像规格。
-   * 中转渠道的型号只在此处有规格，代码目录中没有；每次拉取时按渠道目录更新。解析顺序见 `lookupMediaModel`。
+   * 该型号的规格来源，解析顺序见 `lookupMediaModel`。
+   * 渠道规格由拉取时的渠道目录得到：`openai_videos` 保存视频规格，`openai_images` 保存图像规格；中转渠道的型号只在此处有规格，
+   * 每次拉取时按渠道目录更新。对应型号 `{ base }` 是同类别的生成目录 id，拉取或手动添加时按名称识别得到。
    */
-  spec?: ChannelSpec
+  spec?: StoredMediaSpec
   /** 上一次拉取时渠道的计费清单中已没有该型号。生成工具不再向它提交。 */
   delisted?: true
 }
@@ -933,8 +934,8 @@ export interface ResolvedMediaModel {
   apiKey?: string
   baseUrl?: string
   headers?: Record<string, string>
-  /** 保存的渠道规格，取规格时传给 `lookupMediaModel`。 */
-  spec?: ChannelSpec
+  /** 保存的规格，取规格时传给 `lookupMediaModel`。 */
+  spec?: StoredMediaSpec
   delisted?: true
 }
 
@@ -974,8 +975,8 @@ export interface MediaModelEntry {
   kind: MediaKind
   output: MediaOutput
   isDefault: boolean
-  /** 保存的渠道规格，取规格时传给 `lookupMediaModel`。 */
-  spec?: ChannelSpec
+  /** 保存的规格，取规格时传给 `lookupMediaModel`。 */
+  spec?: StoredMediaSpec
   delisted?: true
 }
 
@@ -1016,6 +1017,16 @@ export function collectSecrets(cfg: QyConfig): { values: string[] } {
     if (p.apiKey) values.add(p.apiKey)
   }
   return { values: [...values] }
+}
+
+/** 保存的对应型号不合法时返回原因：必须只含 `base`，且是与该型号协议同类别的生成目录 id。 */
+function mediaBaseProblem(spec: object, kind: MediaKind): string | null {
+  const { base, ...rest } = spec as { base?: unknown }
+  if (Object.keys(rest).length) return '对应型号只能包含 base'
+  const entry = typeof base === 'string' ? findMediaModel(base) : undefined
+  return entry && MEDIA_KIND_OUTPUT[entry.kind] === MEDIA_KIND_OUTPUT[kind]
+    ? null
+    : 'base 必须是生成目录中与该型号同类别的型号'
 }
 
 /**
@@ -1194,17 +1205,19 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
             `  修改 ${configPath()} 中该接口 "media" 下的对应条目。`,
         )
       }
-      // 保存的渠道规格直接决定请求字段与素材上限，不合法的规格会使画布开放渠道不接受的素材。
+      // 保存的规格直接决定请求字段与素材上限，不合法的规格会使画布开放渠道不接受的素材。
       if (m?.spec !== undefined) {
         const problem =
-          m.kind === 'openai_videos'
-            ? channelVideoSpecProblem(m.spec)
-            : m.kind === 'openai_images'
-              ? channelImageSpecProblem(m.spec)
-              : '只有 openai_videos 与 openai_images 协议可以保存渠道规格'
+          m.spec && typeof m.spec === 'object' && 'base' in m.spec
+            ? mediaBaseProblem(m.spec, m.kind)
+            : m.kind === 'openai_videos'
+              ? channelVideoSpecProblem(m.spec)
+              : m.kind === 'openai_images'
+                ? channelImageSpecProblem(m.spec)
+                : '只有 openai_videos 与 openai_images 协议可以保存渠道规格'
         if (problem)
           problems.push(
-            `${name} / ${id} 的渠道规格不合法：${problem}。\n` +
+            `${name} / ${id} 的规格不合法：${problem}。\n` +
               `  在设置 → 模型中重新拉取，或修改 ${configPath()} 中该条目的 "spec"。`,
           )
       }

@@ -3,8 +3,9 @@
  * 两个函数都只计算新的配置对象，由调用方经 `replaceConfig` 保存；没有变化时返回 null。
  */
 
-import { formatMoney, MEDIA_KIND_OUTPUT } from '@qywork/core'
+import { defaultMediaKind, formatMoney, MEDIA_KIND_OUTPUT } from '@qywork/core'
 import type {
+  MediaLibraryModel,
   PulledModel,
   PullResult,
   RedactedConfig,
@@ -51,14 +52,34 @@ export function refreshPulled(
   return { ...cur, providers: { ...cur.providers, [provider]: next } }
 }
 
-/** 选定的型号；对话型号不在模型库中时可带对应型号。 */
+/** 选定的型号，`model` 已按对应型号确定类别（`withBase`）；未收录的型号可带对应型号。 */
 export interface PulledPick {
   model: PulledModel
   base?: string
 }
 
 /**
- * 添加选定的型号。对话型号写入价格，对应型号写入模型库覆盖（「型号 × 协议」）；生成型号写入协议与规格。
+ * 按对应型号确定添加时的类别。对应型号是生成目录中的型号时按该型号的类别添加，类别改变时协议按接口地址取默认值，
+ * 与 `identifyMediaModel` 中带后缀的名称相同；不在生成目录中时按对话型号添加。未选择对应型号时为拉取结果本身。
+ * 类别改变时不保留拉取到的价格与渠道规格：二者属于原类别。
+ */
+export function withBase(
+  model: PulledModel,
+  base: string | undefined,
+  library: readonly MediaLibraryModel[],
+  baseUrl: string | undefined,
+): PulledModel {
+  if (!base) return model
+  const output = library.find((m) => m.id === base)?.output ?? 'chat'
+  if (output === model.output) return model
+  return output === 'chat'
+    ? { id: model.id, output, known: false }
+    : { id: model.id, output, kind: defaultMediaKind(output, baseUrl), known: false }
+}
+
+/**
+ * 添加选定的型号。对话型号写入价格，对应型号写入模型库覆盖（「型号 × 协议」）；生成型号写入协议与规格，
+ * 对应型号写入 `spec: { base }`。
  * 接口原本没有对话型号时，第一个添加的对话型号成为默认模型；某一类生成没有默认模型时，第一个添加的成为默认。
  */
 export function addPulled(
@@ -82,7 +103,8 @@ export function addPulled(
       }
       continue
     }
-    media[model.id] = { kind: model.kind, ...(model.spec ? { spec: model.spec } : {}) }
+    const spec = model.spec ?? (base ? { base } : undefined)
+    media[model.id] = { kind: model.kind, ...(spec ? { spec } : {}) }
     const output = MEDIA_KIND_OUTPUT[model.kind]
     mediaDefaults[output] ??= { provider, model: model.id }
   }

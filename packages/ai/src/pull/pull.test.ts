@@ -60,6 +60,7 @@ test('木木：计费清单区分对话、图像与视频，视频带渠道规�
     id: 'X-SD25-301010',
     output: 'video',
     kind: 'openai_videos',
+    known: true,
     spec: {
       channel: 'mumugofe',
       seconds: [30],
@@ -156,10 +157,43 @@ test('没有计费清单时退回型号列表，带凭证请求，按生成目�
     source: 'models',
     models: [
       { id: 'gpt-5.6-sol', output: 'chat', known: true },
-      { id: 'veo-3.1-generate-preview', output: 'video', kind: 'veo_videos' },
+      { id: 'veo-3.1-generate-preview', output: 'video', kind: 'veo_videos', known: true },
     ],
   })
   expect(seen.find((s) => s.path === '/v1/models')?.auth).toBe('Bearer sk-test')
+})
+
+// 2026-10-22 ai.apii.cn 的 /v1/models 原样：只有名称，没有计费清单；其中 5 个曾被归为对话。
+test('型号列表中带后缀的生成型号按目录 id 识别，协议按接口地址取默认值', async () => {
+  const ids = [
+    'gpt-image-2',
+    'gpt-image-2.0-4k',
+    'gemini-3-pro-image-preview',
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.5-sunburst-4k',
+    'gpt-image-2.5-flare',
+    'gpt-image-2.5-flare-4k',
+  ]
+  const { target } = site({
+    '/v1/models': {
+      data: [...ids, 'gpt-image-2x'].map((id) => ({
+        id,
+        object: 'model',
+        owned_by: 'gpt-image2-api',
+      })),
+    },
+  })
+  const result = await pullModels(target, signal())
+  const by = new Map(result.models.map((m) => [m.id, m]))
+  for (const id of ids) expect(by.get(id)).toMatchObject({ output: 'image', kind: 'openai_images' })
+  expect(by.get('gpt-image-2')).toMatchObject({ known: true })
+  expect(by.get('gpt-image-2')).not.toHaveProperty('base')
+  expect(by.get('gpt-image-2.0-4k')).toMatchObject({ known: false, base: 'gpt-image-2' })
+  // 取最长的目录前缀；Gemini 名称经中转时不使用目录中的 Gemini 原生协议。
+  expect(by.get('gpt-image-2.5-sunburst-4k')).toMatchObject({ base: 'gpt-image-2.5-sunburst' })
+  expect(by.get('gemini-3-pro-image-preview')).toMatchObject({ base: 'gemini-3-pro-image' })
+  // 目录 id 之后不是分隔符时不识别。
+  expect(by.get('gpt-image-2x')).toMatchObject({ output: 'chat' })
 })
 
 test('两种来源都无法读取时报告失败的地址', async () => {

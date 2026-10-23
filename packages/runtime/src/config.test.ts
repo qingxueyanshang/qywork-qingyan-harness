@@ -435,6 +435,15 @@ test('保存的渠道规格不合法时阻止保存', () => {
   expect(bad(tiered({ '480p': 0.4 }))[0]).toContain('price 必须包含')
   expect(bad(tiered({ '480p': 0.4, '1080p': 0.6 }))[0]).toContain('price 必须包含')
 
+  // 对应型号：任一协议均可保存，必须是同类别的生成目录 id，且不能与渠道规格混合。
+  expect(bad({ base: 'gpt-image-2.5-sunburst' }, 'openai_images')).toEqual([])
+  expect(bad({ base: 'gemini-3-pro-image' }, 'openai_images')).toEqual([])
+  expect(bad({ base: 'gpt-image-2.5-sunburst' }, 'openai_videos')[0]).toContain(
+    'base 必须是生成目录中与该型号同类别的型号',
+  )
+  expect(bad({ base: 'not-in-catalog' }, 'openai_images')[0]).toContain('base 必须是')
+  expect(bad({ ...ok, base: 'doubao-seedance-2-5-260628' })[0]).toContain('对应型号只能包含 base')
+
   const image = {
     channel: 'mumugofe',
     resolutions: ['1K', '2K'],

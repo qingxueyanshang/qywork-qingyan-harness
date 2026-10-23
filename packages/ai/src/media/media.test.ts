@@ -97,6 +97,25 @@ describe('目录查找', () => {
     expect(findMediaModel('some-relay-image')).toBeUndefined()
   })
 
+  test('对应型号按目录 id 取参数表，id 与显示名称为自定义名称，不带单价', () => {
+    const spec = lookupMediaModel('gpt-image-2.5-sunburst-4k', 'openai_images', {
+      base: 'gpt-image-2.5-sunburst',
+    })
+    expect(spec).toMatchObject({
+      id: 'gpt-image-2.5-sunburst-4k',
+      displayName: 'gpt-image-2.5-sunburst-4k',
+      catalogued: true,
+      kind: 'openai_images',
+    })
+    expect(spec.params.map((p) => p.name)).toContain('quality')
+    expect(spec.price).toBeUndefined()
+    // 目录协议是 Gemini 原生且没有登记 OpenAI 兼容映射：使用协议默认。
+    const gemini = lookupMediaModel('gemini-3-pro-image-preview', 'openai_images', {
+      base: 'gemini-3-pro-image',
+    })
+    expect(gemini).toMatchObject({ id: 'gemini-3-pro-image-preview', catalogued: false })
+  })
+
   test('gpt-image-2 的质量只到 high，背景不提供透明', () => {
     const spec = lookupMediaModel('gpt-image-2', 'openai_images')
     const param = (name: string) => spec.params.find((p) => p.name === name)!

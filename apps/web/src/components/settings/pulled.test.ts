@@ -1,13 +1,14 @@
-/** 覆盖 `pulled.ts`：拉取结果刷新已添加型号、添加选定型号，以及两项摘要文字。 */
+/** 覆盖 `pulled.ts`：拉取结果刷新已添加型号、按对应型号确定类别、添加选定型号，以及两项摘要文字。 */
 import { expect, test } from 'bun:test'
 import type { ChannelImageSpec, ChannelVideoSpec } from '@qywork/core'
-import type { PullResult, RedactedConfig } from '../../lib/store/index.ts'
+import type { MediaLibraryModel, PullResult, RedactedConfig } from '../../lib/store/index.ts'
 import {
   addPulled,
   durationSummary,
   priceSummary,
   referenceSummary,
   refreshPulled,
+  withBase,
 } from './pulled.ts'
 
 const SPEC: ChannelVideoSpec = {
@@ -56,9 +57,9 @@ const RESULT: PullResult = {
   models: [
     { id: 'claude-sonnet-5-5', output: 'chat', known: true, price: PRICE },
     { id: 'deepseek-v4.1-flash', output: 'chat', known: false },
-    { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', spec: SPEC },
-    { id: 'seedance-2.5-deal', output: 'video', kind: 'openai_videos', spec: SPEC },
-    { id: 'gpt-image-2', output: 'image', kind: 'openai_images', spec: IMAGE },
+    { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', known: true, spec: SPEC },
+    { id: 'seedance-2.5-deal', output: 'video', kind: 'openai_videos', known: true, spec: SPEC },
+    { id: 'gpt-image-2', output: 'image', kind: 'openai_images', known: true, spec: IMAGE },
   ],
 }
 
@@ -113,6 +114,64 @@ test('添加：对话型号写价格与对应型号，生成型号写规格并�
   expect(addPulled(next, 'mumu', picks)).toBeNull()
 })
 
+const LIBRARY: MediaLibraryModel[] = [
+  {
+    id: 'gpt-image-2.5-sunburst',
+    label: 'GPT Image 2.5 Sunburst',
+    vendor: 'OpenAI',
+    kind: 'openai_images',
+    kinds: ['openai_images'],
+    output: 'image',
+    operations: ['generate', 'edit'],
+    maxImages: 16,
+    maxVideos: 0,
+    params: [],
+  },
+]
+
+test('对应型号决定类别：生成型号改为该类别，类别改变时不保留原类别的价格', () => {
+  const relay = 'https://ai.apii.cn/'
+  const chat = RESULT.models[1]!
+  expect(withBase(chat, 'gpt-image-2.5-sunburst', LIBRARY, relay)).toEqual({
+    id: 'deepseek-v4.1-flash',
+    output: 'image',
+    kind: 'openai_images',
+    known: false,
+  })
+  expect(withBase(RESULT.models[0]!, 'gpt-image-2.5-sunburst', LIBRARY, relay)).not.toHaveProperty(
+    'price',
+  )
+  const alias = {
+    id: 'gpt-image-2.5-sunburst-4k',
+    output: 'image' as const,
+    kind: 'openai_images' as const,
+    known: false,
+    base: 'gpt-image-2.5-sunburst',
+  }
+  expect(withBase(alias, 'gpt-image-2.5-sunburst', LIBRARY, relay)).toBe(alias)
+  expect(withBase(alias, 'deepseek-flash', LIBRARY, relay)).toEqual({
+    id: 'gpt-image-2.5-sunburst-4k',
+    output: 'chat',
+    known: false,
+  })
+  expect(withBase(chat, undefined, LIBRARY, relay)).toBe(chat)
+})
+
+test('添加：生成型号的对应型号写入 spec.base', () => {
+  const model = {
+    id: 'gpt-image-2.5-sunburst-4k',
+    output: 'image' as const,
+    kind: 'openai_images' as const,
+    known: false,
+  }
+  const next = addPulled(base(), 'mumu', [{ model, base: 'gpt-image-2.5-sunburst' }])!
+  expect(next.providers.mumu!.media!['gpt-image-2.5-sunburst-4k']).toEqual({
+    kind: 'openai_images',
+    spec: { base: 'gpt-image-2.5-sunburst' },
+  })
+  expect(next.catalog).toBeUndefined()
+})
+
 test('接口原本没有对话型号时，第一个添加的成为默认模型', () => {
   const cfg = base()
   cfg.providers.mumu!.models = {}
@@ -130,6 +189,7 @@ test('摘要：时长与素材上限、价格', () => {
     id: 'v',
     output: 'video' as const,
     kind: 'openai_videos' as const,
+    known: true,
     spec: { ...SPEC, seconds: [5, 30], maxVideos: 10, maxAudios: 10 },
   }
   expect([durationSummary(full), referenceSummary(full)]).toEqual([

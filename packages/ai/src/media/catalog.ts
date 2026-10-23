@@ -21,7 +21,6 @@
 
 import {
   type ChannelImageSpec,
-  type ChannelSpec,
   type ChannelVideoSpec,
   type Currency,
   MEDIA_KIND_OUTPUT,
@@ -29,6 +28,7 @@ import {
   type MediaParamDefinition,
   type MediaQuote,
   type MentionStyle,
+  type StoredMediaSpec,
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import { QWEN_AUDIO_MODELS } from './catalog-qwen-audio.ts'
@@ -1634,15 +1634,24 @@ export function mediaKindsOf(spec: MediaModelSpec): MediaKind[] {
 }
 
 /**
- * 模型在指定协议上的规格。顺序唯一：配置中保存的渠道规格 → 同协议的目录条目 → 已登记的协议映射 → 协议默认。
+ * 模型在指定协议上的规格。顺序唯一：配置中保存的规格 → 同协议的目录条目 → 已登记的协议映射 → 协议默认。
  *
- * `saved` 是拉取时由渠道目录得到、保存在该型号配置中的规格（`StoredMediaModel.spec`），用于 `openai_videos` 与
+ * `saved` 是保存在该型号配置中的规格（`StoredMediaModel.spec`）。渠道规格由拉取时的渠道目录得到，用于 `openai_videos` 与
  * `openai_images`；配置校验保证视频协议保存视频规格、图像协议保存图像规格。保存的规格先于目录：中转的型号可与内置型号同名
- * （如 gpt-image-2），请求结构与价格以渠道为准。
+ * （如 gpt-image-2），请求结构与价格以渠道为准。对应型号 `{ base }` 按该目录 id 在同一协议上取规格，id 与显示名称为自定义名称，
+ * 不带单价。
  * 生成工具、画布、提示词与适配器都经由本函数取得规格，调用方必须传入同一份保存的规格，否则各处参数不一致。
  * 没有映射的组合使用协议默认，不继承无法正确序列化的原生参数、输入能力或官方单价。
  */
-export function lookupMediaModel(id: string, kind: MediaKind, saved?: ChannelSpec): MediaModelSpec {
+export function lookupMediaModel(
+  id: string,
+  kind: MediaKind,
+  saved?: StoredMediaSpec,
+): MediaModelSpec {
+  if (saved && 'base' in saved) {
+    const { price: _price, ...rest } = lookupMediaModel(saved.base, kind)
+    return { ...rest, id, displayName: id }
+  }
   if (saved && kind === 'openai_videos') return channelMediaSpec(id, saved as ChannelVideoSpec)
   if (saved && kind === 'openai_images') return channelImageMediaSpec(id, saved as ChannelImageSpec)
   const exact = SEEDS.find((m) => m.id === id && m.kind === kind)
