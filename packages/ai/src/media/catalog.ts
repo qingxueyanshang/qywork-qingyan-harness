@@ -31,6 +31,7 @@ import {
   type StoredMediaSpec,
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
+import { MINIMAX_AUDIO_MODELS, MINIMAX_VOICE } from './catalog-minimax-audio.ts'
 import { QWEN_AUDIO_MODELS } from './catalog-qwen-audio.ts'
 import { channelImageMediaSpec, channelMediaSpec } from './channels.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
@@ -1184,6 +1185,7 @@ const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: 
 const SEEDS: readonly MediaModelSpec[] = [
   ...GOOGLE_XAI_MODELS,
   ...QWEN_AUDIO_MODELS,
+  ...MINIMAX_AUDIO_MODELS,
   spec(
     'gpt-image-2',
     'GPT Image 2',
@@ -1604,6 +1606,14 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     operations: SPEECH_OPERATIONS,
     inputs: NO_INPUTS,
     params: qwenSpeechParams.filter((p) => p.name === 'voice'),
+    catalogued: false,
+  },
+  minimax_speech: {
+    vendor: null,
+    kind: 'minimax_speech',
+    operations: SPEECH_OPERATIONS,
+    inputs: NO_INPUTS,
+    params: [MINIMAX_VOICE],
     catalogued: false,
   },
   dashscope_videos: {
