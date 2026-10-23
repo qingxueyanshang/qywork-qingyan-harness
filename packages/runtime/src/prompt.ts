@@ -121,7 +121,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'write_memory',
-    line: '- 记忆写入：用户说明的偏好、项目约定以及后续可复用的结论用 write_memory 保存。默认 scope=project；用户明确指定全局时必须传 scope=global。',
+    line: '- 记忆写入：用户纠正做法、否定方案、认可某一做法或说明其工作习惯时，将其提炼为适用于其他任务的规则，用 write_memory 保存。默认 scope=project；用户明确指定全局时必须传 scope=global。',
   },
   {
     tool: 'move_memory',
@@ -530,7 +530,7 @@ export function buildTailNotes(input: {
   if (input.memories?.length) {
     const list = input.memories.map((m) => `- ${m.key}：${m.preview}`).join('\n')
     notes.push({
-      content: `## 已记住的事实（需要正文时用 read_memory 读取）\n${list}`,
+      content: `## 长期记忆（需要正文时用 read_memory 读取）\n${list}`,
       group: 'memory',
     })
   }

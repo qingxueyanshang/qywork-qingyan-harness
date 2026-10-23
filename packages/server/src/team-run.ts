@@ -194,6 +194,7 @@ export async function runBuiltinMember(
     content: deps.content,
     workspaceRoot: ctx.workspaceRoot,
     signal: controller.signal,
+    member: true,
     ...(extraSystem ? { extraSystem } : {}),
     ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
     /*
