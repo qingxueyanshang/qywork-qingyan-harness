@@ -45,6 +45,9 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
        * register），而账本中该行仍为 running，界面持续显示运行中，只能重启应用恢复。
        */
       const stoppedRun = deps.runs.interruptConversation(cmd.conversationId)
+      const stopping = new Set(
+        deps.subagents.listOf(cmd.conversationId).map((entry) => entry.subagentId),
+      )
       const stoppedSubagents = deps.subagents.interruptConversation(cmd.conversationId)
       if (!stoppedRun && !stoppedSubagents) {
         reject(deps.ws, cmd.type, 'conflict', '本轮已结束')
@@ -53,9 +56,10 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       /*
        * 图中尚未派发的节点一并写入终态。否则这些节点会一直等待：approve 无法通过
        * （上游回执不全），revise 也无法通过（指定的节点没有终态），该图无法结束。
+       * 刚停止的子 agent 所在节点除外，其终态由完成回调写入。
        */
       for (const run of listRuns(deps.store, cmd.conversationId)) {
-        for (const changed of interruptRunningNodes(deps.store, run.id)) {
+        for (const changed of interruptRunningNodes(deps.store, run.id, stopping)) {
           deps.bus.publish(
             {
               type: 'team.member',

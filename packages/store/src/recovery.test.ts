@@ -507,4 +507,46 @@ describe('重启回收扫描派发任务卡上的节点', () => {
     expect(nodes?.fast).toMatchObject({ phase: 'done' })
     store.close()
   })
+
+  /**
+   * 回归测试：卡所在 run 的归属进程仍在运行，另一个共用账本的进程启动并执行回收。
+   * 不检查归属时，仍在执行的节点被写为中断，父会话随即对该节点发起 revise，而其子 agent 仍在执行。
+   */
+  test('归属进程仍在运行时不回收其卡上的节点', () => {
+    const { store, ws, conv } = fresh()
+    const run = newRun(store, ws, conv)
+    markRunRunning(store, run.id)
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'workflow',
+      status: 'running',
+      payload: { kind: 'tool_call', args: {} } as never,
+    })
+    setStepNodeState(store, step.id, 'f1', { phase: 'done', label: '后台', durationMs: 1 })
+    setStepNodeState(store, step.id, 'f2', {
+      phase: 'working',
+      label: '小程序',
+      subagentId: 'cv_child' as never,
+    })
+    setStepNodeState(store, step.id, 'f3', { phase: 'queued', label: '排队' })
+    settleToolStep(store, step.id, 'success', {
+      kind: 'tool_result',
+      args: {},
+      outcome: { status: 'success', executed: true, message: '已起跑' },
+    })
+    finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
+    // 父进程必然存活，且不是本进程：符合「另一个仍在运行的进程」的条件。
+    store.db.query('UPDATE runs SET owner_pid = ? WHERE id = ?').run(process.ppid, run.id)
+
+    recoverStaleRuns(store)
+
+    const nodes = (
+      listSteps(store, run.id)[0]?.payload as { nodes?: Record<string, Record<string, unknown>> }
+    ).nodes
+    expect(nodes?.f2).toEqual({ phase: 'working', label: '小程序', subagentId: 'cv_child' })
+    expect(nodes?.f3).toEqual({ phase: 'queued', label: '排队' })
+    store.close()
+  })
 })

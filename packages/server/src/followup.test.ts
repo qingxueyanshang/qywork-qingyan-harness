@@ -732,7 +732,7 @@ describe('回执进入同一条队列', () => {
  * 遗漏任何一类的结果相同：界面上该会话仍显示运行中，而用户已经点击过停止。
  */
 describe('按会话停止', () => {
-  test('run 与子 agent 一并停止，图上未进入终态的节点标记为中断', async () => {
+  test('run 与子 agent 一并停止，其余未进入终态的节点标记为中断', async () => {
     const cv = conversation()
     const held = gate(textTurn('不会用到。'))
     script = [held.turn]
@@ -750,6 +750,11 @@ describe('按会话停止', () => {
       payload: { kind: 'tool_call', args: {} },
     })
     setStepNodeState(store, step.id, 'slow', { phase: 'working', label: '慢' })
+    setStepNodeState(store, step.id, 'child', {
+      phase: 'working',
+      label: '子',
+      subagentId: 'cv_child' as never,
+    })
     const controller = new AbortController()
     subagents.add(cv, 'cv_child', { name: '慢', kind: 'temp', controller })
 
@@ -767,6 +772,8 @@ describe('按会话停止', () => {
       }
     ).nodes
     expect(nodes?.slow?.phase).toBe('interrupted')
+    // 刚停止的子 agent 仍在退出，其节点由完成回调写入终态；在此写为中断时，此期间的修订会再次派发它。
+    expect(nodes?.child?.phase).toBe('working')
     expect(events.some((f) => f.event.type === 'team.member')).toBe(true)
     held.release()
     subagents.remove(cv, 'cv_child', controller)

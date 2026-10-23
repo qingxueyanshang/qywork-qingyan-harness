@@ -893,6 +893,55 @@ describe('图按事件推进', () => {
     expect(third.result.completed).toBe(true)
   })
 
+  /**
+   * 原始失败形状：修订作废了仍在执行的节点，再次派发因其子 agent 仍在执行而被拒绝，节点被写为失败；
+   * 原执行完毕时的终态被修订卡片上的失败覆盖，检查点回执写的是「失败：正在执行」，产出不再送达。
+   */
+  test('作废范围内有节点仍在执行时拒绝修订，该节点的产出照常送达', async () => {
+    const parent = conversation()
+    const slow = gate()
+    router = (body) =>
+      body.includes('做 B')
+        ? slow.respond()
+        : new Response(textTurn('A 的产出'), { headers: SSE_HEADERS })
+    const runId = run(parent, 'wf-revise-busy')
+    const first = await invoke(parent, runId, 1, twoStage, parsedStart(twoStage))
+    await until(() => receipts.length > 0, '检查点回执')
+
+    const approveArgs = {
+      workflowId: first.step.id,
+      checkpointId: 'cp',
+      decision: 'approve' as const,
+      note: '通过',
+    }
+    await invoke(parent, runId, 2, approveArgs, { kind: 'review', ...approveArgs, revisions: [] })
+    await until(slow.arrived, 'B 发出请求')
+
+    const reviseArgs = {
+      workflowId: first.step.id,
+      checkpointId: 'cp',
+      decision: 'revise' as const,
+      note: '重做',
+      revisions: [{ nodeId: 'a', instruction: '重做 A' }],
+    }
+    const revised = await invoke(parent, runId, 3, reviseArgs, { kind: 'review', ...reviseArgs })
+    expect(revised.result).toEqual({ ok: false, error: '节点 b 正在执行，收到其回执后再修订' })
+    settleToolStep(store, revised.step.id, 'failure', {
+      kind: 'tool_result',
+      args: reviseArgs,
+      outcome: { status: 'failure', executed: true, message: revised.result.error ?? '' },
+    })
+
+    slow.open('B 的产出')
+    await until(
+      () => receipts.some((r) => r.content.includes('checkpointId=cp2')),
+      '第二个检查点回执',
+    )
+    const receipt = receipts.find((r) => r.content.includes('checkpointId=cp2'))?.content
+    expect(receipt).toContain('### b（b）已返回')
+    expect(receipt).toContain('B 的产出')
+  })
+
   test('一个节点失败：先单独发送失败回执，其余节点照常执行', async () => {
     const parent = conversation()
     const parallel = {
