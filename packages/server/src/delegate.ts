@@ -228,12 +228,19 @@ export function makeDelegate(ctx: {
   /**
    * 解析派发目标。已有子 agent 按 id 取得，并校验其属于本会话；新建时立即写入一条会话记录，
    * id 随即固定，进度事件与图卡片在子 agent 开始运行之前即可取得入口。
+   *
+   * 角色库与 CLI 清单在开头一次读取，其后全部同步执行：停止只需在读取之后检查一次，
+   * 检查通过之后不再有 await，停止无法插入到改名、新建子会话与登记之间。
    */
   const resolveTarget = async (
     target: SubagentTarget,
+    signal: AbortSignal,
     model?: string,
     provider?: string,
   ): Promise<Resolved | { error: string }> => {
+    const [{ roles }, clis] = await Promise.all([team(), detectClis()])
+    if (signal.aborted) return { error: '已停止' }
+    const findDetected = (id: string) => clis.find((c) => c.id === id)
     const parent = getConversation(deps.store, conversationId)
     if (!parent) return { error: '未找到当前会话' }
 
@@ -246,7 +253,7 @@ export function makeDelegate(ctx: {
         return { error: `本会话中没有子 agent ${target.subagent}` }
       }
       if (child.source === 'cli') {
-        const cli = child.sourceRef ? await findCli(child.sourceRef) : null
+        const cli = child.sourceRef ? findDetected(child.sourceRef) : null
         if (!cli) return { error: `本机未识别到 ${child.sourceRef}` }
         const conversation = retitle(child, target.name)
         // 无法续接会话时照常执行，但将该事实返回给模型：子 agent 只收到了本次的指令。
@@ -259,7 +266,7 @@ export function makeDelegate(ctx: {
       }
       const conversation = retitle(child, target.name)
       if (conversation.source === 'role') {
-        const found = (await team()).roles.find((r) => r.id === conversation.sourceRef)
+        const found = roles.find((r) => r.id === conversation.sourceRef)
         if (found) return { conversation, role: found, cli: null, created: false }
         return {
           conversation,
@@ -279,7 +286,7 @@ export function makeDelegate(ctx: {
           error: `${target.cli} 使用自身的模型，无法指定 ${provider ? `${provider}/` : ''}${model ?? ''}`,
         }
       }
-      const cli = await findCli(target.cli)
+      const cli = findDetected(target.cli)
       if (!cli) return { error: `本机未识别到 ${target.cli}` }
       const conversation = createConversation(deps.store, {
         workspaceId: parent.workspaceId,
@@ -297,7 +304,7 @@ export function makeDelegate(ctx: {
     if ('error' in picked) return picked
     let role: Role
     if (target.kind === 'role') {
-      const found = (await team()).roles.find((r) => r.id === target.role)
+      const found = roles.find((r) => r.id === target.role)
       if (!found) return { error: `本项目中没有角色 ${target.role}` }
       role = found
     } else {
@@ -432,10 +439,45 @@ export function makeDelegate(ctx: {
       error: string,
     ) => {
       note(at, nodeId)({ phase: 'failed', ...state, error })
+      deps.runs.announce(conversationId)
       if (at.workflow) continueGraph(at.workflow.workflowId, at, { nodeId, failed: true })
       return { ok: false as const, error }
     }
-    const resolved = await resolveTarget(target, at.model, at.provider)
+    /*
+     * 先登记再解析目标。解析需要 await，登记之前的停止无法到达本次派发：节点被写为中断，
+     * 子 agent 随后照常启动，其回执在停止之后再发起一轮。子 agent id 在解析之后才确定，
+     * 因此先以本次派发的临时键登记，解析完成后改用子 agent id，两次登记之间没有 await。
+     */
+    const controller = new AbortController()
+    const dispatchKey = `dispatch_${crypto.randomUUID()}`
+    deps.subagents.add(conversationId, dispatchKey, {
+      name: targetLabel(target),
+      kind: 'subagent' in target ? 'temp' : target.kind,
+      controller,
+    })
+    deps.runs.announce(conversationId)
+    let resolved: Awaited<ReturnType<typeof resolveTarget>>
+    try {
+      resolved = await resolveTarget(target, controller.signal, at.model, at.provider)
+    } finally {
+      deps.subagents.remove(conversationId, dispatchKey, controller)
+    }
+    // 与执行中被停止的节点相同：写入中断，不推进图，不发送回执。
+    if (controller.signal.aborted) {
+      note(
+        at,
+        nodeId,
+      )({
+        phase: 'interrupted',
+        label: targetLabel(target),
+        ...('subagent' in target
+          ? { subagentId: target.subagent as ConversationId }
+          : { kind: target.kind }),
+        error: '已停止',
+      })
+      deps.runs.announce(conversationId)
+      return { ok: false as const, error: '已停止' }
+    }
     if ('error' in resolved) {
       // 只提供子 agent id 时无法判定种类：该会话未能解析，无法取得记录。
       return refuse(
@@ -460,13 +502,11 @@ export function makeDelegate(ctx: {
           : `子 agent ${label} 正在执行，回执返回后再派发`,
       )
     }
-    const controller = new AbortController()
     deps.subagents.add(conversationId, id, {
       name: label,
       kind: resolved.conversation.source ?? 'temp',
       controller,
     })
-    deps.runs.announce(conversationId)
     note(at, nodeId)({ phase: 'working', label, ...kindOf, subagentId: id })
 
     const started = Date.now()
