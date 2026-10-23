@@ -1106,6 +1106,15 @@ describe('卡片返回后节点仍可写入终态', () => {
     store.close()
   })
 
+  /** 原始失败形状：节点先被写为中断，执行完毕后写入 done，卡片上的完成节点仍带着「调用中断」。 */
+  test('写入节点状态整条替换，不保留上一状态的字段', () => {
+    const { store, step, nodes } = returnedCard()
+    setStepNodeState(store, step.id, 'fast', { phase: 'done', label: '快', durationMs: 3 })
+    expect(nodes()?.fast).toMatchObject({ phase: 'done' })
+    expect(nodes()?.fast?.error).toBeUndefined()
+    store.close()
+  })
+
   /**
    * run 结束时不修改节点：子 agent 的生命周期跟随会话，本轮结束时它仍在运行，
    * 回执几分钟后才到达。标为中断时，回执到达后节点上显示的是「中断」。

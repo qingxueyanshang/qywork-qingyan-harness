@@ -1388,9 +1388,12 @@ export function recoverStaleRuns(
     // 子 agent 的生命周期与会话一致，其终态写在一张早已返回的卡上。重启之后
     // 进程中已无接收方处理该回执，节点停留在「进行中」时，该图既无法 approve
     // 也无法 revise。
+    //
+    // 节点只回收归属进程已不在运行的 run：卡上节点的终态由该 run 的归属进程在子 agent 完成时写入。
+    // 不检查归属时，共用账本的任一进程启动都会把其他进程中仍在执行的节点写为中断。
     const orphanRuns = store.db
-      .query<{ run_id: string }, []>(
-        `SELECT DISTINCT s.run_id AS run_id FROM steps s
+      .query<{ run_id: string; ownerPid: number | null }, []>(
+        `SELECT DISTINCT s.run_id AS run_id, r.owner_pid AS ownerPid FROM steps s
          JOIN runs r ON r.id = s.run_id
          WHERE r.status NOT IN ('running','queued')
            AND (s.status = 'running'
@@ -1404,7 +1407,7 @@ export function recoverStaleRuns(
       .all()
     for (const o of orphanRuns) {
       settleRunningSteps(store, o.run_id as RunId)
-      interruptRunningNodes(store, o.run_id as RunId)
+      if (!ownerAlive(o.ownerPid)) interruptRunningNodes(store, o.run_id as RunId)
     }
 
     // 与上方的孤儿 step 同理：账本中可能存在 run 已收尾而已发送请求未写入终态的记录。
@@ -1451,12 +1454,20 @@ const HEARTBEAT_STALE_MS = 60_000
  * pid 判据只会因 pid 复用而误判，心跳判据只会因崩溃后立即重启而误判，因此两者都必须保留。
  */
 function isOrphan(ownerPid: unknown, heartbeatAt: unknown): boolean {
-  const pid = Number(ownerPid)
-  if (!Number.isInteger(pid) || pid <= 0) return true
-  if (pid === process.pid) return true
-  if (!pidAlive(pid)) return true
+  if (!ownerAlive(ownerPid)) return true
   const beat = Number(heartbeatAt)
   return !Number.isFinite(beat) || Date.now() - beat > HEARTBEAT_STALE_MS
+}
+
+/**
+ * 归属进程是否仍在运行：`isOrphan` 的前三条判据，不含心跳。
+ *
+ * 终态 run 不再更新心跳（`touchRun`），判断其派发任务卡上的节点是否仍有进程处理时只能使用本函数。
+ * pid 被复用时会判为存活，该卡上的节点推迟到之后某次启动时回收。
+ */
+function ownerAlive(ownerPid: unknown): boolean {
+  const pid = Number(ownerPid)
+  return Number.isInteger(pid) && pid > 0 && pid !== process.pid && pidAlive(pid)
 }
 
 function pidAlive(pid: number): boolean {
@@ -1529,10 +1540,14 @@ export function settleRunningSteps(store: Store, runId: RunId): void {
  * 调用点只有两处：用户停止会话，以及重启回收（进程中已无接收方处理这些回执）。
  *
  * 不限于仍为 running 的卡：派发后立即返回，节点的终态写在一张已返回的卡上。
+ *
+ * `stopping` 是本次已停止、仍在退出的子 agent 会话 id。执行它们的节点不在此处改写，
+ * 由其完成回调写入终态：提前写入时账本显示已结束而子 agent 仍在执行，此期间的修订会再次派发它。
  */
 export function interruptRunningNodes(
   store: Store,
   runId: RunId,
+  stopping?: ReadonlySet<string>,
 ): { stepId: string; nodeId: string; state: NodeState }[] {
   const cards = store.db
     .query<{ id: string; payload: string }, [string]>(
@@ -1546,6 +1561,7 @@ export function interruptRunningNodes(
     let dirty = false
     for (const [nodeId, state] of Object.entries(payload.nodes)) {
       if (SETTLED_PHASES.has(state.phase)) continue
+      if (state.phase === 'working' && state.subagentId && stopping?.has(state.subagentId)) continue
       const next: NodeState = { ...state, phase: 'interrupted', error: '调用中断' }
       payload.nodes[nodeId] = next
       changed.push({ stepId: card.id, nodeId, state: next })
@@ -2007,7 +2023,10 @@ const SETTLED_PHASES: ReadonlySet<NodePhase> = new Set(['done', 'failed', 'skipp
  * 不限制卡的状态：一个节点失败后卡先返回父会话，其余节点照常运行，
  * 它们的终态仍写在派发它们的卡上。
  *
- * 节点 id 由模型给出，可能含点号或方括号，因此用 `json_object` 构造键再以 `json_patch` 合并。
+ * 整条替换该节点的状态，与界面按 `team.member` 逐个节点替换一致。先以 null 删除旧键再写入：
+ * `json_patch` 是逐字段合并，直接写入时上一状态的字段（如中断留下的 `error`）会残留在新状态中。
+ *
+ * 节点 id 由模型给出，可能含点号或方括号，因此用 `json_object` 构造键再以 `json_patch` 写入。
  * 不要改成把 id 拼入 JSON 路径字符串：这类 id 会被解释为路径分隔符。
  */
 export function setStepNodeState(store: Store, id: StepId, nodeId: string, state: NodeState): void {
@@ -2018,13 +2037,16 @@ export function setStepNodeState(store: Store, id: StepId, nodeId: string, state
              coalesce(payload, '{}'),
              '$.nodes',
              json_patch(
-               coalesce(json_extract(payload, '$.nodes'), json('{}')),
+               json_patch(
+                 coalesce(json_extract(payload, '$.nodes'), json('{}')),
+                 json_object(?, NULL)
+               ),
                json_object(?, json(?))
              )
            )
        WHERE id = ? AND kind = 'tool_action'`,
     )
-    .run(nodeId, JSON.stringify(state), id)
+    .run(nodeId, nodeId, JSON.stringify(state), id)
 }
 
 type ToolResultPayload = Extract<StepPayload, { kind: 'tool_result' }>

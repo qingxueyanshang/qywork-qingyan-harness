@@ -13,6 +13,7 @@ import {
   checkpointOutput,
   type NodeState,
   readyCheckpoint,
+  revisionClosure,
   type SubagentTarget,
   targetLabel,
   type WorkflowAgentNode,
@@ -203,6 +204,19 @@ function applyReview(
       throw new Error(`节点 ${revision.nodeId} 尚无终态，收到其回执后再修订`)
     }
   }
+  /*
+   * 作废范围内的节点也不能处于执行中：修订把它们重置为等待，再次派发时其子 agent 仍在执行而被拒绝；
+   * 原执行完毕时的终态写在较早的卡片上，折叠时被修订卡片上的状态覆盖，其产出不再送达。
+   * 只在此处检查，不放入 `applyRevision`：折叠回放的是已接受的修订，回放读到的节点状态可能写于该次修订之后。
+   */
+  const closure = revisionClosure(
+    plan,
+    checkpoint.id,
+    Object.keys(approvals),
+    review.revisions.map((revision) => revision.nodeId),
+  )
+  const busy = closure.ok ? closure.nodeIds.filter((id) => states[id]?.phase === 'working') : []
+  if (busy.length) throw new Error(`节点 ${busy.join('、')} 正在执行，收到其回执后再修订`)
   const applied = applyRevision(plan, states, approvals, review)
   if (!applied.ok) throw new Error(applied.error)
   return { checkpointId: checkpoint.id, decision: 'revise', note: review.note }
