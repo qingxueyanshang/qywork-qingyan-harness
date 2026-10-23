@@ -335,10 +335,10 @@
   align-items: center;
   min-width: 0;
 }
-/* 行内控件不铺满整行：宽度由内容决定，即「有界」的含义。 */
-.setting-row-control select {
-  width: auto;
-  min-width: 140px;
+/* 行内下拉框保持紧凑的固定宽度，切换选项时不改变位置。 */
+.setting-row-control select,
+.model-access select {
+  width: 144px;
 }
 
 /* 没有内核沙箱是**危险的默认状态**，必须醒目显示，因此标题使用警告色，不与
@@ -631,8 +631,7 @@ fieldset.seg {
   font-family: inherit;
 }
 /*
- * 下拉框完全自绘。不清除 `appearance` 时，它在 Windows 上是系统控件：
- * 自带边框与按钮式箭头，与相邻输入框样式不一致。
+ * 下拉框使用可样式化的原生控件，按钮与展开列表共用页面的中性色阶。
  *
  * 箭头由两道 `linear-gradient` 拼成，**不使用 SVG 的 data URI**：data URI 中无法读取
  * CSS 变量，颜色只能固定为某个灰色，而本仓库只有一条中性色阶（`tokens.css` 开头部分）。
@@ -641,8 +640,9 @@ fieldset.seg {
  */
 .field select,
 .setting-row select,
+.model-access select,
 .pull-base {
-  appearance: none;
+  appearance: base-select;
   padding-right: 26px;
   background-image:
     linear-gradient(45deg, transparent 50%, currentColor 50%),
@@ -653,7 +653,41 @@ fieldset.seg {
   background-size: 4px 4px;
   background-repeat: no-repeat;
 }
-/* 铺满宽度只用于「宽度无界」的控件。行式布局中的下拉框宽度由内容决定
+
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(select) {
+  appearance: base-select;
+  max-height: min(480px, 60vh);
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-subtle) transparent;
+}
+
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+:is(.field select, .setting-row select, .model-access select, .pull-base)::picker-icon {
+  display: none;
+}
+
+:is(.field select, .setting-row select, .model-access select, .pull-base) option {
+  min-height: 24px;
+  padding: 2px var(--s-2);
+}
+
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+:is(.field select, .setting-row select, .model-access select, .pull-base) option::checkmark {
+  display: none;
+}
+
+:is(.field select, .setting-row select, .model-access select, .pull-base) option:checked,
+:is(.field select, .setting-row select, .model-access select, .pull-base) option:hover {
+  background: var(--bg-active);
+}
+
+/* 铺满宽度只用于「宽度无界」的控件。行式布局中的下拉框保持紧凑的固定宽度
    （见上方 `.setting-row-control select`），铺满会把三个选项的下拉框拉伸为整行宽度。 */
 .field input,
 .field select,
@@ -668,6 +702,7 @@ fieldset.seg {
 .setting-row input:focus,
 .setting-row select:focus,
 .setting-row textarea:focus,
+.model-access select:focus,
 .pull-base:focus {
   outline: none;
   border-color: var(--accent);
@@ -979,7 +1014,7 @@ textarea.code-area::placeholder {
   color: var(--text-secondary);
 }
 .model-access select {
-  padding: 3px var(--s-2);
+  padding: 3px 26px 3px var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-xs);
   background-color: var(--bg-inset);
@@ -1900,6 +1935,7 @@ textarea.code-area::placeholder {
 /* 对应型号：边框、底色、箭头、聚焦与设置页的下拉框共用上方的规则；此处缩小上下内距与字号，
    使下拉框不超过行高。 */
 .pull-base {
+  width: 200px;
   max-width: 200px;
   padding-top: 1px;
   padding-bottom: 1px;
