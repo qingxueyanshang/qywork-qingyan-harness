@@ -39,6 +39,7 @@ import {
   createConversation,
   createRun,
   getConversation,
+  listChildConversations,
   listConversationChangesPage,
   listMessages,
   listRuns,
@@ -660,6 +661,27 @@ describe('运行表按会话管理', () => {
     expect(subagents.interruptConversation(cid)).toBe(true)
 
     await until(() => phasesOf('child').includes('interrupted'), '格落中断')
+    expect(receipts).toEqual([])
+    expect(runs.isBusy(cid)).toBe(false)
+  })
+
+  /**
+   * 原始失败形状：解析目标期间按会话停止，派发尚未登记，停止无法到达它；
+   * 节点被写为中断后子 agent 照常启动，回执在停止之后再发起一轮。
+   */
+  test('解析目标期间停止：子 agent 不启动，节点写入中断，不投递回执', async () => {
+    const cid = conversation()
+    router = say('不应执行')
+    const pending = delegate(cid).dispatch({
+      target: { kind: 'temp', name: '临时' },
+      task: '去查一下',
+      ...spot(cid),
+    })
+    expect(subagents.interruptConversation(cid)).toBe(true)
+
+    expect(await pending).toEqual({ ok: false, error: '已停止' })
+    expect(phasesOf('child').at(-1)).toBe('interrupted')
+    expect(listChildConversations(store, cid)).toEqual([])
     expect(receipts).toEqual([])
     expect(runs.isBusy(cid)).toBe(false)
   })
