@@ -96,6 +96,14 @@ describe('目录查找', () => {
     expect(spec.params.map((p) => p.name)).toEqual(['size', 'n'])
     expect(findMediaModel('some-relay-image')).toBeUndefined()
   })
+
+  test('gpt-image-2 的质量只到 high，背景不提供透明', () => {
+    const spec = lookupMediaModel('gpt-image-2', 'openai_images')
+    const param = (name: string) => spec.params.find((p) => p.name === name)!
+    expect(param('quality').values).toEqual(['low', 'medium', 'high', 'auto'])
+    expect(param('background').values).toEqual(['opaque', 'auto'])
+    expect(spec.price).toBeDefined()
+  })
 })
 
 describe('参数校验', () => {
