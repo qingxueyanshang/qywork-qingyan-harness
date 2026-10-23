@@ -170,6 +170,11 @@ export function registerBuiltinTools(
     office?: boolean
     /** 已配置模型的生成类别。各类别的生成工具只在该类别有模型时注册。 */
     media?: readonly MediaOutput[]
+    /**
+     * Agent Team 成员与子 agent 的会话。只注册 `read_memory`：记忆的写入时机来自用户本人的纠正与说明，
+     * 成员会话收到的消息是主会话的派发正文。
+     */
+    member?: boolean
   } = {},
 ): void {
   const shell = commandShell()
@@ -197,9 +202,7 @@ export function registerBuiltinTools(
     // Office 同样按通道注册：没有 Python 与文档库时调用必然失败。
     ...(opts.office ? officeTools : []),
     readMemoryTool,
-    writeMemoryTool,
-    deleteMemoryTool,
-    moveMemoryTool,
+    ...(opts.member ? [] : [writeMemoryTool, deleteMemoryTool, moveMemoryTool]),
     importSkillTool,
     readSkillTool,
     writeSkillTool,

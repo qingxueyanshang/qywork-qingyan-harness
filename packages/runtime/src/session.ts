@@ -169,6 +169,8 @@ export interface SessionOptions {
    * 未传入表示全部内置工具。将两者合并会使「只读、不写」等配置静默失效。
    */
   allowedTools?: string[]
+  /** Agent Team 成员与子 agent 的会话：不注册写入、删除与迁移记忆的工具，理由见 `registerBuiltinTools`。 */
+  member?: true
   /**
    * 派发通道。见 `DelegatePort`。
    *
@@ -341,6 +343,7 @@ export class Session {
       office: opts.office !== undefined,
       // 生成工具按已配置模型的类别注册；与其他内置工具规则相同，角色的 allowedTools 指定工具时按指定的工具过滤。
       media: mediaOn ? [...new Set(listMediaModels(opts.config).map((m) => m.output))] : [],
+      member: opts.member === true,
     }
     if (opts.allowedTools === undefined) {
       registerBuiltinTools(this.registry, withDelegate)

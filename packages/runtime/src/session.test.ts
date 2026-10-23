@@ -155,6 +155,20 @@ describe('派发工具只提供给有派发通道的会话', () => {
   })
 })
 
+describe('成员会话只读取记忆', () => {
+  test('顶层会话有写入、删除与迁移记忆的工具；成员会话只有 read_memory', async () => {
+    const memoryTools = ['read_memory', 'write_memory', 'delete_memory', 'move_memory']
+    const top = await session()
+    expect(top.names()).toEqual(expect.arrayContaining(memoryTools))
+    top.s.dispose()
+    top.store.close()
+    const member = await session({ member: true })
+    expect(member.names().filter((n) => memoryTools.includes(n))).toEqual(['read_memory'])
+    member.s.dispose()
+    member.store.close()
+  })
+})
+
 /** 浅色噪点 PNG（真实编码，可解码）。runtime 不直接依赖图像库，按 PNG 格式手工拼装。 */
 function noisyPng(width: number, height: number): Buffer {
   const chunk = (type: string, data: Buffer) => {
