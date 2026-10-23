@@ -15,6 +15,7 @@ import type {
   MediaParamDefinition,
   PermissionMode,
   ScheduleView,
+  StoredMediaSpec,
   ThinkingMode,
   ToolCallCheck,
   ToolSchemaMode,
@@ -61,8 +62,8 @@ export interface RedactedModel {
 /** 接口下的生成模型。 */
 export interface RedactedMediaModel {
   kind: MediaKind
-  /** 拉取时由渠道目录得到的规格。 */
-  spec?: ChannelSpec
+  /** 拉取时由渠道目录得到的规格，或对应的生成目录型号 `{ base }`。 */
+  spec?: StoredMediaSpec
   delisted?: true
 }
 
@@ -472,6 +473,8 @@ export type PulledModel =
       id: string
       output: MediaOutput
       kind: MediaKind
+      known: boolean
+      base?: string
       spec?: ChannelSpec
     }
 

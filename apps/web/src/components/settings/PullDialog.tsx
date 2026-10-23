@@ -8,6 +8,7 @@ import {
   priceSummary,
   referenceSummary,
   refreshPulled,
+  withBase,
 } from './pulled.ts'
 
 const TAB_LABEL: Record<'chat' | MediaOutput, string> = {
@@ -19,6 +20,7 @@ const TAB_LABEL: Record<'chat' | MediaOutput, string> = {
 
 /**
  * 拉取接口上的型号，勾选后添加。打开即读取；读取成功时先按结果刷新已添加型号的规格、价格与已下架标记。
+ * 未收录的型号可选对应型号，选项为对话模型库与生成目录；所选型号决定该型号所在的页签与添加时的类别。
  *
  * 窗口尺寸固定（CLAUDE.md B9）：读取完成、切换页签时型号数量变化，列表在框内滚动，按钮位置不变。
  */
@@ -36,14 +38,19 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
     const p = owner()
     return !!p && (id in p.models || id in (p.media ?? {}))
   }
+  const media = () => modelCatalog()?.mediaLibrary ?? []
+  const models = () =>
+    (result()?.models ?? []).map((m) => withBase(m, bases()[m.id], media(), owner()?.baseUrl))
   const tabs = () =>
-    (['chat', ...MEDIA_OUTPUTS] as const).filter((o) =>
-      result()?.models.some((m) => m.output === o),
-    )
-  const rows = () => result()?.models.filter((m) => m.output === tab()) ?? []
-  /** 对应型号的可选项：模型库中的内置型号，按模型库的厂商顺序排列。 */
-  const libraryIds = () =>
-    (modelCatalog()?.library ?? []).flatMap((v) => (v.id ? v.models.map((m) => m.id) : []))
+    (['chat', ...MEDIA_OUTPUTS] as const).filter((o) => models().some((m) => m.output === o))
+  // 最后一个型号改选其他类别的对应型号后，该页签不再存在，显示第一个页签。
+  const current = () => (tabs().includes(tab()) ? tab() : (tabs()[0] ?? 'chat'))
+  const rows = () => models().filter((m) => m.output === current())
+  /** 对应型号的可选项：模型库中的内置型号按模型库的厂商顺序排列，其后是生成目录。 */
+  const baseIds = () => [
+    ...(modelCatalog()?.library ?? []).flatMap((v) => (v.id ? v.models.map((m) => m.id) : [])),
+    ...media().map((m) => m.id),
+  ]
 
   const toggle = (id: string, on: boolean) =>
     setPicked((prev) => {
@@ -56,7 +63,7 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
   // 保存在窗口关闭后才执行：编辑函数中不能读取 props，接口名在操作时取出。
   const submit = () => {
     const provider = props.provider
-    const picks = (result()?.models ?? [])
+    const picks = models()
       .filter((m) => picked().has(m.id))
       .map((model) => ({ model, ...(bases()[model.id] ? { base: bases()[model.id]! } : {}) }))
     void replaceConfig((cur) => addPulled(cur, provider, picks))
@@ -69,6 +76,11 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
     void pullModels(provider).then(
       (r) => {
         if (!open) return
+        setBases(
+          Object.fromEntries(
+            r.models.flatMap((m) => (m.output !== 'chat' && m.base ? [[m.id, m.base]] : [])),
+          ),
+        )
         setResult(r)
         setTab(tabs()[0] ?? 'chat')
         void replaceConfig((cur) => refreshPulled(cur, provider, r))
@@ -103,11 +115,11 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
           {(o) => (
             <button
               class="lib-tab"
-              classList={{ active: tab() === o }}
+              classList={{ active: current() === o }}
               type="button"
               onClick={() => setTab(o)}
             >
-              {TAB_LABEL[o]} {result()?.models.filter((m) => m.output === o).length}
+              {TAB_LABEL[o]} {models().filter((m) => m.output === o).length}
             </button>
           )}
         </For>
@@ -147,7 +159,7 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                   <span class="pull-cell">{referenceSummary(m)}</span>
                   <span class="pull-cell">{priceSummary(m)}</span>
                   <Show
-                    when={m.output === 'chat' && !m.known && !done()}
+                    when={!m.known && !done()}
                     fallback={<span class="pull-cell">{done() ? '已添加' : ''}</span>}
                   >
                     <select
@@ -163,7 +175,7 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                       <option value="" disabled hidden>
                         对应型号
                       </option>
-                      <For each={libraryIds()}>{(id) => <option value={id}>{id}</option>}</For>
+                      <For each={baseIds()}>{(id) => <option value={id}>{id}</option>}</For>
                     </select>
                   </Show>
                 </div>

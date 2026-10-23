@@ -1,5 +1,6 @@
 import {
-  defaultMediaKind,
+  channelSpecOf,
+  identifyMediaModel,
   MEDIA_KIND_OUTPUT,
   type MediaKind,
   type MediaOutput,
@@ -197,8 +198,8 @@ export function ModelSettings() {
    * 参数不在此处写入，而是按 id 从模型库查询（`lookupModel` 加模型库中的覆盖项）。
    * 在此处另存窗口与价格会形成第二份记录。
    *
-   * id 位于生成目录中时添加为生成模型，默认使用目录协议，此后以保存的接入方式为准；
-   * 该类别尚无默认模型时，它成为默认模型。目录中不存在的 id 添加为对话模型。
+   * 按名称识别为生成模型时（`identifyMediaModel`）添加为生成模型，此后以保存的接入方式为准；
+   * 该类别尚无默认模型时，它成为默认模型。其余 id 添加为对话模型。
    */
   const addModel = (provider: string, id: string) => {
     const base = config()
@@ -209,26 +210,29 @@ export function ModelSettings() {
       reportConfigWriteError(`模型 ${id} 已存在于接口 ${provider} 下`)
       return
     }
-    const generator = modelCatalog()?.mediaLibrary.find((m) => m.id === id)
-    if (generator) {
+    const library = modelCatalog()?.mediaLibrary ?? []
+    if (identifyMediaModel(id, library, p.baseUrl)) {
       void replaceConfig((cur) => {
         const owner = cur.providers[provider]
         if (!owner || id in owner.models || id in (owner.media ?? {})) return null
-        const kind = defaultMediaKind(generator.output, owner.baseUrl, generator.kind)
+        const generator = identifyMediaModel(id, library, owner.baseUrl)
+        if (!generator) return null
+        const { output, kind, base: catalogId } = generator
         return {
           ...cur,
           providers: {
             ...cur.providers,
-            [provider]: { ...owner, media: { ...owner.media, [id]: { kind } } },
+            [provider]: {
+              ...owner,
+              media: {
+                ...owner.media,
+                [id]: { kind, ...(catalogId ? { spec: { base: catalogId } } : {}) },
+              },
+            },
           },
-          ...(cur.mediaDefaults?.[generator.output]
+          ...(cur.mediaDefaults?.[output]
             ? {}
-            : {
-                mediaDefaults: {
-                  ...cur.mediaDefaults,
-                  [generator.output]: { provider, model: id },
-                },
-              }),
+            : { mediaDefaults: { ...cur.mediaDefaults, [output]: { provider, model: id } } }),
         }
       })
       return
@@ -584,7 +588,7 @@ export function ModelSettings() {
                                   <span class="model-delisted">已下架</span>
                                 </Show>
                                 <Show
-                                  when={m.spec}
+                                  when={channelSpecOf(m.spec)}
                                   fallback={
                                     <label class="model-access">
                                       接入方式
