@@ -656,6 +656,11 @@ export interface DelegatePort {
    * 清单未完成而任务由这些子 agent 执行时，本轮正常结束。
    */
   inflight(): { name: string }[]
+  /**
+   * 停止本会话中一个正在执行的子 agent，只停止本次执行：子 agent 的会话保留，之后按 id 再次派发即在原会话中继续。
+   * 停止后不发送回执；图中的节点写入中断，其余节点照常执行，检查点在上游全部落终态后到达。
+   */
+  stop(subagentId: string): { ok: true; name: string } | { ok: false; error: string }
   dispatch(input: {
     target: SubagentTarget
     task: string

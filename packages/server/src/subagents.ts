@@ -77,6 +77,17 @@ export class SubagentRegistry {
     return true
   }
 
+  /**
+   * 停止该会话中的一个子 agent，返回其名称；该子 agent 没有在执行时返回 null。
+   * 发起方是父会话的模型，中断来源记为 `parent_agent`。条目同样在完成回调中删除。
+   */
+  interrupt(conversationId: ConversationId, subagentId: string): string | null {
+    const entry = this.byConversation.get(conversationId)?.get(subagentId)
+    if (!entry) return null
+    entry.controller.abort({ source: 'parent_agent', observedAt: Date.now() })
+    return entry.name
+  }
+
   /** 服务退出：停止全部子 agent。 */
   interruptAll(): void {
     const observedAt = Date.now()

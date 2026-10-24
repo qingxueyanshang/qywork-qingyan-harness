@@ -1449,6 +1449,7 @@ function interruptionFrom(
     'user',
     'server_shutdown',
     'consumer_closed',
+    'parent_agent',
   ])
   const source =
     typeof reason?.source === 'string' && allowed.has(reason.source as InterruptionSource)
@@ -1470,6 +1471,7 @@ function interruptionMessage(interruption: RunInterruption | null): string | nul
   if (!interruption || interruption.source === 'user') return null
   if (interruption.source === 'server_shutdown') return '服务正常关闭，本轮随之中断'
   if (interruption.source === 'consumer_closed') return '执行流被调用方提前关闭，本轮中断'
+  if (interruption.source === 'parent_agent') return '派发该子 agent 的会话停止了本轮'
   return null
 }
 

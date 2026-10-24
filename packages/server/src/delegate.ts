@@ -671,8 +671,10 @@ export function makeDelegate(ctx: {
   /**
    * 子 agent 进入终态：写入节点状态、发送回执、继续派发图上的后续节点。
    *
-   * **被中断的子 agent 不发送回执，也不推进图。** 中断只来自停止该会话与服务退出，两者的含义均为
-   * 停止该会话的全部执行；投递回执会在停止后再启动一轮，与用户的操作相反。
+   * **被中断的子 agent 不发送回执。** 停止该会话与服务退出的含义均为停止该会话的全部执行：
+   * 投递回执会在停止后再启动一轮，与用户的操作相反，图也不再推进。
+   * 父会话用 `stop_subagent` 停止单个子 agent 时，停止由父会话发起、工具结果已告知，同样不回执；
+   * 但图须继续推进：其余节点照常执行，不推进时该节点若是最后一个在执行的节点，检查点回执不再到达。
    * 中断事实写入节点状态，模型下次被唤醒时可从快照中读取。
    */
   const complete = (
@@ -690,8 +692,10 @@ export function makeDelegate(ctx: {
     deps.runs.announce(conversationId)
 
     const interrupted = controller.signal.aborted || outcome.stop === 'user_interrupt'
+    const stoppedByParent =
+      (controller.signal.reason as { source?: unknown } | undefined)?.source === 'parent_agent'
     const output = interrupted ? '' : excerpt(at, nodeId, outcome.output)
-    const error = interrupted ? '已停止' : outcome.error
+    const error = interrupted ? (stoppedByParent ? '已由当前会话停止' : '已停止') : outcome.error
     note(
       at,
       nodeId,
@@ -706,7 +710,12 @@ export function makeDelegate(ctx: {
       ...(outcome.note ? { note: outcome.note } : {}),
       ...(outcome.fileChanges?.length ? { fileChanges: outcome.fileChanges } : {}),
     })
-    if (interrupted) return
+    if (interrupted) {
+      if (stoppedByParent && at.workflow) {
+        continueGraph(at.workflow.workflowId, at, { nodeId, failed: true, stoppedByParent: true })
+      }
+      return
+    }
 
     if (at.workflow) {
       continueGraph(at.workflow.workflowId, at, { nodeId, failed: !outcome.ok })
@@ -793,7 +802,7 @@ export function makeDelegate(ctx: {
   const continueGraph = (
     workflowId: string,
     at: { runId: string; stepId?: string },
-    just: { nodeId: string; failed: boolean },
+    just: { nodeId: string; failed: boolean; stoppedByParent?: boolean },
   ): void => {
     const folded = foldWorkflow(listWorkflowRecords(deps.store, conversationId), workflowId)
     if (!folded.ok) {
@@ -821,6 +830,7 @@ export function makeDelegate(ctx: {
      * 节点失败时先单独发送一条回执，其余节点照常执行：父会话无需等待整批执行完毕即可得知失败。
      * 只有检查点直接列出了该失败节点时才去重。经由被跳过的下游到达检查点时，
      * 检查点并不包含原失败节点，仍须单独回传其错误。
+     * 父会话停止的节点不单独回执：停止由父会话发起，回执只会在其空闲时多唤醒一轮。
      */
     const includedInCheckpoint = projection.nodes.some(
       (node) =>
@@ -828,7 +838,7 @@ export function makeDelegate(ctx: {
         node.id === result.checkpoint &&
         node.needs.includes(just.nodeId),
     )
-    if (just.failed && !includedInCheckpoint) {
+    if (just.failed && !just.stoppedByParent && !includedInCheckpoint) {
       const receipt = projection.results[just.nodeId]
       send(
         [
@@ -898,6 +908,15 @@ export function makeDelegate(ctx: {
 
     inflight() {
       return deps.subagents.listOf(conversationId).map((entry) => ({ name: entry.name }))
+    },
+
+    stop(subagentId) {
+      // 注册表按本会话查找：其他会话的子 agent 在这里不可见，无法被停止。
+      const name = deps.subagents.interrupt(conversationId, subagentId)
+      if (name === null) {
+        return { ok: false, error: `本会话中没有正在执行的子 agent ${subagentId}` }
+      }
+      return { ok: true, name }
     },
 
     /**

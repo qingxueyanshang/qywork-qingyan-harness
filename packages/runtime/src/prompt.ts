@@ -165,6 +165,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line: '- 子 agent：单项任务用 subagent 委派给一个子 agent；子 agent 在独立会话中运行，执行过程不占用当前上下文。调用在派发后立即返回，子 agent 完成后回执以消息形式送达本会话，不要为等待回执反复调用。首次按 kind 创建：role 按角色，temp 为临时；cli 是本机另一个进程，使用其自身的模型和账号，执行过程不可见，仅在用户用 `@cli:id` 点名或明确要求时派发。之后按 subagentId 续接，三种类型均可续接。用户用 `@角色id` 点名时，委派给该角色。',
   },
   {
+    tool: 'stop_subagent',
+    line: '- 停止子 agent：正在执行的子 agent 需要停下时（派发有误、任务重复、需要改派），用 stop_subagent 停止；其会话保留，之后按 subagentId 再次派发即在原会话中继续。',
+  },
+  {
     tool: 'workflow',
     line: '- 工作流：涉及两个及以上子 agent、需要验收或存在先后依赖时，用 workflow 一次提交完整的任务图。调用派发已就绪的节点后立即返回；各节点的回执与检查点回执都以消息形式送达本会话。收到检查点回执后再决定：approve 进入下一批，revise 让指定的节点在其原有子会话中继续，批准之后仍可 revise。',
   },

@@ -872,6 +872,58 @@ describe('运行表按会话管理', () => {
     expect(runs.isBusy(cid)).toBe(false)
   })
 
+  /**
+   * 原始失败形状：父会话的模型发现派发有误，却没有任何方式停止该子 agent，只能等它执行完毕。
+   * 停止后会话保留：按 id 再次派发即在原会话中继续，即暂停与恢复。
+   */
+  test('父会话停止单个子 agent：节点写入中断，不投递回执；按 id 再次派发在原会话中继续', async () => {
+    const cid = conversation()
+    const where = spot(cid)
+    const slow = gate()
+    router = (body) => (body.includes('乙任务') ? say('乙任务完成')() : slow.respond())
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '写手' },
+      task: '甲任务',
+      ...where,
+    })
+    const id = res.subagentId as ConversationId
+    await until(() => slow.arrived(), '子 agent 的请求已发出')
+
+    expect(delegate(cid).stop(id)).toEqual({ ok: true, name: '写手' })
+    await until(() => phasesOf('child').includes('interrupted'), '节点落中断')
+    expect(members().at(-1)?.state.error).toBe('已由当前会话停止')
+    await until(() => !runs.isBusy(cid), '父会话空闲')
+    expect(receipts).toEqual([])
+    expect(listRuns(store, id)[0]?.interruption?.source).toBe('parent_agent')
+
+    const again = await delegate(cid).dispatch({
+      target: { subagent: id },
+      task: '乙任务',
+      ...where,
+    })
+    expect(again).toMatchObject({ ok: true, subagentId: id })
+    await until(() => receipts.length > 0, '续接后的回执')
+    expect(receipts[0]?.content).toContain('乙任务完成')
+  })
+
+  test('停止未在执行或不属于本会话的子 agent 时如实返回失败', async () => {
+    const cid = conversation()
+    const other = conversation()
+    const slow = gate()
+    router = () => slow.respond()
+    const res = await delegate(other).dispatch({
+      target: { kind: 'temp', name: '别处' },
+      task: '别处的任务',
+      ...spot(other),
+    })
+    await until(() => slow.arrived(), '别处子 agent 的请求已发出')
+    expect(delegate(cid).stop(res.subagentId as string)).toMatchObject({ ok: false })
+    expect(delegate(cid).stop('cv_none')).toMatchObject({ ok: false })
+    expect(runs.isBusy(other)).toBe(true)
+    subagents.interruptConversation(other)
+    await until(() => !runs.isBusy(other), '别处子 agent 结束')
+  })
+
   test('没有运行中的子 agent 时停止返回 false', () => {
     const cid = conversation()
     expect(subagents.interruptConversation(cid)).toBe(false)
@@ -1181,6 +1233,56 @@ describe('图按事件推进', () => {
     await until(() => receipts.length > 1, '检查点回执')
     expect(receipts[1]?.content).toContain('检查点 验收 的上游已经全部返回')
     expect(receipts[1]?.content).toContain('### x（x）失败')
+  })
+
+  /**
+   * 原始失败形状：中断一律不推进图。父会话停止的若是图中最后一个在执行的节点，
+   * 之后不再有完成回调推进该图，检查点回执永远不会到达。
+   */
+  test('父会话停止图中最后一个在执行的节点：检查点回执照常到达，不单独发送该节点的回执', async () => {
+    const parent = conversation()
+    const slow = gate()
+    router = () => slow.respond()
+    const graph = {
+      goal: '一个节点',
+      nodes: [
+        { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
+        { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a'] },
+      ],
+    }
+    const runId = run(parent, 'wf-stop-last')
+    await invoke(parent, runId, 1, graph, parsedStart(graph))
+    await until(() => slow.arrived(), 'a 的请求已发出')
+    const id = members().find((m) => m.nodeId === 'a' && m.state.subagentId)?.state.subagentId
+    expect(delegate(parent).stop(id as string)).toMatchObject({ ok: true })
+
+    await until(() => receipts.some((r) => r.content.includes('检查点 验收')), '检查点回执')
+    expect(receipts).toHaveLength(1)
+    expect(receipts[0]?.content).toContain('已由当前会话停止')
+  })
+
+  test('父会话停止一个节点时其余节点照常执行，检查点回执列出两者', async () => {
+    const parent = conversation()
+    const slow = gate()
+    router = (body) => (body.includes('做 B') ? say('B 的产出')() : slow.respond())
+    const graph = {
+      goal: '两个节点',
+      nodes: [
+        { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
+        { id: 'b', kind: 'temp', name: 'b', task: '做 B' },
+        { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a', 'b'] },
+      ],
+    }
+    const runId = run(parent, 'wf-stop-one')
+    await invoke(parent, runId, 1, graph, parsedStart(graph))
+    await until(() => slow.arrived(), 'a 的请求已发出')
+    const id = members().find((m) => m.nodeId === 'a' && m.state.subagentId)?.state.subagentId
+    expect(delegate(parent).stop(id as string)).toMatchObject({ ok: true })
+
+    await until(() => receipts.some((r) => r.content.includes('检查点 验收')), '检查点回执')
+    expect(receipts).toHaveLength(1)
+    expect(receipts[0]?.content).toContain('B 的产出')
+    expect(receipts[0]?.content).toContain('已由当前会话停止')
   })
 
   test('上游未成功时下游跳过，检查点仍可到达', async () => {
