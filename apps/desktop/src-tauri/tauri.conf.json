@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "qywork",
   "mainBinaryName": "qywork",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "identifier": "dev.qywork.desktop",
   "build": {
     "frontendDist": "../../web/dist",
