@@ -729,6 +729,20 @@ function glm53FlashPromo(now: number): Pricing {
       }
 }
 
+/**
+ * Claude Haiku 5.5 的长上下文档：官方写「over 100,000 tokens」，第一个进入高档的值是 100001。
+ * 提示词长度含缓存读取与写入，超过后整条请求按高档计价。
+ */
+const CLAUDE_HAIKU_55_LONG: LongContextTier = {
+  thresholdTokens: 100_001,
+  input: 0.5,
+  output: 2.5,
+  cacheRead: 0.05,
+  cacheWrite5m: 0.625,
+  cacheWrite1h: 1,
+  note: '提示词超过 10 万 token 后整条请求按 $0.5 / $2.5（缓存 $0.05）计价',
+}
+
 const CLAUDE_BASE = {
   provider: 'anthropic_messages' as const,
   vendor: 'anthropic',
@@ -770,6 +784,16 @@ export function claudeCatalog(): ModelSpec[] {
       displayName: 'Claude Sonnet 5.5',
       // 2026-10-20 核对：https://platform.claude.com/docs/en/models/sonnet-5-5/overview
       pricing: { ...anthropicPricing(2, 10), cacheRead: 0.1 },
+      thinksByDefault: true,
+      minCacheablePrefix: 512,
+    },
+    {
+      ...CLAUDE_BASE,
+      id: 'claude-haiku-5-5',
+      displayName: 'Claude Haiku 5.5',
+      // 2026-10-24 核对：https://platform.claude.com/docs/en/about-claude/pricing
+      pricing: anthropicPricing(0.1, 0.5),
+      longContext: [CLAUDE_HAIKU_55_LONG],
       thinksByDefault: true,
       minCacheablePrefix: 512,
     },
