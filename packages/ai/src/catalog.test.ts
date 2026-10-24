@@ -507,6 +507,8 @@ describe('视频输入', () => {
         'openai_chat_completions:glm-5.3-flashx',
         'openai_chat_completions:glm-5v-turbo',
         'openai_chat_completions:kimi-k3',
+        'openai_chat_completions:kimi-k3.1-pro',
+        'openai_chat_completions:kimi-k3.1-pro-highspeed',
         'openai_chat_completions:qwen3-vl-flash',
         'openai_chat_completions:qwen3-vl-plus',
         'openai_chat_completions:qwen3.7-flash',
@@ -963,15 +965,31 @@ describe('目录中的价格与档位', () => {
     expect(after).toMatchObject({ input: 0.8, output: 2.8, cacheRead: 0.23, currency: 'CNY' })
   })
 
-  test('Kimi K3 三档，Qwen3.8 Max 与 Omni Flash 已收录', () => {
-    expect(spec('kimi-k3').effortLevels).toEqual(['low', 'high', 'max'])
-    expect(spec('kimi-k3').pricing).toMatchObject({
-      input: 20,
-      output: 100,
-      cacheRead: 2,
-      currency: 'CNY',
-    })
-    expect(spec('kimi-k3').maxOutputTokens).toBe(1_048_576)
+  test('Kimi K3 系列三档，Qwen3.8 Max 与 Omni Flash 已收录', () => {
+    const kimi = {
+      'kimi-k3.1-pro': {
+        displayName: 'Kimi K3.1 Pro',
+        prices: [13, 68, 1.3, 13, 26],
+      },
+      'kimi-k3.1-pro-highspeed': {
+        displayName: 'Kimi K3.1 Pro Highspeed',
+        prices: [26, 136, 1.3, 26, 52],
+      },
+      'kimi-k3': { displayName: 'Kimi K3', prices: [20, 100, 2, 20, 40] },
+    }
+    for (const [id, { displayName, prices }] of Object.entries(kimi)) {
+      const [input, output, cacheRead, cacheWrite5m, cacheWrite1h] = prices
+      expect(spec(id)).toMatchObject({
+        displayName,
+        vendor: 'moonshot',
+        contextWindow: 1_048_576,
+        maxOutputTokens: 1_048_576,
+        vision: true,
+        thinksByDefault: true,
+        effortLevels: ['low', 'high', 'max'],
+        pricing: { input, output, cacheRead, cacheWrite5m, cacheWrite1h, currency: 'CNY' },
+      })
+    }
     expect(spec('qwen3.8-max').pricing.input).toBe(12)
     expect(spec('qwen3.8-max').pricing.currency).toBe('CNY')
     expect(spec('qwen3.8-max').maxOutputTokens).toBe(131_072)

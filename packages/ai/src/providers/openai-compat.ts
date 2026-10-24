@@ -725,8 +725,8 @@ interface CompatUsage {
   /** DeepSeek 的写法。 */
   prompt_cache_hit_tokens?: number
   prompt_cache_miss_tokens?: number
-  /** OpenAI 的写法。 */
-  prompt_tokens_details?: { cached_tokens?: number }
+  /** OpenAI 的写法；`cache_write_tokens` 为 Kimi 的缓存写入量。 */
+  prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number }
   /** Step 的缓存命中量位于 usage 顶层。 */
   cached_tokens?: number
   completion_tokens_details?: { reasoning_tokens?: number }
@@ -1028,13 +1028,17 @@ function applyUsage(acc: ProviderUsage, u: CompatUsage) {
     cached = u.cached_tokens
   }
   if (cached !== null) acc.cachedTokens = cached
+  // Kimi：缓存命中、缓存写入与其余输入互斥，三者之和为 `prompt_tokens`。
+  const written =
+    typeof details?.cache_write_tokens === 'number' ? details.cache_write_tokens : null
+  if (written !== null) acc.cacheWriteTokens = written
 
   if (typeof u.prompt_cache_miss_tokens === 'number') {
     // 供应商直接提供了未命中量，最为可靠。
     acc.inputTokens = u.prompt_cache_miss_tokens
   } else if (typeof u.prompt_tokens === 'number') {
-    // 只有总量时自行相减。未回报缓存量时按全部未命中处理。
-    acc.inputTokens = Math.max(0, u.prompt_tokens - (cached ?? 0))
+    // 只有总量时自行相减。未回报缓存量时按全部未命中处理。写入量不减去时同时计入输入与写入，重复计费。
+    acc.inputTokens = Math.max(0, u.prompt_tokens - (cached ?? 0) - (written ?? 0))
   }
   const outDetails = u.completion_tokens_details
   if (outDetails && typeof outDetails.reasoning_tokens === 'number') {
