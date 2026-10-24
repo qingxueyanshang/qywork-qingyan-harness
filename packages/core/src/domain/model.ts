@@ -420,7 +420,14 @@ export type StopReason =
  * 但排查方向完全不同。
  */
 export interface RunInterruption {
-  source: 'user' | 'server_shutdown' | 'consumer_closed' | 'desktop_sidecar' | 'orphan_recovery'
+  /** `parent_agent`：父会话的模型用 `stop_subagent` 停止了该子 agent，不是用户操作。 */
+  source:
+    | 'user'
+    | 'server_shutdown'
+    | 'consumer_closed'
+    | 'desktop_sidecar'
+    | 'orphan_recovery'
+    | 'parent_agent'
   /** 终止首次被观察到的时间。 */
   observedAt: number
   /** 恢复进程把事实写回账本的时间；正常进程内收尾时与 observedAt 相同。 */

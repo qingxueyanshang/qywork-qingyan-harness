@@ -1,6 +1,6 @@
 /**
- * 覆盖范围：`subagent.ts`（派发单个子 agent）与 `workflow.ts`（派发编排图），
- * 以及两者在 `index.ts` 中的注册条件。
+ * 覆盖范围：`subagent.ts`（派发单个子 agent）、`stop-subagent.ts`（停止子 agent）与 `workflow.ts`（派发编排图），
+ * 以及它们在 `index.ts` 中的注册条件。
  *
  * 两个工具只返回「是否已派发」：产出与回执由派发通道在完成后作为消息送回，
  * 该部分由 `server/delegate.test.ts` 覆盖；产出的投递额度检查由 `sink.test.ts` 覆盖。
@@ -10,6 +10,7 @@ import { describe, expect, test } from 'bun:test'
 import { type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
+import { stopSubagentTool } from './stop-subagent.ts'
 import { subagentTool } from './subagent.ts'
 import { workflowTool } from './workflow.ts'
 
@@ -68,6 +69,7 @@ function stub(result: DispatchResult) {
     },
     runGraph: async () => GRAPH_DONE,
     inflight: () => [],
+    stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
   }
   return { calls, port }
 }
@@ -79,6 +81,29 @@ const sent = (extra: Partial<DispatchResult> = {}): DispatchResult => ({
   kind: 'temp',
   created: true,
   ...extra,
+})
+
+describe('停止子 agent', () => {
+  test('按 id 停止，成功时说明会话保留、可按 id 续接', async () => {
+    const stopped: string[] = []
+    const { port } = stub(sent())
+    port.stop = (id) => {
+      stopped.push(id)
+      return { ok: true, name: '写手' }
+    }
+    const res = await stopSubagentTool.fn({ subagent: 'cv_1' }, ctx(port))
+    expect(stopped).toEqual(['cv_1'])
+    expect(res.status).toBe('success')
+    expect(res.message).toContain('再次派发即在原会话中继续')
+  })
+
+  test('没有在执行时返回失败并附原因；未填写 id 时不调用端口', async () => {
+    const { port } = stub(sent())
+    const res = await stopSubagentTool.fn({ subagent: 'cv_1' }, ctx(port))
+    expect(res).toMatchObject({ status: 'failure', message: '没有正在执行的子 agent' })
+    const empty = await stopSubagentTool.fn({ subagent: ' ' }, ctx(port))
+    expect(empty.status).toBe('failure')
+  })
 })
 
 describe('派发任务工具的注册条件', () => {
@@ -93,6 +118,7 @@ describe('派发任务工具的注册条件', () => {
     registerBuiltinTools(r, { delegate: true })
     const names = r.list().map((s) => s.name)
     expect(names).toContain('subagent')
+    expect(names).toContain('stop_subagent')
     expect(names).toContain('workflow')
   })
 
@@ -346,6 +372,7 @@ describe('推进编排图', () => {
       subagents: async () => [],
       dispatch: async () => sent(),
       inflight: () => [],
+      stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
       runGraph: async (input) => {
         if (input.call.kind === 'start') {
           seen.push({
@@ -476,6 +503,7 @@ describe('推进编排图', () => {
       subagents: async () => [],
       dispatch: async () => sent(),
       inflight: () => [],
+      stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
       runGraph: async (input) => {
         if (input.call.kind === 'start') {
           seen.push(

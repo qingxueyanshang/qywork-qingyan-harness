@@ -98,6 +98,7 @@ const delegate: DelegatePort = {
   dispatch: async () => ({ ok: true, subagentId: 'cv_stub' }),
   runGraph: async () => ({ ok: true }),
   inflight: () => [],
+  stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
 }
 
 test('实时重试原因与账本一样脱敏，不把配置密钥显示到等待状态', async () => {
