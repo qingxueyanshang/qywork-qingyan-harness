@@ -52,7 +52,11 @@ const GRAPH_DONE: GraphResult = {
 function stub(result: DispatchResult) {
   const calls: DispatchInput[] = []
   const port: Port = {
-    resolveModel: (name, provider) => ({ provider: provider ?? 'fake', model: name }),
+    resolveModel: (name, provider) => ({
+      provider: provider ?? 'fake',
+      model: name,
+      effortLevels: [],
+    }),
     targets: async () => ({
       roles: [{ id: 'reviewer', name: '审查员', description: '代码审查' }],
       clis: [{ id: 'claude', vendor: 'Anthropic', connected: true }],
@@ -337,7 +341,7 @@ describe('推进编排图', () => {
   const graphPort = (result: GraphResult) => {
     const seen: { goal: string; count: number; stepId: string }[] = []
     const port: Port = {
-      resolveModel: (name) => ({ provider: 'fake', model: name }),
+      resolveModel: (name) => ({ provider: 'fake', model: name, effortLevels: [] }),
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
       dispatch: async () => sent(),
@@ -467,7 +471,7 @@ describe('推进编排图', () => {
   test('节点的种类字段原样解析为派发目标', async () => {
     const seen: unknown[] = []
     const port: Port = {
-      resolveModel: (name) => ({ provider: 'fake', model: name }),
+      resolveModel: (name) => ({ provider: 'fake', model: name, effortLevels: [] }),
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
       dispatch: async () => sent(),

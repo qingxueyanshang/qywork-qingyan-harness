@@ -5,7 +5,12 @@
  * 作为消息送入当前会话；当前会话据此决定 approve 或 revise，续发仍使用同一个 workflowId。
  */
 import type { ToolContext, ToolSpec } from '@qywork/agent'
-import { DEFAULT_MAX_CONCURRENT, parseWorkflowCall, type WorkflowTransition } from '@qywork/core'
+import {
+  DEFAULT_MAX_CONCURRENT,
+  EFFORT_ORDER,
+  parseWorkflowCall,
+  type WorkflowTransition,
+} from '@qywork/core'
 
 export const workflowTool: ToolSpec = {
   name: 'workflow',
@@ -73,6 +78,14 @@ export const workflowTool: ToolSpec = {
                 '仅在用户指定模型时填写：逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写 provider。' +
                 '写在 task 正文里不生效，子 agent 不会自行切换模型。' +
                 '不填 = 使用当前会话的模型（角色指定了模型时使用角色的模型）；指向已有子 agent 或外部 CLI 的节点不接受',
+            },
+            effort: {
+              type: ['string', 'null'],
+              enum: [...EFFORT_ORDER, null],
+              description:
+                '用户指定思考强度时填写，写在 task 正文里不生效。该节点每次派发（含 revise）都使用此档位。' +
+                '不填 = 子 agent 使用角色的模型时取角色设定的档位，否则取模型配置中该模型的档位。' +
+                '所用模型不支持该档位时该节点派发失败并列出可选档位；外部 CLI 按其命令行参数传入，没有该参数的 CLI 拒绝。',
             },
           },
           required: ['id'],

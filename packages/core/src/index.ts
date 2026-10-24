@@ -180,6 +180,7 @@ export {
   type GoalStatus,
   type GoalWriteResult,
   type IntermediateResourceRef,
+  isEffortLevel,
   isInlineAudio,
   isInlineImage,
   isInlineVideo,

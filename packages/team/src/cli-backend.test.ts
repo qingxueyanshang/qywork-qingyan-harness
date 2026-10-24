@@ -1,7 +1,7 @@
 /**
  * 覆盖范围：`cli-backend.ts` 的 `extract`（从外部 CLI 的 stdout 中提取答案）、
- * 流中正文的解析入口（实时页与回执共用），`runCli` 交给 CLI 的两项内容，
- * 即追加的回执约定与续问所用的会话 id，以及中断时的进程树终止。后四组用 `node` 作为替身运行，
+ * 流中正文的解析入口（实时页与回执共用），`runCli` 交给 CLI 的三项内容，
+ * 即追加的回执约定、思考档位参数与续问所用的会话 id，以及中断时的进程树终止。后五组用 `node` 作为替身运行，
  * 无需本机安装相应的 CLI。
  *
  * 厂商表本身（调用哪个 CLI、参数格式）由真机冒烟测试覆盖：厂商表最容易过期，
@@ -257,6 +257,57 @@ describe('回执约定', () => {
     // 交付物正文必须在前：`extract` 取最后一个非空目标字段，
     // 回执约定写在前面时，查询型任务的产出会被替换为一句状态汇报。
     expect(got.output.indexOf('把 a.txt 改成小写')).toBeLessThan(got.output.indexOf('### 回执'))
+  })
+})
+
+describe('思考档位参数', () => {
+  /** 回显除提示词以外全部参数的替身。提示词含追加的回执约定，与本组断言无关。 */
+  const argv: CliAgent = {
+    ...echo,
+    args: [
+      '-e',
+      'process.stdout.write(JSON.stringify(process.argv.slice(2)))',
+      '{prompt}',
+      '{effort_args}',
+      '--tail',
+    ],
+    resumeArgs: [
+      '-e',
+      'process.stdout.write(JSON.stringify(process.argv.slice(2)))',
+      '{prompt}',
+      '{session}',
+      '{effort_args}',
+    ],
+    effortArgs: ['-c', 'model_reasoning_effort={effort}'],
+  }
+  const received = async (
+    agent: CliAgent,
+    extra: { effort?: 'xhigh'; resume?: string },
+  ): Promise<string[]> => {
+    const got = await runCli(agent, {
+      prompt: '检查',
+      workspaceRoot: await mkdtemp(join(tmpdir(), 'qy-cli-')),
+      signal: new AbortController().signal,
+      ...extra,
+    })
+    return JSON.parse(got.output) as string[]
+  }
+
+  test('指定档位时在插入位置展开参数，首次与续问相同', async () => {
+    expect(await received(argv, { effort: 'xhigh' })).toEqual([
+      '-c',
+      'model_reasoning_effort=xhigh',
+      '--tail',
+    ])
+    expect(await received(argv, { effort: 'xhigh', resume: 'sess-1' })).toEqual([
+      'sess-1',
+      '-c',
+      'model_reasoning_effort=xhigh',
+    ])
+  })
+
+  test('未指定档位时插入位置被删除，不留下空参数', async () => {
+    expect(await received(argv, {})).toEqual(['--tail'])
   })
 })
 

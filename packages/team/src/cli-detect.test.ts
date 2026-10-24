@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`cli-detect.ts`（PATH 解析、凭证判据）。
+ * 覆盖范围：`cli-detect.ts`（PATH 解析、凭证判据、思考档位参数与模板插入位置的一致性）。
  *
  * 测试的是行为：已安装的出现在结果中、未安装的不出现、检测到凭证才视为已接入。
  * 不测试厂商表收录哪些 CLI：那是随时可能增加的数据，不是行为。
@@ -54,6 +54,24 @@ describe('外部 CLI 识别', () => {
     const [claude] = await detectClis({ PATH: dir, PATHEXT: '.CMD' })
     expect(claude?.narrate?.text).toBeTruthy()
     expect(claude?.narrate?.tool).toBeTruthy()
+  })
+
+  /**
+   * 思考档位参数与模板中的插入位置必须成对：声明了参数而模板没有插入位置时档位不会传出，
+   * 模板有插入位置而未声明参数时，派发会把该 CLI 判为不支持却仍在模板中保留该项。
+   */
+  test('声明了思考档位参数的 CLI，首次与续问模板都有插入位置；未声明的都没有', async () => {
+    const ids = ['claude', 'codex', 'gemini', 'qwen', 'grok', 'kimi']
+    const dirs = await Promise.all(ids.map(fakeBin))
+    const found = await detectClis({ PATH: dirs.join(delimiter), PATHEXT: '.CMD' })
+    expect(found.some((cli) => cli.effortArgs)).toBe(true)
+    expect(found.some((cli) => !cli.effortArgs)).toBe(true)
+    for (const cli of found) {
+      const declared = !!cli.effortArgs
+      expect(cli.args.includes('{effort_args}')).toBe(declared)
+      if (cli.resumeArgs) expect(cli.resumeArgs.includes('{effort_args}')).toBe(declared)
+      if (declared) expect(cli.effortArgs?.join(' ')).toContain('{effort}')
+    }
   })
 
   test('PATH 上存在即识别，不存在的不出现', async () => {

@@ -1950,6 +1950,11 @@ export function effortIsTransmittable(spec: ModelSpec): boolean {
   return spec.thinking === 'reasoning_effort' || spec.thinking === 'deepseek_thinking'
 }
 
+/** 该 spec 在当前协议上可选的思考档位；无法发送时为空数组。模型列表与派发校验共用。 */
+export function transmittableEffortLevels(spec: ModelSpec): EffortLevel[] {
+  return effortIsTransmittable(spec) ? spec.effortLevels : []
+}
+
 /** 历史中的推理在该 spec 的协议上是否发送、发送哪种。 */
 export interface ReasoningReplay {
   /** 思考正文回放到哪些 assistant 消息上。有原生条目的消息不再附带正文。 */

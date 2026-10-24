@@ -1,7 +1,8 @@
 /**
  * 覆盖范围：`define-role.ts`（创建角色）。
  *
- * 测试对象是行为：写入受保护目录中的配置文件、只修改 roles、JSON 无法解析时不覆盖。
+ * 测试对象是行为：写入受保护目录中的配置文件、只修改 roles、JSON 无法解析时不覆盖、
+ * 模型与思考强度在落盘前校验。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -10,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import type { EffortLevel } from '@qywork/core'
 import { defineRoleTool } from './define-role.ts'
 
 function ctx(root: string): ToolContext {
@@ -31,7 +33,10 @@ function ctx(root: string): ToolContext {
   }
 }
 
-function withModels(root: string, models: { provider: string; model: string }[]): ToolContext {
+function withModels(
+  root: string,
+  models: { provider: string; model: string; effortLevels?: EffortLevel[] }[],
+): ToolContext {
   return {
     ...ctx(root),
     delegate: {
@@ -40,7 +45,7 @@ function withModels(root: string, models: { provider: string; model: string }[])
           (item) => item.model === name && (!provider || item.provider === provider),
         )
         return hits.length === 1
-          ? hits[0]!
+          ? { ...hits[0]!, effortLevels: hits[0]!.effortLevels ?? [] }
           : {
               error: `配置中没有模型 ${name}。当前可用的是：${models.map((item) => item.model).join('、')}`,
             }
@@ -158,6 +163,51 @@ describe('创建角色', () => {
     const res = await defineRoleTool.fn({ ...role, provider: '智谱接口' }, withModels(root, []))
     expect(res.status).toBe('failure')
     expect(res.message).toContain('同时指定 model')
+    expect(await readFile(join(root, '.qy', 'team.json'), 'utf8').catch(() => null)).toBeNull()
+  })
+
+  /** 原始失败形状：用户要求角色使用 xhigh，工具没有该参数，档位只能写进提示词，派发时不生效。 */
+  test('思考强度与模型一起校验并落盘', async () => {
+    const root = await ws()
+    const res = await defineRoleTool.fn(
+      { ...role, provider: 'openai', model: 'gpt-6-sol', effort: 'xhigh' },
+      withModels(root, [
+        { provider: 'openai', model: 'gpt-6-sol', effortLevels: ['low', 'high', 'xhigh'] },
+      ]),
+    )
+    expect(res.status).toBe('success')
+    const doc = JSON.parse(await readFile(join(root, '.qy', 'team.json'), 'utf8'))
+    expect(doc.roles[0]).toMatchObject({ provider: 'openai', model: 'gpt-6-sol', effort: 'xhigh' })
+  })
+
+  test('模型不支持该档位时不落盘，并列出可选档位', async () => {
+    const root = await ws()
+    const res = await defineRoleTool.fn(
+      { ...role, provider: 'openai', model: 'gpt-6-sol', effort: 'minimal' },
+      withModels(root, [
+        { provider: 'openai', model: 'gpt-6-sol', effortLevels: ['low', 'high', 'xhigh'] },
+      ]),
+    )
+    expect(res.status).toBe('failure')
+    expect(res.message).toContain('low、high、xhigh')
+    expect(await readFile(join(root, '.qy', 'team.json'), 'utf8').catch(() => null)).toBeNull()
+  })
+
+  test('只给思考强度、未指定模型时拒绝：可选档位逐模型不同', async () => {
+    const root = await ws()
+    const res = await defineRoleTool.fn({ ...role, effort: 'high' }, withModels(root, []))
+    expect(res.status).toBe('failure')
+    expect(res.message).toContain('同时指定 model')
+    expect(await readFile(join(root, '.qy', 'team.json'), 'utf8').catch(() => null)).toBeNull()
+  })
+
+  test('思考强度不在档位词表中时拒绝', async () => {
+    const root = await ws()
+    const res = await defineRoleTool.fn(
+      { ...role, provider: 'openai', model: 'gpt-6-sol', effort: 'ultra' },
+      withModels(root, [{ provider: 'openai', model: 'gpt-6-sol', effortLevels: ['high'] }]),
+    )
+    expect(res.status).toBe('failure')
     expect(await readFile(join(root, '.qy', 'team.json'), 'utf8').catch(() => null)).toBeNull()
   })
 

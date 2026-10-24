@@ -260,6 +260,11 @@ export interface AskOptions {
    * 而归属只有在创建会话时才能正确写入，事后无法从任何来源推导。
    */
   parentConversationId?: ConversationId
+  /**
+   * 本轮的思考档位，优先于模型配置中该「接口 × 模型」选定的档位。只有派发子 agent 时传入，
+   * 调用方须已按该模型可发送的档位校验；不传入时取模型配置。
+   */
+  effort?: EffortLevel
 }
 
 export class Session {
@@ -489,11 +494,11 @@ export class Session {
      */
     const target: string | ModelRef =
       !options?.model && conversation?.provider ? { provider: conversation.provider, model } : model
-    // 思考强度按本轮实际使用的模型解析，真源是配置中
-    // 「接口 × 模型」对应的条目。不保存会话级的第二份，也不共用一个全局值：
-    // 档位集合因模型而异（见 `StoredModel.effort`），套用全局值必然不匹配。
+    // 思考强度：派发子 agent 时传入的档位优先，否则取配置中「接口 × 模型」对应的条目。
+    // 不保存会话级的第二份，也不共用一个全局值：档位集合因模型而异（见 `StoredModel.effort`），
+    // 套用全局值必然不匹配。
     const resolvedTarget = resolveModel(config, target)
-    const effort = resolvedTarget?.effort
+    const effort = options?.effort ?? resolvedTarget?.effort
 
     /*
      * 冻结本 run 的非对话上下文。
@@ -715,7 +720,8 @@ export class Session {
       messageIdUpperBound: run.messageIdUpperBound,
       summarize: makeSummarizer({
         profile: () => this.resolveProfile(target),
-        effort: () => resolveModel(this.opts.config, target)?.effort,
+        // 与本轮请求使用同一档位；未传入时每次实时读取模型配置。
+        effort: () => options?.effort ?? resolveModel(this.opts.config, target)?.effort,
         signal: this.opts.signal,
       }),
       preserveAssistantReasoning,

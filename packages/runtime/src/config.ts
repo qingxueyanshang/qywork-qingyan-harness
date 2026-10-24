@@ -8,11 +8,13 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import {
+  applyTransportCapabilities,
   builtinCatalog,
   CHAT_REASONING_PROTOCOLS,
   type ChatReasoningProtocol,
   findMediaModel,
   lookupModel,
+  type ModelSpec,
   mediaKindsOf,
   type OffPeakDiscount,
   type TransportCapabilities,
@@ -922,6 +924,21 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
     ...(declared?.transport ? { transport: declared.transport } : {}),
     ...(spec ? { spec } : {}),
   }
+}
+
+/**
+ * 「接口 × 模型」实际生效的模型规格：目录条目叠加模型库覆盖与该接口条目的 transport，
+ * 与适配器（`buildAdapter`）的计算相同。模型列表与派发子 agent 时的档位校验读取它，
+ * 不要在调用方另行拼装：两处结果不一致时，界面可选的档位与派发时接受的档位不同。
+ */
+export function modelSpecOf(cfg: QyConfig, ref: ModelRef): ModelSpec | undefined {
+  const resolved = resolveModel(cfg, ref)
+  if (!resolved) return undefined
+  return applyTransportCapabilities(
+    lookupModel(resolved.model, resolved.kind, undefined, resolved.spec?.base),
+    resolved.transport,
+    resolved.spec,
+  )
 }
 
 /** 一次生成请求所需的全部信息。派生值，不落盘。 */

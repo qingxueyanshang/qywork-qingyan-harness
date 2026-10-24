@@ -11,6 +11,7 @@
 import {
   applyRevision,
   checkpointOutput,
+  type EffortLevel,
   type NodeState,
   readyCheckpoint,
   revisionClosure,
@@ -57,6 +58,7 @@ export interface NodeDispatch {
   prompt: string
   provider?: string
   model?: string
+  effort?: EffortLevel
 }
 
 export interface AdvanceResult {
@@ -279,6 +281,8 @@ function planDispatch(
     // 续接已有子 agent 时模型沿用其会话的设置，节点上的覆盖只在新建时生效。
     ...(!continuing && node.provider ? { provider: node.provider } : {}),
     ...(!continuing && node.model ? { model: node.model } : {}),
+    // 档位不绑定会话，revise 续发时同样使用该节点的档位。
+    ...(node.effort ? { effort: node.effort } : {}),
   }
 }
 

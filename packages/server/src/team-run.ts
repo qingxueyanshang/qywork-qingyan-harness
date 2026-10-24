@@ -9,8 +9,22 @@
  * 两条路径都汇入此处，不存在第三条路径。
  */
 
-import type { AgentEvent, ConversationId, RunId, StepId, StopReason } from '@qywork/core'
-import { type ModelRef, NO_MODEL_MESSAGE, type QyConfig, Session } from '@qywork/runtime'
+import { transmittableEffortLevels } from '@qywork/ai'
+import type {
+  AgentEvent,
+  ConversationId,
+  EffortLevel,
+  RunId,
+  StepId,
+  StopReason,
+} from '@qywork/core'
+import {
+  type ModelRef,
+  modelSpecOf,
+  NO_MODEL_MESSAGE,
+  type QyConfig,
+  Session,
+} from '@qywork/runtime'
 import { getConversation } from '@qywork/store'
 import type { Role } from '@qywork/team'
 import { artRenderOf, canvasPort } from './canvas.ts'
@@ -84,6 +98,40 @@ export function resolveModel(
   return { error: `配置中没有模型 ${name}。当前可用的是：${modelList(config)}` }
 }
 
+/**
+ * 成员本次运行的思考档位。优先级：本次派发指定 > 角色设定 > 不传入（由 `Session.ask` 取模型配置）。
+ *
+ * 角色的档位按角色的接口与模型校验后写入，因此只在子会话使用的正是该模型时采用；派发时另行指定了模型即不采用。
+ * 档位不在实际模型可发送的档位中时拒绝派发，不要改为忽略后照常执行：那样指定的档位没有生效，回执中也看不出来。
+ */
+export function memberEffort(
+  ref: ModelRef,
+  config: QyConfig,
+  requested: EffortLevel | undefined,
+  role: Pick<Role, 'id' | 'provider' | 'model' | 'effort'> | null,
+): { effort?: EffortLevel } | { error: string } {
+  const fromRole =
+    role?.effort && role.model === ref.model && (!role.provider || role.provider === ref.provider)
+      ? role.effort
+      : undefined
+  const effort = requested ?? fromRole
+  if (!effort) return {}
+  const levels = effortLevelsOf(ref, config)
+  if (levels.includes(effort)) return { effort }
+  const what = requested ? `思考强度 ${effort}` : `角色 ${role?.id} 的思考强度 ${effort}`
+  return {
+    error: levels.length
+      ? `${what} 不在 ${ref.provider} / ${ref.model} 可选的档位中：${levels.join('、')}`
+      : `${ref.provider} / ${ref.model} 无法调节思考强度，${what} 不能生效`,
+  }
+}
+
+/** 「接口 × 模型」可选的思考档位。创建角色与派发时的校验共用，与模型列表接口的档位一致。 */
+export function effortLevelsOf(ref: ModelRef, config: QyConfig): EffortLevel[] {
+  const spec = modelSpecOf(config, ref)
+  return spec ? transmittableEffortLevels(spec) : []
+}
+
 function modelList(config: QyConfig): string {
   return Object.entries(config.providers)
     .flatMap(([provider, stored]) =>
@@ -148,6 +196,8 @@ export async function runBuiltinMember(
     conversationId: ConversationId
     /** 派发来源：哪张卡片的哪个节点。没有卡片（调用不带 stepId）时不存在。 */
     dispatch?: { stepId: StepId; nodeId: string }
+    /** 本次运行的思考档位，已由 `memberEffort` 校验；不传入时取模型配置。 */
+    effort?: EffortLevel
   },
   ctx: {
     // 不含 `ws`：任务派发端口（`delegate.ts`）在没有 WebSocket 的场景下也会调用此函数。
@@ -243,11 +293,10 @@ export async function runBuiltinMember(
 
   try {
     // 会话已存在，接口与模型记录在该会话行上；此处不再传递模型名。
-    for await (const ev of session.ask(
-      input.prompt,
-      conversationId,
-      input.dispatch ? { dispatch: input.dispatch } : undefined,
-    )) {
+    for await (const ev of session.ask(input.prompt, conversationId, {
+      ...(input.dispatch ? { dispatch: input.dispatch } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+    })) {
       if (ev.type === 'run.started') {
         runId = ev.runId
         // 先登记忙态，再暴露子会话入口。用户取得入口后立即打开时，加载侧已能从

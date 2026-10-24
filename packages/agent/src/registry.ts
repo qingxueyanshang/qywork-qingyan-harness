@@ -18,6 +18,7 @@ import type {
   CanvasOp,
   CanvasRunResult,
   CanvasView,
+  EffortLevel,
   FileChange,
   GenerateOutput,
   Goal,
@@ -617,7 +618,14 @@ export interface SubagentSummary {
 export interface DelegatePort {
   /** 当前项目可派发的目标：角色库中的角色，以及本机识别到的外部 CLI。 */
   targets(): Promise<{
-    roles: { id: string; name: string; description: string; provider?: string; model?: string }[]
+    roles: {
+      id: string
+      name: string
+      description: string
+      provider?: string
+      model?: string
+      effort?: EffortLevel
+    }[]
     clis: { id: string; vendor: string; connected: boolean }[]
   }>
   /** 本会话已有的子 agent。 */
@@ -632,7 +640,7 @@ export interface DelegatePort {
   resolveModel(
     name: string,
     provider?: string,
-  ): { provider: string; model: string } | { error: string }
+  ): { provider: string; model: string; effortLevels: EffortLevel[] } | { error: string }
   /**
    * 派出一个子 agent，**立即返回**。目标是新建（按种类）还是已有（按 id）由 `target` 决定；
    * 无法派发时通过返回值报告，不抛出异常：模型须按原因改用其他做法。
@@ -654,6 +662,8 @@ export interface DelegatePort {
     /** 仅在新建时生效：仅当用户指定了模型时提供。 */
     provider?: string
     model?: string
+    /** 本次派发的思考档位，新建与续接均生效；实现方按子 agent 实际使用的模型校验。 */
+    effort?: EffortLevel
     runId: string
     stepId?: string
     nodeId?: string

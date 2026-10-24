@@ -9,6 +9,7 @@
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
+import { EFFORT_ORDER, isEffortLevel } from '@qywork/core'
 import {
   loadMcpServers,
   type McpConfig,
@@ -433,11 +434,14 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
   const obj = (parsed ?? {}) as Record<string, unknown>
 
   const roles: Role[] = []
+  const invalidEffort: string[] = []
   for (const value of (obj.roles as unknown[]) ?? []) {
     const r = value as Record<string, unknown>
     const id = String(r.id ?? '').trim()
     // 有 id 即接受：角色不引用其他条目，因此不存在引用缺失的情形。
     if (!id) continue
+    // 档位不在词表中时忽略该项并报告，角色其余设置照常生效。
+    if (r.effort !== undefined && !isEffortLevel(r.effort)) invalidEffort.push(id)
     roles.push({
       id,
       name: String(r.name ?? id),
@@ -445,7 +449,7 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
       systemPrompt: String(r.systemPrompt ?? ''),
       ...(r.provider ? { provider: String(r.provider) } : {}),
       ...(r.model ? { model: String(r.model) } : {}),
-      ...(r.effort ? { effort: r.effort as NonNullable<Role['effort']> } : {}),
+      ...(isEffortLevel(r.effort) ? { effort: r.effort } : {}),
       // allowedTools 的空数组与不填语义不同（前者表示不提供任何工具，后者表示继承全部），
       // 因此只在字段存在时写入。
       ...(Array.isArray(r.allowedTools) ? { allowedTools: r.allowedTools.map(String) } : {}),
@@ -458,10 +462,18 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
 
   // rules 只识别 `shared`：并发上限由每次 workflow 调用给出，无法在此文件中配置。
   const shared = (obj.rules as TeamRules | undefined)?.shared
+  const problems = [
+    ...(dropped > 0 ? [`${dropped} 个角色缺少 id，已忽略`] : []),
+    ...(invalidEffort.length
+      ? [
+          `角色 ${invalidEffort.join('、')} 的 effort 不是 ${EFFORT_ORDER.join('、')} 之一，已忽略该项`,
+        ]
+      : []),
+  ]
   return {
     roles,
     rules: shared ? { shared } : {},
-    error: dropped > 0 ? `${dropped} 个角色缺少 id，已忽略` : null,
+    error: problems.length ? problems.join('；') : null,
   }
 }
 

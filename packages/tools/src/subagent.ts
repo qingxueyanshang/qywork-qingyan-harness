@@ -13,7 +13,7 @@
  */
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
-import { parseSubagentTarget, SUBAGENT_KIND_LABEL } from '@qywork/core'
+import { EFFORT_ORDER, isEffortLevel, parseSubagentTarget, SUBAGENT_KIND_LABEL } from '@qywork/core'
 import { idArg } from './args.ts'
 
 export const subagentTool: ToolSpec = {
@@ -77,6 +77,14 @@ export const subagentTool: ToolSpec = {
           '写在 task 正文里不生效，子 agent 不会自行切换模型。' +
           '不填 = 使用当前会话的模型（角色指定了模型时使用角色的模型）。只在新建时生效；外部 CLI 使用其自身的模型，填写会被拒绝。',
       },
+      effort: {
+        type: ['string', 'null'],
+        enum: [...EFFORT_ORDER, null],
+        description:
+          '用户指定思考强度时填写，写在 task 正文里不生效。只作用于本次派发，新建与续接均可填写。' +
+          '不填 = 子 agent 使用角色的模型时取角色设定的档位，否则取模型配置中该模型的档位。' +
+          '所用模型不支持该档位时派发被拒绝并列出可选档位；外部 CLI 按其命令行参数传入，没有该参数的 CLI 拒绝。',
+      },
     },
     additionalProperties: false,
   },
@@ -114,6 +122,13 @@ export const subagentTool: ToolSpec = {
     const parentTodo = typeof args.parentTodo === 'string' ? args.parentTodo.trim() : ''
     const provider = idArg(args.provider)
     const model = idArg(args.model)
+    const effort = args.effort ?? undefined
+    if (effort !== undefined && !isEffortLevel(effort)) {
+      return {
+        status: 'failure' as const,
+        message: `effort 必须是 ${EFFORT_ORDER.join('、')} 之一`,
+      }
+    }
     if (!task) return { status: 'failure' as const, message: '需写明交给子 agent 的任务' }
     if (provider && !model) {
       return { status: 'failure' as const, message: '指定 provider 时必须同时指定 model' }
@@ -153,6 +168,7 @@ export const subagentTool: ToolSpec = {
       task,
       ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
       // 进度显示在本次调用的卡片上。无法取得卡片 id 时照常执行，只是没有运行期状态。
       runId: ctx.runId,
       ...(ctx.stepId ? { stepId: ctx.stepId } : {}),
