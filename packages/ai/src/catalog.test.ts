@@ -131,6 +131,28 @@ test('Claude Sonnet 5.5 使用官方规格与缓存价格，长上下文不加�
   expect(lookupModel('claude-sonnet-5', 'anthropic_messages').pricing.cacheRead).toBe(0.2)
 })
 
+test('Claude Haiku 5.5 使用官方规格，提示词超过 10 万 token 时整条请求按高档计价', () => {
+  const haiku = lookupModel('claude-haiku-5-5', 'anthropic_messages')
+  expect(haiku).toMatchObject({
+    displayName: 'Claude Haiku 5.5',
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    vision: true,
+    thinking: 'adaptive_only',
+    thinksByDefault: true,
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    minCacheablePrefix: 512,
+    pricing: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite5m: 0.125, cacheWrite1h: 0.2 },
+  })
+  // 提示词长度含缓存读取：正好 10 万 token 仍按基础档。
+  expect(
+    computeCost(haiku, { inputTokens: 50_000, cachedTokens: 50_000, outputTokens: 10_000 }),
+  ).toBeCloseTo(0.0105, 10)
+  expect(
+    computeCost(haiku, { inputTokens: 100_000, cachedTokens: 100_000, outputTokens: 10_000 }),
+  ).toBeCloseTo(0.08, 10)
+})
+
 describe('模型库与端点校验的优先级', () => {
   const transport = {
     effort: true,
