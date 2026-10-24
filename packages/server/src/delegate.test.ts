@@ -3,7 +3,8 @@
  *
  * 覆盖范围：`delegate.ts` 的 `makeDelegate()`：派发后立即返回、完成回调写入节点状态与回执、
  * 回执正文的形状、按会话停止、图的推进（首次派发 → 一个节点执行完毕后派发下游 → 一个节点失败时先发送失败回执 →
- * 上游全部完成后发送检查点回执 → approve / revise），以及 `subagents.ts` 的运行表。
+ * 上游全部完成后发送检查点回执 → approve / revise）、子 agent 的思考强度（`team-run.ts` 的 `memberEffort`），
+ * 以及 `subagents.ts` 的运行表。
  *
  * 使用真实链路的原因：该通道的行为是「派发之后，卡片上对应的节点随之更新，回执自动返回」。
  * 把 `runBuiltinMember` 换成桩只能验证「桩被调用」；实际可能出错的是装配：
@@ -164,6 +165,13 @@ beforeAll(async () => {
         baseUrl: `http://127.0.0.1:${provider.port}/v1`,
         models: { 'qwen/model-3.8': {} },
       },
+      // 可调节思考强度的模型，模型配置中选定 low，用于核对回落到模型配置的情形。
+      推理接口: {
+        kind: 'openai_responses',
+        apiKey: 'sk-fake',
+        baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+        models: { 'gpt-6-sol': { effort: 'low' } },
+      },
     },
     mode: 'auto',
   } as unknown as QyConfig
@@ -299,8 +307,13 @@ async function withCliOutput(
   exitCode: number,
   check: () => Promise<void>,
 ) {
-  const bin = await mkdtemp(join(dir, 'receipt-cli-'))
   const code = `process.stdout.write(${JSON.stringify(stdout)});process.exitCode=${exitCode};`
+  await withCliScript(id, code, check)
+}
+
+/** 以一段 Node 脚本替换指定厂商的本机入口。 */
+async function withCliScript(id: string, code: string, check: () => Promise<void>) {
+  const bin = await mkdtemp(join(dir, 'receipt-cli-'))
   await mkdir(join(bin, 'node_modules', 'fake-cli'), { recursive: true })
   await writeFile(join(bin, 'node_modules', 'fake-cli', 'index.js'), code)
   await writeFile(join(bin, id), `#!/usr/bin/env node\n${code}\n`, { mode: 0o755 })
@@ -562,6 +575,179 @@ describe('派发后立即返回', () => {
       subagentId: res.subagentId,
     })
     await until(() => !runs.isBusy(cid), '子 agent 结束')
+  })
+})
+
+/**
+ * 思考强度的取值顺序：本次派发指定 > 角色设定（子会话使用角色的模型时）> 模型配置。
+ * 断言的是到达 provider 的请求体，而不是派发参数：只有请求中的 `reasoning.effort` 才是实际生效的档位。
+ */
+describe('思考强度', () => {
+  const sent: { body: string; effort: string | undefined }[] = []
+  /** 按任务正文应答，并记录每次请求的思考档位。 */
+  const recording = (map: Record<string, string>) => {
+    const reply = byTask(map)
+    return (body: string) => {
+      sent.push({ body, effort: JSON.parse(body).reasoning?.effort })
+      return reply(body)
+    }
+  }
+  const effortFor = (needle: string) => sent.filter((s) => s.body.includes(needle)).at(-1)?.effort
+  const teamFile = () => join(dir, '.qy', 'team.json')
+
+  beforeAll(async () => {
+    await mkdir(dirname(teamFile()), { recursive: true })
+    await writeFile(
+      teamFile(),
+      JSON.stringify({
+        roles: [
+          {
+            id: 'douzi',
+            name: '豆子',
+            description: '总导演',
+            systemPrompt: '统筹进度',
+            provider: '推理接口',
+            model: 'gpt-6-sol',
+            effort: 'xhigh',
+          },
+        ],
+      }),
+    )
+  })
+  afterAll(async () => {
+    await rm(teamFile(), { force: true })
+  })
+
+  /** 原始失败形状：角色设定了 xhigh，派发该角色时请求仍按模型配置的档位发送。 */
+  test('角色设定的档位到达成员请求', async () => {
+    const cid = conversation()
+    router = recording({ 排期: '已排期' })
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'role', role: 'douzi' },
+      task: '排期',
+      ...spot(cid),
+    })
+    expect(res.ok).toBe(true)
+    await until(() => phasesOf('child').includes('done'), '子 agent 落终态')
+    expect(effortFor('排期')).toBe('xhigh')
+  })
+
+  test('临时子 agent：指定的档位只作用于本次派发，续接未指定时回落到模型配置', async () => {
+    const cid = conversation()
+    const where = spot(cid)
+    router = recording({ 初稿: '初稿完成', 改稿: '改稿完成' })
+    const first = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '写手' },
+      task: '初稿',
+      provider: '推理接口',
+      model: 'gpt-6-sol',
+      effort: 'high',
+      ...where,
+    })
+    expect(first.ok).toBe(true)
+    const done = () => phasesOf('child').filter((phase) => phase === 'done').length
+    await until(() => done() === 1, '初稿结束')
+    expect(effortFor('初稿')).toBe('high')
+
+    const again = await delegate(cid).dispatch({
+      target: { subagent: first.subagentId as string },
+      task: '改稿',
+      ...where,
+    })
+    expect(again.ok).toBe(true)
+    await until(() => done() === 2, '改稿结束')
+    expect(effortFor('改稿')).toBe('low')
+  })
+
+  test('派发时另行指定模型，不采用角色的档位', async () => {
+    const cid = conversation()
+    router = recording({ 换模型: '已完成' })
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'role', role: 'douzi' },
+      task: '换模型',
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      ...spot(cid),
+    })
+    expect(res.ok).toBe(true)
+    await until(() => phasesOf('child').includes('done'), '子 agent 落终态')
+    expect(sent.some((s) => s.body.includes('换模型'))).toBe(true)
+    expect(effortFor('换模型')).toBeUndefined()
+  })
+
+  test('模型不支持该档位时拒绝派发，列出可选档位，不创建子会话', async () => {
+    const cid = conversation()
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '写手' },
+      task: '不应执行',
+      provider: '推理接口',
+      model: 'gpt-6-sol',
+      effort: 'minimal',
+      ...spot(cid),
+    })
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('low、medium、high、xhigh、max')
+    expect(listChildConversations(store, cid)).toEqual([])
+    expect(phasesOf('child')).toEqual(['failed'])
+  })
+
+  test('外部 CLI：档位按厂商表的参数传入；没有该参数的 CLI 拒绝派发，不创建子会话', async () => {
+    // 替身按 Codex 的 JSONL 格式输出，正文是它收到的全部参数。
+    const echoArgs = [
+      'const lines=[',
+      "{type:'thread.started',thread_id:'t-effort'},",
+      "{type:'item.completed',item:{type:'agent_message',text:JSON.stringify(process.argv.slice(2))}},",
+      "{type:'turn.completed',usage:{input_tokens:1}}];",
+      'process.stdout.write(lines.map((l)=>JSON.stringify(l)).join(String.fromCharCode(10)))',
+    ].join('')
+    await withCliScript('codex', echoArgs, async () => {
+      const cid = conversation()
+      const res = await delegate(cid).dispatch({
+        target: { kind: 'cli', cli: 'codex' },
+        task: '看一下',
+        effort: 'high',
+        ...spot(cid),
+      })
+      expect(res.ok).toBe(true)
+      await until(() => receipts.length > 0, '回执')
+      expect(receipts[0]?.content).toContain('model_reasoning_effort=high')
+    })
+    await withCliScript('gemini', "process.stdout.write('不应执行')", async () => {
+      const cid = conversation()
+      const res = await delegate(cid).dispatch({
+        target: { kind: 'cli', cli: 'gemini' },
+        task: '看一下',
+        effort: 'high',
+        ...spot(cid),
+      })
+      expect(res.ok).toBe(false)
+      expect(res.error).toContain('gemini 没有思考强度参数')
+      expect(listChildConversations(store, cid)).toEqual([])
+    })
+  })
+
+  test('workflow 节点的档位到达请求', async () => {
+    const parent = conversation()
+    router = recording({ 节点任务: '节点完成' })
+    const graph = {
+      goal: '一个节点',
+      nodes: [
+        {
+          id: 'x',
+          kind: 'temp',
+          name: 'x',
+          task: '节点任务',
+          provider: '推理接口',
+          model: 'gpt-6-sol',
+          effort: 'max',
+        },
+        { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['x'] },
+      ],
+    }
+    const runId = run(parent, 'wf-effort')
+    await invoke(parent, runId, 1, graph, parsedStart(graph))
+    await until(() => receipts.some((r) => r.content.includes('检查点 验收')), '检查点回执')
+    expect(effortFor('节点任务')).toBe('max')
   })
 })
 

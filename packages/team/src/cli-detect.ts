@@ -57,7 +57,10 @@ const KNOWN: KnownCli[] = [
       '--verbose',
       '--permission-mode',
       'acceptEdits',
+      '{effort_args}',
     ],
+    // `claude --help`（2.1.310）：`--effort <level>`，可选 low、medium、high、xhigh、max。
+    effortArgs: ['--effort', '{effort}'],
     output: 'jsonl',
     protocol: 'claude',
     resultField: 'result',
@@ -80,6 +83,7 @@ const KNOWN: KnownCli[] = [
       '--verbose',
       '--permission-mode',
       'acceptEdits',
+      '{effort_args}',
     ],
     envKeys: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
     credentials: ['.claude/.credentials.json', '.claude.json'],
@@ -93,7 +97,18 @@ const KNOWN: KnownCli[] = [
     // 非 git 仓库的工作区中必然失败。工作区由用户选择，派发由用户的模型发起，
     // 该判断应由 qywork 的权限模式负责，不应由被调度的 CLI 再次拦截。
     // 派发任务允许修改当前工作区。显式指定写入沙箱，避免落入 CLI 默认的只读模式。
-    args: ['exec', '--sandbox', 'workspace-write', '--json', '--skip-git-repo-check', '{prompt}'],
+    args: [
+      'exec',
+      '--sandbox',
+      'workspace-write',
+      '{effort_args}',
+      '--json',
+      '--skip-git-repo-check',
+      '{prompt}',
+    ],
+    // 没有专用参数，经 `-c` 覆盖配置键 `model_reasoning_effort`；`exec` 与 `exec resume` 均接受 `-c`。
+    // 可选档位随模型变化，不在此处列出。
+    effortArgs: ['-c', 'model_reasoning_effort={effort}'],
     output: 'jsonl',
     protocol: 'codex',
     // 答案在 `item.completed` 类型行的 `item.text` 上，顶层没有 `result`。
@@ -109,6 +124,7 @@ const KNOWN: KnownCli[] = [
       '--sandbox',
       'workspace-write',
       'resume',
+      '{effort_args}',
       '{session}',
       '--json',
       '--skip-git-repo-check',
@@ -147,7 +163,9 @@ const KNOWN: KnownCli[] = [
     // **`--always-approve` 不能换成 `--permission-mode acceptEdits`**：实测（2026-08-25）
     // 后者会使其在第一次工具调用处停止，返回的对象为 `stopReason: "cancelled"`、`num_turns: 1`，
     // 正文为「正在创建 g1.txt」而文件并未创建。stdin 已关闭，无人能批准该次调用。
-    args: ['-p', '{prompt}', '--output-format', 'json', '--always-approve'],
+    args: ['-p', '{prompt}', '--output-format', 'json', '--always-approve', '{effort_args}'],
+    // `grok --help`（1.0.0）：`--reasoning-effort <EFFORT>`，未列出可选值。
+    effortArgs: ['--reasoning-effort', '{effort}'],
     output: 'json',
     protocol: 'grok',
     resultField: 'text',
@@ -160,6 +178,7 @@ const KNOWN: KnownCli[] = [
       '--output-format',
       'json',
       '--always-approve',
+      '{effort_args}',
     ],
     envKeys: ['XAI_API_KEY'],
     credentials: ['.grok/auth.json'],
@@ -234,6 +253,8 @@ async function scanClis(env: NodeJS.ProcessEnv): Promise<DetectedCli[]> {
       ...(k.resumeArgs ? { resumeArgs: k.resumeArgs } : {}),
       // 遗漏复制该项时，实时页只有原始 JSON 行，没有 result 行时回执为空。
       ...(k.narrate ? { narrate: k.narrate } : {}),
+      // 遗漏复制该项时，指定档位的派发全部被判为该 CLI 没有对应参数。
+      ...(k.effortArgs ? { effortArgs: k.effortArgs } : {}),
       path,
       connected: await hasCredentials(k, home, env),
     })

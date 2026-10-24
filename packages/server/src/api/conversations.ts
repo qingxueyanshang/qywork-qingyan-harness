@@ -5,15 +5,14 @@ import { MAX_RESENDS } from '@qywork/agent'
 import type { MediaOperation, MediaParamSpec, ModelSpec } from '@qywork/ai'
 import {
   applySpecOverride,
-  applyTransportCapabilities,
   builtinCatalog,
   describeParam,
-  effortIsTransmittable,
   lookupMediaModel,
   lookupModel,
   mediaCatalog,
   mediaKindsOf,
   officialBaseUrl,
+  transmittableEffortLevels,
   VENDORS,
 } from '@qywork/ai'
 import type {
@@ -36,6 +35,7 @@ import {
   contextPanel,
   exportConversationDiagnostics,
   listMediaModels,
+  modelSpecOf,
   type QyConfig,
   removeConversationTemp,
   resolveModel,
@@ -267,7 +267,7 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
       cacheRead: spec.pricing.cacheRead,
       cacheWrite: spec.pricing.cacheWrite5m,
       currency: spec.pricing.currency ?? 'USD',
-      effortLevels: effortIsTransmittable(spec) ? spec.effortLevels : [],
+      effortLevels: transmittableEffortLevels(spec),
       thinksByDefault: spec.thinksByDefault,
       ...(notes.length ? { priceNotes: notes } : {}),
     }
@@ -345,15 +345,9 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         name,
         models: Object.keys(provider.models).map((id) => {
           const declared = provider.models[id]
-          // 模型能力与参数按「模型 + 协议」从官方目录与模型库获取，覆盖对象与运行时相同（含接口价格）；
-          // 当前中转站是否透传控制参数只看该接口下此模型条目的 transport，不能写回全局目录。
-          const override = resolveModel(d.config, { provider: name, model: id })?.spec
-          const spec = applyTransportCapabilities(
-            lookupModel(id, provider.kind, undefined, override?.base),
-            declared?.transport,
-            override,
-          )
-          const effortLevels = effortIsTransmittable(spec) ? spec.effortLevels : []
+          // 与运行时、派发子 agent 时的档位校验使用同一份规格。接口与模型均取自配置本身，解析必然成功。
+          const spec = modelSpecOf(d.config, { provider: name, model: id })!
+          const effortLevels = transmittableEffortLevels(spec)
           const defaultBaseUrl = officialBaseUrl(spec)
           return {
             id,

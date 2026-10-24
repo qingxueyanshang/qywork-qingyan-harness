@@ -29,6 +29,7 @@ export {
   type ReasoningReplay,
   reasoningReplay,
   type SpecOverride,
+  transmittableEffortLevels,
   unknownModel,
   VENDORS,
 } from './catalog.ts'

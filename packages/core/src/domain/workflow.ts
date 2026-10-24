@@ -1,4 +1,11 @@
-import type { NodePhase, NodeState, ToolOutcomeWire } from './model.ts'
+import {
+  EFFORT_ORDER,
+  type EffortLevel,
+  isEffortLevel,
+  type NodePhase,
+  type NodeState,
+  type ToolOutcomeWire,
+} from './model.ts'
 
 export type WorkflowPhase = 'running' | 'waiting_review' | 'completed' | 'failed'
 
@@ -28,6 +35,8 @@ export interface WorkflowAgentNode {
   /** 与 model 配对的接口名；两列始终分开，不使用 `接口/模型` 拼接串。只在新建时生效。 */
   provider?: string
   model?: string
+  /** 该节点每次派发（含 revise 续发）使用的思考档位；是否被所用模型支持由派发端校验。 */
+  effort?: EffortLevel
 }
 
 export interface WorkflowCheckpointNode {
@@ -267,7 +276,16 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
         // 扁平 strict schema 中 passInput 同时用于子 agent 节点；部分 provider 会把它
         // 补全为默认值 true，而不是 null。检查点不使用该字段，直接忽略：若因
         // 严格补全拒绝整张图，模型重试会在界面上留下另一张失败卡片。
-        for (const key of ['role', 'name', 'cli', 'subagent', 'task', 'provider', 'model']) {
+        for (const key of [
+          'role',
+          'name',
+          'cli',
+          'subagent',
+          'task',
+          'provider',
+          'model',
+          'effort',
+        ]) {
           if (!nullish(node[key])) return { ok: false, error: `检查点 ${id} 不能填写 ${key}` }
         }
         nodes.push({ id, kind: 'checkpoint', label, needs })
@@ -285,6 +303,13 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
         return { ok: false, error: `节点 ${id} 指向已有子 agent，不能另行指定模型` }
       if (model && !('subagent' in target.target) && target.target.kind === 'cli')
         return { ok: false, error: `节点 ${id} 的外部 CLI 使用其自身的模型，不接受指定模型` }
+      const effortText = wireText(node.effort)
+      const effort = isEffortLevel(effortText) ? effortText : undefined
+      if (effortText && !effort)
+        return {
+          ok: false,
+          error: `节点 ${id} 的 effort 必须是 ${EFFORT_ORDER.join('、')} 之一`,
+        }
       nodes.push({
         id,
         kind: 'subagent',
@@ -294,6 +319,7 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
         ...(node.passInput === false ? { passInput: false } : {}),
         ...(provider ? { provider } : {}),
         ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
       })
     }
     return { ok: true, call: { kind: 'start', goal, nodes, maxConcurrent } }

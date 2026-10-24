@@ -363,6 +363,26 @@ describe('revise 只影响闭包', () => {
     expect(result.checkpoint).toBeNull()
   })
 
+  /** 模型绑定在子会话上，续发时不再传递；档位不绑定会话，续发时同样使用节点上的档位。 */
+  test('续发时不传递模型，仍传递节点的思考档位', () => {
+    const tuned = [
+      node('a', '研究', { provider: '另/接口', model: 'qwen/model-3.8', effort: 'xhigh' }),
+      checkpoint('cp', ['a']),
+    ]
+    const result = step(tuned, {
+      states: { a: cell('a', { output: '旧 A', subagentId: 'cv_a' }) },
+      review: {
+        checkpointId: 'cp',
+        decision: 'revise',
+        note: '',
+        revisions: [{ nodeId: 'a', instruction: '补证据' }],
+      },
+    })
+    const plan = result.dispatch.find((d) => d.nodeId === 'a')
+    expect(plan).toMatchObject({ target: { subagent: 'cv_a' }, effort: 'xhigh' })
+    expect(plan).not.toHaveProperty('model')
+  })
+
   test('闭包内未被指定的节点随后续发默认指令，仍续接原有子 agent', () => {
     const result = step(plan, {
       states: {

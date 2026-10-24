@@ -18,6 +18,7 @@
 
 import { readFile, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import type { EffortLevel } from '@qywork/core'
 import {
   collectProcess,
   createStreamRedactor,
@@ -104,6 +105,8 @@ export async function runCli(
      * 不传入表示没有已知凭证，不表示无需剥离。
      */
     secrets?: { values: string[] }
+    /** 思考档位，按厂商表的 `effortArgs` 展开到模板的 `{effort_args}` 处。调用方须先确认该 CLI 声明了参数。 */
+    effort?: EffortLevel
     /**
      * 运行期间逐块交出输出。**不提供该回调时，执行完毕才有输出**：外部 CLI 是本机的另一个进程，
      * 其输出在结束之前无法获取。
@@ -115,10 +118,17 @@ export async function runCli(
   },
 ): Promise<CliRunResult> {
   const template = input.resume ? (agent.resumeArgs ?? agent.args) : agent.args
-  const args = template.map((a) =>
-    a
-      .replaceAll('{prompt}', input.prompt + REPORT_CONTRACT)
-      .replaceAll('{session}', input.resume ?? ''),
+  const { effort } = input
+  const effortArgs =
+    effort && agent.effortArgs ? agent.effortArgs.map((a) => a.replaceAll('{effort}', effort)) : []
+  const args = template.flatMap((a) =>
+    a === '{effort_args}'
+      ? effortArgs
+      : [
+          a
+            .replaceAll('{prompt}', input.prompt + REPORT_CONTRACT)
+            .replaceAll('{session}', input.resume ?? ''),
+        ],
   )
 
   // 一律在工作区根目录下运行：向外部 CLI 派发任务即在当前项目中完成一项工作，

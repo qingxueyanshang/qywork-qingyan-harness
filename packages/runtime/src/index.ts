@@ -26,6 +26,7 @@ export {
   loadConfig,
   type MediaModelEntry,
   type ModelRef,
+  modelSpecOf,
   NO_MODEL_MESSAGE,
   type QyConfig,
   type ResolvedMediaModel,

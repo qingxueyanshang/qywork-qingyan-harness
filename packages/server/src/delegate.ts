@@ -20,6 +20,7 @@ import { applySpecOverride, lookupModel, type TokenDensity } from '@qywork/ai'
 import {
   type Conversation,
   type ConversationId,
+  type EffortLevel,
   type FileChange,
   type FollowUp,
   foldWorkflow,
@@ -70,7 +71,13 @@ import {
 } from '@qywork/team'
 import { deliverAgentOutput, openChangeWindow } from '@qywork/tools'
 import type { CommandDeps } from './deps.ts'
-import { memberModel, resolveModel as resolveMemberModel, runBuiltinMember } from './team-run.ts'
+import {
+  effortLevelsOf,
+  memberEffort,
+  memberModel,
+  resolveModel as resolveMemberModel,
+  runBuiltinMember,
+} from './team-run.ts'
 
 /** 任务派发只使用装配的三项基础依赖（账本、正文库、配置）与两张服务级表，不涉及 WebSocket。 */
 type DelegateDeps = Omit<CommandDeps, 'ws'>
@@ -84,8 +91,17 @@ interface Resolved {
   role: Role | null
   cli: CliAgent | null
   created: boolean
+  /** 本次运行的思考档位，已在解析时校验；省略时内置子 agent 取模型配置，外部 CLI 不传参数。 */
+  effort?: EffortLevel
   /** 解析时发现的、需要告知模型的事实：会话未能续接、角色已不存在。 */
   note?: string
+}
+
+/** 派发参数中与执行者设置相关的三项。模型只在新建时生效，档位每次派发生效。 */
+interface DispatchWanted {
+  provider?: string
+  model?: string
+  effort?: EffortLevel
 }
 
 /** 节点所在的卡片（run 与 step），以及它是否属于工作流图。 */
@@ -235,14 +251,23 @@ export function makeDelegate(ctx: {
   const resolveTarget = async (
     target: SubagentTarget,
     signal: AbortSignal,
-    model?: string,
-    provider?: string,
+    wanted: DispatchWanted,
   ): Promise<Resolved | { error: string }> => {
+    const { model, provider } = wanted
     const [{ roles }, clis] = await Promise.all([team(), detectClis()])
     if (signal.aborted) return { error: '已停止' }
     const findDetected = (id: string) => clis.find((c) => c.id === id)
     const parent = getConversation(deps.store, conversationId)
     if (!parent) return { error: '未找到当前会话' }
+    /** 内置子 agent 的档位按子会话的接口与模型计算；新建时在创建子会话之前调用，校验失败不留下空会话。 */
+    const effortOf = (ref: ModelRef, role: Role | null) =>
+      memberEffort(ref, deps.config, wanted.effort, role)
+    /** 外部 CLI 的档位原样传给 CLI，只确认厂商表声明了对应参数；检查时机同上。 */
+    const cliEffortOf = (cli: CliAgent): { effort?: EffortLevel } | { error: string } => {
+      if (!wanted.effort) return {}
+      if (!cli.effortArgs) return { error: `${cli.id} 没有思考强度参数，无法指定 ${wanted.effort}` }
+      return { effort: wanted.effort }
+    }
 
     if ('subagent' in target) {
       if (model || provider) {
@@ -255,6 +280,8 @@ export function makeDelegate(ctx: {
       if (child.source === 'cli') {
         const cli = child.sourceRef ? findDetected(child.sourceRef) : null
         if (!cli) return { error: `本机未识别到 ${child.sourceRef}` }
+        const effort = cliEffortOf(cli)
+        if ('error' in effort) return effort
         const conversation = retitle(child, target.name)
         // 无法续接会话时照常执行，但将该事实返回给模型：子 agent 只收到了本次的指令。
         const note = !conversation.externalSession
@@ -262,21 +289,30 @@ export function makeDelegate(ctx: {
           : !cli.resumeArgs
             ? `${cli.id} 不支持续接会话，本次为新会话，只收到了本次的指令`
             : undefined
-        return { conversation, role: null, cli, created: false, ...(note ? { note } : {}) }
-      }
-      const conversation = retitle(child, target.name)
-      if (conversation.source === 'role') {
-        const found = roles.find((r) => r.id === conversation.sourceRef)
-        if (found) return { conversation, role: found, cli: null, created: false }
         return {
           conversation,
-          role: tempRole(conversation.title),
-          cli: null,
+          role: null,
+          cli,
           created: false,
+          ...effort,
+          ...(note ? { note } : {}),
+        }
+      }
+      const found =
+        child.source === 'role' ? roles.find((r) => r.id === child.sourceRef) : undefined
+      const effort = effortOf({ provider: child.provider, model: child.model }, found ?? null)
+      if ('error' in effort) return effort
+      const conversation = retitle(child, target.name)
+      const base = { conversation, cli: null, created: false, ...effort }
+      if (found) return { ...base, role: found }
+      if (conversation.source === 'role') {
+        return {
+          ...base,
+          role: tempRole(conversation.title),
           note: `角色 ${conversation.sourceRef} 已不在 team.json，本次按临时子 agent 运行（无系统提示词与工具限制）`,
         }
       }
-      return { conversation, role: tempRole(conversation.title), cli: null, created: false }
+      return { ...base, role: tempRole(conversation.title) }
     }
 
     if (target.kind === 'cli') {
@@ -288,6 +324,8 @@ export function makeDelegate(ctx: {
       }
       const cli = findDetected(target.cli)
       if (!cli) return { error: `本机未识别到 ${target.cli}` }
+      const effort = cliEffortOf(cli)
+      if ('error' in effort) return effort
       const conversation = createConversation(deps.store, {
         workspaceId: parent.workspaceId,
         provider: 'cli',
@@ -297,7 +335,7 @@ export function makeDelegate(ctx: {
         sourceRef: cli.id,
         parentConversationId: conversationId,
       })
-      return { conversation, role: null, cli, created: true }
+      return { conversation, role: null, cli, created: true, ...effort }
     }
 
     const picked = pick(model, provider)
@@ -312,6 +350,8 @@ export function makeDelegate(ctx: {
     }
     const active = memberModel(role, deps.config, picked)
     if ('error' in active) return active
+    const effort = effortOf(active, role)
+    if ('error' in effort) return effort
     const conversation = createConversation(deps.store, {
       workspaceId: parent.workspaceId,
       provider: active.provider,
@@ -321,7 +361,7 @@ export function makeDelegate(ctx: {
       ...(target.kind === 'role' ? { sourceRef: role.id } : {}),
       parentConversationId: conversationId,
     })
-    return { conversation, role, cli: null, created: true }
+    return { conversation, role, cli: null, created: true, ...effort }
   }
 
   /**
@@ -415,6 +455,7 @@ export function makeDelegate(ctx: {
       nodeId: input.nodeId ?? SUBAGENT_NODE_ID,
       ...(input.provider ? { provider: input.provider } : {}),
       ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
     })
   }
 
@@ -427,7 +468,7 @@ export function makeDelegate(ctx: {
   const start = async (
     target: SubagentTarget,
     task: string,
-    at: DispatchAt & { provider?: string; model?: string },
+    at: DispatchAt & DispatchWanted,
   ): Promise<Awaited<ReturnType<DelegatePort['dispatch']>>> => {
     const nodeId = at.nodeId ?? SUBAGENT_NODE_ID
     /*
@@ -458,7 +499,7 @@ export function makeDelegate(ctx: {
     deps.runs.announce(conversationId)
     let resolved: Awaited<ReturnType<typeof resolveTarget>>
     try {
-      resolved = await resolveTarget(target, controller.signal, at.model, at.provider)
+      resolved = await resolveTarget(target, controller.signal, at)
     } finally {
       deps.subagents.remove(conversationId, dispatchKey, controller)
     }
@@ -556,6 +597,7 @@ export function makeDelegate(ctx: {
           workspaceRoot,
           signal,
           ...(conversation.externalSession ? { resume: conversation.externalSession } : {}),
+          ...(resolved.effort ? { effort: resolved.effort } : {}),
           // 外部 CLI 使用自身的 key 执行；qywork 配置中的 key 对它没有用途，按值剥离。
           secrets: collectSecrets(deps.config),
           ...(stepId
@@ -603,6 +645,7 @@ export function makeDelegate(ctx: {
           signal,
           conversationId: conversation.id,
           ...(at.stepId ? { dispatch: { stepId: at.stepId as StepId, nodeId } } : {}),
+          ...(resolved.effort ? { effort: resolved.effort } : {}),
         },
         {
           deps,
@@ -737,6 +780,7 @@ export function makeDelegate(ctx: {
       },
       ...(plan.provider ? { provider: plan.provider } : {}),
       ...(plan.model ? { model: plan.model } : {}),
+      ...(plan.effort ? { effort: plan.effort } : {}),
     })
   }
 
@@ -826,7 +870,9 @@ export function makeDelegate(ctx: {
 
   const port: DelegatePort = {
     resolveModel(name, provider) {
-      return resolveMemberModel(name, deps.config, provider)
+      const ref = resolveMemberModel(name, deps.config, provider)
+      if ('error' in ref) return ref
+      return { ...ref, effortLevels: effortLevelsOf(ref, deps.config) }
     },
 
     async targets() {
@@ -838,6 +884,7 @@ export function makeDelegate(ctx: {
           description: r.description,
           ...(r.provider ? { provider: r.provider } : {}),
           ...(r.model ? { model: r.model } : {}),
+          ...(r.effort ? { effort: r.effort } : {}),
         })),
         clis: clis.map((c) => ({ id: c.id, vendor: c.vendor, connected: c.connected })),
       }

@@ -1,6 +1,7 @@
 import type { SubagentSummary } from '@qywork/agent'
 import { describeParam, lookupMediaModel, operationLabel } from '@qywork/ai'
 import {
+  type EffortLevel,
   MEDIA_OUTPUTS,
   type MediaOutput,
   type MentionStyle,
@@ -396,7 +397,14 @@ export function buildTailNotes(input: {
   mediaModels?: MediaModelEntry[]
   /** 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有任务派发能力。 */
   team?: {
-    roles: { id: string; name: string; description: string; provider?: string; model?: string }[]
+    roles: {
+      id: string
+      name: string
+      description: string
+      provider?: string
+      model?: string
+      effort?: EffortLevel
+    }[]
     clis: { id: string; vendor: string; connected: boolean }[]
   }
   /** 本会话已有的子 agent。`undefined` = 本会话没有任务派发能力。 */
@@ -483,7 +491,7 @@ export function buildTailNotes(input: {
       (role) =>
         `- 角色 id \`${role.id}\`：${role.name}${role.description ? `，${oneLine(role.description)}` : ''}；模型 ${
           role.provider && role.model ? `${role.provider} / ${role.model}` : '跟随会话'
-        }`,
+        }${role.effort ? `，思考强度 ${role.effort}` : ''}`,
     )
     const clis = input.team.clis.map(
       (cli) =>

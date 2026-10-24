@@ -16,6 +16,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { EFFORT_ORDER, isEffortLevel } from '@qywork/core'
 
 /** 角色配置文件的路径。与 `runtime` 的 `TEAM_CONFIG` 取值相同：`runtime` 负责加载，本文件负责写入。 */
 const TEAM_CONFIG = '.qy/team.json'
@@ -27,7 +28,7 @@ export const defineRoleTool: ToolSpec = {
   name: 'define_role',
   description:
     '用户明确要求创建或修改角色时（/role 命令或明确的文字要求），把角色写入工作区的 .qy/team.json；' +
-    '用户未要求时不创建。角色是持久定义：有自己的系统提示词、可选的模型与工具范围，' +
+    '用户未要求时不创建。角色是持久定义：有自己的系统提示词、可选的模型、思考强度与工具范围，' +
     '之后新建子 agent 时按 role id 引用。同名 id 直接覆盖。',
   parameters: {
     type: 'object',
@@ -50,6 +51,13 @@ export const defineRoleTool: ToolSpec = {
         type: 'string',
         description:
           '指定模型：逐字填写运行上下文「已配置模型」清单中的 model 参数，并同时填写 provider。留空时使用当前会话的模型',
+      },
+      effort: {
+        type: ['string', 'null'],
+        enum: [...EFFORT_ORDER, null],
+        description:
+          '用户为该角色指定思考强度时填写，同时必须填写 model 与 provider：档位按该模型可选的档位校验。' +
+          '派发该角色且使用该模型时生效；不填 = 取模型配置中该模型的档位',
       },
       allowedTools: {
         type: 'array',
@@ -87,8 +95,19 @@ export const defineRoleTool: ToolSpec = {
     }
     const provider = typeof args.provider === 'string' ? args.provider.trim() : ''
     const model = typeof args.model === 'string' ? args.model.trim() : ''
+    const effort = args.effort ?? undefined
     if (provider && !model) {
       return { status: 'failure' as const, message: '指定 provider 时必须同时指定 model' }
+    }
+    if (effort !== undefined && !isEffortLevel(effort)) {
+      return {
+        status: 'failure' as const,
+        message: `effort 必须是 ${EFFORT_ORDER.join('、')} 之一`,
+      }
+    }
+    // 可选档位逐模型不同，未指定模型的角色跟随会话模型，无法确定档位是否有效。
+    if (effort && !model) {
+      return { status: 'failure' as const, message: '指定 effort 时必须同时指定 model 与 provider' }
     }
     let resolvedModel: { provider: string; model: string } | undefined
     if (model) {
@@ -99,7 +118,15 @@ export const defineRoleTool: ToolSpec = {
       if ('error' in resolved) {
         return { status: 'failure' as const, message: resolved.error }
       }
-      resolvedModel = resolved
+      if (effort && !resolved.effortLevels.includes(effort)) {
+        return {
+          status: 'failure' as const,
+          message: resolved.effortLevels.length
+            ? `${resolved.provider} / ${resolved.model} 可选的思考强度：${resolved.effortLevels.join('、')}，不包含 ${effort}`
+            : `${resolved.provider} / ${resolved.model} 无法调节思考强度`,
+        }
+      }
+      resolvedModel = { provider: resolved.provider, model: resolved.model }
     }
 
     const file = join(ctx.workspaceRoot, ...TEAM_CONFIG.split('/'))
@@ -133,6 +160,7 @@ export const defineRoleTool: ToolSpec = {
       // 直接写入校验得到的结构化结果。模型重名时不要把临时的 `接口/模型` 选择串写入 model 字段：
       // Role 有独立的 provider 字段。
       ...(resolvedModel ? { provider: resolvedModel.provider, model: resolvedModel.model } : {}),
+      ...(effort ? { effort } : {}),
       // 空数组与未填写含义不同：前者表示不提供任何工具，后者表示提供全部工具。
       ...(Array.isArray(args.allowedTools) ? { allowedTools: args.allowedTools.map(String) } : {}),
     }

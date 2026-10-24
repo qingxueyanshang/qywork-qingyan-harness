@@ -225,6 +225,30 @@ describe('workflow 调用判别', () => {
     ).toEqual({ ok: false, error: '节点 a 指定 provider 时必须同时指定 model' })
   })
 
+  test('agent 节点保留思考档位，档位不在词表中时拒绝，检查点不接受该字段', () => {
+    expect(
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做', effort: 'xhigh' }],
+      }),
+    ).toMatchObject({ ok: true, call: { nodes: [{ effort: 'xhigh' }] } })
+    expect(
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做', effort: 'ultra' }],
+      }),
+    ).toMatchObject({ ok: false, error: expect.stringContaining('节点 a 的 effort') })
+    expect(
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [
+          { id: 'a', kind: 'temp', name: 'a', task: '先做' },
+          { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a'], effort: 'high' },
+        ],
+      }),
+    ).toEqual({ ok: false, error: '检查点 cp 不能填写 effort' })
+  })
+
   test('approve 与 revise 的字段互斥', () => {
     expect(
       parseWorkflowCall({

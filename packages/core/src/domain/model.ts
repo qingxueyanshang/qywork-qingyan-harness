@@ -44,6 +44,11 @@ import type { SubagentKind } from './workflow.ts'
 export const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type EffortLevel = (typeof EFFORT_ORDER)[number]
 
+/** 取值是否属于档位全集。工具参数与 `.qy/team.json` 的校验共用；某个模型是否支持该档位须另行判断。 */
+export function isEffortLevel(value: unknown): value is EffortLevel {
+  return typeof value === 'string' && (EFFORT_ORDER as readonly string[]).includes(value)
+}
+
 /**
  * 权限模式，只有两种：`auto` 由路径边界与 `run_command` 的拒绝规则裁决，
  * `full` 全部放行，路径边界一并放开，只保留凭证剥离（`scrubEnv`）。

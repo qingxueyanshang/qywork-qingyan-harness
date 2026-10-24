@@ -70,7 +70,7 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
 }
 
 const delegate: DelegatePort = {
-  resolveModel: (name, provider) => ({ provider: provider ?? 'p', model: name }),
+  resolveModel: (name, provider) => ({ provider: provider ?? 'p', model: name, effortLevels: [] }),
   targets: async () => ({
     roles: [{ id: 'reviewer', name: '审查员', description: '看代码', provider: 'p', model: 'm' }],
     clis: [{ id: 'codex', vendor: 'OpenAI', connected: true }],

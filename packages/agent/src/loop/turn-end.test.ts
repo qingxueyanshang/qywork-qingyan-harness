@@ -403,7 +403,7 @@ describe('正常响应结束不等于任务完成', () => {
    */
   test('派发子 agent 之后 end_turn 照常结束', async () => {
     const delegate: DelegatePort = {
-      resolveModel: (name) => ({ provider: 'p', model: name }),
+      resolveModel: (name) => ({ provider: 'p', model: name, effortLevels: [] }),
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
       dispatch: async () => ({ ok: true, subagentId: 'cv_child', name: '赛车-glm', kind: 'temp' }),
@@ -436,7 +436,7 @@ describe('正常响应结束不等于任务完成', () => {
       },
     }
     const delegate: DelegatePort = {
-      resolveModel: (name) => ({ provider: 'p', model: name }),
+      resolveModel: (name) => ({ provider: 'p', model: name, effortLevels: [] }),
       targets: async () => ({ roles: [], clis: [] }),
       subagents: async () => [],
       dispatch: async () => ({ ok: true, subagentId: 'cv_child', name: '审查员', kind: 'temp' }),

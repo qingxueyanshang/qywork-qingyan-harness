@@ -52,7 +52,10 @@ export interface CliAgent {
   vendor: string
   /** 可执行文件名或已解析出的绝对路径。 */
   command: string
-  /** 参数模板。`{prompt}` 会被替换为任务描述。 */
+  /**
+   * 参数模板。`{prompt}` 会被替换为任务描述；独立一项 `{effort_args}` 在指定思考档位时展开为 `effortArgs`，
+   * 未指定时删除。该项只能出现在声明了 `effortArgs` 的 CLI 中。
+   */
   args: string[]
   /**
    * 输出解析方式，共三种，对应三种实际输出格式：
@@ -70,8 +73,13 @@ export interface CliAgent {
    * 没有该项的 CLI 只能重新派发。
    */
   sessionField?: string
-  /** 续问时使用的参数模板。`{session}` 替换为上一次的会话 id，`{prompt}` 同 `args`。 */
+  /** 续问时使用的参数模板。`{session}` 替换为上一次的会话 id，`{prompt}` 与 `{effort_args}` 同 `args`。 */
   resumeArgs?: string[]
+  /**
+   * 思考档位的命令行参数，`{effort}` 替换为档位。档位原样传入，由 CLI 按其当前模型校验，报错随回执返回。
+   * 未声明表示该 CLI 没有对应参数，派发时指定档位即拒绝。
+   */
+  effortArgs?: string[]
   /**
    * 流中正文与工具名所在的路径。路径语法与 `resultField` 的点分路径相同，
    * 段尾 `[]` 表示遍历该数组。
