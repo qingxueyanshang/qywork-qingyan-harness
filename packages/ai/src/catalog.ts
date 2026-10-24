@@ -1554,20 +1554,49 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       longContext: QWEN_VL_FLASH_LONG,
     },
 
-    // ── 月之暗面（人民币标价）──
-    {
-      ...base,
-      ...effort(['low', 'high', 'max']),
-      id: 'kimi-k3',
-      displayName: 'Kimi K3',
-      vendor: 'moonshot',
-      vision: true,
-      video: true,
-      contextWindow: 1_000_000,
-      // OpenAPI：默认 131,072，参数最大可设 1,048,576；运行时仍会按剩余上下文收紧。
-      maxOutputTokens: 1_048_576,
-      pricing: cny(20, 100, 2),
-    },
+    /*
+     * ── 月之暗面（人民币标价）──
+     *
+     * 价目来源：Kimi 开放平台价目页（2026-10-24 核对），单位 ¥/百万：
+     *
+     * | 模型 | 输入 | 输出 | 缓存命中 | 缓存写入（5min） | 缓存写入（1h） |
+     * |---|---|---|---|---|---|
+     * | kimi-k3.1-pro | 13 | 68 | 1.3 | 13 | 26 |
+     * | kimi-k3.1-pro-highspeed | 26 | 136 | 1.3 | 26 | 52 |
+     * | kimi-k3 | 20 | 100 | 2 | 20 | 40 |
+     *
+     * 模型参数参考页：三款参数约束相同，上下文 1,048,576，始终思考，`reasoning_effort` 为
+     * low / high / max（默认 max）；`max_completion_tokens` 默认 131,072，最大可设 1,048,576，
+     * 运行时仍会按剩余上下文收紧。Highspeed 与 K3.1 Pro 能力相同，输出速度约 2～3 倍。
+     */
+    ...[
+      {
+        id: 'kimi-k3.1-pro',
+        displayName: 'Kimi K3.1 Pro',
+        pricing: { ...cny(13, 68, 1.3), cacheWrite5m: 13, cacheWrite1h: 26 },
+      },
+      {
+        id: 'kimi-k3.1-pro-highspeed',
+        displayName: 'Kimi K3.1 Pro Highspeed',
+        pricing: { ...cny(26, 136, 1.3), cacheWrite5m: 26, cacheWrite1h: 52 },
+      },
+      {
+        id: 'kimi-k3',
+        displayName: 'Kimi K3',
+        pricing: { ...cny(20, 100, 2), cacheWrite5m: 20, cacheWrite1h: 40 },
+      },
+    ].map(
+      (model): ModelSpec => ({
+        ...base,
+        ...effort(['low', 'high', 'max']),
+        ...model,
+        vendor: 'moonshot',
+        vision: true,
+        video: true,
+        contextWindow: 1_048_576,
+        maxOutputTokens: 1_048_576,
+      }),
+    ),
 
     /*
      * ── 智谱 ──

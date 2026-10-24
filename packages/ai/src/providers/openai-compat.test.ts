@@ -903,6 +903,61 @@ describe('Base URL 归一', () => {
   })
 })
 
+describe('缓存写入用量', () => {
+  /**
+   * 字段按 Kimi 上下文缓存文档的用量字段表：`prompt_tokens` 为总输入，命中、写入与其余输入三者互斥。
+   * 写入量不从总量中减去时，同一批 token 同时按输入与缓存写入计费。
+   */
+  test('cache_write_tokens 单独记为缓存写入，不计入未命中输入', async () => {
+    const kimi = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          [
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            'data: {"choices":[],"usage":{"prompt_tokens":10000,"completion_tokens":50,' +
+              '"prompt_tokens_details":{"cached_tokens":6000,"cache_write_tokens":3000}}}',
+            'data: [DONE]',
+            '',
+          ].join('\n\n'),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+    })
+    try {
+      const adapter = new OpenAICompatAdapter(
+        {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-x',
+          model: 'kimi-k3.1-pro',
+          baseUrl: `http://127.0.0.1:${kimi.port}/v1`,
+        },
+        lookupModel('kimi-k3.1-pro', 'openai_chat_completions'),
+      )
+      const events = []
+      for await (const event of adapter.stream({
+        model: 'kimi-k3.1-pro',
+        system: [],
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+        maxOutputTokens: 64,
+        idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+      })) {
+        events.push(event)
+      }
+      const usage = events.find((e) => e.type === 'usage')
+      expect(usage?.type === 'usage' && usage.usage).toMatchObject({
+        inputTokens: 1000,
+        cachedTokens: 6000,
+        cacheWriteTokens: 3000,
+        outputTokens: 50,
+      })
+    } finally {
+      kimi.stop(true)
+    }
+  })
+})
+
 describe('无名工具调用', () => {
   /**
    * 复现原始失败形状：中转站丢失了工具名所在的分片，若以 `continue` 跳过整条调用，
