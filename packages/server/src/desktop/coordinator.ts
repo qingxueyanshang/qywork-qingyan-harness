@@ -10,14 +10,17 @@
  * 2. **每个窗口只保留一份观察。** 同一窗口再次观察后，上一份编号作废；宿主代际变化
  *    （重连、更换 worker）时全部作废。动作只接受表中仍存在的编号。每份观察只含同一次读取
  *    的节点，动作与等待之后按其读取范围整份重新读取，不与其他读取结果拼接。
- * 3. **占用以执行者为单位，权威只在本模块。** 物理桌面只有一个，同一时刻只有一个
- *    执行者能在窗口上观察与执行动作；同时请求桌面的其余执行者排队等待释放。宿主一侧
+ * 3. **占用按窗口归属，冲突当场判定，权威只在本模块。** 执行者首次在某个窗口上观察或执行
+ *    动作时取得该窗口，直到本次执行释放；窗口已归属其他执行者时立即拒绝并写明占用方，不排队。
+ *    `ref` 在观察中产生、在动作中使用，其间只有同一窗口上的他人动作会使它不再成立，因此不同
+ *    窗口互不等待。不要改回整台桌面一把锁：占用到整轮结束才释放，其他会话在任何窗口上都会
+ *    无期限等待。宿主执行线程逐条执行请求，一次动作内的指针与按键不会与其他请求交错；宿主一侧
  *    不记录占用者，只按请求自带的身份派发。
- * 4. **释放过程中仍视为占用。** 顺序固定：禁止新派发 → 撤销自身的排队 → 结清在途调用 →
- *    请宿主撤销尚未派发的请求。宿主确认该执行者名下已无执行中的请求后，才放行下一个
- *    执行者；无法确认时阻塞整个桌面，直到宿主代际变化。
- * 5. **「正在操作的应用」跟随占用。** 只有持有桌面的执行者能写入该值；执行者释放、
- *    宿主断开或代际变化时都清为 `null`。
+ * 4. **释放过程中仍视为占用。** 顺序固定：禁止新派发 → 结清在途调用 → 请宿主撤销尚未派发的
+ *    请求。宿主确认该执行者名下已无执行中的请求后才交还其窗口；无法确认时这些窗口保持占用并
+ *    拒绝他人，直到宿主代际变化。
+ * 5. **「正在操作的应用」按执行者各记一项。** 每个执行者只写入自己的一项；执行者释放时移除，
+ *    宿主断开或代际变化时全部清空。
  * 6. **控件编号只在本模块发放与转换。** 宿主的 ref 含下标路径与身份段，只用于
  *    宿主重新定位控件；端口交出的是按控件身份分配的短编号 `e<n>`。发往宿主的每一处按
  *    本次观察的对应表转换回完整 ref，宿主回包中的 ref 在 `#absorb` 中替换为短编号。
@@ -236,13 +239,15 @@ interface Lease {
   observations: Map<string, ObservationRecord>
   /** 本执行者交出的图像，按 `imageRef` 索引。 */
   images: Map<string, ImageRecord>
-}
-
-/** 排在桌面占用之后的执行者。撤销时按 `lease` 找到自身的条目。 */
-interface Waiter {
-  lease: Lease
-  resolve: () => void
-  reject: (err: Error) => void
+  /** 本执行者取得的窗口。释放并经宿主确认后交还。 */
+  windows: Set<string>
+  /** 本执行者正在操作的应用，见 `#setTarget`。 */
+  target: { app: string; foreground: boolean } | null
+  /**
+   * 释放时宿主无法确认其名下请求是否执行完毕的原因。非 `null` 时其窗口保持占用，他人按此原因被拒绝，
+   * 直到宿主代际变化：交还等于两个执行者同时操作同一个窗口。
+   */
+  unsettled: string | null
 }
 
 /** 宿主代际键。三项中任一项变化，旧观察与旧引用即整体作废。 */
@@ -312,36 +317,32 @@ export class DesktopCoordinator {
   /** 身份键 → 不透明 id。同一窗口再次被发现时沿用同一个 id。 */
   #byIdentity = new Map<string, string>()
   #leases = new Map<number, Lease>()
-  /** 当前持有桌面的执行者。`null` 表示无人占用。 */
-  #holder: Lease | null = null
-  /** 等待取得桌面的执行者，按到达顺序排队。 */
-  #queue: Waiter[] = []
-  /**
-   * 阻塞整个桌面的原因。`null` 表示未阻塞。
-   *
-   * 上一个执行者释放时，宿主无法确认其名下的请求是否执行完毕，此时不能放行下一个执行者，
-   * 否则两个执行者会同时操作同一个桌面。阻塞持续到宿主代际变化为止，届时旧执行实例名下的
-   * 全部请求均已作废。
-   */
-  #blocked: string | null = null
-  /** 只有 `#holder` 能写入的目标快照，会话归属与应用、前台状态一起发布和清空。 */
-  #target: DesktopTargetEvent['target'] = null
-  #targetChanges = new Set<(target: DesktopTargetEvent['target']) => void>()
+  /** 窗口归属：不透明 id → 取得该窗口的执行者。权威只有这一份。 */
+  #owners = new Map<string, Lease>()
+  #targetChanges = new Set<(targets: DesktopTargetEvent['targets']) => void>()
+  /** 会话标题，用于拒绝原因中写明占用方。会话不存在时为 `undefined`。 */
+  #titleOf: (conversationId: string) => string | undefined
   #offHostChange: () => void
 
-  constructor(bridge: DesktopBridge, enabled: () => boolean) {
+  constructor(
+    bridge: DesktopBridge,
+    enabled: () => boolean,
+    titleOf: (conversationId: string) => string | undefined,
+  ) {
     this.#bridge = bridge
     this.#enabled = enabled
-    // 宿主断开或代际变化：已发现的窗口与正在操作的应用均不再成立，阻塞桌面的原因
-    // 也随之失效，因为它针对的执行实例已不存在。
+    this.#titleOf = titleOf
+    // 宿主断开或代际变化：已发现的窗口、窗口归属与正在操作的应用均不再成立；无法确认是否结束的
+    // 窗口随之交还，因为它针对的执行实例已不存在。
     this.#offHostChange = bridge.onHostChange(() => {
       this.#windows.clear()
       this.#byIdentity.clear()
-      this.#clearTarget()
-      if (this.#blocked === null) return
-      log.info('desktop', `桌面占用的阻塞已解除：${this.#blocked}`)
-      this.#blocked = null
-      this.#handOver()
+      this.#owners.clear()
+      for (const lease of this.#leases.values()) {
+        lease.windows.clear()
+        lease.target = null
+      }
+      this.#publishTargets()
     })
   }
 
@@ -356,12 +357,14 @@ export class DesktopCoordinator {
     return this.#enabled() && host !== null && host.workerReady && host.authorized
   }
 
-  /** 当前由哪条会话操作哪个应用。握手与实时事件都读取这一份。 */
-  target(): DesktopTargetEvent['target'] {
-    return this.#target
+  /** 各执行者正在操作的应用及其所属会话。握手与实时事件都读取这一份。 */
+  targets(): DesktopTargetEvent['targets'] {
+    return [...this.#leases.values()].flatMap((lease) =>
+      lease.target ? [{ conversationId: lease.conversationId, ...lease.target }] : [],
+    )
   }
 
-  onTargetChange(listener: (target: DesktopTargetEvent['target']) => void): () => void {
+  onTargetChange(listener: (targets: DesktopTargetEvent['targets']) => void): () => void {
     this.#targetChanges.add(listener)
     return () => this.#targetChanges.delete(listener)
   }
@@ -369,11 +372,10 @@ export class DesktopCoordinator {
   /**
    * 为一次执行创建端口。
    *
-   * `executorId` 每次不同：占用、排队与撤销按它记录，因此两条会话、父任务与子任务
-   * 各自占用、各自撤销。`conversationId` 用于日志与目标状态的归属；桌面仍按执行者
-   * 串行占用，不因界面切换会话而改变。
+   * `executorId` 每次不同：窗口归属与撤销按它记录，因此两条会话、父任务与子任务
+   * 各自占用、各自撤销。`conversationId` 用于拒绝原因与目标状态的归属。
    *
-   * 端口本身不占用桌面，首次在窗口上观察或执行动作时才占用。
+   * 端口本身不占用任何窗口，首次在某个窗口上观察或执行动作时才取得该窗口。
    */
   portFor(conversationId: string): DesktopPort {
     this.#nextOwner += 1
@@ -384,13 +386,16 @@ export class DesktopCoordinator {
       released: false,
       observations: new Map(),
       images: new Map(),
+      windows: new Set(),
+      target: null,
+      unsettled: null,
     }
     this.#leases.set(lease.owner, lease)
     return {
       foregroundEnabled: () => this.#bridge.foregroundEnabled(),
       windows: () => this.#windowList(lease),
       observe: (input) => this.#observe(lease, input),
-      elements: (windowId, observationId) => this.#elements(lease, windowId, observationId),
+      elements: (windowId) => this.#elements(lease, windowId),
       captureImage: (input) => this.#captureImage(lease, input),
       act: (input) => this.#act(lease, input),
       readText: (input) => this.#readText(lease, input),
@@ -414,63 +419,32 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 取得桌面占用。已持有时为空操作，他人持有时排队等待释放。
+   * 取得窗口。已归属本执行者时为空操作；归属其他执行者时立即拒绝，原因写明占用方。
    *
-   * 窗口发现不经过这里：它不绑定任何窗口，也不改变任何状态，而执行者必须先看到窗口
-   * 才能决定是否需要桌面。绑定窗口的观察、动作与等待都必须先经过这里：`ref` 在
-   * 观察中产生、在动作中使用，两者之间插入另一个执行者的动作，`ref` 即不再成立。
+   * 窗口发现不经过这里：它不绑定任何窗口，也不改变任何状态。绑定窗口的观察、采集、动作、
+   * 读取文本与等待都必须先经过这里。不要改为排队等待：占用到对方整轮结束才释放，排队的调用
+   * 会无期限挂起，模型与界面都无法说明原因。
    */
-  #acquire(lease: Lease): Promise<void> {
-    if (lease.released) {
-      return Promise.reject(new DesktopUnavailableError('本次执行的电脑控制已经结束'))
-    }
-    if (this.#holder === lease) return Promise.resolve()
-    if (this.#blocked !== null) {
-      return Promise.reject(new DesktopUnavailableError(this.#blocked))
-    }
-    if (this.#holder === null) {
-      this.#holder = lease
-      return Promise.resolve()
-    }
-    return new Promise<void>((resolve, reject) => {
-      this.#queue.push({ lease, resolve, reject })
-    })
+  #claim(lease: Lease, windowId: string): void {
+    const owner = this.#owners.get(windowId)
+    if (owner === lease) return
+    if (owner !== undefined) throw new DesktopUnavailableError(this.#busy(lease, owner))
+    this.#owners.set(windowId, lease)
+    lease.windows.add(windowId)
   }
 
-  /** 把桌面交给下一个排队的执行者。调用前占用必须已经清空。 */
-  #handOver(): void {
-    this.#holder = null
-    if (this.#blocked !== null) return
-    for (;;) {
-      const next = this.#queue.shift()
-      if (!next) return
-      if (next.lease.released) continue
-      this.#holder = next.lease
-      next.resolve()
-      return
-    }
-  }
-
-  /** 排队中撤销：尚未轮到时直接移出队列，不占用后续执行者的位置。 */
-  #dropWaiter(lease: Lease, reason: string): void {
-    const at = this.#queue.findIndex((w) => w.lease === lease)
-    if (at < 0) return
-    const [waiter] = this.#queue.splice(at, 1)
-    waiter?.reject(new DesktopUnavailableError(reason))
-  }
-
-  /**
-   * 阻塞整个桌面，并拒绝全部排队者。
-   *
-   * 不让排队者继续等待：等待的是一个无法确定何时结束的状态，工具调用会一直挂起且无法说明原因。
-   * 拒绝之后模型收到明确的失败，重新观察即可。
-   */
-  #block(reason: string): void {
-    this.#blocked = reason
-    this.#holder = null
-    for (const waiter of this.#queue.splice(0)) {
-      waiter.reject(new DesktopUnavailableError(reason))
-    }
+  /** 窗口已归属其他执行者时的拒绝原因。 */
+  #busy(lease: Lease, owner: Lease): string {
+    if (owner.unsettled !== null) return owner.unsettled
+    if (owner.released) return '该窗口上一次的电脑控制正在结束，稍后再试'
+    const title = this.#titleOf(owner.conversationId)
+    const who =
+      owner.conversationId === lease.conversationId
+        ? '本会话的另一个执行者'
+        : title
+          ? `会话「${title}」`
+          : '另一个会话'
+    return `该窗口正被${who}操作，对方本轮结束后释放`
   }
 
   async #windowList(lease: Lease): Promise<DesktopWindowInfo[]> {
@@ -537,15 +511,12 @@ export class DesktopCoordinator {
     },
   ): Promise<DesktopSnapshot> {
     this.#liveHost(lease)
-    await this.#acquire(lease)
-    // 排队可能持续很久：取得占用后重新确认宿主仍在、重新解析目标，并读取当前代际。
-    // 等待期间宿主代际变化时，该不透明 id 已不在窗口表中，此处应返回拒绝。
-    this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
+    this.#claim(lease, input.windowId)
     // 子树根必须来自本执行者对该窗口的上一份观察：自行编造编号等于让宿主定位一个
     // 从未观察过的位置。
     const root =
-      input.root === undefined ? undefined : this.#requireRef(lease, input.windowId, input.root)
+      input.root === undefined ? undefined : this.#recordOf(lease, input.windowId, input.root)
     // 目标在**发送请求之前**登记：读取控件树可能在 provider 上阻塞直到超时，回包后才登记时，
     // 界面在这段时间内无法显示正在操作的对象。
     this.#setTarget(lease, known.app)
@@ -618,24 +589,26 @@ export class DesktopCoordinator {
    * 而宿主要到下一个 worker 握手成功后才报告新的 `hostEpoch`。这段时间内代际仍是旧值，
    * 只按代际判定时，模型会用一份已作废的引用发送动作。
    */
-  #elements(lease: Lease, windowId: string, observationId: string): DesktopElement[] | null {
+  #elements(lease: Lease, windowId: string): DesktopElement[] | null {
     if (lease.released) return null
     const host = this.#bridge.host()
     if (!host || !host.workerReady) return null
     const record = lease.observations.get(windowId)
-    if (!record || record.observationId !== observationId) return null
-    if (record.epochKey !== epochKeyOf(host)) return null
+    if (!record || record.epochKey !== epochKeyOf(host)) return null
     return record.elements
   }
 
-  /** 该短编号在指定观察中对应的宿主 ref。观察失效或编号不在其中时在本地拒绝。 */
-  #recordOf(lease: Lease, windowId: string, observationId: string, ref: string): string {
-    if (!this.#elements(lease, windowId, observationId)) {
-      throw new DesktopTargetError(`观察 ${observationId} 已经失效，请重新观察`)
+  /**
+   * 该短编号在本执行者对该窗口最近一份观察中对应的宿主 ref。观察无效或编号不在其中时在本地拒绝，
+   * 不发送任何帧：自行编造编号等于让宿主定位一个从未观察过的位置。
+   */
+  #recordOf(lease: Lease, windowId: string, ref: string): string {
+    if (!this.#elements(lease, windowId)) {
+      throw new DesktopTargetError('本次执行没有该窗口的有效观察，请先观察')
     }
     const hostRef = lease.observations.get(windowId)?.hostRefs.get(ref)
     if (hostRef === undefined) {
-      throw new DesktopTargetError(`观察 ${observationId} 中没有控件 ${ref}`)
+      throw new DesktopTargetError(`该窗口最近一份观察中没有控件 ${ref}，请重新观察`)
     }
     return hostRef
   }
@@ -660,10 +633,9 @@ export class DesktopCoordinator {
       imageRect?: DesktopRect
     },
   ): Promise<DesktopImage> {
-    this.#liveHost(lease)
-    await this.#acquire(lease)
     const host = this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
+    this.#claim(lease, input.windowId)
     const framed = this.#regionOf(lease, known, input)
     this.#setTarget(lease, known.app)
     const result = await this.#bridge.request(
@@ -752,30 +724,18 @@ export class DesktopCoordinator {
     return record
   }
 
-  /** 该短编号在本执行者对该窗口最近一份观察中对应的宿主 ref，不核对观察编号。 */
-  #requireRef(lease: Lease, windowId: string, ref: string): string {
-    const hostRef = lease.observations.get(windowId)?.hostRefs.get(ref)
-    if (hostRef === undefined) {
-      throw new DesktopTargetError(`该窗口最近一份观察中没有控件 ${ref}，请重新观察`)
-    }
-    return hostRef
-  }
-
   async #act(
     lease: Lease,
     input: {
       windowId: string
-      observationId: string
       ref?: string
       at?: DesktopImagePoint
       action: DesktopAction
     },
   ): Promise<DesktopActResult> {
     this.#liveHost(lease)
-    // 观察时已占用桌面，此处通常为空操作；观察之后被强制释放过才会实际排队。
-    await this.#acquire(lease)
-    this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
+    this.#claim(lease, input.windowId)
     const aimed = this.#aim(lease, known, input)
     const action = this.#hostAction(lease, input.windowId, input.action)
     this.#nextAction += 1
@@ -847,7 +807,6 @@ export class DesktopCoordinator {
     known: KnownWindow,
     input: {
       windowId: string
-      observationId: string
       ref?: string
       at?: DesktopImagePoint
       action: DesktopAction
@@ -857,7 +816,7 @@ export class DesktopCoordinator {
       throw new DesktopTargetError('控件与图像点只能提供其中一个')
     }
     if (input.ref !== undefined) {
-      return { ref: this.#recordOf(lease, input.windowId, input.observationId, input.ref) }
+      return { ref: this.#recordOf(lease, input.windowId, input.ref) }
     }
     if (input.at === undefined) {
       if (WINDOW_TARGET.has(input.action.kind)) return {}
@@ -888,7 +847,7 @@ export class DesktopCoordinator {
    */
   #hostAction(lease: Lease, windowId: string, action: DesktopAction): DesktopAction {
     if (action.kind !== 'drag' || action.to.kind !== 'ref') return action
-    return { ...action, to: { kind: 'ref', ref: this.#requireRef(lease, windowId, action.to.ref) } }
+    return { ...action, to: { kind: 'ref', ref: this.#recordOf(lease, windowId, action.to.ref) } }
   }
 
   /**
@@ -898,13 +857,12 @@ export class DesktopCoordinator {
    */
   async #readText(
     lease: Lease,
-    input: { windowId: string; observationId: string; ref: string; maxChars: number },
+    input: { windowId: string; ref: string; maxChars: number },
   ): Promise<DesktopText> {
     this.#liveHost(lease)
-    await this.#acquire(lease)
-    this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
-    const ref = this.#recordOf(lease, input.windowId, input.observationId, input.ref)
+    this.#claim(lease, input.windowId)
+    const ref = this.#recordOf(lease, input.windowId, input.ref)
     this.#setTarget(lease, known.app)
     const result = await this.#bridge.request('read_text', {
       executorId: lease.executorId,
@@ -929,15 +887,14 @@ export class DesktopCoordinator {
    * 判定由宿主执行：这里只发送一条请求并等待其终态，不在本地按固定间隔重新读取。期限比
    * 调用方请求的时长多出一段，因为宿主到期后还要按当前观察的读取范围重新读取一次。
    *
-   * **等待期间本次执行仍占用桌面**：引用在观察中产生、在动作中使用，期间放行其他执行者
+   * **等待期间本次执行仍占用该窗口**：引用在观察中产生、在动作中使用，期间放行其他执行者
    * 会使引用不再成立。占用不会因等待而无限期持续：`release` 调用后即撤销该请求，宿主在
-   * 一个轮询间隔内以 `cancelled` 结束，桌面随即交给下一个执行者。
+   * 一个轮询间隔内以 `cancelled` 结束，窗口随即交还。
    */
   async #wait(
     lease: Lease,
     input: {
       windowId: string
-      observationId: string
       until: DesktopWaitCondition
       ref?: string
       value?: string
@@ -948,13 +905,10 @@ export class DesktopCoordinator {
     },
   ): Promise<DesktopWaitResult> {
     this.#liveHost(lease)
-    await this.#acquire(lease)
-    this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
+    this.#claim(lease, input.windowId)
     const ref =
-      input.ref === undefined
-        ? undefined
-        : this.#recordOf(lease, input.windowId, input.observationId, input.ref)
+      input.ref === undefined ? undefined : this.#recordOf(lease, input.windowId, input.ref)
     this.#setTarget(lease, known.app)
     const scope = lease.observations.get(input.windowId)?.scope
     try {
@@ -1049,11 +1003,10 @@ export class DesktopCoordinator {
    * 顺序固定，任何一步都不能提前：
    *
    * 1. 置位 `released`：此后该端口的所有入口都被 `#liveHost` 拒绝，不再有新派发。
-   * 2. 将自身移出排队：它尚未取得占用，后续执行者直接前移。
-   * 3. 本地在途调用按执行事实结束。无论撤销帧能否发出，它们都已没有回执可等待。
-   * 4. 请宿主撤销该执行者名下尚未派发的请求，并报告其名下是否还有可能正在执行的
-   *    请求。**只有报告为「没有」时才放行下一个执行者**：截止时刻已到而执行状态未知
-   *    时放行，等于两个执行者同时操作同一个桌面。
+   * 2. 本地在途调用按执行事实结束。无论撤销帧能否发出，它们都已没有回执可等待。
+   * 3. 请宿主撤销该执行者名下尚未派发的请求，并报告其名下是否还有可能正在执行的
+   *    请求。**只有报告为「没有」时才交还其窗口**：截止时刻已到而执行状态未知时交还，
+   *    等于两个执行者同时操作同一个窗口。
    */
   async #release(lease: Lease): Promise<void> {
     if (lease.released) return
@@ -1061,14 +1014,15 @@ export class DesktopCoordinator {
     lease.observations.clear()
     lease.images.clear()
     this.#leases.delete(lease.owner)
-    this.#dropWaiter(lease, '本次执行的电脑控制已经结束')
-    const held = this.#holder === lease
-    if (held) this.#clearTarget()
+    if (lease.target !== null) {
+      lease.target = null
+      this.#publishTargets()
+    }
     this.#bridge.settleExecutor(lease.executorId, '本次执行的电脑控制已经结束')
     const before = this.#bridge.host()
     if (!before) {
       // 宿主已断开，该执行实例名下的请求随之作废，无需等待结清。
-      if (held) this.#handOver()
+      this.#returnWindows(lease)
       return
     }
     const settled = await this.#bridge
@@ -1081,41 +1035,46 @@ export class DesktopCoordinator {
         )
         return false
       })
-    if (!held) return
-    // 等待回执期间宿主代际变化或断开：旧执行实例名下的请求均已作废，无需阻塞。
+    // 等待回执期间宿主代际变化或断开：旧执行实例名下的请求均已作废。
     const after = this.#bridge.host()
     const sameHost = after !== null && epochKeyOf(after) === epochKeyOf(before)
     if (settled || !sameHost) {
-      this.#handOver()
+      this.#returnWindows(lease)
       return
     }
-    log.warn('desktop', '执行者释放后仍可能有请求在执行，桌面暂不交给下一个执行者', {
+    if (lease.windows.size === 0) return
+    log.warn('desktop', '执行者释放后仍可能有请求在执行，其窗口暂不交还', {
       executorId: lease.executorId,
     })
-    this.#block('上一次电脑控制尚未确认结束，当前无法操作桌面')
+    lease.unsettled = '该窗口上一次的电脑控制尚未确认结束，当前无法操作'
+  }
+
+  /** 交还执行者取得的窗口。只删除仍归属它的条目：宿主代际变化后窗口归属已整体清空。 */
+  #returnWindows(lease: Lease): void {
+    for (const windowId of lease.windows) {
+      if (this.#owners.get(windowId) === lease) this.#owners.delete(windowId)
+    }
+    lease.windows.clear()
   }
 
   /**
-   * 写入目标快照。`foreground` 是本次动作的回执；缺省表示本次只是读取，同一会话、同一应用时沿用
+   * 写入本执行者的目标。`foreground` 是本次动作的回执；缺省表示本次只是读取，同一应用时沿用
    * 最近一次动作的读数，更换应用时为后台。
+   *
+   * 每个执行者只写入自己的一项：调用方已取得该窗口，两个执行者不会互相覆盖。
    */
   #setTarget(lease: Lease, app: string, foreground?: boolean): void {
-    // 只有持有桌面的执行者能写入此状态。缺少该条件时，两个执行者的目标会互相覆盖，
-    // 界面显示的是最后写入的目标，而不是当前实际操作的目标。
-    if (this.#holder !== lease) return
-    const current = this.#target
-    const same =
-      current !== null && current.conversationId === lease.conversationId && current.app === app
+    const current = lease.target
+    const same = current !== null && current.app === app
     const next = foreground ?? (same && current.foreground)
     if (same && current.foreground === next) return
-    this.#target = { conversationId: lease.conversationId, app, foreground: next }
-    for (const listener of [...this.#targetChanges]) listener(this.#target)
+    lease.target = { app, foreground: next }
+    this.#publishTargets()
   }
 
-  #clearTarget(): void {
-    if (this.#target === null) return
-    this.#target = null
-    for (const listener of [...this.#targetChanges]) listener(null)
+  #publishTargets(): void {
+    const targets = this.targets()
+    for (const listener of [...this.#targetChanges]) listener(targets)
   }
 }
 

@@ -207,8 +207,7 @@ function desktopPort(table: DesktopElement[]): DesktopPort {
     foregroundEnabled: () => true,
     windows: async () => [{ windowId: 'dw_1', app: '合成应用', title: '合成标题 🙂' }],
     observe: async () => 快照(table),
-    elements: (windowId, observationId) =>
-      windowId === 'dw_1' && (observationId === 'do_1' || observationId === 'do_2') ? table : null,
+    elements: (windowId) => (windowId === 'dw_1' ? table : null),
     captureImage: async () => {
       throw new Error('本组夹具不截图')
     },
@@ -523,7 +522,7 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读取'
     const ctx = toolCtx({ h, desktop: desktopPort(大表) })
     const r = await h.registry.execute(
       'desktop_act',
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e6' },
+      { windowId: 'dw_1', action: 'invoke', ref: 'e6' },
       ctx,
     )
     expect(r.status).toBe('success')
@@ -808,7 +807,7 @@ async function runDesktopAct(
           {
             id: callId,
             name: 'desktop_act',
-            arguments: { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e6' },
+            arguments: { windowId: 'dw_1', action: 'invoke', ref: 'e6' },
           },
         ],
         null,
@@ -887,7 +886,6 @@ describe('同一份结果在各层形状一致', () => {
               name: 'desktop_act_sequence',
               arguments: {
                 windowId: 'dw_1',
-                observationId: 'do_1',
                 steps: [
                   { action: 'invoke', ref: 'e6' },
                   { action: 'invoke', ref: 'e6', expect: { until: 'gone' } },
@@ -945,24 +943,24 @@ describe('同一份结果在各层形状一致', () => {
     const port: DesktopPort = {
       ...desktopPort(小表),
       observe: async () => snap(0),
-      elements: (_windowId, observationId) => tables[Number(observationId.slice(3)) - 1] ?? null,
+      elements: () => tables[at] ?? null,
       act: async () => {
         at += 1
         return { dispatch: 'submitted', actionId: `da_${at}`, observation: snap(at) }
       },
     }
-    const act = (id: string, observationId: string) => ({
+    const act = (id: string) => ({
       id,
       name: 'desktop_act',
-      arguments: { windowId: 'dw_1', observationId, action: 'invoke', ref: 'e6' },
+      arguments: { windowId: 'dw_1', action: 'invoke', ref: 'e6' },
     })
     const seen: ChatRequest[] = []
     const loop = new AgentLoop({
       adapter: scriptedAdapter(
         [
           [{ id: 'c_obs', name: 'desktop_observe', arguments: { windowId: 'dw_1' } }],
-          [act('c_act1', 'do_1')],
-          [act('c_act2', 'do_2')],
+          [act('c_act1')],
+          [act('c_act2')],
           null,
         ],
         seen,
@@ -1196,7 +1194,7 @@ describe('实际用量跨工具可见', () => {
 
     const act = await h.registry.execute(
       'desktop_act',
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e6' },
+      { windowId: 'dw_1', action: 'invoke', ref: 'e6' },
       ctx,
     )
     expect(act.status).toBe('success')

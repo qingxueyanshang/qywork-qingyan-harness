@@ -11,7 +11,13 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lookupMediaModel } from '@qywork/ai'
-import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame } from '@qywork/core'
+import type {
+  AgentEvent,
+  ClientCommand,
+  ConversationId,
+  EventEnvelope,
+  HelloFrame,
+} from '@qywork/core'
 import {
   ART_MENTION,
   ART_SIZE_PARAM,
@@ -35,6 +41,7 @@ import type { ProcessExitObservation, ScheduleClaim, Store } from '@qywork/store
 import {
   ContentStore,
   contentPathFor,
+  getConversation,
   getWorkspaceByPath,
   listWorkspaces,
   loadToolImages,
@@ -224,13 +231,17 @@ export function serve(opts: ServeOptions) {
     ? new DesktopBridge(opts.hostKey, () => opts.config.desktopForeground !== false)
     : null
   const desktop = desktopBridge
-    ? new DesktopCoordinator(desktopBridge, () => opts.config.desktopEnabled !== false)
+    ? new DesktopCoordinator(
+        desktopBridge,
+        () => opts.config.desktopEnabled !== false,
+        (id) => getConversation(opts.store, id as ConversationId)?.title,
+      )
     : null
   const offDesktopHost = desktopBridge?.onHostChange(() => {
     bus.publish({ type: 'desktop.state', desktop: desktopCapability(desktopBridge) })
   })
-  const offDesktopTarget = desktop?.onTargetChange((target) => {
-    bus.publish({ type: 'desktop.target', target })
+  const offDesktopTarget = desktop?.onTargetChange((targets) => {
+    bus.publish({ type: 'desktop.target', targets })
   })
   /*
    * Office 执行程序：启动时探测一次本机的 Python、文档库与办公软件，之后按缓存为会话提供端口。
@@ -609,7 +620,7 @@ export function serve(opts: ServeOptions) {
             desktop: () => desktopCapability(desktopBridge),
             announceGit: () => gitWatch.announce(),
             announceDesktopTarget: () => {
-              bus.publish({ type: 'desktop.target', target: desktop?.target() ?? null })
+              bus.publish({ type: 'desktop.target', targets: desktop?.targets() ?? [] })
             },
           })
           return

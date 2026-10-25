@@ -318,14 +318,14 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
    * 可以立即读取它的目标，运行条只使用当前会话的那一份。
    *
    * 目标应用以服务端推送的值为准，前端不自行推断何时清空：执行者释放、
-   * 宿主断开、能力下线三条路径服务端都会推送 `null`，前后端各自判定必然在某条路径上不一致。
+   * 宿主断开、能力下线三条路径服务端都会推送移除后的列表，前后端各自判定必然在某条路径上不一致。
    */
   if (ev.type === 'desktop.state') {
     setState('capabilities', (caps) => (caps ? { ...caps, desktop: ev.desktop } : caps))
     return
   }
   if (ev.type === 'desktop.target') {
-    setState('desktopTarget', ev.target)
+    setState('desktopTargets', ev.targets)
     return
   }
 
