@@ -201,11 +201,13 @@ test('握手报告三项能力位，宿主连接之后由事件推送同一份�
   const targets = frames
     .map((f) => f.event as DesktopTargetEvent | undefined)
     .filter((e) => e?.type === 'desktop.target')
-  expect(targets.at(-1)?.target).toEqual({
-    conversationId: 'cv_a',
-    app: '记事本',
-    foreground: false,
-  })
+  expect(targets.at(-1)?.targets).toEqual([
+    {
+      conversationId: 'cv_a',
+      app: '记事本',
+      foreground: false,
+    },
+  ])
   const releasing = port?.release()
   await observing
   host.reply(await host.next())
@@ -214,7 +216,7 @@ test('握手报告三项能力位，宿主连接之后由事件推送同一份�
   const cleared = frames
     .map((f) => f.event as DesktopTargetEvent | undefined)
     .filter((e) => e?.type === 'desktop.target')
-  expect(cleared.at(-1)?.target).toBe(null)
+  expect(cleared.at(-1)?.targets).toEqual([])
 })
 
 test('请求帧携带全部身份字段：连接代际、执行实例、执行者与截止时刻', async () => {
@@ -288,7 +290,7 @@ test('首次连接、补发与更换事件流后重连均恢复当前桌面目�
   }
 
   const active = { conversationId: 'cv_wechat', app: '记事本', foreground: false }
-  expect((await snapshot()).at(-1)?.target).toEqual(active)
+  expect((await snapshot()).at(-1)?.targets).toEqual([active])
   const releasing = port?.release()
   await observing
   host.reply(await host.next())
@@ -296,9 +298,13 @@ test('首次连接、补发与更换事件流后重连均恢复当前桌面目�
 
   // 补发的帧中包含旧目标；最后一帧必须是当前已释放的快照。
   const replayed = await snapshot({ streamId: handle.bus.streamId, lastSeq: 0 })
-  expect(replayed.some((event) => event.target?.conversationId === 'cv_wechat')).toBe(true)
-  expect(replayed.at(-1)?.target).toBeNull()
-  expect((await snapshot({ streamId: 'previous-server', lastSeq: 9000 })).at(-1)?.target).toBeNull()
+  expect(
+    replayed.some((event) => event.targets.some((t) => t.conversationId === 'cv_wechat')),
+  ).toBe(true)
+  expect(replayed.at(-1)?.targets).toEqual([])
+  expect((await snapshot({ streamId: 'previous-server', lastSeq: 9000 })).at(-1)?.targets).toEqual(
+    [],
+  )
 })
 
 test('代际不一致的迟到回执不得完成本次调用', async () => {
@@ -593,16 +599,18 @@ test('前台接管之后运行态读数如实反映，释放时清除', async ()
   const observing = port?.observe({ windowId: 'dw_1' }).catch(() => null)
   await host.next()
   await settle()
-  expect(targets().at(-1)?.target).toEqual({
-    conversationId: 'cv_a',
-    app: '记事本',
-    foreground: false,
-  })
+  expect(targets().at(-1)?.targets).toEqual([
+    {
+      conversationId: 'cv_a',
+      app: '记事本',
+      foreground: false,
+    },
+  ])
 
   const releasing = port?.release()
   await observing
   host.reply(await host.next())
   await releasing
   await settle()
-  expect(targets().at(-1)?.target).toBeNull()
+  expect(targets().at(-1)?.targets).toEqual([])
 })

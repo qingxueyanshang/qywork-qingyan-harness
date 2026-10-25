@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 电脑控制端口：本机桌面控件的窄接口。
  *
  * 采用端口的原因与 `SinkPort` 相同：原生宿主由桌面外壳持有，服务端经宿主连接操作它，
@@ -10,7 +10,7 @@
  * 句柄不离开本层。端口返回的 `windowId` 是不透明 id，与 OS 句柄的映射保留在实现方；
  * 模型取得的参数中不存在句柄。
  *
- * 每次执行使用一个端口实例。排队与撤销按执行者记录，`release` 由装配方在本轮结束时调用，
+ * 每次执行使用一个端口实例。窗口归属与撤销按执行者记录，`release` 由装配方在本轮结束时调用，
  * 撤销该执行者名下尚未派发的请求；已交给 OS 的动作不回滚。
  */
 
@@ -296,12 +296,14 @@ export interface DesktopPort {
     includeState?: boolean
   }): Promise<DesktopSnapshot>
   /**
-   * 取回一次观察记录的控件表。`null` 表示该次观察已失效，调用方需重新观察。
+   * 本次执行对该窗口最近一份观察的控件表。`null` 表示本次执行尚未观察该窗口，或该观察已作废
+   * （动作之后未能重读、宿主代际变化、worker 未就绪），调用方需重新观察。
    *
-   * 动作前的唯一匹配与前置条件检查依据该表：判定须使用产生 `ref` 的那份快照，
-   * 重新读取会使模型看到的内容与判定依据不属于同一时刻。
+   * 动作前的唯一匹配与前置条件检查依据该表，不重新读取：它就是调用方最近一次收到的控件表，
+   * 重新读取会使模型看到的内容与判定依据不属于同一时刻。编号按控件身份分配，同一编号在
+   * 不同观察中指同一个控件，因此不需要调用方再指明是哪一份观察。
    */
-  elements(windowId: string, observationId: string): DesktopElement[] | null
+  elements(windowId: string): DesktopElement[] | null
   /**
    * 采集目标窗口的图像。这是该端口上唯一采集图像的入口，`observe` 不采集图像。
    *
@@ -332,8 +334,7 @@ export interface DesktopPort {
    */
   act(input: {
     windowId: string
-    observationId: string
-    /** 控件目标。键盘输入以外的动作必须提供它或 `at`。 */
+    /** 控件目标，按该窗口最近一份观察解析。键盘输入以外的动作必须提供它或 `at`。 */
     ref?: string
     /** 图像点目标。只有指针动作接受。 */
     at?: DesktopImagePoint
@@ -344,22 +345,16 @@ export interface DesktopPort {
    *
    * 不更换观察编号：读取文本不改变控件表。
    */
-  readText(input: {
-    windowId: string
-    observationId: string
-    ref: string
-    maxChars: number
-  }): Promise<DesktopText>
+  readText(input: { windowId: string; ref: string; maxChars: number }): Promise<DesktopText>
   /**
    * 等待一个后置条件成立。超时有上限，判定在宿主侧完成。
    *
    * 不派发任何动作，因此没有 `dispatch`：条件未满足时只返回未满足。等待期间本次执行仍占用
-   * 桌面：`ref` 在观察中产生、在动作中使用，中途允许其他执行者操作会使该 `ref` 失效；
+   * 该窗口：`ref` 在观察中产生、在动作中使用，中途允许其他执行者操作会使该 `ref` 失效；
    * 但 `release` 随时生效，等待会在一个轮询间隔内以 `cancelled` 结束。
    */
   wait(input: {
     windowId: string
-    observationId: string
     until: DesktopWaitCondition
     /** `enabled` / `value` / `gone` 的目标控件。 */
     ref?: string

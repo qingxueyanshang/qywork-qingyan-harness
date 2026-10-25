@@ -35,7 +35,7 @@ async function resetStore() {
     todos: [],
     fileChanges: [],
     lastRunId: null,
-    desktopTarget: null,
+    desktopTargets: [],
   })
 }
 
@@ -44,10 +44,12 @@ let sendBefore: ((cmd: never) => void) | null = null
 
 const CV = 'cv_chip'
 const OTHER = 'cv_wechat'
-const targetFrame = (target: DesktopTargetEvent['target']): EventEnvelope<DesktopTargetEvent> => ({
+const targetFrame = (
+  target: DesktopTargetEvent['targets'][number] | null,
+): EventEnvelope<DesktopTargetEvent> => ({
   seq: 3,
   at: 0,
-  event: { type: 'desktop.target', target },
+  event: { type: 'desktop.target', targets: target ? [target] : [] },
 })
 
 async function mount() {

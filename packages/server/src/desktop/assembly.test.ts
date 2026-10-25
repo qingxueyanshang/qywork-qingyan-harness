@@ -103,11 +103,6 @@ function toolNames(body: string): string[] {
   return (parsed.tools ?? []).map((t) => t.name ?? '')
 }
 
-/** 请求体中最近一份观察的编号。编号由协调器分配，脚本只能从模型可见的正文中读取。 */
-function observationIn(body: string): string {
-  return /do_\d+/.exec(body)?.[0] ?? ''
-}
-
 // ───────────────────────── 装配 ─────────────────────────
 
 let dir = ''
@@ -242,7 +237,6 @@ test('主任务从 startRun 取得桌面工具，身份字段齐全，三态回�
     toolTurn('desktop_observe', { windowId: 'dw_1' }),
     toolTurn('desktop_act', {
       windowId: 'dw_1',
-      observationId: 'do_1',
       action: 'set_value',
       ref: 'e2',
       value: '张三',
@@ -354,16 +348,14 @@ const SAVE_BUTTON: DesktopNode = {
 test('一次序列调用逐动作发帧，actionId 各不相同，截断后不再发帧', async () => {
   script = [
     toolTurn('desktop_observe', { windowId: 'dw_1' }),
-    (body) =>
-      toolTurn('desktop_act_sequence', {
-        windowId: 'dw_1',
-        observationId: observationIn(body),
-        steps: [
-          { action: 'set_value', ref: 'e2', value: '张三' },
-          { action: 'set_toggle', ref: 'e3', state: 'on' },
-          { action: 'invoke', ref: 'e4' },
-        ],
-      }),
+    toolTurn('desktop_act_sequence', {
+      windowId: 'dw_1',
+      steps: [
+        { action: 'set_value', ref: 'e2', value: '张三' },
+        { action: 'set_toggle', ref: 'e3', state: 'on' },
+        { action: 'invoke', ref: 'e4' },
+      ],
+    }),
     textTurn('停在第二步了'),
   ]
   bodies = []

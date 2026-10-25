@@ -355,7 +355,7 @@ export interface AppState {
    * `null` 表示没有执行者占用桌面目标。服务端在执行者释放与宿主断开时都会推送 `null`，
    * 前端不自行推断超时并清空：否则前后端各存一份判定。
    */
-  desktopTarget: DesktopTargetEvent['target']
+  desktopTargets: DesktopTargetEvent['targets']
 }
 
 const initial: AppState = {
@@ -371,7 +371,7 @@ const initial: AppState = {
   canvasVersion: 0,
   fileChanges: [],
   git: null,
-  desktopTarget: null,
+  desktopTargets: [],
   followUps: [],
   todos: [],
   goal: null,
@@ -453,10 +453,13 @@ export function isConversationRunning(id: string | null): boolean {
   return id !== null && state.busyConversations.includes(id)
 }
 
-/** 当前会话的桌面目标。占用权仍由服务端裁决，切换会话只改变读数归属。 */
-export function activeDesktopTarget(): DesktopTargetEvent['target'] {
-  const target = state.desktopTarget
-  return target?.conversationId === state.activeConversation ? target : null
+/**
+ * 当前会话的桌面目标。占用权仍由服务端裁决，切换会话只改变读数归属。
+ *
+ * 同一会话可能有多个执行者（父任务与子任务），取列表中最后一项：服务端按执行者创建顺序排列。
+ */
+export function activeDesktopTarget(): DesktopTargetEvent['targets'][number] | null {
+  return state.desktopTargets.findLast((t) => t.conversationId === state.activeConversation) ?? null
 }
 
 /**

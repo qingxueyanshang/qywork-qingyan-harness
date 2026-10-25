@@ -784,6 +784,7 @@ impl Uia {
                     .ok_or_else(|| Failure::Refused("missing_ref".to_owned()))?;
                 match self.locate(req.window, reference) {
                     Ok(located) => {
+                        let mut missing = false;
                         let node = self.read_cached_node(
                             &located.element,
                             &located.path,
@@ -793,7 +794,14 @@ impl Uia {
                                 state: true,
                                 foreground: false,
                             },
+                            &mut missing,
                         )?;
+                        // 等待判定的是这一个控件的读数，缺少时无法判定，不能按未满足继续轮询至超时。
+                        if missing {
+                            return Err(Failure::Refused(format!(
+                                "{FIELD_UNAVAILABLE}: 无法读取该控件的选中项或可见文字"
+                            )));
+                        }
                         Ok(Probe::Element {
                             enabled: node.enabled,
                             value: node.value,
@@ -839,13 +847,15 @@ impl Uia {
 
     /// 从缓存读取节点的属性。
     ///
-    /// 只有选择容器的选中项实时读取，见 `selected_names`；其余全部来自缓存。
+    /// 选择容器的选中项（`selected_names`）与文本控件的可见文字（`visible_text`）实时读取，其余全部来自缓存。
+    /// 这两项读取失败时只缺这一项，`missing` 置真，见 `extra`。
     fn read_cached_node(
         &self,
         element: &IUIAutomationElement,
         path: &[usize],
         focus_window: Option<i64>,
         fields: Fields,
+        missing: &mut bool,
     ) -> Result<Node, Failure> {
         let control_type = unsafe { element.CachedControlType() }.map_err(uia("读取控件类型"))?;
         let name = unsafe { element.CachedName() }.map_err(uia("读取名称"))?;
@@ -933,8 +943,9 @@ impl Uia {
                 cached_flag(element, UIA_SelectionCanSelectMultiplePropertyId)?,
                 cached_flag(element, UIA_SelectionIsSelectionRequiredPropertyId)?,
             ) {
-                let (names, total) = selected_names(element)?;
-                selection = Some(selection_state(multiple, required, names, total));
+                if let Some((names, total)) = extra(selected_names(element), missing)? {
+                    selection = Some(selection_state(multiple, required, names, total));
+                }
             }
         }
 
@@ -978,7 +989,7 @@ impl Uia {
             // 终端与控制台的正文只能经由 TextPattern 读取：不读取时观察中只有控件名，无法得知窗口
             // 中正在运行的内容。
             if fields.value && !value_pattern {
-                value = visible_text(element, &name.to_string())?;
+                value = extra(visible_text(element, &name.to_string()), missing)?.flatten();
             }
         }
 
@@ -1271,9 +1282,13 @@ impl Walk<'_> {
         if !first_sighting(&mut self.seen, &runtime_id(element)?) {
             return Ok(());
         }
-        let mut node = self
-            .backend
-            .read_cached_node(element, path, self.focus_window, self.fields)?;
+        let mut missing = false;
+        let mut node =
+            self.backend
+                .read_cached_node(element, path, self.focus_window, self.fields, &mut missing)?;
+        if missing {
+            self.mark(FIELD_UNAVAILABLE);
+        }
         node.depth = depth;
         self.visited += 1;
         let index = self.collected.len();
@@ -1474,6 +1489,25 @@ fn covers_others(hwnd: HWND) -> bool {
         }
     }
     !cloaked(hwnd)
+}
+
+/// 个别控件的实时附加读数无法读取时记入 `truncated_by` 的原因。
+const FIELD_UNAVAILABLE: &str = "field_unavailable";
+
+/// 单个控件的实时附加读数。
+///
+/// 只有超时与控件消失使整次读取失败：前者说明 provider 已不应答，后者由遍历按节点处理。
+/// 其余失败（如 provider 未实现 `GetVisibleRanges`，返回 E_NOTIMPL）只使该控件缺少这一项，
+/// 不要改为向上传播：一个控件不支持某个接口时，整个窗口都将无法读取。
+fn extra<T>(read: Result<T, Failure>, missing: &mut bool) -> Result<Option<T>, Failure> {
+    match read {
+        Ok(value) => Ok(Some(value)),
+        Err(f) if f.is_timeout() || f.is_element_gone() => Err(f),
+        Err(_) => {
+            *missing = true;
+            Ok(None)
+        }
+    }
 }
 
 /// UIA 用空指针表示「没有该子节点」「不支持该模式」。
@@ -2558,6 +2592,30 @@ fn selection_state(multiple: bool, required: bool, names: Vec<String>, total: us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 原始失败形状：微信开发者工具中一个文本控件的 `GetVisibleRanges` 返回 E_NOTIMPL，整窗读取失败。
+    /// 该失败只使这一项缺失；超时与控件消失仍向上传播。
+    #[test]
+    fn an_unsupported_extra_reading_only_drops_that_field() {
+        let failure = |code: i32| Failure::Uia {
+            code,
+            text: "取可见范围失败".to_owned(),
+        };
+        let mut missing = false;
+        let read = extra::<String>(Err(failure(0x8000_4001_u32 as i32)), &mut missing);
+        assert!(matches!(read, Ok(None)));
+        assert!(missing);
+
+        for code in [TIMEOUT_HRESULT, ELEMENT_GONE_HRESULT] {
+            let mut missing = false;
+            assert!(extra::<String>(Err(failure(code)), &mut missing).is_err());
+            assert!(!missing);
+        }
+
+        let mut missing = false;
+        assert!(matches!(extra(Ok(7), &mut missing), Ok(Some(7))));
+        assert!(!missing);
+    }
 
     /// 原始失败形状：后台点击记事本的编辑框之后 UIA 仍报告无焦点，带 ref 的输入被拒绝。
     /// 控件自身窗口是目标线程的焦点窗口时视为持有焦点；没有自身窗口的控件只看 UIA。

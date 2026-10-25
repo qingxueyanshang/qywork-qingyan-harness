@@ -403,6 +403,11 @@ function candidateLine(table: DesktopElement[], e: DesktopElement): string {
 }
 
 /**
+ * 本次执行没有该窗口的有效控件表时的拒绝原因：本轮尚未观察该窗口，或上一次动作之后未能重读。
+ */
+const STALE = '未执行 · 本轮没有该窗口的有效观察 · 先调用 desktop_observe'
+
+/**
  * 把模型提供的目标解析为本次观察中唯一的控件。
  *
  * 三种写法：直接提供 `ref`、提供 `automationId`、提供 `name`（可再加 `role` 收窄）。
@@ -414,7 +419,7 @@ function resolveTarget(
   args: Record<string, unknown>,
 ): DesktopElement {
   if (!table) {
-    throw new ArgError('未执行 · 观察已失效 · 先重新观察', 'desktop_observation_stale')
+    throw new ArgError(STALE, 'desktop_observation_stale')
   }
   if (given(args.ref)) {
     const ref = str(args.ref, 'ref')
@@ -471,7 +476,7 @@ function isWindowRoot(e: DesktopElement): boolean {
 /** 观察中的窗口根节点。整窗观察必定包含它；只读取过子树的观察不包含，此时要求重新读取整窗。 */
 function windowRoot(table: DesktopElement[] | null): DesktopElement {
   if (!table) {
-    throw new ArgError('未执行 · 观察已失效 · 先重新观察', 'desktop_observation_stale')
+    throw new ArgError(STALE, 'desktop_observation_stale')
   }
   const root = table.find(isWindowRoot)
   if (!root) {
@@ -581,11 +586,54 @@ const ACTION_PARAMS: Record<DesktopActionKind, readonly string[]> = {
 }
 
 /** 定位目标使用的参数。它们适用于每种动作，不参与动作参数的核对。 */
-const TARGET_PARAMS = ['windowId', 'observationId', 'action', 'ref', 'automationId', 'name', 'role']
+const TARGET_PARAMS = ['windowId', 'action', 'ref', 'automationId', 'name', 'role']
 /** 序列中单步接受的定位参数。窗口与观察编号对整组统一提供，不写在单步中。 */
 const STEP_PARAMS = ['action', 'ref', 'automationId', 'name', 'role', 'expect']
 /** 按图定位使用的参数。只有指针动作接受这些参数。 */
 const POINT_PARAMS = ['imageRef', 'imageX', 'imageY']
+
+/** 取值有限的动作参数及其取值。回执中写明取值，模型无需再查工具定义即可改对。 */
+const PARAM_VALUES: Record<string, string> = {
+  button: MOUSE_BUTTONS.join(' / '),
+  count: `1 或 ${MAX_CLICK_COUNT}`,
+  direction: SCROLL_DIRECTIONS.join(' / '),
+  step: SCROLL_STEPS.join(' / '),
+  state: TOGGLE_STATES.join(' / '),
+  windowState: WINDOW_STATES.join(' / '),
+}
+
+/** 一个动作的正确写法：它接受的动作参数及取值，指针动作另注明按图定位的参数。 */
+function actionUsage(kind: DesktopActionKind): string {
+  const params = ACTION_PARAMS[kind].map((p) =>
+    PARAM_VALUES[p] ? `${p}（${PARAM_VALUES[p]}）` : p,
+  )
+  const own = params.length ? `${kind} 的参数：${params.join('、')}` : `${kind} 没有动作参数`
+  return POINTER_ACTIONS.includes(kind) ? `${own}；按图定位用 imageRef 与 imageX / imageY` : own
+}
+
+/**
+ * 无法识别的动作名。动作名包含某个动作的全名时（`rightclick`、`double_click` 包含 click），
+ * 回执给出该动作及其参数，取包含的最长一个；否则列出全部动作名。
+ *
+ * 只按「包含全名」匹配，不按相似度推测：推测错误的建议会把模型引向另一个动作。
+ */
+function unknownAction(
+  raw: unknown,
+  allowed: readonly DesktopActionKind[],
+  field: string,
+): ArgError {
+  const flat = String(raw ?? '')
+    .toLowerCase()
+    .replace(/[^a-z]/g, '')
+  const nearest = allowed
+    .filter((kind) => flat.includes(kind.replace(/_/g, '')))
+    .sort((a, b) => b.length - a.length)[0]
+  return new ArgError(
+    nearest
+      ? `${field} 没有 ${JSON.stringify(raw)} · 最接近的是 ${nearest}，${actionUsage(nearest)}`
+      : `${field} 只能是 ${allowed.join(' / ')}，收到 ${JSON.stringify(raw)}`,
+  )
+}
 
 function checkActionParams(
   kind: DesktopActionKind,
@@ -601,7 +649,7 @@ function checkActionParams(
     (key) => !allowed.has(key) && given(args[key]) && !blank(args[key]),
   )
   if (extra.length) {
-    throw new ArgError(`${kind} 不接受 ${extra.join(' / ')}`)
+    throw new ArgError(`${kind} 不接受 ${extra.join(' / ')} · ${actionUsage(kind)}`)
   }
 }
 
@@ -980,12 +1028,13 @@ function actOutcome(
       data: { ...receipt, blocking: r.blocking, observationError: r.observationError },
     }
   }
+  // 成败只按执行事实判定：已提交即成功。动作后的重读失败只说明控件表已作废，不改变成败；
+  // 按 Escape 关闭菜单、关闭窗口之后目标窗口已不存在，重读失败正是动作生效的结果。
   return {
-    status: 'failure',
-    executed: true,
-    message: `${lead} · 无法读取动作后的控件表 · ${r.observationError}`,
+    status: unknown ? 'failure' : 'success',
+    ...(unknown ? { executed: true, errorKind: 'desktop_unknown' } : {}),
+    message: `${lead} · 无法读取动作后的控件表 · ${r.observationError} · 下一步先重新观察`,
     data: { ...receipt, observationError: r.observationError },
-    errorKind: unknown ? 'desktop_unknown' : 'desktop_observation_unavailable',
   }
 }
 
@@ -1178,13 +1227,13 @@ export const desktopObserveTool: ToolSpec = {
     'background 经控件接口发出，foreground 发送指针与键盘事件或调用窗口接口，unavailable 是此刻无法执行的动作与原因；' +
     '控件上缺失的 enabled、offscreen、automationId 取 defaults 的值。' +
     '回执中的「无可操作控件」表示自绘界面，本次调用已附带整窗图，动作按图提供坐标，无需再次采图；' +
-    '「未读取完整」表示控件树采集不完整，调整 maxNodes 或 maxDepth 后重读；' +
+    '「未读取完整」表示控件树采集不完整，调整 maxNodes 或 maxDepth 后重读；其中 field_unavailable 表示个别控件的选中项或可见文字无法读取，重读不会改变，其余控件照常可用；' +
     'foregroundEnabled 表示当前前台操作开关，与控件支持哪些动作分别判断；为 false 时不能激活窗口或注入鼠标与键盘事件。' +
     '「窗口被遮挡或已最小化」时应用可能未提供内部内容；仅在 foregroundEnabled 为 true 且窗口提供 activate 时激活后再观察。' +
     '浏览器自动填充的账号密码在页面上发生点击或按键之前无法读取，输入框 value 为空不代表框中未填写，点击输入框后再读取；' +
     '「已投递 N/M 个控件」表示本次只返回了其中一部分，完整控件表已按结果中的 resource id 保存，' +
     '用 read_resource 读取，无需重读。' +
-    '返回的 observationId 与 ref 是 desktop_act 与 desktop_wait 的前提；每次重新观察都会更换 observationId，' +
+    '动作与等待按本轮对该窗口最近一份观察解析 ref，本轮未观察过的窗口须先观察；' +
     'ref 按控件分配，同一个控件在新观察中编号不变；窗口移动后旧 imageRef 失效。',
   parameters: {
     type: 'object',
@@ -1211,11 +1260,6 @@ export const desktopObserveTool: ToolSpec = {
       includeState: {
         type: 'boolean',
         description: '是否读取 range / toggle / expand / selected / selection / scroll，默认读取',
-      },
-      observationId: {
-        type: 'string',
-        description:
-          'capture=region_image 使用 around 时必填，capture=text 时必填，取自 desktop_observe',
       },
       ref: {
         type: 'string',
@@ -1263,8 +1307,7 @@ export const desktopObserveTool: ToolSpec = {
         )
       }
       if (capture === 'text') {
-        const observationId = str(args.observationId, 'observationId')
-        const elements = desktop.elements(windowId, observationId)
+        const elements = desktop.elements(windowId)
         const element = resolveTarget(elements, args)
         if (element.text !== true) {
           const hint =
@@ -1281,9 +1324,7 @@ export const desktopObserveTool: ToolSpec = {
         const maxChars = given(args.maxChars)
           ? bounded(args.maxChars, 'maxChars', 1, MAX_TEXT_CHARS)
           : MAX_TEXT_CHARS
-        const read = await send(() =>
-          desktop.readText({ windowId, observationId, ref: element.ref, maxChars }),
-        )
+        const read = await send(() => desktop.readText({ windowId, ref: element.ref, maxChars }))
         const selection = read.selection.length
           ? read.selection
               .map((s) => `${s.start} 起 ${JSON.stringify(s.text)}${s.truncated ? ' 截断' : ''}`)
@@ -1296,11 +1337,6 @@ export const desktopObserveTool: ToolSpec = {
             ` · 选区 ${selection}`,
           data: { ref: element.ref, ...read },
         }
-      }
-      // combined 的 around 按本次读取的控件表解析：读取控件树会更换观察编号，
-      // 用调用方提供的旧编号解析时，依据的是一份已经作废的表。
-      if (capture === 'combined' && given(args.observationId)) {
-        throw new ArgError('未执行 · capture=combined 不接受 observationId')
       }
       // 不接受图片的模型在采集之前即拒绝：采集模型无法查看的图像需要付出完整的采集与编码开销。
       if (capture !== 'structure' && ctx.vision === false) return NO_VISION
@@ -1414,13 +1450,8 @@ async function captureFor(
   if (around && byImage) throw new ArgError('around 与 imageRef 只能提供一个')
   if (around) {
     const ref = str(args.around, 'around')
-    const table = fresh ?? desktop.elements(windowId, str(args.observationId, 'observationId'))
-    if (!table) {
-      throw new ArgError(
-        '该观察已经失效，请重新调用 desktop_observe 获取新的 observationId 与 ref。',
-        'desktop_observation_stale',
-      )
-    }
+    const table = fresh ?? desktop.elements(windowId)
+    if (!table) throw new ArgError(STALE, 'desktop_observation_stale')
     const element = table.find((e) => e.ref === ref)
     if (!element) {
       throw new ArgError(`该观察中没有 ${ref}。`, 'desktop_ref_unknown')
@@ -1472,16 +1503,15 @@ export const desktopActTool: ToolSpec = {
     'dispatch 表示动作派发状态：not_dispatched 未执行，submitted 已提交，unknown 结果未确认。动作提交成功不等于任务完成；结果未确认时应先观察，不得直接重复执行。' +
     '「回读不一致」时同样不要重发同一段文字。' +
     'not_dispatched 只表示请求动作未派发，窗口准备可能已改变界面；有新观察时使用新编号，观察失效时先重新观察。' +
-    '动作之后在同一次调用中带回新观察与新的 observationId；弹出新窗口时改为带回 blocking，对新窗口继续观察。' +
+    '动作之后在同一次调用中带回新观察；弹出新窗口时改为带回 blocking，对新窗口继续观察。' +
     '本工具、desktop_act_sequence 与 desktop_wait 带回的观察在多数控件未变化时只提供变化：' +
     'since 是该窗口上一份整份控件表的 observationId，added 与 changed 整行给出并附带 parentRef，' +
-    'removed 是消失的编号；未列出的控件与 since 对应的控件表相同，编号继续有效，下一步动作使用本次结果的 observationId。' +
+    'removed 是消失的编号；未列出的控件与 since 对应的控件表相同，编号继续有效。' +
     '对同一个窗口连续执行多个动作时用 desktop_act_sequence，一次调用执行完毕。',
   parameters: {
     type: 'object',
     properties: {
       windowId: { type: 'string' },
-      observationId: { type: 'string', description: '取自 desktop_observe' },
       action: { type: 'string', enum: ACTIONS },
       ref: {
         type: 'string',
@@ -1499,8 +1529,15 @@ export const desktopActTool: ToolSpec = {
       itemName: { type: 'string', description: 'realize_item 要实例化的项的名称' },
       start: { type: 'integer', description: 'select_text 的起点，UTF-16 码元' },
       length: { type: 'integer', description: 'select_text 的长度，UTF-16 码元' },
-      button: { type: 'string', enum: MOUSE_BUTTONS, description: 'click 使用的鼠标键，默认 left' },
-      count: { type: 'integer', description: `click 的连击次数，1 或 ${MAX_CLICK_COUNT}，默认 1` },
+      button: {
+        type: 'string',
+        enum: MOUSE_BUTTONS,
+        description: 'click 使用的鼠标键，默认 left；右键点击为 action=click、button=right',
+      },
+      count: {
+        type: 'integer',
+        description: `click 的连击次数，1 或 ${MAX_CLICK_COUNT}，默认 1；双击为 2`,
+      },
       amount: {
         type: 'integer',
         description: `wheel 滚动的格数，上限 ${MAX_WHEEL_AMOUNT}，默认 1`,
@@ -1533,7 +1570,7 @@ export const desktopActTool: ToolSpec = {
       imageX: { type: 'integer', description: '按图定位：图内像素横坐标，左上角是 0,0' },
       imageY: { type: 'integer', description: '按图定位：图内像素纵坐标，左上角是 0,0' },
     },
-    required: ['windowId', 'observationId', 'action'],
+    required: ['windowId', 'action'],
     additionalProperties: false,
   },
   actionKind: 'call',
@@ -1543,18 +1580,18 @@ export const desktopActTool: ToolSpec = {
   fn: (args, ctx) =>
     onDesktop(ctx, async (desktop, send) => {
       const windowId = str(args.windowId, 'windowId')
-      const observationId = str(args.observationId, 'observationId')
-      const kind = oneOf(args.action, ACTIONS, 'action')
-      const table = given(args.imageRef) ? null : desktop.elements(windowId, observationId)
+      if (!ACTIONS.includes(args.action as DesktopActionKind)) {
+        throw unknownAction(args.action, ACTIONS, 'action')
+      }
+      const kind = args.action as DesktopActionKind
+      const table = given(args.imageRef) ? null : desktop.elements(windowId)
       const { aim, action } = planAct(table, kind, args, TARGET_PARAMS, desktop.foregroundEnabled())
       const field = writes(action) ? inputField(table, aim.element) : undefined
-      const r = await send(() => desktop.act({ windowId, observationId, ...aim.input, action }))
+      const r = await send(() => desktop.act({ windowId, ...aim.input, action }))
       const outcome = actOutcome(ctx, action, aim.element?.ref ?? '', r, field)
       if (aim.input.at === undefined) return outcome
       const refresh =
-        r.dispatch !== 'not_dispatched' ||
-        r.observation !== null ||
-        !desktop.elements(windowId, observationId)
+        r.dispatch !== 'not_dispatched' || r.observation !== null || !desktop.elements(windowId)
       return withShot(outcome, refresh, desktop, send, windowId, ctx)
     }),
 }
@@ -1699,11 +1736,10 @@ interface Unread {
 /**
  * 序列执行到当前步骤时的观察。
  *
- * 每一步的动作与等待都会更换观察编号并带回新的控件表，下一步按当前这一份解析目标。
+ * 每一步的动作与等待都会带回新的控件表，下一步按当前这一份解析目标。
  * `table` 为 `null` 表示本次没有重读，后续步骤无法解析，序列在此结束。
  */
 interface Cursor {
-  observationId: string
   table: DesktopElement[] | null
   last: DesktopSnapshot | null
   unread: Unread
@@ -1750,9 +1786,7 @@ function stepKind(raw: unknown, index: number): DesktopActionKind {
         '用 desktop_act 单独执行该动作，再重新观察。',
     )
   }
-  throw new ArgError(
-    `第 ${index} 步的 action 只能是 ${SEQUENCE_ACTIONS.join(' / ')}，收到 ${JSON.stringify(raw)}`,
-  )
+  throw unknownAction(raw, SEQUENCE_ACTIONS, `第 ${index} 步的 action`)
 }
 
 function expectOf(raw: unknown, index: number): ExpectPlan | null {
@@ -1857,7 +1891,7 @@ function tailLine(cursor: Cursor): string {
       .join(' · ')
     return `调用未返回 · ${appearedWindows.length ? '新窗口' : '当前窗口'} ${listed}`
   }
-  if (cursor.table) return `观察 ${cursor.observationId} 仍然有效`
+  if (cursor.table) return '控件表仍然有效'
   return `无法读取最后一份控件表 · ${cursor.unread.observationError ?? '宿主未回传动作之后的观察'}`
 }
 
@@ -1922,13 +1956,29 @@ function sequenceOutcome(
   }
 }
 
-/** 把动作或等待带回的重读写入 `cursor`。没有重读时整份控件表作废，序列在此结束。 */
+/**
+ * 上一步之后没有可用的控件表时的停止点。
+ *
+ * 在下一步开始前判定，而不是在产生它的那一步判定：那一步已经提交，是否失败只看执行事实；
+ * 无法继续的是其后的步骤。最后一步之后没有重读不构成失败。
+ */
+function unreadHalt(index: number, cursor: Cursor): Halt {
+  const blocked = cursor.unread.blocking !== undefined
+  return {
+    index,
+    reason: blocked
+      ? '调用未返回'
+      : `无法读取动作后的控件表 · ${cursor.unread.observationError ?? '宿主未回传动作之后的观察'}`,
+    errorKind: blocked ? 'desktop_blocked' : 'desktop_observation_unavailable',
+  }
+}
+
+/** 把动作或等待带回的重读写入 `cursor`。没有重读时整份控件表作废，序列在下一步之前结束。 */
 function advance(
   cursor: Cursor,
   follow: DesktopFollowUp & { blocking?: DesktopBlockingWindowInfo[] },
 ): void {
   if (follow.observation) {
-    cursor.observationId = follow.observation.observationId
     cursor.table = follow.observation.elements
     cursor.last = follow.observation
     cursor.unread = {}
@@ -1990,9 +2040,7 @@ async function runStep(
   const started = Date.now()
   let result: DesktopActResult
   try {
-    result = await send(() =>
-      desktop.act({ windowId, observationId: cursor.observationId, ...aim.input, action }),
-    )
+    result = await send(() => desktop.act({ windowId, ...aim.input, action }))
   } catch (err) {
     // 只有端口自行声明执行前拒绝时才视为未发出；其余情况一律按可能已生效收尾。
     const refused = declaredExecuted(err) === false
@@ -2025,7 +2073,7 @@ async function runStep(
   }
   if (result.dispatch === 'not_dispatched') {
     // 请求动作未发出，但前台准备可能已改变窗口。是否还能保留旧观察由端口统一判定。
-    if (result.observation || !desktop.elements(windowId, cursor.observationId)) {
+    if (result.observation || !desktop.elements(windowId)) {
       advance(cursor, result)
     }
     return {
@@ -2056,20 +2104,10 @@ async function runStep(
       },
     }
   }
-  if (!result.observation) {
-    return {
-      receipt,
-      halt: {
-        index: plan.index,
-        reason: cursor.unread.blocking
-          ? '调用未返回'
-          : `无法读取动作后的控件表 · ${cursor.unread.observationError}`,
-        errorKind: cursor.unread.blocking ? 'desktop_blocked' : 'desktop_observation_unavailable',
-      },
-    }
-  }
   // 后置条件按控件判定，按图定位的步骤没有可判定的控件，`planSteps` 已经拦截。
   if (!plan.expect || !aim.element) return { receipt, halt: null }
+  // 后置条件需要动作后的控件表；没有重读时无法核验，按未满足停止。
+  if (!result.observation) return { receipt, halt: unreadHalt(plan.index, cursor) }
 
   const settled = await settle(desktop, send, windowId, cursor, aim.element.ref, plan.expect)
   receipt.expect = { until: plan.expect.until, met: settled.met }
@@ -2105,7 +2143,6 @@ async function settle(
     const waited = await send(() =>
       desktop.wait({
         windowId,
-        observationId: cursor.observationId,
         until,
         ...(until === 'appears' ? {} : { ref }),
         ...(expect.value === undefined ? {} : { value: expect.value }),
@@ -2128,7 +2165,7 @@ export const desktopActSequenceTool: ToolSpec = {
     `在同一个窗口上按顺序执行一组动作，一次最多 ${MAX_STEPS} 步，参数与 desktop_act 的同名参数一致；` +
     'set_window_state / move_window / resize_window / close_window 不接受，它们会使后续步骤的 imageRef 失效。' +
     '自绘界面的「点击输入框 → type_text → press_key」这类连续操作使用本工具，一次调用执行完毕。' +
-    '第一步按 observationId 对应的控件表解析目标，之后每一步按上一步带回的新观察解析；' +
+    '第一步按本轮对该窗口最近一份观察解析目标，之后每一步按上一步带回的新观察解析；' +
     '按图定位的步骤使用 imageRef 与 imageX / imageY，序列包含此类步骤时，回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
     '全部提交仅表示动作已提交，不代表任务完成；expect 仅表示所指定的后置条件是否满足。' +
     '某步未执行、结果未确认、后置条件未满足、调用未返回或本次执行被停止，即停在该步并放弃后续步骤。' +
@@ -2137,7 +2174,6 @@ export const desktopActSequenceTool: ToolSpec = {
     type: 'object',
     properties: {
       windowId: { type: 'string' },
-      observationId: { type: 'string', description: '第一步按该观察的控件表解析目标' },
       steps: {
         type: 'array',
         description: `按顺序执行的动作，最多 ${MAX_STEPS} 步`,
@@ -2164,11 +2200,11 @@ export const desktopActSequenceTool: ToolSpec = {
             button: {
               type: 'string',
               enum: MOUSE_BUTTONS,
-              description: 'click 使用的鼠标键，默认 left',
+              description: 'click 使用的鼠标键，默认 left；右键点击为 action=click、button=right',
             },
             count: {
               type: 'integer',
-              description: `click 的连击次数，1 或 ${MAX_CLICK_COUNT}，默认 1`,
+              description: `click 的连击次数，1 或 ${MAX_CLICK_COUNT}，默认 1；双击为 2`,
             },
             amount: {
               type: 'integer',
@@ -2230,7 +2266,7 @@ export const desktopActSequenceTool: ToolSpec = {
         },
       },
     },
-    required: ['windowId', 'observationId', 'steps'],
+    required: ['windowId', 'steps'],
     additionalProperties: false,
   },
   actionKind: 'call',
@@ -2240,13 +2276,11 @@ export const desktopActSequenceTool: ToolSpec = {
   fn: (args, ctx) =>
     onDesktop(ctx, async (desktop, send) => {
       const windowId = str(args.windowId, 'windowId')
-      const observationId = str(args.observationId, 'observationId')
       // 参数错误在派发之前抛出，`onDesktop` 记为未执行：此时尚未发送任何帧。
       const plans = planSteps(args.steps)
 
       const cursor: Cursor = {
-        observationId,
-        table: desktop.elements(windowId, observationId),
+        table: desktop.elements(windowId),
         last: null,
         unread: {},
       }
@@ -2256,6 +2290,10 @@ export const desktopActSequenceTool: ToolSpec = {
       for (const plan of plans) {
         if (ctx.signal.aborted) {
           halt = { index: plan.index, reason: '本次执行已停止', errorKind: 'aborted' }
+          break
+        }
+        if (done.length > 0 && !cursor.table) {
+          halt = unreadHalt(plan.index, cursor)
           break
         }
         const outcome = await runStep(desktop, send, windowId, cursor, plan)
@@ -2291,13 +2329,12 @@ export const desktopWaitTool: ToolSpec = {
     type: 'object',
     properties: {
       windowId: { type: 'string' },
-      observationId: { type: 'string' },
       until: {
         type: 'string',
         enum: WAIT_CONDITIONS,
         description:
           'enabled 控件变为可用，value 控件值变为 value，gone 控件从树上消失，' +
-          'appears 窗口中出现满足 role 与 name 的控件，window 出现标题含 name 的新窗口' +
+          'appears 窗口中出现满足 role 与 name 的控件（name 与 role 至少提供一个），window 出现标题含 name 的新窗口' +
           '（条件满足后先用 desktop_windows 获取该窗口）',
       },
       ref: { type: 'string' },
@@ -2314,7 +2351,7 @@ export const desktopWaitTool: ToolSpec = {
         description: `最长等待时间，默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS}`,
       },
     },
-    required: ['windowId', 'observationId', 'until'],
+    required: ['windowId', 'until'],
     additionalProperties: false,
   },
   actionKind: 'read',
@@ -2324,7 +2361,6 @@ export const desktopWaitTool: ToolSpec = {
   fn: (args, ctx) =>
     onDesktop(ctx, async (desktop, send) => {
       const windowId = str(args.windowId, 'windowId')
-      const observationId = str(args.observationId, 'observationId')
       const until = oneOf(args.until, WAIT_CONDITIONS, 'until')
       if (until === 'value' && (args.value === undefined || args.value === null)) {
         throw new ArgError('until=value 必须提供 value')
@@ -2337,12 +2373,11 @@ export const desktopWaitTool: ToolSpec = {
       }
       // 针对已知控件的三种条件先在本地解析为唯一目标；另外两种等待的是尚未出现的控件或窗口。
       const ref = REF_CONDITIONS.includes(until)
-        ? resolveTarget(desktop.elements(windowId, observationId), args).ref
+        ? resolveTarget(desktop.elements(windowId), args).ref
         : undefined
       const r = await send(() =>
         desktop.wait({
           windowId,
-          observationId,
           until,
           ...(ref !== undefined ? { ref } : {}),
           ...(until === 'value' ? { value: String(args.value) } : {}),
