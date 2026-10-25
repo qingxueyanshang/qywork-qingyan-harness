@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 桌面原生宿主连接的服务端一侧。
  *
  * 该连接由宿主主动建立，只承载桌面控件的观察与动作；聊天指令与浏览器资源操作
@@ -63,6 +63,8 @@ export interface DesktopCallResult {
   observationError?: string
   /** 动作调用尚未返回时目标进程当前的顶层窗口。见协议中的 `blocking`。 */
   blocking?: DesktopBlockingWindow[]
+  /** 本次请求占用了用户的前台。见协议中的 `foreground`。 */
+  foreground?: true
 }
 
 export class DesktopBridgeError extends Error {
@@ -345,6 +347,7 @@ export class DesktopBridge {
       ...(frame.observation !== undefined ? { observation: frame.observation } : {}),
       ...(frame.observationError !== undefined ? { observationError: frame.observationError } : {}),
       ...(frame.blocking !== undefined ? { blocking: frame.blocking } : {}),
+      ...(frame.foreground === true ? { foreground: true as const } : {}),
     })
   }
 

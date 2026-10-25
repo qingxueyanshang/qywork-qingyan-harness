@@ -200,6 +200,9 @@ pub struct ResultFrame {
     /// 动作调用尚未返回时目标进程当前的顶层窗口。身份三项与窗口清单的结构相同。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocking: Option<Value>,
+    /// 本次请求占用了用户的前台。由 worker 按实际投递方式上报，原样转发。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub foreground: bool,
 }
 
 impl ResultFrame {
@@ -216,6 +219,7 @@ impl ResultFrame {
             observation: None,
             observation_error: None,
             blocking: None,
+            foreground: false,
         }
     }
 
@@ -237,6 +241,7 @@ impl ResultFrame {
             observation: None,
             observation_error: None,
             blocking: None,
+            foreground: false,
         }
     }
 }
@@ -333,6 +338,9 @@ pub struct WorkerResponse {
     /// 动作调用尚未返回时目标进程当前的顶层窗口。
     #[serde(default)]
     pub blocking: Option<Value>,
+    /// 本次请求占用了用户的前台。
+    #[serde(default)]
+    pub foreground: bool,
 }
 
 impl WorkerResponse {
@@ -575,6 +583,7 @@ pub fn to_result(
         observation,
         observation_error: response.observation_error,
         blocking: None,
+        foreground: response.foreground,
     }
 }
 
@@ -1119,6 +1128,7 @@ mod tests {
             observation: None,
             observation_error: Some("窗口已关闭".to_owned()),
             blocking: None,
+            foreground: false,
         };
         let frame = to_result("dr_1".to_owned(), &binding(), response, None);
         assert_eq!(
@@ -1147,6 +1157,7 @@ mod tests {
                 observation: None,
                 observation_error: None,
                 blocking: None,
+                foreground: false,
             };
             assert_eq!(
                 to_result("dr_1".to_owned(), &binding(), response, None).dispatch,
@@ -1167,6 +1178,7 @@ mod tests {
             })),
             observation_error: None,
             blocking: None,
+            foreground: false,
         };
         assert!(response.is_ready());
         assert_eq!(
@@ -1184,6 +1196,7 @@ mod tests {
             observation: None,
             observation_error: None,
             blocking: None,
+            foreground: false,
         };
         assert!(!other.is_ready());
         assert_eq!(other.ready_access(), None);

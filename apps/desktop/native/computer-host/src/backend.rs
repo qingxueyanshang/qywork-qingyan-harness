@@ -57,6 +57,20 @@ pub trait Backend: Sized {
         stop: &dyn Fn() -> bool,
     ) -> (Attempt, Result<Observation, String>);
 
+    /// 执行一个动作，并报告本次请求是否占用了用户的前台。服务循环只调用本方法。
+    ///
+    /// 默认实现适用于前台动作一律先提升目标窗口、再经系统输入派发的平台（macOS、Linux）：
+    /// 前台动作的调用已发出即占用前台。指针与键盘可经窗口消息投递的平台（Windows）按实际投递覆盖本方法。
+    fn act_reported(&self, req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Acted {
+        let (attempt, observed) = self.act(req, stop);
+        let foreground = req.action.foreground_only() && matches!(attempt, Attempt::Called(_));
+        Acted {
+            attempt,
+            observed,
+            foreground,
+        }
+    }
+
     fn read_text(&self, window: i64, reference: &str, max_chars: u32)
         -> Result<Observation, String>;
 
@@ -123,6 +137,13 @@ pub struct CaptureRequest<'a> {
     pub max_edge: u32,
     pub max_bytes: u32,
     pub budget: Duration,
+}
+
+/// 一次动作请求的结果：执行事实、动作后的重读，以及是否占用了用户的前台（见 `Response::foreground`）。
+pub struct Acted {
+    pub attempt: Attempt,
+    pub observed: Result<Observation, String>,
+    pub foreground: bool,
 }
 
 /// 一次动作尝试的事实。`Refused` 表示请求的动作没有发出，`Called` 表示调用已经发出。

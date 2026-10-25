@@ -96,26 +96,6 @@ const CAPTURE_BUDGET_MS = 3_000
  * 约占 5.4 MiB。超过此值的请求在采集端即被拒绝，避免单帧中断宿主连接。
  */
 const CAPTURE_MAX_BYTES = 4 * 1024 * 1024
-/**
- * 经由前台投递的动作。
- *
- * 只用于判定「本次是否属于前台接管」，使运行状态能显示当前正在前台操作，
- * 并且只在宿主实际派发之后才标记为前台。**准入不在这里判定**：前台模式是否开启由宿主
- * 一侧按请求自带的开关裁决，在这里再判定一次就形成第二处裁决。
- */
-const FOREGROUND_ACTIONS: ReadonlySet<string> = new Set([
-  'click',
-  'hover',
-  'drag',
-  'wheel',
-  'type_text',
-  'press_key',
-  'activate',
-  'set_window_state',
-  'move_window',
-  'resize_window',
-  'close_window',
-])
 /** 接受图像点作为落点的动作。其余动作只能按控件执行。 */
 const FOREGROUND_POINTER: ReadonlySet<string> = new Set(['click', 'hover', 'drag', 'wheel'])
 /**
@@ -814,9 +794,11 @@ export class DesktopCoordinator {
         maxDepth: DEFAULT_MAX_DEPTH,
         timeBudgetMs: READ_TREE_BUDGET_MS,
       })
-      // 前台接管状态按所请求动作的回执更新；窗口准备后的观察单独接收。
-      if (FOREGROUND_ACTIONS.has(input.action.kind) && result.dispatch !== 'not_dispatched') {
-        this.#setTarget(lease, known.app, true)
+      // 前台读数取宿主回执：宿主按实际投递方式上报本次是否占用了用户的前台，不要改为按动作种类
+      // 推断，一般窗口上的指针与键盘动作经窗口消息投递，不占用前台。未派发且未占用前台时桌面未被操作，
+      // 读数不变。
+      if (result.foreground === true || result.dispatch !== 'not_dispatched') {
+        this.#setTarget(lease, known.app, result.foreground === true)
       }
       return {
         dispatch: result.dispatch,
@@ -1113,18 +1095,20 @@ export class DesktopCoordinator {
     this.#block('上一次电脑控制尚未确认结束，当前无法操作桌面')
   }
 
-  #setTarget(lease: Lease, app: string, foreground = false): void {
+  /**
+   * 写入目标快照。`foreground` 是本次动作的回执；缺省表示本次只是读取，同一会话、同一应用时沿用
+   * 最近一次动作的读数，更换应用时为后台。
+   */
+  #setTarget(lease: Lease, app: string, foreground?: boolean): void {
     // 只有持有桌面的执行者能写入此状态。缺少该条件时，两个执行者的目标会互相覆盖，
     // 界面显示的是最后写入的目标，而不是当前实际操作的目标。
     if (this.#holder !== lease) return
-    const takeover = this.#target?.foreground || foreground
-    if (
-      this.#target?.conversationId === lease.conversationId &&
-      this.#target.app === app &&
-      this.#target.foreground === takeover
-    )
-      return
-    this.#target = { conversationId: lease.conversationId, app, foreground: takeover }
+    const current = this.#target
+    const same =
+      current !== null && current.conversationId === lease.conversationId && current.app === app
+    const next = foreground ?? (same && current.foreground)
+    if (same && current.foreground === next) return
+    this.#target = { conversationId: lease.conversationId, app, foreground: next }
     for (const listener of [...this.#targetChanges]) listener(this.#target)
   }
 

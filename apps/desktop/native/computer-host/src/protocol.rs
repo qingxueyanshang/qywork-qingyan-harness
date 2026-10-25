@@ -693,6 +693,11 @@ pub struct Response {
     /// 等待至超时，该字段代替重读结果说明下一步应观察哪个窗口。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocking: Option<Vec<BlockingWindow>>,
+    /// 本次请求占用了用户的前台：经系统输入队列注入了指针或键盘事件，或使目标窗口成为前台窗口。
+    /// 窗口消息与控件接口不计入。界面据此区分前台操作与后台操作，与 `dispatch` 相互独立：
+    /// 窗口准备已提升窗口而输入被拒绝时，`dispatch` 为 `not_dispatched`，本字段仍为真。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub foreground: bool,
     /// 回执发出之后还需清理一次该窗口所属 provider 的连接。**不写入协议**，只把该任务
     /// 从动作路径传回执行循环。见 `Backend::drain_provider`。
     #[serde(skip)]
@@ -709,6 +714,7 @@ impl Response {
             observation: None,
             observation_error: None,
             blocking: None,
+            foreground: false,
             after_reply: None,
         }
     }
@@ -722,6 +728,7 @@ impl Response {
             observation: Some(observation),
             observation_error: None,
             blocking: None,
+            foreground: false,
             after_reply: None,
         }
     }
@@ -739,6 +746,7 @@ impl Response {
             observation,
             observation_error,
             blocking: None,
+            foreground: false,
             after_reply: None,
         }
     }
@@ -3017,9 +3025,19 @@ mod tests {
                         BlockingWindow { info: window(88, 900, "另存为", "#32770"), appeared: true },
                         BlockingWindow { info: window(99, 901, "身份查不到", "Other"), appeared: false },
                     ]),
+                    foreground: false,
                     after_reply: None,
                 },
             ),
+            ("act_foreground", {
+                let mut response = Response::acted(
+                    "w1".to_owned(),
+                    Dispatch::Submitted,
+                    Err("provider_timeout".to_owned()),
+                );
+                response.foreground = true;
+                response
+            }),
             ("rejected", Response::rejected("w1".to_owned(), "stale_epoch".to_owned())),
         ];
         assert_eq!(cases.len(), expected.as_object().expect("样例").len());

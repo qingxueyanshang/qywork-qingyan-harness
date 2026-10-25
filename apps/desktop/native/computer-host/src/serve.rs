@@ -24,7 +24,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::backend::{ActRequest, Attempt, Backend, CaptureRequest, WaitRequest};
+use crate::backend::{ActRequest, Acted, Attempt, Backend, CaptureRequest, WaitRequest};
 use crate::input;
 use crate::protocol::{
     admit, now_ms, refused_for_grant, Access, AccessNotice, Binding, HostIdentity, InputNotice,
@@ -447,22 +447,22 @@ fn act<B: Backend>(id: String, backend: &B, state: &State, req: &ActRequest<'_>)
     // 派发之后到达的取消必须在拖拽途中生效：准入时的登记已被取出，此处查询的是此后新增的
     // 登记。拖拽是唯一一个在派发中途仍能被中止的动作。
     let stop = || state.cancelled.lock().expect("取消登记锁").contains(&id);
-    let (attempt, observed) = backend.act(req, &stop);
+    let acted = backend.act_reported(req, &stop);
     state.cancelled.lock().expect("取消登记锁").remove(&id);
-    action_response(id, req.window, attempt, observed)
+    action_response(id, req.window, acted)
 }
 
-fn action_response(
-    id: String,
-    window: i64,
-    attempt: Attempt,
-    observed: Result<Observation, String>,
-) -> Response {
-    match attempt {
+fn action_response(id: String, window: i64, acted: Acted) -> Response {
+    let Acted {
+        attempt,
+        observed,
+        foreground,
+    } = acted;
+    let mut response = match attempt {
+        Attempt::Refused(reason) if matches!(&observed, Err(error) if error == NOT_DISPATCHED) => {
+            Response::rejected(id, reason)
+        }
         Attempt::Refused(reason) => {
-            if matches!(&observed, Err(error) if error == NOT_DISPATCHED) {
-                return Response::rejected(id, reason);
-            }
             // 输入未派发与窗口准备已经发生可以同时成立；保留重读结果或重读失败。
             let mut response = Response::acted(id, Dispatch::NotDispatched, observed);
             response.reason = Some(reason);
@@ -478,7 +478,9 @@ fn action_response(
             }
             response
         }
-    }
+    };
+    response.foreground = foreground;
+    response
 }
 
 /// 发送一行输入状态通报。与回执共用 stdout 的整行写出路径，两者不会在同一行中交错。
@@ -564,12 +566,17 @@ mod tests {
         let response = action_response(
             "r1".to_owned(),
             66,
-            Attempt::Refused("geometry_changed".to_owned()),
-            Ok(Observation::Windows { captured_at: 1, windows: Vec::new() }),
+            Acted {
+                attempt: Attempt::Refused("geometry_changed".to_owned()),
+                observed: Ok(Observation::Windows { captured_at: 1, windows: Vec::new() }),
+                foreground: true,
+            },
         );
         assert_eq!(response.dispatch, Dispatch::NotDispatched);
         assert_eq!(response.reason.as_deref(), Some("geometry_changed"));
         assert!(response.observation.is_some());
+        // 窗口准备已提升窗口而输入被拒绝：执行事实与前台占用分别上报。
+        assert!(response.foreground);
     }
 
     #[test]
@@ -578,8 +585,11 @@ mod tests {
             let response = action_response(
                 "r1".to_owned(),
                 66,
-                Attempt::Refused("foreground_lock".to_owned()),
-                Err(error.to_owned()),
+                Acted {
+                    attempt: Attempt::Refused("foreground_lock".to_owned()),
+                    observed: Err(error.to_owned()),
+                    foreground: false,
+                },
             );
             assert_eq!(response.dispatch, Dispatch::NotDispatched);
             assert_eq!(response.reason.as_deref(), Some("foreground_lock"));

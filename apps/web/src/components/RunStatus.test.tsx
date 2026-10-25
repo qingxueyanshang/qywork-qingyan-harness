@@ -172,7 +172,7 @@ describe('整轮状态条随轮次显示，不随忙碌状态显示', () => {
       store.applyEvent(targetFrame({ conversationId: CV, app: 'QQ.exe', foreground: false }))
       expect(host.textContent).toBe('')
       selectRunning(CV)
-      expect(host.textContent).toBe('正在操作 QQ.exe')
+      expect(host.textContent).toBe('正在后台操作 QQ.exe')
       store.applyEvent(targetFrame(null))
       expect(host.textContent).toBe('')
     } finally {
