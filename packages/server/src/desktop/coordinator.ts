@@ -714,14 +714,35 @@ export class DesktopCoordinator {
     if (!record) {
       throw new DesktopTargetError(`无法识别的图像 ${imageRef}，请重新采图`)
     }
+    const invalid = this.#imageInvalid(record, known, windowId)
+    if (invalid !== null) throw new DesktopTargetError(invalid)
+    return record
+  }
+
+  /** 该图像此刻不再适用于该窗口的原因；仍然适用时为 `null`。 */
+  #imageInvalid(record: ImageRecord, known: KnownWindow, windowId: string): string | null {
     const host = this.#bridge.host()
     if (!host || record.epochKey !== epochKeyOf(host)) {
-      throw new DesktopTargetError(`${imageRef} 已失效：桌面宿主的代际已变化，请重新采图`)
+      return `${record.imageRef} 已失效：桌面宿主的代际已变化，请重新采图`
     }
     if (record.windowId !== windowId || record.identityKey !== identityKey(known)) {
-      throw new DesktopTargetError(`${imageRef} 不是从该窗口采集的，请重新采图`)
+      return `${record.imageRef} 不是从该窗口采集的，请重新采图`
     }
-    return record
+    return null
+  }
+
+  /**
+   * 本执行者是否看过该窗口的当前状态：有一份有效观察，或有一张仍然适用的该窗口图像。
+   *
+   * 投递给窗口焦点的键盘输入据此准入。按键不经由控件或图像点定位，不核对时可以向一个从未看过的
+   * 窗口输入；只认观察则拒绝只截过图的窗口，而自绘界面只能截图。
+   */
+  #seen(lease: Lease, known: KnownWindow, windowId: string): boolean {
+    if (this.#elements(lease, windowId)) return true
+    for (const record of lease.images.values()) {
+      if (this.#imageInvalid(record, known, windowId) === null) return true
+    }
+    return false
   }
 
   async #act(
@@ -799,8 +820,8 @@ export class DesktopCoordinator {
    * 经由与按图像重新截取相同的换算与代际核对路径，失效的 `imageRef` 在本地即拒绝，
    * 不发送任何帧。
    *
-   * 两者都不提供时目标是窗口本身，只有键盘输入可以这样发送：它发往目标窗口的焦点所在位置，
-   * 准入由 worker 判定。
+   * 两者都不提供时目标是窗口本身，只有键盘输入可以这样发送：它发往目标窗口的焦点所在位置。
+   * 此处只核对本执行者观察或截取过该窗口（`#seen`），窗口能否接收输入由 worker 判定。
    */
   #aim(
     lease: Lease,
@@ -819,8 +840,13 @@ export class DesktopCoordinator {
       return { ref: this.#recordOf(lease, input.windowId, input.ref) }
     }
     if (input.at === undefined) {
-      if (WINDOW_TARGET.has(input.action.kind)) return {}
-      throw new DesktopTargetError('必须提供控件或图像点')
+      if (!WINDOW_TARGET.has(input.action.kind)) {
+        throw new DesktopTargetError('必须提供控件或图像点')
+      }
+      if (!this.#seen(lease, known, input.windowId)) {
+        throw new DesktopTargetError('本次执行没有观察或截取过该窗口，请先观察或截图')
+      }
+      return {}
     }
     if (!FOREGROUND_POINTER.has(input.action.kind)) {
       throw new DesktopTargetError(`${input.action.kind} 只能按控件执行，不接受图像点`)

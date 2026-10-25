@@ -2024,6 +2024,42 @@ describe('前台动作', () => {
     ])
   })
 
+  test('按控件执行的指针动作在回执中写明落点与控件尺寸，按图定位与键盘动作不写', async () => {
+    const { port } = foregroundPort()
+    const click = await run(
+      desktopActTool,
+      { windowId: 'dw_1', action: 'click', ref: 'e16', button: 'right' },
+      ctxWith(port),
+    )
+    expect(click.message).toContain('click 已提交 · 落点 450,315（控件 100×30 的中心）')
+    expect(click.data).toMatchObject({ landing: { x: 450, y: 315, width: 100, height: 30 } })
+    const drag = await run(
+      desktopActTool,
+      { windowId: 'dw_1', action: 'drag', ref: 'e16', dx: 80, dy: 0 },
+      ctxWith(port),
+    )
+    expect(drag.message).toContain('drag 已提交 · 起点 450,315（控件 100×30 的中心）')
+    const byImage = await run(
+      desktopActTool,
+      { windowId: 'dw_1', action: 'click', imageRef: 'di_1', imageX: 40, imageY: 50 },
+      ctxWith(port),
+    )
+    expect(byImage.message).not.toContain('落点')
+    const typed = await run(
+      desktopActTool,
+      { windowId: 'dw_1', action: 'type_text', ref: 'e17', text: '张三' },
+      ctxWith(port),
+    )
+    expect(typed.message).not.toContain('落点')
+    const steps = await run(
+      desktopActSequenceTool,
+      { windowId: 'dw_1', steps: [{ action: 'click', ref: 'e16', button: 'right' }] },
+      ctxWith(port),
+    )
+    expect(steps.message).toContain('1 click e16 已提交 · 落点 450,315（控件 100×30 的中心）')
+    expect(steps.data).toMatchObject({ steps: [{ landing: { x: 450, y: 315 } }] })
+  })
+
   test('开关关闭后旧观察和图像定位都不能派发，后台动作仍可用', async () => {
     let enabled = true
     const { port, calls } = foregroundPort({ foregroundEnabled: () => enabled })
@@ -2230,31 +2266,29 @@ describe('前台动作', () => {
     expect(calls).toEqual([])
   })
 
-  /** 子树读取的根同样 `depth` 为 0、没有 `parentRef`，但它不是窗口元素。 */
-  test('只读取过子树的观察没有窗口根，不指定控件的输入在派发之前被拒绝', async () => {
+  /**
+   * 原始失败形状：截取菜单窗口之后按 Escape，回执要求先观察。投递给窗口焦点不按控件表判定：
+   * 是否看过该窗口由协调器核对，窗口能否接收输入由宿主判定。
+   */
+  test('只截过图、只读取过子树或窗口根未列出键盘动作时，不指定控件的输入照常交给端口', async () => {
     const { windowRoot: _root, ...子树根 } = 自绘窗口
-    const { port, calls } = fakeDesktop({
-      elements: (windowId) => (windowId === 'dw_1' ? [{ ...子树根, ref: 'e4' }] : null),
-    })
-    const r = await run(
-      desktopActTool,
-      { windowId: 'dw_1', action: 'type_text', text: '张三' },
-      ctxWith(port),
-    )
-    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_target_missing' })
-    expect(r.message).toContain('先对整窗观察一次')
-    expect(calls).toEqual([])
-  })
-
-  test('窗口根没有键盘动作时，不指定控件的输入在派发之前被拒绝', async () => {
-    const { port, calls } = foregroundPort()
-    const r = await run(
-      desktopActTool,
-      { windowId: 'dw_1', action: 'type_text', text: '张三' },
-      ctxWith(port),
-    )
-    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
-    expect(calls).toEqual([])
+    for (const table of [null, [{ ...子树根, ref: 'e4' }], FOREGROUND_TABLE]) {
+      const { port, calls } = fakeDesktop({
+        elements: (windowId) => (windowId === 'dw_1' ? table : null),
+      })
+      const r = await run(
+        desktopActTool,
+        { windowId: 'dw_1', action: 'press_key', key: 'escape' },
+        ctxWith(port),
+      )
+      expect(r.status).toBe('success')
+      expect(calls).toEqual([
+        {
+          method: 'act',
+          input: { windowId: 'dw_1', action: { kind: 'press_key', key: 'escape', modifiers: [] } },
+        },
+      ])
+    }
   })
 
   /**

@@ -6,13 +6,15 @@
 //! 1. 结构化路径不采集任何图像，也不调用置前台、设焦点或指针接口。
 //! 2. 窗口发现经由 Win32 枚举而不是 UIA 根元素：`GetWindowTextW` 对无响应的跨进程窗口
 //!    返回缓存标题而不阻塞，UIA 根元素的子节点枚举需要等待每个 provider 应答。
-//! 3. `ref` 是不透明字符串，包含从窗口元素出发的子节点下标路径与 RuntimeId。动作前按路径重新
-//!    定位并核对 RuntimeId，不允许用旧编号操作当前树中位置已变化的另一个节点。
+//! 3. `ref` 是不透明字符串，包含从窗口元素出发的子节点下标路径与 RuntimeId。动作前先按路径查找
+//!    并核对身份；有 RuntimeId 的控件在路径失效时按 RuntimeId 在窗口内查找。不允许用旧编号操作
+//!    当前树中位于该位置的另一个节点。
 //! 4. UIA 调用均为跨进程调用，上界只能由 IUIAutomation2 的连接超时与事务超时保证；本模块不另建
 //!    线程等待，挂起的 provider 由这两项超时终止。
 //! 5. 子节点枚举只有一处实现：带缓存请求的 `BuildUpdatedCache` + `GetCachedChildren`，筛选条件
 //!    固定为 `ControlViewCondition`。读树与动作前的重定位共用该实现，下标才能一致；改用
-//!    TreeWalker 会产生第二套顺序，同一个 `ref` 在两处指向不同节点。
+//!    TreeWalker 枚举会产生第二套顺序，同一个 `ref` 在两处指向不同节点。按 RuntimeId 定位后
+//!    求路径时只用 TreeWalker 取父节点，下标仍取自缓存子节点。
 
 mod capture;
 mod foreground;
@@ -34,10 +36,11 @@ use ::windows::Win32::System::Com::{
     SAFEARRAY,
 };
 use ::windows::Win32::System::Ole::{
-    SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
+    SafeArrayCreateVector, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
+    SafeArrayPutElement,
 };
 use ::windows::Win32::System::Variant::{
-    VARIANT, VT_ARRAY, VT_BOOL, VT_BSTR, VT_I4, VT_R8, VT_UNKNOWN,
+    VARENUM, VARIANT, VT_ARRAY, VT_BOOL, VT_BSTR, VT_I4, VT_R8, VT_UNKNOWN,
 };
 use ::windows::Win32::UI::Accessibility::{
     AutomationElementMode_Full, CUIAutomation8, ExpandCollapseState_Collapsed,
@@ -48,11 +51,12 @@ use ::windows::Win32::UI::Accessibility::{
     IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern, IUIAutomationItemContainerPattern,
     IUIAutomationRangeValuePattern, IUIAutomationScrollItemPattern, IUIAutomationScrollPattern,
     IUIAutomationSelectionItemPattern, IUIAutomationSelectionPattern, IUIAutomationTextPattern,
-    IUIAutomationTextRange, IUIAutomationTogglePattern, IUIAutomationValuePattern,
+    IUIAutomationTextRange, IUIAutomationTogglePattern, IUIAutomationTreeWalker,
+    IUIAutomationValuePattern,
     IUIAutomationVirtualizedItemPattern, ScrollAmount, SupportedTextSelection,
     SupportedTextSelection_Multiple, SupportedTextSelection_None, SupportedTextSelection_Single,
     TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character, TreeScope,
-    TreeScope_Children, TreeScope_Element, UIA_AutomationIdPropertyId,
+    TreeScope_Children, TreeScope_Element, TreeScope_Subtree, UIA_AutomationIdPropertyId,
     UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_E_ELEMENTNOTAVAILABLE,
     UIA_E_TIMEOUT, UIA_ExpandCollapseExpandCollapseStatePropertyId, UIA_ExpandCollapsePatternId,
     UIA_InvokePatternId, UIA_IsEnabledPropertyId,
@@ -246,6 +250,8 @@ pub struct Uia {
     options: IUIAutomation2,
     /// 子节点枚举的筛选条件。读树与重定位共用，下标因此一致。
     control_view: IUIAutomationCondition,
+    /// 按同一筛选条件取父节点，供按 RuntimeId 定位后向上求路径。不用于枚举子节点。
+    walker: IUIAutomationTreeWalker,
     /// 重定位用的缓存请求。
     ///
     /// **请求的属性与读树的缓存请求完全相同。** 定位路径上的节点会按完整节点读取（等待的判定
@@ -291,6 +297,8 @@ impl Backend for Uia {
             .map_err(|e| format!("关闭 AutoSetFocus 失败：{e}"))?;
         let control_view = unsafe { automation.ControlViewCondition() }
             .map_err(|e| format!("取 ControlViewCondition 失败：{e}"))?;
+        let walker = unsafe { automation.CreateTreeWalker(&control_view) }
+            .map_err(|e| format!("创建 TreeWalker 失败：{e}"))?;
         // 重定位请求的属性与读树完全相同：定位路径上的节点会按完整节点读取
         // （等待的判定即以此方式读取目标控件），少一项即会在读取时出现「所需属性不在
         // CacheRequest 中」。
@@ -314,6 +322,7 @@ impl Backend for Uia {
             automation,
             options,
             control_view,
+            walker,
             nav_cache,
             read_before: Mutex::new(HashSet::new()),
             capturer: OnceCell::new(),
@@ -579,14 +588,15 @@ impl Uia {
         unsafe { element.BuildUpdatedCache(cache) }.map_err(uia("刷新缓存"))
     }
 
-    /// 按 `ref` 中的下标路径重新定位，并核对身份。
+    /// 按 `ref` 重新定位，并核对身份。
     ///
-    /// 每层一次跨进程调用：取得该层的缓存子节点，按下标选取一个。子节点顺序与读树使用同一
-    /// 筛选条件，下标因此指向同一个节点。
+    /// 有 RuntimeId 的控件以 RuntimeId 为准：先沿 `ref` 中记录的下标路径查找，路径中断或该位置
+    /// 已是另一个控件时，在窗口内按 RuntimeId 查找并求出其当前路径。目标窗口弹出的菜单与下拉框
+    /// 列在该窗口的树中，可能排在子节点首位，其后兄弟节点的下标随之后移；只按路径查找时，
+    /// 仍在窗口中的控件同样无法定位。
     ///
-    /// 身份核对分两种，按 `ref` 中记录的种类判定：有 RuntimeId 的比较 RuntimeId，没有的比较
-    /// 角色、名称与稳定标识的指纹。**两种不能互相替代**：原本没有 RuntimeId 的位置
-    /// 当前有了 RuntimeId，说明该位置已经不是同一个控件。
+    /// 没有 RuntimeId 的控件只能沿路径查找，并比较角色、名称与稳定标识的指纹。**两种身份不能
+    /// 互相替代**：原本没有 RuntimeId 的位置当前有了 RuntimeId，说明该位置已经不是同一个控件。
     ///
     /// 本后端返回的 `ref` 不带核对串；带核对串的 `ref` 不是本后端返回的，拒绝而不是忽略该字段。
     fn locate(&self, window: i64, reference: &str) -> Result<Located, Failure> {
@@ -594,7 +604,36 @@ impl Uia {
         if parts.check.is_some() {
             return Err(Failure::Refused(format!("bad_ref: {reference}")));
         }
-        let (path, expected) = (parts.path, parts.identity);
+        let expected = parts.identity;
+        let stale = match self.follow(window, parts.path) {
+            Ok(located) => {
+                let actual = cached_identity(&located.element)?;
+                if actual == expected {
+                    return Ok(located);
+                }
+                format!(
+                    "{REF_STALE}: 该位置当前是 {}，ref 中记录的是 {}",
+                    describe(&actual),
+                    describe(&expected)
+                )
+            }
+            // `follow` 只在路径中断时返回 Refused；读取失败与超时原样返回。
+            Err(Failure::Refused(broken)) => broken,
+            Err(f) => return Err(f),
+        };
+        match &expected {
+            Identity::Stable(id) => self.find_stable(window, id),
+            Identity::Attributes(_) => Err(Failure::Refused(format!(
+                "{stale}；该控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对，界面重排后旧引用不可靠，请重新观察"
+            ))),
+        }
+    }
+
+    /// 沿下标路径逐层查找，不核对身份。路径在某层中断时返回 `Refused`。
+    ///
+    /// 每层一次跨进程调用：取得该层的缓存子节点，按下标选取一个。子节点顺序与读树使用同一
+    /// 筛选条件，下标因此指向同一个节点。
+    fn follow(&self, window: i64, path: Vec<usize>) -> Result<Located, Failure> {
         let mut element = self.window_element(window, &self.nav_cache)?;
         let mut host = window;
         for (depth, index) in path.iter().enumerate() {
@@ -607,24 +646,80 @@ impl Uia {
             element = self.expand(&child, &self.nav_cache)?;
             host = cached_native_window(&element)?.unwrap_or(host);
         }
-        let actual = cached_identity(&element)?;
-        if actual != expected {
-            return Err(Failure::Refused(format!(
-                "{REF_STALE}: 该位置当前是 {}，ref 中记录的是 {}{}",
-                describe(&actual),
-                describe(&expected),
-                if expected.is_weak() {
-                    "；该控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对，界面重排后旧引用不可靠，请重新观察"
-                } else {
-                    ""
-                }
-            )));
-        }
         Ok(Located {
             element,
             path,
             host,
         })
+    }
+
+    /// 在窗口内按 RuntimeId 查找控件，并自该控件向上求出其当前的下标路径。
+    ///
+    /// 查找为一次跨进程调用，向上每层一次：父节点连同其子节点一并缓存，下标取自与读树相同的
+    /// 缓存子节点。不要改为按 TreeWalker 的兄弟顺序计数，它与缓存子节点的顺序不一致（见文件头
+    /// 第 5 条）。窗口中已没有该控件，或某一层的祖先无法在兄弟节点中唯一识别时拒绝。
+    fn find_stable(&self, window: i64, id: &str) -> Result<Located, Failure> {
+        let root = self.window_element(window, &self.nav_cache)?;
+        let condition = self.runtime_condition(id)?;
+        count_call();
+        let found = optional(unsafe {
+            root.FindFirstBuildCache(TreeScope_Subtree, &condition, &self.nav_cache)
+        })
+        .map_err(uia("按 RuntimeId 查找"))?
+        .ok_or_else(|| {
+            Failure::Refused(format!("{REF_STALE}: 窗口中已没有 RuntimeId {id} 的控件"))
+        })?;
+        let unplaced = || {
+            Failure::Refused(format!(
+                "{REF_STALE}: 无法确定 RuntimeId {id} 的控件在窗口中的当前位置，请重新观察"
+            ))
+        };
+        let top = cached_identity(&root)?;
+        let mut path = Vec::new();
+        let mut host = None;
+        let mut element = found.clone();
+        let mut identity = cached_identity(&element)?;
+        while identity != top {
+            if path.len() >= MAX_ANCESTORS {
+                return Err(unplaced());
+            }
+            host = host.or(cached_native_window(&element)?);
+            count_call();
+            let parent = unsafe { self.walker.GetParentElementBuildCache(&element, &self.nav_cache) }
+                .map_err(uia("取父节点"))?;
+            let mut index = None;
+            for (at, sibling) in cached_children(&parent)?.iter().enumerate() {
+                if cached_identity(sibling)? == identity {
+                    if index.is_some() {
+                        return Err(unplaced());
+                    }
+                    index = Some(at);
+                }
+            }
+            path.push(index.ok_or_else(unplaced)?);
+            element = parent;
+            identity = cached_identity(&element)?;
+        }
+        path.reverse();
+        Ok(Located {
+            element: found,
+            path,
+            host: host.unwrap_or(window),
+        })
+    }
+
+    /// 按 RuntimeId 查找的条件，限定在控件视图内，与读树的筛选条件一致。
+    fn runtime_condition(&self, id: &str) -> Result<IUIAutomationCondition, Failure> {
+        let parts = id
+            .split('.')
+            .map(str::parse::<i32>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| Failure::Refused(format!("bad_ref: RuntimeId {id}")))?;
+        let value = i32_array(&parts)?;
+        let by_id = unsafe { self.automation.CreatePropertyCondition(UIA_RuntimeIdPropertyId, &value) }
+            .map_err(uia("创建 RuntimeId 条件"))?;
+        unsafe { self.automation.CreateAndCondition(&self.control_view, &by_id) }
+            .map_err(uia("创建查找条件"))
     }
 
     fn read_tree_inner(
@@ -1791,7 +1886,7 @@ fn cached_identity(element: &IUIAutomationElement) -> Result<Identity, Failure> 
 ///
 /// 只读取缓存：`GetRuntimeId()` 是跨进程调用，按节点各调用一次会抵消批量读取属性的收益。
 /// 部分节点在两处都无法提供身份（实测同一批节点在缓存中是空 VARIANT，实时读取也是空数组），
-/// 此时 `ref` 中的身份段为空，动作前的核对退化为只比较下标路径。
+/// 此时身份取角色、名称与稳定标识的指纹（`cached_identity`），定位只能沿下标路径进行。
 
 fn runtime_id(element: &IUIAutomationElement) -> Result<String, Failure> {
     let variant: VARIANT = unsafe { element.GetCachedPropertyValue(UIA_RuntimeIdPropertyId) }
@@ -1803,6 +1898,33 @@ fn runtime_id(element: &IUIAutomationElement) -> Result<String, Failure> {
     // 其 Drop 会调用 VariantClear，此处只借用读取，不能自行销毁。
     let array = unsafe { variant.Anonymous.Anonymous.Anonymous.parray };
     Ok(unsafe { read_i32_array(array) }?.join("."))
+}
+
+/// 按 RuntimeId 定位后向上求路径的层数上限。控件树的深度远小于该值，超过即判定父节点链
+/// 不经过窗口元素。
+const MAX_ANCESTORS: usize = 512;
+
+/// 由整数数组构造 `VT_ARRAY | VT_I4` 的 VARIANT，用于按 RuntimeId 创建属性条件。
+fn i32_array(parts: &[i32]) -> Result<VARIANT, Failure> {
+    let length = u32::try_from(parts.len())
+        .map_err(|_| Failure::Refused("bad_ref: RuntimeId 过长".to_owned()))?;
+    // SAFETY: 数组创建后立即交给 VARIANT，其 Drop 调用 VariantClear 销毁该数组，
+    // 写入元素失败时同样由它释放。
+    let mut variant = VARIANT::default();
+    unsafe {
+        let array = SafeArrayCreateVector(VT_I4, 0, length);
+        if array.is_null() {
+            return Err(Failure::Refused("创建 RuntimeId 数组失败".to_owned()));
+        }
+        let inner = &mut *variant.Anonymous.Anonymous;
+        inner.vt = VARENUM(VT_ARRAY.0 | VT_I4.0);
+        inner.Anonymous.parray = array;
+        for (index, part) in (0i32..).zip(parts) {
+            SafeArrayPutElement(array, &index, std::ptr::from_ref(part).cast())
+                .map_err(uia("写入 RuntimeId"))?;
+        }
+    }
+    Ok(variant)
 }
 
 unsafe fn read_i32_array(array: *const SAFEARRAY) -> Result<Vec<String>, Failure> {
@@ -2805,5 +2927,210 @@ mod tests {
         // 截断点落在代理对中间时，该字符替换为替换字符，仍标记为截断。
         let pair = BSTR::from("a🙂b");
         assert_eq!(clip_utf16(&pair, 2), ("a\u{fffd}".to_owned(), true));
+    }
+
+    // ── 真实窗口 ──
+
+    use ::windows::core::w;
+    use ::windows::Win32::Foundation::{LRESULT, WPARAM};
+    use ::windows::Win32::System::Threading::GetCurrentThreadId;
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        PostThreadMessageW, RegisterClassExW, SendMessageW, SetWindowPos, ShowWindow, HWND_TOP,
+        MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE,
+        WINDOW_EX_STYLE, WM_APP, WM_QUIT, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
+    };
+
+    /// 在测试窗口中新建一个子窗口，返回其句柄。新建的窗口置于兄弟窗口 z 序的顶部。
+    const ADD_PANE: u32 = WM_APP + 1;
+    /// 销毁 wParam 给出的子窗口。窗口只能由创建它的线程销毁。
+    const REMOVE_PANE: u32 = WM_APP + 2;
+
+    unsafe extern "system" fn panes(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            ADD_PANE => {
+                let child = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    w!("qy-locate-test"),
+                    PCWSTR::null(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    40,
+                    30,
+                    Some(hwnd),
+                    None,
+                    None,
+                    None,
+                );
+                let Ok(child) = child else {
+                    return LRESULT(0);
+                };
+                // 新建的子窗口位于 z 序底部，UIA 按 z 序自顶向下列出子窗口；移到顶部后它成为第一个子节点。
+                let _ = SetWindowPos(
+                    child,
+                    Some(HWND_TOP),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+                LRESULT(child.0 as isize)
+            }
+            REMOVE_PANE => {
+                let _ = DestroyWindow(HWND(wparam.0 as *mut c_void));
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+
+    /// 位于屏幕之外、显示时不激活的测试窗口。子窗口在 UIA 中是带 RuntimeId 的窗格。
+    struct PaneWindow {
+        top: HWND,
+        thread: u32,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl PaneWindow {
+        fn open() -> Self {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                // SAFETY: 窗口类与窗口都只在本线程上创建和使用，退出消息循环后销毁。
+                unsafe {
+                    let class = w!("qy-locate-test");
+                    let wc = WNDCLASSEXW {
+                        cbSize: u32::try_from(std::mem::size_of::<WNDCLASSEXW>()).unwrap_or(0),
+                        lpfnWndProc: Some(panes),
+                        lpszClassName: class,
+                        ..WNDCLASSEXW::default()
+                    };
+                    RegisterClassExW(&wc);
+                    let top = CreateWindowExW(
+                        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                        class,
+                        w!("locate test"),
+                        WS_POPUP,
+                        -30_000,
+                        -30_000,
+                        300,
+                        200,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .expect("创建测试窗口");
+                    let _ = ShowWindow(top, SW_SHOWNOACTIVATE);
+                    let _ = tx.send((top.0 as isize, GetCurrentThreadId()));
+                    let mut msg = MSG::default();
+                    while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                        DispatchMessageW(&msg);
+                    }
+                    let _ = DestroyWindow(top);
+                }
+            });
+            let (top, thread) = rx.recv().expect("测试窗口线程启动");
+            Self {
+                top: HWND(top as *mut c_void),
+                thread,
+                handle: Some(handle),
+            }
+        }
+
+        fn window(&self) -> i64 {
+            self.top.0 as i64
+        }
+
+        fn add(&self) -> i64 {
+            // SAFETY: 同步发送给窗口线程，由其窗口过程创建子窗口。
+            unsafe { SendMessageW(self.top, ADD_PANE, None, None) }.0 as i64
+        }
+
+        fn remove(&self, pane: i64) {
+            // SAFETY: 同上。
+            unsafe { SendMessageW(self.top, REMOVE_PANE, Some(WPARAM(pane as usize)), None) };
+        }
+    }
+
+    impl Drop for PaneWindow {
+        fn drop(&mut self) {
+            // SAFETY: 线程号来自窗口线程自身。
+            let _ = unsafe { PostThreadMessageW(self.thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    /// 原始失败形状：微信中右键弹出的菜单列在主窗口的树中且排在子节点首位，其后兄弟节点的
+    /// 下标后移一位，动作后按局部范围重读报「第 1 层没有下标 0 的子节点」。有 RuntimeId 的控件
+    /// 按 RuntimeId 定位，子树读取以其当前路径生成 ref；控件已销毁时如实拒绝。
+    #[test]
+    fn a_control_whose_siblings_shift_is_located_by_its_runtime_id() {
+        let window = PaneWindow::open();
+        let first = window.add();
+        window.add();
+        let uia = Uia::new().expect("初始化 UIA");
+        let bounds = Bounds {
+            max_nodes: 50,
+            max_depth: 4,
+            time_budget_ms: 5_000,
+        };
+        // 窗口句柄对应的元素，其 RuntimeId 为 42 加句柄。
+        let identity = Identity::Stable(format!("42.{first}"));
+        let reference = uia
+            .read_tree_inner(window.window(), &Select::default(), bounds, false)
+            .unwrap_or_else(|f| panic!("读取测试窗口：{}", f.into_reason(window.window())))
+            .nodes
+            .into_iter()
+            .map(|n| n.reference)
+            .find(|r| decode_ref(r).is_ok_and(|p| p.identity == identity))
+            .expect("控件表中有先建的子窗口");
+        let recorded = decode_ref(&reference).expect("解码 ref");
+
+        window.add();
+        // 原始失败形状成立：记录的路径已指向另一个控件。
+        let along = uia
+            .follow(window.window(), recorded.path.clone())
+            .unwrap_or_else(|f| panic!("沿记录的路径查找：{}", f.into_reason(window.window())));
+        assert_ne!(cached_identity(&along.element).ok(), Some(identity.clone()));
+
+        let located = uia
+            .locate(window.window(), &reference)
+            .unwrap_or_else(|f| panic!("按 RuntimeId 定位：{}", f.into_reason(window.window())));
+        assert_eq!(cached_identity(&located.element).ok(), Some(identity));
+        assert_eq!(located.host, first);
+        let mut shifted = recorded.path.clone();
+        if let Some(last) = shifted.last_mut() {
+            *last += 1;
+        }
+        assert_eq!(located.path, shifted);
+
+        let scoped = Select {
+            root: Some(reference.clone()),
+            ..Select::default()
+        };
+        let subtree = uia
+            .read_tree_inner(window.window(), &scoped, bounds, false)
+            .unwrap_or_else(|f| panic!("按子树读取：{}", f.into_reason(window.window())));
+        let root = subtree.nodes.first().expect("子树根");
+        assert_eq!(decode_ref(&root.reference).map(|p| p.path), Ok(shifted));
+
+        window.remove(first);
+        match uia.locate(window.window(), &reference) {
+            Err(Failure::Refused(text)) => {
+                assert!(text.starts_with(REF_STALE) && text.contains("窗口中已没有"), "{text}");
+            }
+            Err(f) => panic!("应为拒绝：{}", f.into_reason(window.window())),
+            Ok(_) => panic!("控件已销毁时不应定位成功"),
+        }
     }
 }

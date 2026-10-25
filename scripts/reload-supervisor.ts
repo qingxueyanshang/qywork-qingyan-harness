@@ -10,7 +10,7 @@
  */
 
 export interface ReloadDeps {
-  /** 该 sidecar 是否还有未执行完毕的 run。 */
+  /** 该 sidecar 是否还有未执行完毕的 run。sidecar 已退出时返回 false，不得抛错：抛错按「无法确认」重排，退出后的 sidecar 不会再被重启。 */
   busy(): boolean | Promise<boolean>
   /** 执行代码替换：结束旧进程、启动新进程、等待就绪。抛错不致命，下一次改动会再次触发。 */
   restart(): Promise<void>
