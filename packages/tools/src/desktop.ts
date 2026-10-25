@@ -1175,7 +1175,7 @@ export const desktopObserveTool: ToolSpec = {
     '没有名称、值与状态的 pane / group / custom 容器不列出；' +
     '控件按前序排列，depth 按列出的祖先计算，父控件是前面最近的、depth 小一层的控件；' +
     '每个控件的 actionSet 是 actionSets 的下标，该项按投递方式列出控件此刻可执行的动作：' +
-    'background 经控件接口发出，foreground 使用真实指针与键盘，unavailable 是此刻无法执行的动作与原因；' +
+    'background 经控件接口发出，foreground 发送指针与键盘事件或调用窗口接口，unavailable 是此刻无法执行的动作与原因；' +
     '控件上缺失的 enabled、offscreen、automationId 取 defaults 的值。' +
     '回执中的「无可操作控件」表示自绘界面，本次调用已附带整窗图，动作按图提供坐标，无需再次采图；' +
     '「未读取完整」表示控件树采集不完整，调整 maxNodes 或 maxDepth 后重读；' +
@@ -1463,9 +1463,11 @@ export const desktopActTool: ToolSpec = {
     '前台动作 click / hover / drag / wheel / type_text / press_key / activate / set_window_state / ' +
     'move_window / resize_window / close_window 使用指针、键盘或窗口接口，要求 foregroundEnabled 为 true；' +
     '指针与键盘动作执行前无需 activate。' +
+    'hover 将真实指针移到落点并停留，执行前目标窗口置于前台；悬停时才出现的按钮与菜单项，先 hover 再操作。' +
     '为 false 时应说明前台操作已关闭并等待用户开启；动作表中没有某个动作表示该控件不提供它，不能据此推断开关状态。' +
     '恢复或置前窗口直接使用 activate，它会恢复最小化窗口并将其置前；set_window_state 只用于指定窗口状态，不能据此确认窗口已在前台。' +
     'type_text 指定控件时要求该控件此刻持有键盘焦点，先 click 该控件；自绘界面不提供控件，输入投递给窗口。' +
+    '按控件执行的指针动作落在该控件包围盒的中心；控件比其中的可见内容宽时（例如聊天记录中占满整行的一条消息），中心可能是空白处，此时按图像坐标定位到内容上。' +
     '指针动作可使用 imageRef 与 imageX / imageY 定位；回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
     'dispatch 表示动作派发状态：not_dispatched 未执行，submitted 已提交，unknown 结果未确认。动作提交成功不等于任务完成；结果未确认时应先观察，不得直接重复执行。' +
     '「回读不一致」时同样不要重发同一段文字。' +

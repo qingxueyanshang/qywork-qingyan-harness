@@ -4,8 +4,8 @@
 //! 七条边界：
 //!
 //! 1. **指针与键盘按目标窗口的投递方式执行**（`sink::delivery`）。窗口消息不切换前台，也不移动
-//!    用户的指针；系统输入（UWP 与 XAML 窗口）在定位前先将目标窗口提升到前台（`prepare`，由后端在
-//!    定位前调用）。同一个动作只使用一种方式，不在失败后改用另一种。
+//!    用户的指针；系统输入（UWP 与 XAML 窗口，以及任何窗口上的悬停）在定位前先将目标窗口提升到
+//!    前台（`prepare`，由后端在定位前调用）。同一个动作只使用一种方式，不在失败后改用另一种。
 //! 2. **落点在派发时重新计算。** 重新定位控件、读取当前包围盒、核对落点属于目标窗口，
 //!    三步缺一不可：观察时记录的包围盒在控件移动之后指向其他位置。按控件定位时，
 //!    落点位于控件所在的、目标窗口拥有的弹出窗口上，同样视为属于目标。落点所在的顶层窗口，
@@ -99,7 +99,7 @@ pub fn perform(
             return system_shortcut(&SystemSink, key, modifiers);
         }
     }
-    let delivery = delivery(window);
+    let delivery = delivery(window, action);
     match action {
         ActionSpec::Click { button, count } => pointer(window, aim, delivery, |sink, at| {
             click(sink, at.anchor, *button, *count)
@@ -524,14 +524,19 @@ pub fn note_foreground(window: i64, before: i64, action: &ActionSpec, attempt: A
     let Attempt::Called(mut outcome) = attempt else {
         return attempt;
     };
-    if !action.takes_input() || delivery(window) != Delivery::Messages {
+    if !action.takes_input() || delivery(window, action) != Delivery::Messages {
         return Attempt::Called(outcome);
     }
-    let after = foreground_window();
-    let owned = after != 0
-        && belongs_to(HWND(after as *mut c_void), HWND(window as *mut c_void));
-    outcome.reason = foreground_note(outcome.reason.take(), before != after && owned);
+    outcome.reason = foreground_note(outcome.reason.take(), raised(window, before));
     Attempt::Called(outcome)
+}
+
+/// 系统前台窗口自 `before` 之后转到了目标窗口或其拥有的弹出窗口上。
+pub fn raised(window: i64, before: i64) -> bool {
+    let after = foreground_window();
+    after != before
+        && after != 0
+        && belongs_to(HWND(after as *mut c_void), HWND(window as *mut c_void))
 }
 
 const FOREGROUND_TAKEN: &str = "foreground_taken: 目标应用在动作之后成为前台窗口";
@@ -683,7 +688,7 @@ pub fn prepare(window: i64, action: &ActionSpec) -> Result<(), String> {
     {
         return Ok(());
     }
-    if delivery(window) == Delivery::Messages {
+    if delivery(window, action) == Delivery::Messages {
         // SAFETY: 只读查询。
         if action.takes_point() && unsafe { IsIconic(HWND(window as *mut c_void)) }.as_bool() {
             return Err("window_minimized: 窗口已最小化，指针动作需要先恢复窗口".to_owned());

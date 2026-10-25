@@ -119,6 +119,7 @@ const RESULT: Record<keyof DesktopResultFrame, true> = {
   observation: true,
   observationError: true,
   blocking: true,
+  foreground: true,
 }
 const HOST_READY: Record<keyof DesktopHostReadyFrame, true> = {
   type: true,
@@ -327,7 +328,7 @@ test('bridge 按样例发出请求帧，并按样例认领结果帧', async () =
     const expected: DesktopCallResult = {
       dispatch: result.dispatch as DesktopCallResult['dispatch'],
       ...Object.fromEntries(
-        ['reason', 'observation', 'observationError', 'blocking']
+        ['reason', 'observation', 'observationError', 'blocking', 'foreground']
           .filter((k) => result[k] !== undefined)
           .map((k) => [k, result[k]]),
       ),

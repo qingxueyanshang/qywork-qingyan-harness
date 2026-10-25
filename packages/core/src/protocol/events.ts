@@ -643,7 +643,10 @@ export interface DesktopTargetEvent {
   target: {
     conversationId: string
     app: string
-    /** 本次占用已使用过前台接管；后台读取不会撤销该标记，释放时随目标一并清空。 */
+    /**
+     * 最近一次动作是否占用了用户的前台，取自宿主回执的 `foreground`。读取不改变该值，
+     * 更换目标应用时为假，释放时随目标一并清空。
+     */
     foreground: boolean
   } | null
 }

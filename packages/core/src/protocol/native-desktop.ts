@@ -714,6 +714,12 @@ export interface DesktopResultFrame {
    * 观察哪个窗口。
    */
   blocking?: DesktopBlockingWindow[]
+  /**
+   * 本次请求占用了用户的前台：经系统输入队列注入了指针或键盘事件，或使目标窗口成为前台窗口。
+   * 窗口消息与控件接口不计入。由宿主按实际投递方式上报，与 `dispatch` 相互独立：窗口准备已提升
+   * 窗口而输入被拒绝时为 `not_dispatched` 且本字段为真。缺席即为假。
+   */
+  foreground?: true
 }
 
 /**

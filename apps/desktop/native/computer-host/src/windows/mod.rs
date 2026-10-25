@@ -88,7 +88,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::backend::{
-    self, wait_loop, ActRequest, Attempt, Backend, CaptureRequest, Job, Outcome, Probe,
+    self, wait_loop, ActRequest, Acted, Attempt, Backend, CaptureRequest, Job, Outcome, Probe,
     WaitRequest, Watch,
 };
 use crate::geometry::{ScreenPoint, ScreenRect};
@@ -474,6 +474,22 @@ impl Backend for Uia {
     /// 连接超时才返回，再下一次才恢复正常**（实测 2010 ms 失败、随后成功）。本函数的调用即承担
     /// 这一代价，由 worker 在回执发出之后执行：留给调用方承担时，其下一次观察得到的
     /// 是一次本不应出现的超时失败。
+    /// 前台的判据是两项事实：本次请求经 `SendInput` 注入了事件，或系统前台窗口转到了目标窗口。
+    /// 窗口消息与控件接口不改变这两项；目标应用自行成为前台时由第二项计入。
+    ///
+    /// 不要改为按动作种类判定：一般窗口上的指针与键盘动作经窗口消息投递，不占用前台。
+    fn act_reported(&self, req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Acted {
+        let before = foreground::foreground_window();
+        let injected = sink::injected();
+        let (attempt, observed) = self.act(req, stop);
+        let foreground = sink::injected() != injected || foreground::raised(req.window, before);
+        Acted {
+            attempt,
+            observed,
+            foreground,
+        }
+    }
+
     fn drain_provider(&self, window: i64) {
         let _ = self.window_element(window, &self.nav_cache);
     }

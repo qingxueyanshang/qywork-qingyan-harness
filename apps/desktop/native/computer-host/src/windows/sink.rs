@@ -1,12 +1,13 @@
 //! 指针、按键与文字的实际派发端：窗口消息与 `SendInput`。整个进程只有此处向其他窗口发送输入。
 //!
-//! 投递方式按目标窗口选择（`delivery`），同一个窗口的指针、按键与文字只使用其中一种：
+//! 投递方式按目标窗口选择（`delivery`），同一个窗口的指针、按键与文字只使用其中一种，悬停除外：
 //!
 //! - 一般窗口：同步发送窗口消息给接收窗口（`MessageSink`、`MessageCharSink`）。消息不经过系统
 //!   输入队列，目标窗口不需要位于前台，用户的指针位置与键盘焦点不变。
 //! - 承载 UWP 或 XAML 内容的窗口：`SendInput` 进入系统输入队列（`SystemSink`、`SystemCharSink`），
 //!   要求目标窗口位于前台。这类窗口只从系统输入队列读取输入，窗口消息既不报错也不生效
 //!   （开始菜单搜索框与 Windows Terminal 实测如此）。
+//! - 悬停在任何窗口上都经 `SendInput` 移动真实指针，原因见 `delivery`。
 //!
 //! 窗口消息的三项约束：
 //!
@@ -23,6 +24,7 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use ::windows::core::BOOL;
@@ -55,7 +57,7 @@ use super::foreground::virtual_desktop;
 use super::keys::virtual_key;
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::input::{text_batches, Event, Sink};
-use crate::protocol::MouseButton;
+use crate::protocol::{ActionSpec, MouseButton};
 
 // ── 投递方式 ──
 
@@ -88,8 +90,15 @@ fn delivery_of<'a>(classes: impl IntoIterator<Item = &'a str>) -> Delivery {
     }
 }
 
-/// 目标窗口的投递方式。只读取窗口类名，不经过 UIA。
-pub fn delivery(window: i64) -> Delivery {
+/// 本次动作在目标窗口上的投递方式。只读取窗口类名，不经过 UIA。
+///
+/// 悬停一律经系统输入，不要改为窗口消息：工具包以 `TrackMouseEvent` 跟踪指针离开，真实指针不在
+/// 窗口上时系统立即生成 `WM_MOUSELEAVE`，窗口消息投递的悬停状态随即被撤销，只在悬停时出现的菜单与
+/// 按钮不会出现。真实指针停留在落点之后，同一位置上经窗口消息投递的点击仍在悬停状态下处理。
+pub fn delivery(window: i64, action: &ActionSpec) -> Delivery {
+    if matches!(action, ActionSpec::Hover) {
+        return Delivery::SystemInput;
+    }
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let classes = &mut *(lparam.0 as *mut Vec<String>);
         classes.push(class_of(hwnd));
@@ -186,6 +195,15 @@ fn to_absolute(point: ScreenPoint, desktop: ScreenRect) -> (i32, i32) {
     )
 }
 
+/// 经 `SendInput` 进入系统输入队列的事件累计数。动作请求前后各读一次（`injected`），差值不为零
+/// 即本次请求移动了用户的指针或占用了键盘。
+static INJECTED: AtomicU64 = AtomicU64::new(0);
+
+/// 至今经 `SendInput` 进入系统输入队列的事件数。
+pub fn injected() -> u64 {
+    INJECTED.load(Ordering::SeqCst)
+}
+
 /// 按键与指针的实际派发端。
 pub struct SystemSink;
 
@@ -200,7 +218,9 @@ impl Sink for SystemSink {
         };
         let size = i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0);
         // SAFETY: 切片与结构体尺寸都由本函数构造，调用期间不会被改动。
-        unsafe { SendInput(&inputs, size) }
+        let inserted = unsafe { SendInput(&inputs, size) };
+        INJECTED.fetch_add(u64::from(inserted), Ordering::SeqCst);
+        inserted
     }
 }
 
@@ -214,6 +234,7 @@ impl CharSink for SystemCharSink {
         let size = i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0);
         // SAFETY: 切片与结构体尺寸都由本函数构造，调用期间不会被改动。
         let inserted = unsafe { SendInput(&inputs, size) };
+        INJECTED.fetch_add(u64::from(inserted), Ordering::SeqCst);
         inserted / 2
     }
 }

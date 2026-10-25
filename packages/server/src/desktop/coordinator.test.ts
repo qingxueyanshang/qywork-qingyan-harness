@@ -16,8 +16,9 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DesktopSnapshot, DesktopWindowInfo } from '@qywork/agent'
+import type { DesktopActResult, DesktopSnapshot, DesktopWindowInfo } from '@qywork/agent'
 import type {
+  DesktopAction,
   DesktopNode,
   DesktopObservation,
   DesktopRequestFrame,
@@ -1701,56 +1702,72 @@ test('拖拽的像素偏移原样下发，控件终点必须在观察中', async
 })
 
 /**
- * 前台接管的读数按回执上调。
+ * 前台读数取宿主回执的 `foreground`，显示最近一次动作。
  *
- * 宿主拒绝派发时桌面未被操作，此时显示「正在前台操作」与事实不符；派发之后不再撤回，
- * 因为一次前台点击已将焦点留在目标应用上。
+ * 原始失败形状：一般窗口上的右键经窗口消息投递，宿主回执不带 `foreground`，界面仍显示「正在前台操作」。
  */
-test('前台接管的读数只在宿主实际派发之后上调', async () => {
+test('前台读数取宿主回执，窗口消息投递的动作显示为后台', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)
   const seen: DesktopTargetEvent['target'][] = []
   cleanups.push(desktop.onTargetChange((target) => seen.push(target)))
   const a = desktop.portFor('cv_a')
-  const first = await firstLook(host, a)
+  let current = (await firstLook(host, a)).observationId
   expect(seen.at(-1)).toEqual({ conversationId: 'cv_a', app: '记事本', foreground: false })
 
-  // 宿主拒绝派发：读数不变。
-  const refused = a.act({
-    windowId: 'dw_1',
-    observationId: first.observationId,
-    ref: 'e5',
-    action: { kind: 'click', button: 'left', count: 1 },
-  })
-  let frame = await host.next()
-  host.reply(frame, { dispatch: 'not_dispatched', reason: 'foreground_disabled: 前台操作未启用' })
-  expect((await refused).dispatch).toBe('not_dispatched')
+  const act = async (
+    action: DesktopAction,
+    reply: Partial<DesktopResultFrame>,
+  ): Promise<DesktopActResult> => {
+    const pending = a.act({ windowId: 'dw_1', observationId: current, ref: 'e5', action })
+    host.reply(await host.next(), reply)
+    const result = await pending
+    current = result.observation?.observationId ?? current
+    return result
+  }
+  const rightClick: DesktopAction = { kind: 'click', button: 'right', count: 1 }
+
+  // 窗口消息投递的右键：已派发，回执不带 foreground。
+  await act(rightClick, { dispatch: 'submitted', observation: subtree() })
   expect(desktop.target()?.foreground).toBe(false)
 
-  // 已派发：读数上调，之后的后台读取不将其回退。拒绝派发未改变观察记账，
-  // 因此继续使用第一份观察的编号。
-  const acting = a.act({
-    windowId: 'dw_1',
-    observationId: first.observationId,
-    ref: 'e5',
-    action: { kind: 'click', button: 'left', count: 1 },
-  })
-  frame = await host.next()
-  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
-  const done = await acting
-  expect(desktop.target()?.foreground).toBe(true)
+  // 系统输入投递的悬停：读数为前台。
+  await act({ kind: 'hover' }, { dispatch: 'submitted', foreground: true, observation: subtree() })
   expect(seen.at(-1)).toEqual({ conversationId: 'cv_a', app: '记事本', foreground: true })
 
-  const reading = a.act({
-    windowId: 'dw_1',
-    observationId: done.observation?.observationId ?? first.observationId,
-    ref: 'e5',
-    action: { kind: 'invoke' },
+  // 宿主拒绝派发且未占用前台：桌面未被操作，读数不变。
+  await act(rightClick, {
+    dispatch: 'not_dispatched',
+    reason: 'foreground_disabled: 前台操作未启用',
   })
-  frame = await host.next()
-  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
-  await reading
   expect(desktop.target()?.foreground).toBe(true)
+
+  // 读取同一应用不改变读数。
+  const reading = a.observe({ windowId: 'dw_1' })
+  const read = await host.next()
+  host.reply(read, treeOf(read))
+  current = (await reading).observationId
+  expect(desktop.target()?.foreground).toBe(true)
+
+  // 随后的后台动作把读数改回后台。
+  await act({ kind: 'invoke' }, { dispatch: 'submitted', observation: subtree() })
+  expect(desktop.target()?.foreground).toBe(false)
+
+  // 窗口准备已提升窗口而输入被拒绝：未派发，读数仍为前台。
+  await act(rightClick, {
+    dispatch: 'not_dispatched',
+    reason: 'occluded: 1,1',
+    foreground: true,
+    observation: subtree(),
+  })
+  expect(desktop.target()?.foreground).toBe(true)
+
+  // 更换目标应用：读取另一个应用时读数为后台。
+  const other = a.observe({ windowId: 'dw_2' })
+  const otherRead = await host.next()
+  host.reply(otherRead, treeOf(otherRead))
+  await other
+  expect(seen.at(-1)).toEqual({ conversationId: 'cv_a', app: '计算器', foreground: false })
 
   // 释放时与应用名一并清除。
   const releasing = a.release()

@@ -400,6 +400,12 @@
         { "window": 99, "pid": 901, "title": "身份查不到", "className": "Other", "appeared": false }
       ]
     },
+    "act_foreground": {
+      "id": "w1",
+      "dispatch": "submitted",
+      "observationError": "provider_timeout",
+      "foreground": true
+    },
     "rejected": {
       "id": "w1",
       "dispatch": "not_dispatched",
@@ -580,6 +586,16 @@
           "appeared": true
         }
       ]
+    },
+    "act_foreground": {
+      "type": "desktop.result",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "dispatch": "submitted",
+      "observationError": "provider_timeout",
+      "foreground": true
     },
     "rejected": {
       "type": "desktop.result",
