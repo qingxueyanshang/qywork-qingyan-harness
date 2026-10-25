@@ -62,13 +62,11 @@ function sse(rows: unknown[]) {
 for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
   test(`摘要请求的 ${mode} 经真实传输、写入数据库与导出后保留终态`, async () => {
     const controller = new AbortController()
-    let abortTimer: ReturnType<typeof setTimeout> | undefined
     const provider = Bun.serve({
       port: 0,
       async fetch(req) {
         await req.text()
         if (mode === 'abort') {
-          abortTimer = setTimeout(() => controller.abort(), 30)
           return new Response(
             new ReadableStream({
               start(c) {
@@ -118,8 +116,14 @@ for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
         profile: () => h.profile,
         signal: controller.signal,
       })
-      if (mode === 'success') expect(await summarize('生成摘要', 128, h.trace)).toBe('摘要正文')
-      else await expect(summarize('生成摘要', 128, h.trace)).rejects.toBeDefined()
+      const pending = summarize('生成摘要', 128, h.trace)
+      if (mode === 'abort') {
+        // 记下响应头之后再中止。不要改回在服务端收到请求时计时中止：负载高时中止先于响应头到达客户端，headersAt 为空。
+        while (!listProviderRequests(h.store, h.run.id)[0]?.headersAt) await Bun.sleep(5)
+        controller.abort()
+      }
+      if (mode === 'success') expect(await pending).toBe('摘要正文')
+      else await expect(pending).rejects.toBeDefined()
       const row = listProviderRequests(h.store, h.run.id)[0]!
       expect(row.configuration).toMatchObject({
         maxOutputTokens: 128,
@@ -151,7 +155,6 @@ for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
       expect(exported).not.toContain('test-key-123456')
       expect(JSON.parse(exported).runs[0].providerRequests[0].status).toBe(row.status)
     } finally {
-      if (abortTimer) clearTimeout(abortTimer)
       h.store.close()
       provider.stop(true)
     }
