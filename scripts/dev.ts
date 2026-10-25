@@ -248,7 +248,12 @@ process.stderr.write(
 
 supervisor = createReloadSupervisor({
   // 由服务端同时检查对话、子任务与画布生成，并阻止占位之后再启动任务。
-  busy: async () => !(await requestUpdateClaim(PORT, UPDATE_KEY, 'claim')).claimed,
+  // sidecar 已退出时直接判定空闲：已退出的进程上没有运行中的任务，而向它请求必然失败，
+  // 按「无法确认」重排会使源码修好之后也不再重启。
+  busy: async () =>
+    agent.exitCode === null &&
+    agent.signalCode === null &&
+    !(await requestUpdateClaim(PORT, UPDATE_KEY, 'claim')).claimed,
   restart: async () => {
     agent.kill()
     await agent.exited

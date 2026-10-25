@@ -1536,6 +1536,32 @@ test('未指定控件的键盘输入按窗口派发，请求帧中没有 ref 与
   expect((await acting).dispatch).toBe('submitted')
 })
 
+/** 原始失败形状：截取菜单窗口之后按 Escape，回执要求先观察。截图与观察都算看过该窗口。 */
+test('未指定控件的键盘输入要求本执行者观察或截取过该窗口，只截过图即可派发', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+  const press = () =>
+    a.act({ windowId: 'dw_1', action: { kind: 'press_key', key: 'escape', modifiers: [] } })
+
+  const before = host.received.length
+  await expect(press()).rejects.toThrow('本次执行没有观察或截取过该窗口')
+  await captured(host, a.captureImage({ windowId: 'dw_2', maxEdge: 1568 }))
+  await expect(press()).rejects.toThrow('本次执行没有观察或截取过该窗口')
+  await tick()
+  expect(host.received.length).toBe(before + 1)
+
+  await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
+  const acting = press()
+  const frame = await host.next()
+  expect(frame.op).toBe('act')
+  expect(frame.ref).toBeUndefined()
+  expect(frame.point).toBeUndefined()
+  host.reply(frame, { dispatch: 'submitted', ...treeOf(frame) })
+  expect((await acting).dispatch).toBe('submitted')
+})
+
 /** 全角标点与半角连字符不使文字经由第二条投递路径，请求帧与普通文字完全相同。 */
 test('含全角标点的文字按原文下发，没有第二种投递方式', async () => {
   const handle = fresh()

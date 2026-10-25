@@ -511,8 +511,7 @@ function checkPrecondition(element: DesktopElement, kind: DesktopActionKind): vo
   const offer = element.actions.find((a) => a.action === kind)
   if (!offer) {
     const usable = element.actions.length ? element.actions.map((a) => a.action).join(' / ') : '无'
-    const other =
-      WINDOW_TARGET_ACTIONS.includes(kind) && !isWindowRoot(element) ? ` · ${TO_FOCUS}` : ''
+    const other = WINDOW_TARGET_ACTIONS.includes(kind) ? ` · ${TO_FOCUS}` : ''
     throw new ArgError(
       `${kind} 未执行 · ${element.ref} 不支持 · 可用 ${usable}${other}`,
       'desktop_action_unsupported',
@@ -886,16 +885,14 @@ function typedReadback(
 }
 
 /**
- * 一次输入实际进入的控件：指定的控件；输入投递给窗口时，是本控件表中持有键盘焦点的
+ * 一次输入实际进入的控件：指定的控件；输入投递给窗口焦点时，是本控件表中持有键盘焦点的
  * 控件（取层级最深者）。未找到时缺失。
  */
 function inputField(
   table: DesktopElement[] | null,
   element: DesktopElement | undefined,
 ): DesktopElement | undefined {
-  if (!element) return undefined
-  if (!isWindowRoot(element)) return element
-  return table?.findLast((e) => e.focused === true && !isWindowRoot(e))
+  return element ?? table?.findLast((e) => e.focused === true && !isWindowRoot(e))
 }
 
 /** 回执中一个输入框的值，与 `valueLabel` 使用同一长度规则：超长时只输出字数，原文在控件表中。 */
@@ -942,10 +939,11 @@ function delivered(parts: DesktopResultParts): Pick<ToolOutcome, 'message' | 'da
 function actOutcome(
   ctx: ToolContext,
   action: DesktopAction,
-  ref: string,
+  aim: Aim,
   r: DesktopActResult,
   field?: DesktopElement,
 ): ToolOutcome {
+  const ref = aim.element?.ref ?? ''
   const receipt: Record<string, unknown> = { actionId: r.actionId, dispatch: r.dispatch }
   if (r.reason !== undefined) receipt.reason = r.reason
   if (r.dispatch === 'not_dispatched') {
@@ -975,9 +973,11 @@ function actOutcome(
     }
   }
   const unknown = r.dispatch === 'unknown'
+  if (aim.landing) receipt.landing = aim.landing
+  const landed = landingLine(action.kind, aim.landing)
   const lead = unknown
-    ? `${action.kind} 结果未确认 · ${r.reason ?? '调用已发出未确认'}`
-    : `${action.kind} 已提交${r.reason === undefined ? '' : ` · ${r.reason}`}`
+    ? `${action.kind} 结果未确认${landed} · ${r.reason ?? '调用已发出未确认'}`
+    : `${action.kind} 已提交${landed}${r.reason === undefined ? '' : ` · ${r.reason}`}`
   if (r.observation) {
     // 目标查找与回读核验按端口返回的完整控件表执行，不使用投递给模型的部分。
     const target = r.observation.elements.find((e) => e.ref === ref)
@@ -1588,7 +1588,7 @@ export const desktopActTool: ToolSpec = {
       const { aim, action } = planAct(table, kind, args, TARGET_PARAMS, desktop.foregroundEnabled())
       const field = writes(action) ? inputField(table, aim.element) : undefined
       const r = await send(() => desktop.act({ windowId, ...aim.input, action }))
-      const outcome = actOutcome(ctx, action, aim.element?.ref ?? '', r, field)
+      const outcome = actOutcome(ctx, action, aim, r, field)
       if (aim.input.at === undefined) return outcome
       const refresh =
         r.dispatch !== 'not_dispatched' || r.observation !== null || !desktop.elements(windowId)
@@ -1599,25 +1599,51 @@ export const desktopActTool: ToolSpec = {
 /**
  * 一次动作的作用目标，以及回执中对该目标的称呼。
  *
- * `input` 中 `ref` 与 `at` 互斥，两者都不带时目标是窗口本身。`element` 是解析得到的
- * 控件，按图定位时缺失：回读核验与后置条件都依赖它，缺少时无法判定。
+ * `input` 中 `ref` 与 `at` 互斥，两者都不带时目标是窗口焦点。`element` 是解析得到的
+ * 控件，按图定位与投递给窗口焦点时缺失：回读核验与后置条件都依赖它，缺少时无法判定。
  */
 interface Aim {
   input: { ref?: string; at?: DesktopImagePoint }
   element?: DesktopElement
   label: string
+  landing?: Landing
+}
+
+/**
+ * 按控件执行的指针动作的落点（屏幕物理像素）与该控件的尺寸。
+ *
+ * 落点取观察中包围盒的中心，与宿主的取点规则相同。控件比其中的可见内容宽时中心可能是空白处，
+ * 回执写明尺寸，据此判断是否改为按图像坐标定位。控件没有包围盒时缺省。
+ */
+interface Landing {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+function landingOf(e: DesktopElement): Landing | undefined {
+  if (!e.rect) return undefined
+  const { x, y, width, height } = e.rect
+  return { x: x + Math.floor(width / 2), y: y + Math.floor(height / 2), width, height }
+}
+
+function landingLine(kind: DesktopActionKind, landing: Landing | undefined): string {
+  if (!landing) return ''
+  const point = kind === 'drag' ? '起点' : '落点'
+  return ` · ${point} ${landing.x},${landing.y}（控件 ${landing.width}×${landing.height} 的中心）`
 }
 
 /**
  * 解析本次动作的目标并组装动作。单动作与序列的每一步共用此实现。
  *
  * 三种指定方式：`imageRef` 加 `imageX` / `imageY` 表示上一张图像中的一个点，只有指针动作接受；
- * 键盘输入未指定控件时目标是窗口根节点：指定根节点与不指定控件含义相同，在此处合成为
+ * 键盘输入未指定控件时投递给窗口焦点：指定窗口根与不指定控件含义相同，在此处合成为
  * 同一种请求，两种写法各发一种帧会形成两套判定；其余按 `ref` / `automationId` / `name`
  * 定位，并在派发前判定一次前置条件。
  *
- * 按图定位时不判定前置条件：此时没有控件，落点是否属于目标窗口、前台操作是否开启，都由宿主在
- * 派发前核对。
+ * 按图定位与投递给窗口焦点时不判定前置条件：此时没有控件，落点是否属于目标窗口、窗口能否接收输入、
+ * 前台操作是否开启，都由宿主在派发前核对。
  */
 function planAct(
   table: DesktopElement[] | null,
@@ -1657,22 +1683,49 @@ function planAct(
     }
   }
   const toWindow = WINDOW_TARGET_ACTIONS.includes(kind)
-  const onWindow = toWindow || WINDOW_ACTIONS.includes(kind)
-  const element = onWindow && !targetGiven(args) ? windowRoot(table) : resolveTarget(table, args)
+  if (toWindow && !targetGiven(args)) return toFocus(kind, args, params)
+  const element =
+    WINDOW_ACTIONS.includes(kind) && !targetGiven(args)
+      ? windowRoot(table)
+      : resolveTarget(table, args)
+  if (toWindow && isWindowRoot(element)) return toFocus(kind, args, params)
   checkPrecondition(element, kind)
   const action = buildAction(table ?? [], element, kind, args, params)
-  const byWindow = toWindow && isWindowRoot(element)
+  const landing = POINTER_ACTIONS.includes(kind) ? landingOf(element) : undefined
   return {
-    aim: { input: byWindow ? {} : { ref: element.ref }, element, label: element.ref },
+    aim: {
+      input: { ref: element.ref },
+      element,
+      label: element.ref,
+      ...(landing ? { landing } : {}),
+    },
     action,
   }
 }
 
 /**
- * 按图定位时传给 `buildAction` 的占位控件。
+ * 投递给窗口焦点的键盘输入。
  *
- * 它不代表任何真实控件：按图定位时没有控件表，而 `buildAction` 的值域与目标状态判定
- * 只适用于按控件定位的动作，指针动作不读取其中任何字段。
+ * 不按控件表判定前置条件，也不要求控件表：只截过图的窗口同样可以按键。本执行者是否观察或截取过
+ * 该窗口由协调器核对，窗口能否接收输入由宿主在派发前判定；在此处按窗口根判定等于第三份准入，
+ * 且没有控件表时拒绝一次宿主会接受的请求。
+ */
+function toFocus(
+  kind: DesktopActionKind,
+  args: Record<string, unknown>,
+  params: readonly string[],
+): { aim: Aim; action: DesktopAction } {
+  return {
+    aim: { input: {}, label: '窗口焦点' },
+    action: buildAction([], pointTarget(), kind, args, params),
+  }
+}
+
+/**
+ * 按图定位与投递给窗口焦点时传给 `buildAction` 的占位控件。
+ *
+ * 它不代表任何真实控件：这两种请求不按控件表解析目标，而 `buildAction` 的值域与目标状态判定
+ * 只适用于按控件定位的动作，指针与键盘动作不读取其中任何字段。
  */
 function pointTarget(): DesktopElement {
   return {
@@ -1717,6 +1770,8 @@ interface StepReceipt {
   expect?: { until: Expectation; met: boolean }
   /** 写入类步骤的输入框及其在输入前后的值。 */
   input?: { ref: string; before?: string; after?: string }
+  /** 按控件执行的指针步骤的落点与控件尺寸，只在动作已发出时记录。 */
+  landing?: Landing
   durationMs: number
 }
 
@@ -1869,6 +1924,7 @@ function stepLine(r: StepReceipt): string {
       : ` · 后置条件 ${r.expect.until} ${r.expect.met ? '已满足' : '未满足'}`
   return (
     `${r.index} ${r.action} ${r.target} ${fact}` +
+    landingLine(r.action, r.landing) +
     (r.reason === undefined ? '' : ` · ${r.reason}`) +
     (r.input ? fieldLine(r.input.ref, r.input.before, r.input.after) : '') +
     expect
@@ -2069,6 +2125,7 @@ async function runStep(
     actionId: result.actionId,
     dispatch: result.dispatch,
     ...(result.reason === undefined ? {} : { reason: result.reason }),
+    ...(aim.landing && result.dispatch !== 'not_dispatched' ? { landing: aim.landing } : {}),
     durationMs: Date.now() - started,
   }
   if (result.dispatch === 'not_dispatched') {
