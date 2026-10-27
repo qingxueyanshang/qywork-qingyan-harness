@@ -240,6 +240,8 @@ export interface VideoMeta {
   bytes: number
   seconds: number | null
   size: ImageSize | null
+  /** 容器中有音轨。理解声音的模型按时长另计音频（`VideoRule.audioPerSecond`）。 */
+  audio: boolean
 }
 
 /**

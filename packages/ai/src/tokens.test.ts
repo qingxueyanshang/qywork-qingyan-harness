@@ -45,7 +45,7 @@ const measured = JSON.parse(
       kind: ProviderKind
       real: Record<string, number>
       images: { width: number; height: number; tokens: number }[]
-      videos?: { width: number; height: number; seconds: number; tokens: number }[]
+      videos?: { width: number; height: number; seconds: number; audio: boolean; tokens: number }[]
     }
   >
 }
@@ -302,8 +302,8 @@ describe('视频', () => {
     let checked = 0
     for (const [id, { kind, videos }] of Object.entries(measured.models)) {
       const density = lookupModel(id, kind).density
-      for (const { width, height, seconds, tokens } of videos ?? []) {
-        const meta = { bytes: 1, seconds, size: { width, height } }
+      for (const { width, height, seconds, audio, tokens } of videos ?? []) {
+        const meta = { bytes: 1, seconds, size: { width, height }, audio }
         const ratio = estimateVideo(meta, density) / tokens
         const low = estimateVideo(meta, D) / tokens
         expect({

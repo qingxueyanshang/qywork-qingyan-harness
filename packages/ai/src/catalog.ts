@@ -207,7 +207,8 @@ export interface Vendor {
  * 各 tokenizer 的实测系数（2026-10-27，方法见 `tokens.ts` 的 `TokenDensity`）。每档 30–33 段样本，
  * 留一交叉验证的中位偏差 1.9%–3.0%，90% 的样本在 14% 以内。测得相同系数的型号共用一档；
  * 未实测的型号使用 `DEFAULT_DENSITY`，不按名称推断为同一档。不接受视频的档 `video` 为 null；
- * 视频规则按合成视频与生成的成片实测（各约 40 段），中位偏差 0.3% 以内，最大 1.1%（GLM）与 10.4%（Qwen，恰好半秒的时长）。
+ * 视频规则按合成视频与生成的成片实测（GLM、Qwen Flash、Omni 各约 40 段），中位偏差 0.3% 以内，最大 1.1%（GLM），
+ * 两档 Qwen 约 10%（恰好半秒的时长）。
  */
 
 /** deepseek-flash 与 deepseek-v4-pro。 */
@@ -316,7 +317,38 @@ const QWEN_3_8_FLASH_DENSITY: TokenDensity = {
     framesPerSecond: 1,
     maxFrames: Number.POSITIVE_INFINITY,
     frame: { patch: 32, rounding: 'round', maxPixels: 655_360, base: 10 },
+    maxTotalPixels: Number.POSITIVE_INFINITY,
     base: 0,
+    audioPerSecond: 0,
+    maxTokens: Number.POSITIVE_INFINITY,
+    accepts: ANY_VIDEO,
+  },
+}
+
+/** qwen3.8-omni-flash。文字与图片与 qwen3.8-flash 同一分词器，每条消息的开销不同。 */
+const QWEN_3_8_OMNI_FLASH_DENSITY: TokenDensity = {
+  cjk: 0.671,
+  rareCjk: 1.867,
+  word: 0,
+  letter: 0.131,
+  caseBreak: 0.101,
+  digit: 0.996,
+  punctRun: 1.305,
+  punct: 0.078,
+  space: 0.282,
+  other: 1.163,
+  message: 4.32,
+  image: { pixelsPerToken: 1030, minPixels: 0, maxPixels: 2_508_000, base: 2 },
+  // 每秒一组，组数四舍五入，最多 1024 组；每组按 32 像素格取最近整数计，没有时间标记。全部组合计约 1.84 亿像素
+  // （180,000 × 32 × 32）：720p 的 300 秒每组缩为 32 × 18 格、600 秒缩为 23 × 12 格。每段另加 7；
+  // 有音轨时每秒另计 7，与画面尺寸无关（成片 4–153 秒实测）。
+  video: {
+    framesPerSecond: 1,
+    maxFrames: 1024,
+    frame: { patch: 32, rounding: 'round', maxPixels: 655_360, base: 0 },
+    maxTotalPixels: 184_320_000,
+    base: 7,
+    audioPerSecond: 7,
     maxTokens: Number.POSITIVE_INFINITY,
     accepts: ANY_VIDEO,
   },
@@ -342,7 +374,9 @@ const GLM_5_3_FLASHX_DENSITY: TokenDensity = {
     framesPerSecond: 1,
     maxFrames: 1040,
     frame: { patch: 28, rounding: 'ceil', maxPixels: Number.POSITIVE_INFINITY, base: 6 },
+    maxTotalPixels: Number.POSITIVE_INFINITY,
     base: 2,
+    audioPerSecond: 0,
     maxTokens: 205_870,
     accepts: ANY_VIDEO,
   },
@@ -1637,12 +1671,13 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...effort(['low', 'medium', 'xhigh']),
       id: 'qwen3.8-omni-flash',
       displayName: 'Qwen3.8 Omni Flash',
+      density: QWEN_3_8_OMNI_FLASH_DENSITY,
       vendor: 'alibaba',
       // 当前目录只声明已接通的图片与视频输入；音频输入由模型支持，但本协议适配器尚未接通。
       vision: true,
       video: true,
-      // 全模态文档写明视频最长 2 小时，未写最短时长；实测 0.5 秒与 7300 秒被拒，1.9 秒与 7100 秒正常。
-      videoSeconds: { min: 2, max: 7200 },
+      // 全模态文档写明视频最长 2 小时，未写最短时长；实测 0.5 秒与 7300 秒被拒，1 秒与 7100 秒正常。
+      videoSeconds: { min: 1, max: 7200 },
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(0.8, 2.7, 0.1),

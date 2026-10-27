@@ -89,6 +89,7 @@ export function videoMetaOf(abs: string): VideoMeta | null {
       bytes: info.size,
       seconds: movie?.duration && movie.duration > 0 ? movie.duration : null,
       size: movie?.pixels ? { width: movie.pixels.w, height: movie.pixels.h } : null,
+      audio: movie?.audio === true,
     }
     if (cache.size >= CACHE_LIMIT) {
       const oldest = cache.keys().next().value

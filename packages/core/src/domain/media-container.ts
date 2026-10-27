@@ -34,10 +34,11 @@ function* children(parent: Uint8Array, type: string): Generator<Uint8Array> {
   }
 }
 
-/** moov 的 mvhd 保存时长，第一条宽高非零的 trak/tkhd 保存画面尺寸。 */
+/** moov 的 mvhd 保存时长，第一条宽高非零的 trak/tkhd 保存画面尺寸，mdia/hdlr 类型为 soun 的 trak 是音轨。 */
 export function movieMetadataOf(moov: Uint8Array): {
   duration: number | null
   pixels: CanvasPixels | null
+  audio: boolean
 } {
   let duration: number | null = null
   for (const mvhd of children(moov, 'mvhd')) {
@@ -51,14 +52,26 @@ export function movieMetadataOf(moov: Uint8Array): {
     break
   }
   let pixels: CanvasPixels | null = null
+  let audio = false
   for (const trak of children(moov, 'trak')) {
+    if (!audio) audio = isSoundTrack(trak)
+    if (pixels) continue
     for (const tkhd of children(trak, 'tkhd')) {
       pixels = trackPixels(tkhd)
       if (pixels) break
     }
-    if (pixels) break
   }
-  return { duration, pixels }
+  return { duration, pixels, audio }
+}
+
+/** hdlr 载荷：版本与标志 4 字节、pre_defined 4 字节，其后 4 字节是轨道类型。 */
+function isSoundTrack(trak: Uint8Array): boolean {
+  for (const mdia of children(trak, 'mdia')) {
+    for (const hdlr of children(mdia, 'hdlr')) {
+      return hdlr.length >= 12 && String.fromCharCode(...hdlr.subarray(8, 12)) === 'soun'
+    }
+  }
+  return false
 }
 
 /** 从完整 MP4 / MOV 文件中取得索引；moov 位于文件末尾时同样可读取。 */
