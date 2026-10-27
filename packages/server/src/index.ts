@@ -7,6 +7,8 @@
 
 // 局域网候选地址：CLI 的 `qy serve` 要把它们连同二维码一起输出
 export { lanCandidates } from './pairing.ts'
+// 当前平台的系统电源接口；CLI 的 `qy serve` 创建后传给 serve
+export { systemPowerPort } from './power.ts'
 // 桌面外壳异常重启后的单次退出信息；CLI 解析后交给 serve 的恢复路径。
 export { processExitObservationFromEnv } from './process-exit.ts'
 // 服务入口
