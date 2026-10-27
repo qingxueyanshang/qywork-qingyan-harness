@@ -5,9 +5,7 @@
  * 40 张平均约 55 KB，标题与正文仍可辨认。同一输入两次生成的字节相同。
  */
 import { createHash } from 'node:crypto'
-
-/** 缩略图的长边像素，写入发给模型的说明。 */
-export const THUMBNAIL_EDGE = 768
+import { THUMBNAIL_EDGE } from '@qywork/ai'
 
 /**
  * 换出预算中每张缩略图计入的字节数，原图更小时按原图计。

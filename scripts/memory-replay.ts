@@ -423,6 +423,7 @@ async function replay(
   const projection = new RuntimeCompaction({
     store,
     conversationId: p.conversationId as ConversationId,
+    workspaceRoot: process.cwd(),
     messageIdUpperBound: bound,
     summarize: async () => null,
     preserveAssistantReasoning,

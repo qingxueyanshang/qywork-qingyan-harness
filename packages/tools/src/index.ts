@@ -39,6 +39,7 @@ export {
   downscaleNote,
   type ImageRegion,
   shrinkImage,
+  shrunkSize,
   ZOOM_MAX,
   type ZoomedImage,
   zoomImage,

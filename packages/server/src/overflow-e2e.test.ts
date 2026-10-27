@@ -165,6 +165,7 @@ test('容量拒绝 → 识别凭证 → 压缩一次 → 无法缩小时以 cont
   const inner = new RuntimeCompaction({
     store,
     conversationId: conv.id,
+    workspaceRoot: process.cwd(),
     messageIdUpperBound: null,
     summarize: makeSummarizer({
       profile: () => profile,

@@ -195,6 +195,7 @@ async function readThrough() {
   const compaction = new RuntimeCompaction({
     store,
     conversationId: conv.id,
+    workspaceRoot: process.cwd(),
     messageIdUpperBound: ask.id as MessageId,
     summarize,
   })
@@ -397,6 +398,7 @@ async function readScript(window: number, files: { name: string; tokens: number 
   const port = new RuntimeCompaction({
     store,
     conversationId: conv.id,
+    workspaceRoot: process.cwd(),
     messageIdUpperBound: ask.id as MessageId,
     summarize: async () => '已读过前面的文件。',
   })

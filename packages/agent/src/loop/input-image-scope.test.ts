@@ -293,7 +293,11 @@ function storedShot(
     toolCallId: callId,
     content: [
       { type: 'text', text: envelopeOf(callId) },
-      { type: 'image', mimeType: 'image/png', source: { kind: 'resource', resourceId, bytes } },
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        source: { kind: 'resource', resourceId, bytes, size: null },
+      },
     ],
     _group: 'executionRecords',
     _batch: batchId,

@@ -716,6 +716,7 @@ export class Session {
     const compaction = new RuntimeCompaction({
       store,
       conversationId,
+      workspaceRoot: this.opts.workspaceRoot,
       messageIdUpperBound: run.messageIdUpperBound,
       summarize: makeSummarizer({
         profile: () => this.resolveProfile(target),

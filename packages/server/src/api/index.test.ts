@@ -1804,6 +1804,7 @@ describe('会话历史分页接口', () => {
         mime: 'image/png',
         resourceId: expect.any(String),
         bytes: Buffer.from(bytes, 'base64').byteLength,
+        size: null,
       },
     ])
   })

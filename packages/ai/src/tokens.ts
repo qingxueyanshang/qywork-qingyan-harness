@@ -12,12 +12,13 @@
  *   中文约 1.4 字/token，按字符数相除的算法无法同时适用：2026-10-27 用 31 段真实样本留一交叉验证，
  *   该算法在英文为主的思考正文上偏差 46%，词法计数的中位偏差 2%–4%。
  * - **英文单词与字母分别计数。** 只按单词计数时，一段很长的连续字母只计为一个单词，严重低估。
- * - **图片与文档按固定值计算，不按 base64 长度**：一张 1 MB 的图片约为 137 万个
- *   base64 字符，按字符估算为数十万 token，而 provider 实际只计数千。
+ * - **图片按宽高与该模型的图片规则计算（`estimateImage`），不按 base64 长度**：一张 1 MB 的图片约为
+ *   137 万个 base64 字符，按字符估算为数十万 token，而 provider 实际只计数百至数千。
  * - **tool call 的参数须单独计算**：`write_file` 的整份文件正文位于 arguments 中，
  *   只计算 `m.content` 时该部分为 0。
  */
 
+import { type ImageSize, imageSizeOf } from '@qywork/core'
 import { COMMON_HANZI } from './common-hanzi.ts'
 import type { ChatRequest, ContentBlock, ToolSchema, WireMessage } from './types.ts'
 
@@ -78,6 +79,20 @@ export interface TokenDensity {
   other: number
   /** 每条消息的固定协议开销：role、分隔符、消息骨架。 */
   message: number
+  image: ImageRule
+}
+
+/**
+ * 一张图片的计数规则：`base + clamp(宽 × 高, minPixels, maxPixels) / pixelsPerToken`。
+ *
+ * 各家先把图片缩放到像素上限之内再按像素块计数；按张固定计数的型号表现为 `minPixels` 与 `maxPixels` 相近。
+ * 标定方法：同一张图在一条消息中发一张与两张，相减得到一张的 token 数，按 8 种尺寸（256×256 至 3840×2160）拟合。
+ */
+export interface ImageRule {
+  pixelsPerToken: number
+  minPixels: number
+  maxPixels: number
+  base: number
 }
 
 /**
@@ -99,15 +114,61 @@ export const DEFAULT_DENSITY: TokenDensity = {
   space: 0.82,
   other: 1.3,
   message: 6.4,
+  // 每 token 像素取最小、像素上限取最大、固定开销取按张计数的型号（每张约 1350），对每个已测型号都不偏低。
+  image: { pixelsPerToken: 770, minPixels: 0, maxPixels: 8_600_000, base: 1350 },
 }
 
+/** 缩略图的长边像素：`agent` 的 `thumbnailOf` 按它缩小，估算按它换算缩略图的尺寸。 */
+export const THUMBNAIL_EDGE = 768
+
+/** 一张图片计为多少 token。宽高未知时按该规则的像素上限计：只能偏高，不能偏低。 */
+export function estimateImage(size: ImageSize | null, d: TokenDensity): number {
+  const r = d.image
+  const pixels =
+    size === null
+      ? r.maxPixels
+      : Math.min(r.maxPixels, Math.max(r.minPixels, size.width * size.height))
+  return Math.ceil(r.base + pixels / r.pixelsPerToken)
+}
+
+/** 依次尝试解码的 base64 前缀长度：48 B、4 KB、64 KB、256 KB，均为 4 的倍数。 */
+const BASE64_HEADS = [64, 5464, 87_384, 349_528]
+const SIZE_CACHE_LIMIT = 512
+const sizeCache = new Map<string, ImageSize | null>()
+
 /**
- * 一张图片或一份文档计为多少 token。
- *
- * 按 PDF 取值（一份 1 MB 的 PDF 实际约 2000），只按图片估算会偏小一半。
- * 取值偏高：该值用于压缩判断，低估会导致应压缩时未压缩，随后超出窗口。
+ * base64 图片的像素宽高，只解码文件头。JPEG 的尺寸位于第一个 SOF 段，其前可能有带缩略图的 EXIF，
+ * 因此依次解码更长的前缀直至读出尺寸。按 base64 字符串缓存：估算按消息反复调用，同一张图只解析一次。
  */
-export const MEDIA_TOKENS = 2000
+export function imageSizeOfBase64(data: string): ImageSize | null {
+  const hit = sizeCache.get(data)
+  if (hit !== undefined) return hit
+  let size: ImageSize | null = null
+  for (const n of BASE64_HEADS) {
+    size = imageSizeOf(Buffer.from(data.slice(0, n), 'base64'))
+    if (size || n >= data.length) break
+  }
+  if (sizeCache.size >= SIZE_CACHE_LIMIT) {
+    const oldest = sizeCache.keys().next().value
+    if (oldest !== undefined) sizeCache.delete(oldest)
+  }
+  sizeCache.set(data, size)
+  return size
+}
+
+/** 图像块的像素宽高：base64 读文件头，正文库引用取入库时记录的尺寸，缩略图按 `THUMBNAIL_EDGE` 缩小。 */
+function imageBlockSize(block: Extract<ContentBlock, { type: 'image' }>): ImageSize | null {
+  const s = block.source
+  const size =
+    s.kind === 'base64' ? imageSizeOfBase64(s.data) : s.kind === 'resource' ? s.size : null
+  if (!size || !block.thumbnail) return size
+  // 与 `thumbnailOf` 的缩放算式相同。
+  const scale = Math.min(1, THUMBNAIL_EDGE / Math.max(size.width, size.height))
+  return {
+    width: Math.max(1, Math.round(size.width * scale)),
+    height: Math.max(1, Math.round(size.height * scale)),
+  }
+}
 
 const NONE = 0
 const LETTER = 1
@@ -206,7 +267,7 @@ export function estimateJson(value: unknown, d: TokenDensity): number {
 /**
  * 一条消息的内容块。
  *
- * 图片与文档按固定值计算，不得经由 JSON 序列化估算：按 base64 长度估算正是暴涨的来源。
+ * 图片按宽高计算（`estimateImage`），不得经由 JSON 序列化估算：按 base64 长度估算正是暴涨的来源。
  * 视频计为 0：其占用随时长与抽帧规则变化，本地没有可用的算法，只有接口回报的真值可信，
  * 读数一侧据 `videoBlocksOf` 标注「未计」（`agent` 的 `contextEvent`）。
  */
@@ -219,7 +280,7 @@ export function estimateContent(
   let total = 0
   for (const block of content) {
     if (block.type === 'text') total += count(block.text, d)
-    else if (block.type === 'image') total += MEDIA_TOKENS
+    else if (block.type === 'image') total += estimateImage(imageBlockSize(block), d)
   }
   return total
 }

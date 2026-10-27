@@ -14,7 +14,49 @@
         "中文文档": 3388,
         "生僻字": 2812,
         "其他字符": 1053
-      }
+      },
+      "images": [
+        {
+          "width": 1024,
+          "height": 768,
+          "tokens": 497
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "tokens": 579
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "tokens": 969
+        },
+        {
+          "width": 2560,
+          "height": 1440,
+          "tokens": 969
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "tokens": 185
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "tokens": 969
+        },
+        {
+          "width": 512,
+          "height": 512,
+          "tokens": 185
+        },
+        {
+          "width": 800,
+          "height": 1600,
+          "tokens": 822
+        }
+      ]
     },
     "claude-opus-5-5": {
       "kind": "anthropic_messages",
@@ -23,7 +65,49 @@
         "中文文档": 5516,
         "生僻字": 3153,
         "其他字符": 1392
-      }
+      },
+      "images": [
+        {
+          "width": 1024,
+          "height": 768,
+          "tokens": 1039
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "tokens": 1199
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "tokens": 2694
+        },
+        {
+          "width": 2560,
+          "height": 1440,
+          "tokens": 4787
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "tokens": 103
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "tokens": 4787
+        },
+        {
+          "width": 512,
+          "height": 512,
+          "tokens": 364
+        },
+        {
+          "width": 800,
+          "height": 1600,
+          "tokens": 1685
+        }
+      ]
     },
     "gpt-6-astra": {
       "kind": "openai_responses",
@@ -32,7 +116,49 @@
         "中文文档": 3977,
         "生僻字": 3003,
         "其他字符": 1093
-      }
+      },
+      "images": [
+        {
+          "width": 1024,
+          "height": 768,
+          "tokens": 922
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "tokens": 1105
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "tokens": 2449
+        },
+        {
+          "width": 2560,
+          "height": 1440,
+          "tokens": 4321
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "tokens": 77
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "tokens": 9793
+        },
+        {
+          "width": 512,
+          "height": 512,
+          "tokens": 308
+        },
+        {
+          "width": 800,
+          "height": 1600,
+          "tokens": 1501
+        }
+      ]
     },
     "gemini-4-argon": {
       "kind": "openai_responses",
@@ -41,7 +167,49 @@
         "中文文档": 3946,
         "生僻字": 3817,
         "其他字符": 838
-      }
+      },
+      "images": [
+        {
+          "width": 1024,
+          "height": 768,
+          "tokens": 1308
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "tokens": 1351
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "tokens": 1351
+        },
+        {
+          "width": 2560,
+          "height": 1440,
+          "tokens": 1351
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "tokens": 1338
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "tokens": 1351
+        },
+        {
+          "width": 512,
+          "height": 512,
+          "tokens": 1338
+        },
+        {
+          "width": 800,
+          "height": 1600,
+          "tokens": 1328
+        }
+      ]
     },
     "grok-4.7": {
       "kind": "openai_chat_completions",
@@ -50,7 +218,49 @@
         "中文文档": 3691,
         "生僻字": 2477,
         "其他字符": 914
-      }
+      },
+      "images": [
+        {
+          "width": 1024,
+          "height": 768,
+          "tokens": 807
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "tokens": 959
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "tokens": 2079
+        },
+        {
+          "width": 2560,
+          "height": 1440,
+          "tokens": 2444
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "tokens": 103
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "tokens": 2444
+        },
+        {
+          "width": 512,
+          "height": 512,
+          "tokens": 295
+        },
+        {
+          "width": 800,
+          "height": 1600,
+          "tokens": 1289
+        }
+      ]
     },
     "qwen3.8-flash": {
       "kind": "openai_chat_completions",
@@ -59,7 +269,49 @@
         "中文文档": 3453,
         "生僻字": 2800,
         "其他字符": 1198
-      }
+      },
+      "images": [
+        {
+          "width": 1024,
+          "height": 768,
+          "tokens": 770
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "tokens": 882
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "tokens": 2042
+        },
+        {
+          "width": 2560,
+          "height": 1440,
+          "tokens": 2481
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "tokens": 66
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "tokens": 2481
+        },
+        {
+          "width": 512,
+          "height": 512,
+          "tokens": 258
+        },
+        {
+          "width": 800,
+          "height": 1600,
+          "tokens": 1252
+        }
+      ]
     },
     "glm-5.3-flashx": {
       "kind": "openai_chat_completions",
@@ -68,7 +320,49 @@
         "中文文档": 3455,
         "生僻字": 2914,
         "其他字符": 1180
-      }
+      },
+      "images": [
+        {
+          "width": 1024,
+          "height": 768,
+          "tokens": 1038
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "tokens": 1198
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "tokens": 2693
+        },
+        {
+          "width": 2560,
+          "height": 1440,
+          "tokens": 4786
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "tokens": 102
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "tokens": 7975
+        },
+        {
+          "width": 512,
+          "height": 512,
+          "tokens": 363
+        },
+        {
+          "width": 800,
+          "height": 1600,
+          "tokens": 1684
+        }
+      ]
     }
   }
 }

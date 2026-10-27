@@ -217,6 +217,7 @@ const DEEPSEEK_DENSITY: TokenDensity = {
   space: 0.383,
   other: 1.004,
   message: 1.41,
+  image: { pixelsPerToken: 1620, minPixels: 267_000, maxPixels: 1_565_000, base: 19 },
 }
 
 /** claude-opus-5-5。中文约为其他各家的 1.5 倍。 */
@@ -232,6 +233,7 @@ const CLAUDE_OPUS_5_5_DENSITY: TokenDensity = {
   space: 0.812,
   other: 1.29,
   message: 1.87,
+  image: { pixelsPerToken: 770, minPixels: 0, maxPixels: 3_660_000, base: 18 },
 }
 
 /** gpt-6-astra 与 gpt-6.1-sol。 */
@@ -247,6 +249,7 @@ const GPT_6_DENSITY: TokenDensity = {
   space: 0.388,
   other: 1.047,
   message: 4.42,
+  image: { pixelsPerToken: 845, minPixels: 0, maxPixels: 8_555_000, base: 0 },
 }
 
 /** gemini-4-argon。 */
@@ -262,6 +265,7 @@ const GEMINI_4_ARGON_DENSITY: TokenDensity = {
   space: 0.347,
   other: 0.794,
   message: 4.38,
+  image: { pixelsPerToken: 2530, minPixels: 796_000, maxPixels: 847_000, base: 1012 },
 }
 
 /** grok-4.6 与 grok-4.7。 */
@@ -277,6 +281,7 @@ const GROK_4_DENSITY: TokenDensity = {
   space: 0.431,
   other: 0.86,
   message: 3.46,
+  image: { pixelsPerToken: 1005, minPixels: 71_000, maxPixels: 2_392_000, base: 33 },
 }
 
 /** qwen3.8-flash。 */
@@ -292,6 +297,7 @@ const QWEN_3_8_FLASH_DENSITY: TokenDensity = {
   space: 0.279,
   other: 1.164,
   message: 6.32,
+  image: { pixelsPerToken: 1030, minPixels: 0, maxPixels: 2_508_000, base: 2 },
 }
 
 /** glm-5.3-flashx。 */
@@ -307,6 +313,7 @@ const GLM_5_3_FLASHX_DENSITY: TokenDensity = {
   space: 0.47,
   other: 1.12,
   message: 1.5,
+  image: { pixelsPerToken: 770, minPixels: 0, maxPixels: 6_147_000, base: 17 },
 }
 
 export const VENDORS: readonly Vendor[] = [

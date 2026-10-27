@@ -8,6 +8,8 @@
  * `stepStamp` 生成标记，标记形式不同时会按两条不同的边界切分同一段内容。
  */
 
+import { closeSync, openSync, readSync } from 'node:fs'
+import { isAbsolute, resolve } from 'node:path'
 import type {
   CompactionAction,
   CompactionInput,
@@ -28,16 +30,17 @@ import {
   unitKey,
 } from '@qywork/agent'
 import type { TokenDensity, WireMessage } from '@qywork/ai'
-import { estimateMessages, MEDIA_TOKENS } from '@qywork/ai'
+import { estimateImage, estimateMessages } from '@qywork/ai'
 import type {
   ActionKind,
+  Attachment,
   CompactionCut,
   CompactionManifest,
   ConversationId,
   MessageId,
   Step,
 } from '@qywork/core'
-import { isInlineVideo, isNoticeStep } from '@qywork/core'
+import { type ImageSize, imageSizeOf, isInlineImage, isNoticeStep } from '@qywork/core'
 import {
   getConversation,
   latestSentProviderRequest,
@@ -48,6 +51,7 @@ import {
   setCompactionManifest,
   summaryOutputPercentile,
 } from '@qywork/store'
+import { shrunkSize } from '@qywork/tools'
 import {
   attachmentsOf,
   latestContextSnapshot,
@@ -66,6 +70,8 @@ const SUMMARY_PERCENTILE = 0.95
 export interface CompactionDeps {
   store: Store
   conversationId: ConversationId
+  /** 解析附件的相对路径，与发送时（`withAttachments`）相同。 */
+  workspaceRoot: string
   /** run 创建时固定的消息高水位，压缩范围不得越过它。 */
   messageIdUpperBound: MessageId | null
   /** 摘要生成器。 */
@@ -85,6 +91,46 @@ interface Unit {
   /** 单元中助手正文的取回地址 `<runId>:<stepId>`；会话消息单元与没有助手正文的单元为 null。 */
   assistantId: string | null
   actions: CompactionAction[]
+}
+
+/** JPEG 的尺寸位于第一个 SOF 段，其前可能有带缩略图的 EXIF（上限 64 KB），读取该长度即足够。 */
+const IMAGE_HEAD_BYTES = 256 * 1024
+
+/** 文件头中的像素宽高。文件不存在时返回 undefined：发送时跳过该附件，只留一行说明。 */
+function attachmentSize(abs: string): ImageSize | null | undefined {
+  let fd: number
+  try {
+    fd = openSync(abs, 'r')
+  } catch {
+    return undefined
+  }
+  try {
+    const head = new Uint8Array(IMAGE_HEAD_BYTES)
+    return imageSizeOf(head.subarray(0, readSync(fd, head, 0, head.length, 0)))
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/**
+ * 附件中的图片按发送时的尺寸估算：读取文件头，长边超过上限时按发送前的缩放（`shrunkSize`）换算。
+ * 视频与其他文件不计入，与请求侧相同：视频的估算记 0，其他文件只以路径写入正文。读不出尺寸时按尺寸未知计。
+ */
+function attachmentImageTokens(
+  workspaceRoot: string,
+  files: readonly Attachment[],
+  density: TokenDensity,
+): number {
+  let total = 0
+  for (const a of files) {
+    if (!isInlineImage(a.path)) continue
+    const size = attachmentSize(
+      isAbsolute(a.path) ? resolve(a.path) : resolve(workspaceRoot, a.path),
+    )
+    if (size === undefined) continue
+    total += estimateImage(size && shrunkSize(size), density)
+  }
+  return total
 }
 
 export class RuntimeCompaction implements CompactionPort {
@@ -401,7 +447,7 @@ export class RuntimeCompaction implements CompactionPort {
    * 用主模型的同一计量口径测量 manifest 前后的历史投影。
    *
    * 面板只用两者差额修正完整请求，因此系统提示词、工具表等头部不在此处重复
-   * 计量。附件在 `collectUnits` 里按 `MEDIA_TOKENS` 计入 `unit.tokens`；收纳工具
+   * 计量。附件中的图片在 `collectUnits` 里按宽高计入 `unit.tokens`（`attachmentImageTokens`）；收纳工具
    * 正文时仍补回附件差额，口径与实际请求一致。
    */
   private estimateProjection(
@@ -488,10 +534,10 @@ export class RuntimeCompaction implements CompactionPort {
       units.push({
         key: cutKey(cut),
         cut,
-        // 附件按固定值计入、视频不计入，与装配侧（`estimateContent`）口径一致；按 base64 长度估算会高出两个数量级。
+        // 附件中的图片按宽高计入、视频不计入，与装配侧（`estimateContent`）口径一致；按 base64 长度估算会高出两个数量级。
         tokens:
           estimateMessages([...context, wire], density) +
-          m.attachments.filter((a) => !isInlineVideo(a.path)).length * MEDIA_TOKENS,
+          attachmentImageTokens(this.deps.workspaceRoot, m.attachments, density),
         messages: [...context, wire],
         row: {
           id: m.id,
@@ -516,7 +562,7 @@ export class RuntimeCompaction implements CompactionPort {
             cut: stepCut,
             tokens:
               estimateMessages(u.messages, density) +
-              files.filter((a) => !isInlineVideo(a.path)).length * MEDIA_TOKENS,
+              attachmentImageTokens(this.deps.workspaceRoot, files, density),
             messages: u.messages,
             /*
              * run 内注入的用户消息同样需要 `row`，否则该消息折叠进摘要线之后

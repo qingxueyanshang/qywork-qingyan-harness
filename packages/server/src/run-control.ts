@@ -767,6 +767,9 @@ export async function compactConversation(
   const emit = (ev: AgentEvent) => deps.bus.publish(ev, conversationId)
   const conversation = getConversation(deps.store, conversationId)
   if (!conversation) throw new Error('会话不存在')
+  // 附件的相对路径按会话所属项目解析；未查到时停止，理由同 `startRun`。
+  const ws = workspaceOf(deps.store, conversationId)
+  if (!ws) throw new Error('本会话未找到对应的项目目录，无法压缩')
   // 用户发起的维护操作也有真实的 run，摘要与压缩结果因此写入同一份会话账本。
   const run = createRun(deps.store, {
     conversationId,
@@ -800,6 +803,7 @@ export async function compactConversation(
     const compaction = new RuntimeCompaction({
       store: deps.store,
       conversationId,
+      workspaceRoot: ws.rootPath,
       messageIdUpperBound: null,
       summarize: makeSummarizer({
         profile: () => summaryProfile(deps, conversationId),

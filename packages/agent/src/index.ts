@@ -28,6 +28,7 @@ export {
   batchRemaining,
   boundExecutedOutcome,
   chargeBatchBudget,
+  chargeImage,
   continuationNote,
   decodeUtf8Boundary,
   deliveredTokens,
@@ -41,6 +42,7 @@ export {
   tailRetain,
   tokensToBytes,
   tokensToMaxBytes,
+  VIDEO_BUDGET_TOKENS,
 } from './delivery.ts'
 // 电脑控制端口：tools 据此实现桌面工具，server 的协调器实现该端口，由 runtime 注入
 export type {

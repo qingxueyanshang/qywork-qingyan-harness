@@ -13,14 +13,8 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import {
-  chargeBatchBudget,
-  type OfficePort,
-  recordBatchSpent,
-  type ToolContext,
-  type ToolOutcome,
-} from '@qywork/agent'
-import { MEDIA_TOKENS } from '@qywork/ai'
+import { chargeImage, type OfficePort, type ToolContext, type ToolOutcome } from '@qywork/agent'
+import { imageSizeOf } from '@qywork/core'
 import { shrinkImage } from './image.ts'
 import { conversationTempDir, PROTECTED_DIRS } from './paths.ts'
 import { collectProcess, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
@@ -215,8 +209,7 @@ export async function readVideoFrames(
   for (const img of res.images) {
     const raw = new Uint8Array(await readFile(img.path))
     const fit = await shrinkImage(raw, 'image/jpeg')
-    // 余量不足以容纳一张图片时仍然投递，超出部分由下一次发送前的压缩回收（与 read_file 读取图片相同）。
-    if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
+    chargeImage(ctx, imageSizeOf(fit.bytes))
     images.push({ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime })
   }
   // 帧已写入回执，磁盘上的副本不再被读取。

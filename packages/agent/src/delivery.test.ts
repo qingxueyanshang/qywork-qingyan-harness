@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { DEFAULT_DENSITY, MEDIA_TOKENS } from '@qywork/ai'
+import { DEFAULT_DENSITY, estimateImage } from '@qywork/ai'
 import {
   batchRemaining,
   boundExecutedOutcome,
@@ -107,14 +107,22 @@ describe('一次决策一份额度', () => {
 })
 
 describe('结果的占用', () => {
-  test('按写入 JSON 后的形式估算，每张图像按固定值计', () => {
-    const image = { data: 'x'.repeat(100_000), mime: 'image/png' }
+  test('按写入 JSON 后的形式估算，每张图像按宽高计', () => {
+    // 只有文件头合法的 1280×720 PNG，其后是 7.5 万字节填充。
+    const png = new Uint8Array(75_024)
+    png.set(
+      [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52],
+      0,
+    )
+    new DataView(png.buffer).setUint32(16, 1280)
+    new DataView(png.buffer).setUint32(20, 720)
+    const image = { data: Buffer.from(png).toString('base64'), mime: 'image/png' }
     const withImage = outcomeTokens(
       { message: '读取', data: { images: [image], note: 'a' } },
       DEFAULT_DENSITY,
     )
     const without = outcomeTokens({ message: '读取', data: { note: 'a' } }, DEFAULT_DENSITY)
-    expect(withImage - without).toBe(MEDIA_TOKENS)
+    expect(withImage - without).toBe(estimateImage({ width: 1280, height: 720 }, DEFAULT_DENSITY))
   })
 
   test('换行按转义后的形式计入', () => {

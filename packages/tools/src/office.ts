@@ -11,14 +11,12 @@
 import { readFile, stat } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import {
-  chargeBatchBudget,
+  chargeImage,
   type OfficePort,
-  recordBatchSpent,
   type ToolContext,
   type ToolOutcome,
   type ToolSpec,
 } from '@qywork/agent'
-import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import { imageSizeOf } from '@qywork/core'
 import { readHashes } from './files.ts'
@@ -264,8 +262,7 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
     else labels.push(img.label)
     if (!region && !note)
       note = downscaleNote(imageSizeOf(raw), imageSizeOf(fit.bytes), 'view_office')
-    // 余量不足以容纳一张图片时仍然投递，超出部分由下一次发送前的压缩回收（与 read_file 相同）。
-    if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
+    chargeImage(ctx, imageSizeOf(fit.bytes))
     images.push({ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime })
   }
   await releaseCall(run)

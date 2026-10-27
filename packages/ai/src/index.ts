@@ -93,13 +93,16 @@ export type { ChatPrice } from './pull/pricing.ts'
 export {
   DEFAULT_DENSITY,
   estimateContent,
+  estimateImage,
   estimateJson,
   estimateMessage,
   estimateMessages,
   estimateRequest,
   estimateSchemas,
   estimateText,
-  MEDIA_TOKENS,
+  type ImageRule,
+  imageSizeOfBase64,
+  THUMBNAIL_EDGE,
   type TokenDensity,
   videoBlocksOf,
 } from './tokens.ts'
