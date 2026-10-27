@@ -137,6 +137,70 @@ test('hongcheng：工作台目录给出规格，按秒与按次价格', async ()
   expect(by.get('bb2.5')).toMatchObject({ output: 'video', kind: 'openai_videos' })
 })
 
+// 2026-10-27 hongcheng 的两个固定时长型号：工作台目录的 duration 只写一个数，曾因此不带规格。
+test('hongcheng：固定时长的型号取得规格与按次价格', async () => {
+  const data = fixture('newapi-hongcheng.json') as {
+    pricing: { data: unknown[] }
+    workbench: { data: unknown[] }
+    status: unknown
+  }
+  const priced = (model_name: string, model_price: number) => ({
+    model_name,
+    quota_type: 1,
+    model_ratio: 0,
+    model_price,
+    completion_ratio: 0,
+    enable_groups: ['default', 'vip', 'svip'],
+    supported_endpoint_types: ['openai-video'],
+  })
+  const listed = (api_model: string, duration: string, resolution: string, refs: string[]) => ({
+    id: api_model,
+    api_model,
+    duration,
+    resolution,
+    aspect_ratios: '16:9,9:16,1:1',
+    max_image_refs: refs[0],
+    max_video_refs: refs[1],
+    max_audio_refs: refs[2],
+    enabled: true,
+  })
+  const { target } = site({
+    '/api/pricing': {
+      ...data.pricing,
+      data: [
+        ...data.pricing.data,
+        priced('seedance-2.5（YX）-按次', 0.8219178082),
+        priced('sedanco2.0-300秒必出', 0.3150684932),
+      ],
+    },
+    '/api/status': data.status,
+    '/api/workbench-models': {
+      ...data.workbench,
+      data: [
+        ...data.workbench.data,
+        listed('seedance-2.5（YX）-按次', '30', '720p', ['30', '10', '10']),
+        listed('sedanco2.0-300秒必出', '15', '480p', ['9', '0', '3']),
+      ],
+    },
+  })
+  const by = new Map((await pullModels(target, signal())).models.map((m) => [m.id, m]))
+  expect(by.get('seedance-2.5（YX）-按次')).toMatchObject({
+    output: 'video',
+    known: true,
+    spec: { seconds: [30], resolutions: ['720p'], maxImages: 30, price: { per: 'request' } },
+  })
+  expect(by.get('sedanco2.0-300秒必出')).toMatchObject({
+    known: true,
+    spec: { seconds: [15], resolutions: ['480p'], maxVideos: 0, maxAudios: 3 },
+  })
+  const amount = (id: string) => {
+    const m = by.get(id)
+    return m?.output === 'video' ? m.spec?.price?.amount : undefined
+  }
+  expect(amount('seedance-2.5（YX）-按次')).toBeCloseTo(6)
+  expect(amount('sedanco2.0-300秒必出')).toBeCloseTo(2.3)
+})
+
 test('站点状态读取失败时价格不明，型号照常列出', async () => {
   const data = fixture('newapi-mumugofe.json')
   const { target } = site({ '/api/pricing': data.pricing })

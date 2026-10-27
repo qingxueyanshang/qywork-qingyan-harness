@@ -9,7 +9,7 @@ import type { ChannelImageSpec, ChannelPrice, ChannelVideoSpec } from '@qywork/c
 import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
 import type { MediaUsage } from './types.ts'
 
-const RANGE = /^(\d+)\s*-\s*(\d+)$/
+const DURATION = /^(\d+)(?:\s*-\s*(\d+))?$/
 
 function count(value: unknown): number | null {
   const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value
@@ -22,11 +22,11 @@ function range(min: number, max: number): number[] {
 
 /**
  * hongcheng 工作台目录（`/api/workbench-models` 的 `data[]`）中的一条。
- * 时长写为「最小-最大」，画幅为逗号分隔，三类素材上限为数字字符串。
+ * 时长写为「最小-最大」，固定时长只写一个数（如 `"30"`）；画幅为逗号分隔，三类素材上限为数字字符串。
  */
 export function hongchengVideoSpec(entry: Record<string, unknown>): ChannelVideoSpec | null {
-  const duration = typeof entry.duration === 'string' ? RANGE.exec(entry.duration.trim()) : null
-  const seconds = duration ? range(Number(duration[1]), Number(duration[2])) : []
+  const duration = typeof entry.duration === 'string' ? DURATION.exec(entry.duration.trim()) : null
+  const seconds = duration ? range(Number(duration[1]), Number(duration[2] ?? duration[1])) : []
   const ratios =
     typeof entry.aspect_ratios === 'string'
       ? entry.aspect_ratios
