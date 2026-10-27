@@ -219,6 +219,27 @@ export function insertSchedules(store: Store, list: Schedule[]): void {
   }
 }
 
+/**
+ * 全部已启用任务中最早的下次触发时刻，只取晚于 `now` 的值；没有时为 null。
+ *
+ * 用于在系统睡眠期间按时唤醒。已到期而尚未认领的任务（上一轮仍在运行、未配置默认模型）不计入：
+ * 它们由系统运行期间的调度 tick 处理。工作区已移除的任务同样不计入，它们不会触发。
+ */
+export function nextScheduledAt(store: Store, now: number): number | null {
+  const rows = store.db
+    .query<ScheduleRow, []>(
+      `SELECT * FROM schedules s WHERE enabled = 1 AND EXISTS
+       (SELECT 1 FROM workspaces w WHERE w.root_path = s.workspace_root AND w.removed_at IS NULL)`,
+    )
+    .all()
+  let next: number | null = null
+  for (const row of rows) {
+    const at = nextRunAt(rowToSchedule(row), now)
+    if (at !== null && at > now && (next === null || at < next)) next = at
+  }
+  return next
+}
+
 /** 工作区必须仍然登记且未移除，否则该任务不触发。 */
 function workspaceIdForRoot(store: Store, root: string): WorkspaceId | null {
   const row = store.db

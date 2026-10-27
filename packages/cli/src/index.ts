@@ -32,7 +32,12 @@ import {
   MCP_CONFIG,
   Session,
 } from '@qywork/runtime'
-import { lanCandidates, processExitObservationFromEnv, serve } from '@qywork/server'
+import {
+  lanCandidates,
+  processExitObservationFromEnv,
+  serve,
+  systemPowerPort,
+} from '@qywork/server'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import {
   detectSandbox,
@@ -364,6 +369,8 @@ async function runServe(args: string[]): Promise<number> {
   setCommandRunner(startCommandRunner(runnerArgv))
   startupStage('启动服务')
 
+  // 任务运行期间阻止系统睡眠、按定时任务唤醒系统。不按是否由桌面外壳启动区分：经局域网连接的客户端发起的任务同样需要。
+  const power = systemPowerPort()
   const handle = serve({
     store,
     config,
@@ -383,6 +390,7 @@ async function runServe(args: string[]): Promise<number> {
     ...(process.env.QYWORK_HOST_KEY ? { hostKey: process.env.QYWORK_HOST_KEY } : {}),
     ...(process.env.QYWORK_UPDATE_KEY ? { updateHostKey: process.env.QYWORK_UPDATE_KEY } : {}),
     ...(previousProcessExit ? { previousProcessExit } : {}),
+    ...(power ? { power } : {}),
   })
   startupStage('发送就绪回执')
 

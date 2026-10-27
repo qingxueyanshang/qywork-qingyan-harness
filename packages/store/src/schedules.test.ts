@@ -1,5 +1,5 @@
 /**
- * 定时任务仓储。**覆盖范围**：`schedules.ts` 的读写、Run 终态投影与认领事务，
+ * 定时任务仓储。**覆盖范围**：`schedules.ts` 的读写、Run 终态投影、认领事务与下次触发时刻，
  * 以及迁移 54 创建的 `schedules` 表在会话被删除时的外键行为。
  *
  * 跨进程竞争由 `packages/server/src/schedule-race.test.ts` 覆盖，
@@ -25,6 +25,7 @@ import {
   deleteSchedule,
   insertSchedules,
   listSchedules,
+  nextScheduledAt,
   updateSchedule,
 } from './schedules.ts'
 
@@ -492,5 +493,45 @@ describe('认领事务', () => {
       ok: false,
       reason: 'busy',
     })
+  })
+})
+
+describe('下次触发时刻', () => {
+  const localAt = (d: number, h: number, mi = 0) => new Date(2026, 7, d, h, mi, 0, 0).getTime()
+
+  function daily(root: string, title: string, atHour: number) {
+    const s = createSchedule(
+      store,
+      root,
+      { title, prompt: 'p', kind: 'daily', atHour, atMinute: 0 },
+      homeOf(root),
+    )
+    store.db.query('UPDATE schedules SET created_at = ? WHERE id = ?').run(localAt(9, 0), s.id)
+    return s
+  }
+
+  test('取各工作区已启用任务中最早的未来时刻', () => {
+    daily(ROOT_A, '九点', 9)
+    daily(ROOT_B, '七点', 7)
+    expect(nextScheduledAt(store, localAt(10, 6))).toBe(localAt(10, 7))
+    expect(nextScheduledAt(store, localAt(10, 8))).toBe(localAt(10, 9))
+  })
+
+  test('已到期而未认领的任务不计入，停用与工作区已移除的任务不计入', () => {
+    dueSchedule(ROOT_A)
+    expect(nextScheduledAt(store, Date.now())).toBe(null)
+
+    const off = daily(ROOT_A, '九点', 9)
+    updateSchedule(store, off.id, ROOT_A, {
+      title: off.title,
+      prompt: 'p',
+      kind: 'daily',
+      enabled: false,
+      atHour: 9,
+      atMinute: 0,
+    })
+    daily(ROOT_B, '七点', 7)
+    removeWorkspace(store, wsB)
+    expect(nextScheduledAt(store, Date.now())).toBe(null)
   })
 })

@@ -46,6 +46,7 @@ import {
   listWorkspaces,
   loadToolImages,
   mostRecentWorkspace,
+  nextScheduledAt,
   recoverStaleRuns,
   upsertWorkspace,
 } from '@qywork/store'
@@ -67,6 +68,7 @@ import { createGitWatch } from './git-watch.ts'
 import { handleHello } from './handshake.ts'
 import { CORS_HEADERS, hostLabel, serveStatic, withCors } from './http-util.ts'
 import { extractToken, Pairing, preferredLanAddress } from './pairing.ts'
+import { type PowerPort, startPowerGuard } from './power.ts'
 import { sanitizeProcessExitObservation } from './process-exit.ts'
 import { submitMessage } from './run-control.ts'
 import { RunManager } from './runs.ts'
@@ -117,6 +119,13 @@ export interface ServeOptions {
    * 不要用它调节生产精度：到期判定以分钟为单位，修改此值只会增加无效的 tick。
    */
   schedulerTickMs?: number
+  /**
+   * 系统电源接口。传入时任务运行期间阻止系统睡眠，并按下一次定时任务唤醒系统，见 `power.ts`。
+   * 未传入时不调整系统电源状态：回归测试创建的服务不应向本机登记请求与唤醒定时器。
+   */
+  power?: PowerPort
+  /** 电源状态的同步间隔，毫秒。理由同 `schedulerTickMs`，仅用于回归测试。 */
+  powerTickMs?: number
 }
 
 /** 首次运行时创建的工作区名称。已写入磁盘的目录名是历史事实，不要修改（D2）。 */
@@ -403,6 +412,19 @@ export function serve(opts: ServeOptions) {
     opts.schedulerTickMs,
   )
 
+  /* 运行中的会话与画布生成都计入忙碌：更新占位与阻止睡眠使用同一判据。 */
+  const busyCount = () => runs.busyConversations().length + canvas.busyCount
+  const power = opts.power
+    ? startPowerGuard(
+        {
+          busy: () => busyCount() > 0,
+          nextWakeAt: () => nextScheduledAt(opts.store, Date.now()),
+          port: opts.power,
+        },
+        opts.powerTickMs,
+      )
+    : null
+
   /**
    * 局域网监听控制。
    *
@@ -472,7 +494,7 @@ export function serve(opts: ServeOptions) {
         if (body.action !== 'claim') return json({ error: 'invalid action' }, 400)
         return json({
           claimed: canvas.busyCount === 0 && runs.claimUpdate(),
-          busy: runs.busyConversations().length + canvas.busyCount,
+          busy: busyCount(),
         })
       }
 
@@ -759,6 +781,7 @@ export function serve(opts: ServeOptions) {
     async stop() {
       log.info('server', '停止服务', { port: boundPort })
       scheduler.stop()
+      power?.stop()
       gitWatch.stop()
       offBrowserHost?.()
       browser?.stop()
