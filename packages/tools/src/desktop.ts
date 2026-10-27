@@ -50,8 +50,9 @@ import type {
   DesktopToggleState,
   DesktopWindowState,
 } from '@qywork/core'
+import { imageSizeOf } from '@qywork/core'
 import { type DesktopResultParts, desktopResult, MAX_TITLE_CHARS } from './desktop-results.ts'
-import { imageSizeOf, MAX_EDGE, shrinkImage } from './image.ts'
+import { MAX_EDGE, shrinkImage } from './image.ts'
 
 /** 一次读取控件树的节点数上限。端口会再截断一次，此处拦截明显越界的请求。 */
 const MAX_NODES = 4000

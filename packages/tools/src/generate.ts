@@ -14,6 +14,7 @@ import type { MediaCall, MediaCallResult, MediaPort, ToolOutcome, ToolSpec } fro
 import { isImageResult, type MediaFile, type MediaImageResult, type MediaInput } from '@qywork/ai'
 import {
   type GenerateOutput,
+  imageSizeOf,
   isInlineAudio,
   isInlineImage,
   isInlineVideo,
@@ -24,7 +25,6 @@ import {
   mimeOf,
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
-import { imageSizeOf } from './image.ts'
 import {
   displayPath,
   type RootsInput,

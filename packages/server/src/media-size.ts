@@ -11,11 +11,11 @@ import { open } from 'node:fs/promises'
 import {
   artViewportOf,
   type CanvasPixels,
+  imageSizeOf,
   isInlineImage,
   mediaBoxAt,
   movieMetadataOf,
 } from '@qywork/core'
-import { imageSizeOf } from '@qywork/tools'
 
 /** JPEG 的尺寸位于第一个 SOF 段中，其前可能有带缩略图的 EXIF（上限 64 KB），读取该长度即足够。 */
 const IMAGE_HEAD = 256 * 1024

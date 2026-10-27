@@ -20,9 +20,10 @@ import {
 } from '@qywork/agent'
 import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
+import { imageSizeOf } from '@qywork/core'
 import { readHashes } from './files.ts'
 import { landFiles } from './generate.ts'
-import { downscaleNote, imageSizeOf, shrinkImage, zoomImage } from './image.ts'
+import { downscaleNote, shrinkImage, zoomImage } from './image.ts'
 import {
   noResponse,
   READ_TIMEOUT_MS,
