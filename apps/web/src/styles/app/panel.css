@@ -1382,7 +1382,7 @@
 .run-req td:last-child {
   padding-right: 0;
 }
-/* provider 的原始文本长度不可控（`completed:max_output_tokens`），因此截断显示，全文保留在 title 中。 */
+/* 报错正文长度不可控，因此截断显示，全文在悬停提示（`data-tip`）中。 */
 .run-req-out {
   max-width: 9ch;
   overflow: hidden;

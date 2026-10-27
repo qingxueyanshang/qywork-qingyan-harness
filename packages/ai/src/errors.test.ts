@@ -180,7 +180,6 @@ describe('SDK 包装保留具体的传输失败原因', () => {
     expect(e.timedOut).toBe(timedOut)
     expect(e.cause).toBe(wrapped)
     expect(wrapped.cause).toBe(raw)
-    expect(e.detail?.providerMessage).toBe('Connection error.')
   })
 
   test('多层包装中的泛化连接码不能掩盖底层证书原因', () => {
@@ -274,12 +273,26 @@ describe('按用户的下一步动作分类', () => {
     expect(e.code).toBe('provider_unavailable')
     expect(e.message).toBe('Overloaded')
     expect(e.detail).toMatchObject({
-      providerMessage: 'Overloaded',
       providerType: 'overloaded_error',
       providerCode: 'x_overloaded',
     })
     // 没有 HTTP 状态码：流内错误不伪造状态码，账本据此区分请求被拒绝与建立连接后出错。
     expect(e.status).toBeUndefined()
+  })
+
+  test('流内事件按分类码归入限速、无权访问时仍保留原文', () => {
+    const limited = classifyStreamError(P, {
+      type: 'rate_limit_error',
+      message: 'Concurrency limit exceeded for account, please retry later',
+    })
+    expect(limited.code).toBe('rate_limited')
+    expect(limited.message).toBe('Concurrency limit exceeded for account, please retry later')
+    const denied = classifyStreamError(P, {
+      type: 'permission_error',
+      message: 'invalid x-api-key',
+    })
+    expect(denied.code).toBe('auth_failed')
+    expect(denied.message).toBe('invalid x-api-key')
   })
 
   test('事件不含文案时改用 code / type，不编造文案', () => {
@@ -301,10 +314,9 @@ describe('按用户的下一步动作分类', () => {
     })
     const limited = classifyProviderError(P, raw)
     expect(limited.code).toBe('rate_limited')
-    expect(limited.message).toBe('触发限速')
+    expect(limited.message).toBe('HTTP 429 请求过多：Rate limit reached')
     expect(limited.retryAfterMs).toBe(2_500)
     expect(limited.detail).toMatchObject({
-      providerMessage: 'Rate limit reached',
       providerCode: 'rate_limit_exceeded',
       retryAfterMs: 2_500,
     })
@@ -333,10 +345,51 @@ describe('按用户的下一步动作分类', () => {
     expect(classifyProviderError(P, anthropic).code).toBe('insufficient_quota')
     const openai = classifyProviderError(P, http(403, 'insufficient balance'))
     expect(openai.code).toBe('insufficient_quota')
-    expect(openai.message).toBe('账户额度不足')
+    expect(openai.message).toBe('HTTP 403 禁止访问：insufficient balance')
     const denied = classifyProviderError(P, http(403, 'You do not have access to this model'))
     expect(denied.code).toBe('auth_failed')
-    expect(denied.message).toBe('当前 Key 无权访问该模型')
+    expect(denied.message).toBe('HTTP 403 禁止访问：You do not have access to this model')
+  })
+
+  /**
+   * 原始失败形状取自账本：分类码不变，正文必须是对端原文。按分类码改写正文时，
+   * 前两条显示为「当前 Key 无权访问该模型」，第三条显示为「服务端暂时不可用」，第四条显示为「模型不存在」，
+   * 用户与父会话的模型都按错误原因处理。
+   */
+  test('分类码不改写正文：403 / 502 / 503 / 404 显示状态码名称与对端原文', () => {
+    // [状态码, 传输层读取的错误正文, 分类码, 正文]。SDK 的消息是「状态码 + 空格 + 正文」。
+    const cases = [
+      [403, 'API Key 所属分组已删除', 'auth_failed', 'HTTP 403 禁止访问：API Key 所属分组已删除'],
+      [
+        403,
+        '{"error":{"message":"This group does not allow /v1/messages dispatch","type":"permission_error"},"type":"error"}',
+        'auth_failed',
+        'HTTP 403 禁止访问：This group does not allow /v1/messages dispatch',
+      ],
+      [
+        502,
+        '{"error":{"message":"Upstream authentication failed, please contact administrator","type":"upstream_error"},"type":"error"}',
+        'provider_unavailable',
+        'HTTP 502 网关错误：Upstream authentication failed, please contact administrator',
+      ],
+      [
+        503,
+        '{"error":{"message":"No available accounts: no available accounts","type":"api_error"},"type":"error"}',
+        'provider_unavailable',
+        'HTTP 503 服务不可用：No available accounts: no available accounts',
+      ],
+      [
+        404,
+        'Upstream request failed',
+        'model_not_found',
+        'HTTP 404 未找到：Upstream request failed',
+      ],
+    ] as const
+    for (const [status, body, code, message] of cases) {
+      const e = classifyProviderError(P, http(status, `${status} ${body}`), null, body)
+      expect(e.code).toBe(code)
+      expect(e.message).toBe(message)
+    }
   })
 
   /**
@@ -353,7 +406,7 @@ describe('按用户的下一步动作分类', () => {
       )
       expect(err).toBeInstanceOf(ProviderError)
       expect((err as ProviderError).code).toBe('insufficient_quota')
-      expect((err as ProviderError).message).toBe('账户额度不足')
+      expect((err as ProviderError).message).toBe('HTTP 402 需要付费：Insufficient Balance')
     }
   })
 
@@ -413,11 +466,9 @@ describe('按用户的下一步动作分类', () => {
     const fromBody = classifyProviderError(P, http(400, '400 status code (no body)'), null, body)
     expect(fromBody.code).toBe('invalid_request')
     expect(fromBody.message).toBe(`HTTP 400 请求无效：${original}`)
-    expect(fromBody.detail?.providerMessage).toBe(original)
 
     const fromSdk = classifyProviderError(P, http(400, `400 ${original}`))
     expect(fromSdk.message).toBe(`HTTP 400 请求无效：${original}`)
-    expect(fromSdk.detail?.providerMessage).toBe(original)
   })
 
   /**
@@ -461,10 +512,10 @@ describe('按用户的下一步动作分类', () => {
    * 413 到达此处说明容量分类器已排除上下文超限，它是网关的请求体大小限制。
    * 相同字节重发必然同样被拒，因此归入不可重发的类别。
    */
-  test('413 指向附件大小与反向代理配置', () => {
-    const e = classifyProviderError(P, http(413))
+  test('413 归不可重发的请求错误，正文为状态码名称与原文', () => {
+    const e = classifyProviderError(P, http(413, 'Request Entity Too Large'))
     expect(e.code).toBe('invalid_request')
-    expect(e.message).toMatch(/附件|反向代理|网关/)
+    expect(e.message).toBe('HTTP 413 请求内容过大：Request Entity Too Large')
   })
 })
 

@@ -3,7 +3,7 @@
  *
  * 锁定的失败形状：四个子 agent 运行数十分钟、产生数元费用，而运行页只查询当前会话，
  * 这些费用均未显示。子会话的轮次必须以与本会话轮次相同的行格式出现在清单中，
- * 并计入合计；行上须标明该轮派发给哪个角色。
+ * 并计入合计；行上须标明该轮派发给哪个角色。另覆盖逐请求表结果列的悬停全文。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -338,6 +338,72 @@ describe('运行页', () => {
     const cells = [...host.querySelectorAll('.run-req tbody tr td')].map((td) => td.textContent)
     expect(cells).toEqual(['图像', 'N/A', '1 张', 'N/A', 'N/A', '¥0.18', '已完成'])
     expect(host.querySelector('.run-req tbody tr')?.getAttribute('data-tip')).toBe('qwen-image-3.0')
+  })
+
+  /**
+   * 原始失败形状：结果列宽 9 个字符并省略，样式注释称全文保留在 title 中，而单元格上没有 title，
+   * 报错只能看到「HTTP 403…」。
+   */
+  test('结果列的悬停提示为全文', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    const failed = {
+      ...run('rn_denied', 0, 'USD'),
+      status: 'failed',
+      stopReason: 'provider_error',
+    }
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path: string,
+    ) => {
+      if (path.endsWith('/runs')) return { runs: [failed], childRuns: [] }
+      if (path.endsWith('/requests')) {
+        return {
+          requests: [
+            {
+              id: 'pr_denied',
+              turnIndex: 0,
+              retryIndex: 0,
+              status: 'rejected',
+              finishReason: '',
+              errorCode: 'auth_failed',
+              errorMessage: 'HTTP 403 禁止访问：API Key 所属分组已删除',
+              diagnostic: { retry: { decision: 'not_retryable' } },
+              providerInputTokens: null,
+              providerOutputTokens: null,
+              providerCachedTokens: null,
+              providerCacheWriteTokens: null,
+            },
+          ],
+        }
+      }
+      if (path.endsWith('/usage')) return { totals: { entries: 0, cost: {} }, entries: [] }
+      if (path.startsWith('/api/usage')) return { totals: { cost: {} } }
+      return {}
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: unknown }).api = originalApi
+    }
+    store.setState({ activeConversation: 'cv_parent', connection: 'ready' })
+
+    const { render } = await import('solid-js/web')
+    const { default: RunDetails } = await import('./RunDetails.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <RunDetails />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => host.querySelectorAll('.run-row').length === 1,
+      () => `清单里有 ${host.querySelectorAll('.run-row').length} 行`,
+    )
+    host.querySelector('.run-row')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await waitFor(
+      () => host.querySelector('.run-req-out') !== null,
+      () => host.textContent ?? '',
+    )
+    const cell = host.querySelector('.run-req-out')!
+    const full = 'HTTP 403 禁止访问：API Key 所属分组已删除，未重发'
+    expect(cell.textContent).toBe(full)
+    expect(cell.getAttribute('data-tip')).toBe(full)
   })
 
   /** 原始失败形状：模型按约定停下等待用户确认，运行页却以红色标为「模型执行出错，多次重复」。 */

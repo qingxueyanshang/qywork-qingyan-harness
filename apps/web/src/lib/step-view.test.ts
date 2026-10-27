@@ -44,7 +44,6 @@ describe('请求结果只显示产品文案', () => {
   const outcome = (over: {
     status?: 'pending' | 'in_flight' | 'received' | 'uncertain' | 'rejected'
     finishReason?: string
-    errorCode?: string | null
     errorMessage?: string | null
     decision?:
       | 'resend'
@@ -60,7 +59,6 @@ describe('请求结果只显示产品文案', () => {
       status: over.status ?? 'rejected',
       ...(over.purpose ? { purpose: over.purpose } : {}),
       finishReason: over.finishReason ?? '',
-      errorCode: over.errorCode ?? null,
       errorMessage: over.errorMessage ?? null,
       diagnostic: over.decision ? { retry: { decision: over.decision } } : null,
     })
@@ -91,7 +89,6 @@ describe('请求结果只显示产品文案', () => {
   test('补发过第二份请求时在结果后注明，并区分采用的是哪一份', () => {
     const base = {
       finishReason: 'stop',
-      errorCode: null,
       errorMessage: null,
       diagnostic: null,
     } as const
@@ -107,17 +104,21 @@ describe('请求结果只显示产品文案', () => {
         ...base,
         status: 'uncertain',
         finishReason: '',
-        errorCode: 'network_error',
+        errorMessage: '连接被断开',
         diagnostic: { retry: { decision: 'resend' } },
         hedge: { won: false },
       }),
-    ).toBe('网络连接失败，已自动重发，已补发')
+    ).toBe('连接被断开，已自动重发，已补发')
   })
 
-  test('没有 provider 原文时把错误码转换为用户文案', () => {
-    expect(outcome({ status: 'uncertain', errorCode: 'network_error' })).toBe('网络连接失败')
-    expect(outcome({ errorCode: 'internal_error' })).toBe('内部错误')
-    expect(outcome({ errorCode: 'future_internal_code' })).toBe('被拒绝')
+  /** 同一个错误码对应多种原因：按码写标签会使表中的原因与读数条不一致。 */
+  test('失败时显示请求行的报错正文，没有正文时按状态显示', () => {
+    expect(outcome({ status: 'uncertain', errorMessage: '请求超时' })).toBe('请求超时')
+    expect(outcome({ errorMessage: 'HTTP 403 禁止访问：API Key 所属分组已删除' })).toBe(
+      'HTTP 403 禁止访问：API Key 所属分组已删除',
+    )
+    expect(outcome({ status: 'uncertain' })).toBe('结果不明')
+    expect(outcome({})).toBe('被拒绝')
   })
 
   test('七种重试裁决全部有唯一结果文案', () => {

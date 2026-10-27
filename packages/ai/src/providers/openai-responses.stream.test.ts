@@ -708,7 +708,7 @@ describe('错误路径', () => {
     expect(caught).toMatchObject({
       code: 'provider_unavailable',
       status: 400,
-      detail: { providerMessage: 'Upstream returned HTTP 403 Forbidden' },
+      message: 'HTTP 400 请求无效：Upstream returned HTTP 403 Forbidden',
     })
   })
 
@@ -726,7 +726,8 @@ describe('错误路径', () => {
     expect(caught).toMatchObject({
       code: 'rate_limited',
       retryAfterMs: 3_000,
-      detail: { providerMessage: 'Too many requests', providerCode: 'rate_limit_exceeded' },
+      message: 'HTTP 429 请求过多：Too many requests',
+      detail: { providerCode: 'rate_limit_exceeded' },
     })
   })
 

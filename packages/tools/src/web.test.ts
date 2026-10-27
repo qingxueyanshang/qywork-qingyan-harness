@@ -121,6 +121,23 @@ describe('抓取的用量记账', () => {
   })
 })
 
+test('HTTP 失败写明状态码名称，与模型请求和生成的报错写法一致', async () => {
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () => new Response('slow down', { status: 429 }),
+  })
+  try {
+    const c = ctx()
+    c.resources.set(NET_POLICY_KEY, { allowHosts: ['127.0.0.1'] })
+    const r = await webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, c)
+    expect(r.status).toBe('failure')
+    expect(r.message).toBe('HTTP 429 请求过多')
+  } finally {
+    await server.stop(true)
+  }
+})
+
 describe('web_fetch 的安全检查', () => {
   test('内网地址被拦截，且说明是哪条规则', async () => {
     const r = await webFetchTool.fn({ url: 'http://169.254.169.254/latest/meta-data/' }, ctx())

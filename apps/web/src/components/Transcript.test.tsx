@@ -13,6 +13,7 @@
  * 本文件另外锁定三项依赖 DOM 的行为：工具图片的回放、编排画布与展开态的归属、
  * 回执不渲染；只有子 agent 运行时，收尾条之外没有第二条读数条。
  * 运行条另覆盖轮次开始时的交接：耗时列保留位置，开始时刻到达后不显示负耗时。
+ * 另覆盖读数条报错的悬停全文与失败工具调用的展开内容。
  *
  * DOM 在本文件中注册、用后注销，使用动态 import 的原因同 `settings/LoadState.test.tsx`。
  */
@@ -1767,6 +1768,127 @@ describe('定稿的正文不随会话流的增长重建', () => {
     expect(host.textContent).toContain('模型连接失败')
 
     dispose()
+  })
+
+  /**
+   * 原始失败形状：读数条只取首行并裁掉超出部分，报错要求联系管理员，而故障编号与 request id
+   * 恰好在被裁掉的后半段，界面上没有其他位置显示全文。
+   */
+  test('报错正文整段显示在读数条中，悬停提示为全文', async () => {
+    const full =
+      'HTTP 400 请求无效：Notion createAgentThread returned HTTP 400；故障编号 INC-6A3C32ED4D39，' +
+      '进度已保留，请联系管理员 (request id: 202610250350312720216048268d9d6aEZBO2aj)\n第二行'
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      lastRunId: 'run_long_error',
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
+          runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
+          error: null,
+          transcript: [
+            { id: 'u-long-error', kind: 'user', text: '继续' },
+            {
+              id: 'run-run_long_error',
+              kind: 'run',
+              text: '',
+              run: {
+                runId: 'run_long_error',
+                stopReason: 'provider_error',
+                usage: null,
+                startedAt: 1_000,
+                endedAt: 1_500,
+                errorMessage: full,
+              },
+            },
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+    try {
+      const reason = host.querySelector('.run-reason')!
+      expect(reason.textContent).toBe(full)
+      expect(reason.getAttribute('data-tip')).toBe(full)
+    } finally {
+      dispose()
+    }
+  })
+
+  /**
+   * 原始失败形状：失败分支只显示错误行与参数表，参数表跳过超过 400 字的值，
+   * 长命令在展开后不显示，只能靠悬停标题行查看。
+   */
+  test('失败的命令展开后先显示错误正文，再显示命令原文与错误输出', async () => {
+    const command = `cat > wx.py <<'EOF'\n${'print("x")\n'.repeat(60)}EOF\npython wx.py`
+    expect(command.length).toBeGreaterThan(400)
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
+          runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
+          error: null,
+          transcript: [
+            {
+              id: 'tool-failed-long',
+              kind: 'tool',
+              text: '',
+              toolName: 'run_command',
+              action: { kind: 'run', objectLabel: '命令', target: command },
+              args: { command, timeout_ms: 120000 },
+              status: 'failure',
+              outcome: {
+                status: 'failure',
+                executed: true,
+                message: '命令退出码 1',
+                data: {
+                  stdout: 'search status 200',
+                  stderr: "TypeError: 'URL' object is not subscriptable",
+                },
+              },
+            },
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+    try {
+      const details = host.querySelector('details') as HTMLDetailsElement
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+
+      const body = host.querySelector('.fold-body')!
+      const blocks = [...body.children].map((el) => el.className)
+      expect(blocks[0]).toBe('fold-out err')
+      expect(body.querySelector('.fold-out.err')?.textContent).toBe('命令退出码 1')
+      expect(body.querySelector('.fold-code')?.textContent).toBe(command)
+      // 失败时错误流排在标准输出之前；错误行已显示 message，结果不再重复它。
+      const outputs = [...body.querySelectorAll('.fold-out:not(.err)')].map((el) => el.textContent)
+      expect(outputs).toEqual(["TypeError: 'URL' object is not subscriptable"])
+    } finally {
+      dispose()
+    }
   })
 
   test('正常完成不重复显示已完成', async () => {

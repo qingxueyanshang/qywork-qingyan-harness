@@ -3,13 +3,7 @@
  */
 
 import type { ProviderEvent, WireMessage } from '@qywork/ai'
-import {
-  estimateRequest,
-  failureDiagnostics,
-  ProviderError,
-  providerContentKind,
-  providerErrorMessage,
-} from '@qywork/ai'
+import { estimateRequest, failureDiagnostics, ProviderError, providerContentKind } from '@qywork/ai'
 import type { AgentEvent, ProviderRetryDecision, StepId } from '@qywork/core'
 import { log } from '@qywork/core'
 import { concurrencyRejected, type SendOutcome, sendLane, sendLimiter } from '../send-limit.ts'
@@ -265,7 +259,7 @@ export async function* sendTurn(
         pe?.usage ?? null,
         interrupted ? null : code,
         turn.rawStop,
-        interrupted ? null : providerErrorMessage(err),
+        interrupted ? null : err instanceof Error ? err.message : String(err),
       )
 
       // 中止来源由 runtime 的 AbortSignal reason 写入 run；请求行只记录本次不重发。
@@ -298,10 +292,10 @@ export async function* sendTurn(
       }
 
       /*
-       * 原始错误形状只写日志。
+       * 传输层的原始错误形状只写日志。
        *
-       * `errno` 与英文原文是排查的全部依据，但对界面是噪音：归类后的中文说明只表达
-       * 错误类别，不包含具体错误码。缺少这行日志时，账本中只有中文说明，
+       * `errno` 与 SDK 的英文原文是排查的依据，但对界面是噪音：传输层失败的正文只是分类说明，
+       * 不包含具体错误码。缺少这行日志时，账本中只有分类说明，
        * 事后无法区分 `ECONNRESET`（对端重置）与本地空闲超时中止。
        *
        * 读取 `cause` 而不是 `err`：执行到此处时 `err` 已是归类后的
