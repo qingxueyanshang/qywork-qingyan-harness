@@ -1420,6 +1420,8 @@ describe('投递额度按决策计算', () => {
 
   /** 约 30 万 token 的历史，使占用与本地估算都达到真实量级。 */
   const bulky: WireMessage[] = [{ role: 'user', content: '甲'.repeat(270_000) }]
+  /** 约 90 万字节的历史：回报的输入量不超过请求字节数时，回执才作为锚点。 */
+  const large: WireMessage[] = [{ role: 'user', content: '甲'.repeat(300_000) }]
 
   /**
    * 同一决策的三个调用分三个波次执行。若每个波次重新计算额度，三次都会放行，
@@ -1529,7 +1531,8 @@ describe('投递额度按决策计算', () => {
       },
       makeToolContext: (runId) => baseCtx(runId),
       compaction: {
-        project: (messages) => messages,
+        project: (messages) =>
+          runs > 0 ? messages.map((m) => ({ ...m, content: '折' })) : messages,
         run: async () => {
           runs++
           return {
@@ -1547,7 +1550,7 @@ describe('投递额度按决策计算', () => {
         },
       },
     })
-    await drain(loop)
+    await drain(loop, large)
     expect(runs).toBe(1)
     expect(order).toEqual(['compaction:started', 'compaction:done', 'tool'])
     expect(admitted).toEqual([true])
@@ -1590,7 +1593,7 @@ describe('投递额度按决策计算', () => {
       const events: string[] = []
       for await (const ev of loop.run({
         runId: 'rn_budget' as never,
-        history: [],
+        history: large,
         signal: new AbortController().signal,
       })) {
         if (ev.type === 'compaction') events.push(ev.phase)

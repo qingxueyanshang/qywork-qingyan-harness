@@ -1163,6 +1163,7 @@ describe('摘要请求与主请求分开统计', () => {
         sentCategories: {} as never,
         omittedCategories: {} as never,
         payloadHash: `h${turnIndex}`,
+        requestBytes: 4096,
       })
     const main = open(0, 'turn', 100)
     markProviderRequestSent(store, main.id)

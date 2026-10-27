@@ -5,7 +5,7 @@
  * 重新装配**这条控制流确实能够执行。两者分开是因为前者是纯函数，后者需要构造占用压力，
  * 合在一起时，失败无法区分是算法错误还是接线错误。
  *
- * 覆盖范围：`loop/compact.ts` 的压缩触发与容量恢复。其中「压缩后重发在账本中另记一行」用例接入真实
+ * 覆盖范围：`loop/compact.ts` 的压缩触发与容量恢复，`loop/turn-end.ts` 的锚点准入。其中「压缩后重发在账本中另记一行」用例接入真实
  * `Store`，同时覆盖 `store/repos.ts` 的 `openProviderRequest` 在同一轮多次发送时
  * 与 `uq_provider_run_turn` 的关系；其他用例都把该端口打桩为常量。
  */
@@ -32,6 +32,7 @@ import {
 } from '@qywork/store'
 import type { CompactionOutcome } from '../compaction.ts'
 import { stepStamp } from '../compaction.ts'
+import { batchRemaining } from '../delivery.ts'
 import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from '../index.ts'
 import { AgentLoop } from '../index.ts'
 import { compactionEpoch, ToolRegistry } from '../registry.ts'
@@ -144,6 +145,8 @@ const okOutcome: CompactionOutcome = {
 
 test('自动压缩后的发送读数与请求账采用 manifest 估算，回执到达后切换为真值', async () => {
   const spec = lookupModel('claude-opus-5', 'anthropic_messages')
+  // 约 20 万字节：回报的输入量不超过请求字节数时，回执才作为锚点。
+  const system = 'sys '.repeat(50_000)
   let compressed = false
   const recorded: number[] = []
   const persist = noopPersistence()
@@ -174,7 +177,7 @@ test('自动压缩后的发送读数与请求账采用 manifest 估算，回执�
       },
     },
     registry: new ToolRegistry(),
-    systemPrompt: 'sys',
+    systemPrompt: system,
     persist,
     makeToolContext: () => makeCtx(),
     compaction: {
@@ -192,7 +195,7 @@ test('自动压缩后的发送读数与请求账采用 manifest 估算，回执�
               measured: estimateRequest(
                 {
                   model: spec.id,
-                  system: [{ text: 'sys' }],
+                  system: [{ text: system }],
                   messages: [],
                   tools: [],
                   maxOutputTokens: spec.maxOutputTokens,
@@ -636,9 +639,79 @@ describe('发送前检查：唯一的压缩触发', () => {
       permissionEffect: 'internal_control',
       fn: async () => ({ status: 'success', message: 'ok' }),
     })
-    await collectWith(build(adapter, comp.port, registry), 'rn_silent', bulkyHistory())
+    // 回报的输入量达到窗口，发出的请求不少于同样的字节数，否则回执不作为锚点。
+    const history = [{ role: 'user' as const, content: 'x'.repeat(spec.contextWindow + 100_000) }]
+    await collectWith(build(adapter, comp.port, registry), 'rn_silent', history)
     // 静默截断已被识别：压缩限制解除，第二步确实折叠了一次。
     expect(comp.state.runs).toBeGreaterThan(0)
+  })
+
+  /**
+   * 回报的输入量超过请求字节数时不作为锚点。回报值取自用户导出的会话：中转站每次都回报约 60 万缓存命中，
+   * 以它为锚点时读数越过软阈值，每次发送前都触发自动压缩并以「无可压缩内容」跳过，工具结果的投递额度为 0。
+   */
+  test('回报的输入量超过请求字节数时不作为锚点：不触发压缩，投递额度按本地估算计算', async () => {
+    const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
+    const spec = lookupModel('claude-opus-5', 'anthropic_messages')
+    let turn = 0
+    const adapter: LlmAdapter = {
+      kind: 'anthropic_messages',
+      transmits: { effort: true },
+      spec,
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, spec.density) }
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: 208_137,
+            outputTokens: 51,
+            cachedTokens: 617_141,
+            cacheWriteTokens: null,
+            reasoningTokens: 0,
+            source: 'provider',
+          },
+        }
+        if (turn++ < 3) {
+          yield {
+            type: 'tool_calls',
+            calls: [{ id: `c${turn}`, name: 'room', arguments: {} }],
+            at: Date.now(),
+          }
+          yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
+        } else {
+          yield { type: 'text_delta', delta: '完成', at: Date.now() }
+          yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
+        }
+      },
+    }
+    const rooms: number[] = []
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'room',
+      description: '记录投递额度',
+      parameters: { type: 'object', properties: {} },
+      actionKind: 'read',
+      objectLabel: '额度',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      fn: async (_args, ctx) => {
+        rooms.push(batchRemaining(ctx))
+        return { status: 'success', message: 'ok' }
+      },
+    })
+    const events = await collectWith(build(adapter, comp.port, registry), 'rn_inflated', [])
+
+    expect(comp.state.runs).toBe(0)
+    expect(events.some((e) => e.type === 'compaction')).toBe(false)
+    expect(rooms).toHaveLength(3)
+    expect(rooms.every((room) => room > 700_000)).toBe(true)
+    const readings = events.filter(
+      (e): e is Extract<AgentEvent, { type: 'context' }> => e.type === 'context',
+    )
+    expect(readings.length).toBeGreaterThan(0)
+    expect(readings.every((e) => e.source === 'estimated' && e.tokens < 100_000)).toBe(true)
   })
 
   test('非容量错误照常上报', async () => {

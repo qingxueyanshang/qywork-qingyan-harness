@@ -70,6 +70,8 @@ function send(
     fingerprint?: string
     providerName?: string
     providerKind?: ProviderKind
+    /** 缺省为 10 MB：夹具回报的输入量都远小于它，回执因此可作为锚点。 */
+    requestBytes?: number
   },
 ) {
   const row = openProviderRequest(store, {
@@ -84,6 +86,7 @@ function send(
     sentCategories: { ...emptyBreakdown(), ...opts.categories },
     omittedCategories: emptyOmitted(),
     payloadHash: `h${turn}`,
+    requestBytes: opts.requestBytes ?? 10_000_000,
     ...(opts.fingerprint ? { cacheRouteFingerprint: opts.fingerprint } : {}),
   })
   markProviderRequestSent(store, row.id)
@@ -559,6 +562,51 @@ describe('真值锚点按接口路线判定', () => {
     const panel = contextPanel(store, conversationId, M(1_000_000))
     expect(panel.source).toBe('estimated')
     expect(panel.total).toBe(3000)
+    store.close()
+  })
+})
+
+describe('回执的输入量超过请求字节数', () => {
+  /**
+   * 数值取自用户导出的会话：中转站对 482,665 字节的请求回报输入 254,215、缓存命中 614,223，
+   * 发出时的运行中读数为 179,230。以该回执为锚点时面板显示 87%，每次发送前都触发自动压缩。
+   */
+  test('不作为锚点，面板显示发出时的运行中读数并标为估算；之后可容纳的回执照常作为锚点', () => {
+    const { store, conversationId, runId } = fixture()
+    const inflated = send(store, runId, {
+      measured: 179_230,
+      occupancy: 179_230,
+      requestBytes: 482_665,
+    })
+    settleProviderRequest(
+      store,
+      inflated,
+      'received',
+      { inputTokens: 254_215, outputTokens: 14, cachedTokens: 614_223, cacheWriteTokens: null },
+      null,
+    )
+    expect(contextBasis(store, conversationId, M(1_000_000)).anchored).toBeNull()
+    expect(contextPanel(store, conversationId, M(1_000_000))).toMatchObject({
+      source: 'estimated',
+      total: 179_230,
+    })
+
+    const next = send(store, runId, {
+      measured: 180_000,
+      occupancy: 180_000,
+      requestBytes: 490_184,
+    })
+    settleProviderRequest(
+      store,
+      next,
+      'received',
+      { inputTokens: 190_000, outputTokens: 10, cachedTokens: 0, cacheWriteTokens: null },
+      null,
+    )
+    expect(contextPanel(store, conversationId, M(1_000_000))).toMatchObject({
+      source: 'actual',
+      total: 190_010,
+    })
     store.close()
   })
 })

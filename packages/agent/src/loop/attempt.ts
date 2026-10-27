@@ -169,6 +169,7 @@ export async function* sendTurn(
     // provider 是否接收仍未知；两件事分开记录，「已发出但未返回」
     // 与「未发出」在账本上才可区分。
     const payload = payloadSnapshotOf(turn.req)
+    turn.requestBytes = payload.bytes
     const measured = estimateRequest(turn.req, density)
     turn.requestId = persist.openRequest({
       runId: input.runId,
