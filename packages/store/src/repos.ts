@@ -1849,7 +1849,8 @@ export function latestSentProviderRequest(
  * 本会话最近一次**带 usage 回报**的请求。
  *
  * 与 `latestSentProviderRequest` 的区别在于判据：本函数要求 provider 实际回报了正数用量。
- * 与 loop 的锚点更新一致，全零 usage 也不能作为真值，否则漏报时会把锚点归零。
+ * 与 loop 的锚点更新（`agent` 的 `settleResponse`）一致，全零 usage 不能作为真值，否则漏报时会把锚点归零；
+ * 输入量超过 `request_bytes` 的回报也不能作为真值：它包含本次请求之外的 token，压缩无法回收。
  */
 export function latestAnchoredProviderRequest(
   store: Store,
@@ -1862,6 +1863,8 @@ export function latestAnchoredProviderRequest(
        WHERE r.conversation_id = ? AND pr.purpose = 'turn' AND pr.provider_input_tokens IS NOT NULL
          AND COALESCE(pr.provider_input_tokens, 0) + COALESCE(pr.provider_output_tokens, 0)
            + COALESCE(pr.provider_cached_tokens, 0) + COALESCE(pr.provider_cache_write_tokens, 0) > 0
+         AND COALESCE(pr.provider_input_tokens, 0) + COALESCE(pr.provider_cached_tokens, 0)
+           + COALESCE(pr.provider_cache_write_tokens, 0) <= pr.request_bytes
        ORDER BY pr.sent_at DESC, pr.id DESC
        LIMIT 1`,
     )

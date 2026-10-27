@@ -372,6 +372,8 @@ export class TurnState {
   refusalNote: string | null = null
   /** 本次请求 provider 回报的 usage。null 表示未回报，不要用累计值代替。 */
   turnUsage: ProviderUsage | null = null
+  /** 本次尝试写入请求账的 `requestBytes`。收尾时据此判定 usage 能否作为占用锚点。 */
+  requestBytes = 0
   /** 本轮可折叠单元在 transcript 中的起点。由收尾阶段设置，工具结果随后追加在其后。 */
   unitStart = 0
 

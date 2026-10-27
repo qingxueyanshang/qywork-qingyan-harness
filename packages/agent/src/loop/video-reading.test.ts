@@ -95,7 +95,10 @@ function adapter(): LlmAdapter & { seen: ChatRequest[] } {
 test('带视频的请求发出前标出未计的视频；回执之后读数采用含视频的真值', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'qy-video-'))
   const real = { path: join(dir, 'a.mp4'), mime: 'video/mp4' }
-  await writeFile(real.path, new Uint8Array([0, 0, 0, 24]))
+  // 10 万字节：路径视频按编码后的大小计入请求字节数，含视频的 5 万回执因此可作为锚点。
+  const bytes = new Uint8Array(100_000)
+  bytes.set([0, 0, 0, 24])
+  await writeFile(real.path, bytes)
   const registry = new ToolRegistry()
   registry.register({
     name: 'look',

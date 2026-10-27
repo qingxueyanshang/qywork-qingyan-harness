@@ -171,26 +171,35 @@ export function payloadSnapshotOf(req: ChatRequest): { hash: string; bytes: numb
   const serialized = JSON.stringify([req.system, req.messages, req.tools])
   return {
     hash: Bun.hash(serialized).toString(36),
-    bytes: Buffer.byteLength(serialized) + resourceExpansion(req),
+    bytes: Buffer.byteLength(serialized) + referenceExpansion(req),
   }
 }
 
 const BASE64_SOURCE_FRAME = JSON.stringify({ kind: 'base64', data: '' }).length
 
 /**
- * 正文库引用块物化为 base64 之后，序列化长度增加的字节数。
+ * 引用块（正文库资源、本地路径）物化为 base64 之后，序列化长度增加的字节数。
  *
  * `requestBytes` 记录的是模型可见请求主体的大小，引用块按引用本身计时，带图请求只记下几十字节，
  * 请求体大小与响应头时间、413 拒绝之间的对照因此失效。
+ * 路径引用按文件编码后的大小计：内联发送时即实际字节，上传后发送地址或改为抽帧时请求体更小，此时该值是上界。
+ * 占用锚点的准入（`turn-end.ts`）以该值作为输入 token 数的上限，不要把路径引用改回按引用本身计：
+ * 带长视频的请求的真实回执会超过上限而不被采用，视频的占用从此无法计入读数。
  */
-function resourceExpansion(req: ChatRequest): number {
+function referenceExpansion(req: ChatRequest): number {
   let extra = 0
   for (const m of req.messages) {
     if (typeof m.content === 'string' || !m.content) continue
     for (const b of m.content) {
-      if (b.type === 'text' || b.source.kind !== 'resource') continue
-      extra +=
-        BASE64_SOURCE_FRAME + Math.ceil(b.source.bytes / 3) * 4 - JSON.stringify(b.source).length
+      if (b.type === 'text') continue
+      const bytes =
+        b.source.kind === 'resource'
+          ? b.source.bytes
+          : b.source.kind === 'path'
+            ? Bun.file(b.source.path).size
+            : null
+      if (bytes === null) continue
+      extra += BASE64_SOURCE_FRAME + Math.ceil(bytes / 3) * 4 - JSON.stringify(b.source).length
     }
   }
   return extra

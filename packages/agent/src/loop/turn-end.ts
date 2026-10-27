@@ -82,53 +82,65 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
    * 工具结果才是锚点未覆盖的增量。
    */
   const turnUsage = turn.turnUsage
-  if (turnUsage) {
-    const total =
-      turnUsage.inputTokens +
-      (turnUsage.cachedTokens ?? 0) +
-      (turnUsage.cacheWriteTokens ?? 0) +
-      turnUsage.outputTokens
-    /*
-     * 不要排除带视频的请求：本地估算对视频记 0，视频的占用只体现在真值中。保留在请求中的视频
-     * 此后每次都随请求发出，排除后读数与压缩触发始终无法计入它。
-     */
-    if (total > 0) {
-      run.anchor = {
-        tokens: total,
-        uncovered: 0,
-        uncoveredVideos: 0,
-        transcriptIndex: transcript.length,
-        model: turn.req.model,
-        headTokens: envelopeHeadTokens(turn.breakdown),
-        envelope: envelopeHashOf(turn.req),
-      }
-      run.contextEstimate = undefined
+  if (!turnUsage) return true
+  const prompt =
+    turnUsage.inputTokens + (turnUsage.cachedTokens ?? 0) + (turnUsage.cacheWriteTokens ?? 0)
+  /*
+   * 回报的输入量超过请求字节数时，该回执不描述本次请求，锚点与静默溢出判定都不使用它。
+   *
+   * 每个 token 至少对应一个字节，`requestBytes` 已按 base64 计入引用的媒体，本次请求的输入量不会超过它
+   * （实测十条接口路线、2.8 万次回报，最高为请求字节数的 0.56 倍）。超出的部分不是本次发送的内容，压缩也无法回收：
+   * 以这类回执为锚点时读数虚高，每次发送前都触发自动压缩并以「无可压缩内容」跳过，工具结果的投递额度降为 0。
+   * 判据与 `store` 的 `latestAnchoredProviderRequest` 相同，两处须一并修改。
+   */
+  if (prompt > turn.requestBytes) {
+    log.warn('agent', 'provider 回报的输入量超过请求字节数，不作为占用读数', {
+      input: prompt,
+      requestBytes: turn.requestBytes,
+    })
+    return true
+  }
+  const total = prompt + turnUsage.outputTokens
+  /*
+   * 不要排除带视频的请求：本地估算对视频记 0，视频的占用只体现在真值中。保留在请求中的视频
+   * 此后每次都随请求发出，排除后读数与压缩触发始终无法计入它。
+   */
+  if (total > 0) {
+    run.anchor = {
+      tokens: total,
+      uncovered: 0,
+      uncoveredVideos: 0,
+      transcriptIndex: transcript.length,
+      model: turn.req.model,
+      headTokens: envelopeHeadTokens(turn.breakdown),
+      envelope: envelopeHashOf(turn.req),
     }
-    /*
-     * 静默溢出。
-     *
-     * 部分 provider 超出窗口时不报错，而是静默丢弃超出部分并照常返回
-     * （实测 deepseek-v4-flash：发出约 200 万 token，回报收到 1,000,086，
-     * 而窗口正好为 1,000,000，全程没有任何错误）。这类 provider 无法通过错误分类
-     * 触发恢复，而会话已在无提示地丢失历史，比超出窗口时报错更严重：
-     * 后者至少有终态。
-     *
-     * 判据由两个真值推出：provider 回报的输入量达到模型的窗口上限。
-     * 无需可调阈值，达到窗口即可确定。
-     *
-     * 处理方式是重新允许压缩，而不是作废本轮：回答已经取得，作废没有意义；
-     * 将进展判据清零后，下一次发送前的检查会重新折叠一次。
-     */
-    if (total >= adapter.spec.contextWindow) {
-      log.warn('agent', 'provider 静默截断：回报的输入量达到窗口上限', {
-        input: total,
-        contextWindow: adapter.spec.contextWindow,
-      })
-      run.compactedAt = -1
-    } else {
-      // 请求已能容纳。此后再次超出窗口属于新情况，溢出恢复重新可用。
-      run.overflowRecovered = false
-    }
+    run.contextEstimate = undefined
+  }
+  /*
+   * 静默溢出。
+   *
+   * 部分 provider 超出窗口时不报错，而是静默丢弃超出部分并照常返回
+   * （实测 deepseek-v4-flash：发出约 200 万 token，回报收到 1,000,086，
+   * 而窗口正好为 1,000,000，全程没有任何错误）。这类 provider 无法通过错误分类
+   * 触发恢复，而会话已在无提示地丢失历史，比超出窗口时报错更严重：
+   * 后者至少有终态。
+   *
+   * 判据由两个真值推出：provider 回报的输入量达到模型的窗口上限。
+   * 无需可调阈值，达到窗口即可确定。
+   *
+   * 处理方式是重新允许压缩，而不是作废本轮：回答已经取得，作废没有意义；
+   * 将进展判据清零后，下一次发送前的检查会重新折叠一次。
+   */
+  if (total >= adapter.spec.contextWindow) {
+    log.warn('agent', 'provider 静默截断：回报的输入量达到窗口上限', {
+      input: total,
+      contextWindow: adapter.spec.contextWindow,
+    })
+    run.compactedAt = -1
+  } else {
+    // 请求已能容纳。此后再次超出窗口属于新情况，溢出恢复重新可用。
+    run.overflowRecovered = false
   }
   return true
 }
