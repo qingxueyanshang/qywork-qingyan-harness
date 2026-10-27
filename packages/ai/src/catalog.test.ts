@@ -23,7 +23,7 @@ import {
 test('MiniMax 与阶跃星辰只收录当前型号，能力按已接通的协议声明', () => {
   const catalog = builtinCatalog()
   expect([...new Set(catalog.filter((m) => m.vendor === 'minimax').map((m) => m.id))]).toEqual([
-    'MiniMax-M3.1-Flash-Preview',
+    'MiniMax-M3.1-Flash',
     'MiniMax-M3',
   ])
   expect([...new Set(catalog.filter((m) => m.vendor === 'stepfun').map((m) => m.id))]).toEqual([
@@ -34,7 +34,7 @@ test('MiniMax 与阶跃星辰只收录当前型号，能力按已接通的协议
     'openai_responses',
     'anthropic_messages',
   ] as const) {
-    const minimax = lookupModel('MiniMax-M3.1-Flash-Preview', kind)
+    const minimax = lookupModel('MiniMax-M3.1-Flash', kind)
     expect(minimax).toMatchObject({
       contextWindow: 1_000_000,
       maxOutputTokens: 524_288,
@@ -42,16 +42,9 @@ test('MiniMax 与阶跃星辰只收录当前型号，能力按已接通的协议
       vision: true,
       video: kind === 'openai_chat_completions',
       thinksByDefault: true,
-      pricing: {
-        input: null,
-        output: null,
-        cacheRead: null,
-        cacheWrite5m: null,
-        cacheWrite1h: null,
-      },
+      pricing: { input: 0.15, output: 0.6, cacheRead: 0.015 },
     })
-    expect(minimax.pricing.note).toContain('M Plan')
-    expect(computeCost(minimax, { inputTokens: 1_000_000, outputTokens: 1_000 })).toBe(0)
+    expect(minimax.longContext).toBeUndefined()
   }
   for (const kind of ['openai_chat_completions', 'anthropic_messages'] as const) {
     expect(lookupModel('step-5-preview', kind)).toMatchObject({
@@ -501,7 +494,7 @@ describe('视频输入', () => {
     expect(supported).toEqual(
       [
         'openai_chat_completions:MiniMax-M3',
-        'openai_chat_completions:MiniMax-M3.1-Flash-Preview',
+        'openai_chat_completions:MiniMax-M3.1-Flash',
         'openai_chat_completions:glm-4.6v',
         'openai_chat_completions:glm-5.3-flash',
         'openai_chat_completions:glm-5.3-flashx',
@@ -709,10 +702,11 @@ describe('长上下文阶梯价', () => {
     expect(computeCost(astra, { ...usage, cacheWriteTokens: 72_001 })).toBe(4.750025)
   })
 
-  test('GPT-6 Sol、GPT-6.1 Sol 与 Luna 在 272K 边界切换完整计费档', () => {
+  test('GPT-6 Sol、GPT-6.1 Sol、GPT-6.1 Terra 与 Luna 在 272K 边界切换完整计费档', () => {
     for (const [id, short, long] of [
       ['gpt-6-sol', [2, 10, 0.2, 2.5], [4, 15, 0.4, 5]],
       ['gpt-6.1-sol', [2, 10, 0.1, 2.5], [4, 15, 0.2, 5]],
+      ['gpt-6.1-terra', [1, 5, 0.05, 1.25], [2, 7.5, 0.1, 2.5]],
       ['gpt-6-luna', [0.1, 0.5, 0.01, 0.125], [0.2, 0.75, 0.02, 0.25]],
     ] as const) {
       const model = lookupModel(id, 'openai_responses')

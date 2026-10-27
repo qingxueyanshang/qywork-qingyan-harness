@@ -566,6 +566,16 @@ const GPT_61_SOL_LONG: LongContextTier = {
   note: '提示词超过 272K token 后整条请求按 $4 / $15（缓存 $0.2）计价',
 }
 
+const GPT_61_TERRA_LONG: LongContextTier = {
+  thresholdTokens: 272_001,
+  input: 2,
+  output: 7.5,
+  cacheRead: 0.1,
+  cacheWrite5m: 2.5,
+  cacheWrite1h: 2.5,
+  note: '提示词超过 272K token 后整条请求按 $2 / $7.5（缓存 $0.1）计价',
+}
+
 const GPT_6_LUNA_LONG: LongContextTier = {
   thresholdTokens: 272_001,
   input: 0.2,
@@ -1283,6 +1293,21 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     {
       ...base,
       ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
+      id: 'gpt-6.1-terra',
+      displayName: 'GPT-6.1 Terra',
+      vendor: 'openai',
+      // 2026-10-27 核对：https://developers.openai.com/api/docs/models/gpt-6.1-terra
+      // 工具调用要求 Responses；官方另支持 none，产品只提供正向思考档位。
+      provider: 'openai_responses',
+      vision: true,
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(1, 5, 0.05, 1.25),
+      longContext: [GPT_61_TERRA_LONG],
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
       id: 'gpt-6-sol',
       displayName: 'GPT-6 Sol',
       vendor: 'openai',
@@ -1866,8 +1891,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       (provider): ModelSpec => ({
         ...base,
         ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
-        id: 'MiniMax-M3.1-Flash-Preview',
-        displayName: 'MiniMax M3.1 Flash Preview',
+        id: 'MiniMax-M3.1-Flash',
+        displayName: 'MiniMax M3.1 Flash',
         vendor: 'minimax',
         provider,
         thinking: provider === 'anthropic_messages' ? 'always_on' : 'reasoning_effort',
@@ -1880,14 +1905,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
         video: provider === 'openai_chat_completions',
         contextWindow: 1_000_000,
         maxOutputTokens: 524_288,
-        pricing: {
-          input: null,
-          output: null,
-          cacheRead: null,
-          cacheWrite5m: null,
-          cacheWrite1h: null,
-          note: '仅 M Plan 订阅 Key 可用；尚未公布按 token 单价',
-        },
+        // 2026-10-27 核对国际站按量价目：不分长上下文档。
+        pricing: usd(0.15, 0.6, 0.015),
       }),
     ),
     {

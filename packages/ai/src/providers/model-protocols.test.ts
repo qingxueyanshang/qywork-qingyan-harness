@@ -77,7 +77,7 @@ async function exchange(
 
 describe('MiniMax M3.1 与 Step 5 协议映射', () => {
   test('Chat 原生工具 schema、思考输出和工具续轮；Step 根级缓存命中只计一次', async () => {
-    for (const model of ['MiniMax-M3.1-Flash-Preview', 'step-5-preview']) {
+    for (const model of ['MiniMax-M3.1-Flash', 'step-5-preview']) {
       const { body, events } = await exchange(
         model,
         'openai_chat_completions',
@@ -169,7 +169,7 @@ describe('MiniMax M3.1 与 Step 5 协议映射', () => {
 
   test('MiniMax Responses 用 reasoning_text 数组回放，工具结果继续同一轮', async () => {
     const { body, events } = await exchange(
-      'MiniMax-M3.1-Flash-Preview',
+      'MiniMax-M3.1-Flash',
       'openai_responses',
       [
         { type: 'response.reasoning_text.delta', delta: '接着读' },

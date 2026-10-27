@@ -178,7 +178,7 @@ describe('思考档位严格遵守用户选择', () => {
   })
 
   test('MiniMax 和 Step 的 Messages 档位与工具结果按原生协议发送', async () => {
-    for (const model of ['MiniMax-M3.1-Flash-Preview', 'step-5-preview']) {
+    for (const model of ['MiniMax-M3.1-Flash', 'step-5-preview']) {
       for (const effort of lookupModel(model, 'anthropic_messages').effortLevels) {
         const body = await send(
           [
@@ -208,7 +208,7 @@ describe('思考档位严格遵守用户选择', () => {
         expect(history[2]?.content).toEqual([
           { type: 'tool_result', tool_use_id: 'c1', content: '内容' },
         ])
-        if (model === 'MiniMax-M3.1-Flash-Preview')
+        if (model === 'MiniMax-M3.1-Flash')
           expect(history[1]?.content[0]).toEqual({ type: 'thinking', thinking: '先读文件' })
       }
     }

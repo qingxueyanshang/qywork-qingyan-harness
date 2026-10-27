@@ -663,7 +663,7 @@ describe('模型目录', () => {
     expect(response.media.map((m) => m.provider)).toEqual(['video'])
   })
 
-  test('新编码模型只列出一行，保留订阅限制与未知单价', async () => {
+  test('新编码模型只列出一行，按官方单价下发', async () => {
     const response = await body(withConfig('openai_chat_completions', 'step-5-preview'))
     expect(response.providers[0]?.models[0]).toMatchObject({
       known: true,
@@ -674,20 +674,15 @@ describe('模型目录', () => {
       'step-5-preview',
     ])
     const minimax = response.library.find((v) => v.id === 'minimax')!.models
-    expect(minimax.map((m) => m.id)).toEqual(['MiniMax-M3.1-Flash-Preview', 'MiniMax-M3'])
-    expect(minimax[0]).toMatchObject({
-      input: null,
-      output: null,
-      cacheRead: null,
-      cacheWrite: null,
-    })
-    expect(minimax[0]?.priceNotes?.join('')).toContain('M Plan')
+    expect(minimax.map((m) => m.id)).toEqual(['MiniMax-M3.1-Flash', 'MiniMax-M3'])
+    expect(minimax[0]).toMatchObject({ input: 0.15, output: 0.6, cacheRead: 0.015 })
     expect(
       (await models(withConfig('anthropic_messages', 'step-5-preview')))[0]?.defaultBaseUrl,
     ).toBe('https://api.stepfun.com')
-    expect(
-      (await models(withConfig('openai_responses', 'MiniMax-M3.1-Flash-Preview')))[0],
-    ).toMatchObject({ known: true, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] })
+    expect((await models(withConfig('openai_responses', 'MiniMax-M3.1-Flash')))[0]).toMatchObject({
+      known: true,
+      effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    })
   })
 
   test('官方默认地址按模型与协议下发，显式端点不被写回覆盖', async () => {
