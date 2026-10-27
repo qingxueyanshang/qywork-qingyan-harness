@@ -153,8 +153,9 @@ async function serveRaw(url: URL, workspaceRoot: string): Promise<Response> {
 
   const abs = resolveAttachmentPath(workspaceRoot, rel)
   const info = await stat(abs).catch(() => null)
-  if (!info?.isFile()) return json({ error: 'not_found' }, 404)
-  if (info.size > MAX_PREVIEW_BYTES) return json({ error: 'too_large' }, 413)
+  if (!info?.isFile()) return json({ error: 'not_found', message: '文件不存在' }, 404)
+  if (info.size > MAX_PREVIEW_BYTES)
+    return json({ error: 'too_large', message: '文件超出预览大小上限' }, 413)
 
   const file = Bun.file(abs)
   return new Response(file, {

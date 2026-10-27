@@ -23,7 +23,8 @@ export const handleTeamApi: ApiHandler = async (url, req, d) => {
     }
     if (req.method === 'PUT') {
       const body = (await req.json().catch(() => null)) as { raw?: string } | null
-      if (typeof body?.raw !== 'string') return json({ error: 'bad request' }, 400)
+      if (typeof body?.raw !== 'string')
+        return json({ error: 'bad request', message: '请求体缺少 raw 字段' }, 400)
       // 先解析再落盘：写入损坏的 JSON 后，下次编排会在完全无关的位置失败。
       try {
         JSON.parse(body.raw)

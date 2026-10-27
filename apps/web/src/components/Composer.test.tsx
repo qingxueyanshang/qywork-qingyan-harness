@@ -314,10 +314,7 @@ describe('放大面板中的输入区', () => {
     const store = await import('../lib/store/index.ts')
     try {
       store.setState('context', null)
-      store.setState(
-        'contextError',
-        '409 /api/conversations/cv_1/context: {"error":"会话绑定的接口或模型已不在配置中"}',
-      )
+      store.setState('contextError', '会话绑定的接口或模型已不在配置中')
       const meter = host.querySelector('.ctx-meter')!
       expect(meter.textContent).toBe('N/A')
       expect(meter.getAttribute('data-tip')).toBe('会话绑定的接口或模型已不在配置中')

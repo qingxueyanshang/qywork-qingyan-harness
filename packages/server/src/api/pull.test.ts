@@ -1,4 +1,4 @@
-/** 覆盖 `pull.ts`：按已保存的接口拉取，凭证只在服务端使用，失败返回地址与状态码。 */
+/** 覆盖 `pull.ts`：按已保存的接口拉取，凭证只在服务端使用，失败返回地址、状态码与对端说明。 */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import type { PullResult } from '@qywork/ai'
 import type { QyConfig } from '@qywork/runtime'
@@ -8,12 +8,18 @@ import type { ApiRequestDeps } from './types.ts'
 const KEY = 'sk-pull-secret-value'
 let server: ReturnType<typeof Bun.serve>
 let models = true
+let unauthorized = false
 beforeAll(() => {
   server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
     fetch(req) {
       const path = new URL(req.url).pathname
+      if (unauthorized)
+        return Response.json(
+          { error: { message: `Incorrect API key provided: ${KEY}`, code: 'invalid_api_key' } },
+          { status: 401 },
+        )
       if (path === '/v1/models' && models && req.headers.get('authorization') === `Bearer ${KEY}`)
         return Response.json({ data: [{ id: 'gpt-5.6-sol' }] })
       return new Response('not found', { status: 404 })
@@ -60,4 +66,17 @@ test('接口不存在、未填写地址、两种来源都失败时分别报错�
   const text = await res.text()
   expect(text).toContain('/v1/models 返回 HTTP 404')
   expect(text).not.toContain(KEY)
+})
+
+/** 原始失败形状：拉取失败只报「/v1/models 返回 HTTP 401」，对端说明的原因（Key 无效）丢失。 */
+test('对端拒绝时报告状态码名称与对端说明，说明中回显的凭证被替换', async () => {
+  unauthorized = true
+  try {
+    const res = await pull(config(`http://127.0.0.1:${server.port}/v1`))
+    expect(res.status).toBe(502)
+    const body = (await res.json()) as { message: string }
+    expect(body.message).toBe('/v1/models 返回 HTTP 401 未授权：Incorrect API key provided: ***')
+  } finally {
+    unauthorized = false
+  }
 })

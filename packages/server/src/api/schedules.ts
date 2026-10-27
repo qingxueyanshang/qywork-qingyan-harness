@@ -32,15 +32,15 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
 
     if (req.method === 'DELETE') {
       return deleteSchedule(d.store, id, d.workspaceRoot) === null
-        ? json({ error: 'not found' }, 404)
+        ? json({ error: 'not found', message: '定时任务不存在' }, 404)
         : json({ ok: true })
     }
 
     if (req.method === 'PUT') {
       const current = listSchedules(d.store, d.workspaceRoot, Date.now()).find((s) => s.id === id)
-      if (!current) return json({ error: 'not found' }, 404)
+      if (!current) return json({ error: 'not found', message: '定时任务不存在' }, 404)
       const body = (await req.json().catch(() => null)) as Partial<Schedule> | null
-      if (!body) return json({ error: 'bad request' }, 400)
+      if (!body) return json({ error: 'bad request', message: '请求体不是有效的 JSON' }, 400)
       // id / workspaceRoot / createdAt / 触发游标 / 绑定会话 / newConversation
       // 一律不接受客户端修改：允许客户端写入 lastRunAt 等于把下次触发时间交给客户端决定，
       // 而修改 newConversation 会使同一任务的历史一半在绑定会话中、一半分散在其他会话中。
@@ -69,7 +69,9 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       const problems = diagnoseSchedule(next)
       if (problems.length) return json({ error: 'invalid', problems }, 422)
       const saved = updateSchedule(d.store, id, d.workspaceRoot, next)
-      return saved === null ? json({ error: 'not found' }, 404) : json({ schedule: saved })
+      return saved === null
+        ? json({ error: 'not found', message: '定时任务不存在' }, 404)
+        : json({ schedule: saved })
     }
   }
 
@@ -95,7 +97,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
     if (!claimed.ok) {
       if (claimed.reason === 'busy') return json({ error: '上一次触发尚未执行完毕' }, 409)
       if (claimed.reason === 'workspace_missing') return json({ error: '项目已移除' }, 409)
-      return json({ error: 'not found' }, 404)
+      return json({ error: 'not found', message: '定时任务不存在' }, 404)
     }
     d.submitSchedule(claimed.claim)
     return json({ ok: true, conversationId: claimed.claim.conversationId })

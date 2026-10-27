@@ -51,7 +51,10 @@ async function mount(opts: { failLan?: string } = {}) {
     store.client as unknown as { api: (path: string, init?: RequestInit) => Promise<unknown> }
   ).api = async (path: string, init?: RequestInit) => {
     if (path === '/api/pairing/lan') {
-      if (opts.failLan) throw new Error(opts.failLan)
+      if (opts.failLan) {
+        const { ApiError } = await import('../lib/client.ts')
+        throw new ApiError(500, path, opts.failLan)
+      }
       lanEnabled = (JSON.parse(String(init?.body)) as { enabled: boolean }).enabled
       return { ok: true }
     }
@@ -122,7 +125,7 @@ test('打开开关生成二维码、再更换地址，外层 Suspense 始终不�
 /** 原始失败形状：开关请求失败时没有任何提示，勾选框停留在点击后的状态，而局域网接入并未开启。 */
 test('开关请求失败时显示原因，勾选框恢复为实际状态', async () => {
   const { host } = await mount({
-    failLan: '500 /api/pairing/lan: {"error":"0.0.0.0:7717 已被占用"}',
+    failLan: '{"error":"0.0.0.0:7717 已被占用"}',
   })
   const box = host.querySelector<HTMLInputElement>('.pair-toggle input')
   if (!box) throw new Error('开关没渲染')

@@ -34,7 +34,7 @@ export const handlePullApi: ApiHandler = async (url, req, d) => {
     )
   } catch (err) {
     if (!(err instanceof PullError)) throw err
-    // 消息是请求路径与状态码；仍按值扫描一遍，凭证不能经由错误信息到达前端。
+    // 消息含对端返回的说明，对端可能在说明中回显凭证；按值扫描一遍，凭证不能经由错误信息到达前端。
     let message = err.message
     for (const s of collectSecrets(d.config).values)
       if (s.length >= 8) message = message.split(s).join('***')

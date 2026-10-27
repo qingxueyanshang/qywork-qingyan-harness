@@ -147,8 +147,13 @@ describe('删除会话的两种失败语义', () => {
   })
 
   test('删除本身失败：同一提示区域显示原文，会话行保留', async () => {
+    const { ApiError } = await import('../lib/client.ts')
     const host = await mountSidebar(() => {
-      throw new Error('404 /api/conversations/cv_1')
+      throw new ApiError(
+        404,
+        '/api/conversations/cv_1',
+        '{"error":"conversation not found","message":"会话不存在"}',
+      )
     })
     await confirmDelete(host)
 
@@ -156,7 +161,7 @@ describe('删除会话的两种失败语义', () => {
       () => host.querySelector('.side-error') !== null,
       () => host.textContent ?? '',
     )
-    expect(host.querySelector('.side-error')?.textContent).toBe('404 /api/conversations/cv_1')
+    expect(host.querySelector('.side-error')?.textContent).toBe('会话不存在')
     expect(host.querySelectorAll('.conv-row').length).toBe(1)
   })
 

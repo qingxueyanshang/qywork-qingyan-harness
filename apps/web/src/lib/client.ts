@@ -155,32 +155,30 @@ function isMobileViewport(): boolean {
 /**
  * REST 调用失败。
  *
- * `detail` 是显示给用户的一句，`message` 是写入日志的一行。服务端的错误体
- * 是 `{ error, message }`，整段 JSON 显示在界面上会成为「409 /api/files/create:
- * {"error":"exists","message":「notes.md 已存在」}」，而用户需要的只有 `message` 字段。
- * 因此在此处取出 `message`；不是 JSON 时退回原文。
+ * `message` 是服务端说明的原因，界面各处直接显示：错误体是 JSON 时取 `problems`（以「；」连接）、
+ * `message` 或 `error`，否则取正文原文，正文为空时为「请求失败（状态码）」。
+ * 状态码与路径只放在 `status` 与 `path` 中，不要写入 `message`：写入后界面显示的是
+ * 「409 /api/files/create: {"error":"exists",…}」这样的整段原文。
  */
 export class ApiError extends Error {
-  readonly detail: string
-
   constructor(
     readonly status: number,
-    path: string,
+    readonly path: string,
     body: string,
   ) {
-    const parsed = (() => {
-      try {
-        const obj = JSON.parse(body) as { message?: unknown; error?: unknown }
-        const m = obj.message ?? obj.error
-        return typeof m === 'string' && m ? m : ''
-      } catch {
-        return ''
-      }
-    })()
-    super(`${status} ${path}${body ? `: ${body.slice(0, 200)}` : ''}`)
+    super(apiReason(status, body))
     this.name = 'ApiError'
-    this.detail = parsed || body.slice(0, 200) || `请求失败（${status}）`
   }
+}
+
+function apiReason(status: number, body: string): string {
+  const text = body.trim()
+  try {
+    const obj = JSON.parse(text) as { problems?: unknown; message?: unknown; error?: unknown }
+    if (Array.isArray(obj.problems) && obj.problems.length) return obj.problems.join('；')
+    for (const m of [obj.message, obj.error]) if (typeof m === 'string' && m) return m
+  } catch {}
+  return text.slice(0, 200) || `请求失败（${status}）`
 }
 
 export class QyClient {

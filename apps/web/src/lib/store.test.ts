@@ -862,33 +862,39 @@ describe('整页刷新后回到刷新前的会话', () => {
   })
 })
 
-describe('将接口错误转换为可读的说明', () => {
-  const err = (body: unknown) =>
-    new Error(`422 /api/config: ${typeof body === 'string' ? body : JSON.stringify(body)}`)
+/**
+ * `ApiError` 的消息是界面直接显示的原因。原始失败形状：消息写成「状态码 路径: 响应体」，
+ * 新建项目与拉取模型等处显示「409 /api/workspaces: {"error":…}」整段原文。
+ */
+describe('接口错误的消息是服务端说明的原因', () => {
+  const err = async (body: unknown) => {
+    const { ApiError } = await import('./client.ts')
+    return new ApiError(422, '/api/config', typeof body === 'string' ? body : JSON.stringify(body))
+  }
 
-  test('提取 problems 数组，逐条列出不合格项', () => {
-    const msg = explainApiError(
-      err({ error: 'invalid', problems: ['缺 model', '缺 baseUrl'] }),
-      '保存失败',
-    )
-    expect(msg).toBe('缺 model；缺 baseUrl')
+  test('提取 problems 数组，逐条列出不合格项', async () => {
+    const e = await err({ error: 'invalid', problems: ['缺 model', '缺 baseUrl'] })
+    expect(e.message).toBe('缺 model；缺 baseUrl')
+    expect(e.status).toBe(422)
   })
 
-  test('没有 problems 时使用 message', () => {
-    expect(explainApiError(err({ message: '档案不存在' }), '保存失败')).toBe('档案不存在')
+  test('没有 problems 时使用 message，再其次使用 error', async () => {
+    expect((await err({ error: 'not found', message: '档案不存在' })).message).toBe('档案不存在')
+    expect((await err({ error: '已存在同名项目：probe' })).message).toBe('已存在同名项目：probe')
   })
 
-  test('problems 优先于 message', () => {
-    expect(explainApiError(err({ problems: ['甲'], message: '乙' }), 'x')).toBe('甲')
+  test('problems 优先于 message', async () => {
+    expect((await err({ problems: ['甲'], message: '乙' })).message).toBe('甲')
   })
 
-  test('空的 problems 数组视为不存在，继续读取 message', () => {
-    expect(explainApiError(err({ problems: [], message: '乙' }), 'x')).toBe('乙')
+  test('空的 problems 数组视为不存在，继续读取 message', async () => {
+    expect((await err({ problems: [], message: '乙' })).message).toBe('乙')
   })
 
-  test('响应体被截断而无法解析时返回原文而不是通用提示：原文仍包含有效信息', () => {
-    const raw = '422 /api/config: {"problems":["缺 mod'
-    expect(explainApiError(new Error(raw), '保存失败')).toBe(raw)
+  test('正文不是 JSON 时取正文，不带状态码与路径；正文为空时写明状态码', async () => {
+    expect((await err('服务暂不可用')).message).toBe('服务暂不可用')
+    expect((await err('{"problems":["缺 mod')).message).toBe('{"problems":["缺 mod')
+    expect((await err('')).message).toBe('请求失败（422）')
   })
 
   test('非 JSON 的错误原样返回', () => {

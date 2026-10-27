@@ -533,7 +533,7 @@ export function serve(opts: ServeOptions) {
 
       if (url.pathname.startsWith('/api/')) {
         if (!pairing.verify(extractToken(req))) {
-          return withCors(json({ error: 'unauthorized' }, 401))
+          return withCors(json({ error: 'unauthorized', message: '令牌无效' }, 401))
         }
         try {
           const res = await handleApi(url, req, {
@@ -574,7 +574,7 @@ export function serve(opts: ServeOptions) {
         } catch (err) {
           return withCors(json({ error: err instanceof Error ? err.message : String(err) }, 500))
         }
-        return withCors(json({ error: 'not found' }, 404))
+        return withCors(json({ error: 'not found', message: '接口不存在' }, 404))
       }
 
       // ── Art 页面的引导页与库文件：随应用发布的静态内容，不校验令牌（见 art.ts） ──

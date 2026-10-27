@@ -141,7 +141,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
 
   if (p === '/api/files/preview') {
     const rel = q.get('path')
-    if (!rel) return json({ error: 'path required' }, 400)
+    if (!rel) return json({ error: 'path required', message: '缺少路径' }, 400)
     const abs = await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true, literal: true })
     return json(await preview(abs, rel))
   }
@@ -152,10 +152,10 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
    */
   if (p === '/api/files/raw') {
     const rel = q.get('path')
-    if (!rel) return json({ error: 'path required' }, 400)
+    if (!rel) return json({ error: 'path required', message: '缺少路径' }, 400)
     const abs = await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true, literal: true })
     const raw = await openRaw(abs, rel)
-    if (!raw) return json({ error: 'not_found' }, 404)
+    if (!raw) return json({ error: 'not_found', message: '文件不存在' }, 404)
     return new Response(raw.body, {
       headers: { 'content-type': raw.mime, 'cache-control': 'no-store' },
     })

@@ -16,6 +16,7 @@ import {
   type ProviderKind,
 } from '@qywork/core'
 import { lookupModel } from '../catalog.ts'
+import { bodyMessage, httpStatusName } from '../errors.ts'
 import { mediaCatalog } from '../media/catalog.ts'
 import {
   channelMediaSpec,
@@ -95,7 +96,12 @@ async function getJson(
     signal.throwIfAborted()
     throw new PullError(`${new URL(url).pathname} 连接失败：${(err as Error).message}`)
   }
-  if (!res.ok) throw new PullError(`${new URL(url).pathname} 返回 HTTP ${res.status}`)
+  if (!res.ok) {
+    const reason = bodyMessage(await res.text().catch(() => ''))
+    throw new PullError(
+      `${new URL(url).pathname} 返回 HTTP ${res.status} ${httpStatusName(res.status)}${reason ? `：${reason}` : ''}`,
+    )
+  }
   try {
     return await res.json()
   } catch {
