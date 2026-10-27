@@ -51,7 +51,7 @@ const track = (type: number, w = 0, h = 0) =>
   el(0xae, cat(el(0x83, u(type, 1)), ...(w ? [el(0xe0, cat(el(0xb0, u(w)), el(0xba, u(h))))] : [])))
 const cluster = el(0x1f43b675, el(0xe7, u(0)), true)
 
-test('读取时长与第一条视频轨的像素宽高；音轨在前时跳过', () => {
+test('读取时长、第一条视频轨的像素宽高与是否有音轨；音轨在前时跳过', () => {
   const file = cat(
     header,
     el(
@@ -65,7 +65,11 @@ test('读取时长与第一条视频轨的像素宽高；音轨在前时跳过',
       true,
     ),
   )
-  expect(matroskaMetadataOf(file)).toEqual({ duration: 10.04, pixels: { w: 854, h: 480 } })
+  expect(matroskaMetadataOf(file)).toEqual({
+    duration: 10.04,
+    pixels: { w: 854, h: 480 },
+    audio: true,
+  })
 })
 
 test('浏览器录制的 WebM 不写 Duration：时长为 null，尺寸照常读出', () => {
@@ -73,7 +77,11 @@ test('浏览器录制的 WebM 不写 Duration：时长为 null，尺寸照常读
     header,
     el(0x18538067, cat(info(null), el(0x1654ae6b, track(1, 1280, 720)), cluster), true),
   )
-  expect(matroskaMetadataOf(file)).toEqual({ duration: null, pixels: { w: 1280, h: 720 } })
+  expect(matroskaMetadataOf(file)).toEqual({
+    duration: null,
+    pixels: { w: 1280, h: 720 },
+    audio: false,
+  })
 })
 
 test('不是 EBML 文件时返回 null；Tracks 超出已读取的范围时尺寸为 null', () => {
@@ -82,5 +90,6 @@ test('不是 EBML 文件时返回 null；Tracks 超出已读取的范围时尺�
   expect(matroskaMetadataOf(whole.subarray(0, whole.length - 4))).toEqual({
     duration: 5,
     pixels: null,
+    audio: false,
   })
 })

@@ -602,7 +602,12 @@ describe('媒体按字节预算换出', () => {
     expect(mediaBytes(video, upload)).toBe(0)
     expect(mediaBytes(video, CAPS)).toBe(0)
     expect(mediaBytes(video, { image: true, video: null })).toBe(0)
-    const meta = (bytes: number) => ({ bytes, seconds: 10, size: { width: 640, height: 360 } })
+    const meta = (bytes: number) => ({
+      bytes,
+      seconds: 10,
+      size: { width: 640, height: 360 },
+      audio: false,
+    })
     expect(videoDelivery(meta(6 * MB), UPLOADING, 2 * MB)).toBe('upload')
     expect(videoDelivery(meta(6 * MB), NATIVE, undefined)).toBe('frames')
     expect(videoDelivery(meta(MB), NATIVE, undefined)).toBe('inline')

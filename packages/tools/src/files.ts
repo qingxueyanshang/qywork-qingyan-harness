@@ -278,7 +278,7 @@ async function readVideo(
   args: Record<string, unknown>,
 ): Promise<ToolOutcome> {
   const shown = displayPath(ctx.workspaceRoot, abs)
-  const meta = videoMetaOf(abs) ?? { bytes: size, seconds: null, size: null }
+  const meta = videoMetaOf(abs) ?? { bytes: size, seconds: null, size: null, audio: false }
   const rule = ctx.density.video
   if (videoDelivery(meta, rule, ctx.videoUploadAbove) === 'frames') {
     // 模型接受原生视频、但该视频超出原生发送范围或接口拒绝过视频时同样抽帧，并写明原因。

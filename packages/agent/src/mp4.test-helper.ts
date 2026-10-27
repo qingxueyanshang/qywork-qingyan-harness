@@ -25,9 +25,22 @@ function tkhd(w: number, h: number): Buffer {
   return box('tkhd', b)
 }
 
-/** `moov` 位于 `mdat` 之后；`mdat` 的长度使文件总长不小于 `bytes`。 */
-export function mp4Bytes(seconds: number, w: number, h: number, bytes = 4096): Uint8Array {
-  const moov = box('moov', mvhd(seconds), box('trak', tkhd(w, h)))
+/** 声音轨：`mdia/hdlr` 的轨道类型为 `soun`，宽高为 0。 */
+function soundTrak(): Buffer {
+  const hdlr = Buffer.alloc(24)
+  hdlr.write('soun', 8, 'latin1')
+  return box('trak', tkhd(0, 0), box('mdia', box('hdlr', hdlr)))
+}
+
+/** `moov` 位于 `mdat` 之后；`mdat` 的长度使文件总长不小于 `bytes`。`audio` 时另带一条声音轨。 */
+export function mp4Bytes(
+  seconds: number,
+  w: number,
+  h: number,
+  bytes = 4096,
+  audio = false,
+): Uint8Array {
+  const moov = box('moov', mvhd(seconds), ...(audio ? [soundTrak()] : []), box('trak', tkhd(w, h)))
   const ftyp = box('ftyp', Buffer.from('isom0000', 'latin1'))
   const pad = Math.max(0, bytes - moov.length - ftyp.length - 8)
   return new Uint8Array(Buffer.concat([ftyp, box('mdat', Buffer.alloc(pad)), moov]))

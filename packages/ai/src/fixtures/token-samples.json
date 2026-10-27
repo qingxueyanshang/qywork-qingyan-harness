@@ -317,228 +317,294 @@
           "width": 320,
           "height": 240,
           "seconds": 1.9,
+          "audio": false,
           "tokens": 176
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 2,
+          "audio": false,
           "tokens": 176
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 10,
+          "audio": false,
+          "tokens": 880
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 10,
+          "audio": true,
           "tokens": 880
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 39,
+          "audio": false,
           "tokens": 3461
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 41,
+          "audio": false,
           "tokens": 3639
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 60,
+          "audio": false,
+          "tokens": 5330
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 60,
+          "audio": true,
           "tokens": 5330
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 3500,
+          "audio": false,
           "tokens": 317299
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 3700,
+          "audio": false,
           "tokens": 335499
         },
         {
           "width": 480,
           "height": 480,
           "seconds": 10,
+          "audio": false,
           "tokens": 2330
         },
         {
           "width": 640,
           "height": 360,
           "seconds": 10,
+          "audio": false,
           "tokens": 2280
         },
         {
           "width": 480,
           "height": 480,
           "seconds": 60,
+          "audio": false,
           "tokens": 14030
         },
         {
           "width": 640,
           "height": 360,
           "seconds": 60,
+          "audio": false,
           "tokens": 13730
         },
         {
           "width": 640,
           "height": 360,
           "seconds": 900,
+          "audio": false,
           "tokens": 206890
         },
         {
           "width": 854,
           "height": 480,
           "seconds": 10.031,
+          "audio": true,
           "tokens": 4130
         },
         {
           "width": 854,
           "height": 480,
           "seconds": 30.023,
+          "audio": true,
           "tokens": 12410
         },
         {
           "width": 854,
           "height": 480,
           "seconds": 120.19199652777777,
+          "audio": true,
           "tokens": 49690
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 2,
+          "audio": false,
           "tokens": 1204
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 4,
+          "audio": false,
           "tokens": 2408
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 4.042,
+          "audio": true,
           "tokens": 2408
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 4.042,
+          "audio": true,
           "tokens": 2408
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 4.042,
+          "audio": true,
           "tokens": 2408
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 8,
+          "audio": false,
           "tokens": 4816
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 10,
+          "audio": false,
+          "tokens": 6020
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 10,
+          "audio": true,
           "tokens": 6020
         },
         {
           "width": 720,
           "height": 1280,
           "seconds": 10,
+          "audio": false,
           "tokens": 6020
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 10.5,
+          "audio": false,
           "tokens": 6020
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 15,
+          "audio": false,
           "tokens": 9035
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 30,
+          "audio": false,
           "tokens": 18080
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 60,
+          "audio": false,
+          "tokens": 36170
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 60,
+          "audio": true,
           "tokens": 36170
         },
         {
           "width": 720,
           "height": 1280,
           "seconds": 60,
+          "audio": false,
           "tokens": 36170
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 120,
+          "audio": false,
           "tokens": 72370
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 153.0026736111111,
+          "audio": true,
           "tokens": 92302
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 300,
+          "audio": false,
           "tokens": 181090
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 600,
+          "audio": false,
           "tokens": 362290
         },
         {
           "width": 1920,
           "height": 1080,
           "seconds": 5.039,
+          "audio": true,
           "tokens": 3010
         },
         {
           "width": 1920,
           "height": 1080,
           "seconds": 10,
+          "audio": false,
           "tokens": 6020
         },
         {
           "width": 1920,
           "height": 1080,
           "seconds": 60,
+          "audio": false,
           "tokens": 36170
         },
         {
           "width": 3840,
           "height": 2160,
           "seconds": 10,
+          "audio": false,
           "tokens": 6020
         },
         {
           "width": 3840,
           "height": 2160,
           "seconds": 60,
+          "audio": false,
           "tokens": 36170
         }
       ]
@@ -598,235 +664,656 @@
           "width": 320,
           "height": 240,
           "seconds": 0.5,
+          "audio": false,
           "tokens": 116
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 1.9,
+          "audio": false,
           "tokens": 230
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 2,
+          "audio": false,
           "tokens": 230
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 10,
+          "audio": false,
+          "tokens": 1142
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 10,
+          "audio": true,
           "tokens": 1142
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 39,
+          "audio": false,
           "tokens": 4448
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 41,
+          "audio": false,
           "tokens": 4676
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 60,
+          "audio": false,
+          "tokens": 6842
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 60,
+          "audio": true,
           "tokens": 6842
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 3500,
+          "audio": false,
           "tokens": 117986
         },
         {
           "width": 320,
           "height": 240,
           "seconds": 3700,
+          "audio": false,
           "tokens": 118020
         },
         {
           "width": 480,
           "height": 480,
           "seconds": 10,
+          "audio": false,
           "tokens": 3302
         },
         {
           "width": 640,
           "height": 360,
           "seconds": 10,
+          "audio": false,
           "tokens": 3052
         },
         {
           "width": 480,
           "height": 480,
           "seconds": 60,
+          "audio": false,
           "tokens": 19802
         },
         {
           "width": 640,
           "height": 360,
           "seconds": 60,
+          "audio": false,
           "tokens": 18302
         },
         {
           "width": 640,
           "height": 360,
           "seconds": 900,
+          "audio": false,
           "tokens": 204034
         },
         {
           "width": 854,
           "height": 480,
           "seconds": 10.031,
+          "audio": true,
           "tokens": 5642
         },
         {
           "width": 854,
           "height": 480,
           "seconds": 30.023,
+          "audio": true,
           "tokens": 16922
         },
         {
           "width": 854,
           "height": 480,
           "seconds": 120.19199652777777,
+          "audio": true,
           "tokens": 67682
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 1,
+          "audio": false,
           "tokens": 1204
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 2,
+          "audio": false,
           "tokens": 2406
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 4,
+          "audio": false,
           "tokens": 4810
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 4.042,
+          "audio": true,
           "tokens": 4810
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 4.042,
+          "audio": true,
           "tokens": 4810
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 4.042,
+          "audio": true,
           "tokens": 4810
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 8,
+          "audio": false,
           "tokens": 9618
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 10,
+          "audio": false,
+          "tokens": 12022
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 10,
+          "audio": true,
           "tokens": 12022
         },
         {
           "width": 720,
           "height": 1280,
           "seconds": 10,
+          "audio": false,
           "tokens": 12022
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 10.5,
+          "audio": false,
           "tokens": 13224
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 15,
+          "audio": false,
           "tokens": 18032
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 30,
+          "audio": false,
           "tokens": 36062
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 60,
+          "audio": false,
+          "tokens": 72122
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 60,
+          "audio": true,
           "tokens": 72122
         },
         {
           "width": 720,
           "height": 1280,
           "seconds": 60,
+          "audio": false,
           "tokens": 72122
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 120,
+          "audio": false,
           "tokens": 144242
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 300,
+          "audio": false,
           "tokens": 205870
         },
         {
           "width": 1280,
           "height": 720,
           "seconds": 600,
+          "audio": false,
           "tokens": 205543
         },
         {
           "width": 1920,
           "height": 1080,
           "seconds": 5.039,
+          "audio": true,
           "tokens": 13487
         },
         {
           "width": 1920,
           "height": 1080,
           "seconds": 10,
+          "audio": false,
           "tokens": 26972
         },
         {
           "width": 1920,
           "height": 1080,
           "seconds": 60,
+          "audio": false,
           "tokens": 161822
         },
         {
           "width": 3840,
           "height": 2160,
           "seconds": 10,
+          "audio": false,
           "tokens": 107702
         },
         {
           "width": 3840,
           "height": 2160,
           "seconds": 60,
+          "audio": false,
           "tokens": 203642
+        }
+      ]
+    },
+    "qwen3.8-omni-flash": {
+      "kind": "openai_chat_completions",
+      "real": {
+        "英文源码": 4184,
+        "中文文档": 3453,
+        "生僻字": 2800,
+        "其他字符": 1198
+      },
+      "images": [
+        {
+          "width": 1024,
+          "height": 768,
+          "tokens": 770
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "tokens": 882
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "tokens": 2042
+        },
+        {
+          "width": 2560,
+          "height": 1440,
+          "tokens": 2481
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "tokens": 66
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "tokens": 2481
+        },
+        {
+          "width": 512,
+          "height": 512,
+          "tokens": 258
+        },
+        {
+          "width": 800,
+          "height": 1600,
+          "tokens": 1252
+        }
+      ],
+      "videos": [
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 1.9,
+          "audio": false,
+          "tokens": 167
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 2,
+          "audio": false,
+          "tokens": 167
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 10,
+          "audio": true,
+          "tokens": 876
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 10,
+          "audio": false,
+          "tokens": 807
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 39,
+          "audio": false,
+          "tokens": 3127
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 41,
+          "audio": false,
+          "tokens": 3287
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 60,
+          "audio": true,
+          "tokens": 5226
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 60,
+          "audio": false,
+          "tokens": 4807
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 3500,
+          "audio": false,
+          "tokens": 81927
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 3700,
+          "audio": false,
+          "tokens": 81927
+        },
+        {
+          "width": 480,
+          "height": 480,
+          "seconds": 10,
+          "audio": false,
+          "tokens": 2257
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "seconds": 10,
+          "audio": false,
+          "tokens": 2207
+        },
+        {
+          "width": 480,
+          "height": 480,
+          "seconds": 60,
+          "audio": false,
+          "tokens": 13507
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "seconds": 60,
+          "audio": false,
+          "tokens": 13207
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "seconds": 900,
+          "audio": false,
+          "tokens": 162007
+        },
+        {
+          "width": 854,
+          "height": 480,
+          "seconds": 10.031,
+          "audio": true,
+          "tokens": 4126
+        },
+        {
+          "width": 854,
+          "height": 480,
+          "seconds": 30.023,
+          "audio": true,
+          "tokens": 12366
+        },
+        {
+          "width": 854,
+          "height": 480,
+          "seconds": 120.19199652777777,
+          "audio": true,
+          "tokens": 49446
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 1,
+          "audio": false,
+          "tokens": 601
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 2,
+          "audio": false,
+          "tokens": 1195
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 4,
+          "audio": false,
+          "tokens": 2383
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 4.042,
+          "audio": true,
+          "tokens": 2410
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 4.042,
+          "audio": true,
+          "tokens": 2410
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 4.042,
+          "audio": true,
+          "tokens": 2410
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 8,
+          "audio": false,
+          "tokens": 4759
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 10,
+          "audio": false,
+          "tokens": 5947
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 10,
+          "audio": true,
+          "tokens": 6016
+        },
+        {
+          "width": 720,
+          "height": 1280,
+          "seconds": 10,
+          "audio": false,
+          "tokens": 5947
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 10.5,
+          "audio": false,
+          "tokens": 5947
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 15,
+          "audio": false,
+          "tokens": 8917
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 30,
+          "audio": false,
+          "tokens": 17827
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 60,
+          "audio": false,
+          "tokens": 35647
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 60,
+          "audio": true,
+          "tokens": 36066
+        },
+        {
+          "width": 720,
+          "height": 1280,
+          "seconds": 60,
+          "audio": false,
+          "tokens": 35647
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 120,
+          "audio": false,
+          "tokens": 71287
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 153.0026736111111,
+          "audio": true,
+          "tokens": 91959
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 300,
+          "audio": false,
+          "tokens": 172807
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 600,
+          "audio": false,
+          "tokens": 165607
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "seconds": 5.039,
+          "audio": true,
+          "tokens": 3011
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "seconds": 10,
+          "audio": false,
+          "tokens": 5947
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "seconds": 60,
+          "audio": false,
+          "tokens": 35647
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "seconds": 10,
+          "audio": false,
+          "tokens": 5947
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "seconds": 60,
+          "audio": false,
+          "tokens": 35647
         }
       ]
     }

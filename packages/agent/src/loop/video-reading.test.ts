@@ -59,7 +59,7 @@ describe('工具结果中的视频块', () => {
         type: 'video',
         mimeType: 'video/mp4',
         source: { kind: 'path', path },
-        meta: { bytes: 4096, seconds: 10, size: { width: 1280, height: 720 } },
+        meta: { bytes: 4096, seconds: 10, size: { width: 1280, height: 720 }, audio: false },
       },
       // 文件已不存在：发送时替换为说明，估算记 0。
       {
@@ -89,7 +89,12 @@ describe('工具结果中的视频块', () => {
 
 describe('视频估算', () => {
   const glm = lookupModel('glm-5.3-flashx', 'openai_chat_completions').density
-  const meta: VideoMeta = { bytes: 1_000_000, seconds: 10, size: { width: 1280, height: 720 } }
+  const meta: VideoMeta = {
+    bytes: 1_000_000,
+    seconds: 10,
+    size: { width: 1280, height: 720 },
+    audio: false,
+  }
 
   test('按时长与画面尺寸计：GLM 10 秒 720p 实测 12,022，单段上限 205,870', () => {
     expect(estimateVideo(meta, glm)).toBe(12_022)
@@ -139,6 +144,22 @@ describe('视频估算', () => {
       DEFAULT_DENSITY,
     )
     expect(image).toBe(estimateImage(null, DEFAULT_DENSITY))
+  })
+
+  /**
+   * Omni 实测：没有时间标记，每段另加 7；全部组合计约 1.84 亿像素，720p 的 300 秒每组缩为 32×18 格（172,807）；
+   * 有音轨时每秒另计 7，153 秒的成片实测 91,959。
+   */
+  test('Omni 按总像素预算缩小每帧，有音轨时按时长另计音频', () => {
+    const omni = lookupModel('qwen3.8-omni-flash', 'openai_chat_completions').density
+    const hd = { width: 1280, height: 720 }
+    expect(estimateVideo({ bytes: 1, seconds: 10, size: hd, audio: false }, omni)).toBe(5_947)
+    expect(estimateVideo({ bytes: 1, seconds: 300, size: hd, audio: false }, omni)).toBe(172_807)
+    expect(estimateVideo({ bytes: 1, seconds: 600, size: hd, audio: false }, omni)).toBe(165_607)
+    expect(estimateVideo({ bytes: 1, seconds: 153.003, size: hd, audio: true }, omni)).toBe(91_960)
+    // 不理解声音的模型不计音频。
+    const flash = lookupModel('qwen3.8-flash', 'openai_chat_completions').density
+    expect(estimateVideo({ ...meta, audio: true }, flash)).toBe(estimateVideo(meta, flash))
   })
 
   test('本轮密度与发送方式同一判定：不接受视频时不计，不能上传时超过常驻上限不计，能上传时不限', () => {

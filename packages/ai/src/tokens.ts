@@ -98,10 +98,11 @@ export interface ImageRule {
 }
 
 /**
- * 一段原生视频的计数规则：`min(maxTokens, base + min(round(秒数 × framesPerSecond), maxFrames) × 每帧)`，
- * 每帧按 `frame` 计，至少一帧。
+ * 一段原生视频的计数规则：`min(maxTokens, base + 帧数 × 每帧 + 音频)`。帧数为 `min(round(秒数 × framesPerSecond), maxFrames)`，
+ * 至少一帧；每帧按 `frame` 计，单帧像素上限取 `frame.maxPixels` 与 `maxTotalPixels / 帧数` 中较小者；
+ * 有音轨时音频按 `round(秒数 × audioPerSecond)` 计。
  *
- * 各家按固定帧率取帧（或把相邻两帧合为一组），帧数取四舍五入；原视频的帧率与音轨不影响用量。
+ * 各家按固定帧率取帧（或把相邻两帧合为一组），帧数取四舍五入；原视频的帧率不影响用量。
  * 不要改为向上取整：真实视频的时长常带零头（4.04 秒），向上取整多计一帧，短视频偏高 20% 以上。
  * 标定方法：同一段文字带与不带一段视频各发一次相减，按合成视频（320×240 至 3840×2160，0.5 秒至 2 小时）与
  * 生成的成片拟合。
@@ -111,7 +112,11 @@ export interface VideoRule {
   /** 单段视频最多取的帧数；`Infinity` 表示实测范围内没有上限。 */
   maxFrames: number
   frame: FrameRule
+  /** 全部帧合计的像素预算：帧数多时每帧先等比缩小；`Infinity` 表示实测范围内没有该预算。 */
+  maxTotalPixels: number
   base: number
+  /** 有音轨时每秒另计的 token；不理解声音的模型为 0。 */
+  audioPerSecond: number
   /** 单段视频的上限；`Infinity` 表示实测范围内没有上限。 */
   maxTokens: number
   /** 本轮原生发送的范围。目录中不设限（`ANY_VIDEO`），由 `agent` 的 `runDensity` 按模型规格与发送能力填写。 */
@@ -180,12 +185,14 @@ export const DEFAULT_DENSITY: TokenDensity = {
   message: 6.4,
   // 每 token 像素取最小、像素上限取最大、固定开销取按张计数的型号（每张约 1350），对每个已测型号都不偏低。
   image: { pixelsPerToken: 770, minPixels: 0, maxPixels: 8_600_000, base: 1350 },
-  // 每帧取两档中较大的计数（28 像素格向上取整、不缩小，每帧开销取较大者），上限取不设上限的一档。
+  // 每帧取各档中较大的计数（28 像素格向上取整、不缩小，每帧开销取较大者），每段开销与音频取较大者，上限取不设上限的一档。
   video: {
     framesPerSecond: 1,
     maxFrames: Number.POSITIVE_INFINITY,
     frame: { patch: 28, rounding: 'ceil', maxPixels: Number.POSITIVE_INFINITY, base: 10 },
-    base: 2,
+    maxTotalPixels: Number.POSITIVE_INFINITY,
+    base: 7,
+    audioPerSecond: 7,
     maxTokens: Number.POSITIVE_INFINITY,
     accepts: ANY_VIDEO,
   },
@@ -216,13 +223,15 @@ export function estimateVideo(meta: VideoMeta | null, d: TokenDensity): number {
   if (!r || !meta || meta.seconds === null || meta.size === null) return 0
   if (videoOutOfRange(meta, r.accepts)) return 0
   const frames = Math.min(r.maxFrames, Math.max(1, Math.round(meta.seconds * r.framesPerSecond)))
-  return Math.min(r.maxTokens, r.base + frames * frameTokens(meta.size, r.frame))
+  const maxPixels = Math.min(r.frame.maxPixels, r.maxTotalPixels / frames)
+  const audio = meta.audio ? Math.round(meta.seconds * r.audioPerSecond) : 0
+  return Math.min(r.maxTokens, r.base + frames * frameTokens(meta.size, r.frame, maxPixels) + audio)
 }
 
-function frameTokens({ width, height }: ImageSize, r: FrameRule): number {
+function frameTokens({ width, height }: ImageSize, r: FrameRule, maxPixels: number): number {
   const pixels = width * height
-  if (pixels > r.maxPixels) {
-    const scale = Math.sqrt(pixels / r.maxPixels)
+  if (pixels > maxPixels) {
+    const scale = Math.sqrt(pixels / maxPixels)
     const cols = Math.max(1, Math.floor(width / scale / r.patch))
     return cols * Math.max(1, Math.floor(height / scale / r.patch)) + r.base
   }

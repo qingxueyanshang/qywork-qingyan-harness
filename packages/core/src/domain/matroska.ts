@@ -1,5 +1,5 @@
 /**
- * Matroska / WebM 容器（mkv / webm）的索引解析：时长与第一条视频轨的像素宽高，不解码画面。
+ * Matroska / WebM 容器（mkv / webm）的索引解析：时长、第一条视频轨的像素宽高与是否有音轨，不解码画面。
  *
  * 只读取文件开头：`Info` 与 `Tracks` 位于第一个 `Cluster` 之前。浏览器录制的 WebM 不写 `Duration`，
  * 此时时长为 null；百炼与智谱对这类文件都以 400 拒绝，调用方据此改为抽帧，不要改为从末尾推算时长后照常发送。
@@ -18,8 +18,9 @@ const TRACK_TYPE = 0x83
 const VIDEO = 0xe0
 const PIXEL_WIDTH = 0xb0
 const PIXEL_HEIGHT = 0xba
-/** `TrackType` 中视频轨的取值。 */
+/** `TrackType` 中视频轨与音轨的取值。 */
 const VIDEO_TRACK = 1
+const AUDIO_TRACK = 2
 
 interface Element {
   id: number
@@ -86,7 +87,13 @@ function float(bytes: Uint8Array, el: Element): number | null {
 const within = (bytes: Uint8Array, el: Element): el is Element & { end: number } =>
   el.end !== null && el.end <= bytes.length
 
-function videoPixels(bytes: Uint8Array, tracks: Element & { end: number }): CanvasPixels | null {
+/** 第一条视频轨的像素宽高，以及是否有音轨。 */
+function tracksOf(
+  bytes: Uint8Array,
+  tracks: Element & { end: number },
+): { pixels: CanvasPixels | null; audio: boolean } {
+  let video: CanvasPixels | null = null
+  let audio = false
   for (const entry of children(bytes, tracks.at, tracks.end)) {
     if (entry.id !== TRACK_ENTRY || !within(bytes, entry)) continue
     let type = 0
@@ -104,24 +111,26 @@ function videoPixels(bytes: Uint8Array, tracks: Element & { end: number }): Canv
       }
       if (w > 0 && h > 0) pixels = { w, h }
     }
-    if (type === VIDEO_TRACK && pixels) return pixels
+    if (type === AUDIO_TRACK) audio = true
+    if (type === VIDEO_TRACK && pixels && !video) video = pixels
   }
-  return null
+  return { pixels: video, audio }
 }
 
 /**
- * 从文件开头的字节中读取时长（秒）与第一条视频轨的像素宽高。不是 EBML 文件时返回 null；
+ * 从文件开头的字节中读取时长（秒）、第一条视频轨的像素宽高与是否有音轨。不是 EBML 文件时返回 null；
  * 读不出的项为 null（没有 `Duration`、`Tracks` 不在已读取的范围内）。
  */
 export function matroskaMetadataOf(
   head: Uint8Array,
-): { duration: number | null; pixels: CanvasPixels | null } | null {
+): { duration: number | null; pixels: CanvasPixels | null; audio: boolean } | null {
   const header = elementAt(head, 0)
   if (!header || header.id !== EBML || header.end === null) return null
   const segment = elementAt(head, header.end)
   if (!segment || segment.id !== SEGMENT) return null
   let duration: number | null = null
   let pixels: CanvasPixels | null = null
+  let audio = false
   for (const el of children(head, segment.at, Math.min(segment.end ?? head.length, head.length))) {
     if (el.id === CLUSTER) break
     if (!within(head, el)) continue
@@ -135,7 +144,7 @@ export function matroskaMetadataOf(
       }
       duration = ticks !== null && ticks > 0 ? (ticks * scale) / 1e9 : null
     }
-    if (el.id === TRACKS) pixels = videoPixels(head, el)
+    if (el.id === TRACKS) ({ pixels, audio } = tracksOf(head, el))
   }
-  return { duration, pixels }
+  return { duration, pixels, audio }
 }
