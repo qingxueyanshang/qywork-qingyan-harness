@@ -1,4 +1,4 @@
-"""覆盖 video.py 与 worker 的 frames 动作：按画面变化选帧、首尾必选、真实时间戳、区间读取、
+"""覆盖 video.py 与 worker 的 frames 动作：按画面变化选帧、首尾必选、真实时间戳、区间读取、不写时长的容器、
 无法打开的文件报告文件名、说明中的未查看区间与声音未处理。测试视频由 PyAV 在测试中生成：红、绿、蓝各 2 秒。
 """
 
@@ -15,10 +15,10 @@ import worker
 COLORS = ((255, 0, 0), (0, 255, 0), (0, 0, 255))
 
 
-def make_clip(path, seconds_each=2, fps=10, size=(160, 120)):
+def make_clip(path, seconds_each=2, fps=10, size=(160, 120), options=None):
     import av
 
-    with av.open(str(path), "w") as c:
+    with av.open(str(path), "w", options=options or {}) as c:
         stream = c.add_stream("mpeg4", rate=fps)
         stream.width, stream.height = size
         stream.pix_fmt = "yuv420p"
@@ -75,6 +75,18 @@ class SampleTest(unittest.TestCase):
             self.assertAlmostEqual(res["duration"], 6.0, delta=0.2)
             self.assertFalse(res["has_audio"])
             self.assertEqual((res["width"], res["height"]), (160, 120))
+
+    def test_container_without_duration_is_scanned(self):
+        # 浏览器录制的 WebM 不写时长（Matroska 的 live 写法）：逐个读取数据包求出时长后照常抽帧。
+        import av
+
+        with TempDir() as d:
+            make_clip(d / "live.mkv", options={"live": "1"})
+            with av.open(str(d / "live.mkv")) as c:
+                self.assertIsNone(c.duration)
+            res = video.sample(d / "live.mkv", d / "out", max_frames=6)
+            self.assertAlmostEqual(res["duration"], 6.0, delta=0.2)
+            self.assertEqual({dominant(f["path"]) for f in res["frames"]}, {"r", "g", "b"})
 
     def test_range_only_returns_frames_inside(self):
         with TempDir() as d:
