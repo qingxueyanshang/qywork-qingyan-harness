@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-`ModelSpec.density`（十项词法系数与图片规则）按实测拟合，2026-10-27 测了 7 档；Gemini 3.x Flash、Claude Fable 5.1、MiMo 因中转限速或余额不足未测，使用默认档。
+`ModelSpec.density`（十项词法系数、图片与视频规则）按实测拟合，2026-10-27 测了 8 档（含 qwen3.8-omni-flash，它不在用户的模型库中，经同一百炼接口调用）；Gemini 3.x Flash、Claude Fable 5.1、MiMo 因中转限速或余额不足未测，使用默认档。
 
 步骤：`bun run .tmp/ctx-probe/run-all.sh <接口名> <模型>`（真实会话样本与 8 种尺寸图片）→ `density-extra.ts`（生僻字、其他字符、每条消息开销）→ `features.ts` → `fit5.py`（文字）与 `fit_images.py`（图片）→ `build-fixture.ts` 更新 `packages/ai/src/fixtures/token-samples.json`。
 
@@ -17,3 +17,5 @@ metadata:
 - qwen3.8-flash 不受 max_tokens 限制，长样本要思考数分钟；设 `NO_THINKING=1` 走关闭思考的直接请求。
 - 视频规则（`TokenDensity.video`）用 `.tmp/ctx-probe/video-probe.ts <接口名> <模型>` 实测，视频由 imageio_ffmpeg 的 ffmpeg 以 testsrc2 生成到 `.tmp/ctx-probe/vid/`，`fit_video.py` 拟合。百炼的 data URI 单项上限 50 MB，更大的视频经适配器以路径发送（自动上传）；Qwen 拒收短于 2 秒的视频。合成视频的时长是整数秒，帧数取整方式只能用真实成片核对：`real-probe.ts <接口名> <模型>` 读取 `.tmp/ctx-probe/real/` 下的成片副本，与估算逐段比较。
 - 回执准入的判定线（`turn-end.ts` 的 `inputLimit`）依赖这些系数的偏差，系数大幅变化后复核该线。相关：[[relay-catalog-no-mention-syntax]]
+- 补测的型号要与已有型号用同一份文本样本：「英文源码」取自仓库当前的 `loop/index.ts`，文件改动后 `build-fixture.ts` 报样本不一致，用 `.tmp/ctx-probe/resample.ts` 按测试数据中的文本补测（改脚本中的接口名与模型）。
+- 理解声音的模型（Omni）按时长另计音频，标定时用带音轨的成片（`real-probe.ts`）核对 `audioPerSecond`。
