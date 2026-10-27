@@ -59,9 +59,9 @@ export interface PulledPick {
 }
 
 /**
- * 按对应型号确定添加时的类别。对应型号是生成目录中的型号时按该型号的类别添加，类别改变时协议按接口地址取默认值，
- * 与 `identifyMediaModel` 中带后缀的名称相同；不在生成目录中时按对话型号添加。未选择对应型号时为拉取结果本身。
- * 类别改变时不保留拉取到的价格与渠道规格：二者属于原类别。
+ * 按对应型号确定添加时的类别。对话型号的对应型号是生成目录中的型号时改按该型号的类别添加，协议按接口地址取默认值，
+ * 与 `identifyMediaModel` 中带后缀的名称相同；其余情况为拉取结果本身。生成型号的对应型号只能是同类别的生成目录。
+ * 类别改变时不保留拉取到的价格：价格属于原类别。
  */
 export function withBase(
   model: PulledModel,
@@ -69,12 +69,9 @@ export function withBase(
   library: readonly MediaLibraryModel[],
   baseUrl: string | undefined,
 ): PulledModel {
-  if (!base) return model
-  const output = library.find((m) => m.id === base)?.output ?? 'chat'
-  if (output === model.output) return model
-  return output === 'chat'
-    ? { id: model.id, output, known: false }
-    : { id: model.id, output, kind: defaultMediaKind(output, baseUrl), known: false }
+  const output = library.find((m) => m.id === base)?.output
+  if (!output || output === model.output) return model
+  return { id: model.id, output, kind: defaultMediaKind(output, baseUrl), known: false }
 }
 
 /**

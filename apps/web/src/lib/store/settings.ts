@@ -294,6 +294,8 @@ export interface LibraryModel {
    * 差价可达两倍。
    */
   priceNotes?: string[]
+  /** 内置目录中的型号。只有内置型号能作为对应型号；用户添加的条目同样按厂商分组。 */
+  builtin: boolean
 }
 
 export interface LibraryVendor {
