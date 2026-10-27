@@ -39,13 +39,6 @@ const JPEG_QUALITY = 82
  */
 const REENCODE_ABOVE_BYTES = 300 * 1024
 
-/**
- * 必要时把图片缩放到长边 `MAX_EDGE`，或把在上限内的大 PNG 改为更小的 JPEG。
- *
- * 其余情况原样返回同一个引用，不重编码（见文件头的实测数据）。
- * 解码或缩放失败时同样原样返回：图片体积偏大只增加传输量，
- * 不应因此使一次 `read_file` 失败。
- */
 /** 发送前按 `MAX_EDGE` 缩放后的宽高，长边在上限内时原样返回。`shrinkImage` 与估算附件图片共用此算式。 */
 export function shrunkSize(size: ImageSize): ImageSize {
   const scale = MAX_EDGE / Math.max(size.width, size.height)
@@ -56,6 +49,13 @@ export function shrunkSize(size: ImageSize): ImageSize {
   }
 }
 
+/**
+ * 必要时把图片缩放到长边 `MAX_EDGE`，或把在上限内的大 PNG 改为更小的 JPEG。
+ *
+ * 其余情况原样返回同一个引用，不重编码（见文件头的实测数据）。
+ * 解码或缩放失败时同样原样返回：图片体积偏大只增加传输量，
+ * 不应因此使一次 `read_file` 失败。
+ */
 export async function shrinkImage(
   bytes: Uint8Array,
   mime: string,
