@@ -29,6 +29,7 @@ export {
   boundExecutedOutcome,
   chargeBatchBudget,
   chargeImage,
+  chargeVideo,
   continuationNote,
   decodeUtf8Boundary,
   deliveredTokens,
@@ -42,7 +43,6 @@ export {
   tailRetain,
   tokensToBytes,
   tokensToMaxBytes,
-  VIDEO_BUDGET_TOKENS,
 } from './delivery.ts'
 // 电脑控制端口：tools 据此实现桌面工具，server 的协调器实现该端口，由 runtime 注入
 export type {
@@ -147,3 +147,5 @@ export {
   ToolRegistry,
   type ToolSpec,
 } from './registry.ts'
+// 视频的时长与画面尺寸：tools 的读取、runtime 的附件与压缩估算、server 的画布尺寸共用同一读取函数
+export { movieMetadataOfFile, videoMetaOf } from './video-meta.ts'

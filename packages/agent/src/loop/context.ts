@@ -5,7 +5,7 @@ import { reconcileBreakdown } from '@qywork/core'
 import { softLimit } from './request.ts'
 import type { LoopHost, RunState, TurnState } from './run-state.ts'
 
-/** 读数中如实标出尚无真值的视频段数（`RunState.unmeasuredVideos`）。 */
+/** 读数中如实标出读不出时长或画面尺寸、尚无真值的视频段数（`RunState.unmeasuredVideos`）。 */
 export function contextEvent(
   host: LoopHost,
   run: RunState,

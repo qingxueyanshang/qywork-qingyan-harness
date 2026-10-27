@@ -28,9 +28,10 @@ import {
   summaryCutOf,
   tailRetain,
   unitKey,
+  videoMetaOf,
 } from '@qywork/agent'
 import type { TokenDensity, WireMessage } from '@qywork/ai'
-import { estimateImage, estimateMessages } from '@qywork/ai'
+import { estimateImage, estimateMessages, estimateVideo } from '@qywork/ai'
 import type {
   ActionKind,
   Attachment,
@@ -40,7 +41,13 @@ import type {
   MessageId,
   Step,
 } from '@qywork/core'
-import { type ImageSize, imageSizeOf, isInlineImage, isNoticeStep } from '@qywork/core'
+import {
+  type ImageSize,
+  imageSizeOf,
+  isInlineImage,
+  isInlineVideo,
+  isNoticeStep,
+} from '@qywork/core'
 import {
   getConversation,
   latestSentProviderRequest,
@@ -113,20 +120,24 @@ function attachmentSize(abs: string): ImageSize | null | undefined {
 }
 
 /**
- * 附件中的图片按发送时的尺寸估算：读取文件头，长边超过上限时按发送前的缩放（`shrunkSize`）换算。
- * 视频与其他文件不计入，与请求侧相同：视频的估算记 0，其他文件只以路径写入正文。读不出尺寸时按尺寸未知计。
+ * 附件中的媒体按发送时的形态估算，与请求侧（`estimateContent`）相同：图片读取文件头，长边超过上限时按发送前的缩放
+ * （`shrunkSize`）换算，读不出尺寸时按尺寸未知计；视频按时长与画面尺寸计（`estimateVideo`）。
+ * 其他文件只以路径写入正文，不计入；文件已不存在时不计入。
  */
-function attachmentImageTokens(
+function attachmentMediaTokens(
   workspaceRoot: string,
   files: readonly Attachment[],
   density: TokenDensity,
 ): number {
   let total = 0
   for (const a of files) {
+    const abs = isAbsolute(a.path) ? resolve(a.path) : resolve(workspaceRoot, a.path)
+    if (isInlineVideo(a.path)) {
+      total += estimateVideo(videoMetaOf(abs), density)
+      continue
+    }
     if (!isInlineImage(a.path)) continue
-    const size = attachmentSize(
-      isAbsolute(a.path) ? resolve(a.path) : resolve(workspaceRoot, a.path),
-    )
+    const size = attachmentSize(abs)
     if (size === undefined) continue
     total += estimateImage(size && shrunkSize(size), density)
   }
@@ -447,7 +458,7 @@ export class RuntimeCompaction implements CompactionPort {
    * 用主模型的同一计量口径测量 manifest 前后的历史投影。
    *
    * 面板只用两者差额修正完整请求，因此系统提示词、工具表等头部不在此处重复
-   * 计量。附件中的图片在 `collectUnits` 里按宽高计入 `unit.tokens`（`attachmentImageTokens`）；收纳工具
+   * 计量。附件中的媒体在 `collectUnits` 里计入 `unit.tokens`（`attachmentMediaTokens`）；收纳工具
    * 正文时仍补回附件差额，口径与实际请求一致。
    */
   private estimateProjection(
@@ -534,10 +545,10 @@ export class RuntimeCompaction implements CompactionPort {
       units.push({
         key: cutKey(cut),
         cut,
-        // 附件中的图片按宽高计入、视频不计入，与装配侧（`estimateContent`）口径一致；按 base64 长度估算会高出两个数量级。
+        // 附件中的媒体与装配侧（`estimateContent`）口径一致；图片按 base64 长度估算会高出两个数量级。
         tokens:
           estimateMessages([...context, wire], density) +
-          attachmentImageTokens(this.deps.workspaceRoot, m.attachments, density),
+          attachmentMediaTokens(this.deps.workspaceRoot, m.attachments, density),
         messages: [...context, wire],
         row: {
           id: m.id,
@@ -562,7 +573,7 @@ export class RuntimeCompaction implements CompactionPort {
             cut: stepCut,
             tokens:
               estimateMessages(u.messages, density) +
-              attachmentImageTokens(this.deps.workspaceRoot, files, density),
+              attachmentMediaTokens(this.deps.workspaceRoot, files, density),
             messages: u.messages,
             /*
              * run 内注入的用户消息同样需要 `row`，否则该消息折叠进摘要线之后

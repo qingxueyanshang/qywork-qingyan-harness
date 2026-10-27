@@ -311,6 +311,152 @@
           "height": 1600,
           "tokens": 1252
         }
+      ],
+      "videos": [
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 10,
+          "tokens": 880
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 60,
+          "tokens": 5330
+        },
+        {
+          "width": 480,
+          "height": 480,
+          "seconds": 10,
+          "tokens": 2330
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "seconds": 10,
+          "tokens": 2280
+        },
+        {
+          "width": 480,
+          "height": 480,
+          "seconds": 60,
+          "tokens": 14030
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "seconds": 60,
+          "tokens": 13730
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "seconds": 900,
+          "tokens": 206890
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 2,
+          "tokens": 1204
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 4,
+          "tokens": 2408
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 8,
+          "tokens": 4816
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 10,
+          "tokens": 6020
+        },
+        {
+          "width": 720,
+          "height": 1280,
+          "seconds": 10,
+          "tokens": 6020
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 10.5,
+          "tokens": 6020
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 15,
+          "tokens": 9035
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 30,
+          "tokens": 18080
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 60,
+          "tokens": 36170
+        },
+        {
+          "width": 720,
+          "height": 1280,
+          "seconds": 60,
+          "tokens": 36170
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 120,
+          "tokens": 72370
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 300,
+          "tokens": 181090
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 600,
+          "tokens": 362290
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "seconds": 10,
+          "tokens": 6020
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "seconds": 60,
+          "tokens": 36170
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "seconds": 10,
+          "tokens": 6020
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "seconds": 60,
+          "tokens": 36170
+        }
       ]
     },
     "glm-5.3-flashx": {
@@ -361,6 +507,158 @@
           "width": 800,
           "height": 1600,
           "tokens": 1684
+        }
+      ],
+      "videos": [
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 10,
+          "tokens": 1142
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "seconds": 60,
+          "tokens": 6842
+        },
+        {
+          "width": 480,
+          "height": 480,
+          "seconds": 10,
+          "tokens": 3302
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "seconds": 10,
+          "tokens": 3052
+        },
+        {
+          "width": 480,
+          "height": 480,
+          "seconds": 60,
+          "tokens": 19802
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "seconds": 60,
+          "tokens": 18302
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "seconds": 900,
+          "tokens": 204034
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 1,
+          "tokens": 1204
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 2,
+          "tokens": 2406
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 4,
+          "tokens": 4810
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 8,
+          "tokens": 9618
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 10,
+          "tokens": 12022
+        },
+        {
+          "width": 720,
+          "height": 1280,
+          "seconds": 10,
+          "tokens": 12022
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 10.5,
+          "tokens": 13224
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 15,
+          "tokens": 18032
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 30,
+          "tokens": 36062
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 60,
+          "tokens": 72122
+        },
+        {
+          "width": 720,
+          "height": 1280,
+          "seconds": 60,
+          "tokens": 72122
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 120,
+          "tokens": 144242
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 300,
+          "tokens": 205870
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "seconds": 600,
+          "tokens": 205543
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "seconds": 10,
+          "tokens": 26972
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "seconds": 60,
+          "tokens": 161822
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "seconds": 10,
+          "tokens": 107702
+        },
+        {
+          "width": 3840,
+          "height": 2160,
+          "seconds": 60,
+          "tokens": 203642
         }
       ]
     }
