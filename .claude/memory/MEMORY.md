@@ -28,3 +28,4 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [画布提交前不在背后改写提示词](canvas-prompt-no-hidden-rewrite.md) — 手写编号与型号写法不一致时应可见地提示，按型号自动改写已被否决并撤回
 - [中转目录不提供引用写法](relay-catalog-no-mention-syntax.md) — hongcheng 与木木的目录、计费清单都没有「@Image1 / @图片1」字段，拉取无法检测
 - [截断内容沿用原有悬停提示](reuse-existing-hover-tooltip.md) — 显示全文用 `data-tip`，不新增点击浮层；用户以现有界面为参照时按参照的形式实现
+- [.tmp/scratch 由并行会话共用](scratch-dir-shared-between-sessions.md) — 提交说明不用固定文件名，写入本会话私有的临时目录；曾被对方的同名文件覆盖导致说明错误
