@@ -63,6 +63,13 @@ export class ProviderError extends Error {
    */
   readonly timedOut: boolean
   /**
+   * 对端是否明确报告了这次失败：带 HTTP 状态的响应，或 200 之后的流内错误事件。
+   *
+   * 请求行据此记为「被拒绝」，否则记为「结果不明」。不要改为只判断 `status`：
+   * 流内错误事件没有状态码，中转站以这种方式报告并发超限等拒绝，只判断状态码会把对端的明确答复记为结果不明。
+   */
+  readonly rejected: boolean
+  /**
    * 失败时刻的传输层读数。由 `classifyProviderError` 在适配器出口处填写；
    * 请求发出之前的失败（参数、路径、本地拒绝）没有该读数，为 null。
    */
@@ -78,6 +85,8 @@ export class ProviderError extends Error {
     usage?: ProviderUsage
     retryAfterMs?: number
     timedOut?: boolean
+    /** 未提供时按是否带 HTTP 状态判定。 */
+    rejected?: boolean
     cause?: unknown
   }) {
     super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined)
@@ -90,6 +99,7 @@ export class ProviderError extends Error {
     this.usage = opts.usage
     this.retryAfterMs = opts.retryAfterMs ?? null
     this.timedOut = opts.timedOut ?? false
+    this.rejected = opts.rejected ?? opts.status !== undefined
   }
 }
 
@@ -277,7 +287,7 @@ export function classifyStreamError(
     ...(param ? { providerParam: param } : {}),
   }
   const build = (errorCode: ErrorCode) =>
-    new ProviderError({ code: errorCode, message, provider, detail })
+    new ProviderError({ code: errorCode, message, provider, detail, rejected: true })
 
   if (quotaExhausted(event, message)) return build('insufficient_quota')
   if (/rate[\s_-]?limit|too[\s_-]?many[\s_-]?requests/.test(reported)) return build('rate_limited')

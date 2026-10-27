@@ -1181,10 +1181,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     ).flat()
     const n = byId(id)
     if (n?.type !== 'timeline') return
-    if (!added.length) {
+    // 时长读取失败的视频不加入轨道，须写明是哪一个；不能报成「只有视频可以加入」。
+    const unreadable = videos.filter((p) => !added.some((c) => c.path === p))
+    if (unreadable.length) {
+      setFault(`无法读取视频时长：${unreadable.map((p) => p.split('/').pop()).join('、')}`)
+    } else if (!added.length) {
       setFault('只有视频可以加入时间线')
-      return
     }
+    if (!added.length) return
     await apply([{ op: 'update', id, clips: insertClips(n.clips, gap ?? n.clips.length, added) }])
   }
 

@@ -9,6 +9,7 @@ import {
   modelCatalogError,
   setEffort,
   setModel,
+  setState,
   state,
 } from '../lib/store/index.ts'
 import { IconChevron } from './Icons.tsx'
@@ -97,7 +98,12 @@ export function ModelPicker() {
   const pickEffort = async (lv: EffortLevel) => {
     const ref = activeModel()
     if (!ref) return
-    await setEffort(ref.provider, ref.model, lv)
+    await setEffort(ref.provider, ref.model, lv).catch((e: unknown) =>
+      setState('notice', {
+        reason: 'effort_save_failed',
+        message: `推理等级保存失败：${e instanceof Error ? e.message : String(e)}`,
+      }),
+    )
   }
 
   return (

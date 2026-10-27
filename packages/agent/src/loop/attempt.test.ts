@@ -1030,6 +1030,8 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
             message: 'Concurrency limit exceeded for account, please retry later',
             provider: 'anthropic_messages',
             detail: { providerCode: 'gateway_concurrency_limit' },
+            // 流内错误事件：对端已明确答复，形状同 `classifyStreamError` 的产出。
+            rejected: true,
           })
         }
         yield { type: 'text_delta', delta: '完成', at: Date.now() }
@@ -1038,7 +1040,8 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     }
     const { rec, events } = await collect(adapter)
     expect(calls).toBe(2)
-    expect(rec.settled.map((r) => r.status)).toEqual(['uncertain', 'received'])
+    // 原始失败形状：中转站在 200 之后的流内报告并发超限，账本中 1,657 行被记为结果不明。
+    expect(rec.settled.map((r) => r.status)).toEqual(['rejected', 'received'])
     expect(rec.diagnostics[0]?.retry.decision).toBe('resend')
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')

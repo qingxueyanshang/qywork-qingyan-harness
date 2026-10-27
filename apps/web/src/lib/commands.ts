@@ -9,7 +9,14 @@ import { ROLE_COMMAND } from '@qywork/core'
 import type { JSX } from 'solid-js'
 import { IconNewChat, IconSpinner, IconTarget, IconUsers } from '../components/Icons.tsx'
 import { slashQuery } from './slash.ts'
-import { compactContext, newConversation, sendMessage, setGoal, state } from './store/index.ts'
+import {
+  compactContext,
+  newConversation,
+  sendMessage,
+  setGoal,
+  setState,
+  state,
+} from './store/index.ts'
 
 export interface Command {
   id: string
@@ -34,7 +41,13 @@ export function buildCommands(): Command[] {
       slash: 'new',
       hint: '当前对话保留在列表中',
       icon: IconNewChat,
-      run: () => void newConversation(),
+      run: () =>
+        void newConversation().catch((e: unknown) =>
+          setState('notice', {
+            reason: 'new_conversation_failed',
+            message: `无法新建会话：${e instanceof Error ? e.message : String(e)}`,
+          }),
+        ),
     },
     {
       id: 'compact',

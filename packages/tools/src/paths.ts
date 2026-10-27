@@ -26,8 +26,11 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 export class PathNotFoundError extends Error {
   readonly errorKind = 'path_not_found'
 
-  constructor(readonly attempted: string) {
-    super(`路径不存在：${attempted}
+  constructor(
+    readonly attempted: string,
+    param?: string,
+  ) {
+    super(`${paramPrefix(param)}路径不存在：${attempted}
 用 list_dir 或 glob 确认其实际位置后重试。`)
     this.name = 'PathNotFoundError'
   }
@@ -53,9 +56,12 @@ export class PathNotFoundError extends Error {
 export class PathEscapeError extends Error {
   readonly errorKind = 'path_out_of_workspace'
 
-  constructor(readonly attempted: string) {
+  constructor(
+    readonly attempted: string,
+    param?: string,
+  ) {
     super(
-      `路径越界，已拒绝：${attempted}\n` +
+      `${paramPrefix(param)}路径越界，已拒绝：${attempted}\n` +
         '该路径不在工作区（以及配置中显式放行的额外目录）之内，' +
         '且当前为「自动审批」模式。\n' +
         '要么改用工作区内的路径继续，要么停止并告知用户，由用户二选一：' +
@@ -65,6 +71,14 @@ export class PathEscapeError extends Error {
     )
     this.name = 'PathEscapeError'
   }
+}
+
+/**
+ * 报错开头写明是哪个参数。路径不是工具的主参数时（`run_command` 的 `cwd`），
+ * 只写「路径不存在：null」无法判断是哪一项写错了。
+ */
+function paramPrefix(param: string | undefined): string {
+  return param ? `参数 ${param} 的` : ''
 }
 
 /**
@@ -197,7 +211,13 @@ export function writableRoots(roots: RootsInput): WorkspaceRoots {
 export async function resolveInWorkspace(
   roots: RootsInput,
   candidate: string,
-  opts: { mustExist?: boolean; literal?: boolean; followFinalSymlink?: boolean } = {},
+  opts: {
+    mustExist?: boolean
+    literal?: boolean
+    followFinalSymlink?: boolean
+    /** 写入报错开头的参数名；路径不是该工具的主参数时传入。 */
+    param?: string
+  } = {},
 ): Promise<string> {
   const { workspaceRoot, additional, readOnly, unrestricted } = normalizeRoots(roots)
   // 从 file URL 解出的路径已是文件系统字面值，不再解码文件名中的百分号。
@@ -230,7 +250,7 @@ export async function resolveInWorkspace(
    * 调用方用它记录本轮是否已读取，返回字面路径会使软链根目录下的新鲜度判定始终错误。
    */
   if (unrestricted) {
-    if (opts.mustExist) await assertExists(targetReal, candidate)
+    if (opts.mustExist) await assertExists(targetReal, candidate, opts.param)
     return targetReal
   }
 
@@ -251,7 +271,7 @@ export async function resolveInWorkspace(
        * 顺序相反时，「文件不存在」这一回复本身就泄露了工作区外某个路径是否存在，
        * 而拦截边界外的访问正是这一层的职责。
        */
-      if (opts.mustExist) await assertExists(targetReal, candidate)
+      if (opts.mustExist) await assertExists(targetReal, candidate, opts.param)
       // 判定与返回使用同一个路径。两者不同时，判定的是 A、写入的是 B，
       // 边界检查形同虚设；调用方按返回值记录读取状态时也会与读取路径不一致
       // （`files.ts` 的本轮已读判定在软链根目录下会始终判为 stale）。
@@ -264,12 +284,12 @@ export async function resolveInWorkspace(
   for (const extra of readOnly ?? []) {
     const real = await realpath(extra).catch(() => null)
     if (real !== null && isInside(real, targetReal)) {
-      if (opts.mustExist) await assertExists(targetReal, candidate)
+      if (opts.mustExist) await assertExists(targetReal, candidate, opts.param)
       return targetReal
     }
   }
 
-  throw new PathEscapeError(candidate)
+  throw new PathEscapeError(candidate, opts.param)
 }
 
 /**
@@ -294,12 +314,12 @@ async function resolveForWrite(target: string): Promise<string> {
 }
 
 /** 确认目标存在。`mustExist` 的调用方由此得到「不存在」而不是「没有权限」。 */
-async function assertExists(target: string, candidate: string): Promise<void> {
+async function assertExists(target: string, candidate: string, param?: string): Promise<void> {
   const ok = await stat(target).then(
     () => true,
     () => false,
   )
-  if (!ok) throw new PathNotFoundError(candidate)
+  if (!ok) throw new PathNotFoundError(candidate, param)
 }
 
 /** 已存在的最近祖先目录，以及从该目录到目标之间的剩余路径段。 */

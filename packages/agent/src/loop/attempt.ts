@@ -244,8 +244,8 @@ export async function* sendTurn(
       /*
        * 终态判据是**「provider 是否答复过」**，不是错误码。
        *
-       * 有 HTTP 状态码表示 provider 明确拒绝，记为 `rejected`；没有状态码表示连接层未成功，
-       * 是否送达、是否计费均无从判断，只能记为 `uncertain`。
+       * 对端明确报告了失败（HTTP 错误状态或流内错误事件，见 `ProviderError.rejected`）记为 `rejected`；
+       * 其余情况是连接层未成功，是否送达、是否计费均无从判断，只能记为 `uncertain`。
        * 不要按 `code === 'stream_idle_timeout'` 判定：那会把一次「未连接成功」
        * 记为「provider 已拒绝」，这是无依据的确定性。
        *
@@ -256,7 +256,7 @@ export async function* sendTurn(
        */
       persist.settleRequest(
         requestId,
-        interrupted ? 'uncertain' : pe?.status !== undefined ? 'rejected' : 'uncertain',
+        interrupted ? 'uncertain' : pe?.rejected ? 'rejected' : 'uncertain',
         pe?.usage ?? null,
         interrupted ? null : code,
         turn.rawStop,
@@ -427,6 +427,7 @@ export async function* sendTurn(
         ...(pe.detail !== undefined ? { detail: pe.detail } : {}),
         ...(pe.retryAfterMs !== null ? { retryAfterMs: pe.retryAfterMs } : {}),
         ...(pe.timedOut ? { timedOut: true } : {}),
+        rejected: pe.rejected,
         cause: err,
       })
     } finally {

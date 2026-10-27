@@ -295,6 +295,16 @@ describe('按用户的下一步动作分类', () => {
     expect(denied.message).toBe('invalid x-api-key')
   })
 
+  /** 请求行据此区分「被拒绝」与「结果不明」：流内错误事件没有状态码，但对端已明确答复。 */
+  test('HTTP 错误状态与流内错误事件都记为对端明确拒绝，传输层失败不是', () => {
+    expect(
+      classifyStreamError(P, { type: 'error', message: 'Concurrency limit exceeded' }).rejected,
+    ).toBe(true)
+    expect(classifyProviderError(P, http(429, 'Rate limit reached')).rejected).toBe(true)
+    const reset = new APIConnectionError({ cause: transport('ECONNRESET', 'read') })
+    expect(classifyProviderError(P, reset).rejected).toBe(false)
+  })
+
   test('事件不含文案时改用 code / type，不编造文案', () => {
     expect(classifyStreamError(P, { code: 'server_error' }).message).toBe('server_error')
     expect(classifyStreamError(P, {}).message).toBe('模型服务返回错误事件')

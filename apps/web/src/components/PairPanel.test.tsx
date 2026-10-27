@@ -1,5 +1,5 @@
 /**
- * 覆盖 `PairPanel.tsx`：切换开关与更换地址期间不得触发外层 Suspense。
+ * 覆盖 `PairPanel.tsx`：切换开关与更换地址期间不得触发外层 Suspense；开关失败时显示原因并恢复为实际状态。
  *
  * 设置内容区只有一层 Suspense，它挂起时整页内容被移出 DOM，滚动位置随之归零。
  * 判据是外层 fallback 的求值次数：Solid 只在边界挂起时才读取 `fallback`。
@@ -43,7 +43,7 @@ const CANDIDATES = [
   { name: 'vEthernet', address: '172.21.16.1', url: 'http://172.21.16.1:1', qr: 'http://b/' },
 ]
 
-async function mount() {
+async function mount(opts: { failLan?: string } = {}) {
   const store = await import('../lib/store/index.ts')
   const original = store.client.api
   let lanEnabled = false
@@ -51,6 +51,7 @@ async function mount() {
     store.client as unknown as { api: (path: string, init?: RequestInit) => Promise<unknown> }
   ).api = async (path: string, init?: RequestInit) => {
     if (path === '/api/pairing/lan') {
+      if (opts.failLan) throw new Error(opts.failLan)
       lanEnabled = (JSON.parse(String(init?.body)) as { enabled: boolean }).enabled
       return { ok: true }
     }
@@ -116,4 +117,21 @@ test('打开开关生成二维码、再更换地址，外层 Suspense 始终不�
 
   expect(host.querySelector('.pair-qr svg')).not.toBeNull()
   expect(suspended.times).toBe(0)
+})
+
+/** 原始失败形状：开关请求失败时没有任何提示，勾选框停留在点击后的状态，而局域网接入并未开启。 */
+test('开关请求失败时显示原因，勾选框恢复为实际状态', async () => {
+  const { host } = await mount({
+    failLan: '500 /api/pairing/lan: {"error":"0.0.0.0:7717 已被占用"}',
+  })
+  const box = host.querySelector<HTMLInputElement>('.pair-toggle input')
+  if (!box) throw new Error('开关没渲染')
+  box.checked = true
+  box.dispatchEvent(new Event('change', { bubbles: true }))
+  await waitFor(
+    () => (host.textContent ?? '').includes('0.0.0.0:7717 已被占用'),
+    () => host.innerHTML,
+  )
+  expect(host.querySelector<HTMLInputElement>('.pair-toggle input')?.checked).toBe(false)
+  expect(host.querySelector('.pair-qr')).toBeNull()
 })
