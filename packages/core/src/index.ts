@@ -84,6 +84,8 @@ export {
   textReferenceProblems,
   validateCanvas,
 } from './domain/canvas.ts'
+// 生成模型的协议与类别：配置校验、目录、设置页共用
+export { CHANNEL_VENDORS, type ChannelVendor, channelVendorOf } from './domain/channel-vendors.ts'
 // id 与构造器：账本、事件、协议三处都按它们对齐类型
 export {
   type ConversationId,
@@ -106,7 +108,6 @@ export {
 } from './domain/ids.ts'
 export { type ImageSize, imageSizeOf } from './domain/image-size.ts'
 export { matroskaMetadataOf } from './domain/matroska.ts'
-// 生成模型的协议与类别：配置校验、目录、设置页共用
 export {
   type ChannelImageSpec,
   type ChannelPrice,
@@ -119,8 +120,6 @@ export {
   GENERATE_OUTPUTS,
   type GenerateOutput,
   identifyMediaModel,
-  isArkEndpoint,
-  isDashScopeEndpoint,
   MEDIA_INPUT_ROLES,
   MEDIA_KIND_OUTPUT,
   MEDIA_KINDS,

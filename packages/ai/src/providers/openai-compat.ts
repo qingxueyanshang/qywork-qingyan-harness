@@ -14,7 +14,7 @@
 
 import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
-import { isDashScopeEndpoint } from '@qywork/core'
+import { channelVendorOf } from '@qywork/core'
 import OpenAI from 'openai'
 import { effortIsTransmittable, type ModelSpec, reasoningReplay } from '../catalog.ts'
 import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
@@ -84,8 +84,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
     this.spec = spec
     this.apiKey = profile.apiKey || 'unset'
     this.baseUrl = normalizeBaseUrl(profile.baseUrl)
-    this.dashScopeMedia = isDashScopeEndpoint(this.baseUrl)
-    this.openCodeSession = isOpenCodeEndpoint(this.baseUrl) ? crypto.randomUUID() : null
+    const vendor = channelVendorOf(this.baseUrl)
+    this.dashScopeMedia = vendor === 'alibaba'
+    this.openCodeSession = vendor === 'opencode' ? crypto.randomUUID() : null
     this.client = new OpenAI({
       apiKey: this.apiKey,
       ...PROVIDER_HTTP,
@@ -474,14 +475,6 @@ export async function prepareDashScopeMedia(
     }),
   )
   return { ...req, messages }
-}
-
-export function isOpenCodeEndpoint(baseUrl: string): boolean {
-  try {
-    return new URL(baseUrl).hostname.toLowerCase() === 'opencode.ai'
-  } catch {
-    return false
-  }
 }
 
 export function dashScopeMediaHeaders(enabled: boolean, req: ChatRequest): Record<string, string> {

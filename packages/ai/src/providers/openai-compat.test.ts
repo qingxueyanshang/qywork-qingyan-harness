@@ -2,7 +2,7 @@
  * 覆盖 `openai-compat.ts` 的 `buildReasoning`（实际发送的思考控制字段）
  * 与 `createThinkingSplitter`（将正文中带思考标签的内容移到思考通道）、strict 参数约束、
  * `buildMessages` 对工具结果媒体的编码（观察消息），
- * 以及判定百炼官方端点所用的 `@qywork/core` 的 `isDashScopeEndpoint`。
+ * 以及判定百炼官方端点所用的 `@qywork/core` 的 `channelVendorOf`。
  *
  * 必须检查真实请求体，不能只测试纯函数：目录声明了档位、界面渲染了控件
  * 而请求中没有对应字段时，两端均正确而取值在中间环节丢失，
@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isDashScopeEndpoint } from '@qywork/core'
+import { channelVendorOf } from '@qywork/core'
 import { lookupModel, unknownModel } from '../catalog.ts'
 import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderProfile, ToolSchema, WireMessage } from '../types.ts'
@@ -455,11 +455,11 @@ describe('OpenCode 会话请求头', () => {
 describe('百炼媒体上传', () => {
   test('只在百炼官方端点保留本地路径', () => {
     expect(
-      isDashScopeEndpoint('https://llm-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'),
-    ).toBe(true)
-    expect(isDashScopeEndpoint('https://dashscope.aliyuncs.com/compatible-mode/v1')).toBe(true)
-    expect(isDashScopeEndpoint('https://dashscope-us.aliyuncs.com/compatible-mode/v1')).toBe(true)
-    expect(isDashScopeEndpoint('https://relay.example.com/v1')).toBe(false)
+      channelVendorOf('https://llm-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'),
+    ).toBe('alibaba')
+    expect(channelVendorOf('https://dashscope.aliyuncs.com/compatible-mode/v1')).toBe('alibaba')
+    expect(channelVendorOf('https://dashscope-us.aliyuncs.com/compatible-mode/v1')).toBe('alibaba')
+    expect(channelVendorOf('https://relay.example.com/v1')).toBeNull()
     const official = new OpenAICompatAdapter(
       {
         kind: 'openai_chat_completions',
