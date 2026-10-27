@@ -1,5 +1,5 @@
 /**
- * 覆盖 `tool-images.ts`（写入与读取两处转换）、`settleToolStep` 的图像写入，以及迁移 70。
+ * 覆盖 `tool-images.ts`（写入与读取两处转换）、`settleToolStep` 的图像写入，以及迁移 70 与 72。
  */
 import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, statSync } from 'node:fs'
@@ -90,7 +90,7 @@ describe('工具结果的图像写入正文库，账本只存引用', () => {
 
     for (const id of ids) {
       expect(imagesOf(store, run.id, id)).toEqual([
-        { mime: 'image/jpeg', resourceId: expect.any(String), bytes: PAGE_BYTES },
+        { mime: 'image/jpeg', resourceId: expect.any(String), bytes: PAGE_BYTES, size: null },
       ])
     }
     expect(
@@ -243,7 +243,7 @@ describe('迁移 70：已有执行记录中的图像字节移入正文库', () =
         expect(store.migrateInBackground(content)).toBe(false)
         for (const id of old) {
           expect(imagesOf(store, run.id, id)).toEqual([
-            { mime: 'image/jpeg', resourceId: expect.any(String), bytes: PAGE_BYTES },
+            { mime: 'image/jpeg', resourceId: expect.any(String), bytes: PAGE_BYTES, size: null },
           ])
         }
         expect(listSteps(store, run.id).find((s) => s.id === textual.id)).toEqual(
@@ -263,11 +263,82 @@ describe('迁移 70：已有执行记录中的图像字节移入正文库', () =
     }
   })
 
-  test('打开账本时不执行；没有待迁移的行时第一批即完成并登记', () => {
+  test('打开账本时不执行；没有待迁移的行时每个分批迁移第一批即完成并登记', () => {
     const store = new Store({ path: ':memory:' })
-    const done = () => !!store.db.query('SELECT 1 FROM _migrations WHERE id = 70').get()
-    expect(done()).toBe(false)
-    expect(store.migrateInBackground(new ContentStore(':memory:'))).toBe(false)
-    expect(done()).toBe(true)
+    const done = (id: number) => !!store.db.query('SELECT 1 FROM _migrations WHERE id = ?').get(id)
+    expect([done(70), done(72)]).toEqual([false, false])
+    const content = new ContentStore(':memory:')
+    expect(store.migrateInBackground(content)).toBe(true)
+    expect(store.migrateInBackground(content)).toBe(false)
+    expect([done(70), done(72)]).toEqual([true, true])
+  })
+})
+
+describe('迁移 72：工具图片的引用补上像素宽高', () => {
+  /** 只有文件头合法的 1440×900 PNG，其后是填充字节。 */
+  function png(): string {
+    const b = Buffer.alloc(30_000, 9)
+    b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 0)
+    b.writeUInt32BE(1440, 16)
+    b.writeUInt32BE(900, 20)
+    return b.toString('base64')
+  }
+
+  test('入库时记下尺寸；没有尺寸的旧引用由迁移补齐，文件头无法识别的记为 null', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'migration-72-'))
+    const path = join(dir, 'qywork.sqlite3')
+    try {
+      const setup = new Store({ path })
+      const setupContent = new ContentStore(contentPathFor(path))
+      const { run, read } = fixture(setup)
+      const shot = read([{ data: png(), mime: 'image/png' }], setupContent)
+      const blank = read([{ data: OTHER, mime: 'image/png' }], setupContent)
+      expect(imagesOf(setup, run.id, shot)).toEqual([
+        {
+          mime: 'image/png',
+          resourceId: expect.any(String),
+          bytes: 30_000,
+          size: { width: 1440, height: 900 },
+        },
+      ])
+      // 去掉尺寸并撤销迁移 72 的登记，模拟升级前写入的引用。
+      for (const id of [shot, blank]) {
+        const row = setup.db
+          .query<{ payload: string }, [string]>('SELECT payload FROM steps WHERE id = ?')
+          .get(id)!
+        const payload = JSON.parse(row.payload)
+        for (const image of payload.outcome.data.images) delete image.size
+        setup.db.query('UPDATE steps SET payload = ? WHERE id = ?').run(JSON.stringify(payload), id)
+      }
+      setup.db.exec('DELETE FROM _migrations WHERE id = 72')
+      setupContent.close()
+      setup.close()
+
+      const store = new Store({ path })
+      const content = new ContentStore(contentPathFor(path))
+      try {
+        expect(imagesOf(store, run.id, shot)).toEqual([
+          { mime: 'image/png', resourceId: expect.any(String), bytes: 30_000 },
+        ])
+        while (store.migrateInBackground(content)) {}
+        expect(store.db.query('SELECT 1 FROM _migrations WHERE id = 72').get()).toBeTruthy()
+        expect(imagesOf(store, run.id, shot)).toEqual([
+          {
+            mime: 'image/png',
+            resourceId: expect.any(String),
+            bytes: 30_000,
+            size: { width: 1440, height: 900 },
+          },
+        ])
+        expect(imagesOf(store, run.id, blank)).toEqual([
+          { mime: 'image/png', resourceId: expect.any(String), bytes: 13, size: null },
+        ])
+      } finally {
+        content.close()
+        store.close()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -9,6 +9,7 @@
 import type {
   ContextGroup,
   EffortLevel,
+  ImageSize,
   ProviderHedge,
   ProviderKind,
   ProviderRequestContentKind,
@@ -219,12 +220,13 @@ export type MediaSource =
   | { kind: 'base64'; data: string }
   /**
    * 已写入正文库的工具图片：字节在观察时固定，按内容寻址，不随工作区文件变化。
-   * `bytes` 是解码后的字节数，换出预算据此计算而不读取正文。
+   * `bytes` 是解码后的字节数，换出预算据此计算而不读取正文；`size` 是像素宽高，估算据此计算，
+   * `null` 表示尺寸未知（文件头无法识别，或入库记录尚未由迁移补齐尺寸）。
    *
    * 不要在装配历史时把它解码为 base64：请求只携带约 5 MB 的媒体，长任务的历史中有数百 MB 图像，
    * 全部解码后在整个 run 期间常驻内存。
    */
-  | { kind: 'resource'; resourceId: string; bytes: number }
+  | { kind: 'resource'; resourceId: string; bytes: number; size: ImageSize | null }
   | { kind: 'url'; url: string }
 
 export type ImageSource = MediaSource

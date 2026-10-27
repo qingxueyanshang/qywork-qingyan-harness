@@ -46,6 +46,16 @@ const REENCODE_ABOVE_BYTES = 300 * 1024
  * 解码或缩放失败时同样原样返回：图片体积偏大只增加传输量，
  * 不应因此使一次 `read_file` 失败。
  */
+/** 发送前按 `MAX_EDGE` 缩放后的宽高，长边在上限内时原样返回。`shrinkImage` 与估算附件图片共用此算式。 */
+export function shrunkSize(size: ImageSize): ImageSize {
+  const scale = MAX_EDGE / Math.max(size.width, size.height)
+  if (scale >= 1) return size
+  return {
+    width: Math.max(1, Math.round(size.width * scale)),
+    height: Math.max(1, Math.round(size.height * scale)),
+  }
+}
+
 export async function shrinkImage(
   bytes: Uint8Array,
   mime: string,
@@ -70,13 +80,8 @@ export async function shrinkImage(
     // 动态 import：photon 包含 2.2 MB 的 wasm，而绝大多数会话不会遇到超出上限的图片。
     const photon = await import('@silvia-odwyer/photon-node')
     const img = photon.PhotonImage.new_from_byteslice(bytes)
-    const scale = MAX_EDGE / Math.max(img.get_width(), img.get_height())
-    const out = photon.resize(
-      img,
-      Math.max(1, Math.round(img.get_width() * scale)),
-      Math.max(1, Math.round(img.get_height() * scale)),
-      photon.SamplingFilter.Lanczos3,
-    )
+    const target = shrunkSize({ width: img.get_width(), height: img.get_height() })
+    const out = photon.resize(img, target.width, target.height, photon.SamplingFilter.Lanczos3)
     // 两种编码都尝试，取较小者。实测两者相差一个数量级，只输出 PNG 时压缩几乎无效。
     const png = out.get_bytes()
     const jpeg = out.get_bytes_jpeg(JPEG_QUALITY)

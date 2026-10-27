@@ -111,6 +111,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
     const compaction = new RuntimeCompaction({
       store,
       conversationId: conversationId!,
+      workspaceRoot: process.cwd(),
       messageIdUpperBound: null,
       summarize: async () => '保留用户事实的摘要。',
     })

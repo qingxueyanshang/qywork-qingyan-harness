@@ -14,7 +14,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ContentBlock, WireMessage } from '@qywork/ai'
+import { type ContentBlock, THUMBNAIL_EDGE, type WireMessage } from '@qywork/ai'
 import { condenseMessage, IMAGES_OMITTED } from '../compaction.ts'
 import {
   ATTACHMENT_IMAGES_REDUCED,
@@ -34,7 +34,7 @@ import {
   toolResultContent,
   videoDelivery,
 } from './request.ts'
-import { THUMBNAIL_BYTES, THUMBNAIL_EDGE } from './thumbnail.ts'
+import { THUMBNAIL_BYTES } from './thumbnail.ts'
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -818,7 +818,7 @@ test('正文库引用与等价的 base64 计入相同的媒体字节与请求体
   const stored = as({
     type: 'image',
     mimeType: 'image/png',
-    source: { kind: 'resource', resourceId: 'rs_0mvdn1ek80000twshi9', bytes },
+    source: { kind: 'resource', resourceId: 'rs_0mvdn1ek80000twshi9', bytes, size: null },
   })
   const caps = { image: true, video: false }
   expect(mediaBytes(stored, caps)).toBe(bytes)

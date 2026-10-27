@@ -16,6 +16,7 @@ import { dirname, join, parse } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import {
   chargeBatchBudget,
+  chargeImage,
   deliveryCap,
   outcomeTokens,
   recordBatchSpent,
@@ -23,9 +24,9 @@ import {
   type ToolOutcome,
   type ToolSpec,
   tokensToMaxBytes,
+  VIDEO_BUDGET_TOKENS,
   videoDelivery,
 } from '@qywork/agent'
-import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import { imageSizeOf, isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
@@ -262,7 +263,7 @@ const OFFICE_FILE = /\.(docx|dotx|xlsx|xltx|pptx|potx)$/i
 /**
  * 读取一段视频。使用原生视频还是抽帧由 `agent` 的 `videoDelivery` 判定，与发送时使用同一判据：
  * 原生时返回路径引用，由请求装配在发出前内联或上传（`videosOf` 与 `materialize`），
- * 按一份 `MEDIA_TOKENS` 扣除投递额度。
+ * 按 `VIDEO_BUDGET_TOKENS` 扣除投递额度。
  *
  * 抽帧时经 Office 的 Python worker 按时间取帧，帧作为图片返回（`readVideoFrames`），
  * `start` / `end` 指定区间。无法读取时在此处直接拒绝并说明下一步：若返回路径，
@@ -307,7 +308,7 @@ async function readVideo(
       ? { ...read, message: `${cause}，改为按时间抽帧。\n${read.message}` }
       : read
   }
-  if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
+  if (!chargeBatchBudget(ctx, VIDEO_BUDGET_TOKENS).ok) recordBatchSpent(ctx, VIDEO_BUDGET_TOKENS)
   return {
     status: 'success',
     message: `读取 ${shown}（视频）`,
@@ -446,8 +447,6 @@ export const readFileTool: ToolSpec = {
           message: `图片过大（${Math.round(info.size / 1024 / 1024)} MB），上限 10 MB`,
         }
       }
-      // 余量不足以容纳一张图时仍然投递：报告失败的回合不产出内容，超出的部分由下一次发送前的压缩回收。
-      if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
       /*
        * 记录一次读取，且只在图像确实返回时记录。图片不经过下方文本分支的 `readHashes(...).set`，
        * 此处不记录时，模型读取图片后对同一路径执行 `write_file` 会被拒绝为「尚未读取」，
@@ -472,6 +471,7 @@ export const readFileTool: ToolSpec = {
           return { status: 'failure', message: `${shown} 无法解码，不能截取局部` }
         }
         const { box, source, size } = zoom
+        chargeImage(ctx, size)
         return {
           status: 'success',
           message:
@@ -483,6 +483,7 @@ export const readFileTool: ToolSpec = {
       }
       const fit = await shrinkImage(raw, mimeOf(abs))
       const shrunk = { data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }
+      chargeImage(ctx, imageSizeOf(fit.bytes))
       return {
         status: 'success',
         message: `读取 ${shown}（图片${downscaleNote(imageSizeOf(raw), imageSizeOf(fit.bytes))}）`,

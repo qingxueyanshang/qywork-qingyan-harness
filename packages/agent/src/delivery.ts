@@ -8,8 +8,9 @@
  * 结果在执行时按额度定稿后落库，投影只读取已落库的 payload：额度随占用变化，但不改写历史字节。
  */
 
-import { estimateJson, MEDIA_TOKENS, type TokenDensity } from '@qywork/ai'
-import type { IntermediateResourceRef, ResourceCoverage, ResourceId } from '@qywork/core'
+import { estimateImage, estimateJson, imageSizeOfBase64, type TokenDensity } from '@qywork/ai'
+import type { ImageSize, IntermediateResourceRef, ResourceCoverage, ResourceId } from '@qywork/core'
+import { isStoredToolImage } from '@qywork/store'
 import type { SinkPort, ToolContext, ToolOutcome } from './registry.ts'
 
 const SPENT_KEY = 'ctx.batchSpent'
@@ -109,8 +110,36 @@ export function deliveredTokens(text: string, density: TokenDensity): number {
 }
 
 /**
+ * 投递额度中每段视频扣除的 token 数。视频没有本地估算（请求估算对视频记 0，读数标注「未计」），
+ * 此值只用于额度。
+ */
+export const VIDEO_BUDGET_TOKENS = 2000
+
+/**
+ * 按一张图片的宽高扣除投递额度。余量不足以容纳时仍然投递并记下用量：报告失败的回合不产出内容，
+ * 超出的部分由下一次发送前的压缩回收。
+ */
+export function chargeImage(
+  ctx: Pick<ToolContext, 'state' | 'contextWindow' | 'density'>,
+  size: ImageSize | null,
+): void {
+  const tokens = estimateImage(size, ctx.density)
+  if (!chargeBatchBudget(ctx, tokens).ok) recordBatchSpent(ctx, tokens)
+}
+
+/**
+ * 工具结果中一张图片的像素宽高：工具返回的 base64 读文件头，入库后的引用取记录的尺寸。
+ * 与请求侧（`ai/tokens.ts` 的 `estimateContent`）取尺寸的方式相同。
+ */
+function outcomeImageSize(entry: unknown): ImageSize | null {
+  if (isStoredToolImage(entry)) return entry.size ?? null
+  const data = (entry as { data?: unknown } | null)?.data
+  return typeof data === 'string' ? imageSizeOfBase64(data) : null
+}
+
+/**
  * 一条结果放入信封后的占用：message 与 data 按写入 JSON 后的形式估算，计入换行等转义字符；
- * 每个图像与视频按一份 `MEDIA_TOKENS` 计，与请求侧的计算方法一致。
+ * 图片按宽高计（`estimateImage`），与请求侧的计算方法一致；视频按 `VIDEO_BUDGET_TOKENS` 计。
  *
  * 信封中 `call_id` / `tool` / `status` 等固定键约几十 token，不在此计算，由软阈值以上的预留空间覆盖。
  */
@@ -119,12 +148,13 @@ export function outcomeTokens(
   density: TokenDensity,
 ): number {
   const data = parts.data ?? {}
-  const images = Array.isArray(data.images) ? data.images.length : 0
+  const images = Array.isArray(data.images) ? data.images : []
   const videos = Array.isArray(data.videos) ? data.videos.length : 0
   const { images: _bytes, videos: _paths, ...rest } = data
   return (
     deliveredTokens(JSON.stringify({ summary: parts.message, result: rest }), density) +
-    (images + videos) * MEDIA_TOKENS
+    images.reduce((n: number, e) => n + estimateImage(outcomeImageSize(e), density), 0) +
+    videos * VIDEO_BUDGET_TOKENS
   )
 }
 

@@ -11,7 +11,13 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
-import { DEFAULT_DENSITY, estimateContent, estimateRequest, lookupModel } from '@qywork/ai'
+import {
+  DEFAULT_DENSITY,
+  estimateContent,
+  estimateImage,
+  estimateRequest,
+  lookupModel,
+} from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { AgentLoop } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
@@ -44,7 +50,7 @@ describe('工具结果中的视频块', () => {
     expect(JSON.parse(omitted.content as string).images_omitted).toContain('图像或视频')
   })
 
-  test('估算不含视频；图片仍按固定值计', () => {
+  test('估算不含视频；图片按宽高计，读不出尺寸时按上限计', () => {
     const video = estimateContent(
       [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: VIDEO.path } }],
       DEFAULT_DENSITY,
@@ -54,7 +60,7 @@ describe('工具结果中的视频块', () => {
       DEFAULT_DENSITY,
     )
     expect(video).toBe(0)
-    expect(image).toBe(2000)
+    expect(image).toBe(estimateImage(null, DEFAULT_DENSITY))
   })
 })
 

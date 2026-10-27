@@ -23,13 +23,14 @@ import {
   estimateSchemas,
   estimateText,
   STREAM_IDLE_TIMEOUT_MS,
+  THUMBNAIL_EDGE,
 } from '@qywork/ai'
 import type { ContextBreakdown, ProviderRequestConfiguration, RunUsage } from '@qywork/core'
 import { emptyBreakdown } from '@qywork/core'
 import { isStoredToolImage } from '@qywork/store'
 import { IMAGES_OMITTED } from '../compaction.ts'
 import type { SinkPort, ToolOutcome } from '../registry.ts'
-import { THUMBNAIL_BYTES, THUMBNAIL_EDGE, thumbnailOf } from './thumbnail.ts'
+import { THUMBNAIL_BYTES, thumbnailOf } from './thumbnail.ts'
 
 /** 与装配的请求一同写入请求账；之后修改模型设置不会改写本次申报。 */
 export function requestConfiguration(
@@ -669,7 +670,12 @@ export function imagesOf(
     if (isStoredToolImage(item)) {
       out.push({
         mime: item.mime,
-        source: { kind: 'resource', resourceId: item.resourceId, bytes: item.bytes },
+        source: {
+          kind: 'resource',
+          resourceId: item.resourceId,
+          bytes: item.bytes,
+          size: item.size ?? null,
+        },
       })
       continue
     }

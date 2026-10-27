@@ -466,6 +466,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   const compaction = new RuntimeCompaction({
     store,
     conversationId: conv as ConversationId,
+    workspaceRoot: process.cwd(),
     messageIdUpperBound: null,
     // 使用真实装配，思考档位、预算与诊断记录必须与线上一致。
     summarize: async (prompt, budgetTokens, trace) => {

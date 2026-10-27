@@ -454,7 +454,13 @@ describe('历史装配', () => {
     expect(Array.isArray(result?.content) && result.content[1]).toEqual({
       type: 'image',
       mimeType: 'image/png',
-      source: { kind: 'resource', resourceId: expect.any(String), bytes: shot.byteLength },
+      // 填充字节不是可识别的图片格式，入库时记录的尺寸为 null。
+      source: {
+        kind: 'resource',
+        resourceId: expect.any(String),
+        bytes: shot.byteLength,
+        size: null,
+      },
     })
     expect(JSON.stringify(history)).not.toContain(shot.toString('base64').slice(0, 64))
   })

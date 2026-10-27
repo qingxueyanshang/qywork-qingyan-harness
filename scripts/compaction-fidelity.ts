@@ -183,6 +183,7 @@ async function main(): Promise<number> {
   const compaction = new RuntimeCompaction({
     store,
     conversationId: conv.id,
+    workspaceRoot: process.cwd(),
     messageIdUpperBound: null,
     /*
      * **使用真实装配**，不要在此处自行拼装摘要器。

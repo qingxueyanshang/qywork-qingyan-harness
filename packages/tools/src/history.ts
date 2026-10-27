@@ -145,7 +145,7 @@ export const readHistoryTool: ToolSpec = {
       const videos = st.videos ?? []
       const kinds = [images.length ? '图片' : '', videos.length ? '视频' : ''].filter(Boolean)
       const message = `读取执行记录 ${shown}（${st.tool} · ${st.status}${kinds.length ? `，含${kinds.join('与')}` : ''}）`
-      // 图片按与 `read_file` 相同的口径计入额度，每张计一份 `MEDIA_TOKENS`（在 `outcomeTokens` 中计算）。
+      // 图片按宽高计入额度，与 `read_file` 相同（在 `outcomeTokens` 中计算）。
       const media = { ...(images.length ? { images } : {}), ...(videos.length ? { videos } : {}) }
       return deliverReadable(ctx, {
         toolName: 'read_history',

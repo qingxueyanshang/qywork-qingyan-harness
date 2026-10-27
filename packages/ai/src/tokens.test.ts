@@ -17,14 +17,16 @@ import { builtinCatalog, lookupModel } from './catalog.ts'
 import {
   DEFAULT_DENSITY,
   estimateContent,
+  estimateImage,
   estimateJson,
   estimateMessage,
   estimateMessages,
   estimateRequest,
   estimateSchemas,
   estimateText,
-  MEDIA_TOKENS,
+  imageSizeOfBase64,
   TEXT_FEATURES,
+  THUMBNAIL_EDGE,
   type TokenDensity,
   textFeatures,
 } from './tokens.ts'
@@ -36,11 +38,18 @@ const measured = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'token-samples.json'), 'utf8'),
 ) as {
   samples: Record<string, string>
-  models: Record<string, { kind: ProviderKind; real: Record<string, number> }>
+  models: Record<
+    string,
+    {
+      kind: ProviderKind
+      real: Record<string, number>
+      images: { width: number; height: number; tokens: number }[]
+    }
+  >
 }
 
-/** 只有一项系数非零的系数表，用于锁定单项计数。 */
-function only(feature: keyof TokenDensity, value = 1): TokenDensity {
+/** 只有一项系数非零的系数表，用于锁定单项计数；图片每 token 一像素、没有上下限与固定开销。 */
+function only(feature: Exclude<keyof TokenDensity, 'image'>, value = 1): TokenDensity {
   const zero: TokenDensity = {
     cjk: 0,
     rareCjk: 0,
@@ -53,6 +62,7 @@ function only(feature: keyof TokenDensity, value = 1): TokenDensity {
     space: 0,
     other: 0,
     message: 0,
+    image: { pixelsPerToken: 1, minPixels: 0, maxPixels: Number.MAX_SAFE_INTEGER, base: 0 },
   }
   return { ...zero, [feature]: value }
 }
@@ -171,31 +181,112 @@ describe('标定', () => {
   })
 })
 
-describe('内容块', () => {
+/** 只有文件头合法的 PNG 的 base64，`padding` 字节的填充模拟图片正文。 */
+function pngBase64(width: number, height: number, padding = 0): string {
+  const b = new Uint8Array(24 + padding)
+  b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+  b.set([0x49, 0x48, 0x44, 0x52], 12)
+  new DataView(b.buffer).setUint32(16, width)
+  new DataView(b.buffer).setUint32(20, height)
+  return Buffer.from(b).toString('base64')
+}
+
+describe('图片', () => {
   /**
    * 实测的暴涨形状：1 MB 图片约为 137 万个 base64 字符，按字符估算为数十万 token，
-   * provider 实际只计数千。附加一张图片后，面板读数从 2% 升至 39%。
+   * provider 实际只计数百至数千。附加一张图片后，面板读数从 2% 升至 39%。
    */
-  test('图片按固定值计，不按 base64 长度计', () => {
-    const huge = 'A'.repeat(1_370_000)
+  test('按宽高计，不按 base64 长度计', () => {
+    const data = pngBase64(1920, 1080, 1_000_000)
     const n = estimateContent(
-      [{ type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: huge } }],
+      [{ type: 'image', mimeType: 'image/png', source: { kind: 'base64', data } }],
       D,
     )
-    expect(n).toBe(MEDIA_TOKENS)
-    // 断言的是量级：不得与 base64 长度同阶。
-    expect(n).toBeLessThan(huge.length / 100)
+    expect(n).toBe(estimateImage({ width: 1920, height: 1080 }, D))
+    expect(n).toBeLessThan(data.length / 100)
+  })
+
+  test('正文库引用按记录的尺寸计；尺寸未知时按上限计', () => {
+    const block = (size: { width: number; height: number } | null) =>
+      estimateContent(
+        [
+          {
+            type: 'image',
+            mimeType: 'image/png',
+            source: { kind: 'resource', resourceId: 'rs_1', bytes: 1, size },
+          },
+        ],
+        D,
+      )
+    expect(block({ width: 512, height: 512 })).toBe(estimateImage({ width: 512, height: 512 }, D))
+    expect(block(null)).toBe(estimateImage(null, D))
+    expect(estimateImage(null, D)).toBeGreaterThan(estimateImage({ width: 3840, height: 2160 }, D))
+  })
+
+  test('缩略图按长边 THUMBNAIL_EDGE 换算', () => {
+    const data = pngBase64(1536, 864)
+    const n = estimateContent(
+      [{ type: 'image', mimeType: 'image/png', source: { kind: 'base64', data }, thumbnail: true }],
+      D,
+    )
+    expect(n).toBe(estimateImage({ width: THUMBNAIL_EDGE, height: 432 }, D))
+  })
+
+  test('像素数限定在上下限之间', () => {
+    const d = {
+      ...D,
+      image: { pixelsPerToken: 100, minPixels: 10_000, maxPixels: 40_000, base: 5 },
+    }
+    expect(estimateImage({ width: 10, height: 10 }, d)).toBe(105)
+    expect(estimateImage({ width: 150, height: 200 }, d)).toBe(305)
+    expect(estimateImage({ width: 1000, height: 1000 }, d)).toBe(405)
+  })
+
+  test('JPEG 的尺寸在长 EXIF 之后也能读出', () => {
+    const b = new Uint8Array(70_000)
+    b.set([0xff, 0xd8], 0)
+    // APP1 段长 65000，其后才是 SOF0。
+    b.set([0xff, 0xe1, 0xfd, 0xe8], 2)
+    const sof = 2 + 2 + 65_000
+    b.set([0xff, 0xc0, 0x00, 0x11, 0x08], sof)
+    new DataView(b.buffer).setUint16(sof + 5, 900)
+    new DataView(b.buffer).setUint16(sof + 7, 1440)
+    expect(imageSizeOfBase64(Buffer.from(b).toString('base64'))).toEqual({
+      width: 1440,
+      height: 900,
+    })
   })
 
   test('图文混排时分别计算', () => {
     const n = estimateContent(
       [
         { type: 'text', text: 'x'.repeat(40) },
-        { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'zz' } },
+        {
+          type: 'image',
+          mimeType: 'image/png',
+          source: { kind: 'base64', data: pngBase64(10, 20) },
+        },
       ],
       only('letter', 0.25),
     )
-    expect(n).toBe(10 + MEDIA_TOKENS)
+    expect(n).toBe(10 + 200)
+  })
+
+  /** 各型号的图片规则与实测值相差不超过 5%；默认档不低于任何实测值的九成。 */
+  test('标定：实测过的型号与默认档', () => {
+    for (const [id, { kind, images }] of Object.entries(measured.models)) {
+      const density = lookupModel(id, kind).density
+      for (const { width, height, tokens } of images) {
+        const ratio = estimateImage({ width, height }, density) / tokens
+        const low = estimateImage({ width, height }, D) / tokens
+        expect({ id, width, height, ok: Math.abs(ratio - 1) <= 0.05 && low >= 0.9 }).toEqual({
+          id,
+          width,
+          height,
+          ok: true,
+        })
+      }
+    }
   })
 })
 

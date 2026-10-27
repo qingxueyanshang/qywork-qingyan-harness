@@ -97,6 +97,7 @@ function port(store: Store, conversationId: string, summarize: Summarizer = summ
   return new RuntimeCompaction({
     store,
     conversationId: conversationId as never,
+    workspaceRoot: process.cwd(),
     messageIdUpperBound: null,
     summarize,
   })
