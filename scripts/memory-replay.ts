@@ -30,6 +30,7 @@ import {
   AgentLoop,
   type CompactionPort,
   type LoopPersistence,
+  runDensity,
   type ToolContextBase,
   ToolRegistry,
 } from '@qywork/agent'
@@ -495,9 +496,8 @@ async function replay(
     runId: id,
     model: run.model,
     contextWindow: spec.contextWindow,
-    density: spec.density,
+    density: runDensity(adapter),
     vision: spec.vision,
-    video: spec.video && adapter.transmits.video === true,
     ...(adapter.transmits.mediaUploadAbove !== undefined
       ? { videoUploadAbove: adapter.transmits.mediaUploadAbove }
       : {}),

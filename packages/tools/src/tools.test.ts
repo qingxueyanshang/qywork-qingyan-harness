@@ -12,8 +12,8 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
-import { openBatchBudget, sanitizeToolName, ToolRegistry } from '@qywork/agent'
-import { DEFAULT_DENSITY } from '@qywork/ai'
+import { openBatchBudget, runDensity, sanitizeToolName, ToolRegistry } from '@qywork/agent'
+import { lookupModel } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
 import {
   displayPath,
@@ -37,6 +37,18 @@ async function workspace(): Promise<string> {
   return dir
 }
 
+/** 本轮密度（同 `runDensity`）：模型不接受视频时 `video` 为 null；接受时按接口能否上传确定字节上限。 */
+function videoDensity(video: boolean, uploadAbove?: number) {
+  return runDensity({
+    spec: { ...lookupModel('test', 'openai_chat_completions'), video },
+    transmits: {
+      effort: false,
+      video,
+      ...(uploadAbove !== undefined ? { mediaUploadAbove: uploadAbove } : {}),
+    },
+  })
+}
+
 function ctx(root: string, approve = true): ToolContext {
   return {
     workspaceRoot: root,
@@ -44,7 +56,7 @@ function ctx(root: string, approve = true): ToolContext {
     runId: 'rn_test',
     model: 'test',
     contextWindow: 200_000,
-    density: DEFAULT_DENSITY,
+    density: videoDensity(false),
     vision: null,
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
@@ -1957,7 +1969,7 @@ describe('read_file 识别图片', () => {
     const ok = await registry().execute(
       'read_file',
       { path: 'clip.mp4' },
-      { ...ctx(root), video: true },
+      { ...ctx(root), density: videoDensity(true) },
     )
     expect(ok.status).toBe('success')
     expect(ok.data).toEqual({

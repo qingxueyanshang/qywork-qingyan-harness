@@ -23,6 +23,7 @@ import {
   type OfficePort,
   type PermissionVerdict,
   type PluginPort,
+  runDensity,
   type Summarizer,
   type ToolContextBase,
   ToolRegistry,
@@ -76,6 +77,7 @@ import {
   appendTextToStep,
   type ContentStore,
   conversationRejectsImages,
+  conversationRejectsVideos,
   createConversation,
   createRun,
   createSchedule,
@@ -651,8 +653,14 @@ export class Session {
       providerKind: adapter.kind,
     })
     const anchorRun = anchored ? getRun(store, anchored.runId) : null
-    // 接口拒绝图片的记录按「接口名 × 模型」匹配：换用其他接口或模型后照常发送图片。
+    // 接口拒绝图片与视频的记录按「接口名 × 模型」匹配：换用其他接口或模型后照常发送。
     const imagesRejected = conversationRejectsImages(
+      store,
+      conversationId,
+      resolvedTarget?.provider ?? '',
+      adapter.spec.id,
+    )
+    const videosRejected = conversationRejectsVideos(
       store,
       conversationId,
       resolvedTarget?.provider ?? '',
@@ -766,6 +774,7 @@ export class Session {
         ...(anchor ? { anchor } : {}),
         ...(compacted ? { contextEstimate: compacted } : {}),
         ...(imagesRejected ? { imagesRejected: true as const } : {}),
+        ...(videosRejected ? { videosRejected: true as const } : {}),
       })) {
         if (ev.type === 'run.error') failure = { message: ev.message, code: ev.code }
         if (ev.type === 'usage') this.modelUsage.set(run.id, ev.usage)
@@ -1023,6 +1032,7 @@ export class Session {
             ...(input.origin ? { origin: input.origin } : {}),
             ...(input.notice ? { notice: true as const } : {}),
             ...(input.imagesRejected ? { imagesRejected: input.imagesRejected } : {}),
+            ...(input.videosRejected ? { videosRejected: input.videosRejected } : {}),
           },
         }).id,
       markImagesUndelivered: (runId, toolCallIds) =>
@@ -1173,11 +1183,9 @@ export class Session {
       // 投递预算按上下文窗口计算，且在执行时应用：切换模型只影响之后的读取，
       // 已写入数据库的 step 不做任何修改（投影因此仍是纯函数）。
       contextWindow: spec.contextWindow,
-      // 预算扣减使用的 token 密度与窗口取自同一份 spec，理由见 `ToolContext.density`。
-      density: spec.density,
+      // 预算扣减与原生视频的判定使用本轮密度，与请求一侧相同，理由见 `ToolContext.density`。
+      density: runDensity(adapter),
       vision: spec.vision,
-      // 与发送时 `materialize` 的视频判据相同：模型支持视频且适配器能够传输。
-      video: spec.video && adapter.transmits.video === true,
       ...(adapter.transmits.mediaUploadAbove !== undefined
         ? { videoUploadAbove: adapter.transmits.mediaUploadAbove }
         : {}),

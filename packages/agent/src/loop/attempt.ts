@@ -7,6 +7,7 @@ import { estimateRequest, failureDiagnostics, ProviderError, providerContentKind
 import type { AgentEvent, ProviderRetryDecision, StepId } from '@qywork/core'
 import { log } from '@qywork/core'
 import { concurrencyRejected, type SendOutcome, sendLane, sendLimiter } from '../send-limit.ts'
+import { videoMetaOf } from '../video-meta.ts'
 import { recoverFromOverflow } from './compact.ts'
 import { contextEvent } from './context.ts'
 import {
@@ -16,6 +17,7 @@ import {
   payloadSnapshotOf,
   reasoningPrefix,
   requestConfiguration,
+  videoDelivery,
 } from './request.ts'
 import type { LoopHost, RunState, TurnState } from './run-state.ts'
 
@@ -140,7 +142,7 @@ export async function* sendTurn(
   run: RunState,
   turn: TurnState,
 ): AsyncGenerator<AgentEvent, 'received' | 'continued', unknown> {
-  const { adapter, input, persist, density, transcript } = run
+  const { adapter, input, persist, transcript } = run
   /** 本轮已开的请求记录行数。`uq_provider_run_turn` 的第三列取该值。 */
   const ledger = { sendIndex: 0 }
   /**
@@ -164,7 +166,8 @@ export async function* sendTurn(
     // 与「未发出」在账本上才可区分。
     const payload = payloadSnapshotOf(turn.req)
     turn.requestBytes = payload.bytes
-    const measured = estimateRequest(turn.req, density)
+    // 读取 `run.density` 而不是循环外的副本：接口拒绝视频后本轮密度随之改变（`removeVideos`）。
+    const measured = estimateRequest(turn.req, run.density)
     turn.measured = measured
     turn.requestId = persist.openRequest({
       runId: input.runId,
@@ -271,6 +274,12 @@ export async function* sendTurn(
 
       if (code === 'context_overflow' && pe?.capacity && !run.overflowRecovered) {
         yield* recoverFromOverflow(host, run, turn, { err, pe, recordDecision, ledger })
+        continue
+      }
+
+      if (pe && rejectedForVideos(run, turn, pe)) {
+        removeVideos(host, run, turn, pe)
+        recordDecision('videos_removed')
         continue
       }
 
@@ -437,6 +446,54 @@ export async function* sendTurn(
 }
 
 /**
+ * 被拒的请求是否按「接口拒绝视频」处理：provider 以 400 / 422 拒绝、本次请求含原生发送的视频、本 run 尚未停止发送视频。
+ *
+ * 先于图片判定：接受视频输入的接口比接受图片的少，同一请求中两者都有时先移除视频；重发仍被拒时再按图片判定。
+ * 已在模型规格中写明的限制（时长范围）发送前即改为抽帧（`runDensity`），本判定处理规格中没有写明的拒绝原因。
+ * 其余约定同 `rejectedForImages`。
+ */
+function rejectedForVideos(run: RunState, turn: TurnState, pe: ProviderError): boolean {
+  const rule = run.density.video
+  return (
+    pe.code === 'invalid_request' &&
+    (pe.status === 400 || pe.status === 422) &&
+    !run.videosRejected &&
+    rule !== null &&
+    turn.req.messages.some(
+      (m) =>
+        Array.isArray(m.content) &&
+        m.content.some((b) => {
+          if (b.type !== 'video' || b.source.kind !== 'path') return false
+          const meta = videoMetaOf(b.source.path)
+          const upload = run.adapter.transmits.mediaUploadAbove
+          return meta !== null && videoDelivery(meta, rule, upload) !== 'frames'
+        }),
+    )
+  )
+}
+
+/**
+ * ── 接口拒绝视频：改为抽取关键帧后重发一次 ──
+ *
+ * 与 `removeImages` 相同：被拒的事实连同接口返回的原因作为执行事实交给模型，本 run 随即停止原生发送视频
+ * （本轮密度的 `video` 置为 null，物化时视频替换为指向 `read_file` 抽帧的说明），请求按同一装配重建。
+ * 重发被接口接受后才写入执行事实（`settleRejectionNotices`），其中的接口名与模型 id 是之后的 run 停止原生发送视频的判据。
+ */
+function removeVideos(host: LoopHost, run: RunState, turn: TurnState, pe: ProviderError): void {
+  run.videosRejected = true
+  run.density = { ...run.density, video: null }
+  const reason = (pe.message.split(NEWLINE)[0] ?? '').trim().replace(/[，。,.;；]+$/u, '')
+  const text =
+    `包含视频的请求被接口拒绝，接口返回 ${reason}。本会话此后发往该接口的请求不直接携带视频；` +
+    '需要画面时用 read_file 读取视频的路径，将按时间抽取若干帧。'
+  const seq = run.nextSeq()
+  run.pushNotice(text, seq)
+  run.pendingVideosNotice = { seq, text }
+  turn.req = host.buildRequest(run)
+  turn.breakdown = breakdownOf(turn.req, run.density)
+}
+
+/**
  * 被拒的请求是否按「接口拒绝图片」处理：provider 以 400 / 422 拒绝、本次请求含图像块、本 run 尚未停止发送图片。
  *
  * 不按报错文字判断：各中转站的措辞不同。判断有误的代价是一次不带图片的重发；重发仍被拒时
@@ -466,7 +523,7 @@ function hasImage(m: WireMessage): boolean {
  * 被拒的事实作为执行事实交给模型，由模型决定下一步。本 run 随即停止发送图片，请求按同一装配重建，
  * 物化时图片替换为说明。
  *
- * 执行事实只追加到 transcript，等重发被接口接受后才写入（`settleImagesNotice`）：重发仍被拒说明原因不在图片，
+ * 执行事实只追加到 transcript，等重发被接口接受后才写入（`settleRejectionNotices`）：重发仍被拒说明原因不在图片，
  * 该事实不成立；写入后，其中的接口名与模型 id 是之后的 run 停止发送图片的判据（`RunInput.imagesRejected`）。
  *
  * 最后一条 assistant 之后的工具图片从未送达模型，写入时对应 step 一并标记为未送达，供界面显示；
@@ -492,12 +549,27 @@ function removeImages(host: LoopHost, run: RunState, turn: TurnState, pe: Provid
   turn.breakdown = breakdownOf(turn.req, run.density)
 }
 
-/** 移除图片后的重发已被接口接受：写入执行事实，标记未送达图片的工具 step。 */
-function* settleImagesNotice(host: LoopHost, run: RunState): Generator<AgentEvent, void, unknown> {
+/**
+ * 移除视频或图片后的重发已被接口接受：写入执行事实；图片另标记未送达的工具 step。
+ * 视频按路径保留在执行记录中，不标记：之后的请求中它们被替换为指向 `read_file` 抽帧的说明。
+ */
+function* settleRejectionNotices(
+  host: LoopHost,
+  run: RunState,
+): Generator<AgentEvent, void, unknown> {
+  const { input, persist, adapter } = run
+  const videos = run.pendingVideosNotice
+  if (videos) {
+    run.pendingVideosNotice = null
+    persist.landUserStep(input.runId, videos.seq, {
+      text: videos.text,
+      notice: true,
+      videosRejected: { provider: host.deps.providerName ?? '', model: adapter.spec.id },
+    })
+  }
   const pending = run.pendingImagesNotice
   if (!pending) return
   run.pendingImagesNotice = null
-  const { input, persist, adapter } = run
   persist.landUserStep(input.runId, pending.seq, {
     text: pending.text,
     notice: true,
@@ -522,7 +594,7 @@ async function* consumeStream(
   for await (const ev of stream) {
     probe.lastEventAt = Date.now()
     // 非 2xx 不产生 `request_prepared` 之外的任何事件，收到其他事件即表示接口已接受本次请求。
-    if (ev.type !== 'request_prepared') yield* settleImagesNotice(host, run)
+    if (ev.type !== 'request_prepared') yield* settleRejectionNotices(host, run)
     if (ev.type !== 'request_prepared' && ev.type !== 'response_started') {
       probe.providerEvents++
       if (!probe.recordedFirstEvent) {

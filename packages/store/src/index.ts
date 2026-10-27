@@ -20,6 +20,7 @@ export {
   archiveWorkspaceConversations,
   ConversationBusyError,
   conversationRejectsImages,
+  conversationRejectsVideos,
   countConversations,
   createConversation,
   createRun,

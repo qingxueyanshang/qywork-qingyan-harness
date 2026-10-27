@@ -27,6 +27,7 @@ import {
   tokensToMaxBytes,
   videoDelivery,
   videoMetaOf,
+  videoRangeCause,
 } from '@qywork/agent'
 import type { FileChange } from '@qywork/core'
 import { imageSizeOf, isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
@@ -262,7 +263,7 @@ function timeRange(args: Record<string, unknown>): { start?: number; end?: numbe
 const OFFICE_FILE = /\.(docx|dotx|xlsx|xltx|pptx|potx)$/i
 
 /**
- * 读取一段视频。使用原生视频还是抽帧由 `agent` 的 `videoDelivery` 判定，与发送时使用同一判据：
+ * 读取一段视频。使用原生视频还是抽帧由 `agent` 的 `videoDelivery` 按本轮密度（`ctx.density.video`）判定，与发送时使用同一判据：
  * 原生时返回路径引用，由请求装配在发出前内联或上传（`videosOf` 与 `materialize`），
  * 按时长与画面尺寸扣除投递额度（`chargeVideo`）。
  *
@@ -277,20 +278,18 @@ async function readVideo(
   args: Record<string, unknown>,
 ): Promise<ToolOutcome> {
   const shown = displayPath(ctx.workspaceRoot, abs)
-  const delivery = videoDelivery(size, {
-    video: ctx.video === true,
-    ...(ctx.videoUploadAbove !== undefined ? { mediaUploadAbove: ctx.videoUploadAbove } : {}),
-  })
-  if (delivery === 'frames') {
-    // 模型接受原生视频，但该视频过大且无法上传时同样抽帧：内联的视频在下一步即被移出请求，模型只能看到一次。
-    const cause = ctx.video
-      ? `该视频 ${(size / 1024 / 1024).toFixed(1)} MB，超出请求中常驻媒体的上限，且当前接口不支持上传`
-      : '当前模型不接受原生视频'
+  const meta = videoMetaOf(abs) ?? { bytes: size, seconds: null, size: null }
+  const rule = ctx.density.video
+  if (videoDelivery(meta, rule, ctx.videoUploadAbove) === 'frames') {
+    // 模型接受原生视频、但该视频超出原生发送范围或接口拒绝过视频时同样抽帧，并写明原因。
+    const cause = ctx.videosRejected
+      ? '接口拒绝过本会话中包含视频的请求'
+      : rule && videoRangeCause(meta, rule.accepts)
     if (ctx.vision === false) {
       return {
         status: 'failure',
         message:
-          `${ctx.video ? `${cause}，` : ''}当前模型既不接受视频也不接受图片，${shown} 无法读取内容。` +
+          `${cause ? `${cause}，` : ''}当前模型既不接受视频也不接受图片，${shown} 无法读取内容。` +
           `不要再读取该文件：更换支持图片或视频的模型，或请用户描述视频内容。`,
       }
     }
@@ -298,18 +297,18 @@ async function readVideo(
       return {
         status: 'failure',
         message:
-          `${cause}，按时间抽帧需要 Office 的 Python 运行环境，当前没有可用的环境，${shown} 无法读取内容。` +
-          `不要再读取该文件：更换支持视频的模型，或请用户描述视频内容。`,
+          `${cause || '当前模型不接受原生视频'}，按时间抽帧需要 Office 的 Python 运行环境，` +
+          `当前没有可用的环境，${shown} 无法读取内容。不要再读取该文件：更换支持视频的模型，或请用户描述视频内容。`,
       }
     }
     const range = timeRange(args)
     if (typeof range === 'string') return { status: 'failure', message: range }
     const read = await readVideoFrames(ctx, ctx.office, abs, shown, range)
-    return ctx.video && read.status === 'success'
+    return cause && read.status === 'success'
       ? { ...read, message: `${cause}，改为按时间抽帧。\n${read.message}` }
       : read
   }
-  chargeVideo(ctx, videoMetaOf(abs))
+  chargeVideo(ctx, meta)
   return {
     status: 'success',
     message: `读取 ${shown}（视频）`,

@@ -33,7 +33,6 @@ import {
   materialize,
   omitImages,
   replayReasoning,
-  videoCapabilities,
 } from './request.ts'
 import { type LoopHost, RunState, sleep, TurnState, untilAborted } from './run-state.ts'
 import { createSummaryTrace } from './summary-trace.ts'
@@ -108,15 +107,19 @@ export class AgentLoop {
    * 本轮的媒体发送方式。换出预算与发送前物化必须使用同一份，否则两处对同一段视频算出不同的字节数。
    *
    * 接口拒绝过包含图片的请求时（`RunState.imagesRejected`）不发送任何图片，包括此前已送达的：
-   * 合约变化之前送达的图片仍在保留区内，同样会使请求被拒。
+   * 合约变化之前送达的图片仍在保留区内，同样会使请求被拒。视频同理（`RunState.videosRejected`），
+   * 原生发送的范围取本轮密度（`RunState.density`）。
    */
   private mediaCapabilities(run: RunState): InputMediaCapabilities {
     const { adapter } = this.deps
+    const upload = adapter.transmits.mediaUploadAbove
     return {
       image: run.imagesRejected ? false : adapter.spec.vision,
       ...(run.imagesRejected ? { imageRejected: true as const } : {}),
-      ...videoCapabilities(adapter),
+      video: run.density.video,
+      ...(run.videosRejected ? { videoRejected: true as const } : {}),
       mediaPaths: adapter.transmits.mediaPaths === true,
+      ...(upload !== undefined ? { mediaUploadAbove: upload } : {}),
     }
   }
 

@@ -972,7 +972,8 @@ export interface ToolContext {
    */
   contextWindow: number
   /**
-   * 本轮所用模型的 token 密度。投递预算的扣减使用它，与请求一侧采用同一计量标准。
+   * 本轮的估算密度（`loop/request.ts` 的 `runDensity`）。投递预算的扣减使用它，与请求一侧采用同一计量标准；
+   * 其中的 `video` 是本轮原生视频的规则与发送范围，null 表示不原生发送，`read_file` 据此决定交出视频还是抽帧。
    *
    * 理由同 `contextWindow`：上限按执行时的模型计算，结果按算出的上限截断后落库，
    * 投影只读取已落库的 payload。两侧计量标准不同时，同一份结果在投递检查处与在请求中
@@ -994,13 +995,13 @@ export interface ToolContext {
    */
   imagesRejected?: true
   /**
-   * 本轮所用模型与接口是否接受原生视频：需模型具备该能力（`ModelSpec.video`）且适配器实现了视频传输。
-   * 与 `vision` 相同，在执行时判定；`read_file` 据此决定读取视频时交付还是直接拒绝。省略即不接受。
+   * 接口拒绝过本会话中包含视频的请求（`RunState.videosRejected`）。为 true 时 `density.video` 为 null，
+   * `read_file` 读取视频时抽帧并写明原因。由 loop 按调用注入，装配方不设置。
    */
-  video?: boolean
+  videosRejected?: true
   /**
    * 适配器将本地视频上传为地址的字节阈值（`transmits.mediaUploadAbove`），省略表示一律内联。
-   * `read_file` 与 `videoDelivery` 据此共同判断一段视频按原生视频发送还是抽帧，与发送时使用同一判据。
+   * `read_file` 与 `videoDelivery` 据此判断一段原生发送的视频内联还是上传，与发送时使用同一判据。
    */
   videoUploadAbove?: number
   /** 环境注入的只读资源；插件按名称读取所需资源，核心不为业务字段扩展此类型。 */

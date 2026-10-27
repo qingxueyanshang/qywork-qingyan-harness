@@ -98,31 +98,71 @@ export interface ImageRule {
 }
 
 /**
+ * 一段原生视频的计数规则：`min(maxTokens, base + min(round(秒数 × framesPerSecond), maxFrames) × 每帧)`，
+ * 每帧按 `frame` 计，至少一帧。
+ *
+ * 各家按固定帧率取帧（或把相邻两帧合为一组），帧数取四舍五入；原视频的帧率与音轨不影响用量。
+ * 不要改为向上取整：真实视频的时长常带零头（4.04 秒），向上取整多计一帧，短视频偏高 20% 以上。
+ * 标定方法：同一段文字带与不带一段视频各发一次相减，按合成视频（320×240 至 3840×2160，0.5 秒至 2 小时）与
+ * 生成的成片拟合。
+ */
+export interface VideoRule {
+  framesPerSecond: number
+  /** 单段视频最多取的帧数；`Infinity` 表示实测范围内没有上限。 */
+  maxFrames: number
+  frame: FrameRule
+  base: number
+  /** 单段视频的上限；`Infinity` 表示实测范围内没有上限。 */
+  maxTokens: number
+  /** 本轮原生发送的范围。目录中不设限（`ANY_VIDEO`），由 `agent` 的 `runDensity` 按模型规格与发送能力填写。 */
+  accepts: VideoRange
+}
+
+/**
+ * 一帧的计数规则：宽高各按 `patch` 像素分格，格数相乘再加 `base`。单帧像素超过 `maxPixels` 时先等比缩小，
+ * 缩小后的宽高按格向下取整。
+ *
+ * 不要换成按像素面积计算（图片的 `ImageRule`）：分格时宽高各自取整，854×480 在 28 像素格下为 31×18 格，
+ * 按面积计算偏低 4.5%。
+ */
+export interface FrameRule {
+  patch: number
+  /** 未缩小时宽高的取整方式：`ceil` 向上取整，`round` 取最近的整数。 */
+  rounding: 'ceil' | 'round'
+  maxPixels: number
+  base: number
+}
+
+/** 原生发送的视频范围：字节数与时长（秒）。超出时发送前改为抽取关键帧，估算记 0。 */
+export interface VideoRange {
+  maxBytes: number
+  minSeconds: number
+  maxSeconds: number
+}
+
+export const ANY_VIDEO: VideoRange = {
+  maxBytes: Number.POSITIVE_INFINITY,
+  minSeconds: 0,
+  maxSeconds: Number.POSITIVE_INFINITY,
+}
+
+/** 视频超出原生发送范围的原因。读不出时长时只按字节数判定，时长由接口裁决。 */
+export type VideoOutOfRange = 'bytes' | 'short' | 'long'
+
+export function videoOutOfRange(meta: VideoMeta, r: VideoRange): VideoOutOfRange | null {
+  if (meta.bytes > r.maxBytes) return 'bytes'
+  if (meta.seconds === null) return null
+  if (meta.seconds < r.minSeconds) return 'short'
+  return meta.seconds > r.maxSeconds ? 'long' : null
+}
+
+/**
  * 未标定的模型使用此档：各项取已实测各档（`catalog.ts`）的最大值并向上取整；生僻字取字节级上界：
  * 基本平面的汉字在 UTF-8 中占 3 字节，按字节回退的 tokenizer 每字节至多一个 token。
  *
  * 每一项都不低于任何已实测的模型，因此对已实测的 tokenizer 都偏高而不偏低。
  * 代价是读数偏高：未收录的模型只能偏高，不能偏低。
  */
-/**
- * 一段原生视频的计数规则：`min(maxTokens, base + ⌈秒数 × framesPerSecond⌉ × 每帧)`，每帧按 `frame` 的图片规则计。
- *
- * 各家按固定帧率取帧（或把相邻两帧合为一组），每帧缩放到像素上限之内按像素块计数；原视频的帧率与音轨不影响用量。
- * 标定方法：同一段文字带与不带一段视频各发一次相减，按 30 段合成视频（320×240 至 3840×2160，2 秒至 15 分钟）拟合。
- */
-export interface VideoRule {
-  framesPerSecond: number
-  frame: ImageRule
-  base: number
-  /** 单段视频的上限；`Infinity` 表示实测范围内没有上限。 */
-  maxTokens: number
-  /**
-   * 原生发送的视频字节上限，超过时发送前被替换为一行说明，记 0。目录中为 `Infinity`；
-   * 本轮不能上传时由 `agent` 收窄为请求中常驻媒体的上限（`RunState.density`）。
-   */
-  maxBytes: number
-}
-
 export const DEFAULT_DENSITY: TokenDensity = {
   cjk: 1.1,
   rareCjk: 3,
@@ -137,13 +177,14 @@ export const DEFAULT_DENSITY: TokenDensity = {
   message: 6.4,
   // 每 token 像素取最小、像素上限取最大、固定开销取按张计数的型号（每张约 1350），对每个已测型号都不偏低。
   image: { pixelsPerToken: 770, minPixels: 0, maxPixels: 8_600_000, base: 1350 },
-  // 每帧取两档中较大的计数，上限取不设上限的一档。
+  // 每帧取两档中较大的计数（28 像素格向上取整、不缩小，每帧开销取较大者），上限取不设上限的一档。
   video: {
     framesPerSecond: 1,
-    frame: { pixelsPerToken: 770, minPixels: 0, maxPixels: 8_294_400, base: 10 },
+    maxFrames: Number.POSITIVE_INFINITY,
+    frame: { patch: 28, rounding: 'ceil', maxPixels: Number.POSITIVE_INFINITY, base: 10 },
     base: 2,
     maxTokens: Number.POSITIVE_INFINITY,
-    maxBytes: Number.POSITIVE_INFINITY,
+    accepts: ANY_VIDEO,
   },
 }
 
@@ -164,15 +205,26 @@ function imageTokens(size: ImageSize | null, r: ImageRule): number {
 }
 
 /**
- * 一段视频计为多少 token。不原生发送的视频（该档没有视频规则、超过字节上限、文件已不存在）发送时被替换为
+ * 一段视频计为多少 token。不原生发送的视频（该档没有视频规则、超出原生发送范围、文件已不存在）发送时被替换为
  * 一行说明，记 0；读不出时长或画面尺寸时同样记 0，读数一侧据 `unestimatedVideosOf` 标注「未计」。
  */
 export function estimateVideo(meta: VideoMeta | null, d: TokenDensity): number {
   const r = d.video
-  if (!r || !meta || meta.bytes > r.maxBytes || meta.seconds === null || meta.size === null)
-    return 0
-  const frames = Math.ceil(meta.seconds * r.framesPerSecond)
-  return Math.min(r.maxTokens, Math.ceil(r.base + frames * imageTokens(meta.size, r.frame)))
+  if (!r || !meta || videoOutOfRange(meta, r.accepts)) return 0
+  if (meta.seconds === null || meta.size === null) return 0
+  const frames = Math.min(r.maxFrames, Math.max(1, Math.round(meta.seconds * r.framesPerSecond)))
+  return Math.min(r.maxTokens, r.base + frames * frameTokens(meta.size, r.frame))
+}
+
+function frameTokens({ width, height }: ImageSize, r: FrameRule): number {
+  const pixels = width * height
+  if (pixels > r.maxPixels) {
+    const scale = Math.sqrt(pixels / r.maxPixels)
+    const cols = Math.max(1, Math.floor(width / scale / r.patch))
+    return cols * Math.max(1, Math.floor(height / scale / r.patch)) + r.base
+  }
+  const fit = r.rounding === 'ceil' ? Math.ceil : Math.round
+  return Math.max(1, fit(width / r.patch)) * Math.max(1, fit(height / r.patch)) + r.base
 }
 
 /** 依次尝试解码的 base64 前缀长度：48 B、4 KB、64 KB、256 KB，均为 4 的倍数。 */
@@ -340,7 +392,7 @@ export function unestimatedVideosOf(messages: readonly WireMessage[], d: TokenDe
   for (const m of messages) {
     if (typeof m.content === 'string') continue
     for (const b of m.content) {
-      if (b.type !== 'video' || !b.meta || b.meta.bytes > r.maxBytes) continue
+      if (b.type !== 'video' || !b.meta || videoOutOfRange(b.meta, r.accepts)) continue
       if (b.meta.seconds === null || b.meta.size === null) n++
     }
   }

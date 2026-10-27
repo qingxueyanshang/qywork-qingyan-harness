@@ -12,6 +12,9 @@ import type {
   LlmAdapter,
   ReasoningReplay,
   TokenDensity,
+  VideoMeta,
+  VideoRange,
+  VideoRule,
   WireMessage,
   WireToolCall,
 } from '@qywork/ai'
@@ -24,6 +27,7 @@ import {
   estimateText,
   STREAM_IDLE_TIMEOUT_MS,
   THUMBNAIL_EDGE,
+  videoOutOfRange,
 } from '@qywork/ai'
 import type { ContextBreakdown, ProviderRequestConfiguration, RunUsage } from '@qywork/core'
 import { emptyBreakdown } from '@qywork/core'
@@ -468,62 +472,63 @@ export const THUMBNAIL_RETAIN_BYTES = 3 * 1024 * 1024
 /** 路径视频在本轮的发送方式：内联字节、上传后发送地址，或不直接发送、替换为指向 `read_file` 抽帧的说明。 */
 export type VideoDelivery = 'inline' | 'upload' | 'frames'
 
-/** 适配器的视频发送能力。模型支持视频且适配器实现了原生视频传输时才原生发送。 */
-export function videoCapabilities(
-  adapter: Pick<LlmAdapter, 'spec' | 'transmits'>,
-): Pick<InputMediaCapabilities, 'video' | 'mediaUploadAbove'> {
-  const upload = adapter.transmits.mediaUploadAbove
-  return {
-    video: adapter.spec.video && adapter.transmits.video === true,
-    ...(upload !== undefined ? { mediaUploadAbove: upload } : {}),
-  }
-}
-
 /**
- * 原生发送的视频字节上限，`null` 表示不原生发送。`videoDelivery` 与本轮估算密度（`runDensity`）共用，
- * 发送与估算对同一段视频的判定因此一致。
- */
-function nativeVideoLimit(
-  caps: Pick<InputMediaCapabilities, 'video' | 'mediaUploadAbove'>,
-): number | null {
-  if (!caps.video) return null
-  return caps.mediaUploadAbove !== undefined ? Number.POSITIVE_INFINITY : MEDIA_RETAIN_HIGH_BYTES
-}
-
-/**
- * 路径视频的发送方式。换出预算（`mediaBytes`）、发送前物化（`materialize`）与 `read_file` 读取视频
- * 共用本函数，三处判定因此一致。
+ * 本轮的估算密度：模型的计数规则按本轮的视频发送能力收窄（`video.accepts`）。模型不接受视频或适配器没有实现视频
+ * 传输时 `video` 为 null；时长范围取模型规格（`ModelSpec.videoSeconds`）；不能上传时字节上限为请求中常驻媒体的上限：
+ * 内联视频按字节计入常驻预算，超过上限的在下一步即被整批换出，模型只能看到一次。
  *
- * 模型不接受原生视频时使用抽帧；适配器支持上传时大文件上传，请求中只带地址；不能上传且超过常驻上限的也使用
- * 抽帧：内联视频按字节计入常驻预算，超过上限的在下一步即被整批换出，模型只能看到一次，与图片只发送一次的情形相同。
- */
-export function videoDelivery(
-  size: number,
-  caps: Pick<InputMediaCapabilities, 'video' | 'mediaUploadAbove'>,
-): VideoDelivery {
-  const limit = nativeVideoLimit(caps)
-  if (limit === null || size > limit) return 'frames'
-  return caps.mediaUploadAbove !== undefined && size > caps.mediaUploadAbove ? 'upload' : 'inline'
-}
-
-/**
- * 本轮的估算密度：模型的计数规则按本轮的视频发送能力收窄。不原生发送视频时 `video` 为 null；
- * 不能上传时字节上限为请求中常驻媒体的上限，超过的视频发送时被替换为说明（`videoDelivery`），估算记 0。
- *
+ * 本函数是原生视频范围的唯一来源：发送（`videoDelivery`）、`read_file`（`ToolContext.density`）与估算都读取它的结果。
  * 不要直接使用 `spec.density` 估算请求：不接受视频的模型使用默认档时，会把发送时已替换为说明的视频按默认档计入。
  */
 export function runDensity(adapter: Pick<LlmAdapter, 'spec' | 'transmits'>): TokenDensity {
-  const { density } = adapter.spec
+  const { density, video, videoSeconds } = adapter.spec
   if (!density.video) return density
-  const limit = nativeVideoLimit(videoCapabilities(adapter))
+  if (!video || adapter.transmits.video !== true) return { ...density, video: null }
   return {
     ...density,
-    video:
-      limit === null
-        ? null
-        : { ...density.video, maxBytes: Math.min(density.video.maxBytes, limit) },
+    video: {
+      ...density.video,
+      accepts: {
+        maxBytes:
+          adapter.transmits.mediaUploadAbove !== undefined
+            ? Number.POSITIVE_INFINITY
+            : MEDIA_RETAIN_HIGH_BYTES,
+        minSeconds: videoSeconds?.min ?? 0,
+        maxSeconds: videoSeconds?.max ?? Number.POSITIVE_INFINITY,
+      },
+    },
   }
 }
+
+/**
+ * 路径视频的发送方式。`rule` 是本轮密度的视频规则（`runDensity`），null 表示不原生发送。
+ * 换出预算（`mediaBytes`）、发送前物化（`materialize`）与 `read_file` 读取视频共用本函数，三处判定因此一致。
+ *
+ * 超出原生发送范围时使用抽帧：超出时长的视频必然被接口拒绝；超过常驻上限又不能上传的视频只能被模型看到一次。
+ */
+export function videoDelivery(
+  meta: VideoMeta,
+  rule: VideoRule | null,
+  uploadAbove: number | undefined,
+): VideoDelivery {
+  if (!rule || videoOutOfRange(meta, rule.accepts)) return 'frames'
+  return uploadAbove !== undefined && meta.bytes > uploadAbove ? 'upload' : 'inline'
+}
+
+/** 视频超出原生发送范围的原因，写给模型；在范围内时为 null。 */
+export function videoRangeCause(meta: VideoMeta, range: VideoRange): string | null {
+  const why = videoOutOfRange(meta, range)
+  const seconds = meta.seconds === null ? '' : `${Number(meta.seconds.toFixed(1))} 秒`
+  if (why === 'bytes') {
+    return `该视频 ${(meta.bytes / 1024 / 1024).toFixed(1)} MB，超出请求中常驻媒体的上限，且当前接口不支持上传`
+  }
+  if (why === 'short') return `该视频时长 ${seconds}，短于当前模型接受的 ${range.minSeconds} 秒`
+  if (why === 'long') return `该视频时长 ${seconds}，长于当前模型接受的 ${range.maxSeconds} 秒`
+  return null
+}
+
+/** 视频不直接发送时写给模型的下一步。 */
+const VIDEO_FRAMES_HINT = '需要画面时用 read_file 读取此路径，将按时间抽取若干帧'
 
 /**
  * 一个媒体块实际写入请求体的字节数。base64 按解码后的长度计，正文库引用按记录的字节数计；路径视频按 `videoDelivery`：
@@ -538,14 +543,18 @@ function blockBytes(b: ContentBlock, caps: InputMediaCapabilities): number {
   if (b.source.kind === 'base64') return Math.floor((b.source.data.length * 3) / 4)
   if (b.source.kind === 'resource') return b.source.bytes
   if (b.source.kind !== 'path') return 0
-  let size = 0
+  // 文件已不存在：`materialize` 会将其替换为一行说明，不计媒体字节。
+  if (b.type === 'video') {
+    const meta = videoMetaOf(b.source.path)
+    return meta && videoDelivery(meta, caps.video, caps.mediaUploadAbove) === 'inline'
+      ? meta.bytes
+      : 0
+  }
   try {
-    size = statSync(b.source.path).size
+    return statSync(b.source.path).size
   } catch {
-    // 文件已不存在：`materialize` 会将其替换为一行说明，不计媒体字节。
     return 0
   }
-  return b.type === 'image' || videoDelivery(size, caps) === 'inline' ? size : 0
 }
 
 /** 一条消息中媒体块实际写入请求体的字节数，逐块按 `blockBytes` 计。 */
@@ -757,7 +766,10 @@ export interface InputMediaCapabilities {
   image: boolean | null
   /** 接口拒绝了包含图片的请求（`RunState.imagesRejected`）。为 true 时 `image` 同为 false，替换说明不同。 */
   imageRejected?: true
-  video: boolean
+  /** 本轮原生视频的规则与发送范围（`RunState.density` 的 `video`）；null 表示不原生发送。 */
+  video: VideoRule | null
+  /** 接口拒绝了包含视频的请求（`RunState.videosRejected`）。为 true 时 `video` 为 null，替换说明不同。 */
+  videoRejected?: true
   mediaPaths?: boolean
   /** 本地路径媒体超过该字节数时由适配器上传，请求中只带地址；缺失表示一律内联。 */
   mediaUploadAbove?: number
@@ -778,11 +790,10 @@ export interface InputMediaCapabilities {
  * path 形态只剩视频（用户附件与工具读取的视频）。工具图片在消息中是正文库引用，经 `sink` 读取；
  * 附件图片由 `runtime` 的 `withAttachments` 编码为字节。
  *
- * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输，发送方式按 `videoDelivery`。
+ * 图片按模型能力裁决；视频按本轮的原生发送范围（`runDensity`），发送方式按 `videoDelivery`。
  *
- * 文件不存在或能力不支持时替换为文本说明，不使整轮静默丢失媒体。视频只在一种情况下按大小拦截：
- * 适配器不能上传、视频又超过请求中常驻媒体的上限时，内联后下一步即被换出，因此替换为指向
- * `read_file` 抽帧的说明。其余大小上限由实际 Provider 协议裁决。
+ * 文件不存在或能力不支持时替换为文本说明，不使整轮静默丢失媒体。超出原生发送范围的视频（时长超出模型规格，
+ * 或不能上传又超过常驻上限）替换为写明原因、指向 `read_file` 抽帧的说明。其余上限由实际 Provider 协议裁决。
  */
 export async function materialize(
   req: ChatRequest,
@@ -830,10 +841,12 @@ async function loadBlock(
    */
   if (b.type === 'video' && !capabilities.video) {
     const next =
-      b.source.kind === 'path' && capabilities.image !== false
-        ? '；需要画面时用 read_file 读取此路径，将按时间抽取若干帧'
-        : ''
-    return note(`当前模型或接口不接受原生视频输入，此视频未发送${next}`)
+      b.source.kind === 'path' && capabilities.image !== false ? `；${VIDEO_FRAMES_HINT}` : ''
+    return note(
+      capabilities.videoRejected
+        ? `接口拒绝视频输入，此视频未发送${next}`
+        : `当前模型或接口不接受原生视频输入，此视频未发送${next}`,
+    )
   }
 
   // 换出时标记为缩略图的图片（`omitImages`）：读取原图字节后缩小，标记不传给适配器。
@@ -852,15 +865,18 @@ async function loadBlock(
   if (b.source.kind !== 'path') return b
   const { path } = b.source
 
-  const info = await stat(path).catch(() => null)
-  if (!info?.isFile()) return note('已不存在')
-  if (b.type === 'video' && videoDelivery(info.size, capabilities) === 'frames') {
-    const mb = (info.size / 1024 / 1024).toFixed(1)
-    const next =
-      capabilities.image !== false ? '；需要画面时用 read_file 读取此路径，将按时间抽取若干帧' : ''
-    return note(
-      `此视频 ${mb} MB，超出请求中常驻媒体的上限，且当前接口不支持上传，未直接发送${next}`,
-    )
+  if (b.type === 'video') {
+    const meta = videoMetaOf(path)
+    if (!meta) return note('已不存在')
+    const range = capabilities.video?.accepts
+    const cause = range ? videoRangeCause(meta, range) : null
+    if (cause) {
+      const next = capabilities.image !== false ? `；${VIDEO_FRAMES_HINT}` : ''
+      return note(`${cause}，未直接发送${next}`)
+    }
+  } else {
+    const info = await stat(path).catch(() => null)
+    if (!info?.isFile()) return note('已不存在')
   }
   if (capabilities.mediaPaths) return b
   const bytes = await readFile(path).catch(() => null)

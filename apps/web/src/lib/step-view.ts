@@ -349,6 +349,7 @@ const RETRY_LABELS: Record<ProviderRetryDecision, string> = {
   context_compaction: '已压缩后重发',
   context_compaction_failed: '压缩失败，未重发',
   images_removed: '已移除图片后重发',
+  videos_removed: '已移除视频后重发',
   process_exit: '服务进程退出，结果不明',
   run_ended: '本轮已结束，未取得完整的请求结果',
 }

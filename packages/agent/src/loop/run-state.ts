@@ -71,8 +71,11 @@ export class RunState {
   readonly adapter: LlmAdapter
   readonly registry: ToolRegistry
   readonly persist: LoopPersistence
-  /** 本轮的估算密度（`runDensity`）。读数、压缩触发、申报钳位三处共用。 */
-  readonly density: TokenDensity
+  /**
+   * 本轮的估算密度（`runDensity`），同时是原生视频发送范围的来源。读数、压缩触发、申报钳位与媒体发送共用。
+   * 接口拒绝视频后 `video` 置为 null（`attempt.ts` 的 `removeVideos`），之后不复位。
+   */
+  density: TokenDensity
   readonly usage: RunUsage
   readonly fileChanges: FileChange[] = []
   /** transcript = 本 run 内新产生的对话，与传入的 history 拼接后发给模型。 */
@@ -141,6 +144,13 @@ export class RunState {
    * 移除图片后的重发被接口接受时写入并清空；重发仍被拒时不写入。
    */
   pendingImagesNotice: { seq: number; text: string; toolCallIds: string[] } | null = null
+  /**
+   * 本 run 是否已停止原生发送视频。初值来自 `RunInput.videosRejected`；本 run 内请求因视频被接口拒绝时置为 true，
+   * 之后不复位。为 true 时 `density.video` 为 null，物化与工具上下文据此写出「接口拒绝视频输入」的说明。
+   */
+  videosRejected: boolean
+  /** 已交给模型、尚未写入的「接口拒绝视频」执行事实（`attempt.ts` 的 `removeVideos`），写入时机同图片。 */
+  pendingVideosNotice: { seq: number; text: string } | null = null
 
   // 每个 run 只创建一个 ToolContext。工具写入 ctx.state 的状态
   // （files 插件记录的本轮已读文件、目录大小缓存等）必须跨调用可见；
@@ -154,7 +164,9 @@ export class RunState {
     this.adapter = deps.adapter
     this.registry = deps.registry
     this.persist = deps.persist
-    this.density = runDensity(deps.adapter)
+    this.videosRejected = input.videosRejected === true
+    const density = runDensity(deps.adapter)
+    this.density = this.videosRejected ? { ...density, video: null } : density
     this.contextEstimate = input.contextEstimate
     this.imagesRejected = input.imagesRejected === true
     this.usage = {

@@ -183,6 +183,8 @@ export interface LoopPersistence {
       notice?: true
       /** 执行事实是「接口拒绝了包含图片的请求」，见 `core` 的 `StepPayload`。 */
       imagesRejected?: { provider: string; model: string }
+      /** 执行事实是「接口拒绝了包含视频的请求」，见 `core` 的 `StepPayload`。 */
+      videosRejected?: { provider: string; model: string }
     },
   ): string
   /**
@@ -402,6 +404,11 @@ export interface RunInput {
    * （`store` 的 `conversationRejectsImages`）。
    */
   imagesRejected?: true
+  /**
+   * 本会话已有「接口拒绝了包含视频的请求」的执行事实，且接口与模型与本轮相同。为 true 时本轮请求不直接携带视频，
+   * 视频替换为指向 `read_file` 抽帧的说明。由 runtime 从会话记录推导（`store` 的 `conversationRejectsVideos`）。
+   */
+  videosRejected?: true
   /**
    * 本轮 transcript 所属的用户消息。
    *
