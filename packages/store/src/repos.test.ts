@@ -1167,12 +1167,16 @@ describe('摘要请求与主请求分开统计', () => {
       })
     const main = open(0, 'turn', 100)
     markProviderRequestSent(store, main.id)
-    settleProviderRequest(store, main.id, 'received', {
-      inputTokens: 90,
-      outputTokens: 5,
-      cachedTokens: null,
-      cacheWriteTokens: null,
-    })
+    settleProviderRequest(
+      store,
+      main.id,
+      'received',
+      { inputTokens: 90, outputTokens: 5, cachedTokens: null, cacheWriteTokens: null },
+      null,
+      '',
+      null,
+      true,
+    )
     const summary = open(1, 'summary', 9000)
     markProviderRequestSent(store, summary.id)
     settleProviderRequest(store, summary.id, 'received', {

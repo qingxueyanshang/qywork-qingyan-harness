@@ -39,7 +39,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
       if (mode !== 'no-usage') {
         events.push({
           choices: [],
-          // 压缩后的请求约 1 万字节，回报值须小于它才作为锚点。
+          // 压缩后的请求很小，回报值须在估算的 1.5 倍加 2 万之内才作为锚点。
           usage: {
             prompt_tokens: mode === 'before' ? 601_476 : 6_448,
             completion_tokens: mode === 'before' ? 1011 : 1151,
@@ -96,10 +96,10 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
   }
   try {
     // 先通过真实 Session 与本地 HTTP 建立三轮历史和压缩前的用量回执。
-    // 每段约 38 万字节：回报的输入量不超过请求字节数时，回执才作为锚点。
+    // 每段本地估算约 14 万：回报的输入量不超过估算的 1.5 倍加 2 万时，回执才作为锚点。
     for (let i = 0; i < 3; i++) {
       for await (const _ of session.ask(
-        `原始历史${i}：${'old-history-marker '.repeat(20_000)}`,
+        `原始历史${i}：${'old-history-marker '.repeat(35_000)}`,
         conversationId,
       )) {
       }

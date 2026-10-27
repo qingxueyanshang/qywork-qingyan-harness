@@ -1789,13 +1789,14 @@ export function settleProviderRequest(
   errorCode: string | null = null,
   finishReason = '',
   errorMessage: string | null = null,
+  anchored = false,
 ): void {
   store.db
     .query(
       `UPDATE provider_requests
        SET status = ?, provider_input_tokens = ?, provider_output_tokens = ?,
            provider_cached_tokens = ?, provider_cache_write_tokens = ?, error_code = ?,
-           finish_reason = ?, error_message = ?, completed_at = ?
+           finish_reason = ?, error_message = ?, completed_at = ?, anchored = ?
        WHERE id = ?`,
     )
     .run(
@@ -1808,6 +1809,7 @@ export function settleProviderRequest(
       finishReason,
       errorMessage,
       Date.now(),
+      anchored ? 1 : 0,
       id,
     )
 }
@@ -1846,11 +1848,10 @@ export function latestSentProviderRequest(
 }
 
 /**
- * 本会话最近一次**带 usage 回报**的请求。
+ * 本会话最近一次作为占用锚点的请求。
  *
- * 与 `latestSentProviderRequest` 的区别在于判据：本函数要求 provider 实际回报了正数用量。
- * 与 loop 的锚点更新（`agent` 的 `settleResponse`）一致，全零 usage 不能作为真值，否则漏报时会把锚点归零；
- * 输入量超过 `request_bytes` 的回报也不能作为真值：它包含本次请求之外的 token，压缩无法回收。
+ * 判据只有 `anchored` 一列，由 loop 收尾时写入（`agent` 的 `settleResponse`）：全零 usage、输入量超出上限的回执
+ * 都不作为锚点。不要在此另写判据：两处各自判定时，同一条回执在运行中与刷新后的读数可能不同。
  */
 export function latestAnchoredProviderRequest(
   store: Store,
@@ -1860,11 +1861,7 @@ export function latestAnchoredProviderRequest(
     .query<ProviderRequestRow, [string]>(
       `SELECT pr.* FROM provider_requests pr
        JOIN runs r ON r.id = pr.run_id
-       WHERE r.conversation_id = ? AND pr.purpose = 'turn' AND pr.provider_input_tokens IS NOT NULL
-         AND COALESCE(pr.provider_input_tokens, 0) + COALESCE(pr.provider_output_tokens, 0)
-           + COALESCE(pr.provider_cached_tokens, 0) + COALESCE(pr.provider_cache_write_tokens, 0) > 0
-         AND COALESCE(pr.provider_input_tokens, 0) + COALESCE(pr.provider_cached_tokens, 0)
-           + COALESCE(pr.provider_cache_write_tokens, 0) <= pr.request_bytes
+       WHERE r.conversation_id = ? AND pr.anchored = 1
        ORDER BY pr.sent_at DESC, pr.id DESC
        LIMIT 1`,
     )

@@ -184,7 +184,7 @@ const BASE64_SOURCE_FRAME = JSON.stringify({ kind: 'base64', data: '' }).length
  * `requestBytes` 记录的是模型可见请求主体的大小，引用块按引用本身计时，带图请求只记下几十字节，
  * 请求体大小与响应头时间、413 拒绝之间的对照因此失效。
  * 路径引用按文件编码后的大小计：内联发送时即实际字节，上传后发送地址或改为抽帧时请求体更小，此时该值是上界。
- * 占用锚点的准入（`turn-end.ts`）以该值作为输入 token 数的上限，不要把路径引用改回按引用本身计：
+ * 带视频的请求，占用锚点的准入（`turn-end.ts` 的 `inputLimit`）以该值作为输入 token 数的上限，不要把路径引用改回按引用本身计：
  * 带长视频的请求的真实回执会超过上限而不被采用，视频的占用从此无法计入读数。
  */
 function referenceExpansion(req: ChatRequest): number {

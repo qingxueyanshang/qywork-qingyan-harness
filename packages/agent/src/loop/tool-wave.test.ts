@@ -1420,8 +1420,10 @@ describe('投递额度按决策计算', () => {
 
   /** 约 30 万 token 的历史，使占用与本地估算都达到真实量级。 */
   const bulky: WireMessage[] = [{ role: 'user', content: '甲'.repeat(270_000) }]
-  /** 约 90 万字节的历史：回报的输入量不超过请求字节数时，回执才作为锚点。 */
-  const large: WireMessage[] = [{ role: 'user', content: '甲'.repeat(300_000) }]
+  /** 本地估算约 57 万的历史：回报 85 万时仍不超过估算的 1.5 倍加 2 万，回执作为锚点。 */
+  const large: WireMessage[] = [{ role: 'user', content: '甲'.repeat(520_000) }]
+  /** 本地估算约 54 万的历史：回报为估算的 1.25 倍时，软阈值以下余 13 万左右。 */
+  const heavy: WireMessage[] = [{ role: 'user', content: '甲'.repeat(490_000) }]
 
   /**
    * 同一决策的三个调用分三个波次执行。若每个波次重新计算额度，三次都会放行，
@@ -1491,17 +1493,17 @@ describe('投递额度按决策计算', () => {
     const loop = new AgentLoop({
       adapter: adapterWithUsage([call('grab')], (e) => {
         estimated = e
-        return e * 2
+        return Math.round(e * 1.25)
       }),
       registry: grabRegistry(1, [], seen),
       systemPrompt: 'sys',
       persist: noopPersistence(),
       makeToolContext: (runId) => baseCtx(runId),
     })
-    await drain(loop, bulky)
-    const real = 800_000 - estimated * 2
-    expect(seen[0]!).toBeGreaterThan(real * 0.45)
-    expect(seen[0]!).toBeLessThan(real * 0.55)
+    await drain(loop, heavy)
+    const real = 800_000 - estimated * 1.25
+    expect(seen[0]!).toBeGreaterThan((real / 1.25) * 0.9)
+    expect(seen[0]!).toBeLessThan((real / 1.25) * 1.1)
   })
 
   /**
