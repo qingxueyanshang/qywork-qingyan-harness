@@ -21,19 +21,15 @@ function range(min: number, max: number): number[] {
 }
 
 /**
- * hongcheng 工作台目录（`/api/workbench-models` 的 `data[]`）中的一条。
- * 时长写为「最小-最大」，固定时长只写一个数（如 `"30"`）；画幅为逗号分隔，三类素材上限为数字字符串。
+ * hongcheng 型号列表（带凭证请求 `{base}/models`）中一条的 `parameters`。
+ * 时长写为「最小-最大」，固定时长只写一个数（如 `"30"`）；画幅为数组，三类素材上限为数字。
  */
 export function hongchengVideoSpec(entry: Record<string, unknown>): ChannelVideoSpec | null {
   const duration = typeof entry.duration === 'string' ? DURATION.exec(entry.duration.trim()) : null
   const seconds = duration ? range(Number(duration[1]), Number(duration[2] ?? duration[1])) : []
-  const ratios =
-    typeof entry.aspect_ratios === 'string'
-      ? entry.aspect_ratios
-          .split(',')
-          .map((r) => r.trim())
-          .filter(Boolean)
-      : []
+  const ratios = Array.isArray(entry.aspect_ratios)
+    ? entry.aspect_ratios.filter((r): r is string => typeof r === 'string' && /^\d+:\d+$/.test(r))
+    : []
   const resolution = typeof entry.resolution === 'string' ? entry.resolution.trim() : ''
   const maxImages = count(entry.max_image_refs)
   const maxVideos = count(entry.max_video_refs)

@@ -2,7 +2,7 @@
  * 拉取接口上的型号：中转的公开计费清单（New API 的 `/api/pricing`）优先，没有时退回 OpenAI 兼容的 `{base}/models`。
  *
  * 计费清单给出每个型号的接口类型，据此区分对话、图像与视频；价格按 `pricing.ts` 折算。
- * 视频型号再按渠道目录（hongcheng 工作台目录、木木目录）、图像型号按木木目录取得保存的规格；
+ * 视频型号再按渠道目录（hongcheng 型号列表的 `parameters`、木木目录）、图像型号按木木目录取得保存的规格；
  * 目录中没有该型号时不带规格，使用协议默认。
  * 只读：不写配置，写入由调用方经配置接口完成。
  */
@@ -214,21 +214,26 @@ async function fromPricing(
   entries: NewApiPricingEntry[],
   pricing: unknown,
   origin: string,
+  base: string,
+  auth: Record<string, string>,
   target: PullTarget,
   signal: AbortSignal,
 ): Promise<PullResult> {
-  const [status, workbench, typetale] = await Promise.all([
+  // hongcheng 的视频规格只在带凭证的型号列表中（条目的 `parameters`）。
+  // 价格仍按计费清单折算：同一条目的 `pricing` 是展示字段，与实际计费方式不一致的情形已经存在。
+  const [status, listed, typetale] = await Promise.all([
     optional(getJson(`${origin}/api/status`, {}, signal)),
-    optional(getJson(`${origin}/api/workbench-models`, {}, signal)),
+    optional(getJson(`${base}/models`, auth, signal)),
     optional(getJson(`${origin}/docs/typetale-models.json`, {}, signal)),
   ])
   // 站点状态读取失败时无法确定充值价与币种，价格不明。
   const statusData = record(record(status)?.data)
   const basis = statusData ? priceBasis(record(pricing) ?? {}, statusData) : null
   const hongcheng = new Map(
-    (listOf(workbench, 'data') ?? []).flatMap((e) =>
-      typeof e.api_model === 'string' ? [[e.api_model, e] as const] : [],
-    ),
+    (listOf(listed, 'data') ?? []).flatMap((e) => {
+      const parameters = record(e.parameters)
+      return typeof e.id === 'string' && parameters ? [[e.id, parameters] as const] : []
+    }),
   )
   const mumugofe = new Map(
     (listOf(typetale, 'models') ?? []).flatMap((e) =>
@@ -348,17 +353,19 @@ function fromModelList(entries: Record<string, unknown>[], target: PullTarget): 
 export async function pullModels(target: PullTarget, signal: AbortSignal): Promise<PullResult> {
   const base = normalizeBaseUrl(target.baseUrl)
   const origin = new URL(base).origin
+  const auth: Record<string, string> = {
+    ...(target.kind === 'anthropic_messages'
+      ? { 'x-api-key': target.apiKey, 'anthropic-version': '2023-06-01' }
+      : { authorization: `Bearer ${target.apiKey}` }),
+    ...target.headers,
+  }
   const pricing = await optional(getJson(`${origin}/api/pricing`, {}, signal))
   const entries = listOf(pricing, 'data')?.filter(
     (e): e is Record<string, unknown> & NewApiPricingEntry => typeof e.model_name === 'string',
   )
-  if (entries?.length) return fromPricing(entries, pricing, origin, target, signal)
+  if (entries?.length) return fromPricing(entries, pricing, origin, base, auth, target, signal)
 
-  const auth: Record<string, string> =
-    target.kind === 'anthropic_messages'
-      ? { 'x-api-key': target.apiKey, 'anthropic-version': '2023-06-01' }
-      : { authorization: `Bearer ${target.apiKey}` }
-  const listed = await getJson(`${base}/models`, { ...auth, ...target.headers }, signal)
+  const listed = await getJson(`${base}/models`, auth, signal)
   const models = listOf(listed, 'data')
   if (!models) throw new PullError(`${new URL(base).pathname}/models 返回的格式无法识别`)
   return fromModelList(models, target)

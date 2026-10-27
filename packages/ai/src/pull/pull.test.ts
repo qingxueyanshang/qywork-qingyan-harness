@@ -1,5 +1,5 @@
 /**
- * 覆盖 `index.ts`（拉取型号）：本地服务按 2026-10-21 取得的 hongcheng 与木木响应片段应答，
+ * 覆盖 `index.ts`（拉取型号）：本地服务按 2026-10-21 取得的木木与 2026-10-27 取得的 hongcheng 响应片段应答，
  * 核对分类、渠道规格、价格，没有计费清单时退回型号列表、按条目自带的类别归类，以及官方接口按目录补齐自有协议的生成型号。
  */
 
@@ -113,92 +113,51 @@ test('木木：计费清单区分对话、图像与视频，视频带渠道规�
     known: false,
     price: { input: 1.04, output: 4.16, offPeak: { rate: 0.5 } },
   })
-  // 公开接口不携带凭证。
-  expect(seen.every((s) => s.auth === null)).toBe(true)
+  // 公开接口不携带凭证，型号列表带凭证。
+  expect(seen.filter((s) => s.path !== '/v1/models').every((s) => s.auth === null)).toBe(true)
 })
 
-test('hongcheng：工作台目录给出规格，按秒与按次价格', async () => {
+// 2026-10-27 hongcheng 的视频规格只在带凭证的型号列表中（条目的 `parameters`），工作台目录需要登录。
+test('hongcheng：型号列表的 parameters 给出规格，价格按计费清单折算', async () => {
   const data = fixture('newapi-hongcheng.json')
-  const { target } = site({
+  const { target, seen } = site({
     '/api/pricing': data.pricing,
     '/api/status': data.status,
-    '/api/workbench-models': data.workbench,
-  })
-  const result = await pullModels(target, signal())
-  const by = new Map(result.models.map((m) => [m.id, m]))
-  expect(by.get('TTseadanco2.5-720')).toMatchObject({
-    output: 'video',
-    spec: { channel: 'hongcheng', maxVideos: 10, price: { per: 'second', amount: 0.42 } },
-  })
-  expect(by.get('seedance-2.5-yy-720p')).toMatchObject({
-    spec: { seconds: expect.arrayContaining([4, 30]), price: { per: 'request', amount: 7.3 } },
-  })
-  // 计费清单中有、工作台目录中没有的型号不带规格。
-  expect(by.get('bb2.5')).toMatchObject({ output: 'video', kind: 'openai_videos' })
-})
-
-// 2026-10-27 hongcheng 的两个固定时长型号：工作台目录的 duration 只写一个数，曾因此不带规格。
-test('hongcheng：固定时长的型号取得规格与按次价格', async () => {
-  const data = fixture('newapi-hongcheng.json') as {
-    pricing: { data: unknown[] }
-    workbench: { data: unknown[] }
-    status: unknown
-  }
-  const priced = (model_name: string, model_price: number) => ({
-    model_name,
-    quota_type: 1,
-    model_ratio: 0,
-    model_price,
-    completion_ratio: 0,
-    enable_groups: ['default', 'vip', 'svip'],
-    supported_endpoint_types: ['openai-video'],
-  })
-  const listed = (api_model: string, duration: string, resolution: string, refs: string[]) => ({
-    id: api_model,
-    api_model,
-    duration,
-    resolution,
-    aspect_ratios: '16:9,9:16,1:1',
-    max_image_refs: refs[0],
-    max_video_refs: refs[1],
-    max_audio_refs: refs[2],
-    enabled: true,
-  })
-  const { target } = site({
-    '/api/pricing': {
-      ...data.pricing,
-      data: [
-        ...data.pricing.data,
-        priced('seedance-2.5（YX）-按次', 0.8219178082),
-        priced('sedanco2.0-300秒必出', 0.3150684932),
-      ],
-    },
-    '/api/status': data.status,
-    '/api/workbench-models': {
-      ...data.workbench,
-      data: [
-        ...data.workbench.data,
-        listed('seedance-2.5（YX）-按次', '30', '720p', ['30', '10', '10']),
-        listed('sedanco2.0-300秒必出', '15', '480p', ['9', '0', '3']),
-      ],
-    },
+    '/v1/models': data.models,
   })
   const by = new Map((await pullModels(target, signal())).models.map((m) => [m.id, m]))
-  expect(by.get('seedance-2.5（YX）-按次')).toMatchObject({
+  expect(by.get('TTseadanco2.5-720')).toMatchObject({
     output: 'video',
     known: true,
-    spec: { seconds: [30], resolutions: ['720p'], maxImages: 30, price: { per: 'request' } },
+    spec: {
+      channel: 'hongcheng',
+      ratios: ['16:9', '9:16', '1:1'],
+      maxVideos: 10,
+      price: { per: 'second', amount: 0.42, currency: 'CNY' },
+    },
+  })
+  expect(by.get('seedance2.5-yx-stable')).toMatchObject({
+    spec: {
+      seconds: expect.arrayContaining([4, 30]),
+      price: { per: 'request', amount: 7.2, currency: 'CNY' },
+    },
   })
   expect(by.get('sedanco2.0-300秒必出')).toMatchObject({
-    known: true,
     spec: { seconds: [15], resolutions: ['480p'], maxVideos: 0, maxAudios: 3 },
   })
-  const amount = (id: string) => {
-    const m = by.get(id)
-    return m?.output === 'video' ? m.spec?.price?.amount : undefined
-  }
-  expect(amount('seedance-2.5（YX）-按次')).toBeCloseTo(6)
-  expect(amount('sedanco2.0-300秒必出')).toBeCloseTo(2.3)
+  // 型号列表的 `pricing` 写为按条，计费清单为按秒：以计费清单为准。
+  expect(by.get('TTsedanco2.0-720')).toMatchObject({
+    spec: { price: { per: 'second', amount: 0.3 } },
+  })
+  // 型号列表中没有 parameters 的型号不带规格。
+  expect(by.get('bb2.5')).toEqual({
+    id: 'bb2.5',
+    output: 'video',
+    kind: 'openai_videos',
+    known: false,
+  })
+  expect(seen.find((s) => s.path === '/v1/models')?.auth).toBe('Bearer sk-test')
+  expect(seen.filter((s) => s.path.startsWith('/api/')).every((s) => s.auth === null)).toBe(true)
 })
 
 test('站点状态读取失败时价格不明，型号照常列出', async () => {

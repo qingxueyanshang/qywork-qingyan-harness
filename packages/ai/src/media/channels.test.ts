@@ -1,6 +1,6 @@
 /**
  * 覆盖 `channels.ts`：渠道目录条目 → 保存的规格 → 生成规格。
- * 数据是 2026-10-21 从 hongcheng 与木木公开接口取得的响应片段（`../fixtures/newapi-*.json`）。
+ * 数据是从 hongcheng（2026-10-27，型号列表需带凭证）与木木（2026-10-21）接口取得的响应片段（`../fixtures/newapi-*.json`）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -18,20 +18,20 @@ import {
 
 const fixture = (name: string) =>
   JSON.parse(readFileSync(join(import.meta.dir, '../fixtures', name), 'utf8')) as {
-    workbench: { data: Record<string, unknown>[] }
+    models: { data: Record<string, unknown>[] }
     typetale: { models: Record<string, unknown>[] }
   }
 const hongcheng = fixture('newapi-hongcheng.json')
 const mumugofe = fixture('newapi-mumugofe.json')
 
-const workbench = (id: string) =>
-  hongcheng.workbench.data.find((e) => e.api_model === id) as Record<string, unknown>
+const parameters = (id: string) =>
+  hongcheng.models.data.find((e) => e.id === id)?.parameters as Record<string, unknown>
 const typetale = (id: string) =>
   mumugofe.typetale.models.find((e) => e.id === id) as Record<string, unknown>
 
 describe('hongcheng', () => {
-  test('工作台目录 → 保存的规格', () => {
-    expect(hongchengVideoSpec(workbench('TTseadanco2.5-720'))).toEqual({
+  test('型号列表的 parameters → 保存的规格', () => {
+    expect(hongchengVideoSpec(parameters('TTseadanco2.5-720'))).toEqual({
       channel: 'hongcheng',
       seconds: Array.from({ length: 26 }, (_, i) => i + 5),
       ratios: ['16:9', '9:16', '1:1'],
@@ -40,12 +40,12 @@ describe('hongcheng', () => {
       maxVideos: 10,
       maxAudios: 10,
     })
-    expect(hongchengVideoSpec({ ...workbench('TTseadanco2.5-720'), duration: '' })).toBeNull()
+    expect(hongchengVideoSpec({ ...parameters('TTseadanco2.5-720'), duration: '' })).toBeNull()
   })
 
   test('生成规格：参数名、引用写法与参考视频', () => {
     const spec = channelMediaSpec('TTseadanco2.5-720', {
-      ...hongchengVideoSpec(workbench('TTseadanco2.5-720'))!,
+      ...hongchengVideoSpec(parameters('TTseadanco2.5-720'))!,
       price: { per: 'second', amount: 0.42, currency: 'CNY' },
     })
     expect(spec.videoFormat).toBe('hongcheng')
@@ -57,12 +57,12 @@ describe('hongcheng', () => {
     ])
     expect(spec.mention).toEqual({ image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' })
     expect(spec.price?.cost({ seconds: 10 })).toBeCloseTo(4.2)
-    const yy = channelMediaSpec(
-      'seedance-2.5-yy-720p',
-      hongchengVideoSpec(workbench('seedance-2.5-yy-720p'))!,
+    const noVideo = channelMediaSpec(
+      'sedanco2.0-300秒必出',
+      hongchengVideoSpec(parameters('sedanco2.0-300秒必出'))!,
     )
-    expect(yy.operations).not.toContain('video_to_video')
-    expect(yy.price).toBeUndefined()
+    expect(noVideo.operations).not.toContain('video_to_video')
+    expect(noVideo.price).toBeUndefined()
   })
 })
 

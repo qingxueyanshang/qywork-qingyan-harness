@@ -1,105 +1,4 @@
 {
-  "workbench": {
-    "success": true,
-    "data": [
-      {
-        "id": "TTseadanco2.5-720",
-        "name": "Seedance 2.5 720P【30图10音10视 · 5-30秒 · 原生不卡脸】按秒计费",
-        "description": "Seedance 2.5；720P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；原生不卡脸；按秒计费 ¥0.42/秒。",
-        "api_model": "TTseadanco2.5-720",
-        "duration": "5-30",
-        "resolution": "720p",
-        "aspect_ratios": "16:9,9:16,1:1",
-        "max_image_refs": "30",
-        "max_video_refs": "10",
-        "max_audio_refs": "10",
-        "enabled": true,
-        "group": "视频生成",
-        "refbridge_path": "/refhost",
-        "price": 0.42
-      },
-      {
-        "id": "TTsedanco2.5-480",
-        "name": "Seedance 2.5 480P【30图10音10视 · 5-30秒】按秒计费",
-        "description": "Seedance 2.5；480P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；按秒计费 ¥0.31/秒。",
-        "api_model": "TTsedanco2.5-480",
-        "duration": "5-30",
-        "resolution": "480p",
-        "aspect_ratios": "16:9,9:16,1:1",
-        "max_image_refs": "30",
-        "max_video_refs": "10",
-        "max_audio_refs": "10",
-        "enabled": true,
-        "group": "视频生成",
-        "refbridge_path": "/refhost",
-        "price": 0.31
-      },
-      {
-        "id": "GGseadanco2.5/720",
-        "name": "Seedance 2.5 720P【30图10音10视 · 5-30秒 · 原生不卡脸】GG",
-        "description": "Seedance 2.5；720p；5-30 秒自由选择；最多 30 张参考图 / 10 段参考视频 / 10 条参考音频；原生不卡脸；按秒计费 ¥0.54/秒。",
-        "api_model": "GGseadanco2.5/720",
-        "duration": "5-30",
-        "resolution": "720p",
-        "aspect_ratios": "16:9,9:16,1:1",
-        "max_image_refs": "30",
-        "max_video_refs": "10",
-        "max_audio_refs": "10",
-        "enabled": true,
-        "group": "视频生成",
-        "refbridge_path": "/refhost",
-        "price": 0.54
-      },
-      {
-        "id": "seedance-2.5-yy-720p",
-        "name": "Seedance 2.5 YY 720P【30图10音频 · 4-30秒 · 按条计费】",
-        "description": "Seedance 2.5 YY 720P；4-30 秒（默认30秒）；最多 30 张参考图 / 10 条参考音频；不支持参考视频；按条计费 ¥7.3/条。",
-        "api_model": "seedance-2.5-yy-720p",
-        "duration": "4-30",
-        "resolution": "720p",
-        "aspect_ratios": "16:9,9:16,1:1",
-        "max_image_refs": "30",
-        "max_video_refs": "0",
-        "max_audio_refs": "10",
-        "enabled": true,
-        "group": "视频生成",
-        "refbridge_path": "/refhost",
-        "price": 7.3
-      },
-      {
-        "id": "bb2.5",
-        "name": "BB2.5 720P【最多30图/10视频/10音频 · 4-30秒 · 按条计费】",
-        "description": "BB2.5 720P；4-30 秒任选、不乘时长；最多 30 图 / 10 视频 / 10 音频（音视频各自 ≤30 秒）；支持文生、图生、多模态；按条计费 ¥6.2/条。",
-        "api_model": "bb2.5",
-        "duration": "4-30",
-        "resolution": "720p",
-        "aspect_ratios": "16:9,9:16,1:1,4:3,3:4,21:9",
-        "max_image_refs": "30",
-        "max_video_refs": "10",
-        "max_audio_refs": "10",
-        "enabled": true,
-        "group": "视频生成",
-        "refbridge_path": "/refhost",
-        "price": 6.2
-      },
-      {
-        "id": "AIGV-dola-2.0",
-        "name": "AIGV 720P 2.0【不要写秒，用镜头一这样代替秒数，9张参考图】内置过人脸",
-        "description": "AIGV 2.0（内置过人脸）；720p；固定15秒；最多9张参考图；不支持参考视频/音频；按条计费 ¥2.4/条。",
-        "api_model": "AIGV-dola-2.0",
-        "duration": "15-15",
-        "resolution": "720p",
-        "aspect_ratios": "16:9,9:16,1:1",
-        "max_image_refs": "9",
-        "max_video_refs": "0",
-        "max_audio_refs": "3",
-        "enabled": false,
-        "group": "视频生成",
-        "refbridge_path": "",
-        "price": 240
-      }
-    ]
-  },
   "pricing": {
     "success": true,
     "group_ratio": {
@@ -180,6 +79,49 @@
         "completion_ratio": 0,
         "enable_groups": ["default", "vip", "svip"],
         "supported_endpoint_types": ["openai-video"]
+      },
+      {
+        "model_name": "seedance2.5-yx-stable",
+        "display_name": "Seedance 2.5 720P【HC 稳定版 · 4-30秒 · 默认30秒 · 30图10视频10音频】按条计费",
+        "description": "满血；过人脸；参考视频卡人脸；4-30秒；默认30秒；最多30图/10视频/10音频；固定720P；按条计费 ¥7.20/条。",
+        "tags": "video,seedance,YX,720p,fixed",
+        "vendor_id": 1,
+        "quota_type": 1,
+        "model_ratio": 0,
+        "model_price": 0.9863013699,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": ["default", "vip", "svip", "seedance"],
+        "supported_endpoint_types": ["openai-video"]
+      },
+      {
+        "model_name": "sedanco2.0-300秒必出",
+        "display_name": "Sedanco 2.0 300秒必出【9图3音 · 固定15秒 · 480P · 不卡脸】",
+        "description": "固定 480P、15 秒；最多 9 张参考图 / 3 条参考音频，不支持参考视频；不卡脸，按条计费 ¥2.3/条。",
+        "tags": "video,seedance,300s,per-request",
+        "vendor_id": 1,
+        "quota_type": 1,
+        "model_ratio": 0,
+        "model_price": 0.3150684932,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": ["default", "vip", "svip"],
+        "supported_endpoint_types": ["openai-video"]
+      },
+      {
+        "model_name": "TTsedanco2.0-720",
+        "display_name": "鸿呈-Seedance 2.0 720P【5-15秒 · 9图3视频3音频 · 原生不卡脸】",
+        "description": "鸿呈线路；720P；5-15 秒；9 图 / 3 视频 / 3 音频；原生不卡脸满血、全天稳定；按生成秒计费 ¥0.30/秒。",
+        "tags": "video,seedance,720p,zongheng,per-second",
+        "vendor_id": 1,
+        "quota_type": 2,
+        "model_ratio": 0,
+        "model_price": 0.0410958904,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": ["svip", "default", "vip"],
+        "supported_endpoint_types": ["openai-video"],
+        "billing_mode": "per_second"
       }
     ]
   },
@@ -189,5 +131,484 @@
       "price": 7.3,
       "usd_exchange_rate": 7.3
     }
+  },
+  "models": {
+    "success": true,
+    "object": "list",
+    "data": [
+      {
+        "id": "TTseadanco2.5-720",
+        "object": "model",
+        "created": 1626777600,
+        "owned_by": "custom",
+        "supported_endpoint_types": ["openai-video"],
+        "display_name": "Seedance 2.5 720P【30图10音10视 · 5-30秒 · 原生不卡脸】按秒计费",
+        "description": "Seedance 2.5；720P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；原生不卡脸；按秒计费 ¥0.42/秒。",
+        "quota_type": 2,
+        "billing_mode": "per_second",
+        "model_price": 0.42,
+        "price": 0.42,
+        "price_cny": 0.42,
+        "price_currency": "CNY",
+        "price_unit": "second",
+        "duration": "5-30",
+        "resolution": "720p",
+        "aspect_ratios": ["16:9", "9:16", "1:1"],
+        "max_image_refs": 30,
+        "max_video_refs": 10,
+        "max_audio_refs": 10,
+        "capabilities": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "per_second",
+          "duration": "5-30",
+          "max_audio_refs": 10,
+          "max_image_refs": 30,
+          "max_video_refs": 10,
+          "price": 0.42,
+          "price_currency": "CNY",
+          "price_unit": "second",
+          "resolution": "720p"
+        },
+        "name": "Seedance 2.5 720P【30图10音10视 · 5-30秒 · 原生不卡脸】按秒计费",
+        "canonical_slug": "TTseadanco2.5-720",
+        "pricing": {
+          "billing_mode": "per_second",
+          "billing_unit": "second",
+          "currency": "CNY",
+          "price": 0.42,
+          "price_cny": 0.42,
+          "request": 0.42
+        },
+        "architecture": {
+          "input_modalities": ["text", "image", "audio"],
+          "modality": "text+image+audio->video",
+          "output_modalities": ["video"]
+        },
+        "supported_parameters": [
+          "prompt",
+          "duration",
+          "aspect_ratio",
+          "resolution",
+          "images",
+          "audios"
+        ],
+        "parameters": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "per_second",
+          "duration": "5-30",
+          "max_audio_refs": 10,
+          "max_image_refs": 30,
+          "max_video_refs": 10,
+          "price": 0.42,
+          "price_currency": "CNY",
+          "price_unit": "second",
+          "resolution": "720p"
+        },
+        "metadata": {
+          "capabilities": {
+            "aspect_ratios": ["16:9", "9:16", "1:1"],
+            "billing_mode": "per_second",
+            "duration": "5-30",
+            "max_audio_refs": 10,
+            "max_image_refs": 30,
+            "max_video_refs": 10,
+            "price": 0.42,
+            "price_currency": "CNY",
+            "price_unit": "second",
+            "resolution": "720p"
+          },
+          "description": "Seedance 2.5；720P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；原生不卡脸；按秒计费 ¥0.42/秒。",
+          "pricing": {
+            "billing_mode": "per_second",
+            "billing_unit": "second",
+            "currency": "CNY",
+            "price": 0.42,
+            "price_cny": 0.42,
+            "request": 0.42
+          }
+        }
+      },
+      {
+        "id": "TTsedanco2.5-480",
+        "object": "model",
+        "created": 1626777600,
+        "owned_by": "custom",
+        "supported_endpoint_types": ["openai-video"],
+        "display_name": "Seedance 2.5 480P【30图10音10视 · 5-30秒】按秒计费",
+        "description": "Seedance 2.5；480P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；按秒计费 ¥0.31/秒。",
+        "quota_type": 2,
+        "billing_mode": "per_second",
+        "model_price": 0.31,
+        "price": 0.31,
+        "price_cny": 0.31,
+        "price_currency": "CNY",
+        "price_unit": "second",
+        "duration": "5-30",
+        "resolution": "480p",
+        "aspect_ratios": ["16:9", "9:16", "1:1"],
+        "max_image_refs": 30,
+        "max_video_refs": 10,
+        "max_audio_refs": 10,
+        "capabilities": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "per_second",
+          "duration": "5-30",
+          "max_audio_refs": 10,
+          "max_image_refs": 30,
+          "max_video_refs": 10,
+          "price": 0.31,
+          "price_currency": "CNY",
+          "price_unit": "second",
+          "resolution": "480p"
+        },
+        "name": "Seedance 2.5 480P【30图10音10视 · 5-30秒】按秒计费",
+        "canonical_slug": "TTsedanco2.5-480",
+        "pricing": {
+          "billing_mode": "per_second",
+          "billing_unit": "second",
+          "currency": "CNY",
+          "price": 0.31,
+          "price_cny": 0.31,
+          "request": 0.31
+        },
+        "architecture": {
+          "input_modalities": ["text", "image", "audio"],
+          "modality": "text+image+audio->video",
+          "output_modalities": ["video"]
+        },
+        "supported_parameters": [
+          "prompt",
+          "duration",
+          "aspect_ratio",
+          "resolution",
+          "images",
+          "audios"
+        ],
+        "parameters": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "per_second",
+          "duration": "5-30",
+          "max_audio_refs": 10,
+          "max_image_refs": 30,
+          "max_video_refs": 10,
+          "price": 0.31,
+          "price_currency": "CNY",
+          "price_unit": "second",
+          "resolution": "480p"
+        },
+        "metadata": {
+          "capabilities": {
+            "aspect_ratios": ["16:9", "9:16", "1:1"],
+            "billing_mode": "per_second",
+            "duration": "5-30",
+            "max_audio_refs": 10,
+            "max_image_refs": 30,
+            "max_video_refs": 10,
+            "price": 0.31,
+            "price_currency": "CNY",
+            "price_unit": "second",
+            "resolution": "480p"
+          },
+          "description": "Seedance 2.5；480P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；按秒计费 ¥0.31/秒。",
+          "pricing": {
+            "billing_mode": "per_second",
+            "billing_unit": "second",
+            "currency": "CNY",
+            "price": 0.31,
+            "price_cny": 0.31,
+            "request": 0.31
+          }
+        }
+      },
+      {
+        "id": "GGseadanco2.5/720",
+        "object": "model",
+        "created": 1626777600,
+        "owned_by": "custom",
+        "supported_endpoint_types": ["openai-video"]
+      },
+      {
+        "id": "bb2.5",
+        "object": "model",
+        "created": 1626777600,
+        "owned_by": "custom",
+        "supported_endpoint_types": ["openai-video"]
+      },
+      {
+        "id": "seedance2.5-yx-stable",
+        "object": "model",
+        "created": 1626777600,
+        "owned_by": "custom",
+        "supported_endpoint_types": ["openai-video"],
+        "display_name": "Seedance 2.5 720P【YX 稳定版 · 4-30秒 · 默认30秒 · 30图10视频10音频】按条计费",
+        "description": "满血；过人脸；参考视频卡人脸；4-30秒；默认30秒；最多30图/10视频/10音频；固定720P；按条计费 ¥7.20/条。",
+        "quota_type": 1,
+        "billing_mode": "fixed",
+        "model_price": 7.2,
+        "price": 7.2,
+        "price_cny": 7.2,
+        "price_currency": "CNY",
+        "price_unit": "request",
+        "duration": "4-30",
+        "resolution": "720p",
+        "aspect_ratios": ["16:9", "9:16", "1:1"],
+        "max_image_refs": 30,
+        "max_video_refs": 10,
+        "max_audio_refs": 10,
+        "capabilities": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "fixed",
+          "duration": "4-30",
+          "max_audio_refs": 10,
+          "max_image_refs": 30,
+          "max_video_refs": 10,
+          "price": 7.2,
+          "price_currency": "CNY",
+          "price_unit": "request",
+          "resolution": "720p"
+        },
+        "name": "Seedance 2.5 720P【YX 稳定版 · 4-30秒 · 默认30秒 · 30图10视频10音频】按条计费",
+        "canonical_slug": "seedance2.5-yx-stable",
+        "pricing": {
+          "billing_mode": "fixed",
+          "billing_unit": "request",
+          "currency": "CNY",
+          "price": 7.2,
+          "price_cny": 7.2,
+          "request": 7.2
+        },
+        "architecture": {
+          "input_modalities": ["text", "image", "audio"],
+          "modality": "text+image+audio->video",
+          "output_modalities": ["video"]
+        },
+        "supported_parameters": [
+          "prompt",
+          "duration",
+          "aspect_ratio",
+          "resolution",
+          "images",
+          "audios"
+        ],
+        "parameters": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "fixed",
+          "duration": "4-30",
+          "max_audio_refs": 10,
+          "max_image_refs": 30,
+          "max_video_refs": 10,
+          "price": 7.2,
+          "price_currency": "CNY",
+          "price_unit": "request",
+          "resolution": "720p"
+        },
+        "metadata": {
+          "capabilities": {
+            "aspect_ratios": ["16:9", "9:16", "1:1"],
+            "billing_mode": "fixed",
+            "duration": "4-30",
+            "max_audio_refs": 10,
+            "max_image_refs": 30,
+            "max_video_refs": 10,
+            "price": 7.2,
+            "price_currency": "CNY",
+            "price_unit": "request",
+            "resolution": "720p"
+          },
+          "description": "满血；过人脸；参考视频卡人脸；4-30秒；默认30秒；最多30图/10视频/10音频；固定720P；按条计费 ¥7.20/条。",
+          "pricing": {
+            "billing_mode": "fixed",
+            "billing_unit": "request",
+            "currency": "CNY",
+            "price": 7.2,
+            "price_cny": 7.2,
+            "request": 7.2
+          }
+        }
+      },
+      {
+        "id": "sedanco2.0-300秒必出",
+        "object": "model",
+        "created": 1626777600,
+        "owned_by": "custom",
+        "supported_endpoint_types": ["openai-video"],
+        "display_name": "Sedanco 2.0 300秒必出【9图3音 · 固定15秒 · 480P · 不卡脸】",
+        "description": "固定 480P、15 秒；最多 9 张参考图 / 3 条参考音频，不支持参考视频；不卡脸，按条计费 ¥2.3/条。",
+        "quota_type": 1,
+        "billing_mode": "fixed",
+        "model_price": 2.3,
+        "price": 2.3,
+        "price_cny": 2.3,
+        "price_currency": "CNY",
+        "price_unit": "request",
+        "duration": "15",
+        "resolution": "480p",
+        "aspect_ratios": ["16:9", "9:16", "1:1"],
+        "max_image_refs": 9,
+        "max_audio_refs": 3,
+        "capabilities": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "fixed",
+          "duration": "15",
+          "max_audio_refs": 3,
+          "max_image_refs": 9,
+          "max_video_refs": 0,
+          "price": 2.3,
+          "price_currency": "CNY",
+          "price_unit": "request",
+          "resolution": "480p"
+        },
+        "name": "Sedanco 2.0 300秒必出【9图3音 · 固定15秒 · 480P · 不卡脸】",
+        "canonical_slug": "sedanco2.0-300秒必出",
+        "pricing": {
+          "billing_mode": "fixed",
+          "billing_unit": "request",
+          "currency": "CNY",
+          "price": 2.3,
+          "price_cny": 2.3,
+          "request": 2.3
+        },
+        "architecture": {
+          "input_modalities": ["text", "image", "audio"],
+          "modality": "text+image+audio->video",
+          "output_modalities": ["video"]
+        },
+        "supported_parameters": [
+          "prompt",
+          "duration",
+          "aspect_ratio",
+          "resolution",
+          "images",
+          "audios"
+        ],
+        "parameters": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "fixed",
+          "duration": "15",
+          "max_audio_refs": 3,
+          "max_image_refs": 9,
+          "max_video_refs": 0,
+          "price": 2.3,
+          "price_currency": "CNY",
+          "price_unit": "request",
+          "resolution": "480p"
+        },
+        "metadata": {
+          "capabilities": {
+            "aspect_ratios": ["16:9", "9:16", "1:1"],
+            "billing_mode": "fixed",
+            "duration": "15",
+            "max_audio_refs": 3,
+            "max_image_refs": 9,
+            "max_video_refs": 0,
+            "price": 2.3,
+            "price_currency": "CNY",
+            "price_unit": "request",
+            "resolution": "480p"
+          },
+          "description": "固定 480P、15 秒；最多 9 张参考图 / 3 条参考音频，不支持参考视频；不卡脸，按条计费 ¥2.3/条。",
+          "pricing": {
+            "billing_mode": "fixed",
+            "billing_unit": "request",
+            "currency": "CNY",
+            "price": 2.3,
+            "price_cny": 2.3,
+            "request": 2.3
+          }
+        }
+      },
+      {
+        "id": "TTsedanco2.0-720",
+        "object": "model",
+        "created": 1626777600,
+        "owned_by": "custom",
+        "supported_endpoint_types": ["openai-video"],
+        "display_name": "TT-Seedance 2.0 720P【5-15秒 · 9图3视频3音频 · 原生不卡脸】",
+        "description": "纵横科技线路；720P；5-15 秒；9 图 / 3 视频 / 3 音频；原生不卡脸满血、全天稳定；按生成秒计费 ¥0.30/秒。",
+        "quota_type": 1,
+        "billing_mode": "fixed",
+        "model_price": 0.3,
+        "price": 0.3,
+        "price_cny": 0.3,
+        "price_currency": "CNY",
+        "price_unit": "request",
+        "duration": "5-15",
+        "resolution": "720p",
+        "aspect_ratios": ["16:9", "9:16", "1:1"],
+        "max_image_refs": 9,
+        "max_video_refs": 3,
+        "max_audio_refs": 3,
+        "capabilities": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "fixed",
+          "duration": "5-15",
+          "max_audio_refs": 3,
+          "max_image_refs": 9,
+          "max_video_refs": 3,
+          "price": 0.3,
+          "price_currency": "CNY",
+          "price_unit": "request",
+          "resolution": "720p"
+        },
+        "name": "TT-Seedance 2.0 720P【5-15秒 · 9图3视频3音频 · 原生不卡脸】",
+        "canonical_slug": "TTsedanco2.0-720",
+        "pricing": {
+          "billing_mode": "fixed",
+          "billing_unit": "request",
+          "currency": "CNY",
+          "price": 0.3,
+          "price_cny": 0.3,
+          "request": 0.3
+        },
+        "architecture": {
+          "input_modalities": ["text", "image", "audio"],
+          "modality": "text+image+audio->video",
+          "output_modalities": ["video"]
+        },
+        "supported_parameters": [
+          "prompt",
+          "duration",
+          "aspect_ratio",
+          "resolution",
+          "images",
+          "audios"
+        ],
+        "parameters": {
+          "aspect_ratios": ["16:9", "9:16", "1:1"],
+          "billing_mode": "fixed",
+          "duration": "5-15",
+          "max_audio_refs": 3,
+          "max_image_refs": 9,
+          "max_video_refs": 3,
+          "price": 0.3,
+          "price_currency": "CNY",
+          "price_unit": "request",
+          "resolution": "720p"
+        },
+        "metadata": {
+          "capabilities": {
+            "aspect_ratios": ["16:9", "9:16", "1:1"],
+            "billing_mode": "fixed",
+            "duration": "5-15",
+            "max_audio_refs": 3,
+            "max_image_refs": 9,
+            "max_video_refs": 3,
+            "price": 0.3,
+            "price_currency": "CNY",
+            "price_unit": "request",
+            "resolution": "720p"
+          },
+          "description": "纵横科技线路；720P；5-15 秒；9 图 / 3 视频 / 3 音频；原生不卡脸满血、全天稳定；按生成秒计费 ¥0.30/秒。",
+          "pricing": {
+            "billing_mode": "fixed",
+            "billing_unit": "request",
+            "currency": "CNY",
+            "price": 0.3,
+            "price_cny": 0.3,
+            "request": 0.3
+          }
+        }
+      }
+    ]
   }
 }
