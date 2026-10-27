@@ -348,7 +348,7 @@ export function breakdownOf(req: ChatRequest, density: TokenDensity): ContextBre
     const group = m._group ?? 'historyMessages'
     if (m.role === 'tool') {
       // 带图片的工具结果是块数组：信封所在的文本块同样拆分为执行记录与工具结果原文，
-      // 图片按固定值计入工具结果一侧。不取出文本块时整条会计入 `_group`，
+      // 图片按宽高估算后计入工具结果一侧。不取出文本块时整条会计入 `_group`，
       // 面板上执行记录与工具结果两项的数值随之不一致。
       const envelopeText =
         typeof m.content === 'string'
