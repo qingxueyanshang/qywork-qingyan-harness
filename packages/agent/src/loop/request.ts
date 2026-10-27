@@ -91,9 +91,9 @@ export function softLimit(spec: { contextWindow: number }): number {
 /**
  * 申报余量。必须在此单独预留：软阈值 `softLimit` 不参与下方的申报算式。
  *
- * 占用是估算值，估算低估多少，申报就超出窗口多少。取占用的 5%：估算器标定在
- * 1.03–1.18 倍（`ai/tokens.ts` 的 `TokenDensity`），已标定的模型上不会用到该余量；
- * 它针对的是未标定模型采用上界密度后仍然偏低的情况。
+ * 占用是估算值，估算低估多少，申报就超出窗口多少。取占用的 5%：已标定模型的估算无偏，
+ * 单段内容的中位偏差约 3%（`ai/tokens.ts` 的 `TokenDensity`），整份请求的偏差在该余量之内；
+ * 未标定模型使用默认档，只会偏高。
  */
 const OUTPUT_DECLARATION_MARGIN_RATIO = 0.05
 
@@ -298,9 +298,8 @@ export function replayReasoning(
  * 计算方法：将同一份记录去掉正文后再估算一次，两次之差即为正文。
  * tokenization 不可加，因此不能分别估算两段再相加。
  *
- * 两次估算必须使用同一种方式，即 `estimateMessage` 估算整条消息时的方式：tool 角色整条
- * 按 JSON 档估算（`ai/tokens.ts` 的 `estimateMessage`），因此信封也只能使用 `estimateJson`。
- * 方式不一致时信封估值偏高一倍、差额从正文中扣除：实测一个 327 次调用的会话中
+ * 两次估算必须使用同一个函数（`estimateJson`，与 `ai/tokens.ts` 的 `estimateMessage` 计数方式相同）。
+ * 方式不一致时信封估值偏高、差额从正文中扣除：实测一个 327 次调用的会话中
  * 有 167 次被下方的 `Math.min` 截为 `body = 0`，面板显示该调用没有返回正文，
  * 而实际返回了一句 summary。
  */

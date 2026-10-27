@@ -390,8 +390,8 @@ describe('发送前检查：唯一的压缩触发', () => {
    * 因此这段历史的裸估算确实越线，测试的不是空请求。
    */
   test('信封变化时不做无效压缩，更换模型时仍按估算判定', async () => {
-    // 1M 窗口 × 0.8 → 软阈值 800,000。裸估算按 2.5 字符/token 计，这段正文约 96 万。
-    const bulk = 'x'.repeat(2_400_000)
+    // 1M 窗口 × 0.8 → 软阈值 800,000。裸估算按默认档计（中文 1.1 token/字），这段正文约 96 万。
+    const bulk = '这是一段历史正文。'.repeat(97_000)
     const runOnce = async (model: string) => {
       const comp = fakeCompaction(okOutcome)
       const loop = new AgentLoop({

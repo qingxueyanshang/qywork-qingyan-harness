@@ -154,7 +154,7 @@ export const readResourceTool: ToolSpec = {
      * 余量不足时仍投递最小的一份，不报告失败：报告失败的回合不产出正文。
      */
     const wanted = Math.min(
-      Math.max(tokensToMaxBytes(room, ctx.density), MIN_DELIVERY_BYTES),
+      Math.max(tokensToMaxBytes(room), MIN_DELIVERY_BYTES),
       Math.max(1, rawLength),
     )
     // 多读取的两段各有用途：起点对齐最多跳过 3 字节，预算不足一个完整码点时最多补足 3 字节。

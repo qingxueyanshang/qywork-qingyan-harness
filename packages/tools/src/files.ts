@@ -547,7 +547,7 @@ export const readFileTool: ToolSpec = {
     const limit = Math.max(1, rawLimit)
 
     // 只保留本轮额度能容纳的行：保留量取余量折算为字节后的上界，计量后不超额度的前缀必然在其范围内。
-    const keepBytes = Math.max(MIN_DELIVERY_BYTES, tokensToMaxBytes(deliveryCap(ctx), ctx.density))
+    const keepBytes = Math.max(MIN_DELIVERY_BYTES, tokensToMaxBytes(deliveryCap(ctx)))
     const scan = await scanLines(
       pdf === null ? decodeFile(abs) : oneChunk(pdf),
       offset,

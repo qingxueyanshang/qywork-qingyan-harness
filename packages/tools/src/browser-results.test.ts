@@ -109,7 +109,7 @@ const 大页: BrowserObservation = {
 }
 
 function bigOption(i: number): BrowserSelectOption {
-  return { label: `合成选项 ${i} ${'o'.repeat(180)}`, value: `v${i}` }
+  return { label: `合成选项 ${i} ${'选项说明文字'.repeat(30)}`, value: `v${i}` }
 }
 
 const 大选项页: BrowserOptionsPage = {
