@@ -26,6 +26,7 @@ import {
   type Summarizer,
   type ToolContextBase,
   ToolRegistry,
+  videoMetaOf,
   videosOf,
 } from '@qywork/agent'
 import {
@@ -1542,8 +1543,8 @@ function stepRecord(st: Step): HistoryStep {
 /**
  * 将附件转换为 provider 可接受的内容。
  *
- * 每一轮的图片都进入内容块，按与工具图片相同的规则缩放编码（`tools` 的 `shrinkImage`）；视频进入路径块，
- * 发送前由 `materialize` 读取字节。去留不在此处决定：保留的媒体超过上限时，由装配
+ * 每一轮的图片都进入内容块，按与工具图片相同的规则缩放编码（`tools` 的 `shrinkImage`）；视频进入路径块并带上
+ * 时长与画面尺寸（`videoMetaOf`，供估算），发送前由 `materialize` 读取字节。去留不在此处决定：保留的媒体超过上限时，由装配
  * （`agent` 的 `evictedMedia`）将最早的整批缩小为缩略图或替换为说明。每个附件都在正文中保留一行名称与路径，
  * 媒体被换出之后模型依据这一行找到原文件。
  *
@@ -1587,6 +1588,7 @@ export async function withAttachments(
         type: 'video',
         mimeType: mimeOf(a.path),
         source: { kind: 'path', path: toPosixPath(abs) },
+        meta: videoMetaOf(abs),
       })
       continue
     }

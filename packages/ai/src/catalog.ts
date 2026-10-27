@@ -201,7 +201,8 @@ export interface Vendor {
 /*
  * 各 tokenizer 的实测系数（2026-10-27，方法见 `tokens.ts` 的 `TokenDensity`）。每档 30–33 段样本，
  * 留一交叉验证的中位偏差 1.9%–3.0%，90% 的样本在 14% 以内。测得相同系数的型号共用一档；
- * 未实测的型号使用 `DEFAULT_DENSITY`，不按名称推断为同一档。
+ * 未实测的型号使用 `DEFAULT_DENSITY`，不按名称推断为同一档。不接受视频的档 `video` 为 null；
+ * 视频规则按 30 段合成视频实测，常见尺寸的偏差在 1% 以内，小画面与带零头的时长在 10% 以内。
  */
 
 /** deepseek-flash 与 deepseek-v4-pro。 */
@@ -218,6 +219,7 @@ const DEEPSEEK_DENSITY: TokenDensity = {
   other: 1.004,
   message: 1.41,
   image: { pixelsPerToken: 1620, minPixels: 267_000, maxPixels: 1_565_000, base: 19 },
+  video: null,
 }
 
 /** claude-opus-5-5。中文约为其他各家的 1.5 倍。 */
@@ -234,6 +236,7 @@ const CLAUDE_OPUS_5_5_DENSITY: TokenDensity = {
   other: 1.29,
   message: 1.87,
   image: { pixelsPerToken: 770, minPixels: 0, maxPixels: 3_660_000, base: 18 },
+  video: null,
 }
 
 /** gpt-6-astra 与 gpt-6.1-sol。 */
@@ -250,6 +253,7 @@ const GPT_6_DENSITY: TokenDensity = {
   other: 1.047,
   message: 4.42,
   image: { pixelsPerToken: 845, minPixels: 0, maxPixels: 8_555_000, base: 0 },
+  video: null,
 }
 
 /** gemini-4-argon。 */
@@ -266,6 +270,7 @@ const GEMINI_4_ARGON_DENSITY: TokenDensity = {
   other: 0.794,
   message: 4.38,
   image: { pixelsPerToken: 2530, minPixels: 796_000, maxPixels: 847_000, base: 1012 },
+  video: null,
 }
 
 /** grok-4.6 与 grok-4.7。 */
@@ -282,6 +287,7 @@ const GROK_4_DENSITY: TokenDensity = {
   other: 0.86,
   message: 3.46,
   image: { pixelsPerToken: 1005, minPixels: 71_000, maxPixels: 2_392_000, base: 33 },
+  video: null,
 }
 
 /** qwen3.8-flash。 */
@@ -298,6 +304,16 @@ const QWEN_3_8_FLASH_DENSITY: TokenDensity = {
   other: 1.164,
   message: 6.32,
   image: { pixelsPerToken: 1030, minPixels: 0, maxPixels: 2_508_000, base: 2 },
+  // 每秒一组（两帧合为一组，不足一秒的部分接口不计，估算按一组计）；每组像素上限约 61 万，720p 及以上每秒 602；
+  // 每组另有约 10 的时间标记。
+  // 900 秒仍按时长线性增长，未见上限；短于 2 秒的视频被接口拒绝。
+  video: {
+    framesPerSecond: 1,
+    frame: { pixelsPerToken: 1030, minPixels: 0, maxPixels: 612_000, base: 10 },
+    base: 0,
+    maxTokens: Number.POSITIVE_INFINITY,
+    maxBytes: Number.POSITIVE_INFINITY,
+  },
 }
 
 /** glm-5.3-flashx。 */
@@ -314,6 +330,14 @@ const GLM_5_3_FLASHX_DENSITY: TokenDensity = {
   other: 1.12,
   message: 1.5,
   image: { pixelsPerToken: 770, minPixels: 0, maxPixels: 6_147_000, base: 17 },
+  // 每秒 1 帧（不足一秒按一帧），每帧与图片同一除数；单段上限实测 203,642–205,870，取最大值。4K 未见像素上限。
+  video: {
+    framesPerSecond: 1,
+    frame: { pixelsPerToken: 770, minPixels: 0, maxPixels: 8_294_400, base: 6 },
+    base: 2,
+    maxTokens: 205_870,
+    maxBytes: Number.POSITIVE_INFINITY,
+  },
 }
 
 export const VENDORS: readonly Vendor[] = [

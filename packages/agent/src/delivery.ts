@@ -8,10 +8,18 @@
  * 结果在执行时按额度定稿后落库，投影只读取已落库的 payload：额度随占用变化，但不改写历史字节。
  */
 
-import { estimateImage, estimateJson, imageSizeOfBase64, type TokenDensity } from '@qywork/ai'
+import {
+  estimateImage,
+  estimateJson,
+  estimateVideo,
+  imageSizeOfBase64,
+  type TokenDensity,
+  type VideoMeta,
+} from '@qywork/ai'
 import type { ImageSize, IntermediateResourceRef, ResourceCoverage, ResourceId } from '@qywork/core'
 import { isStoredToolImage } from '@qywork/store'
 import type { SinkPort, ToolContext, ToolOutcome } from './registry.ts'
+import { videoMetaOf } from './video-meta.ts'
 
 const SPENT_KEY = 'ctx.batchSpent'
 const ROOM_KEY = 'ctx.batchRoom'
@@ -110,12 +118,6 @@ export function deliveredTokens(text: string, density: TokenDensity): number {
 }
 
 /**
- * 投递额度中每段视频扣除的 token 数。视频没有本地估算（请求估算对视频记 0，读数标注「未计」），
- * 此值只用于额度。
- */
-export const VIDEO_BUDGET_TOKENS = 2000
-
-/**
  * 按一张图片的宽高扣除投递额度。余量不足以容纳时仍然投递并记下用量：报告失败的回合不产出内容，
  * 超出的部分由下一次发送前的压缩回收。
  */
@@ -124,6 +126,15 @@ export function chargeImage(
   size: ImageSize | null,
 ): void {
   const tokens = estimateImage(size, ctx.density)
+  if (!chargeBatchBudget(ctx, tokens).ok) recordBatchSpent(ctx, tokens)
+}
+
+/** 按一段原生发送的视频的时长与画面尺寸扣除投递额度（`estimateVideo`）。余量不足时的处理同 `chargeImage`。 */
+export function chargeVideo(
+  ctx: Pick<ToolContext, 'state' | 'contextWindow' | 'density'>,
+  meta: VideoMeta | null,
+): void {
+  const tokens = estimateVideo(meta, ctx.density)
   if (!chargeBatchBudget(ctx, tokens).ok) recordBatchSpent(ctx, tokens)
 }
 
@@ -137,9 +148,15 @@ function outcomeImageSize(entry: unknown): ImageSize | null {
   return typeof data === 'string' ? imageSizeOfBase64(data) : null
 }
 
+/** 工具结果中一段视频的元数据，按路径读取（`videoMetaOf`）。 */
+function outcomeVideoMeta(entry: unknown): VideoMeta | null {
+  const path = (entry as { path?: unknown } | null)?.path
+  return typeof path === 'string' && path ? videoMetaOf(path) : null
+}
+
 /**
  * 一条结果放入信封后的占用：message 与 data 按写入 JSON 后的形式估算，计入换行等转义字符；
- * 图片按宽高计（`estimateImage`），与请求侧的计算方法一致；视频按 `VIDEO_BUDGET_TOKENS` 计。
+ * 图片按宽高、视频按时长与画面尺寸计（`estimateImage`、`estimateVideo`），与请求侧的计算方法一致。
  *
  * 信封中 `call_id` / `tool` / `status` 等固定键约几十 token，不在此计算，由软阈值以上的预留空间覆盖。
  */
@@ -149,12 +166,12 @@ export function outcomeTokens(
 ): number {
   const data = parts.data ?? {}
   const images = Array.isArray(data.images) ? data.images : []
-  const videos = Array.isArray(data.videos) ? data.videos.length : 0
+  const videos = Array.isArray(data.videos) ? data.videos : []
   const { images: _bytes, videos: _paths, ...rest } = data
   return (
     deliveredTokens(JSON.stringify({ summary: parts.message, result: rest }), density) +
     images.reduce((n: number, e) => n + estimateImage(outcomeImageSize(e), density), 0) +
-    videos * VIDEO_BUDGET_TOKENS
+    videos.reduce((n: number, e) => n + estimateVideo(outcomeVideoMeta(e), density), 0)
   )
 }
 

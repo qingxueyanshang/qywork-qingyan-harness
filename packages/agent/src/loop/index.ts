@@ -33,6 +33,7 @@ import {
   materialize,
   omitImages,
   replayReasoning,
+  videoCapabilities,
 } from './request.ts'
 import { type LoopHost, RunState, sleep, TurnState, untilAborted } from './run-state.ts'
 import { createSummaryTrace } from './summary-trace.ts'
@@ -111,13 +112,11 @@ export class AgentLoop {
    */
   private mediaCapabilities(run: RunState): InputMediaCapabilities {
     const { adapter } = this.deps
-    const upload = adapter.transmits.mediaUploadAbove
     return {
       image: run.imagesRejected ? false : adapter.spec.vision,
       ...(run.imagesRejected ? { imageRejected: true as const } : {}),
-      video: adapter.spec.video && adapter.transmits.video === true,
+      ...videoCapabilities(adapter),
       mediaPaths: adapter.transmits.mediaPaths === true,
-      ...(upload !== undefined ? { mediaUploadAbove: upload } : {}),
     }
   }
 
@@ -303,7 +302,7 @@ export class AgentLoop {
       for (const m of list) {
         // 没有戳记的投影摘要不参与计算：它不是被折叠的原文。
         if (!m._messageId) continue
-        const n = sign * estimateMessage(m, adapter.spec.density)
+        const n = sign * estimateMessage(m, run.density)
         if (m.role === 'tool' || m._group === 'intermediateContent')
           omitted.intermediateOriginal += n
         else omitted.historyOriginal += n

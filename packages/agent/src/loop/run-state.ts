@@ -14,7 +14,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '@qywork/ai'
-import { estimateMessages, estimateRequest, videoBlocksOf } from '@qywork/ai'
+import { estimateMessages, estimateRequest, unestimatedVideosOf } from '@qywork/ai'
 import type {
   ContextBreakdown,
   ContextOmitted,
@@ -29,7 +29,7 @@ import { type SummaryTrace, stepStamp } from '../compaction.ts'
 import { EventQueue } from '../event-queue.ts'
 import { MAX_CYCLE_WIDTH, type ProgressEvidence, repeatsNoProgress } from '../progress.ts'
 import type { ToolContextBase, ToolRegistry } from '../registry.ts'
-import { envelopeHashOf } from './request.ts'
+import { envelopeHashOf, runDensity } from './request.ts'
 import type { CompactionPort, LoopDeps, LoopPersistence, RunInput } from './types.ts'
 
 /** 相同轮次第二次出现时交给模型的事实，文本陈述的是第三次即停止的规则。 */
@@ -55,7 +55,7 @@ export interface LoopHost {
 export interface ContextAnchor {
   tokens: number
   uncovered: number
-  /** `uncovered` 范围内的视频段数。估算对视频记 0，因此它们不计入 `uncovered`。 */
+  /** `uncovered` 范围内读不出时长或画面尺寸的视频段数（`unestimatedVideosOf`），它们不计入 `uncovered`。 */
   uncoveredVideos: number
   transcriptIndex: number
   /** 产生该真值的请求所用的模型。与本轮不同时整个锚点作废。 */
@@ -71,7 +71,7 @@ export class RunState {
   readonly adapter: LlmAdapter
   readonly registry: ToolRegistry
   readonly persist: LoopPersistence
-  /** 本轮的估算密度。读数、压缩触发、申报钳位三处共用。 */
+  /** 本轮的估算密度（`runDensity`）。读数、压缩触发、申报钳位三处共用。 */
   readonly density: TokenDensity
   readonly usage: RunUsage
   readonly fileChanges: FileChange[] = []
@@ -154,7 +154,7 @@ export class RunState {
     this.adapter = deps.adapter
     this.registry = deps.registry
     this.persist = deps.persist
-    this.density = deps.adapter.spec.density
+    this.density = runDensity(deps.adapter)
     this.contextEstimate = input.contextEstimate
     this.imagesRejected = input.imagesRejected === true
     this.usage = {
@@ -182,8 +182,8 @@ export class RunState {
           model: input.anchor.model,
           headTokens: input.anchor.headTokens,
           tokens: input.anchor.tokens,
-          uncovered: estimateMessages(uncovered, deps.adapter.spec.density),
-          uncoveredVideos: videoBlocksOf(uncovered),
+          uncovered: estimateMessages(uncovered, this.density),
+          uncoveredVideos: unestimatedVideosOf(uncovered, this.density),
           transcriptIndex: 0,
         }
       : null
@@ -247,14 +247,15 @@ export class RunState {
   }
 
   /**
-   * 读数中未计入的视频段数：估算对视频记 0，只有接口回报的真值包含视频。
+   * 读数中未计入的视频段数：读不出时长或画面尺寸的视频估算记 0，只有接口回报的真值包含它们。
    * 锚点之前的视频已计入真值；锚点之后新增的视频尚未计入。
    */
   unmeasuredVideos(req: ChatRequest): number {
     const anchor = this.anchor
     return anchor
-      ? anchor.uncoveredVideos + videoBlocksOf(this.transcript.slice(anchor.transcriptIndex))
-      : videoBlocksOf(req.messages)
+      ? anchor.uncoveredVideos +
+          unestimatedVideosOf(this.transcript.slice(anchor.transcriptIndex), this.density)
+      : unestimatedVideosOf(req.messages, this.density)
   }
 
   /** 无进展判据：重复满三次即停止；满两次时先将重复的事实交给模型。 */

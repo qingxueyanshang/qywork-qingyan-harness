@@ -233,6 +233,16 @@ export type ImageSource = MediaSource
 export type VideoSource = MediaSource
 
 /**
+ * 视频文件的字节数、时长（秒）与画面尺寸，取自 ISO 媒体容器的索引（`agent` 的 `videoMetaOf`），不解码画面。
+ * 时长或尺寸读不出时为 null（webm / mkv 等非 ISO 容器）。估算（`estimateVideo`）据此计数。
+ */
+export interface VideoMeta {
+  bytes: number
+  seconds: number | null
+  size: ImageSize | null
+}
+
+/**
  * 消息正文中的一个内容块。
  *
  * 普通文件不放入内容块，装配层只把路径写入正文，由模型按需调用 `read_file`。
@@ -245,7 +255,8 @@ export type ContentBlock =
    * `materialize` 据此生成缩略图字节并去掉该字段，适配器不会收到它。
    */
   | { type: 'image'; mimeType: string; source: ImageSource; thumbnail?: true }
-  | { type: 'video'; mimeType: string; source: VideoSource }
+  /** `meta` 只用于估算，适配器不发送；文件已不存在时为 null。 */
+  | { type: 'video'; mimeType: string; source: VideoSource; meta: VideoMeta | null }
 
 /**
  * 取得图像块的 base64。

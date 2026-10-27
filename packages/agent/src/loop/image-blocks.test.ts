@@ -242,7 +242,9 @@ describe('materialize', () => {
     const original: WireMessage[] = [
       {
         role: 'user',
-        content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+        content: [
+          { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null },
+        ],
       },
     ]
 
@@ -253,6 +255,7 @@ describe('materialize', () => {
     expect((out.messages[0]!.content as ContentBlock[])[0]).toMatchObject({
       type: 'video',
       source: { kind: 'base64', data: bytes.toString('base64') },
+      meta: null,
     })
   })
 
@@ -269,14 +272,16 @@ describe('materialize', () => {
       req([
         {
           role: 'user',
-          content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+          content: [
+            { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null },
+          ],
         },
       ]),
       media(true, true),
       null,
     )
     const block = (out.messages[0]!.content as ContentBlock[])[0]
-    expect(block).toMatchObject({ type: 'video', source: { kind: 'base64' } })
+    expect(block).toMatchObject({ type: 'video', source: { kind: 'base64' }, meta: null })
     if (block?.type !== 'video' || block.source.kind !== 'base64') throw new Error('视频未物化')
     const decoded = Buffer.from(block.source.data, 'base64')
     expect(decoded.byteLength).toBe(bytes.length)
@@ -292,7 +297,9 @@ describe('materialize', () => {
       req([
         {
           role: 'user',
-          content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+          content: [
+            { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null },
+          ],
         },
       ]),
       media(true, true, true),
@@ -302,6 +309,7 @@ describe('materialize', () => {
       type: 'video',
       mimeType: 'video/mp4',
       source: { kind: 'path', path },
+      meta: null,
     })
   })
 
@@ -316,7 +324,9 @@ describe('materialize', () => {
         req([
           {
             role: 'user',
-            content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+            content: [
+              { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null },
+            ],
           },
         ]),
         caps,
@@ -328,7 +338,7 @@ describe('materialize', () => {
     expect(inline.text).toContain('read_file')
     expect(
       await send({ image: true, video: true, mediaPaths: true, mediaUploadAbove: 2 * 1024 * 1024 }),
-    ).toEqual({ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } })
+    ).toEqual({ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null })
   })
 
   test('不接受原生视频但接受图片：路径视频替换为指向 read_file 的说明', async () => {
@@ -338,7 +348,9 @@ describe('materialize', () => {
         req([
           {
             role: 'user',
-            content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+            content: [
+              { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null },
+            ],
           },
         ]),
         media(image, false),
@@ -362,6 +374,7 @@ describe('materialize', () => {
               type: 'video',
               mimeType: 'video/mp4',
               source: { kind: 'base64', data: 'QUJD' },
+              meta: null,
             },
           ],
         },
@@ -524,7 +537,9 @@ describe('媒体按字节预算换出', () => {
     await writeFile(path, new Uint8Array(3 * MB))
     const video: WireMessage = {
       role: 'user',
-      content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+      content: [
+        { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null },
+      ],
     }
     expect(mediaBytes(video, CAPS)).toBe(3 * MB)
     const gone: WireMessage = {
@@ -534,6 +549,7 @@ describe('媒体按字节预算换出', () => {
           type: 'video',
           mimeType: 'video/mp4',
           source: { kind: 'path', path: join(dir, 'x.mp4') },
+          meta: null,
         },
       ],
     }
@@ -550,7 +566,9 @@ describe('媒体按字节预算换出', () => {
     await writeFile(big, new Uint8Array(6 * MB))
     const video: WireMessage = {
       role: 'user',
-      content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: big } }],
+      content: [
+        { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: big }, meta: null },
+      ],
     }
     expect(mediaBytes(video, { ...CAPS, mediaPaths: true, mediaUploadAbove: 2 * MB })).toBe(0)
     expect(mediaBytes(video, CAPS)).toBe(0)
@@ -618,7 +636,7 @@ describe('媒体按字节预算换出', () => {
     const video: WireMessage = {
       role: 'user',
       content: [
-        { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } },
+        { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null },
         shot(MB / 2),
       ],
     }

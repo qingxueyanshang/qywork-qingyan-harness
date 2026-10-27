@@ -100,11 +100,13 @@ export {
   estimateRequest,
   estimateSchemas,
   estimateText,
+  estimateVideo,
   type ImageRule,
   imageSizeOfBase64,
   THUMBNAIL_EDGE,
   type TokenDensity,
-  videoBlocksOf,
+  unestimatedVideosOf,
+  type VideoRule,
 } from './tokens.ts'
 // 流空闲上限的基准：agent 按思考档位放宽该值，runtime 的摘要直接使用该值
 export { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
@@ -120,6 +122,7 @@ export type {
   SystemBlock,
   ToolSchema,
   TransportCapabilities,
+  VideoMeta,
   WireMessage,
   WireToolCall,
 } from './types.ts'

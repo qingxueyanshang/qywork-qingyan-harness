@@ -20,7 +20,7 @@
 
 import { type ImageSize, imageSizeOf } from '@qywork/core'
 import { COMMON_HANZI } from './common-hanzi.ts'
-import type { ChatRequest, ContentBlock, ToolSchema, WireMessage } from './types.ts'
+import type { ChatRequest, ContentBlock, ToolSchema, VideoMeta, WireMessage } from './types.ts'
 
 /**
  * 常用汉字的码元集合（GB2312 一级汉字，`common-hanzi.ts`）。
@@ -80,6 +80,8 @@ export interface TokenDensity {
   /** 每条消息的固定协议开销：role、分隔符、消息骨架。 */
   message: number
   image: ImageRule
+  /** 原生视频的计数规则；`null` 表示该档的视频不原生发送（模型不接受，或本轮不能发送），视频块记 0。 */
+  video: VideoRule | null
 }
 
 /**
@@ -102,6 +104,25 @@ export interface ImageRule {
  * 每一项都不低于任何已实测的模型，因此对已实测的 tokenizer 都偏高而不偏低。
  * 代价是读数偏高：未收录的模型只能偏高，不能偏低。
  */
+/**
+ * 一段原生视频的计数规则：`min(maxTokens, base + ⌈秒数 × framesPerSecond⌉ × 每帧)`，每帧按 `frame` 的图片规则计。
+ *
+ * 各家按固定帧率取帧（或把相邻两帧合为一组），每帧缩放到像素上限之内按像素块计数；原视频的帧率与音轨不影响用量。
+ * 标定方法：同一段文字带与不带一段视频各发一次相减，按 30 段合成视频（320×240 至 3840×2160，2 秒至 15 分钟）拟合。
+ */
+export interface VideoRule {
+  framesPerSecond: number
+  frame: ImageRule
+  base: number
+  /** 单段视频的上限；`Infinity` 表示实测范围内没有上限。 */
+  maxTokens: number
+  /**
+   * 原生发送的视频字节上限，超过时发送前被替换为一行说明，记 0。目录中为 `Infinity`；
+   * 本轮不能上传时由 `agent` 收窄为请求中常驻媒体的上限（`RunState.density`）。
+   */
+  maxBytes: number
+}
+
 export const DEFAULT_DENSITY: TokenDensity = {
   cjk: 1.1,
   rareCjk: 3,
@@ -116,6 +137,14 @@ export const DEFAULT_DENSITY: TokenDensity = {
   message: 6.4,
   // 每 token 像素取最小、像素上限取最大、固定开销取按张计数的型号（每张约 1350），对每个已测型号都不偏低。
   image: { pixelsPerToken: 770, minPixels: 0, maxPixels: 8_600_000, base: 1350 },
+  // 每帧取两档中较大的计数，上限取不设上限的一档。
+  video: {
+    framesPerSecond: 1,
+    frame: { pixelsPerToken: 770, minPixels: 0, maxPixels: 8_294_400, base: 10 },
+    base: 2,
+    maxTokens: Number.POSITIVE_INFINITY,
+    maxBytes: Number.POSITIVE_INFINITY,
+  },
 }
 
 /** 缩略图的长边像素：`agent` 的 `thumbnailOf` 按它缩小，估算按它换算缩略图的尺寸。 */
@@ -123,12 +152,27 @@ export const THUMBNAIL_EDGE = 768
 
 /** 一张图片计为多少 token。宽高未知时按该规则的像素上限计：只能偏高，不能偏低。 */
 export function estimateImage(size: ImageSize | null, d: TokenDensity): number {
-  const r = d.image
+  return Math.ceil(imageTokens(size, d.image))
+}
+
+function imageTokens(size: ImageSize | null, r: ImageRule): number {
   const pixels =
     size === null
       ? r.maxPixels
       : Math.min(r.maxPixels, Math.max(r.minPixels, size.width * size.height))
-  return Math.ceil(r.base + pixels / r.pixelsPerToken)
+  return r.base + pixels / r.pixelsPerToken
+}
+
+/**
+ * 一段视频计为多少 token。不原生发送的视频（该档没有视频规则、超过字节上限、文件已不存在）发送时被替换为
+ * 一行说明，记 0；读不出时长或画面尺寸时同样记 0，读数一侧据 `unestimatedVideosOf` 标注「未计」。
+ */
+export function estimateVideo(meta: VideoMeta | null, d: TokenDensity): number {
+  const r = d.video
+  if (!r || !meta || meta.bytes > r.maxBytes || meta.seconds === null || meta.size === null)
+    return 0
+  const frames = Math.ceil(meta.seconds * r.framesPerSecond)
+  return Math.min(r.maxTokens, Math.ceil(r.base + frames * imageTokens(meta.size, r.frame)))
 }
 
 /** 依次尝试解码的 base64 前缀长度：48 B、4 KB、64 KB、256 KB，均为 4 的倍数。 */
@@ -267,9 +311,8 @@ export function estimateJson(value: unknown, d: TokenDensity): number {
 /**
  * 一条消息的内容块。
  *
- * 图片按宽高计算（`estimateImage`），不得经由 JSON 序列化估算：按 base64 长度估算正是暴涨的来源。
- * 视频计为 0：其占用随时长与抽帧规则变化，本地没有可用的算法，只有接口回报的真值可信，
- * 读数一侧据 `videoBlocksOf` 标注「未计」（`agent` 的 `contextEvent`）。
+ * 图片按宽高计算（`estimateImage`），视频按时长与画面尺寸计算（`estimateVideo`）；
+ * 不得经由 JSON 序列化估算：按 base64 长度估算正是暴涨的来源。
  */
 export function estimateContent(
   content: string | ContentBlock[] | undefined,
@@ -281,15 +324,25 @@ export function estimateContent(
   for (const block of content) {
     if (block.type === 'text') total += count(block.text, d)
     else if (block.type === 'image') total += estimateImage(imageBlockSize(block), d)
+    else total += estimateVideo(block.meta, d)
   }
   return total
 }
 
-/** 一组消息里的视频块数。估算不含它们（见 `estimateContent`）。 */
-export function videoBlocksOf(messages: readonly WireMessage[]): number {
+/**
+ * 一组消息里将原生发送、但读不出时长或画面尺寸的视频段数（webm / mkv 等非 ISO 容器）。
+ * 估算对它们记 0（`estimateVideo`），读数据此标注「未计」（`agent` 的 `contextEvent`）。
+ */
+export function unestimatedVideosOf(messages: readonly WireMessage[], d: TokenDensity): number {
+  const r = d.video
+  if (!r) return 0
   let n = 0
   for (const m of messages) {
-    if (typeof m.content !== 'string') n += m.content.filter((b) => b.type === 'video').length
+    if (typeof m.content === 'string') continue
+    for (const b of m.content) {
+      if (b.type !== 'video' || !b.meta || b.meta.bytes > r.maxBytes) continue
+      if (b.meta.seconds === null || b.meta.size === null) n++
+    }
   }
   return n
 }

@@ -30,6 +30,7 @@ import { emptyBreakdown } from '@qywork/core'
 import { isStoredToolImage } from '@qywork/store'
 import { IMAGES_OMITTED } from '../compaction.ts'
 import type { SinkPort, ToolOutcome } from '../registry.ts'
+import { videoMetaOf } from '../video-meta.ts'
 import { THUMBNAIL_BYTES, thumbnailOf } from './thumbnail.ts'
 
 /** 与装配的请求一同写入请求账；之后修改模型设置不会改写本次申报。 */
@@ -394,8 +395,8 @@ export function toolOutcomeContent(
  * 信封 JSON 不得改动：估算（`breakdownOf`）与收纳（`condenseMessage`）都依赖解析它。
  * 图片作为并列的内容块放在信封之后，不写入信封。
  *
- * 图像块使用正文库引用（或尚未写入账本的 base64），视频块只带路径，均不读取正文，因此本函数是同步的，
- * 投影侧（`runtime/transcript.ts` 的 `toolContent`）才能用同一形状重建历史：
+ * 图像块使用正文库引用（或尚未写入账本的 base64），视频块带路径与容器索引中的元数据（`videoMetaOf`，同步读取并缓存），
+ * 均不读取正文，因此本函数是同步的，投影侧（`runtime/transcript.ts` 的 `toolContent`）才能用同一形状重建历史：
  * 投影侧有一个同步调用方（压缩的单元装配），读取正文会使整条调用链变为 async。
  *
  * 两侧必须逐字同形。形状不同时，同一次调用在本轮与下一轮的内容不一致，
@@ -416,6 +417,7 @@ export function toolResultContent(
         type: 'video',
         mimeType: v.mime,
         source: { kind: 'path', path: v.path },
+        meta: videoMetaOf(v.path),
       }),
     ),
   ]
@@ -466,6 +468,28 @@ export const THUMBNAIL_RETAIN_BYTES = 3 * 1024 * 1024
 /** 路径视频在本轮的发送方式：内联字节、上传后发送地址，或不直接发送、替换为指向 `read_file` 抽帧的说明。 */
 export type VideoDelivery = 'inline' | 'upload' | 'frames'
 
+/** 适配器的视频发送能力。模型支持视频且适配器实现了原生视频传输时才原生发送。 */
+export function videoCapabilities(
+  adapter: Pick<LlmAdapter, 'spec' | 'transmits'>,
+): Pick<InputMediaCapabilities, 'video' | 'mediaUploadAbove'> {
+  const upload = adapter.transmits.mediaUploadAbove
+  return {
+    video: adapter.spec.video && adapter.transmits.video === true,
+    ...(upload !== undefined ? { mediaUploadAbove: upload } : {}),
+  }
+}
+
+/**
+ * 原生发送的视频字节上限，`null` 表示不原生发送。`videoDelivery` 与本轮估算密度（`runDensity`）共用，
+ * 发送与估算对同一段视频的判定因此一致。
+ */
+function nativeVideoLimit(
+  caps: Pick<InputMediaCapabilities, 'video' | 'mediaUploadAbove'>,
+): number | null {
+  if (!caps.video) return null
+  return caps.mediaUploadAbove !== undefined ? Number.POSITIVE_INFINITY : MEDIA_RETAIN_HIGH_BYTES
+}
+
 /**
  * 路径视频的发送方式。换出预算（`mediaBytes`）、发送前物化（`materialize`）与 `read_file` 读取视频
  * 共用本函数，三处判定因此一致。
@@ -477,9 +501,28 @@ export function videoDelivery(
   size: number,
   caps: Pick<InputMediaCapabilities, 'video' | 'mediaUploadAbove'>,
 ): VideoDelivery {
-  if (!caps.video) return 'frames'
-  if (caps.mediaUploadAbove !== undefined && size > caps.mediaUploadAbove) return 'upload'
-  return size > MEDIA_RETAIN_HIGH_BYTES ? 'frames' : 'inline'
+  const limit = nativeVideoLimit(caps)
+  if (limit === null || size > limit) return 'frames'
+  return caps.mediaUploadAbove !== undefined && size > caps.mediaUploadAbove ? 'upload' : 'inline'
+}
+
+/**
+ * 本轮的估算密度：模型的计数规则按本轮的视频发送能力收窄。不原生发送视频时 `video` 为 null；
+ * 不能上传时字节上限为请求中常驻媒体的上限，超过的视频发送时被替换为说明（`videoDelivery`），估算记 0。
+ *
+ * 不要直接使用 `spec.density` 估算请求：不接受视频的模型使用默认档时，会把发送时已替换为说明的视频按默认档计入。
+ */
+export function runDensity(adapter: Pick<LlmAdapter, 'spec' | 'transmits'>): TokenDensity {
+  const { density } = adapter.spec
+  if (!density.video) return density
+  const limit = nativeVideoLimit(videoCapabilities(adapter))
+  return {
+    ...density,
+    video:
+      limit === null
+        ? null
+        : { ...density.video, maxBytes: Math.min(density.video.maxBytes, limit) },
+  }
 }
 
 /**

@@ -3,7 +3,7 @@
  * 可执行时的停机判定。
  */
 
-import { videoBlocksOf } from '@qywork/ai'
+import { unestimatedVideosOf } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { envelopeHeadTokens, log } from '@qywork/core'
 import { cycleFingerprint } from '../progress.ts'
@@ -17,11 +17,13 @@ import type { RunState, TurnState } from './run-state.ts'
  * 「无可压缩内容」跳过，工具结果的投递额度降为 0（实测一个中转每次多报约 61 万缓存命中）。
  *
  * 取本地估算的 1.5 倍加 2 万：已标定型号单段内容 90% 的偏差在 14% 以内、图片在 5% 以内；中转在请求前注入的
- * 隐藏系统提示实测约 8,600 token。带视频的请求改用请求字节数（每个 token 至少一个字节）：本地估算对视频记 0，
- * 按估算判定会拒绝含视频的真实回执，视频的占用从此无法计入读数。
+ * 隐藏系统提示实测约 8,600 token。带有读不出时长或画面尺寸的视频时改用请求字节数（每个 token 至少一个字节）：
+ * 本地估算对这类视频记 0，按估算判定会拒绝含视频的真实回执，视频的占用从此无法计入读数。
  */
-function inputLimit(turn: TurnState): number {
-  return videoBlocksOf(turn.req.messages) > 0 ? turn.requestBytes : turn.measured * 1.5 + 20_000
+function inputLimit(run: RunState, turn: TurnState): number {
+  return unestimatedVideosOf(turn.req.messages, run.density) > 0
+    ? turn.requestBytes
+    : turn.measured * 1.5 + 20_000
 }
 
 const TRUNCATED_NOTICE =
@@ -41,7 +43,7 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
     ? turnUsage.inputTokens + (turnUsage.cachedTokens ?? 0) + (turnUsage.cacheWriteTokens ?? 0)
     : 0
   const total = prompt + (turnUsage?.outputTokens ?? 0)
-  const plausible = prompt <= inputLimit(turn)
+  const plausible = prompt <= inputLimit(run, turn)
 
   // 流结束后为该行写入终态。中途被用户中断时记为 `uncertain`：
   // 无法判断 provider 是否完整接收，这正是 `uncertain` 的语义。
@@ -110,13 +112,13 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
   if (!plausible) {
     log.warn('agent', 'provider 回报的输入量超过上限，不作为占用读数', {
       input: prompt,
-      limit: Math.round(inputLimit(turn)),
+      limit: Math.round(inputLimit(run, turn)),
       measured: turn.measured,
     })
     return true
   }
   /*
-   * 不要排除带视频的请求：本地估算对视频记 0，视频的占用只体现在真值中。保留在请求中的视频
+   * 不要排除带视频的请求：读不出时长或画面尺寸的视频估算记 0，占用只体现在真值中。保留在请求中的视频
    * 此后每次都随请求发出，排除后读数与压缩触发始终无法计入它。
    */
   if (total > 0) {

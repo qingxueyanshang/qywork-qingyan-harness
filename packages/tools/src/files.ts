@@ -17,6 +17,7 @@ import { StringDecoder } from 'node:string_decoder'
 import {
   chargeBatchBudget,
   chargeImage,
+  chargeVideo,
   deliveryCap,
   outcomeTokens,
   recordBatchSpent,
@@ -24,8 +25,8 @@ import {
   type ToolOutcome,
   type ToolSpec,
   tokensToMaxBytes,
-  VIDEO_BUDGET_TOKENS,
   videoDelivery,
+  videoMetaOf,
 } from '@qywork/agent'
 import type { FileChange } from '@qywork/core'
 import { imageSizeOf, isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
@@ -263,7 +264,7 @@ const OFFICE_FILE = /\.(docx|dotx|xlsx|xltx|pptx|potx)$/i
 /**
  * 读取一段视频。使用原生视频还是抽帧由 `agent` 的 `videoDelivery` 判定，与发送时使用同一判据：
  * 原生时返回路径引用，由请求装配在发出前内联或上传（`videosOf` 与 `materialize`），
- * 按 `VIDEO_BUDGET_TOKENS` 扣除投递额度。
+ * 按时长与画面尺寸扣除投递额度（`chargeVideo`）。
  *
  * 抽帧时经 Office 的 Python worker 按时间取帧，帧作为图片返回（`readVideoFrames`），
  * `start` / `end` 指定区间。无法读取时在此处直接拒绝并说明下一步：若返回路径，
@@ -308,7 +309,7 @@ async function readVideo(
       ? { ...read, message: `${cause}，改为按时间抽帧。\n${read.message}` }
       : read
   }
-  if (!chargeBatchBudget(ctx, VIDEO_BUDGET_TOKENS).ok) recordBatchSpent(ctx, VIDEO_BUDGET_TOKENS)
+  chargeVideo(ctx, videoMetaOf(abs))
   return {
     status: 'success',
     message: `读取 ${shown}（视频）`,

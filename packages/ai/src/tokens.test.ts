@@ -24,6 +24,7 @@ import {
   estimateRequest,
   estimateSchemas,
   estimateText,
+  estimateVideo,
   imageSizeOfBase64,
   TEXT_FEATURES,
   THUMBNAIL_EDGE,
@@ -44,12 +45,13 @@ const measured = JSON.parse(
       kind: ProviderKind
       real: Record<string, number>
       images: { width: number; height: number; tokens: number }[]
+      videos?: { width: number; height: number; seconds: number; tokens: number }[]
     }
   >
 }
 
-/** 只有一项系数非零的系数表，用于锁定单项计数；图片每 token 一像素、没有上下限与固定开销。 */
-function only(feature: Exclude<keyof TokenDensity, 'image'>, value = 1): TokenDensity {
+/** 只有一项系数非零的系数表，用于锁定单项计数；图片每 token 一像素、没有上下限与固定开销，没有视频规则。 */
+function only(feature: Exclude<keyof TokenDensity, 'image' | 'video'>, value = 1): TokenDensity {
   const zero: TokenDensity = {
     cjk: 0,
     rareCjk: 0,
@@ -63,6 +65,7 @@ function only(feature: Exclude<keyof TokenDensity, 'image'>, value = 1): TokenDe
     other: 0,
     message: 0,
     image: { pixelsPerToken: 1, minPixels: 0, maxPixels: Number.MAX_SAFE_INTEGER, base: 0 },
+    video: null,
   }
   return { ...zero, [feature]: value }
 }
@@ -287,6 +290,39 @@ describe('图片', () => {
         })
       }
     }
+  })
+})
+
+describe('视频', () => {
+  /**
+   * 各型号的视频规则与实测值相差不超过 11%（常见尺寸在 1% 以内；320×240、480×480 与带零头的时长偏差较大）；
+   * 默认档不低于任何实测值的九成。要防止的形状：视频一律记 0，而一段 60 秒 1080p 视频实测约 16 万。
+   */
+  test('标定：实测过的型号与默认档', () => {
+    let checked = 0
+    for (const [id, { kind, videos }] of Object.entries(measured.models)) {
+      const density = lookupModel(id, kind).density
+      for (const { width, height, seconds, tokens } of videos ?? []) {
+        const meta = { bytes: 1, seconds, size: { width, height } }
+        const ratio = estimateVideo(meta, density) / tokens
+        const low = estimateVideo(meta, D) / tokens
+        expect({
+          id,
+          width,
+          height,
+          seconds,
+          ok: Math.abs(ratio - 1) <= 0.11 && low >= 0.9,
+        }).toEqual({
+          id,
+          width,
+          height,
+          seconds,
+          ok: true,
+        })
+        checked++
+      }
+    }
+    expect(checked).toBeGreaterThan(40)
   })
 })
 

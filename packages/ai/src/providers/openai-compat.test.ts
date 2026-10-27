@@ -270,7 +270,12 @@ describe('工具结果带图片', () => {
           toolCallId: 'c_v',
           content: [
             { type: 'text', text: '{"call_id":"c_v"}' },
-            { type: 'video', mimeType: 'video/mp4', source: { kind: 'base64', data: 'QUJD' } },
+            {
+              type: 'video',
+              mimeType: 'video/mp4',
+              source: { kind: 'base64', data: 'QUJD' },
+              meta: null,
+            },
           ],
         },
       ],
@@ -337,7 +342,12 @@ describe('用户消息带视频', () => {
         {
           role: 'user',
           content: [
-            { type: 'video', mimeType: 'video/mp4', source: { kind: 'base64', data: 'QUJD' } },
+            {
+              type: 'video',
+              mimeType: 'video/mp4',
+              source: { kind: 'base64', data: 'QUJD' },
+              meta: null,
+            },
             { type: 'text', text: '描述视频内容' },
           ],
         },
@@ -363,6 +373,7 @@ describe('用户消息带视频', () => {
               type: 'video',
               mimeType: 'video/mp4',
               source: { kind: 'url', url: 'oss://dashscope-instant/example/clip.mp4' },
+              meta: null,
             },
             { type: 'text', text: '描述视频内容' },
           ],
@@ -473,6 +484,7 @@ describe('百炼媒体上传', () => {
               type: 'video',
               mimeType: 'video/mp4',
               source: { kind: 'url', url: 'oss://dashscope-instant/test/clip.mp4' },
+              meta: null,
             },
           ],
         },
@@ -503,8 +515,18 @@ describe('百炼媒体上传', () => {
           {
             role: 'user',
             content: [
-              { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: small } },
-              { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: large } },
+              {
+                type: 'video',
+                mimeType: 'video/mp4',
+                source: { kind: 'path', path: small },
+                meta: null,
+              },
+              {
+                type: 'video',
+                mimeType: 'video/mp4',
+                source: { kind: 'path', path: large },
+                meta: null,
+              },
             ],
           },
         ],
@@ -523,11 +545,13 @@ describe('百炼媒体上传', () => {
       type: 'video',
       mimeType: 'video/mp4',
       source: { kind: 'base64', data: Buffer.from('abc').toString('base64') },
+      meta: null,
     })
     expect(blocks[1]).toEqual({
       type: 'video',
       mimeType: 'video/mp4',
       source: { kind: 'url', url: 'oss://dashscope-instant/test/large.mp4' },
+      meta: null,
     })
     expect(uploaded).toHaveLength(1)
     expect(uploaded[0]).toMatchObject({ path: large, size: 3 * 1024 * 1024 })
