@@ -125,6 +125,10 @@ test('主会话派发任务结束后刷新或切回，显示子任务进度且�
     turns: [],
   }
   ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (path) => {
+    // 目标与队列读取失败时整次加载报错，因此按服务端的空值答复。
+    if (path.includes('/context')) return { context: null }
+    if (path.includes('/goal')) return { goal: null }
+    if (path.includes('/queue')) return { queue: [] }
     if (!path.includes('/history')) throw new Error('本用例只提供会话历史')
     return {
       messages: [{ id: 'ms_dispatch', role: 'user', content: '做赛车游戏', createdAt: 1 }],

@@ -1,6 +1,8 @@
 import { createSignal, onMount, Show } from 'solid-js'
 import {
+  explainApiError,
   isDesktopShell,
+  setState,
   windowClose,
   windowIsMaximized,
   windowMinimize,
@@ -22,6 +24,12 @@ import { IconWinClose, IconWinMax, IconWinMin } from './Icons.tsx'
 export function WindowControls() {
   const desktop = isDesktopShell()
   const [maximized, setMaximized] = createSignal(false)
+  /** 窗口操作失败时写入通知：按钮点击后没有任何变化时，用户无法区分失败与未点中。 */
+  const failed = (e: unknown) =>
+    setState('notice', {
+      reason: 'window_action_failed',
+      message: `窗口操作失败：${explainApiError(e, '请求失败')}`,
+    })
 
   onMount(() => {
     if (!desktop) return
@@ -38,7 +46,7 @@ export function WindowControls() {
           class="win-btn"
           type="button"
           aria-label="最小化"
-          onClick={() => void windowMinimize()}
+          onClick={() => void windowMinimize().catch(failed)}
         >
           <IconWinMin />
         </button>
@@ -46,7 +54,7 @@ export function WindowControls() {
           class="win-btn"
           type="button"
           aria-label={maximized() ? '还原' : '最大化'}
-          onClick={() => void windowToggleMaximize().then(setMaximized)}
+          onClick={() => void windowToggleMaximize().then(setMaximized, failed)}
         >
           <IconWinMax restore={maximized()} />
         </button>
@@ -54,7 +62,7 @@ export function WindowControls() {
           class="win-btn danger"
           type="button"
           aria-label="关闭"
-          onClick={() => void windowClose()}
+          onClick={() => void windowClose().catch(failed)}
         >
           <IconWinClose />
         </button>

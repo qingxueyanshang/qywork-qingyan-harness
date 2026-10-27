@@ -56,6 +56,8 @@ export function VideoPlayer(props: {
   const [at, setAt] = createSignal(0)
   const [length, setLength] = createSignal(0)
   const [playing, setPlaying] = createSignal(false)
+  /** 无法载入或解码时为真；时间读数改为失败说明，写法与音频卡片相同。 */
+  const [failed, setFailed] = createSignal(false)
   const follow = () => {
     setAt(video.currentTime)
     raf = requestAnimationFrame(follow)
@@ -77,7 +79,12 @@ export function VideoPlayer(props: {
         return
       }
       if (at() >= length()) video.currentTime = 0
-      video.play().catch(() => {})
+      setFailed(false)
+      video.play().catch((error: unknown) => {
+        // AbortError 是播放被随后的暂停或换源打断，不是失败。
+        if (error instanceof Error && error.name === 'AbortError') return
+        setFailed(true)
+      })
     },
   }
   props.register(player)
@@ -97,7 +104,12 @@ export function VideoPlayer(props: {
         }}
         onPlay={() => {
           setPlaying(true)
+          setFailed(false)
           follow()
+        }}
+        onError={() => {
+          setPlaying(false)
+          setFailed(true)
         }}
         onPause={() => {
           setPlaying(false)
@@ -111,8 +123,8 @@ export function VideoPlayer(props: {
             <IconPause size={12} />
           </Show>
         </button>
-        <span>
-          {clock(at() * 1000)} / {clock(length() * 1000)}
+        <span classList={{ failed: failed() }}>
+          {failed() ? '无法播放，请重试' : `${clock(at() * 1000)} / ${clock(length() * 1000)}`}
         </span>
         <input
           type="range"

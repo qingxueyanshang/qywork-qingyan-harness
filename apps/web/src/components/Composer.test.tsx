@@ -307,6 +307,25 @@ describe('放大面板中的输入区', () => {
     }
   })
 
+  /** 原始失败形状：会话绑定的接口已从配置中删除，读数整体消失，没有任何说明。 */
+  test('上下文占用读取失败时读数显示 N/A，悬停提示为服务端原因', async () => {
+    const { dispose, host } = await mountComposer(false)
+    const store = await import('../lib/store/index.ts')
+    try {
+      store.setState('context', null)
+      store.setState(
+        'contextError',
+        '409 /api/conversations/cv_1/context: {"error":"会话绑定的接口或模型已不在配置中"}',
+      )
+      const meter = host.querySelector('.ctx-meter')!
+      expect(meter.textContent).toBe('N/A')
+      expect(meter.getAttribute('data-tip')).toBe('会话绑定的接口或模型已不在配置中')
+    } finally {
+      store.setState('contextError', null)
+      dispose()
+    }
+  })
+
   test('空输入默认收起，悬浮时立即展开，离开后延迟收起', async () => {
     const { dispose, reveal, wrap } = await mountComposer()
     try {

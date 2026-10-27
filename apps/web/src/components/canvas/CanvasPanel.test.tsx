@@ -455,6 +455,44 @@ describe('画布：节点操作', () => {
     expect(video.querySelector('video')!.hasAttribute('controls')).toBe(false)
   })
 
+  /**
+   * 原始失败形状：视频无法载入或解码时，点击播放没有任何反应，时间读数停在 00:00 / 00:00。
+   * 播放被随后的暂停或换源打断（AbortError）是正常情形，不显示为失败。
+   */
+  test('视频无法播放时时间读数改为失败说明，播放被打断不算失败', async () => {
+    const { host, refs } = await mount([
+      { op: 'add_file', ref: '$v', path: 'broken.mp4', x: 0, y: 0 },
+    ])
+    const card = node(host, refs.$v!)
+    pointer(card, 'pointerdown', 10, 10)
+    pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
+    await waitFor(
+      () => !!card.querySelector('.canvas-player'),
+      () => card.innerHTML,
+    )
+    const media = card.querySelector('video')!
+    const readout = () => card.querySelector('.canvas-player > span')!.textContent
+    media.dispatchEvent(new Event('error'))
+    expect(readout()).toBe('无法播放，请重试')
+    media.dispatchEvent(new Event('play'))
+    expect(readout()).toBe('00:00 / 00:00')
+    media.dispatchEvent(new Event('pause'))
+
+    const refuse = (name: string) => {
+      media.play = () => Promise.reject(Object.assign(new Error(name), { name }))
+    }
+    refuse('AbortError')
+    card.querySelector<HTMLButtonElement>('.canvas-player button[aria-label="播放"]')!.click()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(readout()).toBe('00:00 / 00:00')
+    refuse('NotSupportedError')
+    card.querySelector<HTMLButtonElement>('.canvas-player button[aria-label="播放"]')!.click()
+    await waitFor(
+      () => readout() === '无法播放，请重试',
+      () => readout() ?? '',
+    )
+  })
+
   test('音频控件读取时长、同步播放进度与静音，操作进度时不拖动节点', async () => {
     const { host, refs, server } = await mount([{ op: 'add_file', ref: '$a', path: 'voice.wav' }])
     const card = node(host, refs.$a!)
@@ -4288,6 +4326,69 @@ describe('画布：时间线', () => {
         () => host.querySelector('.canvas-fault')?.textContent ?? '',
       )
       expect(server.ops).toHaveLength(1)
+    } finally {
+      restoreVideo()
+    }
+  })
+
+  /** 原始失败形状：视频时长读取失败时报为「只有视频可以加入时间线」，与原因不符。 */
+  test('拖入的视频读取不到时长时写明是哪个文件，不发送操作', async () => {
+    const restoreVideo = fakeDurations(0)
+    try {
+      const { host, server, refs } = await mount(TIMELINE)
+      const store = await import('../../lib/store/index.ts')
+      const ev = new Event('drop', { bubbles: true, cancelable: true })
+      Object.defineProperties(ev, {
+        dataTransfer: {
+          value: {
+            types: [store.WORKSPACE_PATH_TYPE],
+            getData: (type: string) => (type === store.WORKSPACE_PATH_TYPE ? '镜头/损坏.mp4' : ''),
+          },
+        },
+        clientX: { value: 100 },
+        clientY: { value: 100 },
+      })
+      node(host, refs.$t!).dispatchEvent(ev)
+      await waitFor(
+        () => host.querySelector('.canvas-fault')?.textContent === '无法读取视频时长：损坏.mp4',
+        () => host.querySelector('.canvas-fault')?.textContent ?? '',
+      )
+      expect(server.ops).toEqual([])
+    } finally {
+      restoreVideo()
+    }
+  })
+
+  /** 原始失败形状：片段无法解码时点击播放立即停止，没有任何提示。 */
+  test('时间线片段无法播放时时间读数改为失败说明，再次播放时清除', async () => {
+    const restoreVideo = fakeDurations(5)
+    try {
+      const { host, refs } = await mount(TIMELINE)
+      const tl = node(host, refs.$t!)
+      await waitFor(
+        () => !!tl.querySelector('.canvas-tl-screen video'),
+        () => tl.innerHTML.slice(0, 300),
+      )
+      const readout = () => tl.querySelector('.canvas-tl-play > span')!.textContent
+      const videos = [...tl.querySelectorAll<HTMLVideoElement>('.canvas-tl-screen video')]
+      for (const v of videos) {
+        v.play = () =>
+          Promise.reject(
+            Object.assign(new Error('NotSupportedError'), { name: 'NotSupportedError' }),
+          )
+      }
+      tl.querySelector<HTMLButtonElement>('.canvas-tl-play button')!.click()
+      await waitFor(
+        () => readout() === '无法播放，请重试',
+        () => readout() ?? '',
+      )
+      expect(tl.querySelector('.canvas-tl-play button[aria-label="播放"]')).not.toBeNull()
+      for (const v of videos) v.play = () => Promise.resolve()
+      tl.querySelector<HTMLButtonElement>('.canvas-tl-play button')!.click()
+      await waitFor(
+        () => readout() !== '无法播放，请重试',
+        () => readout() ?? '',
+      )
     } finally {
       restoreVideo()
     }

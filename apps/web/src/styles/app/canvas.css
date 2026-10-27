@@ -385,6 +385,15 @@
 .canvas-player > span {
   flex: none;
 }
+/* 无法播放时时间读数改为失败说明，颜色与音频卡片的失败说明相同；窄节点中同样显示，超出时省略。 */
+.canvas-player > span.failed {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--danger);
+}
 .canvas-player > input {
   flex: 1;
   min-width: 0;
@@ -409,7 +418,7 @@
 }
 /* 竖版视频的节点较窄：时间显示的位置让给进度条。 */
 @container (max-width: 160px) {
-  .canvas-player > span {
+  .canvas-player > span:not(.failed) {
     display: none;
   }
 }
@@ -829,6 +838,9 @@
   justify-content: center;
   gap: 4px;
   font-variant-numeric: tabular-nums;
+}
+.canvas-tl-play > span.failed {
+  color: var(--danger);
 }
 .canvas-tl-full-btn {
   padding: 0 8px;

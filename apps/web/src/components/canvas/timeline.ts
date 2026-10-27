@@ -161,6 +161,8 @@ export function gapAt(clips: readonly CanvasClip[], t: number, skip = -1): numbe
 export interface TimelineSession {
   playhead: Accessor<number>
   playing: Accessor<boolean>
+  /** 片段无法载入或解码、播放被拒绝时为真；再次播放、定位或片段变化时清除。 */
+  failed: Accessor<boolean>
   selected: Accessor<number | null>
   select(index: number | null): void
   /** 预览：两个 `<video>` 叠放、轮流播放。同一时刻只挂载在一处（节点或全屏），移动它会暂停播放。 */
@@ -205,6 +207,7 @@ const LAST_FRAME = 1 / 30
 function createSession(id: string): { session: TimelineSession; dispose(): void } {
   const [playhead, setPlayhead] = createSignal(0)
   const [playing, setPlaying] = createSignal(false)
+  const [failed, setFailed] = createSignal(false)
   const [selected, setSelected] = sessionSignal<number | null>(`qywork.timeline.clip:${id}`, null)
   const preview = document.createElement('div')
   preview.className = 'canvas-tl-screen'
@@ -257,6 +260,14 @@ function createSession(id: string): { session: TimelineSession; dispose(): void 
     cancelAnimationFrame(raf)
     for (const v of videos) v.pause()
   }
+  /** 播放被拒绝时停止；AbortError 是被随后的暂停或换源打断，只停止、不记为失败。 */
+  const refused = (error: unknown) => {
+    pause()
+    if (!(error instanceof Error && error.name === 'AbortError')) setFailed(true)
+  }
+  const play = (v: HTMLVideoElement) => {
+    v.play().catch(refused)
+  }
   const seek = (t: number) => {
     const next = Math.min(Math.max(0, t), totalOf(clips))
     setPlayhead(next)
@@ -266,7 +277,7 @@ function createSession(id: string): { session: TimelineSession; dispose(): void 
     load(active, at.index, Math.min(at.source, c.out - LAST_FRAME))
     show(active)
     preload(at.index + 1)
-    if (playing()) videos[active]!.play().catch(pause)
+    if (playing()) play(videos[active]!)
   }
   const tick = () => {
     const index = holds[active]!
@@ -283,7 +294,7 @@ function createSession(id: string): { session: TimelineSession; dispose(): void 
       if (holds[other] !== index + 1) load(other, index + 1, clips[index + 1]!.in)
       // 先切换显示再暂停旧元素：旧元素的 pause 事件到达时它已不是当前元素，不会被视为意外暂停。
       show(other)
-      videos[other]!.play().catch(pause)
+      play(videos[other]!)
       v.pause()
       preload(index + 2)
     }
@@ -296,11 +307,17 @@ function createSession(id: string): { session: TimelineSession; dispose(): void 
     v.addEventListener('pause', () => {
       if (playing() && v === videos[active] && !v.ended) pause()
     })
+    v.addEventListener('error', () => {
+      if (v !== videos[active]) return
+      pause()
+      setFailed(true)
+    })
   }
 
   const session: TimelineSession = {
     playhead,
     playing,
+    failed,
     selected,
     select: setSelected,
     preview,
@@ -310,6 +327,7 @@ function createSession(id: string): { session: TimelineSession; dispose(): void 
       if (nextKey === key) return
       key = nextKey
       pause()
+      setFailed(false)
       urls = nextUrls
       clips = nextClips
       frameTo(urls[0])
@@ -325,8 +343,9 @@ function createSession(id: string): { session: TimelineSession; dispose(): void 
       if (playing()) return pause()
       if (!clips.length) return
       if (playhead() >= totalOf(clips) - LAST_FRAME) seek(0)
+      setFailed(false)
       setPlaying(true)
-      videos[active]!.play().catch(pause)
+      play(videos[active]!)
       raf = requestAnimationFrame(tick)
     },
     pause,

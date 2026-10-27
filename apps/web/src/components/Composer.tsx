@@ -19,6 +19,7 @@ import {
   type CliAgentRow,
   composerSeed,
   dropFollowUp,
+  explainApiError,
   extensionsRevision,
   followUpMode,
   hasRun,
@@ -628,7 +629,7 @@ export function Composer(props: { empty: boolean }) {
         setPending((prev) => [...prev, a], conversationId)
       } catch (e) {
         setState('notice', {
-          message: `${f.name}：${e instanceof Error ? e.message : String(e)}`,
+          message: `${f.name}：${explainApiError(e, '请求失败')}`,
           reason: 'attachment_upload_failed',
         })
       } finally {
@@ -799,17 +800,19 @@ export function Composer(props: { empty: boolean }) {
     }
 
     /*
-     * 图片能力未知时沿用现有的试发送语义；视频只有模型与协议均明确支持时才允许发送。
+     * 图片能力未知时沿用现有的试发送语义。模型不接受原生视频时，后端把视频替换为一行说明，
+     * 由模型调用 `read_file` 抽取关键帧读取（`agent` 的 `materialize`），因此只在模型连图片也不接受时拦截视频。
      * 能力不符时保留草稿与附件，由用户更换模型或移除媒体。
      */
-    if (activeModelRow()?.vision === false && files.some((f) => f.type === 'image')) {
+    const row = activeModelRow()
+    if (row?.vision === false && files.some((f) => f.type === 'image')) {
       setState('notice', {
         message: '当前模型不支持图片输入，请移除图片后再发送',
         reason: 'model_without_vision',
       })
       return
     }
-    if (activeModelRow()?.video !== true && files.some((f) => f.type === 'video')) {
+    if (row?.vision === false && row.video !== true && files.some((f) => f.type === 'video')) {
       setState('notice', {
         message: '当前模型不支持视频输入',
         reason: 'model_without_video',
@@ -1114,7 +1117,7 @@ export function Composer(props: { empty: boolean }) {
                     .catch((e: unknown) =>
                       setState('notice', {
                         reason: 'attachment_pick_failed',
-                        message: `无法选择文件：${e instanceof Error ? e.message : String(e)}`,
+                        message: `无法选择文件：${explainApiError(e, '请求失败')}`,
                       }),
                     )
                   return
@@ -1323,7 +1326,22 @@ function ContextMeter() {
   }
 
   return (
-    <Show when={state.context}>
+    <Show
+      when={state.context}
+      fallback={
+        // 读取失败时显示 N/A，原因在悬停提示中；不显示时读数整体消失，用户看不到原因。
+        <Show when={state.contextError}>
+          {(e) => (
+            <span class="ctx-wrap">
+              <span class="ctx-meter" data-tip={explainApiError(e(), '上下文占用读取失败')}>
+                <ContextRing percent={0} />
+                <span class="ctx-meter-num">N/A</span>
+              </span>
+            </span>
+          )}
+        </Show>
+      }
+    >
       {(c) => (
         <span class="ctx-wrap">
           <button

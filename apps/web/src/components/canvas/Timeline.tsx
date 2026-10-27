@@ -358,11 +358,14 @@ export function Timeline(props: TimelineProps) {
               <IconPause size={14} />
             </Show>
           </button>
-          <span>
-            {props.mode === 'full'
-              ? clockTenths(session.playhead())
-              : clock(session.playhead() * 1000)}{' '}
-            / {clock(total() * 1000)}
+          <span classList={{ failed: session.failed() }}>
+            {session.failed()
+              ? '无法播放，请重试'
+              : `${
+                  props.mode === 'full'
+                    ? clockTenths(session.playhead())
+                    : clock(session.playhead() * 1000)
+                } / ${clock(total() * 1000)}`}
           </span>
         </div>
         <Show
