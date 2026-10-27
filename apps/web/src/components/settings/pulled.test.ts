@@ -129,7 +129,7 @@ const LIBRARY: MediaLibraryModel[] = [
   },
 ]
 
-test('对应型号决定类别：生成型号改为该类别，类别改变时不保留原类别的价格', () => {
+test('对应型号决定类别：对话型号改为生成目录的类别，类别改变时不保留原类别的价格', () => {
   const relay = 'https://ai.apii.cn/'
   const chat = RESULT.models[1]!
   expect(withBase(chat, 'gpt-image-2.5-sunburst', LIBRARY, relay)).toEqual({
@@ -141,6 +141,7 @@ test('对应型号决定类别：生成型号改为该类别，类别改变时�
   expect(withBase(RESULT.models[0]!, 'gpt-image-2.5-sunburst', LIBRARY, relay)).not.toHaveProperty(
     'price',
   )
+  expect(withBase(chat, 'deepseek-flash', LIBRARY, relay)).toBe(chat)
   const alias = {
     id: 'gpt-image-2.5-sunburst-4k',
     output: 'image' as const,
@@ -149,11 +150,6 @@ test('对应型号决定类别：生成型号改为该类别，类别改变时�
     base: 'gpt-image-2.5-sunburst',
   }
   expect(withBase(alias, 'gpt-image-2.5-sunburst', LIBRARY, relay)).toBe(alias)
-  expect(withBase(alias, 'deepseek-flash', LIBRARY, relay)).toEqual({
-    id: 'gpt-image-2.5-sunburst-4k',
-    output: 'chat',
-    known: false,
-  })
   expect(withBase(chat, undefined, LIBRARY, relay)).toBe(chat)
 })
 

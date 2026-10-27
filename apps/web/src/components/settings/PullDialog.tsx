@@ -20,7 +20,8 @@ const TAB_LABEL: Record<'chat' | MediaOutput, string> = {
 
 /**
  * 拉取接口上的型号，勾选后添加。打开即读取；读取成功时先按结果刷新已添加型号的规格、价格与已下架标记。
- * 未收录的型号可选对应型号，选项为对话模型库与生成目录；所选型号决定该型号所在的页签与添加时的类别。
+ * 未收录的型号可选对应型号：对话型号可选模型库中的内置型号与生成目录，所选型号决定该型号所在的页签与添加时的类别；
+ * 生成型号只可选同类别的生成目录。
  *
  * 窗口尺寸固定（CLAUDE.md B9）：读取完成、切换页签时型号数量变化，列表在框内滚动，按钮位置不变。
  */
@@ -46,11 +47,22 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
   // 最后一个型号改选其他类别的对应型号后，该页签不再存在，显示第一个页签。
   const current = () => (tabs().includes(tab()) ? tab() : (tabs()[0] ?? 'chat'))
   const rows = () => models().filter((m) => m.output === current())
-  /** 对应型号的可选项：模型库中的内置型号按模型库的厂商顺序排列，其后是生成目录。 */
-  const baseIds = () => [
-    ...(modelCatalog()?.library ?? []).flatMap((v) => (v.id ? v.models.map((m) => m.id) : [])),
-    ...media().map((m) => m.id),
-  ]
+  /**
+   * 对应型号的可选项，按拉取结果中的类别确定，改选后移到其他页签的型号仍可改回。
+   * 对话型号：模型库中的内置型号按模型库的厂商顺序排列，其后是生成目录。对话是未识别型号的归类，可改为生成类别。
+   * 生成型号：同类别的生成目录。生成类别取自计费清单的接口类型或生成目录的名称识别。
+   * 用户添加的条目不列出：配置校验只接受内置型号，选择后保存被拒绝。
+   */
+  const baseIds = (id: string) => {
+    const output = result()?.models.find((m) => m.id === id)?.output ?? 'chat'
+    if (output !== 'chat') return media().flatMap((m) => (m.output === output ? [m.id] : []))
+    return [
+      ...(modelCatalog()?.library ?? []).flatMap((v) =>
+        v.models.flatMap((m) => (m.builtin ? [m.id] : [])),
+      ),
+      ...media().map((m) => m.id),
+    ]
+  }
 
   const toggle = (id: string, on: boolean) =>
     setPicked((prev) => {
@@ -175,7 +187,7 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                       <option value="" disabled hidden>
                         对应型号
                       </option>
-                      <For each={baseIds()}>{(id) => <option value={id}>{id}</option>}</For>
+                      <For each={baseIds(m.id)}>{(id) => <option value={id}>{id}</option>}</For>
                     </select>
                   </Show>
                 </div>

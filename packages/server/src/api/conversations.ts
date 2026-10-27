@@ -204,6 +204,11 @@ export interface LibraryModel {
    * 该说明属于能力边界，不得折叠，也不得降低对比度（CLAUDE.md B7）。
    */
   priceNotes?: string[]
+  /**
+   * 内置目录中的型号。用户添加的条目同样按厂商分组，只能由本字段区分；
+   * 只有内置型号能作为对应型号，配置校验按内置目录判定。
+   */
+  builtin: boolean
 }
 
 export interface LibraryVendor {
@@ -234,6 +239,7 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
     const o = overrides[catalogKey(m.id, m.provider)]
     rows.set(m.id, applySpecOverride(m, o))
   }
+  const builtin = new Set(rows.keys())
   // 补入目录未收录的模型（用户自行添加的条目）：有对应型号时取该型号的规格，否则 `unknownModel`
   // 提供一组保守默认值，覆盖中填写的值按原样显示。此处丢弃键的第二维：用户添加的模型只可能有一个协议。
   for (const [key, o] of Object.entries(overrides)) {
@@ -270,6 +276,7 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
       effortLevels: transmittableEffortLevels(spec),
       thinksByDefault: spec.thinksByDefault,
       ...(notes.length ? { priceNotes: notes } : {}),
+      builtin: builtin.has(spec.id),
     }
     const group = (spec.vendor && groups.get(spec.vendor)) || custom
     group.models.push(row)

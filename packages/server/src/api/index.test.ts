@@ -1266,6 +1266,9 @@ describe('模型目录', () => {
     const ds = (await body(d)).library.find((v) => v.id === 'deepseek')!
     const row = ds.models.find((m) => m.id === '中转站上的某个模型')!
     expect(row.contextWindow).toBe(65_536)
+    // 与内置型号同组，只能由 builtin 区分：拉取模型的对应型号只列内置型号。
+    expect(row.builtin).toBe(false)
+    expect(ds.models.find((m) => m.id === 'deepseek-flash')?.builtin).toBe(true)
   })
 
   /** 未填写 vendor 的模型归入「自定义」，不静默丢弃。 */

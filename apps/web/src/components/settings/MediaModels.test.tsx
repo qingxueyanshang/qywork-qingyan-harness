@@ -88,6 +88,7 @@ test('模型库未知单价显示横线，并直接显示订阅限制', async ()
                 effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
                 thinksByDefault: true,
                 priceNotes: ['仅 M Plan 订阅 Key 可用；尚未公布按 token 单价'],
+                builtin: true,
               },
             ],
           },
@@ -341,6 +342,19 @@ const SUNBURST: MediaLibraryModel = {
   params: [],
 }
 
+const SEEDANCE: MediaLibraryModel = {
+  id: 'doubao-seedance-2-5-260628',
+  label: 'Seedance 2.5',
+  vendor: 'ByteDance',
+  kind: 'openai_videos',
+  kinds: ['openai_videos'],
+  output: 'video',
+  operations: ['text_to_video'],
+  maxImages: 9,
+  maxVideos: 3,
+  params: [],
+}
+
 /** 中转接口与配置读写的桩：`/api/models` 返回给定的生成目录与对话模型库，配置保存在 `stored` 中。 */
 function relayApi(
   store: typeof import('../../lib/store/index.ts'),
@@ -352,12 +366,16 @@ function relayApi(
       return {
         providers: [],
         media: [],
-        mediaLibrary: [SUNBURST],
+        mediaLibrary: [SUNBURST, SEEDANCE],
         library: [
           {
             id: 'deepseek',
             displayName: 'DeepSeek',
-            models: [{ id: 'deepseek-flash', label: 'DeepSeek Flash' }],
+            // 用户添加的条目按对应型号的厂商分组，与内置型号同组。
+            models: [
+              { id: 'deepseek-flash', label: 'DeepSeek Flash', builtin: true },
+              { id: 'deepseek-v4.1-flash', label: 'deepseek-v4.1-flash', builtin: false },
+            ],
           },
         ],
       } as T
@@ -477,12 +495,14 @@ test('拉取模型：带后缀的生成型号预选对应型号，改选生成�
     expect(tabs().map((b) => b.textContent)).toEqual(['对话 1', '图像 1'])
     const select = (id: string) =>
       dialog.querySelector<HTMLSelectElement>(`select[aria-label="对应型号 ${id}"]`)!
-    // 对应型号的可选项：对话模型库在前，生成目录在后。
-    expect(Array.from(select('banana-pro').options, (o) => o.value)).toEqual([
+    // 对话型号的可选项：模型库中的内置型号在前，生成目录在后；用户添加的条目不列出。
+    const chatOptions = [
       '',
       'deepseek-flash',
       'gpt-image-2.5-sunburst',
-    ])
+      'doubao-seedance-2-5-260628',
+    ]
+    expect(Array.from(select('banana-pro').options, (o) => o.value)).toEqual(chatOptions)
     select('banana-pro').value = 'gpt-image-2.5-sunburst'
     select('banana-pro').dispatchEvent(new Event('change', { bubbles: true }))
     // 对话页签已空，显示图像页签。
@@ -490,6 +510,13 @@ test('拉取模型：带后缀的生成型号预选对应型号，改选生成�
       ['图像 2', true],
     ])
     expect(select('gpt-image-2.5-sunburst-4k').value).toBe('gpt-image-2.5-sunburst')
+    // 生成型号的可选项：同类别的生成目录。
+    expect(Array.from(select('gpt-image-2.5-sunburst-4k').options, (o) => o.value)).toEqual([
+      '',
+      'gpt-image-2.5-sunburst',
+    ])
+    // 移到图像页签的对话型号仍按对话型号列出可选项，可以改回。
+    expect(Array.from(select('banana-pro').options, (o) => o.value)).toEqual(chatOptions)
     for (const row of dialog.querySelectorAll<HTMLElement>('.pull-row')) {
       const box = row.querySelector<HTMLInputElement>('input[type="checkbox"]')!
       box.checked = true
@@ -651,7 +678,7 @@ test('拉取模型：打开即刷新已添加型号，勾选后写入规格与�
           {
             id: 'deepseek',
             displayName: 'DeepSeek',
-            models: [{ id: 'deepseek-flash', label: 'DeepSeek Flash' }],
+            models: [{ id: 'deepseek-flash', label: 'DeepSeek Flash', builtin: true }],
           },
         ],
       } as T
