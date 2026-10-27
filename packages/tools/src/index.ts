@@ -33,6 +33,7 @@ export {
   MEDIA_TOOLS,
   resumeMedia,
   TASK_SUFFIX,
+  taskHeldElsewhere,
 } from './generate.ts'
 // 画布按图片文件头的宽高确定节点尺寸。
 export {

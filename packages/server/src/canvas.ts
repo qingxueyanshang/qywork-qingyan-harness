@@ -82,6 +82,7 @@ import {
   resolveWritablePath,
   resumeMedia,
   TASK_SUFFIX,
+  taskHeldElsewhere,
 } from '@qywork/tools'
 import type { BrowserCoordinator } from './browser/coordinator.ts'
 import { agentView, checkActiveParams, prepareAgentOps } from './canvas-agent-ops.ts'
@@ -375,6 +376,8 @@ export class CanvasService {
                   for (const version of versions) {
                     if (this.shutdown.signal.aborted) return
                     try {
+                      // 另一个服务进程（共用同一工作区）仍在等待该任务时由它收尾，本进程不取回。
+                      if (await taskHeldElsewhere(join(ws.root, version.path))) continue
                       const port = media(ws, version)
                       if (!port) continue
                       const { done } = await this.retrieve(ws, path, node.id, version.id, {

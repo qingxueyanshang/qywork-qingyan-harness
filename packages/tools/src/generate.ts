@@ -201,15 +201,22 @@ interface TaskRecord {
   model: string
   taskId?: string
   imageResult?: MediaImageResult
+  /** 提交时的参数。取回时原样传给端口：按提交时长计费的视频据此计量。 */
   params?: Record<string, unknown>
   /** 产物的目标工作区路径（可以不含扩展名，落盘时补全）。 */
   output: string
   submittedAt: string
+  /** 正在等待该任务的进程：写入记录与开始取回时写入本进程的 pid，由 `taskHeldElsewhere` 判定。 */
+  ownerPid?: number
 }
 
 /** 写入任务记录，不覆盖已有记录（已有记录属于另一个尚未取回的任务）：重名时追加 `-2` 并依次递增。返回写入的绝对路径。 */
-async function writeRecord(roots: RootsInput, target: string, record: TaskRecord): Promise<string> {
-  const text = `${JSON.stringify(record, null, 2)}\n`
+async function writeRecord(
+  roots: RootsInput,
+  target: string,
+  record: Omit<TaskRecord, 'ownerPid'>,
+): Promise<string> {
+  const text = `${JSON.stringify({ ...record, ownerPid: process.pid }, null, 2)}\n`
   for (let n = 1; ; n++) {
     const abs = await resolveWritablePath(
       roots,
@@ -223,6 +230,29 @@ async function writeRecord(roots: RootsInput, target: string, record: TaskRecord
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
     }
+  }
+}
+
+/**
+ * 任务记录是否正由另一个仍在运行的进程等待。多个服务进程共用同一工作区时，启动恢复据此跳过该记录：
+ * 两个进程各自取回同一任务会各记一次账、各下载一份文件。
+ * 没有归属、归属为本进程或归属进程已退出时返回 false。pid 被系统复用时判为持有，该记录留待手动取回。
+ */
+export async function taskHeldElsewhere(recordPath: string): Promise<boolean> {
+  let ownerPid: unknown
+  try {
+    ownerPid = (JSON.parse(await readFile(recordPath, 'utf8')) as TaskRecord).ownerPid
+  } catch {
+    return false
+  }
+  if (!Number.isInteger(ownerPid) || (ownerPid as number) <= 0 || ownerPid === process.pid)
+    return false
+  try {
+    // 信号 0 不投递信号，只检查进程是否存在。`EPERM` 表示存在但无权操作。
+    process.kill(ownerPid as number, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'EPERM'
   }
 }
 
@@ -358,6 +388,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
           provider,
           model,
           taskId,
+          params: req.params,
           output: slot.target,
           submittedAt: new Date().toISOString(),
         })
@@ -415,11 +446,12 @@ export async function resumeMedia(req: {
   ) {
     return refused(`${req.record} 缺少任务号、接口、模型或输出路径`, 'invalid_tool_arguments')
   }
+  await writeFile(recordPath, `${JSON.stringify({ ...record, ownerPid: process.pid }, null, 2)}\n`)
   const call: MediaCall = {
     type: record.imageResult ? 'image' : 'video',
     prompt: '',
     inputs: [],
-    params: {},
+    params: record.params ?? {},
     provider: record.provider,
     model: record.model,
     ...(record.imageResult

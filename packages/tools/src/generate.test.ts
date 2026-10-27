@@ -21,6 +21,7 @@ import {
   landFiles,
   MEDIA_TOOLS,
   retrieveMediaTool,
+  taskHeldElsewhere,
 } from './generate.ts'
 import { registerBuiltinTools } from './index.ts'
 
@@ -247,7 +248,9 @@ describe('generate_video', () => {
       provider: 'qwen',
       model: 'wan3.0-video',
       taskId: 'task-1',
+      params: { resolution: '480P' },
       output: 'clips/bloom',
+      ownerPid: process.pid,
     })
     expect(out.fileChanges?.map((c) => c.path)).toEqual(['clips/bloom.mp4'])
     expect((await readdir(join(root, 'clips'))).sort()).toEqual(['bloom.mp4'])
@@ -273,8 +276,18 @@ describe('generate_video', () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
     await writeFile(
       join(root, 'wave.task.json'),
-      JSON.stringify({ provider: 'qwen', model: 'wan3.0-video', taskId: 'task-7', output: 'wave' }),
+      JSON.stringify({
+        provider: 'qwen',
+        model: 'wan3.0-video',
+        taskId: 'task-7',
+        params: { seconds: '28' },
+        output: 'wave',
+      }),
     )
+    let recordDuring = ''
+    during = async () => {
+      recordDuring = await readFile(join(root, 'wave.task.json'), 'utf8')
+    }
     answer = {
       ok: true,
       provider: 'qwen',
@@ -288,9 +301,35 @@ describe('generate_video', () => {
       provider: 'qwen',
       model: 'wan3.0-video',
       resumeTaskId: 'task-7',
+      params: { seconds: '28' },
     })
+    expect(JSON.parse(recordDuring).ownerPid).toBe(process.pid)
     expect(out.fileChanges?.map((c) => c.path)).toEqual(['wave.mp4'])
     expect(await readdir(root)).toEqual(['wave.mp4'])
+  })
+
+  test('任务记录的归属：仅归属进程是另一个仍在运行的进程时视为被持有', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
+    const record = join(root, 'wave.task.json')
+    const write = (ownerPid?: number) =>
+      writeFile(
+        record,
+        JSON.stringify({ provider: 'qwen', model: 'm', taskId: 't', output: 'wave', ownerPid }),
+      )
+    const other = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)'])
+    try {
+      await write(other.pid)
+      expect(await taskHeldElsewhere(record)).toBe(true)
+      await write(process.pid)
+      expect(await taskHeldElsewhere(record)).toBe(false)
+      await write()
+      expect(await taskHeldElsewhere(record)).toBe(false)
+    } finally {
+      other.kill()
+      await other.exited
+    }
+    await write(other.pid)
+    expect(await taskHeldElsewhere(record)).toBe(false)
   })
 
   test('取回必须提供任务路径，生成必须提供提示词；记录无效时不提交生成', async () => {
