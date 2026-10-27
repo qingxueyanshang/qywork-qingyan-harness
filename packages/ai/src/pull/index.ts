@@ -2,20 +2,23 @@
  * 拉取接口上的型号：中转的公开计费清单（New API 的 `/api/pricing`）优先，没有时退回 OpenAI 兼容的 `{base}/models`。
  *
  * 计费清单给出每个型号的接口类型，据此区分对话、图像与视频；价格按 `pricing.ts` 折算。
- * 视频型号再按渠道目录（hongcheng 型号列表的 `parameters`、木木目录）、图像型号按木木目录取得保存的规格；
- * 目录中没有该型号时不带规格，使用协议默认。
+ * 接口地址是渠道商表中的中转站（`channelVendorOf`）时，视频型号再按该渠道的目录（hongcheng 型号列表的 `parameters`、
+ * 木木目录）、图像型号按木木目录取得保存的规格；其余中转站与目录中没有的型号不带规格，使用协议默认。
  * 只读：不写配置，写入由调用方经配置接口完成。
  */
 
 import {
   type ChannelSpec,
   type ChannelVideoSpec,
+  channelVendorOf,
   defaultMediaKind,
   identifyMediaModel,
   MEDIA_KIND_OUTPUT,
   type MediaKind,
   type MediaOutput,
   type ProviderKind,
+  VIDEO_CHANNELS,
+  type VideoChannel,
 } from '@qywork/core'
 import { lookupModel } from '../catalog.ts'
 import { bodyMessage, httpStatusName } from '../errors.ts'
@@ -163,20 +166,31 @@ function catalogFields(
   return hit.base ? { known: false, base: hit.base } : { known: true }
 }
 
+/** 接口地址所属渠道商有自己的视频格式时返回该渠道，其余返回 null。 */
+function videoChannelOf(baseUrl: string): VideoChannel | null {
+  const vendor = channelVendorOf(baseUrl)
+  return VIDEO_CHANNELS.find((c) => c === vendor) ?? null
+}
+
+/** 渠道目录中的一条及其所属渠道，渠道决定按哪种目录格式解析。 */
+interface ChannelEntry {
+  channel: VideoChannel
+  entry: Record<string, unknown>
+}
+
 function videoOf(
   entry: NewApiPricingEntry,
   basis: PriceBasis | null,
-  hongcheng: Record<string, unknown> | undefined,
-  mumugofe: Record<string, unknown> | undefined,
+  listed: ChannelEntry | undefined,
   baseUrl: string,
 ): PulledModel {
   const id = entry.model_name
-  const parsed = hongcheng
-    ? hongchengVideoSpec(hongcheng)
-    : mumugofe
-      ? mumugofeVideoSpec(mumugofe)
-      : null
-  let spec = parsed ?? undefined
+  let spec =
+    (listed &&
+      (listed.channel === 'hongcheng'
+        ? hongchengVideoSpec(listed.entry)
+        : mumugofeVideoSpec(listed.entry))) ||
+    undefined
   // 木木按请求中的 resolution 计价的型号，不传时渠道按默认档位出图，提交时须发送与尺寸对应的档位。
   if (spec?.channel === 'mumugofe' && entry.billing_usage_schema?.resolution)
     spec = { ...spec, resolutionField: true }
@@ -194,11 +208,11 @@ function videoOf(
 function imageOf(
   entry: NewApiPricingEntry,
   basis: PriceBasis | null,
-  mumugofe: Record<string, unknown> | undefined,
+  listed: ChannelEntry | undefined,
   baseUrl: string,
 ): PulledModel {
   const id = entry.model_name
-  let spec = (mumugofe && mumugofeImageSpec(mumugofe)) || undefined
+  let spec = (listed?.channel === 'mumugofe' && mumugofeImageSpec(listed.entry)) || undefined
   const price = spec && basis && imagePriceOf(entry, basis, spec.resolutions)
   if (spec && price) spec = { ...spec, price }
   return {
@@ -210,6 +224,38 @@ function imageOf(
   }
 }
 
+/**
+ * 渠道目录：型号 → 目录条目。各渠道目录的位置与条目格式不同，只读取接口地址所属渠道商的目录。
+ * 读取失败时目录为空，型号不带规格。
+ */
+async function channelCatalog(
+  channel: VideoChannel | null,
+  origin: string,
+  base: string,
+  auth: Record<string, string>,
+  signal: AbortSignal,
+): Promise<Map<string, ChannelEntry>> {
+  if (!channel) return new Map()
+  // hongcheng 的视频规格只在带凭证的型号列表中（条目的 `parameters`）。价格仍按计费清单折算：
+  // 同一条目的 `pricing` 是展示字段，存在与实际计费方式不一致的条目。
+  const listed =
+    channel === 'hongcheng'
+      ? (listOf(await optional(getJson(`${base}/models`, auth, signal)), 'data') ?? []).flatMap(
+          (e) => (record(e.parameters) ? [{ id: e.id, entry: record(e.parameters)! }] : []),
+        )
+      : (
+          listOf(
+            await optional(getJson(`${origin}/docs/typetale-models.json`, {}, signal)),
+            'models',
+          ) ?? []
+        ).map((e) => ({ id: e.id, entry: e }))
+  return new Map(
+    listed.flatMap(({ id, entry }) =>
+      typeof id === 'string' ? [[id, { channel, entry }] as const] : [],
+    ),
+  )
+}
+
 async function fromPricing(
   entries: NewApiPricingEntry[],
   pricing: unknown,
@@ -219,36 +265,22 @@ async function fromPricing(
   target: PullTarget,
   signal: AbortSignal,
 ): Promise<PullResult> {
-  // hongcheng 的视频规格只在带凭证的型号列表中（条目的 `parameters`）。
-  // 价格仍按计费清单折算：同一条目的 `pricing` 是展示字段，与实际计费方式不一致的情形已经存在。
-  const [status, listed, typetale] = await Promise.all([
+  const [status, catalog] = await Promise.all([
     optional(getJson(`${origin}/api/status`, {}, signal)),
-    optional(getJson(`${base}/models`, auth, signal)),
-    optional(getJson(`${origin}/docs/typetale-models.json`, {}, signal)),
+    channelCatalog(videoChannelOf(target.baseUrl), origin, base, auth, signal),
   ])
   // 站点状态读取失败时无法确定充值价与币种，价格不明。
   const statusData = record(record(status)?.data)
   const basis = statusData ? priceBasis(record(pricing) ?? {}, statusData) : null
-  const hongcheng = new Map(
-    (listOf(listed, 'data') ?? []).flatMap((e) => {
-      const parameters = record(e.parameters)
-      return typeof e.id === 'string' && parameters ? [[e.id, parameters] as const] : []
-    }),
-  )
-  const mumugofe = new Map(
-    (listOf(typetale, 'models') ?? []).flatMap((e) =>
-      typeof e.id === 'string' ? [[e.id, e] as const] : [],
-    ),
-  )
   const models = new Map<string, PulledModel>()
   for (const entry of entries) {
     const id = entry.model_name
     if (models.has(id)) continue
     const types = entry.supported_endpoint_types ?? []
     if (types.includes('openai-video')) {
-      models.set(id, videoOf(entry, basis, hongcheng.get(id), mumugofe.get(id), target.baseUrl))
+      models.set(id, videoOf(entry, basis, catalog.get(id), target.baseUrl))
     } else if (types.includes('image-generation')) {
-      models.set(id, imageOf(entry, basis, mumugofe.get(id), target.baseUrl))
+      models.set(id, imageOf(entry, basis, catalog.get(id), target.baseUrl))
     } else if (types.some((t) => CHAT_ENDPOINTS.includes(t))) {
       const price = basis ? chatPriceOf(entry, basis) : undefined
       models.set(id, {

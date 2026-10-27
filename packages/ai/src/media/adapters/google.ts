@@ -1,5 +1,5 @@
 /** Gemini Interactions 的图片、视频生成，以及 Veo 的长任务接口。 */
-import type { MediaKind } from '@qywork/core'
+import { channelVendorOf, type MediaKind } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, defined, download, getJson, postJson, sniffMime } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
@@ -29,7 +29,7 @@ function connection(profile: MediaProfile) {
     profile.baseUrl?.trim() || 'https://generativelanguage.googleapis.com/v1beta'
   ).replace(/\/+$/, '')
   const url = new URL(base)
-  if (url.hostname === 'generativelanguage.googleapis.com' && url.pathname === '/v1beta/openai') {
+  if (channelVendorOf(url.href) === 'google' && url.pathname === '/v1beta/openai') {
     url.pathname = '/v1beta'
   }
   if (url.pathname === '/') url.pathname = '/v1beta'

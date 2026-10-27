@@ -5,6 +5,7 @@
  * 都按它分派，合并后每一处都必须排除生成协议。
  */
 
+import { channelVendorOf } from './channel-vendors.ts'
 import type { Currency, ProviderKind } from './model.ts'
 
 /**
@@ -279,74 +280,6 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
 }
 
 /**
- * 百炼官方端点：旧的公共域名与按业务空间分配的 `*.maas.aliyuncs.com`。
- *
- * 对话适配器据此决定大媒体是否使用 `oss://` 上传；未收录的生成模型据此选择协议默认值。
- * 两处必须共用此判断：各写一份时，百炼更换域名后可能只修改其中一处。
- */
-export function isDashScopeEndpoint(baseUrl: string): boolean {
-  try {
-    const host = new URL(baseUrl).hostname.toLowerCase()
-    return (
-      host === 'dashscope.aliyuncs.com' ||
-      host === 'dashscope-intl.aliyuncs.com' ||
-      host === 'dashscope-us.aliyuncs.com' ||
-      host.endsWith('.maas.aliyuncs.com')
-    )
-  } catch {
-    return false
-  }
-}
-
-/** 火山方舟官方端点（国内 `ark.<区域>.volces.com`，海外 `ark.<区域>.bytepluses.com`）。 */
-export function isArkEndpoint(baseUrl: string): boolean {
-  try {
-    return /^ark\.[a-z0-9-]+\.(volces|bytepluses)\.com$/.test(
-      new URL(baseUrl).hostname.toLowerCase(),
-    )
-  } catch {
-    return false
-  }
-}
-
-/** 可灵开放平台官方端点（国内 `api-beijing`，海外 `api-singapore`）。 */
-export function isKlingEndpoint(baseUrl: string): boolean {
-  try {
-    return /^api-(beijing|singapore)\.klingai\.com$/.test(new URL(baseUrl).hostname.toLowerCase())
-  } catch {
-    return false
-  }
-}
-
-const MINIMAX_HOSTS = new Set([
-  'api.minimax.cn',
-  'api-bj.minimaxi.com',
-  'api.minimax.io',
-  'api-uw.minimax.io',
-])
-
-/**
- * MiniMax 开放平台官方端点：国内 `api.minimax.cn`（华北 `api-bj.minimaxi.com`），
- * 海外 `api.minimax.io`（美西 `api-uw.minimax.io`）。
- */
-function isMiniMaxEndpoint(baseUrl: string): boolean {
-  try {
-    return MINIMAX_HOSTS.has(new URL(baseUrl).hostname.toLowerCase())
-  } catch {
-    return false
-  }
-}
-
-/** 小米 MiMo 开放平台官方端点。 */
-function isMiMoEndpoint(baseUrl: string): boolean {
-  try {
-    return new URL(baseUrl).hostname.toLowerCase() === 'api.xiaomimimo.com'
-  } catch {
-    return false
-  }
-}
-
-/**
  * 已收录模型默认使用目录协议；未收录时按类别与官方地址给出默认值。
  * 仅在添加时使用。请求以保存的 `media[id].kind` 为准，修改地址不改变协议。
  */
@@ -356,34 +289,25 @@ export function defaultMediaKind(
   catalogKind?: MediaKind,
 ): MediaKind {
   if (catalogKind && MEDIA_KIND_OUTPUT[catalogKind] === output) return catalogKind
-  let host = ''
-  try {
-    host = new URL(baseUrl ?? '').hostname.toLowerCase()
-  } catch {}
-  if (host === 'generativelanguage.googleapis.com') {
-    if (output === 'image') return 'gemini_images'
-    if (output === 'video') return catalogKind === 'veo_videos' ? 'veo_videos' : 'gemini_videos'
-  }
-  if (host === 'api.x.ai') {
-    if (output === 'image') return 'xai_images'
-    if (output === 'video') return 'xai_videos'
-  }
-  const dashScope = baseUrl !== undefined && isDashScopeEndpoint(baseUrl)
-  const miniMax = baseUrl !== undefined && isMiniMaxEndpoint(baseUrl)
+  const vendor = channelVendorOf(baseUrl)
   switch (output) {
     case 'image':
-      if (miniMax) return 'minimax_images'
+      if (vendor === 'google') return 'gemini_images'
+      if (vendor === 'xai') return 'xai_images'
+      if (vendor === 'minimax') return 'minimax_images'
       // 火山方舟的出图接口与 OpenAI 形状相同，与中转站使用同一协议。
-      return dashScope ? 'dashscope_images' : 'openai_images'
+      return vendor === 'alibaba' ? 'dashscope_images' : 'openai_images'
     case 'video':
-      if (dashScope) return 'dashscope_videos'
-      if (miniMax) return 'minimax_videos'
-      if (baseUrl !== undefined && isArkEndpoint(baseUrl)) return 'ark_videos'
-      return baseUrl !== undefined && isKlingEndpoint(baseUrl) ? 'kling_videos' : 'openai_videos'
+      if (vendor === 'google') return catalogKind === 'veo_videos' ? 'veo_videos' : 'gemini_videos'
+      if (vendor === 'xai') return 'xai_videos'
+      if (vendor === 'alibaba') return 'dashscope_videos'
+      if (vendor === 'minimax') return 'minimax_videos'
+      if (vendor === 'volcengine') return 'ark_videos'
+      return vendor === 'kling' ? 'kling_videos' : 'openai_videos'
     case 'audio':
-      if (dashScope) return 'dashscope_speech'
-      if (baseUrl !== undefined && isMiMoEndpoint(baseUrl)) return 'mimo_speech'
-      return miniMax ? 'minimax_speech' : 'openai_speech'
+      if (vendor === 'alibaba') return 'dashscope_speech'
+      if (vendor === 'xiaomi') return 'mimo_speech'
+      return vendor === 'minimax' ? 'minimax_speech' : 'openai_speech'
   }
 }
 

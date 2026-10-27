@@ -3,7 +3,7 @@
  * 核对分类、渠道规格、价格，没有计费清单时退回型号列表、按条目自带的类别归类，以及官方接口按目录补齐自有协议的生成型号。
  */
 
-import { afterAll, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, expect, spyOn, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PullError, pullModels } from './index.ts'
@@ -19,8 +19,16 @@ afterAll(() => {
   for (const s of servers) s.stop(true)
 })
 
-/** 公开接口按地址的来源（origin）请求，因此每个站点一个本地服务。 */
-function site(routes: Record<string, unknown>) {
+const restores: (() => void)[] = []
+afterEach(() => {
+  for (const restore of restores.splice(0)) restore()
+})
+
+/**
+ * 公开接口按地址的来源（origin）请求，因此每个站点一个本地服务。
+ * 给出 `host` 时接口地址使用该主机名，对它的请求转到本地服务：渠道按接口地址的主机名识别。
+ */
+function site(routes: Record<string, unknown>, host?: string) {
   const seen: { path: string; auth: string | null }[] = []
   const server = Bun.serve({
     hostname: '127.0.0.1',
@@ -34,11 +42,20 @@ function site(routes: Record<string, unknown>) {
     },
   })
   servers.push(server)
+  const local = `http://127.0.0.1:${server.port}`
+  if (host) {
+    const original = globalThis.fetch
+    const spy = spyOn(globalThis, 'fetch').mockImplementation(((url, init) => {
+      const u = new URL(String(url))
+      return original(u.host === host ? `${local}${u.pathname}${u.search}` : url, init)
+    }) as typeof fetch)
+    restores.push(() => spy.mockRestore())
+  }
   return {
     seen,
     target: {
       kind: 'openai_chat_completions' as const,
-      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+      baseUrl: `${host ? `https://${host}` : local}/v1`,
       apiKey: 'sk-test',
     },
   }
@@ -48,11 +65,14 @@ const signal = () => new AbortController().signal
 
 test('木木：计费清单区分对话、图像与视频，视频带渠道规格与价格', async () => {
   const data = fixture('newapi-mumugofe.json')
-  const { target, seen } = site({
-    '/api/pricing': data.pricing,
-    '/api/status': data.status,
-    '/docs/typetale-models.json': data.typetale,
-  })
+  const { target, seen } = site(
+    {
+      '/api/pricing': data.pricing,
+      '/api/status': data.status,
+      '/docs/typetale-models.json': data.typetale,
+    },
+    'api.mumugofe.com',
+  )
   const result = await pullModels(target, signal())
   expect(result.source).toBe('pricing')
   const by = new Map(result.models.map((m) => [m.id, m]))
@@ -120,11 +140,14 @@ test('木木：计费清单区分对话、图像与视频，视频带渠道规�
 // 2026-10-27 hongcheng 的视频规格只在带凭证的型号列表中（条目的 `parameters`），工作台目录需要登录。
 test('hongcheng：型号列表的 parameters 给出规格，价格按计费清单折算', async () => {
   const data = fixture('newapi-hongcheng.json')
-  const { target, seen } = site({
-    '/api/pricing': data.pricing,
-    '/api/status': data.status,
-    '/v1/models': data.models,
-  })
+  const { target, seen } = site(
+    {
+      '/api/pricing': data.pricing,
+      '/api/status': data.status,
+      '/v1/models': data.models,
+    },
+    'hongcheng.lol',
+  )
   const by = new Map((await pullModels(target, signal())).models.map((m) => [m.id, m]))
   expect(by.get('TTseadanco2.5-720')).toMatchObject({
     output: 'video',
@@ -158,6 +181,25 @@ test('hongcheng：型号列表的 parameters 给出规格，价格按计费清�
   })
   expect(seen.find((s) => s.path === '/v1/models')?.auth).toBe('Bearer sk-test')
   expect(seen.filter((s) => s.path.startsWith('/api/')).every((s) => s.auth === null)).toBe(true)
+})
+
+test('不是已收录的中转站时不读取渠道目录：返回同名字段也不当作渠道，型号不带规格', async () => {
+  const hongcheng = fixture('newapi-hongcheng.json')
+  const mumugofe = fixture('newapi-mumugofe.json')
+  const { target, seen } = site({
+    '/api/pricing': hongcheng.pricing,
+    '/api/status': hongcheng.status,
+    '/v1/models': hongcheng.models,
+    '/docs/typetale-models.json': mumugofe.typetale,
+  })
+  const by = new Map((await pullModels(target, signal())).models.map((m) => [m.id, m]))
+  expect(by.get('TTseadanco2.5-720')).toEqual({
+    id: 'TTseadanco2.5-720',
+    output: 'video',
+    kind: 'openai_videos',
+    known: false,
+  })
+  expect(seen.map((s) => s.path).sort()).toEqual(['/api/pricing', '/api/status'])
 })
 
 test('站点状态读取失败时价格不明，型号照常列出', async () => {
