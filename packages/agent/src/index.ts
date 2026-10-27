@@ -85,10 +85,12 @@ export {
   envelopeResult,
   imagesOf,
   omitImages,
+  runDensity,
   softLimit,
   toolResultContent,
   type VideoDelivery,
   videoDelivery,
+  videoRangeCause,
   videosOf,
 } from './loop/request.ts'
 export { createSummaryTrace } from './loop/summary-trace.ts'

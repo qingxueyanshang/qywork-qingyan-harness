@@ -91,6 +91,7 @@ export {
 export type { ChatPrice } from './pull/pricing.ts'
 // 字符估算：agent 在没有 count_tokens 的端点上将其作为后备
 export {
+  ANY_VIDEO,
   DEFAULT_DENSITY,
   estimateContent,
   estimateImage,
@@ -101,12 +102,16 @@ export {
   estimateSchemas,
   estimateText,
   estimateVideo,
+  type FrameRule,
   type ImageRule,
   imageSizeOfBase64,
   THUMBNAIL_EDGE,
   type TokenDensity,
   unestimatedVideosOf,
+  type VideoOutOfRange,
+  type VideoRange,
   type VideoRule,
+  videoOutOfRange,
 } from './tokens.ts'
 // 流空闲上限的基准：agent 按思考档位放宽该值，runtime 的摘要直接使用该值
 export { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'

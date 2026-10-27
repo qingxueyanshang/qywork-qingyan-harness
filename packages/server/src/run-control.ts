@@ -13,7 +13,7 @@
  * 首要防止的情形。两处相差一个完整的生命周期。
  */
 
-import { createSummaryTrace } from '@qywork/agent'
+import { createSummaryTrace, runDensity } from '@qywork/agent'
 import { buildAdapter, ProviderError, type ProviderProfile } from '@qywork/ai'
 import type {
   AgentEvent,
@@ -844,7 +844,8 @@ export async function compactConversation(
       // 同一面板的两种计量，压缩按二者的比值折算回收量。
       estimatedOccupancy: panel.measured,
       contextWindow: spec.contextWindow,
-      density: spec.density,
+      // 与对话循环的压缩相同使用本轮密度：附件中不原生发送的视频不计入。
+      density: runDensity(adapter),
     })
     const phase =
       outcome.status === 'compacted' ? 'done' : outcome.status === 'skipped' ? 'skipped' : 'failed'

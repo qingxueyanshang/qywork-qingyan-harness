@@ -11,8 +11,14 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type OfficePort, openBatchBudget, type ToolContext, ToolRegistry } from '@qywork/agent'
-import { DEFAULT_DENSITY } from '@qywork/ai'
+import {
+  type OfficePort,
+  openBatchBudget,
+  runDensity,
+  type ToolContext,
+  ToolRegistry,
+} from '@qywork/agent'
+import { lookupModel } from '@qywork/ai'
 import { readFileTool } from './files.ts'
 import { registerBuiltinTools } from './index.ts'
 import {
@@ -34,6 +40,18 @@ const PORT: OfficePort = {
   enabled: () => true,
 }
 
+/** 本轮密度（同 `runDensity`）：模型不接受视频时 `video` 为 null；接受时按接口能否上传确定字节上限。 */
+function videoDensity(video: boolean, uploadAbove?: number) {
+  return runDensity({
+    spec: { ...lookupModel('test', 'openai_chat_completions'), video },
+    transmits: {
+      effort: false,
+      video,
+      ...(uploadAbove !== undefined ? { mediaUploadAbove: uploadAbove } : {}),
+    },
+  })
+}
+
 function ctx(root: string, office: OfficePort | null = PORT): ToolContext {
   return {
     workspaceRoot: root,
@@ -41,7 +59,7 @@ function ctx(root: string, office: OfficePort | null = PORT): ToolContext {
     runId: 'rn_test',
     model: 'test',
     contextWindow: 200_000,
-    density: DEFAULT_DENSITY,
+    density: videoDensity(false),
     vision: null,
     resources: new Map(),
     state: openBatchBudget(new Map(), 100_000),
@@ -379,7 +397,7 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
     const root = await clip()
     const res = await readFileTool.fn(
       { path: 'clip.mp4', start: 2, end: 8 },
-      { ...ctx(root), video: false, vision: true },
+      { ...ctx(root), vision: true },
     )
     expect(res.status).toBe('success')
     const images = (res.data as { images: { mime: string }[] }).images
@@ -399,12 +417,19 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
     await writeFile(join(root, 'big.mp4'), new Uint8Array(6 * 1024 * 1024))
     const upload = await readFileTool.fn(
       { path: 'big.mp4' },
-      { ...ctx(root), video: true, videoUploadAbove: 2 * 1024 * 1024 },
+      {
+        ...ctx(root),
+        density: videoDensity(true, 2 * 1024 * 1024),
+        videoUploadAbove: 2 * 1024 * 1024,
+      },
     )
     expect(upload.data).toEqual({
       videos: [{ path: await realpath(join(root, 'big.mp4')), mime: 'video/mp4' }],
     })
-    const inline = await readFileTool.fn({ path: 'big.mp4' }, { ...ctx(root), video: true })
+    const inline = await readFileTool.fn(
+      { path: 'big.mp4' },
+      { ...ctx(root), density: videoDensity(true) },
+    )
     expect(inline.status).toBe('success')
     expect(inline.message.startsWith('该视频 6.0 MB')).toBe(true)
     expect(inline.message).toContain('改为按时间抽帧')
@@ -415,14 +440,17 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
     const root = await clip()
     const res = await readFileTool.fn(
       { path: 'clip.mp4', start: 5, end: 5 },
-      { ...ctx(root), video: false, vision: true },
+      { ...ctx(root), vision: true },
     )
     expect(res).toEqual({ status: 'failure', message: 'end 必须大于 start' })
   })
 
   test('接受原生视频的模型仍交出路径，不抽帧', async () => {
     const root = await clip()
-    const res = await readFileTool.fn({ path: 'clip.mp4' }, { ...ctx(root), video: true })
+    const res = await readFileTool.fn(
+      { path: 'clip.mp4' },
+      { ...ctx(root), density: videoDensity(true) },
+    )
     expect(res.status).toBe('success')
     expect(res.data).toEqual({
       videos: [{ path: await realpath(join(root, 'clip.mp4')), mime: 'video/mp4' }],
@@ -433,15 +461,12 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
     const root = await clip()
     const noOffice = await readFileTool.fn(
       { path: 'clip.mp4' },
-      { ...ctx(root, null), video: false, vision: true },
+      { ...ctx(root, null), vision: true },
     )
     expect(noOffice.status).toBe('failure')
     expect(noOffice.message).toContain('不接受原生视频')
     expect(noOffice.message).toContain('不要再读')
-    const noImages = await readFileTool.fn(
-      { path: 'clip.mp4' },
-      { ...ctx(root), video: false, vision: false },
-    )
+    const noImages = await readFileTool.fn({ path: 'clip.mp4' }, { ...ctx(root), vision: false })
     expect(noImages.message).toContain('既不接受视频也不接受图片')
   })
 })

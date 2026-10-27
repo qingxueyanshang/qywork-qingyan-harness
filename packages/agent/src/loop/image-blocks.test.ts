@@ -14,7 +14,13 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type ContentBlock, THUMBNAIL_EDGE, type WireMessage } from '@qywork/ai'
+import {
+  type ContentBlock,
+  DEFAULT_DENSITY,
+  THUMBNAIL_EDGE,
+  type VideoRule,
+  type WireMessage,
+} from '@qywork/ai'
 import { condenseMessage, IMAGES_OMITTED } from '../compaction.ts'
 import {
   ATTACHMENT_IMAGES_REDUCED,
@@ -22,6 +28,7 @@ import {
   envelopeResult,
   evictedMedia,
   IMAGES_REDUCED,
+  type InputMediaCapabilities,
   MEDIA_RETAIN_HIGH_BYTES,
   MEDIA_RETAIN_LOW_BYTES,
   type MediaLevel,
@@ -58,9 +65,26 @@ const envelope = JSON.stringify({
 })
 
 const req = (messages: WireMessage[]) => ({ model: 'm', system: [], messages, tools: [] }) as never
-const media = (image: boolean | null, video = false, mediaPaths = false) => ({
+/** 本轮原生视频的规则（同 `runDensity`）：不能上传时以常驻媒体上限为界，能上传时不限字节。 */
+const NATIVE: VideoRule = {
+  ...DEFAULT_DENSITY.video!,
+  accepts: {
+    maxBytes: MEDIA_RETAIN_HIGH_BYTES,
+    minSeconds: 0,
+    maxSeconds: Number.POSITIVE_INFINITY,
+  },
+}
+const UPLOADING: VideoRule = {
+  ...NATIVE,
+  accepts: { ...NATIVE.accepts, maxBytes: Number.POSITIVE_INFINITY },
+}
+const media = (
+  image: boolean | null,
+  video = false,
+  mediaPaths = false,
+): InputMediaCapabilities => ({
   image,
-  video,
+  video: video ? NATIVE : null,
   mediaPaths,
 })
 
@@ -332,12 +356,17 @@ describe('materialize', () => {
         caps,
         null,
       ).then((out) => (out.messages[0]?.content as ContentBlock[])[0])
-    const inline = (await send({ image: true, video: true })) as { type: string; text: string }
+    const inline = (await send({ image: true, video: NATIVE })) as { type: string; text: string }
     expect(inline.type).toBe('text')
     expect(inline.text).toContain('6.0 MB')
     expect(inline.text).toContain('read_file')
     expect(
-      await send({ image: true, video: true, mediaPaths: true, mediaUploadAbove: 2 * 1024 * 1024 }),
+      await send({
+        image: true,
+        video: UPLOADING,
+        mediaPaths: true,
+        mediaUploadAbove: 2 * 1024 * 1024,
+      }),
     ).toEqual({ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null })
   })
 
@@ -515,7 +544,7 @@ describe('媒体按字节预算换出', () => {
   })
   const MB = 1024 * 1024
   /** 接受图片与原生视频、适配器只支持内联：大多数原生视频接口的发送方式。 */
-  const CAPS = { image: true, video: true }
+  const CAPS: InputMediaCapabilities = { image: true, video: NATIVE }
   const call = (id: string): WireMessage => ({
     role: 'assistant',
     content: '',
@@ -570,21 +599,22 @@ describe('媒体按字节预算换出', () => {
         { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: big }, meta: null },
       ],
     }
-    expect(mediaBytes(video, { ...CAPS, mediaPaths: true, mediaUploadAbove: 2 * MB })).toBe(0)
+    const upload = { ...CAPS, video: UPLOADING, mediaPaths: true, mediaUploadAbove: 2 * MB }
+    expect(mediaBytes(video, upload)).toBe(0)
     expect(mediaBytes(video, CAPS)).toBe(0)
-    expect(mediaBytes(video, { image: true, video: false })).toBe(0)
-    expect(videoDelivery(6 * MB, { video: true, mediaUploadAbove: 2 * MB })).toBe('upload')
-    expect(videoDelivery(6 * MB, { video: true })).toBe('frames')
-    expect(videoDelivery(MB, { video: true })).toBe('inline')
-    expect(videoDelivery(MB, { video: false })).toBe('frames')
+    expect(mediaBytes(video, { image: true, video: null })).toBe(0)
+    const meta = (bytes: number) => ({ bytes, seconds: 10, size: { width: 640, height: 360 } })
+    expect(videoDelivery(meta(6 * MB), UPLOADING, 2 * MB)).toBe('upload')
+    expect(videoDelivery(meta(6 * MB), NATIVE, undefined)).toBe('frames')
+    expect(videoDelivery(meta(MB), NATIVE, undefined)).toBe('inline')
+    expect(videoDelivery(meta(MB), null, undefined)).toBe('frames')
     // 上传为地址的视频不计字节，因此始终保留在请求中，模型在此后每一步都能看到。
     const messages = [video, call('c0'), result('c0', MB), call('c1'), result('c1', MB)]
-    const upload = { ...CAPS, mediaPaths: true, mediaUploadAbove: 2 * MB }
     expect(evictedMedia(messages, upload).has(0)).toBe(false)
   })
 
   test('模型不接受图片时图片不计字节', () => {
-    expect(mediaBytes(result('c', MB), { image: false, video: false })).toBe(0)
+    expect(mediaBytes(result('c', MB), { image: false, video: null })).toBe(0)
   })
 
   test('总量在上限内时不换出任何图片', () => {
@@ -838,7 +868,7 @@ test('正文库引用与等价的 base64 计入相同的媒体字节与请求体
     mimeType: 'image/png',
     source: { kind: 'resource', resourceId: 'rs_0mvdn1ek80000twshi9', bytes, size: null },
   })
-  const caps = { image: true, video: false }
+  const caps: InputMediaCapabilities = { image: true, video: null }
   expect(mediaBytes(stored, caps)).toBe(bytes)
   expect(mediaBytes(inline, caps)).toBe(bytes)
   expect(payloadSnapshotOf(req([stored])).bytes).toBe(payloadSnapshotOf(req([inline])).bytes)

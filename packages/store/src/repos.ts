@@ -2162,13 +2162,33 @@ export function conversationRejectsImages(
   provider: string,
   model: string,
 ): boolean {
+  return hasRejectionFact(store, conversationId, 'imagesRejected', provider, model)
+}
+
+/** 同 `conversationRejectsImages`，执行事实是「接口拒绝了包含视频的请求」（payload 的 `videosRejected`）。 */
+export function conversationRejectsVideos(
+  store: Store,
+  conversationId: ConversationId,
+  provider: string,
+  model: string,
+): boolean {
+  return hasRejectionFact(store, conversationId, 'videosRejected', provider, model)
+}
+
+function hasRejectionFact(
+  store: Store,
+  conversationId: ConversationId,
+  field: 'imagesRejected' | 'videosRejected',
+  provider: string,
+  model: string,
+): boolean {
   return (
     store.db
       .query<{ one: number }, [string, string, string]>(
         `SELECT 1 AS one FROM steps s JOIN runs r ON r.id = s.run_id
          WHERE r.conversation_id = ? AND s.kind = 'user'
-           AND json_extract(s.payload, '$.imagesRejected.provider') = ?
-           AND json_extract(s.payload, '$.imagesRejected.model') = ?
+           AND json_extract(s.payload, '$.${field}.provider') = ?
+           AND json_extract(s.payload, '$.${field}.model') = ?
          LIMIT 1`,
       )
       .get(conversationId, provider, model) !== null

@@ -16,7 +16,7 @@ import type {
   ThinkingMode,
   ToolSchemaMode,
 } from '@qywork/core'
-import { DEFAULT_DENSITY, type TokenDensity } from './tokens.ts'
+import { ANY_VIDEO, DEFAULT_DENSITY, type TokenDensity } from './tokens.ts'
 import type { TransportCapabilities } from './types.ts'
 
 /**
@@ -100,6 +100,11 @@ export interface ModelSpec {
   vision: boolean | null
   /** 只有官方协议与当前适配器都核实支持时才为 true。未知模型按 false 处理。 */
   video: boolean
+  /**
+   * 原生视频可接受的时长（秒），按厂商规格页填写，规格页未写明的按实测填写；省略表示没有依据，不限。
+   * 超出范围的视频发送前改为由模型抽取关键帧（`agent` 的 `runDensity` 与 `videoDelivery`），不发出必然被拒的请求。
+   */
+  videoSeconds?: { min: number; max: number }
   pricing: Pricing
   thinking: ThinkingMode
   /**
@@ -202,7 +207,7 @@ export interface Vendor {
  * 各 tokenizer 的实测系数（2026-10-27，方法见 `tokens.ts` 的 `TokenDensity`）。每档 30–33 段样本，
  * 留一交叉验证的中位偏差 1.9%–3.0%，90% 的样本在 14% 以内。测得相同系数的型号共用一档；
  * 未实测的型号使用 `DEFAULT_DENSITY`，不按名称推断为同一档。不接受视频的档 `video` 为 null；
- * 视频规则按 30 段合成视频实测，常见尺寸的偏差在 1% 以内，小画面与带零头的时长在 10% 以内。
+ * 视频规则按合成视频与生成的成片实测（各约 40 段），中位偏差 0.3% 以内，最大 1.1%（GLM）与 10.4%（Qwen，恰好半秒的时长）。
  */
 
 /** deepseek-flash 与 deepseek-v4-pro。 */
@@ -304,15 +309,16 @@ const QWEN_3_8_FLASH_DENSITY: TokenDensity = {
   other: 1.164,
   message: 6.32,
   image: { pixelsPerToken: 1030, minPixels: 0, maxPixels: 2_508_000, base: 2 },
-  // 每秒一组（两帧合为一组，不足一秒的部分接口不计，估算按一组计）；每组像素上限约 61 万，720p 及以上每秒 602；
-  // 每组另有约 10 的时间标记。
-  // 900 秒仍按时长线性增长，未见上限；短于 2 秒的视频被接口拒绝。
+  // 每秒一组（两帧合为一组），组数四舍五入；每组按 32 像素格取最近整数计，超过 640 × 32 × 32 像素时先等比缩小，
+  // 720p 及以上均为 33 × 18 格；每组另有 8–11 的时间标记，取 10。
+  // 7300 秒仍按时长线性增长，未见上限。
   video: {
     framesPerSecond: 1,
-    frame: { pixelsPerToken: 1030, minPixels: 0, maxPixels: 612_000, base: 10 },
+    maxFrames: Number.POSITIVE_INFINITY,
+    frame: { patch: 32, rounding: 'round', maxPixels: 655_360, base: 10 },
     base: 0,
     maxTokens: Number.POSITIVE_INFINITY,
-    maxBytes: Number.POSITIVE_INFINITY,
+    accepts: ANY_VIDEO,
   },
 }
 
@@ -330,13 +336,15 @@ const GLM_5_3_FLASHX_DENSITY: TokenDensity = {
   other: 1.12,
   message: 1.5,
   image: { pixelsPerToken: 770, minPixels: 0, maxPixels: 6_147_000, base: 17 },
-  // 每秒 1 帧（不足一秒按一帧），每帧与图片同一除数；单段上限实测 203,642–205,870，取最大值。4K 未见像素上限。
+  // 每秒 1 帧，帧数四舍五入；每帧按 28 像素格向上取整计，另加 6；4K 未见像素上限。单段最多约 1040 帧（320×240 的 3500–7300 秒
+  // 均为 11.8 万），合计上限实测 203,642–205,870，取最大值。
   video: {
     framesPerSecond: 1,
-    frame: { pixelsPerToken: 770, minPixels: 0, maxPixels: 8_294_400, base: 6 },
+    maxFrames: 1040,
+    frame: { patch: 28, rounding: 'ceil', maxPixels: Number.POSITIVE_INFINITY, base: 6 },
     base: 2,
     maxTokens: 205_870,
-    maxBytes: Number.POSITIVE_INFINITY,
+    accepts: ANY_VIDEO,
   },
 }
 
@@ -1598,6 +1606,9 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     {
       ...base,
       ...effort(['low', 'medium', 'xhigh']),
+      // 视频时长按百炼视觉理解文档（2026-10-27 核对）：Qwen3.8 / 3.7 系列 2 秒至 2 小时，qwen3-vl-plus 2 秒至 1 小时。
+      // 实测 qwen3.8-flash：0.5 秒与 7300 秒被拒，1.9 秒与 7100 秒正常。
+      videoSeconds: { min: 2, max: 7200 },
       id: 'qwen3.8-omni-flash',
       displayName: 'Qwen3.8 Omni Flash',
       vendor: 'alibaba',
@@ -1614,6 +1625,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...base,
       ...thinksNoDial,
       id: 'qwen3.7-max',
+      videoSeconds: { min: 2, max: 7200 },
       displayName: 'Qwen3.7 Max',
       vendor: 'alibaba',
       vision: false,
@@ -1629,6 +1641,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3.7 Plus',
       vendor: 'alibaba',
       vision: true,
+      // 全模态文档写明视频最长 2 小时，未写最短时长；实测 0.5 秒与 7300 秒被拒，1.9 秒与 7100 秒正常。
+      videoSeconds: { min: 2, max: 7200 },
       video: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
@@ -1655,6 +1669,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3-VL Plus',
       vendor: 'alibaba',
       vision: true,
+      videoSeconds: { min: 2, max: 7200 },
       video: true,
       contextWindow: 262_144,
       maxOutputTokens: 32_768,
@@ -1668,6 +1683,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3-VL Flash',
       vendor: 'alibaba',
       vision: true,
+      videoSeconds: { min: 2, max: 7200 },
       video: true,
       contextWindow: 262_144,
       maxOutputTokens: 32_768,
@@ -1681,6 +1697,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * 价目来源：Kimi 开放平台价目页（2026-10-24 核对），单位 ¥/百万：
      *
      * | 模型 | 输入 | 输出 | 缓存命中 | 缓存写入（5min） | 缓存写入（1h） |
+      videoSeconds: { min: 2, max: 3600 },
      * |---|---|---|---|---|---|
      * | kimi-k3.1-pro | 13 | 68 | 1.3 | 13 | 26 |
      * | kimi-k3.1-pro-highspeed | 26 | 136 | 1.3 | 26 | 52 |

@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ChatRequest, LlmAdapter, ProviderEvent, VideoMeta, WireMessage } from '@qywork/ai'
 import {
+  ANY_VIDEO,
   DEFAULT_DENSITY,
   estimateContent,
   estimateImage,
@@ -34,6 +35,7 @@ import {
   runDensity,
   toolResultContent,
   videoDelivery,
+  videoRangeCause,
 } from './request.ts'
 
 const VIDEO = { path: '/w/generated/a.mp4', mime: 'video/mp4' }
@@ -91,10 +93,11 @@ describe('视频估算', () => {
   const meta: VideoMeta = { bytes: 1_000_000, seconds: 10, size: { width: 1280, height: 720 } }
 
   test('按时长与画面尺寸计：GLM 10 秒 720p 实测 12,022，单段上限 205,870', () => {
-    expect(estimateVideo(meta, glm)).toBe(12_031)
+    expect(estimateVideo(meta, glm)).toBe(12_022)
     expect(estimateVideo({ ...meta, seconds: 600 }, glm)).toBe(205_870)
-    // 不足一秒的部分按一帧计：实测 10.5 秒 13,224。
-    expect(estimateVideo({ ...meta, seconds: 10.5 }, glm)).toBe(13_234)
+    // 帧数四舍五入：实测 10.5 秒 13,224，4.04 秒的成片 4,810（4 帧）。
+    expect(estimateVideo({ ...meta, seconds: 10.5 }, glm)).toBe(13_224)
+    expect(estimateVideo({ ...meta, seconds: 4.04 }, glm)).toBe(4_810)
     expect(
       estimateContent(
         [
@@ -107,7 +110,7 @@ describe('视频估算', () => {
         ],
         glm,
       ),
-    ).toBe(12_031)
+    ).toBe(12_022)
   })
 
   test('不原生发送、超过字节上限、文件已不存在、读不出时长或尺寸时记 0；只有最后一种计入「未计」', () => {
@@ -118,7 +121,10 @@ describe('视频估算', () => {
         source: { kind: 'path', path: VIDEO.path },
         meta: m,
       }) as const
-    const narrowed = { ...glm, video: { ...glm.video!, maxBytes: 500_000 } }
+    const narrowed = {
+      ...glm,
+      video: { ...glm.video!, accepts: { ...ANY_VIDEO, maxBytes: 500_000 } },
+    }
     expect(estimateVideo(meta, { ...glm, video: null })).toBe(0)
     expect(estimateVideo(meta, narrowed)).toBe(0)
     expect(estimateVideo(null, glm)).toBe(0)
@@ -146,13 +152,39 @@ describe('视频估算', () => {
       runDensity({ spec: { ...spec, video: false }, transmits: inline.transmits }).video,
     ).toBeNull()
     expect(runDensity({ spec, transmits: { effort: true, video: false } }).video).toBeNull()
-    expect(runDensity(inline).video?.maxBytes).toBe(MEDIA_RETAIN_HIGH_BYTES)
-    expect(runDensity(upload).video?.maxBytes).toBe(Number.POSITIVE_INFINITY)
-    const big = MEDIA_RETAIN_HIGH_BYTES + 1
-    expect(videoDelivery(big, { video: true })).toBe('frames')
-    expect(estimateVideo({ ...meta, bytes: big }, runDensity(inline))).toBe(0)
-    expect(videoDelivery(big, { video: true, mediaUploadAbove: 2 * 1024 * 1024 })).toBe('upload')
-    expect(estimateVideo({ ...meta, bytes: big }, runDensity(upload))).toBe(12_031)
+    expect(runDensity(inline).video?.accepts.maxBytes).toBe(MEDIA_RETAIN_HIGH_BYTES)
+    expect(runDensity(upload).video?.accepts.maxBytes).toBe(Number.POSITIVE_INFINITY)
+    const big = { ...meta, bytes: MEDIA_RETAIN_HIGH_BYTES + 1 }
+    expect(videoDelivery(big, runDensity(inline).video, undefined)).toBe('frames')
+    expect(estimateVideo(big, runDensity(inline))).toBe(0)
+    expect(videoDelivery(big, runDensity(upload).video, 2 * 1024 * 1024)).toBe('upload')
+    expect(estimateVideo(big, runDensity(upload))).toBe(12_022)
+  })
+
+  /**
+   * 要防止的形状：Qwen3.8 Flash 收到 0.5 秒的视频时接口返回 400「The video file is too short」，整轮失败。
+   * 时长范围按百炼规格页写入模型规格（2 秒至 2 小时），超出时发送前即改为抽帧。
+   */
+  test('时长超出模型规格的视频发送前改为抽帧，估算记 0，说明写明原因', () => {
+    const upload = 2 * 1024 * 1024
+    const density = runDensity({
+      spec: lookupModel('qwen3.8-flash', 'openai_chat_completions'),
+      transmits: { effort: true, video: true, mediaUploadAbove: upload },
+    })
+    const rule = density.video!
+    expect(rule.accepts).toMatchObject({ minSeconds: 2, maxSeconds: 7200 })
+    const short = { ...meta, seconds: 0.5 }
+    const long = { ...meta, seconds: 7300 }
+    for (const m of [short, long]) {
+      expect(videoDelivery(m, rule, upload)).toBe('frames')
+      expect(estimateVideo(m, density)).toBe(0)
+    }
+    expect(videoRangeCause(short, rule.accepts)).toBe('该视频时长 0.5 秒，短于当前模型接受的 2 秒')
+    expect(videoRangeCause(long, rule.accepts)).toBe(
+      '该视频时长 7300 秒，长于当前模型接受的 7200 秒',
+    )
+    expect(videoDelivery({ ...meta, seconds: 2 }, rule, upload)).toBe('inline')
+    expect(videoRangeCause({ ...meta, seconds: 2 }, rule.accepts)).toBeNull()
   })
 })
 
