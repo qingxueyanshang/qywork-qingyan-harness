@@ -150,8 +150,9 @@ export class OpenAIVideosAdapter implements MediaAdapter {
       taskId = submitted.taskId
     }
     const id = taskId
+    const submittedSeconds = count(mediaParamValues(this.spec.params, req.params).seconds)
     return afterSubmit(id, signal, async () => {
-      const done = await waitTask(() => this.check(base, id, auth, signal), opts)
+      const done = await waitTask(() => this.check(base, id, auth, signal, submittedSeconds), opts)
       const url = new URL(done.url)
       return {
         files: [await download(url.href, signal, url.origin === new URL(base).origin ? auth : {})],
@@ -160,11 +161,13 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     })
   }
 
+  /** `submittedSeconds`：提交参数中的时长（含目录默认值），取回时由调用方传入任务记录中的提交参数。 */
   private async check(
     base: string,
     taskId: string,
     auth: Record<string, string>,
     signal: AbortSignal,
+    submittedSeconds: number | undefined,
   ): Promise<TaskState> {
     const path = `${base}/videos/${encodeURIComponent(taskId)}`
     if (this.spec.videoFormat === 'mumugofe') {
@@ -213,11 +216,12 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     const body = await getJson(path, auth, signal)
     const status = String(body.status ?? '')
     // 视频对象只包含时长 `seconds`（字符串），没有用量与金额字段。
+    // 部分渠道不返回时长，而按提交的时长计费：此时按提交时长计量。不要留空，按秒计价的型号会因此记为 0。
     if (status === 'completed') {
       return {
         state: 'done',
         url: `${path}/content`,
-        usage: defined<MediaUsage>({ seconds: count(body.seconds) }),
+        usage: defined<MediaUsage>({ seconds: count(body.seconds) ?? submittedSeconds }),
       }
     }
     const ended = ENDED[status]

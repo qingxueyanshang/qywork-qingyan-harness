@@ -225,7 +225,25 @@ test('YY 按次型号在响应缺少秒数时仍记录一次生成的目录估�
     spends.push(spend),
   ).generate(call(), signal())
   expect(result.ok).toBe(true)
-  expect(spends[0]).toMatchObject({ quantity: null, cost: 7.3, currency: 'CNY' })
+  expect(spends[0]).toMatchObject({ quantity: 4, cost: 7.3, currency: 'CNY' })
+})
+
+test('按秒型号在响应缺少秒数时按提交时长计费，取回时按传入的提交参数计费', async () => {
+  poll = { status: 'completed' }
+  const spends: MediaSpend[] = []
+  const port = makeMediaPort(config(), (spend) => spends.push(spend))
+  expect((await port.generate({ ...call(), params: { seconds: '28' } }, signal())).ok).toBe(true)
+  expect(
+    (
+      await port.generate(
+        { ...call(), params: { seconds: '24' }, resumeTaskId: 'task_hongcheng' },
+        signal(),
+      )
+    ).ok,
+  ).toBe(true)
+  expect(spends.map((s) => s.quantity)).toEqual([28, 24])
+  expect(spends[0]?.cost).toBeCloseTo(28 * 0.42, 10)
+  expect(spends[1]?.cost).toBeCloseTo(24 * 0.42, 10)
 })
 
 test.each(MODELS)('时长下限可提交，低于下限或超过上限时不上传：$id', async ({ id, min }) => {
@@ -420,8 +438,8 @@ test('上传鉴权失败明确未提交，允许随后重新尝试', async () =>
 })
 
 test.each(MODELS)(
-  '任务取回不重复上传或提交，缺失秒数仅影响按秒计费：$id',
-  async ({ id, perRequest, rate }) => {
+  '任务取回不重复上传或提交，接口缺少秒数时按提交参数（含目录默认值）计量：$id',
+  async ({ id, perRequest, rate, defaultSeconds }) => {
     poll = { status: 'completed' }
     const spends: MediaSpend[] = []
     expect(
@@ -436,7 +454,8 @@ test.each(MODELS)(
       'GET /v1/videos/task_hongcheng',
       'GET /v1/videos/task_hongcheng/content',
     ])
-    expect(spends[0]).toMatchObject({ quantity: null, cost: perRequest ? rate : 0 })
+    expect(spends[0]?.quantity).toBe(Number(defaultSeconds))
+    expect(spends[0]?.cost).toBeCloseTo(perRequest ? rate : Number(defaultSeconds) * rate, 10)
   },
 )
 
