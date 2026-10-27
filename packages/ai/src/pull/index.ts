@@ -10,7 +10,9 @@
 import {
   type ChannelSpec,
   type ChannelVideoSpec,
+  defaultMediaKind,
   identifyMediaModel,
+  MEDIA_KIND_OUTPUT,
   type MediaKind,
   type MediaOutput,
   type ProviderKind,
@@ -61,11 +63,13 @@ export type PulledModel =
       base?: string
       spec?: ChannelSpec
     }
+  /** 未知：条目没有类别，名称也不在模型库与生成目录中，由用户选定类别后添加。 */
+  | { id: string; output: 'unknown' }
 
 export interface PullResult {
   /**
    * `pricing`：中转的计费清单，列出全部可计费型号，可据此标记已下架；
-   * `models`：型号列表接口，只有名称，官方接口可能不列出别名，不能据此标记已下架。
+   * `models`：型号列表接口，官方接口可能不列出别名，不能据此标记已下架。
    */
   source: 'pricing' | 'models'
   models: PulledModel[]
@@ -253,21 +257,92 @@ async function fromPricing(
   return { source: 'pricing', models: [...models.values()] }
 }
 
-/** 型号列表接口只有名称：按名称识别生成模型（`identifyMediaModel`），其余作为对话型号。 */
-function fromModelList(ids: string[], target: PullTarget): PullResult {
-  const models = [...new Set(ids)].map((id): PulledModel => {
-    const media = identifyMediaModel(id, mediaCatalog(), target.baseUrl)
-    if (!media)
-      return { id, output: 'chat', known: lookupModel(id, target.kind).catalogued !== false }
-    return {
-      id,
-      output: media.output,
-      kind: media.kind,
-      known: !media.base,
-      ...(media.base ? { base: media.base } : {}),
-    }
+/**
+ * 厂商自有生成协议的目录条目：接口地址的默认协议不同于通用协议时，该协议只由该厂商提供，
+ * 目录中该协议的条目即该厂商的型号。官方型号列表可能不含这些型号（MiniMax 只列出对话型号），由此补齐。
+ */
+function ownProtocolModels(baseUrl: string): PulledModel[] {
+  return mediaCatalog().flatMap((m): PulledModel[] => {
+    const output = MEDIA_KIND_OUTPUT[m.kind]
+    const own = defaultMediaKind(output, baseUrl)
+    if (own !== m.kind || own === defaultMediaKind(output, undefined)) return []
+    return [{ id: m.id, output, kind: m.kind, known: true }]
   })
-  return { source: 'models', models }
+}
+
+/** 方舟型号条目的 `domain`。null 为向量与 3D 型号：既不能对话也没有对应的生成协议，不列出。 */
+const DOMAIN_OUTPUT: Record<string, 'chat' | MediaOutput | null> = {
+  LLM: 'chat',
+  VLM: 'chat',
+  Router: 'chat',
+  ImageGeneration: 'image',
+  VideoGeneration: 'video',
+  Embedding: null,
+  '3DGeneration': null,
+}
+
+const MODALITY_OUTPUT: Record<string, 'chat' | MediaOutput> = {
+  text: 'chat',
+  image: 'image',
+  video: 'video',
+  audio: 'audio',
+}
+
+/**
+ * 条目自带的类别：先读 `domain`，没有时读 `modalities.output_modalities`（输出含文字即为对话）。
+ * 返回 null 表示不列出（含 `status` 为 `Shutdown` 的已下线型号）；undefined 表示条目只有名称，由调用方按名称识别。
+ * 方舟的条目带这些字段，但部分条目 `domain` 为空或缺少输出模态，因此两者依次读取。
+ */
+function declaredOutput(entry: Record<string, unknown>): 'chat' | MediaOutput | null | undefined {
+  if (entry.status === 'Shutdown') return null
+  const domain = typeof entry.domain === 'string' ? DOMAIN_OUTPUT[entry.domain] : undefined
+  if (domain !== undefined) return domain
+  const out = record(entry.modalities)?.output_modalities
+  if (!Array.isArray(out) || !out.length) return undefined
+  const outputs = out.flatMap((m) =>
+    typeof m === 'string' && MODALITY_OUTPUT[m] ? [MODALITY_OUTPUT[m]] : [],
+  )
+  return outputs.includes('chat') ? 'chat' : (outputs[0] ?? null)
+}
+
+/**
+ * 型号列表接口：条目带类别时按类别归类；只有名称时，生成目录中的名称（`identifyMediaModel`）归入对应类别，
+ * 模型库中的名称归入对话，其余归为未知。列表中没有的厂商自有协议型号按目录补齐（`ownProtocolModels`）。
+ * 类别为生成而目录中没有该名称时，协议按接口地址取默认值（`defaultMediaKind`），不带规格。
+ */
+function fromModelList(entries: Record<string, unknown>[], target: PullTarget): PullResult {
+  const listed = new Map<string, PulledModel>()
+  for (const entry of entries) {
+    const id = entry.id
+    if (typeof id !== 'string' || listed.has(id)) continue
+    const declared = declaredOutput(entry)
+    if (declared === null) continue
+    const media = identifyMediaModel(id, mediaCatalog(), target.baseUrl)
+    const known = lookupModel(id, target.kind).catalogued !== false
+    const output = declared ?? media?.output ?? (known ? 'chat' : 'unknown')
+    if (output === 'unknown') {
+      listed.set(id, { id, output })
+    } else if (output === 'chat') {
+      listed.set(id, { id, output, known })
+    } else if (media?.output === output) {
+      listed.set(id, {
+        id,
+        output,
+        kind: media.kind,
+        known: !media.base,
+        ...(media.base ? { base: media.base } : {}),
+      })
+    } else {
+      listed.set(id, {
+        id,
+        output,
+        kind: defaultMediaKind(output, target.baseUrl),
+        known: false,
+      })
+    }
+  }
+  const own = ownProtocolModels(target.baseUrl).filter((m) => !listed.has(m.id))
+  return { source: 'models', models: [...listed.values(), ...own] }
 }
 
 export async function pullModels(target: PullTarget, signal: AbortSignal): Promise<PullResult> {
@@ -284,7 +359,7 @@ export async function pullModels(target: PullTarget, signal: AbortSignal): Promi
       ? { 'x-api-key': target.apiKey, 'anthropic-version': '2023-06-01' }
       : { authorization: `Bearer ${target.apiKey}` }
   const listed = await getJson(`${base}/models`, { ...auth, ...target.headers }, signal)
-  const ids = listOf(listed, 'data')?.flatMap((e) => (typeof e.id === 'string' ? [e.id] : []))
-  if (!ids) throw new PullError(`${new URL(base).pathname}/models 返回的格式无法识别`)
-  return fromModelList(ids, target)
+  const models = listOf(listed, 'data')
+  if (!models) throw new PullError(`${new URL(base).pathname}/models 返回的格式无法识别`)
+  return fromModelList(models, target)
 }

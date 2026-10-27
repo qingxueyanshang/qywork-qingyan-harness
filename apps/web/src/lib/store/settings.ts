@@ -455,6 +455,7 @@ export type PulledModel =
       base?: string
       spec?: ChannelSpec
     }
+  | { id: string; output: 'unknown' }
 
 export interface PullResult {
   /** `pricing` 是中转的完整计费清单，只有它可以用来标记已下架。 */

@@ -4,11 +4,13 @@ import type { ChannelImageSpec, ChannelVideoSpec } from '@qywork/core'
 import type { MediaLibraryModel, PullResult, RedactedConfig } from '../../lib/store/index.ts'
 import {
   addPulled,
+  type ClassifiedModel,
   durationSummary,
   priceSummary,
   referenceSummary,
   refreshPulled,
   withBase,
+  withCategory,
 } from './pulled.ts'
 
 const SPEC: ChannelVideoSpec = {
@@ -52,16 +54,14 @@ const base = (): RedactedConfig => ({
   },
 })
 
-const RESULT: PullResult = {
-  source: 'pricing',
-  models: [
-    { id: 'claude-sonnet-5-5', output: 'chat', known: true, price: PRICE },
-    { id: 'deepseek-v4.1-flash', output: 'chat', known: false },
-    { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', known: true, spec: SPEC },
-    { id: 'seedance-2.5-deal', output: 'video', kind: 'openai_videos', known: true, spec: SPEC },
-    { id: 'gpt-image-2', output: 'image', kind: 'openai_images', known: true, spec: IMAGE },
-  ],
-}
+const MODELS: ClassifiedModel[] = [
+  { id: 'claude-sonnet-5-5', output: 'chat', known: true, price: PRICE },
+  { id: 'deepseek-v4.1-flash', output: 'chat', known: false },
+  { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', known: true, spec: SPEC },
+  { id: 'seedance-2.5-deal', output: 'video', kind: 'openai_videos', known: true, spec: SPEC },
+  { id: 'gpt-image-2', output: 'image', kind: 'openai_images', known: true, spec: IMAGE },
+]
+const RESULT = { source: 'pricing' as const, models: MODELS } satisfies PullResult
 
 test('刷新：更新价格与规格，计费清单中没有的型号标记已下架，其他设置保留', () => {
   const next = refreshPulled(base(), 'mumu', RESULT)!
@@ -174,6 +174,28 @@ test('接口原本没有对话型号时，第一个添加的成为默认模型',
   const next = addPulled(cfg, 'mumu', [{ model: RESULT.models[0]! }])!
   expect(next.active).toEqual({ provider: 'mumu', model: 'claude-sonnet-5-5' })
   expect(next.providers.mumu!.models['claude-sonnet-5-5']).toEqual({ price: PRICE })
+})
+
+test('未知型号按选定的类别归类，协议按接口地址取默认值；未选定时不变', () => {
+  const unknown = { id: 'mimo-v2.5-asr', output: 'unknown' as const }
+  const mimo = 'https://api.xiaomimimo.com/v1'
+  expect(withCategory(unknown, undefined, mimo)).toBe(unknown)
+  expect(withCategory(unknown, 'chat', mimo)).toEqual({
+    id: 'mimo-v2.5-asr',
+    output: 'chat',
+    known: false,
+  })
+  expect(withCategory(unknown, 'audio', mimo)).toEqual({
+    id: 'mimo-v2.5-asr',
+    output: 'audio',
+    kind: 'mimo_speech',
+    known: false,
+  })
+  expect(withCategory(unknown, 'image', 'https://relay.example/v1')).toMatchObject({
+    kind: 'openai_images',
+  })
+  const chat = MODELS[0]!
+  expect(withCategory(chat, 'image', mimo)).toBe(chat)
 })
 
 test('摘要：时长与素材上限、价格', () => {

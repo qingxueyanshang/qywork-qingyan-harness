@@ -58,6 +58,8 @@ export interface MediaUsage {
   imageTier?: string
   /** 计费秒数，口径以接口为准（百炼万相含输入视频时长）。 */
   seconds?: number
+  /** 参考视频的计费秒数。仅在接口分开回报、按不同单价计费时填写（MiniMax H3）。 */
+  inputSeconds?: number
   /**
    * 输出分辨率档位。视频统一写为 `480p` / `720p` / `1080p` / `4k`；中转渠道按目录中的档位写，
    * 渠道按请求中的档位计价时取发送的值。

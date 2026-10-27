@@ -3,7 +3,7 @@
  * 两个函数都只计算新的配置对象，由调用方经 `replaceConfig` 保存；没有变化时返回 null。
  */
 
-import { defaultMediaKind, formatMoney, MEDIA_KIND_OUTPUT } from '@qywork/core'
+import { defaultMediaKind, formatMoney, MEDIA_KIND_OUTPUT, type MediaOutput } from '@qywork/core'
 import type {
   MediaLibraryModel,
   PulledModel,
@@ -40,7 +40,12 @@ export function refreshPulled(
       const hit = pulled.get(id)
       const { delisted: _delisted, ...rest } = m
       if (!hit) return [id, complete ? { ...m, delisted: true } : m]
-      return [id, hit.output !== 'chat' && hit.spec ? { ...rest, spec: hit.spec } : rest]
+      return [
+        id,
+        hit.output !== 'chat' && hit.output !== 'unknown' && hit.spec
+          ? { ...rest, spec: hit.spec }
+          : rest,
+      ]
     }),
   )
   const next = {
@@ -52,10 +57,24 @@ export function refreshPulled(
   return { ...cur, providers: { ...cur.providers, [provider]: next } }
 }
 
+/** 已确定类别的型号：未知型号须先选定类别（`withCategory`）。 */
+export type ClassifiedModel = Exclude<PulledModel, { output: 'unknown' }>
+
 /** 选定的型号，`model` 已按对应型号确定类别（`withBase`）；未收录的型号可带对应型号。 */
 export interface PulledPick {
-  model: PulledModel
+  model: ClassifiedModel
   base?: string
+}
+
+/** 按用户选定的类别归类未知型号，协议按接口地址取默认值；其余型号与未选定类别时为拉取结果本身。 */
+export function withCategory(
+  model: PulledModel,
+  output: 'chat' | MediaOutput | undefined,
+  baseUrl: string | undefined,
+): PulledModel {
+  if (model.output !== 'unknown' || !output) return model
+  if (output === 'chat') return { id: model.id, output, known: false }
+  return { id: model.id, output, kind: defaultMediaKind(output, baseUrl), known: false }
 }
 
 /**
@@ -128,7 +147,13 @@ export function addPulled(
 
 /** 可选时长。没有渠道规格或是图像规格时为空串。 */
 export function durationSummary(model: PulledModel): string {
-  if (model.output === 'chat' || !model.spec || !('seconds' in model.spec)) return ''
+  if (
+    model.output === 'chat' ||
+    model.output === 'unknown' ||
+    !model.spec ||
+    !('seconds' in model.spec)
+  )
+    return ''
   const { seconds } = model.spec
   const first = seconds[0]!
   const last = seconds[seconds.length - 1]!
@@ -137,7 +162,7 @@ export function durationSummary(model: PulledModel): string {
 
 /** 参考素材上限，写法与模型库表格相同。没有渠道规格时为空串。 */
 export function referenceSummary(model: PulledModel): string {
-  if (model.output === 'chat' || !model.spec) return ''
+  if (model.output === 'chat' || model.output === 'unknown' || !model.spec) return ''
   const s = model.spec
   return [
     s.maxImages ? `图≤${s.maxImages}` : '',
@@ -161,6 +186,7 @@ export function priceSummary(model: PulledModel): string {
       : ''
     return `输入 ${formatMoney(price.input, price.currency)} · 输出 ${formatMoney(price.output, price.currency)} /百万${discount}`
   }
+  if (model.output === 'unknown') return ''
   const price = model.spec?.price
   if (!price) return ''
   const unit = model.output === 'image' ? '张' : price.per === 'request' ? '次' : '秒'

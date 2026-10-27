@@ -31,7 +31,10 @@ import {
   type StoredMediaSpec,
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
+import { MIMO_AUDIO_MODELS, MIMO_SPEECH_DEFAULT } from './catalog-mimo-audio.ts'
 import { MINIMAX_AUDIO_MODELS, MINIMAX_VOICE } from './catalog-minimax-audio.ts'
+import { MINIMAX_IMAGE_DEFAULT, MINIMAX_IMAGE_MODELS } from './catalog-minimax-image.ts'
+import { MINIMAX_VIDEO_DEFAULT, MINIMAX_VIDEO_MODELS } from './catalog-minimax-video.ts'
 import { QWEN_AUDIO_MODELS } from './catalog-qwen-audio.ts'
 import { channelImageMediaSpec, channelMediaSpec } from './channels.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
@@ -1186,6 +1189,9 @@ const SEEDS: readonly MediaModelSpec[] = [
   ...GOOGLE_XAI_MODELS,
   ...QWEN_AUDIO_MODELS,
   ...MINIMAX_AUDIO_MODELS,
+  ...MINIMAX_IMAGE_MODELS,
+  ...MINIMAX_VIDEO_MODELS,
+  ...MIMO_AUDIO_MODELS,
   spec(
     'gpt-image-2',
     'GPT Image 2',
@@ -1616,6 +1622,9 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     params: [MINIMAX_VOICE],
     catalogued: false,
   },
+  minimax_images: MINIMAX_IMAGE_DEFAULT,
+  minimax_videos: MINIMAX_VIDEO_DEFAULT,
+  mimo_speech: MIMO_SPEECH_DEFAULT,
   dashscope_videos: {
     vendor: null,
     kind: 'dashscope_videos',

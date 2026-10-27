@@ -16,6 +16,7 @@ export const MEDIA_KINDS = [
   'dashscope_images',
   'gemini_images',
   'xai_images',
+  'minimax_images',
   'openai_videos',
   'ark_videos',
   'dashscope_videos',
@@ -23,9 +24,11 @@ export const MEDIA_KINDS = [
   'gemini_videos',
   'veo_videos',
   'xai_videos',
+  'minimax_videos',
   'openai_speech',
   'dashscope_speech',
   'minimax_speech',
+  'mimo_speech',
 ] as const
 export type MediaKind = (typeof MEDIA_KINDS)[number]
 
@@ -260,6 +263,7 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   dashscope_images: 'image',
   gemini_images: 'image',
   xai_images: 'image',
+  minimax_images: 'image',
   openai_videos: 'video',
   ark_videos: 'video',
   dashscope_videos: 'video',
@@ -267,9 +271,11 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   gemini_videos: 'video',
   veo_videos: 'video',
   xai_videos: 'video',
+  minimax_videos: 'video',
   openai_speech: 'audio',
   dashscope_speech: 'audio',
   minimax_speech: 'audio',
+  mimo_speech: 'audio',
 }
 
 /**
@@ -331,6 +337,15 @@ function isMiniMaxEndpoint(baseUrl: string): boolean {
   }
 }
 
+/** 小米 MiMo 开放平台官方端点。 */
+function isMiMoEndpoint(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === 'api.xiaomimimo.com'
+  } catch {
+    return false
+  }
+}
+
 /**
  * 已收录模型默认使用目录协议；未收录时按类别与官方地址给出默认值。
  * 仅在添加时使用。请求以保存的 `media[id].kind` 为准，修改地址不改变协议。
@@ -354,19 +369,21 @@ export function defaultMediaKind(
     if (output === 'video') return 'xai_videos'
   }
   const dashScope = baseUrl !== undefined && isDashScopeEndpoint(baseUrl)
+  const miniMax = baseUrl !== undefined && isMiniMaxEndpoint(baseUrl)
   switch (output) {
     case 'image':
+      if (miniMax) return 'minimax_images'
       // 火山方舟的出图接口与 OpenAI 形状相同，与中转站使用同一协议。
       return dashScope ? 'dashscope_images' : 'openai_images'
     case 'video':
       if (dashScope) return 'dashscope_videos'
+      if (miniMax) return 'minimax_videos'
       if (baseUrl !== undefined && isArkEndpoint(baseUrl)) return 'ark_videos'
       return baseUrl !== undefined && isKlingEndpoint(baseUrl) ? 'kling_videos' : 'openai_videos'
     case 'audio':
       if (dashScope) return 'dashscope_speech'
-      return baseUrl !== undefined && isMiniMaxEndpoint(baseUrl)
-        ? 'minimax_speech'
-        : 'openai_speech'
+      if (baseUrl !== undefined && isMiMoEndpoint(baseUrl)) return 'mimo_speech'
+      return miniMax ? 'minimax_speech' : 'openai_speech'
   }
 }
 

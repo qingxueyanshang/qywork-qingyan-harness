@@ -54,21 +54,21 @@
 [思考签名](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)、
 [价格](https://ai.google.dev/gemini-api/docs/pricing)。本地协议回归不等同于官方端点实测。
 
-## MiniMax M3.1 Flash Preview 与 Step 5 Preview
+## MiniMax M3.1 Flash 与 Step 5 Preview
 
-本次新增 `MiniMax-M3.1-Flash-Preview` 与 `step-5-preview`，不追加 MiniMax M2.x、Step 3.x 历史型号。
+收录 `MiniMax-M3.1-Flash` 与 `step-5-preview`，不追加 MiniMax M2.x、Step 3.x 历史型号。
 原有 MiniMax M3 仍按自己的规格保留。
 
 | 模型 | 上下文 | 最大输出 | 思考强度 | 接口 |
 |---|---:|---:|---|---|
-| MiniMax-M3.1-Flash-Preview | 1,000,000 | 524,288 | low / medium / high / xhigh / max | Chat、Responses、Messages |
+| MiniMax-M3.1-Flash | 1,000,000 | 524,288 | low / medium / high / xhigh / max | Chat、Responses、Messages |
 | step-5-preview | 1,000,000 | 64,000 | low / medium / high | Chat、Messages |
 
-MiniMax M3.1 Preview 需要 **M Plan 订阅 Key**，目前不面向普通按量 Key。
+MiniMax M3.1 Flash 已列入官方按量价目，按量 Key 可用；Preview 型号已不在官方型号列表中。
 国内 Chat / Responses Base URL 为 `https://api.minimax.cn/v1`，Messages 为
 `https://api.minimax.cn/anthropic`；国际账户使用相应的 `api.minimax.io` 地址。
-模型默认以 `max` 强度思考，不支持关闭思考。未公布按 token 单价，模型库显示“—”，
-不沿用 M3 的价格；现有运行用量中的零金额表示未估算费用，不表示订阅免费。
+模型默认以 `max` 强度思考，不支持关闭思考。目录与 M3 相同，采用国际站美元价格：
+输入 0.15、缓存读取 0.015、输出 0.60（美元 / 百万 token），不分长上下文档；国内站为 1.00 / 0.10 / 4.00 元。
 
 Step 普通 API 的 Chat Base URL 为 `https://api.stepfun.com/v1`，Messages 为
 `https://api.stepfun.com`。Step Plan 应按订阅文档使用其专用地址和 Key。
@@ -79,8 +79,8 @@ Chat 返回的顶层 `usage.cached_tokens` 计入缓存命中，不再按普通�
 MiniMax 的历史思考按协议完整回传，工具定义保留原生 required / optional 语义。
 本地协议回归不等同于官方端点实测。
 
-2026-10-01 核对：[MiniMax 接口](https://platform.minimax.io/docs/api-reference/text-chat-openai)、
-[M Plan 接入](https://platform.minimax.io/docs/m-plan/other-tools)、
+2026-10-27 核对：[MiniMax 接口](https://platform.minimax.cn/docs/api-reference/text-chat-openai)、
+[MiniMax 价格](https://platform.minimax.io/docs/guides/pricing-paygo)；2026-10-01 核对：
 [Step 模型规格](https://platform.stepfun.com/docs/zh/guides/models/step-5-preview)、
 [Step 定价](https://platform.stepfun.com/docs/zh/guides/pricing/details)。
 
@@ -182,6 +182,26 @@ Chat Completions 仅在 `reasoning_effort: none` 时支持函数调用，因此�
 2026-09-30 核对：[官方模型规格](https://developers.openai.com/api/docs/models/gpt-6.1-sol)、
 [发布说明](https://developers.openai.com/api/docs/changelog)、
 [缓存规则](https://developers.openai.com/api/docs/guides/prompt-caching)。
+本地协议回归不等同于官方端点实测；中转站的可用性与价格以所接端点为准。
+
+## GPT-6.1 Terra
+
+内置收录 `gpt-6.1-terra`，显示为 **GPT-6.1 Terra**，原有 `gpt-5.6-terra` 独立保留。
+选择 OpenAI Responses，官方 Base URL 为 `https://api.openai.com/v1`；工具调用要求 Responses。
+
+支持文本、图片输入和文本输出；上下文 1,050,000 token，最大输出 128,000 token。
+产品提供 `low / medium / high / xhigh / max` 思考档位，未选择时使用官方默认 `medium`；
+官方另支持 `none`，产品不提供关闭思考选项。尚未标定 tokenizer 密度，使用通用保守估算。
+
+目录采用标准处理价格，单位为美元 / 百万 token：
+
+| 提示词总 token | 未命中输入 | 缓存读取 | 缓存写入 | 输出 |
+|---|---:|---:|---:|---:|
+| ≤ 272,000 | 1 | 0.05 | 1.25 | 5 |
+| > 272,000 | 2 | 0.10 | 2.50 | 7.50 |
+
+官方缓存写入另有 12 小时保留档 $2.50，目录按 1.25 倍输入价记录，与 GPT-6.1 Sol 相同。
+2026-10-27 核对：[官方模型规格](https://developers.openai.com/api/docs/models/gpt-6.1-terra)。
 本地协议回归不等同于官方端点实测；中转站的可用性与价格以所接端点为准。
 
 ## 小米 MiMo
@@ -388,6 +408,48 @@ Base URL 填 `https://api.minimax.cn/v1`（华北 `https://api-bj.minimaxi.com/v
 已覆盖本地请求捕获、hex 解码、错误码与计费回归，尚未进行真实云端生成。
 依据：[同步语音合成 HTTP](https://platform.minimaxi.com/docs/api-reference/speech-t2a-http)、[接入地址](https://platform.minimaxi.com/docs/guides/speech-t2a-websocket)、[系统音色](https://platform.minimaxi.com/docs/faq/system-voice-id)、[价格](https://platform.minimaxi.com/docs/pricing/overview)。
 
+2026-10-27 新增 MiMo 语音合成，接入方式「MiMo」（`mimo_speech`），经对话接口 `POST {Base URL}/chat/completions` 非流式合成：
+
+| 模型 ID | 输入与控制 |
+|---|---|
+| `mimo-v2.5-tts` | 9 个内置音色（`mimo_default` 在国内集群为冰糖）、朗读要求、WAV/MP3 |
+| `mimo-v2.5-tts-voicedesign` | 朗读要求即音色描述（必填）、文本润色 |
+| `mimo-v2.5-tts-voiceclone` | 1 段参考音频（MP3/WAV，Base64 后不超过 10 MB）作为复刻样本、朗读要求 |
+
+Base URL 填 `https://api.xiaomimimo.com/v1`。朗读文本作为 assistant 消息发送，朗读要求（`instructions`）作为 user 消息发送，
+不出现在合成语音中；风格标签如 `(温柔)`、`(唱歌)` 写在朗读文本开头。其余参数放入 `audio`，复刻样本以 data URI 写入 `audio.voice`。
+三个型号限时免费，官方未公布单价，用量账本金额显示 N/A。语音识别 `mimo-v2.5-asr` 与流式输出未接入。
+已覆盖本地请求捕获、Base64 解码与错误回归，尚未进行真实云端合成。
+依据：[语音合成接口](https://mimo.mi.com/static/docs/api/audio/tts.md)、[语音合成指南](https://mimo.mi.com/static/docs/quick-start/usage-guide/audio/speech-synthesis-v2.5.md)、[价格](https://mimo.mi.com/static/docs/price/pay-as-you-go.md)。
+
+2026-10-27 新增 MiniMax 图像与视频生成，接入方式均显示为「MiniMax」：
+
+| 类别 | 模型 ID | 输入 | 参数 | 价格（元） |
+|---|---|---|---|---|
+| 图像 | `image-01` | 文本、1 张人物参考图 | 宽高比（含 21:9）、张数 1–9 | 每张 0.025 |
+| 图像 | `image-01-live` | 同上 | 宽高比（不含 21:9）、张数、画风 | 每张 0.025 |
+| 视频 | `MiniMax-H3` | 文生、首帧、尾帧、首尾帧；参考图 ≤ 9、参考视频 ≤ 3、参考音频 ≤ 3 | 768P / 2K，4–15 秒 | 768P 每秒 0.50，2K 每秒 0.80 |
+| 视频 | `MiniMax-H3-Highspeed` | 同上 | 768P，4–15 秒 | 每秒 0.40 |
+| 视频 | `MiniMax-H3-Lite` | 同上；参考生视频须指定宽高比 | 480P / 768P，4–15 秒 | 480P 每秒 0.16，768P 每秒 0.26 |
+| 视频 | `MiniMax-H3-Max` | 同上 | 480P / 768P，5–15 秒，提示词扩写 | 480P 每秒 0.33，768P 每秒 0.50 |
+
+图像为同步接口 `POST {Base URL}/image_generation`，参考图以 `subject_reference`（`character`）发送；
+未通过内容安全检查的张数作为警告随其余产物返回。视频为 V2 接口，路径位于版本段之外：
+提交 `POST {根地址}/v2/video_generation`，查询 `GET {根地址}/v2/query/video_generation/{task_id}`，
+素材结构与方舟相同（`content` 数组带 `role`），首尾帧与参考素材互斥。分辨率与时长为必填字段，
+文生视频的宽高比不能为 `adaptive`、首帧与首尾帧只能为 `adaptive`；未填写时按当前操作的目录默认值补齐。
+视频按接口回报的输出秒数、参考视频秒数与参考图张数计价：参考视频按所选输出分辨率的输入单价计费，
+参考图超过免费张数（Max 为 2 张，其余 5 张）后按张计费（Max 0.50 元，Lite 0.13 元，其余 0.20 元），参考音频免费。
+有参考视频时发送前不报价。未接入远端撤销。历史 Hailuo 型号、视频再生成与 H3-Context-IR 未接入。
+
+MiniMax 官方的 `/v1/models` 只列出对话型号。拉取模型时，若接口地址属于某厂商的自有生成协议
+（MiniMax、MiMo、百炼、方舟、可灵、Gemini、xAI），目录中该协议的生成型号随型号列表一并列出；中转站不补入。
+型号条目带类别时（方舟的 `domain` 与 `output_modalities`）按类别归入对话、图像或视频；向量、3D 型号与 `status` 为
+`Shutdown` 的已下线型号不列出。条目没有类别时，生成目录中的名称归入对应类别，模型库中的名称归入对话，
+其余归为「未知」：在拉取窗口中为该行选定类别后，移到该类别的页签再添加。
+已覆盖本地请求捕获、默认值补齐、错误码与计费回归，尚未进行真实云端生成。
+依据：[文生图](https://platform.minimax.cn/docs/api-reference/image-generation-t2i)、[图生图](https://platform.minimax.cn/docs/api-reference/image-generation-i2i)、[创建视频生成任务](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimax.cn/docs/api-reference/video-generation-v2-query)、[价格](https://platform.minimax.cn/docs/guides/pricing-paygo)。
+
 集梦渠道及 `Seedance 2.5 720p` 已于 2026-10-13 移除，不再提供模型目录、协议选择、生成或任务取回。
 加载旧配置时移除该渠道的模型及对应默认引用，混合接口中的其他模型和凭证保留。
 该渠道专用的影币计价与展示已一并移除。
@@ -484,7 +546,7 @@ hongcheng 与木木的型号不再写在代码中，模型库也不列出。代�
 | 生成请求已发出但尚未收到任务号（全部视频协议） | 立即中止本地等待并解锁卡片；显示远端结果未知，不声称撤销成功。中止期间收到的任务号仍保留供取回 |
 | 方舟 `ark_videos` | 已接入排队任务撤销，执行中不能撤销；先查询，避免删除已结束的任务记录 |
 | 百炼 `dashscope_videos` | 已接入排队任务撤销；百炼上的万相、可灵共用此行为 |
-| OpenAI 视频兼容（含 Mumugofe）、可灵原生、Gemini、Veo、xAI | 当前适配器未接入远端取消；停止键暂停本地等待并保留任务供取回，说明可能继续计费 |
+| OpenAI 视频兼容（含 Mumugofe）、可灵原生、Gemini、Veo、xAI、MiniMax | 当前适配器未接入远端取消；停止键暂停本地等待并保留任务供取回，说明可能继续计费 |
 | 方舟、百炼已执行或撤销请求异常 | 同样允许暂停本地等待，保留任务及撤销失败原因，不将停止键永久禁用 |
 | xAI | `pending` 表示仍在生成，按生成中展示；不能沿用百炼 `PENDING` 的排队含义 |
 | Veo 原生 | 长任务只有是否完成，未完成按处理中展示，不宣称已取得排队位置 |

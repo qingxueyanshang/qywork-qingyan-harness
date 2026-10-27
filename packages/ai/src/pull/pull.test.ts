@@ -1,9 +1,9 @@
 /**
  * 覆盖 `index.ts`（拉取型号）：本地服务按 2026-10-21 取得的 hongcheng 与木木响应片段应答，
- * 核对分类、渠道规格、价格，以及没有计费清单时退回型号列表。
+ * 核对分类、渠道规格、价格，没有计费清单时退回型号列表、按条目自带的类别归类，以及官方接口按目录补齐自有协议的生成型号。
  */
 
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, spyOn, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PullError, pullModels } from './index.ts'
@@ -256,8 +256,134 @@ test('型号列表中带后缀的生成型号按目录 id 识别，协议按接�
   // 取最长的目录前缀；Gemini 名称经中转时不使用目录中的 Gemini 原生协议。
   expect(by.get('gpt-image-2.5-sunburst-4k')).toMatchObject({ base: 'gpt-image-2.5-sunburst' })
   expect(by.get('gemini-3-pro-image-preview')).toMatchObject({ base: 'gemini-3-pro-image' })
-  // 目录 id 之后不是分隔符时不识别。
-  expect(by.get('gpt-image-2x')).toMatchObject({ output: 'chat' })
+  // 目录 id 之后不是分隔符时不识别，名称也不在模型库中，归为未知。
+  expect(by.get('gpt-image-2x')).toEqual({ id: 'gpt-image-2x', output: 'unknown' })
+})
+
+// 2026-10-27 api.minimax.cn 的 /v1/models 原样（节选）：只列出对话型号，没有计费清单。
+test('官方接口的型号列表不含自有协议的生成型号时，按目录补齐', async () => {
+  const original = globalThis.fetch
+  const spy = spyOn(globalThis, 'fetch').mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname
+    if (new URL(String(url)).host !== 'api.minimax.cn') return original(url, init)
+    if (path !== '/v1/models') return new Response('not found', { status: 404 })
+    return Response.json({
+      object: 'list',
+      data: ['MiniMax-M3.1-Flash', 'MiniMax-M3', 'MiniMax-M2.7'].map((id) => ({
+        id,
+        object: 'model',
+        owned_by: 'minimax',
+      })),
+    })
+  }) as typeof fetch)
+  try {
+    const result = await pullModels(
+      { kind: 'openai_chat_completions', baseUrl: 'https://api.minimax.cn/v1/', apiKey: 'sk' },
+      signal(),
+    )
+    expect(result.source).toBe('models')
+    const by = new Map(result.models.map((m) => [m.id, m]))
+    expect(by.get('MiniMax-M3.1-Flash')).toEqual({
+      id: 'MiniMax-M3.1-Flash',
+      output: 'chat',
+      known: true,
+    })
+    expect(by.get('speech-2.8-hd')).toEqual({
+      id: 'speech-2.8-hd',
+      output: 'audio',
+      kind: 'minimax_speech',
+      known: true,
+    })
+    expect(by.get('image-01')).toMatchObject({ output: 'image', kind: 'minimax_images' })
+    expect(by.get('MiniMax-H3')).toMatchObject({ output: 'video', kind: 'minimax_videos' })
+    // 模型库未收录的名称归为未知，不默认归入对话。
+    expect(by.get('MiniMax-M2.7')).toEqual({ id: 'MiniMax-M2.7', output: 'unknown' })
+    // 其他厂商自有协议的目录条目不补入。
+    expect(
+      result.models.some(
+        (m) => m.output !== 'chat' && m.output !== 'unknown' && !m.kind.startsWith('minimax_'),
+      ),
+    ).toBe(false)
+  } finally {
+    spy.mockRestore()
+  }
+})
+
+// 2026-10-27 方舟 /api/v3/models 的条目（节选，省略 features 等无关字段）。
+test('条目带类别时按类别归类：向量、3D 与已下线型号不列出，目录中没有的生成型号使用接口地址的默认协议', async () => {
+  const entry = (
+    id: string,
+    domain: string,
+    out: string[] | undefined,
+    status?: string,
+  ): Record<string, unknown> => ({
+    id,
+    object: 'model',
+    domain,
+    ...(out ? { modalities: { output_modalities: out } } : {}),
+    ...(status ? { status } : {}),
+  })
+  const original = globalThis.fetch
+  const spy = spyOn(globalThis, 'fetch').mockImplementation((async (url, init) => {
+    const u = new URL(String(url))
+    if (u.host !== 'ark.cn-beijing.volces.com') return original(url, init)
+    if (u.pathname !== '/api/v3/models') return new Response('not found', { status: 404 })
+    return Response.json({
+      object: 'list',
+      data: [
+        entry('doubao-seed-2-1-pro-260915', 'VLM', ['text']),
+        entry('qwen3-8b-20250429', '', undefined),
+        entry('doubao-pro-32k-240828', 'LLM', ['text'], 'Shutdown'),
+        entry('doubao-seedream-5-0-flash-260915', 'ImageGeneration', undefined),
+        entry('doubao-seedream-4-5-251128', 'ImageGeneration', ['image'], 'Retiring'),
+        entry('doubao-seedance-1-0-pro-250528', 'VideoGeneration', ['video'], 'Retiring'),
+        entry('wan2-1-14b-t2v-250225', '', ['video'], 'Shutdown'),
+        entry('doubao-embedding-text-240715', 'Embedding', undefined, 'Retiring'),
+        entry('doubao-seed3d-2-0-260328', '3DGeneration', ['three_d']),
+      ],
+    })
+  }) as typeof fetch)
+  try {
+    const result = await pullModels(
+      {
+        kind: 'openai_chat_completions',
+        baseUrl: 'https://ark.cn-beijing.volces.com/api/v3/',
+        apiKey: 'sk',
+      },
+      signal(),
+    )
+    const by = new Map(result.models.map((m) => [m.id, m]))
+    expect(by.get('doubao-seed-2-1-pro-260915')).toMatchObject({ output: 'chat' })
+    // 条目没有类别、名称也未收录时归为未知。
+    expect(by.get('qwen3-8b-20250429')).toEqual({ id: 'qwen3-8b-20250429', output: 'unknown' })
+    expect(by.get('doubao-seedream-5-0-flash-260915')).toEqual({
+      id: 'doubao-seedream-5-0-flash-260915',
+      output: 'image',
+      kind: 'openai_images',
+      known: true,
+    })
+    expect(by.get('doubao-seedream-4-5-251128')).toEqual({
+      id: 'doubao-seedream-4-5-251128',
+      output: 'image',
+      kind: 'openai_images',
+      known: false,
+    })
+    expect(by.get('doubao-seedance-1-0-pro-250528')).toEqual({
+      id: 'doubao-seedance-1-0-pro-250528',
+      output: 'video',
+      kind: 'ark_videos',
+      known: false,
+    })
+    for (const id of [
+      'doubao-pro-32k-240828',
+      'wan2-1-14b-t2v-250225',
+      'doubao-embedding-text-240715',
+      'doubao-seed3d-2-0-260328',
+    ])
+      expect(by.has(id)).toBe(false)
+  } finally {
+    spy.mockRestore()
+  }
 })
 
 test('两种来源都无法读取时报告失败的地址', async () => {

@@ -1,8 +1,8 @@
 /**
- * 语音合成：三个语音适配器与按文件头识别格式。
+ * 语音合成：四个语音适配器与按文件头识别格式。
  *
  * 覆盖范围：`media/adapters/openai-speech.ts`、`media/adapters/dashscope.ts` 的 `DashScopeSpeechAdapter`、
- * `media/adapters/minimax.ts` 实际发出的请求与响应的解析方式，`media/http.ts` 的 `sniffMime` 对音视频文件头的识别，
+ * `media/adapters/minimax.ts`、`media/adapters/mimo.ts` 实际发出的请求与响应的解析方式，`media/http.ts` 的 `sniffMime` 对音视频文件头的识别，
  * `catalog-minimax-audio.ts` 的单价。
  */
 
@@ -417,5 +417,88 @@ describe('Qwen-Audio 3.1', () => {
     expect(validateMediaCall(spec(next), 'speech', {}, { ...counts, audios: 3 })).toEqual([])
     expect(validateMediaCall(spec(next), 'speech', {}, { ...counts, audios: 4 })).toHaveLength(1)
     expect(validateMediaCall(spec(flash), 'speech', {}, { ...counts, audios: 1 })).toHaveLength(1)
+  })
+})
+
+describe('mimo_speech', () => {
+  const adapter = (model = 'mimo-v2.5-tts') =>
+    buildMediaAdapter({ kind: 'mimo_speech', model, apiKey: 'sk', baseUrl: `${origin()}/v1` })
+  const ok = (bytes: Uint8Array) =>
+    Response.json({
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: { role: 'assistant', audio: { data: Buffer.from(bytes).toString('base64') } },
+        },
+      ],
+      usage: { prompt_tokens: 12, completion_tokens: 80 },
+    })
+
+  test('朗读文本为 assistant 消息，朗读要求为 user 消息，其余参数放入 audio', async () => {
+    reply = () => ok(WAV)
+    const out = await adapter().run(
+      {
+        operation: 'speech',
+        prompt: '(温柔)晚安。',
+        inputs: [],
+        params: { instructions: '语速稍慢', voice: '冰糖', format: 'wav' },
+      },
+      signal(),
+    )
+    expect(seen[0]).toEqual({
+      path: '/v1/chat/completions',
+      json: {
+        model: 'mimo-v2.5-tts',
+        messages: [
+          { role: 'user', content: '语速稍慢' },
+          { role: 'assistant', content: '(温柔)晚安。' },
+        ],
+        audio: { voice: '冰糖', format: 'wav' },
+        stream: false,
+      },
+    })
+    expect(out.files[0]?.mime).toBe('audio/wav')
+    expect(out.usage).toEqual({ inputTokens: 12, outputTokens: 80 })
+  })
+
+  test('声音复刻：参考音频以 data URI 写入 audio.voice；没有朗读要求时不发送 user 消息', async () => {
+    reply = () => ok(MP3)
+    const out = await adapter('mimo-v2.5-tts-voiceclone').run(
+      {
+        operation: 'speech',
+        prompt: '你好',
+        inputs: [{ role: 'audio', bytes: MP3, mime: 'audio/mpeg', path: '/w/v.mp3' }],
+        params: { format: 'mp3' },
+      },
+      signal(),
+    )
+    expect(seen[0]?.json).toMatchObject({
+      messages: [{ role: 'assistant', content: '你好' }],
+      audio: {
+        format: 'mp3',
+        voice: `data:audio/mpeg;base64,${Buffer.from(MP3).toString('base64')}`,
+      },
+    })
+    expect(out.files[0]?.mime).toBe('audio/mpeg')
+  })
+
+  test('内容被过滤时报告原因', async () => {
+    reply = () =>
+      Response.json({ choices: [{ finish_reason: 'content_filter', message: { content: '' } }] })
+    await expect(
+      adapter().run({ operation: 'speech', prompt: 'x', inputs: [], params: {} }, signal()),
+    ).rejects.toThrow('内容被过滤，接口没有返回音频')
+  })
+
+  test('官方地址的语音默认使用 MiMo 协议；只有声音复刻接受一段参考音频', () => {
+    expect(defaultMediaKind('audio', 'https://api.xiaomimimo.com/v1')).toBe('mimo_speech')
+    const counts = { images: 0, videos: 0 }
+    const spec = (id: string) => lookupMediaModel(id, 'mimo_speech')
+    expect(
+      validateMediaCall(spec('mimo-v2.5-tts-voiceclone'), 'speech', {}, { ...counts, audios: 1 }),
+    ).toEqual([])
+    expect(
+      validateMediaCall(spec('mimo-v2.5-tts'), 'speech', {}, { ...counts, audios: 1 }),
+    ).toHaveLength(1)
   })
 })
