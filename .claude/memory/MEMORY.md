@@ -19,6 +19,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [真机电脑控制任务会操作任何已打开的窗口](desktop-live-runs-can-type-into-this-session.md) — 曾输入 `exit` 结束主会话、曾导航用户的 Edge；运行前确认 run-task.ts 会隐藏运行前已打开的全部窗口，结束后用 scan-touched.ts 检查
 - [参照用的 agent 仓库位于 view-agent](reference-agents-in-view-agent.md) — 「看看开源项目」指桌面 view-agent 下的 pi / prime / cc-haha / deepseek-harness 四个仓库；出处只写入 docs/plans
 - [前一版本未发布时不升版本号](version-bump-only-after-publish.md) — v0.1.20 未公开时新改动并入 0.1.20，本地打包安装使用同一版本号，版本说明修改当前版本的那一份
+- [正式发布经接口脚本完成](publish-release-via-api.md) — `.tmp/scratch/release-api.ps1` 用凭据管理器的令牌触发三个发布工作流并公开草稿，不需要 gh；Git Bash 中设置 `MSYS_NO_PATHCONV=1`
 - [执行 qy 必须隔离数据目录](qy-needs-isolated-home.md) — 同一条命令中设置 `QYWORK_HOME` 指向 .tmp；钩子 `scripts/guard-real-home.ts` 拦截未设置的命令；曾误用用户真实账本执行过一次
 - [Git Bash 的 /tmp 指向已删除的测试目录](git-bash-tmp-points-at-deleted-test-dir.md) — bash 先输出「could not find /tmp」、shell 工具测试报「投递额度未开账」；用 `mount` 查看指向并重建该目录，不结束其他会话的 sh
 - [与并行会话修改了同一批文件时只提交本会话的段](partial-commit-shared-files.md) — 按内容判定归属、从 HEAD 构造内容写入索引、临时工作树自检、按索引提交；带 pathspec 会把对方的段一并提交
