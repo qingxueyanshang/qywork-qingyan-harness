@@ -1,7 +1,8 @@
 /**
  * 画布工具：大模型经画布端口（`ctx.canvas`）创建、读取、修改、运行工作区中的 `*.canvas.json`。
  *
- * 读取、编辑、运行与取回分别声明工具及参数；取回只查询已有任务，不重新提交生成。
+ * 读取、编辑、运行、取回与取帧分别声明工具及参数；取回只查询已有任务，不重新提交生成；
+ * 取帧经 Office 执行程序解码视频，落盘与界面取帧相同。
  *
  * 读写与运行全部由服务端画布服务执行，与界面共用同一个实例：写入次序、运行中状态与失败原文只有一份，
  * 大模型写入的节点在写入时即推送给界面，不等待本次工具调用结束。
@@ -9,12 +10,13 @@
  */
 
 import { readFile } from 'node:fs/promises'
-import type {
-  CanvasEditResult,
-  CanvasPort,
-  CanvasRender,
-  ToolOutcome,
-  ToolSpec,
+import {
+  type CanvasEditResult,
+  type CanvasPort,
+  type CanvasRender,
+  chargeImage,
+  type ToolOutcome,
+  type ToolSpec,
 } from '@qywork/agent'
 import {
   ART_SIZE_PARAM,
@@ -24,13 +26,17 @@ import {
   type CanvasRunResult,
   type CanvasView,
   canvasFileKind,
+  canvasMediaOf,
   canvasRunLabel,
   cardIdOf,
   displayNameOf,
+  frameLabel,
+  imageSizeOf,
   parseCanvasOps,
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
 import { shrinkImage } from './image.ts'
+import { grabVideoFrame } from './office-worker.ts'
 import { resolveInWorkspace, rootsOf } from './paths.ts'
 
 function failure(message: string, errorKind?: string): ToolOutcome {
@@ -792,6 +798,94 @@ export const retrieveCanvasTool: ToolSpec = {
       return generationReceipt(
         await canvas.retrieve(path, ids[0]!, text(args.version), ctx.media, ctx.signal),
       )
+    } catch (err) {
+      return { status: 'failure', executed: true, message: (err as Error).message }
+    }
+  },
+}
+
+/**
+ * 卡片的视频文件：视频文件卡取其文件，视频生成卡取当前版本。
+ * 待取回的版本是恢复记录（`.task.json`），不是视频，按尚无结果处理。
+ */
+function videoOf(node: CanvasNode): { path: string } | { error: string } {
+  const name = displayNameOf(node)
+  if (node.type === 'timeline' || canvasMediaOf(node) !== 'video') {
+    return { error: `「${name}」不是视频卡` }
+  }
+  if (node.type === 'file') return { path: node.path }
+  const current = node.versions.find((v) => v.id === node.current)
+  return current && !current.path.endsWith('.task.json')
+    ? { path: current.path }
+    : { error: `「${name}」尚无视频结果` }
+}
+
+export const captureCanvasFrameTool: ToolSpec = {
+  name: 'capture_canvas_frame',
+  description:
+    '从画布上的视频卡截取一帧，保存为 generated/ 下的 PNG，并作为图片卡放在该视频卡右侧，与界面中的取帧相同。' +
+    'node 是视频生成卡或视频文件卡的名称，生成卡取当前版本；at 是秒数，0 为首帧，不小于视频时长时为尾帧。' +
+    '回执附上截取的画面，据此核对是否为要取的时刻。' +
+    '新卡作为素材使用时，用 edit_canvas 的 update 修改其名称与 group，再连线到使用它的生成卡。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '画布文件的工作区路径' },
+      node: { type: 'string', description: '视频卡的名称' },
+      at: { type: 'number', description: '截取的时刻（秒）' },
+    },
+    required: ['path', 'node', 'at'],
+    additionalProperties: false,
+  },
+  actionKind: 'write',
+  objectLabel: '画布',
+  category: 'media',
+  facet: '生成',
+  summary: '从画布视频卡截取一帧',
+  targetExtractor: (a) => text(a.path) ?? null,
+  permissionEffect: 'write',
+  async fn(args, ctx) {
+    const canvas = ctx.canvas
+    if (!canvas) return failure('本次执行没有画布通道')
+    const office = ctx.office
+    if (!office) return failure('本次执行没有 Office 执行程序，无法解码视频')
+    if (!office.enabled()) return failure('Office 文档已关闭')
+    const path = text(args.path)
+    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+    const ref = text(args.node)
+    if (!ref) return failure('缺少 node', 'invalid_tool_arguments')
+    const at = args.at
+    if (typeof at !== 'number' || !Number.isFinite(at) || at < 0) {
+      return failure('at 须为不小于 0 的秒数', 'invalid_tool_arguments')
+    }
+    try {
+      const { doc } = await canvas.read(path)
+      const found = cardIdOf(doc, ref)
+      if (!found.ok) return failure(found.error, 'invalid_tool_arguments')
+      const node = doc.nodes.find((n) => n.id === found.id)!
+      const video = videoOf(node)
+      if ('error' in video) return failure(video.error, 'invalid_tool_arguments')
+      const abs = await resolveInWorkspace(rootsOf(ctx), video.path, { mustExist: true })
+      const frame = await grabVideoFrame(ctx, office, abs, video.path, at)
+      if ('status' in frame) return frame
+      const label = frameLabel(at, frame.duration ?? Number.POSITIVE_INFINITY)
+      const landed = await canvas.captureFrame(path, node.id, label, frame.png)
+      const card = (await canvas.read(path)).doc.nodes.find((n) => n.id === landed.nodeId)
+      const fit = await shrinkImage(frame.png, 'image/png')
+      chargeImage(ctx, imageSizeOf(fit.bytes))
+      return {
+        status: 'success',
+        message:
+          `已截取「${displayNameOf(node)}」${Math.round(frame.time * 100) / 100} 秒处的一帧` +
+          `（${frame.width}×${frame.height}），保存为 ${landed.path}；` +
+          `新卡「${card ? displayNameOf(card) : landed.nodeId}」位于该视频卡右侧。`,
+        data: {
+          nodeId: landed.nodeId,
+          path: landed.path,
+          images: [{ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }],
+        },
+        fileChanges: [{ path: landed.path, changeType: 'created' }],
+      }
     } catch (err) {
       return { status: 'failure', executed: true, message: (err as Error).message }
     }

@@ -1,5 +1,6 @@
-"""覆盖 video.py 与 worker 的 frames 动作：按画面变化选帧、首尾必选、真实时间戳、区间读取、不写时长的容器、
-无法打开的文件报告文件名、说明中的未查看区间与声音未处理。测试视频由 PyAV 在测试中生成：红、绿、蓝各 2 秒。
+"""覆盖 video.py 与 worker 的 frames、frame 动作：按画面变化选帧、首尾必选、真实时间戳、区间读取、不写时长的容器、
+无法打开的文件报告文件名、说明中的未查看区间与声音未处理；按时间点截取原尺寸 PNG，越界的时间点取首帧或尾帧。
+测试视频由 PyAV 在测试中生成：红、绿、蓝各 2 秒。
 """
 
 import json
@@ -155,6 +156,61 @@ class FramesActionTest(unittest.TestCase):
     def test_av_is_optional_in_probe(self):
         self.assertIn("av", worker.OPTIONAL)
         self.assertIn(("av", "av"), worker.PACKAGES)
+
+
+class GrabTest(unittest.TestCase):
+    def test_frame_at_time_is_full_size_png(self):
+        with TempDir() as d:
+            make_clip(d / "c.mp4", size=(320, 240))
+            res = video.grab(d / "c.mp4", d / "f.png", 3.0)
+            self.assertAlmostEqual(res["time"], 3.0, delta=0.11)
+            self.assertAlmostEqual(res["duration"], 6.0, delta=0.2)
+            self.assertEqual((res["width"], res["height"]), (320, 240))
+            with Image.open(d / "f.png") as img:
+                self.assertEqual((img.format, img.size), ("PNG", (320, 240)))
+            self.assertEqual(dominant(d / "f.png"), "g")
+
+    def test_out_of_range_time_takes_first_or_last_frame(self):
+        with TempDir() as d:
+            make_clip(d / "c.mp4")
+            last = video.grab(d / "c.mp4", d / "last.png", 99)
+            self.assertGreater(last["time"], 5.8)
+            self.assertEqual(dominant(d / "last.png"), "b")
+            first = video.grab(d / "c.mp4", d / "first.png", -1)
+            self.assertAlmostEqual(first["time"], 0.0, delta=0.11)
+            self.assertEqual(dominant(d / "first.png"), "r")
+
+    def test_unreadable_file_names_itself(self):
+        with TempDir() as d:
+            (d / "bad.mp4").write_bytes(b"not a video")
+            with self.assertRaises(video.Unreadable) as e:
+                video.grab(d / "bad.mp4", d / "f.png", 1)
+            self.assertIn("bad.mp4", str(e.exception))
+            self.assertFalse((d / "f.png").exists())
+
+
+class FrameActionTest(unittest.TestCase):
+    def run_frame(self, d, **body):
+        req = {"action": "frame", "call_dir": str(d), **body}
+        (d / "request.json").write_text(json.dumps(req), "utf-8")
+        worker.main(["worker.py", str(d / "request.json")])
+        return json.loads((d / "response.json").read_text("utf-8"))
+
+    def test_returns_png_in_call_dir_with_time_and_duration(self):
+        with TempDir() as d:
+            make_clip(d / "c.mp4")
+            resp = self.run_frame(d, path=str(d / "c.mp4"), at=2.5)
+            self.assertTrue(resp["ok"], resp["message"])
+            self.assertEqual(resp["images"][0]["path"], str(d / "frame.png"))
+            self.assertEqual(dominant(d / "frame.png"), "g")
+            self.assertAlmostEqual(resp["frame"]["time"], 2.5, delta=0.11)
+            self.assertAlmostEqual(resp["frame"]["duration"], 6.0, delta=0.2)
+
+    def test_missing_file(self):
+        with TempDir() as d:
+            resp = self.run_frame(d, path=str(d / "none.mp4"), at=1)
+            self.assertFalse(resp["ok"])
+            self.assertIn("不存在", resp["message"])
 
 
 if __name__ == "__main__":

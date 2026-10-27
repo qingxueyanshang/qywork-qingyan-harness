@@ -1,7 +1,7 @@
 /**
  * 覆盖 `canvas.ts` 的 `canvasPort`：Agent 经由端口与界面经由 HTTP 使用同一个画布服务。
  *
- * 锁定四项行为：同一批操作经两条路径写出的文件逐字节相同；Agent 与用户同时修改时，双方的改动均保留；
+ * 锁定五项行为：同一批操作经两条路径写出的文件逐字节相同；经端口与经 HTTP 取帧写出的画布与图片逐字节相同；Agent 与用户同时修改时，双方的改动均保留；
  * 经端口运行视频时，任务节点在端口返回（工具结束）之前已写入画布并发出通知；
  * 经端口的修改按卡片名称引用、名称不重复、参数按模型参数表核对，经端口读取的生成卡参数为实际发送的参数
  * （`canvas-agent-ops.ts`）。
@@ -668,5 +668,47 @@ describe('画布端口', () => {
     expect(video?.type === 'generate' && video.versions[0]?.path.endsWith('.task.json')).toBe(true)
     finish({ ok: false, message: '等待超时', pendingTaskId: 't' })
     expect(await running).toEqual({ ok: false, message: '等待超时', pending: true })
+  })
+
+  test('经端口取帧与经 HTTP 取帧写出的画布文件与图片逐字节相同', async () => {
+    const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2])
+    const setup = async () => {
+      const root = await workspace()
+      await writeFile(join(root, 'clip.mp4'), 'mp4')
+      const service = new CanvasService({ publish: () => {}, newId: sequence() })
+      const { refs } = await service.apply(root, PATH, [
+        { op: 'add_file', ref: '$v', path: 'clip.mp4', name: '视频1' },
+      ])
+      return { root, service, video: refs.$v! }
+    }
+
+    const viaPort = await setup()
+    const landed = await canvasPort(viaPort.service, { id: 'ws', root: viaPort.root }).captureFrame(
+      PATH,
+      viaPort.video,
+      '2.5s',
+      PNG,
+    )
+    expect(landed.path).toBe('generated/视频1_2.5s.png')
+
+    const viaHttp = await setup()
+    const store = new Store({ path: ':memory:' })
+    const ws = upsertWorkspace(store, viaHttp.root, 'demo')
+    const d = { store, canvas: viaHttp.service } as unknown as ApiDeps
+    const query = new URLSearchParams({
+      ws: ws.id,
+      path: PATH,
+      nodeId: viaHttp.video,
+      label: '2.5s',
+    })
+    const url = `http://127.0.0.1/api/canvas/frame?${query}`
+    const res = await handleApi(new URL(url), new Request(url, { method: 'POST', body: PNG }), d)
+    expect(res?.status).toBe(200)
+
+    expect(await readFile(join(viaHttp.root, PATH), 'utf8')).toBe(
+      await readFile(join(viaPort.root, PATH), 'utf8'),
+    )
+    expect(new Uint8Array(await readFile(join(viaHttp.root, landed.path)))).toEqual(PNG)
+    expect(new Uint8Array(await readFile(join(viaPort.root, landed.path)))).toEqual(PNG)
   })
 })

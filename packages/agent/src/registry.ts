@@ -467,6 +467,16 @@ export interface CanvasPort {
     media: MediaPort,
     signal: AbortSignal,
   ): Promise<CanvasRunResult>
+  /**
+   * 保存从视频卡截取的一帧（PNG）并在该卡右侧添加引用它的图片卡，与界面取帧相同。
+   * `label` 为帧的名称（`frameLabel`）。返回新卡的 id 与文件的工作区路径。
+   */
+  captureFrame(
+    path: string,
+    nodeId: string,
+    label: string,
+    png: Uint8Array,
+  ): Promise<{ nodeId: string; path: string }>
 }
 
 /**
@@ -481,6 +491,8 @@ export interface OfficePort {
   /** worker 入口 `worker.py` 的绝对路径。 */
   worker: string
   apps: Record<'docx' | 'xlsx' | 'pptx', { available: boolean; reason: string }>
+  /** 视频解码库 av 是否已安装。未安装时 `capture_canvas_frame` 不注册。 */
+  videoDecoder: boolean
   /** 开关当前是否开启。每次调用前实时判定：运行中关闭后，后续调用被拒绝，已开始的调用正常结束。 */
   enabled(): boolean
 }

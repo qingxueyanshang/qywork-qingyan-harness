@@ -1,25 +1,34 @@
 /**
- * 覆盖 `canvas.ts` 的读取、编辑、运行与取回工具，`index.ts` 中按通道注册的逻辑，
- * 以及 `files.ts` 写入文本文件后附上的画布引用说明。
+ * 覆盖 `canvas.ts` 的读取、编辑、运行、取回与取帧工具，`index.ts` 中按通道注册的逻辑，
+ * 以及 `files.ts` 写入文本文件后附上的画布引用说明。取帧的 worker 由 `office-worker.test-helper.ts` 代替 Python，
+ * `office-worker.ts` 的 `grabVideoFrame` 经此覆盖。
  *
  * 端口使用假实现：此处验证工具一侧的行为，包括按通道是否存在决定注册、按动作声明权限、参数解析、
  * 运行时使用本轮的生成端口与中止信号、结果写为回执。端口背后的画布服务由 server 包的测试覆盖。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   type CanvasPort,
   type MediaPort,
+  type OfficePort,
   openBatchBudget,
   type ToolContext,
   ToolRegistry,
 } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
-import { applyCanvasOps, type CanvasOp, type CanvasView, emptyCanvas } from '@qywork/core'
 import {
+  addVersions,
+  applyCanvasOps,
+  type CanvasOp,
+  type CanvasView,
+  emptyCanvas,
+} from '@qywork/core'
+import {
+  captureCanvasFrameTool,
   createCanvasTool,
   editCanvasTool,
   readCanvasTool,
@@ -133,6 +142,9 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
       retrieve: async (path, node, version, media, signal) => {
         seen.retrieves.push({ path, node, version, media, signal })
         return result
+      },
+      captureFrame: async () => {
+        throw new Error('不该调用取帧')
       },
     },
   }
@@ -728,5 +740,151 @@ describe('canvas 工具', () => {
     }
     expect(permissions).toEqual([])
     expect(seen).toEqual({ creates: [], edits: [], batches: [], runs: [], retrieves: [] })
+  })
+})
+
+describe('capture_canvas_frame', () => {
+  const OFFICE: OfficePort = {
+    python: process.execPath,
+    worker: join(import.meta.dir, 'office-worker.test-helper.ts'),
+    apps: {
+      docx: { available: true, reason: '' },
+      xlsx: { available: true, reason: '' },
+      pptx: { available: true, reason: '' },
+    },
+    videoDecoder: true,
+    enabled: () => true,
+  }
+  const MADE = {
+    prompt: '',
+    provider: 'p',
+    model: 'm',
+    params: {},
+    inputs: [],
+    at: '2026-10-27T00:00:00.000Z',
+  }
+  const PATH = 'board.canvas.json'
+
+  /**
+   * 画布：图片卡「小满」（id1）、当前版本为 generated/clip.mp4 的视频卡「1-1 视频」（id2）、
+   * 只有待取回版本的视频卡「1-2 视频」（id3）、视频文件卡「坏视频」（id4，模拟 worker 对它报告无法打开）。
+   */
+  async function board(): Promise<{ root: string; view: CanvasView }> {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-canvas-frame-'))
+    await mkdir(join(root, 'generated'), { recursive: true })
+    await writeFile(join(root, 'generated', 'clip.mp4'), 'mp4')
+    await writeFile(join(root, 'broken.mp4'), 'mp4')
+    let n = 0
+    const r = applyCanvasOps(
+      emptyCanvas(),
+      [
+        { op: 'add_file', path: '角色/小满.png', name: '小满' },
+        { op: 'add_generate', output: 'video', name: '1-1 视频' },
+        { op: 'add_generate', output: 'video', name: '1-2 视频' },
+        { op: 'add_file', path: 'broken.mp4', name: '坏视频' },
+      ],
+      () => `id${++n}`,
+    )
+    if (!r.ok) throw new Error(r.error)
+    const a = addVersions(r.doc, 'id2', [{ id: 'v1', path: 'generated/clip.mp4', made: MADE }])
+    if (!a.ok) throw new Error(a.error)
+    const b = addVersions(a.doc, 'id3', [{ id: 'v2', path: 'generated/1-2.task.json', made: MADE }])
+    if (!b.ok) throw new Error(b.error)
+    return { root, view: { path: PATH, doc: b.doc, states: {} } }
+  }
+
+  function frameCtx(root: string, port: CanvasPort, office: OfficePort | null = OFFICE) {
+    return {
+      ...ctx(port),
+      workspaceRoot: root,
+      state: openBatchBudget(new Map(), 100_000),
+      ...(office ? { office } : {}),
+    }
+  }
+
+  /** 端口记录每次取帧，并在取帧后的读取中带上新卡（id9），与服务端的落盘结果一致。 */
+  function capturing(view: CanvasView) {
+    const { port } = fakePort(DONE)
+    const captures: { path: string; nodeId: string; label: string; png: Uint8Array }[] = []
+    let landed: string | null = null
+    port.read = async () => {
+      if (!landed) return view
+      const r = applyCanvasOps(view.doc, [{ op: 'add_file', path: landed }], () => 'id9')
+      if (!r.ok) throw new Error(r.error)
+      return { ...view, doc: r.doc }
+    }
+    port.captureFrame = async (path, nodeId, label, png) => {
+      captures.push({ path, nodeId, label, png })
+      landed = `generated/1-1 视频_${label}.png`
+      return { nodeId: 'id9', path: landed }
+    }
+    return { port, captures }
+  }
+
+  test('有画布通道、Office 执行程序与视频解码库时才注册，需要写权限', () => {
+    const has = (opts: Parameters<typeof registerBuiltinTools>[1]) => {
+      const registry = new ToolRegistry()
+      registerBuiltinTools(registry, opts)
+      return registry.has('capture_canvas_frame')
+    }
+    expect(has({ canvas: true, office: true, videoDecoder: true })).toBe(true)
+    expect(has({ canvas: true, office: true })).toBe(false)
+    expect(has({ canvas: true, videoDecoder: true })).toBe(false)
+    expect(has({ office: true, videoDecoder: true })).toBe(false)
+    expect(captureCanvasFrameTool.actionKind).toBe('write')
+    expect(captureCanvasFrameTool.permissionEffect).toBe('write')
+  })
+
+  test('截取当前版本视频的一帧交给端口落盘：名称按时刻，回执写明新卡并附上画面', async () => {
+    const { root, view } = await board()
+    const { port, captures } = capturing(view)
+    const c = frameCtx(root, port)
+    const out = await captureCanvasFrameTool.fn({ path: PATH, node: '1-1 视频', at: 2.5 }, c)
+    expect(out.status).toBe('success')
+    expect(captures).toHaveLength(1)
+    expect(captures[0]).toMatchObject({ path: PATH, nodeId: 'id2', label: '2.5s' })
+    expect([...captures[0]!.png.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47])
+    expect(out.message).toContain('已截取「1-1 视频」2.5 秒处的一帧')
+    expect(out.message).toContain('保存为 generated/1-1 视频_2.5s.png')
+    expect(out.message).toContain('新卡「1-1 视频_2.5s」位于该视频卡右侧')
+    expect(out.data).toMatchObject({ nodeId: 'id9', path: 'generated/1-1 视频_2.5s.png' })
+    expect((out.data?.images as unknown[]).length).toBe(1)
+    expect(out.fileChanges).toEqual([
+      { path: 'generated/1-1 视频_2.5s.png', changeType: 'created' },
+    ])
+  })
+
+  test('时刻为 0 时名称为首帧，不小于视频时长时为尾帧且回执写实际截取的时间', async () => {
+    const { root, view } = await board()
+    const { port, captures } = capturing(view)
+    const c = frameCtx(root, port)
+    await captureCanvasFrameTool.fn({ path: PATH, node: '1-1 视频', at: 0 }, c)
+    const tail = await captureCanvasFrameTool.fn({ path: PATH, node: 'id2', at: 99 }, c)
+    expect(captures.map((x) => x.label)).toEqual(['首帧', '尾帧'])
+    expect(tail.message).toContain('5.96 秒处的一帧')
+  })
+
+  test('不是视频卡、只有待取回版本、时刻不合法或没有 Office 执行程序时不取帧；解码失败时返回原因', async () => {
+    const { root, view } = await board()
+    const { port, captures } = capturing(view)
+    const c = frameCtx(root, port)
+    const run = (args: Record<string, unknown>, context = c) =>
+      captureCanvasFrameTool.fn({ path: PATH, node: '1-1 视频', at: 1, ...args }, context)
+    expect(await run({ node: '小满' })).toMatchObject({
+      status: 'failure',
+      message: '「小满」不是视频卡',
+      errorKind: 'invalid_tool_arguments',
+    })
+    expect((await run({ node: '1-2 视频' })).message).toBe('「1-2 视频」尚无视频结果')
+    for (const at of [-1, '3', Number.NaN, null]) {
+      expect(await run({ at })).toMatchObject({ errorKind: 'invalid_tool_arguments' })
+    }
+    expect((await run({}, frameCtx(root, port, null))).message).toContain('没有 Office 执行程序')
+    const off = frameCtx(root, port, { ...OFFICE, enabled: () => false })
+    expect((await run({}, off)).message).toBe('Office 文档已关闭')
+    const broken = await run({ node: '坏视频' })
+    expect(broken.status).toBe('failure')
+    expect(broken.message).toContain('broken.mp4 无法打开')
+    expect(captures).toEqual([])
   })
 })

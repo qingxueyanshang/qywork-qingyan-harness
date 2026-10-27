@@ -181,7 +181,13 @@ export function createOfficeHost(config: () => QyConfig): OfficeHost {
       if (!enabled() || !current.available || !current.python || !worker || !current.apps) {
         return undefined
       }
-      return { python: current.python, worker, apps: current.apps, enabled }
+      return {
+        python: current.python,
+        worker,
+        apps: current.apps,
+        videoDecoder: current.videoDecoder,
+        enabled,
+      }
     },
   }
 }

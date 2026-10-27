@@ -25,6 +25,7 @@ import {
   copyOps,
   displayNameOf,
   excerptOf,
+  frameLabel,
   GENERATE_OUTPUTS,
   type GenerateOutput,
   inputsOf,
@@ -85,7 +86,7 @@ import { type ArtLive, ArtView } from './ArtView.tsx'
 import { pngOf, recordArt } from './art.ts'
 import { Bitmap } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
-import { captureVideoFrame, frameLabel } from './frame.ts'
+import { captureVideoFrame } from './frame.ts'
 import { GeneratePanel, mediaOf } from './GeneratePanel.tsx'
 import { KindIcon, OUTPUT_LABEL } from './kinds.tsx'
 import { AudioPlayer, clock, FrameBar, type PlayerHandle, VideoPlayer } from './Player.tsx'

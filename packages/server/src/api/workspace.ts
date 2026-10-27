@@ -298,6 +298,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
       desktop: true,
       canvas: true,
       office: true,
+      videoDecoder: true,
       delegate: true,
       media: MEDIA_OUTPUTS,
     })

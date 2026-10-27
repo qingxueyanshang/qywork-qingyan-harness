@@ -1,5 +1,6 @@
 /**
- * 从视频截取一帧并导出 PNG。在浏览器中执行：本机没有 FFmpeg，服务端没有解码器。
+ * 从视频截取一帧并导出 PNG。在浏览器中执行：服务端进程不解码视频；Office 运行环境中的视频解码库是可选依赖，
+ * 界面取帧不依赖它。帧的名称见 core 的 `frameLabel`。
  *
  * 视频元素必须设置 `crossOrigin = 'anonymous'`：服务端对 `/api/` 允许任意源（CORS `*`），
  * 绘制到 `<canvas>` 后画布不被污染，`toBlob` 才能导出；不设置时画布被跨源污染，导出直接抛错。
@@ -10,16 +11,6 @@
  */
 export function frameTime(at: number, duration: number): number {
   return Math.min(Math.max(0, at), Math.max(0, duration - 1 / 30))
-}
-
-/**
- * 帧的名称，用于文件名：时刻在起点为 `首帧`、在终点为 `尾帧`，其余为 `12.4s`。
- * 与服务端取帧接口接受的三种格式一致。
- */
-export function frameLabel(at: number, duration: number): string {
-  if (at <= 0) return '首帧'
-  if (at >= duration) return '尾帧'
-  return `${Math.round(at * 10) / 10}s`
 }
 
 function once(target: HTMLVideoElement, event: string): Promise<void> {

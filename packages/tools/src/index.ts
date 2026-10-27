@@ -133,6 +133,7 @@ export { type ChangeWindow, openChangeWindow } from './workspace-watch.ts'
 
 import type { MediaOutput } from '@qywork/core'
 import {
+  captureCanvasFrameTool,
   createCanvasTool,
   editCanvasTool,
   readCanvasTool,
@@ -168,6 +169,8 @@ export function registerBuiltinTools(
     canvas?: boolean
     /** 有 Office 执行程序（宿主注入了 `OfficePort`）。 */
     office?: boolean
+    /** Office 执行程序中已安装视频解码库（`OfficePort.videoDecoder`）。 */
+    videoDecoder?: boolean
     /** 已配置模型的生成类别。各类别的生成工具只在该类别有模型时注册。 */
     media?: readonly MediaOutput[]
     /**
@@ -217,6 +220,8 @@ export function registerBuiltinTools(
     ...(opts.canvas
       ? [createCanvasTool, readCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool]
       : []),
+    // 取帧还需要视频解码库：缺少时调用必然失败（B5）。
+    ...(opts.canvas && opts.office && opts.videoDecoder ? [captureCanvasFrameTool] : []),
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,

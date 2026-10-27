@@ -2,7 +2,7 @@
  * Office worker 的调用约定：请求写入调用目录 `<会话临时目录>/office/<runId>/<调用>/<动作>-request.json`，
  * worker 在同目录写入 `response.json` 后以 0 退出。超时或取消时 worker 进程树被结束，但办公软件进程不在
  * 该进程树中，因此随后以 `cleanup` 动作再启动一次 worker，按调用目录中登记的实例处理残留进程。
- * `office` 工具与 `read_file` 的视频抽帧共用此约定。
+ * `office` 工具、`read_file` 的视频抽帧与 `capture_canvas_frame` 的取帧共用此约定。
  *
  * 目录的生命周期：worker 给出结果且调用方读完其中的文件后，调用方以 `releaseCall` 删除调用目录；
  * 写入未提交、超时、取消时保留，供本轮查看候选文件与处理残留进程。渲染缓存位于同一 run 目录下，
@@ -21,7 +21,7 @@ import { collectProcess, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
 import { redactSecrets } from './secrets.ts'
 import { commandEnv } from './shell.ts'
 
-/** 只读动作（read、view、frames）的超时。 */
+/** 只读动作（read、view、frames、frame）的超时。 */
 export const READ_TIMEOUT_MS = 180_000
 const CLEANUP_TIMEOUT_MS = 60_000
 
@@ -57,6 +57,8 @@ export interface WorkerResponse {
   text?: string
   /** `key` 是 view 渲染的页码（xlsx 为「工作表名:页码」），保存页面图时据此命名；frames 不提供。 */
   images?: { path: string; key?: string; label: string; width: number; height: number }[]
+  /** frame 动作：截取的实际时间与视频时长（秒）；时长读不出时为 null。 */
+  frame?: { time: number; duration: number | null }
   script_output?: string
   residue?: { pid: number; name: string; cmdline: string }[]
   errors?: string[]
@@ -215,4 +217,35 @@ export async function readVideoFrames(
   // 帧已写入回执，磁盘上的副本不再被读取。
   await releaseCall(run)
   return { status: 'success', message: res.text ?? '', data: { images } }
+}
+
+/** 截取的一帧：PNG 字节、实际时间与视频时长（秒，读不出时为 null）、像素宽高。 */
+export interface VideoFrame {
+  png: Uint8Array
+  time: number
+  duration: number | null
+  width: number
+  height: number
+}
+
+/**
+ * 视频在时间点 `at`（秒）处的一帧：worker 的 `frame` 动作按原尺寸写出 PNG，越界的时间点取首帧或尾帧。
+ * 无法取得时返回失败回执。
+ */
+export async function grabVideoFrame(
+  ctx: ToolContext,
+  port: OfficePort,
+  abs: string,
+  shown: string,
+  at: number,
+): Promise<VideoFrame | ToolOutcome> {
+  const run = await runWorker(ctx, port, { action: 'frame', path: abs, at }, READ_TIMEOUT_MS)
+  if (!run.response) return noResponse(run)
+  const res = run.response
+  const image = res.images?.[0]
+  if (!res.ok || !image || !res.frame)
+    return { status: 'failure', message: `${shown}：${res.message}` }
+  const png = new Uint8Array(await readFile(image.path))
+  await releaseCall(run)
+  return { png, ...res.frame, width: image.width, height: image.height }
 }

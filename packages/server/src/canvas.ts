@@ -1991,5 +1991,7 @@ export function canvasPort(
       service.runBatch(ws, path, nodeIds, { media, signal }),
     retrieve: async (path, nodeId, version, media, signal) =>
       (await service.retrieve(ws, path, nodeId, version, { media, signal })).done,
+    captureFrame: (path, nodeId, label, png) =>
+      service.captureFrame(ws.root, path, nodeId, label, png),
   }
 }
