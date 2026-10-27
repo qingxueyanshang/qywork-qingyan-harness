@@ -1581,6 +1581,9 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'alibaba',
       vision: true,
       video: true,
+      // 视频时长按百炼视觉理解文档（2026-10-27 核对）：Qwen3.8 / 3.7 系列 2 秒至 2 小时，qwen3-vl-plus 2 秒至 1 小时。
+      // 实测 qwen3.8-flash：0.5 秒与 7300 秒被拒，1.9 秒与 7100 秒正常。
+      videoSeconds: { min: 2, max: 7200 },
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(12, 36, 1.5),
@@ -1597,6 +1600,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'alibaba',
       vision: true,
       video: true,
+      videoSeconds: { min: 2, max: 7200 },
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(0.8, 2.7, 0.1),
@@ -1606,15 +1610,14 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     {
       ...base,
       ...effort(['low', 'medium', 'xhigh']),
-      // 视频时长按百炼视觉理解文档（2026-10-27 核对）：Qwen3.8 / 3.7 系列 2 秒至 2 小时，qwen3-vl-plus 2 秒至 1 小时。
-      // 实测 qwen3.8-flash：0.5 秒与 7300 秒被拒，1.9 秒与 7100 秒正常。
-      videoSeconds: { min: 2, max: 7200 },
       id: 'qwen3.8-omni-flash',
       displayName: 'Qwen3.8 Omni Flash',
       vendor: 'alibaba',
       // 当前目录只声明已接通的图片与视频输入；音频输入由模型支持，但本协议适配器尚未接通。
       vision: true,
       video: true,
+      // 全模态文档写明视频最长 2 小时，未写最短时长；实测 0.5 秒与 7300 秒被拒，1.9 秒与 7100 秒正常。
+      videoSeconds: { min: 2, max: 7200 },
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(0.8, 2.7, 0.1),
@@ -1625,7 +1628,6 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...base,
       ...thinksNoDial,
       id: 'qwen3.7-max',
-      videoSeconds: { min: 2, max: 7200 },
       displayName: 'Qwen3.7 Max',
       vendor: 'alibaba',
       vision: false,
@@ -1641,9 +1643,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3.7 Plus',
       vendor: 'alibaba',
       vision: true,
-      // 全模态文档写明视频最长 2 小时，未写最短时长；实测 0.5 秒与 7300 秒被拒，1.9 秒与 7100 秒正常。
-      videoSeconds: { min: 2, max: 7200 },
       video: true,
+      videoSeconds: { min: 2, max: 7200 },
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(2, 8, 0.4),
@@ -1657,6 +1658,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'alibaba',
       vision: true,
       video: true,
+      videoSeconds: { min: 2, max: 7200 },
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
       pricing: cny(0.2, 0.8, 0.04),
@@ -1669,8 +1671,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3-VL Plus',
       vendor: 'alibaba',
       vision: true,
-      videoSeconds: { min: 2, max: 7200 },
       video: true,
+      videoSeconds: { min: 2, max: 3600 },
       contextWindow: 262_144,
       maxOutputTokens: 32_768,
       pricing: cny(1, 10, 0.2),
@@ -1683,7 +1685,6 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Qwen3-VL Flash',
       vendor: 'alibaba',
       vision: true,
-      videoSeconds: { min: 2, max: 7200 },
       video: true,
       contextWindow: 262_144,
       maxOutputTokens: 32_768,
@@ -1697,7 +1698,6 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * 价目来源：Kimi 开放平台价目页（2026-10-24 核对），单位 ¥/百万：
      *
      * | 模型 | 输入 | 输出 | 缓存命中 | 缓存写入（5min） | 缓存写入（1h） |
-      videoSeconds: { min: 2, max: 3600 },
      * |---|---|---|---|---|---|
      * | kimi-k3.1-pro | 13 | 68 | 1.3 | 13 | 26 |
      * | kimi-k3.1-pro-highspeed | 26 | 136 | 1.3 | 26 | 52 |
