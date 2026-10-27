@@ -7,6 +7,7 @@
  * 另锁定主按钮的一条判据：忙态包含运行中的子 agent，此时主按钮仍是停止。
  * 补全菜单以输入框定位，运行位置行的显隐不改变定位基准，选择候选不提交表单。
  * 草稿、待发送附件与异步上传按会话隔离，切回与刷新后均恢复所属会话的内容。
+ * 视频附件只在模型既不接受视频也不接受图片时拦截。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
@@ -471,6 +472,97 @@ describe('仅子 agent 运行中时主按钮仍是停止', () => {
         busyConversations: [],
         lastRunId: null,
         followUps: [],
+      })
+    }
+  })
+})
+
+describe('视频附件', () => {
+  /**
+   * 要防止的形状：模型不接受原生视频时一律拦截，而后端对这种情况会把视频替换为一行说明，
+   * 由模型调用 read_file 抽取关键帧读取。模型接受图片时照常发送，图片与视频都不接受时才拦截。
+   */
+  test('模型接受图片时可发送视频；图片与视频都不接受时拦截并保留附件', async () => {
+    const store = await import('../lib/store/index.ts')
+    const settings = await import('../lib/store/settings.ts')
+    const conversationsBefore = [...store.state.conversations]
+    const row = (id: string, vision: boolean) => ({
+      id,
+      label: id,
+      chatToolSchema: 'native',
+      effortLevels: [],
+      effort: null,
+      currency: 'USD',
+      vision,
+      video: false,
+      known: true,
+    })
+    const beforeApi = store.client.api
+    store.client.api = async <T,>(path: string) =>
+      (path === '/api/models'
+        ? {
+            providers: [{ name: 'p', models: [row('frames', true), row('text', false)] }],
+            media: [],
+            mediaLibrary: [],
+            library: [],
+          }
+        : {
+            attachment: {
+              type: 'video',
+              name: 'a.mp4',
+              mime: 'video/mp4',
+              size: 1,
+              path: 'C:/a.mp4',
+            },
+          }) as T
+    await settings.reloadModelCatalog()
+    store.setState({
+      activeConversation: 'cv_video',
+      busyConversations: [],
+      followUps: [],
+      conversations: [
+        { id: 'cv_video', provider: 'p', model: 'frames' },
+        { id: 'cv_video_text', provider: 'p', model: 'text' },
+      ] as never,
+    })
+    const { dispose, host, textarea } = await mountComposer(false)
+    const beforeSend = store.client.send
+    const commands: { type: string; attachments?: unknown[] }[] = []
+    store.client.send = (command) => commands.push(command as never)
+    const attachVideo = async () => {
+      const paste = new Event('paste', { bubbles: true, cancelable: true })
+      Object.defineProperty(paste, 'clipboardData', {
+        value: { files: [new File(['v'], 'a.mp4', { type: 'video/mp4' })] },
+      })
+      textarea.dispatchEvent(paste)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    try {
+      await attachVideo()
+      input(textarea, '这是录制好的视频')
+      click(host.querySelector('.send-btn') as HTMLButtonElement)
+      expect(commands.filter((c) => c.type === 'message.send')).toHaveLength(1)
+      expect(commands[0]?.attachments).toHaveLength(1)
+      expect(store.state.notice).toBeNull()
+
+      store.setState('activeConversation', 'cv_video_text')
+      await attachVideo()
+      input(textarea, '这是录制好的视频')
+      click(host.querySelector('.send-btn') as HTMLButtonElement)
+      expect(commands.filter((c) => c.type === 'message.send')).toHaveLength(1)
+      expect(store.state.notice?.reason).toBe('model_without_video')
+      expect(host.querySelector('[aria-label="移除 a.mp4"]')).not.toBeNull()
+    } finally {
+      store.client.send = beforeSend
+      store.client.api = beforeApi
+      dispose()
+      await settings.reloadModelCatalog().catch(() => {})
+      store.setState({
+        activeConversation: null,
+        busyConversations: [],
+        followUps: [],
+        notice: null,
+        conversations: conversationsBefore,
       })
     }
   })
