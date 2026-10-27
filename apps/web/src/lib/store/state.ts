@@ -306,6 +306,13 @@ export interface AppState {
     unmeasuredVideos: number
   } | null
   /**
+   * 上下文占用读取失败的原因（服务端原文），读取成功或收到实时读数时清空。
+   *
+   * 不要按空占用处理：服务端对「会话绑定的接口或模型已不在配置中」返回 409，按空处理时读数整体消失，
+   * 用户看不到原因。
+   */
+  contextError: string | null
+  /**
    * 当前会话排队中的跟进消息。整表快照语义：`queue.changed` 每次整体替换。
    *
    * 真源在服务端进程内（`RunManager`），此处只是其投影：入队时先乐观添加一条
@@ -367,6 +374,7 @@ const initial: AppState = {
   views: {},
   busyConversations: [],
   context: null,
+  contextError: null,
   fileVersion: 0,
   canvasVersion: 0,
   fileChanges: [],

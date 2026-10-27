@@ -4,6 +4,7 @@ import {
   activeModel,
   activeModelRow,
   ensureModelCatalog,
+  explainApiError,
   isRunning,
   modelCatalog,
   modelCatalogError,
@@ -101,7 +102,7 @@ export function ModelPicker() {
     await setEffort(ref.provider, ref.model, lv).catch((e: unknown) =>
       setState('notice', {
         reason: 'effort_save_failed',
-        message: `推理等级保存失败：${e instanceof Error ? e.message : String(e)}`,
+        message: `推理等级保存失败：${explainApiError(e, '请求失败')}`,
       }),
     )
   }

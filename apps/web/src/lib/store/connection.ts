@@ -25,7 +25,7 @@ import type {
 import { isNoticeStep } from '@qywork/core'
 import { createEffect, createRoot, createSignal } from 'solid-js'
 import { produce } from 'solid-js/store'
-import { QyClient } from '../client.ts'
+import { ApiError, QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
 import {
   type ChangeStep,
@@ -911,6 +911,7 @@ function foldRunState(ev: AgentEvent): void {
     case 'context':
       setState(
         produce((s) => {
+          s.contextError = null
           s.context = {
             source: ev.source,
             tokens: ev.tokens,
@@ -1091,8 +1092,10 @@ function canceledByNewerRequest(lease: HistoryLease): boolean {
   return lease.controller.signal.aborted && !lease.timedOut
 }
 
+/** 服务端返回的错误取其说明（`ApiError.detail`），不显示状态码、接口路径与 JSON 原文。 */
 function historyErrorMessage(error: unknown, lease: HistoryLease): string {
   if (lease.timedOut) return '加载历史记录超时，请重试'
+  if (error instanceof ApiError) return error.detail
   return error instanceof Error ? error.message : String(error)
 }
 
@@ -1526,7 +1529,7 @@ export async function reloadActiveConversation(): Promise<void> {
   activeHistoryLease = lease
   // 新视图没有属于自己的辅助快照，不能暂时显示上一个会话的数据。
   if (state.views[id]?.history.loading === 'unloaded') {
-    setState({ context: null, goal: null, todos: [] })
+    setState({ context: null, contextError: null, goal: null, todos: [] })
   }
   const initialContext = state.context
   const initialGoal = state.goal
@@ -1568,13 +1571,16 @@ export async function reloadActiveConversation(): Promise<void> {
         .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`, {
           signal: lease.controller.signal,
         })
-        .then((r) => r.context)
-        .catch(() => null)
-        .then((ctx) => {
+        .then(
+          (r) => ({ ctx: r.context, error: null }),
+          (e: unknown) => ({ ctx: null, error: e instanceof Error ? e.message : String(e) }),
+        )
+        .then(({ ctx, error }) => {
           // 请求期间已有实时事件写入时，较早发起的快照不得覆盖该投影。
           if (!current() || state.context !== initialContext) return
           setState(
             produce((s) => {
+              s.contextError = error
               s.context = ctx
                 ? {
                     tokens: ctx.total,
@@ -1594,8 +1600,9 @@ export async function reloadActiveConversation(): Promise<void> {
         .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`, {
           signal: lease.controller.signal,
         })
+        // 目标与队列读取失败时整次加载失败，由历史记录的报错与重试显示：
+        // 按空处理会使已设定的目标与排队的消息从界面上消失，且没有任何提示。
         .then((r) => r.goal)
-        .catch(() => null)
         .then((goal) => {
           if (current() && state.goal === initialGoal)
             setState(
@@ -1609,7 +1616,6 @@ export async function reloadActiveConversation(): Promise<void> {
           signal: lease.controller.signal,
         })
         .then((r) => r.queue)
-        .catch(() => [])
         .then((queue) => {
           if (
             current() &&

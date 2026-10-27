@@ -177,7 +177,7 @@ const PREVIEW_SOURCES: {
       void openBrowserTab().catch((e: unknown) =>
         setState('notice', {
           reason: 'browser_open_failed',
-          message: `无法打开浏览器页面：${e instanceof Error ? e.message : String(e)}`,
+          message: `无法打开浏览器页面：${explainApiError(e, '请求失败')}`,
         }),
       ),
   },
@@ -205,7 +205,7 @@ const PREVIEW_SOURCES: {
       void openNewCanvas().catch((e: unknown) =>
         setState('notice', {
           reason: 'canvas_create_failed',
-          message: `无法新建画布：${e instanceof Error ? e.message : String(e)}`,
+          message: `无法新建画布：${explainApiError(e, '请求失败')}`,
         }),
       ),
   },

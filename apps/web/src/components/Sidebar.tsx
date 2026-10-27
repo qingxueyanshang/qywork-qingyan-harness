@@ -4,6 +4,7 @@ import { sessionSignal } from '../lib/session.ts'
 import { hasAppUpdate } from '../lib/store/app-update.ts'
 import {
   activateWorkspace,
+  explainApiError,
   isDesktopShell,
   type KnownWorkspace,
   loadConversations,
@@ -100,7 +101,7 @@ export function Sidebar(props: { onClose?: () => void }) {
       // 切换经由 upsert 完成，可能新增项目或恢复已移除的项目，因此重新获取项目列表。
       void refetchWorkspaces()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(explainApiError(e, '请求失败'))
     }
   }
 
@@ -180,7 +181,7 @@ export function Sidebar(props: { onClose?: () => void }) {
                   onNewChat={() => {
                     setCollapsedPath(null)
                     void newConversation().catch((e: unknown) =>
-                      setError(e instanceof Error ? e.message : String(e)),
+                      setError(`无法新建会话：${explainApiError(e, '请求失败')}`),
                     )
                     props.onClose?.()
                   }}
@@ -188,7 +189,7 @@ export function Sidebar(props: { onClose?: () => void }) {
                     void refetchWorkspaces()
                     // 归档改变当前项目的会话列表，不重新获取时侧栏仍显示已归档的会话。
                     void loadConversations().catch((e: unknown) =>
-                      setError(e instanceof Error ? e.message : String(e)),
+                      setError(`无法读取会话列表：${explainApiError(e, '请求失败')}`),
                     )
                   }}
                   onError={setError}

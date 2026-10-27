@@ -11,6 +11,7 @@ import { IconNewChat, IconSpinner, IconTarget, IconUsers } from '../components/I
 import { slashQuery } from './slash.ts'
 import {
   compactContext,
+  explainApiError,
   newConversation,
   sendMessage,
   setGoal,
@@ -45,7 +46,7 @@ export function buildCommands(): Command[] {
         void newConversation().catch((e: unknown) =>
           setState('notice', {
             reason: 'new_conversation_failed',
-            message: `无法新建会话：${e instanceof Error ? e.message : String(e)}`,
+            message: `无法新建会话：${explainApiError(e, '请求失败')}`,
           }),
         ),
     },

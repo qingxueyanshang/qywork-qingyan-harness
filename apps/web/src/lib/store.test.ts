@@ -4186,3 +4186,68 @@ describe('内置浏览器能力投影', () => {
     expect(state.capabilities?.sandbox.backend).toBe('none')
   })
 })
+
+describe('会话的辅助读取失败时显示原因', () => {
+  const reset = (id: string) => {
+    setWorkspace(WS_A)
+    setState({ activeConversation: id, conversations: [], busyConversations: [], todos: [] })
+    freshView(id)
+  }
+  const stubWith = async (fail: 'context' | 'queue') => {
+    const { ApiError } = await import('./client.ts')
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
+      if (p.includes('/history')) {
+        return {
+          messages: [],
+          runs: [],
+          steps: [],
+          todos: [],
+          workflowStarts: [],
+          nextCursor: null,
+          live: NO_LIVE,
+        }
+      }
+      if (p.includes('/context')) {
+        if (fail === 'context') {
+          throw new ApiError(409, p, '{"error":"会话绑定的接口或模型已不在配置中"}')
+        }
+        return { context: null }
+      }
+      if (p.includes('/goal')) return { goal: null }
+      if (p.includes('/queue')) {
+        if (fail === 'queue') throw new ApiError(500, p, '{"error":"队列读取失败"}')
+        return { queue: [] }
+      }
+      throw new Error(`未预期请求：${p}`)
+    }
+  }
+
+  /** 原始失败形状：会话绑定的接口已从配置中删除，上下文读数整体消失，没有任何说明。 */
+  test('上下文占用读取失败时记录服务端原因，历史记录照常加载', async () => {
+    reset('cv_ctx_fail')
+    const apiBefore = client.api
+    await stubWith('context')
+    try {
+      await reloadActiveConversation()
+      expect(state.context).toBeNull()
+      expect(explainApiError(state.contextError, '')).toBe('会话绑定的接口或模型已不在配置中')
+      expect(viewOf('cv_ctx_fail').history.error).toBeNull()
+    } finally {
+      ;(client as unknown as { api: typeof client.api }).api = apiBefore
+      setState('contextError', null)
+    }
+  })
+
+  /** 原始失败形状：队列读取失败按空队列处理，排队中的消息从界面上消失，没有任何提示。 */
+  test('队列读取失败时整次加载显示报错，正文取服务端说明', async () => {
+    reset('cv_queue_fail')
+    const apiBefore = client.api
+    await stubWith('queue')
+    try {
+      await reloadActiveConversation()
+      expect(viewOf('cv_queue_fail').history.error?.message).toBe('队列读取失败')
+    } finally {
+      ;(client as unknown as { api: typeof client.api }).api = apiBefore
+    }
+  })
+})
