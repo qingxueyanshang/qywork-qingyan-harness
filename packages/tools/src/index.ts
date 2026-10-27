@@ -38,8 +38,6 @@ export {
 export {
   downscaleNote,
   type ImageRegion,
-  type ImageSize,
-  imageSizeOf,
   shrinkImage,
   ZOOM_MAX,
   type ZoomedImage,

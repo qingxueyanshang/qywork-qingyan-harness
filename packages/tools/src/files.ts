@@ -27,13 +27,12 @@ import {
 } from '@qywork/agent'
 import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
-import { isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
+import { imageSizeOf, isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import {
   downscaleNote,
   type ImageRegion,
-  imageSizeOf,
   shrinkImage,
   type ZoomedImage,
   zoomImage,
