@@ -341,6 +341,8 @@ export interface LoopPersistence {
     finishReason?: string,
     /** provider 返回的错误正文。连接层失败或没有正文时为 null。 */
     errorMessage?: string | null,
+    /** 该回执是否作为占用锚点，由主请求的收尾（`settleResponse`）判定；其余调用不传，记为否。 */
+    anchored?: boolean,
   ): void
   /** 失败现场与重试裁决。可选只为兼容轻量测试夹具，生产装配必须提供。 */
   recordRequestDiagnostic?(requestId: string, diagnostic: ProviderRequestDiagnostic): void

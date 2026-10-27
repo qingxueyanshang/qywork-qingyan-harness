@@ -3,11 +3,26 @@
  * 可执行时的停机判定。
  */
 
+import { videoBlocksOf } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { envelopeHeadTokens, log } from '@qywork/core'
 import { cycleFingerprint } from '../progress.ts'
 import { envelopeHashOf } from './request.ts'
 import type { RunState, TurnState } from './run-state.ts'
+
+/**
+ * 回报的输入量的上限：超过时该回执不描述本次请求，锚点与静默溢出判定都不使用它，账本行也不标为锚点。
+ *
+ * 超出的部分不是本次发送的内容，压缩也无法回收：以这类回执为锚点时读数虚高，每次发送前都触发自动压缩并以
+ * 「无可压缩内容」跳过，工具结果的投递额度降为 0（实测一个中转每次多报约 61 万缓存命中）。
+ *
+ * 取本地估算的 1.5 倍加 2 万：已标定型号单段内容 90% 的偏差在 14% 以内、图片在 5% 以内；中转在请求前注入的
+ * 隐藏系统提示实测约 8,600 token。带视频的请求改用请求字节数（每个 token 至少一个字节）：本地估算对视频记 0，
+ * 按估算判定会拒绝含视频的真实回执，视频的占用从此无法计入读数。
+ */
+function inputLimit(turn: TurnState): number {
+  return videoBlocksOf(turn.req.messages) > 0 ? turn.requestBytes : turn.measured * 1.5 + 20_000
+}
 
 const TRUNCATED_NOTICE =
   '上一次响应的输出达到单次上限，在中途被截断，本轮未结束。从中断处继续，不重述已完成的部分，剩余工作拆成较小的步骤。'
@@ -21,14 +36,24 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
   const { adapter, input, persist, transcript } = run
   run.turnIndex++
 
+  const turnUsage = turn.turnUsage
+  const prompt = turnUsage
+    ? turnUsage.inputTokens + (turnUsage.cachedTokens ?? 0) + (turnUsage.cacheWriteTokens ?? 0)
+    : 0
+  const total = prompt + (turnUsage?.outputTokens ?? 0)
+  const plausible = prompt <= inputLimit(turn)
+
   // 流结束后为该行写入终态。中途被用户中断时记为 `uncertain`：
   // 无法判断 provider 是否完整接收，这正是 `uncertain` 的语义。
+  // 是否作为锚点一并写入：下一轮与面板按该列选取锚点（`store` 的 `latestAnchoredProviderRequest`），不另行判定。
   persist.settleRequest(
     turn.requestId,
     input.signal.aborted ? 'uncertain' : 'received',
-    turn.turnUsage,
+    turnUsage,
     null,
     turn.rawStop,
+    null,
+    !input.signal.aborted && total > 0 && plausible,
   )
 
   if (input.signal.aborted) {
@@ -81,26 +106,15 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
    * 已计入 `outputTokens`，再估算一次即重复计数。此后追加的
    * 工具结果才是锚点未覆盖的增量。
    */
-  const turnUsage = turn.turnUsage
   if (!turnUsage) return true
-  const prompt =
-    turnUsage.inputTokens + (turnUsage.cachedTokens ?? 0) + (turnUsage.cacheWriteTokens ?? 0)
-  /*
-   * 回报的输入量超过请求字节数时，该回执不描述本次请求，锚点与静默溢出判定都不使用它。
-   *
-   * 每个 token 至少对应一个字节，`requestBytes` 已按 base64 计入引用的媒体，本次请求的输入量不会超过它
-   * （实测十条接口路线、2.8 万次回报，最高为请求字节数的 0.56 倍）。超出的部分不是本次发送的内容，压缩也无法回收：
-   * 以这类回执为锚点时读数虚高，每次发送前都触发自动压缩并以「无可压缩内容」跳过，工具结果的投递额度降为 0。
-   * 判据与 `store` 的 `latestAnchoredProviderRequest` 相同，两处须一并修改。
-   */
-  if (prompt > turn.requestBytes) {
-    log.warn('agent', 'provider 回报的输入量超过请求字节数，不作为占用读数', {
+  if (!plausible) {
+    log.warn('agent', 'provider 回报的输入量超过上限，不作为占用读数', {
       input: prompt,
-      requestBytes: turn.requestBytes,
+      limit: Math.round(inputLimit(turn)),
+      measured: turn.measured,
     })
     return true
   }
-  const total = prompt + turnUsage.outputTokens
   /*
    * 不要排除带视频的请求：本地估算对视频记 0，视频的占用只体现在真值中。保留在请求中的视频
    * 此后每次都随请求发出，排除后读数与压缩触发始终无法计入它。

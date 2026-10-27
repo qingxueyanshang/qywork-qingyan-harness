@@ -137,6 +137,9 @@ describe('上下文面板', () => {
       'received',
       { inputTokens: 2436, cachedTokens: 599_040, outputTokens: 1011, cacheWriteTokens: null },
       null,
+      '',
+      null,
+      true,
     )
     // 压缩前最后一次发送失败，真值回执比快照的来源请求还要早。
     const failed = send(store, runId, { measured: 827_548, occupancy: 602_487 })
@@ -195,6 +198,9 @@ describe('上下文面板', () => {
       'received',
       { inputTokens: 177_506, outputTokens: 3907, cachedTokens: 0, cacheWriteTokens: null },
       null,
+      '',
+      null,
+      true,
     )
     expect(contextBasis(store, conversationId, model).compacted).toBeNull()
     expect(contextPanel(store, conversationId, model)).toMatchObject({
@@ -217,6 +223,9 @@ describe('上下文面板', () => {
       'received',
       { inputTokens: 100_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
     setCompactionManifest(store, conversationId, {
       revision: 1,
@@ -247,6 +256,9 @@ describe('上下文面板', () => {
       'received',
       { inputTokens: 45_000, outputTokens: 500, cachedTokens: 0, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
     const refreshed = contextPanel(store, conversationId, M(1_000_000))
     expect(refreshed.total).toBe(45_500)
@@ -270,6 +282,9 @@ describe('上下文面板', () => {
       'received',
       { inputTokens: 1000, outputTokens: 500, cachedTokens: 8000, cacheWriteTokens: 200 },
       null,
+      '',
+      null,
+      true,
     )
 
     const panel = contextPanel(store, conversationId, M(1_000_000))
@@ -297,6 +312,9 @@ describe('上下文面板', () => {
       'received',
       { inputTokens: 20_000, outputTokens: 1000, cachedTokens: 12_000, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
     const anchored = contextPanel(store, conversationId, M(1_000_000))
     expect(anchored.total).toBe(33_000)
@@ -328,6 +346,9 @@ describe('上下文面板', () => {
       'received',
       { inputTokens: 2, outputTokens: 106_692, cachedTokens: 0, cacheWriteTokens: 28_803 },
       null,
+      '',
+      null,
+      true,
     )
     send(store, runId, { measured: 143_310, occupancy: 135_600 })
     const inFlight = contextPanel(store, conversationId, M(1_000_000))
@@ -365,6 +386,9 @@ describe('上下文面板', () => {
       'received',
       { inputTokens: 5000, outputTokens: 1000, cachedTokens: null, cacheWriteTokens: null },
       null,
+      '',
+      null,
+      true,
     )
 
     const panel = contextPanel(store, conversationId, M(1_000_000))
@@ -385,6 +409,9 @@ describe('上下文面板', () => {
       'received',
       { inputTokens: 900, outputTokens: 0, cachedTokens: null, cacheWriteTokens: null },
       null,
+      '',
+      null,
+      true,
     )
 
     const panel = contextPanel(store, conversationId, M(1_000_000))
@@ -457,6 +484,9 @@ describe('锚点按模型判定', () => {
       'received',
       { inputTokens: 20_000, outputTokens: 1000, cachedTokens: 12_000, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
     // 同一个模型：照常锚定。
     expect(contextPanel(store, conversationId, M(1_000_000)).source).toBe('actual')
@@ -484,6 +514,9 @@ describe('锚点按模型判定', () => {
       'received',
       { inputTokens: 5000, outputTokens: 100, cachedTokens: 0, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
     // 中途换用其他模型执行了一轮，也取得了回执。
     const row = openProviderRequest(store, {
@@ -503,6 +536,9 @@ describe('锚点按模型判定', () => {
       'received',
       { inputTokens: 30_000, outputTokens: 500, cachedTokens: 0, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
 
     // 会话当前模型为 `m`，而最近一条回执属于 `other`：退回估算，不使用 5100 那条回执。
@@ -527,6 +563,9 @@ describe('真值锚点按接口路线判定', () => {
       'received',
       { inputTokens: 20_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
 
     const otherRoute = contextPanel(store, conversationId, {
@@ -557,6 +596,9 @@ describe('真值锚点按接口路线判定', () => {
       'received',
       { inputTokens: 20_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
 
     const panel = contextPanel(store, conversationId, M(1_000_000))
@@ -566,12 +608,13 @@ describe('真值锚点按接口路线判定', () => {
   })
 })
 
-describe('回执的输入量超过请求字节数', () => {
+describe('收尾判定不作为锚点的回执', () => {
   /**
    * 数值取自用户导出的会话：中转站对 482,665 字节的请求回报输入 254,215、缓存命中 614,223，
    * 发出时的运行中读数为 179,230。以该回执为锚点时面板显示 87%，每次发送前都触发自动压缩。
+   * 是否作为锚点由 loop 收尾时判定（`settleResponse`），面板只读取请求行上的判定结果。
    */
-  test('不作为锚点，面板显示发出时的运行中读数并标为估算；之后可容纳的回执照常作为锚点', () => {
+  test('不作为锚点，面板显示发出时的运行中读数并标为估算；之后判定为锚点的回执照常采用', () => {
     const { store, conversationId, runId } = fixture()
     const inflated = send(store, runId, {
       measured: 179_230,
@@ -602,6 +645,9 @@ describe('回执的输入量超过请求字节数', () => {
       'received',
       { inputTokens: 190_000, outputTokens: 10, cachedTokens: 0, cacheWriteTokens: null },
       null,
+      '',
+      null,
+      true,
     )
     expect(contextPanel(store, conversationId, M(1_000_000))).toMatchObject({
       source: 'actual',
@@ -670,6 +716,8 @@ describe('逐请求账本记录重发', () => {
       { inputTokens: 8539, outputTokens: 298, cachedTokens: 16_576, cacheWriteTokens: null },
       null,
       'stop',
+      null,
+      true,
     )
 
     const rows = listProviderRequests(store, runId)
@@ -713,6 +761,9 @@ describe('信封变化时只修正头部', () => {
       'received',
       { inputTokens: 100_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
     // 信封相同：真值保持原值。
     expect(contextPanel(store, conversationId, M(1_000_000)).total).toBe(101_000)
@@ -742,6 +793,9 @@ describe('信封变化时只修正头部', () => {
       'received',
       { inputTokens: 100_000, outputTokens: 1000, cachedTokens: 0, cacheWriteTokens: 0 },
       null,
+      '',
+      null,
+      true,
     )
     const other = contextPanel(store, conversationId, {
       ...M(200_000),

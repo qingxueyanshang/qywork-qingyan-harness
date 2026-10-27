@@ -2389,6 +2389,24 @@ ALTER TABLE provider_requests ADD COLUMN hedge_won INTEGER;
      */
     background: addToolImageSizesBatch,
   },
+  {
+    id: 73,
+    name: 'provider_request_anchored',
+    /**
+     * 回执能否作为占用锚点由对话循环收尾时判定并写入该列（`agent` 的 `settleResponse`），下一轮的起点与面板
+     * 按该列选取（`latestAnchoredProviderRequest`），不各自判定。已有行按迁移前的判据回填：用量大于 0，
+     * 且输入量不超过请求字节数。
+     */
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN anchored INTEGER NOT NULL DEFAULT 0;
+UPDATE provider_requests SET anchored = 1
+ WHERE purpose = 'turn' AND provider_input_tokens IS NOT NULL
+   AND COALESCE(provider_input_tokens, 0) + COALESCE(provider_output_tokens, 0)
+     + COALESCE(provider_cached_tokens, 0) + COALESCE(provider_cache_write_tokens, 0) > 0
+   AND COALESCE(provider_input_tokens, 0) + COALESCE(provider_cached_tokens, 0)
+     + COALESCE(provider_cache_write_tokens, 0) <= request_bytes;
+`,
+  },
 ]
 
 /**
@@ -2556,6 +2574,8 @@ export interface ProviderRequestRow {
   hedge_sent_at: number | null
   /** SQLite 没有布尔类型，使用 0/1。1 表示采用的是补发的一份；未补发为 NULL。 */
   hedge_won: number | null
+  /** 0/1。1 表示该回执作为占用锚点（`agent` 的 `settleResponse` 判定）。 */
+  anchored: number
   first_event_at: number | null
   first_content_at: number | null
   last_content_at: number | null
@@ -2712,6 +2732,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'headers_at',
     'hedge_sent_at',
     'hedge_won',
+    'anchored',
     'first_event_at',
     'first_content_at',
     'last_content_at',

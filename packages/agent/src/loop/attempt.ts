@@ -165,6 +165,7 @@ export async function* sendTurn(
     const payload = payloadSnapshotOf(turn.req)
     turn.requestBytes = payload.bytes
     const measured = estimateRequest(turn.req, density)
+    turn.measured = measured
     turn.requestId = persist.openRequest({
       runId: input.runId,
       turnIndex: run.requestTurn,

@@ -26,7 +26,7 @@ export function requestPersistence(store: Store, config: QyConfig) {
     markRequestFirstEvent: (id) => markProviderRequestFirstEvent(store, id as never),
     markRequestContent: (id, at, kind, visible) =>
       markProviderRequestContent(store, id as never, at, kind, visible),
-    settleRequest: (id, status, usage, errorCode, finishReason, errorMessage) =>
+    settleRequest: (id, status, usage, errorCode, finishReason, errorMessage, anchored) =>
       settleProviderRequest(
         store,
         id as never,
@@ -35,6 +35,7 @@ export function requestPersistence(store: Store, config: QyConfig) {
         errorCode,
         finishReason,
         errorMessage == null ? null : clean(errorMessage),
+        anchored,
       ),
     recordRequestDiagnostic: (id, diagnostic) =>
       recordProviderRequestDiagnostic(store, id as never, {

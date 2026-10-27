@@ -145,8 +145,8 @@ const okOutcome: CompactionOutcome = {
 
 test('自动压缩后的发送读数与请求账采用 manifest 估算，回执到达后切换为真值', async () => {
   const spec = lookupModel('claude-opus-5', 'anthropic_messages')
-  // 约 20 万字节：回报的输入量不超过请求字节数时，回执才作为锚点。
-  const system = 'sys '.repeat(50_000)
+  // 本地估算约 22 万：回报的输入量不超过估算的 1.5 倍加 2 万时，回执才作为锚点。
+  const system = '系统提示。'.repeat(40_000)
   let compressed = false
   const recorded: number[] = []
   const persist = noopPersistence()
@@ -277,7 +277,7 @@ function bulkyHistory() {
 async function collectWith(
   loop: AgentLoop,
   runId: string,
-  history: { role: 'user'; content: string }[],
+  history: WireMessage[],
 ): Promise<AgentEvent[]> {
   const out: AgentEvent[] = []
   for await (const ev of loop.run({
@@ -639,18 +639,21 @@ describe('发送前检查：唯一的压缩触发', () => {
       permissionEffect: 'internal_control',
       fn: async () => ({ status: 'success', message: 'ok' }),
     })
-    // 回报的输入量达到窗口，发出的请求不少于同样的字节数，否则回执不作为锚点。
-    const history = [{ role: 'user' as const, content: 'x'.repeat(spec.contextWindow + 100_000) }]
+    // 发出的请求按本地估算超过窗口（默认档中文 1.1 token/字，约 112 万），provider 回报截断后的窗口大小。
+    const history = [{ role: 'user' as const, content: '这是历史正文。'.repeat(145_000) }]
     await collectWith(build(adapter, comp.port, registry), 'rn_silent', history)
     // 静默截断已被识别：压缩限制解除，第二步确实折叠了一次。
     expect(comp.state.runs).toBeGreaterThan(0)
   })
 
   /**
-   * 回报的输入量超过请求字节数时不作为锚点。回报值取自用户导出的会话：中转站每次都回报约 60 万缓存命中，
+   * 回报的输入量远超本地估算时不作为锚点。回报值取自用户导出的会话：中转站每次都回报约 60 万缓存命中，
    * 以它为锚点时读数越过软阈值，每次发送前都触发自动压缩并以「无可压缩内容」跳过，工具结果的投递额度为 0。
+   *
+   * 带截图的一组：请求字节数因 base64 约 93 万，超过回报的 82.5 万，按「不超过请求字节数」判定时同一回报会被采用；
+   * 图片按宽高估算后，判据不随截图的字节数放宽。
    */
-  test('回报的输入量超过请求字节数时不作为锚点：不触发压缩，投递额度按本地估算计算', async () => {
+  async function inflatedRun(history: WireMessage[]) {
     const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
     const spec = lookupModel('claude-opus-5', 'anthropic_messages')
     let turn = 0
@@ -701,18 +704,48 @@ describe('发送前检查：唯一的压缩触发', () => {
         return { status: 'success', message: 'ok' }
       },
     })
-    const events = await collectWith(build(adapter, comp.port, registry), 'rn_inflated', [])
+    const events = await collectWith(build(adapter, comp.port, registry), 'rn_inflated', history)
+    return { comp, events, rooms }
+  }
 
-    expect(comp.state.runs).toBe(0)
-    expect(events.some((e) => e.type === 'compaction')).toBe(false)
-    expect(rooms).toHaveLength(3)
-    expect(rooms.every((room) => room > 700_000)).toBe(true)
-    const readings = events.filter(
-      (e): e is Extract<AgentEvent, { type: 'context' }> => e.type === 'context',
-    )
-    expect(readings.length).toBeGreaterThan(0)
-    expect(readings.every((e) => e.source === 'estimated' && e.tokens < 100_000)).toBe(true)
-  })
+  /** 只有文件头合法的 1568×882 PNG，其后是 70 万字节填充。 */
+  const screenshot = (() => {
+    const b = Buffer.alloc(700_024)
+    b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 0)
+    b.writeUInt32BE(1568, 16)
+    b.writeUInt32BE(882, 20)
+    return b.toString('base64')
+  })()
+
+  for (const [name, history] of [
+    ['不带图片', []],
+    [
+      '带一张截图',
+      [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '看截图' },
+            { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: screenshot } },
+          ],
+        },
+      ],
+    ],
+  ] as [string, WireMessage[]][]) {
+    test(`回报的输入量远超本地估算时不作为锚点（${name}）：不触发压缩，投递额度按本地估算计算`, async () => {
+      const { comp, events, rooms } = await inflatedRun(history)
+
+      expect(comp.state.runs).toBe(0)
+      expect(events.some((e) => e.type === 'compaction')).toBe(false)
+      expect(rooms).toHaveLength(3)
+      expect(rooms.every((room) => room > 700_000)).toBe(true)
+      const readings = events.filter(
+        (e): e is Extract<AgentEvent, { type: 'context' }> => e.type === 'context',
+      )
+      expect(readings.length).toBeGreaterThan(0)
+      expect(readings.every((e) => e.source === 'estimated' && e.tokens < 100_000)).toBe(true)
+    })
+  }
 
   test('非容量错误照常上报', async () => {
     const comp = fakeCompaction(okOutcome)
