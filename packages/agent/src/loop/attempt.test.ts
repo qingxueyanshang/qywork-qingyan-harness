@@ -859,7 +859,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
         if (act === 'reject') {
           throw new ProviderError({
             code: 'provider_unavailable',
-            message: '服务端暂时不可用',
+            message: 'HTTP 503 服务不可用：No available accounts',
             provider: 'anthropic_messages',
             status: 503,
           })
@@ -914,17 +914,16 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
             yield { type: 'text_delta', delta: '已输出', at: Date.now() }
           throw new ProviderError({
             code: 'rate_limited',
-            message: '触发限速',
+            message: 'HTTP 429 请求过多：Rate limit reached',
             provider: 'anthropic_messages',
             status: 429,
-            detail: { providerMessage: 'Rate limit reached' },
             ...(act === 'rate-limit-no-header' ? {} : { retryAfterMs: 5 }),
           })
         }
         if (act === 'quota') {
           throw new ProviderError({
             code: 'insufficient_quota',
-            message: '账户额度不足',
+            message: 'HTTP 429 请求过多：You exceeded your current quota',
             provider: 'anthropic_messages',
             status: 429,
           })
@@ -986,7 +985,11 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     const { rec } = await collect(scriptedAdapter(['break', 'ok']))
 
     // 第一行是中断的那次。该路径必须 settle，否则账本中的记录永久处于 in_flight（实测 9 行）。
-    expect(rec.settled[0]).toEqual({ status: 'uncertain', errorCode: 'network_error' })
+    expect(rec.settled[0]).toEqual({
+      status: 'uncertain',
+      errorCode: 'network_error',
+      errorMessage: '连接被断开',
+    })
     expect(rec.settled[1]?.status).toBe('received')
   })
 
@@ -995,7 +998,11 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
 
     // 有 HTTP 状态码表示 provider 已拒绝，请求确实到达。该情形与「无法连接」必须分开记录，
     // 两者的区别在于计费责任。
-    expect(rec.settled[0]).toEqual({ status: 'rejected', errorCode: 'provider_unavailable' })
+    expect(rec.settled[0]).toEqual({
+      status: 'rejected',
+      errorCode: 'provider_unavailable',
+      errorMessage: 'HTTP 503 服务不可用：No available accounts',
+    })
   })
 
   /**
@@ -1022,7 +1029,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
             code: 'provider_unavailable',
             message: 'Concurrency limit exceeded for account, please retry later',
             provider: 'anthropic_messages',
-            detail: { source: 'stream', providerCode: 'gateway_concurrency_limit' },
+            detail: { providerCode: 'gateway_concurrency_limit' },
           })
         }
         yield { type: 'text_delta', delta: '完成', at: Date.now() }
@@ -1064,7 +1071,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     expect(rec.settled[0]).toEqual({
       status: 'rejected',
       errorCode: 'provider_unavailable',
-      errorMessage: 'Upstream returned HTTP 403 Forbidden',
+      errorMessage: 'HTTP 400 请求无效：Upstream returned HTTP 403 Forbidden',
     })
     expect(rec.diagnostics[0]?.retry).toMatchObject({
       decision: 'resend',
@@ -1108,7 +1115,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     expect(rec.settled[0]).toEqual({
       status: 'rejected',
       errorCode: 'rate_limited',
-      errorMessage: 'Rate limit reached',
+      errorMessage: 'HTTP 429 请求过多：Rate limit reached',
     })
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
   })
@@ -1159,14 +1166,17 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('user_interrupt')
   })
 
-  test('429 重发耗尽后保留上游原文', async () => {
+  /** 请求行与轮次是同一次失败的两层，正文须一致；轮次只追加重发次数。 */
+  test('429 重发耗尽后轮次与请求行使用同一段正文', async () => {
     const { rec, events } = await collect(
       scriptedAdapter(Array(MAX_RESENDS + 1).fill('rate-limit')),
     )
 
     const err = events.find((e) => e.type === 'run.error')
-    expect(err?.type === 'run.error' && err.message).toBe(`触发限速，已重发 ${MAX_RESENDS} 次`)
-    expect(rec.settled.at(-1)?.errorMessage).toBe('Rate limit reached')
+    expect(err?.type === 'run.error' && err.message).toBe(
+      `HTTP 429 请求过多：Rate limit reached，已重发 ${MAX_RESENDS} 次`,
+    )
+    expect(rec.settled.at(-1)?.errorMessage).toBe('HTTP 429 请求过多：Rate limit reached')
   })
 
   /**
@@ -1189,7 +1199,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
       status: 'rejected',
       errorCode: 'invalid_request',
       errorMessage:
-        '{"error":{"message":"Invalid content type: image_url is not supported by this model"}}',
+        'HTTP 400 请求无效：{"error":{"message":"Invalid content type: image_url is not supported by this model"}}',
     })
   })
 
@@ -1198,7 +1208,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
-    expect(message).toContain('服务端暂时不可用')
+    expect(message).toContain('HTTP 503 服务不可用：No available accounts')
     expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
     // 「N 秒未收到响应」是传输层的读数，附加该读数等于告知用户请求未发出。
     expect(message).not.toMatch(/秒未收到响应/)

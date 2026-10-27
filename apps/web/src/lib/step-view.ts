@@ -9,7 +9,6 @@
  */
 
 import {
-  type ErrorCode,
   type ProviderRequestStatus,
   type ProviderRetryDecision,
   type StopReason,
@@ -342,23 +341,6 @@ export function stopReasonLabel(reason: string): string | null {
   return map[reason as StopReason] ?? null
 }
 
-const ERROR_LABELS: Record<ErrorCode, string> = {
-  no_api_key: '未配置 API Key',
-  auth_failed: '鉴权失败',
-  rate_limited: '触发限速',
-  insufficient_quota: '账户额度不足',
-  context_overflow: '上下文超出模型窗口',
-  model_not_found: '模型不存在',
-  no_model: '未配置模型',
-  invalid_request: '请求不合法',
-  provider_unavailable: '模型服务暂不可用',
-  network_error: '网络连接失败',
-  stream_idle_timeout: '模型响应中断',
-  tool_execution_failed: '工具执行失败',
-  workspace_unavailable: '工作区不可用',
-  internal_error: '内部错误',
-}
-
 const RETRY_LABELS: Record<ProviderRetryDecision, string> = {
   resend: '已自动重发',
   interrupted: '已中断，结果不明',
@@ -376,7 +358,6 @@ interface RequestOutcomeLike {
   /** 未提供时按主请求处理。摘要请求的产出是压缩摘要，结果列显示该项。 */
   purpose?: 'turn' | 'summary'
   finishReason: string
-  errorCode: string | null
   errorMessage: string | null
   diagnostic: { retry: { decision: ProviderRetryDecision } } | null
   /** 响应头之前补发的第二份请求；未提供时按未补发处理。 */
@@ -394,10 +375,6 @@ function finishReasonLabel(reason: string): string {
   return '已回报'
 }
 
-function errorLabel(code: string | null): string | null {
-  return code ? (ERROR_LABELS[code as ErrorCode] ?? null) : null
-}
-
 function appendFact(base: string, fact: string): string {
   return `${base.replace(/[，。,.;；]+$/u, '')}，${fact}`
 }
@@ -408,6 +385,9 @@ function appendFact(base: string, fact: string): string {
  * provider 原始 finish reason、错误码与重试裁决都保留在账本中，但不能直接作为界面文案；
  * 由这一个出口穷举重试裁决，避免结果列与悬浮说明各自维护一部分映射。
  * 补发过第二份请求时追加一项：两份请求都已发出，都可能计费，逐请求表须能与服务商账单对照。
+ *
+ * 失败时取请求行的报错正文，与读数条使用同一段文字。不要按错误码另写标签：同一个码对应多种原因
+ * （`network_error` 含超时、断开、无法连接），标签会使表中的原因与读数条不一致。
  */
 export function requestOutcome(q: RequestOutcomeLike): string {
   const base = outcomeText(q)
@@ -430,7 +410,6 @@ function outcomeText(q: RequestOutcomeLike): string {
   const message = q.errorMessage ? firstLine(q.errorMessage).trim() : ''
   const base =
     message ||
-    errorLabel(q.errorCode) ||
     (q.status === 'uncertain' ? '结果不明' : q.status === 'rejected' ? '被拒绝' : '请求失败')
   return decision ? appendFact(base, RETRY_LABELS[decision]) : base
 }

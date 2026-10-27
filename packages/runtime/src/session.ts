@@ -38,7 +38,6 @@ import {
   type ProviderProfile,
   type ProviderUsage,
   providerContentKind,
-  providerErrorMessage,
   STREAM_IDLE_TIMEOUT_MS,
   type TokenDensity,
   type WireToolCall,
@@ -1393,7 +1392,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
         pe?.usage ?? usage,
         opts.signal?.aborted ? null : (pe?.code ?? 'internal_error'),
         finish,
-        providerErrorMessage(err),
+        opts.signal?.aborted ? null : err instanceof Error ? err.message : String(err),
       )
       trace.diagnostic(requestId, {
         ...failureDiagnostics(err),

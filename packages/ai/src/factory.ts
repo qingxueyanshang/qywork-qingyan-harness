@@ -42,7 +42,7 @@ function isLocalEndpoint(baseUrl: string | undefined): boolean {
  *
  * 不要发送请求后再由 `classifyProviderError` 判定是未配置还是配置错误：
  * 该判定依赖 provider 的错误文案，各厂商写法不同，误判的方向恰好最糟：
- * 报告 `auth_failed / API Key 无效` 会引导新用户检查 key 是否填写有误，
+ * 报告 `auth_failed` 会引导新用户检查 key 是否填写有误，
  * 而正确的操作是配置 key。本地已知 key 为空串，无需询问 provider。
  */
 export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAdapter {

@@ -1633,7 +1633,11 @@ describe('会话历史分页接口', () => {
     settleProviderRequest(d.store, failed.id, 'rejected', null, 'provider_unavailable')
     recordProviderRequestDiagnostic(d.store, failed.id, {
       causes: [
-        { name: 'ProviderError', code: 'provider_unavailable', message: '服务端暂时不可用' },
+        {
+          name: 'ProviderError',
+          code: 'provider_unavailable',
+          message: 'HTTP 503 服务不可用：No available accounts',
+        },
       ],
       providerEvents: 0,
       silentMs: 0,
@@ -1658,7 +1662,7 @@ describe('会话历史分页接口', () => {
       // 次数取自上一行的重发裁决，而非 `retry_index`：后者在每个 turn 中从 0 开始。
       attempt: 1,
       max: 5,
-      retryReason: '服务端暂时不可用',
+      retryReason: 'HTTP 503 服务不可用：No available accounts',
       status: 'in_flight',
       headersAt: 1_700_000_061_000,
       firstContentAt: 1_700_000_062_000,

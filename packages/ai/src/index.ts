@@ -37,8 +37,8 @@ export {
 export {
   classifyProviderError,
   failureDiagnostics,
+  httpStatusName,
   ProviderError,
-  providerErrorMessage,
 } from './errors.ts'
 // 唯一的 adapter 构造入口
 export { buildAdapter } from './factory.ts'

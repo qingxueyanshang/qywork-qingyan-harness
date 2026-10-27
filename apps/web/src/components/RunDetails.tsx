@@ -350,7 +350,9 @@ function RequestLedger(props: { run: Run; revision: string }) {
                     <td>{num(q.providerCachedTokens)}</td>
                     <td>{num(q.providerCacheWriteTokens)}</td>
                     <td>{cost > 0 ? formatMoney(cost, props.run.usage!.currency) : NA}</td>
-                    <td class="run-req-out">{outcome}</td>
+                    <td class="run-req-out" data-tip={outcome}>
+                      {outcome}
+                    </td>
                   </tr>
                 )
               }}

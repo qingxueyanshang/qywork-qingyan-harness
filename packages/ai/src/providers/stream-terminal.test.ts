@@ -68,10 +68,9 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
     expect(result.err).toBeInstanceOf(ProviderError)
     const pe = result.err as ProviderError
     expect(pe.code).toBe('provider_unavailable')
-    expect(pe.message).toContain('Upstream is overloaded')
-    // 原文写入账本的对应字段。分类词在 Responses 中是 `code`，在另两种协议中是 `type`；
+    // 正文是事件原文。分类词在 Responses 中是 `code`，在另两种协议中是 `type`；
     // 本断言不区分字段，逐字段的映射由 `../errors.test.ts` 锁定。
-    expect(pe.detail?.providerMessage).toBe('Upstream is overloaded, please retry')
+    expect(pe.message).toBe('Upstream is overloaded, please retry')
     expect(pe.status).toBeUndefined()
   }, 20_000)
 
@@ -81,16 +80,14 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
       return drainAdapter({ fault, kind, model, idleTimeoutMs: 30_000 })
     })
     expect((auth.err as ProviderError).code).toBe('auth_failed')
-    expect((auth.err as ProviderError).detail?.providerMessage).toBe('invalid x-api-key')
+    expect((auth.err as ProviderError).message).toBe('invalid x-api-key')
 
     const limited = await withFault('inline_error', (fault) => {
       fault.inlineError = { type: 'rate_limit_error', message: 'Number of requests has exceeded' }
       return drainAdapter({ fault, kind, model, idleTimeoutMs: 30_000 })
     })
     expect((limited.err as ProviderError).code).toBe('rate_limited')
-    expect((limited.err as ProviderError).detail?.providerMessage).toBe(
-      'Number of requests has exceeded',
-    )
+    expect((limited.err as ProviderError).message).toBe('Number of requests has exceeded')
   }, 20_000)
 
   /** 正常 FIN，没有协议终态。 */

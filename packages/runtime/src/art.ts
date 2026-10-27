@@ -17,7 +17,6 @@ import {
   computeCost,
   ProviderError,
   type ProviderUsage,
-  providerErrorMessage,
   STREAM_IDLE_TIMEOUT_MS,
 } from '@qywork/ai'
 import { ART_MENTION, artSizeOf, type MediaSpend, withArtViewport } from '@qywork/core'
@@ -144,7 +143,7 @@ export async function generateArt(
     }
   } catch (err) {
     if (signal.aborted || !(err instanceof ProviderError)) throw err
-    return { ok: false, message: `${label}：${providerErrorMessage(err) ?? err.message}` }
+    return { ok: false, message: `${label}：${err.message}` }
   } finally {
     // 对话接口按 token 计费，回复不完整同样计费：收到用量即记账。
     if (usage) {

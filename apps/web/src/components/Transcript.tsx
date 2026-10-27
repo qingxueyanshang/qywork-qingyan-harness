@@ -845,13 +845,11 @@ function RunStatusBar(props: {
    * 地址与代理」说明了下一步操作；两句同时显示即为重复，且该字段位于读数条末位，
    * 用途就是说明停止原因。
    *
-   * 只取第一行：部分正文的第二行是配置文件路径，而读数条只有一行，
-   * 整段放入会撑高该行并挤占前面的字段。
+   * 正文在读数条中单行显示、超出部分省略，悬停提示显示全文。读数条只有一行，整段换行显示会撑高该行；
+   * 而报错的后半段（对端原文、故障编号、request id）在其他位置都看不到，不能只取首行。
    */
-  const reason = () => {
-    const detail = props.errorMessage?.split(NEWLINE)[0]?.trim()
-    return detail ? detail : props.stopReason ? stopReasonLabel(props.stopReason) : null
-  }
+  const detail = () => props.errorMessage?.trim() || null
+  const reason = () => detail() ?? (props.stopReason ? stopReasonLabel(props.stopReason) : null)
   const showReason = () =>
     !props.running &&
     Boolean(reason()) &&
@@ -914,7 +912,9 @@ function RunStatusBar(props: {
         {/* 停止原因排在末位：它长度不定，排在最前会把后续读数整体右移，
             出错的轮次与正常轮次的列无法对齐。排在末位时，前面各字段的位置固定。 */}
         <Show when={showReason()}>
-          <span class="run-reason">{reason()}</span>
+          <span class="run-reason" data-tip={detail() ?? undefined}>
+            {reason()}
+          </span>
         </Show>
       </span>
     </div>
@@ -1729,12 +1729,14 @@ function ToolCard(props: { item: TranscriptItem }) {
  * 有信息量的是参数：修改的 diff、执行的命令、读取的范围都在 `args` 中。
  *
  * 划分方式：
- *   失败：错误正文 →（分隔线）→ 参数表
  *   待办：清单逐行（勾选 / 加载动画 / 空心圆点）
  *   编辑：diff →（分隔线）→ 结果
  *   运行：命令原文 →（分隔线）→「输出」标签 + 输出
  *   创建：新内容全文 → 结果
  *   其余：参数表 →（分隔线）→ 结果
+ *
+ * 失败时错误正文排在最前，之后用分隔线隔开，其下是与成功时相同的主体。不要为失败另写一套主体：
+ * 失败时最需要核对的是执行了什么，而参数表跳过超过 400 字的值，长命令与修改内容会因此不显示。
  *
  * 「结果」字段取 `outcome.data`（`content` / `stdout` / `entries` / `matches`），
  * 无法取得时才回退到 `message`：message 只是一句摘要，不是正文。
@@ -1746,80 +1748,72 @@ function ToolCard(props: { item: TranscriptItem }) {
  */
 function StepBody(props: { item: TranscriptItem }) {
   const args = () => props.item.args ?? {}
-  const rows = () => argsRows(args())
   const kind = () => props.item.action?.kind
 
   return (
-    <Switch fallback={<Generic item={props.item} />}>
-      {/*
-       * 中途输出排在最前。运行时 `outcome` 尚不存在，进入下方任何分支
-       * 都只显示空卡片；该分支只在 `status === 'running'` 时成立，
-       * 到达终态后自动让位，无需额外清理。
-       */}
-      <Match when={props.item.status === 'running' && props.item.stdout}>
-        <LiveOutput item={props.item} />
-      </Match>
-
-      <Match when={props.item.status === 'failure'}>
+    <>
+      <Show when={props.item.status === 'failure'}>
         <pre class="fold-out err">{props.item.outcome?.message || '（无错误正文）'}</pre>
+        <div class="fold-divider" />
+      </Show>
+      <Switch fallback={<Generic item={props.item} />}>
         {/*
-         * 失败时同样必须显示输出。只显示 message 与参数表不够：
-         * message 只是摘要，命令失败时它只是「命令退出码 1」。用户展开失败的
-         * 命令卡片，能看到执行的命令与失败状态，却看不到输出，
-         * 无法判断是命令有误还是被测代码有误。
-         *
-         * 使用 `noMessage` 是因为上方一行已显示 message，回退会重复显示。
+         * 中途输出排在最前。运行时 `outcome` 尚不存在，进入下方任何分支
+         * 都只显示空卡片；该分支只在 `status === 'running'` 时成立，
+         * 到达终态后自动让位，无需额外清理。
          */}
-        <Result item={props.item} label="输出" withDivider noMessage />
-        <Show when={rows().length > 0}>
-          <div class="fold-divider" />
-          <ArgsTable rows={rows()} />
-        </Show>
-      </Match>
+        <Match when={props.item.status === 'running' && props.item.stdout}>
+          <LiveOutput item={props.item} />
+        </Match>
 
-      {/*
-       * 待办清单。不能交给通用参数表分支处理：整个清单的 JSON 位于一个单元格中，
-       * 状态位于 `"status":"in_progress"` 的引号之间，判断哪些条目已完成
-       * 需要逐个辨认。该分支提供标题行没有的信息，即每一条的状态。
-       *
-       * 使用 `noMessage`：回执是「第 3/4 步：编写 main.js」，而清单中该条目已带有
-       * 加载动画标记，再显示回执即为重复。
-       */}
-      <Match when={todosOf(args()) !== null}>
-        <div class="fold-todos">
-          <TodoList todos={todosOf(args())!} />
-        </div>
-      </Match>
+        {/*
+         * 待办清单。不能交给通用参数表分支处理：整个清单的 JSON 位于一个单元格中，
+         * 状态位于 `"status":"in_progress"` 的引号之间，判断哪些条目已完成
+         * 需要逐个辨认。该分支提供标题行没有的信息，即每一条的状态。
+         *
+         * 使用 `noMessage`：回执是「第 3/4 步：编写 main.js」，而清单中该条目已带有
+         * 加载动画标记，再显示回执即为重复。
+         */}
+        <Match when={todosOf(args()) !== null}>
+          <div class="fold-todos">
+            <TodoList todos={todosOf(args())!} />
+          </div>
+        </Match>
 
-      <Match when={kind() === 'edit' && diffFrom(args()) !== null}>
-        {(() => {
-          const d = diffFrom(args())!
-          return (
-            <pre class="fold-diff">
-              <Show when={d.removed}>
-                <span class="del">{d.removed}</span>
-              </Show>
-              <Show when={d.added}>
-                <span class="add">{d.added}</span>
-              </Show>
-            </pre>
-          )
-        })()}
-        <Result item={props.item} withDivider noMessage />
-      </Match>
+        <Match when={kind() === 'edit' && diffFrom(args()) !== null}>
+          {(() => {
+            const d = diffFrom(args())!
+            return (
+              <pre class="fold-diff">
+                <Show when={d.removed}>
+                  <span class="del">{d.removed}</span>
+                </Show>
+                <Show when={d.added}>
+                  <span class="add">{d.added}</span>
+                </Show>
+              </pre>
+            )
+          })()}
+          <Result item={props.item} withDivider noMessage />
+        </Match>
 
-      <Match when={kind() === 'run'}>
-        <Show when={firstString(args(), 'command', 'script', 'code')}>
-          {(cmd) => <pre class="fold-code">{cmd()}</pre>}
-        </Show>
-        <Result item={props.item} label="输出" withDivider />
-      </Match>
+        {/* 没有命令原文的运行类调用（批量运行画布）按「其余」显示参数表：
+            失败时只有参数能说明本次执行的对象。 */}
+        <Match when={kind() === 'run' && firstString(args(), 'command', 'script', 'code')}>
+          {(cmd) => (
+            <>
+              <pre class="fold-code">{cmd()}</pre>
+              <Result item={props.item} label="输出" withDivider />
+            </>
+          )}
+        </Match>
 
-      <Match when={kind() === 'write' && firstString(args(), 'content', 'text') !== ''}>
-        <pre class="fold-code">{clamp(firstString(args(), 'content', 'text'))}</pre>
-        <Result item={props.item} noMessage />
-      </Match>
-    </Switch>
+        <Match when={kind() === 'write' && firstString(args(), 'content', 'text') !== ''}>
+          <pre class="fold-code">{clamp(firstString(args(), 'content', 'text'))}</pre>
+          <Result item={props.item} noMessage />
+        </Match>
+      </Switch>
+    </>
   )
 }
 
@@ -1852,10 +1846,8 @@ function Result(props: {
   label?: string
   withDivider?: boolean
   /**
-   * 无法取得正文时不回退到 `outcome.message`。
-   *
-   * 以下两种情况需要传入：调用方已显示 message（失败分支），
-   * 或 message 只是标题行的复述（编辑、创建）。
+   * 无法取得正文时不回退到 `outcome.message`：message 只是标题行的复述（编辑、创建）。
+   * 失败时同样不回退，message 已作为错误正文显示在展开内容的最上方。
    */
   noMessage?: boolean
 }) {
@@ -1870,7 +1862,9 @@ function Result(props: {
     }
     const list = listOf(data)
     if (list) return list.join(NEWLINE)
-    return props.noMessage ? '' : (props.item.outcome?.message ?? '')
+    return props.noMessage || props.item.status === 'failure'
+      ? ''
+      : (props.item.outcome?.message ?? '')
   }
 
   return (

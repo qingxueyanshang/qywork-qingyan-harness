@@ -137,7 +137,7 @@ describe('并发超限的识别', () => {
       code: 'provider_unavailable',
       message: 'Concurrency limit exceeded for account, please retry later',
       provider: 'openai_responses',
-      detail: { source: 'stream', providerCode: 'gateway_concurrency_limit' },
+      detail: { providerCode: 'gateway_concurrency_limit' },
     })
     expect(concurrencyRejected(inStream)).toBe(true)
     // HTTP 层拒绝经真实的分类器取得同一字段。

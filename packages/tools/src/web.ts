@@ -10,6 +10,7 @@
  */
 
 import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
+import { httpStatusName } from '@qywork/ai'
 import type { IntermediateResourceRef } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
 import { type SafetyOptions, safeFetch } from './net-safety.ts'
@@ -78,7 +79,7 @@ export const webFetchTool: ToolSpec = {
     if (!res.ok) {
       return {
         status: 'failure',
-        message: `HTTP ${res.status}`,
+        message: `HTTP ${res.status} ${httpStatusName(res.status)}`,
         errorKind: 'http_error',
         data: { status: res.status, url: res.url },
       }
@@ -246,7 +247,8 @@ export const webSearchTool: ToolSpec = {
     if (res.blocked || !res.ok) {
       return {
         status: 'failure',
-        message: res.blocked?.message ?? `搜索服务返回 HTTP ${res.status}`,
+        message:
+          res.blocked?.message ?? `搜索服务返回 HTTP ${res.status} ${httpStatusName(res.status)}`,
         errorKind: res.blocked ? 'blocked_by_policy' : 'http_error',
       }
     }

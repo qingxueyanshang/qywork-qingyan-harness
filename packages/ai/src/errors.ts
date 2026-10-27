@@ -16,6 +16,11 @@
  * 两个入口：`classifyProviderError` 接收异常对象（HTTP 失败、SDK 抛出、传输层断流），
  * `classifyStreamError` 接收流内 `error` 事件中的结构化字段。流内错误没有 HTTP 状态码，
  * 不要为使用前一个入口而伪造状态码。
+ *
+ * **分类码与报错正文分开。** 分类码决定重发与界面判定；正文是对端说明的原因：带 HTTP 状态的失败写成
+ * 「HTTP 状态码 名称：对端原文」，流内错误事件写原文。不要按分类码改写正文：分类文案只说明类别，
+ * 会把一次具体的拒绝表述为另一种原因（Key 所属分组已删除会被写成「无权访问该模型」）。
+ * 传输层失败与容量拒绝没有可用的对端原文，正文是本地的分类说明。
  */
 
 import type {
@@ -251,8 +256,7 @@ export function classifyProviderError(
  * **输入是事件中的结构化字段，不是异常对象**：SSE 已返回 200，此时没有可读取的 HTTP 状态码，
  * 伪造状态码会使「provider 拒绝请求」与「连接建立后出错」在账本上无法区分。
  *
- * `message` 保留事件原文：分类码只表示错误类别，不包含 provider 的报错原文。
- * 事件不含文案时改用 `code` / `type`，不编造文案。
+ * 正文是事件原文，分类码只表示错误类别。事件不含文案时改用 `code` / `type`，不编造文案。
  */
 export function classifyStreamError(
   provider: ProviderKind,
@@ -268,24 +272,18 @@ export function classifyStreamError(
   const message = field('message').trim() || code || type || '模型服务返回错误事件'
   const reported = `${type} ${code}`.toLowerCase()
   const detail = {
-    providerMessage: message,
-    source: 'stream',
     ...(code ? { providerCode: code } : {}),
     ...(type ? { providerType: type } : {}),
     ...(param ? { providerParam: param } : {}),
   }
-  const build = (errorCode: ErrorCode, msg?: string) =>
-    new ProviderError({ code: errorCode, message: msg ?? message, provider, detail })
+  const build = (errorCode: ErrorCode) =>
+    new ProviderError({ code: errorCode, message, provider, detail })
 
-  if (quotaExhausted(event, message)) return build('insufficient_quota', '账户额度不足')
-  if (/rate[\s_-]?limit|too[\s_-]?many[\s_-]?requests/.test(reported)) {
-    return build('rate_limited', '触发限速')
-  }
+  if (quotaExhausted(event, message)) return build('insufficient_quota')
+  if (/rate[\s_-]?limit|too[\s_-]?many[\s_-]?requests/.test(reported)) return build('rate_limited')
   if (/authentication|unauthorized|invalid[\s_-]?api[\s_-]?key|permission|forbidden/.test(reported))
-    return build('auth_failed', '当前凭证无权完成请求')
-  if (/not[\s_-]?found/.test(reported)) {
-    return build('model_not_found', '模型不存在：检查模型 ID 与接口地址')
-  }
+    return build('auth_failed')
+  if (/not[\s_-]?found/.test(reported)) return build('model_not_found')
   if (/invalid[\s_-]?request|bad[\s_-]?request/.test(reported)) return build('invalid_request')
   // 明确的失败事件本身即表明 provider 暂不可用；没有结构化细分码时保留原文，
   // 并使其进入 `agent/loop/attempt.ts` 的重发表。
@@ -314,11 +312,13 @@ function classify(provider: ProviderKind, err: unknown, errorBody: string | null
 
   const status = statusOf(err)
   const message = providerText(err, status, errorBody)
+  // 正文写成状态码名称加原文，与生成一侧（`media/http.ts`）相同；原文不翻译。
+  const text =
+    status === undefined ? message : `HTTP ${status} ${httpStatusName(status)}：${message}`
   const retryAfterMs = retryAfterOf(err)
   const providerCode = providerErrorField(err, 'code')
   const providerType = providerErrorField(err, 'type')
   const detail = {
-    providerMessage: message,
     ...(providerCode ? { providerCode } : {}),
     ...(providerType ? { providerType } : {}),
     ...(retryAfterMs !== null ? { retryAfterMs } : {}),
@@ -330,7 +330,7 @@ function classify(provider: ProviderKind, err: unknown, errorBody: string | null
   const build = (code: ErrorCode, msg?: string, timedOut = false) =>
     new ProviderError({
       code,
-      message: msg ?? message,
+      message: msg ?? text,
       provider,
       ...(status !== undefined ? { status } : {}),
       detail,
@@ -362,32 +362,25 @@ function classify(provider: ProviderKind, err: unknown, errorBody: string | null
 
   switch (status) {
     case 401:
-      return build(
-        looksUnconfigured(err) ? 'no_api_key' : 'auth_failed',
-        looksUnconfigured(err) ? '未配置 API Key' : 'API Key 无效',
-      )
+      return build(looksUnconfigured(err) ? 'no_api_key' : 'auth_failed')
     // 402 Payment Required 不依据正文判定：余额不足时正文中的 `code` 可能是 `invalid_request_error`。
     case 402:
-      return build('insufficient_quota', '账户额度不足')
+      return build('insufficient_quota')
     // 403 也分两种：无权访问（更换 key 或模型可解决）与余额耗尽（中转站以 403 + `billing_error`
-    // 报告），后者报告为无权访问会引导用户检查 key 与模型权限。
+    // 报告），后者归为无权访问会使界面引导用户检查 key 与模型权限。
     case 403:
-      return quotaExhausted(err, message)
-        ? build('insufficient_quota', '账户额度不足')
-        : build('auth_failed', '当前 Key 无权访问该模型')
+      return build(quotaExhausted(err, message) ? 'insufficient_quota' : 'auth_failed')
     case 404:
-      return build('model_not_found', `模型不存在：检查模型 ID 与接口地址`)
+      return build('model_not_found')
     case 413:
       // 到达此处说明容量分类器已排除上下文超限，
       // 原因是网关的请求体大小限制（如 nginx 的 client_max_body_size）。
-      // 报告为上下文超限会引导用户精简对话，而实际应缩小附件。
-      return build('invalid_request', '请求体超出网关限制：检查附件大小或反向代理配置')
+      // 归为上下文超限会触发压缩重发，而实际应缩小附件。
+      return build('invalid_request')
     case 429: {
       // 429 分两种：限速（等待后可恢复）与额度耗尽（无论等待多久都不会恢复）。
       // 混为一谈会使用户对不会成功的请求反复重发。
-      return quotaExhausted(err, message)
-        ? build('insufficient_quota', '账户额度不足')
-        : build('rate_limited', '触发限速')
+      return build(quotaExhausted(err, message) ? 'insufficient_quota' : 'rate_limited')
     }
     case 400:
     case 422:
@@ -401,18 +394,15 @@ function classify(provider: ProviderKind, err: unknown, errorBody: string | null
        * 一次仍会被同样拒绝：不接受图片的模型收到图像块、`max_tokens` 越界，
        * 每次都会触发。归为可重发的码时界面显示「正在重连 N / M」，
        * 该提示无法指出真正的原因。
-       *
-       * 报错写成状态码名称加原文，与生成一侧（`media/http.ts`）相同；原文不翻译。
        */
       return build(
         looksRetryableRejection(status, message) ? 'provider_unavailable' : 'invalid_request',
-        `HTTP ${status} ${httpStatusName(status)}：${message}`,
       )
     case 500:
     case 502:
     case 503:
     case 529:
-      return build('provider_unavailable', '服务端暂时不可用')
+      return build('provider_unavailable')
     default:
       break
   }
@@ -608,12 +598,4 @@ export function failureDiagnostics(error: unknown) {
       param: field('providerParam'),
     },
   }
-}
-
-export function providerErrorMessage(error: unknown): string | null {
-  return error instanceof ProviderError &&
-    (error.status !== undefined || error.detail?.source === 'stream') &&
-    typeof error.detail?.providerMessage === 'string'
-    ? error.detail.providerMessage
-    : null
 }

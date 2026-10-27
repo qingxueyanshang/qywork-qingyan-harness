@@ -657,6 +657,10 @@
   margin: 6px 0;
   background: var(--border-subtle);
 }
+/* 失败的调用没有参数也没有输出时，错误正文之后没有其他区块，分隔线不显示。 */
+.fold-divider:last-child {
+  display: none;
+}
 
 /* 「输出」等小标签，位于结果块上方。 */
 .fold-tag {
@@ -1048,7 +1052,11 @@
    排在最前会使后续读数整体右移，出错轮次与正常轮次的读数不再对齐。
    不加粗：读数条其余各项为常规字重，单独加粗会被识别为标题；突出效果由颜色提供。 */
 .run-reason {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--warning);
 }
 
