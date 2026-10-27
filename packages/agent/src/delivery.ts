@@ -101,11 +101,8 @@ export function chargeBatchBudget(
 }
 
 /**
- * 一段将作为工具结果投递的正文的估算大小。准入判定与请求估算使用同一估算方法。
- *
- * 按 JSON 档位估算而不是散文档位：正文最终放在 `{call_id, tool, status, executed,
- * summary, result}` 中发出，而 `estimateMessage` 对 tool 角色整条按 JSON 档位估算
- * （`ai/tokens.ts`）。改用其他估算方法时，扣除的额度与实际进入窗口的量不一致，相差约两成。
+ * 一段将作为工具结果投递的正文的估算大小。准入判定与请求估算使用同一估算函数（`estimateJson`）：
+ * 改用其他函数时，扣除的额度与实际进入窗口的量不一致。
  */
 export function deliveredTokens(text: string, density: TokenDensity): number {
   return estimateJson(text, density)
@@ -134,30 +131,37 @@ export function outcomeTokens(
 /**
  * 将 token 额度换算为字节数。
  *
- * 按每字节 token 数的上界反算：纯 ASCII 每字节 `1 / jsonCharsPerToken` 个 token；
- * 汉字在 UTF-8 中占三字节，常用字与其他汉字分别按各自档位计。取最大值，据此换算出的字节数
- * 对任何正文都不超出额度。该结果对常见文本偏保守；可以按实际内容计算的位置使用 `headBytesWithin`。
+ * 按每字节 token 数的上界反算：一个 ASCII 字节至多计入本类一项与一次连续段的起点（字母另计驼峰分段）；
+ * 汉字在 UTF-8 中占三字节；其他字符至少一字节。取最大值，据此换算出的字节数对任何正文都不超出额度。
+ * 该结果对常见文本偏保守；可以按实际内容计算的位置使用 `headBytesWithin`。
  */
 export function tokensToBytes(tokens: number, density: TokenDensity): number {
+  const d = density
   const perByte = Math.max(
-    density.cjkTokensPerChar / 3,
-    density.rareCjkTokensPerChar / 3,
-    1 / density.jsonCharsPerToken,
+    d.letter + d.word + d.caseBreak,
+    d.digit,
+    d.punct + d.punctRun,
+    d.space,
+    d.other,
+    d.cjk / 3,
+    d.rareCjk / 3,
   )
   return Math.max(0, Math.floor(tokens / perByte))
 }
 
 /**
- * `tokens` 最多对应的字节数：按每字节 token 数的下界反算，再加一个码点的余量。
- * 用于确定先截取多少正文再估算的上限：估算后不超出额度的部分必定在该字节数之内。
+ * 实测正文每 token 对应的最大字节数取整后加余量：各模型各类真实样本中最高为英文思考正文的 5.3（2026-10-27）。
+ *
+ * 不按系数反算下界：连续空白只计一次段起点，按系数反算时一大段空白的下界趋近于 0，换算结果没有上限。
  */
-export function tokensToMaxBytes(tokens: number, density: TokenDensity): number {
-  const perByte = Math.min(
-    density.cjkTokensPerChar / 3,
-    density.rareCjkTokensPerChar / 3,
-    1 / density.jsonCharsPerToken,
-  )
-  return Math.max(0, Math.ceil(tokens / perByte) + 4)
+const MAX_BYTES_PER_TOKEN = 8
+
+/**
+ * `tokens` 最多对应的字节数，再加一个码点的余量。用于确定先截取多少正文再估算的上限。
+ * 连续空白等极端正文在该字节数内估算值仍可能低于额度，此时按该字节数截取，少投递而不超额。
+ */
+export function tokensToMaxBytes(tokens: number): number {
+  return Math.max(0, Math.ceil(tokens * MAX_BYTES_PER_TOKEN) + 4)
 }
 
 /**
@@ -172,7 +176,7 @@ export function headBytesWithin(body: Uint8Array, tokens: number, density: Token
   const cost = (n: number) =>
     deliveredTokens(JSON.stringify(decodeUtf8Boundary(body.subarray(0, n), 'head')), density)
   let fit = Math.min(body.byteLength, tokensToBytes(tokens, density))
-  let over = Math.min(body.byteLength, tokensToMaxBytes(tokens, density))
+  let over = Math.min(body.byteLength, tokensToMaxBytes(tokens))
   if (cost(over) <= tokens) return over
   if (cost(fit) > tokens) fit = 0
   while (over - fit > 1) {

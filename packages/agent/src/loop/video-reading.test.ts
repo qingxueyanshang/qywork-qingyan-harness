@@ -48,12 +48,10 @@ describe('工具结果中的视频块', () => {
     const video = estimateContent(
       [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: VIDEO.path } }],
       DEFAULT_DENSITY,
-      2,
     )
     const image = estimateContent(
       [{ type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'x' } }],
       DEFAULT_DENSITY,
-      2,
     )
     expect(video).toBe(0)
     expect(image).toBe(2000)

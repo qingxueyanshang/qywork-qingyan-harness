@@ -7,7 +7,7 @@
  * `mcp/register.ts` 的 `normalizeSchema` 只补充 `type`/`properties` 即原样透传，
  * 大小完全不受本仓库控制。
  *
- * 实测数据（2026-08-16，四个真实 MCP server，按本仓库 `estimateSchemas` 计算）。```
+ * 实测数据（2026-08-16，四个真实 MCP server，JSON 按 2 字符/token 估算）。```
  * @modelcontextprotocol/server-filesystem           14 个工具   4225 token
  * @modelcontextprotocol/server-everything           15 个工具   3041 token
  * @modelcontextprotocol/server-memory               11 个工具   2537 token
@@ -28,15 +28,13 @@ import { estimateSchemas, type TokenDensity } from '@qywork/ai'
 /**
  * 外部工具 schema 的常驻预算。总量不超过它时照常全量注册，超过才改为按需加载。
  *
- * 取 1600：上表按旧的估算口径（JSON 按 2 字符/token）测得，平均 290 token/个；
- * 按已标定模型的 JSON 档（2.5 字符/token）换算为 232 token/个，
- * 七个普通工具因此为 1624，取整为 1600。语义仍是
- * 「一个小 server 全量常驻，两个 server 或一个大工具改为按需加载」：
+ * 取 1600：七个普通工具的 schema 约 1600 token（工具定义实测 2.3–2.9 字符/token，Claude 为 1.6）。
+ * 语义是「一个小 server 全量常驻，两个 server 或一个大工具改为按需加载」：
  * 低于此线时改为按需加载节省不足两千 token，却要多付出一次往返，得不偿失。
  *
- * 判据是总量而不是个数：单个工具可占一千多 token（sequential-thinking 换算后为 1613），
- * 按个数定档会把只有一个工具的 server 判为小配置。该值与此线只差十几个 token，
- * 修改此常数前先按新口径重新测量这四个 server，不要依据旧表推算。
+ * 判据是总量而不是个数：单个工具可占一千多 token（sequential-thinking 约 1600），
+ * 按个数定档会把只有一个工具的 server 判为小配置。修改此常数前先按当前估算重新测量这四个 server，
+ * 不要依据上表推算。
  */
 export const EXTERNAL_SCHEMA_BUDGET_TOKENS = 1600
 

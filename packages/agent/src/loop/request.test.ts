@@ -447,8 +447,8 @@ describe('上下文读数：统一计量', () => {
 
     const ctx = events.find((e) => e.type === 'context')
     expect(ctx?.type === 'context' && ctx.source).toBe('projected')
-    // “继续”按当前模型的本地结构估算为 7 token；旧请求的整体误差不能外推到新消息。
-    expect(ctx?.type === 'context' && ctx.tokens).toBe(33_007)
+    // “继续”按当前模型的本地结构估算为 10 token；旧请求的整体误差不能外推到新消息。
+    expect(ctx?.type === 'context' && ctx.tokens).toBe(33_010)
   })
 
   test('没有锚点时标为 estimated，不标为实测', async () => {

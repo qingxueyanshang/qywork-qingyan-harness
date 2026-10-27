@@ -140,7 +140,7 @@ describe('按量决策', () => {
    * 按个数定档会把它判为小配置。
    */
   test('一个大工具即可超出预算', () => {
-    const fat = fakeExternal('mcp__x__fat', 'x'.repeat(EXTERNAL_SCHEMA_BUDGET_TOKENS * 2 + 100))
+    const fat = fakeExternal('mcp__x__fat', '参数说明'.repeat(EXTERNAL_SCHEMA_BUDGET_TOKENS))
     expect(externalSchemaTokens([fat], DEFAULT_DENSITY)).toBeGreaterThan(
       EXTERNAL_SCHEMA_BUDGET_TOKENS,
     )

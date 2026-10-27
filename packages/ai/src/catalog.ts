@@ -198,28 +198,115 @@ export interface Vendor {
   baseUrls: Partial<Record<ProviderKind, string>>
 }
 
-/**
- * DeepSeek 的 tokenizer 密度。斜率法实测（2026-08-26，`deepseek-v4-flash-vision-exp`）：
- * 中文 0.569 token/字、真实源码 2.71–3.00 字符/token、工具结果整条 2.53 字符/token。
- * 三档均取略高于实测值的上界，在四份真实样本上估算值为实际值的 1.03–1.12 倍。生僻字未实测，取 `DEFAULT_DENSITY` 的字节级上界。
+/*
+ * 各 tokenizer 的实测系数（2026-10-27，方法见 `tokens.ts` 的 `TokenDensity`）。每档 30–33 段样本，
+ * 留一交叉验证的中位偏差 1.9%–3.0%，90% 的样本在 14% 以内。测得相同系数的型号共用一档；
+ * 未实测的型号使用 `DEFAULT_DENSITY`，不按名称推断为同一档。
  */
+
+/** deepseek-flash 与 deepseek-v4-pro。 */
 const DEEPSEEK_DENSITY: TokenDensity = {
-  cjkTokensPerChar: 0.6,
-  rareCjkTokensPerChar: DEFAULT_DENSITY.rareCjkTokensPerChar,
-  textCharsPerToken: 3,
-  jsonCharsPerToken: 2.5,
+  cjk: 0.686,
+  rareCjk: 1.875,
+  word: 0.286,
+  letter: 0.053,
+  caseBreak: 1.267,
+  digit: 0.699,
+  punctRun: 0.708,
+  punct: 0.349,
+  space: 0.383,
+  other: 1.004,
+  message: 1.41,
 }
 
-/**
- * Google 的 tokenizer 密度。同法实测（2026-08-26，`gemini-3.7-flash`）：
- * 中文 0.647 token/字、真实源码 2.42 字符/token、工具结果 2.43 字符/token。
- * 文本档的字符/token 值低于 DeepSeek，因为其源码 token 密度实测更高。生僻字未实测，取 `DEFAULT_DENSITY` 的字节级上界。
- */
-const GOOGLE_DENSITY: TokenDensity = {
-  cjkTokensPerChar: 0.7,
-  rareCjkTokensPerChar: DEFAULT_DENSITY.rareCjkTokensPerChar,
-  textCharsPerToken: 2.5,
-  jsonCharsPerToken: 2.5,
+/** claude-opus-5-5。中文约为其他各家的 1.5 倍。 */
+const CLAUDE_OPUS_5_5_DENSITY: TokenDensity = {
+  cjk: 1.092,
+  rareCjk: 2.102,
+  word: 0.104,
+  letter: 0.194,
+  caseBreak: 3.292,
+  digit: 1.264,
+  punctRun: 0.384,
+  punct: 0.595,
+  space: 0.812,
+  other: 1.29,
+  message: 1.87,
+}
+
+/** gpt-6-astra 与 gpt-6.1-sol。 */
+const GPT_6_DENSITY: TokenDensity = {
+  cjk: 0.778,
+  rareCjk: 2.002,
+  word: 0.321,
+  letter: 0.059,
+  caseBreak: 1.092,
+  digit: 0.872,
+  punctRun: 0.817,
+  punct: 0.132,
+  space: 0.388,
+  other: 1.047,
+  message: 4.42,
+}
+
+/** gemini-4-argon。 */
+const GEMINI_4_ARGON_DENSITY: TokenDensity = {
+  cjk: 0.715,
+  rareCjk: 2.544,
+  word: 0,
+  letter: 0.131,
+  caseBreak: 0.382,
+  digit: 1.387,
+  punctRun: 1.675,
+  punct: 0.013,
+  space: 0.347,
+  other: 0.794,
+  message: 4.38,
+}
+
+/** grok-4.6 与 grok-4.7。 */
+const GROK_4_DENSITY: TokenDensity = {
+  cjk: 0.728,
+  rareCjk: 1.651,
+  word: 0.216,
+  letter: 0.048,
+  caseBreak: 1.121,
+  digit: 0.996,
+  punctRun: 0.667,
+  punct: 0.436,
+  space: 0.431,
+  other: 0.86,
+  message: 3.46,
+}
+
+/** qwen3.8-flash。 */
+const QWEN_3_8_FLASH_DENSITY: TokenDensity = {
+  cjk: 0.669,
+  rareCjk: 1.867,
+  word: 0,
+  letter: 0.132,
+  caseBreak: 0.108,
+  digit: 0.999,
+  punctRun: 1.308,
+  punct: 0.076,
+  space: 0.279,
+  other: 1.164,
+  message: 6.32,
+}
+
+/** glm-5.3-flashx。 */
+const GLM_5_3_FLASHX_DENSITY: TokenDensity = {
+  cjk: 0.687,
+  rareCjk: 1.943,
+  word: 0.205,
+  letter: 0.053,
+  caseBreak: 0.824,
+  digit: 0.762,
+  punctRun: 0.738,
+  punct: 0.3,
+  space: 0.47,
+  other: 1.12,
+  message: 1.5,
 }
 
 export const VENDORS: readonly Vendor[] = [
@@ -747,11 +834,7 @@ const CLAUDE_BASE = {
   provider: 'anthropic_messages' as const,
   vendor: 'anthropic',
   contextWindow: 1_000_000,
-  /*
-   * **未经直连实测。** 斜率法仅在中转站上测得中文约 1.03 token/字，同一段文本
-   * 改变长度重测时斜率在 1.03 与 1.31 之间波动，结果不可采信。上界档对其偏保守，
-   * 读数偏高。直连实测后在此填写对应的密度。
-   */
+  // 实测过的型号在各自条目中覆盖，其余使用默认档。
   density: DEFAULT_DENSITY,
   maxOutputTokens: 128_000,
   // Claude 5 与 4 系均接受图片输入（见官方模型页的输入模态一栏）。
@@ -774,6 +857,7 @@ export function claudeCatalog(): ModelSpec[] {
       ...CLAUDE_BASE,
       id: 'claude-opus-5-5',
       displayName: 'Claude Opus 5.5',
+      density: CLAUDE_OPUS_5_5_DENSITY,
       pricing: { ...anthropicPricing(4, 20), cacheRead: 0.2 },
       thinksByDefault: true,
       minCacheablePrefix: 512,
@@ -880,7 +964,7 @@ function deepseekCatalog(): ModelSpec[] {
     provider: 'openai_chat_completions',
     vendor: 'deepseek',
     contextWindow: 1_000_000,
-    density: DEFAULT_DENSITY,
+    density: DEEPSEEK_DENSITY,
     maxOutputTokens: 384_000,
     thinking: 'deepseek_thinking',
     vision: true,
@@ -1131,6 +1215,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
       id: 'gpt-6-astra',
       displayName: 'GPT-6 Astra',
+      density: GPT_6_DENSITY,
       vendor: 'openai',
       // Astra 的工具调用要求 Responses API。
       provider: 'openai_responses',
@@ -1145,6 +1230,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
       id: 'gpt-6.1-sol',
       displayName: 'GPT-6.1 Sol',
+      density: GPT_6_DENSITY,
       vendor: 'openai',
       // 2026-09-30 核对：https://developers.openai.com/api/docs/models/gpt-6.1-sol
       // 工具调用要求 Responses；不支持 none / minimal，缓存读取价为输入价的 5%。
@@ -1275,6 +1361,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...effort(['low', 'medium', 'high']),
       id: 'gemini-4-argon',
       displayName: 'Gemini 4 Argon',
+      density: GEMINI_4_ARGON_DENSITY,
       vendor: 'google',
       vision: true,
       contextWindow: 1_048_576,
@@ -1292,7 +1379,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Gemini 3.1 Pro Preview',
       vendor: 'google',
       vision: true,
-      density: GOOGLE_DENSITY,
+      density: DEFAULT_DENSITY,
       contextWindow: 1_048_576,
       maxOutputTokens: 65_536,
       pricing: usd(2, 12, 0.2),
@@ -1305,7 +1392,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Gemini 3.8 Flash',
       vendor: 'google',
       vision: true,
-      density: GOOGLE_DENSITY,
+      density: DEFAULT_DENSITY,
       contextWindow: 1_048_576,
       maxOutputTokens: 65_536,
       pricing: geminiFlashPromo(now),
@@ -1317,7 +1404,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Gemini 3.7 Flash',
       vendor: 'google',
       vision: true,
-      density: GOOGLE_DENSITY,
+      density: DEFAULT_DENSITY,
       contextWindow: 1_048_576,
       maxOutputTokens: 65_536,
       pricing: geminiFlashPromo(now),
@@ -1329,7 +1416,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Gemini 3.6 Flash',
       vendor: 'google',
       vision: true,
-      density: GOOGLE_DENSITY,
+      density: DEFAULT_DENSITY,
       contextWindow: 1_048_576,
       maxOutputTokens: 65_536,
       pricing: geminiFlashPromo(now),
@@ -1341,7 +1428,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'Gemini 3.5 Flash',
       vendor: 'google',
       vision: true,
-      density: GOOGLE_DENSITY,
+      density: DEFAULT_DENSITY,
       contextWindow: 1_048_576,
       maxOutputTokens: 65_536,
       pricing: usd(1.5, 9, 0.15),
@@ -1355,6 +1442,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
         ...effort(['low', 'medium', 'high', 'xhigh']),
         id: 'grok-4.7',
         displayName: 'Grok 4.7',
+        density: GROK_4_DENSITY,
         provider,
         vendor: 'xai',
         chatToolSchema: 'native',
@@ -1384,6 +1472,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...effort(['low', 'medium', 'high', 'xhigh']),
       id: 'grok-4.6',
       displayName: 'Grok 4.6',
+      density: GROK_4_DENSITY,
       vendor: 'xai',
       // xAI 的工具 schema 原生按 required/optional 严格采样；不要套用 OpenAI 的
       // 「全部 required + nullable」，否则模型会被迫为 probe_url 等可选参数臆造取值。
@@ -1465,6 +1554,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...effort(['low', 'medium', 'xhigh']),
       id: 'qwen3.8-flash',
       displayName: 'Qwen3.8 Flash',
+      density: QWEN_3_8_FLASH_DENSITY,
       vendor: 'alibaba',
       vision: true,
       video: true,
@@ -1641,6 +1731,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       {
         id: 'glm-5.3-flashx',
         displayName: 'GLM-5.3 FlashX',
+        density: GLM_5_3_FLASHX_DENSITY,
         vision: true,
         pricing: cny(2, 7, 0.57),
       },
