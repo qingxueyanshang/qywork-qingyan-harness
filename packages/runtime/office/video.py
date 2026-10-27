@@ -37,7 +37,24 @@ def _duration(container, stream):
         return container.duration / 1_000_000
     if stream.duration and stream.time_base:
         return float(stream.duration * stream.time_base)
-    return None
+    return _scanned_duration(container, stream)
+
+
+def _scanned_duration(container, stream):
+    """容器不写时长时（浏览器录制的 WebM）逐个读取数据包，取最后的结束时间戳；只读包头，不解码画面。
+
+    读完后回到开头。读取过程中解封装器记下了关键帧位置，之后按时间定位才可用：这类文件没有索引（Cues）。
+    """
+    end = None
+    for packet in container.demux(stream):
+        if packet.pts is None:
+            continue
+        last = packet.pts + (packet.duration or 0)
+        end = last if end is None else max(end, last)
+    container.seek(0)
+    if end is None or not stream.time_base:
+        return None
+    return float(end * stream.time_base)
 
 
 def _frame_at(container, stream, t):
