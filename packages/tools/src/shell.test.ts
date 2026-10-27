@@ -72,6 +72,14 @@ describe('run_command 参数校验', () => {
     const outcome = await tool.fn({}, { workspaceRoot: process.cwd() } as ToolContext)
     expect(outcome).toMatchObject({ status: 'failure', executed: false, message: '命令为空' })
   })
+
+  /** 原始失败形状：模型把 cwd 写成字符串 "null"，回执只有「路径不存在：null」，看不出是哪个参数。 */
+  test('工作目录不存在时报错写明参数 cwd', async () => {
+    const tool = makeShellTool(shell)
+    await expect(
+      tool.fn({ command: 'echo ok', cwd: 'null' }, { workspaceRoot: process.cwd() } as ToolContext),
+    ).rejects.toThrow('参数 cwd 的路径不存在：null')
+  })
 })
 
 describe('run_command 的子进程环境', () => {

@@ -1389,7 +1389,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
       // 与主请求使用同一套终态：被拒绝为 rejected，其余情况（流被截断、中断、连接断开）均为 uncertain。
       trace.settle(
         requestId,
-        pe?.status !== undefined ? 'rejected' : 'uncertain',
+        pe?.rejected ? 'rejected' : 'uncertain',
         pe?.usage ?? usage,
         opts.signal?.aborted ? null : (pe?.code ?? 'internal_error'),
         finish,

@@ -36,16 +36,21 @@ export default function PairPanel() {
   const [info, { refetch }] = createResource(() => client.api<PairingInfo>('/api/pairing'))
   const [picked, setPicked] = sessionSignal('qywork.settings.pair.picked', 0)
   const [busy, setBusy] = createSignal(false)
+  const [lanError, setLanError] = createSignal<string | null>(null)
 
+  /** 失败时同样重新读取：勾选框已随点击改变，不重新读取时显示的是未生效的状态。 */
   const toggleLan = async (enabled: boolean) => {
     setBusy(true)
+    setLanError(null)
     try {
       await client.api('/api/pairing/lan', {
         method: 'POST',
         body: JSON.stringify({ enabled }),
       })
-      await refetch()
+    } catch (e) {
+      setLanError(explainApiError(e, enabled ? '无法开启局域网接入' : '无法关闭局域网接入'))
     } finally {
+      await refetch()
       setBusy(false)
     }
   }
@@ -71,6 +76,7 @@ export default function PairPanel() {
             />
             <span>允许同一网络的设备接入</span>
           </label>
+          <Show when={lanError()}>{(m) => <p class="pair-hint">{m()}</p>}</Show>
 
           <Show when={d().lanEnabled} fallback={<p class="pair-hint">开启后可使用手机扫码</p>}>
             <Qr text={d().candidates[picked()]?.qr ?? d().qr} />

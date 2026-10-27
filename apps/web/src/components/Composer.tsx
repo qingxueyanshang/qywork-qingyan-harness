@@ -1109,7 +1109,14 @@ export function Composer(props: { empty: boolean }) {
               onClick={() => {
                 if (isDesktopShell()) {
                   const conversationId = state.activeConversation
-                  void pickFiles().then((paths) => takePaths(paths, conversationId))
+                  void pickFiles()
+                    .then((paths) => takePaths(paths, conversationId))
+                    .catch((e: unknown) =>
+                      setState('notice', {
+                        reason: 'attachment_pick_failed',
+                        message: `无法选择文件：${e instanceof Error ? e.message : String(e)}`,
+                      }),
+                    )
                   return
                 }
                 filePickerConversation = state.activeConversation

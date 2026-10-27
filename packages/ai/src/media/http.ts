@@ -56,8 +56,12 @@ function unsentReason(code: string | undefined, host: string): string | null {
   return null
 }
 
+/**
+ * 错误正文中的说明。先去除首尾空白再解析：`JSON.parse` 不接受不换行空格、全角空格等首尾字符，
+ * 而解析失败时显示的是去除空白后的原文，正文因此整段显示为 JSON。
+ */
 async function providerMessage(res: Response): Promise<string> {
-  const text = await res.text().catch(() => '')
+  const text = (await res.text().catch(() => '')).trim()
   try {
     const body = JSON.parse(text) as Record<string, unknown>
     const nested = body.error as Record<string, unknown> | string | undefined
@@ -65,7 +69,7 @@ async function providerMessage(res: Response): Promise<string> {
       (typeof nested === 'object' && nested ? nested.message : nested) ?? body.message ?? body.code
     if (typeof message === 'string' && message.trim()) return message.trim()
   } catch {}
-  return text.trim().slice(0, 500) || res.statusText
+  return text.slice(0, 500) || res.statusText
 }
 
 /** 读完响应体，每收到一段数据调用一次 `heard`。 */

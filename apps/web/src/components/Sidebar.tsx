@@ -179,13 +179,17 @@ export function Sidebar(props: { onClose?: () => void }) {
                   }}
                   onNewChat={() => {
                     setCollapsedPath(null)
-                    void newConversation()
+                    void newConversation().catch((e: unknown) =>
+                      setError(e instanceof Error ? e.message : String(e)),
+                    )
                     props.onClose?.()
                   }}
                   onChanged={() => {
                     void refetchWorkspaces()
                     // 归档改变当前项目的会话列表，不重新获取时侧栏仍显示已归档的会话。
-                    void loadConversations()
+                    void loadConversations().catch((e: unknown) =>
+                      setError(e instanceof Error ? e.message : String(e)),
+                    )
                   }}
                   onError={setError}
                 />

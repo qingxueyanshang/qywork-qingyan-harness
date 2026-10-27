@@ -139,7 +139,8 @@ for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
         expect(row.providerInputTokens).toBe(14)
         expect(row.providerCachedTokens).toBe(11)
       } else {
-        expect(row.status).toBe('uncertain')
+        // 流内错误事件是对端的明确答复，记为被拒绝；断流与中止无法确定送达，记为结果不明。
+        expect(row.status).toBe(mode === 'stream_error' ? 'rejected' : 'uncertain')
         expect(row.diagnostic?.retry.decision).toBe(
           mode === 'abort' ? 'interrupted' : 'not_retryable',
         )

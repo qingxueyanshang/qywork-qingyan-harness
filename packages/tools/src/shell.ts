@@ -319,6 +319,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
 
       const cwd = await resolveInWorkspace(writableRoots(rootsOf(ctx)), String(args.cwd ?? '.'), {
         mustExist: true,
+        param: 'cwd',
       })
       const timeout = resolveCommandTimeout(args.timeout_ms)
 

@@ -49,6 +49,7 @@ import {
   setFileRevealRequest,
   setOpenFile,
   setSidePanel,
+  setState,
   sidePanel,
   state,
   togglePanelMax,
@@ -172,7 +173,13 @@ const PREVIEW_SOURCES: {
     label: '浏览器',
     icon: IconGlobe,
     show: browserReady,
-    open: () => void openBrowserTab(),
+    open: () =>
+      void openBrowserTab().catch((e: unknown) =>
+        setState('notice', {
+          reason: 'browser_open_failed',
+          message: `无法打开浏览器页面：${e instanceof Error ? e.message : String(e)}`,
+        }),
+      ),
   },
   {
     /*
@@ -194,7 +201,13 @@ const PREVIEW_SOURCES: {
     label: '无限画布',
     icon: IconCanvas,
     show: canvasAvailable,
-    open: () => void openNewCanvas(),
+    open: () =>
+      void openNewCanvas().catch((e: unknown) =>
+        setState('notice', {
+          reason: 'canvas_create_failed',
+          message: `无法新建画布：${e instanceof Error ? e.message : String(e)}`,
+        }),
+      ),
   },
 ]
 

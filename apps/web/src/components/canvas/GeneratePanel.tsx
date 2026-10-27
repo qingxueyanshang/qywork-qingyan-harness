@@ -661,8 +661,11 @@ export function GeneratePanel(props: {
   const [previewText] = createResource(preview, async (id) => {
     const source = props.view.doc.nodes.find((n) => n.id === id)
     if (source?.type !== 'file') return ''
+    // 只有 404 是文件不存在；连接失败与其他状态码按实际情况报告。
     const res = await fetch(client.fileUrl(source.path), { cache: 'no-store' }).catch(() => null)
-    if (!res?.ok) return '文件不存在'
+    if (!res) return '无法读取文件：连接失败'
+    if (res.status === 404) return '文件不存在'
+    if (!res.ok) return `无法读取文件：HTTP ${res.status}`
     const r = excerptOf(await res.text(), source.excerpt)
     return r.ok ? r.text : r.error
   })
