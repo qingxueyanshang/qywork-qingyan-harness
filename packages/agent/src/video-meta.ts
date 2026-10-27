@@ -1,14 +1,18 @@
 /**
- * 视频文件的字节数、时长与画面尺寸。只读取 ISO 媒体容器（mp4 / mov / m4v）的 `moov`，不解码画面。
+ * 视频文件的字节数、时长与画面尺寸。只读取容器索引，不解码画面：ISO 媒体容器（mp4 / mov / m4v）的 `moov`，
+ * Matroska（mkv / webm）开头的 `Info` 与 `Tracks`。容器按文件开头的标识字节判断，不按扩展名判断。
  * 估算、投递额度与画布尺寸共用；同步读取，因为请求装配（`toolResultContent`）与压缩的单元估算都是同步的。
  */
 
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs'
 import type { VideoMeta } from '@qywork/ai'
-import { mediaBoxAt, movieMetadataOf } from '@qywork/core'
+import { matroskaMetadataOf, mediaBoxAt, movieMetadataOf } from '@qywork/core'
 
 /** `moov` 只存储索引，长视频也在数 MB 以内；超过此值视为异常文件，不读取。 */
 const MAX_MOOV = 64 * 1024 * 1024
+/** Matroska 的 `Info` 与 `Tracks` 位于第一个 `Cluster` 之前，文件开头这一段足以包含它们。 */
+const MATROSKA_HEAD = 1024 * 1024
+const EBML_MAGIC = [0x1a, 0x45, 0xdf, 0xa3]
 const CACHE_LIMIT = 256
 const cache = new Map<string, VideoMeta>()
 
@@ -50,6 +54,14 @@ function moovOf(fd: number, total: number): ReturnType<typeof movieMetadataOf> |
   return null
 }
 
+function containerOf(fd: number, total: number): ReturnType<typeof movieMetadataOf> | null {
+  const magic = new Uint8Array(EBML_MAGIC.length)
+  readSync(fd, magic, 0, magic.length, 0)
+  if (!EBML_MAGIC.every((b, i) => magic[i] === b)) return moovOf(fd, total)
+  const head = new Uint8Array(Math.min(total, MATROSKA_HEAD))
+  return matroskaMetadataOf(head.subarray(0, readSync(fd, head, 0, head.length, 0)))
+}
+
 /**
  * 估算用的视频信息。文件不存在时返回 null；时长不为正数或读不出画面尺寸时对应项为 null。
  * 按路径、修改时间与大小缓存：请求装配每一步都会对历史中的视频调用本函数。
@@ -69,7 +81,7 @@ export function videoMetaOf(abs: string): VideoMeta | null {
     if (hit) return hit
     let movie: ReturnType<typeof movieMetadataOf> | null = null
     try {
-      movie = moovOf(fd, info.size)
+      movie = containerOf(fd, info.size)
     } catch {
       // 读取中途出错按读不出处理：时长与尺寸为 null，字节数仍有效。
     }

@@ -75,7 +75,6 @@ describe('压缩后的估算基准', () => {
     run.anchor = {
       tokens: 181_413,
       uncovered: 0,
-      uncoveredVideos: 0,
       transcriptIndex: 0,
       model: run.adapter.spec.id,
       headTokens: 0,

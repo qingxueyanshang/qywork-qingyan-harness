@@ -14,7 +14,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '@qywork/ai'
-import { estimateMessages, estimateRequest, unestimatedVideosOf } from '@qywork/ai'
+import { estimateMessages, estimateRequest } from '@qywork/ai'
 import type {
   ContextBreakdown,
   ContextOmitted,
@@ -55,8 +55,6 @@ export interface LoopHost {
 export interface ContextAnchor {
   tokens: number
   uncovered: number
-  /** `uncovered` 范围内读不出时长或画面尺寸的视频段数（`unestimatedVideosOf`），它们不计入 `uncovered`。 */
-  uncoveredVideos: number
   transcriptIndex: number
   /** 产生该真值的请求所用的模型。与本轮不同时整个锚点作废。 */
   model: string
@@ -195,7 +193,6 @@ export class RunState {
           headTokens: input.anchor.headTokens,
           tokens: input.anchor.tokens,
           uncovered: estimateMessages(uncovered, this.density),
-          uncoveredVideos: unestimatedVideosOf(uncovered, this.density),
           transcriptIndex: 0,
         }
       : null
@@ -256,18 +253,6 @@ export class RunState {
    */
   occupancyOf(req: ChatRequest): number {
     return this.meter(this.anchor ? 0 : estimateRequest(req, this.density)).tokens
-  }
-
-  /**
-   * 读数中未计入的视频段数：读不出时长或画面尺寸的视频估算记 0，只有接口回报的真值包含它们。
-   * 锚点之前的视频已计入真值；锚点之后新增的视频尚未计入。
-   */
-  unmeasuredVideos(req: ChatRequest): number {
-    const anchor = this.anchor
-    return anchor
-      ? anchor.uncoveredVideos +
-          unestimatedVideosOf(this.transcript.slice(anchor.transcriptIndex), this.density)
-      : unestimatedVideosOf(req.messages, this.density)
   }
 
   /** 无进展判据：重复满三次即停止；满两次时先将重复的事实交给模型。 */
@@ -385,8 +370,6 @@ export class TurnState {
   refusalNote: string | null = null
   /** 本次请求 provider 回报的 usage。null 表示未回报，不要用累计值代替。 */
   turnUsage: ProviderUsage | null = null
-  /** 本次尝试写入请求账的 `requestBytes`。带视频的请求在收尾时以它作为回报输入量的上限。 */
-  requestBytes = 0
   /** 本次尝试写入请求账的本地估算（`measuredInputTokens`）。收尾时据此判定 usage 能否作为占用锚点。 */
   measured = 0
   /** 本轮可折叠单元在 transcript 中的起点。由收尾阶段设置，工具结果随后追加在其后。 */

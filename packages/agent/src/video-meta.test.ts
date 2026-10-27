@@ -40,3 +40,39 @@ test('文件被替换后重新读取，不返回缓存中的旧值', async () =>
   await writeFile(path, mp4Bytes(30, 640, 360, 8192))
   expect(videoMetaOf(path)).toEqual({ bytes: 8192, seconds: 30, size: { width: 640, height: 360 } })
 })
+
+/** EBML 元素：`id` 按原样写入（含长度标记），大小为 1 字节变长整数（载荷小于 127 字节）。 */
+function ebml(id: number[], ...payload: number[][]): number[] {
+  const body = payload.flat()
+  return [...id, 0x80 | body.length, ...body]
+}
+
+test('Matroska 按文件开头的标识字节识别，不按扩展名：时长与像素宽高照常读出', async () => {
+  const duration = new Uint8Array(8)
+  new DataView(duration.buffer).setFloat64(0, 4_040)
+  const bytes = [
+    ...ebml([0x1a, 0x45, 0xdf, 0xa3], ebml([0x42, 0x82], [0x77, 0x65, 0x62, 0x6d])),
+    ...ebml(
+      [0x18, 0x53, 0x80, 0x67],
+      ebml(
+        [0x15, 0x49, 0xa9, 0x66],
+        ebml([0x2a, 0xd7, 0xb1], [0x0f, 0x42, 0x40]),
+        ebml([0x44, 0x89], [...duration]),
+      ),
+      ebml(
+        [0x16, 0x54, 0xae, 0x6b],
+        ebml(
+          [0xae],
+          ebml([0x83], [1]),
+          ebml([0xe0], ebml([0xb0], [0x05, 0x00]), ebml([0xba], [0x02, 0xd0])),
+        ),
+      ),
+    ),
+  ]
+  const path = await file('d.mp4', new Uint8Array(bytes))
+  expect(videoMetaOf(path)).toEqual({
+    bytes: bytes.length,
+    seconds: 4.04,
+    size: { width: 1280, height: 720 },
+  })
+})

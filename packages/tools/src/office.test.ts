@@ -52,6 +52,31 @@ function videoDensity(video: boolean, uploadAbove?: number) {
   })
 }
 
+/** 只有索引的最小 mp4（10 秒、640×360）：读得出时长与尺寸的视频才原生发送。`bytes` 为文件总长的下限。 */
+function indexedMp4(bytes = 4096): Buffer {
+  const box = (type: string, ...payload: Buffer[]) => {
+    const body = Buffer.concat(payload)
+    const head = Buffer.alloc(8)
+    head.writeUInt32BE(body.length + 8, 0)
+    head.write(type, 4, 'latin1')
+    return Buffer.concat([head, body])
+  }
+  const mvhd = Buffer.alloc(100)
+  mvhd.writeUInt32BE(1000, 12)
+  mvhd.writeUInt32BE(10_000, 16)
+  const tkhd = Buffer.alloc(84)
+  tkhd.writeInt32BE(0x10000, 40)
+  tkhd.writeUInt32BE(640 * 65536, 76)
+  tkhd.writeUInt32BE(360 * 65536, 80)
+  const moov = box('moov', box('mvhd', mvhd), box('trak', box('tkhd', tkhd)))
+  const ftyp = box('ftyp', Buffer.from('isom0000', 'latin1'))
+  return Buffer.concat([
+    ftyp,
+    box('mdat', Buffer.alloc(Math.max(0, bytes - moov.length - ftyp.length - 8))),
+    moov,
+  ])
+}
+
 function ctx(root: string, office: OfficePort | null = PORT): ToolContext {
   return {
     workspaceRoot: root,
@@ -388,7 +413,7 @@ describe('注册与工具指引', () => {
 describe('read_file 读取视频：模型不接受原生视频时按时间抽帧', () => {
   async function clip(): Promise<string> {
     const root = await workspace()
-    await writeFile(join(root, 'clip.mp4'), new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]))
+    await writeFile(join(root, 'clip.mp4'), indexedMp4())
     return root
   }
 
@@ -414,7 +439,7 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
    */
   test('接受原生视频但文件过大：可上传时交出路径，不可上传时改为抽帧', async () => {
     const root = await workspace()
-    await writeFile(join(root, 'big.mp4'), new Uint8Array(6 * 1024 * 1024))
+    await writeFile(join(root, 'big.mp4'), indexedMp4(6 * 1024 * 1024))
     const upload = await readFileTool.fn(
       { path: 'big.mp4' },
       {

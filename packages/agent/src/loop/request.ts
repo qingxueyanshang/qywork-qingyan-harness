@@ -522,6 +522,8 @@ export function videoRangeCause(meta: VideoMeta, range: VideoRange): string | nu
   if (why === 'bytes') {
     return `该视频 ${(meta.bytes / 1024 / 1024).toFixed(1)} MB，超出请求中常驻媒体的上限，且当前接口不支持上传`
   }
+  if (why === 'unknown')
+    return '该视频的容器中读不出时长或画面尺寸（录制时未写入时长，或文件不完整），接口无法解析'
   if (why === 'short') return `该视频时长 ${seconds}，短于当前模型接受的 ${range.minSeconds} 秒`
   if (why === 'long') return `该视频时长 ${seconds}，长于当前模型接受的 ${range.maxSeconds} 秒`
   return null

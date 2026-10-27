@@ -182,6 +182,31 @@ afterAll(async () => {
 const base = () => `http://127.0.0.1:${handle.port}`
 const auth = () => ({ authorization: `Bearer ${handle.token}` })
 
+/** 只有索引的最小 mp4（10 秒、640×360）：读得出时长与尺寸的视频才原生发送。`bytes` 为文件总长的下限。 */
+function indexedMp4(bytes = 4096): Buffer {
+  const box = (type: string, ...payload: Buffer[]) => {
+    const body = Buffer.concat(payload)
+    const head = Buffer.alloc(8)
+    head.writeUInt32BE(body.length + 8, 0)
+    head.write(type, 4, 'latin1')
+    return Buffer.concat([head, body])
+  }
+  const mvhd = Buffer.alloc(100)
+  mvhd.writeUInt32BE(1000, 12)
+  mvhd.writeUInt32BE(10_000, 16)
+  const tkhd = Buffer.alloc(84)
+  tkhd.writeInt32BE(0x10000, 40)
+  tkhd.writeUInt32BE(640 * 65536, 76)
+  tkhd.writeUInt32BE(360 * 65536, 80)
+  const moov = box('moov', box('mvhd', mvhd), box('trak', box('tkhd', tkhd)))
+  const ftyp = box('ftyp', Buffer.from('isom0000', 'latin1'))
+  return Buffer.concat([
+    ftyp,
+    box('mdat', Buffer.alloc(Math.max(0, bytes - moov.length - ftyp.length - 8))),
+    moov,
+  ])
+}
+
 describe('HTTP 接口', () => {
   test('健康检查免鉴权', async () => {
     const r = (await (await fetch(`${base()}/api/health`)).json()) as {
@@ -907,7 +932,7 @@ describe('图片附件', () => {
 
   /** 媒体按字节预算移出（`agent` 的 `evictedMedia`）：小视频在上限内，下一轮仍保留在请求中。 */
   test('当前轮视频写入 video_url，下一轮在保留上限内仍包含该视频', async () => {
-    const video = Buffer.from('native-video-e2e')
+    const video = indexedMp4()
     await writeFile(join(ws_dir, 'clip.mp4'), video)
     const conv = (await (
       await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })

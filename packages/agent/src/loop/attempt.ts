@@ -165,7 +165,6 @@ export async function* sendTurn(
     // provider 是否接收仍未知；两件事分开记录，「已发出但未返回」
     // 与「未发出」在账本上才可区分。
     const payload = payloadSnapshotOf(turn.req)
-    turn.requestBytes = payload.bytes
     // 读取 `run.density` 而不是循环外的副本：接口拒绝视频后本轮密度随之改变（`removeVideos`）。
     const measured = estimateRequest(turn.req, run.density)
     turn.measured = measured

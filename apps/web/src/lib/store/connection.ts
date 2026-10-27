@@ -920,7 +920,6 @@ function foldRunState(ev: AgentEvent): void {
             compactAt: ev.compactAt,
             breakdown: ev.breakdown,
             omitted: ev.omitted,
-            unmeasuredVideos: ev.unmeasuredVideos ?? 0,
           }
         }),
       )
@@ -1588,7 +1587,6 @@ export async function reloadActiveConversation(): Promise<void> {
                     compactAt: ctx.compactAt,
                     breakdown: ctx.breakdown,
                     omitted: ctx.omitted,
-                    unmeasuredVideos: 0,
                   }
                 : null
             }),

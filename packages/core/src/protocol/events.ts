@@ -486,11 +486,6 @@ export interface ContextEvent {
   type: 'context'
   runId: RunId
   tokens: number
-  /**
-   * 本次请求中未计入 `tokens` 的视频段数：视频的占用只有接口返回的真实值可信，本地估算不包含视频。
-   * 缺席即 0。界面据此将读数显示为「未知」。
-   */
-  unmeasuredVideos?: number
   limit: number
   /** 保留一位小数。1M 窗口下取整会把 2139 显示为 0%，因此小数位不能省略。 */
   percent: number

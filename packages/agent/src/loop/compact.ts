@@ -299,7 +299,6 @@ export async function* recoverFromOverflow(
     run.anchor = {
       tokens: cap.reportedInputTokens,
       uncovered: 0,
-      uncoveredVideos: 0,
       transcriptIndex: transcript.length,
       model: turn.req.model,
       headTokens: envelopeHeadTokens(turn.breakdown),

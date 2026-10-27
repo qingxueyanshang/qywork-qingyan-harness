@@ -5,7 +5,6 @@ import { reconcileBreakdown } from '@qywork/core'
 import { softLimit } from './request.ts'
 import type { LoopHost, RunState, TurnState } from './run-state.ts'
 
-/** 读数中如实标出读不出时长或画面尺寸、尚无真值的视频段数（`RunState.unmeasuredVideos`）。 */
 export function contextEvent(
   host: LoopHost,
   run: RunState,
@@ -14,7 +13,6 @@ export function contextEvent(
 ): AgentEvent {
   const limit = run.adapter.spec.contextWindow
   const reading = run.meter(fallback)
-  const unmeasured = run.unmeasuredVideos(turn.req)
   return {
     type: 'context',
     runId: run.input.runId,
@@ -25,6 +23,5 @@ export function contextEvent(
     compactAt: softLimit(run.adapter.spec),
     breakdown: reconcileBreakdown(turn.breakdown, reading.tokens),
     omitted: host.lastOmitted(),
-    ...(unmeasured ? { unmeasuredVideos: unmeasured } : {}),
   }
 }

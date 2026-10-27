@@ -3,8 +3,8 @@
  *
  * 覆盖范围：`loop/request.ts` 的 `toolResultContent` / `videosOf` / `envelopeResult` / `omitImages`
  * 对视频块的处理与 `runDensity` / `videoDelivery` 的同一判定，`ai` 的 `estimateContent` 按时长与画面尺寸计视频，
- * `loop/context.ts` 的 `contextEvent` 与 `loop/run-state.ts` 的 `unmeasuredVideos` 只标出读不出元数据的视频，
- * `loop/turn-end.ts` 的回执准入。
+ * 读不出时长或画面尺寸的视频发送前替换为说明（`materialize`），读数（`loop/context.ts` 的 `contextEvent`）与
+ * 回执准入（`loop/turn-end.ts`）因此只依据本地估算。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -20,7 +20,6 @@ import {
   estimateRequest,
   estimateVideo,
   lookupModel,
-  unestimatedVideosOf,
 } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { AgentLoop } from '../index.ts'
@@ -113,14 +112,11 @@ describe('视频估算', () => {
     ).toBe(12_022)
   })
 
-  test('不原生发送、超过字节上限、文件已不存在、读不出时长或尺寸时记 0；只有最后一种计入「未计」', () => {
-    const block = (m: VideoMeta | null) =>
-      ({
-        type: 'video',
-        mimeType: 'video/mp4',
-        source: { kind: 'path', path: VIDEO.path },
-        meta: m,
-      }) as const
+  /**
+   * 要防止的形状：浏览器录制的 WebM 不写时长，百炼与智谱都以 400 拒绝；读不出画面尺寸的 mp4 同样被拒。
+   * 这类视频发送前改为抽帧，说明写明原因，估算记 0。
+   */
+  test('不原生发送、超出范围、读不出时长或尺寸、文件已不存在时记 0，读不出元数据的改为抽帧', () => {
     const narrowed = {
       ...glm,
       video: { ...glm.video!, accepts: { ...ANY_VIDEO, maxBytes: 500_000 } },
@@ -128,12 +124,16 @@ describe('视频估算', () => {
     expect(estimateVideo(meta, { ...glm, video: null })).toBe(0)
     expect(estimateVideo(meta, narrowed)).toBe(0)
     expect(estimateVideo(null, glm)).toBe(0)
-    expect(estimateVideo({ ...meta, seconds: null }, glm)).toBe(0)
-    const messages: WireMessage[] = [
-      { role: 'user', content: [block(meta), block(null), block({ ...meta, size: null })] },
-    ]
-    expect(unestimatedVideosOf(messages, glm)).toBe(1)
-    expect(unestimatedVideosOf(messages, { ...glm, video: null })).toBe(0)
+    for (const unknown of [
+      { ...meta, seconds: null },
+      { ...meta, size: null },
+    ]) {
+      expect(estimateVideo(unknown, glm)).toBe(0)
+      expect(videoDelivery(unknown, glm.video, undefined)).toBe('frames')
+      expect(videoRangeCause(unknown, glm.video!.accepts)).toBe(
+        '该视频的容器中读不出时长或画面尺寸（录制时未写入时长，或文件不完整），接口无法解析',
+      )
+    }
     const image = estimateContent(
       [{ type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'x' } }],
       DEFAULT_DENSITY,
@@ -220,7 +220,7 @@ function adapter(input: number): LlmAdapter & { seen: ChatRequest[] } {
   }
 }
 
-/** 读取 `path` 处的视频，第二次请求回报 `input` 个输入 token；返回两次请求与全部读数事件。 */
+/** 读取 `path` 处的视频，第二次请求回报 `input` 个输入 token；返回第二次请求与全部读数事件。 */
 async function readVideoRun(path: string, input: number) {
   const registry = new ToolRegistry()
   registry.register({
@@ -255,34 +255,34 @@ async function readVideoRun(path: string, input: number) {
   })) {
     events.push(ev)
   }
-  const withVideo = a.seen[1]!.messages.some(
-    (m) => typeof m.content !== 'string' && m.content.some((b) => b.type === 'video'),
-  )
-  expect(withVideo).toBe(true)
-  return events.flatMap((e) => (e.type === 'context' ? [e] : []))
+  return { second: a.seen[1]!, contexts: events.flatMap((e) => (e.type === 'context' ? [e] : [])) }
 }
 
-test('读得出时长与尺寸的视频计入发送前的读数，不标「未计」；回执之后读数采用真值', async () => {
+const hasVideo = (req: ChatRequest) =>
+  req.messages.some(
+    (m) => typeof m.content !== 'string' && m.content.some((b) => b.type === 'video'),
+  )
+
+test('读得出时长与尺寸的视频原生发送并计入发送前的读数；回执之后读数采用真值', async () => {
   const path = await videoFile(mp4Bytes(10, 1280, 720, 100_000))
   const video = estimateVideo(videoMetaOf(path), DEFAULT_DENSITY)
   expect(video).toBeGreaterThan(10_000)
-  const contexts = await readVideoRun(path, 14_000)
+  const { second, contexts } = await readVideoRun(path, 14_000)
+  expect(hasVideo(second)).toBe(true)
   // 第二次请求发出前：读数 = 第一次的 1,005 真值 + 本地估算的增量，增量含这段视频。
   expect(contexts.some((e) => e.tokens >= 1_005 + video && e.source === 'projected')).toBe(true)
-  expect(contexts.every((e) => !e.unmeasuredVideos)).toBe(true)
   const last = contexts.at(-1)
   expect(last?.tokens).toBe(14_005)
   expect(last?.source).toBe('actual')
 })
 
-test('读不出时长与尺寸的视频发送前标出「未计」；含视频的回执按请求字节数准入', async () => {
-  // 10 万字节、没有 moov：路径视频按编码后的大小计入请求字节数，含视频的 5 万回执因此可作为锚点。
+test('读不出时长与尺寸的视频发送前替换为说明，不发出必然被拒的请求', async () => {
+  // 10 万字节、没有 moov：接口无法解析这类文件。
   const bytes = new Uint8Array(100_000)
   bytes.set([0, 0, 0, 24])
-  const contexts = await readVideoRun(await videoFile(bytes), 50_000)
-  expect(contexts.some((e) => e.unmeasuredVideos === 1)).toBe(true)
-  // 视频保留在请求中，此后每次都随请求发出：结束时的读数采用该次含视频的 5 万真值，不再标出未计入的视频。
-  const last = contexts.at(-1)
-  expect(last?.tokens).toBeGreaterThanOrEqual(50_000)
-  expect(last?.unmeasuredVideos).toBeFalsy()
+  const { second, contexts } = await readVideoRun(await videoFile(bytes), 2_000)
+  expect(hasVideo(second)).toBe(false)
+  expect(JSON.stringify(second.messages)).toContain('读不出时长或画面尺寸')
+  expect(JSON.stringify(second.messages)).toContain('read_file')
+  expect(contexts.at(-1)?.source).toBe('actual')
 })

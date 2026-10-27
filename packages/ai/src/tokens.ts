@@ -146,12 +146,15 @@ export const ANY_VIDEO: VideoRange = {
   maxSeconds: Number.POSITIVE_INFINITY,
 }
 
-/** 视频超出原生发送范围的原因。读不出时长时只按字节数判定，时长由接口裁决。 */
-export type VideoOutOfRange = 'bytes' | 'short' | 'long'
+/**
+ * 视频超出原生发送范围的原因。读不出时长或画面尺寸（`unknown`）同样不原生发送：百炼与智谱对不写时长的 WebM、
+ * 读不出画面尺寸的 mp4 都以 400 拒绝（2026-10-27 实测），而抽帧仍可读取这类文件。
+ */
+export type VideoOutOfRange = 'bytes' | 'unknown' | 'short' | 'long'
 
 export function videoOutOfRange(meta: VideoMeta, r: VideoRange): VideoOutOfRange | null {
   if (meta.bytes > r.maxBytes) return 'bytes'
-  if (meta.seconds === null) return null
+  if (meta.seconds === null || meta.size === null) return 'unknown'
   if (meta.seconds < r.minSeconds) return 'short'
   return meta.seconds > r.maxSeconds ? 'long' : null
 }
@@ -205,13 +208,13 @@ function imageTokens(size: ImageSize | null, r: ImageRule): number {
 }
 
 /**
- * 一段视频计为多少 token。不原生发送的视频（该档没有视频规则、超出原生发送范围、文件已不存在）发送时被替换为
- * 一行说明，记 0；读不出时长或画面尺寸时同样记 0，读数一侧据 `unestimatedVideosOf` 标注「未计」。
+ * 一段视频计为多少 token。不原生发送的视频（该档没有视频规则、超出原生发送范围、读不出时长或画面尺寸、
+ * 文件已不存在）发送时被替换为一行说明，记 0。原生发送的视频都读得出时长与尺寸，因此估算覆盖全部发出的视频。
  */
 export function estimateVideo(meta: VideoMeta | null, d: TokenDensity): number {
   const r = d.video
-  if (!r || !meta || videoOutOfRange(meta, r.accepts)) return 0
-  if (meta.seconds === null || meta.size === null) return 0
+  if (!r || !meta || meta.seconds === null || meta.size === null) return 0
+  if (videoOutOfRange(meta, r.accepts)) return 0
   const frames = Math.min(r.maxFrames, Math.max(1, Math.round(meta.seconds * r.framesPerSecond)))
   return Math.min(r.maxTokens, r.base + frames * frameTokens(meta.size, r.frame))
 }
@@ -379,24 +382,6 @@ export function estimateContent(
     else total += estimateVideo(block.meta, d)
   }
   return total
-}
-
-/**
- * 一组消息里将原生发送、但读不出时长或画面尺寸的视频段数（webm / mkv 等非 ISO 容器）。
- * 估算对它们记 0（`estimateVideo`），读数据此标注「未计」（`agent` 的 `contextEvent`）。
- */
-export function unestimatedVideosOf(messages: readonly WireMessage[], d: TokenDensity): number {
-  const r = d.video
-  if (!r) return 0
-  let n = 0
-  for (const m of messages) {
-    if (typeof m.content === 'string') continue
-    for (const b of m.content) {
-      if (b.type !== 'video' || !b.meta || videoOutOfRange(b.meta, r.accepts)) continue
-      if (b.meta.seconds === null || b.meta.size === null) n++
-    }
-  }
-  return n
 }
 
 /**

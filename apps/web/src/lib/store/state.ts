@@ -302,8 +302,6 @@ export interface AppState {
     compactAt: number
     breakdown: ContextBreakdown
     omitted: ContextOmitted
-    /** 本次请求中未计入 `tokens` 的视频段数。非 0 时读数显示「未知」。 */
-    unmeasuredVideos: number
   } | null
   /**
    * 上下文占用读取失败的原因（服务端原文），读取成功或收到实时读数时清空。
