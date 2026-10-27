@@ -15,5 +15,5 @@ metadata:
 - Anthropic 协议经适配器时要等模型思考完毕，每次约两分钟；`direct.ts` 直接请求，读到 `message_start` 的输入用量即结束，约 6 秒。
 - zhende.ai 的 Claude 中转在每个请求前注入约 8600 token 隐藏系统提示，按「减去基线」计算时抵消；它还会拦截随机生僻字与「第N条」交替消息，Claude 用 `claude-extra.ts` 补测。
 - qwen3.8-flash 不受 max_tokens 限制，长样本要思考数分钟；设 `NO_THINKING=1` 走关闭思考的直接请求。
-- 视频规则（`TokenDensity.video`）用 `.tmp/ctx-probe/video-probe.ts <接口名> <模型>` 实测，视频由 imageio_ffmpeg 的 ffmpeg 以 testsrc2 生成到 `.tmp/ctx-probe/vid/`，`fit_video.py` 拟合。百炼的 data URI 单项上限 50 MB，更大的视频经适配器以路径发送（自动上传）；Qwen 拒收短于 2 秒的视频。
+- 视频规则（`TokenDensity.video`）用 `.tmp/ctx-probe/video-probe.ts <接口名> <模型>` 实测，视频由 imageio_ffmpeg 的 ffmpeg 以 testsrc2 生成到 `.tmp/ctx-probe/vid/`，`fit_video.py` 拟合。百炼的 data URI 单项上限 50 MB，更大的视频经适配器以路径发送（自动上传）；Qwen 拒收短于 2 秒的视频。合成视频的时长是整数秒，帧数取整方式只能用真实成片核对：`real-probe.ts <接口名> <模型>` 读取 `.tmp/ctx-probe/real/` 下的成片副本，与估算逐段比较。
 - 回执准入的判定线（`turn-end.ts` 的 `inputLimit`）依赖这些系数的偏差，系数大幅变化后复核该线。相关：[[relay-catalog-no-mention-syntax]]
