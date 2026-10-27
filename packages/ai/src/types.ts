@@ -233,8 +233,8 @@ export type ImageSource = MediaSource
 export type VideoSource = MediaSource
 
 /**
- * 视频文件的字节数、时长（秒）与画面尺寸，取自 ISO 媒体容器的索引（`agent` 的 `videoMetaOf`），不解码画面。
- * 时长或尺寸读不出时为 null（webm / mkv 等非 ISO 容器）。估算（`estimateVideo`）据此计数。
+ * 视频文件的字节数、时长（秒）与画面尺寸，取自容器索引（`agent` 的 `videoMetaOf`），不解码画面。
+ * 时长或尺寸读不出时为 null（不写时长的 WebM、不完整的文件），这类视频不原生发送。估算（`estimateVideo`）据此计数。
  */
 export interface VideoMeta {
   bytes: number

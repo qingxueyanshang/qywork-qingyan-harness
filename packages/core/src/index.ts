@@ -104,6 +104,7 @@ export {
   type WorkspaceId,
 } from './domain/ids.ts'
 export { type ImageSize, imageSizeOf } from './domain/image-size.ts'
+export { matroskaMetadataOf } from './domain/matroska.ts'
 // 生成模型的协议与类别：配置校验、目录、设置页共用
 export {
   type ChannelImageSpec,

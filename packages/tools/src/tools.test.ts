@@ -49,6 +49,31 @@ function videoDensity(video: boolean, uploadAbove?: number) {
   })
 }
 
+/** 只有索引的最小 mp4（10 秒、640×360）：读得出时长与尺寸的视频才原生发送。`bytes` 为文件总长的下限。 */
+function indexedMp4(bytes = 4096): Buffer {
+  const box = (type: string, ...payload: Buffer[]) => {
+    const body = Buffer.concat(payload)
+    const head = Buffer.alloc(8)
+    head.writeUInt32BE(body.length + 8, 0)
+    head.write(type, 4, 'latin1')
+    return Buffer.concat([head, body])
+  }
+  const mvhd = Buffer.alloc(100)
+  mvhd.writeUInt32BE(1000, 12)
+  mvhd.writeUInt32BE(10_000, 16)
+  const tkhd = Buffer.alloc(84)
+  tkhd.writeInt32BE(0x10000, 40)
+  tkhd.writeUInt32BE(640 * 65536, 76)
+  tkhd.writeUInt32BE(360 * 65536, 80)
+  const moov = box('moov', box('mvhd', mvhd), box('trak', box('tkhd', tkhd)))
+  const ftyp = box('ftyp', Buffer.from('isom0000', 'latin1'))
+  return Buffer.concat([
+    ftyp,
+    box('mdat', Buffer.alloc(Math.max(0, bytes - moov.length - ftyp.length - 8))),
+    moov,
+  ])
+}
+
 function ctx(root: string, approve = true): ToolContext {
   return {
     workspaceRoot: root,
@@ -1958,7 +1983,7 @@ describe('read_file 识别图片', () => {
    */
   test('读取视频：接受视频时返回路径引用，不接受且没有抽帧环境时拒绝', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-video-'))
-    await writeFile(join(root, 'clip.mp4'), new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]))
+    await writeFile(join(root, 'clip.mp4'), indexedMp4())
 
     const refused = await registry().execute('read_file', { path: 'clip.mp4' }, ctx(root))
     expect(refused.status).toBe('failure')

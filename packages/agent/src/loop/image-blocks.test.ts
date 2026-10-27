@@ -22,6 +22,7 @@ import {
   type WireMessage,
 } from '@qywork/ai'
 import { condenseMessage, IMAGES_OMITTED } from '../compaction.ts'
+import { mp4Bytes } from '../mp4.test-helper.ts'
 import {
   ATTACHMENT_IMAGES_REDUCED,
   ATTACHMENT_MEDIA_OMITTED,
@@ -261,7 +262,7 @@ describe('materialize', () => {
   test('支持视频时只在请求副本中读取路径', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-video-'))
     const path = join(dir, 'clip.mp4').replaceAll('\\', '/')
-    const bytes = Buffer.from('native-video')
+    const bytes = Buffer.from(mp4Bytes(10, 640, 360))
     await writeFile(path, bytes)
     const original: WireMessage[] = [
       {
@@ -287,9 +288,7 @@ describe('materialize', () => {
   test('常驻上限以内的本地视频整份进入请求副本', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-video-large-'))
     const path = join(dir, 'clip.mp4').replaceAll('\\', '/')
-    const bytes = Buffer.alloc(MEDIA_RETAIN_HIGH_BYTES)
-    bytes[0] = 7
-    bytes[bytes.length - 1] = 9
+    const bytes = Buffer.from(mp4Bytes(10, 640, 360, MEDIA_RETAIN_HIGH_BYTES))
     await writeFile(path, bytes)
 
     const out = await materialize(
@@ -309,14 +308,14 @@ describe('materialize', () => {
     if (block?.type !== 'video' || block.source.kind !== 'base64') throw new Error('视频未物化')
     const decoded = Buffer.from(block.source.data, 'base64')
     expect(decoded.byteLength).toBe(bytes.length)
-    expect(decoded[0]).toBe(7)
-    expect(decoded[decoded.length - 1]).toBe(9)
+    expect(decoded[0]).toBe(bytes[0])
+    expect(decoded[decoded.length - 1]).toBe(bytes[bytes.length - 1])
   })
 
   test('支持路径媒体的适配器接收原路径', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-video-path-'))
     const path = join(dir, 'clip.mp4').replaceAll('\\', '/')
-    await writeFile(path, 'video')
+    await writeFile(path, mp4Bytes(10, 640, 360))
     const out = await materialize(
       req([
         {
@@ -342,7 +341,7 @@ describe('materialize', () => {
   test('接受原生视频、超过常驻上限且不能上传时替换为说明；能上传时传递路径', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-video-big-'))
     const path = join(dir, 'big.mp4').replaceAll('\\', '/')
-    await writeFile(path, new Uint8Array(6 * 1024 * 1024))
+    await writeFile(path, mp4Bytes(10, 640, 360, 6 * 1024 * 1024))
     const send = (caps: Parameters<typeof materialize>[1]) =>
       materialize(
         req([
@@ -563,7 +562,7 @@ describe('媒体按字节预算换出', () => {
     expect(mediaBytes(result('c', MB), CAPS)).toBeGreaterThanOrEqual(MB)
     const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
     const path = join(dir, 'clip.mp4')
-    await writeFile(path, new Uint8Array(3 * MB))
+    await writeFile(path, mp4Bytes(10, 640, 360, 3 * MB))
     const video: WireMessage = {
       role: 'user',
       content: [
@@ -592,7 +591,7 @@ describe('媒体按字节预算换出', () => {
   test('路径视频按发送方式计字节：上传、抽帧、不接受均记 0', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
     const big = join(dir, 'big.mp4')
-    await writeFile(big, new Uint8Array(6 * MB))
+    await writeFile(big, mp4Bytes(10, 640, 360, 6 * MB))
     const video: WireMessage = {
       role: 'user',
       content: [
@@ -662,7 +661,7 @@ describe('媒体按字节预算换出', () => {
   test('含视频的消息换出时替换为说明', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
     const path = join(dir, 'clip.mp4')
-    await writeFile(path, new Uint8Array(4 * MB))
+    await writeFile(path, mp4Bytes(10, 640, 360, 4 * MB))
     const video: WireMessage = {
       role: 'user',
       content: [

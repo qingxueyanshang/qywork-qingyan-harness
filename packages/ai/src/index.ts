@@ -107,7 +107,6 @@ export {
   imageSizeOfBase64,
   THUMBNAIL_EDGE,
   type TokenDensity,
-  unestimatedVideosOf,
   type VideoOutOfRange,
   type VideoRange,
   type VideoRule,
