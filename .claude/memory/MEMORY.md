@@ -26,3 +26,4 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [刷新恢复的测试方法](refresh-restore-testing.md) — 带查询串重新导入模块模拟刷新；组件测试 afterEach 清空记录；性能对照构建把 sessionSignal 换成 createSignal
 - [画布卡顿须在桌面外壳中按用户布局测量](canvas-perf-measure-in-shell.md) — 无头 Chrome 与窄面板都无法复现；瓶颈是 180Hz 下 GPU 进程的光栅化，测量脚本在 .tmp/perf-drag/
 - [画布提交前不在背后改写提示词](canvas-prompt-no-hidden-rewrite.md) — 手写编号与型号写法不一致时应可见地提示，按型号自动改写已被否决并撤回
+- [中转目录不提供引用写法](relay-catalog-no-mention-syntax.md) — hongcheng 与木木的目录、计费清单都没有「@Image1 / @图片1」字段，拉取无法检测
