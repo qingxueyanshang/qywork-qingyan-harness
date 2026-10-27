@@ -1,6 +1,6 @@
 /**
  * 覆盖 `channels.ts`：渠道目录条目 → 保存的规格 → 生成规格。
- * 数据是 2026-10-21 从 providera 与服务商B公开接口取得的响应片段（`../fixtures/newapi-*.json`）。
+ * 数据是从 providera（2026-10-27，型号列表需带凭证）与服务商B（2026-10-21）接口取得的响应片段（`../fixtures/newapi-*.json`）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -18,20 +18,20 @@ import {
 
 const fixture = (name: string) =>
   JSON.parse(readFileSync(join(import.meta.dir, '../fixtures', name), 'utf8')) as {
-    workbench: { data: Record<string, unknown>[] }
+    models: { data: Record<string, unknown>[] }
     catalog: { models: Record<string, unknown>[] }
   }
 const providera = fixture('newapi-providera.json')
 const providerb = fixture('newapi-providerb.json')
 
-const workbench = (id: string) =>
-  providera.workbench.data.find((e) => e.api_model === id) as Record<string, unknown>
+const parameters = (id: string) =>
+  providera.models.data.find((e) => e.id === id)?.parameters as Record<string, unknown>
 const catalog = (id: string) =>
   providerb.catalog.models.find((e) => e.id === id) as Record<string, unknown>
 
 describe('providera', () => {
-  test('工作台目录 → 保存的规格', () => {
-    expect(provideraVideoSpec(workbench('TTseadanco2.5-720'))).toEqual({
+  test('型号列表的 parameters → 保存的规格', () => {
+    expect(provideraVideoSpec(parameters('TTseadanco2.5-720'))).toEqual({
       channel: 'providera',
       seconds: Array.from({ length: 26 }, (_, i) => i + 5),
       ratios: ['16:9', '9:16', '1:1'],
@@ -40,12 +40,12 @@ describe('providera', () => {
       maxVideos: 10,
       maxAudios: 10,
     })
-    expect(provideraVideoSpec({ ...workbench('TTseadanco2.5-720'), duration: '' })).toBeNull()
+    expect(provideraVideoSpec({ ...parameters('TTseadanco2.5-720'), duration: '' })).toBeNull()
   })
 
   test('生成规格：参数名、引用写法与参考视频', () => {
     const spec = channelMediaSpec('TTseadanco2.5-720', {
-      ...provideraVideoSpec(workbench('TTseadanco2.5-720'))!,
+      ...provideraVideoSpec(parameters('TTseadanco2.5-720'))!,
       price: { per: 'second', amount: 0.42, currency: 'CNY' },
     })
     expect(spec.videoFormat).toBe('providera')
@@ -57,12 +57,12 @@ describe('providera', () => {
     ])
     expect(spec.mention).toEqual({ image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' })
     expect(spec.price?.cost({ seconds: 10 })).toBeCloseTo(4.2)
-    const yy = channelMediaSpec(
-      'seedance-2.5-yy-720p',
-      provideraVideoSpec(workbench('seedance-2.5-yy-720p'))!,
+    const noVideo = channelMediaSpec(
+      'sedanco2.0-300秒必出',
+      provideraVideoSpec(parameters('sedanco2.0-300秒必出'))!,
     )
-    expect(yy.operations).not.toContain('video_to_video')
-    expect(yy.price).toBeUndefined()
+    expect(noVideo.operations).not.toContain('video_to_video')
+    expect(noVideo.price).toBeUndefined()
   })
 })
 
