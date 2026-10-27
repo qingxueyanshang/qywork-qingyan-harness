@@ -163,7 +163,7 @@ function PdfView(props: { path: string; mtime: number }) {
         (err: unknown) => {
           if (mine !== generation) return
           replace(null)
-          setError(err instanceof ApiError ? err.detail : String(err))
+          setError(err instanceof Error ? err.message : String(err))
         },
       )
     }),

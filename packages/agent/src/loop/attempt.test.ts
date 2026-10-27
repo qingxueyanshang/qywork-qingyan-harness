@@ -1202,7 +1202,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
       status: 'rejected',
       errorCode: 'invalid_request',
       errorMessage:
-        'HTTP 400 请求无效：{"error":{"message":"Invalid content type: image_url is not supported by this model"}}',
+        'HTTP 400 请求无效：Invalid content type: image_url is not supported by this model',
     })
   })
 

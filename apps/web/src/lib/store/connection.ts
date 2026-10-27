@@ -25,7 +25,7 @@ import type {
 import { isNoticeStep } from '@qywork/core'
 import { createEffect, createRoot, createSignal } from 'solid-js'
 import { produce } from 'solid-js/store'
-import { ApiError, QyClient } from '../client.ts'
+import { QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
 import {
   type ChangeStep,
@@ -1092,10 +1092,8 @@ function canceledByNewerRequest(lease: HistoryLease): boolean {
   return lease.controller.signal.aborted && !lease.timedOut
 }
 
-/** 服务端返回的错误取其说明（`ApiError.detail`），不显示状态码、接口路径与 JSON 原文。 */
 function historyErrorMessage(error: unknown, lease: HistoryLease): string {
   if (lease.timedOut) return '加载历史记录超时，请重试'
-  if (error instanceof ApiError) return error.detail
   return error instanceof Error ? error.message : String(error)
 }
 

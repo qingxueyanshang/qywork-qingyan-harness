@@ -331,8 +331,7 @@ export async function exportActiveConversation(): Promise<'saved' | 'cancelled'>
   const path = `/api/conversations/${encodeURIComponent(id)}/export`
   const response = await client.raw(path)
   if (!response.ok) {
-    const error = new ApiError(response.status, path, await response.text().catch(() => ''))
-    throw new Error(error.detail)
+    throw new ApiError(response.status, path, await response.text().catch(() => ''))
   }
 
   const contents = await response.text()

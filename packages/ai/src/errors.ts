@@ -142,10 +142,15 @@ export function httpStatusName(status: number): string {
   return STATUS_NAMES[status] ?? (status >= 500 ? '服务器错误' : '请求被拒绝')
 }
 
-/** 错误正文中的说明：JSON 取 `error.message`、顶层 `message` 或字符串形式的 `error`，其余取正文原文。 */
-function bodyMessage(body: string): string | null {
+/**
+ * 错误正文中的说明：JSON 取 `error.message`、顶层 `message` 或字符串形式的 `error`；
+ * HTML 错误页取 `<title>`，没有标题时取去除标签后的文字；其余取正文原文。生成一侧（`media/http.ts`）共用本函数。
+ * 不要对 HTML 返回原文：网关与 CDN 以 HTML 页面报告 502 等失败，下游只显示首行，页面源码的首行是 `<html>`。
+ */
+export function bodyMessage(body: string): string | null {
   const text = body.trim()
   if (!text) return null
+  if (/^<(?:!doctype|html|head|body)\b/i.test(text)) return htmlMessage(text)
   let json: unknown
   try {
     json = JSON.parse(text)
@@ -162,19 +167,32 @@ function bodyMessage(body: string): string | null {
   )
 }
 
+function htmlMessage(html: string): string | null {
+  const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1]
+  const source = title ?? html.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ')
+  return (
+    source
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim() || null
+  )
+}
+
 /**
  * 服务商的报错原文。
  *
  * 优先取传输层读取的错误正文：OpenAI SDK 只从正文的 `error` 字段取说明，正文是顶层 `{code, message}`
- * 时报为「400 status code (no body)」，原文随之丢失。没有正文时取 SDK 的消息并去掉开头的状态码：
+ * 时报为「400 status code (no body)」，原文随之丢失。没有正文时取错误对象的消息并去掉开头的状态码：
  * 两个 SDK 的 `APIError.message` 都是「状态码 + 空格 + 说明」，状态码另由 `status` 表达。
+ * 消息同样按正文解析：直连适配器以未解析的 HTML 错误页作为消息。
  */
 function providerText(err: unknown, status: number | undefined, errorBody: string | null): string {
   const fromBody = errorBody === null ? null : bodyMessage(errorBody)
   if (fromBody) return fromBody
   const message = messageOf(err)
   const prefix = status === undefined ? null : `${status} `
-  return prefix && message.startsWith(prefix) ? message.slice(prefix.length) : message
+  const text = prefix && message.startsWith(prefix) ? message.slice(prefix.length) : message
+  return bodyMessage(text) ?? text
 }
 
 function stringField(value: unknown, key: string): string | null {

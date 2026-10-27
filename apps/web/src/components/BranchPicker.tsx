@@ -1,5 +1,4 @@
 import { createSignal, For, onCleanup, Show } from 'solid-js'
-import { ApiError } from '../lib/client.ts'
 import { client, state } from '../lib/store/index.ts'
 import { IconBranch, IconChevron } from './Icons.tsx'
 
@@ -8,15 +7,8 @@ interface Branch {
   current: boolean
 }
 
-/**
- * 取服务端返回的错误原文，而不是 HTTP 错误的完整包装。
- *
- * `ApiError.message` 的形式为 `409 /api/git/switch: {"error":"…"}`，包含状态码、路径与
- * 整段 JSON。此处需要显示给用户的只有 git 的原文
- * （「以下文件的本地改动会被覆盖：f.txt」），即 `detail`。
- */
+/** 服务端返回的 git 原文（「以下文件的本地改动会被覆盖：f.txt」），即 `ApiError` 的消息。 */
 function said(e: unknown, fallback: string): string {
-  if (e instanceof ApiError) return e.detail
   return e instanceof Error ? e.message : fallback
 }
 

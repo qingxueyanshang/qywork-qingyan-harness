@@ -120,7 +120,9 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
         () => true,
         () => false,
       )
-      return gone ? json({ ok: true }) : json({ error: 'not found' }, 404)
+      return gone
+        ? json({ ok: true })
+        : json({ error: 'not found', message: '记忆条目不存在' }, 404)
     }
   }
 
@@ -155,7 +157,7 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
     // 删除的是目录名，而不是前置元信息中的 name：两者可以不同，而磁盘上只有目录。
     const dirName = decodeURIComponent(skillMatch[1] as string)
     if (dirName.includes('/') || dirName.includes('\\') || dirName.includes('..')) {
-      return json({ error: 'bad request' }, 400)
+      return json({ error: 'bad request', message: '技能目录名无效' }, 400)
     }
     const scope = writableScope(url.searchParams.get('scope'))
     if (!scope) return json({ error: 'bad request', message: '只能删除项目层或全局层的技能' }, 400)
@@ -164,7 +166,8 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
     const dir = join(root, dirName)
     // 删除不存在的目录时返回 404 而不是静默成功：静默成功会使「删除后仍存在」
     // 成为无法查明原因的问题。
-    if (!(await stat(dir).catch(() => null))) return json({ error: 'not found' }, 404)
+    if (!(await stat(dir).catch(() => null)))
+      return json({ error: 'not found', message: '技能不存在' }, 404)
     await rm(dir, { recursive: true, force: true })
     return json({ ok: true })
   }

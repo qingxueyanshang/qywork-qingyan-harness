@@ -41,6 +41,8 @@ export type FaultMode =
   | 'truncated_tool_call'
   /** 一律返回 402，正文取 DeepSeek 余额不足时的原始响应体（111 字节）。 */
   | 'payment_required'
+  /** 一律返回 502，正文是 nginx 的默认错误页。 */
+  | 'gateway_html'
   /** 首次交付完整工具调用（参数原文取 `toolArguments`），其后正常完成。 */
   | 'tool_then_complete'
 
@@ -500,6 +502,11 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
       return new Response(
         '{"error":{"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}}',
         { status: 402, headers: { 'content-type': 'application/json' } },
+      )
+    case 'gateway_html':
+      return new Response(
+        '<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n',
+        { status: 502, headers: { 'content-type': 'text/html' } },
       )
   }
 }

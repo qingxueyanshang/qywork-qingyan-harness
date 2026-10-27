@@ -15,7 +15,6 @@ import {
   Suspense,
   Switch,
 } from 'solid-js'
-import { ApiError } from '../lib/client.ts'
 import { createRefreshKey, loaded } from '../lib/resource.ts'
 import { MAP_CODEC, SET_CODEC, sessionSignal } from '../lib/session.ts'
 import { clamp, diffFrom, firstString } from '../lib/step-view.ts'
@@ -802,8 +801,8 @@ function FileBrowser() {
             if (node.kind === 'file') openFileInPanel(node.path)
           }
         } catch (err) {
-          // `detail` 是服务端返回的错误描述（「x 已存在」），不含状态码与路径。
-          setNameError(err instanceof ApiError ? err.detail : String(err))
+          // `ApiError` 的消息是服务端返回的错误描述（「x 已存在」），不含状态码与路径。
+          setNameError(err instanceof Error ? err.message : String(err))
         }
       })()
     },

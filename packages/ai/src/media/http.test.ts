@@ -239,6 +239,13 @@ test('客户端拒绝与网关结果未知分开报告，保留原文且生成�
       'rejected',
       'HTTP 400 请求无效：视频时长不符合当前模型要求',
     ],
+    // 原始失败形状：网关的 HTML 错误页按原文截取前 500 个字符，界面显示页面源码。
+    [
+      502,
+      '<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n</body>\r\n</html>\r\n',
+      'unknown',
+      'HTTP 502 网关错误：502 Bad Gateway；远端结果未知',
+    ],
     [200, '<html>', 'unknown', '响应无法解析；远端结果未知'],
   ] as const) {
     reply = () => new Response(content, { status })
@@ -246,7 +253,7 @@ test('客户端拒绝与网关结果未知分开报告，保留原文且生成�
     expect(error.diagnostic).toMatchObject({ status, outcome })
     expect(error.message).toBe(message)
   }
-  expect(hits).toEqual(['POST', 'POST', 'POST', 'POST', 'POST', 'POST', 'POST'])
+  expect(hits).toEqual(['POST', 'POST', 'POST', 'POST', 'POST', 'POST', 'POST', 'POST'])
 })
 
 /** 连接未建立时请求没有发出：端口拒绝连接与 TLS 握手失败均为被拒绝，不显示 Bun 的英文提示。 */

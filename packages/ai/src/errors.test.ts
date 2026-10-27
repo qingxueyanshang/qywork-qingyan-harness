@@ -420,6 +420,25 @@ describe('按用户的下一步动作分类', () => {
     }
   })
 
+  /**
+   * 原始失败形状：网关以 nginx 错误页返回 502，读数条与请求行只显示首行，报为「HTTP 502 网关错误：<html>」。
+   * 三条协议的适配器分别经传输层正文与错误消息两条路径取得原因，两条都要覆盖。
+   */
+  test('HTML 错误页取页面标题，没有标题时取页面文字', async () => {
+    for (const { kind, model } of FAULT_PROTOCOLS) {
+      const { err } = await withFault('gateway_html', (fault) =>
+        drainAdapter({ fault, kind, model, idleTimeoutMs: 5_000 }),
+      )
+      expect((err as ProviderError).code).toBe('provider_unavailable')
+      expect((err as ProviderError).message).toBe('HTTP 502 网关错误：502 Bad Gateway')
+    }
+    const page =
+      '<!DOCTYPE html>\n<html><body><h1>Service Unavailable</h1>\n<p>上游维护中</p></body></html>'
+    expect(classifyProviderError(P, http(503, page)).message).toBe(
+      'HTTP 503 服务不可用：Service Unavailable 上游维护中',
+    )
+  })
+
   test('retry-after-ms 优先于 retry-after', () => {
     const err = Object.assign(new Error('busy'), {
       status: 429,
@@ -453,15 +472,16 @@ describe('按用户的下一步动作分类', () => {
    * 因此界面不会显示「正在重连 N / M」。
    */
   test('模型不接受图片的 400 归 invalid_request', () => {
-    for (const m of [
-      '{"error":{"message":"Invalid content type: image_url is not supported by this model","type":"invalid_request_error"}}',
-      '该模型不支持图片输入',
+    const unsupported = 'Invalid content type: image_url is not supported by this model'
+    for (const [m, shown] of [
+      [`{"error":{"message":"${unsupported}","type":"invalid_request_error"}}`, unsupported],
+      ['该模型不支持图片输入', '该模型不支持图片输入'],
     ]) {
       const e = classifyProviderError(P, http(400, m))
       expect(e.code).toBe('invalid_request')
       expect(e.capacity).toBeUndefined()
-      // provider 原文原样保留，前面只加状态码名称：分类短语只能说明错误类别，无法指出具体参数。
-      expect(e.message).toBe(`HTTP 400 请求无效：${m}`)
+      // provider 原文保留，前面只加状态码名称：分类短语只能说明错误类别，无法指出具体参数。
+      expect(e.message).toBe(`HTTP 400 请求无效：${shown}`)
     }
   })
 

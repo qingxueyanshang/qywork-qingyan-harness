@@ -165,33 +165,11 @@ export interface ProviderRename {
 }
 
 /**
- * 将 `client.api` 抛出的错误转换为一句可读的说明。
- *
- * `client.api` 的消息格式为 `<状态码> <路径>: <响应体前 200 字>`，其中响应体是 JSON，
- * 原样显示会把接口细节暴露给用户。此处只取说明原因的字段
- * （`problems` 数组、`message` 或 `error`），无法取得时回退到原文，而不是
- * 「操作失败」：原文包含诊断信息，泛化的失败提示不包含任何信息。
+ * 抛出值的说明文字。`client.api` 抛出的 `ApiError` 的消息已是服务端说明的原因；
+ * 消息为空时使用 `fallback`。
  */
 export function explainApiError(e: unknown, fallback: string): string {
-  const raw = e instanceof Error ? e.message : String(e)
-  const at = raw.indexOf('{')
-  if (at >= 0) {
-    try {
-      const body = JSON.parse(raw.slice(at)) as {
-        problems?: string[]
-        message?: string
-        error?: string
-      }
-      if (body.problems?.length) return body.problems.join('；')
-      if (body.message) return body.message
-      // 服务端多数错误只带 `error` 一个键（`api/types.ts` 的 `json`）。不识别该键时，
-      // 界面显示原始文本，如「422 /api/xxx: {"error":「标题不能为空」}」。
-      if (body.error) return body.error
-    } catch {
-      // 响应体被 client.api 截断到 200 字时解析失败，回退到原文。
-    }
-  }
-  return raw || fallback
+  return (e instanceof Error ? e.message : String(e)) || fallback
 }
 
 /**
@@ -199,10 +177,8 @@ export function explainApiError(e: unknown, fallback: string): string {
  *
  * 服务端先执行 `diagnoseConfig` 再落盘，存在致命问题时返回 422 且不写入。
  *
- * 422 由 `client.api` 抛出为 `Error`，消息形如
- * `422 /api/config: {"error":"invalid","problems":[...]}`，直接显示给用户
- * 是一段原始 JSON。此处提取 `problems` 并转换为可读文字：保存失败时必须指明
- * 哪一项不合格，只显示「保存失败」与显示整段 JSON 同样无法使用。
+ * 422 的消息是以「；」连接的不合格项（`ApiError` 取错误体的 `problems`）：保存失败时必须指明
+ * 哪一项不合格，只显示「保存失败」无法使用。
  *
  * `baseVersion` 是本次编辑所基于的版本指纹；服务端发现配置已被其他位置修改时返回 409，
  * 由 `configStore` 重新读取并重放。409 原样抛出（`ApiError`），不在此处包装为字符串：

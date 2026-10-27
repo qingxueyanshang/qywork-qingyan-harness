@@ -171,10 +171,11 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
     const id = pluginMatch[1]!
     // id 来自 URL，必须拦截分隔符与 `..`，否则该路由构成任意目录删除。
     if (id.includes('/') || id.includes('\\') || id.includes('..')) {
-      return json({ error: 'bad request' }, 400)
+      return json({ error: 'bad request', message: '插件 id 无效' }, 400)
     }
     const target = join(globalPluginsDir(), id)
-    if (!(await stat(target).catch(() => null))) return json({ error: 'not found' }, 404)
+    if (!(await stat(target).catch(() => null)))
+      return json({ error: 'not found', message: '插件不存在' }, 404)
     await rm(target, { recursive: true, force: true })
     return json({ ok: true })
   }

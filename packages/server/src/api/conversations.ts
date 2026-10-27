@@ -452,7 +452,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   const archiveMatch = /^\/api\/conversations\/([^/]+)\/archive$/.exec(p)
   if (archiveMatch && req.method === 'POST') {
     const id = archiveMatch[1] as ConversationId
-    if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+    if (!getConversation(d.store, id))
+      return json({ error: 'conversation not found', message: '会话不存在' }, 404)
     // 已归档的会话返回 false。此处按成功处理：用户要求的终态（不在列表中）已经成立。
     archiveConversation(d.store, id)
     return json({ ok: true })
@@ -472,7 +473,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       const title = typeof body.title === 'string' ? body.title.trim() : ''
       if (!title) return json({ error: '标题不能为空' }, 422)
       const conv = setConversationTitle(d.store, id, title)
-      if (!conv) return json({ error: 'conversation not found' }, 404)
+      if (!conv) return json({ error: 'conversation not found', message: '会话不存在' }, 404)
       // 广播而不是只返回给发起方：手机与桌面可能同时打开该会话，
       // 理由与 `conversation.setModel` 相同。
       d.bus.publish(
@@ -499,7 +500,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
      */
     if (req.method === 'DELETE') {
       const conversation = getConversation(d.store, id)
-      if (!conversation) return json({ error: 'conversation not found' }, 404)
+      if (!conversation)
+        return json({ error: 'conversation not found', message: '会话不存在' }, 404)
       if (d.runs.isBusy(id)) return json({ error: '该会话正在执行，请先中断再删除' }, 409)
       // 先关闭该会话名下的内置浏览器 AI 页面：会话删除后页面归属无从追溯，保留即成为孤立页面。
       await d.closeBrowserPages(id)
@@ -540,7 +542,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   const exportMatch = /^\/api\/conversations\/([^/]+)\/export$/.exec(p)
   if (exportMatch && req.method === 'GET') {
     const id = exportMatch[1] as ConversationId
-    if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+    if (!getConversation(d.store, id))
+      return json({ error: 'conversation not found', message: '会话不存在' }, 404)
     return new Response(exportConversationDiagnostics(d.store, id, d.config), {
       headers: {
         'content-type': 'application/json; charset=utf-8',
@@ -553,7 +556,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     /^\/api\/conversations\/([^/]+)\/(history|changes|messages|runs|usage|queue)$/.exec(p)
   if (convMatch) {
     const id = convMatch[1] as ConversationId
-    if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+    if (!getConversation(d.store, id))
+      return json({ error: 'conversation not found', message: '会话不存在' }, 404)
     if (convMatch[2] === 'history') {
       const rawLimit = url.searchParams.get('limit')
       const limit = rawLimit === null ? 30 : Number(rawLimit)
@@ -621,7 +625,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   if (ctxMatch) {
     const id = ctxMatch[1] as ConversationId
     const conv = getConversation(d.store, id)
-    if (!conv) return json({ error: 'conversation not found' }, 404)
+    if (!conv) return json({ error: 'conversation not found', message: '会话不存在' }, 404)
     if (!conv.provider) return json({ error: '该会话未记录所属接口，请重新选择模型后继续' }, 409)
     // 上下文窗口按本会话的接口 × 模型解析。`active.provider` 是接口名不是协议名，
     // 将其用作 kind 会使中转站上的 claude 匹配到错误的目录条目。
@@ -644,7 +648,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   const goalMatch = /^\/api\/conversations\/([^/]+)\/goal$/.exec(p)
   if (goalMatch) {
     const id = goalMatch[1] as ConversationId
-    if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+    if (!getConversation(d.store, id))
+      return json({ error: 'conversation not found', message: '会话不存在' }, 404)
     // 未设定目标时返回 null，不返回 404：会话没有目标是正常状态。
     return json({ goal: currentGoal(d.store, id) })
   }
