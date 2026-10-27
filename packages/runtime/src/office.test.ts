@@ -26,6 +26,7 @@ const PORT: OfficePort = {
     xlsx: { available: true, reason: '' },
     pptx: { available: true, reason: '' },
   },
+  videoDecoder: false,
   enabled: () => true,
 }
 

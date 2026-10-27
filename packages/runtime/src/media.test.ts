@@ -13,7 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { CanvasPort } from '@qywork/agent'
+import type { CanvasPort, OfficePort } from '@qywork/agent'
 import { lookupMediaModel, validateMediaCall } from '@qywork/ai'
 import { type AgentEvent, type MediaInputRole, runCosts } from '@qywork/core'
 import { ContentStore, getRun, Store } from '@qywork/store'
@@ -366,24 +366,27 @@ describe('生成花费', () => {
 })
 
 describe('画布与生成开关', () => {
+  /** 有画布通道的会话注册的工具名。 */
+  const names = async (over: Partial<QyConfig>, office?: OfficePort) => {
+    const store = new Store({ path: ':memory:' })
+    const s = new Session({
+      content: blobs,
+      store,
+      config: config(over),
+      workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-media-switch-')),
+      signal: signal(),
+      canvas: {} as CanvasPort,
+      ...(office ? { office } : {}),
+    })
+    const list = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
+      .schemas()
+      .map((t) => t.name)
+    store.close()
+    return list
+  }
+
   /** 设置页「画布与生成」分组标题上的开关写入 `mediaEnabled`；会话据此决定是否注册这组工具。 */
   test('mediaEnabled 为 false 时不注册画布与生成工具；缺省时按启用处理', async () => {
-    const names = async (over: Partial<QyConfig>) => {
-      const store = new Store({ path: ':memory:' })
-      const s = new Session({
-        content: blobs,
-        store,
-        config: config(over),
-        workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-media-switch-')),
-        signal: signal(),
-        canvas: {} as CanvasPort,
-      })
-      const list = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
-        .schemas()
-        .map((t) => t.name)
-      store.close()
-      return list
-    }
     const tools = [
       'create_canvas',
       'read_canvas',
@@ -397,6 +400,24 @@ describe('画布与生成开关', () => {
     const off = await names({ mediaEnabled: false })
     for (const name of tools) expect(off).not.toContain(name)
     expect(off).toContain('read_file')
+  })
+
+  test('取帧工具按 Office 端口的视频解码库注册；关闭画布与生成时不注册', async () => {
+    const office = (videoDecoder: boolean): OfficePort => ({
+      python: process.execPath,
+      worker: 'worker.py',
+      apps: {
+        docx: { available: true, reason: '' },
+        xlsx: { available: true, reason: '' },
+        pptx: { available: true, reason: '' },
+      },
+      videoDecoder,
+      enabled: () => true,
+    })
+    expect(await names({}, office(true))).toContain('capture_canvas_frame')
+    expect(await names({}, office(false))).not.toContain('capture_canvas_frame')
+    expect(await names({})).not.toContain('capture_canvas_frame')
+    expect(await names({ mediaEnabled: false }, office(true))).not.toContain('capture_canvas_frame')
   })
 })
 

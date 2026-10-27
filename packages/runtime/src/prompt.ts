@@ -90,6 +90,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line: '- 画布取回：取回已有远端视频结果使用 retrieve_canvas，不重新提交生成。',
   },
   {
+    tool: 'capture_canvas_frame',
+    line: '- 画布取帧：从视频卡的某一时刻截取一帧作为图片卡使用 capture_canvas_frame，与界面中的取帧相同。',
+  },
+  {
     tool: 'browser_tabs',
     line: '- 内置浏览器：browser_tabs、browser_navigate、browser_observe、browser_act 操作应用内置的浏览器。打开的页面以页签显示在界面右侧面板中，用户可以直接看到；打开网页或本地 HTML 供用户查看或核对时使用它。',
   },

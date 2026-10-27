@@ -392,6 +392,7 @@ describe('能力段', () => {
         'edit_canvas',
         'run_canvas',
         'retrieve_canvas',
+        'capture_canvas_frame',
         'desktop_windows',
       ]),
     )
@@ -403,6 +404,7 @@ describe('能力段', () => {
     expect(prompt).toContain('使用 edit_canvas')
     expect(prompt).toContain('使用 run_canvas')
     expect(prompt).toContain('使用 retrieve_canvas')
+    expect(prompt).toContain('使用 capture_canvas_frame')
     expect(prompt).not.toContain('不得使用电脑控制')
     expect(prompt.indexOf('- 画布：')).toBeLessThan(prompt.indexOf('- 电脑控制：'))
     expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('read_canvas')

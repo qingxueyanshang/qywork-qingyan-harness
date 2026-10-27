@@ -2,7 +2,7 @@
 
 用法：python worker.py <call_dir>/request.json
 写入 response.json 后以 0 退出，动作失败时同样如此；只有 worker 自身崩溃时才以非 0 退出。
-动作：probe、guide、read、write、view、frames、cleanup。
+动作：probe、guide、read、write、view、frames、frame、cleanup。
 
 顶层只导入标准库与 util、com：缺第三方包时 probe 仍须能够输出缺项清单。
 """
@@ -489,19 +489,26 @@ def do_write(req, resp, apps_factory=com.Apps):
 
 # ───────────────────────── frames ─────────────────────────
 
-def do_frames(req, resp):
-    """视频抽帧：带时间戳的 JPEG 与一段说明。缺少 av 时如实报告缺少解码库，不影响其余动作。"""
-    path = Path(req["path"])
-    if not path.is_file():
+def _video_ready(req, resp):
+    """视频文件存在且视频解码库 av 已安装时返回 True；否则在 resp 中写明原因。缺少 av 不影响其余动作。"""
+    if not Path(req["path"]).is_file():
         resp["message"] = f"{req['path']} 不存在"
-        return
-    import video
-
+        return False
     try:
         import av  # noqa: F401
     except ImportError:
         resp["message"] = "缺少视频解码库 av（PyAV）"
+        return False
+    return True
+
+
+def do_frames(req, resp):
+    """视频抽帧：带时间戳的 JPEG 与一段说明。"""
+    if not _video_ready(req, resp):
         return
+    import video
+
+    path = Path(req["path"])
     try:
         result = video.sample(path, Path(req["call_dir"]) / "frames", req.get("start"), req.get("end"),
                               req.get("max_frames") or 12, req.get("max_edge") or 1024)
@@ -515,8 +522,27 @@ def do_frames(req, resp):
     resp["message"] = f"返回 {len(resp['images'])} 帧"
 
 
+def do_frame(req, resp):
+    """视频在时间点 at（秒）处的一帧，按原尺寸写出调用目录下的 frame.png，供画布取帧使用；frame 中为实际时间与时长。"""
+    if not _video_ready(req, resp):
+        return
+    import video
+
+    target = Path(req["call_dir"]) / "frame.png"
+    try:
+        result = video.grab(Path(req["path"]), target, req.get("at") or 0)
+    except video.Unreadable as e:
+        resp["message"] = str(e)
+        return
+    resp["images"] = [{"path": str(target), "label": video.clock(result["time"]),
+                       "width": result["width"], "height": result["height"]}]
+    resp["frame"] = {"time": result["time"], "duration": result["duration"]}
+    resp["ok"] = True
+    resp["message"] = f"截取 {video.clock(result['time'])} 处的一帧"
+
+
 HANDLERS = {"probe": do_probe, "guide": do_guide, "read": do_read, "write": do_write,
-            "view": do_view, "frames": do_frames, "cleanup": do_cleanup}
+            "view": do_view, "frames": do_frames, "frame": do_frame, "cleanup": do_cleanup}
 
 
 def main(argv):

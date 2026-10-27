@@ -348,6 +348,7 @@ export class Session {
       desktop: opts.desktop !== undefined,
       canvas: mediaOn && opts.canvas !== undefined,
       office: opts.office !== undefined,
+      videoDecoder: opts.office?.videoDecoder === true,
       // 生成工具按已配置模型的类别注册；与其他内置工具规则相同，角色的 allowedTools 指定工具时按指定的工具过滤。
       media: mediaOn ? [...new Set(listMediaModels(opts.config).map((m) => m.output))] : [],
       member: opts.member === true,

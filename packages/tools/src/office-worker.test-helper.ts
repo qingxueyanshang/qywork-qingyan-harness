@@ -1,5 +1,5 @@
 /**
- * `office.test.ts` 与 `tools.test.ts`（视频抽帧）使用的模拟 worker：按协议读取请求并写入 `response.json`，
+ * `office.test.ts`、`tools.test.ts`（视频抽帧）与 `canvas.test.ts`（取帧）使用的模拟 worker：按协议读取请求并写入 `response.json`，
  * 行为由脚本文件名决定。
  *
  * - `crash.py`：不写结果，以退出码 1 退出（工具随后应以 cleanup 动作再启动一次 worker）。
@@ -95,6 +95,23 @@ switch (req.action) {
       message: '返回 2 帧',
       text: `区间 ${String(req.start ?? '头')}–${String(req.end ?? '尾')}；声音未处理`,
       images,
+    })
+    break
+  }
+  case 'frame': {
+    // 视频时长按 6 秒，越界的时刻取尾帧；与实际 worker 相同，帧写入调用目录下的 frame.png。
+    // 路径名为 broken.mp4 时返回无法解码，测试据此核对失败回执。
+    if (basename(String(req.path)) === 'broken.mp4') {
+      respond({ ok: false, action: 'frame', message: 'broken.mp4 无法打开' })
+      break
+    }
+    const img = join(callDir, 'frame.png')
+    writeFileSync(img, PNG)
+    respond({
+      action: 'frame',
+      message: '',
+      images: [{ path: img, label: '00:02.5', width: 1, height: 1 }],
+      frame: { time: Math.min(Number(req.at), 5.96), duration: 6 },
     })
     break
   }

@@ -12,6 +12,7 @@ import {
   copyOps,
   emptyCanvas,
   excerptOf,
+  frameLabel,
   modeOf,
   parseCanvas,
   parseCanvasOps,
@@ -93,6 +94,13 @@ describe('画布：格式', () => {
     expect(
       ['a.PNG', 'b.mp4', 'c.m4a', 'g.html', 'h.HTM', 'd.md', 'e.txt', 'f.pdf'].map(canvasFileKind),
     ).toEqual(['image', 'video', 'audio', 'art', 'art', 'text', 'text', null])
+  })
+
+  test('取帧的名称：起点为首帧，终点及之后为尾帧，其余按 0.1 秒', () => {
+    expect(frameLabel(0, 5)).toBe('首帧')
+    expect(frameLabel(5, 5)).toBe('尾帧')
+    expect(frameLabel(7, 5)).toBe('尾帧')
+    expect(frameLabel(12.43, 20)).toBe('12.4s')
   })
 
   test('写出后重新读取，字节不变', () => {

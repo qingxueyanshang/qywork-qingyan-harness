@@ -1,4 +1,5 @@
-"""视频抽帧：在指定区间内按画面变化选出数量有上限的一组帧，保存为 JPEG，带真实时间戳。
+"""视频抽帧：在指定区间内按画面变化选出数量有上限的一组帧，保存为 JPEG，带真实时间戳；
+或按时间点截取一帧，按原尺寸保存为 PNG（画布取帧）。
 
 解码使用 PyAV（自带 LGPL 的 FFmpeg）。它是可选依赖：缺少时只有抽帧不可用，Office 其余动作不受影响。
 不处理声音，并在回执中写明：模型不能依据画面回答与声音相关的问题。
@@ -15,6 +16,8 @@ THUMB = 16
 # 16×16 灰度缩略图的平均逐像素差超过该值即视为画面变化；同一画面内编码噪声造成的差在 3 以下。
 CHANGE = 6
 JPEG_QUALITY = 80
+# 末尾保留的余量（秒）：恰好位于时长终点的时间点通常已没有帧。
+END_MARGIN = 0.05
 
 
 class Unreadable(Exception):
@@ -105,21 +108,28 @@ def pick(times, thumbs, limit):
     return sorted(chosen)
 
 
-def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
-    """抽帧并写出 JPEG。返回时长、画面尺寸、音轨、本次区间与每一帧的 (时间, 路径, 宽, 高)。"""
+def _open(path):
+    """打开视频，返回 (容器, 视频轨)，调用方负责关闭容器。无法打开或没有视频轨时报告文件名。"""
     import av
 
-    path = Path(path)
-    max_frames = max(1, min(int(max_frames), MAX_FRAMES))
     try:
         container = av.open(str(path))
     except (av.FFmpegError, OSError) as e:
         raise Unreadable(f"{path.name} 无法打开（{e}）") from e
+    stream = next(iter(container.streams.video), None)
+    if stream is None:
+        container.close()
+        raise Unreadable(f"{path.name} 中没有视频轨")
+    stream.thread_type = "AUTO"
+    return container, stream
+
+
+def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
+    """抽帧并写出 JPEG。返回时长、画面尺寸、音轨、本次区间与每一帧的 (时间, 路径, 宽, 高)。"""
+    path = Path(path)
+    max_frames = max(1, min(int(max_frames), MAX_FRAMES))
+    container, stream = _open(path)
     with container:
-        stream = next(iter(container.streams.video), None)
-        if stream is None:
-            raise Unreadable(f"{path.name} 中没有视频轨")
-        stream.thread_type = "AUTO"
         duration = _duration(container, stream)
         has_audio = bool(container.streams.audio)
         lo = max(0.0, float(start or 0.0))
@@ -129,8 +139,7 @@ def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
         if hi is None or hi <= lo:
             raise Unreadable(f"{path.name} 的区间 {lo}–{hi} 不成立（时长 {duration}）")
         count = max(MIN_CANDIDATES, min(MAX_CANDIDATES, max_frames * CANDIDATES_PER_FRAME))
-        # 末尾保留少量余量：恰好位于时长终点的时间点通常已没有帧。
-        span = max(hi - lo - 0.05, 0.0)
+        span = max(hi - lo - END_MARGIN, 0.0)
         wanted = [lo + span * i / (count - 1) for i in range(count)]
         seen, times, frames = set(), [], []
         for t in wanted:
@@ -167,6 +176,29 @@ def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
             "candidates": len(times),
             "frames": out,
         }
+
+
+def grab(path, target, t):
+    """时间点 t（秒）处的一帧，按原尺寸写出 PNG。t 限定在 [0, 时长 - END_MARGIN]，越界时取首帧或尾帧。
+
+    返回实际时间、时长（读不出时为 None）与宽高。帧用作生成素材，不缩小。
+    """
+    path = Path(path)
+    container, stream = _open(path)
+    with container:
+        duration = _duration(container, stream)
+        at = max(0.0, float(t))
+        if duration is not None:
+            at = min(at, max(duration - END_MARGIN, 0.0))
+        got = _frame_at(container, stream, at)
+        if got is None:
+            raise Unreadable(f"{path.name} 在 {clock(at)} 无法解码出画面")
+        actual, frame = got
+        img = frame.to_image().convert("RGB")
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    img.save(target, "PNG")
+    return {"time": actual, "duration": duration, "width": img.width, "height": img.height}
 
 
 def describe(name, result):

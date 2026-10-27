@@ -1471,6 +1471,7 @@ describe('工具清单', () => {
       'edit_canvas',
       'run_canvas',
       'retrieve_canvas',
+      'capture_canvas_frame',
       'retrieve_media',
       'generate_image',
       'generate_video',

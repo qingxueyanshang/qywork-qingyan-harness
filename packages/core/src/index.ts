@@ -66,6 +66,7 @@ export {
   emptyCanvas,
   excerptOf,
   fitBox,
+  frameLabel,
   inputsOf,
   isTextCard,
   type MentionStyle,

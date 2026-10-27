@@ -567,6 +567,16 @@ export function canvasMediaOf(node: CanvasNode): GenerateOutput | null {
   return kind === 'text' ? null : kind
 }
 
+/**
+ * 从视频截取的帧的名称，用于文件名：时刻在起点为 `首帧`、在终点为 `尾帧`，其余为 `12.4s`。
+ * 界面取帧与 `capture_canvas_frame` 共用，与服务端取帧接口接受的格式一致。
+ */
+export function frameLabel(at: number, duration: number): string {
+  if (at <= 0) return '首帧'
+  if (at >= duration) return '尾帧'
+  return `${Math.round(at * 10) / 10}s`
+}
+
 /** 节点在界面与提示词纯文本中的名称。 */
 export function displayNameOf(node: CanvasNode): string {
   if (node.type !== 'file' || node.name) return node.name ?? ''

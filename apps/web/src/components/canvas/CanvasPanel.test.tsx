@@ -4204,14 +4204,11 @@ describe('画布：纯函数与标签页', () => {
     }
   })
 
-  test('取帧的时刻与名称：起点为首帧，终点为尾帧且取 duration - 1/30 秒，其余按 0.1 秒', async () => {
-    const { frameLabel, frameTime } = await import('./frame.ts')
+  test('取帧的时刻：终点取 duration - 1/30 秒，其余不变', async () => {
+    const { frameTime } = await import('./frame.ts')
     expect(frameTime(0, 5)).toBe(0)
     expect(frameTime(5, 5)).toBeCloseTo(5 - 1 / 30, 6)
     expect(frameTime(1.6, 5)).toBe(1.6)
-    expect(frameLabel(0, 5)).toBe('首帧')
-    expect(frameLabel(5, 5)).toBe('尾帧')
-    expect(frameLabel(12.43, 20)).toBe('12.4s')
   })
 
   test('同一张画布打开两次只有一个标签页', async () => {
