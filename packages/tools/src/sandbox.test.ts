@@ -817,11 +817,16 @@ describe('静默计时', () => {
     const proc = Bun.spawn([...shell.argv, `node -e "${src}"`], opts)
 
     try {
-      const collecting = collectProcess(proc, { idleMs: 3000 })
+      // 静默时限从启动时起算：取 5 秒，使启动 bash 与 node 较慢的机器上进程不会在开始监听之前被终止。
+      let settled = false
+      const collecting = collectProcess(proc, { idleMs: 5000 }).finally(() => {
+        settled = true
+      })
 
-      // 端口未开始监听时，测试的已不是静默计时，直接失败。
+      // 端口未开始监听时，测试的已不是静默计时，直接失败。等到端口可达或进程已结束：
+      // 固定只等 2 秒时，GitHub 的 Windows 机器上启动较慢会偶发失败。
       let up = false
-      for (let i = 0; i < 20 && !up; i++) {
+      while (!up && !settled) {
         await Bun.sleep(100)
         up = await hit()
       }
