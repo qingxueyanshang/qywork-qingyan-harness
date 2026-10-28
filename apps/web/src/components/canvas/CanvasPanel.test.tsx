@@ -54,7 +54,7 @@ afterEach(async () => {
   restore = undefined
   document.body.replaceChildren()
   const store = await import('../../lib/store/index.ts')
-  store.setState({ fileVersion: 0, canvasVersion: 0 })
+  store.setState({ fileVersion: 0, fileTouched: null, canvasVersion: 0 })
   // 视口、选中与草稿在挂载之间保留（刷新恢复），每条用例从未记录的状态开始。
   const { flushSession } = await import('../../lib/session.ts')
   flushSession()
@@ -169,7 +169,12 @@ async function mount(
   seed: CanvasOp[],
   states: CanvasView['states'] = {},
   catalog: unknown = MODELS,
-): Promise<{ host: HTMLElement; server: Server; refs: Record<string, string> }> {
+): Promise<{
+  host: HTMLElement
+  server: Server
+  refs: Record<string, string>
+  setActive: (active: boolean) => void
+}> {
   const core = await import('@qywork/core')
   const store = await import('../../lib/store/index.ts')
   let n = 0
@@ -348,8 +353,9 @@ async function mount(
   // 模型目录在模块中只获取一次；同一进程中先运行的测试文件可能已获取过其他目录。
   await store.reloadModelCatalog()
   const { render } = await import('solid-js/web')
-  const { Suspense } = await import('solid-js')
+  const { Suspense, createSignal } = await import('solid-js')
   const { default: CanvasPanel } = await import('./CanvasPanel.tsx')
+  const [active, setActive] = createSignal(true)
   const host = document.createElement('div')
   host.style.width = '1000px'
   host.style.height = '700px'
@@ -358,7 +364,7 @@ async function mount(
   dispose = render(
     () => (
       <Suspense fallback={<div class="suspended" />}>
-        <CanvasPanel path="board.canvas.json" active />
+        <CanvasPanel path="board.canvas.json" active={active()} />
       </Suspense>
     ),
     host,
@@ -367,7 +373,7 @@ async function mount(
     () => host.querySelectorAll('[data-node]').length === doc.nodes.length && doc.nodes.length > 0,
     () => host.innerHTML.slice(0, 300),
   )
-  return { host, server, refs: seeded.refs }
+  return { host, server, refs: seeded.refs, setActive }
 }
 
 /** 当前视口缩放（`--z`）。屏幕上的位移除以该值才是画布坐标中的位移。 */
@@ -956,6 +962,83 @@ describe('画布：节点操作', () => {
       () => server.reads === before + 2,
       () => `reads=${server.reads}`,
     )
+  })
+
+  test('只在变动涉及画布引用的文件时重新读取，连续变动合并为一次', async () => {
+    const { server } = await mount(FILES)
+    const store = await import('../../lib/store/index.ts')
+    const touch = (paths: string[] | null) =>
+      store.setState({ fileVersion: store.state.fileVersion + 1, fileTouched: paths })
+    const before = server.reads
+    touch(['notes/无关.md'])
+    await new Promise((r) => setTimeout(r, 300))
+    expect(server.reads).toBe(before)
+    touch(['A.png'])
+    touch(['b.png'])
+    touch(null)
+    await waitFor(
+      () => server.reads === before + 1,
+      () => `reads=${server.reads}`,
+    )
+    await new Promise((r) => setTimeout(r, 300))
+    expect(server.reads).toBe(before + 1)
+  })
+
+  test('变动的是引用文件所在的文件夹或工作区外的绝对路径时同样重新读取', async () => {
+    const { server } = await mount([
+      { op: 'add_file', path: '素材/a.png', name: '小满', x: 0, y: 0 },
+    ])
+    const store = await import('../../lib/store/index.ts')
+    const touch = (paths: string[]) =>
+      store.setState({ fileVersion: store.state.fileVersion + 1, fileTouched: paths })
+    let before = server.reads
+    touch(['素材'])
+    await waitFor(
+      () => server.reads === before + 1,
+      () => `reads=${server.reads}`,
+    )
+    before = server.reads
+    touch(['素材库/x.png'])
+    await new Promise((r) => setTimeout(r, 300))
+    expect(server.reads).toBe(before)
+    touch(['C:/其他/x.png'])
+    await waitFor(
+      () => server.reads === before + 1,
+      () => `reads=${server.reads}`,
+    )
+  })
+
+  test('页签不在显示时只记下变动，切回时读取一次', async () => {
+    const { server, setActive } = await mount(FILES)
+    const store = await import('../../lib/store/index.ts')
+    const before = server.reads
+    setActive(false)
+    store.setState({ fileVersion: store.state.fileVersion + 1, fileTouched: null })
+    store.setState('canvasVersion', (v) => v + 1)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(server.reads).toBe(before)
+    setActive(true)
+    await waitFor(
+      () => server.reads === before + 1,
+      () => `reads=${server.reads}`,
+    )
+    await new Promise((r) => setTimeout(r, 300))
+    expect(server.reads).toBe(before + 1)
+  })
+
+  test('重新读取后内容未变的卡片不重建，变化的卡片正常更新', async () => {
+    const { host, server } = await mount(FILES)
+    const store = await import('../../lib/store/index.ts')
+    const first = host.querySelector('[data-node="n1"]')
+    const before = server.reads
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => server.reads === before + 1,
+      () => `reads=${server.reads}`,
+    )
+    await new Promise((r) => setTimeout(r, 50))
+    expect(host.querySelector('[data-node="n1"]')).toBe(first)
+    expect(host.querySelector('[data-node="n1"] .canvas-node-title span')?.textContent).toBe('小满')
   })
 
   test('画布文件损坏时显示原文，按 Delete 不发送任何写操作', async () => {

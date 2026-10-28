@@ -122,12 +122,11 @@
 }
 /*
  * 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变 + 虚线流动。
- * 流动由 `CanvasPanel` 的定时器写入 `--canvas-flow` 推进，不用 CSS 动画，原因写在该定时器处。
+ * 流动由 `CanvasPanel` 的定时器写入该连线的内联 `stroke-dashoffset` 推进，不用 CSS 动画，原因写在该定时器处。
  */
 .canvas-edges path.live {
   stroke-width: 1.5;
   stroke-dasharray: 4 4;
-  stroke-dashoffset: var(--canvas-flow, 0);
 }
 
 .canvas-fault {

@@ -347,6 +347,12 @@ export interface AppState {
    */
   fileVersion: number
   /**
+   * 最近一条 `file.changed` 涉及的路径（工作区相对、正斜杠），与 `fileVersion` 同时写入；
+   * `null` 表示路径未知（执行类工具只能确认可能写过文件）。事件逐条处理、不合批，
+   * 因此读取 `fileVersion` 的计算总是与对应的这一项同时看到。
+   */
+  fileTouched: string[] | null
+  /**
    * 画布卡片运行状态的变化序号。每收到一条本项目的 `canvas.run` 就递增一次，已打开的画布页签据此重新读取；
    * 卡片状态与失败原文以画布读取接口的响应为准，此处不另存一份。
    */
@@ -374,6 +380,7 @@ const initial: AppState = {
   context: null,
   contextError: null,
   fileVersion: 0,
+  fileTouched: null,
   canvasVersion: 0,
   fileChanges: [],
   git: null,
