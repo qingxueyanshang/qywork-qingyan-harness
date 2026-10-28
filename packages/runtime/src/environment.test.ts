@@ -6,8 +6,9 @@
  * 同一个模型下载四次。说明中必须出现这些已有的包、ffmpeg 路径与模型位置，并按权限模式写明包可以装入的位置。
  */
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { statSync } from 'node:fs'
+import * as fsp from 'node:fs/promises'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -120,6 +121,18 @@ describe('运行环境', () => {
     expect(full).toContain('- 工作区环境中的包：pyjokes\n')
     expect(full).toEndWith(`新下载的模型可以放在全局缓存 ${f.hub}，也可以放在 .tmp/models 下。`)
     expect(full).not.toContain('不可写入')
+
+    // 原始失败形状：Linux 的 readdir 不按名称返回，同一模型的位置写成「.tmp/models/whisper、.tmp/asr-cache」。
+    // 目录项倒序返回时说明不变。
+    const original = fsp.readdir as (path: string) => Promise<string[]>
+    const reversed = async (path: string) => (await original(path)).reverse()
+    const spy = spyOn(fsp, 'readdir').mockImplementation(reversed as unknown as typeof readdir)
+    try {
+      expect(await describeEnvironment(f.ws, f.python, null, 'auto')).toBe(text)
+      expect(spy).toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   test('没有 Python 时写明未找到；工作区环境创建失败时写明原因；完全访问模式下没有工作区环境时写明创建方法', async () => {
