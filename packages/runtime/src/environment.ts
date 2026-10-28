@@ -18,9 +18,10 @@ import { displayPath, workspacePythonBin, workspacePythonDir } from '@qywork/too
 const MAX_DIRS = 20
 const MAX_MODELS = 20
 
-/** 读取目录项；目录不存在或无权读取时为空。 */
+/** 读取目录项，按名称排序；目录不存在或无权读取时为空。`readdir` 的顺序随文件系统而异，Linux 上不按名称。 */
 async function entries(dir: string): Promise<string[]> {
-  return readdir(dir).catch(() => [] as string[])
+  const names = await readdir(dir).catch(() => [] as string[])
+  return names.sort()
 }
 
 /** `pyvenv.cfg` 的键值。 */
