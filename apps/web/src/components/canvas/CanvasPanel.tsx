@@ -119,6 +119,31 @@ const SNAP = 6
 const FLOW_PERIOD = 8
 const FLOW_CYCLE_MS = 800
 const FLOW_TICK_MS = 1000 / 24
+/** 合并连续变动的等待时长：期间到达的变动只触发一次重新读取。 */
+const RELOAD_DELAY_MS = 150
+
+/** 变动路径与卡片路径的比较形式：正斜杠、小写。 */
+const normPath = (p: string) => p.replaceAll('\\', '/').toLowerCase()
+
+/**
+ * 内容未变的卡片与卡片状态沿用上一份的对象。每次读取与写操作返回的都是全新的对象，
+ * 不沿用时任何一处变化都使全部卡片重新计算。画布中的对象只读，沿用不改变内容。
+ */
+function shareUnchanged(prev: CanvasView | null, next: CanvasView): CanvasView {
+  if (!prev) return next
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  const before = new Map(prev.doc.nodes.map((n) => [n.id, n]))
+  const nodes = next.doc.nodes.map((n) => {
+    const old = before.get(n.id)
+    return old && same(old, n) ? old : n
+  })
+  const states: CanvasView['states'] = {}
+  for (const [id, s] of Object.entries(next.states)) {
+    const old = prev.states[id]
+    states[id] = old && same(old, s) ? old : s
+  }
+  return { ...next, doc: { ...next.doc, nodes }, states }
+}
 
 /**
  * `at`：从连接点拖到空白处松开时新卡片的输入端位于该点；右键菜单中的粘贴、新建与上传放在该点（画布坐标）。
@@ -234,7 +259,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     try {
       const next = await readCanvas(props.path)
       if (mine !== seq) return
-      setView(next)
+      setView((prev) => shareUnchanged(prev, next))
       setBroken(null)
     } catch (e) {
       if (mine === seq) setBroken(explainApiError(e, '无法打开画布'))
@@ -242,8 +267,100 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
   createEffect(
     on(
-      () => [props.path, state.fileVersion, state.canvasVersion] as const,
+      () => props.path,
       () => void load(),
+    ),
+  )
+
+  /**
+   * 画布读取结果依赖的文件：画布本身与各卡引用的文件。其他文件的变动不影响画布，不重新读取；
+   * 路径小写比较：Windows 上大小写不敏感。
+   */
+  const watched = createMemo(() => {
+    const set = new Set([normPath(props.path)])
+    const v = view()
+    if (v) set.add(normPath(v.path))
+    for (const n of v?.doc.nodes ?? []) {
+      if (n.type === 'file') set.add(normPath(n.path))
+      else if (n.type === 'generate') for (const v of n.versions) set.add(normPath(v.path))
+      else if (n.type === 'timeline') for (const c of n.clips) set.add(normPath(c.path))
+    }
+    return set
+  })
+
+  /**
+   * 文本卡的读取序号：`all` 在路径未知的变动时递增，`byPath` 按变动的路径递增。
+   * 每张文本卡只在自己引用的文件变化时重新读取（见 `TextPreview`）。
+   */
+  const [textVersions, setTextVersions] = createSignal<{
+    all: number
+    byPath: Readonly<Record<string, number>>
+  }>({ all: 0, byPath: {} })
+
+  /**
+   * 待处理的变动：生成或执行命令时变动一条接一条到达，合并后读取一次；页签不在显示时只记下，
+   * 切回时再读取。`texts` 为 `null` 表示全部文本卡都要重新读取。
+   */
+  let pending: { canvas: boolean; texts: Set<string> | null } | null = null
+  let flushTimer: ReturnType<typeof setTimeout> | undefined
+  const flushPending = () => {
+    flushTimer = undefined
+    if (!pending || !props.active) return
+    const { canvas, texts } = pending
+    pending = null
+    if (texts === null) setTextVersions((v) => ({ ...v, all: v.all + 1 }))
+    else if (texts.size) {
+      setTextVersions((v) => {
+        const byPath = { ...v.byPath }
+        for (const p of texts) byPath[p] = (byPath[p] ?? 0) + 1
+        return { all: v.all, byPath }
+      })
+    }
+    if (canvas) void load()
+  }
+  const schedule = (canvas: boolean, texts: string[] | null) => {
+    const next = pending ?? { canvas: false, texts: new Set<string>() }
+    next.canvas ||= canvas
+    if (texts === null) next.texts = null
+    else if (next.texts) for (const p of texts) next.texts.add(p)
+    pending = next
+    if (props.active && flushTimer === undefined)
+      flushTimer = setTimeout(flushPending, RELOAD_DELAY_MS)
+  }
+  onCleanup(() => clearTimeout(flushTimer))
+  createEffect(
+    on(
+      () => state.fileVersion,
+      () => {
+        const touched = state.fileTouched
+        if (touched === null) return schedule(true, null)
+        const paths = touched.map(normPath)
+        // 工作区之外的文件以绝对路径报告，无法与卡片的相对路径比较，按路径未知处理。
+        if (paths.some((p) => /^([a-z]:)?\//.test(p) || p.startsWith('../')))
+          return schedule(true, null)
+        // 变动的可能是整个文件夹（删除、重命名）：卡片引用该文件夹中的文件时同样视为相关。
+        const hit = [...watched()].filter((w) =>
+          paths.some((p) => w === p || w.startsWith(`${p.replace(/\/$/, '')}/`)),
+        )
+        schedule(hit.length > 0, [...paths, ...hit])
+      },
+      { defer: true },
+    ),
+  )
+  createEffect(
+    on(
+      () => state.canvasVersion,
+      () => schedule(true, []),
+      { defer: true },
+    ),
+  )
+  createEffect(
+    on(
+      () => props.active,
+      (active) => {
+        if (active && pending && flushTimer === undefined) flushPending()
+      },
+      { defer: true },
     ),
   )
 
@@ -255,7 +372,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const write = async <T extends CanvasView>(request: Promise<T>): Promise<T> => {
     const mine = ++seq
     const next = await request
-    if (mine === seq) setView(() => next)
+    if (mine === seq) setView((prev) => shareUnchanged(prev, next))
     setFault(null)
     return next
   }
@@ -343,7 +460,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   // ── 视口 ──
 
   const nodes = () => view()?.doc.nodes ?? []
-  const byId = (id: string) => nodes().find((n) => n.id === id)
+  /** 按 id 的索引：每张卡的各项显示都经 `byId` 取节点，逐个遍历时每次重新读取的计算量随卡片数的平方增长。 */
+  const index = createMemo(() => new Map(nodes().map((n) => [n.id, n])))
+  const byId = (id: string) => index().get(id)
   const pos = (n: CanvasNode) => moving()[n.id] ?? { x: n.x, y: n.y }
   /** 屏幕上的网格点距接近 24px：画布点距取 20 × 2ⁿ，n 取使屏幕点距最接近 24px 的值。 */
   const grid = () => {
@@ -878,7 +997,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const path = media.path
     // 先读取摘录与文件全文再打开：打开文件会把面板切到文件页，画布在面板中时随之卸载，之后无法读取节点。
     const excerpt = excerptOfNode(id)
-    const text = excerpt ? fileText(path) : null
+    const text = excerpt ? fileText(path, textVersionOf(path)) : null
     openFileInPanel(path)
     void text?.then((whole) => {
       const r = whole === null ? null : excerptOf(whole, excerpt)
@@ -1549,10 +1668,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         aria-hidden="true"
         width="1"
         height="1"
-        style={{
-          transform: `translate(${px()}px, ${py()}px) scale(${z()})`,
-          '--canvas-flow': flow().toFixed(2),
-        }}
+        style={{ transform: `translate(${px()}px, ${py()}px) scale(${z()})` }}
       >
         <defs>
           <Index each={p.edges.filter((e) => e.live || e.hot)}>
@@ -1584,7 +1700,17 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                   selected: edgeSelected() === e().id,
                 }}
                 // 渐变写在内联样式中：写成 `stroke` 属性会被 `.canvas-edges path` 的描边色覆盖。
-                style={e().live || e().hot ? { stroke: `url("#canvas-flow-${e().id}")` } : {}}
+                // 流动只写在生成中的连线上：写在连线层上的继承变量每次推进都使全部连线重新计算样式。
+                style={
+                  e().live
+                    ? {
+                        stroke: `url("#canvas-flow-${e().id}")`,
+                        'stroke-dashoffset': flow().toFixed(2),
+                      }
+                    : e().hot
+                      ? { stroke: `url("#canvas-flow-${e().id}")` }
+                      : {}
+                }
               />
               <path class="canvas-edge-hit" data-edge={e().id} d={e().d} />
             </>
@@ -1602,37 +1728,42 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return node?.type === 'file' ? node.excerpt : undefined
   }
 
-  /** 摘录卡读取的文件全文：同一文件的各张摘录卡共用一次读取，`fileVersion` 变化后重新读取。 */
-  let fileTexts = { version: -1, texts: new Map<string, Promise<string | null>>() }
-  const fileText = (path: string): Promise<string | null> => {
-    if (fileTexts.version !== state.fileVersion) {
-      fileTexts = { version: state.fileVersion, texts: new Map() }
-    }
-    let text = fileTexts.texts.get(path)
-    if (!text) {
-      text = fetch(client.fileUrl(path), { cache: 'no-store' }).then(
-        (r) => (r.ok ? r.text() : null),
-        () => null,
-      )
-      fileTexts.texts.set(path, text)
-    }
+  /** 文件的读取序号：只在路径未知的变动或该文件本身变动时改变。 */
+  const textVersionOf = (path: string) => {
+    const v = textVersions()
+    return `${v.all}.${v.byPath[normPath(path)] ?? 0}`
+  }
+
+  /** 摘录卡读取的文件全文：同一文件的各张摘录卡共用一次读取，该文件的读取序号变化后重新读取。 */
+  const fileTexts = new Map<string, { version: string; text: Promise<string | null> }>()
+  const fileText = (path: string, version: string): Promise<string | null> => {
+    const hit = fileTexts.get(path)
+    if (hit?.version === version) return hit.text
+    const text = fetch(client.fileUrl(path), { cache: 'no-store' }).then(
+      (r) => (r.ok ? r.text() : null),
+      () => null,
+    )
+    fileTexts.set(path, { version, text })
     return text
   }
 
   /**
    * 文本卡的正文：整篇卡为文件开头，摘录卡为摘录的文字（与运行时发送的相同），无法定位时为原因。
-   * 摘录可能位于长文件的任意位置，因此读取全文定位；文件修改后随 `fileVersion` 重新读取。
+   * 摘录可能位于长文件的任意位置，因此读取全文定位；该文件修改后重新读取。
+   * 来源写成字符串：画布重新读取后摘录是新对象，内容与序号都未变时不重新读取。
    */
   function TextPreview(p: { path: string; excerpt: CanvasExcerpt | undefined }) {
     const [text] = createResource(
-      () => [p.path, p.excerpt && JSON.stringify(p.excerpt), state.fileVersion] as const,
-      async ([path]) => {
+      () =>
+        `${p.path}\u0000${p.excerpt ? JSON.stringify(p.excerpt) : ''}\u0000${textVersionOf(p.path)}`,
+      async () => {
+        const path = p.path
         if (!p.excerpt) {
           return client
             .api<{ content?: string }>(`/api/files/preview?path=${encodeURIComponent(path)}`)
             .then((r) => (r.content ?? '').slice(0, 600))
         }
-        const whole = await fileText(path)
+        const whole = await fileText(path, textVersionOf(path))
         if (whole === null) return ''
         const r = excerptOf(whole, p.excerpt)
         return r.ok ? r.text : r.error
@@ -1741,11 +1872,12 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
    */
   function Node(p: { id: string }) {
     let last!: CanvasNode
-    const n = () => {
+    // 按对象比较：内容未变的卡片沿用原对象（见 `shareUnchanged`），重新读取后本卡的各项计算不重新执行。
+    const n = createMemo(() => {
       last = byId(p.id) ?? last
       return last
-    }
-    const st = () => view()?.states[n().id]
+    })
+    const st = createMemo(() => view()?.states[n().id])
     const at = () => pos(n())
     const isSelected = () => selected().has(n().id)
     const kind = (): GenerateOutput | 'text' | 'timeline' | null => {

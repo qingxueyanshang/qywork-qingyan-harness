@@ -1511,24 +1511,46 @@ export class CanvasService {
     const tasks: Record<string, CanvasTaskInfo> = {}
     const references: Record<string, string[]> = {}
     const read = new Map<string, string | null>()
-    for (const node of doc.nodes) {
-      if (node.type === 'generate' || isTextCard(node)) {
-        const texts = await this.textsOf(workspaceRoot, doc, node.id, read)
-        const broken = textReferenceProblems(doc, node.id, texts)
-        if (broken.length) references[node.id] = broken
-      }
-      states[node.id] = await this.stateOf(
-        workspaceRoot,
-        keyOf(workspaceRoot, path),
-        node,
-        doc.runs?.findLast((r) => r.node === node.id),
-      )
-      if (node.type === 'generate') {
-        for (const version of node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))) {
-          const task = await this.readTask(workspaceRoot, version.path)
-          if (task) tasks[version.id] = task
+    // 各张卡的文件检查互不依赖，并行执行；文本卡引用的文件先一次读入 `read`，`textsOf` 只取缓存。
+    const textPaths = new Set<string>()
+    for (const node of doc.nodes)
+      if (node.type === 'file' && isTextCard(node)) textPaths.add(node.path)
+    await Promise.all(
+      [...textPaths].map(async (p) => {
+        read.set(p, await readFile(join(workspaceRoot, p), 'utf8').catch(() => null))
+      }),
+    )
+    const lastRuns = new Map<string, CanvasRunRecord>()
+    for (const r of doc.runs ?? []) lastRuns.set(r.node, r)
+    const canvasKey = keyOf(workspaceRoot, path)
+    const results = await Promise.all(
+      doc.nodes.map(async (node) => {
+        const texts =
+          node.type === 'generate' || isTextCard(node)
+            ? await this.textsOf(workspaceRoot, doc, node.id, read)
+            : null
+        const [state, nodeTasks] = await Promise.all([
+          this.stateOf(workspaceRoot, canvasKey, node, lastRuns.get(node.id)),
+          node.type === 'generate'
+            ? Promise.all(
+                node.versions
+                  .filter((v) => v.path.endsWith(TASK_SUFFIX))
+                  .map(async (v) => [v.id, await this.readTask(workspaceRoot, v.path)] as const),
+              )
+            : [],
+        ])
+        return {
+          node,
+          broken: texts ? textReferenceProblems(doc, node.id, texts) : [],
+          state,
+          nodeTasks,
         }
-      }
+      }),
+    )
+    for (const { node, broken, state, nodeTasks } of results) {
+      if (broken.length) references[node.id] = broken
+      states[node.id] = state
+      for (const [id, task] of nodeTasks) if (task) tasks[id] = task
     }
     const view: CanvasView = {
       path: await this.relativeTo(workspaceRoot, abs),

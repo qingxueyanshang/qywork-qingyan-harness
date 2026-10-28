@@ -903,6 +903,9 @@ function foldRunState(ev: AgentEvent): void {
           // 即使 `changes` 为空也要递增版本：空数组表示执行类工具使文件快照失效，
           // 但没有可靠的逐路径增删明细，不能为刷新 UI 伪造一条变更。
           s.fileVersion += 1
+          s.fileTouched = ev.changes.length
+            ? ev.changes.flatMap((c) => (c.renamedFrom ? [c.path, c.renamedFrom] : [c.path]))
+            : null
           s.fileChanges.push(...ev.changes)
         }),
       )
