@@ -22,6 +22,7 @@ import {
   settleVersion,
   textReferenceProblems,
 } from './canvas.ts'
+import { shotRows } from './canvas-arrange.ts'
 
 /** 依次返回 a1、a2……的 id 生成器，使断言可以使用固定 id。 */
 function ids(prefix = 'a'): () => string {
@@ -539,10 +540,10 @@ describe('画布：操作', () => {
       ids('n'),
     )
     const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    expect(box('n1')).toMatchObject({ x: 400 + 225 + 100, y: 0 })
+    expect(box('n1')).toMatchObject({ x: 400 + 225 + 48, y: 0 })
     // 视频空卡缺省为横向，按当前框占位。
-    expect(box('n2')).toMatchObject({ x: box('n1').x + 225 + 100, y: 0 })
-    expect(box('n3')).toMatchObject({ x: box('n2').x + 300 + 100, y: 0 })
+    expect(box('n2')).toMatchObject({ x: box('n1').x + 225 + 48, y: 0 })
+    expect(box('n3')).toMatchObject({ x: box('n2').x + 300 + 48, y: 0 })
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
@@ -550,9 +551,9 @@ describe('画布：操作', () => {
 
   /**
    * 原始失败形状：给出 1:1 的方形空卡按 300 见方占位，人物列每 400 一张、列与列相隔 400，出图后空白约 230。
-   * 带组的卡按当前框排位，出图变大后推开同列下方与右侧的卡，间距仍为 100。
+   * 带组的卡按当前框排位，出图变大后推开同列下方与右侧的卡，间距仍为 48。
    */
-  test('带组的方形空卡按当前框排位；出图变大后推开同列下方与右侧各列，间距保持 100', () => {
+  test('带组的方形空卡按当前框排位；出图变大后推开同列下方与右侧各列，间距保持 48', () => {
     let doc = apply(
       emptyCanvas(),
       [
@@ -571,11 +572,11 @@ describe('画布：操作', () => {
     }
     expect(['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(at)).toEqual([
       [0, 0, 169, 169],
-      [0, 269, 169, 169],
-      [0, 538, 300, 169],
-      [0, 807, 169, 169],
-      [400, 0, 169, 169],
-      [400, 269, 169, 169],
+      [0, 217, 169, 169],
+      [0, 434, 300, 169],
+      [0, 651, 169, 169],
+      [348, 0, 169, 169],
+      [348, 217, 169, 169],
     ])
     const results = [
       ['n1', { w: 1672, h: 941 }],
@@ -587,25 +588,25 @@ describe('画布：操作', () => {
       if (!r.ok) throw new Error(r.error)
       doc = r.doc
     }
-    // n2 变高 131，下方两张下移 131；n1 变宽到 300，与「场景」列的间距仍为 100，不必移动；n5 变宽，列内不受影响。
+    // n2 变高 131，下方两张下移 131；n1 变宽到 300，与「场景」列的间距仍为 48，不必移动；n5 变宽，列内不受影响。
     expect(['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(at)).toEqual([
       [0, 0, 300, 169],
-      [0, 269, 169, 300],
-      [0, 669, 300, 169],
-      [0, 938, 169, 169],
-      [400, 0, 254, 169],
-      [400, 269, 169, 169],
+      [0, 217, 169, 300],
+      [0, 565, 300, 169],
+      [0, 782, 169, 169],
+      [348, 0, 254, 169],
+      [348, 217, 169, 169],
     ])
     const wide = addVersions(doc, 'n1', [
       { ...version('p2-n1', 'generated/n1-2.png'), size: { w: 2520, h: 1080 } },
     ])
     if (!wide.ok) throw new Error(wide.error)
     doc = wide.doc
-    // n1 换成 21:9 的结果，宽 394：「场景」整列右移到 394 + 100，与 n1 不相邻的 n6 随列移动，仍对齐。
+    // n1 换成 21:9 的结果，宽 394：「场景」整列右移到 394 + 48，与 n1 不相邻的 n6 随列移动，仍对齐。
     expect([at('n1'), at('n5'), at('n6')]).toEqual([
       [0, 0, 394, 169],
-      [494, 0, 254, 169],
-      [494, 269, 169, 169],
+      [442, 0, 254, 169],
+      [442, 217, 169, 169],
     ])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
@@ -618,14 +619,14 @@ describe('画布：操作', () => {
       [
         { op: 'add_generate', ref: '$a', output: 'image', x: 0, y: 0 },
         { op: 'add_file', path: 'b.png', beside: '$a' },
-        { op: 'add_file', path: 'c.png', x: 0, y: 350 },
+        { op: 'add_file', path: 'c.png', x: 0, y: 250 },
       ],
       ids('u'),
     )
     expect(doc.nodes.map((n) => [n.x, n.y])).toEqual([
       [0, 0],
-      [169 + 100, 0],
-      [0, 350],
+      [169 + 48, 0],
+      [0, 250],
     ])
     const r = addVersions(doc, 'u1', [
       { ...version('p', 'generated/u1.png'), size: { w: 1080, h: 1920 } },
@@ -634,9 +635,9 @@ describe('画布：操作', () => {
     doc = r.doc
     expect(doc.nodes.map((n) => [n.x, n.y, n.w, n.h])).toEqual([
       [0, 0, 169, 300],
-      [269, 0, 225, 169],
-      // 原间距 181，按 CARD_GAP 保留 100：下移 50。
-      [0, 400, 225, 169],
+      [217, 0, 225, 169],
+      // 原间距 81，按 CARD_GAP 保留 48：下移 98。
+      [0, 348, 225, 169],
     ])
   })
 
@@ -662,8 +663,8 @@ describe('画布：操作', () => {
       return [n.x, n.y]
     }
     expect([at('g2'), at('m1'), at('m2')]).toEqual([
-      [400, 0],
-      [669, 0],
+      [348, 0],
+      [565, 0],
       [2000, 0],
     ])
     const tall = addVersions(doc, 'g1', [
@@ -671,11 +672,11 @@ describe('画布：操作', () => {
     ])
     if (!tall.ok) throw new Error(tall.error)
     doc = tall.doc
-    // g1 宽 300 → 169：「场景」列与紧挨着它的界面卡各左移 131，间距仍为 100；远处的卡不动。
+    // g1 宽 300 → 169：「场景」列与紧挨着它的界面卡各左移 131，间距仍为 48；远处的卡不动。
     expect([at('g1'), at('g2'), at('m1'), at('m2')]).toEqual([
       [0, 0],
-      [269, 0],
-      [538, 0],
+      [217, 0],
+      [434, 0],
       [2000, 0],
     ])
   })
@@ -693,7 +694,7 @@ describe('画布：操作', () => {
     doc = apply(
       doc,
       [
-        { op: 'add_file', path: 'note.png', x: 269 + 300 + 100, y: 269 },
+        { op: 'add_file', path: 'note.png', x: 217 + 300 + 48, y: 217 },
         { op: 'add_file', path: 'far.png', x: 500, y: 3000 },
       ],
       ids('m'),
@@ -703,9 +704,9 @@ describe('画布：操作', () => {
       return [n.x, n.y]
     }
     expect([at('g2'), at('g3'), at('m1')]).toEqual([
-      [269, 0],
-      [269, 269],
-      [669, 269],
+      [217, 0],
+      [217, 217],
+      [565, 217],
     ])
     const grow = addVersions(doc, 'g1', [
       { ...version('p1', 'generated/g1.png'), size: { w: 1672, h: 941 } },
@@ -714,21 +715,21 @@ describe('画布：操作', () => {
     doc = grow.doc
     // 「镜头」整列右移 131；界面放在第二张镜头右侧的卡随之右移，间距不变；远处的卡不动。
     expect([at('g2'), at('g3'), at('m1'), at('m2')]).toEqual([
-      [400, 0],
-      [400, 269],
-      [800, 269],
+      [348, 0],
+      [348, 217],
+      [696, 217],
       [500, 3000],
     ])
-    // 视频出竖图：宽变小、高变大。下方的镜头下移；界面放置的卡仍与第二张镜头相对，间距已是 100，不动。
+    // 视频出竖图：宽变小、高变大。下方的镜头下移；界面放置的卡仍与第二张镜头相对，间距已是 48，不动。
     const tall = addVersions(doc, 'g2', [
       { ...version('p2', 'generated/g2.mp4'), size: { w: 720, h: 1280 } },
     ])
     if (!tall.ok) throw new Error(tall.error)
     doc = tall.doc
     expect([at('g2'), at('g3'), at('m1')]).toEqual([
-      [400, 0],
-      [400, 300 + 100],
-      [800, 269],
+      [348, 0],
+      [348, 300 + 48],
+      [696, 217],
     ])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
@@ -753,7 +754,7 @@ describe('画布：操作', () => {
       doc,
       [
         { op: 'add_file', path: 'u1.png', x: 1000, y: 0 },
-        { op: 'add_file', path: 'u2.png', x: 1000, y: 269 },
+        { op: 'add_file', path: 'u2.png', x: 1000, y: 217 },
         { op: 'add_file', path: 'far.png', x: 0, y: 2000 },
       ],
       ids('u'),
@@ -764,19 +765,19 @@ describe('画布：操作', () => {
     }
     expect(['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(at)).toEqual([
       [0, 0],
-      [0, 269],
-      [0, 538],
-      [0, 807],
-      [269, 0],
-      [269, 269],
+      [0, 217],
+      [0, 434],
+      [0, 651],
+      [217, 0],
+      [217, 217],
     ])
     doc = apply(doc, [{ op: 'remove', id: 'n2' }])
     expect(['n1', 'n3', 'n4', 'n5', 'n6', 'u3'].map(at)).toEqual([
       [0, 0],
-      [0, 269],
-      [0, 538],
-      [269, 0],
-      [269, 269],
+      [0, 217],
+      [0, 434],
+      [217, 0],
+      [217, 217],
       [0, 2000],
     ])
     // 同一批删除列首与中间两张，并在列中补一张：剩下的卡移到列首，新卡接在补齐之后的列末。
@@ -791,12 +792,12 @@ describe('画布：操作', () => {
     )
     expect([at('n4'), at('m1'), at('u3')]).toEqual([
       [0, 0],
-      [0, 269],
+      [0, 217],
       [0, 2000],
     ])
     // 界面放置的卡没有组，删除后不移动其他卡。
     doc = apply(doc, [{ op: 'remove', id: 'u1' }])
-    expect(at('u2')).toEqual([1000, 269])
+    expect(at('u2')).toEqual([1000, 217])
   })
 
   /** 原始失败形状：`update` 不接受 group，「含有未知字段：group」，模型改用脚本改写画布文件。 */
@@ -817,14 +818,14 @@ describe('画布：操作', () => {
     }
     expect(['n1', 'n2', 'n3'].map(at)).toEqual([
       [0, 0],
-      [0, 269],
-      [269, 0],
+      [0, 217],
+      [217, 0],
     ])
     doc = apply(doc, [{ op: 'update', id: 'n1', group: '场景/后山' }])
     expect([at('n1'), at('n2'), at('n3')]).toEqual([
-      [269, 269],
+      [217, 217],
       [0, 0],
-      [269, 0],
+      [217, 0],
     ])
     expect(gen(doc, 'n1').group).toBe('场景/后山')
     expect(parseCanvas(serializeCanvas(doc))).toEqual({ ok: true, doc })
@@ -861,16 +862,16 @@ describe('画布：操作', () => {
     }
     expect([at('P10'), at('P1'), at('大纲')]).toEqual([
       [0, 0],
-      [0, 538],
-      [400, 0],
+      [0, 434],
+      [348, 0],
     ])
     doc = apply(doc, [{ op: 'arrange', group: '幻灯片' }])
-    const cell = (k: number) => [(k % 4) * 400, Math.floor(k / 4) * 269]
+    const cell = (k: number) => [(k % 4) * 348, Math.floor(k / 4) * 217]
     for (let k = 0; k < 13; k++) expect(at(`P${k + 1}`)).toEqual(cell(k))
-    // 网格宽 4 × 300 + 3 × 100：「文本」列右移到其右侧一个间距处，列内对齐不变。
+    // 网格宽 4 × 300 + 3 × 48：「文本」列右移到其右侧一个间距处，列内对齐不变。
     expect([at('大纲'), at('讲稿')]).toEqual([
-      [1600, 0],
-      [1600, 269],
+      [1392, 0],
+      [1392, 217],
     ])
     doc = apply(
       doc,
@@ -881,12 +882,12 @@ describe('画布：操作', () => {
       ids('m'),
     )
     for (let k = 0; k < 14; k++) expect(at(`P${k + 1}`)).toEqual(cell(k))
-    expect(at('大纲')).toEqual([1600, 0])
+    expect(at('大纲')).toEqual([1392, 0])
     doc = apply(doc, [{ op: 'arrange', ids: ['P3', 'P1', 'P2'], perRow: 2 }])
     expect([at('P1'), at('P2'), at('P3')]).toEqual([
       [0, 0],
-      [400, 0],
-      [0, 269],
+      [348, 0],
+      [0, 217],
     ])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
@@ -1003,7 +1004,7 @@ describe('画布：操作', () => {
       ],
       ids('n'),
     )
-    expect(named.nodes[1]).toMatchObject({ x: 300 + 100, y: 0 })
+    expect(named.nodes[1]).toMatchObject({ x: 300 + 48, y: 0 })
     expect(parseCanvasOps([{ op: 'add_generate', output: 'image', beside: 'a1' }]).ok).toBe(true)
   })
 
@@ -1076,19 +1077,19 @@ describe('画布：操作', () => {
     }
     // 补沈砚的夜行衣时，顾衡的两张卡下移一张卡与一个间距，林婉接在列末。
     expect(['沈砚_夜行衣', '顾衡_主参考', '顾衡_便装', '林婉_主参考'].map(at)).toEqual([
-      [0, 800],
-      [0, 1200],
-      [0, 1600],
-      [0, 2000],
+      [0, 696],
+      [0, 1044],
+      [0, 1392],
+      [0, 1740],
     ])
     expect([at('山门_雨夜'), at('玉佩'), at('镜头1-1'), at('镜头1-4'), at('第1幕成片')]).toEqual([
-      [269, 0],
-      [669, 0],
-      [1069, 0],
-      [1469, 0],
-      [1869, 0],
+      [217, 0],
+      [565, 0],
+      [913, 0],
+      [1261, 0],
+      [1609, 0],
     ])
-    expect(at('镜头2-1')).toEqual([1869 + 480 + 100, 0])
+    expect(at('镜头2-1')).toEqual([1609 + 480 + 48, 0])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
@@ -1135,26 +1136,26 @@ describe('画布：操作', () => {
       return [n.x, n.y]
     }
     // 已有内容的最右处为视频卡的右缘 -1972 + 300。
-    const x0 = -1672 + 100
+    const x0 = -1672 + 48
     const y0 = 1346
     expect([at('a1'), at('a7')]).toEqual([
       [x0, y0],
-      [x0, y0 + 6 * 400],
+      [x0, y0 + 6 * 348],
     ])
     doc = apply(doc, [shot('镜头1', '林悦_造型1'), { op: 'add_timeline', name: '成片' }], ids('b'))
     expect([at('b1'), at('b2')]).toEqual([
-      [x0 + 269, y0],
-      [x0 + 669, y0],
+      [x0 + 217, y0],
+      [x0 + 565, y0],
     ])
     doc = apply(doc, [shot('镜头2', '林悦_造型2'), outfit('奶奶_家常')], ids('c'))
     expect([at('c1'), at('c2')]).toEqual([
-      [x0 + 269, y0 + 269],
-      [x0, y0 + 7 * 400],
+      [x0 + 217, y0 + 217],
+      [x0, y0 + 7 * 348],
     ])
     doc = apply(doc, [outfit('林悦_造型8')], ids('d'))
     expect([at('d1'), at('c2')]).toEqual([
-      [x0, y0 + 7 * 400],
-      [x0, y0 + 8 * 400],
+      [x0, y0 + 7 * 348],
+      [x0, y0 + 8 * 348],
     ])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
@@ -1235,7 +1236,7 @@ describe('画布：操作', () => {
         expect(new Set(members.map((n) => n.x)).size).toBe(1)
         xs.set(column, members[0]!.x)
         for (let i = 1; i < members.length; i++) {
-          expect(members[i]!.y - members[i - 1]!.y - members[i - 1]!.h).toBe(100)
+          expect(members[i]!.y - members[i - 1]!.y - members[i - 1]!.h).toBe(48)
         }
         const runs = members.map((n) => n.group).filter((g, i, all) => g !== all[i - 1])
         expect(new Set(runs).size).toBe(runs.length)
@@ -1249,7 +1250,7 @@ describe('画布：操作', () => {
           expect(overlaps(a, b)).toBe(false)
           const facing = a.y < b.y + b.h && b.y < a.y + a.h
           if (facing && keyOf(a) !== keyOf(b) && b.x >= a.x + a.w) {
-            expect(b.x - a.x - a.w).toBeGreaterThanOrEqual(100)
+            expect(b.x - a.x - a.w).toBeGreaterThanOrEqual(48)
           }
         }
       }
@@ -1258,6 +1259,218 @@ describe('画布：操作', () => {
     expect(
       doc.nodes.filter((n) => n.type === 'generate' && n.versions.length).length,
     ).toBeGreaterThan(10)
+  })
+
+  /**
+   * 原始失败形状：《第三趟》的交接把摘录卡与生成卡写成同一组，两者在同一列中上下交替，
+   * 模型只能用脚本改写坐标才排成左右两栏。
+   */
+  test('提示词卡排在同组生成卡左侧同一行；出图变高、补插服装与删除时两栏整行移动，仍然对齐', () => {
+    const pair = (who: string, group: string): CanvasOp[] => [
+      { op: 'add_file', ref: `$${who}`, path: `稿/${who}.md`, name: `${who} 提示词`, group },
+      {
+        op: 'add_generate',
+        output: 'image',
+        name: who,
+        group,
+        prompt: `@[$${who}]`,
+        w: 169,
+        h: 169,
+      },
+    ]
+    let doc = apply(
+      emptyCanvas(),
+      [
+        ...pair('老范', '角色/老范'),
+        ...pair('小禾', '角色/小禾'),
+        ...pair('出租车内', '场景/出租车内'),
+      ],
+      ids('n'),
+    )
+    const card = (name: string) => doc.nodes.find((x) => x.name === name)!
+    const at = (name: string) => [card(name).x, card(name).y]
+    const names = ['老范 提示词', '老范', '小禾 提示词', '小禾', '出租车内 提示词', '出租车内']
+    expect(names.map(at)).toEqual([
+      [0, 0],
+      [348, 0],
+      [0, 217],
+      [348, 217],
+      [565, 0],
+      [913, 0],
+    ])
+    // 老范出竖图变高 131：小禾一行的提示词与生成卡一起下移。
+    const r = addVersions(doc, card('老范').id, [
+      { ...version('p1', 'generated/老范.png'), size: { w: 1080, h: 1920 } },
+    ])
+    if (!r.ok) throw new Error(r.error)
+    doc = r.doc
+    expect([at('小禾 提示词'), at('小禾')]).toEqual([
+      [0, 348],
+      [348, 348],
+    ])
+    // 补老范的第二套服装：插在老范一行之后，小禾一行整行下移。
+    doc = apply(doc, pair('老范_便装', '角色/老范'), ids('m'))
+    const below = ['老范_便装 提示词', '老范_便装', '小禾 提示词', '小禾']
+    expect(below.map(at)).toEqual([
+      [0, 348],
+      [348, 348],
+      [0, 565],
+      [348, 565],
+    ])
+    // 删除老范一行：下方各行两栏一起上移。
+    doc = apply(doc, [
+      { op: 'remove', id: '老范' },
+      { op: 'remove', id: '老范 提示词' },
+    ])
+    expect(below.map(at)).toEqual([
+      [0, 0],
+      [348, 0],
+      [0, 217],
+      [348, 217],
+    ])
+    for (const a of doc.nodes) {
+      for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+    }
+  })
+
+  /**
+   * 原始失败形状：镜头按场景分列，2-1、4-1 被单独排到右侧，剧情顺序被打散；九个镜头排成一根长列。
+   * 视频列按镜号的数字顺序排行，满 6 行在右侧另起一栏；图片列不换栏。
+   */
+  test('视频列按镜号排行、满行换栏；补镜头与删除时重排，perColumn 改行数后沿用；图片列不换栏', () => {
+    const shot = (no: string): CanvasOp[] => [
+      {
+        op: 'add_file',
+        ref: `$t${no}`,
+        path: `稿/${no}.md`,
+        name: `${no} 视频提示词`,
+        group: `镜头/${no}`,
+      },
+      {
+        op: 'add_generate',
+        output: 'video',
+        name: no,
+        group: `镜头/${no}`,
+        prompt: `@[$t${no}]`,
+        w: 300,
+        h: 169,
+      },
+    ]
+    const created = ['2-1', '1-1', '1-2', '4-1', '2-2', '3-1', '3-2', '3-3', '4-2']
+    let doc = apply(
+      emptyCanvas(),
+      [
+        ...Array.from(
+          { length: 9 },
+          (_, i): CanvasOp => ({
+            op: 'add_generate',
+            output: 'image',
+            name: `人物${i + 1}`,
+            group: `角色/人物${i + 1}`,
+            w: 169,
+            h: 169,
+          }),
+        ),
+        ...created.flatMap(shot),
+        { op: 'add_timeline', name: '成片' },
+      ],
+      ids('n'),
+    )
+    const at = (name: string) => {
+      const n = doc.nodes.find((x) => x.name === name)!
+      return [n.x, n.y]
+    }
+    /** 各栏自上而下的镜号，并核对每行的提示词在视频左侧一个间距处。 */
+    const lanes = () => {
+      const videos = doc.nodes.filter((n) => n.type === 'generate' && n.output === 'video')
+      for (const v of videos) {
+        expect(at(`${v.name} 视频提示词`)).toEqual([v.x - 48 - 300, v.y])
+      }
+      const xs = [...new Set(videos.map((v) => v.x))].sort((a, b) => a - b)
+      return xs.map((x) =>
+        videos
+          .filter((v) => v.x === x)
+          .sort((a, b) => a.y - b.y)
+          .map((v) => v.name),
+      )
+    }
+    expect(lanes()).toEqual([
+      ['1-1', '1-2', '2-1', '2-2', '3-1', '3-2'],
+      ['3-3', '4-1', '4-2'],
+    ])
+    // 「角色」列九张不换栏；镜头列在其右侧，每栏宽 300 + 48 + 300，时间线让到第二栏右侧。
+    expect([at('人物1'), at('人物9')]).toEqual([
+      [0, 0],
+      [0, 8 * 217],
+    ])
+    const edges = ['1-1 视频提示词', '1-1', '3-2', '3-3 视频提示词', '4-2']
+    expect(edges.map(at)).toEqual([
+      [217, 0],
+      [565, 0],
+      [565, 5 * 217],
+      [913, 0],
+      [1261, 2 * 217],
+    ])
+    expect(at('成片')).toEqual([1261 + 300 + 48, 0])
+    // 补 3-4：按镜号插在 3-3 之后，每栏仍为 6 行。
+    doc = apply(doc, shot('3-4'), ids('a'))
+    expect(lanes()).toEqual([
+      ['1-1', '1-2', '2-1', '2-2', '3-1', '3-2'],
+      ['3-3', '3-4', '4-1', '4-2'],
+    ])
+    // 改为每栏 8 行，之后补镜头沿用 8 行。
+    doc = apply(doc, [{ op: 'arrange', group: '镜头', perColumn: 8 }])
+    doc = apply(doc, shot('4-3'), ids('b'))
+    expect(lanes()).toEqual([
+      ['1-1', '1-2', '2-1', '2-2', '3-1', '3-2', '3-3', '3-4'],
+      ['4-1', '4-2', '4-3'],
+    ])
+    // 删除 1-2：后面的镜头依次前移，4-1 回到第一栏末尾。
+    doc = apply(doc, [
+      { op: 'remove', id: '1-2' },
+      { op: 'remove', id: '1-2 视频提示词' },
+    ])
+    expect(lanes()).toEqual([
+      ['1-1', '2-1', '2-2', '3-1', '3-2', '3-3', '3-4', '4-1'],
+      ['4-2', '4-3'],
+    ])
+    for (const a of doc.nodes) {
+      for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+    }
+    expect(rejects(doc, [{ op: 'arrange', ids: ['1-1'], perColumn: 6 }])).toBe(
+      'perColumn 须与 group 一起给出',
+    )
+    expect(rejects(doc, [{ op: 'arrange', group: '镜头', perColumn: 6, perRow: 2 }])).toBe(
+      'perRow 与 perColumn 只能给出其中一个',
+    )
+    expect(rejects(doc, [{ op: 'arrange', group: '镜头', perColumn: 0 }])).toBe(
+      'perColumn 须为正整数：0',
+    )
+    expect(rejects(doc, [{ op: 'arrange', group: '道具', perColumn: 6 }])).toBe(
+      '组「道具」中没有卡片',
+    )
+  })
+
+  test('视频列每栏的缺省行数随镜头数增加：24 个以内 6 行，35 个以内 7 行，更多 8 行', () => {
+    expect([1, 24, 25, 35, 36, 80].map(shotRows)).toEqual([6, 6, 7, 7, 8, 8])
+    const doc = apply(
+      emptyCanvas(),
+      Array.from(
+        { length: 30 },
+        (_, i): CanvasOp => ({
+          op: 'add_generate',
+          output: 'video',
+          name: `镜头${i + 1}`,
+          group: `镜头/${i + 1}`,
+          w: 300,
+          h: 169,
+        }),
+      ),
+      ids('n'),
+    )
+    const xs = doc.nodes.map((n) => n.x)
+    expect([...new Set(xs)]).toEqual([0, 348, 696, 1044, 1392])
+    expect(xs.filter((x) => x === 0).length).toBe(7)
   })
 })
 

@@ -13,13 +13,17 @@
  */
 
 import {
+  arrangeColumn,
   arrangeGrid,
   arrangeNew,
-  type Box,
+  arrangeShots,
   CARD_GAP,
   closeGaps,
+  columnOfGroup,
   keepSpacing,
+  NAME_ORDER,
   resizedCards,
+  type Vacated,
 } from './canvas-arrange.ts'
 import {
   GENERATE_OUTPUTS,
@@ -393,8 +397,10 @@ export type CanvasOp =
    * 把一组卡按名称排成网格，名称中的数字按数值比较（P2 在 P10 之前），每行 `perRow` 张，缺省 4 张（`arrangeGrid`）。
    * `ids` 与 `group` 二选一，`group` 含其下以「组名/」开头的组。在本批其他操作与按组排位之后执行，
    * 同一批中新增或换组的卡同样参与排列。
+   * 给出 `perColumn` 时改为把 `group` 所在的列按行重排，每栏 `perColumn` 行（`arrangeColumn`）；
+   * 视频列之后补卡时沿用这一行数。
    */
-  | { op: 'arrange'; ids?: string[]; group?: string; perRow?: number }
+  | { op: 'arrange'; ids?: string[]; group?: string; perRow?: number; perColumn?: number }
 
 export type CanvasResult =
   | { ok: true; doc: CanvasDoc; refs: Record<string, string> }
@@ -838,8 +844,21 @@ export function applyCanvasOps(
     keepSpacing(next, resizedCards(doc, next))
     closeGaps(next, later.vacated)
     arrangeNew(next, later.pending)
+    // 视频列在本批新增、删除或换组之后按镜号重排，满行另起一栏。
+    const touched = [
+      ...later.pending.flatMap((id) => {
+        const n = next.nodes.find((m) => m.id === id)
+        return n && n.type !== 'timeline' && n.group !== undefined ? [n.group] : []
+      }),
+      ...later.vacated.flatMap((b) => (b.group === undefined ? [] : [b.group])),
+    ]
+    arrangeShots(doc, next, touched.map(columnOfGroup))
     // 网格最后排列：本批新增或换组的卡此时已有位置。
-    for (const grid of later.grids) arrangeGrid(next, gridCards(next, grid), grid.perRow)
+    for (const grid of later.grids) {
+      const cards = gridCards(next, grid)
+      if ('perColumn' in grid) arrangeColumn(next, columnOfGroup(grid.group), grid.perColumn)
+      else arrangeGrid(next, cards, grid.perRow)
+    }
   } catch (err) {
     if (err instanceof CanvasError) return { ok: false, error: err.message }
     throw err
@@ -851,17 +870,20 @@ export function applyCanvasOps(
 /** 本批全部操作之后才执行的排位：待按组排位的节点、带组的卡空出的框、待排成网格的卡。 */
 interface Deferred {
   pending: string[]
-  vacated: Box[]
+  vacated: Vacated[]
   grids: Grid[]
 }
 
-/** 一条 `arrange`：`ids` 在该条操作时已换成节点 id，`group` 在全部操作之后取组内的卡。 */
-type Grid = { perRow: number } & ({ ids: string[] } | { group: string })
+/**
+ * 一条 `arrange`：`ids` 在该条操作时已换成节点 id，`group` 在全部操作之后取组内的卡。
+ * 带 `perColumn` 的按栏重排 `group` 所在的列。
+ */
+type Grid =
+  | ({ perRow: number } & ({ ids: string[] } | { group: string }))
+  | { group: string; perColumn: number }
 
 /** `arrange` 每行的缺省张数。 */
 const GRID_PER_ROW = 4
-/** `arrange` 的排列顺序：名称中的数字按数值比较，P2 在 P10 之前。 */
-const NAME_ORDER = new Intl.Collator('zh', { numeric: true })
 
 /** 一条 `arrange` 在本批之后要排列的卡，按名称排序；本批中已删除的卡不计入。 */
 function gridCards(doc: CanvasDoc, grid: Grid): CanvasNode[] {
@@ -983,7 +1005,8 @@ function applyOne(
       }
       const node = doc.nodes.find((n) => n.id === id) ?? fail(`目标已不存在：${op.id}`)
       if (op.role !== undefined) fail('节点没有用途，用途属于连线')
-      const box = { x: node.x, y: node.y, w: node.w, h: node.h }
+      const box: Vacated = { x: node.x, y: node.y, w: node.w, h: node.h }
+      if (node.type !== 'timeline' && node.group !== undefined) box.group = node.group
       if (op.x !== undefined) node.x = op.x
       if (op.y !== undefined) node.y = op.y
       if (op.w !== undefined) node.w = op.w
@@ -1151,7 +1174,7 @@ function applyOne(
       }
       const node = doc.nodes.find((n) => n.id === id) ?? fail(`目标已不存在：${op.id}`)
       if (node.type !== 'timeline' && node.group !== undefined) {
-        later.vacated.push({ x: node.x, y: node.y, w: node.w, h: node.h })
+        later.vacated.push({ x: node.x, y: node.y, w: node.w, h: node.h, group: node.group })
       }
       doc.nodes = doc.nodes.filter((n) => n.id !== id)
       doc.edges = doc.edges.filter((e) => e.from !== id && e.to !== id)
@@ -1159,6 +1182,15 @@ function applyOne(
     }
     case 'arrange': {
       if ((op.ids === undefined) === (op.group === undefined)) fail('ids 与 group 须给出其中一个')
+      if (op.perColumn !== undefined) {
+        if (op.group === undefined) fail('perColumn 须与 group 一起给出')
+        if (op.perRow !== undefined) fail('perRow 与 perColumn 只能给出其中一个')
+        if (!Number.isInteger(op.perColumn) || op.perColumn < 1) {
+          fail(`perColumn 须为正整数：${op.perColumn}`)
+        }
+        later.grids.push({ group: op.group, perColumn: op.perColumn })
+        return
+      }
       const perRow = op.perRow ?? GRID_PER_ROW
       if (!Number.isInteger(perRow) || perRow < 1) fail(`perRow 须为正整数：${perRow}`)
       if (op.group !== undefined) {
@@ -1875,7 +1907,13 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
   order_inputs: { 'op!': 'string', 'id!': 'string', 'inputs!': 'strings' },
   remove: { 'op!': 'string', 'id!': 'string', version: 'string' },
   set_mode: { 'op!': 'string', 'id!': 'string', 'mode!': 'mode' },
-  arrange: { 'op!': 'string', ids: 'strings', group: 'string', perRow: 'number' },
+  arrange: {
+    'op!': 'string',
+    ids: 'strings',
+    group: 'string',
+    perRow: 'number',
+    perColumn: 'number',
+  },
 }
 
 /** 核对界面或大模型提交的一批操作。版本不在可提交的字段中：带 `versions` 的操作一律拒绝。 */

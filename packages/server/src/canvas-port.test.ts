@@ -575,8 +575,8 @@ describe('画布端口', () => {
     }
     expect([at('P1'), at('P2'), at('P3')]).toEqual([
       [0, 0],
-      [269, 0],
-      [0, 269],
+      [217, 0],
+      [0, 217],
     ])
     expect(r.changed).toEqual([])
     expect(r.moved).toHaveLength(3)
