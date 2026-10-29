@@ -31,3 +31,4 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [截断内容沿用原有悬停提示](reuse-existing-hover-tooltip.md) — 显示全文用 `data-tip`，不新增点击浮层；用户以现有界面为参照时按参照的形式实现
 - [.tmp/scratch 由并行会话共用](scratch-dir-shared-between-sessions.md) — 提交说明不用固定文件名，写入本会话私有的临时目录；曾被对方的同名文件覆盖导致说明错误
 - [估算系数的实测方法](token-density-calibration.md) — 新增或补测型号用 .tmp/ctx-probe 脚本；Claude 中转直连读首个事件，Qwen 关闭思考；三档未测仍用默认档
+- [模型绕路时修复缺陷而不是加限制](fix-capability-gap-not-prompt-ban.md) — 查出模型只能绕路的原因（缺能力、看不到结果）并修复；不在提示词或工具说明中写禁令，用户否决过「电脑控制只用于 qywork 以外」
