@@ -144,6 +144,13 @@ function keyOf(workspaceRoot: string, path: string): string {
   return resolve(workspaceRoot, path)
 }
 
+/** 卡片选定的接口与模型；未选定时为 undefined，使用默认模型。 */
+function pickOf(node: CanvasGenerateNode): { provider: string; model: string } | undefined {
+  return node.provider !== undefined && node.model !== undefined
+    ? { provider: node.provider, model: node.model }
+    : undefined
+}
+
 /** 一次视频生成产物中的视频文件（同时返回的还可能有尾帧图）。 */
 function videoOf(files: GeneratedFile[]): GeneratedFile {
   return files.find((f) => f.mime.startsWith('video/')) ?? files[0]!
@@ -611,7 +618,7 @@ export class CanvasService {
     if (broken.length) {
       throw new CanvasFailure(`「${node.name}」的提示词引用不成立：${broken.join('；')}`, 422)
     }
-    const mismatched = promptInputProblems(doc, nodeId, texts)
+    const mismatched = promptInputProblems(doc, nodeId, texts, this.styleOf(node))
     if (mismatched.length) {
       throw new CanvasFailure(`「${node.name}」${mismatched.join('；')}`, 422)
     }
@@ -632,10 +639,7 @@ export class CanvasService {
       }
       inputs.push({ role: edge.role, path: file })
     }
-    const pick =
-      node.provider !== undefined && node.model !== undefined
-        ? { provider: node.provider, model: node.model }
-        : undefined
+    const pick = pickOf(node)
     const prompt = compilePrompt(doc, nodeId, this.deps.mentionStyleOf?.(node.output, pick), texts)
     const specs = this.deps.paramSpecsOf?.(node.output, pick)
     const params = specs
@@ -850,6 +854,11 @@ export class CanvasService {
     })
     this.running.get(key)!.done = done
     return { done }
+  }
+
+  /** 卡片所选模型在提示词中指代素材的写法；未登记时为空，不核对写法。 */
+  private styleOf(node: CanvasGenerateNode): MentionStyle {
+    return this.deps.mentionStyleOf?.(node.output, pickOf(node)) ?? {}
   }
 
   /** 运行与取回共用的前置检查：画布、节点、未在运行。 */
@@ -1709,7 +1718,14 @@ export class CanvasService {
         ])
         return {
           node,
-          broken: texts ? textReferenceProblems(doc, node.id, texts) : [],
+          broken: texts
+            ? [
+                ...textReferenceProblems(doc, node.id, texts),
+                ...(node.type === 'generate'
+                  ? promptInputProblems(doc, node.id, texts, this.styleOf(node))
+                  : []),
+              ]
+            : [],
           state,
           nodeTasks,
         }

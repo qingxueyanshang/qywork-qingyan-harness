@@ -677,6 +677,48 @@ describe('画布运行：文本卡引用', () => {
     )
     expect(fake.calls).toHaveLength(0)
   })
+
+  /**
+   * 原始失败形状：用户要求把视频卡换到 hongcheng（声明 @ImageN）后，提示词仍写 @图片N，编号与连线一致，
+   * 换模型与运行都没有任何提示。换模型后读取画布即标出，运行时拒绝；提示词不被改写。
+   */
+  test('换模型后手写的素材写法不是新模型声明的写法：读取画布即标出，运行时不提交，提示词不改写', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-canvas-run-'))
+    await writeFile(join(root, 'a.png'), PNG)
+    const r = applyCanvasOps(emptyCanvas(), [
+      { op: 'add_file', ref: '$a', path: 'a.png', name: '阿七' },
+      {
+        op: 'add_generate',
+        ref: '$v',
+        output: 'video',
+        name: '1-1',
+        prompt: '@图片1 用于阿七的脸。',
+      },
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+    ])
+    if (!r.ok) throw new Error(r.error)
+    await writeFile(join(root, PATH), serializeCanvas(r.doc))
+    const svc = new CanvasService({
+      publish: () => {},
+      mentionStyleOf: (_o, pick) =>
+        pick?.provider === 'hongcheng' ? { image: '@Image{n}' } : { image: '@图片{n}' },
+    })
+    const ws = { id: 'ws1', root }
+    const v = r.refs.$v!
+    expect((await svc.read(root, PATH)).references).toBeUndefined()
+    await svc.apply(root, PATH, [
+      { op: 'update', id: v, provider: 'hongcheng', model: 'TTseadanco2.5-720' },
+    ])
+    const problem =
+      '提示词写的「@图片1」不是所选模型的图片写法：该模型写作「@Image1」「@Image2」，按同类连线顺序编号；改写提示词（引用的文本卡改其文件）后再运行'
+    expect((await svc.read(root, PATH)).references).toEqual({ [v]: [problem] })
+    const fake = fakePort()
+    expect((await failure(svc.run(ws, PATH, v, { media: fake.port }))).message).toBe(
+      `「1-1」${problem}`,
+    )
+    expect(fake.calls).toHaveLength(0)
+    expect((await node(root, v)).prompt).toBe('@图片1 用于阿七的脸。')
+  })
 })
 
 describe('画布运行：视频', () => {

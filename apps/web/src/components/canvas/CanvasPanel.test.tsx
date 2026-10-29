@@ -184,6 +184,7 @@ async function mount(
   let doc = seeded.doc
   let extraStates = states
   let extraTasks: NonNullable<CanvasView['tasks']> = {}
+  let extraReferences: CanvasView['references']
   let written = 0
   let fingerprint = 'd0'
   const snapshots = new Map<string, CanvasDoc>([['d0', doc]])
@@ -194,6 +195,7 @@ async function mount(
       doc,
       states: extraStates,
       tasks: extraTasks,
+      ...(extraReferences ? { references: extraReferences } : {}),
     })
   const server: Server = {
     hold: null,
@@ -214,6 +216,7 @@ async function mount(
       }
       if (next.states) extraStates = next.states
       if (next.tasks) extraTasks = next.tasks
+      if (next.references) extraReferences = next.references
     },
     broken: false,
     quote: null,
@@ -1083,6 +1086,74 @@ describe('画布：生成卡与生成面板', () => {
       () => !host.querySelector('.canvas-panel'),
       () => '',
     )
+  })
+
+  /**
+   * 原始失败形状：《第三趟》「钟家楼下_朝单元门_上午」卡当前选 Seedream，切换到 qwen 生成的那一版时，
+   * 标题仍写 Seedream 5.0 Pro。标题写正在显示的版本实际使用的模型，没有结果时写卡片选定的模型。
+   */
+  test('标题栏的模型名为当前版本实际使用的模型，与卡片之后选定的模型无关；没有结果时为选定的模型', async () => {
+    const made = (provider: string, model: string) => ({
+      prompt: 'p',
+      provider,
+      model,
+      params: {},
+      inputs: [],
+      at: 't',
+    })
+    const { host, refs, server } = await mount([
+      {
+        op: 'add_generate',
+        ref: '$g',
+        output: 'image',
+        name: '楼下',
+        x: 0,
+        y: 0,
+        provider: 'qwen',
+        model: 'qwen-image-3.0',
+      },
+      {
+        op: 'add_generate',
+        ref: '$e',
+        output: 'image',
+        name: '空卡',
+        x: 400,
+        y: 0,
+        provider: 'qwen',
+        model: 'qwen-image-3.0',
+      },
+    ])
+    const doc = server.doc()
+    const g = doc.nodes.find((n) => n.id === refs.$g)!
+    if (g.type !== 'generate') throw new Error('不是生成卡')
+    g.versions = [
+      { id: 'v1', path: 'a.png', made: made('qwen', 'wan3.0-video') },
+      { id: 'v2', path: 'a.png', made: made('qwen', 'qwen-image-3.0') },
+    ]
+    g.current = 'v1'
+    server.setView({ doc })
+    const store = await import('../../lib/store/index.ts')
+    store.setState('canvasVersion', (v) => v + 1)
+    const title = (id: string) =>
+      node(host, id).querySelector('.canvas-node-title .model')?.textContent
+    await waitFor(
+      () => title(refs.$g!) === 'Wan 3.0 Video',
+      () => String(title(refs.$g!)),
+    )
+    expect(title(refs.$e!)).toBe('Qwen Image 3.0')
+  })
+
+  test('服务端报告运行前须修正的问题时，生成面板在提示词下方显示，不等点击生成', async () => {
+    const { host, refs, server } = await mount(CARD)
+    server.setView({ references: { [refs.$v!]: ['提示词写的「@图片1」不是所选模型的图片写法'] } })
+    const store = await import('../../lib/store/index.ts')
+    store.setState('canvasVersion', (v) => v + 1)
+    await select(host, refs.$v!)
+    await waitFor(
+      () => !!host.querySelector('.canvas-check-notice'),
+      () => host.querySelector('.canvas-panel')?.innerHTML.slice(0, 300) ?? '',
+    )
+    expect(host.querySelector('.canvas-check-notice')?.textContent).toContain('「@图片1」')
   })
 
   test('画布区比面板窄时面板宽度缩小到画布区宽度', async () => {

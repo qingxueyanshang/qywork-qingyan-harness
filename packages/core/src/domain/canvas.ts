@@ -257,7 +257,8 @@ export interface CanvasView {
   states: Record<string, CanvasNodeState>
   tasks?: Record<string, CanvasTaskInfo>
   /**
-   * 不成立的文本引用，按节点 id；没有时不写该键。文本卡为摘录无法定位的原因，生成卡为其引用的失效文本卡。
+   * 运行前须修正的问题，按节点 id；没有时不写该键。文本卡为摘录无法定位的原因；生成卡为其引用的失效文本卡（以 `@[名称]`
+   * 开头），以及手写素材编号与连线数量或所选模型的写法不一致（`promptInputProblems`）。运行时同样的问题会被拒绝。
    */
   references?: Record<string, string[]>
 }
@@ -647,17 +648,41 @@ const NUMBERED_INPUT_RE = {
 const NUMBERED_LABEL = { image: '图片', audio: '音频' } as const
 const NUMBERED_UNIT = { image: '张', audio: '段' } as const
 const LEFT_MENTION_RE = /@\[[^[\]\n]{1,200}\]/g
+/**
+ * 手写的带 @ 的素材编号，如 `@图片1`、`@Image 1`、`@图1`、`@voice1`。不带 @ 的 `图1` 不在其内：
+ * 正文中的「如图1」无法与素材编号区分。
+ */
+const AT_INPUT_RE =
+  /@(图片|图|Image|image|视频|Video|video|音频|Audio|audio|voice)(\s?)(\d{1,2})(?!\d)/g
+const KIND_OF_WORD: Record<string, 'image' | 'video' | 'audio'> = {
+  图片: 'image',
+  图: 'image',
+  Image: 'image',
+  image: 'image',
+  视频: 'video',
+  Video: 'video',
+  video: 'video',
+  音频: 'audio',
+  Audio: 'audio',
+  audio: 'audio',
+  voice: 'audio',
+}
+const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' } as const
 
 /**
  * 运行前核对提示词与输入。只检查展开引用后的文本（`compilePrompt` 不套用写法的结果），不依赖文本引用的段落定位方式。
  * - 手写的 `图片N` / `音频N` 的最大编号须等于连接到该卡的同类参考素材数量：多出的素材同样会发送，
  *   超出连线数量的编号指向不存在的素材。以 `@[卡片]` 引用素材时由编译统一编号，不属于本项检查。
+ * - 给出所选模型的写法 `style` 时，手写的带 @ 的编号须是该模型声明的写法（开头的 @ 不计）：换模型后沿用另一种写法（如
+ *   hongcheng 声明 `@Image{n}`，提示词仍写 `@图片1`）时编号一致也会发出，模型不一定把它绑定到素材。
+ *   只报告不改写：卡片上的文字即发送的内容，由 agent 或用户改写。未登记写法的模型与类别不检查。
  * - 展开后的文本不得含有 `@[…]`：引用只展开一层，文本卡中的 `@[名称]` 会按原文发送给模型。
  */
 export function promptInputProblems(
   doc: CanvasDoc,
   nodeId: string,
   texts: ReadonlyMap<string, string> = new Map(),
+  style: MentionStyle = {},
 ): string[] {
   const node = doc.nodes.find((n) => n.id === nodeId)
   if (node?.type !== 'generate') return []
@@ -681,6 +706,22 @@ export function promptInputProblems(
         `提示词引用至${label}${top}，该卡连接了${count}${NUMBERED_UNIT[kind]}${label}；${label}编号须与连线数量一致`,
       )
     }
+  }
+  const wrong = new Map<'image' | 'video' | 'audio', Set<string>>()
+  for (const m of text.matchAll(AT_INPUT_RE)) {
+    const kind = KIND_OF_WORD[m[1]!]!
+    const template = style[kind]
+    if (!template) continue
+    const declared = template.replace(/^@/, '').replaceAll('{n}', m[3]!)
+    if (m[0].slice(1) !== declared) wrong.set(kind, (wrong.get(kind) ?? new Set()).add(m[0]))
+  }
+  for (const [kind, tokens] of wrong) {
+    const shown = [...tokens].slice(0, 3).map((t) => `「${t}」`)
+    problems.push(
+      `提示词写的${shown.join('')}${tokens.size > 3 ? '等' : ''}不是所选模型的${KIND_LABEL[kind]}写法：` +
+        `该模型写作「${style[kind]!.replaceAll('{n}', '1')}」「${style[kind]!.replaceAll('{n}', '2')}」，按同类连线顺序编号；` +
+        `改写提示词（引用的文本卡改其文件）后再运行`,
+    )
   }
   const left = [...new Set([...text.matchAll(LEFT_MENTION_RE)].map((m) => m[0]))]
   if (left.length) {

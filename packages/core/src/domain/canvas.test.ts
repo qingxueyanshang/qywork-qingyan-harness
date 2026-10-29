@@ -2181,6 +2181,34 @@ describe('画布：文本卡引用', () => {
     expect(promptInputProblems(named, 'a3')).toEqual([])
   })
 
+  /**
+   * 原始失败形状：视频卡从声明「@图片N」的模型换到 hongcheng（声明「@ImageN」）后，摘录里仍写 @图片1、@图片2，
+   * 编号与连线数量一致，运行前核对放行，生成出人物没有绑定的视频。核对只报告、不改写。
+   */
+  test('运行前核对：手写的带 @ 编号不是所选模型声明的写法时报告；开头的 @ 不计，不带 @ 的「图1」不核对', () => {
+    const doc = apply(withScript(), [
+      { op: 'update', id: 'a3', prompt: '@图片1 用于阿七的脸，如图1所示。' },
+      { op: 'connect', from: '小满', to: '1-2 入梦', role: 'reference' },
+    ])
+    const hongcheng = { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' }
+    expect(promptInputProblems(doc, 'a3', new Map(), hongcheng)).toEqual([
+      '提示词写的「@图片1」不是所选模型的图片写法：该模型写作「@Image1」「@Image2」，按同类连线顺序编号；改写提示词（引用的文本卡改其文件）后再运行',
+    ])
+    expect(promptInputProblems(doc, 'a3', new Map(), { image: '@图片{n}' })).toEqual([])
+    // 方舟 Seedance 2.0 声明「图片{n}」、万相声明「图{n}」：多写一个 @ 不算写法不同。
+    expect(promptInputProblems(doc, 'a3', new Map(), { image: '图片{n}' })).toEqual([])
+    expect(promptInputProblems(doc, 'a3', new Map(), { image: '图{n}' })).toEqual([
+      '提示词写的「@图片1」不是所选模型的图片写法：该模型写作「图1」「图2」，按同类连线顺序编号；改写提示词（引用的文本卡改其文件）后再运行',
+    ])
+    const spaced = apply(doc, [{ op: 'update', id: 'a3', prompt: '@Image 1 用于阿七的脸。' }])
+    expect(promptInputProblems(spaced, 'a3', new Map(), hongcheng)).toHaveLength(1)
+    expect(promptInputProblems(spaced, 'a3')).toEqual([])
+    // 写在文本卡中的编号同样核对：展开之后的文本才是发送的内容。
+    const viaText = apply(doc, [{ op: 'update', id: 'a3', prompt: '@[制作脚本]' }])
+    const texts = new Map([['a1', '## 1-2 入梦\n@图片1用于阿七的脸。\n']])
+    expect(promptInputProblems(viaText, 'a3', texts, hongcheng)[0]).toContain('「@图片1」')
+  })
+
   test('运行前核对：引用展开后的文本仍含 @[…] 时报告', () => {
     const doc = apply(withScript(), [
       { op: 'update', id: 'a3', prompt: '@[制作脚本]' },

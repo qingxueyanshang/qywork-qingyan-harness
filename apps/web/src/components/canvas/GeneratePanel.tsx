@@ -1164,6 +1164,18 @@ export function GeneratePanel(props: {
         </output>
       </Show>
 
+      {/*
+        运行前须修正的问题由服务端判定（`promptInputProblems` 等，与运行时的拒绝相同），换模型后即显示，不等点击生成。
+        只占一行、全文在悬停提示中：面板高度固定，多行提示会把提示词区挤没。
+      */}
+      <Show when={props.view.references?.[props.node.id]?.join('；')}>
+        {(text) => (
+          <output class="canvas-check-notice" title={text()}>
+            {text()}
+          </output>
+        )}
+      </Show>
+
       <div class="canvas-bar">
         <button
           class="mode-chip model"

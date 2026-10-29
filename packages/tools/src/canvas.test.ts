@@ -297,12 +297,12 @@ describe('canvas 工具', () => {
       return { ...v, doc, references: { id2: [broken], id3: [own] } }
     }
     const one = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
-    expect(one.message).toContain(`提示词 11 字；引用失效：${broken}`)
+    expect(one.message).toContain(`提示词 11 字；运行前须修正：${broken}`)
     expect(one.message).toContain(
       `- id3 文件「1-2 段」脚本.md，摘录 ${JSON.stringify(excerpt)}（正常）\n  引用失效（运行前须修正）：${own}`,
     )
     const full = await readCanvasTool.fn({ path: 'board.canvas.json', node: ['视频1'] }, ctx(port))
-    expect(full.message).toContain(`  引用失效（运行前须修正）：${broken}`)
+    expect(full.message).toContain(`  运行前须修正：${broken}`)
   })
 
   test('read 的 render：截图作为图片附上，回执写明尺寸、截图序号、页面脚本报错与无法渲染的原因', async () => {
