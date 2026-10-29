@@ -127,7 +127,7 @@ function nodeLines(view: CanvasView, n: CanvasNode): string[] {
   }
   lines.push(`  输入：${inputsText(view, n.id)}`)
   const broken = view.references?.[n.id]
-  if (broken?.length) lines.push(`  引用失效（运行前须修正）：${broken.join('；')}`)
+  if (broken?.length) lines.push(`  运行前须修正：${broken.join('；')}`)
   return lines
 }
 
@@ -137,7 +137,7 @@ function overviewLine(view: CanvasView, n: CanvasNode): string {
   const broken = view.references?.[n.id]
   return (
     `${headLine(view, n)}；参数：${paramsText(n.params)}；输入：${inputsText(view, n.id)}；` +
-    `提示词 ${n.prompt.length} 字${broken?.length ? `；引用失效：${broken.join('；')}` : ''}`
+    `提示词 ${n.prompt.length} 字${broken?.length ? `；运行前须修正：${broken.join('；')}` : ''}`
   )
 }
 
@@ -232,6 +232,8 @@ const CANVAS_NOTE =
   '每段一张摘录卡，name 写该段的用途（如「1-1 视频提示词」），group 与引用它的生成卡相同：画布把摘录卡排在该生成卡左侧的同一行。' +
   '文本的连线即引用：写入引用自动连线，删除引用自动断开；用 connect 连接文本卡而提示词中尚未引用它时，在提示词末尾插入该卡的引用，发送时展开为该段全文。' +
   '文件不存在或摘录无法定位（after、start、end 被改动或不再唯一）时引用它的卡不能运行，读取画布时标为引用失效；' +
+  '提示词（含展开的文本卡）中手写的素材编号与连线数量、或与所选模型的写法不一致时同样不能运行，读取画布与修改回执中标为运行前须修正，' +
+  '换模型后按新模型的写法改写（文本卡改其文件）；' +
   '修改文档后按回执中的原因用 update 给出新的 excerpt。' +
   'output 为 art 的生成卡由对话模型写出一个 HTML 页面（3D 白模、动画、前端设计稿），产物是 generated/ 下的 .html，' +
   '再次运行时在当前页面上修改；它只接受参考图，本身不能作为输入（截图与录制由用户在界面上完成）。' +

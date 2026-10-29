@@ -1593,11 +1593,16 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const currentOf = (n: CanvasGenerateNode) => n.versions.find((v) => v.id === n.current)
   const catalogModel = (provider: string | undefined, id: string) =>
     (modelCatalog()?.media ?? []).find((m) => m.provider === provider && m.id === id)
+  /**
+   * 标题栏的模型名：有结果时为正在显示的版本实际使用的模型（`made`），没有结果时为卡片选定的模型。
+   * 不要改回优先取卡片选定的模型：同一张卡换过模型、切换到旧版本时，画面与模型名不对应。下次生成所用的模型见生成面板。
+   */
   const modelLabel = (n: CanvasGenerateNode): string => {
-    const current = currentOf(n)
-    const id = n.model ?? current?.made.model
+    const made = currentOf(n)?.made
+    const provider = made ? made.provider : n.provider
+    const id = made ? made.model : n.model
     if (!id) return ''
-    const m = catalogModel(n.provider ?? current?.made.provider, id)
+    const m = catalogModel(provider, id)
     return m ? `${m.label}${m.delisted ? '（已下架）' : ''}` : id
   }
   const panelAt = () => {
