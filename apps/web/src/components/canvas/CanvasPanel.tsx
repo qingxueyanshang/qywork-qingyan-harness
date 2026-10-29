@@ -47,6 +47,7 @@ import {
   onMount,
   Show,
   Switch,
+  untrack,
 } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import { loaded } from '../../lib/resource.ts'
@@ -62,6 +63,7 @@ import {
   explainApiError,
   exportAbort,
   exportFinish,
+  exportRequests,
   exportStart,
   exportWrite,
   importToCanvas,
@@ -74,6 +76,7 @@ import {
   retrieveCard,
   revealFile,
   runCard,
+  setExportRequests,
   setFileSelectRequest,
   state,
   uploadToCanvas,
@@ -1374,6 +1377,17 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     )
     if (created && !fullscreen()) setSelected(new Set([created]))
   }
+
+  // 大模型请求的导出（`canvas.export`）：本画布读取完成后取走请求，执行与「导出」按钮相同的导出。
+  createEffect(() => {
+    if (!view()) return
+    const mine = exportRequests().filter((r) => normPath(r.path) === normPath(props.path))
+    if (!mine.length) return
+    setExportRequests((all) => all.filter((r) => !mine.includes(r)))
+    untrack(() => {
+      for (const r of mine) void exportTimeline(r.nodeId)
+    })
+  })
 
   /**
    * Art 录制：从实时页面当前的状态起录制 `seconds` 秒。Art 节点保持选中：取消选中会关闭实时页面，

@@ -237,6 +237,20 @@ export interface CanvasServiceDeps {
   newId?: () => string
   /** 导出会话无写入时的作废时限（毫秒）。只在测试中缩短。 */
   exportIdleMs?: number
+  /** 大模型请求导出后等待界面开始导出的时限（毫秒）。只在测试中缩短。 */
+  exportClaimMs?: number
+}
+
+/**
+ * 大模型发起的一次时间线导出：等待界面以现有的导出会话完成它。`claimed` 为界面开始导出后的会话号，
+ * 之前为 null；`timer` 在界面开始导出之前计时，到期即失败（没有界面接手）。
+ */
+interface ExportRequest {
+  claimed: string | null
+  timer: ReturnType<typeof setTimeout>
+  done: Promise<{ nodeId: string; path: string }>
+  resolve: (r: { nodeId: string; path: string }) => void
+  reject: (err: Error) => void
 }
 
 /** 时间线导出的上传会话。`part` 是正在写入的临时文件的绝对路径，`target` 是预期的工作区路径（完成时再按重名规则选定）。 */
@@ -258,6 +272,8 @@ const EXPORT_PART = /^\.([0-9a-f-]{36})\.part$/
 
 /** 导出会话的空闲上限：编码一块数据不会超过此时长，超过即表明浏览器端已断开。 */
 const EXPORT_IDLE_MS = 10 * 60_000
+/** 大模型请求导出后，界面打开画布并开始导出的上限：超过即视为没有界面接手。 */
+const EXPORT_CLAIM_MS = 30_000
 
 /** 画布所在的项目：根目录用于定位文件，id 写入 `canvas.run` 事件。 */
 export interface CanvasWorkspace {
@@ -285,6 +301,11 @@ export interface CanvasRunOptions {
   signal?: AbortSignal
   /** 批量派发时再次检查已有远端任务，防止等待期间新出现的待取回版本被重复提交。 */
   rejectPending?: true
+  /**
+   * 该卡正在生成时不重复提交，返回该次生成的结果（大模型的画布端口）。不给出时以 409 拒绝（界面）。
+   * `signal` 只结束本次等待，不停止该次生成。
+   */
+  join?: true
 }
 
 /** 生成记录中在开始时确定、在生成过程中补充的字段；结果、结束时刻与失败原文在收尾时补充。 */
@@ -339,10 +360,14 @@ export class CanvasService {
 
   private readonly exports = new Map<string, ExportSession>()
   private readonly exportIdleMs: number
+  /** 大模型发起、尚未结束的导出。键与 `running` 相同：`画布绝对路径#节点 id`。 */
+  private readonly exportRequests = new Map<string, ExportRequest>()
+  private readonly exportClaimMs: number
 
   constructor(private readonly deps: CanvasServiceDeps) {
     this.io = { ...NODE_IO, ...deps.io }
     this.exportIdleMs = deps.exportIdleMs ?? EXPORT_IDLE_MS
+    this.exportClaimMs = deps.exportClaimMs ?? EXPORT_CLAIM_MS
   }
 
   /** 扫描中的恢复同样视为忙碌，防止在找到待接续的卡片之前取得更新占位。 */
@@ -408,6 +433,9 @@ export class CanvasService {
   /** 停止本地等待，保留远端任务记录；结束进行中的导出并删除临时文件；等待收尾完成后再关闭账本。 */
   async stop(): Promise<void> {
     this.shutdown.abort()
+    for (const key of [...this.exportRequests.keys()]) {
+      this.settleExport(key, new CanvasFailure('应用正在关闭，导出未完成', 409))
+    }
     await Promise.all([...this.exports.keys()].map((id) => this.dropExport(id)))
     await this.recovery?.catch(() => {})
     await Promise.all([...this.running.values()].map((run) => run.done))
@@ -457,6 +485,7 @@ export class CanvasService {
   /**
    * 只调度本次指定的节点，不自动扩展到其他上游。执行仍走 run，共用状态、版本与计费。
    * 批内依赖失败时跳过下游，独立节点最多并行 4 个；中止后不再派发等待中的节点。
+   * 正在生成的节点不重复提交，等待该次生成的结果（`join`）。
    */
   async runBatch(
     ws: CanvasWorkspace,
@@ -521,17 +550,17 @@ export class CanvasService {
           skip(id, `已有待取回版本 ${state.version}，请使用 retrieve_canvas`, true)
           continue
         }
-        if (state?.state === 'running') {
-          skip(id, '该卡片正在生成，未重复提交')
-          continue
-        }
         if (active.size >= 4) break
         waiting.delete(id)
         active.set(
           id,
           (async (): Promise<Entry> => {
             try {
-              const { done } = await this.run(ws, path, id, { ...opts, rejectPending: true })
+              const { done } = await this.run(ws, path, id, {
+                ...opts,
+                rejectPending: true,
+                join: true,
+              })
               return { node: id, result: await done }
             } catch (err) {
               return {
@@ -553,7 +582,7 @@ export class CanvasService {
   }
 
   /**
-   * 运行一张生成卡。运行中、输入尚无结果、提示词为空均在返回之前以 `CanvasFailure` 抛出；
+   * 运行一张生成卡。运行中（未给出 `join`）、输入尚无结果、提示词为空均在返回之前以 `CanvasFailure` 抛出；
    * 返回的 `done` 在生成结束且画布回写之后兑现，不会拒绝。
    *
    * 视频取得任务号后立即追加一个指向任务记录的版本，此后停止、查询被拒绝或进程退出均可取回；成功后按版本 id
@@ -565,6 +594,8 @@ export class CanvasService {
     nodeId: string,
     opts: CanvasRunOptions,
   ): Promise<{ done: Promise<CanvasRunResult> }> {
+    const joined = opts.join ? this.joined(`${keyOf(ws.root, path)}#${nodeId}`, opts.signal) : null
+    if (joined) return { done: joined }
     const { rel, key, node, doc } = await this.target(ws, path, nodeId)
     if (opts.rejectPending && node.versions.some((v) => v.path.endsWith(TASK_SUFFIX)))
       throw new CanvasFailure('已有待取回版本，请使用 retrieve_canvas，不要重复提交生成', 409)
@@ -836,6 +867,30 @@ export class CanvasService {
     if (!node) throw new CanvasFailure(`目标已不存在：${nodeId}`, 404)
     if (node.type !== 'generate') throw new CanvasFailure('只有生成节点能运行', 422)
     return { rel, key, doc, node }
+  }
+
+  /**
+   * 正在进行的生成或取回的结果；该卡未在生成时为 null。`signal` 中止时只结束等待，生成照常进行并回写画布。
+   * 不要在中止时把 `pending` 记为真：该卡仍在本地生成，结果会自行写回，不需要取回。
+   */
+  private joined(key: string, signal: AbortSignal | undefined): Promise<CanvasRunResult> | null {
+    const done = this.running.get(key)?.done
+    if (!done) return null
+    if (!signal) return done
+    const stopped: CanvasRunResult = {
+      ok: false,
+      message: '已停止等待；该卡的生成照常进行，结束后写回画布',
+      pending: false,
+    }
+    if (signal.aborted) return Promise.resolve(stopped)
+    return new Promise((resolve) => {
+      const stop = () => resolve(stopped)
+      signal.addEventListener('abort', stop, { once: true })
+      void done.then((r) => {
+        signal.removeEventListener('abort', stop)
+        resolve(r)
+      })
+    })
   }
 
   private begin(
@@ -1285,9 +1340,96 @@ export class CanvasService {
   }
 
   /**
+   * 大模型导出时间线：向界面发出 `canvas.export`，界面打开该画布并执行与「导出」按钮相同的导出，
+   * 本方法等待该时间线的导出会话完成，返回新增的视频卡与成片的工作区路径。编码只有界面一处（`renderTimeline`），
+   * 成片与用户点击导出得到的完全相同。
+   *
+   * `exportClaimMs` 内没有界面开始导出（界面未打开该项目、命令行运行）时失败；界面导出失败或被取消时以其原因失败。
+   * `signal` 中止只结束等待，已开始的导出照常完成。同一时间线已有进行中的请求时等待同一次导出。
+   */
+  async requestExport(
+    ws: CanvasWorkspace,
+    path: string,
+    nodeId: string,
+    signal?: AbortSignal,
+  ): Promise<{ nodeId: string; path: string }> {
+    const abs = await this.locate(ws.root, path)
+    const rel = await this.relativeTo(ws.root, abs)
+    const node = (await this.load(abs)).nodes.find((n) => n.id === nodeId)
+    if (!node) throw new CanvasFailure(`目标已不存在：${nodeId}`, 404)
+    if (node.type !== 'timeline') throw new CanvasFailure('只有时间线能导出成片', 422)
+    if (!node.clips.length) throw new CanvasFailure('时间线中没有片段', 422)
+    const key = `${keyOf(ws.root, path)}#${nodeId}`
+    let request = this.exportRequests.get(key)
+    if (!request) {
+      let resolve!: ExportRequest['resolve']
+      let reject!: ExportRequest['reject']
+      const done = new Promise<{ nodeId: string; path: string }>((ok, fail) => {
+        resolve = ok
+        reject = fail
+      })
+      // 没有调用方等待时（均已中止）失败不应成为未处理的拒绝。
+      done.catch(() => {})
+      const fresh: ExportRequest = {
+        claimed: null,
+        done,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          if (fresh.claimed !== null) return
+          this.settleExport(
+            key,
+            new CanvasFailure(
+              '没有界面开始导出：qywork 界面未打开该项目，或画布无法在界面中打开；界面打开后重新导出',
+              409,
+            ),
+          )
+        }, this.exportClaimMs),
+      }
+      request = fresh
+      this.exportRequests.set(key, request)
+      this.deps.publish({ type: 'canvas.export', workspaceId: ws.id, path: rel, nodeId })
+    }
+    const waiting = request.done
+    if (!signal) return waiting
+    if (signal.aborted) throw new CanvasFailure('已停止等待导出', 409)
+    return new Promise((resolve, reject) => {
+      const stop = () =>
+        reject(new CanvasFailure('已停止等待；界面中的导出照常进行，完成后成片出现在画布上', 409))
+      signal.addEventListener('abort', stop, { once: true })
+      waiting.then(
+        (r) => {
+          signal.removeEventListener('abort', stop)
+          resolve(r)
+        },
+        (err: Error) => {
+          signal.removeEventListener('abort', stop)
+          reject(err)
+        },
+      )
+    })
+  }
+
+  /** 结束一次大模型发起的导出：给出结果或失败原因。 */
+  private settleExport(key: string, outcome: { nodeId: string; path: string } | Error): void {
+    const request = this.exportRequests.get(key)
+    if (!request) return
+    this.exportRequests.delete(key)
+    clearTimeout(request.timer)
+    if (outcome instanceof Error) request.reject(outcome)
+    else request.resolve(outcome)
+  }
+
+  /** 会话 `id` 认领的大模型导出请求的键；没有时为 undefined。 */
+  private requestOf(id: string): string | undefined {
+    for (const [key, request] of this.exportRequests) if (request.claimed === id) return key
+    return undefined
+  }
+
+  /**
    * 时间线导出成片、Art 节点录制视频：浏览器一边编码一边将字节按位置写入 `generated/.<会话号>.part`（`exportWrite`），
    * 完成时（`exportFinish`）核对 mp4 文件头、保存为 `generated/<节点名>.mp4`（重名时加 `-2`），并在来源节点右侧添加节点。
-   * 返回会话号。
+   * 返回会话号。该节点有大模型发起、尚未认领的导出时由本会话认领，已被另一会话认领时拒绝（多个界面同时收到请求）。
    *
    * 临时文件的终态：完成时改名；失败、放弃、停止服务或 `EXPORT_IDLE_MS` 内无写入时删除（标签页关闭、网络断开时不会有调用方
    * 调用 `exportAbort`）；进程被结束时遗留的临时文件由下次启动的 `recover` 删除。
@@ -1298,6 +1440,10 @@ export class CanvasService {
     if (!node) throw new CanvasFailure(`目标已不存在：${nodeId}`, 404)
     if (node.type !== 'timeline' && canvasMediaOf(node) !== 'art') {
       throw new CanvasFailure('只有时间线与 Art 节点能导出视频', 422)
+    }
+    const key = `${keyOf(workspaceRoot, path)}#${nodeId}`
+    if (this.exportRequests.get(key)?.claimed) {
+      throw new CanvasFailure('该时间线正在由另一个界面导出', 409)
     }
     const target = `${EXPORT_DIR}/${displayNameOf(node).replace(/[\\/:*?"<>|]/g, '_')}.mp4`
     // 临时文件与成片同目录：完成时改名不跨卷。
@@ -1321,6 +1467,16 @@ export class CanvasService {
       this.exports.delete(id)
       clearTimeout(session.timer)
       throw err
+    }
+    // 创建文件期间另一个界面可能已经认领，认领以此刻为准。
+    const request = this.exportRequests.get(key)
+    if (request) {
+      if (request.claimed) {
+        await this.dropExport(id)
+        throw new CanvasFailure('该时间线正在由另一个界面导出', 409)
+      }
+      request.claimed = id
+      clearTimeout(request.timer)
     }
     return id
   }
@@ -1365,10 +1521,15 @@ export class CanvasService {
       const { refs } = await this.apply(workspaceRoot, session.canvas, [
         { op: 'add_file', ref: '$export', path: rel, beside: session.source },
       ])
-      return { nodeId: refs.$export!, path: rel }
+      const landed = { nodeId: refs.$export!, path: rel }
+      const asked = this.requestOf(id)
+      if (asked) this.settleExport(asked, landed)
+      return landed
     } catch (err) {
       await file.close().catch(() => {})
       await rm(session.part, { force: true })
+      const asked = this.requestOf(id)
+      if (asked) this.settleExport(asked, err as Error)
       throw err
     }
   }
@@ -1408,6 +1569,13 @@ export class CanvasService {
     if (!session) return
     this.exports.delete(id)
     clearTimeout(session.timer)
+    const asked = this.requestOf(id)
+    if (asked) {
+      this.settleExport(
+        asked,
+        new CanvasFailure('界面中的导出失败或被取消，失败原因显示在该画布上', 409),
+      )
+    }
     await (await session.file.catch(() => null))?.close().catch(() => {})
     await rm(session.part, { force: true })
   }
@@ -2011,7 +2179,8 @@ export function canvasPort(
       }
     },
     run: async (path, nodeId, media, signal) =>
-      (await service.run(ws, path, nodeId, { media, signal })).done,
+      (await service.run(ws, path, nodeId, { media, signal, join: true })).done,
+    exportTimeline: (path, nodeId, signal) => service.requestExport(ws, path, nodeId, signal),
     runBatch: (path, nodeIds, media, signal) =>
       service.runBatch(ws, path, nodeIds, { media, signal }),
     retrieve: async (path, nodeId, version, media, signal) =>

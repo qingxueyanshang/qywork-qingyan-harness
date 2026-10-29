@@ -79,6 +79,7 @@ export type AgentEvent =
   // ── 工作区实时性 ──
   | FileChangedEvent
   | CanvasRunEvent
+  | CanvasExportEvent
   | GitStateEvent
   | BrowserStateEvent
   | DesktopStateEvent
@@ -581,6 +582,21 @@ export interface CanvasRunEvent {
   state: 'running' | 'done' | 'failed'
   /** `failed` 时的错误原文。 */
   message?: string
+}
+
+/**
+ * 大模型请求界面导出一条时间线。工作区级事件，信封上不带 `conversationId`。
+ *
+ * 编码只在界面进行（`renderTimeline`）：界面收到后打开该画布，执行与「导出」按钮相同的导出；
+ * 服务端以该时间线的导出会话完成作为结果（`CanvasService.requestExport`）。
+ */
+export interface CanvasExportEvent {
+  type: 'canvas.export'
+  workspaceId: string
+  /** 画布文件的工作区相对路径（正斜杠）。 */
+  path: string
+  /** 时间线节点的 id。 */
+  nodeId: string
 }
 
 export interface GitStateEvent {

@@ -477,6 +477,15 @@ export interface CanvasPort {
     label: string,
     png: Uint8Array,
   ): Promise<{ nodeId: string; path: string }>
+  /**
+   * 导出一条时间线并等待完成：由界面执行与「导出」按钮相同的导出，成片保存在 `generated/`，时间线右侧新增视频卡。
+   * 返回新卡的 id 与成片的工作区路径。没有界面接手、导出失败或 `signal` 中止时抛出。
+   */
+  exportTimeline(
+    path: string,
+    nodeId: string,
+    signal: AbortSignal,
+  ): Promise<{ nodeId: string; path: string }>
 }
 
 /**

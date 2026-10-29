@@ -31,6 +31,7 @@ import {
   captureCanvasFrameTool,
   createCanvasTool,
   editCanvasTool,
+  exportTimelineTool,
   readCanvasTool,
   retrieveCanvasTool,
   runCanvasTool,
@@ -145,6 +146,9 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
       },
       captureFrame: async () => {
         throw new Error('不该调用取帧')
+      },
+      exportTimeline: async () => {
+        throw new Error('不该调用导出')
       },
     },
   }
@@ -515,6 +519,62 @@ describe('canvas 工具', () => {
     expect(none.status).toBe('failure')
   })
 
+  /**
+   * 原始失败形状：回执不含坐标，模型在列间距为 1481、同列两栏重叠时仍声称「已回读坐标核对」「未发现重叠」。
+   */
+  test('读取概况与修改回执写明各列位置与列间距；间距不是 48 与卡片重叠单独写明，时间线单独成列', async () => {
+    let n = 0
+    const next = () => `L${++n}`
+    const step = (doc: CanvasView['doc'], ops: CanvasOp[]) => {
+      const r = applyCanvasOps(doc, ops, next)
+      if (!r.ok) throw new Error(r.error)
+      return r.doc
+    }
+    const base = step(emptyCanvas(), [
+      { op: 'add_generate', output: 'image', name: '林远', group: '角色/林远', w: 300, h: 169 },
+      { op: 'add_generate', output: 'video', name: '1-1', group: '镜头/1-1', w: 300, h: 169 },
+      { op: 'add_timeline', name: '成片' },
+    ])
+    const at = (doc: CanvasView['doc']): CanvasView => ({
+      path: 'board.canvas.json',
+      doc,
+      states: {},
+    })
+    const { port } = fakePort(DONE)
+    port.read = async () => at(base)
+    const read = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
+    expect(read.message).toContain('- 列「角色」：x 0–300，1 栏（x=0），1 张卡')
+    expect(read.message).toContain(
+      '- 列「镜头」：x 348–648，1 栏（x=348），1 张卡；与左侧「角色」相距 48',
+    )
+    expect(read.message).not.toContain('应为 48')
+    expect(read.message).toContain(
+      '- 列「时间线 成片」：x 696–1176，1 栏（x=696），1 张卡；与左侧「镜头」相距 48',
+    )
+
+    const far = step(base, [{ op: 'update', id: '1-1', x: 2000 }])
+    port.edit = async () => ({
+      view: at(far),
+      refs: {},
+      skipped: [],
+      changed: [],
+      moved: ['L2'],
+      removed: [],
+      replaced: [],
+    })
+    const moved = await editCanvasTool.fn(
+      { path: 'board.canvas.json', ops_json: [{ op: 'update', id: '1-1', x: 2000 }] },
+      ctx(port),
+    )
+    expect(moved.message).toContain(
+      '列「镜头」：x 2000–2300，1 栏（x=2000），1 张卡；与左侧「时间线 成片」相距 824，应为 48',
+    )
+
+    port.read = async () => at(step(base, [{ op: 'update', id: '1-1', x: 100 }]))
+    const crossed = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
+    expect(crossed.message).toContain('- 重叠 1 处：「林远」与「1-1」')
+  })
+
   test('ops_json 直接传数组时与 JSON 文本同样生效', async () => {
     const { port, seen } = fakePort(DONE)
     const ok = await editCanvasTool.fn(
@@ -740,6 +800,73 @@ describe('canvas 工具', () => {
     }
     expect(permissions).toEqual([])
     expect(seen).toEqual({ creates: [], edits: [], batches: [], runs: [], retrieves: [] })
+  })
+})
+
+describe('export_timeline', () => {
+  /** 两段片段的时间线「成片」（id tl）与一张生成卡「镜头」；导出后右侧多一张视频卡。 */
+  const board = (exported: boolean): CanvasView => {
+    const order = ['tl', 'g', 'out']
+    const r = applyCanvasOps(
+      emptyCanvas(),
+      [
+        {
+          op: 'add_timeline',
+          name: '成片',
+          clips: [
+            { path: 'generated/a.mp4', in: 0, out: 5 },
+            { path: 'generated/b.mp4', in: 1, out: 3.5 },
+          ],
+        },
+        { op: 'add_generate', output: 'video', name: '镜头' },
+        ...(exported ? [{ op: 'add_file', path: 'generated/成片.mp4' } as CanvasOp] : []),
+      ],
+      () => order.shift()!,
+    )
+    if (!r.ok) throw new Error(r.error)
+    return { path: 'board.canvas.json', doc: r.doc, states: {} }
+  }
+
+  test('按名称找到时间线交给端口导出，使用本轮的中止信号；回执写明段数、时长、成片路径与新卡，并计入文件改动', async () => {
+    const { port } = fakePort(DONE)
+    const calls: { path: string; nodeId: string; signal: AbortSignal }[] = []
+    let done = false
+    port.read = async () => board(done)
+    port.exportTimeline = async (path, nodeId, signal) => {
+      calls.push({ path, nodeId, signal })
+      done = true
+      return { nodeId: 'out', path: 'generated/成片.mp4' }
+    }
+    const c = ctx(port)
+    const out = await exportTimelineTool.fn({ path: 'board.canvas.json', node: '成片' }, c)
+    expect(calls).toEqual([{ path: 'board.canvas.json', nodeId: 'tl', signal: c.signal }])
+    expect(out.status).toBe('success')
+    expect(out.message).toContain('已导出「成片」（2 段，共 7.5 秒）')
+    expect(out.message).toContain('成片保存为 generated/成片.mp4')
+    expect(out.fileChanges).toEqual([{ path: 'generated/成片.mp4', changeType: 'created' }])
+  })
+
+  test('不是时间线或名称不存在时不调用端口；端口报错时原文交给模型', async () => {
+    const { port } = fakePort(DONE)
+    let calls = 0
+    port.read = async () => board(false)
+    port.exportTimeline = async () => {
+      calls++
+      throw new Error('没有界面开始导出')
+    }
+    const card = await exportTimelineTool.fn({ path: 'board.canvas.json', node: '镜头' }, ctx(port))
+    expect(card).toMatchObject({ status: 'failure', message: '「镜头」不是时间线' })
+    const missing = await exportTimelineTool.fn(
+      { path: 'board.canvas.json', node: '不存在' },
+      ctx(port),
+    )
+    expect(missing.status).toBe('failure')
+    expect(calls).toBe(0)
+    const failed = await exportTimelineTool.fn(
+      { path: 'board.canvas.json', node: '成片' },
+      ctx(port),
+    )
+    expect(failed).toMatchObject({ status: 'failure', message: '没有界面开始导出' })
   })
 })
 

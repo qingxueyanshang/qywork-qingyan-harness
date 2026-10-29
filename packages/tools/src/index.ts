@@ -137,6 +137,7 @@ import {
   captureCanvasFrameTool,
   createCanvasTool,
   editCanvasTool,
+  exportTimelineTool,
   readCanvasTool,
   retrieveCanvasTool,
   runCanvasTool,
@@ -145,6 +146,7 @@ import { defineRoleTool } from './define-role.ts'
 import { MEDIA_TOOLS, retrieveMediaTool } from './generate.ts'
 import { readHistoryTool } from './history.ts'
 import { officeTools } from './office.ts'
+import { openInPanelTool } from './panel.ts'
 import { installPluginTool } from './plugin-install.ts'
 import { stopSubagentTool } from './stop-subagent.ts'
 import { subagentTool } from './subagent.ts'
@@ -168,6 +170,8 @@ export function registerBuiltinTools(
     desktop?: boolean
     /** 有画布通道（服务端注入了 `CanvasPort`）。 */
     canvas?: boolean
+    /** 有界面可以打开右侧面板：服务端的顶层会话。CLI 与成员会话没有。 */
+    panel?: boolean
     /** 有 Office 执行程序（宿主注入了 `OfficePort`）。 */
     office?: boolean
     /** Office 执行程序中已安装视频解码库（`OfficePort.videoDecoder`）。 */
@@ -219,10 +223,19 @@ export function registerBuiltinTools(
       : []),
     // 画布按通道注册：没有服务端（CLI 会话）时没有画布服务，工具调用必然失败。
     ...(opts.canvas
-      ? [createCanvasTool, readCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool]
+      ? [
+          createCanvasTool,
+          readCanvasTool,
+          editCanvasTool,
+          runCanvasTool,
+          retrieveCanvasTool,
+          exportTimelineTool,
+        ]
       : []),
     // 取帧还需要视频解码库：缺少时调用必然失败（B5）。
     ...(opts.canvas && opts.office && opts.videoDecoder ? [captureCanvasFrameTool] : []),
+    // 面板由界面打开：没有界面呈现本会话时调用没有效果（B5）。
+    ...(opts.panel ? [openInPanelTool] : []),
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,

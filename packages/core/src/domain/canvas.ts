@@ -22,6 +22,7 @@ import {
   columnOfGroup,
   keepSpacing,
   NAME_ORDER,
+  packLanes,
   resizedCards,
   type Vacated,
 } from './canvas-arrange.ts'
@@ -853,11 +854,12 @@ export function applyCanvasOps(
       ...later.vacated.flatMap((b) => (b.group === undefined ? [] : [b.group])),
     ]
     arrangeShots(doc, next, touched.map(columnOfGroup))
-    // 网格最后排列：本批新增或换组的卡此时已有位置。
+    // 网格最后排列：本批新增或换组的卡此时已有位置。每条排列之后，该区域及其右侧各列向左靠拢（`packLanes`）。
     for (const grid of later.grids) {
       const cards = gridCards(next, grid)
       if ('perColumn' in grid) arrangeColumn(next, columnOfGroup(grid.group), grid.perColumn)
       else arrangeGrid(next, cards, grid.perRow)
+      packLanes(next, Math.min(...cards.map((n) => n.x)))
     }
   } catch (err) {
     if (err instanceof CanvasError) return { ok: false, error: err.message }

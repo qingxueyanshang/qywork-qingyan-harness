@@ -62,6 +62,7 @@ const {
   loadConversations,
   toggleSidebar,
   setFoldOpen,
+  openFile,
   setOpenFile,
   openFileInPanel,
   closeSettings,
@@ -3280,6 +3281,57 @@ describe('工具卡按 stepId 认领实时输出', () => {
     applyEvent(delta('st_tool_1', '第二行\n'))
     applyEvent(finished('st_tool_1'))
     expect(transcript().find((t) => t.id === 'st_tool_1')?.stdout).toBe('第一行\n第二行\n')
+  })
+
+  /**
+   * 原始失败形状：用户要求「打开画布」，工具层没有能打开面板的工具，模型操控 qywork 自身的窗口，用了 14 次桌面调用。
+   * 界面在当前会话的 open_in_panel 成功时打开该文件；其他会话的与失败的不打开。
+   */
+  test('当前会话的 open_in_panel 成功时在右侧面板打开该文件', () => {
+    setWorkspace(WS_A)
+    setOpenFile(null)
+    const open = (cid: string, stepId: string, status: 'success' | 'failure', path: string) => {
+      applyEvent({
+        seq: 1,
+        at: 0,
+        conversationId: cid,
+        event: {
+          type: 'tool.started',
+          runId: 'run_1',
+          stepId,
+          toolCallId: stepId,
+          toolName: 'open_in_panel',
+          batchId: 'b_1',
+          callIndex: 0,
+          waveIndex: 0,
+          args: { path },
+          action: { kind: 'read', objectLabel: '文件', target: path },
+        },
+      } as never)
+      applyEvent({
+        seq: 2,
+        at: 0,
+        conversationId: cid,
+        event: {
+          type: 'tool.finished',
+          runId: 'run_1',
+          stepId,
+          toolCallId: stepId,
+          status,
+          outcome: { kind: 'read', status, data: { path } },
+          durationMs: 1,
+        },
+      } as never)
+    }
+    setState({ activeConversation: 'cv_now' })
+    freshView('cv_now')
+    freshView('cv_other')
+    open('cv_other', 'st_o', 'success', '作品/别处.png')
+    open('cv_now', 'st_f', 'failure', '作品/失败.png')
+    expect(openFile()).toBe(null)
+    open('cv_now', 'st_s', 'success', '作品/签收/封面.png')
+    expect(openFile()).toBe('作品/签收/封面.png')
+    expect(sidePanel()).toBe('files')
   })
 
   /** 接口拒绝了包含图片的请求：事件只标记它列出的卡片，标记显示在对应的「读取文件」行上。 */
