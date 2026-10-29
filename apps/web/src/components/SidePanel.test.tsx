@@ -776,12 +776,16 @@ describe('文件树层级', () => {
     expect(file?.children.length).toBe(2)
     expect(file?.querySelector('.file-type-icon')?.getAttribute('data-file-kind')).toBe('markdown')
     expect(root?.classList.contains('selected')).toBe(false)
+    // 辅助功能树中目录行写明展开状态，电脑控制据此判断点击后是展开还是收起；文件行没有这一状态。
+    expect(dir?.getAttribute('aria-expanded')).toBe('false')
+    expect(file?.hasAttribute('aria-expanded')).toBe(false)
 
     dir?.click()
     await waitFor(
       () => host.textContent?.includes('子文件.md') ?? false,
       () => host.textContent ?? '',
     )
+    expect(dir?.getAttribute('aria-expanded')).toBe('true')
     const childFile = Array.from(host.querySelectorAll<HTMLButtonElement>('.tree-item')).find(
       (row) => row.textContent?.includes('子文件.md'),
     )

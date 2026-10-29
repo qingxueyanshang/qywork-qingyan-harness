@@ -1339,6 +1339,7 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
       classList={{ selected: props.ctx.selected() === props.node.path }}
       type="button"
       style={{ 'padding-left': `${treeIndent(props.depth)}px` }}
+      aria-expanded={props.node.kind === 'dir' ? open() : undefined}
       draggable={props.node.kind === 'file'}
       onDragStart={(e) => e.dataTransfer?.setData(WORKSPACE_PATH_TYPE, props.node.path)}
       onClick={onClick}

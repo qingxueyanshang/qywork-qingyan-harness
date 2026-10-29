@@ -942,6 +942,7 @@ function actOutcome(
   action: DesktopAction,
   aim: Aim,
   r: DesktopActResult,
+  before: readonly DesktopElement[] | null,
   field?: DesktopElement,
 ): ToolOutcome {
   const ref = aim.element?.ref ?? ''
@@ -993,6 +994,7 @@ function actOutcome(
       incremental: true,
       receipt,
       targetRef: ref || null,
+      before,
       lead:
         `${lead} · ${snapshotLine(r.observation)}` +
         (target ? ` · 目标 ${elementLine(target)}` : '') +
@@ -1046,6 +1048,7 @@ function waitOutcome(
   reason: string | undefined,
   ref: string | undefined,
   follow: DesktopFollowUp,
+  before: readonly DesktopElement[] | null,
 ): ToolOutcome {
   // `target_gone`：等待值或可用状态时目标控件已不存在，宿主停止轮询。回执写明原因，不写为超时。
   const gone = !found && reason === 'target_gone'
@@ -1063,6 +1066,7 @@ function waitOutcome(
       incremental: true,
       receipt: { found, ...(reason ? { reason } : {}) },
       targetRef: ref ?? null,
+      before,
       lead: `${lead} · ${snapshotLine(follow.observation)}`,
     })
     return {
@@ -1585,11 +1589,12 @@ export const desktopActTool: ToolSpec = {
         throw unknownAction(args.action, ACTIONS, 'action')
       }
       const kind = args.action as DesktopActionKind
-      const table = given(args.imageRef) ? null : desktop.elements(windowId)
+      const before = desktop.elements(windowId)
+      const table = given(args.imageRef) ? null : before
       const { aim, action } = planAct(table, kind, args, TARGET_PARAMS, desktop.foregroundEnabled())
       const field = writes(action) ? inputField(table, aim.element) : undefined
       const r = await send(() => desktop.act({ windowId, ...aim.input, action }))
-      const outcome = actOutcome(ctx, action, aim, r, field)
+      const outcome = actOutcome(ctx, action, aim, r, before, field)
       if (aim.input.at === undefined) return outcome
       const refresh =
         r.dispatch !== 'not_dispatched' || r.observation !== null || !desktop.elements(windowId)
@@ -1964,6 +1969,7 @@ function sequenceOutcome(
   done: StepReceipt[],
   halt: Halt | null,
   cursor: Cursor,
+  before: readonly DesktopElement[] | null,
 ): ToolOutcome {
   const dispatched = done.filter((r) => r.dispatch !== 'not_dispatched').map((r) => r.index)
   const notExecuted = plans.filter((p) => !dispatched.includes(p.index)).map((p) => p.index)
@@ -2003,6 +2009,7 @@ function sequenceOutcome(
     incremental: true,
     receipt,
     targetRef: done.at(-1)?.target ?? null,
+    before,
     lead,
   })
   return {
@@ -2337,8 +2344,9 @@ export const desktopActSequenceTool: ToolSpec = {
       // 参数错误在派发之前抛出，`onDesktop` 记为未执行：此时尚未发送任何帧。
       const plans = planSteps(args.steps)
 
+      const before = desktop.elements(windowId)
       const cursor: Cursor = {
-        table: desktop.elements(windowId),
+        table: before,
         last: null,
         unread: {},
       }
@@ -2363,7 +2371,7 @@ export const desktopActSequenceTool: ToolSpec = {
         }
       }
 
-      const outcome = sequenceOutcome(ctx, plans, done, halt, cursor)
+      const outcome = sequenceOutcome(ctx, plans, done, halt, cursor, before)
       // 该组中有按图定位的步骤，说明调用方依据图像而非控件表：末尾补充一张动作后的
       // 整窗图，判据与单动作相同，见 `withShot`。
       const byImage = plans.some((p) => given(p.args.imageRef))
@@ -2430,9 +2438,8 @@ export const desktopWaitTool: ToolSpec = {
         throw new ArgError('until=appears 必须提供 name 或 role')
       }
       // 针对已知控件的三种条件先在本地解析为唯一目标；另外两种等待的是尚未出现的控件或窗口。
-      const ref = REF_CONDITIONS.includes(until)
-        ? resolveTarget(desktop.elements(windowId), args).ref
-        : undefined
+      const before = desktop.elements(windowId)
+      const ref = REF_CONDITIONS.includes(until) ? resolveTarget(before, args).ref : undefined
       const r = await send(() =>
         desktop.wait({
           windowId,
@@ -2447,7 +2454,7 @@ export const desktopWaitTool: ToolSpec = {
             : DEFAULT_WAIT_MS,
         }),
       )
-      return waitOutcome(ctx, r.found, r.reason, ref, r)
+      return waitOutcome(ctx, r.found, r.reason, ref, r, before)
     }),
 }
 

@@ -120,6 +120,12 @@ export interface DesktopResultInput {
   receipt?: Record<string, unknown>
   /** 本次动作的目标控件，它及其祖先优先进入视图。没有目标时为 null。 */
   targetRef?: string | null
+  /**
+   * 动作或等待之前该窗口的完整控件表（端口返回的整份）。大表视图中，相对它新增或改变的控件及其祖先
+   * 排在其余控件之前：动作展开的子项、弹出的菜单项在前序中靠后时，按前序截取不会投递它们，
+   * 模型看不到动作的结果，只能重复动作或重复观察。没有时为 null。
+   */
+  before?: readonly DesktopElement[] | null
   /** 视图只列命中这些条件的控件及其祖先。 */
   filter?: ViewFilter
   /** 控件是否包含 `rect`。缺失时不包含。 */
@@ -226,6 +232,7 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const picked = pickView(
     elements,
     priorityOf(read, targetRef),
+    changedOf(read, input.before ?? null),
     limit - tokensOf(skeleton, ctx.density),
     ctx.density,
     includeRect,
@@ -659,23 +666,27 @@ function jsonlBody(snapshot: DesktopSnapshot): Uint8Array {
 }
 
 /**
- * 大表视图的选取规则：本次动作目标、当前焦点控件及其祖先优先，其余按原始顺序补入，直至达到上限。
+ * 大表视图的选取规则：本次动作目标、当前焦点控件及其祖先优先，其次是动作引起的变化（`changed`），
+ * 其余按原始顺序补入，直至达到上限。
  *
  * 控件不从中间截断：超长的名称与值先保留前缀，超出上限即停止。优先控件一律放入：
- * 目标不在视图中时，模型只能再观察一次。输出按原始顺序；其余部分是原始顺序的前缀，
- * 优先控件连同祖先一起放入，因此视图中每个控件列出的祖先都在视图中，层级可按 `depth`
- * 读出。一个控件的成本包含它首次带入字典的动作表。
+ * 目标不在视图中时，模型只能再观察一次。变化的控件受上限约束：界面整体替换时全部控件都是变化。
+ * 输出按原始顺序；变化的控件与其余部分各是原始顺序的前缀，优先控件与变化的控件都连同祖先放入，
+ * 祖先在前序中先于子控件，因此视图中每个控件列出的祖先都在视图中，层级可按 `depth` 读出。
+ * 一个控件的成本包含它首次带入字典的动作表。
  */
 function pickView(
   elements: readonly DesktopElement[],
   priority: ReadonlySet<string>,
+  changed: ReadonlySet<string>,
   budget: number,
   density: TokenDensity,
   includeRect: boolean,
 ): Packed {
   const queue = [
     ...elements.filter((e) => priority.has(e.ref)),
-    ...elements.filter((e) => !priority.has(e.ref)),
+    ...elements.filter((e) => !priority.has(e.ref) && changed.has(e.ref)),
+    ...elements.filter((e) => !priority.has(e.ref) && !changed.has(e.ref)),
   ]
   const sets = new ActionSets()
   const chosen = new Map<string, CompactElement>()
@@ -728,6 +739,29 @@ function priorityOf(elements: readonly DesktopElement[], targetRef: string | nul
     if (element.focused === true) takeWithAncestors(element)
   }
   return priority
+}
+
+/**
+ * 相对动作前的控件表新增或改变的控件及其祖先。改变按投递形状比较（`rowKey`），与差异投递同一判据。
+ * 没有动作前的表时为空。按端口返回的整份表计算，其中被省略的容器不在视图中。
+ */
+function changedOf(
+  elements: readonly DesktopElement[],
+  before: readonly DesktopElement[] | null,
+): Set<string> {
+  const changed = new Set<string>()
+  if (!before) return changed
+  const was = new Map(before.map((e) => [e.ref, rowKey(e)]))
+  const byRef = new Map(elements.map((e) => [e.ref, e]))
+  for (const element of elements) {
+    if (was.get(element.ref) === rowKey(element)) continue
+    let at: DesktopElement | undefined = element
+    while (at !== undefined && !changed.has(at.ref)) {
+      changed.add(at.ref)
+      at = at.parentRef === undefined ? undefined : byRef.get(at.parentRef)
+    }
+  }
+  return changed
 }
 
 /** 超长的名称与值只保留前 `MAX_TITLE_CHARS` 字，并标明省略的字数。未超长的原样保留。 */
