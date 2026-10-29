@@ -1333,6 +1333,190 @@ describe('画布：操作', () => {
     }
   })
 
+  /** 各列的左右缘与栏的横坐标，按左缘排列；`gaps` 是相邻两列之间的距离。 */
+  const columns = (doc: CanvasDoc) => {
+    const by = new Map<string, { left: number; right: number; lanes: Set<number> }>()
+    for (const n of doc.nodes) {
+      if (n.type === 'timeline' || !n.group) continue
+      const key = n.group.split('/')[0]!
+      const c = by.get(key) ?? { left: Infinity, right: -Infinity, lanes: new Set<number>() }
+      c.left = Math.min(c.left, n.x)
+      c.right = Math.max(c.right, n.x + n.w)
+      c.lanes.add(n.x)
+      by.set(key, c)
+    }
+    return [...by.entries()].sort((a, b) => a[1].left - b[1].left)
+  }
+  const gaps = (doc: CanvasDoc) =>
+    columns(doc).flatMap(([, c], i, all) => (i ? [c.left - all[i - 1]![1].right] : []))
+  const pair = (name: string, group: string, output: 'image' | 'video' = 'image'): CanvasOp[] => [
+    { op: 'add_file', path: `稿/${name}.md`, name: `${name} 提示词`, group },
+    { op: 'add_generate', output, name, group, prompt: `@[${name} 提示词]`, w: 300, h: 169 },
+  ]
+
+  /**
+   * 原始失败形状：《三个书包》第一批中场景、走位的图片卡因参数不合法被跳过，只有提示词卡；补建生成卡后
+   * 道具列的提示词栏被推到生成卡栏的位置再推一次，两栏重叠，场景→道具、走位→镜头为 396 / 819。
+   */
+  test('补建生成卡时右侧各栏只让开一次：同列两栏不重叠，列间距为 48', () => {
+    let doc = apply(emptyCanvas(), [
+      ...pair('程一舟', '角色/程一舟'),
+      { op: 'add_file', path: '稿/宿舍.md', name: '宿舍 提示词', group: '场景/宿舍' },
+      { op: 'add_file', path: '稿/入口.md', name: '入口 提示词', group: '场景/入口' },
+      ...pair('书包', '道具/书包'),
+      ...pair('准考证', '道具/准考证'),
+      { op: 'add_file', path: '稿/走位1.md', name: '走位1 提示词', group: '走位/1' },
+      { op: 'add_file', path: '稿/走位2.md', name: '走位2 提示词', group: '走位/2' },
+      ...pair('1-1', '镜头/1-1', 'video'),
+    ])
+    expect(gaps(doc)).toEqual([48, 48, 48, 48])
+    doc = apply(doc, [
+      {
+        op: 'add_generate',
+        output: 'image',
+        name: '宿舍',
+        group: '场景/宿舍',
+        prompt: '@[宿舍 提示词]',
+        w: 300,
+        h: 169,
+      },
+      {
+        op: 'add_generate',
+        output: 'image',
+        name: '入口',
+        group: '场景/入口',
+        prompt: '@[入口 提示词]',
+        w: 300,
+        h: 169,
+      },
+      {
+        op: 'add_generate',
+        output: 'image',
+        name: '走位1',
+        group: '走位/1',
+        prompt: '@[走位1 提示词]',
+        w: 300,
+        h: 169,
+      },
+      {
+        op: 'add_generate',
+        output: 'image',
+        name: '走位2',
+        group: '走位/2',
+        prompt: '@[走位2 提示词]',
+        w: 300,
+        h: 169,
+      },
+    ])
+    expect(gaps(doc)).toEqual([48, 48, 48, 48])
+    for (const [, c] of columns(doc)) expect(c.lanes.size).toBe(2)
+    for (const a of doc.nodes) {
+      for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+    }
+  })
+
+  /** 原始失败形状：「你好」删除镜头列全部 12 张提示词卡后，生成卡栏留在原处，左侧空出一栏（48 → 396）。 */
+  test('删除使一栏或一列清空时，右侧各栏左移，不留空栏', () => {
+    let doc = apply(emptyCanvas(), [
+      ...pair('林远', '角色/林远'),
+      ...pair('旧书店', '场景/旧书店'),
+      ...pair('1-1', '镜头/1-1', 'video'),
+      ...pair('1-2', '镜头/1-2', 'video'),
+    ])
+    doc = apply(doc, [
+      { op: 'remove', id: '1-1 提示词' },
+      { op: 'remove', id: '1-2 提示词' },
+    ])
+    expect(gaps(doc)).toEqual([48, 48])
+    doc = apply(doc, [
+      { op: 'remove', id: '旧书店 提示词' },
+      { op: 'remove', id: '旧书店' },
+    ])
+    expect(columns(doc).map(([k]) => k)).toEqual(['角色', '镜头'])
+    expect(gaps(doc)).toEqual([48])
+  })
+
+  /** 原始失败形状：「你好」先建 8 张图片卡，再补提示词卡并改为引用，提示词卡全部排在图片卡下方。 */
+  test('后补的提示词卡排在已有生成卡左侧同一行，生成卡一栏与右侧各列让开', () => {
+    const card = (name: string, group: string): CanvasOp => ({
+      op: 'add_generate',
+      output: 'image',
+      name,
+      group,
+      prompt: name,
+      w: 300,
+      h: 169,
+    })
+    let doc = apply(emptyCanvas(), [
+      card('林远', '角色/林远'),
+      card('爷爷', '角色/爷爷'),
+      card('旧皮箱', '道具/旧皮箱'),
+      ...pair('1-1', '镜头/1-1', 'video'),
+    ])
+    const label = (name: string, group: string): CanvasOp[] => [
+      { op: 'add_file', path: `稿/${name}.md`, name: `${name} 提示词`, group },
+      { op: 'update', id: name, prompt: `@[${name} 提示词]` },
+    ]
+    doc = apply(doc, [...label('爷爷', '角色/爷爷'), ...label('林远', '角色/林远')])
+    doc = apply(doc, label('旧皮箱', '道具/旧皮箱'))
+    const at = (name: string) => doc.nodes.find((n) => n.type !== 'timeline' && n.name === name)!
+    for (const name of ['林远', '爷爷', '旧皮箱']) {
+      const media = at(name)
+      const prompt = at(`${name} 提示词`)
+      expect(prompt.y).toBe(media.y)
+      expect(media.x - prompt.x - prompt.w).toBe(48)
+    }
+    expect(gaps(doc)).toEqual([48, 48])
+    for (const a of doc.nodes) {
+      for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+    }
+  })
+
+  /**
+   * 原始失败形状：已经存在的大列间距在 arrange 之后保持不变（「你好」1481 / 437），模型只能手写坐标。
+   * 自动的视频列重排不移动用户拖开的列。
+   */
+  test('显式 arrange 之后该列及右侧各列向左靠拢；补镜头的自动重排不靠拢', () => {
+    let doc = apply(emptyCanvas(), [
+      ...pair('林远', '角色/林远'),
+      ...pair('1-1', '镜头/1-1', 'video'),
+      ...pair('1-2', '镜头/1-2', 'video'),
+    ])
+    const shift = 2000
+    doc = apply(
+      doc,
+      doc.nodes
+        .filter((n) => n.type !== 'timeline' && n.group?.startsWith('镜头'))
+        .map((n) => ({ op: 'update', id: n.id, x: n.x + shift }) as CanvasOp),
+    )
+    expect(gaps(doc)).toEqual([48 + shift])
+    doc = apply(doc, pair('2-1', '镜头/2-1', 'video'))
+    expect(gaps(doc)).toEqual([48 + shift])
+    doc = apply(doc, [{ op: 'arrange', group: '镜头', perColumn: 6 }])
+    expect(gaps(doc)).toEqual([48])
+  })
+
+  /** 原始失败形状：开发版验收中 arrange 把镜头列靠拢后，时间线仍留在远处，模型只能用 update 的 x 手动移过去。 */
+  test('显式 arrange 之后时间线作为单独一列一并靠拢；界面放置的无组卡不动', () => {
+    let doc = apply(emptyCanvas(), [
+      ...pair('林远', '角色/林远'),
+      ...pair('1-1', '镜头/1-1', 'video'),
+      { op: 'add_timeline', name: '成片' },
+    ])
+    doc = apply(
+      doc,
+      doc.nodes
+        .filter((n) => n.type === 'timeline' || n.group?.startsWith('镜头'))
+        .map((n) => ({ op: 'update', id: n.id, x: n.x + 2000 }) as CanvasOp),
+    )
+    doc = apply(doc, [{ op: 'add_file', path: '稿/备忘.md', name: '备忘', x: 9000, y: 0 }])
+    doc = apply(doc, [{ op: 'arrange', group: '镜头', perColumn: 6 }])
+    const at = (name: string) => doc.nodes.find((n) => n.name === name)!
+    const shots = doc.nodes.filter((n) => n.type !== 'timeline' && n.group?.startsWith('镜头'))
+    expect(at('成片').x).toBe(Math.max(...shots.map((n) => n.x + n.w)) + 48)
+    expect(at('备忘').x).toBe(9000)
+  })
+
   /**
    * 原始失败形状：镜头按场景分列，2-1、4-1 被单独排到右侧，剧情顺序被打散；九个镜头排成一根长列。
    * 视频列按镜号的数字顺序排行，满 6 行在右侧另起一栏；图片列不换栏。

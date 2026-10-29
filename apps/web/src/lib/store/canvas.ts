@@ -11,7 +11,16 @@ import type {
   MediaOutput,
   MediaQuote,
 } from '@qywork/core'
+import { createSignal } from 'solid-js'
 import { client } from './connection.ts'
+
+/**
+ * 大模型请求导出、尚未由画布页签接手的时间线（`canvas.export`）。打开该画布的页签读取完成后取走并执行导出；
+ * 服务端以导出会话完成作为结果，取走之后的成败不在此记录。
+ */
+export const [exportRequests, setExportRequests] = createSignal<
+  readonly { path: string; nodeId: string }[]
+>([])
 
 /** 从文件树拖出一行时携带的数据类型，值为工作区相对路径。画布据此将拖入的文件添加为节点。 */
 export const WORKSPACE_PATH_TYPE = 'application/x-qywork-path'

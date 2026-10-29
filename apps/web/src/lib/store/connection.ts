@@ -27,6 +27,8 @@ import { createEffect, createRoot, createSignal } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
+import { setExportRequests } from './canvas.ts'
+import { openFileInPanel } from './files.ts'
 import {
   type ChangeStep,
   type ChangesView,
@@ -337,6 +339,13 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     if (ev.workspaceId === workspace()?.id) setState('canvasVersion', (n) => n + 1)
     return
   }
+  // 大模型请求导出时间线：登记请求并打开该画布，画布页签读取完成后取走请求、执行与「导出」按钮相同的导出。
+  if (ev.type === 'canvas.export') {
+    if (ev.workspaceId !== workspace()?.id) return
+    setExportRequests((all) => [...all, { path: ev.path, nodeId: ev.nodeId }])
+    openFileInPanel(ev.path)
+    return
+  }
 
   const from = frame.conversationId
   // 没有归属的是工作区级事件（如 git 状态），按当前会话处理。
@@ -537,6 +546,15 @@ function foldContent(cid: string, ev: AgentEvent): void {
         )
       )
         invalidateExtensions()
+      // 只为用户正在查看的会话打开面板：其他会话的工具卡不在屏幕上，面板突然切换会打断用户。
+      if (
+        ev.status === 'success' &&
+        cid === state.activeConversation &&
+        state.views[cid]?.transcript.find((item) => item.id === ev.stepId)?.toolName ===
+          'open_in_panel' &&
+        typeof ev.outcome.data?.path === 'string'
+      )
+        openFileInPanel(ev.outcome.data.path)
       setState(
         produce((s) => {
           const v = s.views[cid]

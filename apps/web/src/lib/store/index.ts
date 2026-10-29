@@ -20,6 +20,7 @@ export {
   editCanvas,
   exportAbort,
   exportFinish,
+  exportRequests,
   exportStart,
   exportWrite,
   importToCanvas,
@@ -28,6 +29,7 @@ export {
   restoreCanvas,
   retrieveCard,
   runCard,
+  setExportRequests,
   uploadToCanvas,
   WORKSPACE_PATH_TYPE,
 } from './canvas.ts'

@@ -94,6 +94,14 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line: '- 画布取帧：从视频卡的某一时刻截取一帧作为图片卡使用 capture_canvas_frame，与界面中的取帧相同。',
   },
   {
+    tool: 'export_timeline',
+    line: '- 时间线导出：把画布上的时间线导出为成片使用 export_timeline，与界面中的「导出」相同，完成后返回成片路径。',
+  },
+  {
+    tool: 'open_in_panel',
+    line: '- 打开文件：用户要求打开或查看工作区中的画布、网页、图片、视频或文档时，用 open_in_panel 在界面右侧面板打开，与用户点击文件链接相同。',
+  },
+  {
     tool: 'browser_tabs',
     line: '- 内置浏览器：browser_tabs、browser_navigate、browser_observe、browser_act 操作应用内置的浏览器。打开的页面以页签显示在界面右侧面板中，用户可以直接看到；打开网页或本地 HTML 供用户查看或核对时使用它。',
   },

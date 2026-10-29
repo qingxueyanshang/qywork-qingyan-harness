@@ -58,7 +58,13 @@ export function arrangeNew(doc: CanvasDoc, pending: readonly string[]): void {
     // 新开生成卡一栏时同样让开：右侧的列此前紧挨着提示词一栏。
     // 必须先于下方的移动：右侧一列尚未让开时与新卡横向重叠，会被当作下方的节点一起下移。
     const lane = laneRight(doc, node, at.x)
-    if (lane !== null && at.x + size.w > lane) {
+    if (at.media) {
+      // 提示词卡占据生成卡此前所在的位置：生成卡一栏连同右侧各列让开，与新开生成卡一栏时相同。
+      // 放入已有的提示词一栏时不移动。
+      if (at.x === at.media.x) {
+        follow(doc, node, { x: at.x - CARD_GAP, y: at.y, w: 0, h: size.h }, 'right')
+      }
+    } else if (lane !== null && at.x + size.w > lane) {
       follow(doc, node, { x: at.x, y: at.y, w: lane - at.x, h: size.h }, 'right')
     } else if (lane === null && at.label) {
       follow(doc, node, { x: at.x - CARD_GAP, y: at.y, w: 0, h: size.h }, 'right')
@@ -66,9 +72,10 @@ export function arrangeNew(doc: CanvasDoc, pending: readonly string[]): void {
     // 插在同一对象之后：相当于上方多出这张卡与一个间距。以插入点上方一个间距处、高为 0 的框为原框，
     // 下方的节点（含界面放置的节点）按原间距下移，同列的卡仍相隔 `CARD_GAP`。
     if (at.insert) follow(doc, node, { x: at.x, y: at.y - CARD_GAP, w: size.w, h: 0 }, 'down')
-    // 排在提示词右侧且比它高：这一行变高，下方各行按差值下移。
-    if (at.label && size.h > at.label.h) {
-      follow(doc, node, { x: at.x, y: at.y, w: size.w, h: at.label.h }, 'down')
+    // 与同行的另一张卡成行且比它高：这一行变高，下方各行按差值下移。
+    const row = at.label ?? at.media
+    if (row && size.h > row.h) {
+      follow(doc, node, { x: at.x, y: at.y, w: size.w, h: row.h }, 'down')
     }
     const spot = freeSpot(doc, { ...size, x: node.x, y: node.y }, node)
     node.x = spot.x
@@ -148,14 +155,15 @@ function mediaX(doc: CanvasDoc, members: readonly CanvasNode[]): number {
 }
 
 /**
- * 新卡的位置。提示词卡已排好、还没有配对的生成卡时排在它右侧的同一行（`label`）；本对象已有卡时插在其最下方一行之后
- * （`insert`，下方的节点由 `arrangeNew` 下移）；本列已有卡时接在列的末尾；否则在全部已有内容右侧另起一列，
- * 空画布从原点开始。列中有提示词卡时，提示词排在左栏，其他卡排在生成卡一栏。
+ * 新卡的位置。提示词卡已排好、还没有配对的生成卡时排在它右侧的同一行（`label`）；生成卡已排好、提示词卡后补时排在它左侧的
+ * 同一行（`media`）：左侧已有提示词一栏时放入该栏，否则占据生成卡的位置，由 `arrangeNew` 使生成卡一栏及右侧各列让开。
+ * 本对象已有卡时插在其最下方一行之后（`insert`，下方的节点由 `arrangeNew` 下移）；本列已有卡时接在列的末尾；
+ * 否则在全部已有内容右侧另起一列，空画布从原点开始。列中有提示词卡时，提示词排在左栏，其他卡排在生成卡一栏。
  */
 function spotOf(
   doc: CanvasDoc,
   node: CanvasNode,
-): { x: number; y: number; insert: boolean; label?: CanvasNode } {
+): { x: number; y: number; insert: boolean; label?: CanvasNode; media?: CanvasNode } {
   const others = doc.nodes.filter((n) => n !== node && placed(n))
   const column = columnOf(node)
   const members = column === undefined ? [] : others.filter((n) => columnOf(n) === column)
@@ -163,6 +171,10 @@ function spotOf(
     const label = labelOf(doc, node)
     if (label && members.includes(label) && !members.some((m) => labelOf(doc, m) === label)) {
       return { x: mediaX(doc, members), y: label.y, insert: false, label }
+    }
+    const media = members.find((m) => labelOf(doc, m) === node)
+    if (media && !members.some((m) => isLabel(doc, m) && m.y === media.y && m.x < media.x)) {
+      return { x: labelLaneOf(doc, members, media) ?? media.x, y: media.y, insert: false, media }
     }
     const subject = subjectOf(node)
     const same = subject === undefined ? [] : members.filter((n) => subjectOf(n) === subject)
@@ -185,6 +197,18 @@ function spotOf(
 
 function lowest(boxes: readonly Box[]): Box {
   return boxes.reduce((a, b) => (b.y + b.h > a.y + a.h ? b : a))
+}
+
+/**
+ * 紧挨在 `media` 左侧的提示词一栏的横坐标：右缘加一个间距恰好到达 `media` 的栏。没有时为 `undefined`。
+ * 视频列分为多栏时每栏各有一组提示词与生成卡，按右缘定位才能取到同一栏的提示词。
+ */
+function labelLaneOf(
+  doc: CanvasDoc,
+  members: readonly CanvasNode[],
+  media: CanvasNode,
+): number | undefined {
+  return members.find((m) => isLabel(doc, m) && m.x + m.w + CARD_GAP === media.x)?.x
 }
 
 /** 从 `box` 开始向下查找 `self` 的空位：与已排位的其他节点相交时移到该节点下方相隔 `CARD_GAP` 处。 */
@@ -245,11 +269,13 @@ export function keepSpacing(doc: CanvasDoc, resized: readonly Resized[]): void {
 }
 
 /**
- * 带组的卡被删除或移到其他组之后，同列中紧挨在空位下方的卡上移，不留空位。`vacated` 为空出的框，未排位的跳过。
+ * 带组的卡被删除或移到其他组之后，同列中紧挨在空位下方的卡上移，不留空位；一栏因此不再有卡时，右侧各栏左移，
+ * 不留空栏。`vacated` 为空出的框，未排位的跳过。
  *
  * 每个空位以其上方一个间距处、高为 0、带原组的框代替原卡，下方的节点按 `follow` 的收回规则移动，与卡片变小时相同；
  * 带原组使同列另一栏的卡一起上移，提示词与生成卡仍成行。间距大于 `CARD_GAP` 的节点不动。
  * 空位自下而上处理：同一列中先处理上方的空位时，下方空位之下的卡与它不相邻，不会移回。
+ * 空栏以其左侧一个间距处、宽为 0 的框代替，右侧的节点同样按 `follow` 的收回规则移动，自右向左处理。
  */
 export function closeGaps(doc: CanvasDoc, vacated: readonly Vacated[]): void {
   const gaps = vacated.filter((b) => placed(b)).sort((a, b) => b.y - a.y)
@@ -264,6 +290,28 @@ export function closeGaps(doc: CanvasDoc, vacated: readonly Vacated[]): void {
     }
     doc.nodes.push(gap)
     follow(doc, gap, box, 'down')
+    doc.nodes.pop()
+  }
+  const lanes = new Map<string, Vacated>()
+  for (const box of gaps) {
+    if (box.group === undefined) continue
+    const column = columnOfGroup(box.group)
+    if (doc.nodes.some((n) => placed(n) && n.x === box.x && columnOf(n) === column)) continue
+    const key = `${column}\n${box.x}`
+    const lane = lanes.get(key)
+    if (!lane || box.w > lane.w) lanes.set(key, box)
+  }
+  for (const box of [...lanes.values()].sort((a, b) => b.x - a.x)) {
+    const gap: CanvasNode = {
+      ...ghost(),
+      ...(box.group === undefined ? {} : { group: box.group }),
+      x: box.x - CARD_GAP,
+      y: box.y,
+      w: 0,
+      h: box.h,
+    }
+    doc.nodes.push(gap)
+    follow(doc, gap, box, 'right')
     doc.nodes.pop()
   }
 }
@@ -375,6 +423,41 @@ function settle(doc: CanvasDoc, cards: readonly CanvasNode[], was: Box): void {
   doc.nodes = all
 }
 
+/**
+ * 显式 arrange 之后的列间靠拢：左缘不小于 `from` 的带组的各栏与时间线自左向右依次左移，与左侧最近的卡相隔 `CARD_GAP`。
+ *
+ * `settle` 只收回原间距不超过 `CARD_GAP` 的节点，已经存在的大间距在重排之后保持不变；整理布局时由此消除。
+ * 每条时间线单独成一栏（时间线单独占一列）；不带组的其他节点是界面放置的卡，不移动。
+ * 左侧的卡带组时一律作为界限（各列向下生长），不带组时只在纵向重叠时作为界限。栏只左移不右移，
+ * 左侧没有卡的栏不动。只在显式 arrange 之后执行：自动的视频列重排执行它时，每补一个镜头都会移动用户拖开的列。
+ */
+export function packLanes(doc: CanvasDoc, from: number): void {
+  const lanes = new Map<string, CanvasNode[]>()
+  for (const n of doc.nodes) {
+    const column = columnOf(n)
+    if (!placed(n) || n.x < from) continue
+    if (column === undefined && n.type !== 'timeline') continue
+    const key = column === undefined ? `\n${n.id}` : `${column}\n${n.x}`
+    lanes.set(key, [...(lanes.get(key) ?? []), n])
+  }
+  for (const lane of [...lanes.values()].sort((a, b) => a[0]!.x - b[0]!.x)) {
+    const x = lane[0]!.x
+    const top = Math.min(...lane.map((n) => n.y))
+    const bottom = Math.max(...lane.map((n) => n.y + n.h))
+    const left = doc.nodes.filter(
+      (n) =>
+        placed(n) &&
+        !lane.includes(n) &&
+        n.x + n.w <= x &&
+        (groupOf(n) !== undefined || spans(n.y, n.h, top, bottom - top)),
+    )
+    if (!left.length) continue
+    const to = Math.max(...left.map((n) => n.x + n.w)) + CARD_GAP
+    if (to >= x) continue
+    for (const n of lane) n.x = to
+  }
+}
+
 /** 只在排位计算中临时加入文档的框：id 为空，不与任何节点的 id 相同，计算结束即移除。 */
 function ghost(): CanvasNode {
   return { id: '', type: 'file', path: '', x: 0, y: 0, w: 0, h: 0 }
@@ -420,7 +503,7 @@ function follow(doc: CanvasDoc, changed: CanvasNode, was: Box, along: 'right' | 
   const done = new Set<string>()
   for (const n of ahead) {
     if (done.has(n.id)) continue
-    const unit = right ? columnMates(doc, n) : [n]
+    const unit = right ? columnMates(doc, n, origin) : [n]
     for (const b of unit) done.add(b.id)
     let shift = Number.NEGATIVE_INFINITY
     let attached = false
@@ -443,9 +526,67 @@ function follow(doc: CanvasDoc, changed: CanvasNode, was: Box, along: 'right' | 
   }
 }
 
-/** 与 `n` 同列且横坐标相同的节点（含 `n`）；没有组的节点单独移动。 */
-function columnMates(doc: CanvasDoc, n: CanvasNode): CanvasNode[] {
+/**
+ * 移动之前与 `n` 同列且横坐标相同的节点（含 `n`）；没有组的节点单独移动。
+ *
+ * 必须按移动之前的坐标（`origin`）判定：同列先处理的一栏右移后可能恰好落在另一栏的横坐标上，
+ * 按当前坐标判定时它会被当作后一栏的成员再移一次，两栏重叠且右侧各列被多推一段。
+ */
+function columnMates(
+  doc: CanvasDoc,
+  n: CanvasNode,
+  origin: ReadonlyMap<string, Box>,
+): CanvasNode[] {
   const column = columnOf(n)
   if (column === undefined) return [n]
-  return doc.nodes.filter((m) => placed(m) && m.x === n.x && columnOf(m) === column)
+  const x = origin.get(n.id)!.x
+  return doc.nodes.filter((m) => placed(m) && origin.get(m.id)?.x === x && columnOf(m) === column)
+}
+
+/** 画布按列的布局摘要：读取与修改画布的回执据此写明各列位置与列间距，模型据此核对布局。 */
+export interface CanvasLayout {
+  /**
+   * 带组的卡按列汇总，每条时间线单独成一列（`column` 为「时间线 名称」），按左缘排列。
+   * `gap` 是与左侧一列右缘的距离，第一列没有；正常为 `CARD_GAP`。
+   */
+  columns: {
+    column: string
+    left: number
+    right: number
+    lanes: number[]
+    cards: number
+    gap?: number
+  }[]
+  /** 相交（计入标题行）的两张卡。 */
+  overlaps: [CanvasNode, CanvasNode][]
+  /** 没有组的卡：界面放置的卡。 */
+  loose: CanvasNode[]
+}
+
+export function layoutOf(doc: CanvasDoc): CanvasLayout {
+  const shown = doc.nodes.filter((n) => placed(n))
+  const by = new Map<string, CanvasNode[]>()
+  for (const n of shown) {
+    const column = n.type === 'timeline' ? `时间线 ${n.name}` : columnOf(n)
+    if (column !== undefined) by.set(column, [...(by.get(column) ?? []), n])
+  }
+  const columns: CanvasLayout['columns'] = [...by.entries()]
+    .map(([column, cards]) => ({
+      column,
+      left: Math.min(...cards.map((n) => n.x)),
+      right: Math.max(...cards.map((n) => n.x + n.w)),
+      lanes: [...new Set(cards.map((n) => n.x))].sort((a, b) => a - b),
+      cards: cards.length,
+    }))
+    .sort((a, b) => a.left - b.left)
+    .map((c, i, all) => (i ? { ...c, gap: c.left - all[i - 1]!.right } : c))
+  const overlaps: [CanvasNode, CanvasNode][] = []
+  for (const [i, a] of shown.entries()) {
+    for (const b of shown.slice(i + 1)) if (intersects(a, b)) overlaps.push([a, b])
+  }
+  return {
+    columns,
+    overlaps,
+    loose: shown.filter((n) => n.type !== 'timeline' && columnOf(n) === undefined),
+  }
 }

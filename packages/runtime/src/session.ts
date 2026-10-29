@@ -347,6 +347,8 @@ export class Session {
       browser: opts.browser !== undefined,
       desktop: opts.desktop !== undefined,
       canvas: mediaOn && opts.canvas !== undefined,
+      // 画布端口只由服务端注入，与生成开关无关；成员会话的工具卡不显示在当前会话中。
+      panel: opts.canvas !== undefined && opts.member !== true,
       office: opts.office !== undefined,
       videoDecoder: opts.office?.videoDecoder === true,
       // 生成工具按已配置模型的类别注册；与其他内置工具规则相同，角色的 allowedTools 指定工具时按指定的工具过滤。

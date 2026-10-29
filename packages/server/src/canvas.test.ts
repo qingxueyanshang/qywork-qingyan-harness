@@ -591,6 +591,78 @@ describe('画布服务：时间线导出', () => {
     expect((await failure(svc.exportFinish(root, id))).status).toBe(404)
   })
 
+  /**
+   * 原始失败形状：用户要求「合并时间线并导出」，画布工具写明「本工具无法完成」，模型操控 qywork 自身的界面点击导出，
+   * 期间误点「取消导出」。大模型发起的导出由界面以现有的导出会话完成。
+   */
+  test('大模型请求导出：向界面发出 canvas.export，界面的导出会话完成即返回成片；重复请求等待同一次，另一界面不能再认领', async () => {
+    const root = await workspace()
+    const events: AgentEvent[] = []
+    const svc = new CanvasService({ publish: (e) => events.push(e) })
+    await mkdir(join(root, 'generated'), { recursive: true })
+    await writeFile(join(root, 'generated', 'a.mp4'), MP4)
+    const { refs } = await svc.apply(root, PATH, [
+      { op: 'add_timeline', ref: '$t', name: '粗剪', x: 0, y: 400, clips: [] },
+      { op: 'add_file', ref: '$v', path: 'generated/a.mp4', x: 0, y: 0 },
+    ])
+    const ws = { id: 'w1', root }
+    expect((await failure(svc.requestExport(ws, PATH, refs.$t!))).message).toBe('时间线中没有片段')
+    expect((await failure(svc.requestExport(ws, PATH, refs.$v!))).status).toBe(422)
+    await svc.apply(root, PATH, [
+      { op: 'update', id: refs.$t!, clips: [{ path: 'generated/a.mp4', in: 0, out: 2 }] },
+    ])
+    const asked = svc.requestExport(ws, PATH, refs.$t!)
+    const again = svc.requestExport(ws, PATH, refs.$t!)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(events.filter((e) => e.type === 'canvas.export')).toEqual([
+      { type: 'canvas.export', workspaceId: 'w1', path: PATH, nodeId: refs.$t! },
+    ])
+    const id = await svc.exportStart(root, PATH, refs.$t!)
+    expect((await failure(svc.exportStart(root, PATH, refs.$t!))).status).toBe(409)
+    await svc.exportWrite(root, id, 0, MP4)
+    const landed = await svc.exportFinish(root, id)
+    expect(await asked).toEqual(landed)
+    expect(await again).toEqual(landed)
+    expect(landed.path).toBe('generated/粗剪.mp4')
+    // 请求已结束：界面之后自行导出不受影响。
+    await svc.exportAbort(root, await svc.exportStart(root, PATH, refs.$t!))
+  })
+
+  test('大模型请求导出：没有界面开始导出时超时失败；界面放弃导出时失败；中止只结束等待，导出照常完成', async () => {
+    const root = await workspace()
+    const svc = new CanvasService({ publish: () => {}, exportClaimMs: 30 })
+    await mkdir(join(root, 'generated'), { recursive: true })
+    await writeFile(join(root, 'generated', 'a.mp4'), MP4)
+    const { refs } = await svc.apply(root, PATH, [
+      {
+        op: 'add_timeline',
+        ref: '$t',
+        name: '粗剪',
+        x: 0,
+        y: 400,
+        clips: [{ path: 'generated/a.mp4', in: 0, out: 2 }],
+      },
+    ])
+    const ws = { id: 'w1', root }
+    expect((await failure(svc.requestExport(ws, PATH, refs.$t!))).message).toContain(
+      '没有界面开始导出',
+    )
+
+    const dropped = failure(svc.requestExport(ws, PATH, refs.$t!))
+    await new Promise((r) => setTimeout(r, 5))
+    await svc.exportAbort(root, await svc.exportStart(root, PATH, refs.$t!))
+    expect((await dropped).message).toContain('导出失败或被取消')
+
+    const stop = new AbortController()
+    const left = failure(svc.requestExport(ws, PATH, refs.$t!, stop.signal))
+    await new Promise((r) => setTimeout(r, 5))
+    const id = await svc.exportStart(root, PATH, refs.$t!)
+    stop.abort()
+    expect((await left).message).toContain('界面中的导出照常进行')
+    await svc.exportWrite(root, id, 0, MP4)
+    expect((await svc.exportFinish(root, id)).path).toBe('generated/粗剪.mp4')
+  })
+
   test('启动时删除上一个进程被结束时遗留的导出临时文件；进行中会话的与生成落盘的 .part 保留', async () => {
     const { root, svc, timeline } = await withTimeline()
     const live = await svc.exportStart(root, PATH, timeline)

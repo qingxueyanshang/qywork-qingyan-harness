@@ -20,6 +20,7 @@ import {
 } from '@qywork/agent'
 import {
   ART_SIZE_PARAM,
+  CARD_GAP,
   type CanvasBatchRunResult,
   type CanvasNode,
   type CanvasOp,
@@ -32,6 +33,7 @@ import {
   displayNameOf,
   frameLabel,
   imageSizeOf,
+  layoutOf,
   parseCanvasOps,
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
@@ -151,6 +153,38 @@ function countsLine(view: CanvasView): string {
   return `画布 ${view.path}：${view.doc.nodes.length} 个节点，${view.doc.edges.length} 条连线`
 }
 
+/** 重叠卡片最多列出的对数；其余只写总数。 */
+const MAX_OVERLAPS = 10
+
+/**
+ * 按列的布局：每列一行，写明横坐标范围、各栏的横坐标、卡片数与左侧一列的间距，另列没有组的节点与重叠的卡。
+ * 不要省略：回执没有坐标时模型无法核对布局，只能声称核对过。行数随列数增长，不随卡片数增长。
+ */
+function layoutLines(view: CanvasView): string[] {
+  const { columns, overlaps, loose } = layoutOf(view.doc)
+  if (!columns.length && !loose.length) return []
+  const lines = ['布局（按列从左到右）：']
+  for (const [i, c] of columns.entries()) {
+    const gap =
+      c.gap === undefined
+        ? ''
+        : `；与左侧「${columns[i - 1]!.column}」相距 ${c.gap}${c.gap === CARD_GAP ? '' : `，应为 ${CARD_GAP}`}`
+    lines.push(
+      `- 列「${c.column}」：x ${c.left}–${c.right}，${c.lanes.length} 栏（x=${c.lanes.join('、')}），${c.cards} 张卡${gap}`,
+    )
+  }
+  for (const n of loose) lines.push(`- 没有组：「${displayNameOf(n)}」位于 x ${n.x}、y ${n.y}`)
+  if (overlaps.length) {
+    const shown = overlaps
+      .slice(0, MAX_OVERLAPS)
+      .map(([a, b]) => `「${displayNameOf(a)}」与「${displayNameOf(b)}」`)
+    lines.push(
+      `- 重叠 ${overlaps.length} 处：${shown.join('、')}${overlaps.length > MAX_OVERLAPS ? ' 等' : ''}`,
+    )
+  }
+  return lines
+}
+
 /**
  * 读取的回执。未指定节点时为概况：每张卡一行，生成卡只写提示词字数，另列全部连线；
  * 指定节点时为这些节点的全文。不要恢复为默认列出全部提示词：二十张卡的回执达数万字，
@@ -169,6 +203,7 @@ function describe(view: CanvasView, ids?: readonly string[]): string {
     countsLine(view),
     ...view.doc.nodes.map((n) => overviewLine(view, n)),
     ...edgeLines(view),
+    ...layoutLines(view),
     '生成卡的提示词全文用 read_canvas 的 node 按卡片名称读取。',
   ].join('\n')
 }
@@ -184,7 +219,7 @@ function paramsText(params: Record<string, unknown>): string {
 const CANVAS_NOTE =
   '画布是工作区里的 *.canvas.json，只引用工作区文件：file 节点是一个文件路径，' +
   'generate 节点是一张生成卡（输出类别、提示词、模型、参数与历次结果），timeline 节点是一条视频时间线' +
-  '（clips 按顺序首尾相接，每段 {"path":"视频路径","in":起始秒,"out":结束秒}，只引用、不修改源文件；成片须由用户在界面上点击导出，本工具无法完成）。连线将素材连接到生成卡，用途 role 为 ' +
+  '（clips 按顺序首尾相接，每段 {"path":"视频路径","in":起始秒,"out":结束秒}，只引用、不修改源文件；导出成片用 export_timeline）。连线将素材连接到生成卡，用途 role 为 ' +
   'reference（参考图）、first_frame / last_frame（首尾帧，不能与参考素材同时提供）、video（参考视频）、audio（参考音频）、' +
   'text（文本卡）。' +
   '文本卡是放上画布的 .md / .txt：生成卡的提示词写 @[文本卡名称]，运行时展开为文件当前的内容，' +
@@ -195,7 +230,7 @@ const CANVAS_NOTE =
   'start 与 end 逐字照抄原文，只取要发送的文字本身，不含标题行与代码块的围栏行；文档不需要为此改写。' +
   '生成卡的提示词取自工作区中的文档时（剧本、要求、制作稿中的镜头提示词），优先为该段建摘录卡并引用，而不是复制文字：复制的文字不随文档的修改而更新。' +
   '每段一张摘录卡，name 写该段的用途（如「1-1 视频提示词」），group 与引用它的生成卡相同：画布把摘录卡排在该生成卡左侧的同一行。' +
-  '文本的连线即引用：写入引用自动连线，删除引用自动断开。' +
+  '文本的连线即引用：写入引用自动连线，删除引用自动断开；用 connect 连接文本卡而提示词中尚未引用它时，在提示词末尾插入该卡的引用，发送时展开为该段全文。' +
   '文件不存在或摘录无法定位（after、start、end 被改动或不再唯一）时引用它的卡不能运行，读取画布时标为引用失效；' +
   '修改文档后按回执中的原因用 update 给出新的 excerpt。' +
   'output 为 art 的生成卡由对话模型写出一个 HTML 页面（3D 白模、动画、前端设计稿），产物是 generated/ 下的 .html，' +
@@ -246,7 +281,8 @@ export const readCanvasTool: ToolSpec = {
   description:
     '读取画布。' +
     CANVAS_NOTE +
-    '提供 path 时返回概况：每张卡一行（名称、组、模型、版本、状态即正常、文件缺失、未生成、生成中、待取回或失败、参数、输入与提示词字数）与全部连线；' +
+    '提供 path 时返回概况：每张卡一行（名称、组、模型、版本、状态即正常、文件缺失、未生成、生成中、待取回或失败、参数、输入与提示词字数）、全部连线与按列的布局' +
+    '（各列的横坐标范围、各栏的横坐标、与左侧一列的间距、重叠的卡；edit_canvas 的回执同样附上）；' +
     '同时提供 node 时返回这些卡的全文（提示词、参数、输入、已提交的任务）。省略 path 时列出工作区里的画布。' +
     'render 列出设计稿卡（art 生成卡或 .html 文件卡）时，在内置浏览器的隐藏页中按页面声明的尺寸渲染，' +
     '附上截图并列出页面脚本报错；界面不受影响。',
@@ -427,6 +463,7 @@ function editReceipt(
     if (moved.length) lines.push(`位置或尺寸改变：${moved.join('、')}`)
     if (result.removed.length)
       lines.push(`删除：${result.removed.map((n) => `「${n}」`).join('、')}`)
+    lines.push(...layoutLines(view))
     lines.push(`${countsLine(view)}；未改动的卡用 read_canvas 的 node 按名称读取全文。`)
   }
   return lines.join('\n')
@@ -504,9 +541,9 @@ export const editCanvasTool: ToolSpec = {
     '{"op":"order_inputs","id":"生成卡名称","inputs":["素材卡片名称",…]}（按新顺序列出该卡的全部输入，含同批 connect 新连的素材）、' +
     '{"op":"remove","id":"卡片名称或连线 id"}（删除某一版时另加 "version"；删除卡片后同一列中其下方的卡上移，不留空位）、{"op":"set_mode","id":"视频卡名称","mode":"reference|first_last"}、' +
     '{"op":"arrange","group":"组名"} 或 {"op":"arrange","ids":["卡片名称",…]}（按卡片名称排成网格，名称中的数字按数值排序，P2 在 P10 之前；' +
-    '"perRow" 为每行张数，缺省 4，按 group 排列时组内的摘录卡一并排列并计入张数；网格从这些卡原来所占区域的左上角开始，右侧与下方的卡随之让开；在本批其他操作之后执行，同一批新增的卡同样参与）、' +
+    '"perRow" 为每行张数，缺省 4，按 group 排列时组内的摘录卡一并排列并计入张数；网格从这些卡原来所占区域的左上角开始，右侧与下方的卡随之让开；在本批其他操作之后执行，同一批新增的卡同样参与；只用于逐页排列，不用于人物、场景、道具、镜头等按列排列的卡）、' +
     '{"op":"arrange","group":"镜头","perColumn":7}（把该组所在的列按行重排：摘录卡排在左侧、生成卡排在右侧，按对象名的数字顺序每栏 perColumn 行，满了在右侧另起一栏；' +
-    '视频列之后补卡沿用这一行数；用户要求视频每列几行时使用）、' +
+    '视频列之后补卡沿用这一行数；用户要求视频每列几行时使用）。两种 arrange 之后，排列区域及其右侧各列向左靠拢，与左侧相隔一个间距、' +
     '{"op":"add_timeline","name":"…","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）。' +
     '引用卡片时写卡片名称（读取回执中的 id 同样可用）；同一张画布中卡片名称不能重复，同一文件只放一张整篇的卡，同一段只放一张摘录卡；' +
     '同一批中先删除的卡让出其名称与文件，之后的操作可以使用。' +
@@ -521,8 +558,9 @@ export const editCanvasTool: ToolSpec = {
     '镜头不超过 24 个时每栏 6 行，不超过 35 个时 7 行，更多时 8 行。分镜图（图片）写「分镜/镜号」，与人物、场景等图片列一样不换栏。' +
     '图片等其他列的卡按创建顺序自上而下，后补的卡接在同一对象或同一列的末尾；新的列按创建顺序排在画布最右侧，时间线单独占一列。' +
     '因此先建人物、场景等素材再建镜头。' +
-    '要按顺序成行排列（如逐页的幻灯片）时用 arrange；移动单张已有的卡用 update 的 x、y。' +
-    '用户要求整理已有画布的布局时用 arrange 重排（视频列用 perColumn），不要用脚本计算并改写坐标。' +
+    '要按顺序成行排列（如逐页的幻灯片）时用 perRow 的 arrange；移动单张已有的卡用 update 的 x、y。' +
+    '整理已有画布的布局时每一列写一条 perColumn 的 arrange：视频列为每栏行数，其他列不小于该列的行数，不换栏；' +
+    '整理之后各行按对象名的数字顺序排列。不要用脚本计算并改写坐标。' +
     'add_generate 可选 provider、model、params：取值见本轮「可用的生成模型」，只写 model 时按提供该模型的接口补上 provider，有多个接口提供时须写明 provider；' +
     '参数名与取值按所用模型与卡片的输入核对，不合法或在当前输入下不可用时该条不执行并说明原因；' +
     'update 的 params 整体替换卡片参数，未写出的参数恢复缺省；read_canvas 列出的参数即实际发送的参数，与参数面板一致。' +
@@ -711,6 +749,7 @@ export const runCanvasTool: ToolSpec = {
     '运行画布上 node 指定的生成卡并等待结果；node 是生成卡名称的数组，单张卡写成一个元素的数组。' +
     '批量时只运行指定的卡（重复的只运行一次），最多同时运行 4 个独立节点，批内上游完成后才运行下游。' +
     '上游失败或待取回时跳过下游；未指定的上游只使用已有结果，不自动运行。按节点返回成功、失败与未运行原因，勿整批重新运行。' +
+    '指定的卡正在生成（由界面或上一轮发起）时不重复提交、不计费，等待该次生成结束并返回其结果；等待生成结果用本工具。' +
     '回执列出每个产物的宽高、时长与实际发送的参数。运行后核对结果：先核对回执中的宽高、时长与参数是否符合要求，' +
     '再用 read_file 查看图片与视频的画面是否符合提示词；不符合时用 edit_canvas 修改提示词或参数，再运行该节点。' +
     '同一节点重新运行一次后仍不符合时停止重试，在回复中说明差异，由用户决定。回复中的分辨率、时长与参数以回执为准。' +
@@ -890,6 +929,60 @@ export const captureCanvasFrameTool: ToolSpec = {
           path: landed.path,
           images: [{ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }],
         },
+        fileChanges: [{ path: landed.path, changeType: 'created' }],
+      }
+    } catch (err) {
+      return { status: 'failure', executed: true, message: (err as Error).message }
+    }
+  },
+}
+
+export const exportTimelineTool: ToolSpec = {
+  name: 'export_timeline',
+  description:
+    '把画布上的一条时间线导出为成片并等待完成：由界面执行与「导出」按钮相同的编码（界面会打开该画布并显示进度），' +
+    '成片保存为 generated/<时间线名称>.mp4（重名时加 -2），时间线右侧新增引用它的视频卡。' +
+    '片段按 clips 的顺序与入点、出点拼接；先用 edit_canvas 整理好片段再导出。qywork 界面未打开该项目时无法导出。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '画布文件的工作区路径' },
+      node: { type: 'string', description: '时间线的名称或 id' },
+    },
+    required: ['path', 'node'],
+    additionalProperties: false,
+  },
+  actionKind: 'write',
+  objectLabel: '画布',
+  category: 'media',
+  facet: '生成',
+  summary: '导出画布时间线的成片',
+  targetExtractor: (a) => text(a.path) ?? null,
+  permissionEffect: 'write',
+  async fn(args, ctx) {
+    const canvas = ctx.canvas
+    if (!canvas) return failure('本次执行没有画布通道')
+    const path = text(args.path)
+    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+    const ref = text(args.node)
+    if (!ref) return failure('缺少 node', 'invalid_tool_arguments')
+    try {
+      const { doc } = await canvas.read(path)
+      const found = cardIdOf(doc, ref)
+      if (!found.ok) return failure(found.error, 'invalid_tool_arguments')
+      const source = doc.nodes.find((n) => n.id === found.id)!
+      if (source.type !== 'timeline') {
+        return failure(`「${displayNameOf(source)}」不是时间线`, 'invalid_tool_arguments')
+      }
+      const landed = await canvas.exportTimeline(path, source.id, ctx.signal)
+      const card = (await canvas.read(path)).doc.nodes.find((n) => n.id === landed.nodeId)
+      const seconds = source.clips.reduce((sum, c) => sum + (c.out - c.in), 0)
+      return {
+        status: 'success',
+        message:
+          `已导出「${displayNameOf(source)}」（${source.clips.length} 段，共 ${Math.round(seconds * 100) / 100} 秒），` +
+          `成片保存为 ${landed.path}；新卡「${card ? displayNameOf(card) : landed.nodeId}」位于该时间线右侧。`,
+        data: { nodeId: landed.nodeId, path: landed.path },
         fileChanges: [{ path: landed.path, changeType: 'created' }],
       }
     } catch (err) {

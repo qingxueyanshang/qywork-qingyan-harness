@@ -276,6 +276,39 @@ describe('画布批量运行', () => {
     expect(fake.calls).toHaveLength(1)
     expect((await node(ws.root, ids.$v!)).versions).toHaveLength(1)
   })
+
+  /**
+   * 原始失败形状：视频卡由上一轮发起、本轮要等结果时，run_canvas 只返回「该卡片正在生成，未重复提交」，
+   * 画布工具没有等待的途径，模型改为操控界面等待。
+   */
+  test('指定的卡正在生成时不重复提交，等待该次生成并返回其结果；中止只结束等待，不停止生成', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const call = await fake.next()
+    await call.submit('t-1')
+    const batch = svc.runBatch(ws, PATH, [ids.$v!], { media: fake.port })
+    const single = (await svc.run(ws, PATH, ids.$v!, { media: fake.port, join: true })).done
+    const stop = new AbortController()
+    const left = (
+      await svc.run(ws, PATH, ids.$v!, { media: fake.port, join: true, signal: stop.signal })
+    ).done
+    stop.abort()
+    expect(await left).toMatchObject({ ok: false, pending: false })
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
+    call.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'seedance',
+      files: [{ bytes: MP4, mime: 'video/mp4' }],
+    })
+    const results = await batch
+    expect(results[0]).toMatchObject({ result: { ok: true } })
+    expect(results[0]!.skipped).toBeUndefined()
+    expect(await single).toEqual(await first.done)
+    expect(fake.calls).toHaveLength(1)
+    expect((await node(ws.root, ids.$v!)).versions).toHaveLength(1)
+  })
 })
 
 describe('画布运行：图像', () => {
