@@ -499,6 +499,73 @@ describe('大控件表只投递一部分', () => {
     expect(view.map((e) => e.ref)).toContain('e5')
   })
 
+  /**
+   * 原始失败形状：qywork 的文件树中点击目录「签收」后，目录已展开，但视图「已投递 313/524」截止于目录按钮本身，
+   * 展开出的子项一个都没有投递；模型又点了两次，目录在展开与收起之间切换。
+   */
+  test('动作引起的新增与改变的控件排在其余控件之前进入视图，连同祖先；受上限约束', async () => {
+    const item = (ref: string, parentRef: string, depth: number, role: string, name: string) => ({
+      ref,
+      parentRef,
+      depth,
+      role,
+      name,
+      automationId: '',
+      enabled: true,
+      offscreen: false,
+      actions: [{ action: 'invoke', delivery: ['background'] }],
+    })
+    const folder = item('e8', 'e1', 1, 'list_item', '签收')
+    const button = item('e9', 'e8', 2, 'button', '签收')
+    const children = ['过程', '签收_制作脚本.md', '签收.canvas.json'].map((name, i) =>
+      item(`e${20 + i}`, 'e8', 2, 'button', name),
+    ) as DesktopElement[]
+    const before = [根, ...filler(3994), folder, button] as DesktopElement[]
+    const after = [
+      根,
+      ...filler(3994),
+      { ...folder, name: '签收过程签收_制作脚本.md签收.canvas.json' },
+      button,
+      ...children,
+    ] as DesktopElement[]
+    const port: DesktopPort = {
+      ...fakePort(before, { acts: 0 }),
+      act: async () => ({
+        dispatch: 'submitted',
+        actionId: 'da_1',
+        observation: snapshot(after, { observationId: 'do_2' }),
+      }),
+    }
+    const ctx = context(port, fakeSink())
+    const r = await desktopActTool.fn({ windowId: 'dw_1', action: 'invoke', ref: 'e9' }, ctx)
+    const observation = observationOf(r)
+    const refs = observation.elements.map((e) => e.ref)
+    expect(observation.elements.length).toBeLessThan(after.length)
+    expect(refs).toEqual(expect.arrayContaining(['e1', 'e8', 'e9', 'e20', 'e21', 'e22']))
+    expect(refs.indexOf('e8')).toBeLessThan(refs.indexOf('e20'))
+
+    // 界面整体替换时全部控件都是变化，视图仍不超过上限。
+    const replaced = after.map((e) => (e.ref === 'e1' ? e : { ...e, name: `${e.name}（新）` }))
+    const whole: DesktopPort = {
+      ...fakePort(before, { acts: 0 }),
+      act: async () => ({
+        dispatch: 'submitted',
+        actionId: 'da_1',
+        observation: snapshot(replaced, { observationId: 'do_3' }),
+      }),
+    }
+    const out = await desktopActTool.fn(
+      { windowId: 'dw_1', action: 'invoke', ref: 'e9' },
+      context(whole, fakeSink()),
+    )
+    expect(
+      deliveredTokens(
+        JSON.stringify({ message: out.message, data: out.data, resources: out.resources }),
+        DEFAULT_DENSITY,
+      ),
+    ).toBeLessThanOrEqual(LIMIT)
+  })
+
   /** 视图中的层级只由 `depth` 与顺序表达：祖先缺失时，焦点控件会被解读为前一个控件的子控件。 */
   test('焦点控件的祖先随其一起进入视图', async () => {
     const 深外层 = { ...外层, ref: 'e9', automationId: 'deepOuter' }
