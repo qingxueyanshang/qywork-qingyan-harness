@@ -18,13 +18,40 @@ const outcome = (data: WorkflowTransition) => ({
 })
 
 describe('workflow 调用判别', () => {
+  test('子 agent 节点的种类由填写的字段决定；同时填写两种目标时报错', () => {
+    const got = parseWorkflowCall({
+      goal: '做完',
+      nodes: [
+        { id: 'a', name: '查资料', task: '查' },
+        { id: 'b', role: 'reviewer', task: '审' },
+        { id: 'c', cli: 'codex', name: '改稿', task: '改' },
+        { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a', 'b', 'c'] },
+      ],
+    })
+    if (!got.ok || got.call.kind !== 'start') throw new Error('应解析为首次派发')
+    expect(got.call.nodes.map((n) => (n.kind === 'subagent' ? n.target : n.kind))).toEqual([
+      { kind: 'temp', name: '查资料' },
+      { kind: 'role', role: 'reviewer' },
+      { kind: 'cli', cli: 'codex', name: '改稿' },
+      'checkpoint',
+    ])
+    expect(
+      parseWorkflowCall({
+        goal: '做完',
+        nodes: [{ id: 'a', role: 'reviewer', cli: 'codex', task: '审' }],
+      }),
+    ).toEqual({
+      ok: false,
+      error: '节点 a：subagent、role、cli 只能填写一个，当前填写了 role、cli',
+    })
+  })
+
   test('strict wire 的 null 仍判定为首次派发', () => {
     const got = parseWorkflowCall({
       goal: '做完',
       nodes: [
         {
           id: 'a',
-          kind: 'temp',
           name: 'a',
           task: '先做',
           subagent: null,
@@ -75,7 +102,6 @@ describe('workflow 调用判别', () => {
             id: 'a',
             task: '先做',
             needs: '[]',
-            kind: 'temp',
             name: 'a',
             role: 'null',
             subagent: 'null',
@@ -102,7 +128,7 @@ describe('workflow 调用判别', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
-        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做' }],
+        nodes: [{ id: 'a', name: 'a', task: '先做' }],
         workflowId: null,
         checkpointId: null,
         decision: null,
@@ -127,7 +153,7 @@ describe('workflow 调用判别', () => {
       parseWorkflowCall({
         goal: '做完',
         nodes: JSON.stringify([
-          { id: 'a', kind: 'temp', name: 'a', task: '先做' },
+          { id: 'a', name: 'a', task: '先做' },
           { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
         ]),
         workflowId: '',
@@ -156,7 +182,7 @@ describe('workflow 调用判别', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
-        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做' }],
+        nodes: [{ id: 'a', name: 'a', task: '先做' }],
       }),
     ).toMatchObject({
       ok: true,
@@ -165,14 +191,14 @@ describe('workflow 调用判别', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
-        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做' }],
+        nodes: [{ id: 'a', name: 'a', task: '先做' }],
         maxConcurrent: 5,
       }),
     ).toMatchObject({ ok: true, call: { maxConcurrent: 5 } })
     expect(
       parseWorkflowCall({
         goal: '做完',
-        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做' }],
+        nodes: [{ id: 'a', name: 'a', task: '先做' }],
         maxConcurrent: 0,
       }),
     ).toEqual({ ok: false, error: 'maxConcurrent 必须是正整数' })
@@ -203,7 +229,6 @@ describe('workflow 调用判别', () => {
         nodes: [
           {
             id: 'a',
-            kind: 'temp',
             name: 'a',
             task: '先做',
             provider: '官方/中转',
@@ -220,7 +245,7 @@ describe('workflow 调用判别', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
-        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做', provider: '官方' }],
+        nodes: [{ id: 'a', name: 'a', task: '先做', provider: '官方' }],
       }),
     ).toEqual({ ok: false, error: '节点 a 指定 provider 时必须同时指定 model' })
   })
@@ -229,20 +254,20 @@ describe('workflow 调用判别', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
-        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做', effort: 'xhigh' }],
+        nodes: [{ id: 'a', name: 'a', task: '先做', effort: 'xhigh' }],
       }),
     ).toMatchObject({ ok: true, call: { nodes: [{ effort: 'xhigh' }] } })
     expect(
       parseWorkflowCall({
         goal: '做完',
-        nodes: [{ id: 'a', kind: 'temp', name: 'a', task: '先做', effort: 'ultra' }],
+        nodes: [{ id: 'a', name: 'a', task: '先做', effort: 'ultra' }],
       }),
     ).toMatchObject({ ok: false, error: expect.stringContaining('节点 a 的 effort') })
     expect(
       parseWorkflowCall({
         goal: '做完',
         nodes: [
-          { id: 'a', kind: 'temp', name: 'a', task: '先做' },
+          { id: 'a', name: 'a', task: '先做' },
           { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a'], effort: 'high' },
         ],
       }),
@@ -297,9 +322,9 @@ describe('workflow 投影', () => {
         args: {
           goal: '做完',
           nodes: [
-            { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
+            { id: 'a', name: 'a', task: '做 A' },
             { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
-            { id: 'b', kind: 'temp', name: 'b', task: '做 B', needs: ['cp'] },
+            { id: 'b', name: 'b', task: '做 B', needs: ['cp'] },
           ],
         },
         status: 'success',
@@ -353,8 +378,8 @@ describe('workflow 投影', () => {
           args: {
             goal: '目标',
             nodes: [
-              { id: 'a', kind: 'temp', name: 'a', task: '做' },
-              { id: 'b', kind: 'temp', name: 'b', task: '也做' },
+              { id: 'a', name: 'a', task: '做' },
+              { id: 'b', name: 'b', task: '也做' },
               { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
             ],
           },
@@ -384,8 +409,8 @@ describe('workflow 投影', () => {
           args: {
             goal: '目标',
             nodes: [
-              { id: 'a', kind: 'temp', name: 'a', task: '做' },
-              { id: 'b', kind: 'temp', name: 'b', task: '也做' },
+              { id: 'a', name: 'a', task: '做' },
+              { id: 'b', name: 'b', task: '也做' },
               { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
             ],
           },
@@ -409,8 +434,8 @@ describe('workflow 投影', () => {
    */
   test('对已批准的检查点 revise：撤销批准、只作废选中节点', () => {
     const nodes = [
-      { id: 'build-glm', kind: 'temp', name: 'build-glm', task: '做 glm 版' },
-      { id: 'build-qwen', kind: 'temp', name: 'build-qwen', task: '做 qwen 版' },
+      { id: 'build-glm', name: 'build-glm', task: '做 glm 版' },
+      { id: 'build-qwen', name: 'build-qwen', task: '做 qwen 版' },
       {
         id: 'audit-builds',
         kind: 'checkpoint',
@@ -486,7 +511,7 @@ describe('workflow 投影', () => {
           args: {
             goal: '目标',
             nodes: [
-              { id: 'a', kind: 'temp', name: 'a', task: '做' },
+              { id: 'a', name: 'a', task: '做' },
               { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
             ],
           },
@@ -508,8 +533,8 @@ describe('workflow 投影', () => {
           args: {
             goal: '目标',
             nodes: [
-              { id: 'a', kind: 'temp', name: 'a', task: '做' },
-              { id: 'b', kind: 'temp', name: 'b', task: '也做' },
+              { id: 'a', name: 'a', task: '做' },
+              { id: 'b', name: 'b', task: '也做' },
               { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a', 'b'] },
             ],
           },
@@ -551,9 +576,9 @@ describe('workflow 投影', () => {
           args: {
             goal: '目标',
             nodes: [
-              { id: 'a', kind: 'temp', name: 'a', task: '做' },
+              { id: 'a', name: 'a', task: '做' },
               { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
-              { id: 'b', kind: 'temp', name: 'b', task: '再做', needs: ['cp'] },
+              { id: 'b', name: 'b', task: '再做', needs: ['cp'] },
               { id: 'cp2', kind: 'checkpoint', label: '再审查', needs: ['b'] },
             ],
           },
@@ -588,8 +613,8 @@ describe('workflow 投影', () => {
         args: {
           goal: '目标',
           nodes: [
-            { id: 'a', kind: 'temp', name: 'a', task: '研究' },
-            { id: 'b', kind: 'temp', name: 'b', task: '复核', needs: ['a'] },
+            { id: 'a', name: 'a', task: '研究' },
+            { id: 'b', name: 'b', task: '复核', needs: ['a'] },
             { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['b'] },
           ],
         },
@@ -628,7 +653,7 @@ describe('workflow 投影', () => {
         args: {
           goal: '目标',
           nodes: [
-            { id: 'a', kind: 'temp', name: 'a', task: '研究' },
+            { id: 'a', name: 'a', task: '研究' },
             { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
           ],
         },

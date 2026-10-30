@@ -173,39 +173,37 @@ export type SubagentTargetParse =
   | { ok: false; error: string }
 
 /**
- * 派发目标：`subagent` 工具的参数与图节点共用同一套字段。
- * 种类由字段指定，id 取自运行上下文清单，两者互斥；两者都没有时视为未指定目标。
+ * 派发目标：`subagent` 工具的参数与图节点共用同一套字段。种类由填写了哪个字段决定，不另设种类字段：
+ * subagent 为本会话已有的子 agent，role 按角色新建，cli 派给外部 CLI，三者都没有而有 name 时新建临时子 agent。
+ * 不要恢复单独的种类字段：它与这几个字段表达同一件事，两处不一致（填了 name 未填种类、种类与字段不符）只能报错。
+ * 同时填写两种目标时无法确定种类，报错，不推测。
  */
 export function parseSubagentTarget(raw: Record<string, unknown>): SubagentTargetParse {
-  const kind = wireText(raw.kind)
   const role = wireText(raw.role)
   const name = wireText(raw.name)
   const cli = wireText(raw.cli)
   const subagent = wireText(raw.subagent)
-  if (subagent) {
-    if (kind || role || cli) {
-      return { ok: false, error: '填写 subagent 时不能再填写 kind、role、cli' }
+  const given = (
+    [
+      ['subagent', subagent],
+      ['role', role],
+      ['cli', cli],
+    ] as const
+  ).filter(([, value]) => value)
+  if (given.length > 1) {
+    return {
+      ok: false,
+      error: `subagent、role、cli 只能填写一个，当前填写了 ${given.map(([key]) => key).join('、')}`,
     }
-    return { ok: true, target: { subagent, ...(name ? { name } : {}) } }
   }
-  if (kind === 'role') {
-    if (!role) return { ok: false, error: 'kind 为 role 时必须填写 role' }
-    if (cli) return { ok: false, error: 'role 种类不能填写 cli' }
-    return { ok: true, target: { kind: 'role', role, ...(name ? { name } : {}) } }
-  }
-  if (kind === 'temp') {
-    if (!name) return { ok: false, error: 'kind 为 temp 时必须填写 name' }
-    if (role || cli) return { ok: false, error: 'temp 种类不能填写 role 或 cli' }
-    return { ok: true, target: { kind: 'temp', name } }
-  }
-  if (kind === 'cli') {
-    if (!cli) return { ok: false, error: 'kind 为 cli 时必须填写 cli' }
-    if (role) return { ok: false, error: 'cli 种类不能填写 role' }
-    return { ok: true, target: { kind: 'cli', cli, ...(name ? { name } : {}) } }
-  }
+  if (subagent) return { ok: true, target: { subagent, ...(name ? { name } : {}) } }
+  if (role) return { ok: true, target: { kind: 'role', role, ...(name ? { name } : {}) } }
+  if (cli) return { ok: true, target: { kind: 'cli', cli, ...(name ? { name } : {}) } }
+  if (name) return { ok: true, target: { kind: 'temp', name } }
   return {
     ok: false,
-    error: kind ? `kind 不支持 ${kind}` : '必须填写 kind（role / temp / cli）或 subagent',
+    error:
+      '需填写 subagent（续接本会话已有的子 agent）、role（按角色新建）、cli（派给外部 CLI）或 name（新建临时子 agent）之一',
   }
 }
 

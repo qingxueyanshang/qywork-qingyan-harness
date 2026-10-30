@@ -257,10 +257,12 @@ describe('派发任务工具的注册条件', () => {
       Record<string, unknown>
     >
     expect(node.kind?.type).toEqual(['string', 'null'])
-    // 种类是显式字段：角色 / 临时 / 外部 CLI / 检查点，没有「默认 agent」。
-    expect(node.kind?.enum).toEqual(['role', 'temp', 'cli', 'checkpoint', null])
+    // kind 只标记检查点；子 agent 节点的种类由 role / cli / subagent / name 中填写的字段决定，不另设种类字段。
+    expect(node.kind?.enum).toEqual(['checkpoint', null])
     expect(node.subagent).toBeDefined()
     expect(node.agent).toBeUndefined()
+    const single = r.schemas().find((entry) => entry.name === 'subagent')
+    expect((single?.parameters.properties as Record<string, unknown>).kind).toBeUndefined()
   })
 })
 
@@ -271,12 +273,9 @@ describe('派发单个子 agent', () => {
   })
 
   /** 派发后立即返回：本次调用只返回是否已派发，产出经回执送回。 */
-  test('kind 为 temp 时按名称新建，返回派发事实', async () => {
+  test('只填 name 时按名称新建临时子 agent，返回派发事实', async () => {
     const s = stub(sent())
-    const res = await subagentTool.fn(
-      { kind: 'temp', name: '查资料', task: '去查一下' },
-      ctx(s.port),
-    )
+    const res = await subagentTool.fn({ name: '查资料', task: '去查一下' }, ctx(s.port))
     expect(res.status).toBe('success')
     expect(res.message).toBe('已派出临时 查资料（subagentId cv_1），回执会作为一条消息送到本会话')
     expect(s.calls).toEqual([
@@ -292,12 +291,9 @@ describe('派发单个子 agent', () => {
     expect(res.data).not.toHaveProperty('output')
   })
 
-  test('kind 为 role 时按角色 id 创建', async () => {
+  test('填 role 时按角色 id 创建', async () => {
     const s = stub(sent({ subagentId: 'cv_2', name: '审查员', kind: 'role' }))
-    const res = await subagentTool.fn(
-      { kind: 'role', role: 'reviewer', task: '看一眼' },
-      ctx(s.port),
-    )
+    const res = await subagentTool.fn({ role: 'reviewer', task: '看一眼' }, ctx(s.port))
     expect(res.status).toBe('success')
     expect(s.calls[0]?.target).toEqual({ kind: 'role', role: 'reviewer' })
   })
@@ -317,34 +313,44 @@ describe('派发单个子 agent', () => {
     expect(s.calls[1]?.target).toEqual({ subagent: 'cv_2', name: '版式修复' })
 
     const both = await subagentTool.fn(
-      { subagent: 'cv_2', kind: 'temp', name: 'x', task: '再看一遍' },
+      { subagent: 'cv_2', role: 'reviewer', task: '再看一遍' },
       ctx(s.port),
     )
     expect(both.status).toBe('failure')
-    expect(both.message).toContain('不能再填写 kind')
+    expect(both.message).toBe('subagent、role、cli 只能填写一个，当前填写了 subagent、role')
     expect(s.calls).toHaveLength(2)
   })
 
-  test('种类与 id 都未填写时拒绝，不推测种类', async () => {
+  test('subagent、role、cli、name 都未填写时拒绝，不推测种类', async () => {
     const s = stub(sent())
     const res = await subagentTool.fn({ task: '去查一下' }, ctx(s.port))
-    expect(res.status).toBe('failure')
-    expect(res.message).toContain('kind')
+    expect(res).toMatchObject({
+      status: 'failure',
+      message:
+        '需填写 subagent（续接本会话已有的子 agent）、role（按角色新建）、cli（派给外部 CLI）或 name（新建临时子 agent）之一',
+    })
     expect(s.calls).toHaveLength(0)
   })
 
-  test('种类必须与对应字段一同提供', async () => {
+  /**
+   * 原始失败形状：模型填了 name、model 与 task 而未填 kind，4 次被拒「必须填写 kind（role / temp / cli）或 subagent」。
+   * 种类由字段决定后该组合即为新建临时子 agent；同时填写两种目标时仍无法确定，报错。
+   */
+  test('种类由填写的字段决定：只填 name 即临时子 agent；role 与 cli 同填时报错', async () => {
     const s = stub(sent())
-    expect((await subagentTool.fn({ kind: 'role', task: '做' }, ctx(s.port))).message).toContain(
-      '必须填写 role',
+    const res = await subagentTool.fn(
+      { name: 'Opus导演重新制作', model: 'claude-opus-5-5', provider: 'anthropic', task: '重做' },
+      ctx(s.port),
     )
-    expect((await subagentTool.fn({ kind: 'temp', task: '做' }, ctx(s.port))).message).toContain(
-      '必须填写 name',
-    )
-    expect((await subagentTool.fn({ kind: 'cli', task: '做' }, ctx(s.port))).message).toContain(
-      '必须填写 cli',
-    )
-    expect(s.calls).toHaveLength(0)
+    expect(res.status).toBe('success')
+    expect(s.calls[0]).toMatchObject({
+      target: { kind: 'temp', name: 'Opus导演重新制作' },
+      model: 'claude-opus-5-5',
+      provider: 'anthropic',
+    })
+    const both = await subagentTool.fn({ role: 'reviewer', cli: 'codex', task: '做' }, ctx(s.port))
+    expect(both.message).toBe('subagent、role、cli 只能填写一个，当前填写了 role、cli')
+    expect(s.calls).toHaveLength(1)
   })
 
   /**
@@ -353,7 +359,7 @@ describe('派发单个子 agent', () => {
    * 按设计，未指定模型时沿用当前会话的模型，因此此处不得传出任何 model。
    */
   test('model 传入字符串 null 时视为未指定，沿用当前会话的模型', async () => {
-    const temp = { kind: 'temp', name: 'x', task: '去查一下' }
+    const temp = { name: 'x', task: '去查一下' }
     const s = stub(sent())
     const res = await subagentTool.fn({ ...temp, model: 'null' }, ctx(s.port))
     expect(res.status).toBe('success')
@@ -376,7 +382,7 @@ describe('派发单个子 agent', () => {
   test('provider 与 model 必须成对提供，不把不完整的覆盖传给执行器', async () => {
     const s = stub(sent())
     const res = await subagentTool.fn(
-      { kind: 'temp', name: 'x', task: '去查一下', provider: '智谱接口' },
+      { name: 'x', task: '去查一下', provider: '智谱接口' },
       ctx(s.port),
     )
     expect(res.status).toBe('failure')
@@ -386,7 +392,7 @@ describe('派发单个子 agent', () => {
 
   test('任务为空时不派发', async () => {
     const s = stub(sent())
-    const res = await subagentTool.fn({ kind: 'role', role: 'reviewer', task: '  ' }, ctx(s.port))
+    const res = await subagentTool.fn({ role: 'reviewer', task: '  ' }, ctx(s.port))
     expect(res.status).toBe('failure')
     expect(s.calls).toHaveLength(0)
   })
@@ -398,7 +404,7 @@ describe('派发单个子 agent', () => {
         { id: 'todo_2', content: '网页端审计', status: 'pending' as const },
       ],
     }
-    const temp = { kind: 'temp', name: '审计', task: '审计服务端' }
+    const temp = { name: '审计', task: '审计服务端' }
     const missing = stub(sent())
     const missingResult = await subagentTool.fn(temp, withTodos(ctx(missing.port), todos))
     expect(missingResult.status).toBe('failure')
@@ -431,7 +437,7 @@ describe('派发单个子 agent', () => {
   test('存在同名未完成条目时拒绝绑定，不推测应完成哪一条', async () => {
     const s = stub(sent())
     const result = await subagentTool.fn(
-      { kind: 'temp', name: 'x', task: '执行', parentTodo: '重复项' },
+      { name: 'x', task: '执行', parentTodo: '重复项' },
       withTodos(ctx(s.port), {
         read: () => [
           { id: 'todo_1', content: '重复项', status: 'in_progress' },
@@ -447,7 +453,7 @@ describe('派发单个子 agent', () => {
   /** 无法派发时必须带回端口给出的原因：模型据此调整做法，压缩为「执行出错」则无法调整。 */
   test('无法派发时带回原因', async () => {
     const s = stub({ ok: false, error: '本机没有识别到 claude' })
-    const res = await subagentTool.fn({ kind: 'cli', cli: 'claude', task: '执行任务' }, ctx(s.port))
+    const res = await subagentTool.fn({ cli: 'claude', task: '执行任务' }, ctx(s.port))
     expect(res.status).toBe('failure')
     expect(res.message).toContain('本机没有识别到 claude')
     expect(s.calls[0]?.target).toEqual({ kind: 'cli', cli: 'claude' })
@@ -459,7 +465,7 @@ describe('派发单个子 agent', () => {
    */
   test('把本轮 id 与卡片 id 一并传给端口', async () => {
     const s = stub(sent())
-    await subagentTool.fn({ kind: 'temp', name: 'x', task: '去查一下' }, ctx(s.port))
+    await subagentTool.fn({ name: 'x', task: '去查一下' }, ctx(s.port))
     expect(s.calls[0]?.runId).toBe('rn_test')
     expect(s.calls[0]?.stepId).toBe('st_test')
   })
@@ -472,7 +478,7 @@ describe('派发单个子 agent', () => {
     const s = stub(sent())
     const bare = ctx(s.port)
     delete bare.stepId
-    const res = await subagentTool.fn({ kind: 'temp', name: 'x', task: '去查一下' }, bare)
+    const res = await subagentTool.fn({ name: 'x', task: '去查一下' }, bare)
     expect(res.status).toBe('success')
     expect(s.calls[0]?.stepId).toBeUndefined()
   })
@@ -521,7 +527,7 @@ describe('推进编排图', () => {
   test('提交编排图时附带本次调用的 stepId', async () => {
     const g = graphPort(GRAPH_DONE)
     await workflowTool.fn(
-      { ...graph([{ id: 'a', kind: 'role', role: 'dev', task: '写' }]), goal: '做完这件事' },
+      { ...graph([{ id: 'a', role: 'dev', task: '写' }]), goal: '做完这件事' },
       ctx(g.port),
     )
     expect(g.seen).toEqual([{ goal: '做完这件事', count: 2, stepId: 'st_test' }])
@@ -531,8 +537,8 @@ describe('推进编排图', () => {
     const g = graphPort(GRAPH_DONE)
     const res = await workflowTool.fn(
       graph([
-        { id: 'a', kind: 'temp', name: 'a', task: '一' },
-        { id: 'a', kind: 'temp', name: 'a', task: '二' },
+        { id: 'a', name: 'a', task: '一' },
+        { id: 'a', name: 'a', task: '二' },
       ]),
       ctx(g.port),
     )
@@ -549,8 +555,8 @@ describe('推进编排图', () => {
     })
     const res = await workflowTool.fn(
       graph([
-        { id: 'a', kind: 'role', role: 'dev', task: '写' },
-        { id: 'b', kind: 'temp', name: 'b', task: '也写' },
+        { id: 'a', role: 'dev', task: '写' },
+        { id: 'b', name: 'b', task: '也写' },
       ]),
       ctx(g.port),
     )
@@ -603,10 +609,7 @@ describe('推进编排图', () => {
 
   test('编排图不合法时带回推进器的原始错误信息', async () => {
     const g = graphPort({ ok: false, error: '节点 b 依赖不存在的节点 x' })
-    const res = await workflowTool.fn(
-      graph([{ id: 'b', kind: 'role', role: 'dev', task: '写' }]),
-      ctx(g.port),
-    )
+    const res = await workflowTool.fn(graph([{ id: 'b', role: 'dev', task: '写' }]), ctx(g.port))
     expect(res.status).toBe('failure')
     expect(res.message).toContain('依赖不存在的节点')
   })
@@ -641,9 +644,9 @@ describe('推进编排图', () => {
     }
     const res = await workflowTool.fn(
       graph([
-        { id: 'a', kind: 'temp', name: '查这个', task: '查这个' },
-        { id: 'b', kind: 'role', role: 'dev', task: '查那个' },
-        { id: 'c', kind: 'cli', cli: 'codex', task: '改' },
+        { id: 'a', name: '查这个', task: '查这个' },
+        { id: 'b', role: 'dev', task: '查那个' },
+        { id: 'c', cli: 'codex', task: '改' },
         { id: 'd', subagent: 'cv_old', task: '再来' },
       ]),
       ctx(port),
@@ -682,8 +685,7 @@ describe('按种类称呼子 agent', () => {
     ).toBe('已派出角色 审查员（subagentId cv_r），回执会作为一条消息送到本会话')
     const temp = stub(sent({ subagentId: 'cv_t', name: '查资料', kind: 'temp' }))
     expect(
-      (await subagentTool.fn({ kind: 'temp', name: '查资料', task: '去查一下' }, ctx(temp.port)))
-        .message,
+      (await subagentTool.fn({ name: '查资料', task: '去查一下' }, ctx(temp.port))).message,
     ).toBe('已派出临时 查资料（subagentId cv_t），回执会作为一条消息送到本会话')
   })
 })

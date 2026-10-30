@@ -424,8 +424,8 @@ describe('外部 CLI 失败回执', () => {
         const graph = {
           goal: '失败链路验证',
           nodes: [
-            { id: 'external', kind: 'cli', cli: 'codex', task: '执行任务' },
-            { id: 'next', kind: 'temp', name: '后续', task: '继续', needs: ['external'] },
+            { id: 'external', cli: 'codex', task: '执行任务' },
+            { id: 'next', name: '后续', task: '继续', needs: ['external'] },
             { id: 'check', kind: 'checkpoint', label: '检查', needs: ['next'] },
           ],
         }
@@ -734,7 +734,6 @@ describe('思考强度', () => {
       nodes: [
         {
           id: 'x',
-          kind: 'temp',
           name: 'x',
           task: '节点任务',
           provider: '推理接口',
@@ -1181,9 +1180,9 @@ describe('图按事件推进', () => {
   const twoStage = {
     goal: '两段做完',
     nodes: [
-      { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
+      { id: 'a', name: 'a', task: '做 A' },
       { id: 'cp', kind: 'checkpoint', label: '主会话审查', needs: ['a'] },
-      { id: 'b', kind: 'temp', name: 'b', task: '做 B', needs: ['cp'] },
+      { id: 'b', name: 'b', task: '做 B', needs: ['cp'] },
       { id: 'cp2', kind: 'checkpoint', label: '再审查', needs: ['b'] },
     ],
   }
@@ -1337,8 +1336,8 @@ describe('图按事件推进', () => {
     const parallel = {
       goal: '两个候选',
       nodes: [
-        { id: 'x', kind: 'temp', name: 'x', task: '做 X' },
-        { id: 'y', kind: 'temp', name: 'y', task: '做 Y' },
+        { id: 'x', name: 'x', task: '做 X' },
+        { id: 'y', name: 'y', task: '做 Y' },
         { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['x', 'y'] },
       ],
     }
@@ -1376,7 +1375,7 @@ describe('图按事件推进', () => {
     const graph = {
       goal: '一个节点',
       nodes: [
-        { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
+        { id: 'a', name: 'a', task: '做 A' },
         { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a'] },
       ],
     }
@@ -1398,8 +1397,8 @@ describe('图按事件推进', () => {
     const graph = {
       goal: '两个节点',
       nodes: [
-        { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
-        { id: 'b', kind: 'temp', name: 'b', task: '做 B' },
+        { id: 'a', name: 'a', task: '做 A' },
+        { id: 'b', name: 'b', task: '做 B' },
         { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a', 'b'] },
       ],
     }
@@ -1420,8 +1419,8 @@ describe('图按事件推进', () => {
     const chain = {
       goal: '串起来',
       nodes: [
-        { id: 'a', kind: 'temp', name: 'a', task: '做 A' },
-        { id: 'b', kind: 'temp', name: 'b', task: '做 B', needs: ['a'] },
+        { id: 'a', name: 'a', task: '做 A' },
+        { id: 'b', name: 'b', task: '做 B', needs: ['a'] },
         { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['b'] },
       ],
     }
@@ -1439,8 +1438,8 @@ describe('图按事件推进', () => {
     const dotted = {
       goal: '两个候选',
       nodes: [
-        { id: 'build.glm', kind: 'temp', name: 'build.glm', task: '做 glm 版' },
-        { id: 'build.qwen', kind: 'temp', name: 'build.qwen', task: '做 qwen 版' },
+        { id: 'build.glm', name: 'build.glm', task: '做 glm 版' },
+        { id: 'build.qwen', name: 'build.qwen', task: '做 qwen 版' },
         { id: 'audit', kind: 'checkpoint', label: '验收', needs: ['build.glm', 'build.qwen'] },
       ],
     }
@@ -1468,8 +1467,8 @@ describe('图按事件推进', () => {
     const both = {
       goal: '各做一版',
       nodes: [
-        { id: 'build-glm', kind: 'temp', name: 'build-glm', task: '做 glm 版' },
-        { id: 'build-qwen', kind: 'temp', name: 'build-qwen', task: '做 qwen 版' },
+        { id: 'build-glm', name: 'build-glm', task: '做 glm 版' },
+        { id: 'build-qwen', name: 'build-qwen', task: '做 qwen 版' },
         {
           id: 'audit-builds',
           kind: 'checkpoint',
@@ -1545,8 +1544,8 @@ describe('图按事件推进', () => {
     const chain = {
       goal: '先做 a 再做 b',
       nodes: [
-        { id: 'a', kind: 'temp', name: 'a', task: '做 a' },
-        { id: 'b', kind: 'temp', name: 'b', task: '做 b', needs: ['a'] },
+        { id: 'a', name: 'a', task: '做 a' },
+        { id: 'b', name: 'b', task: '做 b', needs: ['a'] },
         { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['b'] },
       ],
     }
@@ -1610,7 +1609,7 @@ describe('图按事件推进', () => {
     const args = {
       goal: '目标',
       nodes: [
-        { id: 'a', kind: 'temp', name: 'a', task: '做' },
+        { id: 'a', name: 'a', task: '做' },
         { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
       ],
     }
