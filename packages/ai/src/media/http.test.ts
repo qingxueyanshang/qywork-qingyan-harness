@@ -1,4 +1,4 @@
-/** 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、下载重试及取消，不调用付费接口。 */
+/** 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、提交遇到 429 时的重发、下载重试及取消，不调用付费接口。 */
 import { afterAll, afterEach, beforeAll, expect, spyOn, test } from 'bun:test'
 import { download, postJson, send, sendJson } from './http.ts'
 import { MediaError } from './types.ts'
@@ -254,6 +254,44 @@ test('客户端拒绝与网关结果未知分开报告，保留原文且生成�
     expect(error.message).toBe(message)
   }
   expect(hits).toEqual(['POST', 'POST', 'POST', 'POST', 'POST', 'POST', 'POST', 'POST'])
+})
+
+/**
+ * 原始失败形状：画布批量出图时千问图像接口对并发的提交返回 429「Requests rate limit exceeded」，卡片直接记为失败。
+ * 429 表示未受理，生成与上传按 Retry-After 重发；查询只发一次，由调用方按自己的间隔重发。
+ */
+test('生成与上传遇到 429 按 Retry-After 重发直到受理；次数用尽后报告原文且判为被拒绝；查询不在此重发', async () => {
+  const limited = () =>
+    new Response('{"message":"Requests rate limit exceeded, please try again later."}', {
+      status: 429,
+      headers: { 'retry-after': '0' },
+    })
+  let left = 2
+  reply = () => (left-- > 0 ? limited() : Response.json({ output: { task_id: 't-1' } }))
+  expect(await postJson(url(), {}, {}, signal())).toEqual({ output: { task_id: 't-1' } })
+  expect(hits).toEqual(['POST', 'POST', 'POST'])
+
+  hits = []
+  left = 1
+  const form = new FormData()
+  form.append('file', new Blob([new Uint8Array([1, 2, 3])]), 'a.png')
+  const uploaded = await send(url(), { method: 'POST', body: form }, signal(), { stage: 'upload' })
+  expect(uploaded.status).toBe(200)
+  expect(hits).toEqual(['POST', 'POST'])
+
+  hits = []
+  reply = limited
+  const error = await failure(postJson(url(), {}, {}, signal()))
+  expect(error.message).toBe(
+    'HTTP 429 请求过多：Requests rate limit exceeded, please try again later.',
+  )
+  expect(error.diagnostic).toMatchObject({ stage: 'generate', status: 429, outcome: 'rejected' })
+  expect(hits).toHaveLength(6)
+
+  hits = []
+  const query = await failure(sendJson(url(), { method: 'GET' }, signal()))
+  expect(query.status).toBe(429)
+  expect(hits).toEqual(['GET'])
 })
 
 /** 连接未建立时请求没有发出：端口拒绝连接与 TLS 握手失败均为被拒绝，不显示 Bun 的英文提示。 */

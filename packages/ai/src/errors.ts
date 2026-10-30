@@ -219,7 +219,7 @@ function headerOf(err: unknown, name: string): string | null {
   return null
 }
 
-function retryAfterOf(err: unknown, now = Date.now()): number | null {
+export function retryAfterOf(err: unknown, now = Date.now()): number | null {
   const milliseconds = headerOf(err, 'retry-after-ms')
   if (milliseconds !== null) {
     const parsed = Number(milliseconds)

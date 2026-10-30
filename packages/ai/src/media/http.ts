@@ -1,6 +1,6 @@
 /** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
 import type { MediaDiagnostic } from '@qywork/core'
-import { bodyMessage, httpStatusName } from '../errors.ts'
+import { bodyMessage, httpStatusName, retryAfterOf } from '../errors.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { MediaError } from './types.ts'
 
@@ -84,8 +84,18 @@ async function readBody(res: Response, heard: () => void): Promise<Uint8Array> {
   return bytes
 }
 
+/** 生成与上传遇到 HTTP 429 时的重发次数上限；等待时间见 `rateLimitWait`。 */
+const RATE_LIMIT_RETRIES = 5
+
+/** 429 之后的等待：取 Retry-After，未给出时依次为 2、4、8、16、32 秒；单次不超过 60 秒。 */
+function rateLimitWait(res: Response, retry: number): number {
+  return Math.min(retryAfterOf(res) ?? 2000 * 2 ** retry, 60_000)
+}
+
 /**
- * 发出请求并读完响应体。期限按静默计算（`IDLE_MS`）：每收到一段数据重新计时。生成 POST 不自动重发。
+ * 发出请求并读完响应体。期限按静默计算（`IDLE_MS`）：每收到一段数据重新计时。
+ * 生成与上传只在 HTTP 429 时重发（`RATE_LIMIT_RETRIES`）：429 表示接口未受理该请求，重发不会重复提交或计费；
+ * 超时、连接中断与 5xx 可能已被受理，不重发。查询与下载由调用方重发（`waitTask`、`download`），此处不再叠加一层。
  *
  * fetch 必须展开 `PROVIDER_HTTP.fetchOptions`：Bun 的 socket 空闲超时默认 300 秒，缺少该选项时
  * 生成请求静默 300 秒即以 `The operation timed out.` 中断。
@@ -99,82 +109,95 @@ export async function send(
 ): Promise<Response> {
   const stage = stageOf(init, policy)
   const idleMs = policy.idleMs ?? IDLE_MS[stage]
-  const silence = new AbortController()
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const heard = () => {
-    clearTimeout(timer)
-    if (idleMs !== undefined) timer = setTimeout(() => silence.abort(), idleMs)
-  }
-  const startedAt = Date.now()
-  let response: Response | undefined
-  const diagnostic = (kind: MediaDiagnostic['kind']): MediaDiagnostic => ({
-    stage,
-    kind,
-    outcome: stage === 'upload' ? 'rejected' : stage === 'download' ? 'available' : 'unknown',
-    host: new URL(url).host,
-    elapsedMs: Date.now() - startedAt,
-    ...(idleMs === undefined ? {} : { timeoutMs: idleMs }),
-    ...(response ? { status: response.status } : {}),
-    ...(response?.headers.get('x-request-id') || response?.headers.get('request-id')
-      ? { requestId: (response.headers.get('x-request-id') ?? response.headers.get('request-id'))! }
-      : {}),
-  })
-  let res: Response
-  try {
-    heard()
-    response = await fetch(url, {
-      ...PROVIDER_HTTP.fetchOptions,
-      ...init,
-      headers: { ...PROVIDER_HEADERS, ...Object.fromEntries(new Headers(init.headers)) },
-      signal: AbortSignal.any([signal, silence.signal]),
+  for (let retry = 0; ; retry++) {
+    const silence = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const heard = () => {
+      clearTimeout(timer)
+      if (idleMs !== undefined) timer = setTimeout(() => silence.abort(), idleMs)
+    }
+    const startedAt = Date.now()
+    let response: Response | undefined
+    const diagnostic = (kind: MediaDiagnostic['kind']): MediaDiagnostic => ({
+      stage,
+      kind,
+      outcome: stage === 'upload' ? 'rejected' : stage === 'download' ? 'available' : 'unknown',
+      host: new URL(url).host,
+      elapsedMs: Date.now() - startedAt,
+      ...(idleMs === undefined ? {} : { timeoutMs: idleMs }),
+      ...(response ? { status: response.status } : {}),
+      ...(response?.headers.get('x-request-id') || response?.headers.get('request-id')
+        ? {
+            requestId: (response.headers.get('x-request-id') ??
+              response.headers.get('request-id'))!,
+          }
+        : {}),
     })
-    heard()
-    if (init.redirect === 'manual' && [301, 302, 303, 307, 308].includes(response.status))
-      return response
-    const bytes = await readBody(response, heard)
-    res = new Response([204, 205, 304].includes(response.status) ? null : bytes, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    })
-  } catch (err) {
-    if (signal.aborted) throw signal.reason
-    const facts = diagnostic(silence.signal.aborted ? 'timeout' : 'connection')
-    const code =
-      (err as { code?: unknown; cause?: { code?: unknown } })?.code ??
-      (err as { cause?: { code?: unknown } })?.cause?.code
-    if (typeof code === 'string') facts.code = code
-    const unsent = silence.signal.aborted ? null : unsentReason(facts.code, facts.host)
-    if (unsent && stage !== 'download') facts.outcome = 'rejected'
-    const reason = silence.signal.aborted
-      ? `连续 ${idleMs! / 1000} 秒未收到数据`
-      : (unsent ??
-        (facts.code === 'ECONNRESET'
-          ? '连接被断开'
-          : `连接失败：${err instanceof Error ? err.message : String(err)}`))
-    throw new MediaError(stageMessage(stage, reason, facts), { diagnostic: facts, cause: err })
-  } finally {
-    clearTimeout(timer)
+    let res: Response
+    try {
+      heard()
+      response = await fetch(url, {
+        ...PROVIDER_HTTP.fetchOptions,
+        ...init,
+        headers: { ...PROVIDER_HEADERS, ...Object.fromEntries(new Headers(init.headers)) },
+        signal: AbortSignal.any([signal, silence.signal]),
+      })
+      heard()
+      if (init.redirect === 'manual' && [301, 302, 303, 307, 308].includes(response.status))
+        return response
+      const bytes = await readBody(response, heard)
+      res = new Response([204, 205, 304].includes(response.status) ? null : bytes, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      })
+    } catch (err) {
+      if (signal.aborted) throw signal.reason
+      const facts = diagnostic(silence.signal.aborted ? 'timeout' : 'connection')
+      const code =
+        (err as { code?: unknown; cause?: { code?: unknown } })?.code ??
+        (err as { cause?: { code?: unknown } })?.cause?.code
+      if (typeof code === 'string') facts.code = code
+      const unsent = silence.signal.aborted ? null : unsentReason(facts.code, facts.host)
+      if (unsent && stage !== 'download') facts.outcome = 'rejected'
+      const reason = silence.signal.aborted
+        ? `连续 ${idleMs! / 1000} 秒未收到数据`
+        : (unsent ??
+          (facts.code === 'ECONNRESET'
+            ? '连接被断开'
+            : `连接失败：${err instanceof Error ? err.message : String(err)}`))
+      throw new MediaError(stageMessage(stage, reason, facts), { diagnostic: facts, cause: err })
+    } finally {
+      clearTimeout(timer)
+    }
+    if (!res.ok) {
+      if (
+        res.status === 429 &&
+        (stage === 'generate' || stage === 'upload') &&
+        retry < RATE_LIMIT_RETRIES
+      ) {
+        await pause(rateLimitWait(res, retry), signal)
+        continue
+      }
+      // 生成的 408 / 5xx 可能来自网关，不能据此断言上游未受理。明确的客户端拒绝才可视为未生成。
+      // 上传错误发生在提交生成之前；下载失败时产物仍在远端，保持可取回。
+      const facts = diagnostic('http')
+      if (
+        stage !== 'download' &&
+        !(stage === 'generate' && (res.status === 408 || res.status >= 500))
+      )
+        facts.outcome = 'rejected'
+      throw new MediaError(
+        stageMessage(
+          stage,
+          `HTTP ${res.status} ${httpStatusName(res.status)}：${await providerMessage(res)}`,
+          facts,
+        ),
+        { status: res.status, diagnostic: facts },
+      )
+    }
+    return res
   }
-  if (!res.ok) {
-    // 生成的 408 / 5xx 可能来自网关，不能据此断言上游未受理。明确的客户端拒绝才可视为未生成。
-    // 上传错误发生在提交生成之前；下载失败时产物仍在远端，保持可取回。
-    const facts = diagnostic('http')
-    if (
-      stage !== 'download' &&
-      !(stage === 'generate' && (res.status === 408 || res.status >= 500))
-    )
-      facts.outcome = 'rejected'
-    throw new MediaError(
-      stageMessage(
-        stage,
-        `HTTP ${res.status} ${httpStatusName(res.status)}：${await providerMessage(res)}`,
-        facts,
-      ),
-      { status: res.status, diagnostic: facts },
-    )
-  }
-  return res
 }
 
 /** 可以重发的只读请求失败：连接中断、静默超过上限、HTTP 408 / 429 / 5xx。 */
