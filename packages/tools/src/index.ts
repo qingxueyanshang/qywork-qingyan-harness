@@ -28,6 +28,7 @@ export {
   freeLandingPath,
   type GeneratedFile,
   type GenerateOutcome,
+  type GenerateSuccess,
   generateMedia,
   landFiles,
   MEDIA_TOOLS,
