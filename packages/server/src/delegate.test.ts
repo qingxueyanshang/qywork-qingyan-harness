@@ -932,8 +932,10 @@ describe('运行表按会话管理', () => {
   /**
    * 原始失败形状：向仍在运行的子 agent 再次派发时返回「已派出」，同一子会话中同时运行两轮，
    * 两轮写入同一批文件；先结束的一轮注销后，子会话与父会话都被报告为空闲。
+   * 之后改为拒绝，模型无法补充指令，只能用 shell 循环等待回执（「留一盏灯」会话 8 次被拒）。
+   * 现在任务排入子 agent 自己的队列；它在注入之前结束时，回执列出未送达的指令，队列清空。
    */
-  test('子 agent 执行中再次派发返回正在执行，同一子会话不会同时运行两轮', async () => {
+  test('子 agent 执行中再次派发：任务作为补充指令排队，不另起一轮；结束前未读取时回执列出', async () => {
     const cid = conversation()
     const where = spot(cid)
     const first = gate()
@@ -954,13 +956,25 @@ describe('运行表按会话管理', () => {
       task: '第二项',
       ...where,
     })
-    expect(again).toEqual({ ok: false, error: '子 agent 校对 正在执行，回执返回后再派发' })
+    expect(again).toEqual({
+      ok: true,
+      subagentId: child,
+      name: '校对',
+      kind: 'temp',
+      created: false,
+      injected: true,
+    })
     expect(runs.hasRun(child)).toBe(true)
     expect(runs.isBusy(cid)).toBe(true)
 
     first.open('第一项完成')
     await until(() => receipts.length === 1 && !runs.isBusy(cid), '第一轮回执')
     expect(listRuns(store, child)).toHaveLength(1)
+    expect(receipts[0]?.content).toContain('第一项完成')
+    expect(receipts[0]?.content).toContain(
+      '以下 1 条补充指令在子 agent 结束前未送达，需要时再次派发：\n- 第二项',
+    )
+    expect(runs.queueOf(child)).toEqual([])
 
     const later = await delegate(cid).dispatch({
       target: { subagent: child },
@@ -972,6 +986,122 @@ describe('运行表按会话管理', () => {
     expect(receipts[1]?.content).toContain('第二项完成')
     expect(listRuns(store, child)).toHaveLength(2)
     expect(runs.hasRun(child)).toBe(false)
+  })
+
+  test('补充指令在子 agent 的下一个 step 边界注入，同一轮读到并完成，回执不列未送达', async () => {
+    const cid = conversation()
+    const where = spot(cid)
+    let releaseFirst: (response: Response) => void = () => {}
+    let firstArrived = false
+    const toolTurn = sse([
+      { type: 'response.created', response: { id: 'resp_tool' } },
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { type: 'function_call', id: 'fc_i', call_id: 'call_i', name: 'write_file' },
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        item_id: 'fc_i',
+        delta: JSON.stringify({ path: 'inject-first.txt', mode: 'create', content: '一\n' }),
+      },
+      { type: 'response.output_item.done', output_index: 0, item: { type: 'function_call' } },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_tool',
+          status: 'completed',
+          usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 0 } },
+        },
+      },
+    ])
+    router = (body) => {
+      if (body.includes('顺便核对标点')) {
+        return new Response(textTurn('两项都完成'), { headers: SSE_HEADERS })
+      }
+      firstArrived = true
+      return new Promise<Response>((resolve) => {
+        releaseFirst = resolve
+      })
+    }
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '编辑' },
+      task: '写第一段',
+      ...where,
+    })
+    const child = res.subagentId as ConversationId
+    await until(() => firstArrived, '第一次请求发出')
+    const extra = await delegate(cid).dispatch({
+      target: { subagent: child },
+      task: '顺便核对标点',
+      ...where,
+    })
+    expect(extra).toMatchObject({ ok: true, injected: true })
+    releaseFirst(new Response(toolTurn, { headers: SSE_HEADERS }))
+    await until(() => receipts.length === 1 && !runs.isBusy(cid), '回执')
+    expect(receipts[0]?.content).toContain('两项都完成')
+    expect(receipts[0]?.content).not.toContain('未送达')
+    expect(listRuns(store, child)).toHaveLength(1)
+    const injected = listSteps(store, listRuns(store, child)[0]!.id).filter(
+      (s) => s.kind === 'user',
+    )
+    expect(injected.map((s) => s.content)).toEqual(['顺便核对标点'])
+  })
+
+  describe('在本轮内等待回执', () => {
+    /** 父轮在运行：回执经由 `deliver` 排入父会话的队列，与 `submitMessage` 在父轮运行时的路径相同。 */
+    const queued = (cid: ConversationId) =>
+      makeDelegate({
+        deps: { store, content, config, bus, runs, subagents },
+        workspaceRoot: dir,
+        conversationId: cid,
+        deliver: (followUp) => runs.enqueue(cid, followUp),
+      })
+
+    test('没有正在执行的子 agent 时立即返回 idle', async () => {
+      const cid = conversation()
+      expect(await queued(cid).awaitReceipt(5_000, new AbortController().signal)).toBe('idle')
+    })
+
+    test('等到回执进入队列即返回 received，回执仍只在队列中', async () => {
+      const cid = conversation()
+      const slow = gate()
+      router = () => slow.respond()
+      const port = queued(cid)
+      await port.dispatch({ target: { kind: 'temp', name: '审读' }, task: '读一遍', ...spot(cid) })
+      await until(slow.arrived, '子 agent 的请求已发出')
+      let settled = false
+      const waiting = port.awaitReceipt(10_000, new AbortController().signal).then((r) => {
+        settled = true
+        return r
+      })
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      expect(settled).toBe(false)
+      slow.open('读完了')
+      expect(await waiting).toBe('received')
+      const queue = runs.queueOf(cid)
+      expect(queue).toHaveLength(1)
+      expect(queue[0]).toMatchObject({ origin: 'subagent', steer: true })
+      expect(queue[0]?.content).toContain('读完了')
+      runs.takeNext(cid)
+    })
+
+    test('到期未收到回执返回 timeout；中止时以中止原因拒绝', async () => {
+      const cid = conversation()
+      const slow = gate()
+      router = () => slow.respond()
+      const port = queued(cid)
+      await port.dispatch({ target: { kind: 'temp', name: '慢' }, task: '慢慢做', ...spot(cid) })
+      await until(slow.arrived, '子 agent 的请求已发出')
+      expect(await port.awaitReceipt(40, new AbortController().signal)).toBe('timeout')
+      const stop = new AbortController()
+      const waiting = port.awaitReceipt(10_000, stop.signal)
+      stop.abort(new Error('已停止'))
+      await expect(waiting).rejects.toThrow('已停止')
+      subagents.interruptConversation(cid)
+      await until(() => !runs.isBusy(cid), '子 agent 结束')
+      expect(runs.queueOf(cid)).toEqual([])
+    })
   })
 
   /**

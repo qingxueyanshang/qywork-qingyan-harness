@@ -217,7 +217,7 @@ export interface SessionOptions {
    * 队列的真源在服务端的 `RunManager`（进程内，不写入磁盘）；此处将其接入 loop
    * 的对应端口，并将附件解析为内容块：loop 不访问磁盘。
    *
-   * 只传给顶层会话：成员会话与 CLI 没有队列，不传入即不注入。
+   * 顶层会话接收用户插入的消息，内置成员会话接收父会话派发的补充指令；外部 CLI 没有队列。
    */
   followUps?: (conversationId: ConversationId) => FollowUp[]
 }

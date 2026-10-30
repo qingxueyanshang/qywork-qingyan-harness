@@ -1,5 +1,6 @@
 /**
- * 覆盖范围：`subagent.ts`（派发单个子 agent）、`stop-subagent.ts`（停止子 agent）与 `workflow.ts`（派发编排图），
+ * 覆盖范围：`subagent.ts`（派发单个子 agent、按 id 或名称解析子 agent）、`stop-subagent.ts`（停止子 agent）、
+ * `wait-subagents.ts`（在本轮内等待回执）与 `workflow.ts`（派发编排图），
  * 以及它们在 `index.ts` 中的注册条件。
  *
  * 两个工具只返回「是否已派发」：产出与回执由派发通道在完成后作为消息送回，
@@ -7,11 +8,12 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { type ToolContext, ToolRegistry } from '@qywork/agent'
+import { type SubagentSummary, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
 import { stopSubagentTool } from './stop-subagent.ts'
 import { subagentTool } from './subagent.ts'
+import { waitSubagentsTool } from './wait-subagents.ts'
 import { workflowTool } from './workflow.ts'
 
 type Port = NonNullable<ToolContext['delegate']>
@@ -49,6 +51,22 @@ const GRAPH_DONE: GraphResult = {
   completed: true,
 }
 
+/** 模拟端口中本会话已有的子 agent：用例按这些 id 续接、停止。 */
+const KNOWN: SubagentSummary[] = [
+  ['cv_1', '写手', 'running'],
+  ['cv_2', '审查员', 'idle'],
+  ['cv_cli', 'claude 代码审查', 'idle'],
+  ['cv_r', '审查员', 'failed'],
+].map(([id, name, status]) => ({
+  id: id!,
+  kind: 'temp',
+  name: name!,
+  provider: 'fake',
+  model: 'm',
+  status: status as SubagentSummary['status'],
+  resumable: true,
+}))
+
 /** 模拟的派发端口：记录派发内容，返回预设结果。 */
 function stub(result: DispatchResult) {
   const calls: DispatchInput[] = []
@@ -62,13 +80,14 @@ function stub(result: DispatchResult) {
       roles: [{ id: 'reviewer', name: '审查员', description: '代码审查' }],
       clis: [{ id: 'claude', vendor: 'Anthropic', connected: true }],
     }),
-    subagents: async () => [],
+    subagents: async () => KNOWN,
     dispatch: async (input) => {
       calls.push(input)
       return result
     },
     runGraph: async () => GRAPH_DONE,
     inflight: () => [],
+    awaitReceipt: async () => 'idle' as const,
     stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
   }
   return { calls, port }
@@ -81,6 +100,104 @@ const sent = (extra: Partial<DispatchResult> = {}): DispatchResult => ({
   kind: 'temp',
   created: true,
   ...extra,
+})
+
+/**
+ * 原始失败形状：「留一盏灯」等会话中模型把子 agent id 抄错一位（cv_0mvuo06700000mz0tj 写成 cv_0mvumoo0670000mz0tj），
+ * 或用名称当 id，报错只说「本会话中没有子 agent X」，模型继续推测 id。
+ */
+describe('按 id 或名称引用子 agent', () => {
+  test('名称唯一时解析为 id 后派发；id 原样派发', async () => {
+    const s = stub(sent({ subagentId: 'cv_1', name: '写手', created: false }))
+    expect((await subagentTool.fn({ subagent: '写手', task: '接着写' }, ctx(s.port))).status).toBe(
+      'success',
+    )
+    expect(s.calls[0]?.target).toEqual({ subagent: 'cv_1' })
+    await subagentTool.fn({ subagent: 'cv_2', task: '再看' }, ctx(s.port))
+    expect(s.calls[1]?.target).toEqual({ subagent: 'cv_2' })
+  })
+
+  test('未找到时列出本会话子 agent 的名称、id 与状态，不派发', async () => {
+    const s = stub(sent())
+    const res = await subagentTool.fn({ subagent: 'cv_l', task: '接着写' }, ctx(s.port))
+    expect(res).toMatchObject({
+      status: 'failure',
+      message:
+        '本会话中没有子 agent cv_l。本会话的子 agent：写手（cv_1，执行中）；审查员（cv_2，空闲）；' +
+        'claude 代码审查（cv_cli，空闲）；审查员（cv_r，上次未成功）',
+    })
+    expect(s.calls).toHaveLength(0)
+  })
+
+  test('名称不唯一时要求改用 id，不替模型选择', async () => {
+    const s = stub(sent())
+    const res = await subagentTool.fn({ subagent: '审查员', task: '再看' }, ctx(s.port))
+    expect(res.status).toBe('failure')
+    expect(res.message).toStartWith('本会话有 2 个名为「审查员」的子 agent，请改用 id。')
+    expect(s.calls).toHaveLength(0)
+  })
+
+  test('停止与读取历史同样接受名称', async () => {
+    const stopped: string[] = []
+    const { port } = stub(sent())
+    port.stop = (id) => {
+      stopped.push(id)
+      return { ok: true, name: '写手' }
+    }
+    expect((await stopSubagentTool.fn({ subagent: '写手' }, ctx(port))).status).toBe('success')
+    expect(stopped).toEqual(['cv_1'])
+    const missing = await stopSubagentTool.fn({ subagent: 'backend' }, ctx(port))
+    expect(missing.message).toStartWith(
+      '本会话中没有子 agent backend。本会话的子 agent：写手（cv_1',
+    )
+    expect(stopped).toEqual(['cv_1'])
+  })
+
+  test('向正在执行的子 agent 派发时说明任务已作为补充指令送入', async () => {
+    const s = stub(sent({ subagentId: 'cv_1', name: '写手', created: false, injected: true }))
+    const res = await subagentTool.fn({ subagent: 'cv_1', task: '顺便改标题' }, ctx(s.port))
+    expect(res).toMatchObject({
+      status: 'success',
+      message:
+        '临时 写手（subagentId cv_1）正在执行，本次任务已作为补充指令送入它正在执行的一轮，在它的下一步生效；回执在它结束后送达',
+    })
+  })
+})
+
+describe('在本轮内等待回执', () => {
+  const waiting = (result: 'received' | 'timeout' | 'idle') => {
+    const asked: number[] = []
+    const { port } = stub(sent())
+    port.awaitReceipt = async (ms) => {
+      asked.push(ms)
+      return result
+    }
+    port.inflight = () => [{ name: '写手' }]
+    return { asked, port }
+  }
+
+  test('收到回执时只报告结果，回执内容由下一条消息送达', async () => {
+    const { asked, port } = waiting('received')
+    const res = await waitSubagentsTool.fn({}, ctx(port))
+    expect(res).toMatchObject({ status: 'success', message: '已收到回执，内容见下一条消息' })
+    expect(asked).toEqual([600_000])
+  })
+
+  test('到期时列出仍在执行的子 agent；等待时长有上限；没有子 agent 时如实说明', async () => {
+    const timeout = waiting('timeout')
+    const res = await waitSubagentsTool.fn({ timeout_seconds: 7200 }, ctx(timeout.port))
+    expect(res.message).toBe('等待 1800 秒未收到回执；仍在执行：写手')
+    expect(timeout.asked).toEqual([1_800_000])
+    const idle = waiting('idle')
+    expect((await waitSubagentsTool.fn({ timeout_seconds: 30 }, ctx(idle.port))).message).toBe(
+      '本会话没有正在执行的子 agent，也没有待送达的回执',
+    )
+    const bad = waiting('idle')
+    expect((await waitSubagentsTool.fn({ timeout_seconds: 0 }, ctx(bad.port))).status).toBe(
+      'failure',
+    )
+    expect(bad.asked).toEqual([])
+  })
 })
 
 describe('停止子 agent', () => {
@@ -119,6 +236,7 @@ describe('派发任务工具的注册条件', () => {
     const names = r.list().map((s) => s.name)
     expect(names).toContain('subagent')
     expect(names).toContain('stop_subagent')
+    expect(names).toContain('wait_subagents')
     expect(names).toContain('workflow')
   })
 
@@ -292,6 +410,10 @@ describe('派发单个子 agent', () => {
       withTodos(ctx(wrong.port), todos),
     )
     expect(wrongResult.status).toBe('failure')
+    // 失败时列出当前未完成的待办，模型据此逐字复制。
+    expect(wrongResult.message).toBe(
+      'parentTodo 不在当前未完成清单中：服务端。当前未完成：「服务端审计」、「网页端审计」',
+    )
     expect(wrong.calls).toHaveLength(0)
 
     const exact = stub(sent({ name: '审计', subagentId: 'cv_3' }))
@@ -372,6 +494,7 @@ describe('推进编排图', () => {
       subagents: async () => [],
       dispatch: async () => sent(),
       inflight: () => [],
+      awaitReceipt: async () => 'idle' as const,
       stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
       runGraph: async (input) => {
         if (input.call.kind === 'start') {
@@ -503,6 +626,7 @@ describe('推进编排图', () => {
       subagents: async () => [],
       dispatch: async () => sent(),
       inflight: () => [],
+      awaitReceipt: async () => 'idle' as const,
       stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
       runGraph: async (input) => {
         if (input.call.kind === 'start') {

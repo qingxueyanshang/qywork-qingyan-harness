@@ -9,6 +9,7 @@
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
 import { idArg } from './args.ts'
+import { resolveSubagentRef } from './subagent.ts'
 
 export const stopSubagentTool: ToolSpec = {
   name: 'stop_subagent',
@@ -22,7 +23,7 @@ export const stopSubagentTool: ToolSpec = {
       subagent: {
         type: 'string',
         description:
-          '要停止的子 agent 的 id：派发时返回的 subagentId，或运行上下文「本会话的子 agent」清单中的 id。',
+          '要停止的子 agent 的 id 或名称：派发时返回的 subagentId，或运行上下文「本会话的子 agent」清单中的 id 与名称。',
       },
     },
     required: ['subagent'],
@@ -44,8 +45,11 @@ export const stopSubagentTool: ToolSpec = {
       // 正常情况下不会执行到此处：没有派发通道时本工具不注册。
       return { status: 'failure' as const, message: '本次执行没有派发通道' }
     }
-    const id = idArg(args.subagent)
-    if (!id) return { status: 'failure' as const, message: '需填写要停止的子 agent 的 id' }
+    const ref = idArg(args.subagent)
+    if (!ref) return { status: 'failure' as const, message: '需填写要停止的子 agent 的 id 或名称' }
+    const found = await resolveSubagentRef(delegate, ref)
+    if ('error' in found) return { status: 'failure' as const, message: found.error }
+    const { id } = found
     const res = delegate.stop(id)
     if (!res.ok) return { status: 'failure' as const, message: res.error }
     return {

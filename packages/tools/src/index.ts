@@ -150,6 +150,7 @@ import { openInPanelTool } from './panel.ts'
 import { installPluginTool } from './plugin-install.ts'
 import { stopSubagentTool } from './stop-subagent.ts'
 import { subagentTool } from './subagent.ts'
+import { waitSubagentsTool } from './wait-subagents.ts'
 import { workflowTool } from './workflow.ts'
 
 /**
@@ -241,7 +242,9 @@ export function registerBuiltinTools(
     deleteScheduleTool,
     // 派发任务与编排按通道注册：没有派发通道时不注册这些工具，
     // 而不是注册必然返回「无法派发」的工具（B5，与 run_command 相同）。
-    ...(opts.delegate ? [defineRoleTool, subagentTool, stopSubagentTool, workflowTool] : []),
+    ...(opts.delegate
+      ? [defineRoleTool, subagentTool, stopSubagentTool, waitSubagentsTool, workflowTool]
+      : []),
     // 安装插件的工具同样按通道注册：无法安装插件时该工具没有降级形态。
     ...(opts.plugins ? [installPluginTool] : []),
   ]) {

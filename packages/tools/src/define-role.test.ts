@@ -55,6 +55,7 @@ function withModels(
       dispatch: async () => ({ ok: true, subagentId: 'cv_stub' }),
       runGraph: async () => ({ ok: true }),
       inflight: () => [],
+      awaitReceipt: async () => 'idle' as const,
       stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
     },
   }
