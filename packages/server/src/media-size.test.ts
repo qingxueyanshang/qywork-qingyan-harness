@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mediaDurationOf, mediaSizeOf } from './media-size.ts'
+import { mediaDurationOfFile } from '@qywork/agent'
+import { mediaSizeOf } from './media-size.ts'
 
 /** PNG 签名与 IHDR 头：尺寸只取决于这 24 字节。 */
 function pngHead(w: number, h: number): Uint8Array {
@@ -111,21 +112,39 @@ describe('媒体像素宽高', () => {
   })
 })
 
-describe('视频时长', () => {
+/** 播放时长由 `@qywork/agent` 的 `mediaDurationOfFile` 读取，画布与生成工具共用；此处按文件路径核对。 */
+describe('播放时长', () => {
+  test('音频文件按文件头计算；扩展名不是音频或视频时不读取', async () => {
+    const pcm = 22050 * 2 * 3
+    const wav = Buffer.alloc(44 + pcm)
+    wav.write('RIFF', 0, 'latin1')
+    wav.writeUInt32LE(36 + pcm, 4)
+    wav.write('WAVEfmt ', 8, 'latin1')
+    wav.writeUInt32LE(16, 16)
+    wav.writeUInt16LE(1, 20)
+    wav.writeUInt16LE(1, 22)
+    wav.writeUInt32LE(22050, 24)
+    wav.writeUInt32LE(44100, 28)
+    wav.writeUInt16LE(2, 32)
+    wav.writeUInt16LE(16, 34)
+    wav.write('data', 36, 'latin1')
+    wav.writeUInt32LE(pcm, 40)
+    expect(mediaDurationOfFile(await file('voice.wav', new Uint8Array(wav)))).toBe(3)
+    expect(mediaDurationOfFile(await file('voice.bin', new Uint8Array(wav)))).toBeNull()
+  })
+
   test('取 mvhd 的 duration / timescale，支持两个版本', async () => {
+    expect(mediaDurationOfFile(await file('a.mp4', mp4(tkhd(1920, 1080), mvhd(1000, 5040))))).toBe(
+      5.04,
+    )
     expect(
-      await mediaDurationOf(await file('a.mp4', mp4(tkhd(1920, 1080), mvhd(1000, 5040)))),
-    ).toBe(5.04)
-    expect(
-      await mediaDurationOf(await file('b.mov', mp4(tkhd(1920, 1080), mvhd(90000, 900000, 1)))),
+      mediaDurationOfFile(await file('b.mov', mp4(tkhd(1920, 1080), mvhd(90000, 900000, 1)))),
     ).toBe(10)
   })
 
   test('不是 mp4 / mov、无法读取、timescale 为 0 时返回 null', async () => {
-    expect(await mediaDurationOf(await file('a.png', pngHead(10, 10)))).toBeNull()
-    expect(
-      await mediaDurationOf(await file('cut.mp4', mp4(tkhd(10, 10)).subarray(0, 60))),
-    ).toBeNull()
-    expect(await mediaDurationOf(await file('z.mp4', mp4(tkhd(10, 10), mvhd(0, 100))))).toBeNull()
+    expect(mediaDurationOfFile(await file('a.png', pngHead(10, 10)))).toBeNull()
+    expect(mediaDurationOfFile(await file('cut.mp4', mp4(tkhd(10, 10)).subarray(0, 60)))).toBeNull()
+    expect(mediaDurationOfFile(await file('z.mp4', mp4(tkhd(10, 10), mvhd(0, 100))))).toBeNull()
   })
 })

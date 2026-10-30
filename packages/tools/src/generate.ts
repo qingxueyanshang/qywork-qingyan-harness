@@ -9,8 +9,15 @@
  */
 
 import { lstat, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
-import { dirname, join, parse } from 'node:path'
-import type { MediaCall, MediaCallResult, MediaPort, ToolOutcome, ToolSpec } from '@qywork/agent'
+import { dirname, join, parse, resolve } from 'node:path'
+import {
+  type MediaCall,
+  type MediaCallResult,
+  type MediaPort,
+  mediaDurationOfFile,
+  type ToolOutcome,
+  type ToolSpec,
+} from '@qywork/agent'
 import { isImageResult, type MediaFile, type MediaImageResult, type MediaInput } from '@qywork/ai'
 import {
   type GenerateOutput,
@@ -663,8 +670,15 @@ function pathList(raw: unknown): string[] {
   return raw === undefined || raw === null || raw === '' ? [] : [String(raw)]
 }
 
-/** 把生成结果写成供模型读取的回执。 */
-function receipt(outcome: GenerateOutcome, noun: (count: number) => string): ToolOutcome {
+/**
+ * 把生成结果写成供模型读取的回执。音频与视频附上播放时长（`mediaDurationOfFile`，与画布的生成结果同一读取函数）：
+ * 时长是验收音色、核对分镜的依据，不附时长时模型只能另写脚本读取文件头。
+ */
+function receipt(
+  outcome: GenerateOutcome,
+  noun: (count: number) => string,
+  roots: RootsInput,
+): ToolOutcome {
   if (!outcome.ok) {
     return {
       status: 'failure',
@@ -680,15 +694,27 @@ function receipt(outcome: GenerateOutcome, noun: (count: number) => string): Too
       ...(outcome.diagnostic ? { errorKind: `media_${outcome.diagnostic.kind}` } : {}),
     }
   }
+  const files = outcome.files.map((f) => {
+    const duration = mediaDurationOfFile(resolve(workspaceOf(roots), f.path))
+    return {
+      path: f.path,
+      mime: f.mime,
+      bytes: f.bytes,
+      ...(duration === null ? {} : { duration }),
+    }
+  })
+  const listed = files.map((f) =>
+    f.duration === undefined ? f.path : `${f.path}（${Math.round(f.duration * 100) / 100} 秒）`,
+  )
   return {
     status: 'success',
     message:
-      `已生成${noun(outcome.files.length)}（${outcome.provider} / ${outcome.model}）：${outcome.files.map((f) => f.path).join('、')}` +
+      `已生成${noun(outcome.files.length)}（${outcome.provider} / ${outcome.model}）：${listed.join('、')}` +
       (outcome.warning ? `\n${outcome.warning}` : ''),
     data: {
       provider: outcome.provider,
       model: outcome.model,
-      files: outcome.files.map((f) => ({ path: f.path, mime: f.mime, bytes: f.bytes })),
+      files,
       ...(outcome.warning ? { warning: outcome.warning } : {}),
     },
     fileChanges: outcome.files.map((f) => ({ path: f.path, changeType: 'created' as const })),
@@ -761,7 +787,7 @@ export const generateImageTool: ToolSpec = {
       ...(common.pick ? { pick: common.pick } : {}),
       ...(common.output ? { output: common.output } : {}),
     })
-    return receipt(outcome, (n) => ` ${n} 张`)
+    return receipt(outcome, (n) => ` ${n} 张`, rootsOf(ctx))
   },
 }
 
@@ -841,7 +867,7 @@ export const generateVideoTool: ToolSpec = {
         ctx.emit('progress', `已提交远端任务 ${taskId}，记录位于 ${record}\n`),
       onStatus,
     })
-    return receipt(outcome, () => '视频')
+    return receipt(outcome, () => '视频', rootsOf(ctx))
   },
 }
 
@@ -877,7 +903,7 @@ export const retrieveMediaTool: ToolSpec = {
       record: path,
       onStatus: (status: string) => ctx.emit('progress', `${status}\n`),
     })
-    return receipt(outcome, () => '产物')
+    return receipt(outcome, () => '产物', rootsOf(ctx))
   },
 }
 
@@ -937,7 +963,7 @@ export const generateAudioTool: ToolSpec = {
       ...(common.pick ? { pick: common.pick } : {}),
       ...(common.output ? { output: common.output } : {}),
     })
-    return receipt(outcome, () => '音频')
+    return receipt(outcome, () => '音频', rootsOf(ctx))
   },
 }
 
