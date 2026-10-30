@@ -23,7 +23,8 @@ export const workflowTool: ToolSpec = {
     '两种调用各自的参数：首次派发只带 goal、nodes、maxConcurrent；审查只带 workflowId、checkpointId、decision、note、revisions。' +
     'checkpoint 的连接方式：并行的子 agent 节点共用一个 checkpoint（needs 列出全部这些节点），而不是每个节点各连接一个；' +
     'checkpoint 之间串成一条链；每个子 agent 节点都要位于某个 checkpoint 的上游。不符合该规则的图在加载期被拒绝。' +
-    '节点按 kind 新建：role 按角色 id 新建、temp 为临时子 agent（name 必填）、cli 为外部 CLI；指向本会话已有子 agent 的节点填 subagent。',
+    '子 agent 节点的目标由填写的字段决定：填 role 按角色新建，填 cli 派给外部 CLI，只填 name 新建临时子 agent，填 subagent 指向本会话已有的子 agent，' +
+    '这几项只填一种；checkpoint 节点填 kind 为 checkpoint。',
   parameters: {
     type: 'object',
     properties: {
@@ -38,29 +39,27 @@ export const workflowTool: ToolSpec = {
             id: { type: 'string', description: '节点唯一 ID' },
             kind: {
               type: ['string', 'null'],
-              enum: ['role', 'temp', 'cli', 'checkpoint', null],
-              description:
-                '节点种类。role：按角色库里的角色新建子 agent，同时填 role；temp：新建临时子 agent，同时填 name；' +
-                'cli：外部 CLI，同时填 cli；checkpoint：当前会话审查关口。指向本会话已有子 agent 时不填 kind，改填 subagent。',
+              enum: ['checkpoint', null],
+              description: 'checkpoint 节点填 checkpoint（当前会话审查关口）；子 agent 节点不填。',
             },
             role: {
               type: 'string',
-              description: '角色 id，运行上下文「角色」清单里的一项。kind 为 role 时填',
+              description: '角色 id，运行上下文「角色」清单里的一项。填写即按该角色新建子 agent',
             },
             name: {
               type: 'string',
               description:
-                '子 agent 的名称。kind 为 temp 时必填；role / cli 可选，不填时使用角色名或 CLI 名；' +
-                '指向已有子 agent 时可选，填写后改为该名称',
+                '子 agent 的名称。没有 role、cli、subagent 时按该名称新建临时子 agent；与 role / cli 同填时为新子 agent 的名称，' +
+                '不填时使用角色名或 CLI 名；指向已有子 agent 时可选，填写后改为该名称',
             },
             cli: {
               type: 'string',
-              description: '外部 CLI 的 id，运行上下文清单里的一项。kind 为 cli 时填',
+              description: '外部 CLI 的 id，运行上下文清单里的一项。填写即派给该 CLI',
             },
             subagent: {
               type: 'string',
               description:
-                '本会话已有子 agent 的 id。填写后该节点在该子 agent 的上下文中继续，不再填 kind、role、cli；' +
+                '本会话已有子 agent 的 id。填写后该节点在该子 agent 的上下文中继续，不再填 role、cli；' +
                 '节点任务与其现有名称不符时同时填写 name',
             },
             task: { type: 'string', description: '子 agent 节点任务' },

@@ -174,7 +174,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：单项任务用 subagent 委派给一个子 agent；子 agent 在独立会话中运行，执行过程不占用当前上下文。调用在派发后立即返回，子 agent 完成后回执以消息形式送达本会话，不要为等待回执反复调用。首次按 kind 创建：role 按角色，temp 为临时；cli 是本机另一个进程，使用其自身的模型和账号，执行过程不可见，仅在用户用 `@cli:id` 点名或明确要求时派发。之后按 subagentId 或名称续接，三种类型均可续接；向正在执行的角色或临时子 agent 派发时，任务作为补充指令在它的下一步生效。用户用 `@角色id` 点名时，委派给该角色。',
+    line: '- 子 agent：单项任务用 subagent 委派给一个子 agent；子 agent 在独立会话中运行，执行过程不占用当前上下文。调用在派发后立即返回，子 agent 完成后回执以消息形式送达本会话，不要为等待回执反复调用。首次派发时填 role 按角色新建，只填 name 新建临时子 agent，填 cli 派给外部 CLI；cli 是本机另一个进程，使用其自身的模型和账号，执行过程不可见，仅在用户用 `@cli:id` 点名或明确要求时派发。之后按 subagentId 或名称续接，三种类型均可续接；向正在执行的角色或临时子 agent 派发时，任务作为补充指令在它的下一步生效。用户用 `@角色id` 点名时，委派给该角色。',
   },
   {
     tool: 'stop_subagent',

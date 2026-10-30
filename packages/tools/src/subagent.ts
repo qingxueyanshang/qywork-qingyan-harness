@@ -51,7 +51,8 @@ export const subagentTool: ToolSpec = {
   name: 'subagent',
   description:
     '把一项任务委派给一个子 agent。派发后立即返回，子 agent 完成后回执会作为一条消息送到本会话，不要为了等回执反复调用。' +
-    '首次派发按 kind 新建：role 按角色 id 新建、temp 为临时子 agent（name 必填）、cli 为外部 CLI；返回其 subagentId。' +
+    '目标由填写的字段决定：填 role 按角色新建，填 cli 派给外部 CLI，只填 name 新建临时子 agent，填 subagent 续接本会话已有的子 agent；' +
+    '这几项只填一种，新建时返回 subagentId。' +
     '之后向同一个子 agent 派发任务时将 subagent 填为该 id 或名称，子 agent 在自己的会话中继续，三种种类均可续接。' +
     '向正在执行的角色或临时子 agent 派发时，任务作为补充指令送入它正在执行的一轮，在它的下一步生效；' +
     '它结束前未读取的补充指令在回执中列出。外部 CLI 执行中再次派发返回「正在执行」，收到其回执后再派发。' +
@@ -60,32 +61,25 @@ export const subagentTool: ToolSpec = {
   parameters: {
     type: 'object',
     properties: {
-      kind: {
-        type: ['string', 'null'],
-        enum: ['role', 'temp', 'cli', null],
-        description:
-          '新建子 agent 的种类。role：按角色库里的角色新建，同时填 role；temp：临时子 agent，同时填 name；' +
-          'cli：外部 CLI，同时填 cli。续接已有子 agent 时不填 kind，改填 subagent。',
-      },
       role: {
         type: 'string',
-        description: '角色 id，运行上下文「角色」清单里的一项。kind 为 role 时填。',
+        description: '角色 id，运行上下文「角色」清单里的一项。填写即按该角色新建子 agent。',
       },
       name: {
         type: 'string',
         description:
-          '子 agent 的名称。kind 为 temp 时必填；role / cli 可选，不填时使用角色名或 CLI 名；' +
-          '续接已有子 agent 时可选，填写后改为该名称。',
+          '子 agent 的名称。没有 role、cli、subagent 时按该名称新建临时子 agent；与 role / cli 同填时为新子 agent 的名称，' +
+          '不填时使用角色名或 CLI 名；续接已有子 agent 时可选，填写后改为该名称。',
       },
       cli: {
         type: 'string',
-        description: '外部 CLI 的 id，运行上下文清单里的一项。kind 为 cli 时填。',
+        description: '外部 CLI 的 id，运行上下文清单里的一项。填写即派给该 CLI。',
       },
       subagent: {
         type: 'string',
         description:
           '本会话已有子 agent 的 id 或名称（上一次派发返回的 subagentId，或运行上下文「本会话的子 agent」清单里的 id 与名称）。' +
-          '填写后在该子 agent 的上下文中继续，不再填 kind、role、cli；本次任务与其现有名称不符时同时填写 name。',
+          '填写后在该子 agent 的上下文中继续，不再填 role、cli；本次任务与其现有名称不符时同时填写 name。',
       },
       task: {
         type: 'string',
