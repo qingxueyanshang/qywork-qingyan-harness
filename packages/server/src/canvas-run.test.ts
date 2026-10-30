@@ -504,6 +504,43 @@ describe('画布运行：图像', () => {
   })
 })
 
+/** 原始失败形状：音色卡的运行结果只有路径没有秒数，模型无法据此验收音色长度。 */
+describe('画布运行：音频', () => {
+  test('结果带产物的实际时长', async () => {
+    const { ws, svc, ids } = await setup([
+      { op: 'add_generate', ref: '$s', output: 'audio', prompt: '你好，我是林禾' },
+    ])
+    const fake = fakePort()
+    const pcm = 22050 * 2 * 3
+    const wav = Buffer.alloc(44 + pcm)
+    wav.write('RIFF', 0, 'latin1')
+    wav.writeUInt32LE(36 + pcm, 4)
+    wav.write('WAVEfmt ', 8, 'latin1')
+    wav.writeUInt32LE(16, 16)
+    wav.writeUInt16LE(1, 20)
+    wav.writeUInt16LE(1, 22)
+    wav.writeUInt32LE(22050, 24)
+    wav.writeUInt32LE(44100, 28)
+    wav.writeUInt16LE(2, 32)
+    wav.writeUInt16LE(16, 34)
+    wav.write('data', 36, 'latin1')
+    wav.writeUInt32LE(pcm, 40)
+    const run = await svc.run(ws, PATH, ids.$s!, { media: fake.port })
+    const p = await fake.next()
+    p.finish({
+      ok: true,
+      provider: 'qwen',
+      model: 'qwen-audio-3.1-tts-flash',
+      files: [{ bytes: new Uint8Array(wav), mime: 'audio/wav' }],
+    })
+    const result = await run.done
+    if (!result.ok) throw new Error(result.message)
+    expect(result.outputs).toEqual([
+      { path: expect.stringMatching(/^generated\/.+\.wav$/), duration: 3 },
+    ])
+  })
+})
+
 describe('画布运行：Art', () => {
   const page = (w: number, h: number, body: string) =>
     new TextEncoder().encode(

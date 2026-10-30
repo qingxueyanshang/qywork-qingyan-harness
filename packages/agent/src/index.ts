@@ -95,6 +95,8 @@ export {
 } from './loop/request.ts'
 export { createSummaryTrace } from './loop/summary-trace.ts'
 export type { CompactionPort, CompactionRunInput, LoopPersistence } from './loop/types.ts'
+// 视频的时长与画面尺寸：tools 的读取、runtime 的附件与压缩估算、server 的画布尺寸共用同一读取函数；媒体播放时长见 `mediaDurationOfFile`
+export { mediaDurationOfFile } from './media-duration.ts'
 // run_command 的拒绝清单：runtime 的 Session 在放行之前调用它裁决
 export { decideCommand } from './policy.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
@@ -149,5 +151,4 @@ export {
   ToolRegistry,
   type ToolSpec,
 } from './registry.ts'
-// 视频的时长与画面尺寸：tools 的读取、runtime 的附件与压缩估算、server 的画布尺寸共用同一读取函数
 export { movieMetadataOfFile, videoMetaOf } from './video-meta.ts'

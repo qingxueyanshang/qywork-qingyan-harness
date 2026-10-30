@@ -26,6 +26,7 @@ export {
   resolveArtRef,
   withArtViewport,
 } from './domain/art.ts'
+export { audioDurationOf } from './domain/audio-duration.ts'
 // 画布文档：格式、操作与不变式。服务端画布服务、画布工具与界面共用同一套规则
 export {
   addVersions,

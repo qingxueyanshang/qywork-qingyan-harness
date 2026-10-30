@@ -394,6 +394,50 @@ describe('generate_audio', () => {
     })
     expect(out.fileChanges?.map((c) => c.path)).toEqual(['voice/hello.wav'])
   })
+
+  /**
+   * 原始失败形状：《寄给今天》4 段音色的回执只有路径没有秒数，模型自行读取文件头，又被流式占位的 WAV 头误导为约 13.5 小时。
+   * 样本按实际返回的两种格式构造：千问语音合成修正头部后的 WAV（22050 Hz 单声道 16bit），带 ID3 标签的 MPEG-2 Layer III MP3。
+   */
+  test('回执与结果数据给出音频的实际时长', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gena-'))
+    const pcm = 22050 * 2 * 3.68
+    const wav = Buffer.alloc(44 + pcm)
+    wav.write('RIFF', 0, 'latin1')
+    wav.writeUInt32LE(36 + pcm, 4)
+    wav.write('WAVEfmt ', 8, 'latin1')
+    wav.writeUInt32LE(16, 16)
+    wav.writeUInt16LE(1, 20)
+    wav.writeUInt16LE(1, 22)
+    wav.writeUInt32LE(22050, 24)
+    wav.writeUInt32LE(44100, 28)
+    wav.writeUInt16LE(2, 32)
+    wav.writeUInt16LE(16, 34)
+    wav.write('data', 36, 'latin1')
+    wav.writeUInt32LE(pcm, 40)
+    const id3 = Buffer.alloc(91)
+    id3.write('ID3', 0, 'latin1')
+    id3[3] = 3
+    id3[9] = 81
+    const frame = Buffer.alloc(104)
+    Buffer.from([0xff, 0xf3, 0x40, 0xc0]).copy(frame)
+    const mp3 = Buffer.concat([id3, ...Array.from({ length: 192 }, () => frame)])
+    const { generateAudioTool } = await import('./generate.ts')
+    const said = async (bytes: Buffer, mime: string) => {
+      answer = {
+        ok: true,
+        provider: 'qwen',
+        model: 'qwen-audio-3.1-tts-flash',
+        files: [{ bytes: new Uint8Array(bytes), mime }],
+      }
+      return generateAudioTool.fn({ text: '你好' }, ctx(root))
+    }
+    const a = await said(wav, 'audio/wav')
+    expect(a.message).toMatch(/generated\/\d{8}-\d{6}(-\d+)?\.wav（3\.68 秒）$/)
+    expect((a.data as { files: { duration?: number }[] }).files[0]?.duration).toBe(3.68)
+    const b = await said(mp3, 'audio/mpeg')
+    expect(b.message).toMatch(/\.mp3（5\.02 秒）$/)
+  })
 })
 
 /** 端到端测试中模型请求 `.mp3`，百炼返回 WAV：按请求原样落盘时文件名与内容不一致。 */

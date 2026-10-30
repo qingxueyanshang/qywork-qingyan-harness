@@ -1,6 +1,6 @@
 /**
- * 读取工作区中图片、视频与 Art 页面的像素宽高，供画布节点按实际比例确定尺寸；读取视频时长，用于核对时间线片段。
- * 只读取文件头与索引，不解码画面。
+ * 读取工作区中图片、视频与 Art 页面的像素宽高，供画布节点按实际比例确定尺寸。只读取文件头与索引，不解码画面。
+ * 播放时长不在此读取，见 `@qywork/agent` 的 `mediaDurationOfFile`。
  *
  * 图片支持 PNG / JPEG / GIF / WebP（`imageSizeOf`）；视频支持 ISO 基础媒体格式（mp4 / mov / m4v），
  * 取第一条宽高非零的轨道；HTML 取 viewport 标签声明的宽高（`artViewportOf`）。
@@ -27,16 +27,6 @@ export async function mediaSizeOf(abs: string): Promise<CanvasPixels | null> {
     // 无法读取时按默认尺寸处理：尺寸只影响显示比例。
   }
   return null
-}
-
-/** 视频的时长（秒），取自 `mvhd`。不是 mp4 / mov / m4v 或无法读取时返回 `null`，调用方不做时长核对。 */
-export async function mediaDurationOf(abs: string): Promise<number | null> {
-  try {
-    if (!VIDEO_RE.test(abs)) return null
-    return movieMetadataOfFile(abs)?.duration ?? null
-  } catch {
-    return null
-  }
 }
 
 async function imageHead(abs: string): Promise<CanvasPixels | null> {

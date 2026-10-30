@@ -24,7 +24,12 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import type { CanvasPort, CanvasRender, MediaPort } from '@qywork/agent'
+import {
+  type CanvasPort,
+  type CanvasRender,
+  type MediaPort,
+  mediaDurationOfFile,
+} from '@qywork/agent'
 import { type TaskPhase, taskPhase } from '@qywork/ai'
 import {
   type AgentEvent,
@@ -87,7 +92,7 @@ import {
 import type { BrowserCoordinator } from './browser/coordinator.ts'
 import { agentView, checkActiveParams, prepareAgentOps } from './canvas-agent-ops.ts'
 import { findByName } from './files.ts'
-import { mediaDurationOf, mediaSizeOf } from './media-size.ts'
+import { mediaSizeOf } from './media-size.ts'
 
 /** 画布文件的后缀。文件树按它把文件交给画布页签打开。 */
 export const CANVAS_SUFFIX = '.canvas.json'
@@ -1298,7 +1303,7 @@ export class CanvasService {
     if (shown && !failed.length) {
       const outputs = await Promise.all(
         paths.map(async (path) => {
-          const duration = await mediaDurationOf(join(root, path))
+          const duration = mediaDurationOfFile(join(root, path))
           return {
             path,
             ...sizeField(made.sizes.get(path)),
@@ -2200,7 +2205,7 @@ export class CanvasService {
   private async normalizeClip(workspaceRoot: string, clip: CanvasClip): Promise<CanvasClip> {
     const abs = await this.existingFile(workspaceRoot, clip.path)
     const path = await this.relativeTo(workspaceRoot, abs)
-    const duration = await mediaDurationOf(abs)
+    const duration = mediaDurationOfFile(abs)
     // 容差为一帧：界面按播放器读取的时长裁剪，与 `mvhd` 的取整值可能相差几毫秒。
     if (duration !== null && clip.out > duration + 1 / 30) {
       throw new CanvasFailure(

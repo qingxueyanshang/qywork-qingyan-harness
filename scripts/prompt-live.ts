@@ -43,7 +43,8 @@ import {
   listSteps,
   Store,
 } from '@qywork/store'
-import { mediaDurationOf, mediaSizeOf } from '../packages/server/src/media-size.ts'
+import { mediaDurationOfFile } from '../packages/agent/src/media-duration.ts'
+import { mediaSizeOf } from '../packages/server/src/media-size.ts'
 
 const WS_ROOT = join(import.meta.dir, '..', '.tmp', 'prompt-live')
 
@@ -1195,7 +1196,7 @@ async function runReal(store: Store, config: QyConfig, ref: ModelRef): Promise<V
         if (!path) return null
         return {
           size: await mediaSizeOf(join(ws, path)),
-          seconds: await mediaDurationOf(join(ws, path)),
+          seconds: mediaDurationOfFile(join(ws, path)),
         }
       }),
     )
