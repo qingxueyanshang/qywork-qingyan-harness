@@ -6,7 +6,8 @@
  *
  * **派发后立即返回，完成以事件通知。** `dispatch` 只负责启动子 agent；子 agent 完成之后，
  * 此处写入节点终态、组装回执，再将回执作为一条消息投递到父会话（父会话忙碌时在下一个 step
- * 边界注入，空闲时立即启动一轮）。不设等待与汇合，本轮结束时也不停止子 agent。
+ * 边界注入，空闲时立即启动一轮）。派发不等待，本轮结束时也不停止子 agent；需要在本轮内等待时，
+ * `awaitReceipt` 只等到回执进入队列为止，回执本身仍由队列送达。
  *
  * **单一派发函数。** `subagent` 工具的单次派发与 `workflow` 图上的每个节点都经由它：
  * 解析目标 → 子 agent 记录（新建或已有）→ 按种类执行 → 完成回调。不区分内置与外部 CLI。
@@ -536,6 +537,15 @@ export function makeDelegate(ctx: {
      * 启动第二个循环，两轮同时写入同一批文件。占位由成员轮次的 `register` 承接，未能启动时释放。
      */
     if (!deps.runs.reserve(id)) {
+      /*
+       * 正在执行的内置子 agent：任务排入它自己的跟进队列，在它下一个 step 边界注入，与用户向顶层会话插入消息是同一条路径。
+       * 不写入节点状态：子 agent 的状态按最后一次出现在卡片上的节点判定（`listSubagents`），本次调用不开始也不结束任何执行。
+       * 外部 CLI 没有队列，图节点按节点推进，两者仍拒绝。
+       */
+      if (!deps.runs.updating && !resolved.cli && !at.workflow) {
+        deps.runs.enqueue(id, { id: `rc_${crypto.randomUUID()}`, content: task, steer: true })
+        return { ok: true, subagentId: id, name: label, ...kindOf, created: false, injected: true }
+      }
       return refuse(
         { label, ...kindOf, subagentId: id },
         deps.runs.updating
@@ -688,6 +698,9 @@ export function makeDelegate(ctx: {
     const label = resolved.conversation.title
     const kindOf = resolved.conversation.source ? { kind: resolved.conversation.source } : {}
     const nodeId = at.nodeId ?? SUBAGENT_NODE_ID
+    // 子 agent 结束时仍在其队列中的补充指令已无处注入：取出并在回执中列出，由父会话决定是否再次派发。
+    const missed: string[] = []
+    for (let f = deps.runs.takeNext(id); f; f = deps.runs.takeNext(id)) missed.push(f.content)
     deps.subagents.remove(conversationId, id, controller)
     deps.runs.announce(conversationId)
 
@@ -721,7 +734,10 @@ export function makeDelegate(ctx: {
       continueGraph(at.workflow.workflowId, at, { nodeId, failed: !outcome.ok })
       return
     }
-    send([head(resolved, outcome.ok, error), output].filter(Boolean).join('\n'), 'subagent')
+    const unread = missed.length
+      ? `以下 ${missed.length} 条补充指令在子 agent 结束前未送达，需要时再次派发：\n${missed.map((m) => `- ${m}`).join('\n')}`
+      : ''
+    send([head(resolved, outcome.ok, error), output, unread].filter(Boolean).join('\n'), 'subagent')
   }
 
   /** 回执首行：执行者与结果。种类名称与界面、提示词使用同一张表。 */
@@ -908,6 +924,20 @@ export function makeDelegate(ctx: {
 
     inflight() {
       return deps.subagents.listOf(conversationId).map((entry) => ({ name: entry.name }))
+    },
+
+    /**
+     * 回执经由 `deliver` 进入本会话的队列（本轮在运行，因此排入队列而不是另起一轮），子 agent 结束时从运行表移除；
+     * 两者都会使队列或忙态变化（`RunManager.changed`），每次变化后重新判定。
+     */
+    async awaitReceipt(timeoutMs, signal) {
+      const deadline = Date.now() + timeoutMs
+      for (;;) {
+        if (deps.runs.queueOf(conversationId).some((f) => f.origin)) return 'received'
+        if (!deps.subagents.listOf(conversationId).length) return 'idle'
+        const left = deadline - Date.now()
+        if (left <= 0 || !(await deps.runs.changed(conversationId, left, signal))) return 'timeout'
+      }
     },
 
     stop(subagentId) {

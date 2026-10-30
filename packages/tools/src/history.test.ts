@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`history.ts` 的 `read_history`。
+ * 覆盖范围：`history.ts` 的 `read_history`（子 agent 按 id 或名称解析的部分同时覆盖 `subagent.ts` 的 `resolveSubagentRef`）。
  *
  * 本工具与压缩配合：被折叠的原文始终保存在账本中，本工具负责把它交还给模型。
  * 因此本文件锁定三项行为：取回的是逐字原文；端口未接入时如实报告，而不是报告未找到；
@@ -107,6 +107,35 @@ describe('读取子 agent 的历史', () => {
     const r = await run({ subagent: 'cv_other', message_id: 'ms_c' })
     expect(r.status).toBe('failure')
     expect(r.message).toContain('没有子 agent cv_other')
+  })
+
+  test('有派发通道时按名称读取；未找到时列出本会话的子 agent；只填 subagent 时提示用 query', async () => {
+    const delegate = {
+      subagents: async () => [
+        {
+          id: 'cv_child',
+          kind: 'temp' as const,
+          name: '审读',
+          provider: 'fake',
+          model: 'm',
+          status: 'idle' as const,
+          resumable: true,
+        },
+      ],
+    } as unknown as NonNullable<ToolContext['delegate']>
+    const withDelegate = { ...ctx(memHistory()), delegate }
+    const named = await readHistoryTool.fn({ subagent: '审读', message_id: 'ms_c' }, withDelegate)
+    expect((named.data as { content: string }).content).toBe('子 agent 的产出')
+    const typo = await readHistoryTool.fn({ subagent: 'cv_chlid', query: '产出' }, withDelegate)
+    expect(typo).toMatchObject({
+      status: 'failure',
+      errorKind: 'not_found',
+      message: '本会话中没有子 agent cv_chlid。本会话的子 agent：审读（cv_child，空闲）',
+    })
+    const bare = await readHistoryTool.fn({ subagent: '审读' }, withDelegate)
+    expect(bare.message).toBe(
+      '需提供 message_id、step_id、call_id、query 之一；读取子 agent 的历史同样需要其中一项，id 未知时用 query 检索',
+    )
   })
 })
 

@@ -162,6 +162,50 @@ export class RunManager {
       conversationId,
       busy: this.isBusy(conversationId),
     })
+    this.wake(conversationId)
+  }
+
+  /** 等待该会话的忙态或队列变化的调用方。见 `changed`。 */
+  private readonly watchers = new Map<string, Set<() => void>>()
+
+  /**
+   * 等到该会话的忙态或跟进消息队列下一次变化（`announce` / `announceQueue`），返回 true；`timeoutMs` 到期返回 false；
+   * `signal` 中止时以中止原因拒绝。只报告发生了变化，变化后的状态由调用方重新读取。
+   */
+  changed(
+    conversationId: ConversationId,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    signal.throwIfAborted()
+    return new Promise((resolve, reject) => {
+      const watchers = this.watchers.get(conversationId) ?? new Set()
+      this.watchers.set(conversationId, watchers)
+      const settle = () => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', abort)
+        watchers.delete(wake)
+        if (!watchers.size) this.watchers.delete(conversationId)
+      }
+      const wake = () => {
+        settle()
+        resolve(true)
+      }
+      const abort = () => {
+        settle()
+        reject(signal.reason)
+      }
+      const timer = setTimeout(() => {
+        settle()
+        resolve(false)
+      }, timeoutMs)
+      watchers.add(wake)
+      signal.addEventListener('abort', abort, { once: true })
+    })
+  }
+
+  private wake(conversationId: ConversationId): void {
+    for (const wake of [...(this.watchers.get(conversationId) ?? [])]) wake()
   }
 
   /**
@@ -237,6 +281,7 @@ export class RunManager {
       { type: 'queue.changed', conversationId, queue: this.queueOf(conversationId) },
       conversationId,
     )
+    this.wake(conversationId)
   }
 
   /** 该会话排队中的跟进消息。返回副本：调用方用它发送事件，不应修改内部数据。 */

@@ -295,7 +295,7 @@ export async function startRun(
               ),
             }
           : {}),
-        // 跟进消息队列同样只提供给顶层会话：成员会话不显示在界面上，用户无法向其插入消息。
+        // 用户插入的消息在本会话的 step 边界注入；成员会话的队列由 `team-run.ts` 接入，只接收父会话派发的补充指令。
         followUps: (id) => deps.runs.takeSteered(id),
       })
 

@@ -409,6 +409,7 @@ describe('正常响应结束不等于任务完成', () => {
       dispatch: async () => ({ ok: true, subagentId: 'cv_child', name: '赛车-glm', kind: 'temp' }),
       runGraph: async () => ({ ok: true }),
       inflight: () => [],
+      awaitReceipt: async () => 'idle' as const,
       stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
     }
     const loop = new AgentLoop({
@@ -443,6 +444,7 @@ describe('正常响应结束不等于任务完成', () => {
       dispatch: async () => ({ ok: true, subagentId: 'cv_child', name: '审查员', kind: 'temp' }),
       runGraph: async () => ({ ok: true }),
       inflight: () => [{ name: '审查员' }],
+      awaitReceipt: async () => 'idle' as const,
       stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
     }
     const loop = new AgentLoop({

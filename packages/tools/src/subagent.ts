@@ -12,17 +12,49 @@
  * 不抛异常：注册表会把异常归并为一句「工具执行出错」，模型无法据此调整做法。
  */
 
-import type { ToolContext, ToolSpec } from '@qywork/agent'
+import type { DelegatePort, SubagentSummary, ToolContext, ToolSpec } from '@qywork/agent'
 import { EFFORT_ORDER, isEffortLevel, parseSubagentTarget, SUBAGENT_KIND_LABEL } from '@qywork/core'
 import { idArg } from './args.ts'
+
+const STATUS_LABEL: Record<SubagentSummary['status'], string> = {
+  running: '执行中',
+  idle: '空闲',
+  failed: '上次未成功',
+}
+
+/**
+ * 把模型填写的子 agent 引用解析为本会话子 agent 的 id：先按 id 精确匹配，再按名称精确匹配且唯一。
+ * `subagent`、`stop_subagent`、`read_history` 共用此解析。
+ *
+ * 未找到或名称重复时，错误列出本会话全部子 agent 的名称、id 与状态。不要改为只报告「没有」：
+ * id 较长，抄错一位即无法匹配，模型没有清单时只能继续推测 id。不做近似匹配，不替模型选择。
+ */
+export async function resolveSubagentRef(
+  delegate: DelegatePort,
+  ref: string,
+): Promise<{ id: string } | { error: string }> {
+  const all = await delegate.subagents()
+  if (all.some((s) => s.id === ref)) return { id: ref }
+  const named = all.filter((s) => s.name === ref)
+  if (named.length === 1) return { id: named[0]!.id }
+  const listing = all.length
+    ? `本会话的子 agent：${all.map((s) => `${s.name}（${s.id}，${STATUS_LABEL[s.status]}）`).join('；')}`
+    : '本会话还没有子 agent'
+  return {
+    error: named.length
+      ? `本会话有 ${named.length} 个名为「${ref}」的子 agent，请改用 id。${listing}`
+      : `本会话中没有子 agent ${ref}。${listing}`,
+  }
+}
 
 export const subagentTool: ToolSpec = {
   name: 'subagent',
   description:
     '把一项任务委派给一个子 agent。派发后立即返回，子 agent 完成后回执会作为一条消息送到本会话，不要为了等回执反复调用。' +
     '首次派发按 kind 新建：role 按角色 id 新建、temp 为临时子 agent（name 必填）、cli 为外部 CLI；返回其 subagentId。' +
-    '之后向同一个子 agent 派发任务时将 subagent 填为该 id，子 agent 在自己的会话中继续，三种种类均可续接。' +
-    '同一个子 agent 同时只执行一项任务，执行中再次派发返回「正在执行」，收到其回执后再派发。' +
+    '之后向同一个子 agent 派发任务时将 subagent 填为该 id 或名称，子 agent 在自己的会话中继续，三种种类均可续接。' +
+    '向正在执行的角色或临时子 agent 派发时，任务作为补充指令送入它正在执行的一轮，在它的下一步生效；' +
+    '它结束前未读取的补充指令在回执中列出。外部 CLI 执行中再次派发返回「正在执行」，收到其回执后再派发。' +
     '一次只派发一个，两个及以上用 workflow。' +
     '子 agent 无法看到本会话的内容，背景需写入 task。',
   parameters: {
@@ -52,7 +84,7 @@ export const subagentTool: ToolSpec = {
       subagent: {
         type: 'string',
         description:
-          '本会话已有子 agent 的 id（上一次派发返回的 subagentId，或运行上下文「本会话的子 agent」清单里的 id）。' +
+          '本会话已有子 agent 的 id 或名称（上一次派发返回的 subagentId，或运行上下文「本会话的子 agent」清单里的 id 与名称）。' +
           '填写后在该子 agent 的上下文中继续，不再填 kind、role、cli；本次任务与其现有名称不符时同时填写 name。',
       },
       task: {
@@ -142,10 +174,12 @@ export const subagentTool: ToolSpec = {
      * 不接受模糊匹配，也不静默替模型选择一条。
      */
     const unfinished = ctx.todos?.read()?.filter((todo) => todo.status !== 'completed') ?? []
+    // 校验失败时列出当前未完成的待办：模型据此逐字复制，不必另行读取清单。
+    const listing = `当前未完成：${unfinished.map((todo) => `「${todo.content}」`).join('、')}`
     if (unfinished.length > 0 && !parentTodo) {
       return {
         status: 'failure' as const,
-        message: '当前有未完成待办；请用 parentTodo 逐字绑定本次子任务成功后即可完成的待办',
+        message: `当前有未完成待办；请用 parentTodo 逐字绑定本次子任务成功后即可完成的待办。${listing}`,
         errorKind: 'invalid_plan',
       }
     }
@@ -156,15 +190,21 @@ export const subagentTool: ToolSpec = {
           status: 'failure' as const,
           message:
             matches.length === 0
-              ? `parentTodo 不在当前未完成清单中：${parentTodo}`
+              ? `parentTodo 不在当前未完成清单中：${parentTodo}。${unfinished.length ? listing : '当前没有未完成待办'}`
               : `当前清单里有多条同名待办，无法确定归属：${parentTodo}`,
           errorKind: 'invalid_plan',
         }
       }
     }
 
+    let dispatchTarget = target.target
+    if ('subagent' in dispatchTarget) {
+      const found = await resolveSubagentRef(delegate, dispatchTarget.subagent)
+      if ('error' in found) return { status: 'failure' as const, message: found.error }
+      dispatchTarget = { ...dispatchTarget, subagent: found.id }
+    }
     const res = await delegate.dispatch({
-      target: target.target,
+      target: dispatchTarget,
       task,
       ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
@@ -184,7 +224,9 @@ export const subagentTool: ToolSpec = {
         message: `${who} 无法派发：${res.error ?? '未说明原因'}${note}`,
       }
     }
-    const head = `已派出${who}（subagentId ${res.subagentId}），回执会作为一条消息送到本会话`
+    const head = res.injected
+      ? `${who}（subagentId ${res.subagentId}）正在执行，本次任务已作为补充指令送入它正在执行的一轮，在它的下一步生效；回执在它结束后送达`
+      : `已派出${who}（subagentId ${res.subagentId}），回执会作为一条消息送到本会话`
     return {
       status: 'success' as const,
       message: `${parentTodo ? `${head}；父待办 ${parentTodo} 仍未完成` : head}${note}`,

@@ -667,7 +667,8 @@ export interface DelegatePort {
    * 无法派发时通过返回值报告，不抛出异常：模型须按原因改用其他做法。
    *
    * **产出不经由此方法返回。** 子 agent 完成之后，实现方将回执作为一条消息投入该会话
-   * （忙碌时在下一个 step 边界注入，空闲时立即开始新一轮），调用方无需等待，也无法等待。
+   * （忙碌时在下一个 step 边界注入，空闲时立即开始新一轮）；需要在本轮内等待时调用 `awaitReceipt`。
+   * 目标是正在执行的内置子 agent 时，任务作为补充指令送入它正在执行的一轮，不另起一轮。
    *
    * `stepId` 是本次调用所属卡片的 id，实现方据此广播进度；`nodeId` 是图中的节点，
    * 只派发一项任务时省略，实现方使用单节点的固定 id。
@@ -677,6 +678,12 @@ export interface DelegatePort {
    * 清单未完成而任务由这些子 agent 执行时，本轮正常结束。
    */
   inflight(): { name: string }[]
+  /**
+   * 在本轮内等待下一条子 agent 或工作流回执进入本会话的投递队列，最长 `timeoutMs`；`signal` 中止时以中止原因拒绝。
+   * 只报告等待结果，不返回回执内容：回执仍经由队列在下一个 step 边界送达，同一条回执只有这一条投递路径。
+   * `idle` 表示没有正在执行的子 agent，也没有待送达的回执。
+   */
+  awaitReceipt(timeoutMs: number, signal: AbortSignal): Promise<'received' | 'timeout' | 'idle'>
   /**
    * 停止本会话中一个正在执行的子 agent，只停止本次执行：子 agent 的会话保留，之后按 id 再次派发即在原会话中继续。
    * 停止后不发送回执；图中的节点写入中断，其余节点照常执行，检查点在上游全部落终态后到达。
@@ -704,6 +711,8 @@ export interface DelegatePort {
     kind?: SubagentKind
     /** 本次派发是否新建了该子 agent。 */
     created?: boolean
+    /** 目标正在执行：任务已作为补充指令送入它正在执行的一轮，没有开始新的执行。 */
+    injected?: boolean
     /** 本次派发中模型应知道的事实，例如续接时未能接续会话、角色已不存在。原样交回模型。 */
     note?: string
   }>

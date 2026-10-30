@@ -174,11 +174,15 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：单项任务用 subagent 委派给一个子 agent；子 agent 在独立会话中运行，执行过程不占用当前上下文。调用在派发后立即返回，子 agent 完成后回执以消息形式送达本会话，不要为等待回执反复调用。首次按 kind 创建：role 按角色，temp 为临时；cli 是本机另一个进程，使用其自身的模型和账号，执行过程不可见，仅在用户用 `@cli:id` 点名或明确要求时派发。之后按 subagentId 续接，三种类型均可续接。用户用 `@角色id` 点名时，委派给该角色。',
+    line: '- 子 agent：单项任务用 subagent 委派给一个子 agent；子 agent 在独立会话中运行，执行过程不占用当前上下文。调用在派发后立即返回，子 agent 完成后回执以消息形式送达本会话，不要为等待回执反复调用。首次按 kind 创建：role 按角色，temp 为临时；cli 是本机另一个进程，使用其自身的模型和账号，执行过程不可见，仅在用户用 `@cli:id` 点名或明确要求时派发。之后按 subagentId 或名称续接，三种类型均可续接；向正在执行的角色或临时子 agent 派发时，任务作为补充指令在它的下一步生效。用户用 `@角色id` 点名时，委派给该角色。',
   },
   {
     tool: 'stop_subagent',
     line: '- 停止子 agent：正在执行的子 agent 需要停下时（派发有误、任务重复、需要改派），用 stop_subagent 停止；其会话保留，之后按 subagentId 再次派发即在原会话中继续。',
+  },
+  {
+    tool: 'wait_subagents',
+    line: '- 等待回执：本轮后续工作需要子 agent 的结果时，用 wait_subagents 在本轮内等待下一条回执，回执作为下一条消息送达；也可以结束本轮，回执送达时自动开始新的一轮。',
   },
   {
     tool: 'workflow',

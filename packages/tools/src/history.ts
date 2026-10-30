@@ -17,6 +17,7 @@
 
 import { chargeBatchBudget, outcomeTokens, recordBatchSpent, type ToolSpec } from '@qywork/agent'
 import { deliverReadable } from './sink.ts'
+import { resolveSubagentRef } from './subagent.ts'
 
 /** 一次搜索最多返回的命中条数。更多的命中模型无法读完，只会耗尽预算。 */
 const MAX_HITS = 40
@@ -39,7 +40,7 @@ export const readHistoryTool: ToolSpec = {
     '信封中带有 images_omitted 时，同样用 call_id 取回该次读取的图片。' +
     '读取范围是本会话与本会话派发的子 agent 的历史，范围外的 id 返回不存在；' +
     '工具保存到磁盘的较长输出（rs_xxx）用 read_resource 读取。' +
-    '传 subagent（本会话子 agent 的 id）时读取该子 agent 的历史，其余参数含义不变。',
+    '传 subagent（本会话子 agent 的 id 或名称）时读取该子 agent 的历史，其余参数含义不变。',
   parameters: {
     type: 'object',
     properties: {
@@ -58,7 +59,8 @@ export const readHistoryTool: ToolSpec = {
       },
       subagent: {
         type: 'string',
-        description: '本会话子 agent 的 id。填写时读取该子 agent 的历史，不填时读取本会话的历史。',
+        description:
+          '本会话子 agent 的 id 或名称。填写时读取该子 agent 的历史，不填时读取本会话的历史。',
       },
     },
     additionalProperties: false,
@@ -81,7 +83,14 @@ export const readHistoryTool: ToolSpec = {
   parallelSafe: true,
 
   async fn(args, ctx) {
-    const subagent = typeof args.subagent === 'string' ? args.subagent.trim() : ''
+    let subagent = typeof args.subagent === 'string' ? args.subagent.trim() : ''
+    // 有派发通道时按 id 或名称解析，未找到时列出本会话的子 agent；成员会话没有派发通道，只按 id 读取。
+    if (subagent && ctx.delegate) {
+      const found = await resolveSubagentRef(ctx.delegate, subagent)
+      if ('error' in found)
+        return { status: 'failure', message: found.error, errorKind: 'not_found' }
+      subagent = found.id
+    }
     const history = subagent ? ctx.history?.forSubagent(subagent) : ctx.history
     if (subagent && ctx.history && !history) {
       return {
@@ -106,7 +115,10 @@ export const readHistoryTool: ToolSpec = {
     const query = typeof args.query === 'string' ? args.query.trim() : ''
 
     if (!messageId && !stepId && !callId && !query) {
-      return { status: 'failure', message: '需提供 message_id、step_id、call_id、query 之一' }
+      return {
+        status: 'failure',
+        message: `需提供 message_id、step_id、call_id、query 之一${subagent ? '；读取子 agent 的历史同样需要其中一项，id 未知时用 query 检索' : ''}`,
+      }
     }
 
     if (messageId) {

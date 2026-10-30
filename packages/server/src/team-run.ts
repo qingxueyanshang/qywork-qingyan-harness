@@ -269,6 +269,8 @@ export async function runBuiltinMember(
     ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(ownerConversation) } : {}),
     // 成员会话与顶层会话使用同一判定：处理文档的成员同样需要 `office`。
     ...officePortOf(deps),
+    // 父会话向正在执行的成员派发的任务排入成员自己的队列（`delegate.ts`），在成员的 step 边界注入。
+    followUps: (id) => deps.runs.takeSteered(id),
     // 画布与顶层会话使用同一个服务：成员修改的节点同样即时推送给界面。
     // 设计稿渲染使用内置浏览器的隐藏页，归属同上记为顶层会话；宿主不可用时画布端口不提供渲染。
     ...(deps.canvas && workspaceId
