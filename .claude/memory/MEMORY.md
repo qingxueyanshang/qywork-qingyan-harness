@@ -23,9 +23,9 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [执行 qy 必须隔离数据目录](qy-needs-isolated-home.md) — 同一条命令中设置 `QYWORK_HOME` 指向 .tmp；钩子 `scripts/guard-real-home.ts` 拦截未设置的命令；曾误用用户真实账本执行过一次
 - [Git Bash 的 /tmp 指向已删除的测试目录](git-bash-tmp-points-at-deleted-test-dir.md) — bash 先输出「could not find /tmp」、shell 工具测试报「投递额度未开账」；用 `mount` 查看指向并重建该目录，不结束其他会话的 sh
 - [与并行会话修改了同一批文件时只提交本会话的段](partial-commit-shared-files.md) — 按内容判定归属、从 HEAD 构造内容写入索引、临时工作树自检、按索引提交；带 pathspec 会把对方的段一并提交
-- [常驻动画只能动 transform / opacity](continuous-animation-cost.md) — 用户显示器 180Hz，CSS 重绘型动画开销为 60Hz 的三倍；画布连线流动改为每秒 24 次的定时器推进，删除视觉效果前先问用户
+- [常驻动画只能动 transform / opacity](continuous-animation-cost.md) — 用户显示器 180Hz，CSS 重绘型动画开销为 60Hz 的三倍；画布流动虚线由 WebGL 绘制（抗锯齿虚线曲线的光栅化随条数增长），删除视觉效果前先问用户
 - [刷新恢复的测试方法](refresh-restore-testing.md) — 带查询串重新导入模块模拟刷新；组件测试 afterEach 清空记录；性能对照构建把 sessionSignal 换成 createSignal
-- [画布卡顿须在桌面外壳中按用户布局测量](canvas-perf-measure-in-shell.md) — 无头 Chrome 与窄面板都无法复现；瓶颈是 180Hz 下 GPU 进程的光栅化，测量脚本在 .tmp/perf-drag/
+- [画布卡顿须在桌面外壳中按用户布局测量](canvas-perf-measure-in-shell.md) — 无头 Chrome 与窄面板都无法复现；先截取用户窗口核对缩放与主题；瓶颈是 180Hz 下 GPU 进程的光栅化，测量脚本在 .tmp/perf-gen/ 与 .tmp/perf-drag/
 - [画布提交前不在背后改写提示词](canvas-prompt-no-hidden-rewrite.md) — 手写编号与型号写法不一致时应可见地提示，按型号自动改写已被否决并撤回
 - [中转目录不提供引用写法](relay-catalog-no-mention-syntax.md) — hongcheng 与木木的目录、计费清单都没有「@Image1 / @图片1」字段，拉取无法检测
 - [截断内容沿用原有悬停提示](reuse-existing-hover-tooltip.md) — 显示全文用 `data-tip`，不新增点击浮层；用户以现有界面为参照时按参照的形式实现
