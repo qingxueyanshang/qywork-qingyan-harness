@@ -130,6 +130,29 @@ function imageUrls(body: Record<string, unknown>): string[] {
 }
 
 /**
+ * 按实际字节修正 WAV 头部的长度字段。千问语音合成返回的 WAV 由流式编码写成，RIFF 与 data 块的长度是占位值
+ * （实测 data 块为 0x7FFFFF9B，按头部计算约 13.5 小时，实际 3 至 4 秒），读取时长、播放与上传都按头部长度处理。
+ * 只修正超出实际字节的长度；不是 WAV 或长度未超出时原样返回。
+ */
+function wavWithActualLengths(bytes: Uint8Array): Uint8Array {
+  if (sniffMime(bytes) !== 'audio/wav') return bytes
+  const out = bytes.slice()
+  const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
+  if (view.getUint32(4, true) + 8 > out.length) view.setUint32(4, out.length - 8, true)
+  for (let at = 12; at + 8 <= out.length; ) {
+    const size = view.getUint32(at + 4, true)
+    if (at + 8 + size > out.length) {
+      if (String.fromCharCode(...out.subarray(at, at + 4)) === 'data') {
+        view.setUint32(at + 4, out.length - at - 8, true)
+      }
+      break
+    }
+    at += 8 + size + (size % 2)
+  }
+  return out
+}
+
+/**
  * 语音参数全部位于 `input`。旧 Qwen-TTS 使用多模态端点，新 Qwen-Audio 使用 SpeechSynthesizer；
  * Next 的正文为 text_prompt，参考音频为 references，且不能传 voice。结构由目录声明。
  * 结果是地址（24 小时有效）或 base64。
@@ -194,10 +217,12 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
           }
         : { characters: count(raw.characters) },
     )
-    if (typeof audio?.url === 'string' && audio.url)
-      return { files: [await download(audio.url, signal)], usage }
+    if (typeof audio?.url === 'string' && audio.url) {
+      const file = await download(audio.url, signal)
+      return { files: [{ ...file, bytes: wavWithActualLengths(file.bytes) }], usage }
+    }
     if (typeof audio?.data === 'string' && audio.data) {
-      const bytes = new Uint8Array(Buffer.from(audio.data, 'base64'))
+      const bytes = wavWithActualLengths(new Uint8Array(Buffer.from(audio.data, 'base64')))
       return { files: [{ bytes, mime: sniffMime(bytes) ?? 'audio/wav' }], usage }
     }
     const code = typeof body.code === 'string' ? body.code : ''

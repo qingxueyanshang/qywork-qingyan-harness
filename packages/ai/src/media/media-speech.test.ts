@@ -16,6 +16,25 @@ import { validateMediaCall } from './params.ts'
 const WAV = new Uint8Array([...Buffer.from('RIFF'), 0, 0, 0, 0, ...Buffer.from('WAVEfmt ')])
 const MP3 = new Uint8Array([...Buffer.from('ID3'), 4, 0, 0])
 
+/** 流式编码写成的 WAV：RIFF 与 data 块长度为千问语音合成实际返回的占位值，其后是 3 秒 22050Hz 单声道 16bit 采样。 */
+function streamedWav(): Uint8Array {
+  const pcm = 22050 * 2 * 3
+  const b = Buffer.alloc(44 + pcm, 7)
+  b.write('RIFF', 0, 'latin1')
+  b.writeUInt32LE(0x7fffffbf, 4)
+  b.write('WAVEfmt ', 8, 'latin1')
+  b.writeUInt32LE(16, 16)
+  b.writeUInt16LE(1, 20)
+  b.writeUInt16LE(1, 22)
+  b.writeUInt32LE(22050, 24)
+  b.writeUInt32LE(44100, 28)
+  b.writeUInt16LE(2, 32)
+  b.writeUInt16LE(16, 34)
+  b.write('data', 36, 'latin1')
+  b.writeUInt32LE(0x7fffff9b, 40)
+  return new Uint8Array(b)
+}
+
 interface Seen {
   path: string
   json?: Record<string, unknown>
@@ -33,6 +52,7 @@ beforeAll(() => {
     async fetch(req) {
       const url = new URL(req.url)
       if (url.pathname === '/files/out.wav') return new Response(WAV)
+      if (url.pathname === '/files/streamed.wav') return new Response(streamedWav())
       if (url.pathname === '/files/out.mp3') return new Response(MP3)
       seen.push({ path: url.pathname, json: (await req.json()) as Record<string, unknown> })
       return reply()
@@ -279,6 +299,32 @@ describe('Qwen-Audio 3.1', () => {
       tokenRates: { input: 1.5, output: 12 },
     })
   })
+
+  test.each([
+    ['地址', () => Response.json({ output: { audio: { url: `${origin()}/files/streamed.wav` } } })],
+    [
+      'base64',
+      () =>
+        Response.json({
+          output: { audio: { data: Buffer.from(streamedWav()).toString('base64') } },
+        }),
+    ],
+  ] as const)(
+    '头部长度为流式占位值的 WAV（%s）按实际字节修正 RIFF 与 data 长度，采样不变',
+    async (_, respond) => {
+      reply = respond
+      const out = await adapter(flash).run(
+        { operation: 'speech', prompt: '你好', inputs: [], params: { format: 'wav' } },
+        signal(),
+      )
+      const file = out.files[0]!
+      const view = new DataView(file.bytes.buffer, file.bytes.byteOffset, file.bytes.byteLength)
+      expect(file.mime).toBe('audio/wav')
+      expect(view.getUint32(4, true)).toBe(file.bytes.length - 8)
+      expect(view.getUint32(40, true)).toBe(22050 * 2 * 3)
+      expect(file.bytes.subarray(44)).toEqual(streamedWav().subarray(44))
+    },
+  )
 
   test('Flash 选择 Opus 时省略采样率也不会发送非法默认 22050', async () => {
     reply = () =>
