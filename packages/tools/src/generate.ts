@@ -208,6 +208,8 @@ interface TaskRecord {
   submittedAt: string
   /** 正在等待该任务的进程：写入记录与开始取回时写入本进程的 pid，由 `taskHeldElsewhere` 判定。 */
   ownerPid?: number
+  /** 产物已落盘而使用方未能接收时写入：取回时直接交付这些产物，不再查询与下载。 */
+  landed?: { files: GeneratedFile[]; warning?: string }
 }
 
 /** 写入任务记录，不覆盖已有记录（已有记录属于另一个尚未取回的任务）：重名时追加 `-2` 并依次递增。返回写入的绝对路径。 */
@@ -279,14 +281,31 @@ export interface GenerateRequest {
   onSubmit?: () => void
   /** 取得结果时回报本次的花费。 */
   onSpend?: (spend: MediaSpend) => void
+  attach?: Attach
 }
+
+/** 已落盘的产物。 */
+export interface GenerateSuccess {
+  ok: true
+  provider: string
+  model: string
+  files: GeneratedFile[]
+  warning?: string
+}
+
+/**
+ * 产物落盘之后、删除任务记录之前调用，由使用方（画布）接收产物。返回 false 表示未能接收（画布已移动、改名或被改写）：
+ * 任务记录保留并写入已落盘的产物，按该记录取回时直接交付这些产物，不再查询与下载。
+ * 不要改为落盘后立即删除记录：使用方未接收时卡片仍指向该记录，删除后结果与任务号一并无法取回。
+ */
+export type Attach = (landed: GenerateSuccess) => Promise<boolean>
 
 /**
  * 生成的结果。失败时 `executed: false` 表示在调用接口之前已拒绝（未产生费用）；
  * `record` 表示远端任务仍存在且任务记录已保留，可按它取回。
  */
 export type GenerateOutcome =
-  | { ok: true; provider: string; model: string; files: GeneratedFile[]; warning?: string }
+  | GenerateSuccess
   | {
       ok: false
       message: string
@@ -408,6 +427,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       slot.target,
       recordPath,
       req.type === 'image' ? req.params : undefined,
+      req.attach,
     )
   } finally {
     slot.release()
@@ -423,6 +443,7 @@ export async function resumeMedia(req: {
   record: string
   onStatus?: (status: string) => void
   onSpend?: (spend: MediaSpend) => void
+  attach?: Attach
 }): Promise<GenerateOutcome> {
   const recordPath = await resolveWritablePath(req.roots, req.record, { mustExist: true })
   let record: TaskRecord
@@ -447,6 +468,20 @@ export async function resumeMedia(req: {
     return refused(`${req.record} 缺少任务号、接口、模型或输出路径`, 'invalid_tool_arguments')
   }
   await writeFile(recordPath, `${JSON.stringify({ ...record, ownerPid: process.pid }, null, 2)}\n`)
+  const landed = record.landed
+  if (landed?.files.length && (await allPresent(req.roots, landed.files))) {
+    return deliver(
+      {
+        ok: true,
+        provider: record.provider,
+        model: record.model,
+        files: landed.files,
+        ...(landed.warning ? { warning: landed.warning } : {}),
+      },
+      recordPath,
+      req.attach,
+    )
+  }
   const call: MediaCall = {
     type: record.imageResult ? 'image' : 'video',
     prompt: '',
@@ -461,18 +496,52 @@ export async function resumeMedia(req: {
   }
   if (req.onStatus) call.onStatus = req.onStatus
   const result = await req.media.generate(call, req.signal)
-  return settle(req.roots, result, record.output, recordPath, record.params)
+  return settle(req.roots, result, record.output, recordPath, record.params, req.attach)
+}
+
+/** 记录中的产物是否都仍在原位置。任一已被移走或删除时按任务号重新取回。 */
+async function allPresent(roots: RootsInput, files: GeneratedFile[]): Promise<boolean> {
+  for (const file of files) {
+    const abs = await resolveInWorkspace(roots, file.path).catch(() => null)
+    if (!abs || !(await occupied(abs))) return false
+  }
+  return true
 }
 
 /**
- * 收尾：成功时落盘并删除任务记录；远端任务仍存在（`pendingTaskId`）时保留记录；终态失败时删除记录。
+ * 把已落盘的产物交给使用方：接收后删除任务记录；未能接收时在记录中写入产物并保留（见 `Attach`）。
+ * 没有使用方时（生成工具直接回报路径）视为已接收。
+ */
+async function deliver(
+  landed: GenerateSuccess,
+  recordPath: string | null,
+  attach: Attach | undefined,
+): Promise<GenerateSuccess> {
+  const accepted = attach ? await attach(landed) : true
+  if (!recordPath) return landed
+  if (accepted) {
+    await rm(recordPath, { force: true })
+  } else {
+    const record = JSON.parse(await readFile(recordPath, 'utf8')) as TaskRecord
+    const kept: TaskRecord = {
+      ...record,
+      landed: { files: landed.files, ...(landed.warning ? { warning: landed.warning } : {}) },
+    }
+    await writeFile(recordPath, `${JSON.stringify(kept, null, 2)}\n`)
+  }
+  return landed
+}
+
+/**
+ * 收尾：成功时落盘并交给使用方（`deliver`）；远端任务仍存在（`pendingTaskId`）时保留记录；终态失败时删除记录。
  */
 async function settle(
   roots: RootsInput,
   result: MediaCallResult,
   target: string,
   recordPath: string | null,
-  imageParams?: Record<string, unknown>,
+  imageParams: Record<string, unknown> | undefined,
+  attach: Attach | undefined,
 ): Promise<GenerateOutcome> {
   if (!result.ok) {
     if ((result.pendingTaskId || result.recoverable || result.executed === false) && recordPath) {
@@ -493,17 +562,20 @@ async function settle(
     }
   }
   const files = await landFiles(roots, result.files, target)
-  if (recordPath) await rm(recordPath, { force: true })
   const warning = [imageResultWarning(result.files, imageParams), result.warning]
     .filter(Boolean)
     .join('；')
-  return {
-    ok: true,
-    provider: result.provider,
-    model: result.model,
-    files,
-    ...(warning ? { warning } : {}),
-  }
+  return deliver(
+    {
+      ok: true,
+      provider: result.provider,
+      model: result.model,
+      files,
+      ...(warning ? { warning } : {}),
+    },
+    recordPath,
+    attach,
+  )
 }
 
 /** 按实际产物核对张数与明确指定的像素尺寸；接口少返回图片或降低分辨率时不视为完整成功。 */

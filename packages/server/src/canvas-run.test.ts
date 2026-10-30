@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/agent'
@@ -960,6 +960,40 @@ describe('画布运行：视频', () => {
     expect(product).toBeDefined()
     expect(result.ok ? '' : result.message).toContain(`generated/${product}`)
     expect(events.at(-1)).toMatchObject({ type: 'canvas.run', state: 'failed' })
+  })
+
+  test('提交后画布被改名、远端完成：任务记录保留并写明产物；在新位置取回即接上产物，不再查询与下载', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-1')
+    const moved = '留给屋檐的信.canvas.json'
+    await rename(join(ws.root, PATH), join(ws.root, moved))
+    p.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'seedance',
+      files: [{ bytes: MP4, mime: 'video/mp4' }],
+    })
+    const result = await run.done
+    expect(result).toMatchObject({ ok: false, pending: true })
+    const generated = await readdir(join(ws.root, 'generated'))
+    const product = generated.find((f) => f.endsWith('.mp4'))!
+    const record = generated.find((f) => f.endsWith('.task.json'))!
+    expect(result.ok ? '' : result.message).toContain(`generated/${product}`)
+    expect(result.ok ? '' : result.message).toContain(`generated/${record}`)
+
+    const again = await svc.retrieve(ws, moved, ids.$v!, undefined, { media: fake.port })
+    expect(await again.done).toMatchObject({ ok: true })
+    expect(fake.calls).toHaveLength(1)
+    const doc = parseCanvas(await readFile(join(ws.root, moved), 'utf8'))
+    if (!doc.ok) throw new Error(doc.error)
+    const card = doc.doc.nodes.find((n) => n.id === ids.$v)
+    expect(card?.type === 'generate' && card.versions.map((v) => v.path)).toEqual([
+      `generated/${product}`,
+    ])
+    expect(await readdir(join(ws.root, 'generated'))).toEqual([product])
   })
 
   test('一张卡有两个待取回版本时按版本 id 分别取回', async () => {

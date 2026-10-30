@@ -675,6 +675,8 @@ export class CanvasService {
     if (node.output === 'video') entry.requestSent = false
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       let versionId: string | null = null
+      let record: string | null = null
+      const written: { result?: CanvasRunResult } = {}
       const outcome = await generateMedia({
         roots: ws.root,
         media: opts.media,
@@ -699,12 +701,13 @@ export class CanvasService {
         inputs,
         params,
         ...(pick ? { pick } : {}),
-        onTask: async ({ record, taskId, provider, model }) => {
+        onTask: async ({ record: path, taskId, provider, model }) => {
+          record = path
           facts.provider = provider
           facts.model = model
           const id = newCanvasId()
           await this.mutate(ws.root, rel, (d) =>
-            addVersions(d, nodeId, [{ id, path: record, made: made(provider, model) }]),
+            addVersions(d, nodeId, [{ id, path, made: made(provider, model) }]),
           ).then(
             () => {
               versionId = id
@@ -714,7 +717,64 @@ export class CanvasService {
             () => {},
           )
           if (taskId)
-            this.submitted(entry, ws, rel, nodeId, { taskId, provider, model, record, versionId })
+            this.submitted(entry, ws, rel, nodeId, {
+              taskId,
+              provider,
+              model,
+              record: path,
+              versionId,
+            })
+        },
+        attach: async (landed) => {
+          facts.provider = landed.provider
+          facts.model = landed.model
+          const files = landed.files
+          const output = node.output === 'video' ? videoOf(files).path : files[0]?.path
+          if (output) facts.output = output
+          const sizes = await this.sizesOf(ws.root, files)
+          const version = (path: string) => ({
+            id: newCanvasId(),
+            path,
+            made: made(landed.provider, landed.model),
+            ...sizeField(sizes.get(path)),
+            ...(landed.warning ? { warning: landed.warning } : {}),
+          })
+          const id: string | null = versionId
+          const images =
+            node.output === 'art' ? await this.artImagesOf(ws.root, files[0]?.path) : null
+          const warning =
+            [
+              landed.warning,
+              images?.missing.length ? `页面引用的图片不存在：${images.missing.join('、')}` : '',
+            ]
+              .filter(Boolean)
+              .join('；') || undefined
+          written.result = await this.writeBack(
+            ws.root,
+            rel,
+            nodeId,
+            { files, sizes, params },
+            (d) => {
+              if (node.output === 'image' && id)
+                return settleImages(d, nodeId, id, files, sizes, landed.warning)
+              if (node.output !== 'video') {
+                const added = addVersions(
+                  d,
+                  nodeId,
+                  files.map((f) => version(f.path)),
+                )
+                return added.ok && images ? linkArtImages(added.doc, nodeId, images.found) : added
+              }
+              if (id) return settleVideo(d, nodeId, id, files, sizes)
+              // 取得任务号时未能写入画布（文件被外部改写），成功后补充一个版本。
+              const late = version(videoOf(files).path)
+              const added = addVersions(d, nodeId, [late])
+              return added.ok ? settleVideo(added.doc, nodeId, late.id, files, sizes) : added
+            },
+            warning,
+            record,
+          )
+          return written.result.ok
         },
       })
       if (!outcome.ok) {
@@ -726,52 +786,8 @@ export class CanvasService {
           ...(outcome.diagnostic ? { diagnostic: outcome.diagnostic } : {}),
         }
       }
-      facts.provider = outcome.provider
-      facts.model = outcome.model
-      const files = outcome.files
-      const output = node.output === 'video' ? videoOf(files).path : files[0]?.path
-      if (output) facts.output = output
-      const sizes = await this.sizesOf(ws.root, files)
-      const version = (path: string) => ({
-        id: newCanvasId(),
-        path,
-        made: made(outcome.provider, outcome.model),
-        ...sizeField(sizes.get(path)),
-        ...(outcome.warning ? { warning: outcome.warning } : {}),
-      })
-      const id: string | null = versionId
-      const images = node.output === 'art' ? await this.artImagesOf(ws.root, files[0]?.path) : null
-      const warning =
-        [
-          outcome.warning,
-          images?.missing.length ? `页面引用的图片不存在：${images.missing.join('、')}` : '',
-        ]
-          .filter(Boolean)
-          .join('；') || undefined
-      return this.writeBack(
-        ws.root,
-        rel,
-        nodeId,
-        { files, sizes, params },
-        (d) => {
-          if (node.output === 'image' && id)
-            return settleImages(d, nodeId, id, files, sizes, outcome.warning)
-          if (node.output !== 'video') {
-            const added = addVersions(
-              d,
-              nodeId,
-              files.map((f) => version(f.path)),
-            )
-            return added.ok && images ? linkArtImages(added.doc, nodeId, images.found) : added
-          }
-          if (id) return settleVideo(d, nodeId, id, files, sizes)
-          // 取得任务号时未能写入画布（文件被外部改写），成功后补充一个版本。
-          const late = version(videoOf(files).path)
-          const added = addVersions(d, nodeId, [late])
-          return added.ok ? settleVideo(added.doc, nodeId, late.id, files, sizes) : added
-        },
-        warning,
-      )
+      // 成功的结果一定经过 `attach`。
+      return written.result!
     })
     this.running.get(key)!.done = done
     return { done }
@@ -815,6 +831,7 @@ export class CanvasService {
           record: version.path,
           versionId: version.id,
         })
+      const written: { result?: CanvasRunResult } = {}
       const outcome = await resumeMedia({
         roots: ws.root,
         media: opts.media,
@@ -825,6 +842,25 @@ export class CanvasService {
           facts.currency = spend.currency
         },
         record: version.path,
+        attach: async (landed) => {
+          const sizes = await this.sizesOf(ws.root, landed.files)
+          const output =
+            node.output === 'video' ? videoOf(landed.files).path : landed.files[0]?.path
+          if (output) facts.output = output
+          written.result = await this.writeBack(
+            ws.root,
+            rel,
+            nodeId,
+            { files: landed.files, sizes, params: version.made.params },
+            (d) =>
+              node.output === 'image'
+                ? settleImages(d, nodeId, version.id, landed.files, sizes, landed.warning)
+                : settleVideo(d, nodeId, version.id, landed.files, sizes),
+            landed.warning,
+            version.path,
+          )
+          return written.result.ok
+        },
       })
       if (!outcome.ok) {
         if (outcome.executed && !outcome.record) {
@@ -837,20 +873,8 @@ export class CanvasService {
           ...(outcome.diagnostic ? { diagnostic: outcome.diagnostic } : {}),
         }
       }
-      const sizes = await this.sizesOf(ws.root, outcome.files)
-      const output = node.output === 'video' ? videoOf(outcome.files).path : outcome.files[0]?.path
-      if (output) facts.output = output
-      return this.writeBack(
-        ws.root,
-        rel,
-        nodeId,
-        { files: outcome.files, sizes, params: version.made.params },
-        (d) =>
-          node.output === 'image'
-            ? settleImages(d, nodeId, version.id, outcome.files, sizes, outcome.warning)
-            : settleVideo(d, nodeId, version.id, outcome.files, sizes),
-        outcome.warning,
-      )
+      // 成功的结果一定经过 `attach`。
+      return written.result!
     })
     this.running.get(key)!.done = done
     return { done }
@@ -1119,7 +1143,8 @@ export class CanvasService {
   /**
    * 产物已落盘，回写画布。成功时返回各产物的像素宽高与时长、实际发送的参数，以及回写后卡片当前版本的路径，
    * 供调用方核对结果：一次生成有多个产物时只有当前版本显示在卡片上。
-   * 回写失败（节点或该版本已被外部修改）时，失败原文写明产物位置。
+   * 回写失败（画布已移动或改名、节点或该版本已被外部修改）时，失败原文写明产物位置；有任务记录时该记录保留，
+   * 结果为待取回，对该卡取回即接上这些产物（`generateMedia` 的 `attach`）。
    */
   private async writeBack(
     root: string,
@@ -1131,7 +1156,8 @@ export class CanvasService {
       params: Record<string, unknown>
     },
     change: (doc: CanvasDoc) => CanvasResult,
-    warning?: string,
+    warning: string | undefined,
+    record: string | null,
   ): Promise<CanvasRunResult> {
     const paths = made.files.map((f) => f.path)
     try {
@@ -1159,10 +1185,11 @@ export class CanvasService {
         ...(warning ? { warning } : {}),
       }
     } catch (err) {
+      const kept = record ? `；任务记录 ${record} 已保留，对该卡取回即接上产物，不重新下载` : ''
       return {
         ok: false,
-        message: `已生成，但回写画布失败（${(err as Error).message}），产物位于 ${paths.join('、')}`,
-        pending: false,
+        message: `已生成，但回写画布失败（${(err as Error).message}），产物位于 ${paths.join('、')}${kept}`,
+        pending: record !== null,
       }
     }
   }
