@@ -887,8 +887,15 @@ describe('运行表按会话管理', () => {
     })
     const id = res.subagentId as ConversationId
     await until(() => slow.arrived(), '子 agent 的请求已发出')
+    // 尚未读取的补充指令随停止交回父会话，不在完成回调中无声丢弃。
+    await delegate(cid).dispatch({ target: { subagent: id }, task: '补充：改用第一人称', ...where })
 
-    expect(delegate(cid).stop(id)).toEqual({ ok: true, name: '写手' })
+    expect(delegate(cid).stop(id)).toEqual({
+      ok: true,
+      name: '写手',
+      dropped: ['补充：改用第一人称'],
+    })
+    expect(runs.queueOf(id)).toEqual([])
     await until(() => phasesOf('child').includes('interrupted'), '节点落中断')
     expect(members().at(-1)?.state.error).toBe('已由当前会话停止')
     await until(() => !runs.isBusy(cid), '父会话空闲')
@@ -1083,6 +1090,63 @@ describe('运行表按会话管理', () => {
       expect(queue[0]).toMatchObject({ origin: 'subagent', steer: true })
       expect(queue[0]?.content).toContain('读完了')
       runs.takeNext(cid)
+    })
+
+    test('等待期间用户插入消息即返回 message，排到本轮之后的消息返回 queued，两者都不经由本方法投递', async () => {
+      const cid = conversation()
+      const slow = gate()
+      router = () => slow.respond()
+      const port = queued(cid)
+      await port.dispatch({
+        target: { kind: 'temp', name: '长任务' },
+        task: '慢慢做',
+        ...spot(cid),
+      })
+      await until(slow.arrived, '子 agent 的请求已发出')
+      const waiting = port.awaitReceipt(10_000, new AbortController().signal)
+      runs.enqueue(cid, { id: 'u1', content: '先停一下', steer: true })
+      expect(await waiting).toBe('message')
+      expect(runs.takeSteered(cid).map((f) => f.content)).toEqual(['先停一下'])
+      runs.enqueue(cid, { id: 'u2', content: '做完再看这个', steer: false })
+      expect(await port.awaitReceipt(10_000, new AbortController().signal)).toBe('queued')
+      runs.takeNext(cid)
+      subagents.interruptConversation(cid)
+      await until(() => !runs.isBusy(cid), '子 agent 结束')
+    })
+
+    test('两个父会话同时等待：只有子 agent 完成的那个返回，另一个继续等待', async () => {
+      const a = conversation()
+      const b = conversation()
+      const slowA = gate()
+      const slowB = gate()
+      router = (body) => (body.includes('甲的任务') ? slowA.respond() : slowB.respond())
+      await queued(a).dispatch({
+        target: { kind: 'temp', name: '甲' },
+        task: '甲的任务',
+        ...spot(a),
+      })
+      await queued(b).dispatch({
+        target: { kind: 'temp', name: '乙' },
+        task: '乙的任务',
+        ...spot(b),
+      })
+      await until(() => slowA.arrived() && slowB.arrived(), '两个子 agent 的请求已发出')
+      let bDone = false
+      const waitA = queued(a).awaitReceipt(10_000, new AbortController().signal)
+      const waitB = queued(b)
+        .awaitReceipt(10_000, new AbortController().signal)
+        .then((r) => {
+          bDone = true
+          return r
+        })
+      slowA.open('甲完成')
+      expect(await waitA).toBe('received')
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      expect(bDone).toBe(false)
+      slowB.open('乙完成')
+      expect(await waitB).toBe('received')
+      runs.takeNext(a)
+      runs.takeNext(b)
     })
 
     test('到期未收到回执返回 timeout；中止时以中止原因拒绝', async () => {

@@ -681,14 +681,21 @@ export interface DelegatePort {
   /**
    * 在本轮内等待下一条子 agent 或工作流回执进入本会话的投递队列，最长 `timeoutMs`；`signal` 中止时以中止原因拒绝。
    * 只报告等待结果，不返回回执内容：回执仍经由队列在下一个 step 边界送达，同一条回执只有这一条投递路径。
-   * `idle` 表示没有正在执行的子 agent，也没有待送达的回执。
+   * 用户的消息同样结束等待：`message` 为插入本轮的消息（下一个 step 边界送达），`queued` 为排到本轮之后的消息
+   * （本轮结束后才送达，等待只会推迟它）。`idle` 表示没有正在执行的子 agent，也没有待送达的回执。
    */
-  awaitReceipt(timeoutMs: number, signal: AbortSignal): Promise<'received' | 'timeout' | 'idle'>
+  awaitReceipt(
+    timeoutMs: number,
+    signal: AbortSignal,
+  ): Promise<'received' | 'message' | 'queued' | 'timeout' | 'idle'>
   /**
    * 停止本会话中一个正在执行的子 agent，只停止本次执行：子 agent 的会话保留，之后按 id 再次派发即在原会话中继续。
    * 停止后不发送回执；图中的节点写入中断，其余节点照常执行，检查点在上游全部落终态后到达。
    */
-  stop(subagentId: string): { ok: true; name: string } | { ok: false; error: string }
+  /** `dropped` 为子 agent 尚未读取、随停止作废的补充指令。 */
+  stop(
+    subagentId: string,
+  ): { ok: true; name: string; dropped: string[] } | { ok: false; error: string }
   dispatch(input: {
     target: SubagentTarget
     task: string

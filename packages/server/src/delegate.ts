@@ -933,7 +933,10 @@ export function makeDelegate(ctx: {
     async awaitReceipt(timeoutMs, signal) {
       const deadline = Date.now() + timeoutMs
       for (;;) {
-        if (deps.runs.queueOf(conversationId).some((f) => f.origin)) return 'received'
+        const queue = deps.runs.queueOf(conversationId)
+        if (queue.some((f) => f.origin)) return 'received'
+        if (queue.some((f) => f.steer)) return 'message'
+        if (queue.length) return 'queued'
         if (!deps.subagents.listOf(conversationId).length) return 'idle'
         const left = deadline - Date.now()
         if (left <= 0 || !(await deps.runs.changed(conversationId, left, signal))) return 'timeout'
@@ -946,7 +949,12 @@ export function makeDelegate(ctx: {
       if (name === null) {
         return { ok: false, error: `本会话中没有正在执行的子 agent ${subagentId}` }
       }
-      return { ok: true, name }
+      // 停止由父会话发起、不发送回执，尚未读取的补充指令在停止的结果中交回父会话，不在完成回调中无声丢弃。
+      const dropped: string[] = []
+      const child = subagentId as ConversationId
+      for (let f = deps.runs.takeNext(child); f; f = deps.runs.takeNext(child))
+        dropped.push(f.content)
+      return { ok: true, name, dropped }
     },
 
     /**

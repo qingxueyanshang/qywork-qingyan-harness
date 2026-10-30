@@ -142,10 +142,14 @@ describe('按 id 或名称引用子 agent', () => {
     const { port } = stub(sent())
     port.stop = (id) => {
       stopped.push(id)
-      return { ok: true, name: '写手' }
+      return { ok: true, name: '写手', dropped: [] }
     }
     expect((await stopSubagentTool.fn({ subagent: '写手' }, ctx(port))).status).toBe('success')
     expect(stopped).toEqual(['cv_1'])
+    port.stop = () => ({ ok: true, name: '写手', dropped: ['改用第一人称'] })
+    expect((await stopSubagentTool.fn({ subagent: 'cv_1' }, ctx(port))).message).toContain(
+      '以下 1 条补充指令它尚未读取，随停止作废，需要时再次派发：\n- 改用第一人称',
+    )
     const missing = await stopSubagentTool.fn({ subagent: 'backend' }, ctx(port))
     expect(missing.message).toStartWith(
       '本会话中没有子 agent backend。本会话的子 agent：写手（cv_1',
@@ -165,7 +169,7 @@ describe('按 id 或名称引用子 agent', () => {
 })
 
 describe('在本轮内等待回执', () => {
-  const waiting = (result: 'received' | 'timeout' | 'idle') => {
+  const waiting = (result: 'received' | 'message' | 'queued' | 'timeout' | 'idle') => {
     const asked: number[] = []
     const { port } = stub(sent())
     port.awaitReceipt = async (ms) => {
@@ -181,6 +185,15 @@ describe('在本轮内等待回执', () => {
     const res = await waitSubagentsTool.fn({}, ctx(port))
     expect(res).toMatchObject({ status: 'success', message: '已收到回执，内容见下一条消息' })
     expect(asked).toEqual([600_000])
+  })
+
+  test('用户发来消息时结束等待：插入本轮的见下一条消息，排在本轮之后的说明等待会推迟它', async () => {
+    expect((await waitSubagentsTool.fn({}, ctx(waiting('message').port))).message).toBe(
+      '用户发来消息，内容见下一条消息',
+    )
+    expect((await waitSubagentsTool.fn({}, ctx(waiting('queued').port))).message).toBe(
+      '用户有一条排在本轮之后的消息，本轮结束后才会送达；继续等待会推迟它',
+    )
   })
 
   test('到期时列出仍在执行的子 agent；等待时长有上限；没有子 agent 时如实说明', async () => {
@@ -206,7 +219,7 @@ describe('停止子 agent', () => {
     const { port } = stub(sent())
     port.stop = (id) => {
       stopped.push(id)
-      return { ok: true, name: '写手' }
+      return { ok: true, name: '写手', dropped: [] }
     }
     const res = await stopSubagentTool.fn({ subagent: 'cv_1' }, ctx(port))
     expect(stopped).toEqual(['cv_1'])
