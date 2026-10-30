@@ -2634,7 +2634,15 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                             >
                               <span>
                                 {i() + 1} · {madeAt(v.made.at)}
-                                {v.path.endsWith('.task.json') ? ' · 待取回' : ''}
+                                {v.path.endsWith('.task.json')
+                                  ? (() => {
+                                      // 每次生成在提交之前登记引用任务记录的版本：正在生成或取回的那一版不是待取回。
+                                      const s = view()?.states[(m() as { nodeId: string }).nodeId]
+                                      if (s?.state !== 'running' || s.version !== v.id)
+                                        return ' · 待取回'
+                                      return s.action === 'retrieve' ? ' · 取回中' : ' · 生成中'
+                                    })()
+                                  : ''}
                               </span>
                               <Show when={current()}>
                                 <IconCheck size={14} />

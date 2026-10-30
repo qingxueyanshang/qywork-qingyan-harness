@@ -192,7 +192,9 @@ describe('generate_image', () => {
     const out = await run(root, { prompt: 'x' })
     expect(out.status).toBe('failure')
     expect(out.message).toContain('范围 1–6')
-    expect(await readdir(root)).toEqual([])
+    // 提交之前写入的任务记录随失败删除；输出目录在写入记录时创建，其中不留下文件。
+    expect(await readdir(root)).toEqual(['generated'])
+    expect(await readdir(join(root, 'generated'))).toEqual([])
   })
 })
 

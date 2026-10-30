@@ -80,6 +80,7 @@ import {
 import {
   freeLandingPath,
   type GeneratedFile,
+  type GenerateSuccess,
   generateMedia,
   landFiles,
   renameWithRetry,
@@ -221,6 +222,36 @@ function settleImages(
     : added
 }
 
+/**
+ * 引用任务记录的占位版本改为指向产物。视频见 `settleVideo`；其余类别的首个产物替换占位版本、其余产物成为同一卡片的版本
+ * （`settleImages`），设计稿页面引用的工作区图片连到该卡（`linkArtImages`）。
+ */
+function settleOutput(
+  doc: CanvasDoc,
+  output: GenerateOutput,
+  card: CardAt,
+  files: GeneratedFile[],
+  sizes: Map<string, CanvasPixels>,
+  warning: string | undefined,
+  artImages: readonly string[],
+): CanvasResult {
+  if (output === 'video') return settleVideo(doc, card.nodeId, card.versionId, files, sizes)
+  const settled = settleImages(doc, card.nodeId, card.versionId, files, sizes, warning)
+  return settled.ok && output === 'art'
+    ? linkArtImages(settled.doc, card.nodeId, artImages)
+    : settled
+}
+
+/** 占位版本记下实际使用的接口与模型：使用默认模型发起时占位版本没有记下它们。占位版本已不在时原样返回副本。 */
+function withModel(doc: CanvasDoc, card: CardAt, provider: string, model: string): CanvasDoc {
+  const next = structuredClone(doc)
+  const node = next.nodes.find((n) => n.id === card.nodeId)
+  const version =
+    node?.type === 'generate' ? node.versions.find((v) => v.id === card.versionId) : undefined
+  if (version) version.made = { ...version.made, provider, model }
+  return next
+}
+
 /** 可选的 `size` 字段：无法读取尺寸时不写入该键。 */
 function sizeField(size: CanvasPixels | null | undefined): { size?: CanvasPixels } {
   return size ? { size } : {}
@@ -357,19 +388,19 @@ interface RunEntry {
   /** 远端已撤销：收尾时删除该版本与任务记录，不记录失败。 */
   cancelled?: true
   /**
-   * 正在等待的任务记录（`keyOf` 形式的绝对路径）。画布在等待期间改名或移动后，按卡片版本引用的记录找到本条目（`entryOf`），
-   * 对同一记录的取回并入本次等待，不再发出第二次查询与下载。
+   * 本次生成或取回的任务记录：工作区相对路径与 `keyOf` 形式的绝对路径。每次生成在提交之前写入记录，卡片的占位版本引用它；
+   * 画布在等待期间改名或移动后，按卡片版本引用的记录找到本条目（`entryOf`），对同一记录的取回并入本次等待。
    */
-  record?: string
+  record?: { path: string; key: string }
   /** 收尾时确定的写回位置（`cardsOf`）；生成记录与结束事件写到这里。未确定时为发起时的画布。 */
   cards?: CardAt[]
 }
 
-/** 某张画布中一张卡片的位置。`versionId` 是引用任务记录的版本；没有任务记录时为 null。 */
+/** 某张画布中引用任务记录的版本所在的卡片。 */
 interface CardAt {
   path: string
   nodeId: string
-  versionId: string | null
+  versionId: string
 }
 
 export class CanvasService {
@@ -611,8 +642,9 @@ export class CanvasService {
    * 运行一张生成卡。运行中（未给出 `join`）、输入尚无结果、提示词为空均在返回之前以 `CanvasFailure` 抛出；
    * 返回的 `done` 在生成结束且画布回写之后兑现，不会拒绝。
    *
-   * 视频取得任务号后立即追加一个指向任务记录的版本，此后停止、查询被拒绝或进程退出均可取回；成功后按版本 id
-   * 将该版本改为指向产物。图像与音频在成功后才追加版本，多张图像对应多个版本。
+   * 提交之前写入任务记录并追加一个引用它的占位版本（所有类别相同），结束时按引用该记录的版本写回（`cardsOf`）：
+   * 成功时该版本改为指向产物，多张图像对应多个版本；没有可取回的结果时删除该版本（`settleRun`）。
+   * 取得任务号或图片来源之后，停止、查询被拒绝或进程退出均可取回。
    */
   async run(
     ws: CanvasWorkspace,
@@ -695,11 +727,6 @@ export class CanvasService {
     const entry = this.begin(key, ws, rel, nodeId)
     if (node.output === 'video') entry.requestSent = false
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
-      /** 任务记录与引用它的版本。版本已写入画布时回写按该记录确定归属；未写入时画布不引用它，按卡片确定。 */
-      const task: { record: string | null; versionId: string | null } = {
-        record: null,
-        versionId: null,
-      }
       const written: { result?: CanvasRunResult } = {}
       const outcome = await generateMedia({
         roots: ws.root,
@@ -725,90 +752,39 @@ export class CanvasService {
         inputs,
         params,
         ...(pick ? { pick } : {}),
-        onTask: async ({ record: path, taskId, provider, model }) => {
-          task.record = path
-          entry.record = keyOf(ws.root, path)
-          facts.provider = provider
-          facts.model = model
+        // 提交之前登记引用任务记录的占位版本：此后无论画布改名、移动还是复制，归属都按引用该记录的版本确定。
+        // 写入失败时抛出，`generateMedia` 删除记录、不提交生成。
+        onRecord: async (record) => {
+          entry.record = { path: record, key: keyOf(ws.root, record) }
           const id = newCanvasId()
           await this.mutate(ws.root, rel, (d) =>
-            addVersions(d, nodeId, [{ id, path, made: made(provider, model) }]),
-          ).then(
-            () => {
-              task.versionId = id
-              facts.version = id
-              entry.version = id
-            },
-            () => {},
+            addVersions(d, nodeId, [
+              { id, path: record, made: made(pick?.provider ?? '', pick?.model ?? '') },
+            ]),
           )
+          facts.version = id
+          entry.version = id
+        },
+        onTask: async ({ record, taskId, provider, model }) => {
+          facts.provider = provider
+          facts.model = model
+          await this.remodel(ws.root, record, provider, model)
           if (taskId)
             this.submitted(entry, ws, rel, nodeId, {
               taskId,
               provider,
               model,
-              record: path,
-              versionId: task.versionId,
+              record,
+              versionId: entry.version ?? null,
             })
         },
         attach: async (landed) => {
-          facts.provider = landed.provider
-          facts.model = landed.model
-          const files = landed.files
-          const output = node.output === 'video' ? videoOf(files).path : files[0]?.path
-          if (output) facts.output = output
-          const sizes = await this.sizesOf(ws.root, files)
-          const version = (path: string) => ({
-            id: newCanvasId(),
-            path,
-            made: made(landed.provider, landed.model),
-            ...sizeField(sizes.get(path)),
-            ...(landed.warning ? { warning: landed.warning } : {}),
-          })
-          const images =
-            node.output === 'art' ? await this.artImagesOf(ws.root, files[0]?.path) : null
-          const warning =
-            [
-              landed.warning,
-              images?.missing.length ? `页面引用的图片不存在：${images.missing.join('、')}` : '',
-            ]
-              .filter(Boolean)
-              .join('；') || undefined
-          const back = await this.writeBack(
-            ws.root,
-            rel,
-            nodeId,
-            task.versionId === null ? null : task.record,
-            { files, sizes, params },
-            (d, card) => {
-              if (node.output === 'image' && card.versionId)
-                return settleImages(d, card.nodeId, card.versionId, files, sizes, landed.warning)
-              if (node.output !== 'video') {
-                const added = addVersions(
-                  d,
-                  card.nodeId,
-                  files.map((f) => version(f.path)),
-                )
-                return added.ok && images
-                  ? linkArtImages(added.doc, card.nodeId, images.found)
-                  : added
-              }
-              if (card.versionId) return settleVideo(d, card.nodeId, card.versionId, files, sizes)
-              // 取得任务号时未能写入画布（文件被外部改写），成功后补充一个版本。
-              const late = version(videoOf(files).path)
-              const added = addVersions(d, card.nodeId, [late])
-              return added.ok ? settleVideo(added.doc, card.nodeId, late.id, files, sizes) : added
-            },
-            warning,
-          )
+          const back = await this.attachResult(ws.root, rel, entry, node, landed, params, facts)
           written.result = back.result
-          entry.cards = back.cards
           return back.settled
         },
       })
       if (!outcome.ok) {
-        if (task.versionId !== null && task.record !== null && !outcome.record) {
-          entry.cards = await this.dropTask(ws.root, rel, nodeId, task.record)
-        }
         return {
           ok: false,
           message: outcome.message,
@@ -821,6 +797,65 @@ export class CanvasService {
     })
     this.running.get(key)!.done = done
     return { done }
+  }
+
+  /**
+   * 产物已落盘：交给 `writeBack` 写回此刻引用任务记录的每一张卡，生成与取回共用。占位版本改为指向产物（`settleOutput`），
+   * 版本记下实际使用的接口与模型。
+   */
+  private async attachResult(
+    root: string,
+    rel: string,
+    entry: RunEntry,
+    node: CanvasGenerateNode,
+    landed: GenerateSuccess,
+    params: Record<string, unknown>,
+    facts: RunFacts,
+  ): Promise<{ result: CanvasRunResult; settled: boolean }> {
+    facts.provider = landed.provider
+    facts.model = landed.model
+    const files = landed.files
+    const output = node.output === 'video' ? videoOf(files).path : files[0]?.path
+    if (output) facts.output = output
+    const sizes = await this.sizesOf(root, files)
+    const images = node.output === 'art' ? await this.artImagesOf(root, files[0]?.path) : null
+    const warning =
+      [
+        landed.warning,
+        images?.missing.length ? `页面引用的图片不存在：${images.missing.join('、')}` : '',
+      ]
+        .filter(Boolean)
+        .join('；') || undefined
+    const back = await this.writeBack(
+      root,
+      rel,
+      entry.record!.path,
+      { files, sizes, params },
+      (d, card) =>
+        settleOutput(
+          withModel(d, card, landed.provider, landed.model),
+          node.output,
+          card,
+          files,
+          sizes,
+          landed.warning,
+          images?.found ?? [],
+        ),
+      warning,
+    )
+    entry.cards = back.cards
+    return back
+  }
+
+  /** 任务号或图片来源到达时记下实际使用的接口与模型：使用默认模型发起时占位版本没有记下它们。写入失败不影响生成。 */
+  private async remodel(root: string, record: string, provider: string, model: string) {
+    for (const card of (await this.cardsOf(root, record)).cards) {
+      await this.mutate(root, card.path, (d) => ({
+        ok: true as const,
+        doc: withModel(d, card, provider, model),
+        refs: {},
+      })).catch(() => {})
+    }
   }
 
   /**
@@ -842,7 +877,7 @@ export class CanvasService {
         : (tasks.find((v) => v.id === node.current) ?? tasks.at(-1))
     if (!version) throw new CanvasFailure(`「${node.name}」没有待取回的任务`, 422)
     // 同一任务记录已在等待（画布改名或移动之前发起的生成或取回）：并入该次等待，它收尾时写回此刻引用该记录的画布。
-    if (running?.record === keyOf(ws.root, version.path)) {
+    if (running?.record?.key === keyOf(ws.root, version.path)) {
       return { done: this.joined(running, opts.signal) }
     }
     if (running) throw new CanvasFailure('该卡片正在生成', 409)
@@ -854,10 +889,9 @@ export class CanvasService {
     }
     const entry = this.begin(key, ws, rel, nodeId, 'retrieve')
     entry.version = version.id
-    entry.record = keyOf(ws.root, version.path)
+    entry.record = { path: version.path, key: keyOf(ws.root, version.path) }
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       if (!(await this.isFile(ws.root, version.path))) {
-        entry.cards = await this.dropTask(ws.root, rel, nodeId, version.path)
         return { ok: false, message: `任务记录已不存在：${version.path}`, pending: false }
       }
       const task = await this.readTask(ws.root, version.path)
@@ -879,31 +913,20 @@ export class CanvasService {
         },
         record: version.path,
         attach: async (landed) => {
-          const sizes = await this.sizesOf(ws.root, landed.files)
-          const output =
-            node.output === 'video' ? videoOf(landed.files).path : landed.files[0]?.path
-          if (output) facts.output = output
-          const back = await this.writeBack(
+          const back = await this.attachResult(
             ws.root,
             rel,
-            nodeId,
-            version.path,
-            { files: landed.files, sizes, params: version.made.params },
-            (d, card) =>
-              node.output === 'image'
-                ? settleImages(d, card.nodeId, card.versionId!, landed.files, sizes, landed.warning)
-                : settleVideo(d, card.nodeId, card.versionId!, landed.files, sizes),
-            landed.warning,
+            entry,
+            node,
+            landed,
+            version.made.params,
+            facts,
           )
           written.result = back.result
-          entry.cards = back.cards
           return back.settled
         },
       })
       if (!outcome.ok) {
-        if (outcome.executed && !outcome.record) {
-          entry.cards = await this.dropTask(ws.root, rel, nodeId, version.path)
-        }
         return {
           ok: false,
           message: outcome.message,
@@ -956,7 +979,7 @@ export class CanvasService {
       node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX)).map((v) => keyOf(root, v.path)),
     )
     if (!records.size) return undefined
-    return [...this.running.values()].find((e) => e.record !== undefined && records.has(e.record))
+    return [...this.running.values()].find((e) => e.record && records.has(e.record.key))
   }
 
   /**
@@ -1129,19 +1152,16 @@ export class CanvasService {
       result = { ok: false, message: (err as Error).message, pending: false }
     }
     const entry = this.running.get(key)
-    // 远端已撤销：删除该版本与任务记录，卡片恢复到本次生成之前的状态，不记录失败。
+    // 远端已撤销：删除任务记录，占位版本随后删除，卡片恢复到本次生成之前的状态，不记录失败。
     if (!result.ok && entry?.cancelled && entry.task) {
-      if (entry.task.versionId) {
-        entry.cards = await this.dropTask(ws.root, rel, nodeId, entry.task.record)
-      }
       await rm(join(ws.root, entry.task.record), { force: true })
       result = { ok: false, message: '已取消生成', pending: false }
     }
-    // 无回执时停止等待：远端仍可能完成。停止期间到达的任务号保留供取回，已成功的结果照常保留。
+    // 无回执时停止等待：远端仍可能完成。任务记录只在能取回时保留（`generateMedia`），已成功的结果照常保留。
     const stopped = !result.ok && !entry?.cancelled && entry?.stop.signal.aborted === true
     const unsent = stopped && entry.requestSent === false
     if (stopped) {
-      const pending = !!entry.task && (await this.isFile(ws.root, entry.task.record))
+      const pending = !!entry.record && (await this.isFile(ws.root, entry.record.path))
       result = {
         ok: false,
         message: unsent
@@ -1151,6 +1171,14 @@ export class CanvasService {
             : '已停止等待；远端结果未知',
         pending,
       }
+    }
+    /*
+     * 任务记录已不存在即没有可取回的结果（远端失败、撤销、停止等待时记录不能取回、提交之前被拒绝、记录已被删除）：
+     * 删除引用该记录的占位版本，它此刻所在的每张画布都删除。生成、取回、撤销与停止只在此处删除，不在各自的分支中另行处理。
+     * 判据是记录是否仍在，不是 `pending`：服务退出时等待被中止，记录能取回而结果不标为待取回，占位版本须留给启动恢复。
+     */
+    if (!result.ok && entry?.record && !(await this.isFile(ws.root, entry.record.path))) {
+      entry.cards = await this.dropTask(ws.root, entry.record.path)
     }
     const task = entry?.task
     const provider = facts.provider ?? task?.provider
@@ -1212,68 +1240,46 @@ export class CanvasService {
   }
 
   /**
-   * 一次生成此刻的归属。任务以任务记录为准，不以发起时记下的画布路径为准：画布可能在生成期间被改名、移动或删除。
-   * - `record` 非空：工作区中引用该记录的每一个版本（画布被复制时可能有多张）。
-   * - `record` 为空（没有任务记录，或引用它的版本未能写入画布）：发起时的画布仍在时以它为准，其中没有该卡即卡片已删除；
-   *   发起时的画布已不在时，取工作区中唯一含有该卡 id 的画布，不唯一时列入 `ambiguous`，不替调用方选择。
-   * 无法读取的画布列入 `unreadable`：其中是否有本次生成的卡片无法判定。
+   * 一次生成此刻的归属：工作区中引用该任务记录的每一个版本（画布被复制时可能有多张）。每次生成在提交之前写入任务记录，
+   * 卡片的占位版本引用它，因此归属只按记录判定，不以发起时记下的画布路径或卡片 id 推测：画布可能在生成期间被改名、移动、复制或删除。
+   * 无法读取的画布列入 `unreadable`：其中是否引用该记录无法判定。
    */
   private async cardsOf(
     root: string,
-    rel: string,
-    nodeId: string,
-    record: string | null,
-  ): Promise<{ cards: CardAt[]; unreadable: string[]; ambiguous: string[] }> {
+    record: string,
+  ): Promise<{ cards: CardAt[]; unreadable: string[] }> {
+    const cards: CardAt[] = []
     const unreadable: string[] = []
-    const docOf = async (path: string): Promise<CanvasDoc | null> => {
+    for (const path of await this.list(root)) {
+      let doc: CanvasDoc
       try {
-        return await this.load(await this.locate(root, path))
+        doc = await this.load(await this.locate(root, path))
       } catch {
         unreadable.push(path)
-        return null
+        continue
       }
-    }
-    if (record !== null) {
-      const cards: CardAt[] = []
-      for (const path of await this.list(root)) {
-        for (const node of (await docOf(path))?.nodes ?? []) {
-          if (node.type !== 'generate') continue
-          for (const v of node.versions) {
-            if (v.path === record) cards.push({ path, nodeId: node.id, versionId: v.id })
-          }
+      for (const node of doc.nodes) {
+        if (node.type !== 'generate') continue
+        for (const v of node.versions) {
+          if (v.path === record) cards.push({ path, nodeId: node.id, versionId: v.id })
         }
       }
-      return { cards, unreadable, ambiguous: [] }
     }
-    if (await this.isFile(root, rel)) {
-      const doc = await docOf(rel)
-      const cards = doc?.nodes.some((n) => n.id === nodeId)
-        ? [{ path: rel, nodeId, versionId: null }]
-        : []
-      return { cards, unreadable, ambiguous: [] }
-    }
-    const found: string[] = []
-    for (const path of await this.list(root)) {
-      if ((await docOf(path))?.nodes.some((n) => n.id === nodeId)) found.push(path)
-    }
-    return found.length === 1
-      ? { cards: [{ path: found[0]!, nodeId, versionId: null }], unreadable, ambiguous: [] }
-      : { cards: [], unreadable, ambiguous: found.sort() }
+    return { cards, unreadable }
   }
 
   /**
-   * 产物已落盘，写回此刻的归属（`cardsOf`）。成功时返回各产物的像素宽高与时长、实际发送的参数，以及回写后卡片当前版本的路径，
-   * 供调用方核对结果：一次生成有多个产物时只有当前版本显示在卡片上；写回的画布不是发起时的画布时给出 `canvas`。
+   * 产物已落盘，写回此刻引用任务记录的每一张卡（`cardsOf`）。成功时返回各产物的像素宽高与时长、实际发送的参数，以及回写后卡片当前版本的路径，
+   * 供调用方核对结果：一次生成有多个产物时只有当前版本显示在卡片上；写回的画布不是发起时的画布（`rel`）时给出 `canvas`。
    *
-   * `settled` 表示任务记录可以删除：已全部写回，或已确认没有画布属于本次生成（卡片、版本或画布已删除，产物留在原位置，结果写明）。
-   * 有归属而写入失败、或没有找到归属而有画布无法读取时为 false：任务记录保留并写明已落盘的产物，画布恢复后对该卡取回即接上产物，
+   * `settled` 表示任务记录可以删除：已全部写回，或已确认没有画布引用该记录（卡片、版本或画布已删除，产物留在原位置，结果写明）。
+   * 有引用而写入失败、或没有找到引用而有画布无法读取时为 false：任务记录保留并写明已落盘的产物，画布恢复后对该卡取回即接上产物，
    * 不重新下载（`generateMedia` 的 `attach`）。
    */
   private async writeBack(
     root: string,
     rel: string,
-    nodeId: string,
-    record: string | null,
+    record: string,
     made: {
       files: GeneratedFile[]
       sizes: Map<string, CanvasPixels>
@@ -1284,7 +1290,7 @@ export class CanvasService {
   ): Promise<{ result: CanvasRunResult; settled: boolean; cards: CardAt[] }> {
     const paths = made.files.map((f) => f.path)
     const where = paths.join('、')
-    const { cards, unreadable, ambiguous } = await this.cardsOf(root, rel, nodeId, record)
+    const { cards, unreadable } = await this.cardsOf(root, record)
     const failed: string[] = []
     let shown: { card: CardAt; current: string | undefined } | undefined
     for (const card of cards) {
@@ -1323,39 +1329,35 @@ export class CanvasService {
     }
     if (failed.length || (!cards.length && unreadable.length)) {
       const reason = failed.length ? failed.join('；') : `无法读取 ${unreadable.join('、')}`
-      const kept = record
-        ? `；任务记录 ${record} 已保留，画布恢复后对该卡取回即接上产物，不重新下载`
-        : ''
       return {
         result: {
           ok: false,
-          message: `已生成，但回写画布失败（${reason}），产物位于 ${where}${kept}`,
-          pending: record !== null,
+          message: `已生成，但回写画布失败（${reason}），产物位于 ${where}；任务记录 ${record} 已保留，画布恢复后对该卡取回即接上产物，不重新下载`,
+          pending: true,
         },
-        settled: record === null,
+        settled: false,
         cards,
       }
     }
-    const message = ambiguous.length
-      ? `已生成，但工作区中有多张画布含有该卡（${ambiguous.join('、')}），无法确定写回哪一张；产物位于 ${where}`
-      : `已生成，但没有画布含有该卡（卡片、版本或画布已删除）；产物位于 ${where}${record ? '，任务记录已删除' : ''}`
-    return { result: { ok: false, message, pending: false }, settled: true, cards }
+    return {
+      result: {
+        ok: false,
+        message: `已生成，但没有画布引用该次生成（卡片、版本或画布已删除）；产物位于 ${where}，任务记录已删除`,
+        pending: false,
+      },
+      settled: true,
+      cards,
+    }
   }
 
   /**
-   * 删除本次生成占位的版本（远端失败、远端已撤销、任务记录已不存在时）。有任务记录时按记录找到它此刻所在的每张画布。
-   * 返回删除的位置，生成记录写到这里。
+   * 删除引用任务记录的占位版本（没有可取回的结果时，见 `settleRun`），按记录找到它此刻所在的每张画布。返回删除的位置，生成记录写到这里。
    */
-  private async dropTask(
-    root: string,
-    rel: string,
-    nodeId: string,
-    record: string,
-  ): Promise<CardAt[]> {
-    const { cards } = await this.cardsOf(root, rel, nodeId, record)
+  private async dropTask(root: string, record: string): Promise<CardAt[]> {
+    const { cards } = await this.cardsOf(root, record)
     for (const card of cards) {
       await this.mutate(root, card.path, (d) =>
-        applyCanvasOps(d, [{ op: 'remove', id: card.nodeId, version: card.versionId! }]),
+        applyCanvasOps(d, [{ op: 'remove', id: card.nodeId, version: card.versionId }]),
       ).catch(() => {})
     }
     return cards

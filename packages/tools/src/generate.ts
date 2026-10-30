@@ -202,10 +202,15 @@ async function reserveDefault(roots: RootsInput): Promise<{ target: string; rele
   }
 }
 
-/** 生成任务与已返回图片的恢复记录。恢复不重新提交生成。 */
+/**
+ * 一次生成的任务记录，在提交之前写入，生成结束后删除。画布卡片的占位版本引用它，归属以此为准。
+ * 取得任务号（视频）或图片来源（异步图片）后写入对应字段，此后可以取回，不重新提交生成；
+ * 两者都没有时（同步生成、视频尚未取得任务号）没有可取回的结果。
+ */
 interface TaskRecord {
-  provider: string
-  model: string
+  /** 提交时卡片选定的接口与模型；使用默认模型时在取得任务号或结果之后写入。 */
+  provider?: string
+  model?: string
   taskId?: string
   imageResult?: MediaImageResult
   /** 提交时的参数。取回时原样传给端口：按提交时长计费的视频据此计量。 */
@@ -239,6 +244,22 @@ async function writeRecord(
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
     }
+  }
+}
+
+/** 改写任务记录中的字段，其余字段保留。 */
+async function updateRecord(recordPath: string, patch: Partial<TaskRecord>): Promise<void> {
+  const record = JSON.parse(await readFile(recordPath, 'utf8')) as TaskRecord
+  await writeFile(recordPath, `${JSON.stringify({ ...record, ...patch }, null, 2)}\n`)
+}
+
+/** 任务记录能否取回结果：已有任务号、图片来源或已落盘的产物。记录不存在或无法读取时为 false。 */
+async function retrievable(recordPath: string): Promise<boolean> {
+  try {
+    const record = JSON.parse(await readFile(recordPath, 'utf8')) as TaskRecord
+    return !!(record.taskId || record.imageResult || record.landed?.files.length)
+  } catch {
+    return false
   }
 }
 
@@ -277,7 +298,12 @@ export interface GenerateRequest {
   pick?: { provider: string; model: string }
   /** 输出路径；已存在时在调用接口之前拒绝。未提供时写入 `generated/<时间>`。 */
   output?: string
-  /** 写入恢复记录后回调。图片记录没有远端任务号。 */
+  /**
+   * 任务记录写入之后、提交生成之前回调，使用方（画布）在此登记引用该记录的占位版本。
+   * 抛出异常时删除记录、不提交生成（未产生费用）：使用方没有登记时，生成结束后无法确定产物的归属。
+   */
+  onRecord?: (record: string) => Promise<void>
+  /** 取得任务号（视频）或图片来源（异步图片）并写入任务记录后回调。图片没有远端任务号。 */
   onTask?: (task: {
     record: string
     taskId?: string
@@ -364,7 +390,10 @@ async function readInputs(
   return read
 }
 
-/** 执行一次生成并落盘。取得任务号或图片来源时保存恢复记录。 */
+/**
+ * 执行一次生成并落盘。提交之前写入任务记录（`onRecord` 在此登记），取得任务号或图片来源时写入记录；
+ * 生成结束后按 `settle` 删除或保留记录。等待被中止且记录不能取回时删除记录：没有可取回的结果，留下即无人处理。
+ */
 export async function generateMedia(req: GenerateRequest): Promise<GenerateOutcome> {
   const inputs = await readInputs(req.roots, req.type, req.inputs)
   if (!Array.isArray(inputs)) return inputs
@@ -380,8 +409,23 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       ? { target: req.output, release() {} }
       : await reserveDefault(req.roots)
   try {
-    let recordPath: string | null = null
     const target = await resolveWritablePath(req.roots, slot.target, { followFinalSymlink: false })
+    const recordPath = await writeRecord(req.roots, slot.target, {
+      ...(req.pick ?? {}),
+      params: req.params,
+      output: slot.target,
+      submittedAt: new Date().toISOString(),
+    })
+    const record = displayPath(workspaceOf(req.roots), recordPath)
+    try {
+      await req.onRecord?.(record)
+    } catch (err) {
+      await rm(recordPath, { force: true })
+      return refused(
+        `未能登记本次生成，未提交：${err instanceof Error ? err.message : String(err)}`,
+        'record_unwritable',
+      )
+    }
     const call: MediaCall = {
       type: req.type,
       prompt: req.prompt,
@@ -393,42 +437,25 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
     }
     if (req.type === 'image') {
       call.onImageResult = async (result, provider, model) => {
-        recordPath = await writeRecord(req.roots, slot.target, {
-          provider,
-          model,
-          imageResult: result,
-          params: req.params,
-          output: slot.target,
-          submittedAt: new Date().toISOString(),
-        })
-        await req.onTask?.({
-          record: displayPath(workspaceOf(req.roots), recordPath),
-          provider,
-          model,
-        })
+        await updateRecord(recordPath, { provider, model, imageResult: result })
+        await req.onTask?.({ record, provider, model })
       }
     }
     if (req.type === 'video') {
       if (req.onSubmit) call.onSubmit = req.onSubmit
       call.onTask = async ({ taskId, provider, model }) => {
-        recordPath = await writeRecord(req.roots, slot.target, {
-          provider,
-          model,
-          taskId,
-          params: req.params,
-          output: slot.target,
-          submittedAt: new Date().toISOString(),
-        })
-        await req.onTask?.({
-          record: displayPath(workspaceOf(req.roots), recordPath),
-          taskId,
-          provider,
-          model,
-        })
+        await updateRecord(recordPath, { provider, model, taskId })
+        await req.onTask?.({ record, taskId, provider, model })
       }
       if (req.onStatus) call.onStatus = req.onStatus
     }
-    const result = await req.media.generate(call, req.signal)
+    let result: MediaCallResult
+    try {
+      result = await req.media.generate(call, req.signal)
+    } catch (err) {
+      if (!(await retrievable(recordPath))) await rm(recordPath, { force: true })
+      throw err
+    }
     return await settle(
       req.roots,
       result,
@@ -463,26 +490,45 @@ export async function resumeMedia(req: {
   if (
     !record ||
     typeof record !== 'object' ||
+    typeof record.output !== 'string' ||
+    !record.output
+  ) {
+    return refused(`${req.record} 缺少输出路径`, 'invalid_tool_arguments')
+  }
+  const landed = record.landed
+  const present = !!landed?.files.length && (await allPresent(req.roots, landed.files))
+  const pending = record.imageResult !== undefined || record.taskId !== undefined
+  // 没有任务号、图片来源，也没有仍在原位置的产物：提交之前写入的记录（同步生成或视频尚未取得任务号时应用退出
+  // 或停止了等待），或已落盘的产物已被移走。没有可取回的结果，删除记录。
+  if (!pending && !present) {
+    await rm(recordPath, { force: true })
+    return {
+      ok: false,
+      executed: true,
+      message: landed?.files.length
+        ? `已落盘的产物已被移走或删除（${landed.files.map((f) => f.path).join('、')}），该次生成没有任务号，无法重新取回`
+        : '该次生成在应用退出或停止等待之前没有返回结果，也没有取得任务号；远端结果未知，没有可取回的结果',
+    }
+  }
+  if (
     typeof record.provider !== 'string' ||
     !record.provider ||
     typeof record.model !== 'string' ||
     !record.model ||
-    typeof record.output !== 'string' ||
-    !record.output ||
     (record.imageResult !== undefined
       ? !isImageResult(record.imageResult)
-      : typeof record.taskId !== 'string' || !record.taskId)
+      : pending && (typeof record.taskId !== 'string' || !record.taskId))
   ) {
-    return refused(`${req.record} 缺少任务号、接口、模型或输出路径`, 'invalid_tool_arguments')
+    return refused(`${req.record} 缺少任务号、接口或模型`, 'invalid_tool_arguments')
   }
+  const { provider, model } = record
   await writeFile(recordPath, `${JSON.stringify({ ...record, ownerPid: process.pid }, null, 2)}\n`)
-  const landed = record.landed
-  if (landed?.files.length && (await allPresent(req.roots, landed.files))) {
+  if (present && landed) {
     return deliver(
       {
         ok: true,
-        provider: record.provider,
-        model: record.model,
+        provider,
+        model,
         files: landed.files,
         ...(landed.warning ? { warning: landed.warning } : {}),
       },
@@ -495,8 +541,8 @@ export async function resumeMedia(req: {
     prompt: '',
     inputs: [],
     params: record.params ?? {},
-    provider: record.provider,
-    model: record.model,
+    provider,
+    model,
     ...(record.imageResult
       ? { resumeImageResult: record.imageResult }
       : { resumeTaskId: record.taskId! }),
@@ -533,6 +579,8 @@ async function deliver(
     const record = JSON.parse(await readFile(recordPath, 'utf8')) as TaskRecord
     const kept: TaskRecord = {
       ...record,
+      provider: landed.provider,
+      model: landed.model,
       landed: { files: landed.files, ...(landed.warning ? { warning: landed.warning } : {}) },
     }
     await writeFile(recordPath, `${JSON.stringify(kept, null, 2)}\n`)
@@ -541,7 +589,8 @@ async function deliver(
 }
 
 /**
- * 收尾：成功时落盘并交给使用方（`deliver`）；远端任务仍存在（`pendingTaskId`）时保留记录；终态失败时删除记录。
+ * 收尾：成功时落盘并交给使用方（`deliver`）；远端任务仍存在（`pendingTaskId`）等可以接续的失败、且记录能取回时保留记录；
+ * 其余失败删除记录（包括提交之前就被拒绝、没有任务号的记录）。
  */
 async function settle(
   roots: RootsInput,
@@ -552,7 +601,11 @@ async function settle(
   attach: Attach | undefined,
 ): Promise<GenerateOutcome> {
   if (!result.ok) {
-    if ((result.pendingTaskId || result.recoverable || result.executed === false) && recordPath) {
+    if (
+      (result.pendingTaskId || result.recoverable || result.executed === false) &&
+      recordPath &&
+      (await retrievable(recordPath))
+    ) {
       return {
         ok: false,
         executed: result.executed ?? true,

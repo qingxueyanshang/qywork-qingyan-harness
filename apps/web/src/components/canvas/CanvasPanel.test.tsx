@@ -1753,10 +1753,16 @@ describe('画布：生成卡与生成面板', () => {
       expect(notice()?.textContent).not.toContain(label)
     }
     versions().click()
+    // 正在取回的任务记录版本标为取回中，其余任务记录版本标为待取回；已完成的版本两者都不带。
     const completed = () =>
       [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
-        (b) => !b.textContent?.includes('待取回'),
+        (b) => !/待取回|取回中|生成中/.test(b.textContent ?? ''),
       )!
+    expect(
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].some((b) =>
+        b.textContent?.includes('取回中'),
+      ),
+    ).toBe(true)
     await waitFor(
       () => !!completed(),
       () => document.body.textContent ?? '',
@@ -1768,6 +1774,50 @@ describe('画布：生成卡与生成面板', () => {
     )
     expect(host.querySelector<HTMLButtonElement>('.send-btn')?.disabled).toBe(false)
     expect(notice()).toBeNull()
+  })
+
+  /** 每次生成在提交之前登记引用任务记录的占位版本：生成进行中的那一版在版本菜单中标为生成中，不标为待取回。 */
+  test('版本菜单中正在生成的占位版本标为生成中，其他任务记录版本标为待取回', async () => {
+    const { host, server, refs } = await mount(CARD)
+    const core = await import('@qywork/core')
+    const store = await import('../../lib/store/index.ts')
+    const id = refs.$v!
+    const made = {
+      prompt: '视频',
+      provider: 'qwen',
+      model: 'wan3.0-video',
+      params: {},
+      inputs: [],
+      at: '2026-10-12T10:00:00Z',
+    }
+    const added = core.addVersions(server.doc(), id, [
+      { id: 'old', path: 'generated/old.task.json', made },
+      { id: 'now', path: 'generated/now.task.json', made: { ...made, at: '2026-10-12T11:00:00Z' } },
+    ])
+    if (!added.ok) throw new Error(added.error)
+    server.setView({
+      doc: added.doc,
+      states: { [id]: { state: 'running', startedAt: Date.now(), version: 'now' } },
+    })
+    store.setState('canvasVersion', (v) => v + 1)
+    await select(host, id)
+    const versions = () => node(host, id).querySelector<HTMLButtonElement>('.canvas-badge.version')!
+    await waitFor(
+      () => !!versions(),
+      () => node(host, id).textContent ?? '',
+    )
+    versions().click()
+    const labels = () =>
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].map(
+        (b) => b.textContent ?? '',
+      )
+    await waitFor(
+      () => labels().length === 2,
+      () => document.body.textContent ?? '',
+    )
+    expect(labels()[0]).toContain('待取回')
+    expect(labels()[1]).toContain('生成中')
+    expect(labels()[1]).not.toContain('待取回')
   })
 
   test('待取回原因来自当前版本最新记录；重新生成和取回完成后不残留旧原因', async () => {

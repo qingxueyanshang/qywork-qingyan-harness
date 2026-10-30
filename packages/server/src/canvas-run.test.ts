@@ -112,6 +112,15 @@ async function node(root: string, id: string): Promise<CanvasGenerateNode> {
   return n
 }
 
+/** 等到条件成立；生成在另一个服务实例中进行时，测试只能按画布文件的状态判断进度。 */
+async function until(check: () => Promise<boolean>, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error('等待超时')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
 async function failure(p: Promise<unknown>): Promise<CanvasFailure> {
   try {
     await p
@@ -399,7 +408,7 @@ describe('画布运行：图像', () => {
     expect({ w: g.w, h: g.h }).toEqual({ w: 169, h: 254 })
   })
 
-  test('事件依次是 running → file.changed（版本、生成记录各一次）→ done', async () => {
+  test('事件依次是 running → file.changed（占位版本、产物、生成记录各一次）→ done', async () => {
     const { ws, svc, ids, events } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -414,39 +423,73 @@ describe('画布运行：图像', () => {
       'run:running',
       'file.changed',
       'file.changed',
+      'file.changed',
       'run:done',
     ])
     expect(events[0]).toMatchObject({ workspaceId: 'ws1', path: PATH, nodeId: ids.$g })
   })
 
-  test('没有任务记录的生成期间画布被改名：写回唯一含有该卡的画布；另有副本时不替调用方选择', async () => {
-    const image: MediaCallResult = {
-      ok: true,
-      provider: 'q',
-      model: 'm',
-      files: [{ bytes: PNG, mime: 'image/png' }],
-    }
+  /**
+   * 原始失败形状：同步出图进行中画布被改名，而工作区中早有一份含同一卡片 id 的副本；回写只能按卡片 id 查找，两张画布都含该卡，
+   * 无法确定写回哪一张。同步生成也在提交之前登记引用任务记录的占位版本后，归属按记录判定：副本不引用该记录。
+   */
+  test('同步生成期间画布被改名、另有含同一卡片的旧副本：按任务记录写回改名后的画布，副本不受影响', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
+    await writeFile(
+      join(ws.root, '旧副本.canvas.json'),
+      await readFile(join(ws.root, PATH), 'utf8'),
+    )
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
     const p = await fake.next()
+    const placeholder = (await node(ws.root, ids.$g!)).versions
+    expect(placeholder.map((v) => v.path)).toEqual([expect.stringMatching(/\.task\.json$/)])
     await rename(join(ws.root, PATH), join(ws.root, '改名.canvas.json'))
-    p.finish(image)
+    p.finish({ ok: true, provider: 'q', model: 'm', files: [{ bytes: PNG, mime: 'image/png' }] })
     expect(await run.done).toMatchObject({ ok: true, canvas: '改名.canvas.json' })
+    const card = async (path: string) => {
+      const r = parseCanvas(await readFile(join(ws.root, path), 'utf8'))
+      if (!r.ok) throw new Error(r.error)
+      const n = r.doc.nodes.find((x) => x.id === ids.$g)
+      if (n?.type !== 'generate') throw new Error('不是生成节点')
+      return n
+    }
+    const renamed = await card('改名.canvas.json')
+    expect(renamed.versions.map((v) => v.path)).toEqual([expect.stringMatching(/\.png$/)])
+    expect(renamed.versions[0]!.made).toMatchObject({ provider: 'q', model: 'm' })
+    expect((await card('旧副本.canvas.json')).versions).toEqual([])
+    expect(
+      (await readdir(join(ws.root, 'generated'))).filter((f) => f.endsWith('.task.json')),
+    ).toEqual([])
+  })
 
-    const again = await svc.run(ws, '改名.canvas.json', ids.$g!, { media: fake.port })
-    const q = await fake.next()
-    await rename(join(ws.root, '改名.canvas.json'), join(ws.root, '甲.canvas.json'))
-    await writeFile(
-      join(ws.root, '乙.canvas.json'),
-      await readFile(join(ws.root, '甲.canvas.json'), 'utf8'),
-    )
-    q.finish(image)
-    const ambiguous = await again.done
-    expect(ambiguous).toMatchObject({ ok: false, pending: false })
-    expect(ambiguous.ok ? '' : ambiguous.message).toContain(
-      '工作区中有多张画布含有该卡（乙.canvas.json、甲.canvas.json）',
-    )
+  test('同步生成的占位版本在停止等待、提交前被拒绝、应用退出后都不残留', async () => {
+    const { ws, svc, ids } = await setup(IMAGE_CARD)
+    const fake = fakePort()
+    const stopped = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    await fake.next()
+    expect(await svc.cancel(ws.root, PATH, ids.$g!, async () => 'unsupported')).toBe('stopped')
+    await stopped.done
+    expect((await node(ws.root, ids.$g!)).versions).toEqual([])
+
+    const refused = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    ;(await fake.next()).finish({ ok: false, executed: false, message: '参数不合法' })
+    expect(await refused.done).toMatchObject({ ok: false, pending: false })
+    expect((await node(ws.root, ids.$g!)).versions).toEqual([])
+    expect(await readdir(join(ws.root, 'generated'))).toEqual([])
+
+    // 应用在同步生成返回之前退出：占位版本与提交前写入的任务记录留在磁盘上，下次启动恢复时删除。
+    const exiting = new CanvasService({ publish: () => {} })
+    void exiting.run(ws, PATH, ids.$g!, { media: fakePort().port })
+    await until(async () => (await node(ws.root, ids.$g!)).versions.length === 1)
+    await new CanvasService({ publish: () => {} }).recover([ws], () => fake.port)
+    expect((await node(ws.root, ids.$g!)).versions).toEqual([])
+    expect(await readdir(join(ws.root, 'generated'))).toEqual([])
+    expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({
+      action: 'retrieve',
+      result: 'failed',
+      message: expect.stringContaining('没有可取回的结果'),
+    })
   })
 
   test('生成图片失败：failed 带原文，状态显示原文；画布只增加一条生成记录', async () => {
@@ -455,9 +498,17 @@ describe('画布运行：图像', () => {
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({ ok: false, message: '内容审核未通过' })
     expect(await done).toEqual({ ok: false, message: '内容审核未通过', pending: false })
-    expect(events.map((e) => e.type)).toEqual(['canvas.run', 'file.changed', 'canvas.run'])
-    expect(events[2]).toMatchObject({ state: 'failed', message: '内容审核未通过' })
+    // 占位版本写入、删除各一次，生成记录一次；占位版本与任务记录都不残留。
+    expect(events.map((e) => e.type)).toEqual([
+      'canvas.run',
+      'file.changed',
+      'file.changed',
+      'file.changed',
+      'canvas.run',
+    ])
+    expect(events[4]).toMatchObject({ state: 'failed', message: '内容审核未通过' })
     expect((await node(ws.root, ids.$g!)).versions).toEqual([])
+    expect(await readdir(join(ws.root, 'generated'))).toEqual([])
     expect((await svc.read(ws.root, PATH)).states[ids.$g!]).toEqual({
       state: 'failed',
       message: '内容审核未通过',
@@ -1522,6 +1573,7 @@ describe('画布运行：生成记录', () => {
         cost: 0.2,
         currency: 'CNY',
         output: expect.stringMatching(/\.png$/),
+        version: (await node(ws.root, ids.$g!)).versions[0]!.id,
       },
     ])
     expect(Date.parse(runs[0]!.end)).toBeGreaterThanOrEqual(Date.parse(runs[0]!.start))
