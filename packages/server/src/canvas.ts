@@ -351,6 +351,20 @@ interface RunEntry {
   phase?: TaskPhase
   /** 远端已撤销：收尾时删除该版本与任务记录，不记录失败。 */
   cancelled?: true
+  /**
+   * 正在等待的任务记录（`keyOf` 形式的绝对路径）。画布在等待期间改名或移动后，按卡片版本引用的记录找到本条目（`entryOf`），
+   * 对同一记录的取回并入本次等待，不再发出第二次查询与下载。
+   */
+  record?: string
+  /** 收尾时确定的写回位置（`cardsOf`）；生成记录与结束事件写到这里。未确定时为发起时的画布。 */
+  cards?: CardAt[]
+}
+
+/** 某张画布中一张卡片的位置。`versionId` 是引用任务记录的版本；没有任务记录时为 null。 */
+interface CardAt {
+  path: string
+  nodeId: string
+  versionId: string | null
 }
 
 export class CanvasService {
@@ -601,9 +615,11 @@ export class CanvasService {
     nodeId: string,
     opts: CanvasRunOptions,
   ): Promise<{ done: Promise<CanvasRunResult> }> {
-    const joined = opts.join ? this.joined(`${keyOf(ws.root, path)}#${nodeId}`, opts.signal) : null
-    if (joined) return { done: joined }
-    const { rel, key, node, doc } = await this.target(ws, path, nodeId)
+    const { rel, key, node, doc, running } = await this.target(ws, path, nodeId)
+    if (running) {
+      if (opts.join) return { done: this.joined(running, opts.signal) }
+      throw new CanvasFailure('该卡片正在生成', 409)
+    }
     if (opts.rejectPending && node.versions.some((v) => v.path.endsWith(TASK_SUFFIX)))
       throw new CanvasFailure('已有待取回版本，请使用 retrieve_canvas，不要重复提交生成', 409)
     if (!node.prompt.trim()) throw new CanvasFailure(`「${node.name}」的提示词为空`, 422)
@@ -674,8 +690,11 @@ export class CanvasService {
     const entry = this.begin(key, ws, rel, nodeId)
     if (node.output === 'video') entry.requestSent = false
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
-      let versionId: string | null = null
-      let record: string | null = null
+      /** 任务记录与引用它的版本。版本已写入画布时回写按该记录确定归属；未写入时画布不引用它，按卡片确定。 */
+      const task: { record: string | null; versionId: string | null } = {
+        record: null,
+        versionId: null,
+      }
       const written: { result?: CanvasRunResult } = {}
       const outcome = await generateMedia({
         roots: ws.root,
@@ -702,7 +721,8 @@ export class CanvasService {
         params,
         ...(pick ? { pick } : {}),
         onTask: async ({ record: path, taskId, provider, model }) => {
-          record = path
+          task.record = path
+          entry.record = keyOf(ws.root, path)
           facts.provider = provider
           facts.model = model
           const id = newCanvasId()
@@ -710,7 +730,7 @@ export class CanvasService {
             addVersions(d, nodeId, [{ id, path, made: made(provider, model) }]),
           ).then(
             () => {
-              versionId = id
+              task.versionId = id
               facts.version = id
               entry.version = id
             },
@@ -722,7 +742,7 @@ export class CanvasService {
               provider,
               model,
               record: path,
-              versionId,
+              versionId: task.versionId,
             })
         },
         attach: async (landed) => {
@@ -739,7 +759,6 @@ export class CanvasService {
             ...sizeField(sizes.get(path)),
             ...(landed.warning ? { warning: landed.warning } : {}),
           })
-          const id: string | null = versionId
           const images =
             node.output === 'art' ? await this.artImagesOf(ws.root, files[0]?.path) : null
           const warning =
@@ -749,36 +768,42 @@ export class CanvasService {
             ]
               .filter(Boolean)
               .join('；') || undefined
-          written.result = await this.writeBack(
+          const back = await this.writeBack(
             ws.root,
             rel,
             nodeId,
+            task.versionId === null ? null : task.record,
             { files, sizes, params },
-            (d) => {
-              if (node.output === 'image' && id)
-                return settleImages(d, nodeId, id, files, sizes, landed.warning)
+            (d, card) => {
+              if (node.output === 'image' && card.versionId)
+                return settleImages(d, card.nodeId, card.versionId, files, sizes, landed.warning)
               if (node.output !== 'video') {
                 const added = addVersions(
                   d,
-                  nodeId,
+                  card.nodeId,
                   files.map((f) => version(f.path)),
                 )
-                return added.ok && images ? linkArtImages(added.doc, nodeId, images.found) : added
+                return added.ok && images
+                  ? linkArtImages(added.doc, card.nodeId, images.found)
+                  : added
               }
-              if (id) return settleVideo(d, nodeId, id, files, sizes)
+              if (card.versionId) return settleVideo(d, card.nodeId, card.versionId, files, sizes)
               // 取得任务号时未能写入画布（文件被外部改写），成功后补充一个版本。
               const late = version(videoOf(files).path)
-              const added = addVersions(d, nodeId, [late])
-              return added.ok ? settleVideo(added.doc, nodeId, late.id, files, sizes) : added
+              const added = addVersions(d, card.nodeId, [late])
+              return added.ok ? settleVideo(added.doc, card.nodeId, late.id, files, sizes) : added
             },
             warning,
-            record,
           )
-          return written.result.ok
+          written.result = back.result
+          entry.cards = back.cards
+          return back.settled
         },
       })
       if (!outcome.ok) {
-        if (versionId && !outcome.record) await this.dropVersion(ws.root, rel, nodeId, versionId)
+        if (task.versionId !== null && task.record !== null && !outcome.record) {
+          entry.cards = await this.dropTask(ws.root, rel, nodeId, task.record)
+        }
         return {
           ok: false,
           message: outcome.message,
@@ -804,13 +829,18 @@ export class CanvasService {
     versionId: string | undefined,
     opts: CanvasRunOptions,
   ): Promise<{ done: Promise<CanvasRunResult> }> {
-    const { rel, key, node } = await this.target(ws, path, nodeId)
+    const { rel, key, node, running } = await this.target(ws, path, nodeId)
     const tasks = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))
     const version =
       versionId !== undefined
         ? tasks.find((v) => v.id === versionId)
         : (tasks.find((v) => v.id === node.current) ?? tasks.at(-1))
     if (!version) throw new CanvasFailure(`「${node.name}」没有待取回的任务`, 422)
+    // 同一任务记录已在等待（画布改名或移动之前发起的生成或取回）：并入该次等待，它收尾时写回此刻引用该记录的画布。
+    if (running?.record === keyOf(ws.root, version.path)) {
+      return { done: this.joined(running, opts.signal) }
+    }
+    if (running) throw new CanvasFailure('该卡片正在生成', 409)
 
     const facts: RunFacts = {
       action: 'retrieve',
@@ -819,9 +849,10 @@ export class CanvasService {
     }
     const entry = this.begin(key, ws, rel, nodeId, 'retrieve')
     entry.version = version.id
+    entry.record = keyOf(ws.root, version.path)
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       if (!(await this.isFile(ws.root, version.path))) {
-        await this.dropVersion(ws.root, rel, nodeId, version.id)
+        entry.cards = await this.dropTask(ws.root, rel, nodeId, version.path)
         return { ok: false, message: `任务记录已不存在：${version.path}`, pending: false }
       }
       const task = await this.readTask(ws.root, version.path)
@@ -847,24 +878,26 @@ export class CanvasService {
           const output =
             node.output === 'video' ? videoOf(landed.files).path : landed.files[0]?.path
           if (output) facts.output = output
-          written.result = await this.writeBack(
+          const back = await this.writeBack(
             ws.root,
             rel,
             nodeId,
-            { files: landed.files, sizes, params: version.made.params },
-            (d) =>
-              node.output === 'image'
-                ? settleImages(d, nodeId, version.id, landed.files, sizes, landed.warning)
-                : settleVideo(d, nodeId, version.id, landed.files, sizes),
-            landed.warning,
             version.path,
+            { files: landed.files, sizes, params: version.made.params },
+            (d, card) =>
+              node.output === 'image'
+                ? settleImages(d, card.nodeId, card.versionId!, landed.files, sizes, landed.warning)
+                : settleVideo(d, card.nodeId, card.versionId!, landed.files, sizes),
+            landed.warning,
           )
-          return written.result.ok
+          written.result = back.result
+          entry.cards = back.cards
+          return back.settled
         },
       })
       if (!outcome.ok) {
         if (outcome.executed && !outcome.record) {
-          await this.dropVersion(ws.root, rel, nodeId, version.id)
+          entry.cards = await this.dropTask(ws.root, rel, nodeId, version.path)
         }
         return {
           ok: false,
@@ -885,30 +918,48 @@ export class CanvasService {
     return this.deps.mentionStyleOf?.(node.output, pickOf(node)) ?? {}
   }
 
-  /** 运行与取回共用的前置检查：画布、节点、未在运行。 */
+  /** 运行与取回共用的前置检查：画布、节点，以及该卡是否正在生成或取回（`entryOf`），由调用方决定并入还是拒绝。 */
   private async target(
     ws: CanvasWorkspace,
     path: string,
     nodeId: string,
-  ): Promise<{ rel: string; key: string; doc: CanvasDoc; node: CanvasGenerateNode }> {
+  ): Promise<{
+    rel: string
+    key: string
+    doc: CanvasDoc
+    node: CanvasGenerateNode
+    running: RunEntry | undefined
+  }> {
     const abs = await this.locate(ws.root, path)
     const rel = await this.relativeTo(ws.root, abs)
     const key = `${keyOf(ws.root, path)}#${nodeId}`
-    if (this.running.has(key)) throw new CanvasFailure('该卡片正在生成', 409)
     const doc = await this.load(abs)
     const node = doc.nodes.find((n) => n.id === nodeId)
     if (!node) throw new CanvasFailure(`目标已不存在：${nodeId}`, 404)
     if (node.type !== 'generate') throw new CanvasFailure('只有生成节点能运行', 422)
-    return { rel, key, doc, node }
+    return { rel, key, doc, node, running: this.entryOf(ws.root, keyOf(ws.root, path), node) }
   }
 
   /**
-   * 正在进行的生成或取回的结果；该卡未在生成时为 null。`signal` 中止时只结束等待，生成照常进行并回写画布。
+   * 正在为该卡生成或取回的条目。先按画布路径与卡片查找；画布在等待期间改名或移动后，按该卡版本引用的任务记录查找：
+   * 任务的归属以任务记录为准，不以发起时的画布路径为准。`canvasKey` 见 `keyOf`。
+   */
+  private entryOf(root: string, canvasKey: string, node: CanvasNode): RunEntry | undefined {
+    const direct = this.running.get(`${canvasKey}#${node.id}`)
+    if (direct || node.type !== 'generate') return direct
+    const records = new Set(
+      node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX)).map((v) => keyOf(root, v.path)),
+    )
+    if (!records.size) return undefined
+    return [...this.running.values()].find((e) => e.record !== undefined && records.has(e.record))
+  }
+
+  /**
+   * 正在进行的生成或取回的结果。`signal` 中止时只结束等待，生成照常进行并回写画布。
    * 不要在中止时把 `pending` 记为真：该卡仍在本地生成，结果会自行写回，不需要取回。
    */
-  private joined(key: string, signal: AbortSignal | undefined): Promise<CanvasRunResult> | null {
-    const done = this.running.get(key)?.done
-    if (!done) return null
+  private joined(entry: RunEntry, signal: AbortSignal | undefined): Promise<CanvasRunResult> {
+    const done = entry.done!
     if (!signal) return done
     const stopped: CanvasRunResult = {
       ok: false,
@@ -1034,7 +1085,11 @@ export class CanvasService {
     nodeId: string,
     cancelTask: CanvasCancelTask,
   ): Promise<CanvasCancelOutcome> {
-    const entry = this.running.get(`${keyOf(workspaceRoot, path)}#${nodeId}`)
+    const canvasKey = keyOf(workspaceRoot, path)
+    const node = (await this.load(await this.locate(workspaceRoot, path))).nodes.find(
+      (n) => n.id === nodeId,
+    )
+    const entry = node ? this.entryOf(workspaceRoot, canvasKey, node) : undefined
     if (!entry) throw new CanvasFailure('该卡片未在生成', 409)
     if (entry.cancelled) return 'cancelled'
     if (!entry.task) {
@@ -1071,7 +1126,9 @@ export class CanvasService {
     const entry = this.running.get(key)
     // 远端已撤销：删除该版本与任务记录，卡片恢复到本次生成之前的状态，不记录失败。
     if (!result.ok && entry?.cancelled && entry.task) {
-      if (entry.task.versionId) await this.dropVersion(ws.root, rel, nodeId, entry.task.versionId)
+      if (entry.task.versionId) {
+        entry.cards = await this.dropTask(ws.root, rel, nodeId, entry.task.record)
+      }
       await rm(join(ws.root, entry.task.record), { force: true })
       result = { ok: false, message: '已取消生成', pending: false }
     }
@@ -1093,9 +1150,8 @@ export class CanvasService {
     const task = entry?.task
     const provider = facts.provider ?? task?.provider
     const model = facts.model ?? task?.model
-    const record: CanvasRunRecord = {
+    const record: Omit<CanvasRunRecord, 'node'> = {
       ...facts,
-      node: nodeId,
       end: new Date().toISOString(),
       result:
         (!result.ok && entry?.cancelled) || unsent
@@ -1114,19 +1170,29 @@ export class CanvasService {
       ...(!result.ok && !entry?.cancelled ? { message: result.message } : {}),
       ...(!result.ok && result.diagnostic ? { diagnostic: result.diagnostic } : {}),
     }
-    // 画布文件已被删除或损坏时无法写入记录；生成本身的结果不因此改变。
-    await this.mutate(ws.root, rel, (d) => recordRun(d, record)).catch(() => {})
+    // 生成记录与结束事件写到收尾时确定的位置：画布在生成期间改名或移动后，写到它此刻所在的画布。
+    const homes = entry?.cards?.length ? entry.cards : [{ path: rel, nodeId, versionId: null }]
+    for (const home of homes) {
+      // 画布文件已被删除或损坏时无法写入记录；生成本身的结果不因此改变。
+      await this.mutate(ws.root, home.path, (d) =>
+        recordRun(d, { ...record, node: home.nodeId }),
+      ).catch(() => {})
+    }
     this.running.delete(key)
-    if (!result.ok && !entry?.cancelled && !unsent) this.failures.set(key, result.message)
-    this.deps.publish({
-      type: 'canvas.run',
-      workspaceId: ws.id,
-      path: rel,
-      nodeId,
-      ...(result.ok || entry?.cancelled || unsent
-        ? { state: 'done' }
-        : { state: 'failed', message: result.message }),
-    })
+    for (const home of homes) {
+      if (!result.ok && !entry?.cancelled && !unsent) {
+        this.failures.set(`${keyOf(ws.root, home.path)}#${home.nodeId}`, result.message)
+      }
+      this.deps.publish({
+        type: 'canvas.run',
+        workspaceId: ws.id,
+        path: home.path,
+        nodeId: home.nodeId,
+        ...(result.ok || entry?.cancelled || unsent
+          ? { state: 'done' }
+          : { state: 'failed', message: result.message }),
+      })
+    }
     return result
   }
 
@@ -1141,32 +1207,95 @@ export class CanvasService {
   }
 
   /**
-   * 产物已落盘，回写画布。成功时返回各产物的像素宽高与时长、实际发送的参数，以及回写后卡片当前版本的路径，
-   * 供调用方核对结果：一次生成有多个产物时只有当前版本显示在卡片上。
-   * 回写失败（画布已移动或改名、节点或该版本已被外部修改）时，失败原文写明产物位置；有任务记录时该记录保留，
-   * 结果为待取回，对该卡取回即接上这些产物（`generateMedia` 的 `attach`）。
+   * 一次生成此刻的归属。任务以任务记录为准，不以发起时记下的画布路径为准：画布可能在生成期间被改名、移动或删除。
+   * - `record` 非空：工作区中引用该记录的每一个版本（画布被复制时可能有多张）。
+   * - `record` 为空（没有任务记录，或引用它的版本未能写入画布）：发起时的画布仍在时以它为准，其中没有该卡即卡片已删除；
+   *   发起时的画布已不在时，取工作区中唯一含有该卡 id 的画布，不唯一时列入 `ambiguous`，不替调用方选择。
+   * 无法读取的画布列入 `unreadable`：其中是否有本次生成的卡片无法判定。
+   */
+  private async cardsOf(
+    root: string,
+    rel: string,
+    nodeId: string,
+    record: string | null,
+  ): Promise<{ cards: CardAt[]; unreadable: string[]; ambiguous: string[] }> {
+    const unreadable: string[] = []
+    const docOf = async (path: string): Promise<CanvasDoc | null> => {
+      try {
+        return await this.load(await this.locate(root, path))
+      } catch {
+        unreadable.push(path)
+        return null
+      }
+    }
+    if (record !== null) {
+      const cards: CardAt[] = []
+      for (const path of await this.list(root)) {
+        for (const node of (await docOf(path))?.nodes ?? []) {
+          if (node.type !== 'generate') continue
+          for (const v of node.versions) {
+            if (v.path === record) cards.push({ path, nodeId: node.id, versionId: v.id })
+          }
+        }
+      }
+      return { cards, unreadable, ambiguous: [] }
+    }
+    if (await this.isFile(root, rel)) {
+      const doc = await docOf(rel)
+      const cards = doc?.nodes.some((n) => n.id === nodeId)
+        ? [{ path: rel, nodeId, versionId: null }]
+        : []
+      return { cards, unreadable, ambiguous: [] }
+    }
+    const found: string[] = []
+    for (const path of await this.list(root)) {
+      if ((await docOf(path))?.nodes.some((n) => n.id === nodeId)) found.push(path)
+    }
+    return found.length === 1
+      ? { cards: [{ path: found[0]!, nodeId, versionId: null }], unreadable, ambiguous: [] }
+      : { cards: [], unreadable, ambiguous: found.sort() }
+  }
+
+  /**
+   * 产物已落盘，写回此刻的归属（`cardsOf`）。成功时返回各产物的像素宽高与时长、实际发送的参数，以及回写后卡片当前版本的路径，
+   * 供调用方核对结果：一次生成有多个产物时只有当前版本显示在卡片上；写回的画布不是发起时的画布时给出 `canvas`。
+   *
+   * `settled` 表示任务记录可以删除：已全部写回，或已确认没有画布属于本次生成（卡片、版本或画布已删除，产物留在原位置，结果写明）。
+   * 有归属而写入失败、或没有找到归属而有画布无法读取时为 false：任务记录保留并写明已落盘的产物，画布恢复后对该卡取回即接上产物，
+   * 不重新下载（`generateMedia` 的 `attach`）。
    */
   private async writeBack(
     root: string,
     rel: string,
     nodeId: string,
+    record: string | null,
     made: {
       files: GeneratedFile[]
       sizes: Map<string, CanvasPixels>
       params: Record<string, unknown>
     },
-    change: (doc: CanvasDoc) => CanvasResult,
+    change: (doc: CanvasDoc, card: CardAt) => CanvasResult,
     warning: string | undefined,
-    record: string | null,
-  ): Promise<CanvasRunResult> {
+  ): Promise<{ result: CanvasRunResult; settled: boolean; cards: CardAt[] }> {
     const paths = made.files.map((f) => f.path)
-    try {
-      const { doc } = await this.mutate(root, rel, change)
-      const node = doc.nodes.find((n) => n.id === nodeId)
-      const current =
-        node?.type === 'generate'
-          ? node.versions.find((v) => v.id === node.current)?.path
-          : undefined
+    const where = paths.join('、')
+    const { cards, unreadable, ambiguous } = await this.cardsOf(root, rel, nodeId, record)
+    const failed: string[] = []
+    let shown: { card: CardAt; current: string | undefined } | undefined
+    for (const card of cards) {
+      try {
+        const { doc } = await this.mutate(root, card.path, (d) => change(d, card))
+        const node = doc.nodes.find((n) => n.id === card.nodeId)
+        const current =
+          node?.type === 'generate'
+            ? node.versions.find((v) => v.id === node.current)?.path
+            : undefined
+        if (!shown || card.path === rel) shown = { card, current }
+      } catch (err) {
+        failed.push(`${card.path}：${(err as Error).message}`)
+      }
+    }
+    if (shown && !failed.length) {
       const outputs = await Promise.all(
         paths.map(async (path) => {
           const duration = await mediaDurationOf(join(root, path))
@@ -1177,27 +1306,54 @@ export class CanvasService {
           }
         }),
       )
-      return {
+      const result: CanvasRunResult = {
         ok: true,
         outputs,
         params: made.params,
-        ...(current ? { current } : {}),
+        ...(shown.current ? { current: shown.current } : {}),
+        ...(shown.card.path !== rel ? { canvas: shown.card.path } : {}),
         ...(warning ? { warning } : {}),
       }
-    } catch (err) {
-      const kept = record ? `；任务记录 ${record} 已保留，对该卡取回即接上产物，不重新下载` : ''
+      return { result, settled: true, cards }
+    }
+    if (failed.length || (!cards.length && unreadable.length)) {
+      const reason = failed.length ? failed.join('；') : `无法读取 ${unreadable.join('、')}`
+      const kept = record
+        ? `；任务记录 ${record} 已保留，画布恢复后对该卡取回即接上产物，不重新下载`
+        : ''
       return {
-        ok: false,
-        message: `已生成，但回写画布失败（${(err as Error).message}），产物位于 ${paths.join('、')}${kept}`,
-        pending: record !== null,
+        result: {
+          ok: false,
+          message: `已生成，但回写画布失败（${reason}），产物位于 ${where}${kept}`,
+          pending: record !== null,
+        },
+        settled: record === null,
+        cards,
       }
     }
+    const message = ambiguous.length
+      ? `已生成，但工作区中有多张画布含有该卡（${ambiguous.join('、')}），无法确定写回哪一张；产物位于 ${where}`
+      : `已生成，但没有画布含有该卡（卡片、版本或画布已删除）；产物位于 ${where}${record ? '，任务记录已删除' : ''}`
+    return { result: { ok: false, message, pending: false }, settled: true, cards }
   }
 
-  private async dropVersion(root: string, rel: string, nodeId: string, versionId: string) {
-    await this.mutate(root, rel, (d) =>
-      applyCanvasOps(d, [{ op: 'remove', id: nodeId, version: versionId }]),
-    ).catch(() => {})
+  /**
+   * 删除本次生成占位的版本（远端失败、远端已撤销、任务记录已不存在时）。有任务记录时按记录找到它此刻所在的每张画布。
+   * 返回删除的位置，生成记录写到这里。
+   */
+  private async dropTask(
+    root: string,
+    rel: string,
+    nodeId: string,
+    record: string,
+  ): Promise<CardAt[]> {
+    const { cards } = await this.cardsOf(root, rel, nodeId, record)
+    for (const card of cards) {
+      await this.mutate(root, card.path, (d) =>
+        applyCanvasOps(d, [{ op: 'remove', id: card.nodeId, version: card.versionId! }]),
+      ).catch(() => {})
+    }
+    return cards
   }
 
   /**
@@ -1971,7 +2127,7 @@ export class CanvasService {
       return found.every(Boolean) ? { state: 'normal' } : { state: 'missing' }
     }
     const key = `${canvasKey}#${node.id}`
-    const run = this.running.get(key)
+    const run = this.entryOf(workspaceRoot, canvasKey, node)
     if (run) {
       return {
         state: 'running',
@@ -2015,7 +2171,7 @@ export class CanvasService {
       // 大模型按卡片名称引用，先按 id、再按名称找到节点。
       const node =
         doc.nodes.find((n) => n.id === op.id) ?? doc.nodes.find((n) => displayNameOf(n) === op.id)
-      if (!node || !this.running.has(`${canvasKey}#${node.id}`)) continue
+      if (!node || !this.entryOf(workspaceRoot, canvasKey, node)) continue
       const inFlight =
         op.version === undefined ||
         (node?.type === 'generate' &&

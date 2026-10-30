@@ -282,6 +282,8 @@ export type CanvasRunResult =
       outputs: CanvasOutput[]
       params: Record<string, unknown>
       current?: string
+      /** 写回的画布（工作区相对路径）；与发起时的画布不同时给出：画布在生成期间被改名或移动。 */
+      canvas?: string
       warning?: string
     }
   | { ok: false; message: string; pending: boolean; diagnostic?: MediaDiagnostic }

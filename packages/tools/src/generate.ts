@@ -208,7 +208,7 @@ interface TaskRecord {
   submittedAt: string
   /** 正在等待该任务的进程：写入记录与开始取回时写入本进程的 pid，由 `taskHeldElsewhere` 判定。 */
   ownerPid?: number
-  /** 产物已落盘而使用方未能接收时写入：取回时直接交付这些产物，不再查询与下载。 */
+  /** 产物已落盘而使用方未能接收时写入（见 `Attach`）：取回时直接交付这些产物，不再查询与下载。 */
   landed?: { files: GeneratedFile[]; warning?: string }
 }
 
@@ -294,8 +294,9 @@ export interface GenerateSuccess {
 }
 
 /**
- * 产物落盘之后、删除任务记录之前调用，由使用方（画布）接收产物。返回 false 表示未能接收（画布已移动、改名或被改写）：
- * 任务记录保留并写入已落盘的产物，按该记录取回时直接交付这些产物，不再查询与下载。
+ * 产物落盘之后、删除任务记录之前调用，由使用方（画布）接收产物。返回 true 表示任务记录可以删除：已接收，或已确认没有使用方。
+ * 返回 false 表示使用方存在但未能接收（画布无法读取或写入失败）：任务记录保留并写入已落盘的产物，
+ * 按该记录取回时直接交付这些产物，不再查询与下载。
  * 不要改为落盘后立即删除记录：使用方未接收时卡片仍指向该记录，删除后结果与任务号一并无法取回。
  */
 export type Attach = (landed: GenerateSuccess) => Promise<boolean>
