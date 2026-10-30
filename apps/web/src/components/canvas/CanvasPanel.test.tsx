@@ -1195,7 +1195,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(document.querySelector('.canvas-context-menu')!.closest('.canvas-stage')).toBeNull()
   })
 
-  test('流向运行中卡片的连线用内联样式绘制渐变，其余连线不使用渐变', async () => {
+  test('无法使用 WebGL 时，流向运行中卡片的连线在连线层中显示静止的渐变虚线', async () => {
     const { host } = await mount(
       [...CARD, { op: 'connect', from: '$a', to: '$v', role: 'reference' }],
       { n2: { state: 'running', startedAt: Date.now() } },
@@ -1205,6 +1205,79 @@ describe('画布：生成卡与生成面板', () => {
     expect(id).toBeDefined()
     expect(host.querySelector(`linearGradient#${id}`)).not.toBeNull()
     expect(live.getAttribute('stroke')).toBeNull()
+    expect(live.style.getPropertyValue('stroke-dashoffset')).toBe('')
+  })
+
+  test('流动虚线由 WebGL 层绘制，生成期间连线层不随推进修改', async () => {
+    // 替身上下文：着色器与程序一律编译成功，记录每次绘制与流动位移。
+    const flows: number[] = []
+    let draws = 0
+    const gl = new Proxy({} as Record<string, unknown>, {
+      get(_target, key) {
+        if (key === 'getShaderParameter' || key === 'getProgramParameter') return () => true
+        if (key === 'getUniformLocation') return (_program: unknown, name: string) => name
+        if (key === 'getAttribLocation') return () => 0
+        if (key === 'uniform1f')
+          return (at: unknown, value: number) => {
+            if (at === 'uFlow') flows.push(value)
+          }
+        if (key === 'drawElements')
+          return () => {
+            draws += 1
+          }
+        if (typeof key === 'string' && /^[A-Z_0-9]+$/.test(key)) return 0
+        return () => ({})
+      },
+    })
+    const context = spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((
+      type: string,
+    ) => (type === 'webgl2' ? gl : null)) as unknown as HTMLCanvasElement['getContext'])
+    try {
+      const { host, server } = await mount(
+        [...CARD, { op: 'connect', from: '$a', to: '$v', role: 'reference' }],
+        { n2: { state: 'running', startedAt: Date.now() } },
+      )
+      const canvas = host.querySelector<HTMLCanvasElement>('canvas.canvas-flow')!
+      resize(canvas, 800, 600)
+      await waitFor(
+        () =>
+          host.querySelector<SVGPathElement>('.canvas-edges path.live')?.style.stroke === 'none',
+        () => host.querySelector('.canvas-edges')!.innerHTML,
+      )
+      const live = host.querySelector<SVGPathElement>('.canvas-edges path.live')!
+      expect(host.querySelector('.canvas-edges linearGradient')).toBeNull()
+      const changes: MutationRecord[] = []
+      const observer = new MutationObserver((records) => changes.push(...records))
+      for (const layer of host.querySelectorAll('.canvas-edges')) {
+        observer.observe(layer, {
+          attributes: true,
+          childList: true,
+          subtree: true,
+          characterData: true,
+        })
+      }
+      const before = draws
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      observer.disconnect()
+      expect(changes).toEqual([])
+      expect(live.style.getPropertyValue('stroke-dashoffset')).toBe('')
+      expect(draws - before).toBeGreaterThan(3)
+      expect(new Set(flows).size).toBeGreaterThan(3)
+      // 生成结束后停止推进。
+      server.setView({ states: {} })
+      const store = await import('../../lib/store/index.ts')
+      store.setState('canvasVersion', (v) => v + 1)
+      await waitFor(
+        () => !host.querySelector('.canvas-edges path.live'),
+        () => host.querySelector('.canvas-edges')!.innerHTML,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const settled = flows.length
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(flows.length).toBe(settled)
+    } finally {
+      context.mockRestore()
+    }
   })
 
   test('选中节点时其连线持续显示同一渐变，其余连线不使用渐变', async () => {

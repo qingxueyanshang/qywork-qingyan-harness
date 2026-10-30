@@ -121,12 +121,21 @@
   pointer-events: none;
 }
 /*
- * 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变 + 虚线流动。
- * 流动由 `CanvasPanel` 的定时器写入该连线的内联 `stroke-dashoffset` 推进，不用 CSS 动画，原因写在该定时器处。
+ * 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变 + 虚线流动，由流动虚线层（`Flow.tsx`）用 WebGL 绘制，
+ * 此处的路径不描边。无法使用 WebGL 时此处显示静止的渐变虚线。
  */
 .canvas-edges path.live {
   stroke-width: 1.5;
   stroke-dasharray: 4 4;
+}
+/* 流动虚线层：覆盖画布区，位于连线层之上、节点层之下，不接收指针。 */
+.canvas-flow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .canvas-fault {
@@ -2149,9 +2158,6 @@ button.canvas-input:hover {
     animation: none;
     opacity: 0.5;
     transform: translate(calc(var(--j) * 12px), 0);
-  }
-  .canvas-edges path.live {
-    animation: none;
   }
 }
 
