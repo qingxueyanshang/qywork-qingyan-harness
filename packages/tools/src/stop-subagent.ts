@@ -54,7 +54,11 @@ export const stopSubagentTool: ToolSpec = {
     if (!res.ok) return { status: 'failure' as const, message: res.error }
     return {
       status: 'success' as const,
-      message: `已停止子 agent ${res.name}（subagentId ${id}）；其会话保留，用 subagent 填写该 id 再次派发即在原会话中继续`,
+      message:
+        `已停止子 agent ${res.name}（subagentId ${id}）；其会话保留，用 subagent 填写该 id 再次派发即在原会话中继续` +
+        (res.dropped.length
+          ? `\n以下 ${res.dropped.length} 条补充指令它尚未读取，随停止作废，需要时再次派发：\n${res.dropped.map((d) => `- ${d}`).join('\n')}`
+          : ''),
       data: { subagentId: id },
     }
   },

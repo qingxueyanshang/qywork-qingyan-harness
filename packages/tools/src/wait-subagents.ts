@@ -17,7 +17,7 @@ export const waitSubagentsTool: ToolSpec = {
   name: 'wait_subagents',
   description:
     '在本轮内等待本会话正在执行的子 agent 或工作流节点送回下一条回执，回执作为下一条消息送达；等待期间不调用模型。' +
-    '收到回执、到达 timeout_seconds 或本会话没有正在执行的子 agent 时返回。' +
+    '收到回执、用户发来消息、到达 timeout_seconds 或本会话没有正在执行的子 agent 时返回。' +
     '一次只等到一条回执；还在等其他子 agent 时，读完这条回执后再次调用。',
   parameters: {
     type: 'object',
@@ -53,6 +53,15 @@ export const waitSubagentsTool: ToolSpec = {
     const result = await delegate.awaitReceipt(seconds * 1000, ctx.signal)
     if (result === 'received') {
       return { status: 'success' as const, message: '已收到回执，内容见下一条消息' }
+    }
+    if (result === 'message') {
+      return { status: 'success' as const, message: '用户发来消息，内容见下一条消息' }
+    }
+    if (result === 'queued') {
+      return {
+        status: 'success' as const,
+        message: '用户有一条排在本轮之后的消息，本轮结束后才会送达；继续等待会推迟它',
+      }
     }
     if (result === 'idle') {
       return {
