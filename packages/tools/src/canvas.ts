@@ -683,6 +683,7 @@ function generationReceipt(
     message:
       `已取得结果：\n${outputs.join('\n')}\n  发送的参数：${paramsText(result.params)}` +
       currentText(result) +
+      (result.canvas ? `\n发起时的画布已不含该卡，结果写回 ${result.canvas}` : '') +
       `${result.warning ? `\n${result.warning}` : ''}${step ? viewStep(paths) : ''}`,
     data: { outputs: result.outputs, params: result.params },
     fileChanges: paths.map((p) => ({ path: p, changeType: 'created' as const })),

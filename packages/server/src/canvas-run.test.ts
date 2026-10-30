@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/agent'
@@ -419,6 +419,36 @@ describe('画布运行：图像', () => {
     expect(events[0]).toMatchObject({ workspaceId: 'ws1', path: PATH, nodeId: ids.$g })
   })
 
+  test('没有任务记录的生成期间画布被改名：写回唯一含有该卡的画布；另有副本时不替调用方选择', async () => {
+    const image: MediaCallResult = {
+      ok: true,
+      provider: 'q',
+      model: 'm',
+      files: [{ bytes: PNG, mime: 'image/png' }],
+    }
+    const { ws, svc, ids } = await setup(IMAGE_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const p = await fake.next()
+    await rename(join(ws.root, PATH), join(ws.root, '改名.canvas.json'))
+    p.finish(image)
+    expect(await run.done).toMatchObject({ ok: true, canvas: '改名.canvas.json' })
+
+    const again = await svc.run(ws, '改名.canvas.json', ids.$g!, { media: fake.port })
+    const q = await fake.next()
+    await rename(join(ws.root, '改名.canvas.json'), join(ws.root, '甲.canvas.json'))
+    await writeFile(
+      join(ws.root, '乙.canvas.json'),
+      await readFile(join(ws.root, '甲.canvas.json'), 'utf8'),
+    )
+    q.finish(image)
+    const ambiguous = await again.done
+    expect(ambiguous).toMatchObject({ ok: false, pending: false })
+    expect(ambiguous.ok ? '' : ambiguous.message).toContain(
+      '工作区中有多张画布含有该卡（乙.canvas.json、甲.canvas.json）',
+    )
+  })
+
   test('生成图片失败：failed 带原文，状态显示原文；画布只增加一条生成记录', async () => {
     const { ws, svc, ids, events } = await setup(IMAGE_CARD)
     const fake = fakePort()
@@ -733,11 +763,10 @@ describe('画布运行：视频', () => {
     expect(during.versions[0]!.path).toMatch(/\.task\.json$/)
     expect(during.versions[0]!.made).toMatchObject({ provider: 'ark', model: 'seedance' })
     expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
-    // 运行中再次运行、取回、删除节点、删除该版本均被拒绝。
+    // 运行中再次运行、删除节点、删除该版本均被拒绝；取回同一任务记录并入本次等待，不再发出请求。
     expect((await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))).status).toBe(409)
-    expect(
-      (await failure(svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port }))).status,
-    ).toBe(409)
+    const joined = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    expect(fake.calls).toHaveLength(1)
     expect((await failure(svc.apply(ws.root, PATH, [{ op: 'remove', id: ids.$v! }]))).status).toBe(
       409,
     )
@@ -757,6 +786,7 @@ describe('画布运行：视频', () => {
       files: [{ bytes: MP4, mime: 'video/mp4' }],
     })
     expect(await done).toMatchObject({ ok: true })
+    expect(await joined.done).toMatchObject({ ok: true })
     const after = await node(ws.root, ids.$v!)
     expect(after.versions.map((v) => v.id)).toEqual([during.versions[0]!.id])
     expect(after.versions[0]!.path).toMatch(/^generated\/\d{8}-\d{6}\.mp4$/)
@@ -941,7 +971,7 @@ describe('画布运行：视频', () => {
     expect(after.current).toBe(after.versions[0]!.id)
   })
 
-  test('生成期间画布被外部改写、节点已删除：产物照常落盘，failed 原文写明产物路径', async () => {
+  test('生成期间画布被外部改写、节点已删除：产物照常落盘，结果写明产物路径，不留下任务记录', async () => {
     const { ws, svc, ids, events } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -955,45 +985,117 @@ describe('画布运行：视频', () => {
       files: [{ bytes: MP4, mime: 'video/mp4' }],
     })
     const result = await run.done
-    expect(result.ok).toBe(false)
-    const product = (await readdir(join(ws.root, 'generated'))).find((f) => f.endsWith('.mp4'))
+    expect(result).toMatchObject({ ok: false, pending: false })
+    const generated = await readdir(join(ws.root, 'generated'))
+    const product = generated.find((f) => f.endsWith('.mp4'))
     expect(product).toBeDefined()
-    expect(result.ok ? '' : result.message).toContain(`generated/${product}`)
+    expect(result.ok ? '' : result.message).toContain(`generated/${product}，任务记录已删除`)
+    expect(generated.filter((f) => f.endsWith('.task.json'))).toEqual([])
     expect(events.at(-1)).toMatchObject({ type: 'canvas.run', state: 'failed' })
   })
 
-  test('提交后画布被改名、远端完成：任务记录保留并写明产物；在新位置取回即接上产物，不再查询与下载', async () => {
+  /** 改名后的画布。 */
+  async function movedDoc(root: string, path: string): Promise<CanvasDoc> {
+    const r = parseCanvas(await readFile(join(root, path), 'utf8'))
+    if (!r.ok) throw new Error(r.error)
+    return r.doc
+  }
+  const MOVED = '留给屋檐的信/留给屋檐的信.canvas.json'
+  const finished: MediaCallResult = {
+    ok: true,
+    provider: 'ark',
+    model: 'seedance',
+    files: [{ bytes: MP4, mime: 'video/mp4' }],
+  }
+
+  /**
+   * 原始失败形状：《留给屋檐的信》8 个视频任务提交后，画布文件与所在目录先后被改名；6 个任务完成后产物已落盘，
+   * 而改名后的画布中这些卡仍指向已删除的任务记录，结果与任务号一并无法取回。
+   */
+  test('提交后画布被改名并移动、远端完成：结果自动写回改名后的画布，不需要取回，不留下任务记录', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-1')
-    const moved = '留给屋檐的信.canvas.json'
-    await rename(join(ws.root, PATH), join(ws.root, moved))
-    p.finish({
-      ok: true,
-      provider: 'ark',
-      model: 'seedance',
-      files: [{ bytes: MP4, mime: 'video/mp4' }],
-    })
+    await mkdir(join(ws.root, '留给屋檐的信'))
+    await rename(join(ws.root, PATH), join(ws.root, MOVED))
+    p.finish(finished)
+    const result = await run.done
+    expect(result).toMatchObject({ ok: true, canvas: MOVED })
+    const generated = await readdir(join(ws.root, 'generated'))
+    expect(generated.filter((f) => f.endsWith('.task.json'))).toEqual([])
+    const doc = await movedDoc(ws.root, MOVED)
+    const card = doc.nodes.find((n) => n.id === ids.$v)
+    expect(card?.type === 'generate' && card.versions.map((v) => v.path)).toEqual([
+      `generated/${generated.find((f) => f.endsWith('.mp4'))}`,
+    ])
+    expect(doc.runs?.at(-1)).toMatchObject({ node: ids.$v, result: 'done', task: 't-1' })
+    expect((await svc.read(ws.root, MOVED)).states[ids.$v!]).toEqual({ state: 'normal' })
+  })
+
+  test('改名后在新路径取回并入原等待：显示生成中，只查询、下载一次，两处都得到结果', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-1')
+    await mkdir(join(ws.root, '留给屋檐的信'))
+    await rename(join(ws.root, PATH), join(ws.root, MOVED))
+    expect((await svc.read(ws.root, MOVED)).states[ids.$v!]).toMatchObject({ state: 'running' })
+    const again = await svc.retrieve(ws, MOVED, ids.$v!, undefined, { media: fake.port })
+    expect(fake.calls).toHaveLength(1)
+    p.finish(finished)
+    expect(await run.done).toMatchObject({ ok: true, canvas: MOVED })
+    expect(await again.done).toMatchObject({ ok: true, canvas: MOVED })
+    expect(fake.calls).toHaveLength(1)
+    const generated = await readdir(join(ws.root, 'generated'))
+    expect(generated.filter((f) => f.endsWith('.mp4'))).toHaveLength(1)
+    expect(generated.filter((f) => f.endsWith('.task.json'))).toEqual([])
+  })
+
+  test('画布在完成时无法读取：任务记录保留并写明产物；画布恢复后取回直接接上，不再查询与下载', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-1')
+    const intact = await readFile(join(ws.root, PATH), 'utf8')
+    await writeFile(join(ws.root, PATH), '{')
+    p.finish(finished)
     const result = await run.done
     expect(result).toMatchObject({ ok: false, pending: true })
+    expect(result.ok ? '' : result.message).toContain(`无法读取 ${PATH}`)
     const generated = await readdir(join(ws.root, 'generated'))
     const product = generated.find((f) => f.endsWith('.mp4'))!
-    const record = generated.find((f) => f.endsWith('.task.json'))!
-    expect(result.ok ? '' : result.message).toContain(`generated/${product}`)
-    expect(result.ok ? '' : result.message).toContain(`generated/${record}`)
+    expect(generated.filter((f) => f.endsWith('.task.json'))).toHaveLength(1)
 
-    const again = await svc.retrieve(ws, moved, ids.$v!, undefined, { media: fake.port })
+    await writeFile(join(ws.root, PATH), intact)
+    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
     expect(await again.done).toMatchObject({ ok: true })
     expect(fake.calls).toHaveLength(1)
-    const doc = parseCanvas(await readFile(join(ws.root, moved), 'utf8'))
-    if (!doc.ok) throw new Error(doc.error)
-    const card = doc.doc.nodes.find((n) => n.id === ids.$v)
-    expect(card?.type === 'generate' && card.versions.map((v) => v.path)).toEqual([
+    expect((await node(ws.root, ids.$v!)).versions.map((v) => v.path)).toEqual([
       `generated/${product}`,
     ])
     expect(await readdir(join(ws.root, 'generated'))).toEqual([product])
+  })
+
+  test('画布被复制后两张都引用同一任务：完成时两张都写回', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-1')
+    const copy = '副本.canvas.json'
+    await writeFile(join(ws.root, copy), await readFile(join(ws.root, PATH), 'utf8'))
+    p.finish(finished)
+    const result = await run.done
+    expect(result.ok).toBe(true)
+    expect('canvas' in result).toBe(false)
+    for (const path of [PATH, copy]) {
+      const card = (await movedDoc(ws.root, path)).nodes.find((n) => n.id === ids.$v)
+      expect(card?.type === 'generate' && card.versions[0]!.path).toMatch(/\.mp4$/)
+    }
   })
 
   test('一张卡有两个待取回版本时按版本 id 分别取回', async () => {
