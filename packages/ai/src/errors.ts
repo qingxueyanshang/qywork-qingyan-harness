@@ -242,11 +242,18 @@ function providerErrorField(err: unknown, key: string): string | null {
   return stringField((err as Record<string, unknown>).error, key)
 }
 
-function quotaExhausted(err: unknown, message: string): boolean {
+/**
+ * 失败是否因账户额度、余额或配额用尽：等待后重试不会成功，须由用户处理。对话请求据此报告 `insufficient_quota`，
+ * 生成请求据此判定 HTTP 429 不重发（`media/http.ts`）。`err` 是接口的错误对象或解析后的错误正文，
+ * 错误码可以在顶层（百炼：`{ code, message }`）或 `error` 之下（OpenAI：`{ error: { code, type } }`）。
+ *
+ * 百炼的 429 中，`Throttling.AllocationQuota` 一个错误码对应多种原因，只有部分是额度用尽，按原文区分。
+ */
+export function quotaExhausted(err: unknown, message: string): boolean {
   const code = providerErrorField(err, 'code')?.toLowerCase() ?? ''
   const type = providerErrorField(err, 'type')?.toLowerCase() ?? ''
   if (
-    /^(insufficient_quota|credit_balance_exhausted|billing_hard_limit_reached|quota_exceeded|insufficient_balance)$/.test(
+    /^(insufficient_quota|credit_balance_exhausted|billing_hard_limit_reached|quota_exceeded|insufficient_balance|arrearage|commoditynotpurchased|prepaidbilloverdue|postpaidbilloverdue|budgetlimitexceeded)$/.test(
       code,
     ) ||
     /^(insufficient_quota|billing_error)$/.test(type)
@@ -254,7 +261,7 @@ function quotaExhausted(err: unknown, message: string): boolean {
     return true
   }
 
-  return /exceeded your current quota|insufficient (?:quota|credit|balance)|credit balance|billing hard limit|not enough credits|额度不足|余额不足|余额耗尽|余额已用完|欠费|需要充值/i.test(
+  return /exceeded your current quota|insufficient (?:quota|credit|balance)|credit balance|billing hard limit|not enough credits|free allocated quota exceeded|voice-clone voice limit exceeded|bill is overdue|budget configured in budget management has been exhausted|account is in good standing|额度不足|余额不足|余额耗尽|余额已用完|欠费|需要充值/i.test(
     message,
   )
 }

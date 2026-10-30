@@ -1,6 +1,6 @@
 /** 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、提交遇到 429 时的重发、下载重试及取消，不调用付费接口。 */
 import { afterAll, afterEach, beforeAll, expect, spyOn, test } from 'bun:test'
-import { download, postJson, send, sendJson } from './http.ts'
+import { download, postJson, rateLimitWait, send, sendJson } from './http.ts'
 import { MediaError } from './types.ts'
 
 let server: ReturnType<typeof Bun.serve>
@@ -261,6 +261,8 @@ test('客户端拒绝与网关结果未知分开报告，保留原文且生成�
  * 429 表示未受理，生成与上传按 Retry-After 重发；查询只发一次，由调用方按自己的间隔重发。
  */
 test('生成与上传遇到 429 按 Retry-After 重发直到受理；次数用尽后报告原文且判为被拒绝；查询不在此重发', async () => {
+  // 随机延后取 0：Retry-After 为 0 时立即重发，用例不等待。
+  const random = spyOn(Math, 'random').mockReturnValue(0)
   const limited = () =>
     new Response('{"message":"Requests rate limit exceeded, please try again later."}', {
       status: 429,
@@ -292,6 +294,66 @@ test('生成与上传遇到 429 按 Retry-After 重发直到受理；次数用�
   const query = await failure(sendJson(url(), { method: 'GET' }, signal()))
   expect(query.status).toBe(429)
   expect(hits).toEqual(['GET'])
+  random.mockRestore()
+})
+
+/**
+ * 额度、余额或配额用尽同样返回 429，等待不会改变结果：只发送一次，立即判为被拒绝。错误码与原文取自 OpenAI 与百炼的错误码文档；
+ * 百炼 `Throttling.AllocationQuota` 一个错误码对应限流与免费额度用尽两种原因，按原文区分。
+ */
+test.each([
+  [
+    'OpenAI 额度用尽',
+    '{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}',
+    1,
+  ],
+  [
+    '百炼预付费欠费',
+    '{"code":"PrepaidBillOverdue","message":"The prepaid bill is overdue.","request_id":"r"}',
+    1,
+  ],
+  [
+    '百炼预算用尽',
+    '{"code":"BudgetLimitExceeded","message":"The budget configured in Budget Management has been exhausted.","request_id":"r"}',
+    1,
+  ],
+  [
+    '百炼免费额度用尽',
+    '{"code":"Throttling.AllocationQuota","message":"Free allocated quota exceeded.","request_id":"r"}',
+    1,
+  ],
+  ['中转站余额不足', '{"error":{"message":"用户额度不足，剩余额度：0","type":"new_api_error"}}', 1],
+  [
+    '百炼按分钟分配的限额',
+    '{"code":"Throttling.AllocationQuota","message":"Allocated quota exceeded, please increase your quota limit.","request_id":"r"}',
+    6,
+  ],
+  [
+    '中转站上游限流',
+    '{"error":{"message":"Upstream rate limit exceeded, please retry later","type":"rate_limit_error"}}',
+    6,
+  ],
+] as const)('429 正文为「%s」：额度类只发一次，限流类按上限重发', async (_, body, sent) => {
+  const random = spyOn(Math, 'random').mockReturnValue(0)
+  reply = () => new Response(body, { status: 429, headers: { 'retry-after': '0' } })
+  const error = await failure(postJson(url(), {}, {}, signal()))
+  expect(error.diagnostic).toMatchObject({ status: 429, outcome: 'rejected' })
+  expect(hits).toHaveLength(sent)
+  random.mockRestore()
+})
+
+test('限流等待在基准之上随机延后至多一半，至少 1 秒的范围，不早于 Retry-After', () => {
+  const at = (retryAfter: string | null, retry: number, r: number) => {
+    const random = spyOn(Math, 'random').mockReturnValue(r)
+    const headers: Record<string, string> = retryAfter === null ? {} : { 'retry-after': retryAfter }
+    const wait = rateLimitWait(new Response(null, { status: 429, headers }), retry)
+    random.mockRestore()
+    return wait
+  }
+  expect([at('10', 0, 0), at('10', 0, 1)]).toEqual([10_000, 15_000])
+  expect([at(null, 2, 0), at(null, 2, 1)]).toEqual([8_000, 12_000])
+  expect([at('0', 0, 0), at('0', 0, 1)]).toEqual([0, 1_000])
+  expect(at('600', 0, 1)).toBe(90_000)
 })
 
 /** 连接未建立时请求没有发出：端口拒绝连接与 TLS 握手失败均为被拒绝，不显示 Bun 的英文提示。 */

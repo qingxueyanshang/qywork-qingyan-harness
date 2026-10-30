@@ -1,6 +1,6 @@
 /** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
 import type { MediaDiagnostic } from '@qywork/core'
-import { bodyMessage, httpStatusName, retryAfterOf } from '../errors.ts'
+import { bodyMessage, httpStatusName, quotaExhausted, retryAfterOf } from '../errors.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { MediaError } from './types.ts'
 
@@ -57,8 +57,17 @@ function unsentReason(code: string | undefined, host: string): string | null {
 }
 
 /** 错误正文中的说明，解析规则与对话一侧相同；说明超过 500 个字符时截断。 */
-async function providerMessage(res: Response): Promise<string> {
-  return bodyMessage(await res.text().catch(() => ''))?.slice(0, 500) || res.statusText
+function providerMessage(res: Response, text: string): string {
+  return bodyMessage(text)?.slice(0, 500) || res.statusText
+}
+
+/** 错误正文按 JSON 解析后的对象，供 `quotaExhausted` 读取错误码；不是 JSON 时为 null。 */
+function errorBodyOf(text: string): unknown {
+  try {
+    return JSON.parse(text.trim())
+  } catch {
+    return null
+  }
 }
 
 /** 读完响应体，每收到一段数据调用一次 `heard`。 */
@@ -84,17 +93,23 @@ async function readBody(res: Response, heard: () => void): Promise<Uint8Array> {
   return bytes
 }
 
-/** 生成与上传遇到 HTTP 429 时的重发次数上限；等待时间见 `rateLimitWait`。 */
+/** 生成与上传遇到限流（HTTP 429 且不是额度用尽）时的重发次数上限；等待时间见 `rateLimitWait`。 */
 const RATE_LIMIT_RETRIES = 5
 
-/** 429 之后的等待：取 Retry-After，未给出时依次为 2、4、8、16、32 秒；单次不超过 60 秒。 */
-function rateLimitWait(res: Response, retry: number): number {
-  return Math.min(retryAfterOf(res) ?? 2000 * 2 ** retry, 60_000)
+/**
+ * 限流之后的等待：基准取 Retry-After，未给出时依次为 2、4、8、16、32 秒，单次不超过 60 秒；在基准之上随机延后
+ * 至多一半（至少 1 秒的范围）。不要去掉随机部分：同一批同时提交的请求同时收到 429，按相同的时间等待会在同一时刻
+ * 再次超出限额。只延后不提前，不早于接口要求的时刻。
+ */
+export function rateLimitWait(res: Response, retry: number): number {
+  const base = Math.min(retryAfterOf(res) ?? 2000 * 2 ** retry, 60_000)
+  return base + Math.random() * Math.max(base / 2, 1000)
 }
 
 /**
  * 发出请求并读完响应体。期限按静默计算（`IDLE_MS`）：每收到一段数据重新计时。
- * 生成与上传只在 HTTP 429 时重发（`RATE_LIMIT_RETRIES`）：429 表示接口未受理该请求，重发不会重复提交或计费；
+ * 生成与上传只在限流时重发（`RATE_LIMIT_RETRIES`）：HTTP 429 表示接口未受理该请求，重发不会重复提交或计费；
+ * 429 的原因是额度、余额或配额用尽时（`quotaExhausted`，与对话请求同一判定）等待不会改变结果，立即报告。
  * 超时、连接中断与 5xx 可能已被受理，不重发。查询与下载由调用方重发（`waitTask`、`download`），此处不再叠加一层。
  *
  * fetch 必须展开 `PROVIDER_HTTP.fetchOptions`：Bun 的 socket 空闲超时默认 300 秒，缺少该选项时
@@ -171,10 +186,13 @@ export async function send(
       clearTimeout(timer)
     }
     if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      const message = providerMessage(res, text)
       if (
         res.status === 429 &&
         (stage === 'generate' || stage === 'upload') &&
-        retry < RATE_LIMIT_RETRIES
+        retry < RATE_LIMIT_RETRIES &&
+        !quotaExhausted(errorBodyOf(text), message)
       ) {
         await pause(rateLimitWait(res, retry), signal)
         continue
@@ -188,11 +206,7 @@ export async function send(
       )
         facts.outcome = 'rejected'
       throw new MediaError(
-        stageMessage(
-          stage,
-          `HTTP ${res.status} ${httpStatusName(res.status)}：${await providerMessage(res)}`,
-          facts,
-        ),
+        stageMessage(stage, `HTTP ${res.status} ${httpStatusName(res.status)}：${message}`, facts),
         { status: res.status, diagnostic: facts },
       )
     }
