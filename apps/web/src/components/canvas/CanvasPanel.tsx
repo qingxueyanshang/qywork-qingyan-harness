@@ -89,6 +89,7 @@ import { type ArtLive, ArtView } from './ArtView.tsx'
 import { pngOf, recordArt } from './art.ts'
 import { Bitmap } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
+import { curveOf, FLOW_STOPS, FlowLayer, pathOf } from './Flow.tsx'
 import { captureVideoFrame } from './frame.ts'
 import { GeneratePanel, mediaOf } from './GeneratePanel.tsx'
 import { KindIcon, OUTPUT_LABEL } from './kinds.tsx'
@@ -118,10 +119,6 @@ type ContextTarget =
 const CLIP_LINK = 'clip:'
 /** 拖动节点时的吸附范围（屏幕像素）：按缩放换算为画布单位，缩放后吸附距离不变。 */
 const SNAP = 6
-/** 生成中连线的虚线流动：每 0.8 秒前进一个虚线周期（`stroke-dasharray: 4 4`），每秒推进 24 次，每次位移约 0.4 像素。 */
-const FLOW_PERIOD = 8
-const FLOW_CYCLE_MS = 800
-const FLOW_TICK_MS = 1000 / 24
 /** 合并连续变动的等待时长：期间到达的变动只触发一次重新读取。 */
 const RELOAD_DELAY_MS = 150
 
@@ -234,7 +231,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const [menu, setMenu] = createSignal<Menu | null>(null)
   const [tall, setTall] = sessionSignal(`${key}.tall`, false)
   const [now, setNow] = createSignal(Date.now())
-  const [flow, setFlow] = createSignal(0)
+  /** 流动虚线层能否用 WebGL 绘制；不能时生成中的连线在连线层中显示为静止的渐变虚线。 */
+  const [flowGl, setFlowGl] = createSignal(false)
   /** 选中的视频节点的播放器；取帧条读写它的时刻。 */
   const players = new Map<string, PlayerHandle>()
   /** 单独选中的 Art 节点的实时页面；截图与录制经由它执行。 */
@@ -448,16 +446,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (!hasRunning()) return
     setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1000)
-    // 不要改回 CSS 动画：`stroke-dashoffset` 动画不能由合成线程执行，按显示器刷新率每帧重绘连线层，
-    // 开销随刷新率增长（180Hz 是 60Hz 的三倍）；定时器的推进次数与显示器无关。
-    const start = performance.now()
-    const flowTimer = setInterval(() => {
-      setFlow(-(((performance.now() - start) / FLOW_CYCLE_MS) * FLOW_PERIOD) % FLOW_PERIOD)
-    }, FLOW_TICK_MS)
-    onCleanup(() => {
-      clearInterval(timer)
-      clearInterval(flowTimer)
-    })
+    onCleanup(() => clearInterval(timer))
   })
 
   // ── 视口 ──
@@ -1655,11 +1644,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       const y1 = pa.y + a.h / 2
       const x2 = pb.x
       const y2 = pb.y + b.h / 2
-      const dx = Math.max(40, (x2 - x1) / 2)
       return [
         {
           id: e.id,
-          d: `M${x1} ${y1} C${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2} ${y2}`,
+          d: pathOf(curveOf(x1, y1, x2, y2)),
           live: v.states[b.id]?.state === 'running',
           moving: moving()[a.id] !== undefined || moving()[b.id] !== undefined,
           hot: selected().has(a.id) || selected().has(b.id),
@@ -1690,7 +1678,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         style={{ transform: `translate(${px()}px, ${py()}px) scale(${z()})` }}
       >
         <defs>
-          <Index each={p.edges.filter((e) => e.live || e.hot)}>
+          <Index each={p.edges.filter((e) => (e.live ? !flowGl() : e.hot))}>
             {(e) => (
               <linearGradient
                 id={`canvas-flow-${e().id}`}
@@ -1700,10 +1688,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 x2={e().x2}
                 y2={e().y2}
               >
-                <stop offset="0" stop-color="#ddd6fe" />
-                <stop offset=".3" stop-color="#a78bfa" />
-                <stop offset=".62" stop-color="#7c3aed" />
-                <stop offset="1" stop-color="#5b21b6" />
+                <For each={FLOW_STOPS}>
+                  {([offset, color]) => <stop offset={offset} stop-color={color} />}
+                </For>
               </linearGradient>
             )}
           </Index>
@@ -1719,13 +1706,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                   selected: edgeSelected() === e().id,
                 }}
                 // 渐变写在内联样式中：写成 `stroke` 属性会被 `.canvas-edges path` 的描边色覆盖。
-                // 流动只写在生成中的连线上：写在连线层上的继承变量每次推进都使全部连线重新计算样式。
+                // 生成中的连线由流动虚线层（`FlowLayer`）绘制，这里不描边；生成期间连线层不随推进修改。
+                // 无法使用 WebGL 时显示静止的渐变虚线。
                 style={
                   e().live
-                    ? {
-                        stroke: `url("#canvas-flow-${e().id}")`,
-                        'stroke-dashoffset': flow().toFixed(2),
-                      }
+                    ? flowGl()
+                      ? { stroke: 'none' }
+                      : { stroke: `url("#canvas-flow-${e().id}")` }
                     : e().hot
                       ? { stroke: `url("#canvas-flow-${e().id}")` }
                       : {}
@@ -2344,6 +2331,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
             {(g) => <line class="canvas-guide" x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} />}
           </For>
         </EdgeLayer>
+        <FlowLayer
+          edges={edgePaths().filter((e) => e.live)}
+          px={px()}
+          py={py()}
+          z={z()}
+          onReady={setFlowGl}
+        />
         <div
           class="canvas-world"
           style={{ transform: `translate(${px()}px, ${py()}px) scale(${z()})` }}
