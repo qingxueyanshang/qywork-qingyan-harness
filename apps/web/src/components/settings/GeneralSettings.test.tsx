@@ -36,6 +36,8 @@ beforeAll(async () => {
     if (path === '/api/models')
       return { providers: [], media: [], mediaLibrary: [], library: [] } as T
     if (path === '/api/pairing') return { candidates: [], lanEnabled: false } as T
+    // 「运行环境」一节在页面显示时获取检测结果（`environmentStore.ts`）。
+    if (path === '/api/host/environment') return { environment: [] } as T
     if (path !== '/api/config') throw new Error(`unexpected ${path}`)
     if (init?.method === 'PUT') {
       const waiting = pendingSave
