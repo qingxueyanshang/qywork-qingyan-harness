@@ -9,4 +9,4 @@ metadata:
 
 **Why:** 用户问过拉取模型能否检测某型号接受「@Image1」还是「@图片1」。代码中 hongcheng 全部型号统一为 `@Image{n}`（`channels.ts`），木木型号不设写法；这不是从目录读取的。
 
-**How to apply:** 不要尝试从这几个接口解析引用写法。要区分只能实际提交一次（计费）或由渠道提供。`refbridge_path` 为空的型号（如 SR-Seedance-2.5-720p）出现过「图片1 requires a corresponding image asset, but none was provided」，二者是否相关尚未验证。相关的提示词改写约束见 [[canvas-prompt-no-hidden-rewrite]]。
+**How to apply:** 不要尝试从这几个接口解析引用写法。要区分只能实际提交一次（计费）或由渠道提供。`refbridge_path` 为空的型号（如 SR-Seedance-2.5-720p）出现过「图片1 requires a corresponding image asset, but none was provided」，二者是否相关尚未验证。画布按登记的写法改写手写编号，木木型号没有登记写法，按原文发送，见 [[canvas-prompt-no-hidden-rewrite]]。

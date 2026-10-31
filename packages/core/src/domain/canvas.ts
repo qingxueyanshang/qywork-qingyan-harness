@@ -258,9 +258,13 @@ export interface CanvasView {
   tasks?: Record<string, CanvasTaskInfo>
   /**
    * 运行前须修正的问题，按节点 id；没有时不写该键。文本卡为摘录无法定位的原因；生成卡为其引用的失效文本卡（以 `@[名称]`
-   * 开头），以及手写素材编号与连线数量或所选模型的写法不一致（`promptInputProblems`）。运行时同样的问题会被拒绝。
+   * 开头），以及手写素材编号与连线数量不一致（`promptInputProblems`）。运行时同样的问题会被拒绝。
    */
   references?: Record<string, string[]>
+  /** 生成卡发送时按所选模型改写的手写素材编号，按节点 id，每项为「原文→发送」（`promptRelabels`）；没有改写时不写该键。 */
+  relabels?: Record<string, string[]>
+  /** 生成卡所选模型登记的素材写法，按节点 id；未登记时不写该键。界面据此显示文本引用发送时的文字（`relabelInputs`）。 */
+  mentions?: Record<string, MentionStyle>
 }
 
 /** 一个产物：工作区路径，以及从文件头读取的像素宽高与时长（秒）；无法读取时缺省。 */
@@ -608,12 +612,64 @@ export type MentionStyle = Partial<Record<GenerateOutput, string>>
  * 不在输入中的节点替换为节点名称：各模型的文档均未说明首尾帧是否计入编号，因此不做推测。
  * 文本卡展开为 `texts` 中该卡文件的内容（摘录卡为其中的一段，见 `excerptOf`），无法定位的摘录展开为空；
  * `texts` 中没有的按名称写出。运行前由调用方以 `textReferenceProblems` 拒绝不成立的引用。
+ * 展开后的全文中手写的素材编号按 `style` 改写（`relabelInputs`）。卡片上保存的提示词与文本卡文件不改写。
  */
 export function compilePrompt(
   doc: CanvasDoc,
   nodeId: string,
   style: MentionStyle = {},
   texts: ReadonlyMap<string, string> = new Map(),
+): string {
+  return relabelInputs(expandPrompt(doc, nodeId, style, texts), style).text
+}
+
+/**
+ * 生成卡发送时改写的手写素材编号，每项为「原文→发送」，按首次出现去重；没有改写时为空。
+ * 读取画布时据此告知 agent 与界面；`@[卡片]` 引用的素材按 `compilePrompt` 的规则编号，不在其内。
+ */
+export function promptRelabels(
+  doc: CanvasDoc,
+  nodeId: string,
+  style: MentionStyle,
+  texts: ReadonlyMap<string, string> = new Map(),
+): string[] {
+  return relabelInputs(expandPrompt(doc, nodeId, style, texts), style).changes
+}
+
+/**
+ * 把文本中手写的素材编号（`HANDWRITTEN_INPUT_RE`）按 `style` 改为该类别的写法，编号不变：带 @ 的改为写法原样，
+ * 不带 @ 的改为去掉开头 @ 的写法。未登记写法的类别保持原文。`changes` 为改动过的「原文→发送」，按首次出现去重。
+ * 运行时的编译、读取画布时的改写清单与界面的文本预览共用此函数，不要另写一份规则。
+ */
+export function relabelInputs(
+  text: string,
+  style: MentionStyle,
+): { text: string; changes: string[] } {
+  const changes = new Set<string>()
+  const out = text.replace(
+    HANDWRITTEN_INPUT_RE,
+    (whole, at: string, word: string, _space: string, n: string, offset: number) => {
+      if (!at && (word === '图' || word === 'voice')) return whole
+      if (!at && /^[A-Za-z]/.test(word) && /[A-Za-z0-9_]/.test(text[offset - 1] ?? '')) {
+        return whole
+      }
+      const template = style[KIND_OF_WORD[word]!]
+      if (!template) return whole
+      const label = template.replaceAll('{n}', n)
+      const sent = at ? label : label.replace(/^@/, '')
+      if (sent !== whole) changes.add(`${whole}→${sent}`)
+      return sent
+    },
+  )
+  return { text: out, changes: [...changes] }
+}
+
+/** `@[id]` 展开后的提示词：素材按 `style` 编号，文本卡展开为摘录；手写编号尚未改写。规则见 `compilePrompt`。 */
+function expandPrompt(
+  doc: CanvasDoc,
+  nodeId: string,
+  style: MentionStyle,
+  texts: ReadonlyMap<string, string>,
 ): string {
   const node = doc.nodes.find((n) => n.id === nodeId)
   if (node?.type !== 'generate') return ''
@@ -651,11 +707,12 @@ const NUMBERED_LABEL = { image: '图片', audio: '音频' } as const
 const NUMBERED_UNIT = { image: '张', audio: '段' } as const
 const LEFT_MENTION_RE = /@\[[^[\]\n]{1,200}\]/g
 /**
- * 手写的带 @ 的素材编号，如 `@图片1`、`@Image 1`、`@图1`、`@voice1`。不带 @ 的 `图1` 不在其内：
- * 正文中的「如图1」无法与素材编号区分。
+ * 手写的素材编号：带 @ 的 `@图片1`、`@Image 1`、`@图1`、`@voice1`，与不带 @ 的 `图片1`、`Image1`、`音频1`。
+ * 不带 @ 的 `图1`、`voice1` 不是编号：正文中的「如图1」无法与素材编号区分；英文写法前接字母或数字时
+ * （`MyImage1`）同样不是编号。两项排除由 `compilePrompt` 按匹配结果判定。
  */
-const AT_INPUT_RE =
-  /@(图片|图|Image|image|视频|Video|video|音频|Audio|audio|voice)(\s?)(\d{1,2})(?!\d)/g
+const HANDWRITTEN_INPUT_RE =
+  /(@?)(图片|图|Image|image|视频|Video|video|音频|Audio|audio|voice)(\s?)(\d{1,2})(?!\d)/g
 const KIND_OF_WORD: Record<string, 'image' | 'video' | 'audio'> = {
   图片: 'image',
   图: 'image',
@@ -669,22 +726,18 @@ const KIND_OF_WORD: Record<string, 'image' | 'video' | 'audio'> = {
   audio: 'audio',
   voice: 'audio',
 }
-const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' } as const
 
 /**
  * 运行前核对提示词与输入。只检查展开引用后的文本（`compilePrompt` 不套用写法的结果），不依赖文本引用的段落定位方式。
  * - 手写的 `图片N` / `音频N` 的最大编号须等于连接到该卡的同类参考素材数量：多出的素材同样会发送，
  *   超出连线数量的编号指向不存在的素材。以 `@[卡片]` 引用素材时由编译统一编号，不属于本项检查。
- * - 给出所选模型的写法 `style` 时，手写的带 @ 的编号须是该模型声明的写法（开头的 @ 不计）：换模型后沿用另一种写法（如
- *   hongcheng 声明 `@Image{n}`，提示词仍写 `@图片1`）时编号一致也会发出，模型不一定把它绑定到素材。
- *   只报告不改写：卡片上的文字即发送的内容，由 agent 或用户改写。未登记写法的模型与类别不检查。
+ *   手写编号的写法不在核对之列：编译时按所选模型的写法改写（`compilePrompt`）。
  * - 展开后的文本不得含有 `@[…]`：引用只展开一层，文本卡中的 `@[名称]` 会按原文发送给模型。
  */
 export function promptInputProblems(
   doc: CanvasDoc,
   nodeId: string,
   texts: ReadonlyMap<string, string> = new Map(),
-  style: MentionStyle = {},
 ): string[] {
   const node = doc.nodes.find((n) => n.id === nodeId)
   if (node?.type !== 'generate') return []
@@ -708,22 +761,6 @@ export function promptInputProblems(
         `提示词引用至${label}${top}，该卡连接了${count}${NUMBERED_UNIT[kind]}${label}；${label}编号须与连线数量一致`,
       )
     }
-  }
-  const wrong = new Map<'image' | 'video' | 'audio', Set<string>>()
-  for (const m of text.matchAll(AT_INPUT_RE)) {
-    const kind = KIND_OF_WORD[m[1]!]!
-    const template = style[kind]
-    if (!template) continue
-    const declared = template.replace(/^@/, '').replaceAll('{n}', m[3]!)
-    if (m[0].slice(1) !== declared) wrong.set(kind, (wrong.get(kind) ?? new Set()).add(m[0]))
-  }
-  for (const [kind, tokens] of wrong) {
-    const shown = [...tokens].slice(0, 3).map((t) => `「${t}」`)
-    problems.push(
-      `提示词写的${shown.join('')}${tokens.size > 3 ? '等' : ''}不是所选模型的${KIND_LABEL[kind]}写法：` +
-        `该模型写作「${style[kind]!.replaceAll('{n}', '1')}」「${style[kind]!.replaceAll('{n}', '2')}」，按同类连线顺序编号；` +
-        `改写提示词（引用的文本卡改其文件）后再运行`,
-    )
   }
   const left = [...new Set([...text.matchAll(LEFT_MENTION_RE)].map((m) => m[0]))]
   if (left.length) {

@@ -17,7 +17,9 @@ import {
   parseCanvas,
   parseCanvasOps,
   promptInputProblems,
+  promptRelabels,
   recordRun,
+  relabelInputs,
   serializeCanvas,
   settleVersion,
   textReferenceProblems,
@@ -2182,31 +2184,40 @@ describe('画布：文本卡引用', () => {
   })
 
   /**
-   * 原始失败形状：视频卡从声明「@图片N」的模型换到 hongcheng（声明「@ImageN」）后，摘录里仍写 @图片1、@图片2，
-   * 编号与连线数量一致，运行前核对放行，生成出人物没有绑定的视频。核对只报告、不改写。
+   * 原始失败形状：视频卡从声明「@图片N」的模型换到 hongcheng（声明「@ImageN」）后，文本卡中仍写 @图片1、参照图片1，
+   * 编号与连线数量一致，每张卡与其文本卡须逐处改写后才能运行。编译时按所选模型的写法改写，运行前核对不报告写法。
    */
-  test('运行前核对：手写的带 @ 编号不是所选模型声明的写法时报告；开头的 @ 不计，不带 @ 的「图1」不核对', () => {
+  test('编译：手写的素材编号按所选模型的写法发送，编号不变；「如图1」、前接字母的英文写法与未登记写法的模型保持原文', () => {
     const doc = apply(withScript(), [
-      { op: 'update', id: 'a3', prompt: '@图片1 用于阿七的脸，如图1所示。' },
+      { op: 'update', id: 'a3', prompt: '@[制作脚本]' },
       { op: 'connect', from: '小满', to: '1-2 入梦', role: 'reference' },
     ])
+    const written = '@图片1用于阿七的脸，参照图片1的阿七推门，如图1所示。'
+    const jimeng = new Map([['a1', written]])
     const hongcheng = { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' }
-    expect(promptInputProblems(doc, 'a3', new Map(), hongcheng)).toEqual([
-      '提示词写的「@图片1」不是所选模型的图片写法：该模型写作「@Image1」「@Image2」，按同类连线顺序编号；改写提示词（引用的文本卡改其文件）后再运行',
-    ])
-    expect(promptInputProblems(doc, 'a3', new Map(), { image: '@图片{n}' })).toEqual([])
-    // 方舟 Seedance 2.0 声明「图片{n}」、万相声明「图{n}」：多写一个 @ 不算写法不同。
-    expect(promptInputProblems(doc, 'a3', new Map(), { image: '图片{n}' })).toEqual([])
-    expect(promptInputProblems(doc, 'a3', new Map(), { image: '图{n}' })).toEqual([
-      '提示词写的「@图片1」不是所选模型的图片写法：该模型写作「图1」「图2」，按同类连线顺序编号；改写提示词（引用的文本卡改其文件）后再运行',
-    ])
-    const spaced = apply(doc, [{ op: 'update', id: 'a3', prompt: '@Image 1 用于阿七的脸。' }])
-    expect(promptInputProblems(spaced, 'a3', new Map(), hongcheng)).toHaveLength(1)
-    expect(promptInputProblems(spaced, 'a3')).toEqual([])
-    // 写在文本卡中的编号同样核对：展开之后的文本才是发送的内容。
-    const viaText = apply(doc, [{ op: 'update', id: 'a3', prompt: '@[制作脚本]' }])
-    const texts = new Map([['a1', '## 1-2 入梦\n@图片1用于阿七的脸。\n']])
-    expect(promptInputProblems(viaText, 'a3', texts, hongcheng)[0]).toContain('「@图片1」')
+    expect(compilePrompt(doc, 'a3', hongcheng, jimeng)).toBe(
+      '@Image1用于阿七的脸，参照Image1的阿七推门，如图1所示。',
+    )
+    expect(promptInputProblems(doc, 'a3', jimeng)).toEqual([])
+    // 改写清单与发送的文字出自同一次改写：读取画布时告知 agent 与界面。
+    expect(promptRelabels(doc, 'a3', hongcheng, jimeng)).toEqual(['@图片1→@Image1', '图片1→Image1'])
+    expect(promptRelabels(doc, 'a3', {}, jimeng)).toEqual([])
+    expect(relabelInputs(written, hongcheng)).toEqual({
+      text: '@Image1用于阿七的脸，参照Image1的阿七推门，如图1所示。',
+      changes: ['@图片1→@Image1', '图片1→Image1'],
+    })
+    const native = new Map([['a1', '@Image 1用于阿七的脸，参照Image1的阿七，MyImage1不是编号。']])
+    expect(compilePrompt(doc, 'a3', hongcheng, native)).toBe(
+      '@Image1用于阿七的脸，参照Image1的阿七，MyImage1不是编号。',
+    )
+    expect(compilePrompt(doc, 'a3', { image: '@图片{n}' }, native)).toBe(
+      '@图片1用于阿七的脸，参照图片1的阿七，MyImage1不是编号。',
+    )
+    // 万相声明「图{n}」：带 @ 与不带 @ 的编号都改为「图1」。
+    expect(compilePrompt(doc, 'a3', { image: '图{n}' }, jimeng)).toBe(
+      '图1用于阿七的脸，参照图1的阿七推门，如图1所示。',
+    )
+    expect(compilePrompt(doc, 'a3', {}, jimeng)).toBe(written)
   })
 
   test('运行前核对：引用展开后的文本仍含 @[…] 时报告', () => {

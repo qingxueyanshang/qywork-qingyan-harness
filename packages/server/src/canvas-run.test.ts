@@ -797,21 +797,26 @@ describe('画布运行：文本卡引用', () => {
   })
 
   /**
-   * 原始失败形状：用户要求把视频卡换到 hongcheng（声明 @ImageN）后，提示词仍写 @图片N，编号与连线一致，
-   * 换模型与运行都没有任何提示。换模型后读取画布即标出，运行时拒绝；提示词不被改写。
+   * 原始失败形状：视频卡换到 hongcheng（声明 @ImageN）后，提示词与文本卡中仍是 @图片N、参照图片N，
+   * 编号与连线一致，每张卡须逐处改写后才能运行。换模型后读取画布不标问题，发送时按 hongcheng 的写法改写，卡片与文件不改写。
    */
-  test('换模型后手写的素材写法不是新模型声明的写法：读取画布即标出，运行时不提交，提示词不改写', async () => {
+  test('换模型后手写的素材编号按新模型的写法发送：读取画布不标问题，卡片与文本卡不改写', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-canvas-run-'))
     await writeFile(join(root, 'a.png'), PNG)
+    await writeFile(
+      join(root, '制作脚本.md'),
+      '## 1-1\n@图片1用于阿七的脸。参照图片1的阿七推门。\n',
+    )
     const r = applyCanvasOps(emptyCanvas(), [
       { op: 'add_file', ref: '$a', path: 'a.png', name: '阿七' },
       {
-        op: 'add_generate',
-        ref: '$v',
-        output: 'video',
-        name: '1-1',
-        prompt: '@图片1 用于阿七的脸。',
+        op: 'add_file',
+        ref: '$t',
+        path: '制作脚本.md',
+        name: '1-1 段',
+        excerpt: { after: '## 1-1', start: '@图片1', end: '推门。' },
       },
+      { op: 'add_generate', ref: '$v', output: 'video', name: '1-1', prompt: '@[$t]' },
       { op: 'connect', from: '$a', to: '$v', role: 'reference' },
     ])
     if (!r.ok) throw new Error(r.error)
@@ -823,19 +828,24 @@ describe('画布运行：文本卡引用', () => {
     })
     const ws = { id: 'ws1', root }
     const v = r.refs.$v!
-    expect((await svc.read(root, PATH)).references).toBeUndefined()
+    const before = await svc.read(root, PATH)
+    expect(before.relabels).toBeUndefined()
+    expect(before.mentions).toEqual({ [v]: { image: '@图片{n}' } })
     await svc.apply(root, PATH, [
       { op: 'update', id: v, provider: 'hongcheng', model: 'TTseadanco2.5-720' },
     ])
-    const problem =
-      '提示词写的「@图片1」不是所选模型的图片写法：该模型写作「@Image1」「@Image2」，按同类连线顺序编号；改写提示词（引用的文本卡改其文件）后再运行'
-    expect((await svc.read(root, PATH)).references).toEqual({ [v]: [problem] })
+    const after = await svc.read(root, PATH)
+    expect(after.references).toBeUndefined()
+    expect(after.relabels).toEqual({ [v]: ['@图片1→@Image1', '图片1→Image1'] })
+    expect(after.mentions).toEqual({ [v]: { image: '@Image{n}' } })
     const fake = fakePort()
-    expect((await failure(svc.run(ws, PATH, v, { media: fake.port }))).message).toBe(
-      `「1-1」${problem}`,
-    )
-    expect(fake.calls).toHaveLength(0)
-    expect((await node(root, v)).prompt).toBe('@图片1 用于阿七的脸。')
+    const run = await svc.run(ws, PATH, v, { media: fake.port })
+    const p = await fake.next()
+    expect(p.call.prompt).toBe('@Image1用于阿七的脸。参照Image1的阿七推门。')
+    p.finish({ ok: false, message: 'x' })
+    await run.done
+    expect((await node(root, v)).prompt).toBe(`@[${r.refs.$t!}]`)
+    expect(await readFile(join(root, '制作脚本.md'), 'utf8')).toContain('@图片1用于阿七的脸。')
   })
 })
 
