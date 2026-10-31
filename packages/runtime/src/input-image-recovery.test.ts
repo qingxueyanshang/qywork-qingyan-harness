@@ -62,6 +62,12 @@ function harness(): Harness {
       seqByRun.set(runId, next)
       return next
     },
+    markImagesUndelivered: () => [],
+    markRequestHeaders: () => {},
+    markRequestHedge: () => {},
+    markRequestFirstEvent: () => {},
+    markRequestContent: () => {},
+    recordRequestDiagnostic: () => {},
     landUserStep: (runId, seq, input) =>
       appendStep(store, { runId, seq, kind: 'user', content: input.text }).id,
     openTextStep: (runId, seq, batchId) =>

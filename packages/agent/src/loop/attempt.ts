@@ -232,16 +232,16 @@ export async function* sendTurn(
       // 非 2xx 的响应头不经过 `response_started`（适配器在该路径上直接抛错），
       // 到达时刻只记录在传输读数中。响应头到达过就记录，账本因此能区分「无法连接」与「被拒绝」。
       if (pe?.transport?.headersAt != null) {
-        persist.markRequestHeaders?.(requestId, pe.transport.headersAt)
+        persist.markRequestHeaders(requestId, pe.transport.headersAt)
       }
-      if (pe?.transport?.hedge) persist.markRequestHedge?.(requestId, pe.transport.hedge)
+      if (pe?.transport?.hedge) persist.markRequestHedge(requestId, pe.transport.hedge)
       const recordDecision = (
         decision: ProviderRetryDecision,
         attempt: number | null = null,
         backoffMs: number | null = null,
         at: number | null = null,
       ): void => {
-        persist.recordRequestDiagnostic?.(requestId, {
+        persist.recordRequestDiagnostic(requestId, {
           ...failureDiagnostics(err),
           providerEvents: probe.providerEvents,
           silentMs,
@@ -582,7 +582,7 @@ function* settleRejectionNotices(
     notice: true,
     imagesRejected: { provider: host.deps.providerName ?? '', model: adapter.spec.id },
   })
-  const stepIds = persist.markImagesUndelivered?.(input.runId, pending.toolCallIds) ?? []
+  const stepIds = persist.markImagesUndelivered(input.runId, pending.toolCallIds)
   if (stepIds.length) {
     yield { type: 'tool.images_undelivered', runId: input.runId, stepIds: stepIds as StepId[] }
   }
@@ -606,7 +606,7 @@ async function* consumeStream(
       probe.providerEvents++
       if (!probe.recordedFirstEvent) {
         probe.recordedFirstEvent = true
-        persist.markRequestFirstEvent?.(turn.requestId)
+        persist.markRequestFirstEvent(turn.requestId)
       }
       /*
        * 内容时刻**每收到一段都更新**，取适配器提供的观察时刻。
@@ -620,7 +620,7 @@ async function* consumeStream(
         const visible =
           (ev.type === 'thinking_delta' && ev.delta.length > 0) ||
           (ev.type === 'text_delta' && (turn.open?.kind === 'text' || /\S/.test(ev.delta)))
-        persist.markRequestContent?.(turn.requestId, ev.at, kind, visible)
+        persist.markRequestContent(turn.requestId, ev.at, kind, visible)
       }
     }
     if (input.signal.aborted) break
@@ -645,8 +645,8 @@ async function* consumeStream(
         break
       case 'response_started':
         // 只作为传输遥测边界；不产生模型可见内容或 UI step。
-        persist.markRequestHeaders?.(turn.requestId, ev.headersAt)
-        if (ev.hedge) persist.markRequestHedge?.(turn.requestId, ev.hedge)
+        persist.markRequestHeaders(turn.requestId, ev.headersAt)
+        if (ev.hedge) persist.markRequestHedge(turn.requestId, ev.hedge)
         yield {
           type: 'run.request',
           runId: input.runId,

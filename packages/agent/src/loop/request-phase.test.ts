@@ -54,6 +54,8 @@ function ledger(): Ledger {
   let seq = 0
   const persist: LoopPersistence = {
     nextSeq: () => ++seq,
+    markImagesUndelivered: () => [],
+    markRequestHedge: () => {},
     landUserStep: () => 'st_user',
     openTextStep: () => 'st_text',
     openThinkingStep: () => 'st_thinking',

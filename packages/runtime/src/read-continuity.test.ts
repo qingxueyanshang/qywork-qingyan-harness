@@ -117,6 +117,12 @@ function persistence(store: Store, compactions: { count: number }): LoopPersiste
   let requests = 0
   return {
     nextSeq: () => ++seq,
+    markImagesUndelivered: () => [],
+    markRequestHeaders: () => {},
+    markRequestHedge: () => {},
+    markRequestFirstEvent: () => {},
+    markRequestContent: () => {},
+    recordRequestDiagnostic: () => {},
     openTextStep: (runId, s, batchId) =>
       appendStep(store, { runId, seq: s, kind: 'text', content: '', providerBatchId: batchId }).id,
     openThinkingStep: (runId, s, batchId) =>

@@ -466,6 +466,12 @@ async function replay(
   let seq = 1_000_000
   const persist: LoopPersistence = {
     nextSeq: () => seq++,
+    markImagesUndelivered: () => [],
+    markRequestHeaders: () => {},
+    markRequestHedge: () => {},
+    markRequestFirstEvent: () => {},
+    markRequestContent: () => {},
+    recordRequestDiagnostic: () => {},
     landUserStep: () => crypto.randomUUID(),
     openTextStep: () => `text-${seq}`,
     openThinkingStep: () => `thinking-${seq}`,

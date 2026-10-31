@@ -32,6 +32,12 @@ function persistence(): LoopPersistence {
   let requests = 0
   return {
     nextSeq: () => ++seq,
+    markImagesUndelivered: () => [],
+    markRequestHeaders: () => {},
+    markRequestHedge: () => {},
+    markRequestFirstEvent: () => {},
+    markRequestContent: () => {},
+    recordRequestDiagnostic: () => {},
     landUserStep: () => `st_user_${seq}`,
     openTextStep: () => `st_text_${seq}`,
     openThinkingStep: () => `st_think_${seq}`,
