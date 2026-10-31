@@ -1153,8 +1153,6 @@ export function foldFileChanges(changes: readonly FileChange[]): FoldedFileChang
   return [...byPath.values()].filter((f) => !(f.changeType === 'deleted' && bornHere.has(f.path)))
 }
 
-// ─────────────────────────────── 产物 ───────────────────────────────
-
 // ─────────────────────────────── 上下文分组 ───────────────────────────────
 
 /**
