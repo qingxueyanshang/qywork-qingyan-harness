@@ -108,7 +108,7 @@ MCP 工具注册名是 `mcp__<server>__<tool>`，权限 scope 是
 `"my.server"` 的话，工具是 `mcp__my_server__xxx`，权限目标仍保留原服务名。
 
 qywork 使用 `auto` 与 `full` 两档。`full` 不作权限裁决；`auto` 的命令规则用于
-`run_command`，MCP 工具沿用专用通道的判定，不逐次弹窗。旧的 `autoApprove` 配置已不生效。
+`run_command`，MCP 工具沿用专用通道的判定，不逐次弹窗。
 详见 [权限](permissions.md)。
 
 ### 为什么不看 `readOnlyHint`

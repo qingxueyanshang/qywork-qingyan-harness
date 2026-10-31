@@ -23,7 +23,6 @@ import {
   claimScheduleNow,
   createSchedule,
   deleteSchedule,
-  insertSchedules,
   listSchedules,
   nextScheduledAt,
   updateSchedule,
@@ -199,66 +198,6 @@ describe('读写', () => {
     expect(after.lastRunAt).toBe(before.lastRunAt)
     expect(after.conversationId).toBe(before.conversationId)
     expect(after.newConversation).toBe(before.newConversation)
-  })
-
-  test('整表导入保留原 id、时间与关联会话', () => {
-    store.tx(() => {
-      insertSchedules(store, [
-        {
-          id: 'sch_old',
-          workspaceRoot: ROOT_A,
-          title: '旧的',
-          prompt: 'p',
-          kind: 'daily',
-          atHour: 9,
-          atMinute: 30,
-          enabled: false,
-          createdAt: 111,
-          lastRunAt: 222,
-          newConversation: false,
-        },
-      ])
-    })
-    const s = listSchedules(store, ROOT_A, Date.now())[0]!
-    expect(s.id).toBe('sch_old')
-    expect(s.createdAt).toBe(111)
-    expect(s.lastRunAt).toBe(222)
-    expect(s.enabled).toBe(false)
-    expect(s.atMinute).toBe(30)
-    // 没有可核验的 Run 时如实返回 null，不伪造历史执行记录。
-    expect(s.lastRun).toBe(null)
-  })
-
-  test('重复 id 触发主键冲突，整个事务回滚，不留下部分写入', () => {
-    expect(() =>
-      store.tx(() => {
-        insertSchedules(store, [
-          {
-            id: 'dup',
-            workspaceRoot: ROOT_A,
-            title: 'a',
-            prompt: 'p',
-            kind: 'interval',
-            everyMinutes: 5,
-            enabled: true,
-            createdAt: 1,
-            newConversation: false,
-          },
-          {
-            id: 'dup',
-            workspaceRoot: ROOT_A,
-            title: 'b',
-            prompt: 'p',
-            kind: 'interval',
-            everyMinutes: 5,
-            enabled: true,
-            createdAt: 2,
-            newConversation: false,
-          },
-        ])
-      }),
-    ).toThrow()
-    expect(listSchedules(store, ROOT_A, Date.now())).toEqual([])
   })
 })
 

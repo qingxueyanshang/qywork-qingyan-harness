@@ -481,16 +481,10 @@ export class Session {
       }).id
 
     const conversation = getConversation(store, conversationId)
-    // 旧会话记录了模型却无法证明接口归属（迁移前的扁平档案）时要求重新选择一次，不按 id 反查。
-    // 但只针对「有模型、无接口」的旧会话：未配置默认模型时新建的会话两个字段均为空，
-    // 上面的 `model` 已回退到当前默认值，按默认的接口与模型发送，不应报告为旧会话。
-    if (conversation && !options?.model && conversation.model && !conversation.provider) {
-      throw new Error('该会话未记录所属接口，请重新选择模型后继续')
-    }
     /*
      * 会话记录了接口名时按记录的接口与模型发送，不再按模型 id 反查：两个接口配置同一
      * 模型 id 时反查结果取决于枚举顺序，出错时端点、key 与价目表都会改变，且不会报错。
-     * 单轮显式 `--model` 仍是用户主动要求的裸模型选择，不属于旧会话回退。
+     * 单轮显式 `--model` 是用户主动要求的裸模型选择，按 `resolveModel` 的裸模型名规则解析。
      */
     const target: string | ModelRef =
       !options?.model && conversation?.provider ? { provider: conversation.provider, model } : model
