@@ -285,13 +285,23 @@ describe('dashscope_videos', () => {
           output: { task_status: 'SUCCEEDED', video_url: `${origin()}/files/out.mp4` },
         }),
     ]
-    const statuses: string[] = []
-    await adapter().run(
-      { operation: 'text_to_video', prompt: 'x', inputs: [], params: {} },
-      opts({ onStatus: (s: string) => statuses.push(s) }),
-    )
-    expect(statuses).toEqual(['RUNNING'])
-  }, 15_000)
+    // 任务查询的首次间隔（5 秒）缩短为 1 毫秒；请求静默上限等其余计时器保持原值。
+    const original = globalThis.setTimeout
+    const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: () => void,
+      ms?: number,
+    ) => original(fn, ms === 5_000 ? 1 : ms)) as typeof setTimeout)
+    try {
+      const statuses: string[] = []
+      await adapter().run(
+        { operation: 'text_to_video', prompt: 'x', inputs: [], params: {} },
+        opts({ onStatus: (s: string) => statuses.push(s) }),
+      )
+      expect(statuses).toEqual(['RUNNING'])
+    } finally {
+      timers.mockRestore()
+    }
+  })
 
   /** 同一端点上的可灵使用另一套素材类型名；视频的用途由 `video_type` 指定，`video_type` 不作为请求参数发送。 */
   test('可灵按目录中的类型名放置素材，video_type 写入视频项', async () => {
