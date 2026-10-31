@@ -49,6 +49,12 @@ afterEach(() => {
 })
 const transportLogs = () => logs.filter((r) => r.scope === 'transport').map((r) => r.message)
 
+/** 轮询等待经网络传递的状态成立：中断与正文到达的耗时取决于机器负载，不要改为固定时长的等待。 */
+async function waitFor(ok: () => boolean, limitMs = 5_000): Promise<void> {
+  const deadline = Date.now() + limitMs
+  while (!ok() && Date.now() < deadline) await Bun.sleep(10)
+}
+
 const url = () => `http://127.0.0.1:${server.port}/v1`
 const post = (trace = newTrace(), signal?: AbortSignal, body: RequestInit['body'] = '{"a":1}') =>
   traceFetch(
@@ -71,7 +77,7 @@ test('原请求在响应头之前挂起：补发的一份先返回并被采用�
   expect(hits).toBe(2)
   expect(trace.hedge).toMatchObject({ won: true })
   expect(trace.hedge!.sentAt - trace.sentAt).toBeGreaterThanOrEqual(HEDGE_MS - 5)
-  await Bun.sleep(50)
+  await waitFor(() => aborted.includes(0))
   expect(aborted).toContain(0)
   expect(readTransport(trace).hedge).toEqual(trace.hedge!)
   expect(transportLogs()).toEqual([
@@ -87,7 +93,7 @@ test('原请求只是较慢：先返回者为原请求，补发的一份被中�
   const res = await post(trace)
   expect(await res.text()).toBe('original')
   expect(trace.hedge).toMatchObject({ won: false })
-  await Bun.sleep(50)
+  await waitFor(() => aborted.includes(1))
   expect(aborted).toContain(1)
   expect(transportLogs()).toEqual([
     '响应头之前等待超过补发时间，补发一份请求',
@@ -128,7 +134,7 @@ test('补发的一份在排队：不被采用，开始处理的原请求被采�
   expect(await res.text()).toBe(STARTED)
   expect(trace.hedge).toMatchObject({ won: false })
   expect(trace.headersAt! - trace.sentAt).toBeGreaterThanOrEqual(295)
-  await Bun.sleep(50)
+  await waitFor(() => aborted.includes(1))
   expect(aborted).toContain(1)
 })
 
@@ -144,7 +150,7 @@ test('原请求在排队：开始处理的补发的一份被采用，排队的�
   expect(trace.bytes).toBe(enc.encode(`${KEEPALIVE}${STARTED}`).byteLength)
   expect(trace.keepAliveLines).toBe(1)
   expect(readTransport(trace).pendingResponses).toBeUndefined()
-  await Bun.sleep(50)
+  await waitFor(() => aborted.includes(0))
   expect(aborted).toContain(0)
 })
 
@@ -160,7 +166,10 @@ test('补发后两份只有保活：尚未择优和中止后的诊断均保留�
     (err: unknown) => err,
   )
   try {
-    await Bun.sleep(250)
+    await waitFor(() => {
+      const copies = readTransport(trace).pendingResponses
+      return copies?.[0]?.keepAliveLines === 1 && copies[1]?.keepAliveLines === 2
+    })
     const reading = readTransport(trace)
     expect(reading.status).toBe(200)
     expect(reading.headersAt).toBeNumber()
@@ -192,7 +201,7 @@ test('仅补发收到保活：失败诊断不再被无响应的原请求读数�
   const trace = newTrace()
   const work = post(trace, controller.signal).catch((err: unknown) => err)
   try {
-    await Bun.sleep(200)
+    await waitFor(() => readTransport(trace).pendingResponses?.[1]?.keepAliveLines === 1)
     expect(readTransport(trace)).toMatchObject({
       status: 200,
       bytes: enc.encode(KEEPALIVE).byteLength,
@@ -353,7 +362,7 @@ test('调用方中止时两份同时中断，期限仍由调用方的信号执�
   const work = post(trace, controller.signal)
   setTimeout(() => controller.abort(), HEDGE_MS + 100)
   await expect(work).rejects.toBeDefined()
-  await Bun.sleep(50)
+  await waitFor(() => aborted.length === 2)
   expect(aborted.sort()).toEqual([0, 1])
   expect(trace.hedge).toMatchObject({ won: false })
 })
