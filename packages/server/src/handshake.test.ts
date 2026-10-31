@@ -60,7 +60,7 @@ function shake(
     { type: 'hello', token: 'tk', origin: 'desktop', ...frame },
     {
       bus,
-      token: 'tk',
+      verify: (candidate) => candidate === 'tk',
       unsubscribers: new Map(),
       config: { active: { provider: 'p', model: 'm' }, providers: {} },
       runs,

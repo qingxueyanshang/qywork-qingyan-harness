@@ -67,7 +67,7 @@ import { DesktopCoordinator } from './desktop/coordinator.ts'
 import { createGitWatch } from './git-watch.ts'
 import { handleHello } from './handshake.ts'
 import { CORS_HEADERS, hostLabel, serveStatic, withCors } from './http-util.ts'
-import { extractToken, Pairing, preferredLanAddress } from './pairing.ts'
+import { extractToken, Pairing, preferredLanAddress, timingSafeEqual } from './pairing.ts'
 import { type PowerPort, startPowerGuard } from './power.ts'
 import { sanitizeProcessExitObservation } from './process-exit.ts'
 import { submitMessage } from './run-control.ts'
@@ -480,7 +480,7 @@ export function serve(opts: ServeOptions) {
         if (
           !opts.updateHostKey ||
           !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address ?? '') ||
-          req.headers.get('x-qywork-update-key') !== opts.updateHostKey
+          !timingSafeEqual(req.headers.get('x-qywork-update-key') ?? '', opts.updateHostKey)
         ) {
           return new Response('unauthorized', { status: 401 })
         }
@@ -525,14 +525,15 @@ export function serve(opts: ServeOptions) {
 
       // ── WebSocket 升级 ──
       if (url.pathname === '/stream') {
-        // 握手阶段即校验令牌：未授权的连接不进入 ws 生命周期。
-        if (!pairing.verify(extractToken(req))) {
-          return new Response('unauthorized', { status: 401 })
-        }
+        /*
+         * 令牌在 hello 帧中校验（`handshake.ts`），不在升级时校验：浏览器无法读取升级被拒的状态码，
+         * 客户端只能看到连接关闭，因此无限重连，用户无法得知原因。hello 通过之前，该连接不订阅事件，
+         * 指令一律忽略（`commands.ts`）；不发送 hello 的连接由空闲超时关闭。
+         */
         const ok = srv.upgrade(req, {
           data: {
             id: crypto.randomUUID(),
-            authed: true,
+            authed: false,
             origin: (url.searchParams.get('origin') as SocketData['origin']) ?? 'external',
             native: null,
             openedAt: Date.now(),
@@ -633,7 +634,7 @@ export function serve(opts: ServeOptions) {
         if (frame.type === 'hello') {
           handleHello(ws, frame, {
             bus,
-            token,
+            verify: (candidate) => pairing.verify(candidate),
             unsubscribers,
             config: opts.config,
             runs,

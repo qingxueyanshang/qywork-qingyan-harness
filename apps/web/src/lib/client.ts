@@ -257,7 +257,8 @@ export class QyClient {
     this.opts.onState(this.attempt === 0 ? 'connecting' : 'reconnecting')
 
     const wsBase = this.endpoint.base.replace(/^http/, 'ws')
-    const url = `${wsBase}/stream?token=${encodeURIComponent(this.endpoint.token)}&origin=${this.endpoint.origin}`
+    // 令牌只放在 hello 帧中：服务端在握手中校验，被拒时回复 `hello.err`，客户端据此停止重连。
+    const url = `${wsBase}/stream?origin=${this.endpoint.origin}`
     const ws = this.open(url)
     this.ws = ws
 

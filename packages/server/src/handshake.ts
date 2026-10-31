@@ -36,7 +36,8 @@ export function handleHello(
   frame: HelloFrame,
   deps: {
     bus: EventBus
-    token: string
+    /** 令牌校验，即 `Pairing.verify`：鉴权只有这一个实现。 */
+    verify(candidate: string | null | undefined): boolean
     unsubscribers: Map<string, () => void>
     /** 传入的是运行中的配置（`/api/config` 的 PUT 会就地修改它），不是启动时的快照。 */
     config: QyConfig
@@ -67,7 +68,7 @@ export function handleHello(
     announceDesktopTarget(): void
   },
 ) {
-  if (frame.token !== deps.token) {
+  if (!deps.verify(frame.token)) {
     log.warn('ws', '握手被拒绝：令牌无效', { id: ws.data.id, origin: frame.origin })
     ws.send(JSON.stringify({ type: 'hello.err', reason: 'bad_token', message: '令牌无效' }))
     ws.close(1008, 'unauthorized')
