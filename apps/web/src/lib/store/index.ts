@@ -45,12 +45,9 @@ export {
   openLinkInPanel,
 } from './browser.ts'
 export {
-  CANVAS_SUFFIX,
   type CanvasEdit,
   type CanvasQuote,
   cancelCard,
-  canvasAvailable,
-  canvasTitle,
   captureFrame,
   createCanvas,
   editCanvas,
@@ -85,6 +82,9 @@ export {
   syncViews,
 } from './connection.ts'
 export {
+  CANVAS_SUFFIX,
+  canvasAvailable,
+  canvasTitle,
   fileRevealRequest,
   fileSelectRequest,
   openFileInPanel,

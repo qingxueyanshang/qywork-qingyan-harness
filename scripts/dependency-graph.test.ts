@@ -7,7 +7,8 @@
  * 判据是**层号**而不是逐包白名单：白名单每增加一个依赖就要修改一次，修改频繁后即失去审查作用；
  * 层号只在「该包在架构中的位置改变」时才需要修改，这种改变本应经过讨论。
  *
- * 覆盖范围：`packages/*` 与 `apps/*` 的 package.json 中所有 `@qywork/*` 依赖。
+ * 覆盖范围：`packages/*` 与 `apps/*` 的 package.json 中所有 `@qywork/*` 依赖；
+ * `apps/web/src/lib/store` 内模块之间的引用。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -121,5 +122,40 @@ describe('包依赖方向', () => {
     const leaves = ['@qywork/web', '@qywork/desktop']
     const bad = pkgs.filter((p) => p.deps.some((d) => leaves.includes(d))).map((p) => p.name)
     expect(bad).toEqual([])
+  })
+})
+
+/**
+ * 前端状态模块（`apps/web/src/lib/store`）之间同样不得成环：环上的模块按加载顺序取得
+ * 尚未初始化的导出，`client` 等常量在另一侧读取为 undefined，只在特定的入口顺序下报错。
+ */
+describe('前端状态模块', () => {
+  test('模块之间没有引用环（只计运行时引用，不计 import type）', () => {
+    const dir = join(ROOT, 'apps', 'web', 'src', 'lib', 'store')
+    const files = readdirSync(dir).filter((f) => /\.tsx?$/.test(f) && !f.includes('.test.'))
+    const graph = new Map(
+      files.map((f) => {
+        const src = readFileSync(join(dir, f), 'utf8')
+        const deps = [...src.matchAll(/^import\s+(?!type\b)[^;]*?from '\.\/([^']+)'/gms)]
+          .map((m) => m[1]!)
+          .filter((d) => files.includes(d))
+        return [f, deps]
+      }),
+    )
+    const state = new Map<string, 'visiting' | 'done'>()
+    const cycles: string[] = []
+    const walk = (node: string, path: string[]): void => {
+      if (state.get(node) === 'done') return
+      if (state.get(node) === 'visiting') {
+        cycles.push([...path.slice(path.indexOf(node)), node].join(' → '))
+        return
+      }
+      state.set(node, 'visiting')
+      for (const d of graph.get(node) ?? []) walk(d, [...path, node])
+      state.set(node, 'done')
+    }
+    for (const f of files) walk(f, [])
+    expect(files.length).toBeGreaterThan(0)
+    expect(cycles).toEqual([])
   })
 })
