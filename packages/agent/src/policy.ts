@@ -210,16 +210,17 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string }[] = [
      * 两道防线都需要：路径拦截已知位置，形状规则处理位于其他位置的凭证（例如项目中的 `.env`：
      * 它是项目文件，不应拦截读取，但其中的值不应原样进入上下文）。
      *
-     * `~/.qywork/config.json` 也列入本规则：它是本程序的全局配置，明文 apiKey、权限
-     * 模式、额外根目录都在该文件中。它位于家目录，写入已由工作区外写入规则拦截；本
-     * 规则补充拦截读取：key 被读取的代价与私钥相同。
+     * `~/.qywork/config.json` 与 `~/.qywork/mcp.json` 也列入本规则：前者是本程序的全局配置，
+     * 明文 apiKey、权限模式、额外根目录都在其中；后者是全局 MCP 配置，server 的凭证写在其
+     * `env` 与 `headers` 中。两者位于家目录，写入已由工作区外写入规则拦截；本规则补充拦截读取：
+     * key 被读取的代价与私钥相同。
      *
      * 它与工作区中的 `.qy/` / `.agents/` 不同：后者是项目自身的
      * agent 配置（mcp.json、skills、team.json），修改它不构成提权（模型已有
      * `run_command`，是否添加工具不改变其能力范围），不在本规则中。
      */
     pattern:
-      /(?:\.ssh[\\/]|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|\.aws[\\/]credentials|\.config[\\/]gcloud[\\/]|\.kube[\\/]config|\.npmrc\b|\.netrc\b|\.pgpass\b|\.docker[\\/]config\.json|\.qywork[\\/]config\.json)/i,
+      /(?:\.ssh[\\/]|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|\.aws[\\/]credentials|\.config[\\/]gcloud[\\/]|\.kube[\\/]config|\.npmrc\b|\.netrc\b|\.pgpass\b|\.docker[\\/]config\.json|\.qywork[\\/](?:config|mcp)\.json)/i,
     reason:
       '命令会访问凭证文件（SSH 私钥、云服务凭据、包管理器令牌或 qywork 配置）；需要凭证时由环境变量传入命令',
   },

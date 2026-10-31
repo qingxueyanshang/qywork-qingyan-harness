@@ -43,7 +43,11 @@ import {
   type ThinkingMode,
   TOOL_SCHEMA_MODES,
 } from '@qywork/core'
-import { globalScopeRoot, normalizeAdditionalDirectories } from '@qywork/tools'
+import {
+  CREDENTIAL_NAME_PATTERN,
+  globalScopeRoot,
+  normalizeAdditionalDirectories,
+} from '@qywork/tools'
 
 /**
  * 权限模式。只有两种，不提供逐次审批。
@@ -1026,14 +1030,39 @@ export function listMediaModels(cfg: QyConfig): MediaModelEntry[] {
  *
  * 按值剥离是唯一不依赖命名习惯的规则：用户把 key 复制到 `MY_STUFF` 时，
  * 只有按值匹配才能识别。因此该函数的用途是收集全部明文。
- * 按名称的判据由 `CREDENTIAL_NAME_PATTERN` 负责，与配置无关。
+ *
+ * 凭证的位置有三处：接口的 `apiKey`；接口请求头中名称形似凭证（`CREDENTIAL_NAME_PATTERN`）的值；
+ * MCP server 的 `env` 与 `headers` 中名称形似凭证的值。后者不在本配置中，由持有已加载 MCP 配置的
+ * 调用方传入 `mcp`。
  */
-export function collectSecrets(cfg: QyConfig): { values: string[] } {
+export function collectSecrets(
+  cfg: QyConfig,
+  mcp?: Record<string, { env?: Record<string, string>; headers?: Record<string, string> }>,
+): { values: string[] } {
   const values = new Set<string>()
+  const named = (entries: Record<string, string> | undefined) => {
+    for (const [name, value] of Object.entries(entries ?? {})) {
+      if (CREDENTIAL_NAME_PATTERN.test(name) && value) values.add(credentialValue(value))
+    }
+  }
   for (const p of Object.values(cfg.providers ?? {})) {
     if (p.apiKey) values.add(p.apiKey)
+    named(p.headers)
+  }
+  for (const server of Object.values(mcp ?? {})) {
+    named(server.env)
+    named(server.headers)
   }
   return { values: [...values] }
+}
+
+/**
+ * 去掉认证方案前缀（`Bearer `、`Basic ` 等）后的值。
+ *
+ * 不要按整段请求头值匹配：命令输出中通常只出现令牌本身，整段值永远匹配不到。
+ */
+function credentialValue(raw: string): string {
+  return /^[A-Za-z][\w-]*\s+(\S+)$/.exec(raw.trim())?.[1] ?? raw.trim()
 }
 
 /** 保存的对应型号不合法时返回原因：必须只含 `base`，且是与该型号协议同类别的生成目录 id。 */
