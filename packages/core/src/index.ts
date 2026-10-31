@@ -239,6 +239,12 @@ export {
   type UsageTotals,
   type Workspace,
 } from './domain/model.ts'
+export {
+  retryScheduleText,
+  TRANSIENT_RETRY_DELAYS_MS,
+  transientRetryDelay,
+  waitOrAbort,
+} from './domain/retry.ts'
 // 定时任务：仓储（store）、HTTP 接口、模型工具与面板共用同一份类型与时间判定
 export {
   diagnoseSchedule,

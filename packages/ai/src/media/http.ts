@@ -1,5 +1,12 @@
 /** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
-import type { MediaDiagnostic } from '@qywork/core'
+import {
+  log,
+  type MediaDiagnostic,
+  retryScheduleText,
+  TRANSIENT_RETRY_DELAYS_MS,
+  transientRetryDelay,
+  waitOrAbort,
+} from '@qywork/core'
 import { bodyMessage, httpStatusName, quotaExhausted, retryAfterOf } from '../errors.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { MediaError } from './types.ts'
@@ -93,24 +100,47 @@ async function readBody(res: Response, heard: () => void): Promise<Uint8Array> {
   return bytes
 }
 
-/** 生成与上传遇到限流（HTTP 429 且不是额度用尽）时的重发次数上限；等待时间见 `rateLimitWait`。 */
-const RATE_LIMIT_RETRIES = 5
-
 /**
- * 限流之后的等待：基准取 Retry-After，未给出时依次为 2、4、8、16、32 秒，单次不超过 60 秒；在基准之上随机延后
- * 至多一半（至少 1 秒的范围）。不要去掉随机部分：同一批同时提交的请求同时收到 429，按相同的时间等待会在同一时刻
- * 再次超出限额。只延后不提前，不早于接口要求的时刻。
+ * 生成与上传的失败是否按暂时故障的间隔（`TRANSIENT_RETRY_DELAYS_MS`）重试。
+ *
+ * 只重试接口未受理的暂时故障（`outcome: 'rejected'` 且 `transientFailure`），重试不会重复提交或计费：
+ * 限流（429 且不是额度用尽）、连接在发出请求之前失败，以及素材上传的 408 / 5xx 与连接中断（上传在提交生成之前）。
+ * 静默超时（`kind: 'timeout'`）不重试：已连续数分钟没有收到任何数据，重试通常得到同样的结果，
+ * 而每次重试都要再等待一个静默上限。
+ * 生成请求发出之后的连接中断与 408 / 5xx 判为结果未知（`outcome: 'unknown'`），远端可能已经受理并计费，
+ * 不要加入：结果未知只能取回，不能重新提交。额度、余额或配额用尽的 429（`quotaExhausted`，与对话请求同一判定）
+ * 等待不会改变结果，同样不重试。查询与下载由调用方重试（`waitTask`、`download`），此处不叠加一层。
  */
-export function rateLimitWait(res: Response, retry: number): number {
-  const base = Math.min(retryAfterOf(res) ?? 2000 * 2 ** retry, 60_000)
-  return base + Math.random() * Math.max(base / 2, 1000)
+function retriesSubmission(
+  stage: MediaDiagnostic['stage'],
+  failure: MediaError,
+  quota: boolean,
+): boolean {
+  return (
+    (stage === 'generate' || stage === 'upload') &&
+    failure.diagnostic?.outcome === 'rejected' &&
+    failure.diagnostic.kind !== 'timeout' &&
+    transientFailure(failure) &&
+    !quota
+  )
+}
+
+/** 重试用尽后的报错：原文之后写明已做的自动重试，模型与界面据此不再重复同一操作。 */
+function afterRetries(failure: MediaError, retries: number): MediaError {
+  return new MediaError(
+    `${failure.message}；已在 ${retryScheduleText(retries)}后各自动重试一次，仍失败`,
+    {
+      ...(failure.status === undefined ? {} : { status: failure.status }),
+      ...(failure.diagnostic ? { diagnostic: failure.diagnostic } : {}),
+      cause: failure.cause,
+    },
+  )
 }
 
 /**
  * 发出请求并读完响应体。期限按静默计算（`IDLE_MS`）：每收到一段数据重新计时。
- * 生成与上传只在限流时重发（`RATE_LIMIT_RETRIES`）：HTTP 429 表示接口未受理该请求，重发不会重复提交或计费；
- * 429 的原因是额度、余额或配额用尽时（`quotaExhausted`，与对话请求同一判定）等待不会改变结果，立即报告。
- * 超时、连接中断与 5xx 可能已被受理，不重发。查询与下载由调用方重发（`waitTask`、`download`），此处不再叠加一层。
+ * 生成与上传遇到接口未受理的暂时故障时按 30 秒、2 分钟、5 分钟重试（`retriesSubmission`），
+ * 用户停止时等待随之取消；结果未知的失败不重试。
  *
  * fetch 必须展开 `PROVIDER_HTTP.fetchOptions`：Bun 的 socket 空闲超时默认 300 秒，缺少该选项时
  * 生成请求静默 300 秒即以 `The operation timed out.` 中断。
@@ -125,6 +155,9 @@ export async function send(
   const stage = stageOf(init, policy)
   const idleMs = policy.idleMs ?? IDLE_MS[stage]
   for (let retry = 0; ; retry++) {
+    let failure: MediaError | undefined
+    let quota = false
+    let retryAfter: number | null = null
     const silence = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const heard = () => {
@@ -148,7 +181,7 @@ export async function send(
           }
         : {}),
     })
-    let res: Response
+    let res: Response | undefined
     try {
       heard()
       response = await fetch(url, {
@@ -181,22 +214,19 @@ export async function send(
           (facts.code === 'ECONNRESET'
             ? '连接被断开'
             : `连接失败：${err instanceof Error ? err.message : String(err)}`))
-      throw new MediaError(stageMessage(stage, reason, facts), { diagnostic: facts, cause: err })
+      failure = new MediaError(stageMessage(stage, reason, facts), {
+        diagnostic: facts,
+        cause: err,
+      })
     } finally {
       clearTimeout(timer)
     }
-    if (!res.ok) {
+    if (res?.ok) return res
+    if (res) {
       const text = await res.text().catch(() => '')
       const message = providerMessage(res, text)
-      if (
-        res.status === 429 &&
-        (stage === 'generate' || stage === 'upload') &&
-        retry < RATE_LIMIT_RETRIES &&
-        !quotaExhausted(errorBodyOf(text), message)
-      ) {
-        await pause(rateLimitWait(res, retry), signal)
-        continue
-      }
+      quota = res.status === 429 && quotaExhausted(errorBodyOf(text), message)
+      retryAfter = retryAfterOf(res)
       // 生成的 408 / 5xx 可能来自网关，不能据此断言上游未受理。明确的客户端拒绝才可视为未生成。
       // 上传错误发生在提交生成之前；下载失败时产物仍在远端，保持可取回。
       const facts = diagnostic('http')
@@ -205,12 +235,21 @@ export async function send(
         !(stage === 'generate' && (res.status === 408 || res.status >= 500))
       )
         facts.outcome = 'rejected'
-      throw new MediaError(
+      failure = new MediaError(
         stageMessage(stage, `HTTP ${res.status} ${httpStatusName(res.status)}：${message}`, facts),
         { status: res.status, diagnostic: facts },
       )
     }
-    return res
+    // 没有响应时 catch 已写入失败原因，有响应时上一段写入，两条路径必有其一。
+    const failed = failure as MediaError
+    if (!retriesSubmission(stage, failed, quota)) throw failed
+    if (retry >= TRANSIENT_RETRY_DELAYS_MS.length) throw afterRetries(failed, retry)
+    const wait = transientRetryDelay(retry, retryAfter)
+    log.warn('media', `${failed.message}；${Math.round(wait / 1000)} 秒后第 ${retry + 1} 次重试`, {
+      stage,
+      host: new URL(url).host,
+    })
+    await waitOrAbort(wait, signal)
   }
 }
 
@@ -293,21 +332,6 @@ export async function getJson(
   return sendJson(url, { method: 'GET', headers }, signal)
 }
 
-function pause(ms: number, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted()
-  return new Promise((resolve, reject) => {
-    const abort = () => {
-      clearTimeout(timer)
-      reject(signal.reason)
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', abort)
-      resolve()
-    }, ms)
-    signal.addEventListener('abort', abort, { once: true })
-  })
-}
-
 /** 重试只读取同一个产物，不提交生成。跨源重定向不得携带接口凭证。 */
 export async function download(
   url: string,
@@ -342,7 +366,7 @@ export async function download(
     } catch (err) {
       if (signal.aborted) throw signal.reason
       if (transientFailure(err) && attempt + 1 < DOWNLOAD_ATTEMPTS) {
-        await pause(500 * 2 ** attempt, signal)
+        await waitOrAbort(500 * 2 ** attempt, signal)
         continue
       }
       throw new MediaError(`结果下载失败：${err instanceof Error ? err.message : String(err)}`, {

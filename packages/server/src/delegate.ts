@@ -16,7 +16,7 @@
  * 外部 CLI 的会话记录只有元数据与外部会话句柄（`externalSession`），正文保存在 CLI 一侧。
  */
 
-import type { DelegatePort, SubagentSummary } from '@qywork/agent'
+import { type DelegatePort, type SubagentSummary, transientErrorCode } from '@qywork/agent'
 import { applySpecOverride, lookupModel, type TokenDensity } from '@qywork/ai'
 import {
   type Conversation,
@@ -28,17 +28,21 @@ import {
   log,
   type NodeState,
   type RunId,
+  retryScheduleText,
   type StepId,
   type StopReason,
   SUBAGENT_KIND_LABEL,
   SUBAGENT_NODE_ID,
   type SubagentKind,
   type SubagentTarget,
+  TRANSIENT_RETRY_DELAYS_MS,
   targetLabel,
+  transientRetryDelay,
   type WorkflowCheckpointNode,
   type WorkflowNode,
   type WorkflowProjection,
   type WorkflowTransition,
+  waitOrAbort,
   workflowResults,
 } from '@qywork/core'
 import {
@@ -114,6 +118,14 @@ interface DispatchAt {
   workflow?: { workflowId: string; share: number }
 }
 
+/**
+ * 重新派发时写入子会话的消息。子会话保留上一轮的全部步骤，因此只要求从中断处继续，不重复任务正文：
+ * 重复正文会使子 agent 把它当作一项新任务从头执行。
+ */
+function redispatchPrompt(error: string): string {
+  return `[自动重新派发] 本消息由系统发出，不是新的任务。上一轮因模型服务暂时故障中断：${error}。继续完成本会话中的原任务：已完成的步骤不重复执行，从中断处继续。`
+}
+
 /** 子 agent 执行完毕后可知的全部事实。 */
 interface Outcome {
   ok: boolean
@@ -170,8 +182,14 @@ export function makeDelegate(ctx: {
    * 而它需要调用 `startRun`，直接 import 会使 `run-control` ↔ `delegate` 成环。
    */
   deliver: (followUp: FollowUp) => void
+  /**
+   * 重新派发之前的等待，缺省为可随停止取消的真实计时（`waitOrAbort`）。测试注入立即返回的实现，
+   * 以记录请求的等待时长。
+   */
+  wait?: (ms: number, signal: AbortSignal) => Promise<void>
 }): DelegatePort {
   const { deps, workspaceRoot, conversationId, deliver } = ctx
+  const wait = ctx.wait ?? waitOrAbort
 
   /**
    * 本轮各次外部 CLI 已报告的工作区相对路径。一个 `makeDelegate` 对应一个
@@ -648,27 +666,72 @@ export function makeDelegate(ctx: {
       }
 
       const { rules } = await team()
-      const res = await runBuiltinMember(
-        {
-          role: role ?? tempRole(conversation.title),
-          prompt: task,
-          signal,
-          conversationId: conversation.id,
-          ...(at.stepId ? { dispatch: { stepId: at.stepId as StepId, nodeId } } : {}),
-          ...(resolved.effort ? { effort: resolved.effort } : {}),
-        },
-        {
-          deps,
-          workspaceRoot,
-          ...(rules.shared ? { shared: rules.shared } : {}),
-          // 子会话的事件按**子会话自身的 id** 发布；图卡片的进度属于父会话，由上方的 `note` 发布。
-          onEvent: (ev, cid) => deps.bus.publish(ev, cid),
-        },
-      )
+      const member = (prompt: string) =>
+        runBuiltinMember(
+          {
+            role: role ?? tempRole(conversation.title),
+            prompt,
+            signal,
+            conversationId: conversation.id,
+            ...(at.stepId ? { dispatch: { stepId: at.stepId as StepId, nodeId } } : {}),
+            ...(resolved.effort ? { effort: resolved.effort } : {}),
+          },
+          {
+            deps,
+            workspaceRoot,
+            ...(rules.shared ? { shared: rules.shared } : {}),
+            // 子会话的事件按**子会话自身的 id** 发布；图卡片的进度属于父会话，由上方的 `note` 发布。
+            onEvent: (ev, cid) => deps.bus.publish(ev, cid),
+          },
+        )
+      /*
+       * 一轮以暂时故障（`transientErrorCode`，与轮内重发同一分类）结束时，按 30 秒、2 分钟、5 分钟重新派发，
+       * 重试用尽之前不发送失败回执：父会话收到失败回执即会把该项记为失败，而模型服务通常在数分钟内恢复。
+       * 等待期间占住子会话，此时向它派发的任务排入它的队列，在重新派发的一轮中注入；占位失败说明子会话已开始
+       * 其他执行，不再重新派发。用户停止或父会话停止该子 agent 时等待随之取消，不发送回执。
+       */
+      let res = await member(task)
+      const faults: string[] = []
+      while (
+        !res.ok &&
+        res.code &&
+        transientErrorCode(res.code) &&
+        faults.length < TRANSIENT_RETRY_DELAYS_MS.length &&
+        !signal.aborted
+      ) {
+        if (!deps.runs.reserve(conversation.id)) {
+          notes.push('子 agent 已开始执行其他任务，未自动重新派发')
+          break
+        }
+        const error = res.error ?? res.code
+        const ms = transientRetryDelay(faults.length)
+        faults.push(error)
+        log.warn(
+          'team',
+          `子 agent ${conversation.title} 因模型服务暂时故障中断：${error}；${Math.round(ms / 1000)} 秒后第 ${faults.length} 次重新派发`,
+          { conversationId: conversation.id },
+        )
+        try {
+          await wait(ms, signal)
+        } catch {
+          deps.runs.release(conversation.id)
+          break
+        }
+        res = await member(redispatchPrompt(error))
+      }
+      // 重新派发的经过写入回执：成功时记在节点说明中，失败时附在失败原因之后，父会话据此不再重复派发。
+      const redispatched = faults.length > 0 && !signal.aborted
+      if (redispatched && res.ok) {
+        notes.push(`模型服务暂时故障（${faults[0]}），自动重新派发 ${faults.length} 次后完成`)
+      }
+      const error =
+        res.error && redispatched
+          ? `${res.error}；已在 ${retryScheduleText(faults.length)}后各自动重新派发一次，仍失败`
+          : res.error
       return {
         ok: res.ok,
         output: res.output,
-        ...(res.error ? { error: res.error } : {}),
+        ...(error ? { error } : {}),
         stop: res.stop,
         ...(notes.length ? { note: notes.join('；') } : {}),
       }

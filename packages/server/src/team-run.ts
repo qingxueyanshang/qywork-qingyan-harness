@@ -14,6 +14,7 @@ import type {
   AgentEvent,
   ConversationId,
   EffortLevel,
+  ErrorCode,
   RunId,
   StepId,
   StopReason,
@@ -209,7 +210,14 @@ export async function runBuiltinMember(
     /** 子会话的每一条事件，附带其自身的会话 id。见本文件头部说明。 */
     onEvent?: (event: AgentEvent, conversationId: ConversationId) => void
   },
-): Promise<{ ok: boolean; output: string; error?: string; stop: StopReason | null }> {
+): Promise<{
+  ok: boolean
+  output: string
+  error?: string
+  stop: StopReason | null
+  /** 本轮 `run.error` 的失败码；没有报错时为 null。派发方据此判定是否属于暂时故障。 */
+  code: ErrorCode | null
+}> {
   const { role } = input
   const { deps } = ctx
   const extraSystem = [role.systemPrompt, ctx.shared].filter(Boolean).join('\n\n')
@@ -292,6 +300,7 @@ export async function runBuiltinMember(
   let runId: RunId | null = null
   let stop: StopReason | null = null
   let detail: string | null = null
+  let code: ErrorCode | null = null
 
   try {
     // 会话已存在，接口与模型记录在该会话行上；此处不再传递模型名。
@@ -310,8 +319,10 @@ export async function runBuiltinMember(
           startedAt: Date.now(),
         })
       } else if (ev.type === 'text.delta') text += ev.delta
-      else if (ev.type === 'run.error') error = `[${ev.code}] ${ev.message}`
-      else if (ev.type === 'run.finished') {
+      else if (ev.type === 'run.error') {
+        error = `[${ev.code}] ${ev.message}`
+        code = ev.code
+      } else if (ev.type === 'run.finished') {
         stop = ev.stopReason
         detail = ev.stopDetail ?? null
       }
@@ -330,7 +341,7 @@ export async function runBuiltinMember(
   }
 
   const output = text.trim()
-  return { ...memberOutcome({ error, stop, detail, output }), output, stop }
+  return { ...memberOutcome({ error, stop, detail, output }), output, stop, code }
 }
 
 /**

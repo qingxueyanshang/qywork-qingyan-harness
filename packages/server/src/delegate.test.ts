@@ -4,7 +4,7 @@
  * 覆盖范围：`delegate.ts` 的 `makeDelegate()`：派发后立即返回、完成回调写入节点状态与回执、
  * 回执正文的形状、按会话停止、图的推进（首次派发 → 一个节点执行完毕后派发下游 → 一个节点失败时先发送失败回执 →
  * 上游全部完成后发送检查点回执 → approve / revise）、子 agent 的思考强度（`team-run.ts` 的 `memberEffort`），
- * 以及 `subagents.ts` 的运行表。
+ * 子 agent 因暂时故障结束时按间隔重新派发（等待由注入的实现记录，不实际等待），以及 `subagents.ts` 的运行表。
  *
  * 使用真实链路的原因：该通道的行为是「派发之后，卡片上对应的节点随之更新，回执自动返回」。
  * 把 `runBuiltinMember` 换成桩只能验证「桩被调用」；实际可能出错的是装配：
@@ -30,6 +30,7 @@ import {
   type RunId,
   type StepId,
   type WorkflowCall,
+  waitOrAbort,
 } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
@@ -803,6 +804,140 @@ describe('回执是一条消息', () => {
     const content = receipts[0]!.content
     expect(content.length).toBeLessThan(huge.length)
     expect(content).toContain('read_resource')
+  })
+})
+
+/**
+ * 原始失败形状：子 agent 的模型请求被限流（HTTP 429），轮内重发 5 次后该轮失败，父会话随即收到
+ * 「失败：[rate_limited]」的回执并停止整项工作。暂时故障在发送失败回执之前按 30 秒、2 分钟、5 分钟重新派发。
+ *
+ * 子会话一轮内的 5 次重发按 Retry-After: 0 立即进行；重新派发前的等待由注入的实现记录。
+ */
+describe('暂时故障时重新派发', () => {
+  const limited = () =>
+    new Response('{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}', {
+      status: 429,
+      headers: { 'retry-after': '0', 'content-type': 'application/json' },
+    })
+  /** 子会话一轮内的请求次数：首次发送加 5 次重发。 */
+  const PER_RUN = 6
+
+  function redispatching(
+    cid: ConversationId,
+    wait: (ms: number, signal: AbortSignal) => Promise<void>,
+  ) {
+    return makeDelegate({
+      deps: { store, content, config, bus, runs, subagents },
+      workspaceRoot: dir,
+      conversationId: cid,
+      deliver: (followUp) => receipts.push(followUp),
+      wait,
+    })
+  }
+
+  /** 前 `failing` 次请求返回 429，之后正常回答；返回已收到的请求数。 */
+  function limitedFor(failing: number): () => number {
+    let count = 0
+    router = () => {
+      count++
+      return count <= failing
+        ? limited()
+        : new Response(textTurn('恢复后完成'), { headers: SSE_HEADERS })
+    }
+    return () => count
+  }
+
+  test('一轮因限流失败后等待 30 秒重新派发，恢复后父会话收到成功回执', async () => {
+    const cid = conversation()
+    const requests = limitedFor(PER_RUN)
+    const waits: number[] = []
+    const res = await redispatching(cid, async (ms) => {
+      waits.push(ms)
+    }).dispatch({ target: { kind: 'temp', name: '审核员' }, task: '审核剧本', ...spot(cid) })
+    await until(() => receipts.length > 0, '回执', 10_000)
+
+    expect(waits).toHaveLength(1)
+    expect(waits[0]).toBeGreaterThanOrEqual(30_000)
+    expect(waits[0]).toBeLessThanOrEqual(33_000)
+    expect(requests()).toBe(PER_RUN + 1)
+    expect(receipts).toHaveLength(1)
+    expect(receipts[0]!.content.split('\n')[0]).toContain('已返回')
+    expect(receipts[0]!.content).toContain('恢复后完成')
+    expect(members().at(-1)?.state).toMatchObject({ phase: 'done' })
+    expect(members().at(-1)?.state.note).toContain('自动重新派发 1 次后完成')
+    // 重新派发写入子会话的是继续执行的说明，不是任务正文的副本。
+    const sent = listMessages(store, res.subagentId as ConversationId)
+      .filter((m) => m.role === 'user')
+      .map((m) => m.content)
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toBe('审核剧本')
+    expect(sent[1]).toStartWith('[自动重新派发] 本消息由系统发出，不是新的任务。')
+    expect(sent[1]).toContain('[rate_limited]')
+  })
+
+  test('重新派发 3 次仍失败时才发送失败回执，写明已做的重新派发', async () => {
+    const cid = conversation()
+    const requests = limitedFor(PER_RUN * 4)
+    const waits: number[] = []
+    await redispatching(cid, async (ms) => {
+      waits.push(ms)
+    }).dispatch({ target: { kind: 'temp', name: '审核员' }, task: '审核剧本', ...spot(cid) })
+    await until(() => receipts.length > 0, '回执', 20_000)
+
+    expect(waits).toHaveLength(3)
+    expect(waits[0]).toBeGreaterThanOrEqual(30_000)
+    expect(waits[1]).toBeGreaterThanOrEqual(120_000)
+    expect(waits[2]).toBeGreaterThanOrEqual(300_000)
+    expect(requests()).toBe(PER_RUN * 4)
+    expect(receipts).toHaveLength(1)
+    const head = receipts[0]!.content.split('\n')[0]!
+    expect(head).toContain('失败：[rate_limited]')
+    expect(head).toEndWith('；已在 30 秒、2 分钟、5 分钟后各自动重新派发一次，仍失败')
+  }, 30_000)
+
+  /** 请求本身有误时重新派发得到同样的拒绝：不等待，立即发送失败回执。 */
+  test('不属于暂时故障的失败不重新派发', async () => {
+    const cid = conversation()
+    let requests = 0
+    router = () => {
+      requests++
+      return new Response('{"error":{"message":"bad input","type":"invalid_request_error"}}', {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const waits: number[] = []
+    await redispatching(cid, async (ms) => {
+      waits.push(ms)
+    }).dispatch({ target: { kind: 'temp', name: '审核员' }, task: '审核剧本', ...spot(cid) })
+    await until(() => receipts.length > 0, '回执', 10_000)
+
+    expect(waits).toEqual([])
+    expect(requests).toBe(1)
+    expect(receipts[0]!.content).toContain('失败：[invalid_request]')
+    expect(receipts[0]!.content).not.toContain('重新派发')
+  })
+
+  /** 用户停止时等待随之取消：不重新派发，不发送回执，子会话的占位随之释放。 */
+  test('等待重新派发期间停止：等待取消，不再请求，不发送回执', async () => {
+    const cid = conversation()
+    const requests = limitedFor(PER_RUN * 4)
+    const waits: number[] = []
+    const res = await redispatching(cid, (ms, signal) => {
+      waits.push(ms)
+      return waitOrAbort(ms, signal)
+    }).dispatch({ target: { kind: 'temp', name: '审核员' }, task: '审核剧本', ...spot(cid) })
+    await until(() => waits.length === 1, '进入等待', 10_000)
+    const child = res.subagentId as ConversationId
+    expect(runs.hasRun(child)).toBe(true)
+
+    expect(subagents.interruptConversation(cid)).toBe(true)
+    await until(() => phasesOf('child').includes('interrupted'), '节点记为中断')
+    await Bun.sleep(100)
+    expect(requests()).toBe(PER_RUN)
+    expect(receipts).toEqual([])
+    expect(runs.hasRun(child)).toBe(false)
+    expect(runs.isBusy(cid)).toBe(false)
   })
 })
 
