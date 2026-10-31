@@ -27,7 +27,6 @@ import { createEffect, createRoot, createSignal } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
-import { setExportRequests } from './canvas.ts'
 import { openFileInPanel } from './files.ts'
 import {
   type ChangeStep,
@@ -51,6 +50,14 @@ export const [extensionsRevision, setExtensionsRevision] = createSignal(0)
 export function invalidateExtensions(): void {
   setExtensionsRevision((value) => value + 1)
 }
+
+/**
+ * 大模型请求导出、尚未由画布页签接手的时间线（`canvas.export`）。打开该画布的页签读取完成后取走并执行导出；
+ * 服务端以导出会话完成作为结果，取走之后的成败不在此记录。
+ */
+export const [exportRequests, setExportRequests] = createSignal<
+  readonly { path: string; nodeId: string }[]
+>([])
 
 export const client = new QyClient({
   onState: (s, detail) => setState({ connection: s, connectionDetail: detail ?? '' }),

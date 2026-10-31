@@ -1,28 +1,16 @@
-import type { Attachment, ContextGroup, FollowUp, Goal } from '@qywork/core'
-import {
-  attachmentTypeOf,
-  baseNameOf,
-  CONTEXT_GROUPS,
-  isInlineImage,
-  mimeOf,
-  toPosixPath,
-} from '@qywork/core'
+import type { Attachment, FollowUp } from '@qywork/core'
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from 'solid-js'
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { matchesMention, mentionQuery, replaceMention } from '../lib/composer-suggestions.ts'
 import { sessionSignal } from '../lib/session.ts'
 import { slashDispatch } from '../lib/slash.ts'
 import {
-  activeMode,
   activeModel,
   activeModelRow,
-  type CliAgentRow,
   composerSeed,
   dropFollowUp,
-  explainApiError,
   extensionsRevision,
   followUpMode,
-  hasRun,
   interrupt,
   isDesktopShell,
   isRunning,
@@ -32,305 +20,34 @@ import {
   loadTools,
   modelCatalog,
   panelMaximized,
-  pickFiles,
   registerDropSink,
-  resumeGoal,
-  type SkillMeta,
   sendMessage,
   setComposerSeed,
-  setMode,
   setState,
   state,
-  steerFollowUp,
-  type TeamRoleRow,
-  type ToolMeta,
-  uploadAttachment,
   workspace,
 } from '../lib/store/index.ts'
-import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { BranchPicker } from './BranchPicker.tsx'
-import {
-  IconFolder,
-  IconMcpSolid,
-  IconPencil,
-  IconPluginSolid,
-  IconPlus,
-  IconSend,
-  IconShield,
-  IconSkillSolid,
-  IconStop,
-  IconTrash,
-  IconUsers,
-  IconX,
-} from './Icons.tsx'
+import { AttachButton, createAttachmentIntake, PendingAttachments } from './ComposerAttachments.tsx'
+import { ContextMeter } from './ContextMeter.tsx'
+import { FollowUpCards } from './FollowUpCards.tsx'
+import { GoalChip } from './GoalChip.tsx'
+import { IconFolder, IconSend, IconSkillSolid, IconStop } from './Icons.tsx'
+import { ModeChip } from './ModeChip.tsx'
 import { ModelPicker } from './ModelPicker.tsx'
+import {
+  cliOption,
+  type MentionOption,
+  roleOption,
+  scopeLabel,
+  toolOption,
+} from './mention-options.ts'
 import { RunStatus } from './RunStatus.tsx'
 import { VoiceButton } from './VoiceButton.tsx'
-
-/**
- * 当前会话的权限模式。
- *
- * 位于输入区而不是设置中：它决定该会话的放行级别，与「使用哪个模型」属于同一层级的决定，
- * 同样按会话保存，需要随时修改。运行中不禁用：之后的每次命令裁决即按新模式执行。
- *
- * 只有两种模式，因此使用开关而不是下拉框。文案使用「自动审批 / 完全访问」，
- * 不使用 `auto` / `full`：后者是协议中的字面量，不面向用户。
- */
-function ModeChip() {
-  const full = () => activeMode() === 'full'
-
-  return (
-    <button
-      class="mode-chip"
-      classList={{ full: full() }}
-      type="button"
-      disabled={!state.activeConversation}
-      aria-pressed={full()}
-      data-tip={
-        full() ? '不做权限检查，也不限制路径；仍剥离凭证' : '只放行确定安全的命令，其余直接拒绝'
-      }
-      onClick={() => setMode(full() ? 'auto' : 'full')}
-    >
-      <IconShield size={13} />
-      {full() ? '完全访问' : '自动审批'}
-    </button>
-  )
-}
-
-/**
- * 目标状态的说明文字。每一种状态都必须有说明，尤其以下两种：
- *
- * - `blocked` 必须原样显示理由。后端强制每一次 blocked 都附带理由
- *   （`run-control.ts` 的 `STOP_NOTE`、触发轮数上限的说明），界面不显示时，
- *   循环已经停止，而用户只看到「受阻」两个字。
- * - `active` 但没有运行中的一轮，含义是「自动继续未开启」。**自动继续标记不落盘**
- *   （`server/runs.ts` 的 `GoalArm`：若落盘，失控后崩溃的循环会在下次
- *   启动时自动恢复运行），因此进程重启、会话恢复之后目标仍保留在账本中，但不会
- *   自动启动新一轮。不说明这一点，界面上呈现的就是「目标仍在、但没有任何动作」。
- */
-function goalNote(goal: Goal, running: boolean): string {
-  if (goal.status === 'blocked') return `受阻：${goal.blockedReason ?? '未提供理由'}`
-  if (goal.status === 'paused') return '已暂停'
-  return running ? '自动继续中' : '自动继续未开启，点击「继续」恢复执行'
-}
-
-/**
- * 当前目标：内容、是否在运行、能否停止。
- *
- * **自动循环必须可见**：它逐轮自动执行，而界面上只有正文在增长。
- * 因此它常驻在输入框顶部，与等待队列共用同一组状态栏：目标回答「多轮执行
- * 要达成什么」，待办回答「本轮进行到哪一步」，用户应能同时看到这两项。
- *
- * **两个按钮的执行路径**：
- * - **停止 = 中断本轮**（`interrupt`）。run 收尾时服务端把目标置回 `paused`
- *   并解除自动继续标记，因此停止本轮即停止该循环。**不另设「暂停目标」指令**：
- *   同一操作有第二个入口时，两条路径终将对「当前是否已停止」给出不同答案。
- * - **继续 = `goal.resume`**（`resumeGoal`）。它不只把状态改回 `active`，
- *   而是重新启用自动继续，并立即发起一轮。
- *
- * **完成后不显示。** 它回答的是「是否仍在运行」，`completed` 之后不存在该问题。`completed` 是终
- * 态，没有任何出边：保留一个点击后必然被服务端拒绝的「继续」按钮，比不保留更差。
- *
- * **不显示轮数。** 该循环没有轮数上限（见 `core` 中 `Goal` 的注释），因此没有「第几轮 / 共几轮」
- * 可显示。也不显示已执行的轮数：该数值不影响用户的任何决定，显示后只会把
- * 「是否完成」转换为「运行了多久」，而循环是否应停止取决于目标本身，不取决于计数。
- * 用户需要的两项信息都在这一行中：是否在运行，以及如何停止。
- *
- * **单行，且窄于输入框。** 空间不足时先截断目标正文，再截断状态，两处都有悬停提示。高度固定（B9）：
- * 状态文字长短不一，若由内容撑高，「停止」按钮的位置会移动。
- */
-function GoalChip() {
-  const goal = () => state.goal
-  const live = () => {
-    const g = goal()
-    return g && g.status !== 'completed' ? g : null
-  }
-
-  return (
-    <Show when={live()}>
-      {(g) => (
-        <div class="goal-chip">
-          <div class="goal-line">
-            <span class="goal-label">目标</span>
-            {/* 正文过长时截断并提供悬停提示，不做悬停卡片：卡片承载的信息这一行
-                已经显示，唯一的效果是鼠标经过时遮挡下一行。 */}
-            <span class="goal-text truncate" data-tip={g().objective}>
-              {g().objective}
-            </span>
-            {/* 状态紧邻「停止」：用户读到运行状态后，紧接着应看到停止按钮。 */}
-            <span
-              class="goal-note truncate"
-              classList={{ blocked: g().status === 'blocked' }}
-              data-tip={goalNote(g(), isRunning())}
-            >
-              {goalNote(g(), isRunning())}
-            </span>
-            <Show
-              when={isRunning()}
-              fallback={
-                <button class="goal-act" type="button" onClick={resumeGoal}>
-                  继续
-                </button>
-              }
-            >
-              <button class="goal-act" type="button" onClick={interrupt}>
-                停止
-              </button>
-            </Show>
-          </div>
-        </div>
-      )}
-    </Show>
-  )
-}
-
-/**
- * 排队中的后续消息，显示为输入框顶部的队列栏；它与正文、附件共用同一个输入框外壳。
- *
- * 卡片上有三个可点击对象：
- *
- * - **档位按钮**：按钮文字表示点击后执行的动作，而不是该条消息当前的档位。
- *   排队中的消息显示「调整方向」，点击后注入当前一轮，文字随之变为「加入队列」，
- *   再次点击退回队列。会话空闲时没有可注入的运行轮次，文字为「发送」，点击后立即
- *   启动一轮。三种状态采用同一种读法。不要改为显示当前档位：那样同一个按钮上「发送」是
- *   动作、另两个词是状态，同一位置出现两种读法。
- *   档位由服务端在同一个同步块中裁决，此处只负责显示。
- * - **修改**：从队列删除原条目，把正文和附件交回输入框；修改后使用原发送入口。
- * - **删除**：删除后既不注入也不发送。
- *
- * **单行，固定高度（B9）**：正文长短不一，若由内容撑高，删除按钮的位置会随之移动。
- * 不做悬停卡片：卡片承载的信息这一行已经显示。
- */
-function FollowUpCards(props: {
-  onEdit: (followUp: FollowUp) => void
-  thumbProps: (path: string) => { localUrl?: string }
-}) {
-  return (
-    <Show when={state.followUps.length > 0}>
-      <div class="followup-cards">
-        <For each={state.followUps}>
-          {(f) => (
-            <div class="followup-card">
-              <span class="followup-label">{f.steer ? '调整' : '队列'}</span>
-              <Show when={(f.attachments?.length ?? 0) > 0}>
-                <span class="followup-attachment-strip">
-                  <For each={(f.attachments ?? []).slice(0, 3)}>
-                    {(a) => (
-                      <span class="followup-mini-attachment" data-tip={a.name}>
-                        <AttachmentThumb
-                          path={a.path}
-                          name={a.name}
-                          box={24}
-                          {...props.thumbProps(a.path)}
-                        />
-                      </span>
-                    )}
-                  </For>
-                  <Show when={(f.attachments?.length ?? 0) > 3}>
-                    <span class="followup-attachment-more">
-                      +{(f.attachments?.length ?? 0) - 3}
-                    </span>
-                  </Show>
-                </span>
-              </Show>
-              <span
-                class="followup-text truncate"
-                data-tip={f.content || f.attachments?.map((a) => a.name).join('、')}
-              >
-                {f.content ||
-                  (f.attachments?.length === 1
-                    ? f.attachments[0]?.name
-                    : `${f.attachments?.length ?? 0} 个附件`)}
-              </span>
-              <div class="followup-actions">
-                <button
-                  class="followup-act"
-                  type="button"
-                  onClick={() => steerFollowUp(f.id, !f.steer)}
-                >
-                  {!hasRun() ? '发送' : f.steer ? '加入队列' : '调整方向'}
-                </button>
-                <button
-                  class="followup-act icon"
-                  type="button"
-                  aria-label="修改"
-                  data-tip="修改"
-                  onClick={() => props.onEdit(f)}
-                >
-                  <IconPencil size={16} />
-                </button>
-                <button
-                  class="followup-act icon danger"
-                  type="button"
-                  aria-label="删除"
-                  data-tip="删除"
-                  onClick={() => dropFollowUp(f.id)}
-                >
-                  <IconTrash size={16} />
-                </button>
-              </div>
-            </div>
-          )}
-        </For>
-      </div>
-    </Show>
-  )
-}
-
-type MentionOption = {
-  id: string
-  name: string
-  label: string
-  hint: string
-  icon: Command['icon']
-}
 
 type PickerOption = { kind: 'command'; command: Command } | { kind: 'mention'; item: MentionOption }
 
 type ComposerDraft = { text: string; attachments: Attachment[] }
-
-function scopeLabel(skill: SkillMeta): string {
-  if (skill.scope === 'project') return '项目技能'
-  if (skill.scope === 'global') return '全局技能'
-  return '内置技能'
-}
-
-function toolSource(tool: ToolMeta): string {
-  if (tool.source.startsWith('mcp:')) return `MCP · ${tool.source.slice(4)}`
-  if (tool.source.startsWith('plugin:')) return `插件 · ${tool.source.slice(7)}`
-  return tool.source
-}
-
-function roleOption(role: TeamRoleRow): MentionOption {
-  return {
-    id: `agent:role:${role.id}`,
-    name: role.id,
-    label: `子 Agent · ${role.name}`,
-    hint: role.description || '项目角色',
-    icon: IconUsers,
-  }
-}
-
-function cliOption(agent: CliAgentRow): MentionOption {
-  return {
-    id: `agent:cli:${agent.id}`,
-    name: `cli:${agent.id}`,
-    label: `外部 Agent · ${agent.vendor}`,
-    hint: '已连接',
-    icon: IconUsers,
-  }
-}
-
-function toolOption(tool: ToolMeta): MentionOption {
-  const source = toolSource(tool)
-  return {
-    id: `tool:${tool.name}`,
-    name: tool.name,
-    label: source,
-    hint: tool.summary,
-    icon: tool.source.startsWith('mcp:') ? IconMcpSolid : IconPluginSolid,
-  }
-}
 
 /**
  * 输入区。
@@ -373,11 +90,7 @@ export function Composer(props: { empty: boolean }) {
     }))
   }
   const [menuCursor, setMenuCursor] = createSignal(0)
-  const [uploads, setUploads] = createSignal<Record<string, number>>({})
-  const uploading = () => uploads()[state.activeConversation ?? ''] ?? 0
-  const changeUploading = (conversationId: string, delta: number) => {
-    setUploads((all) => ({ ...all, [conversationId]: (all[conversationId] ?? 0) + delta }))
-  }
+  const { uploading, thumbProps, takePaths, takeFiles } = createAttachmentIntake(setPending)
   const [dragOver, setDragOver] = createSignal(false)
   const [panelDockOpen, setPanelDockOpen] = createSignal(false)
   const [panelDockFocused, setPanelDockFocused] = createSignal(false)
@@ -388,13 +101,6 @@ export function Composer(props: { empty: boolean }) {
   const [targetLoad, setTargetLoad] = createSignal<'idle' | 'loading' | 'ready'>('idle')
   const [skillLoadNote, setSkillLoadNote] = createSignal<string | null>(null)
   const [targetLoadNote, setTargetLoadNote] = createSignal<string | null>(null)
-  /**
-   * 粘贴附件的本地预览地址，按落盘路径存储。
-   *
-   * 只增不减：一次会话中粘贴的图片数量有限，而按 chip 的生命周期撤销会与
-   * 「发送后 Transcript 仍需显示」冲突。
-   */
-  const localThumbs = new Map<string, string>()
   /** 输入框中是否有可发送的内容。主按钮的四种状态与 `submit()` 共用此判据。 */
   const hasInput = () => text().trim().length > 0 || pending().length > 0
   /**
@@ -404,14 +110,7 @@ export function Composer(props: { empty: boolean }) {
   const panelDockPinned = () => hasInput() || uploading() > 0 || dragOver()
   const panelDockVisible = () =>
     panelMaximized() && (panelDockOpen() || panelDockFocused() || panelDockPinned())
-  /** 有本地预览时附带该字段，没有时省略整个键：`exactOptionalPropertyTypes` 不接受 undefined。 */
-  const thumbProps = (path: string): { localUrl?: string } => {
-    const u = localThumbs.get(path)
-    return u ? { localUrl: u } : {}
-  }
   let ta!: HTMLTextAreaElement
-  let filePicker!: HTMLInputElement
-  let filePickerConversation: string | null = null
   let wrap: HTMLDivElement | undefined
   let stopVoiceForSubmit = () => {}
   let panelDockCloseTimer: ReturnType<typeof setTimeout> | undefined
@@ -589,54 +288,6 @@ export function Composer(props: { empty: boolean }) {
     // 光标移到末尾：用户需要继续往下写，而不是从头修改。
     queueMicrotask(() => ta.setSelectionRange(ta.value.length, ta.value.length))
   })
-
-  /**
-   * 可取得源路径的入口：桌面端拖入、原生选择器。
-   *
-   * **纯前端处理，不发送任何请求。** 文件已在磁盘上，没有字节需要传输，
-   * 这就是「不二次存储」的全部实现。
-   *
-   * `size` 填 0：此处无法取得字节数，而该字段没有消费者（约定写在 `Attachment` 上）。
-   */
-  const takePaths = (paths: string[], conversationId = state.activeConversation) => {
-    const next = paths.filter(Boolean).map((raw) => {
-      const path = toPosixPath(raw)
-      const name = baseNameOf(path)
-      return { type: attachmentTypeOf(name), name, mime: mimeOf(name), size: 0, path }
-    })
-    if (next.length) setPending((prev) => [...prev, ...next], conversationId)
-  }
-
-  /**
-   * 无法取得源路径的入口：剪贴板中只有位图，或浏览器不提供绝对路径。
-   *
-   * 这些字节除内存外没有第二份，因此落盘是第一次存储，而不是第二次。
-   * 存储位置是 `~/.qywork/attachments/<会话id>/`，删除会话时整个目录一并删除。
-   *
-   * 失败逐个报告并继续处理其余文件：一张图片过大不应导致另外三张也添加失败。
-   */
-  const takeFiles = async (files: FileList | File[], conversationId = state.activeConversation) => {
-    const list = Array.from(files)
-    if (!list.length) return
-    // 没有会话就没有归属，与「发送」使用同一判据（`sendMessage` 也在此情况下提前返回）。
-    if (!conversationId) return
-    changeUploading(conversationId, list.length)
-    for (const f of list) {
-      try {
-        const a = await uploadAttachment(f, conversationId)
-        // 粘贴的文件已持有字节，缩略图直接使用它，省去一次读取。
-        if (isInlineImage(a.path)) localThumbs.set(a.path, URL.createObjectURL(f))
-        setPending((prev) => [...prev, a], conversationId)
-      } catch (e) {
-        setState('notice', {
-          message: `${f.name}：${explainApiError(e, '请求失败')}`,
-          reason: 'attachment_upload_failed',
-        })
-      } finally {
-        changeUploading(conversationId, -1)
-      }
-    }
-  }
 
   /**
    * 把输入区登记为外壳拖放的接收方：命中测试使用输入区的矩形，路径交给 `takePaths`。
@@ -962,56 +613,12 @@ export function Composer(props: { empty: boolean }) {
         <div class="composer-body">
           {/* 待发送附件属于本次输入，放在输入框内部，而不是另起一张外部卡片。
             图片显示可辨认的缩略图；普通文件保留文件名卡片。区域最多两行，超出后在内部滚动。 */}
-          <Show when={pending().length > 0 || uploading() > 0}>
-            <div class="attach-row pending">
-              <For each={pending()}>
-                {(a, i) => (
-                  <Show
-                    when={isInlineImage(a.path)}
-                    fallback={
-                      <span class="attach-chip file" data-tip={a.path}>
-                        <AttachmentThumb
-                          path={a.path}
-                          name={a.name}
-                          box={20}
-                          {...thumbProps(a.path)}
-                        />
-                        <span class="truncate">{a.name}</span>
-                        <button
-                          class="attach-x"
-                          type="button"
-                          aria-label={`移除 ${a.name}`}
-                          onClick={() => setPending((prev) => prev.filter((_, j) => j !== i()))}
-                        >
-                          <IconX size={11} />
-                        </button>
-                      </span>
-                    }
-                  >
-                    <span class="attach-image" data-tip={a.path}>
-                      <AttachmentThumb
-                        path={a.path}
-                        name={a.name}
-                        box={72}
-                        {...thumbProps(a.path)}
-                      />
-                      <button
-                        class="attach-image-x"
-                        type="button"
-                        aria-label={`移除 ${a.name}`}
-                        onClick={() => setPending((prev) => prev.filter((_, j) => j !== i()))}
-                      >
-                        <IconX size={10} />
-                      </button>
-                    </span>
-                  </Show>
-                )}
-              </For>
-              <Show when={uploading() > 0}>
-                <span class="attach-chip busy">上传中 {uploading()}</span>
-              </Show>
-            </div>
-          </Show>
+          <PendingAttachments
+            pending={pending()}
+            uploading={uploading()}
+            thumbProps={thumbProps}
+            setPending={setPending}
+          />
 
           <textarea
             ref={ta}
@@ -1087,47 +694,7 @@ export function Composer(props: { empty: boolean }) {
           />
 
           <div class="composer-bar">
-            {/* 一个 `+` 按钮接收所有附件，不分图片与文件两个入口：对用户而言
-              「把这个文件交给模型查看」是同一件事。
-
-              桌面端使用系统对话框：它返回绝对路径，因此该入口与拖入一样
-              不传输字节。`<input type="file">` 无法取得路径，它是浏览器端唯一的入口。 */}
-            <input
-              ref={filePicker}
-              type="file"
-              multiple
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const fs = e.currentTarget.files
-                if (fs) void takeFiles(fs, filePickerConversation)
-                // 清空 value：同一个文件连续选择两次也必须能触发 change。
-                e.currentTarget.value = ''
-              }}
-            />
-            <button
-              class="icon-btn"
-              type="button"
-              aria-label="添加附件"
-              data-tip="添加附件，也可直接粘贴或拖入"
-              onClick={() => {
-                if (isDesktopShell()) {
-                  const conversationId = state.activeConversation
-                  void pickFiles()
-                    .then((paths) => takePaths(paths, conversationId))
-                    .catch((e: unknown) =>
-                      setState('notice', {
-                        reason: 'attachment_pick_failed',
-                        message: `无法选择文件：${explainApiError(e, '请求失败')}`,
-                      }),
-                    )
-                  return
-                }
-                filePickerConversation = state.activeConversation
-                filePicker.click()
-              }}
-            >
-              <IconPlus size={16} />
-            </button>
+            <AttachButton takePaths={takePaths} takeFiles={takeFiles} />
 
             <ModeChip />
 
@@ -1187,241 +754,5 @@ export function Composer(props: { empty: boolean }) {
         </div>
       </form>
     </div>
-  )
-}
-
-/** 分组行的中文名称。键与 `CONTEXT_GROUPS` 一一对应，顺序由后者决定。 */
-const GROUP_LABEL: Record<ContextGroup, string> = {
-  historyMessages: '历史消息',
-  executionRecords: '执行记录',
-  intermediateContent: '工具结果',
-  systemTools: '系统工具',
-  mcpTools: 'MCP工具',
-  systemPrompt: '系统提示词',
-  memory: '记忆内容',
-  skills: '技能清单',
-  summary: '会话摘要',
-  workspaceState: '工作区与状态',
-}
-
-/**
- * 分段颜色。按行序取色，不按值取色：颜色需要与标签绑定，
- * 用户再次打开时同一颜色仍对应同一类目。
- */
-const SEG_COLOR = [
-  '#6366f1',
-  '#8b5cf6',
-  '#a855f7',
-  '#ec4899',
-  '#f43f5e',
-  '#f97316',
-  '#eab308',
-  '#22c55e',
-  '#14b8a6',
-  '#0ea5e9',
-  '#cbd5e1',
-]
-
-/** 紧凑记法：823 / 19.7k / 916.3k / 1M。数字用于快速比较大小，无需精确到个位。 */
-function fmtTok(n: number): string {
-  if (n < 1000) return String(n)
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
-  return `${(n / 1_000_000).toFixed(1)}M`
-}
-
-function fmtLimit(n: number): string {
-  if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`
-  if (n >= 1000) return `${Math.round(n / 1000)}k`
-  return String(n)
-}
-
-/**
- * 占用环。
- *
- * 数字用于读取数值，环用于快速判断占用程度，这是它与「5.2%」的分工。
- *
- * 两处细节由具体图形决定：
- * - **端点使用平头（默认 butt），不使用 round。** 圆头端点在 0% 时会绘制出一个小圆点，
- *   而新会话恒为 0%，该圆点看起来像已经占用了一小段。
- * - **从 -90° 开始绘制**，自十二点方向顺时针。不旋转时 SVG 从三点方向开始，
- *   低占用时那一小段位于右侧中部，无法看出是「刚开始」。
- */
-function ContextRing(props: { percent: number }) {
-  const CIRC = 2 * Math.PI * 6
-  const offset = () => CIRC * (1 - Math.min(100, Math.max(0, props.percent)) / 100)
-  return (
-    <svg class="ctx-ring" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      <circle class="ctx-ring-track" cx="8" cy="8" r="6" fill="none" stroke-width="3.2" />
-      <circle
-        class="ctx-ring-fill"
-        cx="8"
-        cy="8"
-        r="6"
-        fill="none"
-        stroke-width="3.2"
-        stroke-dasharray={String(CIRC)}
-        stroke-dashoffset={String(offset())}
-        transform="rotate(-90 8 8)"
-      />
-    </svg>
-  )
-}
-
-/**
- * 上下文占用。
- *
- * 点开后查看占用的构成：单独的「87%」无法据以操作，用户无法判断应压缩、
- * 删除记忆，还是更换上下文窗口更大的模型。
- *
- * **行集与行序固定，零值也显示：不得 `filter(n > 0)`，也不得按值排序。** 若行随值出现、消失或换
- * 位置，用户每次打开都需要重新查找关注的行；行数一变，浮层高度也随之变化（违反 B9）。
- * 按 `CONTEXT_GROUPS` 定序，十行始终存在，末尾固定为剩余空间。
- *
- * **「省略上下文」只在确实有省略时出现。** 它回答「哪些内容被移除」。压缩之前恒为 0，此时整段不渲染：
- * 恒为零的区块是噪声，而不是信息。
- */
-function ContextMeter() {
-  const [open, setOpen] = createSignal(false)
-
-  /*
-   * 点击外部时关闭。判据使用 `.ctx-wrap`（含按钮）而不是 `.ctx-pop`：`pointerdown` 先于
-   * `click` 触发，若只判断浮层，点击按钮会先关闭一次，按钮自身的 click 又将其打开，浮层无法关闭。
-   */
-  createEffect(() => {
-    if (!open()) return
-    const onDown = (e: Event) => {
-      if (!(e.target as HTMLElement | null)?.closest?.('.ctx-wrap')) setOpen(false)
-    }
-    window.addEventListener('pointerdown', onDown)
-    onCleanup(() => {
-      window.removeEventListener('pointerdown', onDown)
-    })
-  })
-
-  const rows = () => {
-    const c = state.context
-    if (!c) return []
-    const list = CONTEXT_GROUPS.map((key, i) => ({
-      key: key as string,
-      label: GROUP_LABEL[key],
-      tokens: c.breakdown[key],
-      color: SEG_COLOR[i] ?? '#cbd5e1',
-    }))
-    list.push({
-      key: 'freeSpace',
-      label: '剩余空间',
-      tokens: Math.max(0, c.limit - c.tokens),
-      color: SEG_COLOR[SEG_COLOR.length - 1]!,
-    })
-    return list
-  }
-
-  const omittedRows = () => {
-    const o = state.context?.omitted
-    if (!o) return []
-    return [
-      { key: 'historyOriginal', label: '历史消息原文', tokens: o.historyOriginal },
-      { key: 'intermediateOriginal', label: '工具结果原文', tokens: o.intermediateOriginal },
-    ].filter((r) => r.tokens > 0)
-  }
-
-  return (
-    <Show
-      when={state.context}
-      fallback={
-        // 读取失败时显示 N/A，原因在悬停提示中；不显示时读数整体消失，用户看不到原因。
-        <Show when={state.contextError}>
-          {(e) => (
-            <span class="ctx-wrap">
-              <span class="ctx-meter" data-tip={explainApiError(e(), '上下文占用读取失败')}>
-                <ContextRing percent={0} />
-                <span class="ctx-meter-num">N/A</span>
-              </span>
-            </span>
-          )}
-        </Show>
-      }
-    >
-      {(c) => (
-        <span class="ctx-wrap">
-          <button
-            class="ctx-meter"
-            classList={{ warn: c().percent > 75 }}
-            type="button"
-            aria-expanded={open()}
-            data-tip={`${c().tokens.toLocaleString()} / ${c().limit.toLocaleString()} tokens`}
-            onClick={() => setOpen((v) => !v)}
-          >
-            <ContextRing percent={c().percent} />
-            <span class="ctx-meter-num">{c().percent}%</span>
-          </button>
-          <Show when={open()}>
-            <div class="ctx-pop" role="dialog" aria-label="上下文占用明细">
-              <div class="ctx-head">
-                <span>
-                  上下文
-                  {c().source === 'estimated'
-                    ? '（估算）'
-                    : c().source === 'projected'
-                      ? '（含估算）'
-                      : ''}
-                </span>
-                <span class="ctx-head-nums">
-                  {fmtTok(c().tokens)} / {fmtLimit(c().limit)}
-                </span>
-              </div>
-              <div class="ctx-stack" role="img" aria-label="上下文占用占比条">
-                <For each={rows()}>
-                  {(r) => (
-                    <Show when={r.tokens > 0}>
-                      <span
-                        class="ctx-stack-seg"
-                        style={{
-                          width: `${Math.min(100, (r.tokens / Math.max(1, c().limit)) * 100)}%`,
-                          background: r.color,
-                        }}
-                      />
-                    </Show>
-                  )}
-                </For>
-              </div>
-              <ul class="ctx-rows">
-                <For each={rows()}>
-                  {(r) => (
-                    <li class="ctx-row">
-                      <span class="ctx-dot" style={{ background: r.color }} />
-                      <span class="ctx-name">{r.label}</span>
-                      <span class="ctx-num">{fmtTok(r.tokens)}</span>
-                      <span class="ctx-pct">
-                        {((r.tokens / Math.max(1, c().limit)) * 100).toFixed(1)}%
-                      </span>
-                    </li>
-                  )}
-                </For>
-              </ul>
-              <Show when={omittedRows().length > 0}>
-                <div class="ctx-omitted">
-                  <div class="ctx-subtitle">省略上下文</div>
-                  <ul class="ctx-rows">
-                    <For each={omittedRows()}>
-                      {(r) => (
-                        <li class="ctx-row">
-                          <span class="ctx-dot ctx-dot-hollow" />
-                          <span class="ctx-name">{r.label}</span>
-                          <span class="ctx-num">{fmtTok(r.tokens)}</span>
-                          <span class="ctx-pct">
-                            {((r.tokens / Math.max(1, c().limit)) * 100).toFixed(1)}%
-                          </span>
-                        </li>
-                      )}
-                    </For>
-                  </ul>
-                </div>
-              </Show>
-            </div>
-          </Show>
-        </span>
-      )}
-    </Show>
   )
 }
