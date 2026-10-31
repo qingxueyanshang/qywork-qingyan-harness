@@ -1876,6 +1876,26 @@ textarea.code-area::placeholder {
   grid-column: 1 / -1;
 }
 
+/* 拉取对话框的读取失败。只属于该对话框（B8）。 */
+.pull-error {
+  margin: 12px;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+
+/* 导入技能对话框的报错行，理由同 `.np-error`：常驻、高度固定、行内截断，只属于该对话框。 */
+.skill-import-error {
+  margin: 0;
+  min-height: 20px;
+  max-height: 20px;
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
 .pull-state {
   margin: 12px;
   color: var(--text-secondary);

@@ -159,7 +159,7 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
           fallback={
             <Show when={error()} fallback={<p class="pull-state pull-full">读取中…</p>}>
               {(message) => (
-                <p class="np-error pull-full" role="alert">
+                <p class="pull-error pull-full" role="alert">
                   {message()}
                 </p>
               )}

@@ -133,8 +133,11 @@ export function NewProjectDialog(props: {
             </Show>
           </div>
 
-          {/* 失败必须有终态：名称不合法、目录无法创建，都在此处显示。 */}
-          <Show when={error()}>{(e) => <p class="np-error">{e()}</p>}</Show>
+          {/* 失败必须有终态：名称不合法、目录无法创建，都在此处显示。
+              报错行常驻且高度固定：出现报错时对话框高度不变（B9）。 */}
+          <p class="np-error" role="alert" title={error() ?? ''}>
+            {error() ?? ''}
+          </p>
 
           <div class="confirm-actions">
             <button class="btn-ghost" type="button" onClick={props.onClose}>

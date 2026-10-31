@@ -73,7 +73,6 @@ export function SkillImportDialog(props: {
       }}
     >
       <h2 class="confirm-title">导入技能</h2>
-      <p class="skill-import-hint">选择文件夹或 ZIP，双击文件夹进入</p>
       <fieldset disabled={busy()} class="skill-import-fields">
         <form
           class="skill-import-location"
@@ -161,13 +160,10 @@ export function SkillImportDialog(props: {
       <p class="skill-import-selection" title={selected() ?? ''}>
         {selected() ?? '尚未选择'}
       </p>
-      <Show when={error()}>
-        {(message) => (
-          <p class="np-error" role="alert">
-            {message()}
-          </p>
-        )}
-      </Show>
+      {/* 报错行常驻且高度固定：出现报错时对话框高度不变（B9）。 */}
+      <p class="skill-import-error" role="alert" title={error() ?? ''}>
+        {error() ?? ''}
+      </p>
       <div class="confirm-actions">
         <button class="btn-ghost" type="button" disabled={busy()} onClick={props.onClose}>
           取消

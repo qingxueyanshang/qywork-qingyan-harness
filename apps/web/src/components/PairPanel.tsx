@@ -78,7 +78,7 @@ export default function PairPanel() {
           </label>
           <Show when={lanError()}>{(m) => <p class="pair-hint">{m()}</p>}</Show>
 
-          <Show when={d().lanEnabled} fallback={<p class="pair-hint">开启后可使用手机扫码</p>}>
+          <Show when={d().lanEnabled}>
             <Qr text={d().candidates[picked()]?.qr ?? d().qr} />
 
             <Show when={d().candidates.length > 1}>
@@ -98,8 +98,6 @@ export default function PairPanel() {
                 </For>
               </div>
             </Show>
-
-            <p class="pair-hint">若扫描无法接通，请更换其他地址</p>
           </Show>
         </div>
       )}

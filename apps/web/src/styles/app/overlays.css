@@ -302,8 +302,19 @@
 .np-clear:hover {
   background: var(--bg-hover);
 }
+/*
+ * 新建项目对话框的报错行。常驻且高度固定（min-height 与 max-height 相同）：按条件插入时，
+ * 出现报错会使对话框变高，按钮位置随之移动（B9）。过长的报错在行内截断，全文在 title 中。
+ * 只属于该对话框，不与其他对话框共用（B8）。
+ */
 .np-error {
   margin: var(--s-2) 0 0;
+  min-height: 20px;
+  max-height: 20px;
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--fs-sm);
   color: var(--danger);
 }
