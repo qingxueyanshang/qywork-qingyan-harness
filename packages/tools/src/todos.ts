@@ -1,7 +1,7 @@
 /**
  * 待办整表工具。它提交整份清单，也是父会话验收后改变完成状态的唯一入口。
  *
- * 待办不是方案。本工具管理待办清单：每条一句话，三种状态，完成后标记完成。它回答「进行到哪一步」。
+ * 待办不是方案。本工具管理待办清单：每条一句话，五种状态，完成后标记完成。它回答「进行到哪一步」。
  * 方案是另一类产物：说明为什么这样做、如何取舍、验收标准，它是一篇文档，
  * 回答「打算如何做」，本产品尚未提供。因此本工具与其面板都不称为「计划」，
  * 避免待办清单使用方案的名称。
@@ -14,12 +14,16 @@
  *   而不是修补旧清单。
  *
  * 硬约束：同时最多一条 in_progress。允许多条并行会使「当前在做什么」
- * 失去意义，而这正是该面板存在的理由。违反时拒绝并说明，不静默纠正：
- * 静默改写等于告诉模型清单已被原样接受。
+ * 失去意义，而这正是该面板存在的理由。受阻与失败的条目不计入这一条。
+ * 违反时拒绝并说明，不静默纠正：静默改写等于告诉模型清单已被原样接受。
+ *
+ * 硬约束：blocked 必须带 `blocker`（`TODO_BLOCKERS` 之一）与 `need`，failed 必须带 `cause` 与 `attempts`，
+ * 其余状态都不带。执行循环据此判定本轮是继续、停下等待用户还是结束（`agent/loop/turn-end.ts`），
+ * 缺少原因的受阻与失败无法审计，也无法在最终回复中逐项说明。
  */
 
 import type { ToolSpec } from '@qywork/agent'
-import { type TodoItem, todoProgress } from '@qywork/core'
+import { TODO_BLOCKERS, TODO_STATUSES, type TodoItem, todoProgress } from '@qywork/core'
 
 /** 待办条目上限。超过此数说明应拆分任务，而不是把清单当作笔记使用。 */
 const MAX_ITEMS = 40
@@ -31,7 +35,7 @@ export const writeTodosTool: ToolSpec = {
   description:
     '提交或更新当前任务的待办清单。' +
     '每次提交**完整的**清单（整表替换），不是增量：未变化的条目也需原样包含。' +
-    '同一时刻只能有一条 in_progress。',
+    '同一时刻只能有一条 in_progress。标为 blocked 的条目必须填写 blocker 与 need，标为 failed 的条目必须填写 cause 与 attempts，其余状态都不填写。',
   parameters: {
     type: 'object',
     properties: {
@@ -44,8 +48,25 @@ export const writeTodosTool: ToolSpec = {
             content: { type: 'string', description: '该步骤要完成的工作，一句话' },
             status: {
               type: 'string',
-              enum: ['pending', 'in_progress', 'completed'],
+              enum: [...TODO_STATUSES],
               description: '当前状态',
+            },
+            blocker: {
+              type: 'string',
+              enum: [...TODO_BLOCKERS],
+              description: '受阻类别，仅 status 为 blocked 时填写',
+            },
+            need: {
+              type: 'string',
+              description: '仅 status 为 blocked 时填写：需要谁提供什么，一句话',
+            },
+            cause: {
+              type: 'string',
+              description: '仅 status 为 failed 时填写：失败原因',
+            },
+            attempts: {
+              type: 'string',
+              description: '仅 status 为 failed 时填写：做过的尝试，包括次数与每次的改动',
             },
           },
           required: ['content', 'status'],
@@ -118,10 +139,34 @@ function progressLine(todos: TodoItem[]): string {
   const p = todoProgress(todos)
   if (p.current) return `第 ${p.step}/${p.total} 步：${p.current.content}`
   if (p.done === p.total) return `${p.total} 步全部完成`
+  if (p.done + p.blocked + p.failed === p.total) {
+    const rest = [
+      ...(p.blocked ? [`${p.blocked} 步受阻`] : []),
+      ...(p.failed ? [`${p.failed} 步失败`] : []),
+    ]
+    return `已完成 ${p.done}/${p.total} 步，其余 ${rest.join('、')}`
+  }
   return `已完成 ${p.done}/${p.total} 步，未认领下一条`
 }
 
 type ParseResult = { ok: true; todos: TodoItem[] } | { ok: false; message: string }
+
+/** 可选参数是否填写。strict 模式下未填写的可选参数以 null 传入，空字符串同样视为未填写。 */
+function filled(value: unknown): boolean {
+  return value !== undefined && value !== null && !(typeof value === 'string' && !value.trim())
+}
+
+/** 各状态允许填写的原因字段。不在其中的字段一律拒绝。 */
+const REASON_FIELDS = {
+  blocked: ['blocker', 'need'],
+  failed: ['cause', 'attempts'],
+} as const
+const ALL_REASON_FIELDS = ['blocker', 'need', 'cause', 'attempts'] as const
+
+/** 去掉首尾空白后的字符串；不是字符串时为空串。 */
+function trimmed(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
 
 /**
  * 校验并归一化待办清单。
@@ -151,19 +196,48 @@ function parseTodos(raw: unknown): ParseResult {
     const content = String(row.content ?? '').trim()
     if (!content) return { ok: false, message: `第 ${i + 1} 条缺少 content` }
 
-    const status = String(row.status ?? '')
-    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') {
-      return { ok: false, message: `第 ${i + 1} 条的 status 非法：${status}` }
-    }
+    const status = TODO_STATUSES.find((s) => s === row.status)
+    if (!status)
+      return { ok: false, message: `第 ${i + 1} 条的 status 非法：${String(row.status)}` }
     if (status === 'in_progress') inProgress++
 
-    todos.push({
-      // id 由序号生成而不由模型提供：模型提供的 id 经常在两次提交之间变化，
-      // 而整表替换语义下 id 只用于前端 diff，序号足够且稳定。
-      id: `todo_${i + 1}`,
-      content,
-      status,
-    })
+    // id 由序号生成而不由模型提供：模型提供的 id 经常在两次提交之间变化，
+    // 而整表替换语义下 id 只用于前端 diff，序号足够且稳定。
+    const id = `todo_${i + 1}`
+    const allowed: readonly string[] =
+      status === 'blocked' || status === 'failed' ? REASON_FIELDS[status] : []
+    const extra = ALL_REASON_FIELDS.filter((f) => !allowed.includes(f) && filled(row[f]))
+    if (extra.length) {
+      return {
+        ok: false,
+        message: `第 ${i + 1} 条的 status 为 ${status}，不填写 ${extra.join('、')}；blocked 只填写 blocker 与 need，failed 只填写 cause 与 attempts，其余状态都不填写。`,
+      }
+    }
+    if (status === 'blocked') {
+      const blocker = TODO_BLOCKERS.find((b) => b === row.blocker)
+      const need = trimmed(row.need)
+      if (!blocker || !need) {
+        return {
+          ok: false,
+          message: `第 ${i + 1} 条标为 blocked，必须填写 blocker（${TODO_BLOCKERS.join('、')} 之一）与 need（需要谁提供什么）。不是在等待用户的困难不是受阻：按失败的处理方式重试或调整，仍无法完成时标为 failed。`,
+        }
+      }
+      todos.push({ id, content, status, blocker, need })
+      continue
+    }
+    if (status === 'failed') {
+      const cause = trimmed(row.cause)
+      const attempts = trimmed(row.attempts)
+      if (!cause || !attempts) {
+        return {
+          ok: false,
+          message: `第 ${i + 1} 条标为 failed，必须填写 cause（失败原因）与 attempts（做过的尝试，包括次数与每次的改动）。`,
+        }
+      }
+      todos.push({ id, content, status, cause, attempts })
+      continue
+    }
+    todos.push({ id, content, status })
   }
 
   if (inProgress > 1) {

@@ -4,7 +4,7 @@
  */
 
 import type { AgentEvent } from '@qywork/core'
-import { envelopeHeadTokens, log } from '@qywork/core'
+import { envelopeHeadTokens, log, TODO_BLOCKERS, todoReason } from '@qywork/core'
 import { cycleFingerprint } from '../progress.ts'
 import { envelopeHashOf } from './request.ts'
 import type { RunState, TurnState } from './run-state.ts'
@@ -24,6 +24,18 @@ function inputLimit(turn: TurnState): number {
 
 const TRUNCATED_NOTICE =
   '上一次响应的输出达到单次上限，在中途被截断，本轮未结束。从中断处继续，不重述已完成的部分，剩余工作拆成较小的步骤。'
+
+/**
+ * 清单中仍有 pending 或 in_progress 而本轮只有回复时的继续提示，`items` 是这些项。
+ *
+ * 提示以用户消息送达，须写明它不是用户的回复、不代表任何确认：只写「继续执行」时，模型把它当作
+ * 用户对样张的确认，未等用户查看就生成了其余 27 页（宁德视觉升级 2026-10-21）。
+ * 受阻与失败的判定标准只写在系统提示中，此处只列字段与类别取值。不要加入「把等待中的项改回 pending
+ * 后结束本轮」一类的出口：pending 不带原因，任何困难都能借此停下询问用户。
+ */
+function continueNotice(items: string[]): string {
+  return `本轮待办尚有未完成的项：${items.join('；')}。这是系统的自动提示，不是用户的回复，不表示用户确认或授权了任何事项。继续执行这些项；需要在几种做法之间选择时，按最接近用户要求的做法执行，并在最终回复中说明。执行失败时按系统提示中的失败处理方式重试或调整，处理后仍无法完成的项用 write_todos 标为 failed，填写 cause 与 attempts。只有某一项在等待用户，属于受阻类别（${TODO_BLOCKERS.join('、')}）时，例如样张等待用户查看，才标为 blocked 并填写 blocker 与 need。清单中没有 pending 与 in_progress 后本轮结束。`
+}
 
 /**
  * 请求账写入终态，本轮输出写回 transcript，锚点按本轮真值前移。
@@ -245,17 +257,25 @@ export async function* concludeWithoutTools(
   }
 
   // 按本轮接续关系读清单：用户新指令需重新提交，父任务回执沿用已有清单。
-  const unfinished =
-    ctx.todos?.read(input.runId)?.filter((todo) => todo.status !== 'completed') ?? []
+  const todos = ctx.todos?.read(input.runId) ?? []
   // 已派发的子 agent 仍在运行时，清单未完成是因为它们在执行：本轮结束是正确的，
   // 回执到达后会开始新的一轮。强制模型继续只会得到一段无实际内容的回答。
   const delegated = (ctx.delegate?.inflight().length ?? 0) > 0
-  if (unfinished.length && !delegated) {
-    if (!unfinished.some((todo) => todo.status === 'in_progress')) {
-      run.stopReason = 'awaiting_user'
-      return 'stop'
-    }
-    const snapshot = unfinished.map((todo) => [todo.id, todo.content, todo.status])
+  if (delegated) {
+    run.stopReason = 'completed'
+    return 'stop'
+  }
+
+  /*
+   * 还有 pending 或 in_progress 时继续执行，不停止。不要把「没有 in_progress」当作受阻：
+   * 模型标记完成后未认领下一条时清单同样没有 in_progress，按受阻停止会使任务在中途结束，
+   * 且停止没有经过 `write_todos` 对受阻类别的校验。
+   */
+  const open = todos.filter((todo) => todo.status === 'pending' || todo.status === 'in_progress')
+  if (open.length) {
+    const snapshot = todos
+      .filter((todo) => todo.status !== 'completed')
+      .map((todo) => [todo.id, todo.content, todo.status])
     run.progress.push({
       cycle: cycleFingerprint('assistant_end_turn', {}, { status: 'unfinished', data: snapshot }),
       noProgress: true,
@@ -265,14 +285,19 @@ export async function* concludeWithoutTools(
       run.stopDetail = '待办未完成时连续三次仅回复而未执行操作'
       return 'stop'
     }
-    // 提示以用户消息送达，须写明它不是用户的回复：先写「继续执行」时，模型把它当作用户对样张的确认，
-    // 未等用户认可就生成了其余 27 页（宁德视觉升级 2026-10-21）。
-    run.notify(
-      `本轮待办仍在进行中：${unfinished.map((todo) => todo.content).join('；')}。这是系统的自动提示，不是用户的回复，也不是用户的确认或授权。上一条回复在等用户确认、选择或补充信息时（例如样张等用户认可），把等待中的项改回 pending，在回复中说明在等什么，结束本轮，不替用户确认。其余情况继续执行；单个工具调用失败不是受阻，不依赖失败结果的项照常执行。`,
-    )
+    run.notify(continueNotice(open.map((todo) => todo.content)))
     return 'continue'
   }
 
-  run.stopReason = 'completed'
+  /*
+   * 其余每一项都已完成、受阻或失败。有受阻项时停下等待用户；只有失败项时本轮已执行完毕，
+   * 记为 completed，失败不等待任何一方。停止依据逐项列出受阻条件与失败原因。
+   */
+  const reasons = [
+    ...todos.filter((todo) => todo.status === 'blocked'),
+    ...todos.filter((todo) => todo.status === 'failed'),
+  ].flatMap((todo) => todoReason(todo) ?? [])
+  if (reasons.length) run.stopDetail = reasons.join('；')
+  run.stopReason = todos.some((todo) => todo.status === 'blocked') ? 'awaiting_user' : 'completed'
   return 'stop'
 }

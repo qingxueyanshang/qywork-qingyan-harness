@@ -185,6 +185,8 @@ export async function startRun(
      */
     let stopReason: StopReason | null = null
     let failure: string | null = null
+    // 停止依据（待办受阻的条件、无进展的判据），写入目标的受阻原因。
+    let stopDetail: string | null = null
 
     try {
       /*
@@ -316,7 +318,10 @@ export async function startRun(
             startedAt: Date.now(),
           })
         }
-        if (ev.type === 'run.finished') stopReason = ev.stopReason
+        if (ev.type === 'run.finished') {
+          stopReason = ev.stopReason
+          stopDetail = ev.stopDetail ?? null
+        }
         if (ev.type === 'run.error') failure = ev.message
         /*
          * **自动继续标记只由目标事件驱动**，不根据「谁调用过目标工具」推断。
@@ -396,7 +401,7 @@ export async function startRun(
         deps,
         interrupted,
         stopReason,
-        failure,
+        detail: failure ?? stopDetail,
         skipResume: fired,
       })
       // 未查到项目目录时没有可广播的工作区，本轮也未访问任何文件。
@@ -499,7 +504,8 @@ function settleGoalAfterRun(input: {
   deps: Omit<CommandDeps, 'ws'>
   interrupted: boolean
   stopReason: StopReason | null
-  failure: string | null
+  /** 停止说明：`run.error` 的正文，没有时为 `RunFinishedEvent.stopDetail`。 */
+  detail: string | null
   /**
    * 队首的跟进消息已排为下一轮，**只跳过自动继续分支**。
    *
@@ -522,7 +528,7 @@ function settleGoalAfterRun(input: {
       stopGoal(deps, conversationId, armed, {
         action: 'blocked',
         code: input.stopReason ?? 'internal_error',
-        reason: input.failure ? `${note}：${input.failure}` : `${note}。`,
+        reason: input.detail ? `${note}：${input.detail}` : `${note}。`,
       })
       return
     }
@@ -744,7 +750,7 @@ function goalRoundPrompt(goal: Goal): string {
     '',
     '继续执行。声明完成之前先取得证据（执行一次命令或读取一次文件），不要仅凭印象：',
     '- 确认已达成：调用 update_goal(action="complete")，并在回答中写明证据。',
-    '- 需要用户决定，或缺少条件无法继续：调用 update_goal(action="blocked")，写明阻塞点以及继续所需的条件。',
+    '- 属于系统提示所列的受阻类别，且目标的其余部分都无法推进：调用 update_goal(action="blocked")，写明受阻位置以及需要谁提供什么。',
     '- 尚未完成：无需调用，目标保持 active，本轮结束后会自动开始下一轮。',
     '该循环没有轮数上限：不声明结束就会持续执行，因此达成时要声明，无法继续时也要声明。',
     'goal_id 与 revision 以 read_goal 读取的结果为准。',

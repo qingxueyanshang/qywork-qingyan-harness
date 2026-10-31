@@ -1,8 +1,9 @@
 /**
  * 上下文末尾注记的装配。
  *
- * 覆盖范围：`prompt.ts` 的 `buildTailNotes`，`buildSystemPrompt` 中 run_command
- * 一行的措辞与末尾的 `outputLimitNote`（前缀稳定性由 `agent/prefix-audit.test.ts` 审查）。
+ * 覆盖范围：`prompt.ts` 的 `buildTailNotes`，`buildSystemPrompt` 中能力段各行的措辞、
+ * 停下等待用户的判定（受阻四类与不是受阻的情形）、执行失败的五类处理方式与末尾的 `outputLimitNote`
+ * （前缀稳定性由 `agent/prefix-audit.test.ts` 审查）。
  *
  * 锁定的约束是技能、记忆、外部工具都只放入标题：正文（外部工具为完整参数说明）
  * 一旦放回上下文末尾，每轮都要全量重发，且不会产生任何报错，
@@ -10,6 +11,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { TODO_BLOCKERS } from '@qywork/core'
 import { buildSystemPrompt, buildTailNotes, outputLimitNote } from './prompt.ts'
 
 const base = { workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' as const }
@@ -311,6 +313,33 @@ describe('上下文末尾注记', () => {
     expect(todo).not.toContain('parentTodo')
   })
 
+  /** 用户在下一轮补齐条件时，模型需要知道每个受阻项在等什么、每个失败项为何失败，才能接续。 */
+  test('受阻与失败的待办在快照中写明受阻条件与失败原因', () => {
+    const notes = buildTailNotes({
+      ...base,
+      todos: [
+        { id: 'todo_1', content: '生成样张', status: 'completed' },
+        {
+          id: 'todo_2',
+          content: '生成其余 17 页',
+          status: 'blocked',
+          blocker: 'spend',
+          need: '用户同意生成其余 17 页的费用',
+        },
+        {
+          id: 'todo_3',
+          content: '生成第 4 页',
+          status: 'failed',
+          cause: 'HTTP 403 无访问权限',
+          attempts: '不重试',
+        },
+      ],
+    })
+    const todo = notes.at(-1)?.content ?? ''
+    expect(todo).toContain('2. [受阻] 生成其余 17 页（花费待确认：用户同意生成其余 17 页的费用）')
+    expect(todo).toContain('3. [失败] 生成第 4 页（失败：HTTP 403 无访问权限，已尝试：不重试）')
+  })
+
   test('旧清单全部完成后不再作为下一轮的当前待办', () => {
     const notes = buildTailNotes({
       ...base,
@@ -337,6 +366,64 @@ describe('上下文末尾注记', () => {
   })
 })
 
+/**
+ * 原始失败形状：没有任何事项需要用户时，模型结束本轮并询问用户，核对与查找也交给用户；
+ * 一次运行失败即停止整项工作。停下的条件分散在系统提示、待办段落与画布工具说明中，
+ * 且标准含糊（「实质不同的结果」「需要用户决定的事」）。判定只写在一处：四类受阻与五类失败处理。
+ */
+describe('停下等待用户与执行失败的判定', () => {
+  const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows', 'run_canvas']))
+
+  test('受阻四类各定义一次，取值与 write_todos 的 blocker 枚举一致，外部服务故障不在其中', () => {
+    expect(TODO_BLOCKERS).toEqual(['spend', 'user_only', 'review', 'irreversible'])
+    for (const kind of TODO_BLOCKERS) expect(prompt.split(`- ${kind}：`)).toHaveLength(2)
+    expect(prompt).not.toContain('- service：')
+    expect(prompt).toContain('停下等待用户只有一种方式：用 write_todos 把该项标为 blocked')
+    expect(prompt).toContain('受阻只有以下四类，每一类都是在等待用户')
+    expect(prompt).toContain(
+      '清单中没有 pending 与 in_progress 且有受阻项时，在回复中说明需要用户做什么，本轮随即结束',
+    )
+  })
+
+  test('执行失败按原因分五类处理，间隔取自重试间隔表，处理后仍无法完成的项标为 failed', () => {
+    expect(prompt).toContain('执行失败不是受阻，不等待用户')
+    for (const line of [
+      '- 暂时故障（5xx、429 限流、请求得到应答之前连接中断）：以相同参数在 30 秒、2 分钟、5 分钟后各重试一次。',
+      '生成的提交与子 agent 的派发由系统按这一间隔自动重试，回执报告失败时这些重试已经完成。',
+      '- 请求有误（4xx 参数校验失败、参考图数量不符、引用失效、参数取值无效）：按原因修改输入后重试；同一错误再次出现时换一种改法，共尝试 3 次。',
+      '- 结果不符合要求：查明原因，修改提示词后重新运行；同一张卡片的图片最多重新运行 3 次，视频最多 2 次，用尽后保留最接近要求的版本，该项按完成处理',
+      '- 重试无法解决（余额或额度用尽、403 无访问权限、接口要求重新登录）：不重试。',
+      '- 结果未知（请求已发出，但没有收到应答或任务号，或发出后超时）：远端可能已经受理并计费，先取回，不重新提交。',
+      '接口返回了明确的 HTTP 错误即请求已得到应答，按前四类处理；请求发出后没有任何应答，按结果未知处理。',
+      '用 write_todos 标为 failed，cause 写失败原因，attempts 写做过的尝试及每次的改动',
+      '最终回复在一处列出每个失败项的原因、尝试次数与每次的改动，以及仍缺少的内容',
+    ]) {
+      expect(prompt).toContain(line)
+    }
+  })
+
+  test('列出不是受阻的情形，几种做法时选择最接近用户意图的一种并在最终回复中说明', () => {
+    for (const item of [
+      '界面中暂未找到目标',
+      '检查器或脚本报告错误',
+      '所需信息可以自行查找或核对',
+      '存在几种可行做法（选择最接近用户意图的一种，在最终回复中说明）',
+      '时长或数量与要求不一致',
+      '审核未通过',
+    ]) {
+      expect(prompt).toContain(item)
+    }
+    expect(prompt).toContain('需求存在几种理解时，按最接近用户意图的一种执行')
+  })
+
+  test('不再出现分散的出口：向用户确认、改回 pending 后结束、在回复中提出需要用户决定的事', () => {
+    expect(prompt).not.toContain('才向用户确认')
+    expect(prompt).not.toContain('改回 pending')
+    expect(prompt).not.toContain('需要用户决定的事在回复中提出')
+    expect(prompt).not.toContain('以相同参数立即再试一次')
+  })
+})
+
 describe('能力段', () => {
   test('有 run_command 时写明 Chrome 须指定 --user-data-dir，位于 .tmp/ 下', () => {
     const prompt = buildSystemPrompt(new Set(['run_command']))
@@ -359,6 +446,10 @@ describe('能力段', () => {
     // 自绘界面的处理路径须完整写明：observe 附带截图、按图动作的回执附带截图、连续动作使用 sequence。
     expect(prompt).toContain('缺少可操作控件')
     expect(prompt).toContain('使用观察结果附带的截图定位')
+    // 原始失败形状：模型看不到微信搜索框弹出的结果列表，改为请用户自行打开会话。截图已合成同一应用的弹出窗口。
+    expect(prompt).toContain(
+      '截图包含同一应用位于该窗口之上的下拉框、菜单与搜索结果等弹出窗口，回执写明其位置；输入文字后应重新截图查看弹出的内容，再按图点击其中的项目。',
+    )
     expect(prompt).toContain('desktop_act_sequence')
     expect(prompt).toContain('foregroundEnabled')
     expect(prompt).toContain('为 false 时只使用可用的后台动作')

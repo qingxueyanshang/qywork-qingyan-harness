@@ -373,6 +373,11 @@ export interface RunContextSegment {
  * 停止原因。每次停止都必须带有原因，前端据此向用户展示。
  */
 export type StopReason =
+  /**
+   * 本轮执行完毕：清单为空，或每一项都已完成或标为 `failed`。有 `failed` 的项时 `stopDetail` 列出失败原因。
+   * 不要为「有失败项」另设停止原因：失败项已按重试规则处理完毕，本轮不再等待任何一方，
+   * 跟进消息与目标的自动继续都应照常进行。
+   */
   | 'completed'
   /**
    * 无进展循环：连续三次出现相同的执行周期、相同的结果或待办快照，且没有任何副作用。
@@ -381,9 +386,9 @@ export type StopReason =
    */
   | 'no_progress'
   /**
-   * 待办受阻：本轮结束时清单仍有未完成项且没有进行中的项，即模型已按约定把受阻的项改回 pending，
-   * 在回复中说明了阻塞与解除条件，等待用户提供信息、授权或外部条件。本轮执行正确，状态为 `done`。
-   * 不要并入 `no_progress`：后者表示循环出错，界面会把一次正常的提问显示为出错。
+   * 待办受阻：本轮结束时清单中没有 pending 与 in_progress，且至少一项标为 `blocked`，每项带有
+   * `TodoBlocker` 类别与所需条件，`stopDetail` 列出这些条件（另有失败项时一并列出）。本轮执行正确，状态为 `done`。
+   * 不要并入 `no_progress`：后者表示循环出错，界面会把一次正常的等待显示为出错。
    * 也不要并入 `completed`：自动继续会立即开始下一轮，而阻塞尚未解除。
    */
   | 'awaiting_user'
@@ -633,10 +638,67 @@ export interface UsageLedgerRow {
   occurredAt: number
 }
 
-export interface TodoItem {
-  id: string
-  content: string
-  status: 'pending' | 'in_progress' | 'completed'
+/**
+ * 待办状态。`blocked` 是模型停下等待用户的唯一方式，见 `TodoBlocker`；`failed` 是按重试规则处理后
+ * 仍无法完成的终态，不等待任何一方。
+ */
+export const TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'failed', 'completed'] as const
+export type TodoStatus = (typeof TODO_STATUSES)[number]
+
+/**
+ * 待办受阻的类别，闭集，每一类都是在等待用户。执行循环只在清单中没有 pending 与 in_progress
+ * 且有受阻项时停下等待用户（`awaiting_user`）；各类别的判定标准只写在系统提示中（`runtime/prompt.ts`），
+ * 工具参数只列取值。
+ *
+ * 不要加入「需要用户在几种做法中选择」之类的开放类别：任何困难都能归入这类类别，
+ * 模型会据此在任务未完成时停下询问用户，闭集存在的目的就是消除这种停止。
+ * 也不要加入外部服务故障一类：故障按重试规则处理，处理后仍失败的项标为 `failed`，不等待用户。
+ */
+export const TODO_BLOCKERS = ['spend', 'user_only', 'review', 'irreversible'] as const
+export type TodoBlocker = (typeof TODO_BLOCKERS)[number]
+
+/** 受阻类别的中文名称，界面、提示词中的待办快照与停止依据共用。 */
+export const TODO_BLOCKER_LABEL: Record<TodoBlocker, string> = {
+  spend: '花费待确认',
+  user_only: '需要用户提供',
+  review: '等待用户查看',
+  irreversible: '对外操作待确认',
+}
+
+/**
+ * 待办条目。`blocked` 必须带类别与所需条件，`failed` 必须带失败原因与做过的尝试，其余状态都不带，
+ * 由 `write_todos` 校验。
+ *
+ * 账本中的 `write_todos` 参数在 strict 模式下对未填写的字段写入 null，
+ * 读取方按 `status` 判断，不要按这些字段是否存在判断。
+ */
+export type TodoItem =
+  | { id: string; content: string; status: Exclude<TodoStatus, 'blocked' | 'failed'> }
+  | {
+      id: string
+      content: string
+      status: 'blocked'
+      blocker: TodoBlocker
+      /** 需要谁提供什么，一句话。 */
+      need: string
+    }
+  | {
+      id: string
+      content: string
+      status: 'failed'
+      /** 失败原因。 */
+      cause: string
+      /** 做过的尝试：次数与每次的改动。 */
+      attempts: string
+    }
+
+/**
+ * 受阻或失败条目的说明，其余状态为 null。停止依据、提示词中的待办快照与界面使用同一写法。
+ */
+export function todoReason(todo: TodoItem): string | null {
+  if (todo.status === 'blocked') return `${TODO_BLOCKER_LABEL[todo.blocker]}：${todo.need}`
+  if (todo.status === 'failed') return `失败：${todo.cause}，已尝试：${todo.attempts}`
+  return null
 }
 
 /**
@@ -656,12 +718,15 @@ export interface TodoItem {
  *   （输入区的状态条），它与待办面板上已勾选的数目恒等。
  *
  * 没有进行中的条目时（刚勾选完成、尚未认领下一条），`step` 回落到 `done`。
+ * `blocked` 与 `failed` 分别是受阻与失败的条数，二者都不计入 `done`。
  */
 export function todoProgress(todos: readonly TodoItem[]): {
   /** 1-based；没有进行中的条目时等于已完成数。 */
   step: number
   total: number
   done: number
+  blocked: number
+  failed: number
   /** 进行中的条目；没有则为 null（全部完成，或刚勾选完成、尚未认领下一条）。 */
   current: TodoItem | null
 } {
@@ -671,6 +736,8 @@ export function todoProgress(todos: readonly TodoItem[]): {
     step: at >= 0 ? at + 1 : done,
     total: todos.length,
     done,
+    blocked: todos.filter((t) => t.status === 'blocked').length,
+    failed: todos.filter((t) => t.status === 'failed').length,
     current: at >= 0 ? todos[at]! : null,
   }
 }
