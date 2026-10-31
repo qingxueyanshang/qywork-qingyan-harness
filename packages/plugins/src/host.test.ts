@@ -60,7 +60,6 @@ function host(
     manifest: manifest(opts.permissions),
     dir,
     entry,
-    runtime: process.execPath,
     onCapability: opts.onCapability ?? (async () => null),
     ...(opts.onLog ? { onLog: opts.onLog } : {}),
     ...(opts.readyTimeoutMs === undefined ? {} : { readyTimeoutMs: opts.readyTimeoutMs }),
@@ -202,31 +201,6 @@ describe('隔离：插件无法取得宿主的模块', () => {
     const r = (await h.call('env', {}, ctx())) as Record<string, string>
     expect(r.id).toBe('test-plugin')
     expect(JSON.parse(r.perms ?? '[]')).toEqual(['workspace:read'])
-    h.stop()
-  })
-
-  /**
-   * 指定运行时后没有强制隔离，本用例有意断言「未拦截」。
-   *
-   * 子进程本身不是沙箱。不要将其描述为「插件无法取得 fs / net / child_process」：
-   * 这会使用户把权限清单当作沙箱，进而作出「只声明了读权限，安装没有风险」的错误判断。
-   * 只有经自动解析且本机有 node 20+ 时才有强制隔离（见 runtime.test.ts）。
-   */
-  test('指定运行时时没有强制隔离：node:fs 仍然可用', async () => {
-    const { dir, entry } = await pluginWith(`
-      async function handle(msg) {
-        let reachable = false
-        try { const fs = await import('node:fs'); fs.readdirSync(process.cwd()); reachable = true } catch {}
-        send({ id: msg.id, ok: true, result: { reachable } })
-      }
-    `)
-    // host() 传入 runtime: process.execPath，即显式指定运行时。
-    const h = host(entry, dir, { permissions: [] })
-    await h.start()
-    expect(h.runtime?.sandboxed).toBe(false)
-    expect((await h.call('probe', {}, ctx())) as { reachable: boolean }).toEqual({
-      reachable: true,
-    })
     h.stop()
   })
 })

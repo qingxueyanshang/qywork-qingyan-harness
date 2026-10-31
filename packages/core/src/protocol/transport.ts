@@ -103,8 +103,8 @@ export interface ServerCapabilities {
   /**
    * shell 命令是否具备内核级边界。
    *
-   * 报告后端名而不是布尔值。合并为 `sandboxed: true/false` 会出现与插件侧相同的问题
-   * （ARCHITECTURE §24.1）：界面显示「开」，而不同后端、不同平台提供的边界不同。
+   * 报告后端名而不是布尔值。合并为 `sandboxed: true/false` 时界面显示「开」，
+   * 而不同后端、不同平台提供的边界不同。
    * `'none'` 时 `reason` 说明原因与下一步操作。
    *
    * 该字段必须进入握手：在桌面端与手机端上，界面是用户了解命令运行边界的唯一途径，

@@ -1,14 +1,14 @@
 /**
  * `qy plugins`：查看已安装的插件及其隔离程度。
  *
- * **该命令的必要性。** 它是 `sandboxed` 与 `netGuarded` **唯一面向用户的出口**。没有它，这两
- * 个值在 `packages/plugins` 之外没有任何消费者，唯一的记录是 `PluginHost.start()` 中的一行
+ * **该命令的必要性。** 它是 `netGuarded` **唯一面向用户的出口**。没有它，这个
+ * 值在 `packages/plugins` 之外没有任何消费者，唯一的记录是 `PluginHost.start()` 中的一行
  * stderr：用户安装插件后要确认「是否已加载、是否已隔离」，只能发起一轮真实 run 再查阅日志，而桌面
  * 外壳会丢弃这些输出。
  *
- * **隔离状态逐项输出，不合并为「已隔离」。** 两个维度的成立条件不同（版本要求不同，bun 上两者
- * 都不具备），且 `process:exec` 会使网络访问限制失效。合并为一句话后，「已隔离」在不同机器上
- * 含义不同（见 ARCHITECTURE.md §17.1）。
+ * **网络访问限制单独输出，不写成「已隔离」。** 文件系统与子进程的隔离在插件加载时即已成立
+ * （没有 node 20 以上时插件不加载，原因列在加载失败中）；网络访问限制另需 node 22.15 以上，
+ * 且 `process:exec` 会使其失效（见 ARCHITECTURE.md §17.1）。
  *
  * 加载失败同样**逐条输出原因**：清单错误、入口文件缺失、权限声明非法，
  * 每一种的处置办法都不同，只说「有 2 个插件加载失败」会使用户只能自行推测。
@@ -85,7 +85,7 @@ export async function runPlugins(args: string[]): Promise<number> {
       } else {
         const mark = (ok: boolean) => (ok ? `${GREEN}有${RESET}` : `${YELLOW}无${RESET}`)
         process.stderr.write(
-          `    沙箱 ${mark(rt.sandboxed)} · 网络访问限制 ${mark(rt.netGuarded)} ` +
+          `    网络访问限制 ${mark(rt.netGuarded)} ` +
             `${DIM}${rt.command}${RESET}\n` +
             `    ${DIM}${rt.note}${RESET}\n`,
         )

@@ -1,19 +1,15 @@
 /**
- * 插件的运行进程选择，以及能否对其强制隔离。
+ * 插件的运行进程选择，以及对其强制隔离。
  *
- * 不能默认使用 `process.execPath`：开发时它是 `bun`，运行正常；发布产物是 Bun 编译的
- * 单文件二进制，此时 `process.execPath` 是 `qy.exe` 本身，运行 `qy <插件入口>` 只输出
- * 「未知命令」与用法说明，插件启动即退出。
+ * 插件只由 node 20 以上运行：只有 Node 的权限模型（`--permission`，20/22 上为
+ * `--experimental-permission`）能限制插件进程的文件系统、子进程、worker 与原生插件。
+ * PATH 中没有 node 或版本低于 20 时报错，插件不加载。不要加回 bun 或宿主自身作为备选：
+ * 两者没有权限模型，用它们运行等于插件不受隔离，而 auto 下模型可以自行安装插件。
  *
- * 该失效使安装发布包的用户机器上所有插件都无法启动，且只存在于发布产物中，
- * 在开发机上无论如何测试都无法发现。
+ * 不能使用 `process.execPath`：发布产物是 Bun 编译的单文件二进制，该路径是 `qy.exe` 本身，
+ * 运行 `qy <插件入口>` 只输出「未知命令」与用法说明。
  *
- * 因此运行时必须显式解析：配置指定 > PATH 上的 node > PATH 上的 bun >
- * 宿主自身（仅当它是 JS 运行时）。均不满足时明确报错，
- * 不要交给不能执行 JS 的可执行文件尝试。
- *
- * 沙箱按实际能力上报。Node 的权限模型（`--permission`，20/22 上为
- * `--experimental-permission`）可限制文件系统、子进程、worker 与原生插件。实测：
+ * 实测：
  *
  * | 能力 | `--permission --allow-fs-read=<工作区>` 之后 |
  * |---|---|
@@ -23,39 +19,28 @@
  * | child_process | 拒绝（除非另外授予 --allow-child-process） |
  * | 网络 | 权限模型不覆盖，由网络访问限制另行拦截（见 `netguard.ts`） |
  *
- * 网络访问限制由 `netguard.ts` 单独提供，但它是进程内的移除而不是内核边界，
- * 且能否安装取决于 node 版本，因此 `netGuarded` 与 `sandboxed`
- * 分开上报，不合并为一个含义模糊的「有沙箱」。
- *
- * bun 没有等价的权限模型，也没有 `module.registerHooks`，
- * 因此用 bun 运行插件时两者均不具备，须如实上报。
+ * 网络访问限制是进程内的移除而不是内核边界，且需要 node 22.15 / 23.5 以上，
+ * 因此 `netGuarded` 单独上报。
  */
 
-import { basename } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { PluginPermission } from './manifest.ts'
 import { ensureNetGuardScript, netGuardDir, supportsNetGuard } from './netguard.ts'
 
 export interface PluginRuntime {
   command: string
-  /** 沙箱参数，位于插件入口之前。为空表示没有强制隔离。 */
+  /** 权限模型参数，位于插件入口之前。 */
   args: string[]
-  /** 强制隔离是否实际生效。必须如实上报：含糊的上报比不上报更糟。 */
-  sandboxed: boolean
   /**
    * 网络访问限制是否已安装，且未因 `process:exec` 而失效。
-   *
-   * 必须与 `sandboxed` 分开：两者的成立条件不同（版本要求不同，
-   * bun 上两者均不具备），合并为一个布尔值会使「有沙箱」在不同机器上含义不同。
+   * 它的版本要求高于权限模型，因此 node 20–22.14 上文件系统已隔离而网络未限制。
    */
   netGuarded: boolean
-  /** 没有沙箱时的原因，或沙箱的已知缺口。供日志与界面使用。 */
+  /** 隔离的已知缺口。供日志与界面使用。 */
   note: string
 }
 
 export interface RuntimeRequest {
-  /** 用户显式指定的运行时可执行文件。指定后直接使用，不再推测。 */
-  override?: string
   workspaceRoot: string
   pluginDir: string
   permissions: PluginPermission[]
@@ -160,65 +145,16 @@ export function sandboxArgs(
 }
 
 export function resolvePluginRuntime(req: RuntimeRequest): PluginRuntime {
-  // 1. 用户指定的运行时优先。已指定仍推测等于忽略配置。
-  if (req.override) {
-    return {
-      command: req.override,
-      args: [],
-      sandboxed: false,
-      netGuarded: false,
-      note: '使用指定的运行时，未启用强制隔离',
-    }
-  }
-
-  // 2. node：唯一能提供强制隔离的运行时。
   const node = probeNode()
-  if (node) {
-    const sandbox = sandboxArgs(node.major, req, node.minor)
-    if (sandbox) {
-      return {
-        command: node.path,
-        args: sandbox.args,
-        sandboxed: true,
-        netGuarded: sandbox.netGuarded,
-        note: sandbox.note,
-      }
-    }
-    return {
-      command: node.path,
-      args: [],
-      sandboxed: false,
-      netGuarded: false,
-      note: `node ${node.major} 不支持权限模型（需要 20 以上），未启用强制隔离`,
-    }
+  if (!node) throw new Error('插件需要 node 20 以上版本，PATH 中未找到 node。')
+  const sandbox = sandboxArgs(node.major, req, node.minor)
+  if (!sandbox) {
+    throw new Error(`插件需要 node 20 以上版本，当前为 ${node.major}.${node.minor}。`)
   }
-
-  // 3. bun：可以运行，但没有权限模型，也没有 module.registerHooks。
-  const bun = which('bun')
-  if (bun) {
-    return {
-      command: bun,
-      args: [],
-      sandboxed: false,
-      netGuarded: false,
-      note: 'bun 既没有权限模型，也没有网络访问限制所需的 module.registerHooks；安装 node 22.15 以上版本可同时具备两者',
-    }
+  return {
+    command: node.path,
+    args: sandbox.args,
+    netGuarded: sandbox.netGuarded,
+    note: sandbox.note,
   }
-
-  // 4. 宿主自身，仅当它是 JS 运行时。
-  //    编译后的单文件二进制中 execPath 是 qy 本身，用它运行插件只会输出用法说明。
-  const self = basename(process.execPath).toLowerCase()
-  if (self.startsWith('node') || self.startsWith('bun')) {
-    return {
-      command: process.execPath,
-      args: [],
-      sandboxed: false,
-      netGuarded: false,
-      note: '用宿主运行时启动插件，未启用强制隔离',
-    }
-  }
-
-  throw new Error(
-    '未找到可用的 JS 运行时（需要 PATH 中存在 node 或 bun）。插件运行在独立进程中，宿主自身的二进制不能作为运行时。',
-  )
 }

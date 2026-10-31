@@ -29,7 +29,6 @@ export interface PluginRow {
   tools: { name: string; description: string }[]
   /** 纯声明式插件没有进程，不涉及隔离。三种状态分开上报：把「不适用」显示为「无隔离」会被理解为安全问题。 */
   process: 'declarative' | 'running' | 'unknown'
-  sandboxed?: boolean
   netGuarded?: boolean
   note?: string
 }
@@ -53,7 +52,7 @@ export function pluginRows(reg: PluginRegistry): PluginRow[] {
         .filter((t) => t.name.startsWith(prefix))
         .map((t) => ({ name: t.name, description: t.description })),
       process: !pl.host ? 'declarative' : rt ? 'running' : 'unknown',
-      ...(rt ? { sandboxed: rt.sandboxed, netGuarded: rt.netGuarded, note: rt.note } : {}),
+      ...(rt ? { netGuarded: rt.netGuarded, note: rt.note } : {}),
     }
   })
 }

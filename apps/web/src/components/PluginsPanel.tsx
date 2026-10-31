@@ -23,7 +23,6 @@ interface PluginEntry {
   permissions: string[]
   tools: PluginTool[]
   process: 'declarative' | 'running' | 'unknown'
-  sandboxed?: boolean
   netGuarded?: boolean
   note?: string
 }
@@ -183,9 +182,6 @@ export function PluginsPanel() {
                             <span>进程未启动，隔离状态未知</span>
                           </Show>
                           <Show when={p.process === 'running'}>
-                            <span class="iso-flag" classList={{ off: !p.sandboxed }}>
-                              沙箱 {p.sandboxed ? '有' : '无'}
-                            </span>
                             <span class="iso-flag" classList={{ off: !p.netGuarded }}>
                               网络访问限制 {p.netGuarded ? '有' : '无'}
                             </span>
