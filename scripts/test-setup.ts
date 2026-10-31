@@ -38,8 +38,9 @@ process.env.GIT_CEILING_DIRECTORIES = testTemp
  * 全局层的根同样位于隔离目录中。`globalScopeRoot()` 缺省为 `~/.qywork`，其中存有开发者本人的
  * 明文 key、账本与定时任务文件；任何启动 `serve()` 或读取配置的测试若未设置该变量，
  * 就会基于真实数据运行，甚至重命名真实文件。自行设置了 `QYWORK_HOME` 的测试仍会覆盖此值。
+ * 目录按进程区分：并行运行时各进程共用一个目录，同时写入 `config.json` 的用例会相互覆盖。
  */
-process.env.QYWORK_HOME = join(testTemp, 'home')
+process.env.QYWORK_HOME = join(testTemp, `home-${process.pid}`)
 mkdirSync(process.env.QYWORK_HOME, { recursive: true })
 
 plugin({
