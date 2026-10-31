@@ -152,4 +152,11 @@ export {
   ToolRegistry,
   type ToolSpec,
 } from './registry.ts'
+// 同时在途的请求名额：主请求之外的摘要与 art 请求取得同一个名额
+export {
+  concurrencyRejected,
+  type SendOutcome,
+  sendLane,
+  sendLimiter,
+} from './send-limit.ts'
 export { movieMetadataOfFile, videoMetaOf } from './video-meta.ts'

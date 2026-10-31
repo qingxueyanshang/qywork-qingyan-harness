@@ -14,7 +14,7 @@ import {
 import { exportConversationDiagnostics } from './archive.ts'
 import type { QyConfig } from './config.ts'
 import { requestPersistence } from './request-persistence.ts'
-import { makeSummarizer } from './session.ts'
+import { makeSummarizer } from './summarizer.ts'
 
 function fixture(baseUrl: string) {
   const store = new Store({ path: ':memory:' })

@@ -80,10 +80,11 @@ export { requestPersistence } from './request-persistence.ts'
 export { importLegacySchedules } from './schedules.ts'
 // 会话：装配的最终产物，CLI 与 server 的唯一入口。
 // `makeSummarizer` 一并转出：server 的手动压缩与会话内的自动压缩共用同一份摘要装配。
-export { makeSummarizer, Session } from './session.ts'
+export { Session } from './session.ts'
 // 正文落盘：会话内的工具产出与服务端的子 agent 回执共用同一份实现。
 // `collectResourceGarbage` 与它遵循同一锁顺序，在删除会话之后与打开数据库之后各调用一次。
 export { collectResourceGarbage, RuntimeSink } from './sink.ts'
+export { makeSummarizer } from './summarizer.ts'
 // 历史投影：`Session.ask` 用它装配本轮历史，回归测试用它验证
 // 运行中的 transcript 与跨 run 投影出的历史逐条位置一致。
 export { removeConversationTemp } from './temp-files.ts'
