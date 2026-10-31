@@ -6,6 +6,9 @@
  *
  * 事件订阅全局只注册一次，按会话 id 分发。若每打开一个终端各注册一个监听，
  * 已关闭终端的监听无人注销，输出会被投递给已销毁的 xterm 实例。
+ *
+ * 会话的身份是 id 加创建序号：「重开」用同一个 id 关闭后立即重新打开，旧进程的残余输出与退出事件
+ * 仍以该 id 到达，只能按序号与新会话区分。
  */
 
 import { tauriInvoke, tauriListen } from './store/index.ts'
@@ -24,15 +27,23 @@ type ExitHandler = (code: number | null) => void
 
 const outputs = new Map<string, OutputHandler>()
 const exits = new Map<string, ExitHandler>()
+/**
+ * 每个 id 接受的最小创建序号。打开后为该会话的序号；关闭后为其序号加一，
+ * 之后到达的旧会话事件一律丢弃。外壳的序号计数器单调递增，重新打开的会话序号必然更大，
+ * 因此它在 `terminal_open` 返回之前输出的提示符同样被接受。
+ */
+const floors = new Map<string, number>()
 let wired: Promise<void> | null = null
+
+const current = (id: string, createdSeq: number) => createdSeq >= (floors.get(id) ?? 0)
 
 function wire(): Promise<void> {
   wired ??= Promise.all([
-    tauriListen<{ id: string; data: string }>('terminal:output', (e) => {
-      outputs.get(e.id)?.(e.data)
+    tauriListen<{ id: string; createdSeq: number; data: string }>('terminal:output', (e) => {
+      if (current(e.id, e.createdSeq)) outputs.get(e.id)?.(e.data)
     }),
-    tauriListen<{ id: string; code: number | null }>('terminal:exit', (e) => {
-      exits.get(e.id)?.(e.code ?? null)
+    tauriListen<{ id: string; createdSeq: number; code: number | null }>('terminal:exit', (e) => {
+      if (current(e.id, e.createdSeq)) exits.get(e.id)?.(e.code ?? null)
     }),
   ]).then(() => undefined)
   return wired
@@ -59,7 +70,15 @@ export async function openTerminal(
   // 先注册监听再启动进程：顺序相反时 shell 的第一行提示符可能在监听注册之前就已输出，
   // 终端打开后为空白，按一次回车才显示提示符。
   await wire()
-  return await tauriInvoke<string>('terminal_open', { id, workspaceId, cwd, cols, rows })
+  const opened = await tauriInvoke<{ createdSeq: number; backlog: string }>('terminal_open', {
+    id,
+    workspaceId,
+    cwd,
+    cols,
+    rows,
+  })
+  floors.set(id, opened.createdSeq)
+  return opened.backlog
 }
 
 export function writeTerminal(id: string, data: string): Promise<void> {
@@ -71,13 +90,14 @@ export function resizeTerminal(id: string, cols: number, rows: number): Promise<
 }
 
 /**
- * 关闭一个终端：先移除监听，再由 Rust 结束 shell 进程。
+ * 关闭一个终端：先移除监听并抬高序号下限，再由 Rust 结束 shell 进程。
  *
- * 顺序不能颠倒：kill 会使回收线程 emit 一次 `terminal:exit`，顺序颠倒时该事件
- * 会被投递给已销毁的 xterm 实例。
+ * 结束之前读线程可能仍有残余输出；下限使它们不会写入同一 id 重新打开的终端。
  */
 export function closeTerminal(id: string): Promise<void> {
   outputs.delete(id)
   exits.delete(id)
+  const seq = floors.get(id)
+  if (seq !== undefined) floors.set(id, seq + 1)
   return tauriInvoke<void>('terminal_close', { id })
 }

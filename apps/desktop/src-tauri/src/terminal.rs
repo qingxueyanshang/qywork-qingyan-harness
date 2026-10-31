@@ -61,25 +61,39 @@ pub struct TerminalSession {
     created_seq: u64,
 }
 
+/// 输出与退出事件都携带会话的创建序号：同一个 id 关闭后可以重新打开（「重开」），
+/// 旧进程的残余输出与退出必须能与新会话区分。
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Output {
     id: String,
+    created_seq: u64,
     data: String,
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Exit {
     id: String,
+    created_seq: u64,
     /// 退出码。无法取得（被信号终止、平台不报告）时为 `None`，不要伪造为 0：
     /// 「正常结束」与「结束方式未知」对用户是两种不同的情况。
     code: Option<u32>,
 }
 
-/// 打开一个会话，**返回需要回放的输出**。
+/// `terminal_open` 的结果：会话的创建序号与需要回放的输出。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Opened {
+    created_seq: u64,
+    backlog: String,
+}
+
+/// 打开一个会话，**返回创建序号与需要回放的输出**。
 ///
-/// 已存在的 id 不报错，直接返回其回放缓冲：前端在面板重新挂载时会无条件
+/// 已存在的 id 不报错，直接返回其序号与回放缓冲：前端在面板重新挂载时会无条件
 /// 调用一次，报错会使已打开的终端显示「已存在」错误。新建的会话
-/// 没有可回放的内容，返回空串。
+/// 没有可回放的内容，回放为空串。
 ///
 /// **重新接入必须提供同一个工作区**，否则拒绝：接受时该 PTY 会同时出现在两个工作区的
 /// 页签上，而它只有一份 cwd 与一个子进程。
@@ -92,12 +106,15 @@ pub fn terminal_open(
     cwd: String,
     cols: u16,
     rows: u16,
-) -> Result<String, String> {
+) -> Result<Opened, String> {
     if let Some(session) = state.0.lock().get(&id) {
         if session.workspace_id != workspace_id {
             return Err("该终端属于另一个项目".to_owned());
         }
-        return Ok(session.backlog.lock().clone());
+        return Ok(Opened {
+            created_seq: session.created_seq,
+            backlog: session.backlog.lock().clone(),
+        });
     }
 
     let size = PtySize {
@@ -140,12 +157,13 @@ pub fn terminal_open(
         .map_err(|e| format!("无法取得读端：{e}"))?;
 
     let backlog = Arc::new(Mutex::new(String::new()));
+    // 重新接入已存在的 id 时在函数开头已返回，序号只在此处分配一次。
+    let created_seq = crate::next_created_seq();
     state.0.lock().insert(
         id.clone(),
         Session {
             workspace_id,
-            // 重新接入已存在的 id 时在函数开头已返回，序号只在此处分配一次。
-            created_seq: crate::next_created_seq(),
+            created_seq,
             master: pair.master,
             writer,
             killer,
@@ -153,20 +171,54 @@ pub fn terminal_open(
         },
     );
 
-    spawn_reader(app.clone(), id.clone(), reader, backlog);
+    spawn_reader(app.clone(), id.clone(), created_seq, reader, backlog);
 
     // 等待回收子进程的线程。**不能与读线程合并**：读端需等待 EOF，而 EOF 之后
     // 还需取得退出码；分开后两者各自阻塞在自己的句柄上，到达顺序不影响结果。
     //
     // **先把会话从表中移除，再上报退出。** 保留时该 id 永远「已存在」，
     // 用户点击「重开」时 `terminal_open` 直接返回成功，但不会启动新的 shell。
+    // 只移除本次打开的那个会话，且只有移除了表项才上报：`terminal_close` 已移除时不上报。
     std::thread::spawn(move || {
         let code = child.wait().ok().map(|s| s.exit_code());
-        app.state::<TerminalHandle>().0.lock().remove(&id);
-        let _ = app.emit("terminal:exit", Exit { id, code });
+        let removed = take_current(
+            &mut app.state::<TerminalHandle>().0.lock(),
+            &id,
+            created_seq,
+            |s| s.created_seq,
+        );
+        if removed.is_some() {
+            let _ = app.emit(
+                "terminal:exit",
+                Exit {
+                    id,
+                    created_seq,
+                    code,
+                },
+            );
+        }
     });
 
-    Ok(String::new())
+    Ok(Opened {
+        created_seq,
+        backlog: String::new(),
+    })
+}
+
+/// 表项仍是 `created_seq` 那一次打开的会话时将其移除并返回。
+///
+/// 同一个 id 关闭后可以立即重新打开，旧进程的回收可能晚于新会话插入；只按 id 移除会删除新会话，
+/// 新终端随即无法写入，并被报告为已退出。
+fn take_current<V>(
+    map: &mut HashMap<String, V>,
+    id: &str,
+    created_seq: u64,
+    seq_of: impl Fn(&V) -> u64,
+) -> Option<V> {
+    if map.get(id).map(seq_of) != Some(created_seq) {
+        return None;
+    }
+    map.remove(id)
 }
 
 /// 当前打开的会话。
@@ -228,9 +280,7 @@ pub fn terminal_resize(
 /// **不存在的 id 直接返回成功。** 子进程可能已自行退出（回收线程已将其移除），
 /// 用户随后点击页签上的 × 时若报「会话已不存在」，该页签将无法关闭。
 ///
-/// 终止后回收线程仍会 emit 一次 `terminal:exit`。前端在终止之前已移除该 id
-/// 的监听（见 `apps/web/src/lib/terminal.ts` 的 `closeTerminal`），
-/// 因此该事件到达即被丢弃，不会写入已销毁的 xterm。
+/// 表项已在此处移除，回收线程不再上报 `terminal:exit`（见 `take_current`）。
 #[tauri::command]
 pub fn terminal_close(state: State<TerminalHandle>, id: String) -> Result<(), String> {
     if let Some(mut session) = state.0.lock().remove(&id) {
@@ -255,6 +305,7 @@ pub fn shutdown(state: &TerminalHandle) {
 fn spawn_reader(
     app: AppHandle,
     id: String,
+    created_seq: u64,
     mut reader: Box<dyn Read + Send>,
     backlog: Arc<Mutex<String>>,
 ) {
@@ -274,6 +325,7 @@ fn spawn_reader(
                     "terminal:output",
                     Output {
                         id: id.clone(),
+                        created_seq,
                         data: text,
                     },
                 );
@@ -339,5 +391,32 @@ fn default_shell() -> String {
         "powershell.exe".to_owned()
     } else {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 原始失败形状：关闭后用同一 id 重新打开，旧进程的回收晚于新会话插入，按 id 移除了新会话。
+    #[test]
+    fn reaping_an_old_session_leaves_the_reopened_one() {
+        let mut map: HashMap<String, u64> = HashMap::new();
+        map.insert("t1".to_owned(), 7);
+        // 用户关闭：表项先被 `terminal_close` 移除。
+        map.remove("t1");
+        // 同一 id 重新打开，序号更大。
+        map.insert("t1".to_owned(), 9);
+        // 旧进程的回收线程此时才执行。
+        assert!(take_current(&mut map, "t1", 7, |s| *s).is_none());
+        assert_eq!(map.get("t1"), Some(&9));
+    }
+
+    #[test]
+    fn reaping_the_current_session_removes_it_once() {
+        let mut map: HashMap<String, u64> = HashMap::new();
+        map.insert("t1".to_owned(), 7);
+        assert_eq!(take_current(&mut map, "t1", 7, |s| *s), Some(7));
+        assert!(take_current(&mut map, "t1", 7, |s| *s).is_none());
     }
 }
