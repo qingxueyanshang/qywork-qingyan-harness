@@ -115,7 +115,31 @@ pub(crate) fn report_and_show(error: &(dyn Error + 'static)) {
     #[cfg(windows)]
     windows::show(&report, &details, &location);
     #[cfg(not(windows))]
+    show(&details);
+}
+
+/// 非 Windows 平台的启动失败对话框。诊断同时写入标准错误：没有图形会话时对话框无法显示。
+///
+/// macOS 上 rfd 在主线程直接弹出，在其他线程时转交主线程；本函数只在主线程或应用事件循环
+/// 运行期间调用，两种情况都能显示。
+#[cfg(not(windows))]
+fn show(details: &str) {
     eprintln!("{details}");
+    // Linux 上 GTK 无法初始化（没有图形会话）时，rfd 的同步对话框永久阻塞，进程无法退出。
+    // GTK 已初始化时 `gtk_init_check` 立即返回成功，不会重复初始化。
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: 两个参数为空指针时 GTK 不读取命令行参数。
+        if unsafe { gtk_sys::gtk_init_check(std::ptr::null_mut(), std::ptr::null_mut()) } == 0 {
+            return;
+        }
+    }
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("qywork 启动失败")
+        .set_description(details)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
 }
 
 #[cfg(test)]

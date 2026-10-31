@@ -88,6 +88,13 @@ libc = "0.2"
 # 版本与 worker 相同（0.14）；纯 Rust 实现，不链接 libX11。
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.14", default-features = false, features = ["xtest"] }
+# 启动失败对话框之前检查 GTK 能否初始化，见 startup/mod.rs 的 `show`。版本与依赖树中的版本一致（0.18）。
+gtk-sys = "0.18"
+
+# 非 Windows 平台的启动失败对话框，见 startup/mod.rs 的 `show`：不依赖 WebView 与 AppHandle，覆盖窗口创建之前的阶段。
+# 版本与 tauri-plugin-dialog 的传递依赖一致（0.16）；Linux 后端（gtk3）由该插件的缺省特性选定，此处不另行指定。
+[target.'cfg(not(windows))'.dependencies]
+rfd = { version = "0.16", default-features = false }
 
 [features]
 # 由 tauri-build 生成的自定义协议开关，不要手工修改。
