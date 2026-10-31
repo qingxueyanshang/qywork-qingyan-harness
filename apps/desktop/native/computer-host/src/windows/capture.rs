@@ -1,16 +1,20 @@
 //! Windows 图像采集：经由 Windows Graphics Capture 获取帧，经由 WIC 缩放并编码为 PNG。
 //!
-//! 五条边界：
+//! 六条边界：
 //!
 //! 1. **按窗口采集，不采集整个屏幕再裁剪。** 采集屏幕再裁剪会混入其他窗口的内容，且要求目标
 //!    窗口位于前台；WGC 的窗口采集对被遮挡的窗口同样返回该窗口自身的内容。
 //! 2. **回退路径只有 `PrintWindow(PW_RENDERFULLCONTENT)`。** 它依赖目标应用响应 `WM_PRINT`，
-//!    未绘制的部分在图上为黑色，因此采集方式如实记入观察，调用方可区分两种方式。
+//!    未绘制的部分在图上为黑色，因此采集方式如实记入观察，调用方可区分两种方式。WGC 不接受
+//!    工具窗口与 `WS_EX_NOACTIVATE` 窗口（创建采集项返回参数错误），多数弹出窗口经由回退路径采集。
 //! 3. **不置前台、不设置焦点、不移动指针。** 采集全程只读取窗口属性与合成器的帧。
 //! 4. **WGC 帧的原点是 DWM 的可见边框，不是 `GetWindowRect`。** 后者含不可见的调整边框，
 //!    以它为原点会使图像坐标与屏幕坐标整体偏移几个像素。
 //! 5. **进程必须是 per-monitor v2 DPI 感知。** 否则窗口矩形经过系统虚拟化，图像几何
 //!    与控件包围盒不在同一套坐标中，采集请求一律拒绝。
+//! 6. **目标窗口的弹出窗口逐个采集，按 z 序合成在目标窗口之上**（`popup::layers_above`、`compose`）。
+//!    下拉框、菜单是同一应用的另一个顶层窗口，只采集目标窗口时图像中没有它们，模型看到的不是用户
+//!    看到的界面。其他应用的窗口不合成。
 
 use std::ffi::c_void;
 #[cfg(debug_assertions)]
@@ -59,8 +63,9 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
+use super::popup::layers_above;
 use crate::backend::CaptureRequest;
-use crate::geometry::{crop_for, generation_matches, Geometry, ScreenRect, WindowFrame};
+use crate::geometry::{crop_for, generation_matches, Geometry, Popup, ScreenRect, WindowFrame};
 use crate::protocol::{base64, now_ms, Image};
 
 /// 采集方式。图像观察如实附带该值。
@@ -167,6 +172,8 @@ impl Capturer {
     }
 
     /// 采集一张图。返回 `Err(原因)` 时未采集任何像素。
+    ///
+    /// 目标窗口的弹出窗口合成在其像素之上，图像覆盖目标窗口与弹出窗口的并集，见 `compose`。
     pub fn capture(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
         let hwnd = HWND(req.window as *mut c_void);
         // SAFETY: 只读窗口状态。
@@ -190,28 +197,64 @@ impl Capturer {
         }
 
         let started = Instant::now();
-        let (pixels, source) = match self.wgc.then(|| self.wgc_pixels(hwnd, &frame, req.budget)) {
-            Some(Ok(pixels)) => (pixels, SOURCE_WGC),
-            Some(Err(wgc_error)) => (
-                self.print_window_pixels(hwnd, &frame)
-                    .map_err(|e| format!("capture_failed: WGC {wgc_error}；回退路径：{e}"))?,
-                SOURCE_PRINT_WINDOW,
-            ),
-            None => (
-                self.print_window_pixels(hwnd, &frame)
-                    .map_err(|e| format!("capture_failed: 本机不支持 WGC；回退路径：{e}"))?,
-                SOURCE_PRINT_WINDOW,
-            ),
-        };
+        let (pixels, source, popups) = self.view_pixels(hwnd, &frame, started + req.budget)?;
         note_capture();
         // 取得像素之后一律输出一行成本：计数器在此处清零，遗漏一次会使计数累加到下一条
         // 请求的那一行上，而「结构化观察采集计数为零」正是按那一行判定的。
-        let built = self.finish(req, &frame, generation, source, &pixels);
+        let built = self.finish(req, &frame, generation, source, &pixels, popups);
         report_capture_cost(source, built.as_ref(), started);
         built
     }
 
-    /// 裁剪、编码、核对字节上限，成功后组装观察。
+    /// 目标窗口与其弹出窗口合成后的像素、采集方式，以及合成进去的弹出窗口（按 z 序自下而上）。
+    ///
+    /// 任一窗口经由回退路径采集，整张图即记为回退路径：未绘制的黑色区域可能出现在任一窗口中。
+    /// 弹出窗口无法采集时整次采集失败，不交出缺少该窗口的图像：模型会把缺失理解为该窗口不存在。
+    fn view_pixels(
+        &self,
+        hwnd: HWND,
+        frame: &WindowFrame,
+        until: Instant,
+    ) -> Result<(Pixels, &'static str, Vec<Popup>), String> {
+        let (base, mut source) = self.window_pixels(hwnd, frame, until)?;
+        let mut layers = Vec::new();
+        for layer in layers_above(hwnd, frame.visible) {
+            let (pixels, used) = self
+                .window_pixels(layer.hwnd, &layer.frame, until)
+                .map_err(|e| format!("{e} · 弹出窗口 {}", layer.hwnd.0 as i64))?;
+            if used == SOURCE_PRINT_WINDOW {
+                source = SOURCE_PRINT_WINDOW;
+            }
+            layers.push((pixels, layer.popup()));
+        }
+        let canvas = compose(base, &layers);
+        Ok((canvas, source, layers.into_iter().map(|(_, popup)| popup).collect()))
+    }
+
+    /// 一个窗口自身的像素与采集方式：先经 WGC，失败时经 `PrintWindow`。等待帧的时长以 `until` 为限。
+    fn window_pixels(
+        &self,
+        hwnd: HWND,
+        frame: &WindowFrame,
+        until: Instant,
+    ) -> Result<(Pixels, &'static str), String> {
+        let budget = until.saturating_duration_since(Instant::now());
+        match self.wgc.then(|| self.wgc_pixels(hwnd, frame, budget)) {
+            Some(Ok(pixels)) => Ok((pixels, SOURCE_WGC)),
+            Some(Err(wgc_error)) => Ok((
+                self.print_window_pixels(hwnd, frame)
+                    .map_err(|e| format!("capture_failed: WGC {wgc_error}；回退路径：{e}"))?,
+                SOURCE_PRINT_WINDOW,
+            )),
+            None => Ok((
+                self.print_window_pixels(hwnd, frame)
+                    .map_err(|e| format!("capture_failed: 本机不支持 WGC；回退路径：{e}"))?,
+                SOURCE_PRINT_WINDOW,
+            )),
+        }
+    }
+
+    /// 裁剪、编码、核对字节上限，成功后组装观察。只记录与裁剪后的图像有交集的弹出窗口。
     fn finish(
         &self,
         req: &CaptureRequest<'_>,
@@ -219,6 +262,7 @@ impl Capturer {
         generation: String,
         source: &'static str,
         pixels: &Pixels,
+        mut popups: Vec<Popup>,
     ) -> Result<Image, String> {
         let crop = crop_for(
             (pixels.origin.0, pixels.origin.1),
@@ -234,6 +278,7 @@ impl Capturer {
             )
         })?;
 
+        popups.retain(|p| p.screen.intersect(&crop.screen).is_some());
         let bytes = self.encode_png(pixels, crop)?;
         if bytes.len() > req.max_bytes as usize {
             return Err(format!(
@@ -252,6 +297,7 @@ impl Capturer {
                 screen: crop.screen,
                 dpi: frame.dpi,
                 generation,
+                popups,
             },
             mime: "image/png",
             bytes: base64(&bytes),
@@ -562,6 +608,65 @@ struct Pixels {
     origin: (i32, i32),
 }
 
+impl Pixels {
+    /// 这些像素覆盖的屏幕矩形。
+    fn area(&self) -> ScreenRect {
+        ScreenRect {
+            x: self.origin.0,
+            y: self.origin.1,
+            width: i32::try_from(self.width).unwrap_or(i32::MAX),
+            height: i32::try_from(self.height).unwrap_or(i32::MAX),
+        }
+    }
+
+    /// 把 `src` 中位于 `clip` 之内的像素复制到本画布的相同屏幕位置。超出画布的部分不复制。
+    fn paint(&mut self, src: &Self, clip: ScreenRect) {
+        let Some(area) = src
+            .area()
+            .intersect(&clip)
+            .and_then(|r| r.intersect(&self.area()))
+        else {
+            return;
+        };
+        let row = area.width as usize * 4;
+        for y in area.y..area.bottom() {
+            let from = ((y - src.origin.1) as usize * src.width as usize
+                + (area.x - src.origin.0) as usize)
+                * 4;
+            let to = ((y - self.origin.1) as usize * self.width as usize
+                + (area.x - self.origin.0) as usize)
+                * 4;
+            self.bgra[to..to + row].copy_from_slice(&src.bgra[from..from + row]);
+        }
+    }
+}
+
+/// 把弹出窗口按 z 序（自下而上）绘制在目标窗口的像素之上。`layers` 是各弹出窗口的像素与可见矩形。
+///
+/// 画布覆盖目标窗口与全部弹出窗口的并集；不属于任何一个窗口的部分为黑色，不填入屏幕上其他应用的
+/// 内容。每个弹出窗口只绘制其可见矩形之内的像素，且不透明地覆盖下方：落点判定按可见矩形确定接收
+/// 点击的窗口（`popup::popup_at`），图像中每一点显示的因此就是点击该点时接收点击的窗口。
+/// 不要改为按透明度混合：混合之后阴影与圆角处显示的是下方的窗口，而点击该处投递给弹出窗口。
+fn compose(base: Pixels, layers: &[(Pixels, Popup)]) -> Pixels {
+    if layers.is_empty() {
+        return base;
+    }
+    let area = layers
+        .iter()
+        .fold(base.area(), |area, (_, popup)| area.union(&popup.screen));
+    let mut canvas = Pixels {
+        bgra: vec![0; area.width as usize * area.height as usize * 4],
+        width: area.width as u32,
+        height: area.height as u32,
+        origin: (area.x, area.y),
+    };
+    canvas.paint(&base, base.area());
+    for (pixels, popup) in layers {
+        canvas.paint(pixels, popup.screen);
+    }
+    canvas
+}
+
 /// 读取窗口当前的几何事实。
 pub fn window_frame(hwnd: HWND) -> Result<WindowFrame, String> {
     let mut window = RECT::default();
@@ -720,5 +825,137 @@ mod tests {
     fn the_dpi_awareness_query_reads_back_from_the_os() {
         let first = set_per_monitor_v2();
         assert_eq!(first, set_per_monitor_v2(), "同一进程中读取到的模式必须稳定");
+    }
+
+    use super::super::test_window::{rect, Kind, TestWindow, SERIAL};
+
+    /// 单色像素块。
+    fn solid(area: ScreenRect, color: u32) -> Pixels {
+        let [r, g, b, _] = color.to_le_bytes();
+        Pixels {
+            bgra: [b, g, r, 255].repeat(area.width as usize * area.height as usize),
+            width: area.width as u32,
+            height: area.height as u32,
+            origin: (area.x, area.y),
+        }
+    }
+
+    /// 画布上一点的颜色，`0x00BBGGRR`。
+    fn color_at(pixels: &Pixels, x: i32, y: i32) -> u32 {
+        let at = ((y - pixels.origin.1) as usize * pixels.width as usize
+            + (x - pixels.origin.0) as usize)
+            * 4;
+        let [b, g, r] = [pixels.bgra[at], pixels.bgra[at + 1], pixels.bgra[at + 2]];
+        u32::from_le_bytes([r, g, b, 0])
+    }
+
+    fn layer(window: i64, area: ScreenRect, visible: ScreenRect, color: u32) -> (Pixels, Popup) {
+        let popup = Popup {
+            window,
+            title: String::new(),
+            screen: visible,
+        };
+        (solid(area, color), popup)
+    }
+
+    const RED: u32 = 0x0000_00FF;
+    const GREEN: u32 = 0x0000_FF00;
+    const BLUE: u32 = 0x00FF_0000;
+    const WHITE: u32 = 0x00FF_FFFF;
+
+    /// 画布覆盖目标窗口与弹出窗口的并集，弹出窗口按顺序不透明地覆盖下方，只绘制可见矩形之内的像素，
+    /// 不属于任何窗口的部分为黑色。
+    #[test]
+    fn popups_are_painted_over_the_target_in_order_inside_their_visible_rects() {
+        let target = rect(0, 0, 100, 50);
+        let canvas = compose(
+            solid(target, RED),
+            &[
+                // 帧比可见矩形多出 5 像素的边缘，边缘不绘制。
+                layer(1, rect(55, 25, 40, 50), rect(60, 30, 30, 40), GREEN),
+                layer(2, rect(80, 40, 10, 10), rect(80, 40, 10, 10), BLUE),
+            ],
+        );
+        assert_eq!(canvas.area(), rect(0, 0, 100, 70));
+        assert_eq!(color_at(&canvas, 10, 10), RED);
+        assert_eq!(color_at(&canvas, 57, 27), RED, "可见矩形之外的边缘不绘制");
+        assert_eq!(color_at(&canvas, 65, 35), GREEN);
+        assert_eq!(color_at(&canvas, 65, 65), GREEN, "伸出目标窗口的部分同样绘制");
+        assert_eq!(color_at(&canvas, 85, 45), BLUE, "上层的弹出窗口覆盖下层");
+        assert_eq!(color_at(&canvas, 10, 60), 0, "不属于任何窗口的部分为黑色");
+        // 没有弹出窗口时原样返回目标窗口的像素。
+        let alone = compose(solid(target, RED), &[]);
+        assert_eq!(alone.area(), target);
+    }
+
+    /// 原始失败形状：下拉框是同一应用的另一个顶层窗口，只采集目标窗口时图像中没有它。
+    /// 此处目标窗口之上有一个被它拥有、伸出其底边的下拉框，一个未被拥有的工具弹出窗口，
+    /// 一个同进程的独立主窗口，以及一个与目标窗口不相交的工具弹出窗口：前两者按 z 序合成进图像，
+    /// 后两者不合成。
+    #[test]
+    fn a_popup_above_the_target_is_composited_into_its_image() {
+        let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: 只初始化本线程的 COM 单元；WIC 工厂要求已初始化。
+        let _ = unsafe {
+            ::windows::Win32::System::Com::CoInitializeEx(
+                None,
+                ::windows::Win32::System::Com::COINIT_MULTITHREADED,
+            )
+        };
+        let (x, y) = (-20_000, -20_000);
+        let target = TestWindow::open(Kind::Tool, rect(x, y, 200, 100), RED, None);
+        let dropdown =
+            TestWindow::open(Kind::Tool, rect(x + 50, y + 60, 100, 100), GREEN, Some(target.hwnd));
+        let unowned = TestWindow::open(Kind::Tool, rect(x + 10, y + 10, 30, 30), BLUE, None);
+        let _main = TestWindow::open(Kind::Main, rect(x + 100, y + 10, 60, 40), WHITE, None);
+        let _far = TestWindow::open(Kind::Tool, rect(x + 900, y + 900, 20, 20), WHITE, None);
+
+        let capturer = Capturer::new().expect("创建采集器");
+        let frame = window_frame(target.hwnd).expect("读取目标窗口几何");
+        let (canvas, source, popups) = capturer
+            .view_pixels(target.hwnd, &frame, Instant::now() + Duration::from_secs(2))
+            .expect("采集");
+        assert_eq!(
+            popups.iter().map(|p| (p.window, p.screen)).collect::<Vec<_>>(),
+            vec![
+                (dropdown.id(), rect(x + 50, y + 60, 100, 100)),
+                (unowned.id(), rect(x + 10, y + 10, 30, 30)),
+            ]
+        );
+        // 测试窗口不接受 WGC 采集，经由回退路径取得。
+        assert_eq!(source, SOURCE_PRINT_WINDOW);
+        assert_eq!(canvas.area(), rect(x, y, 200, 160));
+        assert_eq!(color_at(&canvas, x + 180, y + 50), RED);
+        assert_eq!(color_at(&canvas, x + 130, y + 30), RED, "独立主窗口不合成");
+        assert_eq!(color_at(&canvas, x + 100, y + 80), GREEN);
+        assert_eq!(color_at(&canvas, x + 100, y + 140), GREEN, "伸出目标窗口的部分同样合成");
+        assert_eq!(color_at(&canvas, x + 20, y + 20), BLUE);
+        assert_eq!(color_at(&canvas, x + 10, y + 140), 0);
+
+        // 交给模型的图像覆盖并集并记录两个弹出窗口；只裁剪伸出部分时，只记录与之相交的下拉框。
+        let generation = frame.generation();
+        let request = |region| CaptureRequest {
+            window: target.id(),
+            region,
+            expect_generation: Some(&generation),
+            max_edge: 1568,
+            max_bytes: 4 << 20,
+            budget: Duration::from_secs(2),
+        };
+        let image = capturer.capture(&request(None)).expect("整窗采集");
+        assert_eq!(image.geometry.screen, rect(x, y, 200, 160));
+        assert_eq!(image.geometry.generation, generation);
+        assert_eq!(
+            image.geometry.popups.iter().map(|p| p.window).collect::<Vec<_>>(),
+            vec![dropdown.id(), unowned.id()]
+        );
+        let overhang = capturer
+            .capture(&request(Some(rect(x + 60, y + 110, 50, 40))))
+            .expect("裁剪伸出部分");
+        assert_eq!(overhang.geometry.screen, rect(x + 60, y + 110, 50, 40));
+        assert_eq!(
+            overhang.geometry.popups.iter().map(|p| p.window).collect::<Vec<_>>(),
+            vec![dropdown.id()]
+        );
     }
 }

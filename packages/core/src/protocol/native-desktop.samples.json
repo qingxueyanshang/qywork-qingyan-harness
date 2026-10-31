@@ -85,7 +85,14 @@
       "maxNodes": 400,
       "maxDepth": 12,
       "timeBudgetMs": 800,
-      "expectGeneration": "80,80,520,460@96#1"
+      "expectGeneration": "80,80,520,460@96#1",
+      "expectPopups": [
+        {
+          "window": 77,
+          "title": "搜索结果",
+          "screen": { "x": 120, "y": 140, "width": 300, "height": 360 }
+        }
+      ]
     },
     "read_text": {
       "type": "desktop.request",
@@ -205,7 +212,14 @@
         "timeBudgetMs": 800,
         "action": { "kind": "click", "button": "left", "count": 2 },
         "point": { "x": 120, "y": -40 },
-        "expectGeneration": "80,80,520,460@96#1"
+        "expectGeneration": "80,80,520,460@96#1",
+        "expectPopups": [
+          {
+            "window": 77,
+            "title": "搜索结果",
+            "screen": { "x": 120, "y": 140, "width": 300, "height": 360 }
+          }
+        ]
       }
     },
     "read_text": {
@@ -384,7 +398,14 @@
           "imageHeight": 453,
           "screen": { "x": 87, "y": 80, "width": 506, "height": 453 },
           "dpi": 96,
-          "generation": "80,80,520,460@96#1"
+          "generation": "80,80,520,460@96#1",
+          "popups": [
+            {
+              "window": 77,
+              "title": "搜索结果",
+              "screen": { "x": 120, "y": 140, "width": 300, "height": 360 }
+            }
+          ]
         },
         "mime": "image/png",
         "bytes": "iVBORw0KGgo="
@@ -561,7 +582,14 @@
           "imageHeight": 453,
           "screen": { "x": 87, "y": 80, "width": 506, "height": 453 },
           "dpi": 96,
-          "generation": "80,80,520,460@96#1"
+          "generation": "80,80,520,460@96#1",
+          "popups": [
+            {
+              "window": 77,
+              "title": "搜索结果",
+              "screen": { "x": 120, "y": 140, "width": 300, "height": 360 }
+            }
+          ]
         },
         "mime": "image/png",
         "bytes": "iVBORw0KGgo="

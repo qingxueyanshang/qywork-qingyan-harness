@@ -306,6 +306,7 @@ fn handle<B: Backend>(backend: &B, state: &Arc<State>, req: Request) -> Response
             root,
             point,
             expect_generation,
+            expect_popups,
             action,
             bounds,
         } => act(
@@ -318,6 +319,7 @@ fn handle<B: Backend>(backend: &B, state: &Arc<State>, req: Request) -> Response
                 root: root.as_deref(),
                 point,
                 expect_generation: expect_generation.as_deref(),
+                expect_popups: &expect_popups,
                 action: &action,
                 bounds,
                 foreground: req.foreground,

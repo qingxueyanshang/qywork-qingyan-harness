@@ -197,6 +197,7 @@ function fakePort(table: DesktopElement[], acted: Acted): DesktopPort {
         screen: { x: 0, y: 0, width: 40, height: 30 },
         dpi: 96,
         generation: '0,0,40,30@96#1',
+        popups: [],
       },
       source: 'wgc',
       capturedAt: 2,

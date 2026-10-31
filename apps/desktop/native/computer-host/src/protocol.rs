@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::geometry::{Geometry, ScreenPoint, ScreenRect};
+use crate::geometry::{Geometry, Popup, ScreenPoint, ScreenRect};
 
 /// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 用同一个时基。
 pub fn now_ms() -> i64 {
@@ -581,7 +581,8 @@ pub enum Op {
     ///
     /// 目标有两种互斥的写法：`ref` 指定一个控件，派发前重新定位并读取派发时的包围盒；
     /// `point` 直接给出屏幕物理像素落点，此时必须同时给出 `expectGeneration`，
-    /// 窗口在截图与派发之间移动过即拒绝。
+    /// 窗口在截图与派发之间移动过即拒绝；`expectPopups` 是该图像中合成的弹出窗口，
+    /// 落点处的那一个已关闭或移动时同样拒绝。
     #[serde(rename_all = "camelCase")]
     Act {
         window: i64,
@@ -594,6 +595,9 @@ pub enum Op {
         point: Option<ScreenPoint>,
         #[serde(default)]
         expect_generation: Option<String>,
+        /// 落点所在图像的 `geometry.popups`，原样带回。缺席表示该图像没有合成弹出窗口。
+        #[serde(default)]
+        expect_popups: Vec<Popup>,
         action: ActionSpec,
         #[serde(flatten)]
         bounds: Bounds,
@@ -2734,6 +2738,15 @@ mod tests {
         serde_json::from_str(SAMPLES).expect("样例文件必须能解析")
     }
 
+    /// 样例图像中合成的弹出窗口。请求样例按图定位时原样带回它。
+    fn sample_popup() -> Popup {
+        Popup {
+            window: 77,
+            title: "搜索结果".to_owned(),
+            screen: ScreenRect { x: 120, y: 140, width: 300, height: 360 },
+        }
+    }
+
     fn sample_request(key: &str) -> Request {
         serde_json::from_value(samples()["workerRequests"][key].clone())
             .unwrap_or_else(|e| panic!("样例请求 {key} 应当解析成功：{e}"))
@@ -2765,11 +2778,21 @@ mod tests {
         let act = sample_request("act_ref");
         assert!(!act.foreground);
         match act.op {
-            Op::Act { window, reference, root, point, expect_generation, action, bounds: b } => {
+            Op::Act {
+                window,
+                reference,
+                root,
+                point,
+                expect_generation,
+                expect_popups,
+                action,
+                bounds: b,
+            } => {
                 assert_eq!(window, 66);
                 assert_eq!(reference.as_deref(), Some("w.0.1#42.7"));
                 assert_eq!(root.as_deref(), Some("w.0"));
                 assert_eq!((point, expect_generation), (None, None));
+                assert!(expect_popups.is_empty());
                 assert!(matches!(action, ActionSpec::SetValue { value } if value == "你好"));
                 assert_eq!(bounds(b), (400, 12, 800));
             }
@@ -2778,10 +2801,11 @@ mod tests {
         let act = sample_request("act_point");
         assert!(act.foreground);
         match act.op {
-            Op::Act { reference, point, expect_generation, action, .. } => {
+            Op::Act { reference, point, expect_generation, expect_popups, action, .. } => {
                 assert_eq!(reference, None);
                 assert_eq!(point, Some(ScreenPoint { x: 120, y: -40 }));
                 assert_eq!(expect_generation.as_deref(), Some("80,80,520,460@96#1"));
+                assert_eq!(expect_popups, vec![sample_popup()]);
                 assert!(matches!(action, ActionSpec::Click { button: MouseButton::Left, count: 2 }));
             }
             other => panic!("{other:?}"),
@@ -3007,6 +3031,7 @@ mod tests {
                             screen: ScreenRect { x: 87, y: 80, width: 506, height: 453 },
                             dpi: 96,
                             generation: "80,80,520,460@96#1".to_owned(),
+                            popups: vec![sample_popup()],
                         },
                         mime: "image/png",
                         bytes: "iVBORw0KGgo=".to_owned(),

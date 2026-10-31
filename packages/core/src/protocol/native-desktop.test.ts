@@ -22,6 +22,7 @@ const 原样: DesktopImageGeometry = {
   screen: { x: 87, y: 80, width: 506, height: 453 },
   dpi: 96,
   generation: '80,80,520,460@96#1',
+  popups: [],
 }
 
 /** 4K 整窗缩放至长边 1568：一个图像像素对应约 2.45 个屏幕像素。 */
@@ -31,6 +32,7 @@ const 缩图: DesktopImageGeometry = {
   screen: { x: 10, y: 20, width: 3840, height: 2160 },
   dpi: 192,
   generation: '10,20,3840,2160@192#1',
+  popups: [],
 }
 
 /** 左侧显示器上的一块区域：屏幕原点为负值，图像原点仍为 (0,0)。 */
@@ -40,6 +42,7 @@ const 负原点: DesktopImageGeometry = {
   screen: { x: -1800, y: -100, width: 400, height: 300 },
   dpi: 96,
   generation: '-1920,-200,1920,1080@96#2',
+  popups: [],
 }
 
 /** 150% 缩放的显示器上的一块裁剪区域，再缩小一半：负原点与缩放同时存在。 */
@@ -49,6 +52,7 @@ const 负原点缩图: DesktopImageGeometry = {
   screen: { x: -1920, y: 540, width: 400, height: 200 },
   dpi: 144,
   generation: '-1920,400,1920,1080@144#2',
+  popups: [],
 }
 
 describe('图像坐标 → 屏幕物理坐标', () => {

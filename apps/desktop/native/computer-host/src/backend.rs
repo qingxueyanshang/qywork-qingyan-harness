@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
-use crate::geometry::{ScreenPoint, ScreenRect};
+use crate::geometry::{Popup, ScreenPoint, ScreenRect};
 use crate::protocol::{
     attainable, classify_action, next_poll, satisfied, Access, ActionEvidence, ActionSpec,
     BlockingWindow, Bounds, Dispatch, Image, Observation, Seen, Select, Tree, WaitUntil,
@@ -101,6 +101,10 @@ pub struct ActRequest<'a> {
     pub point: Option<ScreenPoint>,
     /// 采集落点所在图像时的窗口几何代际。提供 `point` 时必须提供。
     pub expect_generation: Option<&'a str>,
+    /// 落点所在图像中合成的弹出窗口（`Geometry::popups`），由调用方原样带回。
+    ///
+    /// 只有 Windows 的图像合成弹出窗口，其他平台的图像中该项恒为空，后端不读取。
+    pub expect_popups: &'a [Popup],
     pub action: &'a ActionSpec,
     pub bounds: Bounds,
     pub foreground: bool,
@@ -368,22 +372,31 @@ pub fn wait_loop<E>(
     }
 }
 
+/// 一次指针动作的定位依据，决定落点所在的顶层窗口中哪一个可以接受该动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aimed {
+    /// 按控件定位：控件所在的顶层窗口。
+    Control(i64),
+    /// 按图像坐标定位：图像中该点显示的弹出窗口（`geometry::popup_at`）。缺失表示该点显示的是
+    /// 目标窗口本身。
+    Image(Option<i64>),
+}
+
 /// 落点所在的顶层窗口是否接受本次指针动作。
 ///
-/// 是目标窗口本身即接受。否则只在按控件定位时接受：落点所在的顶层窗口就是目标控件所在的
-/// 顶层窗口，且它属于目标窗口（目标窗口弹出的下拉框、菜单）。模态对话框或其他应用覆盖
-/// 目标控件时，落点所在的顶层窗口不是控件所在的窗口，仍然拒绝；按图像坐标定位的动作
-/// 没有控件，`control_root` 缺失，只接受目标窗口本身。
+/// 按控件定位：是目标窗口本身即接受；否则落点所在的顶层窗口必须就是目标控件所在的顶层窗口，
+/// 且它属于目标窗口（目标窗口弹出的下拉框、菜单）。模态对话框或其他应用覆盖目标控件时，
+/// 落点所在的顶层窗口不是控件所在的窗口，仍然拒绝。不要改为只检查落点窗口是否属于目标窗口：
+/// 目标窗口的模态对话框同样属于它，对话框覆盖控件时，点击落在对话框上。
 ///
-/// 不要改为只检查落点窗口是否属于目标窗口：目标窗口的模态对话框同样属于它，
-/// 对话框覆盖控件时，点击落在对话框上。
-pub fn lands_on_target(
-    window: i64,
-    hit_root: i64,
-    hit_owner: i64,
-    control_root: Option<i64>,
-) -> bool {
-    hit_root == window || (control_root == Some(hit_root) && hit_owner == window)
+/// 按图像坐标定位：落点所在的顶层窗口必须就是图像中该点显示的窗口。图像显示目标窗口而此刻
+/// 弹出窗口覆盖该点，或图像显示弹出窗口而此刻落在其他窗口上，模型看到的都不是将要点击的界面。
+/// 弹出窗口的矩形是否未变由后端在此之前核对。
+pub fn lands_on_target(window: i64, hit_root: i64, hit_owner: i64, aimed: Aimed) -> bool {
+    match aimed {
+        Aimed::Control(root) => hit_root == window || (root == hit_root && hit_owner == window),
+        Aimed::Image(shown) => hit_root == shown.unwrap_or(window),
+    }
 }
 
 #[cfg(test)]
@@ -400,34 +413,48 @@ mod tests {
 
     #[test]
     fn a_landing_on_the_target_window_itself_is_accepted() {
-        assert!(lands_on_target(TARGET, TARGET, TARGET, Some(TARGET)));
-        // 按图像坐标定位时没有控件，落点位于目标窗口本身时同样接受。
-        assert!(lands_on_target(TARGET, TARGET, TARGET, None));
+        assert!(lands_on_target(TARGET, TARGET, TARGET, Aimed::Control(TARGET)));
+        // 按图像坐标定位、图像中该点显示的是目标窗口本身时同样接受。
+        assert!(lands_on_target(TARGET, TARGET, TARGET, Aimed::Image(None)));
     }
 
     /// 原始失败形状：Edge 的自动填充下拉框是其拥有的另一个顶层窗口，点击其中的历史账号被判定为遮挡。
     #[test]
     fn a_landing_on_the_popup_the_target_control_lives_in_is_accepted() {
-        assert!(lands_on_target(TARGET, POPUP, TARGET, Some(POPUP)));
+        assert!(lands_on_target(TARGET, POPUP, TARGET, Aimed::Control(POPUP)));
     }
 
     #[test]
     fn another_application_covering_the_control_is_refused() {
-        assert!(!lands_on_target(TARGET, OTHER, OTHER, Some(TARGET)));
+        assert!(!lands_on_target(TARGET, OTHER, OTHER, Aimed::Control(TARGET)));
         // 其他应用的窗口即使恰好是控件所在的窗口，也不属于目标窗口。
-        assert!(!lands_on_target(TARGET, OTHER, OTHER, Some(OTHER)));
+        assert!(!lands_on_target(TARGET, OTHER, OTHER, Aimed::Control(OTHER)));
     }
 
     /// 模态对话框属于目标窗口，但控件位于目标窗口中：点击落在对话框上。
     #[test]
     fn a_modal_dialog_covering_the_control_is_refused() {
-        assert!(!lands_on_target(TARGET, DIALOG, TARGET, Some(TARGET)));
+        assert!(!lands_on_target(TARGET, DIALOG, TARGET, Aimed::Control(TARGET)));
     }
 
-    /// 按图像坐标定位时没有可识别的控件，落在弹出窗口上一律拒绝。
+    /// 原始失败形状：微信的搜索结果下拉框是同一进程中未被拥有的另一个顶层窗口，按图像坐标点击其中的
+    /// 联系人被判定为遮挡。下拉框合成进图像之后，图像中该点显示的就是它，落在它上面即接受，
+    /// 不要求它被目标窗口拥有。
     #[test]
-    fn an_image_point_on_an_owned_popup_is_refused() {
-        assert!(!lands_on_target(TARGET, POPUP, TARGET, None));
+    fn an_image_point_lands_on_the_popup_the_image_shows_there() {
+        assert!(lands_on_target(TARGET, POPUP, POPUP, Aimed::Image(Some(POPUP))));
+        assert!(lands_on_target(TARGET, POPUP, TARGET, Aimed::Image(Some(POPUP))));
+    }
+
+    /// 图像中该点显示目标窗口而此刻弹出窗口覆盖该点，或图像中的弹出窗口已关闭、该点落在目标窗口或
+    /// 其他应用上，模型看到的都不是将要点击的界面，一律拒绝。
+    #[test]
+    fn an_image_point_landing_elsewhere_than_the_image_shows_is_refused() {
+        assert!(!lands_on_target(TARGET, POPUP, TARGET, Aimed::Image(None)));
+        assert!(!lands_on_target(TARGET, DIALOG, TARGET, Aimed::Image(None)));
+        assert!(!lands_on_target(TARGET, TARGET, TARGET, Aimed::Image(Some(POPUP))));
+        assert!(!lands_on_target(TARGET, OTHER, OTHER, Aimed::Image(Some(POPUP))));
+        assert!(!lands_on_target(TARGET, DIALOG, TARGET, Aimed::Image(Some(POPUP))));
     }
 
     fn wait_request(until: WaitUntil, timeout: Duration) -> WaitRequest<'static> {

@@ -72,6 +72,8 @@ pub fn capture(
             screen: area.screen,
             dpi: dpi(frame.crop.0, logical.0),
             generation,
+            // 共享的是用户选定的单个窗口，同一应用的其他窗口不在该流中。
+            popups: Vec::new(),
         },
         mime: "image/png",
         bytes: base64(&bytes),

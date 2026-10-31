@@ -391,6 +391,7 @@ function image(over: Partial<DesktopImage> = {}): DesktopImage {
       screen: { x: 87, y: 80, width: 506, height: 453 },
       dpi: 96,
       generation: '80,80,520,460@96#65537',
+      popups: [],
     },
     source: 'wgc',
     capturedAt: 2,
@@ -1784,6 +1785,49 @@ describe('图片通道与几何核对', () => {
     )
     expect(r.data).toMatchObject({ source: 'print_window' })
     expect(r.message).toContain('黑色')
+  })
+
+  /**
+   * 原始失败形状：微信的搜索结果下拉框是另一个顶层窗口，图像中没有它，模型重试八分钟后认定联系人
+   * 不存在。下拉框合成进图像之后，回执写明它是独立的窗口及其在图像中的位置；图像缩小时位置同样按
+   * 图像坐标给出，未命名的窗口注明无标题。
+   */
+  test('图中合成的弹出窗口在回执中写明是独立的窗口及其图像位置', async () => {
+    const geometry = {
+      imageWidth: 253,
+      imageHeight: 290,
+      screen: { x: 87, y: 80, width: 506, height: 580 },
+      dpi: 96,
+      generation: '80,80,520,460@96#65537',
+      popups: [
+        { window: 4242, title: 'Weixin', screen: { x: 107, y: 140, width: 380, height: 520 } },
+        { window: 4343, title: '', screen: { x: 401, y: 60, width: 100, height: 60 } },
+      ],
+    }
+    const { port } = fakeDesktop({
+      captureImage: async () => image({ data: png(253, 290), geometry }),
+    })
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image' },
+      ctxWith(port),
+    )
+    expect(r.data).toMatchObject({ geometry: { popups: geometry.popups } })
+    expect(r.message).toContain('图中合成了同一应用的 2 个弹出窗口')
+    expect(r.message).toContain('「Weixin」 图像 10,30 190×260')
+    // 第二个窗口伸出图像上沿，只给出图像之内的部分。
+    expect(r.message).toContain('(无标题) 图像 157,0 50×20')
+    expect(r.message).toContain('独立的窗口')
+  })
+
+  test('没有弹出窗口时回执不提及弹出窗口', async () => {
+    const { port } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'region_image' },
+      ctxWith(port),
+    )
+    expect(r.message).not.toContain('弹出窗口')
   })
 })
 

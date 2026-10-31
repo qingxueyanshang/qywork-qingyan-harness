@@ -8,8 +8,9 @@
 //!    前台（`prepare`，由后端在定位前调用）。同一个动作只使用一种方式，不在失败后改用另一种。
 //! 2. **落点在派发时重新计算。** 重新定位控件、读取当前包围盒、核对落点属于目标窗口，
 //!    三步缺一不可：观察时记录的包围盒在控件移动之后指向其他位置。按控件定位时，
-//!    落点位于控件所在的、目标窗口拥有的弹出窗口上，同样视为属于目标。落点所在的顶层窗口，
-//!    消息投递时只在目标窗口及其拥有的弹出窗口中查找，系统输入时取屏幕上实际最上层的窗口。
+//!    落点位于控件所在的、目标窗口拥有的弹出窗口上，同样视为属于目标；按图像坐标定位时，
+//!    落点必须位于图像中该点显示的窗口上（`lands_on_target`）。落点所在的顶层窗口，消息投递时
+//!    只在目标窗口及其弹出窗口（`popup::in_view`）中查找，系统输入时取屏幕上实际最上层的窗口。
 //! 3. **按下的键在按下时登记，任何中止路径都释放。** 登记与释放由 `input::Hold` 负责，
 //!    本模块不直接编写释放调用。
 //! 4. **接收窗口必须可用。** 被模态对话框禁用的窗口不处理真实输入，同步发送的消息却同样会被
@@ -37,20 +38,19 @@ use ::windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId}
 use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
-    FindWindowW, GetWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
-    IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible, IsZoomed, SendMessageTimeoutW,
-    SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT, GA_ROOTOWNER, GUITHREADINFO,
-    GWL_EXSTYLE, GW_HWNDPREV, HTCAPTION, SMTO_ABORTIFHUNG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE, WM_NCHITTEST,
-    WS_EX_TRANSPARENT,
+    FindWindowW, GetWindowRect, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow,
+    IsZoomed, SendMessageTimeoutW, SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT,
+    GA_ROOTOWNER, GUITHREADINFO, HTCAPTION, SMTO_ABORTIFHUNG, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE, WM_NCHITTEST,
 };
 
+use super::popup::{self, check_shown};
 use super::sink::{
     belongs_to, delivery, focus_of, post_text, thread_focus, wheel_reaches, Delivery,
     MessageCharSink, MessageSink, SystemCharSink, SystemSink,
 };
 use super::{current_pattern, defer, dispatch_call, holds_focus, CallWatch, StateWatch};
-use crate::backend::{confirm, lands_on_target, settled, Attempt, Outcome};
+use crate::backend::{confirm, lands_on_target, settled, Aimed, Attempt, Outcome};
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::input::{drag_path, key_stroke, wheel_of, Event, Hold, Sink};
 use crate::protocol::{
@@ -81,6 +81,23 @@ pub struct Aim {
     /// 按控件定位时，目标控件所在的 OS 窗口（控件自身或最近一个带窗口句柄的祖先）。
     /// 按图像坐标定位时缺失。
     pub host: Option<i64>,
+    /// 按图像坐标定位时，图像中落点处显示的弹出窗口，已由 `check_image` 核对仍在原处。
+    /// 缺失表示该点显示的是目标窗口本身。
+    pub shown: Option<i64>,
+}
+
+impl Aim {
+    /// 落点判定的依据。控件所在的 OS 窗口换算为其顶层窗口；该窗口已关闭时换算结果为空句柄，
+    /// 与任何落点都不相等。
+    fn aimed(&self) -> Aimed {
+        match self.host {
+            // SAFETY: 只读查询，句柄来自本次定位。
+            Some(host) => Aimed::Control(
+                unsafe { GetAncestor(HWND(host as *mut c_void), GA_ROOT) }.0 as i64,
+            ),
+            None => Aimed::Image(self.shown),
+        }
+    }
 }
 
 /// 执行一个前台动作。
@@ -191,9 +208,24 @@ pub fn check_generation(window: i64, expected: &str) -> Result<(), String> {
     ))
 }
 
+/// 核对按图像坐标定位所依据的图像仍然成立：目标窗口的几何代际未变，图像中落点处显示的弹出窗口
+/// 仍在原处。返回该弹出窗口，供落点判定使用；该点显示的是目标窗口本身时返回 `None`。
+///
+/// 只核对落点处的弹出窗口：其他位置的弹出窗口出现或关闭，不改变落点处的界面。
+pub fn check_image(
+    window: i64,
+    expected: &str,
+    point: ScreenPoint,
+    popups: &[crate::geometry::Popup],
+) -> Result<Option<i64>, String> {
+    check_generation(window, expected)?;
+    check_shown(window, point, popups)
+}
+
 // ── 指针 ──
 
-/// 一次指针动作经核对的落点，以及接收它的顶层窗口：目标窗口，或按控件定位时控件所在的弹出窗口。
+/// 一次指针动作经核对的落点，以及接收它的顶层窗口：目标窗口，或目标窗口的弹出窗口
+/// （按控件定位时控件所在的弹出窗口，按图像坐标定位时图像中该点显示的弹出窗口）。
 #[derive(Debug, Clone, Copy)]
 struct Landing {
     anchor: ScreenPoint,
@@ -213,13 +245,7 @@ fn pointer(
             Err(reason) => Attempt::Refused(reason),
         },
         Delivery::SystemInput => match landing(window, aim) {
-            Ok(anchor) => act(
-                &SystemSink,
-                Landing {
-                    anchor,
-                    top: window,
-                },
-            ),
+            Ok(at) => act(&SystemSink, at),
             Err(reason) => Attempt::Refused(reason),
         },
     }
@@ -336,17 +362,8 @@ fn drag(
 ///
 /// 目标窗口不在前台的情形由 `prepare` 在定位前处理；执行到此处仍被遮挡时，遮挡方是
 /// 置顶窗口或其他窗口，如实拒绝。
-fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
-    let anchor = aim
-        .anchor
-        .ok_or("missing_target: 指针动作没有落点")?;
-    let rect = window_rect(window)?;
-    if !rect.contains(anchor) {
-        return Err(format!(
-            "point_outside_window: {},{}",
-            anchor.x, anchor.y
-        ));
-    }
+fn landing(window: i64, aim: Aim) -> Result<Landing, String> {
+    let (anchor, _) = within(window, aim)?;
     // 落在窗口矩形内不等于目标窗口可见：其他窗口覆盖在上方时，本次点击落在该窗口上。
     // SAFETY: 纯查询，参数是屏幕坐标。
     let hit = unsafe { WindowFromPoint(POINT {
@@ -363,84 +380,53 @@ fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
     let root = unsafe { GetAncestor(hit, GA_ROOT) };
     // SAFETY: 同上，求顶层窗口所有者链的顶端。
     let owner = unsafe { GetAncestor(root, GA_ROOTOWNER) };
-    // SAFETY: 句柄来自本次定位，窗口已关闭时返回空句柄，与任何落点都不相等。
-    let control_root = aim
-        .host
-        .map(|host| unsafe { GetAncestor(HWND(host as *mut c_void), GA_ROOT) }.0 as i64);
-    if !lands_on_target(window, root.0 as i64, owner.0 as i64, control_root) {
-        return Err(format!(
-            "occluded: {},{}",
-            anchor.x, anchor.y
-        ));
+    let top = root.0 as i64;
+    if !lands_on_target(window, top, owner.0 as i64, aim.aimed()) {
+        return Err(occluded(anchor, aim, top, ""));
     }
-    Ok(anchor)
+    Ok(Landing { anchor, top })
 }
 
 /// 消息投递的落点：判据与系统输入相同（`lands_on_target`），但落点所在的顶层窗口只在目标窗口及其
-/// 拥有的弹出窗口中查找（`owned_window_at`）。其他应用的窗口覆盖在上方不影响投递；目标自身的
+/// 弹出窗口中查找（`popup::popup_at`）。其他应用的窗口覆盖在上方不影响投递；目标自身的
 /// 下拉框或对话框覆盖控件时仍然拒绝，因为真实点击会落在它们上面。
 fn message_landing(window: i64, aim: Aim) -> Result<Landing, String> {
-    let anchor = aim
-        .anchor
-        .ok_or("missing_target: 指针动作没有落点")?;
-    let rect = window_rect(window)?;
-    if !rect.contains(anchor) {
-        return Err(format!(
-            "point_outside_window: {},{}",
-            anchor.x, anchor.y
-        ));
-    }
-    let top = owned_window_at(window, anchor);
+    let (anchor, popup) = within(window, aim)?;
+    let top = popup.map_or(window, |p| p.0 as i64);
     // SAFETY: 句柄来自本次查找。
     let owner = unsafe { GetAncestor(HWND(top as *mut c_void), GA_ROOTOWNER) };
-    // SAFETY: 句柄来自本次定位，窗口已关闭时返回空句柄，与任何落点都不相等。
-    let control_root = aim
-        .host
-        .map(|host| unsafe { GetAncestor(HWND(host as *mut c_void), GA_ROOT) }.0 as i64);
-    if !lands_on_target(window, top, owner.0 as i64, control_root) {
-        return Err(format!(
-            "occluded: {},{} · 目标窗口自身的弹出窗口覆盖该位置",
-            anchor.x, anchor.y
-        ));
+    if !lands_on_target(window, top, owner.0 as i64, aim.aimed()) {
+        return Err(occluded(anchor, aim, top, " · 目标窗口自身的弹出窗口覆盖该位置"));
     }
     message_target(top)?;
     Ok(Landing { anchor, top })
 }
 
-/// 目标窗口及其拥有的弹出窗口中，覆盖该屏幕点的最上层一个；都不覆盖时为目标窗口本身。
-///
-/// 沿 z 序从目标窗口向上查找。跳过不可见、最小化与鼠标穿透（`WS_EX_TRANSPARENT`）的窗口：
-/// 真实点击同样穿过它们。不要跳过分层窗口：Qt 与 Chromium 的菜单、下拉框多为分层窗口，
-/// 跳过后点击会落到菜单下方的控件上。
-fn owned_window_at(window: i64, at: ScreenPoint) -> i64 {
-    let target = HWND(window as *mut c_void);
-    let mut found = window;
-    // SAFETY: 只读查询；沿 z 序向上逐个取得句柄，到达顶端返回错误时停止。
-    let mut above = unsafe { GetWindow(target, GW_HWNDPREV) };
-    while let Ok(next) = above {
-        if next.is_invalid() {
-            break;
-        }
-        if belongs_to(next, target) && accepts_clicks(next) {
-            if let Ok(frame) = super::capture::window_frame(next) {
-                if frame.visible.contains(at) {
-                    found = next.0 as i64;
-                }
-            }
-        }
-        // SAFETY: 同上。
-        above = unsafe { GetWindow(next, GW_HWNDPREV) };
+/// 落点，以及此刻覆盖它的弹出窗口。落点既不在目标窗口的矩形内、也不在任何弹出窗口上时拒绝：
+/// 弹出窗口可以伸出目标窗口的矩形，落在伸出部分上的点同样属于目标窗口的界面。
+fn within(window: i64, aim: Aim) -> Result<(ScreenPoint, Option<HWND>), String> {
+    let anchor = aim
+        .anchor
+        .ok_or("missing_target: 指针动作没有落点")?;
+    let rect = window_rect(window)?;
+    let popup = popup::popup_at(HWND(window as *mut c_void), anchor).map(|(p, _)| p);
+    if popup.is_none() && !rect.contains(anchor) {
+        return Err(format!(
+            "point_outside_window: {},{}",
+            anchor.x, anchor.y
+        ));
     }
-    found
+    Ok((anchor, popup))
 }
 
-/// 窗口可见、未最小化，且不是鼠标穿透窗口。
-fn accepts_clicks(hwnd: HWND) -> bool {
-    // SAFETY: 三项都是只读查询。
-    unsafe {
-        IsWindowVisible(hwnd).as_bool()
-            && !IsIconic(hwnd).as_bool()
-            && GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT.0 == 0
+/// 落点所在的顶层窗口不接受本次动作时的原因。`note` 附在按控件定位的原因之后。
+fn occluded(anchor: ScreenPoint, aim: Aim, top: i64, note: &str) -> String {
+    match aim.host {
+        Some(_) => format!("occluded: {},{}{note}", anchor.x, anchor.y),
+        None => format!(
+            "occluded: {},{} · 该位置此刻由窗口 {top} 接收，与图像中显示的窗口不同，请重新采图",
+            anchor.x, anchor.y
+        ),
     }
 }
 
@@ -1046,7 +1032,109 @@ pub fn virtual_desktop() -> ScreenRect {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_window::{clicks_on, rect, Kind, TestWindow, SERIAL};
     use super::*;
+    use crate::geometry::Popup;
+    use ::windows::Win32::UI::WindowsAndMessaging::{WM_LBUTTONDOWN, WM_LBUTTONUP};
+
+    const CLICK: ActionSpec = ActionSpec::Click {
+        button: MouseButton::Left,
+        count: 1,
+    };
+
+    /// 按采图时的核对路径点击一个图像坐标：先核对图像仍然成立，再派发。返回派发结果或拒绝原因。
+    fn click_image(
+        target: &TestWindow,
+        generation: &str,
+        popups: &[Popup],
+        at: ScreenPoint,
+    ) -> Result<Dispatch, String> {
+        let shown = check_image(target.id(), generation, at, popups)?;
+        let aim = Aim {
+            anchor: Some(at),
+            destination: None,
+            host: None,
+            shown,
+        };
+        match perform(target.id(), None, &CLICK, aim, &|| false) {
+            Attempt::Refused(reason) => Err(reason),
+            Attempt::Called(outcome) => Ok(outcome.dispatch),
+        }
+    }
+
+    /// 采图时目标窗口之上的弹出窗口，与图像几何中记录的相同。
+    fn popups_of(target: &TestWindow) -> (String, Vec<Popup>) {
+        let frame = super::super::capture::window_frame(target.hwnd).expect("读取目标窗口几何");
+        let popups = popup::layers_above(target.hwnd, frame.visible)
+            .iter()
+            .map(popup::Layer::popup)
+            .collect();
+        (frame.generation(), popups)
+    }
+
+    /// 原始失败形状：按图像坐标点在同一应用未被拥有的下拉框上被判定为遮挡，且落点位于目标窗口矩形
+    /// 之外时被判定为不在窗口内。下拉框合成进图像之后，点在它上面（包括伸出目标窗口的部分）的点击
+    /// 投递给下拉框；点在目标窗口其余位置的点击投递给目标窗口。
+    #[test]
+    fn an_image_click_on_a_composited_popup_is_delivered_to_it() {
+        let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (x, y) = (-21_000, -21_000);
+        let target = TestWindow::open(Kind::Tool, rect(x, y, 200, 100), 0x0000_00FF, None);
+        let dropdown = TestWindow::open(Kind::Tool, rect(x + 50, y + 50, 80, 120), 0x0000_FF00, None);
+        let (generation, popups) = popups_of(&target);
+        assert_eq!(popups.iter().map(|p| p.window).collect::<Vec<_>>(), vec![dropdown.id()]);
+        clicks_on(target.hwnd);
+        clicks_on(dropdown.hwnd);
+
+        let inside = ScreenPoint { x: x + 60, y: y + 60 };
+        let overhang = ScreenPoint { x: x + 60, y: y + 150 };
+        for at in [inside, overhang] {
+            assert_eq!(click_image(&target, &generation, &popups, at), Ok(Dispatch::Submitted));
+            assert_eq!(clicks_on(dropdown.hwnd), vec![WM_LBUTTONDOWN, WM_LBUTTONUP]);
+            assert!(clicks_on(target.hwnd).is_empty());
+        }
+        let beside = ScreenPoint { x: x + 180, y: y + 20 };
+        assert_eq!(click_image(&target, &generation, &popups, beside), Ok(Dispatch::Submitted));
+        assert_eq!(clicks_on(target.hwnd), vec![WM_LBUTTONDOWN, WM_LBUTTONUP]);
+        assert!(clicks_on(dropdown.hwnd).is_empty());
+        // 图像中不属于任何窗口的空白处不派发。
+        let blank = ScreenPoint { x: x + 10, y: y + 150 };
+        let refused = click_image(&target, &generation, &popups, blank).expect_err("空白处应当拒绝");
+        assert!(refused.starts_with("point_outside_window"), "{refused}");
+    }
+
+    /// 图像中落点处的弹出窗口已移动或关闭时按图像失效拒绝；采图之后才出现、覆盖落点的弹出窗口
+    /// 不在图像中，点击同样拒绝。三种情形都不向任何窗口派发。
+    #[test]
+    fn a_stale_popup_refuses_the_image_click() {
+        let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (x, y) = (-22_000, -22_000);
+        let target = TestWindow::open(Kind::Tool, rect(x, y, 200, 100), 0x0000_00FF, None);
+        let dropdown = TestWindow::open(Kind::Tool, rect(x + 50, y + 50, 80, 120), 0x0000_FF00, None);
+        let (generation, popups) = popups_of(&target);
+        clicks_on(target.hwnd);
+        let on_dropdown = ScreenPoint { x: x + 60, y: y + 60 };
+
+        dropdown.move_to(x + 51, y + 50);
+        let moved = click_image(&target, &generation, &popups, on_dropdown).expect_err("已移动");
+        assert!(moved.starts_with("geometry_changed") && moved.contains("已移动"), "{moved}");
+        assert!(clicks_on(dropdown.hwnd).is_empty());
+
+        let closed_id = dropdown.id();
+        drop(dropdown);
+        let closed = click_image(&target, &generation, &popups, on_dropdown).expect_err("已关闭");
+        assert!(closed.starts_with("geometry_changed") && closed.contains("已关闭"), "{closed}");
+        assert!(closed.contains(&closed_id.to_string()), "{closed}");
+
+        let (generation, popups) = popups_of(&target);
+        assert!(popups.is_empty());
+        let late = TestWindow::open(Kind::Tool, rect(x + 100, y + 10, 60, 60), 0x00FF_0000, None);
+        let covered = ScreenPoint { x: x + 120, y: y + 30 };
+        let occluded = click_image(&target, &generation, &popups, covered).expect_err("被新窗口覆盖");
+        assert!(occluded.starts_with("occluded") && occluded.contains("请重新采图"), "{occluded}");
+        assert!(clicks_on(late.hwnd).is_empty());
+        assert!(clicks_on(target.hwnd).is_empty());
+    }
 
     /// 前台转到目标窗口时追加说明，保留原有原因；未转到时原样返回。
     #[test]

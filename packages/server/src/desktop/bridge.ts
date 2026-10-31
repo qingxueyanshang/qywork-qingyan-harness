@@ -112,6 +112,8 @@ export interface DesktopRequestParams {
   timeoutMs?: number
   region?: DesktopRect
   expectGeneration?: string
+  /** 按图像坐标操作时，该图像几何中合成的弹出窗口。 */
+  expectPopups?: DesktopRequestFrame['expectPopups']
   maxEdge?: number
   maxBytes?: number
 }
@@ -217,6 +219,7 @@ export class DesktopBridge {
       ...(params.expectGeneration !== undefined
         ? { expectGeneration: params.expectGeneration }
         : {}),
+      ...(params.expectPopups !== undefined ? { expectPopups: params.expectPopups } : {}),
       ...(params.maxEdge !== undefined ? { maxEdge: params.maxEdge } : {}),
       ...(params.maxBytes !== undefined ? { maxBytes: params.maxBytes } : {}),
     }

@@ -11,6 +11,8 @@
 //!    交给模型的像素数**。两者不相等时比例由二者的商决定，调用方不要另取 DPI 换算。
 //! 3. **`dpi` 是窗口所在显示器的缩放读数，不是换算因子**。96 表示 100%。它纳入几何是为了使
 //!    调用方能够判断图像在哪一档缩放下采集，代际变化由 `generation` 表达。
+//! 4. **`generation` 只描述目标窗口自身**。合成进图像的弹出窗口逐个记录在 `popups` 中，按图定位时
+//!    只核对落点处的那一个：其他位置的弹出窗口出现或关闭，不使落在目标窗口上的坐标失效。
 
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +54,18 @@ impl ScreenRect {
     /// 该点是否位于矩形内。右边界与下边界不包含在内，与 `intersect` 使用同一种半开区间。
     pub const fn contains(&self, point: ScreenPoint) -> bool {
         point.x >= self.x && point.y >= self.y && point.x < self.right() && point.y < self.bottom()
+    }
+
+    /// 同时包含两个矩形的最小矩形。
+    pub fn union(&self, other: &Self) -> Self {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        Self {
+            x,
+            y,
+            width: self.right().max(other.right()) - x,
+            height: self.bottom().max(other.bottom()) - y,
+        }
     }
 
     /// 两个矩形的交集。不相交时返回 `None`，不返回零尺寸矩形：零尺寸的图像无法采集，
@@ -114,6 +128,31 @@ pub struct Geometry {
     /// 窗口矩形与显示器的代际。窗口移动、缩放、更换显示器或 DPI 变化后该值改变，
     /// 按图像定位的请求据此在派发前被拒绝。
     pub generation: String,
+    /// 合成进该图像的弹出窗口，按 z 序自下而上。只列出与图像有交集的窗口。
+    pub popups: Vec<Popup>,
+}
+
+/// 合成进图像的一个弹出窗口：与目标窗口同属一个应用、位于其上方的下拉框、菜单、对话框等顶层窗口。
+///
+/// 它是独立的窗口：按图像坐标点在它上面时，指针投递给它，而不是目标窗口。调用方按图定位时把图像
+/// 几何中的这一项原样带回，worker 据此核对落点处的窗口仍是同一个、矩形未变。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Popup {
+    pub window: i64,
+    /// 窗口标题，可能为空。
+    #[serde(default)]
+    pub title: String,
+    /// 该窗口在图像中占据的屏幕矩形，也是点击投递给它的范围。
+    pub screen: ScreenRect,
+}
+
+/// 图像中该点显示的弹出窗口：`popups` 中覆盖该点的最上层一个。没有时该点显示的是目标窗口本身，
+/// 或不属于任何窗口的空白。
+///
+/// `popups` 按 z 序自下而上排列，与合成的绘制顺序相同，因此取最后一个命中项。
+pub fn popup_at(popups: &[Popup], point: ScreenPoint) -> Option<&Popup> {
+    popups.iter().rev().find(|p| p.screen.contains(point))
 }
 
 /// 窗口当前的几何事实，由平台层读取。代际与几何均据此计算。
@@ -274,6 +313,33 @@ mod tests {
         assert!(!r.contains(point(180, 212)));
         assert!(!r.contains(point(140, 224)));
         assert!(!r.contains(point(99, 212)));
+    }
+
+    /// 并集包含两个矩形，含负原点；一个矩形包含另一个时即为外侧矩形。
+    #[test]
+    fn a_union_spans_both_rects() {
+        assert_eq!(rect(0, 0, 100, 100).union(&rect(80, 90, 60, 300)), rect(0, 0, 140, 390));
+        assert_eq!(rect(-50, 10, 20, 20).union(&rect(0, 0, 10, 10)), rect(-50, 0, 60, 30));
+        assert_eq!(rect(0, 0, 100, 100).union(&rect(10, 10, 5, 5)), rect(0, 0, 100, 100));
+    }
+
+    fn popup(window: i64, screen: ScreenRect) -> Popup {
+        Popup {
+            window,
+            title: String::new(),
+            screen,
+        }
+    }
+
+    /// 图像中一点显示的是覆盖它的最上层弹出窗口；没有弹出窗口覆盖时为 `None`。
+    #[test]
+    fn the_popup_shown_at_a_point_is_the_topmost_one_covering_it() {
+        let popups = [popup(1, rect(0, 0, 100, 100)), popup(2, rect(50, 50, 100, 100))];
+        assert_eq!(popup_at(&popups, point(10, 10)).map(|p| p.window), Some(1));
+        assert_eq!(popup_at(&popups, point(60, 60)).map(|p| p.window), Some(2));
+        assert_eq!(popup_at(&popups, point(149, 149)).map(|p| p.window), Some(2));
+        assert_eq!(popup_at(&popups, point(150, 150)), None);
+        assert_eq!(popup_at(&[], point(10, 10)), None);
     }
 
     #[test]

@@ -25,7 +25,7 @@ use x11rb::protocol::xproto::Window;
 use super::x11::sink::XSink;
 use super::x11::{Display, WmAction};
 use super::CallWatch;
-use crate::backend::{confirm, lands_on_target, settled, Attempt, Outcome, Watch};
+use crate::backend::{confirm, lands_on_target, settled, Aimed, Attempt, Outcome, Watch};
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::input::{drag_path, key_stroke, wheel_of, Event, Hold, Sink};
 use crate::protocol::{
@@ -271,7 +271,8 @@ fn landing(display: &Display, window: Window, aim: Aim) -> Result<ScreenPoint, S
         return Err(format!("point_outside_window: {},{}", anchor.x, anchor.y));
     }
     let (hit_root, hit_owner) = display.hit(anchor)?;
-    if !lands_on_target(i64::from(window), hit_root, hit_owner, aim.host) {
+    let aimed = aim.host.map_or(Aimed::Image(None), Aimed::Control);
+    if !lands_on_target(i64::from(window), hit_root, hit_owner, aimed) {
         return Err(format!("occluded: {},{}", anchor.x, anchor.y));
     }
     Ok(anchor)

@@ -25,7 +25,7 @@ use super::ax::{self, Element};
 use super::backend::CallWatch;
 use super::sink::MacSink;
 use super::walk::{self, Root};
-use crate::backend::{confirm, dispatch_call, lands_on_target, settled, Attempt, Outcome};
+use crate::backend::{confirm, dispatch_call, lands_on_target, settled, Aimed, Attempt, Outcome};
 use crate::geometry::ScreenPoint;
 use crate::input::{drag_path, key_stroke, wheel_of, Event, Hold, Sink};
 use crate::macos::pure::associate;
@@ -253,7 +253,8 @@ fn landing(target: &Target<'_>, aim: Aim) -> Result<ScreenPoint, String> {
         return Err(format!("point_outside_window: {},{}", anchor.x, anchor.y));
     }
     let (hit_root, hit_owner) = hit(&target.placed, anchor)?;
-    if !lands_on_target(i64::from(target.number), hit_root, hit_owner, aim.host) {
+    let aimed = aim.host.map_or(Aimed::Image(None), Aimed::Control);
+    if !lands_on_target(i64::from(target.number), hit_root, hit_owner, aimed) {
         return Err(format!("occluded: {},{}", anchor.x, anchor.y));
     }
     Ok(anchor)
