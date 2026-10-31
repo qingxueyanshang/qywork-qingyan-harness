@@ -83,7 +83,6 @@ export interface ChatPrice {
 export interface RedactedProvider {
   kind: string
   baseUrl?: string
-  headers?: Record<string, string>
   models: Record<string, RedactedModel>
   /** 该接口下的生成模型，键为模型 id。与 `models` 分开存放：输入框的模型选择只列出 `models`。 */
   media?: Record<string, RedactedMediaModel>

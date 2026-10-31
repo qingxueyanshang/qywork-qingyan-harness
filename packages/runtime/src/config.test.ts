@@ -791,6 +791,38 @@ describe('收集凭证', () => {
     )
     expect(s.values.filter((v) => v === 'sk-same-key-everywhere')).toHaveLength(1)
   })
+
+  /** 原始失败形状：凭证写在请求头中时不进入凭证集合，命令输出中的令牌不被脱敏。 */
+  test('接口请求头中形似凭证的值去掉认证方案后收集，其余请求头不收集', () => {
+    const s = collectSecrets(
+      cfg({
+        providers: {
+          relay: {
+            kind: 'openai_chat_completions',
+            headers: {
+              Authorization: 'Bearer tok-in-authorization',
+              'x-api-key': 'tok-in-x-api-key',
+              'x-region': 'cn-north',
+            },
+            models: { m: {} },
+          },
+        },
+      }),
+    )
+    expect(s.values).toContain('tok-in-authorization')
+    expect(s.values).toContain('tok-in-x-api-key')
+    expect(s.values).not.toContain('cn-north')
+  })
+
+  test('MCP server 的 env 与 headers 中形似凭证的值一并收集', () => {
+    const s = collectSecrets(cfg({ providers: {} }), {
+      gh: { env: { GITHUB_TOKEN: 'ghp-mcp-env-token', LOG_LEVEL: 'debug' } },
+      remote: { headers: { Authorization: 'Bearer mcp-header-token' } },
+    })
+    expect(s.values).toContain('ghp-mcp-env-token')
+    expect(s.values).toContain('mcp-header-token')
+    expect(s.values).not.toContain('debug')
+  })
 })
 
 describe('配置提醒', () => {

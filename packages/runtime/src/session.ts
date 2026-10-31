@@ -1181,7 +1181,7 @@ export class Session {
     conversationId: ConversationId,
   ): ToolContextBase {
     const model = typeof target === 'string' ? target : target.model
-    const secrets = collectSecrets(this.opts.config)
+    const secrets = collectSecrets(this.opts.config, this.extensions?.mcpConfig.servers)
     const store = this.opts.store
     // 逐模型的能力取自本轮的 adapter，与请求一侧是同一份规格。
     const spec = adapter.spec

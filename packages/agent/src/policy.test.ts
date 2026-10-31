@@ -260,6 +260,11 @@ describe('凭证文件', () => {
     expect(kind('cat ~/.qywork/config.json')).toBe('deny')
   })
 
+  /** 全局 MCP 配置：server 的凭证写在其 env 与 headers 中。 */
+  test('qywork 的全局 mcp.json', () => {
+    expect(kind('cat ~/.qywork/mcp.json')).toBe('deny')
+  })
+
   test('写入 SSH 凭据', () => {
     expect(kind('echo mykey >> ~/.ssh/authorized_keys')).toBe('deny')
   })

@@ -112,8 +112,13 @@ export {
   scopePaths,
   scopeRoots,
 } from './scopes.ts'
-// 脱敏：team/cli-backend.ts 启动外部 CLI 前剥离凭证；runtime 写入诊断前对异常原文脱敏。
-export { createStreamRedactor, redactSecrets, scrubEnv } from './secrets.ts'
+// 脱敏：team/cli-backend.ts 启动外部 CLI 前剥离凭证；runtime 写入诊断前对异常原文脱敏，并按名称模式收集请求头与 MCP 配置中的凭证。
+export {
+  CREDENTIAL_NAME_PATTERN,
+  createStreamRedactor,
+  redactSecrets,
+  scrubEnv,
+} from './secrets.ts'
 // 环境变量的默认豁免名单：server/api 下发给设置页，作为留空时的实际值。
 // `MAX_TIMEOUT_MS` 是本机单次工具执行的时限：team 用作外部 CLI 的静默上限，
 // 执行器据此组装终止说明。

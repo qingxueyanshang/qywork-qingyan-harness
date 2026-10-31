@@ -31,19 +31,24 @@ function configVersion(cfg: QyConfig): string {
   return createHash('sha1').update(JSON.stringify(cfg)).digest('hex').slice(0, 16)
 }
 
-/** 接口对外的数据结构：`apiKey` 替换为布尔值 `hasApiKey`。 */
-export type RedactedProvider = Omit<StoredProvider, 'apiKey'> & { hasApiKey: boolean }
+/**
+ * 接口对外的数据结构：`apiKey` 替换为布尔值 `hasApiKey`，`headers` 不下发。
+ *
+ * 请求头中可能写有凭证（`Authorization`、`x-api-key`），而设置页没有请求头的编辑入口，
+ * 下发只会使凭证离开本进程。
+ */
+export type RedactedProvider = Omit<StoredProvider, 'apiKey' | 'headers'> & { hasApiKey: boolean }
 export type RedactedConfig = Omit<QyConfig, 'providers'> & {
   providers: Record<string, RedactedProvider>
 }
 
 /**
- * 明文 key 不离开本进程。仅移除 `apiKey`，替换为表示是否已配置的布尔值。
+ * 明文 key 不离开本进程。移除 `apiKey`（替换为表示是否已配置的布尔值）与 `headers`。
  */
 export function redactConfig(cfg: QyConfig): RedactedConfig {
   const providers: Record<string, RedactedProvider> = {}
   for (const [name, p] of Object.entries(cfg.providers)) {
-    const { apiKey, ...rest } = p
+    const { apiKey, headers: _headers, ...rest } = p
     providers[name] = { ...rest, hasApiKey: Boolean(apiKey) }
   }
   return { ...cfg, providers }
@@ -75,9 +80,12 @@ export function mergeConfig(
     const source = renameProvider?.to === name ? renameProvider.from : name
     const prior = current.providers[source]?.apiKey
     const apiKey = explicit !== undefined ? explicit : hasApiKey ? prior : undefined
+    // 请求头不下发，客户端提交的配置中没有它：按改名映射沿用已存储的值。
+    const headers = current.providers[source]?.headers
     providers[name] = {
       ...(rest as StoredProvider),
       ...(apiKey ? { apiKey } : {}),
+      ...(headers ? { headers } : {}),
     }
   }
   const merged: QyConfig = { ...current, ...incoming, providers }

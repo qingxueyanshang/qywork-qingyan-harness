@@ -53,6 +53,15 @@ describe('脱敏', () => {
     expect(redactConfig(c).providers.main?.hasApiKey).toBe(false)
   })
 
+  /** 原始失败形状：写在请求头中的凭证随读接口下发给客户端。 */
+  test('接口的请求头不下发', () => {
+    const c = cfg()
+    c.providers.local = { ...c.providers.local!, headers: { Authorization: 'Bearer tok-header' } }
+    const wire = redactConfig(c)
+    expect(JSON.stringify(wire)).not.toContain('tok-header')
+    expect('headers' in wire.providers.local!).toBe(false)
+  })
+
   test('非密钥字段原样保留', () => {
     const r = redactConfig(cfg())
     expect(r.mode).toBe('auto')
@@ -62,6 +71,23 @@ describe('脱敏', () => {
 })
 
 describe('回填', () => {
+  test('请求头不经客户端往返：保存后沿用已存储的值，改名后随接口迁移', () => {
+    const current = cfg()
+    current.providers.local = {
+      ...current.providers.local!,
+      headers: { Authorization: 'Bearer tok-header' },
+    }
+    expect(mergeConfig(current, redactConfig(current)).providers.local?.headers).toEqual({
+      Authorization: 'Bearer tok-header',
+    })
+    const wire = redactConfig(current)
+    wire.providers.renamed = wire.providers.local!
+    delete wire.providers.local
+    if (wire.active?.provider === 'local') wire.active.provider = 'renamed'
+    const renamed = mergeConfig(current, wire, { from: 'local', to: 'renamed' })
+    expect(renamed.providers.renamed?.headers).toEqual({ Authorization: 'Bearer tok-header' })
+  })
+
   test('修改接口地址保留所有已保存的生成协议，包括与旧默认值相同的选择', () => {
     const current = cfg()
     current.providers.main!.media = {
