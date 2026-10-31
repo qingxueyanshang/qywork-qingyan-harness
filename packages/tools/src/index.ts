@@ -11,7 +11,7 @@ import { browserTools } from './browser.ts'
 import { desktopTools } from './desktop.ts'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.ts'
 import { readGoalTool, updateGoalTool } from './goals.ts'
-import { moveMcpServerTool, writeMcpServerTool } from './mcp-config.ts'
+import { enableMcpServerTool, moveMcpServerTool, writeMcpServerTool } from './mcp-config.ts'
 import { deleteMemoryTool, moveMemoryTool, readMemoryTool, writeMemoryTool } from './memory.ts'
 import { readResourceTool } from './resources.ts'
 import { commandShell } from './sandbox.ts'
@@ -46,6 +46,8 @@ export {
   type ZoomedImage,
   zoomImage,
 } from './image.ts'
+// MCP 服务的命令行写法：工具的命令判定与 runtime 列出未启用的项目服务使用同一种写法。
+export { formatCommandLine } from './mcp-config.ts'
 // 记忆：runtime/session.ts 装配提示词时读取索引，server/api/memory.ts 读写单条记忆
 export {
   listAllScopedEntries,
@@ -222,7 +224,7 @@ export function registerBuiltinTools(
     readSkillTool,
     writeSkillTool,
     moveSkillTool,
-    ...(opts.mcpConfig ? [writeMcpServerTool, moveMcpServerTool] : []),
+    ...(opts.mcpConfig ? [writeMcpServerTool, moveMcpServerTool, enableMcpServerTool] : []),
     // 生成工具按类别注册：没有图像模型时，图像生成工具的调用必然失败（B5）。
     ...(opts.media ?? []).map((output) => MEDIA_TOOLS[output]),
     ...(opts.media?.some((type) => type === 'video' || type === 'image')

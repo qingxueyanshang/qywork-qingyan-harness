@@ -1483,7 +1483,7 @@ describe('工具清单', () => {
         .filter((t) => t.source === 'builtin' && t.category === c)
         .map((t) => t.name)
         .sort()
-    expect(builtinIn('mcp')).toEqual(['move_mcp_server', 'write_mcp_server'])
+    expect(builtinIn('mcp')).toEqual(['enable_mcp_server', 'move_mcp_server', 'write_mcp_server'])
     expect(builtinIn('plugins')).toEqual(['install_plugin'])
   })
 

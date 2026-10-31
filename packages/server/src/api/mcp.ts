@@ -59,10 +59,18 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
         })),
         failures: ext.mcp.failures,
         /** 已配置但本次未连接的 server 同样列出，否则它们在界面上消失。 */
-        configured: Object.keys(config.servers).map((name) => ({
-          name,
-          scope: config.scopeOf[name] ?? 'project',
-        })),
+        configured: [
+          ...Object.keys(config.servers).map((name) => ({
+            name,
+            scope: config.scopeOf[name] ?? 'project',
+          })),
+          // 项目配置中尚未确认的服务：未启动，列出将要运行的命令。
+          ...config.pending.map((p) => ({
+            name: p.name,
+            scope: 'project' as const,
+            pendingCommand: p.command,
+          })),
+        ],
         error: config.error,
       })
     } finally {

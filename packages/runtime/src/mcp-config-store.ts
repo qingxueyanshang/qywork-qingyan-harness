@@ -8,9 +8,12 @@
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { McpActivation, McpConfigPort } from '@qywork/agent'
-import { parseMcpConfig, toolNamePrefix } from '@qywork/mcp'
-import { scopeDir, scopeRoots, withFileLocks } from '@qywork/tools'
+import { type McpConfig, parseMcpConfig, toolNamePrefix } from '@qywork/mcp'
+import { formatCommandLine, scopeDir, scopeRoots, withFileLocks } from '@qywork/tools'
 import { acquireExtensions, MCP_FILE, refreshExtensions } from './extensions.ts'
+import { approveMcpServers } from './mcp-approvals.ts'
+
+type ApprovedSpec = McpConfig['servers'][string]
 
 export type WritableMcpScope = 'project' | 'global'
 
@@ -139,6 +142,7 @@ export async function mergeMcpServers(
     if (!layer.ok) return { ok: false, kind: 'invalid', error: layer.error }
     const names = Object.keys(incoming)
     const clash = names.filter((name) => name in layer.doc.servers)
+    const approved: Record<string, ApprovedSpec> = {}
     if (clash.length) {
       return {
         ok: false,
@@ -151,8 +155,11 @@ export async function mergeMcpServers(
       const checked = validateServer(name, incoming[name])
       if (!checked.ok) return { ok: false, kind: 'invalid', error: `${name}：${checked.error}` }
       layer.doc.servers[name] = checked.value
+      approved[name] = checked.value as ApprovedSpec
     }
     await saveLayer(layer.doc)
+    // 导入由用户在设置页发起：写入项目层的条目即已确认。
+    if (scope === 'project') await approveMcpServers(workspaceRoot, approved)
     return {
       ok: true,
       saved: true,
@@ -181,6 +188,10 @@ export function makeMcpConfigPort(workspaceRoot: string): McpConfigPort {
         layer.doc.servers[input.name] = checked.value
         try {
           await saveLayer(layer.doc)
+          // 经工具写入即确认：auto 下其命令已经过 `decideCommand`。
+          if (input.scope === 'project') {
+            await approveMcpServers(workspaceRoot, { [input.name]: checked.value as ApprovedSpec })
+          }
           return {
             ok: true,
             path: layer.doc.file,
@@ -221,6 +232,14 @@ export function makeMcpConfigPort(workspaceRoot: string): McpConfigPort {
           } catch (err) {
             return { ok: false, error: `写入目标层失败，原配置未修改：${String(err)}` }
           }
+          if (input.toScope === 'project') {
+            const checked = validateServer(input.name, target.doc.servers[input.name])
+            if (checked.ok) {
+              await approveMcpServers(workspaceRoot, {
+                [input.name]: checked.value as ApprovedSpec,
+              })
+            }
+          }
 
           delete source.doc.servers[input.name]
           try {
@@ -250,6 +269,27 @@ export function makeMcpConfigPort(workspaceRoot: string): McpConfigPort {
           }
         },
       )
+    },
+
+    async commandLineOf(input) {
+      const layer = await loadLayer(workspaceRoot, input.scope)
+      if (!layer.ok || !(input.name in layer.doc.servers)) return null
+      const checked = validateServer(input.name, layer.doc.servers[input.name])
+      if (!checked.ok) return null
+      const spec = checked.value as ApprovedSpec
+      return 'url' in spec ? null : formatCommandLine(spec.command, spec.args ?? [])
+    },
+
+    async enableServer(input) {
+      const layer = await loadLayer(workspaceRoot, 'project')
+      if (!layer.ok) return { ok: false, error: layer.error }
+      if (!(input.name in layer.doc.servers)) {
+        return { ok: false, error: `项目配置中没有 MCP 服务 ${input.name}` }
+      }
+      const checked = validateServer(input.name, layer.doc.servers[input.name])
+      if (!checked.ok) return { ok: false, error: checked.error }
+      await approveMcpServers(workspaceRoot, { [input.name]: checked.value as ApprovedSpec })
+      return { ok: true, activation: await activate(workspaceRoot, false, [input.name]) }
     },
   }
 }

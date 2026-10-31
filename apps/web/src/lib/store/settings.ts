@@ -787,8 +787,11 @@ export interface McpPayload {
   files: { scope: Scope; path: string }[]
   servers: McpServerRow[]
   failures: { server: string; reason: string }[]
-  /** 已配置但本次未连接成功的 server。不列出时它们会从界面上消失。 */
-  configured: { name: string; scope: Scope }[]
+  /**
+   * 已配置但本次未连接成功的 server。不列出时它们会从界面上消失。
+   * `pendingCommand`：项目配置中尚未启用的服务将要运行的命令，经模型询问并取得同意后启用。
+   */
+  configured: { name: string; scope: Scope; pendingCommand?: string }[]
   error: string | null
 }
 export function loadMcp(): Promise<McpPayload> {

@@ -103,6 +103,29 @@ describe('执行入口 fail-closed', () => {
     })
   })
 
+  test('声明了命令行的调用把命令交给权限裁决；未声明的调用不带该字段', async () => {
+    const r = new ToolRegistry()
+    r.register({
+      ...spec('runner'),
+      permissionEffect: 'execute',
+      commandLine: (a) => String(a.cmd),
+    })
+    r.register({ ...spec('plain'), permissionEffect: 'write' })
+    const seen: unknown[] = []
+    const ctx = {
+      requestPermission: async (call: unknown) => {
+        seen.push(call)
+        return { allowed: false as const, reason: '拒绝' }
+      },
+    } as unknown as ToolContext
+    expect(await r.execute('runner', { cmd: 'ls' }, ctx)).toMatchObject({ executed: false })
+    expect(await r.execute('plain', {}, ctx)).toMatchObject({ executed: false })
+    expect(seen).toEqual([
+      { toolName: 'runner', args: { cmd: 'ls' }, command: 'ls' },
+      { toolName: 'plain', args: {} },
+    ])
+  })
+
   test('注册表未命中返回未执行的结构化失败', async () => {
     const out = await new ToolRegistry().execute('missing_tool', {}, {} as unknown as ToolContext)
     expect(out).toEqual({

@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openBatchBudget, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { parseMcpConfig } from '@qywork/mcp'
 import { ContentStore, Store } from '@qywork/store'
 import { writeMcpServerTool } from '../../tools/src/mcp-config.ts'
 import { acquireExtensions, type Extensions } from './extensions.ts'
+import { approveMcpServers } from './mcp-approvals.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { Session } from './session.ts'
 
@@ -411,12 +413,11 @@ test('stdio 最后句柄释放后可立即删除其工作目录，重复释放�
     `let b='';process.stdin.on('data',c=>{b+=c;let i;while((i=b.indexOf('\\n'))>=0){const m=JSON.parse(b.slice(0,i));b=b.slice(i+1);if(m.id===undefined)continue;const result=m.method==='initialize'?{protocolVersion:'2025-06-18',capabilities:{tools:{}}}:m.method==='tools/list'?{tools:[{name:'ping',inputSchema:{type:'object'}}]}:{content:[{type:'text',text:'pong'}]};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n')}})`,
   )
   await mkdir(join(root, '.agents'))
-  await writeFile(
-    join(root, '.agents', 'mcp.json'),
-    JSON.stringify({
-      mcpServers: { probe: { command: process.execPath, args: [script], cwd: 'server' } },
-    }),
-  )
+  const text = JSON.stringify({
+    mcpServers: { probe: { command: process.execPath, args: [script], cwd: 'server' } },
+  })
+  await writeFile(join(root, '.agents', 'mcp.json'), text)
+  await approveMcpServers(root, parseMcpConfig(text).servers)
   const ext = await acquire()
   expect((await call(ext, 'mcp__probe__ping')).status).toBe('success')
   await Promise.all([ext.stop(), ext.stop()])

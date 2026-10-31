@@ -369,9 +369,12 @@ function decodeSafely(input: string): string {
  * **判据是「写入后是否会为自身增加工具」，不是「是否位于配置目录」。** 工作区约束拦截的是越界，
  * 而这些路径位于工作区**内部**，能合法通过 `resolveInWorkspace`。拦截它们是因为写入即**自我提权**：
  *
- * - `.agents/mcp.json`：配置 MCP server，写入一行即增加一批工具；
  * - `.qy/`：`plugins/` 是已安装的插件本体（下次加载时就会执行的代码），
  *   `plugin-data/` 是插件的私有存储。
+ *
+ * **项目层 MCP 配置 `.agents/mcp.json` 不在其中。** 其中的服务只有在用户确认过当前内容后才启动
+ * （`runtime` 的 `mcp-approvals.ts`），任何途径写入的新内容都回到待确认；启用经由 `enable_mcp_server`，
+ * 其命令与 `run_command` 经同一个命令判定。路径层再拦截一次只会形成第二道、且 shell 一侧无法对应的判定。
  *
  * **技能与记忆不在其中**，尽管它们同样位于 `.agents/` 下：一篇 SKILL.md 是一段提示词，
  * 一条记忆是一条事实，两者都不给模型任何新能力。按整个目录拦截的代价是：
@@ -382,14 +385,11 @@ function decodeSafely(input: string): string {
  * 因此经由 `define_role` 只修改 `roles` 的写入路径，而不是放开整个 `.qy/`。
  *
  * **`full` 下不拦截**（判据在 `resolveWritablePath` 的 `unrestricted`）：该模式下
- * `run_command` 全部放行，`echo > .agents/mcp.json` 一行即可写入，只拦截文件工具会形成
+ * `run_command` 全部放行，一行重定向即可写入，只拦截文件工具会形成
  * 「文件工具拦截、shell 不拦截」的两套账。
  *
  * **它无法拦截的情形。** `run_command` 中的路径不经过这里（`rm .qy/mcp.json` 仍能执行）。
  * 这条路径只能依靠 OS 沙箱，Windows 上目前没有。
- *
- * **`.agents/` 下的 MCP 配置必须在其中。** 项目层的 MCP 配置位于 `.agents/`（跨客户端约定的路径），
- * 保护必须覆盖该位置，否则这项防护只剩一个空目录名。
  *
  * **插件不在其中**：插件只从 `~/.qywork/plugins/` 加载，工作区中没有插件目录，
  * 拦截 `.agents/plugins` 等于保护一条没有加载方的路径。
@@ -398,7 +398,7 @@ function decodeSafely(input: string): string {
  * `write_memory` 经由 `resolveInWorkspace` 而不是本清单。记忆应由模型写入，
  * 但必须经由这条唯一的写入路径，而不是用 `write_file` 直接修改。
  */
-export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents/mcp.json']
+export const PROTECTED_DIRS: readonly string[] = ['.qy']
 
 /**
  * **模型**遍历工作区时跳过的噪音目录：依赖树、构建产物、缓存。

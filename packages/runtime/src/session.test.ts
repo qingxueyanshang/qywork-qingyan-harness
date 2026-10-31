@@ -22,6 +22,7 @@ import {
   type TokenDensity,
 } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
+import { parseMcpConfig } from '@qywork/mcp'
 import {
   appendMessage,
   appendStep,
@@ -43,6 +44,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
+import { approveMcpServers } from './mcp-approvals.ts'
 import { buildTailNotes, outputLimitNote } from './prompt.ts'
 import { Session, withAttachments } from './session.ts'
 
@@ -623,10 +625,10 @@ describe('被拒绝时返回的说明', () => {
       s as unknown as {
         decide(
           conversationId: string,
-          m: { toolName: string; args: Record<string, unknown> },
+          m: { toolName: string; args: Record<string, unknown>; command?: string },
         ): Promise<Deny>
       }
-    ).decide('cv_auto', { toolName: 'run_command', args: { command } })
+    ).decide('cv_auto', { toolName: 'run_command', args: { command }, command })
     store.close()
     return v
   }
@@ -665,16 +667,61 @@ describe('权限模式按会话裁决', () => {
           s as unknown as {
             decide(
               conversationId: ConversationId,
-              m: { toolName: string; args: Record<string, unknown> },
+              m: { toolName: string; args: Record<string, unknown>; command?: string },
             ): Promise<{ allowed: boolean }>
           }
-        ).decide(id, { toolName: 'run_command', args: { command: 'rm -rf ~/' } })
+        ).decide(id, {
+          toolName: 'run_command',
+          args: { command: 'rm -rf ~/' },
+          command: 'rm -rf ~/',
+        })
       ).allowed
 
     setConversationMode(store, a, 'full')
     expect([await allowed(a), await allowed(child), await allowed(b)]).toEqual([true, true, false])
     setConversationMode(store, a, 'auto')
     expect(await allowed(child)).toBe(false)
+    store.close()
+  })
+
+  /**
+   * 原始失败形状：auto 下 `write_mcp_server` 写入一条 stdio 命令即启动它，不经过 `run_command` 的命令判定。
+   * 命令由工具声明（`commandLine`），裁决与 `run_command` 使用同一个 `decideCommand`。
+   */
+  test('auto 下写入 MCP 服务的命令经同一命令判定：拒绝清单命中即不写入、不启动', async () => {
+    const { s, store } = await session()
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' }).id
+    setConversationMode(store, conv, 'auto')
+    const registry = (s as unknown as { registry: ToolRegistry }).registry
+    const ctx = { ...toolContext(s, 'rn_mcp', 'm', conv), emit: () => {} } as ToolContext
+    const out = await registry.execute(
+      'write_mcp_server',
+      {
+        name: 'evil',
+        config_json: JSON.stringify({ command: 'sh', args: ['-c', 'rm -rf ~/x'] }),
+      },
+      ctx,
+    )
+    expect(out).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'permission_denied',
+    })
+    const root = (s as unknown as { opts: { workspaceRoot: string } }).opts.workspaceRoot
+    expect(existsSync(join(root, '.agents', 'mcp.json'))).toBe(false)
+
+    const decide = (command: string) =>
+      (
+        s as unknown as {
+          decide(
+            c: ConversationId,
+            m: { toolName: string; args: Record<string, unknown>; command?: string },
+          ): Promise<{ allowed: boolean }>
+        }
+      ).decide(conv, { toolName: 'write_mcp_server', args: {}, command })
+    expect((await decide('npx -y @modelcontextprotocol/server-github')).allowed).toBe(true)
+    s.dispose()
     store.close()
   })
 
@@ -756,15 +803,14 @@ async function workspaceWithMcp(
     ].join(NL),
     'utf8',
   )
-  await writeFile(
-    join(root, '.agents', 'mcp.json'),
-    JSON.stringify({
-      mcpServers: {
-        [server]: { command: process.execPath, args: [join(root, '.agents', 'server.mjs')] },
-      },
-    }),
-    'utf8',
-  )
+  const text = JSON.stringify({
+    mcpServers: {
+      [server]: { command: process.execPath, args: [join(root, '.agents', 'server.mjs')] },
+    },
+  })
+  await writeFile(join(root, '.agents', 'mcp.json'), text, 'utf8')
+  // 项目层的服务经确认后才启动（`mcp-approvals.ts`）：这些用例测试的是确认之后的工具装配。
+  await approveMcpServers(root, parseMcpConfig(text).servers)
   return root
 }
 

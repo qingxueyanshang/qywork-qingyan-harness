@@ -806,6 +806,16 @@ export interface McpConfigPort {
     saved?: boolean
     activation?: McpActivation
   }>
+  /**
+   * 某一层中该服务将启动的命令行，供工具声明 `commandLine`。服务不存在或是 HTTP 服务时为 null。
+   */
+  commandLineOf(input: { name: string; scope: 'project' | 'global' }): Promise<string | null>
+  /** 确认项目层中该服务的当前内容并启动它。确认记录保存在用户一侧，不写入项目文件。 */
+  enableServer(input: { name: string }): Promise<{
+    ok: boolean
+    error?: string
+    activation?: McpActivation
+  }>
 }
 
 /**
@@ -1170,6 +1180,8 @@ export interface ToolContext {
   requestPermission(call: {
     toolName: string
     args: Record<string, unknown>
+    /** 本次调用将执行的命令行（`ToolSpec.commandLine`）。不执行命令的调用没有该字段。 */
+    command?: string
   }): Promise<PermissionVerdict>
   /**
    * 已知凭证：交给子进程之前须剥离的值。
@@ -1385,6 +1397,17 @@ export interface ToolSpec {
   requireOneOf?: readonly (readonly string[])[]
   permissionEffect: PermissionEffect | ((args: Record<string, unknown>) => PermissionEffect)
   /**
+   * 本次调用将执行的命令行。会启动进程的工具声明它，权限裁决对它运行与 `run_command` 相同的命令判定；
+   * 本次调用不执行命令时返回 null。
+   *
+   * 由工具声明，不由裁决方按工具名判断：按名称判断时，新增一个会启动进程的工具，就多出一条
+   * 不经命令判定的路径，且不会报错。
+   */
+  commandLine?: (
+    args: Record<string, unknown>,
+    ctx: ToolContext,
+  ) => string | null | Promise<string | null>
+  /**
    * 并行默认关闭。只有工具显式 opt-in **且**本次具体参数通过 parallelSafe，
    * 才可能与同批次的其他调用放入同一执行波次。
    */
@@ -1538,7 +1561,12 @@ export class ToolRegistry {
     const effect = resolvePermissionEffect(spec, args)
     let callCtx = ctx
     if (effect !== 'internal_control') {
-      const verdict = await ctx.requestPermission({ toolName: name, args })
+      const command = (await spec.commandLine?.(args, ctx)) ?? null
+      const verdict = await ctx.requestPermission({
+        toolName: name,
+        args,
+        ...(command !== null ? { command } : {}),
+      })
       if (!verdict.allowed) {
         // executed=false 是必需的：被拒的调用没有产生任何副作用，
         // 后续的崩溃恢复与重试逻辑依赖这一事实。

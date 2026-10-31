@@ -198,9 +198,9 @@ describe('完全访问：路径边界一并放开', () => {
   test('受保护目录的写入也一并放开', async () => {
     const root = await workspace()
     await expect(
-      resolveWritablePath({ workspaceRoot: root, unrestricted: true }, '.agents/mcp.json'),
+      resolveWritablePath({ workspaceRoot: root, unrestricted: true }, '.qy/team.json'),
     ).resolves.toBeDefined()
-    await expect(resolveWritablePath(root, '.agents/mcp.json')).rejects.toBeInstanceOf(
+    await expect(resolveWritablePath(root, '.qy/team.json')).rejects.toBeInstanceOf(
       ProtectedPathError,
     )
   })
@@ -336,13 +336,10 @@ describe('额外根目录', () => {
     )
   })
 
-  test('工作区的 .qy / .agents 保护不受额外目录影响', async () => {
+  test('工作区的 .qy 保护不受额外目录影响', async () => {
     const { root, extra } = await withExtra()
     await expect(
       resolveWritablePath({ workspaceRoot: root, additional: [extra] }, '.qy/team.json'),
-    ).rejects.toThrow(/权限|扩展配置/)
-    await expect(
-      resolveWritablePath({ workspaceRoot: root, additional: [extra] }, '.agents/mcp.json'),
     ).rejects.toThrow(/权限|扩展配置/)
   })
 
@@ -1685,12 +1682,12 @@ describe('受保护目录', () => {
   })
 
   /*
-   * 保护范围必须覆盖项目层 MCP 配置的实际位置 `.agents/`。
-   * 保护指向其他目录时只覆盖一个空目录，而这在外观上与有效保护无法区分。
+   * 项目层 MCP 配置不受路径保护：其中的服务经用户确认后才启动（runtime 的 `mcp-approvals.ts`），
+   * 任何途径写入的新内容都回到待确认。
    */
-  test('会添加工具的配置被拒绝：mcp.json', async () => {
+  test('项目层 mcp.json 可以写入，其中的服务由启动确认约束', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
-    await expect(resolveWritablePath(dir, '.agents/mcp.json')).rejects.toThrow(/权限|扩展配置/)
+    await expect(resolveWritablePath(dir, '.agents/mcp.json')).resolves.toContain('mcp.json')
   })
 
   /**
@@ -1716,14 +1713,7 @@ describe('受保护目录', () => {
   test('绕过尝试均被拦截', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     const backslash = String.fromCharCode(92)
-    const attempts = [
-      './.qy/x.json',
-      'sub/../.qy/x.json',
-      `.qy${backslash}x.json`,
-      './.agents/mcp.json',
-      'sub/../.agents/mcp.json',
-      `.agents${backslash}mcp.json`,
-    ]
+    const attempts = ['./.qy/x.json', 'sub/../.qy/x.json', `.qy${backslash}x.json`]
     for (const p of attempts) {
       await expect(resolveWritablePath(dir, p)).rejects.toThrow()
     }
@@ -1742,7 +1732,6 @@ describe('受保护目录', () => {
   test('只拦截写入，不拦截读取', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     expect(isProtectedPath(dir, join(dir, '.qy', 'team.json'))).toBe(true)
-    expect(isProtectedPath(dir, join(dir, '.agents', 'mcp.json'))).toBe(true)
     expect(isProtectedPath(dir, join(dir, 'src', 'a.ts'))).toBe(false)
   })
 })
