@@ -768,17 +768,31 @@ function migrateChannelModelSpecs(cfg: QyConfig): string[] {
   return notices
 }
 
+/**
+ * 读取配置文件。文件不存在时返回默认配置；无法读取或无法解析时抛出，报错写明文件路径与解析器原文。
+ *
+ * 不要改为以默认配置继续：之后任何一次保存（设置页、`qy probe`、`qy init --force`）都会以默认配置
+ * 整体覆盖原文件，接口与 API Key 随之丢失，而用户只是手工编辑时留下了一处语法错误。
+ */
 export async function loadConfig(): Promise<QyConfig> {
-  const raw = await readFile(configPath(), 'utf8').catch(() => null)
-  if (raw === null) return structuredClone(DEFAULT_CONFIG)
+  const path = configPath()
+  let raw: string
+  try {
+    raw = await readFile(path, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return structuredClone(DEFAULT_CONFIG)
+    throw new Error(
+      `无法读取配置文件：${err instanceof Error ? err.message : String(err)}。文件：${path}`,
+    )
+  }
 
   let parsed: Partial<QyConfig>
   try {
     parsed = JSON.parse(raw) as Partial<QyConfig>
-  } catch {
-    // 配置损坏时不能导致整个 CLI 无法启动：使用默认值继续，并向调用方报告该错误。
-    log.error('config', '配置文件解析失败，已使用默认配置', { path: configPath() })
-    return structuredClone(DEFAULT_CONFIG)
+  } catch (err) {
+    throw new Error(
+      `配置文件无法解析，修复后重新启动：${err instanceof Error ? err.message : String(err)}。文件：${path}`,
+    )
   }
 
   // 未迁移的全局 mode 可能来自输入区开关，不能视为新对话的显式偏好。

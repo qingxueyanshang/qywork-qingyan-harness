@@ -338,6 +338,31 @@ describe('落盘门禁', () => {
     return (await res!.json()) as { config: RedactedConfig; problems: string[]; version: string }
   }
 
+  /**
+   * 原始失败形状：文件损坏时打开设置页，GET 以默认配置替换运行中的配置；随后保存任意一项，
+   * PUT 以默认配置覆盖原文件。
+   */
+  test('配置文件无法解析时 GET 与 PUT 都失败：运行中的配置不变，文件字节不变', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-broken-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    const file = join(home, 'config.json')
+    const broken = '{ "providers": x }'
+    try {
+      await writeFile(file, broken, 'utf8')
+      const d = { config: cfg() } as unknown as ApiDeps
+      const before = structuredClone(d.config)
+      await expect(get(d)).rejects.toThrow('配置文件无法解析')
+      expect(d.config).toEqual(before)
+      await expect(put(d, redactConfig(cfg()))).rejects.toThrow('配置文件无法解析')
+      expect(d.config).toEqual(before)
+      expect(await readFile(file, 'utf8')).toBe(broken)
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
   test('同一版本同时提交只能成功一次，冲突重放保留两处修改与密钥', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-parallel-'))
     const prev = process.env.QYWORK_HOME
