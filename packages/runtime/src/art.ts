@@ -9,7 +9,14 @@
  */
 
 import { relative } from 'node:path'
-import type { MediaCall, MediaCallResult } from '@qywork/agent'
+import {
+  concurrencyRejected,
+  type MediaCall,
+  type MediaCallResult,
+  type SendOutcome,
+  sendLane,
+  sendLimiter,
+} from '@qywork/agent'
 import {
   buildAdapter,
   type ChatRequest,
@@ -135,13 +142,19 @@ export async function generateArt(
   let text = ''
   let usage: ProviderUsage | null = null
   let truncated = false
+  // 与对话请求取得同一个在途名额：中转的并发按请求方计算（`sendLimiter`）。
+  let release: ((outcome: SendOutcome) => void) | null = null
   try {
+    const granted = await sendLimiter.acquire(sendLane(adapter), signal)
+    release = granted
     for await (const ev of adapter.stream(req)) {
       if (ev.type === 'text_delta') text += ev.delta
       else if (ev.type === 'usage') usage = ev.usage
       else if (ev.type === 'done') truncated = ev.stopReason === 'max_tokens'
     }
+    granted('completed')
   } catch (err) {
+    release?.(concurrencyRejected(err) ? 'concurrency_rejected' : 'failed')
     if (signal.aborted || !(err instanceof ProviderError)) throw err
     return { ok: false, message: `${label}：${err.message}` }
   } finally {
