@@ -126,18 +126,24 @@ function nodeLines(view: CanvasView, n: CanvasNode): string[] {
     )
   }
   lines.push(`  输入：${inputsText(view, n.id)}`)
+  const relabeled = view.relabels?.[n.id]
+  if (relabeled?.length) lines.push(`  发送时改写：${relabeled.join('、')}`)
   const broken = view.references?.[n.id]
   if (broken?.length) lines.push(`  运行前须修正：${broken.join('；')}`)
   return lines
 }
 
-/** 概况中的一行：生成卡写参数、输入与提示词字数，不写提示词正文。 */
+/** 概况中的一行：生成卡写参数、输入与提示词字数，不写提示词正文；发送时的改写只写前三项与种数。 */
 function overviewLine(view: CanvasView, n: CanvasNode): string {
   if (n.type !== 'generate') return nodeLines(view, n).join('\n')
   const broken = view.references?.[n.id]
+  const relabeled = view.relabels?.[n.id] ?? []
+  const shown = relabeled.slice(0, 3).join('、') + (relabeled.length > 3 ? ' 等' : '')
   return (
     `${headLine(view, n)}；参数：${paramsText(n.params)}；输入：${inputsText(view, n.id)}；` +
-    `提示词 ${n.prompt.length} 字${broken?.length ? `；运行前须修正：${broken.join('；')}` : ''}`
+    `提示词 ${n.prompt.length} 字` +
+    (relabeled.length ? `；发送时改写 ${relabeled.length} 种写法：${shown}` : '') +
+    (broken?.length ? `；运行前须修正：${broken.join('；')}` : '')
   )
 }
 
@@ -232,8 +238,9 @@ const CANVAS_NOTE =
   '每段一张摘录卡，name 写该段的用途（如「1-1 视频提示词」），group 与引用它的生成卡相同：画布把摘录卡排在该生成卡左侧的同一行。' +
   '文本的连线即引用：写入引用自动连线，删除引用自动断开；用 connect 连接文本卡而提示词中尚未引用它时，在提示词末尾插入该卡的引用，发送时展开为该段全文。' +
   '文件不存在或摘录无法定位（after、start、end 被改动或不再唯一）时引用它的卡不能运行，读取画布时标为引用失效；' +
-  '提示词（含展开的文本卡）中手写的素材编号与连线数量、或与所选模型的写法不一致时同样不能运行，读取画布与修改回执中标为运行前须修正，' +
-  '换模型后按新模型的写法改写（文本卡改其文件）；' +
+  '提示词（含展开的文本卡）中手写的素材编号与连线数量不一致时同样不能运行，读取画布与修改回执中标为运行前须修正；' +
+  '手写的素材编号（如 @图片1、@Image1、图片1）发送时按所选模型声明的写法改写、编号不变，换模型不需要改写提示词或文本卡；' +
+  '读取画布与修改回执中逐卡列出「发送时改写」，换模型或运行前把其中的改写告知用户；未声明写法的模型按原文发送；' +
   '修改文档后按回执中的原因用 update 给出新的 excerpt。' +
   'output 为 art 的生成卡由对话模型写出一个 HTML 页面（3D 白模、动画、前端设计稿），产物是 generated/ 下的 .html，' +
   '再次运行时在当前页面上修改；它只接受参考图，本身不能作为输入（截图与录制由用户在界面上完成）。' +

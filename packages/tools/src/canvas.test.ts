@@ -321,6 +321,18 @@ describe('canvas 工具', () => {
     expect(full.message).toContain(`  运行前须修正：${broken}`)
   })
 
+  test('read 在概况与全文中列出生成卡发送时改写的素材写法', async () => {
+    const { port } = fakePort(DONE)
+    const relabels = ['@图片1→@Image1', '图片1→Image1', '@音频1→@Audio1', '@图片2→@Image2']
+    port.read = async () => ({ ...view(), relabels: { id2: relabels } })
+    const one = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
+    expect(one.message).toContain(
+      '提示词 11 字；发送时改写 4 种写法：@图片1→@Image1、图片1→Image1、@音频1→@Audio1 等',
+    )
+    const full = await readCanvasTool.fn({ path: 'board.canvas.json', node: ['视频1'] }, ctx(port))
+    expect(full.message).toContain(`  发送时改写：${relabels.join('、')}`)
+  })
+
   test('read 的 render：截图作为图片附上，回执写明尺寸、截图序号、页面脚本报错与无法渲染的原因', async () => {
     const { port } = fakePort(DONE)
     const asked: string[][] = []

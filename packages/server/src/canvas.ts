@@ -70,6 +70,7 @@ import {
   newCanvasId,
   parseCanvas,
   promptInputProblems,
+  promptRelabels,
   recordRun,
   resolveArtRef,
   serializeCanvas,
@@ -671,7 +672,7 @@ export class CanvasService {
     if (broken.length) {
       throw new CanvasFailure(`「${node.name}」的提示词引用不成立：${broken.join('；')}`, 422)
     }
-    const mismatched = promptInputProblems(doc, nodeId, texts, this.styleOf(node))
+    const mismatched = promptInputProblems(doc, nodeId, texts)
     if (mismatched.length) {
       throw new CanvasFailure(`「${node.name}」${mismatched.join('；')}`, 422)
     }
@@ -939,11 +940,6 @@ export class CanvasService {
     })
     this.running.get(key)!.done = done
     return { done }
-  }
-
-  /** 卡片所选模型在提示词中指代素材的写法；未登记时为空，不核对写法。 */
-  private styleOf(node: CanvasGenerateNode): MentionStyle {
-    return this.deps.mentionStyleOf?.(node.output, pickOf(node)) ?? {}
   }
 
   /** 运行与取回共用的前置检查：画布、节点，以及该卡是否正在生成或取回（`entryOf`），由调用方决定并入还是拒绝。 */
@@ -1877,6 +1873,8 @@ export class CanvasService {
     const states: Record<string, CanvasNodeState> = {}
     const tasks: Record<string, CanvasTaskInfo> = {}
     const references: Record<string, string[]> = {}
+    const relabels: Record<string, string[]> = {}
+    const mentions: Record<string, MentionStyle> = {}
     const read = new Map<string, string | null>()
     // 各张卡的文件检查互不依赖，并行执行；文本卡引用的文件先一次读入 `read`，`textsOf` 只取缓存。
     const textPaths = new Set<string>()
@@ -1906,14 +1904,19 @@ export class CanvasService {
               )
             : [],
         ])
+        const style =
+          node.type === 'generate'
+            ? (this.deps.mentionStyleOf?.(node.output, pickOf(node)) ?? {})
+            : {}
         return {
           node,
+          style,
+          relabeled:
+            node.type === 'generate' && texts ? promptRelabels(doc, node.id, style, texts) : [],
           broken: texts
             ? [
                 ...textReferenceProblems(doc, node.id, texts),
-                ...(node.type === 'generate'
-                  ? promptInputProblems(doc, node.id, texts, this.styleOf(node))
-                  : []),
+                ...(node.type === 'generate' ? promptInputProblems(doc, node.id, texts) : []),
               ]
             : [],
           state,
@@ -1921,8 +1924,10 @@ export class CanvasService {
         }
       }),
     )
-    for (const { node, broken, state, nodeTasks } of results) {
+    for (const { node, style, relabeled, broken, state, nodeTasks } of results) {
       if (broken.length) references[node.id] = broken
+      if (relabeled.length) relabels[node.id] = relabeled
+      if (Object.keys(style).length) mentions[node.id] = style
       states[node.id] = state
       for (const [id, task] of nodeTasks) if (task) tasks[id] = task
     }
@@ -1932,6 +1937,8 @@ export class CanvasService {
       states,
       ...(Object.keys(tasks).length ? { tasks } : {}),
       ...(Object.keys(references).length ? { references } : {}),
+      ...(Object.keys(relabels).length ? { relabels } : {}),
+      ...(Object.keys(mentions).length ? { mentions } : {}),
     }
     return agent ? agentView(view, this.deps.paramSpecsOf) : view
   }

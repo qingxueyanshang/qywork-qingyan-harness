@@ -32,6 +32,7 @@ import {
   mediaParamValues,
   modeOf,
   ratioOf,
+  relabelInputs,
   resolveMediaParam,
 } from '@qywork/core'
 import {
@@ -656,7 +657,10 @@ export function GeneratePanel(props: {
     setMenu({ kind: 'pick', anchor, ...(role ? { role } : {}) })
   }
 
-  /** 展开查看的文本引用：点击文本标签切换。内容为文件当前的全文或摘录，与运行时展开的内容相同。 */
+  /**
+   * 展开查看的文本引用：点击文本标签切换。内容为文件当前的全文或摘录；显示时手写的素材编号按所选模型的写法改写
+   * （`relabelInputs`，写法取自 `view.mentions`），与运行时发送的文字相同，换模型后随画布快照更新。
+   */
   const [preview, setPreview] = createSignal<string | null>(null)
   const [previewText] = createResource(preview, async (id) => {
     const source = props.view.doc.nodes.find((n) => n.id === id)
@@ -1155,7 +1159,12 @@ export function GeneratePanel(props: {
       />
       <Show when={preview()}>
         {/* 使用 `loaded()`：`previewText()` 在读取期间使外层 Suspense 显示占位，点击标签时整块画布闪烁。 */}
-        <pre class="canvas-text-preview">{loaded(previewText) ?? ''}</pre>
+        <pre class="canvas-text-preview">
+          {
+            relabelInputs(loaded(previewText) ?? '', props.view.mentions?.[props.node.id] ?? {})
+              .text
+          }
+        </pre>
       </Show>
 
       <Show when={stopping() || stopNotice()}>
@@ -1172,6 +1181,14 @@ export function GeneratePanel(props: {
         {(text) => (
           <output class="canvas-check-notice" title={text()}>
             {text()}
+          </output>
+        )}
+      </Show>
+      {/* 发送时按所选模型改写的手写素材编号（服务端 `promptRelabels`），只占一行，全文在悬停提示中。 */}
+      <Show when={props.view.relabels?.[props.node.id]?.join('、')}>
+        {(text) => (
+          <output class="canvas-relabel-notice" title={text()}>
+            发送时改写：{text()}
           </output>
         )}
       </Show>

@@ -185,6 +185,8 @@ async function mount(
   let extraStates = states
   let extraTasks: NonNullable<CanvasView['tasks']> = {}
   let extraReferences: CanvasView['references']
+  let extraRelabels: CanvasView['relabels']
+  let extraMentions: CanvasView['mentions']
   let written = 0
   let fingerprint = 'd0'
   const snapshots = new Map<string, CanvasDoc>([['d0', doc]])
@@ -196,6 +198,8 @@ async function mount(
       states: extraStates,
       tasks: extraTasks,
       ...(extraReferences ? { references: extraReferences } : {}),
+      ...(extraRelabels ? { relabels: extraRelabels } : {}),
+      ...(extraMentions ? { mentions: extraMentions } : {}),
     })
   const server: Server = {
     hold: null,
@@ -217,6 +221,8 @@ async function mount(
       if (next.states) extraStates = next.states
       if (next.tasks) extraTasks = next.tasks
       if (next.references) extraReferences = next.references
+      if (next.relabels) extraRelabels = next.relabels
+      if (next.mentions) extraMentions = next.mentions
     },
     broken: false,
     quote: null,
@@ -1145,7 +1151,11 @@ describe('画布：生成卡与生成面板', () => {
 
   test('服务端报告运行前须修正的问题时，生成面板在提示词下方显示，不等点击生成', async () => {
     const { host, refs, server } = await mount(CARD)
-    server.setView({ references: { [refs.$v!]: ['提示词写的「@图片1」不是所选模型的图片写法'] } })
+    server.setView({
+      references: {
+        [refs.$v!]: ['提示词引用至图片2，该卡连接了1张图片；图片编号须与连线数量一致'],
+      },
+    })
     const store = await import('../../lib/store/index.ts')
     store.setState('canvasVersion', (v) => v + 1)
     await select(host, refs.$v!)
@@ -1153,7 +1163,7 @@ describe('画布：生成卡与生成面板', () => {
       () => !!host.querySelector('.canvas-check-notice'),
       () => host.querySelector('.canvas-panel')?.innerHTML.slice(0, 300) ?? '',
     )
-    expect(host.querySelector('.canvas-check-notice')?.textContent).toContain('「@图片1」')
+    expect(host.querySelector('.canvas-check-notice')?.textContent).toContain('引用至图片2')
   })
 
   test('画布区比面板窄时面板宽度缩小到画布区宽度', async () => {
@@ -2818,6 +2828,47 @@ describe('画布：生成卡与生成面板', () => {
         () => host.querySelector('.canvas-text-preview')?.textContent === '握手。',
         () => host.querySelector('.canvas-text-preview')?.textContent ?? '',
       )
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  test('所选模型改写手写编号时，提示词下方列出改写，点击文本标签显示改写后发送的文字', async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string) =>
+      String(url).includes(encodeURIComponent('制作脚本.md'))
+        ? Promise.resolve(new Response('## 1-2 入梦\n@图片1用于阿七，参照图片1的阿七握手。\n'))
+        : original(url)) as unknown as typeof fetch
+    try {
+      const { host, server, refs } = await mount([
+        {
+          op: 'add_file',
+          ref: '$e',
+          path: '制作脚本.md',
+          name: '1-2 段',
+          excerpt: { after: '## 1-2 入梦', start: '@图片1', end: '握手。' },
+          x: 0,
+          y: 0,
+        },
+        { op: 'add_generate', ref: '$v', output: 'video', prompt: '@[$e] ', x: 300, y: 0 },
+      ])
+      server.setView({
+        relabels: { [refs.$v!]: ['@图片1→@Image1', '图片1→Image1'] },
+        mentions: { [refs.$v!]: { image: '@Image{n}' } },
+      })
+      const store = await import('../../lib/store/index.ts')
+      store.setState('canvasVersion', (v) => v + 1)
+      await select(host, refs.$v!)
+      const notice = () => host.querySelector('.canvas-relabel-notice')?.textContent ?? ''
+      await waitFor(() => notice() === '发送时改写：@图片1→@Image1、图片1→Image1', notice)
+      const tag = () => host.querySelector<HTMLElement>('.canvas-prompt .canvas-chip.text')
+      await waitFor(
+        () => !!tag(),
+        () => host.querySelector('.canvas-prompt')?.innerHTML ?? '',
+      )
+      tag()!.click()
+      const preview = () => host.querySelector('.canvas-text-preview')?.textContent ?? ''
+      await waitFor(() => preview() === '@Image1用于阿七，参照Image1的阿七握手。', preview)
     } finally {
       globalThis.fetch = original
     }
