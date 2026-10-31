@@ -156,7 +156,8 @@ test('目录导航清除旧选择，路径失败可恢复，取消不执行导�
     expect(button(host, '导入').disabled).toBe(true)
     click(button(host, '下载'))
     await tick()
-    expect(host.querySelector('[role="alert"]')).toBeNull()
+    // 报错行常驻（B9），清除报错即清空其文字。
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('')
     click(button(host, '取消'))
     expect(closed).toBe(true)
     expect(imported).toBe(false)
