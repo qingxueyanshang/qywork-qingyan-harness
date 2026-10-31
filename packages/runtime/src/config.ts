@@ -156,7 +156,7 @@ export interface QyConfig {
    * 测试覆盖「清单内可写 / 清单外仍拒 / 软链逃逸 / 相对路径被拒」四种情形。
    *
    * `full` 下该层不设。不要写成「`full` 不豁免它」，这与代码不符：
-   * `Session.makeToolContext` 在 `full` 下传 `unrestrictedPaths: true`，`resolveInWorkspace` 直接返
+   * `Session.decide` 在 `full` 下放行并带上 `unrestrictedPaths: true`，`resolveInWorkspace` 直接返
    * 回目标路径。「完全访问」的定义是不裁决，路径层同样不设；只放开权限检查而保留路径层，会形
    * 成「`read_file` 被拒、`run_command` 读到」的两套账（见 CLAUDE.md E）。不受模式影响的是凭证
    * 剥离。

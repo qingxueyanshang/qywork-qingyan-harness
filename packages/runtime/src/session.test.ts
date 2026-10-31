@@ -7,12 +7,20 @@
  */
 
 import { afterEach, describe, expect, spyOn, test } from 'bun:test'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
 import type { BrowserPort, DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
-import { DEFAULT_DENSITY, lookupModel, type TokenDensity } from '@qywork/ai'
+import {
+  buildAdapter,
+  DEFAULT_DENSITY,
+  type LlmAdapter,
+  lookupModel,
+  type ProviderProfile,
+  type TokenDensity,
+} from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import {
   appendMessage,
@@ -21,6 +29,7 @@ import {
   createConversation,
   createRun,
   fileReadHash,
+  getRun,
   listConversations,
   listMessages,
   listRecentConversations,
@@ -67,6 +76,16 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
       .schemas()
       .map((t) => t.name)
   return { s, store, names }
+}
+
+/** 按 `ask` 的方式解析本轮规格，再构造工具上下文。 */
+function toolContext(s: Session, runId: string, target: string, conv: string): ToolContext {
+  const inner = s as unknown as {
+    resolveProfile(t: string): ProviderProfile
+    makeToolContext(r: string, e: () => void, t: string, a: LlmAdapter, c: string): ToolContext
+  }
+  const adapter = buildAdapter(inner.resolveProfile(target))
+  return inner.makeToolContext(runId, () => {}, target, adapter, conv)
 }
 
 const delegate: DelegatePort = {
@@ -133,6 +152,37 @@ test('实时重试原因与账本一样脱敏，不把配置密钥显示到等�
     }
     expect(observed).toContain('连接失败')
     expect(observed).not.toContain(secret)
+  } finally {
+    mock.mockRestore()
+    s.dispose()
+    store.close()
+  }
+})
+
+test('生成器内抛出异常时 run 记为失败并保留原文，不记为用户中断', async () => {
+  const { s, store } = await session()
+  const mock = spyOn(
+    s as unknown as { makeLoop(): { run(): AsyncGenerator<AgentEvent> } },
+    'makeLoop',
+  ).mockReturnValue({
+    async *run() {
+      yield* [] as AgentEvent[]
+      throw new Error('装配失败')
+    },
+  })
+  try {
+    let runId: string | undefined
+    const drain = async () => {
+      for await (const ev of s.ask('触发异常')) if (ev.type === 'run.started') runId = ev.runId
+    }
+    await expect(drain()).rejects.toThrow('装配失败')
+    const run = getRun(store, runId as never)
+    expect(run).toMatchObject({
+      status: 'failed',
+      stopReason: 'provider_error',
+      errorMessage: '装配失败',
+      errorCode: 'internal_error',
+    })
   } finally {
     mock.mockRestore()
     s.dispose()
@@ -627,6 +677,42 @@ describe('权限模式按会话裁决', () => {
     expect(await allowed(child)).toBe(false)
     store.close()
   })
+
+  /** 工具上下文每轮构造一次；路径范围必须随每次调用的裁决变化，不得固定为构造时的模式。 */
+  test('同一轮内切换模式：路径范围随每次调用的裁决变化', async () => {
+    const { s, store } = await session()
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' }).id
+    const registry = (s as unknown as { registry: ToolRegistry }).registry
+    const outside = await mkdtemp(join(tmpdir(), 'qywork-outside-'))
+    const run = (name: string, args: Record<string, unknown>, ctx: ToolContext) =>
+      registry.execute(name, args, ctx)
+
+    // full 下构造，本轮中途切到 auto：之后向工作区外写入被拒。
+    setConversationMode(store, conv, 'full')
+    const fromFull = { ...toolContext(s, 'rn_a', 'm', conv), emit: () => {} } as ToolContext
+    const a = join(outside, 'a.txt')
+    expect(
+      (await run('write_file', { path: a, mode: 'create', content: 'a' }, fromFull)).status,
+    ).toBe('success')
+    setConversationMode(store, conv, 'auto')
+    const b = join(outside, 'b.txt')
+    expect(
+      await run('write_file', { path: b, mode: 'create', content: 'b' }, fromFull),
+    ).toMatchObject({ status: 'failure', executed: false })
+    expect(existsSync(b)).toBe(false)
+
+    // auto 下构造，本轮中途切到 full：之后向工作区外写入成功。
+    const fromAuto = { ...toolContext(s, 'rn_b', 'm', conv), emit: () => {} } as ToolContext
+    setConversationMode(store, conv, 'full')
+    const c = join(outside, 'c.txt')
+    expect(
+      (await run('write_file', { path: c, mode: 'create', content: 'c' }, fromAuto)).status,
+    ).toBe('success')
+    expect(existsSync(c)).toBe(true)
+    s.dispose()
+    store.close()
+  })
 })
 
 /**
@@ -785,9 +871,7 @@ describe('外部工具按总量转为按需加载', () => {
     const out = await registry.execute(
       'load_tool',
       { names: ['mcp__fat__t0'] },
-      (
-        s as unknown as { makeToolContext(r: string, e: () => void, m: string, c: string): unknown }
-      ).makeToolContext('rn_x', () => {}, 'm', 'cv_x') as never,
+      toolContext(s, 'rn_x', 'm', 'cv_x') as never,
     )
 
     expect(out.status).toBe('success')
@@ -806,9 +890,7 @@ describe('外部工具按总量转为按需加载', () => {
     await registry.execute(
       'load_tool',
       { names: ['mcp__fat__t0'] },
-      (
-        s as unknown as { makeToolContext(r: string, e: () => void, m: string, c: string): unknown }
-      ).makeToolContext('rn_x', () => {}, 'm', 'cv_x') as never,
+      toolContext(s, 'rn_x', 'm', 'cv_x') as never,
     )
     const root = s as unknown as { opts: { workspaceRoot: string } }
 
@@ -944,11 +1026,8 @@ describe('工具上下文的读取记录', () => {
     const { s, store } = await session()
     const ws = listWorkspaces(store)[0]!
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
-    const make = (
-      s as unknown as {
-        makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
-      }
-    ).makeToolContext.bind(s)
+    const make = (runId: string, _emit: () => void, target: string, conv: string) =>
+      toolContext(s, runId, target, conv)
 
     const first = make('rn_1', () => {}, 'm', conv.id)
     const second = make('rn_2', () => {}, 'm', conv.id)
@@ -1116,11 +1195,8 @@ describe('注入消息的读取', () => {
       payload: { kind: 'user' },
     })
 
-    const make = (
-      s as unknown as {
-        makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
-      }
-    ).makeToolContext.bind(s)
+    const make = (runId: string, _emit: () => void, target: string, conv: string) =>
+      toolContext(s, runId, target, conv)
     const ctx = make(run.id, () => {}, 'm', conv.id)
     const address = `${run.id}:${step.id}`
 
@@ -1174,11 +1250,8 @@ describe('注入消息的读取', () => {
       providerBatchId: 'bt_1',
     })
 
-    const make = (
-      s as unknown as {
-        makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
-      }
-    ).makeToolContext.bind(s)
+    const make = (runId: string, _emit: () => void, target: string, conv: string) =>
+      toolContext(s, runId, target, conv)
     const ctx = make(run.id, () => {}, 'm', conv.id)
     const address = `${run.id}:${first.id}`
 
@@ -1259,11 +1332,8 @@ describe('带图执行记录的读取', () => {
       outcome: { status: 'success', executed: true, message: '读取 a.ts', data: { lines: 3 } },
     } as never)
 
-    const make = (
-      s as unknown as {
-        makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
-      }
-    ).makeToolContext.bind(s)
+    const make = (runId: string, _emit: () => void, target: string, conv: string) =>
+      toolContext(s, runId, target, conv)
     const ctx = make(run.id, () => {}, 'm', conv.id)
 
     const byCall = ctx.history?.byCallId('call_shot')
@@ -1393,11 +1463,7 @@ describe('浏览器控制与本轮执行绑定', () => {
 
   test('没有端口时工具上下文中没有浏览器通道', async () => {
     const { s, store } = await session()
-    const ctx = (
-      s as unknown as {
-        makeToolContext(r: string, e: () => void, t: string, c: string): ToolContext
-      }
-    ).makeToolContext('run_1', () => {}, 'deepseek-v4-flash', 'cv_1')
+    const ctx = toolContext(s, 'run_1', 'deepseek-v4-flash', 'cv_1')
     expect(ctx.browser).toBeUndefined()
     s.dispose()
     store.close()
@@ -1406,11 +1472,7 @@ describe('浏览器控制与本轮执行绑定', () => {
   test('有端口时原样透传给工具上下文', async () => {
     const browser = fakeBrowser()
     const { s, store } = await session({ browser: browser.port })
-    const ctx = (
-      s as unknown as {
-        makeToolContext(r: string, e: () => void, t: string, c: string): ToolContext
-      }
-    ).makeToolContext('run_1', () => {}, 'deepseek-v4-flash', 'cv_1')
+    const ctx = toolContext(s, 'run_1', 'deepseek-v4-flash', 'cv_1')
     expect(ctx.browser).toBe(browser.port)
     s.dispose()
     store.close()
@@ -1501,11 +1563,7 @@ test('本会话的附件路径进入只读根，read_file 可读', async () => {
     content: '看图',
     attachments: [{ type: 'image', name: 'shot.png', mime: 'image/png', size: 1, path: shot }],
   })
-  const ctx = (
-    s as unknown as {
-      makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
-    }
-  ).makeToolContext('rn_x', () => {}, 'm', conv.id)
+  const ctx = toolContext(s, 'rn_x', 'm', conv.id)
   expect(ctx.readOnlyRoots).toContain(shot)
   // 同目录下的其他文件不因此可读：授权的是附件本身。
   expect(ctx.readOnlyRoots).not.toContain(outside)

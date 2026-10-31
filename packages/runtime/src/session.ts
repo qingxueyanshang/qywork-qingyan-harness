@@ -447,7 +447,7 @@ export class Session {
         await this.loadExtensionTools(adapter.spec.density, conversationId)
       },
       makeToolContext: (runId, emit) =>
-        this.makeToolContext(runId, emit, target, conversationId as ConversationId),
+        this.makeToolContext(runId, emit, target, adapter, conversationId as ConversationId),
       persist: this.makePersistence(),
       ...(compaction ? { compaction } : {}),
     })
@@ -512,7 +512,10 @@ export class Session {
      * 同行写入数据库。loop 内任何一次 provider 请求都不再临时重新计算，重启也从同一份快照
      * 重建，因此上下文字节不会随执行波次变化。
      */
-    const adapter = buildAdapter(this.resolveProfile(target))
+    // 本轮的规格只在此处解析一次：工具上下文、摘要与记账都使用这一份。各自重新解析时，
+    // 轮次进行中保存配置会使它们取得不同的规格，接口被删除时记账一步抛出异常。
+    const profile = this.resolveProfile(target)
+    const adapter = buildAdapter(profile)
     if (!this.extensions) {
       await this.loadExtensionTools(adapter.spec.density, conversationId)
     }
@@ -731,9 +734,9 @@ export class Session {
       workspaceRoot: this.opts.workspaceRoot,
       messageIdUpperBound: run.messageIdUpperBound,
       summarize: makeSummarizer({
-        profile: () => this.resolveProfile(target),
-        // 与本轮请求使用同一档位；未传入时每次实时读取模型配置。
-        effort: () => options?.effort ?? resolveModel(this.opts.config, target)?.effort,
+        // 与本轮请求使用同一份规格与同一档位。
+        profile: () => profile,
+        effort: () => effort,
         signal: this.opts.signal,
       }),
       preserveAssistantReasoning,
@@ -813,7 +816,7 @@ export class Session {
             conversationId,
             workspaceId: this.workspaceId,
             model,
-            provider: this.resolveProfile(target).kind,
+            provider: adapter.kind,
             inputTokens: ev.usage.inputTokens,
             outputTokens: ev.usage.outputTokens,
             cachedTokens: ev.usage.cachedTokens,
@@ -839,6 +842,20 @@ export class Session {
         }
         yield out
       }
+    } catch (error) {
+      // 生成器内抛出的异常记为失败并保留原文，再交给调用方报告。不要留给 `finally`：
+      // 那里只能区分用户停止与消费方关闭，异常会被记为用户中断。
+      if (!finished && !this.opts.signal.aborted) {
+        finished = true
+        const pe = error instanceof ProviderError ? error : null
+        finishRun(store, run.id, {
+          status: 'failed',
+          stopReason: 'provider_error',
+          errorMessage: pe?.message ?? (error instanceof Error ? error.message : String(error)),
+          errorCode: pe?.code ?? 'internal_error',
+        })
+      }
+      throw error
     } finally {
       // 先停止心跳。停止较晚不影响正确性（只更新 running 的行），但最先停止才能保证
       // 无论下面哪一步抛出异常，都不会留下仍在推送心跳的定时器。
@@ -1084,7 +1101,7 @@ export class Session {
    *
    * `full` 模式下仍保留的只有凭证剥离。`scrubEnv` 在两种模式下行为相同：它不是裁决，而是「明文
    * key 不进入子进程」这一与模式无关的事实。路径约束不在此列：`full` 的语义是「全部权限」，路径
-   * 边界随之一并放开（`makeToolContext` 的 `unrestrictedPaths`）。
+   * 边界随之一并放开（放行时带上 `unrestrictedPaths`）。
    *
    * 只放开权限检查而保留路径层不会更安全，只会形成两套账：同一模式下
    * `run_command` 全部放行，shell 中一个 `cd` 即可离开工作区，而 `read_file` 仍被拦截；
@@ -1115,8 +1132,10 @@ export class Session {
       args: Record<string, unknown>
     },
   ): Promise<PermissionVerdict> {
-    // 每次裁决从账本读取：运行中切换模式后，下一条命令即按新模式裁决。
-    if (permissionModeOf(this.opts.store, conversationId) === 'full') return { allowed: true }
+    // 每次裁决从账本读取：运行中切换模式后，下一次调用即按新模式裁决，路径范围随裁决一并给出。
+    if (permissionModeOf(this.opts.store, conversationId) === 'full') {
+      return { allowed: true, unrestrictedPaths: true }
+    }
 
     if (call.toolName !== 'run_command') return { allowed: true }
 
@@ -1163,14 +1182,13 @@ export class Session {
     runId: RunId,
     emit: (e: AgentEvent) => void,
     target: string | ModelRef,
+    adapter: LlmAdapter,
     conversationId: ConversationId,
   ): ToolContextBase {
     const model = typeof target === 'string' ? target : target.model
     const secrets = collectSecrets(this.opts.config)
     const store = this.opts.store
-    // 三项逐模型的能力取自同一份 spec：分别解析时，切换模型后三项可能来自
-    // 两次不同的解析结果。
-    const adapter = buildAdapter(this.resolveProfile(target))
+    // 逐模型的能力取自本轮的 adapter，与请求一侧是同一份规格。
     const spec = adapter.spec
     const attached = listMessages(store, conversationId, null).flatMap((m) =>
       m.attachments.map((a) =>
@@ -1286,17 +1304,14 @@ export class Session {
       // `read_file` 的 region 截取局部放大，附件不在工作区内时，缺少这一条即无法读取。
       ...(readOnly.length ? { readOnlyRoots: readOnly } : {}),
       ...(this.opts.office ? { office: this.opts.office } : {}),
-      // 「完全访问」即全部权限，路径边界也由它决定。这与下方 `decide` 中
-      // 「`full` 不裁决」是同一规则的两个方面：只放开权限检查而保留路径层，
-      // 会形成「read_file 被拒、run_command 可读」的两套账。
-      ...(permissionModeOf(store, conversationId) === 'full' ? { unrestrictedPaths: true } : {}),
+      // 路径范围不在此处固定：`decide` 每次调用时读取模式，放行时一并给出。
       requestPermission: (call) => this.decide(conversationId, call),
     }
   }
 }
 
 export interface SummarizerOptions {
-  /** 每次调用时实时解析：发起摘要时会话模型可能已被切换。 */
+  /** 每次发起摘要时调用。轮次内的自动压缩返回本轮开始时的规格；手动压缩在发起时解析。 */
   profile: () => ProviderProfile
   /** 用户为当前「接口 × 模型」选择的思考档位；undefined 表示省略该字段，沿用模型默认值。 */
   effort?: () => EffortLevel | undefined
