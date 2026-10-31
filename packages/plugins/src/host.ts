@@ -17,17 +17,13 @@
  * - 崩溃与无响应：插件段错误不会导致宿主退出，超时只拒绝当次调用。
  * - 宿主能力的越权使用：`host.*` 的每次调用都经过 manifest 权限检查。
  *
- * 强制隔离的实际范围（`resolvePluginRuntime` 如实报告，两个维度分开）：
- * - `sandboxed`：Node 的 `--permission` 限制文件系统、子进程、worker 与原生插件。
- *   需要 node 20+。
+ * 强制隔离的实际范围（`resolvePluginRuntime`）：
+ * - Node 的 `--permission` 限制文件系统、子进程、worker 与原生插件。插件只由 node 20+ 运行，
+ *   没有 node 时插件不加载，因此不存在不受隔离的插件进程。
  * - `netGuarded`：网络访问限制（`netguard.ts`）移除进程内的直接网络通道，
- *   网络访问只剩 `host.net.fetch`。需要 node 22.15 / 23.5+。
+ *   网络访问只剩 `host.net.fetch`。需要 node 22.15 / 23.5+，低于该版本时如实上报 false。
  *
- * 两者都不成立时（bun、低版本 node、用户指定了运行时），插件进程是普通的 Node/Bun
- * 进程：它能通过 `import('node:fs')` 读取主目录，通过 `import('node:net')` 打开套接字。
- * 此时 manifest 权限约束的是「经由宿主执行的操作」，不是「插件能执行的操作」。
- *
- * 即使两者都成立，仍有一个定义上的缺口：取得 `process:exec` 的插件能启动子进程，
+ * 仍有一个定义上的缺口：取得 `process:exec` 的插件能启动子进程，
  * 从而能运行 curl，因此这种情况下 `netGuarded` 如实报告 false。
  * 此外，网络访问限制是进程内的移除而不是内核边界，准确的表述是
  * 「网络访问从默认可用变为必须主动绕过」，不是「插件完全无法联网」。
@@ -106,12 +102,6 @@ export interface PluginHostOptions {
   dir: string
   /** 插件入口的绝对路径。 */
   entry: string
-  /**
-   * 运行插件所用的运行时。未填写时自动解析（优先 node，只有 node 能提供强制隔离）。
-   *
-   * 不能默认使用 `process.execPath`：发布产物是单文件二进制，该路径指向 qy 本身。
-   */
-  runtime?: string
   /** 工作区根目录。沙箱据此决定插件可读写的范围。 */
   workspaceRoot?: string
   /** 宿主能力实现。插件的 `host.*` 调用最终由此实现处理，权限已在外层校验。 */
@@ -155,16 +145,14 @@ export class PluginHost {
     if (this.proc) return
 
     const rt = resolvePluginRuntime({
-      ...(this.opts.runtime ? { override: this.opts.runtime } : {}),
       workspaceRoot: this.opts.workspaceRoot ?? this.opts.dir,
       pluginDir: this.opts.dir,
       permissions: this.permissions,
     })
     this.runtime = rt
-    // 两个维度分开报告。合并为「已沙箱」会把网络也报告为已限制。
     this.opts.onLog?.(
       `[${this.opts.manifest.id}] 运行时 ${rt.command}` +
-        `（沙箱 ${rt.sandboxed ? '有' : '无'} · 网络访问限制 ${rt.netGuarded ? '有' : '无'}）：${rt.note}`,
+        `（网络访问限制 ${rt.netGuarded ? '有' : '无'}）：${rt.note}`,
     )
 
     const proc = spawn(rt.command, [...rt.args, this.opts.entry], {

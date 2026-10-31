@@ -332,11 +332,11 @@ async function checkPlugins(workspaceRoot: string): Promise<Line[]> {
         out.push({ level: 'warn', text: `${p.manifest.id} · 进程未启动，隔离状态未知` })
         continue
       }
-      // 两个维度分开报告，不合并为「已隔离」：二者的成立条件不同（版本要求不同，
-      // bun 上两者都不具备），合并后「已隔离」在不同机器上含义不同。
-      const bits = `沙箱 ${rt.sandboxed ? '有' : '无'} · 网络访问限制 ${rt.netGuarded ? '有' : '无'}`
+      // 文件系统与子进程的隔离在插件加载时即已成立，没有 node 20 以上时插件不加载，
+      // 原因列在加载失败中。网络访问限制另需 node 22.15 以上，因此单独报告。
+      const bits = `网络访问限制 ${rt.netGuarded ? '有' : '无'}`
       out.push({
-        level: rt.sandboxed && rt.netGuarded ? 'ok' : 'warn',
+        level: rt.netGuarded ? 'ok' : 'warn',
         text: `${p.manifest.id} · ${bits}`,
         detail: rt.note,
       })

@@ -6,9 +6,8 @@
  * - 不能把 `process.execPath` 用作默认运行时。发布产物是单文件二进制，
  *   该路径指向 qy 本身，用它运行插件只会输出用法说明：插件在开发机上正常，
  *   在安装了发布包的用户机器上全部无法启动。
- * - 隔离范围必须如实上报，且分维度上报。沙箱（`--permission`）与网络访问限制
- *   （`netguard.ts`）的成立条件不同：版本要求不同，bun 上两者均不具备。
- *   合并为一句「已隔离」会给出一个不成立的承诺，用户的知情同意因此失去依据。
+ * - 插件只由 node 20 以上运行，权限模型始终生效；网络访问限制另需 node 22.15 以上，
+ *   必须如实上报。合并为一句「已隔离」会给出一个不成立的承诺，用户的知情同意因此失去依据。
  *
  * 因此这里有两类断言，缺一不可：上报口径是否正确（`netGuarded` 何时应为
  * false），以及实际能否拦截（逐条执行逃逸路径）。
@@ -18,7 +17,7 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { PluginHost } from './host.ts'
 import type { PluginManifest, PluginPermission } from './manifest.ts'
 import { resolvePluginRuntime, sandboxArgs } from './runtime.ts'
@@ -158,33 +157,31 @@ describe('网络访问限制的上报口径', () => {
 })
 
 describe('运行时解析', () => {
-  test('显式指定时直接使用，不再推测', () => {
-    const rt = resolvePluginRuntime({ ...req(), override: '/opt/custom-node' })
-    expect(rt.command).toBe('/opt/custom-node')
-    expect(rt.args).toEqual([])
-    expect(rt.sandboxed).toBe(false)
-  })
-
   /**
-   * 自动解析必须选中能执行 JS 的运行时。
-   * 单文件二进制中 `process.execPath` 是 qy 本身，选中它会使所有插件都无法启动。
+   * 运行时只能是 PATH 上的 node，并带权限模型参数。
+   * 单文件二进制中 `process.execPath` 是 qy 本身，bun 没有权限模型，两者都不能作为备选。
    */
-  test('自动解析出的运行时是 node 或 bun，不是宿主二进制', () => {
+  test('解析出 PATH 上的 node，并带权限模型参数', () => {
     const rt = resolvePluginRuntime(req(['workspace:read']))
-    const name = basename(rt.command).toLowerCase()
-    expect(name.startsWith('node') || name.startsWith('bun')).toBe(true)
+    expect(rt.command).toBe(Bun.which('node')!)
+    expect(rt.args[0]).toMatch(/^--(experimental-)?permission$/)
+    expect(rt.args).toContain('--allow-fs-read=/ws')
   })
 
-  test('解析到 node 时启用沙箱；解析到 bun 时说明没有沙箱', () => {
-    const rt = resolvePluginRuntime(req(['workspace:read']))
-    if (basename(rt.command).toLowerCase().startsWith('node')) {
-      expect(rt.sandboxed).toBe(true)
-      expect(rt.args).toContain('--allow-fs-read=/ws')
-    } else {
-      // bun 没有权限模型，此时必须上报 false：含糊的上报比不上报更糟。
-      expect(rt.sandboxed).toBe(false)
-      expect(rt.note).toContain('node')
-    }
+  test('PATH 中没有 node 时报错，不以其他运行时代替', () => {
+    const child = Bun.spawnSync(
+      [
+        process.execPath,
+        '-e',
+        `
+        const { resolvePluginRuntime } = await import(${JSON.stringify(join(import.meta.dir, 'runtime.ts'))})
+        try { resolvePluginRuntime({ workspaceRoot: '/ws', pluginDir: '/p', permissions: [] }); console.log('resolved') }
+        catch (e) { console.log(String(e.message)) }
+      `,
+      ],
+      { env: { ...process.env, PATH: '' } },
+    )
+    expect(child.stdout.toString().trim()).toBe('插件需要 node 20 以上版本，PATH 中未找到 node。')
   })
 })
 
@@ -244,20 +241,13 @@ describe('沙箱实测：只声明 workspace:read 的插件', () => {
         deadline: Date.now() + 60_000,
       },
     )) as Record<string, string>
-    const sandboxed = h.runtime?.sandboxed === true
     const netGuarded = h.runtime?.netGuarded === true
     h.stop()
-    return { out, sandboxed, netGuarded }
+    return { out, netGuarded }
   }
 
-  test('沙箱生效时无法读取主目录、无法写入磁盘、无法启动子进程', async () => {
-    const { out, sandboxed } = await probePlugin()
-    if (!sandboxed) {
-      // 本机没有 node 20+。不静默跳过：断言宿主如实上报没有隔离，
-      // 使测试仍然验证一项事实，而不是恒定通过。
-      expect(out.home).toBe('OK')
-      return
-    }
+  test('无法读取主目录、无法写入磁盘、无法启动子进程', async () => {
+    const { out } = await probePlugin()
     expect(out.home).toBe('BLOCKED')
     expect(out.write).toBe('BLOCKED')
     expect(out.exec).toBe('BLOCKED')
@@ -270,7 +260,7 @@ describe('沙箱实测：只声明 workspace:read 的插件', () => {
   test('直接打开套接字被拦截', async () => {
     const { out, netGuarded } = await probePlugin()
     if (!netGuarded) {
-      // 本机无法安装网络访问限制（bun / 低版本 node）。不静默跳过：断言宿主如实上报没有限制，
+      // 本机 node 低于 22.15，无法安装网络访问限制。不静默跳过：断言宿主如实上报没有限制，
       // 且此时网络确实可用，使测试仍然验证一项事实。
       expect(out.net).toBe('OK')
       return
