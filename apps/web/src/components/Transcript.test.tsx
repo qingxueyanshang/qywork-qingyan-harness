@@ -13,7 +13,7 @@
  * 本文件另外锁定三项依赖 DOM 的行为：工具图片的回放、编排画布与展开态的归属、
  * 回执不渲染；只有子 agent 运行时，收尾条之外没有第二条读数条。
  * 运行条另覆盖轮次开始时的交接：耗时列保留位置，开始时刻到达后不显示负耗时。
- * 另覆盖读数条报错的悬停全文与失败工具调用的展开内容。
+ * 另覆盖读数条报错的悬停全文与失败工具调用的展开内容，以及回看到顶部时加载更早一页。
  *
  * DOM 在本文件中注册、用后注销，使用动态 import 的原因同 `settings/LoadState.test.tsx`。
  */
@@ -2030,6 +2030,108 @@ describe('定稿的正文不随会话流的增长重建', () => {
     expect(host.querySelector('.history-button')?.textContent).toContain('加载更早记录')
 
     dispose()
+  })
+
+  /** 原始失败形状：滚动到顶部后不加载，只能点击「加载更早记录」。 */
+  test('回看到顶部时加载更早一页，跟随底部时不加载', async () => {
+    const store = await import('../lib/store/index.ts')
+    const apiBefore = store.client.api
+    const calls: string[] = []
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path,
+    ) => {
+      calls.push(path)
+      return {
+        messages: [
+          {
+            id: 'ms_old',
+            conversationId: CV,
+            role: 'user',
+            content: '更早的问题',
+            attachments: [],
+            createdAt: 1,
+          },
+        ],
+        runs: [],
+        steps: [],
+        todos: [],
+        workflowStarts: [],
+        nextCursor: null,
+        live: { runId: null, seq: 0, request: null },
+      }
+    }
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: 'ms_old', error: null },
+          changes: null,
+          runUserMessageId: null,
+          runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
+          usage: null,
+          generatingToolCall: false,
+          request: null,
+          error: null,
+          transcript: [{ id: 'ms_new', kind: 'user', text: '最新的问题' }],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { ConversationStream } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(
+      () => (
+        <ConversationStream
+          conversationId={CV}
+          items={store.viewOf(CV).transcript}
+          live={() => false}
+          closed={() => true}
+          variant="main"
+        />
+      ),
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      const scroller = host.querySelector<HTMLElement>('.conversation-scroll')!
+      const inner = host.querySelector<HTMLElement>('.conversation-stream-inner')!
+      Object.defineProperties(scroller, {
+        scrollHeight: { configurable: true, get: () => 1000 },
+        clientHeight: { configurable: true, get: () => 100 },
+      })
+      resize(inner)
+      expect(scroller.scrollTop).toBe(1000)
+
+      // 没有滚动手势的 scroll 不改变跟随状态，跟随底部时到达顶部不加载。
+      scroller.scrollTop = 0
+      scroller.dispatchEvent(new Event('scroll'))
+      expect(calls).toEqual([])
+
+      scroller.scrollTop = 1000
+      scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
+      scroller.scrollTop = 500
+      scroller.dispatchEvent(new Event('scroll'))
+      // 平滑滚动后续的 scroll 事件不带滚动意图。
+      scroller.scrollTop = 0
+      scroller.dispatchEvent(new Event('scroll'))
+      for (let i = 0; i < 100 && store.viewOf(CV).history.nextCursor !== null; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toContain('before=ms_old')
+      expect(host.textContent).toContain('更早的问题')
+      expect(host.querySelector('.history-button')).toBeNull()
+    } finally {
+      dispose()
+      host.remove()
+      ;(store.client as unknown as { api: typeof apiBefore }).api = apiBefore
+    }
   })
 })
 

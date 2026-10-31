@@ -211,6 +211,10 @@ export function createConversationScroll(conversationId: () => string | null) {
     scrollIntent = false
     const id = conversationId()
     if (id) writeSession(scrollKey(id), pinned() ? undefined : gap)
+    // 回看到顶部时加载更早一页。按位置判定，不要求 `scrollIntent`：平滑滚动时一次滚轮派发
+    // 多个 scroll 事件，只有第一个带有滚动意图。跟随底部时位于顶部只说明内容不足一屏，
+    // 此时不触发：`loadOlderAnchored` 会关闭跟随，此后的新内容位于视口下方。
+    if (!pinned() && scroller.scrollTop <= 2) void loadOlderAnchored()
   }
 
   /*
