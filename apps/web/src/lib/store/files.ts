@@ -1,8 +1,24 @@
 /** 文件打开入口与文件树定位。定位请求只传递一次操作，选中状态仍由文件树持有。 */
 import { createSignal } from 'solid-js'
 import { openLinkInPanel } from './browser.ts'
-import { CANVAS_SUFFIX, canvasAvailable, canvasTitle } from './canvas.ts'
 import { openCanvasTab, openPanel, setOpenFile, workspace } from './ui.ts'
+
+/** 画布文件的后缀。文件树据此用画布页签打开文件。 */
+export const CANVAS_SUFFIX = '.canvas.json'
+
+/**
+ * 当前客户端是否可以使用画布。画布的操作均按鼠标设计（滚轮缩放、Shift 框选、悬停显示连接点、从文件树拖入），
+ * 主指针不是鼠标时不提供入口，画布文件按文本打开。
+ */
+export function canvasAvailable(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches
+}
+
+/** 页签名称：去掉 `.canvas.json` 后缀的文件名。 */
+export function canvasTitle(path: string): string {
+  const name = path.split('/').pop() ?? path
+  return name.toLowerCase().endsWith(CANVAS_SUFFIX) ? name.slice(0, -CANVAS_SUFFIX.length) : name
+}
 
 export const [fileRevealRequest, setFileRevealRequest] = createSignal<{
   workspaceId: string
