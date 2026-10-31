@@ -374,7 +374,9 @@ struct Pressed {
     last_down: Option<Down>,
     /// 最近一次指针移动的时刻，按下之前据此停顿（`PRESS_DELAY`）。
     moved_at: Option<Instant>,
-    /// 最近一次按下的时刻，抬起之前据此等待（`HOLD_TIME`）。不用 `last_down`：双击之后它被清空。
+    /// 最近一次按下送达之后的时刻，抬起之前据此等待（`HOLD_TIME`）。不要改为发送之前的时刻：
+    /// 目标处理按下所用的时间会从按住时长中扣除，目标收到的间隔短于 `HOLD_TIME`。
+    /// 不用 `last_down`：双击之后它被清空。
     pressed_at: Option<Instant>,
 }
 
@@ -443,7 +445,6 @@ impl MessageSink {
                     at,
                     when: now,
                 });
-                state.pressed_at = Some(now);
                 if !state.buttons.contains(&button) {
                     state.buttons.push(button);
                 }
@@ -458,7 +459,11 @@ impl MessageSink {
             };
             (receiver, msg, button_flags(&state.buttons), at)
         };
-        send_message(receiver, msg, flags, client_lparam(receiver, at))
+        let sent = send_message(receiver, msg, flags, client_lparam(receiver, at));
+        if down {
+            self.state.borrow_mut().pressed_at = Some(Instant::now());
+        }
+        sent
     }
 
     fn wheel(&self, notches: i32, horizontal: bool) -> Sent {
@@ -1382,6 +1387,10 @@ mod tests {
         WM_SYSCHAR,
     ];
 
+    /// 测试窗口处理一次左键按下所用的时间。按住时长须从按下处理完毕起算，目标收到按下与抬起的间隔
+    /// 才不短于 `HOLD_TIME`；实际窗口处理按下的时间同样不为零。
+    const PRESS_HANDLING: Duration = Duration::from_millis(5);
+
     unsafe extern "system" fn record(
         hwnd: HWND,
         msg: u32,
@@ -1389,6 +1398,9 @@ mod tests {
         lparam: LPARAM,
     ) -> LRESULT {
         if RECORDED.contains(&msg) {
+            if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK {
+                std::thread::sleep(PRESS_HANDLING);
+            }
             let ctrl = GetKeyState(i32::from(VK_CONTROL)) < 0;
             if let Ok(mut seen) = SEEN.lock() {
                 seen.push(Seen {
