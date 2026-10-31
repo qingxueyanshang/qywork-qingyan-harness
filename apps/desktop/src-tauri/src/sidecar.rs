@@ -20,7 +20,6 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::mpsc::Receiver;
 
-const RESTART_MAX_DELAY_MS: u64 = 15_000;
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
 /// 启动失败对话框中附带的 stderr 长度。远小于 `STDERR_TAIL_BYTES`：MessageBox 不支持滚动，
 /// 文本超出屏幕高度时无法点击确定按钮。取尾部：退出前最后输出的内容即错误本身。
@@ -253,6 +252,10 @@ fn supervise(
 ) {
     tauri::async_runtime::spawn(async move {
         let mut stderr_tail = String::new();
+        // 重启退避与放弃条件与电脑控制 worker、浏览器进程共用 `restart.rs`：连续短时退出达到上限即停止，
+        // 显示启动报告并退出应用。无限重启时，退出原因不会显示在任何位置。
+        let mut attempt = 0_u32;
+        let mut started = std::time::Instant::now();
         loop {
             let previous_exit = loop {
                 match rx.recv().await {
@@ -312,16 +315,21 @@ fn supervise(
                 previous_exit.stderr_tail.trim_end().replace('\n', "\n    ")
             );
 
-            let mut delay_ms = 400_u64;
             loop {
+                attempt = crate::restart::next_attempt(attempt, started.elapsed());
+                let Some(delay) = crate::restart::restart_delay(attempt) else {
+                    give_up(&app, attempt, &previous_exit, &stderr_tail);
+                    return;
+                };
+                tokio::time::sleep(delay).await;
+                while crate::updater::installing(&app) {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
                 if handle.0.lock().stopping {
                     return;
                 }
-                if crate::updater::installing(&app) {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    continue;
-                }
 
+                started = std::time::Instant::now();
                 match spawn_process(
                     &app,
                     info.port,
@@ -357,12 +365,25 @@ fn supervise(
                     }
                     Err(error) => log::error!("qy serve 重新启动失败：{error}"),
                 }
-
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                delay_ms = (delay_ms * 2).min(RESTART_MAX_DELAY_MS);
             }
         }
     });
+}
+
+/// 连续启动失败后停止重启：显示启动报告并退出应用。
+///
+/// 报告附带最后输出的 stderr 尾部，与首次启动失败的报告相同（`spawn`）：退出原因只在其中。
+/// 退出经由 `AppHandle::exit`，终端、浏览器等子进程按正常退出路径终止。
+fn give_up(app: &AppHandle, attempts: u32, previous_exit: &PreviousExit, stderr_tail: &str) {
+    let tail = tail_of(stderr_tail.trim_end(), FATAL_STDERR_TAIL_BYTES);
+    let error = anyhow!(
+        "qy serve 连续 {attempts} 次启动后退出，已停止重启（kind={} code={:?}）\n\n{tail}",
+        previous_exit.kind,
+        previous_exit.code,
+    );
+    log::error!("{error}");
+    crate::startup::report_and_show(error.as_ref());
+    app.exit(1);
 }
 
 /// 启动 sidecar 并等待其输出令牌与端口。
