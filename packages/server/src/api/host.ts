@@ -424,6 +424,6 @@ function installPip(dep: DepSpec, ctx: EnvProbeContext): Response {
     started: true,
     command: `"${target.python}" ${argv.slice(argv.indexOf('-m')).join(' ')}`,
     // 文档库安装到解释器自身的目录，不修改 PATH；重新检测即可生效。
-    note: '安装窗口已打开，完成后重新检测即可。',
+    note: '安装窗口已打开。安装完成后重新打开本页即显示结果。',
   })
 }

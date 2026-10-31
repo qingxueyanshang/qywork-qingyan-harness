@@ -21,7 +21,6 @@ import type { OfficeHost, QyConfig } from '@qywork/runtime'
 import { detectSandbox } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import pkg from '../package.json' with { type: 'json' }
-import { probeEnvironment } from './api/host.ts'
 import type { EventBus, Subscriber } from './bus.ts'
 import type { SocketData } from './deps.ts'
 import type { RunManager } from './runs.ts'
@@ -132,12 +131,6 @@ export function handleHello(
      */
     capabilities: {
       sandbox: sandboxCapability(),
-      // 同样**每次握手重新探测**：安装完成后重新连接即应显示，
-      // 而不是要求用户重启整个服务，因为用户无从得知需要重启。这些探针都不缓存。
-      environment: probeEnvironment({
-        config: deps.config,
-        ...(deps.office ? { office: deps.office } : {}),
-      }),
       browser: deps.browser(),
       desktop: deps.desktop(),
     },

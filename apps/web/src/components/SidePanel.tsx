@@ -654,7 +654,8 @@ function FileBrowser() {
   const [renaming, setRenaming] = createSignal<FileNode | null>(null)
   const [nameError, setNameError] = createSignal<string | null>(null)
   const [menuAt, setMenuAt] = createSignal<{ node: FileNode; x: number; y: number } | null>(null)
-  const [revealError, setRevealError] = createSignal<string | null>(null)
+  /** 文件树上一次操作（展开、删除、在资源管理器中显示）的失败原因，显示在文件树顶部。 */
+  const [actionError, setActionError] = createSignal<string | null>(null)
   const [doomed, setDoomed] = createSignal<FileNode | null>(null)
   const [query, setQuery] = sessionSignal(`qywork.files.query:${ws}`, '')
   const [rootOpen, setRootOpen] = sessionSignal(`qywork.files.root:${ws}`, true)
@@ -715,6 +716,15 @@ function FileBrowser() {
     void client
       .api<{ nodes: FileNode[] }>(`/api/files/tree?path=${encodeURIComponent(path)}&depth=1`)
       .then((res) => setKids((m) => new Map(m).set(path, res.nodes)))
+      .catch((err) => {
+        // 收起该节点：保持展开而内容为空时，无法区分空目录与读取失败。再次展开即重新请求。
+        setExpanded((s) => {
+          const next = new Set(s)
+          next.delete(path)
+          return next
+        })
+        setActionError(`无法展开 ${path}：${explainApiError(err, '读取失败')}`)
+      })
   }
 
   /**
@@ -759,7 +769,7 @@ function FileBrowser() {
     },
     menu: (node, x, y) => {
       setSelected(node)
-      setRevealError(null)
+      setActionError(null)
       setMenuAt({ node, x, y })
     },
     creating,
@@ -828,6 +838,7 @@ function FileBrowser() {
         if (openFile() === node.path) setOpenFile(null)
         if (selected()?.path === node.path) setSelected(null)
       })
+      .catch((err) => setActionError(`无法删除 ${node.path}：${explainApiError(err, '删除失败')}`))
       .finally(() => setDoomed(null))
   }
 
@@ -937,15 +948,15 @@ function FileBrowser() {
           )}
         </Show>
 
-        <Show when={revealError()}>
+        <Show when={actionError()}>
           {(msg) => (
             <div class="tree-hint" role="alert">
-              无法打开目录：{msg()}
+              {msg()}
               <button
                 class="icon-btn"
                 type="button"
                 aria-label="关闭错误提示"
-                onClick={() => setRevealError(null)}
+                onClick={() => setActionError(null)}
               >
                 <IconX size={12} />
               </button>
@@ -985,7 +996,7 @@ function FileBrowser() {
             x={at().x}
             y={at().y}
             onClose={() => setMenuAt(null)}
-            onError={setRevealError}
+            onError={(msg) => setActionError(`无法打开目录：${msg}`)}
             onRename={() => {
               setCreating(null)
               setNameError(null)

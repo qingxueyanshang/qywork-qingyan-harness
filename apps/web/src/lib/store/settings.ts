@@ -10,6 +10,7 @@ import type {
   ChannelSpec,
   Conversation,
   EffortLevel,
+  EnvDependency,
   MediaKind,
   MediaOutput,
   MediaParamDefinition,
@@ -793,6 +794,11 @@ export interface McpPayload {
 }
 export function loadMcp(): Promise<McpPayload> {
   return client.api<McpPayload>('/api/mcp')
+}
+
+/** 运行环境：qywork 调用的外部程序是否已安装。服务端每次请求时重新探测。 */
+export async function loadEnvironment(): Promise<EnvDependency[]> {
+  return (await client.api<{ environment: EnvDependency[] }>('/api/host/environment')).environment
 }
 
 /**

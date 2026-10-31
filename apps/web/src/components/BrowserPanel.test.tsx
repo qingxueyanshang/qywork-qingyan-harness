@@ -58,7 +58,6 @@ async function mount(tabId: string, browser: BrowserCapability) {
   const store = await import('../lib/store/index.ts')
   store.setState('capabilities', {
     sandbox: { backend: 'none', active: false, reason: '' },
-    environment: [],
     browser,
   } as never)
   store.setWorkspace(WS)
