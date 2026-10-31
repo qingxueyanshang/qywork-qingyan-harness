@@ -30,7 +30,7 @@ import { claimDueSchedules, type ScheduleClaim, type Store } from '@qywork/store
  * 调度精度是分钟级（`diagnoseSchedule` 拒绝小于 1 分钟的间隔），30 秒的 tick 保证分钟边界
  * 不会被错过。
  */
-const SCHEDULER_TICK_MS = 30_000
+export const SCHEDULER_TICK_MS = 30_000
 
 export interface SchedulerDeps {
   canStart?: () => boolean

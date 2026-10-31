@@ -1,5 +1,5 @@
 /** Google 与 xAI 生成接口的请求、任务恢复、错误终态及计价回归。 */
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { defaultMediaKind, MEDIA_KIND_OUTPUT, type MediaKind } from '@qywork/core'
 import { findMediaModel, lookupMediaModel, mediaCatalog, mediaCost, quoteMedia } from './catalog.ts'
 import { download } from './http.ts'
@@ -323,15 +323,25 @@ describe('Gemini Interactions', () => {
         ? new Response('unavailable', { status: 503 })
         : Response.json(completed('video'))
     }
-    const result = await a.run(request(), { signal: signal(), resumeTaskId: 'task-1' })
-    expect(result.files).toEqual([{ bytes: MP4, mime: 'video/mp4' }])
-    expect(queries).toBe(2)
+    // 任务查询的首次间隔（5 秒）缩短为 1 毫秒；请求静默上限等其余计时器保持原值。
+    const original = globalThis.setTimeout
+    const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: () => void,
+      ms?: number,
+    ) => original(fn, ms === 5_000 ? 1 : ms)) as typeof setTimeout)
+    try {
+      const result = await a.run(request(), { signal: signal(), resumeTaskId: 'task-1' })
+      expect(result.files).toEqual([{ bytes: MP4, mime: 'video/mp4' }])
+      expect(queries).toBe(2)
+    } finally {
+      timers.mockRestore()
+    }
     reply = () => new Response('not found', { status: 404 })
     const err = await a
       .run(request(), { signal: signal(), resumeTaskId: 'task-1' })
       .catch((e: unknown) => e)
     expect((err as MediaError).pendingTaskId).toBe('task-1')
-  }, 15_000)
+  })
 
   test('Omni 首帧与参考图组合按实际图片顺序声明用途', async () => {
     reply = () => Response.json(completed('video'))

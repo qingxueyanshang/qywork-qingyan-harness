@@ -3,7 +3,7 @@
  * 型号规格按拉取后保存在配置中的形式构造（`StoredMediaModel.spec`）。
  */
 
-import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import type { MediaCall } from '@qywork/agent'
 import { lookupMediaModel, mediaCatalog, mediaKindsOf, quoteMedia } from '@qywork/ai'
@@ -1049,21 +1049,30 @@ test.each([false, true])(
   'NOT_START 继续等待原任务，不提前进入待取回：resume=%s',
   async (resume) => {
     taskStatuses = ['NOT_START']
-    const phases: string[] = []
-    const result = await makeMediaPort(config(FULL_PARAMS)).generate(
-      call({
-        ...(resume ? { resumeTaskId: TASK } : {}),
-        onStatus: (s) => phases.push(s),
-      }),
-      signal(),
-    )
-    expect(result).toMatchObject({ ok: true, model: FULL_PARAMS })
-    expect(phases).toEqual(['queued'])
-    expect(seen.filter((s) => s.method === 'POST')).toHaveLength(resume ? 0 : 1)
-    expect(seen.filter((s) => s.path === `/v1/video/generations/${TASK}`)).toHaveLength(2)
-    expect(seen.at(-1)?.path).toBe(`/generated/${TASK}.mp4`)
+    // 任务查询的首次间隔（5 秒）缩短为 1 毫秒；请求静默上限等其余计时器保持原值。
+    const original = globalThis.setTimeout
+    const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: () => void,
+      ms?: number,
+    ) => original(fn, ms === 5_000 ? 1 : ms)) as typeof setTimeout)
+    try {
+      const phases: string[] = []
+      const result = await makeMediaPort(config(FULL_PARAMS)).generate(
+        call({
+          ...(resume ? { resumeTaskId: TASK } : {}),
+          onStatus: (s) => phases.push(s),
+        }),
+        signal(),
+      )
+      expect(result).toMatchObject({ ok: true, model: FULL_PARAMS })
+      expect(phases).toEqual(['queued'])
+      expect(seen.filter((s) => s.method === 'POST')).toHaveLength(resume ? 0 : 1)
+      expect(seen.filter((s) => s.path === `/v1/video/generations/${TASK}`)).toHaveLength(2)
+      expect(seen.at(-1)?.path).toBe(`/generated/${TASK}.mp4`)
+    } finally {
+      timers.mockRestore()
+    }
   },
-  10000,
 )
 
 test('任务记录中的扣费额度按站点充值价折算后记账，优先于单价', async () => {

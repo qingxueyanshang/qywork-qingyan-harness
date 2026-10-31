@@ -118,6 +118,8 @@ export interface PluginHostOptions {
   onCapability: HostCapabilityHandler
   /** 诊断输出。 */
   onLog?: (line: string) => void
+  /** 启动握手超时，毫秒。缺省为 `READY_TIMEOUT_MS`，仅供回归测试缩短等待。 */
+  readyTimeoutMs?: number
 }
 
 export class PluginHost {
@@ -213,12 +215,13 @@ export class PluginHost {
   }
 
   private async waitReady(): Promise<void> {
-    const deadline = Date.now() + READY_TIMEOUT_MS
+    const timeoutMs = this.opts.readyTimeoutMs ?? READY_TIMEOUT_MS
+    const deadline = Date.now() + timeoutMs
     while (!this.ready) {
       if (this.exited) throw new Error(`插件启动即退出：${this.opts.manifest.id}`)
       if (Date.now() > deadline) {
         this.stop()
-        throw new Error(`插件启动超时（${READY_TIMEOUT_MS}ms）：${this.opts.manifest.id}`)
+        throw new Error(`插件启动超时（${timeoutMs}ms）：${this.opts.manifest.id}`)
       }
       await new Promise((r) => setTimeout(r, 20))
     }

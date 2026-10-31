@@ -53,6 +53,7 @@ function host(
     permissions?: PluginManifest['permissions']
     onCapability?: (m: string, p: Record<string, unknown>, c: HostCallContext) => Promise<unknown>
     onLog?: (line: string) => void
+    readyTimeoutMs?: number
   } = {},
 ) {
   return new PluginHost({
@@ -62,6 +63,7 @@ function host(
     runtime: process.execPath,
     onCapability: opts.onCapability ?? (async () => null),
     ...(opts.onLog ? { onLog: opts.onLog } : {}),
+    ...(opts.readyTimeoutMs === undefined ? {} : { readyTimeoutMs: opts.readyTimeoutMs }),
   })
 }
 
@@ -157,8 +159,8 @@ describe('进程生命周期', () => {
     const entry = join(dir, 'index.mjs')
     // 保持运行但不发送 ready。
     await writeFile(entry, 'setInterval(() => {}, 1000)\n', 'utf8')
-    expect(host(entry, dir).start()).rejects.toThrow('超时')
-  }, 15_000)
+    expect(host(entry, dir, { readyTimeoutMs: 200 }).start()).rejects.toThrow('超时（200ms）')
+  })
 })
 
 describe('隔离：插件无法取得宿主的模块', () => {
