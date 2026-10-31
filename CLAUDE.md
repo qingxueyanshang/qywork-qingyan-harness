@@ -129,8 +129,8 @@ F 列出明确不采纳的做法，写明它们是为了防止再次被引入。
 `server.ts` 只做装配，HTTP 路由按域拆分到 `api/*`，由 `api/index.ts` 的处理器表分派；
 `packages/agent/src/loop/` 的 `AgentLoop.run` 只做轮次编排，压缩、发送与重发、收尾、
 工具波次各在一个文件中，共用 `run-state.ts` 的同一份状态。
-反例：`apps/web/src/components/Composer.tsx` 的 `Composer` 一个组件同时承担模型选择、
-附件、语音输入与提交。
+反例：`apps/web/src/components/canvas/CanvasPanel.tsx` 的 `CanvasPanel` 一个组件同时承担
+与服务端的同步、键盘与剪贴板、指针拖动与缩放、右键菜单、时间线剪辑与导出、上传与节点渲染。
 判据不是行数而是理由数：无法说出「这个文件只做 X」时就应拆分。
 
 **O 对扩展开放、对修改关闭——新增功能不应修改既有代码。**
@@ -456,6 +456,9 @@ sidecar 这一步拦截的是只在打包时才暴露的失败（例如 Bun 升�
 
 **每次都运行全量，不设范围限制**：限定范围会遗漏跨包回归。全量耗时上升时，修正耗时的来源
 （按真实时间等待的用例改为注入间隔或时钟），不缩小运行范围。
+
+**测试按文件分进程并行运行**（`scripts/run-tests.ts` 的 `--parallel`）。每个文件在独立的全局环境中运行，
+因此用例不得依赖其他文件留下的状态：串行运行时被前一个文件掩盖的顺序依赖，并行时会直接失败。
 
 类型档位见 `tsconfig.base.json`，lint 规则见 `biome.json`，两处是唯一事实来源。
 此处只提示最常见的问题：`exactOptionalPropertyTypes` 已开启，`{ x?: number }` **不接受**
