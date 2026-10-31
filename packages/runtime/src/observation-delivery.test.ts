@@ -700,6 +700,12 @@ function persistence(store: Store, counters: { userSteps: number }): LoopPersist
   let seq = 0
   return {
     nextSeq: () => ++seq,
+    markImagesUndelivered: () => [],
+    markRequestHeaders: () => {},
+    markRequestHedge: () => {},
+    markRequestFirstEvent: () => {},
+    markRequestContent: () => {},
+    recordRequestDiagnostic: () => {},
     openTextStep: (runId, s) => appendStep(store, { runId, seq: s, kind: 'text', content: '' }).id,
     openThinkingStep: (runId, s) =>
       appendStep(store, { runId, seq: s, kind: 'thinking', content: '' }).id,

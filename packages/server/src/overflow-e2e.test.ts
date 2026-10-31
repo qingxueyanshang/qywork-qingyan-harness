@@ -188,6 +188,12 @@ test('容量拒绝 → 识别凭证 → 压缩一次 → 无法缩小时以 cont
     systemPrompt: 'sys',
     persist: {
       nextSeq: () => 1,
+      markImagesUndelivered: () => [],
+      markRequestHeaders: () => {},
+      markRequestHedge: () => {},
+      markRequestFirstEvent: () => {},
+      markRequestContent: () => {},
+      recordRequestDiagnostic: () => {},
       openTextStep: () => 'st_1',
       openThinkingStep: () => 'st_1',
       landUserStep: () => 'st_user_1',

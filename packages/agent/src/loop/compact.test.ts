@@ -46,6 +46,12 @@ function noopPersistence(recorded: RecordedCompaction[] = []): LoopPersistence {
   let seq = 0
   return {
     nextSeq: () => ++seq,
+    markImagesUndelivered: () => [],
+    markRequestHeaders: () => {},
+    markRequestHedge: () => {},
+    markRequestFirstEvent: () => {},
+    markRequestContent: () => {},
+    recordRequestDiagnostic: () => {},
     openTextStep: () => `st_${seq}`,
     openThinkingStep: () => `st_think_${seq}`,
     landUserStep: () => `st_user_${seq}`,

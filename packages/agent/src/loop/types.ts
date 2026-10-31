@@ -191,9 +191,8 @@ export interface LoopPersistence {
    * 将同一会话中这些工具调用的 step 标记为图片未送达，返回被标记的 step id。
    *
    * 调用可能属于该会话的上一个 run：上一轮失败之后继续执行时，未送达的图片来自 history。
-   * 可选仅为兼容测试夹具；生产装配必须提供。
    */
-  markImagesUndelivered?(runId: RunId, toolCallIds: string[]): string[]
+  markImagesUndelivered(runId: RunId, toolCallIds: string[]): string[]
   /**
    * `batchId` 是产生该段正文的请求 id，写入 `provider_batch_id`。
    * 工具行与同一次生成的思考行取相同的值：投影据此识别生成边界。
@@ -306,20 +305,20 @@ export interface LoopPersistence {
    * 响应头到达。`at` 是传输层观察到的时刻，由 `response_started` 事件携带，
    * 不是本方法被调用的时刻。
    */
-  markRequestHeaders?(requestId: string, at: number): void
+  markRequestHeaders(requestId: string, at: number): void
   /**
    * 响应头之前补发过第二份请求。成功时由 `response_started` 携带，失败时取自诊断中的传输读数；
    * 两份请求都没有返回响应头时同样记录。
    */
-  markRequestHedge?(requestId: string, hedge: ProviderHedge): void
-  /** 可选仅为兼容测试夹具；生产装配必须提供。 */
-  markRequestFirstEvent?(requestId: string): void
+  markRequestHedge(requestId: string, hedge: ProviderHedge): void
+  /** 首个 provider 事件到达。 */
+  markRequestFirstEvent(requestId: string): void
   /**
    * 收到一段非空思考、正文或新增工具参数。每一段都调用，首值与末值由写库端分别保留。
    *
    * `at` 是适配器解析该段时的观察时刻，由 provider 事件携带，不是本方法被调用的时刻。
    */
-  markRequestContent?(
+  markRequestContent(
     requestId: string,
     at: number,
     kind?: ProviderRequestContentKind,
@@ -346,8 +345,8 @@ export interface LoopPersistence {
     /** 该回执是否作为占用锚点，由主请求的收尾（`settleResponse`）判定；其余调用不传，记为否。 */
     anchored?: boolean,
   ): void
-  /** 失败现场与重试裁决。可选只为兼容轻量测试夹具，生产装配必须提供。 */
-  recordRequestDiagnostic?(requestId: string, diagnostic: ProviderRequestDiagnostic): void
+  /** 失败现场与重试裁决。 */
+  recordRequestDiagnostic(requestId: string, diagnostic: ProviderRequestDiagnostic): void
 }
 
 export interface RunInput {

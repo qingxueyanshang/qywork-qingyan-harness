@@ -61,14 +61,14 @@ export function createSummaryTrace(
       })
     },
     sent: (requestId: string): void => persist.markRequestSent(requestId),
-    headers: (requestId: string, at: number): void => persist.markRequestHeaders?.(requestId, at),
+    headers: (requestId: string, at: number): void => persist.markRequestHeaders(requestId, at),
     hedge: (requestId: string, hedge: ProviderHedge): void =>
-      persist.markRequestHedge?.(requestId, hedge),
-    firstEvent: (requestId: string): void => persist.markRequestFirstEvent?.(requestId),
+      persist.markRequestHedge(requestId, hedge),
+    firstEvent: (requestId: string): void => persist.markRequestFirstEvent(requestId),
     content: (requestId: string, at: number, kind?: ProviderRequestContentKind): void =>
-      persist.markRequestContent?.(requestId, at, kind, false),
+      persist.markRequestContent(requestId, at, kind, false),
     diagnostic: (requestId: string, diagnostic: ProviderRequestDiagnostic): void =>
-      persist.recordRequestDiagnostic?.(requestId, diagnostic),
+      persist.recordRequestDiagnostic(requestId, diagnostic),
     settle: (
       requestId: string,
       status: 'received' | 'uncertain' | 'rejected',
