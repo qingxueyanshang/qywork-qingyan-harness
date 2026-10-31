@@ -4223,7 +4223,6 @@ describe('内置浏览器能力投影', () => {
   const caps = (connected: boolean) =>
     ({
       sandbox: { backend: 'none', active: false, reason: '' },
-      environment: [],
       browser: { connected, runtimeSupported: connected },
     }) as never
 

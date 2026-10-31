@@ -112,18 +112,6 @@ export interface ServerCapabilities {
    */
   sandbox: { backend: string; active: boolean; reason: string }
   /**
-   * 本机是否已安装 qywork 所需的外部程序。每一条都对应一处实际的 `Bun.spawn`，
-   * 而不是装饰性的环境检查清单：
-   * bash → `run_command`，git → 版本面板，rg → 搜索加速，node → 插件运行时。
-   *
-   * 报告路径而不是布尔值，理由与 `sandbox` 报告后端名相同：「已安装」不足以让用户知道
-   * 使用的是哪一个（Git Bash、Homebrew 的 bash、用户指定的 MSYS），
-   * 而这正是排查「同一条命令在终端中能运行、在此处不能运行」时唯一有用的信息。
-   *
-   * 该字段与其消费者（设置页「运行环境」一节）必须同时存在，只有生产者没有消费者的字段不应加入。
-   */
-  environment: EnvDependency[]
-  /**
    * 内置浏览器。两项状态分开报告，不合并为一个布尔值。
    *
    * 合并后，「运行时版本不达标」会被理解为「浏览器不可用」，而此时手动浏览仍然可用。
@@ -184,10 +172,12 @@ export interface DesktopCapability {
 }
 
 /**
- * 一个外部程序依赖。
+ * 一个外部程序依赖，由 `GET /api/host/environment` 返回，每次请求时重新探测。
  *
  * 加入该表的条件：代码中确有一处 `Bun.spawn` 调用它。「安装后更好」「同类工具都列出了」
  * 不构成理由：这类清单会让用户面对大量与其无关的红色标记，真正出错的条目被掩盖。
+ *
+ * 不经握手下发：握手只在连接时发生一次，安装完成后界面无法得到新结果。
  */
 export interface EnvDependency {
   /** 稳定 id，安装路由据此查询常量表。 */

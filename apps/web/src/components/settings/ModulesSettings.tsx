@@ -1,8 +1,15 @@
 import { createResource, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
-import { client, type SettingsPage, setSettingsPage, state } from '../../lib/store/index.ts'
+import {
+  client,
+  explainApiError,
+  type SettingsPage,
+  setSettingsPage,
+  state,
+} from '../../lib/store/index.ts'
 import { IconChevron } from '../Icons.tsx'
 import { config, ensureConfig, patchConfig } from './configStore.ts'
+import { environment, environmentError, reloadEnvironment } from './environmentStore.ts'
 import { LoadState } from './LoadState.tsx'
 import { OnOff } from './OnOff.tsx'
 
@@ -69,10 +76,12 @@ export function mediaSwitchOn(cfg: { mediaEnabled?: boolean } | null): boolean {
 
 /**
  * Office 分组的可用状态：Python 与文档库均已安装才可用，缺失项在「通用 → 运行环境」中安装。
- * 读取握手中的运行环境表，与该页的两行使用同一次检测结果。
+ * 与该页的两行读取同一份检测结果（`environmentStore.ts`）。
  */
 function officeState(): { text: string; missing: boolean } {
-  const rows = state.capabilities?.environment
+  const failed = environmentError()
+  if (failed) return { text: explainApiError(failed, '读取失败'), missing: true }
+  const rows = environment()
   const python = rows?.find((d) => d.id === 'python')
   const libs = rows?.find((d) => d.id === 'office-libs')
   if (!python || !libs) return { text: '读取中…', missing: false }
@@ -81,9 +90,11 @@ function officeState(): { text: string; missing: boolean } {
   return { text: '可用', missing: false }
 }
 
-/** 命令语法由检测结果决定（bash → pwsh 7 → Windows PowerShell 5.1）；握手只报告 bash 一项。 */
+/** 命令语法由检测结果决定（bash → pwsh 7 → Windows PowerShell 5.1）；运行环境表只报告 bash 一项。 */
 function shellNote(): string {
-  const row = state.capabilities?.environment.find((d) => d.id === 'bash')
+  const failed = environmentError()
+  if (failed) return explainApiError(failed, '读取失败')
+  const row = environment()?.find((d) => d.id === 'bash')
   if (!row) return '读取中…'
   if (row.path) return '已检测到 bash，命令使用 POSIX 语法。'
   if (row.required) return '未检测到可用的 shell，run_command 未注册。'
@@ -355,6 +366,7 @@ interface ToolRow {
 export function ModulesSettings() {
   // 分组标题的开关读写同一份服务端配置，与各设置页共用（见 `configStore.ts`）。
   ensureConfig()
+  void reloadEnvironment()
   const [data, { refetch }] = createResource(() => client.api<{ tools: ToolRow[] }>('/api/tools'))
 
   /** 后端已按类目排序，此处只分组，不重新排序；只有说明行、没有工具的模块追加在末尾。 */

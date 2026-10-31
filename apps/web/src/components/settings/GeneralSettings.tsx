@@ -6,7 +6,6 @@ import {
   followUpMode,
   setFollowUpMode,
   setTheme,
-  state,
   type ThemePref,
   theme,
   workspace,
@@ -21,6 +20,7 @@ import {
   patchConfig,
   reloadConfig,
 } from './configStore.ts'
+import { environment, environmentError, reloadEnvironment } from './environmentStore.ts'
 import { LoadState } from './LoadState.tsx'
 import { PathRow, Row } from './Row.tsx'
 import { UpdateSettings } from './UpdateSettings.tsx'
@@ -55,7 +55,8 @@ const PERMISSION_MODES: { id: PermissionMode; label: string }[] = [
  * 不提供点击即报错的按钮（B5）。
  */
 function EnvironmentRows() {
-  const deps = () => state.capabilities?.environment ?? []
+  void reloadEnvironment()
+  const deps = () => environment() ?? []
   const [busy, setBusy] = createSignal('')
   const [result, setResult] = createSignal('')
 
@@ -77,6 +78,9 @@ function EnvironmentRows() {
 
   return (
     <>
+      <Show when={environment() === null}>
+        <LoadState error={environmentError()} onRetry={() => void reloadEnvironment()} />
+      </Show>
       {/* 使用行式布局，不使用 `stack`。按钮是宽度有限的控件，应在右缘对齐：
           四行按钮各自换行排在左侧，会使本节高度增加一倍，而浏览时视线
           只需扫过右缘（`Row.tsx` 的判据）。路径虽长，但它是说明而不是控件，

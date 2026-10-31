@@ -449,6 +449,98 @@ describe('在资源管理器中显示', () => {
   })
 })
 
+/**
+ * 原始失败形状：子目录获取失败后节点保持展开、内容为空、没有任何提示；
+ * 删除失败时确认框关闭，文件树没有变化，也没有提示。
+ */
+describe('文件树操作失败的终态', () => {
+  async function mount(api: (path: string) => unknown) {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    store.client.api = async <T,>(path: string): Promise<T> => api(path) as T
+    restoreApi = () => {
+      store.client.api = originalApi
+    }
+    store.setWorkspace({ id: 'ws_tree_fail', root: 'C:\\w', name: '项目' })
+    store.setSidePanel('files')
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+    await waitFor(
+      () => !!host.querySelector('.tree-top .tree-item'),
+      () => host.innerHTML,
+    )
+    const row = (name: string) =>
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.tree-top .tree-item')).find((item) =>
+        item.textContent?.includes(name),
+      )!
+    return { host, row }
+  }
+
+  // 子层不随根请求返回（`children` 缺失），展开时按需获取。
+  const ROOT = {
+    nodes: [
+      { name: '深层', path: '深层', kind: 'dir', size: 0, mtime: 1 },
+      { name: 'a.txt', path: 'a.txt', kind: 'file', size: 1, mtime: 1 },
+    ],
+  }
+
+  test('展开子目录失败：节点收起并显示原因，再次展开时重新请求', async () => {
+    let fail = true
+    const page = await mount((path) => {
+      if (path.startsWith('/api/files/tree?path=')) {
+        if (fail) throw new Error('无法读取目录')
+        return { nodes: [{ name: 'b.txt', path: '深层/b.txt', kind: 'file', size: 1, mtime: 1 }] }
+      }
+      if (path.startsWith('/api/files/tree')) return ROOT
+      throw new Error(`未预期请求：${path}`)
+    })
+    page.row('深层').click()
+    await waitFor(
+      () => !!page.host.querySelector('[role="alert"]'),
+      () => page.host.innerHTML,
+    )
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toContain('无法展开 深层')
+    expect(page.row('深层').getAttribute('aria-expanded')).not.toBe('true')
+
+    fail = false
+    page.row('深层').click()
+    await waitFor(
+      () => page.host.textContent?.includes('b.txt') ?? false,
+      () => page.host.innerHTML,
+    )
+  })
+
+  test('删除失败：确认框关闭后显示原因', async () => {
+    const page = await mount((path) => {
+      if (path === '/api/files/delete') throw new Error('文件被占用')
+      if (path.startsWith('/api/files/tree')) return ROOT
+      throw new Error(`未预期请求：${path}`)
+    })
+    page
+      .row('a.txt')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    const item = Array.from(page.host.querySelectorAll<HTMLButtonElement>('.tree-menu-item')).find(
+      (b) => b.textContent === '删除',
+    )!
+    item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    item.click()
+    await waitFor(
+      () => !!document.querySelector('.confirm-dialog'),
+      () => document.body.innerHTML,
+    )
+    document.querySelector<HTMLButtonElement>('.confirm-actions .btn-primary')!.click()
+    await waitFor(
+      () => !!page.host.querySelector('[role="alert"]'),
+      () => page.host.innerHTML,
+    )
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toContain('无法删除 a.txt')
+    expect(document.querySelector('.confirm-dialog')).toBeNull()
+  })
+})
+
 describe('文件页刷新', () => {
   test('点击一次同时重取文件树与当前预览', async () => {
     const store = await import('../lib/store/index.ts')
@@ -1272,7 +1364,6 @@ describe('看板按当前端实际具备的能力列出各行', () => {
     }
     store.setState('capabilities', {
       sandbox: { backend: 'none', active: false, reason: '' },
-      environment: [],
       browser: {
         connected: true,
         runtimeSupported: true,

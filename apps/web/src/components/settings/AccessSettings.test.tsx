@@ -104,7 +104,6 @@ async function mount(
   const previousCaps = store.state.capabilities
   setState('capabilities', {
     sandbox: { backend: 'none', active: false, reason: '' },
-    environment: [],
     browser: { connected: false, runtimeSupported: false },
     desktop: capability,
   } as never)

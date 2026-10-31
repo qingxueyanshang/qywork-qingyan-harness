@@ -1,9 +1,9 @@
 /**
  * 握手时客户端的同步位置。
  *
- * 覆盖范围：`handshake.ts` 的补发分支与 `environment` 能力上报
- * （令牌校验由 `e2e.test.ts` 经由真实连接覆盖）；后者一并覆盖 `api/host.ts` 的
- * 依赖表：该表同时供握手与安装路由使用，分别计算必然产生偏差。
+ * 覆盖范围：`handshake.ts` 的补发分支（令牌校验由 `e2e.test.ts` 经由真实连接覆盖），
+ * 以及 `api/host.ts` 的运行环境依赖表（`probeEnvironment`）：该表同时供环境接口与安装路由使用，
+ * 分别计算必然产生偏差。
  *
  * 本测试锁定一条用户可见的链路：**sidecar 重启之后，必须告知重连的客户端
  * 重新拉取全量**。不告知时界面会一直停留在断线时刻：该轮持续显示执行中，
@@ -14,7 +14,7 @@ import { describe, expect, test } from 'bun:test'
 import type { AgentEvent, ConversationId, HelloFrame } from '@qywork/core'
 import type { CommandShell } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
-import { resolveBashRow, resolveWinget } from './api/host.ts'
+import { probeEnvironment, resolveBashRow, resolveWinget } from './api/host.ts'
 import { EventBus } from './bus.ts'
 import type { SocketData } from './deps.ts'
 import { handleHello } from './handshake.ts'
@@ -31,16 +31,6 @@ interface HelloOk {
   currentSeq: number
   resync: boolean
   busyConversations: string[]
-  capabilities: {
-    environment: {
-      id: string
-      label: string
-      path: string | null
-      required: boolean
-      hint: string
-      canInstall: boolean
-    }[]
-  }
 }
 
 /** 最小的假 socket：只需要 `data` / `send` / `close`。 */
@@ -152,16 +142,16 @@ describe('断线重连的位置', () => {
   })
 })
 
-describe('能力上报', () => {
+describe('运行环境', () => {
+  const probe = () =>
+    probeEnvironment({ config: { active: { provider: 'p', model: 'm' }, providers: {} } })
+
   /**
-   * `environment` 的每个字段必须**在握手中即可被消费方读取**。
-   *
-   * 这不是形式检查：握手中没有消费方的能力位一律应删除（见 `transport.ts`），
-   * 因此该字段的验收标准是「设置页的对应部分能据此渲染」：
+   * 验收标准是「设置页的对应部分能据此渲染」：
    * 有路径时显示路径，没有时显示缺失的影响，`canInstall` 决定是否显示按钮。
    */
-  test('environment 逐条报告路径、缺失影响与能否一键安装', () => {
-    const env = shake(new EventBus(), {}).ok().capabilities.environment
+  test('逐条报告路径、缺失影响与能否一键安装', () => {
+    const env = probe()
     // 表中每一条都对应代码中一处真实的 spawn。
     expect(env.map((d) => d.id)).toEqual([
       'bash',
@@ -186,7 +176,7 @@ describe('能力上报', () => {
 
   test('本机已安装 Git，因此 bash 与 git 都能报告路径', () => {
     // 本用例锁定探测确实执行，而不是恒返回 null 也能使上一条用例通过。
-    const env = shake(new EventBus(), {}).ok().capabilities.environment
+    const env = probe()
     const bash = env.find((d) => d.id === 'bash')
     expect(bash?.path?.toLowerCase()).toContain('bash')
     expect(env.find((d) => d.id === 'git')?.path).not.toBeNull()

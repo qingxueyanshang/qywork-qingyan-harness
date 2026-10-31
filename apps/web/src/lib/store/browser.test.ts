@@ -293,7 +293,6 @@ describe('正文链接交给内置浏览器', () => {
   const caps = (browser: Record<string, unknown>) =>
     ({
       sandbox: { backend: 'none', active: false, reason: '' },
-      environment: [],
       browser,
     }) as never
 
