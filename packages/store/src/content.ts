@@ -35,8 +35,6 @@ import { BUSY_TIMEOUT_MS, enableWal } from './db.ts'
 /** 分片大小。过小则行数激增，过大则单次读取的放大明显。 */
 export const CHUNK_BYTES = 256 * 1024
 
-export const CONTENT_SCHEMA_VERSION = 1
-
 /**
  * 已有库转换为增量回收需执行一次全库 VACUUM，此值是允许转换的体积上限。
  *
@@ -120,11 +118,6 @@ export class ContentStore {
 
   private ensureSchema(): void {
     this.db.exec(/* sql */ `
-      CREATE TABLE IF NOT EXISTS content_meta (
-        key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-
       CREATE TABLE IF NOT EXISTS pending_writes (
         write_id       TEXT PRIMARY KEY,
         resource_id    TEXT,
@@ -157,9 +150,6 @@ export class ContentStore {
         PRIMARY KEY (content_hash, chunk_index)
       );
     `)
-    this.db
-      .query("INSERT OR IGNORE INTO content_meta(key, value) VALUES ('schema_version', ?)")
-      .run(String(CONTENT_SCHEMA_VERSION))
   }
 
   // ─────────────────────────── 写入 ───────────────────────────
