@@ -19,7 +19,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type {
   AgentEvent,
   Attachment,
@@ -476,12 +476,26 @@ describe('HTTP 接口', () => {
     expect(storedLarge.byteLength).toBe(large.length)
     expect(storedLarge[0]).toBe(7)
     expect(storedLarge[storedLarge.length - 1]).toBe(9)
-    // 缩略图读取仍有独立的浏览器内存保护，不影响原文件写入磁盘与发送给模型。
+    // 缩略图接口只返回图片：视频附件不经此接口读取，不影响原文件写入磁盘与发送给模型。
     const largeRaw = await fetch(
       `${base()}/api/attachments/raw?path=${encodeURIComponent(largeAttachment.attachment.path)}`,
       { headers: auth() },
     )
-    expect(largeRaw.status).toBe(413)
+    expect(largeRaw.status).toBe(415)
+    // 图片仍有独立的浏览器内存保护。
+    const bigImage = join(dirname(largeAttachment.attachment.path), 'big.png')
+    await writeFile(bigImage, new Uint8Array(4 * 1024 * 1024 + 1))
+    const bigRaw = await fetch(
+      `${base()}/api/attachments/raw?path=${encodeURIComponent(bigImage)}`,
+      { headers: auth() },
+    )
+    expect(bigRaw.status).toBe(413)
+    // 原始失败形状：持令牌的客户端可借此读取任意本机文件，例如明文 key 所在的配置文件。
+    const config = await fetch(
+      `${base()}/api/attachments/raw?path=${encodeURIComponent(configPath())}`,
+      { headers: auth() },
+    )
+    expect(config.status).toBe(415)
 
     /*
      * 删除会话时一并删除其目录：这就是「附件属于会话」的全部实现，
@@ -511,14 +525,39 @@ describe('HTTP 接口', () => {
 })
 
 describe('WebSocket 协议与一轮完整 run', () => {
-  test('握手阶段的错误令牌被拒绝', async () => {
-    const bad = new WebSocket(`ws://127.0.0.1:${handle.port}/stream?token=wrong`)
-    const closed = await new Promise<boolean>((res) => {
-      bad.addEventListener('close', () => res(true), { once: true })
-      bad.addEventListener('error', () => res(true), { once: true })
-      setTimeout(() => res(false), 3000)
+  /**
+   * 原始失败形状：升级阶段以 401 拒绝错误令牌，浏览器无法读取该状态码，客户端只看到连接关闭，
+   * 因此无限重连。改为在 hello 帧中校验并回复 `hello.err`，客户端据此进入终态。
+   */
+  test('hello 帧中的错误令牌：回复 hello.err 并关闭连接', async () => {
+    const bad = new WebSocket(`ws://127.0.0.1:${handle.port}/stream?origin=desktop`)
+    const frames: { type?: string; reason?: string }[] = []
+    bad.addEventListener('message', (e) => frames.push(JSON.parse(String(e.data))))
+    await new Promise<void>((res, rej) => {
+      bad.addEventListener('open', () => res(), { once: true })
+      bad.addEventListener('error', () => rej(new Error('升级应当成功')), { once: true })
     })
-    expect(closed).toBe(true)
+    const closed = new Promise<number>((res) =>
+      bad.addEventListener('close', (e) => res(e.code), { once: true }),
+    )
+    bad.send(JSON.stringify({ type: 'hello', token: 'wrong', origin: 'desktop' }))
+    expect(await closed).toBe(1008)
+    expect(frames).toEqual([
+      expect.objectContaining({ type: 'hello.err', reason: 'bad_token' }) as never,
+    ])
+  })
+
+  test('未发送 hello 的连接收不到任何事件，指令被忽略', async () => {
+    const idle = new WebSocket(`ws://127.0.0.1:${handle.port}/stream?origin=desktop`)
+    const frames: unknown[] = []
+    idle.addEventListener('message', (e) => frames.push(JSON.parse(String(e.data))))
+    await new Promise<void>((res) => idle.addEventListener('open', () => res(), { once: true }))
+    idle.send(JSON.stringify({ type: 'subscribe', conversations: null }))
+    // 产生一条会话事件：已握手的连接会收到 conversation 相关广播。
+    await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
+    await Bun.sleep(200)
+    expect(frames).toEqual([])
+    idle.close()
   })
 
   test('握手 → 下发 → 工具执行 → 结束，全链路执行成功', async () => {

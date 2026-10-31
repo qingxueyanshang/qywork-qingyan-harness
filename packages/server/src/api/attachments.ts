@@ -21,7 +21,7 @@
 
 import { mkdir, rename, rm, stat } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
-import { type Attachment, attachmentTypeOf, toPosixPath } from '@qywork/core'
+import { type Attachment, attachmentTypeOf, isInlineImage, toPosixPath } from '@qywork/core'
 import { configDir } from '@qywork/runtime'
 import type { ApiHandler } from './types.ts'
 import { json } from './types.ts'
@@ -143,6 +143,9 @@ export const handleAttachmentsApi: ApiHandler = async (url, req, d) => {
 /**
  * 按路径返回原始字节，供界面显示缩略图。
  *
+ * 只返回内联图片：唯一的调用方是缩略图（`AttachmentThumb`），它只为 `isInlineImage` 为真的附件请求字节。
+ * 接口不提供消费者不需要的能力，类型判定位于 `stat` 之前，其他文件不访问文件系统。
+ *
  * 返回字节而不是 base64 JSON：体积不增加三分之一，浏览器自行管理缓存，前端取得后即可调用
  * `createObjectURL`。`/api/files/preview` 只接受工作区相对路径且不返回字节，
  * 无法访问工作区外的源文件。
@@ -150,6 +153,7 @@ export const handleAttachmentsApi: ApiHandler = async (url, req, d) => {
 async function serveRaw(url: URL, workspaceRoot: string): Promise<Response> {
   const rel = url.searchParams.get('path')
   if (!rel) return json({ error: 'invalid', message: '缺少要读取的路径' }, 422)
+  if (!isInlineImage(rel)) return json({ error: 'unsupported', message: '只能读取图片' }, 415)
 
   const abs = resolveAttachmentPath(workspaceRoot, rel)
   const info = await stat(abs).catch(() => null)
