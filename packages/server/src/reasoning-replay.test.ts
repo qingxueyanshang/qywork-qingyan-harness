@@ -205,7 +205,7 @@ test('签名思考块在同一 run 的下一轮与下一个 run 里都按原位�
   ])
 })
 
-function todoTurn(signature: string, status: string): string {
+function todoTurn(signature: string, status: string, extra: Record<string, string> = {}): string {
   return sse([
     START,
     ...thinking(0, '更新清单', signature),
@@ -219,7 +219,7 @@ function todoTurn(signature: string, status: string): string {
       index: 1,
       delta: {
         type: 'input_json_delta',
-        partial_json: JSON.stringify({ todos: [{ content: '整理目录', status }] }),
+        partial_json: JSON.stringify({ todos: [{ content: '整理目录', status, ...extra }] }),
       },
     },
     { type: 'content_block_stop', index: 1 },
@@ -266,7 +266,7 @@ test('待办自动继续的提示保留在历史中，其前后的签名块都�
 
   expect(bodies).toHaveLength(5)
   const notice = (b: Record<string, unknown>) =>
-    userTexts(b).some((t) => t.includes('本轮待办仍在进行中'))
+    userTexts(b).some((t) => t.includes('本轮待办尚有未完成的项'))
   // 提示自自动继续的那次请求起一直保留，签名块全部保留。
   expect(notice(bodies[2]!)).toBe(true)
   expect(signatures(bodies[2]!)).toEqual(['thinking:sig-a', 'thinking:sig-b'])
@@ -292,7 +292,10 @@ test('受阻结束、下轮解释与明确接续都以同一份待办账本裁�
   }).id
   script = [
     todoTurn('blocked-start', 'in_progress'),
-    todoTurn('blocked-pending', 'pending'),
+    todoTurn('blocked-pending', 'blocked', {
+      blocker: 'user_only',
+      need: '用户补充页面缺少的信息',
+    }),
     textTurn('blocked-reply', '页面缺少必要信息，当前无法继续。'),
     textTurn('explain', '暂停原因是缺少信息，任务仍未完成。'),
     todoTurn('resume', 'in_progress'),
@@ -303,20 +306,24 @@ test('受阻结束、下轮解释与明确接续都以同一份待办账本裁�
   await startRun(cv, '整理目录', undefined, deps())
   await finished(before + 1)
   expect(bodies).toHaveLength(3)
-  expect(latestTodos(store, cv)?.[0]?.status).toBe('pending')
+  expect(latestTodos(store, cv)?.[0]?.status).toBe('blocked')
   const stops = () => events.filter((f) => f.event.type === 'run.finished').slice(before)
-  expect(stops()[0]?.event).toMatchObject({ status: 'done', stopReason: 'awaiting_user' })
+  expect(stops()[0]?.event).toMatchObject({
+    status: 'done',
+    stopReason: 'awaiting_user',
+    stopDetail: '需要用户提供：用户补充页面缺少的信息',
+  })
 
   await startRun(cv, '为什么暂停', undefined, deps())
   await finished(before + 2)
   expect(bodies).toHaveLength(4)
-  expect(latestTodos(store, cv)?.[0]?.status).toBe('pending')
+  expect(latestTodos(store, cv)?.[0]?.status).toBe('blocked')
   expect(stops()[1]?.event).toMatchObject({ stopReason: 'completed' })
 
   await startRun(cv, '信息已补齐，继续完成', undefined, deps())
   await finished(before + 3)
   expect(bodies).toHaveLength(8)
-  expect(userTexts(bodies[6]!).some((t) => t.includes('本轮待办仍在进行中'))).toBe(true)
+  expect(userTexts(bodies[6]!).some((t) => t.includes('本轮待办尚有未完成的项'))).toBe(true)
   expect(latestTodos(store, cv)?.[0]?.status).toBe('completed')
   expect(stops()[2]?.event).toMatchObject({ stopReason: 'completed' })
 })

@@ -1,5 +1,6 @@
 /**
- * 覆盖 `loop/turn-end.ts`：输出截断时丢弃工具调用并续写、`end_turn` 与未完成待办、
+ * 覆盖 `loop/turn-end.ts`：输出截断时丢弃工具调用并续写、`end_turn` 与待办清单（还有 pending 或
+ * in_progress 时继续提示、受阻时等待用户、只有失败项时完成并列出失败、无进展时停止）、
  * `tool_use` 却没有可解析调用。
  */
 
@@ -307,8 +308,14 @@ describe('正常响应结束不等于任务完成', () => {
       '待办未完成时连续三次仅回复而未执行操作',
     )
     expect(tails[1]?.role).toBe('user')
-    expect(String(tails[1]?.content)).toContain('本轮待办仍在进行中：完成第 7 步；完成第 8 步')
-    expect(String(tails[1]?.content)).toContain('单个工具调用失败不是受阻')
+    const notice = String(tails[1]?.content)
+    expect(notice).toContain('本轮待办尚有未完成的项：完成第 7 步；完成第 8 步')
+    // 提示不是用户的回复：模型曾把「继续执行」当作用户对样张的确认（宁德视觉升级 2026-10-21）。
+    expect(notice).toContain('不是用户的回复，不表示用户确认或授权了任何事项')
+    expect(notice).toContain('spend、user_only、review、irreversible')
+    expect(notice).not.toContain('service')
+    // 不再提供「改回 pending 后结束本轮」这条不带原因的出口。
+    expect(notice).not.toContain('改回 pending')
   })
 
   test('相同未完成清单下连续三次只结束响应，停止原因为 no_progress', async () => {
@@ -338,20 +345,68 @@ describe('正常响应结束不等于任务完成', () => {
     expect(requests).toBe(3)
   })
 
-  test('本轮受阻清单只剩 pending，保留未完成项且一次响应后停止，记为等待用户回复而不是出错', async () => {
-    const todos = unfinished.map((todo) => ({ ...todo, status: 'pending' as const }))
-    const inner = fakeAdapter([null])
+  /**
+   * 原始失败形状：模型把第 2 项标为完成而未认领第 3 项，随即结束本轮并询问用户，
+   * 执行循环把「没有进行中的项」当作受阻，按等待用户停止。没有标为 blocked 的项必须继续执行。
+   */
+  test('标记完成后未认领下一条即结束回复：提示继续执行，清单完成后才结束', async () => {
+    let todos: TodoItem[] = [
+      { id: 'todo_1', content: '切换视频卡模型', status: 'completed' },
+      { id: 'todo_2', content: '并行生成视频', status: 'pending' },
+    ]
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'finish_todos',
+      description: '把测试清单标成完成。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'write',
+      objectLabel: '待办',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn() {
+        todos = todos.map((todo) => ({ ...todo, status: 'completed' }))
+        return { status: 'success', message: '清单已完成' }
+      },
+    })
+    const inner = fakeAdapter([null, [call('finish_todos')], null])
+    const tails: { role: string; content: unknown }[] = []
+    const loop = new AgentLoop({
+      adapter: {
+        ...inner,
+        async *stream(req) {
+          tails.push(req.messages[req.messages.length - 1]!)
+          yield* inner.stream(req)
+        },
+      },
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({ ...baseCtx(runId), todos: { read: () => todos } }),
+    })
+
+    const finished = await runToEnd(loop, { runId: 'rn_unclaimed' })
+
+    expect(finished).toMatchObject({ status: 'done', stopReason: 'completed' })
+    expect(tails).toHaveLength(3)
+    expect(tails[1]?.role).toBe('user')
+    expect(String(tails[1]?.content)).toContain('本轮待办尚有未完成的项：并行生成视频。')
+  })
+
+  test('只剩 pending 且连续三次只结束回复：停止原因为 no_progress，不记为等待用户', async () => {
+    const todos: TodoItem[] = [
+      { id: 'todo_1', content: '导出预览', status: 'completed' },
+      { id: 'todo_2', content: '发送预览文件', status: 'pending' },
+    ]
     let requests = 0
+    const inner = fakeAdapter(Array.from({ length: 10 }, () => null))
     const loop = new AgentLoop({
       adapter: {
         ...inner,
         async *stream(req) {
           requests++
-          for await (const event of inner.stream(req)) {
-            yield event.type === 'text_delta'
-              ? { ...event, delta: '当前页面缺少必要信息，无法继续。' }
-              : event
-          }
+          yield* inner.stream(req)
         },
       },
       registry: new ToolRegistry(),
@@ -359,11 +414,128 @@ describe('正常响应结束不等于任务完成', () => {
       persist: noopPersistence(),
       makeToolContext: (runId) => ({ ...baseCtx(runId), todos: { read: () => todos } }),
     })
-    const finished = await runToEnd(loop)
+
+    const finished = await runToEnd(loop, { runId: 'rn_pending_stuck' })
+
+    expect(finished).toMatchObject({ status: 'failed', stopReason: 'no_progress' })
+    expect(requests).toBe(3)
+  })
+
+  test('未完成项全部标为受阻：一次回复后停止，记为等待用户回复，停止依据列出受阻类别与所需条件', async () => {
+    const todos: TodoItem[] = [
+      { id: 'todo_1', content: '生成样张', status: 'completed' },
+      {
+        id: 'todo_2',
+        content: '生成其余 17 页',
+        status: 'blocked',
+        blocker: 'review',
+        need: '用户查看样张并认可风格',
+      },
+      {
+        id: 'todo_3',
+        content: '重新提交第 4 页',
+        status: 'blocked',
+        blocker: 'spend',
+        need: '用户在渠道后台确认原任务是否扣费',
+      },
+    ]
+    let requests = 0
+    const inner = fakeAdapter([null])
+    const loop = new AgentLoop({
+      adapter: {
+        ...inner,
+        async *stream(req) {
+          requests++
+          yield* inner.stream(req)
+        },
+      },
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({ ...baseCtx(runId), todos: { read: () => todos } }),
+    })
+
+    const finished = await runToEnd(loop, { runId: 'rn_all_blocked' })
+
     expect(finished).toMatchObject({ status: 'done', stopReason: 'awaiting_user' })
-    expect(finished.type === 'run.finished' && finished.stopDetail).toBeUndefined()
+    expect(finished.type === 'run.finished' && finished.stopDetail).toBe(
+      '等待用户查看：用户查看样张并认可风格；花费待确认：用户在渠道后台确认原任务是否扣费',
+    )
     expect(requests).toBe(1)
-    expect(todos.every((todo) => todo.status === 'pending')).toBe(true)
+  })
+
+  /** 结束回复时按清单裁决：`end` 为一次只有回复的响应之后的停止原因与停止依据。 */
+  async function endWith(todos: TodoItem[], runId: string) {
+    const tails: { role: string; content: unknown }[] = []
+    const inner = fakeAdapter([null, null, null])
+    const loop = new AgentLoop({
+      adapter: {
+        ...inner,
+        async *stream(req) {
+          tails.push(req.messages[req.messages.length - 1]!)
+          yield* inner.stream(req)
+        },
+      },
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (id) => ({ ...baseCtx(id), todos: { read: () => todos } }),
+    })
+    const finished = await runToEnd(loop, { runId })
+    return {
+      tails,
+      stopReason: finished.type === 'run.finished' ? finished.stopReason : null,
+      stopDetail: finished.type === 'run.finished' ? finished.stopDetail : undefined,
+      status: finished.type === 'run.finished' ? finished.status : null,
+    }
+  }
+
+  const blockedItem: TodoItem = {
+    id: 'todo_1',
+    content: '发送预览文件',
+    status: 'blocked',
+    blocker: 'user_only',
+    need: '用户在手机上扫码登录微信',
+  }
+  const failedItem: TodoItem = {
+    id: 'todo_2',
+    content: '生成第 4 页',
+    status: 'failed',
+    cause: 'HTTP 429 限流',
+    attempts: '系统在 30 秒、2 分钟、5 分钟后各重试一次，仍失败',
+  }
+  const doneItem: TodoItem = { id: 'todo_3', content: '生成其余页面', status: 'completed' }
+
+  test('受阻或失败的项之外还有 pending 时继续执行，提示只列出 pending 与 in_progress 的项', async () => {
+    const end = await endWith(
+      [blockedItem, failedItem, { id: 'todo_3', content: '核验已生成的音色', status: 'pending' }],
+      'rn_partly_open',
+    )
+    expect(end.stopReason).toBe('no_progress')
+    const notice = String(end.tails[1]?.content)
+    expect(notice).toContain('本轮待办尚有未完成的项：核验已生成的音色。')
+    expect(notice).not.toContain('发送预览文件')
+    expect(notice).not.toContain('生成第 4 页')
+    expect(notice).toContain('标为 failed，填写 cause 与 attempts')
+  })
+
+  /** 失败按重试规则处理完毕，不等待任何一方：本轮执行完毕，停止依据列出失败原因供最终回复与审计。 */
+  test('其余项都已完成，只有失败项：记为 completed，停止依据列出失败原因与尝试', async () => {
+    const end = await endWith([doneItem, failedItem], 'rn_failed_only')
+    expect(end).toMatchObject({ status: 'done', stopReason: 'completed' })
+    expect(end.stopDetail).toBe(
+      '失败：HTTP 429 限流，已尝试：系统在 30 秒、2 分钟、5 分钟后各重试一次，仍失败',
+    )
+    expect(end.tails).toHaveLength(1)
+  })
+
+  test('受阻与失败并存、没有 pending 与 in_progress：停下等待用户，先列受阻条件再列失败原因', async () => {
+    const end = await endWith([failedItem, doneItem, blockedItem], 'rn_blocked_and_failed')
+    expect(end).toMatchObject({ status: 'done', stopReason: 'awaiting_user' })
+    expect(end.stopDetail).toBe(
+      '需要用户提供：用户在手机上扫码登录微信；失败：HTTP 429 限流，已尝试：系统在 30 秒、2 分钟、5 分钟后各重试一次，仍失败',
+    )
+    expect(end.tails).toHaveLength(1)
   })
 
   test('新一轮只解释问题，旧清单不强迫恢复执行', async () => {

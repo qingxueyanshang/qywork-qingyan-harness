@@ -667,9 +667,10 @@ function foldContent(cid: string, ev: AgentEvent): void {
                 usage: ev.usage,
                 startedAt: (owns ? v.runStartedAt : null) ?? Date.now(),
                 endedAt: Date.now(),
-                // 前一条 `run.error` 的正文（总是在 finished 之前到达）。服务端同时
-                // 将它写入 `runs.error_message`，刷新后由投影层原样恢复。
-                errorMessage: owns ? (v.error?.message ?? null) : null,
+                // 前一条 `run.error` 的正文（总是在 finished 之前到达），没有时为停止依据
+                // （待办受阻的条件、无进展的判据）。服务端按同一顺序写入 `runs.error_message`，
+                // 刷新后由投影层原样恢复。
+                errorMessage: (owns ? v.error?.message : null) ?? ev.stopDetail ?? null,
               },
             })
           }

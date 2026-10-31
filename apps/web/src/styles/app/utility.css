@@ -217,6 +217,12 @@
 .todo-item.now .todo-mark {
   color: var(--accent);
 }
+.todo-item.blocked .todo-mark {
+  color: var(--warning);
+}
+.todo-item.failed .todo-mark {
+  color: var(--danger);
+}
 .todo-dot {
   width: 5px;
   height: 5px;
@@ -228,6 +234,11 @@
    而面板清单的用途正是显示细节。 */
 .todo-text {
   min-width: 0;
+}
+/* 受阻条件与失败原因单独占一行，位于条目名称下方。 */
+.todo-need {
+  display: block;
+  color: var(--text-tertiary);
 }
 
 /* ── 状态覆盖 ──

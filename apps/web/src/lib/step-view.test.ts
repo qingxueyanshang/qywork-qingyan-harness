@@ -476,6 +476,52 @@ describe('待办清单参数识别', () => {
     expect(todosOf({ todos: [{ status: 'pending' }] })).toBeNull()
   })
 
+  /** strict 模式下非受阻条目带 `blocker: null` 与 `need: null`，识别结果不带这两个字段。 */
+  test('识别受阻条目的类别与所需条件，非受阻条目的空字段不带入', () => {
+    const list = todosOf({
+      todos: [
+        { content: '生成样张', status: 'completed', blocker: null, need: null },
+        { content: '生成其余页面', status: 'blocked', blocker: 'review', need: '用户查看样张' },
+      ],
+    })
+    expect(list).toEqual([
+      { id: 'todo_1', content: '生成样张', status: 'completed' },
+      {
+        id: 'todo_2',
+        content: '生成其余页面',
+        status: 'blocked',
+        blocker: 'review',
+        need: '用户查看样张',
+      },
+    ])
+  })
+
+  test('识别失败条目的原因与尝试', () => {
+    const list = todosOf({
+      todos: [{ content: '生成第 4 页', status: 'failed', cause: 'HTTP 403', attempts: '不重试' }],
+    })
+    expect(list).toEqual([
+      {
+        id: 'todo_1',
+        content: '生成第 4 页',
+        status: 'failed',
+        cause: 'HTTP 403',
+        attempts: '不重试',
+      },
+    ])
+    expect(todosOf({ todos: [{ content: '甲', status: 'failed', cause: 'HTTP 403' }] })).toBeNull()
+  })
+
+  test('受阻条目缺少类别、类别不在闭集内或缺少所需条件时整体返回 null', () => {
+    expect(todosOf({ todos: [{ content: '甲', status: 'blocked', need: '用户扫码' }] })).toBeNull()
+    for (const blocker of ['decision', 'service']) {
+      expect(
+        todosOf({ todos: [{ content: '甲', status: 'blocked', blocker, need: 'x' }] }),
+      ).toBeNull()
+    }
+    expect(todosOf({ todos: [{ content: '甲', status: 'blocked', blocker: 'spend' }] })).toBeNull()
+  })
+
   /** 任一条不合格即整体不识别：只显示部分清单比不渲染更具误导性。 */
   test('含有一条不合格条目时整体返回 null', () => {
     expect(

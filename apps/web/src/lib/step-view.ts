@@ -13,6 +13,9 @@ import {
   type ProviderRetryDecision,
   type StopReason,
   SUBAGENT_NODE_ID,
+  TODO_BLOCKERS,
+  TODO_STATUSES,
+  type TodoItem,
 } from '@qywork/core'
 
 const NEWLINE = String.fromCharCode(10)
@@ -218,28 +221,36 @@ export function argsRows(args: Record<string, unknown>): [string, string][] {
 }
 
 /**
- * 待办清单型参数：`{ todos: [{ content, status }, …] }`。
+ * 待办清单型参数：`{ todos: [{ content, status, blocker?, need?, cause?, attempts? }, …] }`。
  *
  * 按形状识别，不按工具名识别：同文件的 `listOf` / `diffFrom` 采用相同做法，
  * 展开内容中的 Switch 不判断步骤由哪个工具调用。
  *
  * 无法识别时返回 null（而不是空数组）：空数组会使调用方渲染出一个空的清单框，
- * 而没有清单时应使用通用参数表。
+ * 而没有清单时应使用通用参数表。受阻条目缺少类别或所需条件、失败条目缺少原因或尝试时同样不识别。
  */
-export function todosOf(
-  args: Record<string, unknown>,
-): { id: string; content: string; status: 'pending' | 'in_progress' | 'completed' }[] | null {
+export function todosOf(args: Record<string, unknown>): TodoItem[] | null {
   const raw = args.todos
   if (!Array.isArray(raw) || raw.length === 0) return null
-  const out: { id: string; content: string; status: 'pending' | 'in_progress' | 'completed' }[] = []
+  const out: TodoItem[] = []
   for (let i = 0; i < raw.length; i++) {
     const t = raw[i] as Record<string, unknown> | null
     if (!t || typeof t !== 'object') return null
     if (typeof t.content !== 'string') return null
-    const status = t.status
-    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') return null
+    const status = TODO_STATUSES.find((s) => s === t.status)
+    if (!status) return null
     // 数据库中的 args 不含 id（id 由工具补充），按行渲染需要稳定的 key，因此按位置补充。
-    out.push({ id: typeof t.id === 'string' ? t.id : `todo_${i + 1}`, content: t.content, status })
+    const id = typeof t.id === 'string' ? t.id : `todo_${i + 1}`
+    if (status === 'blocked') {
+      const blocker = TODO_BLOCKERS.find((b) => b === t.blocker)
+      if (!blocker || typeof t.need !== 'string') return null
+      out.push({ id, content: t.content, status, blocker, need: t.need })
+    } else if (status === 'failed') {
+      if (typeof t.cause !== 'string' || typeof t.attempts !== 'string') return null
+      out.push({ id, content: t.content, status, cause: t.cause, attempts: t.attempts })
+    } else {
+      out.push({ id, content: t.content, status })
+    }
   }
   return out
 }
