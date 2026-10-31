@@ -65,7 +65,7 @@ const GROUPS: Item[][] = [
       id: 'mcp',
       label: 'MCP',
       icon: IconTerminal,
-      desc: '为模型接入外部工具，修改后需重启应用生效',
+      desc: '为模型接入外部工具',
     },
     {
       id: 'plugins',

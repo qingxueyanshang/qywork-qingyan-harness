@@ -143,8 +143,7 @@ export class AgentLoop {
         yield* injectFollowUps(this.deps, run)
         await this.deps.beforeRequest?.()
 
-        // `signal` 不在此处合成：每次尝试各有一个中止器，因此装配只生成请求体，
-        // 信号在尝试循环中逐次接入。
+        // 每轮装配一次请求体，携带本轮的中断信号 `input.signal`；同一轮的重发复用这份请求体。
         const req = this.buildRequest(run)
         const turn = new TurnState(run, req, breakdownOf(req, run.density))
         run.rebaseAnchor(turn.req, turn.breakdown)
