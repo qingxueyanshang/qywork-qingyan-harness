@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -68,6 +68,30 @@ test.each([undefined, 'auto', 'full'] as const)(
     }
   },
 )
+
+/** 原始失败形状：手工编辑留下一处语法错误后，读取得到默认配置，下一次保存以默认配置覆盖原文件。 */
+test('配置文件无法解析或无法读取时抛出并写明路径；文件不存在时为默认配置', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'qy-config-broken-'))
+  const previousHome = process.env.QYWORK_HOME
+  const file = join(home, 'config.json')
+  try {
+    process.env.QYWORK_HOME = home
+    expect((await loadConfig()).providers).toEqual({})
+
+    await writeFile(file, '{ "providers": x }', 'utf8')
+    await expect(loadConfig()).rejects.toThrow(`配置文件无法解析`)
+    await expect(loadConfig()).rejects.toThrow(file)
+
+    // 不是「文件不存在」的读取失败（此处为同名目录）同样停止。
+    await rm(file)
+    await mkdir(file)
+    await expect(loadConfig()).rejects.toThrow('无法读取配置文件')
+  } finally {
+    if (previousHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
 
 test('新版本直接保存的默认权限不被识别为旧配置，非法权限值不能通过校验', async () => {
   const home = await mkdtemp(join(tmpdir(), 'qy-default-permission-save-'))

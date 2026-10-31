@@ -326,12 +326,12 @@ async function runServe(args: string[]): Promise<number> {
   const config = await loadConfig()
   startupStage('打开账本')
 
-  // serve 与 exec 相反：配置有问题时**仍然启动**。
+  // 配置文件无法读取或解析时 `loadConfig` 抛出，serve 停止：以默认配置启动后，设置页的任何一次保存
+  // 都会覆盖原文件。
   //
-  // 桌面外壳无条件 spawn 该命令，此处退出即导致应用无法打开，而用户唯一能修改配置的
-  // 界面就在应用中。查看旧会话、修改配置都不需要 key，只有实际发起一轮才需要，
-  // 届时 buildAdapter 会抛出 no_api_key，前端据此引导用户。
-  // serve 不因配置问题退出，因此两类问题都只打印，可以合并。
+  // 结构问题（未配置 key、引用不存在的接口）仍然启动：桌面外壳无条件 spawn 该命令，此处退出即导致
+  // 应用无法打开，而修改这些设置的界面就在应用中。查看旧会话、修改配置都不需要 key，只有实际发起一轮
+  // 才需要，届时 buildAdapter 会抛出 no_api_key，前端据此引导用户。两类结构问题都只打印，可以合并。
   const problems = [
     ...diagnoseConfig(config),
     ...diagnoseRunnable(config),
