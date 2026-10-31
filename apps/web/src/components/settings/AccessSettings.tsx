@@ -83,8 +83,8 @@ export function AccessSettings() {
           <section class="settings-block">
             <div class="setting-rows">
               {/* 「完全访问」的边界说明位于页头（`SettingsNav` 的 `desc`），与其他页一致；
-                    不要写成「完全访问下同样受限」，这与实现相反：`session.ts` 在该模式下
-                    传入 `unrestrictedPaths`，完全不设路径层。
+                    不要写成「完全访问下同样受限」，这与实现相反：`session.ts` 的裁决在该模式下
+                    带上 `unrestrictedPaths`，完全不设路径层。
                     「只接受绝对路径」不写入说明，占位符中已包含该信息。 */}
               <Field label="工作区之外额外可读写的目录">
                 {/*

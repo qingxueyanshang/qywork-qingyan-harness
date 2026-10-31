@@ -1216,6 +1216,9 @@ export interface ToolContext {
    * 返回 allowed，`run_command` 已全部放行。路径层若不随之放开，结果不是更安全，
    * 而是 `read_file` 被拒、`run_command` 却能读取同一文件。
    *
+   * 只由 `execute` 按本次调用的裁决填入（`PermissionVerdict`），装配方不得提供：
+   * 每轮固定一次时，运行中切换模式后路径层仍按旧模式判定，而命令裁决已按新模式。
+   *
    * **它不影响内核沙箱层。** `shell.ts` 组装 `SandboxPolicy` 时不读取此字段，
    * 因此在具备 bubblewrap / seatbelt 的平台上，`full` 下 shell 子进程仍受写入边界约束。
    */
@@ -1236,7 +1239,7 @@ export interface ToolContext {
  * 而 stepId 在每次工具调用时才产生（`emit` 须携带它，`workflow` 也用它关联图卡）。
  * 装配方无法取得这两个字段，因此它们不出现在此类型中，由 loop 在调用前补齐。
  */
-export type ToolContextBase = Omit<ToolContext, 'emit' | 'stepId'>
+export type ToolContextBase = Omit<ToolContext, 'emit' | 'stepId' | 'unrestrictedPaths'>
 
 /**
  * 授权裁决。
@@ -1244,8 +1247,12 @@ export type ToolContextBase = Omit<ToolContext, 'emit' | 'stepId'>
  * 拒绝**必须**带理由。这是两种模式设计的直接结果：`auto` 下没有弹窗，
  * 拒绝信息只能经由工具结果交给模型，而模型只有取得理由才能改用其他做法
  * （「无法写入工作区外的路径」→ 改为写入工作区内）。
+ *
+ * 放行时带上本次调用的路径范围：模式与路径边界取自同一次读取。
  */
-export type PermissionVerdict = { allowed: true } | { allowed: false; reason: string }
+export type PermissionVerdict =
+  | { allowed: true; unrestrictedPaths?: true }
+  | { allowed: false; reason: string }
 
 export type ToolFn = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolOutcome>
 
@@ -1529,6 +1536,7 @@ export class ToolRegistry {
     }
 
     const effect = resolvePermissionEffect(spec, args)
+    let callCtx = ctx
     if (effect !== 'internal_control') {
       const verdict = await ctx.requestPermission({ toolName: name, args })
       if (!verdict.allowed) {
@@ -1544,10 +1552,11 @@ export class ToolRegistry {
           errorKind: 'permission_denied',
         }
       }
+      if (verdict.unrestrictedPaths) callCtx = { ...ctx, unrestrictedPaths: true }
     }
 
     try {
-      const out = await spec.fn(args, ctx)
+      const out = await spec.fn(args, callCtx)
       return {
         status: out.status,
         executed: out.executed ?? true,
