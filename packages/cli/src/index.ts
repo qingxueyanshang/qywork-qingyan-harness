@@ -27,7 +27,6 @@ import {
   diagnoseConfig,
   diagnoseRunnable,
   fileLogSink,
-  importLegacySchedules,
   loadConfig,
   MCP_CONFIG,
   Session,
@@ -213,9 +212,6 @@ async function runExec(args: string[]): Promise<number> {
   for (const n of configNotices(config)) process.stderr.write(`\n${YELLOW}⚠${RESET} ${n}\n`)
 
   const store = new Store({ path: dataPath(), owner: 'cli' })
-  // 此处同样需要导入定时任务的旧文件：本次会话注入了定时任务端口，若不导入，在 `qy serve`
-  // 运行之前 `list_schedules` 无法读取已排定的任务。文件不合法时抛出，与 serve 的行为相同。
-  importLegacySchedules(store)
   // 单次执行同样需要正文库：超出预算的命令输出若只截断而不落盘，
   // 模型在**同一轮中**无法通过 read_resource 读取被截去的中间部分。
   const content = new ContentStore(contentPathFor(dataPath()))

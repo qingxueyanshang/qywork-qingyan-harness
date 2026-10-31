@@ -77,7 +77,6 @@ export { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 // 主请求与摘要请求共用的持久化边界。
 export { requestPersistence } from './request-persistence.ts'
 // 全机任务文件导入账本：server 在开始服务之前调用一次
-export { importLegacySchedules } from './schedules.ts'
 // 会话：装配的最终产物，CLI 与 server 的唯一入口。
 // `makeSummarizer` 一并转出：server 的手动压缩与会话内的自动压缩共用同一份摘要装配。
 export { Session } from './session.ts'

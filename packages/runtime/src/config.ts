@@ -15,19 +15,16 @@ import {
   findMediaModel,
   lookupModel,
   type ModelSpec,
-  mediaKindsOf,
   type OffPeakDiscount,
   type TransportCapabilities,
 } from '@qywork/ai'
 import {
   CACHE_ROUTINGS,
   type CacheRouting,
-  type ChannelVideoSpec,
   channelImageSpecProblem,
   channelVideoSpecProblem,
   EFFORT_ORDER,
   type EffortLevel,
-  log,
   MEDIA_KIND_OUTPUT,
   MEDIA_KINDS,
   MEDIA_OUTPUTS,
@@ -98,8 +95,6 @@ export interface QyConfig {
    * 输入区开关只修改当前会话，不修改本字段。
    */
   mode?: PermissionMode
-  /** 新对话默认权限的一次性迁移标记；权限值仍只由 mode 决定。 */
-  permissionDefaultsVersion?: 1
   /**
    * 是否允许 agent 控制内置浏览器。缺省时视为启用，只有显式 `false` 表示关闭。
    *
@@ -448,324 +443,10 @@ export const NO_MODEL_MESSAGE = '未配置模型'
 const DEFAULT_CONFIG: QyConfig = {
   providers: {},
   mode: 'auto',
-  permissionDefaultsVersion: 1,
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-/**
- * 迁移前位于 `StoredModel` 上的两个字段。只有 `migrateModelLibrary` 读取它们，
- * 解析链不读取：保留第二条读取路径会形成两套账。
- */
-interface LegacyStoredModel {
-  maxOutputTokens?: number
-  capabilities?: {
-    thinking?: ThinkingMode
-    effortLevels?: EffortLevel[]
-    thinksByDefault?: boolean
-    cacheRouting?: CacheRouting
-  }
-}
-
-/**
- * 一次性迁移：模型库的旧结构 → `catalogKey(id, kind)` 两维键。
- *
- * 三条来源，接口下的两个字段优先（旧解析链中它们排在模型库之后）：
- * 一维 `catalog[id]` 的语义是「同一份参数用于所有协议」，因此按该 id 在 `providers`
- * 中出现过的每个 kind 各写一份；`models[id].maxOutputTokens` 与 `.capabilities`
- * 的协议由所在接口直接确定，合并到同一个键。
- *
- * 幂等判据是键的形式：执行一次后一维键与这两个字段即不再存在，不引入版本号。
- * 同协议的多个接口为同一个键写入不同值时不推测：保留接口名字典序靠前的取值，
- * 其余逐条返回给调用方报告。
- *
- * 只修改内存中的配置，不落盘：下一次保存配置时，旧键随整份写回一并删除。
- */
-function migrateModelLibrary(cfg: QyConfig): string[] {
-  const providers = cfg.providers ?? {}
-  const flatKeys = Object.keys(cfg.catalog ?? {}).filter((k) => !k.includes('|'))
-  const hasLegacyFields = Object.values(providers).some((p) =>
-    Object.values(p.models ?? {}).some((m) => 'maxOutputTokens' in m || 'capabilities' in m),
-  )
-  if (flatKeys.length === 0 && !hasLegacyFields) return []
-
-  const notices: string[] = []
-  const catalog: Record<string, StoredCatalogEntry> = {}
-  for (const [key, entry] of Object.entries(cfg.catalog ?? {})) {
-    if (key.includes('|')) catalog[key] = entry
-  }
-
-  const kindsOf = new Map<string, Set<ProviderKind>>()
-  for (const p of Object.values(providers)) {
-    for (const id of Object.keys(p.models ?? {})) {
-      const set = kindsOf.get(id) ?? new Set<ProviderKind>()
-      set.add(p.kind)
-      kindsOf.set(id, set)
-    }
-  }
-
-  for (const id of flatKeys) {
-    const entry = cfg.catalog?.[id]
-    if (!entry) continue
-    const kinds = kindsOf.get(id)
-    if (!kinds) {
-      notices.push(`模型库中的 ${id} 不属于任何接口，无法判定协议，该条目已丢弃。`)
-      continue
-    }
-    for (const kind of kinds) {
-      const key = catalogKey(id, kind)
-      catalog[key] = { ...catalog[key], ...entry }
-    }
-  }
-
-  const owner = new Map<string, string>()
-  for (const name of Object.keys(providers).sort()) {
-    const p = providers[name]
-    if (!p) continue
-    for (const [id, model] of Object.entries(p.models ?? {})) {
-      const legacy = model as StoredModel & LegacyStoredModel
-      const caps = legacy.capabilities
-      const entry: StoredCatalogEntry = {
-        ...(legacy.maxOutputTokens ? { maxOutputTokens: legacy.maxOutputTokens } : {}),
-        ...(caps?.thinking ? { thinking: caps.thinking } : {}),
-        ...(caps?.effortLevels ? { effortLevels: caps.effortLevels } : {}),
-        ...(caps?.thinksByDefault !== undefined ? { thinksByDefault: caps.thinksByDefault } : {}),
-        ...(caps?.cacheRouting ? { cacheRouting: caps.cacheRouting } : {}),
-      }
-      delete legacy.maxOutputTokens
-      delete legacy.capabilities
-
-      const fields = Object.keys(entry)
-      if (fields.length === 0) continue
-      const key = catalogKey(id, p.kind)
-      const held = owner.get(key)
-      if (held === undefined) {
-        owner.set(key, name)
-        catalog[key] = { ...catalog[key], ...entry }
-        continue
-      }
-      const kept = catalog[key] as Record<string, unknown>
-      const source = entry as Record<string, unknown>
-      const differing = fields.filter((f) => JSON.stringify(kept[f]) !== JSON.stringify(source[f]))
-      if (differing.length > 0) {
-        notices.push(
-          `模型 ${id} 在接口 ${name} 与 ${held} 下的 ${differing.join('、')} 取值不同；` +
-            `两个接口协议相同，模型库中只有一个条目，已按 ${held} 的取值写入。`,
-        )
-      }
-    }
-  }
-
-  if (Object.keys(catalog).length > 0) cfg.catalog = catalog
-  else delete cfg.catalog
-  return notices
-}
-
-/**
- * 配置中读取到曾作为思考强度保存的 `none` 时迁移为“未选择”：`none` 不再是用户档位，
- * provider 字段随之省略，沿用模型默认值。
- *
- * 只修改内存，与模型库迁移相同；用户下一次保存配置时旧值随之删除。
- */
-function migrateDisabledEffort(cfg: QyConfig): string[] {
-  const notices: string[] = []
-  for (const [providerName, provider] of Object.entries(cfg.providers ?? {})) {
-    for (const [modelId, model] of Object.entries(provider.models ?? {})) {
-      const legacy = model as { effort?: string }
-      if (legacy.effort !== 'none') continue
-      delete legacy.effort
-      notices.push(
-        `接口 ${providerName} / ${modelId} 的思考强度 none 已迁移为未选择，将沿用模型默认值。`,
-      )
-    }
-  }
-  return notices
-}
-
-/** Flash 正式名称更新后，清除未使用的旧思考记录，避免其被当作自建模型。 */
-function migrateRetiredDeepSeekOverrides(cfg: QyConfig): string[] {
-  const retired = new Set(['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])
-  const used = new Set(
-    Object.values(cfg.providers ?? {}).flatMap((p) => Object.keys(p.models ?? {})),
-  )
-  const notices: string[] = []
-  for (const [key, entry] of Object.entries(cfg.catalog ?? {})) {
-    const id = key.split('|')[0]!
-    if (!retired.has(id) || used.has(id)) continue
-    // 有人工维护的价格、窗口等规格时保留；此处只清理旧探测留下的思考记录。
-    if (
-      Object.keys(entry).some(
-        (field) => !['thinking', 'effortLevels', 'thinksByDefault'].includes(field),
-      )
-    )
-      continue
-    delete cfg.catalog![key]
-    notices.push(`已移除未使用的旧模型 ${id} 的思考记录；正式名称为 deepseek-flash。`)
-  }
-  return notices
-}
-
-/**
- * 已收录生成模型保存的协议不在 `mediaKindsOf` 中时，改为目录协议。
- *
- * 此类协议没有已核实的请求格式：经中转站以 OpenAI 兼容协议调用 Grok 视频时，上游按 xAI 格式
- * 返回 `request_id`，适配器无法取得任务号。添加模型时按目录协议保存，设置页也只提供已核实的协议；
- * 已核实的选择不改写。
- *
- * 只修改内存，与模型库迁移相同；用户下一次保存配置时随整份写回。
- */
-function migrateUnverifiedMediaKinds(cfg: QyConfig): string[] {
-  const notices: string[] = []
-  for (const [providerName, provider] of Object.entries(cfg.providers ?? {})) {
-    for (const [id, stored] of Object.entries(provider.media ?? {})) {
-      const spec = findMediaModel(id)
-      if (!spec || mediaKindsOf(spec).includes(stored.kind)) continue
-      notices.push(
-        `接口 ${providerName} / ${id} 的生成协议 ${stored.kind} 不是该模型已核实的协议，已改为 ${spec.kind}。`,
-      )
-      stored.kind = spec.kind
-    }
-  }
-  return notices
-}
-
-/** 参考图由生成渠道原生上传，加载时清除停用的跨渠道上传引用。 */
-function migrateMediaUploadProvider(cfg: QyConfig): string[] {
-  const notices: string[] = []
-  for (const [name, provider] of Object.entries(cfg.providers ?? {})) {
-    for (const [id, stored] of Object.entries(provider.media ?? {})) {
-      const legacy = stored as StoredMediaModel & { hongchengUploadProvider?: unknown }
-      if (!Object.hasOwn(legacy, 'hongchengUploadProvider')) continue
-      delete legacy.hongchengUploadProvider
-      notices.push(`已清除 ${name} / ${id} 的跨渠道上传引用。`)
-    }
-  }
-  return notices
-}
-
-/** 清理已停用生成模型及默认引用，保留所属接口及凭证。 */
-function migrateRemovedMediaModels(cfg: QyConfig): string[] {
-  const notices: string[] = []
-  const removedModels = new Set([
-    'video-sd25-30s',
-    '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
-    '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
-    '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
-    'wf-sd2.5-v2',
-    'GGsedanco2.5/480',
-    'seedance-2.5（YX）',
-    'seedance-2.5（YX）-按次',
-    'seedance2.5-yx-count',
-    'seedance-2.5（AA）',
-    'seedance2.5-aa-count',
-    'seedance-2.5  AA-按次',
-    'sd2.5-pp-1080p',
-    'XG-Seedance-2.5-720p-2',
-    'lec-vp-seedance-2-5-301010-1',
-    '满血sd2.5(30-10-10原生过人脸/720P)',
-    '高质量sd2.5/(全参原生过真人速度快720P)',
-    '全能sd2.5(满血内置过脸30图超分1080P)',
-    'sd-25-30/10/1-1',
-  ])
-  for (const [name, provider] of Object.entries(cfg.providers ?? {})) {
-    let removed = false
-    let removedChannel = false
-    for (const [id, stored] of Object.entries(provider.media ?? {})) {
-      const isRemovedChannel = (stored.kind as string) === 'binguo_videos'
-      // 带保存规格的条目是拉取得到的型号：渠道可能重新启用同名型号，不按旧名单删除。
-      if (
-        !isRemovedChannel &&
-        !(stored.kind === 'openai_videos' && removedModels.has(id) && !stored.spec)
-      )
-        continue
-      delete provider.media![id]
-      removed = true
-      removedChannel ||= isRemovedChannel
-      for (const output of MEDIA_OUTPUTS) {
-        const ref = cfg.mediaDefaults?.[output]
-        if (ref?.provider !== name || ref.model !== id) continue
-        delete cfg.mediaDefaults![output]
-      }
-      notices.push(`已移除停用的生成模型 ${name} / ${id}。`)
-    }
-    if (!removed || Object.keys(provider.media ?? {}).length) continue
-    delete provider.media
-    if (!removedChannel || Object.keys(provider.models ?? {}).length) continue
-    delete cfg.providers[name]
-    if (cfg.active?.provider === name) delete cfg.active
-  }
-  if (notices.length && cfg.mediaDefaults && !Object.keys(cfg.mediaDefaults).length)
-    delete cfg.mediaDefaults
-  return notices
-}
-
-/**
- * 渠道型号的规格改为拉取时保存在配置中之前，代码目录中登记的 hongcheng 与木木型号（含两个木木下架型号）。
- * 本表只用于为这些已落盘的条目补上同样的规格，使升级后的请求字段与升级前一致；不要增加型号，新型号经拉取取得。
- */
-const CHANNEL_MODELS_BEFORE_PULL: Record<string, ChannelVideoSpec> = (() => {
-  const seconds = (min: number) => Array.from({ length: 31 - min }, (_, i) => i + min)
-  const hongcheng = (
-    resolution: string,
-    maxVideos: number,
-    min: number,
-    price: ChannelVideoSpec['price'],
-  ): ChannelVideoSpec => ({
-    channel: 'hongcheng',
-    seconds: seconds(min),
-    ratios: ['16:9', '9:16', '1:1'],
-    resolutions: [resolution],
-    maxImages: 30,
-    maxVideos,
-    maxAudios: 10,
-    ...(price ? { price } : {}),
-  })
-  const mumugofe = (
-    secs: number[],
-    inputs: Pick<ChannelVideoSpec, 'maxVideos' | 'maxAudios' | 'publicUrls'>,
-    amount?: number,
-  ): ChannelVideoSpec => ({
-    channel: 'mumugofe',
-    seconds: secs,
-    ratios: ['16:9', '9:16'],
-    resolutions: ['720p'],
-    sizes: { '720p': [1280, 720] },
-    maxImages: 30,
-    ...inputs,
-    ...(amount ? { price: { per: 'request', amount, currency: 'CNY' } } : {}),
-  })
-  const perSecond = (amount: number) => ({ per: 'second', amount, currency: 'CNY' }) as const
-  return {
-    'TTseadanco2.5-720': hongcheng('720p', 10, 5, perSecond(0.42)),
-    'TTsedanco2.5-480': hongcheng('480p', 10, 5, perSecond(0.31)),
-    'GGseadanco2.5/720': hongcheng('720p', 10, 5, perSecond(0.54)),
-    'seedance-2.5-yy-720p': hongcheng('720p', 0, 4, {
-      per: 'request',
-      amount: 7.3,
-      currency: 'CNY',
-    }),
-    'seedance2.5-V': mumugofe(seconds(5), { maxVideos: 0, maxAudios: 0, publicUrls: true }, 7.5),
-    '007系列/sd2.5(30图10音/4-30秒/720P)': mumugofe(seconds(4), { maxVideos: 0, maxAudios: 10 }, 6),
-    'X-SD25-301010': mumugofe([30], { maxVideos: 0, maxAudios: 0, publicUrls: true }, 7),
-    '专享sd2.5(30图10音/4-30秒/720p)': mumugofe(seconds(4), { maxVideos: 0, maxAudios: 10 }),
-    '高质量sd2.5(满血全参/720P/按次)': mumugofe([30], { maxVideos: 10, maxAudios: 10 }),
-  }
-})()
-
-/** 为已落盘的渠道型号补上保存的规格（`CHANNEL_MODELS_BEFORE_PULL`）。只修改内存，下一次保存时随整份写回。 */
-function migrateChannelModelSpecs(cfg: QyConfig): string[] {
-  const notices: string[] = []
-  for (const [name, provider] of Object.entries(cfg.providers ?? {})) {
-    for (const [id, stored] of Object.entries(provider.media ?? {})) {
-      const spec = CHANNEL_MODELS_BEFORE_PULL[id]
-      if (!spec || stored.kind !== 'openai_videos' || stored.spec) continue
-      stored.spec = structuredClone(spec)
-      notices.push(`${name} / ${id} 的参数已转存到配置中；重新拉取模型时按渠道目录更新。`)
-    }
-  }
-  return notices
 }
 
 /**
@@ -795,47 +476,11 @@ export async function loadConfig(): Promise<QyConfig> {
     )
   }
 
-  // 未迁移的全局 mode 可能来自输入区开关，不能视为新对话的显式偏好。
-  // 只重置未迁移的默认值，已有会话的 mode 保存在数据库中，不受影响。
-  // 与其他配置迁移相同，加载即生效，下一次保存时由 saveConfig 一并落盘。
-  if (parsed.permissionDefaultsVersion !== 1) {
-    parsed.mode = 'auto'
-    parsed.permissionDefaultsVersion = 1
+  // 其余字段的取值由 `diagnoseConfig` 校验；`providers` 不是对象时后续每一处读取都会失败，因此在此停止。
+  if (parsed.providers !== undefined && !isRecord(parsed.providers)) {
+    throw new Error(`配置文件中的 providers 必须是对象，修复后重新启动。文件：${path}`)
   }
-  const cfg: QyConfig = { ...structuredClone(DEFAULT_CONFIG), ...parsed }
-
-  // 模型库的旧结构就地迁移为两维键。冲突在此处记录：迁移发生在解析阶段，
-  // 而 `configNotices` 取得的已是迁移完成的配置，无法读取旧键。
-  for (const n of migrateModelLibrary(cfg)) log.warn('config', n)
-  for (const n of migrateDisabledEffort(cfg)) log.warn('config', n)
-  for (const n of migrateRetiredDeepSeekOverrides(cfg)) log.warn('config', n)
-  for (const n of migrateRemovedMediaModels(cfg)) log.warn('config', n)
-  for (const n of migrateChannelModelSpecs(cfg)) log.warn('config', n)
-  for (const n of migrateMediaUploadProvider(cfg)) log.warn('config', n)
-  for (const n of migrateUnverifiedMediaKinds(cfg)) log.warn('config', n)
-
-  /*
-   * `providers` 为对象时即两层格式，原样加载。
-   *
-   * active 缺省是合法状态：出厂不预设模型，用户完成配置之前该字段不存在。此处不
-   * 校验 active 是否为 ModelRef：无效的 active 由 `diagnoseConfig` / `resolveModel` 处理，
-   * 空的 active 是正常状态。
-   */
-  if (isRecord(parsed.providers)) return cfg
-
-  /*
-   * 其余情形是旧的扁平档案（`profiles`）或损坏的配置：模型部分整体置空。
-   *
-   * 一条旧档案须拆分为「一个接口 + 一个模型」，而两条 kind 与 baseUrl 均相同的档案
-   * 应合并为一个接口还是两个、key 归属哪个接口，只能推测。推测错误时配置看似仍在，
-   * 请求却发往另一个端点，危害大于明确提示用户重新配置。
-   *
-   * 因此模型部分整体清空，其余设置（权限、额外目录、思考强度）保留，
-   * 并由 `configNotices` 明确提示。`autoApprove` 采用相同处理：一律忽略，但必须提示。
-   */
-  delete cfg.active
-  cfg.providers = {}
-  return cfg
+  return { ...structuredClone(DEFAULT_CONFIG), ...parsed }
 }
 
 /** 重命名遇到读方占用时的重试上限。读取配置只占用文件几十微秒。 */
@@ -855,11 +500,7 @@ export async function saveConfig(cfg: QyConfig): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`
   try {
-    await writeFile(
-      temporary,
-      `${JSON.stringify({ ...cfg, permissionDefaultsVersion: 1 }, null, 2)}\n`,
-      'utf8',
-    )
+    await writeFile(temporary, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
     const deadline = Date.now() + RENAME_RETRY_MS
     for (;;) {
       try {
@@ -1366,32 +1007,6 @@ export function configNotices(cfg: QyConfig): string[] {
     notices.push(
       `已开放工作区之外的 ${extras.dirs.length} 个目录（模型可读写）：\n` +
         extras.dirs.map((d) => `- ${d}`).join('\n'),
-    )
-  }
-
-  // 配置中的 autoApprove 已取消。
-  //
-  // 只能向更严格的方向迁移：`autoApprove: ["execute:"]` 的原意是「全部放行」，
-  // 自动映射为 `mode: "full"` 等于在用户未确认的情况下取消全部裁决。
-  // 因此一律忽略、回退到默认的 `auto`，并且必须提示：
-  // 静默收紧会使命令开始被拒绝，而配置中无从查明原因。
-  if ((cfg as { autoApprove?: unknown }).autoApprove !== undefined) {
-    notices.push(
-      `配置中的 autoApprove 已不再生效，权限改为两种模式。\n` +
-        `- 新会话按 "${cfg.mode ?? 'auto'}" 运行（默认 auto：不弹出确认框，由硬边界与静态规则裁决）。\n` +
-        `- 如需新会话默认完全访问，在 ${configPath()} 中设置 "mode": "full"，该模式不做任何裁决。\n` +
-        `- 删除 autoApprove 字段即可消除本提示。`,
-    )
-  }
-
-  // 扁平 profiles 已不再加载（见 `loadConfig`），必须提示：
-  // 否则界面上已配置的接口与 key 全部消失，而配置文件中仍原样保存。
-  if ((cfg as { profiles?: unknown }).profiles !== undefined) {
-    notices.push(
-      `配置中的 profiles 为旧格式，已不再加载。模型配置改为「接口 → 模型」两层。\n` +
-        `- 当前使用默认接口，**API Key 需要重新填写**（旧的明文仍在配置文件中，可直接复制）。\n` +
-        `- 在设置页「模型」中重新配置，或直接修改 ${configPath()} 的 "active" / "providers"。\n` +
-        `- 配置完成后删除 profiles 字段即可消除本提示。`,
     )
   }
 

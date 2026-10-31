@@ -207,19 +207,6 @@ export function deleteSchedule(store: Store, id: string, workspaceRoot: string):
 }
 
 /**
- * 整表插入已有 id 的任务，用于一次性导入旧数据。
- *
- * 调用方必须在 `store.tx()` 中调用：只导入一部分比不导入更糟，且导入方还需要在同一个事务中
- * 完成旧文件的收尾。原 id、createdAt、触发游标与关联会话原样保留；重复 id 由主键约束立即
- * 报错，整个事务随之回滚。
- */
-export function insertSchedules(store: Store, list: Schedule[]): void {
-  for (const s of list) {
-    insert(store, { ...s, workspaceRoot: normalizeWorkspaceRoot(s.workspaceRoot) })
-  }
-}
-
-/**
  * 全部已启用任务中最早的下次触发时刻，只取晚于 `now` 的值；没有时为 null。
  *
  * 用于在系统睡眠期间按时唤醒。已到期而尚未认领的任务（上一轮仍在运行、未配置默认模型）不计入：

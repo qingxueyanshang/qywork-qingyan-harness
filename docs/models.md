@@ -350,7 +350,7 @@ bun run packages/cli/src/index.ts probe my-model --save
 新增生成模型默认使用模型库的原生协议，不根据中转域名改变协议。每个生成模型行的「接入方式」
 只列出该模型已实现的原生协议与兼容映射，保存后由 `media[id].kind` 决定调用方式。
 修改 Base URL 不会覆盖已保存的选择；上方「对话协议」只作用于对话模型。
-已收录模型的未核实协议在加载旧配置时校正为目录协议，已登记的兼容映射保留；未收录的自定义模型使用所选协议的默认规格。
+未收录的自定义模型使用所选协议的默认规格。
 
 中转站的 `/v1/videos` 按已核实的模型映射发送素材：万相使用 `metadata.input.media`，
 Seedance 使用 `metadata.content`，Veo 使用 `images` 首帧字段。其他型号采用通用文生参数。
@@ -451,7 +451,6 @@ MiniMax 官方的 `/v1/models` 只列出对话型号。拉取模型时，若接�
 依据：[文生图](https://platform.minimax.cn/docs/api-reference/image-generation-t2i)、[图生图](https://platform.minimax.cn/docs/api-reference/image-generation-i2i)、[创建视频生成任务](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimax.cn/docs/api-reference/video-generation-v2-query)、[价格](https://platform.minimax.cn/docs/guides/pricing-paygo)。
 
 集梦渠道及 `Seedance 2.5 720p` 已于 2026-10-13 移除，不再提供模型目录、协议选择、生成或任务取回。
-加载旧配置时移除该渠道的模型及对应默认引用，混合接口中的其他模型和凭证保留。
 该渠道专用的影币计价与展示已一并移除。
 
 ### 拉取模型

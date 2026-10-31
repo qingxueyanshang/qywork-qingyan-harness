@@ -24,7 +24,6 @@ import {
   diagnoseConfig,
   diagnoseRunnable,
   exportConversation,
-  importLegacySchedules,
   loadConfig,
   type QyConfig,
   Session,
@@ -61,9 +60,6 @@ export async function runTui(workspaceRoot: string): Promise<number> {
   }
 
   const store = new Store({ path: dataPath(), owner: 'cli' })
-  // 此处同样需要导入定时任务的旧文件：本次会话注入了定时任务端口，若不导入，在 `qy serve`
-  // 运行之前 `list_schedules` 无法读取已排定的任务。文件不合法时抛出，与 serve 的行为相同。
-  importLegacySchedules(store)
   const content = new ContentStore(contentPathFor(dataPath()))
   /*
    * 正文回收。两个库都打开之后、执行本轮之前回收一次：清理上一个进程在登记引用之前

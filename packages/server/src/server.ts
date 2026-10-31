@@ -32,7 +32,6 @@ import {
   collectSecrets,
   configDir,
   createOfficeHost,
-  importLegacySchedules,
   listMediaModels,
   releaseExtensions,
   resolveMediaModel,
@@ -340,18 +339,6 @@ export function serve(opts: ServeOptions) {
     log.info('runs', '另有执行记录由其他运行中的进程持有，未回收', {
       heldByOthers: stale.heldByOthers,
     })
-  }
-
-  /*
-   * `~/.qywork/schedules.json` 的一次性导入，必须在开始服务之前执行：导入之后任务表的
-   * 唯一权威是账本，调度、HTTP 接口与模型工具都只读取账本，运行期间不再读取该文件。
-   *
-   * 文件不合法时抛出异常，经现有的启动失败路径退出并保留原字节。静默视为空表会使界面上的
-   * 定时任务全部消失，用户会重新创建一遍。
-   */
-  const importedSchedules = importLegacySchedules(opts.store)
-  if (importedSchedules !== null) {
-    log.info('scheduler', '已把定时任务文件导入账本', { count: importedSchedules })
   }
 
   /*

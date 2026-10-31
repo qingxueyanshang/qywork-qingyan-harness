@@ -165,7 +165,6 @@ export function sampleConfig(): QyConfig {
     catalog,
     mediaDefaults,
     mode: 'auto',
-    permissionDefaultsVersion: 1,
     browserEnabled: false,
     desktopEnabled: false,
     desktopForeground: false,

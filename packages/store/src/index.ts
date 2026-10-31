@@ -95,7 +95,6 @@ export {
   claimScheduleNow,
   createSchedule,
   deleteSchedule,
-  insertSchedules,
   listSchedules,
   nextScheduledAt,
   type ScheduleClaim,

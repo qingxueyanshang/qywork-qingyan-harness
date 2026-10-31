@@ -822,14 +822,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
 
     await putMode('full')
     const a = await create()
-    // 模拟升级前残留的全局 full：加载旧配置只重置后续新会话的默认值。
-    const legacy = JSON.parse(await readFile(configPath(), 'utf8')) as QyConfig
-    delete legacy.permissionDefaultsVersion
-    await writeFile(configPath(), JSON.stringify(legacy))
-    const migrated = (await (
-      await fetch(`${base()}/api/config`, { headers: auth() })
-    ).json()) as ConfigBody
-    expect(migrated.config.mode).toBe('auto')
+    await putMode('auto')
     const b = await create()
     expect([a.mode, b.mode]).toEqual(['full', 'auto'])
     await putMode('full')
