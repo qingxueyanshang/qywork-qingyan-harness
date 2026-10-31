@@ -152,7 +152,18 @@ export default function McpSettings() {
           <Show when={missing().length > 0 || failures().length > 0}>
             <Section title="未连接">
               <div class="entry-list">
-                <For each={missing()}>{(c) => <EntryCard name={c.name} />}</For>
+                <For each={missing()}>
+                  {(c) => (
+                    <EntryCard
+                      name={c.name}
+                      {...(c.pendingCommand ? { desc: c.pendingCommand } : {})}
+                    >
+                      <Show when={c.pendingCommand}>
+                        <div class="entry-extra bad">未启用</div>
+                      </Show>
+                    </EntryCard>
+                  )}
+                </For>
                 <For each={failures()}>
                   {(f) => (
                     <EntryCard name={f.server}>

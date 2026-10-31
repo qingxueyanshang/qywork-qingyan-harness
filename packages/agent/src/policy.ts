@@ -126,9 +126,8 @@ const OUTSIDE_SYMBOL_RE = OUTSIDE_SYMBOLS.map((s) => s.re).join('|')
  *
  * 不要添加「用 shell 写入 .qy/ 或 .agents/ 即自我提权」的规则，它因以下两条理由不成立：
  *
- * 1. 它无法限制任何能力。`.agents/mcp.json` 决定模型取得哪些工具，而模型
- *    已有 `run_command`，MCP 服务器本身就是模型能直接启动的进程。为自身添加一个
- *    工具不会获得任何新能力，只是改变了调用方式。
+ * 1. 它无法限制任何能力。模型已有 `run_command`，MCP 服务器本身就是模型能直接启动的进程；
+ *    写入 `.agents/mcp.json` 的服务经用户确认后才启动，启用时其命令与 `run_command` 经同一个命令判定。
  * 2. `.agents/` 本应可写：`write_memory` 向 `.agents/memory/` 写入内容。
  *    shell 拦截而工具不拦截，会对同一件事形成两套规则。
  *

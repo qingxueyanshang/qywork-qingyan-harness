@@ -456,6 +456,10 @@ export function buildTailNotes(input: {
    */
   externalTools?: { name: string; summary: string }[]
   /**
+   * 项目配置（`.agents/mcp.json`）中尚未启用的 MCP 服务与其命令行。属于 run 快照：随项目文件与用户的确认变化。
+   */
+  pendingMcp?: { name: string; command: string }[]
+  /**
    * run 开始时会话账本中的待办快照。run 内的更新仍以真实的 `write_todos` 与绑定父待办的
    * `subagent` 调用和回执为准；压缩层保留这组最小事实链，不另建 Todo 状态。
    * 全部完成的清单属于上一项任务，只保留在历史中，不作为下一条指令的「当前待办」。
@@ -588,6 +592,13 @@ export function buildTailNotes(input: {
     const list = input.externalTools.map((t) => `- ${t.name}：${oneLine(t.summary)}`).join('\n')
     notes.push({
       content: `## 可加载的外部工具（调用前先用 load_tool 加载参数说明）\n${list}`,
+      group: 'mcpTools',
+    })
+  }
+  if (input.pendingMcp?.length) {
+    const list = input.pendingMcp.map((p) => `- ${p.name}：${oneLine(p.command)}`).join('\n')
+    notes.push({
+      content: `## 项目配置中未启用的 MCP 服务\n这些服务写在项目的 .agents/mcp.json 中，经用户确认后才启动；启用即以用户权限运行其命令。需要使用时，向用户列出命令并取得同意，再调用 enable_mcp_server。\n${list}`,
       group: 'mcpTools',
     })
   }

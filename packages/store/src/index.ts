@@ -56,6 +56,7 @@ export {
   markRunRunning,
   markStepExecuting,
   mostRecentWorkspace,
+  normalizeWorkspaceRoot,
   openProviderRequest,
   type ProcessExitObservation,
   permissionModeOf,

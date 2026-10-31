@@ -58,6 +58,8 @@ describe('模型侧 MCP 配置工具', () => {
             }
           },
           moveServer: async () => ({ ok: false }),
+          commandLineOf: async () => null,
+          enableServer: async () => ({ ok: false }),
         },
       }),
     )
@@ -74,6 +76,8 @@ describe('模型侧 MCP 配置工具', () => {
           return { ok: true, saved: true, path: 'p', replaced: false }
         },
         moveServer: async () => ({ ok: false }),
+        commandLineOf: async () => null,
+        enableServer: async () => ({ ok: false }),
       },
     } as Partial<ToolContext>
     await writeMcpServerTool.fn(
@@ -98,6 +102,8 @@ describe('模型侧 MCP 配置工具', () => {
       ctx({
         mcpConfig: {
           writeServer: async () => ({ ok: false }),
+          commandLineOf: async () => null,
+          enableServer: async () => ({ ok: false }),
           moveServer: async (input) => {
             calls += 1
             expect(input).toEqual({ name: 'docs', fromScope: 'project', toScope: 'global' })

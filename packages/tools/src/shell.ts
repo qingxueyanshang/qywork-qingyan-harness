@@ -311,6 +311,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
     summary: '在工作区中执行一条命令',
     targetExtractor: (a) => (typeof a.command === 'string' ? a.command : null),
     permissionEffect: 'execute',
+    commandLine: (a) => String(a.command ?? ''),
     // 不并行执行：命令之间的顺序几乎总是携带意图（先安装依赖再构建）。
     parallelSafe: false,
     async fn(args, ctx) {

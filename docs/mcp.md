@@ -1,7 +1,11 @@
 # MCP：接入外部工具
 
 qywork 是 MCP **客户端**：把别人写的 MCP server 提供的工具接进来给模型用。
-配置在工作区的 `.agents/mcp.json`；全局那份放 `~/.qywork/mcp.json`，同名时项目层赢。
+配置在工作区的 `.agents/mcp.json`；全局的一份在 `~/.qywork/mcp.json`，同名时项目层优先。
+
+项目 `.agents/mcp.json` 中的服务经用户确认后才启动：仓库自带的服务、或 `git pull` 后命令被修改的服务，
+在设置页的「未连接」中显示为「未启用」，模型在会话中列出命令、用户同意后由模型启用。
+在 qywork 中新增、导入的服务即已确认。确认记录保存在 `~/.qywork/mcp-approvals.json`，不写入仓库。
 
 ```bash
 qy mcp            # 看每个 server 连没连上

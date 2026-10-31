@@ -21,6 +21,7 @@ import { loadPlugins, type PluginRegistry, pluginToolPrefix } from '@qywork/plug
 import type { Role, TeamRules } from '@qywork/team'
 import {
   AGENTS_DIR,
+  formatCommandLine,
   globalScopeRoot,
   resolveInWorkspace,
   type Scope,
@@ -29,6 +30,7 @@ import {
   withFileLocks,
 } from '@qywork/tools'
 import { makeCapabilityHandler } from './capabilities.ts'
+import { isApproved, readApprovals } from './mcp-approvals.ts'
 
 /** 全局根目录下存放插件的子目录名。 */
 export const PLUGINS_SUBDIR = 'plugins'
@@ -379,6 +381,12 @@ export interface ScopedMcpConfig extends McpConfig {
   scopeOf: Record<string, Scope>
   /** 每一层的文件路径，无论文件是否存在都列出：用户需要知道在何处添加配置。 */
   files: { scope: Scope; path: string }[]
+  /**
+   * 项目层中尚未确认的服务（`mcp-approvals.ts`）：不进入 `servers`，不启动。设置页列为未启用，
+   * 运行快照列出它们，供模型向用户说明后调用 `enable_mcp_server`。
+   * `command` 是将要运行的命令行；HTTP 服务为其地址。
+   */
+  pending: { name: string; command: string }[]
 }
 
 /**
@@ -390,7 +398,10 @@ export async function loadScopedMcpConfig(workspaceRoot: string): Promise<Scoped
   const servers: ScopedMcpConfig['servers'] = {}
   const scopeOf: Record<string, Scope> = {}
   const files: { scope: Scope; path: string }[] = []
+  const pending: ScopedMcpConfig['pending'] = []
   const errors: string[] = []
+  const { approvals, error: approvalError } = await readApprovals()
+  if (approvalError) errors.push(approvalError)
 
   for (const { scope, dir } of scopePaths(scopeRoots(workspaceRoot), '')) {
     const path = join(dir, MCP_FILE)
@@ -404,12 +415,20 @@ export async function loadScopedMcpConfig(workspaceRoot: string): Promise<Scoped
     }
     for (const [name, spec] of Object.entries(parsed.servers)) {
       if (name in servers) continue
+      // 项目层位于仓库内：只启动用户确认过当前内容的服务。所有启动时机都经过本函数。
+      if (scope === 'project' && !isApproved(approvals, workspaceRoot, name, spec)) {
+        pending.push({
+          name,
+          command: 'url' in spec ? spec.url : formatCommandLine(spec.command, spec.args ?? []),
+        })
+        continue
+      }
       servers[name] = spec
       scopeOf[name] = scope
     }
   }
 
-  return { servers, scopeOf, files, error: errors.length ? errors.join('\n') : null }
+  return { servers, scopeOf, files, pending, error: errors.length ? errors.join('\n') : null }
 }
 
 /**

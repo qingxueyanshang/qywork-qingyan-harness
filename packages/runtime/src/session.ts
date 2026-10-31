@@ -573,6 +573,7 @@ export class Session {
       // 参数表随生成工具提供：工具未注册（未配置模型、角色未指定）时不提供。
       ...(mediaModels.length ? { mediaModels } : {}),
       externalTools: this.pendingTools?.index() ?? [],
+      pendingMcp: this.extensions?.mcpConfig.pending ?? [],
       todos: latestTodos(store, conversationId),
       // 未执行完毕的任务图随快照一并冻结。没有派发通道时不存在任务图，无需查询。
       ...(canAssignModels ? { workflows: unfinishedWorkflows(store, conversationId) } : {}),
@@ -1108,7 +1109,7 @@ export class Session {
    * - 文件与网络类（read/write/delete/network）：路径已由
    *   `resolveInWorkspace` 限定，外发请求已经过 SSRF 防护，均为确定性判断，
    *   越界的调用不会到达此处。因此放行，不再额外裁决。
-   * - MCP 与插件工具：由用户显式配置或安装，属于知情同意，放行；
+   * - MCP 与插件工具的调用：由用户显式配置或安装，属于知情同意，放行；
    *   不为用户自选的扩展另设第三套检查。
    * - 内置浏览器工具（`browser` 效果）：端口由装配方按本轮执行注入，
    *   参数中自报的会话、Run、工作区根一律不读取；页面归属由宿主裁决，用户手动打开的页面
@@ -1117,14 +1118,16 @@ export class Session {
    * - 内置桌面工具（`desktop` 效果）：端口由装配方按用户的启用开关与宿主状态注入，
    *   参数中只有端口发放的不透明目标 id，OS 句柄不会交给模型；能否操作由
    *   系统授权与宿主裁决。边界同样位于参数解析之前，放行。
-   * - `run_command`：唯一能同时绕过路径约束与 SSRF 防护的工具
-   *   （命令字符串中的路径不经过参数解析），只有它需要实际裁决。
+   * - 声明了命令行的调用（`ToolSpec.commandLine`：`run_command`，以及写入 stdio MCP 服务的
+   *   `write_mcp_server`）：命令字符串中的路径不经过参数解析，能同时绕过路径约束与 SSRF 防护，
+   *   由 `decideCommand` 裁决。是否裁决取决于调用是否声明了命令行，不按工具名判断。
    */
   private async decide(
     conversationId: ConversationId,
     call: {
       toolName: string
       args: Record<string, unknown>
+      command?: string
     },
   ): Promise<PermissionVerdict> {
     // 每次裁决从账本读取：运行中切换模式后，下一次调用即按新模式裁决，路径范围随裁决一并给出。
@@ -1132,9 +1135,9 @@ export class Session {
       return { allowed: true, unrestrictedPaths: true }
     }
 
-    if (call.toolName !== 'run_command') return { allowed: true }
+    if (call.command === undefined) return { allowed: true }
 
-    const command = String(call.args.command ?? '')
+    const command = call.command
     // 根目录清单必须与路径层、沙箱层使用同一份。三处分别计算时，
     // 配置只在其中一层生效，且三层的报错互不相关。
     const d = decideCommand(command, {

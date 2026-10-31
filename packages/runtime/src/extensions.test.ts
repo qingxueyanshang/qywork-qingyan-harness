@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openBatchBudget, type SinkPort, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { parseMcpConfig } from '@qywork/mcp'
 import {
   acquireExtensions,
   globalPluginsDir,
@@ -18,6 +19,7 @@ import {
   MCP_CONFIG,
   releaseExtensions,
 } from './extensions.ts'
+import { approveMcpServers } from './mcp-approvals.ts'
 
 /**
  * 插件安装在全局目录中，因此本组测试使用临时的 `QYWORK_HOME`。
@@ -375,16 +377,15 @@ describe('MCP 接入', () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-mcpext-'))
     await mkdir(join(root, '.agents'), { recursive: true })
     await writeFile(join(root, '.agents', 'server.mjs'), SERVER, 'utf8')
-    await writeFile(
-      join(root, MCP_CONFIG),
-      JSON.stringify({
-        mcpServers: {
-          demo: { command: process.execPath, args: [join(root, '.agents', 'server.mjs')] },
-          ...extra,
-        },
-      }),
-      'utf8',
-    )
+    const text = JSON.stringify({
+      mcpServers: {
+        demo: { command: process.execPath, args: [join(root, '.agents', 'server.mjs')] },
+        ...extra,
+      },
+    })
+    await writeFile(join(root, MCP_CONFIG), text, 'utf8')
+    // 项目层的服务经确认后才启动（`mcp-approvals.ts`）：本组测试的是确认之后的连接。
+    await approveMcpServers(root, parseMcpConfig(text).servers)
     return { root, ext: await loadExtensions(root) }
   }
 

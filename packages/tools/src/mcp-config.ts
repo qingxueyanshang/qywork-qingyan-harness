@@ -47,6 +47,8 @@ export const writeMcpServerTool: ToolSpec = {
   summary: '新增或更新一个 MCP 服务',
   targetExtractor: (a) => (typeof a.name === 'string' ? a.name : null),
   permissionEffect: 'write',
+  // 写入 stdio 服务即启动其命令：与 `run_command` 经同一个命令判定。HTTP 服务不启动本机进程。
+  commandLine: (a) => stdioCommandLine(a.config_json),
   parallelSafe: false,
   resourceKeys: (a) => [`mcp-config:${String(a.scope ?? 'project')}`],
 
@@ -97,6 +99,12 @@ export const moveMcpServerTool: ToolSpec = {
   summary: '在项目层与全局层之间迁移 MCP 服务',
   targetExtractor: (a) => (typeof a.name === 'string' ? a.name : null),
   permissionEffect: 'delete',
+  // 迁入另一层即在该层启动它：迁入全局层的服务不再需要项目层的启动确认，因此同样经命令判定。
+  commandLine: async (a, ctx) =>
+    (await ctx.mcpConfig?.commandLineOf({
+      name: String(a.name ?? '').trim(),
+      scope: writableScope(a.from_scope) ?? 'project',
+    })) ?? null,
   parallelSafe: false,
   resourceKeys: () => ['mcp-config:project', 'mcp-config:global'],
 
@@ -122,6 +130,68 @@ export const moveMcpServerTool: ToolSpec = {
       data: { name, from_scope: from, to_scope: to, ...result },
     }
   },
+}
+
+export const enableMcpServerTool: ToolSpec = {
+  name: 'enable_mcp_server',
+  description:
+    '启用项目配置（.agents/mcp.json）中尚未启用的 MCP 服务。项目文件中的服务经用户确认后才启动；启用即以用户权限运行其命令，因此先向用户列出该命令并取得同意，再调用本工具。服务内容此后被修改时回到未启用。',
+  parameters: {
+    type: 'object',
+    properties: { name: { type: 'string', description: 'server 名称' } },
+    required: ['name'],
+    additionalProperties: false,
+  },
+  actionKind: 'write',
+  objectLabel: 'MCP 服务',
+  category: 'mcp',
+  facet: 'MCP',
+  summary: '启用项目配置中的 MCP 服务',
+  targetExtractor: (a) => (typeof a.name === 'string' ? a.name : null),
+  permissionEffect: 'write',
+  // 启用即启动该服务的命令：与 `run_command` 经同一个命令判定。
+  commandLine: async (a, ctx) =>
+    (await ctx.mcpConfig?.commandLineOf({ name: String(a.name ?? '').trim(), scope: 'project' })) ??
+    null,
+  parallelSafe: false,
+  resourceKeys: () => ['mcp-config:project'],
+
+  async fn(args, ctx) {
+    const name = String(args.name ?? '').trim()
+    if (!name) return { status: 'failure', message: '缺少 name' }
+    if (!ctx.mcpConfig) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
+    const result = await ctx.mcpConfig.enableServer({ name })
+    if (!result.ok)
+      return {
+        status: 'failure',
+        message: result.error ?? '启用 MCP 服务失败',
+        data: { ...result },
+      }
+    return {
+      status: result.activation?.connected ? 'success' : 'failure',
+      message: `已启用项目 MCP 服务 ${name}；${activationMessage(result.activation)}`,
+      data: { name, ...result },
+    }
+  },
+}
+
+/** 命令与参数按 shell 的写法拼接，含空白或特殊字符的参数加双引号。用于命令判定与向用户显示。 */
+export function formatCommandLine(command: string, args: readonly string[]): string {
+  return [command, ...args]
+    .map((p) => (/^[\w@%+=:,./-]+$/.test(p) ? p : JSON.stringify(p)))
+    .join(' ')
+}
+
+/**
+ * stdio 服务配置将启动的命令行。不是 stdio 配置（HTTP 服务或无法解析）时返回 null；
+ * 无法解析的配置由工具本身报告。
+ */
+export function stdioCommandLine(raw: unknown): string | null {
+  const parsed = jsonArg(raw, 'object', 'config_json')
+  if (!parsed.ok || !parsed.value || typeof parsed.value !== 'object') return null
+  const { command, args } = parsed.value as { command?: unknown; args?: unknown }
+  if (typeof command !== 'string' || !command.trim()) return null
+  return formatCommandLine(command, Array.isArray(args) ? args.map(String) : [])
 }
 
 function activationMessage(activation: import('@qywork/agent').McpActivation | undefined): string {
