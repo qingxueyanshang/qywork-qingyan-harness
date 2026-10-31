@@ -68,6 +68,14 @@ const RESENDABLE_CODES: ReadonlySet<string> = new Set([
   'rate_limited',
 ])
 
+/**
+ * 失败码是否属于暂时故障。子 agent 的一轮以这些失败码结束时，派发方按暂时故障的间隔重新派发
+ * （`server/delegate.ts`），与本轮内的重发使用同一个集合，不另立一份分类。
+ */
+export function transientErrorCode(code: string): boolean {
+  return RESENDABLE_CODES.has(code)
+}
+
 /** 指数退避的首个间隔。中转侧故障的恢复为秒级，更短的首个间隔等于不退避地反复请求对端。 */
 const RESEND_BACKOFF_BASE_MS = 2_000
 

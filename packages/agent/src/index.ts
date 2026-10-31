@@ -79,7 +79,8 @@ export {
 // 主循环：runtime/session.ts 是唯一装配方
 // `softLimit` 另有一个包外消费者：面板显示的触发线必须与实际触发压缩的阈值同源
 // `MAX_RESENDS` 同理：历史接口的运行中快照必须报告同一个上限，另行定义一个数值即形成第二本账
-export { MAX_RESENDS } from './loop/attempt.ts'
+// `transientErrorCode` 同理：子 agent 的重新派发与本轮内的重发使用同一份暂时故障分类
+export { MAX_RESENDS, transientErrorCode } from './loop/attempt.ts'
 export { AgentLoop } from './loop/index.ts'
 export {
   envelopeResult,
