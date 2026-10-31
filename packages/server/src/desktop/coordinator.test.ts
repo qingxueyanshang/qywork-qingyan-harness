@@ -1129,6 +1129,7 @@ const IMAGE: Extract<DesktopObservation, { kind: 'image' }> = {
     screen: { x: 87, y: 80, width: 506, height: 453 },
     dpi: 96,
     generation: '80,80,520,460@96#65537',
+    popups: [],
   },
   mime: 'image/png',
   bytes: 'iVBORw0KGgo=',
@@ -1226,6 +1227,7 @@ test('缩放过的图像按比例换算，不按 DPI 换算', async () => {
         screen: { x: 10, y: 20, width: 3840, height: 2160 },
         dpi: 192,
         generation: '10,20,3840,2160@192#65537',
+        popups: [],
       },
     },
   })
@@ -1472,7 +1474,49 @@ test('按图像定位的指针动作换算为屏幕坐标并携带几何代际',
   // 该图像为 1:1，换算即一次平移：87+10、80+20。
   expect(frame.point).toEqual({ x: 97, y: 100 })
   expect(frame.expectGeneration).toBe('80,80,520,460@96#65537')
+  expect(frame.expectPopups).toEqual([])
   expect(frame.ref).toBeUndefined()
+  host.reply(frame, { dispatch: 'submitted', observation: subtree() })
+  expect((await acting).dispatch).toBe('submitted')
+})
+
+/**
+ * 原始失败形状：微信的搜索结果下拉框是同一应用的另一个顶层窗口。它合成进图像后，按图像坐标点在
+ * 它上面的动作带回该图像中的弹出窗口，由 worker 核对它仍在原处并把点击投递给它；伸出目标窗口的
+ * 部分同样在图像之内，按图像范围准入。
+ */
+test('按图像定位的动作带回该图像中合成的弹出窗口', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+  const popups = [{ window: 4242, title: '', screen: { x: 300, y: 400, width: 240, height: 260 } }]
+  const pending = a.captureImage({ windowId: 'dw_1', maxEdge: 1568 })
+  const shot = await host.next()
+  host.reply(shot, {
+    observation: {
+      ...IMAGE,
+      window: shot.target?.window ?? 0,
+      geometry: {
+        ...IMAGE.geometry,
+        imageHeight: 580,
+        screen: { x: 87, y: 80, width: 506, height: 580 },
+        popups,
+      },
+    },
+  })
+  const image = await pending
+  expect(image.geometry.popups).toEqual(popups)
+
+  const acting = a.act({
+    windowId: 'dw_1',
+    at: { imageRef: image.imageRef, x: 300, y: 560 },
+    action: { kind: 'click', button: 'left', count: 1 },
+  })
+  const frame = await host.next()
+  expect(frame.point).toEqual({ x: 387, y: 640 })
+  expect(frame.expectGeneration).toBe('80,80,520,460@96#65537')
+  expect(frame.expectPopups).toEqual(popups)
   host.reply(frame, { dispatch: 'submitted', observation: subtree() })
   expect((await acting).dispatch).toBe('submitted')
 })

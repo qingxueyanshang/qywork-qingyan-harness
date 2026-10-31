@@ -148,6 +148,9 @@ pub struct RequestFrame {
     /// `capture_image` 要求的窗口几何代际。
     #[serde(default)]
     pub expect_generation: Option<String>,
+    /// 按图定位的 `act` 带回该图像中合成的弹出窗口。原样交给 worker，由它核对落点处的那一个。
+    #[serde(default)]
+    pub expect_popups: Option<Value>,
     #[serde(default)]
     pub max_edge: Option<u32>,
     #[serde(default)]
@@ -399,6 +402,9 @@ pub fn to_worker(
             }
             if let Some(generation) = &frame.expect_generation {
                 merge(&mut params, json!({ "expectGeneration": generation }));
+            }
+            if let Some(popups) = &frame.expect_popups {
+                merge(&mut params, json!({ "expectPopups": popups }));
             }
             if let Some(root) = &frame.root {
                 merge(&mut params, json!({ "root": root }));
@@ -730,6 +736,7 @@ mod tests {
             timeout_ms: None,
             region: None,
             expect_generation: None,
+            expect_popups: None,
             max_edge: None,
             max_bytes: None,
         }
@@ -791,7 +798,7 @@ mod tests {
         assert!(!WorkerRequest::bind_connection("w3".to_owned(), &binding()).foreground);
     }
 
-    /// 按图定位的动作携带屏幕落点与窗口几何代际，不带 ref。两种目标由 worker 裁决。
+    /// 按图定位的动作携带屏幕落点、窗口几何代际与图像中合成的弹出窗口，不带 ref。两种目标由 worker 裁决。
     #[test]
     fn a_pointer_action_can_carry_a_screen_point_instead_of_a_control() {
         let mut frame = request("act");
@@ -800,9 +807,12 @@ mod tests {
         frame.action = Some(json!({"kind": "click", "button": "right", "count": 1}));
         frame.point = Some(json!({"x": -1800, "y": 240}));
         frame.expect_generation = Some("100,100,800,600@96#7".to_owned());
+        let popups = json!([{"window": 88, "title": "", "screen": {"x": -1820, "y": 220, "width": 90, "height": 60}}]);
+        frame.expect_popups = Some(popups.clone());
         let worker = to_worker("w1".to_owned(), &frame, &binding(), 66).unwrap();
         assert_eq!(worker.params["point"], json!({"x": -1800, "y": 240}));
         assert_eq!(worker.params["expectGeneration"], json!("100,100,800,600@96#7"));
+        assert_eq!(worker.params["expectPopups"], popups);
         assert!(worker.params.get("ref").is_none());
     }
 

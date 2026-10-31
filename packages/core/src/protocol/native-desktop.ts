@@ -422,8 +422,12 @@ export interface DesktopTreeBody {
  * 计算：`dpi` 是窗口所在显示器的缩放读数（96 = 100%），只用于说明图像是在哪一档
  * 缩放下采集的。
  *
- * `generation` 是窗口矩形与显示器的代际：窗口移动、缩放、更换显示器或 DPI 变化后该值
+ * `generation` 是目标窗口矩形与显示器的代际：窗口移动、缩放、更换显示器或 DPI 变化后该值
  * 即不同，按图定位的请求在派发前据此被拒绝。
+ *
+ * `popups` 是合成进该图像的弹出窗口（同一应用位于目标窗口之上的下拉框、菜单、对话框），
+ * 按 z 序自下而上，只列出与图像有交集的窗口。弹出窗口可以伸出目标窗口，`screen` 因此覆盖
+ * 两者的并集，并集中不属于任何窗口的部分为黑色。目前只有 Windows 合成弹出窗口，其他平台恒为空。
  *
  * 来源为 `portal_screen_cast` 时没有屏幕坐标：Wayland 不向客户端提供全局坐标，`screen` 是该流
  * 自身的逻辑坐标，原点为窗口左上角。按图定位的落点按同一换算交给 worker，只对该窗口有效。
@@ -434,6 +438,20 @@ export interface DesktopImageGeometry {
   screen: DesktopRect
   dpi: number
   generation: string
+  popups: DesktopImagePopup[]
+}
+
+/**
+ * 合成进图像的一个弹出窗口。它是独立的顶层窗口：按图像坐标点在它上面时，指针投递给它。
+ * 按图定位的动作原样带回图像中的这一项（`expectPopups`）。
+ */
+export interface DesktopImagePopup {
+  /** 窗口句柄。 */
+  window: number
+  /** 窗口标题，可能为空。 */
+  title: string
+  /** 该窗口在图像中占据的屏幕物理像素矩形，也是点击投递给它的范围。 */
+  screen: DesktopRect
 }
 
 /** 图像采集的方式。 */
@@ -634,8 +652,8 @@ export interface DesktopRequestFrame {
   /**
    * 指针动作在屏幕物理像素上的落点，与 `ref` 互斥。
    *
-   * 由服务端从图像坐标换算得到，因此必须与 `expectGeneration` 一同给出：窗口在采集图像与派发
-   * 之间移动过时，该坐标指向的已不是同一块界面。
+   * 由服务端从图像坐标换算得到，因此必须与 `expectGeneration`、`expectPopups` 一同给出：
+   * 窗口在采集图像与派发之间移动过时，该坐标指向的已不是同一块界面。
    */
   point?: { x: number; y: number }
   /** `act` 要执行的动作。参数随动作一并给出。 */
@@ -677,6 +695,13 @@ export interface DesktopRequestFrame {
    * 移动过时，该矩形或坐标指向的已不是同一块界面。宿主在派发前核对，不一致即拒绝。
    */
   expectGeneration?: string
+  /**
+   * 按图像坐标操作时，该图像几何中的 `popups`，原样带回。
+   *
+   * worker 只核对落点处的那一个：它已关闭或移动即拒绝；图像中该点显示目标窗口而此刻被
+   * 弹出窗口覆盖时同样拒绝。
+   */
+  expectPopups?: DesktopImagePopup[]
   /**
    * `capture_image` 交给模型的图像长边上限。
    *

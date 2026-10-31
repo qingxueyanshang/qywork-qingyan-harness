@@ -116,6 +116,8 @@ pub fn capture(number: u32, placed: &Placed, req: &CaptureRequest<'_>) -> Result
             screen: crop.screen,
             dpi: placed.frame.dpi,
             generation,
+            // 只采集目标窗口自身，同一应用的菜单与弹出面板（另一个窗口）不合成进图像。
+            popups: Vec::new(),
         },
         mime: "image/png",
         bytes: base64(&bytes),

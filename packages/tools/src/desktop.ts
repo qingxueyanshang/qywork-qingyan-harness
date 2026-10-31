@@ -42,6 +42,7 @@ import type {
   DesktopAction,
   DesktopActionKind,
   DesktopDispatch,
+  DesktopImageGeometry,
   DesktopModifier,
   DesktopMouseButton,
   DesktopRect,
@@ -50,7 +51,7 @@ import type {
   DesktopToggleState,
   DesktopWindowState,
 } from '@qywork/core'
-import { imageSizeOf } from '@qywork/core'
+import { imageSizeOf, screenPointToImage } from '@qywork/core'
 import { type DesktopResultParts, desktopResult, MAX_TITLE_CHARS } from './desktop-results.ts'
 import { MAX_EDGE, shrinkImage } from './image.ts'
 
@@ -1126,8 +1127,41 @@ async function imagePayload(
     line:
       `${image.imageRef} ${g.imageWidth}×${g.imageHeight} 像素 · ` +
       `屏幕 ${g.screen.x},${g.screen.y} ${g.screen.width}×${g.screen.height} · ` +
-      `DPI ${g.dpi}${hint}`,
+      `DPI ${g.dpi}${hint}${popupNote(g)}`,
   }
+}
+
+/**
+ * 图像中合成的弹出窗口（下拉框、菜单、对话框）的说明，位置按图像坐标给出。没有时为空串。
+ *
+ * 必须写明它们是独立的窗口：按图点击其中的位置投递给它们，而目标窗口的控件表通常不含其中的控件；
+ * 不写明时模型会按目标窗口的控件表判断下拉框中有什么。
+ */
+function popupNote(g: DesktopImageGeometry): string {
+  if (g.popups.length === 0) return ''
+  const items = g.popups.map((p) => {
+    const at = imageAreaOf(g, p.screen)
+    const where = at ? ` 图像 ${at.x},${at.y} ${at.width}×${at.height}` : ''
+    return `${p.title ? `「${windowTitle(p.title)}」` : windowTitle(p.title)}${where}`
+  })
+  return (
+    ` · 图中合成了同一应用的 ${g.popups.length} 个弹出窗口：${items.join('；')}。` +
+    '弹出窗口是独立的窗口，按图点击其中的位置投递给它；目标窗口的控件表可能不含其中的控件，' +
+    '有标题的弹出窗口也列在窗口清单中，可单独观察'
+  )
+}
+
+/** 屏幕矩形在图像中对应的区域，按图像覆盖范围截取；与图像没有交集时为 `null`。 */
+function imageAreaOf(g: DesktopImageGeometry, rect: DesktopRect): DesktopRect | null {
+  const left = Math.max(rect.x, g.screen.x)
+  const top = Math.max(rect.y, g.screen.y)
+  const right = Math.min(rect.x + rect.width, g.screen.x + g.screen.width)
+  const bottom = Math.min(rect.y + rect.height, g.screen.y + g.screen.height)
+  if (right <= left || bottom <= top) return null
+  const from = screenPointToImage(g, left, top)
+  const to = screenPointToImage(g, right - 1, bottom - 1)
+  if (!from || !to) return null
+  return { x: from.x, y: from.y, width: to.x - from.x + 1, height: to.y - from.y + 1 }
 }
 
 /**

@@ -102,6 +102,8 @@ impl Display {
                 screen: crop.screen,
                 dpi: frame.dpi,
                 generation,
+                // 只采集目标窗口自身，同一应用的菜单与下拉框（另一个顶层窗口）不合成进图像。
+                popups: Vec::new(),
             },
             mime: "image/png",
             bytes: base64(&bytes),

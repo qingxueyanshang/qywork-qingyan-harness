@@ -19,7 +19,10 @@
 mod capture;
 mod foreground;
 mod keys;
+mod popup;
 mod sink;
+#[cfg(test)]
+mod test_window;
 
 use std::cell::OnceCell;
 use std::collections::HashSet;
@@ -404,6 +407,7 @@ impl Backend for Uia {
             root,
             point,
             expect_generation,
+            expect_popups,
             action,
             bounds,
             foreground: fg,
@@ -423,21 +427,26 @@ impl Backend for Uia {
             };
             (Attempt::Refused(reason), observed)
         };
-        // 已失效的截图不能触发窗口准备；几何已改变时也不能保留旧观察。
-        if let Some(expected) = expect_generation {
-            if let Err(reason) = foreground::check_generation(window, expected) {
-                return refused(reason);
+        // 按图像坐标定位所依据的图像：目标窗口的几何代际与落点处的弹出窗口。
+        let image = || match (expect_generation, point) {
+            (Some(expected), Some(point)) => {
+                foreground::check_image(window, expected, point, expect_popups)
             }
+            (Some(expected), None) => foreground::check_generation(window, expected).map(|()| None),
+            (None, _) => Ok(None),
+        };
+        // 已失效的截图不能触发窗口准备；几何已改变时也不能保留旧观察。
+        if let Err(reason) = image() {
+            return refused(reason);
         }
         if let Err(reason) = foreground::prepare(window, action) {
             return refused(reason);
         }
         // 不能把恢复窗口前的截图坐标用于恢复后的窗口。
-        if let Some(expected) = expect_generation {
-            if let Err(reason) = foreground::check_generation(window, expected) {
-                return refused(reason);
-            }
-        }
+        let shown = match image() {
+            Ok(shown) => shown,
+            Err(reason) => return refused(reason),
+        };
         let located = match reference.map(|r| self.locate(window, r)) {
             None => None,
             Some(Ok(l)) => Some(l),
@@ -445,7 +454,7 @@ impl Backend for Uia {
                 return refused(f.into_reason(window));
             }
         };
-        let aim = match self.aim(window, located.as_ref(), point, action) {
+        let aim = match self.aim(window, located.as_ref(), point, shown, action) {
             Ok(aim) => aim,
             Err(reason) => return refused(reason),
         };
@@ -821,6 +830,7 @@ impl Uia {
         window: i64,
         located: Option<&Located>,
         point: Option<ScreenPoint>,
+        shown: Option<i64>,
         action: &ActionSpec,
     ) -> Result<foreground::Aim, String> {
         if !action.takes_point() {
@@ -851,8 +861,9 @@ impl Uia {
         Ok(foreground::Aim {
             anchor: Some(anchor),
             destination,
-            // 按图像坐标定位时没有控件，落点只核对目标窗口本身。
+            // 按图像坐标定位时没有控件，落点按图像中该点显示的窗口核对。
             host: point.is_none().then(|| located.map(|l| l.host)).flatten(),
+            shown,
         })
     }
 

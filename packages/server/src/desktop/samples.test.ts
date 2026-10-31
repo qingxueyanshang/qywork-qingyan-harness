@@ -105,6 +105,7 @@ const REQUEST: Record<keyof DesktopRequestFrame, true> = {
   timeoutMs: true,
   region: true,
   expectGeneration: true,
+  expectPopups: true,
   maxEdge: true,
   maxBytes: true,
 }
@@ -240,6 +241,12 @@ const GEOMETRY: Record<keyof DesktopImageGeometry, true> = {
   screen: true,
   dpi: true,
   generation: true,
+  popups: true,
+}
+const POPUP: Record<keyof DesktopImageGeometry['popups'][number], true> = {
+  window: true,
+  title: true,
+  screen: true,
 }
 
 test('样例的字段集合与协议类型的键集合一致', () => {
@@ -270,7 +277,10 @@ test('样例的字段集合与协议类型的键集合一致', () => {
   expect(union(observation('text'))).toEqual(keysOf({ ...TEXT, kind: true }))
   expect(union(...(observation('text').selection as Json[]))).toEqual(keysOf(TEXT_SELECTION))
   expect(union(observation('image'))).toEqual(keysOf({ ...IMAGE, kind: true }))
-  expect(union(observation('image').geometry)).toEqual(keysOf(GEOMETRY))
+  const geometry = observation('image').geometry as Json
+  expect(union(geometry)).toEqual(keysOf(GEOMETRY))
+  expect(union(...(geometry.popups as Json[]))).toEqual(keysOf(POPUP))
+  expect(requests.act_point!.expectPopups).toEqual(geometry.popups)
 })
 
 /** worker 按角色逐字比较：请求中的角色写法与控件表不一致时，等待条件永远无法满足。 */

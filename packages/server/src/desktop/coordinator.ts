@@ -818,7 +818,8 @@ export class DesktopCoordinator {
    *
    * **前两种只能提供一种。** 提供控件时按观察编号核对它是否仍在该份表中；提供图像点时
    * 经由与按图像重新截取相同的换算与代际核对路径，失效的 `imageRef` 在本地即拒绝，
-   * 不发送任何帧。
+   * 不发送任何帧。图像点同时带回该图像中合成的弹出窗口：落点可能位于其中一个上，
+   * 由 worker 核对它仍在原处，并把点击投递给它。
    *
    * 两者都不提供时目标是窗口本身，只有键盘输入可以这样发送：它发往目标窗口的焦点所在位置。
    * 此处只核对本执行者观察或截取过该窗口（`#seen`），窗口能否接收输入由 worker 判定。
@@ -832,7 +833,12 @@ export class DesktopCoordinator {
       at?: DesktopImagePoint
       action: DesktopAction
     },
-  ): { ref?: string; point?: { x: number; y: number }; expectGeneration?: string } {
+  ): {
+    ref?: string
+    point?: { x: number; y: number }
+    expectGeneration?: string
+    expectPopups?: DesktopImageGeometry['popups']
+  } {
     if (input.ref !== undefined && input.at !== undefined) {
       throw new DesktopTargetError('控件与图像点只能提供其中一个')
     }
@@ -861,7 +867,11 @@ export class DesktopCoordinator {
       )
     }
     const point = imagePointToScreen(record.geometry, input.at.x, input.at.y)
-    return { point, expectGeneration: record.geometry.generation }
+    return {
+      point,
+      expectGeneration: record.geometry.generation,
+      expectPopups: record.geometry.popups,
+    }
   }
 
   /**
