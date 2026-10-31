@@ -2897,11 +2897,13 @@ name = "qywork"
 version = "0.3.9"
 dependencies = [
  "anyhow",
+ "gtk-sys",
  "libc",
  "log",
  "parking_lot",
  "portable-pty",
  "reqwest 0.12.28",
+ "rfd",
  "serde",
  "serde_json",
  "tauri",
