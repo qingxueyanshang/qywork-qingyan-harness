@@ -136,7 +136,7 @@ export function ProviderTabs(props: {
                   live: props.live === name,
                 }}
                 type="button"
-                title={name}
+                data-tip={name}
                 aria-pressed={!props.library && props.current === name}
                 onClick={() => props.onPick(name)}
               >

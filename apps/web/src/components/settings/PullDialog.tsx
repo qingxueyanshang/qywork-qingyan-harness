@@ -178,7 +178,7 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                       disabled={done() || m.output === 'unknown'}
                       onChange={(e) => toggle(m.id, e.currentTarget.checked)}
                     />
-                    <span class="pull-id" title={m.id}>
+                    <span class="pull-id" data-tip={m.id}>
                       {m.id}
                     </span>
                   </label>

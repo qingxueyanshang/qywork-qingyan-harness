@@ -157,11 +157,11 @@ export function SkillImportDialog(props: {
           </Show>
         </section>
       </fieldset>
-      <p class="skill-import-selection" title={selected() ?? ''}>
+      <p class="skill-import-selection" data-tip={selected() ?? ''}>
         {selected() ?? '尚未选择'}
       </p>
       {/* 报错行常驻且高度固定：出现报错时对话框高度不变（B9）。 */}
-      <p class="skill-import-error" role="alert" title={error() ?? ''}>
+      <p class="skill-import-error" role="alert" data-tip={error() ?? ''}>
         {error() ?? ''}
       </p>
       <div class="confirm-actions">
