@@ -40,6 +40,8 @@ export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
  *
  * `canvas` 是画布，每页对应一个 `*.canvas.json`（`path`），从看板新建或从文件树打开。
  *
+ * `file` 是文件预览页，每页对应一个工作区文件（`path`），从看板的 Office 行选择文件后打开。
+ *
  * `plugin` 是插件提供的工作台，每页对应一个工作台（`workbench`），从看板或 `open_in_panel` 打开。
  */
 export type PanelTabKind =
@@ -49,6 +51,7 @@ export type PanelTabKind =
   | 'conversation'
   | 'cli'
   | 'canvas'
+  | 'file'
   | 'plugin'
 
 export interface PanelTab {
@@ -71,7 +74,7 @@ export interface PanelTab {
    * 内置浏览器页没有此字段：其地址由原生宿主维护，前端只做投影。
    */
   url?: string
-  /** 画布页对应的画布文件（工作区相对路径）。其他类型的页没有此字段。 */
+  /** 画布页与文件预览页对应的文件（工作区相对路径）。其他类型的页没有此字段。 */
   path?: string
   /**
    * 工作台页对应的工作台，`<插件 id>/<工作台 id>`。只记录标识不记录地址：
@@ -411,6 +414,23 @@ export function openCanvasTab(path: string, title: string): void {
     tabs: cur.tabs.some((t) => t.id === id)
       ? cur.tabs
       : [...cur.tabs, { id, kind: 'canvas', title, path, createdSeq: nextLocalSeq() }],
+    page: { tab: id },
+  }))
+}
+
+/**
+ * 打开文件预览页。同一文件已打开时切换到该页，不并排新建第二页（同 `openCanvasTab`）。
+ * 页签标题是文件名，创建后不再修改。
+ */
+export function openFileTab(path: string): void {
+  const wsId = workspace()?.id
+  if (!wsId) return
+  const id = `file-${path}`
+  const title = path.split('/').pop() ?? path
+  updatePanel(wsId, (cur) => ({
+    tabs: cur.tabs.some((t) => t.id === id)
+      ? cur.tabs
+      : [...cur.tabs, { id, kind: 'file', title, path, createdSeq: nextLocalSeq() }],
     page: { tab: id },
   }))
 }

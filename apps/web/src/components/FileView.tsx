@@ -4,14 +4,17 @@ import {
   createMemo,
   createResource,
   createSignal,
+  lazy,
   Match,
   on,
   onCleanup,
   Show,
+  Suspense,
   Switch,
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
 import { createReadonlyEditor, scrollToLine, selectRange, topLine } from '../lib/editor.ts'
+import type { OfficeFormat } from '../lib/file-search.ts'
 import { loaded } from '../lib/resource.ts'
 import { readSession, writeSession } from '../lib/session.ts'
 import {
@@ -20,19 +23,24 @@ import {
   explainApiError,
   fileSelectRequest,
   setFileSelectRequest,
-  setOpenFile,
 } from '../lib/store/index.ts'
 import FileImageView from './FileImageView.tsx'
 import { IconX } from './Icons.tsx'
 
+// 懒加载：表格、演示文稿与文档的解析与绘制代码只在打开对应文件时下载。
+const SheetView = lazy(() => import('./office/SheetView.tsx'))
+const SlideView = lazy(() => import('./office/pptx/SlideView.tsx'))
+const DocView = lazy(() => import('./office/docx/DocView.tsx'))
+
 interface PreviewResult {
   path: string
-  kind: 'text' | 'image' | 'pdf' | 'audio' | 'video' | 'tabular' | 'archive' | 'binary'
+  kind: 'text' | 'image' | 'pdf' | 'audio' | 'video' | 'tabular' | 'office' | 'archive' | 'binary'
   mime: string
   size: number
   mtime: number
   content?: string
   language?: string
+  office?: OfficeFormat
   truncated: boolean
   note?: string
 }
@@ -48,8 +56,10 @@ interface PreviewResult {
  *
  * 默认导出供 `lazy()` 使用：`CodeView` 依赖约 300 kB 的 CodeMirror 核心，
  * 只使用聊天功能的用户不应为它承担首屏加载成本。
+ *
+ * `onClose` 只在文件页中提供：文件预览页（页签）由页签上的 × 关闭，标题条不再放第二个关闭按钮。
  */
-export default function FileView(props: { path: string; refresh?: number }) {
+export default function FileView(props: { path: string; refresh?: number; onClose?: () => void }) {
   // 路径与文件页的统一失效序号直接作为资源判据。失效序号不在 `run.started` 时清空，
   // 因此发起新一轮不会把「摘要从非空变为空」误判为一次磁盘改动。
   const [result] = createResource(
@@ -68,9 +78,16 @@ export default function FileView(props: { path: string; refresh?: number }) {
           <span dir="ltr">{absPath(props.path)}</span>
         </code>
         <span class="spacer" />
-        <button class="icon-btn" type="button" aria-label="关闭" onClick={() => setOpenFile(null)}>
-          <IconX size={14} />
-        </button>
+        <Show when={props.onClose}>
+          <button
+            class="icon-btn"
+            type="button"
+            aria-label="关闭"
+            onClick={() => props.onClose?.()}
+          >
+            <IconX size={14} />
+          </button>
+        </Show>
       </header>
 
       <div class="preview-body">
@@ -92,6 +109,21 @@ export default function FileView(props: { path: string; refresh?: number }) {
               </Match>
               <Match when={r().kind === 'pdf'}>
                 <PdfView path={r().path} mtime={r().mtime} />
+              </Match>
+              <Match when={r().office === 'xlsx'}>
+                <Suspense fallback={<div class="preview-loading" />}>
+                  <SheetView path={r().path} mtime={r().mtime} />
+                </Suspense>
+              </Match>
+              <Match when={r().office === 'pptx'}>
+                <Suspense fallback={<div class="preview-loading" />}>
+                  <SlideView path={r().path} mtime={r().mtime} />
+                </Suspense>
+              </Match>
+              <Match when={r().office === 'docx'}>
+                <Suspense fallback={<div class="preview-loading" />}>
+                  <DocView path={r().path} mtime={r().mtime} />
+                </Suspense>
               </Match>
               <Match when={r().kind === 'image'}>
                 <FileImageView src={client.fileUrl(r().path, r().mtime)} alt={r().path} />

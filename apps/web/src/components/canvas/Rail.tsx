@@ -7,11 +7,11 @@
 
 import { CANVAS_FILE_KINDS, type GenerateOutput } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
+import { createFileSearch } from '../../lib/file-search.ts'
 import FileTypeIcon from '../FileTypeIcon.tsx'
 import { IconFolder, IconUpload } from '../Icons.tsx'
 import { dismissOnOutside } from './dismiss.ts'
 import { KindIcon, OUTPUT_LABEL } from './kinds.tsx'
-import { createFileSearch } from './search.ts'
 
 /** 工具条图标的尺寸与线宽：比正文中的图标大一号，线条更粗。 */
 const ICON = { size: 18, stroke: 1.9 }
@@ -86,7 +86,7 @@ export function Rail(props: {
 
 /** 工作区文件的选择框：打开即列出可添加到画布的文件，输入时按名称筛选。每选择一个即添加一个，选择框不收起，可连续选择。 */
 function Picker(props: { onPick: OnPick }) {
-  const { hits, error, search } = createFileSearch(() => CANVAS_FILE_KINDS)
+  const { hits, error, search } = createFileSearch(() => ({ kinds: CANVAS_FILE_KINDS }))
   search('')
   let picked = 0
 
