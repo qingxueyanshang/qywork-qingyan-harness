@@ -22,6 +22,7 @@ import type {
   ConversationLiveSnapshot,
   ConversationRunsResponse,
   ConversationUsageResponse,
+  Currency,
   EffortLevel,
   MediaKind,
   MediaOutput,
@@ -80,7 +81,7 @@ export interface ModelRow {
    */
   effort: EffortLevel | null
   /** 计价币种。缺省为 USD，阿里、月之暗面、智谱三家官网按人民币标价。 */
-  currency: 'USD' | 'CNY'
+  currency: Currency
   /**
    * 是否接受图片输入。该能力逐模型不同，因此与 `effortLevels` 一起在此下发，
    * 不经由握手：握手是连接级、只上报一次，用户切换模型后该值即失效。
@@ -184,7 +185,7 @@ export interface LibraryModel {
   cacheRead: number | null
   /** 缓存写入价（5 分钟档）。`computeCost` 只按该档计算。 */
   cacheWrite: number | null
-  currency: 'USD' | 'CNY'
+  currency: Currency
   effortLevels: EffortLevel[]
   /**
    * 不选择强度时模型是否思考。必须与 `effortLevels` 一起下发才能完整描述思考能力：

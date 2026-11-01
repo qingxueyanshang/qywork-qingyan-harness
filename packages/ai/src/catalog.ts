@@ -10,6 +10,7 @@
 
 import type {
   CacheRouting,
+  Currency,
   EffortLevel,
   ProviderKind,
   ReasoningEcho,
@@ -31,7 +32,7 @@ export interface Pricing {
   input: number | null
   output: number | null
   /** 省略即 `'USD'`，美元价目无需逐条填写。 */
-  currency?: 'USD' | 'CNY'
+  currency?: Currency
   /** 缓存读取，通常是 input 的 0.1 倍。 */
   cacheRead: number | null
   /** 缓存写入（5 分钟 TTL），通常是 input 的 1.25 倍。 */
@@ -2011,7 +2012,7 @@ export interface SpecOverride {
    * 没有可达的代码分支，因此不提供修改入口。
    */
   cacheWrite?: number
-  currency?: 'USD' | 'CNY'
+  currency?: Currency
   /** 分时段折扣，替换目录中的折扣。中转价格按计费公式折算得到，模型库界面不编辑该项。 */
   offPeak?: OffPeakDiscount
   /**
