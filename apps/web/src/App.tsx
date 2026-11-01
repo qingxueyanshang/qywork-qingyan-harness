@@ -33,6 +33,7 @@ import { WindowControls } from './components/WindowControls.tsx'
 import {
   client,
   exportActiveConversation,
+  isDesktopShell,
   loadConversations,
   loadWorkspace,
   observePet,
@@ -192,8 +193,11 @@ export function App() {
     const stopUpdates = observeAppUpdate()
     onCleanup(stopUpdates)
     onCleanup(observeSkins())
-    onCleanup(observePet())
-    onCleanup(observePetWindow(activePet))
+    // 宠物只显示在桌面外壳的宠物窗口中；其他端不推导，避免每次会话变闲都读取一次轮次。
+    if (isDesktopShell()) {
+      onCleanup(observePet())
+      onCleanup(observePetWindow(activePet))
+    }
 
     /*
      * 空闲时预先加载面板模块的代码。

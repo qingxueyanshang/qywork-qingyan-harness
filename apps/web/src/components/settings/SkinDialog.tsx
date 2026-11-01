@@ -1,58 +1,33 @@
 /**
- * 外观：主题、皮肤与宠物。
+ * 皮肤：从「通用」页的「皮肤」一行打开的弹窗，结构同「拉取模型」。
  *
- * 选用皮肤时主题不生效（明暗取皮肤的模式），因此只在未选用皮肤时显示主题一行。
- * 皮肤的每项修改立即预览、停顿后保存（`editChosenSkin`），无需保存按钮。
+ * 每项修改立即预览、停顿后保存（`editChosenSkin`），没有保存按钮。窗口尺寸固定（B9）：
+ * 切换背景类型、开关雾面时控件行数变化，编辑区在框内滚动，按钮位置不变。
+ * 弹窗没有遮罩：修改时需要看到窗口四周的皮肤效果，设置窗口自身已有遮罩。
  */
 
 import { DEFAULT_SKIN, mergeSkin, SKIN_LIMITS, type Skin, type SkinImageFit } from '@qywork/core'
-import { createSignal, For, type JSX, onMount, Show } from 'solid-js'
+import { createSignal, For, type JSX, onCleanup, onMount, Show } from 'solid-js'
 import {
   createSkin,
   editChosenSkin,
   effectiveTheme,
-  isDesktopShell,
-  type PetPlace,
   paintedSkin,
-  petLibrary,
-  petPrefs,
-  refreshPetLibrary,
   refreshSkinLibrary,
-  removePet,
   removeSkin,
   selectSkin,
-  setPetPrefs,
   setSkinImage,
-  setTheme,
   skinChoice,
   skinLibrary,
   skinSaveError,
-  type ThemePref,
-  theme,
 } from '../../lib/store/index.ts'
-import { DEFAULT_PET } from '../appearance/pet-default.ts'
-import { ConfirmDialog } from '../ConfirmDialog.tsx'
 import { OnOff } from './OnOff.tsx'
-import { Section } from './Page.tsx'
 import { Row } from './Row.tsx'
-
-const THEMES: { id: ThemePref; label: string }[] = [
-  { id: 'system', label: '跟随系统' },
-  { id: 'light', label: '浅色' },
-  { id: 'dark', label: '深色' },
-]
 
 const FITS: { id: SkinImageFit; label: string }[] = [
   { id: 'cover', label: '填充' },
   { id: 'contain', label: '适应' },
   { id: 'tile', label: '平铺' },
-]
-
-/** 「桌面」只在桌面外壳中提供：其他端没有可承载宠物的透明窗口（B5）。 */
-const PET_PLACES: { id: PetPlace; label: string }[] = [
-  { id: 'app', label: '窗口内' },
-  ...(isDesktopShell() ? [{ id: 'desktop' as const, label: '桌面' }] : []),
-  { id: 'hidden', label: '隐藏' },
 ]
 
 /** 渐变新增色标时使用的颜色。 */
@@ -128,16 +103,52 @@ function ColorInput(props: { label: string; value: string; onInput: (v: string) 
 
 const percent = (v: number) => `${Math.round(v * 100)}%`
 
-export function AppearanceSettings() {
+/**
+ * 删除确认。皮肤弹窗是原生模态窗口，位于顶层；普通的确认浮层会被它遮住，因此确认同样用原生模态窗口，叠在其上。
+ */
+function DeleteSkinDialog(props: { onConfirm: () => void; onCancel: () => void }) {
+  let dialog!: HTMLDialogElement
+  onMount(() => dialog.showModal())
+  onCleanup(() => dialog.close())
+  return (
+    <dialog
+      ref={dialog}
+      class="skin-delete-dialog"
+      aria-label="删除皮肤？"
+      onCancel={(e) => {
+        e.preventDefault()
+        props.onCancel()
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') e.stopPropagation()
+      }}
+    >
+      <h2 class="confirm-title">删除皮肤？</h2>
+      <div class="confirm-actions">
+        <button class="btn-ghost" type="button" onClick={props.onCancel}>
+          取消
+        </button>
+        <button class="btn-primary danger" type="button" onClick={props.onConfirm}>
+          删除
+        </button>
+      </div>
+    </dialog>
+  )
+}
+
+export function SkinDialog(props: { onClose: () => void }) {
+  let dialog!: HTMLDialogElement
+  let picker: HTMLInputElement | undefined
   const [doomed, setDoomed] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
-  let picker: HTMLInputElement | undefined
 
   onMount(() => {
-    const report = (e: unknown) => setError(e instanceof Error ? e.message : String(e))
-    void refreshSkinLibrary().catch(report)
-    void refreshPetLibrary().catch(report)
+    dialog.showModal()
+    void refreshSkinLibrary().catch((e: unknown) =>
+      setError(e instanceof Error ? e.message : String(e)),
+    )
   })
+  onCleanup(() => dialog.close())
 
   /** 正在编辑的皮肤：取正在显示的定义，它包含尚未写入的修改。 */
   const current = (): Skin | null => {
@@ -199,8 +210,7 @@ export function AppearanceSettings() {
     }
     if (bg.kind === 'gradient') {
       const stops = bg.stops
-      const [, max] = SKIN_LIMITS.stops
-      const [min] = SKIN_LIMITS.stops
+      const [min, max] = SKIN_LIMITS.stops
       return (
         <>
           <Slider
@@ -292,7 +302,20 @@ export function AppearanceSettings() {
   }
 
   return (
-    <>
+    <dialog
+      ref={dialog}
+      class="skin-dialog"
+      aria-label="皮肤"
+      onCancel={(e) => {
+        e.preventDefault()
+        props.onClose()
+      }}
+      onKeyDown={(e) => {
+        // Escape 只关闭本窗口，不把后面的设置窗口一起关闭。
+        if (e.key === 'Escape') e.stopPropagation()
+      }}
+    >
+      <h2 class="confirm-title">皮肤</h2>
       <input
         ref={picker}
         class="skin-file"
@@ -303,56 +326,34 @@ export function AppearanceSettings() {
           e.currentTarget.value = ''
         }}
       />
-      <Section
-        title="皮肤"
-        actions={
-          <button class="btn-ghost sm" type="button" onClick={() => void create()}>
-            新建
-          </button>
-        }
-      >
-        <div class="skin-list">
-          <button
-            class="seg-item"
-            classList={{ active: !skinChoice() }}
-            type="button"
-            onClick={() => selectSkin(null)}
-          >
-            无
-          </button>
-          <For each={skinLibrary() ?? []}>
-            {(entry) => (
-              <button
-                class="seg-item"
-                classList={{ active: skinChoice()?.id === entry.id }}
-                type="button"
-                onClick={() => selectSkin(entry)}
-              >
-                {entry.skin.name}
-              </button>
-            )}
-          </For>
-        </div>
-        <Show when={error() ?? skinSaveError()}>
-          {(e) => <div class="settings-error">{e()}</div>}
-        </Show>
-      </Section>
-
-      <Show when={!skinChoice()}>
-        <Section title="主题">
-          <div class="setting-rows">
-            {/* 使用三态而不是深色开关：开关关闭后，系统切换为深色时应用是否跟随，
-                界面上无法区分。`system` 必须单独作为一项。 */}
-            <Row label="主题">
-              <Seg items={THEMES} value={theme()} onPick={setTheme} />
-            </Row>
-          </div>
-        </Section>
-      </Show>
-
-      <Show when={current()}>
-        {(skin) => (
-          <Section title={skin().name}>
+      <div class="skin-list">
+        <button
+          class="seg-item"
+          classList={{ active: !skinChoice() }}
+          type="button"
+          onClick={() => selectSkin(null)}
+        >
+          无
+        </button>
+        <For each={skinLibrary() ?? []}>
+          {(entry) => (
+            <button
+              class="seg-item"
+              classList={{ active: skinChoice()?.id === entry.id }}
+              type="button"
+              onClick={() => selectSkin(entry)}
+            >
+              {entry.skin.name}
+            </button>
+          )}
+        </For>
+        <button class="btn-ghost sm" type="button" onClick={() => void create()}>
+          新建
+        </button>
+      </div>
+      <section class="skin-editor">
+        <Show when={current()}>
+          {(skin) => (
             <div class="setting-rows">
               <Row label="名称">
                 <input
@@ -457,71 +458,26 @@ export function AppearanceSettings() {
                   </Show>
                 </div>
               </Row>
-              <Row label="删除皮肤">
-                <button class="btn-ghost sm" type="button" onClick={() => setDoomed(true)}>
-                  删除
-                </button>
-              </Row>
             </div>
-          </Section>
-        )}
-      </Show>
-
-      <Section title="宠物">
-        <div class="skin-list">
-          <button
-            class="seg-item"
-            classList={{ active: petPrefs().pack === null }}
-            type="button"
-            onClick={() => setPetPrefs({ pack: null })}
-          >
-            {DEFAULT_PET.name}
+          )}
+        </Show>
+      </section>
+      <div class="confirm-actions skin-actions">
+        <span class="skin-error truncate" role="alert" title={error() ?? skinSaveError() ?? ''}>
+          {error() ?? skinSaveError() ?? ''}
+        </span>
+        <Show when={skinChoice()}>
+          <button class="btn-ghost" type="button" onClick={() => setDoomed(true)}>
+            删除
           </button>
-          <For each={petLibrary() ?? []}>
-            {(entry) => (
-              <button
-                class="seg-item"
-                classList={{ active: petPrefs().pack === entry.id }}
-                type="button"
-                onClick={() => setPetPrefs({ pack: entry.id })}
-              >
-                {entry.pack.name}
-              </button>
-            )}
-          </For>
-        </div>
-        <div class="setting-rows">
-          <Row label="显示位置">
-            <Seg
-              items={PET_PLACES}
-              value={petPrefs().place}
-              onPick={(place) => setPetPrefs({ place })}
-            />
-          </Row>
-          <Show when={petPrefs().pack}>
-            {(id) => (
-              <Row label="删除宠物">
-                <button
-                  class="btn-ghost sm"
-                  type="button"
-                  onClick={() => void run(() => removePet(id()))}
-                >
-                  删除
-                </button>
-              </Row>
-            )}
-          </Show>
-        </div>
-      </Section>
-
-      <ConfirmDialog
-        open={doomed()}
-        title="删除皮肤？"
-        confirmLabel="删除"
-        danger
-        onConfirm={remove}
-        onCancel={() => setDoomed(false)}
-      />
-    </>
+        </Show>
+        <button class="btn-primary" type="button" onClick={props.onClose}>
+          完成
+        </button>
+      </div>
+      <Show when={doomed()}>
+        <DeleteSkinDialog onConfirm={remove} onCancel={() => setDoomed(false)} />
+      </Show>
+    </dialog>
   )
 }

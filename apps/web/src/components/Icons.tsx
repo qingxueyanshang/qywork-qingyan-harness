@@ -165,16 +165,6 @@ export const IconBrain = (p: IconProps) => (
   </Svg>
 )
 
-/** 外观：调色板。 */
-export const IconPalette = (p: IconProps) => (
-  <Svg {...p}>
-    <path d="M12 4a8 8 0 0 0 0 16c1.1 0 1.7-.8 1.7-1.6 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.7-1.6 1.6-1.6H16a4 4 0 0 0 4-4C20 7 16.4 4 12 4z" />
-    <circle cx="8" cy="11" r="1" />
-    <circle cx="10.5" cy="7.8" r="1" />
-    <circle cx="14.5" cy="7.8" r="1" />
-  </Svg>
-)
-
 export const IconClock = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="12" cy="12" r="8" />

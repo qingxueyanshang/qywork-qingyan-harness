@@ -65,7 +65,7 @@ button {
   text-align: center;
 }
 
-/* 精灵与动作，与主界面 `appearance.css` 中的同名规则一致。宠物窗口不加载主界面样式，因此单独定义。 */
+/* 精灵与动作。只对 transform 做动画，交给合成器处理；只有一帧的状态由这组动作表现。 */
 .pet-sprite {
   display: block;
   pointer-events: none;
