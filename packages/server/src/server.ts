@@ -59,6 +59,7 @@ import { BrowserCoordinator } from './browser/coordinator.ts'
 import { EventBus } from './bus.ts'
 import { CanvasService } from './canvas.ts'
 import { CloudAccount } from './cloud/account.ts'
+import { watchRunEnds } from './cloud/notify.ts'
 import { cloudOrigins } from './cloud/origins.ts'
 import { RemoteAccess } from './cloud/remote.ts'
 import { handleCommand, reject } from './commands.ts'
@@ -471,6 +472,10 @@ export function serve(opts: ServeOptions) {
     pairing: () => ({ token: pairing.token, deviceName: pairing.deviceName }),
     onRevoked: () => cloud?.revoked() ?? Promise.resolve(),
   })
+  // 一轮结束时经隧道上送通知；隧道未连接时不发送。
+  const offRunNotify = watchRunEnds(bus, opts.store, (event, conversationId, title) =>
+    remote.notify(event, conversationId, title),
+  )
 
   // handler 单独定义，供两个监听器共用。
   // 只写第一个类型参数：Bun 的签名是 serve<WebSocketData, R extends string>，
@@ -801,6 +806,7 @@ export function serve(opts: ServeOptions) {
       // 子 agent 跟随会话而非 run，关闭服务时需单独停止：否则会留下一批无人接收回执的进程。
       subagents.interruptAll()
       await canvas.stop()
+      offRunNotify()
       remote.stop()
       server.stop(true)
       // 插件是子进程，不显式关闭会留下孤儿进程；sidecar 与截图脚本遵循同一约束。
