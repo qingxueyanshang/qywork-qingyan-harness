@@ -9,6 +9,7 @@
   "exclude": ["dist"],
   "references": [
     { "path": "../packages/core" },
+    { "path": "../packages/ooxml" },
     { "path": "../packages/ai" },
     { "path": "../packages/store" },
     { "path": "../packages/agent" },

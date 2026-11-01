@@ -27,6 +27,7 @@ const LAYER: Record<string, number> = {
   '@qywork/core': 0,
   '@qywork/store': 1,
   '@qywork/ai': 1,
+  '@qywork/ooxml': 1,
   '@qywork/agent': 2,
   '@qywork/tools': 3,
   '@qywork/plugins': 3,

@@ -11,6 +11,7 @@
     "@qywork/ai": "workspace:*",
     "@qywork/core": "workspace:*",
     "@qywork/mcp": "workspace:*",
+    "@qywork/ooxml": "workspace:*",
     "@qywork/plugins": "workspace:*",
     "@qywork/runtime": "workspace:*",
     "@qywork/store": "workspace:*",

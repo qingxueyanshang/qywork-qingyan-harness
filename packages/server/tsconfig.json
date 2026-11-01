@@ -10,6 +10,7 @@
     { "path": "../agent" },
     { "path": "../ai" },
     { "path": "../core" },
+    { "path": "../ooxml" },
     { "path": "../store" },
     { "path": "../tools" },
     { "path": "../team" },

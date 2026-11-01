@@ -1,0 +1,17 @@
+{
+  "name": "@qywork/ooxml",
+  "version": "0.3.10",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./zip": "./src/zip/index.ts",
+    "./xml": "./src/xml/index.ts",
+    "./font": "./src/font/index.ts",
+    "./opc": "./src/opc/index.ts",
+    "./drawingml": "./src/drawingml/index.ts",
+    "./xlsx": "./src/xlsx/index.ts",
+    "./text": "./src/text/index.ts",
+    "./pptx": "./src/pptx/index.ts",
+    "./docx": "./src/docx/index.ts"
+  }
+}
