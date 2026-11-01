@@ -1218,10 +1218,10 @@ describe('画布：生成卡与生成面板', () => {
     expect(live.style.getPropertyValue('stroke-dashoffset')).toBe('')
   })
 
-  test('流动虚线由 WebGL 层绘制，生成期间连线层不随推进修改', async () => {
-    // 替身上下文：着色器与程序一律编译成功，记录每次绘制与流动位移。
+  /** 替身 WebGL2 上下文：着色器与程序一律编译成功，记录每次绘制与流动位移。调用方负责 `restore`。 */
+  function fakeGl() {
     const flows: number[] = []
-    let draws = 0
+    const counter = { draws: 0 }
     const gl = new Proxy({} as Record<string, unknown>, {
       get(_target, key) {
         if (key === 'getShaderParameter' || key === 'getProgramParameter') return () => true
@@ -1233,7 +1233,7 @@ describe('画布：生成卡与生成面板', () => {
           }
         if (key === 'drawElements')
           return () => {
-            draws += 1
+            counter.draws += 1
           }
         if (typeof key === 'string' && /^[A-Z_0-9]+$/.test(key)) return 0
         return () => ({})
@@ -1242,6 +1242,11 @@ describe('画布：生成卡与生成面板', () => {
     const context = spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((
       type: string,
     ) => (type === 'webgl2' ? gl : null)) as unknown as HTMLCanvasElement['getContext'])
+    return { flows, draws: () => counter.draws, restore: () => context.mockRestore() }
+  }
+
+  test('流动虚线由 WebGL 层绘制，生成期间连线层不随推进修改', async () => {
+    const { flows, draws, restore } = fakeGl()
     try {
       const { host, server } = await mount(
         [...CARD, { op: 'connect', from: '$a', to: '$v', role: 'reference' }],
@@ -1266,12 +1271,12 @@ describe('画布：生成卡与生成面板', () => {
           characterData: true,
         })
       }
-      const before = draws
+      const before = draws()
       await new Promise((resolve) => setTimeout(resolve, 300))
       observer.disconnect()
       expect(changes).toEqual([])
       expect(live.style.getPropertyValue('stroke-dashoffset')).toBe('')
-      expect(draws - before).toBeGreaterThan(3)
+      expect(draws() - before).toBeGreaterThan(3)
       expect(new Set(flows).size).toBeGreaterThan(3)
       // 生成结束后停止推进。
       server.setView({ states: {} })
@@ -1286,7 +1291,31 @@ describe('画布：生成卡与生成面板', () => {
       await new Promise((resolve) => setTimeout(resolve, 200))
       expect(flows.length).toBe(settled)
     } finally {
-      context.mockRestore()
+      restore()
+    }
+  })
+
+  test('打开画布时没有生成中的卡片，开始生成后流动虚线推进', async () => {
+    const { flows, restore } = fakeGl()
+    try {
+      const { host, server } = await mount([
+        ...CARD,
+        { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+      ])
+      resize(host.querySelector<HTMLCanvasElement>('canvas.canvas-flow')!, 800, 600)
+      expect(host.querySelector('.canvas-edges path.live')).toBeNull()
+      server.setView({ states: { n2: { state: 'running', startedAt: Date.now() } } })
+      const store = await import('../../lib/store/index.ts')
+      store.setState('canvasVersion', (v) => v + 1)
+      await waitFor(
+        () =>
+          host.querySelector<SVGPathElement>('.canvas-edges path.live')?.style.stroke === 'none',
+        () => host.querySelector('.canvas-edges')!.innerHTML,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(new Set(flows).size).toBeGreaterThan(3)
+    } finally {
+      restore()
     }
   })
 

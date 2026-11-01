@@ -6,12 +6,12 @@
  * 画布每秒 9 帧；推进停止时约 0.3%。此处每次推进只更新一个 uniform，顶点只在几何变化时重建，
  * 连线层的 SVG 在生成期间不发生修改。
  *
- * 外观与原写法相同：线宽 1.5、虚线 4 4、流动位移都按画布单位计，随缩放变粗变细。连线层的缩放是 `<svg>` 元素上的
+ * 线宽 1.5、虚线 4 4 按画布单位计，随缩放变粗变细，与连线层的 SVG 虚线一致。连线层的缩放是 `<svg>` 元素上的
  * CSS 变换，`vector-effect: non-scaling-stroke` 只抵消 SVG 内部的变换，不抵消它（缩放 32% 时屏幕上线宽约 0.5 像素）。
- * 渐变沿两端连线方向（`gradientUnits="userSpaceOnUse"`）；每 0.8 秒前进一个周期，每秒推进 24 次。
+ * 流速按屏幕像素计，不随缩放变化。渐变沿两端连线方向（`gradientUnits="userSpaceOnUse"`）；每秒推进 24 次。
  */
 
-import { createEffect, createMemo, onCleanup, onMount } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from 'solid-js'
 
 /** 渐变色标：SVG 中选中节点的连线（`linearGradient`）与此处的流动虚线共用。 */
 export const FLOW_STOPS: readonly (readonly [number, string])[] = [
@@ -20,10 +20,18 @@ export const FLOW_STOPS: readonly (readonly [number, string])[] = [
   [0.62, '#7c3aed'],
   [1, '#5b21b6'],
 ]
-/** 每 0.8 秒前进一个虚线周期（`4 4`），每秒推进 24 次，每次位移约 0.4 像素。 */
+/** 虚线周期（`4 4`，画布单位）；流速为每秒 10 个屏幕像素，每秒推进 24 次，每次位移约 0.4 像素。 */
 const FLOW_PERIOD = 8
-const FLOW_CYCLE_MS = 800
+const FLOW_SPEED = 10
 const FLOW_TICK_MS = 1000 / 24
+
+/**
+ * 推进 `ms` 毫秒后的流动位移（画布单位，对虚线周期取模）。按屏幕像素换算为画布单位，缩放越小每次位移越大。
+ * 不要改为由起始时刻直接求位移：那样缩放变化时整段已推进的位移按新缩放重算，相位不连续。
+ */
+export function advanceFlow(flow: number, ms: number, z: number): number {
+  return (flow - (ms / 1000) * (FLOW_SPEED / z)) % FLOW_PERIOD
+}
 /** 线宽的一半（画布单位）与抗锯齿余量（屏幕像素）。 */
 const HALF_WIDTH = 0.75
 const FRINGE = 1
@@ -291,14 +299,15 @@ export function FlowLayer(p: {
   onReady: (ok: boolean) => void
 }) {
   let canvas!: HTMLCanvasElement
-  let renderer: Renderer | null | undefined
+  // 必须是信号：推进的副作用可能先于创建渲染器的副作用执行，渲染器创建后须触发它重新执行。
+  const [renderer, setRenderer] = createSignal<Renderer | null>()
   let flow = 0
   let frame = 0
   let size = { width: 0, height: 0, dpr: 1 }
   let key = ''
   const draw = () => {
     frame = 0
-    renderer?.draw({ px: p.px, py: p.py, z: p.z, ...size }, flow)
+    renderer()?.draw({ px: p.px, py: p.py, z: p.z, ...size }, flow)
   }
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(draw)
@@ -319,17 +328,19 @@ export function FlowLayer(p: {
   // 连线数组随选中、状态等任何变化重新生成；只有几何或缩放变化时才重建顶点。
   createEffect(() => {
     const edges = p.edges
-    if (edges.length && renderer === undefined) {
-      renderer = createRenderer(canvas)
-      p.onReady(renderer !== null)
+    if (edges.length && untrack(renderer) === undefined) {
+      const created = createRenderer(canvas)
+      setRenderer(created)
+      p.onReady(created !== null)
     }
-    if (!renderer) return
+    const gl = renderer()
+    if (!gl) return
     const next = edges.length
       ? `${p.z}|${edges.map((e) => `${e.x1},${e.y1},${e.x2},${e.y2}`).join(';')}`
       : ''
     if (next !== key) {
       key = next
-      renderer.setMesh(edges.length ? flowMesh(edges, p.z) : flowMesh([], p.z))
+      gl.setMesh(edges.length ? flowMesh(edges, p.z) : flowMesh([], p.z))
     }
     schedule()
   })
@@ -340,17 +351,19 @@ export function FlowLayer(p: {
   // 只在开始与全部结束时启动或停止推进：连线数组重新生成不重置流动的相位。
   const active = createMemo(() => p.edges.length > 0)
   createEffect(() => {
-    if (!active() || !renderer) return
-    const start = performance.now()
+    if (!active() || !renderer()) return
+    let last = performance.now()
     const timer = setInterval(() => {
-      flow = -(((performance.now() - start) / FLOW_CYCLE_MS) * FLOW_PERIOD) % FLOW_PERIOD
+      const now = performance.now()
+      flow = advanceFlow(flow, now - last, p.z)
+      last = now
       schedule()
     }, FLOW_TICK_MS)
     onCleanup(() => clearInterval(timer))
   })
   onCleanup(() => {
     if (frame) cancelAnimationFrame(frame)
-    renderer?.dispose()
+    renderer()?.dispose()
   })
   return <canvas class="canvas-flow" ref={canvas} />
 }
