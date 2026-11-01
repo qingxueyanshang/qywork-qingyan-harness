@@ -1,0 +1,200 @@
+/**
+ * pptx 候选截图的浏览器入口（由 `pptx-candidates.ts` 打包）：解析 pptx、以字节注册字体、解码图片并绘制指定幻灯片。
+ *
+ * 页面向 `window` 暴露 `renderPage(id, slide, width, height)`，返回画布尺寸；截图由 Node 驱动的 Playwright 完成。
+ * 主机没有的字体取文件中的嵌入字体；缺少字体与缺少字形时使用宋体。本文件只声明用到的浏览器接口，不引入 DOM 类型库。
+ */
+
+import type {
+  CreateCanvas,
+  PaintCanvas,
+  PaintContext,
+  PaintImage,
+} from '../../packages/ooxml/src/drawingml/index.ts'
+import { readFaces, readMetrics, readVerticalMetrics } from '../../packages/ooxml/src/font/index.ts'
+import {
+  type Presentation,
+  paintSlide,
+  parsePptx,
+  presentationFonts,
+  readEmbeddedFonts,
+  readImages,
+  type SlideFont,
+  type SlideFontSource,
+  slideImages,
+} from '../../packages/ooxml/src/pptx/index.ts'
+
+interface CanvasElement {
+  width: number
+  height: number
+  style: { width: string; height: string }
+  getContext(kind: '2d', options: { alpha: boolean }): PaintContext
+}
+
+declare const document: {
+  getElementById(id: string): CanvasElement
+  fonts: { add(face: unknown): void }
+}
+declare const window: Record<string, unknown>
+declare class FontFace {
+  constructor(family: string, source: ArrayBuffer, descriptors: { weight: string; style: string })
+  load(): Promise<unknown>
+}
+declare class OffscreenCanvas implements PaintCanvas {
+  constructor(width: number, height: number)
+  readonly width: number
+  readonly height: number
+  getContext(kind: '2d'): PaintContext | null
+}
+declare function createImageBitmap(blob: Blob): Promise<PaintImage>
+
+const FALLBACK = '宋体'
+
+interface FaceInfo {
+  readonly id: string
+  readonly bold: boolean
+  readonly italic: boolean
+}
+
+const families = new Map<string, Promise<SlideFont[]>>()
+
+/** 按字体名取得本机字体，以同一族名注册到页面并读取度量。主机上没有该字体时返回空数组。 */
+function loadFamily(name: string): Promise<SlideFont[]> {
+  let pending = families.get(name)
+  if (!pending) {
+    pending = (async () => {
+      const res = await fetch(`/font?name=${encodeURIComponent(name)}`)
+      if (!res.ok) return []
+      const list = (await res.json()) as FaceInfo[]
+      const out: SlideFont[] = []
+      for (const f of list) {
+        const bytes = await (await fetch(`/font-face?id=${encodeURIComponent(f.id)}`)).arrayBuffer()
+        const face = new FontFace(name, bytes, {
+          weight: f.bold ? '700' : '400',
+          style: f.italic ? 'italic' : 'normal',
+        })
+        await face.load()
+        document.fonts.add(face)
+        const data = new Uint8Array(bytes)
+        const sfnt = readFaces(data)[0]
+        if (!sfnt) continue
+        out.push({
+          face: { metrics: readMetrics(data, sfnt), vertical: readVerticalMetrics(data, sfnt) },
+          family: name,
+          bold: f.bold,
+          italic: f.italic,
+        })
+      }
+      return out
+    })()
+    families.set(name, pending)
+  }
+  return pending
+}
+
+function pick(list: readonly SlideFont[], bold: boolean, italic: boolean): SlideFont | null {
+  return (
+    list.find((f) => f.bold === bold && f.italic === italic) ??
+    list.find((f) => f.bold === bold) ??
+    list.find((f) => !f.bold && !f.italic) ??
+    list[0] ??
+    null
+  )
+}
+
+interface Doc {
+  readonly bytes: Uint8Array<ArrayBuffer>
+  readonly presentation: Presentation
+  readonly fonts: SlideFontSource
+}
+
+const docs = new Map<string, Promise<Doc>>()
+
+function loadDoc(id: string): Promise<Doc> {
+  let pending = docs.get(id)
+  if (!pending) {
+    pending = (async () => {
+      const bytes = new Uint8Array(
+        await (await fetch(`/doc/${encodeURIComponent(id)}`)).arrayBuffer(),
+      )
+      const parsed = await parsePptx(bytes)
+      if (!parsed.ok) throw new Error(`解析失败：${JSON.stringify(parsed.failure)}`)
+      const presentation = parsed.value
+      const names = [...new Set([...presentationFonts(presentation), FALLBACK])]
+      const loaded = new Map<string, SlideFont[]>()
+      for (const name of names) loaded.set(name, await loadFamily(name))
+      // 主机没有的字体取文件中的嵌入字体。
+      const missing = presentation.embeddedFonts.filter((f) => !loaded.get(f.typeface)?.length)
+      const embedded = await readEmbeddedFonts(bytes, missing)
+      for (const part of embedded.failed) console.warn(`嵌入字体无法还原：${part}`)
+      for (const f of embedded.fonts) {
+        const face = new FontFace(f.typeface, f.bytes.slice().buffer, {
+          weight: f.bold ? '700' : '400',
+          style: f.italic ? 'italic' : 'normal',
+        })
+        await face.load()
+        document.fonts.add(face)
+        const sfnt = readFaces(f.bytes)[0]
+        if (!sfnt) continue
+        const list = loaded.get(f.typeface) ?? []
+        list.push({
+          face: {
+            metrics: readMetrics(f.bytes, sfnt),
+            vertical: readVerticalMetrics(f.bytes, sfnt),
+          },
+          family: f.typeface,
+          bold: f.bold,
+          italic: f.italic,
+        })
+        loaded.set(f.typeface, list)
+      }
+      const fallback = pick(loaded.get(FALLBACK) ?? [], false, false)
+      if (fallback === null) throw new Error('本机没有宋体')
+      const fonts: SlideFontSource = {
+        face: (name, bold, italic) => pick(loaded.get(name) ?? [], bold, italic),
+        fallback,
+      }
+      return { bytes, presentation, fonts }
+    })()
+    docs.set(id, pending)
+  }
+  return pending
+}
+
+const createCanvas: CreateCanvas = (width, height) =>
+  new OffscreenCanvas(Math.max(1, width), Math.max(1, height))
+
+async function renderPage(
+  id: string,
+  slideNumber: number,
+  width: number,
+  height: number,
+): Promise<{ width: number; height: number }> {
+  const { bytes, presentation, fonts } = await loadDoc(id)
+  const slide = presentation.slides[slideNumber - 1]
+  if (!slide) throw new Error(`没有第 ${slideNumber} 张幻灯片`)
+  const parts = await readImages(bytes, slideImages(slide))
+  const images = new Map<string, PaintImage | null>()
+  for (const [part, img] of parts) {
+    const blob = new Blob([img.bytes.slice()], { type: img.contentType })
+    images.set(part, await createImageBitmap(blob).catch(() => null))
+  }
+  const scale = width / (presentation.width / 9525)
+  const canvas = document.getElementById('slide')
+  canvas.width = width
+  canvas.height = height
+  canvas.style.width = `${width}px`
+  canvas.style.height = `${height}px`
+  const ctx = canvas.getContext('2d', { alpha: false })
+  paintSlide(
+    ctx,
+    presentation,
+    slide,
+    { fonts, image: (part) => images.get(part) ?? null, createCanvas },
+    scale,
+  )
+  return { width, height }
+}
+
+window.renderPage = renderPage
+window.pageReady = true
