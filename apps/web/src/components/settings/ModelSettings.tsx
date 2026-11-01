@@ -10,8 +10,10 @@ import {
   type ToolCallCheck,
   type VideoChannel,
 } from '@qywork/core'
-import { createSignal, For, Show } from 'solid-js'
+import { createResource, createSignal, For, Show } from 'solid-js'
+import { loaded } from '../../lib/resource.ts'
 import { sessionSignal } from '../../lib/session.ts'
+import { fetchCloudState } from '../../lib/store/cloud.ts'
 import {
   ensureModelCatalog,
   modelCatalog,
@@ -97,6 +99,15 @@ export function ModelSettings() {
   const [probing, setProbing] = createSignal<string | null>(null)
   /** 打开拉取窗口的接口名。 */
   const [pulling, setPulling] = createSignal<string | null>(null)
+  /**
+   * 已登录云端账号时，云端接口的名称、地址、协议、密钥与型号由账号维护：不提供编辑、删除与拉取，移除只经「退出」。
+   * 拉取会按美元记录型号价格，而云端型号以积分计价。
+   */
+  const [cloud] = createResource(() => fetchCloudState().catch(() => null))
+  const managed = (name: string) => {
+    const s = loaded(cloud)
+    return s?.state === 'signed_in' && s.provider === name
+  }
 
   const names = () => Object.keys(config()?.providers ?? {})
   const current = () => {
@@ -399,79 +410,87 @@ export function ModelSettings() {
                   <section class="settings-block">
                     <div class="settings-block-head">
                       <h3>{name()}</h3>
-                      <button
-                        class="icon-btn"
-                        type="button"
-                        aria-label={`删除接口 ${name()}`}
-                        onClick={() => setDoomed(name())}
-                      >
-                        <IconTrash size={13} />
-                      </button>
-                    </div>
-
-                    <div class="setting-rows">
-                      <Row label="名称">
-                        <input
-                          type="text"
-                          value={name()}
-                          onBlur={(e) => {
-                            const from = name()
-                            if (!renameProvider(from, e.currentTarget.value.trim()))
-                              e.currentTarget.value = from
-                          }}
-                        />
-                      </Row>
-
-                      <Row label="对话协议">
-                        <select
-                          value={p().kind}
-                          onChange={(e) => patchProvider(name(), { kind: e.currentTarget.value })}
+                      <Show when={!managed(name())}>
+                        <button
+                          class="icon-btn"
+                          type="button"
+                          aria-label={`删除接口 ${name()}`}
+                          onClick={() => setDoomed(name())}
                         >
-                          <For each={PROVIDER_KINDS}>
-                            {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
-                          </For>
-                        </select>
-                      </Row>
-
-                      <Field label="Base URL">
-                        <input
-                          type="text"
-                          placeholder={baseUrlPlaceholder(defaultUrls())}
-                          value={p().baseUrl ?? ''}
-                          onBlur={(e) => patchProvider(name(), { baseUrl: e.currentTarget.value })}
-                        />
-                      </Field>
-
-                      <Field label="API Key">
-                        <input
-                          type="password"
-                          placeholder={p().hasApiKey ? '已设置（留空则保持不变）' : '未设置'}
-                          onBlur={(e) => {
-                            // 留空表示保持原值，因此不发送空串：空串会被视为清除 key。
-                            if (e.currentTarget.value) {
-                              patchProvider(name(), {
-                                apiKey: e.currentTarget.value,
-                                hasApiKey: true,
-                              })
-                              e.currentTarget.value = ''
-                            }
-                          }}
-                        />
-                      </Field>
+                          <IconTrash size={13} />
+                        </button>
+                      </Show>
                     </div>
+
+                    <Show when={!managed(name())}>
+                      <div class="setting-rows">
+                        <Row label="名称">
+                          <input
+                            type="text"
+                            value={name()}
+                            onBlur={(e) => {
+                              const from = name()
+                              if (!renameProvider(from, e.currentTarget.value.trim()))
+                                e.currentTarget.value = from
+                            }}
+                          />
+                        </Row>
+
+                        <Row label="对话协议">
+                          <select
+                            value={p().kind}
+                            onChange={(e) => patchProvider(name(), { kind: e.currentTarget.value })}
+                          >
+                            <For each={PROVIDER_KINDS}>
+                              {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
+                            </For>
+                          </select>
+                        </Row>
+
+                        <Field label="Base URL">
+                          <input
+                            type="text"
+                            placeholder={baseUrlPlaceholder(defaultUrls())}
+                            value={p().baseUrl ?? ''}
+                            onBlur={(e) =>
+                              patchProvider(name(), { baseUrl: e.currentTarget.value })
+                            }
+                          />
+                        </Field>
+
+                        <Field label="API Key">
+                          <input
+                            type="password"
+                            placeholder={p().hasApiKey ? '已设置（留空则保持不变）' : '未设置'}
+                            onBlur={(e) => {
+                              // 留空表示保持原值，因此不发送空串：空串会被视为清除 key。
+                              if (e.currentTarget.value) {
+                                patchProvider(name(), {
+                                  apiKey: e.currentTarget.value,
+                                  hasApiKey: true,
+                                })
+                                e.currentTarget.value = ''
+                              }
+                            }}
+                          />
+                        </Field>
+                      </div>
+                    </Show>
                   </section>
 
                   <section class="settings-block">
                     <div class="settings-block-head">
                       <h3>模型</h3>
-                      <button
-                        class="btn-ghost sm pull-open"
-                        type="button"
-                        disabled={!p().baseUrl || configBusy()}
-                        onClick={() => setPulling(name())}
-                      >
-                        拉取模型
-                      </button>
+                      <Show when={!managed(name())}>
+                        <button
+                          class="btn-ghost sm pull-open"
+                          type="button"
+                          disabled={!p().baseUrl || configBusy()}
+                          onClick={() => setPulling(name())}
+                        >
+                          拉取模型
+                        </button>
+                      </Show>
                     </div>
 
                     <div class="model-list">

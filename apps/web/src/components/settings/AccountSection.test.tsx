@@ -99,7 +99,7 @@ test('设备被移除后显示原因与登录按钮；点击登录后显示登�
 })
 
 test('已登录时显示邮箱与积分余额；退出后回到登录按钮', async () => {
-  cloud = { state: 'signed_in', email: 'me@example.com', credits: 12.5 }
+  cloud = { state: 'signed_in', email: 'me@example.com', credits: 12.5, provider: 'qywork' }
   const view = await mount('section')
   await until(() => view.text().includes('me@example.com'))
   expect(view.text()).toContain('12.50 积分')

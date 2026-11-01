@@ -131,6 +131,7 @@ test('批准后写入云端接口：设备密钥只在该接口中，型号带�
     state: 'signed_in',
     email: 'me@example.com',
     credits: 12.5,
+    provider: CLOUD_PROVIDER,
   })
   expect(cloud.signedOut).toBe(1)
   // 写入的是磁盘上的配置，而不只是内存中的对象。
