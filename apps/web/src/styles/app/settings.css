@@ -654,17 +654,55 @@ fieldset.seg {
   background-repeat: no-repeat;
 }
 
+/*
+ * 列表默认在下拉框下方展开，下方空间不足时才翻到上方。不要删去 `position-try-order`：
+ * 浏览器的缺省值是 `most-block-size`，按上下哪一侧空间大决定方向，位于窗口下半部的下拉框
+ * 会从上方展开，与其他下拉框方向不一致。
+ */
 /* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
 :is(.field select, .setting-row select, .model-access select, .pull-base)::picker(select) {
   appearance: base-select;
+  position-try-order: normal;
   max-height: min(480px, 60vh);
   padding: 0;
   border: 1px solid var(--border-default);
   border-radius: var(--r-xs);
   background: var(--bg-raised);
   color: var(--text-primary);
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-subtle) transparent;
+}
+
+/*
+ * 弹出层的滚动条与全局一致：细、无箭头（数值同 base.css）。全局的 `*::-webkit-scrollbar` 作用不到
+ * `::picker(select)` 这个伪元素，必须在它上面单独写。不要改用 `scrollbar-width` / `scrollbar-color`：
+ * Chromium 识别到这两项后忽略 `::-webkit-scrollbar` 规则，退回带箭头按钮的系统滚动条。
+ */
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(
+    select
+  )::-webkit-scrollbar {
+  width: 12px;
+}
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(
+    select
+  )::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(
+    select
+  )::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: var(--r-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(
+    select
+  )::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: content-box;
 }
 
 /* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
