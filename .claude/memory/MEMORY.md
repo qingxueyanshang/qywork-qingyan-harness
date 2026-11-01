@@ -15,7 +15,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [PTY 是否存活以进程树为准](pty-alive-check-by-process-tree.md) — 外壳进程（开发实例 `qywork-dev.exe`）下有 `conhost.exe --headless` + shell 才算存活；只剩 webview 说明界面显示与实际不符
 - [本地打包产物收集到 .tmp/installer/](local-installer-lands-in-tmp.md) — `tauri:build` 末尾自动收集；正式发布通过 GitHub Actions 草稿 Release，不要把本地 exe 当作发布产物
 - [计时测试在机器高负载时成批超时](timing-tests-fail-under-machine-load.md) — followup / goal-loop / 插件 e2e 的 10s 上限；套件总时长翻倍且只有这几条失败即为负载所致，待负载回落后重新运行
-- [在不影响用户窗口的前提下复现前端问题](probe-ui-with-isolated-instance.md) — 复制数据库到 .tmp/probe/home 并启动隔离 sidecar，`#t=token` 配对，用 Node 驱动 Playwright 获取 pageerror
+- [在不影响用户窗口的前提下复现前端问题](probe-ui-with-isolated-instance.md) — 复制数据库到 .tmp/probe/home 并启动隔离 sidecar，`#t=token` 配对，用 Node 驱动 Playwright 获取 pageerror；外壳实例须用 `TAURI_CONFIG` 把 devUrl 改为 5181 再编译
 - [真机电脑控制任务会操作任何已打开的窗口](desktop-live-runs-can-type-into-this-session.md) — 曾输入 `exit` 结束主会话、曾导航用户的 Edge；运行前确认 run-task.ts 会隐藏运行前已打开的全部窗口，结束后用 scan-touched.ts 检查
 - [参照用的 agent 仓库位于 view-agent](reference-agents-in-view-agent.md) — 「看看开源项目」指桌面 view-agent 下的 pi / prime / cc-haha / deepseek-harness 四个仓库；出处只写入 docs/plans
 - [云端仓库只用本地 git](cloud-repo-local-only.md) — `Desktop\qywork-cloud` 不推送、不建远程；用户未要求时不构建安装包，服务器由用户准备

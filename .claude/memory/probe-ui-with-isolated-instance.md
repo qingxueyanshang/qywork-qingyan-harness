@@ -16,5 +16,11 @@ metadata:
 4. 驱动浏览器时用 **node** 运行 `.mjs`，脚本放在 `.tmp/probe/`（放在系统临时目录时无法解析 `playwright`），
    监听 `pageerror` / `console.error`，最后用 `taskkill //PID <pid> //T //F` 结束两个进程。
 
+需要桌面外壳（宠物窗口、窗口尺寸与位置）时另起外壳实例。外壳的页面地址在编译时取自 `tauri.conf.json` 的
+`devUrl`（5180），与用户正在运行的 `bun run dev` 相同，直接启动会加载用户的前端并连到用户的服务端。因此编译时覆盖：
+`TAURI_CONFIG='{"build":{"devUrl":"http://localhost:5181"}}' CARGO_TARGET_DIR=<仓库>/.tmp/cargo-target-verify cargo build --bin qywork-dev`，
+用 `grep -c localhost:5181` 确认二进制中的地址；启动时设 `WEBVIEW2_USER_DATA_FOLDER` 与 `QYWORK_WEBVIEW_DEBUG_PORT`，
+只经调试协议向本次启动的页面发送点击。逐帧截取闪烁用 `.tmp/pet-probe/flicker.mjs`（`capture.ps1` 约 54 帧每秒，`sheet.py` 拼出变化的帧）。
+
 2026-09-04 实测：白屏报告发生在 dev 监督器 05:41 的那次协调重启之后；隔离实例下同一条会话在生产与开发构建中都正常渲染，
 说明是那次整页刷新取得了异常状态，而不是当前代码的渲染崩溃。见 [[dev-edits-hit-the-running-app]]。
