@@ -25,7 +25,7 @@ import type {
 import { isNoticeStep } from '@qywork/core'
 import { createEffect, createRoot, createSignal } from 'solid-js'
 import { produce } from 'solid-js/store'
-import { QyClient } from '../client.ts'
+import { type ConnectionState, QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
 import { openFileInPanel } from './files.ts'
 import {
@@ -89,8 +89,19 @@ export const [petsChange, setPetsChange] = createSignal<{
 /** 当前会话中 `pet` 工具最近一次成功的 `apply`：`id` 为 null 表示切回内置宠物。理由同 `skinApply`。 */
 export const [petApply, setPetApply] = createSignal<{ id: string | null; seq: number } | null>(null)
 
+/**
+ * 连接状态写入 `state`。经 console 打开时本页在 iframe 中：电脑端重启后令牌改变、握手被拒，
+ * 此时通知 console 重新取得令牌并刷新本页。消息不含令牌，因此不限定接收方的来源。
+ */
+export function onConnectionState(s: ConnectionState, detail?: string): void {
+  setState({ connection: s, connectionDetail: detail ?? '' })
+  if (s === 'unauthorized' && window.parent !== window) {
+    window.parent.postMessage({ type: 'qywork.unauthorized' }, '*')
+  }
+}
+
 export const client = new QyClient({
-  onState: (s, detail) => setState({ connection: s, connectionDetail: detail ?? '' }),
+  onState: onConnectionState,
   onCapabilities: (caps) => setState('capabilities', caps),
   // 握手携带的忙闲快照直接整表替换：它是服务端当前的完整状态，不是增量。
   onBusy: (ids) => syncBusy(ids),
