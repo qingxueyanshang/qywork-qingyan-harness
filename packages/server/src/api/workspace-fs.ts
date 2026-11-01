@@ -15,11 +15,13 @@
 import { CANVAS_FILE_KINDS, canvasFileKind } from '@qywork/core'
 import { resolveInWorkspace } from '@qywork/tools'
 import {
+  classify,
   createEntry,
   deleteEntry,
   EntryExistsError,
   findByName,
   listTree,
+  OFFICE_FORMATS,
   openRaw,
   preview,
   renameEntry,
@@ -40,9 +42,22 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
 
   if (p === '/api/files/find') {
     // 空查询由 `findByName` 判定（返回空结果，不返回整棵树），此处不重复判定。
-    // 带 `kinds`（逗号分隔的画布文件类别）时只返回这些类别的文件，查询允许为空：画布上选择素材的对话框打开时即列出文件。
+    // 带筛选参数时只返回该类文件，查询允许为空：选择文件的对话框打开时即列出文件。两种筛选只能给出一个：
+    // `kinds`（逗号分隔的画布文件类别）按 `canvasFileKind` 判定；`office`（Office 格式）按预览分类 `classify` 判定。
+    const query = q.get('q') ?? ''
     const kinds = q.get('kinds')
-    if (kinds === null) return json(await findByName(d.workspaceRoot, q.get('q') ?? ''))
+    const office = q.get('office')
+    if (office !== null) {
+      if (kinds !== null) {
+        return json({ error: 'invalid', message: '筛选参数 kinds 与 office 不能同时给出' }, 422)
+      }
+      if (!OFFICE_FORMATS.has(office)) {
+        return json({ error: 'invalid', message: `格式不合法：${office}` }, 422)
+      }
+      const accept = (path: string) => classify(path).office === office
+      return json(await findByName(d.workspaceRoot, query, undefined, accept))
+    }
+    if (kinds === null) return json(await findByName(d.workspaceRoot, query))
     const wanted = new Set(kinds.split(','))
     if (![...wanted].every((k) => (CANVAS_FILE_KINDS as readonly string[]).includes(k))) {
       return json({ error: 'invalid', message: `类别不合法：${kinds}` }, 422)
@@ -51,7 +66,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
       const kind = canvasFileKind(path)
       return kind !== null && wanted.has(kind)
     }
-    return json(await findByName(d.workspaceRoot, q.get('q') ?? '', undefined, accept))
+    return json(await findByName(d.workspaceRoot, query, undefined, accept))
   }
 
   /*

@@ -17,6 +17,7 @@ import { handleCanvasApi } from './canvas.ts'
 import { handleCloudApi } from './cloud.ts'
 import { handleConfigApi } from './config.ts'
 import { handleConversationsApi } from './conversations.ts'
+import { handleFontsApi } from './fonts.ts'
 import { handleGitApi } from './git.ts'
 import { handleHostApi } from './host.ts'
 import { handleMcpApi } from './mcp.ts'
@@ -74,6 +75,7 @@ const HANDLERS: ApiHandler[] = [
   handleUsageApi,
   handleConversationsApi,
   handleWorkspaceFsApi,
+  handleFontsApi,
   handleCanvasApi,
   handleGitApi,
 ]

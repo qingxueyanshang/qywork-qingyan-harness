@@ -2,8 +2,8 @@
  * 文件浏览与预览。
  *
  * 支持所有格式的实现策略是分类而非穷举：把文件归入若干渲染族
- * （文本/图片/PDF/音视频/表格/归档/二进制），每族一种渲染器，具体扩展名只影响
- * 语法高亮语言的选择。插件可以注册新的族或覆盖某扩展名所属的族：扩展名表
+ * （文本/图片/PDF/音视频/表格/Office/归档/二进制），每族一种渲染器，具体扩展名只影响
+ * 语法高亮语言或 Office 格式的选择。插件可以注册新的族或覆盖某扩展名所属的族：扩展名表
  * 无法穷举所有格式，而族的数量是有限的。
  */
 
@@ -18,8 +18,12 @@ export type PreviewKind =
   | 'audio'
   | 'video'
   | 'tabular'
+  | 'office'
   | 'archive'
   | 'binary'
+
+/** Office 文档的格式，决定界面使用哪一种渲染器。 */
+export type OfficeFormat = 'xlsx' | 'pptx' | 'docx'
 
 export interface FileNode {
   name: string
@@ -42,6 +46,8 @@ export interface PreviewResult {
   content?: string
   /** 语法高亮语言标识。 */
   language?: string
+  /** 仅 Office 族有。 */
+  office?: OfficeFormat
   truncated: boolean
   /** 无法内联时给出的说明，UI 直接显示。 */
   note?: string
@@ -136,10 +142,26 @@ const EXT_KIND: Record<string, PreviewKind> = {
   '.xz': 'archive',
   '.whl': 'archive',
   '.jar': 'archive',
-  '.xlsx': 'tabular',
-  '.xls': 'tabular',
-  '.ods': 'tabular',
 }
+
+/**
+ * Office 族的扩展名与格式。带宏的文件与模板的内部结构与对应格式相同，按对应格式预览：
+ * 预览只解析，不执行宏。新增格式时在此登记扩展名，并在界面为该格式增加渲染器。
+ */
+const EXT_OFFICE: Record<string, OfficeFormat> = {
+  '.xlsx': 'xlsx',
+  '.xlsm': 'xlsx',
+  '.xltx': 'xlsx',
+  '.pptx': 'pptx',
+  '.pptm': 'pptx',
+  '.potx': 'pptx',
+  '.docx': 'docx',
+  '.docm': 'docx',
+  '.dotx': 'docx',
+}
+
+/** 已登记的 Office 格式，供接口校验参数。 */
+export const OFFICE_FORMATS: ReadonlySet<string> = new Set(Object.values(EXT_OFFICE))
 
 const EXT_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -161,12 +183,18 @@ const EXT_MIME: Record<string, string> = {
   '.mov': 'video/quicktime',
 }
 
-export function classify(path: string): { kind: PreviewKind; mime: string; language?: string } {
+export function classify(path: string): {
+  kind: PreviewKind
+  mime: string
+  language?: string
+  office?: OfficeFormat
+} {
   const ext = extname(path).toLowerCase()
-  const kind = EXT_KIND[ext] ?? 'text'
+  const office = EXT_OFFICE[ext]
+  const kind = office ? 'office' : (EXT_KIND[ext] ?? 'text')
   const mime = EXT_MIME[ext] ?? (kind === 'text' ? 'text/plain' : 'application/octet-stream')
   const language = EXT_LANGUAGE[ext]
-  return { kind, mime, ...(language ? { language } : {}) }
+  return { kind, mime, ...(language ? { language } : {}), ...(office ? { office } : {}) }
 }
 
 /**
@@ -362,7 +390,7 @@ export async function findByName(
 
 export async function preview(abs: string, relPath: string): Promise<PreviewResult> {
   const info = await stat(abs)
-  const { kind, mime, language } = classify(relPath)
+  const { kind, mime, language, office } = classify(relPath)
 
   const base = {
     path: toPosix(relPath),
@@ -372,17 +400,24 @@ export async function preview(abs: string, relPath: string): Promise<PreviewResu
     mtime: info.mtimeMs,
     truncated: false,
     ...(language ? { language } : {}),
+    ...(office ? { office } : {}),
   }
 
   /*
-   * PDF、图片与音视频不内联，字节由 `openRaw` 另行提供。不要改为 data URI：桌面端 CSP 的
+   * PDF、图片、音视频与 Office 文档不内联，字节由 `openRaw` 另行提供。不要改为 data URI：桌面端 CSP 的
    * `frame-src` 只允许 `blob:`，data URI 的 iframe 在打包版中显示空白；内联还需把整份文件以
    * base64 写入该 JSON 响应，生成的 4K 图片与视频常超过数 MB，只能截断而无法显示。
    */
-  if (kind === 'pdf' || kind === 'image' || kind === 'audio' || kind === 'video') return base
+  if (
+    kind === 'pdf' ||
+    kind === 'image' ||
+    kind === 'audio' ||
+    kind === 'video' ||
+    kind === 'office'
+  )
+    return base
 
   if (kind === 'text' || kind === 'tabular') {
-    // 表格族中 csv/tsv 是文本，xlsx 不是：按实际能否解码决定处理路径。
     // 只读取上限以内的字节：整文件读入后再截断，内存占用会随文件大小增长。
     const text = new TextDecoder('utf-8', { fatal: false }).decode(
       await readHead(abs, MAX_TEXT_BYTES),
