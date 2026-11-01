@@ -233,6 +233,11 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
 
     #[cfg(windows)]
     let window = window.additional_browser_args(&shell_browser_args());
+    #[cfg(all(windows, not(feature = "custom-protocol")))]
+    let window = match dev_webview_dir(app) {
+        Some(dir) => window.data_directory(dir),
+        None => window,
+    };
     let window = window.build()?;
 
     // `build()` 返回 Ok 不代表窗口存在：运行时把创建失败写入日志后仍返回 Ok。
@@ -279,6 +284,21 @@ pub(crate) fn shell_browser_args() -> String {
     args
 }
 
+/// 开发构建的外壳窗口使用单独的 WebView2 用户数据目录。启动窗口、主窗口与宠物窗口都经此取得，
+/// 三者须使用同一个目录。
+///
+/// 开发构建与安装版的应用标识相同，默认目录都是 `%LOCALAPPDATA%\dev.qywork.desktop\EBWebView`。
+/// 安装版运行时，开发构建在该目录上创建第一个 WebView 即失败（日志记录为 0x80010108 与 0x8007139F），
+/// 启动窗口无法打开。不要改用环境变量 `WEBVIEW2_USER_DATA_FOLDER`：它覆盖进程内全部 WebView 的目录，
+/// 包括内置浏览器单独指定的配置目录（`browser/webview2.rs`），而内置浏览器的启动参数与外壳不同。
+#[cfg(all(windows, not(feature = "custom-protocol")))]
+pub(crate) fn dev_webview_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .ok()
+        .map(|dir| dir.join("EBWebView-dev"))
+}
+
 /// 先给出可取消的等待窗口。业务页面仍只在取得后台就绪回执后加载。
 fn build_startup_window(app: &AppHandle) -> tauri::Result<()> {
     let window = WebviewWindowBuilder::new(app, "startup", WebviewUrl::App("startup.html".into()))
@@ -289,6 +309,11 @@ fn build_startup_window(app: &AppHandle) -> tauri::Result<()> {
         .center();
     #[cfg(windows)]
     let window = window.additional_browser_args(&shell_browser_args());
+    #[cfg(all(windows, not(feature = "custom-protocol")))]
+    let window = match dev_webview_dir(app) {
+        Some(dir) => window.data_directory(dir),
+        None => window,
+    };
     let window = window.build()?;
     if window.is_visible().is_err() {
         let reason = LAST_ERROR
