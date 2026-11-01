@@ -16,6 +16,14 @@ describe('单币种', () => {
     expect(CURRENCY_SYMBOL.CNY).toBe('¥')
   })
 
+  /** 原始失败形状：内置模型的费用以美元显示，而账号余额以积分显示，同一界面两种单位无法对应。 */
+  test('积分以单位后缀显示，与账号余额同一单位；不与美元合计', () => {
+    expect(formatMoney(12.5, 'CREDIT')).toBe('12.50 积分')
+    expect(formatMoney(0, 'CREDIT')).toBe('0 积分')
+    expect(formatMoney(0.001, 'CREDIT')).toBe('<0.01 积分')
+    expect(formatCosts({ CREDIT: 3, USD: 0.5 })).toBe('3.00 积分 + $0.50')
+  })
+
   test('未传入币种时按美元', () => {
     expect(formatMoney(1.5)).toBe('$1.50')
   })

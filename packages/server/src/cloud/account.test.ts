@@ -17,10 +17,10 @@ const cloud = {
   signedOut: 0,
 }
 
-const server = Bun.serve({
+const server: ReturnType<typeof Bun.serve> = Bun.serve({
   hostname: '127.0.0.1',
   port: 0,
-  async fetch(req) {
+  async fetch(req): Promise<Response> {
     const path = new URL(req.url).pathname
     if (path === '/api/auth/device/code') {
       cloud.codes++
@@ -74,7 +74,7 @@ const server = Bun.serve({
     return new Response('not found', { status: 404 })
   },
 })
-const origin = `http://127.0.0.1:${server.port}`
+const origin: string = `http://127.0.0.1:${server.port}`
 
 afterAll(() => {
   server.stop(true)
@@ -120,6 +120,12 @@ test('批准后写入云端接口：设备密钥只在该接口中，型号带�
   expect(provider).toMatchObject({ baseUrl: origin, apiKey: 'qyd_device_key' })
   expect(provider.models['claude-sonnet-5-5']?.kind).toBeUndefined()
   expect(provider.models['gpt-5']?.kind).toBe('openai_responses')
+  // 网关清单的额度单位是积分：价格记为积分，与账号余额同一单位。
+  expect(provider.models['gpt-5']?.price).toMatchObject({
+    input: 300,
+    output: 1500,
+    currency: 'CREDIT',
+  })
   expect(live.active?.provider).toBe(CLOUD_PROVIDER)
   expect(await account.state()).toEqual({
     state: 'signed_in',

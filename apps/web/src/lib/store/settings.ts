@@ -9,6 +9,7 @@ import type {
   Attachment,
   ChannelSpec,
   Conversation,
+  Currency,
   EffortLevel,
   EnvDependency,
   MediaKind,
@@ -77,7 +78,7 @@ export interface ChatPrice {
   output: number
   cacheRead: number
   cacheWrite: number
-  currency: 'USD' | 'CNY'
+  currency: Currency
   /** 分时段折扣。此时四项单价是高峰价。 */
   offPeak?: { rate: number; peakWindowsUtc: [number, number][]; peakWeekdaysUtc: number[] }
 }
@@ -223,7 +224,7 @@ export interface ModelOption {
   /** 用户为该模型选定的档位。null 表示未选择，不发送思考字段。与上一字段同源。 */
   effort: EffortLevel | null
   /** 计价币种。阿里 / 月之暗面 / 智谱三家官网按人民币标价，符号不能一律显示为 $。 */
-  currency: 'USD' | 'CNY'
+  currency: Currency
   /**
    * 是否接受图片输入。`null` 表示没有依据，照常允许；仅 `false` 时隐藏
    * 图片附件入口。与上方字段同源，各模型不同，因此不经由握手下发。
@@ -263,7 +264,7 @@ export interface LibraryModel {
   cacheRead: number | null
   /** 缓存写入价（5 分钟档）。计价只按该档计算。 */
   cacheWrite: number | null
-  currency: 'USD' | 'CNY'
+  currency: Currency
   effortLevels: EffortLevel[]
   /** 未选择强度时是否思考。 */
   thinksByDefault: boolean

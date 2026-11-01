@@ -234,7 +234,10 @@ export class CloudAccount {
     this.refreshed = true
   }
 
-  /** 网关上的对话型号：协议与价格。 */
+  /**
+   * 网关上的对话型号：协议与价格。网关价格清单的额度单位是积分，拉取按清单格式得到美元币种，
+   * 此处改记为积分：费用与账号余额须使用同一单位显示。
+   */
   private async pulled(key: string): Promise<Record<string, StoredModel>> {
     const result = await pullModels(
       { kind: DEFAULT_KIND, baseUrl: this.origins.api, apiKey: key },
@@ -243,7 +246,10 @@ export class CloudAccount {
     const models: Record<string, StoredModel> = {}
     for (const m of result.models) {
       if (m.output !== 'chat') continue
-      models[m.id] = { ...(m.kind ? { kind: m.kind } : {}), ...(m.price ? { price: m.price } : {}) }
+      models[m.id] = {
+        ...(m.kind ? { kind: m.kind } : {}),
+        ...(m.price ? { price: { ...m.price, currency: 'CREDIT' } } : {}),
+      }
     }
     return models
   }

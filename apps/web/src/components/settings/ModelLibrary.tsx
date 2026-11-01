@@ -1,4 +1,4 @@
-import { MEDIA_OUTPUTS, type MediaKind, type MediaOutput } from '@qywork/core'
+import { type Currency, MEDIA_OUTPUTS, type MediaKind, type MediaOutput } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import { sessionSignal } from '../../lib/session.ts'
 import {
@@ -304,7 +304,8 @@ function compact(n: number): string {
 }
 
 /** 每百万 token 的单价。币种是数据的一部分：把 ¥6 误作 $6 会相差约七倍。 */
-function price(n: number | null, currency: 'USD' | 'CNY'): string {
+function price(n: number | null, currency: Currency): string {
   if (n === null) return '—'
+  if (currency === 'CREDIT') return `${n} 积分`
   return `${currency === 'CNY' ? '¥' : '$'}${n}`
 }

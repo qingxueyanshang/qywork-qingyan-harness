@@ -21,6 +21,8 @@ import {
 import {
   CACHE_ROUTINGS,
   type CacheRouting,
+  CURRENCIES,
+  type Currency,
   channelImageSpecProblem,
   channelVideoSpecProblem,
   EFFORT_ORDER,
@@ -284,7 +286,7 @@ export interface StoredCatalogEntry {
   cacheRead?: number
   /** 缓存写入价。只覆盖 5 分钟一档：`computeCost` 只按该档计算。 */
   cacheWrite?: number
-  currency?: 'USD' | 'CNY'
+  currency?: Currency
   /** 分时段折扣，替换目录中的折扣。接口价格（`ModelPrice`）经 `resolveModel` 合成到此处；模型库界面不编辑该项。 */
   offPeak?: OffPeakDiscount
   thinking?: ThinkingMode
@@ -364,7 +366,7 @@ export interface ModelPrice {
   output: number
   cacheRead: number
   cacheWrite: number
-  currency: 'USD' | 'CNY'
+  currency: Currency
   /** 分时段折扣。此时四项单价是高峰价。 */
   offPeak?: OffPeakDiscount
 }
@@ -830,7 +832,7 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
             const v = (price as unknown as Record<string, unknown>)[k]
             return typeof v === 'number' && Number.isFinite(v) && v >= 0
           }) ||
-          !['USD', 'CNY'].includes(price.currency))
+          !CURRENCIES.includes(price.currency))
       ) {
         problems.push(
           `${name} / ${id} 的 price 必须包含非负数 input、output、cacheRead、cacheWrite 与 currency（USD 或 CNY）。`,

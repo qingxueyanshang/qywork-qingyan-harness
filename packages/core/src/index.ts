@@ -198,6 +198,7 @@ export {
   type ContextGroup,
   type ContextOmitted,
   type Conversation,
+  CURRENCIES,
   type Currency,
   deriveConversationTitle,
   EFFORT_ORDER,
