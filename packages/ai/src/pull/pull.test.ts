@@ -202,6 +202,31 @@ test('不是已收录的中转站时不读取渠道目录：返回同名字段�
   expect(seen.map((s) => s.path).sort()).toEqual(['/api/pricing', '/api/status'])
 })
 
+test('型号不支持接口的协议时带上它支持的协议；同时支持接口协议的型号不带', async () => {
+  const entry = (model_name: string, types: string[]) => ({
+    model_name,
+    quota_type: 0,
+    model_ratio: 1.5,
+    enable_groups: ['default'],
+    supported_endpoint_types: types,
+  })
+  const { target } = site({
+    '/api/pricing': {
+      data: [
+        entry('claude-sonnet-5-5', ['anthropic']),
+        entry('gpt-5', ['openai-response']),
+        entry('both', ['openai', 'anthropic']),
+      ],
+      group_ratio: { default: 1 },
+    },
+    '/api/status': { data: {} },
+  })
+  const by = new Map((await pullModels(target, signal())).models.map((m) => [m.id, m]))
+  expect(by.get('claude-sonnet-5-5')).toMatchObject({ kind: 'anthropic_messages', known: true })
+  expect(by.get('gpt-5')).toMatchObject({ kind: 'openai_responses' })
+  expect(by.get('both')).not.toHaveProperty('kind')
+})
+
 test('站点状态读取失败时价格不明，型号照常列出', async () => {
   const data = fixture('newapi-mumugofe.json')
   const { target } = site({ '/api/pricing': data.pricing })

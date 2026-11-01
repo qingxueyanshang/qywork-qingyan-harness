@@ -52,6 +52,11 @@ export type PulledModel =
   | {
       id: string
       output: 'chat'
+      /**
+       * 该型号使用的协议，只在它不支持接口的协议、而支持另一种协议时给出（计费清单的 `supported_endpoint_types`）；
+       * 写入接口下该模型的 `kind`。
+       */
+      kind?: ProviderKind
       /** 模型库中有同名型号，规格按模型库取得。 */
       known: boolean
       price?: ChatPrice
@@ -86,6 +91,25 @@ const TIMEOUT_MS = 20_000
 
 /** New API 的接口类型中，对话类请求的取值。 */
 const CHAT_ENDPOINTS = ['openai', 'openai-response', 'anthropic', 'gemini']
+
+/** 接口类型与协议的对应。`gemini` 没有对应的协议。 */
+const ENDPOINT_KIND: Readonly<Record<string, ProviderKind>> = {
+  openai: 'openai_chat_completions',
+  'openai-response': 'openai_responses',
+  anthropic: 'anthropic_messages',
+}
+
+/**
+ * 型号应使用的协议：支持接口的协议时返回 undefined（沿用接口的协议），否则返回它支持的第一种协议。
+ * 不要无条件写入：中转站的型号通常同时支持多种接口类型，写入后用户修改接口协议时这些型号不再随之改变。
+ */
+export function chatKindOf(
+  types: readonly string[],
+  providerKind: ProviderKind,
+): ProviderKind | undefined {
+  const kinds = types.flatMap((t) => (ENDPOINT_KIND[t] ? [ENDPOINT_KIND[t]] : []))
+  return kinds.length && !kinds.includes(providerKind) ? kinds[0] : undefined
+}
 
 async function getJson(
   url: string,
@@ -283,10 +307,12 @@ async function fromPricing(
       models.set(id, imageOf(entry, basis, catalog.get(id), target.baseUrl))
     } else if (types.some((t) => CHAT_ENDPOINTS.includes(t))) {
       const price = basis ? chatPriceOf(entry, basis) : undefined
+      const kind = chatKindOf(types, target.kind)
       models.set(id, {
         id,
         output: 'chat',
-        known: lookupModel(id, target.kind).catalogued !== false,
+        ...(kind ? { kind } : {}),
+        known: lookupModel(id, kind ?? target.kind).catalogued !== false,
         ...(price ? { price } : {}),
       })
     }

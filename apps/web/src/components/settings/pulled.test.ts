@@ -84,6 +84,27 @@ test('刷新：更新价格与规格，计费清单中没有的型号标记已�
   expect(back.providers.mumu!.models['old-chat']).toEqual({})
 })
 
+test('对话型号的协议：添加时写入，刷新时随拉取结果更新，拉取结果不带时删除', () => {
+  const claude: ClassifiedModel = {
+    id: 'claude-x',
+    output: 'chat',
+    kind: 'anthropic_messages',
+    known: true,
+  }
+  const added = addPulled(base(), 'mumu', [{ model: claude }])!
+  expect(added.providers.mumu?.models['claude-x']).toEqual({ kind: 'anthropic_messages' })
+  const unchanged = refreshPulled(added, 'mumu', {
+    source: 'pricing',
+    models: [...MODELS, claude],
+  })!
+  expect(unchanged.providers.mumu?.models['claude-x']).toEqual({ kind: 'anthropic_messages' })
+  const plain = refreshPulled(added, 'mumu', {
+    source: 'pricing',
+    models: [...MODELS, { id: 'claude-x', output: 'chat', known: true }],
+  })!
+  expect(plain.providers.mumu?.models['claude-x']).toEqual({})
+})
+
 test('型号列表不完整，不据此标记已下架', () => {
   const next = refreshPulled(base(), 'mumu', { source: 'models', models: [] })
   expect(next).toBeNull()
