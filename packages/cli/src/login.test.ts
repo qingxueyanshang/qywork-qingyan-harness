@@ -8,10 +8,10 @@ import { loadConfig } from '@qywork/runtime'
 import { runLogin, runLogout } from './login.ts'
 
 let revoked = 0
-const server = Bun.serve({
+const server: ReturnType<typeof Bun.serve> = Bun.serve({
   hostname: '127.0.0.1',
   port: 0,
-  fetch(req) {
+  fetch(req): Response {
     const path = new URL(req.url).pathname
     if (path === '/api/auth/device/code') {
       return Response.json({
@@ -49,7 +49,7 @@ const server = Bun.serve({
     return new Response('not found', { status: 404 })
   },
 })
-const origin = `http://127.0.0.1:${server.port}`
+const origin: string = `http://127.0.0.1:${server.port}`
 const previous = process.env.QYWORK_CLOUD
 
 beforeAll(() => {
