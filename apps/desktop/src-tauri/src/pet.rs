@@ -44,6 +44,11 @@ pub async fn pet_window_show(app: AppHandle, x: Option<f64>, y: Option<f64>) -> 
     // 与主窗口共用用户数据目录，环境参数必须完全相同，见 `shell_browser_args`。
     #[cfg(windows)]
     let builder = builder.additional_browser_args(&crate::shell_browser_args());
+    #[cfg(all(windows, not(feature = "custom-protocol")))]
+    let builder = match crate::dev_webview_dir(&app) {
+        Some(dir) => builder.data_directory(dir),
+        None => builder,
+    };
     let window = builder.build().map_err(|e| e.to_string())?;
     match (x, y) {
         (Some(x), Some(y)) if on_screen(&window, x, y) => {
