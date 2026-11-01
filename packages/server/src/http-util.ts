@@ -56,16 +56,40 @@ export function withCors(res: Response): Response {
   return res
 }
 
-export async function serveStatic(dir: string, pathname: string): Promise<Response | null> {
+/**
+ * 网页构建产物的来源：按相对路径（`index.html`、`assets/x.js`）取得文件，不存在时返回 null。
+ * 返回的文件必须带 MIME 类型：模块脚本的响应缺少 Content-Type 时，浏览器拒绝执行。
+ */
+export type WebAssets = (rel: string) => Promise<Blob | null>
+
+/** 磁盘目录中的构建产物（`qy serve --static <目录>`）。类型由 `Bun.file` 按扩展名推断。 */
+export function directoryAssets(dir: string): WebAssets {
+  return async (rel) => {
+    const file = Bun.file(join(dir, rel))
+    return (await file.exists()) ? file : null
+  }
+}
+
+/**
+ * 编译时嵌入单文件程序的构建产物，键为相对路径，值为嵌入文件的路径。
+ *
+ * 类型必须显式给出：以嵌入文件的路径打开的 `Bun.file` 没有类型，响应不带 Content-Type。
+ * `Bun.file(rel).type` 只依据扩展名，文件不必存在。
+ */
+export function embeddedAssets(files: Readonly<Record<string, string>>): WebAssets {
+  return async (rel) => {
+    const path = files[rel]
+    return path ? Bun.file(path, { type: Bun.file(rel).type }) : null
+  }
+}
+
+export async function serveStatic(web: WebAssets, pathname: string): Promise<Response | null> {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '')
-  // 静态目录同样要拦截路径穿越：`GET /../../etc/passwd` 不能生效。
+  // 拦截路径穿越：`GET /../../etc/passwd` 不能生效。
   if (rel.includes('..')) return null
-  const file = Bun.file(join(dir, rel))
-  if (await file.exists()) return new Response(file)
   // SPA 回退：未知路径交给前端路由（/m 是移动端入口）。
-  const index = Bun.file(join(dir, 'index.html'))
-  if (await index.exists()) return new Response(index)
-  return null
+  const file = (await web(rel)) ?? (await web('index.html'))
+  return file ? new Response(file) : null
 }
 
 export function hostLabel(): string {

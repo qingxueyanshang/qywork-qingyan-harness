@@ -32,6 +32,8 @@ import {
   Session,
 } from '@qywork/runtime'
 import {
+  directoryAssets,
+  embeddedAssets,
   lanCandidates,
   processExitObservationFromEnv,
   serve,
@@ -53,6 +55,7 @@ import { runProbe } from './probe.ts'
 import { renderQr } from './qr.ts'
 import { runTui } from './tui.ts'
 import { runUsage } from './usage.ts'
+import { embeddedWeb } from './web-assets.ts'
 
 const USAGE = `qy —— qywork 编码 agent
 
@@ -69,7 +72,7 @@ const USAGE = `qy —— qywork 编码 agent
     --port <端口>         默认 7717，0 = 随机可用端口
     --host <地址>         默认 0.0.0.0（允许手机连接）；仅限本机时使用 127.0.0.1
     --cwd <路径>          指定工作区
-    --static <目录>       前端构建产物目录
+    --static <目录>       前端构建产物目录（默认使用编译时嵌入的网页）
     --print-token         将令牌输出到 stdout（供 Tauri 读取）
     --parent-pid <pid>    父进程退出时一并退出，避免留下孤儿服务
 
@@ -367,13 +370,20 @@ async function runServe(args: string[]): Promise<number> {
 
   // 任务运行期间阻止系统睡眠、按定时任务唤醒系统。不按是否由桌面外壳启动区分：经局域网连接的客户端发起的任务同样需要。
   const power = systemPowerPort()
+  // 网页来源：`--static` 指定的目录优先，其次是编译时嵌入的网页。桌面外壳启动 sidecar 时不传 `--static`，
+  // 手机取得的页面即嵌入的网页；没有网页时手机只能得到纯文本响应。源码运行时没有嵌入内容。
+  const web = flags.static
+    ? directoryAssets(resolve(flags.static))
+    : embeddedWeb
+      ? embeddedAssets(embeddedWeb)
+      : null
   const handle = serve({
     store,
     config,
     ...(workspaceRoot ? { workspaceRoot } : {}),
     port: flags.port ?? 7717,
     host: flags.host ?? '0.0.0.0',
-    ...(flags.static ? { staticDir: resolve(flags.static) } : {}),
+    ...(web ? { web } : {}),
     // Tauri spawn 时通过环境变量传入令牌，桌面端因此无需扫码配对。
     ...(process.env.QYWORK_TOKEN ? { token: process.env.QYWORK_TOKEN } : {}),
     /*
