@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { builtinCatalog, CHAT_REASONING_PROTOCOLS, type TransportCapabilities } from '@qywork/ai'
 import {
   CACHE_ROUTINGS,
+  CURRENCIES,
   EFFORT_ORDER,
   MEDIA_KIND_OUTPUT,
   MEDIA_KINDS,
@@ -65,6 +66,7 @@ export function sampleConfig(): QyConfig {
         },
       }
       models[id] = {
+        kind,
         effort,
         transport,
         price: {
@@ -72,7 +74,7 @@ export function sampleConfig(): QyConfig {
           output: 2 + n,
           cacheRead: 0.1,
           cacheWrite: 1.25,
-          currency: pick(['USD', 'CNY'] as const, n + 1),
+          currency: pick(CURRENCIES, n + 1),
           offPeak: { rate: 0.5, peakWindowsUtc: [[1, 4]], peakWeekdaysUtc: [1, 2, 3, 4, 5] },
         },
         delisted: true,
@@ -87,7 +89,7 @@ export function sampleConfig(): QyConfig {
         output: 2 + n,
         cacheRead: 0.1,
         cacheWrite: 1.25,
-        currency: pick(['USD', 'CNY'] as const, n),
+        currency: pick(CURRENCIES, n),
         thinking: pick(THINKING_MODES, n),
         effortLevels: EFFORT_ORDER.slice(n % EFFORT_ORDER.length),
         thinksByDefault: n % 3 === 0,
@@ -170,6 +172,7 @@ export function sampleConfig(): QyConfig {
     desktopForeground: false,
     officeEnabled: false,
     mediaEnabled: false,
+    remote: false,
     officePython: '/usr/bin/python3',
     additionalDirectories: ['/srv/qywork-sample'],
     sandboxNetwork: 'deny',
@@ -206,6 +209,7 @@ export function meaningOf(cfg: QyConfig) {
     desktopForeground: cfg.desktopForeground,
     officeEnabled: cfg.officeEnabled,
     mediaEnabled: cfg.mediaEnabled,
+    remote: cfg.remote,
     officePython: cfg.officePython,
     additionalDirectories: cfg.additionalDirectories,
     sandboxNetwork: cfg.sandboxNetwork,

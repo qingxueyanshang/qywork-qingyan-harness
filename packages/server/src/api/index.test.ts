@@ -66,7 +66,6 @@ interface RunsStub {
 }
 
 function deps(root = '/ws/demo'): ApiDeps & { wsId: string } {
-  let lan = false
   const runsStub: RunsStub = {
     isBusy: () => false,
     runId: null,
@@ -95,15 +94,17 @@ function deps(root = '/ws/demo'): ApiDeps & { wsId: string } {
     bus: { publish: () => {}, currentSeq: 77 },
     // 删除会话时关闭该会话名下的内置浏览器页面。没有宿主时为空操作。
     closeBrowserPages: async () => {},
-    enableLan: () => {
-      lan = true
-      return { port: 7788 }
+    // 远程访问只替换开关与快照：隧道由 `cloud/remote.test.ts` 覆盖。
+    remote: {
+      enabled: false,
+      async setEnabled(on: boolean) {
+        this.enabled = on
+        return null
+      },
+      snapshot() {
+        return { available: true, enabled: this.enabled, tunnel: null }
+      },
     },
-    disableLan: () => {
-      lan = false
-    },
-    lanEnabled: () => lan,
-    lanPort: () => 7788,
     // upsert 项目时调用它，将分支监听指向该项目。真实的监听在 `server.ts` 中装配，
     // 此处只需不为 undefined。
     watchGit: () => {},
@@ -150,35 +151,34 @@ describe('派发', () => {
 })
 
 describe('方法参与匹配，不只匹配路径', () => {
-  test('只有 POST 切换局域网开关；同一路径的 GET 不由它处理', async () => {
+  test('只有 POST 切换远程访问；同一路径的 GET 不由它处理', async () => {
     const d = deps()
-    expect(await call('/api/pairing/lan', undefined, d)).toBe(null)
-    expect(d.lanEnabled()).toBe(false)
+    expect(await call('/api/pairing/remote', undefined, d)).toBe(null)
+    expect(d.remote.snapshot().enabled).toBe(false)
   })
 
   test('开关实际切换，且返回切换后的状态', async () => {
     const d = deps()
     const on = await call(
-      '/api/pairing/lan',
+      '/api/pairing/remote',
       { method: 'POST', body: JSON.stringify({ enabled: true }) },
       d,
     )
-    expect(await on?.json()).toEqual({ enabled: true })
-    expect(d.lanEnabled()).toBe(true)
+    expect(((await on?.json()) as { enabled: boolean }).enabled).toBe(true)
 
     const off = await call(
-      '/api/pairing/lan',
+      '/api/pairing/remote',
       { method: 'POST', body: JSON.stringify({ enabled: false }) },
       d,
     )
-    expect(await off?.json()).toEqual({ enabled: false })
-    expect(d.lanEnabled()).toBe(false)
+    expect(((await off?.json()) as { enabled: boolean }).enabled).toBe(false)
   })
 
-  test('body 不是合法 JSON 时按关闭处理且不抛出异常：默认取更安全的状态', async () => {
+  test('body 不是布尔值时返回 400，开关不变', async () => {
     const d = deps()
-    const res = await call('/api/pairing/lan', { method: 'POST', body: 'not json' }, d)
-    expect(res?.status).toBe(200)
+    const res = await call('/api/pairing/remote', { method: 'POST', body: 'not json' }, d)
+    expect(res?.status).toBe(400)
+    expect(d.remote.snapshot().enabled).toBe(false)
   })
 })
 

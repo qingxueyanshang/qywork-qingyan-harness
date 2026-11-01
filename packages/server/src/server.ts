@@ -4,8 +4,8 @@
  * 桌面端与手机端连接同一个服务、使用同一套协议。桌面端不经由 Tauri IPC 取得数据，
  * 它是本服务的一个 Web 客户端：手机端因此无需第二套后端，两端的能力也不会出现差异。
  *
- * 绑定地址：默认绑定 0.0.0.0，手机因此能够连接，同一 Wi-Fi 下的任何设备也都能访问，
- * 所以令牌鉴权是强制的（见 pairing.ts）。仅供本机使用时传 --host 127.0.0.1。
+ * 绑定地址由调用方决定（`qy serve` 默认 127.0.0.1）。手机经云端隧道访问（`cloud/remote.ts`），
+ * 不直接连接本服务。任何监听地址上令牌鉴权都是强制的（见 pairing.ts）。
  */
 
 import { mkdirSync } from 'node:fs'
@@ -58,6 +58,9 @@ import { browserCapability } from './browser/capability.ts'
 import { BrowserCoordinator } from './browser/coordinator.ts'
 import { EventBus } from './bus.ts'
 import { CanvasService } from './canvas.ts'
+import { CloudAccount } from './cloud/account.ts'
+import { cloudOrigins } from './cloud/origins.ts'
+import { RemoteAccess } from './cloud/remote.ts'
 import { handleCommand, reject } from './commands.ts'
 import type { SocketData } from './deps.ts'
 import { DesktopBridge } from './desktop/bridge.ts'
@@ -66,7 +69,7 @@ import { DesktopCoordinator } from './desktop/coordinator.ts'
 import { createGitWatch } from './git-watch.ts'
 import { handleHello } from './handshake.ts'
 import { CORS_HEADERS, hostLabel, serveStatic, type WebAssets, withCors } from './http-util.ts'
-import { extractToken, Pairing, preferredLanAddress, timingSafeEqual } from './pairing.ts'
+import { extractToken, Pairing, timingSafeEqual } from './pairing.ts'
 import { servePluginUi } from './plugin-ui.ts'
 import { type PowerPort, startPowerGuard } from './power.ts'
 import { sanitizeProcessExitObservation } from './process-exit.ts'
@@ -416,43 +419,58 @@ export function serve(opts: ServeOptions) {
     : null
 
   /**
-   * 局域网监听控制。
+   * 远程监听器：只绑定 127.0.0.1 的随机端口，隧道客户端把手机的请求转发给它（`cloud/tunnel.ts`）。
    *
-   * 桌面端默认只绑定 127.0.0.1：启动即把工作区暴露给整个 Wi-Fi 不是合理的默认值。
-   * 用户点击「允许手机接入」时追加一个 0.0.0.0 的监听器，而不是重启服务：
-   * 重启会断开桌面端的 WebSocket 并丢弃正在运行的 run。
+   * 与主监听器分开的原因：
+   * - 关闭远程访问时 `stop(true)` 断开全部手机连接，主监听器上的桌面端连接不受影响；
+   * - 经隧道到达的请求在本机看来都来自回环地址，而 `/internal/*` 与原生宿主路径只凭回环地址与宿主凭据判定，
+   *   因此这里对它们一律返回 404。
    *
-   * 两个监听器共用同一个 bus / runs / store，手机连接后看到的是同一份状态。
-   * 此处使用后赋值的引用，原因是监听器需复用主 server 的 handler，而 handler 又需
-   * 调用这几个函数；循环引用只能通过延迟解析打破。
+   * 两个监听器共用同一份 handler，因此共用同一个 bus / runs / store。handler 在下方定义，这里经后赋值的引用使用它。
    */
-  let lanServer: ReturnType<typeof Bun.serve<SocketData>> | null = null
+  let remoteServer: ReturnType<typeof Bun.serve<SocketData>> | null = null
   let boundPort = opts.port
+  const remoteListener = {
+    start: (): number => {
+      remoteServer ??= Bun.serve<SocketData>({
+        ...handlers,
+        fetch(req: Request, srv: Bun.Server<SocketData>) {
+          const { pathname } = new URL(req.url)
+          if (
+            pathname.startsWith('/internal/') ||
+            pathname === NATIVE_BROWSER_PATH ||
+            pathname === NATIVE_DESKTOP_PATH
+          ) {
+            return new Response('not found', { status: 404 })
+          }
+          return handlers.fetch(req, srv)
+        },
+        port: 0,
+        hostname: '127.0.0.1',
+      })
+      return remoteServer.port ?? 0
+    },
+    stop: (): void => {
+      remoteServer?.stop(true)
+      remoteServer = null
+    },
+  }
 
-  let lanPort = 0
-
-  /**
-   * 局域网监听使用另一个端口，不使用主端口。
-   *
-   * `0.0.0.0:P` 与已绑定的 `127.0.0.1:P` 在同一端口上冲突，直接报
-   * 「Failed to start server. Is port P in use?」。
-   * 因此传入 port 0 由内核选择空闲端口，二维码指向该端口。
+  /*
+   * 云端账号与远程访问。未配置云端地址时账号为 null（`/api/cloud/state` 回答 unavailable），远程访问始终不可用。
+   * 登录与退出改变云端接口后，远程访问按新的登录状态启停隧道。
    */
-  const enableLan = (): { port: number } => {
-    if (!lanServer) {
-      // 复用同一份 handler：两个监听器共用 bus / runs / store，
-      // 手机连接后看到的是同一份状态，而非副本。
-      lanServer = Bun.serve<SocketData>({ ...handlers, port: 0, hostname: '0.0.0.0' })
-      lanPort = lanServer.port ?? 0
-    }
-    return { port: lanPort }
-  }
-  const disableLan = (): void => {
-    lanServer?.stop(true)
-    lanServer = null
-    lanPort = 0
-  }
-  const lanEnabled = (): boolean => lanServer !== null
+  const origins = cloudOrigins()
+  const cloud = origins
+    ? new CloudAccount(opts.config, origins, { onChange: () => remote.sync() })
+    : null
+  const remote: RemoteAccess = new RemoteAccess({
+    config: opts.config,
+    origins,
+    listener: remoteListener,
+    pairing: () => ({ token: pairing.token, deviceName: pairing.deviceName }),
+    onRevoked: () => cloud?.revoked() ?? Promise.resolve(),
+  })
 
   // handler 单独定义，供两个监听器共用。
   // 只写第一个类型参数：Bun 的签名是 serve<WebSocketData, R extends string>，
@@ -558,10 +576,8 @@ export function serve(opts: ServeOptions) {
             pairing,
             token,
             port: srv.port ?? opts.port,
-            enableLan,
-            disableLan,
-            lanEnabled,
-            lanPort: () => lanPort,
+            cloud,
+            remote,
             // 定时任务的「立即运行」经由此处，与自动触发使用同一个函数。
             // 以注入方式提供而不由 api 模块 import：后者会形成循环依赖（server → api → server）。
             //
@@ -723,6 +739,7 @@ export function serve(opts: ServeOptions) {
     workspace: workspaceRoot,
     streamId: bus.streamId,
   })
+  remote.sync()
 
   // 分支名跟随 `.git/HEAD`，理由与边界见 `git-watch.ts`。
   gitWatch.retarget()
@@ -769,11 +786,7 @@ export function serve(opts: ServeOptions) {
     // 启动横幅应显示实际生效的工作区。调用方传入的值可能为空（未传 --cwd），
     // 此时由 bootstrapWorkspace 决定，只有此处知道结果。
     workspaceRoot,
-    enableLan,
-    disableLan,
-    lanEnabled: () => lanServer !== null,
-    pairingUrl: () => pairing.qrUrl(boundPort),
-    lanUrl: () => `http://${preferredLanAddress()}:${boundPort}`,
+    remote,
     async stop() {
       log.info('server', '停止服务', { port: boundPort })
       scheduler.stop()
@@ -788,7 +801,7 @@ export function serve(opts: ServeOptions) {
       // 子 agent 跟随会话而非 run，关闭服务时需单独停止：否则会留下一批无人接收回执的进程。
       subagents.interruptAll()
       await canvas.stop()
-      disableLan()
+      remote.stop()
       server.stop(true)
       // 插件是子进程，不显式关闭会留下孤儿进程；sidecar 与截图脚本遵循同一约束。
       const ext = await extensionsReady

@@ -1,94 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import type { networkInterfaces } from 'node:os'
-import { decodePairingUrl } from '@qywork/core'
-import { lanCandidates, Pairing, repairMojibake } from './pairing.ts'
-
-type Ifaces = ReturnType<typeof networkInterfaces>
-
-function iface(address: string, netmask: string, mac: string): NonNullable<Ifaces[string]>[number] {
-  return {
-    address,
-    netmask,
-    family: 'IPv4',
-    mac,
-    internal: false,
-    cidr: `${address}/24`,
-  } as NonNullable<Ifaces[string]>[number]
-}
-
-describe('局域网地址选择', () => {
-  /**
-   * 回归用例：数据取自实测机器。
-   *
-   * 该机器同时存在真实网卡、Hyper-V 虚拟交换机与 singbox 的 TUN 隧道。
-   * 按网卡名黑名单选择（同分时由枚举顺序决定）与按默认路由选择（VPN 下默认路由指向 TUN）
-   * 在该环境下都会选错。
-   */
-  test('在 VPN + Hyper-V 环境下选中真实网卡', () => {
-    const ifaces: Ifaces = {
-      singbox_tun: [iface('172.18.0.1', '255.255.255.252', '00:00:00:00:00:00')],
-      'vEthernet (Default Switch)': [iface('192.168.176.1', '255.255.240.0', '00:15:5d:90:fd:7e')],
-      以太网: [iface('192.168.1.26', '255.255.255.0', '10:ff:e0:d5:64:b6')],
-    }
-    const ranked = lanCandidates(ifaces)
-    expect(ranked[0]?.address).toBe('192.168.1.26')
-    // 虚拟网卡仍出现在候选中：自动判断不可靠时用户必须能手动选择。
-    expect(ranked).toHaveLength(3)
-  })
-
-  test('排除 169.254 自动配置地址', () => {
-    const ifaces: Ifaces = {
-      WLAN: [iface('169.254.128.140', '255.255.0.0', 'aa:bb:cc:dd:ee:ff')],
-      eth0: [iface('192.168.1.5', '255.255.255.0', '10:ff:e0:00:00:01')],
-    }
-    const ranked = lanCandidates(ifaces)
-    expect(ranked.map((c) => c.address)).toEqual(['192.168.1.5'])
-  })
-
-  test('同分时按地址排序，结果稳定', () => {
-    const ifaces: Ifaces = {
-      b: [iface('192.168.1.9', '255.255.255.0', '10:ff:e0:00:00:02')],
-      a: [iface('192.168.1.3', '255.255.255.0', '10:ff:e0:00:00:01')],
-    }
-    expect(lanCandidates(ifaces).map((c) => c.address)).toEqual(['192.168.1.3', '192.168.1.9'])
-    // 改变枚举顺序后，结果必须相同。
-    const reversed: Ifaces = { a: ifaces.a, b: ifaces.b }
-    expect(lanCandidates(reversed).map((c) => c.address)).toEqual(['192.168.1.3', '192.168.1.9'])
-  })
-
-  test('Docker 网桥排在真实网卡之后', () => {
-    const ifaces: Ifaces = {
-      docker0: [iface('172.17.0.1', '255.255.0.0', '02:42:ac:11:00:01')],
-      eth0: [iface('10.0.0.7', '255.255.255.0', '3c:22:fb:00:00:01')],
-    }
-    expect(lanCandidates(ifaces)[0]?.address).toBe('10.0.0.7')
-  })
-})
-
-describe('网卡名乱码修复', () => {
-  /**
-   * Windows 上「以太网」经 os.networkInterfaces() 读取后会变为按 Latin-1 误解码的
-   * `ä»¥å¤ªç½`。用户依靠该名称辨认应选择的网卡，名称为乱码时该功能失效。
-   */
-  test('还原被 Latin-1 误解码的中文网卡名', () => {
-    const broken = Buffer.from('以太网', 'utf8').toString('latin1')
-    expect(repairMojibake(broken)).toBe('以太网')
-  })
-
-  test('纯 ASCII 名原样返回', () => {
-    expect(repairMojibake('vEthernet (Default Switch)')).toBe('vEthernet (Default Switch)')
-    expect(repairMojibake('singbox_tun')).toBe('singbox_tun')
-  })
-
-  test('原本正确的中文名不被误改', () => {
-    expect(repairMojibake('以太网')).toBe('以太网')
-  })
-
-  test('无法按 UTF-8 解码时原样返回，不丢弃内容', () => {
-    // 单个 Latin-1 重音字符不是合法 UTF-8 序列，必须原样保留。
-    expect(repairMojibake('Café')).toBe('Café')
-  })
-})
+import { decodePairingUrl, encodePairingUrl } from '@qywork/core'
+import { Pairing } from './pairing.ts'
 
 describe('配对令牌', () => {
   test('令牌可自行校验，错误令牌被拒绝', () => {
@@ -106,9 +18,13 @@ describe('配对令牌', () => {
     expect(p.verify('injected-by-deskto')).toBe(false)
   })
 
-  test('令牌放在 fragment 中，不放入 query（不会被日志与 Referer 捕获）', () => {
+  test('设备页面地址中令牌放在 fragment 中，不放入 query（不会被日志与 Referer 捕获）', () => {
     const p = new Pairing({ deviceName: 'testbox' })
-    const url = p.qrUrl(7717)
+    const url = encodePairingUrl({
+      url: 'https://abc.example.com',
+      token: p.token,
+      deviceName: p.deviceName,
+    })
     const [beforeHash] = url.split('#')
     expect(beforeHash).not.toContain(p.token)
     expect(url).toContain('#')

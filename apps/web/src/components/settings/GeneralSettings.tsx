@@ -307,10 +307,7 @@ export function GeneralSettings() {
         </section>
       </Show>
 
-      <section class="settings-block">
-        <h3 class="settings-block-head">手机接入</h3>
-        <PairPanel />
-      </section>
+      <PairPanel />
 
       <Show when={config()}>
         <ConfigStatus />

@@ -1,41 +1,25 @@
-/** 配对与局域网开关。 */
+/**
+ * 远程访问：开关与隧道状态。
+ *
+ * 二维码编码 console 中本设备的地址（隧道握手时由云端下发），不含令牌：手机扫码后登录同一账号才能打开本设备。
+ */
 
-import { encodePairingUrl } from '@qywork/core'
-import { lanCandidates } from '../pairing.ts'
 import { type ApiHandler, json } from './types.ts'
 
 export const handlePairingApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
 
-  if (p === '/api/pairing/lan' && req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as { enabled?: boolean }
-    if (body.enabled) d.enableLan()
-    else d.disableLan()
-    return json({ enabled: d.lanEnabled() })
+  if (p === '/api/pairing/remote' && req.method === 'POST') {
+    const body = (await req.json().catch(() => null)) as { enabled?: unknown } | null
+    if (typeof body?.enabled !== 'boolean') {
+      return json({ error: 'invalid_payload', message: 'enabled 必须是 true 或 false' }, 400)
+    }
+    const problems = await d.remote.setEnabled(body.enabled)
+    if (problems) return json({ error: 'invalid_config', message: problems.join('；') }, 422)
+    return json(d.remote.snapshot())
   }
 
-  if (p === '/api/pairing') {
-    // 二维码必须指向局域网监听的端口，而不是主端口：主端口只绑定 127.0.0.1，
-    // 手机无法连接。未开启局域网时先给出主端口，界面会提示先打开开关。
-    const reachablePort = d.lanEnabled() ? d.lanPort() : d.port
-    return json({
-      ...d.pairing.payload(reachablePort),
-      qr: d.pairing.qrUrl(reachablePort),
-      lanEnabled: d.lanEnabled(),
-      // 同时返回全部候选地址：自动判断在 VPN 或虚拟网卡环境下不可靠，
-      // 界面必须允许用户换一个地址重新生成二维码。
-      candidates: lanCandidates().map((c) => ({
-        name: c.name,
-        address: c.address,
-        url: `http://${c.address}:${reachablePort}`,
-        qr: encodePairingUrl({
-          url: `http://${c.address}:${reachablePort}`,
-          token: d.token,
-          deviceName: d.pairing.deviceName,
-        }),
-      })),
-    })
-  }
+  if (p === '/api/pairing' && req.method === 'GET') return json(d.remote.snapshot())
 
   return null
 }

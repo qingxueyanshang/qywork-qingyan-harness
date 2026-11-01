@@ -94,10 +94,6 @@
         "@qywork/server": "workspace:*",
         "@qywork/store": "workspace:*",
         "@qywork/tools": "workspace:*",
-        "qrcode": "^1.5.4",
-      },
-      "devDependencies": {
-        "@types/qrcode": "^1.5.6",
       },
     },
     "packages/core": {
