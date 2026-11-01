@@ -244,7 +244,7 @@ function RunRow(props: {
         <Show when={elapsed()}>{(e) => <span class="run-meta">{e()}</span>}</Show>
         <Show when={mark()}>
           {(m) => (
-            <span class="run-mark" classList={{ bad: m().bad }} title={m().text}>
+            <span class="run-mark" classList={{ bad: m().bad }} data-tip={m().text}>
               {m().text}
             </span>
           )}

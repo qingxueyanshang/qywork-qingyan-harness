@@ -1367,7 +1367,7 @@ describe('画布：生成卡与生成面板', () => {
       () => phase.textContent === '已提交',
       () => phase.textContent ?? '',
     )
-    expect(phase.getAttribute('title')).toBe('任务号：submitted-task')
+    expect(phase.getAttribute('data-tip')).toBe('任务号：submitted-task')
     server.setView({
       states: {
         n3: { state: 'running', startedAt: Date.now(), taskId: 'submitted-task', phase: 'running' },
@@ -1726,16 +1726,16 @@ describe('画布：生成卡与生成面板', () => {
       () => !!old(),
       () => document.body.textContent ?? '',
     )
-    expect(old().title).toContain('original-task-id')
-    expect(old().title).toContain('generated/old')
-    expect(old().title).toContain('HTTP 503')
+    expect(old().dataset.tip).toContain('original-task-id')
+    expect(old().dataset.tip).toContain('generated/old')
+    expect(old().dataset.tip).toContain('HTTP 503')
     old().click()
     const get = () => node(host, id).querySelector<HTMLButtonElement>('.canvas-ghost')!
     await waitFor(
       () => !!get(),
       () => node(host, id).textContent ?? '',
     )
-    expect(get().title).toContain('原任务，不重新生成')
+    expect(get().closest<HTMLElement>('[data-tip]')?.dataset.tip).toContain('原任务，不重新生成')
     const notice = () => node(host, id).querySelector('.canvas-task-notice')
     expect(notice()?.textContent).toContain('本次等待已结束')
     expect(notice()?.textContent).toContain('查询异常 HTTP 503')

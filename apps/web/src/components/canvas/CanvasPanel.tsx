@@ -2129,10 +2129,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                       <span />
                       <span />
                     </span>
-                    <span class="phase" title={s().taskId ? `任务号：${s().taskId}` : undefined}>
+                    <span class="phase" data-tip={s().taskId ? `任务号：${s().taskId}` : undefined}>
                       {canvasRunLabel(p.node.output, s())}
                     </span>
-                    <span class="time" title="本次等待用时">
+                    <span class="time" data-tip="本次等待用时">
                       {clock(now() - s().startedAt)}
                     </span>
                   </div>
@@ -2151,19 +2151,23 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
             {(s) => (
               <div class="canvas-media canvas-slot with-task-notice">
                 <div class="canvas-task-progress">
-                  <button
-                    class="canvas-ghost"
-                    type="button"
-                    disabled={st()?.state === 'running'}
-                    title={
+                  {/* 提示设在外层：禁用的按钮不派发指针事件，设在按钮上时禁用期间的原因不显示。 */}
+                  <span
+                    data-tip={
                       st()?.state === 'running'
                         ? '请先暂停当前等待，再取回此任务'
                         : taskInfo(p.node.id, s().version).details
                     }
-                    onClick={() => retrieve(p.node.id, s().version)}
                   >
-                    取回
-                  </button>
+                    <button
+                      class="canvas-ghost"
+                      type="button"
+                      disabled={st()?.state === 'running'}
+                      onClick={() => retrieve(p.node.id, s().version)}
+                    >
+                      取回
+                    </button>
+                  </span>
                 </div>
                 <TaskNotice nodeId={p.node.id} version={s().version} />
               </div>
@@ -2622,7 +2626,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                               type="button"
                               role="menuitemradio"
                               aria-checked={current()}
-                              title={
+                              data-tip={
                                 v.path.endsWith('.task.json')
                                   ? taskInfo(m().nodeId, v.id).details
                                   : v.path

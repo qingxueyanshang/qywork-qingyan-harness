@@ -1179,7 +1179,7 @@ export function GeneratePanel(props: {
       */}
       <Show when={props.view.references?.[props.node.id]?.join('；')}>
         {(text) => (
-          <output class="canvas-check-notice" title={text()}>
+          <output class="canvas-check-notice" data-tip={text()}>
             {text()}
           </output>
         )}
@@ -1187,7 +1187,7 @@ export function GeneratePanel(props: {
       {/* 发送时按所选模型改写的手写素材编号（服务端 `promptRelabels`），只占一行，全文在悬停提示中。 */}
       <Show when={props.view.relabels?.[props.node.id]?.join('、')}>
         {(text) => (
-          <output class="canvas-relabel-notice" title={text()}>
+          <output class="canvas-relabel-notice" data-tip={text()}>
             发送时改写：{text()}
           </output>
         )}
@@ -1270,7 +1270,7 @@ export function GeneratePanel(props: {
             aria-label={stopping() ? '正在请求停止' : '停止'}
             aria-busy={stopping()}
             aria-describedby={stopping() || stopNotice() ? `canvas-stop-${nodeId}` : undefined}
-            title={stopNotice() ?? '暂停等待；支持取消时撤销任务'}
+            data-tip={stopNotice() ?? '暂停等待；支持取消时撤销任务'}
             disabled={stopping()}
             onClick={() => void stop()}
           >
