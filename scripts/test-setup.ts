@@ -17,8 +17,10 @@
  * 测试需要 Bun 原生的 `fetch`：安装为全局后，一百多个测试立即失败。需要 DOM 的测试自行调用
  * `GlobalRegistrator.register()`，用完后卸载（样例见 `LoadState.test.tsx`）。
  */
+import { afterAll } from 'bun:test'
 import { mkdirSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
+import { Worker } from 'node:worker_threads'
 import { transformSync } from '@babel/core'
 import presetTypeScript from '@babel/preset-typescript'
 import presetSolid from 'babel-preset-solid'
@@ -42,6 +44,21 @@ process.env.GIT_CEILING_DIRECTORIES = testTemp
  */
 process.env.QYWORK_HOME = join(testTemp, `home-${process.pid}`)
 mkdirSync(process.env.QYWORK_HOME, { recursive: true })
+
+/*
+ * 内存上限（`test-memory-cap.ts`）：同步死循环中持续分配内存的用例不受 `--timeout` 约束，
+ * 没有上限时会耗尽整机内存。上限取 4 GB：全量测试中单个进程的峰值约 0.9 GB（2026-11-01 实测）。
+ * 每个文件启动一个并在文件结束时关闭：`--isolate` 在文件之间重置全局对象与环境变量，
+ * 无法按进程只启动一个。`QYWORK_TEST_MEMORY_LIMIT_MB` 只供该机制的回归测试设置较小的值。
+ */
+const memoryCap = new Worker(new URL('./test-memory-cap.ts', import.meta.url), {
+  workerData: {
+    file: relative(root, Bun.main).replaceAll('\\', '/'),
+    limitMb: Number(process.env.QYWORK_TEST_MEMORY_LIMIT_MB ?? 4096),
+  },
+})
+memoryCap.unref()
+afterAll(() => memoryCap.terminate())
 
 plugin({
   name: 'solid-jsx',
