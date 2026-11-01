@@ -1,10 +1,10 @@
 /**
- * 覆盖 `canvas/Flow.tsx` 的纯函数：连线曲线（`curveOf` / `pathOf`）与流动虚线的顶点（`flowMesh`）。
+ * 覆盖 `canvas/Flow.tsx` 的纯函数：连线曲线（`curveOf` / `pathOf`）、流动虚线的顶点（`flowMesh`）与流动位移（`advanceFlow`）。
  * WebGL 绘制与推进由 `CanvasPanel.test.tsx` 以替身上下文验证，画面在桌面外壳中实测。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { curveOf, flowMesh, pathOf } from './Flow.tsx'
+import { advanceFlow, curveOf, flowMesh, pathOf } from './Flow.tsx'
 
 const STRIDE = 7
 
@@ -77,5 +77,27 @@ describe('流动虚线的顶点', () => {
     const { vertices, indices } = flowMesh([], 1)
     expect(vertices.length).toBe(0)
     expect(indices.length).toBe(0)
+  })
+})
+
+describe('流动位移', () => {
+  test('流速按屏幕像素计：缩放 32% 时每秒的画布位移是 100% 时的 1/0.32 倍', () => {
+    // 不取模的区间内比较：100% 时 0.5 秒位移 5，32% 时 0.16 秒位移同为 5 个画布单位。
+    expect(advanceFlow(0, 500, 1)).toBeCloseTo(-5)
+    expect(advanceFlow(0, 160, 0.32)).toBeCloseTo(-5)
+  })
+
+  test('位移对虚线周期取模，连续推进时相位连续', () => {
+    let flow = 0
+    for (let i = 0; i < 240; i++) {
+      const next = advanceFlow(flow, 1000 / 24, 0.32)
+      expect(next).toBeGreaterThan(-8)
+      expect(next).toBeLessThanOrEqual(0)
+      // 相邻两次相差一个步长，或跨过周期边界时相差步长减去一个周期。
+      const step = (1000 / 24 / 1000) * (10 / 0.32)
+      const d = flow - next
+      expect(Math.min(Math.abs(d - step), Math.abs(d - step + 8))).toBeLessThan(1e-9)
+      flow = next
+    }
   })
 })
