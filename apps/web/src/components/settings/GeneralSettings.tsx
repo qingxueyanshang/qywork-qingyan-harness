@@ -21,6 +21,7 @@ import {
 } from '../../lib/store/index.ts'
 import { DEFAULT_PET } from '../appearance/pet-default.ts'
 import PairPanel from '../PairPanel.tsx'
+import { AccountSection } from './AccountSection.tsx'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import {
   config,
@@ -164,6 +165,7 @@ export function GeneralSettings() {
       <Show when={skinOpen()}>
         <SkinDialog onClose={() => setSkinOpen(false)} />
       </Show>
+      <AccountSection />
       <section class="settings-block">
         <h3 class="settings-block-head">偏好</h3>
         <div class="setting-rows">

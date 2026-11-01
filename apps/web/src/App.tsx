@@ -29,6 +29,7 @@ const SettingsDialog = lazy(() =>
 )
 
 import { IconCheck, IconChevron, IconDownload, IconPanel } from './components/Icons.tsx'
+import { LoginGate } from './components/LoginGate.tsx'
 import { WindowControls } from './components/WindowControls.tsx'
 import {
   client,
@@ -350,6 +351,7 @@ export function App() {
           <SettingsDialog />
         </Suspense>
       </Show>
+      <LoginGate />
     </div>
   )
 }
