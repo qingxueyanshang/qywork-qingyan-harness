@@ -59,6 +59,36 @@ export const [exportRequests, setExportRequests] = createSignal<
   readonly { path: string; nodeId: string }[]
 >([])
 
+/**
+ * 最近一次皮肤库变更（`skins.changed`）。皮肤模块监听它重新读取，见 `appearance/skins.ts`。
+ *
+ * 以信号交出而不是在此处直接重新读取：读取需要皮肤模块的选择与列表状态，
+ * 由本模块调用它会形成 connection 与皮肤模块之间的引用环。`seq` 使同一皮肤的连续两次变更都触发监听。
+ */
+export const [skinsChange, setSkinsChange] = createSignal<{
+  id: string
+  removed: boolean
+  seq: number
+} | null>(null)
+
+/**
+ * 当前会话中 `skin` 工具最近一次成功的 `apply`：`id` 为 null 表示取消皮肤。
+ * 皮肤模块监听它执行切换，理由同 `skinsChange`；`seq` 逐次加一，使连续两次切换到同一皮肤都生效。
+ */
+export const [skinApply, setSkinApply] = createSignal<{ id: string | null; seq: number } | null>(
+  null,
+)
+
+/** 最近一次宠物库变更（`pets.changed`），理由同 `skinsChange`。 */
+export const [petsChange, setPetsChange] = createSignal<{
+  id: string
+  removed: boolean
+  seq: number
+} | null>(null)
+
+/** 当前会话中 `pet` 工具最近一次成功的 `apply`：`id` 为 null 表示切回内置宠物。理由同 `skinApply`。 */
+export const [petApply, setPetApply] = createSignal<{ id: string | null; seq: number } | null>(null)
+
 export const client = new QyClient({
   onState: (s, detail) => setState({ connection: s, connectionDetail: detail ?? '' }),
   onCapabilities: (caps) => setState('capabilities', caps),
@@ -337,6 +367,15 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     setState('desktopTargets', ev.targets)
     return
   }
+  // 皮肤库是本机级数据，不属于任何会话或项目，同样在归属判定之前处理。
+  if (ev.type === 'skins.changed') {
+    setSkinsChange({ id: ev.id, removed: ev.removed, seq: frame.seq })
+    return
+  }
+  if (ev.type === 'pets.changed') {
+    setPetsChange({ id: ev.id, removed: ev.removed, seq: frame.seq })
+    return
+  }
 
   /*
    * 画布卡片的运行状态：工作区级事件，与 `git.state` 相同，丢弃其他项目的事件。
@@ -562,6 +601,19 @@ function foldContent(cid: string, ev: AgentEvent): void {
         typeof ev.outcome.data?.path === 'string'
       )
         openFileInPanel(ev.outcome.data.path)
+      // 切换皮肤与宠物同理只响应当前会话：`applied` 只出现在 apply 的成功结果中，save 与 read 不带该字段。
+      if (
+        ev.status === 'success' &&
+        cid === state.activeConversation &&
+        ev.outcome.data !== undefined &&
+        'applied' in ev.outcome.data
+      ) {
+        const tool = state.views[cid]?.transcript.find((item) => item.id === ev.stepId)?.toolName
+        const applied = ev.outcome.data.applied
+        const id = typeof applied === 'string' ? applied : null
+        if (tool === 'skin') setSkinApply((prev) => ({ id, seq: (prev?.seq ?? 0) + 1 }))
+        if (tool === 'pet') setPetApply((prev) => ({ id, seq: (prev?.seq ?? 0) + 1 }))
+      }
       setState(
         produce((s) => {
           const v = s.views[cid]

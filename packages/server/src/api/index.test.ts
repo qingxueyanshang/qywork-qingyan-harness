@@ -1818,6 +1818,27 @@ describe('会话历史分页接口', () => {
   })
 })
 
+describe('读取单条会话', () => {
+  test('返回会话与所属项目，不存在时 404', async () => {
+    const d = deps('/ws/pet')
+    const conv = createConversation(d.store, {
+      workspaceId: d.wsId as never,
+      provider: 'p',
+      model: 'm',
+      title: '别处的会话',
+    })
+    const res = await call(`/api/conversations/${conv.id}`, undefined, d)
+    expect(res?.status).toBe(200)
+    const body = (await res?.json()) as {
+      conversation: { id: string; title: string }
+      workspace: { id: string; name: string }
+    }
+    expect(body.conversation).toMatchObject({ id: conv.id, title: '别处的会话' })
+    expect(body.workspace).toMatchObject({ id: d.wsId, name: 'pet' })
+    expect((await call('/api/conversations/cv_none', undefined, d))?.status).toBe(404)
+  })
+})
+
 describe('会话诊断导出接口', () => {
   test('只导出路径中指定的会话，并以 JSON 附件返回', async () => {
     const d = deps()
@@ -2108,11 +2129,13 @@ describe('会话的重命名 / 归档 / 删除', () => {
     expect(res?.status).toBe(404)
   })
 
-  /* 同一路径的 GET 不由这些路由处理：方法参与匹配，否则读请求会命中写操作的分支。 */
-  test('GET /api/conversations/:id 不由任何模块处理', async () => {
+  /* 方法参与匹配：同一路径的 GET 只读取，不能进入改名或删除的分支。 */
+  test('GET /api/conversations/:id 只读取，不修改也不删除', async () => {
     const d = deps()
     const c = conv(d)
-    expect(await call(`/api/conversations/${c.id}`, undefined, d)).toBe(null)
+    const res = await call(`/api/conversations/${c.id}`, undefined, d)
+    expect(res?.status).toBe(200)
+    expect(getConversation(d.store, c.id)?.title).toBe(c.title)
   })
 })
 

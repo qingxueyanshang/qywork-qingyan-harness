@@ -6,6 +6,32 @@
  * `Session`。下游只应看到装配结果，不应依赖装配过程。
  */
 
+// 宠物库：server 的宠物接口与会话里的 pet 工具共用同一份读写与校验
+export {
+  deletePet,
+  listPets,
+  PET_IMAGE_MAX_BYTES,
+  type PetImage,
+  type PetList,
+  type PetSaveResult,
+  petImagePath,
+  petsDir,
+  readPet,
+  savePet,
+} from './appearance/pets.ts'
+// 皮肤库：server 的皮肤接口与会话里的 skin 工具共用同一份读写与校验
+export {
+  deleteSkin,
+  listSkins,
+  readSkin,
+  SKIN_IMAGE_MAX_BYTES,
+  type SkinImage,
+  type SkinList,
+  type SkinSaveResult,
+  saveSkin,
+  skinImagePath,
+  skinsDir,
+} from './appearance/skins.ts'
 // 会话导出：`qy export`
 export { exportConversation, exportConversationDiagnostics } from './archive.ts'
 // Art 页面可用的 three.js 附加模块：sidecar 按同一份清单提供库文件

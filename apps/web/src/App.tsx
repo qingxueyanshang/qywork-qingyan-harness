@@ -8,6 +8,7 @@ import {
   Show,
   Suspense,
 } from 'solid-js'
+import { SkinBackdrop } from './components/appearance/SkinBackdrop.tsx'
 import { Composer } from './components/Composer.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
@@ -33,6 +34,8 @@ import {
   exportActiveConversation,
   loadConversations,
   loadWorkspace,
+  observePet,
+  observeSkins,
   openFileInPanel,
   openLinkInPanel,
   PANEL_MIN,
@@ -186,6 +189,8 @@ export function App() {
     client.connect()
     const stopUpdates = observeAppUpdate()
     onCleanup(stopUpdates)
+    onCleanup(observeSkins())
+    onCleanup(observePet())
 
     /*
      * 空闲时预先加载面板模块的代码。
@@ -222,6 +227,7 @@ export function App() {
         copyCode(e)
       }}
     >
+      <SkinBackdrop />
       <Show when={state.connection !== 'ready'}>
         <div class="conn-bar" classList={{ bad: state.connection === 'unauthorized' }}>
           {connLabel()}

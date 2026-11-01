@@ -35,7 +35,7 @@
    */
   grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
-  background: var(--bg-sunken);
+  background: var(--frame-bg);
 }
 /*
  * 打开右侧面板时增加一列。
@@ -89,11 +89,12 @@
 
 /* ── 侧栏 ── */
 /* 跨两行：侧栏头部位于标题栏所在行，与顶栏连成一条横栏。
-   不设右边框：该分隔线由内容区的左边框提供，两条同时存在时会在圆角处露出一段直角。 */
+   不设右边框：该分隔线由内容区的左边框提供，两条同时存在时会在圆角处露出一段直角。
+   宽屏不设底色，透出 `.app` 的外框底色：两层都设 `--frame-bg` 时，皮肤的半透明底色在侧栏处
+   叠加两次，侧栏比顶栏更不透明。窄屏抽屉覆盖在会话区之上，底色在 utility.css 中单独设置。 */
 .sidebar-slot {
   grid-column: 1;
   grid-row: 1 / -1;
-  background: var(--bg-sunken);
   min-width: 0;
 }
 
@@ -654,7 +655,7 @@
   flex-direction: column;
   min-width: 0;
   height: 100%;
-  background: var(--bg-app);
+  background: var(--content-bg);
   border-top: 1px solid var(--border-subtle);
   border-left: 1px solid var(--border-subtle);
   border-top-left-radius: var(--r-xl);

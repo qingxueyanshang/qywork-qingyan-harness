@@ -5,9 +5,6 @@ import {
   type FollowUpMode,
   followUpMode,
   setFollowUpMode,
-  setTheme,
-  type ThemePref,
-  theme,
   workspace,
 } from '../../lib/store/index.ts'
 import PairPanel from '../PairPanel.tsx'
@@ -24,12 +21,6 @@ import { environment, environmentError, reloadEnvironment } from './environmentS
 import { LoadState } from './LoadState.tsx'
 import { PathRow, Row } from './Row.tsx'
 import { UpdateSettings } from './UpdateSettings.tsx'
-
-const THEMES: { id: ThemePref; label: string }[] = [
-  { id: 'system', label: '跟随系统' },
-  { id: 'light', label: '浅色' },
-  { id: 'dark', label: '深色' },
-]
 
 const FOLLOWUP_MODES: { id: FollowUpMode; label: string }[] = [
   { id: 'queue', label: '加入队列' },
@@ -127,14 +118,13 @@ function EnvironmentRows() {
  * 通用。
  *
  * 本页最容易变成无法归类内容的集合。归入本页的判据是
- * 修改的对象是应用本身，而不是 agent 的某个模块：外观、本机是否缺少依赖、
+ * 修改的对象是应用本身，而不是 agent 的某个模块：本机是否缺少依赖、
  * 配置和会话的存储位置、其他设备如何接入。
  *
- * 手机接入按此判据归入本页：它涉及应用的访问方式，与主题、安装位置同类，
+ * 手机接入按此判据归入本页：它涉及应用的访问方式，与安装位置同类，
  * 而不是 agent 的一项能力；后者全部位于「模块」页。
  *
- * 模型和命令边界各自独立成页：它们条目多，每次修改都需要阅读说明，放在本页会使
- * 上述各项被淹没。
+ * 外观、模型和命令边界各自独立成页：它们条目多，放在本页会使上述各项被淹没。
  */
 export function GeneralSettings() {
   ensureConfig()
@@ -145,24 +135,6 @@ export function GeneralSettings() {
       <section class="settings-block">
         <h3 class="settings-block-head">偏好</h3>
         <div class="setting-rows">
-          {/* 使用三态而不是深色开关：开关关闭后，系统切换为深色时应用是否跟随，
-              界面上无法区分。`system` 必须单独作为一项。 */}
-          <Row label="主题">
-            <div class="seg">
-              <For each={THEMES}>
-                {(t) => (
-                  <button
-                    class="seg-item"
-                    classList={{ active: theme() === t.id }}
-                    type="button"
-                    onClick={() => setTheme(t.id)}
-                  >
-                    {t.label}
-                  </button>
-                )}
-              </For>
-            </div>
-          </Row>
           {/* 会话运行中发出的消息默认采用的处理方式。
               放在设置中而不是输入框旁：它很少修改；若常驻主界面，run 每次启动和停止
               都会增减一个控件，相邻的主按钮随之移位。单条消息需要使用另一种方式时按
