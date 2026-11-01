@@ -122,4 +122,17 @@ describe('插件清单校验', () => {
     const bad = { ...base, contributes: { previewers: [{ extensions: [], renders: 'text' }] } }
     expect(() => parseManifest(bad, 'p')).toThrow(/扩展名/)
   })
+
+  test('工作台：合法声明通过；id、名称、入口路径不合法或 id 重复时拒绝', () => {
+    const panel = { id: 'board', title: '看板', entry: 'ui/index.html' }
+    const withPanels = (panels: unknown[]) => ({ ...base, contributes: { panels } })
+    expect(parseManifest(withPanels([panel]), 'p').contributes.panels).toEqual([panel])
+    expect(() => parseManifest(withPanels([{ ...panel, id: 'A B' }]), 'p')).toThrow(/工作台 id/)
+    expect(() => parseManifest(withPanels([{ ...panel, title: '' }]), 'p')).toThrow(/title/)
+    expect(() => parseManifest(withPanels([panel, panel]), 'p')).toThrow(/重复/)
+    const bad = ['../x.html', '/abs.html', 'ui\\x.html', 'ui/x.js', 'C:/x.html', 'a//b.html']
+    for (const entry of bad) {
+      expect(() => parseManifest(withPanels([{ ...panel, entry }]), 'p')).toThrow(/entry/)
+    }
+  })
 })

@@ -149,7 +149,47 @@ PATH 中没有 node 或版本低于 20 时，插件加载失败并说明原因�
 的角色表里、也不会被模型工厂认出来。写了不报错，只是没有效果。
 
 保留这三条通道是有意的（它们是面向插件作者的契约，删掉等于毁约），但在接上消费端之前
-**不要指望它们工作**。只有 `tools` 是端到端通的。
+**不要指望它们工作**。端到端可用的只有 `tools` 与 `panels`（见下节「工作台」）。
+
+## 工作台
+
+`contributes.panels` 声明插件提供的网页。安装后它列在右侧面板「新开预览」看板中终端、
+浏览器、无限画布之后，点击即新开一页；模型可用 `open_in_panel` 的 `workbench` 参数
+（「插件 id/工作台 id」）打开它。
+
+```json
+"contributes": {
+  "tools": [{ "name": "load", "description": "读取看板数据", "parameters": { "type": "object", "properties": {} }, "permissionEffect": "read" }],
+  "panels": [{ "id": "board", "title": "任务看板", "entry": "ui/index.html" }]
+}
+```
+
+- `id`：1～32 位小写字母、数字、横线或下划线，插件内唯一。`title`：1～20 个字符。
+- `entry`：插件目录内的相对路径，以 `.html` 结尾。安装时校验该文件存在。
+- 页面文件由服务端从已安装的插件目录直接提供，不经插件进程，安装后即可打开。
+
+页面在沙箱 iframe 中运行（`allow-scripts allow-forms allow-popups allow-modals allow-downloads`，
+不含 `allow-same-origin`）。页面的源是不透明源，因此无法使用 `localStorage`、cookie，也无法直接请求
+qywork 的接口；需要保存的数据经本插件的工具写入。
+
+页面经桥接调用界面：
+
+```js
+parent.postMessage({ type: 'qywork', id, method, params }, '*')
+// 回复以 message 事件到达：{ type: 'qywork', id, ok: true, result } 或 { type: 'qywork', id, ok: false, error }
+```
+
+| method | params | 作用 |
+|---|---|---|
+| `tool.call` | `{ tool, args }` | 调用本插件 `contributes.tools` 中的工具，`result` 是工具返回值（形状同模型调用） |
+| `panel.open` | `{ path }` | 在右侧面板打开工作区中的文件 |
+| `composer.insert` | `{ text }` | 把文字放入输入框，由用户决定是否发送 |
+
+`tool.call` 与模型调用使用同一个插件进程，插件经 `host.*` 使用宿主能力时经过同一套权限检查；
+调用由用户在页面上的操作发起，不再经过模型调用时的权限审批。
+
+服务端对启动时打开的项目常驻持有扩展，插件安装后其工具最迟在 qywork 重启后加载；
+加载之前 `tool.call` 返回「插件的工具尚未加载，重启 qywork 后可用」，页面本身不受影响。
 
 ---
 

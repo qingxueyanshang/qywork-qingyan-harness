@@ -37,6 +37,7 @@ export interface PluginManifest {
     previewers?: PreviewerContribution[]
     roles?: RoleContribution[]
     providers?: ProviderContribution[]
+    panels?: PanelContribution[]
   }
 }
 
@@ -65,6 +66,21 @@ export interface ToolContribution {
   description: string
   parameters: Record<string, unknown>
   permissionEffect: 'read' | 'write' | 'delete' | 'execute' | 'network'
+}
+
+/**
+ * 工作台：插件提供的网页，列在右侧面板的「新开预览」看板中，打开后在沙箱 iframe 中运行。
+ *
+ * 页面文件由服务端从已安装的插件目录直接提供，不经插件进程；页面需要后端逻辑时调用
+ * 本插件声明的工具（经界面的桥接，与模型调用同一条路径、同一套权限）。
+ */
+export interface PanelContribution {
+  /** 插件内唯一。 */
+  id: string
+  /** 看板与页签上显示的名称。 */
+  title: string
+  /** 入口页面，插件目录内的相对路径，`.html` 结尾。 */
+  entry: string
 }
 
 export interface PreviewerContribution {
@@ -181,6 +197,21 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
     }
   }
 
+  const panelIds = new Set<string>()
+  for (const panel of contributes.panels ?? []) {
+    if (typeof panel.id !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(panel.id)) {
+      return fail('工作台 id 必须是 1~32 位小写字母、数字、横线或下划线')
+    }
+    if (panelIds.has(panel.id)) return fail(`工作台 id 重复：${panel.id}`)
+    panelIds.add(panel.id)
+    if (typeof panel.title !== 'string' || !panel.title.trim() || panel.title.length > 20) {
+      return fail(`工作台 ${panel.id} 的 title 必须是 1~20 个字符`)
+    }
+    if (!isPanelEntry(panel.entry)) {
+      return fail(`工作台 ${panel.id} 的 entry 必须是插件目录内的相对路径，以 .html 结尾`)
+    }
+  }
+
   for (const p of contributes.previewers ?? []) {
     if (p.renders === 'custom' && !p.render) {
       return fail('自定义渲染器必须提供 render 导出名')
@@ -202,6 +233,13 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
     permissions: permissions as PluginPermission[],
     contributes,
   }
+}
+
+/** 工作台入口：相对路径，各段非空且不是 `.` / `..`，不含反斜杠，以 `.html` 结尾。 */
+export function isPanelEntry(entry: unknown): entry is string {
+  if (typeof entry !== 'string' || !entry.toLowerCase().endsWith('.html')) return false
+  if (entry.includes('\\') || entry.startsWith('/') || /^[a-zA-Z]:/.test(entry)) return false
+  return entry.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..')
 }
 
 const KNOWN_EFFECTS: ToolContribution['permissionEffect'][] = [

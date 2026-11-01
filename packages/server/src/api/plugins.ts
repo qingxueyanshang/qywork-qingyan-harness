@@ -19,6 +19,7 @@ import { cp, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import type { PluginRegistry } from '@qywork/plugins'
 import { globalPluginsDir, pluginToolPrefix } from '@qywork/runtime'
+import { listWorkbenches } from '../plugin-ui.ts'
 import { type ApiHandler, json } from './types.ts'
 
 export interface PluginRow {
@@ -79,6 +80,12 @@ export async function readPluginDir(src: string): Promise<{
   try {
     const { parseManifest } = await import('@qywork/plugins')
     const m = parseManifest(JSON.parse(raw), manifestPath)
+    // 工作台的入口文件必须在目录中：缺少时安装后看板上没有该工作台，且没有任何提示。
+    for (const panel of m.contributes.panels ?? []) {
+      if (!(await stat(join(src, panel.entry)).catch(() => null))?.isFile()) {
+        return { ok: false, error: `工作台 ${panel.id} 的入口文件不存在：${panel.entry}` }
+      }
+    }
     return {
       ok: true,
       id: m.id,
@@ -127,7 +134,65 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
         dir: globalPluginsDir(),
         plugins: pluginRows(ext.plugins),
         failures: ext.plugins.failures.map((f) => ({ dir: f.dir, reason: f.reason })),
+        // 工作台从磁盘读取，不取自扩展缓存：刚安装的插件在缓存重新加载之前就能打开页面。
+        workbenches: await listWorkbenches(d.pluginUiKey),
       })
+    } finally {
+      await releaseExtensions(ext)
+    }
+  }
+
+  /*
+   * 工作台页面调用本插件声明的工具（经界面的桥接，见 `WorkbenchPanel`）。
+   *
+   * 与模型调用使用同一个插件进程（扩展缓存中的 `PluginHost`），插件经 `host.*` 使用宿主能力时
+   * 经过同一套权限检查。调用由用户在页面上的操作发起，因此不再经过模型调用时的权限审批。
+   * 调用身份中没有会话与轮次：宿主能力的路径裁决只依据插件 id 与项目根目录。
+   *
+   * 扩展缓存对启动项目常驻，插件安装后要到下次启动才加载其工具；此时返回 409 并写明原因，
+   * 页面本身不受影响（页面文件不经扩展缓存，见 `plugin-ui.ts`）。
+   */
+  const call = /^\/api\/plugins\/([^/]+)\/call$/.exec(p)
+  if (call && req.method === 'POST') {
+    const id = decodeURIComponent(call[1] as string)
+    const body = (await req.json().catch(() => null)) as { tool?: unknown; args?: unknown } | null
+    const tool = typeof body?.tool === 'string' ? body.tool : ''
+    const args = body?.args ?? {}
+    if (!tool) return json({ error: '缺少 tool' }, 422)
+    if (typeof args !== 'object' || args === null || Array.isArray(args)) {
+      return json({ error: 'args 必须是对象' }, 422)
+    }
+    const { CALL_TIMEOUT_MS, normalizeOutcome } = await import('@qywork/plugins')
+    const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
+    const ext = await acquireExtensions(d.workspaceRoot)
+    try {
+      const plugin = ext.plugins.plugins.find((pl) => pl.manifest.id === id)
+      if (!plugin) {
+        const installed = (await stat(join(globalPluginsDir(), id)).catch(() => null)) !== null
+        return installed
+          ? json({ error: '插件的工具尚未加载，重启 qywork 后可用' }, 409)
+          : json({ error: `插件不存在：${id}` }, 404)
+      }
+      if (!plugin.host || !plugin.manifest.contributes.tools?.some((t) => t.name === tool)) {
+        return json({ error: `插件 ${id} 没有声明工具 ${tool}` }, 404)
+      }
+      try {
+        const result = await plugin.host.call(tool, args as Record<string, unknown>, {
+          pluginId: id,
+          workspaceRoot: d.workspaceRoot,
+          conversationId: '',
+          runId: '',
+          signal: req.signal,
+          deadline: Date.now() + CALL_TIMEOUT_MS,
+        })
+        return json(normalizeOutcome(result, tool))
+      } catch (err) {
+        return json({
+          status: 'failure',
+          executed: true,
+          message: `插件工具 ${tool} 执行失败：${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
     } finally {
       await releaseExtensions(ext)
     }

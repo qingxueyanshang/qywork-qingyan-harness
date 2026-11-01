@@ -64,6 +64,8 @@ export interface ApiDeps {
   closeBrowserPages(conversationId: ConversationId): Promise<void>
   /** Office 执行程序的宿主。「运行环境」中 Python 与文档库两行读取它的探测结果。 */
   office?: OfficeHost
+  /** 工作台页面地址中的随机段（`plugin-ui.ts`）。`/api/plugins` 据此生成页面地址。 */
+  pluginUiKey: string
 }
 
 /**

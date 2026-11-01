@@ -438,6 +438,21 @@
   width: 100%;
   border: none;
 }
+/* 工作台页：插件页面占满整页。页面的底色由页面自己决定，不透出皮肤背景：
+   页面是内容区，皮肤只作用于界面骨架。 */
+.workbench-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-app);
+}
+.workbench-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: none;
+}
 /* 内置浏览器的占位容器。网页是窗口的原生子视图，由宿主按该区域的矩形定位，
    因此此处不绘制底色与边框：绘制后会在子视图移开的瞬间闪烁。 */
 .web-view {
