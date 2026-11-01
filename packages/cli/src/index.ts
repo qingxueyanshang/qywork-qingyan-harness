@@ -48,6 +48,7 @@ import {
 import { runDoctor } from './doctor.ts'
 import { runExport } from './export.ts'
 import { runInit } from './init.ts'
+import { runLogin, runLogout } from './login.ts'
 import { runMcp } from './mcp.ts'
 import { runPlugins } from './plugins.ts'
 import { runProbe } from './probe.ts'
@@ -61,6 +62,9 @@ const USAGE = `qy —— qywork 编码 agent
 
   qy init                 生成配置（首次使用时先执行此命令）
     --force               覆盖已有配置
+
+  qy login                登录 qywork 账号（在浏览器中确认登录码），之后可使用内置模型
+  qy logout               退出登录并移除本设备
 
   qy exec "<任务>"        在当前目录执行一次任务
     --cwd <路径>          指定工作区（默认当前目录）
@@ -126,6 +130,8 @@ async function main(argv: string[]): Promise<number> {
     return 0
   }
   if (cmd === 'init') return runInit(rest)
+  if (cmd === 'login') return runLogin()
+  if (cmd === 'logout') return runLogout()
   if (cmd === 'config') {
     const cfg = await loadConfig()
     process.stdout.write(`配置文件：${configPath()}\n账本：${dataPath()}\n\n`)

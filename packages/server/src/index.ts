@@ -5,6 +5,9 @@
  * 实现，导出它们等于声明它们可以被单独复用。
  */
 
+// 云端账号：CLI 的 `qy login` / `qy logout` 与桌面端账号区块使用同一个账号对象
+export { CloudAccount, type CloudState } from './cloud/account.ts'
+export { cloudOrigins } from './cloud/origins.ts'
 // 网页构建产物的两种来源：CLI 的 `qy serve` 按 `--static` 或编译时嵌入的内容选择其一，传给 serve
 export { directoryAssets, embeddedAssets } from './http-util.ts'
 // 当前平台的系统电源接口；CLI 的 `qy serve` 创建后传给 serve
