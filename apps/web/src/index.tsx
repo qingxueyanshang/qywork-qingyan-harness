@@ -1,6 +1,7 @@
 import { render } from 'solid-js/web'
 import './styles/tokens.css'
 import './styles/base.css'
+import './styles/icons.css'
 import './styles/app.css'
 import { App } from './App.tsx'
 import { initTheme } from './lib/store/index.ts'

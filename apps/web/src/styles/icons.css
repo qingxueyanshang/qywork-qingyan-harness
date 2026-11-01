@@ -1,0 +1,13 @@
+/*
+ * 图标自带的动画。主界面与桌面宠物的页面都加载本文件：`Icons.tsx` 的 `IconSpinner` 依赖它，
+ * 只写在主界面的样式中时，宠物页面中的加载图标不转动。
+ */
+
+.icon-spin {
+  animation: spin 900ms linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
