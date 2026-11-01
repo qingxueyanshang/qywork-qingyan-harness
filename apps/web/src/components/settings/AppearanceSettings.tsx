@@ -11,6 +11,7 @@ import {
   createSkin,
   editChosenSkin,
   effectiveTheme,
+  isDesktopShell,
   type PetPlace,
   paintedSkin,
   petLibrary,
@@ -47,8 +48,10 @@ const FITS: { id: SkinImageFit; label: string }[] = [
   { id: 'tile', label: '平铺' },
 ]
 
+/** 「桌面」只在桌面外壳中提供：其他端没有可承载宠物的透明窗口（B5）。 */
 const PET_PLACES: { id: PetPlace; label: string }[] = [
   { id: 'app', label: '窗口内' },
+  ...(isDesktopShell() ? [{ id: 'desktop' as const, label: '桌面' }] : []),
   { id: 'hidden', label: '隐藏' },
 ]
 

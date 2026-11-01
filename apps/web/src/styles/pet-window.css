@@ -1,0 +1,243 @@
+/*
+ * 桌面宠物窗口（`pet.html`）的样式。只与 `tokens.css` 一起加载，不加载主界面的样式。
+ *
+ * 页面底色必须透明：外壳的窗口是透明的，任何不透明底色都会在宠物四周显示为方块。
+ * 宠物固定在左下角：外壳调整窗口尺寸时以左下角为基准，宠物在屏幕上的位置不变。
+ */
+
+html,
+body,
+#pet-root {
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  user-select: none;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+button {
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+
+.petw {
+  position: relative;
+  height: 100%;
+}
+
+.petw-pet {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+}
+
+.petw-badge {
+  position: absolute;
+  top: 6px;
+  right: 2px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  color: var(--text-inverted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* 精灵与动作，与主界面 `appearance.css` 中的同名规则一致。宠物窗口不加载主界面样式，因此单独定义。 */
+.pet-sprite {
+  display: block;
+  pointer-events: none;
+  transform-origin: 50% 90%;
+}
+.pet-motion-idle {
+  animation: pet-breathe 3.2s ease-in-out infinite;
+}
+.pet-motion-working {
+  animation: pet-bounce 0.9s ease-in-out infinite;
+}
+.pet-motion-desktop {
+  animation: pet-breathe 1.4s ease-in-out infinite;
+}
+.pet-motion-done {
+  animation: pet-hop 1.6s ease-in-out infinite;
+}
+.pet-motion-failed {
+  animation: pet-sway 2.4s ease-in-out infinite;
+}
+.pet-sprite.paused {
+  animation-play-state: paused;
+}
+
+@keyframes pet-breathe {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  50% {
+    transform: scale(1.03, 0.97);
+  }
+}
+@keyframes pet-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+@keyframes pet-hop {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+  20% {
+    transform: translateY(-8px) scale(0.97, 1.03);
+  }
+  40% {
+    transform: translateY(0) scale(1.04, 0.96);
+  }
+}
+@keyframes pet-sway {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-4deg);
+  }
+  75% {
+    transform: rotate(4deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-sprite {
+    animation: none;
+  }
+}
+
+/* 气泡：位于宠物上方。完整规则，不与列表共用选择器（B8）。 */
+.petw-bubble {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% - 236px);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 6px var(--s-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  text-align: left;
+}
+.petw-bubble-state {
+  flex: none;
+  color: var(--success);
+}
+.petw-bubble-state.failed {
+  color: var(--danger);
+}
+
+/* 列表：占满宠物上方的区域，高度固定，内容过多时在框内滚动（B9）。完整规则，不与气泡共用选择器。 */
+.petw-menu {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  height: 220px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+}
+.petw-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.petw-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.petw-row-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--s-2);
+  border-radius: var(--r-xs);
+  text-align: left;
+}
+.petw-row-main:hover,
+.petw-item:hover,
+.petw-stop:hover {
+  background: var(--bg-hover);
+}
+.petw-row-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+}
+.petw-row-icon.done {
+  color: var(--success);
+}
+.petw-row-icon.failed {
+  color: var(--danger);
+}
+.petw-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.petw-stop {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-xs);
+}
+.petw-split {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border-subtle);
+}
+.petw-item {
+  height: 28px;
+  padding: 0 var(--s-2);
+  border-radius: var(--r-xs);
+  text-align: left;
+}

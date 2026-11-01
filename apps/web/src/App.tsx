@@ -8,6 +8,7 @@ import {
   Show,
   Suspense,
 } from 'solid-js'
+import { activePet } from './components/appearance/active-pet.ts'
 import { SkinBackdrop } from './components/appearance/SkinBackdrop.tsx'
 import { Composer } from './components/Composer.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
@@ -35,6 +36,7 @@ import {
   loadConversations,
   loadWorkspace,
   observePet,
+  observePetWindow,
   observeSkins,
   openFileInPanel,
   openLinkInPanel,
@@ -191,6 +193,7 @@ export function App() {
     onCleanup(stopUpdates)
     onCleanup(observeSkins())
     onCleanup(observePet())
+    onCleanup(observePetWindow(activePet))
 
     /*
      * 空闲时预先加载面板模块的代码。

@@ -56,6 +56,7 @@ export {
   setPetPrefs,
   stopPetEntry,
 } from './appearance/pet.ts'
+export { observePetWindow } from './appearance/pet-window.ts'
 export {
   createSkin,
   editChosenSkin,

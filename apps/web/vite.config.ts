@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import solid from 'vite-plugin-solid'
 
@@ -48,5 +49,12 @@ export default defineConfig(({ command }) => ({
     // 语言包通过动态 import 加载，手动归组会把它们全部合并到同一个 chunk
     // （实测 593 kB），按需加载失效。由 Vite 按动态导入边界自动切分。
     chunkSizeWarningLimit: 700,
+    // 两个页面：主界面与桌面宠物窗口（外壳以 `WebviewUrl::App("pet.html")` 加载）。
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        pet: fileURLToPath(new URL('./pet.html', import.meta.url)),
+      },
+    },
   },
 }))
