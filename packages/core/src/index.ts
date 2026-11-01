@@ -444,4 +444,28 @@ export {
   ROLE_COMMAND,
   type ServerCapabilities,
 } from './protocol/transport.ts'
+// 电脑端与云端之间的远程隧道
+export {
+  decodeData,
+  encodeData,
+  parseControl,
+  pumpBody,
+  sendableCloseCode,
+  TUNNEL_CHUNK,
+  TUNNEL_CLOSE,
+  TUNNEL_DATA,
+  TUNNEL_DEAD_MS,
+  TUNNEL_PATH,
+  TUNNEL_PING_MS,
+  TUNNEL_PROTOCOL_VERSION,
+  TUNNEL_WINDOW,
+  type TunnelControl,
+  TunnelCredit,
+  type TunnelDataKind,
+  type TunnelHeaders,
+  TunnelInbound,
+  type TunnelNotifyEvent,
+  type TunnelSender,
+  tunnelHeaders,
+} from './protocol/tunnel.ts'
 export type { UpdateAction, UpdatePreferences, UpdateSnapshot } from './protocol/updates.ts'
