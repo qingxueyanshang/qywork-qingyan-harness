@@ -14,6 +14,7 @@ import { getWorkspace, mostRecentWorkspace } from '@qywork/store'
 import { handleAppearanceApi } from './appearance.ts'
 import { handleAttachmentsApi } from './attachments.ts'
 import { handleCanvasApi } from './canvas.ts'
+import { handleCloudApi } from './cloud.ts'
 import { handleConfigApi } from './config.ts'
 import { handleConversationsApi } from './conversations.ts'
 import { handleGitApi } from './git.ts'
@@ -59,6 +60,7 @@ const HANDLERS: ApiHandler[] = [
   handlePairingApi,
   handleWorkspaceApi,
   handleConfigApi,
+  handleCloudApi,
   handleProbeApi,
   handlePullApi,
   handleSchedulesApi,
