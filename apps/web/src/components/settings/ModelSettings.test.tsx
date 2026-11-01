@@ -1,4 +1,4 @@
-/** 覆盖接口改名、名称冲突、默认模型操作、检测结果显示和 Base URL 的官方地址占位符。 */
+/** 覆盖接口改名、名称冲突、默认模型操作、检测结果显示、Base URL 的官方地址占位符，以及云端接口不提供编辑入口。 */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { ProbeResult, ProviderRename, RedactedConfig } from '../../lib/store/index.ts'
@@ -21,6 +21,8 @@ async function settingsFixture(
     beforeRead: (action: () => void) => void
     idle: () => Promise<void>
   }) => Promise<void>,
+  /** `/api/cloud/state` 的答复；缺省时视为未配置云端服务。 */
+  cloud: unknown = { state: 'unavailable' },
 ) {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
@@ -43,6 +45,7 @@ async function settingsFixture(
   store.client.api = async <T,>(path: string, init?: RequestInit) => {
     if (path === '/api/models')
       return { providers: [], library: [], media: [], mediaLibrary: [] } as T
+    if (path === '/api/cloud/state') return structuredClone(cloud) as T
     if (init?.method === 'PUT') {
       stored = JSON.parse(String(init.body)).config
       return { ok: true } as T
@@ -223,6 +226,30 @@ test('名称输入框提交改名关系，默认对话与生成模型同步指�
     host.remove()
     store.client.api = originalApi
   }
+})
+
+test('已登录云端账号时，云端接口没有名称、地址、密钥、拉取与删除入口；其他接口照常', async () => {
+  await settingsFixture(
+    async ({ host }) => {
+      const tab = (name: string) =>
+        [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === name)
+      const visible = () => ({
+        remove: host.querySelector('[aria-label^="删除接口"]') !== null,
+        url: [...host.querySelectorAll('.setting-row-label')].some((l) =>
+          l.textContent?.includes('Base URL'),
+        ),
+        pull: tab('拉取模型') !== undefined,
+      })
+      const deadline = Date.now() + 3000
+      while (visible().remove && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+      expect(visible()).toEqual({ remove: false, url: false, pull: false })
+
+      tab('second')?.click()
+      await new Promise((r) => setTimeout(r, 30))
+      expect(visible()).toEqual({ remove: true, url: true, pull: true })
+    },
+    { state: 'signed_in', email: 'me@example.com', credits: 1, provider: 'first' },
+  )
 })
 
 test('地址占位符显示实际官方地址；混合厂商与未知模型不显示错误的统一默认', async () => {

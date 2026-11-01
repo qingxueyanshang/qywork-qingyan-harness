@@ -26,7 +26,8 @@ export type CloudState =
   | { state: 'unavailable' }
   | { state: 'signed_out'; reason?: 'revoked' | 'expired' | 'denied' | 'error'; message?: string }
   | { state: 'pending'; userCode: string; verificationUri: string; expiresAt: number }
-  | { state: 'signed_in'; email: string; credits: number | null }
+  /** `provider` 是配置中云端接口的名称：模型设置页据此不提供它的编辑与删除，移除只经退出。 */
+  | { state: 'signed_in'; email: string; credits: number | null; provider: string }
 
 interface Pending {
   deviceCode: string
@@ -100,10 +101,10 @@ export class CloudAccount {
         this.refreshed = true
         void this.refreshModels(provider.apiKey).catch(() => {})
       }
-      return { state: 'signed_in', email: me.email, credits: me.credits }
+      return { state: 'signed_in', email: me.email, credits: me.credits, provider: CLOUD_PROVIDER }
     }
     // 云端暂时无法访问：仍视为已登录，余额未知。
-    return { state: 'signed_in', email: this.email ?? '', credits: null }
+    return { state: 'signed_in', email: this.email ?? '', credits: null, provider: CLOUD_PROVIDER }
   }
 
   /** 发起登录；已在进行中时返回进行中的那一次。 */

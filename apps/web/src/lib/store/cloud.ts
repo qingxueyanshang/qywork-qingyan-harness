@@ -10,7 +10,8 @@ export type CloudState =
   | { state: 'unavailable' }
   | { state: 'signed_out'; reason?: 'revoked' | 'expired' | 'denied' | 'error'; message?: string }
   | { state: 'pending'; userCode: string; verificationUri: string; expiresAt: number }
-  | { state: 'signed_in'; email: string; credits: number | null }
+  /** `provider` 是配置中云端接口的名称：模型设置页不提供它的编辑与删除，移除只经退出。 */
+  | { state: 'signed_in'; email: string; credits: number | null; provider: string }
 
 export function fetchCloudState(): Promise<CloudState> {
   return client.api<CloudState>('/api/cloud/state')
