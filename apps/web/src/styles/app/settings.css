@@ -1534,6 +1534,60 @@ textarea.code-area::placeholder {
   opacity: 0.5;
 }
 
+/* ───────────────────────── 外观 ───────────────────────── */
+
+/* 皮肤列表：「无」加各皮肤，按名称宽度自然换行。 */
+.skin-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+}
+.skin-list .seg-item {
+  border: 1px solid var(--border-default);
+}
+
+/* 选择图片用的原生文件框，由「更换」与「图片」两个按钮触发，本身不显示。 */
+.skin-file {
+  display: none;
+}
+
+/* 滑块与当前值。值的宽度固定，拖动时数字位数变化不推动滑块。 */
+.skin-slider {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.setting-row .skin-slider input[type="range"] {
+  width: 160px;
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--accent);
+}
+.skin-slider-value {
+  width: 44px;
+  text-align: right;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* 颜色块。覆盖 `.setting-row input` 的内距与底色：内距会把色块压成一条细线。 */
+.setting-row input.skin-color {
+  width: 32px;
+  height: 24px;
+  padding: 2px;
+  background: none;
+  cursor: pointer;
+}
+
+.skin-stops,
+.skin-accent {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+
 /* ───────────────────────── 插件 ───────────────────────── */
 
 /* 「有」与「无」均如实显示，两者都不是错误状态：

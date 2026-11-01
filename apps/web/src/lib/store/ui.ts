@@ -682,6 +682,7 @@ export function toggleSidebar(): void {
  */
 export type SettingsPage =
   | 'general'
+  | 'appearance'
   | 'models'
   | 'usage'
   | 'modules'

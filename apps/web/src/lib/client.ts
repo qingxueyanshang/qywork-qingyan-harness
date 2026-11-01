@@ -460,4 +460,13 @@ export class QyClient {
     const query = `/api/files/raw?path=${encodeURIComponent(path)}${version === undefined ? '' : `&v=${version}`}`
     return `${this.endpoint.base}${withWorkspace(query)}&token=${encodeURIComponent(this.endpoint.token)}`
   }
+
+  /**
+   * 本机级资源（不属于任何项目，如皮肤图片）的直链。令牌放在查询串中，理由同 `fileUrl`；
+   * 不附加 `ws=`：这些资源与项目无关。
+   */
+  assetUrl(path: string): string {
+    const sep = path.includes('?') ? '&' : '?'
+    return `${this.endpoint.base}${path}${sep}token=${encodeURIComponent(this.endpoint.token)}`
+  }
 }

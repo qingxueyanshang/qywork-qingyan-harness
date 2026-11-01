@@ -27,11 +27,15 @@ import type {
   IntermediateResourceRef,
   MediaDiagnostic,
   MediaSpend,
+  PetEntry,
+  PetPack,
   ResourceCoverage,
   RunId,
   Schedule,
   ScheduleDraft,
   ScheduleView,
+  Skin,
+  SkinEntry,
   SubagentKind,
   SubagentTarget,
   TodoItem,
@@ -819,6 +823,38 @@ export interface McpConfigPort {
 }
 
 /**
+ * 皮肤库端口。
+ *
+ * 读写与校验位于 runtime，变更广播位于 server；工具只声明动作，server 组合二者实现该端口并注入。
+ * 只注入给有服务端的顶层会话：切换皮肤由界面在当前会话收到工具的成功结果时执行，
+ * 成员会话的工具卡不显示在当前会话中，切换不会发生。
+ */
+export interface SkinPort {
+  list(): Promise<SkinEntry[]>
+  read(id: string): Promise<SkinEntry | null>
+  /** `id` 为 null 时新建。`image` 随同一次保存写入皮肤目录。失败时 `error` 原样交给大模型。 */
+  save(
+    id: string | null,
+    skin: Skin,
+    image?: { name: string; bytes: Uint8Array },
+  ): Promise<{ ok: true; entry: SkinEntry } | { ok: false; error: string }>
+}
+
+/**
+ * 宠物库端口。理由与注入范围同 `SkinPort`。
+ */
+export interface PetPort {
+  list(): Promise<PetEntry[]>
+  read(id: string): Promise<PetEntry | null>
+  /** `id` 为 null 时新建。`images` 随同一次保存写入宠物目录。失败时 `error` 原样交给大模型。 */
+  save(
+    id: string | null,
+    pack: PetPack,
+    images: { name: string; bytes: Uint8Array }[],
+  ): Promise<{ ok: true; entry: PetEntry } | { ok: false; error: string }>
+}
+
+/**
  * 定时任务端口。
  *
  * **为什么是端口。** 理由同 `GoalPort`：任务表位于账本（`@qywork/store`），而工具不持有账本
@@ -1115,6 +1151,10 @@ export interface ToolContext {
    * 没有服务端时不接入，`canvas` 工具不注册。
    */
   canvas?: CanvasPort
+  /** 皮肤库通道。见 `SkinPort`。未接入时 `skin` 工具不注册。 */
+  skins?: SkinPort
+  /** 宠物库通道。见 `PetPort`。未接入时 `pet` 工具不注册。 */
+  pets?: PetPort
   /**
    * 内置浏览器通道。见 `BrowserPort`。
    *

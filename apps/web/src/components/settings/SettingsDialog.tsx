@@ -2,6 +2,7 @@ import { createEffect, lazy, Match, onCleanup, Suspense, Switch } from 'solid-js
 import { closeSettings, holdOverlay, settingsPage } from '../../lib/store/index.ts'
 import { IconX } from '../Icons.tsx'
 import { AccessSettings } from './AccessSettings.tsx'
+import { AppearanceSettings } from './AppearanceSettings.tsx'
 import { GeneralSettings } from './GeneralSettings.tsx'
 import { ModelSettings } from './ModelSettings.tsx'
 import { PageHead } from './Page.tsx'
@@ -96,6 +97,9 @@ export function SettingsDialog() {
                   <Switch>
                     <Match when={settingsPage() === 'general'}>
                       <GeneralSettings />
+                    </Match>
+                    <Match when={settingsPage() === 'appearance'}>
+                      <AppearanceSettings />
                     </Match>
                     <Match when={settingsPage() === 'models'}>
                       <ModelSettings />

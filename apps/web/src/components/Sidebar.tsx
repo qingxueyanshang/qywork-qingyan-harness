@@ -11,11 +11,14 @@ import {
   loadKnownWorkspaces,
   newConversation,
   openSettings,
+  petPrefs,
   selectConversation,
   state,
   toggleSidebar,
   workspace,
 } from '../lib/store/index.ts'
+import { activePet } from './appearance/active-pet.ts'
+import { PetDock } from './appearance/PetDock.tsx'
 import { ConversationRow } from './ConversationRow.tsx'
 import { IconPanel, IconPlus, IconSettings } from './Icons.tsx'
 import { NewProjectDialog } from './NewProjectDialog.tsx'
@@ -223,6 +226,9 @@ export function Sidebar(props: { onClose?: () => void }) {
       </div>
 
       <footer class="sidebar-foot">
+        <Show when={petPrefs().place === 'app'}>
+          <PetDock pack={activePet().pack} frameUrl={activePet().frameUrl} />
+        </Show>
         {/* **只保留一个入口。**
             不要把定时任务 / 记忆与技能 / 插件 / Agent 团队 / 手机接入并列放在此处：
             它们是「设置」的子项，每增加一项能力就多一行，配置项最终会挤占会话

@@ -53,6 +53,7 @@ import {
   workspaceOf,
 } from '@qywork/store'
 import { redactSecrets } from '@qywork/tools'
+import { petPort, skinPort } from './appearance.ts'
 import { artRenderOf, canvasPort } from './canvas.ts'
 import { makeDelegate } from './delegate.ts'
 import { type CommandDeps, officePortOf } from './deps.ts'
@@ -297,6 +298,9 @@ export async function startRun(
               ),
             }
           : {}),
+        // 皮肤库与宠物库只交给顶层会话：切换由界面在当前会话执行，成员会话（`team-run.ts`）不注入。
+        skins: skinPort(deps.bus),
+        pets: petPort(deps.bus),
         // 用户插入的消息在本会话的 step 边界注入；成员会话的队列由 `team-run.ts` 接入，只接收父会话派发的补充指令。
         followUps: (id) => deps.runs.takeSteered(id),
       })

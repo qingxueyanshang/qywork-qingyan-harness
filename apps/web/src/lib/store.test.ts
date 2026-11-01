@@ -3354,6 +3354,64 @@ describe('工具卡按 stepId 认领实时输出', () => {
     expect(sidePanel()).toBe('files')
   })
 
+  /**
+   * 对话中切换皮肤：当前会话的 `skin` 工具 apply 成功时交给皮肤模块切换（`skinApply`）；
+   * 其他会话的、失败的、以及不带 `applied` 的 save 结果都不触发切换。
+   */
+  test('当前会话的 skin apply 成功时请求切换皮肤', async () => {
+    const { skinApply } = await import('./store/connection.ts')
+    const call = (
+      cid: string,
+      stepId: string,
+      status: 'success' | 'failure',
+      data: Record<string, unknown>,
+    ) => {
+      applyEvent({
+        seq: 1,
+        at: 0,
+        conversationId: cid,
+        event: {
+          type: 'tool.started',
+          runId: 'run_1',
+          stepId,
+          toolCallId: stepId,
+          toolName: 'skin',
+          batchId: 'b_1',
+          callIndex: 0,
+          waveIndex: 0,
+          args: { action: 'apply' },
+          action: { kind: 'call', objectLabel: '皮肤', target: null },
+        },
+      } as never)
+      applyEvent({
+        seq: 2,
+        at: 0,
+        conversationId: cid,
+        event: {
+          type: 'tool.finished',
+          runId: 'run_1',
+          stepId,
+          toolCallId: stepId,
+          status,
+          outcome: { kind: 'call', status, data },
+          durationMs: 1,
+        },
+      } as never)
+    }
+    setState({ activeConversation: 'cv_now' })
+    freshView('cv_now')
+    freshView('cv_other')
+    const before = skinApply()
+    call('cv_other', 'sk_o', 'success', { applied: 'night' })
+    call('cv_now', 'sk_f', 'failure', { applied: 'night' })
+    call('cv_now', 'sk_save', 'success', { id: 'night' })
+    expect(skinApply()).toBe(before)
+    call('cv_now', 'sk_a', 'success', { applied: 'night' })
+    expect(skinApply()?.id).toBe('night')
+    call('cv_now', 'sk_n', 'success', { applied: null })
+    expect(skinApply()?.id).toBeNull()
+  })
+
   /** 接口拒绝了包含图片的请求：事件只标记它列出的卡片，标记显示在对应的「读取文件」行上。 */
   test('图片未送达的事件标记对应的卡片', () => {
     setState({ activeConversation: 'cv_now' })

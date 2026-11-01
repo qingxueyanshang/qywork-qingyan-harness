@@ -10,6 +10,37 @@
  * 相当于同一份清单维护两次。
  */
 
+// 宠物包：格式与校验。宠物库接口、pet 工具与界面共用
+export {
+  isPetId,
+  isPetImageName,
+  PET_IMAGE_EXTENSIONS,
+  PET_LIMITS,
+  PET_STATES,
+  type PetAnimation,
+  type PetEntry,
+  type PetPack,
+  type PetState,
+  parsePetPack,
+  petFrameFiles,
+} from './domain/appearance/pet.ts'
+// 皮肤：格式、校验与合并。皮肤库接口、skin 工具与界面共用
+export {
+  DEFAULT_SKIN,
+  isSkinId,
+  isSkinImageName,
+  mergeSkin,
+  parseSkin,
+  SKIN_IMAGE_EXTENSIONS,
+  SKIN_LIMITS,
+  type Skin,
+  type SkinBackground,
+  type SkinBase,
+  type SkinEffect,
+  type SkinEntry,
+  type SkinImageFit,
+  type SkinSurface,
+} from './domain/appearance/skin.ts'
 // Art 页面：尺寸参数与 viewport 读写。服务端生成、尺寸读取与界面渲染共用
 export {
   ART_DEFAULT_SIZE,

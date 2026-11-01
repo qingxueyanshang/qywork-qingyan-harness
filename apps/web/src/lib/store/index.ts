@@ -36,6 +36,41 @@ export {
   type TeamRoleRow,
 } from './actions.ts'
 export {
+  observePet,
+  openPetEntry,
+  PET_BUBBLE_MS,
+  type PetEntry,
+  type PetPlace,
+  type PetResult,
+  petBadge,
+  petBubble,
+  petEntries,
+  petFrameUrl,
+  petLibrary,
+  petMood,
+  petPack,
+  petPrefs,
+  petResults,
+  refreshPetLibrary,
+  removePet,
+  setPetPrefs,
+  stopPetEntry,
+} from './appearance/pet.ts'
+export {
+  createSkin,
+  editChosenSkin,
+  observeSkins,
+  refreshSkinLibrary,
+  removeSkin,
+  saveSkin,
+  selectSkin,
+  selectSkinById,
+  setSkinImage,
+  skinImageUrl,
+  skinLibrary,
+  skinSaveError,
+} from './appearance/skins.ts'
+export {
   browserPresentation,
   browserReady,
   browserTab,
@@ -191,7 +226,19 @@ export {
   view,
   viewOf,
 } from './state.ts'
-export { initTheme, setTheme, type ThemePref, theme } from './theme.ts'
+export {
+  chooseSkin,
+  effectiveTheme,
+  initTheme,
+  type PaintedSkin,
+  paintedSkin,
+  paintSkin,
+  type SkinChoice,
+  setTheme,
+  skinChoice,
+  type ThemePref,
+  theme,
+} from './theme.ts'
 export {
   absPath,
   activePanelTab,

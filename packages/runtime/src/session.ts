@@ -22,8 +22,10 @@ import {
   type LoopPersistence,
   type OfficePort,
   type PermissionVerdict,
+  type PetPort,
   type PluginPort,
   runDensity,
+  type SkinPort,
   type ToolContextBase,
   ToolRegistry,
   videoMetaOf,
@@ -193,6 +195,12 @@ export interface SessionOptions {
    */
   canvas?: CanvasPort
   /**
+   * 皮肤库通道。见 `SkinPort`。由服务端为顶层会话注入；未传入时（CLI 会话、成员会话）没有 `skin` 工具。
+   */
+  skins?: SkinPort
+  /** 宠物库通道。见 `PetPort`。注入范围同 `skins`。 */
+  pets?: PetPort
+  /**
    * 电脑控制通道。见 `DesktopPort`。
    *
    * 由装配方依据用户的启用开关与当前宿主状态实时判定后传入；未传入时本轮没有
@@ -344,6 +352,8 @@ export class Session {
       canvas: mediaOn && opts.canvas !== undefined,
       // 画布端口只由服务端注入，与生成开关无关；成员会话的工具卡不显示在当前会话中。
       panel: opts.canvas !== undefined && opts.member !== true,
+      skins: opts.skins !== undefined && opts.member !== true,
+      pets: opts.pets !== undefined && opts.member !== true,
       office: opts.office !== undefined,
       videoDecoder: opts.office?.videoDecoder === true,
       // 生成工具按已配置模型的类别注册；与其他内置工具规则相同，角色的 allowedTools 指定工具时按指定的工具过滤。
@@ -1264,6 +1274,8 @@ export class Session {
       ...(this.opts.browser ? { browser: this.opts.browser } : {}),
       ...(this.opts.desktop ? { desktop: this.opts.desktop } : {}),
       ...(this.opts.canvas ? { canvas: this.opts.canvas } : {}),
+      ...(this.opts.skins ? { skins: this.opts.skins } : {}),
+      ...(this.opts.pets ? { pets: this.opts.pets } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
       skillSourcePaths: () =>
         listMessages(store, conversationId, null).flatMap((m) => m.attachments.map((a) => a.path)),

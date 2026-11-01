@@ -532,6 +532,21 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       }
       return json(reclaimError ? { ok: true, reclaimError } : { ok: true })
     }
+
+    /*
+     * 读取一条会话及其所属项目。宠物列表显示其他项目中完成或出错的会话时使用：
+     * 界面只持有当前项目的会话列表，跨项目跳转还需要该项目的路径。
+     */
+    if (req.method === 'GET') {
+      const conversation = getConversation(d.store, id)
+      if (!conversation)
+        return json({ error: 'conversation not found', message: '会话不存在' }, 404)
+      const ws = getWorkspace(d.store, conversation.workspaceId)
+      return json({
+        conversation,
+        workspace: ws ? { id: ws.id, rootPath: ws.rootPath, name: ws.name } : null,
+      })
+    }
   }
 
   /*
