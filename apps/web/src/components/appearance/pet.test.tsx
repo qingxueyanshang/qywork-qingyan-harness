@@ -1,6 +1,6 @@
 /**
- * 覆盖 `lib/store/appearance/pet.ts`（心情推导、未查看结果、气泡、显示的消息与偏好）、`PetSprite.tsx`、`PetWindow.tsx`
- * 与 `pet-default.ts`（默认宠物包须通过 core 的校验）。
+ * 覆盖 `lib/store/appearance/pet.ts`（心情推导、未查看结果、气泡、显示的消息与偏好）、`PetSprite.tsx`、
+ * `PetWindow.tsx`、`PetBox.tsx`、`pet-view.ts` 与 `pet-default.ts`（默认宠物包须通过 core 的校验）。
  *
  * 测试 DOM 在本文件内注册，结束后注销，理由同 `settings/LoadState.test.tsx`。
  * 账本以桩代替：会话行与轮次列表由 `fetch` 返回，键为会话 id。
@@ -283,13 +283,10 @@ describe('宠物组件', () => {
   })
 
   /**
-   * 桌面宠物窗口的页面：只显示主窗口推送的状态。外壳以注入的 `__TAURI_INTERNALS__` 模拟，
-   * 只在本用例期间存在，理由同 `WindowControls.test.tsx`。
+   * 外壳以注入的 `__TAURI_INTERNALS__` 模拟，只在用例期间存在，理由同 `WindowControls.test.tsx`。
+   * `emit` 向页面注册的监听派发事件；`calls` 记录页面发出的全部调用。
    */
-  test('宠物窗口：按推送的状态显示（含个性化强调色），单击展开列表并按行数调整尺寸，没有条目时不展开，右侧空间不足时向左展开，移动后上报宠物左下角，停止与打开会话交给主窗口与外壳', async () => {
-    const { render } = await import('solid-js/web')
-    const { DEFAULT_PET } = await import('./pet-default.ts')
-    const { PetWindow } = await import('./PetWindow.tsx')
+  function mockShell() {
     const calls: { cmd: string; args?: Record<string, unknown> }[] = []
     const callbacks = new Map<number, (payload: unknown) => void>()
     const listeners = new Map<string, number>()
@@ -306,69 +303,132 @@ describe('宠物组件', () => {
         return null
       },
     }
+    const emit = (event: string, payload: unknown) =>
+      callbacks.get(listeners.get(event) as number)?.({ payload })
+    const emitted = (event: string) =>
+      calls
+        .filter((c) => c.cmd === 'plugin:event|emit_to' && c.args?.event === event)
+        .map((c) => c.args)
+    return { calls, emit, emitted, restore: () => delete g.__TAURI_INTERNALS__ }
+  }
+
+  async function petState(entries: unknown[], extra: Record<string, unknown> = {}) {
+    const { DEFAULT_PET } = await import('./pet-default.ts')
+    const frames = Object.fromEntries(
+      Object.values(DEFAULT_PET.states).flatMap((a) => a.frames.map((f) => [f, `/f/${f}`])),
+    )
+    return {
+      mood: 'working',
+      badge: '2',
+      bubble: null,
+      entries,
+      pack: DEFAULT_PET,
+      frames,
+      dark: true,
+      accent: null,
+      ...extra,
+    }
+  }
+
+  async function until(check: () => boolean, ms = 2000): Promise<void> {
+    const end = Date.now() + ms
+    while (!check()) {
+      if (Date.now() > end) throw new Error('等待超时')
+      await new Promise((r) => setTimeout(r, 10))
+    }
+  }
+
+  const running = [{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }]
+
+  test('宠物窗口：按推送的状态显示（含个性化强调色），只按宠物包请求一次尺寸，单击交给任务框窗口，移动后上报宠物左下角', async () => {
+    const { render } = await import('solid-js/web')
+    const { PetWindow } = await import('./PetWindow.tsx')
+    const shell = mockShell()
     const host = document.createElement('div')
     document.body.append(host)
     const dispose = render(() => <PetWindow />, host)
     try {
       await flush()
-      expect(
-        calls.some((c) => c.cmd === 'plugin:event|emit_to' && c.args?.event === 'pet://ready'),
-      ).toBe(true)
-      const frames = Object.fromEntries(
-        Object.values(DEFAULT_PET.states).flatMap((a) => a.frames.map((f) => [f, `/f/${f}`])),
-      )
-      const push = (entries: unknown[], accent: { color: string; fg: string } | null = null) =>
-        callbacks.get(listeners.get('pet://state') as number)?.({
-          payload: {
-            mood: 'working',
-            badge: '2',
-            bubble: null,
-            entries,
-            pack: DEFAULT_PET,
-            frames,
-            dark: true,
-            accent,
-          },
-        })
-      push([{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }])
+      expect(shell.emitted('pet://ready')).toHaveLength(1)
+      shell.emit('pet://state', await petState(running))
       await flush()
-      const resizes = () => calls.filter((c) => c.cmd === 'pet_window_resize').map((c) => c.args)
-      expect(resizes().at(-1)).toEqual({ width: 92, height: 92, leftward: false })
+      const resizes = () => shell.calls.filter((c) => c.cmd === 'pet_window_resize')
+      expect(resizes().map((c) => c.args)).toEqual([{ width: 92, height: 92 }])
       expect(host.querySelector('.petw-badge')?.textContent).toBe('2')
       expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
 
       // 个性化的强调色写在根元素上（角标取它）；为 null 时移除，恢复主题的强调色。
-      push([{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }], {
-        color: 'rgba(168, 85, 247, 1)',
-        fg: '#ffffff',
-      })
+      shell.emit(
+        'pet://state',
+        await petState(running, { accent: { color: 'rgba(168, 85, 247, 1)', fg: '#ffffff' } }),
+      )
       await flush()
       const rootStyle = document.documentElement.style
       expect(rootStyle.getPropertyValue('--accent')).toBe('rgba(168, 85, 247, 1)')
       expect(rootStyle.getPropertyValue('--accent-fg')).toBe('#ffffff')
-      push([{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }])
+      shell.emit('pet://state', await petState(running))
       await flush()
       expect(rootStyle.getPropertyValue('--accent')).toBe('')
 
+      // 单击只通知任务框窗口，宠物窗口不改变尺寸。
       const pet = host.querySelector('.petw-pet') as HTMLElement
-      const clickPet = async () => {
-        pet.dispatchEvent(
-          new PointerEvent('pointerdown', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
-        )
-        pet.dispatchEvent(
-          new PointerEvent('pointerup', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
-        )
-        await flush()
-      }
-      await clickPet()
-      expect(host.querySelector('.petw-menu')).not.toBeNull()
-      // 一行：行高 30 加内边距与边框 10，列表上下各留 8。
-      expect(resizes().at(-1)).toEqual({ width: 260, height: 92 + 40 + 16, leftward: false })
+      pet.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
+      )
+      pet.dispatchEvent(
+        new PointerEvent('pointerup', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
+      )
+      await flush()
+      expect(shell.emitted('pet://box-toggle')).toEqual([
+        {
+          target: { kind: 'WebviewWindow', label: 'pet-box' },
+          event: 'pet://box-toggle',
+          payload: null,
+        },
+      ])
+      expect(resizes()).toHaveLength(1)
+
+      shell.emit('pet://window-moved', { x: 640, y: 500 })
+      expect(shell.emitted('pet://moved').at(-1)?.payload).toEqual({ left: 640, bottom: 592 })
+    } finally {
+      shell.restore()
+      dispose()
+      host.remove()
+    }
+  })
+
+  test('任务框窗口：展开时先设置尺寸再显示内容，收起时先清空并缩小，从气泡改为列表时先缩小、等待空白画面再展开；停止与打开会话交给主窗口与外壳', async () => {
+    const { render } = await import('solid-js/web')
+    const { PetBox } = await import('./PetBox.tsx')
+    const shell = mockShell()
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(() => <PetBox />, host)
+    const placeCalls = () => shell.calls.filter((c) => c.cmd === 'pet_box_place').map((c) => c.args)
+    try {
+      await flush()
+      expect(shell.emitted('pet://ready')).toHaveLength(1)
+      const bubble = { conversationId: 'cv_done', title: '写好的报告', outcome: 'done' }
+      shell.emit('pet://state', await petState([...running], { bubble }))
+      await until(() => !!host.querySelector('.petw-bubble'))
+      expect(placeCalls()).toEqual([{ width: 244, height: 34 }])
+      expect(host.querySelector('.petw-bubble')?.textContent).toContain('写好的报告')
+
+      // 单击宠物：气泡改为列表。先清空并缩小，空白画面之后再按一行的高度展开。
+      shell.emit('pet://box-toggle', null)
+      await flush()
+      expect(host.querySelector('.petw-bubble')).toBeNull()
+      expect(placeCalls().at(-1)).toEqual({ width: 0, height: 0 })
+      await until(() => !!host.querySelector('.petw-menu'))
+      expect(placeCalls().slice(1)).toEqual([
+        { width: 0, height: 0 },
+        { width: 244, height: 40 },
+      ])
 
       ;(host.querySelector('.petw-stop') as HTMLButtonElement).click()
       ;(host.querySelector('.petw-row-main') as HTMLButtonElement).click()
       await flush()
-      expect(calls).toContainEqual({
+      expect(shell.calls).toContainEqual({
         cmd: 'plugin:event|emit_to',
         args: {
           target: { kind: 'WebviewWindow', label: 'main' },
@@ -376,51 +436,28 @@ describe('宠物组件', () => {
           payload: { type: 'stop', id: 'cv_run' },
         },
       })
-      expect(calls).toContainEqual({ cmd: 'pet_open_main', args: { conversationId: 'cv_run' } })
-      expect(host.querySelector('.petw-menu')).toBeNull()
-      expect(resizes().at(-1)).toEqual({ width: 92, height: 92, leftward: false })
+      expect(shell.calls).toContainEqual({
+        cmd: 'pet_open_main',
+        args: { conversationId: 'cv_run' },
+      })
+      // 打开会话后列表关闭，回到气泡：同样先缩小再展开。
+      await until(() => !!host.querySelector('.petw-bubble'))
+      expect(placeCalls().slice(3)).toEqual([
+        { width: 0, height: 0 },
+        { width: 244, height: 34 },
+      ])
 
-      // 打开期间条目清空时列表关闭；没有条目时单击不打开。
-      await clickPet()
-      expect(host.querySelector('.petw-menu')).not.toBeNull()
-      push([])
-      await flush()
+      // 没有气泡与条目时收起；没有条目时单击不展开。
+      shell.emit('pet://state', await petState([]))
+      await until(() => !host.querySelector('.petw-bubble'))
+      expect(placeCalls().at(-1)).toEqual({ width: 0, height: 0 })
+      const count = placeCalls().length
+      shell.emit('pet://box-toggle', null)
+      await new Promise((r) => setTimeout(r, 150))
+      expect(placeCalls()).toHaveLength(count)
       expect(host.querySelector('.petw-menu')).toBeNull()
-      await clickPet()
-      expect(host.querySelector('.petw-menu')).toBeNull()
-      expect(resizes().at(-1)).toEqual({ width: 92, height: 92, leftward: false })
-
-      // 右侧空间不足展开宽度时向左展开，宠物固定在右下角；收起时沿用同一侧。
-      Object.defineProperty(window, 'screenX', { value: 900, configurable: true })
-      Object.defineProperty(screen, 'availLeft', { value: 0, configurable: true })
-      Object.defineProperty(screen, 'availWidth', { value: 1000, configurable: true })
-      push([{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }])
-      await flush()
-      await clickPet()
-      expect(resizes().at(-1)).toEqual({ width: 260, height: 92 + 40 + 16, leftward: true })
-      expect(host.querySelector('.petw')?.classList.contains('leftward')).toBe(true)
-
-      // 窗口移动后上报宠物的左下角，而不是窗口的左上角：展开时宠物位于右下角。
-      const moved = (x: number, y: number) =>
-        callbacks.get(listeners.get('pet://window-moved') as number)?.({ payload: { x, y } })
-      const anchors = () =>
-        calls
-          .filter((c) => c.cmd === 'plugin:event|emit_to' && c.args?.event === 'pet://moved')
-          .map((c) => c.args?.payload)
-      moved(640, 500)
-      expect(anchors().at(-1)).toEqual({ left: 640 + 260 - 92, bottom: 500 + 148 })
-      await clickPet()
-      expect(resizes().at(-1)).toEqual({ width: 92, height: 92, leftward: true })
-      moved(808, 556)
-      expect(anchors().at(-1)).toEqual({ left: 808, bottom: 556 + 92 })
     } finally {
-      for (const [o, k] of [
-        [window, 'screenX'],
-        [screen, 'availLeft'],
-        [screen, 'availWidth'],
-      ] as const)
-        Reflect.deleteProperty(o, k)
-      delete g.__TAURI_INTERNALS__
+      shell.restore()
       dispose()
       host.remove()
     }

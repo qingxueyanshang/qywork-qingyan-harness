@@ -603,6 +603,7 @@ pub fn run() {
             pet::pet_window_show,
             pet::pet_window_hide,
             pet::pet_window_resize,
+            pet::pet_box_place,
             pet::pet_open_main,
         ])
         .setup(|app| {
@@ -653,11 +654,14 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 宠物窗口：移动后把位置交给宠物页面换算并保存。系统的关闭请求（Alt+F4 等）一律拒绝：
-            // 显示与否只由设置页的开关决定，记录在主窗口；`pet_window_hide` 用 `destroy()`，不经过此处。
-            if window.label() == pet::LABEL {
+            // 宠物窗口：移动后把位置交给宠物页面换算并保存，任务框随之移动。两个窗口的系统关闭请求
+            // （Alt+F4 等）一律拒绝：显示与否只由设置页的开关决定，记录在主窗口；`pet_window_hide` 用
+            // `destroy()`，不经过此处。
+            if window.label() == pet::LABEL || window.label() == pet::BOX_LABEL {
                 match event {
-                    WindowEvent::Moved(pos) => pet::moved(window, *pos),
+                    WindowEvent::Moved(pos) if window.label() == pet::LABEL => {
+                        pet::moved(window, *pos)
+                    }
                     WindowEvent::CloseRequested { api, .. } => api.prevent_close(),
                     _ => {}
                 }

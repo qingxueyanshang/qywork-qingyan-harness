@@ -1,7 +1,8 @@
 /**
- * 桌面宠物窗口的主窗口一侧：按偏好显示或关闭外壳的宠物窗口，把派生状态推送给它，处理它回传的操作。
+ * 桌面宠物窗口的主窗口一侧：按偏好显示或关闭外壳的宠物窗口，把派生状态推送给宠物窗口与任务框窗口，
+ * 处理它们回传的操作。
  *
- * 宠物窗口不连接服务、不推导状态，只显示这里推送的内容（理由见 `pet.ts` 文件头）。
+ * 两个窗口都不连接服务、不推导状态，只显示这里推送的内容（理由见 `pet.ts` 文件头）。
  * 主窗口关闭时隐藏到托盘而不销毁，推导持续进行。
  */
 
@@ -9,6 +10,7 @@ import type { PetPack } from '@qywork/core'
 import { createEffect, createRoot, on } from 'solid-js'
 import {
   PET_ACTION_EVENT,
+  PET_BOX_LABEL,
   PET_MOVED_EVENT,
   PET_OPEN_EVENT,
   PET_READY_EVENT,
@@ -77,8 +79,10 @@ export function observePetWindow(
     }
     const shown = () => petPrefs().place === 'desktop'
     const push = () => {
-      if (shown())
-        void tauriEmitTo(PET_WINDOW_LABEL, PET_STATE_EVENT, snapshot()).catch(() => undefined)
+      if (!shown()) return
+      const s = snapshot()
+      for (const label of [PET_WINDOW_LABEL, PET_BOX_LABEL])
+        void tauriEmitTo(label, PET_STATE_EVENT, s).catch(() => undefined)
     }
 
     createEffect(
@@ -98,7 +102,7 @@ export function observePetWindow(
       push()
     })
 
-    // 宠物窗口加载完成时请求一次完整状态：它在主窗口首次推送之后才创建。
+    // 两个窗口加载完成时各请求一次完整状态：它们在主窗口首次推送之后才创建。
     void tauriListen(PET_READY_EVENT, push).catch(() => undefined)
     void tauriListen<string>(PET_OPEN_EVENT, (id) => void openPetEntry(id)).catch(() => undefined)
     void tauriListen<PetWindowAction>(PET_ACTION_EVENT, (a) => stopPetEntry(a.id)).catch(
