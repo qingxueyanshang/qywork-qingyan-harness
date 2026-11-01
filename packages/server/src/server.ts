@@ -65,7 +65,7 @@ import { desktopCapability } from './desktop/capability.ts'
 import { DesktopCoordinator } from './desktop/coordinator.ts'
 import { createGitWatch } from './git-watch.ts'
 import { handleHello } from './handshake.ts'
-import { CORS_HEADERS, hostLabel, serveStatic, withCors } from './http-util.ts'
+import { CORS_HEADERS, hostLabel, serveStatic, type WebAssets, withCors } from './http-util.ts'
 import { extractToken, Pairing, preferredLanAddress, timingSafeEqual } from './pairing.ts'
 import { type PowerPort, startPowerGuard } from './power.ts'
 import { sanitizeProcessExitObservation } from './process-exit.ts'
@@ -94,8 +94,8 @@ export interface ServeOptions {
   workspaceRoot?: string
   port: number
   host: string
-  /** web 构建产物目录；不存在时只提供 API。 */
-  staticDir?: string
+  /** 网页构建产物；未提供时只提供 API。 */
+  web?: WebAssets
   /** 由外部注入的令牌（Tauri 启动子进程时经环境变量传入），未传入时自行生成。 */
   token?: string
   /**
@@ -592,8 +592,8 @@ export function serve(opts: ServeOptions) {
       if (art) return art
 
       // ── 静态资源 ──
-      if (opts.staticDir) {
-        const served = await serveStatic(opts.staticDir, url.pathname)
+      if (opts.web) {
+        const served = await serveStatic(opts.web, url.pathname)
         if (served) return served
       }
       return new Response('qywork server', { status: 200 })

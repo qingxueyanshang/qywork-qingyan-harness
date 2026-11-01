@@ -5,6 +5,8 @@
  * 实现，导出它们等于声明它们可以被单独复用。
  */
 
+// 网页构建产物的两种来源：CLI 的 `qy serve` 按 `--static` 或编译时嵌入的内容选择其一，传给 serve
+export { directoryAssets, embeddedAssets } from './http-util.ts'
 // 局域网候选地址：CLI 的 `qy serve` 要把它们连同二维码一起输出
 export { lanCandidates } from './pairing.ts'
 // 当前平台的系统电源接口；CLI 的 `qy serve` 创建后传给 serve

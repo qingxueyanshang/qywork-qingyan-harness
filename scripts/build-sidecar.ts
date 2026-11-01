@@ -6,8 +6,8 @@
  *   bun run scripts/build-sidecar.ts
  */
 
-import { mkdir, rm } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { mkdir, readdir, rm } from 'node:fs/promises'
+import { basename, dirname, join, relative } from 'node:path'
 import type { BunPlugin, CompileBuildOptions } from 'bun'
 import { BIN_DIR, externalBinPath } from './external-bin.ts'
 
@@ -68,6 +68,68 @@ const embedPhotonWasm: BunPlugin = {
 }
 
 /**
+ * 网页构建产物的嵌入点。`qy serve` 未指定 `--static` 时提供嵌入的网页，手机经此取得页面。
+ *
+ * 网页在此处单独构建到临时目录，不读取 `apps/web/dist`：发布流程与门禁都在构建网页之前编译 sidecar
+ * （`.github/actions/setup-build/action.yml` 的 Build sidecar 步骤），读取 `apps/web/dist` 得到的是缺失或过期的内容。
+ */
+const WEB_ASSETS_MODULE = /[\\/]packages[\\/]cli[\\/]src[\\/]web-assets\.ts$/
+
+/** 构建网页到 `dir`，返回其中全部文件的绝对路径；失败或缺少 index.html 时返回 null。 */
+async function buildWeb(dir: string): Promise<string[] | null> {
+  const proc = Bun.spawn(
+    [
+      process.execPath,
+      'run',
+      '--cwd',
+      join(ROOT, 'apps/web'),
+      'build',
+      '--outDir',
+      dir,
+      '--emptyOutDir',
+    ],
+    { cwd: ROOT, stdout: 'inherit', stderr: 'inherit', stdin: 'ignore' },
+  )
+  if ((await proc.exited) !== 0) {
+    process.stderr.write('网页构建失败\n')
+    return null
+  }
+  const files = (await readdir(dir, { recursive: true, withFileTypes: true }))
+    .filter((e) => e.isFile())
+    .map((e) => join(e.parentPath, e.name))
+  if (!files.some((f) => relative(dir, f) === 'index.html')) {
+    process.stderr.write(`网页构建产物中没有 index.html：${dir}\n`)
+    return null
+  }
+  return files
+}
+
+/**
+ * 把 `packages/cli/src/web-assets.ts` 的内容替换为逐个文件的 `type: 'file'` 导入，文件随之嵌入产物。
+ * 未发生替换时（该模块改名或移动）构建须失败，由调用方按 `onEmbed` 是否被调用判定：否则产物不含网页且不报错。
+ */
+function embedWeb(dir: string, files: string[], onEmbed: () => void): BunPlugin {
+  return {
+    name: 'embed-web',
+    setup(build) {
+      build.onLoad({ filter: WEB_ASSETS_MODULE }, () => {
+        onEmbed()
+        const imports = files.map(
+          (f, i) => `import f${i} from ${JSON.stringify(f)} with { type: 'file' }`,
+        )
+        const entries = files.map(
+          (f, i) => `${JSON.stringify(relative(dir, f).replaceAll('\\', '/'))}: f${i}`,
+        )
+        return {
+          contents: `${imports.join('\n')}\nexport const embeddedWeb = { ${entries.join(', ')} }\n`,
+          loader: 'ts',
+        }
+      })
+    },
+  }
+}
+
+/**
  * 产物中出现仓库根路径时返回该处前后的内容，没有时返回 null。
  *
  * 构建机路径只在构建机上存在：依赖它读取文件的模块在构建机上照常运行，门禁无法发现，安装到其他机器后才失败。
@@ -107,6 +169,11 @@ async function main(): Promise<number> {
   // 相对路径无法解析到打包之外的文件，实测输出会变为后备值 0.0.0。
   const version = (await Bun.file(join(ROOT, 'VERSION')).text()).trim()
 
+  const webDir = join(ROOT, '.tmp', 'build-sidecar', `web-${process.pid}`)
+  const webFiles = await buildWeb(webDir)
+  if (!webFiles) return 1
+  let webEmbedded = false
+
   const result = await Bun.build({
     entrypoints: [ENTRY],
     compile: { outfile, ...windowsMetadata(version) },
@@ -117,11 +184,20 @@ async function main(): Promise<number> {
     define: { QYWORK_VERSION: JSON.stringify(version) },
     // `embedPhotonWasm` 依赖 wasm 按文件嵌入；默认加载器改变时 photon 会读取到错误的内容。
     loader: { '.wasm': 'file' },
-    plugins: [embedPhotonWasm],
+    plugins: [
+      embedPhotonWasm,
+      embedWeb(webDir, webFiles, () => {
+        webEmbedded = true
+      }),
+    ],
     throw: false,
-  })
+  }).finally(() => rm(webDir, { recursive: true, force: true }))
   if (!result.success) {
     for (const log of result.logs) process.stderr.write(`${log}\n`)
+    return 1
+  }
+  if (!webEmbedded) {
+    process.stderr.write('未找到 packages/cli/src/web-assets.ts，产物不含网页\n')
     return 1
   }
 
