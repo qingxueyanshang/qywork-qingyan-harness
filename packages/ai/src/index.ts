@@ -112,6 +112,9 @@ export {
   type VideoRule,
   videoOutOfRange,
 } from './tokens.ts'
+// 模型网关透传上游响应时读取用量：分帧与接口地址的补全规则须与适配器相同，否则网关与客户端对同一地址得出不同的请求路径
+export { normalizeBaseUrl } from './providers/openai-compat.ts'
+export { readSse, SSE_DONE, type SseFrame, sseJson } from './sse.ts'
 // 流空闲上限的基准：agent 按思考档位放宽该值，runtime 的摘要直接使用该值
 export { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 // 协议无关的请求与事件形状
