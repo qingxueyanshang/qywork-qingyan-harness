@@ -1,5 +1,5 @@
 /**
- * 覆盖 `lib/store/appearance/pet.ts`（心情推导、未查看结果、气泡与偏好）、`PetSprite.tsx`、`PetWindow.tsx`
+ * 覆盖 `lib/store/appearance/pet.ts`（心情推导、未查看结果、气泡、显示的消息与偏好）、`PetSprite.tsx`、`PetWindow.tsx`
  * 与 `pet-default.ts`（默认宠物包须通过 core 的校验）。
  *
  * 测试 DOM 在本文件内注册，结束后注销，理由同 `settings/LoadState.test.tsx`。
@@ -18,16 +18,30 @@ afterAll(async () => {
 
 type RunRow = { status: string; createdAt: number; finishedAt: number | null }
 
-/** 会话 id → 会话行与轮次。未登记的会话返回 404。 */
-const ledger = new Map<string, { title: string; parent?: boolean; runs: RunRow[] }>()
+/** 会话 id → 会话行、最近一条消息与轮次。未登记的会话返回 404。 */
+const ledger = new Map<
+  string,
+  {
+    title: string
+    parent?: boolean
+    latest?: { content: string; origin: 'subagent' | null }
+    runs: RunRow[]
+  }
+>()
 
 function serveLedger(): void {
   globalThis.fetch = (async (input: string) => {
     const url = new URL(String(input), 'http://localhost')
-    const m = /^\/api\/conversations\/([^/]+)(\/runs)?$/.exec(url.pathname)
+    const m = /^\/api\/conversations\/([^/]+)(\/runs|\/history)?$/.exec(url.pathname)
     const row = m ? ledger.get(decodeURIComponent(m[1] as string)) : undefined
     if (!m || !row) return new Response('{}', { status: 404 })
-    if (m[2]) return new Response(JSON.stringify({ runs: row.runs, childRuns: [] }))
+    if (m[2] === '/runs') return new Response(JSON.stringify({ runs: row.runs, childRuns: [] }))
+    if (m[2] === '/history') {
+      const messages = row.latest
+        ? [{ id: 'm1', role: 'user', attachments: [], createdAt: 0, ...row.latest }]
+        : []
+      return new Response(JSON.stringify({ messages, runs: [], steps: [], todos: [] }))
+    }
     return new Response(
       JSON.stringify({
         conversation: {
@@ -104,6 +118,43 @@ describe('宠物状态推导', () => {
       store.setState('busyConversations', [])
       await flush()
       expect(store.petResults().find((r) => r.conversationId === 'cv_long')?.outcome).toBe('done')
+    } finally {
+      stop()
+    }
+  })
+
+  test('列表与气泡显示最近一条由用户本人发送的消息；回执不替换；没有消息时显示会话标题', async () => {
+    const store = await import('../../lib/store/index.ts')
+    serveLedger()
+    const now = Date.now()
+    const done = [{ status: 'done', createdAt: now, finishedAt: now }]
+    ledger.set('cv_follow', {
+      title: '第一次的提问',
+      latest: { content: '第二次的提问\n补充说明', origin: null },
+      runs: done,
+    })
+    ledger.set('cv_receipt', {
+      title: '派发任务',
+      latest: { content: '子 agent 的回执', origin: 'subagent' },
+      runs: done,
+    })
+    ledger.set('cv_plain', { title: '只有标题', runs: done })
+    store.setState({ activeConversation: 'cv_elsewhere', busyConversations: [] })
+    const stop = store.observePet()
+    try {
+      store.setState('busyConversations', ['cv_follow', 'cv_receipt', 'cv_plain'])
+      await flush()
+      const running = Object.fromEntries(store.petEntries().map((e) => [e.conversationId, e.title]))
+      expect(running).toMatchObject({
+        cv_follow: '第二次的提问',
+        cv_receipt: '派发任务',
+        cv_plain: '只有标题',
+      })
+      store.setState('busyConversations', [])
+      await flush()
+      expect(store.petResults().find((r) => r.conversationId === 'cv_follow')?.title).toBe(
+        '第二次的提问',
+      )
     } finally {
       stop()
     }

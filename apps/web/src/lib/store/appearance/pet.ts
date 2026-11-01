@@ -14,7 +14,9 @@
 
 import {
   type Conversation,
+  type ConversationHistoryPageResponse,
   type ConversationRunsResponse,
+  deriveConversationTitle,
   type PetEntry as PetPackEntry,
   type PetState,
   todoProgress,
@@ -31,6 +33,7 @@ export type PetPlace = 'desktop' | 'hidden'
 
 export interface PetResult {
   conversationId: string
+  /** 显示的文字：该会话最近一条由用户本人发送的消息（`textOf`），不是会话标题。 */
   title: string
   outcome: 'done' | 'failed'
   at: number
@@ -39,6 +42,7 @@ export interface PetResult {
 /** 宠物列表中的一行：运行中的会话或未查看的结果。 */
 export interface PetEntry {
   conversationId: string
+  /** 同 `PetResult.title`。 */
   title: string
   status: 'running' | 'done' | 'failed'
 }
@@ -171,6 +175,31 @@ async function loadMeta(id: string): Promise<ConversationMeta | null> {
 
 const titleOf = (id: string) => metaOf(id)?.title || '新对话'
 
+/**
+ * 会话 id → 最近一条由用户本人发送的消息，按会话标题的规则取首行并截断。列表与气泡显示它：
+ * 会话标题只来自第一条消息，同一会话中后续的提问与标题不同。会话开始运行时读取。
+ */
+const [prompts, setPrompts] = createSignal<ReadonlyMap<string, string>>(new Map())
+
+async function loadPrompt(id: string): Promise<void> {
+  let page: ConversationHistoryPageResponse
+  try {
+    page = await client.api<ConversationHistoryPageResponse>(
+      `/api/conversations/${encodeURIComponent(id)}/history?limit=1`,
+    )
+  } catch {
+    return
+  }
+  const m = page.messages.at(-1)
+  // 子 agent 与 workflow 的回执不是用户的提问，保留上一次读取到的消息。
+  if (!m || m.origin !== null) return
+  const text = deriveConversationTitle(m.content)
+  if (text) setPrompts((all) => new Map(all).set(id, text))
+}
+
+/** 列表与气泡中一行的文字。最近的消息尚未读取到或读取失败时为会话标题。 */
+const textOf = (id: string) => prompts().get(id) || titleOf(id)
+
 /** 运行中的顶层会话。子会话的运行属于派发它的会话，不单独列出。 */
 function runningIds(): string[] {
   return state.busyConversations.filter((id) => metaOf(id)?.parent !== true)
@@ -204,7 +233,7 @@ export function petEntries(): PetEntry[] {
   const running = runningIds()
   const rows: PetEntry[] = running.map((id) => ({
     conversationId: id,
-    title: titleOf(id),
+    title: textOf(id),
     status: 'running',
   }))
   for (const r of [...results()].sort((a, b) => b.at - a.at)) {
@@ -278,7 +307,7 @@ async function settle(id: string, since: number): Promise<void> {
   }
   const result: PetResult = {
     conversationId: id,
-    title: meta?.title || titleOf(id),
+    title: textOf(id),
     outcome,
     at: Date.now(),
   }
@@ -301,6 +330,7 @@ export function observePet(): () => void {
             if (!since.has(id)) {
               since.set(id, now)
               void loadMeta(id)
+              void loadPrompt(id)
             }
           }
           for (const [id, at] of [...since]) {
