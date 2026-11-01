@@ -6,6 +6,7 @@
  * 锁定以下行为：文件树不遗漏任何条目（依赖树、构建产物、以点开头的条目全部列出，
  * 界面隐藏某个条目即等同于该条目不存在）、新建与改名均不覆盖、删除不存在的条目必须抛出
  * （不静默成功）、搜索跳过噪音目录（与文件树的规则不同，属于有意设计）、分类的回退规则、
+ * Office 族的分类与按 Office 格式搜索、Office 文档的预览只返回元数据、
  * 预览只读取上限以内的字节，以及接口按字面值解析路径、删除软链接只删除目录项本身。
  */
 
@@ -194,6 +195,40 @@ describe('按名称搜索', () => {
     expect(await paths('q=')).toEqual([])
     expect((await find('kinds=video,exe')).status).toBe(422)
   })
+
+  test('接口传入 office 时按预览分类列出该格式的文件，带宏的文件与模板一并列出；格式不合法或与 kinds 同时给出时返回 422', async () => {
+    const dir = await workspace()
+    await mkdir(join(dir, 'sheets'), { recursive: true })
+    for (const name of ['a.xlsx', 'b.XLSM', 'c.xltx', 'd.csv', 'e.xls', 'f.ods']) {
+      await writeFile(join(dir, 'sheets', name), 'x')
+    }
+    await mkdir(join(dir, 'slides'), { recursive: true })
+    for (const name of ['a.pptx', 'b.PPTM', 'c.potx', 'd.ppt', 'e.odp']) {
+      await writeFile(join(dir, 'slides', name), 'x')
+    }
+    await mkdir(join(dir, 'docs'), { recursive: true })
+    for (const name of ['a.docx', 'b.DOCM', 'c.dotx', 'd.doc', 'e.odt', 'f.rtf']) {
+      await writeFile(join(dir, 'docs', name), 'x')
+    }
+    const find = async (query: string) => {
+      const url = new URL(`http://x/api/files/find?${query}`)
+      return (await handleWorkspaceFsApi(url, new Request(url.href), {
+        workspaceRoot: dir,
+      } as never)) as Response
+    }
+    const paths = async (query: string) =>
+      ((await (await find(query)).json()) as { matches: { path: string }[] }).matches
+        .map((m) => m.path)
+        .sort()
+    expect(await paths('office=xlsx')).toEqual(['sheets/a.xlsx', 'sheets/b.XLSM', 'sheets/c.xltx'])
+    expect(await paths('q=b&office=xlsx')).toEqual(['sheets/b.XLSM'])
+    expect(await paths('office=pptx')).toEqual(['slides/a.pptx', 'slides/b.PPTM', 'slides/c.potx'])
+    expect(await paths('q=b&office=pptx')).toEqual(['slides/b.PPTM'])
+    expect(await paths('office=docx')).toEqual(['docs/a.docx', 'docs/b.DOCM', 'docs/c.dotx'])
+    expect(await paths('q=b&office=docx')).toEqual(['docs/b.DOCM'])
+    expect((await find('office=doc')).status).toBe(422)
+    expect((await find('office=xlsx&kinds=image')).status).toBe(422)
+  })
 })
 
 describe('预览分类', () => {
@@ -204,6 +239,44 @@ describe('预览分类', () => {
     // 回退为 text 而不是 binary：扩展名无法穷举，未知扩展名按文本读取时最多显示乱码，
     // 按二进制处理则会使可读取的内容无法显示。
     expect(classify('x.qwerty')).toEqual({ kind: 'text', mime: 'text/plain' })
+  })
+
+  test('xlsx、带宏的 xlsm 与模板 xltx 归入 Office 族的 xlsx 格式；xls、ods 不在此列，csv 仍为表格族', () => {
+    for (const name of ['a.xlsx', 'b.xlsm', 'c.xltx', 'D.XLSX']) {
+      expect(classify(name)).toEqual({
+        kind: 'office',
+        mime: 'application/octet-stream',
+        office: 'xlsx',
+      })
+    }
+    expect(classify('a.xls')).toEqual({ kind: 'text', mime: 'text/plain' })
+    expect(classify('a.ods')).toEqual({ kind: 'text', mime: 'text/plain' })
+    expect(classify('a.csv').kind).toBe('tabular')
+  })
+
+  test('pptx、带宏的 pptm 与模板 potx 归入 Office 族的 pptx 格式；ppt、odp 不在此列', () => {
+    for (const name of ['a.pptx', 'b.pptm', 'c.potx', 'D.PPTX']) {
+      expect(classify(name)).toEqual({
+        kind: 'office',
+        mime: 'application/octet-stream',
+        office: 'pptx',
+      })
+    }
+    expect(classify('a.ppt')).toEqual({ kind: 'text', mime: 'text/plain' })
+    expect(classify('a.odp')).toEqual({ kind: 'text', mime: 'text/plain' })
+  })
+
+  test('docx、带宏的 docm 与模板 dotx 归入 Office 族的 docx 格式；doc、odt、rtf 不在此列', () => {
+    for (const name of ['a.docx', 'b.docm', 'c.dotx', 'D.DOCX']) {
+      expect(classify(name)).toEqual({
+        kind: 'office',
+        mime: 'application/octet-stream',
+        office: 'docx',
+      })
+    }
+    for (const name of ['a.doc', 'a.odt', 'a.rtf']) {
+      expect(classify(name)).toEqual({ kind: 'text', mime: 'text/plain' })
+    }
   })
 })
 
@@ -244,6 +317,32 @@ describe('预览', () => {
       expect('dataUri' in out).toBe(false)
       expect(out.note).toBeUndefined()
     }
+  })
+
+  /** 原始失败形状：xlsx 归入表格族后按文本解码，经 `looksBinary` 判定后显示「无法以文本预览」。 */
+  test('Office 文档只返回元数据与格式，不内联内容；xls 仍按二进制显示', async () => {
+    const dir = await workspace()
+    const abs = join(dir, 'book.xlsx')
+    await writeFile(
+      abs,
+      new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, ...new Uint8Array(600 * 1024)]),
+    )
+    const out = await preview(abs, 'book.xlsx')
+    expect(out).toEqual({
+      path: 'book.xlsx',
+      kind: 'office',
+      office: 'xlsx',
+      mime: 'application/octet-stream',
+      size: 600 * 1024 + 8,
+      mtime: (await stat(abs)).mtimeMs,
+      truncated: false,
+    })
+    const legacy = join(dir, 'old.xls')
+    await writeFile(legacy, new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0, 0, 0, 0]))
+    expect(await preview(legacy, 'old.xls')).toMatchObject({
+      kind: 'binary',
+      note: '二进制内容，无法以文本预览',
+    })
   })
 })
 
