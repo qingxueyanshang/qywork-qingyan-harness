@@ -348,3 +348,40 @@
 .tooltip.show {
   opacity: 1;
 }
+
+/* 首次启动的登录页（LoginGate）：覆盖整个窗口，设置弹窗打开时位于其下。 */
+.login-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: var(--bg-app);
+}
+
+.login-gate-card {
+  width: min(360px, calc(100vw - 32px));
+  height: 260px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.login-gate-card h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+}
+
+.login-gate-code {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.login-gate-code code {
+  font-size: 22px;
+  letter-spacing: 3px;
+}
