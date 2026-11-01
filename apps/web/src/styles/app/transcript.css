@@ -291,32 +291,6 @@
  * 只用六个语义色（关键字、字符串、数字、注释、函数、类型）：代码着色用于区分结构，
  * 颜色过多会削弱区分度。注释取最低对比度，它是最不需要突出的 token。
  */
-:root {
-  --hl-keyword: #8250df;
-  --hl-string: #0a6b3d;
-  --hl-number: #0550ae;
-  --hl-comment: #8b8b93;
-  --hl-function: #6639ba;
-  --hl-type: #953800;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --hl-keyword: #d2a8ff;
-    --hl-string: #7ee787;
-    --hl-number: #79c0ff;
-    --hl-comment: #7a7a84;
-    --hl-function: #d2a8ff;
-    --hl-type: #ffa657;
-  }
-}
-:root[data-theme="dark"] {
-  --hl-keyword: #d2a8ff;
-  --hl-string: #7ee787;
-  --hl-number: #79c0ff;
-  --hl-comment: #7a7a84;
-  --hl-function: #d2a8ff;
-  --hl-type: #ffa657;
-}
 
 .hljs-keyword,
 .hljs-built_in,
@@ -762,23 +736,6 @@
   flex: 1;
 }
 
-/* 卡片内的次级按钮：视觉权重低，但可点击。 */
-.ghost-btn {
-  flex-shrink: 0;
-  padding: 2px 10px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: var(--fs-xs);
-  cursor: pointer;
-  transition: background var(--t-fast) var(--ease);
-}
-.ghost-btn:hover {
-  background: var(--bg-hover);
-}
-
 /* 压缩事件：与折叠行同列、同字号，仅失败时以红色突出。
  *
  * 不要改为居中：会话流中的过程记录都左对齐于同一条竖线，居中的条目会被识别为
@@ -901,7 +858,7 @@
   width: 8px;
   height: 8px;
   border-radius: 1px;
-  background: #ede9fe;
+  background: var(--vivid-100);
   /* 必须使用 `linear`：缓动函数按相邻两个关键帧计算，六个色标会产生六次停顿，
      颜色变化时断时续。 */
   animation: run-blocks 1.8s linear infinite;
@@ -1009,8 +966,14 @@
 }
 .run-strip.done .run-galaxy > span {
   background:
-    linear-gradient(90deg, #ddd6fe 0%, #a78bfa 30%, #7c3aed 62%, #5b21b6 100%) calc(var(--x) * -1) 0
-    / 56px 8px;
+    linear-gradient(
+      90deg,
+      var(--vivid-200) 0%,
+      var(--vivid-400) 30%,
+      var(--vivid-600) 62%,
+      var(--vivid-800) 100%
+    )
+    calc(var(--x) * -1) 0 / 56px 8px;
   opacity: 1;
   animation: none;
 }

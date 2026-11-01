@@ -1,0 +1,342 @@
+/*
+ * 全局控件：按钮、分段、开关、下拉框、滑块、颜色选择与禁用态。
+ *
+ * 新增界面直接使用这些类与元素，不在各区域另写一套：同一类控件分处多个文件时，
+ * 修改一处后其余各处仍是旧样式，同一页上出现两种开关、两种按钮。
+ * 由 `../app.css` 最先引入：各区域对控件的尺寸调整写在自己的文件中，以更高或相同的特异性覆盖本文件。
+ *
+ * 强调色只用于主操作与「开 / 选中」状态（主按钮、开关、滑块、颜色选择中的当前项），
+ * 其余状态使用中性色阶，规则见 `../tokens.css` 开头。
+ */
+
+/* ── 按钮 ── */
+
+/* 主操作。文字色取 `--accent-fg`：个性化设置浅色强调色时，白字在其上无法辨认。 */
+.btn-primary {
+  padding: 6px var(--s-4);
+  border-radius: var(--r-xs);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  transition: background var(--t-fast) var(--ease);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.btn-primary.danger {
+  background: var(--danger);
+  color: var(--text-inverted);
+}
+.btn-ghost {
+  align-self: flex-start;
+  padding: 5px var(--s-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  transition: background var(--t-fast) var(--ease);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* 行内紧凑按钮：设置行、卡片与列表行中的次要操作。 */
+.btn-primary.sm,
+.btn-ghost.sm {
+  flex: none;
+  align-self: auto;
+  padding: 2px var(--s-2);
+  font-size: var(--fs-xs);
+}
+.btn-primary:disabled,
+.btn-ghost:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+
+/* ── 分段 ──
+   使用一排按钮而不是下拉框：选项全部可见时，「跟随系统」与「浅色」的区别可直接看到；
+   下拉框需要展开才能看到第三个选项。选中项用浮起的中性底色，不用强调色：分段的每一项都是可选值，
+   不是「开」与「关」。 */
+.seg {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+}
+fieldset.seg {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+}
+.seg-item {
+  padding: 4px var(--s-3);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.seg-item:hover {
+  color: var(--text-primary);
+}
+.seg-item.active {
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── 开关 ──
+   由勾选框绘制（`appearance: none` 后以 `::before` 画滑块），键盘与读屏行为沿用原生勾选框。 */
+.switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: 9px;
+  background: var(--bg-inset);
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: transform var(--t-fast) var(--ease);
+}
+.switch:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.switch:checked::before {
+  transform: translateX(12px);
+  background: var(--accent-fg);
+}
+.switch:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+
+/* ── 下拉框 ──
+ *
+ * 全部 `select` 使用可样式化的原生控件，按钮与展开列表共用页面的中性色阶。
+ * 写成元素选择器而不是限定在某些容器中：限定时，容器之外新增的下拉框退回系统样式。
+ *
+ * 箭头由两道 `linear-gradient` 拼成，不使用 SVG 的 data URI：data URI 中无法读取 CSS 变量，
+ * 颜色只能固定为某个灰色。渐变支持 `currentColor`，可自动适配亮色与暗色主题。
+ * 右内距为箭头预留位置，修改箭头的 `background-position` 时须同步修改右内距；
+ * 区域内改写底色时使用 `background-color`，`background` 简写会清除箭头。
+ */
+select {
+  appearance: base-select;
+  padding: 6px 26px 6px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background-color: var(--bg-app);
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    right 13px center,
+    right 9px center;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+}
+select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+/*
+ * 列表默认在下拉框下方展开，下方空间不足时才翻到上方。不要删去 `position-try-order`：
+ * 浏览器的缺省值是 `most-block-size`，按上下哪一侧空间大决定方向，位于窗口下半部的下拉框
+ * 会从上方展开，与其他下拉框方向不一致。
+ */
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+select::picker(select) {
+  appearance: base-select;
+  position-try-order: normal;
+  max-height: min(480px, 60vh);
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+}
+
+/*
+ * 弹出层的滚动条与全局一致：细、无箭头（数值同 base.css）。全局的 `*::-webkit-scrollbar` 作用不到
+ * `::picker(select)` 这个伪元素，必须在它上面单独写。不要改用 `scrollbar-width` / `scrollbar-color`：
+ * Chromium 识别到这两项后忽略 `::-webkit-scrollbar` 规则，退回带箭头按钮的系统滚动条。
+ */
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+select::picker(select)::-webkit-scrollbar {
+  width: 12px;
+}
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+select::picker(select)::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+select::picker(select)::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: var(--r-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+select::picker(select)::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: content-box;
+}
+
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+select::picker-icon {
+  display: none;
+}
+
+select option {
+  min-height: 24px;
+  padding: 2px var(--s-2);
+}
+
+/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
+select option::checkmark {
+  display: none;
+}
+
+/* 当前项与悬停项同一档灰色，与列表中的选中行一致（`--bg-active`）。 */
+select option:checked,
+select option:hover {
+  background: var(--bg-active);
+}
+
+/* ── 滑块 ──
+   不重绘轨道与滑块，只设强调色，理由同 base.css 的勾选框：`accent-color` 是标准属性，
+   配合 `color-scheme` 在亮暗两种主题下均正确。视频上的白色滑块由画布样式单独覆盖。 */
+input[type="range"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ── 颜色选择（`ColorWell`） ── */
+
+.color-well {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 24px;
+  padding: 3px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+}
+.color-well:hover {
+  border-color: var(--border-strong);
+}
+.color-well[aria-expanded="true"] {
+  border-color: var(--border-focus);
+}
+
+/* 色块。空值画一条对角斜线，与常见办公软件的「无颜色」相同。 */
+.color-swatch {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.color-swatch.empty {
+  background:
+    linear-gradient(
+      to top right,
+      transparent calc(50% - 0.75px),
+      var(--danger) calc(50% - 0.75px),
+      var(--danger) calc(50% + 0.75px),
+      transparent calc(50% + 0.75px)
+    ), var(--bg-app);
+}
+
+/* 颜色面板。位置由组件按色块按钮的位置计算（`position: fixed`），尺寸固定（B9）。
+   完整规则，不与其他浮层共用选择器（B8）。 */
+.color-panel {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  width: 232px;
+  padding: var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+.color-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 18px);
+  gap: 4px;
+}
+.color-panel-cell {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.color-panel-cell:hover {
+  outline: 1px solid var(--border-strong);
+  outline-offset: 1px;
+}
+.color-panel-cell[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.color-panel-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 26px;
+  padding: 0 var(--s-1);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  text-align: left;
+}
+.color-panel-row:hover {
+  background: var(--bg-hover);
+}
+.color-panel-row[aria-pressed="true"] {
+  background: var(--bg-active);
+}
+.color-panel-row > .color-swatch {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+/* 系统取色器由「其他颜色」触发，本身不显示。 */
+.color-panel-native {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}

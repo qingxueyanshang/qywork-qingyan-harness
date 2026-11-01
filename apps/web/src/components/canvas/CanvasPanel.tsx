@@ -1689,7 +1689,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 y2={e().y2}
               >
                 <For each={FLOW_STOPS}>
-                  {([offset, color]) => <stop offset={offset} stop-color={color} />}
+                  {([offset, token]) => (
+                    <stop offset={offset} style={{ 'stop-color': `var(${token})` }} />
+                  )}
                 </For>
               </linearGradient>
             )}

@@ -462,7 +462,7 @@ export class QyClient {
   }
 
   /**
-   * 本机级资源（不属于任何项目，如皮肤图片）的直链。令牌放在查询串中，理由同 `fileUrl`；
+   * 本机级资源（不属于任何项目，如个性化的背景图片）的直链。令牌放在查询串中，理由同 `fileUrl`；
    * 不附加 `ws=`：这些资源与项目无关。
    */
   assetUrl(path: string): string {

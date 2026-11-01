@@ -1,4 +1,4 @@
-/* 皮肤背景层（`SkinBackdrop`）。由 `../app.css` 按固定顺序引入，不要单独 import 本文件。 */
+/* 个性化的背景层（`PersonalBackdrop`）。由 `../app.css` 按固定顺序引入，不要单独 import 本文件。 */
 
 /*
  * 位于界面骨架之下：`.app` 不建立层叠上下文，`z-index: -1` 的固定层绘制在 `.app` 的
@@ -6,7 +6,7 @@
  * 建立层叠上下文后本层被限制在 `.app` 内部，仍在其底色之下，结果相同，但窄屏抽屉等
  * 按根层叠上下文排序的浮层会与之交错。
  */
-.skin-backdrop {
+.personal-backdrop {
   position: fixed;
   inset: 0;
   z-index: -1;
@@ -14,15 +14,15 @@
   pointer-events: none;
 }
 
-.skin-layer {
+.personal-layer {
   position: absolute;
   inset: 0;
 }
 
-.skin-dim {
+.personal-dim {
   position: absolute;
   inset: 0;
-  background: #000;
+  background: var(--media-black);
 }
 
 /*
@@ -30,7 +30,7 @@
  * 不触发重新布局与重绘。不要改为对 `background-position` 或 `filter` 做动画：
  * 两者每帧都在主线程重绘整层。
  */
-.skin-fog {
+.personal-fog {
   position: absolute;
   inset: 0;
 }
@@ -70,7 +70,7 @@
   animation-direction: alternate-reverse;
 }
 
-.skin-fog.paused .fog-blob {
+.personal-fog.paused .fog-blob {
   animation-play-state: paused;
 }
 

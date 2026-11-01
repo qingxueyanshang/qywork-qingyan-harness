@@ -11,7 +11,7 @@ import {
   type Setter,
   Show,
 } from 'solid-js'
-import { activePanelTab, effectiveTheme, holdPanelTab, workspace } from '../lib/store/index.ts'
+import { activePanelTab, holdPanelTab, theme, workspace } from '../lib/store/index.ts'
 import { closeTerminal, openTerminal, resizeTerminal, writeTerminal } from '../lib/terminal.ts'
 import {
   disconnectedTerminal,
@@ -132,7 +132,7 @@ function applyTheme(pane: Pane): void {
  * 主题同步**注册在模块级而不是组件中**，一次作用于所有实例。
  *
  * 注册在组件中时，收起面板期间切换主题，实例仍存在但不会更新配色，重新打开后仍是旧配色。
- * 两条路径都必须存在：显式切换与皮肤切换经由 `effectiveTheme()`，`system` 档没有 `data-theme` 属性，只能监听
+ * 两条路径都必须存在：显式切换经由 `theme()`，`system` 档没有 `data-theme` 属性，只能监听
  * 系统偏好；缺少任一条，都有一类情况不随主题变化。
  *
  * `createRoot` 只为该 effect 提供所有者。它随模块常驻，没有销毁时机，
@@ -147,7 +147,7 @@ function watchTheme(): void {
   }
   createRoot(() =>
     createEffect(() => {
-      effectiveTheme()
+      theme()
       applyAll()
     }),
   )

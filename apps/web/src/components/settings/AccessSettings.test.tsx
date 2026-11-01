@@ -18,7 +18,7 @@ afterAll(async () => {
 
 const g = globalThis as Record<string, unknown>
 
-function click(button: HTMLButtonElement) {
+function click(button: HTMLElement) {
   const event = new MouseEvent('click', { bubbles: true })
   const delegated = (button as unknown as { $$click?: (event: MouseEvent) => void }).$$click
   if (delegated) delegated.call(button, event)
@@ -127,7 +127,7 @@ async function mount(
     rows,
     invokes,
     saved,
-    foreground: () => card()?.querySelector<HTMLElement>('.setting-row .seg'),
+    foreground: () => card()?.querySelector<HTMLInputElement>('.setting-row .switch'),
     done: () => {
       dispose()
       host.remove()
@@ -141,17 +141,17 @@ test('前台操作默认启用，显式关闭与重新开启均按实际选择�
   for (const value of [undefined, true, false]) {
     const page = await mount(desktop({}), null, value)
     try {
-      const selected = () => page.foreground()?.querySelector('.active')?.textContent
-      expect(selected()).toBe(value === false ? '关闭' : '启用')
-      const buttons = page.foreground()?.querySelectorAll<HTMLButtonElement>('button')
-      click(buttons?.[0] as HTMLButtonElement)
-      expect(await until(() => page.saved.length === 1)).toBe(true)
-      expect(page.saved[0]).toBe(false)
-      expect(selected()).toBe('关闭')
-      click(buttons?.[1] as HTMLButtonElement)
-      expect(await until(() => page.saved.length === 2)).toBe(true)
-      expect(page.saved[1]).toBe(true)
-      expect(selected()).toBe('启用')
+      const on = () => page.foreground()?.checked
+      expect(on()).toBe(value !== false)
+      if (value !== false) {
+        click(page.foreground() as HTMLInputElement)
+        expect(await until(() => page.saved.length === 1)).toBe(true)
+        expect(page.saved[0]).toBe(false)
+        expect(on()).toBe(false)
+      }
+      click(page.foreground() as HTMLInputElement)
+      expect(await until(() => page.saved.at(-1) === true)).toBe(true)
+      expect(on()).toBe(true)
     } finally {
       page.done()
     }

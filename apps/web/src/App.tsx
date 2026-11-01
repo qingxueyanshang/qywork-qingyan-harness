@@ -9,7 +9,7 @@ import {
   Suspense,
 } from 'solid-js'
 import { activePet } from './components/appearance/active-pet.ts'
-import { SkinBackdrop } from './components/appearance/SkinBackdrop.tsx'
+import { PersonalBackdrop } from './components/appearance/PersonalBackdrop.tsx'
 import { Composer } from './components/Composer.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
@@ -37,9 +37,9 @@ import {
   isDesktopShell,
   loadConversations,
   loadWorkspace,
+  observePersonalization,
   observePet,
   observePetWindow,
-  observeSkins,
   openFileInPanel,
   openLinkInPanel,
   PANEL_MIN,
@@ -193,7 +193,7 @@ export function App() {
     client.connect()
     const stopUpdates = observeAppUpdate()
     onCleanup(stopUpdates)
-    onCleanup(observeSkins())
+    onCleanup(observePersonalization())
     // 宠物只显示在桌面外壳的宠物窗口中；其他端不推导，避免每次会话变闲都读取一次轮次。
     if (isDesktopShell()) {
       onCleanup(observePet())
@@ -235,7 +235,7 @@ export function App() {
         copyCode(e)
       }}
     >
-      <SkinBackdrop />
+      <PersonalBackdrop />
       <Show when={state.connection !== 'ready'}>
         <div class="conn-bar" classList={{ bad: state.connection === 'unauthorized' }}>
           {connLabel()}

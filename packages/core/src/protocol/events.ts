@@ -84,7 +84,7 @@ export type AgentEvent =
   | BrowserStateEvent
   | DesktopStateEvent
   | DesktopTargetEvent
-  | SkinsChangedEvent
+  | PersonalizationChangedEvent
   | PetsChangedEvent
   // ── 多智能体 ──
   | TeamMemberEvent
@@ -602,20 +602,17 @@ export interface CanvasExportEvent {
 }
 
 /**
- * 皮肤库中的一套皮肤已保存或删除。
+ * 个性化已保存或恢复为默认。
  *
- * 工作区级事件：信封上不带 `conversationId`，所有客户端都能收到。皮肤库是本机级数据，
- * 设置页与 `skin` 工具都会修改它；正在使用该皮肤的屏幕据此重新读取，修改无需刷新即生效。
- * 只携带 id 不携带内容：各屏幕读取时按自己的端点生成图片直链，内容随事件下发时各端仍需再取一次图片。
+ * 工作区级事件：信封上不带 `conversationId`，所有客户端都能收到。个性化是本机级数据，
+ * 设置页与 `personalize` 工具都会修改它；各屏幕据此重新读取，修改无需刷新即生效。
+ * 不携带内容：各屏幕读取时按自己的端点生成图片直链，内容随事件下发时各端仍需再取一次图片。
  */
-export interface SkinsChangedEvent {
-  type: 'skins.changed'
-  id: string
-  /** true 表示已删除。 */
-  removed: boolean
+export interface PersonalizationChangedEvent {
+  type: 'personalization.changed'
 }
 
-/** 宠物库中的一只宠物已保存或删除。理由同 `SkinsChangedEvent`。 */
+/** 宠物库中的一只宠物已保存或删除。理由同 `PersonalizationChangedEvent`。 */
 export interface PetsChangedEvent {
   type: 'pets.changed'
   id: string

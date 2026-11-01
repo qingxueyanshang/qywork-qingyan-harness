@@ -134,15 +134,14 @@
  *
  * 第三项使用向下的 box-shadow，不使用 `margin-bottom: -1px`：负外边距会使该页签
  * 整体下移 1px，各页签的文字基线随之错开。
- * 线条使用 `--text-primary` 而不是 `--accent`：横带上已由底色表示选中，
- * 再使用彩色会形成第二处强调色。
+ * 线条使用强调色，与设置页页签的下划线相同：选中项的标记全应用只用一种颜色。
  */
 .side-tab.active {
   background: var(--content-bg);
   color: var(--text-primary);
   font-weight: 500;
   box-shadow:
-    inset 0 2px 0 var(--text-primary),
+    inset 0 2px 0 var(--accent),
     0 1px 0 var(--content-bg);
 }
 
@@ -438,8 +437,8 @@
   width: 100%;
   border: none;
 }
-/* 工作台页：插件页面占满整页。页面的底色由页面自己决定，不透出皮肤背景：
-   页面是内容区，皮肤只作用于界面骨架。 */
+/* 工作台页：插件页面占满整页。页面的底色由页面自己决定，不透出个性化背景：
+   页面是内容区，个性化只作用于界面骨架。 */
 .workbench-pane {
   flex: 1;
   min-height: 0;
@@ -712,7 +711,7 @@
   flex: 1 1 auto;
   min-width: 0;
   padding: 1px var(--s-1);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border-focus);
   border-radius: var(--r-xs);
   background: var(--bg-app);
   font-size: var(--fs-sm);
@@ -910,7 +909,7 @@
   color: var(--text-primary);
 }
 .image-preview-tools button:disabled {
-  opacity: 0.4;
+  opacity: var(--disabled-opacity);
   cursor: default;
 }
 .image-preview-zoom {

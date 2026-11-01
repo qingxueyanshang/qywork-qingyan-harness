@@ -2,7 +2,7 @@
  * `pet`：读取、创建与切换 qywork 的宠物。
  *
  * 读写经 `ctx.pets` 端口完成，宠物库位于 `~/.qywork/pets/`。`apply` 只核对宠物存在并返回 id，
- * 切换由界面在当前会话收到成功结果后执行，理由同 `skin` 工具。
+ * 切换由界面在当前会话收到成功结果后执行：当前屏幕选用哪只宠物只由界面记录，服务端与本工具都不知道。
  */
 
 import { readFile, stat } from 'node:fs/promises'

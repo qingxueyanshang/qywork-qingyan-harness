@@ -1,33 +1,43 @@
 /**
- * 外观的服务端装配：皮肤库与宠物库变更的广播，以及注入会话的 `SkinPort` / `PetPort`。
+ * 外观的服务端装配：个性化与宠物库变更的广播，以及注入会话的 `PersonalizationPort` / `PetPort`。
  *
- * HTTP 接口（`api/appearance.ts`）与 `skin` / `pet` 工具都经由此处广播：
- * 两条修改路径各自广播时，一处遗漏即使正在使用该皮肤或宠物的屏幕无法更新。
+ * HTTP 接口（`api/appearance.ts`）与 `personalize` / `pet` 工具都经由此处广播：
+ * 两条修改路径各自广播时，一处遗漏即使其他屏幕无法更新。
  */
 
-import type { PetPort, SkinPort } from '@qywork/agent'
-import { listPets, listSkins, readPet, readSkin, savePet, saveSkin } from '@qywork/runtime'
+import type { PersonalizationPort, PetPort } from '@qywork/agent'
+import {
+  listPets,
+  readPersonalization,
+  readPet,
+  resetPersonalization,
+  savePersonalization,
+  savePet,
+} from '@qywork/runtime'
 import type { EventBus } from './bus.ts'
 
-/** 广播皮肤库变更。工作区级事件，不带 `conversationId`：所有客户端都需要收到。 */
-export function announceSkin(bus: EventBus, id: string, removed: boolean): void {
-  bus.publish({ type: 'skins.changed', id, removed })
+/** 广播个性化变更。工作区级事件，不带 `conversationId`：所有客户端都需要收到。 */
+export function announcePersonalization(bus: EventBus): void {
+  bus.publish({ type: 'personalization.changed' })
 }
 
-export function skinPort(bus: EventBus): SkinPort {
+export function personalizationPort(bus: EventBus): PersonalizationPort {
   return {
-    list: async () => (await listSkins()).skins,
-    read: (id) => readSkin(id),
-    save: async (id, skin, image) => {
-      const r = await saveSkin(id, skin, image ? [image] : [])
-      if (!r.ok) return { ok: false, error: r.error }
-      announceSkin(bus, r.entry.id, false)
-      return { ok: true, entry: r.entry }
+    read: () => readPersonalization(),
+    save: async (value, image) => {
+      const r = await savePersonalization(value, image ? [image] : [])
+      if (r.ok) announcePersonalization(bus)
+      return r
+    },
+    reset: async () => {
+      const entry = await resetPersonalization()
+      announcePersonalization(bus)
+      return entry
     },
   }
 }
 
-/** 广播宠物库变更。理由同 `announceSkin`。 */
+/** 广播宠物库变更。理由同 `announcePersonalization`。 */
 export function announcePet(bus: EventBus, id: string, removed: boolean): void {
   bus.publish({ type: 'pets.changed', id, removed })
 }

@@ -22,10 +22,10 @@ import {
   type LoopPersistence,
   type OfficePort,
   type PermissionVerdict,
+  type PersonalizationPort,
   type PetPort,
   type PluginPort,
   runDensity,
-  type SkinPort,
   type ToolContextBase,
   ToolRegistry,
   videoMetaOf,
@@ -195,10 +195,11 @@ export interface SessionOptions {
    */
   canvas?: CanvasPort
   /**
-   * 皮肤库通道。见 `SkinPort`。由服务端为顶层会话注入；未传入时（CLI 会话、成员会话）没有 `skin` 工具。
+   * 个性化通道。见 `PersonalizationPort`。由服务端为顶层会话注入；未传入时（CLI 会话、成员会话）
+   * 没有 `personalize` 工具。
    */
-  skins?: SkinPort
-  /** 宠物库通道。见 `PetPort`。注入范围同 `skins`。 */
+  personalization?: PersonalizationPort
+  /** 宠物库通道。见 `PetPort`。注入范围同 `personalization`。 */
   pets?: PetPort
   /**
    * 电脑控制通道。见 `DesktopPort`。
@@ -352,7 +353,7 @@ export class Session {
       canvas: mediaOn && opts.canvas !== undefined,
       // 画布端口只由服务端注入，与生成开关无关；成员会话的工具卡不显示在当前会话中。
       panel: opts.canvas !== undefined && opts.member !== true,
-      skins: opts.skins !== undefined && opts.member !== true,
+      personalization: opts.personalization !== undefined && opts.member !== true,
       pets: opts.pets !== undefined && opts.member !== true,
       office: opts.office !== undefined,
       videoDecoder: opts.office?.videoDecoder === true,
@@ -1274,7 +1275,7 @@ export class Session {
       ...(this.opts.browser ? { browser: this.opts.browser } : {}),
       ...(this.opts.desktop ? { desktop: this.opts.desktop } : {}),
       ...(this.opts.canvas ? { canvas: this.opts.canvas } : {}),
-      ...(this.opts.skins ? { skins: this.opts.skins } : {}),
+      ...(this.opts.personalization ? { personalization: this.opts.personalization } : {}),
       ...(this.opts.pets ? { pets: this.opts.pets } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
       skillSourcePaths: () =>

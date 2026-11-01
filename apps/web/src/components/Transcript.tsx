@@ -110,7 +110,7 @@ export function ConversationHistoryBoundary(props: {
             <div class="history-error" role="alert">
               <span>历史记录加载失败：{error().message}</span>
               <button
-                class="ghost-btn"
+                class="btn-ghost sm"
                 type="button"
                 onClick={() => void retryConversationHistory(props.conversationId)}
               >
@@ -442,7 +442,7 @@ export function Transcript() {
             {(n) => (
               <output class="notice-card">
                 <span>{n().message}</span>
-                <button class="ghost-btn" type="button" onClick={() => setState('notice', null)}>
+                <button class="btn-ghost sm" type="button" onClick={() => setState('notice', null)}>
                   关闭
                 </button>
               </output>

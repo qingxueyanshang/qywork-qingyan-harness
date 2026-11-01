@@ -3355,11 +3355,11 @@ describe('工具卡按 stepId 认领实时输出', () => {
   })
 
   /**
-   * 对话中切换皮肤：当前会话的 `skin` 工具 apply 成功时交给皮肤模块切换（`skinApply`）；
+   * 对话中切换宠物：当前会话的 `pet` 工具 apply 成功时交给宠物模块切换（`petApply`）；
    * 其他会话的、失败的、以及不带 `applied` 的 save 结果都不触发切换。
    */
-  test('当前会话的 skin apply 成功时请求切换皮肤', async () => {
-    const { skinApply } = await import('./store/connection.ts')
+  test('当前会话的 pet apply 成功时请求切换宠物', async () => {
+    const { petApply } = await import('./store/connection.ts')
     const call = (
       cid: string,
       stepId: string,
@@ -3375,12 +3375,12 @@ describe('工具卡按 stepId 认领实时输出', () => {
           runId: 'run_1',
           stepId,
           toolCallId: stepId,
-          toolName: 'skin',
+          toolName: 'pet',
           batchId: 'b_1',
           callIndex: 0,
           waveIndex: 0,
           args: { action: 'apply' },
-          action: { kind: 'call', objectLabel: '皮肤', target: null },
+          action: { kind: 'call', objectLabel: '宠物', target: null },
         },
       } as never)
       applyEvent({
@@ -3401,15 +3401,15 @@ describe('工具卡按 stepId 认领实时输出', () => {
     setState({ activeConversation: 'cv_now' })
     freshView('cv_now')
     freshView('cv_other')
-    const before = skinApply()
-    call('cv_other', 'sk_o', 'success', { applied: 'night' })
-    call('cv_now', 'sk_f', 'failure', { applied: 'night' })
-    call('cv_now', 'sk_save', 'success', { id: 'night' })
-    expect(skinApply()).toBe(before)
-    call('cv_now', 'sk_a', 'success', { applied: 'night' })
-    expect(skinApply()?.id).toBe('night')
-    call('cv_now', 'sk_n', 'success', { applied: null })
-    expect(skinApply()?.id).toBeNull()
+    const before = petApply()
+    call('cv_other', 'pt_o', 'success', { applied: 'cat' })
+    call('cv_now', 'pt_f', 'failure', { applied: 'cat' })
+    call('cv_now', 'pt_save', 'success', { id: 'cat' })
+    expect(petApply()).toBe(before)
+    call('cv_now', 'pt_a', 'success', { applied: 'cat' })
+    expect(petApply()?.id).toBe('cat')
+    call('cv_now', 'pt_n', 'success', { applied: null })
+    expect(petApply()?.id).toBeNull()
   })
 
   /** 接口拒绝了包含图片的请求：事件只标记它列出的卡片，标记显示在对应的「读取文件」行上。 */

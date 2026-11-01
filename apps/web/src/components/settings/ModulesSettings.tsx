@@ -426,7 +426,7 @@ export function ModulesSettings() {
               <Show when={g.mod.toggle}>
                 {(t) => (
                   <Show when={config()}>
-                    <OnOff on={t().on()} onPick={t().onPick} />
+                    <OnOff label={g.mod.label} on={t().on()} onPick={t().onPick} />
                   </Show>
                 )}
               </Show>

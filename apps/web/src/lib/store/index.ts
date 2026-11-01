@@ -36,6 +36,14 @@ export {
   type TeamRoleRow,
 } from './actions.ts'
 export {
+  currentPersonalization,
+  editPersonalization,
+  observePersonalization,
+  personalizationError,
+  resetPersonalization,
+  setPersonalImage,
+} from './appearance/personalization.ts'
+export {
   observePet,
   openPetEntry,
   PET_BUBBLE_MS,
@@ -57,20 +65,6 @@ export {
   stopPetEntry,
 } from './appearance/pet.ts'
 export { observePetWindow } from './appearance/pet-window.ts'
-export {
-  createSkin,
-  editChosenSkin,
-  observeSkins,
-  refreshSkinLibrary,
-  removeSkin,
-  saveSkin,
-  selectSkin,
-  selectSkinById,
-  setSkinImage,
-  skinImageUrl,
-  skinLibrary,
-  skinSaveError,
-} from './appearance/skins.ts'
 export {
   browserPresentation,
   browserReady,
@@ -228,15 +222,11 @@ export {
   viewOf,
 } from './state.ts'
 export {
-  chooseSkin,
-  effectiveTheme,
   initTheme,
-  type PaintedSkin,
-  paintedSkin,
-  paintSkin,
-  type SkinChoice,
+  type PaintedPersonalization,
+  paintedPersonalization,
+  paintPersonalization,
   setTheme,
-  skinChoice,
   type ThemePref,
   theme,
 } from './theme.ts'

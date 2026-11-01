@@ -1,20 +1,18 @@
-import type { PermissionMode } from '@qywork/core'
+import { isDefaultPersonalization, type PermissionMode } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import {
   client,
+  currentPersonalization,
   type FollowUpMode,
   followUpMode,
   isDesktopShell,
-  paintedSkin,
   petLibrary,
   petPrefs,
   refreshPetLibrary,
   removePet,
-  selectSkin,
   setFollowUpMode,
   setPetPrefs,
   setTheme,
-  skinChoice,
   type ThemePref,
   theme,
   workspace,
@@ -34,8 +32,8 @@ import {
 import { environment, environmentError, reloadEnvironment } from './environmentStore.ts'
 import { LoadState } from './LoadState.tsx'
 import { OnOff } from './OnOff.tsx'
+import { PersonalizationDialog } from './PersonalizationDialog.tsx'
 import { PathRow, Row } from './Row.tsx'
-import { SkinDialog } from './SkinDialog.tsx'
 import { UpdateSettings } from './UpdateSettings.tsx'
 
 const THEMES: { id: ThemePref; label: string }[] = [
@@ -151,7 +149,7 @@ function EnvironmentRows() {
  */
 export function GeneralSettings() {
   ensureConfig()
-  const [skinOpen, setSkinOpen] = createSignal(false)
+  const [personalOpen, setPersonalOpen] = createSignal(false)
   const [petError, setPetError] = createSignal<string | null>(null)
   if (isDesktopShell()) {
     void refreshPetLibrary().catch((e: unknown) =>
@@ -162,28 +160,24 @@ export function GeneralSettings() {
   return (
     <>
       <UpdateSettings />
-      <Show when={skinOpen()}>
-        <SkinDialog onClose={() => setSkinOpen(false)} />
+      <Show when={personalOpen()}>
+        <PersonalizationDialog onClose={() => setPersonalOpen(false)} />
       </Show>
       <AccountSection />
       <section class="settings-block">
         <h3 class="settings-block-head">偏好</h3>
         <div class="setting-rows">
           {/* 使用三态而不是深色开关：开关关闭后，系统切换为深色时应用是否跟随，
-              界面上无法区分。`system` 必须单独作为一项。
-              选用皮肤时明暗取皮肤的模式，三项都不高亮；点选一项即取消皮肤，否则点选没有效果。 */}
+              界面上无法区分。`system` 必须单独作为一项。 */}
           <Row label="主题">
             <div class="seg">
               <For each={THEMES}>
                 {(t) => (
                   <button
                     class="seg-item"
-                    classList={{ active: !skinChoice() && theme() === t.id }}
+                    classList={{ active: theme() === t.id }}
                     type="button"
-                    onClick={() => {
-                      if (skinChoice()) selectSkin(null)
-                      setTheme(t.id)
-                    }}
+                    onClick={() => setTheme(t.id)}
                   >
                     {t.label}
                   </button>
@@ -191,22 +185,23 @@ export function GeneralSettings() {
               </For>
             </div>
           </Row>
-          {/* 皮肤的编辑控件较多，放在弹窗中（`SkinDialog`），本页只显示当前皮肤的名称。 */}
-          <Row label="皮肤">
-            <button class="btn-ghost sm" type="button" onClick={() => setSkinOpen(true)}>
-              {skinChoice() ? (paintedSkin()?.skin.name ?? '…') : '无'}
+          {/* 个性化的编辑控件较多，放在弹窗中（`PersonalizationDialog`），本页只显示是否已修改。 */}
+          <Row label="个性化">
+            <button class="btn-ghost sm" type="button" onClick={() => setPersonalOpen(true)}>
+              {isDefaultPersonalization(currentPersonalization()) ? '默认' : '自定义'}
             </button>
           </Row>
           {/* 宠物只显示在桌面外壳的透明窗口中，其他端没有可承载它的窗口，不显示这两行（B5）。 */}
           <Show when={isDesktopShell()}>
             <Row label="桌面宠物">
               <OnOff
+                label="桌面宠物"
                 on={petPrefs().place === 'desktop'}
                 onPick={(on) => setPetPrefs({ place: on ? 'desktop' : 'hidden' })}
               />
             </Row>
             <Row label="宠物">
-              <div class="skin-accent">
+              <div class="pet-pick">
                 <select
                   aria-label="宠物"
                   value={petPrefs().pack ?? ''}

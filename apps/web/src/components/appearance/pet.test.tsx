@@ -235,7 +235,7 @@ describe('宠物组件', () => {
    * 桌面宠物窗口的页面：只显示主窗口推送的状态。外壳以注入的 `__TAURI_INTERNALS__` 模拟，
    * 只在本用例期间存在，理由同 `WindowControls.test.tsx`。
    */
-  test('宠物窗口：按推送的状态显示，单击展开列表并按行数调整尺寸，没有条目时不展开，右侧空间不足时向左展开，移动后上报宠物左下角，停止与打开会话交给主窗口与外壳', async () => {
+  test('宠物窗口：按推送的状态显示（含个性化强调色），单击展开列表并按行数调整尺寸，没有条目时不展开，右侧空间不足时向左展开，移动后上报宠物左下角，停止与打开会话交给主窗口与外壳', async () => {
     const { render } = await import('solid-js/web')
     const { DEFAULT_PET } = await import('./pet-default.ts')
     const { PetWindow } = await import('./PetWindow.tsx')
@@ -266,7 +266,7 @@ describe('宠物组件', () => {
       const frames = Object.fromEntries(
         Object.values(DEFAULT_PET.states).flatMap((a) => a.frames.map((f) => [f, `/f/${f}`])),
       )
-      const push = (entries: unknown[]) =>
+      const push = (entries: unknown[], accent: { color: string; fg: string } | null = null) =>
         callbacks.get(listeners.get('pet://state') as number)?.({
           payload: {
             mood: 'working',
@@ -276,6 +276,7 @@ describe('宠物组件', () => {
             pack: DEFAULT_PET,
             frames,
             dark: true,
+            accent,
           },
         })
       push([{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }])
@@ -284,6 +285,19 @@ describe('宠物组件', () => {
       expect(resizes().at(-1)).toEqual({ width: 92, height: 92, leftward: false })
       expect(host.querySelector('.petw-badge')?.textContent).toBe('2')
       expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+
+      // 个性化的强调色写在根元素上（角标取它）；为 null 时移除，恢复主题的强调色。
+      push([{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }], {
+        color: 'rgba(168, 85, 247, 1)',
+        fg: '#ffffff',
+      })
+      await flush()
+      const rootStyle = document.documentElement.style
+      expect(rootStyle.getPropertyValue('--accent')).toBe('rgba(168, 85, 247, 1)')
+      expect(rootStyle.getPropertyValue('--accent-fg')).toBe('#ffffff')
+      push([{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }])
+      await flush()
+      expect(rootStyle.getPropertyValue('--accent')).toBe('')
 
       const pet = host.querySelector('.petw-pet') as HTMLElement
       const clickPet = async () => {

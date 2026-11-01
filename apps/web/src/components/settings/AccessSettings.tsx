@@ -126,6 +126,7 @@ export function AccessSettings() {
                     鼠标键盘并可能切换前台窗口。关闭时桌面工具仍可用，但只保留经控件接口发出的操作。 */}
               <Row label="前台操作" hint="模拟鼠标键盘，执行时可能切换前台窗口">
                 <OnOff
+                  label="前台操作"
                   on={c().desktopForeground !== false}
                   onPick={(on) => void patchConfig({ desktopForeground: on })}
                 />

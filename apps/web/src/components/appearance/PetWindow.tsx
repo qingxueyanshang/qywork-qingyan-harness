@@ -113,6 +113,19 @@ export function PetWindow() {
       document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
   })
 
+  // 个性化的强调色写在根元素上，覆盖 `tokens.css` 的值；为 null 时移除，恢复主题的强调色。
+  createEffect(() => {
+    const accent = view()?.accent ?? null
+    const style = document.documentElement.style
+    if (accent) {
+      style.setProperty('--accent', accent.color)
+      style.setProperty('--accent-fg', accent.fg)
+    } else {
+      style.removeProperty('--accent')
+      style.removeProperty('--accent-fg')
+    }
+  })
+
   // 拖动与点击共用一次按下：移动超过阈值时交给系统拖动窗口，否则在抬起时视为点击。
   let down: { x: number; y: number } | null = null
   let dragging = false

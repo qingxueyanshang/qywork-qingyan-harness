@@ -17,7 +17,7 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 
-function click(button: HTMLButtonElement) {
+function click(button: HTMLElement) {
   const event = new MouseEvent('click', { bubbles: true })
   const delegated = (button as unknown as { $$click?: (event: MouseEvent) => void }).$$click
   if (delegated) delegated.call(button, event)
@@ -63,15 +63,15 @@ const TOOLS = {
 }
 
 /** 指定分组标题中的两项开关按钮。 */
-function segOf(host: HTMLElement, title = '电脑控制'): HTMLButtonElement[] {
+function switchOf(host: HTMLElement, title = '电脑控制'): HTMLInputElement | null {
   const head = Array.from(host.querySelectorAll<HTMLElement>('.settings-block-head')).find((h) =>
     h.querySelector('h3')?.textContent?.includes(title),
   )
-  return Array.from(head?.querySelectorAll<HTMLButtonElement>('.seg-item') ?? [])
+  return head?.querySelector<HTMLInputElement>('.switch') ?? null
 }
 
-function activeLabel(host: HTMLElement, title = '电脑控制'): string | undefined {
-  return segOf(host, title).find((b) => b.classList.contains('active'))?.textContent ?? undefined
+function isOn(host: HTMLElement, title = '电脑控制'): boolean | undefined {
+  return switchOf(host, title)?.checked
 }
 
 /** 等待条件成立。配置、工具清单与 PUT 各自异步完成，不要改为固定时长的 sleep。 */
@@ -136,7 +136,7 @@ test('分组标题开关：缺省视为启用，单击后写入 desktopEnabled',
   document.body.append(host)
   const dispose = render(() => <ModulesSettings />, host as unknown as HTMLElement)
   try {
-    expect(await until(() => segOf(host).length === 2)).toBe(true)
+    expect(await until(() => switchOf(host) !== null)).toBe(true)
 
     // 工具行来自 /api/tools。
     expect(host.textContent).toContain('desktop_windows')
@@ -145,21 +145,21 @@ test('分组标题开关：缺省视为启用，单击后写入 desktopEnabled',
     expect(host.textContent).not.toContain('dispatch')
 
     // 字段缺失视为启用。true / false 两种读数由 `desktopSwitchOn` 的单元测试锁定。
-    expect(activeLabel(host)).toBe('启用')
+    expect(isOn(host)).toBe(true)
 
-    click(segOf(host).find((b) => b.textContent === '关闭') as HTMLButtonElement)
+    click(switchOf(host) as HTMLInputElement)
     expect(config()?.desktopEnabled).toBe(false)
-    expect(activeLabel(host)).toBe('关闭')
+    expect(isOn(host)).toBe(false)
     expect(await until(() => stored.desktopEnabled === false)).toBe(true)
 
-    click(segOf(host).find((b) => b.textContent === '启用') as HTMLButtonElement)
+    click(switchOf(host) as HTMLInputElement)
     expect(config()?.desktopEnabled).toBe(true)
-    expect(activeLabel(host)).toBe('启用')
+    expect(isOn(host)).toBe(true)
     expect(await until(() => stored.desktopEnabled === true)).toBe(true)
 
     // Office 文档分组：开关形式相同，写入 officeEnabled，不改变电脑控制的开关。
-    expect(activeLabel(host, 'Office 文档')).toBe('启用')
-    click(segOf(host, 'Office 文档').find((b) => b.textContent === '关闭') as HTMLButtonElement)
+    expect(isOn(host, 'Office 文档')).toBe(true)
+    click(switchOf(host, 'Office 文档') as HTMLInputElement)
     expect(config()?.officeEnabled).toBe(false)
     expect(await until(() => stored.officeEnabled === false)).toBe(true)
     expect(stored.desktopEnabled).toBe(true)
@@ -169,15 +169,15 @@ test('分组标题开关：缺省视为启用，单击后写入 desktopEnabled',
       (h) => h.querySelector('h3')?.textContent === '画布与生成',
     )
     expect(media?.querySelector('.module-console')).toBeNull()
-    expect(activeLabel(host, '画布与生成')).toBe('启用')
-    click(segOf(host, '画布与生成').find((b) => b.textContent === '关闭') as HTMLButtonElement)
+    expect(isOn(host, '画布与生成')).toBe(true)
+    click(switchOf(host, '画布与生成') as HTMLInputElement)
     expect(config()?.mediaEnabled).toBe(false)
     expect(await until(() => stored.mediaEnabled === false)).toBe(true)
     expect(stored.officeEnabled).toBe(false)
 
     // 浏览器控制分组：开关形式相同，写入 browserEnabled。
-    expect(activeLabel(host, '浏览器控制')).toBe('启用')
-    click(segOf(host, '浏览器控制').find((b) => b.textContent === '关闭') as HTMLButtonElement)
+    expect(isOn(host, '浏览器控制')).toBe(true)
+    click(switchOf(host, '浏览器控制') as HTMLInputElement)
     expect(config()?.browserEnabled).toBe(false)
     expect(await until(() => stored.browserEnabled === false)).toBe(true)
     expect(stored.mediaEnabled).toBe(false)

@@ -130,48 +130,6 @@
 .app-update-section .settings-block-head {
   margin-bottom: var(--s-2);
 }
-.app-update-section .app-update-switch {
-  appearance: none;
-  position: relative;
-  flex: none;
-  width: 30px;
-  height: 18px;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--border-default);
-  border-radius: 10px;
-  background: var(--bg-inset);
-  cursor: pointer;
-}
-.app-update-section .app-update-switch::before {
-  content: "";
-  display: block;
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--text-secondary);
-}
-.app-update-section .app-update-switch:checked {
-  background: light-dark(
-    color-mix(in srgb, var(--text-primary) 30%, var(--bg-raised)),
-    var(--text-primary)
-  );
-  border-color: light-dark(
-    color-mix(in srgb, var(--text-primary) 30%, var(--bg-raised)),
-    var(--text-primary)
-  );
-}
-.app-update-section .app-update-switch:checked::before {
-  transform: translateX(12px);
-  background: var(--bg-raised);
-}
-.app-update-section .app-update-switch:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
 .app-update-status-row {
   display: flex;
   align-items: center;
@@ -196,27 +154,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: none;
   height: 26px;
-  padding: 0 9px;
   margin-left: auto;
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-xs);
-  background: transparent;
-  color: var(--text-primary);
-  font-size: var(--fs-xs);
   white-space: nowrap;
-  text-decoration: none;
-  cursor: pointer;
-}
-.app-update-action.primary {
-  border-color: var(--text-primary);
-  background: var(--text-primary);
-  color: var(--bg-raised);
-}
-.app-update-action:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 .app-update-notes-link {
   flex: none;
@@ -415,41 +355,10 @@
   gap: 2px;
 }
 
-/* 三态分段控件。使用一排按钮而不是下拉框：三个选项全部可见时，
-   「跟随系统」与「浅色」的区别可直接看到；下拉框需要展开才能看到第三个选项。 */
-.seg {
-  display: inline-flex;
-  align-self: flex-start;
-  padding: 2px;
-  border-radius: var(--r-sm);
-  background: var(--bg-inset);
-}
-fieldset.seg {
-  min-width: 0;
-  margin: 0;
-  border: 0;
-}
-.seg-item {
-  padding: 4px var(--s-3);
-  border-radius: var(--r-xs);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  transition:
-    background var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease);
-}
-.seg-item:hover {
-  color: var(--text-primary);
-}
-.seg-item.active {
-  background: var(--bg-raised);
-  color: var(--text-primary);
-  font-weight: 500;
-  box-shadow: var(--shadow-sm);
-}
 /* 分组标题右侧的开关。与「去配置」按钮占同一位置，同一分组不会同时具有两者。
    本规则必须排在 `.seg` 之后：排在前面时，lint 按降序特异性规则判定它可能不生效。 */
-.settings-block-head .seg {
+.settings-block-head .seg,
+.settings-block-head .switch {
   margin-left: auto;
 }
 
@@ -614,115 +523,16 @@ fieldset.seg {
    多行清单位于 `.setting-row.stack` 内，会整体回退为浏览器默认样式：
    直角、系统边框，与相邻输入框样式不一致。 */
 .field input,
-.field select,
 .field textarea,
 .setting-row input,
-.setting-row select,
-.setting-row textarea,
-.pull-base {
+.setting-row textarea {
   padding: 6px var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-xs);
-  /* 使用 `background-color` 而不是 `background` 简写：下方的 `select` 在
-     `background-image` 上绘制自定义箭头，简写会将其重置。 */
   background-color: var(--bg-app);
   color: var(--text-primary);
   font-size: var(--fs-sm);
   font-family: inherit;
-}
-/*
- * 下拉框使用可样式化的原生控件，按钮与展开列表共用页面的中性色阶。
- *
- * 箭头由两道 `linear-gradient` 拼成，**不使用 SVG 的 data URI**：data URI 中无法读取
- * CSS 变量，颜色只能固定为某个灰色，而本仓库只有一条中性色阶（`tokens.css` 开头部分）。
- * 渐变支持 `currentColor`，可自动适配亮色与暗色主题。
- * 右内距为箭头预留位置，修改箭头的 `background-position` 时须同步修改右内距。
- */
-.field select,
-.setting-row select,
-.model-access select,
-.pull-base {
-  appearance: base-select;
-  padding-right: 26px;
-  background-image:
-    linear-gradient(45deg, transparent 50%, currentColor 50%),
-    linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position:
-    right 13px center,
-    right 9px center;
-  background-size: 4px 4px;
-  background-repeat: no-repeat;
-}
-
-/*
- * 列表默认在下拉框下方展开，下方空间不足时才翻到上方。不要删去 `position-try-order`：
- * 浏览器的缺省值是 `most-block-size`，按上下哪一侧空间大决定方向，位于窗口下半部的下拉框
- * 会从上方展开，与其他下拉框方向不一致。
- */
-/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
-:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(select) {
-  appearance: base-select;
-  position-try-order: normal;
-  max-height: min(480px, 60vh);
-  padding: 0;
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-xs);
-  background: var(--bg-raised);
-  color: var(--text-primary);
-}
-
-/*
- * 弹出层的滚动条与全局一致：细、无箭头（数值同 base.css）。全局的 `*::-webkit-scrollbar` 作用不到
- * `::picker(select)` 这个伪元素，必须在它上面单独写。不要改用 `scrollbar-width` / `scrollbar-color`：
- * Chromium 识别到这两项后忽略 `::-webkit-scrollbar` 规则，退回带箭头按钮的系统滚动条。
- */
-/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
-:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(
-    select
-  )::-webkit-scrollbar {
-  width: 12px;
-}
-/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
-:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(
-    select
-  )::-webkit-scrollbar-track {
-  background: transparent;
-}
-/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
-:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(
-    select
-  )::-webkit-scrollbar-thumb {
-  background: var(--border-subtle);
-  border-radius: var(--r-full);
-  border: 2px solid transparent;
-  background-clip: content-box;
-}
-/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
-:is(.field select, .setting-row select, .model-access select, .pull-base)::picker(
-    select
-  )::-webkit-scrollbar-thumb:hover {
-  background: var(--border-strong);
-  background-clip: content-box;
-}
-
-/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
-:is(.field select, .setting-row select, .model-access select, .pull-base)::picker-icon {
-  display: none;
-}
-
-:is(.field select, .setting-row select, .model-access select, .pull-base) option {
-  min-height: 24px;
-  padding: 2px var(--s-2);
-}
-
-/* biome-ignore lint/correctness/noUnknownPseudoElement: 浏览器支持标准的可样式化 select 伪元素。 */
-:is(.field select, .setting-row select, .model-access select, .pull-base) option::checkmark {
-  display: none;
-}
-
-:is(.field select, .setting-row select, .model-access select, .pull-base) option:checked,
-:is(.field select, .setting-row select, .model-access select, .pull-base) option:hover {
-  background: var(--bg-active);
 }
 
 /* 铺满宽度只用于「宽度无界」的控件。行式布局中的下拉框保持紧凑的固定宽度
@@ -735,15 +545,11 @@ fieldset.seg {
   width: 100%;
 }
 .field input:focus,
-.field select:focus,
 .field textarea:focus,
 .setting-row input:focus,
-.setting-row select:focus,
-.setting-row textarea:focus,
-.model-access select:focus,
-.pull-base:focus {
+.setting-row textarea:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--border-focus);
 }
 .field textarea,
 .setting-row textarea {
@@ -1101,7 +907,7 @@ textarea.code-area::placeholder {
 }
 .model-row.add input:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--border-focus);
 }
 
 /* ── 模型库 ──
@@ -1539,48 +1345,18 @@ textarea.code-area::placeholder {
   margin: var(--s-1) 0;
 }
 
-.btn-primary {
-  padding: 6px var(--s-4);
-  border-radius: var(--r-xs);
-  background: var(--accent);
-  color: var(--text-inverted);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-}
-.btn-primary:disabled {
-  opacity: 0.5;
-}
-.btn-ghost {
-  align-self: flex-start;
-  padding: 5px var(--s-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-xs);
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-}
-.btn-ghost:hover {
-  background: var(--bg-hover);
-}
-/* 行内紧凑按钮：模型行上的测试连接 / 校准思考。 */
-.btn-ghost.sm {
-  flex: none;
-  align-self: auto;
-  padding: 2px var(--s-2);
-  font-size: var(--fs-xs);
-}
-.btn-ghost:disabled {
-  opacity: 0.5;
-}
+/* ───────────────────────── 个性化弹窗 ───────────────────────── */
 
-/* ───────────────────────── 皮肤弹窗 ───────────────────────── */
-
-/* 「通用」页「皮肤」一行打开的弹窗。全部属性写在本规则中，不与其他浮层共用选择器（B8）。
-   尺寸固定（B9）：控件行数随背景类型与雾面开关变化，编辑区在框内滚动。 */
-.skin-dialog {
-  width: min(640px, calc(100vw - 32px));
-  height: min(600px, calc(100vh - 48px));
-  min-height: min(600px, calc(100vh - 48px));
-  max-height: min(600px, calc(100vh - 48px));
+/*
+ * 「通用」页「个性化」一行打开的弹窗。全部属性写在本规则中，不与其他浮层共用选择器（B8）。
+ * 尺寸固定（B9），高度容纳行数最多的情形（图片背景加雾面，共 10 行，编辑区 442px），切换背景类型或设置雾面时
+ * 编辑区不出现滚动条，按钮位置不变。修改行高或行数时须同步修改高度。
+ */
+.personal-dialog {
+  width: min(560px, calc(100vw - 32px));
+  height: min(560px, calc(100vh - 48px));
+  min-height: min(560px, calc(100vh - 48px));
+  max-height: min(560px, calc(100vh - 48px));
   box-sizing: border-box;
   padding: 16px;
   border: 1px solid var(--border-default);
@@ -1591,36 +1367,46 @@ textarea.code-area::placeholder {
 }
 
 /* 只在打开时改为纵向排列：写在未打开的 dialog 上会覆盖浏览器的 `display: none`。 */
-.skin-dialog[open] {
+.personal-dialog[open] {
   display: flex;
   flex-direction: column;
 }
 
-/* 不加遮罩：修改时需要看到窗口四周的皮肤效果，后面的设置窗口已有遮罩。 */
-.skin-dialog::backdrop {
+/* 不加遮罩：修改时需要看到窗口四周的个性化效果，后面的设置窗口已有遮罩。 */
+.personal-dialog::backdrop {
   background: transparent;
 }
 
-.skin-editor {
+/* 窗口高度小于内容时在框内滚动；预留滚动条的槽，滚动条出现时版面不左移。 */
+.personal-editor {
   flex: 1;
   min-height: 0;
+  margin-top: var(--s-3);
   overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+/* 行高 44px（比设置页的行矮一档），10 行加卡片边框共 442px，弹窗高度按此计算。 */
+.personal-editor .setting-row {
+  height: 44px;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* 底栏：左侧一行报错，右侧按钮。报错只占一行、过长截断，底栏高度不变。 */
-.skin-actions {
+.personal-actions {
   flex: none;
   align-items: center;
 }
-.skin-error {
+.personal-error {
   flex: 1;
   min-width: 0;
   font-size: var(--fs-sm);
   color: var(--danger);
 }
 
-/* 删除皮肤的确认，叠在皮肤弹窗之上。完整规则，不与其他浮层共用选择器。 */
-.skin-delete-dialog {
+/* 恢复默认的确认，叠在个性化弹窗之上。完整规则，不与其他浮层共用选择器。 */
+.personal-reset-dialog {
   width: min(320px, calc(100vw - 32px));
   box-sizing: border-box;
   padding: 16px;
@@ -1630,41 +1416,28 @@ textarea.code-area::placeholder {
   color: var(--text-primary);
   box-shadow: var(--shadow-lg);
 }
-.skin-delete-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.36);
+.personal-reset-dialog::backdrop {
+  background: var(--scrim);
 }
 
-/* 皮肤列表：「无」、各皮肤与「新建」，按名称宽度自然换行。 */
-.skin-list {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s-1);
-  margin: 10px 0;
-}
-.skin-list .seg-item {
-  border: 1px solid var(--border-default);
-}
-
-/* 选择图片用的原生文件框，由「更换」与「图片」两个按钮触发，本身不显示。 */
-.skin-file {
+/* 选择图片用的原生文件框，由「背景」中的「图片」与「更换」两个按钮触发，本身不显示。 */
+.personal-file {
   display: none;
 }
 
 /* 滑块与当前值。值的宽度固定，拖动时数字位数变化不推动滑块。 */
-.skin-slider {
+.personal-slider {
   display: flex;
   align-items: center;
   gap: var(--s-2);
 }
-.setting-row .skin-slider input[type="range"] {
+.setting-row .personal-slider input[type="range"] {
   width: 160px;
   padding: 0;
   border: none;
   background: none;
-  accent-color: var(--accent);
 }
-.skin-slider-value {
+.personal-slider-value {
   width: 44px;
   text-align: right;
   font-size: var(--fs-sm);
@@ -1672,17 +1445,8 @@ textarea.code-area::placeholder {
   color: var(--text-secondary);
 }
 
-/* 颜色块。覆盖 `.setting-row input` 的内距与底色：内距会把色块压成一条细线。 */
-.setting-row input.skin-color {
-  width: 32px;
-  height: 24px;
-  padding: 2px;
-  background: none;
-  cursor: pointer;
-}
-
-.skin-stops,
-.skin-accent {
+/* 「宠物」一行：下拉框与删除按钮。 */
+.pet-pick {
   display: flex;
   align-items: center;
   gap: var(--s-1);
@@ -1891,7 +1655,7 @@ textarea.code-area::placeholder {
 }
 
 .skill-import-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.36);
+  background: var(--scrim);
 }
 
 .skill-import-fields {
@@ -2004,7 +1768,7 @@ textarea.code-area::placeholder {
 }
 
 .pull-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.36);
+  background: var(--scrim);
 }
 
 .pull-tabs {

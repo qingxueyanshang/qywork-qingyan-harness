@@ -90,7 +90,7 @@
 /* ── 侧栏 ── */
 /* 跨两行：侧栏头部位于标题栏所在行，与顶栏连成一条横栏。
    不设右边框：该分隔线由内容区的左边框提供，两条同时存在时会在圆角处露出一段直角。
-   宽屏不设底色，透出 `.app` 的外框底色：两层都设 `--frame-bg` 时，皮肤的半透明底色在侧栏处
+   宽屏不设底色，透出 `.app` 的外框底色：两层都设 `--frame-bg` 时，个性化的半透明底色在侧栏处
    叠加两次，侧栏比顶栏更不透明。窄屏抽屉覆盖在会话区之上，底色在 utility.css 中单独设置。 */
 .sidebar-slot {
   grid-column: 1;
@@ -169,7 +169,7 @@
 }
 .icon-btn:disabled {
   cursor: default;
-  opacity: 0.45;
+  opacity: var(--disabled-opacity);
 }
 .icon-btn:disabled:hover {
   background: transparent;
@@ -629,7 +629,7 @@
 }
 /* 「重试」位于错误文字之后的同一行。它是左栏无法取得列表时唯一的恢复操作，
    缺少它时用户只能重启应用。 */
-.side-error .ghost-btn {
+.side-error .btn-ghost {
   margin-left: var(--s-2);
 }
 
