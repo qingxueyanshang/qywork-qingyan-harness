@@ -134,28 +134,6 @@
   background: #fff;
   line-height: 0;
 }
-.pair-addrs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s-1);
-  justify-content: center;
-}
-.pair-addr {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 3px var(--s-2);
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border-default);
-  color: var(--text-secondary);
-  font-size: var(--fs-xs);
-}
-.pair-addr.active {
-  border-color: var(--accent);
-  color: var(--text-primary);
-  background: var(--accent-soft);
-}
 .pair-hint {
   margin: 0;
   color: var(--text-tertiary);

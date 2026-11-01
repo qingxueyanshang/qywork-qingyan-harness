@@ -1,5 +1,6 @@
 /**
- * 覆盖 `PairPanel.tsx`：切换开关与更换地址期间不得触发外层 Suspense；开关失败时显示原因并恢复为实际状态。
+ * 覆盖 `PairPanel.tsx`：未登录时整节不出现；开关切换期间不得触发外层 Suspense；开关失败时显示原因并恢复为实际状态；
+ * 隧道各状态的显示。
  *
  * 设置内容区只有一层 Suspense，它挂起时整页内容被移出 DOM，滚动位置随之归零。
  * 判据是外层 fallback 的求值次数：Solid 只在边界挂起时才读取 `fallback`。
@@ -8,6 +9,7 @@
  */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
+import type { RemoteInfo } from './PairPanel.tsx'
 
 beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
@@ -38,37 +40,30 @@ async function waitFor(done: () => boolean, detail: () => string) {
   throw new Error(`界面没有在时限内更新：${detail()}`)
 }
 
-const CANDIDATES = [
-  { name: '以太网', address: '192.168.1.26', url: 'http://192.168.1.26:1', qr: 'http://a/' },
-  { name: 'vEthernet', address: '172.21.16.1', url: 'http://172.21.16.1:1', qr: 'http://b/' },
-]
+const DEVICE_URL = 'https://app.example.com/devices/dv_1'
 
-async function mount(opts: { failLan?: string } = {}) {
+async function mount(initial: RemoteInfo, opts: { failToggle?: string } = {}) {
   const store = await import('../lib/store/index.ts')
   const original = store.client.api
-  let lanEnabled = false
+  let info = initial
   ;(
     store.client as unknown as { api: (path: string, init?: RequestInit) => Promise<unknown> }
   ).api = async (path: string, init?: RequestInit) => {
-    if (path === '/api/pairing/lan') {
-      if (opts.failLan) {
+    if (path === '/api/pairing/remote') {
+      if (opts.failToggle) {
         const { ApiError } = await import('../lib/client.ts')
-        throw new ApiError(500, path, opts.failLan)
+        throw new ApiError(422, path, opts.failToggle)
       }
-      lanEnabled = (JSON.parse(String(init?.body)) as { enabled: boolean }).enabled
-      return { ok: true }
-    }
-    if (path === '/api/pairing') {
-      return {
-        url: CANDIDATES[0]?.url,
-        token: 't',
-        deviceName: 'pc',
-        qr: CANDIDATES[0]?.qr,
-        lanEnabled,
-        candidates: CANDIDATES,
+      const { enabled } = JSON.parse(String(init?.body)) as { enabled: boolean }
+      info = {
+        ...info,
+        enabled,
+        tunnel: enabled ? { state: 'online', deviceUrl: DEVICE_URL } : null,
       }
+      return info
     }
-    throw new Error(`没有桩这条：${path}`)
+    if (path === '/api/pairing') return info
+    throw new Error(`未替换的接口：${path}`)
   }
   restoreApi = () => {
     ;(store.client as unknown as { api: typeof original }).api = original
@@ -92,49 +87,71 @@ async function mount(opts: { failLan?: string } = {}) {
     ),
     host as unknown as HTMLElement,
   )
-  await waitFor(
-    () => host.querySelector('.pair-toggle') !== null,
-    () => host.textContent ?? '',
-  )
   return { host, suspended }
 }
 
-test('打开开关生成二维码、再更换地址，外层 Suspense 始终不挂起', async () => {
-  const { host, suspended } = await mount()
+const signedIn = (tunnel: RemoteInfo['tunnel'] = null): RemoteInfo => ({
+  available: true,
+  enabled: tunnel !== null,
+  tunnel,
+})
 
-  const box = host.querySelector<HTMLInputElement>('.pair-toggle input')
-  if (!box) throw new Error('开关没渲染')
+test('未登录云端账号时整节不出现', async () => {
+  const { host } = await mount({ available: false, enabled: true, tunnel: null })
+  await new Promise((r) => setTimeout(r, 30))
+  expect(host.querySelector('.settings-block')).toBeNull()
+})
+
+test('打开开关后显示 console 中本设备地址的二维码，外层 Suspense 始终不挂起', async () => {
+  const { host, suspended } = await mount(signedIn())
+  await waitFor(
+    () => host.querySelector('.pair-toggle') !== null,
+    () => host.innerHTML,
+  )
+  expect(host.textContent).toContain('允许远程访问')
+  const box = host.querySelector<HTMLInputElement>('.pair-toggle input')!
   box.checked = true
   box.dispatchEvent(new Event('change', { bubbles: true }))
   await waitFor(
     () => host.querySelector('.pair-qr svg') !== null,
     () => host.innerHTML,
   )
-  const first = host.querySelector('.pair-qr')?.innerHTML
-
-  host.querySelectorAll<HTMLButtonElement>('.pair-addr')[1]?.click()
-  await waitFor(
-    () => host.querySelector('.pair-qr')?.innerHTML !== first,
-    () => '换地址后二维码没变',
-  )
-
-  expect(host.querySelector('.pair-qr svg')).not.toBeNull()
   expect(suspended.times).toBe(0)
 })
 
-/** 原始失败形状：开关请求失败时没有任何提示，勾选框停留在点击后的状态，而局域网接入并未开启。 */
+/** 原始失败形状：开关请求失败时没有任何提示，勾选框停留在点击后的状态，而远程访问并未开启。 */
 test('开关请求失败时显示原因，勾选框恢复为实际状态', async () => {
-  const { host } = await mount({
-    failLan: '{"error":"0.0.0.0:7717 已被占用"}',
+  const { host } = await mount(signedIn(), {
+    failToggle: '{"message":"remote 必须是 true 或 false"}',
   })
-  const box = host.querySelector<HTMLInputElement>('.pair-toggle input')
-  if (!box) throw new Error('开关没渲染')
+  await waitFor(
+    () => host.querySelector('.pair-toggle') !== null,
+    () => host.innerHTML,
+  )
+  const box = host.querySelector<HTMLInputElement>('.pair-toggle input')!
   box.checked = true
   box.dispatchEvent(new Event('change', { bubbles: true }))
   await waitFor(
-    () => (host.textContent ?? '').includes('0.0.0.0:7717 已被占用'),
+    () => (host.textContent ?? '').includes('remote 必须是 true 或 false'),
     () => host.innerHTML,
   )
   expect(host.querySelector<HTMLInputElement>('.pair-toggle input')?.checked).toBe(false)
   expect(host.querySelector('.pair-qr')).toBeNull()
+})
+
+test('隧道断开时显示原因；协议版本过旧时提示更新应用', async () => {
+  const offline = await mount(signedIn({ state: 'offline', message: '无法连接云端服务' }))
+  await waitFor(
+    () => (offline.host.textContent ?? '').includes('无法连接云端服务'),
+    () => offline.host.innerHTML,
+  )
+  dispose?.()
+  document.body.replaceChildren()
+  restoreApi?.()
+
+  const outdated = await mount(signedIn({ state: 'outdated' }))
+  await waitFor(
+    () => (outdated.host.textContent ?? '').includes('需要更新应用'),
+    () => outdated.host.innerHTML,
+  )
 })

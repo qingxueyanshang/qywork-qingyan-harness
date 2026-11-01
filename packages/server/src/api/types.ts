@@ -15,6 +15,8 @@ import type { OfficeHost, QyConfig } from '@qywork/runtime'
 import type { ScheduleClaim, Store } from '@qywork/store'
 import type { EventBus } from '../bus.ts'
 import type { CanvasService } from '../canvas.ts'
+import type { CloudAccount } from '../cloud/account.ts'
+import type { RemoteAccess } from '../cloud/remote.ts'
 import type { Pairing } from '../pairing.ts'
 import type { RunManager } from '../runs.ts'
 
@@ -28,10 +30,10 @@ export interface ApiDeps {
   pairing: Pairing
   token: string
   port: number
-  enableLan(): { port: number }
-  disableLan(): void
-  lanEnabled(): boolean
-  lanPort(): number
+  /** 云端账号；未配置云端地址时为 null。 */
+  cloud: CloudAccount | null
+  /** 远程访问的开关与隧道状态。 */
+  remote: RemoteAccess
   /** 交付一次定时触发（广播新建会话并发送用户消息）。由 `server.ts` 注入，见本文件头注释。 */
   submitSchedule(claim: ScheduleClaim): void
   /**

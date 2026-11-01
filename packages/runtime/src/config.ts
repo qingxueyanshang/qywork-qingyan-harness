@@ -142,6 +142,11 @@ export interface QyConfig {
    */
   mediaEnabled?: boolean
   /**
+   * 是否允许经云端远程访问本机（手机打开电脑上的页面）。缺省视为关闭，只有显式 `true` 表示开启。
+   * 开启且已登录云端账号时，服务连接云端隧道；未登录时该值保留，登录后生效。
+   */
+  remote?: boolean
+  /**
    * Office 工具使用的 Python 解释器绝对路径。缺省时在 PATH 中查找 `python`，排除 Windows 商店别名。
    */
   officePython?: string
@@ -779,6 +784,9 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   if (cfg.mediaEnabled !== undefined && typeof cfg.mediaEnabled !== 'boolean') {
     problems.push('mediaEnabled 必须是 true 或 false')
   }
+  if (cfg.remote !== undefined && typeof cfg.remote !== 'boolean') {
+    problems.push('remote 必须是 true 或 false')
+  }
   if (
     cfg.officePython !== undefined &&
     (typeof cfg.officePython !== 'string' || !isAbsolute(cfg.officePython))
@@ -835,7 +843,7 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
           !CURRENCIES.includes(price.currency))
       ) {
         problems.push(
-          `${name} / ${id} 的 price 必须包含非负数 input、output、cacheRead、cacheWrite 与 currency（USD 或 CNY）。`,
+          `${name} / ${id} 的 price 必须包含非负数 input、output、cacheRead、cacheWrite 与 currency（${CURRENCIES.join('、')}）。`,
         )
       } else if (price && invalidOffPeak(price.offPeak)) {
         problems.push(`${name} / ${id} 的 price.${OFF_PEAK_RULE}。`)

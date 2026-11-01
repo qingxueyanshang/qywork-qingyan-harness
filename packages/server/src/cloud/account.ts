@@ -5,7 +5,8 @@
  * - 登录状态只有一份，在本对象中：`pending` 期间重复登录返回同一个用户码；已登录以配置中存在云端接口为准。
  * - 设备密钥只保存在配置的云端接口（`CLOUD_PROVIDER`，地址为网关）中，没有第二份。
  * - 配置只经 `writeConfig` 写入；退出与「设备已被移除」使用同一个删除函数，`active` 与 `mediaDefaults` 指向它时一并删除。
- * - 只有网关明确返回 `device_revoked` 时才删除本地接口；其他失败（断网、云端故障）不删除，避免误清空配置。
+ * - 只有网关或隧道明确返回「设备已被移除」时才删除本地接口；其他失败（断网、云端故障）不删除，避免误清空配置。
+ * - 写入或删除云端接口后调用 `onChange`：远程访问据此启停隧道。
  */
 
 import { pullModels } from '@qywork/ai'
@@ -38,6 +39,8 @@ interface Pending {
 export interface CloudAccountOptions {
   /** 设备授权的轮询间隔（毫秒），按云端给出的秒数换算。测试中缩短。 */
   intervalMs?: (seconds: number) => number
+  /** 云端接口写入或删除之后。 */
+  onChange?: () => void
 }
 
 /** 配置中的云端接口：名称为 `CLOUD_PROVIDER` 且地址为网关。 */
@@ -57,10 +60,14 @@ const json = (body: unknown, token?: string): RequestInit => ({
 
 export class CloudAccount {
   private pending: Pending | null = null
-  private failure: { reason: 'expired' | 'denied' | 'error'; message?: string } | null = null
+  private failure: {
+    reason: 'revoked' | 'expired' | 'denied' | 'error'
+    message?: string
+  } | null = null
   private email: string | null = null
   private refreshed = false
   private readonly intervalMs: (seconds: number) => number
+  private readonly onChange: () => void
 
   constructor(
     private readonly live: QyConfig,
@@ -68,6 +75,7 @@ export class CloudAccount {
     options: CloudAccountOptions = {},
   ) {
     this.intervalMs = options.intervalMs ?? ((s) => s * 1000)
+    this.onChange = options.onChange ?? (() => {})
   }
 
   async state(): Promise<CloudState> {
@@ -83,8 +91,7 @@ export class CloudAccount {
     if (!provider?.apiKey) return { state: 'signed_out', ...(this.failure ?? {}) }
     const me = await this.me(provider.apiKey)
     if (me === 'revoked') {
-      await this.remove()
-      this.failure = null
+      await this.revoked()
       return { state: 'signed_out', reason: 'revoked' }
     }
     if (me) {
@@ -133,6 +140,13 @@ export class CloudAccount {
       }
     }
     return this.state()
+  }
+
+  /** 云端答复本设备已被移除（网关或隧道）：删除本地接口，账号区块显示原因。 */
+  async revoked(): Promise<void> {
+    this.email = null
+    await this.remove()
+    this.failure = { reason: 'revoked' }
   }
 
   /** 退出：先请求云端吊销本设备（失败时仍在本地退出），再删除本地接口。 */
@@ -232,6 +246,7 @@ export class CloudAccount {
       )
     }
     this.refreshed = true
+    this.onChange()
   }
 
   /**
@@ -292,7 +307,7 @@ export class CloudAccount {
 
   /** 删除本地的云端接口；`active` 与 `mediaDefaults` 指向它时一并删除，规则与设置页删除接口相同。 */
   private async remove(): Promise<void> {
-    await writeConfig(this.live, (current) => {
+    const result = await writeConfig(this.live, (current) => {
       if (!(CLOUD_PROVIDER in current.providers)) return current
       const { [CLOUD_PROVIDER]: _removed, ...providers } = current.providers
       const next: QyConfig = { ...current, providers }
@@ -306,5 +321,6 @@ export class CloudAccount {
       }
       return next
     })
+    if (!(result instanceof Response) && 'config' in result) this.onChange()
   }
 }

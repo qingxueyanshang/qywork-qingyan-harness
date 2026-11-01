@@ -34,7 +34,6 @@ import {
 import {
   directoryAssets,
   embeddedAssets,
-  lanCandidates,
   processExitObservationFromEnv,
   serve,
   systemPowerPort,
@@ -52,7 +51,6 @@ import { runInit } from './init.ts'
 import { runMcp } from './mcp.ts'
 import { runPlugins } from './plugins.ts'
 import { runProbe } from './probe.ts'
-import { renderQr } from './qr.ts'
 import { runTui } from './tui.ts'
 import { runUsage } from './usage.ts'
 import { embeddedWeb } from './web-assets.ts'
@@ -70,7 +68,7 @@ const USAGE = `qy —— qywork 编码 agent
 
   qy serve                启动本地服务（桌面端与手机端均连接此服务）
     --port <端口>         默认 7717，0 = 随机可用端口
-    --host <地址>         默认 0.0.0.0（允许手机连接）；仅限本机时使用 127.0.0.1
+    --host <地址>         默认 127.0.0.1（手机经云端远程访问，不直接连接本服务）
     --cwd <路径>          指定工作区
     --static <目录>       前端构建产物目录（默认使用编译时嵌入的网页）
     --print-token         将令牌输出到 stdout（供 Tauri 读取）
@@ -382,7 +380,7 @@ async function runServe(args: string[]): Promise<number> {
     config,
     ...(workspaceRoot ? { workspaceRoot } : {}),
     port: flags.port ?? 7717,
-    host: flags.host ?? '0.0.0.0',
+    host: flags.host ?? '127.0.0.1',
     ...(web ? { web } : {}),
     // Tauri spawn 时通过环境变量传入令牌，桌面端因此无需扫码配对。
     ...(process.env.QYWORK_TOKEN ? { token: process.env.QYWORK_TOKEN } : {}),
@@ -426,26 +424,13 @@ async function runServe(args: string[]): Promise<number> {
     version: await version(),
     pid: process.pid,
     port: handle.port,
-    host: flags.host ?? '0.0.0.0',
+    host: flags.host ?? '127.0.0.1',
     workspace: handle.workspaceRoot,
   })
   process.stderr.write(`\n${BOLD}qy serve${RESET} 已启动\n`)
   for (const p of problems) process.stderr.write(`\n${YELLOW}⚠${RESET} ${p}\n`)
   process.stderr.write(`  工作区  ${handle.workspaceRoot}\n`)
   process.stderr.write(`  本机    ${local}/#t=${handle.token}\n`)
-  if (flags.host !== '127.0.0.1') {
-    const candidates = lanCandidates()
-    process.stderr.write(`  局域网  ${handle.lanUrl()}\n`)
-    // 安装了 VPN / Hyper-V / Docker 的机器上自动选择的地址不一定正确，
-    // 因此同时列出备选地址，扫码无法连接时可手动输入其他地址。
-    for (const c of candidates.slice(1)) {
-      process.stderr.write(
-        `${DIM}          备选 http://${c.address}:${handle.port}  (${c.name})${RESET}\n`,
-      )
-    }
-    process.stderr.write(`\n${DIM}手机扫码接入：${RESET}\n`)
-    process.stderr.write(`${await renderQr(handle.pairingUrl())}\n`)
-  }
   process.stderr.write(`${DIM}按 Ctrl-C 停止服务${RESET}\n`)
 
   await new Promise<void>((done) => {
