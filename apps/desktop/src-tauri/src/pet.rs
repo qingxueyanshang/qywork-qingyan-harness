@@ -3,7 +3,8 @@
 //! 只承载宠物页面（`pet.html`），不连接 `qy serve`：显示的状态由主窗口推送（`pet://state`），
 //! 点击由本模块唤起主窗口后转交（`pet://open`）。未查看结果因此只在主窗口记录一份。
 //!
-//! 调整尺寸以左下角为基准：页面中的宠物固定在左下角，展开列表或气泡时宠物在屏幕上的位置不变。
+//! 调整尺寸以宠物所在的下角为基准：页面中的宠物固定在左下角，向左展开时固定在右下角，
+//! 展开列表或气泡时宠物在屏幕上的位置不变。
 
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
@@ -20,12 +21,17 @@ const MARGIN: f64 = 16.0;
 const MIN_SIDE: f64 = 40.0;
 const MAX_SIDE: f64 = 640.0;
 
-/// 显示宠物窗口；不存在时创建。`x` / `y` 是上次移动后保存的逻辑坐标，
+/// 显示宠物窗口；不存在时创建。`left` / `bottom` 是上次保存的宠物左下角（逻辑坐标），
 /// 缺省或已不在任何显示器上时放在主窗口右下角的内侧，主窗口不可见时放在主显示器工作区的右下角。
+/// 新窗口为紧凑尺寸，页面随后调整尺寸时固定左下角，宠物因此回到保存的位置。
 ///
 /// 必须是异步命令：Windows 上在同步命令中创建 WebView 窗口会使主线程死锁。
 #[tauri::command]
-pub async fn pet_window_show(app: AppHandle, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
+pub async fn pet_window_show(
+    app: AppHandle,
+    left: Option<f64>,
+    bottom: Option<f64>,
+) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(LABEL) {
         return window.show().map_err(|e| e.to_string());
     }
@@ -50,7 +56,7 @@ pub async fn pet_window_show(app: AppHandle, x: Option<f64>, y: Option<f64>) -> 
         None => builder,
     };
     let window = builder.build().map_err(|e| e.to_string())?;
-    match (x, y) {
+    match (left, bottom.map(|b| b - INITIAL)) {
         (Some(x), Some(y)) if on_screen(&window, x, y) => {
             let scale = window.scale_factor().map_err(|e| e.to_string())?;
             window
@@ -73,9 +79,15 @@ pub fn pet_window_hide(app: AppHandle) -> Result<(), String> {
     }
 }
 
-/// 按逻辑尺寸调整宠物窗口，保持左下角不动。只接受宠物窗口自身的调用。
+/// 按逻辑尺寸调整宠物窗口，保持底边不动；`leftward` 为 true 时保持右边不动，否则保持左边不动。
+/// 只接受宠物窗口自身的调用。
 #[tauri::command]
-pub fn pet_window_resize(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
+pub fn pet_window_resize(
+    window: WebviewWindow,
+    width: f64,
+    height: f64,
+    leftward: bool,
+) -> Result<(), String> {
     if window.label() != LABEL {
         return Err("只用于宠物窗口".into());
     }
@@ -90,9 +102,14 @@ pub fn pet_window_resize(window: WebviewWindow, width: f64, height: f64) -> Resu
         return Ok(());
     }
     let bottom = pos.y + size.height as i32;
+    let x = if leftward {
+        pos.x + size.width as i32 - next.width as i32
+    } else {
+        pos.x
+    };
     window.set_size(next).map_err(|e| e.to_string())?;
     window
-        .set_position(PhysicalPosition::new(pos.x, bottom - next.height as i32))
+        .set_position(PhysicalPosition::new(x, bottom - next.height as i32))
         .map_err(|e| e.to_string())
 }
 
@@ -109,23 +126,15 @@ pub fn pet_open_main(app: AppHandle, conversation_id: String) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
-/// 宠物窗口移动后把逻辑坐标交给主窗口保存，下次显示时放回原处。
+/// 宠物窗口移动后把窗口左上角的逻辑坐标交给宠物页面。页面知道当前尺寸与宠物所在的一侧，
+/// 由它换算为宠物的左下角后交给主窗口保存；本模块只知道窗口的矩形，换算不了。
 pub fn moved(window: &tauri::Window, pos: PhysicalPosition<i32>) {
     let Ok(scale) = window.scale_factor() else {
         return;
     };
     let at = serde_json::json!({ "x": f64::from(pos.x) / scale, "y": f64::from(pos.y) / scale });
-    if let Err(e) = window.app_handle().emit_to(MAIN, "pet://moved", at) {
-        log::warn!("宠物窗口位置未能交给主窗口：{e}");
-    }
-}
-
-/// 用户关闭宠物窗口（Alt+F4 等）时交给主窗口改为「隐藏」：显示位置的记录在主窗口，
-/// 直接销毁窗口会使记录仍为「桌面」，下次启动时宠物又出现。
-pub fn close_requested(window: &tauri::Window) {
-    let action = serde_json::json!({ "type": "hide" });
-    if let Err(e) = window.app_handle().emit_to(MAIN, "pet://action", action) {
-        log::warn!("宠物窗口关闭未能交给主窗口：{e}");
+    if let Err(e) = window.app_handle().emit_to(LABEL, "pet://window-moved", at) {
+        log::warn!("宠物窗口位置未能交给宠物页面：{e}");
     }
 }
 

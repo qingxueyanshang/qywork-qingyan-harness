@@ -2,7 +2,7 @@
  * 桌面宠物窗口（`pet.html`）的样式。只与 `tokens.css` 一起加载，不加载主界面的样式。
  *
  * 页面底色必须透明：外壳的窗口是透明的，任何不透明底色都会在宠物四周显示为方块。
- * 宠物固定在左下角：外壳调整窗口尺寸时以左下角为基准，宠物在屏幕上的位置不变。
+ * 宠物固定在左下角（向左展开时为右下角）：外壳调整窗口尺寸时以同一角为基准，宠物在屏幕上的位置不变。
  */
 
 html,
@@ -48,6 +48,11 @@ button {
   bottom: 0;
   display: grid;
   place-items: center;
+}
+/* 向左展开时宠物固定在右下角，外壳同时固定窗口右边（`PetWindow.tsx` 的 `leftward`）。 */
+.petw.leftward .petw-pet {
+  left: auto;
+  right: 0;
 }
 
 .petw-badge {
@@ -140,12 +145,11 @@ button {
   }
 }
 
-/* 气泡：位于宠物上方。完整规则，不与列表共用选择器（B8）。 */
+/* 气泡：位于宠物上方，顶边位置与高度由 `PetWindow.tsx` 设定。完整规则，不与列表共用选择器（B8）。 */
 .petw-bubble {
   position: absolute;
   left: 8px;
   right: 8px;
-  bottom: calc(100% - 236px);
   display: flex;
   align-items: center;
   gap: var(--s-2);
@@ -163,13 +167,14 @@ button {
   color: var(--danger);
 }
 
-/* 列表：占满宠物上方的区域，高度固定，内容过多时在框内滚动（B9）。完整规则，不与气泡共用选择器。 */
+/*
+ * 列表：位于宠物上方。顶边位置与高度由 `PetWindow.tsx` 在打开时按行数设定，打开期间不变，
+ * 多出的行在框内滚动（B9）。完整规则，不与气泡共用选择器。
+ */
 .petw-menu {
   position: absolute;
   left: 8px;
   right: 8px;
-  top: 8px;
-  height: 220px;
   display: flex;
   flex-direction: column;
   padding: 4px;
@@ -182,11 +187,29 @@ button {
   min-height: 0;
   overflow-y: auto;
 }
+/* 滚动条与主界面一致（数值同 base.css）。本页不加载 base.css，不写时显示带箭头的系统滚动条。 */
+.petw-list::-webkit-scrollbar {
+  width: 12px;
+}
+.petw-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.petw-list::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: var(--r-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.petw-list::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: content-box;
+}
 .petw-row {
   display: flex;
   align-items: center;
   gap: 2px;
 }
+/* 高度与 `PetWindow.tsx` 的 `ROW_H` 一致：列表高度按它计算。 */
 .petw-row-main {
   display: flex;
   flex: 1;
@@ -199,7 +222,6 @@ button {
   text-align: left;
 }
 .petw-row-main:hover,
-.petw-item:hover,
 .petw-stop:hover {
   background: var(--bg-hover);
 }
@@ -229,15 +251,4 @@ button {
   width: 24px;
   height: 24px;
   border-radius: var(--r-xs);
-}
-.petw-split {
-  height: 1px;
-  margin: 4px 0;
-  background: var(--border-subtle);
-}
-.petw-item {
-  height: 28px;
-  padding: 0 var(--s-2);
-  border-radius: var(--r-xs);
-  text-align: left;
 }

@@ -21,8 +21,20 @@ export interface PetWindowState {
   dark: boolean
 }
 
-/** 宠物窗口回传的操作。打开会话经外壳命令 `pet_open_main` 先唤起主窗口，不在此列。 */
-export type PetWindowAction = { type: 'stop'; id: string } | { type: 'hide' }
+/**
+ * 宠物窗口回传的操作。打开会话经外壳命令 `pet_open_main` 先唤起主窗口，不在此列。
+ * 关闭宠物只经设置页的开关，宠物窗口不回传关闭操作。
+ */
+export type PetWindowAction = { type: 'stop'; id: string }
+
+/**
+ * 宠物在屏幕上的左下角（逻辑像素），即保存与恢复的位置。不要改为窗口的左上角：
+ * 展开列表或气泡时窗口向上（向左展开时也向左）扩大，左上角随之改变，宠物本身不动。
+ */
+export interface PetAnchor {
+  left: number
+  bottom: number
+}
 
 export const PET_WINDOW_LABEL = 'pet'
 export const PET_STATE_EVENT = 'pet://state'
@@ -30,5 +42,7 @@ export const PET_READY_EVENT = 'pet://ready'
 export const PET_ACTION_EVENT = 'pet://action'
 /** 外壳在 `pet_open_main` 唤起主窗口后发给主窗口，载荷为会话 id。 */
 export const PET_OPEN_EVENT = 'pet://open'
-/** 外壳在宠物窗口移动后发给主窗口，载荷为逻辑坐标。 */
+/** 外壳在宠物窗口移动后发给宠物窗口，载荷为窗口左上角的逻辑坐标 `{ x, y }`。 */
+export const PET_WINDOW_MOVED_EVENT = 'pet://window-moved'
+/** 宠物窗口据窗口位置与当前尺寸算出宠物的位置后发给主窗口保存，载荷为 `PetAnchor`。 */
 export const PET_MOVED_EVENT = 'pet://moved'

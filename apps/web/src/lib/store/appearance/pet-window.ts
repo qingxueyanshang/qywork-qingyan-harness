@@ -14,6 +14,7 @@ import {
   PET_READY_EVENT,
   PET_STATE_EVENT,
   PET_WINDOW_LABEL,
+  type PetAnchor,
   type PetWindowAction,
   type PetWindowState,
 } from '../../pet-protocol.ts'
@@ -26,19 +27,20 @@ import {
   petEntries,
   petMood,
   petPrefs,
-  setPetPrefs,
   stopPetEntry,
 } from './pet.ts'
 
 const POSITION_KEY = 'qywork.pet.position'
 
-function savedPosition(): { x: number; y: number } | null {
+function savedPosition(): PetAnchor | null {
   try {
     const v = JSON.parse(localStorage.getItem(POSITION_KEY) ?? 'null') as {
-      x?: unknown
-      y?: unknown
+      left?: unknown
+      bottom?: unknown
     } | null
-    return typeof v?.x === 'number' && typeof v.y === 'number' ? { x: v.x, y: v.y } : null
+    return typeof v?.left === 'number' && typeof v.bottom === 'number'
+      ? { left: v.left, bottom: v.bottom }
+      : null
   } catch {
     return null
   }
@@ -82,7 +84,9 @@ export function observePetWindow(
       on(shown, (on) => {
         if (on) {
           const at = savedPosition()
-          void tauriInvoke('pet_window_show', at ? { x: at.x, y: at.y } : {}).catch(() => undefined)
+          void tauriInvoke('pet_window_show', at ? { left: at.left, bottom: at.bottom } : {}).catch(
+            () => undefined,
+          )
         } else {
           void tauriInvoke('pet_window_hide').catch(() => undefined)
         }
@@ -96,11 +100,10 @@ export function observePetWindow(
     // 宠物窗口加载完成时请求一次完整状态：它在主窗口首次推送之后才创建。
     void tauriListen(PET_READY_EVENT, push).catch(() => undefined)
     void tauriListen<string>(PET_OPEN_EVENT, (id) => void openPetEntry(id)).catch(() => undefined)
-    void tauriListen<PetWindowAction>(PET_ACTION_EVENT, (a) => {
-      if (a.type === 'stop') stopPetEntry(a.id)
-      else setPetPrefs({ place: 'hidden' })
-    }).catch(() => undefined)
-    void tauriListen<{ x: number; y: number }>(PET_MOVED_EVENT, (at) => {
+    void tauriListen<PetWindowAction>(PET_ACTION_EVENT, (a) => stopPetEntry(a.id)).catch(
+      () => undefined,
+    )
+    void tauriListen<PetAnchor>(PET_MOVED_EVENT, (at) => {
       try {
         localStorage.setItem(POSITION_KEY, JSON.stringify(at))
       } catch {

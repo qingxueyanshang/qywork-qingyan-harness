@@ -235,7 +235,7 @@ describe('宠物组件', () => {
    * 桌面宠物窗口的页面：只显示主窗口推送的状态。外壳以注入的 `__TAURI_INTERNALS__` 模拟，
    * 只在本用例期间存在，理由同 `WindowControls.test.tsx`。
    */
-  test('宠物窗口：按推送的状态显示，单击展开列表并调整尺寸，停止与打开会话交给主窗口与外壳', async () => {
+  test('宠物窗口：按推送的状态显示，单击展开列表并按行数调整尺寸，没有条目时不展开，右侧空间不足时向左展开，移动后上报宠物左下角，停止与打开会话交给主窗口与外壳', async () => {
     const { render } = await import('solid-js/web')
     const { DEFAULT_PET } = await import('./pet-default.ts')
     const { PetWindow } = await import('./PetWindow.tsx')
@@ -266,36 +266,39 @@ describe('宠物组件', () => {
       const frames = Object.fromEntries(
         Object.values(DEFAULT_PET.states).flatMap((a) => a.frames.map((f) => [f, `/f/${f}`])),
       )
-      callbacks.get(listeners.get('pet://state') as number)?.({
-        payload: {
-          mood: 'working',
-          badge: '2',
-          bubble: null,
-          entries: [{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }],
-          pack: DEFAULT_PET,
-          frames,
-          dark: true,
-        },
-      })
+      const push = (entries: unknown[]) =>
+        callbacks.get(listeners.get('pet://state') as number)?.({
+          payload: {
+            mood: 'working',
+            badge: '2',
+            bubble: null,
+            entries,
+            pack: DEFAULT_PET,
+            frames,
+            dark: true,
+          },
+        })
+      push([{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }])
       await flush()
       const resizes = () => calls.filter((c) => c.cmd === 'pet_window_resize').map((c) => c.args)
-      expect(resizes().at(-1)).toEqual({ width: 92, height: 92 })
+      expect(resizes().at(-1)).toEqual({ width: 92, height: 92, leftward: false })
       expect(host.querySelector('.petw-badge')?.textContent).toBe('2')
       expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
 
       const pet = host.querySelector('.petw-pet') as HTMLElement
-      pet.dispatchEvent(
-        new PointerEvent('pointerdown', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
-      )
-      pet.dispatchEvent(
-        new PointerEvent('pointerup', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
-      )
-      await flush()
+      const clickPet = async () => {
+        pet.dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
+        )
+        pet.dispatchEvent(
+          new PointerEvent('pointerup', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
+        )
+        await flush()
+      }
+      await clickPet()
       expect(host.querySelector('.petw-menu')).not.toBeNull()
-      expect(resizes().at(-1)).toEqual({ width: 260, height: 92 + 236 })
-      expect([...host.querySelectorAll('.petw-item')].map((b) => b.textContent)).toEqual([
-        '隐藏宠物',
-      ])
+      // 一行：行高 30 加内边距与边框 10，列表上下各留 8。
+      expect(resizes().at(-1)).toEqual({ width: 260, height: 92 + 40 + 16, leftward: false })
 
       ;(host.querySelector('.petw-stop') as HTMLButtonElement).click()
       ;(host.querySelector('.petw-row-main') as HTMLButtonElement).click()
@@ -309,7 +312,49 @@ describe('宠物组件', () => {
         },
       })
       expect(calls).toContainEqual({ cmd: 'pet_open_main', args: { conversationId: 'cv_run' } })
+      expect(host.querySelector('.petw-menu')).toBeNull()
+      expect(resizes().at(-1)).toEqual({ width: 92, height: 92, leftward: false })
+
+      // 打开期间条目清空时列表关闭；没有条目时单击不打开。
+      await clickPet()
+      expect(host.querySelector('.petw-menu')).not.toBeNull()
+      push([])
+      await flush()
+      expect(host.querySelector('.petw-menu')).toBeNull()
+      await clickPet()
+      expect(host.querySelector('.petw-menu')).toBeNull()
+      expect(resizes().at(-1)).toEqual({ width: 92, height: 92, leftward: false })
+
+      // 右侧空间不足展开宽度时向左展开，宠物固定在右下角；收起时沿用同一侧。
+      Object.defineProperty(window, 'screenX', { value: 900, configurable: true })
+      Object.defineProperty(screen, 'availLeft', { value: 0, configurable: true })
+      Object.defineProperty(screen, 'availWidth', { value: 1000, configurable: true })
+      push([{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }])
+      await flush()
+      await clickPet()
+      expect(resizes().at(-1)).toEqual({ width: 260, height: 92 + 40 + 16, leftward: true })
+      expect(host.querySelector('.petw')?.classList.contains('leftward')).toBe(true)
+
+      // 窗口移动后上报宠物的左下角，而不是窗口的左上角：展开时宠物位于右下角。
+      const moved = (x: number, y: number) =>
+        callbacks.get(listeners.get('pet://window-moved') as number)?.({ payload: { x, y } })
+      const anchors = () =>
+        calls
+          .filter((c) => c.cmd === 'plugin:event|emit_to' && c.args?.event === 'pet://moved')
+          .map((c) => c.args?.payload)
+      moved(640, 500)
+      expect(anchors().at(-1)).toEqual({ left: 640 + 260 - 92, bottom: 500 + 148 })
+      await clickPet()
+      expect(resizes().at(-1)).toEqual({ width: 92, height: 92, leftward: true })
+      moved(808, 556)
+      expect(anchors().at(-1)).toEqual({ left: 808, bottom: 556 + 92 })
     } finally {
+      for (const [o, k] of [
+        [window, 'screenX'],
+        [screen, 'availLeft'],
+        [screen, 'availWidth'],
+      ] as const)
+        Reflect.deleteProperty(o, k)
       delete g.__TAURI_INTERNALS__
       dispose()
       host.remove()
