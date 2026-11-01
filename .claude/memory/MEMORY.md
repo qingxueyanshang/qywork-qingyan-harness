@@ -18,6 +18,8 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [在不影响用户窗口的前提下复现前端问题](probe-ui-with-isolated-instance.md) — 复制数据库到 .tmp/probe/home 并启动隔离 sidecar，`#t=token` 配对，用 Node 驱动 Playwright 获取 pageerror
 - [真机电脑控制任务会操作任何已打开的窗口](desktop-live-runs-can-type-into-this-session.md) — 曾输入 `exit` 结束主会话、曾导航用户的 Edge；运行前确认 run-task.ts 会隐藏运行前已打开的全部窗口，结束后用 scan-touched.ts 检查
 - [参照用的 agent 仓库位于 view-agent](reference-agents-in-view-agent.md) — 「看看开源项目」指桌面 view-agent 下的 pi / prime / cc-haha / deepseek-harness 四个仓库；出处只写入 docs/plans
+- [云端仓库只用本地 git](cloud-repo-local-only.md) — `Desktop\qywork-cloud` 不推送、不建远程；用户未要求时不构建安装包，服务器由用户准备
+- [商业化云服务使用独立账号](commercial-cloud-standalone-accounts.md) — 邮箱加密码注册登录，不接第三方登录；后台录入模型接口并查看用户数据
 - [前一版本未发布时不升版本号](version-bump-only-after-publish.md) — v0.1.20 未公开时新改动并入 0.1.20，本地打包安装使用同一版本号，版本说明修改当前版本的那一份
 - [正式发布经接口脚本完成](publish-release-via-api.md) — `.tmp/scratch/release-api.ps1` 用凭据管理器的令牌触发三个发布工作流并公开草稿，不需要 gh；Git Bash 中设置 `MSYS_NO_PATHCONV=1`
 - [执行 qy 必须隔离数据目录](qy-needs-isolated-home.md) — 同一条命令中设置 `QYWORK_HOME` 指向 .tmp；钩子 `scripts/guard-real-home.ts` 拦截未设置的命令；曾误用用户真实账本执行过一次

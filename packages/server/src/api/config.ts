@@ -127,8 +127,8 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
        * （`qy probe` 写入的校准结果、手动编辑的 JSON、另一个 qywork 实例）会在用户下一次
        * 修改任意设置项时被整体覆盖，且没有提示。
        *
-       * 进程内不存在仅在内存中、磁盘上没有的配置状态：除本文件的 PUT 分支外，
-       * 全仓没有第二处写入 `d.config`，因此整体替换不会丢失字段。
+       * 进程内不存在仅在内存中、磁盘上没有的配置状态：全仓只有 `writeConfig` 写入 `d.config`，
+       * 它在写入前读取磁盘、写入后落盘，因此整体替换不会丢失字段。
        */
       adoptConfig(d.config, await loadConfig())
       return json({
@@ -155,19 +155,16 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
     } | null
     if (!body?.config) return json({ error: 'bad request', message: '缺少 config' }, 400)
     const incoming = body.config
-    // 同一服务的读写按文件串行，版本比较与落盘不能被另一次保存穿插。
-    // 仅原子替换文件不够：两次 PUT 仍可能都读到旧版本并同时通过校验。
-    return withFileLocks([configPath()], async () => {
+    const result = await writeConfig(d.config, (current) => {
       /*
        * 乐观并发校验：多个客户端同时修改时，后发起的写入基于修改前的完整配置，整体回写
        * 会覆盖前一次已保存的字段（典型为 API Key）。基线版本不一致时拒绝，由客户端重新
        * 读取并重放本次修改。未携带 baseVersion 的旧客户端不受此校验限制。
        *
-       * 比较基准是磁盘上的当前内容，先读取磁盘再比较。不要只与进程内的配置比较：它只在 GET 时刷新，
+       * 比较基准是磁盘上的当前内容（`writeConfig` 先读取磁盘）。不要只与进程内的配置比较：它只在 GET 时刷新，
        * 两次请求之间其他进程（`qy probe`、另一个 qywork 实例）写入文件的改动会被整体覆盖。
        */
-      adoptConfig(d.config, await loadConfig())
-      if (typeof body.baseVersion === 'string' && body.baseVersion !== configVersion(d.config)) {
+      if (typeof body.baseVersion === 'string' && body.baseVersion !== configVersion(current)) {
         return json({ error: 'conflict', message: '配置已在其他位置修改，已基于最新内容重试' }, 409)
       }
       const rename = body.renameProvider
@@ -179,8 +176,8 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
           !rename.from.trim() ||
           !rename.to.trim() ||
           rename.from === rename.to ||
-          !Object.hasOwn(d.config.providers, rename.from) ||
-          Object.hasOwn(d.config.providers, rename.to) ||
+          !Object.hasOwn(current.providers, rename.from) ||
+          Object.hasOwn(current.providers, rename.to) ||
           Object.hasOwn(incoming.providers ?? {}, rename.from) ||
           !Object.hasOwn(incoming.providers ?? {}, rename.to))
       ) {
@@ -195,25 +192,43 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
           ([name, provider]) =>
             provider.hasApiKey &&
             !('apiKey' in provider) &&
-            !Object.hasOwn(d.config.providers, name) &&
+            !Object.hasOwn(current.providers, name) &&
             rename?.to !== name,
         )
       ) {
         return json({ error: 'invalid', message: '无法保留接口密钥，请重新加载设置后重试' }, 422)
       }
-      const merged = mergeConfig(d.config, incoming, rename)
-      // 只依据 `diagnoseConfig`（结构不合法）返回 422。不要加入 `diagnoseRunnable`：未配置 key 是配置
-      // 中间态，阻止保存将使「新增接口 → 新增模型 → 再填写 key」这一流程无法完成（active 切换到新接口后即无法保存）。
-      const problems = diagnoseConfig(merged)
-      // 配置结构不合法时不落盘：写入后 CLI 将无法启动，后果比拒绝保存严重。
-      if (problems.length) return json({ error: 'invalid', problems }, 422)
-      await saveConfig(merged)
-      // 就地更新运行中的配置：否则保存成功后本进程仍使用旧配置，
-      // 下一轮对话仍使用旧模型。
-      adoptConfig(d.config, merged)
-      return json({ ok: true, config: redactConfig(d.config), notices: configNotices(d.config) })
+      return mergeConfig(current, incoming, rename)
     })
+    if (result instanceof Response) return result
+    if ('problems' in result) return json({ error: 'invalid', problems: result.problems }, 422)
+    return json({ ok: true, config: redactConfig(d.config), notices: configNotices(d.config) })
   }
 
   return null
+}
+
+/**
+ * 配置的唯一写入路径：按文件加锁 → 读取磁盘上的当前内容 → 由 `change` 生成新配置 → 校验 → 落盘 → 就地替换运行中的配置。
+ * 设置页保存与云端登录、退出都经此写入；不要在其他位置调用 `saveConfig` 或修改运行中的配置对象。
+ *
+ * - 加锁使读取、比较与落盘不被另一次写入穿插；只原子替换文件不够，两次写入仍可能都读到旧内容并同时通过校验。
+ * - 只依据 `diagnoseConfig`（结构不合法）拒绝。不要加入 `diagnoseRunnable`：未配置 key 是配置中间态，
+ *   拒绝会使「新增接口 → 新增模型 → 再填写 key」这一流程无法完成。结构不合法时不落盘：写入后 CLI 将无法启动。
+ * - `change` 返回 Response 时不写入，原样返回该 Response（版本冲突等拒绝）。
+ */
+export async function writeConfig(
+  live: QyConfig,
+  change: (current: QyConfig) => QyConfig | Response,
+): Promise<{ config: QyConfig } | { problems: string[] } | Response> {
+  return withFileLocks([configPath()], async () => {
+    adoptConfig(live, await loadConfig())
+    const next = change(live)
+    if (next instanceof Response) return next
+    const problems = diagnoseConfig(next)
+    if (problems.length) return { problems }
+    await saveConfig(next)
+    adoptConfig(live, next)
+    return { config: live }
+  })
 }
