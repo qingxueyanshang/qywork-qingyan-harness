@@ -29,10 +29,12 @@ export function refreshPulled(
   const models = Object.fromEntries(
     Object.entries(owner.models).map(([id, m]): [string, RedactedModel] => {
       const hit = pulled.get(id)
-      const { price: _price, delisted: _delisted, ...rest } = m
+      const { price: _price, delisted: _delisted, kind: _kind, ...rest } = m
       if (!hit) return [id, complete ? { ...m, delisted: true } : m]
       const price = hit.output === 'chat' ? hit.price : m.price
-      return [id, { ...rest, ...(price ? { price } : {}) }]
+      // 协议随每次拉取更新：型号改为支持接口的协议后，拉取结果不再带 `kind`，此处随之删除。
+      const kind = hit.output === 'chat' ? hit.kind : m.kind
+      return [id, { ...rest, ...(kind ? { kind } : {}), ...(price ? { price } : {}) }]
     }),
   )
   const media = Object.fromEntries(
@@ -112,9 +114,12 @@ export function addPulled(
   for (const { model, base } of picks) {
     if (model.id in models || model.id in media) continue
     if (model.output === 'chat') {
-      models[model.id] = model.price ? { price: model.price } : {}
+      models[model.id] = {
+        ...(model.kind ? { kind: model.kind } : {}),
+        ...(model.price ? { price: model.price } : {}),
+      }
       if (base) {
-        const key = `${model.id}|${owner.kind}`
+        const key = `${model.id}|${model.kind ?? owner.kind}`
         catalog[key] = { ...catalog[key], base }
       }
       continue

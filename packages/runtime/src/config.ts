@@ -317,6 +317,12 @@ export interface StoredCatalogEntry {
  */
 export interface StoredModel {
   /**
+   * 该模型在本接口上使用的协议；缺省时为接口的 `kind`。同一个接口按不同协议提供不同型号时使用
+   * （例如模型网关上 Claude 走 Anthropic Messages、GPT 走 Responses），由拉取按价格清单的
+   * `supported_endpoint_types` 写入。只在 `resolveModel` 中合成，不要在其他位置读取接口的 `kind` 代替它。
+   */
+  kind?: ProviderKind
+  /**
    * 用户为该模型选定的思考档位。`undefined` 表示未选择，不发送思考字段。
    *
    * 该字段按「接口 × 模型」存储，因为各模型的档位集合不同。
@@ -567,14 +573,16 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
   const provider = cfg.providers[name]
   if (!provider) return undefined
   const declared = provider.models[wanted]
-  // 模型库中的覆盖按「模型 id × 该接口的协议」查询。无论接口是否声明过该模型都能取得：
+  // 协议在此处合成一次：模型自带的协议优先，缺省时为接口的协议。下游只读取返回值的 `kind`。
+  const kind = declared?.kind ?? provider.kind
+  // 模型库中的覆盖按「模型 id × 协议」查询。无论接口是否声明过该模型都能取得：
   // 参数是模型在该协议上的属性，不是接口下模型配置项的属性。接口价格在此合成进同一个覆盖对象。
-  const entry = cfg.catalog?.[catalogKey(wanted, provider.kind)]
+  const entry = cfg.catalog?.[catalogKey(wanted, kind)]
   const spec = declared?.price ? { ...entry, ...declared.price } : entry
 
   return {
     provider: name,
-    kind: provider.kind,
+    kind,
     model: wanted,
     ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
     ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
@@ -785,6 +793,11 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
    */
   for (const [name, p] of Object.entries(cfg.providers)) {
     for (const [id, m] of Object.entries(p.models)) {
+      if (m.kind !== undefined && !PROVIDER_KINDS.includes(m.kind)) {
+        problems.push(
+          `${name} / ${id} 的协议 "${String(m.kind)}" 不是有效值。可选：${PROVIDER_KINDS.join('、')}`,
+        )
+      }
       if (m.effort !== undefined && !EFFORT_ORDER.includes(m.effort)) {
         problems.push(
           `${name} / ${id} 的思考强度 "${m.effort}" 不是有效值。\n` +

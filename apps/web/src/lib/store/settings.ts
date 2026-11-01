@@ -15,6 +15,7 @@ import type {
   MediaOutput,
   MediaParamDefinition,
   PermissionMode,
+  ProviderKind,
   ScheduleView,
   StoredMediaSpec,
   ThinkingMode,
@@ -37,6 +38,8 @@ export interface ModelRef {
 
 /** 单个模型在接口下的配置项。 */
 export interface RedactedModel {
+  /** 该模型在本接口上使用的协议，缺省时为接口的协议；由拉取写入（服务端 `StoredModel.kind`）。 */
+  kind?: ProviderKind
   maxOutputTokens?: number
   /** 保存时原样回传，避免覆盖探测得到的实测结果。 */
   capabilities?: unknown
@@ -446,7 +449,7 @@ export function probeModel(provider: string, model: string): Promise<ProbeResult
 
 /** 拉取得到的一个型号。字段与服务端 `PulledModel` 一致。 */
 export type PulledModel =
-  | { id: string; output: 'chat'; known: boolean; price?: ChatPrice }
+  | { id: string; output: 'chat'; kind?: ProviderKind; known: boolean; price?: ChatPrice }
   | {
       id: string
       output: MediaOutput

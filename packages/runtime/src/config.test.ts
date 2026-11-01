@@ -214,6 +214,40 @@ describe('模型解析', () => {
     },
   })
 
+  /**
+   * 原始失败形状：模型网关在同一个地址上按 Anthropic Messages 提供 Claude、按 Responses 提供 GPT，
+   * 而一个接口只有一种协议，另一家的型号只能经网关转换协议。
+   */
+  test('模型带协议时按模型的协议解析与查询模型库，未带时取接口的协议', () => {
+    const mixed = cfg({
+      providers: {
+        gateway: {
+          kind: 'openai_responses',
+          baseUrl: 'https://api.example.com',
+          apiKey: 'qyd_x',
+          models: { 'claude-sonnet-5-5': { kind: 'anthropic_messages' }, 'gpt-5': {} },
+        },
+      },
+    })
+    mixed.catalog = { 'claude-sonnet-5-5|anthropic_messages': { contextWindow: 123_456 } }
+    const claude = resolveModel(mixed, { provider: 'gateway', model: 'claude-sonnet-5-5' })!
+    expect(claude.kind).toBe('anthropic_messages')
+    expect(claude.spec).toEqual({ contextWindow: 123_456 })
+    expect(buildAdapter({ ...claude, apiKey: 'qyd_x' }).kind).toBe('anthropic_messages')
+    expect(resolveModel(mixed, { provider: 'gateway', model: 'gpt-5' })!.kind).toBe(
+      'openai_responses',
+    )
+  })
+
+  test('模型的协议不在词表中时配置诊断报告该模型', () => {
+    const bad = cfg({
+      providers: {
+        g: { kind: 'openai_responses', apiKey: 'k', models: { m: { kind: 'gemini' as never } } },
+      },
+    })
+    expect(diagnoseConfig(bad).join('\n')).toContain('g / m 的协议 "gemini" 不是有效值')
+  })
+
   test('接口价格只合成进该接口的覆盖对象，同名同协议的其他接口不受影响', () => {
     const priced = structuredClone(two)
     priced.catalog = { 'deepseek-v4-flash|openai_chat_completions': { contextWindow: 500_000 } }
