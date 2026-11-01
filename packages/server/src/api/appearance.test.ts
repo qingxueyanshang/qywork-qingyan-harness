@@ -1,6 +1,6 @@
 /**
- * 覆盖 `api/appearance.ts`：皮肤库接口的读写、背景图片设置、图片直链与 `skins.changed` 广播；
- * 宠物库接口的读取、删除、帧直链与 `pets.changed` 广播。
+ * 覆盖 `api/appearance.ts`：个性化接口的读取、保存、恢复默认、背景图片设置、图片直链与
+ * `personalization.changed` 广播；宠物库接口的读取、删除、帧直链与 `pets.changed` 广播。
  *
  * 只构造 `bus` 一个依赖：接口不读取项目与配置，其余字段构造后即成为集成测试。
  */
@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type AgentEvent, DEFAULT_SKIN, type SkinEntry } from '@qywork/core'
+import { type AgentEvent, DEFAULT_PERSONALIZATION, type PersonalizationEntry } from '@qywork/core'
 import { savePet } from '@qywork/runtime'
 import { handleAppearanceApi } from './appearance.ts'
 import type { ApiRequestDeps } from './types.ts'
@@ -41,47 +41,36 @@ async function call(path: string, init?: RequestInit): Promise<Response> {
 }
 
 const put = (body: unknown): RequestInit => ({ method: 'PUT', body: JSON.stringify(body) })
+const read = async (r: Response) => (await r.json()) as PersonalizationEntry
 
-describe('皮肤接口', () => {
-  test('新建、读取、替换、删除，每次修改都广播', async () => {
-    const created = await call('/api/skins', { method: 'POST', body: JSON.stringify(DEFAULT_SKIN) })
-    expect(created.status).toBe(201)
-    const entry = (await created.json()) as SkinEntry
-
-    expect(((await (await call(`/api/skins/${entry.id}`)).json()) as SkinEntry).skin.name).toBe(
-      '新皮肤',
+describe('个性化接口', () => {
+  test('读取默认值、保存、恢复默认，每次修改都广播', async () => {
+    expect((await read(await call('/api/personalization'))).personalization).toEqual(
+      DEFAULT_PERSONALIZATION,
     )
+    const value = { ...DEFAULT_PERSONALIZATION, accent: '#7c3aed' }
+    expect((await call('/api/personalization', put(value))).status).toBe(200)
+    expect((await read(await call('/api/personalization'))).personalization).toEqual(value)
 
-    const replaced = await call(`/api/skins/${entry.id}`, put({ ...DEFAULT_SKIN, name: '夜' }))
-    expect(replaced.status).toBe(200)
-
-    const list = (await (await call('/api/skins')).json()) as { skins: SkinEntry[] }
-    expect(list.skins.map((s) => s.skin.name)).toEqual(['夜'])
-
-    expect((await call(`/api/skins/${entry.id}`, { method: 'DELETE' })).status).toBe(200)
-    expect((await call(`/api/skins/${entry.id}`)).status).toBe(404)
+    const reset = await call('/api/personalization', { method: 'DELETE' })
+    expect((await read(reset)).personalization).toEqual(DEFAULT_PERSONALIZATION)
     expect(events).toEqual([
-      { type: 'skins.changed', id: entry.id, removed: false },
-      { type: 'skins.changed', id: entry.id, removed: false },
-      { type: 'skins.changed', id: entry.id, removed: true },
+      { type: 'personalization.changed' },
+      { type: 'personalization.changed' },
     ])
   })
 
   test('内容不合法返回 422，不广播', async () => {
-    const r = await call('/api/skins', { method: 'POST', body: JSON.stringify({ name: '' }) })
+    const r = await call('/api/personalization', put({ ...DEFAULT_PERSONALIZATION, base: 'dark' }))
     expect(r.status).toBe(422)
     expect(events).toEqual([])
   })
 
   test('设置背景图片：写入图片并切换背景，图片可经直链读取', async () => {
-    const entry = (await (
-      await call('/api/skins', { method: 'POST', body: JSON.stringify(DEFAULT_SKIN) })
-    ).json()) as SkinEntry
     const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
-    const r = await call(`/api/skins/${entry.id}/image?name=bg.png`, { method: 'PUT', body: bytes })
+    const r = await call('/api/personalization/image?name=bg.png', { method: 'PUT', body: bytes })
     expect(r.status).toBe(200)
-    const next = (await r.json()) as SkinEntry
-    expect(next.skin.background).toEqual({
+    expect((await read(r)).personalization.background).toEqual({
       kind: 'image',
       file: 'bg.png',
       fit: 'cover',
@@ -89,19 +78,15 @@ describe('皮肤接口', () => {
       blur: 0,
     })
 
-    const file = await call(`/api/skins/${entry.id}/files/bg.png`)
+    const file = await call('/api/personalization/files/bg.png')
     expect(file.status).toBe(200)
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(bytes)
-    expect((await call(`/api/skins/${entry.id}/files/missing.png`)).status).toBe(404)
+    expect((await call('/api/personalization/files/missing.png')).status).toBe(404)
   })
 
-  test('图片文件名不合法或皮肤不存在', async () => {
-    expect(
-      (await call('/api/skins/skin-x/image?name=a.svg', { method: 'PUT', body: 'x' })).status,
-    ).toBe(422)
-    expect(
-      (await call('/api/skins/skin-x/image?name=a.png', { method: 'PUT', body: 'x' })).status,
-    ).toBe(404)
+  test('图片文件名不合法时返回 422', async () => {
+    const r = await call('/api/personalization/image?name=a.svg', { method: 'PUT', body: 'x' })
+    expect(r.status).toBe(422)
   })
 })
 

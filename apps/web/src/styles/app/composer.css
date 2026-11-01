@@ -343,7 +343,7 @@
   background: var(--bg-hover);
 }
 .mode-chip:disabled {
-  opacity: 0.45;
+  opacity: var(--disabled-opacity);
   cursor: default;
 }
 /* 「完全访问」必须一眼可辨。
@@ -418,7 +418,7 @@
   background: var(--bg-hover);
 }
 .model-entry:disabled {
-  opacity: 0.45;
+  opacity: var(--disabled-opacity);
   cursor: default;
 }
 .model-entry:disabled:hover {
@@ -546,14 +546,14 @@
   width: 30px;
   height: 30px;
   border-radius: var(--r-full);
-  background: var(--text-primary);
-  color: var(--bg-app);
+  background: var(--accent);
+  color: var(--accent-fg);
   transition:
     opacity var(--t-fast) var(--ease),
     transform var(--t-fast) var(--ease);
 }
 .send-btn:disabled {
-  opacity: 0.3;
+  opacity: var(--disabled-opacity);
   cursor: default;
 }
 .send-btn:not(:disabled):active {
@@ -796,8 +796,8 @@
   height: 20px;
   border: 2px solid var(--bg-raised);
   border-radius: var(--r-full);
-  background: var(--text-primary);
-  color: var(--bg-raised);
+  background: var(--bg-inverse);
+  color: var(--text-inverted);
 }
 .attach-image-x:hover {
   background: var(--danger);

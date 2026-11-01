@@ -27,6 +27,8 @@ import type {
   IntermediateResourceRef,
   MediaDiagnostic,
   MediaSpend,
+  Personalization,
+  PersonalizationEntry,
   PetEntry,
   PetPack,
   ResourceCoverage,
@@ -34,8 +36,6 @@ import type {
   Schedule,
   ScheduleDraft,
   ScheduleView,
-  Skin,
-  SkinEntry,
   SubagentKind,
   SubagentTarget,
   TodoItem,
@@ -823,25 +823,26 @@ export interface McpConfigPort {
 }
 
 /**
- * 皮肤库端口。
+ * 个性化端口。
  *
  * 读写与校验位于 runtime，变更广播位于 server；工具只声明动作，server 组合二者实现该端口并注入。
- * 只注入给有服务端的顶层会话：切换皮肤由界面在当前会话收到工具的成功结果时执行，
- * 成员会话的工具卡不显示在当前会话中，切换不会发生。
+ * 只注入给有服务端的顶层会话：个性化作用于界面，CLI 会话没有界面，成员会话不代替用户修改界面。
  */
-export interface SkinPort {
-  list(): Promise<SkinEntry[]>
-  read(id: string): Promise<SkinEntry | null>
-  /** `id` 为 null 时新建。`image` 随同一次保存写入皮肤目录。失败时 `error` 原样交给大模型。 */
+export interface PersonalizationPort {
+  /** 读取失败（文件被改坏）时 `error` 原样交给大模型。 */
+  read(): Promise<{ ok: true; entry: PersonalizationEntry } | { ok: false; error: string }>
+  /** 整体保存。`image` 随同一次保存写入个性化目录。失败时 `error` 原样交给大模型。 */
   save(
-    id: string | null,
-    skin: Skin,
+    value: Personalization,
     image?: { name: string; bytes: Uint8Array },
-  ): Promise<{ ok: true; entry: SkinEntry } | { ok: false; error: string }>
+  ): Promise<{ ok: true; entry: PersonalizationEntry } | { ok: false; error: string }>
+  /** 恢复默认。 */
+  reset(): Promise<PersonalizationEntry>
 }
 
 /**
- * 宠物库端口。理由与注入范围同 `SkinPort`。
+ * 宠物库端口。理由与注入范围同 `PersonalizationPort`；当前屏幕选用哪只宠物由界面记录，
+ * 选用由界面在当前会话收到工具的成功结果时执行。
  */
 export interface PetPort {
   list(): Promise<PetEntry[]>
@@ -1151,8 +1152,8 @@ export interface ToolContext {
    * 没有服务端时不接入，`canvas` 工具不注册。
    */
   canvas?: CanvasPort
-  /** 皮肤库通道。见 `SkinPort`。未接入时 `skin` 工具不注册。 */
-  skins?: SkinPort
+  /** 个性化通道。见 `PersonalizationPort`。未接入时 `personalize` 工具不注册。 */
+  personalization?: PersonalizationPort
   /** 宠物库通道。见 `PetPort`。未接入时 `pet` 工具不注册。 */
   pets?: PetPort
   /**

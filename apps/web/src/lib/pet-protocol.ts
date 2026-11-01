@@ -19,6 +19,8 @@ export interface PetWindowState {
   frames: Record<string, string>
   /** 主窗口实际生效的明暗。宠物窗口的气泡与列表按它取色。 */
   dark: boolean
+  /** 个性化的强调色与其上的文字色（角标）。null 表示使用主题的强调色。 */
+  accent: { color: string; fg: string } | null
 }
 
 /**

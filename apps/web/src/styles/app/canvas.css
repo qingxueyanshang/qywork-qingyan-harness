@@ -73,7 +73,7 @@
 }
 /* 拖动节点时的对齐线。 */
 .canvas-edges line.canvas-guide {
-  stroke: #8b5cf6;
+  stroke: var(--vivid-500);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
@@ -315,16 +315,12 @@
 }
 .canvas-audio-track > input:disabled {
   cursor: default;
-  opacity: 0.5;
+  opacity: var(--disabled-opacity);
 }
 .canvas-audio-track > input::-webkit-slider-runnable-track {
   height: 3px;
   border-radius: var(--r-xs);
-  background: linear-gradient(
-    to right,
-    var(--text-primary) var(--p),
-    var(--border-strong) var(--p)
-  );
+  background: linear-gradient(to right, var(--accent) var(--p), var(--border-strong) var(--p));
 }
 .canvas-audio-track > input::-webkit-slider-thumb {
   appearance: none;
@@ -332,7 +328,7 @@
   height: 8px;
   margin-top: -2.5px;
   border-radius: 50%;
-  background: var(--text-primary);
+  background: var(--accent);
 }
 @container (max-width: 180px) {
   .canvas-audio-controls {
@@ -358,8 +354,8 @@
   border-radius: var(--r-xs);
   font: var(--fs-xs) / 1 var(--font-ui);
   font-variant-numeric: tabular-nums;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.5);
+  color: var(--media-fg);
+  background: var(--media-scrim);
 }
 /* 选中的视频节点底部的播放控件。尺寸随画布缩放：按节点高度 169 确定，不按屏幕像素。 */
 .canvas-player {
@@ -373,10 +369,10 @@
   height: 24px;
   padding: 0 6px;
   container-type: inline-size;
-  color: #fff;
+  color: var(--media-fg);
   font: 10px / 1 var(--font-ui);
   font-variant-numeric: tabular-nums;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.55));
+  background: linear-gradient(transparent, var(--media-scrim));
 }
 .canvas-player > button {
   flex: none;
@@ -385,7 +381,7 @@
   width: 18px;
   height: 18px;
   border-radius: var(--r-xs);
-  color: #fff;
+  color: var(--media-fg);
 }
 .canvas-player > button:hover {
   background: rgba(255, 255, 255, 0.18);
@@ -414,7 +410,11 @@
 .canvas-player > input::-webkit-slider-runnable-track {
   height: 2px;
   border-radius: 1px;
-  background: linear-gradient(to right, #fff var(--p), rgba(255, 255, 255, 0.35) var(--p));
+  background: linear-gradient(
+    to right,
+    var(--media-fg) var(--p),
+    rgba(255, 255, 255, 0.35) var(--p)
+  );
 }
 .canvas-player > input::-webkit-slider-thumb {
   appearance: none;
@@ -422,7 +422,7 @@
   height: 8px;
   margin-top: -3px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--media-fg);
 }
 /* 竖版视频的节点较窄：时间显示的位置让给进度条。 */
 @container (max-width: 160px) {
@@ -608,23 +608,23 @@
 }
 .canvas-snake > span:nth-child(1) {
   --j: 0;
-  background: #6d28d9;
+  background: var(--vivid-700);
 }
 .canvas-snake > span:nth-child(2) {
   --j: 1;
-  background: #8b5cf6;
+  background: var(--vivid-500);
 }
 .canvas-snake > span:nth-child(3) {
   --j: 2;
-  background: #a78bfa;
+  background: var(--vivid-400);
 }
 .canvas-snake > span:nth-child(4) {
   --j: 3;
-  background: #c4b5fd;
+  background: var(--vivid-300);
 }
 .canvas-snake > span:nth-child(5) {
   --j: 4;
-  background: #ddd6fe;
+  background: var(--vivid-200);
 }
 .canvas-snake > span::before {
   content: "";
@@ -837,7 +837,7 @@
 }
 .canvas-tl-bar button:disabled,
 .canvas-tl-head button:disabled {
-  opacity: 0.4;
+  opacity: var(--disabled-opacity);
 }
 .canvas-tl-play {
   flex: 1;
@@ -872,7 +872,7 @@
   aspect-ratio: var(--tl-ratio, 1.7778);
   overflow: hidden;
   border-radius: var(--r-sm);
-  background: #000;
+  background: var(--media-black);
 }
 .canvas-tl-screen > video {
   position: absolute;
@@ -1042,7 +1042,7 @@
   bottom: 2px;
   width: 2px;
   margin-left: -1px;
-  background: var(--text-primary);
+  background: var(--accent);
 }
 .canvas-tl-playhead {
   position: absolute;
@@ -1050,7 +1050,7 @@
   bottom: 0;
   width: 1.5px;
   margin-left: -0.75px;
-  background: var(--text-primary);
+  background: var(--accent);
   pointer-events: none;
 }
 .canvas-tl-playhead::before {
@@ -1061,7 +1061,7 @@
   width: 7.5px;
   height: 7.5px;
   border-radius: 2px;
-  background: var(--text-primary);
+  background: var(--accent);
 }
 
 /* 全屏编辑：覆盖窗口标题栏以下的整个应用，菜单（60）与对话框位于其上。 */
@@ -1181,7 +1181,7 @@
   width: 3px;
   height: 40px;
   border-radius: 2px;
-  background: #fff;
+  background: var(--media-fg);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
 }
 .canvas-frame-row {
@@ -1222,7 +1222,7 @@
   background: var(--accent-hover);
 }
 .canvas-frame-take:disabled {
-  opacity: 0.5;
+  opacity: var(--disabled-opacity);
 }
 
 /* ── 画布上的下拉菜单（添加、接出、选素材、切版本） ── */
@@ -1365,7 +1365,7 @@
   color: var(--text-primary);
 }
 .canvas-rail > button:disabled {
-  opacity: 0.45;
+  opacity: var(--disabled-opacity);
   cursor: default;
 }
 .canvas-rail > hr {
@@ -1406,7 +1406,7 @@
   outline: none;
 }
 .canvas-picker > input:focus {
-  border-color: var(--border-strong);
+  border-color: var(--border-focus);
 }
 .canvas-picker-list {
   flex: 1;
@@ -1500,8 +1500,8 @@
   font-style: normal;
   font-size: 10px;
   line-height: 1;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.55);
+  color: var(--media-fg);
+  background: var(--media-scrim);
 }
 .canvas-input > .cap {
   position: absolute;
@@ -1520,8 +1520,8 @@
   width: 16px;
   height: 16px;
   border-radius: var(--r-full);
-  color: #fff;
-  background: rgba(0, 0, 0, 0.55);
+  color: var(--media-fg);
+  background: var(--media-scrim);
   opacity: 0;
   transition: opacity var(--t-fast) var(--ease);
 }
@@ -1761,9 +1761,12 @@ button.canvas-input:hover {
   padding: 6px 8px;
   border: 1px solid var(--border-default);
   border-radius: var(--r-md);
-  background: var(--bg-raised);
+  background-color: var(--bg-raised);
   color: var(--text-primary);
   font-size: var(--fs-sm);
+}
+.canvas-param-select {
+  padding-right: 26px;
 }
 .canvas-param-text {
   resize: vertical;
@@ -1781,7 +1784,7 @@ button.canvas-input:hover {
   appearance: none;
   margin: 0;
 }
-/* 选中态只有一层：描边改为墨色、文字改为主色，不加底色，外层也不加底色容器。 */
+/* 选中态只有一层：描边改为强调色、文字改为主色，不加底色，外层也不加底色容器。 */
 .canvas-seg {
   display: grid;
   grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr));
@@ -1818,7 +1821,7 @@ button.canvas-input:hover {
   color: var(--text-primary);
 }
 .canvas-seg > button[aria-checked="true"] {
-  border-color: var(--text-primary);
+  border-color: var(--accent);
   color: var(--text-primary);
 }
 .canvas-seg > button > span {
@@ -2117,7 +2120,7 @@ button.canvas-input:hover {
   outline: none;
 }
 .canvas-pick > input[type="search"]:focus {
-  border-color: var(--border-strong);
+  border-color: var(--border-focus);
 }
 .canvas-pick-list {
   flex: 1;

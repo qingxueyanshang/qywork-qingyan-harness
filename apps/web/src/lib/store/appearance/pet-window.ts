@@ -19,7 +19,7 @@ import {
   type PetWindowState,
 } from '../../pet-protocol.ts'
 import { isDesktopShell, tauriEmitTo, tauriInvoke, tauriListen } from '../shell.ts'
-import { effectiveTheme } from '../theme.ts'
+import { paintedPersonalization, personalAccent, theme } from '../theme.ts'
 import {
   openPetEntry,
   petBadge,
@@ -60,7 +60,7 @@ export function observePetWindow(
       const frames: Record<string, string> = {}
       for (const a of Object.values(pack.states)) for (const f of a.frames) frames[f] = frameUrl(f)
       const b = petBubble()
-      const pref = effectiveTheme()
+      const pref = theme()
       return {
         mood: petMood(),
         badge: petBadge(),
@@ -72,6 +72,7 @@ export function observePetWindow(
           pref === 'system'
             ? window.matchMedia('(prefers-color-scheme: dark)').matches
             : pref === 'dark',
+        accent: personalAccent(paintedPersonalization()?.personalization ?? null),
       }
     }
     const shown = () => petPrefs().place === 'desktop'

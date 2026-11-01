@@ -46,7 +46,7 @@ export function UpdateSettings() {
                 <label class="setting-row">
                   <span class="setting-row-label">自动检查更新</span>
                   <input
-                    class="app-update-switch"
+                    class="switch"
                     type="checkbox"
                     role="switch"
                     aria-checked={preferences().autoCheck}
@@ -58,7 +58,7 @@ export function UpdateSettings() {
                 <label class="setting-row">
                   <span class="setting-row-label">自动下载更新</span>
                   <input
-                    class="app-update-switch"
+                    class="switch"
                     type="checkbox"
                     role="switch"
                     aria-checked={preferences().autoDownload}
@@ -95,8 +95,11 @@ export function UpdateSettings() {
                   />
                 </Show>
                 <button
-                  class="app-update-action"
-                  classList={{ primary: ['available', 'ready'].includes(value().stage) }}
+                  class="app-update-action sm"
+                  classList={{
+                    'btn-primary': ['available', 'ready'].includes(value().stage),
+                    'btn-ghost': !['available', 'ready'].includes(value().stage),
+                  }}
                   type="button"
                   disabled={view().disabled}
                   onClick={() => void actOnUpdate(view().action)}
@@ -120,7 +123,7 @@ export function UpdateSettings() {
                 <div class="app-update-notes-heading">
                   <h3>{value().version} 更新说明</h3>
                   <button
-                    class="app-update-action"
+                    class="btn-ghost sm"
                     type="button"
                     ref={(element) => queueMicrotask(() => element.focus())}
                     onClick={() => showNotes(false)}

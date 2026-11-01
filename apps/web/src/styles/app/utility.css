@@ -84,7 +84,7 @@
     position: fixed;
     inset: 0;
     z-index: 40;
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--scrim);
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--t-base) var(--ease);

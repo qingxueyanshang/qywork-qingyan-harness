@@ -63,7 +63,7 @@ button {
   padding: 0 5px;
   border-radius: var(--r-full);
   background: var(--accent);
-  color: var(--text-inverted);
+  color: var(--accent-fg);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   line-height: 18px;

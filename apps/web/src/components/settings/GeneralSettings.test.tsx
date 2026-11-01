@@ -1,9 +1,10 @@
 /**
  * 通用设置：新对话默认权限（配置读取、即时保存、连续切换、失败回滚，不修改当前会话）；
- * 主题与皮肤一行（点选主题即取消皮肤，皮肤一行打开 `SkinDialog`）。
+ * 主题三项始终可选；「个性化」一行打开个性化弹窗（颜色选择可选空值，修改后保存，恢复默认需确认）。
  */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
+import { DEFAULT_PERSONALIZATION } from '@qywork/core'
 import type { ConfigPayload, RedactedConfig } from '../../lib/store/index.ts'
 
 let store: typeof import('../../lib/store/index.ts')
@@ -14,6 +15,7 @@ let stored: RedactedConfig
 let failNext = false
 let pendingSave: Promise<void> | undefined
 let commands: unknown[] = []
+let personalCalls: string[] = []
 
 const payload = (): ConfigPayload => ({
   path: 'config.json',
@@ -41,7 +43,11 @@ beforeAll(async () => {
     if (path === '/api/pairing') return { available: false, enabled: false, tunnel: null } as T
     // 「运行环境」一节在页面显示时获取检测结果（`environmentStore.ts`）。
     if (path === '/api/host/environment') return { environment: [] } as T
-    if (path === '/api/skins') return { skins: [], failures: [] } as T
+    if (path === '/api/personalization') {
+      personalCalls.push(init?.method ?? 'GET')
+      const body = init?.method === 'PUT' ? JSON.parse(String(init.body)) : DEFAULT_PERSONALIZATION
+      return { personalization: body, updatedAt: 1 } as T
+    }
     if (path !== '/api/config') throw new Error(`unexpected ${path}`)
     if (init?.method === 'PUT') {
       const waiting = pendingSave
@@ -151,42 +157,83 @@ test('连续切换时保留最后选择，保存失败时回滚并显示错误',
   }
 })
 
-test('选用皮肤时主题三项都不高亮，点选一项即取消皮肤', async () => {
-  store.chooseSkin({ id: 'night', base: 'dark' })
+test('主题三项始终可选，个性化不影响主题的选中项', async () => {
+  store.paintPersonalization({
+    personalization: { ...DEFAULT_PERSONALIZATION, accent: '#7c3aed' },
+    imageUrl: null,
+  })
   const view = await mount()
   try {
     const themes = [...view.host.querySelectorAll<HTMLButtonElement>('.seg-item')].filter((b) =>
       ['跟随系统', '浅色', '深色'].includes(b.textContent ?? ''),
     )
-    expect(themes.some((b) => b.classList.contains('active'))).toBe(false)
     themes.find((b) => b.textContent === '浅色')!.click()
-    expect(store.skinChoice()).toBeNull()
     expect(store.theme()).toBe('light')
     expect(themes.find((b) => b.textContent === '浅色')!.classList.contains('active')).toBe(true)
+    expect(store.paintedPersonalization()?.personalization.accent).toBe('#7c3aed')
   } finally {
     store.setTheme('system')
+    store.paintPersonalization(null)
     view.close()
   }
 })
 
-test('皮肤一行打开皮肤弹窗，完成后关闭', async () => {
+test('个性化一行打开弹窗：雾面可选颜色与「无」，修改后保存，恢复默认需确认', async () => {
+  personalCalls = []
   const view = await mount()
   try {
     const row = [...view.host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (b) => b.textContent === '无',
+      (b) => b.textContent === '默认',
     )!
     row.click()
-    await until(() => view.host.querySelector('dialog.skin-dialog') !== null)
-    const dialog = view.host.querySelector('dialog.skin-dialog')!
-    expect([...dialog.querySelectorAll('.skin-list button')].map((b) => b.textContent)).toEqual([
-      '无',
-      '新建',
-    ])
+    await until(() => view.host.querySelector('dialog.personal-dialog') !== null)
+    const dialog = view.host.querySelector('dialog.personal-dialog')!
+    const labels = [...dialog.querySelectorAll('.setting-row-label')].map((l) => l.textContent)
+    expect(labels).toEqual(['背景', '颜色', '雾面', '界面不透明度', '强调色'])
+    expect(dialog.textContent).not.toContain('模式')
+
+    const fog = dialog.querySelector<HTMLButtonElement>('button[aria-label="雾面颜色"]')!
+    expect(fog.querySelector('.color-swatch.empty')).not.toBeNull()
+    // 面板打开时，弹窗的关闭请求（Escape）只关闭面板，弹窗保留。
+    fog.click()
+    expect(dialog.querySelector('.color-panel')).not.toBeNull()
+    dialog.dispatchEvent(new Event('cancel', { cancelable: true }))
+    expect(dialog.querySelector('.color-panel')).toBeNull()
+    expect(view.host.querySelector('dialog.personal-dialog')).not.toBeNull()
+    await new Promise((r) => setTimeout(r, 0))
+    fog.click()
+    const panel = dialog.querySelector('.color-panel')!
+    expect(panel.textContent).toContain('无')
+    panel.querySelector<HTMLButtonElement>('button[aria-label="#3b82f6"]')!.click()
+    // 从看不到背景改为设置雾面：不透明度同一次降为 85%，浓度与速度两行出现。
+    expect(store.currentPersonalization().fog).toEqual({
+      color: '#3b82f6',
+      density: 0.5,
+      speed: 0.4,
+    })
+    expect(store.currentPersonalization().opacity).toBe(0.85)
+    expect([...dialog.querySelectorAll('.setting-row-label')].map((l) => l.textContent)).toContain(
+      '浓度',
+    )
+    await until(() => personalCalls.includes('PUT'))
+
+    ;[...dialog.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent === '恢复默认')!
+      .click()
+    await until(() => dialog.querySelector('dialog.personal-reset-dialog') !== null)
+    const confirm = dialog.querySelector('dialog.personal-reset-dialog')!
+    ;[...confirm.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent === '恢复默认')!
+      .click()
+    await until(() => personalCalls.includes('DELETE'))
+    expect(store.currentPersonalization()).toEqual(DEFAULT_PERSONALIZATION)
+
     ;[...dialog.querySelectorAll<HTMLButtonElement>('button')]
       .find((b) => b.textContent === '完成')!
       .click()
-    await until(() => view.host.querySelector('dialog.skin-dialog') === null)
+    await until(() => view.host.querySelector('dialog.personal-dialog') === null)
   } finally {
+    store.paintPersonalization(null)
     view.close()
   }
 })

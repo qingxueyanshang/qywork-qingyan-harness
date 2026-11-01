@@ -8,6 +8,7 @@
  * 层叠优先级，通常不符合预期，并会产生降序选择器警告。
  */
 
+@import "./app/controls.css";
 @import "./app/shell.css";
 @import "./app/appearance.css";
 @import "./app/transcript.css";

@@ -1539,7 +1539,7 @@ function ChangeRecord() {
         {(error) => (
           <div class="change-more" role="alert">
             <span>历史记录加载失败：{error()}</span>
-            <button class="ghost-btn" type="button" onClick={retry}>
+            <button class="btn-ghost sm" type="button" onClick={retry}>
               重试
             </button>
           </div>
@@ -1760,7 +1760,7 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
             {(error) => (
               <>
                 <span role="alert">历史记录加载失败：{error()}</span>
-                <button class="ghost-btn" type="button" onClick={() => void loadOlder()}>
+                <button class="btn-ghost sm" type="button" onClick={() => void loadOlder()}>
                   重试
                 </button>
               </>

@@ -10,6 +10,24 @@
  * 相当于同一份清单维护两次。
  */
 
+// 个性化：格式、校验与合并。个性化接口、personalize 工具与界面共用
+export {
+  DEFAULT_PERSONALIZATION,
+  GRADIENT_ANGLE,
+  GRADIENT_DIRECTIONS,
+  type GradientDirection,
+  type ImageFit,
+  isDefaultPersonalization,
+  isPersonalImageName,
+  mergePersonalization,
+  PERSONAL_IMAGE_EXTENSIONS,
+  PERSONAL_LIMITS,
+  type PersonalBackground,
+  type PersonalFog,
+  type Personalization,
+  type PersonalizationEntry,
+  parsePersonalization,
+} from './domain/appearance/personalization.ts'
 // 宠物包：格式与校验。宠物库接口、pet 工具与界面共用
 export {
   isPetId,
@@ -24,23 +42,6 @@ export {
   parsePetPack,
   petFrameFiles,
 } from './domain/appearance/pet.ts'
-// 皮肤：格式、校验与合并。皮肤库接口、skin 工具与界面共用
-export {
-  DEFAULT_SKIN,
-  isSkinId,
-  isSkinImageName,
-  mergeSkin,
-  parseSkin,
-  SKIN_IMAGE_EXTENSIONS,
-  SKIN_LIMITS,
-  type Skin,
-  type SkinBackground,
-  type SkinBase,
-  type SkinEffect,
-  type SkinEntry,
-  type SkinImageFit,
-  type SkinSurface,
-} from './domain/appearance/skin.ts'
 // Art 页面：尺寸参数与 viewport 读写。服务端生成、尺寸读取与界面渲染共用
 export {
   ART_DEFAULT_SIZE,

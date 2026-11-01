@@ -12,14 +12,27 @@
  */
 
 import { createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from 'solid-js'
+import { parseColor } from '../../lib/color.ts'
 
-/** 渐变色标：SVG 中选中节点的连线（`linearGradient`）与此处的流动虚线共用。 */
+/**
+ * 渐变色标：位置与颜色令牌（`tokens.css` 的生成进度色阶，不随强调色变化）。SVG 中选中节点的连线
+ * （`linearGradient`）与此处的流动虚线共用。
+ */
 export const FLOW_STOPS: readonly (readonly [number, string])[] = [
-  [0, '#ddd6fe'],
-  [0.3, '#a78bfa'],
-  [0.62, '#7c3aed'],
-  [1, '#5b21b6'],
+  [0, '--vivid-200'],
+  [0.3, '--vivid-400'],
+  [0.62, '--vivid-600'],
+  [1, '--vivid-800'],
 ]
+
+/** 读取色标令牌的当前值，按 WebGL 需要的 0–1 分量排列。令牌缺失（没有加载样式表的环境）时取黑色。 */
+function flowColors(): number[] {
+  const css = getComputedStyle(document.documentElement)
+  return FLOW_STOPS.flatMap(([, token]) => {
+    const c = parseColor(css.getPropertyValue(token)) ?? { r: 0, g: 0, b: 0, a: 1 }
+    return [c.r / 255, c.g / 255, c.b / 255]
+  })
+}
 /** 虚线周期（`4 4`，画布单位）；流速为每秒 10 个屏幕像素，每秒推进 24 次，每次位移约 0.4 像素。 */
 const FLOW_PERIOD = 8
 const FLOW_SPEED = 10
@@ -192,11 +205,6 @@ interface Renderer {
   dispose(): void
 }
 
-function rgb(hex: string): number[] {
-  const n = Number.parseInt(hex.slice(1), 16)
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
-}
-
 /** 无法取得 WebGL2 上下文或着色器编译失败时返回 null，由调用方改用静止的虚线。 */
 function createRenderer(canvas: HTMLCanvasElement): Renderer | null {
   const gl = canvas.getContext('webgl2', { premultipliedAlpha: true, antialias: false })
@@ -243,10 +251,7 @@ function createRenderer(canvas: HTMLCanvasElement): Renderer | null {
   const uFlow = u('uFlow')
   const uDpr = u('uDpr')
   const uHalf = u('uHalf')
-  gl.uniform3fv(
-    u('uColor'),
-    FLOW_STOPS.flatMap(([, color]) => rgb(color)),
-  )
+  gl.uniform3fv(u('uColor'), flowColors())
   gl.uniform1fv(
     u('uStop'),
     FLOW_STOPS.map(([offset]) => offset),

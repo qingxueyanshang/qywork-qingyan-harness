@@ -141,8 +141,8 @@ export {
 export { type ChangeWindow, openChangeWindow } from './workspace-watch.ts'
 
 import type { MediaOutput } from '@qywork/core'
+import { personalizeTool } from './appearance/personalize.ts'
 import { petTool } from './appearance/pet.ts'
-import { skinTool } from './appearance/skin.ts'
 import {
   captureCanvasFrameTool,
   createCanvasTool,
@@ -183,8 +183,8 @@ export function registerBuiltinTools(
     canvas?: boolean
     /** 有界面可以打开右侧面板：服务端的顶层会话。CLI 与成员会话没有。 */
     panel?: boolean
-    /** 有皮肤库通道（服务端为顶层会话注入了 `SkinPort`）。 */
-    skins?: boolean
+    /** 有个性化通道（服务端为顶层会话注入了 `PersonalizationPort`）。 */
+    personalization?: boolean
     /** 有宠物库通道（服务端为顶层会话注入了 `PetPort`）。 */
     pets?: boolean
     /** 有 Office 执行程序（宿主注入了 `OfficePort`）。 */
@@ -252,7 +252,7 @@ export function registerBuiltinTools(
     // 面板由界面打开：没有界面呈现本会话时调用没有效果（B5）。
     ...(opts.panel ? [openInPanelTool] : []),
     // 切换皮肤同样由界面执行：没有界面呈现本会话时切换不会发生（B5）。
-    ...(opts.skins ? [skinTool] : []),
+    ...(opts.personalization ? [personalizeTool] : []),
     ...(opts.pets ? [petTool] : []),
     createScheduleTool,
     listSchedulesTool,

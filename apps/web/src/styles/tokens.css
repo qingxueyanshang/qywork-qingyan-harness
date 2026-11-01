@@ -46,6 +46,51 @@
   --accent-hover: #35353b;
   --accent-soft: rgba(0, 0, 0, 0.06);
 
+  /* 强调色上的文字（主按钮、开关滑块）。个性化设置强调色时按其明暗改写为黑或白。 */
+  --accent-fg: var(--text-inverted);
+  /* 文字输入框与下拉框获得焦点时的边框。 */
+  --border-focus: var(--accent);
+  /* 反色底：工具提示、附件删除钮。文字取 `--text-inverted`。 */
+  --bg-inverse: var(--text-primary);
+
+  /* 禁用态的不透明度。按钮、开关、工具栏按钮共用一个值。 */
+  --disabled-opacity: 0.45;
+
+  /* 模态窗口与抽屉下方的遮罩。 */
+  --scrim: rgba(0, 0, 0, 0.36);
+
+  /*
+   * 图片与视频上的浮层（角标、播放条、删除钮）。与明暗无关：浮层压在媒体上，
+   * 媒体本身不随主题变化，浮层按主题取色时在浅色图片上看不清。
+   */
+  --media-scrim: rgba(0, 0, 0, 0.55);
+  --media-fg: #ffffff;
+  --media-black: #000000;
+
+  /*
+   * 生成进度的彩色色阶（流动虚线、选中节点的连线、进度条、画布对齐线），浅到深，固定为紫色。
+   * 不属于强调色：个性化的强调色只改写 `--accent*`，不改写此处，生成进度在任何强调色下颜色相同。
+   */
+  --vivid-100: #ede9fe;
+  --vivid-200: #ddd6fe;
+  --vivid-300: #c4b5fd;
+  --vivid-400: #a78bfa;
+  --vivid-500: #8b5cf6;
+  --vivid-600: #7c3aed;
+  --vivid-700: #6d28d9;
+  --vivid-800: #5b21b6;
+
+  /*
+   * 代码高亮。只用六个语义色（关键字、字符串、数字、注释、函数、类型）：代码着色用于区分结构，
+   * 颜色过多会削弱区分度。注释取最低对比度，它是最不需要突出的 token。
+   */
+  --hl-keyword: #8250df;
+  --hl-string: #0a6b3d;
+  --hl-number: #0550ae;
+  --hl-comment: #8b8b93;
+  --hl-function: #6639ba;
+  --hl-type: #953800;
+
   --success: #1a7f47;
   --success-soft: rgba(26, 127, 71, 0.1);
   /* 取 #cb5541，即 #c2371f（砖红，不透明时偏褐色）以 0.85 不透明度叠加在白底上的结果。
@@ -62,15 +107,15 @@
   --warning: #cb6a3c;
 
   /*
-   * 界面骨架的底色。缺省值即无皮肤时的外观；皮肤在 `document.documentElement` 的行内样式中
-   * 改写这两项（`lib/store/theme.ts`）。
+   * 界面骨架的底色。缺省值即默认外观；个性化的界面不透明度小于 1 时，在 `document.documentElement`
+   * 的行内样式中改写这两项（`lib/store/theme.ts`）。
    *
    * 只有外框（`.app`、窄屏抽屉、页签条）、会话区（`.main`）与右侧面板（`.side-panel`、当前页签）引用它们。
-   * 画布、终端、文件预览、弹窗与菜单继续引用 `--bg-*`：它们是内容区或浮层，皮肤不作用于它们。
+   * 画布、终端、文件预览、弹窗与菜单继续引用 `--bg-*`：它们是内容区或浮层，个性化不作用于它们。
    * 缺省值必须写成 `var()` 引用而不是色值：暗色主题只改写 `--bg-*`，写成色值时暗色下骨架仍为亮色。
    *
    * 不要为骨架加 `backdrop-filter`：取值不为 `none` 时元素成为 `position: fixed` 后代的定位基准，
-   * 会话区与面板中的右键菜单、弹窗随之错位。毛玻璃效果由背景层自身模糊实现（`SkinBackdrop`）。
+   * 会话区与面板中的右键菜单、弹窗随之错位。毛玻璃效果由背景层自身模糊实现（`PersonalBackdrop`）。
    */
   --frame-bg: var(--bg-sunken);
   --content-bg: var(--bg-app);
@@ -218,6 +263,13 @@
     --diff-add-bg: rgba(78, 201, 138, 0.14);
     --diff-del-bg: rgba(255, 123, 99, 0.14);
 
+    --hl-keyword: #d2a8ff;
+    --hl-string: #7ee787;
+    --hl-number: #79c0ff;
+    --hl-comment: #7a7a84;
+    --hl-function: #d2a8ff;
+    --hl-type: #ffa657;
+
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
     --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
@@ -260,6 +312,13 @@
 
   --diff-add-bg: rgba(78, 201, 138, 0.14);
   --diff-del-bg: rgba(255, 123, 99, 0.14);
+
+  --hl-keyword: #d2a8ff;
+  --hl-string: #7ee787;
+  --hl-number: #79c0ff;
+  --hl-comment: #7a7a84;
+  --hl-function: #d2a8ff;
+  --hl-type: #ffa657;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);

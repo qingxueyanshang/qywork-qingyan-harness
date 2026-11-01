@@ -19,7 +19,7 @@
   padding: 0;
   font: inherit;
   cursor: default;
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--scrim);
 }
 
 /* 遮罩层只负责居中，点击穿透到下层的关闭按钮；对话框自身重新接收点击。 */
@@ -37,7 +37,7 @@
   position: fixed;
   inset: 0;
   z-index: 90;
-  background: rgba(0, 0, 0, 0.36);
+  background: var(--scrim);
   display: grid;
   place-items: center;
   padding: var(--s-4);
@@ -83,33 +83,6 @@
   display: flex;
   gap: var(--s-2);
   padding: var(--s-3) var(--s-4);
-}
-
-.btn {
-  padding: 7px var(--s-4);
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border-default);
-  background: var(--bg-raised);
-  font-size: var(--fs-base);
-  transition: background var(--t-fast) var(--ease);
-}
-.btn:hover {
-  background: var(--bg-hover);
-}
-.btn.ghost {
-  border-color: transparent;
-  color: var(--text-secondary);
-  margin-right: auto;
-}
-/* 前景色使用 `--text-inverted`，不写死 #fff：强调色是墨色，暗色主题下为近白色，
-   写死白色会出现白底白字。 */
-.btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--text-inverted);
-}
-.btn.primary:hover {
-  background: var(--accent-hover);
 }
 
 /* ── 手机接入 ── */
@@ -176,9 +149,6 @@
 .confirm-actions > .btn-ghost {
   align-self: auto;
 }
-.btn-primary.danger {
-  background: var(--danger);
-}
 
 /* ── 新建 work ──
    比确认框宽一档：它有两个字段和一段可能很长的路径。 */
@@ -212,7 +182,7 @@
 }
 .np-input:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--border-focus);
 }
 
 /* 未选择文件夹时显示虚线框：它表示待填写的位置，而不是已确定的信息。 */
@@ -313,8 +283,8 @@
   max-width: 300px;
   padding: 5px var(--s-2);
   border-radius: var(--r-sm);
-  background: var(--text-primary);
-  color: var(--bg-app);
+  background: var(--bg-inverse);
+  color: var(--text-inverted);
   font-size: var(--fs-sm);
   line-height: 1.5;
   box-shadow: var(--shadow-md);

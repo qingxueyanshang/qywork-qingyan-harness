@@ -1334,7 +1334,7 @@ describe('变更页按轮次分组', () => {
           ?.textContent?.includes('历史记录加载失败：网络断开') === true,
       () => host.innerHTML,
     )
-    host.querySelector<HTMLButtonElement>('.change-more .ghost-btn')?.click()
+    host.querySelector<HTMLButtonElement>('.change-more .btn-ghost')?.click()
     await waitFor(
       () => host.querySelectorAll('.change-turn').length === 1,
       () => `calls=${calls} html=${host.innerHTML}`,

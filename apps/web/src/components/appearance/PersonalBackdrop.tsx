@@ -1,14 +1,15 @@
 /**
- * 皮肤的背景层：纯色、渐变或图片，加流动雾面。位于界面骨架之下，透过半透明的骨架底色显示。
+ * 个性化的背景层：纯色、渐变或图片，加流动雾面。位于界面骨架之下，透过半透明的骨架底色显示。
  *
- * 只渲染 `paintedSkin()`，不自行读取皮肤库：选用哪套皮肤、何时读取由外观权威与皮肤库模块决定。
+ * 只渲染 `paintedPersonalization()`，不自行读取：何时读取由个性化模块决定。
+ * 纯色背景的颜色为 null 且没有雾面时不渲染：此时骨架下方只有页面底色。
  */
 
-import type { Skin } from '@qywork/core'
+import { GRADIENT_ANGLE, type Personalization } from '@qywork/core'
 import type { JSX } from 'solid-js'
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { parseColor, toCss, withAlpha } from '../../lib/color.ts'
-import { type PaintedSkin, paintedSkin } from '../../lib/store/index.ts'
+import { type PaintedPersonalization, paintedPersonalization } from '../../lib/store/index.ts'
 
 /** 雾团数量。每团是一个径向渐变块，各自沿不同路径缓慢移动。 */
 const FOG_BLOBS = 4
@@ -17,11 +18,13 @@ const FOG_BLOBS = 4
 const FOG_SLOWEST_S = 120
 const FOG_FASTEST_S = 20
 
-function backgroundStyle(p: PaintedSkin): JSX.CSSProperties {
-  const bg = p.skin.background
-  if (bg.kind === 'color') return { 'background-color': bg.color }
+function backgroundStyle(p: PaintedPersonalization): JSX.CSSProperties {
+  const bg = p.personalization.background
+  if (bg.kind === 'color') return bg.color ? { 'background-color': bg.color } : {}
   if (bg.kind === 'gradient') {
-    return { 'background-image': `linear-gradient(${bg.angle}deg, ${bg.stops.join(', ')})` }
+    return {
+      'background-image': `linear-gradient(${GRADIENT_ANGLE[bg.direction]}deg, ${bg.from}, ${bg.to})`,
+    }
   }
   return {
     'background-image': p.imageUrl ? `url("${p.imageUrl}")` : 'none',
@@ -34,9 +37,9 @@ function backgroundStyle(p: PaintedSkin): JSX.CSSProperties {
   }
 }
 
-function fogStyle(skin: Skin): JSX.CSSProperties | null {
-  const fx = skin.effect
-  if (fx.kind !== 'fog') return null
+function fogStyle(p: Personalization): JSX.CSSProperties | null {
+  const fx = p.fog
+  if (!fx) return null
   const color = parseColor(fx.color)
   if (!color) return null
   const duration = FOG_SLOWEST_S - (FOG_SLOWEST_S - FOG_FASTEST_S) * fx.speed
@@ -46,7 +49,7 @@ function fogStyle(skin: Skin): JSX.CSSProperties | null {
   }
 }
 
-export function SkinBackdrop() {
+export function PersonalBackdrop() {
   // 窗口不可见时暂停雾面动画：后台运行的合成动画持续占用 GPU，而没有人在看。
   const [hidden, setHidden] = createSignal(document.hidden)
   onMount(() => {
@@ -56,21 +59,21 @@ export function SkinBackdrop() {
   })
 
   return (
-    <Show when={paintedSkin()}>
+    <Show when={paintedPersonalization()}>
       {(p) => {
         const dim = () => {
-          const bg = p().skin.background
+          const bg = p().personalization.background
           return bg.kind === 'image' ? bg.dim : 0
         }
         return (
-          <div class="skin-backdrop" aria-hidden="true">
-            <div class="skin-layer" style={backgroundStyle(p())} />
+          <div class="personal-backdrop" aria-hidden="true">
+            <div class="personal-layer" style={backgroundStyle(p())} />
             <Show when={dim() > 0}>
-              <div class="skin-dim" style={{ opacity: dim() }} />
+              <div class="personal-dim" style={{ opacity: dim() }} />
             </Show>
-            <Show when={fogStyle(p().skin)}>
+            <Show when={fogStyle(p().personalization)}>
               {(style) => (
-                <div class="skin-fog" classList={{ paused: hidden() }} style={style()}>
+                <div class="personal-fog" classList={{ paused: hidden() }} style={style()}>
                   <For each={Array.from({ length: FOG_BLOBS }, (_, i) => i)}>
                     {(i) => <i class={`fog-blob fog-blob-${i}`} />}
                   </For>

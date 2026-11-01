@@ -150,7 +150,7 @@ export function Sidebar(props: { onClose?: () => void }) {
         <Show when={known.error}>
           <div class="side-error">
             无法加载项目列表
-            <button class="ghost-btn" type="button" onClick={() => void refetchWorkspaces()}>
+            <button class="btn-ghost sm" type="button" onClick={() => void refetchWorkspaces()}>
               重试
             </button>
           </div>
