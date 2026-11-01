@@ -36,6 +36,7 @@ const APP_COMMANDS: &[&str] = &[
     "pet_window_show",
     "pet_window_hide",
     "pet_window_resize",
+    "pet_box_place",
     "pet_open_main",
 ];
 

@@ -1,8 +1,9 @@
 /*
- * 桌面宠物窗口（`pet.html`）的样式。只与 `tokens.css` 一起加载，不加载主界面的样式。
+ * 桌面宠物窗口与任务框窗口（`pet.html`、`pet.html#box`）的样式。只与 `tokens.css`、`icons.css`
+ * 一起加载，不加载主界面的样式。
  *
  * 页面底色必须透明：外壳的窗口是透明的，任何不透明底色都会在宠物四周显示为方块。
- * 宠物固定在左下角（向左展开时为右下角）：外壳调整窗口尺寸时以同一角为基准，宠物在屏幕上的位置不变。
+ * 宠物窗口只容纳宠物；气泡与列表各自铺满任务框窗口，尺寸由外壳按 `PetBox.tsx` 的请求设置。
  */
 
 html,
@@ -37,22 +38,12 @@ button {
   cursor: default;
 }
 
-.petw {
-  position: relative;
-  height: 100%;
-}
-
 .petw-pet {
   position: absolute;
   left: 0;
   bottom: 0;
   display: grid;
   place-items: center;
-}
-/* 向左展开时宠物固定在右下角，外壳同时固定窗口右边（`PetWindow.tsx` 的 `leftward`）。 */
-.petw.leftward .petw-pet {
-  left: auto;
-  right: 0;
 }
 
 .petw-badge {
@@ -145,11 +136,10 @@ button {
   }
 }
 
-/* 气泡：位于宠物上方，顶边位置与高度由 `PetWindow.tsx` 设定。完整规则，不与列表共用选择器（B8）。 */
+/* 气泡：铺满任务框窗口。完整规则，不与列表共用选择器（B8）。 */
 .petw-bubble {
   position: absolute;
-  left: 8px;
-  right: 8px;
+  inset: 0;
   display: flex;
   align-items: center;
   gap: var(--s-2);
@@ -168,13 +158,12 @@ button {
 }
 
 /*
- * 列表：位于宠物上方。顶边位置与高度由 `PetWindow.tsx` 在打开时按行数设定，打开期间不变，
+ * 列表：铺满任务框窗口。窗口高度由 `PetBox.tsx` 在打开时按行数确定，打开期间不变，
  * 多出的行在框内滚动（B9）。完整规则，不与气泡共用选择器。
  */
 .petw-menu {
   position: absolute;
-  left: 8px;
-  right: 8px;
+  inset: 0;
   display: flex;
   flex-direction: column;
   padding: 4px;

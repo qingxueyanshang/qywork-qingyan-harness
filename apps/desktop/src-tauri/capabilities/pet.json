@@ -1,14 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "pet",
-  "description": "桌面宠物窗口的权限集：接收主窗口推送的状态、回传操作与位置、拖动自身、调整自身尺寸、唤起主窗口。不授予任何读写本机或服务的能力。",
-  "webviews": ["pet"],
+  "description": "桌面宠物窗口与任务框窗口的权限集：接收主窗口推送的状态、回传操作与位置、拖动宠物、调整自身尺寸与位置、唤起主窗口。不授予任何读写本机或服务的能力。",
+  "webviews": ["pet", "pet-box"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:event:allow-emit-to",
     "core:window:allow-start-dragging",
     "allow-pet-window-resize",
+    "allow-pet-box-place",
     "allow-pet-open-main"
   ]
 }
