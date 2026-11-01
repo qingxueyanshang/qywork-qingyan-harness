@@ -27,15 +27,6 @@
   text-align: left;
 }
 
-.icon-spin {
-  animation: spin 900ms linear infinite;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* 遮罩是 button（可经键盘访问），因此需清除浏览器为按钮设置的全部默认样式，
    否则窄屏下会显示边框与默认背景。 */
 .drawer-scrim {
