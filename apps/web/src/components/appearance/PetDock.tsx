@@ -9,6 +9,7 @@
 import type { PetPack } from '@qywork/core'
 import { createSignal, For, onCleanup, Show } from 'solid-js'
 import {
+  isDesktopShell,
   openPetEntry,
   petBadge,
   petBubble,
@@ -107,6 +108,18 @@ export function PetDock(props: { pack: PetPack; frameUrl: (name: string) => stri
             </For>
           </div>
           <div class="pet-menu-split" />
+          <Show when={isDesktopShell()}>
+            <button
+              class="menu-item"
+              type="button"
+              onClick={() => {
+                close()
+                setPetPrefs({ place: 'desktop' })
+              }}
+            >
+              放到桌面
+            </button>
+          </Show>
           <button
             class="menu-item"
             type="button"

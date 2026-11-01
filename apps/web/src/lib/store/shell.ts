@@ -55,6 +55,20 @@ export function tauriListen<T>(event: string, handler: (payload: T) => void): Pr
 }
 
 /**
+ * 向指定窗口发送一个事件。主窗口向桌面宠物窗口推送状态、宠物窗口回传操作都经由此处。
+ * 理由同 `tauriListen`：经内部通道，不引入 `@tauri-apps/api`。
+ */
+export function tauriEmitTo(label: string, event: string, payload: unknown): Promise<void> {
+  const api = internals()
+  if (!api) return Promise.reject(new Error('该功能仅在桌面端可用'))
+  return api.invoke('plugin:event|emit_to', {
+    target: { kind: 'WebviewWindow', label },
+    event,
+    payload,
+  }) as Promise<void>
+}
+
+/**
  * 桌面外壳的系统拖放分发。
  *
  * HTML5 的 `ondrop` 在桌面端不触发：Tauri 的 `drag_drop_handler_enabled` 默认为真，系统拖放被外壳截获，

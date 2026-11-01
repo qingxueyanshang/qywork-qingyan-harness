@@ -33,6 +33,10 @@ const APP_COMMANDS: &[&str] = &[
     "browser_navigate",
     "browser_activate",
     "browser_layout",
+    "pet_window_show",
+    "pet_window_hide",
+    "pet_window_resize",
+    "pet_open_main",
 ];
 
 /// computer-host worker 的 `externalBin` 条目名。打包时查找

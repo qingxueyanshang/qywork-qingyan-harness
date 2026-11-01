@@ -21,6 +21,7 @@ mod browser;
 pub mod desktop;
 mod hostkey;
 mod logfile;
+mod pet;
 mod restart;
 mod sidecar;
 mod skill_source;
@@ -261,7 +262,7 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
 /// 共用用户数据目录的 WebView 必须使用完全相同的环境参数，否则 WebView2 返回
 /// ERROR_INVALID_STATE (0x8007139F)。启动窗口与主窗口都从此处取得参数。
 #[cfg(windows)]
-fn shell_browser_args() -> String {
+pub(crate) fn shell_browser_args() -> String {
     // 保留 wry 默认禁用项；语音识别使用既有服务端点。
     let args = String::from(
         "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msSpeechRecognitionServiceUseCetoService",
@@ -574,6 +575,10 @@ pub fn run() {
             browser::commands::browser_navigate,
             browser::commands::browser_activate,
             browser::commands::browser_layout,
+            pet::pet_window_show,
+            pet::pet_window_hide,
+            pet::pet_window_resize,
+            pet::pet_open_main,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -623,6 +628,18 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // 宠物窗口：移动后交给主窗口保存位置；关闭交给主窗口改为隐藏，由主窗口销毁它。
+            if window.label() == pet::LABEL {
+                match event {
+                    WindowEvent::Moved(pos) => pet::moved(window, *pos),
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        pet::close_requested(window);
+                    }
+                    _ => {}
+                }
+                return;
+            }
             // 关闭即隐藏到托盘。关闭按钮（`window_close` 的 `close()`）与 Alt+F4 都进入此处；
             // 进程只经由托盘菜单「退出」结束。
             if let WindowEvent::CloseRequested { api, .. } = event {
