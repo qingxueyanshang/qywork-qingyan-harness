@@ -23,7 +23,15 @@ export const installPluginTool: ToolSpec = {
   description:
     '把工作区中已编写好的插件目录安装到本机的插件目录。' +
     '目录中必须有合法的 qywork.plugin.json。安装后从下一条消息起生效，不立即生效。' +
-    '修改插件代码后需重新安装：安装的是快照。',
+    '修改插件代码后需重新安装：安装的是快照。' +
+    '清单的 contributes.panels 声明工作台：[{"id","title","entry"}]，entry 是插件目录内的 .html 页面；' +
+    '工作台安装后立即列在右侧面板的「新开预览」看板中，可用 open_in_panel 的 workbench 参数打开。' +
+    '工作台页面在沙箱 iframe 中运行，无法使用 localStorage 与 cookie，需要保存的数据经本插件的工具写入。' +
+    '页面经 parent.postMessage({type:"qywork",id,method,params},"*") 调用界面，' +
+    '回复以 message 事件返回 {type:"qywork",id,ok,result} 或 {type:"qywork",id,ok:false,error}。' +
+    'method：tool.call（params {tool,args}，调用本插件 contributes.tools 中的工具，result 为工具返回值）、' +
+    'panel.open（params {path}，在面板打开工作区文件）、composer.insert（params {text}，把文字放入输入框）。' +
+    '页面调用的工具最迟在 qywork 重启后加载，尚未加载时调用返回该原因。',
   parameters: {
     type: 'object',
     properties: {

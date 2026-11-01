@@ -57,4 +57,36 @@ describe('open_in_panel', () => {
     expect(names({ panel: true })).toContain('open_in_panel')
     expect(names({})).not.toContain('open_in_panel')
   })
+
+  test('workbench：已安装的工作台返回标识与名称交给界面打开；未安装、与 path 同时给出时失败', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-panel-'))
+    const homeBefore = process.env.QYWORK_HOME
+    const home = await mkdtemp(join(tmpdir(), 'qywork-home-'))
+    process.env.QYWORK_HOME = home
+    try {
+      await mkdir(join(home, 'plugins', 'dev.demo'), { recursive: true })
+      await writeFile(
+        join(home, 'plugins', 'dev.demo', 'qywork.plugin.json'),
+        JSON.stringify({
+          contributes: { panels: [{ id: 'board', title: '看板', entry: 'ui.html' }] },
+        }),
+      )
+      expect(await openInPanelTool.fn({ workbench: 'dev.demo/board' }, ctx(root))).toMatchObject({
+        status: 'success',
+        data: { workbench: 'dev.demo/board', title: '看板' },
+      })
+      expect(await openInPanelTool.fn({ workbench: 'dev.demo/none' }, ctx(root))).toMatchObject({
+        status: 'failure',
+      })
+      expect(await openInPanelTool.fn({ workbench: '../x/board' }, ctx(root))).toMatchObject({
+        status: 'failure',
+      })
+      expect(
+        await openInPanelTool.fn({ workbench: 'dev.demo/board', path: 'a.png' }, ctx(root)),
+      ).toMatchObject({ status: 'failure', message: 'path 与 workbench 只给一个' })
+    } finally {
+      if (homeBefore === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = homeBefore
+    }
+  })
 })

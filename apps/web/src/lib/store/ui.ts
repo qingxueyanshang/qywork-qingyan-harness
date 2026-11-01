@@ -39,8 +39,17 @@ export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
  * 前者是子会话（有正文与工具卡），后者是本机另一个进程输出的文本流。
  *
  * `canvas` 是画布，每页对应一个 `*.canvas.json`（`path`），从看板新建或从文件树打开。
+ *
+ * `plugin` 是插件提供的工作台，每页对应一个工作台（`workbench`），从看板或 `open_in_panel` 打开。
  */
-export type PanelTabKind = 'terminal' | 'browser' | 'preview' | 'conversation' | 'cli' | 'canvas'
+export type PanelTabKind =
+  | 'terminal'
+  | 'browser'
+  | 'preview'
+  | 'conversation'
+  | 'cli'
+  | 'canvas'
+  | 'plugin'
 
 export interface PanelTab {
   id: string
@@ -64,6 +73,11 @@ export interface PanelTab {
   url?: string
   /** 画布页对应的画布文件（工作区相对路径）。其他类型的页没有此字段。 */
   path?: string
+  /**
+   * 工作台页对应的工作台，`<插件 id>/<工作台 id>`。只记录标识不记录地址：
+   * 地址中的随机段每次服务端启动都不同，刷新后按 `workbenches()` 重新取得。
+   */
+  workbench?: string
   /**
    * 创建序号，页签条按它排序。
    *
@@ -397,6 +411,19 @@ export function openCanvasTab(path: string, title: string): void {
     tabs: cur.tabs.some((t) => t.id === id)
       ? cur.tabs
       : [...cur.tabs, { id, kind: 'canvas', title, path, createdSeq: nextLocalSeq() }],
+    page: { tab: id },
+  }))
+}
+
+/** 打开工作台页。已打开时切换到该页，不并排新建第二页。 */
+export function openWorkbenchTab(key: string, title: string): void {
+  const wsId = workspace()?.id
+  if (!wsId) return
+  const id = `plugin-${key}`
+  updatePanel(wsId, (cur) => ({
+    tabs: cur.tabs.some((t) => t.id === id)
+      ? cur.tabs
+      : [...cur.tabs, { id, kind: 'plugin', title, workbench: key, createdSeq: nextLocalSeq() }],
     page: { tab: id },
   }))
 }

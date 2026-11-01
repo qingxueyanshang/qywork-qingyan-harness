@@ -38,6 +38,8 @@ export default defineConfig(({ command }) => ({
       '/stream': { target: `ws://127.0.0.1:${AGENT_PORT}`, ws: true },
       // Art 页面的引导页与库文件由 qy serve 提供（见 packages/server/src/art.ts）。
       '/art': { target: `http://127.0.0.1:${AGENT_PORT}`, changeOrigin: true },
+      // 工作台页面由 qy serve 从已安装的插件目录提供（见 packages/server/src/plugin-ui.ts）。
+      '/plugin-ui': { target: `http://127.0.0.1:${AGENT_PORT}`, changeOrigin: true },
     },
   },
   // mediabunny 只经动态导入使用（时间线导出、Art 录制）。不预先声明时，开发服务器在第一次导出时才打包它

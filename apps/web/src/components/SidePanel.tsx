@@ -38,10 +38,12 @@ import {
   openFile,
   openFileInPanel,
   openPanelTab,
+  openWorkbenchTab,
   type PanelView,
   panelMaximized,
   panelTabs,
   panelWidth,
+  refreshWorkbenches,
   resizePanel,
   revealFile,
   revealWorkspace,
@@ -54,6 +56,8 @@ import {
   togglePanelMax,
   view,
   WORKSPACE_PATH_TYPE,
+  workbenches,
+  workbenchKey,
   workspace,
 } from '../lib/store/index.ts'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
@@ -68,6 +72,7 @@ import {
   IconFolder,
   IconFolderPlus,
   IconGlobe,
+  IconPlug,
   IconPlus,
   IconRefresh,
   IconSpinner,
@@ -96,6 +101,8 @@ const CliPanel = lazy(() => import('./CliPanel.tsx'))
 const FileView = lazy(() => import('./FileView.tsx'))
 // 画布页：只在打开画布时下载。
 const CanvasPanel = lazy(() => import('./canvas/CanvasPanel.tsx'))
+// 工作台页：只在打开插件提供的工作台时下载。
+const WorkbenchPanel = lazy(() => import('./WorkbenchPanel.tsx'))
 
 // 同样懒加载：运行页挂载后即请求两个接口，不打开它的用户不应为它承担首屏成本。
 const RunDetails = lazy(() => import('./RunDetails.tsx'))
@@ -422,7 +429,11 @@ export default function SidePanel() {
               aria-label="新开预览"
               data-tip="新开预览"
               aria-pressed={board()}
-              onClick={() => setBoard((v) => !v)}
+              onClick={() => {
+                // 每次打开看板都重新读取工作台：插件可能刚由模型安装或在设置页卸载。
+                if (!board()) void refreshWorkbenches().catch(() => undefined)
+                setBoard((v) => !v)
+              }}
             >
               <IconPlus size={15} />
             </button>
@@ -525,6 +536,9 @@ export default function SidePanel() {
                             <CanvasPanel path={path()} active={activePanelTab() === t.id} />
                           )}
                         </Match>
+                        <Match when={t.kind === 'plugin' && t.workbench}>
+                          {(key) => <WorkbenchPanel workbench={key()} />}
+                        </Match>
                       </Switch>
                     </Suspense>
                   </div>
@@ -574,6 +588,22 @@ function PreviewBoard(props: { onPick: () => void }) {
             <Show when={!s.open}>
               <span class="board-tag">未接入</span>
             </Show>
+          </button>
+        )}
+      </For>
+      {/* 已安装插件提供的工作台，排在固定行之后。 */}
+      <For each={workbenches()}>
+        {(w) => (
+          <button
+            class="board-item"
+            type="button"
+            onClick={() => {
+              props.onPick()
+              openWorkbenchTab(workbenchKey(w), w.title)
+            }}
+          >
+            <IconPlug size={15} />
+            <span class="board-label truncate">{w.title}</span>
           </button>
         )}
       </For>

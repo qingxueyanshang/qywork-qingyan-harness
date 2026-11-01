@@ -261,6 +261,7 @@ export {
   openPanelTab,
   openPreviewTab,
   openSettings,
+  openWorkbenchTab,
   overlayOpen,
   PANEL_MIN,
   type PanelTab,
@@ -293,3 +294,12 @@ export {
   toggleSidebar,
   workspace,
 } from './ui.ts'
+export {
+  callWorkbenchTool,
+  refreshWorkbenches,
+  type Workbench,
+  type WorkbenchOutcome,
+  workbenches,
+  workbenchKey,
+  workbenchUrl,
+} from './workbench.ts'

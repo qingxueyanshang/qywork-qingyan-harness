@@ -44,7 +44,7 @@ import {
   syncBusy,
   type TranscriptItem,
 } from './state.ts'
-import { panelTabs, tabConversationId, workspace } from './ui.ts'
+import { openWorkbenchTab, panelTabs, tabConversationId, workspace } from './ui.ts'
 
 export const [extensionsRevision, setExtensionsRevision] = createSignal(0)
 export function invalidateExtensions(): void {
@@ -597,10 +597,18 @@ function foldContent(cid: string, ev: AgentEvent): void {
         ev.status === 'success' &&
         cid === state.activeConversation &&
         state.views[cid]?.transcript.find((item) => item.id === ev.stepId)?.toolName ===
-          'open_in_panel' &&
-        typeof ev.outcome.data?.path === 'string'
-      )
-        openFileInPanel(ev.outcome.data.path)
+          'open_in_panel'
+      ) {
+        const data = ev.outcome.data
+        if (typeof data?.workbench === 'string') {
+          openWorkbenchTab(
+            data.workbench,
+            typeof data.title === 'string' ? data.title : data.workbench,
+          )
+        } else if (typeof data?.path === 'string') {
+          openFileInPanel(data.path)
+        }
+      }
       // 切换皮肤与宠物同理只响应当前会话：`applied` 只出现在 apply 的成功结果中，save 与 read 不带该字段。
       if (
         ev.status === 'success' &&

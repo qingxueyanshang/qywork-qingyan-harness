@@ -67,6 +67,7 @@ import { createGitWatch } from './git-watch.ts'
 import { handleHello } from './handshake.ts'
 import { CORS_HEADERS, hostLabel, serveStatic, type WebAssets, withCors } from './http-util.ts'
 import { extractToken, Pairing, preferredLanAddress, timingSafeEqual } from './pairing.ts'
+import { servePluginUi } from './plugin-ui.ts'
 import { type PowerPort, startPowerGuard } from './power.ts'
 import { sanitizeProcessExitObservation } from './process-exit.ts'
 import { submitMessage } from './run-control.ts'
@@ -264,6 +265,8 @@ export function serve(opts: ServeOptions) {
     ...(opts.token ? { token: opts.token } : {}),
   })
   const token = pairing.token
+  // 工作台页面地址中的随机段，见 `plugin-ui.ts`。每次启动重新生成，界面每次按 `/api/plugins` 取得。
+  const pluginUiKey = crypto.randomUUID()
 
   /*
    * 启动时的项目。三种来源，优先级从高到低：
@@ -579,6 +582,7 @@ export function serve(opts: ServeOptions) {
             closeBrowserPages: (conversationId) =>
               browser?.closeConversation(conversationId) ?? Promise.resolve(),
             office,
+            pluginUiKey,
           })
           if (res) return withCors(res)
         } catch (err) {
@@ -590,6 +594,10 @@ export function serve(opts: ServeOptions) {
       // ── Art 页面的引导页与库文件：随应用发布的静态内容，不校验令牌（见 art.ts） ──
       const art = serveArt(url.pathname)
       if (art) return art
+
+      // ── 工作台页面：已安装插件目录中的文件，地址带启动时生成的随机段（见 plugin-ui.ts） ──
+      const workbench = await servePluginUi(url.pathname, pluginUiKey)
+      if (workbench) return workbench
 
       // ── 静态资源 ──
       if (opts.web) {
