@@ -445,7 +445,7 @@ export function Composer(props: { empty: boolean }) {
      * （cat 为 null）时不拦截，由服务端的 no_model 作为后备处理，避免误拦截。
      */
     const cat = modelCatalog()
-    if (!activeModel()?.model && cat !== null && !cat.active) {
+    if (!activeModel()?.model && cat !== null) {
       setState('notice', { message: '未配置模型', reason: 'no_model' })
       return
     }

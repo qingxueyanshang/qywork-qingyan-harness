@@ -268,6 +268,9 @@ export function loadTeamClis(): Promise<{ agents: CliAgentRow[] }> {
 /**
  * 当前会话使用的「接口 × 模型」。会话不存在时返回 null，不编造默认值。
  *
+ * 会话没有记录模型（创建时尚未配置模型）时取配置的默认值，与服务端发送时的优先顺序相同
+ * （会话当前 > 配置默认），否则选择器显示「选择模型」，而发送实际使用默认模型。
+ *
  * 两项一起返回。只返回模型名时，若两个接口配置了同一个 id，选择器会高亮
  * 两项，而用户实际切换到的只有一项。
  */
@@ -275,7 +278,9 @@ export function activeModel(): { provider: string; model: string } | null {
   const id = state.activeConversation
   if (!id) return null
   const conv = state.conversations.find((c) => c.id === id)
-  return conv ? { provider: conv.provider, model: conv.model } : null
+  if (!conv) return null
+  if (!conv.model) return modelCatalog()?.active ?? { provider: conv.provider, model: conv.model }
+  return { provider: conv.provider, model: conv.model }
 }
 
 /** 当前会话的权限模式。会话不存在时返回 null。 */
