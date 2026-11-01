@@ -398,6 +398,15 @@ export async function newConversation(): Promise<void> {
 }
 
 /**
+ * `message.send` 的幂等键。不要改用 `crypto.randomUUID()`：它只在安全来源（HTTPS 与 localhost）中存在，
+ * 手机经 `http://192.168.x.x` 打开页面时为 undefined，发送随即抛出异常。
+ */
+function newRequestId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/**
  * 发送一条消息。有 run 正在运行时不拒绝，而是加入队列，去向由 `steer` 决定。
  *
  * `steer` 由调用方提供：Enter 使用默认值，Ctrl+Enter 使用相反值（`Composer.tsx`）。
@@ -408,7 +417,7 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
   // 只有附件没有文字也是有效消息：用户的意图可能就是让模型查看图片，
   // 不应要求用户额外输入文字。
   if (!id || (!content.trim() && !attachments?.length)) return
-  const requestId = crypto.randomUUID()
+  const requestId = newRequestId()
   const queued = hasRun()
   setState(
     produce((s) => {

@@ -1414,6 +1414,26 @@ describe('事件按会话归属过滤', () => {
     expect(state.notice?.message).toBe('应用正在更新，请稍后重试')
   })
 
+  /**
+   * 原始失败形状：手机经 `http://192.168.x.x` 打开页面，非安全来源中没有 `crypto.randomUUID`，
+   * 按回车即抛出异常，指令没有发出。
+   */
+  test('非安全来源中没有 crypto.randomUUID 时消息照常发出', () => {
+    reset('cv_now')
+    const own = Object.getOwnPropertyDescriptor(crypto, 'randomUUID')
+    Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true })
+    const sent = captureSend()
+    try {
+      sendMessage('在吗')
+    } finally {
+      sent.restore()
+      if (own) Object.defineProperty(crypto, 'randomUUID', own)
+      else Reflect.deleteProperty(crypto, 'randomUUID')
+    }
+    expect(typeof crypto.randomUUID).toBe('function')
+    expect(sent.requestId()).toMatch(/^[0-9a-f]{32}$/)
+  })
+
   test('会话已在运行时后发的指令被拒绝，状态仍为忙', () => {
     reset('cv_now')
     // 服务端先置为忙：该忙状态不是客户端预先设置的，指令被拒绝时不得修改。
