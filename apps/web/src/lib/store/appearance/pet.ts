@@ -8,8 +8,8 @@
  * 「未查看结果」只记录用户是否看过，与运行状态不重叠：用户正在查看该会话时不记录，
  * 打开该会话或在宠物列表中点击它时移除。
  *
- * 推导只在主窗口进行。桌面宠物窗口只显示主窗口推送的结果，不建立第二条事件连接，
- * 否则两处各有一份未查看结果，在一处打开会话后另一处无从得知。
+ * 宠物只显示在桌面外壳的宠物窗口中。推导只在主窗口进行，宠物窗口只显示主窗口推送的结果，
+ * 不建立第二条事件连接，否则两处各有一份未查看结果，在一处打开会话后另一处无从得知。
  */
 
 import {
@@ -26,8 +26,8 @@ import { client, petApply, petsChange } from '../connection.ts'
 import { state } from '../state.ts'
 import { workspace } from '../ui.ts'
 
-/** 显示位置：窗口内（侧栏底部）、桌面（外壳的透明窗口）、隐藏。 */
-export type PetPlace = 'app' | 'desktop' | 'hidden'
+/** 显示位置：桌面（外壳的透明窗口）或隐藏。缺省为桌面。 */
+export type PetPlace = 'desktop' | 'hidden'
 
 export interface PetResult {
   conversationId: string
@@ -69,10 +69,10 @@ interface PetPrefs {
 function readPrefs(): PetPrefs {
   try {
     const v = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null') as Partial<PetPrefs> | null
-    const place = v?.place === 'desktop' || v?.place === 'hidden' ? v.place : 'app'
+    const place = v?.place === 'hidden' ? 'hidden' : 'desktop'
     return { place, pack: typeof v?.pack === 'string' ? v.pack : null }
   } catch {
-    return { place: 'app', pack: null }
+    return { place: 'desktop', pack: null }
   }
 }
 

@@ -1,4 +1,7 @@
-/** 通用设置的新对话默认权限：配置读取、即时保存、连续切换、失败回滚，不修改当前会话。 */
+/**
+ * 通用设置：新对话默认权限（配置读取、即时保存、连续切换、失败回滚，不修改当前会话）；
+ * 主题与皮肤一行（点选主题即取消皮肤，皮肤一行打开 `SkinDialog`）。
+ */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { ConfigPayload, RedactedConfig } from '../../lib/store/index.ts'
@@ -38,6 +41,7 @@ beforeAll(async () => {
     if (path === '/api/pairing') return { candidates: [], lanEnabled: false } as T
     // 「运行环境」一节在页面显示时获取检测结果（`environmentStore.ts`）。
     if (path === '/api/host/environment') return { environment: [] } as T
+    if (path === '/api/skins') return { skins: [], failures: [] } as T
     if (path !== '/api/config') throw new Error(`unexpected ${path}`)
     if (init?.method === 'PUT') {
       const waiting = pendingSave
@@ -144,5 +148,45 @@ test('连续切换时保留最后选择，保存失败时回滚并显示错误',
     expect(ui.host.querySelector('.settings-error')).toBeNull()
   } finally {
     ui.close()
+  }
+})
+
+test('选用皮肤时主题三项都不高亮，点选一项即取消皮肤', async () => {
+  store.chooseSkin({ id: 'night', base: 'dark' })
+  const view = await mount()
+  try {
+    const themes = [...view.host.querySelectorAll<HTMLButtonElement>('.seg-item')].filter((b) =>
+      ['跟随系统', '浅色', '深色'].includes(b.textContent ?? ''),
+    )
+    expect(themes.some((b) => b.classList.contains('active'))).toBe(false)
+    themes.find((b) => b.textContent === '浅色')!.click()
+    expect(store.skinChoice()).toBeNull()
+    expect(store.theme()).toBe('light')
+    expect(themes.find((b) => b.textContent === '浅色')!.classList.contains('active')).toBe(true)
+  } finally {
+    store.setTheme('system')
+    view.close()
+  }
+})
+
+test('皮肤一行打开皮肤弹窗，完成后关闭', async () => {
+  const view = await mount()
+  try {
+    const row = [...view.host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent === '无',
+    )!
+    row.click()
+    await until(() => view.host.querySelector('dialog.skin-dialog') !== null)
+    const dialog = view.host.querySelector('dialog.skin-dialog')!
+    expect([...dialog.querySelectorAll('.skin-list button')].map((b) => b.textContent)).toEqual([
+      '无',
+      '新建',
+    ])
+    ;[...dialog.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent === '完成')!
+      .click()
+    await until(() => view.host.querySelector('dialog.skin-dialog') === null)
+  } finally {
+    view.close()
   }
 })

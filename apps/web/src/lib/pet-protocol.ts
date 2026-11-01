@@ -22,7 +22,7 @@ export interface PetWindowState {
 }
 
 /** 宠物窗口回传的操作。打开会话经外壳命令 `pet_open_main` 先唤起主窗口，不在此列。 */
-export type PetWindowAction = { type: 'stop'; id: string } | { type: 'dock' } | { type: 'hide' }
+export type PetWindowAction = { type: 'stop'; id: string } | { type: 'hide' }
 
 export const PET_WINDOW_LABEL = 'pet'
 export const PET_STATE_EVENT = 'pet://state'

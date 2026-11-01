@@ -98,7 +98,6 @@ export function observePetWindow(
     void tauriListen<string>(PET_OPEN_EVENT, (id) => void openPetEntry(id)).catch(() => undefined)
     void tauriListen<PetWindowAction>(PET_ACTION_EVENT, (a) => {
       if (a.type === 'stop') stopPetEntry(a.id)
-      else if (a.type === 'dock') setPetPrefs({ place: 'app' })
       else setPetPrefs({ place: 'hidden' })
     }).catch(() => undefined)
     void tauriListen<{ x: number; y: number }>(PET_MOVED_EVENT, (at) => {

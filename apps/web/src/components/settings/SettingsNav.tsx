@@ -6,7 +6,6 @@ import {
   IconCanvas,
   IconClock,
   IconPackage,
-  IconPalette,
   IconPlug,
   IconSettings,
   IconShield,
@@ -41,7 +40,6 @@ interface Item {
 const GROUPS: Item[][] = [
   [
     { id: 'general', label: '通用', icon: IconSettings },
-    { id: 'appearance', label: '外观', icon: IconPalette },
     { id: 'models', label: '模型', icon: IconPackage },
     // 用量紧随模型：先选择模型，再查看其花费。
     { id: 'usage', label: '用量', icon: IconActivity },

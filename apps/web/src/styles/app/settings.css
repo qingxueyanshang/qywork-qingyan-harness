@@ -1534,13 +1534,75 @@ textarea.code-area::placeholder {
   opacity: 0.5;
 }
 
-/* ───────────────────────── 外观 ───────────────────────── */
+/* ───────────────────────── 皮肤弹窗 ───────────────────────── */
 
-/* 皮肤列表：「无」加各皮肤，按名称宽度自然换行。 */
+/* 「通用」页「皮肤」一行打开的弹窗。全部属性写在本规则中，不与其他浮层共用选择器（B8）。
+   尺寸固定（B9）：控件行数随背景类型与雾面开关变化，编辑区在框内滚动。 */
+.skin-dialog {
+  width: min(640px, calc(100vw - 32px));
+  height: min(600px, calc(100vh - 48px));
+  min-height: min(600px, calc(100vh - 48px));
+  max-height: min(600px, calc(100vh - 48px));
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+/* 只在打开时改为纵向排列：写在未打开的 dialog 上会覆盖浏览器的 `display: none`。 */
+.skin-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 不加遮罩：修改时需要看到窗口四周的皮肤效果，后面的设置窗口已有遮罩。 */
+.skin-dialog::backdrop {
+  background: transparent;
+}
+
+.skin-editor {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 底栏：左侧一行报错，右侧按钮。报错只占一行、过长截断，底栏高度不变。 */
+.skin-actions {
+  flex: none;
+  align-items: center;
+}
+.skin-error {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+/* 删除皮肤的确认，叠在皮肤弹窗之上。完整规则，不与其他浮层共用选择器。 */
+.skin-delete-dialog {
+  width: min(320px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+.skin-delete-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.36);
+}
+
+/* 皮肤列表：「无」、各皮肤与「新建」，按名称宽度自然换行。 */
 .skin-list {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   gap: var(--s-1);
+  margin: 10px 0;
 }
 .skin-list .seg-item {
   border: 1px solid var(--border-default);

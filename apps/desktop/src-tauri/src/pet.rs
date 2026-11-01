@@ -14,14 +14,14 @@ pub const LABEL: &str = "pet";
 const MAIN: &str = "main";
 /// 首次创建时的边长（逻辑像素）。页面读取到宠物尺寸后经 `pet_window_resize` 调整。
 const INITIAL: f64 = 92.0;
-/// 未给出位置时距屏幕工作区右下角的边距（逻辑像素）。
-const MARGIN: f64 = 24.0;
+/// 未给出位置时距主窗口（或屏幕工作区）右下角的边距（逻辑像素）。
+const MARGIN: f64 = 16.0;
 /// 页面可请求的尺寸范围（逻辑像素）。超出时拒绝：越界的尺寸只可能来自错误的调用。
 const MIN_SIDE: f64 = 40.0;
 const MAX_SIDE: f64 = 640.0;
 
 /// 显示宠物窗口；不存在时创建。`x` / `y` 是上次移动后保存的逻辑坐标，
-/// 缺省或已不在任何显示器上时放在主显示器工作区的右下角。
+/// 缺省或已不在任何显示器上时放在主窗口右下角的内侧，主窗口不可见时放在主显示器工作区的右下角。
 ///
 /// 必须是异步命令：Windows 上在同步命令中创建 WebView 窗口会使主线程死锁。
 #[tauri::command]
@@ -129,16 +129,31 @@ pub fn close_requested(window: &tauri::Window) {
     }
 }
 
+/// 首次显示的位置：主窗口右下角的内侧，与输入框右侧的空白对齐；之后的位置由用户拖动决定。
+/// 主窗口隐藏或最小化时取主显示器工作区的右下角：此时主窗口的坐标不在可见区域内。
 fn place_default(window: &WebviewWindow) -> Result<(), String> {
-    let Some(monitor) = window.primary_monitor().map_err(|e| e.to_string())? else {
-        return Ok(());
+    let main = window.app_handle().get_webview_window(MAIN).filter(|m| {
+        m.is_visible().unwrap_or(false) && !m.is_minimized().unwrap_or(true)
+    });
+    let (origin, size, scale) = match main {
+        Some(m) => (
+            m.outer_position().map_err(|e| e.to_string())?,
+            m.outer_size().map_err(|e| e.to_string())?,
+            m.scale_factor().map_err(|e| e.to_string())?,
+        ),
+        None => {
+            let Some(monitor) = window.primary_monitor().map_err(|e| e.to_string())? else {
+                return Ok(());
+            };
+            let area = monitor.work_area();
+            (area.position, area.size, monitor.scale_factor())
+        }
     };
-    let area = monitor.work_area();
-    let offset = ((INITIAL + MARGIN) * monitor.scale_factor()).round() as i32;
+    let offset = ((INITIAL + MARGIN) * scale).round() as i32;
     window
         .set_position(PhysicalPosition::new(
-            area.position.x + area.size.width as i32 - offset,
-            area.position.y + area.size.height as i32 - offset,
+            origin.x + size.width as i32 - offset,
+            origin.y + size.height as i32 - offset,
         ))
         .map_err(|e| e.to_string())
 }

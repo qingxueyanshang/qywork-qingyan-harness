@@ -128,9 +128,6 @@ export function PetWindow() {
                 </For>
               </div>
               <div class="petw-split" />
-              <button class="petw-item" type="button" onClick={() => act({ type: 'dock' })}>
-                放回窗口
-              </button>
               <button class="petw-item" type="button" onClick={() => act({ type: 'hide' })}>
                 隐藏宠物
               </button>

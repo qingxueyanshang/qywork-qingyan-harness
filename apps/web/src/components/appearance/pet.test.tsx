@@ -1,5 +1,5 @@
 /**
- * 覆盖 `lib/store/appearance/pet.ts`（心情推导、未查看结果、气泡与偏好）、`PetSprite.tsx`、`PetDock.tsx`
+ * 覆盖 `lib/store/appearance/pet.ts`（心情推导、未查看结果、气泡与偏好）、`PetSprite.tsx`、`PetWindow.tsx`
  * 与 `pet-default.ts`（默认宠物包须通过 core 的校验）。
  *
  * 测试 DOM 在本文件内注册，结束后注销，理由同 `settings/LoadState.test.tsx`。
@@ -161,8 +161,8 @@ describe('宠物状态推导', () => {
       place: 'hidden',
       pack: null,
     })
-    store.setPetPrefs({ place: 'app' })
-    expect(store.petPrefs().place).toBe('app')
+    store.setPetPrefs({ place: 'desktop' })
+    expect(store.petPrefs().place).toBe('desktop')
   })
 
   test('对话中的 apply 切换宠物包并读取；宠物被删除时切回内置宠物', async () => {
@@ -231,32 +231,86 @@ describe('宠物组件', () => {
     }
   })
 
-  test('列表显示运行中与结果，运行中的可停止', async () => {
-    const store = await import('../../lib/store/index.ts')
+  /**
+   * 桌面宠物窗口的页面：只显示主窗口推送的状态。外壳以注入的 `__TAURI_INTERNALS__` 模拟，
+   * 只在本用例期间存在，理由同 `WindowControls.test.tsx`。
+   */
+  test('宠物窗口：按推送的状态显示，单击展开列表并调整尺寸，停止与打开会话交给主窗口与外壳', async () => {
     const { render } = await import('solid-js/web')
-    const { DEFAULT_PET, defaultPetFrame } = await import('./pet-default.ts')
-    const { PetDock } = await import('./PetDock.tsx')
-    const sent: unknown[] = []
-    const send = store.client.send.bind(store.client)
-    store.client.send = (cmd) => {
-      sent.push(cmd)
+    const { DEFAULT_PET } = await import('./pet-default.ts')
+    const { PetWindow } = await import('./PetWindow.tsx')
+    const calls: { cmd: string; args?: Record<string, unknown> }[] = []
+    const callbacks = new Map<number, (payload: unknown) => void>()
+    const listeners = new Map<string, number>()
+    let next = 1
+    const g = globalThis as Record<string, unknown>
+    g.__TAURI_INTERNALS__ = {
+      transformCallback: (cb: (payload: unknown) => void) => {
+        callbacks.set(next, cb)
+        return next++
+      },
+      invoke: async (cmd: string, args?: Record<string, unknown>) => {
+        calls.push({ cmd, ...(args ? { args } : {}) })
+        if (cmd === 'plugin:event|listen') listeners.set(String(args?.event), Number(args?.handler))
+        return null
+      },
     }
-    serveLedger()
-    ledger.set('cv_run', { title: '运行中的任务', runs: [] })
-    store.setState({ busyConversations: ['cv_run'] })
     const host = document.createElement('div')
     document.body.append(host)
-    const dispose = render(() => <PetDock pack={DEFAULT_PET} frameUrl={defaultPetFrame} />, host)
+    const dispose = render(() => <PetWindow />, host)
     try {
-      ;(host.querySelector('.pet-button') as HTMLButtonElement).click()
       await flush()
-      const rows = [...document.querySelectorAll('.pet-row')]
-      expect(rows.length).toBeGreaterThan(0)
-      ;(document.querySelector('.pet-row-stop') as HTMLButtonElement).click()
-      expect(sent).toContainEqual({ type: 'conversation.interrupt', conversationId: 'cv_run' })
+      expect(
+        calls.some((c) => c.cmd === 'plugin:event|emit_to' && c.args?.event === 'pet://ready'),
+      ).toBe(true)
+      const frames = Object.fromEntries(
+        Object.values(DEFAULT_PET.states).flatMap((a) => a.frames.map((f) => [f, `/f/${f}`])),
+      )
+      callbacks.get(listeners.get('pet://state') as number)?.({
+        payload: {
+          mood: 'working',
+          badge: '2',
+          bubble: null,
+          entries: [{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }],
+          pack: DEFAULT_PET,
+          frames,
+          dark: true,
+        },
+      })
+      await flush()
+      const resizes = () => calls.filter((c) => c.cmd === 'pet_window_resize').map((c) => c.args)
+      expect(resizes().at(-1)).toEqual({ width: 92, height: 92 })
+      expect(host.querySelector('.petw-badge')?.textContent).toBe('2')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+
+      const pet = host.querySelector('.petw-pet') as HTMLElement
+      pet.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
+      )
+      pet.dispatchEvent(
+        new PointerEvent('pointerup', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
+      )
+      await flush()
+      expect(host.querySelector('.petw-menu')).not.toBeNull()
+      expect(resizes().at(-1)).toEqual({ width: 260, height: 92 + 236 })
+      expect([...host.querySelectorAll('.petw-item')].map((b) => b.textContent)).toEqual([
+        '隐藏宠物',
+      ])
+
+      ;(host.querySelector('.petw-stop') as HTMLButtonElement).click()
+      ;(host.querySelector('.petw-row-main') as HTMLButtonElement).click()
+      await flush()
+      expect(calls).toContainEqual({
+        cmd: 'plugin:event|emit_to',
+        args: {
+          target: { kind: 'WebviewWindow', label: 'main' },
+          event: 'pet://action',
+          payload: { type: 'stop', id: 'cv_run' },
+        },
+      })
+      expect(calls).toContainEqual({ cmd: 'pet_open_main', args: { conversationId: 'cv_run' } })
     } finally {
-      store.client.send = send
-      store.setState({ busyConversations: [] })
+      delete g.__TAURI_INTERNALS__
       dispose()
       host.remove()
     }
