@@ -15,6 +15,7 @@ import {
   Suspense,
   Switch,
 } from 'solid-js'
+import type { OfficeFormat } from '../lib/file-search.ts'
 import { createRefreshKey, loaded } from '../lib/resource.ts'
 import { MAP_CODEC, SET_CODEC, sessionSignal } from '../lib/session.ts'
 import { clamp, diffFrom, firstString } from '../lib/step-view.ts'
@@ -37,6 +38,7 @@ import {
   openBrowserTab,
   openFile,
   openFileInPanel,
+  openFileTab,
   openPanelTab,
   openWorkbenchTab,
   type PanelView,
@@ -79,6 +81,7 @@ import {
   IconTerminal,
   IconX,
 } from './Icons.tsx'
+import { OfficePicker } from './office/OfficePicker.tsx'
 import { TodoPanel } from './TodoPanel.tsx'
 
 // 懒加载：xterm 及其样式只在打开终端时下载。手机端和浏览器无法打开终端页，
@@ -144,27 +147,27 @@ async function openNewCanvas(): Promise<void> {
 }
 
 /**
+ * 看板 Office 行打开的文件选择框的格式，`null` 为未打开。放在模块级：选择框在看板关闭之后才显示，
+ * 不能属于看板组件；`SidePanel` 卸载时清除。
+ */
+const [officePick, setOfficePick] = createSignal<OfficeFormat | null>(null)
+
+/**
  * 「新开预览」看板的各行。**每一行都会新开一页**，因此固定页签不在此处：
  * 它们始终位于页签栏上，列出后点击也不会新开一页。
- *
- * **没有 `open` 的行尚未接入后端**，在看板上置灰、不可点击、行尾标注「未接入」。
- * 这是用户明确要求的形式：清单同时充当路线图。接入某一项时为它补充 `open`，
- * 看板的 JSX 无需修改。
  *
  * 现状（已核对代码，不要按标签推测）：终端依赖 Rust 侧的 PTY，只在桌面端可用；内置浏览器由
  * 桌面外壳的宿主承载（Windows 嵌入面板，macOS 与 Linux 显示在浏览器的独立窗口中），
  * 宿主连接后才可用，其他端改用 HTTP 网页预览（iframe，只读）。无限画布只在鼠标端提供入口（`canvasAvailable`）；
- * Word / PPT 不在 `packages/server/src/files.ts` 的分类表中；Excel 虽归入 `tabular`，但 xlsx 是
- * 二进制格式，经 `looksBinary` 判定后显示「无法以文本预览」，实际可预览的只有 csv / tsv，
- * 而文件页已支持这两种格式。
+ * Word、PPT 与 Excel 打开工作区文件选择框（只列出 `packages/server/src/files.ts` 的 `classify` 归入 docx、pptx
+ * 或 xlsx 格式的文件），选中后新开文件预览页。
  */
 const PREVIEW_SOURCES: {
   key: string
   label: string
   icon: (p: { size?: number }) => JSX.Element
-  /** 缺省表示该项尚未接入后端。 */
-  open?: () => void
-  /** 当前端不具备该能力时整行不渲染，与「尚未接入」的置灰不同。 */
+  open: () => void
+  /** 当前端不具备该能力时整行不渲染。 */
   show?: () => boolean
 }[] = [
   {
@@ -199,9 +202,9 @@ const PREVIEW_SOURCES: {
     show: () => !isDesktopShell(),
     open: () => openPanelTab('preview'),
   },
-  { key: 'word', label: 'Word', icon: IconFile },
-  { key: 'ppt', label: 'PPT', icon: IconFile },
-  { key: 'excel', label: 'Excel', icon: IconFile },
+  { key: 'word', label: 'Word', icon: IconFile, open: () => setOfficePick('docx') },
+  { key: 'ppt', label: 'PPT', icon: IconFile, open: () => setOfficePick('pptx') },
+  { key: 'excel', label: 'Excel', icon: IconFile, open: () => setOfficePick('xlsx') },
   {
     key: 'canvas',
     label: '无限画布',
@@ -321,6 +324,7 @@ export default function SidePanel() {
   }
 
   onCleanup(stopWheelScroll)
+  onCleanup(() => setOfficePick(null))
 
   /** 页签是否高亮。看板覆盖正文时所有页签均不高亮：此时正文不属于任何页签。 */
   const onView = (view: PanelView) => sidePanel() === view && !board()
@@ -539,6 +543,9 @@ export default function SidePanel() {
                         <Match when={t.kind === 'plugin' && t.workbench}>
                           {(key) => <WorkbenchPanel workbench={key()} />}
                         </Match>
+                        <Match when={t.kind === 'file' && t.path}>
+                          {(path) => <FileTab path={path()} />}
+                        </Match>
                       </Switch>
                     </Suspense>
                   </div>
@@ -550,9 +557,33 @@ export default function SidePanel() {
             </Show>
           </Show>
         </div>
+        <Show when={officePick()}>
+          {(format) => (
+            <OfficePicker
+              format={format()}
+              onPick={(path) => {
+                setOfficePick(null)
+                openFileTab(path)
+              }}
+              onClose={() => setOfficePick(null)}
+            />
+          )}
+        </Show>
       </aside>
     </Show>
   )
+}
+
+/**
+ * 文件预览页：与文件页中的预览相同，按文件失效序号重新读取（合并连续失效，同 `FileBrowser`）。
+ * 不传 `onClose`：该页由页签上的 × 关闭。
+ */
+function FileTab(props: { path: string }) {
+  const refreshKey = createRefreshKey(
+    () => (state.connection === 'ready' ? workspace()?.id : undefined),
+    () => state.fileVersion,
+  )
+  return <FileView path={props.path} refresh={refreshKey().revision} />
 }
 
 /**
@@ -560,11 +591,6 @@ export default function SidePanel() {
  *
  * **位于面板正文中，不是浮层。** 浮层菜单只能容纳三四行，且会遮挡下方内容；
  * 该清单列出面板可打开的全部页面，因此占满整个区域。
- *
- * 没有后端的行仍然显示，但设为 `disabled` 并标注「未接入」：这是用户明确要求的
- * 路线图式清单。它是本仓库 B5「不造空壳」的例外，例外的边界是
- * **必须不可点击、必须标注**：B5 针对的正是看起来可点击、点击后没有响应
- * 的入口。
  */
 function PreviewBoard(props: { onPick: () => void }) {
   return (
@@ -574,20 +600,16 @@ function PreviewBoard(props: { onPick: () => void }) {
           <button
             class="board-item"
             type="button"
-            disabled={!s.open}
             onClick={() => {
               // **先关闭看板，再打开新页。** 顺序相反时新页会在 `display: none`
               // 的容器中挂载，而 xterm 挂载后立即测量字符宽高，测得 0 时要等下一次
               // 尺寸变化才会重新测量。
               props.onPick()
-              s.open?.()
+              s.open()
             }}
           >
             <s.icon size={15} />
             <span class="board-label truncate">{s.label}</span>
-            <Show when={!s.open}>
-              <span class="board-tag">未接入</span>
-            </Show>
           </button>
         )}
       </For>
@@ -1014,7 +1036,11 @@ function FileBrowser() {
       <Show when={openFile()} keyed>
         {(path) => (
           <Suspense fallback={<div class="preview" />}>
-            <FileView path={path} refresh={manualRefresh() + refreshKey().revision} />
+            <FileView
+              path={path}
+              refresh={manualRefresh() + refreshKey().revision}
+              onClose={() => setOpenFile(null)}
+            />
           </Suspense>
         )}
       </Show>

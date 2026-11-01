@@ -247,6 +247,7 @@ export {
   openCliTab,
   openConversationTab,
   openFile,
+  openFileTab,
   openPanel,
   openPanelTab,
   openPreviewTab,

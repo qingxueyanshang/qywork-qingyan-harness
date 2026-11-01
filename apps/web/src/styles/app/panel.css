@@ -317,27 +317,13 @@
   cursor: pointer;
   transition: background var(--t-fast) var(--ease);
 }
-.board-item:hover:not(:disabled) {
+.board-item:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
-}
-/* 后端尚未接入的行：不可点击，且外观上明确不可点击。
-   只调暗而不禁用时，点击后没有任何反馈，看起来像配置错误。 */
-.board-item:disabled {
-  color: var(--text-tertiary);
-  cursor: default;
 }
 .board-label {
   flex: 1 1 auto;
   min-width: 0;
-}
-.board-tag {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: var(--r-xs);
-  background: var(--bg-hover);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
 }
 
 /* ── 终端 ──

@@ -7,9 +7,9 @@
 
 import { type CanvasFileKind, type CanvasNode, displayNameOf } from '@qywork/core'
 import { createSignal, For, type JSX, Show } from 'solid-js'
+import { createFileSearch } from '../../lib/file-search.ts'
 import FileTypeIcon from '../FileTypeIcon.tsx'
 import { IconUpload } from '../Icons.tsx'
-import { createFileSearch } from './search.ts'
 
 export function SourcePicker(props: {
   /** 可选的画布节点，已按用途过滤。 */
@@ -29,7 +29,7 @@ export function SourcePicker(props: {
 }) {
   const [query, setQuery] = createSignal('')
   const files = createFileSearch(
-    () => props.kinds,
+    () => ({ kinds: props.kinds }),
     (path) => props.accepts?.(path) ?? true,
   )
   if (props.files) files.search('')
