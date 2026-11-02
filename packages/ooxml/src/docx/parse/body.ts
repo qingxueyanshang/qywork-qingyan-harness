@@ -132,11 +132,18 @@ interface Field {
   start: { readonly runs: Run[]; readonly index: number } | null
 }
 
+/** 段落中第一个有内容的字段：`object` 为对象所在的字段（嵌入式或浮动对象）。 */
+interface FirstContent {
+  readonly props: RunProps
+  readonly object: boolean
+}
+
 interface PendingParagraph {
   readonly ctx: ParagraphContext
   readonly runs: readonly Run[]
   readonly mark: RunProps
   readonly numbering: Numbering | null
+  readonly first: FirstContent | null
   readonly images: readonly InlineImage[]
   readonly anchors: readonly {
     readonly offset: number
@@ -202,7 +209,8 @@ export class BodyReader {
   private layer: TableLayer | null = null
   private readonly fields: Field[] = []
   private deleted = 0
-  /** 当前段落的嵌入式对象、浮动对象与已读文字的长度。 */
+  /** 当前段落的第一个有内容的字段（见 `noteContent`）、嵌入式对象、浮动对象与已读文字的长度。 */
+  private first: FirstContent | null = null
   private images: InlineImage[] = []
   private anchors: { offset: number; anchor: PendingAnchor<Pending[]> }[] = []
   private textLength = 0
@@ -341,10 +349,13 @@ export class BodyReader {
     place: BlockPlace,
   ): Paragraph {
     const { ctx, runs, mark, numbering, images } = pp
-    // 首行缩进的字符单位取段落第一个字段的字号加两倍字符间距，没有字段时取段落标记的属性（WPS 实测：
-    // 12 磅、间距 1 磅时两个字符为 28 磅）。上下标字段按原字号计算。
-    const first = runs[0]?.props ?? mark
-    const unit = (first.complexScript ? first.sizeCs : first.size) + 2 * first.spacing
+    // 首行缩进的字符单位取段落第一个有内容的字段的字号加两倍字符间距，对象所在的字段不加间距；没有这样的字段时取
+    // 段落标记的属性。WPS 实测（构造文档 w13 a1）：文字 12 磅、间距 1 磅时两个字符为 28 磅；12 磅字段中的图片在前、
+    // 段落标记 18 磅时为 24 磅，间距 1 磅时仍为 24 磅；隐藏文字与浮动对象所在的字段同样计入，空字段与只有
+    // `lastRenderedPageBreak` 的字段不计入。上下标字段按原字号计算。
+    const first = pp.first?.props ?? mark
+    const spacing = pp.first?.object === true ? 0 : first.spacing
+    const unit = (first.complexScript ? first.sizeCs : first.size) + 2 * spacing
     const props = paragraphProps(ctx, section, unit, this.count)
     return {
       kind: 'paragraph',
@@ -560,6 +571,7 @@ export class BodyReader {
   private readParagraph(): void {
     const x = this.x
     const saved = {
+      first: this.first,
       images: this.images,
       anchors: this.anchors,
       textLength: this.textLength,
@@ -572,6 +584,7 @@ export class BodyReader {
     let section: Section | null = null
     let ctx: ParagraphContext | null = null
     const runs: Run[] = []
+    this.first = null
     this.images = []
     this.anchors = []
     this.textLength = 0
@@ -619,9 +632,11 @@ export class BodyReader {
       runs: this.displayFormula(runs),
       mark: r.runProps(markRaw),
       numbering,
+      first: this.first,
       images: this.images,
       anchors: this.anchors,
     }
+    this.first = saved.first
     this.images = saved.images
     this.anchors = saved.anchors
     this.textLength = saved.textLength
@@ -665,6 +680,7 @@ export class BodyReader {
       this.mathParagraphs++
     }
     const props = r.runProps(r.effectiveRun(ctx, {}))
+    this.noteContent(props, false)
     const field = this.fieldName()
     const f = this.fields.at(-1)
     for (const math of zones) {
@@ -763,7 +779,13 @@ export class BodyReader {
   private pageFieldPlaceholder(name: string, ctx: ParagraphContext, runs: Run[]): void {
     if (!PAGE_FIELDS.has(name)) return
     const props = this.resolver.runProps(this.resolver.effectiveRun(ctx, {}))
+    this.noteContent(props, false)
     runs.push({ text: '', props, field: name })
+  }
+
+  /** 记下段落中第一个有内容的字段，供首行缩进的字符单位（见 `resolveParagraph`）。 */
+  private noteContent(props: RunProps, object: boolean): void {
+    this.first ??= { props, object }
   }
 
   /** 打开时重新计算的域计入 `dynamicField`；页眉页脚中的页码域由分页按页生成，不计入。 */
@@ -806,16 +828,21 @@ export class BodyReader {
       raw ??= r.effectiveRun(ctx, this.tocRun(direct))
       return raw
     }
+    const resolved = (): RunProps => {
+      props ??= r.runProps(effective())
+      return props
+    }
     const emit = (text: string, override?: RawRunProps) => {
       if (text === '' || this.hidden()) return
       const eff = effective()
+      const base = resolved()
+      this.noteContent(base, false)
       if (eff.vanish === true) return
       if (!counted) {
         counted = true
         this.countRun(eff)
       }
-      props ??= r.runProps(eff)
-      const p = override ? r.runProps(mergeRun(eff, override)) : props
+      const p = override ? r.runProps(mergeRun(eff, override)) : base
       const field = this.fieldName()
       const f = this.fields.at(-1)
       if (f !== undefined) f.shown = true
@@ -887,12 +914,14 @@ export class BodyReader {
         case 'drawing':
           if (!this.hidden()) {
             const eff = effective()
-            this.readDrawing(eff.vanish === true, runs, r.runProps(eff).position)
+            this.noteContent(resolved(), true)
+            this.readDrawing(eff.vanish === true, runs, resolved().position)
             last = null
           } else skip(x)
           return
         case 'pict':
           if (!this.hidden()) {
+            this.noteContent(resolved(), true)
             const a = readVml(x, this.drawing)
             if (a !== null) this.anchors.push({ offset: this.textLength, anchor: a })
           } else skip(x)
@@ -900,7 +929,8 @@ export class BodyReader {
         case 'object':
           if (!this.hidden()) {
             const eff = effective()
-            this.readObject(eff.vanish === true, runs.length, r.runProps(eff).position)
+            this.noteContent(resolved(), true)
+            this.readObject(eff.vanish === true, runs.length, resolved().position)
             last = null
           } else skip(x)
           return
