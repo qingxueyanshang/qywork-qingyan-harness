@@ -19,7 +19,7 @@ import {
   readVerticalMetrics,
 } from '../font/index.ts'
 import { PartScanner } from '../opc/index.ts'
-import type { TextFace } from '../text/index.ts'
+import { DEFAULT_SLOT_CONTEXT, fontSlot, type TextFace } from '../text/index.ts'
 import {
   atomClass,
   fillAliased,
@@ -48,16 +48,20 @@ const NS =
 interface Props {
   size?: number
   font?: string
+  hint?: boolean
 }
 
-/** 读取 `w:rPr` 中的 `w:sz`（半磅）与 `w:rFonts` 的 `w:ascii`。 */
+/** 读取 `w:rPr` 中的 `w:sz`（半磅）与 `w:rFonts` 的 `w:ascii`、`w:hint`。 */
 function readProps(x: PartScanner): Props {
   const depth = x.depth
   const p: Props = {}
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t === 'end' && x.depth === depth) break
     if (t === 'start' && x.local === 'sz') p.size = Number(x.attr('w:val')) / 2
-    if (t === 'start' && x.local === 'rFonts') p.font = x.attr('w:ascii') ?? ''
+    if (t === 'start' && x.local === 'rFonts') {
+      p.font = x.attr('w:ascii') ?? ''
+      if (x.attr('w:hint') === 'eastAsia') p.hint = true
+    }
   }
   return p
 }
@@ -245,7 +249,12 @@ function env(
       color: '#000000',
       bold: false,
       italic: false,
-      textFace: () => ({ face: font.face, font: 'Cambria Math', outlines: font.outlines }),
+      textFace: () => ({
+        face: font.face,
+        font: 'Cambria Math',
+        outlines: font.outlines,
+        eastAsia: false,
+      }),
     }),
   }
 }
@@ -265,7 +274,10 @@ function textFace(file: string) {
   return f
 }
 
-/** 文字字体按字段的 `w:rFonts`：缺省为 Times New Roman，Cambria Math 为数学字体本身；中日韩字符取宋体。 */
+/**
+ * 文字字体按字段的 `w:rFonts`：缺省为 Times New Roman，Cambria Math 为数学字体本身；按字体选择规则（含 `w:hint`）落在东亚字体中的
+ * 字符取宋体。
+ */
 function textEnv(size: number): MathEnvironment<Props, string> {
   const font = cambria()
   return {
@@ -275,12 +287,15 @@ function textEnv(size: number): MathEnvironment<Props, string> {
       color: '#000000',
       bold: false,
       italic: false,
-      textFace: (cp) =>
-        cp >= 0x2e80 || p?.font === '宋体'
-          ? { ...textFace('simsun.ttc'), font: '宋体' }
-          : p?.font === 'Cambria Math'
-            ? { face: font.face, outlines: font.outlines, font: 'Cambria Math' }
-            : { ...textFace('times.ttf'), font: 'Times New Roman' },
+      textFace: (cp) => {
+        const eastAsia =
+          fontSlot(cp, { ...DEFAULT_SLOT_CONTEXT, eastAsiaHint: p?.hint === true }) === 'eastAsia'
+        if (eastAsia || p?.font === '宋体')
+          return { ...textFace('simsun.ttc'), font: '宋体', eastAsia }
+        if (p?.font === 'Cambria Math')
+          return { face: font.face, outlines: font.outlines, font: 'Cambria Math', eastAsia }
+        return { ...textFace('times.ttf'), font: 'Times New Roman', eastAsia }
+      },
     }),
   }
 }
@@ -453,13 +468,25 @@ describe.skipIf(!windows)('排版（与 WPS 实测比较）', () => {
     expect(sign.kind === 'outline' && -(sign.y - (1886 * 96) / 2048)).toBeCloseTo(75.9, 0)
   })
 
-  test('重音：取不宽于底字墨迹的最宽变体，居中于底字前进宽度', () => {
+  test('重音：取不宽于底式宽度的最宽变体，居中于底式宽度', () => {
     const l = layout(`<m:acc><m:e>${r('y')}</m:e></m:acc>`, 48)
     const [y, hat] = glyphs(l)
     expect(hat!.glyph).toBe(3548)
     expect(hat!.text).toBeNull()
     // WPS（48 磅）：扬抑符字形原点在 y 右侧 3.75 磅（像素取整）。
     expect(hat!.x - y!.x).toBeCloseTo(3.75, 0)
+  })
+
+  test('重音：底式高于 flattenedAccentBaseHeight 时取 GSUB flac 的扁平形式', () => {
+    // WPS（Cambria Math 12 与 24 磅，页面 EMF 字形编号）：y、p 为 3548，ℎ 为 3552，V 与 A 为 3553，Δπ 与 x² 为 3554，xyz 为 3550。
+    const hat = (inner: string) => {
+      const g = glyphs(layout(`<m:acc><m:e>${inner}</m:e></m:acc>`, 12))
+      return g[g.length - 1]!.glyph
+    }
+    expect(['y', 'p', 'h', 'V', 'A', 'Δπ', 'xyz'].map((t) => hat(r(t)))).toEqual([
+      3548, 3548, 3552, 3553, 3553, 3554, 3550,
+    ])
+    expect(hat(`<m:sSup><m:e>${r('x')}</m:e><m:sup>${r('2')}</m:sup></m:sSup>`)).toBe(3554)
   })
 
   test('行高：只含 x+y 的显示公式 12 磅为 14.05 磅（WPS），分数行顶为墨迹上沿减 mathLeading', () => {
@@ -723,6 +750,58 @@ describe.skipIf(!windows)('排版（与 WPS 实测比较）', () => {
     expect(glyphs(alpha)[0]!.font).toBe('Cambria Math')
     expect(sum(alpha)).toBeCloseTo(28.15, 1)
     expect(glyphs(height(tnr('P', 'b'), 24))[0]!.font).toBe('Cambria Math')
+  })
+
+  test('m:sty 缺省或为 i 时数字与运算符按字段字体排版，为 b 时数字取数学字体', () => {
+    // WPS（12 磅显示公式，字段字体 Times New Roman）：2、= 与 x2+(1) 中的 2+(1) 以 Times New Roman 绘制，2 的行高 13.8 磅；
+    // m:sty="b" 的 2 映射为数学粗体数字，以 Cambria Math 绘制。
+    const tnr = (t: string, sty = '') =>
+      r(t, `${sty}<w:rPr><w:rFonts w:ascii="Times New Roman"/></w:rPr>`)
+    const two = height(tnr('2'), 12)
+    expect(glyphs(two)[0]!.font).toBe('Times New Roman')
+    expect(sum(two)).toBeCloseTo(13.8, 1)
+    expect(glyphs(height(tnr('x2+(1)'), 12)).map((g) => g.font)).toEqual([
+      'Cambria Math',
+      'Times New Roman',
+      'Times New Roman',
+      'Times New Roman',
+      'Times New Roman',
+      'Times New Roman',
+    ])
+    expect(glyphs(height(tnr('2', '<m:rPr><m:sty m:val="i"/></m:rPr>'), 12))[0]!.font).toBe(
+      'Times New Roman',
+    )
+    expect(glyphs(height(tnr('2', '<m:rPr><m:sty m:val="b"/></m:rPr>'), 12))[0]!.font).toBe(
+      'Cambria Math',
+    )
+  })
+
+  test('东亚提示的希腊与西里尔字母落在东亚字体中：按该字体绘制，取其单倍行高上下沿', () => {
+    // WPS（24 磅显示公式 x 后接东亚提示的字段，Times New Roman 与宋体）：m:sty="p" 的 α、μ、а 以宋体绘制，行高 34.6 磅；
+    // · 与 “ 以 Cambria Math 绘制，行高 28.15 磅；m:sty 缺省的 α 映射为数学斜体、以 Cambria Math 绘制，а 以宋体绘制、34.6 磅；
+    // m:nor 的 α 以宋体绘制、34.6 磅，· 以宋体绘制、28.15 磅。
+    const HINT = '<w:rPr><w:rFonts w:hint="eastAsia" w:ascii="Times New Roman"/></w:rPr>'
+    const STY = '<m:rPr><m:sty m:val="p"/></m:rPr>'
+    const x = r('x', CM)
+    const line = (ch: string, mp: string) => height(x + r(ch, mp + HINT), 24)
+    for (const ch of ['α', 'μ', 'а']) {
+      const l = line(ch, STY)
+      expect(glyphs(l)[1]!.font).toBe('宋体')
+      expect(sum(l)).toBeCloseTo(34.6, 1)
+    }
+    for (const ch of ['·', '“']) {
+      const l = line(ch, STY)
+      expect(glyphs(l)[1]!.font).toBe('Cambria Math')
+      expect(sum(l)).toBeCloseTo(28.15, 1)
+    }
+    expect(glyphs(line('α', ''))[1]!.font).toBe('Cambria Math')
+    const cyrillic = line('а', '')
+    expect(glyphs(cyrillic)[1]!.font).toBe('宋体')
+    expect(sum(cyrillic)).toBeCloseTo(34.6, 1)
+    expect(sum(line('α', NOR))).toBeCloseTo(34.6, 1)
+    const dot = line('·', NOR)
+    expect(glyphs(dot)[1]!.font).toBe('宋体')
+    expect(sum(dot)).toBeCloseTo(28.15, 1)
   })
 })
 

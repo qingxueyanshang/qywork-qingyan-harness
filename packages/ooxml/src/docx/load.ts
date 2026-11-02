@@ -37,7 +37,7 @@ import { XmlSyntaxError } from '../xml/index.ts'
 import type { Block, DocxDocument, MediaPart, UnsupportedCounts, UnsupportedKind } from './model.ts'
 import { type BodyEnv, BodyReader } from './parse/body.ts'
 import { EMPTY_NUMBERING, readNumbering } from './parse/numbering.ts'
-import { DEFAULT_SETTINGS, readChineseCharsetFonts, readSettings } from './parse/settings.ts'
+import { DEFAULT_SETTINGS, readFontTable, readSettings } from './parse/settings.ts'
 import { EMPTY_STYLES, readStyles } from './parse/styles.ts'
 import { Resolver } from './resolve/cascade.ts'
 import { NumberingState } from './resolve/numbering.ts'
@@ -174,8 +174,7 @@ async function parsePackage(pkg: OpcPackage): Promise<DocxDocument> {
   const settings =
     settingsXml === null ? DEFAULT_SETTINGS : readSettings(new PartScanner(settingsXml))
   const fontTableXml = await part('fontTable')
-  const chineseCharsetFonts =
-    fontTableXml === null ? [] : readChineseCharsetFonts(new PartScanner(fontTableXml))
+  const fontTable = fontTableXml === null ? new Map() : readFontTable(new PartScanner(fontTableXml))
   const themeXml = await part('theme')
   const theme = themeXml === null ? null : parseTheme(themeXml)
 
@@ -310,7 +309,7 @@ async function parsePackage(pkg: OpcPackage): Promise<DocxDocument> {
       gridInTables: settings.adjustLineHeightInTable,
       math: settings.math,
     },
-    chineseCharsetFonts,
+    fontTable,
     unsupported,
     parts,
     media: mediaList,

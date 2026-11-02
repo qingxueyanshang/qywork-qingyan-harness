@@ -1,9 +1,9 @@
 /**
  * 文字排版。覆盖 `classify.ts`（字体选择与字符类别）、`breaking.ts`（断点与禁则）、
  * `line-height.ts`（单倍行高、上下沿、行距规则、网格与基线）、`layout.ts`（断行、悬挂、中西文间距、对齐、制表符、行高与片段，
- * 上下标、字符间距、基线提升、`wordWrap` 关闭与单双字节宽度协调、行内对象、段落标记计入行高的条件、最小与最大内容宽度）、
+ * 上下标、字符间距、基线提升、字距调整、`wordWrap` 关闭与单双字节宽度协调、行内对象、段落标记计入行高的条件、最小与最大内容宽度）、
  * `punctuation.ts`（相邻标点压缩与压缩标点），
- * 以及 `../font/vertical.ts`（`hhea` 与 `OS/2` 纵向度量、上下标字号）。
+ * 以及 `../font/vertical.ts`（`hhea` 与 `OS/2` 纵向度量、上下标字号）与 `../font/features/kern.ts`（`kern` 表的字偶）。
  *
  * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
  * 期望的断行位置、坐标与行高取自 WPS 只读打开同样内容的文档后逐字取得的结果（版心 415.3 磅，宋体 10.5 磅），
@@ -187,7 +187,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
   const H = '汉'
 
   describe('纵向度量', () => {
-    test('宋体与 Times New Roman 的 hhea、OS/2 字段', () => {
+    test('宋体与 Times New Roman 的 hhea、OS/2 字段（代码页与 Word 写入字体表 w:sig 的 csb0 相同）', () => {
       expect(song.vertical).toEqual({
         unitsPerEm: 256,
         hheaAscender: 220,
@@ -198,6 +198,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
         useTypoMetrics: false,
         averageWidth: 128,
         eastAsianCodePage: true,
+        codePages: 0x40001,
         superscriptSize: 128,
         superscriptOffset: 128,
         subscriptSize: 128,
@@ -208,6 +209,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
         winDescent: 443,
         hheaLineGap: 87,
         eastAsianCodePage: false,
+        codePages: 0x400001ff,
       })
     })
   })
@@ -725,6 +727,50 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       expect(line({ raise: 3, size: 18 }).height).toBeCloseTo(24.6, 1)
       const raised = line({ raise: 6 })
       expect(raised.fragments[1]!.baseline).toBeCloseTo(raised.baseline - 6, 9)
+    })
+  })
+
+  describe('字距调整', () => {
+    const adv = (b: TextBlock) => b.lines[0]!.fragments.flatMap((f) => f.advances)
+    const fonts = (f: TextFace): RunFonts => ({ ascii: f, hAnsi: f, eastAsia: song, cs: f })
+    const lay = (runs: TextRun[]) => layoutParagraph(runs, style({ align: 'left' }))
+    const AV = 'AVAW'
+
+    test('同一字体的相邻两字按 kern 表的字偶调整前一字的步进：Times New Roman 12 磅「AV」收紧 1.55 磅，只有 GPOS 字偶的字体不调整', () => {
+      // WPS（构造文档 k1，逐字横坐标，0.05 磅精度）：AVAW 的各字起点 72、79.1、86.2、93.9；未开启时 72、80.65、89.3、97.95。
+      const on = adv(lay([run(AV, { fonts: fonts(times), size: 12, kern: 1 })]))
+      expect(on.slice(0, 3).map((a) => Math.round(a * 20) / 20)).toEqual([7.1, 7.1, 7.7])
+      const off = adv(lay([run(AV, { fonts: fonts(times), size: 12 })]))
+      expect(off[0]).toBeCloseTo((1479 * 12) / 2048, 6)
+      expect(on[0]).toBeCloseTo(((1479 - 264) * 12) / 2048, 6)
+      // 最小字号 12 磅时开启，13 磅时不开启。
+      expect(adv(lay([run(AV, { fonts: fonts(times), size: 12, kern: 12 })]))).toEqual(on)
+      expect(adv(lay([run(AV, { fonts: fonts(times), size: 12, kern: 13 })]))).toEqual(off)
+      // 只有 GPOS 字偶、没有 kern 表的字体不调整（WPS：Georgia 与等线开启字距调整后各字位置不变）。
+      const georgia = face('georgia.ttf')
+      expect(adv(lay([run(AV, { fonts: fonts(georgia), size: 12, kern: 1 })]))).toEqual(
+        adv(lay([run(AV, { fonts: fonts(georgia), size: 12 })])),
+      )
+    })
+
+    test('跨字段时两字都开启且为同一字体才调整；字符间距另加；上标按原字号的字偶值收紧', () => {
+      // WPS：A、V 分属两个开启的字段时 A 的步进 7.1；只有一侧开启时 8.65；A 为 Times New Roman、V 为 Arial 时 8.65；
+      // 字符间距 1 磅时 8.1；12 磅上标（7.75 磅）的 A 为 4.05（原字号的字偶值）。
+      const t = fonts(times)
+      const two = (a: Partial<TextRun>, b: Partial<TextRun>) =>
+        adv(
+          lay([run('A', { fonts: t, size: 12, ...a }), run('V', { fonts: t, size: 12, ...b })]),
+        )[0]!
+      expect(two({ kern: 1 }, { kern: 1 })).toBeCloseTo(7.119, 3)
+      expect(two({ kern: 1 }, {})).toBeCloseTo(8.666, 3)
+      expect(two({}, { kern: 1 })).toBeCloseTo(8.666, 3)
+      expect(two({ kern: 1 }, { kern: 1, fonts: fonts(arial) })).toBeCloseTo(8.666, 3)
+      expect(adv(lay([run(AV, { fonts: t, size: 12, kern: 1, spacing: 1 })]))[0]).toBeCloseTo(
+        8.119,
+        3,
+      )
+      const sup = adv(lay([run(AV, { fonts: t, size: 12, kern: 1, script: 'superscript' })]))
+      expect(sup[0]).toBeCloseTo((1479 * 7.75) / 2048 - (264 * 12) / 2048, 6)
     })
   })
 

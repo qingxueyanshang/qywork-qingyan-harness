@@ -1,13 +1,15 @@
 /**
- * 设置部件与字体表：影响排版的文档设置、主题字体语言与字体字符集。
+ * 设置部件与字体表：影响排版的文档设置、主题字体语言与字体表条目。
  *
  * - `defaultTabStop` 缺失时为 500 缇：WPS 打开没有该项的文档时默认制表位间距为 25 磅（实测）。
  * - `themeFontLang` 缺失的语言按 `zh-CN` 处理：WPS 对没有该项的文档用主题的 `Hans` 字体作为东亚主题字体（实测）。
  * - 自定义禁则字符（`noLineBreaksBefore`、`noLineBreaksAfter`）不区分 `w:lang`，出现即替换缺省表。
  * - 公式设置（`m:mathPr`）缺失时取 `MATH_SETTINGS_DEFAULTS`。
+ * - 字体表中同名的条目只取第一个：WPS 实测（构造文档 f4、f5）两个同名条目的 `w:altName` 不同时按第一个替代。
  */
 
 import { MATH_SETTINGS_DEFAULTS, type MathSettings, readMathSettings } from '../../math/index.ts'
+import type { FontTableEntry } from '../model.ts'
 import { eachChild, onOff, type Scanner, skip, wAttr, wNum } from './xml.ts'
 
 const DEFAULT_TAB_STOP = 500
@@ -119,22 +121,23 @@ export function readSettings(x: Scanner): RawSettings {
   }
 }
 
-/** GB2312 与 Big5 的 `w:charset` 取值（十六进制）。 */
-const CHINESE_CHARSETS = new Set(['86', '88'])
-
-/** 根元素为 `fonts` 的部件：返回字符集为 GB2312 或 Big5 的字体名。 */
-export function readChineseCharsetFonts(x: Scanner): string[] {
-  const out: string[] = []
+/** 根元素为 `fonts` 的部件：各字体名的第一个条目。`w:charset` 为十六进制，不是十六进制数时按未指定。 */
+export function readFontTable(x: Scanner): Map<string, FontTableEntry> {
+  const out = new Map<string, FontTableEntry>()
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t !== 'start' || x.depth !== 2 || x.local !== 'font') continue
     const name = wAttr(x, 'name')
+    let altName = ''
+    let charset: number | null = null
     eachChild(x, (local) => {
-      if (local === 'charset') {
-        const v = wAttr(x, 'val')?.toUpperCase()
-        if (name !== null && v !== undefined && CHINESE_CHARSETS.has(v)) out.push(name)
+      if (local === 'altName') altName = (wAttr(x, 'val') ?? '').trim()
+      else if (local === 'charset') {
+        const v = wAttr(x, 'val') ?? ''
+        if (/^[0-9a-f]{1,2}$/i.test(v)) charset = Number.parseInt(v, 16)
       }
       skip(x)
     })
+    if (name !== null && !out.has(name)) out.set(name, { altName, charset })
   }
   return out
 }

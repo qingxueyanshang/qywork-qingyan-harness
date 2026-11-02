@@ -33,7 +33,7 @@ import {
   TOGGLES,
 } from '../parse/properties.ts'
 import type { StyleDef, Styles } from '../parse/styles.ts'
-import { type FontContext, fontName } from './fonts.ts'
+import { type FontContext, fontName, fromTheme } from './fonts.ts'
 import type { NumberingState } from './numbering.ts'
 
 /** 未指定字号时的字号：WPS 打开没有字号设置的文档时为 10.5 磅（实测）。 */
@@ -214,6 +214,7 @@ export class Resolver {
         eastAsia: fontName(raw.eastAsia, 'eastAsia', f),
         cs: fontName(raw.cs, 'cs', f),
       },
+      eastAsiaTheme: fromTheme(raw.eastAsia),
       hint: raw.hint ?? 'default',
       complexScript: raw.complexScript === true || raw.rtl === true,
       size: raw.size ?? DEFAULT_SIZE,

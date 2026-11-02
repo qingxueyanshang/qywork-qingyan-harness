@@ -6,6 +6,7 @@
  */
 
 import { readCmap } from './cmap.ts'
+import { readKerning } from './features/kern.ts'
 import { FontFormatError, type SfntFace, tableBytes } from './sfnt.ts'
 
 const HEAD_MAGIC = 0x5f0f3cf5
@@ -38,6 +39,11 @@ export interface FontMetrics {
   advanceWidth(codePoint: number): number
   /** 按字号换算，单位与 `size` 相同（传入 px 得 px，传入 pt 得 pt）。 */
   advance(codePoint: number, size: number): number
+  /**
+   * 两个码位之间的字偶调整值（字体单位，负值为收紧），取自 `kern` 表（见 `features/kern.ts`）；没有该字偶时为 0。
+   * 不来自字体文件的度量可以省略，按没有字偶。
+   */
+  kerning?(left: number, right: number): number
 }
 
 /** `bytes` 是整个文件的字节（单个字体或 TTC），`face` 取自 `readFaces(bytes)`。 */
@@ -63,11 +69,13 @@ export function readMetrics(bytes: Uint8Array, face: SfntFace): FontMetrics {
   // 编号不小于 numberOfHMetrics 的字形只存 leftSideBearing，前进宽度取最后一项的值。
   const glyphAdvance = (g: number): number => metrics.getUint16(4 * Math.min(g, metricCount - 1))
   const advanceWidth = (codePoint: number): number => glyphAdvance(glyphId(codePoint))
+  const kern = readKerning(bytes, face)
   return {
     unitsPerEm,
     numGlyphs,
     glyphId,
     advanceWidth,
     advance: (codePoint, size) => (advanceWidth(codePoint) * size) / unitsPerEm,
+    kerning: kern === null ? () => 0 : (left, right) => kern(glyphId(left), glyphId(right)),
   }
 }

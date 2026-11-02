@@ -7,9 +7,12 @@
 import {
   FontFormatError,
   type GlyphOutlines,
+  type GlyphSubstitution,
+  readCoverage,
   readFaces,
   readGlyphOutlines,
   readMetrics,
+  readSingleSubstitution,
   readVerticalMetrics,
   type SfntFace,
   tableBytes,
@@ -118,32 +121,8 @@ function view(bytes: Uint8Array): DataView {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 }
 
-/** Coverage 表：字形编号 → 覆盖序号；不在表中为 -1。 */
-function coverage(v: DataView, at: number): (glyph: number) => number {
-  const format = v.getUint16(at)
-  if (format === 1) {
-    const count = v.getUint16(at + 2)
-    const glyphs = new Map<number, number>()
-    for (let i = 0; i < count; i++) glyphs.set(v.getUint16(at + 4 + 2 * i), i)
-    return (g) => glyphs.get(g) ?? -1
-  }
-  if (format === 2) {
-    const count = v.getUint16(at + 2)
-    const ranges: [number, number, number][] = []
-    for (let i = 0; i < count; i++) {
-      const r = at + 4 + 6 * i
-      ranges.push([v.getUint16(r), v.getUint16(r + 2), v.getUint16(r + 4)])
-    }
-    return (g) => {
-      for (const [start, end, index] of ranges) if (g >= start && g <= end) return index + g - start
-      return -1
-    }
-  }
-  throw new FontFormatError(`不支持的 Coverage 格式 ${format}`)
-}
-
 function valueTable(v: DataView, at: number): (glyph: number) => number | null {
-  const cover = coverage(v, at + v.getUint16(at))
+  const cover = readCoverage(v, at + v.getUint16(at))
   const count = v.getUint16(at + 2)
   return (g) => {
     const i = cover(g)
@@ -215,8 +194,8 @@ export function readMathTable(bytes: Uint8Array, face: SfntFace): MathTable | nu
   if (variantsAt !== 0) {
     const at = variantsAt
     minConnectorOverlap = v.getUint16(at)
-    const vCover = coverage(v, at + v.getUint16(at + 2))
-    const hCover = coverage(v, at + v.getUint16(at + 4))
+    const vCover = readCoverage(v, at + v.getUint16(at + 2))
+    const hCover = readCoverage(v, at + v.getUint16(at + 4))
     const vCount = v.getUint16(at + 6)
     const hCount = v.getUint16(at + 8)
     const cache = new Map<number, GlyphConstruction>()
@@ -248,6 +227,8 @@ export interface MathFont<F> {
   readonly face: TextFace
   readonly outlines: GlyphOutlines
   readonly table: MathTable
+  /** 上方重音的扁平形式（`GSUB` 的 `flac` 特性）；字体没有该特性或字形不在替换范围内时原样返回。 */
+  readonly flattenedAccent: GlyphSubstitution
   readonly font: F
 }
 
@@ -267,6 +248,7 @@ export function readMathFont<F>(bytes: Uint8Array, index: number, font: F): Math
     face: { metrics: readMetrics(bytes, face), vertical: readVerticalMetrics(bytes, face) },
     outlines,
     table,
+    flattenedAccent: readSingleSubstitution(bytes, face, 'flac') ?? ((glyph) => glyph),
     font,
   }
 }

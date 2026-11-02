@@ -3,7 +3,8 @@
  *
  * - `source` 交给 `layoutDocument`。请求粗体而字体没有粗体字形时，返回已按仿粗体换算（`emboldened`）的字形并标为粗体，
  *   使排版结果中的每个 `TextFace` 都是本字体集登记过的对象，分页时可由 `ref` 找回字体与字形。
- * - 主机没有的字体由 `layoutDocument` 改用 `fallback` 并记入 `missingFonts`。
+ * - 主机没有的字体由 `layoutDocument` 按替代字体（`../resolve/fonts.ts` 的 `substitutes`）排版并记入 `missingFonts`，
+ *   没有替代字体时改用 `fallback`。
  * - 带 `MATH` 表与 TrueType 轮廓的字体另读取为数学字体（`DocxFace.math`），供公式排版（`source.math`）与按轮廓绘制；
  *   公式中的普通文字按其字体的轮廓取墨迹（`source.outlines`）。
  * - `blockFonts` 列出段落用到的字体名，含公式中的字符属性与数学字体（文档所需的全部字体名见 `requiredFonts`）。
