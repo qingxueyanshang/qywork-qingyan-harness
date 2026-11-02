@@ -19,7 +19,7 @@
 
 import type { Personalization } from '@qywork/core'
 import { createSignal } from 'solid-js'
-import { luminance, mix, parseColor, toCss, withAlpha } from '../color.ts'
+import { contrast, mix, overlayFor, parseColor, type Rgba, toCss, withAlpha } from '../color.ts'
 
 export type ThemePref = 'system' | 'light' | 'dark'
 
@@ -38,8 +38,10 @@ const THEME_KEY = 'qywork.theme'
  * 不改用 CSS 的 `color-mix()`，理由见 `../color.ts`。
  */
 const PERSONAL_VARIABLES = [
+  '--app-bg',
   '--frame-bg',
   '--content-bg',
+  '--content-inset',
   '--accent',
   '--accent-hover',
   '--accent-soft',
@@ -83,16 +85,52 @@ function applyDataTheme(pref: ThemePref): void {
   else root.setAttribute('data-theme', pref)
 }
 
+const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 1 }
+
 /**
- * 个性化的强调色与其上的文字色。null 表示使用主题的强调色。主窗口与桌面宠物窗口共用：
- * 宠物窗口不读取个性化，由主窗口随状态推送（`appearance/pet-window.ts`）。
+ * 白色系的界限：强调色与白色的对比度低于此值时，白色的文字与圆钮在强调色上无法区分
+ * （相对亮度 0.825，灰阶 `#ebebeb` 及更浅）。`#f2f2f2` 为 1.12；`#d9d9d9` 为 1.42、`#bfbfbf` 为 1.84，
+ * 属于灰色而不是白色系。
+ */
+const WHITE_SERIES_CONTRAST = 1.2
+
+/**
+ * 强调色填充上的文字、图标与实心图形（主按钮文字、开关圆点、复选框勾号）共用一条规则：
+ * 白色，只有强调色属于白色系时取 `#16161a`。浅灰、`#bfbfbf`、浅蓝等一律为白色。
+ * 不要改为按亮度或对比度在黑白之间择优：中等亮度的彩色强调色上会出现黑字。
+ */
+function onAccent(accent: Rgba): string {
+  return contrast(accent, WHITE) < WHITE_SERIES_CONTRAST ? '#16161a' : '#ffffff'
+}
+
+/**
+ * 由强调色推导的全部颜色，每种用途一条规则。样式只引用这些变量，不在组件中另作判定，也不使用
+ * `accent-color`：浏览器按自己的阈值推导勾号与滑块轨道的颜色。
  *
- * 文字色按强调色自身的明暗取黑或白：浅色强调色上的白字无法辨认。
+ * - `--accent`：填充（主按钮、开关轨道、滑块）与页面上以强调色绘制的线条、标记与文字，原样使用。
+ * - `--accent-hover`：填充的悬停色，向 `page` 混合 15%，与默认令牌的关系一致。
+ * - `--accent-fg`：填充上的文字、图标与实心图形，见 `onAccent`。
+ * - `--accent-soft`：浅底（文字选中、框选），取强调色的 14%。
+ *
+ * `page` 是当前主题的内容底色。
+ */
+export function accentPalette(accent: Rgba, page: Rgba): Record<string, string> {
+  return {
+    '--accent': toCss(accent),
+    '--accent-hover': toCss(mix(accent, page, 0.15)),
+    '--accent-soft': toCss(withAlpha(accent, 0.14)),
+    '--accent-fg': onAccent(accent),
+  }
+}
+
+/**
+ * 个性化的强调色与其上的文字色。null 表示使用主题的强调色。供桌面宠物窗口的角标使用：
+ * 宠物窗口不读取个性化，由主窗口随状态推送（`appearance/pet-window.ts`）。
  */
 export function personalAccent(p: Personalization | null): { color: string; fg: string } | null {
   const accent = p?.accent ? parseColor(p.accent) : null
   if (!accent) return null
-  return { color: toCss(accent), fg: luminance(accent) > 0.6 ? '#16161a' : '#ffffff' }
+  return { color: toCss(accent), fg: onAccent(accent) }
 }
 
 /** 必须在 `data-theme` 已设置之后调用：先计算再切换明暗时，深色下会取到浅色令牌。 */
@@ -105,17 +143,21 @@ function writeVariables(p: Personalization | null): void {
   const frame = token('--bg-sunken')
   const content = token('--bg-app')
   if (p.opacity < 1 && frame && content) {
-    style.setProperty('--frame-bg', toCss(withAlpha(frame, p.opacity)))
+    // 外框比内容低一层：不透明度取界面不透明度的平方，透出的背景多于内容区（85% 时为 28% 对 15%），
+    // 任何背景下两层都有可辨认的差别。两者取同一不透明度时，强烈的背景压过两层底色本身的差别，
+    // 会话栏、会话区与面板显示为同一种颜色。卡片、输入框与浮层不透明，位于内容之上。
+    style.setProperty('--frame-bg', toCss(withAlpha(frame, p.opacity * p.opacity)))
     style.setProperty('--content-bg', toCss(withAlpha(content, p.opacity)))
+    style.setProperty('--app-bg', 'transparent')
+    // 内容区中凹下的底色改为叠加色，随内容区透出背景（见 `tokens.css` 的 `--content-inset`）。
+    const inset = token('--bg-inset')
+    if (inset) style.setProperty('--content-inset', toCss(overlayFor(content, inset)))
   }
   const accent = p.accent ? parseColor(p.accent) : null
-  const pair = personalAccent(p)
-  if (accent && pair && content) {
-    // 悬停色向底色方向偏移 15%，与默认令牌的关系一致：深色底上变暗、浅色底上变亮。
-    style.setProperty('--accent', pair.color)
-    style.setProperty('--accent-hover', toCss(mix(accent, content, 0.15)))
-    style.setProperty('--accent-soft', toCss(withAlpha(accent, 0.14)))
-    style.setProperty('--accent-fg', pair.fg)
+  if (accent && content) {
+    for (const [name, value] of Object.entries(accentPalette(accent, content))) {
+      style.setProperty(name, value)
+    }
   }
 }
 

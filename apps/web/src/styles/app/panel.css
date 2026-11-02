@@ -7,7 +7,10 @@
  * 它位于标题栏下方的一行，与会话区并排，而不是从窗口顶端整列占据。
  * 后者会截短顶栏，使窗口按钮被推到窗口中央。
  *
- * 底色与会话区一致：两者是同一平面上的两栏，中间只需一条分隔线。 */
+ * 正文底色与会话区一致：两者是同一平面上的两栏，中间只需一条分隔线。
+ * 本层不绘制整块底色，页签条与正文（`.side-body`）各自绘制：页签条位于本层之内，
+ * 在此绘制时个性化的半透明底色在页签条处叠加两层（规则见 `tokens.css` 的 `--frame-bg`）。
+ * 只在上、左两条边框下方补画 1px 正文底色：不补时边框处直接透出背景，个性化下显示为一条背景色的线。 */
 .side-panel {
   grid-column: 3;
   grid-row: 2;
@@ -16,7 +19,9 @@
   min-width: 0;
   border-top: 1px solid var(--border-subtle);
   border-left: 1px solid var(--border-subtle);
-  background: var(--content-bg);
+  background:
+    linear-gradient(var(--content-bg), var(--content-bg)) 0 0 / 100% 1px no-repeat border-box,
+    linear-gradient(var(--content-bg), var(--content-bg)) 0 1px / 1px 100% no-repeat border-box;
   /* 拖拽把手按它定位。 */
   position: relative;
 }
@@ -56,17 +61,17 @@
 
 /* 标签行不贴窗口上沿：安全区已由顶栏占用，此处无需再预留。
  *
- * 底色比面板正文低一档：该横带是各页签的上沿，选中的页签使用正文底色，
- * 因此与下方内容连为一体。`align-items: stretch` 是该设计的前提：标签
+ * 外框色比面板正文低一档：未选中的页签、页签后的空白与右侧按钮区各自绘制外框色与下边线，
+ * 选中的页签使用正文底色、不画下边线，因此与下方内容连为一体。
+ * 本层不绘制底色与下边框：选中的页签位于本层之内，无法遮去父元素的半透明底色，
+ * 个性化时会在选中页签处叠加两层。`align-items: stretch` 是该设计的前提：标签
  * 必须撑满整条横带，否则无法与下方内容相连。
  * 同理左右内距归零，改由标签自身提供内距，否则第一个标签与横带左沿之间会
- * 露出一段与正文颜色不同的间隙。 */
+ * 露出一段未绘制外框色的间隙。 */
 .side-head {
   display: flex;
   align-items: stretch;
   height: var(--header-h);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--frame-bg);
   flex: none;
 }
 
@@ -84,6 +89,13 @@
 .side-tabs::-webkit-scrollbar {
   display: none;
 }
+/* 最后一个页签之后的空白，与未选中的页签相同：外框色与下边线。 */
+.side-tabs::after {
+  content: "";
+  flex: 1 0 auto;
+  background: var(--frame-bg);
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
+}
 
 /*
  * 浏览器式页签：选中态由顶部的线条与正文底色表示，不使用圆角高亮块。
@@ -99,6 +111,8 @@
   flex: none;
   padding: 0 var(--s-3);
   border-radius: 0;
+  background: var(--frame-bg);
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   white-space: nowrap;
@@ -124,25 +138,20 @@
   display: none;
 }
 /* 选中态不应用 hover 底色：半透明叠加层会使其变回横带的灰色，指针经过时
-   选中态无法辨认。 */
+   选中态无法辨认。悬停色写在 `background-image` 上，叠加在外框色之上而不替换它。 */
 .side-tab:not(.active):hover {
-  background: var(--bg-hover);
+  background-image: linear-gradient(var(--bg-hover), var(--bg-hover));
   color: var(--text-primary);
 }
 /*
- * 选中态包含三项：顶部 2px 的线、正文底色、在该页签处遮盖横带的下边框。
- *
- * 第三项使用向下的 box-shadow，不使用 `margin-bottom: -1px`：负外边距会使该页签
- * 整体下移 1px，各页签的文字基线随之错开。
+ * 选中态包含两项：顶部 2px 的线与正文底色；不画下边线，与下方正文连为一体。
  * 线条使用强调色，与设置页页签的下划线相同：选中项的标记全应用只用一种颜色。
  */
 .side-tab.active {
   background: var(--content-bg);
   color: var(--text-primary);
   font-weight: 500;
-  box-shadow:
-    inset 0 2px 0 var(--accent),
-    0 1px 0 var(--content-bg);
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 /* 可关闭的页签：名称与 × 各为一个按钮，外层包一个容器（button 嵌套 button
@@ -188,6 +197,8 @@
   gap: 2px;
   flex: none;
   padding: 0 var(--s-2);
+  background: var(--frame-bg);
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
 }
 /* 关闭按钮默认不显示：面板开合由顶栏的开关控制，此处再放一个按钮会形成同一操作的
    第二个入口。窄屏例外：面板在窄屏下覆盖顶栏，见 utility.css。 */
@@ -218,6 +229,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: var(--content-bg);
 }
 
 /* 固定页签与可多开页签共用的层叠容器。
@@ -1037,7 +1049,7 @@
   max-height: 200px;
   overflow: auto;
   border-radius: var(--r-xs);
-  background: var(--bg-inset);
+  background: var(--content-inset);
   font-size: var(--fs-xs);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -1300,7 +1312,7 @@
   white-space: nowrap;
   padding: 0 5px;
   border-radius: var(--r-xs);
-  background: var(--bg-inset);
+  background: var(--content-inset);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }

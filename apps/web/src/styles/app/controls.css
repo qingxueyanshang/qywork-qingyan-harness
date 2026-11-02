@@ -6,7 +6,9 @@
  * 由 `../app.css` 最先引入：各区域对控件的尺寸调整写在自己的文件中，以更高或相同的特异性覆盖本文件。
  *
  * 强调色只用于主操作与「开 / 选中」状态（主按钮、开关、滑块、颜色选择中的当前项），
- * 其余状态使用中性色阶，规则见 `../tokens.css` 开头。
+ * 其余状态使用中性色阶，规则见 `../tokens.css` 开头。由强调色推导的颜色各有用途：
+ * 填充与页面上的选中线、焦点边框用 `--accent`，填充上的文字、图标、开关圆点与勾号用 `--accent-fg`
+ * （规则见 `lib/store/theme.ts` 的 `accentPalette`）。
  */
 
 /* ── 按钮 ── */
@@ -229,11 +231,61 @@ select option:hover {
 }
 
 /* ── 滑块 ──
-   不重绘轨道与滑块，只设强调色，理由同 base.css 的勾选框：`accent-color` 是标准属性，
-   配合 `color-scheme` 在亮暗两种主题下均正确。视频上的白色滑块由画布样式单独覆盖。 */
+ *
+ * 按令牌绘制：已填充段与圆钮取 `--range-fill`（缺省为 `--accent`），未填充段 `--border-default`，圆钮加内描边，
+ * 强调色为白色时仍可辨认。中性色的滑块（画布时间线缩放）在区域内改写 `--range-fill`。
+ * 不使用 `accent-color`：浏览器按自己的阈值推导未填充段的颜色，实测 Edge 在强调色相对亮度约 0.25 以上
+ * 把未填充段画成 #3b3b3b，浅灰强调色上出现黑色轨道。
+ *
+ * 两段轨道由圆钮的 `border-image` 从圆钮两侧各向外延伸 100vw 绘制，输入框的 `overflow: hidden`
+ * 裁去超出部分，进度无需由脚本写入。输入框高度等于圆钮直径，圆钮的描边画在内侧：
+ * 外侧的描边与投影会被裁去。区域内只改 `--range-thumb`（圆钮直径）、`--range-band`（轨道粗细）与 `--range-fill`。
+ * 媒体上的白色滑块（画布视频播放条、取帧条）自绘轨道与圆钮，须清除本规则的 `border-image`。
+ */
 input[type="range"] {
-  accent-color: var(--accent);
+  --range-thumb: 14px;
+  --range-band: 4px;
+  --range-fill: var(--accent);
+  appearance: none;
+  height: var(--range-thumb);
+  margin: 0;
+  overflow: hidden;
+  background: none;
   cursor: pointer;
+}
+input[type="range"]:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 100%;
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--range-thumb);
+  height: var(--range-thumb);
+  border-radius: 50%;
+  background: var(--range-fill);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  border-image:
+    linear-gradient(90deg, var(--range-fill) 50%, var(--border-default) 50%) 0 1 /
+    calc(50% - var(--range-band) / 2) 100vw / 0 100vw;
+}
+input[type="range"]::-moz-range-track {
+  height: var(--range-band);
+  background: var(--border-default);
+}
+input[type="range"]::-moz-range-progress {
+  height: var(--range-band);
+  background: var(--range-fill);
+}
+input[type="range"]::-moz-range-thumb {
+  width: var(--range-thumb);
+  height: var(--range-thumb);
+  border: none;
+  border-radius: 50%;
+  background: var(--range-fill);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 /* ── 颜色选择（`ColorWell`） ── */

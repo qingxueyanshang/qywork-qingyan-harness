@@ -59,3 +59,21 @@ export function luminance(c: Rgba): number {
   }
   return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
 }
+
+/** WCAG 对比度，1 到 21。透明度不参与计算。 */
+export function contrast(a: Rgba, b: Rgba): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number]
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/**
+ * 叠在 `base` 上效果等于 `target` 的半透明黑色（`target` 较暗时）或白色（较亮时），不透明度按三个通道的平均取得。
+ * 用于把不透明的色阶换成随底色透出背景的叠加色：叠在 `base` 本身上时与 `target` 相同。
+ */
+export function overlayFor(base: Rgba, target: Rgba): Rgba {
+  const avg = (c: Rgba) => (c.r + c.g + c.b) / 3
+  const b = avg(base)
+  const t = avg(target)
+  if (t <= b) return { r: 0, g: 0, b: 0, a: b === 0 ? 0 : 1 - t / b }
+  return { r: 255, g: 255, b: 255, a: b === 255 ? 0 : (t - b) / (255 - b) }
+}

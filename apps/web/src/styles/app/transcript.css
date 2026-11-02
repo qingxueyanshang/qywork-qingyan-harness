@@ -103,7 +103,7 @@
   max-width: 100%;
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-md);
-  background: var(--bg-inset);
+  background: var(--content-inset);
   color: var(--danger);
   font-size: var(--fs-xs);
 }
@@ -144,7 +144,7 @@
 .bubble {
   padding: 8px var(--s-3);
   border-radius: var(--r-xl);
-  background: var(--bg-inset);
+  background: var(--content-inset);
   font-size: var(--fs-prose);
   line-height: 1.55;
   white-space: pre-wrap;
@@ -255,7 +255,7 @@
 .markdown :not(pre) > code {
   padding: 1px 5px;
   border-radius: var(--r-xs);
-  background: var(--bg-inset);
+  background: var(--content-inset);
 }
 .markdown hr {
   border: none;
@@ -272,7 +272,7 @@
   position: relative;
   margin: 0 0 var(--s-3);
   border-radius: var(--r-md);
-  background: var(--bg-inset);
+  background: var(--content-inset);
 }
 /* 横向滚动设在本层；右上角的工具排位于本层之外，横向滚动代码时位置不变。 */
 .code-body {
@@ -585,7 +585,7 @@
   max-height: 260px;
   overflow: auto;
   border-radius: var(--r-sm);
-  background: var(--bg-inset);
+  background: var(--content-inset);
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -650,7 +650,7 @@
   max-height: 260px;
   overflow: auto;
   border-radius: var(--r-sm);
-  background: var(--bg-inset);
+  background: var(--content-inset);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   line-height: 1.5;
@@ -714,7 +714,7 @@
 .error-card {
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-md);
-  background: var(--bg-inset);
+  background: var(--content-inset);
   color: var(--danger);
   font-size: var(--fs-sm);
   white-space: pre-wrap;
@@ -728,7 +728,7 @@
   gap: var(--s-2);
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-md);
-  background: var(--bg-inset);
+  background: var(--content-inset);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
@@ -1182,7 +1182,7 @@
   color: var(--accent);
 }
 .wf-node.done {
-  background: var(--bg-inset);
+  background: var(--content-inset);
 }
 .wf-node.failed {
   border-color: var(--danger);

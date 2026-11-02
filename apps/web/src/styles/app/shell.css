@@ -35,7 +35,12 @@
    */
   grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
-  background: var(--frame-bg);
+  /* 外框色与内容色由各区域分别绘制（规则见 `tokens.css` 的 `--frame-bg`），本层只绘制 `--app-bg`：
+     不透明时是整窗的不透明底，半透明时为透明，理由见该令牌。 */
+  background: var(--app-bg);
+  /* 会话区左上角的圆角半径。`.main` 与圆角外侧的外框色（`.main::before`）共用；
+     没有圆角的布局（左栏收起、窄屏、面板放大）设为 0。 */
+  --main-radius: var(--r-xl);
 }
 /*
  * 打开右侧面板时增加一列。
@@ -90,12 +95,12 @@
 /* ── 侧栏 ── */
 /* 跨两行：侧栏头部位于标题栏所在行，与顶栏连成一条横栏。
    不设右边框：该分隔线由内容区的左边框提供，两条同时存在时会在圆角处露出一段直角。
-   宽屏不设底色，透出 `.app` 的外框底色：两层都设 `--frame-bg` 时，个性化的半透明底色在侧栏处
-   叠加两次，侧栏比顶栏更不透明。窄屏抽屉覆盖在会话区之上，底色在 utility.css 中单独设置。 */
+   窄屏抽屉覆盖在会话区之上，属于浮层，底色在 utility.css 中单独设置。 */
 .sidebar-slot {
   grid-column: 1;
   grid-row: 1 / -1;
   min-width: 0;
+  background: var(--frame-bg);
 }
 
 .sidebar {
@@ -658,20 +663,45 @@
   background: var(--content-bg);
   border-top: 1px solid var(--border-subtle);
   border-left: 1px solid var(--border-subtle);
-  border-top-left-radius: var(--r-xl);
+  border-top-left-radius: var(--main-radius);
   /* 向左上方投射轻微阴影，使内容区浮于灰色外框之上：只有 1px 描边时，
      圆角看起来只是一条线，而不是覆盖侧栏的边缘。
      方向阴影仅此一处，不加入 tokens：tokens 中的 sm/md/lg 是四周均匀的浮层阴影。 */
   box-shadow: -2px 0 8px rgba(0, 0, 0, 0.05);
+  /* 圆角外侧的外框色（`::before`）按它定位。 */
+  position: relative;
+}
+/*
+ * 会话区左上圆角外侧的外框色：该处位于会话区的盒内、圆角之外，`.main` 的底色不覆盖它。
+ * 盒为圆角半径见方，起点在边框外沿，圆角内侧透明。
+ *
+ * `z-index: -1` 使它位于背景层之上、会话区的底色与投影之下：`.main` 与 `.app` 都不建立层叠上下文，
+ * 它与 `PersonalBackdrop` 同在根层叠上下文中，按文档顺序排在背景层之后。
+ * 不要改为由 `.app` 在整窗绘制外框色，理由见 `tokens.css` 的 `--app-bg`；也不要挂在 `.topbar` 上：
+ * 顶栏因此成为定位元素，绘制在会话区之后，遮住会话区向上的投影。
+ */
+.main::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  z-index: -1;
+  width: var(--main-radius);
+  height: var(--main-radius);
+  background: radial-gradient(
+    circle at 100% 100%,
+    transparent var(--main-radius),
+    var(--frame-bg) var(--main-radius)
+  );
+  pointer-events: none;
 }
 
 /*
- * 顶栏与侧栏头底色相同，连成贯穿窗口宽度的灰色横栏，桌面外壳的标题栏
+ * 顶栏与侧栏头底色相同（`--frame-bg`），连成贯穿窗口宽度的灰色横栏，桌面外壳的标题栏
  * 位于其中。顶栏为白色时，它与白色正文之间只有 1px 描边，窗口拖拽区
  * 与内容区在视觉上无法区分，用户无法识别可拖动的区域。
  *
- * 底色继承 .app，不单独声明：它与侧栏头使用同一灰色，重复声明会导致两处
- * 可能不一致。分界线由内容区的上边框提供，此处不设 border-bottom。
+ * 分界线由内容区的上边框提供，此处不设 border-bottom。
  */
 .topbar {
   grid-column: 2 / -1;
@@ -684,6 +714,7 @@
   height: calc(var(--header-h) + var(--safe-top));
   padding: var(--safe-top) var(--s-3) 0;
   flex: none;
+  background: var(--frame-bg);
 }
 
 .title {
@@ -762,6 +793,7 @@
 @media (min-width: 821px) {
   .app.sidebar-collapsed {
     grid-template-columns: 0 minmax(0, 1fr);
+    --main-radius: 0px;
   }
   .app.sidebar-collapsed.with-panel {
     grid-template-columns: 0 minmax(var(--chat-floor), 1fr) minmax(0, var(--panel-w));
@@ -771,7 +803,6 @@
   }
   .app.sidebar-collapsed .main {
     border-left: none;
-    border-top-left-radius: 0;
     box-shadow: none;
   }
 }
@@ -801,6 +832,9 @@
  * 两处规则在「收起 + 放大」时都设置左边框，以层叠顺序决定生效的规则。
  */
 @media (min-width: 821px) {
+  .app.panel-max {
+    --main-radius: 0px;
+  }
   .app.panel-max.with-panel {
     grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   }
@@ -811,12 +845,12 @@
    * 面板只是移到更大的网格区域，**外观不变**：不设圆角，也不设左侧投影。
    *
    * **不要为该角添加圆角。** 圆角要求角上没有子元素，而面板的第一个子元素是
-   * 页签条：标签行的不透明底色会覆盖圆角边框；为标签行添加圆角后，选中态的
+   * 页签条：页签的底色会覆盖圆角边框；为页签条添加圆角后，选中态的
    * 第一个页签再次覆盖圆角，只能通过平移页签解决，代价是整排页签右移 14px。
    *
    * `.main` 可以设置圆角，是因为其第一个子元素是正文，四周留白，角上没有内容；
    * 面板的第一个子元素是从 x=0 开始排列的页签条。
-   * 此外，该角不存在灰色外框与白色内容区的分界：标签行的底色 `--bg-sunken`
+   * 此外，该角不存在灰色外框与白色内容区的分界：页签条的底色 `--frame-bg`
    * 与外框同色，灰色与灰色之间的圆角没有视觉意义。
    *
    * 投影一并去除：`.main` 的投影用于在只有 1px 描边时使圆角清晰可见，
