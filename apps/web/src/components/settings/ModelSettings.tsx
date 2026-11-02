@@ -99,8 +99,8 @@ export function ModelSettings() {
   /** 打开拉取窗口的接口名。 */
   const [pulling, setPulling] = createSignal<string | null>(null)
   /**
-   * 已登录云端账号时，云端接口的名称、地址、协议、密钥与型号由账号维护：不提供编辑、删除与拉取，移除只经「退出」。
-   * 拉取会按美元记录型号价格，而云端型号以积分计价。
+   * 已登录云端账号时，云端接口由账号维护，不在本页列出：其型号与单价在账号弹窗中查看，消耗计入账号积分，
+   * 而本页只管理自行添加的接口。退出账号后该接口随之删除。
    */
   void refreshCloudState().catch(() => {})
   const managed = (name: string) => {
@@ -108,12 +108,12 @@ export function ModelSettings() {
     return s?.state === 'signed_in' && s.provider === name
   }
 
-  const names = () => Object.keys(config()?.providers ?? {})
+  const names = () => Object.keys(config()?.providers ?? {}).filter((name) => !managed(name))
   const current = () => {
     const c = config()
     if (!c) return null
     const name = picked() ?? c.active?.provider ?? ''
-    return name in c.providers ? name : (names()[0] ?? null)
+    return names().includes(name) ? name : (names()[0] ?? null)
   }
 
   const patchProvider = (name: string, p: Partial<RedactedProvider>) => {
@@ -409,87 +409,79 @@ export function ModelSettings() {
                   <section class="settings-block">
                     <div class="settings-block-head">
                       <h3>{name()}</h3>
-                      <Show when={!managed(name())}>
-                        <button
-                          class="icon-btn"
-                          type="button"
-                          aria-label={`删除接口 ${name()}`}
-                          onClick={() => setDoomed(name())}
-                        >
-                          <IconTrash size={13} />
-                        </button>
-                      </Show>
+                      <button
+                        class="icon-btn"
+                        type="button"
+                        aria-label={`删除接口 ${name()}`}
+                        onClick={() => setDoomed(name())}
+                      >
+                        <IconTrash size={13} />
+                      </button>
                     </div>
 
-                    <Show when={!managed(name())}>
-                      <div class="setting-rows">
-                        <Row label="名称">
-                          <input
-                            type="text"
-                            value={name()}
-                            onBlur={(e) => {
-                              const from = name()
-                              if (!renameProvider(from, e.currentTarget.value.trim()))
-                                e.currentTarget.value = from
-                            }}
-                          />
-                        </Row>
+                    <div class="setting-rows">
+                      <Row label="名称">
+                        <input
+                          type="text"
+                          value={name()}
+                          onBlur={(e) => {
+                            const from = name()
+                            if (!renameProvider(from, e.currentTarget.value.trim()))
+                              e.currentTarget.value = from
+                          }}
+                        />
+                      </Row>
 
-                        <Row label="对话协议">
-                          <select
-                            value={p().kind}
-                            onChange={(e) => patchProvider(name(), { kind: e.currentTarget.value })}
-                          >
-                            <For each={PROVIDER_KINDS}>
-                              {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
-                            </For>
-                          </select>
-                        </Row>
+                      <Row label="对话协议">
+                        <select
+                          value={p().kind}
+                          onChange={(e) => patchProvider(name(), { kind: e.currentTarget.value })}
+                        >
+                          <For each={PROVIDER_KINDS}>
+                            {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
+                          </For>
+                        </select>
+                      </Row>
 
-                        <Field label="Base URL">
-                          <input
-                            type="text"
-                            placeholder={baseUrlPlaceholder(defaultUrls())}
-                            value={p().baseUrl ?? ''}
-                            onBlur={(e) =>
-                              patchProvider(name(), { baseUrl: e.currentTarget.value })
+                      <Field label="Base URL">
+                        <input
+                          type="text"
+                          placeholder={baseUrlPlaceholder(defaultUrls())}
+                          value={p().baseUrl ?? ''}
+                          onBlur={(e) => patchProvider(name(), { baseUrl: e.currentTarget.value })}
+                        />
+                      </Field>
+
+                      <Field label="API Key">
+                        <input
+                          type="password"
+                          placeholder={p().hasApiKey ? '已设置（留空则保持不变）' : '未设置'}
+                          onBlur={(e) => {
+                            // 留空表示保持原值，因此不发送空串：空串会被视为清除 key。
+                            if (e.currentTarget.value) {
+                              patchProvider(name(), {
+                                apiKey: e.currentTarget.value,
+                                hasApiKey: true,
+                              })
+                              e.currentTarget.value = ''
                             }
-                          />
-                        </Field>
-
-                        <Field label="API Key">
-                          <input
-                            type="password"
-                            placeholder={p().hasApiKey ? '已设置（留空则保持不变）' : '未设置'}
-                            onBlur={(e) => {
-                              // 留空表示保持原值，因此不发送空串：空串会被视为清除 key。
-                              if (e.currentTarget.value) {
-                                patchProvider(name(), {
-                                  apiKey: e.currentTarget.value,
-                                  hasApiKey: true,
-                                })
-                                e.currentTarget.value = ''
-                              }
-                            }}
-                          />
-                        </Field>
-                      </div>
-                    </Show>
+                          }}
+                        />
+                      </Field>
+                    </div>
                   </section>
 
                   <section class="settings-block">
                     <div class="settings-block-head">
                       <h3>模型</h3>
-                      <Show when={!managed(name())}>
-                        <button
-                          class="btn-ghost sm pull-open"
-                          type="button"
-                          disabled={!p().baseUrl || configBusy()}
-                          onClick={() => setPulling(name())}
-                        >
-                          拉取模型
-                        </button>
-                      </Show>
+                      <button
+                        class="btn-ghost sm pull-open"
+                        type="button"
+                        disabled={!p().baseUrl || configBusy()}
+                        onClick={() => setPulling(name())}
+                      >
+                        拉取模型
+                      </button>
                     </div>
 
                     <div class="model-list">

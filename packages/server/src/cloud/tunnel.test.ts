@@ -60,9 +60,7 @@ class FakeCloud {
                 return
               }
               this.ws = ws
-              ws.send(
-                JSON.stringify({ type: 'welcome', deviceUrl: 'http://app.test/devices/dv_1' }),
-              )
+              ws.send(JSON.stringify({ type: 'welcome' }))
               return
             }
             if (control.type === 'ping') return
@@ -249,7 +247,7 @@ describe('隧道客户端', () => {
       protocol: TUNNEL_PROTOCOL_VERSION,
       key: 'qyd_key',
     } as never)
-    expect(c.status).toEqual({ state: 'online', deviceUrl: 'http://app.test/devices/dv_1' })
+    expect(c.status).toEqual({ state: 'online' })
   })
 
   test('HTTP 请求转发给本机：路径、请求头与大于窗口的请求体原样送达；响应字节不解压；重定向原样返回', async () => {

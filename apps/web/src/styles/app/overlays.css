@@ -85,12 +85,11 @@
   padding: var(--s-3) var(--s-4);
 }
 
-/* ── 手机接入 ── */
+/* ── 远程访问 ── */
 .pair-body {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: var(--s-3);
+  gap: var(--s-2);
 }
 .pair-toggle {
   display: flex;
@@ -99,13 +98,6 @@
   align-self: stretch;
   font-size: var(--fs-base);
   cursor: pointer;
-}
-.pair-qr {
-  padding: var(--s-3);
-  border-radius: var(--r-md);
-  /* 二维码必须白底黑码：许多扫码器无法识别反色二维码。 */
-  background: #fff;
-  line-height: 0;
 }
 .pair-hint {
   margin: 0;

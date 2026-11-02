@@ -1,4 +1,4 @@
-/** 覆盖接口改名、名称冲突、默认模型操作、检测结果显示、Base URL 的官方地址占位符，以及云端接口不提供编辑入口。 */
+/** 覆盖接口改名、名称冲突、默认模型操作、检测结果显示、Base URL 的官方地址占位符，以及已登录时云端接口不在本页列出。 */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { ProbeResult, ProviderRename, RedactedConfig } from '../../lib/store/index.ts'
@@ -228,25 +228,21 @@ test('名称输入框提交改名关系，默认对话与生成模型同步指�
   }
 })
 
-test('已登录云端账号时，云端接口没有名称、地址、密钥、拉取与删除入口；其他接口照常', async () => {
+test('已登录云端账号时，云端接口不在接口标签中，默认显示其他接口且编辑入口照常', async () => {
   await settingsFixture(
     async ({ host }) => {
-      const tab = (name: string) =>
-        [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === name)
-      const visible = () => ({
-        remove: host.querySelector('[aria-label^="删除接口"]') !== null,
-        url: [...host.querySelectorAll('.setting-row-label')].some((l) =>
-          l.textContent?.includes('Base URL'),
-        ),
-        pull: tab('拉取模型') !== undefined,
-      })
+      const tabs = () =>
+        [...host.querySelectorAll<HTMLButtonElement>('.tab-chip')].map((b) => b.textContent)
       const deadline = Date.now() + 3000
-      while (visible().remove && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
-      expect(visible()).toEqual({ remove: false, url: false, pull: false })
-
-      tab('second')?.click()
-      await new Promise((r) => setTimeout(r, 30))
-      expect(visible()).toEqual({ remove: true, url: true, pull: true })
+      while (tabs().includes('first') && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 10))
+      }
+      expect(tabs()).not.toContain('first')
+      expect(tabs()).toContain('second')
+      expect(host.querySelector('.settings-block-head h3')?.textContent).toBe('second')
+      expect(host.querySelector('[aria-label="删除接口 second"]')).not.toBeNull()
+      const labels = [...host.querySelectorAll('.setting-row-label')].map((l) => l.textContent)
+      expect(labels.some((l) => l?.includes('Base URL'))).toBe(true)
     },
     { state: 'signed_in', email: 'me@example.com', credits: 1, provider: 'first' },
   )

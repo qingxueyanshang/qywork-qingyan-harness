@@ -40,8 +40,6 @@ async function waitFor(done: () => boolean, detail: () => string) {
   throw new Error(`界面没有在时限内更新：${detail()}`)
 }
 
-const DEVICE_URL = 'https://app.example.com/devices/dv_1'
-
 async function mount(initial: RemoteInfo, opts: { failToggle?: string } = {}) {
   const store = await import('../lib/store/index.ts')
   const original = store.client.api
@@ -58,7 +56,7 @@ async function mount(initial: RemoteInfo, opts: { failToggle?: string } = {}) {
       info = {
         ...info,
         enabled,
-        tunnel: enabled ? { state: 'online', deviceUrl: DEVICE_URL } : null,
+        tunnel: enabled ? { state: 'online' } : null,
       }
       return info
     }
@@ -102,21 +100,21 @@ test('未登录云端账号时整节不出现', async () => {
   expect(host.querySelector('.pair-section')).toBeNull()
 })
 
-test('打开开关后显示 console 中本设备地址的二维码，外层 Suspense 始终不挂起', async () => {
+test('打开开关后显示已连接，不显示二维码；外层 Suspense 始终不挂起', async () => {
   const { host, suspended } = await mount(signedIn())
   await waitFor(
     () => host.querySelector('.pair-toggle') !== null,
     () => host.innerHTML,
   )
-  expect(host.textContent).toContain('允许远程访问')
+  expect(host.textContent).toContain('允许从云端网页使用这台电脑')
   const box = host.querySelector<HTMLInputElement>('.pair-toggle input')!
   box.checked = true
   box.dispatchEvent(new Event('change', { bubbles: true }))
   await waitFor(
-    () => host.querySelector('.pair-qr svg') !== null,
+    () => (host.textContent ?? '').includes('已连接'),
     () => host.innerHTML,
   )
-  expect(host.textContent).toContain('手机扫码，远程使用这台电脑')
+  expect(host.querySelector('svg')).toBeNull()
   expect(suspended.times).toBe(0)
 })
 
@@ -137,7 +135,7 @@ test('开关请求失败时显示原因，勾选框恢复为实际状态', async
     () => host.innerHTML,
   )
   expect(host.querySelector<HTMLInputElement>('.pair-toggle input')?.checked).toBe(false)
-  expect(host.querySelector('.pair-qr')).toBeNull()
+  expect(host.textContent).not.toContain('已连接')
 })
 
 test('隧道断开时显示原因；协议版本过旧时提示更新应用', async () => {
