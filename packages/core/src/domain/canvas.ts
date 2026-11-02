@@ -265,6 +265,11 @@ export interface CanvasView {
   relabels?: Record<string, string[]>
   /** 生成卡所选模型登记的素材写法，按节点 id；未登记时不写该键。界面据此显示文本引用发送时的文字（`relabelInputs`）。 */
   mentions?: Record<string, MentionStyle>
+  /**
+   * 卡片显示的文件（文件卡的文件、生成卡的当前版本）的修改时间（毫秒），按工作区路径；文件不存在时没有该项，
+   * 全部不存在时不写该键。界面将其写入媒体地址：同一路径的文件被改写后地址随之变化，媒体重新载入。
+   */
+  mtimes?: Record<string, number>
 }
 
 /** 一个产物：工作区路径，以及从文件头读取的像素宽高与时长（秒）；无法读取时缺省。 */

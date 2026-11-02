@@ -1885,6 +1885,20 @@ export class CanvasService {
         read.set(p, await readFile(join(workspaceRoot, p), 'utf8').catch(() => null))
       }),
     )
+    const mtimes: Record<string, number> = {}
+    const shown = doc.nodes.flatMap((n) =>
+      n.type === 'file'
+        ? [n.path]
+        : n.type === 'generate'
+          ? n.versions.filter((v) => v.id === n.current).map((v) => v.path)
+          : [],
+    )
+    await Promise.all(
+      shown.map(async (p) => {
+        const s = await stat(join(workspaceRoot, p)).catch(() => null)
+        if (s?.isFile()) mtimes[p] = s.mtimeMs
+      }),
+    )
     const lastRuns = new Map<string, CanvasRunRecord>()
     for (const r of doc.runs ?? []) lastRuns.set(r.node, r)
     const canvasKey = keyOf(workspaceRoot, path)
@@ -1939,6 +1953,7 @@ export class CanvasService {
       ...(Object.keys(references).length ? { references } : {}),
       ...(Object.keys(relabels).length ? { relabels } : {}),
       ...(Object.keys(mentions).length ? { mentions } : {}),
+      ...(Object.keys(mtimes).length ? { mtimes } : {}),
     }
     return agent ? agentView(view, this.deps.paramSpecsOf) : view
   }

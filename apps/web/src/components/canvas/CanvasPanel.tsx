@@ -1791,6 +1791,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     controls: boolean
   }) {
     const [length, setLength] = createSignal<number | null>(null)
+    // 地址带文件的修改时间：同一路径的文件被改写后地址变化，媒体重新载入。经 memo 取值，重新读取画布而文件未变时地址不变。
+    const src = createMemo(() => client.fileUrl(p.path, view()?.mtimes?.[p.path]))
     return (
       <Switch
         fallback={
@@ -1810,7 +1812,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         <Match when={p.kind === 'image'}>
           <div class="canvas-media">
             <Bitmap
-              src={client.fileUrl(p.path)}
+              src={src()}
               width={p.w * z() * window.devicePixelRatio}
               height={p.h * z() * window.devicePixelRatio}
             />
@@ -1824,7 +1826,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
               fallback={
                 <Bitmap
                   kind="video"
-                  src={client.fileUrl(p.path)}
+                  src={src()}
                   width={p.w * z() * window.devicePixelRatio}
                   height={p.h * z() * window.devicePixelRatio}
                   onDuration={setLength}
@@ -1832,7 +1834,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
               }
             >
               <VideoPlayer
-                src={client.fileUrl(p.path)}
+                src={src()}
                 register={(player) => {
                   players.set(p.nodeId, player)
                   onCleanup(() => players.delete(p.nodeId))
@@ -1853,7 +1855,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           <div class="canvas-media">
             {/* 只在单独选中时运行实时页面：同时运行的 WebGL 页面有数量上限，平移缩放时每个页面都要重绘。 */}
             <ArtView
-              url={client.fileUrl(p.path)}
+              url={src()}
               w={p.w}
               h={p.h}
               z={z()}
@@ -1866,8 +1868,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           </div>
         </Match>
         <Match when={p.kind === 'audio'}>
-          <Show when={client.fileUrl(p.path)} keyed>
-            {(src) => <AudioPlayer src={src} active={props.active} />}
+          <Show when={src()} keyed>
+            {(url) => <AudioPlayer src={url} active={props.active} />}
           </Show>
         </Match>
       </Switch>
