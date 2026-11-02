@@ -179,10 +179,11 @@ export default function AgentsSettings() {
                           desc={a.path}
                           badge={<span class="entry-tag">{a.vendor}</span>}
                         >
-                          {/* 「接入」判断的是是否检测到凭证，而不是实际执行是否成功：
-                                实际执行一次需要付费且耗时数十秒，而该结果应在打开页面时即给出。 */}
+                          {/* 「已登录」判断的是登录信息（环境变量中的 key 或 CLI 的登录文件）是否存在，而不是实际执行是否成功：
+                                实际执行一次需要付费且耗时数十秒，而该结果应在打开页面时即给出。
+                                用词与各 CLI 自己的提示一致（`grok login`、Codex 的 Logged in using an API key），不使用「凭证」「凭据」。 */}
                           <div class="entry-extra" classList={{ bad: !a.connected }}>
-                            {a.connected ? '已检测到凭据' : '未见凭证'}
+                            {a.connected ? '已登录' : '未登录'}
                           </div>
                         </EntryCard>
                       )}
