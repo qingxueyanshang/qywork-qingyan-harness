@@ -238,7 +238,6 @@ export function AudioPlayer(props: { src: string; active: boolean }) {
             onKeyDown={(e) => e.stopPropagation()}
             onKeyUp={(e) => e.stopPropagation()}
             aria-valuetext={`${clock(at() * 1000)} / ${clock(length() * 1000)}`}
-            style={{ '--p': `${length() ? (at() / length()) * 100 : 0}%` }}
             onInput={(e) => {
               const next = Math.min(length(), Math.max(0, Number(e.currentTarget.value)))
               audio.currentTime = next

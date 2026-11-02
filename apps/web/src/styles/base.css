@@ -50,13 +50,44 @@ button {
  *
  * 上方已重置 `button`，此处处理 input 的各类部件。这些部件不受本仓库其他样式控制，
  * 不处理时同一行中会混有自定义控件与系统部件两种外观。
- * `select` 不在此处：它需要连同箭头一起重绘，与其他相关规则一起放在 `settings.css`。
+ * `select` 与滑块不在此处：它们与其他全局控件一起放在 `app/controls.css`。
  */
 
-/* 勾选框不重绘，只设为本仓库的强调色。`appearance: none` 之后需要用 `::after` 绘制勾号，
-   而 `<input>` 是替换元素，伪元素是否生效因引擎而异；`accent-color` 是标准属性，
-   配合 `color-scheme` 在亮暗两种主题下均正确。 */
-input[type="checkbox"],
+/*
+ * 勾选框按令牌绘制：未选为描边方框，选中为强调色底与 `--accent-fg` 勾号。
+ * 不使用 `accent-color`：浏览器按自己的阈值推导勾号颜色（实测 Edge 在强调色相对亮度约 0.25 以上
+ * 画深色勾号），与开关滑块的规则不一致。开关是 `role="switch"` 的勾选框，由 `.switch` 绘制，不在此列。
+ * 勾号以遮罩绘制，颜色取自底色，因此可读取 CSS 变量。
+ */
+input[type="checkbox"]:not([role="switch"]) {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: 1px solid var(--text-secondary);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="checkbox"]:not([role="switch"]):checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+input[type="checkbox"]:not([role="switch"]):checked::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent-fg);
+  mask:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.4 2.4 4.6-5' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+input[type="checkbox"]:not([role="switch"]):disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
+}
 input[type="radio"] {
   accent-color: var(--accent);
   cursor: pointer;

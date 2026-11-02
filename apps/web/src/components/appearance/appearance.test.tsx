@@ -1,11 +1,13 @@
 /**
- * 覆盖 `lib/store/theme.ts`（外观权威：主题与个性化变量）、`lib/store/appearance/personalization.ts`
- * （个性化的读取、编辑与变更）、`lib/color.ts` 与 `PersonalBackdrop.tsx`。
+ * 覆盖 `lib/store/theme.ts`（外观权威：主题、个性化变量与强调色派生）、`lib/store/appearance/personalization.ts`
+ * （个性化的读取、编辑与变更）、`lib/color.ts`、`PersonalBackdrop.tsx`，以及 `styles/tokens.css`、
+ * `styles/app/shell.css`、`styles/app/panel.css` 中骨架底色的绘制位置。
  *
  * 测试 DOM 在本文件内注册，结束后注销，理由同 `settings/LoadState.test.tsx`。
  * 令牌以一段样式表注入：骨架半透明底色由当前明暗的 `--bg-*` 计算，缺少令牌时无法验证取值。
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { Personalization } from '@qywork/core'
 
@@ -13,8 +15,8 @@ beforeAll(() => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
   const style = document.createElement('style')
   style.textContent = `
-    :root { --bg-sunken: #f7f7f8; --bg-app: #ffffff; }
-    :root[data-theme="dark"] { --bg-sunken: #151517; --bg-app: #0c0c0d; }
+    :root { --bg-sunken: #f7f7f8; --bg-app: #ffffff; --bg-inset: #f2f2f3; }
+    :root[data-theme="dark"] { --bg-sunken: #151517; --bg-app: #0c0c0d; --bg-inset: #202024; }
   `
   document.head.append(style)
 })
@@ -43,6 +45,17 @@ describe('color', () => {
     )
     expect(luminance({ r: 255, g: 255, b: 255, a: 1 })).toBeCloseTo(1)
   })
+
+  test('叠加色叠在底色上与目标色相同：目标较暗时为半透明黑，较亮时为半透明白', async () => {
+    const { overlayFor } = await import('../../lib/color.ts')
+    const over = (base: number, o: { r: number; a: number }) => base * (1 - o.a) + o.r * o.a
+    const light = overlayFor({ r: 255, g: 255, b: 255, a: 1 }, { r: 242, g: 242, b: 243, a: 1 })
+    expect(light.r).toBe(0)
+    expect(over(255, light)).toBeCloseTo((242 + 242 + 243) / 3, 6)
+    const dark = overlayFor({ r: 12, g: 12, b: 13, a: 1 }, { r: 32, g: 32, b: 36, a: 1 })
+    expect(dark.r).toBe(255)
+    expect(over((12 + 12 + 13) / 3, dark)).toBeCloseTo((32 + 32 + 36) / 3, 6)
+  })
 })
 
 describe('外观权威', () => {
@@ -52,8 +65,11 @@ describe('外观权威', () => {
     store.paintPersonalization({ personalization: sample, imageUrl: null })
     const root = document.documentElement
     expect(root.getAttribute('data-theme')).toBe('dark')
-    expect(root.style.getPropertyValue('--frame-bg')).toBe('rgba(21, 21, 23, 0.5)')
+    // 外框的不透明度是界面不透明度的平方，比内容区多透出背景。
+    expect(root.style.getPropertyValue('--frame-bg')).toBe('rgba(21, 21, 23, 0.25)')
     expect(root.style.getPropertyValue('--content-bg')).toBe('rgba(12, 12, 13, 0.5)')
+    // 内容区中凹下的底色（气泡、代码块）为叠在内容底色上的半透明白，随内容区透出背景。
+    expect(root.style.getPropertyValue('--content-inset')).toBe('rgba(255, 255, 255, 0.087)')
     expect(root.style.getPropertyValue('--accent')).toBe('rgba(124, 58, 237, 1)')
     expect(root.style.getPropertyValue('--accent-fg')).toBe('#ffffff')
     // 生成进度的色阶不属于强调色，保持 `tokens.css` 的值。
@@ -65,17 +81,44 @@ describe('外观权威', () => {
     store.setTheme('light')
     const root = document.documentElement
     expect(root.getAttribute('data-theme')).toBe('light')
-    expect(root.style.getPropertyValue('--frame-bg')).toBe('rgba(247, 247, 248, 0.5)')
+    expect(root.style.getPropertyValue('--frame-bg')).toBe('rgba(247, 247, 248, 0.25)')
+    expect(root.style.getPropertyValue('--content-inset')).toBe('rgba(0, 0, 0, 0.05)')
     expect(store.paintedPersonalization()?.personalization).toEqual(sample)
   })
 
-  test('浅色强调色上的文字取深色', async () => {
+  test('强调色上的文字、图标与开关滑块同一判定：只有白色系取深色', async () => {
     const store = await import('../../lib/store/index.ts')
-    store.paintPersonalization({
-      personalization: { ...sample, accent: '#fde68a' },
-      imageUrl: null,
-    })
-    expect(document.documentElement.style.getPropertyValue('--accent-fg')).toBe('#16161a')
+    const root = document.documentElement
+    const fg = (accent: string) => {
+      store.paintPersonalization({ personalization: { ...sample, accent }, imageUrl: null })
+      return root.style.getPropertyValue('--accent-fg')
+    }
+    for (const grey of [
+      '#bfbfbf',
+      '#d9d9d9',
+      '#e6e6e6',
+      '#93c5fd',
+      '#3b82f6',
+      '#fde68a',
+      '#7c3aed',
+    ])
+      expect(fg(grey)).toBe('#ffffff')
+    for (const white of ['#ffffff', '#f5f5f5', '#f2f2f2', '#ebebeb'])
+      expect(fg(white)).toBe('#16161a')
+  })
+
+  test('默认令牌即推导规则作用于主题强调色的结果', async () => {
+    const { accentPalette } = await import('../../lib/store/theme.ts')
+    const { parseColor } = await import('../../lib/color.ts')
+    const css = readFileSync(new URL('../../styles/tokens.css', import.meta.url), 'utf8')
+    const block = (selector: string) => css.slice(css.indexOf(selector))
+    const value = (text: string, name: string) =>
+      parseColor(new RegExp(`${name}:\\s*([^;]+);`).exec(text)?.[1] ?? '')!
+    for (const theme of [block(':root {'), block(':root[data-theme="dark"]')]) {
+      const palette = accentPalette(value(theme, '--accent'), value(theme, '--bg-app'))
+      // `--accent-fg` 缺省为 `--text-inverted`。
+      expect(parseColor(palette['--accent-fg']!)).toEqual(value(theme, '--text-inverted'))
+    }
   })
 
   test('不透明度为 1、强调色为空时不写入变量；清除时移除全部变量', async () => {
@@ -86,6 +129,7 @@ describe('外观权威', () => {
       imageUrl: null,
     })
     expect(root.style.getPropertyValue('--frame-bg')).toBe('')
+    expect(root.style.getPropertyValue('--content-inset')).toBe('')
     expect(root.style.getPropertyValue('--accent')).toBe('')
     store.paintPersonalization({ personalization: sample, imageUrl: null })
     store.paintPersonalization(null)
@@ -219,5 +263,77 @@ describe('个性化保存失败', () => {
     store.editPersonalization({ ...sample, opacity: 0.6 })
     await new Promise((r) => setTimeout(r, 300))
     expect(store.personalizationError()).toBe('强调色格式不正确')
+  })
+})
+
+/**
+ * 骨架底色的绘制位置。原始失败形状：`.app` 在整窗绘制外框色，会话区、面板、页签条、当前页签逐层叠在其上，
+ * 界面不透明度 85% 时会话区只透出 2.25% 的背景，页签条与正上方的顶栏显示为两种颜色。
+ */
+describe('骨架底色', () => {
+  test('半透明时绘制骨架底色的元素互不嵌套，外框比内容多透出背景；不透明时整窗有不透明底', async () => {
+    const store = await import('../../lib/store/index.ts')
+    const style = document.createElement('style')
+    style.textContent = ['tokens.css', 'app/shell.css', 'app/panel.css']
+      .map((f) => readFileSync(new URL(`../../styles/${f}`, import.meta.url), 'utf8'))
+      .join('\n')
+    document.head.append(style)
+    const root = document.documentElement
+    store.setTheme('light')
+    store.paintPersonalization({ personalization: { ...sample, opacity: 0.85 }, imageUrl: null })
+    const FRAME = root.style.getPropertyValue('--frame-bg')
+    const CONTENT = root.style.getPropertyValue('--content-bg')
+    expect(FRAME).toBe('rgba(247, 247, 248, 0.722)')
+    expect(CONTENT).toBe('rgba(255, 255, 255, 0.85)')
+    const host = document.createElement('div')
+    host.innerHTML = `<div class="app with-panel">
+      <aside class="sidebar-slot"><div class="sidebar"></div></aside>
+      <header class="topbar"></header>
+      <main class="main"><div class="transcript"></div></main>
+      <aside class="side-panel">
+        <header class="side-head">
+          <div class="side-tabs"><button class="side-tab active">待办</button><button class="side-tab">文件</button></div>
+          <div class="side-actions"></div>
+        </header>
+        <div class="side-body"></div>
+      </aside>
+    </div>`
+    document.body.append(host)
+    try {
+      const painted = [...host.querySelectorAll<HTMLElement>('*')].filter((el) =>
+        [FRAME, CONTENT].includes(getComputedStyle(el).backgroundColor),
+      )
+      const name = (el: Element) => `.${[...el.classList].join('.')}`
+      expect(painted.map(name)).toEqual([
+        '.sidebar-slot',
+        '.topbar',
+        '.main',
+        '.side-tab.active',
+        '.side-tab',
+        '.side-actions',
+        '.side-body',
+      ])
+      for (const el of painted) {
+        for (const other of painted) if (other !== el) expect(el.contains(other)).toBe(false)
+      }
+      const bg = (selector: string) =>
+        getComputedStyle(host.querySelector(selector)!).backgroundColor
+      expect([bg('.sidebar-slot'), bg('.topbar'), bg('.side-tab:not(.active)')]).toEqual([
+        FRAME,
+        FRAME,
+        FRAME,
+      ])
+      expect([bg('.main'), bg('.side-body'), bg('.side-tab.active')]).toEqual([
+        CONTENT,
+        CONTENT,
+        CONTENT,
+      ])
+      store.paintPersonalization({ personalization: { ...sample, opacity: 1 }, imageUrl: null })
+      expect(bg('.app')).toBe('#f7f7f8')
+    } finally {
+      host.remove()
+      style.remove()
+      store.paintPersonalization(null)
+    }
   })
 })
