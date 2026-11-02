@@ -25,7 +25,7 @@ import { createEffect, createRoot, createSignal, on, onCleanup } from 'solid-js'
 import { ApiError } from '../../client.ts'
 import { activateWorkspace, selectConversation } from '../actions.ts'
 import { client, petApply, petsChange } from '../connection.ts'
-import { state } from '../state.ts'
+import { state, transcript } from '../state.ts'
 import { workspace } from '../ui.ts'
 
 /** 显示位置：桌面（外壳的透明窗口）或隐藏。缺省为桌面。 */
@@ -177,7 +177,8 @@ const titleOf = (id: string) => metaOf(id)?.title || '新对话'
 
 /**
  * 会话 id → 最近一条由用户本人发送的消息，按会话标题的规则取首行并截断。列表与气泡显示它：
- * 会话标题只来自第一条消息，同一会话中后续的提问与标题不同。会话开始运行时读取。
+ * 会话标题只来自第一条消息，同一会话中后续的提问与标题不同。会话开始运行时读取；当前会话另在会话流中
+ * 出现新的用户消息时更新（`observePet`）：运行中发送的消息进入跟进队列，会话保持运行，不会再次开始运行。
  */
 const [prompts, setPrompts] = createSignal<ReadonlyMap<string, string>>(new Map())
 
@@ -321,6 +322,19 @@ async function settle(id: string, since: number): Promise<void> {
 export function observePet(): () => void {
   return createRoot((dispose) => {
     const since = new Map<string, number>()
+    // 当前会话的会话流中最后一条用户消息：包括运行中加入队列、随后开始新一轮的消息。
+    createEffect(
+      on(
+        () => {
+          const id = state.activeConversation
+          const last = transcript().findLast((item) => item.kind === 'user')
+          return id && last ? { id, text: deriveConversationTitle(last.text) } : null
+        },
+        (latest) => {
+          if (latest?.text) setPrompts((all) => new Map(all).set(latest.id, latest.text))
+        },
+      ),
+    )
     createEffect(
       on(
         () => [...state.busyConversations],
