@@ -18,6 +18,7 @@ import {
   RecordingCanvas,
   RecordingContext,
 } from '../../drawingml/paint/test-helper.ts'
+import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, parseDocx } from '../index.ts'
 import { layoutPages, requiredFonts } from '../page/build.ts'
 import { buildDocx, p } from '../test-helper.ts'
@@ -31,6 +32,14 @@ const DRAWING = placeableWmf([
   [0x041b, 40, 90, 10, 10],
   [0x02fb, -20 & 0xffff, 0, 0, 0, 400, 0, 0, 0, 0, 0x7241, 0x6169, 0x006c],
   [0x012d, 1],
+  [0x0102, 1],
+  [0x0a32, 0, 20, 1, 0, 0x41, 12],
+])
+
+/** 同 `DRAWING`，文字的逻辑字高为 50。 */
+const TALL_TEXT = placeableWmf([
+  [0x02fb, -50 & 0xffff, 0, 0, 0, 400, 0, 0, 0, 0, 0x7241, 0x6169, 0x006c],
+  [0x012d, 0],
   [0x0102, 1],
   [0x0a32, 0, 20, 1, 0, 0x41, 12],
 ])
@@ -93,6 +102,7 @@ async function parse(body: string): Promise<DocxDocument> {
         image('rIdWmf', 'media/image1.wmf', DRAWING),
         image('rIdBad', 'media/image2.wmf', UNSUPPORTED),
         image('rIdRect', 'media/image3.wmf', RED_RECT_WMF),
+        image('rIdTall', 'media/image4.wmf', TALL_TEXT),
       ],
     }),
   )
@@ -151,8 +161,8 @@ describe.skipIf(process.platform !== 'win32')('图元文件的排版与绘制（
     const doc = await parse(
       p(OBJECT) + p('<w:r><w:br w:type="page"/></w:r>') + p('<w:r><w:t>二</w:t></w:r>'),
     )
-    expect(requiredFonts(doc)).toContain('Arial')
-    const { pages } = layoutPages(doc, new DocxFonts(faces, '宋体'))
+    expect(requiredFonts(doc, NO_HOST_FAMILIES)).toContain('Arial')
+    const { pages } = layoutPages(doc, new DocxFonts(faces, '宋体'), NO_HOST_FAMILIES)
     expect(pages.pages[0]!.graphicFonts).not.toBeNull()
     expect(pages.pages[1]!.graphicFonts).toBeNull()
     const images = await Promise.all(
@@ -182,15 +192,49 @@ describe.skipIf(process.platform !== 'win32')('图元文件的排版与绘制（
     // 矩形 (10, 10)–(90, 40) 的左上角：(-76.67 + 10 × 6.133, -14.67 + 10 × 2.347) 取整。
     const corner = ctx.calls.slice(0, red).findLast((c) => c.name === 'moveTo')!
     expect(corner.args).toEqual([Math.round(bx - 15.333), Math.round(by + 8.8)])
-    // 字号 20 × 2.347 取整为 47 像素；参考点横坐标 -76.67 + 20 × 6.133 = 46。
+    // 字号 20 × 2.347 取整为 47 像素；参考点横坐标 -76.67 + 20 × 6.133 = 46。逻辑字高 20 小于 50，为单色字形：
+    // 着墨的行段与 Arial 在 ppem 47 下提示后的「A」相同，左边为参考点加左侧位点。
+    expect(ctx.named('fillText').some((c) => c.args[0] === 'A')).toBe(false)
+    const glyph = arial.hinting!.glyph(arial.text.metrics.glyphId(0x41), 47, false)
+    const black = ctx.calls.filter((c) => c.name === 'fillRect' && c.fillStyle === 'rgb(0,0,0)')
+    const runs = glyph.pixels.reduce(
+      (n, v, i) => n + (v && (i % glyph.width === 0 || !glyph.pixels[i - 1]) ? 1 : 0),
+      0,
+    )
+    expect(black).toHaveLength(runs)
+    expect(Math.min(...black.map((c) => c.args[0] as number))).toBe(bx + 46 + glyph.bearingX)
+  })
+
+  test('图元文件文字的逻辑字高不小于 50 且 gasp 要求灰度时平滑，否则为单色字形', async () => {
+    // WPS 文字实测（构造文件，Times New Roman 与 Symbol）：逻辑字高 49 及以下单色，50 及以上在 gasp 要求灰度的 ppem 平滑。
+    const doc = await parse(p(inlinePicture('rIdTall')))
+    const { pages } = layoutPages(doc, new DocxFonts(faces, '宋体'), NO_HOST_FAMILIES)
+    const images = await Promise.all(
+      pages.images.map((im) => decodePicture(im.bytes, im.contentType, decoder)),
+    )
+    const ctx = new RecordingContext()
+    paintPage(
+      ctx,
+      pages.pages[0]!,
+      {
+        faces: pages.faces,
+        draw: (ref) => faces.find((f) => f.family === ref.family && f.bold === ref.bold) ?? null,
+      },
+      {
+        images,
+        parts: pages.images.map((im) => im.part),
+        createCanvas: () => new RecordingCanvas(1, 1),
+      },
+    )
+    // 图片框 100 × 50 映射到 133.33 × 66.67 像素：字号 50 × 1.333 取整为 67 像素，Arial 在该 ppem 的 gasp 要求灰度。
+    expect(arial.grayscale(67)).toBe(true)
     const text = ctx.named('fillText').find((c) => c.args[0] === 'A')!
-    expect(text.font).toBe('47px "Arial"')
-    expect(text.args[1]).toBe(bx + 46)
+    expect(text.font).toBe('67px "Arial"')
   })
 
   test('浮动对象中的图元文件按图片填充回放，该页带字体表', async () => {
     const doc = await parse(p(anchoredPicture('rIdRect')))
-    const { pages } = layoutPages(doc, new DocxFonts(faces, '宋体'))
+    const { pages } = layoutPages(doc, new DocxFonts(faces, '宋体'), NO_HOST_FAMILIES)
     expect(pages.pages[0]!.graphicFonts).not.toBeNull()
     const images = await Promise.all(
       pages.images.map((im) => decodePicture(im.bytes, im.contentType, decoder)),

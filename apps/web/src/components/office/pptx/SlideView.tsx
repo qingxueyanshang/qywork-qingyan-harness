@@ -9,6 +9,8 @@
  * - 嵌入字体每次加载以新的族名注册，文档被替换或卸载时从 `document.fonts` 删除，尚未完成的还原结果丢弃：
  *   不同文件嵌入同名字体的不同子集时，族名相同会使绘制取到另一份字形。
  * - 缺少字体与缺字时使用宋体；主机没有宋体时取文档字体中主机已有的第一个。
+ * - 主机显示器的 ClearType 设置随文档一同取得（`loadClearType`）：不为 `null` 时文字以 ClearType 字形写入画布像素，
+ *   画布按频繁读取像素创建。
  * - 图片（位图与图元文件）在幻灯片首次进入可见区域时读取并解码，按部件缓存到文档被替换为止。
  *
  * 默认导出供 `lazy()` 使用：解析与绘制代码只在打开演示文稿时下载。
@@ -19,15 +21,16 @@ import {
   decodePicture,
   type ImageDecoder,
   type PaintCanvas,
-  type PaintContext,
   type PaintPicture,
 } from '@qywork/ooxml/drawingml'
 import {
+  type ClearTypeDisplay,
   type EmbeddedFont,
   type Presentation,
   paintSlide,
   presentationFonts,
   readSlideFace,
+  type SlideContext,
   type SlideFace,
   type SlideFonts,
   slideImages,
@@ -41,7 +44,7 @@ import {
   failureText,
   type WorkerChannel,
 } from '../document.ts'
-import { type HostFace, loadHostFaces, registerFace } from '../fonts.ts'
+import { type HostFace, loadClearType, loadHostFaces, registerFace } from '../fonts.ts'
 import type { ViewPosition } from '../viewport.ts'
 import type { PptxReplies, PptxRequest } from './pptx-worker.ts'
 import { createSlideViewport, type SlideViewport } from './slide-viewport.ts'
@@ -78,6 +81,8 @@ interface Doc {
   readonly presentation: Presentation
   /** 主机字体与已注册的嵌入字体；嵌入字体注册后，此后的绘制即取到它。 */
   readonly fonts: SlideFonts
+  /** 主机显示器的 ClearType 设置；为 `null` 时文字以浏览器字体绘制。 */
+  readonly clearType: ClearTypeDisplay | null
   readonly channel: WorkerChannel<PptxRequest, PptxReplies>
   /** 已解码的图片部件；无法解码的为 `null`。 */
   readonly images: Map<string, PaintPicture | null>
@@ -152,7 +157,10 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
       return failureText(parsed.failure)
     }
     const presentation = parsed.value
-    const host = await loadHostFaces([...presentationFonts(presentation), FALLBACK])
+    const [host, clearType] = await Promise.all([
+      loadHostFaces([...presentationFonts(presentation), FALLBACK]),
+      loadClearType(),
+    ])
     // 按文件中的字体名与按族名各记一份：绘制时按族名取得点阵（`SlideFonts.family`）。
     const fonts = new Map<string, SlideFace[]>()
     const families = new Map<string, SlideFace[]>()
@@ -204,6 +212,7 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
         fallback,
         family: (name) => families.get(name) ?? [],
       },
+      clearType,
       channel,
       images: new Map(),
       reading: new Map(),
@@ -258,9 +267,13 @@ export default function SlideView(props: { path: string; mtime: number }) {
   const paint = (index: number, canvas: HTMLCanvasElement) => {
     const d = doc()
     const slide = d?.presentation.slides[index]
-    // 不透明画布：浏览器对不透明画布上的文字使用子像素抗锯齿，与 WPS 屏幕显示（ClearType）相同，透明画布只用灰度抗锯齿。
+    // 不透明画布：ClearType 字形按底色混合；以 `fillText` 绘制的文字（主机不使用 ClearType、旋转的文字）在不透明画布上
+    // 为子像素抗锯齿，透明画布只用灰度抗锯齿。ClearType 字形读写画布像素，见 `SlideContext`。
     // 初始像素为黑色，先以白色铺满：画布高度按 CSS 尺寸取整，`paintSlide` 按宽度求比例，最后一行像素可能只被部分覆盖。
-    const ctx = canvas.getContext('2d', { alpha: false }) as PaintContext | null
+    const ctx = canvas.getContext('2d', {
+      alpha: false,
+      willReadFrequently: (d?.clearType ?? null) !== null,
+    }) as SlideContext | null
     if (!d || !slide || !ctx) return
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
@@ -269,7 +282,12 @@ export default function SlideView(props: { path: string; mtime: number }) {
       ctx,
       d.presentation,
       slide,
-      { fonts: d.fonts, image: (part) => d.images.get(part) ?? null, createCanvas },
+      {
+        fonts: d.fonts,
+        image: (part) => d.images.get(part) ?? null,
+        createCanvas,
+        clearType: d.clearType,
+      },
       scale,
     )
   }

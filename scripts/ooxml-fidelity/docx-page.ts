@@ -1,9 +1,10 @@
 /**
  * docx 候选截图的浏览器入口（由 `docx-candidates.ts` 打包）：解析 docx、以字节注册字体、分页并绘制指定页。
  *
- * 页面向 `window` 暴露 `renderPage(id, n, width, height)`（`n` 从 1 起，返回本方总页数与该页统计）与
- * `pageCount(id)`；截图由 Node 驱动的 Playwright 完成。本文件只声明用到的浏览器接口，不引入 DOM 类型库。
- * 字体按 `requiredFonts` 的字体名取得，含公式所用的数学字体。
+ * 页面向 `window` 暴露 `renderPage(id, n, width, height, clearType)`（`n` 从 1 起，`clearType` 为采集时显示器的
+ * ClearType 设置，返回本方总页数与该页统计）与 `pageCount(id)`；截图由 Node 驱动的 Playwright 完成。
+ * 本文件只声明用到的浏览器接口，不引入 DOM 类型库。
+ * 字体按 `requiredFonts` 的字体名取得，含公式所用的数学字体；主机字体的族名（`/families`）与界面相同，供前缀匹配。
  */
 
 import {
@@ -13,6 +14,7 @@ import {
   layoutPages,
   loadDocxFace,
   type Page,
+  type PageClearType,
   type PageContext,
   type PageItem,
   paintPage,
@@ -26,12 +28,16 @@ import {
   type PaintImage,
   type PaintPicture,
 } from '../../packages/ooxml/src/drawingml/index.ts'
+import type { HostFamilies } from '../../packages/ooxml/src/text/index.ts'
 
 interface CanvasElement {
   width: number
   height: number
   style: { width: string; height: string }
-  getContext(kind: '2d', options: { alpha: boolean }): PageContext
+  getContext(
+    kind: '2d',
+    options: { alpha: boolean; willReadFrequently: boolean },
+  ): PageClearType['target']
 }
 
 declare const document: {
@@ -109,10 +115,11 @@ function loadDoc(id: string): Promise<Doc> {
       const parsed = await parseDocx(bytes)
       if (!parsed.ok) throw new Error(`解析失败：${JSON.stringify(parsed.failure)}`)
       const doc = parsed.value
-      const names = [...new Set([...requiredFonts(doc), FALLBACK])]
+      const host = (await (await fetch('/families')).json()) as HostFamilies
+      const names = [...new Set([...requiredFonts(doc, host), FALLBACK])]
       const faces = (await Promise.all(names.map(loadFamily))).flat()
       const fonts = new DocxFonts(faces, FALLBACK)
-      const { pages } = layoutPages(doc, fonts)
+      const { pages } = layoutPages(doc, fonts, host)
       const decoder: ImageDecoder = {
         file: (bytes, type) => createImageBitmap(new Blob([bytes.slice()], { type })),
         pixels: (width, height, data) => createImageBitmap(new ImageData(data, width, height)),
@@ -148,7 +155,8 @@ function countGraphics(page: Page, kind: 'chart' | 'diagram'): number {
       0,
     )
   let n = inItems(page.header) + inItems(page.body) + inItems(page.footer)
-  for (const f of page.floats) n += inItems(f.items) + (f.drawing?.kind === kind ? 1 : 0)
+  for (const f of page.floats)
+    n += f.texts.reduce((m, t) => m + inItems(t.items), 0) + (f.drawing?.kind === kind ? 1 : 0)
   return n
 }
 
@@ -157,7 +165,7 @@ function countFormulas(page: Page): number {
   const inItems = (items: readonly PageItem[]): number =>
     items.reduce((n, it) => n + (it.kind === 'table' ? inItems(it.items) : it.formulas.length), 0)
   let n = inItems(page.header) + inItems(page.body) + inItems(page.footer)
-  for (const f of page.floats) n += inItems(f.items)
+  for (const f of page.floats) n += f.texts.reduce((m, t) => m + inItems(t.items), 0)
   return n
 }
 
@@ -166,6 +174,7 @@ async function renderPage(
   n: number,
   width: number,
   height: number,
+  clearType: PageClearType['display'] | null,
 ): Promise<{
   pages: number
   tables: number
@@ -183,7 +192,8 @@ async function renderPage(
   canvas.height = height
   canvas.style.width = `${width}px`
   canvas.style.height = `${height}px`
-  const ctx = canvas.getContext('2d', { alpha: false })
+  // ClearType 字形读写画布像素。画布元素在各页之间复用，绘制上下文的选项取第一页的设置。
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: clearType !== null })
   paintPage(
     ctx,
     page,
@@ -194,6 +204,7 @@ async function renderPage(
       createCanvas: (w, h) => new OffscreenCanvas(w, h),
     },
     SCREEN_SCALE,
+    clearType === null ? null : { display: clearType, target: ctx },
   )
   return {
     pages: pages.pages.length,

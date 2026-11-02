@@ -9,14 +9,23 @@
  *   为 472 个。不要把属性相同的相邻字段并为一组：WPS 有时合并、有时不合并，合并后为 482 个。
  * - 字体在该 ppem 处于点阵模式（`EmbeddedBitmaps.screenMode`）时以单色字形绘制，不做平滑：strike 中的点阵，
  *   没有点阵的字形为提示后光栅化的轮廓，仿斜体为倾斜的轮廓；仿粗体按 GDI 的方式加粗。
+ * - 其余字号在 `paintPage` 的 `clearType` 不为 `null` 时以 ClearType 字形写入画布像素（`../../glyph/cleartype/`，
+ *   自然宽度方式，仿粗体、仿斜体按 GDI 的方式合成）；一组为一段，段内各字的覆盖相加后混合。CFF 轮廓与可变字体、
+ *   字体中没有的字以 `fillText` 绘制。`clearType` 为 `null`（主机不使用 ClearType）时平滑字号一律以 `fillText` 绘制。
+ * - ClearType 字形段暂存，在下一次非文字绘制（填充、底纹、线、边框、公式、图片、图表与浮动对象）之前一并混合
+ *   （`flush`）：每次混合读写一次像素，读写的次数决定绘制耗时。新增非文字绘制时，在其前调用 `flush`。
+ *   点阵字形与 `fillText` 直接绘制，不等待暂存的字形段：两者与 ClearType 字形只在相邻字的边缘像素重叠，同色时结果与
+ *   混合顺序无关。
  * 页面的绘制顺序：白底、页面背景（底色与整页图片）、衬于文字下方的浮动对象、页面边框、页眉页脚与正文、其余浮动对象。
  * 段落内：段落底纹、字符填充（突出显示与底纹）、文字、公式、下划线与删除线、段落边框、图片、图表与 SmartArt。
  * 图片（位图与图元文件）经 `../../drawingml/paint/picture.ts` 绘制：嵌入式图片按裁剪比例拉伸到对象框（取整到像素），
- * 浮动对象与页面背景中的图片同样可以是图元文件；图元文件文字的字形按正文文字的规则绘制（点阵模式的字号以单色字形绘制）。
- * 公式经 `../../math/` 绘制：括号与根号按数学字体的轮廓填充，文字项在点阵模式的字号下与正文文字同样以点阵绘制。
+ * 浮动对象与页面背景中的图片同样可以是图元文件；图元文件文字在点阵模式的字号下以单色字形绘制，其余以 `fillText` 绘制，
+ * 不使用 ClearType 字形。
+ * 公式经 `../../math/` 绘制：括号与根号按数学字体的轮廓填充，文字项与正文文字同样按点阵或 ClearType 字形绘制；
+ * 公式的轮廓与文字项交错绘制，ClearType 字形逐字立即混合。
  * 表格：单元格底纹、单元格内容、边框线；没有边框的边画表格虚框（WPS 屏幕显示：1 像素 #c8c8c8，按页面像素坐标
  * 每 4 像素中的第 4 个留空）。浮动对象的形状、图片、图表与 SmartArt 经 `../../drawingml/` 绘制（图表与 SmartArt
- * 的文字见 `graphic.ts`），文本框的文字按本文件的规则绘制。
+ * 的文字见 `graphic.ts`），文本框的内容按本文件的规则绘制，裁剪到 `PageTextBox.clip`。
  */
 
 import { paintChart } from '../../drawingml/chart/paint.ts'
@@ -28,6 +37,14 @@ import { SCREEN_RESOLUTION } from '../../drawingml/paint/resolution.ts'
 import { paintAutoShape, paintGroup, type ShapeScene } from '../../drawingml/shape/paint.ts'
 import { emboldenBitmap } from '../../font/index.ts'
 import { fillBitmap } from '../../glyph/bitmap.ts'
+import {
+  type ClearTypeDisplay,
+  type DeviceRect,
+  type GlyphRun,
+  type PixelCanvas,
+  type PlacedGlyph,
+  paintGlyphRuns,
+} from '../../glyph/cleartype/index.ts'
 import { type MathPaintFonts, paintMath } from '../../math/index.ts'
 import type { MetafileFace, MetafileFonts } from '../../metafile/index.ts'
 import type { DrawingNode } from '../model.ts'
@@ -41,6 +58,7 @@ import type {
   PageFragment,
   PageItem,
   PageParagraph,
+  PageTextBox,
 } from '../page/model.ts'
 import type { DocxFace } from './fonts.ts'
 import { chartImages, graphicSettings, namedFontKey } from './graphic.ts'
@@ -62,6 +80,49 @@ export interface PageFonts {
   readonly faces: readonly FaceRef[]
   /** 按登记的族名与字形取得绘制用的字体；主机没有时为 `null`，该字形按族名交给浏览器绘制。 */
   draw(ref: FaceRef): DocxFace | null
+}
+
+/**
+ * 文字的 ClearType 绘制：`display` 为显示器的 ClearType 设置，`target` 为 `paintPage` 的绘制上下文本身，
+ * 字形按设备坐标读写其像素（画布宜以 `willReadFrequently: true` 创建）。
+ */
+export interface PageClearType {
+  readonly display: ClearTypeDisplay
+  readonly target: PageContext & PixelCanvas
+}
+
+/**
+ * 暂存的 ClearType 字形段与字形段的裁剪范围（设备像素）：页面为整页，文本框为页面与其裁剪范围的交集，与页面共用 `runs`。
+ * ClearType 字形直接写入画布像素，不受画布裁剪路径约束，裁剪由 `bounds` 实现。
+ */
+interface GlyphBatch {
+  readonly clearType: PageClearType
+  readonly bounds: DeviceRect
+  readonly runs: GlyphRun[]
+}
+
+/** 混合暂存的字形段；没有时不读写像素。每次非文字绘制之前调用。 */
+function flush(batch: GlyphBatch | null): void {
+  if (batch === null || batch.runs.length === 0) return
+  paintGlyphRuns(batch.clearType.target, batch.runs, batch.clearType.display)
+  batch.runs.length = 0
+}
+
+/** 以 `baseline` 为基线的字形段的裁剪范围：超出 GDI 上下沿（`tmAscent`、`tmDescent`）的行不绘制。 */
+function textClip(face: DocxFace, ppem: number, baseline: number, batch: GlyphBatch): DeviceRect {
+  const v = face.pixelVertical(ppem)
+  const b = batch.bounds
+  return {
+    left: b.left,
+    top: Math.max(b.top, baseline - v.ascent),
+    right: b.right,
+    bottom: Math.min(b.bottom, baseline + v.descent),
+  }
+}
+
+/** 字体在 `ppem` 下的 ClearType 字形；点阵模式的字号、CFF 轮廓与可变字体为 `null`。 */
+function smoothGlyphs(face: DocxFace, ppem: number): DocxFace['clearType'] {
+  return face.bitmaps?.screenMode(ppem) ? null : face.clearType
 }
 
 const NO_CROP = { left: 0, top: 0, right: 0, bottom: 0 }
@@ -101,7 +162,7 @@ export function pageImages(page: Page, parts: readonly string[]): number[] {
   }
   for (const list of [page.header, page.body, page.footer]) items(list)
   for (const f of page.floats) {
-    items(f.items)
+    for (const t of f.texts) items(t.items)
     if (f.drawing !== null) node(f.drawing)
   }
   return [...out]
@@ -117,15 +178,21 @@ function cssFont(ref: FaceRef, ppem: number): string {
   return `${italic}${bold}${ppem}px ${quote(ref.family)}`
 }
 
+/** `clearType` 为 `null` 时平滑字号以 `fillText` 绘制；不为 `null` 时其 `target` 须为 `ctx`。 */
 export function paintPage(
   ctx: PageContext,
   page: Page,
   fonts: PageFonts,
   res: PageResources,
   scale: number = SCREEN_SCALE,
+  clearType: PageClearType | null = null,
 ): void {
   const width = Math.ceil(page.width * scale)
   const height = Math.ceil(page.height * scale)
+  const batch: GlyphBatch | null =
+    clearType === null
+      ? null
+      : { clearType, bounds: { left: 0, top: 0, right: width, bottom: height }, runs: [] }
   ctx.save()
   ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, width, height)
@@ -167,19 +234,29 @@ export function paintPage(
         return i < 0 ? null : (res.images[i] ?? null)
       },
       createCanvas: res.createCanvas,
-      ...(metafile === null ? {} : { metafileFonts: metafile }),
+      metafileFonts: metafile,
     },
     scale: scale * 0.75,
     canvas: { width, height },
-    settings: page.graphicFonts === null ? null : graphicSettings(page.graphicFonts, fonts),
+    settings:
+      page.graphicFonts === null ? null : graphicSettings(page.graphicFonts, fonts, clearType),
   }
   const pictures: PictureFonts = { res, fonts: metafile }
-  for (const f of page.floats) if (f.behind) paintFloat(scene, f, fonts, pictures, scale)
+  const text: PageText = { fonts, batch }
+  for (const f of page.floats) if (f.behind) paintFloat(scene, f, text, pictures, scale)
+  flush(batch)
   if (page.borders !== null) paintPageBorders(ctx, page.borders, scale)
   for (const items of [page.header, page.footer, page.body])
-    paintItems(scene, items, fonts, pictures, scale)
-  for (const f of page.floats) if (!f.behind) paintFloat(scene, f, fonts, pictures, scale)
+    paintItems(scene, items, text, pictures, scale)
+  for (const f of page.floats) if (!f.behind) paintFloat(scene, f, text, pictures, scale)
+  flush(batch)
   ctx.restore()
+}
+
+/** 文字的字体与暂存的 ClearType 字形段（主机不使用 ClearType 时为 `null`）。 */
+interface PageText {
+  readonly fonts: PageFonts
+  readonly batch: GlyphBatch | null
 }
 
 /** 对象框左上角在 (`x`, `y`) 磅处时，对象局部坐标（96 dpi 像素）到设备坐标的变换。 */
@@ -191,12 +268,64 @@ function objectMatrix(x: number, y: number, scale: number) {
 function paintFloat(
   scene: ShapeScene,
   f: PageFloat,
-  fonts: PageFonts,
+  text: PageText,
   pictures: PictureFonts,
   scale: number,
 ): void {
-  if (f.drawing !== null) paintObject(scene, f.drawing, f.x, f.y, scale)
-  paintItems(scene, f.items, fonts, pictures, scale)
+  if (f.drawing !== null) {
+    flush(text.batch)
+    paintObject(scene, f.drawing, f.x, f.y, scale)
+  }
+  for (const t of f.texts) paintTextBox(scene, t, text, pictures, scale)
+}
+
+/**
+ * 文本框的内容：画布按裁剪范围（取整到像素）裁剪，ClearType 字形段另按 `GlyphBatch.bounds` 裁剪。文字随形状旋转时画布绕旋转中心
+ * 旋转，平滑字号以 `fillText` 绘制（ClearType 字形按设备像素写入，不能旋转）。未实现：其中的嵌入式图片、图表与 SmartArt
+ * 按单位变换绘制，不随之旋转，`paintObject` 绘制之后同一文本框中其余的内容同样不再旋转。
+ */
+function paintTextBox(
+  scene: ShapeScene,
+  t: PageTextBox,
+  text: PageText,
+  pictures: PictureFonts,
+  scale: number,
+): void {
+  const ctx = scene.ctx
+  const px = (v: number) => Math.round(v * scale)
+  const rect = {
+    left: px(t.clip.x),
+    top: px(t.clip.y),
+    right: px(t.clip.x + t.clip.width),
+    bottom: px(t.clip.y + t.clip.height),
+  }
+  const outer = text.batch
+  flush(outer)
+  ctx.save()
+  const turn = t.rotation
+  if (turn !== null) {
+    ctx.translate(turn.x * scale, turn.y * scale)
+    ctx.rotate((turn.angle * Math.PI) / 180)
+    ctx.translate(-turn.x * scale, -turn.y * scale)
+  }
+  ctx.beginPath()
+  ctx.rect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+  ctx.clip()
+  const batch =
+    outer === null || turn !== null
+      ? null
+      : {
+          ...outer,
+          bounds: {
+            left: Math.max(outer.bounds.left, rect.left),
+            top: Math.max(outer.bounds.top, rect.top),
+            right: Math.min(outer.bounds.right, rect.right),
+            bottom: Math.min(outer.bounds.bottom, rect.bottom),
+          },
+        }
+  paintItems(scene, t.items, { fonts: text.fonts, batch }, pictures, scale)
+  flush(batch)
+  ctx.restore()
 }
 
 /** 对象框左上角在 (`x`, `y`) 磅处的对象；绘制后恢复单位变换。 */
@@ -228,14 +357,16 @@ function paintNode(scene: ShapeScene, n: DrawingNode, parent: Matrix): void {
 function paintItems(
   scene: ShapeScene,
   items: readonly PageItem[],
-  fonts: PageFonts,
+  text: PageText,
   pictures: PictureFonts,
   scale: number,
 ): void {
   const ctx = scene.ctx
+  const { fonts, batch } = text
   const px = (v: number) => Math.round(v * scale)
   for (const item of items) {
     if (item.kind === 'table') {
+      if (item.fills.length > 0) flush(batch)
       for (const fill of item.fills) {
         ctx.fillStyle = fill.color
         ctx.fillRect(
@@ -245,23 +376,30 @@ function paintItems(
           px(fill.y + fill.height) - px(fill.y),
         )
       }
-      paintItems(scene, item.items, fonts, pictures, scale)
+      paintItems(scene, item.items, text, pictures, scale)
+      if (item.edges.length > 0) flush(batch)
       for (const e of item.edges) if (e.line === null) paintGridline(ctx, e, scale)
       for (const e of item.edges) if (e.line !== null) paintEdge(ctx, e, e.line, scale)
       continue
     }
     if (item.box?.fill) {
       const b = item.box
+      flush(batch)
       ctx.fillStyle = b.fill
       ctx.fillRect(px(b.x), px(b.y), px(b.x + b.width) - px(b.x), px(b.y + b.height) - px(b.y))
     }
-    paintFills(ctx, item, scale)
-    for (const line of item.lines) for (const f of line.fragments) paintText(ctx, f, fonts, scale)
-    for (const m of item.formulas)
-      paintMath(ctx, m.layout, m.x, m.baseline, mathFonts(ctx, fonts), scale)
+    paintFills(ctx, item, scale, batch)
     for (const line of item.lines)
-      for (const f of line.fragments) paintDecorations(ctx, f, fonts, scale)
-    if (item.box) paintBorders(ctx, item, scale)
+      for (const f of line.fragments) paintText(ctx, f, fonts, scale, batch)
+    if (item.formulas.length > 0) flush(batch)
+    for (const m of item.formulas)
+      paintMath(ctx, m.layout, m.x, m.baseline, mathFonts(ctx, fonts, batch), scale)
+    for (const line of item.lines)
+      for (const f of line.fragments) paintDecorations(ctx, f, fonts, scale, batch)
+    if (item.box) {
+      flush(batch)
+      paintBorders(ctx, item, scale)
+    }
     for (const im of item.images) {
       const picture = pictures.res.images[im.image]
       if (picture == null) continue
@@ -271,10 +409,15 @@ function paintItems(
         width: px(im.x + im.width) - px(im.x),
         height: px(im.y + im.height) - px(im.y),
       }
-      if (box.width > 0 && box.height > 0)
+      if (box.width > 0 && box.height > 0) {
+        flush(batch)
         drawPicture(ctx, picture, im.crop, box, IDENTITY, 'low', pictures.fonts)
+      }
     }
-    for (const g of item.graphics) paintObject(scene, g.graphic, g.x, g.y, scale)
+    for (const g of item.graphics) {
+      flush(batch)
+      paintObject(scene, g.graphic, g.x, g.y, scale)
+    }
   }
 }
 
@@ -286,8 +429,11 @@ interface PictureFonts {
 
 /**
  * 图元文件文字的字体：按 `GraphicFonts` 中的字体名取得登记的字形，主机没有的字体取其回退字体；请求粗体或斜体而字体没有
- * 该字形时仿粗体、仿斜体。字形按正文文字的规则绘制（`paintBitmapGlyph`，否则按族名交给浏览器）。
- * 本页没有字体表或回退字体没有绘制度量时为 `null`。
+ * 该字形时仿粗体、仿斜体。本页没有字体表或回退字体没有绘制度量时为 `null`。
+ *
+ * WPS 文字把图元文件栅格化为单色或灰度的蒙版（页面 EMF 中的 ALPHABLEND 位图），文字不用 ClearType：字体对象的逻辑字高
+ * 不小于 `SMOOTH_HEIGHT` 且 `gasp` 在该 ppem 要求灰度平滑时平滑（按族名交给浏览器），否则为单色字形（有该 ppem 的点阵时
+ * 取点阵，否则取提示后的轮廓；仿粗体按 GDI 的方式加粗）。字体中没有该字时按族名交给浏览器。
  */
 function metafileFonts(table: GraphicFonts | null, fonts: PageFonts): MetafileFonts | null {
   if (table === null) return null
@@ -319,12 +465,22 @@ function metafileFonts(table: GraphicFonts | null, fonts: PageFonts): MetafileFo
       const out: MetafileFace = {
         vertical: (ppem) => face.pixelVertical(ppem),
         emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
+        averageWidth: v.averageWidth / v.unitsPerEm,
+        symbol: ((v.codePages ?? 0) & SYMBOL_CODE_PAGE) !== 0,
         advance: (cp, ppem) => face.pixelAdvance(cp, ppem) ?? face.text.metrics.advance(cp, ppem),
-        draw: (c, text, x, baseline, ppem) => {
-          c.font = cssFont(ref, ppem)
+        draw: (c, text, x, baseline, ppem, height) => {
           const glyph = face.text.metrics.glyphId(text.codePointAt(0)!)
-          if (!paintBitmapGlyph(c, face, ref, glyph, x, baseline, ppem))
-            c.fillText(text, x, baseline)
+          const mono =
+            glyph === 0 || (height >= SMOOTH_HEIGHT && face.grayscale(ppem))
+              ? null
+              : monochromeGlyph(face, ref, glyph, ppem)
+          if (mono !== null) {
+            const { ascent, descent } = face.pixelVertical(ppem)
+            fillBitmap(c, mono, x, baseline, ascent, descent)
+            return
+          }
+          c.font = cssFont(ref, ppem)
+          c.fillText(text, x, baseline)
         },
       }
       cache.set(key, out)
@@ -333,12 +489,36 @@ function metafileFonts(table: GraphicFonts | null, fonts: PageFonts): MetafileFo
   }
 }
 
+/**
+ * 图元文件文字平滑的最小逻辑字高（`lfHeight` 的绝对值）。WPS 文字实测（构造文件，Times New Roman 与 Symbol）：
+ * 逻辑字高 49 及以下为单色，50 及以上在 `gasp` 要求灰度的 ppem 平滑，与每英寸逻辑单位数（96、192、480–4800）无关。
+ */
+const SMOOTH_HEIGHT = 50
+
+/** `OS/2.ulCodePageRange1` 的第 31 位：符号字符集。 */
+const SYMBOL_CODE_PAGE = 0x80000000
+
+/** 单色字形：该 ppem 有点阵时取点阵，否则取提示后光栅化的轮廓；字体没有 TrueType 轮廓时为 `null`。 */
+function monochromeGlyph(face: DocxFace, ref: FaceRef, glyph: number, ppem: number) {
+  const raw =
+    face.bitmaps?.glyph(ppem, glyph, ref.syntheticItalic) ??
+    face.hinting?.glyph(glyph, ppem, ref.syntheticItalic) ??
+    null
+  return raw === null ? null : ref.syntheticBold ? emboldenBitmap(raw) : raw
+}
+
 /** 突出显示与字符底纹：覆盖行的全高，横向为片段的范围。 */
-function paintFills(ctx: PageContext, item: PageParagraph, scale: number): void {
+function paintFills(
+  ctx: PageContext,
+  item: PageParagraph,
+  scale: number,
+  batch: GlyphBatch | null,
+): void {
   const px = (v: number) => Math.round(v * scale)
   for (const line of item.lines) {
     for (const f of line.fragments) {
       if (f.fill === null) continue
+      flush(batch)
       const width = f.advances.reduce((a, b) => a + b, 0)
       ctx.fillStyle = f.fill
       ctx.fillRect(
@@ -379,7 +559,13 @@ function paintBitmapGlyph(
   return true
 }
 
-function paintText(ctx: PageContext, f: PageFragment, fonts: PageFonts, scale: number): void {
+function paintText(
+  ctx: PageContext,
+  f: PageFragment,
+  fonts: PageFonts,
+  scale: number,
+  batch: GlyphBatch | null,
+): void {
   const ref = fonts.faces[f.face]
   if (ref === undefined) return
   const face = fonts.draw(ref)
@@ -388,15 +574,19 @@ function paintText(ctx: PageContext, f: PageFragment, fonts: PageFonts, scale: n
   ctx.fillStyle = f.color
   ctx.font = cssFont(ref, ppem)
   if ('letterSpacing' in ctx) ctx.letterSpacing = '0px'
+  const smooth = batch === null || face === null ? null : smoothGlyphs(face, ppem)
   let x = f.x
   let k = 0
   /** 当前组的第一个字（排版坐标与像素）；空格之后为 `null`。 */
   let origin: { readonly x: number; readonly px: number } | null = null
+  /** 当前组的 ClearType 字形段；空格之后为 `null`。 */
+  let run: PlacedGlyph[] | null = null
   for (const ch of f.text) {
     const cp = ch.codePointAt(0)!
     const advance = f.advances[k++] ?? 0
     if (cp === 0x20) {
       origin = null
+      run = null
       x += advance
       continue
     }
@@ -406,12 +596,35 @@ function paintText(ctx: PageContext, f: PageFragment, fonts: PageFonts, scale: n
     if (cp < 32) continue
     const glyph = face?.text.metrics.glyphId(cp) ?? 0
     if (paintBitmapGlyph(ctx, face, ref, glyph, gx, baseline, ppem)) continue
+    if (smooth !== null && glyph !== 0) {
+      if (run === null) {
+        run = []
+        batch!.runs.push({
+          glyphs: run,
+          color: f.color,
+          clip: textClip(face!, ppem, baseline, batch!),
+        })
+      }
+      run.push({
+        glyph: smooth.glyph(glyph, ppem, ref.syntheticBold, ref.syntheticItalic),
+        x: gx,
+        baseline,
+      })
+      continue
+    }
     ctx.fillText(ch, gx, baseline)
   }
 }
 
-/** 公式绘制所用的字体：族名与轮廓按 `DocumentPages.faces` 的下标取得，文字项经 `paintBitmapGlyph`。 */
-function mathFonts(ctx: PageContext, fonts: PageFonts): MathPaintFonts<number> {
+/**
+ * 公式绘制所用的字体：族名与轮廓按 `DocumentPages.faces` 的下标取得，文字项经 `paintBitmapGlyph`，
+ * 其余字号有 ClearType 字形时立即混合。调用前须已混合暂存的字形段（`flush`）。
+ */
+function mathFonts(
+  ctx: PageContext,
+  fonts: PageFonts,
+  batch: GlyphBatch | null,
+): MathPaintFonts<number> {
   const face = (i: number) => {
     const ref = fonts.faces[i]
     return ref === undefined ? null : { ref, face: fonts.draw(ref) }
@@ -421,7 +634,18 @@ function mathFonts(ctx: PageContext, fonts: PageFonts): MathPaintFonts<number> {
     outlines: (i) => face(i)?.face?.math?.outlines ?? null,
     glyph: (it, x, baseline, ppem) => {
       const f = face(it.font)
-      return f !== null && paintBitmapGlyph(ctx, f.face, f.ref, it.glyph, x, baseline, ppem)
+      if (f === null) return false
+      if (paintBitmapGlyph(ctx, f.face, f.ref, it.glyph, x, baseline, ppem)) return true
+      const smooth = batch === null || f.face === null ? null : smoothGlyphs(f.face, ppem)
+      if (smooth === null || it.glyph === 0) return false
+      const glyph = smooth.glyph(it.glyph, ppem, f.ref.syntheticBold, f.ref.syntheticItalic)
+      const clip = textClip(f.face!, ppem, baseline, batch!)
+      paintGlyphRuns(
+        batch!.clearType.target,
+        [{ glyphs: [{ glyph, x, baseline }], color: it.color, clip }],
+        batch!.clearType.display,
+      )
+      return true
     },
   }
 }
@@ -432,8 +656,10 @@ function paintDecorations(
   f: PageFragment,
   fonts: PageFonts,
   scale: number,
+  batch: GlyphBatch | null,
 ): void {
   if (f.underline === null && f.strike === null) return
+  flush(batch)
   const width = f.advances.reduce((a, b) => a + b, 0)
   const x0 = Math.round(f.x * scale)
   const x1 = Math.round((f.x + width) * scale)

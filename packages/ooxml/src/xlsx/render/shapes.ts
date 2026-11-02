@@ -5,6 +5,8 @@
  *   树中全部 `frame` 经同一映射由 `frameOf` 换算（接近竖直的形状横纵比例互换）。换算结果仍为 EMU，1 像素 = 9525 EMU。
  * - 文字：排版与字体规则与演示文稿相同（`../../drawingml/text/`），单倍行高见 `SHEET_SINGLE_LINE`，行高、基线与点阵
  *   按屏幕显示（`screenText`）。字体取自工作表的 `FontSet`；缺字与缺少字体时依次取 `fallbackFonts(workbook)` 与文档字体中第一个可用的字体，都没有时不绘制形状文字。
+ *   显示器使用 ClearType 时形状与图表文字的平滑字号以 ClearType 字形绘制（`sheetClearType`），对比度与单元格文字相同。
+ *   图片中图元文件的文字取同样的字体（`metafileFonts`）。
  * - 绘制范围：旋转后的外接矩形加上线条、箭头与外部阴影的余量，用于跳过区域外的形状。超出形状框的文字不计入。
  */
 
@@ -21,11 +23,20 @@ import {
 import { frameOf, nearVertical, type Transform } from '../../drawingml/shape/resolve.ts'
 import {
   FaceCache,
+  type ScreenGlyph,
   type ScreenText,
   SINGLE_LINE,
   type SlideFont,
+  type TextClearType,
 } from '../../drawingml/text/fonts.ts'
 import { emboldenBitmap } from '../../font/index.ts'
+import { fillBitmap } from '../../glyph/bitmap.ts'
+import {
+  type ClearTypeDisplay,
+  type DeviceRect,
+  paintGlyphRuns,
+} from '../../glyph/cleartype/index.ts'
+import type { MetafileFace, MetafileFonts } from '../../metafile/index.ts'
 import type { DrawingAnchor, ShapeNode, SheetShape, Workbook } from '../model.ts'
 import { type FontSet, fallbackFonts, type LoadedFace } from './fonts.ts'
 
@@ -61,23 +72,38 @@ const SHEET_SINGLE_LINE = 1.296
  */
 function screenText(fonts: FontSet): ScreenText {
   return {
-    bitmap(face, codePoint, ppem) {
-      const f = fonts.face(face.family, face.bold, face.italic)
-      if (!f?.bitmaps?.screenMode(ppem)) return null
-      const raw = f.bitmaps.glyph(ppem, f.metrics.glyphId(codePoint), face.italic && !f.italic)
-      if (raw === null) return null
-      const { ascent, descent } = f.vertical(ppem)
-      return { glyph: face.bold && !f.bold ? emboldenBitmap(raw) : raw, ascent, descent }
-    },
+    bitmap: (face, codePoint, ppem) =>
+      screenBitmap(fonts, face.family, face.bold, face.italic, codePoint, ppem),
   }
 }
 
-function faceSource(workbook: Workbook, fonts: FontSet) {
-  let fallback: LoadedFace | null = null
+function screenBitmap(
+  fonts: FontSet,
+  family: string,
+  bold: boolean,
+  italic: boolean,
+  codePoint: number,
+  ppem: number,
+): ScreenGlyph | null {
+  const f = fonts.face(family, bold, italic)
+  if (!f?.bitmaps?.screenMode(ppem)) return null
+  const raw = f.bitmaps.glyph(ppem, f.metrics.glyphId(codePoint), italic && !f.italic)
+  if (raw === null) return null
+  const { ascent, descent } = f.vertical(ppem)
+  return { glyph: bold && !f.bold ? emboldenBitmap(raw) : raw, ascent, descent }
+}
+
+/** 缺少字体时使用的字体：`fallbackFonts(workbook)` 与文档字体中第一个可用的字体；都没有时为 `null`。 */
+function fallbackFace(workbook: Workbook, fonts: FontSet): LoadedFace | null {
   for (const name of [...fallbackFonts(workbook), ...workbook.fontNames]) {
-    fallback = fonts.face(name, false, false)
-    if (fallback !== null) break
+    const f = fonts.face(name, false, false)
+    if (f !== null) return f
   }
+  return null
+}
+
+function faceSource(workbook: Workbook, fonts: FontSet) {
+  const fallback = fallbackFace(workbook, fonts)
   if (fallback === null) return null
   return {
     face(name: string, bold: boolean, italic: boolean) {
@@ -88,20 +114,119 @@ function faceSource(workbook: Workbook, fonts: FontSet) {
   }
 }
 
-/** 形状文字的字体缓存；字体集中没有任何可用字体时为 `null`。 */
-export function shapeFaces(workbook: Workbook, fonts: FontSet): FaceCache | null {
+/**
+ * 形状与图表文字的 ClearType 字形（`TextClearType`）：字形与单元格文字相同（`LoadedFace.clearType`），字体没有
+ * TrueType 轮廓或没有该字时为 `null`；请求粗体或斜体而字体没有该字形时按 GDI 的方式合成。每段文字立即混合，
+ * 像素只写入 `clip`（设备像素，绘制区域）之内：像素的读写不受裁剪路径约束。
+ */
+export function sheetClearType(
+  fonts: FontSet,
+  display: ClearTypeDisplay,
+  target: TextClearType['target'],
+  clip: DeviceRect,
+): TextClearType {
+  return {
+    target,
+    paint(runs) {
+      paintGlyphRuns(
+        target,
+        runs.map((r) => ({
+          ...r,
+          clip: {
+            left: Math.max(r.clip.left, clip.left),
+            top: Math.max(r.clip.top, clip.top),
+            right: Math.min(r.clip.right, clip.right),
+            bottom: Math.min(r.clip.bottom, clip.bottom),
+          },
+        })),
+        display,
+      )
+    },
+    flush() {},
+    glyph(face, codePoint, ppem) {
+      const f = fonts.face(face.family, face.bold, face.italic)
+      const glyphs = f?.clearType
+      if (!f || !glyphs) return null
+      const id = f.metrics.glyphId(codePoint)
+      if (id === 0) return null
+      const { ascent, descent } = f.vertical(ppem)
+      return {
+        glyph: glyphs.glyph(id, ppem, face.bold && !f.bold, face.italic && !f.italic),
+        ascent,
+        descent,
+      }
+    },
+  }
+}
+
+/**
+ * 形状文字的字体缓存；字体集中没有任何可用字体时为 `null`。`clearType` 为 `null` 时平滑字号以 `fillText` 绘制。
+ */
+export function shapeFaces(
+  workbook: Workbook,
+  fonts: FontSet,
+  clearType: TextClearType | null,
+): FaceCache | null {
   const source = faceSource(workbook, fonts)
-  return source === null ? null : new FaceCache(source, SHEET_SINGLE_LINE, screenText(fonts))
+  if (source === null) return null
+  const screen = screenText(fonts)
+  return new FaceCache(source, SHEET_SINGLE_LINE, screen, screen, clearType)
 }
 
 /**
  * 图表文字的字体缓存：行高与基线按演示文稿的规则，字形按屏幕显示绘制（`screenText`）。WPS 表格中图表文字的位置与
- * WPS 演示一致（校准文件实测：按形状文字的行高排版时分类标签与数值轴底端标签分别高 2 与 4 像素）；宋体 9–13 磅的
- * 图表文字不做平滑、按内嵌点阵绘制，14 磅平滑（校准文件实测，与 GDI 的点阵条件相同）。
+ * WPS 演示一致（校准文件实测：按形状文字的行高排版时分类标签与数值轴底端标签分别高 2 与 4 像素），只有单倍行高
+ * 与形状文字相同，按整数字号计算（`FaceCache.wholeSizeLine`）；宋体 9–13 磅的图表文字不做平滑、按内嵌点阵绘制，
+ * 14 磅平滑（校准文件实测，与 GDI 的点阵条件相同）。`clearType` 同 `shapeFaces`。
  */
-export function chartFaces(workbook: Workbook, fonts: FontSet): FaceCache | null {
+export function chartFaces(
+  workbook: Workbook,
+  fonts: FontSet,
+  clearType: TextClearType | null,
+): FaceCache | null {
   const source = faceSource(workbook, fonts)
-  return source === null ? null : new FaceCache(source, SINGLE_LINE, null, screenText(fonts))
+  return source === null
+    ? null
+    : new FaceCache(source, SINGLE_LINE, null, screenText(fonts), clearType, true)
+}
+
+/**
+ * 图片中图元文件文字的字体：按字体名与字形取得字体集中的字体，没有时取 `fallbackFace`。字形按形状文字的点阵条件绘制
+ * （`screenBitmap`），其余按族名交给浏览器；请求粗体或斜体而字体没有该字形时由点阵或浏览器合成。字体集中没有可用字体时为 `null`。
+ */
+export function metafileFonts(workbook: Workbook, fonts: FontSet): MetafileFonts | null {
+  const fallback = fallbackFace(workbook, fonts)
+  if (fallback === null) return null
+  const cache = new Map<string, MetafileFace>()
+  return {
+    face(name, bold, italic) {
+      const key = `${name}|${bold}|${italic}`
+      const known = cache.get(key)
+      if (known !== undefined) return known
+      const f = fonts.face(name, bold, italic) ?? fallback
+      const v = f.text.vertical
+      const css = `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}`
+      const out: MetafileFace = {
+        vertical: (ppem) => f.vertical(ppem),
+        emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
+        averageWidth: v.averageWidth / v.unitsPerEm,
+        // `OS/2.ulCodePageRange1` 的第 31 位：符号字符集。
+        symbol: ((v.codePages ?? 0) & 0x80000000) !== 0,
+        advance: (cp, ppem) => f.pixelAdvance(cp, ppem) ?? f.metrics.advance(cp, ppem),
+        draw: (c, text, x, baseline, ppem) => {
+          const g = screenBitmap(fonts, f.family, bold, italic, text.codePointAt(0)!, ppem)
+          if (g !== null) {
+            fillBitmap(c, g.glyph, x, baseline, g.ascent, g.descent)
+            return
+          }
+          c.font = `${css}${ppem}px "${f.family.replace(/["\\]/g, '')}"`
+          c.fillText(text, x, baseline)
+        },
+      }
+      cache.set(key, out)
+      return out
+    },
+  }
 }
 
 /** 顶层节点所在坐标系（EMU）到工作表坐标（EMU）的映射：顶层节点在工作表上所占的矩形对齐锚点矩形 `rect`（像素）。 */

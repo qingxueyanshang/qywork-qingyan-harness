@@ -3,7 +3,7 @@
  * `resolve/`（样式继承与切换属性、编号计数与格式、主题字体）与 `layout.ts`（转换为 `layoutParagraph` 的输入，
  * 含字符间距、上下标、基线提升、字距调整、东亚语言、压缩标点与单双字节宽度协调的传递），
  * 以及 `../text/layout.ts` 中为编号字段补充的规则（编号对齐、编号后缀制表符、编号与正文之间的中西文间距、缺字回退）、
- * `table/layout.ts` 的 `layoutStack`（文本框中的段落不悬挂行尾标点）。
+ * `table/layout.ts` 的 `layoutStack`（文本框中的段落不悬挂行尾标点），`../font/cmap.ts`（符号编码子表）。
  *
  * 期望值取自 WPS 12.1 只读打开同样内容的文档后取得的结果（`Paragraph.Format`、`Range.Font`、`ListFormat.ListString`
  * 与逐字的 `Information`），不由本模块计算；少数按 ISO/IEC 29500 规定的项在用例名中注明。
@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readFaces, readMetrics, readVerticalMetrics } from '../font/index.ts'
 import { MATH_SETTINGS_DEFAULTS } from '../math/index.ts'
-import type { TextFace } from '../text/index.ts'
+import { NO_HOST_FAMILIES, type TextFace } from '../text/index.ts'
 import {
   type Block,
   type DocxDocument,
@@ -62,6 +62,19 @@ describe('部件定位', () => {
     expect(wrong).toEqual({ ok: false, failure: { kind: 'corrupt', reason: 'document' } })
     const bad = await parseDocx(buildDocx({ body: '<w:p><w:r></w:p>' }))
     expect(bad).toEqual({ ok: false, failure: { kind: 'corrupt', reason: 'xml' } })
+  })
+
+  test('元素嵌套超过 256 层时为 corrupt(xml)，不溢出调用栈：5000 层嵌套表格；嵌套 20 层表格照常解析', async () => {
+    const nested = (n: number) => {
+      let inner = p(r('x'))
+      for (let k = 0; k < n; k++)
+        inner = `<w:tbl><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>${inner}</w:tc></w:tr></w:tbl>`
+      return inner
+    }
+    const deep = await parseDocx(buildDocx({ body: nested(5000) }))
+    expect(deep).toEqual({ ok: false, failure: { kind: 'corrupt', reason: 'xml' } })
+    const doc = await parse({ body: nested(20) })
+    expect(doc.body[0]!.kind).toBe('table')
   })
 
   test('缺少样式、编号、设置与主题部件时按缺省值解析', async () => {
@@ -652,6 +665,31 @@ describe('段落属性', () => {
     expect(list.map((x) => x.props.snapToGrid)).toEqual([true, true, true, true, false, false])
   })
 
+  test('段前段后的 *Lines 为 -2147483648 时按 0 读取：覆盖样式中的值，改取按缇的值；其他负值按原值（WPS：构造文档 w16 sp）', async () => {
+    const unset = '-2147483648'
+    const sp = (attrs: string, pPr = '') => p(r('a'), `${pPr}<w:spacing ${attrs}/>`)
+    const doc = await parse({
+      styles:
+        styles +
+        style('paragraph', 'PSA', '<w:pPr><w:spacing w:after="300"/></w:pPr>') +
+        style('paragraph', 'PSL', '<w:pPr><w:spacing w:afterLines="100"/></w:pPr>'),
+      body:
+        sp(`w:after="0" w:afterLines="${unset}"`) +
+        sp(`w:after="200" w:afterLines="${unset}"`) +
+        sp(`w:afterLines="${unset}"`, ps('PSA')) +
+        sp(`w:afterLines="${unset}"`, ps('PSL')) +
+        sp(`w:before="200" w:beforeLines="${unset}"`) +
+        sp('w:after="100" w:afterLines="-1"') +
+        '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1800" w:bottom="1440" w:left="1800"/>' +
+        '<w:docGrid w:type="lines" w:linePitch="312"/></w:sectPr>',
+    })
+    const list = paragraphs(doc)
+    // WPS：段后 0、10、15、0 磅，段前 10 磅；afterLines="-1" 时段后为 0（本方为 -0.156 磅，段间距取段后与段前中的较大者）。
+    expect(list.slice(0, 4).map((x) => x.props.after)).toEqual([0, 10, 15, 0])
+    expect(list[4]!.props.before).toBe(10)
+    expect(list[5]!.props.after).toBeCloseTo(-0.156, 10)
+  })
+
   test('行距：给出 line 而未给出 lineRule 时为 auto，不继承上层的规则', async () => {
     const doc = await parse({
       styles,
@@ -667,20 +705,28 @@ describe('段落属性', () => {
     ])
   })
 
-  test('制表位按位置合并，clear 移除继承的同位置制表位；点前导符为「.」，其余前导符计入 tabLeader', async () => {
+  test('制表位按位置合并，clear 移除继承的同位置制表位；前导符 dot、hyphen、underscore、heavy、middleDot 为「.」「-」「_」「_」「·」', async () => {
+    // WPS（构造文档 w13 l1，页面 EMF 中的文字记录）：heavy 与 underscore 同为「_」。
+    const tab = (pos: number, leader: string) =>
+      `<w:tab w:val="left" w:pos="${pos}" w:leader="${leader}"/>`
     const doc = await parse({
       styles,
       body: p(
         r('a'),
-        `${ps('PTABS')}<w:tabs><w:tab w:val="clear" w:pos="1000"/><w:tab w:val="right" w:pos="2000" w:leader="dot"/><w:tab w:val="bar" w:pos="2500"/><w:tab w:val="left" w:pos="4000" w:leader="hyphen"/></w:tabs>`,
+        `${ps('PTABS')}<w:tabs><w:tab w:val="clear" w:pos="1000"/><w:tab w:val="right" w:pos="2000" w:leader="dot"/><w:tab w:val="bar" w:pos="2500"/>` +
+          `${tab(4000, 'hyphen')}${tab(5000, 'underscore')}${tab(6000, 'heavy')}${tab(7000, 'middleDot')}${tab(8000, 'none')}</w:tabs>`,
       ),
     })
     expect(paragraphs(doc)[0]!.props.tabs).toEqual([
       { position: 100, align: 'right', leader: '.' },
       { position: 150, align: 'left', leader: null },
-      { position: 200, align: 'left', leader: null },
+      { position: 200, align: 'left', leader: '-' },
+      { position: 250, align: 'left', leader: '_' },
+      { position: 300, align: 'left', leader: '_' },
+      { position: 350, align: 'left', leader: '·' },
+      { position: 400, align: 'left', leader: null },
     ])
-    expect(doc.unsupported).toMatchObject({ tabLeader: 1, barTab: 1 })
+    expect(doc.unsupported).toEqual({ barTab: 1 })
   })
 
   test('对齐取值：start 与 end 换算为左右，kashida 类为两端对齐', async () => {
@@ -1269,9 +1315,30 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
   const SETTINGS =
     '<w:defaultTabStop w:val="420"/><w:compat><w:compatSetting w:name="compatibilityMode" w:val="14"/></w:compat>'
 
+  test('符号字体中 U+0020–U+00FF 的字符取符号编码子表 U+F000 起的字形（WPS：构造文档 w16 sym，Wingdings 的 w:char 00A8 输出 U+F0A8，16 磅时步进 14.25 磅）', async () => {
+    const wingdings = load('wingding.ttf')
+    expect(wingdings.metrics.glyphId(0xa8)).not.toBe(0)
+    expect(wingdings.metrics.glyphId(0xa8)).toBe(wingdings.metrics.glyphId(0xf0a8))
+    const doc = await parse({
+      styles: DEFAULTS,
+      body: p(
+        '<w:r><w:rPr><w:sz w:val="32"/></w:rPr><w:sym w:font="Wingdings" w:char="00A8"/></w:r>',
+      ),
+    })
+    const symbols = {
+      ...source,
+      face: (name: string) =>
+        name === 'Wingdings' ? { face: wingdings, bold: false } : source.face(name),
+    }
+    const frag = layoutDocument(doc, symbols, NO_HOST_FAMILIES).paragraphs[0]!.text.lines[0]!
+      .fragments[0]!
+    expect(frag.face).toBe(wingdings)
+    expect(Math.abs(frag.advances[0]! - 14.25)).toBeLessThan(0.1)
+  })
+
   /** 各段第一个正文字符相对版心左边的横坐标。 */
   const firstX = (doc: DocxDocument) =>
-    layoutDocument(doc, source).paragraphs.map((pl) => {
+    layoutDocument(doc, source, NO_HOST_FAMILIES).paragraphs.map((pl) => {
       for (const line of pl.text.lines) {
         for (const f of line.fragments) if (pl.runs[f.run]! >= 0) return pl.left + f.x
       }
@@ -1302,7 +1369,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     })
     const xs = firstX(doc)
     expect(xs.slice(0, 6).map((x) => Math.round(x * 100) / 100)).toEqual([42, 42, 42, 21, 84, 36])
-    const last = layoutDocument(doc, source).paragraphs[6]!
+    const last = layoutDocument(doc, source, NO_HOST_FAMILIES).paragraphs[6]!
     const c = last.text.lines[0]!.fragments.at(-1)!
     expect(last.left + c.x).toBeCloseTo(45, 6)
   })
@@ -1365,7 +1432,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
         p(r('c', '<w:rFonts w:ascii="NoSuchFont" w:hAnsi="NoSuchFont"/>')) +
         SECT_LINES,
     })
-    const layout = layoutDocument(doc, source)
+    const layout = layoutDocument(doc, source, NO_HOST_FAMILIES)
     expect(layout.paragraphs.map((x) => [x.spaceBefore, x.spaceAfter])).toEqual([
       [12, 0],
       [0, 12],
@@ -1428,7 +1495,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
           .join('') + p(r('H汉字', themed)),
     })
     const byFile = new Map(Object.entries(files).map(([name, file]) => [load(file), name]))
-    const used = layoutDocument(doc, fonts).paragraphs.map((pl) =>
+    const used = layoutDocument(doc, fonts, NO_HOST_FAMILIES).paragraphs.map((pl) =>
       pl.text.lines[0]!.fragments.flatMap((f) =>
         [...text(paragraphs(doc)[pl.block]!).slice(f.start, f.end)].map(() => byFile.get(f.face)),
       ),
@@ -1471,7 +1538,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     const entry = (name: string, alt: string, charset: string) =>
       `<w:font w:name="${name}">${alt === '' ? '' : `<w:altName w:val="${alt}"/>`}` +
       `<w:charset w:val="${charset}"/></w:font>`
-    const names = ['MS Shell Dlg 2', 'MS Shell Dlg', 'TIMES', 'K', 'KG', 'T', 'Times']
+    const names = ['MS Shell Dlg 2', 'MS Shell Dlg', 'K', 'KG', 'T', 'Times']
     const doc = await parse({
       styles: DEFAULTS,
       settings: SETTINGS,
@@ -1486,7 +1553,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
         .join(''),
     })
     const byFile = new Map(Object.entries(files).map(([name, file]) => [load(file), name]))
-    const used = layoutDocument(doc, fonts).paragraphs.map((pl) =>
+    const used = layoutDocument(doc, fonts, NO_HOST_FAMILIES).paragraphs.map((pl) =>
       pl.text.lines[0]!.fragments.flatMap((f) =>
         [...text(paragraphs(doc)[pl.block]!).slice(f.start, f.end)].map(() => byFile.get(f.face)),
       ),
@@ -1494,11 +1561,177 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     expect(used).toEqual([
       ['Tahoma', '宋体'],
       ['Microsoft Sans Serif', '宋体'],
-      ['Segoe Print', '宋体'],
       ['Malgun Gothic', '宋体'],
       ['Malgun Gothic', '宋体'],
       ['MingLiU-ExtB', '宋体'],
       ['Georgia', '宋体'],
+    ])
+    // 名称区分大小写：单独出现的 TIMES 不替换（同一文档中与 Times 同时出现时沿用先出现者的结果，见下一项）。
+    const upper = await parse({
+      styles: DEFAULTS,
+      settings: SETTINGS,
+      body: p(r('H', '<w:rFonts w:ascii="TIMES" w:hAnsi="TIMES"/>')),
+    })
+    const face = layoutDocument(upper, fonts, NO_HOST_FAMILIES).paragraphs[0]!.text.lines[0]!
+      .fragments[0]!.face
+    expect(byFile.get(face)).toBe('Segoe Print')
+  })
+
+  test('主机没有的字体：按主机字体族名的前缀匹配，在关键字与 charset 86 之后、charset 80 之前；同一用途中只差大小写的名称沿用第一次的结果', async () => {
+    // WPS（构造文档 w13 p1、q01–q31，w15 p1、p2，12 磅，页面 EMF 中的字体名）：Calibri Light Fake 为 Calibri，Courier 为
+    // Courier New，Sitka 为 Sitka Banner，等线 Fake 的西文与汉字都为等线；charset 为 80、altName 为本机没有的字体的
+    // Calibri FakeY 为 Calibri，charset 为 86 的 Calibri FakeX 为宋体；楷体 Fake、新宋体 Fake 的西文为宋体；calibri fake 为
+    // Segoe Print；先出现的 courier 为 Segoe Print 时其后的 Courier 同样为 Segoe Print。
+    const files: Record<string, string> = {
+      宋体: 'simsun.ttc',
+      'Segoe Print': 'segoepr.ttf',
+      Calibri: 'calibri.ttf',
+      'Courier New': 'cour.ttf',
+      'Sitka Banner': 'Sitka.ttc',
+      等线: 'Deng.ttf',
+      楷体: 'simkai.ttf',
+      'Yu Gothic': 'YuGothR.ttc',
+    }
+    const fonts = {
+      face: (name: string) =>
+        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+      math: () => null,
+      outlines: () => null,
+      get fallback() {
+        return load('simsun.ttc')
+      },
+    }
+    const host = {
+      local: [
+        'Calibri',
+        'Calibri Light',
+        'Courier New',
+        'Sitka Banner',
+        'Sitka Small',
+        'Yu Gothic',
+        '等线',
+        '楷体',
+      ],
+      names: [],
+    }
+    const entry = (name: string, alt: string, charset: string) =>
+      `<w:font w:name="${name}"><w:altName w:val="${alt}"/><w:charset w:val="${charset}"/></w:font>`
+    const byFile = new Map(Object.entries(files).map(([name, file]) => [load(file), name]))
+    const used = async (names: readonly string[]) => {
+      const doc = await parse({
+        styles: DEFAULTS,
+        settings: SETTINGS,
+        fonts: entry('Calibri FakeY', 'FFont-Family', '80') + entry('Calibri FakeX', '', '86'),
+        body: names
+          .map((n) => p(r('H汉', `<w:rFonts w:ascii="${n}" w:hAnsi="${n}" w:eastAsia="${n}"/>`)))
+          .join(''),
+      })
+      return layoutDocument(doc, fonts, host).paragraphs.map((pl) =>
+        pl.text.lines[0]!.fragments.flatMap((f) =>
+          [...text(paragraphs(doc)[pl.block]!).slice(f.start, f.end)].map(() => byFile.get(f.face)),
+        ),
+      )
+    }
+    expect(
+      await used([
+        'Calibri Light Fake',
+        'Courier',
+        'Sitka',
+        '等线 Fake',
+        'Calibri FakeY',
+        'Calibri FakeX',
+        '楷体 Fake',
+        '新宋体 Fake',
+        'calibri fake',
+      ]),
+    ).toEqual([
+      ['Calibri', '宋体'],
+      ['Courier New', '宋体'],
+      ['Sitka Banner', '宋体'],
+      ['等线', '等线'],
+      ['Calibri', '宋体'],
+      ['宋体', '宋体'],
+      ['宋体', '宋体'],
+      ['宋体', '宋体'],
+      ['Segoe Print', '宋体'],
+    ])
+    expect(await used(['courier', 'Courier'])).toEqual([
+      ['Segoe Print', '宋体'],
+      ['Segoe Print', '宋体'],
+    ])
+    // 不给出主机字体的族名时不做前缀匹配。
+    const plain = await parse({
+      styles: DEFAULTS,
+      settings: SETTINGS,
+      body: p(r('H', '<w:rFonts w:ascii="Courier" w:hAnsi="Courier"/>')),
+    })
+    const face = layoutDocument(plain, fonts, NO_HOST_FAMILIES).paragraphs[0]!.text.lines[0]!
+      .fragments[0]!.face
+    expect(byFile.get(face)).toBe('Segoe Print')
+  })
+
+  test('主机没有的字体：名称含「黑」取黑体、含「仿宋」取仿宋，在 altName 之后、charset 之前，西文与东亚字体相同', async () => {
+    // WPS（构造文档 w14 r1e、r1a、r2a，12 磅，页面 EMF 中的字体名）：思源黑体 CN（altName 为本机没有的字体）为黑体，
+    // 方正黑体_A 的 altName 为楷体时为楷体，charset 为 80 的方正黑体_C、charset 为 86 的微软雅黑 Fake 为黑体，
+    // altName 为 Arial 而 charset 为 86 的方正黑体_F 为黑体，charset 为 88 的方正仿宋_E 为仿宋；幼圆西文为 Segoe Print、汉字为宋体。
+    const files: Record<string, string> = {
+      宋体: 'simsun.ttc',
+      黑体: 'simhei.ttf',
+      仿宋: 'simfang.ttf',
+      楷体: 'simkai.ttf',
+      Arial: 'arial.ttf',
+      'Segoe Print': 'segoepr.ttf',
+      'Yu Gothic': 'YuGothR.ttc',
+    }
+    const fonts = {
+      face: (name: string) =>
+        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+      math: () => null,
+      outlines: () => null,
+      get fallback() {
+        return load('simsun.ttc')
+      },
+    }
+    const entry = (name: string, alt: string, charset: string) =>
+      `<w:font w:name="${name}">${alt === '' ? '' : `<w:altName w:val="${alt}"/>`}` +
+      `<w:charset w:val="${charset}"/></w:font>`
+    const names = [
+      '思源黑体 CN',
+      '方正黑体_A',
+      '方正黑体_C',
+      '微软雅黑 Fake',
+      '方正黑体_F',
+      '方正仿宋_E',
+      '幼圆',
+    ]
+    const doc = await parse({
+      styles: DEFAULTS,
+      settings: SETTINGS,
+      fonts:
+        entry('思源黑体 CN', 'FFont-Family', '00') +
+        entry('方正黑体_A', '楷体', '00') +
+        entry('方正黑体_C', '', '80') +
+        entry('微软雅黑 Fake', '', '86') +
+        entry('方正黑体_F', 'Arial', '86') +
+        entry('方正仿宋_E', '', '88'),
+      body: names
+        .map((n) => p(r('H汉', `<w:rFonts w:ascii="${n}" w:hAnsi="${n}" w:eastAsia="${n}"/>`)))
+        .join(''),
+    })
+    const byFile = new Map(Object.entries(files).map(([name, file]) => [load(file), name]))
+    const used = layoutDocument(doc, fonts, NO_HOST_FAMILIES).paragraphs.map((pl) =>
+      pl.text.lines[0]!.fragments.flatMap((f) =>
+        [...text(paragraphs(doc)[pl.block]!).slice(f.start, f.end)].map(() => byFile.get(f.face)),
+      ),
+    )
+    expect(used).toEqual([
+      ['黑体', '黑体'],
+      ['楷体', '楷体'],
+      ['黑体', '黑体'],
+      ['黑体', '黑体'],
+      ['黑体', '黑体'],
+      ['仿宋', '仿宋'],
+      ['Segoe Print', '宋体'],
     ])
   })
 
@@ -1508,7 +1741,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
       settings: SETTINGS,
       body: p(r('abc', '<w:caps/>')) + p(r('ABC')),
     })
-    const [a, b] = layoutDocument(doc, source).paragraphs
+    const [a, b] = layoutDocument(doc, source, NO_HOST_FAMILIES).paragraphs
     expect(a!.text.lines[0]!.width).toBeCloseTo(b!.text.lines[0]!.width, 9)
   })
 
@@ -1534,7 +1767,11 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
         ) +
         SECT_LINES,
     })
-    const [kern, squeeze, hung, plain] = layoutDocument(doc, source).paragraphs.map((x) => x.text)
+    const [kern, squeeze, hung, plain] = layoutDocument(
+      doc,
+      source,
+      NO_HOST_FAMILIES,
+    ).paragraphs.map((x) => x.text)
     expect(kern!.lines[0]!.fragments.flatMap((f) => f.advances)).toEqual([12, 6, 12, 12])
     expect(squeeze!.lines[0]!.end - squeeze!.lines[0]!.start).toBe(35)
     expect(squeeze!.lines[0]!.fragments.flatMap((f) => f.advances)[17]).toBeCloseTo(7.3, 9)
@@ -1549,7 +1786,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
           p(r(`${H.repeat(34)}，${H.repeat(20)}`), '<w:jc w:val="left"/><w:ind w:right="138"/>') +
           SECT_LINES,
       })
-      const line = layoutDocument(d, source).paragraphs[0]!.text.lines[0]!
+      const line = layoutDocument(d, source, NO_HOST_FAMILIES).paragraphs[0]!.text.lines[0]!
       return line.end - line.start
     }
     expect(await left(14)).toBe(35)
@@ -1563,7 +1800,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
       settings: SETTINGS,
       body: p(r('汉汉汉', '<w:b/><w:sz w:val="24"/>')) + p(r('汉汉汉', '<w:sz w:val="24"/>')),
     })
-    const [bold, plain] = layoutDocument(doc, source).paragraphs.map(
+    const [bold, plain] = layoutDocument(doc, source, NO_HOST_FAMILIES).paragraphs.map(
       (x) => x.text.lines[0]!.fragments[0]!.advances[0]!,
     )
     expect(bold).toBeCloseTo(12 + 12 / 256, 9)
@@ -1591,10 +1828,10 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
         settings: `<w:compat><w:compatSetting w:name="compatibilityMode" w:val="${mode}"/></w:compat>`,
         body: p(r(words), '<w:ind w:right="138"/>') + cell + p(r('后')) + SECT_LINES,
       })
-      const body = layoutDocument(doc, source).paragraphs[0]!.text.lines[0]!
+      const body = layoutDocument(doc, source, NO_HOST_FAMILIES).paragraphs[0]!.text.lines[0]!
       const t = doc.body[1]!
       if (t.kind !== 'table') throw new Error('不是表格')
-      const layouter = new ParagraphLayouter(doc, source)
+      const layouter = new ParagraphLayouter(doc, source, NO_HOST_FAMILIES)
       const laid = layoutTable(t, doc.sections[0]!.columns[0]!.width, {
         layouter,
         compatibilityMode: mode,
@@ -1638,11 +1875,11 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     if (anchored?.kind !== 'paragraph') throw new Error('不是段落')
     const shape = anchored.anchors[0]!.drawing
     if (shape?.kind !== 'shape' || shape.text === null) throw new Error('不是文本框')
-    const layouter = new ParagraphLayouter(doc, source)
+    const layouter = new ParagraphLayouter(doc, source, NO_HOST_FAMILIES)
     const inBox = layoutStack(shape.text.content, 408.4, { layouter, compatibilityMode: 14 })
       .items[0]!
     if (inBox.kind !== 'paragraph') throw new Error('不是段落')
-    const body = layoutDocument(doc, source).paragraphs[0]!.text.lines[0]!
+    const body = layoutDocument(doc, source, NO_HOST_FAMILIES).paragraphs[0]!.text.lines[0]!
     const line = inBox.layout.text.lines[0]!
     expect(body.end - body.start).toBe(35)
     expect(line.end - line.start).toBe(33)

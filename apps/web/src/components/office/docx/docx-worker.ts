@@ -1,5 +1,5 @@
 /**
- * docx 解析与分页 Worker：首条请求 `parse` 接收文件字节（转移所有权）并保留解析结果，回复所需字体名；
+ * docx 解析与分页 Worker：首条请求 `parse` 接收文件字节（转移所有权）与主机字体的族名并保留两者，回复所需字体名；
  * 主线程取得字体后发出 `layout`，Worker 以同样的字体字节排版、分页，回复纯数据的分页结果。请求与回复的格式见 `../document.ts`。
  *
  * - 排版度量与绘制必须来自同一份字体字节：`layout` 中的字节即主线程注册 `FontFace` 与读取绘制度量所用的字节。
@@ -19,10 +19,16 @@ import {
   requiredFonts,
   type UnsupportedCounts,
 } from '@qywork/ooxml/docx'
+import type { HostFamilies } from '@qywork/ooxml/text'
 import type { WorkerReply, WorkerRequest } from '../document.ts'
 
 export type DocxRequest =
-  | { readonly kind: 'parse'; readonly bytes: ArrayBuffer }
+  | {
+      readonly kind: 'parse'
+      readonly bytes: ArrayBuffer
+      /** 主机字体的族名，排版时对主机没有的字体名做前缀匹配，`layout` 沿用。 */
+      readonly host: HostFamilies
+    }
   | {
       readonly kind: 'layout'
       /** 字体文件字节，每个文件只出现一次。 */
@@ -48,6 +54,7 @@ export interface DocxReplies {
 }
 
 let doc: DocxDocument | null = null
+let host: HostFamilies | null = null
 
 /** 独占整个缓冲区的字节：原样返回，否则复制一份。 */
 function owned(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -74,12 +81,13 @@ async function handle(
     const parsed = await parseDocx(new Uint8Array(body.bytes))
     if (!parsed.ok) return { reply: parsed, transfer: [] }
     doc = parsed.value
+    host = body.host
     return {
-      reply: { ok: true, fonts: requiredFonts(doc), unsupported: doc.unsupported },
+      reply: { ok: true, fonts: requiredFonts(doc, host), unsupported: doc.unsupported },
       transfer: [],
     }
   }
-  if (doc === null) throw new Error('尚未接收文件')
+  if (doc === null || host === null) throw new Error('尚未接收文件')
   const read = body.files.map(readFace)
   const faces: DocxFace[] = []
   for (const [name, indexes] of body.families) {
@@ -88,7 +96,7 @@ async function handle(
       if (face) faces.push({ ...face, family: name })
     }
   }
-  const { pages } = layoutPages(doc, new DocxFonts(faces, body.fallback))
+  const { pages } = layoutPages(doc, new DocxFonts(faces, body.fallback), host)
   const images = pages.images.map((im) => ({ ...im, bytes: owned(im.bytes) }))
   return {
     reply: { ...pages, images },

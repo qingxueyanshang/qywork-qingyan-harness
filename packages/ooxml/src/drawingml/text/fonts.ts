@@ -9,10 +9,13 @@
  *   排版前把每个字体的纵向度量换算为满足这两点的上下沿（`lineFace`），排版模块的行高与基线即按此计算；
  *   中日韩字体不再乘 1.3，也不加外部行距。
  * - `collectTextFonts` 收集文本框用到的字体名；调用方据此并加上 `MISSING_LATIN` 预先取得字体。
+ * - 屏幕显示的字形（`ScreenText`、`TextClearType`）由宿主提供：不平滑字号的单色字形与平滑字号的 ClearType 字形。
  */
 
 import type { BitmapGlyph } from '../../font/index.ts'
+import type { CoverageGlyph, GlyphRun, PixelCanvas } from '../../glyph/cleartype/index.ts'
 import { emboldened, type TextFace } from '../../text/index.ts'
+import type { PaintContext } from '../paint/context.ts'
 import type { Bullet, RunStyle, TextBody } from './model.ts'
 
 export interface SlideFont {
@@ -125,6 +128,35 @@ export interface ScreenText {
   bitmap(face: PaintFace, codePoint: number, ppem: number): ScreenGlyph | null
 }
 
+/** ClearType 字形与该字号的上下沿（GDI 的 `tmAscent`、`tmDescent`，超出的行不绘制）。 */
+export interface ClearTypeGlyph {
+  readonly glyph: CoverageGlyph
+  readonly ascent: number
+  readonly descent: number
+}
+
+/**
+ * 平滑字号按 ClearType 绘制（WPS 经 GDI 的屏幕显示，见 `../../glyph/cleartype/`）：`ScreenText.bitmap` 返回 `null` 的字
+ * 按 `glyph` 的覆盖写入 `target` 的像素。只用于 `target`：画到图层（文字阴影、三维效果、带阴影的组合）上的文字以
+ * `fillText` 绘制，图层透明，按底色混合的像素没有底色。
+ * - 每段文字的字形段交给 `paint`；实现方可以暂存，在 `flush` 时一并混合：每次读写像素都要先完成此前的全部绘制，
+ *   读写的次数决定绘制耗时。`paintBody` 在自己的非文字绘制（底纹、阴影、非纯色填充、轮廓、下划线）与
+ *   `fillText`、点阵字形之前调用 `flush`；暂存的实现方须在其余非文字绘制之前调用 `flush`。
+ */
+export interface TextClearType {
+  /** 不透明的目标画布的绘制上下文；像素按设备坐标读写，不受变换与裁剪路径影响。 */
+  readonly target: PaintContext & PixelCanvas
+  /**
+   * 字在 `ppem`（设备像素字号）下的 ClearType 字形；字体没有 TrueType 轮廓或没有该字时为 `null`（以 `fillText` 绘制）。
+   * 合成粗体与合成斜体由实现方完成。
+   */
+  glyph(face: PaintFace, codePoint: number, ppem: number): ClearTypeGlyph | null
+  /** 混合（或暂存）一段文字的字形段，按顺序。 */
+  paint(runs: readonly GlyphRun[]): void
+  /** 混合暂存的字形段；没有时不读写像素。 */
+  flush(): void
+}
+
 export class FaceCache {
   private readonly lines = new Map<TextFace, { readonly face: TextFace; readonly line: FaceLine }>()
   private readonly faces = new Map<string, PaintFace>()
@@ -134,13 +166,17 @@ export class FaceCache {
   /**
    * `single` 为单倍行高与字号之比，缺省为 `SINGLE_LINE`（演示文稿）；`screen` 见 `ScreenText`，同时决定排版与绘制。
    * `glyphs` 只决定绘制（基线取整与点阵），缺省与 `screen` 相同；`screen` 为 `null` 而 `glyphs` 不为 `null` 时
-   * 行高、基线与纵向中心仍按演示文稿的规则。
+   * 行高、基线与纵向中心仍按演示文稿的规则。`clearType` 只决定绘制，`glyphs` 为 `null` 时不使用；缺省为 `null`
+   * （平滑字号以 `fillText` 绘制）。`wholeSizeLine` 为真时单倍行高按行内最大字号的整数部分计算（见 `body.ts` 的
+   * `singleLine`），缺省与是否按屏幕显示排版相同。
    */
   constructor(
     private readonly source: SlideFontSource,
     private readonly single = SINGLE_LINE,
     readonly screen: ScreenText | null = null,
     readonly glyphs: ScreenText | null = screen,
+    readonly clearType: TextClearType | null = null,
+    readonly wholeSizeLine: boolean = screen !== null,
   ) {
     const fallback = this.line(source.fallback.face)
     this.fallback = this.register({

@@ -5,7 +5,8 @@
  *   文本框与页眉页脚共用。`layoutDocument` 排版正文的顶层段落，区域宽度为所在节第一栏的宽度。
  * - 可用宽度为区域宽度减去左右缩进；制表位与制表起点换算为相对左缩进的行坐标。
  * - 字体由调用方按字体名与字形提供（`FontSource.face`）。返回 `null` 的字体记入 `missingFonts`，按 `substitutes` 的替代字体
- *   排版，都没有时改用 `fallback`。请求粗体而返回的不是粗体字形时按仿粗体（`emboldened`）排版。
+ *   排版，都没有时改用 `fallback`；前缀匹配所用的主机字体族名由调用方给出（`HostFamilies`）。请求粗体而返回的不是粗体字形时
+ *   按仿粗体（`emboldened`）排版。
  * - 文档的数学字体主机没有时改用 Cambria Math（WPS 实测：数学字体为 STIX Math 的文档按 Cambria Math 排版与绘制）。
  * - 段前段后间距按 `contextualSpacing` 抵消（`contextSpacing`）：同一容器中相邻段落样式相同时，设置了该项的段落
  *   不留对应一侧的间距。段落上下边框占用的高度见 `borderExtents`，由调用方加在段前间距之后与最后一行之后，不与间距合并。
@@ -21,8 +22,9 @@
  *   `advance`，上下沿为该段所在行的上下沿（`lineAscent`、`lineDescent`）；第一段与其前的西文、最后一段与其后的西文之间
  *   不断开，与汉字之间可断，其后各段之前可断（WPS 实测）。
  * - 显示公式段落的行由 `layoutMathParagraph` 给出（断行与横向位置），不按段落的对齐方式与首行缩进。行高按 `lineBox`：
- *   上下沿为公式所在行的上下沿，多倍行距增加的部分按段落标记字体的单倍行高计，不对齐行网格（WPS 实测：10.5 磅三种公式
- *   在 1、1.15、1.5、2 倍行距下增加 (倍数 − 1) × 12.1 磅，段落标记为 16 磅时 × 18.4 磅；有行网格时行高不变）。
+ *   上下沿为公式所在行的上下沿，多倍行距增加的部分按段落标记字体的单倍行高计（WPS 实测：10.5 磅三种公式在 1、1.15、1.5、
+ *   2 倍行距下增加 (倍数 − 1) × 12.1 磅，段落标记为 16 磅时 × 18.4 磅）。只在设置了 `adjustLineHeightInTable` 时对齐行网格
+ *   （`gridPitch`）。
  * - 公式含未实现的结构或主机没有数学字体时不排版：行内公式宽度为 0、上下沿取其字段属性的字体，显示公式段落按空段落排版。
  */
 
@@ -46,6 +48,7 @@ import {
   emboldened,
   faceExtent,
   fontSlot,
+  type HostFamilies,
   type InlineObject,
   type LineArea,
   layoutParagraph,
@@ -132,8 +135,8 @@ export interface DocumentLayout {
   readonly missingFonts: readonly string[]
 }
 
-/** 环绕查询：`top`、`height` 为段落坐标，返回的区段横坐标相对区域左边。 */
-export type AreaQuery = (top: number, height: number) => LineArea
+/** 环绕查询：`top`、`height` 为段落坐标，`final` 为该行是段落的最后一行，返回的区段横坐标相对区域左边。 */
+export type AreaQuery = (top: number, height: number, final: boolean) => LineArea
 
 const PAGE_OR_COLUMN_BREAK = /[\f\v]/g
 
@@ -151,10 +154,17 @@ export const EMOJI_FALLBACK = 'Segoe UI Emoji'
 /** 目录域结果以外的制表位前导符所用的字体（见 `ParagraphLayouter.leaderStyle`）。 */
 export const LEADER_FONT = 'Times New Roman'
 
-/** 前导符的字体与对齐：`end` 为整数个前导符与制表位的终点相接，否则自制表符的起点排起。 */
+/** 目录域结果以外的前导符基线另外上移的距离（磅，见 `ParagraphLayouter.leaderStyle`）。 */
+const LEADER_LIFT = 0.05
+
+/**
+ * 前导符的字体、对齐与纵向位置：`end` 为整数个前导符与制表位的终点相接，否则自制表符的起点排起；`rise` 为前导符基线
+ * 在所在行基线之上的距离（磅）。
+ */
 export interface LeaderStyle {
   readonly face: TextFace
   readonly end: boolean
+  readonly rise: number
 }
 const EMOJI_RANGES: readonly (readonly [number, number])[] = [
   [0x1f300, 0x1f64f],
@@ -319,6 +329,8 @@ export function contextSpacing(blocks: readonly Block[], i: number): BlockSpacin
 export class ParagraphLayouter {
   private readonly faces = new Map<string, TextFace>()
   private readonly missing = new Set<string>()
+  /** 替代结果按用途与小写的字体名沿用第一次的结果（见 `substitutes`）：所取的字体名，没有可用的替代字体时为 `null`。 */
+  private readonly substituted = new Map<string, string | null>()
   private readonly chinese: Set<string>
   private readonly noBreakBefore: ReadonlySet<number>
   private readonly noBreakAfter: ReadonlySet<number>
@@ -331,9 +343,11 @@ export class ParagraphLayouter {
   private mathFont: MathFont<TextFace> | null | undefined
   private emoji: TextFace | null | undefined
 
+  /** `host` 为主机字体的族名，用于主机没有的字体名的前缀匹配（见 `substitutes`）。 */
   constructor(
     private readonly doc: DocxDocument,
     private readonly source: FontSource,
+    private readonly host: HostFamilies,
   ) {
     this.chinese = new Set()
     for (const [name, entry] of doc.fontTable)
@@ -370,24 +384,43 @@ export class ParagraphLayouter {
   }
 
   /**
-   * 制表位前导符的绘制方式：`tab` 为制表符的字体（`LineLeader.face`），`props` 与 `field` 为制表符所在的字段；字号、粗体与
-   * 斜体取该字段。目录域结果中字体为 `tab`，整数个前导符与制表位的终点相接；其余为 `LEADER_FONT`，自制表符的起点排起。
-   * WPS 实测（构造文档 w13 l1、m1–m4、n1 与语料目录页）：目录域以外，制表符字段为黑体、Arial、Courier New、微软雅黑、
-   * Segoe Print 等，或文档缺省字体、缺省段落样式、段落样式与字符样式另设字体时，前导符都为 Times New Roman，第一个点
-   * 位于制表符起点，余量留在页码之前；目录域结果中制表符字段为 Arial 时为 Arial，最后一个点止于页码左端。
+   * 制表位前导符的绘制方式：`tab` 为制表符的字体（`LineLeader.face`），`size` 为其字号，`props` 与 `field` 为制表符所在的字段；
+   * 粗体与斜体取该字段。目录域结果中字体为 `tab`，整数个前导符与制表位的终点相接，基线与所在行相同；其余为 `LEADER_FONT`，
+   * 自制表符的起点排起，基线上移 `tab` 与 `LEADER_FONT` 的上沿之差（`faceExtent`）再加 `LEADER_LIFT`。
+   * WPS 实测（构造文档 w13 l1、m1–m4、n1–n7，w14 v1，与语料目录页）：
+   * - 字体：目录域以外，制表符字段为黑体、Arial、Courier New、微软雅黑、Segoe Print 等，或文档缺省字体、缺省段落样式、段落样式与
+   *   字符样式另设字体时，前导符都为 Times New Roman，第一个点位于制表符起点，余量留在页码之前；目录域结果中制表符字段为 Arial
+   *   时为 Arial，最后一个点止于页码左端。起作用的是目录域，与超链接和 `webHidden` 无关（只有超链接或只有 `webHidden` 时为
+   *   Times New Roman，目录域中没有超链接时为 Arial）。
+   * - 纵向：目录域以外 244 行（v1 224 行与 l1 20 行，14 种制表符字体，10、10.5、12、15 磅，行顶的小数部分逐项变化）的前导符
+   *   像素位置全部一致；上移量在 0.045–0.059 磅之间时都一致，不加 `LEADER_LIFT` 时 24 行低 1 像素。目录域结果中语料 153 行
+   *   与所在行基线相同（再上移 0.05 磅时 17 行高 1 像素）。
    */
-  leaderStyle(tab: TextFace, props: RunProps, field: string | null): LeaderStyle {
-    if (field === 'TOC') return { face: tab, end: true }
-    return { face: this.face(LEADER_FONT, props.bold, props.italic), end: false }
+  leaderStyle(tab: TextFace, size: number, props: RunProps, field: string | null): LeaderStyle {
+    if (field === 'TOC') return { face: tab, end: true, rise: 0 }
+    const face = this.face(LEADER_FONT, props.bold, props.italic)
+    const rise =
+      faceExtent(tab.vertical, size).ascent - faceExtent(face.vertical, size).ascent + LEADER_LIFT
+    return { face, end: false, rise }
   }
 
-  /** 第一个主机有且含所需代码页的替代字体；都没有时为 `null`。 */
+  /**
+   * 第一个主机有且含所需代码页的替代字体；都没有时为 `null`。同一用途中名称只差大小写的字体名沿用第一次所取的替代字体
+   * （WPS 实测，构造文档 w13 p1：先出现的 `courier` 为 Segoe Print 时，其后的 `Courier` 同样为 Segoe Print，单独出现时为
+   * Courier New）。
+   */
   private substitute(name: string, bold: boolean, italic: boolean, use: FontUse): FontMatch | null {
-    for (const c of substitutes(name, use, this.doc.fontTable)) {
+    const key = `${use}\u0000${name.toLowerCase()}`
+    const chosen = this.substituted.get(key)
+    if (chosen !== undefined) return chosen === null ? null : this.source.face(chosen, bold, italic)
+    for (const c of substitutes(name, use, this.doc.fontTable, this.host.local)) {
       const found = this.source.face(c.name, bold, italic)
-      if (found !== null && ((found.face.vertical.codePages ?? 0) & c.codePages) === c.codePages)
+      if (found !== null && ((found.face.vertical.codePages ?? 0) & c.codePages) === c.codePages) {
+        this.substituted.set(key, c.name)
         return found
+      }
     }
+    this.substituted.set(key, null)
     return null
   }
 
@@ -532,24 +565,37 @@ export class ParagraphLayouter {
     return result
   }
 
-  /** 显示公式段落的行（见文件头）；公式不能排版时为 `null`。 */
+  /**
+   * 段落对齐行网格时的网格行距，不对齐时为 `null`。显示公式段落只在设置了 `adjustLineHeightInTable` 时对齐（WPS 实测，构造文档
+   * w16 c：只加这一项时 1.3 倍行距的分式行高为 2 × 15.6 磅、两层分式为 3 × 15.6 磅、单倍行距的分式为 2 × 15.6 磅，
+   * `snapToGrid` 关闭时不对齐；兼容模式缺省、14 与 15 时没有该项都不对齐）。
+   */
+  private gridPitch(p: Paragraph, display: boolean): number | null {
+    const pitch = this.doc.sections[p.section]!.linePitch
+    if (!p.props.snapToGrid || pitch <= 0) return null
+    return display && !this.doc.settings.gridInTables ? null : pitch
+  }
+
+  /** 显示公式段落的行（见文件头）与各行公式的下沿；公式不能排版时为 `null`。 */
   private displayLines(
     p: Paragraph,
     justification: MathJustification,
     width: number,
     markSingle: number,
-  ): { text: TextBlock; formulas: LineFormula[] } | null {
+  ): { text: TextBlock; formulas: LineFormula[]; descents: Map<number, number> } | null {
     const result = this.displayResult(p, justification, width)
     if (result === null || result.kind !== 'layout') return null
     const end = p.runs.reduce((n, r) => n + r.text.length, 0)
     const lines: TextLine[] = []
     const formulas: LineFormula[] = []
+    const descents = new Map<number, number>()
+    const grid = this.gridPitch(p, true)
     let top = 0
     result.lines.forEach((l, k) => {
       const box = lineBox(
         [{ ascent: l.lineAscent, descent: l.lineDescent, single: markSingle }],
         p.props.lineSpacing,
-        null,
+        grid,
       )
       const baseline = top + box.baseline
       lines.push({
@@ -568,9 +614,10 @@ export class ParagraphLayouter {
         forcedBreak: false,
       })
       formulas.push({ line: k, x: l.x, baseline, layout: bare(l) })
+      descents.set(k, l.lineDescent)
       top += box.height
     })
-    return { text: { lines, height: top }, formulas }
+    return { text: { lines, height: top }, formulas, descents }
   }
 
   /**
@@ -594,8 +641,8 @@ export class ParagraphLayouter {
     const lineArea =
       area === undefined
         ? undefined
-        : (top: number, height: number): LineArea => {
-            const a = area(top, height)
+        : (top: number, height: number, final: boolean): LineArea => {
+            const a = area(top, height, final)
             const segments: { left: number; width: number }[] = []
             for (const g of a.segments) {
               const left = Math.max(g.left, props.left) - props.left
@@ -607,6 +654,7 @@ export class ParagraphLayouter {
     const text =
       shown?.text ?? layoutParagraph(runs, lineArea === undefined ? style : { ...style, lineArea })
     const placed = placeObjects(p, text, sources)
+    if (shown !== null) for (const [k, d] of shown.descents) placed.descents.set(k, d)
     const ls = props.lineSpacing
     const gridBottoms =
       style.gridPitch !== null && ls.rule === 'multiple' && ls.value > 1
@@ -631,7 +679,7 @@ export class ParagraphLayouter {
 
   /**
    * 段落的断行输入：字段、各字段的来源与段落格式。`width` 为可用宽度，缩进取 `indent`；`display` 为显示公式段落：
-   * 公式字段按未排版的公式参与，不对齐行网格。
+   * 公式字段按未排版的公式参与，行网格见 `gridPitch`。
    */
   private textInput(
     p: Paragraph,
@@ -639,7 +687,6 @@ export class ParagraphLayouter {
     indent: { readonly left: number; readonly firstLine: number },
     display: boolean,
   ): { runs: ParagraphRun[]; map: number[]; sources: RunSource[]; style: ParagraphStyle } {
-    const section = this.doc.sections[p.section]!
     const s = this.doc.settings
     const props = p.props
     const runs: ParagraphRun[] = []
@@ -672,8 +719,7 @@ export class ParagraphLayouter {
       for (const formula of segments) add({ object: formula.object }, i, { formula })
     })
     imagesBefore(Number.POSITIVE_INFINITY)
-    const gridPitch =
-      !display && props.snapToGrid && section.linePitch > 0 ? section.linePitch : null
+    const gridPitch = this.gridPitch(p, display)
     const mark = this.face(p.mark.fonts.hAnsi, p.mark.bold, p.mark.italic)
     const style: ParagraphStyle = {
       width,
@@ -787,9 +833,13 @@ function textBottoms(
   return out
 }
 
-/** 正文顶层段落的排版：区域为所在节第一栏。 */
-export function layoutDocument(doc: DocxDocument, source: FontSource): DocumentLayout {
-  const layouter = new ParagraphLayouter(doc, source)
+/** 正文顶层段落的排版：区域为所在节第一栏。`host` 为主机字体的族名，用于主机没有的字体名的前缀匹配。 */
+export function layoutDocument(
+  doc: DocxDocument,
+  source: FontSource,
+  host: HostFamilies,
+): DocumentLayout {
+  const layouter = new ParagraphLayouter(doc, source, host)
   const paragraphs: ParagraphLayout[] = []
   doc.body.forEach((p, block) => {
     if (p.kind !== 'paragraph') return

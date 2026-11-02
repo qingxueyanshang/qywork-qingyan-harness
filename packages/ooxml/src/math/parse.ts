@@ -4,6 +4,7 @@
  * - 元素按本地名识别；`m:val` 先按 `m:` 前缀取，再按命名空间取，最后取无前缀的 `val`（部分生成器省略前缀）。
  * - 字符属性（`m:r` 与 `m:ctrlPr` 中非 `m:` 命名空间的 `rPr`）交给调用方的 `readProps` 读取：回调须读到该元素的结束标签。
  * - 修订：`ins`、`moveTo` 中的内容按最终状态保留，`del`、`moveFrom` 中的内容丢弃。书签、校对与批注范围标记忽略。
+ *   `m:r` 中的可选连字符（`w:softHyphen`）不显示（WPS 实测，构造文档 w16 fm：「a」可选连字符「+b」显示为 a+b，行高与 a+b 相同）。
  * - 其余未识别的元素记为 `unsupported` 节点，排版时整个公式不绘制。
  */
 
@@ -209,7 +210,8 @@ class Reader<P> {
         })
       } else if (local === 'rPr') props = this.readProps(x)
       else if (local === 't') text += readText(x)
-      else if (local === 'ins' || local === 'del' || IGNORED.has(local)) skip(x)
+      else if (local === 'ins' || local === 'del' || local === 'softHyphen' || IGNORED.has(local))
+        skip(x)
       else {
         unsupported ??= local
         skip(x)

@@ -31,8 +31,7 @@ import type { Alignment, LineSpacing } from '../text/index.ts'
  * - 版面：`columns`（多栏节；连续分节前的多栏平衡与不等宽栏的排版宽度未实现）、`footnote`、`endnote`、`comment`、
  *   `artBorder`（艺术型页面边框，按单线绘制）、`lineNumbers`、`textDirection`。
  * - 文字效果：`characterScale`、`emphasisMark`、`smallCaps`、`eastAsianLayout`、
- *   `fitText`、`rtl`、`charGrid`（字符网格）、`tabLeader`（点以外的制表位前导符）、`decimalTab`、`barTab`、`ruby`、
- *   `ptab`、`softHyphen`。
+ *   `fitText`、`rtl`、`charGrid`（字符网格）、`decimalTab`、`barTab`、`ruby`、`ptab`、`softHyphen`。
  * - 内容：`revision`（修订标记，按最终状态显示）、`dynamicField`（打开时由应用重新计算的域，显示文件中缓存的结果）、
  *   `numberFormat`（未实现的编号格式，按中文计数显示）、`autoSpacing`（HTML 自动段间距）。
  */
@@ -67,7 +66,6 @@ export type UnsupportedKind =
   | 'fitText'
   | 'rtl'
   | 'charGrid'
-  | 'tabLeader'
   | 'decimalTab'
   | 'barTab'
   | 'ruby'
@@ -215,7 +213,7 @@ export interface TabStop {
   readonly position: number
   /** 小数点对齐按右对齐排版，计入 `decimalTab`。 */
   readonly align: 'left' | 'center' | 'right'
-  /** 前导符字符：`dot` 为「.」；其余前导符未实现（计入 `tabLeader`），与没有前导符同为 `null`。 */
+  /** 前导符字符（`dot` 为「.」，见 `resolve/cascade.ts` 的 `LEADERS`）；没有前导符时为 `null`。 */
   readonly leader: string | null
 }
 
@@ -401,6 +399,11 @@ export interface TextBox {
   readonly autoFit: boolean
   /** 文字在文字区域宽度处换行；为假（`wrap="none"`）且根据文字调整大小时，形状宽度另取内容不换行的宽度加左右内缩。 */
   readonly wrap: boolean
+  /**
+   * 竖排文字（`bodyPr/@vert` 为 `vert` 或 `vert270`）与形状的旋转相抵时形状的顺时针旋转（270 或 90）：文字横排在旋转后的形状框中，
+   * 内缩随形状旋转；其余为 0，文字区为未旋转的形状框。
+   */
+  readonly turned: 0 | 90 | 270
 }
 
 /**

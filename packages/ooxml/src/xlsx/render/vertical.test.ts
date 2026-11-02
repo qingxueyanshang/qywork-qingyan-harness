@@ -1,7 +1,7 @@
 /**
  * 覆盖：`text.ts` 的 `LineBox.baseline`（行高中的 `2·extra` 在文字上下平分）、一行有多个字体时取行高最大者
  * （行高相同取先出现的）、`lineBoxOf`（以换行符结束的行计入换行符所在段的主字体）；`cell-text.ts` 的纵向定位
- * （靠上、靠下、居中向零取整、多行文字高于行高时居中改为靠上）；`shapes.ts` 的 `screenText` 接入，
+ * （靠上、靠下、居中向零取整、多行文字高于行高时居中改为靠上）；`shapes.ts` 的 `screenText` 接入与图表文字的单倍行高，
  * `../../drawingml/text/fonts.ts` 屏幕显示的纵向中心（按代码页分两组），以及 `../../drawingml/text/body.ts` 的
  * `hostBlock`（小数字号的行高与基线、百分比与固定行距的基线）与屏幕显示绘制（点阵、基线取整）。
  * 期望值取自 WPS 屏幕显示的逐格实测（构造文件经 `Range.CopyPicture` 取得的对照图）。
@@ -10,13 +10,18 @@
 import { describe, expect, test } from 'bun:test'
 import { canvasFactory, RecordingContext } from '../../drawingml/paint/test-helper.ts'
 import { layoutBody, paintBody } from '../../drawingml/text/body.ts'
-import { FaceCache, type ScreenText, type SlideFont } from '../../drawingml/text/fonts.ts'
+import {
+  FaceCache,
+  type ScreenText,
+  SINGLE_LINE,
+  type SlideFont,
+} from '../../drawingml/text/fonts.ts'
 import type { Paragraph, RunStyle, TextBody } from '../../drawingml/text/model.ts'
 import type { FontMetrics, PixelVerticalMetrics } from '../../font/index.ts'
 import type { CellStyle, FontStyle, Workbook } from '../model.ts'
 import { type CellBox, cellContent, layoutCell } from './cell-text.ts'
 import { FontSet, type LoadedFace } from './fonts.ts'
-import { shapeFaces } from './shapes.ts'
+import { chartFaces, shapeFaces } from './shapes.ts'
 import { lineBox, lineBoxOf, makeRun, wrapRuns } from './text.ts'
 
 type Vertical = (ppem: number) => { ascent: number; descent: number; externalLeading: number }
@@ -262,7 +267,8 @@ const single = { unit: 'percent', value: 1 } as const
 describe('形状文字的屏幕显示', () => {
   test('工作表的形状文字按屏幕显示排版，演示文稿不使用', () => {
     expect(
-      shapeFaces({ fontNames: ['宋体'], minorFont: null } as unknown as Workbook, fonts)?.screen,
+      shapeFaces({ fontNames: ['宋体'], minorFont: null } as unknown as Workbook, fonts, null)
+        ?.screen,
     ).not.toBeNull()
     expect(new FaceCache(source).screen).toBeNull()
   })
@@ -283,6 +289,19 @@ describe('形状文字的屏幕显示', () => {
       return line.baseline - line.height / 2
     }
     expect(offset(10.5)).toBeCloseTo(offset(10) * 1.05, 6)
+  })
+
+  /** 原始失败形状：WPS 表格图表 10.5 磅的多行标题每行比本方少 1 像素。 */
+  test('图表文字的单倍行高同样按整数字号计算，演示文稿的图表按实际字号', () => {
+    const pitch = (faces: FaceCache) => {
+      const ps = layoutBody(body(10.5, single), 200, { faces, slideNumber: null }).paragraphs
+      return ((ps[1]!.y - ps[0]!.y) * 4) / 3
+    }
+    const sheet = { fontNames: ['宋体'], minorFont: null } as unknown as Workbook
+    // WPS 表格：宋体、微软雅黑、Calibri、Arial 10.5 磅的标题各行相距 16 像素，即 1.2 × 10 磅。
+    expect(pitch(chartFaces(sheet, fonts, null)!)).toBeCloseTo(16, 6)
+    // WPS 演示与 WPS 文字：同样的标题各行位于 13、30、47 像素，与 1.2 × 10.5 磅（16.8 像素）一致。
+    expect(pitch(new FaceCache(source, SINGLE_LINE, null, none))).toBeCloseTo(16.8, 6)
   })
 
   test('纵向中心按代码页分两组，屏幕显示与演示文稿相同', () => {
@@ -338,7 +357,7 @@ describe('形状文字的屏幕显示', () => {
         layout,
         { matrix, width: 150, height: 100, scale: 1 },
         faces,
-        { image: () => null, createCanvas: canvasFactory().create },
+        { image: () => null, createCanvas: canvasFactory().create, metafileFonts: null },
         { width: 400, height: 400 },
         [],
       )

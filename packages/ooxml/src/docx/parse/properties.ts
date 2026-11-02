@@ -386,11 +386,18 @@ function readIndent(x: Scanner): RawIndent {
   return out
 }
 
+/**
+ * `beforeLines`、`afterLines` 为此值时按 0 读取：覆盖样式中的值，间距改取按缇的值（WPS 实测，构造文档 w16 sp：
+ * `after="200"` 时段后 10 磅，样式中的 `afterLines="100"` 不再起作用；其他负值按原值，`afterLines="-1"` 与 `"-100"` 时段后为 0，
+ * 不改取按缇的值）。
+ */
+const UNSET_LINES = -2147483648
+
 function readSpacing(x: Scanner): RawSpacing {
   const out: RawSpacing = {}
   for (const key of ['before', 'after', 'beforeLines', 'afterLines', 'line'] as const) {
     const v = wNum(x, key)
-    if (v !== null) out[key] = v
+    if (v !== null) out[key] = v === UNSET_LINES && key.endsWith('Lines') ? 0 : v
   }
   const rule = wAttr(x, 'lineRule')
   if (rule !== null) out.lineRule = rule

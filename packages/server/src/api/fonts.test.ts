@@ -1,6 +1,6 @@
 /**
- * 主机字体接口（`api/fonts.ts`）：字体目录表、按字体名解析、按标识取字节、TTC 拆分结果、
- * 参数校验、未找到、缓存头、字体安装后下一次请求可见、字体平滑设置，以及在派发器中的注册。
+ * 主机字体接口（`api/fonts.ts`）：字体目录表、按字体名解析、按标识取字节、TTC 拆分结果、主机字体的族名（按界面语言取的族名与
+ * 全部语言的族名）、参数校验、未找到、缓存头、字体安装后下一次请求可见、字体平滑设置，以及在派发器中的注册。
  *
  * 系统字体取自本机 Windows 字体目录；用户字体目录指向临时目录，用例之间不受本机已安装的用户字体影响。
  * 环境变量在任何请求之前设置：索引按首次请求时的目录清单建立。
@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readFaces, readFamilyNames, tableBytes } from '@qywork/ooxml/font'
+import { localFamilyName, readFaces, readFamilyNames, tableBytes } from '@qywork/ooxml/font'
 import { Store, upsertWorkspace } from '@qywork/store'
 import { fontRoots, fontSmoothing, handleFontsApi, readSmoothingParameters } from './fonts.ts'
 import { type ApiDeps, handleApi } from './index.ts'
@@ -123,6 +123,29 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
     const res = await file('黑体', body.faces[0]!.id)
     const original = readFileSync(join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts', 'simhei.ttf'))
     expect(new Uint8Array(await res!.arrayBuffer())).toEqual(new Uint8Array(original))
+  })
+
+  test('族名：按界面语言取每个字体的族名，没有该语言时取英文名；另列全部语言的族名（小写）', async () => {
+    const nameTable = (file: string, index = 0) => {
+      const bytes = new Uint8Array(
+        readFileSync(join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts', file)),
+      )
+      return tableBytes(bytes, readFaces(bytes)[index]!, 'name')
+    }
+    expect(localFamilyName(nameTable('simsun.ttc'), 0x0804)).toBe('宋体')
+    expect(localFamilyName(nameTable('simsun.ttc'), 0x0409)).toBe('SimSun')
+    // 微软正黑体只有繁体中文与英文名称：中文（简体）界面中取英文名。
+    expect(localFamilyName(nameTable('msjh.ttc'), 0x0804)).toBe('Microsoft JhengHei')
+    expect(localFamilyName(nameTable('msjh.ttc'), 0x0404)).toBe('微軟正黑體')
+    const res = await get('/api/fonts/families')
+    expect(res?.status).toBe(200)
+    const body = (await res!.json()) as { local: string[]; names: string[] }
+    expect(body.local).toContain('Arial')
+    expect(body.names).toContain('simsun')
+    expect(body.names).toContain('宋体')
+    expect(body.names).toContain('arial')
+    expect(body.local.includes('宋体') !== body.local.includes('SimSun')).toBe(true)
+    expect([...body.local].sort()).toEqual(body.local)
   })
 
   test('主机上没有的字体名与不匹配的标识返回 404', async () => {

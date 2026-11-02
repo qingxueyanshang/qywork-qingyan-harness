@@ -12,6 +12,8 @@
  * - `cNvPr/@hidden` 为真的对象不显示，也不计数（含其中的未实现内容与组合内的对象）。锚点不完整或顶层形状缺少
  *   `xfrm` 时不显示并计为 `graphic`：形状的坐标系由顶层 `xfrm` 确定（见 `SheetShape`）。
  * - 锚点按文档顺序编号（`order`），图片与形状共用同一序列。
+ * - 工作表部件中的控件（`readControls`）：`AlternateContent` 按 `x14` 命名空间选择分支，2010 版起的 `controlPr` 写在要求
+ *   `x14` 的 `Choice` 中，给出替代图片的关系与单元格锚点。
  */
 
 import { type RelativeRect, readFill, type ShapeFill, ZERO_RECT } from '../../drawingml/fill.ts'
@@ -85,8 +87,22 @@ export interface ParsedDrawing {
   readonly pictures: DrawingPicture[]
   readonly shapes: SheetShape[]
   readonly charts: DrawingChart[]
+  /** 锚点个数，即下一个对象的序号。 */
+  readonly anchors: number
   readonly unsupported: UnsupportedCounts
 }
+
+/** 工作表的一个控件（`controls/control`）。 */
+export interface RawControl {
+  /** `control/@r:id`：控件部件（ActiveX 控件或表单控件属性）的关系 ID。 */
+  readonly control: string | null
+  /** `controlPr/@r:id`：替代图片的关系 ID；没有时为 `null`。 */
+  readonly image: string | null
+  /** `controlPr/anchor` 的单元格锚点；缺失或不完整时为 `null`。 */
+  readonly anchor: DrawingAnchor | null
+}
+
+const X14 = 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main'
 
 const CHART_URI = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
 const ANCHORS = new Set(['twoCellAnchor', 'oneCellAnchor', 'absoluteAnchor'])
@@ -432,5 +448,39 @@ export function parseDrawing(
       }
     }
   })
-  return { pictures, shapes, charts, unsupported: counts }
+  return { pictures, shapes, charts, anchors: order, unsupported: counts }
+}
+
+/** 读取工作表部件中 `controls` 的各个控件。 */
+export function readControls(xml: string): RawControl[] {
+  const x = new PartScanner(xml, [X14])
+  const out: RawControl[] = []
+  for (let t = x.next(); t !== null; t = x.next()) {
+    if (t !== 'start' || x.depth !== 2 || x.local !== 'controls') continue
+    eachChild(x, (local) => {
+      if (local === 'control') out.push(readControl(x))
+    })
+  }
+  return out
+}
+
+function readControl(x: Scanner): RawControl {
+  const control = relAttr(x, 'id')
+  let image: string | null = null
+  let anchor: DrawingAnchor | null = null
+  eachChild(x, (local) => {
+    if (local !== 'controlPr') return
+    image = relAttr(x, 'id')
+    eachChild(x, (inner) => {
+      if (inner !== 'anchor') return
+      let from: AnchorMarker | null = null
+      let to: AnchorMarker | null = null
+      eachChild(x, (m) => {
+        if (m === 'from') from = readMarker(x)
+        else if (m === 'to') to = readMarker(x)
+      })
+      anchor = buildAnchor('twoCellAnchor', from, to, { x: 0, y: 0 }, { cx: 0, cy: 0 })
+    })
+  })
+  return { control, image, anchor }
 }

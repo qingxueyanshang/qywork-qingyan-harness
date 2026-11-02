@@ -8,7 +8,7 @@
  * 留白与自动换行行宽、数字格式空白的宽度与自动换行时末尾空白、自动换行的行居中取整、逻辑值不按行排版）、
  * `conditional.ts` 与 `../formula.ts`（条件格式规则与公式求值）、`painter.ts`（以记录调用的上下文检查
  * 网格线与填充的覆盖规则、各线型边框相对网格线的位置、文字与筛选按钮、点阵绘制与逐字定位、合成粗体的两次绘制、
- * 绘图对象的上下次序、冻结窗格各块的平移、区域外的形状）、`shapes.ts`（锚点换算、旋转接近 90° 时的宽高互换、组合内的换算、绘制范围、形状文字的字体与单倍行高）。
+ * 绘图对象的上下次序、图片按共用图片接口绘制、冻结窗格各块的平移、区域外的形状）、`shapes.ts`（锚点换算、旋转接近 90° 时的宽高互换、组合内的换算、绘制范围、形状文字的字体与单倍行高、形状与图表文字的 ClearType 字形）。
  * Bun 中没有 Canvas，像素结果由对比基准验证。
  * 「本机字体的单行行高」读取 Windows 字体目录中的真实文件，其他平台跳过；期望值取自 WPS 实测（含缺失字体的行高与留白分界）。
  */
@@ -16,12 +16,18 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Matrix, PaintImage } from '../../drawingml/paint/context.ts'
-import { canvasFactory, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { readChart } from '../../drawingml/chart/read.ts'
+import { resolveChart } from '../../drawingml/chart/resolve.ts'
+import { DEFAULT_COLOR_MAP } from '../../drawingml/color.ts'
+import type { Matrix } from '../../drawingml/paint/context.ts'
+import type { PaintPicture } from '../../drawingml/paint/picture.ts'
+import { SCREEN_RESOLUTION } from '../../drawingml/paint/resolution.ts'
+import { canvasFactory, placeableWmf, RecordingContext } from '../../drawingml/paint/test-helper.ts'
 import type { Frame } from '../../drawingml/shape/model.ts'
 import { layoutBody } from '../../drawingml/text/body.ts'
 import { FaceCache } from '../../drawingml/text/fonts.ts'
 import type { RunStyle, TextBody } from '../../drawingml/text/model.ts'
+import { EMPTY_THEME } from '../../drawingml/theme.ts'
 import {
   type BitmapGlyph,
   type EmbeddedBitmaps,
@@ -29,6 +35,7 @@ import {
   type FontMetrics,
 } from '../../font/index.ts'
 import type { CoverageGlyph, PixelData } from '../../glyph/cleartype/index.ts'
+import { readMetafile } from '../../metafile/index.ts'
 import { canEvaluate, evaluateFormula } from '../formula.ts'
 import type {
   BorderLineStyle,
@@ -1518,7 +1525,11 @@ function image(anchor: DrawingAnchor, order: number): SheetImage {
   }
 }
 
-const BITMAP: PaintImage = { width: 10, height: 10 }
+const BITMAP: PaintPicture = {
+  kind: 'bitmap',
+  bitmap: { width: 10, height: 10 },
+  resolution: SCREEN_RESOLUTION,
+}
 
 describe('形状', () => {
   test('顶层形状框对齐锚点矩形；旋转接近 90° 时按互换后的宽高对齐；组合内的子形状按同一映射换算', () => {
@@ -1596,6 +1607,48 @@ describe('形状', () => {
     expect(far.named('fill')).toHaveLength(0)
   })
 
+  test('图片按共用图片接口绘制：位图以 medium 插值按裁剪比例绘制，图元文件在设备坐标中回放并以工作表字体绘制文字', () => {
+    // 字体名不在字体集中的「A」：按缺少字体时的字体（回退字体宋体）绘制。
+    const wmf = placeableWmf([
+      [0x02fb, -20 & 0xffff, 0, 0, 0, 400, 0, 0, 0, 0, 0x6556, 0x6472, 0x6e61, 0x0061],
+      [0x012d, 0],
+      [0x0a32, 0, 20, 1, 0, 0x41, 12],
+    ])
+    const sheet = sheetOf(
+      {},
+      {
+        images: [
+          {
+            ...image(absolute(10, 0, 20, 10), 0),
+            crop: { left: 0.2, top: 0, right: 0.3, bottom: 0 },
+          },
+          { ...image(absolute(40, 0, 100, 50), 1), contentType: 'image/x-wmf', bytes: wmf },
+        ],
+      },
+    )
+    const res: SheetResources = {
+      images: [BITMAP, { kind: 'metafile', metafile: readMetafile(wmf)!, images: [] }],
+      createCanvas: canvasFactory().create,
+      clearType: null,
+    }
+    const ctx = new SheetRecorder() as SheetRecorder & { imageSmoothingQuality: string }
+    ctx.imageSmoothingQuality = 'low'
+    ctx.setTransform(2, 0, 0, 2, 0, 0)
+    paintRegion(
+      ctx,
+      createScene(workbook(sheet), sheet, fonts),
+      { x: 0, y: 0, width: 200, height: 100 },
+      res,
+    )
+    expect(ctx.named('drawImage').map((c) => c.args.slice(1))).toEqual([
+      [2, 0, 5, 10, 10, 0, 20, 10],
+    ])
+    expect(ctx.imageSmoothingQuality).toBe('medium')
+    const text = ctx.named('fillText').filter((c) => c.font.includes('"宋体"'))
+    expect(text.map((c) => c.args[0])).toEqual(['A'])
+    expect(text[0]!.matrix).toEqual({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 })
+  })
+
   test('冻结窗格：跨越冻结线的形状在四块中各绘制一次，可滚动的块随滚动量平移', () => {
     const view = {
       showGridLines: true,
@@ -1657,13 +1710,93 @@ describe('形状', () => {
     expect(bare.named('fillText')).toHaveLength(0)
   })
 
+  /** 每个字形为一行 20 像素、原点左侧 10 像素起、覆盖 (3, 2, 1) 的 ClearType 字形；只有宋体带 ClearType 字形。 */
+  const clearTypeFonts = () => {
+    const glyph: CoverageGlyph = {
+      width: 20,
+      height: 1,
+      bearingX: -10,
+      bearingY: 1,
+      coverage: Uint8Array.from({ length: 60 }, (_, i) => 3 - (i % 3)),
+    }
+    return new FontSet(
+      [
+        fakeFace('西文', { cjk: false }),
+        { ...fakeFace('宋体', { cjk: true }), clearType: { glyph: () => glyph } },
+      ],
+      ['宋体'],
+    )
+  }
+  /** 画布像素缓冲区中各行混合为 (144, 182, 219)（黑字在对比度 1200 下覆盖 (3, 2, 1) 的结果）的像素横坐标。 */
+  const blended = (ctx: SheetRecorder) => {
+    const out: number[] = []
+    for (let y = 0; y < PIXELS_H; y++)
+      for (let x = 0; x < PIXELS_W; x++) if (rgbAt(ctx, x, y).join() === '144,182,219') out.push(x)
+    return out
+  }
+
+  /** 原始失败形状：WPS 表格的形状文字为 GDI 的 ClearType 绘制，此前一律以浏览器字体（`fillText`）绘制。 */
+  test('显示器使用 ClearType 时形状文字按 ClearType 字形写入画布像素，不调用 fillText；像素不写到绘制区域之外', () => {
+    const shape: SheetShape = {
+      anchor: absolute(0, 0, 100, 40),
+      order: 0,
+      shape: rectShape(framePx(0, 0, 100, 40), textBody('汉')),
+    }
+    const sheet = sheetOf({}, { shapes: [shape] })
+    const scene = createScene(workbook(sheet), sheet, clearTypeFonts())
+    const on = recorder()
+    paintRegion(on.ctx, scene, { x: 0, y: 0, width: 200, height: 100 }, resources(1200))
+    expect(on.texts).toEqual([])
+    // 文字起点为左边距 9.6 像素取整后的 10，字形覆盖 [0, 20)。
+    expect(blended(on.ctx)).toEqual(Array.from({ length: 20 }, (_, i) => i))
+    // 区域自工作表 x = 5 起画在画布 x = 50 处：字形覆盖画布 [45, 65)，区域左沿之外的 [45, 50) 不写入。
+    const shifted = recorder()
+    paintRegion(shifted.ctx, scene, { x: 5, y: 0, width: 100, height: 100 }, resources(1200), 50)
+    expect(blended(shifted.ctx)).toEqual(Array.from({ length: 15 }, (_, i) => 50 + i))
+    const off = recorder()
+    paintRegion(off.ctx, scene, { x: 0, y: 0, width: 200, height: 100 }, resources())
+    expect(off.texts.map((t) => t[0])).toEqual(['汉'])
+    expect(blended(off.ctx)).toEqual([])
+  })
+
+  /** 原始失败形状：WPS 表格的图表文字为 GDI 的 ClearType 绘制，此前一律以浏览器字体（`fillText`）绘制。 */
+  test('显示器使用 ClearType 时图表文字按 ClearType 字形写入画布像素，不调用 fillText', () => {
+    const C = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+    const A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    const xml =
+      `<c:chartSpace xmlns:c="${C}" xmlns:a="${A}"><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r>` +
+      '<a:rPr lang="zh-CN" sz="1400"><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:latin typeface="宋体"/>' +
+      '<a:ea typeface="宋体"/></a:rPr><a:t>汉</a:t></a:r></a:p>' +
+      '</c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/><c:plotArea><c:layout/>' +
+      '<c:pieChart><c:varyColors val="1"/><c:ser><c:idx val="0"/><c:order val="0"/><c:val><c:numLit><c:ptCount val="1"/>' +
+      '<c:pt idx="0"><c:v>1</c:v></c:pt></c:numLit></c:val></c:ser></c:pieChart></c:plotArea></c:chart></c:chartSpace>'
+    const rels = { source: '', list: [], byId: () => null, ofKind: () => [], part: () => null }
+    const chart = resolveChart(readChart(xml, rels), {
+      theme: EMPTY_THEME,
+      colors: { scheme: EMPTY_THEME.colors, map: DEFAULT_COLOR_MAP },
+      host: 'sheet',
+      cells: null,
+    })
+    if (chart === null) throw new Error('图表不支持')
+    const sheet = sheetOf({}, { charts: [{ anchor: absolute(0, 0, 300, 180), order: 0, chart }] })
+    const scene = createScene(workbook(sheet), sheet, clearTypeFonts())
+    const on = recorder()
+    paintRegion(on.ctx, scene, { x: 0, y: 0, width: 300, height: 180 }, resources(1200))
+    expect(on.texts).toEqual([])
+    expect(blended(on.ctx)).toHaveLength(20)
+    const off = recorder()
+    paintRegion(off.ctx, scene, { x: 0, y: 0, width: 300, height: 180 }, resources())
+    expect(off.texts.map((t) => t[0])).toEqual(['汉'])
+    expect(blended(off.ctx)).toEqual([])
+  })
+
   test('形状文字的单倍行高为字号的 1.296 倍，与字体无关（演示文稿为 1.2 倍）', () => {
     const one = textBody('汉字')
     const p = one.paragraphs[0]!
     const big = { ...p, runs: p.runs.map((r) => ({ ...r, style: { ...r.style, size: 20 } })) }
     const text: TextBody = { ...one, paragraphs: [big, big, big] }
     const sheet = sheetOf({})
-    const faces = shapeFaces(workbook(sheet), fonts)!
+    const faces = shapeFaces(workbook(sheet), fonts, null)!
     const tops = layoutBody(text, 200, { faces, slideNumber: null }).paragraphs.map((q) => q.y)
     expect(tops[1]! - tops[0]!).toBeCloseTo(1.296 * 20, 6)
     expect(tops[2]! - tops[1]!).toBeCloseTo(1.296 * 20, 6)

@@ -308,6 +308,9 @@ function docPages(pages: Page[]): DocumentPages {
   return { faces: [], images: [], pages }
 }
 
+/** 假服务端的主机字体族名（`/api/fonts/families`）。 */
+const HOST_FAMILIES = { local: ['宋体', 'Courier New'], names: ['courier new', 'simsun', '宋体'] }
+
 /** 第 4 页为横向，其余为纵向。 */
 const REPORT_SIZES = Array.from({ length: 10 }, (_, i) => (i === 3 ? A4_LANDSCAPE : A4))
 
@@ -317,7 +320,7 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
     parsed: {
       ok: true,
       fonts: ['宋体', 'SimSun', '黑体'],
-      unsupported: { chart: 2, tabLeader: 3 },
+      unsupported: { chart: 2, decimalTab: 3 },
     },
     pages: docPages(REPORT_SIZES.map((size) => docPage(size))),
   },
@@ -360,7 +363,6 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
         fitText: 1,
         rtl: 1,
         charGrid: 1,
-        tabLeader: 1,
         decimalTab: 1,
         barTab: 1,
         ruby: 1,
@@ -473,12 +475,13 @@ interface WorkerCall {
 /**
  * 替换 `Worker`：xlsx Worker 按收到的字节回复 `XLSX_RESULTS`；pptx Worker 的 `parse` 按字节回复 `PPTX_RESULTS`，
  * `font` 回复一份 `tinyFont()`，`images` 回复空列表；docx Worker 的 `parse` 按字节回复 `DOCX_RESULTS` 的解析结果，
- * `layout` 回复同一份文件的分页结果。记录每次创建时的地址与类型、pptx 与 docx 请求的种类、docx 的 `layout` 请求、
+ * `layout` 回复同一份文件的分页结果。记录每次创建时的地址与类型、pptx 与 docx 请求的种类、docx 的 `parse` 与 `layout` 请求、
  * 结束的次数。`holdFonts` 时 `font` 请求不立即回复，按请求顺序放入 `held`，由 `release` 发出回复；Worker 结束后不再回复。
  */
 function fakeWorker(opts: { fail?: boolean; holdFonts?: boolean } = {}) {
   const calls: WorkerCall[] = []
   const requests: (PptxRequest | DocxRequest)['kind'][] = []
+  const parses: Extract<DocxRequest, { kind: 'parse' }>[] = []
   const layouts: Extract<DocxRequest, { kind: 'layout' }>[] = []
   const held: { readonly typeface: string; readonly release: () => void }[] = []
   let terminated = 0
@@ -499,7 +502,10 @@ function fakeWorker(opts: { fail?: boolean; holdFonts?: boolean } = {}) {
       const docx = this.url.endsWith('/docx-worker.ts')
       if (!xlsx) requests.push(body.kind)
       if (body.kind === 'layout') layouts.push(body)
-      if (docx && body.kind === 'parse') this.doc = new TextDecoder().decode(body.bytes)
+      if (docx && body.kind === 'parse') {
+        parses.push(body as Extract<DocxRequest, { kind: 'parse' }>)
+        this.doc = new TextDecoder().decode(body.bytes)
+      }
       const reply = (): WorkerReply<unknown> => {
         if (docx) {
           const result = DOCX_RESULTS[this.doc]
@@ -538,7 +544,7 @@ function fakeWorker(opts: { fail?: boolean; holdFonts?: boolean } = {}) {
   restores.push(() => {
     globalThis.Worker = original
   })
-  return { calls, requests, layouts, held, terminated: () => terminated }
+  return { calls, requests, parses, layouts, held, terminated: () => terminated }
 }
 
 /**
@@ -605,6 +611,7 @@ async function fakeServer(opts: {
       return { faces: [{ id: `id-${name}`, bold: false, italic: false }] }
     }
     if (path === '/api/fonts/smoothing') return { clearType: opts.clearType ?? null }
+    if (path === '/api/fonts/families') return HOST_FAMILIES
     if (path.startsWith('/api/files/tree')) return { nodes: [] }
     if (path.startsWith('/api/files/find')) {
       const query = new URLSearchParams(path.split('?')[1] ?? '')
@@ -1092,6 +1099,7 @@ describe('演示文稿预览', () => {
   /**
    * 原始失败形状：透明画布上的文字为灰度抗锯齿；画布位置与 CSS 尺寸为小数时浏览器重采样，文字发虚。
    * 不透明画布的初始像素为黑色，画布高度取整后最后一行像素只被幻灯片部分覆盖，须先以白色铺满。
+   * 主机不使用 ClearType 时画布不按频繁读取像素创建。
    */
   test('幻灯片画布为不透明画布，绘制前以白色铺满整个画布；位置按像素取整，画布像素与 CSS 像素相同', async () => {
     fakeWorker()
@@ -1109,7 +1117,7 @@ describe('演示文稿预览', () => {
     const { GAP } = await import('./pptx/slide-viewport.ts')
     const scale = VIEW_W / (1 + 2 * GAP)
     for (const { canvas, options, fills } of contexts) {
-      expect(options).toEqual({ alpha: false })
+      expect(options).toEqual({ alpha: false, willReadFrequently: false })
       expect(fills[0]).toEqual({
         transform: [1, 0, 0, 1, 0, 0],
         fillStyle: '#ffffff',
@@ -1125,6 +1133,25 @@ describe('演示文稿预览', () => {
       `${Math.round(GAP * scale)}px`,
       `${Math.round((2 * GAP + ASPECT) * scale)}px`,
     ])
+  })
+
+  /** 原始失败形状：WPS 演示的文字为 GDI 的 ClearType 绘制，此前幻灯片一律以浏览器字体绘制。 */
+  test('主机使用 ClearType 时幻灯片画布按频繁读取像素创建：文字以 ClearType 字形读写画布像素', async () => {
+    fakeWorker()
+    const contexts = recordContexts()
+    await fakeServer({ bytes: () => 'deck', clearType: { contrast: 1200 } })
+    sizeScrollers()
+    const host = await mountFileView(
+      () => 'deck.pptx',
+      () => 0,
+    )
+    await waitFor(
+      () => contexts.length >= 2 && contexts.every((c) => c.fills.length > 0),
+      () => host.innerHTML.slice(0, 300),
+    )
+    for (const { options } of contexts) {
+      expect(options).toEqual({ alpha: false, willReadFrequently: true })
+    }
   })
 
   /** 原始失败形状：AI 改写文件后预览不刷新；或刷新后回到第一张幻灯片、缩放复原。 */
@@ -1348,7 +1375,7 @@ async function docIndexes(host: HTMLElement, scale: number): Promise<number[]> {
 }
 
 describe('文档预览', () => {
-  test('加载期间显示加载态；解析与分页在模块 Worker 中进行，Worker 为同源文件，分页完成后结束；排版使用主机字体的字节', async () => {
+  test('加载期间显示加载态；解析与分页在模块 Worker 中进行，Worker 为同源文件，分页完成后结束；排版使用主机字体的字节与族名', async () => {
     const workers = fakeWorker()
     let release: (() => void) | undefined
     await fakeServer({
@@ -1382,6 +1409,8 @@ describe('文档预览', () => {
     )
     expect(workers.requests).toEqual(['parse', 'layout'])
     expect(workers.terminated()).toBe(1)
+    // 主机字体的族名随解析请求交给 Worker（前缀匹配与所需字体名都按它求得）。
+    expect(workers.parses[0]!.host).toEqual(HOST_FAMILIES)
     // 文档所需的字体名与回退字体都请求过；主机只有宋体，其余字体名没有字体文件。
     const layout = workers.layouts[0]!
     expect(layout.families).toEqual([
@@ -1430,7 +1459,7 @@ describe('文档预览', () => {
     expect(boundary(host)).toBe(
       '未显示：图片 2、图表 1、SmartArt 1、形状 1、组合 1、绘图画布 1、其他对象 2、嵌入对象 1、公式 1、墨迹 1、' +
         '其他效果 1、图文框 1、浮动表格 1、外部内容 1、子文档 1、脚注 1、尾注 1、批注 1、修订 1、域 1、分栏 1、' +
-        '文字方向 1、行号 1、字符网格 1、艺术型页面边框 1、编号格式 1、自动段间距 1、制表位前导符 1、' +
+        '文字方向 1、行号 1、字符网格 1、艺术型页面边框 1、编号格式 1、自动段间距 1、' +
         '小数点对齐制表位 1、竖线对齐制表位 1、对齐方式选项卡 1、字符缩放 1、着重号 1、小型大写字母 1、中文版式 1、' +
         '调整宽度 1、从右向左 1、拼音指南 1、可选连字符 1',
     )
@@ -1503,6 +1532,30 @@ describe('文档预览', () => {
     expect(canvas.style.top).toBe(`${Math.round(GAP * PX_PER_POINT)}px`)
   })
 
+  /** 原始失败形状：WPS 文字的正文为 GDI 的 ClearType 绘制，此前页面一律以浏览器字体绘制。 */
+  test('主机使用 ClearType 时页面画布按频繁读取像素创建；不使用时按缺省方式创建', async () => {
+    for (const clearType of [{ contrast: 1200 }, undefined]) {
+      fakeWorker()
+      const contexts = recordContexts()
+      await fakeServer(clearType ? { bytes: () => 'report', clearType } : { bytes: () => 'report' })
+      sizeScrollers()
+      const host = await mountFileView(
+        () => 'report.docx',
+        () => 0,
+      )
+      await waitFor(
+        () => contexts.length >= 1 && contexts.every((c) => c.fills.length > 0),
+        () => host.innerHTML.slice(0, 300),
+      )
+      for (const { options } of contexts)
+        expect(options).toEqual({ alpha: false, willReadFrequently: clearType !== undefined })
+      dispose?.()
+      dispose = undefined
+      document.body.replaceChildren()
+      for (const restore of restores.splice(0).reverse()) restore()
+    }
+  })
+
   /** 原始失败形状：AI 改写文件后预览不刷新；或刷新后回到第一页、缩放复原。 */
   test('改写后按修改时间重新加载，保留滚动位置与缩放比例；修改时间不变时不重新获取', async () => {
     fakeWorker()
@@ -1516,7 +1569,7 @@ describe('文档预览', () => {
     sizeScrollers()
     const host = await mountFileView(() => 'report.docx', refresh)
     await waitFor(
-      () => boundary(host) === '未显示：图表 2、制表位前导符 3',
+      () => boundary(host) === '未显示：图表 2、小数点对齐制表位 3',
       () => host.innerHTML.slice(0, 300),
     )
     const scroller = host.querySelector<HTMLElement>('.doc-scroll')!

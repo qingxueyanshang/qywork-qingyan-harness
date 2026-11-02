@@ -95,11 +95,15 @@ function dib1(): { bmi: Bytes; bits: Bytes } {
   return { bmi, bits }
 }
 
-/** 字形宽度为 ppem 一半的等宽字体；上升为 ppem 的 0.8，下降为 0.2。 */
-function testFonts(seen: { name: string; bold: boolean }[] = []): MetafileFonts {
+/**
+ * 字形宽度为 ppem 一半的等宽字体；上升为 ppem 的 0.8，下降为 0.2，平均字符宽度为 em 的一半。`symbol` 为真时是符号字体。
+ */
+function testFonts(seen: { name: string; bold: boolean }[] = [], symbol = false): MetafileFonts {
   const face: MetafileFace = {
     vertical: (ppem) => ({ ascent: Math.round(ppem * 0.8), descent: Math.round(ppem * 0.2) }),
     emPerCell: 1,
+    averageWidth: 0.5,
+    symbol,
     advance: (_cp, ppem) => ppem / 2,
     draw: (ctx: PaintContext, text, x, baseline, ppem) => {
       ctx.font = `${ppem}px test`
@@ -162,24 +166,73 @@ describe('WMF 的读取', () => {
       p: { x: 4, y: 8 },
       text: '提交',
       dx: [15, 15],
+      symbol: null,
       opaque: null,
       clip: null,
     })
   })
 
-  test('未选入字体时绘制文字、DEFAULT_CHARSET 的非 ASCII 字节与未实现的记录计为不支持', () => {
+  test('未选入字体时绘制文字与未实现的记录计为不支持', () => {
     const noFont = readMetafile(wmf([[0x0a32, 0, 0, 1, 0, 0x41]]))!
     expect(noFont.unsupported).toEqual(['text:stockFont'])
-    const font = [-15, 0, 0, 0, 400, ...words([0, 0, 0, 1, 0, 0, 0, 0, 0x41, 0])]
-    const ansi = readMetafile(
+    expect(readMetafile(wmf([[0x0817, 0, 0, 0, 0, 0, 0, 0, 0]]))!.unsupported).toEqual(['ARC'])
+  })
+
+  test('SYMBOL_CHARSET 按符号编码；DEFAULT_CHARSET 按系统代码页并另给出符号编码；字体名按系统代码页', () => {
+    // WPS 实测（构造文件）：Symbol 的 SYMBOL_CHARSET 字节 61 62 显示为 αβ；Times New Roman 的 DEFAULT_CHARSET 字节
+    // E9 96 41 显示为「闁A」；字符集为 DEFAULT_CHARSET、字体名为「宋体」的 GBK 字节时按宋体绘制。
+    const font = (charset: number, face: readonly number[]) => [
+      -20 & 0xffff,
+      0,
+      0,
+      0,
+      400,
+      ...words([0, 0, 0, charset, 0, 0, 0, 0, ...face, 0]),
+    ]
+    const mf = readMetafile(
       wmf([
-        [0x02fb, ...font],
+        [0x02fb, ...font(2, [0x53, 0x79, 0x6d])],
         [0x012d, 0],
-        [0x0a32, 0, 0, 2, 0, 0xbbcc],
+        [0x0a32, 0, 0, 2, 0, ...words([0x61, 0x62]), 5, 6],
+        [0x02fb, ...font(1, [0x54, 0x4e, 0x52])],
+        [0x012d, 1],
+        [0x0a32, 0, 0, 3, 0, ...words([0xe9, 0x96, 0x41]), 7, 8, 9],
+        [0x02fb, ...font(1, [0xcb, 0xce, 0xcc, 0xe5])],
+        [0x012d, 2],
+        [0x0a32, 0, 0, 1, 0, 0x41],
       ]),
     )!
-    expect(ansi.unsupported).toEqual(['text:charset1'])
-    expect(readMetafile(wmf([[0x0817, 0, 0, 0, 0, 0, 0, 0, 0]]))!.unsupported).toEqual(['ARC'])
+    expect(mf.unsupported).toEqual([])
+    expect(mf.fonts).toEqual(['Sym', 'TNR', '宋体'])
+    const texts = mf.ops.flatMap((o) => (o.op === 'text' ? [[o.text, o.dx, o.symbol]] : []))
+    expect(texts).toEqual([
+      ['\uf061\uf062', [5, 6], null],
+      ['闁A', [15, 9], { text: '\uf0e9\uf096\uf041', dx: [7, 8, 9] }],
+      ['A', null, { text: '', dx: null }],
+    ])
+  })
+
+  test('没有可放置文件头时以记录设置的窗口为图片框；SETMAPPERFLAGS 不影响绘制', () => {
+    // WPS 演示实测（构造文件）：窗口原点 (0, 40)、范围 (80, -40) 时内容映射到图片矩形，文字正立，基线在 30 像素处。
+    const records: number[][] = [
+      [0x0103, 8],
+      [0x020b, 40, 0],
+      [0x020c, -40 & 0xffff, 80],
+      [0x0231, 1, 0],
+      [0x02fb, -20 & 0xffff, 0, 0, 0, 400, ...words([0, 0, 0, 0, 0, 0, 0, 0, 0x41, 0])],
+      [0x012d, 0],
+      [0x0102, 1],
+      [0x012e, 24],
+      [0x0a32, 10, 4, 1, 0, 0x41],
+    ]
+    const b = new Bytes().u16(1, 9, 0x0300).u32(0).u16(4).u32(0).u16(0)
+    for (const [fn, ...params] of [...records, [0]]) b.u32(3 + params.length).u16(fn!, ...params)
+    const mf = readMetafile(b.build())!
+    expect(mf.unsupported).toEqual([])
+    expect(mf.frame).toEqual({ left: 0, top: 40, right: 80, bottom: 0 })
+    const ctx = new RecordingContext()
+    playMetafile(ctx, mf, [], { x: 0, y: 0, width: 80, height: 40 }, testFonts())
+    expect(ctx.named('fillText').map((c) => c.args)).toEqual([['A', 4, 30]])
   })
 
   test('没有字符的 EXTTEXTOUT 只填充不透明矩形，不需要字体', () => {
@@ -191,6 +244,7 @@ describe('WMF 的读取', () => {
         p: { x: 0, y: 0 },
         text: '',
         dx: null,
+        symbol: null,
         opaque: { left: 3, top: 3, right: 141, bottom: 33 },
         clip: null,
       },
@@ -216,9 +270,129 @@ describe('WMF 的读取', () => {
         src: { x: 0, y: 0, width: 2, height: 1 },
         bitmap: 0,
         alpha: 1,
+        rop: 'copy',
       },
       { op: 'patBlt', box: { left: 7, top: 8, right: 12, bottom: 14 }, fill: 'brush' },
     ])
+  })
+})
+
+describe('WMF 的区域、调色板与画笔', () => {
+  test('CREATEREGION 的扫描线矩形由 PAINTREGION 以当前画刷、FILLREGION 以指定画刷填充', () => {
+    // 区域：2 条扫描线，(10, 5)–(20, 7) 与 (10, 7)–(14, 9)、(16, 7)–(20, 9)。
+    const region = [
+      0, 6, 0, 0, 0, 2, 4, 10, 5, 20, 9, 2, 5, 7, 10, 20, 2, 4, 7, 9, 10, 14, 16, 20, 4,
+    ]
+    const mf = readMetafile(
+      wmf([
+        [0x06ff, ...region],
+        [0x02fc, 0, 0x00ff, 0, 0],
+        [0x012d, 1],
+        [0x012b, 0],
+        [0x02fc, 0, 0xff00, 0, 0],
+        [0x0228, 0, 2],
+      ]),
+    )!
+    expect(mf.unsupported).toEqual([])
+    const rects = [
+      { left: 10, top: 5, right: 20, bottom: 7 },
+      { left: 10, top: 7, right: 14, bottom: 9 },
+      { left: 16, top: 7, right: 20, bottom: 9 },
+    ]
+    expect(mf.ops.filter((o) => o.op === 'fillRegion')).toEqual([
+      { op: 'fillRegion', rects, brush: null },
+      { op: 'fillRegion', rects, brush: { kind: 'solid', color: { r: 0, g: 255, b: 0 } } },
+    ])
+    const ctx = new RecordingContext()
+    playMetafile(ctx, mf, [], { x: 0, y: 0, width: 200, height: 100 }, testFonts())
+    expect(ctx.named('rect').map((c) => c.args)).toEqual([
+      [20, 10, 20, 4],
+      [20, 14, 8, 4],
+      [32, 14, 8, 4],
+      [20, 10, 20, 4],
+      [20, 14, 8, 4],
+      [32, 14, 8, 4],
+    ])
+    expect(ctx.named('fill').map((c) => c.fillStyle)).toEqual(['rgb(255,0,0)', 'rgb(0,255,0)'])
+  })
+
+  test('调色板的创建与选入不改变绘制，占用对象表的位置；引用调色板序号的颜色计为不支持', () => {
+    const mf = readMetafile(
+      wmf([
+        [0x00f7, 0x0300, 1, 0x00ff, 0],
+        [0x0234, 0],
+        [0x0035],
+        [0x02fc, 0, 0x00ff, 0, 0],
+        [0x012d, 1],
+      ]),
+    )!
+    expect(mf.unsupported).toEqual([])
+    expect(mf.ops).toEqual([
+      { op: 'brush', brush: { kind: 'solid', color: { r: 255, g: 0, b: 0 } } },
+    ])
+    expect(readMetafile(wmf([[0x0209, 3, 0x0100]]))!.unsupported).toEqual(['color:paletteIndex'])
+  })
+
+  test('DIBBITBLT 的 SRCAND 以 multiply、SRCPAINT 以 lighter 合成，其余光栅操作计为不支持', () => {
+    // 透明位图的写法：先以黑白掩码按位与，再以黑底图像按位或。
+    const { bmi, bits } = dib1()
+    const dib = words([...bmi.build(), ...bits.build()])
+    const blt = (lo: number, hi: number) => [0x0940, lo, hi, 0, 0, 2, 2, 10, 10, ...dib]
+    const mf = readMetafile(wmf([blt(0x00c6, 0x0088), blt(0x0086, 0x00ee)]))!
+    expect(mf.unsupported).toEqual([])
+    expect(mf.ops.map((o) => (o.op === 'bitmap' ? o.rop : o.op))).toEqual(['and', 'paint'])
+    const ctx = new RecordingContext()
+    playMetafile(
+      ctx,
+      mf,
+      [
+        { width: 2, height: 2 },
+        { width: 2, height: 2 },
+      ],
+      {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 50,
+      },
+      testFonts(),
+    )
+    expect(ctx.named('drawImage').map((c) => c.composite)).toEqual(['multiply', 'lighter'])
+    expect(readMetafile(wmf([blt(0x0046, 0x0066)]))!.unsupported).toEqual(['bitmap:rop660046'])
+  })
+
+  test('SCALEVIEWPORTEXT 与 SCALEWINDOWEXT 按分子与分母缩放视口与窗口的范围', () => {
+    const draw = (scale: number[]) => {
+      const mf = readMetafile(wmf([scale, [0x041b, 40, 90, 10, 10]]))!
+      expect(mf.unsupported).toEqual([])
+      const ctx = new RecordingContext()
+      playMetafile(ctx, mf, [], { x: 0, y: 0, width: 100, height: 50 }, testFonts())
+      return ctx.named('moveTo')[0]!.args
+    }
+    // 视口的范围乘以 1/2、窗口的范围乘以 2：矩形 (10, 10)–(90, 40) 映射为 (5, 5)–(45, 20)。
+    expect(draw([0x0412, 2, 1, 2, 1])).toEqual([5, 5])
+    expect(draw([0x0410, 1, 2, 1, 2])).toEqual([5, 5])
+  })
+
+  test('PS_INSIDEFRAME：线宽大于 1 像素时矩形缩进到外接矩形之内，线宽 1 像素时与实线相同；DSTCOPY 不绘制', () => {
+    const draw = (width: number) => {
+      const mf = readMetafile(
+        wmf([
+          [0x02fa, 6, width, 0, 0, 0],
+          [0x012d, 0],
+          [0x041b, 40, 90, 10, 10],
+          [0x0940, 0x0029, 0x00aa, 0, 0, 0, 6, 5, 8, 7],
+        ]),
+      )!
+      expect(mf.unsupported).toEqual([])
+      const ctx = new RecordingContext()
+      playMetafile(ctx, mf, [], { x: 0, y: 0, width: 100, height: 50 }, testFonts())
+      return ctx
+    }
+    // 线宽 5：外接矩形 (10, 10)–(90, 40) 各边缩进 2，描边的中心线为 (12.5, 12.5)–(87.5, 37.5)。
+    expect(draw(5).named('moveTo').at(-1)!.args).toEqual([12.5, 12.5])
+    expect(draw(1).named('moveTo').at(-1)!.args).toEqual([10.5, 10.5])
+    expect(draw(1).named('fillRect')).toEqual([])
   })
 })
 
@@ -271,8 +445,16 @@ describe('EMF 的读取', () => {
     expect(ok.unsupported).toEqual([])
     expect(ok.fonts).toEqual(['Arial'])
     expect(ok.ops).toEqual([
-      { op: 'font', font: { height: -20, weight: 700, italic: false, face: 'Arial' } },
-      { op: 'text', p: { x: 5, y: 6 }, text: 'A中', dx: [7, 9], opaque: null, clip: null },
+      { op: 'font', font: { height: -20, width: 0, weight: 700, italic: false, face: 'Arial' } },
+      {
+        op: 'text',
+        p: { x: 5, y: 6 },
+        text: 'A中',
+        dx: [7, 9],
+        symbol: null,
+        opaque: null,
+        clip: null,
+      },
     ])
     const stock = readMetafile(
       emf([
@@ -321,6 +503,7 @@ describe('EMF 的读取', () => {
         src: { x: 0, y: 0, width: 1, height: 1 },
         bitmap: 0,
         alpha: 128 / 255,
+        rop: 'copy',
       },
     ])
     expect([...mf.bitmaps[0]!.data]).toEqual([128, 0, 0, 128])
@@ -485,6 +668,128 @@ describe('绘制', () => {
     const cell = ctx.named('fillRect')[0]!
     expect(cell.fillStyle).toBe('rgb(255,255,255)')
     expect(cell.args).toEqual([0, 0, 10, 10])
+  })
+
+  test('TA_UPDATECP：参考点为当前位置，左对齐时移到文字右端、右对齐时移到左端，居中时不移动', () => {
+    // WPS 实测（构造文件，字号 20 像素）：左对齐时「ab」「cd」「ef」（前进宽度 12、12）「g」依次相接，其后的 LINETO
+    // 自文字右端起；右对齐时各段依次向左排列；居中时两段文字重叠。
+    const font = [-20 & 0xffff, 0, 0, 0, 400, ...words([0, 0, 0, 0, 0, 0, 0, 0, 0x41, 0])]
+    const run = (align: number, x: number, tail: number[][]) => {
+      const mf = readMetafile(
+        wmf(
+          [
+            [0x02fb, ...font],
+            [0x012d, 0],
+            [0x0102, 1],
+            [0x012e, align],
+            [0x0214, 30, x],
+            [0x0a32, 0, 0, 2, 0, 0x6261],
+            [0x0a32, 0, 0, 2, 0, 0x6463],
+            ...tail,
+          ],
+          [0, 0, 120, 40],
+        ),
+      )!
+      expect(mf.unsupported).toEqual([])
+      const ctx = new RecordingContext()
+      playMetafile(ctx, mf, [], { x: 0, y: 0, width: 120, height: 40 }, testFonts())
+      return ctx
+    }
+    const left = run(25, 4, [
+      [0x0a32, 0, 0, 2, 0, 0x6665, 12, 12],
+      [0x0a32, 0, 0, 1, 0, 0x67],
+      [0x0213, 30, 110],
+    ])
+    expect(left.named('fillText').map((c) => [c.args[0], c.args[1]])).toEqual([
+      ['a', 4],
+      ['b', 14],
+      ['c', 24],
+      ['d', 34],
+      ['e', 44],
+      ['f', 56],
+      ['g', 68],
+    ])
+    expect(left.named('moveTo').at(-1)!.args).toEqual([78.5, 30.5])
+    const right = run(27, 116, [[0x0a32, 0, 0, 2, 0, 0x6665, 12, 12]])
+    expect(right.named('fillText').map((c) => [c.args[0], c.args[1]])).toEqual([
+      ['a', 96],
+      ['b', 106],
+      ['c', 76],
+      ['d', 86],
+      ['e', 52],
+      ['f', 64],
+    ])
+    const center = run(31, 60, [])
+    expect(center.named('fillText').map((c) => [c.args[0], c.args[1]])).toEqual([
+      ['a', 50],
+      ['b', 60],
+      ['c', 50],
+      ['d', 60],
+    ])
+  })
+
+  test('DEFAULT_CHARSET 的文字在所选字体为符号字体时按符号编码绘制', () => {
+    // WPS 实测（构造文件）：Symbol 的 DEFAULT_CHARSET 字节 61 62 E5 显示为 αβ∑。
+    const font = [-20 & 0xffff, 0, 0, 0, 400, ...words([0, 0, 0, 1, 0, 0, 0, 0, 0x41, 0])]
+    const mf = readMetafile(
+      wmf([
+        [0x02fb, ...font],
+        [0x012d, 0],
+        [0x0102, 1],
+        [0x0a32, 30, 4, 3, 0, ...words([0x61, 0x62, 0xe5])],
+      ]),
+    )!
+    const draw = (symbol: boolean) => {
+      const ctx = new RecordingContext()
+      playMetafile(ctx, mf, [], { x: 0, y: 0, width: 100, height: 50 }, testFonts([], symbol))
+      return ctx.named('fillText').map((c) => c.args[0])
+    }
+    expect(draw(true)).toEqual(['\uf061', '\uf062', '\uf0e5'])
+    expect(draw(false)).toEqual(['a', 'b', '\ufffd'])
+  })
+
+  test('lfWidth 不为 0 时字形与按字体度量的前进宽度按 lfWidth 与平均字符宽度之比横向缩放', () => {
+    // WPS 实测（构造文件）：Times New Roman 20 像素「Rqx」，lfWidth 6 时宽 22 像素、14 时宽 56 像素（原宽 31 像素，
+    // 按比例 0.75、1.75 为 23、54 像素）。
+    const font = [-20 & 0xffff, 6, 0, 0, 400, ...words([0, 0, 0, 0, 0, 0, 0, 0, 0x41, 0])]
+    const mf = readMetafile(
+      wmf([
+        [0x02fb, ...font],
+        [0x012d, 0],
+        [0x0102, 1],
+        [0x0a32, 30, 4, 2, 0, 0x6261],
+      ]),
+    )!
+    expect(mf.unsupported).toEqual([])
+    const ctx = new RecordingContext()
+    playMetafile(ctx, mf, [], { x: 0, y: 0, width: 100, height: 50 }, testFonts())
+    // 平均字符宽度 10 像素，缩放 0.6；字的前进宽度 10 × 0.6 = 6；顶端对齐，基线在 30 + 上升 16 处。
+    const texts = ctx.named('fillText')
+    expect(texts.map((c) => c.args)).toEqual([
+      ['a', 0, 0],
+      ['b', 0, 0],
+    ])
+    expect(texts.map((c) => [c.matrix.a, c.matrix.e, c.matrix.f])).toEqual([
+      [0.6, 4, 46],
+      [0.6, 10, 46],
+    ])
+  })
+
+  test('SETMETARGN：当前裁剪并入元区域，此后取消裁剪不取消元区域', () => {
+    const mf = readMetafile(
+      emf([
+        [30, new Bytes().u32(10, 10, 60, 30)],
+        [28, new Bytes()],
+        [75, new Bytes().u32(0, 5)],
+        [43, new Bytes().u32(0, 0, 1000, 500)],
+      ]),
+    )!
+    expect(mf.unsupported).toEqual([])
+    const ctx = new RecordingContext()
+    playMetafile(ctx, mf, [], { x: 0, y: 0, width: 100, height: 50 }, testFonts())
+    // 图片框为参考设备的 100 × 50 像素，映射到 100 × 50 的目标：裁剪矩形 (10, 10)–(60, 30) 保持不变。
+    expect(ctx.named('rect')[0]!.args).toEqual([10, 10, 50, 20])
+    expect(ctx.named('clip')).toHaveLength(1)
   })
 
   test('含不支持内容的图元文件不绘制', () => {

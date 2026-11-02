@@ -1,15 +1,25 @@
 /**
  * WMF 读取：可放置文件头（`0x9AC6CDD7`）给出图片框（逻辑坐标的边界）与每英寸的逻辑单位数，其后为标准文件头与记录。
  *
- * - 没有可放置文件头的 WMF 没有图片框，计为不支持。
+ * - 没有可放置文件头的 WMF（PowerPoint 的 OLE 对象替代图片）以记录设置的窗口为图片框：第一条 SETWINDOWEXT 及其之前的
+ *   SETWINDOWORG（缺省为原点），没有 SETWINDOWEXT 时计为不支持。WPS 演示实测（构造文件）：窗口映射到图片的矩形，
+ *   窗口范围的 y 为负时内容不翻转显示，文字正立。
  * - 对象表按标准规则分配：新建的对象放入编号最小的空位，删除后空位可再用；选入时按编号取对象。
  * - 映射：播放时窗口初值为图片框，视口为目标矩形，映射模式为 `MM_ANISOTROPIC`；记录可修改窗口的原点与范围、
- *   在 `MM_ANISOTROPIC` 与 `MM_ISOTROPIC` 之间切换。修改视口与其他映射模式未实现。
- * - `SELECTCLIPREGION` 引用的对象不是区域时取消裁剪（区域对象未实现）。
+ *   在 `MM_ANISOTROPIC` 与 `MM_ISOTROPIC` 之间切换、按比例缩放窗口与视口的范围。设置视口与其他映射模式未实现。
+ * - 区域对象（`CREATEREGION`）为逻辑坐标的扫描线矩形：`PAINTREGION`、`FILLREGION` 填充区域；`SELECTCLIPREGION` 以区域
+ *   裁剪未实现（区域按设备坐标解释），引用的对象不是区域时取消裁剪。
  * - 参数为 16 位；多数记录的坐标参数 y 在前，按各记录的格式读取。
  */
 
-import { Builder, decodeAnsi, type FontObject, fontObject } from './builder.ts'
+import {
+  Builder,
+  bitmapRop,
+  decodeAnsi,
+  decodeFaceName,
+  type FontObject,
+  fontObject,
+} from './builder.ts'
 import {
   type Box,
   type Brush,
@@ -26,31 +36,23 @@ type WmfObject =
   | { readonly kind: 'pen'; readonly pen: Pen }
   | { readonly kind: 'brush'; readonly brush: Brush }
   | { readonly kind: 'font'; readonly font: FontObject }
+  | { readonly kind: 'region'; readonly rects: readonly Box[] }
   | { readonly kind: 'other' }
 
 /** 记录名，用于不支持的记录的登记。 */
 const NAMES: Readonly<Record<number, string>> = {
-  53: 'REALIZEPALETTE',
-  55: 'SETPALENTRIES',
-  313: 'RESIZEPALETTE',
   329: 'SETLAYOUT',
   529: 'OFFSETVIEWPORTORG',
   527: 'OFFSETWINDOWORG',
   544: 'OFFSETCLIPRGN',
-  552: 'FILLREGION',
-  561: 'SETMAPPERFLAGS',
-  1040: 'SCALEWINDOWEXT',
-  1042: 'SCALEVIEWPORTEXT',
   1049: 'FLOODFILL',
   1065: 'FRAMEREGION',
-  1078: 'ANIMATEPALETTE',
   1352: 'EXTFLOODFILL',
   1055: 'SETPIXEL',
   1564: 'ROUNDRECT',
   2074: 'PIE',
   2851: 'STRETCHBLT',
   298: 'INVERTREGION',
-  299: 'PAINTREGION',
   2071: 'ARC',
   2096: 'CHORD',
   2338: 'BITBLT',
@@ -88,6 +90,10 @@ class Params {
     const c = this.u32(i)
     return { r: c & 0xff, g: (c >> 8) & 0xff, b: (c >> 16) & 0xff }
   }
+  /** 第 `i` 个参数起的 `COLORREF` 引用调色板序号（`PALETTEINDEX`）。 */
+  paletteIndex(i: number): boolean {
+    return this.u32(i) >>> 24 === 1
+  }
   /** 第 `i` 个参数起为 `bottom, right, top, left`。 */
   box(i: number): Box {
     return { bottom: this.s(i), right: this.s(i + 1), top: this.s(i + 2), left: this.s(i + 3) }
@@ -102,11 +108,11 @@ class Params {
 /** 画笔样式的低 4 位、端点与连接。 */
 function wmfPen(style: number, width: number, color: Rgb): Pen | string {
   const kind = style & 0x0f
-  if (kind !== 0 && kind !== 5) return `pen:style${kind}`
+  if (kind !== 0 && kind !== 5 && kind !== 6) return `pen:style${kind}`
   const cap = style & 0x0f00
   const join = style & 0xf000
   return {
-    style: kind === 5 ? 'null' : 'solid',
+    style: kind === 5 ? 'null' : kind === 6 ? 'insideFrame' : 'solid',
     width: Math.abs(width),
     cosmetic: width === 0,
     color,
@@ -121,16 +127,8 @@ export function wmfBrush(style: number, color: Rgb): Brush | string {
   return `brush:style${style}`
 }
 
-/** 字体名：按字体的字符集解码，取第一个空字符之前的部分。 */
-function faceName(bytes: Uint8Array, charset: number): string {
-  const end = bytes.indexOf(0)
-  const raw = end < 0 ? bytes : bytes.subarray(0, end)
-  const decoded = decodeAnsi(raw, charset, null)
-  return typeof decoded === 'string' ? new TextDecoder('windows-1252').decode(raw) : decoded.text
-}
-
-/** 光栅操作：`SRCCOPY`、`PATCOPY`、`BLACKNESS`、`WHITENESS`。 */
-const SRCCOPY = 0x00cc0020
+/** 填充的光栅操作：`PATCOPY`、`BLACKNESS`、`WHITENESS`；`DSTCOPY` 为目标不变，不绘制。位图的光栅操作见 `bitmapRop`。 */
+const DSTCOPY = 0x00aa0029
 const PATCOPY = 0x00f00021
 const BLACKNESS = 0x00000042
 const WHITENESS = 0x00ff0062
@@ -163,18 +161,22 @@ export function readWmf(b: Uint8Array): Metafile {
   const out = new Builder()
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength)
   const empty: Box = { left: 0, top: 0, right: 0, bottom: 0 }
-  if (b.length < 22 || v.getUint32(0, true) !== PLACEABLE_KEY) {
+  const placeable = b.length >= 22 && v.getUint32(0, true) === PLACEABLE_KEY
+  const head = placeable ? 22 : 0
+  const headerWords = b.length >= head + 18 ? v.getUint16(head + 2, true) : 0
+  const objectCount = b.length >= head + 18 ? v.getUint16(head + 10, true) : 0
+  const frame: Box | null = placeable
+    ? {
+        left: v.getInt16(6, true),
+        top: v.getInt16(8, true),
+        right: v.getInt16(10, true),
+        bottom: v.getInt16(12, true),
+      }
+    : recordedWindow(b, v, head + headerWords * 2)
+  if (frame === null) {
     out.unsupported('header:nonPlaceable')
     return out.finish('wmf', empty, null, NO_SIZE)
   }
-  const frame: Box = {
-    left: v.getInt16(6, true),
-    top: v.getInt16(8, true),
-    right: v.getInt16(10, true),
-    bottom: v.getInt16(12, true),
-  }
-  const headerWords = b.length >= 40 ? v.getUint16(24, true) : 0
-  const objectCount = b.length >= 40 ? v.getUint16(32, true) : 0
   if (headerWords < 9 || frame.right === frame.left || frame.bottom === frame.top) {
     out.unsupported('header')
     return out.finish('wmf', frame, null, NO_SIZE)
@@ -185,7 +187,7 @@ export function readWmf(b: Uint8Array): Metafile {
     if (i < 0) out.unsupported('objectTable')
     else objects[i] = o
   }
-  let off = 22 + headerWords * 2
+  let off = head + headerWords * 2
   let ended = false
   while (off + 6 <= b.length) {
     const size = v.getUint32(off, true) * 2
@@ -200,12 +202,65 @@ export function readWmf(b: Uint8Array): Metafile {
     record(fn, p, out, objects, create)
   }
   if (!ended) out.unsupported('truncated')
-  const inch = v.getUint16(14, true) || 1440
+  const inch = (placeable && v.getUint16(14, true)) || 1440
   const size = {
     width: (Math.abs(frame.right - frame.left) * 96) / inch,
     height: (Math.abs(frame.bottom - frame.top) * 96) / inch,
   }
   return out.finish('wmf', frame, null, size)
+}
+
+/**
+ * `CREATEREGION` 的区域：对象头（`nextInChain`、`ObjectType` 为 6、`ObjectCount`、`RegionSize`、`ScanCount`、`maxScan`、
+ * 边界矩形）之后为各扫描线（`Count`、`Top`、`Bottom`、`Count` / 2 对左右边、`Count2`），矩形不含右边与底边。
+ * 结构与长度不符时为 `null`。
+ */
+function region(p: Params): Box[] | null {
+  if (p.u(1) !== 6) return null
+  const scans = p.u(5)
+  const rects: Box[] = []
+  let at = 11
+  for (let k = 0; k < scans; k++) {
+    const count = p.u(at)
+    if (count % 2 !== 0 || at + 3 + count + 1 > p.words) return null
+    const top = p.s(at + 1)
+    const bottom = p.s(at + 2)
+    for (let j = 0; j < count; j += 2)
+      rects.push({ left: p.s(at + 3 + j), top, right: p.s(at + 4 + j), bottom })
+    if (p.u(at + 3 + count) !== count) return null
+    at += 4 + count
+  }
+  return rects
+}
+
+/** 没有可放置文件头时的图片框：第一条 SETWINDOWEXT 与其之前最后一条 SETWINDOWORG；没有 SETWINDOWEXT 时为 `null`。 */
+function recordedWindow(b: Uint8Array, v: DataView, start: number): Box | null {
+  let x = 0
+  let y = 0
+  for (let off = start; off + 6 <= b.length; ) {
+    const size = v.getUint32(off, true) * 2
+    const fn = v.getUint16(off + 4, true)
+    if (size < 6 || off + size > b.length || fn === 0x0000) return null
+    if (fn === 0x020b && size >= 10) {
+      y = v.getInt16(off + 6, true)
+      x = v.getInt16(off + 8, true)
+    }
+    if (fn === 0x020c && size >= 10) {
+      const h = v.getInt16(off + 6, true)
+      const w = v.getInt16(off + 8, true)
+      return { left: x, top: y, right: x + w, bottom: y + h }
+    }
+    off += size
+  }
+  return null
+}
+
+/** 带 `COLORREF` 的记录（函数号）：颜色所在的参数序号。 */
+const COLOR_PARAMS: Readonly<Record<number, number>> = {
+  513: 0, // SETBKCOLOR
+  521: 0, // SETTEXTCOLOR
+  762: 3, // CREATEPENINDIRECT
+  764: 1, // CREATEBRUSHINDIRECT
 }
 
 function record(
@@ -215,6 +270,8 @@ function record(
   objects: (WmfObject | null)[],
   create: (o: WmfObject) => void,
 ): void {
+  const colorAt = COLOR_PARAMS[fn]
+  if (colorAt !== undefined && p.paletteIndex(colorAt)) out.unsupported('color:paletteIndex')
   switch (fn) {
     case 0x0626: // ESCAPE：只有注释（MFCOMMENT）不影响绘制。
       if (p.u(0) !== 15) out.unsupported(`ESCAPE:${p.u(0)}`)
@@ -224,6 +281,18 @@ function record(
       return
     case 0x020c:
       out.op({ op: 'windowExt', x: p.s(1), y: p.s(0) })
+      return
+    case 0x0410:
+    case 0x0412:
+      // 参数依次为 y 的分母、y 的分子、x 的分母、x 的分子。
+      if (p.s(0) === 0 || p.s(2) === 0)
+        out.unsupported(fn === 0x0410 ? 'SCALEWINDOWEXT' : 'SCALEVIEWPORTEXT')
+      else
+        out.op({
+          op: fn === 0x0410 ? 'scaleWindowExt' : 'scaleViewportExt',
+          num: { x: p.s(3), y: p.s(1) },
+          den: { x: p.s(2), y: p.s(0) },
+        })
       return
     case 0x020d:
     case 0x020e:
@@ -244,12 +313,9 @@ function record(
     case 0x0209:
       out.op({ op: 'textColor', color: p.color(0) })
       return
-    case 0x012e: {
-      const align = p.u(0)
-      if (align & 0x0101) out.unsupported('SETTEXTALIGN:updateCp')
-      else out.op({ op: 'textAlign', align })
+    case 0x012e:
+      out.op({ op: 'textAlign', align: p.u(0) })
       return
-    }
     case 0x0106:
       out.op({ op: 'fillMode', evenOdd: p.u(0) !== 2 })
       return
@@ -259,6 +325,7 @@ function record(
       if (p.u(0) !== 13) out.unsupported(`SETROP2:${p.u(0)}`)
       return
     case 0x0105: // SETRELABS：不影响绘制。
+    case 0x0231: // SETMAPPERFLAGS：只影响字体匹配的纵横比。
       return
     case 0x0108:
     case 0x020a:
@@ -305,7 +372,7 @@ function record(
       return
     case 0x012c: {
       const o = objects[p.u(0)]
-      if (o?.kind === 'other') out.unsupported('SELECTCLIPREGION:region')
+      if (o?.kind === 'region') out.unsupported('SELECTCLIPREGION:region')
       else out.op({ op: 'clipRegion', rects: null, mode: 'copy' })
       return
     }
@@ -374,6 +441,7 @@ function record(
       // DIBSTRETCHBLT、DIBBITBLT：记录长度等于固定参数个数时没有位图，按光栅操作填充。
       const stretch = fn === 0x0b41
       const rop = p.u32(0)
+      if (rop === DSTCOPY) return
       const fixed = stretch ? 10 : 8
       if (p.words <= fixed + 1) {
         const fill = patFill(rop)
@@ -423,12 +491,12 @@ function record(
       const font = fontObject(
         {
           height: p.s(0),
+          width: p.s(1),
           weight: p.s(4),
           italic: (bytes[10] ?? 0) !== 0,
-          face: faceName(p.bytes(9, 32), charset),
+          face: decodeFaceName(p.bytes(9, 32)),
         },
         {
-          width: p.s(1),
           escapement: p.s(2),
           orientation: p.s(3),
           underline: (bytes[11] ?? 0) !== 0,
@@ -441,13 +509,27 @@ function record(
     }
     case 0x0142:
     case 0x01f9:
-    case 0x00f7:
-    case 0x06ff:
-      out.unsupported(
-        fn === 0x00f7 ? 'CREATEPALETTE' : fn === 0x06ff ? 'CREATEREGION' : 'CREATEPATTERNBRUSH',
-      )
+      out.unsupported('CREATEPATTERNBRUSH')
       create({ kind: 'other' })
       return
+    case 0x00f7: // CREATEPALETTE
+      create({ kind: 'other' })
+      return
+    case 0x06ff: {
+      const rects = region(p)
+      if (rects === null) out.unsupported('CREATEREGION')
+      create(rects === null ? { kind: 'other' } : { kind: 'region', rects })
+      return
+    }
+    case 0x012b:
+    case 0x0228: {
+      const o = objects[p.u(0)]
+      const b = fn === 0x0228 ? objects[p.u(1)] : null
+      if (o?.kind !== 'region' || (b !== null && b?.kind !== 'brush'))
+        out.unsupported(fn === 0x012b ? 'PAINTREGION' : 'FILLREGION')
+      else out.op({ op: 'fillRegion', rects: o.rects, brush: b === null ? null : b.brush })
+      return
+    }
     case 0x012d: {
       const o = objects[p.u(0)]
       if (o?.kind === 'pen') out.op({ op: 'pen', pen: o.pen })
@@ -460,7 +542,11 @@ function record(
       if (i < objects.length) objects[i] = null
       return
     }
-    case 0x0234: // SELECTPALETTE：调色板只影响调色板设备。
+    case 0x0234: // SELECTPALETTE、REALIZEPALETTE、SETPALENTRIES、RESIZEPALETTE、ANIMATEPALETTE
+    case 0x0035:
+    case 0x0037:
+    case 0x0139:
+    case 0x0436:
       return
     default:
       out.unsupported(NAMES[fn] ?? `0x${fn.toString(16).padStart(4, '0')}`)
@@ -476,7 +562,7 @@ function text(
   clip: Box | null,
 ): void {
   if (bytes.length === 0) {
-    out.text(at, '', null, opaque, clip)
+    out.text(at, '', null, null, opaque, clip)
     return
   }
   const f = out.textFont()
@@ -486,7 +572,7 @@ function text(
     out.unsupported(decoded)
     return
   }
-  out.text(at, decoded.text, decoded.dx, opaque, clip)
+  out.text(at, decoded.text, decoded.dx, decoded.symbol, opaque, clip)
 }
 
 interface Rect16 {
@@ -496,7 +582,7 @@ interface Rect16 {
   readonly h: number
 }
 
-/** 带位图的光栅记录：`dib` 为位图头在参数中的起点（16 位参数的序号）。只支持 `SRCCOPY`。 */
+/** 带位图的光栅记录：`dib` 为位图头在参数中的起点（16 位参数的序号）。光栅操作见 `bitmapRop`。 */
 function bitmap(
   out: Builder,
   p: Params,
@@ -504,7 +590,8 @@ function bitmap(
   dib: number,
   r: { readonly src: Rect16; readonly dest: Rect16; readonly fromBottom: boolean },
 ): void {
-  if (rop !== SRCCOPY) {
+  const mode = bitmapRop(rop)
+  if (mode === null) {
     out.unsupported(`bitmap:rop${rop.toString(16)}`)
     return
   }
@@ -537,5 +624,6 @@ function bitmap(
     src: { x: r.src.x, y: sy, width: r.src.w, height: r.src.h },
     bitmap: index,
     alpha: 1,
+    rop: mode,
   })
 }

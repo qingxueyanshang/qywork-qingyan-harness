@@ -4,7 +4,7 @@
  * - 部件按关系定位：包关系的 `officeDocument` 为主文档，其关系给出样式、编号、设置、字体表与主题；
  *   缺少的部件按空部件处理。
  * - 主文档的内容类型不是 WordprocessingML 文档（含启用宏的文档与模板）或主文档不存在时返回 `corrupt('document')`；
- *   部件 XML 结构错误时返回 `corrupt('xml')`。ZIP 与 OPC 层的失败原样返回。
+ *   部件 XML 结构错误或元素嵌套过深（`parse/xml.ts` 的 `MAX_DEPTH`）时返回 `corrupt('xml')`。ZIP 与 OPC 层的失败原样返回。
  * - `AlternateContent` 选择 WordprocessingML 2010 扩展、绘图形状、组合与画布的分支，使其中的对象按 DrawingML 计数。
  * - 各节引用的页眉页脚部件按引用它的第一节的版面解析；图片（嵌入式图片、浮动对象、页面背景）按所在部件的关系
  *   取得部件字节，同一部件只读取一次。部件不存在时该页眉页脚没有内容，图片的 `media` 为 -1。
@@ -39,6 +39,7 @@ import { type BodyEnv, BodyReader } from './parse/body.ts'
 import { EMPTY_NUMBERING, readNumbering } from './parse/numbering.ts'
 import { DEFAULT_SETTINGS, readFontTable, readSettings } from './parse/settings.ts'
 import { EMPTY_STYLES, readStyles } from './parse/styles.ts'
+import { NestingError } from './parse/xml.ts'
 import { Resolver } from './resolve/cascade.ts'
 import { NumberingState } from './resolve/numbering.ts'
 
@@ -146,7 +147,7 @@ export async function parseDocx(data: Uint8Array<ArrayBuffer>): Promise<DocxResu
     return { ok: true, value: await parsePackage(opened.value) }
   } catch (e) {
     if (e instanceof PartError) return { ok: false, failure: e.failure }
-    if (e instanceof XmlSyntaxError)
+    if (e instanceof XmlSyntaxError || e instanceof NestingError)
       return { ok: false, failure: { kind: 'corrupt', reason: 'xml' } }
     throw e
   }

@@ -50,8 +50,8 @@ export interface PaintResources {
   /** 图片部件；未加载或无法解码时为 `null`。 */
   image(part: string): PaintPicture | null
   readonly createCanvas: CreateCanvas
-  /** 图元文件中文字的字体；没有时含文字的图元文件不绘制。 */
-  readonly metafileFonts?: MetafileFonts
+  /** 图元文件中文字的字体；为 `null` 时含文字的图元文件不绘制。 */
+  readonly metafileFonts: MetafileFonts | null
 }
 
 /** 局部坐标中每单位对应的设备像素数（取两个方向的平均值）。 */
@@ -338,7 +338,7 @@ export function paintImageFill(
 ): void {
   const picture = image.part === null ? null : res.image(image.part)
   if (picture === null) return
-  const fonts = res.metafileFonts ?? null
+  const fonts = res.metafileFonts
   const { width, height } = area
   ctx.globalAlpha *= image.alpha
   if (image.tile === null) {

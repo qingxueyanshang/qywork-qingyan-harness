@@ -4,10 +4,23 @@
  *
  * - 选入的字体与旋转状态随 `SaveDC`、`RestoreDC` 入栈出栈，规则与设备上下文相同（`restore` 的参数含义见 `MetaOp`）。
  * - 未选入字体或选入库存字体时绘制文字计为不支持：库存字体的字形由系统决定。旋转或倾斜的文字、路径中的文字同样计为不支持。
+ * - 系统代码页按简体中文（936）：DEFAULT_CHARSET 与 OEM_CHARSET 的 8 位文字、8 位字体名都按它解码。WPS 实测（构造文件）：
+ *   Times New Roman 的 DEFAULT_CHARSET 字节 E9 96 显示为「闁」，字符集为 DEFAULT_CHARSET、字体名为「宋体」的 GBK
+ *   字节时按宋体绘制。所选字体为符号字体时 DEFAULT_CHARSET 的字节按符号编码（见 `MetaOp` 的 `symbol`），Symbol 的
+ *   DEFAULT_CHARSET 字节 E5 显示为「∑」。
  */
 
 import { decodeDib, type Pixels } from './dib.ts'
-import type { Box, Font, Metafile, MetaOp, PixelRect, Point } from './model.ts'
+import type {
+  BitmapRop,
+  Box,
+  Font,
+  Metafile,
+  MetaOp,
+  PixelRect,
+  Point,
+  SymbolText,
+} from './model.ts'
 
 /** 字体对象：`issue` 为第一个未实现的参数取值，只在用它绘制文字时计入不支持。 */
 export interface FontObject {
@@ -23,11 +36,10 @@ interface Tracked {
   readonly rotated: boolean
 }
 
-/** LOGFONT 的参数：宽度、角度、下划线、删除线未实现。 */
+/** LOGFONT 的参数：角度、下划线、删除线未实现。 */
 export function fontObject(
   font: Font,
   p: {
-    readonly width: number
     readonly escapement: number
     readonly orientation: number
     readonly underline: boolean
@@ -36,19 +48,23 @@ export function fontObject(
   },
 ): FontObject {
   const issue =
-    p.width !== 0
-      ? 'font:width'
-      : p.escapement !== 0 || p.orientation !== 0
-        ? 'font:escapement'
-        : p.underline
-          ? 'font:underline'
-          : p.strikeOut
-            ? 'font:strikeOut'
-            : font.height === 0
-              ? 'font:defaultHeight'
-              : null
+    p.escapement !== 0 || p.orientation !== 0
+      ? 'font:escapement'
+      : p.underline
+        ? 'font:underline'
+        : p.strikeOut
+          ? 'font:strikeOut'
+          : font.height === 0
+            ? 'font:defaultHeight'
+            : null
   return { font, charset: p.charset, issue }
 }
+
+const SYMBOL_CHARSET = 2
+const DEFAULT_CHARSET = 1
+const OEM_CHARSET = 255
+/** 系统代码页的字符集（GB2312_CHARSET），见文件头。 */
+const SYSTEM_CHARSET = 134
 
 /** 单字节与双字节字符集到 `TextDecoder` 编码名；`null` 为未实现的字符集。 */
 const CHARSETS: Readonly<Record<number, string>> = {
@@ -82,29 +98,54 @@ function leadByte(charset: number, b: number): boolean {
   return false
 }
 
+/** 每个字节一个字符：字节值加 U+F000（符号字体 `cmap` 平台 3 编码 0 的码位）。 */
+function symbolText(bytes: Uint8Array, dx: readonly number[] | null): SymbolText {
+  let text = ''
+  for (const b of bytes) text += String.fromCharCode(0xf000 + b)
+  return { text, dx: dx === null ? null : Array.from(bytes, (_, i) => dx[i] ?? 0) }
+}
+
 /**
  * 按字体的字符集解码 8 位字符串。`dx` 为逐字节的前进宽度时，双字节字符取两字节之和。
- * `DEFAULT_CHARSET` 与 `OEM_CHARSET` 依赖系统代码页：只接受 ASCII 字节。
+ * SYMBOL_CHARSET 按符号编码；DEFAULT_CHARSET 与 OEM_CHARSET 按系统代码页，另给出所选字体为符号字体时的解码（`symbol`）。
  */
 export function decodeAnsi(
   bytes: Uint8Array,
   charset: number,
   dx: readonly number[] | null,
-): { text: string; dx: number[] | null } | string {
-  const ascii = bytes.every((b) => b < 0x80)
-  const name =
-    CHARSETS[charset] ?? (ascii && (charset === 1 || charset === 255) ? 'windows-1252' : null)
-  if (name === null) return `text:charset${charset}`
+): { text: string; dx: readonly number[] | null; symbol: SymbolText | null } | string {
+  if (charset === SYMBOL_CHARSET) return { ...symbolText(bytes, dx), symbol: null }
+  const system = charset === DEFAULT_CHARSET || charset === OEM_CHARSET
+  const effective = system ? SYSTEM_CHARSET : charset
+  const name = CHARSETS[effective]
+  if (name === undefined) return `text:charset${charset}`
   const decoder = legacyDecoder(name)
   let text = ''
   const out: number[] = []
   for (let i = 0; i < bytes.length; ) {
-    const n = leadByte(charset, bytes[i]!) && i + 1 < bytes.length ? 2 : 1
+    const n = leadByte(effective, bytes[i]!) && i + 1 < bytes.length ? 2 : 1
     text += decoder.decode(bytes.subarray(i, i + n))
     if (dx !== null) out.push((dx[i] ?? 0) + (n === 2 ? (dx[i + 1] ?? 0) : 0))
     i += n
   }
-  return { text, dx: dx === null ? null : out }
+  return { text, dx: dx === null ? null : out, symbol: system ? symbolText(bytes, dx) : null }
+}
+
+/** 8 位字体名：按系统代码页解码，取第一个空字符之前的部分。 */
+export function decodeFaceName(bytes: Uint8Array): string {
+  const end = bytes.indexOf(0)
+  return legacyDecoder(CHARSETS[SYSTEM_CHARSET]!).decode(end < 0 ? bytes : bytes.subarray(0, end))
+}
+
+/** 位图记录的光栅操作：`SRCCOPY`、`SRCAND`、`SRCPAINT`；其他为 `null`。 */
+export function bitmapRop(rop: number): BitmapRop | null {
+  return rop === 0x00cc0020
+    ? 'copy'
+    : rop === 0x008800c6
+      ? 'and'
+      : rop === 0x00ee0086
+        ? 'paint'
+        : null
 }
 
 export class Builder {
@@ -190,14 +231,21 @@ export class Builder {
     return f
   }
 
-  /** 文字记录；没有字符时只填充 `opaque`，不需要字体。 */
-  text(p: Point, text: string, dx: readonly number[] | null, opaque: Box | null, clip: Box | null) {
+  /** 文字记录；没有字符时只填充 `opaque`，不需要字体。`symbol` 见 `MetaOp`。 */
+  text(
+    p: Point,
+    text: string,
+    dx: readonly number[] | null,
+    symbol: SymbolText | null,
+    opaque: Box | null,
+    clip: Box | null,
+  ) {
     if (text !== '') {
       const f = this.textFont()
       if (f === null) return
       if (text.trim() !== '') this.fontNames.add(f.font.face)
     }
-    this.op({ op: 'text', p, text, dx, opaque, clip })
+    this.op({ op: 'text', p, text, dx, symbol, opaque, clip })
   }
 
   /** 源矩形在位图之内且宽高为正。 */

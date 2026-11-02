@@ -114,14 +114,14 @@ describe('ClearType 绘制的指令', () => {
     return z.curY[0]
   }
 
-  test('GETINFO：版本号两种绘制均为 42，ClearType 与兼容宽度只在 ClearType 绘制下回答', () => {
+  test('GETINFO：版本号两种绘制均为 42，ClearType 只在 ClearType 绘制下回答，自然宽度方式不回答兼容宽度', () => {
     // PUSHB 选择子；GETINFO
     const getinfo = (sel: number) => [0xb0, sel, 0x88]
     expect(readout(new SizeHinter(programs(), 12), getinfo(1))).toBe(42)
     expect(readout(new SizeHinter(programs(), 12, true), getinfo(1))).toBe(42)
     expect(readout(new SizeHinter(programs(), 12), getinfo(64))).toBe(0)
     expect(readout(new SizeHinter(programs(), 12, true), getinfo(64))).toBe(0x2000)
-    expect(readout(new SizeHinter(programs(), 12, true), getinfo(128))).toBe(0x4000)
+    expect(readout(new SizeHinter(programs(), 12, true), getinfo(128))).toBe(0)
   })
 
   test('字形指令在 x 方向取整到 1/16 像素、最小距离取一半；y 方向与 prep 仍取整到整像素', () => {

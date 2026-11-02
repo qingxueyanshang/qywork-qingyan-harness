@@ -1,5 +1,5 @@
 /**
- * `name` 表：字体家族名。
+ * `name` 表：字体家族名（全部语言的名称与按语言取的 Windows 名称）。
  *
  * 只取 nameID 1（家族名），不取 nameID 16（排版家族名）。文档按 nameID 1 引用字体：
  * 「微软雅黑 Light」的 nameID 16 是「微软雅黑」，并入后同一家族名下出现两个同为常规样式的字体。
@@ -59,22 +59,56 @@ function decoderFor(platform: number, encoding: number): ((bytes: Uint8Array) =>
   return null
 }
 
-/** 全部语言的家族名，去重后按表中顺序返回（含本地化名称，如「宋体」与「SimSun」）。 */
-export function readFamilyNames(table: Uint8Array): string[] {
+const PLATFORM_WINDOWS = 3
+
+/** en-US 的语言标识：`localFamilyName` 在没有所求语言的名称时取它。 */
+export const LANGUAGE_EN_US = 0x0409
+
+interface FamilyRecord {
+  readonly platform: number
+  readonly language: number
+  readonly name: string
+}
+
+/** 可解码的家族名记录，按表中顺序；去掉首尾空白后为空的记录不列出。 */
+function familyRecords(table: Uint8Array): FamilyRecord[] {
   const v = new DataView(table.buffer, table.byteOffset, table.byteLength)
   const count = v.getUint16(2)
   const storage = v.getUint16(4)
-  const names = new Set<string>()
+  const out: FamilyRecord[] = []
   for (let i = 0; i < count; i++) {
     const rec = 6 + 12 * i
     if (v.getUint16(rec + 6) !== FAMILY) continue
-    const decode = decoderFor(v.getUint16(rec), v.getUint16(rec + 2))
+    const platform = v.getUint16(rec)
+    const decode = decoderFor(platform, v.getUint16(rec + 2))
     if (!decode) continue
     const start = storage + v.getUint16(rec + 10)
     const end = start + v.getUint16(rec + 8)
     if (end > table.byteLength) throw new FontFormatError('name 表记录超出表范围')
     const name = decode(table.subarray(start, end)).trim()
-    if (name) names.add(name)
+    if (name) out.push({ platform, language: v.getUint16(rec + 4), name })
   }
-  return [...names]
+  return out
+}
+
+/** 全部语言的家族名，去重后按表中顺序返回（含本地化名称，如「宋体」与「SimSun」）。 */
+export function readFamilyNames(table: Uint8Array): string[] {
+  return [...new Set(familyRecords(table).map((r) => r.name))]
+}
+
+/**
+ * Windows 平台按语言标识 `language` 取的家族名：没有该语言时取 en-US，再没有时取第一个 Windows 平台的家族名；
+ * 没有 Windows 平台的家族名时为 `null`。Windows 的 GDI 按界面语言列出字体时取同样的名称，WPS 按主机字体名的前缀
+ * 匹配缺失字体时只用这些名称（WPS 实测：中文界面中 `等线 Fake` 取等线，`SimHei Fake`、`新細明體-ExtB X` 不匹配，
+ * `MingLiU-ExtB X` 取 MingLiU-ExtB）。
+ */
+export function localFamilyName(table: Uint8Array, language: number): string | null {
+  const found = new Map<number, string>()
+  let first: string | null = null
+  for (const r of familyRecords(table)) {
+    if (r.platform !== PLATFORM_WINDOWS) continue
+    first ??= r.name
+    if (!found.has(r.language)) found.set(r.language, r.name)
+  }
+  return found.get(language) ?? found.get(LANGUAGE_EN_US) ?? first
 }

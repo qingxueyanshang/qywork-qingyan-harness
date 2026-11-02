@@ -1,10 +1,11 @@
 /**
  * docx 中的公式。覆盖 `../parse/body.ts`（公式字段、显示公式的判定、删除的修订）、`../parse/settings.ts`（`m:mathPr`）、
- * `../layout.ts`（行内公式参与断行与行高、显示公式段落的行高与横向位置、不能排版的公式、数学字体的替代、东亚提示的字段字体）、
+ * `../layout.ts`（行内公式参与断行与行高、显示公式段落的行高、行网格与横向位置、不能排版的公式、数学字体的替代、东亚提示的字段字体）、
+ * `../../math/parse.ts`（公式字段中的可选连字符）、
  * `build.ts`（`requiredFonts` 中的数学字体与替代字体、`PageParagraph.formulas` 与 `Page.hiddenMath`）、`../render/fonts.ts`
  * （数学字体的读取与登记）与 `../render/paint.ts`（公式的绘制）。
  *
- * 期望值取自 WPS 12.1 只读打开构造文档 w7-ls、w7-lsgrid、w7-x、w7-xleft、w7-mark 后逐段取得的位置
+ * 期望值取自 WPS 12.1 只读打开构造文档 w7-ls、w7-lsgrid、w7-x、w7-xleft、w7-mark、w16 fm 与 c 后逐段取得的位置
  * （`Range.Information(5)`、`Information(6)`，0.05 磅精度）。排版用例读取本机 Windows 字体目录中的宋体、
  * Times New Roman 与 Cambria Math（cambria.ttc 第 2 个字体）：其他平台跳过。
  */
@@ -13,6 +14,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, layoutDocument, type Paragraph, parseDocx } from '../index.ts'
 import type { ParagraphLayout } from '../layout.ts'
 import { DocxFonts, loadDocxFace } from '../render/fonts.ts'
@@ -97,13 +99,13 @@ describe('公式字段与显示公式的判定', () => {
     )
     expect(doc.settings.math.defaultJustification).toBe('left')
     expect(paragraphs(doc).map(kinds)).toEqual([['left'], ['left'], ['center']])
-    expect(requiredFonts(doc)).toContain('STIX Two Math')
-    expect(requiredFonts(doc)).toContain('Cambria Math')
+    expect(requiredFonts(doc, NO_HOST_FAMILIES)).toContain('STIX Two Math')
+    expect(requiredFonts(doc, NO_HOST_FAMILIES)).toContain('Cambria Math')
     const plain = await parse(p(r('a')) + SECT(), settings)
-    expect(requiredFonts(plain)).not.toContain('STIX Two Math')
-    expect(requiredFonts(plain)).not.toContain('Cambria Math')
+    expect(requiredFonts(plain, NO_HOST_FAMILIES)).not.toContain('STIX Two Math')
+    expect(requiredFonts(plain, NO_HOST_FAMILIES)).not.toContain('Cambria Math')
     // 主机没有西文字体时的替代字体 Segoe Print 计入所需字体（见 `../resolve/fonts.ts` 的 `substitutes`）。
-    expect(requiredFonts(plain)).toContain('Segoe Print')
+    expect(requiredFonts(plain, NO_HOST_FAMILIES)).toContain('Segoe Print')
   })
 })
 
@@ -125,9 +127,10 @@ describe.skipIf(!HAS_FONTS)('公式的排版与分页', () => {
   /** 没有数学字体的字体集。 */
   const textOnly = () =>
     new DocxFonts([load('simsun.ttc', '宋体'), load('times.ttf', 'Times New Roman')], '宋体')
-  const layouts = (doc: DocxDocument) => layoutDocument(doc, fonts().source).paragraphs
+  const layouts = (doc: DocxDocument) =>
+    layoutDocument(doc, fonts().source, NO_HOST_FAMILIES).paragraphs
   const bodyOf = (doc: DocxDocument, f = fonts()) =>
-    layoutPages(doc, f).pages.pages[0]!.body.filter(
+    layoutPages(doc, f, NO_HOST_FAMILIES).pages.pages[0]!.body.filter(
       (it): it is PageParagraph => it.kind === 'paragraph',
     )
 
@@ -138,7 +141,7 @@ describe.skipIf(!HAS_FONTS)('公式的排版与分页', () => {
     expect(fonts().source.math('宋体')).toBeNull()
   })
 
-  test('显示公式段落：行高为公式行的上下沿之和，多倍行距增加的部分按段落标记的单倍行高计，不对齐行网格', async () => {
+  test('显示公式段落：行高为公式行的上下沿之和，多倍行距增加的部分按段落标记的单倍行高计；未设置 adjustLineHeightInTable 时不对齐行网格', async () => {
     const body =
       p(para(FRAC)) +
       p(para(FRAC), spacing(276)) +
@@ -154,6 +157,43 @@ describe.skipIf(!HAS_FONTS)('公式的排版与分页', () => {
     const grid = heights(await parse(body + SECT(GRID)))
     expect(grid.slice(0, 4)).toEqual(plain.slice(0, 4))
     expect(grid[4]).toBeCloseTo(31.2, 6)
+  })
+
+  test('设置了 adjustLineHeightInTable 时显示公式段落对齐行网格，关闭 snapToGrid 的段落不对齐', async () => {
+    const f1 =
+      `<m:f><m:num>${mr('F')}</m:num><m:den>${mr('S')}</m:den></m:f>${mr('=')}${mr('E')}` +
+      `<m:f><m:num>${mr('δL')}</m:num><m:den>${mr('L')}</m:den></m:f>`
+    const f5 = `<m:f><m:num>${FRAC}</m:num><m:den><m:f><m:num>${mr('c')}</m:num><m:den>${mr('d')}</m:den></m:f></m:den></m:f>`
+    const body =
+      p(para(f1), spacing(312)) +
+      p(para(mr('a+b')), spacing(312)) +
+      p(para(f1), spacing(240)) +
+      p(para(f1), `${spacing(312)}<w:snapToGrid w:val="0"/>`) +
+      p(para(f5), spacing(312)) +
+      SECT(GRID)
+    const heights = (doc: DocxDocument) => layouts(doc).map((l) => l.text.height)
+    // WPS（构造文档 w16 c、fm-0：网格 15.6 磅）：设置该项时 31.2、20.3、31.2、27.55、46.8 磅，未设置时 27.55、15.95、23.9、27.55、41.65 磅。
+    const on = heights(await parse(body, '<w:compat><w:adjustLineHeightInTable/></w:compat>'))
+    for (const [i, h] of [31.2, 20.3, 31.2, 27.55, 46.8].entries())
+      expect(Math.abs(on[i]! - h)).toBeLessThan(0.1)
+    const off = heights(await parse(body))
+    for (const [i, h] of [27.55, 15.95, 23.9, 27.55, 41.65].entries())
+      expect(Math.abs(off[i]! - h)).toBeLessThan(0.1)
+  })
+
+  test('公式字段中的可选连字符不显示：公式照常排版，行高与没有该字符时相同（WPS：构造文档 w16 fm，两者都为 15.95 磅）', async () => {
+    const soft = `${mr('a')}<m:r><m:rPr><m:sty m:val="p"/></m:rPr><w:softHyphen/></m:r>${mr('+b')}`
+    const doc = await parse(
+      p(para(mr('a+b')), spacing(312)) +
+        p(para(soft), spacing(312)) +
+        p(r('段中') + omath(soft) + r('连字'), spacing(312)) +
+        SECT(GRID),
+    )
+    const lays = layouts(doc)
+    expect(lays.every((l) => l.formulas.every((f) => f.layout !== null))).toBe(true)
+    expect(lays[1]!.text.height).toBeCloseTo(lays[0]!.text.height, 9)
+    expect(Math.abs(lays[1]!.text.height - 15.95)).toBeLessThan(0.1)
+    expect(doc.unsupported).toEqual({})
   })
 
   test('显示公式的横向位置：在缩进之间按 jc 与 defJc 对齐，不按段落的对齐方式与首行缩进', async () => {
@@ -236,14 +276,14 @@ describe.skipIf(!HAS_FONTS)('公式的排版与分页', () => {
     const doc = await parse(
       p(r('文字') + omath(FRAC) + r('字')) + p(para(FRAC)) + p(omath('<m:foo/>')) + SECT(),
     )
-    const missing = layoutPages(doc, textOnly()).pages.pages[0]!
+    const missing = layoutPages(doc, textOnly(), NO_HOST_FAMILIES).pages.pages[0]!
     expect(missing.hiddenMath).toBe(3)
     const items = missing.body.filter((it): it is PageParagraph => it.kind === 'paragraph')
     expect(items.every((it) => it.formulas.length === 0)).toBe(true)
     const frags = items[0]!.lines[0]!.fragments
     expect(frags.map((f) => f.text)).toEqual(['文字', '字'])
     expect(frags[1]!.x).toBeCloseTo(frags[0]!.x + 21, 6)
-    const drawn = layoutPages(doc, fonts()).pages.pages[0]!
+    const drawn = layoutPages(doc, fonts(), NO_HOST_FAMILIES).pages.pages[0]!
     expect(drawn.hiddenMath).toBe(1)
   })
 
@@ -282,7 +322,7 @@ describe.skipIf(!HAS_FONTS)('公式的排版与分页', () => {
   test('绘制：公式的字形以数学字体的族名绘制，分数线以填充矩形绘制，不生成文字片段', async () => {
     const doc = await parse(p(para(FRAC)) + SECT())
     const f = fonts()
-    const { pages } = layoutPages(doc, f)
+    const { pages } = layoutPages(doc, f, NO_HOST_FAMILIES)
     const page = pages.pages[0]!
     const item = page.body[0] as PageParagraph
     expect(item.lines[0]!.fragments).toEqual([])

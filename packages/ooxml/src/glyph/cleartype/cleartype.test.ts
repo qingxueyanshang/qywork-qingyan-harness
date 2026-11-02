@@ -1,16 +1,20 @@
 /**
- * ClearType 的子像素覆盖与混合。覆盖 `coverage.ts`（取样、滤波、纵向权重、合成粗体）与 `blend.ts`（伽马混合、覆盖相加、
- * 裁剪）。
+ * ClearType 的子像素覆盖与混合。覆盖 `coverage.ts`（取样、滤波、纵向权重、合成粗体）、`glyphs.ts`（本机字体的字形）与
+ * `blend.ts`（伽马混合、覆盖相加、裁剪）。
  *
- * 覆盖的期望值取自 GDI 在本机的实测：构造字体中的矩形（ppem 16，没有指令）以 ClearType 绘制到内存位图，黑字白底、
- * 对比度 1000 时各子像素的亮度换算为 0–6。混合的期望值取自 WPS 表格的屏幕显示：对比度 1200 的取自对比基准（楷体 12 磅），
+ * 覆盖的期望值取自 GDI 在本机的实测：构造字体中的矩形（ppem 16，没有指令）与本机字体的字形以 ClearType 绘制到内存位图，
+ * 黑字白底、对比度 1000 时各子像素的亮度换算为 0–6；本机字体按 WPS 请求的自然宽度方式（`CLEARTYPE_NATURAL_QUALITY`）绘制，
+ * 其他平台跳过这些用例。混合的期望值取自 WPS 表格的屏幕显示：对比度 1200 的取自对比基准（楷体 12 磅），
  * 对比度 1000 的取自 13 种文字颜色 × 11 种填充色的单元格（楷体 12 磅）。
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { HintedOutline } from '../../font/index.ts'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { type HintedOutline, readFaces, readMetrics } from '../../font/index.ts'
 import { type PixelData, paintGlyphRuns } from './blend.ts'
 import { type CoverageGlyph, emboldenSamples, filterSamples, sampleOutline } from './coverage.ts'
+import { readClearTypeGlyphs } from './glyphs.ts'
 
 /** 矩形轮廓（26.6，顺时针）。 */
 function rect(x0: number, y0: number, x1: number, y1: number): HintedOutline {
@@ -67,6 +71,128 @@ describe('子像素覆盖', () => {
   test('合成粗体：取样点阵与右移 1 像素的副本取并集', () => {
     const g = filterSamples(emboldenSamples(sampleOutline(rect(128, 0, 192, 640), 1)), 1)
     expect(row(g, 5, 1, 4)).toBe('002 466 664 200')
+  })
+})
+
+/** 覆盖不为 0 的外接矩形：[左（相对原点）, 上（基线以上）, 宽, 高, 逐行的覆盖]。 */
+function inked(g: CoverageGlyph): [number, number, number, number, string[]] {
+  let x0 = g.width
+  let x1 = -1
+  let y0 = g.height
+  let y1 = -1
+  for (let y = 0; y < g.height; y++)
+    for (let x = 0; x < g.width; x++) {
+      const at = 3 * (y * g.width + x)
+      if (!(g.coverage[at] || g.coverage[at + 1] || g.coverage[at + 2])) continue
+      x0 = Math.min(x0, x)
+      x1 = Math.max(x1, x)
+      y0 = Math.min(y0, y)
+      y1 = Math.max(y1, y)
+    }
+  const rows: string[] = []
+  for (let y = y0; y <= y1; y++) {
+    let r = ''
+    for (let x = x0; x <= x1; x++)
+      r += g.coverage.subarray(3 * (y * g.width + x), 3 * (y * g.width + x) + 3).join('')
+    rows.push(r)
+  }
+  return [g.bearingX + x0, g.bearingY - y0, x1 - x0 + 1, y1 - y0 + 1, rows]
+}
+
+const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
+
+describe.skipIf(process.platform !== 'win32')('本机字体的 ClearType 字形', () => {
+  /** 字体文件 `file` 中字符 `ch` 在 `ppem` 下的 ClearType 覆盖。 */
+  const glyph = (file: string, ch: string, ppem: number) => {
+    const bytes = new Uint8Array(readFileSync(join(FONTS, file)))
+    const face = readFaces(bytes)[0]!
+    const glyphs = readClearTypeGlyphs(bytes, face)!
+    return inked(
+      glyphs.glyph(readMetrics(bytes, face).glyphId(ch.codePointAt(0)!), ppem, false, false),
+    )
+  }
+
+  /** 原始失败形状：Noto Sans SC（可变字体）的粗体文字按缺省实例的最细字重绘制。 */
+  test('可变字体（有 fvar）不取 ClearType 字形', () => {
+    const bytes = new Uint8Array(readFileSync(join(FONTS, 'arial.ttf')))
+    const face = readFaces(bytes)[0]!
+    expect(readClearTypeGlyphs(bytes, face)).not.toBeNull()
+    const variable = {
+      ...face,
+      tables: new Map([...face.tables, ['fvar', face.tables.get('head')!]]),
+    }
+    expect(readClearTypeGlyphs(bytes, variable)).toBeNull()
+  })
+
+  /** 原始失败形状：Times New Roman 的数字 0 在 ppem 12、14 绘制为直边的方框。 */
+  test('IUP[x] 与 IUP[y] 之后的字形指令不移动点、不翻转点的类型', () => {
+    // Times New Roman 的字形指令在 IUP 之后以 SCFS、ALIGNRP 与 FLIPRGON 把 0 改为直边，GDI 的 ClearType 字形为椭圆。
+    expect(glyph('times.ttf', '0', 12)).toEqual([
+      0,
+      9,
+      6,
+      9,
+      [
+        '000013566665310000',
+        '001355310002453100',
+        '024642000000246420',
+        '135531000000135531',
+        '135531000000135531',
+        '135531000000135531',
+        '024642000000246420',
+        '001355310013553100',
+        '000013566665310000',
+      ],
+    ])
+  })
+
+  test('按自然宽度方式提示：不做兼容宽度的调整，GETINFO 不回答兼容宽度', () => {
+    // 三个字形的兼容宽度方式（`CLEARTYPE_QUALITY`）与此不同：Arial「B」第 2 行右端为 565 310，Times「n」整字右移约半像素。
+    expect(glyph('arial.ttf', 'B', 12)).toEqual([
+      0,
+      9,
+      8,
+      9,
+      [
+        '013566666666666666420000',
+        '013564200000000013564200',
+        '013564200000000001355310',
+        '013564200000000013542000',
+        '013566666666666666653100',
+        '013564200000000002466420',
+        '013564200000000000246420',
+        '013564200000000002465310',
+        '013566666666666666420000',
+      ],
+    ])
+    expect(glyph('times.ttf', 'n', 12)).toEqual([
+      -1,
+      6,
+      8,
+      6,
+      [
+        '002466664224666642000000',
+        '000013566642013564200000',
+        '000013564200013564200000',
+        '000013564200013564200000',
+        '000013564200013564200000',
+        '001356666655566666653100',
+      ],
+    ])
+    expect(glyph('msyh.ttc', 'e', 12)).toEqual([
+      0,
+      6,
+      7,
+      6,
+      [
+        '000013566666666420000',
+        '002464200000002465310',
+        '024666666666666666420',
+        '024653100000000000000',
+        '002466420000001343100',
+        '000013566666665310000',
+      ],
+    ])
   })
 })
 

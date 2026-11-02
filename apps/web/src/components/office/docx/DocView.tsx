@@ -7,7 +7,10 @@
  * - Worker 只在解析与分页期间存在：分页结果为纯数据，图片字节随结果转交主线程。
  * - 字体：主机字体经 `../fonts.ts` 取得，同一份字节交给 Worker 排版、在主线程读取绘制度量。分页结果以文档中的字体名引用字形，
  *   绘制前换算为注册时的族名：文档以另一个名称引用已注册的字体时（如 `SimSun` 与 `宋体`），注册的族名是首次注册时的名称。
- * - 缺少字体与缺字时使用宋体；主机没有宋体时取文档字体中主机已有的第一个。
+ * - 缺少字体与缺字时使用宋体；主机没有宋体时取文档字体中主机已有的第一个。主机字体的族名在解析前取得（`loadHostFamilies`），
+ *   Worker 据此为主机没有的字体名做前缀匹配。
+ * - 主机显示器的 ClearType 设置随文档一同取得（`loadClearType`）：不为 `null` 时平滑字号的文字以 ClearType 字形写入画布像素，
+ *   画布按频繁读取像素创建。
  * - 图片在页面首次进入可见区域时解码，按下标缓存到文档被替换为止。
  *
  * 默认导出供 `lazy()` 使用：解析与绘制代码只在打开文档时下载。
@@ -18,7 +21,7 @@ import {
   type DocxFace,
   type FaceRef,
   loadDocxFace,
-  type PageContext,
+  type PageClearType,
   type PageFonts,
   pageImages,
   paintPage,
@@ -34,7 +37,7 @@ import {
 } from '@qywork/ooxml/drawingml'
 import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
 import { boundaryText, connectWorker, createDocumentLoader, failureText } from '../document.ts'
-import { type HostFace, loadHostFaces } from '../fonts.ts'
+import { type HostFace, loadClearType, loadHostFaces, loadHostFamilies } from '../fonts.ts'
 import type { ViewPosition } from '../viewport.ts'
 import type { DocxReplies, DocxRequest } from './docx-worker.ts'
 import { createPageViewport, type PageViewport } from './page-viewport.ts'
@@ -73,7 +76,6 @@ const UNSUPPORTED_LABEL: Record<BoundaryKind, string> = {
   artBorder: '艺术型页面边框',
   numberFormat: '编号格式',
   autoSpacing: '自动段间距',
-  tabLeader: '制表位前导符',
   decimalTab: '小数点对齐制表位',
   barTab: '竖线对齐制表位',
   ptab: '对齐方式选项卡',
@@ -93,6 +95,8 @@ interface Doc {
   readonly pages: DocumentPages
   readonly fonts: PageFonts
   readonly unsupported: UnsupportedCounts
+  /** 主机显示器的 ClearType 设置；为 `null` 时平滑字号以浏览器字体绘制。 */
+  readonly clearType: PageClearType['display'] | null
   /** 与 `pages.images` 对应的图片部件名。 */
   readonly parts: readonly string[]
   /** 已解码的图片；尚未解码与无法解码的为 `null`。 */
@@ -171,9 +175,13 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
   )
   signal.addEventListener('abort', () => channel.close(), { once: true })
   try {
-    const parsed = await channel.request({ kind: 'parse', bytes }, [bytes])
+    const hostFamilies = await loadHostFamilies()
+    const parsed = await channel.request({ kind: 'parse', bytes, host: hostFamilies }, [bytes])
     if (!parsed.ok) return failureText(parsed.failure)
-    const host = await loadHostFaces([...parsed.fonts, FALLBACK])
+    const [host, clearType] = await Promise.all([
+      loadHostFaces([...parsed.fonts, FALLBACK]),
+      loadClearType(),
+    ])
     const files: HostFace[] = []
     const families: [string, number[]][] = []
     for (const [name, list] of host) {
@@ -200,6 +208,7 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
       pages,
       fonts: pageFonts(host, pages.faces),
       unsupported: parsed.unsupported,
+      clearType,
       parts: pages.images.map((im) => im.part),
       images: pages.images.map(() => null),
       decoding: new Map(),
@@ -233,11 +242,21 @@ export default function DocView(props: { path: string; mtime: number }) {
   const paint = (index: number, canvas: HTMLCanvasElement, scale: number) => {
     const d = doc()
     const page = d?.pages.pages[index]
-    // 不透明画布：浏览器对不透明画布上的文字使用子像素抗锯齿，与 WPS 屏幕显示（ClearType）相同；
-    // 缺省的透明画布只用灰度抗锯齿。`paintPage` 先铺满白底，不需要透明。
-    const ctx = canvas.getContext('2d', { alpha: false }) as PageContext | null
+    // 不透明画布：ClearType 字形按底色混合；以 `fillText` 绘制的文字（主机不使用 ClearType、CFF 字体）在不透明画布上
+    // 为子像素抗锯齿，透明画布只用灰度抗锯齿。`paintPage` 先铺满白底，不需要透明。ClearType 字形读写画布像素。
+    const ctx = canvas.getContext('2d', {
+      alpha: false,
+      willReadFrequently: (d?.clearType ?? null) !== null,
+    }) as PageClearType['target'] | null
     if (!d || !page || !ctx) return
-    paintPage(ctx, page, d.fonts, { images: d.images, parts: d.parts, createCanvas }, scale)
+    paintPage(
+      ctx,
+      page,
+      d.fonts,
+      { images: d.images, parts: d.parts, createCanvas },
+      scale,
+      d.clearType === null ? null : { display: d.clearType, target: ctx },
+    )
   }
 
   /** 下一次显示时的位置：改写后重新加载时为原位置，首次显示时为 `null`。 */

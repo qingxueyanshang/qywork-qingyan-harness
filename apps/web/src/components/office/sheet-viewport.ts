@@ -6,19 +6,18 @@
  *   放大后超出浏览器的元素尺寸上限，滚动条也无法用于定位内容。
  * - 画布按 `devicePixelRatio` 分配像素，CSS 尺寸取画布像素除以设备像素比，使画布像素与屏幕像素一一对应；
  *   缩放与设备像素比以画布变换施加，绘制仍按工作表像素计算。
- * - 画布不透明（`alpha: false`）：浏览器对不透明画布上的文字（旋转的文字、主机不使用 ClearType 时的单元格文字）使用
- *   子像素抗锯齿，透明画布只用灰度抗锯齿。主机使用 ClearType 时单元格文字读写画布像素（见 `PaintContext`），画布在首次
+ * - 画布不透明（`alpha: false`）：浏览器对不透明画布上的文字（旋转的文字、主机不使用 ClearType 时的文字）使用
+ *   子像素抗锯齿，透明画布只用灰度抗锯齿。主机使用 ClearType 时单元格、形状与图表文字读写画布像素（见 `PaintContext`），画布在首次
  *   绘制时以 `willReadFrequently` 创建；绘制上下文的选项此后不再改变。不透明画布的初始像素为黑色，每次绘制前先以白色
  *   铺满整个画布：缩放比例或设备像素比不是整数时，各窗格边缘的像素只被部分覆盖。
  * - 画布不接收指针事件（`pointer-events: none`），滚轮与触摸落在其下方的滚动容器上。
  */
 
-import type { CreateCanvas, PaintCanvas } from '@qywork/ooxml/drawingml'
+import type { CreateCanvas, PaintCanvas, PaintPicture } from '@qywork/ooxml/drawingml'
 import {
   type ClearTypeDisplay,
   initialScroll,
   type PaintContext,
-  type PaintImage,
   paintView,
   type SheetScene,
 } from '@qywork/ooxml/xlsx'
@@ -27,11 +26,11 @@ import { createZoomScroll, type ViewPosition } from './viewport.ts'
 export interface SheetViewport {
   /**
    * 显示工作表并定位到 `at`；`at` 为 `null` 时取工作表保存的打开位置与缩放比例。`clearType` 为主机显示器的 ClearType 设置，
-   * 为 `null` 时单元格文字以浏览器字体绘制。
+   * 为 `null` 时单元格、形状与图表文字以浏览器字体绘制。
    */
   show(scene: SheetScene, at: ViewPosition | null, clearType: ClearTypeDisplay | null): void
-  /** 图片解码完成后传入，与 `scene.sheet.images` 逐项对应，无法解码的为 `null`。 */
-  setImages(images: readonly (PaintImage | null)[]): void
+  /** 图片解码完成后传入（`decodePicture`），与 `scene.sheet.images` 逐项对应，无法解码的为 `null`。 */
+  setImages(images: readonly (PaintPicture | null)[]): void
   /** 当前位置；尚未显示工作表时为 `null`。 */
   position(): ViewPosition | null
   destroy(): void
@@ -57,7 +56,7 @@ export function createSheetViewport(els: {
   const { scroller, extent, canvas } = els
   let scene: SheetScene | null = null
   let clearType: ClearTypeDisplay | null = null
-  let images: readonly (PaintImage | null)[] = []
+  let images: readonly (PaintPicture | null)[] = []
   let frame = 0
 
   /** 按滚动位置 (`x`, `y`)（工作表像素）设置占位元素的尺寸，使该位置可以到达。 */

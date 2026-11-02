@@ -11,9 +11,14 @@
  *   已在解析时按种类计入 `unsupported`。
  * - 公式位于排版给出的位置（左端与基线），不生成文字片段；没有排版结果的公式计入 `Page.hiddenMath`（页眉页脚部件中的只在
  *   使用该部件的第一页计入）。
+ * - 行顶取整到缇（`twipFloor`）：行的位置按累计的行高与间距求得，绘制时行顶取其向下取整到整缇的值，行内的文字、图片与公式
+ *   随之上移，分页与环绕仍按累计值判定；下移到避让矩形之下的行自矩形底边之下的第一个整缇排起（`twipBelow`）。
  * - 浮动对象（WPS 12.1 实测）：对象的位置按锚定段落在不受该对象影响时的位置求得（相对段落时取段落顶边：上一段的
  *   段后间距之下、本段超出该间距的段前间距之上），之后本页与对象重叠的各行（含锚定段落之前的段落）避让，对象不随锚定段落
- *   移动。段落的第一行下移到上下型对象下方时，本段超出上一段段后间距的段前间距加在对象底边之下（构造文档 w11f、w11g）。环绕方式：
+ *   移动。段落的第一行下移到上下型对象下方时，本段超出上一段段后间距的段前间距加在对象底边之下（构造文档 w11f、w11g），其余各行
+ *   下移时不加（构造文档 w14 k15、k14，兼容模式 14 相同）。兼容模式低于 15 时上下型对象的顶边恰好接触之前段落的行时该行
+ *   同样下移，且判断重叠时段落的末行计入其段后间距（见 `overlaps`；w11f、w11g 改为兼容模式 14：上一段段后 0 或 10 磅、对象
+ *   位于本段顶边时上一段移到对象下方）。环绕方式：
  *   避让矩形为对象框加 `effectExtent` 与距正文的距离（WPS 实测：effectExtent 底边 0.9 磅的上下型 SmartArt 使其下的行
  *   再下移 0.9 磅）。上下型（`topAndBottom`）使与矩形重叠的行（行底恰好接触矩形顶边的行见 `overlaps`）下移到其下方；
  *   四周型、紧密型与穿越型按矩形避让，一行依次排入对象两侧宽度足够的区段（不足 `MIN_SEGMENT`
@@ -48,7 +53,7 @@ import {
   mathText,
 } from '../../math/index.ts'
 import { readMetafile } from '../../metafile/index.ts'
-import type { LineArea, TextFace, TextLine } from '../../text/index.ts'
+import type { HostFamilies, LineArea, TextFace, TextLine } from '../../text/index.ts'
 import { borderStrokes } from '../border.ts'
 import {
   contextSpacing,
@@ -103,6 +108,7 @@ import type {
   PageLine,
   PageParagraph,
   PageTable,
+  PageTextBox,
   ParagraphBox,
   Underline,
 } from './model.ts'
@@ -317,9 +323,10 @@ function graphicFontNames(graphics: readonly DrawingGraphic[]): string[] {
 
 /**
  * 文档所需的全部字体名：正文、表格、文本框、各节引用的页眉页脚、图表、SmartArt 与图元文件，以及主机没有其中的字体时所用的替代字体
- * （`substitutes`，数学字体的替代为 Cambria Math）。调用方据此预先取得字体文件。
+ * （`substitutes`，数学字体的替代为 Cambria Math）。调用方据此预先取得字体文件。`host` 为主机字体的族名：主机有的字体名不列出
+ * 其替代字体，主机没有的字体名按它做前缀匹配。
  */
-export function requiredFonts(doc: DocxDocument): string[] {
+export function requiredFonts(doc: DocxDocument, host: HostFamilies): string[] {
   const names = new Set<string>()
   const visit = (blocks: readonly Block[]) => {
     blockFonts(blocks, doc.settings.math.font, names)
@@ -338,9 +345,12 @@ export function requiredFonts(doc: DocxDocument): string[] {
   }
   visit(doc.body)
   for (const part of Object.values(doc.parts)) visit(part)
-  for (const name of [...names])
+  const present = new Set(host.names)
+  for (const name of [...names]) {
+    if (present.has(name.trim().toLowerCase())) continue
     for (const use of ['other', 'eastAsia'] as const)
-      for (const c of substitutes(name, use, doc.fontTable)) names.add(c.name)
+      for (const c of substitutes(name, use, doc.fontTable, host.local)) names.add(c.name)
+  }
   if (names.has(doc.settings.math.font)) names.add(MATH_SETTINGS_DEFAULTS.font)
   const { graphics, metafiles } = documentGraphics(doc)
   for (const name of graphicFontNames(graphics)) names.add(name)
@@ -515,6 +525,7 @@ function exclusionOf(
   a: Anchor,
   r: { x: number; y: number; width: number; height: number },
   owner: number,
+  mode: number,
 ): Exclusion | null {
   if (a.wrap.type === 'none') return null
   const d = a.wrap.distance
@@ -525,6 +536,7 @@ function exclusionOf(
     top: r.y - e.top - d.top,
     bottom: r.y + r.height + e.bottom + d.bottom,
     topAndBottom: a.wrap.type === 'topAndBottom',
+    touchesEarlier: mode < 15 && a.wrap.type === 'topAndBottom',
     side: a.wrap.side,
     owner,
   }
@@ -532,9 +544,10 @@ function exclusionOf(
 
 /**
  * 环绕查询：段落 `block` 第一行行顶在 `top`、区域左边在 `x`、宽度 `region`、正文区底边在 `limit` 时各行的可用区段
- * （见文件头）。行下移后再检查新位置上的对象；`once` 为真时上下型只下移一次，不再检查新位置。`exempt` 为假时
+ * （见文件头）。下移的行的行顶为矩形底边之下的第一个整缇（`twipBelow`）。
+ * 行下移后再检查新位置上的对象；`once` 为真时上下型只下移一次，不再检查新位置。`exempt` 为假时
  * 本段的四周型等对象同样避让（判定段落是否移页用）。第一行下移到上下型对象下方时，行顶在对象底边之下 `before`
- * （本段自身的段前间距，见 `PaginateOptions.wrap`）。
+ * （本段自身的段前间距，见 `PaginateOptions.wrap`）。`after` 为本段的段后间距，判断末行的重叠时传给 `overlaps`。
  */
 function wrapArea(
   exclusions: readonly Exclusion[],
@@ -545,21 +558,22 @@ function wrapArea(
   limit: number,
   once: boolean,
   before: number,
+  after: number,
   exempt = true,
 ) {
-  return (lineTop: number, height: number): LineArea => {
+  return (lineTop: number, height: number, final: boolean): LineArea => {
     const gap = lineTop === 0 ? before : 0
     let y = top + lineTop
     for (let guard = 0; guard < 2 * exclusions.length + 2; guard++) {
       const bottom = y + height
       const hit = exclusions.filter(
         (e) =>
-          overlaps(e, y, bottom, block) &&
+          overlaps(e, y, bottom, block, final ? after : 0) &&
           !(exempt && e.owner === block && !e.topAndBottom && e.bottom + height > limit + 0.01),
       )
       const tb = hit.filter((e) => e.topAndBottom)
       if (tb.length > 0) {
-        y = Math.max(...tb.map((e) => e.bottom)) + gap
+        y = twipBelow(Math.max(...tb.map((e) => e.bottom))) + gap
         if (once) return { top: y - top, segments: [{ left: 0, width: region }] }
         continue
       }
@@ -580,7 +594,7 @@ function wrapArea(
       }
       const usable = segments.filter((g) => g.right - g.left >= MIN_SEGMENT)
       if (usable.length === 0 && hit.length > 0) {
-        y = Math.min(...hit.map((e) => e.bottom))
+        y = twipBelow(Math.min(...hit.map((e) => e.bottom)))
         continue
       }
       return {
@@ -637,8 +651,9 @@ function unwrappedWidth(blocks: readonly Block[], cx: TableContext): number {
   return w
 }
 
-export function layoutPages(doc: DocxDocument, fonts: DocxFonts): PagesResult {
-  const layouter = new ParagraphLayouter(doc, fonts.source)
+/** `host` 为主机字体的族名，用于主机没有的字体名的前缀匹配。 */
+export function layoutPages(doc: DocxDocument, fonts: DocxFonts, host: HostFamilies): PagesResult {
+  const layouter = new ParagraphLayouter(doc, fonts.source, host)
   const mode = doc.settings.compatibilityMode
   const cx: TableContext = { layouter, compatibilityMode: mode }
   const fitted = new Map<Anchor, Anchor>()
@@ -740,12 +755,13 @@ export function layoutPages(doc: DocxDocument, fonts: DocxFonts): PagesResult {
         if (endsSection && p.runs.every((r) => BREAKS_ONLY.test(r.text))) return null
         if (!list.some((e) => e.bottom > top)) return null
         const region = doc.sections[p.section]!.columns[0]!.width
+        const spacing = contextSpacing(doc.body, block)
         return layouter.layout(
           p,
           block,
           region,
-          contextSpacing(doc.body, block),
-          wrapArea(list, block, x, region, top, bottom, once, before),
+          spacing,
+          wrapArea(list, block, x, region, top, bottom, once, before, spacing.after),
         )
       },
       anchored: (block, site) => {
@@ -769,7 +785,7 @@ export function layoutPages(doc: DocxDocument, fonts: DocxFonts): PagesResult {
             return
           const a = fit(raw)
           const box = anchorRect(a, placed, frame, site.area)
-          out.push({ key: `${block}:${k}`, box, exclusion: exclusionOf(a, box, block) })
+          out.push({ key: `${block}:${k}`, box, exclusion: exclusionOf(a, box, block, mode) })
         })
         return out
       },
@@ -788,7 +804,7 @@ export function layoutPages(doc: DocxDocument, fonts: DocxFonts): PagesResult {
           if (a.vertical.align !== null) return false
           if (a.vertical.from !== 'paragraph' && a.vertical.from !== 'line') return false
           if (lineAt(lines, raw.offset + shift) !== 0) return false
-          const e = exclusionOf(a, anchorRect(a, placed, frame, site.area), block)
+          const e = exclusionOf(a, anchorRect(a, placed, frame, site.area), block, mode)
           if (e === null) return false
           const area = wrapArea(
             [e],
@@ -799,9 +815,10 @@ export function layoutPages(doc: DocxDocument, fonts: DocxFonts): PagesResult {
             site.area.bottom,
             false,
             site.lineTop - site.top,
+            site.layout.spaceAfter,
             false,
           )
-          const moved = area(0, first.height).top
+          const moved = area(0, first.height, lines.length === 1).top
           return site.lineTop + moved + first.height > site.area.bottom + FIT_EPSILON
         })
       },
@@ -934,7 +951,9 @@ function hasGraphic(
   }
   return (
     lists.some(inItems) ||
-    floats.some((f) => inItems(f.items) || (f.drawing !== null && inNode(f.drawing))) ||
+    floats.some(
+      (f) => f.texts.some((t) => inItems(t.items)) || (f.drawing !== null && inNode(f.drawing)),
+    ) ||
     (background?.image != null && metafiles.has(background.image))
   )
 }
@@ -1034,29 +1053,53 @@ class PageBuilder {
   }
 
   private addFloat(a: Anchor, r: { x: number; y: number; width: number; height: number }): void {
-    const items: PageItem[] = []
-    if (a.drawing !== null) this.textBoxes(items, a.drawing, r.x, r.y)
-    this.floats.push({ ...r, behind: a.behind, drawing: a.drawing, items, z: a.z })
+    const texts: PageTextBox[] = []
+    if (a.drawing !== null) this.textBoxes(texts, a.drawing, r.x, r.y)
+    this.floats.push({ ...r, behind: a.behind, drawing: a.drawing, texts, z: a.z })
   }
 
-  /** 文本框的内容：文字区为形状框减去内缩，内容按 `anchor` 纵向对齐；形状的旋转不作用于文字。 */
-  private textBoxes(out: PageItem[], n: DrawingNode, x: number, y: number): void {
+  /**
+   * 文本框的内容：文字区为形状框减去内缩，内容按 `anchor` 纵向对齐。竖排文字与形状旋转相抵时（`TextBox.turned`）文字区取旋转后的
+   * 形状框（中心不变、宽高互换），内缩随之旋转：270° 时左、上、右、下依次为 `tIns`、`rIns`、`bIns`、`lIns`，90° 时为 `bIns`、
+   * `lIns`、`tIns`、`rIns`（WPS 实测，构造文档 w14 x1：顶端、居中、底端对齐，内缩各不相同，含组合中的形状，9 个文本框的换行
+   * 一致，顶端对齐时文字起点相差 0.6 磅以内；居中与底端对齐时含空段落的内容另低 0.8–1.6 磅，原因未查明）。
+   * 形状的其余旋转使文字随形状旋转（`PageTextBox.rotation`；组合的旋转不作用于文字，未实测）。内容高于文字区时一律顶端对齐
+   * （WPS 实测，构造文档 w13 x1），裁剪范围见 `PageTextBox`。
+   */
+  private textBoxes(out: PageTextBox[], n: DrawingNode, x: number, y: number): void {
     if (n.kind === 'group') {
       for (const c of n.children) this.textBoxes(out, c, x, y)
       return
     }
     if (n.kind !== 'shape' || n.text === null) return
     const f = n.frame
-    const inset = n.text.inset
-    const left = x + f.x / EMU_PER_POINT + inset.left
-    const top = y + f.y / EMU_PER_POINT + inset.top
-    const width = Math.max(0, f.width / EMU_PER_POINT - inset.left - inset.right)
-    const height = Math.max(0, f.height / EMU_PER_POINT - inset.top - inset.bottom)
+    const turned = n.text.turned
+    const w = f.width / EMU_PER_POINT
+    const h = f.height / EMU_PER_POINT
+    const i = n.text.inset
+    const inset =
+      turned === 270
+        ? { left: i.top, top: i.right, right: i.bottom, bottom: i.left }
+        : turned === 90
+          ? { left: i.bottom, top: i.left, right: i.top, bottom: i.right }
+          : i
+    const [bw, bh] = turned === 0 ? [w, h] : [h, w]
+    const boxLeft = x + f.x / EMU_PER_POINT + (w - bw) / 2
+    const boxTop = y + f.y / EMU_PER_POINT + (h - bh) / 2
+    const left = boxLeft + inset.left
+    const top = boxTop + inset.top
+    const width = Math.max(0, bw - inset.left - inset.right)
+    const height = Math.max(0, bh - inset.top - inset.bottom)
     const stack = layoutStack(n.text.content, width, this.cx)
     const free = height - stack.height
     const dy =
       free <= 0 ? 0 : n.text.anchor === 'center' ? free / 2 : n.text.anchor === 'bottom' ? free : 0
-    this.stackItems(out, stack, left, top + dy, width, null)
+    const items: PageItem[] = []
+    this.stackItems(items, stack, left, top + dy, width, null)
+    const clip = { x: boxLeft, y: boxTop, width: bw, height: Math.max(0, bh - inset.bottom) }
+    const angle = turned === 0 ? ((f.rotation % 360) + 360) % 360 : 0
+    const rotation = angle === 0 ? null : { angle, x: boxLeft + bw / 2, y: boxTop + bh / 2 }
+    out.push({ clip, rotation, items })
   }
 
   /**
@@ -1239,18 +1282,23 @@ class PageBuilder {
     }
   }
 
+  /** `placed` 为各行按累计值求得的行顶（含环绕下移的部分），绘制位置按 `twipFloor` 取整。 */
   private paragraphItem(
     p: Paragraph,
     lay: ParagraphLayout,
     block: number,
     first: number,
-    tops: readonly number[],
+    placed: readonly number[],
     x: number,
   ): PageParagraph {
+    // 环绕下移的部分不属于该行：取整的是文字所在处的行顶。
+    const tops = placed.map((top, k) => {
+      const skip = lay.text.lines[first + k]!.skip ?? 0
+      return twipFloor(top + skip) - skip
+    })
     const lines: PageLine[] = []
     tops.forEach((top, k) => {
       const line = lay.text.lines[first + k]!
-      // 环绕下移的部分不属于该行：行顶取文字所在处。
       const skip = line.skip ?? 0
       lines.push({
         top: top + skip,
@@ -1300,6 +1348,23 @@ class PageBuilder {
   }
 }
 
+/**
+ * 行顶（磅）向下取整到整缇。WPS 实测（构造文档 w14 v1 的 225 段，行高的小数部分与段前间距逐项变化；语料正文 4155 行的逐字
+ * 行顶）：累计值向下取整时 v1 全部一致、语料 4061 行一致；四舍五入时 v1 114 段、语料 810 行差 1 缇；逐行取整后再累计时
+ * v1 195 段不一致。
+ */
+function twipFloor(y: number): number {
+  return Math.floor(y * 20 + 1e-6) / 20
+}
+
+/**
+ * `y`（磅）之下的第一个整缇：`y` 为整缇时下移 1 缇。WPS 实测（构造文档 w14 k14、k15、w11f、w11g 中上下型图片之下的 101 行，
+ * 图片底边为整缇；语料 32c9f4a4 中 53 行）：行顶比图片底边低 1 缇，其后的行与段落随之下移，按本函数求得时全部一致。
+ */
+function twipBelow(y: number): number {
+  return twipFloor(y) + 1 / 20
+}
+
 /** 公式排版结果中的字体换算为 `DocumentPages.faces` 的下标。 */
 function mathFaces(m: MathLayout<TextFace>, fonts: DocxFonts): MathLayout<number> {
   const items = m.items.map(
@@ -1341,15 +1406,15 @@ function fragments(
     const src = lay.runs[l.run]!
     const run = src < 0 ? null : p.runs[src]!
     const props = run?.props ?? p.numbering!.props
-    const { face, end } = layouter.leaderStyle(l.face, props, run?.field ?? null)
-    const advance = face.metrics.advance(l.char.codePointAt(0)!, l.size)
+    const { face, end, rise } = layouter.leaderStyle(l.face, l.size, props, run?.field ?? null)
+    const advance = leaderAdvance(face, l.char, l.size)
     const count = advance > 0 ? Math.floor(l.width / advance + 1e-6) : 0
     if (count === 0) continue
     out.push({
       face: fonts.ref(face),
       size: l.size,
       x: x0 + l.x + (end ? l.width - count * advance : 0),
-      baseline: line.baseline + dy,
+      baseline: line.baseline + dy - rise,
       text: l.char.repeat(count),
       advances: Array.from({ length: count }, () => advance),
       color: runPaint(props).color,
@@ -1359,6 +1424,17 @@ function fragments(
     })
   }
   return out
+}
+
+/**
+ * 前导符字符的步进（磅）：线性宽度四舍五入到 96 dpi 的整像素。WPS 实测（构造文档 w13 l1 的 28 行与 w14 v1 的 224 行，页面 EMF
+ * 中前导符的字距与个数）：12 磅 Times New Roman 的「-」「·」为 5 像素、「_」为 8 像素，10 磅的「.」为 3 像素，个数为前导符的
+ * 宽度除以该步进取整，全部一致。不要改为 GDI 的整数像素宽度：12 磅的「-」为 6 像素，个数少 12 个；按线性宽度时 12 磅的
+ * 「-」「·」各少 4 个，10 磅的「.」少 13 个。
+ */
+function leaderAdvance(face: TextFace, char: string, size: number): number {
+  const px = Math.round((face.metrics.advance(char.codePointAt(0)!, size) * 4) / 3)
+  return (px * 3) / 4
 }
 
 /** `ST_Underline` 归并为绘制支持的线型。 */

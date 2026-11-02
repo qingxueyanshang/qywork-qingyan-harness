@@ -12,7 +12,8 @@
  * - `wrap` 为假时不断行：按不限宽度排版后，各行在文本区域内按段落对齐方式整体平移。
  * - 字段 `slidenum` 显示 `TextSettings.slideNumber`（为 `null` 时与其余字段相同），其余字段显示文件中保存的文字。
  *   全部大写（`caps="all"`）按大写字母排版。字符间距（`spc`）乘以自动调整的字号缩放。
- * - 绘制：每个字逐个定位，与排版的步进一致；`FaceCache.glyphs` 不为 `null` 时按屏幕显示绘制（见 `drawGlyphs`）。
+ * - 绘制：每个字逐个定位，与排版的步进一致；`FaceCache.glyphs` 不为 `null` 时按屏幕显示绘制（见 `drawGlyphs`），
+ *   `FaceCache.clearType` 不为 `null` 时平滑字号以 ClearType 字形写入画布像素。
  *   不是纯色的文字填充（渐变、图片、图案）以每一行为填充范围：横向为该行内容（`TextLine.left` 起 `width` 宽），
  *   纵向为行高，在图层中以文字为遮罩覆盖。实测（WPS 演示导出图，宋体 40 磅的方块，线性渐变 0° 与 90°、
  *   路径渐变与图片拉伸填充）：每行的颜色变化都从行首到行尾、从行顶到行底，与行长、对齐、锚点、溢出与
@@ -21,6 +22,7 @@
  */
 
 import { fillBitmap } from '../../glyph/bitmap.ts'
+import type { GlyphRun, PlacedGlyph } from '../../glyph/cleartype/index.ts'
 import {
   type Alignment,
   DEFAULT_NO_LINE_BREAK_AFTER,
@@ -56,7 +58,13 @@ import {
   paintShadows,
 } from '../paint/shadow.ts'
 import { autoNumberText, symbolChar } from './bullet.ts'
-import { type FaceCache, type PaintFace, type ScreenText, SINGLE_LINE } from './fonts.ts'
+import {
+  type FaceCache,
+  type PaintFace,
+  type ScreenText,
+  SINGLE_LINE,
+  type TextClearType,
+} from './fonts.ts'
 import type { BodyProperties, Paragraph, Run, RunStyle, Spacing, TextBody } from './model.ts'
 
 const EMU_PER_PT = 12700
@@ -299,8 +307,9 @@ function mixedBaseline(
  * 一行按单倍行距的行高与基线（磅）：`natural` 取行内各片段的上下沿，`height` 为宿主的单倍行高。
  * - 项目符号不计入：WPS 演示导出图中 Arial、Wingdings、宋体的项目符号（字号 70%–150%）不改变行高与基线。
  * - 只有项目符号或没有片段的行取段落结束符。
- * - 屏幕显示（`FaceCache.screen`，WPS 表格形状文字实测）的单倍行高按行内最大字号的整数部分计算（10.5 磅与
- *   10 磅行距相同；宋体 9–14.5 磅以 0.25 磅步进）。
+ * - `FaceCache.wholeSizeLine` 为真时单倍行高按行内最大字号的整数部分计算。实测：WPS 表格的形状文字 10.5 磅与 10 磅
+ *   行距相同（宋体 9–14.5 磅以 0.25 磅步进）；WPS 表格图表的 10.5 磅多行标题（宋体、微软雅黑、Calibri、Arial）每行
+ *   比按实际字号计算少 1 像素，WPS 演示与 WPS 文字中同样的图表按实际字号。
  */
 function singleLine(
   line: TextLine,
@@ -314,15 +323,15 @@ function singleLine(
   const extents = parts.map((p) => faceExtent(p.face.vertical, p.size))
   const box = lineBox(extents, { rule: 'proportional', value: 1 }, null)
   const natural = screen ? box : { height: box.height, baseline: mixedBaseline(parts, context) }
-  const k = screen && size >= 1 ? Math.floor(size) / size : 1
+  const k = context.faces.wholeSizeLine && size >= 1 ? Math.floor(size) / size : 1
   return { natural, height: natural.height * k }
 }
 
 /**
  * 按宿主的规则换算行高与基线（排版模块把行高与单倍行高之差全部加在文字上方）：
  * - 行高与单倍行高（`singleLine`）之差的 `EXTRA_ABOVE`（屏幕显示为 `SCREEN_EXTRA_ABOVE`）加在文字上方。
- * - 屏幕显示时基线与单倍行高中线的距离仍按实际字号，即基线比按实际字号排版时上移两种单倍行高之差的一半
- *   （6 种字体的 10.5 磅，宋体与 Arial 6.5–13.5 磅）。
+ * - 单倍行高按整数字号计算时（`FaceCache.wholeSizeLine`）基线与单倍行高中线的距离仍按实际字号，即基线比按实际字号
+ *   排版时上移两种单倍行高之差的一半（WPS 表格形状文字 6 种字体的 10.5 磅，宋体与 Arial 6.5–13.5 磅）。
  * 没有片段的行（空段落）保持原行高与基线。
  */
 function hostBlock(block: TextBlock, spacing: LineSpacing, context: LineContext): TextBlock {
@@ -480,46 +489,100 @@ function collect(
   return { glyphs, lines, highlights }
 }
 
+/** 按屏幕显示绘制：字形来源、文本区域到设备坐标的变换与画布尺寸（ClearType 字形裁到画布之内）。 */
+interface ScreenTarget {
+  readonly text: ScreenText
+  readonly matrix: Matrix
+  readonly clearType: TextClearType | null
+  readonly canvas: { readonly width: number; readonly height: number }
+}
+
 /**
  * 逐字绘制。`screen` 不为 `null` 且 `matrix` 不含旋转与斜切时按屏幕显示绘制：基线取整到设备像素，
- * 有单色字形的字（`ScreenText.bitmap`：点阵、提示后的轮廓或倾斜的轮廓）画在取整后的设备坐标上。
+ * 有单色字形的字（`ScreenText.bitmap`：点阵、提示后的轮廓或倾斜的轮廓）画在取整后的设备坐标上；其余的字在
+ * `screen.clearType` 不为 `null` 且填充为不透明纯色时以 ClearType 字形写入画布像素，同一字体、字号、颜色与基线的
+ * 相邻字合为一段（GDI 把一段文字的覆盖相加后混合），这一批字收集完后交给 `TextClearType.paint`。旋转与斜切的文字、
+ * 半透明的文字与没有 ClearType 字形的字以 `fillText` 绘制，在第一个这样的字之前混合暂存的字形段（`TextClearType.flush`）。
  */
 function drawGlyphs(
   ctx: PaintContext,
   glyphs: readonly Glyph[],
   color: string | null,
-  screen: { readonly text: ScreenText; readonly matrix: Matrix } | null = null,
+  screen: ScreenTarget | null = null,
 ): void {
   const m = screen?.matrix
   const upright = m !== undefined && m.b === 0 && m.c === 0 && m.a > 0 && m.d > 0
+  const runs: GlyphRun[] = []
+  let placed: PlacedGlyph[] = []
+  let runKey = ''
   let font = ''
+  let flushed = false
+  /** 直接画到画布上的字（`fillText`、点阵）之前，先混合暂存的 ClearType 字形段。 */
+  const direct = () => {
+    if (flushed) return
+    screen?.clearType?.flush()
+    flushed = true
+  }
   for (const g of glyphs) {
     const f = fontString(g.face, g.size)
     if (f !== font) {
       ctx.font = f
       font = f
     }
-    if (color === null) {
+    let css = color
+    if (css === null) {
       const fill = g.paint.fill
       if (fill.kind !== 'solid') continue
-      ctx.fillStyle = colorToCss(fill.color)
+      css = colorToCss(fill.color)
+      ctx.fillStyle = css
     }
     if (!upright) {
+      direct()
       ctx.fillText(g.text, g.x, g.y)
       continue
     }
     const baseline = Math.round(m.d * g.y + m.f)
-    const bitmap = screen!.text.bitmap(g.face, g.text.codePointAt(0)!, Math.round(g.size * m.d))
-    if (bitmap === null) {
+    const x = Math.round(m.a * g.x + m.e)
+    const codePoint = g.text.codePointAt(0)!
+    const ppem = Math.round(g.size * m.d)
+    const bitmap = screen!.text.bitmap(g.face, codePoint, ppem)
+    if (bitmap !== null) {
+      direct()
+      ctx.save()
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      fillBitmap(ctx, bitmap.glyph, x, baseline, bitmap.ascent, bitmap.descent)
+      ctx.restore()
+      continue
+    }
+    // `colorToCss` 只对不透明的颜色返回 `#rrggbb`。
+    const smooth =
+      screen!.clearType !== null && css.startsWith('#')
+        ? screen!.clearType.glyph(g.face, codePoint, ppem)
+        : null
+    if (smooth === null) {
+      direct()
       ctx.fillText(g.text, g.x, (baseline - m.f) / m.d)
       continue
     }
-    ctx.save()
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
-    const x = Math.round(m.a * g.x + m.e)
-    fillBitmap(ctx, bitmap.glyph, x, baseline, bitmap.ascent, bitmap.descent)
-    ctx.restore()
+    const key = `${f}\u0000${css}\u0000${baseline}\u0000${smooth.ascent}\u0000${smooth.descent}`
+    if (key !== runKey) {
+      runKey = key
+      placed = []
+      const { width, height } = screen!.canvas
+      runs.push({
+        glyphs: placed,
+        color: css,
+        clip: {
+          left: 0,
+          top: Math.max(0, baseline - smooth.ascent),
+          right: width,
+          bottom: Math.min(height, baseline + smooth.descent),
+        },
+      })
+    }
+    placed.push({ glyph: smooth.glyph, x, baseline })
   }
+  if (runs.length > 0) screen!.clearType!.paint(runs)
 }
 
 function prepare(ctx: PaintContext): void {
@@ -585,6 +648,8 @@ export function paintBody(
 ): void {
   const { glyphs, lines, highlights } = collect(layout, faces)
   if (glyphs.length === 0 && lines.length === 0 && highlights.length === 0) return
+  // 底纹与阴影是非文字绘制，见 `TextClearType`。
+  if (highlights.length > 0) faces.clearType?.flush()
   const frame = {
     matrix: target.matrix,
     width: target.width,
@@ -612,6 +677,7 @@ export function paintBody(
       groups.set(key, group)
     }
   }
+  if (groups.size > 0) faces.clearType?.flush()
   for (const { shadow, glyphs: list } of groups.values()) {
     const bounds = glyphBounds(list, target.matrix, canvas)
     if (bounds === null) continue
@@ -631,7 +697,15 @@ export function paintBody(
     ctx,
     glyphs,
     null,
-    faces.glyphs === null ? null : { text: faces.glyphs, matrix: target.matrix },
+    faces.glyphs === null
+      ? null
+      : {
+          text: faces.glyphs,
+          matrix: target.matrix,
+          // 图层（阴影、三维效果、带阴影的组合）不是 `FaceCache.clearType` 的目标画布，见 `TextClearType`。
+          clearType: faces.clearType?.target === ctx ? faces.clearType : null,
+          canvas,
+        },
   )
   ctx.restore()
 
@@ -645,6 +719,9 @@ export function paintBody(
     group.glyphs.push(g)
     fills.set(key, group)
   }
+  // 非纯色填充、轮廓与下划线画在文字之上，见 `TextClearType`。
+  if (fills.size > 0 || lines.length > 0 || glyphs.some((g) => g.paint.style?.outline))
+    faces.clearType?.flush()
   for (const { fill, area, glyphs: list } of fills.values()) {
     const bounds = glyphBounds(list, target.matrix, canvas)
     if (bounds === null) continue

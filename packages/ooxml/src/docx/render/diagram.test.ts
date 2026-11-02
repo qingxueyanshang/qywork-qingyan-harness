@@ -18,6 +18,7 @@ import {
   THEME_XML,
 } from '../../drawingml/diagram/test-helper.ts'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, type Paragraph, parseDocx } from '../index.ts'
 import { layoutPages, requiredFonts } from '../page/build.ts'
 import { buildDocx, p, r } from '../test-helper.ts'
@@ -178,8 +179,10 @@ describe.skipIf(process.platform !== 'win32')('SmartArt 的放置与绘制（本
         p(inlineDiagram(1), '<w:jc w:val="center"/>'),
       diagramParts(1),
     )
-    expect(requiredFonts(doc)).toEqual(expect.arrayContaining(['MinorEA', 'Segoe Print']))
-    const { pages } = layoutPages(doc, new DocxFonts([simsun()], '宋体'))
+    expect(requiredFonts(doc, NO_HOST_FAMILIES)).toEqual(
+      expect.arrayContaining(['MinorEA', 'Segoe Print']),
+    )
+    const { pages } = layoutPages(doc, new DocxFonts([simsun()], '宋体'), NO_HOST_FAMILIES)
     expect(pages.pages).toHaveLength(2)
     expect(pages.pages[0]!.graphicFonts).toBeNull()
     const page = pages.pages[1]!

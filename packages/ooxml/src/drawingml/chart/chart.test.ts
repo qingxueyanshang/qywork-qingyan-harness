@@ -452,6 +452,61 @@ describe('布局', () => {
     expect(rotation(380)).toBe(-90)
   })
 
+  test('数值轴在下方的横向条形图：标签顶距轴线 0.58f + 1，与不旋转的分类标签相同', () => {
+    const axes = SIZED_AXES.replace('<c:axPos val="b"/>', '<c:axPos val="l"/>').replace(
+      '<c:axPos val="l"/><c:majorGridlines/>',
+      '<c:axPos val="b"/><c:majorGridlines/>',
+    )
+    const xml = chartXml(
+      `<c:barChart><c:barDir val="bar"/>${ser(0, 'a', [4.3, 2.5, 3.5])}<c:axId val="1"/><c:axId val="2"/></c:barChart>${axes}`,
+    )
+    const l = layoutChart(resolved(xml), 300, 340, SETTINGS)
+    const value = l.axes.find((a) => a.horizontal)!
+    expect(value.scale).not.toBeNull()
+    for (const label of value.labels) expect(label.y - value.at).toBeCloseTo(0.58 * 12 + 1, 6)
+  })
+
+  test('−90° 的分类标签右端距轴线 0.58f + 1，绘图区下沿随之上移，标签末端位置不变', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `第${i + 1}期销售`)
+    const xml = chartXml(
+      `<c:barChart><c:barDir val="col"/><c:ser><c:idx val="0"/><c:order val="0"/><c:cat><c:strRef><c:f>S!$A$1</c:f>` +
+        `${strCache(many)}</c:strRef></c:cat><c:val><c:numRef><c:f>S!$B$1</c:f>` +
+        `${numCache(many.map((_, i) => i + 1))}</c:numRef></c:val></c:ser>` +
+        `<c:axId val="1"/><c:axId val="2"/></c:barChart>${SIZED_AXES}`,
+    )
+    const l = layoutChart(resolved(xml), 380, 300, SETTINGS)
+    const cat = l.axes.find((a) => a.horizontal)!
+    const label = cat.labels.at(-1)!
+    expect(label.rotation).toBe(-90)
+    // −90° 时文字框左上角在旋转后的下端：上端为 y − 宽度。
+    expect(label.y - label.width - cat.at).toBeCloseTo(0.58 * 12 + 1, 6)
+    expect(label.y).toBeCloseTo(300 - 9.25 - (0.943 * 12 - 2.35) + 0.375 * 12, 6)
+  })
+
+  test('自动位置的图例条目在框内上移 0.5 像素，手动位置的不上移', () => {
+    const legend = (layout: string) =>
+      chartXml(plot([4.3, 2.5, 3.5, 4.5])).replace(
+        '</c:plotArea>',
+        `</c:plotArea><c:legend><c:legendPos val="b"/>${layout}</c:legend>`,
+      )
+    const inset = Math.max(1, 0.37 * 10 * (4 / 3) - 1.9)
+    const auto = layoutChart(resolved(legend('')), 300, 340, SETTINGS).legend!
+    expect(auto.entries[0]!.text.y - auto.box.y).toBeCloseTo(inset - 0.5, 6)
+    expect(auto.box.y + auto.box.h).toBeCloseTo(340 - 9.25, 6)
+    const manual = layoutChart(
+      resolved(
+        legend(
+          '<c:layout><c:manualLayout><c:xMode val="edge"/><c:yMode val="edge"/><c:x val="0.1"/><c:y val="0.9"/></c:manualLayout></c:layout>',
+        ),
+      ),
+      300,
+      340,
+      SETTINGS,
+    ).legend!
+    expect(manual.box.y).toBeCloseTo(0.9 * 340, 6)
+    expect(manual.entries[0]!.text.y - manual.box.y).toBeCloseTo(inset, 6)
+  })
+
   test('底部图例居中，框底在留白处；横向条形图的图例按系列倒序', () => {
     const xml = chartXml(
       `<c:barChart><c:barDir val="bar"/>${ser(0, '甲系列', [1, 2])}${ser(1, '乙系列', [2, 1])}<c:axId val="1"/><c:axId val="2"/></c:barChart>` +
@@ -485,7 +540,7 @@ describe('绘制', () => {
     const identity = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
     const scene = {
       ctx,
-      res: { image: () => null, createCanvas: canvasFactory().create },
+      res: { image: () => null, createCanvas: canvasFactory().create, metafileFonts: null },
       scale: 1,
       canvas: { width: 300, height: 200 },
       settings: SETTINGS,
@@ -518,7 +573,7 @@ describe('宿主的像素规则', () => {
     }
     const scene = {
       ctx,
-      res: { image: () => null, createCanvas: canvasFactory().create },
+      res: { image: () => null, createCanvas: canvasFactory().create, metafileFonts: null },
       scale: 1,
       canvas: { width: 301, height: 201 },
       settings: SETTINGS,
@@ -901,6 +956,26 @@ describe('日期轴', () => {
     expect(unitIndex(day(2024, 3, 1), dateScale([day(2024, 1, 15)], 'months', false))).toBe(2)
   })
 
+  test('旋转的日期标签按每个基本单位的标签中最宽者留出高度', () => {
+    // 365 天按月显示：显示的标签最宽为 2024/10/1（9 个字符），单位中最宽为 2024/10/10（10 个字符）。
+    const dates = Array.from({ length: 365 }, (_, i) => day(2024, 1, 1) + i)
+    const axes = AXES.replace(
+      /<c:crossAx/g,
+      '<c:txPr><a:bodyPr/><a:p><a:pPr><a:defRPr sz="900"/></a:pPr></a:p></c:txPr><c:crossAx',
+    ).replace('<c:crossAx val="2"/>', '<c:crossAx val="2"/><c:auto val="1"/>')
+    const xml = chartXml(
+      `<c:lineChart><c:grouping val="standard"/><c:ser><c:idx val="0"/><c:order val="0"/>` +
+        `<c:cat><c:numRef><c:f>S!$A$1</c:f>${numCache(dates, 'yyyy/m/d')}</c:numRef></c:cat>` +
+        `<c:val><c:numRef><c:f>S!$B$1</c:f>${numCache(dates.map((_, i) => i % 7))}</c:numRef></c:val></c:ser>` +
+        `<c:axId val="1"/><c:axId val="2"/></c:lineChart>${axes}`,
+    )
+    const l = layoutChart(resolved(xml), 250, 300, SETTINGS)
+    const cat = l.axes.find((a) => a.horizontal)!
+    expect(cat.labels[0]!.rotation).toBe(-90)
+    expect(Math.max(...cat.labels.map((x) => x.text.length))).toBe(9)
+    expect(l.plot.y + l.plot.h).toBeCloseTo(300 - 9.25 - 10 * 6 - (0.943 * 12 - 2.35), 6)
+  })
+
   test('分类轴 auto 为真且分类为日期格式时按日期轴，数据点落在其日期所在的单位上', () => {
     const dates = [day(2024, 1, 1), day(2024, 1, 2), day(2024, 1, 30)]
     const axes = AXES.replace('<c:crossAx val="2"/>', '<c:crossAx val="2"/><c:auto val="1"/>')
@@ -1026,7 +1101,7 @@ describe('三维饼图', () => {
     }
     const scene = {
       ctx,
-      res: { image: () => null, createCanvas: canvasFactory().create },
+      res: { image: () => null, createCanvas: canvasFactory().create, metafileFonts: null },
       scale: 1,
       canvas: { width: 300, height: 200 },
       settings: SETTINGS,
@@ -1118,7 +1193,7 @@ describe('垂直线与趋势线', () => {
     }
     const scene = {
       ctx,
-      res: { image: () => null, createCanvas: canvasFactory().create },
+      res: { image: () => null, createCanvas: canvasFactory().create, metafileFonts: null },
       scale: 1,
       canvas: { width: 400, height: 300 },
       settings: SETTINGS,
@@ -1204,7 +1279,7 @@ describe('图表文字的字体与字形', () => {
       height: 100,
       scale: 1,
     }
-    const res = { image: () => null, createCanvas: canvasFactory().create }
+    const res = { image: () => null, createCanvas: canvasFactory().create, metafileFonts: null }
     paintBody(ctx, b, target, drawn, res, { width: 400, height: 400 }, [])
     expect(ctx.named('fillRect').length).toBe(2)
     expect(ctx.named('fillText').map((c) => c.args[0])).toEqual(['中'])
@@ -1238,7 +1313,7 @@ describe('数据标签的自定义文字与手动位置', () => {
     const ctx = new RecordingContext()
     const scene = {
       ctx,
-      res: { image: () => null, createCanvas: canvasFactory().create },
+      res: { image: () => null, createCanvas: canvasFactory().create, metafileFonts: null },
       scale: 1,
       canvas: { width: 300, height: 200 },
       settings: SETTINGS,

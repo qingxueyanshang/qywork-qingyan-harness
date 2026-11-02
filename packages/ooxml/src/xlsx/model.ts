@@ -405,7 +405,7 @@ export interface SheetChart {
  * - `oleObject`：嵌入对象。
  * - `cellImage`：单元格内图片（`DISPIMG` 公式）。
  * - `conditionalFormat`：无法求值的条件格式规则（公式类规则、图标集等）。
- * - `image`：未显示的图片（组合内的图片、锚点不完整、关系目标缺失、形状的图片填充与图片项目符号）。
+ * - `image`：未显示的图片（组合内的图片、锚点不完整、关系目标缺失、形状的图片填充与图片项目符号、图表的图片填充）。
  */
 export type UnsupportedKind =
   | 'chart'
