@@ -7,8 +7,8 @@
  * - 配置只经 `writeConfig` 写入；退出与「设备已被移除」使用同一个删除函数，`active` 与 `mediaDefaults` 指向它时一并删除。
  * - 只有网关或隧道明确返回「设备已被移除」时才删除本地接口；其他失败（断网、云端故障）不删除，避免误清空配置。
  * - 写入或删除云端接口后调用 `onChange`：远程访问据此启停隧道。
- * - 云端型号清单（`/v1/catalog`）中带规格的型号，规格写入模型库覆盖层（`catalog`），只写本机模型库没有的型号；
- *   覆盖层仍是模型库之上唯一的一层，云端修改规格后下次读取清单时更新。
+ * - 云端型号清单（`/v1/catalog`）中带规格的型号，规格写入模型库覆盖层（`catalog`），只写本机模型库没有的型号，
+ *   写入的条目带 `cloud` 标记；覆盖层仍是模型库之上唯一的一层，所有权规则见 `withSpecs`。
  */
 
 import { httpStatusName, lookupModel } from '@qywork/ai'
@@ -49,36 +49,61 @@ function storedModels(list: readonly CatalogModel[]): Record<string, StoredModel
   return models
 }
 
+/** 去掉云端写入的四项与 `cloud` 标记，保留其余字段；不剩任何字段时为 undefined。 */
+function withoutCloud(entry: StoredCatalogEntry): StoredCatalogEntry | undefined {
+  const {
+    displayName: _displayName,
+    base: _base,
+    contextWindow: _contextWindow,
+    maxOutputTokens: _maxOutputTokens,
+    cloud: _cloud,
+    ...rest
+  } = entry
+  return Object.keys(rest).length ? rest : undefined
+}
+
+const known = (id: string, kind: ProviderKind) => lookupModel(id, kind).catalogued !== false
+
 /**
- * 云端规格写入模型库覆盖层后的 `catalog`。本机模型库没有该型号时写入显示名称、对应型号、窗口与输出上限
- * （对应型号不在本机模型库中时不写该项：配置校验会拒绝）；本机模型库已有该型号时删除此前写入的对应型号，
- * 否则对应型号会使该型号继续按对应型号的规格解析。其余字段与用户的修改保留。
+ * 云端规格写入模型库覆盖层后的 `catalog`。带 `cloud` 标记的条目中，显示名称、对应型号、窗口与输出上限四项归云端同步所有：
+ * - 本机模型库已收录该型号时删除这四项，不论该型号是否仍在清单中：否则旧值（尤其是对应型号）继续优先于内置模型库；
+ * - 本机模型库没有该型号时，四项与清单一致：清单给出规格则整体替换，不再给出则删除。对应型号不在本机模型库中时
+ *   不写该项（配置校验会拒绝）。
+ * 条目的其余字段保留。不按值比较判断哪些字段由云端写入：云端修改或清空规格后，旧值无从比较。
  */
 function withSpecs(
   catalog: QyConfig['catalog'],
   list: readonly CatalogModel[],
 ): QyConfig['catalog'] {
   const next: Record<string, StoredCatalogEntry> = { ...catalog }
+  const put = (key: string, entry: StoredCatalogEntry | undefined) => {
+    if (entry) next[key] = entry
+    else delete next[key]
+  }
+  for (const [key, entry] of Object.entries(next)) {
+    const at = key.lastIndexOf('|')
+    if (entry.cloud && known(key.slice(0, at), key.slice(at + 1) as ProviderKind)) {
+      put(key, withoutCloud(entry))
+    }
+  }
   for (const m of list) {
-    if (!m.spec) continue
+    if (known(m.id, m.protocol)) continue
     const key = catalogKey(m.id, m.protocol)
     const entry = next[key]
-    if (lookupModel(m.id, m.protocol).catalogued !== false) {
-      if (entry && m.spec.base && entry.base === m.spec.base) {
-        const { base: _base, ...rest } = entry
-        if (Object.keys(rest).length) next[key] = rest
-        else delete next[key]
-      }
+    const rest = entry?.cloud ? withoutCloud(entry) : entry
+    if (!m.spec) {
+      if (entry?.cloud) put(key, rest)
       continue
     }
     const { displayName, base, contextWindow, maxOutputTokens } = m.spec
-    next[key] = {
-      ...entry,
+    put(key, {
+      ...rest,
       displayName,
-      ...(base && lookupModel(base, m.protocol).catalogued !== false ? { base } : {}),
+      ...(base && known(base, m.protocol) ? { base } : {}),
       ...(contextWindow ? { contextWindow } : {}),
       ...(maxOutputTokens ? { maxOutputTokens } : {}),
-    }
+      cloud: true,
+    })
   }
   return Object.keys(next).length ? next : undefined
 }

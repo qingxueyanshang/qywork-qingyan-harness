@@ -23,7 +23,8 @@ const cloud = {
   requestsQuery: '',
   /** 型号清单中是否包含后上架的型号。 */
   extraModel: false,
-  /** 型号清单中模型库没有的型号的对应型号。 */
+  /** 型号清单中模型库没有的型号是否带规格，以及规格中的对应型号。 */
+  nextSpec: true,
   nextBase: 'claude-sonnet-5-5',
   /** 后上架的型号（模型库已收录）是否带规格。 */
   opusSpec: false,
@@ -108,12 +109,16 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
             id: 'claude-next',
             protocol: 'anthropic_messages',
             price,
-            spec: {
-              displayName: 'Claude Next',
-              base: cloud.nextBase,
-              contextWindow: 2_000_000,
-              maxOutputTokens: 128_000,
-            },
+            ...(cloud.nextSpec
+              ? {
+                  spec: {
+                    displayName: 'Claude Next',
+                    base: cloud.nextBase,
+                    contextWindow: 2_000_000,
+                    maxOutputTokens: 128_000,
+                  },
+                }
+              : {}),
           },
           ...(cloud.extraModel
             ? [
@@ -150,6 +155,7 @@ beforeEach(async () => {
     usageQuery: '',
     requestsQuery: '',
     extraModel: false,
+    nextSpec: true,
     nextBase: 'claude-sonnet-5-5',
     opusSpec: false,
     avatar: null,
@@ -287,7 +293,7 @@ async function setCatalog(key: string, entry: Record<string, unknown>): Promise<
   await writeConfig(live, (c) => ({ ...c, catalog: { ...c.catalog, [key]: entry } }))
 }
 
-test('模型库没有的型号：云端规格写入模型库覆盖层，用户的其他修改保留；对应型号不在本机模型库时不写该项', async () => {
+test('模型库没有的型号：云端规格带来源标记写入覆盖层；云端修改规格后四项整体替换，清空后删除，其余字段保留', async () => {
   await account.login('me@example.com', PASSWORD)
   const key = 'claude-next|anthropic_messages'
   expect(live.catalog?.[key]).toEqual({
@@ -295,34 +301,49 @@ test('模型库没有的型号：云端规格写入模型库覆盖层，用户�
     base: 'claude-sonnet-5-5',
     contextWindow: 2_000_000,
     maxOutputTokens: 128_000,
+    cloud: true,
   })
   // 模型库已有的型号不写入覆盖层。
   expect(live.catalog?.['claude-sonnet-5-5|anthropic_messages']).toBeUndefined()
   expect((await loadConfig()).catalog?.[key]?.contextWindow).toBe(2_000_000)
 
   await setCatalog(key, { ...live.catalog?.[key], thinksByDefault: true })
+  // 对应型号不在本机模型库中：不写该项，也不保留此前写入的对应型号。
   cloud.nextBase = 'model-unknown-here'
   await account.models()
   expect(live.catalog?.[key]).toEqual({
     displayName: 'Claude Next',
-    base: 'claude-sonnet-5-5',
     contextWindow: 2_000_000,
     maxOutputTokens: 128_000,
     thinksByDefault: true,
+    cloud: true,
   })
+  cloud.nextSpec = false
+  await account.models()
+  expect(live.catalog?.[key]).toEqual({ thinksByDefault: true })
 })
 
-test('本机模型库已收录的型号：删除与云端相同的对应型号，其余修改保留；用户另选的对应型号保留', async () => {
+test('本机模型库已收录的型号：带来源标记的条目删除云端写入的四项，不论是否仍在清单中；不带标记的条目不变', async () => {
   await account.login('me@example.com', PASSWORD)
-  const key = 'claude-opus-5-5|anthropic_messages'
+  const opus = 'claude-opus-5-5|anthropic_messages'
+  const haiku = 'claude-haiku-5-5|anthropic_messages'
+  const sonnet = 'claude-sonnet-5-5|anthropic_messages'
+  await setCatalog(opus, {
+    displayName: 'Opus',
+    base: 'claude-sonnet-5-5',
+    contextWindow: 1,
+    thinksByDefault: true,
+    cloud: true,
+  })
+  await setCatalog(haiku, { contextWindow: 5, cloud: true })
+  await setCatalog(sonnet, { base: 'claude-haiku-5-5' })
   cloud.extraModel = true
   cloud.opusSpec = true
-  await setCatalog(key, { base: 'claude-sonnet-5-5', contextWindow: 1 })
   await account.models()
-  expect(live.catalog?.[key]).toEqual({ contextWindow: 1 })
-  await setCatalog(key, { base: 'claude-haiku-5-5' })
-  await account.models()
-  expect(live.catalog?.[key]).toEqual({ base: 'claude-haiku-5-5' })
+  expect(live.catalog?.[opus]).toEqual({ thinksByDefault: true })
+  expect(live.catalog?.[haiku]).toBeUndefined()
+  expect(live.catalog?.[sonnet]).toEqual({ base: 'claude-haiku-5-5' })
+  expect((await loadConfig()).catalog?.[haiku]).toBeUndefined()
 })
 
 test('更换头像：以设备密钥写入云端，状态中带头像；格式不对时给出云端的原因', async () => {

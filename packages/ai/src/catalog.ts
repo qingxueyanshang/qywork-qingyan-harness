@@ -2041,6 +2041,8 @@ export interface SpecOverride {
    * 由用户在拉取模型时选择，不按名称推测。
    */
   base?: string
+  /** 来源标记：显示名称、对应型号、窗口与输出上限由云端同步写入。`applySpecOverride` 不读取该项。 */
+  cloud?: true
 }
 
 /**
