@@ -160,6 +160,33 @@ describe('宠物状态推导', () => {
     }
   })
 
+  test('当前会话运行中加入队列的消息进入会话流后，列表改为显示它；会话始终处于运行中', async () => {
+    const store = await import('../../lib/store/index.ts')
+    serveLedger()
+    ledger.set('cv_queue', {
+      title: '第一次的提问',
+      latest: { content: '那你直接帮我配置好', origin: null },
+      runs: [],
+    })
+    store.setState({ activeConversation: 'cv_queue', busyConversations: [] })
+    store.openView('cv_queue')
+    const stop = store.observePet()
+    try {
+      store.setState('busyConversations', ['cv_queue'])
+      await flush()
+      expect(store.petEntries()[0]?.title).toBe('那你直接帮我配置好')
+      store.setState('views', 'cv_queue', 'transcript', (items) => [
+        ...items,
+        { id: 'm_next', kind: 'user' as const, text: '切换权限了' },
+      ])
+      await flush()
+      expect(store.state.busyConversations).toEqual(['cv_queue'])
+      expect(store.petEntries()[0]?.title).toBe('切换权限了')
+    } finally {
+      stop()
+    }
+  })
+
   test('子会话不计入运行中，也不记录结果', async () => {
     const store = await import('../../lib/store/index.ts')
     serveLedger()
