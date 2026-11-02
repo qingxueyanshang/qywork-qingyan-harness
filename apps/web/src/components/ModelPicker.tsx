@@ -1,5 +1,6 @@
 import type { EffortLevel } from '@qywork/core'
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js'
+import { cloudState } from '../lib/store/cloud.ts'
 import {
   activeModel,
   activeModelRow,
@@ -85,6 +86,19 @@ export function ModelPicker() {
   // 使用 `||` 而不是 `??`：未配置模型的会话 model 为空串，空串应显示为「选择模型」而不是空白。
   const label = () => activeModelRow()?.label || activeModel()?.model || '选择模型'
 
+  /** 已登录时账号的接口名；其模型排在最前。 */
+  const accountProvider = () => {
+    const s = cloudState()
+    return s?.state === 'signed_in' ? s.provider : null
+  }
+  const groups = () => {
+    const all = modelCatalog()?.providers ?? []
+    const mine = accountProvider()
+    return mine
+      ? [...all.filter((p) => p.name === mine), ...all.filter((p) => p.name !== mine)]
+      : all
+  }
+
   const isLive = (provider: string, id: string) => {
     const ref = activeModel()
     return ref?.provider === provider && ref.model === id
@@ -159,11 +173,14 @@ export function ModelPicker() {
               <Show when={modelCatalogError()}>
                 <div class="model-menu-error">{modelCatalogError()}</div>
               </Show>
-              <For each={modelCatalog()?.providers ?? []}>
+              <For each={groups()}>
                 {(p) => (
                   <>
-                    {/* 接口名即分组名。它由用户自行命名，比协议名更有辨识度。 */}
-                    <div class="model-group-name">{p.name}</div>
+                    {/* 接口名即分组名。它由用户自行命名，比协议名更有辨识度。
+                        账号的接口不是用户命名的，分组名写「账号订阅」。 */}
+                    <div class="model-group-name">
+                      {p.name === accountProvider() ? '账号订阅' : p.name}
+                    </div>
                     <For each={p.models}>
                       {(m) => (
                         <button

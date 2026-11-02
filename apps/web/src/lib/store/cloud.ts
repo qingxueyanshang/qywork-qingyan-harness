@@ -3,7 +3,7 @@
  * 每次读取与操作后以服务端返回为准。
  */
 
-import type { CloudRequest, CloudState, CloudUsage } from '@qywork/core'
+import type { CloudModel, CloudRequest, CloudState, CloudUsage } from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { client } from './connection.ts'
 import { reloadModelCatalog } from './settings.ts'
@@ -35,6 +35,16 @@ export async function cloudLogout(): Promise<void> {
   void reloadModelCatalog()
 }
 
+/** 更换头像：`image` 为裁剪编码后的 data URL。失败时抛出可直接显示的原因，状态不变。 */
+export async function setCloudAvatar(image: string): Promise<void> {
+  setCloudState(
+    await client.api<CloudState>('/api/cloud/avatar', {
+      method: 'PUT',
+      body: JSON.stringify({ image }),
+    }),
+  )
+}
+
 /** 读取用量或记录失败时，设备可能已被移除：服务端已删除本地接口，状态随之重新读取。 */
 async function readCloud<T>(path: string): Promise<T> {
   try {
@@ -43,6 +53,13 @@ async function readCloud<T>(path: string): Promise<T> {
     void refreshCloudState().catch(() => {})
     throw e
   }
+}
+
+/** 可用模型与单价。服务端读取时同时更新了配置中的内置模型，模型列表随之刷新。 */
+export async function fetchCloudModels(): Promise<CloudModel[]> {
+  const models = await readCloud<CloudModel[]>('/api/cloud/models')
+  void reloadModelCatalog()
+  return models
 }
 
 export function fetchCloudUsage(): Promise<CloudUsage> {

@@ -163,7 +163,14 @@ export interface UsageResponse {
 export type CloudState =
   | { state: 'unavailable' }
   | { state: 'signed_out'; reason?: 'revoked' }
-  | { state: 'signed_in'; email: string; credits: number | null; provider: string }
+  | {
+      state: 'signed_in'
+      email: string
+      credits: number | null
+      /** 头像的 data URL；未设置或云端暂时无法访问时为 null。 */
+      avatar: string | null
+      provider: string
+    }
 
 /**
  * `GET /api/cloud/usage`：云端统计的本账号用量。token 四项与云端计费口径相同：输入不含缓存命中与缓存写入。
@@ -178,6 +185,12 @@ export interface CloudUsage {
   credits: number
   /** 近 53 周中有请求的日期（`YYYY-MM-DD`，按电脑所在时区分日），升序。 */
   days: { day: string; requests: number; tokens: number; credits: number }[]
+}
+
+/** `GET /api/cloud/models`：云端当前提供的对话型号与单价，单位为积分 / 百万 token；云端未定价时为 null。 */
+export interface CloudModel {
+  id: string
+  price: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
 }
 
 /** `GET /api/cloud/requests`：云端的一条请求记录，按时间倒序分页。 */

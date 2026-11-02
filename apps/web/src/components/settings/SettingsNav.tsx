@@ -40,9 +40,20 @@ interface Item {
 const GROUPS: Item[][] = [
   [
     { id: 'general', label: '通用', icon: IconSettings },
-    { id: 'models', label: '模型', icon: IconPackage },
+    // 两页都只涉及自行添加的接口：账号的积分消耗在账号弹窗中按云端统计，不计入这两页。
+    {
+      id: 'models',
+      label: '模型',
+      icon: IconPackage,
+      desc: '自行添加的接口，消耗计入「用量」，不计入账号积分',
+    },
     // 用量紧随模型：先选择模型，再查看其花费。
-    { id: 'usage', label: '用量', icon: IconActivity },
+    {
+      id: 'usage',
+      label: '用量',
+      icon: IconActivity,
+      desc: '只统计自行添加的接口；账号积分的消耗在账号中查看',
+    },
     { id: 'modules', label: '模块', icon: IconCanvas },
   ],
   [

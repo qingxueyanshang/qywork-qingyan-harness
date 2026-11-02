@@ -10,7 +10,7 @@
  */
 
 import { httpStatusName, pullModels } from '@qywork/ai'
-import type { CloudRequest, CloudState, CloudUsage } from '@qywork/core'
+import type { CloudModel, CloudRequest, CloudState, CloudUsage } from '@qywork/core'
 import type { QyConfig, StoredModel, StoredProvider } from '@qywork/runtime'
 import { writeConfig } from '../api/config.ts'
 import { hostLabel } from '../http-util.ts'
@@ -102,10 +102,22 @@ export class CloudAccount {
         this.refreshed = true
         void this.refreshModels(provider.apiKey).catch(() => {})
       }
-      return { state: 'signed_in', email: me.email, credits: me.credits, provider: CLOUD_PROVIDER }
+      return {
+        state: 'signed_in',
+        email: me.email,
+        credits: me.credits,
+        avatar: me.avatar,
+        provider: CLOUD_PROVIDER,
+      }
     }
-    // 云端暂时无法访问：仍视为已登录，余额未知。
-    return { state: 'signed_in', email: this.email ?? '', credits: null, provider: CLOUD_PROVIDER }
+    // 云端暂时无法访问：仍视为已登录，余额与头像未知。
+    return {
+      state: 'signed_in',
+      email: this.email ?? '',
+      credits: null,
+      avatar: null,
+      provider: CLOUD_PROVIDER,
+    }
   }
 
   /** 以邮箱密码登录。已登录时直接返回当前状态。 */
@@ -118,17 +130,54 @@ export class CloudAccount {
     return this.signIn('sign-up/email', { email, password, name: email })
   }
 
+  /**
+   * 云端当前提供的对话型号与单价（积分 / 百万 token）。读取的同时更新配置中的云端接口：
+   * 账号弹窗列出的型号与模型下拉列表一致，管理员调价或上架后无需重启。
+   */
+  async models(): Promise<CloudModel[]> {
+    const provider = cloudProviderOf(this.live, this.origins)
+    if (!provider?.apiKey) throw new CloudAccountError('未登录')
+    let pulled: Record<string, StoredModel>
+    try {
+      pulled = await this.pulled(provider.apiKey)
+    } catch (err) {
+      throw unreachable(err)
+    }
+    await this.applyModels(pulled)
+    return Object.entries(pulled).map(([id, m]) => ({
+      id,
+      price: m.price
+        ? {
+            input: m.price.input,
+            output: m.price.output,
+            cacheRead: m.price.cacheRead,
+            cacheWrite: m.price.cacheWrite,
+          }
+        : null,
+    }))
+  }
+
+  /** 更换头像。`image` 是客户端裁剪编码后的 data URL，格式与大小由云端校验。 */
+  async setAvatar(image: string): Promise<CloudState> {
+    await this.call('/v1/me/avatar', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ image }),
+    })
+    return this.state()
+  }
+
   /** 用量汇总，按本机时区分日。 */
   usage(): Promise<CloudUsage> {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-    return this.read<CloudUsage>(`/v1/usage?tz=${encodeURIComponent(tz)}`)
+    return this.call<CloudUsage>(`/v1/usage?tz=${encodeURIComponent(tz)}`)
   }
 
   /** 使用记录，按时间倒序；`before` 为上一页最后一条的 `startedAt`。 */
   async requests(before: string | null, limit: number): Promise<CloudRequest[]> {
     const query = new URLSearchParams({ limit: String(limit) })
     if (before) query.set('before', before)
-    const rows = await this.read<GatewayRequest[]>(`/v1/requests?${query}`)
+    const rows = await this.call<GatewayRequest[]>(`/v1/requests?${query}`)
     return rows.map(({ status, errorCode, ...r }) => ({
       ...r,
       failure: failure(status, errorCode),
@@ -184,18 +233,20 @@ export class CloudAccount {
     return this.state()
   }
 
-  /** 以设备密钥读取云端接口；云端答复设备已被移除时删除本地接口。 */
-  private async read<T>(path: string): Promise<T> {
+  /** 以设备密钥调用云端接口；204 返回 undefined。云端答复设备已被移除时删除本地接口。 */
+  private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
     const provider = cloudProviderOf(this.live, this.origins)
     if (!provider?.apiKey) throw new CloudAccountError('未登录')
     let res: Response
     try {
       res = await fetch(`${this.origins.api}${path}`, {
-        headers: { authorization: `Bearer ${provider.apiKey}` },
+        ...init,
+        headers: { ...init.headers, authorization: `Bearer ${provider.apiKey}` },
       })
     } catch (err) {
       throw unreachable(err)
     }
+    if (res.status === 204) return undefined as T
     if (res.ok) return (await res.json()) as T
     const body = (await res.json().catch(() => null)) as {
       error?: { code?: string; message?: string }
@@ -264,11 +315,14 @@ export class CloudAccount {
   }
 
   /**
-   * 更新网关上的型号：协议与价格随拉取结果更新，用户的思考档位等设置保留；新增的型号加入；
-   * 网关上已停用的型号标记 `delisted`。每个进程只执行一次（首次确认已登录时），管理员调价后在下次启动时生效。
+   * 更新配置中网关上的型号：协议与价格随拉取结果更新，用户的思考档位等设置保留；新增的型号加入；
+   * 网关上已停用的型号标记 `delisted`。每个进程首次确认已登录时执行一次，账号弹窗每次读取可用模型时再执行一次。
    */
   private async refreshModels(key: string): Promise<void> {
-    const pulled = await this.pulled(key)
+    await this.applyModels(await this.pulled(key))
+  }
+
+  private async applyModels(pulled: Record<string, StoredModel>): Promise<void> {
     await writeConfig(this.live, (current) => {
       const provider = cloudProviderOf(current, this.origins)
       if (!provider) return current
@@ -286,12 +340,17 @@ export class CloudAccount {
     })
   }
 
-  private async me(key: string): Promise<{ email: string; credits: number } | 'revoked' | null> {
+  private async me(
+    key: string,
+  ): Promise<{ email: string; credits: number; avatar: string | null } | 'revoked' | null> {
     try {
       const res = await fetch(`${this.origins.api}/v1/me`, {
         headers: { authorization: `Bearer ${key}` },
       })
-      if (res.ok) return (await res.json()) as { email: string; credits: number }
+      if (res.ok) {
+        const me = (await res.json()) as { email: string; credits: number; avatar?: string | null }
+        return { email: me.email, credits: me.credits, avatar: me.avatar ?? null }
+      }
       const body = (await res.json().catch(() => null)) as { error?: { code?: string } } | null
       return res.status === 401 && body?.error?.code === 'device_revoked' ? 'revoked' : null
     } catch {

@@ -14,14 +14,17 @@ import { compact } from '../../lib/step-view.ts'
 import {
   cloudLogout,
   cloudState,
+  fetchCloudModels,
   fetchCloudRequests,
   fetchCloudUsage,
   refreshCloudState,
+  setCloudAvatar,
 } from '../../lib/store/cloud.ts'
 import { explainApiError, holdOverlay, setAccountOpen } from '../../lib/store/index.ts'
-import { IconX } from '../Icons.tsx'
+import { IconLogOut, IconX } from '../Icons.tsx'
 import { LoadState } from '../settings/LoadState.tsx'
 import { ActivityGrid } from './ActivityGrid.tsx'
+import { AccountAvatar, squareAvatar } from './Avatar.tsx'
 import { formatCredits } from './format.ts'
 import { LoginForm } from './LoginForm.tsx'
 
@@ -92,15 +95,45 @@ function AccountView(props: { signed: SignedIn }) {
     }
   }
 
+  const pickAvatar = async (input: HTMLInputElement) => {
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+    setBusy(true)
+    setError(null)
+    try {
+      await setCloudAvatar(await squareAvatar(file))
+    } catch (e) {
+      setError(explainApiError(e, '无法更换头像'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div class="account-scroll">
       <header class="account-head">
-        <span class="account-avatar" aria-hidden="true">
-          {(props.signed.email[0] ?? '?').toUpperCase()}
-        </span>
+        <label class="account-avatar-edit" data-tip="更换头像">
+          <AccountAvatar email={props.signed.email} avatar={props.signed.avatar} />
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            aria-label="更换头像"
+            hidden
+            disabled={busy()}
+            onChange={(e) => void pickAvatar(e.currentTarget)}
+          />
+        </label>
         <span class="account-email">{props.signed.email}</span>
-        <button type="button" class="btn-ghost sm" disabled={busy()} onClick={logout}>
-          退出登录
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label="退出登录"
+          data-tip="退出登录"
+          disabled={busy()}
+          onClick={logout}
+        >
+          <IconLogOut size={15} />
         </button>
       </header>
       <Show when={error()}>{(m) => <p class="account-error">{m()}</p>}</Show>
@@ -137,9 +170,55 @@ function AccountView(props: { signed: SignedIn }) {
         )}
       </Show>
 
+      <h3 class="account-section">
+        可用模型<span class="account-unit">积分 / 百万 token</span>
+      </h3>
+      <ModelTable />
+
       <h3 class="account-section">使用记录</h3>
       <RequestTable />
     </div>
+  )
+}
+
+/** 云端当前提供的型号与单价，每次打开弹窗时读取。 */
+function ModelTable() {
+  const [models, { refetch }] = createResource(fetchCloudModels)
+  return (
+    <Show when={loaded(models)} fallback={<LoadState error={models.error} onRetry={refetch} />}>
+      {(list) => (
+        <section class="lib-card">
+          <div class="lib-scroll">
+            <table class="lib-table account-table">
+              <thead>
+                <tr>
+                  <th>型号</th>
+                  <th class="num">输入</th>
+                  <th class="num">输出</th>
+                  <th class="num">缓存读取</th>
+                  <th class="num">缓存写入</th>
+                </tr>
+              </thead>
+              <tbody>
+                <For each={list()}>
+                  {(m) => (
+                    <tr>
+                      <td>
+                        <code class="lib-id">{m.id}</code>
+                      </td>
+                      <td class="num">{m.price ? formatCredits(m.price.input) : '—'}</td>
+                      <td class="num">{m.price ? formatCredits(m.price.output) : '—'}</td>
+                      <td class="num">{m.price ? formatCredits(m.price.cacheRead) : '—'}</td>
+                      <td class="num">{m.price ? formatCredits(m.price.cacheWrite) : '—'}</td>
+                    </tr>
+                  )}
+                </For>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </Show>
   )
 }
 
@@ -182,40 +261,44 @@ function RequestTable() {
   return (
     <>
       <Show when={rows().length > 0}>
-        <div class="usage-scroll">
-          <table class="usage-table">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>型号</th>
-                <th class="num">输入</th>
-                <th class="num">输出</th>
-                <th class="num">命中</th>
-                <th class="num">积分</th>
-                <th>结果</th>
-              </tr>
-            </thead>
-            <tbody>
-              <For each={rows()}>
-                {(r) => (
-                  <tr>
-                    <td>{when(r.startedAt)}</td>
-                    <td>{r.modelId}</td>
-                    <td class="num">
-                      {compact(r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens)}
-                    </td>
-                    <td class="num">{compact(r.outputTokens)}</td>
-                    <td class="num">{compact(r.cacheReadTokens)}</td>
-                    <td class="num">{formatCredits(r.credits)}</td>
-                    <td classList={{ 'account-failed': r.failure !== null }}>
-                      {r.failure ?? '完成'}
-                    </td>
-                  </tr>
-                )}
-              </For>
-            </tbody>
-          </table>
-        </div>
+        <section class="lib-card">
+          <div class="lib-scroll">
+            <table class="lib-table account-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>型号</th>
+                  <th class="num">输入</th>
+                  <th class="num">输出</th>
+                  <th class="num">缓存读取</th>
+                  <th class="num">积分</th>
+                  <th>结果</th>
+                </tr>
+              </thead>
+              <tbody>
+                <For each={rows()}>
+                  {(r) => (
+                    <tr>
+                      <td>{when(r.startedAt)}</td>
+                      <td>
+                        <code class="lib-id">{r.modelId}</code>
+                      </td>
+                      <td class="num">
+                        {compact(r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens)}
+                      </td>
+                      <td class="num">{compact(r.outputTokens)}</td>
+                      <td class="num">{compact(r.cacheReadTokens)}</td>
+                      <td class="num">{formatCredits(r.credits)}</td>
+                      <td classList={{ 'account-failed': r.failure !== null }}>
+                        {r.failure ?? '完成'}
+                      </td>
+                    </tr>
+                  )}
+                </For>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </Show>
       <Show when={error()}>{(e) => <LoadState error={e()} onRetry={() => void more()} />}</Show>
       <Show when={!done() && !error() && rows().length > 0}>
