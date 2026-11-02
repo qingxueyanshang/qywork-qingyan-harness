@@ -539,7 +539,7 @@ export function buildTailNotes(input: {
     )
     const clis = input.team.clis.map(
       (cli) =>
-        `- 外部 CLI id \`${cli.id}\`：${cli.vendor}，本机进程，自带模型与账号，${cli.connected ? '已接入' : '未见凭证'}`,
+        `- 外部 CLI id \`${cli.id}\`：${cli.vendor}，本机进程，自带模型与账号，${cli.connected ? '已登录' : '未登录'}`,
     )
     const list = [...roles, ...clis].join('\n') || '- 当前项目没有角色，本机没有外部 CLI'
     notes.push({
