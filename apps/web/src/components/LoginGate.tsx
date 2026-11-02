@@ -19,7 +19,6 @@ export function LoginGate() {
     <Show when={visible()}>
       <div class="login-gate">
         <div class="login-gate-card">
-          <h1>qywork</h1>
           <LoginForm />
           <button
             type="button"

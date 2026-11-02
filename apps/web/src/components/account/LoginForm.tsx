@@ -1,8 +1,9 @@
 import { createSignal, Show } from 'solid-js'
 import { cloudSignIn, cloudState, signedOutReason } from '../../lib/store/cloud.ts'
+import mark from './mark.png'
 
 /**
- * 邮箱密码的登录与注册表单。账号弹窗与首次启动的登录页共用。
+ * 邮箱密码的登录与注册表单，顶部为应用标志与标题。账号弹窗与首次启动的登录页共用。
  * 两种方式字段相同，切换时表单高度不变（B9）；失败原因显示在按钮下方的固定高度行中。
  */
 export function LoginForm() {
@@ -33,6 +34,10 @@ export function LoginForm() {
 
   return (
     <form class="account-form" onSubmit={submit}>
+      <div class="account-form-head">
+        <img class="account-mark" src={mark} width="44" height="44" alt="" />
+        <h2 class="account-form-title">qywork 账号</h2>
+      </div>
       <div class="seg account-form-mode" role="tablist">
         <button
           type="button"

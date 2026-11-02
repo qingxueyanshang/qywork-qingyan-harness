@@ -38,7 +38,8 @@ const close = () => setAccountOpen(false)
 
 /**
  * 账号弹窗：已登录时显示账号、统计、Token 活动与使用记录，数据全部取自云端；未登录时显示登录表单。
- * 与设置弹窗同为固定尺寸（B9），内容在弹窗内滚动。
+ * 两种状态各为固定尺寸（B9），内容在弹窗内滚动。未登录时是窄的登录框（`.signin`）：尺寸只在登录成功、
+ * 内容整体换成账号页时改变一次，此时登录表单的按钮已不存在，不会移动用户正在瞄准的目标。
  */
 export default function AccountDialog() {
   holdOverlay(() => true)
@@ -59,7 +60,13 @@ export default function AccountDialog() {
     <>
       <button class="backdrop-close" type="button" aria-label="关闭账号" onClick={close} />
       <div class="sheet-backdrop pass-through">
-        <div class="account-dialog" role="dialog" aria-modal="true" aria-label="账号">
+        <div
+          class="account-dialog"
+          classList={{ signin: cloudState()?.state === 'signed_out' }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="账号"
+        >
           <button class="icon-btn account-close" type="button" aria-label="关闭" onClick={close}>
             <IconX size={15} />
           </button>
