@@ -4,6 +4,9 @@
  *
  * 用 Node 驱动 Playwright 打开 Edge（`channel: 'msedge'`），设备像素比 1；逐页调用 `renderMathPage` 并对画布截图，
  * 写入 `<输出目录>/page-<序号>.png`（序号自 0 起，与任务顺序一致）。单页失败时记录原因并继续，结束时以失败页数作为退出码。
+ *
+ * 画布由 CPU 光栅化（`--disable-accelerated-2d-canvas`）：GPU 光栅化时抗锯齿字形边缘的像素在不同的浏览器进程之间
+ * 相差 1 个色阶（同一进程内重复绘制不变），候选图因此每次运行不同，对照无法逐字节比较。
  */
 
 import { join } from 'node:path'
@@ -15,7 +18,11 @@ if (!base || !count || !outDir) {
   process.exit(2)
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({
+  channel: 'msedge',
+  headless: true,
+  args: ['--disable-accelerated-2d-canvas'],
+})
 let failed = 0
 try {
   const context = await browser.newContext({

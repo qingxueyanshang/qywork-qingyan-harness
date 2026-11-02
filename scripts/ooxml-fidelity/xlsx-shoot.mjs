@@ -6,6 +6,9 @@
  * ClearType 设置调用页面的 `renderPage`，
  * 把视口调整到不小于画布后对画布元素截图，写入 `<输出目录>/<文档标识>/<真值文件名>`。
  * 单页失败时记录原因并继续，结束时以失败页数作为退出码。
+ *
+ * 画布由 CPU 光栅化（`--disable-accelerated-2d-canvas`）：GPU 光栅化时抗锯齿字形边缘的像素在不同的浏览器进程之间
+ * 相差 1 个色阶（同一进程内重复绘制不变），候选图因此每次运行不同，对照无法逐字节比较。
  */
 
 import { mkdir } from 'node:fs/promises'
@@ -18,7 +21,11 @@ if (!base || !outDir) {
   process.exit(2)
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({
+  channel: 'msedge',
+  headless: true,
+  args: ['--disable-accelerated-2d-canvas'],
+})
 let failed = 0
 try {
   const context = await browser.newContext({
