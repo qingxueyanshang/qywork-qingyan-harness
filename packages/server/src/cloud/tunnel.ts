@@ -30,7 +30,7 @@ import {
 
 export type TunnelStatus =
   | { state: 'connecting' }
-  | { state: 'online'; deviceUrl: string }
+  | { state: 'online' }
   | { state: 'offline'; message: string }
   | { state: 'outdated' }
   | { state: 'revoked' }
@@ -177,7 +177,7 @@ export class TunnelClient {
     switch (frame.type) {
       case 'welcome':
         this.attempt = 0
-        this.setStatus({ state: 'online', deviceUrl: frame.deviceUrl })
+        this.setStatus({ state: 'online' })
         return
       case 'pair.request':
         this.send({ type: 'pair.reply', rid: frame.rid, ...this.opts.pairing() })

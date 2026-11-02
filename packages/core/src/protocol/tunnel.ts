@@ -10,7 +10,7 @@
  * - 协议版本由云端裁决：`hello.protocol` 不在云端支持范围内时以 `TUNNEL_CLOSE.outdated` 关闭，电脑端不再重连。
  */
 
-export const TUNNEL_PROTOCOL_VERSION = 1
+export const TUNNEL_PROTOCOL_VERSION = 2
 
 /** 云端接口来源上的隧道入口。 */
 export const TUNNEL_PATH = '/tunnel'
@@ -49,7 +49,7 @@ export type TunnelNotifyEvent = 'run.finished' | 'run.error'
 
 export type TunnelControl =
   | { type: 'hello'; protocol: number; key: string }
-  | { type: 'welcome'; deviceUrl: string }
+  | { type: 'welcome' }
   | { type: 'ping' }
   | { type: 'pong' }
   /** 请求体随后以数据帧发送，以 `end` 结束；没有请求体时紧接一个 `end`。 */
@@ -71,7 +71,7 @@ type FieldKind = 'string' | 'number' | 'headers' | 'string?' | 'number?'
 /** 每种控制帧的字段与类型。`parseControl` 只按此表校验，新增帧类型时在此登记。 */
 const FIELDS: { [T in TunnelControl['type']]: Record<string, FieldKind> } = {
   hello: { protocol: 'number', key: 'string' },
-  welcome: { deviceUrl: 'string' },
+  welcome: {},
   ping: {},
   pong: {},
   'http.open': { sid: 'number', method: 'string', path: 'string', headers: 'headers' },

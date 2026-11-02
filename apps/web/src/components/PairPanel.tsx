@@ -12,7 +12,7 @@ import { client, explainApiError } from '../lib/store/index.ts'
 
 type TunnelStatus =
   | { state: 'connecting' }
-  | { state: 'online'; deviceUrl: string }
+  | { state: 'online' }
   | { state: 'offline'; message: string }
   | { state: 'outdated' }
   | { state: 'revoked' }
@@ -27,14 +27,10 @@ export interface RemoteInfo {
 /** 连接中与重连期间读取状态的间隔。 */
 const POLL_MS = 2000
 
-const onlineUrl = (t: TunnelStatus | null) => (t?.state === 'online' ? t.deviceUrl : null)
 const offlineMessage = (t: TunnelStatus | null) => (t?.state === 'offline' ? t.message : null)
 
 /**
- * 手机接入：经云端远程访问本机。
- *
- * 二维码是 cloud 站中本设备的地址，不含令牌：手机扫码后登录同一账号才能打开本设备。
- * 二维码下方写明用途：二维码本身不表明是给手机扫的，只显示二维码时它看起来像要求本机扫码。
+ * 远程访问：开启后，在任何设备上登录同一账号的云端网页即可打开并使用本机，无需另行配对。
  * 它是账号窗口中的一节（远程访问依赖账号），整节由本组件输出，未登录时不出现。
  */
 export default function PairPanel() {
@@ -76,7 +72,7 @@ export default function PairPanel() {
   return (
     <Show when={loaded(info)?.available || info.error}>
       <section class="pair-section">
-        <h3 class="account-section">手机接入</h3>
+        <h3 class="account-section">远程访问</h3>
         <Show
           when={loaded(info)}
           fallback={<p class="pair-hint">{explainApiError(info.error, '无法读取接入信息')}</p>}
@@ -90,20 +86,15 @@ export default function PairPanel() {
                   disabled={busy()}
                   onChange={(e) => void toggle(e.currentTarget)}
                 />
-                <span>允许远程访问</span>
+                <span>允许从云端网页使用这台电脑</span>
               </label>
               <Show when={toggleError()}>{(m) => <p class="pair-hint">{m()}</p>}</Show>
               <Switch>
-                <Match when={onlineUrl(d().tunnel)}>
-                  {(url) => (
-                    <>
-                      <Qr text={url()} />
-                      <p class="pair-hint">手机扫码，远程使用这台电脑</p>
-                    </>
-                  )}
+                <Match when={d().tunnel?.state === 'online'}>
+                  <p class="pair-hint">已连接</p>
                 </Match>
                 <Match when={d().tunnel?.state === 'connecting'}>
-                  <div class="preview-loading" />
+                  <p class="pair-hint">连接中</p>
                 </Match>
                 <Match when={offlineMessage(d().tunnel)}>
                   {(m) => <p class="pair-hint">{m()}</p>}
@@ -117,32 +108,5 @@ export default function PairPanel() {
         </Show>
       </section>
     </Show>
-  )
-}
-
-function Qr(props: { text: string }) {
-  const [svg] = createResource(
-    () => props.text,
-    async (text) => {
-      // 编码器动态导入：约 28 kB，只在需要生成二维码时下载。
-      const { default: QRCode } = await import('qrcode')
-      // 生成 SVG 而不是 canvas：矢量图在任何 DPI 下都清晰，
-      // 而高分屏上模糊的二维码是手机摄像头扫码失败的常见原因。
-      return QRCode.toString(text, {
-        type: 'svg',
-        errorCorrectionLevel: 'M',
-        margin: 1,
-        width: 220,
-      }).catch(() => '')
-    },
-  )
-  // 使用 `loaded()`，不要改为 `svg()`：后者在获取数据期间会进入设置内容区的 Suspense，
-  // 整页内容被移出 DOM，滚动容器高度归零，重新挂载后 `scrollTop` 停在 0。
-  return (
-    <div class="pair-qr">
-      <Show when={loaded(svg)} fallback={<div class="preview-loading" />}>
-        {(s) => <div innerHTML={s()} />}
-      </Show>
-    </div>
   )
 }
