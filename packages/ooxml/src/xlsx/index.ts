@@ -4,14 +4,15 @@
  * 接入顺序：
  * 1. `parseXlsx(bytes)` 得到纯数据的 `Workbook`，可在 Worker 中调用并经 `postMessage` 传回。
  *    `workbook.unsupported` 为未显示内容的计数，界面据此显示一行能力边界。
- * 2. 按 `workbook.fontNames` 与 `fallbackFonts(workbook)` 取得字体文件：每个字体以同一族名注册为浏览器 `FontFace`，
- *    并以 `loadFace` 读取度量，组成 `FontSet`。
+ * 2. 按 `workbook.fontNames` 与 `fallbackFonts(workbook)` 取得字体文件，主机上没有的字体名再取得 `substituteFont(name)`：
+ *    每个字体以同一族名注册为浏览器 `FontFace`，并以 `loadFace` 读取度量，组成 `FontSet`。
  * 3. `createScene(workbook, sheet, fonts)` 计算行高列宽并换算形状的位置；`sheet.images` 由调用方解码为位图。
  * 4. `paintView`（按冻结窗格）或 `paintRegion`（任意区域）绘制到 Canvas 2D 或 `OffscreenCanvas` 上下文；
- *    `SheetResources` 提供解码后的图片与形状所需的图层。只访问可见区域，滚动时重绘即可。
+ *    `SheetResources` 提供解码后的图片、形状所需的图层与显示器的 ClearType 设置。只访问可见区域，滚动时重绘即可。
  */
 
 export type { PaintImage } from '../drawingml/paint/context.ts'
+export type { ClearTypeDisplay } from '../glyph/cleartype/index.ts'
 export {
   type FormatOptions,
   type FormatPart,
@@ -70,6 +71,7 @@ export {
   type LoadedFace,
   loadFace,
   pointsToPixels,
+  substituteFont,
 } from './render/fonts.ts'
 export type { SheetGeometry } from './render/geometry.ts'
 export {

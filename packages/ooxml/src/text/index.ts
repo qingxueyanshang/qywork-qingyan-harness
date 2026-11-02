@@ -1,13 +1,14 @@
 /**
  * 文字排版：PPT 文本框与 Word 段落共用的字体选择、断行、对齐与行高。
  *
- * - `fontSlot` 按码位在字段的四种字体中选择；`layoutParagraph` 输出带坐标的行与片段。
+ * - `fontSlot` 按码位在字段的四种字体中选择；`layoutParagraph` 输出带坐标的行、片段与行内对象。
  * - 宽度与行高均由字体文件计算（`../font`），调用方负责按字体名找到字体文件并读取度量。
  */
 
 export {
   type BreakRules,
   canBreakBetween,
+  canBreakForWidth,
   codePointSet,
   DEFAULT_NO_LINE_BREAK_AFTER,
   DEFAULT_NO_LINE_BREAK_BEFORE,
@@ -23,10 +24,16 @@ export {
 } from './classify.ts'
 export {
   type Alignment,
+  contentWidths,
   emboldened,
+  type InlineObject,
   type LineArea,
+  type LineLeader,
+  type LineObject,
   layoutParagraph,
+  type ObjectRun,
   PARAGRAPH_DEFAULTS,
+  type ParagraphRun,
   type ParagraphStyle,
   type RunFonts,
   type TabStop,

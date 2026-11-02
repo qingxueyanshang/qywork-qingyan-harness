@@ -1,7 +1,8 @@
 /**
  * 文字排版。覆盖 `classify.ts`（字体选择与字符类别）、`breaking.ts`（断点与禁则）、
  * `line-height.ts`（单倍行高、上下沿、行距规则、网格与基线）、`layout.ts`（断行、悬挂、中西文间距、对齐、制表符、行高与片段，
- * 上下标、字符间距、基线提升、`wordWrap` 关闭与单双字节宽度协调）、`punctuation.ts`（相邻标点压缩与压缩标点），
+ * 上下标、字符间距、基线提升、`wordWrap` 关闭与单双字节宽度协调、行内对象、段落标记计入行高的条件、最小与最大内容宽度）、
+ * `punctuation.ts`（相邻标点压缩与压缩标点），
  * 以及 `../font/vertical.ts`（`hhea` 与 `OS/2` 纵向度量、上下标字号）。
  *
  * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
@@ -15,15 +16,19 @@ import { join } from 'node:path'
 import { readFaces, readMetrics, readVerticalMetrics } from '../font/index.ts'
 import {
   canBreakBetween,
+  canBreakForWidth,
+  contentWidths,
   DEFAULT_NO_LINE_BREAK_AFTER,
   DEFAULT_NO_LINE_BREAK_BEFORE,
   DEFAULT_SLOT_CONTEXT,
   faceExtent,
   fontSlot,
+  type InlineObject,
   isEastAsian,
   isIdeographic,
   layoutParagraph,
   lineBox,
+  type ObjectRun,
   PARAGRAPH_DEFAULTS,
   type ParagraphStyle,
   type RunFonts,
@@ -135,6 +140,15 @@ describe('断点', () => {
     expect(can('—', '汉')).toBe(true)
     expect(can('—', '—')).toBe(true)
   })
+
+  test('最小内容宽度的断点：东亚字符与连字符之间可断；压缩标点时连字符与其后的西文之间不断', () => {
+    const width = (a: string, b: string, compressPunctuation: boolean) =>
+      canBreakForWidth(a.codePointAt(0)!, b.codePointAt(0)!, { ...rules, compressPunctuation })
+    expect([width('汉', '-', false), width('汉', '-', true)]).toEqual([true, true])
+    expect([width('-', '1', false), width('-', '1', true)]).toEqual([true, false])
+    expect([width('-', '汉', true), width('d', '-', true)]).toEqual([true, false])
+    expect(width('（', '-', false)).toBe(false)
+  })
 })
 
 describe.skipIf(process.platform !== 'win32')('本机字体', () => {
@@ -158,7 +172,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
     defaultTabStop: 21,
     noLineBreakBefore: DEFAULT_NO_LINE_BREAK_BEFORE,
     noLineBreakAfter: DEFAULT_NO_LINE_BREAK_AFTER,
-    fallback: song,
+    fallback: () => song,
     mark: { face: times, size: 10.5 },
     ...over,
   })
@@ -181,6 +195,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
         hheaLineGap: 36,
         winAscent: 220,
         winDescent: 36,
+        useTypoMetrics: false,
         averageWidth: 128,
         eastAsianCodePage: true,
         superscriptSize: 128,
@@ -205,6 +220,17 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       expect(singleLineHeight(times.vertical, 10.5)).toBeCloseTo((2355 * 10.5) / 2048, 10)
       expect(singleLineHeight(arial.vertical, 10.5)).toBeCloseTo((2355 * 10.5) / 2048, 10)
       expect(singleLineHeight(yahei.vertical, 10.5)).toBeCloseTo((3513 * 10.5) / 2048, 10)
+    })
+
+    test('设置 USE_TYPO_METRICS 的字体取 hhea 上沿减下沿加行距，行距在上沿之上；未设置的仍取 Windows 上下沿（WPS：Cambria Math 10.5 磅 12.30 磅，Segoe UI Emoji 13.95 磅）', () => {
+      const math = face('cambria.ttc', 1)
+      expect(math.vertical.useTypoMetrics).toBe(true)
+      const e = faceExtent(math.vertical, 10.5)
+      expect(e.ascent).toBeCloseTo(((1595 + 353) * 10.5) / 2048, 10)
+      expect(e.descent).toBeCloseTo((455 * 10.5) / 2048, 10)
+      const emoji = face('seguiemj.ttf')
+      expect(emoji.vertical.useTypoMetrics).toBe(false)
+      expect(singleLineHeight(emoji.vertical, 10.5)).toBeCloseTo((2724 * 10.5) / 2048, 10)
     })
 
     test('中日韩字体的增量上下各半，外部行距在上沿之上', () => {
@@ -256,6 +282,41 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       expect(box.baseline).toBeCloseTo(song105[0]!.ascent + (15.6 - song105[0]!.single) / 2, 10)
       expect(lineBox(song105, { rule: 'exact', value: 20 }, 15.6).height).toBe(20)
       expect(lineBox(song105, { rule: 'atLeast', value: 12 }, 15.6).height).toBeCloseTo(15.6, 10)
+    })
+
+    test('多倍行距小于 1、不对齐网格：减少的行高 80% 取自文字上方', () => {
+      // WPS（构造文档 w11c，行顶取 Information(6)，基线取页面 EMF）：宋体 10.5 磅倍数 0.5 时行高 6.8 磅、基线距行顶 5.15 磅，
+      // 倍数 185/240 时行高 10.5 磅、基线 8.0 磅；宋体 18 磅倍数 0.5 时 11.65、8.9 磅；微软雅黑 10.5 磅倍数 0.5 时基线 6.1 磅。
+      const cases: [TextFace, number, number, number][] = [
+        [song, 10.5, 0.5, 5.15],
+        [song, 10.5, 185 / 240, 8.0],
+        [song, 18, 0.5, 8.9],
+        [yahei, 10.5, 0.5, 6.1],
+      ]
+      for (const [f, size, value, baseline] of cases) {
+        const e = [faceExtent(f.vertical, size)]
+        const box = lineBox(e, { rule: 'multiple', value }, null)
+        expect(box.height).toBeCloseTo(e[0]!.single * value, 10)
+        expect(Math.abs(box.baseline - baseline)).toBeLessThan(0.15)
+      }
+    })
+
+    test('行网格中的最小值：小于取整后的单倍行高时与单倍行距相同、文字居中，不小于时增加部分在文字上方', () => {
+      // WPS（网格行距 15.6）：宋体 10.5 磅最小值 6 至 15 磅与单倍行距的基线相同，15.6、16、30 磅时为设定值减下沿；
+      // 微软雅黑 10.5 磅最小值 30 磅时行高 31.2 磅，基线与单倍行距相同。
+      const song105 = [faceExtent(song.vertical, 10.5)]
+      const single = lineBox(song105, { rule: 'multiple', value: 1 }, 15.6)
+      for (const value of [6, 12, 15])
+        expect(lineBox(song105, { rule: 'atLeast', value }, 15.6)).toEqual(single)
+      for (const value of [15.6, 16, 30]) {
+        const box = lineBox(song105, { rule: 'atLeast', value }, 15.6)
+        expect(box.height).toBe(value)
+        expect(box.baseline).toBeCloseTo(value - song105[0]!.descent, 10)
+      }
+      const yahei105 = [faceExtent(yahei.vertical, 10.5)]
+      expect(lineBox(yahei105, { rule: 'atLeast', value: 30 }, 15.6)).toEqual(
+        lineBox(yahei105, { rule: 'multiple', value: 1 }, 15.6),
+      )
     })
 
     test('上沿与下沿分别取行内最大值：宋体与等线同行时行高大于两者各自的单倍行高', () => {
@@ -453,7 +514,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       expect(one.lines[1]!.left).toBeCloseTo((415.3 - 10.5) / 2, 9)
     })
 
-    test('居中与右对齐按内容宽度偏移；justifiedPunctuation 时悬挂只用于两端对齐与分散对齐；悬挂标点使内容超宽时不向左偏移', () => {
+    test('居中与右对齐按内容宽度偏移；兼容模式 15 时悬挂只用于两端对齐与分散对齐；悬挂标点使内容超宽时不向左偏移', () => {
       expect(
         layoutParagraph([run(H.repeat(34))], style({ align: 'center' })).lines[0]!.left,
       ).toBeCloseTo((415.3 - 357) / 2, 9)
@@ -464,7 +525,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       const text = `${H.repeat(39)}，${H.repeat(5)}`
       const centered = layoutParagraph(
         [run(text)],
-        style({ align: 'center', justifiedPunctuation: true }),
+        style({ align: 'center', compatibilityMode: 15 }),
       )
       expect(counts(centered)).toEqual([38, 7])
       expect(centered.lines[0]!.left).toBeCloseTo((415.3 - 38 * 10.5) / 2, 9)
@@ -473,7 +534,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       expect(hung.lines[0]!.left).toBe(0)
       const spread = layoutParagraph(
         [run(text)],
-        style({ align: 'distribute', justifiedPunctuation: true }),
+        style({ align: 'distribute', compatibilityMode: 15 }),
       )
       expect(counts(spread)).toEqual([40, 5])
     })
@@ -551,6 +612,37 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       expect(fr[3]!.size).toBe(12)
     })
 
+    test('同一字体的西文与东亚文字按字体槽分为不同片段；被压缩的标点单独成为片段（WPS 分别输出）', () => {
+      const one = { ascii: song, hAnsi: song, eastAsia: song, cs: song }
+      const slots = layoutParagraph([run('甲AB乙', { fonts: one })], style({ align: 'left' }))
+      expect(slots.lines[0]!.fragments.map((f) => [f.start, f.end, f.slot])).toEqual([
+        [0, 1, 'eastAsia'],
+        [1, 3, 'ascii'],
+        [3, 4, 'eastAsia'],
+      ])
+      const squeezed = layoutParagraph(
+        [run('字）：字字', { fonts: one, size: 12, kern: 1 })],
+        style({ align: 'left' }),
+      )
+      expect(squeezed.lines[0]!.fragments.map((f) => [f.start, f.end, f.squeezed])).toEqual([
+        [0, 1, false],
+        [1, 2, true],
+        [2, 5, false],
+      ])
+    })
+
+    test('改用的字体按码位选择，宽度与上下沿都按该字体计算（WPS：12 磅宋体字段中的「🔹」按 Segoe UI Emoji 排版，行高 16.4 磅）', () => {
+      const emoji = face('seguiemj.ttf')
+      const b = layoutParagraph(
+        [run('🔹第', { size: 12 })],
+        style({ align: 'left', fallback: (cp) => (cp >= 0x1f300 ? emoji : song) }),
+      )
+      const line = b.lines[0]!
+      expect(line.fragments[0]!.face).toBe(emoji)
+      expect(line.fragments[0]!.advances[0]).toBeCloseTo(emoji.metrics.advance(0x1f539, 12), 10)
+      expect(line.height).toBeCloseTo((2210 * 12) / 2048 + (74 * 12) / 256, 6)
+    })
+
     test('所选字体缺字形时改用 fallback，不改用字段的东亚字体；fallback 为 null 时按 .notdef 宽度', () => {
       // WPS：Times New Roman 与微软雅黑组合时「★」宽 10.5 磅（宋体），微软雅黑的「★」为 8.57 磅。
       const fonts = { ...SONG, eastAsia: yahei }
@@ -558,8 +650,16 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
         .fragments[0]!
       expect(f.face).toBe(song)
       expect(f.advances).toEqual([10.5])
-      const none = layoutParagraph([run('★', { fonts })], style({ align: 'left', fallback: null }))
+      const none = layoutParagraph(
+        [run('★', { fonts })],
+        style({ align: 'left', fallback: () => null }),
+      )
       expect(none.lines[0]!.fragments[0]!.advances[0]).toBe(times.metrics.advance(0x2605, 10.5))
+    })
+
+    test('两种字体都缺少的补充平面字符与控制字符按 0.5 em，其余按改用字体的 .notdef 宽度（WPS：「𝑥」与 U+001A 各 5.25 磅，「⑳」10.5 磅）', () => {
+      const f = layoutParagraph([run('𝑥\u001a⑳')], style({ align: 'left' })).lines[0]!.fragments
+      expect(f.flatMap((x) => x.advances)).toEqual([5.25, 5.25, 10.5])
     })
   })
   describe('上下标、字符间距与基线提升', () => {
@@ -658,7 +758,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
     const squeeze = (text: string, width = 415.3, over: Partial<ParagraphStyle> = {}) =>
       layoutParagraph(
         [run(text, { size: 12, slots: hint })],
-        style({ width, compressPunctuation: true, ...over }),
+        style({ width, compressPunctuation: true, compatibilityMode: 15, ...over }),
       )
 
     test('压缩标点：行宽不足时压缩标点容纳下一字，至多压缩一半', () => {
@@ -669,15 +769,15 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       expect(counts(squeeze(`${H.repeat(17)}，${H.repeat(37)}`, 413.9))[0]).toBe(34)
     })
 
-    test('压缩标点：两个逗号时超出 7.75 磅容纳、8 磅不容纳；justifiedPunctuation 时左对齐不压缩', () => {
+    test('压缩标点：两个逗号时超出 7.75 磅容纳、8 磅不容纳；兼容模式 15 时左对齐不压缩', () => {
       const text = `${H.repeat(10)}，${H.repeat(10)}，${H.repeat(44)}`
       const yes = squeeze(text, 432 - 7.75)
       expect(counts(yes)[0]).toBe(36)
       expect(adv(yes)[10]).toBeCloseTo(8.125, 9)
       expect(counts(squeeze(text, 432 - 8))[0]).toBe(35)
-      expect(
-        counts(squeeze(text, 432 - 7.75, { align: 'left', justifiedPunctuation: true }))[0],
-      ).toBe(35)
+      expect(counts(squeeze(text, 432 - 7.75, { align: 'left', compatibilityMode: 15 }))[0]).toBe(
+        35,
+      )
     })
 
     test('压缩标点：行尾标点先压缩；行首的开启类标点不压缩', () => {
@@ -691,20 +791,130 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       expect(adv(start)[17]).toBeCloseTo(7.3, 9)
     })
 
-    test('justifiedPunctuation 时左对齐不悬挂；东亚语言不是中文时不悬挂', () => {
+    test('兼容模式 15 时左对齐不悬挂；东亚语言不是中文时不悬挂', () => {
       // WPS：34 字之后的逗号越过行宽 0.5 磅时，兼容模式 15 的左对齐段落与没有东亚语言的段落均把前一字连同逗号移到下一行。
       const text = `${H.repeat(34)}，${H.repeat(20)}`
       const at = (over: Partial<TextRun>, align: ParagraphStyle['align']) =>
         counts(
           layoutParagraph(
             [run(text, { size: 12, ...over })],
-            style({ width: 408.5, align, justifiedPunctuation: true }),
+            style({ width: 408.5, align, compatibilityMode: 15 }),
           ),
         )[0]
       expect(at({}, 'both')).toBe(35)
       expect(at({}, 'left')).toBe(33)
       expect(at({ eastAsiaLanguage: '' }, 'both')).toBe(33)
       expect(at({ eastAsiaLanguage: 'zh-CN' }, 'both')).toBe(35)
+    })
+  })
+
+  describe('压缩判定', () => {
+    // WPS 构造文档：宋体 12 磅（西文同为宋体），字距调整、单双字节宽度协调，两端对齐，行宽 415.3 磅减去右缩进。
+    let ALL: RunFonts
+    beforeAll(() => {
+      ALL = { ascii: song, hAnsi: song, eastAsia: song, cs: times }
+    })
+    /** `total` 个汉字中均匀放 `n` 个逗号，`edit` 再替换个别字符。 */
+    const row = (n: number, total: number, edit: (u: string[]) => void = () => {}) => {
+      const u = Array.from({ length: total }, () => H)
+      const step = Math.floor(total / (n + 1))
+      for (let k = 1; k <= n; k++) u[k * step] = '，'
+      edit(u)
+      return u.join('')
+    }
+    const lay = (
+      text: string,
+      width: number,
+      over: Partial<ParagraphStyle> = {},
+      r: Partial<TextRun> = {},
+    ) =>
+      layoutParagraph(
+        [run(text, { fonts: ALL, size: 12, kern: 1, ...r })],
+        style({
+          width,
+          compressPunctuation: true,
+          compatibilityMode: 15,
+          balanceSingleByte: true,
+          ...over,
+        }),
+      )
+    const first = (
+      text: string,
+      width: number,
+      over: Partial<ParagraphStyle> = {},
+      r: Partial<TextRun> = {},
+    ) => counts(lay(text, width, over, r))[0]
+
+    test('收缩比例不大于伸展比例时压缩：阈值随断行后的字间数增加而降低', () => {
+      // WPS：两个逗号，断行后 20 字时超出 9.2 磅压缩、9.3 磅不压缩；34 字时为 7.9 与 7.95 磅。
+      const short = `${row(2, 20)}${H}${H.repeat(15)}。`
+      expect(first(short, 252 - 9.2)).toBe(21)
+      expect(first(short, 252 - 9.3)).toBe(20)
+      const long = `${row(2, 34)}${H}${H.repeat(30)}。`
+      expect(first(long, 420 - 7.9)).toBe(35)
+      expect(first(long, 420 - 7.95)).toBe(34)
+    })
+
+    test('中西文间距使阈值降低；隔开西文与汉字的空格同样计入伸展量', () => {
+      // WPS：「汉汉汉1汉…」两个逗号超出 6.7 磅压缩、6.8 磅不压缩；「汉汉汉A 汉…」为 6.4 与 6.5 磅。
+      const digit = `${row(2, 34, (u) => {
+        u[3] = '1'
+      })}${H}${H.repeat(30)}。`
+      expect(first(digit, 420 - 6.7)).toBe(35)
+      expect(first(digit, 420 - 6.8)).toBe(34)
+      const space = `${row(2, 34, (u) => {
+        u[3] = 'A'
+        u[4] = ' '
+      })}${H}${H.repeat(30)}。`
+      expect(first(space, 411 - 6.4)).toBe(35)
+      expect(first(space, 411 - 6.5)).toBe(34)
+    })
+
+    test('伸展量只计最后一个制表符之后的字间', () => {
+      // WPS：「o⇥」后 30 字、两个逗号，超出 8.2 磅压缩、8.3 磅不压缩。
+      const text = `o\t${row(2, 30)}${H}${H.repeat(20)}。`
+      expect(first(text, 21 + 372 - 8.2)).toBe(33)
+      expect(first(text, 21 + 372 - 8.3)).toBe(32)
+    })
+
+    test('越界字之后不能断开的标点一并计入：全部压缩或悬挂该标点', () => {
+      // WPS：两个逗号的行后接段末句号，超出 7 磅时排入、7.25 磅时与前一字移到下一行；
+      // 超出 4 磅时句号压缩一半、逗号各 7 磅，超出 6.5 磅时句号悬挂、逗号各 8.75 磅。
+      const text = `${row(2, 34)}${H}。`
+      expect(first(text, 420 - 7)).toBe(36)
+      expect(first(text, 420 - 7.25)).toBe(34)
+      const adv = (b: TextBlock) => b.lines[0]!.fragments.flatMap((f) => f.advances)
+      const squeezed = adv(lay(text, 420 - 4))
+      expect(squeezed[11]).toBeCloseTo(7, 9)
+      expect(squeezed[35]).toBeCloseTo(6, 9)
+      const hung = adv(lay(text, 420 - 6.5))
+      expect(hung[11]).toBeCloseTo(8.75, 9)
+      expect(hung[35]).toBe(12)
+    })
+
+    test('兼容模式 14：越界字超出量不超过字号的一半时压缩，与标点个数无关', () => {
+      const text = `${row(4, 34)}${H}${H.repeat(30)}。`
+      expect(first(text, 420 - 6, { compatibilityMode: 14 })).toBe(35)
+      expect(first(text, 420 - 6.5, { compatibilityMode: 14 })).toBe(34)
+    })
+
+    test('无东亚提示的引号使用西文字体，不压缩，也不与相邻标点压缩', () => {
+      const text = `${H.repeat(10)}“${H.repeat(10)}”${H.repeat(12)}${H}${H.repeat(30)}。`
+      expect(first(text, 420 - 5)).toBe(34)
+      expect(first(text, 420 - 5, {}, { slots: hint })).toBe(35)
+      const adv = lay('字”，字', 415.3, { align: 'left' }).lines[0]!.fragments.flatMap(
+        (f) => f.advances,
+      )
+      expect(adv).toEqual([12, 12, 12, 12])
+    })
+
+    test('压缩标点时汉字与其后的破折号之间可断；wordWrap 关闭时同样可断', () => {
+      const text = `${H.repeat(34)}—${H.repeat(20)}。`
+      const at = (over: Partial<ParagraphStyle>) =>
+        counts(layoutParagraph([run(text, { size: 12 })], style({ width: 418, ...over })))[0]
+      expect(at({ compressPunctuation: true })).toBe(34)
+      expect(at({})).toBe(33)
+      expect(at({ wordWrap: false })).toBe(34)
     })
   })
 
@@ -746,6 +956,194 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
         3,
         6,
       ])
+    })
+
+    test('单双字节宽度协调：行首、行尾与连续的空格为字号的一半，两侧紧邻西文字符的单个空格保持字体宽度', () => {
+      // WPS：Times New Roman 与宋体 12 磅左对齐，空格步进如下。
+      const spaces = (text: string) =>
+        layoutParagraph(
+          [run(text, { size: 12 })],
+          style({ align: 'left', balanceSingleByte: true }),
+        )
+          .lines[0]!.fragments.flatMap((f) => f.advances)
+          .filter((_, k) => text[k] === ' ')
+      expect(spaces('   X|')).toEqual([6, 6, 6])
+      expect(spaces('X   Y|')).toEqual([6, 6, 6])
+      expect(spaces('X  ')).toEqual([6, 6])
+      expect(spaces('1 2|')).toEqual([3])
+    })
+  })
+
+  // WPS 实测：构造文档 w9-img、w9-obj（嵌入式图片与公式，版心 451.3 磅，宋体 10.5 磅）与 e-mark。
+  describe('内容宽度（WPS：宋体 12 磅的单列表格，tblW 为 auto 时列宽为最大内容宽度加边距，为 1 缇时为最小内容宽度加边距）', () => {
+    let fonts: RunFonts
+    beforeAll(() => {
+      fonts = { ascii: song, hAnsi: song, eastAsia: song, cs: song }
+    })
+    const widths = (text: string, over: Partial<ParagraphStyle> = {}) =>
+      contentWidths([run(text, { fonts, size: 12 })], style({ align: 'left', ...over }))
+
+    test('最大为不断行时最宽的一行，最小为最长的不可断开部分；第一部分自首行起点计，对齐方式不计入', () => {
+      expect(widths('-15.0%')).toEqual({ min: 30, max: 36 })
+      expect(widths('汉汉汉汉', { firstLineIndent: 24 })).toEqual({ min: 36, max: 72 })
+      expect(widths('汉汉汉汉', { firstLineIndent: -24 })).toEqual({ min: 12, max: 24 })
+      expect(widths('学生姓名', { align: 'distribute' })).toEqual({ min: 12, max: 48 })
+      expect(widths('汉汉\n汉汉汉汉', { align: 'both' })).toEqual({ min: 12, max: 48 })
+      expect(widths('0000 0000')).toEqual({ min: 24, max: 54 })
+      expect(widths('净利润（万元）')).toEqual({ min: 24, max: 84 })
+      expect(widths('', { firstLineIndent: 24 })).toBeNull()
+    })
+
+    test('压缩标点时连字符与其后的西文之间不断开（WPS：「-15.0%」36 磅、「ab cd-ef」30 磅；不压缩时 30 磅、18 磅）', () => {
+      const cp = { compressPunctuation: true }
+      const min = (text: string, over: Partial<ParagraphStyle> = {}) => widths(text, over)?.min
+      expect([min('-15.0%', cp), min('ab cd-ef', cp)]).toEqual([36, 30])
+      expect([min('ab cd-ef'), min('汉-汉汉'), min('汉-汉汉', cp)]).toEqual([18, 12, 12])
+    })
+
+    test('行内对象按断行类别：嵌入式对象两侧可断，公式与相邻的西文之间不断开', () => {
+      const obj = (breaks: InlineObject['breaks']): ObjectRun => ({
+        object: {
+          advance: 10,
+          width: 10,
+          ascent: 10,
+          descent: 0,
+          breaks,
+          breakBefore: false,
+          textual: breaks === 'western',
+        },
+      })
+      const of = (breaks: InlineObject['breaks']) =>
+        contentWidths(
+          [run('ab', { fonts, size: 12 }), obj(breaks), run('cd', { fonts, size: 12 })],
+          style({ align: 'left' }),
+        )
+      expect(of('western')).toEqual({ min: 34, max: 34 })
+      expect(of('ideographic')).toEqual({ min: 12, max: 34 })
+    })
+  })
+
+  describe('行内对象与段落标记', () => {
+    const object = (over: Partial<InlineObject> = {}): ObjectRun => ({
+      object: {
+        advance: 30,
+        width: 30,
+        ascent: 30,
+        descent: 0,
+        breaks: 'ideographic',
+        breakBefore: false,
+        textual: false,
+        ...over,
+      },
+    })
+    const formula = (over: Partial<InlineObject> = {}) =>
+      object({ breaks: 'western', textual: true, ascent: 9.99, descent: 2.33, ...over })
+    const wide = (over: Partial<ParagraphStyle> = {}) =>
+      style({ width: 451.3, align: 'left', ...over })
+    const songSingle = (332 * 10.5) / 256
+    const timesSingle = (2355 * 10.5) / 2048
+
+    test('与文字同行：上沿取对象框，多倍行距的基数为文字字体的单倍行高，不计对象（10.5 磅文字与 30 磅图片：单倍 33.0 磅，1.5 倍 39.85 磅）', () => {
+      const runs = [run('文字'), object(), run('文字')]
+      const descent = faceExtent(song.vertical, 10.5).descent
+      const one = layoutParagraph(runs, wide()).lines[0]!
+      expect(one.height).toBeCloseTo(30 + descent, 6)
+      expect(one.baseline).toBeCloseTo(30, 6)
+      expect(one.objects).toEqual([{ run: 1, x: 21 }])
+      expect(one.fragments[1]!.x).toBeCloseTo(51, 6)
+      const multi = layoutParagraph(runs, wide({ lineSpacing: { rule: 'multiple', value: 1.5 } }))
+      expect(multi.lines[0]!.height).toBeCloseTo(30 + descent + songSingle / 2, 6)
+    })
+
+    test('没有文字的末行：段落标记的单倍行高为下限，增加的部分在对象上方，也是多倍行距的基数；不是末行时不计（11 磅图片 12.05 磅，70 磅图片 70 磅，第一行的 12 磅图片 12.0 磅，1.5 倍时 10 磅图片 18.15 磅）', () => {
+      const small = layoutParagraph([object({ ascent: 11 })], wide()).lines[0]!
+      expect(small.height).toBeCloseTo(timesSingle, 6)
+      expect(small.baseline).toBeCloseTo(timesSingle, 6)
+      expect(layoutParagraph([object({ ascent: 70 })], wide()).height).toBeCloseTo(70, 6)
+      const two = layoutParagraph(
+        [
+          object({ ascent: 12, advance: 300, width: 300 }),
+          object({ ascent: 12, advance: 300, width: 300 }),
+        ],
+        wide(),
+      )
+      expect(two.lines).toHaveLength(2)
+      expect(two.lines[0]!.height).toBeCloseTo(12, 6)
+      expect(two.lines[1]!.height).toBeCloseTo(timesSingle, 6)
+      const multi = layoutParagraph(
+        [object({ ascent: 10 })],
+        wide({ lineSpacing: { rule: 'multiple', value: 1.5 } }),
+      )
+      expect(multi.height).toBeCloseTo(1.5 * timesSingle, 6)
+    })
+
+    test('只含公式的末行不计段落标记；固定行距中对象底边位于行顶下 80% 处（段落标记 24 磅时公式行 12.33 磅；30 磅固定行距中 10 磅图片底边在行顶下 24 磅）', () => {
+      const big = { face: song, size: 24 }
+      expect(layoutParagraph([formula()], wide({ mark: big })).height).toBeCloseTo(12.32, 6)
+      expect(layoutParagraph([object({ ascent: 5 })], wide({ mark: big })).height).toBeCloseTo(
+        (332 * 24) / 256,
+        6,
+      )
+      const exact = layoutParagraph(
+        [object({ ascent: 10 })],
+        wide({ lineSpacing: { rule: 'exact', value: 30 } }),
+      ).lines[0]!
+      expect(exact.baseline).toBeCloseTo(24, 6)
+    })
+
+    test('只有空白的末行计入段落标记，有文字的行不计（e-mark：段落标记为 24 磅宋体，只有制表符 31.15 磅、只有空格 31.10 磅、「字」与制表符 13.65 磅）', () => {
+      const big = { face: song, size: 24 }
+      const height = (text: string) => layoutParagraph([run(text)], wide({ mark: big })).height
+      expect(height('\t')).toBeCloseTo((332 * 24) / 256, 6)
+      expect(height('  ')).toBeCloseTo((332 * 24) / 256, 6)
+      expect(height('字\t')).toBeCloseTo(songSingle, 6)
+    })
+
+    test('断行：嵌入式对象两侧可断、相邻的禁则字符照常；公式与其后的西文之间不断开', () => {
+      const ends = (runs: (TextRun | ObjectRun)[]) =>
+        layoutParagraph(runs, wide()).lines.map((l) => l.end)
+      // 「abcd」与其后的 40 磅图片之间断开；图片与其后的「abcdefghij」之间断开。
+      expect(
+        ends([run(`${H.repeat(38)}abcd`), object({ advance: 40, width: 40 }), run(H.repeat(5))]),
+      ).toEqual([42, 47])
+      expect(
+        ends([
+          run(H.repeat(38)),
+          object({ advance: 20, width: 20 }),
+          run(`abcdefghij${H.repeat(5)}`),
+        ]),
+      ).toEqual([38, 53])
+      // 不能位于行首的「？」与其前的图片、不能位于行尾的「（」与其后的图片一起移到下一行。
+      expect(
+        ends([run(H.repeat(41)), object({ advance: 15, width: 15 }), run(`？${H.repeat(5)}`)]),
+      ).toEqual([41, 47])
+      expect(
+        ends([run(`${H.repeat(41)}（`), object({ advance: 15, width: 15 }), run(H.repeat(5))]),
+      ).toEqual([41, 47])
+      // 公式之后的「abcdefghij」排不下时公式随之移到下一行。
+      expect(
+        ends([
+          run(H.repeat(40)),
+          formula({ advance: 5.5, width: 5.5 }),
+          run(`abcdefghij${H.repeat(3)}`),
+        ]),
+      ).toEqual([40, 53])
+    })
+
+    test('行尾的对象按 width 计入内容宽度与对齐，判断能否排入本行也按 width；对象两侧不加中西文间距', () => {
+      const right = layoutParagraph(
+        [run(H.repeat(3)), object({ advance: 20, width: 12, ascent: 10 })],
+        wide({ align: 'right' }),
+      ).lines[0]!
+      expect(right.width).toBeCloseTo(31.5 + 12, 6)
+      expect(right.objects[0]!.x + 12).toBeCloseTo(451.3, 6)
+      const fit = layoutParagraph([run(H.repeat(42)), formula({ advance: 12, width: 5 })], wide())
+      expect(fit.lines).toHaveLength(1)
+      const mixed = layoutParagraph([run('ab'), object(), run('cd')], wide()).lines[0]!
+      expect(mixed.objects[0]!.x).toBeCloseTo(
+        mixed.fragments[0]!.advances.reduce((a, b) => a + b),
+        6,
+      )
     })
   })
 })

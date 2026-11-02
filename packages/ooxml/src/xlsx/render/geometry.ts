@@ -25,7 +25,7 @@ import type {
 } from '../model.ts'
 import { MAX_COL, MAX_ROW } from '../parse/refs.ts'
 import { Axis, type AxisRun } from './axis.ts'
-import { type FontSet, pixelSize } from './fonts.ts'
+import { type FaceChain, type FontSet, pixelSize } from './fonts.ts'
 import { lineBox, lineBoxOf, lineMetrics, makeRun, wrapRuns } from './text.ts'
 
 export interface SheetGeometry {
@@ -35,13 +35,31 @@ export interface SheetGeometry {
   readonly mdw: number
 }
 
-/** 文字到左、右网格线的留白（对照 WPS 屏幕显示测得），自动换行的行宽与绘制共用。 */
-export const TEXT_PADDING_LEFT = 3
-export const TEXT_PADDING_RIGHT = 2
+/** 文字到左、右网格线的留白（像素），以及决定留白的最大数字宽度。 */
+export interface TextPadding {
+  readonly left: number
+  readonly right: number
+  readonly digit: number
+}
 
+/**
+ * 单元格文字的留白，由单元格字体（含粗体）的最大数字宽度 w 决定：左留白 ⌊5(w + 6)/19⌋，右留白比左留白少 1。
+ * 经验拟合（机制未查明）：WPS 屏幕显示中 8 种字体 ppem 8–55（w 为 4–35）的靠左与靠右文字全部一致，宋体 11 磅（w = 8）为 3 与 2；
+ * 粗体按粗体的数字宽度（合成粗体加 1）计算，语料中宋体 18 磅与 Times New Roman 14 磅粗体的位置据此一致。
+ * 自动换行的行宽、溢出与各种对齐共用此留白；居中不受留白影响（左右之差恒为 1）。
+ */
+export function textPadding(font: FontStyle, fonts: FontSet): TextPadding {
+  const w = widestDigit(fonts.chain(font.name, font.bold, font.italic), pixelSize(font.size))
+  const left = Math.floor((5 * (w + 6)) / 19)
+  return { left, right: left - 1, digit: w }
+}
+
+/** 列宽换算所用的最大数字宽度：常规字形。 */
 export function maxDigitWidth(font: FontStyle, fonts: FontSet): number {
-  const chain = fonts.chain(font.name, false, false)
-  const ppem = pixelSize(font.size)
+  return widestDigit(fonts.chain(font.name, false, false), pixelSize(font.size))
+}
+
+function widestDigit(chain: FaceChain, ppem: number): number {
   if (chain.faces.length === 0) return Math.round(ppem / 2)
   let max = 0
   for (let d = 0; d <= 9; d++) max = Math.max(max, chain.width(String(d), ppem))
@@ -253,7 +271,8 @@ function autoRowHeight(
       colWidth > 0 &&
       (v.type === 'string' || v.type === 'formula')
     ) {
-      const width = colWidth - TEXT_PADDING_LEFT - TEXT_PADDING_RIGHT
+      const pad = textPadding(style.font, fonts)
+      const width = colWidth - pad.left - pad.right
       let total = 0
       for (const l of wrapRuns(runs, Math.max(1, width))) total += lineBoxOf(l).height
       height = Math.max(height, total)

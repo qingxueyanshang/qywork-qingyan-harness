@@ -40,6 +40,7 @@ import {
   resolveShapeFill,
   resolveShapeLine,
   type StyleScope,
+  shapeThreeD,
   type Transform,
 } from '../../drawingml/shape/resolve.ts'
 import { collectTextFonts, MISSING_LATIN } from '../../drawingml/text/fonts.ts'
@@ -51,6 +52,7 @@ import {
 } from '../../drawingml/text/read.ts'
 import { resolveTextBody } from '../../drawingml/text/resolve.ts'
 import type { Theme } from '../../drawingml/theme.ts'
+import { visibleThreeD } from '../../drawingml/three/camera.ts'
 import type { Relationships } from '../../opc/package.ts'
 import { eachChild, readText, relAttr, type Scanner } from '../../opc/read.ts'
 import { PartScanner } from '../../opc/scanner.ts'
@@ -317,6 +319,9 @@ class Resolver {
     )
     countOtherEffects(raw.props, scope.found)
     countEffects(effects, scope.found)
+    // 工作表不绘制三维效果：改变外观的三维设置（相机、旋转、棱台、挤出、轮廓）登记 `effect3d`。
+    const three = shapeThreeD([raw.props], raw.kind === 'group' ? null : raw.style, scope)
+    if (visibleThreeD(three.scene, three.shape)) scope.found.push('effect3d')
     switch (raw.kind) {
       case 'shape': {
         const fill = resolveShapeFill(raw.props.fill, raw.style, group, scope)

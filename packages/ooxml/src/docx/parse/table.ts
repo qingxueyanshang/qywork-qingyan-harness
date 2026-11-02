@@ -176,9 +176,12 @@ export function readTableProps(x: Scanner): RawTableProps {
         break
       case 'tblpPr': {
         const anchor = wAttr(x, 'horzAnchor')
+        const vertical = wAttr(x, 'vertAnchor')
         out.float = {
           from: anchor === 'page' ? 'page' : anchor === 'margin' ? 'margin' : 'text',
           x: (wNum(x, 'tblpX') ?? 0) / 20,
+          vertical: vertical === 'page' ? 'page' : vertical === 'margin' ? 'margin' : 'text',
+          y: (wNum(x, 'tblpY') ?? 0) / 20,
         }
         break
       }

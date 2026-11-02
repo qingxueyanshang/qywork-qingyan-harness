@@ -5,9 +5,13 @@
  * - 段落按页切分：同一段落跨页时，每页各有一项 `PageParagraph`，`firstLine` 为本页第一行在整段中的序号。
  * - 表格按页切分：每页一项 `PageTable`，含单元格底纹、单元格中的内容与边框线。
  * - 浮动对象（`PageFloat`）按叠放次序排列，文本框的内容已排版为页面坐标中的项。
+ * - 公式（`PageFormula`）的排版结果以 `DocumentPages.faces` 的下标引用字体。
  */
 
-import type { DrawingNode } from '../model.ts'
+import type { RelativeRect } from '../../drawingml/fill.ts'
+import type { MathLayout } from '../../math/index.ts'
+import type { BorderStroke } from '../border.ts'
+import type { DrawingGraphic, DrawingNode } from '../model.ts'
 
 export interface FaceRef {
   /** 族名，与调用方注册的 `FontFace` 族名相同。 */
@@ -63,10 +67,11 @@ export interface PageLine {
 }
 
 export interface BorderLine {
-  /** 线宽（磅）。 */
-  readonly width: number
+  /** 各条线距线组起点的偏移与粗细（磅），按自上而下、自左而右的顺序（见 `../border.ts`）。 */
+  readonly strokes: readonly BorderStroke[]
   readonly color: string
-  readonly style: 'single' | 'double' | 'dotted' | 'dashed'
+  /** 点线与虚线只有一条线。 */
+  readonly style: 'solid' | 'dotted' | 'dashed'
   /** 与文字的距离（磅）。 */
   readonly space: number
 }
@@ -91,6 +96,24 @@ export interface PageImage {
   readonly y: number
   readonly width: number
   readonly height: number
+  /** 图片各边裁去的比例（`InlineImage.crop`）：未裁去的部分拉伸到对象框。 */
+  readonly crop: RelativeRect
+}
+
+/** 嵌入式图表与 SmartArt：对象框（页面坐标）。 */
+export interface PageGraphic {
+  readonly graphic: DrawingGraphic
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/** 公式：左端与基线（页面坐标）及排版结果，字体为 `DocumentPages.faces` 的下标。 */
+export interface PageFormula {
+  readonly x: number
+  readonly baseline: number
+  readonly layout: MathLayout<number>
 }
 
 export interface PageParagraph {
@@ -102,6 +125,8 @@ export interface PageParagraph {
   readonly lines: readonly PageLine[]
   readonly box: ParagraphBox | null
   readonly images: readonly PageImage[]
+  readonly graphics: readonly PageGraphic[]
+  readonly formulas: readonly PageFormula[]
 }
 
 /** 表格的一条边框线：横线的 `y` 为线的上沿，竖线的 `x` 为线的中线。`line` 为 `null` 时为无边框处的表格虚框。 */
@@ -145,24 +170,28 @@ export interface PageFloat {
   readonly width: number
   readonly height: number
   readonly behind: boolean
-  /** 形状、图片与组合；`null` 为未实现的对象（不绘制）。 */
+  /** 形状、图片、组合、图表与 SmartArt；`null` 为未实现的对象（不绘制）。 */
   readonly drawing: DrawingNode | null
   /** 文本框中的内容（页面坐标）。 */
   readonly items: readonly PageItem[]
 }
 
-/** 页面背景：底色与按像素尺寸（1 像素为 0.75 磅）自页面左上角平铺的图片（`DocumentPages.images` 的下标）。 */
+/** 页面背景：底色与自页面左上角平铺的图片（`DocumentPages.images` 的下标）。 */
 export interface PageBackground {
   readonly color: string | null
   readonly image: number | null
+  /** 平铺单元按图片文件记录的分辨率换算；为假时按图片的像素尺寸（1 像素为 0.75 磅）。 */
+  readonly tile: boolean
 }
 
-/** 页面边框：四边的线与所围矩形（页面坐标）。 */
+/** 页面边框：四边的线与矩形（页面坐标）。 */
 export interface PageBorderBox {
   readonly x: number
   readonly y: number
   readonly width: number
   readonly height: number
+  /** 线画在矩形内侧（矩形为线的外缘，`offsetFrom` 为 `page`）或外侧（矩形为线的内缘，`offsetFrom` 为 `text`）。 */
+  readonly inside: boolean
   readonly top: BorderLine | null
   readonly bottom: BorderLine | null
   readonly left: BorderLine | null
@@ -183,19 +212,37 @@ export interface Page {
   readonly floats: readonly PageFloat[]
   readonly background: PageBackground | null
   readonly borders: PageBorderBox | null
+  /** 图表、SmartArt 与图元文件文字的字体（全文档相同）；本页没有这三种对象时为 `null`。 */
+  readonly graphicFonts: GraphicFonts | null
   /**
-   * 本页未绘制的嵌入式图片个数：与文字同行的图片（绘制未实现）。没有可绘制内容的对象（图表、缺少部件的图片等）
-   * 已在解析时按种类计入 `DocxDocument.unsupported`，不在此计数。
+   * 本页未绘制的公式个数：含未实现的结构或主机没有数学字体的公式。页眉页脚部件中的只在使用该部件的第一页计入，
+   * 使各页之和中每个部件只计一次。
    */
-  readonly hidden: number
+  readonly hiddenMath: number
 }
 
 export interface PageImageSource {
   /** 图片部件名：形状的图片填充按部件名引用。 */
   readonly part: string
   readonly contentType: string
-  /** 图片文件的字节，由调用方解码（浏览器中为 `createImageBitmap`）。 */
+  /** 图片文件的字节，由调用方解码（`decodePicture`）。 */
   readonly bytes: Uint8Array<ArrayBuffer>
+}
+
+/**
+ * 图表、SmartArt 与图元文件文字按字体名取得的字体：请求的字体名与字形所对应的 `DocumentPages.faces` 下标（字体文件本身的字形）。
+ */
+export interface GraphicFace {
+  readonly name: string
+  readonly bold: boolean
+  readonly italic: boolean
+  readonly face: number
+}
+
+/** 图表、SmartArt 与图元文件文字的字体：主机有的字体逐一列出，其余字体名取 `fallback`（`DocumentPages.faces` 的下标）。 */
+export interface GraphicFonts {
+  readonly named: readonly GraphicFace[]
+  readonly fallback: number
 }
 
 export interface DocumentPages {

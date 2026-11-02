@@ -110,6 +110,8 @@ export interface ParagraphContext {
   readonly tableRun: RawRunProps
   /** 段落样式链（含文档默认）的字号：左右缩进的字符单位。 */
   readonly styleSize: number
+  /** 缺省段落样式（含文档默认）的字号：计算内容宽度时首行与悬挂缩进的字符单位（见 `ParagraphProps.contentIndent`）。 */
+  readonly defaultStyleSize: number
   readonly numbering: { readonly numId: number; readonly ilvl: number } | null
 }
 
@@ -179,7 +181,11 @@ export class Resolver {
     pPr = mergePara(pPr, direct)
     const tableRun = table?.rPr ?? {}
     const styleSize = chain.rPr.size ?? tableRun.size ?? this.styles.defaultRun.size ?? DEFAULT_SIZE
-    return { style, pPr, styleRun: chain.rPr, tableRun, styleSize, numbering }
+    const defaultStyleSize =
+      this.chain(this.styles.defaultParagraphStyle).rPr.size ??
+      this.styles.defaultRun.size ??
+      DEFAULT_SIZE
+    return { style, pPr, styleRun: chain.rPr, tableRun, styleSize, defaultStyleSize, numbering }
   }
 
   /** 字段属性的合并结果，切换属性已解决为确定值。`direct` 中的 `rStyle` 指定字符样式。 */
@@ -335,7 +341,7 @@ export function paragraphProps(
   }
   const tabs: TabStop[] = []
   for (const t of p.tabs ?? []) {
-    if (t.leader !== null && t.leader !== 'none') count('tabLeader')
+    if (t.leader !== null && t.leader !== 'none' && t.leader !== 'dot') count('tabLeader')
     if (t.val === 'bar') {
       count('barTab')
       continue
@@ -347,11 +353,13 @@ export function paragraphProps(
         : t.val === 'right' || t.val === 'end' || t.val === 'decimal'
           ? 'right'
           : 'left'
-    tabs.push({ position: t.pos / 20, align })
+    tabs.push({ position: t.pos / 20, align, leader: t.leader === 'dot' ? '.' : null })
   }
+  const content = indents(p.ind ?? {}, ctx.defaultStyleSize, ctx.styleSize)
   return {
     align: ALIGNMENTS[p.jc ?? 'left'] ?? 'left',
     ...indents(p.ind ?? {}, firstUnit, ctx.styleSize),
+    contentIndent: { left: content.left, firstLine: content.firstLine },
     before: spaceOf(s.beforeLines, s.before, s.beforeAuto),
     after: spaceOf(s.afterLines, s.after, s.afterAuto),
     contextualSpacing: p.contextualSpacing === true,

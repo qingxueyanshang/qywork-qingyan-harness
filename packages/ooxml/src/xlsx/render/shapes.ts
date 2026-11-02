@@ -19,7 +19,12 @@ import {
   type ShapeScene,
 } from '../../drawingml/shape/paint.ts'
 import { frameOf, nearVertical, type Transform } from '../../drawingml/shape/resolve.ts'
-import { FaceCache, type ScreenText, type SlideFont } from '../../drawingml/text/fonts.ts'
+import {
+  FaceCache,
+  type ScreenText,
+  SINGLE_LINE,
+  type SlideFont,
+} from '../../drawingml/text/fonts.ts'
 import { emboldenBitmap } from '../../font/index.ts'
 import type { DrawingAnchor, ShapeNode, SheetShape, Workbook } from '../model.ts'
 import { type FontSet, fallbackFonts, type LoadedFace } from './fonts.ts'
@@ -45,20 +50,21 @@ function slideFont(f: LoadedFace): SlideFont {
 /**
  * 形状文字的单倍行高与字号之比。经验拟合（机制未查明）：WPS 表格屏幕显示中宋体、微软雅黑、等线、Arial、Calibri、
  * Times New Roman 9–28 磅的段间行距与字体无关，为字号的 1.2953–1.2976 倍。
- * 小数字号按整数部分计算，百分比与固定行距的分配见 `../../drawingml/text/body.ts` 的 `screenBlock`。
+ * 小数字号按整数部分计算，百分比与固定行距的分配见 `../../drawingml/text/body.ts` 的 `hostBlock`。
  */
 const SHEET_SINGLE_LINE = 1.296
 
 /**
  * 形状文字按屏幕显示绘制（`ScreenText`）：WPS 表格对宋体 9–12 磅的形状文字使用内嵌点阵（14 磅起为轮廓），
- * 使用条件与单元格文字相同（`EmbeddedBitmaps.screenMode`）；字体没有粗体字形时点阵按 GDI 的方式加粗。
+ * 使用条件与单元格文字相同（`EmbeddedBitmaps.screenMode`），没有点阵的字形与合成斜体取单色字形（`EmbeddedBitmaps.glyph`）；
+ * 字体没有粗体字形时按 GDI 的方式加粗。
  */
 function screenText(fonts: FontSet): ScreenText {
   return {
     bitmap(face, codePoint, ppem) {
       const f = fonts.face(face.family, face.bold, face.italic)
-      if (!f?.bitmaps?.screenMode(ppem, face.italic)) return null
-      const raw = f.bitmaps.glyph(ppem, f.metrics.glyphId(codePoint))
+      if (!f?.bitmaps?.screenMode(ppem)) return null
+      const raw = f.bitmaps.glyph(ppem, f.metrics.glyphId(codePoint), face.italic && !f.italic)
       if (raw === null) return null
       const { ascent, descent } = f.vertical(ppem)
       return { glyph: face.bold && !f.bold ? emboldenBitmap(raw) : raw, ascent, descent }
@@ -89,12 +95,13 @@ export function shapeFaces(workbook: Workbook, fonts: FontSet): FaceCache | null
 }
 
 /**
- * 图表文字的字体缓存：单倍行高与演示文稿相同，不用点阵。WPS 表格中图表文字的位置与 WPS 演示一致（校准文件实测：
- * 按形状文字的行高排版时分类标签与数值轴底端标签分别高 2 与 4 像素）。
+ * 图表文字的字体缓存：行高与基线按演示文稿的规则，字形按屏幕显示绘制（`screenText`）。WPS 表格中图表文字的位置与
+ * WPS 演示一致（校准文件实测：按形状文字的行高排版时分类标签与数值轴底端标签分别高 2 与 4 像素）；宋体 9–13 磅的
+ * 图表文字不做平滑、按内嵌点阵绘制，14 磅平滑（校准文件实测，与 GDI 的点阵条件相同）。
  */
 export function chartFaces(workbook: Workbook, fonts: FontSet): FaceCache | null {
   const source = faceSource(workbook, fonts)
-  return source === null ? null : new FaceCache(source)
+  return source === null ? null : new FaceCache(source, SINGLE_LINE, null, screenText(fonts))
 }
 
 /** 顶层节点所在坐标系（EMU）到工作表坐标（EMU）的映射：顶层节点在工作表上所占的矩形对齐锚点矩形 `rect`（像素）。 */

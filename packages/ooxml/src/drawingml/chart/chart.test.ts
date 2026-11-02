@@ -1,9 +1,10 @@
 /**
- * 覆盖范围：`scale.ts`（自动范围、主要单位、刻度，数据取自 WPS 校准文件）、`read.ts` 与 `resolve.ts`（缓存数据、
- * 缺省样式、自动颜色、标题与数据标签的样式规则、不支持的内容、按引用从单元格取值）、`layout.ts`（百分比取整、
- * 竖直轴区间数、分类标签旋转、图例与绘图区位置、次坐标轴、坐标轴标题、日期轴的单位数）、`date-axis.ts`
- * （基本单位推定、自动主要单位、标签日期）、`pie3d.ts`（三维饼图的直径与投影）、`paint.ts`（绘制入口不抛错且画出
- * 系列，三维饼图）；以及 `../../pptx/` 与 `../../xlsx/` 中图表的接入（图形框引用图表部件、能力边界计数、
+ * 覆盖范围：`scale.ts`（自动范围、主要单位、指定端点、刻度，数据取自 WPS 校准文件）、`../theme.ts` 读取主题覆盖、`read.ts` 与 `resolve.ts`（缓存数据、
+ * 缺省样式、自动颜色、标题与数据标签的样式规则、主题东亚字体为空时的文种字体、垂直线与趋势线、不支持的内容、按引用从单元格取值）、
+ * `layout.ts`（百分比取整、数值轴与散点图 x 轴标签的格式、竖直轴区间数、分类标签旋转、图例与绘图区位置、趋势线的图例项、次坐标轴、
+ * 坐标轴标题、日期轴的单位数）、`date-axis.ts`（基本单位推定、自动主要单位、标签日期）、`pie3d.ts`（三维饼图的直径与投影）、
+ * `paint.ts`（绘制入口不抛错且画出系列，垂直线与趋势线，三维饼图，数据标签的自定义文字与手动位置）；`../text/fonts.ts` 的 `FaceCache.glyphs` 与 `../text/body.ts`
+ * 的点阵绘制；以及 `../../pptx/` 与 `../../xlsx/` 中图表的接入（图形框引用图表部件、主题覆盖、能力边界计数、
  * `../../xlsx/parse/chart-cells.ts` 的引用解析）。
  */
 
@@ -12,12 +13,14 @@ import { parsePptx } from '../../pptx/load.ts'
 import { buildPptx, buildZip, slideXml, xfrm } from '../../pptx/test-helper.ts'
 import type { TextFace } from '../../text/index.ts'
 import { parseXlsx } from '../../xlsx/parse/workbook.ts'
-import { DEFAULT_COLOR_MAP } from '../color.ts'
+import { colorToCss, DEFAULT_COLOR_MAP, parseHexColor } from '../color.ts'
 import { canvasFactory, RecordingContext } from '../paint/test-helper.ts'
-import { FaceCache } from '../text/fonts.ts'
+import { layoutBody, paintBody } from '../text/body.ts'
+import { FaceCache, type ScreenText, SINGLE_LINE } from '../text/fonts.ts'
+import type { RunStyle } from '../text/model.ts'
 import { EMPTY_THEME, parseTheme } from '../theme.ts'
 import { autoBase, autoStep, dateLabels, dateScale, type TimeUnit, unitIndex } from './date-axis.ts'
-import { layoutChart, roundPercents } from './layout.ts'
+import { labelBody, layoutChart, measure, roundPercents } from './layout.ts'
 import type { Chart } from './model.ts'
 import { paintChart } from './paint.ts'
 import { pieGeometry, project } from './pie3d.ts'
@@ -41,6 +44,16 @@ const THEME_XML = `<?xml version="1.0" encoding="UTF-8"?><a:theme xmlns:a="${A}"
 </a:themeElements></a:theme>`
 
 const THEME = parseTheme(THEME_XML)
+
+test('parseTheme 读取图表的主题覆盖：三种方案直接位于根元素 themeOverride 之下', () => {
+  const override = parseTheme(
+    `<a:themeOverride xmlns:a="${A}"><a:clrScheme name="c"><a:accent1><a:srgbClr val="FF8D41"/></a:accent1></a:clrScheme>` +
+      '<a:fontScheme name="f"><a:majorFont><a:latin typeface="Arial"/></a:majorFont><a:minorFont><a:latin typeface="微软雅黑"/></a:minorFont></a:fontScheme>' +
+      '</a:themeOverride>',
+  )
+  expect(override.colors.accent1).toEqual(parseHexColor('FF8D41'))
+  expect(override.fonts.minor.latin).toBe('微软雅黑')
+})
 const SCOPE: ChartScope = {
   theme: THEME,
   colors: { scheme: THEME.colors, map: DEFAULT_COLOR_MAP },
@@ -145,6 +158,9 @@ describe('自动刻度', () => {
     [[4.3, 2.4, 2, 2.5, 4.4, 2, 3.5, 1.8, 3, 4.5, 2.8, 5], 10, 0, 6, 1],
     [[9.4, 3, 6, 8], 9, 0, 10, 2],
     [[9.4, 3, 6, 8], 10, 0, 10, 1],
+    // WPS 文字（同一图表的主次坐标轴）：取整前的范围除以单位不超过上限，取整后的区间数可以超过（0.195–0.25 共 11 个）。
+    [[0.215333, 0.247333], 10, 0.195, 0.25, 0.005],
+    [[627331.7, 10258641.1], 10, 0, 12000000, 2000000],
   ]
   for (const [data, limit, min, max, major] of CASES) {
     test(`${data.join(' ')}（上限 ${limit}）`, () => {
@@ -157,6 +173,21 @@ describe('自动刻度', () => {
       expect(s).toEqual({ min, max, major })
     })
   }
+
+  test('数值轴链接到源的格式取第一个系列，第一个点为空时为常规（WPS 文字：缓存没有第一个点的 0.00% 系列按常规显示）', () => {
+    const line = (values: readonly (number | null)[]) =>
+      chartXml(
+        `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>` +
+          ser(0, '线', values).replace(numCache(values), numCache(values, '0.00%')) +
+          `<c:axId val="1"/><c:axId val="2"/></c:lineChart>${AXES}`,
+      )
+    const labels = (values: readonly (number | null)[]) =>
+      layoutChart(resolved(line(values)), 300, 200, SETTINGS)
+        .axes.find((a) => !a.horizontal)!
+        .labels.map((l) => l.text)
+    expect(labels([0.2, 0.3, 0.25]).every((t) => t.endsWith('%'))).toBe(true)
+    expect(labels([null, 0.3, 0.25]).some((t) => t.includes('%'))).toBe(false)
+  })
 
   test('下限取 0 的条件为跨度不小于最大值的 1/6', () => {
     expect(autoRange(1000, 1050).lo).toBe(975)
@@ -171,6 +202,45 @@ describe('自动刻度', () => {
       major: 1000,
     })
     expect(valueScale(10, 90, { min: 5, max: null, major: null, maxIntervals: 10 }).min).toBe(5)
+  })
+
+  test('指定的最小值（最大值）代替数据的最小值（最大值），自动的另一端取指定值加减主要单位的整数倍', () => {
+    const scale = (min: number | null, max: number | null, lo: number, hi: number) =>
+      valueScale(lo, hi, { min, max, major: null, maxIntervals: 10 })
+    // WPS 演示与 WPS 表格的校准文件：数据 55–58；散点图 x 值含 0 与 4600–4690、最小值 3500。
+    expect(scale(0, null, 55, 58)).toEqual({ min: 0, max: 70, major: 10 })
+    expect(scale(3, null, 55, 58)).toEqual({ min: 3, max: 63, major: 10 })
+    expect(scale(null, 100, 55, 58)).toEqual({ min: 0, max: 100, major: 10 })
+    expect(scale(3500, null, 0, 4690)).toEqual({ min: 3500, max: 4900, major: 200 })
+  })
+
+  test('数字格式中的颜色作用于数值轴标签', () => {
+    const xml = chartXml(barChart(ser(0, 'a', [-3, 2, 5]))).replace(
+      '<c:axPos val="l"/>',
+      '<c:axPos val="l"/><c:numFmt formatCode="0;[Red]\\(0\\)" sourceLinked="0"/>',
+    )
+    const labels = layoutChart(resolved(xml), 300, 200, SETTINGS).axes.find(
+      (a) => !a.horizontal,
+    )!.labels
+    const fill = (text: string) =>
+      labels.find((l) => l.text === text)?.layout.paragraphs[0]?.runs[0]?.fill
+    expect(fill('(2)')).toEqual({ kind: 'solid', color: parseHexColor('FF0000')! })
+    expect(fill('2')).toEqual({ kind: 'solid', color: parseHexColor('000000')! })
+  })
+
+  test('散点图 x 轴链接到源的格式取第一个系列 x 值的格式', () => {
+    const xml = chartXml(
+      '<c:scatterChart><c:scatterStyle val="marker"/><c:ser><c:idx val="0"/><c:order val="0"/>' +
+        `<c:xVal><c:numRef><c:f>S!$A$2</c:f>${numCache([3600, 4200, 4690], '#,##0')}</c:numRef></c:xVal>` +
+        `<c:yVal><c:numRef><c:f>S!$B$2</c:f>${numCache([1, 2, 3])}</c:numRef></c:yVal></c:ser>` +
+        '<c:axId val="1"/><c:axId val="2"/></c:scatterChart>' +
+        '<c:valAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/>' +
+        '<c:numFmt formatCode="#,##0" sourceLinked="1"/><c:crossAx val="2"/></c:valAx>' +
+        '<c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>' +
+        '<c:crossAx val="1"/></c:valAx>',
+    )
+    const x = layoutChart(resolved(xml), 400, 300, SETTINGS).axes.find((a) => a.horizontal)!
+    expect(x.labels.map((l) => l.text)).toContain('1,000')
   })
 
   test('主要单位与刻度值没有浮点误差', () => {
@@ -284,15 +354,80 @@ describe('布局', () => {
   const plot = (values: number[]) =>
     `<c:barChart><c:barDir val="col"/>${ser(0, 'a', values)}<c:axId val="1"/><c:axId val="2"/></c:barChart>${SIZED_AXES}`
 
-  test('竖直轴的区间数随绘图区高度变化（9 磅标签在 132 像素与 142 像素之间由 5 个变为 10 个）', () => {
+  test('竖直轴的区间数随绘图区高度变化（9 磅标签在 158 像素与 163 像素之间由 5 个变为 10 个）', () => {
     const chart = resolved(chartXml(plot([9.4, 3, 6, 8])))
     const at = (height: number) =>
       layoutChart(chart, 100, height, SETTINGS).axes.find((a) => !a.horizontal)!
-    // 内框高度 = 图表高度 − 上沿 14.16 − 下沿（分类标签一行）。
-    const low = at(175)
-    const high = at(195)
+    // 内框高度 = 图表高度 − 上沿 14.16 − 下沿 30.27（分类标签一行）；WPS 演示实测 158.3 像素 5 个、163.3 像素 10 个。
+    const low = at(202)
+    const high = at(208)
     expect(low.scale?.major).toBe(2)
     expect(high.scale?.major).toBe(1)
+  })
+
+  test('上下沿较高的字体使文字框高出 0.65 × (H − 1.2) × 字号，文字仍在框顶', () => {
+    const tall = fakeFace()
+    const face: TextFace = {
+      ...tall,
+      vertical: { ...tall.vertical, winAscent: 1100, winDescent: 300 },
+    }
+    const settings = {
+      faces: new FaceCache({
+        face: (name) =>
+          name === 'Tall' ? { face, family: 'Tall', bold: false, italic: false } : null,
+        fallback: { face: fakeFace(), family: 'F', bold: false, italic: false },
+      }),
+      slideNumber: null,
+    }
+    const run = (latin: string): RunStyle => ({
+      latin,
+      ea: '',
+      cs: '',
+      sym: '',
+      size: 9,
+      bold: false,
+      italic: false,
+      underline: 'none',
+      strike: 'noStrike',
+      baseline: 0,
+      caps: 'none',
+      spacing: 0,
+      kern: 0,
+      fill: { kind: 'none' },
+      highlight: null,
+      outline: null,
+      effects: [],
+      lang: '',
+    })
+    const low = measure(labelBody('A', run('F')), settings)
+    expect(low.frame).toBeCloseTo(low.height, 9)
+    // H = 1.4：12 像素字号多出 0.65 × 0.2 × 12。多行文字也只计一次。
+    const high = measure(labelBody('A', run('Tall')), settings)
+    expect(high.frame - high.height).toBeCloseTo(0.65 * 0.2 * 12, 6)
+    const two = measure(labelBody(['A', 'B'].join(String.fromCharCode(10)), run('Tall')), settings)
+    expect(two.frame - two.height).toBeCloseTo(0.65 * 0.2 * 12, 6)
+  })
+
+  test('竖直轴的区间门槛 1.4f − 0.8 与宿主无关', () => {
+    const chart = resolved(chartXml(plot([9.4, 3, 6, 8])))
+    const slide = { ...chart, host: 'slide' as const }
+    const major = (c: Chart, height: number) =>
+      layoutChart(c, 100, height, SETTINGS).axes.find((a) => !a.horizontal)!.scale?.major
+    for (const c of [slide, { ...chart, host: 'sheet' as const }]) {
+      expect(major(c, 202)).toBe(2)
+      expect(major(c, 208)).toBe(1)
+    }
+  })
+
+  test('不旋转的分类标签顶距轴线 0.58f + 1；标题框底之下 13.74 为外沿，内框上沿再低 4.91', () => {
+    const xml = chartXml(
+      plot([4.3, 2.5, 3.5, 4.5]),
+      '<c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>T</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>',
+    )
+    const l = layoutChart(resolved(xml), 300, 340, SETTINGS)
+    const cat = l.axes.find((a) => a.horizontal)!
+    expect(cat.labels[0]!.y - cat.at).toBeCloseTo(0.58 * 12 + 1, 6)
+    expect(l.plot.y - (l.title!.y + l.title!.height)).toBeCloseTo(13.74 + 4.91, 6)
   })
 
   test('无标题无图例时内框上沿为 14.16 像素，右沿距右边 15.3 像素', () => {
@@ -364,6 +499,86 @@ describe('绘制', () => {
   })
 })
 
+describe('宿主的像素规则', () => {
+  /** 在 x、y 各偏移 0.3 像素的图形框中绘制，返回条形四边与网格线（上沿）的设备坐标。 */
+  const painted = (host: Chart['host']) => {
+    const green =
+      '<c:majorGridlines><c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="00FF00"/></a:solidFill></a:ln></c:spPr></c:majorGridlines>'
+    const xml = chartXml(barChart(ser(0, 'a', [1, 2, 3]))).replace('<c:majorGridlines/>', green)
+    const chart = { ...resolved(xml), host }
+    const ctx = new RecordingContext()
+    const frame = {
+      x: 0.3 * 9525,
+      y: 0.3 * 9525,
+      width: 300 * 9525,
+      height: 200 * 9525,
+      rotation: 0,
+      flipH: false,
+      flipV: false,
+    }
+    const scene = {
+      ctx,
+      res: { image: () => null, createCanvas: canvasFactory().create },
+      scale: 1,
+      canvas: { width: 301, height: 201 },
+      settings: SETTINGS,
+    }
+    paintChart(scene, chart, frame, { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 })
+    const device = (c: {
+      args: readonly unknown[]
+      matrix: { a: number; d: number; e: number; f: number }
+    }) => {
+      const [x, y] = c.args as [number, number]
+      return [c.matrix.a * x + c.matrix.e, c.matrix.d * y + c.matrix.f]
+    }
+    const accent = chart.plot.groups[0]!.series[0]!.box.fill
+    const color = accent.kind === 'solid' ? colorToCss(accent.color) : ''
+    const fills = ctx.calls.filter((c) => c.name === 'fill' && c.fillStyle === color)
+    const bars = fills.map((f) => {
+      const i = ctx.calls.indexOf(f)
+      return ctx.calls
+        .slice(0, i)
+        .filter((c) => c.name === 'moveTo' || c.name === 'lineTo')
+        .slice(-4)
+        .map(device)
+    })
+    // 网格线为绿色的一次描边，记录各段起点。
+    const gridColor = colorToCss({ r: 0, g: 1, b: 0, a: 1 })
+    let ys: number[] = []
+    let lines: number[] = []
+    for (const c of ctx.calls) {
+      if (c.name === 'beginPath') ys = []
+      else if (c.name === 'moveTo') ys.push(device(c)[1]!)
+      else if (c.name === 'stroke' && c.strokeStyle === gridColor)
+        lines = ys.map((y) => y - c.lineWidth / 2)
+    }
+    return { bars, lines }
+  }
+
+  test('手动布局的绘图区左上角在按比例求出的位置向左上各 0.5 像素，宽高不变', () => {
+    const manual =
+      '<c:plotArea><c:layout><c:manualLayout><c:layoutTarget val="inner"/><c:xMode val="edge"/><c:yMode val="edge"/>' +
+      '<c:x val="0.1"/><c:y val="0.2"/><c:w val="0.5"/><c:h val="0.5"/></c:manualLayout></c:layout>'
+    const xml = chartXml(barChart(ser(0, 'a', [1, 2, 3]))).replace(
+      '<c:plotArea><c:layout/>',
+      manual,
+    )
+    const plot = layoutChart(resolved(xml), 300, 200, SETTINGS).plot
+    expect([plot.x, plot.y, plot.w, plot.h]).toEqual([29.5, 39.5, 150, 100])
+  })
+
+  test('WPS 表格与 WPS 文字的条形四边与主要网格线上沿在整像素上，WPS 演示按原位置绘制', () => {
+    const sheet = painted('sheet')
+    expect(sheet.bars.length).toBe(3)
+    for (const v of sheet.bars.flat(2)) expect(v).toBeCloseTo(Math.round(v), 9)
+    expect(sheet.lines.length).toBeGreaterThan(2)
+    for (const y of sheet.lines) expect(y).toBeCloseTo(Math.round(y), 9)
+    const slide = painted('slide')
+    expect(slide.bars.flat(2).some((v) => Math.abs(v - Math.round(v)) > 0.01)).toBe(true)
+    expect(slide.lines.some((y) => Math.abs(y - Math.round(y)) > 0.01)).toBe(true)
+  })
+})
+
 describe('接入', () => {
   const chart = chartXml(
     barChart(ser(0, 'a', [1, 2])),
@@ -403,22 +618,23 @@ describe('接入', () => {
     )
   })
 
+  const X = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  const XDR = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+  const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+  const rels = (items: [string, string, string][]) =>
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${items
+      .map(
+        ([id, type, target]) =>
+          `<Relationship Id="${id}" Type="${REL}/${type}" Target="${target}"/>`,
+      )
+      .join('')}</Relationships>`
+  const anchor = (rid: string) =>
+    `<xdr:absoluteAnchor><xdr:pos x="0" y="0"/><xdr:ext cx="3000000" cy="2000000"/><xdr:graphicFrame macro="">` +
+    `<xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="图表"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>` +
+    `<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="${C}">` +
+    `<c:chart xmlns:c="${C}" r:id="${rid}"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:absoluteAnchor>`
+
   test('xlsx：锚定的图表进入 charts，不支持的图表计入 chart', async () => {
-    const X = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
-    const XDR = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
-    const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
-    const rels = (items: [string, string, string][]) =>
-      `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${items
-        .map(
-          ([id, type, target]) =>
-            `<Relationship Id="${id}" Type="${REL}/${type}" Target="${target}"/>`,
-        )
-        .join('')}</Relationships>`
-    const anchor = (rid: string) =>
-      `<xdr:absoluteAnchor><xdr:pos x="0" y="0"/><xdr:ext cx="3000000" cy="2000000"/><xdr:graphicFrame macro="">` +
-      `<xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="图表"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>` +
-      `<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="${C}">` +
-      `<c:chart xmlns:c="${C}" r:id="${rid}"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:absoluteAnchor>`
     const bytes = buildZip({
       '[Content_Types].xml':
         '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
@@ -452,6 +668,81 @@ describe('接入', () => {
     expect(sheet.charts[0]!.chart.box.line?.width).toBe(9525)
     expect(sheet.unsupported.chart).toBe(1)
     expect(r.value.fontNames).toContain('Calibri')
+  })
+
+  test('xlsx：图表部件引用主题覆盖时颜色方案与主题字体取自主题覆盖', async () => {
+    const bytes = buildZip({
+      '[Content_Types].xml':
+        '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+        '<Default Extension="xml" ContentType="application/xml"/>' +
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/></Types>',
+      '_rels/.rels': rels([['rId1', 'officeDocument', 'xl/workbook.xml']]),
+      'xl/workbook.xml': `<workbook xmlns="${X}" xmlns:r="${REL}"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      'xl/_rels/workbook.xml.rels': rels([
+        ['rId1', 'worksheet', 'worksheets/sheet1.xml'],
+        ['rId2', 'theme', 'theme/theme1.xml'],
+      ]),
+      'xl/theme/theme1.xml': THEME_XML,
+      'xl/worksheets/sheet1.xml': `<worksheet xmlns="${X}" xmlns:r="${REL}"><sheetData/><drawing r:id="rId1"/></worksheet>`,
+      'xl/worksheets/_rels/sheet1.xml.rels': rels([
+        ['rId1', 'drawing', '../drawings/drawing1.xml'],
+      ]),
+      'xl/drawings/drawing1.xml': `<xdr:wsDr xmlns:xdr="${XDR}" xmlns:a="${A}" xmlns:r="${REL}">${anchor('rId1')}${anchor('rId2')}</xdr:wsDr>`,
+      'xl/drawings/_rels/drawing1.xml.rels': rels([
+        ['rId1', 'chart', '../charts/chart1.xml'],
+        ['rId2', 'chart', '../charts/chart2.xml'],
+      ]),
+      'xl/charts/chart1.xml': chart,
+      'xl/charts/_rels/chart1.xml.rels': OVERRIDE_RELS,
+      'xl/theme/themeOverride1.xml': OVERRIDE_XML,
+      'xl/charts/chart2.xml': chart,
+    })
+    const r = await parseXlsx(bytes)
+    if (!r.ok) throw new Error(r.failure.kind)
+    const [own, plain] = r.value.sheets[0]!.charts.map((c) => c.chart)
+    expect(own!.plot.groups[0]!.series[0]!.box.fill).toEqual({ kind: 'solid', color: RED })
+    expect(plain!.plot.groups[0]!.series[0]!.box.fill).not.toEqual({ kind: 'solid', color: RED })
+    expect(own!.plot.axes[0]!.text.run.ea).toBe('楷体')
+    expect(r.value.fontNames).toContain('Times New Roman')
+  })
+
+  const OVERRIDE_XML =
+    `<a:themeOverride xmlns:a="${A}"><a:clrScheme name="o"><a:dk1><a:srgbClr val="C00000"/></a:dk1>` +
+    '<a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:accent1><a:srgbClr val="FF0000"/></a:accent1></a:clrScheme>' +
+    '<a:fontScheme name="o"><a:majorFont><a:latin typeface="Arial Black"/><a:ea typeface="黑体"/></a:majorFont>' +
+    '<a:minorFont><a:latin typeface="Times New Roman"/><a:ea typeface="楷体"/></a:minorFont></a:fontScheme></a:themeOverride>'
+  const OVERRIDE_RELS =
+    '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    `<Relationship Id="rId1" Type="${R}/themeOverride" Target="../theme/themeOverride1.xml"/></Relationships>`
+  const RED = parseHexColor('FF0000')!
+
+  test('pptx：图表部件引用主题覆盖时颜色方案与主题字体取自主题覆盖', async () => {
+    const bytes = buildPptx({
+      slides: [
+        {
+          xml: slideXml(frame(2, 'rIdC1') + frame(3, 'rIdC2')),
+          rels: [
+            ['rIdC1', 'chart', '../charts/chart1.xml'],
+            ['rIdC2', 'chart', '../charts/chart2.xml'],
+          ],
+        },
+      ],
+      media: {
+        'ppt/charts/chart1.xml': chart,
+        'ppt/charts/_rels/chart1.xml.rels': OVERRIDE_RELS,
+        'ppt/theme/themeOverride1.xml': OVERRIDE_XML,
+        'ppt/charts/chart2.xml': chart,
+      },
+    })
+    const r = await parsePptx(bytes)
+    if (!r.ok) throw new Error(r.failure.kind)
+    const charts = r.value.slides[0]!.shapes.map((s) => (s.kind === 'chart' ? s.chart : null))
+    const fill = (c: Chart | null) => c?.plot.groups[0]?.series[0]?.box.fill
+    expect(fill(charts[0]!)).toEqual({ kind: 'solid', color: RED })
+    expect(fill(charts[1]!)).not.toEqual({ kind: 'solid', color: RED })
+    expect(charts[0]!.plot.axes[0]!.text.run.latin).toBe('Times New Roman')
+    expect(charts[0]!.plot.axes[0]!.text.run.ea).toBe('楷体')
   })
 
   test('没有主题时按空主题求值，不失败', () => {
@@ -743,5 +1034,254 @@ describe('三维饼图', () => {
     paintChart(scene, three, frame, { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 })
     // 图表区、三个顶面与可见的侧面各有填充。
     expect(ctx.named('fill').length).toBeGreaterThanOrEqual(6)
+  })
+})
+
+describe('垂直线与趋势线', () => {
+  const trend = (body: string) => `<c:trendline>${body}</c:trendline>`
+  const linear = '<c:trendlineType val="linear"/><c:dispRSqr val="0"/><c:dispEq val="0"/>'
+  const blue =
+    '<c:spPr><a:ln w="25400"><a:solidFill><a:srgbClr val="0070C0"/></a:solidFill></a:ln></c:spPr>'
+  const red =
+    '<c:spPr><a:ln w="12700"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln></c:spPr>'
+  const line = (series: string, drop = '') =>
+    chartXml(
+      `<c:lineChart><c:grouping val="standard"/>${series}${drop}<c:axId val="1"/><c:axId val="2"/></c:lineChart>${AXES}`,
+      '<c:legend><c:legendPos val="b"/></c:legend>',
+    )
+
+  test('垂直线与线性趋势线：未写出格式时为 0.75 磅 tx1；趋势线的图例项排在全部系列之后', () => {
+    const chart = resolved(
+      line(
+        ser(0, '丙', [2, 3, 4], trend(linear)) +
+          ser(1, '甲', [1, 2, 1], trend(`<c:name>趋势</c:name>${blue}${linear}`)),
+        '<c:dropLines/>',
+      ),
+    )
+    const g = chart.plot.groups[0]!
+    expect(g.dropLines?.width).toBe(9525)
+    expect(g.dropLines?.fill).toEqual({ kind: 'solid', color: parseHexColor('000000')! })
+    const [a, b] = g.series
+    expect(a!.trendlines.map((t) => t.name)).toEqual(['线性 (丙)'])
+    expect(a!.trendlines[0]!.line?.width).toBe(9525)
+    expect(b!.trendlines[0]!.name).toBe('趋势')
+    expect(b!.trendlines[0]!.line?.width).toBe(25400)
+    const legend = layoutChart(chart, 400, 300, SETTINGS).legend!
+    expect(legend.entries.map((e) => e.text.layout.paragraphs[0]!.runs.length > 0)).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ])
+    expect(legend.entries.map((e) => (e.trend === null ? e.series.name : e.trend.name))).toEqual([
+      '丙',
+      '甲',
+      '线性 (丙)',
+      '趋势',
+    ])
+  })
+
+  test('线性以外的趋势线、显示公式或 R²、外推，以及散点图与堆积图的趋势线使整个图表不绘制', () => {
+    const none = (series: string) => resolveChart(readChart(line(series), EMPTY_RELS), SCOPE)
+    expect(
+      none(ser(0, 'a', [1, 2], trend('<c:trendlineType val="poly"/><c:order val="2"/>'))),
+    ).toBeNull()
+    expect(
+      none(ser(0, 'a', [1, 2], trend('<c:trendlineType val="linear"/><c:dispEq val="1"/>'))),
+    ).toBeNull()
+    expect(
+      none(ser(0, 'a', [1, 2], trend('<c:trendlineType val="linear"/><c:forward val="1"/>'))),
+    ).toBeNull()
+    const stacked = line(ser(0, 'a', [1, 2], trend(linear))).replace(
+      '<c:grouping val="standard"/>',
+      '<c:grouping val="stacked"/>',
+    )
+    expect(resolveChart(readChart(stacked, EMPTY_RELS), SCOPE)).toBeNull()
+  })
+
+  test('垂直线每个分类一条，覆盖各系列的点与分类轴之间；趋势线按最小二乘拟合，画在系列之后', () => {
+    const chart = resolved(
+      line(
+        ser(0, '丙', [2, 3, 4], trend(blue + linear)) + ser(1, '甲', [-1, 2, 1]),
+        `<c:dropLines>${red}</c:dropLines>`,
+      ),
+    )
+    const ctx = new RecordingContext()
+    const frame = {
+      x: 0,
+      y: 0,
+      width: 400 * 9525,
+      height: 300 * 9525,
+      rotation: 0,
+      flipH: false,
+      flipV: false,
+    }
+    const scene = {
+      ctx,
+      res: { image: () => null, createCanvas: canvasFactory().create },
+      scale: 1,
+      canvas: { width: 400, height: 300 },
+      settings: SETTINGS,
+    }
+    paintChart(scene, chart, frame, { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 })
+    const layout = layoutChart(chart, 400, 300, SETTINGS)
+    const strokes = ctx.calls.filter((c) => c.name === 'stroke')
+    const redStroke = strokes.findIndex(
+      (c) =>
+        String(c.strokeStyle).includes('255, 0, 0') ||
+        String(c.strokeStyle).toLowerCase().includes('ff0000'),
+    )
+    const blueStrokes = strokes.filter(
+      (c) =>
+        String(c.strokeStyle).includes('0, 112, 192') ||
+        String(c.strokeStyle).toLowerCase().includes('0070c0'),
+    )
+    expect(redStroke).toBeGreaterThanOrEqual(0)
+    // 趋势线与其图例符号各一次。
+    expect(blueStrokes.length).toBe(2)
+    // 垂直线的路径：第二个分类的两个点（3 与 2）与分类轴（0）之间为 0–3，第一个分类为 −1–2。
+    const vs = layout.axes.find((a) => a.scale !== null)!.scale!
+    expect(vs.min).toBeLessThan(0)
+    const plot = layout.plot
+    const y = (v: number) => plot.y + plot.h - ((v - vs.min) / (vs.max - vs.min)) * plot.h
+    const path = ctx.calls.filter((c) => c.name === 'moveTo' || c.name === 'lineTo')
+    const vertical: [number, number][] = []
+    path.forEach((c, i) => {
+      const next = path[i + 1]
+      if (c.name !== 'moveTo' || next?.name !== 'lineTo') return
+      const [x0, y0] = c.args as number[]
+      const [x1, y1] = next.args as number[]
+      if (Math.abs(x0! - x1!) < 1e-9) vertical.push([y0!, y1!])
+    })
+    const has = (lo: number, hi: number) =>
+      vertical.some(([a, b]) => Math.abs(a - y(lo)) < 1e-6 && Math.abs(b - y(hi)) < 1e-6)
+    expect(has(2, -1)).toBe(true)
+    expect(has(3, 0)).toBe(true)
+  })
+})
+
+describe('图表文字的字体与字形', () => {
+  test('主题的东亚字体为空时取简体中文的文种字体，与 c:lang 无关', () => {
+    const plain = resolved(chartXml(barChart(ser(0, 'a', [1, 2]))))
+    expect(plain.plot.axes[0]!.text.run.ea).toBe('等线')
+    const english = resolved(chartXml(barChart(ser(0, 'a', [1, 2])), '', '<c:lang val="en-US"/>'))
+    expect(english.plot.axes[0]!.text.run.ea).toBe('等线')
+  })
+
+  test('FaceCache 的 glyphs 只改变绘制：行高与基线同演示文稿，有点阵的字形按点阵画在整数坐标上', () => {
+    const glyph = {
+      width: 2,
+      height: 2,
+      bearingX: 0,
+      bearingY: 2,
+      advance: 2,
+      pixels: new Uint8Array([1, 1, 1, 1]),
+    }
+    const bitmaps: ScreenText = {
+      bitmap: (_f, cp) => (cp === 0x56fd ? { glyph, ascent: 14, descent: 2 } : null),
+    }
+    const source = {
+      face: () => null,
+      fallback: { face: fakeFace(), family: 'F', bold: false, italic: false },
+    }
+    const body = labelBody('国中', {
+      ...resolved(chartXml(barChart(ser(0, 'a', [1])))).plot.axes[0]!.text.run,
+      size: 12,
+    })
+    const plainFaces = new FaceCache(source)
+    const drawn = new FaceCache(source, SINGLE_LINE, null, bitmaps)
+    expect(drawn.screen).toBeNull()
+    const a = layoutBody(body, 200, { faces: plainFaces, slideNumber: null })
+    const b = layoutBody(body, 200, { faces: drawn, slideNumber: null })
+    expect(b.paragraphs[0]!.block.lines[0]!.baseline).toBe(
+      a.paragraphs[0]!.block.lines[0]!.baseline,
+    )
+    expect(b.height).toBe(a.height)
+    const ctx = new RecordingContext()
+    const target = {
+      matrix: { a: 4 / 3, b: 0, c: 0, d: 4 / 3, e: 10.3, f: 20.4 },
+      width: 150,
+      height: 100,
+      scale: 1,
+    }
+    const res = { image: () => null, createCanvas: canvasFactory().create }
+    paintBody(ctx, b, target, drawn, res, { width: 400, height: 400 }, [])
+    expect(ctx.named('fillRect').length).toBe(2)
+    expect(ctx.named('fillText').map((c) => c.args[0])).toEqual(['中'])
+  })
+})
+
+describe('数据标签的自定义文字与手动位置', () => {
+  const LABELS_TXPR =
+    '<c:txPr><a:bodyPr/><a:p><a:pPr><a:defRPr sz="900"/></a:pPr></a:p></c:txPr><c:showVal val="1"/>'
+  const label = (idx: number, inner: string) =>
+    `<c:dLbl><c:idx val="${idx}"/>${inner}<c:showVal val="1"/></c:dLbl>`
+  const rich = (runs: string) => `<c:tx><c:rich><a:bodyPr/><a:p>${runs}</a:p></c:rich></c:tx>`
+  // 坐标轴删除：图中的文字只有数据标签。
+  const withLabels = (points: string) =>
+    chartXml(
+      `<c:barChart><c:barDir val="col"/>${ser(0, 'a', [1, 2, 3], `<c:dLbls>${points}${LABELS_TXPR}</c:dLbls>`)}` +
+        `<c:axId val="1"/><c:axId val="2"/></c:barChart>${AXES.replaceAll('<c:delete val="0"/>', '<c:delete val="1"/>')}`,
+    )
+  const frame = {
+    x: 0,
+    y: 0,
+    width: 300 * 9525,
+    height: 200 * 9525,
+    rotation: 0,
+    flipH: false,
+    flipV: false,
+  }
+  const identity = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
+  /** 各字的设备坐标。 */
+  const drawn = (chart: Chart) => {
+    const ctx = new RecordingContext()
+    const scene = {
+      ctx,
+      res: { image: () => null, createCanvas: canvasFactory().create },
+      scale: 1,
+      canvas: { width: 300, height: 200 },
+      settings: SETTINGS,
+    }
+    paintChart(scene, chart, frame, identity)
+    return ctx.named('fillText').map((c) => {
+      const [text, x, y] = c.args as [string, number, number]
+      const m = c.matrix
+      return { text, x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f }
+    })
+  }
+
+  /** 原始失败形状：生物科技模板第 3 页的两个柱形图带单个标签的自定义文字，整个图表计入不支持而不绘制。 */
+  test('自定义文字取代该点的数值，字段属性覆盖标签的 txPr，其余点仍为数值', () => {
+    const chart = resolved(
+      withLabels(label(1, rich('<a:r><a:rPr sz="1400" b="1"/><a:t>粗红</a:t></a:r>'))),
+    )
+    const s = chart.plot.groups[0]!.series[0]!
+    const own = s.pointLabels.get(1)!.rich!.paragraphs[0]!.runs[0]!
+    expect(own.kind === 'text' ? [own.text, own.style.size, own.style.bold] : null).toEqual([
+      '粗红',
+      14,
+      true,
+    ])
+    expect(s.labels?.rich).toBeNull()
+    const texts = drawn(chart).map((g) => g.text)
+    expect(texts).toContain('粗')
+    expect(texts).toContain('3')
+    expect(texts).not.toContain('2')
+  })
+
+  test('自定义文字含字段时整个图表不绘制', () => {
+    const field = rich('<a:fld id="{1}" type="VALUE"><a:rPr/><a:t>[值]</a:t></a:fld>')
+    expect(resolveChart(readChart(withLabels(label(0, field)), EMPTY_RELS), SCOPE)).toBeNull()
+  })
+
+  /** 原始失败形状：`c:dLbl/c:layout` 不读取，移动过的标签画在自动位置。 */
+  test('手动位置按图表区宽高的比例偏移自动位置', () => {
+    const layout =
+      '<c:layout><c:manualLayout><c:x val="0.1"/><c:y val="-0.1"/></c:manualLayout></c:layout>'
+    const plain = drawn(resolved(withLabels(''))).find((g) => g.text === '1')!
+    const moved = drawn(resolved(withLabels(label(0, layout)))).find((g) => g.text === '1')!
+    expect(moved.x - plain.x).toBeCloseTo(30, 6)
+    expect(moved.y - plain.y).toBeCloseTo(-20, 6)
   })
 })

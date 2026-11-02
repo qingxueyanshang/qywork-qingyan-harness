@@ -9,13 +9,17 @@
  *   不使用 `otherStyle`。
  * - 填充、线条、效果与组合坐标的求值规则见 `../../drawingml/shape/resolve.ts`；线条的各层 `ln` 为形状自身与继承来源。
  * - 组合填充（`grpFill`）取最近一级组合的填充；组合未指定填充时沿用上一级组合的填充，顶层为无填充。
- * - 图表：引用的图表部件按幻灯片的主题与颜色映射求值；部件缺失或含不支持的内容时计入 `chart`。
+ * - 图表：引用的图表部件按幻灯片的主题与颜色映射求值，有主题覆盖时颜色方案与主题字体取自主题覆盖；部件缺失或含不支持的内容时计入 `chart`。
+ * - SmartArt：按幻灯片的主题与颜色映射求值（见 `../../drawingml/diagram/resolve.ts`）；数据部件缺失或含未实现的构造时
+ *   计入 `smartArt`。
+ * - 墨迹：见 `./ink.ts`；部件缺失或没有笔画时计入 `ink`。
  */
 
 import { resolveChart } from '../../drawingml/chart/resolve.ts'
+import { resolveDiagram } from '../../drawingml/diagram/resolve.ts'
 import type { ShapeFill } from '../../drawingml/fill.ts'
 import type { Geometry } from '../../drawingml/geometry/model.ts'
-import type { ShapeProps, StyleRefs } from '../../drawingml/shape/read.ts'
+import { EMPTY_PROPS, type ShapeProps, type StyleRefs } from '../../drawingml/shape/read.ts'
 import {
   childTransform,
   countEffects,
@@ -28,14 +32,17 @@ import {
   resolveShapeEffects,
   resolveShapeFill,
   resolveShapeLine,
+  shapeThreeD,
   type Transform,
   unpaintedVertical,
 } from '../../drawingml/shape/resolve.ts'
 import type { TextBody } from '../../drawingml/text/model.ts'
 import type { RawTextBody } from '../../drawingml/text/read.ts'
 import { resolveTextBody } from '../../drawingml/text/resolve.ts'
+import { resolveThreeD, visibleThreeD } from '../../drawingml/three/camera.ts'
 import type { Placeholder, Shape } from '../model.ts'
 import type { RawShape } from '../parse/shape.ts'
+import { resolveInk } from './ink.ts'
 import { matchLayoutPlaceholder, matchMasterPlaceholder, textStyleKind } from './placeholder.ts'
 import type { SlideScope } from './scope.ts'
 import { resolveTable } from './table.ts'
@@ -44,8 +51,8 @@ const NONE: ShapeFill = { kind: 'none' }
 const RECT: Geometry = { kind: 'preset', name: 'rect', adjust: [] }
 
 function propsOf(s: RawShape): ShapeProps {
-  if (s.kind === 'table' || s.kind === 'graphic') {
-    return { xfrm: s.xfrm, geometry: null, fill: null, line: null, effects: null }
+  if (s.kind === 'table' || s.kind === 'graphic' || s.kind === 'ink') {
+    return { ...EMPTY_PROPS, xfrm: s.xfrm }
   }
   return s.props
 }
@@ -68,7 +75,7 @@ function textOf(s: RawShape | null): RawTextBody | null {
 
 /** 部件不在包中时不登记：没有可绘制的内容。 */
 function countPart(part: string | null, scope: SlideScope): void {
-  countImage(part === null ? null : scope.imageType(part), scope.found)
+  countImage(part === null ? null : scope.imageDrawable(part), scope.found)
 }
 
 function countFill(fill: ShapeFill, scope: SlideScope): void {
@@ -107,6 +114,8 @@ function countUnpainted(shape: Shape, scope: SlideScope): void {
       return
     case 'graphic':
     case 'chart':
+    case 'diagram':
+    case 'ink':
       return
   }
 }
@@ -162,6 +171,7 @@ export class ShapeResolver {
     const fillSpec = first(chain, (p) => p.fill)
     const effectSpec = first(chain, (p) => p.effects)
     const lines = chain.map((s) => propsOf(s).line)
+    const three = shapeThreeD(chain.map(propsOf), style, scope)
 
     switch (raw.kind) {
       case 'shape': {
@@ -173,6 +183,7 @@ export class ShapeResolver {
           fill: resolveShapeFill(fillSpec, style, group, scope),
           line: resolveShapeLine(lines, style, scope),
           effects: resolveShapeEffects(effectSpec, style, scope),
+          threeD: resolveThreeD(three.scene, three.shape, scope.found),
           textBox: raw.textBox,
           text,
         }
@@ -186,8 +197,10 @@ export class ShapeResolver {
           fill: resolveShapeFill(fillSpec, style, group, scope),
           line: resolveShapeLine(lines, style, scope),
           effects: resolveShapeEffects(effectSpec, style, scope),
+          threeD: resolveThreeD(three.scene, three.shape, scope.found),
         }
       case 'connector':
+        if (visibleThreeD(three.scene, three.shape)) scope.found.push('effect3d')
         return {
           kind: 'connector',
           ...common,
@@ -198,6 +211,7 @@ export class ShapeResolver {
           end: raw.end,
         }
       case 'group': {
+        if (visibleThreeD(three.scene, three.shape)) scope.found.push('effect3d')
         const fill =
           raw.props.fill === null ? group : resolveShapeFill(raw.props.fill, null, group, scope)
         const inner = childTransform(raw.props.xfrm, t)
@@ -222,19 +236,38 @@ export class ShapeResolver {
         }
       }
       case 'graphic': {
-        const rawChart = raw.chart === null ? undefined : scope.charts.get(raw.chart)
+        if (raw.diagram !== null) {
+          const rawDiagram = scope.diagrams.get(raw.diagram.data)
+          const diagram =
+            rawDiagram === undefined
+              ? null
+              : resolveDiagram(rawDiagram, { theme: scope.theme, colors: scope.colors })
+          if (diagram !== null) return { kind: 'diagram', ...common, diagram }
+          scope.found.push('smartArt')
+          return { kind: 'graphic', ...common, content: raw.content }
+        }
+        const part = raw.chart === null ? undefined : scope.charts.get(raw.chart)
         const chart =
-          rawChart === undefined
+          part === undefined
             ? null
-            : resolveChart(rawChart, {
-                theme: scope.theme,
-                colors: scope.colors,
+            : resolveChart(part.raw, {
+                theme: part.theme ?? scope.theme,
+                colors:
+                  part.theme === null
+                    ? scope.colors
+                    : { ...scope.colors, scheme: part.theme.colors },
                 host: 'slide',
                 cells: null,
               })
         if (chart !== null) return { kind: 'chart', ...common, chart }
         if (raw.chart !== null) scope.found.push('chart')
         return { kind: 'graphic', ...common, content: raw.content }
+      }
+      case 'ink': {
+        const raws = raw.part === null ? undefined : scope.inks.get(raw.part)
+        const strokes = raws === undefined ? [] : resolveInk(raws, common.frame)
+        if (strokes.length === 0) scope.found.push('ink')
+        return { kind: 'ink', ...common, strokes }
       }
     }
   }

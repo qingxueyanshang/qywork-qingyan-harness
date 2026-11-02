@@ -1,6 +1,6 @@
 /**
  * 主机字体接口（`api/fonts.ts`）：字体目录表、按字体名解析、按标识取字节、TTC 拆分结果、
- * 参数校验、未找到、缓存头、字体安装后下一次请求可见，以及在派发器中的注册。
+ * 参数校验、未找到、缓存头、字体安装后下一次请求可见、字体平滑设置，以及在派发器中的注册。
  *
  * 系统字体取自本机 Windows 字体目录；用户字体目录指向临时目录，用例之间不受本机已安装的用户字体影响。
  * 环境变量在任何请求之前设置：索引按首次请求时的目录清单建立。
@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFaces, readFamilyNames, tableBytes } from '@qywork/ooxml/font'
 import { Store, upsertWorkspace } from '@qywork/store'
-import { fontRoots, handleFontsApi } from './fonts.ts'
+import { fontRoots, fontSmoothing, handleFontsApi, readSmoothingParameters } from './fonts.ts'
 import { type ApiDeps, handleApi } from './index.ts'
 
 describe('字体目录', () => {
@@ -198,4 +198,32 @@ describe('参数校验', () => {
     const res = await handleApi(url, new Request(url.href), { store } as unknown as ApiDeps)
     expect(res?.status).toBe(422)
   })
+})
+
+describe('字体平滑', () => {
+  test('平滑开启且方式为 ClearType 时下发对比度；标准方式、关闭与没有 ClearType 的平台为 null', () => {
+    expect(fontSmoothing({ enabled: true, type: 2, contrast: 1400 })).toEqual({
+      clearType: { contrast: 1400 },
+    })
+    expect(fontSmoothing({ enabled: true, type: 1, contrast: 1400 })).toEqual({ clearType: null })
+    expect(fontSmoothing({ enabled: false, type: 2, contrast: 1400 })).toEqual({ clearType: null })
+    expect(fontSmoothing(null)).toEqual({ clearType: null })
+    expect(readSmoothingParameters('darwin')).toBe(null)
+    expect(readSmoothingParameters('linux')).toBe(null)
+  })
+
+  test.skipIf(process.platform !== 'win32')(
+    'Windows 上按系统的当前设置下发，不需要字体名',
+    async () => {
+      const res = await get('/api/fonts/smoothing')
+      expect(res?.status).toBe(200)
+      const body = (await res!.json()) as { clearType: { contrast: number } | null }
+      expect(body).toEqual(fontSmoothing(readSmoothingParameters()))
+      if (body.clearType) {
+        expect(Number.isInteger(body.clearType.contrast)).toBe(true)
+        expect(body.clearType.contrast).toBeGreaterThanOrEqual(1000)
+        expect(body.clearType.contrast).toBeLessThanOrEqual(2200)
+      }
+    },
+  )
 })

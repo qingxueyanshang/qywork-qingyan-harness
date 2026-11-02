@@ -29,6 +29,8 @@ import { lineWidth, paintLine } from '../paint/line.ts'
 import { deviceBounds, type OuterShadow, paintWithShadows, pathBounds } from '../paint/shadow.ts'
 import { layoutBody, paintBody, type TextSettings } from '../text/body.ts'
 import type { TextBody } from '../text/model.ts'
+import type { ThreeD } from '../three/model.ts'
+import { paintThreeD } from '../three/paint.ts'
 import type { Frame } from './model.ts'
 
 export const EMU_PER_PX = 9525
@@ -176,6 +178,36 @@ export function paintAutoShape(scene: ShapeScene, shape: PaintableShape, parent:
     const textShadows = hasGeometryPaint(shape) ? [] : shadows
     paintShapeText(scene, scene.settings, shape.text, outline, placed, textShadows)
   }
+}
+
+/**
+ * 带三维效果的自选图形（见 `../three/paint.ts`）：填充、线条与文字按平面画到图层后投影并着色，外部阴影取投影后的轮廓
+ * （形状没有填充与线条时阴影作用于文字，在投影之前画出）。
+ */
+export function paintAutoShapeThreeD(
+  scene: ShapeScene,
+  shape: PaintableShape,
+  three: ThreeD,
+  parent: Matrix,
+): void {
+  const placed = placeFrame(shape.frame, parent)
+  const outline = outlineOf(shape)
+  const shadows = shadowsOf(shape.effects)
+  const geometry = hasGeometryPaint(shape)
+  paintThreeD(
+    scene,
+    three,
+    placed,
+    strokeMargin(shape, placed),
+    geometry ? shadows : [],
+    (c, offset, size) => {
+      const inner: ShapeScene = { ...scene, ctx: c, canvas: size }
+      const p = { ...placed, matrix: multiply(offset, placed.matrix) }
+      paintGeometry(inner, c, shape.fill, shape.line, outline, p)
+      if (shape.text !== null && scene.settings !== null)
+        paintShapeText(inner, scene.settings, shape.text, outline, p, geometry ? [] : shadows)
+    },
+  )
 }
 
 /** 文本框的文字：边距、旋转（`bodyPr/@rot` 与 `vert`、`vert270`）、锚定与 `anchorCtr`。 */

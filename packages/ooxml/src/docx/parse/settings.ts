@@ -4,8 +4,10 @@
  * - `defaultTabStop` 缺失时为 500 缇：WPS 打开没有该项的文档时默认制表位间距为 25 磅（实测）。
  * - `themeFontLang` 缺失的语言按 `zh-CN` 处理：WPS 对没有该项的文档用主题的 `Hans` 字体作为东亚主题字体（实测）。
  * - 自定义禁则字符（`noLineBreaksBefore`、`noLineBreaksAfter`）不区分 `w:lang`，出现即替换缺省表。
+ * - 公式设置（`m:mathPr`）缺失时取 `MATH_SETTINGS_DEFAULTS`。
  */
 
+import { MATH_SETTINGS_DEFAULTS, type MathSettings, readMathSettings } from '../../math/index.ts'
 import { eachChild, onOff, type Scanner, skip, wAttr, wNum } from './xml.ts'
 
 const DEFAULT_TAB_STOP = 500
@@ -26,6 +28,7 @@ export interface RawSettings {
   readonly bidiLanguage: string
   readonly adjustLineHeightInTable: boolean
   readonly displayBackgroundShape: boolean
+  readonly math: MathSettings
 }
 
 export const DEFAULT_SETTINGS: RawSettings = {
@@ -41,6 +44,7 @@ export const DEFAULT_SETTINGS: RawSettings = {
   bidiLanguage: '',
   adjustLineHeightInTable: false,
   displayBackgroundShape: false,
+  math: MATH_SETTINGS_DEFAULTS,
 }
 
 /** 根元素为 `settings` 的部件。 */
@@ -57,6 +61,7 @@ export function readSettings(x: Scanner): RawSettings {
   let bidiLanguage = ''
   let adjustLineHeightInTable = false
   let displayBackgroundShape = false
+  let math = MATH_SETTINGS_DEFAULTS
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t !== 'start' || x.depth !== 2) continue
     switch (x.local) {
@@ -68,6 +73,9 @@ export function readSettings(x: Scanner): RawSettings {
         break
       case 'displayBackgroundShape':
         displayBackgroundShape = onOff(x)
+        break
+      case 'mathPr':
+        math = readMathSettings(x)
         break
       case 'characterSpacingControl':
         compressPunctuation = (wAttr(x, 'val') ?? '').startsWith('compressPunctuation')
@@ -107,6 +115,7 @@ export function readSettings(x: Scanner): RawSettings {
     bidiLanguage,
     adjustLineHeightInTable,
     displayBackgroundShape,
+    math,
   }
 }
 

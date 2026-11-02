@@ -61,6 +61,13 @@ export interface DataLabels {
   readonly separator: string
   readonly text: TextStyle
   readonly box: ChartBox
+  /** 单个标签的自定义文字（`c:dLbl/c:tx/c:rich`，样式已解决）；`null` 时按显示项生成文字。 */
+  readonly rich: TextBody | null
+  /**
+   * 单个标签的手动位置：相对自动位置的偏移，`x`、`y` 为图表区宽、高的比例（WPS 演示实测柱形、折线与堆积柱形）；
+   * `null` 为自动位置。
+   */
+  readonly offset: { readonly x: number; readonly y: number } | null
 }
 
 /** 数据点的单独格式（`c:dPt`）与单独标签（`c:dLbl`）。 */
@@ -70,6 +77,16 @@ export interface DataPoint {
   readonly marker: Marker | null
   /** 饼图扇区的分离比例（百分比的小数）。 */
   readonly explosion: number
+}
+
+/**
+ * 线性趋势线：按最小二乘拟合系列各点（横坐标取点在分类轴上的位置），自第一个分类画到最后一个分类，绘制在系列之上；
+ * 图例项排在全部系列之后（WPS 实测）。
+ */
+export interface Trendline {
+  /** 图例项文字：`c:name`，未写出时为「线性 (系列名)」。 */
+  readonly name: string
+  readonly line: Line | null
 }
 
 export interface Series {
@@ -95,6 +112,7 @@ export interface Series {
   readonly labels: DataLabels | null
   /** 饼图扇区的分离比例。 */
   readonly explosion: number
+  readonly trendlines: readonly Trendline[]
 }
 
 export type PlotType = 'bar' | 'line' | 'scatter' | 'pie' | 'doughnut'
@@ -118,6 +136,11 @@ export interface PlotGroup {
   readonly lines: boolean
   /** 三维饼图（`pie3DChart`）：`Chart.view3D` 为 `null` 时按平面饼图绘制（WPS 实测）。 */
   readonly threeD: boolean
+  /**
+   * 折线图的垂直线（`dropLines`）；没有时为 `null`。每个分类一条，覆盖该分类各系列的点与分类轴所在位置之间的范围，
+   * 绘制在系列之下（WPS 实测）。
+   */
+  readonly dropLines: Line | null
 }
 
 /** 日期轴的设置：单位为 `days`、`months`、`years`，`null` 为自动。 */
@@ -197,6 +220,8 @@ export interface Chart {
   /** 日期序列号按 1904 日期系统换算（数字格式中的日期）。 */
   readonly date1904: boolean
   readonly view3D: View3D | null
-  /** 图表所在的应用：WPS 表格（`sheet`）与 WPS 演示（`slide`）的个别规则不同（图表区缺省边框、竖直数值轴的区间数）。 */
+  /**
+   * 图表所在的应用：WPS 表格与 WPS 文字（`sheet`）、WPS 演示（`slide`）的个别规则不同（图表区缺省边框、竖直数值轴的区间数）。
+   */
   readonly host: 'sheet' | 'slide'
 }

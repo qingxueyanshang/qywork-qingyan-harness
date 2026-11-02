@@ -1,11 +1,12 @@
 /**
- * 内嵌点阵字形：`EBLC`（位置）与 `EBDT`（图像）。
+ * 内嵌点阵字形：`EBLC`（位置）与 `EBDT`（图像），以及不平滑模式下没有点阵的字形（按 TrueType 指令提示后光栅化）。
  *
  * - 读取索引子表格式 1–5；图像格式 1、2、5、7，位深 1。含其他图像格式、其他位深或没有横排度量的 strike
  *   不列入 `sizes`，该字号按轮廓字形处理。
- * - 只在调用 `glyph` 时解码单个字形，读取时只建立 strike 与索引子表的目录。
+ * - 只在调用 `glyph` 时解码单个字形，读取时只建立 strike 与索引子表的目录；提示所需的表在第一次需要时读取。
  */
 
+import { type GlyphHinting, readGlyphHinting } from './hinting/index.ts'
 import { FontFormatError, type SfntFace, tableBytes } from './sfnt.ts'
 import { codePageRange1 } from './vertical.ts'
 
@@ -39,14 +40,20 @@ export interface EmbeddedBitmaps {
   readonly sizes: readonly number[]
   /**
    * Windows 在 ClearType 下以点阵模式绘制该字号：字体代码页含日文、简体中文、韩文（Wansung）或繁体中文，
-   * 有该 ppem 的 strike，且不是斜体。`gasp` 表与文字颜色不影响这一判定。
-   * - 点阵模式下 strike 中有的字形取点阵，只用前景色一种颜色；没有的字形按轮廓绘制且不做平滑。
+   * 且有该 ppem 的 strike。`gasp` 表、文字颜色与粗体、斜体不影响这一判定。WPS 表格与 WPS 演示实测
+   * （9 种字体 6–16 磅，常规、粗体、斜体）：只有宋体、新宋体 9–13 磅（ppem 12–17）及以宋体回退绘制的汉字不平滑。
+   * - 点阵模式下该字体的全部字形只用前景色一种颜色，不做平滑，单色字形见 `glyph`。
    * - 点阵超出基线以上 `ascent`、以下 `descent`（见 `readPixelVerticalMetrics`）的行不绘制。
-   * - 粗体取点阵后加粗，见 `emboldenBitmap`；斜体按轮廓字形倾斜绘制，同样不做平滑。
+   * - 粗体取单色字形后加粗，见 `emboldenBitmap`。
    */
-  screenMode(ppem: number, italic: boolean): boolean
-  /** 该 ppem 没有可读取的 strike，或 strike 中没有这个字形时返回 `null`。 */
-  glyph(ppem: number, glyphId: number): BitmapGlyph | null
+  screenMode(ppem: number): boolean
+  /**
+   * 该 ppem 的单色字形。`oblique` 为假时 strike 中有的取点阵，没有的在点阵模式下取按 TrueType 指令提示后光栅化的轮廓；
+   * `oblique` 为真（合成斜体）时一律取提示后倾斜的轮廓，不取点阵。没有轮廓的字形为 0×0。
+   * 该 ppem 没有 strike、字形编号为 0、不处于点阵模式而 strike 中没有该字形（或要求倾斜）、字体没有 TrueType 轮廓时
+   * 返回 `null`。
+   */
+  glyph(ppem: number, glyphId: number, oblique: boolean): BitmapGlyph | null
 }
 
 interface SubTable {
@@ -249,16 +256,23 @@ export function readEmbeddedBitmaps(bytes: Uint8Array, face: SfntFace): Embedded
   const ev = view(eblc)
   const dv = view(ebdt)
   const byPpem = new Map(strikes.map((s) => [s.ppem, s]))
+  let hinting: GlyphHinting | null | undefined
+  const hinted = (ppem: number, glyphId: number, oblique: boolean): BitmapGlyph | null => {
+    if (!cjk) return null
+    if (hinting === undefined) hinting = readGlyphHinting(bytes, face)
+    return hinting === null ? null : hinting.glyph(glyphId, ppem, oblique)
+  }
 
   return {
     sizes: strikes.map((s) => s.ppem),
-    screenMode: (ppem, italic) => cjk && !italic && byPpem.has(ppem),
-    glyph(ppem, glyphId) {
+    screenMode: (ppem) => cjk && byPpem.has(ppem),
+    glyph(ppem, glyphId, oblique) {
       const strike = byPpem.get(ppem)
-      const s = strike?.subTables.find((t) => glyphId >= t.first && glyphId <= t.last)
-      if (!s) return null
-      const loc = locate(ev, eblc, s, glyphId)
-      if (!loc) return null
+      if (strike === undefined || glyphId === 0) return null
+      if (oblique) return hinted(ppem, glyphId, true)
+      const s = strike.subTables.find((t) => glyphId >= t.first && glyphId <= t.last)
+      const loc = s ? locate(ev, eblc, s, glyphId) : null
+      if (!s || !loc) return hinted(ppem, glyphId, false)
       if (loc.end > ebdt.byteLength) throw new FontFormatError('EBDT 字形超出表范围')
       let metrics: Metrics
       let image: number

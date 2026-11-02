@@ -5,7 +5,7 @@
  * - 主机没有的字体与空字体名改用 `fallback`，西文字体例外（`MISSING_LATIN`）；请求粗体而返回的不是粗体字形时
  *   按仿粗体排版（`emboldened`），绘制时由浏览器合成粗体。
  * - 行高与字体无关：WPS 演示的单倍行高为字号的 `SINGLE_LINE` 倍（其他宿主由 `FaceCache` 的参数给出），
- *   字体的纵向中心位于行顶以下 `CENTER` 倍字号（屏幕显示时见 `SCREEN_CENTER_EAST_ASIAN`）。
+ *   字体的纵向中心位于行顶以下 `CENTER_OTHER`、`CENTER_EAST_ASIAN` 或 `slideCenterEastAsian` 倍字号。
  *   排版前把每个字体的纵向度量换算为满足这两点的上下沿（`lineFace`），排版模块的行高与基线即按此计算；
  *   中日韩字体不再乘 1.3，也不加外部行距。
  * - `collectTextFonts` 收集文本框用到的字体名；调用方据此并加上 `MISSING_LATIN` 预先取得字体。
@@ -31,32 +31,49 @@ export interface SlideFontSource {
   readonly fallback: SlideFont
 }
 
+/** 字体 `usWinAscent`、`usWinDescent` 与 `unitsPerEm` 之比，以及该字体的纵向中心系数（见 `lineFace`）。 */
+export interface FaceLine {
+  readonly ascent: number
+  readonly descent: number
+  readonly center: number
+}
+
 /** 排版与绘制共用的字形：`face` 已按仿粗体换算；`bold`、`italic` 为请求的字形，绘制时写入 `ctx.font`。 */
 export interface PaintFace {
   readonly face: TextFace
   readonly family: string
   readonly bold: boolean
   readonly italic: boolean
+  /** 换算前的纵向度量：多种字体同行时的基线按此求出（`body.ts` 的 `singleLine`）。 */
+  readonly line: FaceLine
 }
 
 /**
- * 单倍行高与字号之比，与字体无关。实测：WPS 保存的 `spAutoFit` 文本框，宋体、黑体、微软雅黑、优设标题黑、
- * Noto Sans SC 16–36 磅单倍行距的文字区域高度均为行数 × 字号 × 1.210–1.212；120% 行距为 1.2 × 1.21 × 字号；
- * 一行内字号或字体不同时取最大字号，不因字体组合增高。
+ * 单倍行高与字号之比，与字体无关。实测：WPS 演示导出图中等线、等线 Light、黑体、宋体、微软雅黑、Arial 10–32 磅
+ * 单倍、150%、80% 与 30 磅固定行距的逐行位置。不要按 `spAutoFit` 文本框保存的高度（约 1.21 倍字号）取值：
+ * 按 1.21 计算时，16 磅以上的第 4 行低 1 像素。一行内字号或字体不同时取最大字号。
  */
-export const SINGLE_LINE = 1.21
+export const SINGLE_LINE = 1.2
 /**
- * 字体纵向中心（`usWinAscent` 与 `usWinDescent` 的中点）距行顶的距离与字号之比。实测：对照 WPS 导出图中
- * 13 种字体 16–166 磅单行文字的位置，各字体为 0.567–0.596，中位数 0.578。
+ * 字体纵向中心（`usWinAscent` 与 `usWinDescent` 的中点）距行顶的距离与字号之比，按 `eastAsianCodePage` 分两组。
+ * 经验拟合（机制未查明）：WPS 演示导出图与 WPS 表格形状文字的首行位置，Arial、Calibri、Times New Roman、Segoe UI、
+ * Cambria、Verdana、Tahoma、Georgia 9–32 磅取 0.6012；东亚字体取 0.5825（屏幕显示时宋体、微软雅黑、等线 9–28 磅），
+ * 演示文稿中上下沿较高的东亚字体见 `slideCenterEastAsian`。不要合为一个值：两组相差约 0.019 倍字号，
+ * 11 磅以上西文字体的首行高 1 像素。
  */
-export const CENTER = 0.578
+const CENTER_EAST_ASIAN = 0.5825
+const CENTER_OTHER = 0.6012
+
 /**
- * 屏幕显示（`FaceCache.screen` 不为 `null`）时代替 `CENTER` 的比例，按 `eastAsianCodePage` 分两组。经验拟合（机制未查明）：
- * 对照 WPS 表格形状文字的首行位置，宋体、微软雅黑、等线 9–28 磅取 0.5825，Arial、Calibri、Times New Roman 9–28 磅取 0.6012，
- * 各字体的最佳值与所在组相差不超过 0.002。不要合为一个值：两组相差约 0.019 倍字号，11 磅以上西文字体的首行高 1 像素。
+ * 演示文稿中代码页含中日韩的字体的纵向中心系数：0.5825 − 0.03 × max(0, H − 1.1)，H 为 `(usWinAscent + usWinDescent) /
+ * unitsPerEm`。实测（WPS 演示导出图，10–32 磅单倍、150%、80% 与固定行距的逐行位置）：宋体、黑体、仿宋、楷体、MS Gothic
+ * （H 为 1.00）、等线（1.04）、Yu Gothic（1.29）、微软雅黑（1.32）、Microsoft JhengHei 与 Malgun Gothic（1.33）、
+ * Noto Sans SC（1.45）的 668 行中 667 行一致；取常数 0.5825 时 H 大于 1.2 的字体有 30 行低 1 像素。
+ * 1.04 与 1.29 之间没有实测字体，转折点 1.1 取在其间。
  */
-const SCREEN_CENTER_EAST_ASIAN = 0.5825
-const SCREEN_CENTER_OTHER = 0.6012
+function slideCenterEastAsian(v: TextFace['vertical']): number {
+  return CENTER_EAST_ASIAN - 0.03 * Math.max(0, (v.winAscent + v.winDescent) / v.unitsPerEm - 1.1)
+}
 
 /**
  * 主机没有西文字体时，西文字符改用的字体；主机也没有该字体时用 `fallback`。实测：WPS 演示导出图中，11 个不存在的
@@ -69,7 +86,7 @@ const SCREEN_CENTER_OTHER = 0.6012
 export const MISSING_LATIN = 'Segoe Print'
 
 /** 纵向度量换算为上沿、下沿之和为 `single` 倍字号、纵向中心距行顶 `center` 倍字号的度量。 */
-export function lineFace(face: TextFace, single = SINGLE_LINE, center = CENTER): TextFace {
+export function lineFace(face: TextFace, single: number, center: number): TextFace {
   const v = face.vertical
   const u = v.unitsPerEm
   const ascent = u * center + (v.winAscent - v.winDescent) / 2
@@ -88,7 +105,7 @@ export function lineFace(face: TextFace, single = SINGLE_LINE, center = CENTER):
   }
 }
 
-/** 内嵌点阵字形与该字号的上下沿（GDI 的 `tmAscent`、`tmDescent`，超出的行不绘制）。 */
+/** 单色字形与该字号的上下沿（GDI 的 `tmAscent`、`tmDescent`，超出的行不绘制）。 */
 export interface ScreenGlyph {
   readonly glyph: BitmapGlyph
   readonly ascent: number
@@ -97,44 +114,62 @@ export interface ScreenGlyph {
 
 /**
  * 按屏幕显示（GDI）排版与绘制的规则，WPS 表格的形状文字使用，演示文稿不使用（`FaceCache` 缺省为 `null`）。
- * 行高与基线见 `body.ts` 的 `screenBlock`；绘制时基线取整到设备像素，`bitmap` 返回点阵的字形按点阵绘制。
+ * 行高与基线见 `body.ts` 的 `hostBlock`；绘制时基线取整到设备像素，`bitmap` 返回单色字形的字按该字形逐像素绘制。
+ * 只按屏幕显示绘制而不改变排版时作为 `FaceCache` 的 `glyphs` 传入（图表文字与演示文稿的全部文字）。
  */
 export interface ScreenText {
-  /** 字形在 `ppem`（设备像素字号）下按点阵绘制时返回点阵，否则为 `null`；合成粗体的点阵加粗由实现方完成。 */
+  /**
+   * 字在 `ppem`（设备像素字号）下不平滑绘制时返回单色字形（点阵、提示后的轮廓或合成斜体的倾斜轮廓，见
+   * `EmbeddedBitmaps.glyph`），否则为 `null`；合成粗体的加粗由实现方完成。
+   */
   bitmap(face: PaintFace, codePoint: number, ppem: number): ScreenGlyph | null
 }
 
 export class FaceCache {
-  private readonly lines = new Map<TextFace, TextFace>()
+  private readonly lines = new Map<TextFace, { readonly face: TextFace; readonly line: FaceLine }>()
   private readonly faces = new Map<string, PaintFace>()
   private readonly byFace = new Map<TextFace, PaintFace>()
   readonly fallback: PaintFace
 
-  /** `single` 为单倍行高与字号之比，缺省为 `SINGLE_LINE`（演示文稿）；`screen` 见 `ScreenText`。 */
+  /**
+   * `single` 为单倍行高与字号之比，缺省为 `SINGLE_LINE`（演示文稿）；`screen` 见 `ScreenText`，同时决定排版与绘制。
+   * `glyphs` 只决定绘制（基线取整与点阵），缺省与 `screen` 相同；`screen` 为 `null` 而 `glyphs` 不为 `null` 时
+   * 行高、基线与纵向中心仍按演示文稿的规则。
+   */
   constructor(
     private readonly source: SlideFontSource,
     private readonly single = SINGLE_LINE,
     readonly screen: ScreenText | null = null,
+    readonly glyphs: ScreenText | null = screen,
   ) {
+    const fallback = this.line(source.fallback.face)
     this.fallback = this.register({
-      face: this.line(source.fallback.face),
+      face: fallback.face,
       family: source.fallback.family,
       bold: false,
       italic: false,
+      line: fallback.line,
     })
   }
 
   /** 同一字体文件只换算一次：排版模块按对象判定字体是否相同。 */
-  private line(face: TextFace): TextFace {
+  private line(face: TextFace): { readonly face: TextFace; readonly line: FaceLine } {
     let out = this.lines.get(face)
     if (out === undefined) {
-      const center =
-        this.screen === null
-          ? CENTER
-          : face.vertical.eastAsianCodePage
-            ? SCREEN_CENTER_EAST_ASIAN
-            : SCREEN_CENTER_OTHER
-      out = lineFace(face, this.single, center)
+      const v = face.vertical
+      const center = !v.eastAsianCodePage
+        ? CENTER_OTHER
+        : this.screen === null
+          ? slideCenterEastAsian(v)
+          : CENTER_EAST_ASIAN
+      out = {
+        face: lineFace(face, this.single, center),
+        line: {
+          ascent: v.winAscent / v.unitsPerEm,
+          descent: v.winDescent / v.unitsPerEm,
+          center,
+        },
+      }
       this.lines.set(face, out)
     }
     return out
@@ -151,11 +186,13 @@ export class FaceCache {
     if (f === undefined) {
       const found = name === '' ? null : this.source.face(name, bold, italic)
       const base = found ?? this.source.fallback
+      const converted = this.line(base.face)
       f = this.register({
-        face: bold && !base.bold ? emboldened(this.line(base.face)) : this.line(base.face),
+        face: bold && !base.bold ? emboldened(converted.face) : converted.face,
         family: base.family,
         bold,
         italic,
+        line: converted.line,
       })
       this.faces.set(key, f)
     }

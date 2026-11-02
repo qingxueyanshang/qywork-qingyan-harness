@@ -8,12 +8,23 @@
  * - `AlternateContent` 选择 WordprocessingML 2010 扩展、绘图形状、组合与画布的分支，使其中的对象按 DrawingML 计数。
  * - 各节引用的页眉页脚部件按引用它的第一节的版面解析；图片（嵌入式图片、浮动对象、页面背景）按所在部件的关系
  *   取得部件字节，同一部件只读取一次。部件不存在时该页眉页脚没有内容，图片的 `media` 为 -1。
- *   正文中引用浏览器无法解码的图片格式时每次引用计一次 `imageFormat`，与其他种类相同，页眉页脚不计数。
+ *   引用浏览器无法解码的图片格式时每次引用计一次 `imageFormat`，与其他种类相同；可以绘制的图元文件
+ *   （`../metafile/` 读取后没有未实现的内容）不计。
+ * - 每个页眉页脚部件只读取一次，其中的未实现元素与正文按同一口径计入 `unsupported`（每个部件计一次，不按页重复）。
  * - 形状的颜色按主题与缺省颜色映射求值；没有主题部件时按空主题。
+ * - 图表：主文档与页眉页脚部件引用的图表部件在读取其内容之前读取并求值（`loadCharts`），图表中图片填充的部件
+ *   随引用登记为图片部件。
+ * - SmartArt：主文档与页眉页脚部件引用的数据、布局、样式、颜色部件在读取其内容之前读取文字（`loadDiagramParts`），
+ *   读到 `dgm:relIds` 时按其中的四个部件名读取并按文档主题求值。
  * - 页面背景（颜色与整页图片）只在设置开启 `displayBackgroundShape` 时保留（WPS 实测：未开启时颜色与图片都不显示）。
  */
 
-import { countImage } from '../drawingml/shape/resolve.ts'
+import type { Chart } from '../drawingml/chart/model.ts'
+import { readChart } from '../drawingml/chart/read.ts'
+import { type ChartScope, collectChartImages, resolveChart } from '../drawingml/chart/resolve.ts'
+import { type DiagramParts, readDiagram } from '../drawingml/diagram/read.ts'
+import { resolveDiagram } from '../drawingml/diagram/resolve.ts'
+import { countImage, drawableImage } from '../drawingml/shape/resolve.ts'
 import { EMPTY_THEME, parseTheme } from '../drawingml/theme.ts'
 import {
   type OpcFailure,
@@ -54,6 +65,12 @@ const SUPPORTED_NAMESPACES = [
   'http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing',
 ]
 
+/**
+ * 图表的宿主规则（`Chart.host`）：WPS 文字与 WPS 表格相同（构造文档实测：未写出格式的图表区有 0.75 磅 `#898989` 边框；
+ * 9 磅标签、140 像素高的数值轴取 2 为单位，10 磅与 10.5 磅标签、约 170 像素高时取 1）。
+ */
+const CHART_HOST: Chart['host'] = 'sheet'
+
 class PartError extends Error {
   constructor(readonly failure: DocxFailure) {
     super(failure.kind)
@@ -65,6 +82,61 @@ async function partText(pkg: OpcPackage, part: string | null): Promise<string | 
   const r = await pkg.text(part)
   if (!r.ok) throw new PartError(r.failure)
   return r.value
+}
+
+/**
+ * `rels` 引用的图表部件读取并求值后加入 `into`；部件不存在或含未实现内容时为 `null`。
+ * 图表部件引用主题覆盖（`themeOverride`）时颜色与主题字体取自它（WPS 实测：图表的方案颜色按主题覆盖显示）。
+ */
+async function loadCharts(
+  pkg: OpcPackage,
+  rels: Relationships,
+  scope: ChartScope,
+  into: Map<string, Chart | null>,
+): Promise<void> {
+  for (const rel of rels.ofKind('chart')) {
+    const part = rel.part
+    if (part === null || rel.external || into.has(part)) continue
+    const xml = await partText(pkg, part)
+    const chartRels = xml === null ? null : await pkg.relationships(part)
+    if (chartRels !== null && !chartRels.ok) throw new PartError(chartRels.failure)
+    if (xml === null || chartRels === null) {
+      into.set(part, null)
+      continue
+    }
+    const override = await partText(pkg, chartRels.value.part('themeOverride'))
+    const theme = override === null ? null : parseTheme(override)
+    const own = theme === null ? scope : { ...scope, theme, colors: { scheme: theme.colors } }
+    into.set(part, resolveChart(readChart(xml, chartRels.value), own))
+  }
+}
+
+const DIAGRAM_PARTS = ['diagramData', 'diagramLayout', 'diagramQuickStyle', 'diagramColors']
+
+/** SmartArt 部件的文字（部件不存在时为 `null`）与数据部件的关系表，按部件名。 */
+interface DiagramTexts {
+  readonly texts: Map<string, string | null>
+  readonly dataRels: Map<string, Relationships>
+}
+
+/** `rels` 引用的 SmartArt 部件读取文字后加入 `into`。 */
+async function loadDiagramParts(
+  pkg: OpcPackage,
+  rels: Relationships,
+  into: DiagramTexts,
+): Promise<void> {
+  for (const kind of DIAGRAM_PARTS) {
+    for (const rel of rels.ofKind(kind)) {
+      const part = rel.part
+      if (part === null || rel.external || into.texts.has(part)) continue
+      const text = await partText(pkg, part)
+      into.texts.set(part, text)
+      if (kind !== 'diagramData' || text === null) continue
+      const dataRels = await pkg.relationships(part)
+      if (!dataRels.ok) throw new PartError(dataRels.failure)
+      into.dataRels.set(part, dataRels.value)
+    }
+  }
 }
 
 export async function parseDocx(data: Uint8Array<ArrayBuffer>): Promise<DocxResult> {
@@ -125,22 +197,59 @@ async function parsePackage(pkg: OpcPackage): Promise<DocxDocument> {
     mediaParts.push(part)
     return mediaParts.length - 1
   }
-  const env = (source: Relationships, found: (kind: UnsupportedKind) => void): BodyEnv => ({
-    styles,
-    rels: source,
-    scope: {
-      theme: theme ?? EMPTY_THEME,
-      colors: { scheme: (theme ?? EMPTY_THEME).colors },
-      found: { push: () => {} },
-    },
-    media: (part) => {
+  const colors = { scheme: (theme ?? EMPTY_THEME).colors }
+  const chartScope: ChartScope = {
+    theme: theme ?? EMPTY_THEME,
+    colors,
+    host: CHART_HOST,
+    cells: null,
+  }
+  const charts = new Map<string, Chart | null>()
+  const diagrams: DiagramTexts = { texts: new Map(), dataRels: new Map() }
+  const text = (part: string | null) => (part === null ? null : (diagrams.texts.get(part) ?? null))
+  const diagram = (parts: DiagramParts) => {
+    const data = text(parts.data)
+    const dataRels = diagrams.dataRels.get(parts.data)
+    if (data === null || dataRels === undefined) return null
+    const raw = readDiagram({
+      data,
+      dataRels,
+      layout: text(parts.layout),
+      style: text(parts.style),
+      colors: text(parts.colors),
+    })
+    return resolveDiagram(raw, { theme: theme ?? EMPTY_THEME, colors })
+  }
+  /** 图片的每次引用：部件字节读取后判定格式，按引用计数。 */
+  const references: { part: string; found: (kind: UnsupportedKind) => void }[] = []
+  const env = (source: Relationships, found: (kind: UnsupportedKind) => void): BodyEnv => {
+    const image = (part: string) => {
       const index = media(part)
-      if (index >= 0) countImage(pkg.contentType(part) ?? '', { push: () => found('imageFormat') })
+      if (index >= 0) references.push({ part, found })
       return index
-    },
-    gridInTables: settings.adjustLineHeightInTable,
-  })
+    }
+    return {
+      styles,
+      rels: source,
+      scope: { theme: theme ?? EMPTY_THEME, colors, found: { push: () => {} } },
+      media: image,
+      chart: (part) => {
+        const chart = charts.get(part) ?? null
+        if (chart !== null) {
+          const images = new Set<string>()
+          collectChartImages(images, chart)
+          for (const p of images) image(p)
+        }
+        return chart
+      },
+      diagram,
+      gridInTables: settings.adjustLineHeightInTable,
+      mathJustification: settings.math.defaultJustification,
+    }
+  }
   const scan = (text: string) => new PartScanner(text, SUPPORTED_NAMESPACES)
+  await loadCharts(pkg, rels.value, chartScope, charts)
+  await loadDiagramParts(pkg, rels.value, diagrams)
   const body = new BodyReader(scan(xml), resolver, count, env(rels.value, count)).read()
   const parts: Record<string, readonly Block[]> = {}
   for (const section of body.sections) {
@@ -158,11 +267,14 @@ async function parsePackage(pkg: OpcPackage): Promise<DocxDocument> {
       const text = await partText(pkg, part)
       const partRels = part === null ? null : await pkg.relationships(part)
       if (partRels !== null && !partRels.ok) throw new PartError(partRels.failure)
-      const quiet = () => {}
+      if (partRels !== null) {
+        await loadCharts(pkg, partRels.value, chartScope, charts)
+        await loadDiagramParts(pkg, partRels.value, diagrams)
+      }
       parts[id] =
         text === null || partRels === null
           ? []
-          : new BodyReader(scan(text), resolver, quiet, env(partRels.value, quiet)).readStory(
+          : new BodyReader(scan(text), resolver, count, env(partRels.value, count)).readStory(
               section,
             )
     }
@@ -175,6 +287,12 @@ async function parsePackage(pkg: OpcPackage): Promise<DocxDocument> {
       part,
       contentType: pkg.contentType(part) ?? '',
       bytes: r.value === null ? new Uint8Array(0) : new Uint8Array(r.value),
+    })
+  }
+  for (const ref of references) {
+    const bytes = mediaList[mediaParts.indexOf(ref.part)]!.bytes
+    countImage(drawableImage(pkg.contentType(ref.part) ?? '', bytes), {
+      push: () => ref.found('imageFormat'),
     })
   }
   return {
@@ -190,6 +308,7 @@ async function parsePackage(pkg: OpcPackage): Promise<DocxDocument> {
       compatibilityMode: settings.compatibilityMode,
       evenAndOddHeaders: settings.evenAndOddHeaders,
       gridInTables: settings.adjustLineHeightInTable,
+      math: settings.math,
     },
     chineseCharsetFonts,
     unsupported,

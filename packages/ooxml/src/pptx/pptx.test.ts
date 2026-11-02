@@ -1,16 +1,19 @@
 /**
- * 覆盖 `load.ts`（`parsePptx` 的部件定位、失败分类、背景与颜色映射）、`parse/`（演示文稿、幻灯片部件、形状树、几何、
- * 表格、文本）与 `resolve/`（占位符匹配与继承、样式矩阵引用、文字样式链、组合坐标换算、组合填充、表格样式、未实现元素计数）。
+ * 覆盖 `load.ts`（`parsePptx` 的部件定位、失败分类、背景与颜色映射、SmartArt 与墨迹部件读取）、`parse/`（演示文稿、幻灯片部件、
+ * 形状树、几何、表格、文本、SmartArt 部件引用、InkML）与 `resolve/`（占位符匹配与继承、样式矩阵引用、文字样式链、组合坐标换算、
+ * 组合填充、表格样式、SmartArt 求值、墨迹坐标与笔宽、未实现元素计数）；`render/fonts.ts` 收集 SmartArt 文字的字体。
  *
  * 夹具由 `test-helper.ts` 在测试内生成最小 pptx。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { type Color, colorToHex } from '../drawingml/color.ts'
+import { CHEVRON, colorsXml, dataXml, STYLES } from '../drawingml/diagram/test-helper.ts'
 import type { ShapeFill } from '../drawingml/fill.ts'
 import type { Paragraph } from '../drawingml/text/model.ts'
 import { parsePptx } from './load.ts'
-import type { AutoShape, Group, Picture, Presentation, Shape, Slide, Table } from './model.ts'
+import type { AutoShape, Group, Ink, Picture, Presentation, Shape, Slide, Table } from './model.ts'
+import { presentationFonts } from './render/fonts.ts'
 import {
   buildPptx,
   buildZip,
@@ -206,8 +209,14 @@ describe('样式矩阵引用', () => {
     const r10 = firstRun(s10.text!.paragraphs[0]!)
     expect(r10.latin).toBe('Calibri')
     expect(hex(r10.fill)).toBe('FFFFFF')
-    // 效果样式 3 含棱台。
-    expect(slide.unsupported.effect3d).toBe(1)
+    // 效果样式 3 含正视相机与棱台：棱台不改变外观，按 threePt 光照着色，不登记。
+    expect(s10.threeD).toEqual({
+      rotation: { lat: 0, lon: 0, rev: 0 },
+      distance: null,
+      scale: 1.039,
+      add: 6.5,
+    })
+    expect(slide.unsupported.effect3d).toBeUndefined()
 
     const s11 = autoShape(slide, 11)
     expect(s11.fill.kind).toBe('gradient')
@@ -712,6 +721,37 @@ describe('图片、几何与未实现元素', () => {
   const MC = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
   const P14 = 'xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main"'
 
+  test('相机旋转与光照随图片与形状给出；挤出与轮廓登记一次，正面照常投影', async () => {
+    const scene =
+      '<a:scene3d><a:camera prst="perspectiveRelaxedModerately"><a:rot lat="17690635" lon="0" rev="0"/></a:camera>' +
+      '<a:lightRig rig="contrasting" dir="t"/></a:scene3d>'
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            '<p:pic><p:nvPicPr><p:cNvPr id="60" name="图片"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>' +
+              '<p:blipFill><a:blip r:embed="rIdImg"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>' +
+              `<p:spPr>${xfrm(0, 0, 10, 10)}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>${scene}` +
+              '<a:sp3d extrusionH="146050" contourW="38100"/></p:spPr></p:pic>' +
+              sp(61, {
+                spPr: `${xfrm(0, 0, 10, 10)}<a:scene3d><a:camera prst="isometricTopUp"/><a:lightRig rig="threePt" dir="t"/></a:scene3d>`,
+              }) +
+              sp(62, { spPr: xfrm(0, 0, 10, 10) }),
+          ),
+          rels: [['rIdImg', 'image', '../media/image1.png']],
+        },
+      ],
+    })
+    const slide = p.slides[0]!
+    const picture = byId(slide, 60) as Picture
+    expect(picture.threeD?.rotation.lat).toBeCloseTo(294.8439, 3)
+    expect(picture.threeD?.scale).toBe(0.969)
+    expect(autoShape(slide, 61).threeD?.rotation).toEqual({ lat: 35.26, lon: 45, rev: 60 })
+    expect(autoShape(slide, 61).threeD?.distance).toBeNull()
+    expect(autoShape(slide, 62).threeD).toBeNull()
+    expect(slide.unsupported.effect3d).toBe(1)
+  })
+
   test('图片的部件、裁剪、透明度与几何；自定义几何的路径', async () => {
     const cust =
       '<a:custGeom><a:avLst/><a:gdLst><a:gd name="g1" fmla="*/ w 1 2"/></a:gdLst><a:rect l="0" t="0" r="r" b="b"/>' +
@@ -814,21 +854,116 @@ describe('图片、几何与未实现元素', () => {
         { xml: slideXml('', { attrs: ' showMasterSp="0"' }) },
       ],
     })
+    // 两处墨迹的关系都不存在：`AlternateContent` 取 `contentPart` 分支，不读取替代图片 52。
     expect(p.slides[0]!.unsupported).toEqual({
       chart: 2,
       smartArt: 1,
-      ink: 1,
+      ink: 2,
       media: 1,
       imageEffect: 1,
       textWarp: 1,
       animation: 2,
       transition: 1,
     })
-    expect(byId(p.slides[0]!, 52).kind).toBe('picture')
+    expect(p.slides[0]!.shapes.some((s) => s.id === 52)).toBe(false)
     const chart = byId(p.slides[0]!, 50)
     expect(chart.kind === 'graphic' ? chart.content : null).toBe('chart')
     expect(p.slides[1]!.unsupported).toEqual({ chart: 1 })
     expect(p.slides[2]!.unsupported).toEqual({})
     expect(p.unsupported.chart).toBe(3)
+  })
+
+  test('墨迹：InkML 的差分编码解码；外接框按同一比例对应形状框；笔宽按压力换算；单点笔画位于形状框中心', async () => {
+    const ink = (traces: string, brush: string) =>
+      '<inkml:ink xmlns:inkml="http://www.w3.org/2003/InkML"><inkml:definitions><inkml:context xml:id="ctx0">' +
+      '<inkml:inkSource xml:id="s0"><inkml:traceFormat><inkml:channel name="X" type="integer"/>' +
+      '<inkml:channel name="Y" type="integer"/><inkml:channel name="F" type="integer" max="1000"/></inkml:traceFormat>' +
+      `</inkml:inkSource></inkml:context><inkml:brush xml:id="br0">${brush}</inkml:brush></inkml:definitions>${traces}</inkml:ink>`
+    const width = '<inkml:brushProperty name="width" value="0.1" units="cm"/>'
+    const color = '<inkml:brushProperty name="color" value="#F80600"/>'
+    // 显式 (100, 200)，一阶差分 (+100, 0)，二阶差分 (+100 + 50, 0)：x 为 100、200、350，压力 0.5、0.5、0.75。
+    const line = `<inkml:trace brushRef="#br0">100 200 500,'100'0'0,"50"0"250</inkml:trace>`
+    const content = (id: number, rid: string, cx: number, cy: number) =>
+      `<mc:AlternateContent ${MC} ${P14}><mc:Choice Requires="p14"><p:contentPart r:id="${rid}">` +
+      `<p14:nvContentPartPr><p14:cNvPr id="${id}" name="墨迹"/><p14:cNvContentPartPr/><p14:nvPr/></p14:nvContentPartPr>` +
+      `<p14:xfrm><a:off x="1000" y="2000"/><a:ext cx="${cx}" cy="${cy}"/></p14:xfrm></p:contentPart></mc:Choice>` +
+      `<mc:Fallback>${pic(id + 100, '<a:blip r:embed="rIdImg"/>')}</mc:Fallback></mc:AlternateContent>`
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(content(60, 'rIdA', 5000, 127) + content(61, 'rIdB', 127, 127)),
+          rels: [
+            ['rIdA', 'customXml', '../ink/ink1.xml'],
+            ['rIdB', 'customXml', '../ink/ink2.xml'],
+            ['rIdImg', 'image', '../media/image1.png'],
+          ],
+        },
+      ],
+      media: {
+        'ppt/ink/ink1.xml': ink(line, width + color),
+        'ppt/ink/ink2.xml': ink('<inkml:trace brushRef="#br0">7 8 1000</inkml:trace>', ''),
+      },
+    })
+    const slide = p.slides[0]!
+    expect(slide.unsupported).toEqual({})
+    expect(slide.shapes.map((s) => s.id)).toEqual([60, 61])
+    const [a, b] = slide.shapes as Ink[]
+    expect(a!.kind).toBe('ink')
+    expect(a!.frame).toMatchObject({ x: 1000, y: 2000, width: 5000, height: 127 })
+    expect(a!.strokes[0]!.color).toEqual({ r: 248 / 255, g: 6 / 255, b: 0, a: 1 })
+    // 外接框 250 × 0 对应宽 5000 EMU：每单位 20 EMU；外接框高为 0，各点位于形状框的纵向中线。
+    expect(a!.strokes[0]!.points).toEqual([
+      { x: 0, y: 63.5, width: 36000 * (0.2 + 1.6 * 0.5) },
+      { x: 2000, y: 63.5, width: 36000 * (0.2 + 1.6 * 0.5) },
+      { x: 5000, y: 63.5, width: 36000 * (0.2 + 1.6 * 0.75) },
+    ])
+    expect(b!.strokes[0]!.points).toEqual([{ x: 63.5, y: 63.5, width: 0.0529 * 360000 * 1.8 }])
+  })
+})
+
+describe('SmartArt', () => {
+  const smartArt = (id: number, ids: string) =>
+    `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}" name="图示"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>` +
+    `<p:xfrm><a:off x="100" y="200"/><a:ext cx="8151495" cy="660920"/></p:xfrm><a:graphic>` +
+    '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram">' +
+    `<dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" ${ids}/>` +
+    '</a:graphicData></a:graphic></p:graphicFrame>'
+
+  test('按数据部件与布局定义求值为 diagram，不计入 smartArt；布局部件缺失时计入 smartArt', async () => {
+    const data = dataXml([['甲'], ['乙']], { node: 'node', trans: ['space'] })
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            smartArt(7, 'r:dm="rIdDm" r:lo="rIdLo" r:qs="rIdQs" r:cs="rIdCs"') +
+              smartArt(8, 'r:dm="rIdDm2" r:qs="rIdQs" r:cs="rIdCs"'),
+          ),
+          rels: [
+            ['rIdDm', 'diagramData', '../diagrams/data1.xml'],
+            ['rIdLo', 'diagramLayout', '../diagrams/layout1.xml'],
+            ['rIdQs', 'diagramQuickStyle', '../diagrams/quickStyle1.xml'],
+            ['rIdCs', 'diagramColors', '../diagrams/colors1.xml'],
+            ['rIdDm2', 'diagramData', '../diagrams/data2.xml'],
+          ],
+        },
+      ],
+      media: {
+        'ppt/diagrams/data1.xml': data,
+        'ppt/diagrams/data2.xml': data,
+        'ppt/diagrams/layout1.xml': CHEVRON(),
+        'ppt/diagrams/quickStyle1.xml': STYLES,
+        'ppt/diagrams/colors1.xml': colorsXml(),
+      },
+    })
+    const slide = p.slides[0]!
+    const drawn = byId(slide, 7)
+    expect(drawn.kind).toBe('diagram')
+    expect(drawn.frame).toMatchObject({ x: 100, y: 200, width: 8151495, height: 660920 })
+    const names = drawn.kind === 'diagram' ? drawn.diagram.root.children.map((c) => c.name) : []
+    expect(names).toEqual(['node', 'space', 'node'])
+    const missing = byId(slide, 8)
+    expect(missing.kind === 'graphic' ? missing.content : null).toBe('smartArt')
+    expect(slide.unsupported).toEqual({ smartArt: 1 })
+    expect(presentationFonts(p)).toContain('等线')
   })
 })

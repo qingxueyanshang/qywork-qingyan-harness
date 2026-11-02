@@ -3,7 +3,7 @@
  * （行高相同取先出现的）、`lineBoxOf`（以换行符结束的行计入换行符所在段的主字体）；`cell-text.ts` 的纵向定位
  * （靠上、靠下、居中向零取整、多行文字高于行高时居中改为靠上）；`shapes.ts` 的 `screenText` 接入，
  * `../../drawingml/text/fonts.ts` 屏幕显示的纵向中心（按代码页分两组），以及 `../../drawingml/text/body.ts` 的
- * `screenBlock`（小数字号的行高与基线、百分比与固定行距的基线）与屏幕显示绘制（点阵、基线取整）。
+ * `hostBlock`（小数字号的行高与基线、百分比与固定行距的基线）与屏幕显示绘制（点阵、基线取整）。
  * 期望值取自 WPS 屏幕显示的逐格实测（构造文件经 `Range.CopyPicture` 取得的对照图）。
  */
 
@@ -47,6 +47,7 @@ function face(family: string, cjk: boolean, vertical: Vertical): LoadedFace {
     },
     pixelAdvance: () => null,
     bitmaps: null,
+    clearType: null,
     text: {
       metrics,
       vertical: {
@@ -284,7 +285,7 @@ describe('形状文字的屏幕显示', () => {
     expect(offset(10.5)).toBeCloseTo(offset(10) * 1.05, 6)
   })
 
-  test('屏幕显示的纵向中心按代码页分两组，演示文稿不区分', () => {
+  test('纵向中心按代码页分两组，屏幕显示与演示文稿相同', () => {
     const western: SlideFont = { face: latin.text, family: '西文', bold: false, italic: false }
     const westernSource = { face: () => western, fallback: western }
     const baseline = (faces: FaceCache) =>
@@ -295,7 +296,7 @@ describe('形状文字的屏幕显示', () => {
       baseline(new FaceCache(source, 1.296, screen))
     // 两种测试字体的 `winAscent`、`winDescent` 相同，只有 `eastAsianCodePage` 不同。
     expect(shift(none)).toBeCloseTo((0.6012 - 0.5825) * 12, 6)
-    expect(shift(null)).toBeCloseTo(0, 6)
+    expect(shift(null)).toBeCloseTo((0.6012 - 0.5825) * 12, 6)
   })
 
   test('百分比与固定行距：行高与单倍行高之差的 0.76 加在文字上方', () => {
@@ -313,7 +314,7 @@ describe('形状文字的屏幕显示', () => {
     const slide = new FaceCache(source, 1.296)
     const plainOne = first(slide, single)
     const plainWide = first(slide, { unit: 'percent', value: 1.5 })
-    expect(plainWide.baseline - plainOne.baseline).toBeCloseTo(plainOne.height * 0.5, 6)
+    expect(plainWide.baseline - plainOne.baseline).toBeCloseTo((plainOne.height * 0.5) / 1.2, 6)
   })
 
   test('有点阵的字形以点阵画在取整后的设备坐标上，基线取整到设备像素', () => {

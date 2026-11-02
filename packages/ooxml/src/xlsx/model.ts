@@ -286,8 +286,8 @@ export type CfRuleKind =
 export type CfRule = CfRuleKind & {
   readonly priority: number
   readonly stopIfTrue: boolean
-  /** `Workbook.dxfs` 的下标；`null` 为不改变样式（色阶与数据条没有 dxf）。 */
-  readonly dxf: number | null
+  /** 命中后叠加的差异样式；`null` 为不改变样式（色阶与数据条没有 dxf）。 */
+  readonly dxf: DifferentialStyle | null
 }
 
 export interface ConditionalFormat {
@@ -457,7 +457,6 @@ export interface Workbook {
   readonly sheets: readonly Worksheet[]
   /** 单元格样式表（`cellXfs` 逐项解析的结果）。 */
   readonly styles: readonly CellStyle[]
-  readonly dxfs: readonly DifferentialStyle[]
   /** 「常规」样式的字体，列宽换算与行高推算以它为准。 */
   readonly defaultFont: FontStyle
   /** 主题正文字体：西文与简体中文（`Hans` 文种，缺失时取 `ea`）；没有主题时为 `null`。缺字回退时使用。 */

@@ -7,7 +7,7 @@
  * - `rgbToHsl`、`hslToRgb`、`srgbToLinear`、`linearToSrgb` 为色彩空间换算工具，SpreadsheetML 的 `tint` 算法复用前两者。
  * - 几何：`Geometry` 为预设或自定义几何的定义，`shapeOutline` 求值为路径段与文本矩形（预设定义见 `geometry/preset.ts`）。
  * - 绘制：`PaintContext` 为 Canvas 2D 子集；`paintFill`、`paintLine`、`paintWithShadows` 在形状局部坐标中绘制填充、
- *   线条与外部阴影，docx 与 pptx 共用。
+ *   线条与外部阴影，docx 与 pptx 共用。图片（位图与图元文件）由 `decodePicture` 解码为 `PaintPicture`，三种文档共用。
  * - 形状与文字：`shape/` 读取与求值形状属性并绘制自选图形、连接线与组合，`text/` 读取、求值、排版与绘制文本框，
  *   pptx 与 xlsx 共用；模型类型 `Frame`、`TextBody` 等在此导出。
  */
@@ -64,7 +64,6 @@ export {
   readEffects,
   readFill,
   readLine,
-  readThreeD,
   resolveEffects,
   resolveFill,
   resolveLine,
@@ -115,6 +114,8 @@ export {
   tracePath,
 } from './paint/fill.ts'
 export { paintLine } from './paint/line.ts'
+export { decodePicture, type ImageDecoder, type PaintPicture } from './paint/picture.ts'
+export { type ImageResolution, imageResolution } from './paint/resolution.ts'
 export {
   type DeviceRect,
   type OuterShadow,
@@ -145,3 +146,6 @@ export {
   styleLine,
   type Theme,
 } from './theme.ts'
+export { resolveThreeD, visibleThreeD } from './three/camera.ts'
+export type { Bevel3D, Rotation3D, Scene3D, Shape3D, ThreeD } from './three/model.ts'
+export { readScene3D, readShape3D } from './three/read.ts'

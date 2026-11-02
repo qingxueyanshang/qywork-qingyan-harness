@@ -13,8 +13,11 @@ xlsx：Range.CopyPicture(xlScreen, xlBitmap) 取每个可见工作表 A1 起的�
   读取剪贴板的 CF_DIB。该取法按 100% 缩放输出，与窗口缩放比例无关；空白单元格为白底，网格线随工作表的显示设置。
   不要改用 xlPicture：其 PNG 中空白单元格是透明像素，去掉透明通道后为黑色。
 pptx：见 slides.py。Slide.Export 的导出图经 Slide.Copy 缩略图逐页核对，任一页不一致时整份不写入。
+每份文档的清单记录采集时系统的字体平滑设置（font_smoothing）：WPS 经 GDI 绘制的文字随 ClearType 对比度改变，
+xlsx 候选按清单中的对比度绘制。只读取，不修改系统设置。
 """
 
+import ctypes
 import json
 import os
 import time
@@ -27,9 +30,25 @@ import records
 import slides
 
 XL_SCREEN, XL_BITMAP = 1, 2
+SPI_GETFONTSMOOTHING, SPI_GETFONTSMOOTHINGTYPE, SPI_GETFONTSMOOTHINGCONTRAST = 0x004A, 0x200A, 0x200C
 MAX_ROWS, MAX_COLS = 60, 26
 # 页面尺寸与图片框的允许偏差（mm）：图片框按 0.01 mm 取整且含边界，A4 实测偏差约 0.2 mm。
 SIZE_TOL_MM = 1.0
+
+
+def _font_smoothing() -> dict:
+    """系统当前的字体平滑设置：enabled 为是否开启，type 为 1（标准）或 2（ClearType），contrast 为 ClearType 对比度。
+    只调用 SystemParametersInfoW 的 SPI_GET*。"""
+    spi = ctypes.windll.user32.SystemParametersInfoW
+
+    def get(action: int) -> int:
+        out = ctypes.c_uint(0)
+        if not spi(action, 0, ctypes.byref(out), 0):
+            raise ctypes.WinError()
+        return out.value
+
+    return {"enabled": get(SPI_GETFONTSMOOTHING) != 0, "type": get(SPI_GETFONTSMOOTHINGTYPE),
+            "contrast": get(SPI_GETFONTSMOOTHINGCONTRAST)}
 
 
 def _page_sizes_mm(doc) -> list:
@@ -151,7 +170,7 @@ def run(docs, truth_dir: Path, call_root: Path, dpi: float, review: list) -> dic
     backup = call_dir / "clipboard-backup"
     results, statuses, stopped = [], [], None
     for d in docs:
-        entry = {"id": d["id"], "path": d["path"], "format": d["format"]}
+        entry = {"id": d["id"], "path": d["path"], "format": d["format"], "font_smoothing": _font_smoothing()}
         stage = call_dir / d["id"]
         stage.mkdir(parents=True, exist_ok=True)
         before = records.snapshot()

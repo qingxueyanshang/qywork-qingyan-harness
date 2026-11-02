@@ -4,8 +4,10 @@
  * - 数据全部非负时：(最大 − 最小) / 最大 < 1/6 时下限取 最小 − (最大 − 最小) / 2，否则取 0；全部相等时取 0。
  *   数据有负值时下限取 最小 − 5% × (最大 − 最小)。全部非正时与之对称。
  * - 上限取 最大 + 5% × (最大 − 最小)（全部相等时跨度取最大值的绝对值）。上下限再分别向外取整到主要单位的整数倍。
- * - 主要单位取 {1, 2, 5} × 10ⁿ 中使区间数不超过 `maxIntervals` 的最小值；数据全为 0 时范围为 0–1。
- * - 指定了最小值、最大值或主要单位时，该项不再自动计算，其余项按上述规则在指定值的约束下计算。
+ * - 主要单位取 {1, 2, 5} × 10ⁿ 中使取整前的范围除以单位不超过 `maxIntervals` 的最小值；数据全为 0 时范围为 0–1。
+ * - 指定了最小值、最大值或主要单位时，该项不再自动计算。指定的最小值（最大值）代替数据的最小值（最大值）参与上述规则，
+ *   自动的另一端取指定值加上（减去）主要单位的整数倍，而不是主要单位的整数倍（WPS 演示与 WPS 表格实测：最小值 0、数据 55–58
+ *   时为 0–70；最小值 3 时为 3–63；最大值 100 时为 0–100；最小值 3500、数据含 0 与 4600–4690 时为 3500–4900）。
  */
 
 export interface Scale {
@@ -40,7 +42,10 @@ function ceilTo(v: number, unit: number): number {
   return clean(Math.ceil(v / unit - EPSILON) * unit)
 }
 
-/** `{1, 2, 5} × 10ⁿ` 中使 [lo, hi] 取整后的区间数不超过 `max` 的最小单位。 */
+/**
+ * `{1, 2, 5} × 10ⁿ` 中使 (hi − lo) / 单位不超过 `max` 的最小单位。按取整前的范围计数，不要改为取整到单位之后的区间数
+ * （WPS 文字实测：0.19933–0.24893 取 0.005，取整后为 0.195–0.25 共 11 个区间；同一图表 0–10.74×10⁶ 取 2×10⁶ 而不取 10⁶）。
+ */
 export function niceUnit(lo: number, hi: number, max: number): number {
   const range = hi - lo
   if (!(range > 0)) return 1
@@ -49,8 +54,7 @@ export function niceUnit(lo: number, hi: number, max: number): number {
   for (let guard = 0; guard < 40; guard++, exp++) {
     for (const s of STEPS) {
       const u = clean(s * 10 ** exp)
-      const count = Math.round((ceilTo(hi, u) - floorTo(lo, u)) / u)
-      if (count <= limit) return u
+      if (range / u <= limit + EPSILON) return u
     }
   }
   return clean(10 ** exp)
@@ -74,7 +78,7 @@ export function autoRange(dataMin: number, dataMax: number): { lo: number; hi: n
 
 /** 数值轴刻度。`dataMin`、`dataMax` 为参与该轴的全部数据（堆积图为各分类的累计值）。 */
 export function valueScale(dataMin: number, dataMax: number, o: ScaleOptions): Scale {
-  let { lo, hi } = autoRange(dataMin, dataMax)
+  let { lo, hi } = autoRange(o.min ?? dataMin, o.max ?? dataMax)
   if (o.min !== null) lo = o.min
   if (o.max !== null) hi = o.max
   if (hi <= lo) {
@@ -82,8 +86,10 @@ export function valueScale(dataMin: number, dataMax: number, o: ScaleOptions): S
     else lo = hi - (o.major ?? Math.abs(hi || 1))
   }
   const major = o.major ?? niceUnit(lo, hi, o.maxIntervals)
-  const min = o.min ?? floorTo(lo, major)
-  const max = o.max ?? ceilTo(hi, major)
+  const min =
+    o.min ?? (o.max === null ? floorTo(lo, major) : clean(o.max - ceilTo(o.max - lo, major)))
+  const max =
+    o.max ?? (o.min === null ? ceilTo(hi, major) : clean(o.min + ceilTo(hi - o.min, major)))
   return { min, max: max > min ? max : clean(min + major), major }
 }
 

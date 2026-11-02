@@ -6,14 +6,15 @@
  * - 溢出：不换行、不旋转、不缩小的文本可以越过相邻的空单元格显示；靠左向右溢出，靠右向左溢出，
  *   居中向两侧对称溢出。数字、日期、逻辑值与错误值不溢出。
  * - 数字宽度不足：「常规」格式先减少小数位或改用科学计数（`generalFit`），其余格式以 `#` 填满单元格。
- * - 留白：文字距左、右网格线 `TEXT_PADDING_LEFT`、`TEXT_PADDING_RIGHT` 像素；垂直位置见 `firstLineTop`。
+ *   容纳判定比留白之间的宽度宽松（见 `GENERAL_SLACK` 与 `FORMAT_SLACK`）。
+ * - 留白：文字到左、右网格线的距离见 `textPadding`（随单元格字体变化）；垂直位置见 `firstLineTop`。
  */
 
 import { type FormatPart, formatNumber, formatText } from '../../numfmt/format.ts'
 import { generalFit } from '../../numfmt/general.ts'
 import type { CellAlignment, CellValue, FontStyle, HorizontalAlign, Workbook } from '../model.ts'
 import type { FontSet } from './fonts.ts'
-import { TEXT_PADDING_LEFT, TEXT_PADDING_RIGHT } from './geometry.ts'
+import { type TextPadding, textPadding } from './geometry.ts'
 import {
   lineBoxOf,
   lineMetrics,
@@ -177,7 +178,21 @@ interface Piece {
   readonly kind: FormatPart['kind']
 }
 
-function piecesOf(input: LayoutInput, available: number): { pieces: Piece[]; hashes: boolean } {
+/**
+ * 数字宽度的容纳判定允许超出留白之间的宽度（像素）。WPS 屏幕显示实测（构造文件，列宽逐像素变化）：
+ * 「常规」数字以字符数乘最大数字宽度（`TextPadding.digit`）估计宽度，宋体、楷体、黑体、等线、Arial、
+ * Times New Roman、微软雅黑 9–16 磅的常规与粗体（留白 3+2 与 4+3）都在估计宽度 ≤ 留白之间的宽度 + 1 时容纳；
+ * 其他格式以实际宽度判定，宋体、楷体、Arial 的 8 种格式在实际宽度 ≤ 留白之间的宽度 + 3 时容纳。
+ * 不要改为按实际宽度判定「常规」数字：西文字体中小数点窄于数字，按实际宽度会多显示一位小数。
+ */
+const GENERAL_SLACK = 1
+const FORMAT_SLACK = 3
+
+function piecesOf(
+  input: LayoutInput,
+  available: number,
+  digit: number,
+): { pieces: Piece[]; hashes: boolean } {
   const { content, font, fonts } = input
   if (content.runs) {
     const pieces = content.runs.map(
@@ -186,16 +201,38 @@ function piecesOf(input: LayoutInput, available: number): { pieces: Piece[]; has
     return { pieces, hashes: false }
   }
   if (content.general !== null) {
-    const probe = makeRun('', font, fonts)
-    const text = generalFit(content.general, (s) => probe.chain.width(s, probe.px) <= available)
+    const text = generalFit(content.general, (s) => s.length * digit <= available + GENERAL_SLACK)
     if (text === null) return { pieces: [], hashes: true }
     return { pieces: [{ run: makeRun(text, font, fonts), kind: 'text' }], hashes: false }
   }
   if (content.invalid) return { pieces: [], hashes: true }
+  // `_x` 的空白取空格的宽度，与其后的字符无关（WPS 实测：Arial 中 `0_W`、`0_0` 与 `0_ ` 的留白相同）。
   return {
-    pieces: content.parts.map((p) => ({ run: makeRun(p.text, font, fonts), kind: p.kind })),
+    pieces: content.parts.map((p) => ({
+      run: makeRun(p.kind === 'gap' ? ' ' : p.text, font, fonts),
+      kind: p.kind,
+    })),
     hashes: false,
   }
+}
+
+/**
+ * 去掉末尾的空白：`_x` 的空白与文字末尾的空格。自动换行的单元格中数字按文本排版，行末空白不占宽度
+ * （WPS 实测：`0_ `、`#,##0_ `、`0" "` 在自动换行时与 `0` 靠右的位置相同，不换行时留出空白；开头的空白保留）。
+ */
+function trimTrailingBlanks(pieces: readonly Piece[]): Piece[] {
+  const out = [...pieces]
+  while (out.length > 0) {
+    const last = out[out.length - 1]!
+    if (last.kind === 'fill') break
+    const text = last.run.text.replace(/ +$/, '')
+    if (text !== '') {
+      if (text !== last.run.text) out[out.length - 1] = { ...last, run: { ...last.run, text } }
+      break
+    }
+    out.pop()
+  }
+  return out
 }
 
 function measure(piece: Piece): number {
@@ -222,18 +259,22 @@ export function layoutCell(input: LayoutInput, box: CellBox): CellTextLayout | n
   const { content, alignment } = input
   const horizontal = resolveHorizontal(alignment.horizontal, content.kind)
   const indent = alignment.indent * input.indentUnit
-  const innerLeft = box.left + TEXT_PADDING_LEFT
-  const innerRight = box.right - TEXT_PADDING_RIGHT
+  const pad = textPadding(input.font, input.fonts)
+  const innerLeft = box.left + pad.left
+  const innerRight = box.right - pad.right
   const available = Math.max(0, innerRight - innerLeft - indent)
   const rotation = alignment.rotation
   const numeric = content.kind === 'number'
-  const built = piecesOf(input, available)
-  let pieces = built.pieces
+  // 自动换行与分散对齐都在单元格内排版，不溢出。只有文本按行排版；数字、逻辑值与错误值按单行排版
+  // （WPS 实测：自动换行单元格中的逻辑值居中时与不换行的位置相同）。
+  const wrap = alignment.wrap || horizontal === 'justify' || alignment.vertical === 'justify'
+  const built = piecesOf(input, available, pad.digit)
+  let pieces = wrap && numeric ? trimTrailingBlanks(built.pieces) : built.pieces
   if (built.hashes) pieces = hashPieces(input, available)
   else if (numeric && content.general === null && !alignment.shrink && rotation === 0) {
     // 非常规格式的数字宽度不足时整格显示 `#`。
     const width = pieces.reduce((s, p) => s + measure(p), 0)
-    if (width > available + 0.01) pieces = hashPieces(input, available)
+    if (width > available + FORMAT_SLACK + 0.01) pieces = hashPieces(input, available)
   }
   if (pieces.length === 0) return null
   let runs = pieces.map((p) => p.run)
@@ -243,12 +284,10 @@ export function layoutCell(input: LayoutInput, box: CellBox): CellTextLayout | n
 
   if (rotation !== 0) {
     const metrics = lineMetrics(runs)
-    return layoutRotated(input, box, runs, metrics.ascent + metrics.descent, metrics)
+    return layoutRotated(input, box, runs, metrics.ascent + metrics.descent, metrics, pad)
   }
 
-  // 自动换行与分散对齐都在单元格内排版，不溢出。
-  const wrap = alignment.wrap || horizontal === 'justify' || alignment.vertical === 'justify'
-  if (wrap && !numeric) {
+  if (wrap && content.kind === 'text') {
     const lines = wrapRuns(runs, Math.max(1, innerRight - innerLeft - indent))
     const boxes = lines.map(lineBoxOf)
     const total = boxes.reduce((sum, b) => sum + b.height, 0)
@@ -261,7 +300,8 @@ export function layoutCell(input: LayoutInput, box: CellBox): CellTextLayout | n
       let x = innerLeft + indent
       if (horizontal === 'right') x = innerRight - indent - line.width
       else if (horizontal === 'center' || horizontal === 'centerContinuous') {
-        x = (innerLeft + innerRight - line.width) / 2
+        // 自动换行的行居中时余量为奇数向左取整，不换行的文字向右取整（WPS 实测，7 种字体两种列宽奇偶）。
+        x = Math.floor((innerLeft + innerRight - line.width) / 2)
       }
       for (const run of line.runs) {
         const w = runWidth(run)
@@ -296,7 +336,7 @@ export function layoutCell(input: LayoutInput, box: CellBox): CellTextLayout | n
 
   // `*x` 填充与填充对齐：在可用宽度内重复字符。
   if (horizontal === 'fill' || pieces.some((p) => p.kind === 'fill')) {
-    return layoutFill(input, box, pieces, baseline, horizontal === 'fill', indent)
+    return layoutFill(input, box, pieces, baseline, horizontal, indent, pad)
   }
 
   let firstCol = box.col
@@ -305,7 +345,7 @@ export function layoutCell(input: LayoutInput, box: CellBox): CellTextLayout | n
   let clipRight = box.right
   let x = innerLeft + indent
   if (horizontal === 'distributed' && runs.length === 1 && !numeric) {
-    return layoutDistributed(input, box, runs[0]!, baseline, indent)
+    return layoutDistributed(input, box, runs[0]!, baseline, indent, pad)
   }
   if (horizontal === 'right') x = innerRight - indent - width
   else if (horizontal === 'center' || horizontal === 'centerContinuous') {
@@ -316,12 +356,12 @@ export function layoutCell(input: LayoutInput, box: CellBox): CellTextLayout | n
   const spills = content.kind === 'text' && !box.merged && !alignment.shrink
   if (spills && width > available) {
     if (horizontal === 'left' || horizontal === 'general' || horizontal === 'justify') {
-      ;({ lastCol, clipRight } = spillRight(box, x + width + TEXT_PADDING_RIGHT))
+      ;({ lastCol, clipRight } = spillRight(box, x + width + pad.right))
     } else if (horizontal === 'right') {
-      ;({ firstCol, clipLeft } = spillLeft(box, x - TEXT_PADDING_LEFT))
+      ;({ firstCol, clipLeft } = spillLeft(box, x - pad.left))
     } else if (horizontal === 'center' || horizontal === 'centerContinuous') {
-      ;({ lastCol, clipRight } = spillRight(box, x + width + TEXT_PADDING_RIGHT))
-      ;({ firstCol, clipLeft } = spillLeft(box, x - TEXT_PADDING_LEFT))
+      ;({ lastCol, clipRight } = spillRight(box, x + width + pad.right))
+      ;({ firstCol, clipLeft } = spillLeft(box, x - pad.left))
     }
   }
 
@@ -392,19 +432,25 @@ function spillLeft(box: CellBox, needLeft: number): { firstCol: number; clipLeft
   return { firstCol, clipLeft }
 }
 
+/**
+ * 填充对齐与 `*x` 填充。`*x` 的字符重复整数次：取总宽不超过可用宽度加 `FORMAT_SLACK` 的最大次数，
+ * 之后整段按水平对齐放置（靠左、居中，其余靠右）。不要改为把填充拉伸到单元格两侧：WPS 屏幕显示实测
+ * （宋体、Arial，常规与粗体，列宽逐像素变化）靠左与居中时数字的位置随列宽以填充字符宽度为周期往复变化。
+ */
 function layoutFill(
   input: LayoutInput,
   box: CellBox,
   pieces: Piece[],
   baseline: number,
-  repeatAll: boolean,
+  horizontal: HorizontalAlign,
   indent: number,
+  pad: TextPadding,
 ): CellTextLayout {
-  const left = box.left + TEXT_PADDING_LEFT + indent
-  const right = box.right - TEXT_PADDING_RIGHT
+  const left = box.left + pad.left + indent
+  const right = box.right - pad.right
   const fragments: TextFragment[] = []
   const first = pieces[0]!.run
-  if (repeatAll) {
+  if (horizontal === 'fill') {
     // 填充对齐：整段文字重复到填满单元格，不足一次时显示一次。
     const text = pieces.map((p) => p.run.text).join('')
     const w = runWidth({ ...first, text })
@@ -424,9 +470,13 @@ function layoutFill(
   const fillIndex = pieces.findIndex((p) => p.kind === 'fill')
   const fill = pieces[fillIndex]!.run
   const charWidth = runWidth(fill)
-  const count = charWidth > 0 ? Math.floor(Math.max(0, right - left - fixed) / charWidth) : 0
-  // 填充字符之前的部分靠左，之后的部分靠右。
-  let x = left
+  const count =
+    charWidth > 0 ? Math.floor(Math.max(0, right - left + FORMAT_SLACK - fixed) / charWidth) : 0
+  const total = fixed + count * charWidth
+  let x = right - total
+  if (horizontal === 'left') x = left
+  else if (horizontal === 'center' || horizontal === 'centerContinuous')
+    x = (left + right - total) / 2
   pieces.forEach((p, i) => {
     if (i === fillIndex) {
       const text = fill.text.repeat(count)
@@ -441,8 +491,7 @@ function layoutFill(
           color: fontColor(input, fill),
         })
       }
-      const tail = pieces.slice(i + 1).reduce((s, q) => s + measure(q), 0)
-      x = Math.max(x + count * charWidth, right - tail)
+      x += count * charWidth
       return
     }
     const w = measure(p)
@@ -468,9 +517,10 @@ function layoutDistributed(
   run: TextRun,
   baseline: number,
   indent: number,
+  pad: TextPadding,
 ): CellTextLayout {
-  const left = box.left + TEXT_PADDING_LEFT + indent
-  const right = box.right - TEXT_PADDING_RIGHT - indent
+  const left = box.left + pad.left + indent
+  const right = box.right - pad.right - indent
   const chars = [...run.text]
   const widths = chars.map((c) => run.chain.width(c, run.px))
   const total = widths.reduce((a, b) => a + b, 0)
@@ -514,6 +564,7 @@ function layoutRotated(
   runs: TextRun[],
   lineHeight: number,
   metrics: { ascent: number; descent: number },
+  pad: TextPadding,
 ): CellTextLayout {
   const { alignment } = input
   const horizontal = resolveHorizontal(alignment.horizontal, input.content.kind)
@@ -521,8 +572,8 @@ function layoutRotated(
   const text = runs.map((r) => r.text).join('')
   const run = { ...runs[0]!, text }
   const width = runWidth(run)
-  const innerLeft = box.left + TEXT_PADDING_LEFT
-  const innerRight = box.right - TEXT_PADDING_RIGHT
+  const innerLeft = box.left + pad.left
+  const innerRight = box.right - pad.right
   const innerTop = box.top + TOP_PADDING
   const innerBottom = box.bottom - BOTTOM_PADDING
   if (rot === 255) {

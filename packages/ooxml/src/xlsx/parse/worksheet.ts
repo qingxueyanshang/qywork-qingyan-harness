@@ -20,6 +20,7 @@ import type {
   CfThreshold,
   ColumnSpec,
   ConditionalFormat,
+  DifferentialStyle,
   FontStyle,
   RowSpec,
   SheetFormat,
@@ -29,6 +30,7 @@ import type {
 import { type ColorContext, readRawColor, resolveRawColor } from './color.ts'
 import { parseCellRef, parseRange, parseRangeList, shiftFormula } from './refs.ts'
 import { readStringItem, type SharedString } from './shared-strings.ts'
+import { readDifferentialStyle } from './styles.ts'
 import {
   boolAttr,
   decodeEscapes,
@@ -46,6 +48,9 @@ export interface WorksheetContext {
   readonly defaultFont: FontStyle
   readonly colors: ColorContext
   readonly fontNames: Set<string>
+  /** 条件格式规则按 `dxfId` 引用的差异样式。 */
+  readonly dxfs: readonly DifferentialStyle[]
+  readonly numFmts: ReadonlyMap<number, string>
 }
 
 export interface ParsedWorksheet {
@@ -192,7 +197,7 @@ export function parseWorksheet(xml: string, ctx: WorksheetContext): ParsedWorksh
         break
       }
       case 'conditionalFormatting':
-        conditionalFormats.push(readConditionalFormatting(x, ctx.colors, unsupported))
+        conditionalFormats.push(readConditionalFormatting(x, ctx, unsupported))
         break
       case 'autoFilter':
         if (x.depth === 2) autoFilter = parseRange(x.attr('ref') ?? '')
@@ -202,7 +207,7 @@ export function parseWorksheet(xml: string, ctx: WorksheetContext): ParsedWorksh
         drawingId = relAttr(x, 'id')
         break
       case 'extLst':
-        readExtensions(x, unsupported)
+        readExtensions(x, ctx, conditionalFormats, unsupported)
         break
     }
   }
@@ -333,7 +338,7 @@ function readThreshold(x: Scanner): CfThreshold {
 
 function readConditionalFormatting(
   x: Scanner,
-  colors: ColorContext,
+  ctx: WorksheetContext,
   unsupported: UnsupportedCounts,
 ): ConditionalFormat {
   const ranges = parseRangeList(x.attr('sqref') ?? '')
@@ -342,7 +347,7 @@ function readConditionalFormatting(
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t === 'end' && x.depth === depth) break
     if (t !== 'start' || x.local !== 'cfRule') continue
-    const rule = readRule(x, colors)
+    const rule = readRule(x, ctx)
     if (rule) rules.push(rule)
     // 无法表示的规则与公式无法求值的规则都计入；后者保留在模型中，求值时不命中。
     if (!rule || !formulasEvaluable(rule)) add(unsupported, 'conditionalFormat')
@@ -356,14 +361,16 @@ function formulasEvaluable(rule: CfRule): boolean {
   return true
 }
 
-function readRule(x: Scanner, palette: ColorContext): CfRule | null {
+/**
+ * 读取一条规则：`cfRule` 的差异样式按 `dxfId` 引用，2010 扩展的 `x14:cfRule` 内嵌 `x14:dxf`，
+ * 公式分别写在 `formula` 与 `xm:f` 中（只取规则的直接子元素，`x14:cfvo` 内的 `xm:f` 是阈值）。
+ */
+function readRule(x: Scanner, ctx: WorksheetContext): CfRule | null {
   const type = x.attr('type') ?? ''
-  const dxf = numAttr(x, 'dxfId')
-  const base = {
-    priority: numAttr(x, 'priority') ?? Number.MAX_SAFE_INTEGER,
-    stopIfTrue: boolAttr(x, 'stopIfTrue', false),
-    dxf,
-  }
+  const dxfId = numAttr(x, 'dxfId')
+  let dxf = dxfId === null ? null : (ctx.dxfs[dxfId] ?? null)
+  const priority = numAttr(x, 'priority') ?? Number.MAX_SAFE_INTEGER
+  const stopIfTrue = boolAttr(x, 'stopIfTrue', false)
   const operator = x.attr('operator') ?? ''
   const text = x.attr('text') ?? ''
   const attrs = {
@@ -381,13 +388,15 @@ function readRule(x: Scanner, palette: ColorContext): CfRule | null {
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t === 'end' && x.depth === depth) break
     if (t !== 'start') continue
-    if (x.local === 'formula') formulas.push(readText(x))
+    const child = x.depth === depth + 1
+    if (child && (x.local === 'formula' || x.local === 'f')) formulas.push(readText(x))
+    else if (child && x.local === 'dxf') dxf = readDifferentialStyle(x, ctx.numFmts, ctx.colors)
     else if (x.local === 'cfvo') thresholds.push(readThreshold(x))
     else if (x.local === 'color') {
       colors.push(
         resolveRawColor(
           readRawColor((n) => x.attr(n)),
-          palette,
+          ctx.colors,
         ) ?? '#000000',
       )
     }
@@ -433,19 +442,44 @@ function readRule(x: Scanner, palette: ColorContext): CfRule | null {
       kind = { type, text }
       break
   }
-  return kind ? { ...kind, ...base } : null
+  return kind ? { ...kind, priority, stopIfTrue, dxf } : null
 }
 
-/** `extLst` 中的 2010 扩展：迷你图与扩展条件格式。数据条扩展只补充主规则的外观，不单独计数。 */
-function readExtensions(x: Scanner, unsupported: UnsupportedCounts): void {
+/**
+ * `extLst` 中的 2010 扩展：迷你图计数；扩展条件格式（`x14:conditionalFormatting`，引用其他工作表的规则写在这里）
+ * 与 `conditionalFormatting` 同样读入，区域在规则之后的 `xm:sqref` 中。数据条扩展只补充主规则的外观，不单独读入与计数。
+ */
+function readExtensions(
+  x: Scanner,
+  ctx: WorksheetContext,
+  out: ConditionalFormat[],
+  unsupported: UnsupportedCounts,
+): void {
   const depth = x.depth
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t === 'end' && x.depth === depth) break
     if (t !== 'start') continue
     if (x.local === 'sparkline') add(unsupported, 'sparkline')
-    else if (x.local === 'cfRule' && x.attr('type') !== 'dataBar') {
-      add(unsupported, 'conditionalFormat')
-      skipElement(x)
+    else if (x.local === 'conditionalFormatting') {
+      const rules: CfRule[] = []
+      let ranges: CellRange[] = []
+      const own = x.depth
+      for (let u = x.next(); u !== null; u = x.next()) {
+        if (u === 'end' && x.depth === own) break
+        if (u !== 'start') continue
+        const name: string = x.local
+        if (name === 'sqref') ranges = parseRangeList(readText(x))
+        else if (name === 'cfRule') {
+          if (x.attr('type') === 'dataBar') {
+            skipElement(x)
+            continue
+          }
+          const rule = readRule(x, ctx)
+          if (rule) rules.push(rule)
+          if (!rule || !formulasEvaluable(rule)) add(unsupported, 'conditionalFormat')
+        }
+      }
+      if (rules.length > 0) out.push({ ranges, rules })
     }
   }
 }

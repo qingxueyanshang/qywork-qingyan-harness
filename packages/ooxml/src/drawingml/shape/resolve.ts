@@ -10,6 +10,7 @@
  *   子形状自身旋转接近 90° 或 270° 时横纵比例互换（见 `frameOf`，WPS 实测）。
  */
 
+import { readMetafile } from '../../metafile/index.ts'
 import { type ColorContext, type ColorSpec, resolveColor } from '../color.ts'
 import {
   type Effect,
@@ -25,8 +26,9 @@ import {
 import type { TextBody } from '../text/model.ts'
 import type { ListStyleSpec, RunSpec } from '../text/read.ts'
 import { styleEffect, styleFill, styleLine, type Theme } from '../theme.ts'
+import type { Scene3D, Shape3D } from '../three/model.ts'
 import type { FindingSink, Frame } from './model.ts'
-import type { StyleRefs, Xfrm } from './read.ts'
+import type { ShapeProps, StyleRefs, Xfrm } from './read.ts'
 
 export interface StyleScope {
   readonly theme: Theme
@@ -63,7 +65,6 @@ export function matrixLine(
 export function matrixEffects(scope: StyleScope, idx: number, color: ColorSpec | null): Effect[] {
   const style = styleEffect(scope.theme.formats, idx)
   if (style === null) return []
-  if (style.threeD) scope.found.push('effect3d')
   for (const e of style.effects) if (e.kind === 'other') scope.found.push('effect')
   return resolveEffects(style.effects, refColors(scope, color))
 }
@@ -105,6 +106,22 @@ export function resolveShapeEffects(
 ) {
   if (spec !== null) return resolveEffects(spec, scope.colors)
   return style?.effect ? matrixEffects(scope, style.effect.idx, style.effect.color) : []
+}
+
+/**
+ * 三维设置：`scene3d` 与 `sp3d` 各自取 `layers`（各层 `spPr`，按优先级从高到低）中最先出现的一项，都没有时取
+ * `effectRef` 所引用的效果样式中的一项。
+ */
+export function shapeThreeD(
+  layers: readonly ShapeProps[],
+  style: StyleRefs | null,
+  scope: StyleScope,
+): { readonly scene: Scene3D | null; readonly shape: Shape3D | null } {
+  const ref = style?.effect ? styleEffect(scope.theme.formats, style.effect.idx) : null
+  return {
+    scene: layers.find((p) => p.scene3d !== null)?.scene3d ?? ref?.scene3d ?? null,
+    shape: layers.find((p) => p.shape3d !== null)?.shape3d ?? ref?.shape3d ?? null,
+  }
 }
 
 /** `fontRef` 作为一层列表样式：每个层级都只有字段属性（主题字体与颜色）。 */
@@ -183,7 +200,7 @@ export function childTransform(xfrm: Xfrm | null, t: Transform): Transform {
   }
 }
 
-/** 浏览器 `createImageBitmap` 可解码的图片内容类型；其余（EMF、WMF、TIFF 等）登记为 `imageFormat`。 */
+/** 浏览器 `createImageBitmap` 可解码的图片内容类型。 */
 const DECODABLE_IMAGES = new Set([
   'image/png',
   'image/jpeg',
@@ -195,9 +212,23 @@ const DECODABLE_IMAGES = new Set([
 /** 绘制端不实现的文字方向；`vert`、`vert270` 按旋转绘制。 */
 const UNPAINTED_VERTICAL = new Set(['eaVert', 'wordArtVert', 'mongolianVert', 'wordArtVertRtl'])
 
-/** 部件的内容类型：`imageType` 返回 `null` 表示部件不在包中，没有可绘制的内容，不登记。 */
-export function countImage(type: string | null, found: FindingSink): void {
-  if (type !== null && !DECODABLE_IMAGES.has(type)) found.push('imageFormat')
+/**
+ * 图片部件能否绘制：内容类型为浏览器可解码的位图，或字节为没有未实现内容的图元文件（按字节识别，与
+ * `../paint/picture.ts` 的 `decodePicture` 相同）。其余（TIFF、含未实现记录的图元文件等）登记为 `imageFormat`。
+ */
+export function drawableImage(type: string, bytes: Uint8Array): boolean {
+  const mf = readMetafile(bytes)
+  return mf === null ? DECODABLE_IMAGES.has(type) : mf.unsupported.length === 0
+}
+
+/** 内容类型为浏览器可解码的位图：这类部件不必读取字节即可判定（`drawableImage`）。 */
+export function decodableImage(type: string): boolean {
+  return DECODABLE_IMAGES.has(type)
+}
+
+/** `drawable` 为 `null` 表示部件不在包中，没有可绘制的内容，不登记。 */
+export function countImage(drawable: boolean | null, found: FindingSink): void {
+  if (drawable === false) found.push('imageFormat')
 }
 
 /** 外部阴影之外的效果；`other` 已在读取时登记。 */

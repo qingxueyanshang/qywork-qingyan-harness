@@ -4,7 +4,9 @@
  *
  * - 内容坐标以幻灯片宽度为单位：缩放比例为 1 时幻灯片列（含两侧间距）与滚动容器同宽，小于 1 时居中。
  *   不要改为 CSS 像素：以幻灯片宽度为单位，滚动容器宽度改变后仍定位到同一处内容。
- * - 画布像素按 CSS 尺寸乘 `devicePixelRatio` 分配，面积超过 `MAX_CANVAS_PIXELS` 时等比缩小，由浏览器放大显示。
+ * - 画布像素按 CSS 尺寸乘 `devicePixelRatio` 取整分配，面积超过 `MAX_CANVAS_PIXELS` 时等比缩小，由浏览器放大显示。
+ *   画布的位置按设备像素取整，CSS 尺寸取画布像素除以设备像素比，使画布像素与屏幕像素一一对应；不取整时浏览器按小数
+ *   位置与尺寸重采样，文字发虚。
  * - 缩放期间已绘制的画布随元素尺寸拉伸显示，停止缩放 `SETTLE_MS` 后按新尺寸重绘；没有内容的画布立即绘制。
  * - 每帧最多绘制一张幻灯片，其余留到后续帧：一张幻灯片的排版与绘制可达数十毫秒。待绘制的可见幻灯片在同一帧中
  *   全部调用 `prepare`，资源的读取不随绘制推迟到后续帧。
@@ -116,6 +118,7 @@ export function createSlideViewport(
     for (const index of [...pages.keys()]) if (index < first || index > last) release(index)
 
     const dpr = window.devicePixelRatio || 1
+    const snap = (v: number) => Math.round(v * dpr) / dpr
     let pw = scale * dpr
     let ph = layout.aspect * scale * dpr
     const shrink = Math.min(1, Math.sqrt(MAX_CANVAS_PIXELS / (pw * ph)))
@@ -136,10 +139,10 @@ export function createSlideViewport(
         pages.set(index, page)
       }
       const style = page.canvas.style
-      style.left = `${originX + GAP * scale}px`
-      style.top = `${(GAP + index * step) * scale}px`
-      style.width = `${scale}px`
-      style.height = `${layout.aspect * scale}px`
+      style.left = `${snap(originX + GAP * scale)}px`
+      style.top = `${snap((GAP + index * step) * scale)}px`
+      style.width = `${pw / (dpr * shrink)}px`
+      style.height = `${ph / (dpr * shrink)}px`
 
       const drawn = page.drawn
       if (drawn?.size === size && drawn.generation === generation) continue

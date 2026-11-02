@@ -1,14 +1,16 @@
 /**
  * 覆盖 `office/SheetView.tsx`、`office/pptx/SlideView.tsx` 与 `office/docx/DocView.tsx`（经 `FileView.tsx` 的 Office 分支：
- * 加载态、四类失败、能力边界、工作表签、改写后刷新、嵌入字体还原前先绘制与还原后只重绘用到它的幻灯片、文档的字体请求）、
+ * 加载态、四类失败、能力边界、工作表签、改写后刷新、主机上没有的字体改取替代字体、嵌入字体还原前先绘制与还原后只重绘用到它的幻灯片、文档的字体请求）、
  * `office/document.ts`（加载与重新加载、Worker 请求与回复、Worker 出错、失败与能力边界文案）、
- * `office/fonts.ts`（主机上没有的字体按缺失处理、嵌入字体的注册）、`office/viewport.ts`、`office/pptx/slide-viewport.ts`
- * 与 `office/docx/page-viewport.ts`（只为可见的幻灯片与页面创建画布并绘制、首次显示的缩放比例、页面居中与按像素取整、
- * 改写后保留滚动位置与缩放比例）、`office/OfficePicker.tsx` 与 `lib/file-search.ts` 的 `office` 筛选、
+ * `office/fonts.ts`（主机上没有的字体按缺失处理、嵌入字体的注册）、`office/viewport.ts`、`office/sheet-viewport.ts`、
+ * `office/pptx/slide-viewport.ts` 与 `office/docx/page-viewport.ts`（只为可见的幻灯片与页面创建画布并绘制、首次显示的缩放比例、
+ * 页面居中、幻灯片与页面按像素取整、工作表与幻灯片为不透明画布并在绘制前以白色铺满、改写后保留滚动位置与缩放比例）、
+ * `office/OfficePicker.tsx` 与 `lib/file-search.ts` 的 `office` 筛选、
  * `SidePanel.tsx` 看板的 Word 行、PPT 行、Excel 行与文件预览页、`lib/store/ui.ts` 的 `openFileTab`。
  *
  * happy-dom 没有 Canvas（`getContext` 返回 `null`）与 `FontFace`：绘制由对比基准与浏览器实测验证，这里只断言界面状态、
- * 画布的创建与释放、绘制的调用对象；`FontFace` 与 `document.fonts` 替换为记录注册与删除的替身。
+ * 画布的创建与释放、绘制的调用对象，以及替身上下文记录的填充（`recordContexts`）；`FontFace` 与 `document.fonts`
+ * 替换为记录注册与删除的替身。
  * `Worker` 替换为按请求回复的替身，断言 Worker 以模块方式从同源文件加载；解析本身由 `@qywork/ooxml` 的测试覆盖。
  */
 
@@ -130,7 +132,6 @@ function workbook(sheets: Worksheet[], over: Partial<Workbook> = {}): Workbook {
   return {
     sheets,
     styles: [style],
-    dxfs: [],
     defaultFont: font,
     minorFont: null,
     date1904: false,
@@ -164,10 +165,26 @@ const FAILURES = {
   plain: { ok: false, failure: { kind: 'not-office' } },
 } as const
 
+/** 保存的缩放比例为 85% 的空白工作表：画布变换不是整数比例。 */
+const ZOOMED = workbook([
+  sheet('甲', {
+    view: {
+      showGridLines: true,
+      zoom: 85,
+      rightToLeft: false,
+      frozenRows: 0,
+      frozenCols: 0,
+      topLeft: { row: 0, col: 0 },
+    },
+  }),
+])
+
 /** 文件字节（文本）到 xlsx 解析结果的对应。 */
 const XLSX_RESULTS: Record<string, XlsxResult> = {
   first: { ok: true, value: FIRST },
+  'missing-font': { ok: true, value: workbook([sheet('甲')], { fontNames: ['Inherit', '宋体'] }) },
   second: { ok: true, value: SECOND },
+  zoomed: { ok: true, value: ZOOMED },
   ...FAILURES,
 }
 
@@ -217,6 +234,7 @@ function presentation(
     masters: ['/ppt/slideMasters/slideMaster1.xml'],
     slides,
     unsupported,
+    metafileFonts: [],
   }
 }
 
@@ -269,8 +287,8 @@ const PPTX_RESULTS: Record<string, PptxResult> = {
 const A4 = { width: 595.3, height: 841.9 }
 const A4_LANDSCAPE = { width: 841.9, height: 595.3 }
 
-/** 没有内容的页面：测试中画布没有绘制上下文，不执行绘制。`hidden` 为与文字同行的图片个数。 */
-function docPage(size: { width: number; height: number }, hidden = 0): Page {
+/** 没有内容的页面：测试中画布没有绘制上下文，不执行绘制。`hiddenMath` 为未绘制的公式个数。 */
+function docPage(size: { width: number; height: number }, hiddenMath = 0): Page {
   return {
     section: 0,
     ...size,
@@ -281,7 +299,8 @@ function docPage(size: { width: number; height: number }, hidden = 0): Page {
     floats: [],
     background: null,
     borders: null,
-    hidden,
+    graphicFonts: null,
+    hiddenMath,
   }
 }
 
@@ -303,8 +322,8 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
     pages: docPages(REPORT_SIZES.map((size) => docPage(size))),
   },
   revised: {
-    parsed: { ok: true, fonts: ['宋体'], unsupported: { math: 1 } },
-    pages: docPages(REPORT_SIZES.map((size) => docPage(size))),
+    parsed: { ok: true, fonts: ['宋体'], unsupported: {} },
+    pages: docPages(REPORT_SIZES.map((size, i) => docPage(size, i === 0 ? 1 : 0))),
   },
   kinds: {
     parsed: {
@@ -326,7 +345,6 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
         imageFormat: 1,
         vml: 1,
         ole: 1,
-        math: 1,
         contentPart: 1,
         columns: 1,
         footnote: 1,
@@ -354,7 +372,7 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
         autoSpacing: 1,
       },
     },
-    pages: docPages([docPage(A4, 2), docPage(A4, 1)]),
+    pages: docPages([docPage(A4, 1), docPage(A4)]),
   },
   encrypted: { parsed: FAILURES.encrypted },
   legacy: { parsed: FAILURES.legacy },
@@ -560,19 +578,21 @@ function fakeFonts(holdLoad: (family: string) => boolean = () => false) {
  * 替换服务端：预览接口按扩展名返回 Office 元数据（修改时间取 `mtime()`），原始字节按路径取 `bytes`。
  * 字体接口只提供宋体（内容为 `tinyFont()`），其余为 404（主机上没有该字体）。主机字体按字体名缓存在页面模块中、
  * 跨用例保留，因此每个用例都提供同一组字体；同时替换 `FontFace`（`families` 为本用例中注册的族名，
- * `holdLoad` 与 `loads` 见 `fakeFonts`）。
+ * `holdLoad` 与 `loads` 见 `fakeFonts`）。字体平滑接口下发 `clearType`，省略时为主机不使用 ClearType。
  */
 async function fakeServer(opts: {
   bytes: (path: string) => string | Promise<string>
   mtime?: () => number
   find?: (query: URLSearchParams) => { path: string; kind: 'file' | 'dir' }[]
   holdLoad?: (family: string) => boolean
+  clearType?: { contrast: number }
 }) {
   const { families, loads } = fakeFonts(opts.holdLoad)
   const store = await import('../../lib/store/index.ts')
   const { ApiError } = await import('../../lib/client.ts')
   const raw: string[] = []
   const finds: URLSearchParams[] = []
+  const fontRequests: string[] = []
   const originalApi = store.client.api
   const originalRaw = store.client.raw
   ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
@@ -580,9 +600,11 @@ async function fakeServer(opts: {
   ) => {
     if (path.startsWith('/api/fonts?')) {
       const name = new URLSearchParams(path.split('?')[1]).get('name') ?? ''
+      fontRequests.push(name)
       if (name !== '宋体') throw new ApiError(404, path, '')
       return { faces: [{ id: `id-${name}`, bold: false, italic: false }] }
     }
+    if (path === '/api/fonts/smoothing') return { clearType: opts.clearType ?? null }
     if (path.startsWith('/api/files/tree')) return { nodes: [] }
     if (path.startsWith('/api/files/find')) {
       const query = new URLSearchParams(path.split('?')[1] ?? '')
@@ -615,7 +637,7 @@ async function fakeServer(opts: {
     ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
     ;(store.client as unknown as { raw: typeof originalRaw }).raw = originalRaw
   })
-  return { raw, finds, store, families, loads }
+  return { raw, finds, store, families, loads, fontRequests }
 }
 
 async function mountFileView(path: () => string, refresh: () => number) {
@@ -668,6 +690,21 @@ describe('表格预览', () => {
     expect(new URL(workers.calls[0]!.url).pathname.endsWith('/office/xlsx-worker.ts')).toBe(true)
     // 解析完成后结束 Worker。
     expect(workers.terminated()).toBe(1)
+  })
+
+  test('主机上没有的字体改为取得其替代字体', async () => {
+    fakeWorker()
+    const { fontRequests } = await fakeServer({ bytes: () => 'missing-font' })
+    const host = await mountFileView(
+      () => 'missing.xlsx',
+      () => 0,
+    )
+    await waitFor(
+      () => tabNames(host).length > 0,
+      () => fontRequests.join(','),
+    )
+    expect(fontRequests).toContain('Inherit')
+    expect(fontRequests.indexOf('Arial')).toBeGreaterThan(fontRequests.indexOf('Inherit'))
   })
 
   test('四类失败各显示一句原因，不显示工作表签', async () => {
@@ -766,6 +803,55 @@ describe('表格预览', () => {
     )
     expect(host.querySelector('.sheet-tab')).toBeNull()
   })
+
+  /**
+   * 原始失败形状：透明画布上的文字为灰度抗锯齿，与 WPS 屏幕显示不同。不透明画布的初始像素为黑色，
+   * 缩放比例不是整数时窗格边缘只被部分覆盖，须先以白色铺满。主机使用 ClearType 时单元格文字读写画布像素，
+   * 画布以 `willReadFrequently` 创建。
+   */
+  test('工作表画布为不透明画布，主机使用 ClearType 时按频繁读取像素创建；每次绘制前在单位变换下以白色铺满整个画布；画布像素与 CSS 像素相同', async () => {
+    fakeWorker()
+    const contexts = recordContexts()
+    await fakeServer({ bytes: () => 'zoomed', clearType: { contrast: 1200 } })
+    sizeScrollers()
+    const host = await mountFileView(
+      () => 'a.xlsx',
+      () => 0,
+    )
+    await waitFor(
+      () => contexts[0] !== undefined && contexts[0].fills.length > 1,
+      () => host.innerHTML.slice(0, 300),
+    )
+    const { canvas, options, fills } = contexts[0]!
+    expect(canvas.classList.contains('sheet-canvas')).toBe(true)
+    expect(options).toEqual({ alpha: false, willReadFrequently: true })
+    expect([canvas.width, canvas.height]).toEqual([VIEW_W, VIEW_H])
+    expect(fills[0]).toEqual({
+      transform: [1, 0, 0, 1, 0, 0],
+      fillStyle: '#ffffff',
+      rect: [0, 0, VIEW_W, VIEW_H],
+    })
+    // 其后的绘制按工作表的缩放比例变换。
+    expect(fills[1]!.transform).toEqual([0.85, 0, 0, 0.85, 0, 0])
+    expect(canvas.style.width).toBe(`${canvas.width}px`)
+    expect(canvas.style.height).toBe(`${canvas.height}px`)
+  })
+
+  test('主机不使用 ClearType 时画布不按频繁读取像素创建', async () => {
+    fakeWorker()
+    const contexts = recordContexts()
+    await fakeServer({ bytes: () => 'zoomed' })
+    sizeScrollers()
+    const host = await mountFileView(
+      () => 'a.xlsx',
+      () => 0,
+    )
+    await waitFor(
+      () => contexts[0] !== undefined && contexts[0].fills.length > 1,
+      () => host.innerHTML.slice(0, 300),
+    )
+    expect(contexts[0]!.options).toEqual({ alpha: false, willReadFrequently: false })
+  })
 })
 
 /** 幻灯片与页面视口的测试尺寸：滚动容器 800 × 600，幻灯片 16:9。 */
@@ -773,14 +859,15 @@ const VIEW_W = 800
 const VIEW_H = 600
 const ASPECT = 6858000 / 12192000
 
-/** happy-dom 不计算布局：未隐藏的幻灯片与页面滚动容器取上述尺寸（宽度可另给），其余元素为 0。挂载前调用。 */
+/** happy-dom 不计算布局：未隐藏的工作表、幻灯片与页面滚动容器取上述尺寸（宽度可另给），其余元素为 0。挂载前调用。 */
 function sizeScrollers(width = VIEW_W) {
   const proto = HTMLElement.prototype
   const size = (value: number) => ({
     configurable: true,
     get(this: HTMLElement) {
-      const scroller =
-        this.classList.contains('slide-scroll') || this.classList.contains('doc-scroll')
+      const scroller = ['sheet-scroll', 'slide-scroll', 'doc-scroll'].some((name) =>
+        this.classList.contains(name),
+      )
       return scroller && !this.hidden ? value : 0
     },
   })
@@ -807,6 +894,73 @@ function spyPaint(): HTMLCanvasElement[] {
     proto.getContext = original
   })
   return painted
+}
+
+interface RecordedFill {
+  /** 填充时的画布变换 `[a, b, c, d, e, f]`。 */
+  readonly transform: readonly unknown[]
+  readonly fillStyle: unknown
+  readonly rect: readonly number[]
+}
+
+interface RecordedContext {
+  readonly canvas: HTMLCanvasElement
+  /** 首次取得绘制上下文时的选项。 */
+  readonly options: unknown
+  readonly fills: RecordedFill[]
+}
+
+/**
+ * 替换 `getContext`：每个画布返回一个记录 `fillRect` 的替身上下文（同一画布返回同一个），其余方法为空操作。
+ * 替身只记录填充时的变换与填充色，不模拟像素；`in` 运算对任何属性为假，绘制代码按缺少可选属性处理。
+ */
+function recordContexts(): RecordedContext[] {
+  const list: RecordedContext[] = []
+  const contexts = new WeakMap<HTMLCanvasElement, object>()
+  const proto = HTMLCanvasElement.prototype as unknown as {
+    getContext: (this: HTMLCanvasElement, kind: string, options?: unknown) => object | null
+  }
+  const original = proto.getContext
+  proto.getContext = function (this: HTMLCanvasElement, _kind: string, options?: unknown) {
+    let ctx = contexts.get(this)
+    if (!ctx) {
+      const record: RecordedContext = { canvas: this, options, fills: [] }
+      list.push(record)
+      let transform: readonly unknown[] = [1, 0, 0, 1, 0, 0]
+      let fillStyle: unknown = '#000000'
+      ctx = new Proxy(
+        {},
+        {
+          has: () => false,
+          get: (_target, prop) => {
+            if (prop === 'fillStyle') return fillStyle
+            if (prop === 'setTransform')
+              return (...m: unknown[]) => {
+                transform = m
+              }
+            if (prop === 'getTransform')
+              return () => {
+                const [a, b, c, d, e, f] = transform
+                return { a, b, c, d, e, f }
+              }
+            if (prop === 'fillRect')
+              return (...rect: number[]) => record.fills.push({ transform, fillStyle, rect })
+            return () => {}
+          },
+          set: (_target, prop, value) => {
+            if (prop === 'fillStyle') fillStyle = value
+            return true
+          },
+        },
+      )
+      contexts.set(this, ctx)
+    }
+    return ctx
+  }
+  restores.push(() => {
+    proto.getContext = original
+  })
+  return list
 }
 
 /** 由画布的纵向位置求幻灯片序号（`slide-viewport.ts` 的排列：间距 `GAP`，以幻灯片宽度为单位）。 */
@@ -933,6 +1087,44 @@ describe('演示文稿预览', () => {
     expect(await Promise.all(painted.slice(2).map(slideIndex))).toEqual([5, 6])
     // 离开可见区域的画布已移除并释放像素。
     expect(painted.slice(0, 2).every((c) => !c.isConnected && c.width === 0)).toBe(true)
+  })
+
+  /**
+   * 原始失败形状：透明画布上的文字为灰度抗锯齿；画布位置与 CSS 尺寸为小数时浏览器重采样，文字发虚。
+   * 不透明画布的初始像素为黑色，画布高度取整后最后一行像素只被幻灯片部分覆盖，须先以白色铺满。
+   */
+  test('幻灯片画布为不透明画布，绘制前以白色铺满整个画布；位置按像素取整，画布像素与 CSS 像素相同', async () => {
+    fakeWorker()
+    const contexts = recordContexts()
+    await fakeServer({ bytes: () => 'deck' })
+    sizeScrollers()
+    const host = await mountFileView(
+      () => 'deck.pptx',
+      () => 0,
+    )
+    await waitFor(
+      () => contexts.length >= 2 && contexts.every((c) => c.fills.length > 0),
+      () => host.innerHTML.slice(0, 300),
+    )
+    const { GAP } = await import('./pptx/slide-viewport.ts')
+    const scale = VIEW_W / (1 + 2 * GAP)
+    for (const { canvas, options, fills } of contexts) {
+      expect(options).toEqual({ alpha: false })
+      expect(fills[0]).toEqual({
+        transform: [1, 0, 0, 1, 0, 0],
+        fillStyle: '#ffffff',
+        rect: [0, 0, canvas.width, canvas.height],
+      })
+      expect([canvas.width, canvas.height]).toEqual([Math.round(scale), Math.round(ASPECT * scale)])
+      expect(canvas.style.width).toBe(`${canvas.width}px`)
+      expect(canvas.style.height).toBe(`${canvas.height}px`)
+    }
+    const left = `${Math.round(GAP * scale)}px`
+    expect(contexts.map((c) => c.canvas.style.left)).toEqual([left, left])
+    expect(contexts.map((c) => c.canvas.style.top)).toEqual([
+      `${Math.round(GAP * scale)}px`,
+      `${Math.round((2 * GAP + ASPECT) * scale)}px`,
+    ])
   })
 
   /** 原始失败形状：AI 改写文件后预览不刷新；或刷新后回到第一张幻灯片、缩放复原。 */
@@ -1224,7 +1416,7 @@ describe('文档预览', () => {
     }
   })
 
-  test('能力边界按整个文件列出名称与计数；无法解码的图片格式与与文字同行的图片计入图片，VML 计入其他对象', async () => {
+  test('能力边界按整个文件列出名称与计数；无法解码的图片格式计入图片，VML 计入其他对象，未绘制的公式取自分页结果', async () => {
     fakeWorker()
     await fakeServer({ bytes: () => 'kinds' })
     const host = await mountFileView(
@@ -1236,7 +1428,7 @@ describe('文档预览', () => {
       () => host.innerHTML.slice(0, 300),
     )
     expect(boundary(host)).toBe(
-      '未显示：图片 5、图表 1、SmartArt 1、形状 1、组合 1、绘图画布 1、其他对象 2、嵌入对象 1、公式 1、墨迹 1、' +
+      '未显示：图片 2、图表 1、SmartArt 1、形状 1、组合 1、绘图画布 1、其他对象 2、嵌入对象 1、公式 1、墨迹 1、' +
         '其他效果 1、图文框 1、浮动表格 1、外部内容 1、子文档 1、脚注 1、尾注 1、批注 1、修订 1、域 1、分栏 1、' +
         '文字方向 1、行号 1、字符网格 1、艺术型页面边框 1、编号格式 1、自动段间距 1、制表位前导符 1、' +
         '小数点对齐制表位 1、竖线对齐制表位 1、对齐方式选项卡 1、字符缩放 1、着重号 1、小型大写字母 1、中文版式 1、' +

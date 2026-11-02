@@ -15,11 +15,12 @@ import {
   readEffects,
   readFill,
   readLine,
-  readThreeD,
 } from '../fill.ts'
 import type { Geometry } from '../geometry/model.ts'
 import { readGeometry } from '../geometry/read.ts'
 import type { TextContext } from '../text/read.ts'
+import type { Scene3D, Shape3D } from '../three/model.ts'
+import { readScene3D, readShape3D } from '../three/read.ts'
 import type { FindingSink } from './model.ts'
 
 export interface Xfrm {
@@ -59,6 +60,8 @@ export interface ShapeProps {
   readonly fill: FillSpec | null
   readonly line: LineSpec | null
   readonly effects: readonly EffectSpec[] | null
+  readonly scene3d: Scene3D | null
+  readonly shape3d: Shape3D | null
 }
 
 export const EMPTY_PROPS: ShapeProps = {
@@ -67,6 +70,8 @@ export const EMPTY_PROPS: ShapeProps = {
   fill: null,
   line: null,
   effects: null,
+  scene3d: null,
+  shape3d: null,
 }
 
 export interface Connection {
@@ -164,13 +169,15 @@ export function readXfrm(x: Scanner): Xfrm {
   return { x: px, y: py, width, height, rotation, flipH, flipV, child }
 }
 
-/** 在 `spPr` 或 `grpSpPr` 的开始标签处调用。改变外观的三维设置登记为 `effect3d`。 */
+/** 在 `spPr` 或 `grpSpPr` 的开始标签处调用。三维设置只读取，绘制端能力内外的登记见 `three/camera.ts`。 */
 export function readShapeProps(x: Scanner, cx: TextContext): ShapeProps {
   let xfrm: Xfrm | null = null
   let geometry: Geometry | null = null
   let fill: FillSpec | null = null
   let line: LineSpec | null = null
   let effects: EffectSpec[] | null = null
+  let scene3d: Scene3D | null = null
+  let shape3d: Shape3D | null = null
   eachChild(x, (local) => {
     if (local === 'xfrm') xfrm = readXfrm(x)
     else if (local === 'prstGeom' || local === 'custGeom') geometry = readGeometry(x)
@@ -178,9 +185,10 @@ export function readShapeProps(x: Scanner, cx: TextContext): ShapeProps {
     else if (local === 'ln') line = readLine(x, cx.rels)
     else if (local === 'effectLst') effects = readEffects(x)
     else if (local === 'effectDag') effects = [{ kind: 'other', name: 'effectDag' }]
-    else if ((local === 'scene3d' || local === 'sp3d') && readThreeD(x)) cx.found.push('effect3d')
+    else if (local === 'scene3d') scene3d = readScene3D(x)
+    else if (local === 'sp3d') shape3d = readShape3D(x)
   })
-  return { xfrm, geometry, fill, line, effects }
+  return { xfrm, geometry, fill, line, effects, scene3d, shape3d }
 }
 
 function readStyleRef(x: Scanner): StyleRef {

@@ -6,8 +6,8 @@
  * 1. 白色底。
  * 2. 网格线（`showGridLines` 为真时），颜色 `#e6e6e6`。与有填充的单元格相邻的线段、合并区域内部的线段、
  *    被溢出文字覆盖的竖线段不画。
- * 3. 填充：覆盖单元格内部及其右侧、下侧网格线；左侧（上侧）相邻单元格也有填充时同时覆盖左侧（上侧）网格线。
- *    按行优先顺序绘制，两个填充单元格之间的线取后绘制者的颜色。
+ * 3. 填充：覆盖单元格内部及其四周的网格线，区域左沿（上沿）恰为网格线时不覆盖该线。按填充分组绘制，
+ *    组的先后为区域内按行优先首次出现的先后，两种填充之间的线因此取后出现者的颜色（与两格的左右上下位置无关）。
  * 4. 数据条，5. 边框（同一条边两侧都指定时取较粗者），6. 文字，7. 绘图对象（图片、形状与图表，按锚点在绘图部件中的顺序，
  *    形状见 `shapes.ts`，图表见 `../../drawingml/chart/paint.ts`，图表区即锚点矩形），8. 自动筛选按钮。
  */
@@ -26,6 +26,14 @@ import type { ShapeScene } from '../../drawingml/shape/paint.ts'
 import type { FaceCache } from '../../drawingml/text/fonts.ts'
 import { emboldenBitmap } from '../../font/index.ts'
 import { fillBitmap } from '../../glyph/bitmap.ts'
+import {
+  type ClearTypeDisplay,
+  type DeviceRect,
+  type GlyphRun,
+  type PixelCanvas,
+  type PlacedGlyph,
+  paintGlyphRuns,
+} from '../../glyph/cleartype/index.ts'
 import type {
   BorderLine,
   BorderLineStyle,
@@ -57,8 +65,10 @@ import type { TextRun } from './text.ts'
 /**
  * 绘制所需的 Canvas 2D 接口子集；浏览器的 `CanvasRenderingContext2D` 与 `OffscreenCanvasRenderingContext2D` 都满足。
  * `getTransform` 取得调用方设置的缩放与设备像素比：形状按绝对变换绘制，须以它为基准。
+ * `SheetResources.clearType` 不为 `null` 时单元格文字读写画布像素（`getImageData`、`putImageData`），
+ * 画布宜以 `willReadFrequently: true` 创建。
  */
-export interface PaintContext extends DrawingContext {
+export interface PaintContext extends DrawingContext, PixelCanvas {
   getTransform(): Matrix
 }
 
@@ -67,6 +77,11 @@ export interface SheetResources {
   readonly images: readonly (PaintImage | null)[]
   /** 形状的阴影、图案与复合线条所需的图层；浏览器中为 `(w, h) => new OffscreenCanvas(w, h)`。 */
   readonly createCanvas: CreateCanvas
+  /**
+   * 显示器的 ClearType 设置。不为 `null` 时 TrueType 字体的单元格文字以 ClearType 字形绘制（见 `clearTypeRun`），
+   * 为 `null` 时以浏览器字体绘制。
+   */
+  readonly clearType: ClearTypeDisplay | null
 }
 
 /** 绘图对象按上下次序排列：图片为 `sheet.images` 的下标，形状已换算到工作表坐标，图表附锚点矩形（工作表像素）。 */
@@ -250,9 +265,18 @@ export function paintRegion(
   if (sheet.view.showGridLines) {
     drawGridLines(ctx, scene, { r0, r1, c0, c1 }, filled, covered, tx, ty)
   }
-  drawFills(ctx, scene, { r0, r1, c0, c1 }, infoAt, filled, tx, ty)
-  drawBorders(ctx, scene, { r0, r1, c0, c1 }, infoAt, tx, ty)
-  for (const layout of layouts) drawText(ctx, layout, tx, ty)
+  drawFills(ctx, scene, { r0, r1, c0, c1 }, region, infoAt, tx, ty)
+  drawBorders(ctx, scene, { r0, r1, c0, c1 }, infoAt, tx, ty, originX, originY)
+  // ClearType 字形读写画布像素：各单元格的字形收集后一次混合，在边框之后、绘图对象之前。
+  const runs: GlyphRun[] | null = res.clearType ? [] : null
+  const bounds: DeviceRect = {
+    left: originX,
+    top: originY,
+    right: originX + region.width + 1,
+    bottom: originY + region.height + 1,
+  }
+  for (const layout of layouts) drawText(ctx, layout, tx, ty, bounds, runs)
+  if (runs && runs.length > 0) paintGlyphRuns(ctx, runs, res.clearType!)
   drawDrawings(ctx, scene, res, { base, region, originX, originY })
   if (sheet.autoFilter) drawFilterButtons(ctx, scene, sheet.autoFilter, { r0, r1, c0, c1 }, tx, ty)
   ctx.restore()
@@ -516,17 +540,33 @@ function fillStyleOf(
   return g
 }
 
+/**
+ * 填充按 `CellFill` 对象分组，组按首次出现的先后绘制（`Map` 保持插入顺序）。不要改回逐格绘制：
+ * 两种填充之间的线归后出现的那一组，与哪一格在左（上）无关，逐格绘制总是归右（下）侧。
+ * WPS 屏幕显示实测（构造文件经 `Range.CopyPicture`）：交换两格位置、交换 fillId 与 xf 的顺序、改变缩放比例、
+ * 隐藏网格线都不改变归属，只有改变区域内首次出现的先后才改变。
+ * 边界：一行中多种填充连续相间（构造文件中整行逐列轮换三种颜色）时 WPS 的竖线归左侧单元格，不符合本规则，机制未查明。
+ * 数据条在全部填充之后绘制，位于单元格内侧 2 像素以内，不受相邻填充覆盖。
+ */
 function drawFills(
   ctx: PaintContext,
   scene: SheetScene,
   range: Range,
+  region: PaintRegion,
   infoAt: (r: number, c: number) => CellInfo,
-  filled: (r: number, c: number) => boolean,
   tx: (x: number) => number,
   ty: (y: number) => number,
 ): void {
   const { cols, rows } = scene.geometry
   const done = new Set<CellRange>()
+  const groups = new Map<CellFill, { x0: number; y0: number; x1: number; y1: number }[]>()
+  const bars: {
+    bar: { ratio: number; color: string }
+    left: number
+    top: number
+    right: number
+    bottom: number
+  }[] = []
   for (let r = range.r0; r <= range.r1; r++) {
     if (rows.size(r) <= 0) continue
     for (let c = range.c0; c <= range.c1; c++) {
@@ -542,26 +582,38 @@ function drawFills(
       const bottom = m ? m.bottom : r
       const right = m ? m.right : c
       if (info.fill) {
-        const x0 = cols.offset(left) + (filled(top, left - 1) ? 0 : 1)
-        const y0 = rows.offset(top) + (filled(top - 1, left) ? 0 : 1)
-        const x1 = cols.offset(right + 1)
-        const y1 = rows.offset(bottom + 1)
-        const x = tx(x0)
-        const y = ty(y0)
-        ctx.fillStyle = fillStyleOf(ctx, info.fill, x, y, x1 - x0 + 1, y1 - y0 + 1)
-        ctx.fillRect(x, y, x1 - x0 + 1, y1 - y0 + 1)
+        const x0 = cols.offset(left)
+        const y0 = rows.offset(top)
+        const rects = groups.get(info.fill) ?? []
+        rects.push({
+          x0: x0 === region.x ? x0 + 1 : x0,
+          y0: y0 === region.y ? y0 + 1 : y0,
+          x1: cols.offset(right + 1),
+          y1: rows.offset(bottom + 1),
+        })
+        groups.set(info.fill, rects)
       }
       const bar = info.effect?.bar
-      if (bar)
-        drawDataBar(
-          ctx,
-          bar,
-          tx(cols.offset(left)),
-          ty(rows.offset(top)),
-          cols.offset(right + 1) - cols.offset(left),
-          rows.offset(bottom + 1) - rows.offset(top),
-        )
+      if (bar) bars.push({ bar, left, top, right, bottom })
     }
+  }
+  for (const [fill, rects] of groups) {
+    for (const { x0, y0, x1, y1 } of rects) {
+      const x = tx(x0)
+      const y = ty(y0)
+      ctx.fillStyle = fillStyleOf(ctx, fill, x, y, x1 - x0 + 1, y1 - y0 + 1)
+      ctx.fillRect(x, y, x1 - x0 + 1, y1 - y0 + 1)
+    }
+  }
+  for (const { bar, left, top, right, bottom } of bars) {
+    drawDataBar(
+      ctx,
+      bar,
+      tx(cols.offset(left)),
+      ty(rows.offset(top)),
+      cols.offset(right + 1) - cols.offset(left),
+      rows.offset(bottom + 1) - rows.offset(top),
+    )
   }
 }
 
@@ -604,7 +656,10 @@ function stronger(a: BorderLine | null, b: BorderLine | null): BorderLine | null
   return STYLE_RANK[b.style] > STYLE_RANK[a.style] ? b : a
 }
 
-/** 线宽与相对网格线像素的起始偏移。 */
+/**
+ * 线宽与相对网格线像素的起始偏移。WPS 屏幕显示实测（四条边相同）：中粗类线占网格线及其上方或左方 1 像素，
+ * 粗线与双线以网格线为中心，其余占网格线。
+ */
 function lineGeometry(style: BorderLineStyle): { width: number; offset: number } {
   switch (style) {
     case 'medium':
@@ -612,7 +667,7 @@ function lineGeometry(style: BorderLineStyle): { width: number; offset: number }
     case 'mediumDashDot':
     case 'mediumDashDotDot':
     case 'slantDashDot':
-      return { width: 2, offset: 0 }
+      return { width: 2, offset: -1 }
     case 'thick':
     case 'double':
       return { width: 3, offset: -1 }
@@ -621,30 +676,81 @@ function lineGeometry(style: BorderLineStyle): { width: number; offset: number }
   }
 }
 
-/** 虚线图案：交替的实线与空白长度（像素），空数组为实线。 */
-function dashPattern(style: BorderLineStyle): number[] {
+/** 虚线图案：周期与周期内的实线段 `[起点, 长度]`（像素），`null` 为实线。 */
+interface Dash {
+  readonly period: number
+  readonly on: readonly (readonly [number, number])[]
+}
+
+/** 斜点划线的下一行（竖线为右一列）：上一行各段左移 1 像素并缩短 1 像素，形成斜切的段端。 */
+const SLANT_LOWER: Dash = {
+  period: 18,
+  on: [
+    [-1, 10],
+    [11, 4],
+  ],
+}
+
+/**
+ * WPS 屏幕显示实测（构造文件经 `Range.CopyPicture`）：图案沿整条线连续，不在单元格边界重新开始；
+ * 相位以绘制区域的左沿（竖线为上沿）之后 1 像素为周期起点，与工作表坐标无关（同一条线换一个区域起点，图案随之平移）。
+ * 斜点划线上一行（左一列）的图案与点划线相同，下一行见 `SLANT_LOWER`。
+ */
+function dashOf(style: BorderLineStyle): Dash | null {
   switch (style) {
     case 'hair':
+      return { period: 2, on: [[1, 1]] }
     case 'dotted':
-      return [1, 1]
+      return { period: 4, on: [[0, 2]] }
     case 'dashed':
-      return [3, 1]
+      return { period: 4, on: [[0, 3]] }
     case 'mediumDashed':
-      return [9, 3]
+      return { period: 12, on: [[0, 9]] }
     case 'dashDot':
-      return [9, 3, 3, 3]
     case 'mediumDashDot':
     case 'slantDashDot':
-      return [9, 3, 3, 3]
+      return {
+        period: 18,
+        on: [
+          [0, 9],
+          [12, 3],
+        ],
+      }
     case 'dashDotDot':
     case 'mediumDashDotDot':
-      return [9, 3, 3, 3, 3, 3]
+      return {
+        period: 24,
+        on: [
+          [0, 9],
+          [12, 3],
+          [18, 3],
+        ],
+      }
     default:
-      return []
+      return null
   }
 }
 
-/** 画一条水平或竖直的边框线；`x`、`y` 为网格线像素，`length` 沿线方向。 */
+/** 线段 `[from, from + length)` 中属于图案实线段的部分；`origin` 为周期起点。 */
+function dashRuns(dash: Dash, from: number, length: number, origin: number): [number, number][] {
+  const runs: [number, number][] = []
+  const end = from + length
+  for (const [s, l] of dash.on) {
+    for (let k = Math.floor((from - origin - s - l) / dash.period); ; k++) {
+      const a = origin + s + k * dash.period
+      if (a >= end) break
+      const lo = Math.max(a, from)
+      const hi = Math.min(a + l, end)
+      if (hi > lo) runs.push([lo, hi - lo])
+    }
+  }
+  return runs
+}
+
+/**
+ * 画一条水平或竖直的边框线；`x`、`y` 为网格线像素，`length` 沿线方向，`origin` 为绘制区域沿线方向的起点像素。
+ * 粗线两端各延长 1 像素（实测：单独一条粗线的墨迹比网格线两端各长 1 像素）。
+ */
 function drawLine(
   ctx: PaintContext,
   line: BorderLine,
@@ -652,33 +758,35 @@ function drawLine(
   x: number,
   y: number,
   length: number,
+  origin: number,
 ): void {
   ctx.fillStyle = line.color
   const { width, offset } = lineGeometry(line.style)
+  const rect = (along: number, across: number, size: number, thickness: number) => {
+    if (horizontal) ctx.fillRect(along, y + across, size, thickness)
+    else ctx.fillRect(x + across, along, thickness, size)
+  }
+  const start = horizontal ? x : y
   if (line.style === 'double') {
-    for (const d of [-1, 1]) {
-      if (horizontal) ctx.fillRect(x, y + d, length, 1)
-      else ctx.fillRect(x + d, y, 1, length)
-    }
+    rect(start, -1, length, 1)
+    rect(start, 1, length, 1)
     return
   }
-  const dash = dashPattern(line.style)
-  if (dash.length === 0) {
-    if (horizontal) ctx.fillRect(x, y + offset, length, width)
-    else ctx.fillRect(x + offset, y, width, length)
+  if (line.style === 'thick') {
+    rect(start - 1, offset, length + 2, width)
     return
   }
-  let pos = 0
-  let i = 0
-  while (pos < length) {
-    const seg = Math.min(dash[i % dash.length]!, length - pos)
-    if (i % 2 === 0) {
-      if (horizontal) ctx.fillRect(x + pos, y + offset, seg, width)
-      else ctx.fillRect(x + offset, y + pos, width, seg)
-    }
-    pos += dash[i % dash.length]!
-    i++
+  const dash = dashOf(line.style)
+  if (!dash) {
+    rect(start, offset, length, width)
+    return
   }
+  if (line.style === 'slantDashDot') {
+    for (const [a, n] of dashRuns(dash, start, length, origin + 1)) rect(a, -1, n, 1)
+    for (const [a, n] of dashRuns(SLANT_LOWER, start, length, origin + 1)) rect(a, 0, n, 1)
+    return
+  }
+  for (const [a, n] of dashRuns(dash, start, length, origin + 1)) rect(a, offset, n, width)
 }
 
 function drawBorders(
@@ -688,6 +796,8 @@ function drawBorders(
   infoAt: (r: number, c: number) => CellInfo,
   tx: (x: number) => number,
   ty: (y: number) => number,
+  originX: number,
+  originY: number,
 ): void {
   const { cols, rows } = scene.geometry
   const borderOf = (r: number, c: number): CellBorder | null =>
@@ -701,7 +811,7 @@ function drawBorders(
       const m = scene.mergeAt(r, c)
       if (m && r > m.top && insideMerge(m, r - 1, c)) continue
       const line = stronger(borderOf(r - 1, c)?.bottom ?? null, borderOf(r, c)?.top ?? null)
-      if (line) drawLine(ctx, line, true, tx(cols.offset(c)), y, w + 1)
+      if (line) drawLine(ctx, line, true, tx(cols.offset(c)), y, w + 1, originX)
     }
   }
   // 竖边：第 c 列左沿。
@@ -713,7 +823,7 @@ function drawBorders(
       const m = scene.mergeAt(r, c)
       if (m && c > m.left && insideMerge(m, r, c - 1)) continue
       const line = stronger(borderOf(r, c - 1)?.right ?? null, borderOf(r, c)?.left ?? null)
-      if (line) drawLine(ctx, line, false, x, ty(rows.offset(r)), h + 1)
+      if (line) drawLine(ctx, line, false, x, ty(rows.offset(r)), h + 1, originY)
     }
   }
   // 对角线：按合并区域或单元格的矩形。
@@ -743,25 +853,67 @@ function drawBorders(
   }
 }
 
-function fontCss(font: FontStyle, px: number, css: string): string {
-  return `${font.italic ? 'italic ' : ''}${font.bold ? 'bold ' : ''}${px}px ${css}`
+function fontCss(font: FontStyle, px: number, css: string, bold = font.bold): string {
+  return `${font.italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${px}px ${css}`
 }
 
+/**
+ * 字体没有粗体字形而要求粗体时，以常规字形在原位与右移 1 像素处各绘制一次（GDI 的合成粗体），不交给浏览器合成：
+ * 浏览器的合成粗体向两侧加粗，墨迹左缘比 WPS 靠左 1 像素。经验规则：对比基准中宋体 8–22 磅、楷体 8–28 磅、
+ * Times New Roman 14 磅粗体单元格的 SSIM 损失均下降；深色填充上的白色楷体 11 磅与宋体 9 磅粗体数字上升，原因未查明。
+ */
+function fillGlyphs(
+  ctx: PaintContext,
+  text: string,
+  x: number,
+  y: number,
+  synthetic: boolean,
+): void {
+  ctx.fillText(text, x, y)
+  if (synthetic) ctx.fillText(text, x + 1, y)
+}
+
+/** 画布矩形（调用方坐标）按变换 `m` 换算为设备像素矩形；`m` 只含缩放与平移。 */
+function deviceRect(m: Matrix, r: DeviceRect): DeviceRect {
+  return {
+    left: m.a * r.left + m.e,
+    top: m.d * r.top + m.f,
+    right: m.a * r.right + m.e,
+    bottom: m.d * r.bottom + m.f,
+  }
+}
+
+function intersect(a: DeviceRect, b: DeviceRect): DeviceRect {
+  return {
+    left: Math.max(a.left, b.left),
+    top: Math.max(a.top, b.top),
+    right: Math.min(a.right, b.right),
+    bottom: Math.min(a.bottom, b.bottom),
+  }
+}
+
+/**
+ * 绘制一个单元格的文字。`runs` 不为 `null` 时 ClearType 字形不在此绘制，按排版位置加入 `runs`，由调用方一次混合到画布像素；
+ * `bounds` 为区域的裁剪矩形（调用方坐标）：像素的读写不受裁剪路径约束，按它与单元格的裁剪矩形另行裁剪。
+ */
 function drawText(
   ctx: PaintContext,
   layout: CellTextLayout,
   tx: (x: number) => number,
   ty: (y: number) => number,
+  bounds: DeviceRect,
+  runs: GlyphRun[] | null,
 ): void {
   const { clip } = layout
+  const cell: DeviceRect = {
+    left: tx(clip.left) + 1,
+    top: ty(clip.top) + 1,
+    right: tx(clip.right),
+    bottom: ty(clip.bottom),
+  }
   ctx.save()
   ctx.beginPath()
-  ctx.rect(
-    tx(clip.left) + 1,
-    ty(clip.top) + 1,
-    clip.right - clip.left - 1,
-    clip.bottom - clip.top - 1,
-  )
+  ctx.rect(cell.left, cell.top, cell.right - cell.left, cell.bottom - cell.top)
   ctx.clip()
   if (layout.rotate) {
     const { angle, cx, cy } = layout.rotate
@@ -769,6 +921,10 @@ function drawText(
     ctx.rotate((-angle * Math.PI) / 180)
     ctx.translate(-tx(cx), -ty(cy))
   }
+  // 旋转的文字以浏览器字体绘制：ClearType 字形按设备像素的整数位置放置，不旋转。
+  const glyphRuns = layout.rotate ? null : runs
+  const m = ctx.getTransform()
+  const deviceClip = glyphRuns ? intersect(deviceRect(m, cell), deviceRect(m, bounds)) : null
   ctx.textAlign = 'left'
   ctx.textBaseline = 'alphabetic'
   for (const f of layout.fragments) {
@@ -788,14 +944,17 @@ function drawText(
     const ppem = Math.round(run.px)
     for (const seg of run.chain.segments(f.text, run.px)) {
       const face = seg.face
-      if (face?.bitmaps && !layout.rotate && face.bitmaps.screenMode(ppem, run.font.italic)) {
+      if (face?.bitmaps && !layout.rotate && face.bitmaps.screenMode(ppem)) {
         drawBitmapSegment(ctx, run, seg, face, Math.round(sx), Math.round(y), ppem)
+      } else if (glyphRuns && face?.clearType) {
+        glyphRuns.push(clearTypeRun(m, { run, seg, face, x: sx, y, color: f.color }, deviceClip!))
       } else if (face && !layout.rotate && hasPixelAdvances(face, seg.text, ppem)) {
         drawPositioned(ctx, run, seg, Math.round(sx), y)
       } else {
-        ctx.font = fontCss(run.font, run.px, seg.css)
+        const synthetic = run.font.bold && face !== null && !face.bold
+        ctx.font = fontCss(run.font, run.px, seg.css, run.font.bold && !synthetic)
         if ('letterSpacing' in ctx) ctx.letterSpacing = `${seg.letterSpacing}px`
-        ctx.fillText(seg.text, Math.round(sx), y)
+        fillGlyphs(ctx, seg.text, Math.round(sx), y, synthetic)
       }
       sx += seg.width
     }
@@ -811,9 +970,10 @@ function drawText(
 }
 
 /**
- * 以内嵌点阵逐字绘制一段文字（WPS 经 GDI 在 ClearType 下的点阵模式，见 `EmbeddedBitmaps.screenMode`）。
- * 字符位置按排版宽度累加，与测宽一致；字体没有粗体字形时点阵按 GDI 的方式加粗。
- * strike 中没有点阵的字形以 `fillText` 绘制：GDI 此时不做平滑，Canvas 无法关闭文字平滑，两者不一致。
+ * 以单色字形逐字绘制一段文字（WPS 经 GDI 在 ClearType 下的点阵模式，见 `EmbeddedBitmaps.screenMode`）：
+ * strike 中的点阵、提示后光栅化的轮廓，要求斜体而字体没有斜体字形时为倾斜的轮廓。
+ * 字符位置按排版宽度累加，与测宽一致；字体没有粗体字形时按 GDI 的方式加粗。
+ * 取不到单色字形（字体没有 TrueType 轮廓）的字以 `fillText` 绘制。
  */
 function drawBitmapSegment(
   ctx: PaintContext,
@@ -827,11 +987,12 @@ function drawBitmapSegment(
   const bitmaps = face.bitmaps!
   const { ascent, descent } = face.vertical(ppem)
   const embolden = run.font.bold && !face.bold
+  const oblique = run.font.italic && !face.italic
   let x = x0
   for (const ch of seg.text) {
     const cp = ch.codePointAt(0)!
     if (cp < 32) continue
-    const raw = bitmaps.glyph(ppem, face.metrics.glyphId(cp))
+    const raw = bitmaps.glyph(ppem, face.metrics.glyphId(cp), oblique)
     if (raw) {
       fillBitmap(
         ctx,
@@ -842,9 +1003,9 @@ function drawBitmapSegment(
         descent,
       )
     } else {
-      ctx.font = fontCss(run.font, run.px, seg.css)
-      if ('letterSpacing' in ctx) ctx.letterSpacing = `${seg.letterSpacing}px`
-      ctx.fillText(ch, Math.round(x), baseline)
+      ctx.font = fontCss(run.font, run.px, seg.css, run.font.bold && !embolden)
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '0px'
+      fillGlyphs(ctx, ch, Math.round(x), baseline, embolden)
     }
     x += run.chain.charWidth(cp, run.px)
   }
@@ -867,14 +1028,62 @@ function drawPositioned(
   x0: number,
   y: number,
 ): void {
-  ctx.font = fontCss(run.font, run.px, seg.css)
+  const synthetic = run.font.bold && seg.face !== null && !seg.face.bold
+  ctx.font = fontCss(run.font, run.px, seg.css, run.font.bold && !synthetic)
   if ('letterSpacing' in ctx) ctx.letterSpacing = '0px'
   let x = x0
   for (const ch of seg.text) {
     const cp = ch.codePointAt(0)!
     if (cp < 32) continue
-    ctx.fillText(ch, x, y)
+    fillGlyphs(ctx, ch, x, y, synthetic)
     x += run.chain.charWidth(cp, run.px)
+  }
+}
+
+/** 一段同一字体的文字：排版位置 (`x`, `y`) 为调用方坐标，`color` 为 `#rrggbb`。 */
+interface SegmentPlacement {
+  readonly run: TextRun
+  readonly seg: FaceSegment
+  readonly face: LoadedFace
+  readonly x: number
+  readonly y: number
+  readonly color: string
+}
+
+/**
+ * 一段文字的 ClearType 字形（WPS 经 GDI 在平滑字号下的文字），见 `../../glyph/cleartype/`。
+ * 字形按设备像素光栅化：ppem 为字号乘以变换的缩放后取整，字符原点为排版位置换算到设备像素后取整；单元格裁剪矩形之外、
+ * 基线以上 `ascent`、以下 `descent` 之外的像素不绘制（与 GDI 相同）。字体没有粗体（斜体）字形时按 GDI 的方式合成。
+ */
+function clearTypeRun(m: Matrix, s: SegmentPlacement, clip: DeviceRect): GlyphRun {
+  const { run, face } = s
+  const glyphs = face.clearType!
+  const ppem = Math.round(run.px * m.a)
+  const { ascent, descent } = face.vertical(ppem)
+  const bold = run.font.bold && !face.bold
+  const oblique = run.font.italic && !face.italic
+  const baseline = Math.round(m.d * s.y + m.f)
+  const placed: PlacedGlyph[] = []
+  let x = s.x
+  for (const ch of s.seg.text) {
+    const cp = ch.codePointAt(0)!
+    if (cp < 32) continue
+    placed.push({
+      glyph: glyphs.glyph(face.metrics.glyphId(cp), ppem, bold, oblique),
+      x: Math.round(m.a * x + m.e),
+      baseline,
+    })
+    x += run.chain.charWidth(cp, run.px)
+  }
+  return {
+    glyphs: placed,
+    color: s.color,
+    clip: intersect(clip, {
+      left: -Infinity,
+      top: baseline - ascent,
+      right: Infinity,
+      bottom: baseline + descent,
+    }),
   }
 }
 

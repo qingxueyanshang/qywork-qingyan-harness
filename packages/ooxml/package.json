@@ -12,6 +12,7 @@
     "./xlsx": "./src/xlsx/index.ts",
     "./text": "./src/text/index.ts",
     "./pptx": "./src/pptx/index.ts",
-    "./docx": "./src/docx/index.ts"
+    "./docx": "./src/docx/index.ts",
+    "./math": "./src/math/index.ts"
   }
 }

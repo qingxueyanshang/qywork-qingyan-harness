@@ -2,7 +2,8 @@
 /**
  * 候选截图的浏览器驱动：由 `xlsx-candidates.ts` 启动，参数为页面地址与输出目录。
  *
- * 用 Node 驱动 Playwright 打开 Edge（`channel: 'msedge'`），设备像素比 1；逐页调用页面的 `renderPage`，
+ * 用 Node 驱动 Playwright 打开 Edge（`channel: 'msedge'`），设备像素比 1；逐页以真值清单的区域、位图尺寸与采集时的
+ * ClearType 设置调用页面的 `renderPage`，
  * 把视口调整到不小于画布后对画布元素截图，写入 `<输出目录>/<文档标识>/<真值文件名>`。
  * 单页失败时记录原因并继续，结束时以失败页数作为退出码。
  */
@@ -35,16 +36,20 @@ try {
       const started = Date.now()
       try {
         const size = await page.evaluate(
-          ([id, sheet, range]) => window.renderPage(id, sheet, range),
-          [job.id, p.sheet, p.range],
+          ([id, sheet, range, width, height, clearType]) =>
+            window.renderPage(id, sheet, range, width, height, clearType),
+          [job.id, p.sheet, p.range, p.width, p.height, job.clearType],
         )
         await page.setViewportSize({
           width: Math.max(size.width, 200),
           height: Math.max(size.height, 200),
         })
         await page.locator('#sheet').screenshot({ path: join(outDir, job.id, p.file) })
+        const { region } = size
+        const differs = region.width !== size.width || region.height !== size.height
         console.log(
-          `${job.id} ${p.file} ${p.sheet} ${size.width}×${size.height} ${Date.now() - started}ms`,
+          `${job.id} ${p.file} ${p.sheet} ${size.width}×${size.height}` +
+            `${differs ? `（本方区域 ${region.width}×${region.height}）` : ''} ${Date.now() - started}ms`,
         )
       } catch (e) {
         failed++

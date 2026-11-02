@@ -2,7 +2,8 @@
  * Word 预览：取得文件字节，在 Worker 中解析；取得字体后在 Worker 中排版与分页，按顺序纵向排列页面，只绘制可见的页面。
  * 滚动、缩放与按可见区域绘制见 `page-viewport.ts`；加载、改写后重新加载与失败文案见 `../document.ts`。
  *
- * - 重新加载完成后保留滚动位置与缩放比例。存在未显示的内容时显示一行能力边界，计数为整个文件之和。
+ * - 重新加载完成后保留滚动位置与缩放比例。存在未显示的内容时显示一行能力边界，计数为整个文件之和；未绘制的公式取自
+ *   分页结果（`Page.hiddenMath`），其余取自解析结果。
  * - Worker 只在解析与分页期间存在：分页结果为纯数据，图片字节随结果转交主线程。
  * - 字体：主机字体经 `../fonts.ts` 取得，同一份字节交给 Worker 排版、在主线程读取绘制度量。分页结果以文档中的字体名引用字形，
  *   绘制前换算为注册时的族名：文档以另一个名称引用已注册的字体时（如 `SimSun` 与 `宋体`），注册的族名是首次注册时的名称。
@@ -17,7 +18,6 @@ import {
   type DocxFace,
   type FaceRef,
   loadDocxFace,
-  type PageBitmap,
   type PageContext,
   type PageFonts,
   pageImages,
@@ -25,7 +25,13 @@ import {
   type UnsupportedCounts,
   type UnsupportedKind,
 } from '@qywork/ooxml/docx'
-import type { CreateCanvas, PaintCanvas } from '@qywork/ooxml/drawingml'
+import {
+  type CreateCanvas,
+  decodePicture,
+  type ImageDecoder,
+  type PaintCanvas,
+  type PaintPicture,
+} from '@qywork/ooxml/drawingml'
 import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
 import { boundaryText, connectWorker, createDocumentLoader, failureText } from '../document.ts'
 import { type HostFace, loadHostFaces } from '../fonts.ts'
@@ -33,10 +39,10 @@ import type { ViewPosition } from '../viewport.ts'
 import type { DocxReplies, DocxRequest } from './docx-worker.ts'
 import { createPageViewport, type PageViewport } from './page-viewport.ts'
 
-type BoundaryKind = Exclude<UnsupportedKind, 'imageFormat' | 'vml'>
+type BoundaryKind = Exclude<UnsupportedKind, 'imageFormat' | 'vml'> | 'math'
 
 /**
- * 能力边界中各种类的名称，按此顺序列出。无法解码的图片格式（`imageFormat`）计入「图片」，无法转换的 VML（`vml`）
+ * 能力边界中各种类的名称，按此顺序列出。无法绘制的图片格式（`imageFormat`）计入「图片」，无法转换的 VML（`vml`）
  * 计入「其他对象」：同一名称只列一次。
  */
 const UNSUPPORTED_LABEL: Record<BoundaryKind, string> = {
@@ -90,7 +96,7 @@ interface Doc {
   /** 与 `pages.images` 对应的图片部件名。 */
   readonly parts: readonly string[]
   /** 已解码的图片；尚未解码与无法解码的为 `null`。 */
-  readonly images: (PageBitmap | null)[]
+  readonly images: (PaintPicture | null)[]
   /** 已开始解码的图片下标与其完成；无法解码时同样完成。 */
   readonly decoding: Map<number, Promise<void>>
   /** 解码已完成（含无法解码）的图片下标。 */
@@ -140,21 +146,20 @@ function pageFonts(
 const createCanvas: CreateCanvas = (width, height) =>
   new OffscreenCanvas(Math.max(1, width), Math.max(1, height)) as unknown as PaintCanvas
 
+const imageDecoder: ImageDecoder = {
+  file: (bytes, type) => createImageBitmap(new Blob([bytes], { type })),
+  pixels: (width, height, data) => createImageBitmap(new ImageData(data, width, height)),
+}
+
 /** 解码第 `i` 张图片；同一张只解码一次。 */
 function decode(d: Doc, i: number): Promise<void> {
   let done = d.decoding.get(i)
   if (!done) {
     const source = d.pages.images[i]!
-    done = createImageBitmap(new Blob([source.bytes], { type: source.contentType }))
-      .then(
-        (bitmap) => {
-          d.images[i] = bitmap
-        },
-        () => {},
-      )
-      .then(() => {
-        d.decoded.add(i)
-      })
+    done = decodePicture(source.bytes, source.contentType, imageDecoder).then((picture) => {
+      d.images[i] = picture
+      d.decoded.add(i)
+    })
     d.decoding.set(i, done)
   }
   return done
@@ -260,12 +265,13 @@ export default function DocView(props: { path: string; mtime: number }) {
     const d = doc()
     if (!d) return null
     const u = d.unsupported
-    const inline = d.pages.pages.reduce((n, p) => n + p.hidden, 0)
+    const math = d.pages.pages.reduce((n, p) => n + p.hiddenMath, 0)
     return boundaryText<BoundaryKind>(
       {
         ...u,
-        picture: (u.picture ?? 0) + (u.imageFormat ?? 0) + inline,
+        picture: (u.picture ?? 0) + (u.imageFormat ?? 0),
         drawing: (u.drawing ?? 0) + (u.vml ?? 0),
+        math,
       },
       UNSUPPORTED_LABEL,
     )

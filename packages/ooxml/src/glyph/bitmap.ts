@@ -1,5 +1,6 @@
 /**
- * 内嵌点阵字形的绘制（WPS 经 GDI 在 ClearType 下的点阵模式，见 `EmbeddedBitmaps.screenMode`），xlsx 与 docx 共用。
+ * 单色字形的绘制（WPS 经 GDI 在 ClearType 下的点阵模式，见 `EmbeddedBitmaps.screenMode`）：内嵌点阵与提示后光栅化的轮廓，
+ * xlsx、DrawingML 文字与 docx 共用。
  */
 
 import type { BitmapGlyph } from '../font/index.ts'

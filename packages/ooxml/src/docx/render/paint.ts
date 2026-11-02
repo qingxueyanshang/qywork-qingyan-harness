@@ -2,25 +2,39 @@
  * 页面绘制：把一页分页结果绘制到 Canvas 2D 上下文。坐标按 `scale`（像素/磅）换算，96 dpi、100% 时为 4/3。
  *
  * 文字按 WPS 屏幕显示（GDI）的方式绘制：
- * - 字号取整数像素（ppem = round(字号 × scale)）；每个字形的位置为排版坐标换算后四舍五入到整像素，逐字绘制，
- *   不交给浏览器连续排列（浏览器按线性宽度排列，与排版位置逐字偏离）。
- * - 字体在该 ppem 有内嵌点阵且处于点阵模式（`EmbeddedBitmaps.screenMode`）时以点阵绘制，仿粗体按 GDI 的方式加粗；
- *   strike 中没有的字形以轮廓绘制。
+ * - 字号取整数像素（ppem = round(字号 × scale)）；逐字绘制，不交给浏览器连续排列（浏览器按线性宽度排列，与排版位置
+ *   逐字偏离）。字形按组取整：组为 WPS 的一次文字输出，即一个片段（片段按字段、字体与字体槽划分，被压缩的标点单独成为片段，
+ *   见 `../../text/layout.ts`）中空格之间的字（空格不输出）；组的第一个字的排版坐标换算后四舍五入到整像素，组内各字为该像素
+ *   加相对第一个字的距离换算后四舍五入。WPS 页面 EMF 中 15 页 12 000 个字的像素位置：逐字四舍五入有 1894 个不一致，按组取整
+ *   为 472 个。不要把属性相同的相邻字段并为一组：WPS 有时合并、有时不合并，合并后为 482 个。
+ * - 字体在该 ppem 处于点阵模式（`EmbeddedBitmaps.screenMode`）时以单色字形绘制，不做平滑：strike 中的点阵，
+ *   没有点阵的字形为提示后光栅化的轮廓，仿斜体为倾斜的轮廓；仿粗体按 GDI 的方式加粗。
  * 页面的绘制顺序：白底、页面背景（底色与整页图片）、衬于文字下方的浮动对象、页面边框、页眉页脚与正文、其余浮动对象。
- * 段落内：段落底纹、字符填充（突出显示与底纹）、文字、下划线与删除线、段落边框、图片。
+ * 段落内：段落底纹、字符填充（突出显示与底纹）、文字、公式、下划线与删除线、段落边框、图片、图表与 SmartArt。
+ * 图片（位图与图元文件）经 `../../drawingml/paint/picture.ts` 绘制：嵌入式图片按裁剪比例拉伸到对象框（取整到像素），
+ * 浮动对象与页面背景中的图片同样可以是图元文件；图元文件文字的字形按正文文字的规则绘制（点阵模式的字号以单色字形绘制）。
+ * 公式经 `../../math/` 绘制：括号与根号按数学字体的轮廓填充，文字项在点阵模式的字号下与正文文字同样以点阵绘制。
  * 表格：单元格底纹、单元格内容、边框线；没有边框的边画表格虚框（WPS 屏幕显示：1 像素 #c8c8c8，按页面像素坐标
- * 每 4 像素中的第 4 个留空）。浮动对象的形状与图片经 `../../drawingml/` 绘制，文本框的文字按本文件的规则绘制。
+ * 每 4 像素中的第 4 个留空）。浮动对象的形状、图片、图表与 SmartArt 经 `../../drawingml/` 绘制（图表与 SmartArt
+ * 的文字见 `graphic.ts`），文本框的文字按本文件的规则绘制。
  */
 
-import type { CreateCanvas, PaintContext, PaintImage } from '../../drawingml/paint/context.ts'
-import { multiply, scaling, translation } from '../../drawingml/paint/context.ts'
+import { paintChart } from '../../drawingml/chart/paint.ts'
+import { paintDiagram } from '../../drawingml/diagram/paint.ts'
+import type { CreateCanvas, Matrix, PaintContext } from '../../drawingml/paint/context.ts'
+import { IDENTITY, multiply, scaling, translation } from '../../drawingml/paint/context.ts'
+import { drawPicture, type PaintPicture, pictureSize } from '../../drawingml/paint/picture.ts'
+import { SCREEN_RESOLUTION } from '../../drawingml/paint/resolution.ts'
 import { paintAutoShape, paintGroup, type ShapeScene } from '../../drawingml/shape/paint.ts'
 import { emboldenBitmap } from '../../font/index.ts'
 import { fillBitmap } from '../../glyph/bitmap.ts'
+import { type MathPaintFonts, paintMath } from '../../math/index.ts'
+import type { MetafileFace, MetafileFonts } from '../../metafile/index.ts'
 import type { DrawingNode } from '../model.ts'
 import type {
   BorderLine,
   FaceRef,
+  GraphicFonts,
   Page,
   PageEdge,
   PageFloat,
@@ -29,17 +43,15 @@ import type {
   PageParagraph,
 } from '../page/model.ts'
 import type { DocxFace } from './fonts.ts'
+import { chartImages, graphicSettings, namedFontKey } from './graphic.ts'
 
 /** 绘制所需的 Canvas 2D 接口：与 DrawingML 形状绘制共用。 */
 export type PageContext = PaintContext
 
-/** 已解码的图片（`ImageBitmap` 等），尺寸为像素。 */
-export type PageBitmap = PaintImage
-
 /** 绘制用的图片与图层。 */
 export interface PageResources {
-  /** 与 `DocumentPages.images` 一一对应；未加载或无法解码时为 `null`。 */
-  readonly images: readonly (PageBitmap | null)[]
+  /** 与 `DocumentPages.images` 一一对应：已解码的图片（`decodePicture`）；未加载或无法解码时为 `null`。 */
+  readonly images: readonly (PaintPicture | null)[]
   /** 与 `images` 对应的图片部件名。 */
   readonly parts: readonly string[]
   readonly createCanvas: CreateCanvas
@@ -51,6 +63,8 @@ export interface PageFonts {
   /** 按登记的族名与字形取得绘制用的字体；主机没有时为 `null`，该字形按族名交给浏览器绘制。 */
   draw(ref: FaceRef): DocxFace | null
 }
+
+const NO_CROP = { left: 0, top: 0, right: 0, bottom: 0 }
 
 /** 96 dpi、100% 显示时每磅的像素数。 */
 export const SCREEN_SCALE = 4 / 3
@@ -65,7 +79,10 @@ export function pageImages(page: Page, parts: readonly string[]): number[] {
   const items = (list: readonly PageItem[]) => {
     for (const it of list) {
       if (it.kind === 'table') items(it.items)
-      else for (const im of it.images) out.add(im.image)
+      else {
+        for (const im of it.images) out.add(im.image)
+        for (const g of it.graphics) node(g.graphic)
+      }
     }
   }
   const node = (n: DrawingNode) => {
@@ -73,6 +90,11 @@ export function pageImages(page: Page, parts: readonly string[]): number[] {
       for (const c of n.children) node(c)
       return
     }
+    if (n.kind === 'chart') {
+      chartImages(n.chart, parts, out)
+      return
+    }
+    if (n.kind === 'diagram') return
     const part = n.fill.kind === 'picture' ? n.fill.image.part : null
     const i = part === null ? -1 : parts.indexOf(part)
     if (i >= 0) out.add(i)
@@ -110,21 +132,33 @@ export function paintPage(
   ctx.textAlign = 'left'
   ctx.textBaseline = 'alphabetic'
   if ('fontKerning' in ctx) ctx.fontKerning = 'none'
+  const metafile = metafileFonts(page.graphicFonts, fonts)
   const bg = page.background
   if (bg !== null) {
     if (bg.color !== null) {
       ctx.fillStyle = bg.color
       ctx.fillRect(0, 0, width, height)
     }
-    const bmp = bg.image === null ? null : res.images[bg.image]
-    if (bmp && bmp.width > 0 && bmp.height > 0) {
-      const tw = bmp.width * 0.75 * scale
-      const th = bmp.height * 0.75 * scale
-      for (let ty = 0; ty < height; ty += th)
-        for (let tx = 0; tx < width; tx += tw)
-          ctx.drawImage(bmp, Math.round(tx), Math.round(ty), Math.round(tw), Math.round(th))
+    const picture = bg.image === null ? null : (res.images[bg.image] ?? null)
+    const size = picture === null ? null : pictureSize(picture)
+    if (picture !== null && size !== null && size.width > 0 && size.height > 0) {
+      const dpi = bg.tile ? size.resolution : SCREEN_RESOLUTION
+      const tw = Math.max(1, Math.round((size.width * 96) / dpi.x)) * 0.75 * scale
+      const th = Math.max(1, Math.round((size.height * 96) / dpi.y)) * 0.75 * scale
+      for (let ty = 0; ty < height; ty += th) {
+        for (let tx = 0; tx < width; tx += tw) {
+          const rect = {
+            x: Math.round(tx),
+            y: Math.round(ty),
+            width: Math.round(tw),
+            height: Math.round(th),
+          }
+          drawPicture(ctx, picture, NO_CROP, rect, IDENTITY, 'low', metafile)
+        }
+      }
     }
   }
+  // 形状文字由本文件按文档规则绘制（`paintNode` 不传入文字）；图表与 SmartArt 的文字按 `graphicSettings`。
   const scene: ShapeScene = {
     ctx,
     res: {
@@ -133,17 +167,24 @@ export function paintPage(
         return i < 0 ? null : (res.images[i] ?? null)
       },
       createCanvas: res.createCanvas,
+      ...(metafile === null ? {} : { metafileFonts: metafile }),
     },
     scale: scale * 0.75,
     canvas: { width, height },
-    settings: null,
+    settings: page.graphicFonts === null ? null : graphicSettings(page.graphicFonts, fonts),
   }
-  for (const f of page.floats) if (f.behind) paintFloat(scene, f, fonts, res, scale)
+  const pictures: PictureFonts = { res, fonts: metafile }
+  for (const f of page.floats) if (f.behind) paintFloat(scene, f, fonts, pictures, scale)
   if (page.borders !== null) paintPageBorders(ctx, page.borders, scale)
   for (const items of [page.header, page.footer, page.body])
-    paintItems(ctx, items, fonts, res, scale)
-  for (const f of page.floats) if (!f.behind) paintFloat(scene, f, fonts, res, scale)
+    paintItems(scene, items, fonts, pictures, scale)
+  for (const f of page.floats) if (!f.behind) paintFloat(scene, f, fonts, pictures, scale)
   ctx.restore()
+}
+
+/** 对象框左上角在 (`x`, `y`) 磅处时，对象局部坐标（96 dpi 像素）到设备坐标的变换。 */
+function objectMatrix(x: number, y: number, scale: number) {
+  return multiply(translation(x * scale, y * scale), scaling(scale * 0.75, scale * 0.75))
 }
 
 /** 浮动对象：形状与图片的局部坐标为 96 dpi 像素，原点为对象框左上角。 */
@@ -151,44 +192,47 @@ function paintFloat(
   scene: ShapeScene,
   f: PageFloat,
   fonts: PageFonts,
-  res: PageResources,
+  pictures: PictureFonts,
   scale: number,
 ): void {
-  const ctx = scene.ctx
-  if (f.drawing !== null) {
-    ctx.save()
-    const parent = multiply(
-      translation(f.x * scale, f.y * scale),
-      scaling(scale * 0.75, scale * 0.75),
-    )
-    paintNode(scene, f.drawing, parent)
-    ctx.restore()
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
-  }
-  paintItems(ctx, f.items, fonts, res, scale)
+  if (f.drawing !== null) paintObject(scene, f.drawing, f.x, f.y, scale)
+  paintItems(scene, f.items, fonts, pictures, scale)
 }
 
-function paintNode(
-  scene: ShapeScene,
-  n: DrawingNode,
-  parent: ReturnType<typeof translation>,
-): void {
+/** 对象框左上角在 (`x`, `y`) 磅处的对象；绘制后恢复单位变换。 */
+function paintObject(scene: ShapeScene, n: DrawingNode, x: number, y: number, scale: number): void {
+  scene.ctx.save()
+  paintNode(scene, n, objectMatrix(x, y, scale))
+  scene.ctx.restore()
+  scene.ctx.setTransform(1, 0, 0, 1, 0, 0)
+}
+
+function paintNode(scene: ShapeScene, n: DrawingNode, parent: Matrix): void {
   if (n.kind === 'group') {
     paintGroup(scene, n, parent, (inner, m) => {
       for (const c of n.children) paintNode(inner, c, m)
     })
     return
   }
+  if (n.kind === 'chart') {
+    paintChart(scene, n.chart, n.frame, parent)
+    return
+  }
+  if (n.kind === 'diagram') {
+    paintDiagram(scene, n.diagram, n.frame, parent)
+    return
+  }
   paintAutoShape(scene, { ...n, text: null }, parent)
 }
 
 function paintItems(
-  ctx: PageContext,
+  scene: ShapeScene,
   items: readonly PageItem[],
   fonts: PageFonts,
-  res: PageResources,
+  pictures: PictureFonts,
   scale: number,
 ): void {
+  const ctx = scene.ctx
   const px = (v: number) => Math.round(v * scale)
   for (const item of items) {
     if (item.kind === 'table') {
@@ -201,7 +245,7 @@ function paintItems(
           px(fill.y + fill.height) - px(fill.y),
         )
       }
-      paintItems(ctx, item.items, fonts, res, scale)
+      paintItems(scene, item.items, fonts, pictures, scale)
       for (const e of item.edges) if (e.line === null) paintGridline(ctx, e, scale)
       for (const e of item.edges) if (e.line !== null) paintEdge(ctx, e, e.line, scale)
       continue
@@ -213,20 +257,79 @@ function paintItems(
     }
     paintFills(ctx, item, scale)
     for (const line of item.lines) for (const f of line.fragments) paintText(ctx, f, fonts, scale)
+    for (const m of item.formulas)
+      paintMath(ctx, m.layout, m.x, m.baseline, mathFonts(ctx, fonts), scale)
     for (const line of item.lines)
       for (const f of line.fragments) paintDecorations(ctx, f, fonts, scale)
     if (item.box) paintBorders(ctx, item, scale)
     for (const im of item.images) {
-      const bmp = res.images[im.image]
-      if (!bmp || bmp.width === 0 || bmp.height === 0) continue
-      ctx.drawImage(
-        bmp,
-        px(im.x),
-        px(im.y),
-        px(im.x + im.width) - px(im.x),
-        px(im.y + im.height) - px(im.y),
-      )
+      const picture = pictures.res.images[im.image]
+      if (picture == null) continue
+      const box = {
+        x: px(im.x),
+        y: px(im.y),
+        width: px(im.x + im.width) - px(im.x),
+        height: px(im.y + im.height) - px(im.y),
+      }
+      if (box.width > 0 && box.height > 0)
+        drawPicture(ctx, picture, im.crop, box, IDENTITY, 'low', pictures.fonts)
     }
+    for (const g of item.graphics) paintObject(scene, g.graphic, g.x, g.y, scale)
+  }
+}
+
+/** 嵌入式图片的绘制所需：已解码的图片与图元文件文字的字体（`metafileFonts`）。 */
+interface PictureFonts {
+  readonly res: PageResources
+  readonly fonts: MetafileFonts | null
+}
+
+/**
+ * 图元文件文字的字体：按 `GraphicFonts` 中的字体名取得登记的字形，主机没有的字体取其回退字体；请求粗体或斜体而字体没有
+ * 该字形时仿粗体、仿斜体。字形按正文文字的规则绘制（`paintBitmapGlyph`，否则按族名交给浏览器）。
+ * 本页没有字体表或回退字体没有绘制度量时为 `null`。
+ */
+function metafileFonts(table: GraphicFonts | null, fonts: PageFonts): MetafileFonts | null {
+  if (table === null) return null
+  const entry = (index: number) => {
+    const ref = fonts.faces[index]
+    const face = ref === undefined ? null : fonts.draw(ref)
+    return ref === undefined || face === null ? null : { ref, face }
+  }
+  const fallback = entry(table.fallback)
+  if (fallback === null) return null
+  const named = new Map<string, { ref: FaceRef; face: DocxFace }>()
+  for (const n of table.named) {
+    const e = entry(n.face)
+    if (e !== null) named.set(namedFontKey(n.name, n.bold, n.italic), e)
+  }
+  const cache = new Map<string, MetafileFace>()
+  return {
+    face: (name, bold, italic) => {
+      const key = namedFontKey(name, bold, italic)
+      const known = cache.get(key)
+      if (known !== undefined) return known
+      const { ref: base, face } = named.get(key) ?? fallback
+      const ref: FaceRef = {
+        ...base,
+        syntheticBold: bold && !base.bold,
+        syntheticItalic: italic && !base.italic,
+      }
+      const v = face.text.vertical
+      const out: MetafileFace = {
+        vertical: (ppem) => face.pixelVertical(ppem),
+        emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
+        advance: (cp, ppem) => face.pixelAdvance(cp, ppem) ?? face.text.metrics.advance(cp, ppem),
+        draw: (c, text, x, baseline, ppem) => {
+          c.font = cssFont(ref, ppem)
+          const glyph = face.text.metrics.glyphId(text.codePointAt(0)!)
+          if (!paintBitmapGlyph(c, face, ref, glyph, x, baseline, ppem))
+            c.fillText(text, x, baseline)
+        },
+      }
+      cache.set(key, out)
+      return out
+    },
   }
 }
 
@@ -248,6 +351,34 @@ function paintFills(ctx: PageContext, item: PageParagraph, scale: number): void 
   }
 }
 
+/**
+ * 字体在该 ppem 处于点阵模式时以单色字形绘制（`EmbeddedBitmaps.glyph`：点阵、提示后的轮廓、仿斜体的倾斜轮廓；
+ * 仿粗体按 GDI 的方式加粗），返回是否已绘制。`x`、`baseline` 为整数像素。
+ */
+function paintBitmapGlyph(
+  ctx: PageContext,
+  face: DocxFace | null,
+  ref: FaceRef,
+  glyph: number,
+  x: number,
+  baseline: number,
+  ppem: number,
+): boolean {
+  if (!face?.bitmaps?.screenMode(ppem)) return false
+  const raw = face.bitmaps.glyph(ppem, glyph, ref.syntheticItalic)
+  if (!raw) return false
+  const vertical = face.pixelVertical(ppem)
+  fillBitmap(
+    ctx,
+    ref.syntheticBold ? emboldenBitmap(raw) : raw,
+    x,
+    baseline,
+    vertical.ascent,
+    vertical.descent,
+  )
+  return true
+}
+
 function paintText(ctx: PageContext, f: PageFragment, fonts: PageFonts, scale: number): void {
   const ref = fonts.faces[f.face]
   if (ref === undefined) return
@@ -255,33 +386,43 @@ function paintText(ctx: PageContext, f: PageFragment, fonts: PageFonts, scale: n
   const ppem = Math.round(f.size * scale)
   const baseline = Math.round(f.baseline * scale)
   ctx.fillStyle = f.color
-  const bitmapMode = face?.bitmaps?.screenMode(ppem, ref.italic || ref.syntheticItalic)
-  const vertical = bitmapMode ? face!.pixelVertical(ppem) : null
   ctx.font = cssFont(ref, ppem)
   if ('letterSpacing' in ctx) ctx.letterSpacing = '0px'
   let x = f.x
   let k = 0
+  /** 当前组的第一个字（排版坐标与像素）；空格之后为 `null`。 */
+  let origin: { readonly x: number; readonly px: number } | null = null
   for (const ch of f.text) {
     const cp = ch.codePointAt(0)!
     const advance = f.advances[k++] ?? 0
-    const gx = Math.round(x * scale)
+    if (cp === 0x20) {
+      origin = null
+      x += advance
+      continue
+    }
+    origin ??= { x, px: Math.round(x * scale) }
+    const gx = origin.px + Math.round((x - origin.x) * scale)
     x += advance
     if (cp < 32) continue
-    if (bitmapMode) {
-      const raw = face!.bitmaps!.glyph(ppem, face!.text.metrics.glyphId(cp))
-      if (raw) {
-        fillBitmap(
-          ctx,
-          ref.syntheticBold ? emboldenBitmap(raw) : raw,
-          gx,
-          baseline,
-          vertical!.ascent,
-          vertical!.descent,
-        )
-        continue
-      }
-    }
+    const glyph = face?.text.metrics.glyphId(cp) ?? 0
+    if (paintBitmapGlyph(ctx, face, ref, glyph, gx, baseline, ppem)) continue
     ctx.fillText(ch, gx, baseline)
+  }
+}
+
+/** 公式绘制所用的字体：族名与轮廓按 `DocumentPages.faces` 的下标取得，文字项经 `paintBitmapGlyph`。 */
+function mathFonts(ctx: PageContext, fonts: PageFonts): MathPaintFonts<number> {
+  const face = (i: number) => {
+    const ref = fonts.faces[i]
+    return ref === undefined ? null : { ref, face: fonts.draw(ref) }
+  }
+  return {
+    family: (i) => fonts.faces[i]?.family ?? '',
+    outlines: (i) => face(i)?.face?.math?.outlines ?? null,
+    glyph: (it, x, baseline, ppem) => {
+      const f = face(it.font)
+      return f !== null && paintBitmapGlyph(ctx, f.face, f.ref, it.glyph, x, baseline, ppem)
+    },
   }
 }
 
@@ -317,8 +458,47 @@ function paintDecorations(
   }
 }
 
-function borderWidth(b: BorderLine, scale: number): number {
-  return Math.max(1, Math.round(b.width * scale))
+/** 一条线在线组中的位置（像素）。 */
+interface PixelStroke {
+  readonly offset: number
+  readonly size: number
+}
+
+/**
+ * 线组的各条线换算为像素：线与间距的边界按累计的磅值四舍五入，每条线与每个间距至少 1 像素（WPS 屏幕 EMF 实测：
+ * 0.75 磅线宽的 `MediumGap` 为 1、1、1 像素，双线 0.5 磅为 1、1、1 像素，1 磅为 1、2、1 像素）。
+ */
+function strokePixels(l: BorderLine, scale: number): PixelStroke[] {
+  const out: PixelStroke[] = []
+  let edge = 0
+  for (const [k, st] of l.strokes.entries()) {
+    const start = k === 0 ? 0 : Math.max(edge + 1, Math.round(st.offset * scale))
+    edge = Math.max(start + 1, Math.round((st.offset + st.size) * scale))
+    out.push({ offset: start, size: edge - start })
+  }
+  return out
+}
+
+function strokeTotal(strokes: readonly PixelStroke[]): number {
+  const last = strokes[strokes.length - 1]
+  return last === undefined ? 0 : last.offset + last.size
+}
+
+/** 一组线：横线自 `y` 向下排列，竖线自 `x` 向右排列，长度为 `length` 像素。 */
+function strokeRun(
+  ctx: PageContext,
+  line: BorderLine,
+  strokes: readonly PixelStroke[],
+  x: number,
+  y: number,
+  length: number,
+  vertical: boolean,
+): void {
+  ctx.fillStyle = line.color
+  for (const st of strokes) {
+    if (vertical) dashRun(ctx, x + st.offset, y, length, st.size, true, line.style)
+    else dashRun(ctx, x, y + st.offset, length, st.size, false, line.style)
+  }
 }
 
 /** 段落边框：上下边框外扩 `space`，左右边框位于缩进之外 `space` 处。 */
@@ -328,58 +508,72 @@ function paintBorders(ctx: PageContext, item: PageParagraph, scale: number): voi
   const left = b.left ? b.x - b.left.space : b.x
   const right = b.right ? b.x + b.width + b.right.space : b.x + b.width
   if (b.top) {
-    ctx.fillStyle = b.top.color
-    ctx.fillRect(
+    const st = strokePixels(b.top, scale)
+    strokeRun(
+      ctx,
+      b.top,
+      st,
       px(left),
-      px(b.y - b.top.space) - borderWidth(b.top, scale),
+      px(b.y - b.top.space) - strokeTotal(st),
       px(right) - px(left),
-      borderWidth(b.top, scale),
+      false,
     )
   }
   if (b.bottom) {
-    ctx.fillStyle = b.bottom.color
-    ctx.fillRect(
+    const st = strokePixels(b.bottom, scale)
+    strokeRun(
+      ctx,
+      b.bottom,
+      st,
       px(left),
       px(b.y + b.height + b.bottom.space),
       px(right) - px(left),
-      borderWidth(b.bottom, scale),
+      false,
     )
   }
   const top = b.top ? b.y - b.top.space : b.y
   const bottom = b.bottom ? b.y + b.height + b.bottom.space : b.y + b.height
   if (b.left) {
-    ctx.fillStyle = b.left.color
-    ctx.fillRect(
-      px(left) - borderWidth(b.left, scale),
-      px(top),
-      borderWidth(b.left, scale),
-      px(bottom) - px(top),
-    )
+    const st = strokePixels(b.left, scale)
+    strokeRun(ctx, b.left, st, px(left) - strokeTotal(st), px(top), px(bottom) - px(top), true)
   }
   if (b.right) {
-    ctx.fillStyle = b.right.color
-    ctx.fillRect(px(right), px(top), borderWidth(b.right, scale), px(bottom) - px(top))
+    const st = strokePixels(b.right, scale)
+    strokeRun(ctx, b.right, st, px(right), px(top), px(bottom) - px(top), true)
   }
 }
 
-/** 表格的边框线：横线自 `y` 向下占线宽，竖线以 `x` 为中线；双线为两条线宽的线中间隔一个线宽。 */
+/**
+ * 表格边框的一条线覆盖的像素 `[start, start + size)`（`from` 为线的起点，`size` 为线宽，单位为像素）。WPS 屏幕 EMF
+ * 实测（语料 5 份 1012 处表格边框）：每条线画为宽度为线宽取整到像素（至少 1 像素）加 1 缇的矩形，覆盖左上角落在矩形内的
+ * 像素，即起点向上取整、终点向上取整后不含。线起点为整数像素时 1.5 磅的线占 3 像素，起点在 0.8 像素处时占 2 像素。
+ */
+function edgePixels(from: number, size: number, scale: number): PixelStroke {
+  const start = Math.ceil(from - PIXEL_EPSILON)
+  const end = Math.ceil(from + lineWidth(size) + scale / 20 - PIXEL_EPSILON)
+  return { offset: start, size: Math.max(1, end - start) }
+}
+
+/** 线宽取整到像素，至少 1 像素。 */
+function lineWidth(size: number): number {
+  return Math.max(1, Math.round(size))
+}
+
+const PIXEL_EPSILON = 1e-6
+
+/** 表格的边框线：横线自 `y` 向下占线组宽度，竖线以 `x` 为中线（按取整到像素的线组宽度居中）。 */
 function paintEdge(ctx: PageContext, e: PageEdge, line: BorderLine, scale: number): void {
   const px = (v: number) => Math.round(v * scale)
-  const w = Math.max(1, Math.round(line.width * scale))
-  const total = line.style === 'double' ? Math.max(3, Math.round(line.width * 3 * scale)) : w
+  const last = line.strokes[line.strokes.length - 1]
+  const total = last === undefined ? 0 : (last.offset + last.size) * scale
+  const origin = e.vertical ? e.x * scale - lineWidth(total) / 2 : e.y * scale
   ctx.fillStyle = line.color
-  const strokes = line.style === 'double' ? [0, total - w] : [0]
-  if (!e.vertical) {
-    const x0 = px(e.x)
-    const x1 = px(e.x + e.length)
-    const y = px(e.y)
-    for (const off of strokes) dashRun(ctx, x0, y + off, x1 - x0, w, false, line.style)
-    return
+  for (const s of line.strokes) {
+    const p = edgePixels(origin + s.offset * scale, s.size * scale, scale)
+    if (e.vertical)
+      dashRun(ctx, p.offset, px(e.y), px(e.y + e.length) - px(e.y), p.size, true, line.style)
+    else dashRun(ctx, px(e.x), p.offset, px(e.x + e.length) - px(e.x), p.size, false, line.style)
   }
-  const y0 = px(e.y)
-  const y1 = px(e.y + e.length)
-  const x = Math.round(e.x * scale - total / 2)
-  for (const off of strokes) dashRun(ctx, x + off, y0, y1 - y0, w, true, line.style)
 }
 
 /** 一段线：实线一次填充，虚线与点线按线宽分段。 */
@@ -425,24 +619,65 @@ function paintGridline(ctx: PageContext, e: PageEdge, scale: number): void {
   for (let y = y0; y <= y1; y++) if (y % 4 !== 3) ctx.fillRect(x, y, 1, 1)
 }
 
-/** 页面边框：四边的线画在矩形外侧（上、左边框向外占线宽）。 */
+/**
+ * 一边页面边框的各条线：距线外缘的偏移与粗细（像素），自外缘向内。线组按屏幕顺序排列（`strokePixels`），
+ * 下边与右边的外缘在线组末端。
+ */
+function outerStrokes(l: BorderLine | null, scale: number, reversed: boolean): PixelStroke[] {
+  if (l === null) return []
+  const st = strokePixels(l, scale)
+  if (!reversed) return st
+  const total = strokeTotal(st)
+  return st.map((x) => ({ offset: total - x.offset - x.size, size: x.size })).reverse()
+}
+
+/**
+ * 页面边框：`inside` 为真时线画在矩形内侧，否则外侧。同一序号的线（双线的外线与内线）四边相接围成矩形
+ * （WPS 实测：四角填满，双线的内线在内角相接）。
+ */
 function paintPageBorders(ctx: PageContext, b: NonNullable<Page['borders']>, scale: number): void {
   const px = (v: number) => Math.round(v * scale)
-  const wide = (l: BorderLine) => Math.max(1, Math.round(l.width * scale))
-  if (b.top) {
-    ctx.fillStyle = b.top.color
-    ctx.fillRect(px(b.x), px(b.y) - wide(b.top), px(b.x + b.width) - px(b.x), wide(b.top))
+  const sides = {
+    top: outerStrokes(b.top, scale, false),
+    bottom: outerStrokes(b.bottom, scale, true),
+    left: outerStrokes(b.left, scale, false),
+    right: outerStrokes(b.right, scale, true),
   }
-  if (b.bottom) {
-    ctx.fillStyle = b.bottom.color
-    ctx.fillRect(px(b.x), px(b.y + b.height), px(b.x + b.width) - px(b.x), wide(b.bottom))
+  const total = (s: readonly { offset: number; size: number }[]) => {
+    const last = s[s.length - 1]
+    return last === undefined ? 0 : last.offset + last.size
   }
-  if (b.left) {
-    ctx.fillStyle = b.left.color
-    ctx.fillRect(px(b.x) - wide(b.left), px(b.y), wide(b.left), px(b.y + b.height) - px(b.y))
+  const out = b.inside ? 0 : 1
+  const x0 = px(b.x) - out * total(sides.left)
+  const y0 = px(b.y) - out * total(sides.top)
+  const x1 = px(b.x + b.width) + out * total(sides.right)
+  const y1 = px(b.y + b.height) + out * total(sides.bottom)
+  const inset = (s: readonly { offset: number }[], k: number) => s[k]?.offset ?? 0
+  const draw = (
+    line: BorderLine,
+    x: number,
+    y: number,
+    length: number,
+    thick: number,
+    vertical: boolean,
+  ) => {
+    ctx.fillStyle = line.color
+    dashRun(ctx, x, y, length, thick, vertical, line.style)
   }
-  if (b.right) {
-    ctx.fillStyle = b.right.color
-    ctx.fillRect(px(b.x + b.width), px(b.y), wide(b.right), px(b.y + b.height) - px(b.y))
+  for (const [k, s] of sides.top.entries()) {
+    const l = x0 + inset(sides.left, k)
+    draw(b.top!, l, y0 + s.offset, x1 - inset(sides.right, k) - l, s.size, false)
+  }
+  for (const [k, s] of sides.bottom.entries()) {
+    const l = x0 + inset(sides.left, k)
+    draw(b.bottom!, l, y1 - s.offset - s.size, x1 - inset(sides.right, k) - l, s.size, false)
+  }
+  for (const [k, s] of sides.left.entries()) {
+    const t = y0 + inset(sides.top, k)
+    draw(b.left!, x0 + s.offset, t, y1 - inset(sides.bottom, k) - t, s.size, true)
+  }
+  for (const [k, s] of sides.right.entries()) {
+    const t = y0 + inset(sides.top, k)
+    draw(b.right!, x1 - s.offset - s.size, t, y1 - inset(sides.bottom, k) - t, s.size, true)
   }
 }

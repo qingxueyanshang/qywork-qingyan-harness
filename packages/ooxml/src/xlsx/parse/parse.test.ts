@@ -155,7 +155,11 @@ const SHEET1 = `<worksheet xmlns="${NS}" xmlns:r="${R}">
 <cfRule type="expression" dxfId="0" priority="1" stopIfTrue="1"><formula>INDIRECT("A1")</formula></cfRule></conditionalFormatting>
 <conditionalFormatting sqref="A1:A10"><cfRule type="colorScale" priority="3"><colorScale><cfvo type="min"/><cfvo type="max"/><color rgb="FFF8696B"/><color theme="4"/></colorScale></cfRule></conditionalFormatting>
 <drawing r:id="rId1"/>
-<extLst><ext uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}"><x14:sparklineGroups xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:sparklineGroup><x14:sparklines><x14:sparkline><xm:f xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">S!A1:B1</xm:f></x14:sparkline></x14:sparklines></x14:sparklineGroup></x14:sparklineGroups></ext></extLst>
+<extLst><ext uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}"><x14:sparklineGroups xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:sparklineGroup><x14:sparklines><x14:sparkline><xm:f xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">S!A1:B1</xm:f></x14:sparkline></x14:sparklines></x14:sparklineGroup></x14:sparklineGroups></ext>
+<ext uri="{78C0D931-6437-407d-A8EE-F0AAD7539E65}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:conditionalFormattings><x14:conditionalFormatting xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">
+<x14:cfRule type="expression" priority="4" id="{1}"><xm:f>$B$1&gt;隐藏!$A$1</xm:f><x14:dxf><font><b/></font><fill><patternFill><bgColor rgb="FFEBF1DF"/></patternFill></fill></x14:dxf></x14:cfRule>
+<x14:cfRule type="dataBar" id="{2}"><x14:dataBar><x14:cfvo type="autoMin"/><x14:cfvo type="num"><xm:f>5</xm:f></x14:cfvo></x14:dataBar></x14:cfRule>
+<xm:sqref>C1:C2</xm:sqref></x14:conditionalFormatting></x14:conditionalFormattings></ext></extLst>
 </worksheet>`
 
 const DRAWING = `<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${R}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
@@ -327,7 +331,7 @@ describe('样式', () => {
   })
   test('差异样式的纯色填充取背景色', async () => {
     const wb = await parsed()
-    expect(wb.dxfs[0]).toMatchObject({
+    expect(wb.sheets[0]!.conditionalFormats[0]!.rules[0]!.dxf).toMatchObject({
       bold: true,
       italic: null,
       color: '#9c0006',
@@ -418,7 +422,7 @@ describe('单元格', () => {
       type: 'cellIs',
       operator: 'greaterThan',
       formulas: ['$C$1*10'],
-      dxf: 0,
+      dxf: { bold: true, color: '#9c0006' },
       priority: 2,
     })
     expect(s.conditionalFormats[1]!.rules[0]).toMatchObject({
@@ -428,6 +432,22 @@ describe('单元格', () => {
     })
     expect(s.maxRow).toBe(5)
     expect(s.maxCol).toBe(6)
+  })
+  test('2010 扩展条件格式：公式在 xm:f、差异样式内嵌、区域在规则之后；数据条扩展不读入', async () => {
+    const s = (await parsed()).sheets[0]!
+    expect(s.conditionalFormats).toHaveLength(3)
+    expect(s.conditionalFormats[2]).toMatchObject({
+      ranges: [{ top: 0, left: 2, bottom: 1, right: 2 }],
+      rules: [
+        {
+          type: 'expression',
+          formula: '$B$1>隐藏!$A$1',
+          priority: 4,
+          dxf: { bold: true, fill: { kind: 'pattern', pattern: 'solid', fg: '#ebf1df' } },
+        },
+      ],
+    })
+    expect(s.conditionalFormats[2]!.rules).toHaveLength(1)
   })
   test('图片的锚点、裁剪与字节', async () => {
     const s = (await parsed()).sheets[0]!
@@ -481,10 +501,11 @@ ${two(`<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="3" name="按钮"/><xdr:cNvSpPr/></xdr:
 <xdr:pic><xdr:nvPicPr><xdr:cNvPr id="9" name="组内图片"/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId1"/></xdr:blipFill></xdr:pic>
 </xdr:grpSp><xdr:clientData/></xdr:absoluteAnchor>
 ${two(`<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="10" name="艺术字"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr>${xfrm(0, 0, 100, 100)}
-<a:effectLst><a:glow rad="12700"><a:srgbClr val="FF0000"/></a:glow></a:effectLst></xdr:spPr>
+<a:effectLst><a:glow rad="12700"><a:srgbClr val="FF0000"/></a:glow></a:effectLst>
+<a:scene3d><a:camera prst="orthographicFront"/><a:lightRig rig="threePt" dir="t"/></a:scene3d><a:sp3d><a:bevelT/></a:sp3d></xdr:spPr>
 <xdr:txBody><a:bodyPr vert="eaVert"><a:prstTxWarp prst="textWave1"><a:avLst/></a:prstTxWarp></a:bodyPr><a:p><a:r><a:t>波浪</a:t></a:r></a:p></xdr:txBody></xdr:sp>`)}
 ${two(`<xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id="11" name="隐藏" hidden="1"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr>${xfrm(0, 0, 100, 100)}</xdr:grpSpPr>
-<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="13" name="隐藏组内"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr>${xfrm(0, 0, 100, 100)}<a:effectLst><a:glow rad="12700"><a:srgbClr val="FF0000"/></a:glow></a:effectLst></xdr:spPr></xdr:sp>
+<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="13" name="隐藏组内"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr>${xfrm(0, 0, 100, 100)}<a:effectLst><a:glow rad="12700"><a:srgbClr val="FF0000"/></a:glow></a:effectLst><a:sp3d><a:bevelT/></a:sp3d></xdr:spPr></xdr:sp>
 <xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="14" name="隐藏组内图表"/></xdr:nvGraphicFramePr><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"/></a:graphic></xdr:graphicFrame></xdr:grpSp>`)}
 ${two('<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="12" name="无位置"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr/></xdr:sp>')}
 </xdr:wsDr>`
@@ -547,7 +568,7 @@ describe('形状', () => {
     expect(group.children[0]?.kind === 'shape' && solidHex(group.children[0].fill)).toBe('FF0000')
 
     expect(warp?.kind).toBe('shape')
-    // 组内图表、组内图片、缺少 xfrm 的顶层形状；艺术字的变形、竖排与发光。隐藏的组合及其中的发光与图表不计数。
+    // 组内图表、组内图片、缺少 xfrm 的顶层形状；艺术字的变形、竖排、发光与棱台。隐藏的组合及其中的发光、棱台与图表不计数。
     expect(s.unsupported).toEqual({
       comment: 2,
       table: 1,
@@ -560,6 +581,7 @@ describe('形状', () => {
       textWarp: 1,
       verticalText: 1,
       effect: 1,
+      effect3d: 1,
     })
   })
   test('形状文字未指定的字号为 11 磅，字体为主题正文字体', async () => {

@@ -2,12 +2,17 @@
  * 整数像素字号下的前进宽度，与 Windows GDI（ClearType，`GetCharWidth32`）的整数结果一致。
  *
  * - 有 `hdmx` 且其中有该 ppem 的记录时取记录中的宽度。
- * - 否则，`head.flags` 第 4 位为 0（指令不改变前进宽度）时按线性宽度四舍五入；等宽字体（`post.isFixedPitch`
- *   非 0，或 `OS/2` 的 panose 比例为 9）中前进宽度不小于 1 em 的字形取 `2 × round(线性宽度 / 2)`：GDI 按半角宽度的 2 倍给出全角宽度。
+ * - 否则，ClearType 绘制在该 ppem 不执行指令（`gasp`，见 `readClearTypeRanges`）或 `head.flags` 第 4 位为 0
+ *   （指令不改变前进宽度）时按线性宽度四舍五入；等宽字体（`post.isFixedPitch` 非 0，或 `OS/2` 的 panose 比例为 9）中
+ *   前进宽度不小于 1 em 的字形取 `2 × round(线性宽度 / 2)`：GDI 按半角宽度的 2 倍给出全角宽度。
  *   不要把判据放宽为「宽于半 em」：西文等宽字体（Consolas 等）的字形都略宽于半 em，按线性宽度四舍五入。
- * - 其余情形（指令可能改变宽度且没有对应的 `hdmx` 记录）无法由字体表确定，返回 `null`。
+ * - 其余情形取单色提示后的前进宽度（幻影点之差取整，见 `GlyphHinting.advance`）：GDI 的 ClearType 宽度与单色相同
+ *   （兼容宽度）。GDI 实测：Arial、Times New Roman、Calibri、微软雅黑、等线、楷体、宋体 ppem 6–39 的可打印 ASCII，
+ *   两种绘制的宽度只在 `gasp` 不要求网格对齐的字号不同。字体没有 TrueType 轮廓（CFF）时无法提示，返回 `null`。
  */
 
+import { readClearTypeRanges } from './hinting/gasp.ts'
+import { readGlyphHinting } from './hinting/index.ts'
 import { readMetrics } from './metrics.ts'
 import { FontFormatError, type SfntFace, tableBytes } from './sfnt.ts'
 
@@ -55,7 +60,7 @@ function isMonospaced(bytes: Uint8Array, face: SfntFace): boolean {
 }
 
 /**
- * 返回按码位与 ppem 求整数前进宽度（像素）的函数；无法确定时返回 `null`，调用方按线性宽度处理。
+ * 返回按码位与 ppem 求整数前进宽度（像素）的函数；字体没有 TrueType 轮廓而需要提示时返回 `null`，调用方按线性宽度处理。
  * 码位不在 `cmap` 中时按 `.notdef` 计算。`bytes` 是整个文件的字节（单个字体或 TTC），`face` 取自 `readFaces(bytes)`。
  */
 export function readPixelAdvances(
@@ -70,11 +75,17 @@ export function readPixelAdvances(
     ? readHdmx(tableBytes(bytes, face, 'hdmx'), metrics.numGlyphs)
     : new Map<number, Uint8Array>()
   const mono = linear && isMonospaced(bytes, face)
+  const ranges = readClearTypeRanges(bytes, face)
+  // 提示所需的表在第一次需要时读取。
+  let hinting: ReturnType<typeof readGlyphHinting> | undefined
   const upm = metrics.unitsPerEm
   return (codePoint, ppem) => {
     const record = hdmx.get(ppem)
     if (record) return record[metrics.glyphId(codePoint)]!
-    if (!linear) return null
+    if (!linear && ranges(ppem).gridFit) {
+      if (hinting === undefined) hinting = readGlyphHinting(bytes, face)
+      return hinting === null ? null : hinting.advance(metrics.glyphId(codePoint), ppem)
+    }
     const units = metrics.advanceWidth(codePoint)
     // 整数运算：四舍五入（0.5 进位）不经浮点。
     if (mono && units >= upm) return 2 * Math.floor((units * ppem + upm) / (2 * upm))

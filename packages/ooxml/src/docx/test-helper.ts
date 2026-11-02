@@ -20,13 +20,13 @@ const W_DECL =
 const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const CT = 'application/vnd.openxmlformats-officedocument.wordprocessingml'
 
-function buildZip(members: Record<string, string>): Uint8Array<ArrayBuffer> {
+function buildZip(members: Record<string, string | Uint8Array>): Uint8Array<ArrayBuffer> {
   const locals: Uint8Array[] = []
   const centrals: Uint8Array[] = []
   let offset = 0
   for (const [name, content] of Object.entries(members)) {
     const nameBytes = encoder.encode(name)
-    const data = encoder.encode(content)
+    const data = typeof content === 'string' ? encoder.encode(content) : content
     const crc = Bun.hash.crc32(data)
     const local = new Uint8Array(30 + nameBytes.length + data.length)
     const lv = new DataView(local.buffer)
@@ -98,14 +98,14 @@ export interface DocxParts {
   readonly before?: string
   /** 主文档的内容类型，缺省为 WordprocessingML 文档。 */
   readonly mainType?: string
-  /** 主文档关系引用的其他部件（页眉页脚、图片），按给出的关系标识与类型登记，内容原样写入。 */
+  /** 主文档关系引用的其他部件（页眉页脚、图片），按给出的关系标识与类型登记，内容原样写入（字符串按 UTF-8）。 */
   readonly extra?: readonly {
     readonly id: string
     /** 关系类型的末段，如 `header`、`image`。 */
     readonly type: string
     /** `word/` 之下的部件名。 */
     readonly name: string
-    readonly content: string
+    readonly content: string | Uint8Array
     readonly contentType?: string
   }[]
 }
@@ -119,7 +119,7 @@ const PARTS: readonly (readonly [keyof DocxParts, string, string, string])[] = [
 
 export function buildDocx(parts: DocxParts): Uint8Array<ArrayBuffer> {
   const head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-  const members: Record<string, string> = {}
+  const members: Record<string, string | Uint8Array> = {}
   const overrides = [
     `<Override PartName="/word/document.xml" ContentType="${parts.mainType ?? `${CT}.document.main+xml`}"/>`,
   ]

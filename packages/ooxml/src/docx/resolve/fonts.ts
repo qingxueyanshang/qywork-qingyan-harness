@@ -3,7 +3,9 @@
  *
  * - `*Ascii`、`*HAnsi` 取主题字体集的 `latin`；`*EastAsia` 取 `ea`，为空时按 `themeFontLang/@w:eastAsia` 的文种取
  *   按文种字体；`*Bidi` 取 `cs`，为空时按 `themeFontLang/@w:bidi` 的文种取。
- * - 缺省字体：`ascii` 与 `hAnsi` 为 Calibri、`eastAsia` 为宋体、`cs` 为 Times New Roman。
+ * - 未指定的字体取主题的次要字体（`minorHAnsi`、`minorEastAsia`、`minorBidi`）。WPS 实测：没有样式部件、样式部件为空、
+ *   `docDefaults` 只给出西文字体的文档，有主题部件时东亚文字为主题 `Hans` 字体（等线，行高 14.2 磅）。
+ * - 缺省字体：主题中也没有时 `ascii` 与 `hAnsi` 为 Calibri、`eastAsia` 为宋体、`cs` 为 Times New Roman。
  *   WPS 打开没有字体设置与主题的文档时各类字体即为这些值（实测）。
  */
 
@@ -54,8 +56,20 @@ function themeFont(theme: ThemeFont, ctx: FontContext): string {
   return collection.latin
 }
 
+/** 未指定字体时所取的主题字体。 */
+const UNSPECIFIED: Readonly<Record<FontSlotName, ThemeFont>> = {
+  ascii: 'minorHAnsi',
+  hAnsi: 'minorHAnsi',
+  eastAsia: 'minorEastAsia',
+  cs: 'minorBidi',
+}
+
 export function fontName(ref: FontRef | undefined, slot: FontSlotName, ctx: FontContext): string {
-  if (ref === undefined) return DEFAULT_FONTS[slot]
-  const name = 'theme' in ref ? themeFont(ref.theme, ctx) : ref.name
+  const name =
+    ref === undefined
+      ? themeFont(UNSPECIFIED[slot], ctx)
+      : 'theme' in ref
+        ? themeFont(ref.theme, ctx)
+        : ref.name
   return name === '' ? DEFAULT_FONTS[slot] : name
 }

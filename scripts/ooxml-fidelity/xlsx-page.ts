@@ -1,7 +1,8 @@
 /**
  * 候选截图的浏览器入口（由 `xlsx-candidates.ts` 打包）：解析 xlsx、以字节注册字体、按真值清单的区域绘制到画布。
  *
- * 页面向 `window` 暴露 `renderPage(id, sheet, range)`，返回画布尺寸；截图由 Node 驱动的 Playwright 完成。
+ * 页面向 `window` 暴露 `renderPage(id, sheet, range, width, height, clearType)`（`width`、`height` 为真值位图的尺寸，
+ * `clearType` 为采集时显示器的 ClearType 设置），返回画布尺寸与本方区域尺寸；截图由 Node 驱动的 Playwright 完成。
  * 本文件只声明用到的浏览器接口，不引入 DOM 类型库（`scripts` 的类型检查环境不含 DOM）。
  */
 
@@ -11,6 +12,7 @@ import type {
   PaintCanvas,
 } from '../../packages/ooxml/src/drawingml/index.ts'
 import {
+  type ClearTypeDisplay,
   createScene,
   FontSet,
   fallbackFonts,
@@ -20,6 +22,7 @@ import {
   type PaintImage,
   paintRegion,
   parseXlsx,
+  substituteFont,
   type Workbook,
 } from '../../packages/ooxml/src/xlsx/index.ts'
 
@@ -27,7 +30,7 @@ interface CanvasElement {
   width: number
   height: number
   style: { width: string; height: string }
-  getContext(kind: '2d', options: { alpha: boolean }): PaintContext
+  getContext(kind: '2d', options: { alpha: boolean; willReadFrequently: boolean }): PaintContext
 }
 
 declare const document: {
@@ -103,7 +106,10 @@ function loadDoc(id: string): Promise<Doc> {
       const workbook = parsed.value
       const fallbacks = fallbackFonts(workbook)
       const names = [...new Set([...workbook.fontNames, ...fallbacks])]
-      const faces = (await Promise.all(names.map(loadFamily))).flat()
+      const found = await Promise.all(names.map(loadFamily))
+      const substitutes = names.filter((_, i) => found[i]!.length === 0).map(substituteFont)
+      const extra = [...new Set(substitutes)].filter((n) => !names.includes(n))
+      const faces = [...found, ...(await Promise.all(extra.map(loadFamily)))].flat()
       return { workbook, fonts: new FontSet(faces, fallbacks) }
     })()
     docs.set(id, pending)
@@ -119,11 +125,19 @@ function lastCell(range: string): { row: number; col: number } {
   return { row: Number(m[2]) - 1, col: col - 1 }
 }
 
+/**
+ * 画布尺寸取真值位图的尺寸（与 docx 候选一致），区域之外为白色，打分时不重采样。
+ * 返回值中的 `region` 是本方区域尺寸（含右侧与下侧的网格线），与位图尺寸不同时由驱动脚本输出。
+ * WPS 对保存的缩放比例不是 100% 的部分工作表，`CopyPicture` 的位图在右侧或下方多出 1 像素白边，取整规则未查明。
+ */
 async function renderPage(
   id: string,
   sheetName: string,
   range: string,
-): Promise<{ width: number; height: number }> {
+  truthWidth: number,
+  truthHeight: number,
+  clearType: ClearTypeDisplay | null,
+): Promise<{ width: number; height: number; region: { width: number; height: number } }> {
   const { workbook, fonts } = await loadDoc(id)
   const sheet = workbook.sheets.find((s) => s.name === sheetName)
   if (!sheet) throw new Error(`没有工作表：${sheetName}`)
@@ -137,13 +151,21 @@ async function renderPage(
     ),
   )
   const canvas = document.getElementById('sheet')
-  canvas.width = width + 1
-  canvas.height = height + 1
-  canvas.style.width = `${width + 1}px`
-  canvas.style.height = `${height + 1}px`
-  const ctx = canvas.getContext('2d', { alpha: false })
-  paintRegion(ctx, scene, { x: 0, y: 0, width, height }, { images, createCanvas })
-  return { width: width + 1, height: height + 1 }
+  canvas.width = truthWidth
+  canvas.height = truthHeight
+  canvas.style.width = `${canvas.width}px`
+  canvas.style.height = `${canvas.height}px`
+  // 不透明画布的初始像素为黑色；区域之外的白边不由 `paintRegion` 绘制。ClearType 字形读写画布像素，见 `PaintContext`。
+  // 画布元素在各页之间复用，绘制上下文的选项取第一页的设置。
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: clearType !== null })
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  paintRegion(ctx, scene, { x: 0, y: 0, width, height }, { images, createCanvas, clearType })
+  return {
+    width: canvas.width,
+    height: canvas.height,
+    region: { width: width + 1, height: height + 1 },
+  }
 }
 
 window.renderPage = renderPage

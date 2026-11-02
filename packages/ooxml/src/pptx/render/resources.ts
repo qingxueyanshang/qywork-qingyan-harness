@@ -2,7 +2,8 @@
  * 绘制所需的图片与嵌入字体：从文件字节中读取（可在 Worker 中运行）。
  *
  * - 图片的引用来源：图片形状、形状与表格单元格的图片填充、文字的图片填充、背景、组合内的后代。
- *   解码由调用方完成（浏览器 `createImageBitmap`）；无法解码的格式已在解析时计入 `imageFormat`。
+ *   解码由调用方完成（`../../drawingml/paint/picture.ts` 的 `decodePicture`：位图与图元文件）；无法绘制的图片已在解析时
+ *   计入 `imageFormat`。
  * - 嵌入字体：部件为 EOT（含 MicroType Express 压缩与异或）时还原为 TrueType 或 CFF 字体字节，
  *   部件本身为 sfnt 时原样使用；两者都不是或还原失败的计入 `failed`。字体字节由调用方以 `typeface`
  *   为族名注册为 `FontFace`，并读取度量。

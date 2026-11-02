@@ -1,10 +1,13 @@
 /**
- * 样式部件：`docDefaults` 与各样式的 `basedOn`、`pPr`、`rPr`。继承链在 `../resolve/cascade.ts` 中展开。
+ * 样式部件：`docDefaults` 与各样式的名称、`basedOn`、`pPr`、`rPr`。继承链在 `../resolve/cascade.ts` 中展开。
  *
  * - 同一标识出现多次时取第一个；`w:default` 为真的第一个段落样式与字符样式为缺省样式。
  * - 不读取 `w:link`：段落样式的标识用作 `rStyle`、字符样式的标识用作 `pStyle` 时，WPS 均按未指定样式处理
  *   （实测），链接关系不参与属性解决。
  * - 表格样式另读取表格、单元格属性与各种条件格式（`tblStylePr`）；`w:default` 为真的第一个表格样式为缺省表格样式。
+ * - `rPrDefault` 中有 `rPr` 而没有字号时字号为 10 磅（`DOC_DEFAULT_SIZE`）；没有 `rPr`（含没有样式部件）时由
+ *   `../resolve/cascade.ts` 取 10.5 磅。WPS 实测：只有 `docDefaults`、`rPrDefault` 或 `pPrDefault` 时为 10.5 磅，
+ *   有空的 `rPrDefault/rPr` 时为 10 磅。
  */
 
 import { type RawParaProps, type RawRunProps, readParaProps, readRunProps } from './properties.ts'
@@ -30,6 +33,10 @@ export interface TableFormat {
 
 export interface StyleDef {
   readonly id: string
+  /** `w:name`；没有时为空串。 */
+  readonly name: string
+  /** `w:customStyle`：用户定义的样式。 */
+  readonly custom: boolean
   readonly type: StyleType
   readonly basedOn: string | null
   readonly pPr: RawParaProps
@@ -80,6 +87,8 @@ const STYLE_TYPES = new Set<string>(['paragraph', 'character', 'table', 'numberi
 function readStyle(x: Scanner): StyleDef | null {
   const id = wAttr(x, 'styleId')
   const type = wAttr(x, 'type') ?? 'paragraph'
+  const custom = wAttr(x, 'customStyle') !== null && onOff(x, 'customStyle')
+  let name = ''
   let basedOn: string | null = null
   let pPr: RawParaProps = {}
   let rPr: RawRunProps = {}
@@ -89,6 +98,9 @@ function readStyle(x: Scanner): StyleDef | null {
   eachChild(x, (local) => {
     if (local === 'basedOn') {
       basedOn = wAttr(x, 'val')
+      skip(x)
+    } else if (local === 'name') {
+      name = wAttr(x, 'val') ?? ''
       skip(x)
     } else if (local === 'pPr') pPr = readParaProps(x)
     else if (local === 'rPr') rPr = readRunProps(x)
@@ -101,8 +113,11 @@ function readStyle(x: Scanner): StyleDef | null {
     } else skip(x)
   })
   if (id === null || !STYLE_TYPES.has(type)) return null
-  return { id, type: type as StyleType, basedOn, pPr, rPr, tblPr, tcPr, conditions }
+  return { id, name, custom, type: type as StyleType, basedOn, pPr, rPr, tblPr, tcPr, conditions }
 }
+
+/** `rPrDefault/rPr` 存在而没有 `sz`、`szCs` 时的字号（磅）。 */
+const DOC_DEFAULT_SIZE = 10
 
 /** 根元素为 `styles` 的部件。 */
 export function readStyles(x: Scanner): Styles {
@@ -117,7 +132,8 @@ export function readStyles(x: Scanner): Styles {
     if (x.local === 'docDefaults') {
       eachChild(x, (local) => {
         eachChild(x, (inner) => {
-          if (local === 'rPrDefault' && inner === 'rPr') defaultRun = readRunProps(x)
+          if (local === 'rPrDefault' && inner === 'rPr')
+            defaultRun = { size: DOC_DEFAULT_SIZE, sizeCs: DOC_DEFAULT_SIZE, ...readRunProps(x) }
           else if (local === 'pPrDefault' && inner === 'pPr') defaultParagraph = readParaProps(x)
           else skip(x)
         })

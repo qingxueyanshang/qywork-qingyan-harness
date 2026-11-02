@@ -8,7 +8,8 @@
  * 画布尺寸取真值清单中该页的像素尺寸，页数以真值为准：本方页数不足时缺页由打分记 0 分，多出的页不输出。
  *
  * 输出：`<out>/<文档标识>/page-0001.png` 起，文件名与真值清单一致。缺省输出目录为
- * `.tmp/ooxml-fidelity/candidates/ooxml-docx`。另写 `<out>/<文档标识>/pages.json`：本方页数与每页的表格、浮动对象个数。
+ * `.tmp/ooxml-fidelity/candidates/ooxml-docx`。另写 `<out>/<文档标识>/pages.json`：本方页数与每页的表格、浮动对象、图表、SmartArt、
+ * 绘制与未绘制的公式个数。
  */
 
 import { mkdirSync, readFileSync } from 'node:fs'

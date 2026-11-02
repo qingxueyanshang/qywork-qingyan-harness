@@ -1,5 +1,6 @@
 /**
- * 纵向度量与平均字宽：`hhea` 的上下沿与行距、`OS/2` 的 Windows 上下沿、平均字宽、代码页与上下标的字号与偏移。
+ * 纵向度量与平均字宽：`hhea` 的上下沿与行距、`OS/2` 的 Windows 上下沿、`USE_TYPO_METRICS` 标志、平均字宽、代码页与上下标的
+ * 字号与偏移。
  *
  * 只读取原始字段，不做取舍：行高取哪一组字段、怎样换算由排版模块决定。
  */
@@ -11,6 +12,9 @@ import { FontFormatError, type SfntFace, tableBytes } from './sfnt.ts'
 const OS2_CODE_PAGE_END = 86
 /** `OS/2` 中直到 `usWinDescent` 的长度。 */
 const OS2_WIN_END = 78
+/** `OS/2.fsSelection` 的偏移与其第 7 位 `USE_TYPO_METRICS`。 */
+const OS2_FS_SELECTION = 62
+const USE_TYPO_METRICS = 0x80
 const HHEA_LENGTH = 36
 
 /** `ulCodePageRange1` 的第 17–21 位：日文、简体中文、韩文（Wansung）、繁体中文、韩文（Johab）。 */
@@ -27,6 +31,11 @@ export interface VerticalMetrics {
   winAscent: number
   /** `OS/2.usWinDescent`，字体单位，非负（向下为正）。 */
   winDescent: number
+  /**
+   * `OS/2.fsSelection` 设置了 `USE_TYPO_METRICS`。不限 `OS/2` 版本：版本 3 的 Cambria Math 已设置该位。
+   * 不来自字体文件的度量可以省略，按未设置。
+   */
+  useTypoMetrics?: boolean
   /** `OS/2.xAvgCharWidth`，字体单位。 */
   averageWidth: number
   /** `OS/2.ulCodePageRange1` 含中文、日文或韩文代码页。版本 0 的表没有该字段，为 `false`。 */
@@ -63,6 +72,7 @@ export function readVerticalMetrics(bytes: Uint8Array, face: SfntFace): Vertical
     hheaLineGap: h.getInt16(8),
     winAscent: o.getUint16(74),
     winDescent: o.getUint16(76),
+    useTypoMetrics: (o.getUint16(OS2_FS_SELECTION) & USE_TYPO_METRICS) !== 0,
     averageWidth: o.getInt16(2),
     eastAsianCodePage: (codePageRange1(os2) & EAST_ASIAN_CODE_PAGES) !== 0,
     subscriptSize: o.getInt16(12),

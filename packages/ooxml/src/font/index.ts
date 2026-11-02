@@ -13,8 +13,17 @@ export {
   type EmbeddedOpenType,
   readEmbeddedOpenType,
 } from './embedded/eot.ts'
+export type { HintedOutline } from './hinting/glyph.ts'
+export { type GlyphHinting, readGlyphHinting } from './hinting/index.ts'
+export { rasterize } from './hinting/raster.ts'
 export { type FontMetrics, readHead, readMetrics } from './metrics.ts'
 export { readFamilyNames } from './name.ts'
+export {
+  type GlyphBounds,
+  type GlyphOutlines,
+  type OutlineCommand,
+  readGlyphOutlines,
+} from './outline.ts'
 export { readPixelAdvances } from './pixel-advance.ts'
 export { type PixelVerticalMetrics, readPixelVerticalMetrics } from './pixel-metrics.ts'
 export {

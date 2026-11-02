@@ -208,7 +208,7 @@ export class ConditionalFormats {
       }
     }
     if (!matched) return null
-    const dxf = rule.dxf === null ? null : this.wb.dxfs[rule.dxf]
+    const dxf = rule.dxf
     if (!dxf) return {}
     return {
       fill: dxf.fill,

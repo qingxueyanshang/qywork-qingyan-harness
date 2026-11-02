@@ -2,23 +2,39 @@
  * 表格排版：列宽、表格位置、单元格内容、边框与行高。长度单位为磅，坐标相对表格所在区域（栏、单元格或文本框的文字区）
  * 的左边与表格顶边。规则均为 WPS 12.1 实测结果。
  *
- * - 列宽取网格（`tblGrid`）；固定布局不看 `tcW` 与 `tblW`。自动调整布局中每列不小于其中单列单元格的最小内容宽度
- *   （最长的不可断开部分加左右边距，向上取整到 1/20 磅；`noWrap` 的单元格为整段宽度），`tblW` 为百分比时各列按比例缩放到该宽度
- *   （兼容模式低于 15 时为区域宽度加表格左右边距，15 时为区域宽度减左右边框的一半）。
+ * - 列宽：固定布局取网格（`tblGrid`），不看 `tcW` 与 `tblW`；自动调整布局按内容与首选宽度求得（`autofit.ts`）。
  * - 横向位置：兼容模式低于 15 时，左对齐的表格文字与区域左边加 `tblInd` 对齐（单元格左边在其左侧一个左边距处），
- *   右对齐时文字右端与区域右边对齐；兼容模式 15 时左对齐的单元格左边在 `tblInd` 加左边框一半处，右对齐时单元格右边
- *   在区域右边减右边框一半处。居中时按网格宽度居中，与兼容模式无关。
- * - 行高：行顶边框（本行各列上边框中最宽者）计入本行；固定行高（`exact`）含该边框；最小行高（`atLeast`）与自动行高
- *   为边框加内容高度（单元格上下边距与内容）与最小值中的较大者。表格底边框在最后一行之后另占高度。
+ *   右对齐时文字右端与区域右边对齐；兼容模式 15 时左对齐的单元格左边在 `tblInd` 加左框线一半处，右对齐时单元格右边
+ *   在区域右边减右框线一半处。框线取表格的 `tblBorders`，不看单元格自身的边框（WPS 实测，构造文档 w10g：表格没有左框线、
+ *   第一列单元格左边框 3 磅时单元格左边与区域左边对齐）。居中时按列宽之和居中，与兼容模式无关。
+ *   浮动表格（`tblpPr`）的横向位置由调用方按基准加 `tblpX` 另行给出（`page/build.ts`），不看对齐方式；`text` 基准为栏。
+ *   兼容模式 15 时单元格左边在该处，不看 `tblInd` 与框线；低于 15 时文字在该处加 `tblInd` 处（WPS 实测，构造文档 w11b）。
+ * - 行高：行顶边框计入本行：各列取本行单元格自身的上边框（未给出时为表格的内框线或上框线）与上一行单元格的下边框
+ *   减去本行单元格上边距中的较大者，再取各列的最大值。即上一行的下边框与本行的上边距重叠，本行的上边框与上边距相加
+ *   （WPS 实测：上边距 5 磅时，上一行 1.5 磅的下边框不使内容下移，本行 1.5 磅的上边框或内框线使内容下移 1.5 磅；
+ *   上边距 1 磅时上一行 1.25 磅的下边框使内容下移 0.25 磅）。绘制的线仍按相邻单元格的取舍。自动行高为边框加单元格上下边距与内容；最小行高（`atLeast`）的
+ *   设定值不含单元格上下边距，行高为边框加上下边距加内容与设定值中的较大者；固定行高（`exact`）的设定值含边框与上边距、
+ *   不含下边距，行高为设定值加下边距（WPS 实测：上下边距各 5 磅、内容 13.6 磅时，最小值 30 磅的行高 40 磅，固定值 30 磅
+ *   的行高 35 磅；只有上边距 5 磅时固定值 30 磅的行高 30 磅，只有下边距 5 磅时 35 磅）。表格底边框在最后一行之后另占高度。
  *   纵向合并的单元格内容高于所跨各行时，最后一行加高。
- * - 边框占用的高度：双线为线宽的 3 倍，三线为 5 倍，其余为线宽。
+ * - 跨页处的边框：续页部分的第一行（不含重复的标题行）顶边按表格的第一行求取（单元格的上边框，未给出时为表格的上框线）；
+ *   未以最后一行结束的页面部分，底边按表格的最后一行求取。从续页开头放置的整行占用该顶边的高度而不是本行的行顶边框，
+ *   切开的行在续页的部分仍占用本行的行顶边框（WPS 实测：上下框线 1.5 磅、内框横线 0.5 磅或无的表格跨页时，续页顶部与本页
+ *   底部都绘制 1.5 磅的框线；续页第一行为整行时内容下移 1.5 磅，为切开的行时下移 0.5 磅）。
+ * - 边框占用的高度：各条线与间距之和（`../border.ts`）。
  * - 相邻单元格边框冲突：各边取单元格明确给出的边框，未给出时取表格的外框或内框；两侧都有边框时取较宽者，宽度相同时
- *   取上方或左侧单元格的边框；一侧为无边框时取另一侧。
- * - 单元格内容：第一段的段前间距与最后一段的段后间距都计入；段落之间取上段段后与下段段前的较大者。
+ *   取上方或左侧单元格的边框。一侧为无边框时另一侧须胜过表格虚框（0.5 磅、#c8c8c8）：线宽大于 0.5 磅，或等于 0.5 磅
+ *   且亮度（R + B + 2G）不高于虚框，否则该边为无边框（WPS 实测，构造文档 w11j、w11k：0.25 磅与 0.375 磅的线、
+ *   0.5 磅的 #d0d0d0 与 #e7e7e7 不绘制，0.5 磅的 #c8c8c8、#ffff00 与 0.75 磅的 #e7e7e7 绘制；竖边相同）。
+ *   表格外沿没有另一侧，边框照常绘制。
+ * - 单元格内容：第一段的段前间距与最后一段的段后间距都计入；段落之间取上段段后与下段段前的较大者，段落边框占用的高度
+ *   另加（`ParagraphLayout.borderTop`、`borderBottom`）。
  */
 
+import { borderSpace } from '../border.ts'
 import { contextSpacing, type ParagraphLayout, type ParagraphLayouter } from '../layout.ts'
 import type { Block, Border, CellBorders, Paragraph, TableBlock, TableCell } from '../model.ts'
+import { autofitColumns } from './autofit.ts'
 
 /** 单元格内容中的一项，`top` 相对单元格文字区顶边，`x` 相对文字区左边。 */
 export type StackItem =
@@ -60,6 +76,12 @@ export interface RowBox {
   readonly height: number
   /** 行顶边框占用的高度。 */
   readonly border: number
+  /** 本行整行位于续页部分开头时顶边框占用的高度（`TableLayout.pageTop`）。 */
+  readonly pageBorder: number
+  /** 本行为页面部分的最后一行时底边框占用的高度（`TableLayout.pageBottom`；最后一行即表格底边框）。 */
+  readonly pageBottomBorder: number
+  /** 不含行顶边框的最小高度：最小行高的设定值加单元格上下边距；其他行为 0。切开后续页的部分同样不小于此值。 */
+  readonly minimum: number
   readonly rule: 'auto' | 'atLeast' | 'exact'
   readonly header: boolean
   readonly cantSplit: boolean
@@ -94,19 +116,14 @@ export interface TableLayout {
   readonly horizontal: readonly (readonly (Border | null | undefined)[])[]
   /** 纵向边框：`[r][c]` 为第 `r` 行第 `c` 列左边（`c` 等于列数时为表格右边）的边框；合并单元格内部为 `undefined`。 */
   readonly vertical: readonly (readonly (Border | null | undefined)[])[]
+  /** 第 `r` 行位于续页部分开头时的顶边、位于页面部分末尾时的底边（见文件头）：`[r][c]`，没有单元格处为 `undefined`。 */
+  readonly pageTop: readonly (readonly (Border | null | undefined)[])[]
+  readonly pageBottom: readonly (readonly (Border | null | undefined)[])[]
 }
 
 export interface TableContext {
   readonly layouter: ParagraphLayouter
   readonly compatibilityMode: number
-}
-
-/** 边框在排版中占用的宽度。 */
-export function borderSpace(b: Border | null | undefined): number {
-  if (b == null) return 0
-  if (b.style === 'double') return b.width * 3
-  if (b.style === 'triple') return b.width * 5
-  return b.width
 }
 
 /** 在宽度为 `region` 的区域中排版一组块（单元格、文本框或页眉页脚的内容）。 */
@@ -117,11 +134,11 @@ export function layoutStack(blocks: readonly Block[], region: number, cx: TableC
   blocks.forEach((b, i) => {
     if (b.kind === 'paragraph') {
       const sp = contextSpacing(blocks, i)
-      const space = i === 0 ? sp.before : Math.max(prevAfter, sp.before)
-      y += space
       const layout = cx.layouter.layout(b, i, region, sp)
+      const space = (i === 0 ? sp.before : Math.max(prevAfter, sp.before)) + layout.borderTop
+      y += space
       items.push({ kind: 'paragraph', block: i, paragraph: b, layout, top: y, space })
-      y += layout.text.height
+      y += layout.text.height + layout.borderBottom
       prevAfter = sp.after
       return
     }
@@ -132,28 +149,6 @@ export function layoutStack(blocks: readonly Block[], region: number, cx: TableC
     y += table.height
   })
   return { items, height: y + prevAfter }
-}
-
-/**
- * 向上取整到 1/20 磅。WPS 实测：最小内容宽度 172.9245 与 50.457 磅的列为 172.95 与 50.5 磅；不要改为四舍五入，
- * 那样得到 172.9 与 50.45。容差抵消浮点误差，使恰为 1/20 磅整数倍的值不进位。
- */
-function ceilTwips(v: number): number {
-  return Math.ceil(v * 20 - 1e-9) / 20
-}
-
-/** 单元格的最小内容宽度（不含边距）；嵌套表格取其宽度。 */
-function minContent(cell: TableCell, cx: TableContext): number {
-  let w = 0
-  for (const b of cell.content) {
-    if (b.kind === 'paragraph') w = Math.max(w, cx.layouter.contentWidth(b, cell.noWrap))
-    else
-      w = Math.max(
-        w,
-        b.grid.reduce((a, g) => a + g, 0),
-      )
-  }
-  return w
 }
 
 interface Slot {
@@ -185,11 +180,63 @@ function occupancy(t: TableBlock, columns: number): (Slot | null)[][] {
   return grid
 }
 
+/**
+ * 第 `r` 行第 `c` 列的行顶边框占用的高度（见文件头）：本行单元格的上边框，与上一行单元格的下边框减去本行上边距中的较大者；
+ * `edge` 为单元格某一边未经相邻取舍的边框，`continued` 为第 `r` 行该列纵向合并的后续单元格（`vMerge` 为 `continue`）。
+ * 纵向合并的单元格内部同样按此计算，本行一侧取后续单元格自身的上边框（WPS 实测，构造文档 w10m：合并单元格内部
+ * 只有起始单元格 3 磅的下边框或只有后续单元格 3 磅的上边框时，相邻一列的下一行都下移 3 磅；两者都没有时不下移）；
+ * 不绘制。本行该列没有单元格时取上一行单元格的下边框。
+ */
+function rowTopSpace(
+  grid: readonly (readonly (Slot | null)[])[],
+  r: number,
+  c: number,
+  edge: (
+    slot: Slot | null,
+    key: 'top' | 'bottom',
+    r: number,
+    c: number,
+  ) => Border | null | undefined,
+  continued: { readonly top: Border | null; readonly margin: number } | null,
+): number {
+  const below = grid[r]?.[c] ?? null
+  const above = r > 0 ? (grid[r - 1]?.[c] ?? null) : null
+  if (below === null && above === null) return 0
+  if (below === above) {
+    if (continued === null) return 0
+    const own = borderSpace(continued.top)
+    return Math.max(own, borderSpace(edge(above, 'bottom', r - 1, c)) - continued.margin)
+  }
+  if (below === null) return borderSpace(edge(above, 'bottom', r - 1, c))
+  const own = borderSpace(edge(below, 'top', r, c))
+  if (above === null) return own
+  return Math.max(own, borderSpace(edge(above, 'bottom', r - 1, c)) - below.cell.margins.top)
+}
+
 /** 两侧边框的取舍（见文件头）。`undefined` 为该侧没有单元格。 */
 function resolveEdge(a: Border | null | undefined, b: Border | null | undefined): Border | null {
-  if (a == null) return b ?? null
-  if (b == null) return a
+  if (a === undefined) return b ?? null
+  if (b === undefined) return a
+  if (a === null) return b !== null && beatsGridline(b) ? b : null
+  if (b === null) return beatsGridline(a) ? a : null
   return borderSpace(b) > borderSpace(a) ? b : a
+}
+
+/** 表格虚框作为无边框一侧的边框参与取舍：0.5 磅，亮度为 #c8c8c8 的亮度。 */
+const GRIDLINE_WIDTH = 0.5
+const GRIDLINE_BRIGHTNESS = brightness('#c8c8c8')
+
+/** 亮度：R + B + 2G；自动颜色为黑色。 */
+function brightness(color: string | null): number {
+  if (color === null) return 0
+  const v = Number.parseInt(color.slice(1), 16)
+  return (v >> 16) + (v & 0xff) + 2 * ((v >> 8) & 0xff)
+}
+
+/** 边框胜过表格虚框：线宽更大，或线宽相同且亮度不高于虚框。 */
+function beatsGridline(b: Border): boolean {
+  if (b.width !== GRIDLINE_WIDTH) return b.width > GRIDLINE_WIDTH
+  return brightness(b.color) <= GRIDLINE_BRIGHTNESS
 }
 
 function side(
@@ -207,8 +254,22 @@ export function layoutTable(t: TableBlock, region: number, cx: TableContext): Ta
     n,
     ...t.rows.map((r) => r.gridBefore + r.cells.reduce((a, c) => a + Math.max(1, c.span), 0)),
   )
-  const widths = Array.from({ length: columnsCount }, (_, c) => t.grid[c] ?? 0)
   const grid = occupancy(t, columnsCount)
+  /** 第 `r` 行覆盖第 `c` 列的纵向合并后续单元格的上边框（未给出时为表格的内框横线）与上边距；没有时为 `null`。 */
+  const continuedAt = (r: number, c: number) => {
+    const row = t.rows[r]
+    if (row === undefined) return null
+    let col = row.gridBefore
+    for (const cell of row.cells) {
+      const span = Math.max(1, cell.span)
+      if (c >= col && c < col + span)
+        return cell.vMerge === 'continue'
+          ? { top: side(cell.borders, 'top', t.borders.insideH), margin: cell.margins.top }
+          : null
+      col += span
+    }
+    return null
+  }
   const tb = t.borders
   const c15 = cx.compatibilityMode >= 15
   const lastRow = t.rows.length - 1
@@ -275,35 +336,27 @@ export function layoutTable(t: TableBlock, region: number, cx: TableContext): Ta
     }
     vertical.push(line)
   }
-
-  // 列宽。
-  if (t.layout === 'autofit') {
-    t.rows.forEach((_, r) => {
-      for (const slot of grid[r] ?? []) {
-        if (slot === null || slot.row !== r || slot.span !== 1 || slot.cell.vMerge === 'continue')
-          continue
-        const m = slot.cell.margins
-        const need = ceilTwips(minContent(slot.cell, cx) + m.left + m.right)
-        if (need > widths[slot.col]!) widths[slot.col] = need
-      }
-    })
-    if (t.width?.type === 'pct' && t.width.value > 0) {
-      const lb = borderSpace(vertical[0]?.[0])
-      const rb = borderSpace(vertical[0]?.[columnsCount])
-      const target = c15
-        ? region * t.width.value - (lb + rb) / 2
-        : region * t.width.value + t.margins.left + t.margins.right
-      const sum = widths.reduce((a, w) => a + w, 0)
-      if (sum > 0) for (let c = 0; c < columnsCount; c++) widths[c] = (widths[c]! * target) / sum
-    }
+  const pageTop: (Border | null | undefined)[][] = []
+  const pageBottom: (Border | null | undefined)[][] = []
+  for (let r = 0; r <= lastRow; r++) {
+    const slots = grid[r] ?? []
+    pageTop.push(slots.map((s) => (s === null ? undefined : side(s.cell.borders, 'top', tb.top))))
+    pageBottom.push(
+      slots.map((s) => (s === null ? undefined : side(s.cell.borders, 'bottom', tb.bottom))),
+    )
   }
+
+  const widths =
+    t.layout === 'autofit'
+      ? autofitColumns(t, columnsCount, region, cx)
+      : Array.from({ length: columnsCount }, (_, c) => t.grid[c] ?? 0)
   const columns: number[] = [0]
   for (const w of widths) columns.push(columns[columns.length - 1]! + w)
   const width = columns[columnsCount]!
 
   // 横向位置。
-  const leftBorder = borderSpace(vertical[0]?.[t.rows[0]?.gridBefore ?? 0])
-  const rightBorder = borderSpace(vertical[0]?.[columnsCount])
+  const leftBorder = borderSpace(tb.left)
+  const rightBorder = borderSpace(tb.right)
   let x: number
   if (t.align === 'center') x = (region - width) / 2
   else if (t.align === 'right')
@@ -315,10 +368,17 @@ export function layoutTable(t: TableBlock, region: number, cx: TableContext): Ta
   const pendingMerged: { box: CellBox; first: number; need: number }[] = []
   t.rows.forEach((row, r) => {
     let border = 0
-    for (let c = 0; c < columnsCount; c++)
-      border = Math.max(border, borderSpace(horizontal[r]?.[c]))
+    let pageBorder = 0
+    let pageBottomBorder = 0
+    for (let c = 0; c < columnsCount; c++) {
+      border = Math.max(border, rowTopSpace(grid, r, c, edge, continuedAt(r, c)))
+      pageBorder = Math.max(pageBorder, borderSpace(pageTop[r]?.[c]))
+      pageBottomBorder = Math.max(pageBottomBorder, borderSpace(pageBottom[r]?.[c]))
+    }
     const cells: CellBox[] = []
     let need = 0
+    let margins = 0
+    let bottomMargin = 0
     for (const slot of grid[r] ?? []) {
       if (slot === null || slot.row !== r || cells.some((b) => b.cell === slot.cell)) continue
       let rowSpan = 1
@@ -336,20 +396,25 @@ export function layoutTable(t: TableBlock, region: number, cx: TableContext): Ta
         content,
       }
       cells.push(box)
+      margins = Math.max(margins, m.top + m.bottom)
+      bottomMargin = Math.max(bottomMargin, m.bottom)
       const h = m.top + content.height + m.bottom
       if (rowSpan === 1) need = Math.max(need, h)
       else pendingMerged.push({ box, first: r, need: h })
     }
     const rule = row.height?.rule ?? 'auto'
     const value = row.height?.value ?? 0
-    const height =
-      rule === 'exact' ? value : border + Math.max(rule === 'atLeast' ? value : 0, need)
+    const minimum = rule === 'atLeast' ? value + margins : 0
+    const height = rule === 'exact' ? value + bottomMargin : border + Math.max(minimum, need)
     const keepNext = row.cells.some((c) =>
       c.content.some((b) => b.kind === 'paragraph' && b.props.keepNext),
     )
     rows.push({
       height,
       border,
+      pageBorder,
+      pageBottomBorder,
+      minimum,
       rule,
       header: row.header,
       cantSplit: row.cantSplit,
@@ -369,7 +434,19 @@ export function layoutTable(t: TableBlock, region: number, cx: TableContext): Ta
   for (let c = 0; c < columnsCount; c++)
     bottom = Math.max(bottom, borderSpace(horizontal[t.rows.length]?.[c]))
   const height = rows.reduce((a, row) => a + row.height, 0) + bottom
-  return { table: t, x, width, columns, rows, bottom, height, horizontal, vertical }
+  return {
+    table: t,
+    x,
+    width,
+    columns,
+    rows,
+    bottom,
+    height,
+    horizontal,
+    vertical,
+    pageTop,
+    pageBottom,
+  }
 }
 
 /** 单元格内容在所跨各行中的纵向偏移（`vAlign`）：`space` 为文字区高度。 */

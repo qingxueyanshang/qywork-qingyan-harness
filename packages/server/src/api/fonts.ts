@@ -1,11 +1,13 @@
 /**
- * 主机字体：按字体名查找主机已安装的字体，按内容哈希下发单个字体的字节。
- * Office 文档预览在没有该字体的设备上以 `FontFace` 注册这些字节，按原字体排版。
+ * 主机字体：按字体名查找主机已安装的字体，按内容哈希下发单个字体的字节；下发主机显示器的 ClearType 设置。
+ * Office 文档预览在没有该字体的设备上以 `FontFace` 注册这些字节，按原字体排版，按主机的 ClearType 设置绘制文字。
  *
  * - `GET /api/fonts?name=<字体名>`：该家族在主机上的各个字体，`{ faces: [{ id, bold, italic }] }`。
  *   `id` 是下发字节的 SHA-256。主机上没有该家族时返回 404。
  * - `GET /api/fonts/file?name=<字体名>&id=<SHA-256>`：单个字体的字节，`.ttc` 中的字体拆为独立的 sfnt。
  *   地址由内容决定，响应按一年缓存并标为不可变；文件内容改变后哈希随之改变，原地址返回 404。
+ * - `GET /api/fonts/smoothing`：`{ clearType: { contrast } | null }`，每次请求时读取系统的当前值（见 `fontSmoothing`），
+ *   不缓存。系统接口调用失败时返回 500。
  *
  * 边界：
  * - 只读取系统与当前用户的字体目录（`fontRoots`），不跟随符号链接。字体名只用于查询内存中的索引，
@@ -16,6 +18,7 @@
  *   此时家族名沿用索引中的值，字节与哈希仍取自当前文件。
  */
 
+import { dlopen, FFIType, ptr } from 'bun:ffi'
 import { createHash } from 'node:crypto'
 import type { Dirent } from 'node:fs'
 import { type FileHandle, open, readdir, readFile, stat } from 'node:fs/promises'
@@ -217,8 +220,80 @@ function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
+/** 系统的字体平滑设置：Windows `SystemParametersInfoW` 的三项读取结果。 */
+export interface SmoothingParameters {
+  /** `SPI_GETFONTSMOOTHING`：字体平滑是否开启。 */
+  readonly enabled: boolean
+  /** `SPI_GETFONTSMOOTHINGTYPE`：1 为标准（灰度），2 为 ClearType。 */
+  readonly type: number
+  /** `SPI_GETFONTSMOOTHINGCONTRAST`：ClearType 对比度，1000–2200。 */
+  readonly contrast: number
+}
+
+/** 主机显示器的 ClearType 设置；不使用 ClearType 时 `clearType` 为 `null`。 */
+export interface FontSmoothing {
+  readonly clearType: { readonly contrast: number } | null
+}
+
+const SPI_GETFONTSMOOTHING = 0x004a
+const SPI_GETFONTSMOOTHINGTYPE = 0x200a
+const SPI_GETFONTSMOOTHINGCONTRAST = 0x200c
+const FE_FONTSMOOTHINGCLEARTYPE = 2
+
+/**
+ * 字体平滑开启且方式为 ClearType 时取其对比度，否则为 `null`：标准方式为灰度抗锯齿，关闭时不平滑，两者都不是 ClearType。
+ * `parameters` 为 `null` 表示平台没有 ClearType：macOS 的文字由 Core Text 绘制，Linux 由 FreeType 绘制，两者的子像素
+ * 处理都不是 GDI 的 ClearType。
+ */
+export function fontSmoothing(parameters: SmoothingParameters | null): FontSmoothing {
+  if (parameters === null || !parameters.enabled || parameters.type !== FE_FONTSMOOTHINGCLEARTYPE) {
+    return { clearType: null }
+  }
+  return { clearType: { contrast: parameters.contrast } }
+}
+
+let systemParametersInfo:
+  | ((action: number, param: number, out: ReturnType<typeof ptr>, winIni: number) => number)
+  | null = null
+
+/**
+ * 读取系统的字体平滑设置。只调用 `SPI_GET*`，不修改系统设置。Windows 以外的平台返回 `null`；
+ * 系统接口调用失败时抛出。
+ */
+export function readSmoothingParameters(
+  platform: string = process.platform,
+): SmoothingParameters | null {
+  if (platform !== 'win32') return null
+  systemParametersInfo ??= dlopen('user32.dll', {
+    SystemParametersInfoW: {
+      args: [FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32],
+      returns: FFIType.i32,
+    },
+  }).symbols.SystemParametersInfoW
+  const read = (action: number): number => {
+    const out = new Uint32Array(1)
+    if (systemParametersInfo!(action, 0, ptr(out), 0) === 0) {
+      throw new Error(`SystemParametersInfoW(0x${action.toString(16)}) 调用失败`)
+    }
+    return out[0]!
+  }
+  return {
+    enabled: read(SPI_GETFONTSMOOTHING) !== 0,
+    type: read(SPI_GETFONTSMOOTHINGTYPE),
+    contrast: read(SPI_GETFONTSMOOTHINGCONTRAST),
+  }
+}
+
 export const handleFontsApi: ApiHandler = async (url, req) => {
   const p = url.pathname
+  if (req.method === 'GET' && p === '/api/fonts/smoothing') {
+    try {
+      return json(fontSmoothing(readSmoothingParameters()))
+    } catch (err) {
+      log.error('fonts', '无法读取系统的字体平滑设置', { reason: reason(err) })
+      return json({ error: 'unavailable', message: '无法读取系统的字体平滑设置' }, 500)
+    }
+  }
   if (req.method !== 'GET' || (p !== '/api/fonts' && p !== '/api/fonts/file')) return null
 
   const name = url.searchParams.get('name')
