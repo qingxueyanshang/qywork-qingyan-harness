@@ -6,6 +6,7 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
 import { loadConfig, type QyConfig } from '@qywork/runtime'
 import { handleCloudApi } from '../api/cloud.ts'
+import { writeConfig } from '../api/config.ts'
 import type { ApiRequestDeps } from '../api/types.ts'
 import { CLOUD_PROVIDER, CloudAccount, CloudAccountError } from './account.ts'
 import { cloudOrigin } from './origin.ts'
@@ -20,8 +21,12 @@ const cloud = {
   /** 云端收到的最后一次 `/v1/usage` 查询串与 `/v1/requests` 查询串。 */
   usageQuery: '',
   requestsQuery: '',
-  /** 价格清单中是否包含后上架的型号。 */
+  /** 型号清单中是否包含后上架的型号。 */
   extraModel: false,
+  /** 型号清单中模型库没有的型号的对应型号。 */
+  nextBase: 'claude-sonnet-5-5',
+  /** 后上架的型号（模型库已收录）是否带规格。 */
+  opusSpec: false,
   avatar: null as string | null,
 }
 
@@ -93,25 +98,38 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         { id: 'r3', credits: 0.1, status: 200, errorCode: 'stream_interrupted' },
       ])
     }
-    if (path === '/api/pricing') {
-      const entry = (model_name: string, type: string) => ({
-        model_name,
-        quota_type: 0,
-        model_ratio: 150,
-        completion_ratio: 5,
-        enable_groups: ['default'],
-        supported_endpoint_types: [type],
-      })
+    if (path === '/v1/catalog' && authed) {
+      const price = { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 }
       return Response.json({
-        data: [
-          entry('claude-sonnet-5-5', 'anthropic'),
-          entry('gpt-5', 'openai-response'),
-          ...(cloud.extraModel ? [entry('claude-opus-5-5', 'anthropic')] : []),
+        models: [
+          { id: 'claude-sonnet-5-5', protocol: 'anthropic_messages', price },
+          { id: 'gpt-5', protocol: 'openai_responses', price },
+          {
+            id: 'claude-next',
+            protocol: 'anthropic_messages',
+            price,
+            spec: {
+              displayName: 'Claude Next',
+              base: cloud.nextBase,
+              contextWindow: 2_000_000,
+              maxOutputTokens: 128_000,
+            },
+          },
+          ...(cloud.extraModel
+            ? [
+                {
+                  id: 'claude-opus-5-5',
+                  protocol: 'anthropic_messages',
+                  price,
+                  ...(cloud.opusSpec
+                    ? { spec: { displayName: 'Opus', base: 'claude-sonnet-5-5' } }
+                    : {}),
+                },
+              ]
+            : []),
         ],
-        group_ratio: { default: 1 },
       })
     }
-    if (path === '/api/status') return Response.json({ data: {} })
     return new Response('not found', { status: 404 })
   },
 })
@@ -132,9 +150,12 @@ beforeEach(async () => {
     usageQuery: '',
     requestsQuery: '',
     extraModel: false,
+    nextBase: 'claude-sonnet-5-5',
+    opusSpec: false,
     avatar: null,
   })
   live = await loadConfig()
+  delete live.catalog
   delete live.providers[CLOUD_PROVIDER]
   delete live.active
   account = new CloudAccount(live, origin)
@@ -153,10 +174,12 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
   expect(provider).toMatchObject({ baseUrl: origin, apiKey: 'qyd_device_key' })
   expect(provider.models['claude-sonnet-5-5']?.kind).toBeUndefined()
   expect(provider.models['gpt-5']?.kind).toBe('openai_responses')
-  // 网关清单的额度单位是积分：价格记为积分，与账号余额同一单位。
-  expect(provider.models['gpt-5']?.price).toMatchObject({
+  // 网关清单的单价单位是积分：价格记为积分，与账号余额同一单位。
+  expect(provider.models['gpt-5']?.price).toEqual({
     input: 300,
     output: 1500,
+    cacheRead: 30,
+    cacheWrite: 375,
     currency: 'CREDIT',
   })
   expect(live.active?.provider).toBe(CLOUD_PROVIDER)
@@ -242,16 +265,64 @@ test('读取用量时设备已被移除：删除本地接口，接口以 400 返
   expect(await account.state()).toEqual({ state: 'signed_out', reason: 'revoked' })
 })
 
-test('可用模型实时读取云端价格清单，单价为积分 / 百万 token；新上架的型号同时写入配置', async () => {
+test('可用模型实时读取云端型号清单，单价为积分 / 百万 token；新上架的型号同时写入配置', async () => {
   await account.login('me@example.com', PASSWORD)
   cloud.extraModel = true
   const models = await account.models()
-  expect(models.map((m) => m.id)).toEqual(['claude-sonnet-5-5', 'gpt-5', 'claude-opus-5-5'])
+  expect(models.map((m) => m.id)).toEqual([
+    'claude-sonnet-5-5',
+    'gpt-5',
+    'claude-next',
+    'claude-opus-5-5',
+  ])
   expect(models[1]?.price).toMatchObject({ input: 300, output: 1500 })
   expect(Object.keys(live.providers[CLOUD_PROVIDER]?.models ?? {})).toContain('claude-opus-5-5')
   expect(Object.keys((await loadConfig()).providers[CLOUD_PROVIDER]?.models ?? {})).toContain(
     'claude-opus-5-5',
   )
+})
+
+/** 以配置接口写入一条模型库覆盖，与用户在模型库中修改的写入路径相同。 */
+async function setCatalog(key: string, entry: Record<string, unknown>): Promise<void> {
+  await writeConfig(live, (c) => ({ ...c, catalog: { ...c.catalog, [key]: entry } }))
+}
+
+test('模型库没有的型号：云端规格写入模型库覆盖层，用户的其他修改保留；对应型号不在本机模型库时不写该项', async () => {
+  await account.login('me@example.com', PASSWORD)
+  const key = 'claude-next|anthropic_messages'
+  expect(live.catalog?.[key]).toEqual({
+    displayName: 'Claude Next',
+    base: 'claude-sonnet-5-5',
+    contextWindow: 2_000_000,
+    maxOutputTokens: 128_000,
+  })
+  // 模型库已有的型号不写入覆盖层。
+  expect(live.catalog?.['claude-sonnet-5-5|anthropic_messages']).toBeUndefined()
+  expect((await loadConfig()).catalog?.[key]?.contextWindow).toBe(2_000_000)
+
+  await setCatalog(key, { ...live.catalog?.[key], thinksByDefault: true })
+  cloud.nextBase = 'model-unknown-here'
+  await account.models()
+  expect(live.catalog?.[key]).toEqual({
+    displayName: 'Claude Next',
+    base: 'claude-sonnet-5-5',
+    contextWindow: 2_000_000,
+    maxOutputTokens: 128_000,
+    thinksByDefault: true,
+  })
+})
+
+test('本机模型库已收录的型号：删除与云端相同的对应型号，其余修改保留；用户另选的对应型号保留', async () => {
+  await account.login('me@example.com', PASSWORD)
+  const key = 'claude-opus-5-5|anthropic_messages'
+  cloud.extraModel = true
+  cloud.opusSpec = true
+  await setCatalog(key, { base: 'claude-sonnet-5-5', contextWindow: 1 })
+  await account.models()
+  expect(live.catalog?.[key]).toEqual({ contextWindow: 1 })
+  await setCatalog(key, { base: 'claude-haiku-5-5' })
+  await account.models()
+  expect(live.catalog?.[key]).toEqual({ base: 'claude-haiku-5-5' })
 })
 
 test('更换头像：以设备密钥写入云端，状态中带头像；格式不对时给出云端的原因', async () => {

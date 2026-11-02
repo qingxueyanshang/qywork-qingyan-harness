@@ -7,18 +7,81 @@
  * - 配置只经 `writeConfig` 写入；退出与「设备已被移除」使用同一个删除函数，`active` 与 `mediaDefaults` 指向它时一并删除。
  * - 只有网关或隧道明确返回「设备已被移除」时才删除本地接口；其他失败（断网、云端故障）不删除，避免误清空配置。
  * - 写入或删除云端接口后调用 `onChange`：远程访问据此启停隧道。
+ * - 云端型号清单（`/v1/catalog`）中带规格的型号，规格写入模型库覆盖层（`catalog`），只写本机模型库没有的型号；
+ *   覆盖层仍是模型库之上唯一的一层，云端修改规格后下次读取清单时更新。
  */
 
-import { httpStatusName, pullModels } from '@qywork/ai'
-import type { CloudModel, CloudRequest, CloudState, CloudUsage } from '@qywork/core'
-import type { QyConfig, StoredModel, StoredProvider } from '@qywork/runtime'
+import { httpStatusName, lookupModel } from '@qywork/ai'
+import type { CloudModel, CloudRequest, CloudState, CloudUsage, ProviderKind } from '@qywork/core'
+import {
+  catalogKey,
+  type QyConfig,
+  type StoredCatalogEntry,
+  type StoredModel,
+  type StoredProvider,
+} from '@qywork/runtime'
 import { writeConfig } from '../api/config.ts'
 import { hostLabel } from '../http-util.ts'
 
 /** 云端接口在配置中的名称。 */
 export const CLOUD_PROVIDER = 'qywork'
-/** 云端接口的默认协议；网关上协议不同的型号带各自的 `kind`（拉取时写入）。 */
+/** 云端接口的默认协议；网关上协议不同的型号带各自的 `kind`。 */
 const DEFAULT_KIND = 'anthropic_messages'
+
+/** 云端 `/v1/catalog` 中的一个型号。单价单位为积分 / 百万 token。 */
+interface CatalogModel {
+  id: string
+  protocol: ProviderKind
+  price: { input: number; output: number; cacheRead: number; cacheWrite: number }
+  /** 云端为模型库中没有的型号填写的规格。 */
+  spec?: { displayName: string; base?: string; contextWindow?: number; maxOutputTokens?: number }
+}
+
+/** 云端型号在配置中的形状：协议与默认协议不同时带 `kind`，价格记为积分，与账号余额同一单位。 */
+function storedModels(list: readonly CatalogModel[]): Record<string, StoredModel> {
+  const models: Record<string, StoredModel> = {}
+  for (const m of list) {
+    models[m.id] = {
+      ...(m.protocol !== DEFAULT_KIND ? { kind: m.protocol } : {}),
+      price: { ...m.price, currency: 'CREDIT' },
+    }
+  }
+  return models
+}
+
+/**
+ * 云端规格写入模型库覆盖层后的 `catalog`。本机模型库没有该型号时写入显示名称、对应型号、窗口与输出上限
+ * （对应型号不在本机模型库中时不写该项：配置校验会拒绝）；本机模型库已有该型号时删除此前写入的对应型号，
+ * 否则对应型号会使该型号继续按对应型号的规格解析。其余字段与用户的修改保留。
+ */
+function withSpecs(
+  catalog: QyConfig['catalog'],
+  list: readonly CatalogModel[],
+): QyConfig['catalog'] {
+  const next: Record<string, StoredCatalogEntry> = { ...catalog }
+  for (const m of list) {
+    if (!m.spec) continue
+    const key = catalogKey(m.id, m.protocol)
+    const entry = next[key]
+    if (lookupModel(m.id, m.protocol).catalogued !== false) {
+      if (entry && m.spec.base && entry.base === m.spec.base) {
+        const { base: _base, ...rest } = entry
+        if (Object.keys(rest).length) next[key] = rest
+        else delete next[key]
+      }
+      continue
+    }
+    const { displayName, base, contextWindow, maxOutputTokens } = m.spec
+    next[key] = {
+      ...entry,
+      displayName,
+      ...(base && lookupModel(base, m.protocol).catalogued !== false ? { base } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
+    }
+  }
+  return Object.keys(next).length ? next : undefined
+}
 
 /** 登录、注册或读取用量失败；`message` 直接显示给用户。 */
 export class CloudAccountError extends Error {}
@@ -130,30 +193,13 @@ export class CloudAccount {
   }
 
   /**
-   * 云端当前提供的对话型号与单价（积分 / 百万 token）。读取的同时更新配置中的云端接口：
+   * 云端当前提供的对话型号与单价（积分 / 百万 token）。读取的同时更新配置中的云端接口与型号规格：
    * 账号弹窗列出的型号与模型下拉列表一致，管理员调价或上架后无需重启。
    */
   async models(): Promise<CloudModel[]> {
-    const provider = cloudProviderOf(this.live, this.origin)
-    if (!provider?.apiKey) throw new CloudAccountError('未登录')
-    let pulled: Record<string, StoredModel>
-    try {
-      pulled = await this.pulled(provider.apiKey)
-    } catch (err) {
-      throw unreachable(err)
-    }
-    await this.applyModels(pulled)
-    return Object.entries(pulled).map(([id, m]) => ({
-      id,
-      price: m.price
-        ? {
-            input: m.price.input,
-            output: m.price.output,
-            cacheRead: m.price.cacheRead,
-            cacheWrite: m.price.cacheWrite,
-          }
-        : null,
-    }))
+    const list = await this.call<{ models: CatalogModel[] }>('/v1/catalog')
+    await this.applyModels(list.models)
+    return list.models.map((m) => ({ id: m.id, price: m.price }))
   }
 
   /** 更换头像。`image` 是客户端裁剪编码后的 data URL，格式与大小由云端校验。 */
@@ -270,11 +316,15 @@ export class CloudAccount {
     if (existing && existing.baseUrl !== this.origin) {
       throw new Error(`已有名为「${CLOUD_PROVIDER}」的接口，请先在模型设置中改名`)
     }
-    const models = await this.pulled(key)
+    const list = await this.catalog(key)
+    const models = storedModels(list)
     const result = await writeConfig(this.live, (current) => {
       const first = Object.keys(models)[0]
+      const catalog = withSpecs(current.catalog, list)
+      const { catalog: _catalog, ...rest } = current
       return {
-        ...current,
+        ...rest,
+        ...(catalog ? { catalog } : {}),
         providers: {
           ...current.providers,
           [CLOUD_PROVIDER]: { kind: DEFAULT_KIND, baseUrl: this.origin, apiKey: key, models },
@@ -291,47 +341,42 @@ export class CloudAccount {
     this.onChange()
   }
 
-  /**
-   * 网关上的对话型号：协议与价格。网关价格清单的额度单位是积分，拉取按清单格式得到美元币种，
-   * 此处改记为积分：费用与账号余额须使用同一单位显示。
-   */
-  private async pulled(key: string): Promise<Record<string, StoredModel>> {
-    const result = await pullModels(
-      { kind: DEFAULT_KIND, baseUrl: this.origin, apiKey: key },
-      AbortSignal.timeout(20_000),
-    )
-    const models: Record<string, StoredModel> = {}
-    for (const m of result.models) {
-      if (m.output !== 'chat') continue
-      models[m.id] = {
-        ...(m.kind ? { kind: m.kind } : {}),
-        ...(m.price ? { price: { ...m.price, currency: 'CREDIT' } } : {}),
-      }
-    }
-    return models
+  /** 以设备密钥读取云端型号清单（登录完成时尚未写入接口，因此不经 `call`）。 */
+  private async catalog(key: string): Promise<CatalogModel[]> {
+    const res = await fetch(`${this.origin}/v1/catalog`, {
+      headers: { authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (!res.ok) throw new Error(`读取型号清单失败：${res.status} ${httpStatusName(res.status)}`)
+    return ((await res.json()) as { models: CatalogModel[] }).models
   }
 
   /**
-   * 更新配置中网关上的型号：协议与价格随拉取结果更新，用户的思考档位等设置保留；新增的型号加入；
-   * 网关上已停用的型号标记 `delisted`。每个进程首次确认已登录时执行一次，账号弹窗每次读取可用模型时再执行一次。
+   * 更新配置中网关上的型号：协议与价格随清单更新，用户的思考档位等设置保留；新增的型号加入；
+   * 网关上已停用的型号标记 `delisted`；型号规格写入模型库覆盖层（`withSpecs`）。
+   * 每个进程首次确认已登录时执行一次，账号弹窗每次读取可用模型时再执行一次。
    */
   private async refreshModels(key: string): Promise<void> {
-    await this.applyModels(await this.pulled(key))
+    await this.applyModels(await this.catalog(key))
   }
 
-  private async applyModels(pulled: Record<string, StoredModel>): Promise<void> {
+  private async applyModels(list: readonly CatalogModel[]): Promise<void> {
+    const listed = storedModels(list)
     await writeConfig(this.live, (current) => {
       const provider = cloudProviderOf(current, this.origin)
       if (!provider) return current
       const models: Record<string, StoredModel> = {}
       for (const [id, m] of Object.entries(provider.models)) {
         const { kind: _kind, price: _price, delisted: _delisted, ...rest } = m
-        const hit = pulled[id]
+        const hit = listed[id]
         models[id] = hit ? { ...rest, ...hit } : { ...m, delisted: true }
       }
-      for (const [id, m] of Object.entries(pulled)) models[id] ??= m
+      for (const [id, m] of Object.entries(listed)) models[id] ??= m
+      const catalog = withSpecs(current.catalog, list)
+      const { catalog: _catalog, ...rest } = current
       return {
-        ...current,
+        ...rest,
+        ...(catalog ? { catalog } : {}),
         providers: { ...current.providers, [CLOUD_PROVIDER]: { ...provider, models } },
       }
     })
