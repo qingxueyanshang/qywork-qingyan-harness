@@ -98,6 +98,11 @@ export interface UsageQuery {
    */
   conversationId?: string
   kind?: UsageKind
+  /**
+   * 不统计该币种的账目。本机合计传入 `CREDIT`：积分只用于云端账号的内置模型，
+   * 其用量与消耗以账号界面读取的云端统计为准，本机合计只含自行接入的接口。
+   */
+  excludeCurrency?: Currency
 }
 
 function where(q: UsageQuery): { sql: string; args: (string | number)[] } {
@@ -114,6 +119,10 @@ function where(q: UsageQuery): { sql: string; args: (string | number)[] } {
   if (q.workspaceId) {
     parts.push('workspace_id = ?')
     args.push(q.workspaceId)
+  }
+  if (q.excludeCurrency) {
+    parts.push('currency <> ?')
+    args.push(q.excludeCurrency)
   }
   if (q.conversationId) {
     // 子会话的账目记在其自身的 conversation_id 下，父会话按 parent_conversation_id 汇总。
