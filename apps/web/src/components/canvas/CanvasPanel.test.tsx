@@ -187,6 +187,7 @@ async function mount(
   let extraReferences: CanvasView['references']
   let extraRelabels: CanvasView['relabels']
   let extraMentions: CanvasView['mentions']
+  let extraMtimes: CanvasView['mtimes']
   let written = 0
   let fingerprint = 'd0'
   const snapshots = new Map<string, CanvasDoc>([['d0', doc]])
@@ -200,6 +201,7 @@ async function mount(
       ...(extraReferences ? { references: extraReferences } : {}),
       ...(extraRelabels ? { relabels: extraRelabels } : {}),
       ...(extraMentions ? { mentions: extraMentions } : {}),
+      ...(extraMtimes ? { mtimes: extraMtimes } : {}),
     })
   const server: Server = {
     hold: null,
@@ -223,6 +225,7 @@ async function mount(
       if (next.references) extraReferences = next.references
       if (next.relabels) extraRelabels = next.relabels
       if (next.mentions) extraMentions = next.mentions
+      if (next.mtimes) extraMtimes = next.mtimes
     },
     broken: false,
     quote: null,
@@ -573,6 +576,35 @@ describe('画布：节点操作', () => {
     expect(card.querySelector<HTMLInputElement>('input')!.value).toBe('0')
     expect(card.querySelector('output')!.textContent).toBe('音频')
     pause.mockRestore()
+  })
+
+  test('同一路径的音频被改写后重新载入；文件未变时重新读取画布不重新载入', async () => {
+    const { host, refs, server } = await mount([{ op: 'add_file', ref: '$a', path: 'voice.mp3' }])
+    const card = node(host, refs.$a!)
+    const store = await import('../../lib/store/index.ts')
+    const reload = async (version: number) => {
+      const reads = server.reads
+      store.setState('fileVersion', version)
+      await waitFor(
+        () => server.reads > reads,
+        () => `reads=${server.reads}`,
+      )
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    server.setView({ mtimes: { 'voice.mp3': 1000 } })
+    await reload(1)
+    const before = card.querySelector('audio')!
+    expect(before.getAttribute('src')).toBe(store.client.fileUrl('voice.mp3', 1000))
+
+    // 执行命令后路径未知、整张画布重新读取；该文件未变，播放器保留。
+    await reload(2)
+    expect(card.querySelector('audio')).toBe(before)
+
+    server.setView({ mtimes: { 'voice.mp3': 2000 } })
+    await reload(3)
+    const after = card.querySelector('audio')!
+    expect(after).not.toBe(before)
+    expect(after.getAttribute('src')).toBe(store.client.fileUrl('voice.mp3', 2000))
   })
 
   test('切换选中节点后沿用静音设置', async () => {
