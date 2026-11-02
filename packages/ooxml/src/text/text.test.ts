@@ -2,7 +2,7 @@
  * 文字排版。覆盖 `classify.ts`（字体选择与字符类别）、`breaking.ts`（断点与禁则）、
  * `line-height.ts`（单倍行高、上下沿、行距规则、网格与基线）、`layout.ts`（断行、悬挂、中西文间距、对齐、制表符、行高与片段，
  * 上下标、字符间距、基线提升、字距调整、`wordWrap` 关闭与单双字节宽度协调、行内对象、段落标记计入行高的条件、最小与最大内容宽度）、
- * `punctuation.ts`（相邻标点压缩与压缩标点），
+ * `punctuation.ts`（相邻标点压缩与压缩标点）、`font-substitutes.ts`（Windows 字体替换表的大小写与按主机字体族名的前缀匹配），
  * 以及 `../font/vertical.ts`（`hhea` 与 `OS/2` 纵向度量、上下标字号）与 `../font/features/kern.ts`（`kern` 表的字偶）。
  *
  * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
@@ -31,11 +31,13 @@ import {
   type ObjectRun,
   PARAGRAPH_DEFAULTS,
   type ParagraphStyle,
+  prefixFont,
   type RunFonts,
   singleLineHeight,
   type TextBlock,
   type TextFace,
   type TextRun,
+  windowsFontSubstitute,
 } from './index.ts'
 
 const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
@@ -97,6 +99,70 @@ describe('字体选择', () => {
     expect(isIdeographic('，'.codePointAt(0)!)).toBe(false)
     expect(isIdeographic('汉'.codePointAt(0)!)).toBe(true)
     expect(isEastAsian('“'.codePointAt(0)!)).toBe(false)
+  })
+})
+
+describe('主机没有的字体名', () => {
+  test('Windows 字体替换表：区分大小写由宿主给出', () => {
+    // WPS 文字（构造文档 w13 q18、q30）：TIMES 不替换；WPS 表格（构造文件 c6-subst）：各项不区分大小写。
+    expect(windowsFontSubstitute('Times', false)).toBe('Times New Roman')
+    expect(windowsFontSubstitute('TIMES', false)).toBeNull()
+    expect(windowsFontSubstitute('TIMES', true)).toBe('Times New Roman')
+    expect(windowsFontSubstitute('ms shell dlg 2', true)).toBe('Tahoma')
+    expect(windowsFontSubstitute('MS SHELL DLG', true)).toBe('Microsoft Sans Serif')
+    expect(windowsFontSubstitute('tahoma armenian', true)).toBe('Tahoma')
+    expect(windowsFontSubstitute('KAITI_GB2312', true)).toBe('楷体')
+    expect(windowsFontSubstitute('Arabic Transparent Bold', false)).toBeNull()
+  })
+
+  test('前缀匹配：前若干词为主机字体名时取词数最少的一个，否则取以名称加空格开头的主机字体中字母序第一个，区分大小写', () => {
+    // WPS 文字（构造文档 w13 p1、q01–q12，w15 p1、p2）：主机字体名为中文界面中列出的族名。
+    const local = [
+      'Arial',
+      'Arial Black',
+      'Calibri',
+      'Calibri Light',
+      'Courier New',
+      'Lucida Console',
+      'Lucida Sans Unicode',
+      'MS Gothic',
+      'MS PGothic',
+      'Noto Sans SC',
+      'Noto Serif CJK SC Medium',
+      'Noto Serif CJK SC SemiBold',
+      'Segoe UI',
+      'Segoe UI Light',
+      'Sitka Small',
+      'Sitka Banner',
+      'Yu Gothic',
+      'Yu Gothic UI',
+      '等线',
+      '等线 Light',
+    ]
+    const cases: [string, string | null][] = [
+      ['Calibri Light Fake', 'Calibri'],
+      ['Arial Black Fake', 'Arial'],
+      ['Segoe UI Light Fake', 'Segoe UI'],
+      ['Yu Gothic UI X', 'Yu Gothic'],
+      ['Calibri  Fake', 'Calibri'],
+      ['等线 Light Fake', '等线'],
+      ['Courier', 'Courier New'],
+      ['Lucida', 'Lucida Console'],
+      ['Lucida Sans', 'Lucida Sans Unicode'],
+      ['MS', 'MS Gothic'],
+      ['Noto', 'Noto Sans SC'],
+      ['Noto Serif CJK SC', 'Noto Serif CJK SC Medium'],
+      ['Sitka', 'Sitka Banner'],
+      ['calibri fake', null],
+      ['courier', null],
+      [' Calibri Fake', null],
+      ['Cour', null],
+      ['Segoe U', null],
+      ['Noto Serif CJK SC M', null],
+      ['DengXian Fake', null],
+    ]
+    for (const [name, expected] of cases)
+      expect([name, prefixFont(name, local)]).toEqual([name, expected])
   })
 })
 
@@ -539,6 +605,28 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
         style({ align: 'distribute', compatibilityMode: 15 }),
       )
       expect(counts(spread)).toEqual([40, 5])
+    })
+
+    test('两端对齐的余量同样分配到不换行空格之后（WPS：构造文档 w16 nb，Arial 10.5 磅，第一行空格与不换行空格都为 5.1–5.15 磅）', () => {
+      const ARIAL: RunFonts = { ascii: arial, hAnsi: arial, eastAsia: song, cs: arial }
+      const words =
+        'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega'.split(
+          ' ',
+        )
+      const text = [...words, ...words].map((w, k) => w + (k % 2 ? ' ' : ' ')).join('')
+      const b = layoutParagraph([run(text, { fonts: ARIAL })], style({ width: 451.3 }))
+      const first = b.lines[0]!
+      /** 第一行中词间的空格与不换行空格（不含行尾空格）的步进。 */
+      const gaps: { cp: number; advance: number }[] = []
+      const last = text.slice(0, first.end).trimEnd().length
+      for (const f of first.fragments) {
+        for (let i = f.start; i < f.end && i < last; i++) {
+          const cp = text.charCodeAt(i)
+          if (cp === 0x20 || cp === 0xa0) gaps.push({ cp, advance: f.advances[i - f.start]! })
+        }
+      }
+      expect(gaps.filter((g) => g.cp === 0xa0).length).toBeGreaterThan(5)
+      for (const g of gaps) expect(Math.abs(g.advance - 5.125)).toBeLessThan(0.05)
     })
 
     test('以强制换行结束的行参与两端对齐，expandLineBreak 关闭时不参与；段末强制换行之后有一个空行', () => {

@@ -4,7 +4,7 @@
  * - 图表与 SmartArt 的文字以 `../../drawingml/text/` 排版与绘制，字体按字体名取得：`GraphicFonts.named` 中登记的字体由
  *   `PageFonts.draw` 取得度量，族名取登记的 `FaceRef.family`，与正文文字注册的 `FontFace` 相同。
  * - 主机没有的字体取 `GraphicFonts.fallback`，西文字符另按 `MISSING_LATIN`（见 `FaceCache`）。
- * - 行高与基线按演示文稿的规则，字形的点阵见 `chart.ts` 的 `chartGlyphs`。
+ * - 行高与基线按演示文稿的规则，字形的点阵与 ClearType 字形见 `chart.ts`。
  */
 
 import type { Chart } from '../../drawingml/chart/model.ts'
@@ -12,16 +12,23 @@ import { collectChartImages } from '../../drawingml/chart/resolve.ts'
 import type { TextSettings } from '../../drawingml/text/body.ts'
 import { FaceCache, SINGLE_LINE, type SlideFont } from '../../drawingml/text/fonts.ts'
 import type { GraphicFonts } from '../page/model.ts'
-import { chartGlyphs } from './chart.ts'
-import type { PageFonts } from './paint.ts'
+import { chartClearType, chartGlyphs } from './chart.ts'
+import type { PageClearType, PageFonts } from './paint.ts'
 
 /** `GraphicFonts.named` 的查找键：字体名不区分大小写与首尾空白。 */
 export function namedFontKey(name: string, bold: boolean, italic: boolean): string {
   return `${name.trim().toLowerCase()}\u0000${bold ? 1 : 0}${italic ? 1 : 0}`
 }
 
-/** 图表与 SmartArt 文字的排版设置；回退字体在主机上不可用时为 `null`（图表不绘制，SmartArt 不绘制文字）。 */
-export function graphicSettings(table: GraphicFonts, fonts: PageFonts): TextSettings | null {
+/**
+ * 图表与 SmartArt 文字的排版设置；回退字体在主机上不可用时为 `null`（图表不绘制，SmartArt 不绘制文字）。
+ * `clearType` 为 `null` 时平滑字号以 `fillText` 绘制。
+ */
+export function graphicSettings(
+  table: GraphicFonts,
+  fonts: PageFonts,
+  clearType: PageClearType | null,
+): TextSettings | null {
   const slide = (index: number): SlideFont | null => {
     const ref = fonts.faces[index]
     const face = ref === undefined ? null : fonts.draw(ref)
@@ -41,7 +48,13 @@ export function graphicSettings(table: GraphicFonts, fonts: PageFonts): TextSett
     fallback,
   }
   return {
-    faces: new FaceCache(source, SINGLE_LINE, null, chartGlyphs(table, fonts)),
+    faces: new FaceCache(
+      source,
+      SINGLE_LINE,
+      null,
+      chartGlyphs(table, fonts),
+      clearType === null ? null : chartClearType(table, fonts, clearType),
+    ),
     slideNumber: null,
   }
 }

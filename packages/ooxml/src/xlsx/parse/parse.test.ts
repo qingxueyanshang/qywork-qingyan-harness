@@ -10,6 +10,7 @@
 import { describe, expect, test } from 'bun:test'
 import { colorToHex } from '../../drawingml/color.ts'
 import type { ShapeFill } from '../../drawingml/fill.ts'
+import { placeableWmf, RED_RECT_WMF } from '../../drawingml/paint/test-helper.ts'
 import { MISSING_LATIN } from '../../drawingml/text/fonts.ts'
 import type { Workbook } from '../model.ts'
 import { applyTint, DEFAULT_PALETTE } from './color.ts'
@@ -175,6 +176,13 @@ const DRAWING = `<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingm
 </xdr:wsDr>`
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+
+/** 以 Verdana 字体绘制「A」的 WMF。 */
+const TEXT_WMF = placeableWmf([
+  [0x02fb, -20 & 0xffff, 0, 0, 0, 400, 0, 0, 0, 0, 0x6556, 0x6472, 0x6e61, 0x0061],
+  [0x012d, 0],
+  [0x0a32, 0, 20, 1, 0, 0x41, 12],
+])
 
 function workbookPackage(
   overrides: Record<string, string | Uint8Array> = {},
@@ -462,6 +470,68 @@ describe('单元格', () => {
       crop: { left: 0.1, top: 0, right: 0, bottom: 0.25 },
     })
     expect([...s.images[0]!.bytes]).toEqual([...PNG])
+  })
+  test('图元文件图片中文字的字体加入 fontNames；ActiveX 控件的替代图片按 x14 分支的锚点排在绘图对象之后，没有替代图片的计入 control', async () => {
+    const mc = 'http://schemas.openxmlformats.org/markup-compatibility/2006'
+    const x14 = 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main'
+    const xdr = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+    const at = (tag: string, col: number, row: number) =>
+      `<${tag}><xdr:col>${col}</xdr:col><xdr:colOff>9525</xdr:colOff><xdr:row>${row}</xdr:row><xdr:rowOff>0</xdr:rowOff></${tag}>`
+    const sheet = `<worksheet xmlns="${NS}" xmlns:r="${R}" xmlns:mc="${mc}" xmlns:ext="${x14}" xmlns:xdr="${xdr}">
+<sheetData/><drawing r:id="rId1"/><controls>
+<mc:AlternateContent><mc:Choice Requires="ext"><control shapeId="1025" r:id="rId5" name="复选框"><controlPr r:id="rId6"><anchor>${at('from', 2, 3)}${at('to', 3, 4)}</anchor></controlPr></control></mc:Choice>
+<mc:Fallback><control shapeId="1025" r:id="rId5" name="复选框"/></mc:Fallback></mc:AlternateContent>
+<control shapeId="1026" r:id="rId7" name="没有替代图片"/></controls></worksheet>`
+    const r = await parseXlsx(
+      workbookPackage({
+        'xl/worksheets/sheet1.xml': sheet,
+        'xl/worksheets/_rels/sheet1.xml.rels': rels(
+          rel('rId1', 'drawing', '../drawings/drawing1.xml'),
+          rel('rId4', 'ctrlProp', '../ctrlProps/ctrlProp1.xml'),
+          rel('rId5', 'control', '../activeX/activeX1.xml'),
+          rel('rId6', 'image', '../media/image2.wmf'),
+          rel('rId7', 'control', '../activeX/activeX2.xml'),
+        ),
+        'xl/media/image1.png': TEXT_WMF,
+        'xl/media/image2.wmf': RED_RECT_WMF,
+      }),
+    )
+    if (!r.ok) throw new Error('解析失败')
+    const s = r.value.sheets[0]!
+    expect(r.value.fontNames).toContain('Verdana')
+    expect(s.images.map((i) => i.order)).toEqual([0, 3])
+    expect(s.images[1]!.anchor).toEqual({
+      kind: 'twoCell',
+      from: { col: 2, colOff: 9525, row: 3, rowOff: 0 },
+      to: { col: 3, colOff: 9525, row: 4, rowOff: 0 },
+    })
+    expect([...s.images[1]!.bytes]).toEqual([...RED_RECT_WMF])
+    expect(s.unsupported.control).toBe(2)
+  })
+  test('图表照常求值，图片填充引用的图片按部件计入 image', async () => {
+    const C = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+    const A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    const blip = '<c:spPr><a:blipFill><a:blip r:embed="rId1"/><a:stretch/></a:blipFill></c:spPr>'
+    const chart = `<c:chartSpace xmlns:c="${C}" xmlns:a="${A}" xmlns:r="${R}"><c:chart><c:plotArea><c:layout/>
+<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/>${blip}
+<c:val><c:numLit><c:ptCount val="1"/><c:pt idx="0"><c:v>1</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart>
+<c:catAx><c:axId val="1"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx>
+${blip}</c:plotArea></c:chart>${blip}</c:chartSpace>`
+    const drawing = `<xdr:wsDr ${XDR}>${two(`<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="图表"/></xdr:nvGraphicFramePr>
+<a:graphic><a:graphicData uri="${C}"><c:chart xmlns:c="${C}" r:id="rId2"/></a:graphicData></a:graphic></xdr:graphicFrame>`)}</xdr:wsDr>`
+    const r = await parseXlsx(
+      workbookPackage({
+        'xl/drawings/drawing1.xml': drawing,
+        'xl/drawings/_rels/drawing1.xml.rels': rels(rel('rId2', 'chart', '../charts/chart1.xml')),
+        'xl/charts/chart1.xml': chart,
+        'xl/charts/_rels/chart1.xml.rels': rels(rel('rId1', 'image', '../media/image1.png')),
+      }),
+    )
+    if (!r.ok) throw new Error('解析失败')
+    const s = r.value.sheets[0]!
+    expect(s.charts).toHaveLength(1)
+    expect(s.unsupported.image).toBe(1)
+    expect(r.value.unsupported.image).toBe(1)
   })
 })
 

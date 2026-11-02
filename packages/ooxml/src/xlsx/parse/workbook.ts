@@ -3,14 +3,22 @@
  *
  * - 部件按关系定位：包关系的 `officeDocument` 为工作簿，工作簿关系给出主题、样式、共享字符串与各工作表，
  *   工作表关系给出绘图、批注、表格、数据透视表、控件与嵌入对象。部件按顺序读取（并发读取 ZIP 成员更慢）。
+ * - ActiveX 控件按其替代图片显示（WPS 表格实测：复选框与文本控件显示替代图片），作为图片排在绘图部件的对象之后；
+ *   没有替代图片或锚点的计入 `control`。表单控件按关系计数。
  * - 主文档的内容类型不是 SpreadsheetML 工作簿时返回 `corrupt('workbook')`；部件 XML 结构错误时返回 `corrupt('xml')`。
  *   ZIP 与 OPC 层的失败原样返回。
  * - 已识别但未实现的内容逐项计入 `unsupported`，见 `model.ts` 的 `UnsupportedKind`。
+ * - 可以绘制的图元文件图片中文字的字体加入 `fontNames`；位图能否解码由调用方解码时判定（`decodePicture`）。
  */
 
 import { type RawChart, readChart } from '../../drawingml/chart/read.ts'
-import { collectChartFonts, resolveChart } from '../../drawingml/chart/resolve.ts'
+import {
+  collectChartFonts,
+  collectChartImages,
+  resolveChart,
+} from '../../drawingml/chart/resolve.ts'
 import { EMPTY_THEME, parseTheme, type Theme } from '../../drawingml/theme.ts'
+import { readMetafile } from '../../metafile/index.ts'
 import {
   type OpcFailure,
   type OpcPackage,
@@ -29,7 +37,7 @@ import type {
   Worksheet,
 } from '../model.ts'
 import { workbookCells } from './chart-cells.ts'
-import { parseDrawing } from './drawing.ts'
+import { parseDrawing, type RawControl, readControls } from './drawing.ts'
 import { parseSharedStrings } from './shared-strings.ts'
 import { parseStyles } from './styles.ts'
 import { parseWorksheet } from './worksheet.ts'
@@ -203,10 +211,12 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
     })
     const counts: UnsupportedCounts = { ...parsed.unsupported }
     const sheetRels = await readRels(pkg, rel.part)
+    const controls = sheetRels.ofKind('control').length > 0 ? readControls(xml) : []
     const drawing = await readDrawing(
       pkg,
       sheetRels,
       parsed.drawingId,
+      controls,
       theme ?? EMPTY_THEME,
       fontNames,
       counts,
@@ -244,7 +254,7 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
     addCounts(unsupported, counts)
   }
   // 图表按工作簿主题求值，引用主题覆盖时颜色方案与主题字体取自主题覆盖（WPS 表格实测）；数据按引用从单元格取；
-  // 部件缺失或含不支持的内容时计入 `chart`。
+  // 部件缺失或含不支持的内容时计入 `chart`。图片填充不绘制，引用的图片按部件计入 `image`。
   const cells = workbookCells(sheets, sheet.styles)
   for (const p of pending) {
     for (const c of p.items) {
@@ -264,6 +274,12 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
         continue
       }
       collectChartFonts(fontNames, chart)
+      const fills = new Set<string>()
+      collectChartImages(fills, chart)
+      if (fills.size > 0) {
+        p.counts.image = (p.counts.image ?? 0) + fills.size
+        unsupported.image = (unsupported.image ?? 0) + fills.size
+      }
       p.charts.push({ anchor: c.anchor, order: c.order, chart })
     }
   }
@@ -285,23 +301,40 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
   }
 }
 
+/** 图片部件的字节；部件缺失或无法读取时为 `null`。可以绘制的图元文件中文字的字体加入 `fontNames`。 */
+async function imageBytes(
+  pkg: OpcPackage,
+  part: string | null,
+  fontNames: Set<string>,
+): Promise<Uint8Array | null> {
+  const r = part === null ? null : await pkg.bytes(part)
+  if (r === null || !r.ok || r.value === null) return null
+  const mf = readMetafile(r.value)
+  if (mf !== null && mf.unsupported.length === 0) for (const name of mf.fonts) fontNames.add(name)
+  return r.value
+}
+
+/** 绘图部件中的对象与 ActiveX 控件的替代图片（`controls` 为工作表部件中的控件）。 */
 async function readDrawing(
   pkg: OpcPackage,
   sheetRels: Relationships,
   drawingId: string | null,
+  controls: readonly RawControl[],
   theme: Theme,
   fontNames: Set<string>,
   counts: UnsupportedCounts,
 ): Promise<{ images: SheetImage[]; shapes: SheetShape[]; charts: PendingChart[] }> {
   const drawingPart = drawingId === null ? null : (sheetRels.byId(drawingId)?.part ?? null)
   const xml = await readText(pkg, drawingPart)
-  if (drawingPart === null || xml === null) return { images: [], shapes: [], charts: [] }
-  const drawing = parseDrawing(xml, await readRels(pkg, drawingPart), theme, fontNames)
-  addCounts(counts, drawing.unsupported)
+  const drawing =
+    drawingPart === null || xml === null
+      ? null
+      : parseDrawing(xml, await readRels(pkg, drawingPart), theme, fontNames)
+  if (drawing !== null) addCounts(counts, drawing.unsupported)
   const images: SheetImage[] = []
-  for (const pic of drawing.pictures) {
-    const bytes = pic.part === null ? null : await pkg.bytes(pic.part)
-    if (pic.part === null || bytes === null || !bytes.ok || bytes.value === null) {
+  for (const pic of drawing?.pictures ?? []) {
+    const bytes = await imageBytes(pkg, pic.part, fontNames)
+    if (pic.part === null || bytes === null) {
       counts.image = (counts.image ?? 0) + 1
       continue
     }
@@ -309,10 +342,28 @@ async function readDrawing(
       anchor: pic.anchor,
       order: pic.order,
       contentType: pkg.contentType(pic.part) ?? 'application/octet-stream',
-      bytes: bytes.value,
+      bytes,
       crop: pic.crop,
     })
   }
+  let order = drawing?.anchors ?? 0
+  for (const c of controls) {
+    if (c.control === null || sheetRels.byId(c.control)?.kind !== 'control') continue
+    const part = c.image === null ? null : (sheetRels.byId(c.image)?.part ?? null)
+    const bytes = await imageBytes(pkg, part, fontNames)
+    if (part === null || bytes === null || c.anchor === null) {
+      counts.control = (counts.control ?? 0) + 1
+      continue
+    }
+    images.push({
+      anchor: c.anchor,
+      order: order++,
+      contentType: pkg.contentType(part) ?? 'application/octet-stream',
+      bytes,
+      crop: NO_CROP,
+    })
+  }
+  if (drawing === null) return { images, shapes: [], charts: [] }
   const charts: PendingChart[] = []
   for (const c of drawing.charts) {
     const chartXml = await readText(pkg, c.part)
@@ -329,3 +380,5 @@ async function readDrawing(
   }
   return { images, shapes: drawing.shapes, charts }
 }
+
+const NO_CROP = { left: 0, top: 0, right: 0, bottom: 0 }

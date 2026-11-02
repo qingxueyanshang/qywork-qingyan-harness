@@ -1,6 +1,6 @@
 /**
  * Office 预览的字体：经 `/api/fonts` 取得主机上的字体文件并以 `FontFace` 注册；文件中的嵌入字体也经此注册。
- * 主机显示器的 ClearType 设置也经此接口取得（`loadClearType`）。
+ * 主机显示器的 ClearType 设置与主机字体的族名也经此接口取得（`loadClearType`、`loadHostFamilies`）。
  *
  * - 排版度量与绘制必须来自同一份字节：调用方从 `HostFace.bytes` 读取度量，绘制按 `family` 引用已注册的 `FontFace`。
  * - 主机上没有的字体（404）与字体名不合法（422）按缺失处理，结果中该字体名没有字形；其他失败抛出。
@@ -8,6 +8,7 @@
  *   （如 `SimSun` 与 `宋体`）时不重复下载，`family` 为首次注册时的族名。
  */
 
+import type { HostFamilies } from '@qywork/ooxml/text'
 import { ApiError } from '../../lib/client.ts'
 import { client } from '../../lib/store/index.ts'
 
@@ -94,6 +95,14 @@ export async function registerFace(
 export async function loadClearType(): Promise<{ readonly contrast: number } | null> {
   const r = await client.api<{ clearType: { contrast: number } | null }>('/api/fonts/smoothing')
   return r.clearType
+}
+
+/**
+ * 主机字体的族名（`/api/fonts/families`），供排版对主机没有的字体名做前缀匹配。每次调用都重新取得：字体可在页面打开期间安装，
+ * 重新打开文档即按新清单排版。请求失败时抛出。
+ */
+export function loadHostFamilies(): Promise<HostFamilies> {
+  return client.api<HostFamilies>('/api/fonts/families')
 }
 
 /** 取得 `names` 中各字体名在主机上的字体；主机上没有的字体名对应空数组。 */

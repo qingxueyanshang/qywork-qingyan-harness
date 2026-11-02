@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import type { Chart } from '../../drawingml/chart/model.ts'
 import { parseHexColor } from '../../drawingml/color.ts'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, type Paragraph, parseDocx } from '../index.ts'
 import type { InlineImage } from '../model.ts'
 import { layoutPages, requiredFonts } from '../page/build.ts'
@@ -203,8 +204,10 @@ describe.skipIf(process.platform !== 'win32')('图表的放置与绘制（本机
       p(r('正文')) + p('<w:r><w:br w:type="page"/></w:r>') + p(inlineChart('rIdChart')),
       [chartPart(chartXml())],
     )
-    expect(requiredFonts(doc)).toEqual(expect.arrayContaining(['宋体', 'Segoe Print']))
-    const { pages } = layoutPages(doc, new DocxFonts([simsun()], '宋体'))
+    expect(requiredFonts(doc, NO_HOST_FAMILIES)).toEqual(
+      expect.arrayContaining(['宋体', 'Segoe Print']),
+    )
+    const { pages } = layoutPages(doc, new DocxFonts([simsun()], '宋体'), NO_HOST_FAMILIES)
     expect(pages.pages).toHaveLength(2)
     expect(pages.pages[0]!.graphicFonts).toBeNull()
     const fonts = pages.pages[1]!.graphicFonts!
@@ -220,7 +223,7 @@ describe.skipIf(process.platform !== 'win32')('图表的放置与绘制（本机
       ),
       [chartPart(chartXml())],
     )
-    const { pages } = layoutPages(doc, new DocxFonts([simsun()], '宋体'))
+    const { pages } = layoutPages(doc, new DocxFonts([simsun()], '宋体'), NO_HOST_FAMILIES)
     const page = pages.pages[0]!
     const item = page.body[0]!
     if (item.kind !== 'paragraph') throw new Error('不是段落')
@@ -266,7 +269,7 @@ describe.skipIf(process.platform !== 'win32')('图表的放置与绘制（本机
       },
       { id: 'rIdBar', type: 'x', name: 'media/bar.png', content: 'PNG', contentType: 'image/png' },
     ])
-    const { pages } = layoutPages(doc, new DocxFonts([simsun()], '宋体'))
+    const { pages } = layoutPages(doc, new DocxFonts([simsun()], '宋体'), NO_HOST_FAMILIES)
     const parts = pages.images.map((im) => im.part)
     expect(pageImages(pages.pages[0]!, parts)).toEqual([0])
   })

@@ -4,6 +4,10 @@
  * - 只记录文档中出现的属性（`spPr` 各项缺失时为 `null`），占位符继承、样式引用与坐标换算在 `resolve/` 中完成。
  * - `AlternateContent` 的分支由扫描器按 `../load.ts` 声明的扩展选择：墨迹取 `contentPart`，公式取 `Fallback` 中的
  *   替代图片（按普通图片读取）。
+ * - OLE 对象（`graphicFrame` 中的 `p:oleObj`）按其中的替代图片（`p:pic`）读取为图片，位置尺寸取 `graphicFrame` 的
+ *   `xfrm`，非可视属性取 `graphicFrame` 的。WPS 演示实测（构造文件）：替代图片自身的 `xfrm` 与外框不同时按外框显示；
+ *   没有替代图片的 OLE 对象（嵌入数据不是可识别的对象）不显示，计入 `ole`。PowerPoint 写出的 OLE 对象把 `p:pic` 放在
+ *   `AlternateContent` 的 `Fallback` 中（`Choice` 要求 VML），扫描器取 `Fallback`。
  * - 每个形状的 `found` 记录该形状自身（含其文字与表格）遇到的未实现元素；组合的 `found` 不含子形状。
  * - 图表、SmartArt 与墨迹只记录部件名，能否绘制在求值时判定并计数。
  */
@@ -126,13 +130,14 @@ const MEDIA_ELEMENTS = new Set(['videoFile', 'audioFile', 'wavAudioFile', 'quick
 
 const CHART_URI = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
 const DIAGRAM_URI = 'http://schemas.openxmlformats.org/drawingml/2006/diagram'
+const OLE_URI = 'http://schemas.openxmlformats.org/presentationml/2006/ole'
 
 const GRAPHIC_KINDS: Record<string, RawGraphic['content'] | 'table'> = {
   'http://schemas.openxmlformats.org/drawingml/2006/table': 'table',
   [CHART_URI]: 'chart',
   'http://schemas.microsoft.com/office/drawing/2014/chartex': 'chart',
   [DIAGRAM_URI]: 'smartArt',
-  'http://schemas.openxmlformats.org/presentationml/2006/ole': 'ole',
+  [OLE_URI]: 'ole',
 }
 
 /** 非可视属性，加上 `nvPr` 中的占位符与音视频标记。 */
@@ -236,7 +241,10 @@ function readConnector(x: Scanner, rels: TextContext['rels']): RawConnector {
   return { kind: 'connector', ...base(nv, found), props, style, start: nv.start, end: nv.end }
 }
 
-function readGraphicFrame(x: Scanner, rels: TextContext['rels']): RawTableFrame | RawGraphic {
+function readGraphicFrame(
+  x: Scanner,
+  rels: TextContext['rels'],
+): RawTableFrame | RawGraphic | RawPicture {
   const found: UnsupportedKind[] = []
   const cx: TextContext = { rels, found }
   let nv = EMPTY_SLIDE_NON_VISUAL
@@ -245,6 +253,7 @@ function readGraphicFrame(x: Scanner, rels: TextContext['rels']): RawTableFrame 
   let table = null as RawTable | null
   let chart: string | null = null
   let diagram: DiagramParts | null = null
+  let preview = null as RawPicture | null
   eachChild(x, (local) => {
     if (local === 'nvGraphicFramePr') nv = readSlideNonVisual(x)
     else if (local === 'xfrm') xfrm = readXfrm(x)
@@ -255,6 +264,15 @@ function readGraphicFrame(x: Scanner, rels: TextContext['rels']): RawTableFrame 
         const kind = GRAPHIC_KINDS[uri] ?? 'graphic'
         if (kind !== 'table') {
           content = kind
+          if (uri === OLE_URI) {
+            eachChild(x, (c) => {
+              if (c !== 'oleObj') return
+              eachChild(x, (o) => {
+                if (o === 'pic') preview = readPicture(x, rels)
+              })
+            })
+            return
+          }
           if (uri === DIAGRAM_URI) {
             eachChild(x, (c) => {
               if (c === 'relIds') diagram = readDiagramParts(x, rels)
@@ -276,6 +294,14 @@ function readGraphicFrame(x: Scanner, rels: TextContext['rels']): RawTableFrame 
     }
   })
   if (table !== null) return { kind: 'table', ...base(nv, found), xfrm, table }
+  if (preview !== null) {
+    const pic: RawPicture = preview
+    return {
+      ...pic,
+      ...base(nv, [...found, ...pic.found]),
+      props: { ...pic.props, xfrm },
+    }
+  }
   if (chart === null && diagram === null) found.push(content)
   return { kind: 'graphic', ...base(nv, found), xfrm, content, chart, diagram }
 }

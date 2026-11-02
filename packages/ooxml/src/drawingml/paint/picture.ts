@@ -80,10 +80,13 @@ export function pictureSize(p: PaintPicture): {
 
 /**
  * 位图缩放的插值质量（`imageSmoothingQuality`）。DrawingML 的图片与图片填充为 `high`：与 WPS 演示导出图更接近
- * （实测 37 页平均分 0.9016 → 0.9024）。WPS 文字的嵌入式图片与页面背景为 `low`：docx 语料中缩小 4.4–5.7 倍的
- * 嵌入式图片按 `high` 绘制时 38 页之和低 0.097。
+ * （实测 37 页平均分 0.9016 → 0.9024）；三个宿主中图表的图片填充同样最接近 `high`（构造图表 7 个区域的 SSIM 之和，
+ * WPS 演示 low 6.40、medium 6.52、high 6.52，WPS 文字 6.47、6.66、6.66，WPS 表格 6.37、6.57、6.58）。
+ * WPS 文字的嵌入式图片与页面背景为 `low`：docx 语料中缩小 4.4–5.7 倍的嵌入式图片按 `high` 绘制时 38 页之和低 0.097，
+ * 按 `medium` 绘制时变化的 53 页中 34 页下降、平均分低 0.0004。WPS 表格锚定在工作表上的图片为 `medium`：构造文件 9 张缩小 1.5–4 倍与放大 2.4–5 倍的
+ * 图片区域 SSIM 之和 low 8.17、medium 8.82、high 8.78，放大时 `high` 的平均误差是 `medium` 的 8 倍。
  */
-export type ImageQuality = 'low' | 'high'
+export type ImageQuality = 'low' | 'medium' | 'high'
 
 /**
  * 按 `srcRect` 裁剪绘制位图到目标矩形：裁剪比例为负时图片在目标矩形内缩小，超出原图的部分透明。

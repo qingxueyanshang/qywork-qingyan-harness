@@ -5,7 +5,11 @@
  *   96 dpi 像素对应的设备像素数，画布尺寸见 `slideSize`。
  * - 自选图形、连接线与组合的绘制规则见 `../../drawingml/shape/paint.ts`；本模块按形状种类分派，并绘制图片与表格。
  * - 绘制顺序：背景（没有背景时为白色）、各形状按文档顺序。
- * - 文字的行高与基线按演示文稿的规则，字形按点阵条件绘制（`./fonts.ts` 的 `slideGlyphs`）。
+ * - 文字的行高与基线按演示文稿的规则，字形按点阵条件绘制（`./fonts.ts` 的 `slideGlyphs`）；`SlideResources.clearType`
+ *   不为 `null` 时其余字号以 ClearType 字形写入画布像素（`slideClearType`），画布宜以 `willReadFrequently: true` 创建。
+ *   旋转的文字、没有 TrueType 轮廓的字体、半透明的文字与画到图层上的文字以 `fillText` 绘制（见 `TextClearType`）。
+ *   形状与表格的文字暂存，在下一个不是只有文字的形状与表格边框之前一并混合；图表与 SmartArt 的文字与其他绘制交错，
+ *   每段立即混合。
  * - 图片的外部阴影取图片区域与线条的轮廓。图片可以是位图或图元文件（`../../drawingml/paint/picture.ts`），
  *   图元文件文字的字体取自幻灯片字体（`slideMetafileFonts`）。
  * - 三维效果（相机旋转、透视与光照）见 `../../drawingml/three/paint.ts`，图片与自选图形相同。
@@ -48,18 +52,39 @@ import {
 import type { TextSettings } from '../../drawingml/text/body.ts'
 import { FaceCache, SINGLE_LINE } from '../../drawingml/text/fonts.ts'
 import { paintThreeD } from '../../drawingml/three/paint.ts'
+import type { ClearTypeDisplay, PixelCanvas } from '../../glyph/cleartype/index.ts'
 import type { Picture, Presentation, Shape, Slide } from '../model.ts'
-import { type SlideFonts, slideGlyphs, slideMetafileFonts } from './fonts.ts'
+import { type SlideFonts, slideClearType, slideGlyphs, slideMetafileFonts } from './fonts.ts'
 import { paintInk } from './ink.ts'
 import { layoutTable, paintTable } from './table.ts'
 
-export interface SlideResources extends PaintResources {
+/** 调用方提供的资源；图元文件文字的字体由幻灯片字体生成（`slideMetafileFonts`）。 */
+export interface SlideResources extends Omit<PaintResources, 'metafileFonts'> {
   readonly fonts: SlideFonts
+  /** 显示器的 ClearType 设置；为 `null` 时文字以浏览器字体绘制（不平滑的字号仍按点阵）。 */
+  readonly clearType: ClearTypeDisplay | null
 }
 
-/** 幻灯片上的文字总有排版设置（缺少字体时使用 `SlideFonts.fallback`）。 */
+/** 绘制幻灯片的上下文：ClearType 字形读写画布像素（`getImageData`、`putImageData`）。 */
+export interface SlideContext extends PaintContext, PixelCanvas {}
+
+/**
+ * 幻灯片上的文字总有排版设置（缺少字体时使用 `SlideFonts.fallback`）。`settings` 的 ClearType 字形暂存（见 `paintShape`），
+ * `immediate` 的每段立即混合，用于图表与 SmartArt。
+ */
 interface SlideScene extends ShapeScene {
   readonly settings: TextSettings
+  readonly immediate: TextSettings
+}
+
+/** 只画文字的形状（没有填充、线条与三维效果）：其文字可以与前后形状的文字一并混合。 */
+function textOnly(shape: Shape): boolean {
+  return (
+    shape.kind === 'shape' &&
+    shape.fill.kind === 'none' &&
+    shape.line === null &&
+    shape.threeD === null
+  )
 }
 
 /** 幻灯片在 `scale` 下的画布像素尺寸。 */
@@ -157,6 +182,9 @@ function paintPicture(scene: SlideScene, shape: Picture, parent: Matrix): void {
 
 function paintShape(scene: SlideScene, shape: Shape, parent: Matrix): void {
   if (shape.hidden) return
+  // 组合本身不绘制（有阴影时除外），其子形状各自判定。
+  const draws = shape.kind === 'group' ? shadowsOf(shape.effects).length > 0 : !textOnly(shape)
+  if (draws) scene.settings.faces.clearType?.flush()
   scene.ctx.save()
   switch (shape.kind) {
     case 'shape':
@@ -190,10 +218,10 @@ function paintShape(scene: SlideScene, shape: Shape, parent: Matrix): void {
       break
     }
     case 'chart':
-      paintChart(scene, shape.chart, shape.frame, parent)
+      paintChart({ ...scene, settings: scene.immediate }, shape.chart, shape.frame, parent)
       break
     case 'diagram':
-      paintDiagram(scene, shape.diagram, shape.frame, parent)
+      paintDiagram({ ...scene, settings: scene.immediate }, shape.diagram, shape.frame, parent)
       break
     case 'ink':
       paintInk(scene.ctx, shape, placeFrame(shape.frame, parent).matrix)
@@ -209,23 +237,31 @@ function paintShape(scene: SlideScene, shape: Shape, parent: Matrix): void {
  * 列出的字体与幻灯片引用的图片（`slideImages`）。
  */
 export function paintSlide(
-  ctx: PaintContext,
+  ctx: SlideContext,
   presentation: Presentation,
   slide: Slide,
   res: SlideResources,
   scale: number,
 ): void {
   const canvas = slideSize(presentation, scale)
-  const resources: SlideResources = { ...res, metafileFonts: slideMetafileFonts(res.fonts) }
+  const resources: PaintResources = { ...res, metafileFonts: slideMetafileFonts(res.fonts) }
+  const settings = (deferred: boolean): TextSettings => ({
+    faces: new FaceCache(
+      res.fonts,
+      SINGLE_LINE,
+      null,
+      slideGlyphs(res.fonts),
+      res.clearType === null ? null : slideClearType(res.fonts, res.clearType, ctx, deferred),
+    ),
+    slideNumber: slide.number,
+  })
   const scene: SlideScene = {
     ctx,
     res: resources,
     scale,
     canvas,
-    settings: {
-      faces: new FaceCache(res.fonts, SINGLE_LINE, null, slideGlyphs(res.fonts)),
-      slideNumber: slide.number,
-    },
+    settings: settings(true),
+    immediate: settings(false),
   }
   const base = scaling(scale, scale)
   const width = presentation.width / EMU_PER_PX
@@ -247,5 +283,6 @@ export function paintSlide(
     )
   }
   for (const shape of slide.shapes) paintShape(scene, shape, base)
+  scene.settings.faces.clearType?.flush()
   ctx.restore()
 }

@@ -52,8 +52,7 @@ const MAX_DEPTH = 8
 
 /**
  * 提示字形 `glyph`；没有轮廓的字形返回点数为 0 的轮廓。`gridFit` 为假时不执行指令，幻影点不取整（缩放后的轮廓）。
- * `compatibleAdvance` 给出单色提示后的前进宽度（26.6），ClearType 绘制的简单字形按它做兼容宽度的调整（见 `SizeHinter.hint`），
- * 只在调整时调用。字形数据不合法时抛出 `FontFormatError`。
+ * 字形数据不合法时抛出 `FontFormatError`。
  */
 export function hintGlyph(
   outlines: GlyphOutlines,
@@ -61,10 +60,9 @@ export function hintGlyph(
   size: SizeHinter,
   glyph: number,
   gridFit = true,
-  compatibleAdvance: (() => number) | null = null,
 ): HintedOutline {
   const hint = gridFit && size.ok && !size.disabled
-  const g = load(outlines, vertical, size, glyph, hint, 0, compatibleAdvance)
+  const g = load(outlines, vertical, size, glyph, hint, 0)
   // `load` 的结果是新建的数组，原地平移到左侧位点。
   const xs = g.xs
   for (let i = 0; i < xs.length; i++) xs[i] = xs[i]! - g.pp1x
@@ -99,7 +97,6 @@ function load(
   glyph: number,
   hint: boolean,
   depth: number,
-  compatibleAdvance: (() => number) | null = null,
 ): Loaded {
   const scale = size.scale
   const [pp1, pp2, pp3, pp4] = phantom(outlines, vertical, glyph)
@@ -125,7 +122,7 @@ function load(
     if (hint) {
       roundPhantoms(zone.curX, zone.curY, n, size.clearType)
       if (data !== null && data.instructions.length > 0)
-        scan = size.hint(zone, data.instructions, false, compatibleAdvance)
+        scan = size.hint(zone, data.instructions, false)
     }
     const on = zone.tags.slice(0, n)
     for (let i = 0; i < n; i++) on[i]! &= TAG_ON

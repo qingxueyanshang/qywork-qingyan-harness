@@ -6,7 +6,8 @@ import { FontFormatError } from './sfnt.ts'
 
 /**
  * 子表的选用顺序：完整 Unicode 优先于 BMP，Unicode 编码优先于符号编码。
- * 平台 3 编码 0 是符号字体（Wingdings 等），码位位于 U+F000–U+F0FF，按原码位查询。
+ * 平台 3 编码 0 是符号字体（Wingdings 等），码位位于 U+F000–U+F0FF：按原码位查询，U+0020–U+00FF 没有字形时取
+ * U+F000 加该码位的字形（`symbolLookup`）。
  */
 const PREFERENCE: [platform: number, encoding: number][] = [
   [3, 10],
@@ -67,6 +68,17 @@ function format12(v: DataView, at: number): Lookup {
 }
 
 /**
+ * 符号编码的子表：U+0020–U+00FF 按原码位没有字形时取 U+F000 加该码位的字形。WPS 输出 `w:sym` 与符号字体字段中的这些字符时
+ * 同样换算（WPS 实测，构造文档 w16 sym：Wingdings 的 `w:char="00A8"`、`"F0A8"` 与字段文字「¨」都输出 U+F0A8，「l」输出 U+F06C）。
+ */
+function symbolLookup(lookup: Lookup): Lookup {
+  return (c) => {
+    const g = lookup(c)
+    return g !== 0 || c < 0x20 || c > 0xff ? g : lookup(0xf000 + c)
+  }
+}
+
+/**
  * 按选用顺序取第一个格式受支持的子表。字体中没有格式 4 或 12 的 Unicode 子表时抛出
  * `FontFormatError`，不返回恒为 0 的查询：恒为 0 会使全部字符按 `.notdef` 的宽度排版。
  */
@@ -82,8 +94,9 @@ export function readCmap(table: Uint8Array): Lookup {
     const at = records.get(`${platform}/${encoding}`)
     if (at === undefined) continue
     const format = v.getUint16(at)
-    if (format === 12) return format12(v, at)
-    if (format === 4) return format4(v, at)
+    const lookup = format === 12 ? format12(v, at) : format === 4 ? format4(v, at) : null
+    if (lookup === null) continue
+    return platform === 3 && encoding === 0 ? symbolLookup(lookup) : lookup
   }
   throw new FontFormatError('cmap 中没有格式 4 或 12 的 Unicode 子表')
 }

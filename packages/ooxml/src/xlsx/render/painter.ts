@@ -10,6 +10,7 @@
  *    组的先后为区域内按行优先首次出现的先后，两种填充之间的线因此取后出现者的颜色（与两格的左右上下位置无关）。
  * 4. 数据条，5. 边框（同一条边两侧都指定时取较粗者），6. 文字，7. 绘图对象（图片、形状与图表，按锚点在绘图部件中的顺序，
  *    形状见 `shapes.ts`，图表见 `../../drawingml/chart/paint.ts`，图表区即锚点矩形），8. 自动筛选按钮。
+ * 图片（位图与图元文件）按 `../../drawingml/paint/picture.ts` 的 `drawPicture` 绘制到锚点矩形，位图的插值质量为 `medium`。
  */
 
 import { paintChart } from '../../drawingml/chart/paint.ts'
@@ -18,10 +19,10 @@ import {
   type PaintContext as DrawingContext,
   type Matrix,
   multiply,
-  type PaintImage,
   translation,
 } from '../../drawingml/paint/context.ts'
 import { deviceScale } from '../../drawingml/paint/fill.ts'
+import { drawPicture, type PaintPicture } from '../../drawingml/paint/picture.ts'
 import type { ShapeScene } from '../../drawingml/shape/paint.ts'
 import type { FaceCache } from '../../drawingml/text/fonts.ts'
 import { emboldenBitmap } from '../../font/index.ts'
@@ -34,6 +35,7 @@ import {
   type PlacedGlyph,
   paintGlyphRuns,
 } from '../../glyph/cleartype/index.ts'
+import type { MetafileFonts } from '../../metafile/index.ts'
 import type {
   BorderLine,
   BorderLineStyle,
@@ -54,18 +56,20 @@ import type { FaceSegment, FontSet, LoadedFace } from './fonts.ts'
 import { buildGeometry, type SheetGeometry } from './geometry.ts'
 import {
   chartFaces,
+  metafileFonts,
   type PlacedShape,
   paintShapeNode,
   placeShape,
   type Rect,
   shapeFaces,
+  sheetClearType,
 } from './shapes.ts'
 import type { TextRun } from './text.ts'
 
 /**
  * 绘制所需的 Canvas 2D 接口子集；浏览器的 `CanvasRenderingContext2D` 与 `OffscreenCanvasRenderingContext2D` 都满足。
  * `getTransform` 取得调用方设置的缩放与设备像素比：形状按绝对变换绘制，须以它为基准。
- * `SheetResources.clearType` 不为 `null` 时单元格文字读写画布像素（`getImageData`、`putImageData`），
+ * `SheetResources.clearType` 不为 `null` 时单元格、形状与图表文字读写画布像素（`getImageData`、`putImageData`），
  * 画布宜以 `willReadFrequently: true` 创建。
  */
 export interface PaintContext extends DrawingContext, PixelCanvas {
@@ -73,13 +77,13 @@ export interface PaintContext extends DrawingContext, PixelCanvas {
 }
 
 export interface SheetResources {
-  /** 与 `sheet.images` 逐项对应的已解码图片（`ImageBitmap`、`HTMLImageElement` 等），未解码完成或无法解码的为 `null`。 */
-  readonly images: readonly (PaintImage | null)[]
+  /** 与 `sheet.images` 逐项对应的已解码图片（`decodePicture`），未解码完成或无法解码的为 `null`。 */
+  readonly images: readonly (PaintPicture | null)[]
   /** 形状的阴影、图案与复合线条所需的图层；浏览器中为 `(w, h) => new OffscreenCanvas(w, h)`。 */
   readonly createCanvas: CreateCanvas
   /**
-   * 显示器的 ClearType 设置。不为 `null` 时 TrueType 字体的单元格文字以 ClearType 字形绘制（见 `clearTypeRun`），
-   * 为 `null` 时以浏览器字体绘制。
+   * 显示器的 ClearType 设置。不为 `null` 时 TrueType 字体的单元格文字（见 `clearTypeRun`）与形状、图表文字的平滑字号
+   * （见 `./shapes.ts` 的 `sheetClearType`）以 ClearType 字形绘制，为 `null` 时以浏览器字体绘制。
    */
   readonly clearType: ClearTypeDisplay | null
 }
@@ -101,10 +105,8 @@ export interface SheetScene {
   /** 单元格的生效样式下标：单元格自身、行默认样式、列默认样式依次取第一个指定的。 */
   styleAt(row: number, col: number): number
   readonly drawings: readonly SheetDrawing[]
-  /** 形状文字的字体；字体集中没有可用字体时为 `null`，形状文字不绘制。 */
-  readonly faces: FaceCache | null
-  /** 图表文字的字体（见 `chartFaces`）；为 `null` 时图表不绘制。 */
-  readonly chartFaces: FaceCache | null
+  /** 图片中图元文件文字的字体（见 `metafileFonts`）；为 `null` 时含文字的图元文件不绘制。 */
+  readonly metafileFonts: MetafileFonts | null
 }
 
 const GRID_COLOR = '#e6e6e6'
@@ -124,8 +126,7 @@ export function createScene(workbook: Workbook, sheet: Worksheet, fonts: FontSet
     }
   }
   const colStyles = sheet.cols.filter((c) => c.style !== null)
-  const faces = sheet.shapes.length > 0 ? shapeFaces(workbook, fonts) : null
-  const chartText = sheet.charts.length > 0 ? chartFaces(workbook, fonts) : null
+  const pictureText = sheet.images.length > 0 ? metafileFonts(workbook, fonts) : null
   const rectOf = (anchor: DrawingAnchor) => anchorRect(geometry, anchor)
   const ordered: { order: number; drawing: SheetDrawing }[] = [
     ...sheet.images.map((img, index) => ({
@@ -148,8 +149,7 @@ export function createScene(workbook: Workbook, sheet: Worksheet, fonts: FontSet
     geometry,
     fonts,
     drawings: ordered.map((d) => d.drawing),
-    faces,
-    chartFaces: chartText,
+    metafileFonts: pictureText,
     conditional: new ConditionalFormats(workbook, sheet),
     mergeAt(row, col) {
       const list = merges.get(row)
@@ -1124,6 +1124,11 @@ function intersects(a: Rect, region: PaintRegion): boolean {
   )
 }
 
+/**
+ * 按上下次序绘制图片、形状与图表。形状文字与图表文字的字体（`shapeFaces`、`chartFaces`）在区域内第一个形状与图表处
+ * 取得，字体集中没有可用字体时形状文字与图表不绘制；显示器使用 ClearType 时两者的平滑字号以 ClearType 字形绘制，
+ * 像素裁到区域之内。
+ */
 function drawDrawings(
   ctx: PaintContext,
   scene: SheetScene,
@@ -1132,16 +1137,31 @@ function drawDrawings(
 ): void {
   const dx = at.originX - at.region.x
   const dy = at.originY - at.region.y
+  const { workbook, fonts } = scene
+  const clearType =
+    res.clearType === null
+      ? null
+      : sheetClearType(
+          fonts,
+          res.clearType,
+          ctx,
+          deviceRect(at.base, {
+            left: at.originX,
+            top: at.originY,
+            right: at.originX + at.region.width + 1,
+            bottom: at.originY + at.region.height + 1,
+          }),
+        )
   let shapes: { scene: ShapeScene; parent: Matrix } | null = null
   let charts: { scene: ShapeScene; parent: Matrix } | null = null
   for (const d of scene.drawings) {
     if (d.kind === 'image') {
-      drawImage(ctx, scene, d.index, res.images[d.index] ?? null, dx, dy)
+      drawImage(ctx, scene, d.index, res.images[d.index] ?? null, dx, dy, at.base)
       continue
     }
     if (d.kind === 'chart') {
       if (!intersects(d.rect, at.region)) continue
-      charts ??= shapeScene(ctx, res, at, scene.chartFaces)
+      charts ??= shapeScene(ctx, res, at, chartFaces(workbook, fonts, clearType))
       const r = d.rect
       const frame = {
         x: r.x * EMU_PER_PX,
@@ -1156,14 +1176,14 @@ function drawDrawings(
       continue
     }
     if (!intersects(d.shape.bounds, at.region)) continue
-    shapes ??= shapeScene(ctx, res, at, scene.faces)
+    shapes ??= shapeScene(ctx, res, at, shapeFaces(workbook, fonts, clearType))
     paintShapeNode(shapes.scene, d.shape.node, shapes.parent)
   }
 }
 
 /**
  * 形状绘制的上下文：工作表像素经区域平移与调用方的变换换算为设备坐标；图层边界以区域右下角的设备坐标为限。
- * 形状的图片填充不绘制（已计入未显示的图片）。
+ * 形状与图表的图片填充不绘制（已计入未显示的图片）。
  */
 function shapeScene(
   ctx: PaintContext,
@@ -1177,7 +1197,7 @@ function shapeScene(
   return {
     scene: {
       ctx,
-      res: { image: () => null, createCanvas: res.createCanvas },
+      res: { image: () => null, createCanvas: res.createCanvas, metafileFonts: null },
       scale: deviceScale(base),
       canvas: {
         width: Math.ceil(base.a * right + base.c * bottom + base.e),
@@ -1189,25 +1209,22 @@ function shapeScene(
   }
 }
 
+/** 图片绘制到锚点矩形平移 (`dx`, `dy`) 处；`base` 为调用方设置的变换，即绘制时上下文的当前变换。 */
 function drawImage(
   ctx: PaintContext,
   scene: SheetScene,
   index: number,
-  img: PaintImage | null,
+  picture: PaintPicture | null,
   dx: number,
   dy: number,
+  base: Matrix,
 ): void {
   const spec = scene.sheet.images[index]
-  if (!spec || !img || img.width === 0 || img.height === 0) return
+  if (!spec || !picture) return
   const rect = anchorRect(scene.geometry, spec.anchor)
   if (rect.width <= 0 || rect.height <= 0) return
-  const { left, top, right, bottom } = spec.crop
-  const sx = img.width * left
-  const sy = img.height * top
-  const sw = img.width * Math.max(0, 1 - left - right)
-  const sh = img.height * Math.max(0, 1 - top - bottom)
-  if (sw <= 0 || sh <= 0) return
-  ctx.drawImage(img, sx, sy, sw, sh, rect.x + dx, rect.y + dy, rect.width, rect.height)
+  const target = { x: rect.x + dx, y: rect.y + dy, width: rect.width, height: rect.height }
+  drawPicture(ctx, picture, spec.crop, target, base, 'medium', scene.metafileFonts)
 }
 
 /** 自动筛选按钮：15 像素见方，位于标题行每个单元格的右下角，灰色边框、白底、向下的三角形。 */

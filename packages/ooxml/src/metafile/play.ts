@@ -5,11 +5,16 @@
  *   EMF 的设备坐标为参考设备像素。
  * - 与 GDI 相同，换算到目标后的坐标取整到像素：填充的边界落在像素边缘，奇数宽度的线落在像素中心；矩形与椭圆不含右边与底边
  *   （空画笔时是否再小 1 像素见 `MetaOp` 的 `shrink`）。修饰画笔（cosmetic）为 1 像素，几何画笔的线宽按变换缩放，至少 1 像素。
+ * - 光栅操作 `SRCAND` 与 `SRCPAINT` 以 `multiply` 与 `lighter` 合成：黑白掩码与之配合的透明位图（先以掩码按位与、再以黑底图像
+ *   按位或）在像素值为 0 或 255 的位置与按位运算相同。
  * - 位图一律平滑缩放，不按 `SetStretchBltMode` 区分，目标矩形按换算后的坐标绘制、不取整。WPS 实测（构造文档 7 张含位图的
  *   图元文件，含 `COLORONCOLOR` 放大 3 倍的渐变与 1 位棋盘格）：缩放均为平滑插值；区域 SSIM 之和为 5.95，按模式区分平滑并
  *   取整到像素时为 5.76，坐标加 0.5 像素时为 5.56。
  * - 文字逐字绘制：字号为 `lfHeight` 换算到目标后取整的 ppem，字的横坐标为参考点加前进宽度之和换算后取整；对齐方式按
- *   `TA_*`，背景模式为不透明时以背景色填充字符单元。字形由 `MetafileFonts` 绘制。
+ *   `TA_*`，背景模式为不透明时以背景色填充字符单元。字形由 `MetafileFonts` 绘制。`lfWidth` 不为 0 时字形与按字体度量的
+ *   前进宽度横向缩放为 `lfWidth` 与字体平均字符宽度之比（WPS 实测：Times New Roman 20 像素，`lfWidth` 6 与 14 的字形宽度）。
+ * - `TA_UPDATECP`：参考点为当前位置；左对齐时绘制后当前位置移到文字右端，右对齐时移到文字左端，居中时不移动
+ *   （WPS 实测：构造文件中连续三段文字与其后的 LINETO）。
  * - 目标矩形之外不裁剪：调用方按需要裁剪（图片的裁剪区域由调用方处理）。
  */
 
@@ -29,10 +34,27 @@ export interface MetafileFace {
   vertical(ppem: number): { readonly ascent: number; readonly descent: number }
   /** em 高度与字符单元高度之比：`lfHeight` 为正（单元高度）时按它换算为 em 高度。 */
   readonly emPerCell: number
+  /** 平均字符宽度（`OS/2.xAvgCharWidth`）与 em 之比：`lfWidth` 不为 0 时按它换算横向缩放。 */
+  readonly averageWidth: number
+  /**
+   * 符号字体（`OS/2.ulCodePageRange1` 含符号字符集）：DEFAULT_CHARSET 与 OEM_CHARSET 的 8 位文字按符号编码解码
+   * （`MetaOp` 的 `symbol`）。
+   */
+  readonly symbol: boolean
   /** ppem 下字符的前进宽度（像素）：文字记录没有前进宽度时使用。 */
   advance(codePoint: number, ppem: number): number
-  /** 以 `ctx.fillStyle` 在整数像素 (`x`, `baseline`) 处绘制一个字符。 */
-  draw(ctx: PaintContext, text: string, x: number, baseline: number, ppem: number): void
+  /**
+   * 以 `ctx.fillStyle` 在整数像素 (`x`, `baseline`) 处绘制一个字符。`height` 为字体对象 `lfHeight` 的绝对值（逻辑单位），
+   * 供宿主按其规则选择平滑方式。
+   */
+  draw(
+    ctx: PaintContext,
+    text: string,
+    x: number,
+    baseline: number,
+    ppem: number,
+    height: number,
+  ): void
 }
 
 export interface MetafileFonts {
@@ -84,6 +106,8 @@ interface State {
   miterLimit: number
   pos: Point
   clip: readonly Clip[]
+  /** 元区域（`SetMetaRgn`）：与 `clip` 同时生效。 */
+  meta: readonly Clip[]
 }
 
 const BLACK: Rgb = { r: 0, g: 0, b: 0 }
@@ -98,6 +122,7 @@ const UNITS_PER_MM: Readonly<Record<number, number>> = {
   6: 1440 / 25.4,
 }
 
+const TA_UPDATECP = 1
 const TA_RIGHT = 2
 const TA_CENTER = 6
 const TA_BOTTOM = 8
@@ -131,6 +156,7 @@ function initial(mf: Metafile, target: MetafileTarget): State {
     miterLimit: 10,
     pos: { x: 0, y: 0 },
     clip: [],
+    meta: [],
   }
 }
 
@@ -228,6 +254,12 @@ class Player {
       case 'viewportExt':
         s.vpExt = { x: o.x, y: o.y }
         return
+      case 'scaleWindowExt':
+        s.winExt = { x: (s.winExt.x * o.num.x) / o.den.x, y: (s.winExt.y * o.num.y) / o.den.y }
+        return
+      case 'scaleViewportExt':
+        s.vpExt = { x: (s.vpExt.x * o.num.x) / o.den.x, y: (s.vpExt.y * o.num.y) / o.den.y }
+        return
       case 'world':
         s.world =
           o.mode === 'set'
@@ -315,6 +347,9 @@ class Player {
       case 'patBlt':
         this.patBlt(o.box, o.fill)
         return
+      case 'fillRegion':
+        this.fillRegion(o.rects, o.brush ?? s.brush)
+        return
       case 'bitmap':
         this.bitmap(o)
         return
@@ -362,6 +397,10 @@ class Player {
         s.clip = [...s.clip, item]
         return
       }
+      case 'metaRegion':
+        s.meta = [...s.meta, ...s.clip]
+        s.clip = []
+        return
       case 'clipRegion': {
         if (o.rects === null) {
           s.clip = []
@@ -421,8 +460,15 @@ class Player {
       )
       return
     }
-    const r = this.pixelBox(b, m)
     const pen = this.penWidth(m)
+    const frame = this.pixelBox(b, m)
+    const inset = this.s.pen.style === 'insideFrame' && pen > 1 ? Math.floor(pen / 2) : 0
+    const r: Box = {
+      left: frame.left + inset,
+      top: frame.top + inset,
+      right: frame.right - inset,
+      bottom: frame.bottom - inset,
+    }
     const shrink = pen === 0 && shrinkNullPen ? 1 : 0
     const inner: Box = {
       left: r.left,
@@ -494,6 +540,23 @@ class Player {
     ctx.restore()
   }
 
+  /** 区域的矩形换算到目标并取整后填充。 */
+  private fillRegion(rects: readonly Box[], brush: Brush): void {
+    if (brush.kind !== 'solid' || rects.length === 0) return
+    const m = this.matrix()
+    const ctx = this.ctx
+    ctx.save()
+    this.applyClip()
+    ctx.beginPath()
+    for (const b of rects) {
+      const r = this.pixelBox(b, m)
+      ctx.rect(r.left, r.top, r.right - r.left, r.bottom - r.top)
+    }
+    ctx.fillStyle = css(brush.color)
+    ctx.fill()
+    ctx.restore()
+  }
+
   private patBlt(b: Box, fill: 'brush' | 'black' | 'white'): void {
     const color = fill === 'black' ? BLACK : fill === 'white' ? WHITE : null
     const brush = this.s.brush
@@ -515,6 +578,7 @@ class Player {
     ctx.save()
     this.applyClip()
     ctx.globalAlpha *= o.alpha
+    if (o.rop !== 'copy') ctx.globalCompositeOperation = o.rop === 'and' ? 'multiply' : 'lighter'
     ctx.imageSmoothingEnabled = true
     if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high'
     const { x, y, width, height } = o.src
@@ -541,6 +605,7 @@ class Player {
     const s = this.s
     const m = this.matrix()
     const ctx = this.ctx
+    const ref = s.align & TA_UPDATECP ? s.pos : o.p
     ctx.save()
     this.applyClip()
     if (o.opaque !== null) {
@@ -568,21 +633,26 @@ class Player {
       ctx.restore()
       return
     }
+    const { text, dx } = o.symbol !== null && face.symbol ? o.symbol : o
+    const stretch =
+      font.width === 0 || face.averageWidth <= 0
+        ? 1
+        : Math.abs(font.width * m.a) / (face.averageWidth * ppem)
     // 字符（UTF-16 代理对合为一个字符，前进宽度取两项之和）与各字距参考点的横向距离（目标像素）。
     const chars: { text: string; offset: number }[] = []
     let advance = 0
-    for (let k = 0; k < o.text.length; k++) {
-      const code = o.text.charCodeAt(k)
-      const pair = code >= 0xd800 && code < 0xdc00 && k + 1 < o.text.length
-      const ch = pair ? o.text.slice(k, k + 2) : o.text[k]!
+    for (let k = 0; k < text.length; k++) {
+      const code = text.charCodeAt(k)
+      const pair = code >= 0xd800 && code < 0xdc00 && k + 1 < text.length
+      const ch = pair ? text.slice(k, k + 2) : text[k]!
       let w: number
-      if (o.dx !== null) w = ((o.dx[k] ?? 0) + (pair ? (o.dx[k + 1] ?? 0) : 0)) * m.a
-      else w = face.advance(ch.codePointAt(0)!, ppem)
+      if (dx !== null) w = ((dx[k] ?? 0) + (pair ? (dx[k + 1] ?? 0) : 0)) * m.a
+      else w = face.advance(ch.codePointAt(0)!, ppem) * stretch
       chars.push({ text: ch, offset: advance })
       advance += w
       if (pair) k++
     }
-    const origin = this.out(o.p, m)
+    const origin = this.out(ref, m)
     const h = s.align & TA_CENTER
     const shift = h === TA_CENTER ? -advance / 2 : h === TA_RIGHT ? -advance : 0
     const v = face.vertical(ppem)
@@ -602,16 +672,29 @@ class Player {
       ctx.fillRect(left, baseline - v.ascent, right - left, v.ascent + v.descent)
     }
     ctx.fillStyle = css(s.textColor)
+    const height = Math.abs(font.height)
     for (const c of chars) {
       if (c.text === ' ') continue
-      face.draw(ctx, c.text, Math.round(x0 + c.offset), baseline, ppem)
+      const x = Math.round(x0 + c.offset)
+      if (stretch === 1) face.draw(ctx, c.text, x, baseline, ppem, height)
+      else {
+        ctx.save()
+        ctx.translate(x, baseline)
+        ctx.scale(stretch, 1)
+        face.draw(ctx, c.text, 0, 0, ppem, height)
+        ctx.restore()
+      }
     }
     ctx.restore()
+    if (s.align & TA_UPDATECP && h !== TA_CENTER && m.a !== 0) {
+      const logical = advance / m.a
+      s.pos = { x: ref.x + (h === TA_RIGHT ? -logical : logical), y: ref.y }
+    }
   }
 
   private applyClip(): void {
     const ctx = this.ctx
-    for (const c of this.s.clip) {
+    for (const c of [...this.s.meta, ...this.s.clip]) {
       ctx.beginPath()
       if (c.kind === 'rects') {
         for (const b of c.boxes) ctx.rect(b.left, b.top, b.right - b.left, b.bottom - b.top)

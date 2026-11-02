@@ -7,7 +7,7 @@
  * - 坐标为 32 位整数；名称以 16 结尾的记录为 16 位坐标。
  */
 
-import { Builder, decodeAnsi, type FontObject, fontObject } from './builder.ts'
+import { Builder, bitmapRop, decodeAnsi, type FontObject, fontObject } from './builder.ts'
 import {
   type Box,
   type Brush,
@@ -31,17 +31,11 @@ const NAMES: Readonly<Record<number, string>> = {
   15: 'SETPIXELV',
   23: 'SETCOLORADJUSTMENT',
   26: 'OFFSETCLIPRGN',
-  28: 'SETMETARGN',
-  31: 'SCALEVIEWPORTEXTEX',
-  32: 'SCALEWINDOWEXTEX',
   41: 'ANGLEARC',
   44: 'ROUNDRECT',
   45: 'ARC',
   46: 'CHORD',
   47: 'PIE',
-  49: 'CREATEPALETTE',
-  50: 'SETPALETTEENTRIES',
-  51: 'RESIZEPALETTE',
   53: 'EXTFLOODFILL',
   55: 'ARCTO',
   56: 'POLYDRAW',
@@ -233,13 +227,13 @@ function extPen(r: Rec): Pen | string {
   const width = r.u32(32)
   const brushStyle = r.u32(36)
   const kind = style & 0x0f
-  if (kind !== 0 && kind !== 5) return `pen:style${kind}`
+  if (kind !== 0 && kind !== 5 && kind !== 6) return `pen:style${kind}`
   if (brushStyle !== 0 && kind !== 5) return `pen:brush${brushStyle}`
   const geometric = (style & 0x00010000) !== 0
   const cap = style & 0x0f00
   const join = style & 0xf000
   return {
-    style: kind === 5 ? 'null' : 'solid',
+    style: kind === 5 ? 'null' : kind === 6 ? 'insideFrame' : 'solid',
     width: geometric ? width : 0,
     cosmetic: !geometric || width === 0,
     color: r.color(40),
@@ -251,10 +245,10 @@ function extPen(r: Rec): Pen | string {
 function logPen(r: Rec): Pen | string {
   const style = r.u32(12)
   const kind = style & 0x0f
-  if (kind !== 0 && kind !== 5) return `pen:style${kind}`
+  if (kind !== 0 && kind !== 5 && kind !== 6) return `pen:style${kind}`
   const width = r.i32(16)
   return {
-    style: kind === 5 ? 'null' : 'solid',
+    style: kind === 5 ? 'null' : kind === 6 ? 'insideFrame' : 'solid',
     width: Math.abs(width),
     cosmetic: width === 0,
     color: r.color(24),
@@ -274,9 +268,8 @@ function logFont(r: Rec): FontObject {
     face += String.fromCharCode(c)
   }
   return fontObject(
-    { height: r.i32(12), weight: r.i32(28), italic: bytes[20] !== 0, face },
+    { height: r.i32(12), width: r.i32(16), weight: r.i32(28), italic: bytes[20] !== 0, face },
     {
-      width: r.i32(16),
       escapement: r.i32(20),
       orientation: r.i32(24),
       underline: bytes[21] !== 0,
@@ -301,12 +294,28 @@ function plusDual(r: Rec): boolean | null {
   return null
 }
 
+/** 带 `COLORREF` 的记录：颜色在记录中的偏移（SETTEXTCOLOR、SETBKCOLOR、CREATEPEN、CREATEBRUSHINDIRECT、EXTCREATEPEN）。 */
+const COLOR_OFFSETS: Readonly<Record<number, number>> = { 24: 8, 25: 8, 38: 24, 39: 16, 95: 40 }
+
 function record(type: number, r: Rec, out: Builder, objects: Map<number, EmfObject>): void {
+  const colorAt = COLOR_OFFSETS[type]
+  if (colorAt !== undefined && r.u32(colorAt) >>> 24 === 1) out.unsupported('color:paletteIndex')
   switch (type) {
     case 70: {
       if (r.size >= 16 && r.u32(12) === EMF_PLUS && plusDual(r) === false) out.unsupported('EMF+')
       return
     }
+    case 31:
+    case 32:
+      if (r.i32(12) === 0 || r.i32(20) === 0)
+        out.unsupported(type === 31 ? 'SCALEVIEWPORTEXTEX' : 'SCALEWINDOWEXTEX')
+      else
+        out.op({
+          op: type === 31 ? 'scaleViewportExt' : 'scaleWindowExt',
+          num: { x: r.i32(8), y: r.i32(16) },
+          den: { x: r.i32(12), y: r.i32(20) },
+        })
+      return
     case 9:
     case 10:
     case 11:
@@ -341,12 +350,12 @@ function record(type: number, r: Rec, out: Builder, objects: Map<number, EmfObje
     case 20:
       if (r.u32(8) !== 13) out.unsupported(`SETROP2:${r.u32(8)}`)
       return
-    case 22: {
-      const align = r.u32(8)
-      if (align & 0x0101) out.unsupported('SETTEXTALIGN:updateCp')
-      else out.op({ op: 'textAlign', align })
+    case 22:
+      out.op({ op: 'textAlign', align: r.u32(8) })
       return
-    }
+    case 28:
+      out.op({ op: 'metaRegion' })
+      return
     case 24:
     case 25:
       out.op({ op: type === 24 ? 'textColor' : 'bkColor', color: r.color(8) })
@@ -497,8 +506,11 @@ function record(type: number, r: Rec, out: Builder, objects: Map<number, EmfObje
     case 40:
       objects.delete(r.u32(8))
       return
-    case 48: // SELECTPALETTE：库存调色板之外的调色板在创建时已计为不支持。
-    case 52: // REALIZEPALETTE
+    case 48: // SELECTPALETTE、REALIZEPALETTE、CREATEPALETTE、SETPALETTEENTRIES、RESIZEPALETTE
+    case 52:
+    case 49:
+    case 50:
+    case 51:
       return
     case 76:
     case 77: {
@@ -595,18 +607,18 @@ function record(type: number, r: Rec, out: Builder, objects: Map<number, EmfObje
         let s = ''
         for (let k = 0; k + 1 < raw.length; k += 2)
           s += String.fromCharCode(raw[k]! | (raw[k + 1]! << 8))
-        out.text(p, s, dx, opaque, clip)
+        out.text(p, s, dx, null, opaque, clip)
         return
       }
       if (n === 0) {
-        out.text(p, '', null, opaque, clip)
+        out.text(p, '', null, null, opaque, clip)
         return
       }
       const f = out.textFont()
       if (f === null) return
       const decoded = decodeAnsi(r.bytes(strAt, n), f.charset, dx)
       if (typeof decoded === 'string') out.unsupported(decoded)
-      else out.text(p, decoded.text, decoded.dx, opaque, clip)
+      else out.text(p, decoded.text, decoded.dx, decoded.symbol, opaque, clip)
       return
     }
     case 120:
@@ -635,7 +647,8 @@ function blit(
   src: { x: number; y: number; width: number; height: number },
   alpha: number,
 ): void {
-  if (f.rop !== SRCCOPY) {
+  const mode = bitmapRop(f.rop)
+  if (mode === null) {
     out.unsupported(`bitmap:rop${f.rop.toString(16)}`)
     return
   }
@@ -651,5 +664,5 @@ function blit(
   const headerSize = dv.getUint32(0, true)
   const h = headerSize === 12 ? dv.getUint16(6, true) : dv.getInt32(8, true)
   const sy = f.fromBottom && h > 0 ? Math.abs(h) - src.y - src.height : src.y
-  out.op({ op: 'bitmap', dest, src: { ...src, y: sy }, bitmap: index, alpha })
+  out.op({ op: 'bitmap', dest, src: { ...src, y: sy }, bitmap: index, alpha, rop: mode })
 }

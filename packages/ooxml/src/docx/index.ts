@@ -74,13 +74,16 @@ export type {
   PageItem,
   PageLine,
   PageParagraph,
+  PageRect,
   PageTable,
+  PageTextBox,
   ParagraphBox,
   Underline,
   UnderlineStyle,
 } from './page/model.ts'
 export { type DocxFace, DocxFonts, loadDocxFace } from './render/fonts.ts'
 export {
+  type PageClearType,
   type PageContext,
   type PageFonts,
   type PageResources,

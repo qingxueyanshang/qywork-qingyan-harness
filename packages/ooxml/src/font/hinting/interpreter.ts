@@ -12,10 +12,15 @@
  *   RTHG、RTDG、RDTG、RUTG 的网格为 1/16 像素（SROUND、S45ROUND 不变）；最小距离取一半；cvt cut-in 取 1/16，且 MIRP
  *   不论是否取整都做 cut-in 判定；自由向量的 x 分量不为 0 时 DELTAP 不移动点。`prep` 与 y 方向与单色绘制相同。
  *   GDI 实测（构造字体逐条指令读取结果，Arial 的 `prep` 写入的 cvt 两种绘制相同）。
- * - ClearType 绘制的兼容宽度（字体没有以 INSTCTRL 选择子 3 声明按 ClearType 设计时）：字形指令第一次执行 IUP[x] 时，
- *   先把已在 x 方向触及的点相对左侧位点按「单色提示后的前进宽度 / 线性前进宽度」缩放，以 black 距离（MIRP、MDRP 的
- *   距离类型 1）相连的两点保持距离、中点按同一比例缩放，经 ALIGNRP 对齐的点保持与参考点的距离，再按常规插值。
- *   GDI 实测（Arial ppem 12 的 l、n、H 在 IUP[x] 前后各点的 x 逐一读取）；等线、宋体声明了按 ClearType 设计，不做此调整。
+ * - ClearType 绘制下字形指令执行过 IUP[x] 与 IUP[y] 之后，字形区的点不再移动（移动类指令只标记触及），FLIPPT、FLIPRGON、
+ *   FLIPRGOFF 不再改变点的类型（`settled`）。GDI 实测：Times New Roman 的数字 0 在 ppem 12、14 时于 IUP 之后以 SCFS、
+ *   ALIGNRP 与 FLIPRGON 改为直边，GDI 的 ClearType 字形仍为椭圆。不要去掉这一条：Arial、Times New Roman（常规、粗体）
+ *   与 Calibri ppem 8–30 的可打印 ASCII 共 8648 个字形中与 GDI 逐像素相同的由 6156 个降为 5465 个。未查明的例外：
+ *   Times New Roman 的 k、c、e、d 与 Arial 的 M、N、R、w 在个别 ppem 下 IUP 之后的 SHPIX 在 GDI 中生效，按本规则不移动。
+ * - ClearType 绘制为 GDI 的自然宽度方式（`CLEARTYPE_NATURAL_QUALITY`）：WPS 以此请求绘制文字（WPS 表格的屏幕图像、
+ *   WPS 演示的导出图与 WPS 文字复制为图片的图元文件实测）。该方式下 GETINFO 不回答兼容宽度，字形不按单色宽度缩放。
+ *   不要改为兼容宽度方式（`CLEARTYPE_QUALITY`）：Arial、Times New Roman、微软雅黑 ppem 8–30 的可打印 ASCII 中与
+ *   自然宽度方式的 GDI 字形逐像素相同的比例由 60%–68% 降为 9%–29%。
  */
 
 import {
@@ -279,8 +284,9 @@ function instructionLength(code: Uint8Array, ip: number): number {
 
 /**
  * GETINFO：选择子各位对应的回答（Windows 10 GDI 实测）。版本号、字体变体（选择子位 3）与纵向幻影点（位 4）两种绘制相同；
- * ClearType 绘制另回答 ClearType（位 6）与兼容宽度（位 7），y 方向平滑时回答对称平滑（位 11）；不回答 BGR、子像素定位与
- * 灰度 ClearType。Arial ppem 12（`gasp` 不要求平滑）的字形指令中位 11 的回答为 0，构造字体（没有 `gasp`）中为真。
+ * ClearType 绘制另回答 ClearType（位 6），y 方向平滑时回答对称平滑（位 11）；自然宽度方式不回答兼容宽度（位 7），
+ * 也不回答 BGR、子像素定位与灰度 ClearType。Arial ppem 12（`gasp` 不要求平滑）的字形指令中位 11 的回答为 0，
+ * 构造字体（没有 `gasp`）中为真。
  */
 function getInfo(selector: number, clearType: boolean, smoothY: boolean): number {
   let r = 0
@@ -289,7 +295,6 @@ function getInfo(selector: number, clearType: boolean, smoothY: boolean): number
   if (selector & 16) r |= 0x800
   if (clearType) {
     if (selector & 64) r |= 0x2000
-    if (selector & 128) r |= 0x4000
     if (selector & 2048 && smoothY) r |= 0x40000
   }
   return r
@@ -394,15 +399,9 @@ export class SizeHinter {
   /**
    * 执行字形指令，原地修改 `zone` 的 `cur` 与触及标志。`zone` 的最后 4 个点为幻影点，调用方已把其中 x 方向的两个点
    * 的 x 与 y 方向的两个点的 y 取整。`composite` 为真时 `orus` 是分量提示后的 26.6 坐标，按缩放系数 1 计算原始距离。
-   * 指令出错时保留出错前的点位。`compatibleAdvance` 给出该字形单色提示后的前进宽度（26.6），ClearType 绘制按它做兼容宽度的
-   * 调整（见文件头），只在调整时调用；为 `null` 时不调整。
+   * 指令出错时保留出错前的点位。
    */
-  hint(
-    zone: Zone,
-    instructions: Uint8Array,
-    composite: boolean,
-    compatibleAdvance: (() => number) | null = null,
-  ): ScanSettings {
+  hint(zone: Zone, instructions: Uint8Array, composite: boolean): ScanSettings {
     const base = (this.state.instructControl & 2) !== 0 ? defaultState() : this.state
     // 每次执行前把执行空间复原为 prep 之后的状态，栈清零；执行中再次调用时另建一份。
     const ws = this.workspace ?? {
@@ -417,7 +416,6 @@ export class SizeHinter {
     copyZoneInto(ws.twilight, this.twilight)
     ws.stack.fill(0)
     const exec = new Exec(this, copyState(base), ws.cvt, ws.storage, ws.twilight, zone, ws.stack)
-    exec.compatibleAdvance = compatibleAdvance
     this.ranges[GLYPH] = instructions
     try {
       exec.run(GLYPH, composite ? 0x10000 : this.scale)
@@ -454,11 +452,8 @@ class Exec {
   private threshold = 32
   /** 正在执行字形指令（含其调用的函数）。 */
   private glyph = false
-  /** 给出兼容宽度的调整所需的单色前进宽度（26.6）；完成调整或不调整时为 `null`。 */
-  compatibleAdvance: (() => number) | null = null
-  /** 字形区中按 x 方向相连的两点 `[参考点, 点]`：black 距离与 ALIGNRP，按执行顺序。 */
-  private readonly blackLinks: [number, number][] = []
-  private readonly alignLinks: [number, number][] = []
+  /** 本段字形指令已执行的 IUP：1 为 x 方向，2 为 y 方向。 */
+  private iupDone = 0
 
   constructor(
     private readonly size: SizeHinter,
@@ -479,6 +474,7 @@ class Exec {
     this.top = 0
     this.calls = []
     this.glyph = range === GLYPH
+    this.iupDone = 0
     if (range === GLYPH) {
       const g = this.gs
       this.zp0 = this.zp1 = this.zp2 = this.pts
@@ -559,15 +555,21 @@ class Exec {
     return dot14(dx, dy, this.gs.dual.x, this.gs.dual.y)
   }
 
+  /** ClearType 绘制的字形指令已执行过 IUP[x] 与 IUP[y]：字形区的点不再移动，点的类型不再翻转（见文件头）。 */
+  private get settled(): boolean {
+    return this.glyph && this.size.clearType && this.iupDone === 3
+  }
+
   /** 点 `p` 沿自由向量移动，使其在投影向量上的坐标增加 `d`，并标记触及。 */
   private move(z: Zone, p: number, d: number): void {
     const { free } = this.gs
+    const still = z === this.pts && this.settled
     if (free.x !== 0) {
-      z.curX[p] = z.curX[p]! + mulDiv(d, free.x, this.fDotP)
+      if (!still) z.curX[p] = z.curX[p]! + mulDiv(d, free.x, this.fDotP)
       z.tags[p] = z.tags[p]! | TOUCH_X
     }
     if (free.y !== 0) {
-      z.curY[p] = z.curY[p]! + mulDiv(d, free.y, this.fDotP)
+      if (!still) z.curY[p] = z.curY[p]! + mulDiv(d, free.y, this.fDotP)
       z.tags[p] = z.tags[p]! | TOUCH_Y
     }
   }
@@ -677,43 +679,6 @@ class Exec {
     this.phase = phase >> 8
     this.threshold = threshold >> 8
     if (this.period === 0) this.period = 1
-  }
-
-  /** 记录兼容宽度的调整所需的点对：只在需要调整、两点都在字形区且投影向量含 x 分量时。 */
-  private link(list: [number, number][], ref: number, p: number): void {
-    if (this.compatibleAdvance === null || !this.subpixelX) return
-    if (this.zp0 !== this.pts || this.zp1 !== this.pts) return
-    list.push([ref, p])
-  }
-
-  /** 兼容宽度的调整（见文件头），在 IUP[x] 的插值之前执行一次。 */
-  private compatibleWidth(): void {
-    const advanceOf = this.compatibleAdvance
-    this.compatibleAdvance = null
-    const z = this.pts
-    const n = z.n - 4
-    if (advanceOf === null || !this.glyph || (this.gs.instructControl & 4) !== 0 || n <= 0) return
-    const advance = advanceOf()
-    const linear = ((z.orusX[n + 1]! - z.orusX[n]!) * this.orusScale) / 0x10000
-    if (linear <= 0) return
-    const ratio = advance / linear
-    const origin = z.curX[n]!
-    const old = z.curX.slice()
-    const scaled = (x: number) => origin + (x - origin) * ratio
-    for (let i = 0; i < n; i++) if (z.tags[i]! & TOUCH_X) z.curX[i] = scaled(old[i]!)
-    const fixed = new Uint8Array(n)
-    for (const [r, p] of this.blackLinks) {
-      if (r >= n || p >= n) continue
-      const c = scaled((old[r]! + old[p]!) / 2)
-      const half = (old[p]! - old[r]!) / 2
-      z.curX[r] = c - half
-      z.curX[p] = c + half
-      fixed[r] = fixed[p] = 1
-    }
-    for (const [r, p] of this.alignLinks) {
-      if (r >= n || p >= n || fixed[p]) continue
-      z.curX[p] = z.curX[r]! + (old[p]! - old[r]!)
-    }
   }
 
   private minimumDistance(): number {
@@ -979,8 +944,8 @@ class Exec {
         return
       case 0x30:
       case 0x31:
-        if (op === 0x31) this.compatibleWidth()
         this.iup(op === 0x31)
+        this.iupDone |= op === 0x31 ? 1 : 2
         return
       case 0x32:
       case 0x33:
@@ -1230,6 +1195,7 @@ class Exec {
         return
       case 0x81:
       case 0x82: {
+        if (this.settled) return
         const lo = this.arg(0)
         const hi = this.arg(1)
         const z = this.pts
@@ -1473,7 +1439,6 @@ class Exec {
     }
     const cur = this.project(zp1.curX[p]! - zp0.curX[g.rp0]!, zp1.curY[p]! - zp0.curY[g.rp0]!)
     this.move(zp1, p, d - cur)
-    if ((op & 3) === 1) this.link(this.blackLinks, g.rp0, p)
     g.rp1 = g.rp0
     g.rp2 = p
     if (op & 16) g.rp0 = p
@@ -1522,7 +1487,6 @@ class Exec {
       } else if (d > -min) d = -min
     }
     this.move(zp1, p, d - curDist)
-    if ((op & 3) === 1) this.link(this.blackLinks, g.rp0, p)
     g.rp1 = g.rp0
     if (op & 16) g.rp0 = p
     g.rp2 = p
@@ -1577,7 +1541,6 @@ class Exec {
       if (Exec.inside(p, zp1)) {
         const d = this.project(zp1.curX[p]! - zp0.curX[g.rp0]!, zp1.curY[p]! - zp0.curY[g.rp0]!)
         this.move(zp1, p, -d)
-        this.link(this.alignLinks, g.rp0, p)
       }
       g.loop--
     }
@@ -1601,6 +1564,7 @@ class Exec {
 
   private shift(p: number, dx: number, dy: number, touch: boolean): void {
     const z = this.zp2
+    if (z === this.pts && this.settled) return
     if (this.gs.free.x !== 0) {
       z.curX[p] = z.curX[p]! + dx
       if (touch) z.tags[p] = z.tags[p]! | TOUCH_X
@@ -1722,7 +1686,7 @@ class Exec {
     }
     while (g.loop > 0) {
       const p = this.popLoop()
-      if (Exec.inside(p, this.pts)) this.pts.tags[p] = this.pts.tags[p]! ^ TAG_ON
+      if (Exec.inside(p, this.pts) && !this.settled) this.pts.tags[p] = this.pts.tags[p]! ^ TAG_ON
       g.loop--
     }
     g.loop = 1

@@ -20,8 +20,12 @@ export interface ClearTypeGlyphs {
   glyph(glyphId: number, ppem: number, bold: boolean, oblique: boolean): CoverageGlyph
 }
 
-/** 读取 ClearType 绘制所需的表；字体没有 TrueType 轮廓（CFF）时返回 `null`。 */
+/**
+ * 读取 ClearType 绘制所需的表；字体没有 TrueType 轮廓（CFF）或是可变字体（有 `fvar`）时返回 `null`。
+ * 可变字体不要按 `glyf` 绘制：`glyf` 是缺省实例（如 Noto Sans SC 的最细字重），GDI 按所选实例的轮廓绘制。
+ */
 export function readClearTypeGlyphs(bytes: Uint8Array, face: SfntFace): ClearTypeGlyphs | null {
+  if (face.tables.has('fvar')) return null
   const hinting = readGlyphHinting(bytes, face)
   if (hinting === null) return null
   const cache = new Map<number, CoverageGlyph>()

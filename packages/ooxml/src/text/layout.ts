@@ -6,7 +6,8 @@
  * - 断行为逐行贪心：超出行宽的字符连同其后不能断开的字符，先判断能否压缩标点容纳或悬挂最后一字
  *   （`compressPunctuation`，见 `fitByCompression`），不压缩标点时只判断能否悬挂，
  *   再回退到最近的断点，没有断点时在超出处强制断开。
- * - 两端对齐的余量平均分配到可伸缩的字间：空格之后，以及任一侧字符使用东亚字体（`eastAsia`）的字间；
+ * - 两端对齐的余量平均分配到可伸缩的字间：空格与不换行空格（U+00A0，不是断行位置）之后，以及任一侧字符使用东亚字体
+ *   （`eastAsia`）的字间（WPS 实测，构造文档 w16 nb：不换行空格与空格的伸展量相同）；
  *   西文字母之间不分配，行内最后一个制表符之前不分配，末行不分配。分散对齐分配到全部字间，含末行。
  *   `wordWrap` 关闭时空格是普通字符，余量分配到全部字间（末行不分配）。
  * - 汉字与基本拉丁字母或数字相邻时，在前一字之后加前一字字体平均字宽（`xAvgCharWidth`）的一半；
@@ -197,10 +198,11 @@ export interface ParagraphStyle extends BreakRules {
    */
   readonly compatibilityMode?: number
   /**
-   * 环绕：按行查询可用的横向区段，`top` 与 `height` 为该行的行顶与预计行高（段落坐标）。缺省为整行 `[0, width]`。
-   * 一行依次填入各区段，各区段分别对齐；按实际行高再查询一次，区段变化时该行按新区段重排。
+   * 环绕：按行查询可用的横向区段，`top` 与 `height` 为该行的行顶与预计行高（段落坐标），`final` 为该行是段落的最后一行。
+   * 缺省为整行 `[0, width]`。一行依次填入各区段，各区段分别对齐；按实际行高再查询一次（最后一行同样再查询），区段变化时
+   * 该行按新区段重排。
    */
-  readonly lineArea?: (top: number, height: number) => LineArea
+  readonly lineArea?: (top: number, height: number, final: boolean) => LineArea
 }
 
 /** 一行的可用区段（相对左缩进），`top` 不小于查询的行顶：大于时该行下移到 `top`。 */
@@ -307,6 +309,7 @@ const TEXT = 0
 const SPACE = 1
 const TAB = 2
 const BREAK = 3
+const NO_BREAK_SPACE = 0xa0
 const OBJECT = 4
 
 /** 放置判定的容差：宽度由浮点累加得到，恰好排满一行时不因舍入误差移到下一行。 */
@@ -869,8 +872,8 @@ export function layoutParagraph(runs: readonly ParagraphRun[], style: ParagraphS
     return parts
   }
 
-  const areaAt = (top: number, height: number): LineArea =>
-    style.lineArea?.(top, height) ?? { top, segments: [{ left: 0, width: style.width }] }
+  const areaAt = (top: number, height: number, final: boolean): LineArea =>
+    style.lineArea?.(top, height, final) ?? { top, segments: [{ left: 0, width: style.width }] }
   const markExtent = faceExtent(style.mark.face.vertical, style.mark.size)
   /** 段落的最后一行：其后没有字符，或是段末强制换行之后的空行。 */
   const isFinal = (parts: readonly RawLine[]): boolean => {
@@ -886,11 +889,12 @@ export function layoutParagraph(runs: readonly ParagraphRun[], style: ParagraphS
   let estimate = 0
   for (;;) {
     const firstLine = rows.length === 0
-    let area = areaAt(top, estimate)
+    let area = areaAt(top, estimate, false)
     let parts = breakRow(i, firstLine, area.segments)
     let box = boxOf(parts)
-    if (style.lineArea !== undefined && Math.abs(box.height - estimate) > EPSILON) {
-      const again = areaAt(top, box.height)
+    const final = isFinal(parts)
+    if (style.lineArea !== undefined && (Math.abs(box.height - estimate) > EPSILON || final)) {
+      const again = areaAt(top, box.height, final)
       if (!sameArea(again, area)) {
         area = again
         parts = breakRow(i, firstLine, area.segments)
@@ -1105,6 +1109,7 @@ export function layoutParagraph(runs: readonly ParagraphRun[], style: ParagraphS
           style.align === 'distribute' ||
           !style.wordWrap ||
           a.kind === SPACE ||
+          a.cp === NO_BREAK_SPACE ||
           a.slot === 'eastAsia' ||
           b.slot === 'eastAsia'
         ) {

@@ -12,7 +12,7 @@
 
 import { MISSING_LATIN } from '../../drawingml/text/fonts.ts'
 import type { FontCollection, FontScheme } from '../../drawingml/theme.ts'
-import { windowsFontSubstitute } from '../../text/index.ts'
+import { prefixFont, windowsFontSubstitute } from '../../text/index.ts'
 import type { FontNames, FontTableEntry } from '../model.ts'
 import type { FontRef, FontSlotName, ThemeFont } from '../parse/properties.ts'
 
@@ -102,7 +102,10 @@ const CHARSET_CODE_PAGES: ReadonlyMap<number, number> = new Map([
   [0x88, 1 << 20],
 ])
 
-/** 字体表条目的字符集为中日韩字符集而没有可用的 `w:altName` 时所取的字体。 */
+/**
+ * 字体表条目的字符集为中日韩字符集而没有可用的 `w:altName` 时所取的字体：GB2312 在前缀匹配之前，其余在其后（见 `substitutes`
+ * 第 4、6 步）。
+ */
 const CHARSET_DEFAULTS: ReadonlyMap<number, string> = new Map([
   [0x80, 'Yu Gothic'],
   [0x81, 'Malgun Gothic'],
@@ -110,29 +113,50 @@ const CHARSET_DEFAULTS: ReadonlyMap<number, string> = new Map([
   [0x88, 'MingLiU-ExtB'],
 ])
 
+/** `w:charset` 的 GB2312 字符集。 */
+const GB2312 = 0x86
+
+/**
+ * 名称中含这些字的字体名取对应的字体（见 `substitutes` 第 3 步），按先后取第一个：「仿宋」须在「宋」之前。
+ * 含「黑」与「宋」或「楷」的名称未实测。
+ */
+const NAME_KEYWORDS: readonly (readonly [string, string])[] = [
+  ['黑', '黑体'],
+  ['仿宋', '仿宋'],
+  ['楷', '宋体'],
+  ['宋', '宋体'],
+]
+
 /**
  * 主机没有字体 `name` 时 WPS 文字依次尝试的字体，调用方取第一个主机有且满足 `codePages` 的；都没有时取缺字与缺少字体时使用的字体
- * （宋体）。WPS 实测（构造文档 w12 f1–f5、w13 p1–p3、q01–q31：缺失字体名在西文、东亚与复杂文种字体中的绘制字体与行高；正文与
- * 页眉页脚相同）：
+ * （宋体）。同一文档中按用途与不区分大小写的名称沿用第一次的结果（调用方实现，见 `../layout.ts` 的 `ParagraphLayouter`）。
+ * WPS 实测（构造文档 w12 f1–f5、w13 p1–p3、q01–q31、w14 r1e、r1a、r2e、r2a、w15 p1、p2：缺失字体名在西文、东亚与复杂文种字体中的
+ * 绘制字体与行高；正文与页眉页脚相同）：
  * 1. 字体表中该名称第一个条目的 `w:altName`。条目的 `w:charset` 为中日韩字符集时要求替代字体含该代码页：altName 为 Georgia、
  *    Times New Roman、Arial、Yu Gothic 而 charset 为 86 时不取，为 Times New Roman 而 charset 为 80 时不取，为 Georgia、宋体而
  *    charset 为 81 时不取，为 Times New Roman、宋体而 charset 为 88 时不取。
- * 2. Windows 字体替换表（`windowsFontSubstitute`），与 charset 无关（`MS Shell Dlg 2` 在 charset 为 86 时仍取 Tahoma）。
- * 3. 条目的 charset 为 80 时为 Yu Gothic，81 时为 Malgun Gothic，86 时为宋体，88 时为 MingLiU-ExtB（含西文字体）。
- * 4. 东亚字体为宋体；其余字体为 Segoe Print（`MISSING_LATIN`），与 `w:family`、`w:pitch` 无关。
+ * 2. Windows 字体替换表（`windowsFontSubstitute`，区分大小写），与 charset 无关（`MS Shell Dlg 2` 在 charset 为 86 时仍取 Tahoma）。
+ * 3. 名称含「黑」时为黑体，含「仿宋」时为仿宋，含「楷」或其余的「宋」时为宋体（`NAME_KEYWORDS`），西文与东亚字体相同：
+ *    altName 为楷体时仍取楷体，altName 因代码页不取时取本步；charset 为 80、81、86、88 时都取本步（`方正黑体_C` 的 charset
+ *    为 80 时为黑体，`微软雅黑 Fake` 的 charset 为 86 时为黑体）；先于前缀匹配（`微软雅黑 Fake` 为黑体，`楷体 Fake`、`新宋体 Fake`
+ *    的西文为宋体，`楷X`、`宋X` 的西文同样为宋体）。
+ * 4. 条目的 charset 为 86 时为宋体（`Calibri FakeX`、`Lucida` 的 charset 为 86 时西文为宋体）。
+ * 5. 按主机字体族名的前缀匹配（`prefixFont`，`hostLocal` 为主机字体按界面语言取的族名）。
+ * 6. 条目的 charset 为 80 时为 Yu Gothic，81 时为 Malgun Gothic，88 时为 MingLiU-ExtB（含西文字体；`Noto Serif` 的 charset 为
+ *    80 时为 Noto Serif CJK SC Medium）。
+ * 7. 东亚字体为宋体；其余字体为 Segoe Print（`MISSING_LATIN`），与 `w:family`、`w:pitch` 无关。
  * 取自主题的东亚字体不按以上各步替代，直接为宋体（WPS 实测：主题的 Hans 或 Jpan 字体为本机没有的字体时，字体表中 altName 为楷体、
  * Yu Gothic 的条目不起作用；取自主题的西文字体照常替代）。
- * 未实现（调用方只能按字体名查找主机字体）：按主机字体族名的前缀匹配，WPS 位于第 3 步的 charset 86 与其余字符集之间，
- * 只按本机语言的字体族名（宋体、黑体等中文名，不按 SimSun、SimHei）、区分大小写、以空格分词：名称的前几个词为主机字体名时取
- * 词数最少的一个（`Calibri Fake` 取 Calibri，`Yu Gothic UI X` 取 Yu Gothic），否则取以名称加空格开头的主机字体
- * （`Noto Serif CJK SC` 取 Noto Serif CJK SC Medium，`Courier` 取 Courier New）；名称含「黑」的东亚字体取黑体、含「仿宋」的
- * 取仿宋；按 `w:panose1` 或 `w:sig` 匹配主机字体；WPS 自带度量的字体（方正仿宋_GB2312、华文行楷、思源黑体 CN Medium、
- * Arial Unicode MS 等按其度量排版、以其他字体绘制）。
+ * 未实现：按 `w:panose1` 或 `w:sig` 匹配主机字体；WPS 自带度量的字体按其度量排版、以其他字体绘制，先于以上各步（方正黑体_GBK 与
+ * 方正仿宋_GBK 以微软雅黑绘制、华文仿宋以仿宋绘制，12 磅单倍行高 17.45 磅；另有方正仿宋_GB2312、华文行楷、思源黑体、隶书、
+ * Arial Unicode MS 等）；`Hei` 取微软雅黑；没有西文字形的字体（Segoe MDL2 Assets、HoloLens MDL2 Assets）WPS 以 Arial 排版与
+ * 绘制西文，本方按缺字形改用 `FontSource.fallback`。
  */
 export function substitutes(
   name: string,
   use: FontUse,
   table: ReadonlyMap<string, FontTableEntry>,
+  hostLocal: readonly string[],
 ): FontCandidate[] {
   const out: FontCandidate[] = []
   if (use === 'themeEastAsia') return out
@@ -141,10 +165,15 @@ export function substitutes(
   const codePages = charset === null ? 0 : (CHARSET_CODE_PAGES.get(charset) ?? 0)
   if (entry !== undefined && entry.altName !== '' && entry.altName !== name)
     out.push({ name: entry.altName, codePages })
-  const windows = windowsFontSubstitute(name)
+  const windows = windowsFontSubstitute(name, false)
   if (windows !== null) out.push({ name: windows, codePages: 0 })
+  const keyword = NAME_KEYWORDS.find(([part]) => name.includes(part))
+  if (keyword !== undefined) out.push({ name: keyword[1], codePages: 0 })
   const byCharset = charset === null ? undefined : CHARSET_DEFAULTS.get(charset)
-  if (byCharset !== undefined) out.push({ name: byCharset, codePages: 0 })
+  if (byCharset !== undefined && charset === GB2312) out.push({ name: byCharset, codePages: 0 })
+  const prefix = prefixFont(name, hostLocal)
+  if (prefix !== null) out.push({ name: prefix, codePages: 0 })
+  if (byCharset !== undefined && charset !== GB2312) out.push({ name: byCharset, codePages: 0 })
   if (use === 'other') out.push({ name: MISSING_LATIN, codePages: 0 })
   return out
 }

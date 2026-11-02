@@ -101,6 +101,7 @@ export interface PendingTextBox<C> {
   readonly anchor: 'top' | 'center' | 'bottom'
   readonly autoFit: boolean
   readonly wrap: boolean
+  readonly turned: 0 | 90 | 270
 }
 
 export type PendingNode<C> =
@@ -216,15 +217,29 @@ function countThreeD(
   if (visibleThreeD(t.scene, t.shape)) found.push('effect3d')
 }
 
+/**
+ * 文本框的 `TextBox.turned`：`vert`（文字顺时针旋转 90°）与 270° 的形状、`vert270` 与 90° 的形状相抵。横排为 0；其余竖排方式、
+ * 与形状旋转不相抵或形状翻转时为 `null`（按横排排版，调用方计入 `verticalText`）。
+ */
+function turnedText(vert: string | null, frame: Frame): 0 | 90 | 270 | null {
+  if (vert === null || vert === 'horz') return 0
+  const turn = vert === 'vert' ? 90 : vert === 'vert270' ? 270 : null
+  if (turn === null || frame.flipH || frame.flipV) return null
+  if ((((frame.rotation + turn) % 360) + 360) % 360 !== 0) return null
+  return turn === 90 ? 270 : 90
+}
+
 /** 在 `bodyPr` 的开始标签处调用，返回时位于其结束标签。 */
 function readBodyInset(x: Scanner): {
   inset: Edges
   anchor: 'top' | 'center' | 'bottom'
   autoFit: boolean
   wrap: boolean
+  vert: string | null
 } {
   const ins = (name: string, fallback: number) => (x.attr(name) === null ? fallback : emu(x, name))
   const a = x.attr('anchor')
+  const vert = x.attr('vert')
   const wrap = x.attr('wrap') !== 'none'
   const inset = {
     left: ins('lIns', DEFAULT_INSET.left),
@@ -242,6 +257,7 @@ function readBodyInset(x: Scanner): {
     anchor: a === 'ctr' ? 'center' : a === 'b' ? 'bottom' : 'top',
     autoFit,
     wrap,
+    vert,
   }
 }
 
@@ -294,6 +310,7 @@ function readNode<C>(
         anchor: 'top' as 'top' | 'center' | 'bottom',
         autoFit: false,
         wrap: true,
+        vert: null as string | null,
       }
       eachChild(x, (child) => {
         if (child === 'spPr') props = readShapeProps(x, text)
@@ -307,6 +324,8 @@ function readNode<C>(
         else skip(x)
       })
       const { frame: f } = frame(props)
+      const turned = content === null ? 0 : turnedText(body.vert, f)
+      if (turned === null) found.push('verticalText')
       countOtherEffects(props, found)
       countThreeD(props, style, scope, found)
       const effects = resolveShapeEffects(props.effects, style, scope)
@@ -329,6 +348,7 @@ function readNode<C>(
                 anchor: body.anchor,
                 autoFit: body.autoFit,
                 wrap: body.wrap,
+                turned: turned ?? 0,
               },
       }
     }
@@ -757,6 +777,7 @@ function readVmlShape<C>(
                 textAnchor === 'middle' ? 'center' : textAnchor === 'bottom' ? 'bottom' : 'top',
               autoFit: css.get('mso-fit-shape-to-text') === 't',
               wrap: css.get('mso-wrap-style') !== 'none',
+              turned: 0,
             },
     },
   }

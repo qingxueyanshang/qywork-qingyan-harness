@@ -120,14 +120,7 @@ function createGlyphHinting(bytes: Uint8Array, face: SfntFace): GlyphHinting | n
       return g
     },
     clearTypeOutline(glyphId, ppem, oblique) {
-      const h = hintGlyph(
-        outlines,
-        vertical,
-        size(ppem, true),
-        glyphId,
-        ranges(ppem).gridFit,
-        () => 64 * advance(glyphId, ppem),
-      )
+      const h = hintGlyph(outlines, vertical, size(ppem, true), glyphId, ranges(ppem).gridFit)
       return oblique ? shear(h) : h
     },
     advance,

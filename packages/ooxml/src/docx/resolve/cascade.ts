@@ -256,6 +256,18 @@ export function border(b: RawBorder | null | undefined): Border | null {
 /** 网格类型为 `default`（含没有 `docGrid`）时 `*Lines` 的一行为 12 磅。 */
 const DEFAULT_LINE_UNIT = 12
 
+/**
+ * 制表位前导符（`ST_TabTlc`）绘制的字符；`none` 与未给出时没有前导符。WPS 实测（构造文档 w13 l1，页面 EMF 中的文字记录）：
+ * `heavy` 与 `underscore` 同为「_」。
+ */
+const LEADERS: ReadonlyMap<string, string> = new Map([
+  ['dot', '.'],
+  ['hyphen', '-'],
+  ['underscore', '_'],
+  ['heavy', '_'],
+  ['middleDot', '·'],
+])
+
 const ALIGNMENTS: Readonly<Record<string, Alignment>> = {
   left: 'left',
   start: 'left',
@@ -342,7 +354,6 @@ export function paragraphProps(
   }
   const tabs: TabStop[] = []
   for (const t of p.tabs ?? []) {
-    if (t.leader !== null && t.leader !== 'none' && t.leader !== 'dot') count('tabLeader')
     if (t.val === 'bar') {
       count('barTab')
       continue
@@ -354,7 +365,7 @@ export function paragraphProps(
         : t.val === 'right' || t.val === 'end' || t.val === 'decimal'
           ? 'right'
           : 'left'
-    tabs.push({ position: t.pos / 20, align, leader: t.leader === 'dot' ? '.' : null })
+    tabs.push({ position: t.pos / 20, align, leader: LEADERS.get(t.leader ?? '') ?? null })
   }
   const content = indents(p.ind ?? {}, ctx.defaultStyleSize, ctx.styleSize)
   return {

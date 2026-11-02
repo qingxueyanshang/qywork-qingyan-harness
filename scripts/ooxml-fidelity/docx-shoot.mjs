@@ -2,7 +2,7 @@
 /**
  * docx 候选截图的浏览器驱动：由 `docx-candidates.ts` 启动，参数为页面地址与输出目录。
  *
- * 用 Node 驱动 Playwright 打开 Edge（`channel: 'msedge'`），设备像素比 1；逐页调用页面的 `renderPage`，
+ * 用 Node 驱动 Playwright 打开 Edge（`channel: 'msedge'`），设备像素比 1；逐页以采集时的 ClearType 设置调用页面的 `renderPage`，
  * 把视口调整到不小于画布后对画布元素截图，写入 `<输出目录>/<文档标识>/<真值文件名>`。本方没有的页不输出。
  * 每个文档另写 `pages.json`（本方页数与每页的表格、浮动对象、图表、SmartArt、绘制与未绘制的公式个数）。单页失败时记录原因并继续，结束时以失败页数作为退出码。
  *
@@ -43,8 +43,8 @@ try {
       const started = Date.now()
       try {
         const info = await page.evaluate(
-          ([id, n, w, h]) => window.renderPage(id, n, w, h),
-          [job.id, p.n, p.width, p.height],
+          ([id, n, w, h, clearType]) => window.renderPage(id, n, w, h, clearType),
+          [job.id, p.n, p.width, p.height, job.clearType],
         )
         if (info === null) continue
         stats.pages = info.pages

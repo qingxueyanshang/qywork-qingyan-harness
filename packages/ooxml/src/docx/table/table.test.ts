@@ -15,6 +15,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, parseDocx, type TableBlock } from '../index.ts'
 import { ParagraphLayouter } from '../layout.ts'
 import { layoutPages } from '../page/build.ts'
@@ -268,7 +269,7 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
 
   /** 各页表格中的段落：文字、首字横坐标与行顶。 */
   function cells(d: DocxDocument): { page: number; text: string; x: number; y: number }[][] {
-    const pages = layoutPages(d, load()).pages.pages
+    const pages = layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages
     return pages.map((pg, i) => {
       const out: { page: number; text: string; x: number; y: number }[] = []
       const visit = (items: readonly PageItem[]) => {
@@ -441,7 +442,7 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
     const d = await parse(body)
     const all = cells(d)
     near(find(all, 'M2a').y, 281.75 - 269.2 + find(all, 'M1a').y)
-    const page = layoutPages(d, load()).pages.pages[0]!
+    const page = layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages[0]!
     const second = page.body.filter((it): it is PageTable => it.kind === 'table')[1]!
     const between = second.edges.find((e) => e.vertical && Math.abs(e.x - 334.6) < 0.01)
     expect(between?.line).toMatchObject({ strokes: [{ offset: 0, size: 3 }], color: '#ff0000' })
@@ -484,7 +485,7 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
       'autofit',
     )
     const d = await parse(body)
-    const pg = layoutPages(d, load()).pages.pages[0]!
+    const pg = layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages[0]!
     const t = pg.body[0]
     if (t?.kind !== 'table') throw new Error('不是表格')
     const xs = t.edges.filter((e) => e.vertical).map((e) => e.x)
@@ -539,16 +540,22 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
       'w:left="1440" w:header="851" w:footer="992" w:gutter="0"/></w:sectPr>'
     const SONG = '<w:rFonts w:ascii="宋体" w:hAnsi="宋体" w:eastAsia="宋体"/>'
     const H = '汉'
-    /** 单元格：文字、`tcW`（缇或 `auto`）与其余 `tcPr`；文字为宋体 10.5 磅，`ppr` 另给段落属性。 */
+    /** 单元格：文字、`tcW`（缇、`auto` 或 `pct:` 加五十分之一百分数）与其余 `tcPr`；文字为宋体 10.5 磅，`ppr` 另给段落属性。 */
     type C = readonly [
       text: string,
-      width: number | 'auto',
+      width: number | 'auto' | `pct:${number}`,
       tcPr?: string,
       ppr?: string,
       rpr?: string,
     ]
+    const tcW = (width: C[1]) =>
+      width === 'auto'
+        ? '<w:tcW w:w="0" w:type="auto"/>'
+        : typeof width === 'number'
+          ? `<w:tcW w:w="${width}" w:type="dxa"/>`
+          : `<w:tcW w:w="${width.slice(4)}" w:type="pct"/>`
     const tc = ([text, width, tcPr = '', ppr = '', rpr = '']: C) =>
-      `<w:tc><w:tcPr>${width === 'auto' ? '<w:tcW w:w="0" w:type="auto"/>' : `<w:tcW w:w="${width}" w:type="dxa"/>`}` +
+      `<w:tc><w:tcPr>${tcW(width)}` +
       `${tcPr}</w:tcPr>${p(text === '' ? '' : r(text, SONG + rpr), `<w:jc w:val="left"/>${ppr}`)}</w:tc>`
     const auto = (
       rows: readonly (readonly C[])[],
@@ -566,7 +573,10 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
       const result = await parseDocx(buildDocx({ body, settings: compat(mode), styles: DEFAULTS }))
       if (!result.ok) throw new Error('解析失败')
       const d = result.value
-      const cx = { layouter: new ParagraphLayouter(d, load().source), compatibilityMode: mode }
+      const cx = {
+        layouter: new ParagraphLayouter(d, load().source, NO_HOST_FAMILIES),
+        compatibilityMode: mode,
+      }
       return tables(d).map((t) => {
         const c = layoutTable(t, d.sections[0]!.columns[0]!.width, cx).columns
         return c.slice(1).map((x, i) => Math.round((x - c[i]!) * 100) / 100)
@@ -697,7 +707,7 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
       ])
     })
 
-    test('可用宽度：兼容模式 15 为版心减表格左右框线的一半（不看单元格边框），14 为版心加表格左右边距，都减左缩进；pct 的 tblW 按比例', async () => {
+    test('可用宽度：兼容模式 15 为版心减表格左右框线的一半（不看单元格边框），14 为版心加表格左右边距，都减左缩进；pct 的 tblW 按比例，不减左缩进', async () => {
       const long = auto([
         [
           [H.repeat(30), 'auto'],
@@ -723,15 +733,27 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
         ],
         '<w:tblW w:w="2500" w:type="pct"/>',
       )
-      expect(await widths([long, indented, half], 15)).toEqual([
+      const full = auto(
+        [
+          [
+            [H.repeat(4), 'auto'],
+            [H.repeat(8), 'auto'],
+          ],
+        ],
+        '<w:tblW w:w="5000" w:type="pct"/>',
+        '<w:tblInd w:w="500" w:type="dxa"/>',
+      )
+      expect(await widths([long, indented, half, full], 15)).toEqual([
         [225.4, 225.4],
         [212.9, 212.9],
         [80.65, 144.75],
+        [161.25, 289.55],
       ])
-      expect(await widths([long, indented, half], 14)).toEqual([
+      expect(await widths([long, indented, half, full], 14)).toEqual([
         [231.05, 231.05],
         [218.55, 218.55],
         [82.65, 148.4],
+        [165.3, 296.8],
       ])
       const thick = (side: string) =>
         `<w:tcBorders><w:${side} w:val="single" w:sz="24" w:space="0" w:color="000000"/></w:tcBorders>`
@@ -782,7 +804,10 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
       )
       if (!result.ok) throw new Error('解析失败')
       const d = result.value
-      const cx = { layouter: new ParagraphLayouter(d, load().source), compatibilityMode: 15 }
+      const cx = {
+        layouter: new ParagraphLayouter(d, load().source, NO_HOST_FAMILIES),
+        compatibilityMode: 15,
+      }
       expect(layoutTable(tables(d)[0]!, d.sections[0]!.columns[0]!.width, cx).x).toBe(0)
     })
 
@@ -808,6 +833,83 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
       ).toEqual([
         [79, 141.8],
         [167.25, 158.55],
+      ])
+    })
+
+    test('合并单元格中不可断开的内容宽于所跨各列之和时，各列按最小宽度与初值之和的比例分得该宽度；不宽于时各列不变（WPS：构造文档 w14 t15 的 S7、S11、S13、S14）', async () => {
+      const digits = (n: number) => '0'.repeat(n)
+      const span = (n: number) => `<w:gridSpan w:val="${n}"/>`
+      expect(
+        await widths([
+          auto([
+            [
+              [H.repeat(4), 'auto'],
+              [H.repeat(8), 'auto'],
+            ],
+            [[digits(40), 'auto', span(2)]],
+          ]),
+          auto([
+            [
+              [H.repeat(2), 'auto'],
+              [H.repeat(4), 'auto'],
+              [H.repeat(8), 'auto'],
+            ],
+            [[digits(50), 'auto', span(3)]],
+          ]),
+          auto([
+            [
+              [H.repeat(4), 2000],
+              [H.repeat(8), 'auto'],
+            ],
+            [[digits(40), 'auto', span(2)]],
+          ]),
+          auto([
+            [
+              [H.repeat(4), 'auto'],
+              [H.repeat(16), 'auto'],
+            ],
+            [[digits(40), 'auto', span(2)]],
+          ]),
+        ]),
+      ).toEqual([
+        [86, 134.8],
+        [59.65, 83.25, 130.4],
+        [112.8, 108],
+        [52.8, 178.8],
+      ])
+    })
+
+    test('tcW 为 pct 的列：没有其他列时按比例分满表格宽度，否则为表格宽度乘以比例、余下归其他列（WPS：构造文档 w14 t15 的 M3–M12）', async () => {
+      const two = (a: string, b: string, wa: C[1], wb: C[1], tblW?: string) =>
+        auto(
+          [
+            [
+              [a, wa],
+              [b, wb],
+            ],
+          ],
+          tblW,
+        )
+      expect(
+        await widths([
+          two(H.repeat(4), H.repeat(8), 'pct:1000', 'pct:2000'),
+          two(H.repeat(8), H.repeat(4), 'pct:1000', 'pct:2000'),
+          two(H.repeat(4), H.repeat(8), 'pct:1000', 'pct:2000', dxa(6000)),
+          two(H.repeat(4), H.repeat(8), 'pct:1000', 3000),
+          auto([
+            [
+              [H.repeat(4), 'pct:1000'],
+              [H.repeat(8), 'pct:2000'],
+              [H.repeat(2), 'auto'],
+            ],
+          ]),
+        ]),
+      ).toEqual([
+        [88, 176],
+        [150.25, 300.55],
+        [100, 200],
+        [52.8, 211.2],
+        [52.8, 105.6, 105.6],
       ])
     })
 
@@ -980,7 +1082,7 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
     expect(all[splitPage + 1]![0]!.text).toBe('C11行')
     near(all[splitPage + 1]![0]!.y, 72.5)
     near(find(all, 'G2末行').y, 141.05)
-    const pages = layoutPages(d, load()).pages.pages
+    const pages = layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages
     const widths = (page: number, y: number) =>
       pages[page]!.body.flatMap((it) => (it.kind === 'table' ? it.edges : []))
         .filter((e) => !e.vertical && e.line !== null && Math.abs(e.y - y) < 0.01)
@@ -1161,7 +1263,10 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
           null,
         )
       const d = await parse(body)
-      const cx = { layouter: new ParagraphLayouter(d, load().source), compatibilityMode: 14 }
+      const cx = {
+        layouter: new ParagraphLayouter(d, load().source, NO_HOST_FAMILIES),
+        compatibilityMode: 14,
+      }
       const laid = layoutTable(tables(d)[0]!, d.sections[0]!.columns[0]!.width, cx)
       const key = `${sz} ${color} ${val}`
       expect([key, laid.horizontal[1]![0] !== null]).toEqual([key, drawn])
@@ -1176,7 +1281,7 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
       p(r('前')) +
       table([3000, 3000], [{ cells: [{ body: p(r('甲') + brk(type) + r('乙')) }, { text: '右' }] }])
     const lines = async (type: string) => {
-      const pages = layoutPages(await parse(body(type)), load()).pages.pages
+      const pages = layoutPages(await parse(body(type)), load(), NO_HOST_FAMILIES).pages.pages
       const t = pages[0]!.body.find((it) => it.kind === 'table')!
       if (t.kind !== 'table') throw new Error('不是表格')
       const para = t.items.find(

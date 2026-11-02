@@ -27,7 +27,7 @@ import {
   tableBytes,
 } from '../../font/index.ts'
 import { type ClearTypeGlyphs, readClearTypeGlyphs } from '../../glyph/cleartype/index.ts'
-import type { TextFace } from '../../text/index.ts'
+import { type TextFace, windowsFontSubstitute } from '../../text/index.ts'
 import type { Workbook } from '../model.ts'
 
 export interface LoadedFace {
@@ -59,18 +59,6 @@ export function fallbackFonts(wb: Workbook): string[] {
   return out
 }
 
-/**
- * Windows 字体替换表（注册表 `FontSubstitutes`）中 WPS 表格遵循的项，键为小写。只列出经 WPS 实测的项：
- * 替换目标为点阵字体的项（如 `Tms Rmn`、`Helv`）无法按字体文件排版，不列出。
- */
-const WINDOWS_SUBSTITUTES: ReadonlyMap<string, string> = new Map([
-  ['helvetica', 'Arial'],
-  ['times', 'Times New Roman'],
-  ['ms shell dlg 2', 'Tahoma'],
-  ['fangsong_gb2312', '仿宋'],
-  ['kaiti_gb2312', '楷体'],
-])
-
 /** 汉字、假名、谚文与全角字符。 */
 const EAST_ASIAN_NAME = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}！-～]/u
 
@@ -78,14 +66,14 @@ const EAST_ASIAN_NAME = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}�
  * WPS 表格的单元格文字对主机上没有的字体使用的替代字体名（形状与图表文字另有规则，见 `../../drawingml/text/fonts.ts`）。
  * 实测（WPS 表格经 COM 读取行高并取屏幕图像，6–48 磅 21 个字号）：替代后的行高与显式指定替代字体逐字号一致，
  * 图像逐像素相同；与 `charset`、`family`、「常规」字体、主题字体无关。规则：
- * - `WINDOWS_SUBSTITUTES` 中的名称取替换后的字体；
+ * - Windows 字体替换表（`windowsFontSubstitute`，不区分大小写）中的名称取替换后的字体；
  * - `Arial Unicode MS`（区分大小写，`arial unicode ms` 取 Arial）与含汉字、假名、谚文或全角字符的名称取宋体；
  * - 其余名称取 Arial，含西文中日韩字体名（`STSong`、`MS Mincho`、`PingFang SC`）与带附加符号的拉丁字母名称。
  * 未实现：含东亚字符的名称在 `charset` 为 128 时 WPS 取 MS Gothic（模型不保留 `charset`），本函数取宋体。
  */
 export function substituteFont(name: string): string {
-  const mapped = WINDOWS_SUBSTITUTES.get(key(name))
-  if (mapped !== undefined) return mapped
+  const mapped = windowsFontSubstitute(name.trim(), true)
+  if (mapped !== null) return mapped
   return name === 'Arial Unicode MS' || EAST_ASIAN_NAME.test(name) ? '宋体' : 'Arial'
 }
 

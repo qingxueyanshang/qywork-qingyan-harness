@@ -873,6 +873,40 @@ describe('图片、几何与未实现元素', () => {
     expect(p.unsupported.chart).toBe(3)
   })
 
+  test('OLE 对象按 Fallback 中的替代图片读取为图片，位置尺寸取外框；没有替代图片时计入 ole', async () => {
+    // WPS 演示实测（构造文件）：替代图片自身的 xfrm 与外框不同时按外框显示；没有替代图片的 OLE 对象不显示。
+    const ole = (id: number, inner: string) =>
+      `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}" name="对象 ${id}"/><p:cNvGraphicFramePr/><p:nvPr/>` +
+      `</p:nvGraphicFramePr><p:xfrm><a:off x="100" y="200"/><a:ext cx="300" cy="400"/></p:xfrm><a:graphic>` +
+      '<a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">' +
+      `<mc:AlternateContent ${MC}><mc:Choice xmlns:v="urn:schemas-microsoft-com:vml" Requires="v">` +
+      '<p:oleObj spid="_x0000_s1025" name="" r:id="rIdOle" progId="Equation.3"><p:embed/></p:oleObj></mc:Choice>' +
+      `<mc:Fallback><p:oleObj name="" r:id="rIdOle" progId="Equation.3"><p:embed/>${inner}</p:oleObj></mc:Fallback>` +
+      '</mc:AlternateContent></a:graphicData></a:graphic></p:graphicFrame>'
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(ole(70, pic(0, '<a:blip r:embed="rIdImg"/>')) + ole(71, '')),
+          rels: [
+            ['rIdImg', 'image', '../media/image1.png'],
+            ['rIdOle', 'oleObject', '../embeddings/oleObject1.bin'],
+          ],
+        },
+      ],
+    })
+    const slide = p.slides[0]!
+    const picture = byId(slide, 70) as Picture
+    expect(picture.kind).toBe('picture')
+    expect(picture.name).toBe('对象 70')
+    expect(picture.image.part).toBe('/ppt/media/image1.png')
+    expect(picture.image.crop.left).toBeCloseTo(0.1)
+    expect([picture.frame.x, picture.frame.y, picture.frame.width, picture.frame.height]).toEqual([
+      100, 200, 300, 400,
+    ])
+    expect(byId(slide, 71).kind).toBe('graphic')
+    expect(slide.unsupported).toEqual({ ole: 1 })
+  })
+
   test('墨迹：InkML 的差分编码解码；外接框按同一比例对应形状框；笔宽按压力换算；单点笔画位于形状框中心', async () => {
     const ink = (traces: string, brush: string) =>
       '<inkml:ink xmlns:inkml="http://www.w3.org/2003/InkML"><inkml:definitions><inkml:context xml:id="ctx0">' +

@@ -4,7 +4,7 @@
  * - 字体以 `DocumentPages.faces` 的下标引用；绘制时由调用方按族名与字形取得字体（`paintPage`）。
  * - 段落按页切分：同一段落跨页时，每页各有一项 `PageParagraph`，`firstLine` 为本页第一行在整段中的序号。
  * - 表格按页切分：每页一项 `PageTable`，含单元格底纹、单元格中的内容与边框线。
- * - 浮动对象（`PageFloat`）按叠放次序排列，文本框的内容已排版为页面坐标中的项。
+ * - 浮动对象（`PageFloat`）按叠放次序排列，文本框的内容已排版为页面坐标中的项，每个文本框带裁剪范围（`PageTextBox`）。
  * - 公式（`PageFormula`）的排版结果以 `DocumentPages.faces` 的下标引用字体。
  */
 
@@ -163,6 +163,29 @@ export interface PageTable {
 
 export type PageItem = PageParagraph | PageTable
 
+/** 矩形（页面坐标）。 */
+export interface PageRect {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/**
+ * 一个文本框的内容（页面坐标），绘制时裁剪到 `clip`：横向为形状框，纵向自形状框顶边至下内缩以内（WPS 实测，构造文档
+ * w13 x1、y1：内容超出时宽于形状的图片裁到形状的外边缘，超出的行与图片裁到下内缩以内，内缩为 0 时裁到外边缘，
+ * 与 `vertOverflow` 无关）。竖排文字与形状旋转相抵时形状框为旋转后的框（`TextBox.turned`）。
+ */
+export interface PageTextBox {
+  readonly clip: PageRect
+  /**
+   * 文字随形状旋转：顺时针角度（度）与旋转中心（形状框中心，页面坐标）；不旋转时为 `null`。`items` 与 `clip` 为旋转前的位置
+   * （WPS 实测，构造文档 w14 x1 的 X18：旋转 270° 的形状中横排文字按未旋转的形状框排版后随形状旋转）。
+   */
+  readonly rotation: { readonly angle: number; readonly x: number; readonly y: number } | null
+  readonly items: readonly PageItem[]
+}
+
 /** 浮动对象：对象框（页面坐标）与可绘制的内容。 */
 export interface PageFloat {
   readonly x: number
@@ -172,8 +195,8 @@ export interface PageFloat {
   readonly behind: boolean
   /** 形状、图片、组合、图表与 SmartArt；`null` 为未实现的对象（不绘制）。 */
   readonly drawing: DrawingNode | null
-  /** 文本框中的内容（页面坐标）。 */
-  readonly items: readonly PageItem[]
+  /** 对象（含组合内）中各文本框的内容。 */
+  readonly texts: readonly PageTextBox[]
 }
 
 /** 页面背景：底色与自页面左上角平铺的图片（`DocumentPages.images` 的下标）。 */

@@ -7,12 +7,15 @@
  * `pptx-shoot.mjs`（Node）驱动 Playwright 打开 Edge，设备像素比 1，逐页调用 `renderPage` 并对画布截图。
  *
  * 真值清单的每页取 `file` 与幻灯片序号（`slide`，从 1 起；缺省为页序号 `n`），画布尺寸取真值图片的宽高。
+ * 文字按真值清单记录的采集时系统字体平滑设置（`font_smoothing`）绘制，与界面按主机设置绘制的规则相同（`fontSmoothing`）；
+ * 清单没有该记录时停止。
  * 输出：`<out>/<文档标识>/<真值文件名>`，缺省输出目录为 `.tmp/ooxml-fidelity/candidates/ooxml-pptx`。
  */
 
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { extractFace } from '../../packages/ooxml/src/font/index.ts'
+import { fontSmoothing, type SmoothingParameters } from '../../packages/server/src/api/fonts.ts'
 import { facesFor, type IndexedFace, indexFonts } from './font-index.ts'
 
 const ROOT = join(import.meta.dir, '..', '..')
@@ -67,10 +70,16 @@ const docs = corpus.documents.filter(
 )
 const jobs = docs.map((d) => {
   const manifest = JSON.parse(readFileSync(join(truth, d.id, 'manifest.json'), 'utf8')) as {
+    font_smoothing?: SmoothingParameters
     pages: TruthPage[]
+  }
+  if (!manifest.font_smoothing) {
+    console.error(`真值清单没有记录字体平滑设置：${d.id}`)
+    process.exit(1)
   }
   return {
     id: d.id,
+    clearType: fontSmoothing(manifest.font_smoothing).clearType,
     pages: manifest.pages.map((p) => ({
       file: p.file,
       slide: p.slide ?? p.n,

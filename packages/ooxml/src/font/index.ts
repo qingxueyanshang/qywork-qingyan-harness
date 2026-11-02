@@ -19,7 +19,7 @@ export type { HintedOutline } from './hinting/glyph.ts'
 export { type GlyphHinting, readGlyphHinting } from './hinting/index.ts'
 export { rasterize } from './hinting/raster.ts'
 export { type FontMetrics, readHead, readMetrics } from './metrics.ts'
-export { readFamilyNames } from './name.ts'
+export { LANGUAGE_EN_US, localFamilyName, readFamilyNames } from './name.ts'
 export {
   type GlyphBounds,
   type GlyphOutlines,

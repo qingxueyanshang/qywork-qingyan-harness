@@ -9,6 +9,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, type Paragraph, parseDocx } from '../index.ts'
 import { DocxFonts, loadDocxFace } from '../render/fonts.ts'
 import { buildDocx, p, r } from '../test-helper.ts'
@@ -121,7 +122,7 @@ describe.skipIf(process.platform !== 'win32')('STYLEREF 按页求出的文字（
         PAGE_BREAK +
         heading('丙章'),
     )
-    const pages = layoutPages(doc, fonts()).pages.pages
+    const pages = layoutPages(doc, fonts(), NO_HOST_FAMILIES).pages.pages
     expect(pages).toHaveLength(4)
     expect(pages.map((pg) => text(pg.header))).toEqual(
       [
@@ -150,7 +151,7 @@ describe.skipIf(process.platform !== 'win32')('STYLEREF 按页求出的文字（
         PAGE_BREAK +
         p(`${r('例')}<m:oMath>${frac}${radical}</m:oMath>`, '<w:pStyle w:val="1"/>'),
     )
-    const pages = layoutPages(doc, fonts()).pages.pages
+    const pages = layoutPages(doc, fonts(), NO_HOST_FAMILIES).pages.pages
     expect(pages.map((pg) => text(pg.header)[0])).toEqual([
       '甲：例𝑥+1尾',
       '甲：例\u001a𝑎+1\u001b𝑏\u001b\u001a\u001b𝑥\u001b',

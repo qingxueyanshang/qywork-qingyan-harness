@@ -5,15 +5,16 @@
  * - 文字在布局中按文字框高度占位：文字高度加 `frameExcess`（上下沿较高的字体），文字位于框的顶端。
  * - 图表区四边留白 `PAD`。标题框顶在留白处、水平居中，标题框底与下一元素相距 `TITLE_GAP`。
  * - 绘图区内框（坐标轴围成的矩形）：上沿在外沿之下 max(4.91, 数值标签文字框高 / 2 − 3.08)；
- *   下沿留出分类标签：0.943f − 2.35 加文字框高度，旋转的标签按旋转后的高度计；不旋转的标签顶距坐标轴线
- *   `CATEGORY_LABEL_GAP` × f + 1。右沿在外沿之内 `RIGHT_EXTRA`，
+ *   下沿留出底部坐标轴的标签：0.943f − 2.35 加文字框高度，旋转的标签按旋转后的高度计；不旋转的标签（分类轴与数值轴）
+ *   顶距坐标轴线 `CATEGORY_LABEL_GAP` × f + 1。右沿在外沿之内 `RIGHT_EXTRA`，
  *   水平数值轴另保证末个标签的一半落在留白之内（再向外 2.4）；左沿留出数值轴标签，标签右对齐，距内框 0.92f − 3。
  *   坐标轴跨越另一条数值轴的内部（如数据有负值、轴在 0 处）且标签为 `nextTo` 时，标签随轴线位于内框内部，不另留空间（`low`、`high` 的标签在内框边缘，照常留出）。
  * - 数值轴区间数上限：竖直轴为 ⌊轴长 / (1.4f − 0.8)⌋，水平轴为 ⌊轴长 / (最宽标签 / 2 + 2.5f)⌋，且都不超过 10。
  * - 分类标签：最宽标签不超过分类宽度时不旋转；否则 −45°（文字框右上角对齐分类中心），旋转后仍超过时 −90°
- *   （文字框右端中点对齐分类中心）。
+ *   （文字框右端中点对齐分类中心，右端与坐标轴线的距离见 `nearEnd`）。
  *   `bodyPr/@rot` 为具体角度（含 0）时按该角度，不自动旋转。
- * - 图例：符号边长 0.63f，折线符号长 2.2f，符号与文字间隔 0.42f，横排条目间隔 0.3f，竖排行距 0.33f，框内边距 0.37f − 1.9。
+ * - 图例：符号边长 0.63f，折线符号长 2.2f，符号与文字间隔 0.42f，横排条目间隔 0.3f，竖排行距 0.33f，框内边距 0.37f − 1.9，
+ *   自动位置的图例条目另上移 `LEGEND_SHIFT`。
  *   底部图例框底在留白处，框顶与分类标签相距 `LEGEND_BOTTOM_GAP` − 0.089f；右侧图例框右沿在留白处，在标题以下的高度内
  *   竖直居中（见 `TITLE_SIDE_LEGEND`），与绘图区外沿相距 `LEGEND_SIDE_GAP` − 0.14f；顶部图例与绘图区外沿相距 1.67f − 7.1。
  *   含折线条目的图例中条形的符号与折线符号同宽。
@@ -21,7 +22,7 @@
  *   右侧标签左对齐，距内框 0.92f − 3。
  * - 坐标轴标题在标签外侧，沿绘图区居中；竖直坐标轴的标题缺省旋转 −90°。
  * - 日期轴（见 `date-axis.ts`）的标签：最宽标签 + `DATE_LABEL_GAP` 不超过标签间距时不旋转，间距不小于
- *   `DATE_DIAGONAL` × 行高时 −45°，否则 −90°。
+ *   `DATE_DIAGONAL` × 行高时 −45°，否则 −90°。−90° 的标签按每个基本单位的标签中最宽者留出高度（`dateAxisLabels`）。
  */
 
 import { formatNumber, plainText } from '../../numfmt/format.ts'
@@ -81,12 +82,19 @@ const DATE_FIT = 2.5
 const DATE_LABEL_GAP = 3
 const DATE_DIAGONAL = 1.78
 /**
- * 底部不旋转的分类标签：标签顶距坐标轴线 `CATEGORY_LABEL_GAP` × f + 1；绘图区下沿留出的仍是 0.943f − 2.35 加文字框高度，
- * 标签因此不贴着图表区下沿（实测宋体、微软雅黑、Noto Sans SC、Calibri 8–14 磅，字号越大离下沿越远）。
+ * 底部不旋转的标签：标签顶距坐标轴线 `CATEGORY_LABEL_GAP` × f + 1；绘图区下沿留出的仍是 0.943f − 2.35 加文字框高度，
+ * 标签因此不贴着图表区下沿（实测宋体、微软雅黑、Noto Sans SC、Calibri 8–14 磅，字号越大离下沿越远）。数值轴在下方的
+ * 横向条形图相同（三个宿主实测，宋体、微软雅黑 8–14 磅：按 0.943f − 2.35 放置时低 0–3 像素，按本规则时绘图区下沿不变）。
  */
 const CATEGORY_LABEL_GAP = 0.58
 /** 旋转的首个分类标签与外沿之间至少留出的距离。 */
 const ROTATED_MARGIN = 5.5
+/**
+ * 图例条目相对框内边距上移的距离。实测（构造图表，底部与右侧图例各 32 个，三个宿主相同）：按内边距放置时图例符号的
+ * 重心低 0.46 与 0.44 像素、文字低 0.28 与 0.26 像素，上移后为 −0.03 与 +0.07 至 +0.18 像素；绘图区位置不变。
+ * 手动位置的图例不上移（语料 f3d0519d 三个手动位置的顶部图例上移后分数下降）。
+ */
+const LEGEND_SHIFT = 0.5
 /** 手动布局的绘图区相对按比例求出的位置向左上平移的距离（见 `manualPlot`）。 */
 const MANUAL_SHIFT = 0.5
 
@@ -435,7 +443,7 @@ function categoryRotation(axis: Axis, labels: readonly Measured[], band: number)
 
 /** 分类标签放在分类中心为 0 处时，旋转后最左点的横坐标。 */
 function leftExtent(l: Labeled, rotation: number, f: number, date: boolean): number {
-  const t = placeCategory(l, 0, 0, rotation, f, date)
+  const t = placeCategory(l, 0, 0, 0, rotation, f, date)
   const a = (rotation * Math.PI) / 180
   const cos = Math.cos(a)
   const sin = Math.sin(a)
@@ -454,27 +462,36 @@ function rotatedExtent(l: Measured, rotation: number): number {
 }
 
 /**
- * 分类标签框的左上角：不旋转时居中；−90° 时右端中点对齐分类中心；其余角度时右上角对齐分类中心右侧 0.12f
- * （日期轴为左侧 0.3f：两组实测的 −45° 日期标签比分类轴的规则靠左 5 像素）。
+ * 旋转的分类标签框的左上角：−90° 时右端中点对齐分类中心，右端在坐标轴线 `y` 之下 `near`（见 `nearEnd`）；其余角度时
+ * 右上角对齐分类中心右侧 0.12f（日期轴为左侧 0.3f：两组实测的 −45° 日期标签比分类轴的规则靠左 5 像素）、坐标轴线之下 `gap`。
  */
 function placeCategory(
   l: Labeled,
   cx: number,
   y: number,
+  near: number,
   rotation: number,
   f: number,
   date: boolean,
 ): TickLabel {
-  if (rotation === 0) return { ...l, x: cx - l.width / 2, y, rotation: 0 }
   const a = (rotation * Math.PI) / 180
   const cos = Math.cos(a)
   const sin = Math.sin(a)
   // 锚点在文字框中的位置及其对齐的位置。
   const [ax, ay, tx, ty] =
     rotation === -90
-      ? [l.width, l.height / 2, cx, y - (0.943 * f - 2.35) + 0.375 * f]
-      : [l.width, 0, cx + (date ? -0.3 : 0.12) * f, y]
+      ? [l.width, l.height / 2, cx, y + near]
+      : [l.width, 0, cx + (date ? -0.3 : 0.12) * f, y + Math.max(2, 0.943 * f - 2.35)]
   return { ...l, x: tx - (ax * cos - ay * sin), y: ty - (ax * sin + ay * cos), rotation }
+}
+
+/**
+ * −90° 的分类标签右端（旋转后的近端）与坐标轴线的距离；绘图区下沿留出的高度随之增减。
+ * 分类轴与不旋转的标签顶端相同，为 `CATEGORY_LABEL_GAP` × f + 1：校准文件中 24 个竖排「类别 n」的图表与语料 f3d0519d 第 27 页
+ * 按 0.375f 时绘图区下沿低约 3 像素、标签离坐标轴线近约 4 像素。日期轴为 0.375f（1/1 至 1/30 的 m/d 标签实测）。
+ */
+function nearEnd(date: boolean, f: number): number {
+  return date ? 0.375 * f : CATEGORY_LABEL_GAP * f + 1
 }
 
 // ── 图例 ──
@@ -754,6 +771,7 @@ export function layoutChart(
       }
     }
     const manual = lg.layout
+    let shift = LEGEND_SHIFT
     if (
       manual !== null &&
       manual.xMode === 'edge' &&
@@ -762,8 +780,9 @@ export function layoutChart(
       manual.y !== null
     ) {
       box = { ...box, x: manual.x * width, y: manual.y * height }
+      shift = 0
     }
-    legend = { box, entries: legendEntries(plan, box.x + inset, box.y + inset) }
+    legend = { box, entries: legendEntries(plan, box.x + inset, box.y + inset - shift) }
   }
 
   const outer: Rect = {
@@ -857,14 +876,19 @@ function placeRotated(m: Measured, rotation: number, bx: number, by: number): Pl
   }
 }
 
-/** 日期轴的标签：主要单位未指定时按间距自动选择（见 `date-axis.ts`），旋转规则见文件头。 */
+/**
+ * 日期轴的标签：主要单位未指定时按间距自动选择（见 `date-axis.ts`），旋转规则见文件头。`widest` 为每个基本单位的标签中
+ * 最宽者，−90° 的标签按它留出高度。实测（WPS 演示与文字，365 天的 yyyy/m/d，宋体 9–11 磅）：显示的标签最宽为 2023/10/1，
+ * 绘图区下沿按 2023/10/10 留出，高 1 个数字宽度。−45° 的标签不按此留出：两组 9 磅的校准图表按此留出时绘图区下沿高 2 像素。
+ * 只比较字符数最多的标签：数字等宽。
+ */
 function dateAxisLabels(
   plan: AxisPlan,
   scale: DateScale,
   length: number,
   settings: TextSettings,
   date1904: boolean,
-): { labels: Labeled[]; rotation: number } {
+): { labels: Labeled[]; rotation: number; widest: Measured | null } {
   const a = plan.axis
   const source = plan.groups.flatMap((g) => g.series).find((s) => s.xValues !== null)
   const code = a.format ?? source?.categoryFormat ?? 'General'
@@ -879,14 +903,31 @@ function dateAxisLabels(
     const t = text(d.serial)
     return { text: t, slot: d.slot, ...labelSize(t, a.text, settings) }
   })
-  if (a.text.rotation !== null || !plan.horizontal) {
-    return { labels, rotation: a.text.rotation ?? 0 }
-  }
+  const rotation =
+    a.text.rotation !== null || !plan.horizontal
+      ? (a.text.rotation ?? 0)
+      : autoRotation(labels, band, length, sample.height)
+  if (rotation !== -90) return { labels, rotation, widest: null }
+  const units = [
+    ...new Set(dateLabels(scale, { count: 1, unit: scale.base }).map((d) => text(d.serial))),
+  ]
+  const longest = Math.max(0, ...units.map((t) => t.length))
+  const widest = units
+    .filter((t) => t.length === longest)
+    .map((t) => labelSize(t, a.text, settings))
+    .reduce<Measured | null>((m, x) => (m === null || x.width > m.width ? x : m), null)
+  return { labels, rotation, widest }
+}
+
+function autoRotation(
+  labels: readonly Labeled[],
+  band: number,
+  length: number,
+  line: number,
+): number {
   const spacing = labels.length > 1 ? (labels[1]!.slot - labels[0]!.slot) * band : length
   const widest = Math.max(0, ...labels.map((l) => l.width))
-  const rotation =
-    widest + DATE_LABEL_GAP <= spacing ? 0 : spacing >= DATE_DIAGONAL * sample.height ? -45 : -90
-  return { labels, rotation }
+  return widest + DATE_LABEL_GAP <= spacing ? 0 : spacing >= DATE_DIAGONAL * line ? -45 : -90
 }
 
 function layoutAxes(
@@ -919,6 +960,8 @@ function layoutAxes(
   const scales: (Scale | null)[] = plans.map(() => null)
   const labels: Labeled[][] = plans.map(() => [])
   const rotations = plans.map(() => 0)
+  /** 日期轴的标签为 −90° 时另按它留出高度（`dateAxisLabels`）。 */
+  const widest: (Measured | null)[] = plans.map(() => null)
   const scaleOf = (i: number) => (i < 0 ? null : scales[i]!)
   let rect = { l: box.l, r: box.r - RIGHT_EXTRA, t: box.t + TOP_OFFSET, b: box.b - BOTTOM_OFFSET }
   for (let pass = 0; pass < 3; pass++) {
@@ -932,6 +975,7 @@ function layoutAxes(
         const r = dateAxisLabels(p, p.dates, length, settings, date1904)
         labels[i] = r.labels
         rotations[i] = r.rotation
+        widest[i] = r.widest
       } else {
         labels[i] = categoryLabels(p, p.slots, settings)
         rotations[i] = p.horizontal
@@ -955,7 +999,10 @@ function layoutAxes(
       if (!shown(p) || (nextTo && inside(p.axis, scaleOf(partner[i]!)))) return
       const ls = labels[i]!
       if (p.horizontal) {
-        const ext = Math.max(0, ...ls.map((x) => rotatedExtent(x, rotations[i]!)))
+        const reserved = widest[i] === null ? ls : [...ls, widest[i]!]
+        const near =
+          rotations[i] === -90 ? nearEnd(p.dates !== null, font[i]!) - 0.375 * font[i]! : 0
+        const ext = near + Math.max(0, ...reserved.map((x) => rotatedExtent(x, rotations[i]!)))
         if (sides[i] === 'b') b = Math.min(b, box.b - ext - gap[i]!)
         else t = Math.max(t, box.t + ext + gap[i]!)
         const first = ls[0]
@@ -1013,7 +1060,8 @@ function layoutAxes(
           tickPos.push(x)
           const l = labels[i]![k]
           if (l === undefined || !visible) return
-          out.push({ ...l, x: x - l.width / 2, y: far ? labelY - l.height : labelY, rotation: 0 })
+          const y = far ? labelY - l.height : edge + CATEGORY_LABEL_GAP * font[i]! + 1
+          out.push({ ...l, x: x - l.width / 2, y, rotation: 0 })
         })
       } else {
         const band = plot.w / (mid ? n : Math.max(1, n - 1))
@@ -1033,7 +1081,15 @@ function layoutAxes(
                     y: edge + CATEGORY_LABEL_GAP * font[i]! + 1,
                     rotation: 0,
                   }
-                : placeCategory(l, cx, labelY, rotations[i]!, font[i]!, p.dates !== null),
+                : placeCategory(
+                    l,
+                    cx,
+                    edge,
+                    nearEnd(p.dates !== null, font[i]!),
+                    rotations[i]!,
+                    font[i]!,
+                    p.dates !== null,
+                  ),
           )
         }
       }

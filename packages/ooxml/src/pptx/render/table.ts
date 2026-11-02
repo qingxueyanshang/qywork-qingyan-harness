@@ -205,6 +205,8 @@ export function paintTable(
       [],
     )
   }
+  // 单元格文字的 ClearType 字形可以暂存（见 `TextClearType`）：边框画在其上。
+  settings.faces.clearType?.flush()
   const borders: [Line | null, ShapePath[]][] = []
   for (const c of layout.cells) {
     const b = c.cell.borders

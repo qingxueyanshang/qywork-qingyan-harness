@@ -41,6 +41,7 @@ function resources(
         return bitmap === undefined ? null : { kind: 'bitmap' as const, bitmap, resolution }
       },
       createCanvas: f.create,
+      metafileFonts: null,
     },
     created: f.created,
   }
@@ -300,7 +301,7 @@ describe('填充', () => {
     })
     const matrix = { a: 1.5, b: 0, c: 0, d: 1.5, e: 10.3, f: 20.2 }
     const f = canvasFactory()
-    const res = { image: () => picture, createCanvas: f.create }
+    const res = { image: () => picture, createCanvas: f.create, metafileFonts: null }
     const ctx = new RecordingContext()
     ctx.setTransform(1.5, 0, 0, 1.5, 10.3, 20.2)
     paintImageFill(ctx, image(null), { width: 200, height: 100, matrix }, res)

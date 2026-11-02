@@ -4,7 +4,7 @@
  * （行高与基线、行距与段间距换算、项目符号不计入行高、自动调整缩放、字符间距、
  * 项目符号与悬挂缩进、自动编号、`slidenum`、不断行时的对齐平移）、`table.ts`（行高随文字增高、合并单元格的区域、边框）、
  * `../../drawingml/text/bullet.ts`、`fonts.ts` 与 `../../drawingml/text/fonts.ts`（字体名收集、仿粗体、缺少字体、
- * 西文字体缺失时的替代字体、点阵字形）、`resources.ts`（图片部件收集、嵌入字体读取）；`../parse/slide.ts` 与 `../load.ts` 的
+ * 西文字体缺失时的替代字体、点阵字形、ClearType 字形）、`resources.ts`（图片部件收集、嵌入字体读取）；`../parse/slide.ts` 与 `../load.ts` 的
  * `embeddedFontLst` 与可以绘制的图元文件；以及 `../resolve/` 与 `../../drawingml/shape/resolve.ts` 中为绘制补充的部分（内置表格样式、
  * 未指定西文字体为 Arial、竖排文字、图片项目符号、无法绘制的图片与外部阴影之外的效果的计数）。
  */
@@ -37,6 +37,7 @@ import type { TextBody } from '../../drawingml/text/model.ts'
 import type { BitmapGlyph, EmbeddedBitmaps } from '../../font/bitmap.ts'
 import type { FontMetrics } from '../../font/metrics.ts'
 import type { VerticalMetrics } from '../../font/vertical.ts'
+import type { ClearTypeDisplay, ClearTypeGlyphs, PixelData } from '../../glyph/cleartype/index.ts'
 import { readMetafile } from '../../metafile/index.ts'
 import type { TextFace } from '../../text/index.ts'
 import { parsePptx } from '../load.ts'
@@ -80,7 +81,11 @@ function fakeFace(
 /** 拉丁字符半宽、其余全宽；单倍行高为字号。 */
 const FACE = fakeFace((cp) => (cp < 0x80 ? 500 : 1000))
 
-function slideFace(font: SlideFont, bitmaps: EmbeddedBitmaps | null = null): SlideFace {
+function slideFace(
+  font: SlideFont,
+  bitmaps: EmbeddedBitmaps | null = null,
+  clearType: ClearTypeGlyphs | null = null,
+): SlideFace {
   const ppem = (p: number) => ({
     ascent: Math.round(p * 0.86),
     descent: Math.round(p * 0.14),
@@ -88,7 +93,7 @@ function slideFace(font: SlideFont, bitmaps: EmbeddedBitmaps | null = null): Sli
     internalLeading: 0,
     externalLeading: 0,
   })
-  return { ...font, bitmaps, pixelVertical: ppem }
+  return { ...font, bitmaps, pixelVertical: ppem, clearType }
 }
 
 const FALLBACK = slideFace({ face: FACE, family: '宋体', bold: false, italic: false })
@@ -124,13 +129,63 @@ function find(p: Presentation, id: number): Shape {
   return found
 }
 
+/**
+ * 记录绘制调用，另以白色不透明的像素缓冲区实现像素的读写（ClearType 字形）。`writes` 为每次写回像素时已记录的
+ * 绘制调用数，用于判定写回与其他绘制的先后。
+ */
+class PixelContext extends RecordingContext {
+  readonly pixels: Uint8ClampedArray
+  readonly writes: number[] = []
+
+  constructor(
+    readonly width = 1600,
+    readonly height = 1000,
+  ) {
+    super()
+    this.pixels = new Uint8ClampedArray(4 * width * height).fill(255)
+  }
+
+  getImageData(sx: number, sy: number, sw: number, sh: number): PixelData {
+    const data = new Uint8ClampedArray(4 * sw * sh)
+    for (let y = 0; y < sh; y++) {
+      const from = 4 * ((sy + y) * this.width + sx)
+      data.set(this.pixels.subarray(from, from + 4 * sw), 4 * y * sw)
+    }
+    return { data, width: sw, height: sh }
+  }
+
+  putImageData(img: PixelData, dx: number, dy: number): void {
+    this.writes.push(this.calls.length)
+    for (let y = 0; y < img.height; y++)
+      this.pixels.set(
+        img.data.subarray(4 * y * img.width, 4 * (y + 1) * img.width),
+        4 * ((dy + y) * this.width + dx),
+      )
+  }
+
+  /** 颜色为 `[r, g, b]` 的像素坐标。 */
+  find(rgb: readonly number[]): [number, number][] {
+    const out: [number, number][] = []
+    for (let i = 0; i < this.pixels.length; i += 4) {
+      if (
+        this.pixels[i] === rgb[0] &&
+        this.pixels[i + 1] === rgb[1] &&
+        this.pixels[i + 2] === rgb[2]
+      )
+        out.push([(i / 4) % this.width, Math.floor(i / 4 / this.width)])
+    }
+    return out
+  }
+}
+
 function paint(
   p: Presentation,
   images: Record<string, PaintImage> = {},
   source: SlideFonts = fonts(),
   scale = 1,
+  clearType: ClearTypeDisplay | null = null,
 ) {
-  const ctx = new RecordingContext()
+  const ctx = new PixelContext()
   const factory = canvasFactory()
   paintSlide(
     ctx,
@@ -138,6 +193,7 @@ function paint(
     p.slides[0]!,
     {
       fonts: source,
+      clearType,
       image: (part) => {
         const bitmap = images[part]
         return bitmap === undefined
@@ -329,7 +385,7 @@ describe('图片与墨迹', () => {
     })
     expect(p.slides[0]!.unsupported).toEqual({ imageFormat: 1 })
     expect(presentationFonts(p)).toContain('Arial')
-    const ctx = new RecordingContext()
+    const ctx = new PixelContext()
     const metafile = readMetafile(RED_RECT_WMF)!
     paintSlide(
       ctx,
@@ -337,6 +393,7 @@ describe('图片与墨迹', () => {
       p.slides[0]!,
       {
         fonts: fonts(),
+        clearType: null,
         image: (part) =>
           part === '/ppt/media/image1.emf' ? { kind: 'metafile', metafile, images: [] } : null,
         createCanvas: canvasFactory().create,
@@ -523,7 +580,7 @@ describe('文字输入换算', () => {
       layout,
       target,
       faces,
-      { image: () => null, createCanvas: factory.create },
+      { image: () => null, createCanvas: factory.create, metafileFonts: null },
       { width: 800, height: 600 },
       [],
     )
@@ -983,5 +1040,145 @@ describe('点阵字形', () => {
     const italic = paint(await deck(' i="1"'), {}, fonts({ 宋体: song }), 1).ctx
     expect(italic.named('fillText')).toHaveLength(0)
     expect(rows(italic).map((c) => c.args[2])).toEqual([1, 1])
+  })
+})
+
+describe('ClearType 字形', () => {
+  /** 每个字形为 1 × 1、三个通道覆盖都为 6 的像素（混合后为文字颜色），记录每次请求的字形编号、ppem、合成粗体与斜体。 */
+  const recordingGlyphs = (requests: unknown[][]): ClearTypeGlyphs => ({
+    glyph: (id, ppem, bold, oblique) => {
+      requests.push([id, ppem, bold, oblique])
+      return { width: 1, height: 1, bearingX: 0, bearingY: 1, coverage: Uint8Array.from([6, 6, 6]) }
+    },
+  })
+  // 每个字体须有自己的度量对象：排版按对象判定字体是否相同。
+  const arial = (glyphs: ClearTypeGlyphs) =>
+    slideFace(
+      {
+        face: fakeFace((cp) => (cp < 0x80 ? 500 : 1000)),
+        family: 'Arial',
+        bold: false,
+        italic: false,
+      },
+      null,
+      glyphs,
+    )
+  const deck = (rPr: string, bodyPr = '') =>
+    parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 400 * EMU, 100 * EMU),
+              body: text(
+                para(
+                  run(
+                    'AB',
+                    `<a:rPr lang="en-US" sz="1200"${rPr}>${solid('C00000')}<a:latin typeface="Arial"/></a:rPr>`,
+                  ),
+                ),
+                bodyPr,
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+
+  /** 原始失败形状：WPS 演示的形状文字为 GDI 的 ClearType 绘制，此前一律以浏览器字体（`fillText`）绘制。 */
+  test('显示器使用 ClearType 时形状文字按 ClearType 字形逐字写入画布像素，不调用 fillText；不使用时以 fillText 绘制', async () => {
+    const p = await deck('')
+    const requests: unknown[][] = []
+    const on = paint(p, {}, fonts({ Arial: arial(recordingGlyphs(requests)) }), 1, {
+      contrast: 1000,
+    }).ctx
+    expect(on.named('fillText')).toHaveLength(0)
+    // 两个字各一个像素，位于整数设备坐标、同一基线；ppem 为 12 磅按 96 dpi 取整（16）。
+    const ink = on.find([0xc0, 0, 0])
+    expect(ink).toHaveLength(2)
+    expect(ink[0]![1]).toBe(ink[1]![1])
+    expect(requests).toEqual([
+      [1, 16, false, false],
+      [1, 16, false, false],
+    ])
+    const off = paint(p, {}, fonts({ Arial: arial(recordingGlyphs([])) }), 1, null).ctx
+    expect(off.named('fillText').map((c) => c.args[0])).toEqual(['A', 'B'])
+    expect(off.find([0xc0, 0, 0])).toHaveLength(0)
+  })
+
+  test('字体没有粗体、斜体字形时按合成粗体与合成斜体取 ClearType 字形', async () => {
+    const requests: unknown[][] = []
+    paint(await deck(' b="1" i="1"'), {}, fonts({ Arial: arial(recordingGlyphs(requests)) }), 1, {
+      contrast: 1000,
+    })
+    expect(requests).toEqual([
+      [1, 16, true, true],
+      [1, 16, true, true],
+    ])
+  })
+
+  test('旋转的文字与半透明的文字以 fillText 绘制', async () => {
+    const source = fonts({ Arial: arial(recordingGlyphs([])) })
+    const rotated = paint(await deck('', '<a:bodyPr rot="5400000"/>'), {}, source, 1, {
+      contrast: 1000,
+    }).ctx
+    expect(rotated.named('fillText').map((c) => c.args[0])).toEqual(['A', 'B'])
+    const translucent = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 400 * EMU, 100 * EMU),
+              body: text(
+                para(
+                  run(
+                    'AB',
+                    '<a:rPr lang="en-US" sz="1200"><a:solidFill><a:srgbClr val="C00000"><a:alpha val="50000"/></a:srgbClr></a:solidFill><a:latin typeface="Arial"/></a:rPr>',
+                  ),
+                ),
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+    const half = paint(translucent, {}, source, 1, { contrast: 1000 }).ctx
+    expect(half.named('fillText').map((c) => c.args[0])).toEqual(['A', 'B'])
+  })
+
+  /** 原始失败形状：每个文本框各读写一次画布像素，每次读写都要先完成此前的绘制，含图片的幻灯片重绘耗时约翻倍。 */
+  test('只画文字的相邻形状一并混合，在其后有填充的形状之前写回；幻灯片末尾写回其余的文字', async () => {
+    const box = (id: number, y: number, fill = '<a:noFill/>') =>
+      sp(id, {
+        txBox: true,
+        spPr: xfrm(0, y * EMU, 400 * EMU, 40 * EMU) + fill,
+        body: text(
+          para(
+            run(
+              'AB',
+              `<a:rPr lang="en-US" sz="1200">${solid('C00000')}<a:latin typeface="Arial"/></a:rPr>`,
+            ),
+          ),
+        ),
+      })
+    const p = await parse({
+      slides: [
+        { xml: slideXml(box(10, 0) + box(11, 50) + box(12, 100, solid('00FF00')) + box(13, 150)) },
+      ],
+    })
+    const ctx = paint(p, {}, fonts({ Arial: arial(recordingGlyphs([])) }), 1, {
+      contrast: 1000,
+    }).ctx
+    expect(ctx.named('fillText')).toHaveLength(0)
+    // 第三个形状的填充是第一次以绿色绘制的调用。
+    const green = ctx.calls.findIndex((c) => String(c.fillStyle).toLowerCase() === '#00ff00')
+    expect(green).toBeGreaterThan(0)
+    expect(ctx.writes).toHaveLength(2)
+    expect(ctx.writes[0]).toBeLessThanOrEqual(green)
+    expect(ctx.writes[1]).toBeGreaterThan(green)
+    // 四个文本框的字都已写入：每个字一个文字颜色的像素。
+    expect(ctx.find([0xc0, 0, 0])).toHaveLength(8)
   })
 })

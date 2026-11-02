@@ -1,6 +1,7 @@
 /**
  * docx 中对象的放置、页面边框与计数。覆盖 `../layout.ts`（独占一行的嵌入式对象的纵向位置）、`build.ts`（影响环绕的浮动
- * 对象横向不超出页面、纵向按兼容模式调整（`keepOnPage`）、不换行且根据文字调整大小的文本框的宽度（`fitAnchor`）、上下型对象使锚定段落移页、对象所属的页、页面边框的矩形、
+ * 对象横向不超出页面、纵向按兼容模式调整（`keepOnPage`）、不换行且根据文字调整大小的文本框的宽度（`fitAnchor`）、竖排文字与形状旋转
+ * 相抵的文本框的文字区（`textBoxes`，含 `../parse/drawing.ts` 的 `turnedText`）、上下型对象使锚定段落移页、对象所属的页、页面边框的矩形、
  * 页眉页脚中未绘制图片与公式的计数、同页分为几部分的段落中的对象只放置一次、被推到上下型对象下方的行另加本段段前间距）、
  * `paginate.ts`（相对段落的对象的基准、与下段同页的段落组整体移页时舍弃已记录的对象、`overlaps` 中上一段与
  * 上下型对象相接的行、`fitRatio`）、`../render/paint.ts`（页面边框的线与四角）、
@@ -16,6 +17,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { borderSpace, borderStrokes } from '../border.ts'
 import { type DocxDocument, parseDocx } from '../index.ts'
 import { DocxFonts, loadDocxFace } from '../render/fonts.ts'
@@ -187,7 +189,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
         '<w:spacing w:line="240" w:lineRule="auto"/>',
       )
     const d = await parse(raised(-10) + raised(6) + SECT())
-    const [down, up] = paragraphsOf(layoutPages(d, load()).pages.pages[0]!)
+    const [down, up] = paragraphsOf(layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages[0]!)
     const bottom = (it: PageParagraph) => it.images[0]!.y + it.images[0]!.height - it.lines[0]!.top
     expect(down!.lines[0]!.height).toBeCloseTo(30, 6)
     expect(bottom(down!)).toBeCloseTo(30, 6)
@@ -212,7 +214,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
     for (const snap of [false, true]) {
       const grid = snap ? '<w:docGrid w:type="lines" w:linePitch="312"/>' : ''
       const d = await parse(body(snap) + SECT('', grid))
-      const items = paragraphsOf(layoutPages(d, load()).pages.pages[0]!).filter(
+      const items = paragraphsOf(layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages[0]!).filter(
         (it) => it.images.length > 0,
       )
       const [multiple, exact, atLeast] = items.map((it) => ({
@@ -240,7 +242,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       p('<w:r><w:br w:type="page"/></w:r>') +
       p(anchor(300, 100, ['column', -150], ['paragraph', 0], square) + r('三')) +
       SECT()
-    const pages = layoutPages(await parse(body), load()).pages.pages
+    const pages = layoutPages(await parse(body), load(), NO_HOST_FAMILIES).pages.pages
     expect(pages.map((pg) => pg.floats[0]!.x)).toEqual([595.3 - 300, 90 + 400, 0])
   })
 
@@ -263,9 +265,10 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       ['left', 'center', 'right'].map((a) => p(box(a, 'none') + r('段'))).join('') +
       p(box('center', 'square') + r('段')) +
       SECT()
-    const floats = layoutPages(await parse(body, []), load()).pages.pages[0]!.floats
+    const floats = layoutPages(await parse(body, []), load(), NO_HOST_FAMILIES).pages.pages[0]!
+      .floats
     const textWidth = (k: number) => {
-      const item = floats[k]!.items[0]
+      const item = floats[k]!.texts[0]!.items[0]
       if (item?.kind !== 'paragraph') throw new Error('不是段落')
       return item.lines[0]!.fragments.reduce((w, f) => w + f.advances.reduce((a, b) => a + b, 0), 0)
     }
@@ -281,6 +284,143 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
     expect(textWidth(1)).toBeCloseTo(w, 9)
   })
 
+  test('文本框内容超出形状时顶端对齐并裁剪：横向到形状外边缘，纵向到下内缩以内，内缩为 0 时到外边缘', async () => {
+    // WPS（构造文档 w13 x1）：七行文字放进 140 × 60 磅的框，上、中、下三种纵向对齐都自上内缩处排起，裁到下内缩（3.6 磅）以内；
+    // 内缩为 0 的框裁到外边缘；60 磅宽的框中 100 磅宽的图片裁到形状的右边缘。
+    const box = (x: number, anchor: string, ins: number, w: number, h: number, content: string) =>
+      '<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="1" ' +
+      'behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>' +
+      `<wp:positionH relativeFrom="page"><wp:posOffset>${x * EMU}</wp:posOffset></wp:positionH>` +
+      `<wp:positionV relativeFrom="page"><wp:posOffset>${60 * EMU}</wp:posOffset></wp:positionV>` +
+      `<wp:extent cx="${w * EMU}" cy="${h * EMU}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>` +
+      '<wp:docPr id="1" name="文本框"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">' +
+      `<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${w * EMU}" cy="${h * EMU}"/></a:xfrm>` +
+      '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></wps:spPr>' +
+      `<wps:txbx><w:txbxContent>${content}</w:txbxContent></wps:txbx>` +
+      `<wps:bodyPr wrap="square" lIns="${ins * 91440}" tIns="${ins * 45720}" rIns="${ins * 91440}" bIns="${ins * 45720}" ` +
+      `anchor="${anchor}"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>`
+    const lines = Array.from({ length: 7 }, (_, k) => p(r(`第${k + 1}行文字`))).join('')
+    const body =
+      p(
+        box(60, 't', 1, 140, 60, lines) +
+          box(220, 'ctr', 1, 140, 60, lines) +
+          box(380, 'b', 1, 140, 60, lines) +
+          box(60, 't', 0, 140, 40, lines) +
+          box(220, 't', 1, 60, 120, p(inline(100, 100))) +
+          r('段'),
+      ) + SECT()
+    const { pages } = layoutPages(await parse(body), load(), NO_HOST_FAMILIES)
+    const page = pages.pages[0]!
+    const texts = page.floats.map((f) => f.texts[0]!)
+    expect(texts.map((t) => t.clip)).toEqual([
+      { x: 60, y: 60, width: 140, height: 56.4 },
+      { x: 220, y: 60, width: 140, height: 56.4 },
+      { x: 380, y: 60, width: 140, height: 56.4 },
+      { x: 60, y: 60, width: 140, height: 40 },
+      { x: 220, y: 60, width: 60, height: 116.4 },
+    ])
+    for (const t of texts.slice(0, 3)) {
+      const first = t.items[0]
+      if (first?.kind !== 'paragraph') throw new Error('不是段落')
+      expect(first.lines[0]!.top).toBeCloseTo(63.6, 1)
+    }
+    const ctx = new RecordingContext()
+    paintPage(
+      ctx,
+      page,
+      { faces: pages.faces, draw: () => null },
+      {
+        images: [],
+        parts: [],
+        createCanvas: () => new RecordingCanvas(1, 1),
+      },
+    )
+    const clips = ctx.calls.filter((c) => c.name === 'rect').map((c) => c.args.join(' '))
+    expect(clips).toEqual(expect.arrayContaining(['80 80 187 75', '80 80 187 53', '293 80 80 155']))
+  })
+
+  test('横排文字随形状旋转：按未旋转的形状框排版，绘制时绕形状框中心旋转', async () => {
+    // WPS（构造文档 w14 x1 的 X18）：56.7 × 113.4 磅、旋转 270°、内缩左 2 上 6 右 10 下 14 磅的文本框，文字按 56.7 磅宽的框换行，
+    // 随形状旋转 270°。
+    const box =
+      '<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="1" ' +
+      'behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>' +
+      `<wp:positionH relativeFrom="page"><wp:posOffset>${380 * EMU}</wp:posOffset></wp:positionH>` +
+      `<wp:positionV relativeFrom="page"><wp:posOffset>${440 * EMU}</wp:posOffset></wp:positionV>` +
+      '<wp:extent cx="720090" cy="1440180"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>' +
+      '<wp:docPr id="1" name="文本框"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">' +
+      '<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm rot="16200000"><a:off x="0" y="0"/>' +
+      '<a:ext cx="720090" cy="1440180"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></wps:spPr>' +
+      `<wps:txbx><w:txbxContent>${p(r('汉'.repeat(9)))}</w:txbxContent></wps:txbx>` +
+      '<wps:bodyPr vert="horz" wrap="square" lIns="25400" tIns="76200" rIns="127000" bIns="177800" anchor="t">' +
+      '<a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>'
+    const { pages } = layoutPages(
+      await parse(p(box + r('段')) + SECT(), []),
+      load(),
+      NO_HOST_FAMILIES,
+    )
+    const page = pages.pages[0]!
+    const t = page.floats[0]!.texts[0]!
+    expect(t.rotation).toEqual({ angle: 270, x: 380 + 56.7 / 2, y: 440 + 113.4 / 2 })
+    const first = t.items[0]
+    if (first?.kind !== 'paragraph') throw new Error('不是段落')
+    // 文字区宽 56.7 − 2 − 10 = 44.7 磅：每行 4 个 10.5 磅的字。
+    expect(first.lines.map((l) => l.fragments[0]!.text.length)).toEqual([4, 4, 1])
+    expect(first.lines[0]!.fragments[0]!.x).toBeCloseTo(382, 6)
+    const ctx = new RecordingContext()
+    paintPage(
+      ctx,
+      page,
+      { faces: pages.faces, draw: () => null },
+      {
+        images: [],
+        parts: [],
+        createCanvas: () => new RecordingCanvas(1, 1),
+      },
+    )
+    // 裁剪路径在旋转后的坐标中：顺时针 270° 的变换为 (0, −1, 1, 0)，旋转中心不动。
+    const clip = ctx.calls.find((c) => c.name === 'rect')!
+    const m = clip.matrix
+    expect([m.a, m.b, m.c, m.d].map((v) => Math.round(v * 1e9) / 1e9 + 0)).toEqual([0, -1, 1, 0])
+    const [cx, cy] = [(380 + 56.7 / 2) * (4 / 3), (440 + 113.4 / 2) * (4 / 3)]
+    expect(m.a * cx + m.c * cy + m.e).toBeCloseTo(cx, 6)
+    expect(m.b * cx + m.d * cy + m.f).toBeCloseTo(cy, 6)
+  })
+
+  test('竖排文字与形状旋转相抵的文本框：文字横排在旋转后的形状框中，内缩随形状旋转；不相抵的竖排计入不支持的效果', async () => {
+    // WPS（构造文档 w14 x1）：56.7 × 113.4 磅、内缩左 2 上 6 右 10 下 14 磅的文本框，旋转 270° 且 vert 时文字区宽 93.4 磅，
+    // 左边距中心 56.7 − 6 磅、顶边距中心 28.35 − 10 磅；旋转 90° 且 vert270 时为 56.7 − 14 与 28.35 − 2 磅。
+    const box = (x: number, rot: number, vert: string) =>
+      '<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="1" ' +
+      'behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>' +
+      `<wp:positionH relativeFrom="page"><wp:posOffset>${x * EMU}</wp:posOffset></wp:positionH>` +
+      `<wp:positionV relativeFrom="page"><wp:posOffset>${80 * EMU}</wp:posOffset></wp:positionV>` +
+      '<wp:extent cx="720090" cy="1440180"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>' +
+      '<wp:docPr id="1" name="文本框"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">' +
+      `<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm rot="${rot * 60000}"><a:off x="0" y="0"/>` +
+      '<a:ext cx="720090" cy="1440180"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></wps:spPr>' +
+      `<wps:txbx><w:txbxContent>${p(r('汉'.repeat(17)))}</w:txbxContent></wps:txbx>` +
+      `<wps:bodyPr vert="${vert}" wrap="square" lIns="25400" tIns="76200" rIns="127000" bIns="177800" anchor="t">` +
+      '<a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>'
+    const body =
+      p(box(60, 270, 'vert') + box(220, 90, 'vert270') + box(380, 0, 'vert') + r('段')) + SECT()
+    const doc = await parse(body, [])
+    const floats = layoutPages(doc, load(), NO_HOST_FAMILIES).pages.pages[0]!.floats
+    const lines = (k: number) => {
+      const item = floats[k]!.texts[0]!.items[0]
+      if (item?.kind !== 'paragraph') throw new Error('不是段落')
+      return item.lines
+    }
+    const [cx, cy] = [60 + 56.7 / 2, 80 + 113.4 / 2]
+    expect(lines(0).map((l) => l.fragments[0]!.text.length)).toEqual([8, 8, 1])
+    expect(lines(0)[0]!.fragments[0]!.x).toBeCloseTo(cx - 56.7 + 6, 6)
+    expect(lines(0)[0]!.top).toBeCloseTo(cy - 28.35 + 10, 6)
+    expect(lines(1)[0]!.fragments[0]!.x).toBeCloseTo(cx + 160 - 56.7 + 14, 6)
+    expect(lines(1)[0]!.top).toBeCloseTo(cy - 28.35 + 2, 6)
+    expect(lines(2)[0]!.fragments[0]!.text.length).toBe(4)
+    expect(doc.unsupported).toEqual({ effect: 1 })
+  })
+
   test('与下段同页的段落组因下一段的上下型图片无法容纳而整体移页：图片按段落的新位置求得，标题留在页首（WPS：标题 72，图片 85.5）', async () => {
     const big = p(r('占位'), '<w:spacing w:line="12000" w:lineRule="exact"/>')
     const heading = p(r('标题'), '<w:keepNext/>')
@@ -290,18 +430,21 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
           r('带图片的段落'),
       )
     for (const offset of [0, 20]) {
-      const pages = layoutPages(await parse(big + heading + withPicture(offset) + SECT()), load())
-        .pages.pages
+      const pages = layoutPages(
+        await parse(big + heading + withPicture(offset) + SECT(), [IMAGE], 15),
+        load(),
+        NO_HOST_FAMILIES,
+      ).pages.pages
       expect(pages).toHaveLength(2)
       const [title, owner] = paragraphsOf(pages[1]!)
       const titleLine = title!.lines[0]!
       expect(titleLine.top).toBeCloseTo(72, 6)
       const f = pages[1]!.floats[0]!
       expect(f.y).toBeCloseTo(titleLine.top + titleLine.height + offset, 6)
-      // 偏移 0 时段落的行在图片下方；偏移 20 磅时一行文字排在标题与图片之间（WPS：段落位于 85.6，图片 105.75）。
+      // 偏移 0 时段落的行在图片底边（235.617 磅）之下的第一个整缇；偏移 20 磅时一行文字排在标题与图片之间，行顶向下
+      // 取整到缇（WPS：段落位于 85.6，图片 105.75）。
       const textTop = owner!.lines[0]!.top
-      if (offset === 0) expect(textTop).toBeCloseTo(f.y + f.height, 6)
-      else expect(textTop).toBeCloseTo(titleLine.top + titleLine.height, 6)
+      expect(textTop).toBeCloseTo(offset === 0 ? 235.65 : 85.6, 6)
       expect(pages[0]!.floats).toEqual([])
     }
   })
@@ -317,7 +460,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
           r('带图片的段落'),
       ) +
       SECT()
-    const pages = layoutPages(await parse(body), load()).pages.pages
+    const pages = layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages.pages
     expect(pages).toHaveLength(2)
     const f = pages[0]!.floats
     expect(f).toEqual([])
@@ -325,7 +468,8 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
     expect(title!.lines[0]!.top).toBeCloseTo(72, 6)
     const picture = pages[1]!.floats[0]!
     expect(picture.y + picture.height).toBeLessThan(769.9)
-    expect(owner!.lines[0]!.top).toBeCloseTo(picture.y + picture.height, 6)
+    // 图片底边 235.617 磅之下的第一个整缇。
+    expect(owner!.lines[0]!.top).toBeCloseTo(235.65, 6)
   })
 
   test('上一段末行与上下型图片顶边相接时不避让（WPS：上一段留在 235.4，图片 249.0，带图片段落的文字在 399.05）', async () => {
@@ -336,12 +480,39 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
           r('带图片的段落'),
       ) +
       SECT()
-    const page = layoutPages(await parse(body), load()).pages.pages[0]!
+    const page = layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages
+      .pages[0]!
     const [prev, owner] = paragraphsOf(page)
     expect(prev!.lines[0]!.top).toBeCloseTo(72, 6)
     const f = page.floats[0]!
     expect(f.y).toBeCloseTo(72 + prev!.lines[0]!.height, 6)
-    expect(owner!.lines[0]!.top).toBeCloseTo(f.y + f.height, 6)
+    // 图片底边 235.617 磅之下的第一个整缇（WPS：图片底边 399.017 磅时文字在 399.05）。
+    expect(owner!.lines[0]!.top).toBeCloseTo(235.65, 6)
+  })
+
+  test('兼容模式 14：上下型图片顶边恰好接触上一段末行（末行计入段后间距）时上一段移到图片下方（WPS：w11f、w11g 改为兼容模式 14）', async () => {
+    // WPS 实测（构造文档 w14 的 w11f-14、w11g-14）：图片相对段落偏移 0，上一段段后 0 或 10 磅时上一段都移到图片底边之下的
+    // 第一个整缇，兼容模式 15 中上一段留在原处。
+    for (const [after, top] of [
+      [0, 235.65],
+      [200, 245.65],
+    ] as const) {
+      const body =
+        p(r('上一段'), `<w:spacing w:after="${after}"/>`) +
+        p(
+          anchor(200, 150, ['column', 100], ['paragraph', 0], '<wp:wrapTopAndBottom/>') +
+            r('带图片的段落'),
+        ) +
+        SECT()
+      const [legacy] = paragraphsOf(
+        layoutPages(await parse(body, [IMAGE], 14), load(), NO_HOST_FAMILIES).pages.pages[0]!,
+      )
+      const [current] = paragraphsOf(
+        layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages.pages[0]!,
+      )
+      expect([after, legacy!.lines[0]!.top]).toEqual([after, top])
+      expect([after, current!.lines[0]!.top]).toEqual([after, 72])
+    }
   })
 
   test('页面边框：相对页面时矩形为线的外缘，相对正文时为线的内缘', async () => {
@@ -349,7 +520,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       `<w:pgBorders w:offsetFrom="${frm}"><w:top w:val="single" w:sz="8" w:space="4" w:color="FF0000"/>` +
       '<w:left w:val="single" w:sz="8" w:space="4" w:color="FF0000"/></w:pgBorders>'
     const d = await parse(p(r('一'), SECT(border('page'))) + p(r('二')) + SECT(border('text')))
-    const pages = layoutPages(d, load()).pages.pages
+    const pages = layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages
     expect(pages[0]!.borders).toMatchObject({ x: 4, y: 4, inside: true })
     expect(pages[1]!.borders).toMatchObject({ x: 86, y: 68, inside: false })
   })
@@ -396,7 +567,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       ],
     )
     expect(d.unsupported).toEqual({ dynamicField: 1 })
-    const pages = layoutPages(d, load()).pages.pages
+    const pages = layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages
     const drawn = (pg: Page) =>
       pg.header.reduce((n, it) => n + (it.kind === 'paragraph' ? it.images.length : 0), 0)
     expect(pages.map(drawn)).toEqual([1, 1, 1])
@@ -419,7 +590,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       fill(20) +
       p(anchor(300, 500, ['column', 0], ['paragraph', 0], SQUARE) + r('三'), EXACT) +
       SECT()
-    const pages = layoutPages(await parse(body, [IMAGE], 15), load()).pages.pages
+    const pages = layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages.pages
     expect(pages).toHaveLength(3)
     const ys = floatsY(pages)
     // 高于正文区的对象顶边对齐正文区顶边；第 3 页对象上移到段落顶边（352）之上，段落留在本页。
@@ -435,7 +606,9 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       PAGE_BREAK +
       p(anchor(300, 700, ['column', 0], ['paragraph', 40], SQUARE) + r('二'), EXACT) +
       SECT()
-    const ys = floatsY(layoutPages(await parse(body, [IMAGE], 14), load()).pages.pages)
+    const ys = floatsY(
+      layoutPages(await parse(body, [IMAGE], 14), load(), NO_HOST_FAMILIES).pages.pages,
+    )
     expect(ys[0]![0]).toBeCloseTo(841.9 - 760, 6)
     expect(ys[1]![0]).toBeCloseTo(72 + 40, 6)
   })
@@ -449,7 +622,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       p('<w:r><w:br w:type="page"/></w:r>') +
       p(r('其后')) +
       SECT()
-    const pages = layoutPages(await parse(body, [IMAGE], 15), load()).pages.pages
+    const pages = layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages.pages
     expect(pages).toHaveLength(3)
     expect(pages[0]!.floats[0]!.y).toBeCloseTo(72, 6)
     expect(pages.map((pg) => paragraphsOf(pg).map((it) => it.block))).toEqual([[0], [1], [2]])
@@ -463,7 +636,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
         EXACT,
       ) +
       SECT()
-    const pages = layoutPages(await parse(body, [IMAGE], 15), load()).pages.pages
+    const pages = layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages.pages
     expect(pages).toHaveLength(2)
     expect(paragraphsOf(pages[0]!).at(-1)!.block).toBe(44)
     expect(pages[0]!.floats).toEqual([])
@@ -482,11 +655,12 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       )
     for (const b of [0, 0.9]) {
       const body = p(r('前'), EXACT) + p(effect(b), EXACT) + p(r('后'), EXACT) + SECT()
-      const page = layoutPages(await parse(body, [IMAGE], 15), load()).pages.pages[0]!
+      const page = layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages
+        .pages[0]!
       const [, owner, after] = paragraphsOf(page)
-      // 锚定段落顶边 86，对象 88.55–129.65；锚定段落的行与其后的行依次在矩形下方。
-      expect(owner!.lines[0]!.top).toBeCloseTo(72 + 14 + 2.55 + 41.1 + b, 6)
-      expect(after!.lines[0]!.top).toBeCloseTo(72 + 14 + 2.55 + 41.1 + b + 14, 6)
+      // 锚定段落顶边 86，对象 88.55–129.65；锚定段落的行与其后的行依次在矩形下方，矩形底边为整缇，行顶在其下 1 缇。
+      expect(owner!.lines[0]!.top).toBeCloseTo(72 + 14 + 2.55 + 41.1 + b + 0.05, 6)
+      expect(after!.lines[0]!.top).toBeCloseTo(72 + 14 + 2.55 + 41.1 + b + 0.05 + 14, 6)
     }
   })
 
@@ -505,7 +679,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
         `${EXACT}<w:widowControl w:val="0"/>`,
       ) +
       SECT()
-    const pages = layoutPages(await parse(body, [IMAGE], 15), load()).pages.pages
+    const pages = layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages.pages
     expect(pages[0]!.floats[0]!.y).toBeCloseTo(769.9 - 216, 6)
     expect(paragraphsOf(pages[0]!).at(-1)!.lines).toHaveLength(2)
     const rest = paragraphsOf(pages[1]!)[0]!
@@ -528,7 +702,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
         `${EXACT}<w:widowControl w:val="0"/>`,
       ) +
       SECT()
-    const pages = layoutPages(await parse(body, [IMAGE], 15), load()).pages.pages
+    const pages = layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages.pages
     expect(pages[0]!.floats).toEqual([])
     const first = paragraphsOf(pages[0]!)
     expect(first.map((it) => it.lines[0]!.top)).toEqual(
@@ -560,7 +734,8 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       [pushed(400, 200), '被推', 198.05],
     ]
     for (const [body, text, top] of cases) {
-      const pages = layoutPages(await parse(body + SECT(), [IMAGE], 15), load()).pages.pages
+      const pages = layoutPages(await parse(body + SECT(), [IMAGE], 15), load(), NO_HOST_FAMILIES)
+        .pages.pages
       const it = paragraphsOf(pages[0]!).find((x) =>
         x.lines[0]!.fragments.some((f) => f.text.startsWith(text)),
       )!
@@ -577,7 +752,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
           '<w:r><w:br w:type="column"/></w:r>' +
           r('右栏'),
       ) + SECT(cols)
-    const pages = layoutPages(await parse(body, [IMAGE], 15), load()).pages.pages
+    const pages = layoutPages(await parse(body, [IMAGE], 15), load(), NO_HOST_FAMILIES).pages.pages
     expect(paragraphsOf(pages[0]!)).toHaveLength(2)
     expect(pages[0]!.floats).toHaveLength(1)
   })
@@ -607,19 +782,20 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
       p(r('J'), bdr(side('bottom', 'thickThinSmallGap', 12, 1))) +
       p(r('后')) +
       SECT()
-    const tops = paragraphsOf(layoutPages(await parse(body), load()).pages.pages[0]!).map(
-      (it) => it.lines[0]!.top,
-    )
+    const tops = paragraphsOf(
+      layoutPages(await parse(body), load(), NO_HOST_FAMILIES).pages.pages[0]!,
+    ).map((it) => it.lines[0]!.top)
     expect(tops[0]).toBeCloseTo(82, 6)
+    // 行顶取整到缇，相邻行顶之差与按行高求得的值相差不到 1 缇：按 0.5 磅取整后比较。
     const line = tops[2]! - tops[1]! - 10.5
-    const extra = tops.slice(1).map((t, k) => Math.round((t - tops[k]! - line) * 100) / 100)
+    const extra = tops.slice(1).map((t, k) => Math.round((t - tops[k]! - line) * 2) / 2 + 0)
     expect(extra).toEqual([0, 10.5, 0, 0, 10.5, 0, 0, 0, 20, 10, 10.5, 10.5, 0, 10.5, 0, 4])
   })
 
   test('下边框须与最后一行一起容纳在本页：3 磅三线下边框超出正文区底边时段落移到下一页', async () => {
     const tail = (b: string) => fill(48) + p(r('边框'), EXACT + bdr(b)) + SECT()
     const pageOf = async (b: string) =>
-      layoutPages(await parse(tail(b)), load()).pages.pages.findIndex((pg) =>
+      layoutPages(await parse(tail(b)), load(), NO_HOST_FAMILIES).pages.pages.findIndex((pg) =>
         paragraphsOf(pg).some((it) => it.block === 48),
       )
     expect(await pageOf(side('bottom', 'single', 4, 4))).toBe(0)

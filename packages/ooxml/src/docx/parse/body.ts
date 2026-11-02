@@ -334,12 +334,14 @@ export class BodyReader {
   /**
    * 单元格与文本框中段落的排版规则（WPS 实测）：不悬挂行尾标点，越界的标点与其前一字移到下一行（兼容模式 14 与 15
    * 相同，单元格中显式设置 `overflowPunct` 也不悬挂；文本框见构造文档 w11d）；单元格中未设置 `adjustLineHeightInTable`
-   * 时不对齐行网格。
+   * 时不对齐行网格。页眉页脚部件中的段落与其中单元格的段落不对齐行网格（WPS 实测，构造文档 w16 hf：网格 579、312、
+   * `linesAndChars` 与没有网格时页眉页脚各行的位置相同，设置 `adjustLineHeightInTable` 时单元格同样如此；其中文本框未实测）。
    */
   private placeProps(props: ParagraphProps, place: BlockPlace): ParagraphProps {
-    if (place === 'body') return props
     if (place === 'textbox') return { ...props, overflowPunct: false }
-    return { ...props, overflowPunct: false, snapToGrid: props.snapToGrid && this.env.gridInTables }
+    const grid = props.snapToGrid && !this.story
+    if (place === 'body') return grid === props.snapToGrid ? props : { ...props, snapToGrid: grid }
+    return { ...props, overflowPunct: false, snapToGrid: grid && this.env.gridInTables }
   }
 
   private resolveParagraph(
@@ -405,6 +407,7 @@ export class BodyReader {
               anchor: n.text.anchor,
               autoFit: n.text.autoFit,
               wrap: n.text.wrap,
+              turned: n.text.turned,
             },
     }
   }

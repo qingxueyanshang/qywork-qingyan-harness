@@ -8,6 +8,8 @@
  *   地址由内容决定，响应按一年缓存并标为不可变；文件内容改变后哈希随之改变，原地址返回 404。
  * - `GET /api/fonts/smoothing`：`{ clearType: { contrast } | null }`，每次请求时读取系统的当前值（见 `fontSmoothing`），
  *   不缓存。系统接口调用失败时返回 500。
+ * - `GET /api/fonts/families`：主机字体的族名（`hostFamilies`），`{ local, names }`：`local` 为各字体按界面语言取的族名
+ *   （区分大小写，见 `localFamilyName`），`names` 为全部语言的族名（小写，与 `?name=` 的查找方式相同）。
  *
  * 边界：
  * - 只读取系统与当前用户的字体目录（`fontRoots`），不跟随符号链接。字体名只用于查询内存中的索引，
@@ -28,6 +30,8 @@ import { log } from '@qywork/core'
 import {
   extractFace,
   isCffOutline,
+  LANGUAGE_EN_US,
+  localFamilyName,
   readFaces,
   readFamilyNames,
   readHead,
@@ -83,6 +87,8 @@ interface FontIndex {
   dirs: Map<string, number>
   /** 键为 `familyKey` 处理后的家族名。同一家族中粗体与斜体组合相同的字体只保留先扫描到的一个。 */
   families: Map<string, FaceLocation[]>
+  /** 各字体按界面语言取的族名（`localFamilyName`）。 */
+  local: Set<string>
 }
 
 /** 家族名不区分大小写，与 Office 按名称引用字体的方式一致。 */
@@ -104,7 +110,18 @@ async function readAt(fh: FileHandle, offset: number, length: number): Promise<U
   return buf
 }
 
-type IndexedFace = FaceLocation & { names: string[] }
+type IndexedFace = FaceLocation & { names: string[]; local: string }
+
+let uiLanguage: number | null = null
+
+/** 主机的界面语言标识：Windows 取 `GetUserDefaultUILanguage`，其他平台为 en-US。 */
+function hostLanguage(): number {
+  if (process.platform !== 'win32') return LANGUAGE_EN_US
+  uiLanguage ??= dlopen('kernel32.dll', {
+    GetUserDefaultUILanguage: { args: [], returns: FFIType.u16 },
+  }).symbols.GetUserDefaultUILanguage()
+  return uiLanguage
+}
 
 async function readFileFaces(path: string): Promise<IndexedFace[]> {
   const fh = await open(path, 'r')
@@ -114,10 +131,13 @@ async function readFileFaces(path: string): Promise<IndexedFace[]> {
     const table = (record: TableRecord) => readAt(fh, record.offset, record.length)
     const out: IndexedFace[] = []
     for (const [index, face] of faces.entries()) {
-      const names = readFamilyNames(await table(tableRecord(face, 'name')))
+      const nameTable = await table(tableRecord(face, 'name'))
+      const names = readFamilyNames(nameTable)
       const { bold, italic } = readHead(await table(tableRecord(face, 'head')))
       const contentType = isCffOutline(face) ? 'font/otf' : 'font/ttf'
-      out.push({ path, index, bold, italic, contentType, names })
+      const local = localFamilyName(nameTable, hostLanguage()) ?? names[0]
+      if (local === undefined) continue
+      out.push({ path, index, bold, italic, contentType, names, local })
     }
     return out
   } finally {
@@ -160,7 +180,8 @@ async function scanDir(dir: string, index: FontIndex): Promise<void> {
       log.warn('fonts', '字体文件无法解析，已跳过', { path, reason: reason(err) })
       continue
     }
-    for (const { names, ...location } of faces) {
+    for (const { names, local, ...location } of faces) {
+      index.local.add(local)
       for (const name of names) {
         const key = familyKey(name)
         const list = index.families.get(key) ?? []
@@ -173,7 +194,7 @@ async function scanDir(dir: string, index: FontIndex): Promise<void> {
 }
 
 async function buildIndex(): Promise<FontIndex> {
-  const index: FontIndex = { dirs: new Map(), families: new Map() }
+  const index: FontIndex = { dirs: new Map(), families: new Map(), local: new Set() }
   for (const root of fontRoots()) await scanDir(root, index)
   return index
 }
@@ -197,6 +218,12 @@ function fontIndex(): Promise<FontIndex> {
     checking = null
   })
   return checking
+}
+
+/** 主机字体的族名（见文件头 `/api/fonts/families`），各自按 UTF-16 码元排序。 */
+export async function hostFamilies(): Promise<{ local: string[]; names: string[] }> {
+  const index = await fontIndex()
+  return { local: [...index.local].sort(), names: [...index.families.keys()].sort() }
 }
 
 /** 字体名只用于查询索引；与路径形状相关的值一律拒绝，不做改写。 */
@@ -294,6 +321,7 @@ export const handleFontsApi: ApiHandler = async (url, req) => {
       return json({ error: 'unavailable', message: '无法读取系统的字体平滑设置' }, 500)
     }
   }
+  if (req.method === 'GET' && p === '/api/fonts/families') return json(await hostFamilies())
   if (req.method !== 'GET' || (p !== '/api/fonts' && p !== '/api/fonts/file')) return null
 
   const name = url.searchParams.get('name')

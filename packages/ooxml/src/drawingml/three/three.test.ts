@@ -237,6 +237,7 @@ describe('绘制', () => {
       ctx: main,
       res: {
         image: () => null,
+        metafileFonts: null,
         createCanvas: (w, h) => {
           const c = new PixelCanvas(w, h)
           layers.push(c)

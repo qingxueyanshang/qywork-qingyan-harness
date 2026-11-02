@@ -5,6 +5,7 @@
  * - 对象的选入在读取时按对象表解析为对象本身（`pen`、`brush`、`font`），删除对象不影响已选入的对象。
  * - 位图在读取时解码为非预乘的 RGBA 像素（`Metafile.bitmaps`），命令按下标引用。
  * - `unsupported` 列出未实现的记录与参数取值（去重）；不为空时整张图片不绘制，由调用方计入能力边界。
+ * - 调色板只影响调色板设备，创建与选入不改变绘制；引用调色板序号的颜色（`PALETTEINDEX`）计为不支持。
  */
 
 import type { Matrix } from '../drawingml/paint/context.ts'
@@ -39,8 +40,10 @@ export interface Rgb {
 }
 
 export interface Pen {
-  /** 画笔样式：只有实线与空画笔。 */
-  readonly style: 'solid' | 'null'
+  /**
+   * 画笔样式：实线、空画笔与 `PS_INSIDEFRAME`（矩形与椭圆的线宽大于 1 像素时整个图形缩进到外接矩形之内，其余与实线相同）。
+   */
+  readonly style: 'solid' | 'null' | 'insideFrame'
   /** 线宽（逻辑单位）；`cosmetic` 为真时线宽恒为 1 个设备像素。 */
   readonly width: number
   readonly cosmetic: boolean
@@ -54,6 +57,8 @@ export type Brush = { readonly kind: 'solid'; readonly color: Rgb } | { readonly
 export interface Font {
   /** `lfHeight`（逻辑单位）：负值为 em 高度，正值为字符单元高度。 */
   readonly height: number
+  /** `lfWidth`（逻辑单位）：字符的平均宽度，0 为字体本身的宽度；不为 0 时字形按它横向缩放。 */
+  readonly width: number
   readonly weight: number
   readonly italic: boolean
   readonly face: string
@@ -69,6 +74,12 @@ export type MetaOp =
       readonly x: number
       readonly y: number
     }
+  /** 窗口或视口的范围乘以 `num / den`（`SCALEWINDOWEXT`、`SCALEVIEWPORTEXT`）。 */
+  | {
+      readonly op: 'scaleWindowExt' | 'scaleViewportExt'
+      readonly num: Point
+      readonly den: Point
+    }
   /** 世界变换：`set` 替换，`left` 在当前变换之前施加，`right` 在当前变换之后施加，`identity` 复位。 */
   | {
       readonly op: 'world'
@@ -80,7 +91,10 @@ export type MetaOp =
   | { readonly op: 'font'; readonly font: Font }
   | { readonly op: 'textColor' | 'bkColor'; readonly color: Rgb }
   | { readonly op: 'bkMode'; readonly opaque: boolean }
-  /** `TA_*` 标志：水平为 `TA_LEFT`、`TA_RIGHT`、`TA_CENTER`，竖直为 `TA_TOP`、`TA_BOTTOM`、`TA_BASELINE`。 */
+  /**
+   * `TA_*` 标志：水平为 `TA_LEFT`、`TA_RIGHT`、`TA_CENTER`，竖直为 `TA_TOP`、`TA_BOTTOM`、`TA_BASELINE`；
+   * `TA_UPDATECP` 时文字以当前位置为参考点，绘制后当前位置移到文字的另一端（居中对齐时不移动）。
+   */
   | { readonly op: 'textAlign'; readonly align: number }
   | { readonly op: 'fillMode'; readonly evenOdd: boolean }
   | { readonly op: 'miterLimit'; readonly limit: number }
@@ -95,10 +109,13 @@ export type MetaOp =
    * EMF 记录的边界已是录制时换算的结果，WPS 不再缩小（构造文档实测）。
    */
   | { readonly op: 'rectangle' | 'ellipse'; readonly box: Box; readonly shrink: boolean }
+  /** 以画刷填充区域（逻辑坐标的矩形并集），不描边：`brush` 为 `null` 时用当前画刷（`PAINTREGION`）。 */
+  | { readonly op: 'fillRegion'; readonly rects: readonly Box[]; readonly brush: Brush | null }
   /** 以画刷（`PATCOPY`）、黑色或白色填充矩形，不描边。 */
   | { readonly op: 'patBlt'; readonly box: Box; readonly fill: 'brush' | 'black' | 'white' }
   /**
    * 位图复制到目标矩形（逻辑坐标）。`alpha` 为常量不透明度（0–1）；像素自身的不透明度已在解码时写入。
+   * `rop` 为光栅操作：`copy` 为 `SRCCOPY`，`and` 为 `SRCAND`（与目标按位与），`paint` 为 `SRCPAINT`（按位或）。
    */
   | {
       readonly op: 'bitmap'
@@ -106,15 +123,19 @@ export type MetaOp =
       readonly src: PixelRect
       readonly bitmap: number
       readonly alpha: number
+      readonly rop: BitmapRop
     }
   /**
    * 文字：`dx` 为各字符的前进宽度（逻辑单位），`null` 时按字体度量。`opaque` 先以背景色填充，`clip` 裁剪到该矩形。
+   * `symbol` 为 DEFAULT_CHARSET 与 OEM_CHARSET 的 8 位文字在所选字体是符号字体时的字符与前进宽度（字节值加 U+F000），
+   * 其余文字为 `null`。
    */
   | {
       readonly op: 'text'
       readonly p: Point
       readonly text: string
       readonly dx: readonly number[] | null
+      readonly symbol: SymbolText | null
       readonly opaque: Box | null
       readonly clip: Box | null
     }
@@ -124,6 +145,8 @@ export type MetaOp =
   | { readonly op: 'clipPath'; readonly mode: 'copy' | 'and' }
   /** 与逻辑坐标的矩形求交（`exclude` 为真时排除该矩形）。 */
   | { readonly op: 'clipRect'; readonly box: Box; readonly exclude: boolean }
+  /** `SetMetaRgn`：当前裁剪并入元区域，裁剪复位；此后的裁剪与元区域求交，取消裁剪不取消元区域。 */
+  | { readonly op: 'metaRegion' }
   /** 设备坐标的矩形并集：`rects` 为 `null` 时取消裁剪。 */
   | {
       readonly op: 'clipRegion'
@@ -131,15 +154,27 @@ export type MetaOp =
       readonly mode: 'copy' | 'and'
     }
 
+export type BitmapRop = 'copy' | 'and' | 'paint'
+
+/** 按符号编码解码的 8 位文字：每个字节一个字符。 */
+export interface SymbolText {
+  readonly text: string
+  readonly dx: readonly number[] | null
+}
+
 export interface Metafile {
   readonly kind: 'wmf' | 'emf'
   /**
-   * 图片框：WMF 为可放置文件头的边界（逻辑坐标），EMF 为 `rclFrame` 换算到参考设备的像素坐标。绘制时图片框映射到目标矩形。
+   * 图片框：WMF 为可放置文件头的边界（逻辑坐标；没有可放置文件头时为记录设置的窗口），EMF 为 `rclFrame` 换算到参考设备的
+   * 像素坐标。绘制时图片框映射到目标矩形。
    */
   readonly frame: Box
   /** EMF 参考设备每毫米的像素数（度量映射模式按它换算）；WMF 为 `null`。 */
   readonly device: Point | null
-  /** 图片框在 96 dpi 下的像素尺寸：WMF 按可放置文件头的每英寸单位数，EMF 按 `rclFrame`（0.01 毫米）。 */
+  /**
+   * 图片框在 96 dpi 下的像素尺寸：WMF 按可放置文件头的每英寸单位数（没有可放置文件头时按每英寸 1440 单位），
+   * EMF 按 `rclFrame`（0.01 毫米）。
+   */
   readonly size: { readonly width: number; readonly height: number }
   readonly ops: readonly MetaOp[]
   readonly bitmaps: readonly Pixels[]

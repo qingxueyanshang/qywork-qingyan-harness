@@ -9,7 +9,7 @@
  *
  * 输出：`<out>/<文档标识>/page-0001.png` 起，文件名与真值清单一致。缺省输出目录为
  * `.tmp/ooxml-fidelity/candidates/ooxml`。语料与真值见 `fidelity.py` 的文件头。
- * 单元格文字按真值清单记录的采集时系统字体平滑设置（`font_smoothing`）绘制，与界面按主机设置绘制的规则相同
+ * 文字按真值清单记录的采集时系统字体平滑设置（`font_smoothing`）绘制，与界面按主机设置绘制的规则相同
  * （`fontSmoothing`）；清单没有该记录时停止。
  */
 

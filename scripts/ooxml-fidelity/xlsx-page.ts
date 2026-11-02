@@ -6,10 +6,13 @@
  * 本文件只声明用到的浏览器接口，不引入 DOM 类型库（`scripts` 的类型检查环境不含 DOM）。
  */
 
-import type {
-  CreateCanvas,
-  PaintContext as LayerContext,
-  PaintCanvas,
+import {
+  type CreateCanvas,
+  decodePicture,
+  type ImageDecoder,
+  type PaintContext as LayerContext,
+  type PaintCanvas,
+  type PaintImage,
 } from '../../packages/ooxml/src/drawingml/index.ts'
 import {
   type ClearTypeDisplay,
@@ -19,7 +22,6 @@ import {
   type LoadedFace,
   loadFace,
   type PaintContext,
-  type PaintImage,
   paintRegion,
   parseXlsx,
   substituteFont,
@@ -42,7 +44,10 @@ declare class FontFace {
   constructor(family: string, source: ArrayBuffer, descriptors: { weight: string; style: string })
   load(): Promise<unknown>
 }
-declare function createImageBitmap(blob: Blob): Promise<PaintImage>
+declare function createImageBitmap(source: Blob | ImageData): Promise<PaintImage>
+declare class ImageData {
+  constructor(data: Uint8ClampedArray<ArrayBuffer>, width: number, height: number)
+}
 declare class OffscreenCanvas implements PaintCanvas {
   constructor(width: number, height: number)
   readonly width: number
@@ -52,6 +57,11 @@ declare class OffscreenCanvas implements PaintCanvas {
 
 const createCanvas: CreateCanvas = (width, height) =>
   new OffscreenCanvas(Math.max(1, width), Math.max(1, height))
+
+const decoder: ImageDecoder = {
+  file: (bytes, type) => createImageBitmap(new Blob([bytes], { type })),
+  pixels: (width, height, data) => createImageBitmap(new ImageData(data, width, height)),
+}
 
 interface FaceInfo {
   readonly id: string
@@ -146,9 +156,7 @@ async function renderPage(
   const width = scene.geometry.cols.offset(end.col + 1)
   const height = scene.geometry.rows.offset(end.row + 1)
   const images = await Promise.all(
-    sheet.images.map((img) =>
-      createImageBitmap(new Blob([img.bytes.slice()], { type: img.contentType })).catch(() => null),
-    ),
+    sheet.images.map((img) => decodePicture(img.bytes.slice(), img.contentType, decoder)),
   )
   const canvas = document.getElementById('sheet')
   canvas.width = truthWidth

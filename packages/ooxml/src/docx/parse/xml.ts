@@ -3,6 +3,7 @@
  *
  * - 元素按本地名匹配；属性先按元素自身的前缀取，取不到再按 WordprocessingML 命名空间匹配。
  * - 开关值（`ST_OnOff`）：缺少 `w:val` 为真；`true`、`1`、`on` 为真，`false`、`0`、`off` 为假。
+ * - 元素嵌套超过 `MAX_DEPTH` 层时 `eachChild` 抛出 `NestingError`：解析与排版按嵌套逐层递归，层数不设上限时由输入决定调用栈深度。
  */
 
 import type { PartScanner } from '../../opc/scanner.ts'
@@ -11,9 +12,24 @@ export type Scanner = PartScanner
 
 export const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
+/**
+ * 元素嵌套层数的上限。网络语料 1728 份 docx 中最深为 53 层（其中表格嵌套最多 5 层）；5000 层嵌套表格的文档在解析时
+ * 溢出调用栈。
+ */
+export const MAX_DEPTH = 256
+
+/** 部件中的元素嵌套超过 `MAX_DEPTH` 层：按结构错误处理（`../load.ts` 返回 `corrupt('xml')`）。 */
+export class NestingError extends Error {
+  constructor() {
+    super(`元素嵌套超过 ${MAX_DEPTH} 层`)
+    this.name = 'NestingError'
+  }
+}
+
 /** 访问当前元素的每个子元素；回调可读到子元素的结束标签为止，也可不前进。 */
 export function eachChild(x: Scanner, visit: (local: string) => void): void {
   const depth = x.depth
+  if (depth >= MAX_DEPTH) throw new NestingError()
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t === 'end' && x.depth === depth) return
     if (t === 'start' && x.depth === depth + 1) visit(x.local)

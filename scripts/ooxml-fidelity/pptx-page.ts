@@ -1,7 +1,8 @@
 /**
  * pptx 候选截图的浏览器入口（由 `pptx-candidates.ts` 打包）：解析 pptx、以字节注册字体并读取度量与点阵、解码图片并绘制指定幻灯片。
  *
- * 页面向 `window` 暴露 `renderPage(id, slide, width, height)`，返回画布尺寸；截图由 Node 驱动的 Playwright 完成。
+ * 页面向 `window` 暴露 `renderPage(id, slide, width, height, clearType)`（`clearType` 为采集时显示器的 ClearType 设置），
+ * 返回画布尺寸；截图由 Node 驱动的 Playwright 完成。
  * 主机没有的字体取文件中的嵌入字体；缺少字体与缺少字形时使用宋体。本文件只声明用到的浏览器接口，不引入 DOM 类型库。
  */
 
@@ -15,6 +16,7 @@ import {
   type PaintPicture,
 } from '../../packages/ooxml/src/drawingml/index.ts'
 import {
+  type ClearTypeDisplay,
   type Presentation,
   paintSlide,
   parsePptx,
@@ -22,6 +24,7 @@ import {
   readEmbeddedFonts,
   readImages,
   readSlideFace,
+  type SlideContext,
   type SlideFace,
   type SlideFonts,
   slideImages,
@@ -31,7 +34,7 @@ interface CanvasElement {
   width: number
   height: number
   style: { width: string; height: string }
-  getContext(kind: '2d', options: { alpha: boolean }): PaintContext
+  getContext(kind: '2d', options: { alpha: boolean; willReadFrequently: boolean }): SlideContext
 }
 
 declare const document: {
@@ -170,6 +173,7 @@ async function renderPage(
   slideNumber: number,
   width: number,
   height: number,
+  clearType: ClearTypeDisplay | null,
 ): Promise<{ width: number; height: number }> {
   const { bytes, presentation, fonts } = await loadDoc(id)
   const slide = presentation.slides[slideNumber - 1]
@@ -184,12 +188,13 @@ async function renderPage(
   canvas.height = height
   canvas.style.width = `${width}px`
   canvas.style.height = `${height}px`
-  const ctx = canvas.getContext('2d', { alpha: false })
+  // ClearType 字形读写画布像素，见 `SlideContext`。画布元素在各页之间复用，绘制上下文的选项取第一页的设置。
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: clearType !== null })
   paintSlide(
     ctx,
     presentation,
     slide,
-    { fonts, image: (part) => images.get(part) ?? null, createCanvas },
+    { fonts, image: (part) => images.get(part) ?? null, createCanvas, clearType },
     scale,
   )
   return { width, height }

@@ -1,9 +1,9 @@
 /**
  * docx 分页与页面绘制。覆盖 `paginate.ts`（行可容纳的判据与 `lineNeed`、相邻段间距、页首段前间距、段内分页符与分栏符、
  * 孤行控制、段中不分页、与下段同页、分节类型、奇偶页空白页、分栏、表格的逐行放置、行内切开、标题行重复、
- * 不能跨页的行与同页的行、页码与页面种类）、`number.ts`（页码格式）、`build.ts`（`partRef` 页眉页脚的沿用、
- * `requiredFonts`、独占一行的嵌入式图片的横向位置、未绘制图片的计数、制表位前导符）、`../layout.ts`（对齐网格的多倍行距各行的
- * 文字底边）、`../render/paint.ts`（字形按组取整定位、点阵模式、`pageImages`、页面背景的平铺单元）与 `../render/fonts.ts`（字形登记）。
+ * 不能跨页的行与同页的行、页码与页面种类、只有段落标记的分节段落）、`number.ts`（页码格式）、`build.ts`（`partRef` 页眉页脚的沿用、
+ * `requiredFonts`、独占一行的嵌入式图片的横向位置、未绘制图片的计数、制表位前导符）、`../parse/body.ts`（页眉页脚不对齐行网格）、
+ * `../layout.ts`（对齐网格的多倍行距各行的文字底边）、`../render/paint.ts`（字形按组取整定位、点阵模式、`pageImages`、页面背景的平铺单元）与 `../render/fonts.ts`（字形登记）。
  *
  * 期望值取自 WPS 12.1 只读打开构造文档后逐段取得的所在页与垂直位置（`Range.Information(3)`、`Information(6)`）。
  * 文档由 XML 解析得到；分页用例的排版结果按给定行高构造，不读取字体。分页属性写在 XML 中，或由 `tweak` 改写模型字段。
@@ -15,7 +15,12 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
 import type { BitmapGlyph, EmbeddedBitmaps } from '../../font/index.ts'
-import type { TextBlock, TextFragment, TextLine } from '../../text/index.ts'
+import {
+  NO_HOST_FAMILIES,
+  type TextBlock,
+  type TextFragment,
+  type TextLine,
+} from '../../text/index.ts'
 import {
   type DocumentSettings,
   type DocxDocument,
@@ -29,7 +34,7 @@ import { pageImages, paintPage } from '../render/paint.ts'
 import type { CellBox, RowBox, TableLayout } from '../table/layout.ts'
 import { buildDocx, p, r } from '../test-helper.ts'
 import { layoutPages, partRef, requiredFonts } from './build.ts'
-import type { Page, PageParagraph } from './model.ts'
+import type { Page, PageItem, PageParagraph } from './model.ts'
 import { pageNumberText } from './number.ts'
 import {
   type PageFlow,
@@ -498,6 +503,22 @@ describe('paginate：分节', () => {
     ])
   })
 
+  test('只有段落标记的分节段落超出正文区底边时留在本页；带文字时与文档最后的空段落移到下一页（WPS：构造文档 w16 se）', async () => {
+    // 34 段 20 磅与 1 段 15 磅之后余 2.9 磅，第 36 段（13.6 磅）超出正文区底边。
+    const heights = [...Array.from({ length: 34 }, () => [20]), [15], [13.6], [20]]
+    const pagesOf = async (body: string, empty: boolean, rows = heights) => {
+      const lay = layout(rows)
+      const paragraphs = lay.paragraphs.map((l, i) => (i === 35 && empty ? emptyLast(l) : l))
+      return where(paginate(tweak(await doc(body)), { ...lay, paragraphs }, options()))
+    }
+    const mark = await pagesOf(paras(35) + p('', SECT()) + p(r('b')) + SECT(), true)
+    expect([mark.get(35)!.page, mark.get(36)!.page]).toEqual([1, 2])
+    const text = await pagesOf(paras(35) + p(r('节末'), SECT()) + p(r('b')) + SECT(), false)
+    expect([text.get(35)!.page, text.get(36)!.page]).toEqual([2, 3])
+    const last = await pagesOf(paras(35) + p('') + SECT(), true, heights.slice(0, 36))
+    expect(last.get(35)!.page).toBe(2)
+  })
+
   test('没有段落的节同样开始新页', async () => {
     const d = tweak(await doc(p(r('a'), SECT()) + SECT()))
     expect(paginate(d, layout([[20]]), options()).length).toBe(2)
@@ -641,9 +662,23 @@ describe('build：页眉页脚与所需字体', () => {
         `<w:tbl><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>${p(r('b', '<w:rFonts w:ascii="T1" w:hAnsi="T1" w:eastAsia="T2"/>'))}</w:tc></w:tr></w:tbl>` +
         SECT(),
     )
-    const names = requiredFonts(d)
+    const names = requiredFonts(d, NO_HOST_FAMILIES)
     expect(names).toContain('A1')
     expect(names).toContain('T2')
+  })
+
+  test('requiredFonts：主机有的字体名不列出替代字体，主机没有的字体名列出前缀匹配的结果', async () => {
+    const font = (name: string) =>
+      `<w:rFonts w:ascii="${name}" w:hAnsi="${name}" w:eastAsia="宋体"/>`
+    const d = await doc(p(r('a', font('Microsoft YaHei'))) + p(r('b', font('Courier'))) + SECT())
+    const host = {
+      local: ['Courier New', 'Microsoft YaHei UI', '宋体', '微软雅黑'],
+      names: ['courier new', 'microsoft yahei', 'microsoft yahei ui', 'simsun', '宋体', '微软雅黑'],
+    }
+    const names = requiredFonts(d, host)
+    expect(names).toContain('Courier New')
+    // Microsoft YaHei 是微软雅黑的英文名，主机有该字体：不取其前缀匹配的结果（Microsoft YaHei UI）。
+    expect(names).not.toContain('Microsoft YaHei UI')
   })
 })
 
@@ -728,6 +763,9 @@ describe('paintPage：逐字定位与点阵模式', () => {
       pixelAdvance: () => null,
       bitmaps,
       outlines: null,
+      clearType: null,
+      hinting: null,
+      grayscale: () => false,
       math: null,
     }
   }
@@ -833,20 +871,20 @@ describe.skipIf(process.platform !== 'win32')('build：制表位前导符（本�
   const TABS = '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8306"/></w:tabs>'
   const SONG = '<w:rFonts w:ascii="宋体" w:hAnsi="宋体" w:eastAsia="宋体"/><w:sz w:val="30"/>'
 
-  async function leaderLine(body: string) {
+  async function leaderLine(body: string, char = '.') {
     const result = await parseDocx(buildDocx({ body: body + SECT(), settings: COMPAT14 }))
     if (!result.ok) throw new Error('解析失败')
     const faces = [
       loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0),
       loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'times.ttf'))), 'Times New Roman'),
     ]
-    const { pages } = layoutPages(result.value, new DocxFonts(faces, '宋体'))
+    const { pages } = layoutPages(result.value, new DocxFonts(faces, '宋体'), NO_HOST_FAMILIES)
     const item = pages.pages[0]!.body.find(
       (it) => it.kind === 'paragraph' && it.lines[0]!.fragments.length > 0,
     )!
     if (item.kind !== 'paragraph') throw new Error('不是段落')
     const fragments = item.lines[0]!.fragments
-    const leader = fragments.find((f) => f.text.startsWith('.'))!
+    const leader = fragments.find((f) => f.text.startsWith(char))!
     const words = fragments.filter((f) => f !== leader)
     const last = words.at(-2)!
     return {
@@ -890,6 +928,101 @@ describe.skipIf(process.platform !== 'win32')('build：制表位前导符（本�
     expect(leader.x).toBeCloseTo(start, 6)
     expect(leader.text.length).toBe(Math.floor((number.x - start) / dot))
   })
+
+  test('前导符的基线：目录域以外上移制表符字体与 Times New Roman 的上沿之差再加 0.05 磅，目录域结果中与所在行相同', async () => {
+    // WPS 实测（构造文档 w13 l1、w14 v1）：15 磅宋体制表符的 Times New Roman 前导符比页码高 1 像素；目录域中与页码同一基线。
+    const tab = `${r('第1章 绪论', SONG)}<w:r><w:rPr>${SONG}</w:rPr><w:tab/></w:r>${r('1', SONG)}`
+    const field =
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    const plain = await leaderLine(p(tab, TABS))
+    const toc = await leaderLine(
+      p(field + tab, TABS) + p('<w:r><w:fldChar w:fldCharType="end"/></w:r>'),
+    )
+    const songAscent = (258 / 256) * 15
+    const timesAscent = (1912 / 2048) * 15
+    expect(plain.number.baseline - plain.leader.baseline).toBeCloseTo(
+      songAscent - timesAscent + 0.05,
+      6,
+    )
+    expect(toc.leader.baseline).toBeCloseTo(toc.number.baseline, 9)
+  })
+
+  test('点以外的前导符：hyphen、underscore、heavy、middleDot 以 Times New Roman 的「-」「_」「_」「·」自制表符起点排起，纵向位置与点前导符相同', async () => {
+    // WPS 实测（构造文档 w13 l1 的 L14–L21：12 磅宋体与 Arial 制表符）：页面 EMF 中前导符的字符、字体、起点与基线像素位置。
+    const tabs = (leader: string) =>
+      `<w:tabs><w:tab w:val="right" w:leader="${leader}" w:pos="8306"/></w:tabs>`
+    const tab = `${r('第1章 绪论', SONG)}<w:r><w:rPr>${SONG}</w:rPr><w:tab/></w:r>${r('1', SONG)}`
+    const dot = await leaderLine(p(tab, tabs('dot')))
+    for (const [leader, char] of [
+      ['hyphen', '-'],
+      ['underscore', '_'],
+      ['heavy', '_'],
+      ['middleDot', '·'],
+    ] as const) {
+      const line = await leaderLine(p(tab, tabs(leader)), char)
+      expect([leader, line.family, line.leader.size]).toEqual([leader, 'Times New Roman', 15])
+      expect(new Set(line.leader.text)).toEqual(new Set([char]))
+      expect(line.leader.x).toBeCloseTo(line.start, 6)
+      expect(line.leader.baseline).toBeCloseTo(dot.leader.baseline, 9)
+    }
+  })
+
+  test('前导符的步进为线性宽度取整到整像素，个数为宽度除以步进取整（WPS：12 磅「-」「·」5 像素、「_」8 像素，10 磅「.」3 像素）', async () => {
+    // WPS 实测（构造文档 w13 l1，页面 EMF 中的字距与个数）：线性宽度为 5.33、5.33、8、3.33 像素。
+    const tabs = (leader: string) =>
+      `<w:tabs><w:tab w:val="right" w:leader="${leader}" w:pos="8306"/></w:tabs>`
+    const song = (sz: number) =>
+      `<w:rFonts w:ascii="宋体" w:hAnsi="宋体" w:eastAsia="宋体"/><w:sz w:val="${sz}"/>`
+    for (const [leader, char, sz, px] of [
+      ['hyphen', '-', 24, 5],
+      ['middleDot', '·', 24, 5],
+      ['underscore', '_', 24, 8],
+      ['dot', '.', 20, 3],
+    ] as const) {
+      const tab = `${r('第1章 绪论', SONG)}<w:r><w:rPr>${song(sz)}</w:rPr><w:tab/></w:r>${r('1', SONG)}`
+      const { leader: f, start, number } = await leaderLine(p(tab, tabs(leader)), char)
+      expect([leader, f.advances[0]]).toEqual([leader, (px * 3) / 4])
+      expect(f.text.length).toBe(Math.floor((number.x - start) / ((px * 3) / 4)))
+    }
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('build：行顶取整到缇（本机字体）', () => {
+  const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
+  const STYLES =
+    '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体" ' +
+    'w:cs="Times New Roman"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr>' +
+    '<w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>'
+  const font = (name: string) =>
+    `<w:rFonts w:ascii="${name}" w:hAnsi="${name}" w:eastAsia="${name}"/><w:sz w:val="30"/>`
+
+  test('行顶为按行高与段前间距累计的值向下取整到整缇（WPS：w14 v1 前 10 段的行顶）', async () => {
+    // 段前间距依次为 0、3、6、9、12 缇；前 5 段为 15 磅黑体（单倍行高 389.06 缇），后 5 段另有 15 磅微软雅黑的字段
+    // （514.60 缇）。累计值的小数部分逐段不同，后 5 段为 3415.31、3932.91、4453.51、4977.11、5503.71 缇：四舍五入时与 WPS 不同。
+    const body = [0, 3, 6, 9, 12, 0, 3, 6, 9, 12]
+      .map((before, k) =>
+        p(
+          r(`V${k}`, font('黑体')) + (k < 5 ? '' : r('x', font('微软雅黑'))),
+          `<w:spacing w:before="${before}" w:after="0" w:line="240" w:lineRule="auto"/>`,
+        ),
+      )
+      .join('')
+    const result = await parseDocx(buildDocx({ body: body + SECT(), styles: STYLES }))
+    if (!result.ok) throw new Error('解析失败')
+    const faces = [
+      loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0),
+      loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simhei.ttf'))), '黑体'),
+      loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'times.ttf'))), 'Times New Roman'),
+      loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'msyh.ttc'))), '微软雅黑', 0),
+    ]
+    const { pages } = layoutPages(result.value, new DocxFonts(faces, '宋体'), NO_HOST_FAMILIES)
+    const tops = pages.pages[0]!.body.map((it) =>
+      it.kind === 'paragraph' ? it.lines[0]!.top : NaN,
+    )
+    const wps = [1440, 1832, 2227, 2625, 3026, 3415, 3932, 4453, 4977, 5503]
+    expect(tops).toEqual(wps.map((t) => t / 20))
+  })
 })
 
 describe.skipIf(process.platform !== 'win32')('build：独占一行的嵌入式图片（本机字体）', () => {
@@ -923,7 +1056,8 @@ describe.skipIf(process.platform !== 'win32')('build：独占一行的嵌入式�
     )
     if (!result.ok) throw new Error('解析失败')
     const simsun = loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)
-    const page = layoutPages(result.value, new DocxFonts([simsun], '宋体')).pages.pages[0]!
+    const page = layoutPages(result.value, new DocxFonts([simsun], '宋体'), NO_HOST_FAMILIES).pages
+      .pages[0]!
     const xs = page.body.flatMap((it) =>
       it.kind === 'paragraph' ? it.images.map((im) => im.x) : [],
     )
@@ -957,7 +1091,7 @@ describe.skipIf(process.platform !== 'win32')('build：独占一行的嵌入式�
     if (!result.ok) throw new Error('解析失败')
     expect(result.value.unsupported).toEqual({ chart: 1 })
     const simsun = loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)
-    const { pages } = layoutPages(result.value, new DocxFonts([simsun], '宋体'))
+    const { pages } = layoutPages(result.value, new DocxFonts([simsun], '宋体'), NO_HOST_FAMILIES)
     const page = pages.pages[0]!
     expect(pages.pages).toHaveLength(1)
     const item = page.body[0] as PageParagraph
@@ -995,12 +1129,71 @@ describe.skipIf(process.platform !== 'win32')('paginate：对齐网格的多倍�
       .join('')
     const d = await doc(body + SECT('<w:docGrid w:type="lines" w:linePitch="312"/>'), COMPAT15)
     const simsun = loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)
-    const pages = layoutPages(d, new DocxFonts([simsun], '宋体')).pages.pages
+    const pages = layoutPages(d, new DocxFonts([simsun], '宋体'), NO_HOST_FAMILIES).pages.pages
     const lineCounts = pages.map((pg) =>
       pg.body.map((it) => (it.kind === 'paragraph' ? it.lines.length : 0)),
     )
     // 第 2、4 页各为上一例的分页符段落与第二行（WPS 两例共 4 页）。
     expect(lineCounts).toEqual([[1, 2], [1], [1, 1], [1]])
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('build：页眉页脚与行网格（本机字体）', () => {
+  const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
+  const W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+  const part = (root: 'hdr' | 'ftr', body: string) =>
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:${root} ${W_NS}>${body}</w:${root}>`
+  const SZ = '<w:sz w:val="24"/>'
+  const TABLE = `<w:tbl><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:tc>${p(r('核稿人', SZ))}</w:tc></w:tr></w:tbl>`
+  const REFS =
+    '<w:headerReference w:type="default" r:id="rH"/><w:footerReference w:type="default" r:id="rF"/>'
+  const SETTINGS = COMPAT14.replace('<w:compat>', '<w:compat><w:adjustLineHeightInTable/>')
+
+  async function pageWith(grid: string): Promise<Page> {
+    const result = await parseDocx(
+      buildDocx({
+        body: p(r('正文甲', SZ)) + p(r('正文乙', SZ)) + SECT(REFS + grid),
+        settings: SETTINGS,
+        extra: [
+          {
+            id: 'rH',
+            type: 'header',
+            name: 'header1.xml',
+            content: part('hdr', p(r('页眉甲', SZ)) + p(r('页眉乙', SZ))),
+          },
+          {
+            id: 'rF',
+            type: 'footer',
+            name: 'footer1.xml',
+            content: part('ftr', p(r('页脚甲', SZ)) + TABLE),
+          },
+        ],
+      }),
+    )
+    if (!result.ok) throw new Error('解析失败')
+    const simsun = loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)
+    return layoutPages(result.value, new DocxFonts([simsun], '宋体'), NO_HOST_FAMILIES).pages
+      .pages[0]!
+  }
+  /** 各行的行顶与行高，含单元格中的行。 */
+  const lines = (items: readonly PageItem[]): [number, number][] =>
+    items.flatMap((it) =>
+      it.kind === 'table'
+        ? lines(it.items)
+        : it.lines.map((l): [number, number] => [l.top, l.height]),
+    )
+
+  test('页眉页脚中的段落与单元格不对齐行网格（WPS：网格 579、312 与没有网格时页眉页脚各行的位置相同，正文行距 28.95 磅）', async () => {
+    const none = await pageWith('')
+    for (const pitch of [579, 312]) {
+      const grid = await pageWith(`<w:docGrid w:type="lines" w:linePitch="${pitch}"/>`)
+      expect(lines(grid.header)).toEqual(lines(none.header))
+      expect(lines(grid.footer)).toEqual(lines(none.footer))
+    }
+    expect(lines(none.header)).toHaveLength(2)
+    expect(lines(none.footer)).toHaveLength(2)
+    const body = lines((await pageWith('<w:docGrid w:type="lines" w:linePitch="579"/>')).body)
+    expect(body[0]![1]).toBeCloseTo(28.95, 6)
   })
 })
 
@@ -1024,6 +1217,9 @@ describe('DocxFonts：登记字形', () => {
     pixelAdvance: () => null,
     bitmaps: null,
     outlines: null,
+    clearType: null,
+    hinting: null,
+    grayscale: () => false,
     math: null,
   }
 

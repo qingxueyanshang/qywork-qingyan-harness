@@ -5,6 +5,7 @@
  *   使排版结果中的每个 `TextFace` 都是本字体集登记过的对象，分页时可由 `ref` 找回字体与字形。
  * - 主机没有的字体由 `layoutDocument` 按替代字体（`../resolve/fonts.ts` 的 `substitutes`）排版并记入 `missingFonts`，
  *   没有替代字体时改用 `fallback`。
+ * - 平滑字号的 ClearType 字形取自 `DocxFace.clearType`（`../../glyph/cleartype/`）。
  * - 带 `MATH` 表与 TrueType 轮廓的字体另读取为数学字体（`DocxFace.math`），供公式排版（`source.math`）与按轮廓绘制；
  *   公式中的普通文字按其字体的轮廓取墨迹（`source.outlines`）。
  * - `blockFonts` 列出段落用到的字体名，含公式中的字符属性与数学字体（文档所需的全部字体名见 `requiredFonts`）。
@@ -12,18 +13,22 @@
 
 import {
   type EmbeddedBitmaps,
+  type GlyphHinting,
   type GlyphOutlines,
   type PixelVerticalMetrics,
   readEmbeddedBitmaps,
   readFaces,
+  readGlyphHinting,
   readGlyphOutlines,
   readHead,
   readMetrics,
   readPixelAdvances,
   readPixelVerticalMetrics,
   readVerticalMetrics,
+  type SfntFace,
   tableBytes,
 } from '../../font/index.ts'
+import { type ClearTypeGlyphs, readClearTypeGlyphs } from '../../glyph/cleartype/index.ts'
 import { type MathArg, type MathFont, readMathFont } from '../../math/index.ts'
 import { emboldened, type TextFace } from '../../text/index.ts'
 import { EMOJI_FALLBACK, emojiFallback, type FontMatch, type FontSource } from '../layout.ts'
@@ -44,6 +49,12 @@ export interface DocxFace {
   readonly bitmaps: EmbeddedBitmaps | null
   /** TrueType 字形轮廓；CFF 轮廓的字体为 `null`。 */
   readonly outlines: GlyphOutlines | null
+  /** ClearType 字形；CFF 轮廓的字体与可变字体为 `null`（见 `readClearTypeGlyphs`）。 */
+  readonly clearType: ClearTypeGlyphs | null
+  /** 单色字形的指令提示（图元文件文字，见 `paint.ts`）；没有 TrueType 轮廓的字体为 `null`。 */
+  readonly hinting: GlyphHinting | null
+  /** `gasp` 表在 ppem 下要求灰度平滑（`GASP_DOGRAY`）；没有 `gasp` 表时为真。 */
+  readonly grayscale: (ppem: number) => boolean
   /** 数学字体：`font` 为本字体的 `text`。字体没有 `MATH` 表或没有 TrueType 轮廓时为 `null`。 */
   readonly math: MathFont<TextFace> | null
 }
@@ -66,8 +77,25 @@ export function loadDocxFace(bytes: Uint8Array, family: string, index = 0): Docx
     pixelAdvance: readPixelAdvances(bytes, face),
     bitmaps: readEmbeddedBitmaps(bytes, face),
     outlines: readGlyphOutlines(bytes, face),
+    clearType: readClearTypeGlyphs(bytes, face),
+    hinting: readGlyphHinting(bytes, face),
+    grayscale: readGrayscaleRanges(bytes, face),
     math: readMathFont(bytes, index, text),
   }
+}
+
+const GASP_DOGRAY = 0x0002
+
+/** `gasp` 表的 `GASP_DOGRAY`：ppem 超出最后一条记录时按最后一条记录。 */
+function readGrayscaleRanges(bytes: Uint8Array, face: SfntFace): (ppem: number) => boolean {
+  if (!face.tables.has('gasp')) return () => true
+  const t = tableBytes(bytes, face, 'gasp')
+  const v = new DataView(t.buffer, t.byteOffset, t.byteLength)
+  const count = t.byteLength >= 4 ? Math.min(v.getUint16(2), (t.byteLength - 4) >> 2) : 0
+  const ranges: [max: number, gray: boolean][] = []
+  for (let i = 0; i < count; i++)
+    ranges.push([v.getUint16(4 + 4 * i), (v.getUint16(6 + 4 * i) & GASP_DOGRAY) !== 0])
+  return (ppem) => (ranges.find(([max]) => ppem <= max) ?? ranges.at(-1))?.[1] ?? true
 }
 
 function key(name: string): string {

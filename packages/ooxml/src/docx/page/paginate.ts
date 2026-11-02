@@ -3,7 +3,8 @@
  *
  * - 行可容纳的判据：行中文字的底边不超过正文区底边（容差 `FIT_EPSILON`），见 `lineNeed`。多倍行距（倍数大于 1）
  *   在文字下方增加的部分不必容纳在本页：不对齐网格时按行高除以倍数判定，对齐网格时按文字底边判定（文字在行内上下
- *   居中）；含嵌入式对象的行按对象框高度判定；段后间距不必容纳。
+ *   居中）；含嵌入式对象的行按对象框高度判定；段后间距不必容纳。结束一节且其后还有节的段落没有文字与行内对象时
+ *   不判定，留在本页（`sectionMark`）。
  * - 相邻段落之间的距离为上一段段后间距与下一段段前间距中的较大者（不相加）；与网格无关。段落边框占用的高度
  *   （`ParagraphLayout.borderTop`、`borderBottom`）另加在段前间距之后与最后一行之后，下边框须与最后一行一起容纳在本页
  *   （WPS 实测：3 磅三线下边框超出正文区底边时段落移到下一页）。
@@ -160,6 +161,10 @@ export interface Exclusion {
   readonly bottom: number
   /** 上下型：重叠的行下移到矩形下方（见 `overlaps`）。 */
   readonly topAndBottom: boolean
+  /**
+   * 上下型且兼容模式低于 15：顶边恰好接触锚定段落之前的段落的行时该行同样计入重叠，段落末行计入段后间距（见 `overlaps`）。
+   */
+  readonly touchesEarlier: boolean
   readonly side: 'bothSides' | 'left' | 'right' | 'largest'
   /** 锚定段落的块下标。 */
   readonly owner: number
@@ -213,11 +218,21 @@ export interface PaginateOptions {
 
 /**
  * 段落 `block` 中纵向范围为 [`top`, `bottom`) 的行是否与矩形 `e` 重叠。上下型对象的顶边恰好接触行底时，锚定段落及其后
- * 段落的行同样计入，之前段落的行不计入（WPS 实测：上下型图片相对段落偏移 0 时，上一段末行留在图片上方）。
+ * 段落的行同样计入；之前段落的行在兼容模式 15 中不计入（WPS 实测：上下型图片相对段落偏移 0 时，上一段末行留在图片
+ * 上方），低于 15 时计入（`Exclusion.touchesEarlier`；构造文档 w11f、w11g 改为兼容模式 14：偏移 0 时上一段移到图片下方）。
+ * `after` 为段落末行的段后间距（其余行为 0），只对 `touchesEarlier` 的矩形计入行底（上一段段后 10 磅、图片位于本段顶边时
+ * 上一段同样下移）。
  */
-export function overlaps(e: Exclusion, top: number, bottom: number, block: number): boolean {
-  const touching = e.topAndBottom && block >= e.owner
-  return (touching ? bottom > e.top - 0.01 : bottom > e.top + 0.01) && top < e.bottom
+export function overlaps(
+  e: Exclusion,
+  top: number,
+  bottom: number,
+  block: number,
+  after: number,
+): boolean {
+  const end = e.touchesEarlier ? bottom + after : bottom
+  const touching = e.topAndBottom && (block >= e.owner || e.touchesEarlier)
+  return (touching ? end > e.top - 0.01 : end > e.top + 0.01) && top < e.bottom
 }
 
 /** 单元格内容中可在其后切开的位置（相对文字区顶边）：段落各行的底边与嵌套表格的底边。 */
@@ -442,10 +457,12 @@ export function paginate(
   const overlapsPlaced = (e: Exclusion): boolean => {
     for (const it of current().items) {
       if (it.kind !== 'paragraph') continue
+      const lines = it.layout.text.lines
       for (let k = 0; k < it.tops.length; k++) {
         const top = it.tops[k]!
-        const bottom = top + it.layout.text.lines[it.first + k]!.height
-        if (overlaps(e, top, bottom, it.block)) return true
+        const bottom = top + lines[it.first + k]!.height
+        const after = it.first + k === lines.length - 1 ? it.layout.spaceAfter : 0
+        if (overlaps(e, top, bottom, it.block, after)) return true
       }
     }
     return false
@@ -847,7 +864,7 @@ export function paginate(
       for (let j = i; j < n; j++) {
         const border = j === lines.length - 1 ? lay.borderBottom : 0
         const need = lineNeed(lay, block.props, j, strip(j)) + border
-        if (bottom + need > page.area.bottom + FIT_EPSILON) break
+        if (bottom + need > page.area.bottom + FIT_EPSILON && !sectionMark(doc, b, lay)) break
         bottom += lines[j]!.height - strip(j)
         fit++
         if (forced.has(j)) {
@@ -922,6 +939,23 @@ export function paginate(
   }
   enter(doc.sections.length - 1)
   return pages
+}
+
+/**
+ * 只有段落标记的分节段落：结束一节且其后还有节，只有一行且该行没有文字与行内对象。超出正文区底边时留在本页，不另起一页
+ * （WPS 实测，构造文档 w16 se：10.5 磅与 20 磅的空段落都留在本页；节末段落带文字时、普通空段落与文档最后的空段落移到下一页）。
+ */
+function sectionMark(doc: DocxDocument, b: number, layout: ParagraphLayout): boolean {
+  const lines = layout.text.lines
+  const line = lines[0]
+  const next = doc.body[b + 1]
+  return (
+    next !== undefined &&
+    next.section !== doc.body[b]!.section &&
+    lines.length === 1 &&
+    line!.start === line!.end &&
+    line!.objects.length === 0
+  )
 }
 
 /** 段落 `block` 第一部分所在页的下标（自 `from` 起查找）。 */

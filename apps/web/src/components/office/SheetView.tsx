@@ -8,6 +8,7 @@
  * 默认导出供 `lazy()` 使用：解析与绘制代码只在打开表格文件时下载。
  */
 
+import { decodePicture, type ImageDecoder } from '@qywork/ooxml/drawingml'
 import {
   type ClearTypeDisplay,
   createScene,
@@ -15,7 +16,6 @@ import {
   fallbackFonts,
   type LoadedFace,
   loadFace,
-  type PaintImage,
   substituteFont,
   type UnsupportedKind,
   type Workbook,
@@ -30,7 +30,7 @@ import type { XlsxReplies, XlsxRequest } from './xlsx-worker.ts'
 interface Doc {
   readonly workbook: Workbook
   readonly fonts: FontSet
-  /** 主机显示器的 ClearType 设置，随文档一同取得；为 `null` 时单元格文字以浏览器字体绘制。 */
+  /** 主机显示器的 ClearType 设置，随文档一同取得；为 `null` 时单元格、形状与图表文字以浏览器字体绘制。 */
   readonly clearType: ClearTypeDisplay | null
 }
 
@@ -54,6 +54,11 @@ const UNSUPPORTED_LABEL: Record<UnsupportedKind, string> = {
   comment: '批注',
   control: '控件',
   oleObject: '嵌入对象',
+}
+
+const imageDecoder: ImageDecoder = {
+  file: (bytes, type) => createImageBitmap(new Blob([bytes], { type })),
+  pixels: (width, height, data) => createImageBitmap(new ImageData(data, width, height)),
 }
 
 /** 字体的排版度量，按字体缓存；字体表不完整（如缺少 `OS/2`）时为 `null`，按主机上没有该字体处理。 */
@@ -172,12 +177,7 @@ export default function SheetView(props: { path: string; mtime: number }) {
       const mine = ++decoding
       setUndecoded(0)
       void Promise.all(
-        sheet.images.map((img) =>
-          createImageBitmap(new Blob([img.bytes.slice()], { type: img.contentType })).then(
-            (bitmap): PaintImage | null => bitmap,
-            () => null,
-          ),
-        ),
+        sheet.images.map((img) => decodePicture(img.bytes.slice(), img.contentType, imageDecoder)),
       ).then((images) => {
         if (mine !== decoding) return
         viewport?.setImages(images)
