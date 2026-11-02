@@ -198,10 +198,10 @@ export function GeneralSettings() {
                 onPick={(on) => setPetPrefs({ place: on ? 'desktop' : 'hidden' })}
               />
             </Row>
-            <Row label="宠物">
+            <Row label="宠物皮肤">
               <div class="pet-pick">
                 <select
-                  aria-label="宠物"
+                  aria-label="宠物皮肤"
                   value={petPrefs().pack ?? ''}
                   onChange={(e) => setPetPrefs({ pack: e.currentTarget.value || null })}
                 >
