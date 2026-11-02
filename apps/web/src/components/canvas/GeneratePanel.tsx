@@ -274,6 +274,14 @@ export function mediaOf(
   return { kind: node.output, path }
 }
 
+/**
+ * 画布引用的文件的地址，带读取画布时该文件的修改时间（`CanvasView.mtimes`）。画布中显示或读取文件一律使用它：
+ * 只含路径的地址在同一路径的文件被改写后不变，媒体元素不重新载入，按地址缓存的读数（时长、封面）不失效。
+ */
+export function fileUrlOf(view: CanvasView | null, path: string): string {
+  return client.fileUrl(path, view?.mtimes?.[path])
+}
+
 function Thumb(props: { view: CanvasView; nodeId: string }) {
   const media = () => mediaOf(props.view, props.nodeId)
   return (
@@ -284,7 +292,7 @@ function Thumb(props: { view: CanvasView; nodeId: string }) {
           fallback={
             <Show when={media().kind === 'image'}>
               <Bitmap
-                src={client.fileUrl(path())}
+                src={fileUrlOf(props.view, path())}
                 width={40 * window.devicePixelRatio}
                 height={40 * window.devicePixelRatio}
               />
@@ -293,7 +301,7 @@ function Thumb(props: { view: CanvasView; nodeId: string }) {
         >
           <Bitmap
             kind="video"
-            src={client.fileUrl(path())}
+            src={fileUrlOf(props.view, path())}
             width={40 * window.devicePixelRatio}
             height={40 * window.devicePixelRatio}
           />
@@ -525,15 +533,16 @@ export function GeneratePanel(props: {
     el.classList.toggle('broken', !!broken)
     const media = mediaOf(props.view, id)
     const path = media.kind === 'image' ? (media.path ?? '') : ''
-    // 只在引用的图片版本变化时替换缩略图；重读文档和修改名称不重新取图。
-    if ((el.dataset.preview ?? '') !== path) {
-      el.dataset.preview = path
+    // 只在引用的图片版本或其文件内容变化时替换缩略图；重读文档和修改名称不重新取图。
+    const preview = path && `${path}|${props.view.mtimes?.[path] ?? ''}`
+    if ((el.dataset.preview ?? '') !== preview) {
+      el.dataset.preview = preview
       el.querySelector('canvas')?.remove()
       if (path) {
         const thumb = document.createElement('canvas')
         thumb.className = 'canvas-bitmap'
         const side = 32 * window.devicePixelRatio
-        void decodeImage(client.fileUrl(path), { w: side, h: side }).then(
+        void decodeImage(fileUrlOf(props.view, path), { w: side, h: side }).then(
           (bitmap) => paint(thumb, bitmap),
           () => thumb.remove(),
         )
@@ -660,19 +669,33 @@ export function GeneratePanel(props: {
   /**
    * 展开查看的文本引用：点击文本标签切换。内容为文件当前的全文或摘录；显示时手写的素材编号按所选模型的写法改写
    * （`relabelInputs`，写法取自 `view.mentions`），与运行时发送的文字相同，换模型后随画布快照更新。
+   * 来源写成字符串：展开期间文件被改写时随修改时间重新读取，画布重新读取而文件未变时不重新读取。
    */
   const [preview, setPreview] = createSignal<string | null>(null)
-  const [previewText] = createResource(preview, async (id) => {
-    const source = props.view.doc.nodes.find((n) => n.id === id)
-    if (source?.type !== 'file') return ''
-    // 只有 404 是文件不存在；连接失败与其他状态码按实际情况报告。
-    const res = await fetch(client.fileUrl(source.path), { cache: 'no-store' }).catch(() => null)
-    if (!res) return '无法读取文件：连接失败'
-    if (res.status === 404) return '文件不存在'
-    if (!res.ok) return `无法读取文件：HTTP ${res.status}`
-    const r = excerptOf(await res.text(), source.excerpt)
-    return r.ok ? r.text : r.error
-  })
+  const previewSource = () => {
+    const node = props.view.doc.nodes.find((n) => n.id === preview())
+    return node?.type === 'file' ? node : null
+  }
+  const [previewText] = createResource(
+    () => {
+      const id = preview()
+      const path = previewSource()?.path
+      return id && `${id}\u0000${path ? (props.view.mtimes?.[path] ?? '') : ''}`
+    },
+    async () => {
+      const source = previewSource()
+      if (!source) return ''
+      // 只有 404 是文件不存在；连接失败与其他状态码按实际情况报告。
+      const res = await fetch(fileUrlOf(props.view, source.path), { cache: 'no-store' }).catch(
+        () => null,
+      )
+      if (!res) return '无法读取文件：连接失败'
+      if (res.status === 404) return '文件不存在'
+      if (!res.ok) return `无法读取文件：HTTP ${res.status}`
+      const r = excerptOf(await res.text(), source.excerpt)
+      return r.ok ? r.text : r.error
+    },
+  )
   /** 画布上有文本卡时，任何生成卡都可以用 @ 引用：文本不受卡片接受的素材类别限制。 */
   const canMention = () => showInputs() || props.view.doc.nodes.some(isTextCard)
 

@@ -329,38 +329,27 @@ export async function pngOf(bitmap: ImageBitmap): Promise<Blob> {
 }
 
 /**
- * 已生成的封面（PNG）与其所依据的页面内容，按页面地址缓存。生成卡的版本文件写出后不再修改；
- * 放上画布的 HTML 文件可能被改写，实时页面读到不同内容时经 `dropStalePoster` 丢弃。
+ * 已生成的封面（PNG），按页面地址缓存。地址带文件的修改时间（`fileUrlOf`），页面文件被改写后地址变化，
+ * 封面随之重新生成。
  */
-const posters = new Map<string, { html?: string; png: Promise<Blob> }>()
-
-/** 实时页面读到的内容与封面所依据的不同时丢弃该封面，下次显示封面时重新生成。 */
-export function dropStalePoster(url: string, html: string): void {
-  const hit = posters.get(url)
-  if (hit?.html !== undefined && hit.html !== html) posters.delete(url)
-}
+const posters = new Map<string, Promise<Blob>>()
 
 /**
  * 页面的封面：在隐藏的 iframe 中从 0 开始逐帧推进到 `ART_POSTER_MS`，截取后关闭。页面脚本报错或加载超时时拒绝。
  */
 export function artPoster(url: string): Promise<Blob> {
-  const hit = posters.get(url)
-  if (hit) return hit.png
-  const entry: { html?: string; png: Promise<Blob> } = {
-    png: renderPoster(url, (html) => {
-      entry.html = html
-    }),
+  let png = posters.get(url)
+  if (!png) {
+    png = renderPoster(url)
+    posters.set(url, png)
   }
-  posters.set(url, entry)
-  return entry.png
+  return png
 }
 
-/** 生成一张封面。读到页面内容后经 `onSource` 交出，供缓存比对。 */
-async function renderPoster(url: string, onSource: (html: string) => void): Promise<Blob> {
+async function renderPoster(url: string): Promise<Blob> {
   const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`页面读取失败：${res.status}`)
   const html = await res.text()
-  onSource(html)
   const page = await inlineArtImages(html, url)
   const size = artPageSize(html)
   const frame = document.createElement('iframe')

@@ -944,7 +944,7 @@ describe('画布：节点操作', () => {
   })
 
   /** 原始失败形状：生成时每次写文件文件版本加一，文本卡重新读取期间外层 Suspense 显示占位，整块画布闪烁。 */
-  test('文件版本变化时文本卡重新读取，画布不被占位替换', async () => {
+  test('文件修改时间变化时文本卡重新读取，画布不被占位替换；文件未变时不重新读取', async () => {
     let reads = 0
     const original = globalThis.fetch
     globalThis.fetch = (async (url: string) => {
@@ -954,7 +954,7 @@ describe('画布：节点操作', () => {
       return new Response('## 1-1\n推门。\n')
     }) as unknown as typeof fetch
     try {
-      const { host } = await mount([
+      const { host, server } = await mount([
         {
           op: 'add_file',
           path: '脚本.md',
@@ -975,6 +975,7 @@ describe('画布：节点操作', () => {
         if (host.querySelector('.suspended')) suspended = true
       })
       watch.observe(host, { childList: true, subtree: true })
+      server.setView({ mtimes: { '脚本.md': 2000 } })
       store.setState('fileVersion', store.state.fileVersion + 1)
       await waitFor(
         () => reads === 2,
@@ -984,6 +985,15 @@ describe('画布：节点操作', () => {
       watch.disconnect()
       expect(suspended).toBe(false)
       expect(text()).toBe('推门。')
+
+      const canvasReads = server.reads
+      store.setState('fileVersion', store.state.fileVersion + 1)
+      await waitFor(
+        () => server.reads > canvasReads,
+        () => `reads=${server.reads}`,
+      )
+      await new Promise((r) => setTimeout(r, 60))
+      expect(reads).toBe(2)
     } finally {
       globalThis.fetch = original
     }
@@ -4882,6 +4892,55 @@ describe('画布：时间线', () => {
           ],
         },
       ])
+    } finally {
+      document.elementFromPoint = point
+      document.elementsFromPoint = points
+      restoreVideo()
+    }
+  })
+
+  test('视频被原地改写后，加入时间线时按新文件读取时长', async () => {
+    let restoreVideo = fakeDurations(5)
+    const point = document.elementFromPoint
+    const points = document.elementsFromPoint
+    try {
+      const { host, server, refs } = await mount(TIMELINE)
+      const store = await import('../../lib/store/index.ts')
+      const stage = host.querySelector('.canvas-stage')!
+      document.elementFromPoint = () => node(host, refs.$t!)
+      document.elementsFromPoint = () => [node(host, refs.$t!)]
+      const reload = async (mtime: number) => {
+        const reads = server.reads
+        server.setView({ mtimes: { 'clip.mp4': mtime } })
+        store.setState('fileVersion', (v) => v + 1)
+        await waitFor(
+          () => server.reads > reads,
+          () => `reads=${server.reads}`,
+        )
+        await new Promise((r) => setTimeout(r, 0))
+      }
+      const link = async (count: number) => {
+        pointer(node(host, refs.$v!).querySelector('.canvas-port.out')!, 'pointerdown', 10, 10)
+        pointer(stage, 'pointermove', 120, 40)
+        await waitFor(
+          () => node(host, refs.$t!).classList.contains('link-target'),
+          () => node(host, refs.$t!).className,
+        )
+        pointer(stage, 'pointerup', 120, 40)
+        await waitFor(
+          () => server.ops.length === count,
+          () => JSON.stringify(server.ops),
+        )
+        const op = server.ops[count - 1]![0] as Extract<CanvasOp, { op: 'update' }>
+        return op.clips!.at(-1)
+      }
+      await reload(1000)
+      expect(await link(1)).toEqual({ path: 'clip.mp4', in: 0, out: 5 })
+
+      restoreVideo()
+      restoreVideo = fakeDurations(3)
+      await reload(2000)
+      expect(await link(2)).toEqual({ path: 'clip.mp4', in: 0, out: 3 })
     } finally {
       document.elementFromPoint = point
       document.elementsFromPoint = points

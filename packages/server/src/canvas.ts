@@ -1891,7 +1891,7 @@ export class CanvasService {
         ? [n.path]
         : n.type === 'generate'
           ? n.versions.filter((v) => v.id === n.current).map((v) => v.path)
-          : [],
+          : n.clips.map((c) => c.path),
     )
     await Promise.all(
       shown.map(async (p) => {

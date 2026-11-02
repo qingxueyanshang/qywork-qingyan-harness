@@ -7,7 +7,7 @@
 
 import { artPageSize, type CanvasPixels } from '@qywork/core'
 import { createResource, createSignal, onCleanup, onMount, Show } from 'solid-js'
-import { type ArtHandle, connectArt, dropStalePoster, inlineArtImages } from './art.ts'
+import { type ArtHandle, connectArt, inlineArtImages } from './art.ts'
 import { Bitmap } from './Bitmap.tsx'
 
 /** 实时页面的句柄与视口。 */
@@ -25,15 +25,13 @@ export function ArtView(props: {
   live: boolean
   register: (live: ArtLive | null) => void
 }) {
-  // 每次进入实时状态重新读取：Agent 可能已改写该文件，封面缓存不影响实时页面。
+  // 每次进入实时状态重新读取：页面引用的图片可能已被改写，而页面地址只随页面文件本身变化。
   const [html] = createResource(
     () => (props.live ? props.url : null),
     async (url) => {
       const res = await fetch(url, { cache: 'no-store' })
       if (!res.ok) throw new Error(`页面读取失败：${res.status}`)
-      const html = await res.text()
-      dropStalePoster(url, html)
-      return inlineArtImages(html, url)
+      return inlineArtImages(await res.text(), url)
     },
   )
   return (

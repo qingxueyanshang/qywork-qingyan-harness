@@ -91,7 +91,7 @@ import { Bitmap } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
 import { curveOf, FLOW_STOPS, FlowLayer, pathOf } from './Flow.tsx'
 import { captureVideoFrame } from './frame.ts'
-import { GeneratePanel, mediaOf } from './GeneratePanel.tsx'
+import { fileUrlOf, GeneratePanel, mediaOf } from './GeneratePanel.tsx'
 import { KindIcon, OUTPUT_LABEL } from './kinds.tsx'
 import { AudioPlayer, clock, FrameBar, type PlayerHandle, VideoPlayer } from './Player.tsx'
 import { Rail } from './Rail.tsx'
@@ -290,41 +290,19 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   })
 
   /**
-   * 文本卡的读取序号：`all` 在路径未知的变动时递增，`byPath` 按变动的路径递增。
-   * 每张文本卡只在自己引用的文件变化时重新读取（见 `TextPreview`）。
+   * 待重新读取：生成或执行命令时变动一条接一条到达，合并后读取一次；页签不在显示时只记下，切回时再读取。
+   * 文本卡与媒体卡按读取结果中文件的修改时间（`mtimes`）更新，不另设读取序号。
    */
-  const [textVersions, setTextVersions] = createSignal<{
-    all: number
-    byPath: Readonly<Record<string, number>>
-  }>({ all: 0, byPath: {} })
-
-  /**
-   * 待处理的变动：生成或执行命令时变动一条接一条到达，合并后读取一次；页签不在显示时只记下，
-   * 切回时再读取。`texts` 为 `null` 表示全部文本卡都要重新读取。
-   */
-  let pending: { canvas: boolean; texts: Set<string> | null } | null = null
+  let pending = false
   let flushTimer: ReturnType<typeof setTimeout> | undefined
   const flushPending = () => {
     flushTimer = undefined
     if (!pending || !props.active) return
-    const { canvas, texts } = pending
-    pending = null
-    if (texts === null) setTextVersions((v) => ({ ...v, all: v.all + 1 }))
-    else if (texts.size) {
-      setTextVersions((v) => {
-        const byPath = { ...v.byPath }
-        for (const p of texts) byPath[p] = (byPath[p] ?? 0) + 1
-        return { all: v.all, byPath }
-      })
-    }
-    if (canvas) void load()
+    pending = false
+    void load()
   }
-  const schedule = (canvas: boolean, texts: string[] | null) => {
-    const next = pending ?? { canvas: false, texts: new Set<string>() }
-    next.canvas ||= canvas
-    if (texts === null) next.texts = null
-    else if (next.texts) for (const p of texts) next.texts.add(p)
-    pending = next
+  const schedule = () => {
+    pending = true
     if (props.active && flushTimer === undefined)
       flushTimer = setTimeout(flushPending, RELOAD_DELAY_MS)
   }
@@ -334,16 +312,15 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       () => state.fileVersion,
       () => {
         const touched = state.fileTouched
-        if (touched === null) return schedule(true, null)
+        if (touched === null) return schedule()
         const paths = touched.map(normPath)
         // 工作区之外的文件以绝对路径报告，无法与卡片的相对路径比较，按路径未知处理。
-        if (paths.some((p) => /^([a-z]:)?\//.test(p) || p.startsWith('../')))
-          return schedule(true, null)
+        if (paths.some((p) => /^([a-z]:)?\//.test(p) || p.startsWith('../'))) return schedule()
         // 变动的可能是整个文件夹（删除、重命名）：卡片引用该文件夹中的文件时同样视为相关。
-        const hit = [...watched()].filter((w) =>
+        const hit = [...watched()].some((w) =>
           paths.some((p) => w === p || w.startsWith(`${p.replace(/\/$/, '')}/`)),
         )
-        schedule(hit.length > 0, [...paths, ...hit])
+        if (hit) schedule()
       },
       { defer: true },
     ),
@@ -351,7 +328,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   createEffect(
     on(
       () => state.canvasVersion,
-      () => schedule(true, []),
+      () => schedule(),
       { defer: true },
     ),
   )
@@ -989,7 +966,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const path = media.path
     // 先读取摘录与文件全文再打开：打开文件会把面板切到文件页，画布在面板中时随之卸载，之后无法读取节点。
     const excerpt = excerptOfNode(id)
-    const text = excerpt ? fileText(path, textVersionOf(path)) : null
+    const text = excerpt ? fileText(path) : null
     openFileInPanel(path)
     void text?.then((whole) => {
       const r = whole === null ? null : excerptOf(whole, excerpt)
@@ -1286,7 +1263,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const added = (
       await Promise.all(
         videos.map(async (path) => {
-          const d = (await metaOf(client.fileUrl(path))).duration
+          const d = (await metaOf(fileUrlOf(view(), path))).duration
           return d > 0 ? [{ path, in: 0, out: Math.floor(d * 1000) / 1000 }] : []
         }),
       )
@@ -1353,7 +1330,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const created = await exportVideo(id, '导出失败', (write, progress, signal) =>
       renderTimeline(
         n.clips.map((c) => ({
-          url: client.fileUrl(c.path),
+          url: fileUrlOf(view(), c.path),
           name: c.path.split('/').pop() ?? c.path,
           in: c.in,
           out: c.out,
@@ -1559,7 +1536,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const media = view() ? mediaOf(view()!, nodeId) : null
     if (!media?.path) return
     try {
-      const blob = await captureVideoFrame(client.fileUrl(media.path), at)
+      const blob = await captureVideoFrame(fileUrlOf(view(), media.path), at)
       const r = await captureFrame(props.path, nodeId, frameLabel(at, duration), blob)
       setFault(null)
       setSelected(new Set([r.nodeId]))
@@ -1736,34 +1713,29 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return node?.type === 'file' ? node.excerpt : undefined
   }
 
-  /** 文件的读取序号：只在路径未知的变动或该文件本身变动时改变。 */
-  const textVersionOf = (path: string) => {
-    const v = textVersions()
-    return `${v.all}.${v.byPath[normPath(path)] ?? 0}`
-  }
-
-  /** 摘录卡读取的文件全文：同一文件的各张摘录卡共用一次读取，该文件的读取序号变化后重新读取。 */
-  const fileTexts = new Map<string, { version: string; text: Promise<string | null> }>()
-  const fileText = (path: string, version: string): Promise<string | null> => {
+  /** 摘录卡读取的文件全文：同一文件的各张摘录卡共用一次读取，该文件的修改时间变化后重新读取。 */
+  const fileTexts = new Map<string, { url: string; text: Promise<string | null> }>()
+  const fileText = (path: string): Promise<string | null> => {
+    const url = fileUrlOf(view(), path)
     const hit = fileTexts.get(path)
-    if (hit?.version === version) return hit.text
-    const text = fetch(client.fileUrl(path), { cache: 'no-store' }).then(
+    if (hit?.url === url) return hit.text
+    const text = fetch(url, { cache: 'no-store' }).then(
       (r) => (r.ok ? r.text() : null),
       () => null,
     )
-    fileTexts.set(path, { version, text })
+    fileTexts.set(path, { url, text })
     return text
   }
 
   /**
    * 文本卡的正文：整篇卡为文件开头，摘录卡为摘录的文字（与运行时发送的相同），无法定位时为原因。
    * 摘录可能位于长文件的任意位置，因此读取全文定位；该文件修改后重新读取。
-   * 来源写成字符串：画布重新读取后摘录是新对象，内容与序号都未变时不重新读取。
+   * 来源写成字符串：画布重新读取后摘录是新对象，内容与修改时间都未变时不重新读取。
    */
   function TextPreview(p: { path: string; excerpt: CanvasExcerpt | undefined }) {
     const [text] = createResource(
       () =>
-        `${p.path}\u0000${p.excerpt ? JSON.stringify(p.excerpt) : ''}\u0000${textVersionOf(p.path)}`,
+        `${p.path}\u0000${p.excerpt ? JSON.stringify(p.excerpt) : ''}\u0000${view()?.mtimes?.[p.path] ?? ''}`,
       async () => {
         const path = p.path
         if (!p.excerpt) {
@@ -1771,7 +1743,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
             .api<{ content?: string }>(`/api/files/preview?path=${encodeURIComponent(path)}`)
             .then((r) => (r.content ?? '').slice(0, 600))
         }
-        const whole = await fileText(path, textVersionOf(path))
+        const whole = await fileText(path)
         if (whole === null) return ''
         const r = excerptOf(whole, p.excerpt)
         return r.ok ? r.text : r.error
@@ -1791,8 +1763,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     controls: boolean
   }) {
     const [length, setLength] = createSignal<number | null>(null)
-    // 地址带文件的修改时间：同一路径的文件被改写后地址变化，媒体重新载入。经 memo 取值，重新读取画布而文件未变时地址不变。
-    const src = createMemo(() => client.fileUrl(p.path, view()?.mtimes?.[p.path]))
+    // 经 memo 取值：重新读取画布而文件未变时地址不变，媒体不重新载入。
+    const src = createMemo(() => fileUrlOf(view(), p.path))
     return (
       <Switch
         fallback={
@@ -1945,7 +1917,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
               node={n() as CanvasTimelineNode}
               mode="node"
               showPreview={fullscreen() !== n().id}
-              urlOf={(path) => client.fileUrl(path)}
+              urlOf={(path) => fileUrlOf(view(), path)}
               exporting={exports()[n().id] ?? null}
               setClips={(clips) =>
                 apply([{ op: 'update', id: n().id, clips }]).then((r) => r !== null)
@@ -2455,7 +2427,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 node={n()}
                 mode="full"
                 showPreview={true}
-                urlOf={(path) => client.fileUrl(path)}
+                urlOf={(path) => fileUrlOf(view(), path)}
                 exporting={exports()[n().id] ?? null}
                 setClips={(clips) =>
                   apply([{ op: 'update', id: n().id, clips }]).then((r) => r !== null)

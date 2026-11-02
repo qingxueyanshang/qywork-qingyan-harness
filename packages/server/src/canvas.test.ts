@@ -272,7 +272,10 @@ describe('画布服务：节点状态', () => {
   })
 
   test('卡片显示的文件附带修改时间：同一路径改写后随之变化，文件不存在时没有该项', async () => {
-    const gen = applyCanvasOps(withNodes(2), [{ op: 'add_generate', output: 'audio' }])
+    const gen = applyCanvasOps(withNodes(2), [
+      { op: 'add_generate', output: 'audio' },
+      { op: 'add_timeline', clips: [{ path: 'clip.mp4', in: 0, out: 1 }] },
+    ])
     if (!gen.ok) throw new Error(gen.error)
     const made = { prompt: '', provider: 'q', model: 'm', params: {}, inputs: [], at: 't' }
     // 第一个版本成为当前版本；其他版本不显示在卡片上，不附带修改时间。
@@ -284,7 +287,9 @@ describe('画布服务：节点状态', () => {
     const root = await workspace(versioned.doc)
     await writeFile(join(root, 'voice.mp3'), 'mp3')
     await writeFile(join(root, 'other.mp3'), 'mp3')
+    await writeFile(join(root, 'clip.mp4'), 'mp4')
     await utimes(join(root, 'voice.mp3'), 1000, 1000)
+    await utimes(join(root, 'clip.mp4'), 4000, 4000)
     await utimes(join(root, '角色', '0.png'), 2000, 2000)
     await rm(join(root, '角色', '1.png'))
     const { svc } = service()
@@ -292,6 +297,7 @@ describe('画布服务：节点状态', () => {
     expect((await svc.read(root, PATH)).mtimes).toEqual({
       '角色/0.png': 2_000_000,
       'voice.mp3': 1_000_000,
+      'clip.mp4': 4_000_000,
     })
 
     // 原地改写同一路径的文件：路径不变，修改时间变化。
