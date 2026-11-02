@@ -189,7 +189,7 @@ test('个性化一行打开弹窗：雾面可选颜色与「无」，修改后�
     await until(() => view.host.querySelector('dialog.personal-dialog') !== null)
     const dialog = view.host.querySelector('dialog.personal-dialog')!
     const labels = [...dialog.querySelectorAll('.setting-row-label')].map((l) => l.textContent)
-    expect(labels).toEqual(['背景', '颜色', '雾面', '界面不透明度', '强调色'])
+    expect(labels).toEqual(['背景', '颜色', '雾面', '界面不透明度', '强调色', '流动色'])
     expect(dialog.textContent).not.toContain('模式')
 
     const fog = dialog.querySelector<HTMLButtonElement>('button[aria-label="雾面颜色"]')!

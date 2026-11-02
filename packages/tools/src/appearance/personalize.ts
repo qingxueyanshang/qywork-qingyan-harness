@@ -82,7 +82,7 @@ async function withImage(
 export const personalizeTool: ToolSpec = {
   name: 'personalize',
   description:
-    '读取与修改 qywork 界面的个性化。个性化由背景、流动雾面、界面不透明度与强调色组成，' +
+    '读取与修改 qywork 界面的个性化。个性化由背景、流动雾面、界面不透明度、强调色与流动色组成，' +
     '作用于界面外框、会话区与右侧面板；浅色或深色由用户的主题设置决定，不属于个性化。' +
     '只有一套个性化，保存后所有屏幕立即生效。' +
     'action=read 读取当前参数；save 只写要改的字段：background 的 kind 不变时逐字段合并，kind 改变时整组替换，' +
@@ -100,7 +100,8 @@ export const personalizeTool: ToolSpec = {
           '或 {"kind":"gradient","from":颜色,"to":颜色,"direction":"horizontal"|"vertical"|"diagonal-down"|"diagonal-up"} ' +
           '或 {"kind":"image","fit":"cover"|"contain"|"tile","dim":0–0.9,"blur":0–40}（图片文件用 image 参数给出）；' +
           'fog：null（无雾面）或 {"color","density":0–1,"speed":0–1}；' +
-          'opacity：0.2–1，界面底色的不透明度；accent：强调色或 null（主题的强调色）。颜色写 #rrggbb',
+          'opacity：0.2–1，界面底色的不透明度；accent：强调色或 null（主题的强调色）；' +
+          'flow：流动色或 null（默认的紫色），用于画布连线的流动效果、生成中的动画与读数条的进度方块。颜色写 #rrggbb',
       },
       image: {
         type: 'string',

@@ -13,9 +13,10 @@
 
 import { createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from 'solid-js'
 import { parseColor } from '../../lib/color.ts'
+import { paintedPersonalization, theme } from '../../lib/store/theme.ts'
 
 /**
- * 渐变色标：位置与颜色令牌（`tokens.css` 的生成进度色阶，不随强调色变化）。SVG 中选中节点的连线
+ * 渐变色标：位置与颜色令牌（`tokens.css` 的生成进度色阶，由个性化的流动色改写，不随强调色变化）。SVG 中选中节点的连线
  * （`linearGradient`）与此处的流动虚线共用。
  */
 export const FLOW_STOPS: readonly (readonly [number, string])[] = [
@@ -198,6 +199,8 @@ void main() {
 
 interface Renderer {
   setMesh(mesh: FlowMesh): void
+  /** 按色阶令牌的当前值更新渐变色（`flowColors`）。 */
+  setColors(colors: number[]): void
   draw(
     view: { px: number; py: number; z: number; width: number; height: number; dpr: number },
     flow: number,
@@ -251,7 +254,8 @@ function createRenderer(canvas: HTMLCanvasElement): Renderer | null {
   const uFlow = u('uFlow')
   const uDpr = u('uDpr')
   const uHalf = u('uHalf')
-  gl.uniform3fv(u('uColor'), flowColors())
+  const uColor = u('uColor')
+  gl.uniform3fv(uColor, flowColors())
   gl.uniform1fv(
     u('uStop'),
     FLOW_STOPS.map(([offset]) => offset),
@@ -260,6 +264,9 @@ function createRenderer(canvas: HTMLCanvasElement): Renderer | null {
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
   let count = 0
   return {
+    setColors(colors) {
+      gl.uniform3fv(uColor, colors)
+    },
     setMesh(mesh) {
       gl.bindBuffer(gl.ARRAY_BUFFER, vbo)
       gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW)
@@ -351,6 +358,14 @@ export function FlowLayer(p: {
   })
   createEffect(() => {
     void [p.px, p.py, p.z]
+    schedule()
+  })
+  // 流动色或主题改变后令牌已改写（`theme.ts` 同步写入行内样式），重新读取色阶。
+  createEffect(() => {
+    void [paintedPersonalization(), theme()]
+    const gl = renderer()
+    if (!gl) return
+    gl.setColors(flowColors())
     schedule()
   })
   // 只在开始与全部结束时启动或停止推进：连线数组重新生成不重置流动的相位。

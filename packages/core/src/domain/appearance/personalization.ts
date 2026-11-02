@@ -49,6 +49,11 @@ export interface Personalization {
   opacity: number
   /** 强调色。null 表示使用主题的强调色。 */
   accent: string | null
+  /**
+   * 流动色：生成进度的色阶（画布连线的流动虚线、选中节点的连线、卡片上的生成中与排队中动画、读数条的进度方块、
+   * 画布对齐线）由它推导。null 表示使用默认的紫色。不随强调色变化。
+   */
+  flow: string | null
 }
 
 /** 已保存的个性化。`updatedAt` 为 0 表示从未保存，内容即默认值。 */
@@ -81,6 +86,7 @@ export const DEFAULT_PERSONALIZATION: Personalization = {
   fog: null,
   opacity: 1,
   accent: null,
+  flow: null,
 }
 
 /** 是否与默认值相同。 */
@@ -90,7 +96,8 @@ export function isDefaultPersonalization(p: Personalization): boolean {
     p.background.color === null &&
     p.fog === null &&
     p.opacity === 1 &&
-    p.accent === null
+    p.accent === null &&
+    p.flow === null
   )
 }
 
@@ -183,12 +190,15 @@ function fog(raw: unknown): PersonalFog | null {
 }
 
 function personalizationOf(raw: unknown): Personalization {
-  const o = record(raw, '个性化', ['background', 'fog', 'opacity', 'accent'])
+  const o = record(raw, '个性化', ['background', 'fog', 'opacity', 'accent', 'flow'])
   return {
     background: background(o.background),
     fog: fog(o.fog),
     opacity: num(o.opacity, 'opacity', PERSONAL_LIMITS.opacity),
     accent: o.accent === null ? null : color(o.accent, 'accent'),
+    // `flow` 晚于其他字段加入：此前保存的个性化文件没有该字段，缺省按 null（默认的紫色）读取，
+    // 不要改为必填，否则这些文件无法读取，用户的个性化随之失效。
+    flow: o.flow === undefined || o.flow === null ? null : color(o.flow, 'flow'),
   }
 }
 

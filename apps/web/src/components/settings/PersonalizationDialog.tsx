@@ -373,6 +373,14 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
               onPick={(accent) => edit({ accent })}
             />
           </Row>
+          <Row label="流动色">
+            <ColorWell
+              label="流动色"
+              value={p().flow}
+              emptyLabel="默认"
+              onPick={(flow) => edit({ flow })}
+            />
+          </Row>
         </div>
       </section>
       <div class="confirm-actions personal-actions">
