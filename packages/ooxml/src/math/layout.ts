@@ -3,13 +3,14 @@
  *
  * 规则以 OpenType `MATH` 表为准（常量、变体、斜体校正），以下各项按 WPS 12.1 屏幕显示（页面 EMF 与逐字坐标）实测：
  * - 上下标字号：原字号乘 `scriptPercentScaleDown`（二级乘 `scriptScriptPercentScaleDown`），按半磅向下取整。
- * - 上标只在根号内按紧缩移位（见 `Style.cramped`）；`m:sty="p"` 字段中的拉丁字符按字段字体排版（见 `mathGlyphId`）。
+ * - 上标只在根号内按紧缩移位（见 `Style.cramped`）；没有映射为数学字母的拉丁字符与东亚提示的希腊、西里尔字母按字段字体排版
+ *   （见 `mathGlyphId`）。
  * - 显示公式中分数的分子分母不缩小字号，嵌套的分数按非显示参数移位；行内公式中分子分母缩小一级。
  * - 底式为字段时上下标不按底式高度下降，为结构时下降（见 `scripts`）；上下标同时存在且间隙小于 `subSuperscriptGapMin` 时，
  *   不足部分由上标上移与下标下移各分一半；上标不加斜体校正。
  * - 原子间距按左右原子的类别查表，数值为经验拟合（见 `THIN` 等常量）；分数为内部原子，n 元运算符（连同被积式）为大型运算符
  *   原子，两者与普通原子之间均加细间距。
- * - 重音字形取不宽于底字墨迹的最宽变体，墨迹居中于底字前进宽度的中点。
+ * - 重音字形取不宽于底式宽度的最宽变体，墨迹居中于底式宽度的中点；底式高于 `flattenedAccentBaseHeight` 时取扁平形式。
  * - 行内的 n 元运算符取原字形、不按轴居中，上下限按上下标放置。
  * - 括号与根号由 WPS 以字形轮廓绘制（`outline` 项），线性分数的斜线以画笔绘制（`slash` 项），其余字形为文字（`glyph` 项）。
  *   显示公式中根号的间隙见 `RADICAL_DISPLAY_GAP`；上下极限内容的横向偏移见 `hlist`。
@@ -54,14 +55,15 @@ export interface MathRunStyle<F> {
   readonly bold: boolean
   readonly italic: boolean
   /**
-   * 不按数学字体排版的字符（普通文字、`m:sty="p"` 字段中的拉丁字符与数学字体缺字的字符，见 `mathGlyphId`）所用的字体。
-   * 字符的上下沿（上下标移位、行高与线性分数的斜线共用）：东亚字符（`isEastAsian`）取该字体的单倍行高上下沿（`faceExtent`），
-   * 其余字符取字形墨迹，`outlines` 为该字体的字形轮廓，字体没有 TrueType 轮廓时为 `null`，改取 `hhea` 的上下沿。
+   * 不按数学字体排版的字符（见 `mathGlyphId`）所用的字体。字符的上下沿（上下标移位、行高与线性分数的斜线共用）见 `textExtent`；
+   * `outlines` 为该字体的字形轮廓，字体没有 TrueType 轮廓时为 `null`，改取 `hhea` 的上下沿。`eastAsia` 为该字符按字段的
+   * 字体选择规则落在东亚字体（WordprocessingML 的 `w:eastAsia`）。
    */
   textFace(codePoint: number): {
     readonly face: TextFace
     readonly font: F
     readonly outlines: GlyphOutlines | null
+    readonly eastAsia: boolean
   }
 }
 
@@ -619,13 +621,21 @@ class Engine<P, F> {
 
   /**
    * 字符在数学字体中的字形编号（按 `m:sty`、`m:scr` 映射为数学字母后）；按字段字体排版的字符为 0：普通文字、数学字体缺字的字符，
-   * 以及 `m:sty="p"`（未指定 `m:scr`）字段中的 ASCII 字符与 Latin-1 字母（`plainLatin`）。WPS 实测（24 磅，字段字体为
-   * Times New Roman、Arial、Calibri、宋体与未指定）：`m:sty="p"` 的字母、数字、`=`、`+`、`(` 与 `é` 按字段字体绘制，行高取该字体；
-   * 同一字段中的 `α`、`∑`、`·`、`×` 与 `m:sty` 为 `b`、`i`、`bi` 或缺省的字母仍取数学字体。
+   * 以及没有映射为数学字母的 ASCII 字符与 Latin-1 字母（`plainLatin`）、落在东亚字体中的希腊与西里尔字母（`eastAsianText`）。
+   * WPS 实测（24 磅，字段字体为 Times New Roman、Arial、Calibri、宋体、缺失字体与未指定）：`m:sty="p"` 的字母、数字、`=`、`+`、
+   * `(` 与 `é`，以及 `m:sty` 缺省或为 `i` 时的数字、`=`、`+`、`(` 按字段字体绘制，行高取该字体；`m:sty` 为 `b` 时的数字、缺省时的
+   * 字母（映射为数学字母）与 `α`、`∑`、`·`、`×` 取数学字体。
    */
   private mathGlyphId(r: MathRun<P>, cp: number): number {
-    if (r.normal || (r.style === 'p' && r.script === null && plainLatin(cp))) return 0
-    return this.env.font.face.metrics.glyphId(mathLetter(cp, r.style, r.script))
+    if (r.normal) return 0
+    const mapped = mathLetter(cp, r.style, r.script)
+    if (mapped === cp && (plainLatin(cp) || this.eastAsianText(r.props, cp))) return 0
+    return this.env.font.face.metrics.glyphId(mapped)
+  }
+
+  /** 字符为希腊或西里尔字母且按字段的字体选择规则落在东亚字体中（见 `eastAsianLetter`）。 */
+  private eastAsianText(props: P | null, cp: number): boolean {
+    return eastAsianLetter(cp) && this.env.style(props).textFace(cp).eastAsia
   }
 
   /** 字段：每个字符一个原子。不按数学字体排版的字符（见 `mathGlyphId`）按字符属性的字体排版，上下沿见 `textExtent`。 */
@@ -644,7 +654,8 @@ class Engine<P, F> {
       }
       const t = st.textFace(cp)
       const glyph = t.face.metrics.glyphId(cp)
-      const { height, depth } = this.textExtent(cp, t.face, t.outlines, glyph, size)
+      const lineExtent = isEastAsian(cp) || (t.eastAsia && eastAsianLetter(cp))
+      const { height, depth } = this.textExtent(lineExtent, t.face, t.outlines, glyph, size)
       out.push({
         width: t.face.metrics.advance(cp, size),
         height,
@@ -671,18 +682,18 @@ class Engine<P, F> {
   }
 
   /**
-   * 按文字字体排版的字符的上下沿：东亚字符取该字体的单倍行高上下沿，其余字符取字形墨迹，字体没有轮廓时取 `hhea` 的上下沿。
-   * WPS 实测（10.5 至 24 磅，宋体、黑体、微软雅黑）：含全角括号或汉字的显示公式行高为该字体单倍行高加 `mathLeading`，
-   * 汉字作下标时的移位按该字体的上沿；同一字体中的西文字符不使行高增加。
+   * 按文字字体排版的字符的上下沿：`line` 为真的字符（东亚字符与落在东亚字体中的希腊、西里尔字母）取该字体的单倍行高上下沿，
+   * 其余字符取字形墨迹，字体没有轮廓时取 `hhea` 的上下沿。WPS 实测（10.5 至 24 磅，宋体、黑体、微软雅黑）：含全角括号或汉字的
+   * 显示公式行高为该字体单倍行高加 `mathLeading`，汉字作下标时的移位按该字体的上沿；同一字体中的西文字符不使行高增加。
    */
   private textExtent(
-    cp: number,
+    line: boolean,
     face: TextFace,
     outlines: GlyphOutlines | null,
     glyph: number,
     size: number,
   ): { height: number; depth: number } {
-    if (isEastAsian(cp)) {
+    if (line) {
       const e = faceExtent(face.vertical, size)
       return { height: e.ascent, depth: e.descent }
     }
@@ -1208,18 +1219,24 @@ class Engine<P, F> {
     return { ...this.row([name, gap, body]), cls: 'ord' }
   }
 
-  /** 重音：取不宽于底字墨迹的最宽横向变体，墨迹中心对齐底字前进宽度的中点（WPS 实测，不取上方重音附着点）。 */
+  /**
+   * 重音：取不宽于底式宽度的最宽横向变体，墨迹中心对齐底式宽度的中点（WPS 实测，不取上方重音附着点）；底式高于
+   * `flattenedAccentBaseHeight` 时取该变体的扁平形式。WPS 实测（Cambria Math 12 与 24 磅，页面 EMF 字形编号）：y、p、ℎ 取
+   * 第一个变体，V、A 取第二个，Δπ、xyz 与 x² 取第三个；ℎ、V、A、Δπ、x² 为扁平形式。不要按底式的墨迹宽度选取：x² 的墨迹
+   * 窄于第三个变体。
+   */
   private accent(n: MathAccent<P>, style: Style): Box<F> {
     const base = this.list(n.base, style)
     const size = this.sizeOf(this.own(n), style)
     const color = this.color(n)
     const gid0 = this.glyphOf(n.char)
     if (gid0 === 0) throw new Unsupported(['acc/chr'])
-    const ink = this.inkWidth(base.items)
     let gid = gid0
     const c = this.table.horizontal(gid0)
     if (c !== null)
-      for (const v of c.variants) if (this.units(v.advance, size) <= ink) gid = v.glyph
+      for (const v of c.variants) if (this.units(v.advance, size) <= base.width) gid = v.glyph
+    if (base.height > this.k('flattenedAccentBaseHeight', size))
+      gid = this.env.font.flattenedAccent(gid)
     const b = this.env.font.outlines.bounds(gid)
     if (b === null) throw new Unsupported(['acc/glyph'])
     const rise = base.height + ACCENT_GAP * size - this.units(b.yMin, size)
@@ -1245,21 +1262,6 @@ class Engine<P, F> {
       cls: 'ord',
       core: single(n.base) ? { height: base.height, depth: base.depth } : null,
     }
-  }
-
-  /** 数学字体字形墨迹框的横向并集；没有这类字形时为 0。 */
-  private inkWidth(items: readonly MathItem<F>[]): number {
-    let lo = Infinity
-    let hi = -Infinity
-    const math = this.env.font
-    for (const it of items) {
-      if (it.kind !== 'glyph' || it.font !== math.font) continue
-      const b = math.outlines.bounds(it.glyph)
-      if (b === null) continue
-      lo = Math.min(lo, it.x + this.units(b.xMin, it.size))
-      hi = Math.max(hi, it.x + this.units(b.xMax, it.size))
-    }
-    return hi > lo ? hi - lo : 0
   }
 
   private bar(n: MathBar<P>, style: Style): Box<F> {
@@ -1342,6 +1344,16 @@ class Engine<P, F> {
 /** ASCII 字符与 Latin-1 补充中的字母（U+00C0–U+00FF，不含 `×`、`÷`）。 */
 function plainLatin(cp: number): boolean {
   return cp < 0x80 || (cp >= 0xc0 && cp <= 0xff && cp !== 0xd7 && cp !== 0xf7)
+}
+
+/**
+ * 希腊字母与西里尔字母（U+0370–U+04FF）：落在东亚字体中时按该字体绘制、取其单倍行高上下沿。WPS 实测（构造文档 24 磅显示公式与
+ * 10 磅行内公式，东亚字体为宋体、微软雅黑、等线，西文字体为 Times New Roman、Arial）：东亚提示的数学字段与普通文字中，
+ * α β γ Α Ω μ π а 均如此，与字体的字形宽度无关；`·`、`“`、`×`、`→`、`∑` 等不按行高计（数学字段中取数学字体）。
+ * 同样按东亚行高计的 `∞`、`①`、`Ⅰ`、`‰`、`′`、`※`、`℃`、`№`、`★`、`■`、`─` 未列入。
+ */
+function eastAsianLetter(cp: number): boolean {
+  return cp >= 0x370 && cp <= 0x4ff
 }
 
 /** 参数恰为一个结构（不是字段）。 */

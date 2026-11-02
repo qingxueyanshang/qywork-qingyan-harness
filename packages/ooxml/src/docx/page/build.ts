@@ -41,7 +41,12 @@
 import { collectChartFonts } from '../../drawingml/chart/resolve.ts'
 import { collectDiagramFonts } from '../../drawingml/diagram/resolve.ts'
 import { MISSING_LATIN } from '../../drawingml/text/fonts.ts'
-import { type MathItem, type MathLayout, mathText } from '../../math/index.ts'
+import {
+  MATH_SETTINGS_DEFAULTS,
+  type MathItem,
+  type MathLayout,
+  mathText,
+} from '../../math/index.ts'
 import { readMetafile } from '../../metafile/index.ts'
 import type { LineArea, TextFace, TextLine } from '../../text/index.ts'
 import { borderStrokes } from '../border.ts'
@@ -69,6 +74,7 @@ import type {
   StyleRef,
 } from '../model.ts'
 import { blockFonts, type DocxFonts } from '../render/fonts.ts'
+import { substitutes } from '../resolve/fonts.ts'
 import {
   alignOffset,
   layoutStack,
@@ -309,7 +315,8 @@ function graphicFontNames(graphics: readonly DrawingGraphic[]): string[] {
 }
 
 /**
- * 文档所需的全部字体名：正文、表格、文本框、各节引用的页眉页脚、图表、SmartArt 与图元文件。调用方据此预先取得字体文件。
+ * 文档所需的全部字体名：正文、表格、文本框、各节引用的页眉页脚、图表、SmartArt 与图元文件，以及主机没有其中的字体时所用的替代字体
+ * （`substitutes`，数学字体的替代为 Cambria Math）。调用方据此预先取得字体文件。
  */
 export function requiredFonts(doc: DocxDocument): string[] {
   const names = new Set<string>()
@@ -329,6 +336,10 @@ export function requiredFonts(doc: DocxDocument): string[] {
   }
   visit(doc.body)
   for (const part of Object.values(doc.parts)) visit(part)
+  for (const name of [...names])
+    for (const use of ['other', 'eastAsia'] as const)
+      for (const c of substitutes(name, use, doc.fontTable)) names.add(c.name)
+  if (names.has(doc.settings.math.font)) names.add(MATH_SETTINGS_DEFAULTS.font)
   const { graphics, metafiles } = documentGraphics(doc)
   for (const name of graphicFontNames(graphics)) names.add(name)
   for (const name of metafileFontNames(doc, metafiles)) names.add(name)

@@ -90,6 +90,8 @@ export interface FontNames {
 /** 字段属性的解决结果。字体名已由主题字体换算并补足缺省值，不为空串。 */
 export interface RunProps {
   readonly fonts: FontNames
+  /** 东亚字体取自主题（`w:eastAsiaTheme` 或未指定）：主机没有该字体时不按字体表替代（见 `resolve/fonts.ts`）。 */
+  readonly eastAsiaTheme: boolean
   /** `w:rFonts/@w:hint`。 */
   readonly hint: 'default' | 'eastAsia' | 'cs'
   /** 带 `w:cs` 或 `w:rtl`：全部字符使用 `cs` 字体与 `sizeCs`。 */
@@ -536,12 +538,20 @@ export interface DocumentSettings {
   readonly math: MathSettings
 }
 
+/** 字体表（`fontTable`）中一个字体名的条目。 */
+export interface FontTableEntry {
+  /** `w:altName`；未指定时为空串。 */
+  readonly altName: string
+  /** `w:charset`；未指定时为 `null`。 */
+  readonly charset: number | null
+}
+
 export interface DocxDocument {
   readonly sections: readonly Section[]
   readonly body: readonly Block[]
   readonly settings: DocumentSettings
-  /** 字体表中字符集为 GB2312 或 Big5 的字体名，供字体选择判断中文字符集。 */
-  readonly chineseCharsetFonts: readonly string[]
+  /** 字体表：字体名的第一个条目，供字体选择判断中文字符集与主机没有该字体时的替代（见 `resolve/fonts.ts`）。 */
+  readonly fontTable: ReadonlyMap<string, FontTableEntry>
   readonly unsupported: UnsupportedCounts
   /** 页眉页脚部件中的段落与表格，按关系标识（`Section.headers`、`Section.footers`）。 */
   readonly parts: Readonly<Record<string, readonly Block[]>>

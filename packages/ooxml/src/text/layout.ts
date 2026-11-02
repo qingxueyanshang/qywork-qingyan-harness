@@ -102,8 +102,8 @@ export interface TextRun {
   /** 基线提升（磅，向下为负）：行高的上沿加上提升量、下沿减去提升量。缺省为 0。 */
   readonly raise?: number
   /**
-   * 字距调整的最小字号（磅）：字号不小于该值时与相邻的同样开启的字段之间做相邻标点压缩（见 `punctuation.ts`）。
-   * 缺省或 0 为不调整。西文字偶的字距调整未实现。
+   * 字距调整的最小字号（磅）：字号不小于该值时，与相邻的同样开启的字（含相邻字段中的字）之间做字距调整（见 `measure`）与
+   * 相邻标点压缩（见 `punctuation.ts`）。缺省或 0 为不调整。
    */
   readonly kern?: number
   /**
@@ -504,6 +504,8 @@ function measure(runs: readonly ParagraphRun[], style: ParagraphStyle): Measured
     base[k] =
       u.kind === OBJECT ? u.advance : u.kind === TEXT || u.kind === SPACE ? glyph + u.spacing : 0
     const next = units[k + 1]
+    if (next !== undefined && u.kern && next.kern && u.face === next.face)
+      base[k] = base[k]! + pairKerning(u, next)
     // 两字都使用东亚字体时才压缩：无东亚提示的「“”」使用西文字体，与相邻标点之间不压缩（WPS 实测）。
     if (
       next !== undefined &&
@@ -533,6 +535,18 @@ function measure(runs: readonly ParagraphRun[], style: ParagraphStyle): Measured
     return (width + a.spacing) / 2
   }
   return { units, base, trimLeft, trimRight, westernAt, autoSpace }
+}
+
+/**
+ * 相邻两字（文字或空格，同一字体）的字距调整：前一字的步进加字体 `kern` 表的字偶值，按字段的原字号换算。WPS 实测（构造文档
+ * k1：Times New Roman 7.5 至 24 磅「AV」等字偶）：12 磅「AV」收紧 1.55 磅；上标按原字号的字偶值收紧；字符间距另加；
+ * 字体不同的两字之间、任一字未开启时不调整；只有 `GPOS` 字偶的字体（Georgia、等线）不调整。
+ */
+function pairKerning(a: Unit, b: Unit): number {
+  if ((a.kind !== TEXT && a.kind !== SPACE) || (b.kind !== TEXT && b.kind !== SPACE)) return 0
+  const m = a.face!.metrics
+  const units = m.kerning?.(a.cp, b.cp) ?? 0
+  return units === 0 ? 0 : (units * a.extentSize) / m.unitsPerEm
 }
 
 const breakUnit = (u: Unit): BreakUnit => (u.object === null ? u.cp : u.object.breaks)

@@ -767,7 +767,7 @@ describe('正文内容', () => {
     expect(doc.unsupported.columns).toBe(1)
   })
 
-  test('设置：默认制表位、doNotExpandShiftReturn、自定义禁则字符、压缩标点、单双字节宽度协调；字体表中 GB2312 与 Big5 字体', async () => {
+  test('设置：默认制表位、doNotExpandShiftReturn、自定义禁则字符、压缩标点、单双字节宽度协调；字体表取同名字体的第一个条目', async () => {
     const doc = await parse({
       styles: DEFAULTS,
       settings:
@@ -776,7 +776,10 @@ describe('正文内容', () => {
         '<w:compat><w:doNotExpandShiftReturn/><w:balanceSingleByteDoubleByteWidth/></w:compat>',
       fonts:
         '<w:font w:name="宋体"><w:charset w:val="86"/></w:font><w:font w:name="新細明體"><w:charset w:val="88"/></w:font>' +
-        '<w:font w:name="Times New Roman"><w:charset w:val="00"/></w:font>',
+        '<w:font w:name="Times New Roman"><w:charset w:val="00"/></w:font>' +
+        '<w:font w:name="ＭＳ 明朝"><w:altName w:val="Yu Gothic"/><w:charset w:val="80"/></w:font>' +
+        '<w:font w:name="ＭＳ 明朝"><w:altName w:val="Segoe Print"/><w:charset w:val="00"/></w:font>' +
+        '<w:font w:name="Noto"><w:charset w:val="-122"/></w:font>',
       body: p(r('a')),
     })
     expect(doc.settings).toEqual({
@@ -791,7 +794,13 @@ describe('正文内容', () => {
       gridInTables: false,
       math: MATH_SETTINGS_DEFAULTS,
     })
-    expect(doc.chineseCharsetFonts).toEqual(['宋体', '新細明體'])
+    expect([...doc.fontTable]).toEqual([
+      ['宋体', { altName: '', charset: 0x86 }],
+      ['新細明體', { altName: '', charset: 0x88 }],
+      ['Times New Roman', { altName: '', charset: 0 }],
+      ['ＭＳ 明朝', { altName: 'Yu Gothic', charset: 0x80 }],
+      ['Noto', { altName: '', charset: null }],
+    ])
     expect(doc.unsupported).toEqual({})
   })
 
@@ -1339,6 +1348,76 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     expect(layout.missingFonts).toEqual(['NoSuchFont'])
     expect(layout.paragraphs[2]!.text.lines[0]!.fragments[0]!.face).toBe(source.fallback)
     expect(layout.paragraphs[0]!.width).toBeCloseTo((11906 - 3600) / 20, 9)
+  })
+
+  test('主机没有的字体：字体表的 altName 含所需代码页时取它，charset 为 86、80 时取宋体、Yu Gothic，其余西文字体取 Segoe Print', async () => {
+    // WPS（构造文档 f1、f2、f4，12 磅，页面 EMF 中的字体名）：没有条目的 NoSuchFont 西文为 Segoe Print、汉字为宋体；
+    // altName 为 Georgia 时西文为 Georgia，charset 同时为 86 时为宋体；altName 为 Yu Gothic 而 charset 为 86 时为宋体；
+    // altName 为楷体时西文与汉字都为楷体；charset 为 80 时为 Yu Gothic（Yu Gothic 没有的「汉」为宋体）；
+    // altName 为 Times New Roman 而 charset 为 80 时为 Yu Gothic；同名的两个条目取第一个。
+    // 构造文档 t5、t7：取自主题的西文字体照常按 altName 替代，取自主题的东亚字体不按 altName 替代、为宋体。
+    const files: Record<string, string> = {
+      'Times New Roman': 'times.ttf',
+      宋体: 'simsun.ttc',
+      'Segoe Print': 'segoepr.ttf',
+      Georgia: 'georgia.ttf',
+      Verdana: 'verdana.ttf',
+      楷体: 'simkai.ttf',
+      'Yu Gothic': 'YuGothR.ttc',
+    }
+    const fonts = {
+      face: (name: string) =>
+        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+      math: () => null,
+      outlines: () => null,
+      get fallback() {
+        return load('simsun.ttc')
+      },
+    }
+    const entry = (name: string, alt: string, charset: string) =>
+      `<w:font w:name="${name}">${alt === '' ? '' : `<w:altName w:val="${alt}"/>`}` +
+      `${charset === '' ? '' : `<w:charset w:val="${charset}"/>`}</w:font>`
+    const names = ['NoSuchFont', 'A', 'I', 'R', 'N', 'H', 'P', 'Dup']
+    const themed =
+      '<w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:eastAsiaTheme="minorEastAsia"/>'
+    const doc = await parse({
+      styles: DEFAULTS,
+      settings: SETTINGS,
+      theme: theme(
+        '<a:latin typeface="A"/><a:ea typeface=""/><a:cs typeface=""/><a:font script="Hans" typeface="N"/>',
+        '<a:latin typeface="A"/><a:ea typeface=""/><a:cs typeface=""/>',
+      ),
+      fonts:
+        entry('A', 'Georgia', '00') +
+        entry('I', 'Georgia', '86') +
+        entry('R', 'Yu Gothic', '86') +
+        entry('N', '楷体', '') +
+        entry('H', '', '80') +
+        entry('P', 'Times New Roman', '80') +
+        entry('Dup', 'Georgia', '00') +
+        entry('Dup', 'Verdana', '00'),
+      body:
+        names
+          .map((n) => p(r('H汉字', `<w:rFonts w:ascii="${n}" w:hAnsi="${n}" w:eastAsia="${n}"/>`)))
+          .join('') + p(r('H汉字', themed)),
+    })
+    const byFile = new Map(Object.entries(files).map(([name, file]) => [load(file), name]))
+    const used = layoutDocument(doc, fonts).paragraphs.map((pl) =>
+      pl.text.lines[0]!.fragments.flatMap((f) =>
+        [...text(paragraphs(doc)[pl.block]!).slice(f.start, f.end)].map(() => byFile.get(f.face)),
+      ),
+    )
+    expect(used).toEqual([
+      ['Segoe Print', '宋体', '宋体'],
+      ['Georgia', '宋体', '宋体'],
+      ['宋体', '宋体', '宋体'],
+      ['宋体', '宋体', '宋体'],
+      ['楷体', '楷体', '楷体'],
+      ['Yu Gothic', '宋体', 'Yu Gothic'],
+      ['Yu Gothic', '宋体', 'Yu Gothic'],
+      ['Georgia', '宋体', '宋体'],
+      ['Georgia', '宋体', '宋体'],
+    ])
   })
 
   test('全部大写按大写字母排版', async () => {

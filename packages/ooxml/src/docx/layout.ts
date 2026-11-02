@@ -4,8 +4,9 @@
  * - `ParagraphLayouter` 在给定区域宽度（栏、单元格或文本框的文字区）中排版一段，可附带环绕查询；正文、单元格、
  *   文本框与页眉页脚共用。`layoutDocument` 排版正文的顶层段落，区域宽度为所在节第一栏的宽度。
  * - 可用宽度为区域宽度减去左右缩进；制表位与制表起点换算为相对左缩进的行坐标。
- * - 字体由调用方按字体名与字形提供（`FontSource.face`）。返回 `null` 的字体改用 `fallback` 并记入 `missingFonts`，
- *   调用方可据此取得字体后重新排版。请求粗体而返回的不是粗体字形时按仿粗体（`emboldened`）排版。
+ * - 字体由调用方按字体名与字形提供（`FontSource.face`）。返回 `null` 的字体记入 `missingFonts`，按 `substitutes` 的替代字体
+ *   排版，都没有时改用 `fallback`。请求粗体而返回的不是粗体字形时按仿粗体（`emboldened`）排版。
+ * - 文档的数学字体主机没有时改用 Cambria Math（WPS 实测：数学字体为 STIX Math 的文档按 Cambria Math 排版与绘制）。
  * - 段前段后间距按 `contextualSpacing` 抵消（`contextSpacing`）：同一容器中相邻段落样式相同时，设置了该项的段落
  *   不留对应一侧的间距。段落上下边框占用的高度见 `borderExtents`，由调用方加在段前间距之后与最后一行之后，不与间距合并。
  * - 全部大写（`caps`）按大写字母排版；大小写转换改变字符数的字符保持原样，使片段的位置与字段文字一一对应。
@@ -29,6 +30,7 @@ import type { GlyphOutlines } from '../font/index.ts'
 import {
   layoutMath,
   layoutMathParagraph,
+  MATH_SETTINGS_DEFAULTS,
   type MathEnvironment,
   type MathFont,
   type MathJustification,
@@ -59,6 +61,7 @@ import {
 } from '../text/index.ts'
 import { borderSpace } from './border.ts'
 import type { Block, DocxDocument, InlineImage, Paragraph, RunMath, RunProps } from './model.ts'
+import { type FontUse, substitutes } from './resolve/fonts.ts'
 
 export interface FontMatch {
   readonly face: TextFace
@@ -73,7 +76,7 @@ export interface FontSource {
   math(name: string): MathFont<TextFace> | null
   /** `face` 或 `fallback` 返回的字形的 TrueType 轮廓；其他字形与没有轮廓的字体为 `null`。 */
   outlines(face: TextFace): GlyphOutlines | null
-  /** 缺少字形与缺少字体时使用的字体（常规字形）。 */
+  /** 缺少字形与缺少字体（没有可用的替代字体）时使用的字体（常规字形）。 */
   readonly fallback: TextFace
 }
 
@@ -149,6 +152,14 @@ const EMOJI_RANGES: readonly (readonly [number, number])[] = [
   [0x1f680, 0x1f6ff],
   [0x1f900, 0x1f9ff],
 ]
+
+/** 字段东亚字体的用途（见 `substitutes`）。 */
+function eastAsiaUse(p: RunProps): FontUse {
+  return p.eastAsiaTheme ? 'themeEastAsia' : 'eastAsia'
+}
+
+/** 字体表中按中文字符集判断字体选择的 `w:charset`：GB2312 与 Big5。 */
+const CHINESE_CHARSETS = new Set([0x86, 0x88])
 
 /** 码位缺字形时改用 `EMOJI_FALLBACK`。 */
 export function emojiFallback(cp: number): boolean {
@@ -315,7 +326,9 @@ export class ParagraphLayouter {
     private readonly doc: DocxDocument,
     private readonly source: FontSource,
   ) {
-    this.chinese = new Set(doc.chineseCharsetFonts)
+    this.chinese = new Set()
+    for (const [name, entry] of doc.fontTable)
+      if (entry.charset !== null && CHINESE_CHARSETS.has(entry.charset)) this.chinese.add(name)
     const s = doc.settings
     this.noBreakBefore =
       s.noLineBreakBefore === null
@@ -330,17 +343,31 @@ export class ParagraphLayouter {
     return [...this.missing]
   }
 
-  face(name: string, bold: boolean, italic: boolean): TextFace {
-    const key = `${name}\u0000${bold ? 1 : 0}${italic ? 1 : 0}`
+  /** `use` 为该字体在字段中的用途，决定主机没有该字体时的替代（见 `substitutes`）。 */
+  face(name: string, bold: boolean, italic: boolean, use: FontUse = 'other'): TextFace {
+    const key = `${name}\u0000${bold ? 1 : 0}${italic ? 1 : 0}${use}`
     let f = this.faces.get(key)
     if (f === undefined) {
-      const found = this.source.face(name, bold, italic)
-      if (found === null) this.missing.add(name)
+      let found = this.source.face(name, bold, italic)
+      if (found === null) {
+        this.missing.add(name)
+        found = this.substitute(name, bold, italic, use)
+      }
       const base = found?.face ?? this.source.fallback
       f = bold && found?.bold !== true ? emboldened(base) : base
       this.faces.set(key, f)
     }
     return f
+  }
+
+  /** 第一个主机有且含所需代码页的替代字体；都没有时为 `null`。 */
+  private substitute(name: string, bold: boolean, italic: boolean, use: FontUse): FontMatch | null {
+    for (const c of substitutes(name, use, this.doc.fontTable)) {
+      const found = this.source.face(c.name, bold, italic)
+      if (found !== null && ((found.face.vertical.codePages ?? 0) & c.codePages) === c.codePages)
+        return found
+    }
+    return null
   }
 
   /** 缺字形时改用的字体（见 `EMOJI_FALLBACK`）：主机没有该字体或其中也没有该字形时为 `FontSource.fallback`。 */
@@ -365,7 +392,7 @@ export class ParagraphLayouter {
     const fonts: RunFonts = {
       ascii: this.face(p.fonts.ascii, p.bold, p.italic),
       hAnsi: this.face(p.fonts.hAnsi, p.bold, p.italic),
-      eastAsia: this.face(p.fonts.eastAsia, p.bold, p.italic),
+      eastAsia: this.face(p.fonts.eastAsia, p.bold, p.italic, eastAsiaUse(p)),
       cs: this.face(p.fonts.cs, p.boldCs, p.italicCs),
     }
     const run: TextRun = {
@@ -390,16 +417,21 @@ export class ParagraphLayouter {
       bold: p.bold,
       italic: p.italic,
       textFace: (cp) => {
-        let face = this.face(p.fonts[fontSlot(cp, slots)], p.bold, p.italic)
+        const slot = fontSlot(cp, slots)
+        const eastAsia = slot === 'eastAsia'
+        let face = this.face(p.fonts[slot], p.bold, p.italic, eastAsia ? eastAsiaUse(p) : 'other')
         if (face.metrics.glyphId(cp) === 0) face = this.glyphFallback(cp)
-        return { face, font: face, outlines: this.source.outlines(face) }
+        return { face, font: face, outlines: this.source.outlines(face), eastAsia }
       },
     }
   }
 
-  /** 公式的排版环境：没有字符属性的部分取 `props`；主机没有数学字体时为 `null`。 */
+  /** 公式的排版环境：没有字符属性的部分取 `props`；主机既没有文档的数学字体也没有 Cambria Math 时为 `null`。 */
   private mathEnvironment(props: RunProps): MathEnvironment<RunProps, TextFace> | null {
-    if (this.mathFont === undefined) this.mathFont = this.source.math(this.doc.settings.math.font)
+    if (this.mathFont === undefined)
+      this.mathFont =
+        this.source.math(this.doc.settings.math.font) ??
+        this.source.math(MATH_SETTINGS_DEFAULTS.font)
     const font = this.mathFont
     if (font === null) return null
     const styles = new Map<RunProps, MathRunStyle<TextFace>>()

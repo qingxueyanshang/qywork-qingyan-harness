@@ -1,8 +1,8 @@
 /**
  * docx 中的公式。覆盖 `../parse/body.ts`（公式字段、显示公式的判定、删除的修订）、`../parse/settings.ts`（`m:mathPr`）、
- * `../layout.ts`（行内公式参与断行与行高、显示公式段落的行高与横向位置、不能排版的公式）、`build.ts`（`requiredFonts`
- * 中的数学字体、`PageParagraph.formulas` 与 `Page.hiddenMath`）、`../render/fonts.ts`（数学字体的读取与登记）与
- * `../render/paint.ts`（公式的绘制）。
+ * `../layout.ts`（行内公式参与断行与行高、显示公式段落的行高与横向位置、不能排版的公式、数学字体的替代、东亚提示的字段字体）、
+ * `build.ts`（`requiredFonts` 中的数学字体与替代字体、`PageParagraph.formulas` 与 `Page.hiddenMath`）、`../render/fonts.ts`
+ * （数学字体的读取与登记）与 `../render/paint.ts`（公式的绘制）。
  *
  * 期望值取自 WPS 12.1 只读打开构造文档 w7-ls、w7-lsgrid、w7-x、w7-xleft、w7-mark 后逐段取得的位置
  * （`Range.Information(5)`、`Information(6)`，0.05 磅精度）。排版用例读取本机 Windows 字体目录中的宋体、
@@ -98,8 +98,12 @@ describe('公式字段与显示公式的判定', () => {
     expect(doc.settings.math.defaultJustification).toBe('left')
     expect(paragraphs(doc).map(kinds)).toEqual([['left'], ['left'], ['center']])
     expect(requiredFonts(doc)).toContain('STIX Two Math')
+    expect(requiredFonts(doc)).toContain('Cambria Math')
     const plain = await parse(p(r('a')) + SECT(), settings)
     expect(requiredFonts(plain)).not.toContain('STIX Two Math')
+    expect(requiredFonts(plain)).not.toContain('Cambria Math')
+    // 主机没有西文字体时的替代字体 Segoe Print 计入所需字体（见 `../resolve/fonts.ts` 的 `substitutes`）。
+    expect(requiredFonts(plain)).toContain('Segoe Print')
   })
 })
 
@@ -241,6 +245,38 @@ describe.skipIf(!HAS_FONTS)('公式的排版与分页', () => {
     expect(frags[1]!.x).toBeCloseTo(frags[0]!.x + 21, 6)
     const drawn = layoutPages(doc, fonts()).pages.pages[0]!
     expect(drawn.hiddenMath).toBe(1)
+  })
+
+  test('文档的数学字体主机没有时按 Cambria Math 排版', async () => {
+    // WPS（构造文档 f3：数学字体为本机没有的 STIX Math）：公式中的数学字母与运算符以 Cambria Math 绘制。
+    const doc = await parse(
+      p(r('文字') + omath(FRAC)) + SECT(),
+      '<m:mathPr><m:mathFont m:val="STIX Math"/></m:mathPr>',
+    )
+    const [lay] = layouts(doc)
+    expect(lay!.formulas).toHaveLength(1)
+    expect(lay!.formulas[0]!.layout).not.toBeNull()
+  })
+
+  test('行内公式中东亚提示的希腊字母以宋体绘制，所在行按宋体的单倍行高计算', async () => {
+    // WPS（构造文档 ea4i，10 磅「The value μ is」，μ 为 m:sty="p"、w:hint="eastAsia" 的数学字段）：μ、α、λ、ε 以宋体绘制，
+    // 行高 14.40 磅；公式为数学斜体 x 时 11.75 磅。
+    const sz = '<w:sz w:val="20"/><w:szCs w:val="20"/>'
+    const word = (t: string) =>
+      `<w:r><w:rPr>${sz}</w:rPr><w:t xml:space="preserve">${t}</w:t></w:r>`
+    const hinted = (t: string) =>
+      `<m:r><m:rPr><m:sty m:val="p"/></m:rPr><w:rPr><w:rFonts w:hint="eastAsia" w:ascii="Times New Roman" ` +
+      `w:hAnsi="Times New Roman" w:cs="Times New Roman"/>${sz}</w:rPr><m:t>${t}</m:t></m:r>`
+    const line = (z: string) =>
+      p(word('The value ') + omath(z) + word(' is'), '<w:jc w:val="left"/>')
+    const doc = await parse(line(hinted('μ')) + line(mr('x', sz)) + SECT())
+    const [mu, x] = layouts(doc)
+    expect(mu!.text.lines[0]!.height).toBeCloseTo(14.4, 1)
+    expect(x!.text.lines[0]!.height).toBeCloseTo(11.75, 1)
+    const glyph = mu!.formulas[0]!.layout!.items.find((it) => it.kind === 'glyph')!
+    expect(glyph.kind === 'glyph' && glyph.font).toBe(
+      fonts().source.face('宋体', false, false)!.face,
+    )
   })
 
   test('绘制：公式的字形以数学字体的族名绘制，分数线以填充矩形绘制，不生成文字片段', async () => {

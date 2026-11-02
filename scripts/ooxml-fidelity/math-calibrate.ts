@@ -15,7 +15,8 @@
  * `--render`：以 WPS 的页面图为底，把每个配对成功的公式盒（上下各外扩 2 像素）涂白，再按配对得到的原点画出本方的公式
  * （`math-page.ts` 经 `math-shoot.mjs` 截图）；`math_score.py` 逐个公式裁出该区域（不足 11 像素的一边向两侧补足，
  * 补足部分两图相同）比较 SSIM，结果写入 `<输出目录>/scores.json`。
- * 字体取本机 Windows 字体目录：Cambria Math（cambria.ttc 第 2 个字体）、宋体、Times New Roman。
+ * 字体取本机 Windows 字体目录：Cambria Math（cambria.ttc 第 2 个字体）、宋体、Times New Roman。按字体选择规则（含 `w:hint`）
+ * 落在东亚字体中的字符取宋体。
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -43,7 +44,11 @@ import {
   readMathSettings,
 } from '../../packages/ooxml/src/math/index.ts'
 import { PartScanner } from '../../packages/ooxml/src/opc/index.ts'
-import type { TextFace } from '../../packages/ooxml/src/text/index.ts'
+import {
+  DEFAULT_SLOT_CONTEXT,
+  fontSlot,
+  type TextFace,
+} from '../../packages/ooxml/src/text/index.ts'
 import { openZip } from '../../packages/ooxml/src/zip/index.ts'
 
 const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
@@ -54,6 +59,8 @@ export interface Props {
   size?: number
   ascii?: string
   eastAsia?: string
+  /** `w:rFonts/@w:hint` 为 `eastAsia`。 */
+  hint?: boolean
   bold?: boolean
   italic?: boolean
   color?: string
@@ -72,6 +79,7 @@ export function readProps(x: PartScanner): Props {
       const e = x.attr('w:eastAsia')
       if (a !== null) p.ascii = a
       if (e !== null) p.eastAsia = e
+      if (x.attr('w:hint') === 'eastAsia') p.hint = true
     } else if (x.local === 'b') p.bold = v === null || !(v === '0' || v === 'false')
     else if (x.local === 'i') p.italic = v === null || !(v === '0' || v === 'false')
     else if (x.local === 'color' && v !== null && v !== 'auto') p.color = `#${v}`
@@ -128,10 +136,16 @@ export function loadEnvironment(defaultSize: number, settings = MATH_SETTINGS_DE
       bold: p?.bold ?? false,
       italic: p?.italic ?? false,
       textFace: (cp) => {
-        if (cp >= 0x2e80) return { ...song, font: '宋体' }
+        const eastAsia =
+          fontSlot(cp, { ...DEFAULT_SLOT_CONTEXT, eastAsiaHint: p?.hint === true }) === 'eastAsia'
+        if (cp >= 0x2e80 || eastAsia) return { ...song, font: '宋体', eastAsia }
         if (p?.ascii === 'Cambria Math')
-          return { face: math.face, outlines: math.outlines, font: 'Cambria Math' }
-        return { ...times(p?.bold ?? false, p?.italic ?? false), font: 'Times New Roman' }
+          return { face: math.face, outlines: math.outlines, font: 'Cambria Math', eastAsia }
+        return {
+          ...times(p?.bold ?? false, p?.italic ?? false),
+          font: 'Times New Roman',
+          eastAsia,
+        }
       },
     }),
   }

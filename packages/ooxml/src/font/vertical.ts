@@ -40,6 +40,11 @@ export interface VerticalMetrics {
   averageWidth: number
   /** `OS/2.ulCodePageRange1` 含中文、日文或韩文代码页。版本 0 的表没有该字段，为 `false`。 */
   eastAsianCodePage: boolean
+  /**
+   * `OS/2.ulCodePageRange1`（位 17 日文、18 简体中文、19 韩文、20 繁体中文）。版本 0 的表没有该字段，为 0。
+   * 不来自字体文件的度量可以省略，按 0。
+   */
+  codePages?: number
   /** `OS/2.ySuperscriptYSize`，字体单位：上标字号为原字号乘以该值除以 `unitsPerEm`。 */
   superscriptSize: number
   /** `OS/2.ySuperscriptYOffset`，字体单位，基线向上为正。 */
@@ -75,6 +80,7 @@ export function readVerticalMetrics(bytes: Uint8Array, face: SfntFace): Vertical
     useTypoMetrics: (o.getUint16(OS2_FS_SELECTION) & USE_TYPO_METRICS) !== 0,
     averageWidth: o.getInt16(2),
     eastAsianCodePage: (codePageRange1(os2) & EAST_ASIAN_CODE_PAGES) !== 0,
+    codePages: codePageRange1(os2),
     subscriptSize: o.getInt16(12),
     subscriptOffset: o.getInt16(16),
     superscriptSize: o.getInt16(20),

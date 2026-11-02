@@ -13,6 +13,8 @@ export {
   type EmbeddedOpenType,
   readEmbeddedOpenType,
 } from './embedded/eot.ts'
+export { readCoverage } from './features/coverage.ts'
+export { type GlyphSubstitution, readSingleSubstitution } from './features/gsub.ts'
 export type { HintedOutline } from './hinting/glyph.ts'
 export { type GlyphHinting, readGlyphHinting } from './hinting/index.ts'
 export { rasterize } from './hinting/raster.ts'
