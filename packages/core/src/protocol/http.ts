@@ -157,6 +157,45 @@ export interface UsageResponse {
 }
 
 /**
+ * `GET /api/cloud/state`：云端账号状态。`unavailable` 表示未配置云端服务，界面不显示账号入口。
+ * `provider` 是配置中云端接口的名称：模型设置页据此不提供它的编辑与删除，移除只经退出。
+ */
+export type CloudState =
+  | { state: 'unavailable' }
+  | { state: 'signed_out'; reason?: 'revoked' }
+  | { state: 'signed_in'; email: string; credits: number | null; provider: string }
+
+/**
+ * `GET /api/cloud/usage`：云端统计的本账号用量。token 四项与云端计费口径相同：输入不含缓存命中与缓存写入。
+ */
+export interface CloudUsage {
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  /** 累计消耗的积分。 */
+  credits: number
+  /** 近 53 周中有请求的日期（`YYYY-MM-DD`，按电脑所在时区分日），升序。 */
+  days: { day: string; requests: number; tokens: number; credits: number }[]
+}
+
+/** `GET /api/cloud/requests`：云端的一条请求记录，按时间倒序分页。 */
+export interface CloudRequest {
+  id: string
+  modelId: string
+  /** 失败原因（如「429 请求过多」「连接中断」）；成功为 null。 */
+  failure: string | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  /** 本次扣除的积分。 */
+  credits: number
+  startedAt: string
+}
+
+/**
  * `GET /api/conversations/:id/usage`：单个会话的完整花费。
  *
  * `entries` 逐笔返回，而不只返回合计：合计中包含压缩摘要等不属于任何轮次的开销，

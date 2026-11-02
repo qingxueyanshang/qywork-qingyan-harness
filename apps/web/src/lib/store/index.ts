@@ -232,6 +232,7 @@ export {
 } from './theme.ts'
 export {
   absPath,
+  accountOpen,
   activePanelTab,
   askInChat,
   closePanel,
@@ -265,6 +266,7 @@ export {
   restoreTerminalTabs,
   type SettingsPage,
   seedFoldOpen,
+  setAccountOpen,
   setComposerSeed,
   setFoldOpen,
   setFollowUpMode,

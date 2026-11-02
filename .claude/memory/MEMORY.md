@@ -22,7 +22,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [商业化云服务使用独立账号](commercial-cloud-standalone-accounts.md) — 邮箱加密码注册登录，不接第三方登录；后台录入模型接口并查看用户数据
 - [前一版本未发布时不升版本号](version-bump-only-after-publish.md) — v0.1.20 未公开时新改动并入 0.1.20，本地打包安装使用同一版本号，版本说明修改当前版本的那一份
 - [正式发布经接口脚本完成](publish-release-via-api.md) — `.tmp/scratch/release-api.ps1` 用凭据管理器的令牌触发三个发布工作流并公开草稿，不需要 gh；Git Bash 中设置 `MSYS_NO_PATHCONV=1`
-- [执行 qy 必须隔离数据目录](qy-needs-isolated-home.md) — 同一条命令中设置 `QYWORK_HOME` 指向 .tmp；钩子 `scripts/guard-real-home.ts` 拦截未设置的命令；曾误用用户真实账本执行过一次
+- [执行 qy 必须隔离数据目录](qy-needs-isolated-home.md) — 同一条命令中设置 `QYWORK_HOME` 指向 .tmp；钩子 `scripts/guard-real-home.ts` 拦截未设置的命令；`bun test` 只在仓库根目录执行，包目录中不加载预载；两次误用过用户真实数据
 - [Git Bash 的 /tmp 指向已删除的测试目录](git-bash-tmp-points-at-deleted-test-dir.md) — bash 先输出「could not find /tmp」、shell 工具测试报「投递额度未开账」；用 `mount` 查看指向并重建该目录，不结束其他会话的 sh
 - [与并行会话修改了同一批文件时只提交本会话的段](partial-commit-shared-files.md) — 按内容判定归属、从 HEAD 构造内容写入索引、临时工作树自检、按索引提交；带 pathspec 会把对方的段一并提交
 - [常驻动画只能动 transform / opacity](continuous-animation-cost.md) — 用户显示器 180Hz，CSS 重绘型动画开销为 60Hz 的三倍；画布流动虚线由 WebGL 绘制（抗锯齿虚线曲线的光栅化随条数增长），删除视觉效果前先问用户

@@ -27,11 +27,15 @@ const SidePanel = lazy(() => import('./components/SidePanel.tsx'))
 const SettingsDialog = lazy(() =>
   import('./components/settings/SettingsDialog.tsx').then((m) => ({ default: m.SettingsDialog })),
 )
+// 账号弹窗同样仅在打开时下载。
+const AccountDialog = lazy(() => import('./components/account/AccountDialog.tsx'))
 
 import { IconCheck, IconChevron, IconDownload, IconPanel } from './components/Icons.tsx'
 import { LoginGate } from './components/LoginGate.tsx'
 import { WindowControls } from './components/WindowControls.tsx'
+import { cloudState, refreshCloudState } from './lib/store/cloud.ts'
 import {
+  accountOpen,
   client,
   exportActiveConversation,
   isDesktopShell,
@@ -185,6 +189,8 @@ export function App() {
           message: `恢复项目与会话失败：${error instanceof Error ? error.message : String(error)}`,
         })
       })
+      // 侧栏的账号入口与首次启动的登录页依据账号状态显示，同样在每次连接可用时读取。
+      void refreshCloudState().catch(() => {})
     }
     return ready
   }, false)
@@ -349,6 +355,12 @@ export function App() {
       <Show when={settingsPage()}>
         <Suspense>
           <SettingsDialog />
+        </Suspense>
+      </Show>
+      {/* 未配置云端服务时不打开：刷新前打开过的弹窗会经 sessionSignal 恢复。 */}
+      <Show when={accountOpen() && cloudState() && cloudState()?.state !== 'unavailable'}>
+        <Suspense>
+          <AccountDialog />
         </Suspense>
       </Show>
       <LoginGate />

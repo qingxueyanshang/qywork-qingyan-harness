@@ -1,15 +1,16 @@
 /**
- * 云端账号：电脑端登录、退出与内置模型的接口。
+ * 云端账号：电脑端以邮箱密码登录或注册、退出、内置模型的接口，以及账号界面读取的用量与使用记录。
  *
  * 不变量：
- * - 登录状态只有一份，在本对象中：`pending` 期间重复登录返回同一个用户码；已登录以配置中存在云端接口为准。
+ * - 已登录以配置中存在云端接口为准；本对象只另记「设备已被移除」这一个退出原因。
  * - 设备密钥只保存在配置的云端接口（`CLOUD_PROVIDER`，地址为网关）中，没有第二份。
  * - 配置只经 `writeConfig` 写入；退出与「设备已被移除」使用同一个删除函数，`active` 与 `mediaDefaults` 指向它时一并删除。
  * - 只有网关或隧道明确返回「设备已被移除」时才删除本地接口；其他失败（断网、云端故障）不删除，避免误清空配置。
  * - 写入或删除云端接口后调用 `onChange`：远程访问据此启停隧道。
  */
 
-import { pullModels } from '@qywork/ai'
+import { httpStatusName, pullModels } from '@qywork/ai'
+import type { CloudRequest, CloudState, CloudUsage } from '@qywork/core'
 import type { QyConfig, StoredModel, StoredProvider } from '@qywork/runtime'
 import { writeConfig } from '../api/config.ts'
 import { hostLabel } from '../http-util.ts'
@@ -17,31 +18,37 @@ import type { CloudOrigins } from './origins.ts'
 
 /** 云端接口在配置中的名称。 */
 export const CLOUD_PROVIDER = 'qywork'
-/** 设备授权的客户端 id，与云端 `DESKTOP_CLIENT_ID` 相同。 */
-const CLIENT_ID = 'qywork-desktop'
 /** 云端接口的默认协议；网关上协议不同的型号带各自的 `kind`（拉取时写入）。 */
 const DEFAULT_KIND = 'anthropic_messages'
 
-export type CloudState =
-  | { state: 'unavailable' }
-  | { state: 'signed_out'; reason?: 'revoked' | 'expired' | 'denied' | 'error'; message?: string }
-  | { state: 'pending'; userCode: string; verificationUri: string; expiresAt: number }
-  /** `provider` 是配置中云端接口的名称：模型设置页据此不提供它的编辑与删除，移除只经退出。 */
-  | { state: 'signed_in'; email: string; credits: number | null; provider: string }
-
-interface Pending {
-  deviceCode: string
-  userCode: string
-  verificationUri: string
-  expiresAt: number
-  intervalMs: number
-}
+/** 登录、注册或读取用量失败；`message` 直接显示给用户。 */
+export class CloudAccountError extends Error {}
 
 export interface CloudAccountOptions {
-  /** 设备授权的轮询间隔（毫秒），按云端给出的秒数换算。测试中缩短。 */
-  intervalMs?: (seconds: number) => number
   /** 云端接口写入或删除之后。 */
   onChange?: () => void
+}
+
+/** 网关返回的请求记录：失败以状态码与网关的错误码表示，转为界面文字后交给账号界面。 */
+type GatewayRequest = Omit<CloudRequest, 'failure'> & { status: number; errorCode: string | null }
+
+/** 网关错误码对应的说明。`upstream_<状态码>` 写成「状态码 名称」，与运行页的报错写法相同。 */
+function failure(status: number, errorCode: string | null): string | null {
+  if (!errorCode) return null
+  if (errorCode === 'stream_interrupted') return '连接中断'
+  if (errorCode === 'upstream_unreachable') return '无法连接模型服务'
+  if (errorCode.startsWith('upstream_')) return `${status} ${httpStatusName(status)}`
+  return errorCode
+}
+
+/** Better Auth 的错误码对应的说明；未列出的错误码显示状态码与原文。 */
+const AUTH_ERRORS: Record<string, string> = {
+  INVALID_EMAIL_OR_PASSWORD: '邮箱或密码错误',
+  INVALID_EMAIL: '邮箱格式不正确',
+  USER_ALREADY_EXISTS: '该邮箱已注册',
+  USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: '该邮箱已注册',
+  PASSWORD_TOO_SHORT: '密码至少 8 位',
+  BANNED_USER: '账号已被停用',
 }
 
 /** 配置中的云端接口：名称为 `CLOUD_PROVIDER` 且地址为网关。 */
@@ -59,15 +66,16 @@ const json = (body: unknown, token?: string): RequestInit => ({
   body: JSON.stringify(body),
 })
 
+function unreachable(err: unknown): CloudAccountError {
+  return new CloudAccountError(
+    `无法连接账号服务：${err instanceof Error ? err.message : String(err)}`,
+  )
+}
+
 export class CloudAccount {
-  private pending: Pending | null = null
-  private failure: {
-    reason: 'revoked' | 'expired' | 'denied' | 'error'
-    message?: string
-  } | null = null
+  private wasRevoked = false
   private email: string | null = null
   private refreshed = false
-  private readonly intervalMs: (seconds: number) => number
   private readonly onChange: () => void
 
   constructor(
@@ -75,21 +83,14 @@ export class CloudAccount {
     private readonly origins: CloudOrigins,
     options: CloudAccountOptions = {},
   ) {
-    this.intervalMs = options.intervalMs ?? ((s) => s * 1000)
     this.onChange = options.onChange ?? (() => {})
   }
 
   async state(): Promise<CloudState> {
-    if (this.pending) {
-      if (Date.now() <= this.pending.expiresAt) {
-        const { userCode, verificationUri, expiresAt } = this.pending
-        return { state: 'pending', userCode, verificationUri, expiresAt }
-      }
-      this.pending = null
-      this.failure = { reason: 'expired' }
-    }
     const provider = cloudProviderOf(this.live, this.origins)
-    if (!provider?.apiKey) return { state: 'signed_out', ...(this.failure ?? {}) }
+    if (!provider?.apiKey) {
+      return this.wasRevoked ? { state: 'signed_out', reason: 'revoked' } : { state: 'signed_out' }
+    }
     const me = await this.me(provider.apiKey)
     if (me === 'revoked') {
       await this.revoked()
@@ -107,53 +108,43 @@ export class CloudAccount {
     return { state: 'signed_in', email: this.email ?? '', credits: null, provider: CLOUD_PROVIDER }
   }
 
-  /** 发起登录；已在进行中时返回进行中的那一次。 */
-  async login(): Promise<CloudState> {
-    if (this.pending || cloudProviderOf(this.live, this.origins)) return this.state()
-    this.failure = null
-    try {
-      const res = await fetch(
-        `${this.origins.app}/api/auth/device/code`,
-        json({ client_id: CLIENT_ID }),
-      )
-      if (!res.ok) throw new Error(`账号服务返回 ${res.status}`)
-      const code = (await res.json()) as {
-        device_code: string
-        user_code: string
-        verification_uri: string
-        verification_uri_complete?: string
-        expires_in: number
-        interval?: number
-      }
-      this.pending = {
-        deviceCode: code.device_code,
-        userCode: code.user_code,
-        verificationUri:
-          code.verification_uri_complete ?? `${code.verification_uri}?user_code=${code.user_code}`,
-        expiresAt: Date.now() + code.expires_in * 1000,
-        intervalMs: this.intervalMs(code.interval ?? 5),
-      }
-      void this.poll(this.pending)
-    } catch (err) {
-      this.failure = {
-        reason: 'error',
-        message: `无法连接账号服务：${err instanceof Error ? err.message : String(err)}`,
-      }
-    }
-    return this.state()
+  /** 以邮箱密码登录。已登录时直接返回当前状态。 */
+  login(email: string, password: string): Promise<CloudState> {
+    return this.signIn('sign-in/email', { email, password })
   }
 
-  /** 云端答复本设备已被移除（网关或隧道）：删除本地接口，账号区块显示原因。 */
+  /** 注册并登录：云端开启了注册后自动登录，注册的响应即带会话令牌。 */
+  register(email: string, password: string): Promise<CloudState> {
+    return this.signIn('sign-up/email', { email, password, name: email })
+  }
+
+  /** 用量汇总，按本机时区分日。 */
+  usage(): Promise<CloudUsage> {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return this.read<CloudUsage>(`/v1/usage?tz=${encodeURIComponent(tz)}`)
+  }
+
+  /** 使用记录，按时间倒序；`before` 为上一页最后一条的 `startedAt`。 */
+  async requests(before: string | null, limit: number): Promise<CloudRequest[]> {
+    const query = new URLSearchParams({ limit: String(limit) })
+    if (before) query.set('before', before)
+    const rows = await this.read<GatewayRequest[]>(`/v1/requests?${query}`)
+    return rows.map(({ status, errorCode, ...r }) => ({
+      ...r,
+      failure: failure(status, errorCode),
+    }))
+  }
+
+  /** 云端答复本设备已被移除（网关或隧道）：删除本地接口，账号界面显示原因。 */
   async revoked(): Promise<void> {
     this.email = null
     await this.remove()
-    this.failure = { reason: 'revoked' }
+    this.wasRevoked = true
   }
 
   /** 退出：先请求云端吊销本设备（失败时仍在本地退出），再删除本地接口。 */
   async logout(): Promise<void> {
-    this.pending = null
-    this.failure = null
+    this.wasRevoked = false
     this.email = null
     const provider = cloudProviderOf(this.live, this.origins)
     if (provider?.apiKey) {
@@ -162,61 +153,63 @@ export class CloudAccount {
     await this.remove()
   }
 
-  private async poll(p: Pending): Promise<void> {
-    let interval = p.intervalMs
-    while (this.pending === p) {
-      await Bun.sleep(interval)
-      if (this.pending !== p) return
-      if (Date.now() > p.expiresAt) {
-        this.pending = null
-        this.failure = { reason: 'expired' }
-        return
-      }
-      let status: number
-      let body: { access_token?: string; error?: string; error_description?: string }
-      try {
-        const res = await fetch(
-          `${this.origins.app}/api/auth/device/token`,
-          json({
-            grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-            device_code: p.deviceCode,
-            client_id: CLIENT_ID,
-          }),
-        )
-        status = res.status
-        body = (await res.json().catch(() => ({}))) as typeof body
-      } catch {
-        continue
-      }
-      if (status === 200 && body.access_token) {
-        try {
-          await this.complete(body.access_token)
-        } catch (err) {
-          this.failure = {
-            reason: 'error',
-            message: err instanceof Error ? err.message : String(err),
-          }
-        }
-        if (this.pending === p) this.pending = null
-        return
-      }
-      if (body.error === 'authorization_pending') continue
-      if (body.error === 'slow_down') {
-        interval += this.intervalMs(5)
-        continue
-      }
-      this.pending = null
-      this.failure =
-        body.error === 'access_denied'
-          ? { reason: 'denied' }
-          : body.error === 'expired_token'
-            ? { reason: 'expired' }
-            : { reason: 'error', message: body.error_description ?? `账号服务返回 ${status}` }
-      return
+  /** 登录或注册：取得会话令牌后登记设备。失败抛出 `CloudAccountError`，状态仍为未登录。 */
+  private async signIn(path: string, body: Record<string, string>): Promise<CloudState> {
+    if (cloudProviderOf(this.live, this.origins)) return this.state()
+    let res: Response
+    try {
+      res = await fetch(`${this.origins.app}/api/auth/${path}`, json(body))
+    } catch (err) {
+      throw unreachable(err)
     }
+    const reply = (await res.json().catch(() => ({}))) as {
+      token?: string
+      code?: string
+      message?: string
+    }
+    if (!res.ok || !reply.token) {
+      const known = reply.code ? AUTH_ERRORS[reply.code] : undefined
+      if (known) throw new CloudAccountError(known)
+      if (res.status === 429) throw new CloudAccountError('尝试次数过多，请稍后再试')
+      throw new CloudAccountError(
+        `账号服务返回 ${res.status}${reply.message ? `：${reply.message}` : ''}`,
+      )
+    }
+    try {
+      await this.complete(reply.token)
+    } catch (err) {
+      throw new CloudAccountError(err instanceof Error ? err.message : String(err))
+    }
+    this.wasRevoked = false
+    return this.state()
   }
 
-  /** 授权完成：登记设备取得设备密钥，注销这次的会话，写入云端接口与型号。 */
+  /** 以设备密钥读取云端接口；云端答复设备已被移除时删除本地接口。 */
+  private async read<T>(path: string): Promise<T> {
+    const provider = cloudProviderOf(this.live, this.origins)
+    if (!provider?.apiKey) throw new CloudAccountError('未登录')
+    let res: Response
+    try {
+      res = await fetch(`${this.origins.api}${path}`, {
+        headers: { authorization: `Bearer ${provider.apiKey}` },
+      })
+    } catch (err) {
+      throw unreachable(err)
+    }
+    if (res.ok) return (await res.json()) as T
+    const body = (await res.json().catch(() => null)) as {
+      error?: { code?: string; message?: string }
+    } | null
+    if (res.status === 401 && body?.error?.code === 'device_revoked') {
+      await this.revoked()
+      throw new CloudAccountError('设备已被移除')
+    }
+    throw new CloudAccountError(
+      `账号服务返回 ${res.status}${body?.error?.message ? `：${body.error.message}` : ''}`,
+    )
+  }
+
+  /** 登录完成：登记设备取得设备密钥，注销这次的会话，写入云端接口与型号。 */
   private async complete(sessionToken: string): Promise<void> {
     const existing = this.live.providers[CLOUD_PROVIDER]
     if (existing && existing.baseUrl !== this.origins.api) {

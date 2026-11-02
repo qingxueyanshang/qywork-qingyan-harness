@@ -752,6 +752,9 @@ export function closeSettings(): void {
   setSettingsPage(null)
 }
 
+/** 账号弹窗是否打开。与设置弹窗相同，经 `sessionSignal` 记录，整页刷新后恢复。 */
+export const [accountOpen, setAccountOpen] = sessionSignal<boolean>('qywork.account.open', false)
+
 /**
  * 面板中当前打开的文件（工作区相对路径）。`null` 表示只显示文件树。
  *

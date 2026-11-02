@@ -1,28 +1,24 @@
 /**
- * 覆盖范围：`login.ts`（`qy login` / `qy logout`）。云端是本文件中的模拟服务，用户在浏览器中的确认以第一次轮询即批准代替；
+ * 覆盖范围：`login.ts`（`qy login` / `qy logout`）。云端是本文件中的模拟服务，终端输入以固定答案代替；
  * 配置写入测试进程的 `QYWORK_HOME`。
  */
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { loadConfig } from '@qywork/runtime'
-import { runLogin, runLogout } from './login.ts'
+import { type Ask, runLogin, runLogout } from './login.ts'
 
 let revoked = 0
 const server: ReturnType<typeof Bun.serve> = Bun.serve({
   hostname: '127.0.0.1',
   port: 0,
-  fetch(req): Response {
+  async fetch(req): Promise<Response> {
     const path = new URL(req.url).pathname
-    if (path === '/api/auth/device/code') {
-      return Response.json({
-        device_code: 'dc',
-        user_code: 'ABCD1234',
-        verification_uri: `${origin}/device`,
-        expires_in: 600,
-        interval: 0,
-      })
+    if (path === '/api/auth/sign-in/email') {
+      const body = (await req.json()) as { password: string }
+      return body.password === 'password-123'
+        ? Response.json({ token: 'session' })
+        : Response.json({ code: 'INVALID_EMAIL_OR_PASSWORD' }, { status: 401 })
     }
-    if (path === '/api/auth/device/token') return Response.json({ access_token: 'session' })
     if (path === '/api/devices') return Response.json({ id: 'dv_1', key: 'qyd_cli_key' })
     if (path === '/api/auth/sign-out') return Response.json({ success: true })
     if (path === '/v1/me') return Response.json({ email: 'cli@example.com', credits: 3 })
@@ -62,8 +58,23 @@ afterAll(() => {
   else process.env.QYWORK_CLOUD = previous
 })
 
-test('登录后配置中有云端接口；退出时吊销设备并删除接口', async () => {
-  expect(await runLogin({ pollMs: 10 })).toBe(0)
+/** 依次回答邮箱与密码，并记录每次询问是否要求不回显。 */
+function answers(email: string, password: string, hidden: boolean[] = []): Ask {
+  return async (_question, isHidden) => {
+    hidden.push(isHidden)
+    return hidden.length === 1 ? email : password
+  }
+}
+
+test('密码错误时失败退出，不写入接口', async () => {
+  expect(await runLogin(answers('cli@example.com', 'wrong-password'))).toBe(1)
+  expect((await loadConfig()).providers.qywork).toBeUndefined()
+})
+
+test('登录后配置中有云端接口，密码不回显；退出时吊销设备并删除接口', async () => {
+  const hidden: boolean[] = []
+  expect(await runLogin(answers('cli@example.com', 'password-123', hidden))).toBe(0)
+  expect(hidden).toEqual([false, true])
   expect((await loadConfig()).providers.qywork?.apiKey).toBe('qyd_cli_key')
   expect(await runLogout()).toBe(0)
   expect(revoked).toBe(1)
