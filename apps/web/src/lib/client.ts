@@ -159,6 +159,9 @@ function isMobileViewport(): boolean {
  * `message` 或 `error`，否则取正文原文，正文为空时为「请求失败（状态码）」。
  * 状态码与路径只放在 `status` 与 `path` 中，不要写入 `message`：写入后界面显示的是
  * 「409 /api/files/create: {"error":"exists",…}」这样的整段原文。
+ *
+ * `status` 为 0 表示没有收到响应（服务未监听、正在重启、连接中途断开）：`api` 与 `raw` 把 `fetch` 抛出的
+ * `TypeError` 转为此形状，界面不显示浏览器原文（「Failed to fetch」）。
  */
 export class ApiError extends Error {
   constructor(
@@ -172,6 +175,7 @@ export class ApiError extends Error {
 }
 
 function apiReason(status: number, body: string): string {
+  if (status === 0) return '未收到服务响应'
   const text = body.trim()
   try {
     const obj = JSON.parse(text) as { problems?: unknown; message?: unknown; error?: unknown }
@@ -425,10 +429,7 @@ export class QyClient {
       given.set('content-type', 'application/json')
     }
     given.set('authorization', `Bearer ${this.endpoint.token}`)
-    const res = await fetch(`${this.endpoint.base}${withWorkspace(path)}`, {
-      ...init,
-      headers: given,
-    })
+    const res = await this.request(path, init, given)
     if (!res.ok) {
       throw new ApiError(res.status, path, await res.text().catch(() => ''))
     }
@@ -445,7 +446,20 @@ export class QyClient {
   raw(path: string, init?: RequestInit): Promise<Response> {
     const given = new Headers(init?.headers ?? {})
     given.set('authorization', `Bearer ${this.endpoint.token}`)
-    return fetch(`${this.endpoint.base}${withWorkspace(path)}`, { ...init, headers: given })
+    return this.request(path, init, given)
+  }
+
+  /**
+   * 发出请求。没有收到响应时 `fetch` 抛出 `TypeError`，转为状态 0 的 `ApiError`；
+   * 中止请求抛出的 `AbortError` 原样抛出，调用方按它判断是否由自己取消。
+   */
+  private async request(path: string, init: RequestInit | undefined, headers: Headers) {
+    try {
+      return await fetch(`${this.endpoint.base}${withWorkspace(path)}`, { ...init, headers })
+    } catch (e) {
+      if (e instanceof TypeError) throw new ApiError(0, path, '')
+      throw e
+    }
   }
 
   /**

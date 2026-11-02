@@ -169,10 +169,12 @@ export interface ProviderRename {
 }
 
 /**
- * 抛出值的说明文字。`client.api` 抛出的 `ApiError` 的消息已是服务端说明的原因；
- * 消息为空时使用 `fallback`。
+ * 一次操作失败时显示的文字。`client.api` 抛出的 `ApiError` 的消息已是服务端说明的原因；
+ * 没有收到响应（状态 0）或消息为空时使用 `fallback`，即本次操作的结果（如「保存失败」）：
+ * 连接中断由顶部的连接状态条显示，此处不再重复。
  */
 export function explainApiError(e: unknown, fallback: string): string {
+  if (e instanceof ApiError && e.status === 0) return fallback
   return (e instanceof Error ? e.message : String(e)) || fallback
 }
 

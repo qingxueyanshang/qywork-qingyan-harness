@@ -909,6 +909,31 @@ describe('接口错误的消息是服务端说明的原因', () => {
   test('仅在消息为空时使用默认文案', () => {
     expect(explainApiError(new Error(''), '保存失败')).toBe('保存失败')
   })
+
+  test('没有收到响应时转为状态 0 的接口错误，不显示浏览器原文；中止请求原样抛出', async () => {
+    const { ApiError } = await import('./client.ts')
+    const original = globalThis.fetch
+    try {
+      globalThis.fetch = (async () => {
+        throw new TypeError('Failed to fetch')
+      }) as unknown as typeof fetch
+      const e = await client.api('/api/personalization').catch((x: unknown) => x)
+      expect(e).toBeInstanceOf(ApiError)
+      expect((e as InstanceType<typeof ApiError>).status).toBe(0)
+      expect((e as Error).message).toBe('未收到服务响应')
+      expect(explainApiError(e, '保存失败')).toBe('保存失败')
+      const raw = await client.raw('/api/files/raw').catch((x: unknown) => x)
+      expect((raw as Error).message).toBe('未收到服务响应')
+
+      globalThis.fetch = (async () => {
+        throw new DOMException('aborted', 'AbortError')
+      }) as unknown as typeof fetch
+      const aborted = await client.api('/api/personalization').catch((x: unknown) => x)
+      expect((aborted as Error).name).toBe('AbortError')
+    } finally {
+      globalThis.fetch = original
+    }
+  })
 })
 
 /**
