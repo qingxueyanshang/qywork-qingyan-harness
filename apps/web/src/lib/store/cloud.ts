@@ -1,43 +1,62 @@
 /**
- * 云端账号（服务端 `/api/cloud/*`）。状态以服务端为准，界面不另存登录状态。
+ * 云端账号（服务端 `/api/cloud/*`）。界面只有这一份账号状态，侧栏入口、账号弹窗与首次启动的登录页共用；
+ * 每次读取与操作后以服务端返回为准。
  */
 
+import type { CloudRequest, CloudState, CloudUsage } from '@qywork/core'
+import { createSignal } from 'solid-js'
 import { client } from './connection.ts'
 import { reloadModelCatalog } from './settings.ts'
-import { isDesktopShell } from './shell.ts'
 
-export type CloudState =
-  | { state: 'unavailable' }
-  | { state: 'signed_out'; reason?: 'revoked' | 'expired' | 'denied' | 'error'; message?: string }
-  | { state: 'pending'; userCode: string; verificationUri: string; expiresAt: number }
-  /** `provider` 是配置中云端接口的名称：模型设置页不提供它的编辑与删除，移除只经退出。 */
-  | { state: 'signed_in'; email: string; credits: number | null; provider: string }
+/** `null` 表示尚未读取，或读取失败：两者都不显示账号入口。 */
+const [cloudState, setCloudState] = createSignal<CloudState | null>(null)
+export { cloudState }
 
-export function fetchCloudState(): Promise<CloudState> {
-  return client.api<CloudState>('/api/cloud/state')
+export async function refreshCloudState(): Promise<void> {
+  setCloudState(await client.api<CloudState>('/api/cloud/state'))
 }
 
-/** 发起登录。桌面外壳中由服务端打开系统浏览器；其他情况下界面显示链接。 */
-export function startCloudLogin(): Promise<CloudState> {
-  return client.api<CloudState>('/api/cloud/login', {
+/** 登录或注册。失败时抛出可直接显示的原因，状态不变。成功后内置模型已写入配置，模型列表随之刷新。 */
+export async function cloudSignIn(
+  mode: 'login' | 'register',
+  email: string,
+  password: string,
+): Promise<void> {
+  const state = await client.api<CloudState>(`/api/cloud/${mode}`, {
     method: 'POST',
-    body: JSON.stringify({ openBrowser: isDesktopShell() }),
+    body: JSON.stringify({ email, password }),
   })
-}
-
-export async function cloudLogout(): Promise<CloudState> {
-  const state = await client.api<CloudState>('/api/cloud/logout', { method: 'POST' })
+  setCloudState(state)
   void reloadModelCatalog()
-  return state
 }
 
-/** 退出登录或设备被移除时的原因，显示在账号区块中。 */
-export function signedOutReason(state: CloudState): string | null {
-  if (state.state !== 'signed_out' || !state.reason) return null
-  return {
-    revoked: '设备已被移除',
-    expired: '登录码已过期',
-    denied: '已在浏览器中拒绝',
-    error: state.message ?? '登录失败',
-  }[state.reason]
+export async function cloudLogout(): Promise<void> {
+  setCloudState(await client.api<CloudState>('/api/cloud/logout', { method: 'POST' }))
+  void reloadModelCatalog()
+}
+
+/** 读取用量或记录失败时，设备可能已被移除：服务端已删除本地接口，状态随之重新读取。 */
+async function readCloud<T>(path: string): Promise<T> {
+  try {
+    return await client.api<T>(path)
+  } catch (e) {
+    void refreshCloudState().catch(() => {})
+    throw e
+  }
+}
+
+export function fetchCloudUsage(): Promise<CloudUsage> {
+  return readCloud<CloudUsage>('/api/cloud/usage')
+}
+
+/** `before` 为上一页最后一条的 `startedAt`；返回空数组表示没有更早的记录。 */
+export function fetchCloudRequests(before: string | null): Promise<CloudRequest[]> {
+  return readCloud<CloudRequest[]>(
+    `/api/cloud/requests${before ? `?before=${encodeURIComponent(before)}` : ''}`,
+  )
+}
+
+/** 退出登录的原因，显示在登录表单上方。 */
+export function signedOutReason(state: CloudState | null): string | null {
+  return state?.state === 'signed_out' && state.reason === 'revoked' ? '设备已被移除' : null
 }

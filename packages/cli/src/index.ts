@@ -63,7 +63,7 @@ const USAGE = `qy —— qywork 编码 agent
   qy init                 生成配置（首次使用时先执行此命令）
     --force               覆盖已有配置
 
-  qy login                登录 qywork 账号（在浏览器中确认登录码），之后可使用内置模型
+  qy login                以邮箱与密码登录 qywork 账号，之后可使用内置模型
   qy logout               退出登录并移除本设备
 
   qy exec "<任务>"        在当前目录执行一次任务

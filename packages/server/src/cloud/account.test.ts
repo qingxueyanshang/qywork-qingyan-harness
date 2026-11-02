@@ -1,48 +1,58 @@
 /**
- * 覆盖范围：`cloud/account.ts`。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
+ * 覆盖范围：`cloud/account.ts` 与 `api/cloud.ts` 的错误返回。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
 
 import { afterAll, beforeEach, expect, test } from 'bun:test'
 import { loadConfig, type QyConfig } from '@qywork/runtime'
-import { CLOUD_PROVIDER, CloudAccount, type CloudState } from './account.ts'
+import { handleCloudApi } from '../api/cloud.ts'
+import type { ApiRequestDeps } from '../api/types.ts'
+import { CLOUD_PROVIDER, CloudAccount, CloudAccountError } from './account.ts'
 
-type TokenReply = 'pending' | 'denied' | 'expired' | 'ok'
+const PASSWORD = 'password-123'
 
 const cloud = {
-  token: 'pending' as TokenReply,
   me: 'ok' as 'ok' | 'revoked' | 'invalid',
-  codes: 0,
   revoked: 0,
   signedOut: 0,
+  /** 云端收到的最后一次 `/v1/usage` 查询串与 `/v1/requests` 查询串。 */
+  usageQuery: '',
+  requestsQuery: '',
 }
 
 const server: ReturnType<typeof Bun.serve> = Bun.serve({
   hostname: '127.0.0.1',
   port: 0,
   async fetch(req): Promise<Response> {
-    const path = new URL(req.url).pathname
-    if (path === '/api/auth/device/code') {
-      cloud.codes++
-      return Response.json({
-        device_code: 'dc',
-        user_code: 'ABCD1234',
-        verification_uri: `${origin}/device`,
-        verification_uri_complete: `${origin}/device?user_code=ABCD1234`,
-        expires_in: 600,
-        interval: 5,
-      })
+    const url = new URL(req.url)
+    const path = url.pathname
+    const authed = req.headers.get('authorization') === 'Bearer qyd_device_key'
+    if (path === '/api/auth/sign-in/email') {
+      const body = (await req.json()) as { email: string; password: string }
+      if (body.password !== PASSWORD) {
+        return Response.json(
+          { message: 'Invalid email or password', code: 'INVALID_EMAIL_OR_PASSWORD' },
+          { status: 401 },
+        )
+      }
+      return Response.json({ token: 'session-token', user: { email: body.email } })
     }
-    if (path === '/api/auth/device/token') {
-      if (cloud.token === 'ok') return Response.json({ access_token: 'session-token' })
-      const error = {
-        pending: 'authorization_pending',
-        denied: 'access_denied',
-        expired: 'expired_token',
-      }[cloud.token]
-      return Response.json({ error, error_description: error }, { status: 400 })
+    if (path === '/api/auth/sign-up/email') {
+      const body = (await req.json()) as { email: string; name: string }
+      if (body.email === 'taken@example.com') {
+        return Response.json(
+          { message: 'User already exists.', code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL' },
+          { status: 422 },
+        )
+      }
+      return Response.json({ token: 'session-token', user: { email: body.email } })
     }
-    if (path === '/api/devices') return Response.json({ id: 'dv_1', key: 'qyd_device_key' })
+    if (path === '/api/devices') {
+      if (req.headers.get('authorization') !== 'Bearer session-token') {
+        return new Response(null, { status: 401 })
+      }
+      return Response.json({ id: 'dv_1', key: 'qyd_device_key' })
+    }
     if (path === '/api/auth/sign-out') {
       cloud.signedOut++
       return Response.json({ success: true })
@@ -51,10 +61,22 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
       cloud.revoked++
       return new Response(null, { status: 204 })
     }
-    if (path === '/v1/me') {
-      if (cloud.me === 'ok') return Response.json({ email: 'me@example.com', credits: 12.5 })
+    if (path.startsWith('/v1/') && cloud.me !== 'ok') {
       const code = cloud.me === 'revoked' ? 'device_revoked' : 'invalid_key'
-      return Response.json({ error: { code } }, { status: 401 })
+      return Response.json({ error: { code, message: code } }, { status: 401 })
+    }
+    if (path === '/v1/me') return Response.json({ email: 'me@example.com', credits: 12.5 })
+    if (path === '/v1/usage' && authed) {
+      cloud.usageQuery = url.search
+      return Response.json({ requests: 3, credits: 1.5, days: [] })
+    }
+    if (path === '/v1/requests' && authed) {
+      cloud.requestsQuery = url.search
+      return Response.json([
+        { id: 'r1', credits: 0.5, status: 200, errorCode: null },
+        { id: 'r2', credits: 0, status: 429, errorCode: 'upstream_429' },
+        { id: 'r3', credits: 0.1, status: 200, errorCode: 'stream_interrupted' },
+      ])
     }
     if (path === '/api/pricing') {
       const entry = (model_name: string, type: string) => ({
@@ -84,38 +106,21 @@ let live: QyConfig
 let account: CloudAccount
 
 beforeEach(async () => {
-  Object.assign(cloud, { token: 'pending', me: 'ok', codes: 0, revoked: 0, signedOut: 0 })
+  Object.assign(cloud, { me: 'ok', revoked: 0, signedOut: 0, usageQuery: '', requestsQuery: '' })
   live = await loadConfig()
   delete live.providers[CLOUD_PROVIDER]
-  account = new CloudAccount(live, { app: origin, api: origin }, { intervalMs: () => 10 })
+  delete live.active
+  account = new CloudAccount(live, { app: origin, api: origin })
 })
 
-async function until(check: () => Promise<boolean>): Promise<void> {
-  for (let i = 0; i < 200; i++) {
-    if (await check()) return
-    await Bun.sleep(10)
-  }
-  throw new Error('等待超时')
-}
-
-const stateIs = (s: CloudState['state']) => async () => (await account.state()).state === s
-
-test('登录进行中时重复点击返回同一个用户码，只申请一次', async () => {
-  const first = await account.login()
-  const second = await account.login()
-  expect(first).toMatchObject({ state: 'pending', userCode: 'ABCD1234' })
-  expect(second).toMatchObject({ state: 'pending', userCode: 'ABCD1234' })
-  expect((first as { verificationUri: string }).verificationUri).toBe(
-    `${origin}/device?user_code=ABCD1234`,
-  )
-  expect(cloud.codes).toBe(1)
-  await account.logout()
-})
-
-test('批准后写入云端接口：设备密钥只在该接口中，型号带各自的协议，未选模型时设为当前模型', async () => {
-  await account.login()
-  cloud.token = 'ok'
-  await until(stateIs('signed_in'))
+test('登录后写入云端接口：设备密钥只在该接口中，型号带各自的协议，未选模型时设为当前模型', async () => {
+  const state = await account.login('me@example.com', PASSWORD)
+  expect(state).toEqual({
+    state: 'signed_in',
+    email: 'me@example.com',
+    credits: 12.5,
+    provider: CLOUD_PROVIDER,
+  })
   const provider = live.providers[CLOUD_PROVIDER]!
   expect(provider).toMatchObject({ baseUrl: origin, apiKey: 'qyd_device_key' })
   expect(provider.models['claude-sonnet-5-5']?.kind).toBeUndefined()
@@ -127,33 +132,31 @@ test('批准后写入云端接口：设备密钥只在该接口中，型号带�
     currency: 'CREDIT',
   })
   expect(live.active?.provider).toBe(CLOUD_PROVIDER)
-  expect(await account.state()).toEqual({
-    state: 'signed_in',
-    email: 'me@example.com',
-    credits: 12.5,
-    provider: CLOUD_PROVIDER,
-  })
   expect(cloud.signedOut).toBe(1)
   // 写入的是磁盘上的配置，而不只是内存中的对象。
   expect((await loadConfig()).providers[CLOUD_PROVIDER]?.apiKey).toBe('qyd_device_key')
 })
 
-test('在浏览器中拒绝或用户码过期时结束等待并给出原因', async () => {
-  await account.login()
-  cloud.token = 'denied'
-  await until(stateIs('signed_out'))
-  expect(await account.state()).toEqual({ state: 'signed_out', reason: 'denied' })
-  cloud.token = 'pending'
-  await account.login()
-  cloud.token = 'expired'
-  await until(stateIs('signed_out'))
-  expect(await account.state()).toEqual({ state: 'signed_out', reason: 'expired' })
+test('密码错误时给出原因，不写入接口，状态仍为未登录', async () => {
+  const failed = account.login('me@example.com', 'wrong-password')
+  await expect(failed).rejects.toThrow(new CloudAccountError('邮箱或密码错误'))
+  expect(live.providers[CLOUD_PROVIDER]).toBeUndefined()
+  expect(await account.state()).toEqual({ state: 'signed_out' })
+})
+
+test('注册：邮箱已注册时给出原因；新邮箱注册后直接登录', async () => {
+  await expect(account.register('taken@example.com', PASSWORD)).rejects.toThrow('该邮箱已注册')
+  expect((await account.register('new@example.com', PASSWORD)).state).toBe('signed_in')
+  expect(live.providers[CLOUD_PROVIDER]?.apiKey).toBe('qyd_device_key')
+})
+
+test('账号服务无法连接时给出原因', async () => {
+  const offline = new CloudAccount(live, { app: 'http://127.0.0.1:9', api: origin })
+  await expect(offline.login('me@example.com', PASSWORD)).rejects.toThrow('无法连接账号服务')
 })
 
 test('网关返回 device_revoked 时删除本地接口并清除当前模型；其他 401 不删除', async () => {
-  await account.login()
-  cloud.token = 'ok'
-  await until(stateIs('signed_in'))
+  await account.login('me@example.com', PASSWORD)
   cloud.me = 'invalid'
   expect((await account.state()).state).toBe('signed_in')
   expect(live.providers[CLOUD_PROVIDER]).toBeDefined()
@@ -164,12 +167,41 @@ test('网关返回 device_revoked 时删除本地接口并清除当前模型；�
 })
 
 test('退出时请求云端吊销本设备并删除本地接口', async () => {
-  await account.login()
-  cloud.token = 'ok'
-  await until(stateIs('signed_in'))
+  await account.login('me@example.com', PASSWORD)
   await account.logout()
   expect(cloud.revoked).toBe(1)
   expect(live.providers[CLOUD_PROVIDER]).toBeUndefined()
   expect((await loadConfig()).providers[CLOUD_PROVIDER]).toBeUndefined()
   expect((await account.state()).state).toBe('signed_out')
+})
+
+test('用量与使用记录以设备密钥读取：用量带本机时区，记录带页长与续页位置，失败转为文字', async () => {
+  await account.login('me@example.com', PASSWORD)
+  expect(await account.usage()).toMatchObject({ requests: 3, credits: 1.5 })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  expect(new URLSearchParams(cloud.usageQuery).get('tz')).toBe(tz)
+  expect(await account.requests('2026-11-01T00:00:00.000Z', 50)).toEqual([
+    { id: 'r1', credits: 0.5, failure: null },
+    { id: 'r2', credits: 0, failure: '429 请求过多' },
+    { id: 'r3', credits: 0.1, failure: '连接中断' },
+  ] as never)
+  expect(Object.fromEntries(new URLSearchParams(cloud.requestsQuery))).toEqual({
+    limit: '50',
+    before: '2026-11-01T00:00:00.000Z',
+  })
+})
+
+test('读取用量时设备已被移除：删除本地接口，接口以 400 返回原因', async () => {
+  await account.login('me@example.com', PASSWORD)
+  cloud.me = 'revoked'
+  const deps = { cloud: account } as unknown as ApiRequestDeps
+  const res = await handleCloudApi(
+    new URL('http://x/api/cloud/usage'),
+    new Request('http://x/api/cloud/usage'),
+    deps,
+  )
+  expect(res?.status).toBe(400)
+  expect(await res?.json()).toEqual({ error: 'cloud', message: '设备已被移除' })
+  expect(live.providers[CLOUD_PROVIDER]).toBeUndefined()
+  expect(await account.state()).toEqual({ state: 'signed_out', reason: 'revoked' })
 })

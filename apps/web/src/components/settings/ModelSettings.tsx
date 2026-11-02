@@ -10,10 +10,9 @@ import {
   type ToolCallCheck,
   type VideoChannel,
 } from '@qywork/core'
-import { createResource, createSignal, For, Show } from 'solid-js'
-import { loaded } from '../../lib/resource.ts'
+import { createSignal, For, Show } from 'solid-js'
 import { sessionSignal } from '../../lib/session.ts'
-import { fetchCloudState } from '../../lib/store/cloud.ts'
+import { cloudState, refreshCloudState } from '../../lib/store/cloud.ts'
 import {
   ensureModelCatalog,
   modelCatalog,
@@ -103,9 +102,9 @@ export function ModelSettings() {
    * 已登录云端账号时，云端接口的名称、地址、协议、密钥与型号由账号维护：不提供编辑、删除与拉取，移除只经「退出」。
    * 拉取会按美元记录型号价格，而云端型号以积分计价。
    */
-  const [cloud] = createResource(() => fetchCloudState().catch(() => null))
+  void refreshCloudState().catch(() => {})
   const managed = (name: string) => {
-    const s = loaded(cloud)
+    const s = cloudState()
     return s?.state === 'signed_in' && s.provider === name
   }
 

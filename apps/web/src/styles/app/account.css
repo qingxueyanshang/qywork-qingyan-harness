@@ -1,0 +1,253 @@
+/* 账号：侧栏入口、账号弹窗、登录表单、Token 活动方格。
+ *
+ * 由 `../app.css` 引入；不要单独 import 本文件。 */
+
+/* ── 侧栏入口 ── */
+
+.account-entry-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 头像：邮箱首字母。只用中性色，强调色只用于主操作与选中状态（tokens.css 开头的规则）。 */
+.account-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-full);
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.account-avatar.sm {
+  width: 18px;
+  height: 18px;
+  font-size: var(--fs-xs);
+}
+
+/* ── 弹窗 ──
+ * 尺寸固定（B9）：未登录的表单与已登录的统计、记录高度相差很大，由内容决定尺寸时，
+ * 登录成功的瞬间弹窗会整体变大，用户正要点击的位置随之移动。内容超出时在 `.account-scroll` 内滚动。 */
+.account-dialog {
+  position: relative;
+  width: min(860px, 100%);
+  height: min(700px, 100%);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.account-close {
+  position: absolute;
+  top: var(--s-2);
+  right: var(--s-2);
+  z-index: 1;
+}
+.account-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: var(--s-6);
+}
+.account-signin {
+  flex: 1;
+  display: grid;
+  place-items: center;
+}
+
+.account-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  /* 右侧留出关闭按钮的位置。 */
+  padding-right: var(--s-8);
+}
+.account-email {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.account-error {
+  margin: var(--s-2) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+/* 四个统计并排等宽，铺满整行。 */
+.account-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin: var(--s-5) 0 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+}
+.account-stats > div {
+  display: flex;
+  flex-direction: column;
+  padding: var(--s-3) var(--s-4);
+  text-align: center;
+}
+.account-stats > div + div {
+  border-left: 1px solid var(--border-subtle);
+}
+.account-stats dt {
+  /* 数值在上、名称在下：dl 中 dt 须在 dd 之前。 */
+  order: 2;
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.account-stats dd {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-section {
+  margin: var(--s-6) 0 var(--s-3);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.account-failed {
+  color: var(--danger);
+}
+.account-more {
+  margin-top: var(--s-3);
+}
+
+/* ── Token 活动 ──
+ * 53 列 × 7 行，按列（周）排列，每列自上而下为周一到周日。格子边长随弹窗宽度缩放，月份标签与格子同列宽。 */
+.account-activity {
+  --activity-gap: 3px;
+}
+.account-activity-months,
+.account-activity-grid {
+  display: grid;
+  grid-template-columns: repeat(53, 1fr);
+  column-gap: var(--activity-gap);
+}
+.account-activity-months {
+  margin-bottom: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+/* 标签可以宽于一列：不裁剪，向右溢出到下一列的空白处。 */
+.account-activity-months > span {
+  white-space: nowrap;
+  overflow: visible;
+  width: 0;
+}
+.account-activity-grid {
+  grid-template-rows: repeat(7, auto);
+  grid-auto-flow: column;
+  row-gap: var(--activity-gap);
+}
+.account-activity-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--bg-inset);
+}
+.account-activity-cell.future {
+  visibility: hidden;
+}
+.account-activity-cell[data-level="1"] {
+  background: color-mix(in srgb, var(--accent) 25%, var(--bg-inset));
+}
+.account-activity-cell[data-level="2"] {
+  background: color-mix(in srgb, var(--accent) 50%, var(--bg-inset));
+}
+.account-activity-cell[data-level="3"] {
+  background: color-mix(in srgb, var(--accent) 75%, var(--bg-inset));
+}
+.account-activity-cell[data-level="4"] {
+  background: var(--accent);
+}
+
+/* ── 登录表单 ──
+ * 登录与注册字段相同，切换时高度不变；错误行固定一行高度，出现错误时表单不伸长（B9）。 */
+.account-form {
+  width: min(320px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.account-form-mode {
+  align-self: center;
+  margin-bottom: var(--s-2);
+}
+.account-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.account-label {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.account-input {
+  width: 100%;
+  padding: 7px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+.account-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+.account-submit {
+  margin-top: var(--s-2);
+  justify-content: center;
+}
+.account-form-error {
+  min-height: 1.5em;
+  max-height: 1.5em;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+/* 窄屏（手机经远程访问）：弹窗铺满全屏，统计改为两列。断点与设置弹窗相同。 */
+@media (max-width: 820px) {
+  .account-dialog {
+    height: 100%;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bottom);
+  }
+  .account-scroll {
+    padding: var(--s-4);
+  }
+  .account-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .account-stats > div + div {
+    border-left: 0;
+  }
+  .account-stats > div:nth-child(even) {
+    border-left: 1px solid var(--border-subtle);
+  }
+  .account-stats > div:nth-child(n + 3) {
+    border-top: 1px solid var(--border-subtle);
+  }
+}
