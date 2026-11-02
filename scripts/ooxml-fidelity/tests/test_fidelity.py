@@ -1,5 +1,5 @@
 """覆盖 score.py（SSIM、报告的页数对齐规则与按格式筛选）、fidelity.py 的 score 子命令（--format 参数）
-与 emf.py（按图片框回放、超出部分裁去）。
+与 emf.py（按图片框回放、超出部分裁去、字体质量的改写）。
 
 运行：python -m unittest discover -s scripts/ooxml-fidelity/tests
 临时文件位于 .tmp/ooxml-fidelity/tests。emf 的用例调用 GDI，只在 Windows 上运行。
@@ -184,6 +184,49 @@ class EmfTest(unittest.TestCase):
         self.assertEqual(img.size, (round(100.01 / 25.4 * 96), round(50.01 / 25.4 * 96)))
         gray = np.asarray(img.convert("L"))
         self.assertLess(gray[5:-5, 5:-5].mean(), 10)
+
+    def _text_emf(self, quality: int) -> bytes:
+        """60×20 mm 的图片框，以 lfQuality 为 quality 的 Times New Roman（16 像素）写一行文字。"""
+        gdi32 = ctypes.windll.gdi32
+        vp = ctypes.c_void_p
+        gdi32.CreateEnhMetaFileW.restype = vp
+        gdi32.CreateEnhMetaFileW.argtypes = [vp, wintypes.LPCWSTR, ctypes.POINTER(wintypes.RECT), wintypes.LPCWSTR]
+        gdi32.CloseEnhMetaFile.restype = vp
+        gdi32.CloseEnhMetaFile.argtypes = [vp]
+        gdi32.GetEnhMetaFileBits.argtypes = [vp, wintypes.UINT, vp]
+        gdi32.DeleteEnhMetaFile.argtypes = [vp]
+        gdi32.CreateFontW.restype = vp
+        gdi32.CreateFontW.argtypes = [ctypes.c_int] * 5 + [wintypes.DWORD] * 8 + [wintypes.LPCWSTR]
+        gdi32.SelectObject.restype = vp
+        gdi32.SelectObject.argtypes = [vp, vp]
+        gdi32.DeleteObject.argtypes = [vp]
+        gdi32.TextOutW.argtypes = [vp, ctypes.c_int, ctypes.c_int, wintypes.LPCWSTR, ctypes.c_int]
+        frame = wintypes.RECT(0, 0, 6000, 2000)
+        dc = gdi32.CreateEnhMetaFileW(None, None, ctypes.byref(frame), None)
+        font = gdi32.CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, quality, 0, "Times New Roman")
+        old = gdi32.SelectObject(dc, font)
+        text = "Hamburgefonts 0123"
+        gdi32.TextOutW(dc, 10, 10, text, len(text))
+        gdi32.SelectObject(dc, old)
+        gdi32.DeleteObject(font)
+        hemf = gdi32.CloseEnhMetaFile(dc)
+        n = gdi32.GetEnhMetaFileBits(hemf, 0, None)
+        buf = ctypes.create_string_buffer(n)
+        gdi32.GetEnhMetaFileBits(hemf, n, buf)
+        gdi32.DeleteEnhMetaFile(hemf)
+        return buf.raw
+
+    def test_font_quality_rewrite_replays_as_natural_cleartype(self):
+        """WPS 页面 EMF 的字体 lfQuality 为 0；改写为 CLEARTYPE_NATURAL_QUALITY 后与以该质量创建字体的 EMF 回放逐像素相同。"""
+        import emf
+
+        default = self._text_emf(0)
+        natural = self._text_emf(6)
+        rewritten = emf.with_font_quality(default, 6)
+        self.assertEqual(len(rewritten), len(default))
+        self.assertEqual(np.asarray(emf.render(rewritten, 96)).tobytes(), np.asarray(emf.render(natural, 96)).tobytes())
+        with self.assertRaises(ValueError):
+            emf.with_font_quality(default[:-4], 6)
 
 
 if __name__ == "__main__":
