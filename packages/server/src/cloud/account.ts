@@ -14,7 +14,6 @@ import type { CloudModel, CloudRequest, CloudState, CloudUsage } from '@qywork/c
 import type { QyConfig, StoredModel, StoredProvider } from '@qywork/runtime'
 import { writeConfig } from '../api/config.ts'
 import { hostLabel } from '../http-util.ts'
-import type { CloudOrigins } from './origins.ts'
 
 /** 云端接口在配置中的名称。 */
 export const CLOUD_PROVIDER = 'qywork'
@@ -52,9 +51,9 @@ const AUTH_ERRORS: Record<string, string> = {
 }
 
 /** 配置中的云端接口：名称为 `CLOUD_PROVIDER` 且地址为网关。 */
-export function cloudProviderOf(config: QyConfig, origins: CloudOrigins): StoredProvider | null {
+export function cloudProviderOf(config: QyConfig, origin: string): StoredProvider | null {
   const p = config.providers[CLOUD_PROVIDER]
-  return p && p.baseUrl === origins.api ? p : null
+  return p && p.baseUrl === origin ? p : null
 }
 
 const json = (body: unknown, token?: string): RequestInit => ({
@@ -80,14 +79,14 @@ export class CloudAccount {
 
   constructor(
     private readonly live: QyConfig,
-    private readonly origins: CloudOrigins,
+    private readonly origin: string,
     options: CloudAccountOptions = {},
   ) {
     this.onChange = options.onChange ?? (() => {})
   }
 
   async state(): Promise<CloudState> {
-    const provider = cloudProviderOf(this.live, this.origins)
+    const provider = cloudProviderOf(this.live, this.origin)
     if (!provider?.apiKey) {
       return this.wasRevoked ? { state: 'signed_out', reason: 'revoked' } : { state: 'signed_out' }
     }
@@ -135,7 +134,7 @@ export class CloudAccount {
    * 账号弹窗列出的型号与模型下拉列表一致，管理员调价或上架后无需重启。
    */
   async models(): Promise<CloudModel[]> {
-    const provider = cloudProviderOf(this.live, this.origins)
+    const provider = cloudProviderOf(this.live, this.origin)
     if (!provider?.apiKey) throw new CloudAccountError('未登录')
     let pulled: Record<string, StoredModel>
     try {
@@ -195,9 +194,9 @@ export class CloudAccount {
   async logout(): Promise<void> {
     this.wasRevoked = false
     this.email = null
-    const provider = cloudProviderOf(this.live, this.origins)
+    const provider = cloudProviderOf(this.live, this.origin)
     if (provider?.apiKey) {
-      await fetch(`${this.origins.api}/v1/device/revoke`, json({}, provider.apiKey)).catch(() => {})
+      await fetch(`${this.origin}/v1/device/revoke`, json({}, provider.apiKey)).catch(() => {})
     }
     await this.remove()
   }
@@ -207,11 +206,11 @@ export class CloudAccount {
    * 失败抛出 `CloudAccountError`，状态仍为未登录。
    */
   private async signIn(path: string, email: string, password: string): Promise<CloudState> {
-    if (cloudProviderOf(this.live, this.origins)) return this.state()
+    if (cloudProviderOf(this.live, this.origin)) return this.state()
     let res: Response
     try {
       res = await fetch(
-        `${this.origins.api}${path}`,
+        `${this.origin}${path}`,
         json({ email, password, name: hostLabel(), platform: process.platform }),
       )
     } catch (err) {
@@ -240,11 +239,11 @@ export class CloudAccount {
 
   /** 以设备密钥调用云端接口；204 返回 undefined。云端答复设备已被移除时删除本地接口。 */
   private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const provider = cloudProviderOf(this.live, this.origins)
+    const provider = cloudProviderOf(this.live, this.origin)
     if (!provider?.apiKey) throw new CloudAccountError('未登录')
     let res: Response
     try {
-      res = await fetch(`${this.origins.api}${path}`, {
+      res = await fetch(`${this.origin}${path}`, {
         ...init,
         headers: { ...init.headers, authorization: `Bearer ${provider.apiKey}` },
       })
@@ -268,7 +267,7 @@ export class CloudAccount {
   /** 登录完成：以设备密钥写入云端接口与型号。 */
   private async complete(key: string): Promise<void> {
     const existing = this.live.providers[CLOUD_PROVIDER]
-    if (existing && existing.baseUrl !== this.origins.api) {
+    if (existing && existing.baseUrl !== this.origin) {
       throw new Error(`已有名为「${CLOUD_PROVIDER}」的接口，请先在模型设置中改名`)
     }
     const models = await this.pulled(key)
@@ -278,7 +277,7 @@ export class CloudAccount {
         ...current,
         providers: {
           ...current.providers,
-          [CLOUD_PROVIDER]: { kind: DEFAULT_KIND, baseUrl: this.origins.api, apiKey: key, models },
+          [CLOUD_PROVIDER]: { kind: DEFAULT_KIND, baseUrl: this.origin, apiKey: key, models },
         },
         ...(current.active || !first ? {} : { active: { provider: CLOUD_PROVIDER, model: first } }),
       }
@@ -298,7 +297,7 @@ export class CloudAccount {
    */
   private async pulled(key: string): Promise<Record<string, StoredModel>> {
     const result = await pullModels(
-      { kind: DEFAULT_KIND, baseUrl: this.origins.api, apiKey: key },
+      { kind: DEFAULT_KIND, baseUrl: this.origin, apiKey: key },
       AbortSignal.timeout(20_000),
     )
     const models: Record<string, StoredModel> = {}
@@ -322,7 +321,7 @@ export class CloudAccount {
 
   private async applyModels(pulled: Record<string, StoredModel>): Promise<void> {
     await writeConfig(this.live, (current) => {
-      const provider = cloudProviderOf(current, this.origins)
+      const provider = cloudProviderOf(current, this.origin)
       if (!provider) return current
       const models: Record<string, StoredModel> = {}
       for (const [id, m] of Object.entries(provider.models)) {
@@ -342,7 +341,7 @@ export class CloudAccount {
     key: string,
   ): Promise<{ email: string; credits: number; avatar: string | null } | 'revoked' | null> {
     try {
-      const res = await fetch(`${this.origins.api}/v1/me`, {
+      const res = await fetch(`${this.origin}/v1/me`, {
         headers: { authorization: `Bearer ${key}` },
       })
       if (res.ok) {

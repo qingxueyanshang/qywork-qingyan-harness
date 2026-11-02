@@ -1,5 +1,5 @@
 /**
- * 覆盖 `store/connection.ts` 的 `onConnectionState`：本页嵌在 console 的 iframe 中且握手被拒时通知 console；
+ * 覆盖 `store/connection.ts` 的 `onConnectionState`：本页嵌在 console 的 iframe 中、握手被拒或断线重连时通知 console；
  * 未嵌入或其他连接状态时不发送。
  */
 
@@ -29,13 +29,18 @@ function withParent(parent: unknown, run: () => void): void {
   }
 }
 
-test('嵌在 iframe 中且握手被拒时通知上层页面，消息不含令牌', () => {
+test('嵌在 iframe 中、握手被拒或断线重连时通知上层页面，消息只含状态名', () => {
   const sent: unknown[] = []
   withParent({ postMessage: (message: unknown) => sent.push(message) }, () => {
+    connection.onConnectionState('connecting')
     connection.onConnectionState('ready')
+    connection.onConnectionState('reconnecting')
     connection.onConnectionState('unauthorized', '令牌无效')
   })
-  expect(sent).toEqual([{ type: 'qywork.unauthorized' }])
+  expect(sent).toEqual([
+    { type: 'qywork.connection', state: 'reconnecting' },
+    { type: 'qywork.connection', state: 'unauthorized' },
+  ])
 })
 
 test('未嵌入时握手被拒只更新连接状态', () => {

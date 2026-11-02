@@ -346,7 +346,7 @@ describe('远程访问经 serve() 装配', () => {
 
   test('经隧道只能访问令牌保护的接口；/internal 与原生宿主路径返回 404；关闭开关后断开；设备被移除后删除云端接口', async () => {
     dir = await mkdtemp(join(tmpdir(), 'qywork-remote-'))
-    process.env.QYWORK_CLOUD = `${cloud.origin},${cloud.origin}`
+    process.env.QYWORK_CLOUD = cloud.origin
     const config: QyConfig = {
       providers: {
         [CLOUD_PROVIDER]: {

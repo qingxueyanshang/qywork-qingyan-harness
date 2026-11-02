@@ -60,7 +60,7 @@ import { EventBus } from './bus.ts'
 import { CanvasService } from './canvas.ts'
 import { CloudAccount } from './cloud/account.ts'
 import { watchRunEnds } from './cloud/notify.ts'
-import { cloudOrigins } from './cloud/origins.ts'
+import { cloudOrigin } from './cloud/origin.ts'
 import { RemoteAccess } from './cloud/remote.ts'
 import { handleCommand, reject } from './commands.ts'
 import type { SocketData } from './deps.ts'
@@ -461,13 +461,13 @@ export function serve(opts: ServeOptions) {
    * 云端账号与远程访问。未配置云端地址时账号为 null（`/api/cloud/state` 回答 unavailable），远程访问始终不可用。
    * 登录与退出改变云端接口后，远程访问按新的登录状态启停隧道。
    */
-  const origins = cloudOrigins()
-  const cloud = origins
-    ? new CloudAccount(opts.config, origins, { onChange: () => remote.sync() })
+  const origin = cloudOrigin()
+  const cloud = origin
+    ? new CloudAccount(opts.config, origin, { onChange: () => remote.sync() })
     : null
   const remote: RemoteAccess = new RemoteAccess({
     config: opts.config,
-    origins,
+    origin,
     listener: remoteListener,
     pairing: () => ({ token: pairing.token, deviceName: pairing.deviceName }),
     onRevoked: () => cloud?.revoked() ?? Promise.resolve(),

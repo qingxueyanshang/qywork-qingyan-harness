@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`cloud/account.ts` 与 `api/cloud.ts` 的错误返回。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
+ * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts` 与 `api/cloud.ts` 的错误返回。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
 
@@ -8,6 +8,7 @@ import { loadConfig, type QyConfig } from '@qywork/runtime'
 import { handleCloudApi } from '../api/cloud.ts'
 import type { ApiRequestDeps } from '../api/types.ts'
 import { CLOUD_PROVIDER, CloudAccount, CloudAccountError } from './account.ts'
+import { cloudOrigin } from './origin.ts'
 
 const PASSWORD = 'password-123'
 
@@ -136,7 +137,7 @@ beforeEach(async () => {
   live = await loadConfig()
   delete live.providers[CLOUD_PROVIDER]
   delete live.active
-  account = new CloudAccount(live, { site: 'http://site.invalid', api: origin })
+  account = new CloudAccount(live, origin)
 })
 
 test('登录后写入云端接口：设备密钥只在该接口中，型号带各自的协议，未选模型时设为当前模型', async () => {
@@ -186,7 +187,7 @@ test('注册：邮箱已注册时给出原因；新邮箱注册后直接登录',
 })
 
 test('账号服务无法连接时给出原因', async () => {
-  const offline = new CloudAccount(live, { site: 'http://site.invalid', api: 'http://127.0.0.1:9' })
+  const offline = new CloudAccount(live, 'http://127.0.0.1:9')
   await expect(offline.login('me@example.com', PASSWORD)).rejects.toThrow('无法连接账号服务')
 })
 
@@ -260,4 +261,11 @@ test('更换头像：以设备密钥写入云端，状态中带头像；格式�
   await expect(account.setAvatar('data:text/html;base64,PGI+')).rejects.toThrow(
     '头像须为 PNG、JPEG 或 WebP 图片',
   )
+})
+
+test('云端地址：去掉首尾空白与末尾斜杠；带路径或多个地址时报错', () => {
+  expect(cloudOrigin({ QYWORK_CLOUD: ' http://localhost:8080/ ' })).toBe('http://localhost:8080')
+  for (const raw of ['http://localhost:8080/v1', 'http://localhost:8080,http://127.0.0.1:8080']) {
+    expect(() => cloudOrigin({ QYWORK_CLOUD: raw })).toThrow('QYWORK_CLOUD 须为云端服务的地址')
+  }
 })

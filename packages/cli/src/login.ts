@@ -4,18 +4,18 @@
  */
 
 import { loadConfig } from '@qywork/runtime'
-import { CloudAccount, CloudAccountError, cloudOrigins } from '@qywork/server'
+import { CloudAccount, CloudAccountError, cloudOrigin } from '@qywork/server'
 
 /** 读取一行输入；`hidden` 为真时不回显。测试以固定答案代替终端。 */
 export type Ask = (question: string, hidden: boolean) => Promise<string>
 
 async function account(): Promise<CloudAccount | null> {
-  const origins = cloudOrigins()
-  if (!origins) {
+  const origin = cloudOrigin()
+  if (!origin) {
     process.stderr.write('未配置云端服务\n')
     return null
   }
-  return new CloudAccount(await loadConfig(), origins)
+  return new CloudAccount(await loadConfig(), origin)
 }
 
 /**
