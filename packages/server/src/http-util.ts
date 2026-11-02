@@ -83,6 +83,45 @@ export function embeddedAssets(files: Readonly<Record<string, string>>): WebAsse
   }
 }
 
+/**
+ * 网页的来源：按请求的地址返回页面或资源，不处理时返回 null。每个进程只有一种来源，由启动参数决定：
+ * 构建产物（`fileSource`，嵌入的网页或 `--static` 目录）或源码运行时的 Vite 开发服务器（`devServerSource`）。
+ */
+export type WebSource = (url: URL, req: Request) => Promise<Response | null>
+
+/** 构建产物：按路径取文件，未知路径回退到 `index.html`。 */
+export function fileSource(web: WebAssets): WebSource {
+  return (url) => serveStatic(web, url.pathname)
+}
+
+/**
+ * 源码运行时的 Vite 开发服务器：GET 与 HEAD 请求原样转发，路径与查询串都保留。
+ * 查询串不能去掉：Vite 以 `?import`、`?v=` 区分同一文件的不同产物，去掉后样式文件作为模块加载失败。
+ * 去掉 `content-encoding` 与 `content-length`：`fetch` 已解压响应体，原值会使浏览器再次解压或截断。
+ * 开发服务器未运行时返回 502。
+ */
+export function devServerSource(origin: string): WebSource {
+  return async (url, req) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return null
+    const headers = new Headers(req.headers)
+    headers.delete('host')
+    let res: Response
+    try {
+      res = await fetch(`${origin}${url.pathname}${url.search}`, {
+        method: req.method,
+        headers,
+        redirect: 'manual',
+      })
+    } catch {
+      return new Response('开发服务器未响应', { status: 502 })
+    }
+    const out = new Headers(res.headers)
+    out.delete('content-encoding')
+    out.delete('content-length')
+    return new Response(res.body, { status: res.status, headers: out })
+  }
+}
+
 export async function serveStatic(web: WebAssets, pathname: string): Promise<Response | null> {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '')
   // 拦截路径穿越：`GET /../../etc/passwd` 不能生效。
