@@ -34,6 +34,7 @@ const offlineMessage = (t: TunnelStatus | null) => (t?.state === 'offline' ? t.m
  * 手机接入：经云端远程访问本机。
  *
  * 二维码是 cloud 站中本设备的地址，不含令牌：手机扫码后登录同一账号才能打开本设备。
+ * 二维码下方写明用途：二维码本身不表明是给手机扫的，只显示二维码时它看起来像要求本机扫码。
  * 它是账号窗口中的一节（远程访问依赖账号），整节由本组件输出，未登录时不出现。
  */
 export default function PairPanel() {
@@ -93,7 +94,14 @@ export default function PairPanel() {
               </label>
               <Show when={toggleError()}>{(m) => <p class="pair-hint">{m()}</p>}</Show>
               <Switch>
-                <Match when={onlineUrl(d().tunnel)}>{(url) => <Qr text={url()} />}</Match>
+                <Match when={onlineUrl(d().tunnel)}>
+                  {(url) => (
+                    <>
+                      <Qr text={url()} />
+                      <p class="pair-hint">手机扫码，远程使用这台电脑</p>
+                    </>
+                  )}
+                </Match>
                 <Match when={d().tunnel?.state === 'connecting'}>
                   <div class="preview-loading" />
                 </Match>

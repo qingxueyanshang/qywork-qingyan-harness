@@ -116,6 +116,7 @@ test('打开开关后显示 console 中本设备地址的二维码，外层 Susp
     () => host.querySelector('.pair-qr svg') !== null,
     () => host.innerHTML,
   )
+  expect(host.textContent).toContain('手机扫码，远程使用这台电脑')
   expect(suspended.times).toBe(0)
 })
 

@@ -98,6 +98,7 @@ export function sampleConfig(): QyConfig {
         cacheRouting: pick(CACHE_ROUTINGS, n),
         offPeak: { rate: 0.75, peakWindowsUtc: [[0, 12]], peakWeekdaysUtc: [0, 6] },
         base: pick(builtinCatalog(), n).id,
+        cloud: true,
       }
       n++
     }

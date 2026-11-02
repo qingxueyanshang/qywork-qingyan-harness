@@ -50,6 +50,8 @@ import { startSourceUpdater } from './update/source.ts'
 
 const ROOT = join(import.meta.dir, '..')
 const PORT = Number(process.env.QYWORK_PORT ?? 7717)
+/** Vite 开发服务器的地址，端口与 `apps/web/vite.config.ts` 的 `server.port` 相同。 */
+const WEB_ORIGIN = 'http://127.0.0.1:5180'
 /** 每次开发会话重新生成。不写入仓库：写入仓库即成为一个入库的凭证。 */
 const TOKEN = process.env.QYWORK_TOKEN ?? randomBytes(24).toString('hex')
 const MODE = process.argv.includes('--web') ? 'web' : 'desktop'
@@ -171,6 +173,9 @@ function spawnAgent(): ReturnType<typeof Bun.spawn> {
       // 只绑定本机：局域网接入由应用内显式开启，开发脚本不替用户做此决定。
       '--host',
       '127.0.0.1',
+      // 远程访问经 sidecar 取得页面，源码运行时页面由下方启动的 Vite 提供。
+      '--web-dev-server',
+      WEB_ORIGIN,
       // 本脚本被强制关闭（关闭窗口、任务管理器）时 sidecar 随之退出：
       // shutdown 没有机会执行时，sidecar 必须自行结束。
       '--parent-pid',
@@ -335,12 +340,12 @@ shell =
     : undefined
 
 if (MODE === 'web') {
-  const url = `http://127.0.0.1:5180/#t=${TOKEN}`
+  const url = `${WEB_ORIGIN}/#t=${TOKEN}`
   process.stderr.write(`[dev] ${url}\n`)
   if (!process.argv.includes('--no-open')) {
     const ready = setInterval(async () => {
       try {
-        if (!(await fetch('http://127.0.0.1:5180/')).ok) return
+        if (!(await fetch(`${WEB_ORIGIN}/`)).ok) return
         clearInterval(ready)
         Bun.spawn(['powershell.exe', '-NoProfile', '-Command', `Start-Process '${url}'`], {
           stdin: 'ignore',
