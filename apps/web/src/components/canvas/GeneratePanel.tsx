@@ -274,12 +274,9 @@ export function mediaOf(
   return { kind: node.output, path }
 }
 
-/**
- * 画布引用的文件的地址，带读取画布时该文件的修改时间（`CanvasView.mtimes`）。画布中显示或读取文件一律使用它：
- * 只含路径的地址在同一路径的文件被改写后不变，媒体元素不重新载入，按地址缓存的读数（时长、封面）不失效。
- */
+/** 画布中文件的地址，带读取画布时该文件所依据内容的版本（`CanvasView.revisions`）。 */
 export function fileUrlOf(view: CanvasView | null, path: string): string {
-  return client.fileUrl(path, view?.mtimes?.[path])
+  return client.fileUrl(path, view?.revisions?.[path] ?? '')
 }
 
 function Thumb(props: { view: CanvasView; nodeId: string }) {
@@ -534,7 +531,7 @@ export function GeneratePanel(props: {
     const media = mediaOf(props.view, id)
     const path = media.kind === 'image' ? (media.path ?? '') : ''
     // 只在引用的图片版本或其文件内容变化时替换缩略图；重读文档和修改名称不重新取图。
-    const preview = path && `${path}|${props.view.mtimes?.[path] ?? ''}`
+    const preview = path && `${path}|${props.view.revisions?.[path] ?? ''}`
     if ((el.dataset.preview ?? '') !== preview) {
       el.dataset.preview = preview
       el.querySelector('canvas')?.remove()
@@ -680,7 +677,7 @@ export function GeneratePanel(props: {
     () => {
       const id = preview()
       const path = previewSource()?.path
-      return id && `${id}\u0000${path ? (props.view.mtimes?.[path] ?? '') : ''}`
+      return id && `${id}\u0000${path ? (props.view.revisions?.[path] ?? '') : ''}`
     },
     async () => {
       const source = previewSource()

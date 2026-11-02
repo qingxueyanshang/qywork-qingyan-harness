@@ -187,7 +187,7 @@ async function mount(
   let extraReferences: CanvasView['references']
   let extraRelabels: CanvasView['relabels']
   let extraMentions: CanvasView['mentions']
-  let extraMtimes: CanvasView['mtimes']
+  let extraRevisions: CanvasView['revisions']
   let written = 0
   let fingerprint = 'd0'
   const snapshots = new Map<string, CanvasDoc>([['d0', doc]])
@@ -201,7 +201,7 @@ async function mount(
       ...(extraReferences ? { references: extraReferences } : {}),
       ...(extraRelabels ? { relabels: extraRelabels } : {}),
       ...(extraMentions ? { mentions: extraMentions } : {}),
-      ...(extraMtimes ? { mtimes: extraMtimes } : {}),
+      ...(extraRevisions ? { revisions: extraRevisions } : {}),
     })
   const server: Server = {
     hold: null,
@@ -225,7 +225,7 @@ async function mount(
       if (next.references) extraReferences = next.references
       if (next.relabels) extraRelabels = next.relabels
       if (next.mentions) extraMentions = next.mentions
-      if (next.mtimes) extraMtimes = next.mtimes
+      if (next.revisions) extraRevisions = next.revisions
     },
     broken: false,
     quote: null,
@@ -591,20 +591,48 @@ describe('画布：节点操作', () => {
       )
       await new Promise((r) => setTimeout(r, 0))
     }
-    server.setView({ mtimes: { 'voice.mp3': 1000 } })
+    server.setView({ revisions: { 'voice.mp3': '1000' } })
     await reload(1)
     const before = card.querySelector('audio')!
-    expect(before.getAttribute('src')).toBe(store.client.fileUrl('voice.mp3', 1000))
+    expect(before.getAttribute('src')).toBe(store.client.fileUrl('voice.mp3', '1000'))
 
     // 执行命令后路径未知、整张画布重新读取；该文件未变，播放器保留。
     await reload(2)
     expect(card.querySelector('audio')).toBe(before)
 
-    server.setView({ mtimes: { 'voice.mp3': 2000 } })
+    server.setView({ revisions: { 'voice.mp3': '2000' } })
     await reload(3)
     const after = card.querySelector('audio')!
     expect(after).not.toBe(before)
-    expect(after.getAttribute('src')).toBe(store.client.fileUrl('voice.mp3', 2000))
+    expect(after.getAttribute('src')).toBe(store.client.fileUrl('voice.mp3', '2000'))
+  })
+
+  test('Art 页面引用的图片被改写时重新读取画布，封面按新版本重新生成', async () => {
+    const { server } = await mount([{ op: 'add_file', path: '页面/首页.html', x: 0, y: 0 }])
+    const store = await import('../../lib/store/index.ts')
+    const touch = async (paths: string[] | null) => {
+      const reads = server.reads
+      store.setState({ fileVersion: store.state.fileVersion + 1, fileTouched: paths })
+      await waitFor(
+        () => server.reads > reads,
+        () => `reads=${server.reads}`,
+      )
+    }
+    const poster = (revision: string) => store.client.fileUrl('页面/首页.html', revision)
+    server.setView({ revisions: { '页面/首页.html': '1|2', '角色/a.png': '2' } })
+    await touch(null)
+    await waitFor(
+      () => fetched.includes(poster('1|2')),
+      () => fetched.join('\n'),
+    )
+
+    // 只改写了页面引用的图片：该图片在依据的文件中，画布重新读取，页面地址随版本变化。
+    server.setView({ revisions: { '页面/首页.html': '1|3', '角色/a.png': '3' } })
+    await touch(['角色/a.png'])
+    await waitFor(
+      () => fetched.includes(poster('1|3')),
+      () => fetched.join('\n'),
+    )
   })
 
   test('切换选中节点后沿用静音设置', async () => {
@@ -975,7 +1003,7 @@ describe('画布：节点操作', () => {
         if (host.querySelector('.suspended')) suspended = true
       })
       watch.observe(host, { childList: true, subtree: true })
-      server.setView({ mtimes: { '脚本.md': 2000 } })
+      server.setView({ revisions: { '脚本.md': '2000' } })
       store.setState('fileVersion', store.state.fileVersion + 1)
       await waitFor(
         () => reads === 2,
@@ -3133,7 +3161,7 @@ describe('画布：生成卡与生成面板', () => {
 
     await change([{ op: 'update', id: refs.$a!, path: '新图片.png' }])
     await waitFor(
-      () => fetched.slice(before).includes(store.client.fileUrl('新图片.png')),
+      () => fetched.slice(before).includes(store.client.fileUrl('新图片.png', '')),
       () => fetched.slice(before).join('\n'),
     )
     expect(editor.firstChild === tag).toBe(true)
@@ -4909,9 +4937,9 @@ describe('画布：时间线', () => {
       const stage = host.querySelector('.canvas-stage')!
       document.elementFromPoint = () => node(host, refs.$t!)
       document.elementsFromPoint = () => [node(host, refs.$t!)]
-      const reload = async (mtime: number) => {
+      const reload = async (revision: string) => {
         const reads = server.reads
-        server.setView({ mtimes: { 'clip.mp4': mtime } })
+        server.setView({ revisions: { 'clip.mp4': revision } })
         store.setState('fileVersion', (v) => v + 1)
         await waitFor(
           () => server.reads > reads,
@@ -4934,12 +4962,12 @@ describe('画布：时间线', () => {
         const op = server.ops[count - 1]![0] as Extract<CanvasOp, { op: 'update' }>
         return op.clips!.at(-1)
       }
-      await reload(1000)
+      await reload('1000')
       expect(await link(1)).toEqual({ path: 'clip.mp4', in: 0, out: 5 })
 
       restoreVideo()
       restoreVideo = fakeDurations(3)
-      await reload(2000)
+      await reload('2000')
       expect(await link(2)).toEqual({ path: 'clip.mp4', in: 0, out: 3 })
     } finally {
       document.elementFromPoint = point

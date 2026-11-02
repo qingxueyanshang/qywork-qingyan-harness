@@ -25,7 +25,6 @@ export function ArtView(props: {
   live: boolean
   register: (live: ArtLive | null) => void
 }) {
-  // 每次进入实时状态重新读取：页面引用的图片可能已被改写，而页面地址只随页面文件本身变化。
   const [html] = createResource(
     () => (props.live ? props.url : null),
     async (url) => {

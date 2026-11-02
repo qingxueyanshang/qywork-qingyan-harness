@@ -274,13 +274,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   )
 
   /**
-   * 画布读取结果依赖的文件：画布本身与各卡引用的文件。其他文件的变动不影响画布，不重新读取；
-   * 路径小写比较：Windows 上大小写不敏感。
+   * 画布读取结果依赖的文件：画布本身、各卡引用的文件与卡片显示内容所依据的文件（`revisions`，含 Art 页面引用的图片）。
+   * 其他文件的变动不影响画布，不重新读取；路径小写比较：Windows 上大小写不敏感。
    */
   const watched = createMemo(() => {
     const set = new Set([normPath(props.path)])
     const v = view()
     if (v) set.add(normPath(v.path))
+    for (const p of Object.keys(v?.revisions ?? {})) set.add(normPath(p))
     for (const n of v?.doc.nodes ?? []) {
       if (n.type === 'file') set.add(normPath(n.path))
       else if (n.type === 'generate') for (const v of n.versions) set.add(normPath(v.path))
@@ -291,7 +292,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   /**
    * 待重新读取：生成或执行命令时变动一条接一条到达，合并后读取一次；页签不在显示时只记下，切回时再读取。
-   * 文本卡与媒体卡按读取结果中文件的修改时间（`mtimes`）更新，不另设读取序号。
+   * 文本卡与媒体卡按读取结果中各文件的版本（`revisions`）更新，不另设读取序号。
    */
   let pending = false
   let flushTimer: ReturnType<typeof setTimeout> | undefined
@@ -1735,7 +1736,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   function TextPreview(p: { path: string; excerpt: CanvasExcerpt | undefined }) {
     const [text] = createResource(
       () =>
-        `${p.path}\u0000${p.excerpt ? JSON.stringify(p.excerpt) : ''}\u0000${view()?.mtimes?.[p.path] ?? ''}`,
+        `${p.path}\u0000${p.excerpt ? JSON.stringify(p.excerpt) : ''}\u0000${view()?.revisions?.[p.path] ?? ''}`,
       async () => {
         const path = p.path
         if (!p.excerpt) {
