@@ -454,10 +454,11 @@ export class QyClient {
    * 媒体元素自行发起请求，无法携带 Authorization 头，令牌只能放在查询串中（服务端对 `/api/`
    * 接受 query 令牌，与 WebSocket 握手相同；服务端不记录请求地址）。直链使视频可边播放边加载、
    * 可拖动进度，内存占用不随文件大小增长。
-   * `version`（修改时间）写入地址：文件修改后地址随之变化，元素重新加载。
+   * `version` 为内容的版本（如修改时间），必填：媒体元素与按地址缓存的读数以地址识别内容，
+   * 地址不随内容变化时，同一路径的文件被改写后仍显示旧内容。一次性读取不需要地址，使用 `raw`。
    */
-  fileUrl(path: string, version?: number): string {
-    const query = `/api/files/raw?path=${encodeURIComponent(path)}${version === undefined ? '' : `&v=${version}`}`
+  fileUrl(path: string, version: string | number): string {
+    const query = `/api/files/raw?path=${encodeURIComponent(path)}&v=${encodeURIComponent(version)}`
     return `${this.endpoint.base}${withWorkspace(query)}&token=${encodeURIComponent(this.endpoint.token)}`
   }
 

@@ -1885,20 +1885,7 @@ export class CanvasService {
         read.set(p, await readFile(join(workspaceRoot, p), 'utf8').catch(() => null))
       }),
     )
-    const mtimes: Record<string, number> = {}
-    const shown = doc.nodes.flatMap((n) =>
-      n.type === 'file'
-        ? [n.path]
-        : n.type === 'generate'
-          ? n.versions.filter((v) => v.id === n.current).map((v) => v.path)
-          : n.clips.map((c) => c.path),
-    )
-    await Promise.all(
-      shown.map(async (p) => {
-        const s = await stat(join(workspaceRoot, p)).catch(() => null)
-        if (s?.isFile()) mtimes[p] = s.mtimeMs
-      }),
-    )
+    const revisions = await this.revisionsOf(workspaceRoot, doc)
     const lastRuns = new Map<string, CanvasRunRecord>()
     for (const r of doc.runs ?? []) lastRuns.set(r.node, r)
     const canvasKey = keyOf(workspaceRoot, path)
@@ -1953,9 +1940,45 @@ export class CanvasService {
       ...(Object.keys(references).length ? { references } : {}),
       ...(Object.keys(relabels).length ? { relabels } : {}),
       ...(Object.keys(mentions).length ? { mentions } : {}),
-      ...(Object.keys(mtimes).length ? { mtimes } : {}),
+      ...(Object.keys(revisions).length ? { revisions } : {}),
     }
     return agent ? agentView(view, this.deps.paramSpecsOf) : view
+  }
+
+  /** `CanvasView.revisions`：卡片显示的文件与 Art 页面引用的图片，各自的修改时间；页面的版本连接页面与各图片的版本。 */
+  private async revisionsOf(
+    workspaceRoot: string,
+    doc: CanvasDoc,
+  ): Promise<Record<string, string>> {
+    const shown = doc.nodes.flatMap((n) =>
+      n.type === 'file'
+        ? [n.path]
+        : n.type === 'generate'
+          ? n.versions.filter((v) => v.id === n.current).map((v) => v.path)
+          : n.clips.map((c) => c.path),
+    )
+    const images = new Map<string, string[]>()
+    await Promise.all(
+      shown
+        .filter((p) => canvasFileKind(p) === 'art')
+        .map(async (page) => {
+          const html = await readFile(join(workspaceRoot, page), 'utf8').catch(() => '')
+          images.set(
+            page,
+            artImageRefs(html).flatMap((ref) => resolveArtRef(page, ref) ?? []),
+          )
+        }),
+    )
+    const revisions: Record<string, string> = {}
+    await Promise.all(
+      [...new Set([...shown, ...[...images.values()].flat()])].map(async (p) => {
+        const s = await stat(join(workspaceRoot, p)).catch(() => null)
+        revisions[p] = s?.isFile() ? String(s.mtimeMs) : ''
+      }),
+    )
+    for (const [page, refs] of images)
+      revisions[page] = [revisions[page], ...refs.map((p) => revisions[p])].join('|')
+    return revisions
   }
 
   /**

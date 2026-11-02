@@ -210,7 +210,7 @@ export async function inlineArtImages(html: string, url: string): Promise<string
   const found = new Map<string, string | null>()
   for (const rel of artImageRefs(html)) {
     const path = resolveArtRef(page, rel)
-    found.set(rel, path ? await dataUrlOf(client.fileUrl(path)) : null)
+    found.set(rel, path ? await dataUrlOf(path) : null)
   }
   return html.replace(ART_IMAGE_REF_RE, (whole, lead: string, rel: string) => {
     const data = found.get(rel)
@@ -218,9 +218,11 @@ export async function inlineArtImages(html: string, url: string): Promise<string
   })
 }
 
-async function dataUrlOf(url: string): Promise<string | null> {
+async function dataUrlOf(path: string): Promise<string | null> {
   try {
-    const res = await fetch(url, { cache: 'no-store' })
+    const res = await client.raw(`/api/files/raw?path=${encodeURIComponent(path)}`, {
+      cache: 'no-store',
+    })
     if (!res.ok) return null
     const blob = await res.blob()
     return await new Promise<string>((resolve, reject) => {
@@ -329,8 +331,8 @@ export async function pngOf(bitmap: ImageBitmap): Promise<Blob> {
 }
 
 /**
- * 已生成的封面（PNG），按页面地址缓存。地址带文件的修改时间（`fileUrlOf`），页面文件被改写后地址变化，
- * 封面随之重新生成。
+ * 已生成的封面（PNG），按页面地址缓存。地址带页面及其引用的图片的版本（`fileUrlOf`），任一文件被改写后
+ * 地址变化，封面随之重新生成。
  */
 const posters = new Map<string, Promise<Blob>>()
 
