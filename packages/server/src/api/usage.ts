@@ -7,7 +7,7 @@
  * 两端均已实现，中间缺少一个环节。
  *
  * **口径与 CLI 完全一致。** 使用同一组函数与同一组参数，不在此处另行计算。界面与命令行报告不同的数字，
- * 比其中一方报错更难排查。
+ * 比其中一方报错更难排查。两者都不统计积分（内置模型），见 `UsageQuery.excludeCurrency`。
  */
 
 import type { UsageResponse } from '@qywork/core'
@@ -38,11 +38,15 @@ export const handleUsageApi: ApiHandler = async (url, _req, d) => {
     days,
     since,
     by,
-    totals: usageTotals(d.store, { since }),
-    rows: usageBy(d.store, by, { since }),
+    totals: usageTotals(d.store, { since, excludeCurrency: 'CREDIT' }),
+    rows: usageBy(d.store, by, { since, excludeCurrency: 'CREDIT' }),
     // 单独返回本工作区的用量：界面上本机用量与本工作区用量是两个都会被查询的问题，
     // 前端无法从总量中自行计算出本工作区的用量。
-    workspaceTotals: usageTotals(d.store, { since, workspaceId: d.workspaceId }),
+    workspaceTotals: usageTotals(d.store, {
+      since,
+      workspaceId: d.workspaceId,
+      excludeCurrency: 'CREDIT',
+    }),
   }
   return json(res)
 }

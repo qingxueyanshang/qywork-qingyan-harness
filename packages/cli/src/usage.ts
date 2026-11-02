@@ -39,8 +39,9 @@ export async function runUsage(args: string[]): Promise<number> {
   const store = new Store({ path: dataPath() })
   try {
     const since = Date.now() - days * 86_400_000
-    const totals = usageTotals(store, { since })
-    const rows = usageBy(store, by, { since })
+    // 与界面的「用量」页同一口径：不统计积分（内置模型），见 `UsageQuery.excludeCurrency`。
+    const totals = usageTotals(store, { since, excludeCurrency: 'CREDIT' })
+    const rows = usageBy(store, by, { since, excludeCurrency: 'CREDIT' })
 
     if (json) {
       process.stdout.write(`${JSON.stringify({ since, days, by, totals, rows }, null, 2)}\n`)

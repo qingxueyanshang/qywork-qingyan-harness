@@ -120,6 +120,31 @@ describe('查询账本', () => {
     store.close()
   })
 
+  /** 积分只用于云端账号的内置模型，其用量在账号界面按云端统计，本机合计不含。 */
+  test('积分计价的条目不计入合计、分组与本工作区用量', async () => {
+    const store = new Store({ path: ':memory:' })
+    seed(store)
+    recordUsage(store, {
+      kind: 'run',
+      runId: 'rn_credit' as never,
+      workspaceId: 'ws_a',
+      model: 'claude-sonnet-5-5',
+      provider: 'anthropic_messages',
+      inputTokens: 1000,
+      outputTokens: 1000,
+      cachedTokens: null,
+      reasoningTokens: 0,
+      cost: 7,
+      currency: 'CREDIT',
+    })
+    const j = (await (await call('', deps(store, 'ws_a')))!.json()) as UsageResponse
+    expect(j.totals.entries).toBe(2)
+    expect(j.totals.cost.CREDIT).toBeUndefined()
+    expect(j.rows.map((r) => r.key)).not.toContain('claude-sonnet-5-5')
+    expect(j.workspaceTotals.entries).toBe(1)
+    store.close()
+  })
+
   /** 多币种分开上报，前端据此各列一行。合并需要汇率，而本仓库不做换算。 */
   test('两种币种分开上报，不相加', async () => {
     const store = new Store({ path: ':memory:' })

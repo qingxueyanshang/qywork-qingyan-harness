@@ -214,7 +214,10 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
     }
 
     case 'usage': {
-      const t = usageTotals(ctx.store, { since: Date.now() - 30 * 86_400_000 })
+      const t = usageTotals(ctx.store, {
+        since: Date.now() - 30 * 86_400_000,
+        excludeCurrency: 'CREDIT',
+      })
       process.stdout.write(
         t.entries === 0
           ? `${DIM}最近 30 天没有记录${RESET}\n`
@@ -228,7 +231,7 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
         process.stdout.write(`${DIM}尚未开始会话${RESET}\n`)
         return 'ok'
       }
-      const t = usageTotals(ctx.store, {})
+      const t = usageTotals(ctx.store, { excludeCurrency: 'CREDIT' })
       process.stdout.write(`${DIM}账本总计 ${formatCosts(t.cost)}（本机全部会话）${RESET}\n`)
       return 'ok'
     }
