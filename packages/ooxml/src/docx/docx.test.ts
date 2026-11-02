@@ -596,6 +596,32 @@ describe('段落属性', () => {
     expect(paragraphs(doc).map((x) => x.props.firstLine)).toEqual([25, 26, 24])
   })
 
+  test('首行字符单位取第一个有内容的字段：图片、隐藏文字与浮动对象所在的字段计入，对象所在的字段不加字符间距，空字段不计入', async () => {
+    const graphic =
+      '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"/></a:graphic>'
+    const inline = (rpr: string) =>
+      `<w:r><w:rPr>${rpr}</w:rPr><w:drawing><wp:inline><wp:extent cx="1270000" cy="381000"/>${graphic}</wp:inline></w:drawing></w:r>`
+    const anchor = (rpr: string) =>
+      `<w:r><w:rPr>${rpr}</w:rPr><w:drawing><wp:anchor>${graphic}</wp:anchor></w:drawing></w:r>`
+    const ind = '<w:ind w:firstLineChars="200" w:firstLine="420"/>'
+    const sz = (v: number) => `<w:sz w:val="${v}"/>`
+    const doc = await parse({
+      styles: DEFAULTS,
+      body:
+        p(inline(sz(24)), ind) +
+        p(inline(sz(24)) + r('汉字', sz(36)), ind) +
+        p(inline(sz(24)), `${ind}<w:rPr>${sz(36)}</w:rPr>`) +
+        p(inline(sz(24) + '<w:spacing w:val="20"/>'), ind) +
+        p(anchor(sz(48)) + r('汉字'), ind) +
+        p(r('隐', `${sz(48)}<w:vanish/>`) + r('汉字'), ind) +
+        p(`<w:r><w:rPr>${sz(48)}</w:rPr></w:r>${r('汉字')}`, ind) +
+        p(`<w:r><w:rPr>${sz(48)}</w:rPr><w:lastRenderedPageBreak/></w:r>${r('汉字')}`, ind),
+    })
+    // WPS 实测（段落标记 10.5 磅）：图片字段 12 磅时首行 24 磅，其后的 18 磅文字与 18 磅段落标记不起作用；
+    // 24 磅的浮动对象字段与隐藏文字为 48 磅；空字段与只有 lastRenderedPageBreak 的字段之后的 10.5 磅文字为 21 磅。
+    expect(paragraphs(doc).map((x) => x.props.firstLine)).toEqual([24, 24, 24, 24, 48, 48, 21, 21])
+  })
+
   test('右缩进的字符数优先于缇', async () => {
     const doc = await parse({
       styles,
@@ -1417,6 +1443,62 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
       ['Yu Gothic', '宋体', 'Yu Gothic'],
       ['Georgia', '宋体', '宋体'],
       ['Georgia', '宋体', '宋体'],
+    ])
+  })
+
+  test('主机没有的字体：Windows 字体替换表在 altName 之后、charset 之前，区分大小写；charset 为 81、88 时取 Malgun Gothic、MingLiU-ExtB', async () => {
+    // WPS（构造文档 w13 p2、p3、q18、q30，12 磅，页面 EMF 中的字体名）：MS Shell Dlg 2 为 Tahoma（charset 为 86 时同样），
+    // MS Shell Dlg 为 Microsoft Sans Serif，TIMES 为 Segoe Print；charset 为 81 时西文为 Malgun Gothic、「汉」为宋体，
+    // altName 为 Georgia 而 charset 为 81 时同样；charset 为 88 时西文为 MingLiU-ExtB、汉字为宋体；altName 为 Georgia 时取 Georgia。
+    const files: Record<string, string> = {
+      宋体: 'simsun.ttc',
+      'Segoe Print': 'segoepr.ttf',
+      Georgia: 'georgia.ttf',
+      Tahoma: 'tahoma.ttf',
+      'Microsoft Sans Serif': 'micross.ttf',
+      'Malgun Gothic': 'malgun.ttf',
+      'MingLiU-ExtB': 'mingliub.ttc',
+    }
+    const fonts = {
+      face: (name: string) =>
+        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+      math: () => null,
+      outlines: () => null,
+      get fallback() {
+        return load('simsun.ttc')
+      },
+    }
+    const entry = (name: string, alt: string, charset: string) =>
+      `<w:font w:name="${name}">${alt === '' ? '' : `<w:altName w:val="${alt}"/>`}` +
+      `<w:charset w:val="${charset}"/></w:font>`
+    const names = ['MS Shell Dlg 2', 'MS Shell Dlg', 'TIMES', 'K', 'KG', 'T', 'Times']
+    const doc = await parse({
+      styles: DEFAULTS,
+      settings: SETTINGS,
+      fonts:
+        entry('MS Shell Dlg 2', '', '86') +
+        entry('K', '', '81') +
+        entry('KG', 'Georgia', '81') +
+        entry('T', '', '88') +
+        entry('Times', 'Georgia', '00'),
+      body: names
+        .map((n) => p(r('H汉', `<w:rFonts w:ascii="${n}" w:hAnsi="${n}" w:eastAsia="${n}"/>`)))
+        .join(''),
+    })
+    const byFile = new Map(Object.entries(files).map(([name, file]) => [load(file), name]))
+    const used = layoutDocument(doc, fonts).paragraphs.map((pl) =>
+      pl.text.lines[0]!.fragments.flatMap((f) =>
+        [...text(paragraphs(doc)[pl.block]!).slice(f.start, f.end)].map(() => byFile.get(f.face)),
+      ),
+    )
+    expect(used).toEqual([
+      ['Tahoma', '宋体'],
+      ['Microsoft Sans Serif', '宋体'],
+      ['Segoe Print', '宋体'],
+      ['Malgun Gothic', '宋体'],
+      ['Malgun Gothic', '宋体'],
+      ['MingLiU-ExtB', '宋体'],
+      ['Georgia', '宋体'],
     ])
   })
 

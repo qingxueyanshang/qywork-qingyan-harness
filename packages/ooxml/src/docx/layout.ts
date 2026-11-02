@@ -147,6 +147,15 @@ const UNWRAPPED = 1e6
  * Segoe UI Emoji 有字形的「🀄」「🅰」「🩰」也是如此。其余字符改用 `FontSource.fallback`。
  */
 export const EMOJI_FALLBACK = 'Segoe UI Emoji'
+
+/** 目录域结果以外的制表位前导符所用的字体（见 `ParagraphLayouter.leaderStyle`）。 */
+export const LEADER_FONT = 'Times New Roman'
+
+/** 前导符的字体与对齐：`end` 为整数个前导符与制表位的终点相接，否则自制表符的起点排起。 */
+export interface LeaderStyle {
+  readonly face: TextFace
+  readonly end: boolean
+}
 const EMOJI_RANGES: readonly (readonly [number, number])[] = [
   [0x1f300, 0x1f64f],
   [0x1f680, 0x1f6ff],
@@ -358,6 +367,18 @@ export class ParagraphLayouter {
       this.faces.set(key, f)
     }
     return f
+  }
+
+  /**
+   * 制表位前导符的绘制方式：`tab` 为制表符的字体（`LineLeader.face`），`props` 与 `field` 为制表符所在的字段；字号、粗体与
+   * 斜体取该字段。目录域结果中字体为 `tab`，整数个前导符与制表位的终点相接；其余为 `LEADER_FONT`，自制表符的起点排起。
+   * WPS 实测（构造文档 w13 l1、m1–m4、n1 与语料目录页）：目录域以外，制表符字段为黑体、Arial、Courier New、微软雅黑、
+   * Segoe Print 等，或文档缺省字体、缺省段落样式、段落样式与字符样式另设字体时，前导符都为 Times New Roman，第一个点
+   * 位于制表符起点，余量留在页码之前；目录域结果中制表符字段为 Arial 时为 Arial，最后一个点止于页码左端。
+   */
+  leaderStyle(tab: TextFace, props: RunProps, field: string | null): LeaderStyle {
+    if (field === 'TOC') return { face: tab, end: true }
+    return { face: this.face(LEADER_FONT, props.bold, props.italic), end: false }
   }
 
   /** 第一个主机有且含所需代码页的替代字体；都没有时为 `null`。 */

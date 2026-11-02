@@ -830,29 +830,64 @@ describe('paintPage：逐字定位与点阵模式', () => {
 describe.skipIf(process.platform !== 'win32')('build：制表位前导符（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
 
-  test('点前导符：以制表符字体的「.」填满，按其宽度取整数个并与制表位对齐的一端相接（WPS：目录行 132 个点，每个 4 像素，止于页码左端）', async () => {
-    const tabs = '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8306"/></w:tabs>'
-    const body = p(`${r('第1章 绪论')}<w:r><w:tab/></w:r>${r('1')}`, tabs)
+  const TABS = '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8306"/></w:tabs>'
+  const SONG = '<w:rFonts w:ascii="宋体" w:hAnsi="宋体" w:eastAsia="宋体"/><w:sz w:val="30"/>'
+
+  async function leaderLine(body: string) {
     const result = await parseDocx(buildDocx({ body: body + SECT(), settings: COMPAT14 }))
     if (!result.ok) throw new Error('解析失败')
     const faces = [
       loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0),
       loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'times.ttf'))), 'Times New Roman'),
     ]
-    const page = layoutPages(result.value, new DocxFonts(faces, '宋体')).pages.pages[0]!
-    const item = page.body[0]!
+    const { pages } = layoutPages(result.value, new DocxFonts(faces, '宋体'))
+    const item = pages.pages[0]!.body.find(
+      (it) => it.kind === 'paragraph' && it.lines[0]!.fragments.length > 0,
+    )!
     if (item.kind !== 'paragraph') throw new Error('不是段落')
     const fragments = item.lines[0]!.fragments
     const leader = fragments.find((f) => f.text.startsWith('.'))!
     const words = fragments.filter((f) => f !== leader)
-    const number = words.at(-1)!
+    const last = words.at(-2)!
+    return {
+      leader,
+      family: pages.faces[leader.face]!.family,
+      start: last.x + last.advances.reduce((a, v) => a + v, 0),
+      number: words.at(-1)!,
+    }
+  }
+
+  test('目录域结果中的点前导符：以制表符字体的「.」填满，按其宽度取整数个并与页码左端相接（WPS：目录行 132 个点，每个 4 像素，止于页码左端）', async () => {
+    const field =
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    const body =
+      p(
+        `${field}${r('第1章 绪论', SONG)}<w:r><w:rPr>${SONG}</w:rPr><w:tab/></w:r>${r('1', SONG)}`,
+        TABS,
+      ) + p('<w:r><w:fldChar w:fldCharType="end"/></w:r>')
+    const { leader, family, start, number } = await leaderLine(body)
     const dot = leader.advances[0]!
-    expect(dot).toBeGreaterThan(0)
+    expect(family).toBe('宋体')
+    expect(dot).toBeCloseTo(7.5, 6)
     expect(new Set(leader.text)).toEqual(new Set(['.']))
     expect(leader.advances.every((a) => a === dot)).toBe(true)
     expect(leader.x + leader.text.length * dot).toBeCloseTo(number.x, 6)
-    const last = words.at(-2)!
-    const start = last.x + last.advances.reduce((a, v) => a + v, 0)
+    expect(leader.text.length).toBe(Math.floor((number.x - start) / dot))
+  })
+
+  test('目录域以外的点前导符：Times New Roman，字号取制表符所在的字段，自制表符起点排起', async () => {
+    // WPS 实测（构造文档 w13 l1、m1–m4）：制表符字段为 15 磅宋体时前导符为 15 磅 Times New Roman，每个 5 像素，
+    // 第一个点位于制表符起点，余量留在页码之前。
+    const body = p(
+      `${r('第1章 绪论', SONG)}<w:r><w:rPr>${SONG}</w:rPr><w:tab/></w:r>${r('1', SONG)}`,
+      TABS,
+    )
+    const { leader, family, start, number } = await leaderLine(body)
+    const dot = leader.advances[0]!
+    expect([family, leader.size]).toEqual(['Times New Roman', 15])
+    expect(dot).toBeCloseTo(3.75, 6)
+    expect(leader.x).toBeCloseTo(start, 6)
     expect(leader.text.length).toBe(Math.floor((number.x - start) / dot))
   })
 })

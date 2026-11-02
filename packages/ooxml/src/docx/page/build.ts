@@ -52,6 +52,7 @@ import type { LineArea, TextFace, TextLine } from '../../text/index.ts'
 import { borderStrokes } from '../border.ts'
 import {
   contextSpacing,
+  LEADER_FONT,
   lineAt,
   numberingText,
   type ParagraphLayout,
@@ -327,6 +328,7 @@ export function requiredFonts(doc: DocxDocument): string[] {
         for (const r of b.rows) for (const c of r.cells) visit(c.content)
         continue
       }
+      if (b.props.tabs.some((t) => t.leader !== null)) names.add(LEADER_FONT)
       for (const a of b.anchors) if (a.drawing !== null) visitNode(a.drawing)
     }
   }
@@ -1253,7 +1255,7 @@ class PageBuilder {
       lines.push({
         top: top + skip,
         height: line.height - skip,
-        fragments: fragments(p, lay, line, x, top, this.fonts),
+        fragments: fragments(p, lay, line, x, top, this.fonts, this.cx.layouter),
       })
     })
     const formulas: PageFormula[] = []
@@ -1313,6 +1315,7 @@ function fragments(
   x0: number,
   top: number,
   fonts: DocxFonts,
+  layouter: ParagraphLayouter,
 ): PageFragment[] {
   const out: PageFragment[] = []
   const dy = top - line.top
@@ -1336,14 +1339,16 @@ function fragments(
   }
   for (const l of line.leaders) {
     const src = lay.runs[l.run]!
-    const props = src < 0 ? p.numbering!.props : p.runs[src]!.props
-    const advance = l.face.metrics.advance(l.char.codePointAt(0)!, l.size)
+    const run = src < 0 ? null : p.runs[src]!
+    const props = run?.props ?? p.numbering!.props
+    const { face, end } = layouter.leaderStyle(l.face, props, run?.field ?? null)
+    const advance = face.metrics.advance(l.char.codePointAt(0)!, l.size)
     const count = advance > 0 ? Math.floor(l.width / advance + 1e-6) : 0
     if (count === 0) continue
     out.push({
-      face: fonts.ref(l.face),
+      face: fonts.ref(face),
       size: l.size,
-      x: x0 + l.x + l.width - count * advance,
+      x: x0 + l.x + (end ? l.width - count * advance : 0),
       baseline: line.baseline + dy,
       text: l.char.repeat(count),
       advances: Array.from({ length: count }, () => advance),
