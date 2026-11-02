@@ -9,12 +9,12 @@ import {
   type PersonalizationEntry,
 } from '@qywork/core'
 import { createEffect, createRoot, createSignal, on } from 'solid-js'
-import { ApiError } from '../../client.ts'
 import { client, personalizationChange } from '../connection.ts'
+import { explainApiError } from '../settings.ts'
 import { state } from '../state.ts'
 import { paintedPersonalization, paintPersonalization } from '../theme.ts'
 
-/** 最近一次保存或读取失败的原因。成功后清空。 */
+/** 最近一次保存或读取失败的说明（`explainApiError`）。成功后清空。 */
 export const [personalizationError, setPersonalizationError] = createSignal<string | null>(null)
 
 /** 编辑停顿多久后保存。拖动滑块时每一帧都预览，只在停顿后写入一次。 */
@@ -55,7 +55,7 @@ async function reload(): Promise<void> {
     paint(await client.api<PersonalizationEntry>('/api/personalization'))
     setPersonalizationError(null)
   } catch (e) {
-    setPersonalizationError(e instanceof ApiError ? e.message : String(e))
+    setPersonalizationError(explainApiError(e, '读取失败'))
   }
 }
 
@@ -78,7 +78,7 @@ export function editPersonalization(next: Personalization): void {
         body: JSON.stringify(next),
       })
       .then(() => setPersonalizationError(null))
-      .catch((e: unknown) => setPersonalizationError(e instanceof ApiError ? e.message : String(e)))
+      .catch((e: unknown) => setPersonalizationError(explainApiError(e, '保存失败')))
       .finally(() => {
         draftsInFlight--
       })

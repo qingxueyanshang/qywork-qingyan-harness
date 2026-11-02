@@ -198,3 +198,26 @@ describe('个性化读取', () => {
     }
   })
 })
+
+describe('个性化保存失败', () => {
+  test('没有收到响应时只显示本次操作的结果，不显示浏览器原文', async () => {
+    const store = await import('../../lib/store/index.ts')
+    globalThis.fetch = (async () => {
+      throw new TypeError('Failed to fetch')
+    }) as unknown as typeof fetch
+    store.editPersonalization({ ...sample, opacity: 0.65 })
+    await new Promise((r) => setTimeout(r, 300))
+    expect(store.personalizationError()).toBe('保存失败')
+  })
+
+  test('服务端拒绝时显示服务端说明的原因', async () => {
+    const store = await import('../../lib/store/index.ts')
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: '强调色格式不正确' }), {
+        status: 422,
+      })) as unknown as typeof fetch
+    store.editPersonalization({ ...sample, opacity: 0.6 })
+    await new Promise((r) => setTimeout(r, 300))
+    expect(store.personalizationError()).toBe('强调色格式不正确')
+  })
+})

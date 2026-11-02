@@ -19,6 +19,7 @@ import { createSignal, For, type JSX, onCleanup, onMount, Show } from 'solid-js'
 import {
   currentPersonalization,
   editPersonalization,
+  explainApiError,
   personalizationError,
   resetPersonalization,
   setPersonalImage,
@@ -178,12 +179,13 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
     } else setError(merged.error)
   }
 
-  const run = async (fn: () => Promise<unknown>) => {
+  /** 执行一次请求。失败时显示服务端说明的原因；没有收到响应时只显示 `failed`（本次操作的结果）。 */
+  const run = async (fn: () => Promise<unknown>, failed: string) => {
     setError(null)
     try {
       await fn()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(explainApiError(e, failed))
     }
   }
 
@@ -193,7 +195,7 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
     void run(async () => {
       await setPersonalImage(file.name, file)
       if (reveal) edit({ opacity: REVEAL_OPACITY })
-    })
+    }, '更换图片失败')
   }
 
   const pickKind = (next: PersonalBackground['kind']) => {
@@ -397,7 +399,7 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
         <ResetDialog
           onConfirm={() => {
             setConfirming(false)
-            void run(resetPersonalization)
+            void run(resetPersonalization, '恢复默认失败')
           }}
           onCancel={() => setConfirming(false)}
         />
