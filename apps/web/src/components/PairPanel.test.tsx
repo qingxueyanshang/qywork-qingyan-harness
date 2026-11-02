@@ -99,7 +99,7 @@ const signedIn = (tunnel: RemoteInfo['tunnel'] = null): RemoteInfo => ({
 test('未登录云端账号时整节不出现', async () => {
   const { host } = await mount({ available: false, enabled: true, tunnel: null })
   await new Promise((r) => setTimeout(r, 30))
-  expect(host.querySelector('.settings-block')).toBeNull()
+  expect(host.querySelector('.pair-section')).toBeNull()
 })
 
 test('打开开关后显示 console 中本设备地址的二维码，外层 Suspense 始终不挂起', async () => {

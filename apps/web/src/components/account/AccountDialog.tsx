@@ -22,6 +22,7 @@ import {
 } from '../../lib/store/cloud.ts'
 import { explainApiError, holdOverlay, setAccountOpen } from '../../lib/store/index.ts'
 import { IconLogOut, IconX } from '../Icons.tsx'
+import PairPanel from '../PairPanel.tsx'
 import { LoadState } from '../settings/LoadState.tsx'
 import { ActivityGrid } from './ActivityGrid.tsx'
 import { AccountAvatar, squareAvatar } from './Avatar.tsx'
@@ -169,6 +170,8 @@ function AccountView(props: { signed: SignedIn }) {
           </>
         )}
       </Show>
+
+      <PairPanel />
 
       <h3 class="account-section">
         可用模型<span class="account-unit">积分 / 百万 token</span>

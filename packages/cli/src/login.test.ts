@@ -13,14 +13,12 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
   port: 0,
   async fetch(req): Promise<Response> {
     const path = new URL(req.url).pathname
-    if (path === '/api/auth/sign-in/email') {
+    if (path === '/v1/login') {
       const body = (await req.json()) as { password: string }
       return body.password === 'password-123'
-        ? Response.json({ token: 'session' })
-        : Response.json({ code: 'INVALID_EMAIL_OR_PASSWORD' }, { status: 401 })
+        ? Response.json({ key: 'qyd_cli_key' })
+        : Response.json({ error: { code: 'INVALID_EMAIL_OR_PASSWORD' } }, { status: 401 })
     }
-    if (path === '/api/devices') return Response.json({ id: 'dv_1', key: 'qyd_cli_key' })
-    if (path === '/api/auth/sign-out') return Response.json({ success: true })
     if (path === '/v1/me') return Response.json({ email: 'cli@example.com', credits: 3 })
     if (path === '/v1/device/revoke') {
       revoked++

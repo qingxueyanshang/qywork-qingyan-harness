@@ -14,7 +14,8 @@ const PASSWORD = 'password-123'
 const cloud = {
   me: 'ok' as 'ok' | 'revoked' | 'invalid',
   revoked: 0,
-  signedOut: 0,
+  /** 云端收到的登录与注册请求。 */
+  logins: [] as { email: string; password: string; name: string; platform: string }[],
   /** 云端收到的最后一次 `/v1/usage` 查询串与 `/v1/requests` 查询串。 */
   usageQuery: '',
   requestsQuery: '',
@@ -30,35 +31,32 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
     const url = new URL(req.url)
     const path = url.pathname
     const authed = req.headers.get('authorization') === 'Bearer qyd_device_key'
-    if (path === '/api/auth/sign-in/email') {
-      const body = (await req.json()) as { email: string; password: string }
-      if (body.password !== PASSWORD) {
+    if (path === '/v1/login' || path === '/v1/register') {
+      const body = (await req.json()) as {
+        email: string
+        password: string
+        name: string
+        platform: string
+      }
+      cloud.logins.push(body)
+      if (path === '/v1/login' && body.password !== PASSWORD) {
         return Response.json(
-          { message: 'Invalid email or password', code: 'INVALID_EMAIL_OR_PASSWORD' },
+          { error: { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid email or password' } },
           { status: 401 },
         )
       }
-      return Response.json({ token: 'session-token', user: { email: body.email } })
-    }
-    if (path === '/api/auth/sign-up/email') {
-      const body = (await req.json()) as { email: string; name: string }
-      if (body.email === 'taken@example.com') {
+      if (path === '/v1/register' && body.email === 'taken@example.com') {
         return Response.json(
-          { message: 'User already exists.', code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL' },
+          {
+            error: {
+              code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL',
+              message: 'User already exists.',
+            },
+          },
           { status: 422 },
         )
       }
-      return Response.json({ token: 'session-token', user: { email: body.email } })
-    }
-    if (path === '/api/devices') {
-      if (req.headers.get('authorization') !== 'Bearer session-token') {
-        return new Response(null, { status: 401 })
-      }
-      return Response.json({ id: 'dv_1', key: 'qyd_device_key' })
-    }
-    if (path === '/api/auth/sign-out') {
-      cloud.signedOut++
-      return Response.json({ success: true })
+      return Response.json({ key: 'qyd_device_key' })
     }
     if (path === '/v1/device/revoke') {
       cloud.revoked++
@@ -129,7 +127,7 @@ beforeEach(async () => {
   Object.assign(cloud, {
     me: 'ok',
     revoked: 0,
-    signedOut: 0,
+    logins: [],
     usageQuery: '',
     requestsQuery: '',
     extraModel: false,
@@ -138,7 +136,7 @@ beforeEach(async () => {
   live = await loadConfig()
   delete live.providers[CLOUD_PROVIDER]
   delete live.active
-  account = new CloudAccount(live, { app: origin, api: origin })
+  account = new CloudAccount(live, { site: 'http://site.invalid', api: origin })
 })
 
 test('登录后写入云端接口：设备密钥只在该接口中，型号带各自的协议，未选模型时设为当前模型', async () => {
@@ -161,7 +159,15 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
     currency: 'CREDIT',
   })
   expect(live.active?.provider).toBe(CLOUD_PROVIDER)
-  expect(cloud.signedOut).toBe(1)
+  // 一次请求完成登录与登记本设备，只发往接口主机，带本机名称与平台。
+  expect(cloud.logins).toEqual([
+    {
+      email: 'me@example.com',
+      password: PASSWORD,
+      name: expect.any(String),
+      platform: process.platform,
+    },
+  ])
   // 写入的是磁盘上的配置，而不只是内存中的对象。
   expect((await loadConfig()).providers[CLOUD_PROVIDER]?.apiKey).toBe('qyd_device_key')
 })
@@ -180,7 +186,7 @@ test('注册：邮箱已注册时给出原因；新邮箱注册后直接登录',
 })
 
 test('账号服务无法连接时给出原因', async () => {
-  const offline = new CloudAccount(live, { app: 'http://127.0.0.1:9', api: origin })
+  const offline = new CloudAccount(live, { site: 'http://site.invalid', api: 'http://127.0.0.1:9' })
   await expect(offline.login('me@example.com', PASSWORD)).rejects.toThrow('无法连接账号服务')
 })
 

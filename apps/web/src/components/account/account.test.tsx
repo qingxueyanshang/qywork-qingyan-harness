@@ -1,5 +1,5 @@
 /**
- * 账号界面：`AccountEntry.tsx`（侧栏入口）、`AccountDialog.tsx`（账号弹窗）、`LoginForm.tsx`（登录表单）、
+ * 账号界面：`AccountEntry.tsx`（侧栏入口）、`AccountDialog.tsx`（账号弹窗，其中的手机接入见 `PairPanel.test.tsx`）、`LoginForm.tsx`（登录表单）、
  * `ActivityGrid.tsx`（Token 活动方格）、`../LoginGate.tsx`（首次启动的登录页），以及 `lib/store/cloud.ts`。
  * 服务端接口以替身代替，状态以替身返回值为准。
  */
@@ -80,6 +80,7 @@ beforeAll(async () => {
       cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), avatar: image }
       return structuredClone(cloud) as T
     }
+    if (path === '/api/pairing') return { available: false, enabled: false, tunnel: null } as T
     if (path === '/api/cloud/usage') return structuredClone(USAGE) as T
     if (path === '/api/cloud/models') {
       return [
