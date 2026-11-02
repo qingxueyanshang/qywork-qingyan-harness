@@ -19,9 +19,10 @@ import {
   readEffects,
   readFill,
   readLine,
-  readThreeD,
 } from '../fill.ts'
 import type { FindingSink } from '../shape/model.ts'
+import { visibleThreeD } from '../three/camera.ts'
+import { readScene3D, readShape3D } from '../three/read.ts'
 import type { Autofit, Spacing } from './model.ts'
 
 export type BulletSpec =
@@ -385,8 +386,10 @@ export function readBodyProps(x: Scanner, cx: TextContext): BodySpec {
       }
     } else if (local === 'prstTxWarp') {
       if ((x.attr('prst') ?? 'textNoShape') !== 'textNoShape') cx.found.push('textWarp')
-    } else if ((local === 'scene3d' || local === 'sp3d') && readThreeD(x)) {
-      cx.found.push('effect3d')
+    } else if (local === 'scene3d') {
+      if (visibleThreeD(readScene3D(x), null)) cx.found.push('effect3d')
+    } else if (local === 'sp3d') {
+      if (visibleThreeD(null, readShape3D(x))) cx.found.push('effect3d')
     }
   })
   return out

@@ -15,7 +15,7 @@ export interface Frame {
 
 /**
  * 形状与文字中绘制端不实现的内容：`textWarp` 艺术字变形；`effect3d` 改变外观的三维设置；`effect` 外部阴影之外的效果；
- * `verticalText` 按旋转绘制之外的竖排文字；`pictureBullet` 图片项目符号；`imageFormat` 浏览器无法解码的图片。
+ * `verticalText` 按旋转绘制之外的竖排文字；`pictureBullet` 图片项目符号；`imageFormat` 无法绘制的图片（`drawableImage`）。
  */
 export type DrawingFinding =
   | 'textWarp'

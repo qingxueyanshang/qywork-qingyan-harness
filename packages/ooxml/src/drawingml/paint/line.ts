@@ -2,7 +2,8 @@
  * 线条绘制：宽度、虚线、端点、连接、对齐、复合线与箭头，绘制在形状局部坐标中（单位为 96 dpi 像素）。
  *
  * - 线宽不足 1 个设备像素（含宽度为 0）时按 1 个设备像素绘制。
- * - 预设虚线的线段与间隔为线宽的倍数；自定义虚线（`custDash`）的比例同样乘以线宽。
+ * - 预设虚线的线段与间隔为线宽的倍数；自定义虚线（`custDash`）的比例同样乘以线宽。圆形与方形端点的虚线另见
+ *   `dashPattern` 与 `setStroke`。
  * - `algn` 为 `in` 时线条位于路径内侧：裁剪到路径内部并以两倍线宽描边。
  * - 复合线：`dbl` 为 1 : 1 : 1 的两条线，`tri` 为 1 : 1 : 1 : 1 : 1 的三条线；`thickThin` 与 `thinThick`
  *   按 `dbl` 绘制（两侧粗细不同的线需要区分路径内外两侧，开放路径没有内外之分）。
@@ -57,23 +58,36 @@ export function lineWidth(line: Line, matrix: Matrix): number {
   return Math.max(line.width / EMU_PER_PX, 1 / deviceScale(matrix))
 }
 
+/**
+ * Canvas 的虚线数组。圆形端点时每段连同两端的半圆仍为原长度、起点不变：线段缩短一个线宽、间隔加长一个线宽，
+ * `sysDot` 因此是以线段起点为圆心、直径为线宽的圆点（WPS 演示实测 1–8 像素线宽的 6 种预设虚线）。
+ * 不要直接用原长度：Canvas 把半圆加在每段两端之外，`sysDot` 的间隔被填满，画成实线。
+ */
 export function dashPattern(line: Line, width: number): number[] {
   const d = line.dash
   const unit =
     d.kind === 'preset' ? (DASHES[d.name] ?? []) : d.stops.flatMap((s) => [s.dash, s.space])
-  return unit.map((v) => v * width)
+  const lengths = unit.map((v) => v * width)
+  if (line.cap !== 'rnd') return lengths
+  return lengths.map((v, i) => (i % 2 === 0 ? Math.max(0, v - width) : v + width))
 }
 
 function isClosed(segments: readonly Segment[]): boolean {
   return segments.at(-1)?.kind === 'close'
 }
 
+/**
+ * 端点：方形端点只加在路径两端，虚线中各段两端平直（WPS 演示实测），虚线时改用 `butt`；Canvas 的 `square`
+ * 会加在每一段上。未实现：方形端点的虚线在路径起点另向外延伸半个线宽。
+ */
 function setStroke(ctx: PaintContext, line: Line, width: number): void {
+  const dash = dashPattern(line, width)
   ctx.lineWidth = width
-  ctx.lineCap = line.cap === 'rnd' ? 'round' : line.cap === 'sq' ? 'square' : 'butt'
+  ctx.lineCap =
+    line.cap === 'rnd' ? 'round' : line.cap === 'sq' && dash.length === 0 ? 'square' : 'butt'
   ctx.lineJoin = line.join
   ctx.miterLimit = line.miterLimit ?? 10
-  ctx.setLineDash(dashPattern(line, width))
+  ctx.setLineDash(dash)
 }
 
 interface EndShape {

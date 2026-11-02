@@ -4,7 +4,8 @@
  * - 相邻压缩与压缩标点设置无关，只在两字所在字段都开启字距调整（`TextRun.kern`）时发生：
  *   前一字属于 `ADJACENT_FIRST`、后一字属于 `ADJACENT_SECOND` 时前一字去掉右半；
  *   两字都属于 `OPENING` 时后一字去掉左半。`？`、`…`、`—` 不参与。
- * - 压缩标点：行宽不足时压缩行内属于 `COMPRESSIBLE` 的标点，每个至多压缩到原宽度的一半；行首的开启类标点不压缩。
+ * - 压缩标点：行宽不足时压缩行内属于 `COMPRESSIBLE` 且使用东亚字体的标点，每个至多压缩到原宽度的一半；
+ *   行首的开启类标点不压缩。无东亚提示的 `“”` 使用西文字体，不压缩。是否压缩由 `acceptsCompression` 判定。
  */
 
 import { codePointSet } from './breaking.ts'
@@ -30,13 +31,34 @@ export function adjacentSqueeze(before: number, after: number): 'first' | 'secon
 
 const EPSILON = 1e-6
 
+/** 两端对齐的普通字间在压缩判定中的伸展量：前一字字号的 1/64。中西文间距的伸展量为其宽度。 */
+export const SLOT_STRETCH = 1 / 64
+
 /**
- * 压缩标点设置下，加入一个字符使行宽超出 `overflow` 时是否以压缩行内 `count` 个标点容纳它（另需容量足够）：
- * 每个标点的压缩量按 0.25 磅四舍五入后须小于 `slack`，即不容纳它、在最近的断点断行时该行的剩余宽度。
- * 这是对 WPS 的经验拟合，机制未查明：12 磅时 1 至 6 个与 8 个逗号的分界依次为超出 6、8、9、9.5、10、10.25、10.75 磅
- * （等于该值时拒绝，低 0.1 至 0.25 磅时接受），10.5 磅两个逗号为 7 磅，均与此一致；断点因禁则前移时 `slack` 随之增大。
+ * 兼容模式 15 及以上，越过行宽的字符（连同其后不能断开的字符）以压缩标点排入本行的条件：
+ * `overflow / shrink ≤ slack / stretch`，即排入时的收缩比例不大于不排入、在最近的断点断行时的伸展比例。
+ *
+ * - `overflow`：排入后超出行宽的量；`slack`：在最近的断点断行时该行的剩余宽度。
+ * - `shrink`：排入后的行中可压缩标点的容量之和，加上每个中西文间距宽度的一半；
+ *   该行最后一字不得位于行首时（句号、逗号、问号等），以其全部宽度代替它的容量。
+ * - `stretch`：在断点断行时该行各字间的伸展量之和（见 `SLOT_STRETCH`）。
+ *
+ * WPS 实测（宋体 12 与 10.5 磅，正文与单元格）：阈值随断行后的字间数增加而降低，随中西文间距增加而降低，
+ * 与单双字节宽度协调、连续字母或数字的个数无关。中西文间距一侧为 Times New Roman 数字时，阈值与实测差约 0.05 磅。
  */
-export function acceptsCompression(overflow: number, count: number, slack: number): boolean {
-  const share = Math.round((overflow / count) * 4 + EPSILON) / 4
-  return share < slack - EPSILON
+export function acceptsCompression(
+  overflow: number,
+  shrink: number,
+  slack: number,
+  stretch: number,
+): boolean {
+  return overflow * stretch <= slack * shrink + EPSILON
+}
+
+/**
+ * 兼容模式 14 及以下：越过行宽的字符本身超出行宽的量（它是可压缩标点时减去它自身的容量）不超过其字号的一半时排入，
+ * 与标点个数、行长和其后须连排的字符无关（WPS 实测）。
+ */
+export function acceptsCompressionBelow15(overflow: number, size: number): boolean {
+  return overflow <= size / 2 + EPSILON
 }

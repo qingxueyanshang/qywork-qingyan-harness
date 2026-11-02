@@ -5,10 +5,12 @@
  *   共 n 轮时第 k 轮的系数 f = (k + 1) / (n + 1) × 1.4 − 0.7，f < 0 时施加 `shade(1 + f)`，f > 0 时施加 `tint(1 − f)`
  *   （实测 8 个系列：首轮为 shade 76%，次轮为 tint 77%）。
  * - 未写出 `spPr` 的元素：图表区白色（WPS 表格中另有 0.75 磅、`tx1` tint 75% 的边框，WPS 演示没有）；绘图区无填充无边框；坐标轴线与网格线为
- *   0.75 磅、`tx1` tint 75%；折线为 1.5 磅；标记为 5 磅，符号按系列依次取 `MARKER_SYMBOLS`，填充与线条为系列颜色。
+ *   0.75 磅、`tx1` tint 75%；折线为 1.5 磅；标记为 5 磅，符号按系列依次取 `MARKER_SYMBOLS`，填充与线条为系列颜色；
+ *   垂直线与趋势线为 0.75 磅实线、`tx1`（校准文件中为黑色，未区分 `tx1` 与固定的黑色）。
  * - 文字样式链：元素自身的 `c:rich` 字段与段落属性 → 元素的 `c:txPr` → 图表区的 `c:txPr` → 缺省值
  *   （字号 10 磅、`tx1`、主题正文字体；图表标题 18 磅粗体）。
  * - 数据标签：系列的 `dLbls` 逐项覆盖图表组的 `dLbls`；`dLbl` 覆盖单个点。未写出的显示项为假。
+ *   `dLbl` 的自定义文字（`c:rich`）以该标签的文字样式为下一级解决（WPS 演示实测：字段属性覆盖 `txPr`）。
  * - 标题：只在有 `c:title` 时显示；`c:title` 没有文字时，只有一个系列的图表取系列名，其余取「图表标题」。
  *   坐标轴标题没有文字时为「坐标轴标题」，缺省为 10 磅粗体。
  * - 数据标签的文字样式只取系列与数据点自身的 `txPr`，图表组 `dLbls` 的 `txPr` 不生效；显示项按上一条逐项覆盖。
@@ -75,9 +77,9 @@ export interface ChartCells {
 export interface ChartScope {
   readonly theme: Theme
   readonly colors: ColorContext
-  /** 图表所在的应用：`sheet` 为 WPS 表格，`slide` 为 WPS 演示（文字文档中的图表按 `slide`）。 */
+  /** 图表所在的应用：`sheet` 为 WPS 表格与 WPS 文字，`slide` 为 WPS 演示。 */
   readonly host: Chart['host']
-  /** 图表数据所在的工作簿；PPT 与文字文档中的图表为 `null`，只用缓存值。 */
+  /** 图表数据所在的工作簿；PPT 与文字文档中的图表为 `null`，只用缓存值（WPS 文字实测：缓存值与内嵌工作簿不同时显示缓存值）。 */
   readonly cells: ChartCells | null
 }
 
@@ -109,13 +111,22 @@ const AXIS_LINE: LineSpec = {
   fill: solid(scheme('tx1', [{ name: 'tint', value: 0.75 }])),
 }
 
-/** 图表文字的字段默认样式：主题正文字体、`tx1`。 */
+/** 垂直线与趋势线未写出格式时的线条。 */
+const THIN_LINE: LineSpec = { width: 9525, fill: solid(scheme('tx1')) }
+const TREND_NAME = '线性'
+
+/**
+ * 图表文字的字段默认样式：主题正文字体、`tx1`。主题的东亚字体为空时按 `altLang` 取简体中文的文种字体（`Hans`）：
+ * WPS 演示与 WPS 表格实测，`c:lang` 为 `en-US`、`ja-JP`、`zh-CN` 或未写出时图表文字都取主题的 `Hans` 字体
+ * （本机界面语言为简体中文）。不要改为 `lang`：`lang` 另决定歧义字符是否按东亚字体排版。
+ */
 const CHART_FONT: RunSpec = {
   latin: '+mn-lt',
   ea: '+mn-ea',
   cs: '+mn-cs',
   fill: solid(scheme('tx1')),
   size: 10,
+  altLang: 'zh-CN',
 }
 
 const SERIES_LINE_WIDTH = 19050
@@ -259,6 +270,9 @@ class Resolver {
       txPr ??= l.txPr
       if (box.fill === null && box.line === null) box = l.box
     }
+    // 自定义文字与手动位置只出现在单个标签（`c:dLbl`）上，即 `chain` 的首项。
+    const { rich, layout } = chain[0]!
+    const defaults: RunSpec = { size: 10 }
     return {
       showValue,
       showCategory,
@@ -267,8 +281,10 @@ class Resolver {
       position: pick('position') ?? defaultPosition,
       format: pick('format') as string | null,
       separator: (pick('separator') as string | null) ?? ', ',
-      text: this.text(txPr, { size: 10 }),
+      text: this.text(txPr, defaults),
       box: this.box(box, null, null),
+      rich: rich === null ? null : resolveTextBody(rich, this.textScope(txPr, defaults)),
+      offset: layout === null ? null : { x: layout.x ?? 0, y: layout.y ?? 0 },
     }
   }
 
@@ -411,9 +427,10 @@ class Resolver {
       const own = s.labels === null ? 1 : 2
       pointLabels.set(index, l.deleted ? null : this.labelsFrom(chain, own, defaultPosition))
     }
+    const name = s.name ?? `系列${s.index + 1}`
     return {
       index: s.index,
-      name: s.name ?? `系列${s.index + 1}`,
+      name,
       categories: this.categories(s.categories, length),
       values: Array.from({ length }, (_, i) => values[i] ?? null),
       xValues: s.categories?.numbers && !s.categories.strings ? s.categories.numbers : null,
@@ -427,6 +444,10 @@ class Resolver {
       pointLabels,
       labels: this.labels(g.labels, s.labels, defaultPosition),
       explosion: (s.explosion ?? 0) / 100,
+      trendlines: s.trendlines.map((t) => ({
+        name: t.name ?? `${TREND_NAME} (${name})`,
+        line: this.line(t.box.line, THIN_LINE),
+      })),
     }
   }
 
@@ -450,6 +471,8 @@ class Resolver {
       holeSize: g.holeSize ?? 50,
       lines: g.type === 'line' || (g.scatterStyle !== 'marker' && g.scatterStyle !== 'none'),
       threeD: g.threeD,
+      dropLines:
+        g.type === 'line' && g.dropLines !== null ? this.line(g.dropLines.line, THIN_LINE) : null,
     }
   }
 
@@ -611,6 +634,31 @@ function addRun(out: Set<string>, s: RunStyle): void {
   for (const name of [s.latin, s.ea, s.cs, s.sym]) if (name !== '') out.add(name)
 }
 
+function addBox(out: Set<string>, b: ChartBox): void {
+  if (b.fill.kind === 'picture' && b.fill.image.part !== null) out.add(b.fill.image.part)
+}
+
+/** 图表中图片填充引用的图片部件名加入 `out`：图表区、绘图区、标题、图例、系列、数据点、标记与数据标签。 */
+export function collectChartImages(out: Set<string>, chart: Chart): void {
+  addBox(out, chart.box)
+  addBox(out, chart.plot.box)
+  if (chart.title !== null) addBox(out, chart.title.box)
+  if (chart.legend !== null) addBox(out, chart.legend.box)
+  for (const a of chart.plot.axes) if (a.title !== null) addBox(out, a.title.box)
+  for (const g of chart.plot.groups) {
+    for (const s of g.series) {
+      addBox(out, s.box)
+      if (s.marker !== null) addBox(out, s.marker.box)
+      if (s.labels !== null) addBox(out, s.labels.box)
+      for (const p of s.points) {
+        addBox(out, p.box)
+        if (p.marker !== null) addBox(out, p.marker.box)
+      }
+      for (const l of s.pointLabels.values()) if (l !== null) addBox(out, l.box)
+    }
+  }
+}
+
 /** 图表用到的字体名加入 `out`：标题、坐标轴与坐标轴标题、图例与数据标签的字体，不含空串。 */
 export function collectChartFonts(out: Set<string>, chart: Chart): void {
   if (chart.title !== null) collectTextFonts(out, chart.title.text)
@@ -622,7 +670,11 @@ export function collectChartFonts(out: Set<string>, chart: Chart): void {
   for (const g of chart.plot.groups) {
     for (const s of g.series) {
       if (s.labels !== null) addRun(out, s.labels.text.run)
-      for (const l of s.pointLabels.values()) if (l !== null) addRun(out, l.text.run)
+      for (const l of s.pointLabels.values()) {
+        if (l === null) continue
+        addRun(out, l.text.run)
+        if (l.rich !== null) collectTextFonts(out, l.rich)
+      }
     }
   }
 }

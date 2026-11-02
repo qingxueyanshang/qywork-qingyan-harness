@@ -1,5 +1,5 @@
 /**
- * 覆盖 `fill.ts`（`readFill` 的六种填充、`readLine` 与 `mergeLine`、`readEffects`、`readThreeD`、`resolveFill` 与 `resolveLine`
+ * 覆盖 `fill.ts`（`readFill` 的六种填充、`readLine` 与 `mergeLine`、`readEffects`、`resolveFill` 与 `resolveLine`
  * 的求值规则）与 `theme.ts` 的格式方案（`fmtScheme` 四个列表、`styleFill`、`styleLine`、`styleEffect` 的索引规则）。
  */
 
@@ -12,7 +12,6 @@ import {
   readEffects,
   readFill,
   readLine,
-  readThreeD,
   resolveEffects,
   resolveFill,
   resolveLine,
@@ -195,7 +194,7 @@ describe('readLine', () => {
   })
 })
 
-describe('readEffects 与 readThreeD', () => {
+describe('readEffects', () => {
   test('阴影、发光、柔化边缘、倒影、模糊与未实现的效果', () => {
     const list = readEffects(
       at(
@@ -227,22 +226,6 @@ describe('readEffects 与 readThreeD', () => {
       'other',
     ])
   })
-
-  test('三维设置只在改变外观时为真', () => {
-    expect(
-      readThreeD(
-        at(
-          `<a:scene3d ${A}><a:camera prst="orthographicFront"/><a:lightRig rig="threePt" dir="t"/></a:scene3d>`,
-        ),
-      ),
-    ).toBe(false)
-    expect(readThreeD(at(`<a:scene3d ${A}><a:camera prst="perspectiveFront"/></a:scene3d>`))).toBe(
-      true,
-    )
-    expect(readThreeD(at(`<a:sp3d ${A}/>`))).toBe(false)
-    expect(readThreeD(at(`<a:sp3d ${A} extrusionH="10"/>`))).toBe(true)
-    expect(readThreeD(at(`<a:sp3d ${A}><a:bevelT/></a:sp3d>`))).toBe(true)
-  })
 })
 
 describe('格式方案', () => {
@@ -260,8 +243,18 @@ describe('格式方案', () => {
     expect(f.fills.map((x) => x.kind)).toEqual(['solid', 'none'])
     expect(f.lines.map((x) => x.width)).toEqual([6350, 12700])
     expect(f.effects).toEqual([
-      { effects: [], threeD: false },
-      { effects: [{ kind: 'other', name: 'effectDag' }], threeD: true },
+      { effects: [], scene3d: null, shape3d: null },
+      {
+        effects: [{ kind: 'other', name: 'effectDag' }],
+        scene3d: null,
+        shape3d: {
+          extrusion: 0,
+          contour: 0,
+          top: { width: 76200, height: 76200, preset: 'circle' },
+          bottom: null,
+          material: 'warmMatte',
+        },
+      },
     ])
     const bg = f.backgroundFills[1]!
     expect(bg.kind === 'picture' ? bg.image.part : null).toBe('/ppt/media/a.png')
@@ -281,7 +274,7 @@ describe('格式方案', () => {
     expect(styleLine(f, 2)?.width).toBe(12700)
     expect(styleLine(f, 3)).toBeNull()
     expect(styleEffect(f, 0)).toBeNull()
-    expect(styleEffect(f, 2)?.threeD).toBe(true)
+    expect(styleEffect(f, 2)?.shape3d?.top?.preset).toBe('circle')
   })
 
   test('没有 fmtScheme 时各列表为空', () => {

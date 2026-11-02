@@ -1,13 +1,13 @@
 /**
- * docx 分页与页面绘制。覆盖 `paginate.ts`（行可容纳的判据、相邻段间距、页首段前间距、段内分页符与分栏符、
+ * docx 分页与页面绘制。覆盖 `paginate.ts`（行可容纳的判据与 `lineNeed`、相邻段间距、页首段前间距、段内分页符与分栏符、
  * 孤行控制、段中不分页、与下段同页、分节类型、奇偶页空白页、分栏、表格的逐行放置、行内切开、标题行重复、
  * 不能跨页的行与同页的行、页码与页面种类）、`number.ts`（页码格式）、`build.ts`（`partRef` 页眉页脚的沿用、
- * `requiredFonts`、独占一行的嵌入式图片的横向位置、未绘制图片的计数）、`../render/paint.ts`（逐字取整定位、
- * 点阵模式、`pageImages`）与 `../render/fonts.ts`（字形登记）。
+ * `requiredFonts`、独占一行的嵌入式图片的横向位置、未绘制图片的计数、制表位前导符）、`../layout.ts`（对齐网格的多倍行距各行的
+ * 文字底边）、`../render/paint.ts`（字形按组取整定位、点阵模式、`pageImages`、页面背景的平铺单元）与 `../render/fonts.ts`（字形登记）。
  *
  * 期望值取自 WPS 12.1 只读打开构造文档后逐段取得的所在页与垂直位置（`Range.Information(3)`、`Information(6)`）。
  * 文档由 XML 解析得到；分页用例的排版结果按给定行高构造，不读取字体。分页属性写在 XML 中，或由 `tweak` 改写模型字段。
- * 嵌入式图片的用例读取本机 Windows 字体目录中的宋体：其他平台跳过。
+ * 嵌入式图片与前导符的用例读取本机 Windows 字体目录中的宋体与 Times New Roman：其他平台跳过。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -29,7 +29,7 @@ import { pageImages, paintPage } from '../render/paint.ts'
 import type { CellBox, RowBox, TableLayout } from '../table/layout.ts'
 import { buildDocx, p, r } from '../test-helper.ts'
 import { layoutPages, partRef, requiredFonts } from './build.ts'
-import type { Page } from './model.ts'
+import type { Page, PageParagraph } from './model.ts'
 import { pageNumberText } from './number.ts'
 import {
   type PageFlow,
@@ -88,9 +88,11 @@ function line(start: number, end: number, top: number, height: number): TextLine
     baseline: top + height * 0.8,
     left: 0,
     width: 0,
+    leaders: [],
     origin: 0,
     limit: 0,
     fragments: [],
+    objects: [],
     forcedBreak: false,
   }
 }
@@ -120,10 +122,14 @@ function layout(
       width: 400,
       spaceBefore: before,
       spaceAfter: after,
+      borderTop: 0,
+      borderBottom: 0,
       text,
       runs: [],
       objects: new Map(objects[blocks[i]!] === undefined ? [] : [[0, objects[blocks[i]!]!]]),
-      imageLines: [],
+      gridBottoms: new Map(),
+      images: [],
+      formulas: [],
     }
   })
   return { paragraphs, missingFonts: [] }
@@ -160,6 +166,9 @@ function tableOf(rows: readonly RowSpec[]): TableLayout {
     return {
       height: r.height,
       border: 0,
+      pageBorder: 0,
+      pageBottomBorder: 0,
+      minimum: 0,
       rule: 'auto',
       header: r.header ?? false,
       cantSplit: r.cantSplit ?? false,
@@ -168,7 +177,7 @@ function tableOf(rows: readonly RowSpec[]): TableLayout {
     }
   })
   return {
-    table: {} as TableLayout['table'],
+    table: { float: null } as TableLayout['table'],
     x: 0,
     width: 100,
     columns: [0, 100],
@@ -177,6 +186,8 @@ function tableOf(rows: readonly RowSpec[]): TableLayout {
     height: boxes.reduce((a, r) => a + r.height, 0),
     horizontal: [],
     vertical: [],
+    pageTop: [],
+    pageBottom: [],
   }
 }
 
@@ -541,10 +552,28 @@ describe('paginate：表格', () => {
     const [first, second] = parts(paginate(d, layout([[20], [20]], [], [0, 2]), options({ 1: t })))
     // 72+20 起可容纳 33 行（660 磅）；下页显示其余 7 行。
     expect(first!.it.segments).toEqual([
-      { row: 0, top: 92, height: 660, from: [0], to: [660], repeat: false },
+      {
+        row: 0,
+        top: 92,
+        height: 660,
+        from: [0],
+        to: [660],
+        repeat: false,
+        pageTop: false,
+        border: 0,
+      },
     ])
     expect(second!.it.segments).toEqual([
-      { row: 0, top: 72, height: 140, from: [660], to: [Number.POSITIVE_INFINITY], repeat: false },
+      {
+        row: 0,
+        top: 72,
+        height: 140,
+        from: [660],
+        to: [Number.POSITIVE_INFINITY],
+        repeat: false,
+        pageTop: true,
+        border: 0,
+      },
     ])
   })
 
@@ -644,7 +673,8 @@ describe('paintPage：逐字定位与点阵模式', () => {
       floats: [],
       background: null,
       borders: null,
-      hidden: 0,
+      graphicFonts: null,
+      hiddenMath: 0,
       body: [
         {
           kind: 'paragraph',
@@ -652,6 +682,8 @@ describe('paintPage：逐字定位与点阵模式', () => {
           firstLine: 0,
           box: null,
           images: [],
+          graphics: [],
+          formulas: [],
           lines: [
             {
               top: 0,
@@ -695,6 +727,8 @@ describe('paintPage：逐字定位与点阵模式', () => {
       }),
       pixelAdvance: () => null,
       bitmaps,
+      outlines: null,
+      math: null,
     }
   }
 
@@ -706,7 +740,7 @@ describe('paintPage：逐字定位与点阵模式', () => {
     syntheticItalic: false,
   }
 
-  test('轮廓字形：每字位于排版坐标换算为像素后四舍五入处，字号取整数像素', () => {
+  test('轮廓字形：字号取整数像素，片段第一个字位于排版坐标换算为像素后四舍五入处', () => {
     const { ctx, calls } = recorder()
     paintPage(
       ctx,
@@ -716,6 +750,59 @@ describe('paintPage：逐字定位与点阵模式', () => {
     )
     expect(calls().filter((c) => c.startsWith('text'))).toEqual(['text a 13 20', 'text b 20 20'])
     expect(ctx.font).toBe('14px "F"')
+  })
+
+  test('页面背景：tile 的平铺单元按图片文件记录的分辨率换算，frame 按图片的像素尺寸', () => {
+    // WPS（构造文档 w11bg）：200×100 像素、150 dpi 的 PNG 与 JPEG 背景，tile 时单元为 128×64 像素，frame 时为 200×100 像素。
+    const bitmap = { width: 200, height: 100 }
+    const cells = (tile: boolean) => {
+      const { ctx } = recorder()
+      const one: Page = { ...page({ text: '', advances: [] }), width: 300, height: 150 }
+      paintPage(
+        ctx,
+        { ...one, body: [], background: { color: null, image: 0, tile } },
+        { faces: [ref], draw: () => null },
+        {
+          images: [{ kind: 'bitmap', bitmap, resolution: { x: 150, y: 150 } }],
+          parts: ['media/bg.png'],
+          createCanvas: () => new RecordingCanvas(1, 1),
+        },
+        1 / 0.75,
+      )
+      return ctx.named('drawImage').map((c) => c.args.slice(5, 9).join(' '))
+    }
+    expect(cells(true).slice(0, 4)).toEqual([
+      '0 0 128 64',
+      '128 0 128 64',
+      '256 0 128 64',
+      '384 0 128 64',
+    ])
+    expect(cells(false).slice(0, 3)).toEqual(['0 0 200 100', '200 0 200 100', '0 100 200 100'])
+  })
+
+  test('字形按组取整：组的第一个字四舍五入到整像素，其余按相对第一个字的距离取整；空格之后与下一片段另起一组', () => {
+    // WPS 页面 EMF：f3d0519d 第 14 页按组取整与各字的像素位置不一致 42/1094，逐字四舍五入为 384/1094。
+    const { ctx, calls } = recorder()
+    const one = page({ text: 'abc d', x: 10.4, advances: [0.6, 0.6, 0.6, 0.6, 1.0875] })
+    const para = one.body[0]!
+    if (para.kind !== 'paragraph') throw new Error('不是段落')
+    const f = para.lines[0]!.fragments[0]!
+    const fragments = [f, { ...f, x: 13.8875, text: 'eg', advances: [0.6, 0.6] }]
+    const lines = [{ ...para.lines[0]!, fragments }]
+    paintPage(
+      ctx,
+      { ...one, body: [{ ...para, lines }] },
+      { faces: [ref], draw: () => face(null) },
+      NO_RESOURCES,
+    )
+    expect(calls().filter((c) => c.startsWith('text'))).toEqual([
+      'text a 14 20',
+      'text b 15 20',
+      'text c 16 20',
+      'text d 17 20',
+      'text e 19 20',
+      'text g 20 20',
+    ])
   })
 
   test('点阵模式：字形以着墨像素的横向线段填充，不调用 fillText', () => {
@@ -737,6 +824,36 @@ describe('paintPage：逐字定位与点阵模式', () => {
     )
     expect(calls().filter((c) => c.startsWith('text'))).toEqual([])
     expect(calls()).toContain('rect 13 19 2 1')
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('build：制表位前导符（本机字体）', () => {
+  const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
+
+  test('点前导符：以制表符字体的「.」填满，按其宽度取整数个并与制表位对齐的一端相接（WPS：目录行 132 个点，每个 4 像素，止于页码左端）', async () => {
+    const tabs = '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8306"/></w:tabs>'
+    const body = p(`${r('第1章 绪论')}<w:r><w:tab/></w:r>${r('1')}`, tabs)
+    const result = await parseDocx(buildDocx({ body: body + SECT(), settings: COMPAT14 }))
+    if (!result.ok) throw new Error('解析失败')
+    const faces = [
+      loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0),
+      loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'times.ttf'))), 'Times New Roman'),
+    ]
+    const page = layoutPages(result.value, new DocxFonts(faces, '宋体')).pages.pages[0]!
+    const item = page.body[0]!
+    if (item.kind !== 'paragraph') throw new Error('不是段落')
+    const fragments = item.lines[0]!.fragments
+    const leader = fragments.find((f) => f.text.startsWith('.'))!
+    const words = fragments.filter((f) => f !== leader)
+    const number = words.at(-1)!
+    const dot = leader.advances[0]!
+    expect(dot).toBeGreaterThan(0)
+    expect(new Set(leader.text)).toEqual(new Set(['.']))
+    expect(leader.advances.every((a) => a === dot)).toBe(true)
+    expect(leader.x + leader.text.length * dot).toBeCloseTo(number.x, 6)
+    const last = words.at(-2)!
+    const start = last.x + last.advances.reduce((a, v) => a + v, 0)
+    expect(leader.text.length).toBe(Math.floor((number.x - start) / dot))
   })
 })
 
@@ -783,7 +900,7 @@ describe.skipIf(process.platform !== 'win32')('build：独占一行的嵌入式�
     })
   })
 
-  test('与文字同行的图片计入 Page.hidden，图表等没有可绘制内容的对象只在解析时计数；pageImages 列出该页绘制的图片', async () => {
+  test('与文字同行的图片位于其前文字的右端、底边在基线，图表等没有可绘制内容的对象只在解析时计数；pageImages 列出该页绘制的图片', async () => {
     const chart =
       '<w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="635000"/><a:graphic>' +
       '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"/>' +
@@ -808,10 +925,47 @@ describe.skipIf(process.platform !== 'win32')('build：独占一行的嵌入式�
     const { pages } = layoutPages(result.value, new DocxFonts([simsun], '宋体'))
     const page = pages.pages[0]!
     expect(pages.pages).toHaveLength(1)
-    expect(page.hidden).toBe(1)
+    const item = page.body[0] as PageParagraph
+    const text = item.lines[0]!.fragments[0]!
+    const im = item.images[0]!
+    expect(im.x).toBeCloseTo(text.x + text.advances.reduce((a, b) => a + b, 0), 6)
+    expect(im.y + im.height).toBeCloseTo(text.baseline, 6)
     const parts = pages.images.map((im) => im.part)
     expect(parts).toEqual(['/word/media/image2.png', '/word/media/image1.png'])
-    expect(pageImages(page, parts)).toEqual([1])
+    expect(pageImages(page, parts)).toEqual([0, 1])
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('paginate：对齐网格的多倍行距（本机字体）', () => {
+  const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
+  const COMPAT15 = COMPAT14.replace('w:val="14"', 'w:val="15"')
+
+  test('按文字底边判定能否容纳：文字在 23.4 磅的网格行内上下居中（WPS：w6-grid24，剩余 19.5 磅留在本页、19 磅移到下一页）', async () => {
+    // 占位段落为固定行距：测试段落第二行行顶距正文区底边 rest 磅。
+    const body = [19.5, 19]
+      .map(
+        (rest, i) =>
+          (i > 0
+            ? p('<w:r><w:br w:type="page"/></w:r>', '<w:spacing w:line="280" w:lineRule="exact"/>')
+            : '') +
+          p(
+            r('占位'),
+            `<w:spacing w:line="${Math.round((BOTTOM - 72 - 23.4 - rest) * 20)}" w:lineRule="exact"/>`,
+          ) +
+          p(
+            `${r('第一行', '<w:sz w:val="24"/>')}<w:r><w:br/></w:r>${r('第二行', '<w:sz w:val="24"/>')}`,
+            '<w:widowControl w:val="0"/><w:spacing w:line="360" w:lineRule="auto"/>',
+          ),
+      )
+      .join('')
+    const d = await doc(body + SECT('<w:docGrid w:type="lines" w:linePitch="312"/>'), COMPAT15)
+    const simsun = loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)
+    const pages = layoutPages(d, new DocxFonts([simsun], '宋体')).pages.pages
+    const lineCounts = pages.map((pg) =>
+      pg.body.map((it) => (it.kind === 'paragraph' ? it.lines.length : 0)),
+    )
+    // 第 2、4 页各为上一例的分页符段落与第二行（WPS 两例共 4 页）。
+    expect(lineCounts).toEqual([[1, 2], [1], [1, 1], [1]])
   })
 })
 
@@ -834,6 +988,8 @@ describe('DocxFonts：登记字形', () => {
     }),
     pixelAdvance: () => null,
     bitmaps: null,
+    outlines: null,
+    math: null,
   }
 
   test('请求粗体而没有粗体字形时返回已按仿粗体换算的字形，登记为合成粗体；缺少的字体返回 null', () => {

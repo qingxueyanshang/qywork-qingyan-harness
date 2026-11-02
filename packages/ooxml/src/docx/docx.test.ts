@@ -2,7 +2,8 @@
  * docx 解析与逐段排版。覆盖 `load.ts`（部件定位与失败分类、无法解码的图片格式计数）、`parse/`（样式、编号、设置、字体表、节与正文）、
  * `resolve/`（样式继承与切换属性、编号计数与格式、主题字体）与 `layout.ts`（转换为 `layoutParagraph` 的输入，
  * 含字符间距、上下标、基线提升、字距调整、东亚语言、压缩标点与单双字节宽度协调的传递），
- * 以及 `../text/layout.ts` 中为编号字段补充的规则（编号对齐、编号后缀制表符、编号与正文之间的中西文间距、缺字回退）。
+ * 以及 `../text/layout.ts` 中为编号字段补充的规则（编号对齐、编号后缀制表符、编号与正文之间的中西文间距、缺字回退）、
+ * `table/layout.ts` 的 `layoutStack`（文本框中的段落不悬挂行尾标点）。
  *
  * 期望值取自 WPS 12.1 只读打开同样内容的文档后取得的结果（`Paragraph.Format`、`Range.Font`、`ListFormat.ListString`
  * 与逐字的 `Information`），不由本模块计算；少数按 ISO/IEC 29500 规定的项在用例名中注明。
@@ -13,6 +14,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readFaces, readMetrics, readVerticalMetrics } from '../font/index.ts'
+import { MATH_SETTINGS_DEFAULTS } from '../math/index.ts'
 import type { TextFace } from '../text/index.ts'
 import {
   type Block,
@@ -21,7 +23,9 @@ import {
   type Paragraph,
   parseDocx,
 } from './index.ts'
+import { ParagraphLayouter } from './layout.ts'
 import { formatNumber } from './resolve/number-format.ts'
+import { layoutStack, layoutTable } from './table/layout.ts'
 import { buildDocx, type DocxParts, numPr, p, r, singleLevel, style, theme } from './test-helper.ts'
 
 const DEFAULTS =
@@ -222,6 +226,37 @@ describe('主题字体', () => {
     const ja = await fontsOf('<w:themeFontLang w:val="en-US" w:eastAsia="ja-JP"/>')
     expect(ja.map((f) => f.eastAsia)).toEqual(['MS Mincho', 'MS Gothic'])
     expect((await fontsOf(undefined)).map((f) => f.eastAsia)).toEqual(['楷体', '黑体'])
+  })
+
+  test('未指定的字体取主题的次要字体，没有主题时取缺省字体；rPrDefault 中有 rPr 而没有字号时为 10 磅，否则为 10.5 磅', async () => {
+    // WPS 实测（w7-nostyles、w7-nostyles-theme、w7-emptystyles-theme、w7-partial-theme、w7-sz-*）：有主题时东亚文字为
+    // 主题的 Hans 字体（行高 14.2 磅）；空的 rPrDefault/rPr 使字号为 10 磅，只有 docDefaults 或 rPrDefault 时为 10.5 磅。
+    const run = async (parts: Omit<DocxParts, 'body'>) =>
+      paragraphs(await parse({ ...parts, body: p(r('汉')) }))[0]!.runs[0]!.props
+    const none = await run({})
+    expect(none.fonts).toEqual({
+      ascii: 'Calibri',
+      hAnsi: 'Calibri',
+      eastAsia: '宋体',
+      cs: 'Times New Roman',
+    })
+    expect(none.size).toBe(10.5)
+    const themed = await run({ theme: theme(minor, major) })
+    expect(themed.fonts).toEqual({
+      ascii: 'Calibri',
+      hAnsi: 'Calibri',
+      eastAsia: '楷体',
+      cs: 'Times New Roman',
+    })
+    const partial = await run({
+      theme: theme(minor, major),
+      styles:
+        '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/></w:rPr></w:rPrDefault></w:docDefaults>',
+    })
+    expect(partial.fonts).toMatchObject({ ascii: 'Arial', eastAsia: '楷体' })
+    expect(partial.size).toBe(10)
+    const bare = await run({ styles: '<w:docDefaults><w:rPrDefault/></w:docDefaults>' })
+    expect(bare.size).toBe(10.5)
   })
 
   test('同一层同时给出主题字体与字体名时取主题字体', async () => {
@@ -606,17 +641,18 @@ describe('段落属性', () => {
     ])
   })
 
-  test('制表位按位置合并，clear 移除继承的同位置制表位', async () => {
+  test('制表位按位置合并，clear 移除继承的同位置制表位；点前导符为「.」，其余前导符计入 tabLeader', async () => {
     const doc = await parse({
       styles,
       body: p(
         r('a'),
-        `${ps('PTABS')}<w:tabs><w:tab w:val="clear" w:pos="1000"/><w:tab w:val="right" w:pos="2000" w:leader="dot"/><w:tab w:val="bar" w:pos="2500"/></w:tabs>`,
+        `${ps('PTABS')}<w:tabs><w:tab w:val="clear" w:pos="1000"/><w:tab w:val="right" w:pos="2000" w:leader="dot"/><w:tab w:val="bar" w:pos="2500"/><w:tab w:val="left" w:pos="4000" w:leader="hyphen"/></w:tabs>`,
       ),
     })
     expect(paragraphs(doc)[0]!.props.tabs).toEqual([
-      { position: 100, align: 'right' },
-      { position: 150, align: 'left' },
+      { position: 100, align: 'right', leader: '.' },
+      { position: 150, align: 'left', leader: null },
+      { position: 200, align: 'left', leader: null },
     ])
     expect(doc.unsupported).toMatchObject({ tabLeader: 1, barTab: 1 })
   })
@@ -753,9 +789,44 @@ describe('正文内容', () => {
       compatibilityMode: 0,
       evenAndOddHeaders: false,
       gridInTables: false,
+      math: MATH_SETTINGS_DEFAULTS,
     })
     expect(doc.chineseCharsetFonts).toEqual(['宋体', '新細明體'])
     expect(doc.unsupported).toEqual({})
+  })
+
+  test('目录域结果中的字段不取超链接字符样式，其他字符样式与直接格式照常；目录域之外照常取超链接样式', async () => {
+    // WPS：目录项（超链接样式、颜色 0563C1 与单下划线）显示为黑色无下划线；自定义字符样式的红色双下划线与直接给出的
+    // 绿色照常显示；页码域（PAGEREF）结果与目录域之外的超链接样式照常显示。
+    const styles =
+      DEFAULTS +
+      '<w:style w:type="character" w:styleId="af7"><w:name w:val="Hyperlink"/><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr></w:style>' +
+      '<w:style w:type="character" w:styleId="red"><w:name w:val="Red Char"/><w:rPr><w:color w:val="FF0000"/><w:u w:val="double"/></w:rPr></w:style>'
+    const run = (t: string, rPr: string) => `<w:r><w:rPr>${rPr}</w:rPr><w:t>${t}</w:t></w:r>`
+    const link = (inner: string) => `<w:hyperlink w:anchor="_Toc1">${inner}</w:hyperlink>`
+    const HYP = '<w:rStyle w:val="af7"/>'
+    const doc = await parse({
+      styles,
+      body:
+        p(
+          `${fld('begin')}${instr(' TOC \\o "1-3" \\h ')}${fld('separate')}${link(run('甲', HYP))}`,
+        ) +
+        p(link(run('乙', '<w:rStyle w:val="red"/>'))) +
+        p(link(run('丙', `${HYP}<w:color w:val="00B050"/>`))) +
+        p(fld('end')) +
+        p(
+          `${fld('begin')}${instr(' PAGEREF _Toc1 \\h ')}${fld('separate')}${run('丁', HYP)}${fld('end')}`,
+        ) +
+        p(link(run('戊', HYP))),
+    })
+    const props = paragraphs(doc).flatMap((x) => x.runs.map((rn) => rn.props))
+    expect(props.map((x) => [x.color, x.underline?.style ?? null])).toEqual([
+      [null, null],
+      ['#ff0000', 'double'],
+      ['#00b050', null],
+      ['#0563c1', 'single'],
+      ['#0563c1', 'single'],
+    ])
   })
 })
 
@@ -793,7 +864,6 @@ describe('未实现元素计数', () => {
       picture: 1,
       chart: 1,
       vml: 1,
-      math: 1,
       footnote: 1,
       charGrid: 1,
     })
@@ -820,6 +890,32 @@ describe('未实现元素计数', () => {
       emphasisMark: 1,
       frame: 1,
     })
+  })
+
+  test('形状、图片与组合中改变外观的三维设置计入 effect；正视且不旋转、没有棱台的 scene3d 不计', async () => {
+    const scene = (camera: string) =>
+      `<a:scene3d><a:camera prst="${camera}"/><a:lightRig rig="threePt" dir="t"/></a:scene3d>`
+    const drawing = (uri: string, inner: string) =>
+      `<w:r><w:drawing><wp:anchor><a:graphic><a:graphicData uri="${uri}">${inner}</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>`
+    const wsp = (spPr: string) =>
+      drawing(
+        'http://schemas.microsoft.com/office/word/2010/wordprocessingShape',
+        `<wps:wsp><wps:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>${spPr}</wps:spPr></wps:wsp>`,
+      )
+    const group = drawing(
+      'http://schemas.microsoft.com/office/word/2010/wordprocessingGroup',
+      `<wpg:wgp><wpg:grpSpPr>${scene('isometricLeftDown')}</wpg:grpSpPr></wpg:wgp>`,
+    )
+    const doc = await parse({
+      styles: DEFAULTS,
+      body: p(
+        wsp(scene('perspectiveFront')) +
+          wsp(scene('orthographicFront')) +
+          wsp(`${scene('orthographicFront')}<a:sp3d><a:bevelT/></a:sp3d>`) +
+          group,
+      ),
+    })
+    expect(doc.unsupported.effect).toBe(3)
   })
 })
 
@@ -998,18 +1094,24 @@ describe('分页与绘制所需的属性', () => {
     const [withImages, anchored] = paragraphs(doc)
     expect(withImages!.images).toEqual([
       {
-        offset: 1,
+        run: 1,
+        raise: 0,
         media: 0,
+        graphic: null,
         width: 100,
         height: 50,
         effect: { left: 0, top: 1, right: 0, bottom: 2 },
+        crop: { left: 0, top: 0, right: 0, bottom: 0 },
       },
       {
-        offset: 1,
+        run: 1,
+        raise: 0,
         media: -1,
+        graphic: null,
         width: 100,
         height: 50,
         effect: { left: 0, top: 1, right: 0, bottom: 2 },
+        crop: { left: 0, top: 0, right: 0, bottom: 0 },
       },
     ])
     expect(doc.media).toHaveLength(1)
@@ -1023,7 +1125,7 @@ describe('分页与绘制所需的属性', () => {
     expect(doc.parts.rIdHdr!.map((b) => (b.kind === 'paragraph' ? text(b) : ''))).toEqual(['页眉'])
   })
 
-  test('浏览器无法解码的图片格式：正文中每次引用计一次 imageFormat，图片仍登记为部件；页眉页脚中的引用不计数', async () => {
+  test('浏览器无法解码的图片格式：每次引用计一次 imageFormat，图片仍登记为部件；页眉部件中的引用按部件计一次', async () => {
     const emf = {
       id: 'rIdEmf',
       type: 'image',
@@ -1043,6 +1145,14 @@ describe('分页与绘制所需的属性', () => {
           content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr ${W}><w:p>${picture('rIdEmf')}</w:p></w:hdr>`,
           contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml',
         },
+        {
+          id: 'rIdHdrRels',
+          type: 'x',
+          name: '_rels/header1.xml.rels',
+          content:
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            '<Relationship Id="rIdEmf" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.emf"/></Relationships>',
+        },
       ],
       body:
         p(picture('rIdEmf')) +
@@ -1050,11 +1160,47 @@ describe('分页与绘制所需的属性', () => {
         p(picture('rIdPng')) +
         '<w:sectPr><w:headerReference w:type="default" r:id="rIdHdr"/></w:sectPr>',
     })
-    expect(doc.unsupported).toEqual({ imageFormat: 2 })
+    expect(doc.unsupported).toEqual({ imageFormat: 3 })
     expect(doc.media.map((m) => m.part)).toEqual([
       '/word/media/image1.emf',
       '/word/media/image2.png',
     ])
+  })
+
+  test('w:object：其中 VML 形状的宽高为嵌入式对象框，图片为 v:imagedata；没有形状时计为 ole（语料 0824436d 封面）', async () => {
+    // WPS（语料 0824436d）：封面第一段为 345×66.1 磅的 OLE 对象，其后各段的位置与把它当作同样大小的嵌入式图片时一致。
+    const wmf = {
+      id: 'rIdWmf',
+      type: 'image',
+      name: 'media/image1.wmf',
+      content: 'WMF',
+      contentType: 'image/x-wmf',
+    }
+    const shape =
+      '<v:shape id="s1" style="height:66.1pt;width:345pt;" filled="f" stroked="f"><v:imagedata r:id="rIdWmf"/></v:shape>'
+    const doc = await parse({
+      styles: DEFAULTS,
+      extra: [wmf],
+      body:
+        p(`<w:r><w:object>${shape}</w:object></w:r>`) +
+        p('<w:r><w:object><o:OLEObject Type="Embed" ProgID="Word.Picture.8"/></w:object></w:r>'),
+    })
+    const [first, second] = doc.body
+    if (first?.kind !== 'paragraph' || second?.kind !== 'paragraph') throw new Error('不是段落')
+    expect(first.images).toEqual([
+      {
+        run: 0,
+        raise: 0,
+        media: 0,
+        graphic: null,
+        width: 345,
+        height: 66.1,
+        effect: { left: 0, top: 0, right: 0, bottom: 0 },
+        crop: { left: 0, top: 0, right: 0, bottom: 0 },
+      },
+    ])
+    expect(second.images).toEqual([])
+    expect(doc.unsupported).toEqual({ imageFormat: 1, ole: 1 })
   })
 })
 
@@ -1079,6 +1225,8 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
   const source = {
     face: (name: string) =>
       FILES[name] === undefined ? null : { face: load(FILES[name]!), bold: false },
+    math: () => null,
+    outlines: () => null,
     get fallback() {
       return load('simsun.ttc')
     },
@@ -1259,5 +1407,83 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     )
     expect(bold).toBeCloseTo(12 + 12 / 256, 9)
     expect(plain).toBe(12)
+  })
+
+  test('表格单元格中的段落不悬挂行尾标点：同样宽度与文字的正文段落悬挂逗号，单元格中逗号连同前一字移到下一行', async () => {
+    // WPS：兼容模式 14 与 15 相同，单元格中显式设置 overflowPunct 也不悬挂。
+    const defaults =
+      '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" ' +
+      'w:eastAsia="宋体" w:cs="Times New Roman"/><w:sz w:val="24"/><w:szCs w:val="24"/>' +
+      '<w:lang w:val="en-US" w:eastAsia="zh-CN"/></w:rPr></w:rPrDefault></w:docDefaults>' +
+      style('paragraph', 'Normal', '<w:pPr><w:jc w:val="both"/></w:pPr>', ' w:default="1"')
+    const H = '汉'
+    const words = `${H.repeat(34)}，${H.repeat(20)}`
+    // 正文版心 415.3 磅减右缩进 6.9 磅，与单元格的文字区同为 408.4 磅（8168 缇，左右边距 0）。
+    const cell =
+      '<w:tbl><w:tblPr><w:tblW w:w="8168" w:type="dxa"/><w:tblLayout w:type="fixed"/>' +
+      '<w:tblCellMar><w:left w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr>' +
+      '<w:tblGrid><w:gridCol w:w="8168"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="8168" w:type="dxa"/></w:tcPr>' +
+      `${p(r(words), '<w:overflowPunct w:val="1"/>')}</w:tc></w:tr></w:tbl>`
+    for (const mode of [14, 15]) {
+      const doc = await parse({
+        styles: defaults,
+        settings: `<w:compat><w:compatSetting w:name="compatibilityMode" w:val="${mode}"/></w:compat>`,
+        body: p(r(words), '<w:ind w:right="138"/>') + cell + p(r('后')) + SECT_LINES,
+      })
+      const body = layoutDocument(doc, source).paragraphs[0]!.text.lines[0]!
+      const t = doc.body[1]!
+      if (t.kind !== 'table') throw new Error('不是表格')
+      const layouter = new ParagraphLayouter(doc, source)
+      const laid = layoutTable(t, doc.sections[0]!.columns[0]!.width, {
+        layouter,
+        compatibilityMode: mode,
+      })
+      const item = laid.rows[0]!.cells[0]!.content.items[0]!
+      if (item.kind !== 'paragraph') throw new Error('不是段落')
+      const inCell = item.layout.text.lines[0]!
+      expect([mode, body.end - body.start]).toEqual([mode, 35])
+      expect([mode, inCell.end - inCell.start]).toEqual([mode, 33])
+    }
+  })
+
+  test('文本框中的段落同样不悬挂行尾标点：越界的逗号连同前一字移到下一行', async () => {
+    // WPS（构造文档 w11d，兼容模式 14，文本框宽 200 磅、内缩 0）：同样宽度的正文段落悬挂越界的「、，。）」，
+    // 文本框中这些标点连同前一字移到下一行；doNotUseEastAsianBreakRules 与 doNotWrapTextWithPunct 不改变结果。
+    const defaults =
+      '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" ' +
+      'w:eastAsia="宋体" w:cs="Times New Roman"/><w:sz w:val="24"/><w:szCs w:val="24"/>' +
+      '<w:lang w:val="en-US" w:eastAsia="zh-CN"/></w:rPr></w:rPrDefault></w:docDefaults>' +
+      style('paragraph', 'Normal', '<w:pPr><w:jc w:val="both"/></w:pPr>', ' w:default="1"')
+    const words = `${'汉'.repeat(34)}，${'汉'.repeat(20)}`
+    const emu = 408.4 * 12700
+    const box =
+      '<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="1" ' +
+      'behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>' +
+      '<wp:positionH relativeFrom="margin"><wp:posOffset>0</wp:posOffset></wp:positionH>' +
+      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>' +
+      `<wp:extent cx="${emu}" cy="1828800"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>` +
+      '<wp:docPr id="1" name="文本框"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">' +
+      `<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${emu}" cy="1828800"/></a:xfrm>` +
+      '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></wps:spPr>' +
+      `<wps:txbx><w:txbxContent>${p(r(words))}</w:txbxContent></wps:txbx>` +
+      '<wps:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0"><a:noAutofit/></wps:bodyPr>' +
+      '</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>'
+    const doc = await parse({
+      styles: defaults,
+      settings: '<w:compat><w:compatSetting w:name="compatibilityMode" w:val="14"/></w:compat>',
+      body: p(r(words), '<w:ind w:right="138"/>') + p(box + r('段')) + SECT_LINES,
+    })
+    const anchored = doc.body[1]
+    if (anchored?.kind !== 'paragraph') throw new Error('不是段落')
+    const shape = anchored.anchors[0]!.drawing
+    if (shape?.kind !== 'shape' || shape.text === null) throw new Error('不是文本框')
+    const layouter = new ParagraphLayouter(doc, source)
+    const inBox = layoutStack(shape.text.content, 408.4, { layouter, compatibilityMode: 14 })
+      .items[0]!
+    if (inBox.kind !== 'paragraph') throw new Error('不是段落')
+    const body = layoutDocument(doc, source).paragraphs[0]!.text.lines[0]!
+    const line = inBox.layout.text.lines[0]!
+    expect(body.end - body.start).toBe(35)
+    expect(line.end - line.start).toBe(33)
   })
 })

@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`ctf.ts`（简单字形的三元组与包围盒、组合字形、入栈数据的 HOP 码与 255SHORT、重新生成的入栈指令、
- * `loca` 长格式与 `head`、`maxp` 的修正、`cvt `、`hdmx` 的还原、CFF 字体各表原样保留）、
+ * `loca` 长格式与 `head`、`maxp` 的修正、`cvt `、`hdmx` 的还原、长度为 0 的表与 `cmap` 语言字段、CFF 字体各表原样保留）、
  * `eot.ts`（文件头、家族名、异或与未压缩的字体数据）。
  *
  * LZCOMP（`lzcomp.ts`）由真实文件核对：语料中 2 份 pptx 的 24 个嵌入字体全部还原，字形数与 `name` 表一致，
@@ -155,6 +155,47 @@ describe('CTF 还原', () => {
     expect([cv.getInt16(0), cv.getInt16(2), cv.getInt16(4)]).toEqual([10, 260, 255])
     const d = tableBytes(font, face, 'hdmx')
     expect(Array.from(d.subarray(8, 13))).toEqual([10, 6, 6, 5, 4])
+  })
+
+  /**
+   * 原始失败形状：浏览器以「Invalid font data」拒绝还原出的字体。生物科技模板的腾讯体含长度为 0 的表，
+   * 青学研上的等线子集在 `cmap` 格式 12 子表的语言字段写入非 0 的值，字体校验因此拒绝整个字体。
+   */
+  test('长度为 0 的表不写出；cmap 格式 12 子表的语言字段置 0，其他平台的子表不变', () => {
+    const format12 = new Bytes()
+      .u16(12, 0)
+      .u32(28)
+      .u32(0x5abbccdd)
+      .u32(1)
+      .u32(0x4e00)
+      .u32(0x4e00)
+      .u32(1).bytes
+    const mac = new Bytes().u16(0, 262, 7).u8(...new Array(256).fill(0)).bytes
+    const cmap = new Bytes()
+      .u16(0, 2)
+      .u16(3, 10)
+      .u32(20)
+      .u16(1, 0)
+      .u32(20 + format12.length)
+      .u8(...format12)
+      .u8(...mac).bytes
+    const out = ctfToTrueType(
+      sfnt(0x00010000, [
+        ['head', head()],
+        ['maxp', new Bytes().u32(0x00005000).u16(1).bytes],
+        ['cmap', cmap],
+        ['cnrd', new Uint8Array()],
+      ]),
+      new Uint8Array(),
+      new Uint8Array(),
+    )
+    const face = readFaces(out)[0]!
+    expect(face.tables.has('cnrd')).toBe(false)
+    const c = tableBytes(out, face, 'cmap')
+    const v = new DataView(c.buffer, c.byteOffset, c.byteLength)
+    expect(v.getUint32(20 + 8)).toBe(0)
+    expect(v.getUint32(20 + 12)).toBe(1)
+    expect(v.getUint16(20 + format12.length + 4)).toBe(7)
   })
 
   test('CFF 轮廓的字体没有 glyf，各表原样保留', () => {

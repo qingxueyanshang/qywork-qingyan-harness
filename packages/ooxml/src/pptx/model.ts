@@ -14,21 +14,26 @@
  */
 
 import type { Chart } from '../drawingml/chart/model.ts'
+import type { Color } from '../drawingml/color.ts'
+import type { Diagram } from '../drawingml/diagram/model.ts'
 import type { Effect, Fill, Line, ShapeFill } from '../drawingml/fill.ts'
 import type { Geometry } from '../drawingml/geometry/model.ts'
 import type { Frame } from '../drawingml/shape/model.ts'
 import type { TextBody } from '../drawingml/text/model.ts'
+import type { ThreeD } from '../drawingml/three/model.ts'
 
 /**
- * - `chart`、`smartArt`、`ole`：`graphicFrame` 中未绘制的图表（扩展图表与不支持的图表类型）、SmartArt 与 OLE 对象；
+ * - `chart`、`smartArt`、`ole`：`graphicFrame` 中未绘制的图表（扩展图表与不支持的图表类型）、SmartArt（布局或内容含
+ *   未实现的构造）与 OLE 对象；
  *   `graphic` 为其他种类的 `graphicFrame`。
- * - `media`：带音视频的图片（显示其封面图片）。`ink`：不带替代图片的墨迹（`contentPart`）。
+ * - `media`：带音视频的图片（显示其封面图片）。`ink`：部件缺失或没有笔画的墨迹（`contentPart`）。
  * - `animation`：有动画的形状数；`transition`：带切换效果的幻灯片。
- * - `effect3d`：改变外观的三维设置；`textWarp`：艺术字变形；`imageEffect`：图片效果（不含透明度）；
+ * - `effect3d`：绘制端未实现的三维设置（挤出、轮廓、棱台、斜二测与 `legacy*` 相机、未实测的光照方案，见
+ *   `../drawingml/three/camera.ts`；相机旋转、透视与光照照常绘制）；`textWarp`：艺术字变形；`imageEffect`：图片效果（不含透明度）；
  *   `effect`：`fillOverlay`、`effectDag` 等未实现的效果。
  * - `tableStyle`：表格引用的样式不在表格样式部件中，也不在收录的内置样式中，按无样式处理。
  * - 以下由求值阶段按绘制端的能力计数：`effect` 另含外部阴影之外的已识别效果（内阴影、发光、柔化边缘、映像、
- *   模糊、预设阴影；文字中的这类效果每个文本框计一次）；`imageFormat`：浏览器无法解码的图片（EMF、WMF、TIFF 等）；
+ *   模糊、预设阴影；文字中的这类效果每个文本框计一次）；`imageFormat`：无法绘制的图片（TIFF 等浏览器无法解码的位图、含未实现内容的图元文件）；
  *   `verticalText`：`eaVert`、`wordArtVert` 等竖排文字（`vert`、`vert270` 按旋转绘制，不计）；
  *   `pictureBullet`：图片项目符号。
  */
@@ -96,6 +101,8 @@ export interface AutoShape extends ShapeBase {
   readonly fill: ShapeFill
   readonly line: Line | null
   readonly effects: readonly Effect[]
+  /** 相机旋转、透视与光照；没有 `scene3d` 时为 `null`。 */
+  readonly threeD: ThreeD | null
   readonly textBox: boolean
   readonly text: TextBody | null
 }
@@ -108,6 +115,7 @@ export interface Picture extends ShapeBase {
   readonly fill: ShapeFill
   readonly line: Line | null
   readonly effects: readonly Effect[]
+  readonly threeD: ThreeD | null
 }
 
 export interface ConnectionRef {
@@ -201,7 +209,40 @@ export interface ChartFrame extends ShapeBase {
   readonly chart: Chart
 }
 
-export type Shape = AutoShape | Picture | Connector | Group | Table | Graphic | ChartFrame
+/** 已求值的 SmartArt；布局或内容含未实现的构造时为 `Graphic`。 */
+export interface DiagramFrame extends ShapeBase {
+  readonly kind: 'diagram'
+  readonly diagram: Diagram
+}
+
+/** 墨迹笔画的一点：相对形状框左上角的坐标与该点的笔宽（EMU）。 */
+export interface InkVertex {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+}
+
+export interface InkStroke {
+  readonly points: readonly InkVertex[]
+  readonly color: Color
+}
+
+/** 墨迹（`contentPart` 引用的 InkML）；部件缺失或没有笔画时 `strokes` 为空并计入 `ink`。 */
+export interface Ink extends ShapeBase {
+  readonly kind: 'ink'
+  readonly strokes: readonly InkStroke[]
+}
+
+export type Shape =
+  | AutoShape
+  | Picture
+  | Connector
+  | Group
+  | Table
+  | Graphic
+  | ChartFrame
+  | DiagramFrame
+  | Ink
 
 export interface Slide {
   readonly part: string
@@ -239,4 +280,6 @@ export interface Presentation {
   readonly slides: readonly Slide[]
   /** 各幻灯片 `unsupported` 之和。 */
   readonly unsupported: UnsupportedCounts
+  /** 可以绘制的图元文件中文字的字体名（去重）。 */
+  readonly metafileFonts: readonly string[]
 }

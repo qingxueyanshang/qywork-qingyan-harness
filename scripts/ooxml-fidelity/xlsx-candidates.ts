@@ -9,11 +9,14 @@
  *
  * 输出：`<out>/<文档标识>/page-0001.png` 起，文件名与真值清单一致。缺省输出目录为
  * `.tmp/ooxml-fidelity/candidates/ooxml`。语料与真值见 `fidelity.py` 的文件头。
+ * 单元格文字按真值清单记录的采集时系统字体平滑设置（`font_smoothing`）绘制，与界面按主机设置绘制的规则相同
+ * （`fontSmoothing`）；清单没有该记录时停止。
  */
 
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { extractFace } from '../../packages/ooxml/src/font/index.ts'
+import { fontSmoothing, type SmoothingParameters } from '../../packages/server/src/api/fonts.ts'
 import { facesFor, type IndexedFace, indexFonts } from './font-index.ts'
 
 const ROOT = join(import.meta.dir, '..', '..')
@@ -30,6 +33,8 @@ interface TruthPage {
   readonly file: string
   readonly sheet: string
   readonly range: string
+  readonly width: number
+  readonly height: number
 }
 
 function parseArgs(argv: string[]): { only: string[]; out: string } {
@@ -60,11 +65,23 @@ const docs = corpus.documents.filter(
 )
 const jobs = docs.map((d) => {
   const manifest = JSON.parse(readFileSync(join(OUT, 'truth', d.id, 'manifest.json'), 'utf8')) as {
+    font_smoothing?: SmoothingParameters
     pages: TruthPage[]
+  }
+  if (!manifest.font_smoothing) {
+    console.error(`真值清单没有记录字体平滑设置：${d.id}`)
+    process.exit(1)
   }
   return {
     id: d.id,
-    pages: manifest.pages.map(({ file, sheet, range }) => ({ file, sheet, range })),
+    clearType: fontSmoothing(manifest.font_smoothing).clearType,
+    pages: manifest.pages.map(({ file, sheet, range, width, height }) => ({
+      file,
+      sheet,
+      range,
+      width,
+      height,
+    })),
   }
 })
 

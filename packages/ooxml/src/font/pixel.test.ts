@@ -1,7 +1,8 @@
 /**
  * 按像素显示的字体数据。覆盖 `bitmap.ts`（EBLC/EBDT 读取、点阵模式的判定、粗体模拟）、
  * `pixel-metrics.ts`（按 ppem 的纵向度量，含 `VDMX` 选用）、`pixel-advance.ts`（整数前进宽度：`hdmx`、
- * 线性缩放字体的四舍五入与等宽字体的全角宽度），以及 `vertical.ts` 的 `codePageRange1`。
+ * 线性缩放字体的四舍五入与等宽字体的全角宽度、`gasp` 不要求网格对齐的字号、单色提示后的幻影点），以及 `vertical.ts` 的
+ * `codePageRange1`。
  *
  * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
  * 期望值不由本模块计算：点阵取自独立实现对同一文件的读取；纵向度量、前进宽度、点阵模式与粗体结果取自 GDI
@@ -205,18 +206,23 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
   describe('点阵字形', () => {
     test.each(GLYPHS)('$name', (c) => {
       const bytes = load(c.file)
-      const g = readEmbeddedBitmaps(bytes, readFaces(bytes)[c.face]!)!.glyph(c.ppem, c.glyph)!
+      const g = readEmbeddedBitmaps(bytes, readFaces(bytes)[c.face]!)!.glyph(
+        c.ppem,
+        c.glyph,
+        false,
+      )!
       expect([g.width, g.height, g.bearingX, g.bearingY, g.advance]).toEqual(c.metrics)
       expect(rows(g)).toEqual(c.rows)
     })
 
-    test('strike 中没有的字形与没有 strike 的 ppem 返回 null', () => {
+    test('没有 strike 的 ppem 返回 null；点阵模式下 strike 中没有的字形取提示后的轮廓', () => {
       const bytes = load('simsun.ttc')
       const bitmaps = readEmbeddedBitmaps(bytes, readFaces(bytes)[0]!)!
+      expect(bitmaps.glyph(18, 1117, false)).toBeNull()
+      expect(bitmaps.glyph(12, 1117, false)).not.toBeNull()
       // 宋体的 ASCII 字形没有点阵。
-      expect(bitmaps.glyph(12, 36)).toBeNull()
-      expect(bitmaps.glyph(18, 1117)).toBeNull()
-      expect(bitmaps.glyph(12, 1117)).not.toBeNull()
+      expect(bitmaps.glyph(12, 36, false)?.width).toBeGreaterThan(0)
+      expect(bitmaps.glyph(12, 0, false)).toBeNull()
     })
 
     test('没有 EBLC 的字体返回 null', () => {
@@ -236,7 +242,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
     })
   })
 
-  describe('点阵模式：ClearType 下按代码页、strike 与斜体判定', () => {
+  describe('点阵模式：ClearType 下按代码页与 strike 判定', () => {
     const cases: [string, number, number[], number[]][] = [
       // [文件, 字体序号, strike 的 ppem, ClearType 下使用点阵的 ppem]
       ['simsun.ttc', 0, [12, 13, 14, 15, 16, 17], [12, 13, 14, 15, 16, 17]],
@@ -250,17 +256,14 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       const bytes = load(file)
       const bitmaps = readEmbeddedBitmaps(bytes, readFaces(bytes)[index]!)!
       expect(bitmaps.sizes).toEqual(sizes)
-      const used = Array.from({ length: 40 }, (_, p) => p).filter((p) =>
-        bitmaps.screenMode(p, false),
-      )
+      const used = Array.from({ length: 40 }, (_, p) => p).filter((p) => bitmaps.screenMode(p))
       expect(used).toEqual(screen)
-      expect(sizes.some((p) => bitmaps.screenMode(p, true))).toBe(false)
     })
   })
 
   test('粗体：与 GDI 对宋体 12 像素「中」的粗体绘制结果一致，前进宽度加 1', () => {
     const bytes = load('simsun.ttc')
-    const g = readEmbeddedBitmaps(bytes, readFaces(bytes)[0]!)!.glyph(12, 1117)!
+    const g = readEmbeddedBitmaps(bytes, readFaces(bytes)[0]!)!.glyph(12, 1117, false)!
     const bold = emboldenBitmap(g)
     expect([bold.width, bold.height, bold.bearingX, bold.bearingY, bold.advance]).toEqual([
       10, 12, 1, 10, 13,
@@ -308,16 +311,26 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
 })
 
 describe.skipIf(process.platform !== 'win32')('整数前进宽度', () => {
-  const cases: [string, string, number, number, string, (number | null)[]][] = [
-    // [说明, 文件, 字体序号, ppem, 字符, GDI 宽度（null 为无法确定）]
+  const cases: [string, string, number, number, string, number[]][] = [
+    // [说明, 文件, 字体序号, ppem, 字符, GDI ClearType 宽度]
     ['Arial 15：取 hdmx', 'arial.ttf', 0, 15, 'AWi1', [9, 15, 3, 8]],
-    ['Arial 9：hdmx 中没有该 ppem，指令可能改变宽度', 'arial.ttf', 0, 9, 'AW', [null, null]],
+    // WPS 排版同为 5 像素：企模工具-4「规则」第 4 行按线性宽度 5.19 少排一个字。
+    ['Arial 9：hdmx 中没有该 ppem，取单色提示后的幻影点', 'arial.ttf', 0, 9, 'AW05', [6, 9, 5, 5]],
+    ['Arial 7：gasp 不要求 ClearType 网格对齐，线性宽度四舍五入', 'arial.ttf', 0, 7, '!k', [2, 4]],
+    [
+      'Arial Bold 7：版本 0 的 gasp 不影响 ClearType，取提示结果',
+      'arialbd.ttf',
+      0,
+      7,
+      '!%',
+      [1, 8],
+    ],
     ['Tahoma 9：取 hdmx', 'tahoma.ttf', 0, 9, 'Ai', [7, 2]],
     ['宋体 15：线性宽度四舍五入', 'simsun.ttc', 0, 15, 'Ai中', [8, 8, 15]],
     ['黑体 13：等宽字体的全角取半角的 2 倍', 'simhei.ttf', 0, 13, 'A中', [7, 14]],
     ['黑体 12', 'simhei.ttf', 0, 12, 'A中', [6, 12]],
     ['Consolas 13：西文等宽字体按线性宽度四舍五入', 'consola.ttf', 0, 13, 'Ai', [7, 7]],
-    ['Calibri 15：没有 hdmx，指令可能改变宽度', 'calibri.ttf', 0, 15, 'A0', [null, null]],
+    ['Calibri 15：没有 hdmx，取单色提示后的幻影点', 'calibri.ttf', 0, 15, 'A0', [9, 7]],
   ]
   test.each(cases)('%s', (_, file, index, ppem, text, expected) => {
     const bytes = load(file)

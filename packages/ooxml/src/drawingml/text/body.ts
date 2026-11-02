@@ -1,19 +1,22 @@
 /**
  * 文本框排版与绘制：把已解决样式的段落转换为 `../../text/` 的输入，再按行与片段绘制。长度单位为磅。
  *
- * - 断行、对齐、行高全部由 `layoutParagraph` 完成；本模块只换算输入：
- *   - 行距 `spcPct` 为单倍行高的倍数（`proportional`），`spcPts` 为固定行高（`fixed`），与单倍行高之差都在文字上方
- *     （实测：对照 WPS 导出图，百分比行距 1.18 的 54 磅多行文字与 25 磅固定行距的 16、18 磅文字）；
- *     `normAutofit` 的 `lnSpcReduction` 从百分比行距中减去，`fontScale` 乘到字号上。
- *     `FaceCache.screen` 不为 `null` 时行高与基线另按 `screenBlock` 换算。
- *   - 段前段后的 `spcPts` 为磅值，`spcPct` 为该段首行（段后取末行）行高的倍数；首段不加段前间距。
+ * - 断行与对齐由 `layoutParagraph` 完成，行高与基线再按宿主的规则换算（`hostBlock`）；本模块换算输入：
+ *   - 行距 `spcPct` 为单倍行高的倍数（`proportional`），`spcPts` 为固定行高（`fixed`），与单倍行高之差按 `hostBlock`
+ *     分配在文字上下；`normAutofit` 的 `lnSpcReduction` 从百分比行距中减去，`fontScale` 乘到字号上。
+ *   - 段前段后的 `spcPts` 为磅值，`spcPct` 为该段首行（段后取末行）单倍行高（`singleLine`）的倍数，与行距无关；
+ *     首段不加段前间距。实测（WPS 演示导出图，等线、宋体、Arial 12–24 磅，行距 100% 与 150%）：段前与此一致；
+ *     段后为单倍行高的 1.03–1.12 倍（随字体不同，机制未查明）。
  *   - 制表位位置相对文本区域左边，换算为相对左缩进的行坐标；默认制表位从文本区域左边起排列。
  *   - 项目符号作为编号字段：悬挂缩进（`indent` 小于 0）时其后加制表符，正文从左缩进处开始。
  * - `wrap` 为假时不断行：按不限宽度排版后，各行在文本区域内按段落对齐方式整体平移。
  * - 字段 `slidenum` 显示 `TextSettings.slideNumber`（为 `null` 时与其余字段相同），其余字段显示文件中保存的文字。
  *   全部大写（`caps="all"`）按大写字母排版。字符间距（`spc`）乘以自动调整的字号缩放。
- * - 绘制：每个字逐个定位，与排版的步进一致；屏幕显示规则见 `drawGlyphs`。不是纯色的文字填充（渐变、图片、图案）以文本区域为填充范围，
- *   在图层中以文字为遮罩覆盖。文字的外部阴影与调用方传入的阴影一并按字形轮廓绘制。
+ * - 绘制：每个字逐个定位，与排版的步进一致；`FaceCache.glyphs` 不为 `null` 时按屏幕显示绘制（见 `drawGlyphs`）。
+ *   不是纯色的文字填充（渐变、图片、图案）以每一行为填充范围：横向为该行内容（`TextLine.left` 起 `width` 宽），
+ *   纵向为行高，在图层中以文字为遮罩覆盖。实测（WPS 演示导出图，宋体 40 磅的方块，线性渐变 0° 与 90°、
+ *   路径渐变与图片拉伸填充）：每行的颜色变化都从行首到行尾、从行顶到行底，与行长、对齐、锚点、溢出与
+ *   `spAutoFit` 无关，同一行的两个字段共用一个范围。文字的外部阴影与调用方传入的阴影一并按字形轮廓绘制。
  * - 下划线与删除线的位置与粗细按字号的固定比例绘制，不读取字体的 `post` 表。
  */
 
@@ -23,17 +26,27 @@ import {
   DEFAULT_NO_LINE_BREAK_AFTER,
   DEFAULT_NO_LINE_BREAK_BEFORE,
   faceExtent,
+  type LineBox,
   type LineSpacing,
   layoutParagraph,
   lineBox,
   type ParagraphStyle,
   type TabStop,
   type TextBlock,
+  type TextFace,
+  type TextLine,
   type TextRun,
 } from '../../text/index.ts'
 import { type Color, colorToCss } from '../color.ts'
 import type { ShapeFill } from '../fill.ts'
-import { apply, type Matrix, multiply, type PaintContext, setMatrix } from '../paint/context.ts'
+import {
+  apply,
+  type Matrix,
+  multiply,
+  type PaintContext,
+  setMatrix,
+  translation,
+} from '../paint/context.ts'
 import { deviceScale, type PaintResources, paintFill, traceRect } from '../paint/fill.ts'
 import {
   type DeviceRect,
@@ -43,7 +56,7 @@ import {
   paintShadows,
 } from '../paint/shadow.ts'
 import { autoNumberText, symbolChar } from './bullet.ts'
-import type { FaceCache, PaintFace, ScreenText } from './fonts.ts'
+import { type FaceCache, type PaintFace, type ScreenText, SINGLE_LINE } from './fonts.ts'
 import type { BodyProperties, Paragraph, Run, RunStyle, Spacing, TextBody } from './model.ts'
 
 const EMU_PER_PT = 12700
@@ -221,7 +234,7 @@ function paragraphStyle(
     })),
     defaultTabStop: p.defaultTabSize / EMU_PER_PT,
     tabOrigin: -marL,
-    fallback: faces.fallback.face,
+    fallback: () => faces.fallback.face,
     mark: { face: end.face, size: p.end.size * scale.font },
   }
 }
@@ -235,20 +248,85 @@ function alignShift(align: string, avail: number, lineRight: number): number {
 }
 
 /**
- * 屏幕显示时行高与单倍行高之差加在文字上方的比例。经验拟合（机制未查明）：WPS 表格形状文字，宋体与 Arial 11、12 磅，
- * 百分比 80%–200%，固定 20、30 磅。不要改为 1（排版模块的做法，150% 时首行低约 3 像素），也不要改为按
+ * 行高与单倍行高之差加在文字上方的比例（其余在文字下方）。演示文稿为字号与单倍行高之比：WPS 演示导出图中 6 种字体
+ * 10–32 磅的 150%、80% 与 30 磅固定行距，首行比单倍行距下移（行高 − 单倍行高）÷ 1.2。不要改为 1（排版模块的做法，
+ * 150% 时 16 磅首行低 2 像素）。
+ */
+const EXTRA_ABOVE = 1 / SINGLE_LINE
+/**
+ * 屏幕显示时代替 `EXTRA_ABOVE` 的比例。经验拟合（机制未查明）：WPS 表格形状文字，宋体与 Arial 11、12 磅，
+ * 百分比 80%–200%，固定 20、30 磅。不要改为 1（150% 时首行低约 3 像素），也不要改为按
  * `行高 / 单倍行高` 缩放基线（200% 时首行高约 1 像素）。
  */
 const SCREEN_EXTRA_ABOVE = 0.76
 
+/** 一段的行高换算参数：段落结束符、是否屏幕显示、项目符号的字段下标（没有项目符号时为 `null`）。 */
+interface LineContext {
+  readonly mark: ParagraphStyle['mark']
+  readonly screen: boolean
+  readonly bullet: number | null
+  readonly faces: FaceCache
+}
+
 /**
- * 屏幕显示（`FaceCache.screen`）的行高与基线，WPS 表格形状文字实测：
- * - 单倍行高按字号的整数部分计算（10.5 磅与 10 磅行距相同；宋体 9–14.5 磅以 0.25 磅步进）。基线与单倍行高中线的
- *   距离仍按实际字号，即基线比按实际字号排版时上移两种单倍行高之差的一半（6 种字体的 10.5 磅，宋体与 Arial 6.5–13.5 磅）。
- * - 行高与单倍行高之差的 `SCREEN_EXTRA_ABOVE` 加在文字上方。
+ * 不按屏幕显示排版时一行的基线距行顶的距离（单倍行距，磅）：各片段 win 上下沿（乘字号）的并集，以下沿最大的片段的
+ * 纵向中心系数定位，即基线 = 系数 × 行内最大字号 + (最大上沿 − 最大下沿) / 2。只有一种字体时与 `lineFace` 换算的
+ * 上沿相同。实测（WPS 演示导出图，44 磅一行，等线、黑体、宋体、楷体、微软雅黑与 Arial、Calibri、Times New Roman、
+ * Georgia、Verdana、Segoe UI 两两同行）：30 组中 23 组两种字体的位置都一致，其余 7 组相差 1 像素。不要改为取各片段
+ * 上沿的最大值：此时 10 组不一致，其中 6 组相差 2 像素（如等线与 Arial 同行时整行低 2 像素）。
+ */
+function mixedBaseline(
+  parts: readonly { face: TextFace; size: number }[],
+  context: LineContext,
+): number {
+  let size = 0
+  let ascent = 0
+  let descent = -1
+  let center = 0
+  for (const p of parts) {
+    const m = context.faces.of(p.face).line
+    size = Math.max(size, p.size)
+    ascent = Math.max(ascent, m.ascent * p.size)
+    if (m.descent * p.size > descent) {
+      descent = m.descent * p.size
+      center = m.center
+    }
+  }
+  return center * size + (ascent - descent) / 2
+}
+
+/**
+ * 一行按单倍行距的行高与基线（磅）：`natural` 取行内各片段的上下沿，`height` 为宿主的单倍行高。
+ * - 项目符号不计入：WPS 演示导出图中 Arial、Wingdings、宋体的项目符号（字号 70%–150%）不改变行高与基线。
+ * - 只有项目符号或没有片段的行取段落结束符。
+ * - 屏幕显示（`FaceCache.screen`，WPS 表格形状文字实测）的单倍行高按行内最大字号的整数部分计算（10.5 磅与
+ *   10 磅行距相同；宋体 9–14.5 磅以 0.25 磅步进）。
+ */
+function singleLine(
+  line: TextLine,
+  context: LineContext,
+): { readonly natural: LineBox; readonly height: number } {
+  const { mark, screen, bullet } = context
+  const text = line.fragments.filter((f) => f.run !== bullet)
+  const parts = text.length > 0 ? text : [mark]
+  let size = 0
+  for (const p of parts) size = Math.max(size, p.size)
+  const extents = parts.map((p) => faceExtent(p.face.vertical, p.size))
+  const box = lineBox(extents, { rule: 'proportional', value: 1 }, null)
+  const natural = screen ? box : { height: box.height, baseline: mixedBaseline(parts, context) }
+  const k = screen && size >= 1 ? Math.floor(size) / size : 1
+  return { natural, height: natural.height * k }
+}
+
+/**
+ * 按宿主的规则换算行高与基线（排版模块把行高与单倍行高之差全部加在文字上方）：
+ * - 行高与单倍行高（`singleLine`）之差的 `EXTRA_ABOVE`（屏幕显示为 `SCREEN_EXTRA_ABOVE`）加在文字上方。
+ * - 屏幕显示时基线与单倍行高中线的距离仍按实际字号，即基线比按实际字号排版时上移两种单倍行高之差的一半
+ *   （6 种字体的 10.5 磅，宋体与 Arial 6.5–13.5 磅）。
  * 没有片段的行（空段落）保持原行高与基线。
  */
-function screenBlock(block: TextBlock, spacing: LineSpacing): TextBlock {
+function hostBlock(block: TextBlock, spacing: LineSpacing, context: LineContext): TextBlock {
+  const extraAbove = context.screen ? SCREEN_EXTRA_ABOVE : EXTRA_ABOVE
   let top = block.lines[0]?.top ?? 0
   const start = top
   const lines = block.lines.map((line) => {
@@ -257,19 +335,14 @@ function screenBlock(block: TextBlock, spacing: LineSpacing): TextBlock {
       top += line.height
       return out
     }
-    let size = 0
-    for (const f of line.fragments) size = Math.max(size, f.size)
-    const k = size >= 1 ? Math.floor(size) / size : 1
-    const extents = line.fragments.map((f) => faceExtent(f.face.vertical, f.size))
-    const single = lineBox(extents, { rule: 'proportional', value: 1 }, null)
-    const singleHeight = single.height * k
+    const { natural: single, height: singleHeight } = singleLine(line, context)
     // `lineSpacing` 只产生 `fixed` 与 `proportional` 两种规则。
     const height = spacing.rule === 'fixed' ? spacing.value : spacing.value * singleHeight
     const baseline =
       top +
       single.baseline -
       (single.height - singleHeight) / 2 +
-      SCREEN_EXTRA_ABOVE * (height - singleHeight)
+      extraAbove * (height - singleHeight)
     const delta = baseline - line.baseline
     const out = {
       ...line,
@@ -294,9 +367,17 @@ export function layoutBody(text: TextBody, width: number, settings: TextSettings
     const { runs, paints } = paragraphRuns(p, scale.font, settings)
     const style = paragraphStyle(p, width, wrap, scale, settings.faces)
     const laid = layoutParagraph(runs, style)
-    const block = settings.faces.screen === null ? laid : screenBlock(laid, style.lineSpacing)
-    const firstLine = block.lines[0]?.height ?? 0
-    const lastLine = block.lines.at(-1)?.height ?? 0
+    const context: LineContext = {
+      mark: style.mark,
+      screen: settings.faces.screen !== null,
+      bullet: paints[0]?.style === null ? 0 : null,
+      faces: settings.faces,
+    }
+    const block = hostBlock(laid, style.lineSpacing, context)
+    const single = (line: TextLine | undefined) =>
+      line === undefined ? 0 : singleLine(line, context).height
+    const firstLine = single(block.lines[0])
+    const lastLine = single(block.lines.at(-1))
     if (index > 0) y += paragraphSpace(p.spaceBefore, firstLine)
     const marL = p.marginLeft / EMU_PER_PT
     const avail = width - marL - p.marginRight / EMU_PER_PT
@@ -307,6 +388,14 @@ export function layoutBody(text: TextBody, width: number, settings: TextSettings
   return { paragraphs, height: y }
 }
 
+/** 文本区域坐标中的矩形。 */
+interface Area {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
 interface Glyph {
   readonly text: string
   readonly x: number
@@ -314,6 +403,8 @@ interface Glyph {
   readonly size: number
   readonly face: PaintFace
   readonly paint: RunPaint
+  /** 所在行：非纯色填充的范围。 */
+  readonly line: Area
 }
 
 interface Band {
@@ -347,6 +438,12 @@ function collect(
   for (const p of layout.paragraphs) {
     p.block.lines.forEach((line, li) => {
       const shift = p.shifts[li] ?? 0
+      const area: Area = {
+        x: p.x + line.left + shift,
+        y: p.y + line.top,
+        width: line.width,
+        height: line.height,
+      }
       for (const f of line.fragments) {
         const paint = p.runs[f.run]
         if (paint === undefined) continue
@@ -359,7 +456,7 @@ function collect(
         let k = 0
         for (const ch of paint.text.slice(f.start, f.end)) {
           if (ch !== '\t' && ch !== '\n' && ch !== ' ')
-            glyphs.push({ text: ch, x, y, size: f.size, face, paint })
+            glyphs.push({ text: ch, x, y, size: f.size, face, paint, line: area })
           x += f.advances[k] ?? 0
           k++
         }
@@ -385,7 +482,7 @@ function collect(
 
 /**
  * 逐字绘制。`screen` 不为 `null` 且 `matrix` 不含旋转与斜切时按屏幕显示绘制：基线取整到设备像素，
- * 有点阵的字形以点阵画在取整后的设备坐标上（`ScreenText.bitmap`）。
+ * 有单色字形的字（`ScreenText.bitmap`：点阵、提示后的轮廓或倾斜的轮廓）画在取整后的设备坐标上。
  */
 function drawGlyphs(
   ctx: PaintContext,
@@ -465,7 +562,7 @@ function glyphBounds(
 export interface TextTarget {
   /** 文本区域坐标（磅，原点为文本区域左上角）到设备坐标。 */
   readonly matrix: Matrix
-  /** 文本区域宽高（磅）：文字的非纯色填充以此为范围。 */
+  /** 文本区域宽高（磅）：文字阴影的 `algn` 按此定位。 */
   readonly width: number
   readonly height: number
   /** 每个 96 dpi 像素对应的设备像素数。 */
@@ -534,21 +631,21 @@ export function paintBody(
     ctx,
     glyphs,
     null,
-    faces.screen === null ? null : { text: faces.screen, matrix: target.matrix },
+    faces.glyphs === null ? null : { text: faces.glyphs, matrix: target.matrix },
   )
   ctx.restore()
 
-  // 非纯色填充：字形作遮罩，填充覆盖其上。
-  const fills = new Map<string, { fill: ShapeFill; glyphs: Glyph[] }>()
+  // 非纯色填充：按行与填充分组，字形作遮罩，以行为范围的填充覆盖其上。
+  const fills = new Map<string, { fill: ShapeFill; area: Area; glyphs: Glyph[] }>()
   for (const g of glyphs) {
     const fill = g.paint.fill
     if (fill.kind === 'solid' || fill.kind === 'none') continue
-    const key = JSON.stringify(fill)
-    const group = fills.get(key) ?? { fill, glyphs: [] }
+    const key = `${JSON.stringify(fill)}\u0000${JSON.stringify(g.line)}`
+    const group = fills.get(key) ?? { fill, area: g.line, glyphs: [] }
     group.glyphs.push(g)
     fills.set(key, group)
   }
-  for (const { fill, glyphs: list } of fills.values()) {
+  for (const { fill, area, glyphs: list } of fills.values()) {
     const bounds = glyphBounds(list, target.matrix, canvas)
     if (bounds === null) continue
     const layer = drawLayer(bounds, res, (c, offset) => {
@@ -557,14 +654,14 @@ export function paintBody(
       prepare(c)
       drawGlyphs(c, list, '#000')
       const cover = drawLayer(bounds, res, (f, o2) => {
-        const fm = multiply(o2, target.matrix)
+        const fm = multiply(multiply(o2, target.matrix), translation(area.x, area.y))
         setMatrix(f, fm)
-        const margin = Math.max(target.width, target.height)
+        const margin = Math.max(area.width, area.height, 1)
         paintFill(
           f,
-          () => traceRect(f, target.width, target.height, margin),
+          () => traceRect(f, area.width, area.height, margin),
           fill,
-          { width: target.width, height: target.height, matrix: fm },
+          { width: area.width, height: area.height, matrix: fm },
           res,
         )
       })

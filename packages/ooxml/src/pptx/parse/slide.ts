@@ -132,11 +132,7 @@ export function readSlidePart(x: Scanner, part: string, rels: Relationships): Ra
       if (local === 'cSld') {
         eachChild(x, (child) => {
           if (child === 'bg') background = readBackground(x, rels)
-          else if (child === 'spTree') {
-            const tree = readShapeTree(x, rels)
-            shapes = tree.shapes
-            found.push(...tree.found)
-          }
+          else if (child === 'spTree') shapes = readShapeTree(x, rels)
         })
       } else if (local === 'clrMap') {
         colorMap = readColorMap(x)

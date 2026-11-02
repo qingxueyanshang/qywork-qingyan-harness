@@ -5,7 +5,8 @@
  *   编号文本已生成；未实现的元素按种类计入 `unsupported`。
  * - `layoutDocument` 按调用方提供的字体逐段排版正文的顶层段落，输出行与片段的坐标及段前段后间距；分页、表格与浮动对象不在其中。
  * - `layoutPages` 在逐段排版之上排版表格、定位浮动对象、分页并排列页眉页脚，输出纯数据的 `DocumentPages`；
- *   `paintPage` 把一页（含页面背景、表格与浮动对象）绘制到 Canvas，`pageImages` 列出它读取的图片。
+ *   `paintPage` 把一页（含页面背景、表格与浮动对象）绘制到 Canvas，`pageImages` 列出它读取的图片；图片（位图与图元文件）由
+ *   `../drawingml/` 的 `decodePicture` 解码。
  *   字体经 `DocxFonts` 提供（`requiredFonts` 列出所需字体名，`loadDocxFace` 读取字体文件）。
  */
 
@@ -26,6 +27,9 @@ export type {
   CellBorders,
   DocumentSettings,
   DocxDocument,
+  DrawingChart,
+  DrawingDiagram,
+  DrawingGraphic,
   DrawingGroup,
   DrawingNode,
   DrawingShape,
@@ -54,13 +58,17 @@ export type {
   BorderLine,
   DocumentPages,
   FaceRef,
+  GraphicFace,
+  GraphicFonts,
   Page,
   PageBackground,
   PageBorderBox,
   PageEdge,
   PageFill,
   PageFloat,
+  PageFormula,
   PageFragment,
+  PageGraphic,
   PageImage,
   PageImageSource,
   PageItem,
@@ -73,7 +81,6 @@ export type {
 } from './page/model.ts'
 export { type DocxFace, DocxFonts, loadDocxFace } from './render/fonts.ts'
 export {
-  type PageBitmap,
   type PageContext,
   type PageFonts,
   type PageResources,

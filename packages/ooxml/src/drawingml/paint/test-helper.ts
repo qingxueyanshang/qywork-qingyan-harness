@@ -6,7 +6,7 @@ import type { Matrix, PaintCanvas, PaintContext, PaintImage } from './context.ts
 
 export type Call = readonly [string, ...unknown[]]
 
-/** 每个调用记录名称、参数，以及调用时的变换、`fillStyle`、`strokeStyle`、线宽、合成方式与字体。 */
+/** 每个调用记录名称、参数，以及调用时的变换、`fillStyle`、`strokeStyle`、线宽、不透明度、合成方式与字体。 */
 export interface Recorded {
   readonly name: string
   readonly args: readonly unknown[]
@@ -14,6 +14,7 @@ export interface Recorded {
   readonly fillStyle: unknown
   readonly strokeStyle: unknown
   readonly lineWidth: number
+  readonly alpha: number
   readonly composite: string
   readonly font: string
 }
@@ -40,7 +41,7 @@ export class RecordingContext implements PaintContext {
   matrix: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
   dash: number[] = []
   readonly calls: Recorded[] = []
-  private readonly stack: Matrix[] = []
+  private readonly stack: { matrix: Matrix; alpha: number }[] = []
 
   private record(name: string, args: readonly unknown[]): void {
     this.calls.push({
@@ -50,6 +51,7 @@ export class RecordingContext implements PaintContext {
       fillStyle: this.fillStyle,
       strokeStyle: this.strokeStyle,
       lineWidth: this.lineWidth,
+      alpha: this.globalAlpha,
       composite: this.globalCompositeOperation,
       font: this.font,
     })
@@ -60,10 +62,13 @@ export class RecordingContext implements PaintContext {
   }
 
   save(): void {
-    this.stack.push(this.matrix)
+    this.stack.push({ matrix: this.matrix, alpha: this.globalAlpha })
   }
   restore(): void {
-    this.matrix = this.stack.pop() ?? this.matrix
+    const top = this.stack.pop()
+    if (top === undefined) return
+    this.matrix = top.matrix
+    this.globalAlpha = top.alpha
   }
   setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void {
     this.matrix = { a, b, c, d, e, f }
@@ -192,3 +197,37 @@ export function canvasFactory(): {
     created,
   }
 }
+
+/**
+ * 可放置 WMF（图片框 0–100 × 0–50，每英寸 `inch` 单位）：`records` 为 [函数号, ...16 位参数]，末尾自动加 EOF。
+ */
+export function placeableWmf(
+  records: readonly (readonly number[])[],
+  inch = 96,
+): Uint8Array<ArrayBuffer> {
+  const out: number[] = []
+  const u16 = (...v: number[]) => {
+    for (const x of v) out.push(x & 0xff, (x >> 8) & 0xff)
+  }
+  const u32 = (x: number) => u16(x & 0xffff, x >>> 16)
+  u32(0x9ac6cdd7)
+  u16(0, 0, 0, 100, 50, inch)
+  u32(0)
+  u16(0, 1, 9, 0x0300)
+  u32(0)
+  u16(4)
+  u32(0)
+  u16(0)
+  for (const [fn, ...params] of [...records, [0]]) {
+    u32(3 + params.length)
+    u16(fn!, ...params)
+  }
+  return new Uint8Array(out)
+}
+
+/** 红色画刷的矩形 (10, 10)–(90, 40)，没有文字记录。 */
+export const RED_RECT_WMF = placeableWmf([
+  [0x02fc, 0, 0x00ff, 0, 0],
+  [0x012d, 0],
+  [0x041b, 40, 90, 10, 10],
+])

@@ -9,18 +9,20 @@
  */
 
 import {
+  type ClearTypeDisplay,
   createScene,
   FontSet,
   fallbackFonts,
   type LoadedFace,
   loadFace,
   type PaintImage,
+  substituteFont,
   type UnsupportedKind,
   type Workbook,
 } from '@qywork/ooxml/xlsx'
 import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js'
 import { boundaryText, connectWorker, createDocumentLoader, failureText } from './document.ts'
-import { type HostFace, loadHostFaces } from './fonts.ts'
+import { type HostFace, loadClearType, loadHostFaces } from './fonts.ts'
 import { createSheetViewport, type SheetViewport } from './sheet-viewport.ts'
 import type { ViewPosition } from './viewport.ts'
 import type { XlsxReplies, XlsxRequest } from './xlsx-worker.ts'
@@ -28,6 +30,8 @@ import type { XlsxReplies, XlsxRequest } from './xlsx-worker.ts'
 interface Doc {
   readonly workbook: Workbook
   readonly fonts: FontSet
+  /** 主机显示器的 ClearType 设置，随文档一同取得；为 `null` 时单元格文字以浏览器字体绘制。 */
+  readonly clearType: ClearTypeDisplay | null
 }
 
 /** 能力边界中各种类的名称，按此顺序列出。 */
@@ -69,14 +73,20 @@ function loadedFace(host: HostFace): LoadedFace | null {
 }
 
 /**
- * 取得 `names` 中各字体（主机上没有的略去），组成排版用的字体集；`fallbacks` 为缺字时依次尝试的字体名。
- * 文档以另一个名称引用已注册的字体时，以别名指向首次注册的族名。
+ * 取得 `names` 中各字体，主机上没有的字体名改为取得其替代字体（`substituteFont`），组成排版用的字体集；
+ * `fallbacks` 为缺字时依次尝试的字体名。文档以另一个名称引用已注册的字体时，以别名指向首次注册的族名。
  */
 async function loadFontSet(
   names: readonly string[],
   fallbacks: readonly string[],
 ): Promise<FontSet> {
   const host = await loadHostFaces([...names, ...fallbacks])
+  const substitutes = [...host]
+    .filter(([, list]) => list.length === 0)
+    .map(([n]) => substituteFont(n))
+  for (const [name, list] of await loadHostFaces(substitutes.filter((n) => !host.has(n)))) {
+    host.set(name, list)
+  }
   const loaded: LoadedFace[] = []
   const aliases = new Map<string, string>()
   for (const [name, list] of host) {
@@ -142,8 +152,11 @@ export default function SheetView(props: { path: string; mtime: number }) {
       const parsed = await parseInWorker(bytes, signal)
       if (!parsed.ok) return failureText(parsed.failure)
       const workbook = parsed.value
-      const fonts = await loadFontSet(workbook.fontNames, fallbackFonts(workbook))
-      return { workbook, fonts }
+      const [fonts, clearType] = await Promise.all([
+        loadFontSet(workbook.fontNames, fallbackFonts(workbook)),
+        loadClearType(),
+      ])
+      return { workbook, fonts, clearType }
     },
     showDoc,
   )
@@ -154,7 +167,7 @@ export default function SheetView(props: { path: string; mtime: number }) {
       const sheet = d?.workbook.sheets[index]
       if (!d || !sheet) return
       viewport ??= createSheetViewport({ scroller, extent, canvas })
-      viewport.show(createScene(d.workbook, sheet, d.fonts), nextPosition)
+      viewport.show(createScene(d.workbook, sheet, d.fonts), nextPosition, d.clearType)
       nextPosition = null
       const mine = ++decoding
       setUndecoded(0)

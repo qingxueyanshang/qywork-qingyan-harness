@@ -236,7 +236,8 @@ function bool(x: Reader, name: string, fallback: boolean): boolean {
   return v === '1' || v === 'true'
 }
 
-function readRect(x: Reader): RelativeRect {
+/** `srcRect`、`fillRect` 等相对矩形：各边比例，缺省为 0。 */
+export function readRelativeRect(x: Reader): RelativeRect {
   return {
     left: percent(x, 'l', 0),
     top: percent(x, 't', 0),
@@ -305,7 +306,7 @@ function readGradient(x: Reader): FillSpec {
       const path = p === 'rect' || p === 'shape' ? p : 'circle'
       let focus = ZERO_RECT
       eachChild(x, (child) => {
-        if (child === 'fillToRect') focus = readRect(x)
+        if (child === 'fillToRect') focus = readRelativeRect(x)
       })
       shade = { kind: 'path', path, focus }
     }
@@ -335,11 +336,11 @@ function readImageFill(x: Reader, rels: Relationships | null): ImageFill {
         else if (!BLIP_IGNORED.has(effect)) effects.push(effect)
       })
     } else if (local === 'srcRect') {
-      crop = readRect(x)
+      crop = readRelativeRect(x)
     } else if (local === 'stretch') {
       stretch = ZERO_RECT
       eachChild(x, (child) => {
-        if (child === 'fillRect') stretch = readRect(x)
+        if (child === 'fillRect') stretch = readRelativeRect(x)
       })
     } else if (local === 'tile') {
       tile = {
@@ -493,30 +494,6 @@ export function readEffects(x: Reader): EffectSpec[] {
     }
   })
   return out
-}
-
-/**
- * 在 `scene3d` 或 `sp3d` 的开始标签处调用，返回三维设置是否改变外观：
- * `scene3d` 的相机不是正视或带旋转，`sp3d` 有棱台、挤出或轮廓。
- */
-export function readThreeD(x: Reader): boolean {
-  let visible = false
-  if (x.local === 'sp3d') {
-    visible = num(x, 'extrusionH', 0) > 0 || num(x, 'contourW', 0) > 0
-    eachChild(x, (local) => {
-      if (local === 'bevelT' || local === 'bevelB') visible = true
-    })
-    return visible
-  }
-  eachChild(x, (local) => {
-    if (local !== 'camera') return
-    if ((x.attr('prst') ?? 'orthographicFront') !== 'orthographicFront') visible = true
-    eachChild(x, (child) => {
-      if (child !== 'rot') return
-      if (num(x, 'lat', 0) !== 0 || num(x, 'lon', 0) !== 0 || num(x, 'rev', 0) !== 0) visible = true
-    })
-  })
-  return visible
 }
 
 function color(spec: ColorSpec | null, context: ColorContext): Color | null {

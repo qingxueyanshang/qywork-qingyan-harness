@@ -1,15 +1,20 @@
 /**
- * 幻灯片绘制：背景、形状树（形状、图片、连接线、组合、表格）与文字，绘制到 Canvas 2D 上下文。
+ * 幻灯片绘制：背景、形状树（形状、图片、连接线、组合、表格、墨迹）与文字，绘制到 Canvas 2D 上下文。
  *
  * - 坐标：形状局部坐标以 96 dpi 像素为单位（1 px = 9525 EMU），原点为形状框左上角；`scale` 为每个
  *   96 dpi 像素对应的设备像素数，画布尺寸见 `slideSize`。
  * - 自选图形、连接线与组合的绘制规则见 `../../drawingml/shape/paint.ts`；本模块按形状种类分派，并绘制图片与表格。
  * - 绘制顺序：背景（没有背景时为白色）、各形状按文档顺序。
- * - 图片的外部阴影取图片区域与线条的轮廓。
- * - 图表见 `../../drawingml/chart/paint.ts`。不绘制：隐藏的形状、`graphic`（未绘制的图表、SmartArt、OLE，已计数）。
+ * - 文字的行高与基线按演示文稿的规则，字形按点阵条件绘制（`./fonts.ts` 的 `slideGlyphs`）。
+ * - 图片的外部阴影取图片区域与线条的轮廓。图片可以是位图或图元文件（`../../drawingml/paint/picture.ts`），
+ *   图元文件文字的字体取自幻灯片字体（`slideMetafileFonts`）。
+ * - 三维效果（相机旋转、透视与光照）见 `../../drawingml/three/paint.ts`，图片与自选图形相同。
+ * - 图表见 `../../drawingml/chart/paint.ts`，SmartArt 见 `../../drawingml/diagram/paint.ts`，墨迹见 `./ink.ts`。
+ *   不绘制：隐藏的形状、`graphic`（未绘制的图表、SmartArt、OLE，已计数）。
  */
 
 import { paintChart } from '../../drawingml/chart/paint.ts'
+import { paintDiagram } from '../../drawingml/diagram/paint.ts'
 import type { ShapeOutline } from '../../drawingml/geometry/path.ts'
 import {
   type Matrix,
@@ -32,6 +37,7 @@ import {
   outlineOf,
   type Placed,
   paintAutoShape,
+  paintAutoShapeThreeD,
   paintConnector,
   paintGroup,
   placeFrame,
@@ -40,15 +46,18 @@ import {
   strokeMargin,
 } from '../../drawingml/shape/paint.ts'
 import type { TextSettings } from '../../drawingml/text/body.ts'
-import { FaceCache, type SlideFontSource } from '../../drawingml/text/fonts.ts'
+import { FaceCache, SINGLE_LINE } from '../../drawingml/text/fonts.ts'
+import { paintThreeD } from '../../drawingml/three/paint.ts'
 import type { Picture, Presentation, Shape, Slide } from '../model.ts'
+import { type SlideFonts, slideGlyphs, slideMetafileFonts } from './fonts.ts'
+import { paintInk } from './ink.ts'
 import { layoutTable, paintTable } from './table.ts'
 
 export interface SlideResources extends PaintResources {
-  readonly fonts: SlideFontSource
+  readonly fonts: SlideFonts
 }
 
-/** 幻灯片上的文字总有排版设置（缺少字体时使用 `SlideFontSource.fallback`）。 */
+/** 幻灯片上的文字总有排版设置（缺少字体时使用 `SlideFonts.fallback`）。 */
 interface SlideScene extends ShapeScene {
   readonly settings: TextSettings
 }
@@ -58,6 +67,25 @@ export function slideSize(p: Presentation, scale: number): { width: number; heig
   return {
     width: Math.round((p.width / EMU_PER_PX) * scale),
     height: Math.round((p.height / EMU_PER_PX) * scale),
+  }
+}
+
+/**
+ * 图片的绘制矩形取整到设备像素：左上角四舍五入（恰为 .5 时向下），宽高各自四舍五入；返回把形状框映射到取整后矩形的
+ * 变换，变换含旋转、斜切或镜像时原样返回。裁剪路径与线条不取整。实测（WPS 演示导出图）：400×300 的图片 1:1 放在
+ * (500.5, 50.5)、(50.25, 400.75)、(850.75, 400.25) 时与放在 (500, 50)、(50, 401)、(851, 400) 逐像素相同；
+ * 2730×1471 的照片缩小到 1229.67×591.2 放在 5 种小数位置时，都与按取整后的矩形重采样最接近（宽高 1230×591，
+ * 不按右下角取整）。形状的图片填充不取整：语料中两个图片填充的矩形与按原位置重采样一致，取整后低约 0.02。
+ */
+function snapPicture(m: Matrix, width: number, height: number): Matrix {
+  if (m.b !== 0 || m.c !== 0 || m.a <= 0 || m.d <= 0 || width <= 0 || height <= 0) return m
+  return {
+    a: Math.round(m.a * width) / width,
+    b: 0,
+    c: 0,
+    d: Math.round(m.d * height) / height,
+    e: Math.ceil(m.e - 0.5),
+    f: Math.ceil(m.f - 0.5),
   }
 }
 
@@ -80,7 +108,9 @@ function paintPictureBody(
   ctx.save()
   trace()
   ctx.clip()
-  paintImageFill(ctx, shape.image, area, scene.res)
+  const snapped = snapPicture(placed.matrix, placed.width, placed.height)
+  setMatrix(ctx, snapped)
+  paintImageFill(ctx, shape.image, { ...area, matrix: snapped }, scene.res)
   ctx.restore()
   if (shape.line !== null) paintLine(ctx, outline.paths, shape.line, area, scene.res, scene.canvas)
 }
@@ -89,6 +119,21 @@ function paintPicture(scene: SlideScene, shape: Picture, parent: Matrix): void {
   const placed = placeFrame(shape.frame, parent)
   const outline = outlineOf(shape)
   const shadows = shadowsOf(shape.effects)
+  if (shape.threeD !== null) {
+    paintThreeD(
+      scene,
+      shape.threeD,
+      placed,
+      strokeMargin(shape, placed),
+      shadows,
+      (c, offset, size) =>
+        paintPictureBody({ ...scene, ctx: c, canvas: size }, c, shape, outline, {
+          ...placed,
+          matrix: multiply(offset, placed.matrix),
+        }),
+    )
+    return
+  }
   if (shadows.length === 0) {
     paintPictureBody(scene, scene.ctx, shape, outline, placed)
     return
@@ -115,7 +160,8 @@ function paintShape(scene: SlideScene, shape: Shape, parent: Matrix): void {
   scene.ctx.save()
   switch (shape.kind) {
     case 'shape':
-      paintAutoShape(scene, shape, parent)
+      if (shape.threeD === null) paintAutoShape(scene, shape, parent)
+      else paintAutoShapeThreeD(scene, shape, shape.threeD, parent)
       break
     case 'connector':
       paintConnector(scene, shape, parent)
@@ -146,6 +192,12 @@ function paintShape(scene: SlideScene, shape: Shape, parent: Matrix): void {
     case 'chart':
       paintChart(scene, shape.chart, shape.frame, parent)
       break
+    case 'diagram':
+      paintDiagram(scene, shape.diagram, shape.frame, parent)
+      break
+    case 'ink':
+      paintInk(scene.ctx, shape, placeFrame(shape.frame, parent).matrix)
+      break
     case 'graphic':
       break
   }
@@ -164,12 +216,16 @@ export function paintSlide(
   scale: number,
 ): void {
   const canvas = slideSize(presentation, scale)
+  const resources: SlideResources = { ...res, metafileFonts: slideMetafileFonts(res.fonts) }
   const scene: SlideScene = {
     ctx,
-    res,
+    res: resources,
     scale,
     canvas,
-    settings: { faces: new FaceCache(res.fonts), slideNumber: slide.number },
+    settings: {
+      faces: new FaceCache(res.fonts, SINGLE_LINE, null, slideGlyphs(res.fonts)),
+      slideNumber: slide.number,
+    },
   }
   const base = scaling(scale, scale)
   const width = presentation.width / EMU_PER_PX
@@ -187,7 +243,7 @@ export function paintSlide(
       () => traceRect(ctx, width, height),
       slide.background,
       { width, height, matrix: base },
-      res,
+      resources,
     )
   }
   for (const shape of slide.shapes) paintShape(scene, shape, base)

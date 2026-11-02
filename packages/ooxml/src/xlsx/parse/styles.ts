@@ -41,7 +41,10 @@ import { boolAttr, boolVal, numAttr, type Scanner } from './xml-util.ts'
 
 export interface StyleSheet {
   readonly styles: readonly CellStyle[]
+  /** `dxfs` 中的差异样式，条件格式规则按 `dxfId` 引用。 */
   readonly dxfs: readonly DifferentialStyle[]
+  /** 自定义数字格式，供工作表中内嵌的差异样式（2010 扩展条件格式的 `x14:dxf`）按 `numFmtId` 取格式代码。 */
+  readonly numFmts: ReadonlyMap<number, string>
   readonly defaultFont: FontStyle
   readonly palette: readonly string[]
   /** 供共享字符串的富文本换算颜色。 */
@@ -335,7 +338,7 @@ function readXf(x: Scanner): RawXf {
   return xf
 }
 
-function readDxf(x: Scanner, numFmts: Map<number, string>): RawDxf {
+function readDxf(x: Scanner, numFmts: ReadonlyMap<number, string>): RawDxf {
   const dxf: RawDxf = { font: null, fill: null, border: null, numFmt: null }
   const depth = x.depth
   for (let t = x.next(); t !== null; t = x.next()) {
@@ -426,6 +429,7 @@ export function parseStyles(xml: string | null, theme: Theme | null): StyleSheet
   return {
     styles,
     dxfs: dxfs.map((d) => resolveDxf(d, ctx)),
+    numFmts,
     defaultFont,
     palette: fullPalette,
     colors: ctx,
@@ -535,6 +539,15 @@ function resolveBorder(raw: RawBorder, ctx: ColorContext): CellBorder | null {
     !border.diagonalUp &&
     !border.diagonalDown
   return empty ? null : border
+}
+
+/** 读取并换算一个差异样式元素（`dxf` 或 `x14:dxf`）。 */
+export function readDifferentialStyle(
+  x: Scanner,
+  numFmts: ReadonlyMap<number, string>,
+  ctx: ColorContext,
+): DifferentialStyle {
+  return resolveDxf(readDxf(x, numFmts), ctx)
 }
 
 function resolveDxf(raw: RawDxf, ctx: ColorContext): DifferentialStyle {

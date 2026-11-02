@@ -8,23 +8,31 @@
  * - 隐藏文字（`vanish`）、域代码、删除的修订不出现在字段文字中；域只取结果文字，字段记录所在域名。
  */
 
-import type { Effect, Line, ShapeFill } from '../drawingml/fill.ts'
+import type { Chart } from '../drawingml/chart/model.ts'
+import type { Diagram } from '../drawingml/diagram/model.ts'
+import type { Effect, Line, RelativeRect, ShapeFill } from '../drawingml/fill.ts'
 import type { Geometry } from '../drawingml/geometry/model.ts'
 import type { Frame } from '../drawingml/shape/model.ts'
+import type { MathJustification, MathSettings, MathZone } from '../math/index.ts'
 import type { Alignment, LineSpacing } from '../text/index.ts'
 
 /**
  * 遇到但未实现的元素与属性，按出现次数计数：
- * - 正文结构：`frame`（`framePr` 段落）、`floatingTable`（`tblpPr`：按普通表格排在原位置，横向按其偏移）、
+ * - 正文结构：`frame`（`framePr` 段落）、`floatingTable`（`tblpPr`：按普通表格排在原位置，横向按其偏移，纵向相对文字时
+ *   下移其偏移；文字不环绕表格）、
  *   `altChunk` 与 `subDocument`（外部内容）。
  * - 对象：`picture`、`chart`、`smartArt`、`shape`、`group`、`canvas`、`drawing`（其他 DrawingML 对象）、
- *   `vml`（无法转换的 VML）、`ole`（`w:object`）、`math`、`contentPart`。图片、形状、文本框、组合与 VML 的
- *   形状、文本框、图片可以绘制，不计数；嵌入式的其余对象只占行高，浮动的其余对象只占位置。
- *   `effect` 为形状中外部阴影之外的效果、三维效果与艺术字变形，`imageFormat` 为浏览器无法解码的图片格式。
+ *   `vml`（无法转换的 VML）、`ole`（没有 VML 形状或图片部件的 `w:object`）、`contentPart`。图片、形状、文本框、组合与 VML 的
+ *   形状、文本框、图片可以绘制，不计数；图表在部件存在且不含未实现内容时可以绘制，否则计入 `chart`；
+ *   SmartArt 在数据部件存在且布局可以求值时可以绘制，否则计入 `smartArt`。
+ *   嵌入式的其余对象只占行高，浮动的其余对象只占位置。
+ *   `effect` 为形状中外部阴影之外的效果、三维效果与艺术字变形，`imageFormat` 为无法绘制的图片格式（浏览器无法解码的位图，
+ *   含未实现内容的图元文件）。
  * - 版面：`columns`（多栏节；连续分节前的多栏平衡与不等宽栏的排版宽度未实现）、`footnote`、`endnote`、`comment`、
  *   `artBorder`（艺术型页面边框，按单线绘制）、`lineNumbers`、`textDirection`。
  * - 文字效果：`characterScale`、`emphasisMark`、`smallCaps`、`eastAsianLayout`、
- *   `fitText`、`rtl`、`charGrid`（字符网格）、`tabLeader`、`decimalTab`、`barTab`、`ruby`、`ptab`、`softHyphen`。
+ *   `fitText`、`rtl`、`charGrid`（字符网格）、`tabLeader`（点以外的制表位前导符）、`decimalTab`、`barTab`、`ruby`、
+ *   `ptab`、`softHyphen`。
  * - 内容：`revision`（修订标记，按最终状态显示）、`dynamicField`（打开时由应用重新计算的域，显示文件中缓存的结果）、
  *   `numberFormat`（未实现的编号格式，按中文计数显示）、`autoSpacing`（HTML 自动段间距）。
  */
@@ -44,7 +52,6 @@ export type UnsupportedKind =
   | 'imageFormat'
   | 'vml'
   | 'ole'
-  | 'math'
   | 'contentPart'
   | 'columns'
   | 'footnote'
@@ -126,13 +133,42 @@ export interface Run {
   readonly props: RunProps
   /** 字段所在域（最内层、处于结果部分）的域名，大写；不在域中时为 `null`。 */
   readonly field: string | null
+  /** 页眉页脚中 STYLEREF 域的结果（合并为一个字段）：文字由分页按页求出，`text` 为文件中缓存的结果。 */
+  readonly styleRef?: StyleRef
+  /**
+   * 公式（一个 `m:oMath`）：`text` 为空串，按段参与断行（见 `../layout.ts`）；`props` 为段落的缺省字段属性，
+   * 公式中没有字符属性的部分取此值。
+   */
+  readonly math?: RunMath
+}
+
+export interface RunMath {
+  readonly zone: MathZone<RunProps>
+  /**
+   * 显示公式的对齐方式（已按 `defJc` 补足）；行内公式为 `null`。WPS 实测：段落中只有公式、没有其他文字，且公式为一个
+   * `m:oMathPara` 或若干个不在 `m:oMathPara` 中的 `m:oMath` 时为显示公式，段落中的各个公式依次排列；否则全部为行内公式。
+   * 段落中另有嵌入式对象时按行内公式排版（未与 WPS 核对）。
+   */
+  readonly display: MathJustification | null
+}
+
+/** STYLEREF 域所引用的段落样式。 */
+export interface StyleRef {
+  /** 段落样式标识；样式名有效而文档中没有该样式时为 `null`（显示未找到的提示）。 */
+  readonly style: string | null
+  /** `\l`：取本页最后一个而不是第一个该样式的段落。 */
+  readonly last: boolean
 }
 
 export interface InlineImage {
-  /** 段落文字（各字段依次相接）中的位置。 */
-  readonly offset: number
+  /** 对象之后第一个字段在 `Paragraph.runs` 中的序号；等于字段个数时对象位于段末。 */
+  readonly run: number
+  /** 所在字段的基线提升（磅，向下为负）：对象框随之上移或下移。 */
+  readonly raise: number
   /** `DocxDocument.media` 的下标；不是图片（图表、文本框等）或没有图片部件时为 -1。 */
   readonly media: number
+  /** 可绘制的图表或 SmartArt；不是这两种对象、部件不存在或含未实现内容时为 `null`。 */
+  readonly graphic: DrawingGraphic | null
   /** `wp:extent`（磅）。 */
   readonly width: number
   readonly height: number
@@ -143,6 +179,8 @@ export interface InlineImage {
     readonly right: number
     readonly bottom: number
   }
+  /** 图片各边裁去的比例：DrawingML 图片的 `a:srcRect`，`w:object` 中 `v:imagedata` 的 `crop*`。 */
+  readonly crop: RelativeRect
 }
 
 export interface MediaPart {
@@ -153,7 +191,7 @@ export interface MediaPart {
 
 /** 段落、表格、单元格与页面共用的边框。 */
 export interface Border {
-  /** `ST_Border` 的取值。 */
+  /** `ST_Border` 的取值。段落边框中带非零 `space` 的 `none` 保留为 `none`（只占高度，不绘制），其余边框中没有 `none`。 */
   readonly style: string
   /** 线宽（磅）。 */
   readonly width: number
@@ -175,6 +213,8 @@ export interface TabStop {
   readonly position: number
   /** 小数点对齐按右对齐排版，计入 `decimalTab`。 */
   readonly align: 'left' | 'center' | 'right'
+  /** 前导符字符：`dot` 为「.」；其余前导符未实现（计入 `tabLeader`），与没有前导符同为 `null`。 */
+  readonly leader: string | null
 }
 
 export interface ParagraphProps {
@@ -184,6 +224,12 @@ export interface ParagraphProps {
   readonly right: number
   /** 首行相对其余各行的缩进，负值为悬挂缩进。 */
   readonly firstLine: number
+  /**
+   * 计算内容宽度（`ParagraphLayouter.contentWidths`）所用的左缩进与首行缩进：按字符给出的首行与悬挂缩进以缺省段落样式的
+   * 字号为单位，其余与 `left`、`firstLine` 相同（WPS 实测，构造文档 w10b、w10f：字段 12 磅、缺省段落样式 10.5 磅时，
+   * `firstLineChars="200"` 排版按 24 磅、自动调整列宽按 21 磅；段落样式另设字号时仍按缺省段落样式）。
+   */
+  readonly contentIndent: { readonly left: number; readonly firstLine: number }
   /** 段前段后间距，未计入 `contextualSpacing` 的抵消。 */
   readonly before: number
   readonly after: number
@@ -193,6 +239,7 @@ export interface ParagraphProps {
   readonly snapToGrid: boolean
   readonly kinsoku: boolean
   readonly wordWrap: boolean
+  /** 行尾标点可以悬挂；表格单元格中的段落为假（见 `parse/body.ts`）。 */
   readonly overflowPunct: boolean
   readonly autoSpaceDE: boolean
   readonly autoSpaceDN: boolean
@@ -299,10 +346,12 @@ export interface TableRow {
   readonly cells: readonly TableCell[]
 }
 
-/** 浮动表格（`tblpPr`）的横向偏移（磅）与基准。 */
+/** 浮动表格（`tblpPr`）的横向与纵向偏移（磅）及各自的基准。 */
 export interface TableFloat {
   readonly from: 'margin' | 'page' | 'text'
   readonly x: number
+  readonly vertical: 'margin' | 'page' | 'text'
+  readonly y: number
 }
 
 /** 表格：网格、表格属性与行。表格样式与条件格式已并入单元格与段落。 */
@@ -348,6 +397,8 @@ export interface TextBox {
   readonly anchor: 'top' | 'center' | 'bottom'
   /** 根据文字调整形状大小（`spAutoFit`）：形状高度取内容高度加上下内缩，与文件中记录的高度无关。 */
   readonly autoFit: boolean
+  /** 文字在文字区域宽度处换行；为假（`wrap="none"`）且根据文字调整大小时，形状宽度另取内容不换行的宽度加左右内缩。 */
+  readonly wrap: boolean
 }
 
 /**
@@ -371,7 +422,24 @@ export interface DrawingGroup {
   readonly children: readonly DrawingNode[]
 }
 
-export type DrawingNode = DrawingShape | DrawingGroup
+/** 图表：`frame` 为对象框（EMU，原点在对象框左上角）。 */
+export interface DrawingChart {
+  readonly kind: 'chart'
+  readonly frame: Frame
+  readonly chart: Chart
+}
+
+/** SmartArt：`frame` 为对象框（EMU，原点在对象框左上角），图示在对象框中排版。 */
+export interface DrawingDiagram {
+  readonly kind: 'diagram'
+  readonly frame: Frame
+  readonly diagram: Diagram
+}
+
+/** `graphicData` 中由调用方按关系读取部件的对象：图表与 SmartArt。 */
+export type DrawingGraphic = DrawingChart | DrawingDiagram
+
+export type DrawingNode = DrawingShape | DrawingGroup | DrawingGraphic
 
 /** 浮动对象（`wp:anchor` 与 VML）。 */
 export interface Anchor {
@@ -382,12 +450,14 @@ export interface Anchor {
   /** 对象框（磅），不含 `effectExtent`。 */
   readonly width: number
   readonly height: number
+  /** `wp:effectExtent`：四周为效果预留的范围（磅），计入避让矩形，不改变对象框的位置。 */
+  readonly effect: Edges
   readonly wrap: Wrap
   /** 衬于文字下方。 */
   readonly behind: boolean
   /** 叠放次序（`relativeHeight`），大者在上。 */
   readonly z: number
-  /** 可绘制的内容；图表、SmartArt 等未实现的对象为 `null`，只占位置。 */
+  /** 可绘制的内容；画布、含未实现内容的图表与 SmartArt 等为 `null`，只占位置。 */
   readonly drawing: DrawingNode | null
 }
 
@@ -395,10 +465,15 @@ export interface Anchor {
 export type Background =
   | { readonly kind: 'color'; readonly color: string }
   /**
-   * 图片填充（`v:fill` 的 `type` 为 `frame` 或 `tile`）：自页面左上角按图片的像素尺寸（1 像素为 0.75 磅）平铺；
-   * `part` 为图片部件名，`color` 为图片之下的底色。
+   * 图片填充（`v:fill` 的 `type` 为 `frame` 或 `tile`）：自页面左上角平铺；`part` 为图片部件名，`color` 为图片之下的底色，
+   * `tile` 为真时平铺单元按图片文件记录的分辨率换算，否则按图片的像素尺寸（1 像素为 0.75 磅）。
    */
-  | { readonly kind: 'image'; readonly part: string; readonly color: string | null }
+  | {
+      readonly kind: 'image'
+      readonly part: string
+      readonly color: string | null
+      readonly tile: boolean
+    }
 
 /** 页面边框（`pgBorders`）。 */
 export interface PageBorders {
@@ -457,6 +532,8 @@ export interface DocumentSettings {
   readonly evenAndOddHeaders: boolean
   /** `compat/adjustLineHeightInTable`：表格中的段落对齐行网格（WPS 实测：未设置时不对齐）。 */
   readonly gridInTables: boolean
+  /** 公式设置（`m:mathPr`）；没有该元素时取 `MATH_SETTINGS_DEFAULTS`。 */
+  readonly math: MathSettings
 }
 
 export interface DocxDocument {

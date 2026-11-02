@@ -3,8 +3,8 @@
  *
  * - 坐标：图表局部坐标为 96 dpi 像素，原点为图形框左上角；`parent` 为外层坐标到设备坐标的变换（与形状相同）。
  *   图表整体另向右下平移半个像素：WPS 的像素中心在整数坐标处（校准文件逐页比对，平移后网格线与文字位置一致）。
- * - 绘制顺序：图表区、绘图区、网格线、数据系列（条形、折线与标记、散点、扇区）、坐标轴线与刻度线、坐标轴标签、
- *   坐标轴标题、数据标签、图例、标题。各图表组按自身的坐标轴换算（次坐标轴的组按次坐标轴）。
+ * - 绘制顺序：图表区、绘图区、网格线、数据系列（条形、垂直线、折线与标记、散点、扇区，各组的趋势线在该组系列之后）、
+ *   坐标轴线与刻度线、坐标轴标签、坐标轴标题、数据标签、图例、标题。各图表组按自身的坐标轴换算（次坐标轴的组按次坐标轴）。
  * - 条形：分类宽度 = 条宽 × (系列数 − (系列数 − 1) × 重叠比例 + 间隙比例)，组内条形依次错开 条宽 × (1 − 重叠比例)，
  *   分类两侧各留 间隙比例 / 2 × 条宽。条形从坐标轴交叉值延伸到数据值，超出绘图区的部分裁去。
  * - 饼图：直径为绘图区较短边减去 `PIE_MARGIN` 与数据标签的预留，居中；第一个扇区从 12 点方向起顺时针排列，
@@ -57,6 +57,38 @@ interface Scene {
   readonly matrix: Matrix
   readonly layout: ChartLayout
   readonly date1904: boolean
+  /**
+   * 条形四边与主要网格线上沿在设备坐标中四舍五入到整像素：WPS 表格与 WPS 文字（`host` 为 `sheet`）如此绘制，
+   * WPS 演示按亚像素抗锯齿绘制。实测（WPS 表格对照图 3 页）：本方条形边缘按四舍五入后与对照图一致 8998/9871 处，
+   * 网格线 53/53 条（2 页中的 8 个图表）；折线与标记仍为抗锯齿。
+   */
+  readonly snap: boolean
+}
+
+/** 变换是否只有缩放与平移（缩放为正）。 */
+function axisAligned(m: Matrix): boolean {
+  return m.b === 0 && m.c === 0 && m.a > 0 && m.d > 0
+}
+
+/** 矩形的四边换算到设备坐标后四舍五入到整像素，再换算回局部坐标。 */
+function snapRect(s: Scene, r: Rect): Rect {
+  const m = s.matrix
+  if (!s.snap || !axisAligned(m)) return r
+  const x0 = Math.round(m.a * r.x + m.e)
+  const x1 = Math.round(m.a * (r.x + r.w) + m.e)
+  const y0 = Math.round(m.d * r.y + m.f)
+  const y1 = Math.round(m.d * (r.y + r.h) + m.f)
+  return { x: (x0 - m.e) / m.a, y: (y0 - m.f) / m.d, w: (x1 - x0) / m.a, h: (y1 - y0) / m.d }
+}
+
+/** 线宽为 `width`（局部坐标）的直线在 `at` 处：上沿（左沿）换算到设备坐标后四舍五入，返回对齐后的中线位置。 */
+function snapLine(s: Scene, at: number, width: number, vertical: boolean): number {
+  const m = s.matrix
+  if (!s.snap || !axisAligned(m)) return at
+  const k = vertical ? m.a : m.d
+  const o = vertical ? m.e : m.f
+  const w = Math.max(1, Math.round(width * k))
+  return (Math.round(k * at + o - w / 2) + w / 2 - o) / k
 }
 
 // ── 基本图元 ──
@@ -153,6 +185,8 @@ interface Mapping {
   val(v: number): number
   /** 条形的起点：数值轴上 0 的位置，0 不在刻度范围内时取最近的端点。 */
   readonly base: number
+  /** 分类轴线在数值方向上的位置（垂直线的一端）。 */
+  readonly cross: number
   readonly band: number
   /** 分类轴水平。 */
   readonly horizontal: boolean
@@ -194,6 +228,7 @@ function mapping(s: Scene, g: PlotGroup): Mapping | null {
     cat,
     val: (v) => along(vs, v, valAxis),
     base: along(vs, zero, valAxis),
+    cross: catAxis.at,
     band,
     horizontal: catAxis.horizontal,
     numeric: cs !== null || ds !== null,
@@ -290,7 +325,7 @@ function paintBars(s: Scene, g: PlotGroup, m: Mapping, spots: LabelSpot[]): void
       const r: Rect = m.horizontal
         ? { x: center - m.band / 2 + offset, y: Math.min(a, b), w: bar, h: Math.abs(b - a) }
         : { x: Math.min(a, b), y: center + m.band / 2 - offset - bar, w: Math.abs(b - a), h: bar }
-      paintBox(s, r, pointBox(series, i))
+      paintBox(s, snapRect(s, r), pointBox(series, i))
       const labels = labelsAt(series, i)
       if (labels === null) return
       spots.push({
@@ -308,6 +343,7 @@ function paintBars(s: Scene, g: PlotGroup, m: Mapping, spots: LabelSpot[]): void
     })
   })
   ctx.restore()
+  for (const series of g.series) paintTrendlines(s, series, m)
 }
 
 function smoothSegments(points: readonly { x: number; y: number }[]): Segment[] {
@@ -486,6 +522,88 @@ function paintMarker(s: Scene, marker: Marker, x: number, y: number): void {
   strokePath(s, seg, marker.box.line, r)
 }
 
+interface PlotPoint {
+  readonly x: number
+  readonly y: number
+  readonly i: number
+}
+
+/** 各分类一条垂直线：覆盖该分类各系列的点与分类轴线之间的范围，自数值方向的一端画到另一端。 */
+function paintDropLines(
+  s: Scene,
+  m: Mapping,
+  line: Line,
+  points: readonly (readonly (PlotPoint | null)[])[],
+): void {
+  const n = Math.max(0, ...points.map((p) => p.length))
+  const seg: Segment[] = []
+  for (let i = 0; i < n; i++) {
+    const at = points.map((p) => p[i] ?? null).filter((p): p is PlotPoint => p !== null)
+    const first = at[0]
+    if (first === undefined) continue
+    const values = at.map((p) => (m.horizontal ? p.y : p.x))
+    const lo = Math.min(m.cross, ...values)
+    const hi = Math.max(m.cross, ...values)
+    if (m.horizontal) {
+      seg.push({ kind: 'move', x: first.x, y: lo }, { kind: 'line', x: first.x, y: hi })
+    } else seg.push({ kind: 'move', x: lo, y: first.y }, { kind: 'line', x: hi, y: first.y })
+  }
+  strokePath(s, seg, line, s.layout.plot)
+}
+
+/**
+ * 系列的线性趋势线：以点在分类轴上的位置为自变量按最小二乘拟合数值，自第一个分类画到最后一个分类，裁去绘图区以外的部分。
+ * 少于 2 个点时不绘制。
+ */
+function paintTrendlines(s: Scene, series: Series, m: Mapping): void {
+  if (series.trendlines.length === 0) return
+  const at: number[] = []
+  const cs: number[] = []
+  const vs: number[] = []
+  series.values.forEach((v, i) => {
+    const x = series.xValues?.[i] ?? null
+    if (m.numeric && x === null) return
+    const c = m.cat(i, x)
+    at.push(c)
+    if (v === null) return
+    cs.push(c)
+    vs.push(v)
+  })
+  const n = cs.length
+  if (n < 2) return
+  const cMean = cs.reduce((a, c) => a + c, 0) / n
+  const vMean = vs.reduce((a, v) => a + v, 0) / n
+  let sxy = 0
+  let sxx = 0
+  for (let k = 0; k < n; k++) {
+    sxy += (cs[k]! - cMean) * (vs[k]! - vMean)
+    sxx += (cs[k]! - cMean) ** 2
+  }
+  if (!(sxx > 0)) return
+  const slope = sxy / sxx
+  const point = (c: number) => {
+    const p = m.val(vMean + slope * (c - cMean))
+    return m.horizontal ? { x: c, y: p } : { x: p, y: c }
+  }
+  const a = point(at[0]!)
+  const b = point(at.at(-1)!)
+  const plot = s.layout.plot
+  const ctx = s.base.ctx
+  ctx.save()
+  setMatrix(ctx, s.matrix)
+  ctx.beginPath()
+  ctx.rect(plot.x, plot.y, plot.w, plot.h)
+  ctx.clip()
+  for (const t of series.trendlines) {
+    const seg: Segment[] = [
+      { kind: 'move', x: a.x, y: a.y },
+      { kind: 'line', x: b.x, y: b.y },
+    ]
+    strokePath(s, seg, t.line, plot)
+  }
+  ctx.restore()
+}
+
 function paintLines(
   s: Scene,
   g: PlotGroup,
@@ -497,8 +615,8 @@ function paintLines(
   const sums = totals(g)
   const acc = sums.map(() => 0)
   const plot = s.layout.plot
-  for (const series of g.series) {
-    const pts = series.values.map((raw, i) => {
+  const all = g.series.map((series) =>
+    series.values.map((raw, i): PlotPoint | null => {
       const x = series.xValues === null ? null : (series.xValues[i] ?? null)
       if (m.numeric && x === null) return null
       if (raw === null && (blanks !== 'zero' || series.missing.has(i))) return null
@@ -511,7 +629,11 @@ function paintLines(
       const c = m.cat(i, x)
       const p = m.val(v)
       return m.horizontal ? { x: c, y: p, i } : { x: p, y: c, i }
-    })
+    }),
+  )
+  if (g.dropLines !== null) paintDropLines(s, m, g.dropLines, all)
+  g.series.forEach((series, k) => {
+    const pts = all[k]!
     if (g.lines && series.box.line !== null) {
       const runs: { x: number; y: number }[][] = [[]]
       pts.forEach((p, i) => {
@@ -545,7 +667,8 @@ function paintLines(
         marker,
       })
     }
-  }
+  })
+  for (const series of g.series) paintTrendlines(s, series, m)
 }
 
 /** 扇区（或圆环段）的路径。 */
@@ -767,7 +890,9 @@ function paintGridlines(s: Scene): void {
     const line = a.axis.majorGridlines
     if (line === null) continue
     const seg: Segment[] = []
-    for (const t of a.ticks) {
+    const width = line.width / EMU_PER_PX
+    for (const tick of a.ticks) {
+      const t = snapLine(s, tick, width, a.horizontal)
       if (a.horizontal)
         seg.push({ kind: 'move', x: t, y: plot.y }, { kind: 'line', x: t, y: plot.y + plot.h })
       else seg.push({ kind: 'move', x: plot.x, y: t }, { kind: 'line', x: plot.x + plot.w, y: t })
@@ -860,7 +985,8 @@ function percentDigits(code: string): number {
  * 数据标签文字框的左上角（实测）：柱形外端相距 5，横向条形外端相距 9.4（`inEnd`、`inBase` 在内侧以同样间距）；
  * 折线与散点的上方、下方、右侧（左侧）与标记边缘相距 7、7.9、9.6；
  * 饼图扇区内侧（`bestFit`、`inEnd`）的标签中心距圆心 半径 − 径向半宽 − 7，外侧（`outEnd`）为 半径 + 径向半宽 + 11，
- * 径向半宽为文字框沿半径方向的投影的一半；`ctr` 与圆环在半径（环宽）中点。
+ * 径向半宽为文字框沿半径方向的投影的一半；`ctr` 与圆环在半径（环宽）中点。有手动位置的扇区标签以外侧位置为自动位置
+ * （WPS 演示实测 `bestFit` 的标签）。未实现：移开的扇区标签的引导线。
  */
 function placeLabel(spot: LabelSpot, w: number, h: number): { x: number; y: number } {
   const a = spot.anchor
@@ -901,19 +1027,27 @@ function placeLabel(spot: LabelSpot, w: number, h: number): { x: number; y: numb
   const sin = Math.sin(sl.angle)
   const radial = (Math.abs(cos) * w + Math.abs(sin) * h) / 2
   let dist = sl.r - radial - 7
-  if (pos === 'outEnd') dist = sl.r + radial + 11
+  if (pos === 'outEnd' || spot.labels.offset !== null) dist = sl.r + radial + 11
   else if (sl.inner > 0) dist = (sl.r + sl.inner) / 2
   else if (pos === 'ctr') dist = sl.r / 2
   return { x: sl.cx + cos * dist - w / 2, y: sl.cy + sin * dist * sl.squash - h / 2 }
 }
 
+/** 手动位置（`DataLabels.offset`）在自动位置上按图表区宽高的比例偏移。 */
 function paintDataLabels(s: Scene, spots: readonly LabelSpot[]): void {
   for (const spot of spots) {
-    const text = dataLabelText(spot.labels, spot.series, spot.index, spot.percent, s.date1904)
-    if (text === '') continue
-    const m = measure(labelBody(text, spot.labels.text.run), s.settings)
-    const { x, y } = placeLabel(spot, m.width, m.height)
-    paintBox(s, { x, y, w: m.width, h: m.height }, spot.labels.box)
+    const labels = spot.labels
+    let body = labels.rich
+    if (body === null) {
+      const text = dataLabelText(labels, spot.series, spot.index, spot.percent, s.date1904)
+      if (text === '') continue
+      body = labelBody(text, labels.text.run)
+    }
+    const m = measure(body, s.settings)
+    const auto = placeLabel(spot, m.width, m.height)
+    const x = auto.x + (labels.offset?.x ?? 0) * s.layout.width
+    const y = auto.y + (labels.offset?.y ?? 0) * s.layout.height
+    paintBox(s, { x, y, w: m.width, h: m.height }, labels.box)
     paintText(s, { layout: m.layout, x, y, width: m.width, height: m.height, rotation: 0 })
   }
 }
@@ -927,7 +1061,14 @@ function paintLegend(s: Scene, chart: Chart): void {
   for (const e of legend.entries) {
     const r = e.symbol
     const box = e.point === null ? e.series.box : pointBox(e.series, e.point)
-    if (e.group.type === 'line' || e.group.type === 'scatter') {
+    if (e.trend !== null) {
+      const cy = r.y + r.h / 2
+      const seg: Segment[] = [
+        { kind: 'move', x: r.x, y: cy },
+        { kind: 'line', x: r.x + r.w, y: cy },
+      ]
+      strokePath(s, seg, e.trend.line, r)
+    } else if (e.group.type === 'line' || e.group.type === 'scatter') {
       const cy = r.y + r.h / 2
       if (e.group.lines) {
         strokePath(
@@ -999,6 +1140,7 @@ export function paintChart(scene: ShapeScene, chart: Chart, frame: Frame, parent
     matrix: multiply(placed.matrix, translation(0.5, 0.5)),
     layout,
     date1904: chart.date1904,
+    snap: chart.host === 'sheet',
   }
   scene.ctx.save()
   chartArea(s, chart)

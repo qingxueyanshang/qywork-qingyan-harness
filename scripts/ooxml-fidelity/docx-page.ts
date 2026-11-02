@@ -3,6 +3,7 @@
  *
  * 页面向 `window` 暴露 `renderPage(id, n, width, height)`（`n` 从 1 起，返回本方总页数与该页统计）与
  * `pageCount(id)`；截图由 Node 驱动的 Playwright 完成。本文件只声明用到的浏览器接口，不引入 DOM 类型库。
+ * 字体按 `requiredFonts` 的字体名取得，含公式所用的数学字体。
  */
 
 import {
@@ -11,7 +12,7 @@ import {
   DocxFonts,
   layoutPages,
   loadDocxFace,
-  type PageBitmap,
+  type Page,
   type PageContext,
   type PageItem,
   paintPage,
@@ -19,6 +20,12 @@ import {
   requiredFonts,
   SCREEN_SCALE,
 } from '../../packages/ooxml/src/docx/index.ts'
+import {
+  decodePicture,
+  type ImageDecoder,
+  type PaintImage,
+  type PaintPicture,
+} from '../../packages/ooxml/src/drawingml/index.ts'
 
 interface CanvasElement {
   width: number
@@ -36,7 +43,10 @@ declare class FontFace {
   constructor(family: string, source: ArrayBuffer, descriptors: { weight: string; style: string })
   load(): Promise<unknown>
 }
-declare function createImageBitmap(blob: Blob): Promise<PageBitmap>
+declare function createImageBitmap(source: Blob | ImageData): Promise<PaintImage>
+declare class ImageData {
+  constructor(data: Uint8ClampedArray<ArrayBuffer>, width: number, height: number)
+}
 declare class OffscreenCanvas {
   constructor(width: number, height: number)
   readonly width: number
@@ -84,7 +94,7 @@ function loadFamily(name: string): Promise<DocxFace[]> {
 interface Doc {
   readonly pages: DocumentPages
   readonly fonts: DocxFonts
-  readonly images: readonly (PageBitmap | null)[]
+  readonly images: readonly (PaintPicture | null)[]
 }
 
 const docs = new Map<string, Promise<Doc>>()
@@ -103,12 +113,12 @@ function loadDoc(id: string): Promise<Doc> {
       const faces = (await Promise.all(names.map(loadFamily))).flat()
       const fonts = new DocxFonts(faces, FALLBACK)
       const { pages } = layoutPages(doc, fonts)
+      const decoder: ImageDecoder = {
+        file: (bytes, type) => createImageBitmap(new Blob([bytes.slice()], { type })),
+        pixels: (width, height, data) => createImageBitmap(new ImageData(data, width, height)),
+      }
       const images = await Promise.all(
-        pages.images.map((im) =>
-          createImageBitmap(new Blob([im.bytes.slice()], { type: im.contentType })).catch(
-            () => null,
-          ),
-        ),
+        pages.images.map((im) => decodePicture(im.bytes, im.contentType, decoder)),
       )
       return { pages, fonts, images }
     })()
@@ -124,12 +134,47 @@ function countTables(items: readonly PageItem[]): number {
   return n
 }
 
+/**
+ * 本页 `kind` 种对象（图表或 SmartArt）的个数：段落中的嵌入式对象（含表格中的）与浮动对象（不含组合内的）。
+ */
+function countGraphics(page: Page, kind: 'chart' | 'diagram'): number {
+  const inItems = (items: readonly PageItem[]): number =>
+    items.reduce(
+      (n, it) =>
+        n +
+        (it.kind === 'table'
+          ? inItems(it.items)
+          : it.graphics.filter((g) => g.graphic.kind === kind).length),
+      0,
+    )
+  let n = inItems(page.header) + inItems(page.body) + inItems(page.footer)
+  for (const f of page.floats) n += inItems(f.items) + (f.drawing?.kind === kind ? 1 : 0)
+  return n
+}
+
+/** 本页绘制的公式个数（段落、表格与文本框中的）。 */
+function countFormulas(page: Page): number {
+  const inItems = (items: readonly PageItem[]): number =>
+    items.reduce((n, it) => n + (it.kind === 'table' ? inItems(it.items) : it.formulas.length), 0)
+  let n = inItems(page.header) + inItems(page.body) + inItems(page.footer)
+  for (const f of page.floats) n += inItems(f.items)
+  return n
+}
+
 async function renderPage(
   id: string,
   n: number,
   width: number,
   height: number,
-): Promise<{ pages: number; tables: number; floating: number } | null> {
+): Promise<{
+  pages: number
+  tables: number
+  floating: number
+  charts: number
+  diagrams: number
+  formulas: number
+  hiddenMath: number
+} | null> {
   const { pages, fonts, images } = await loadDoc(id)
   const page = pages.pages[n - 1]
   if (!page) return null
@@ -154,6 +199,10 @@ async function renderPage(
     pages: pages.pages.length,
     tables: countTables(page.body),
     floating: page.floats.length,
+    charts: countGraphics(page, 'chart'),
+    diagrams: countGraphics(page, 'diagram'),
+    formulas: countFormulas(page),
+    hiddenMath: page.hiddenMath,
   }
 }
 

@@ -5,7 +5,11 @@
  *   跨行单元格所需高度超出所跨各行之和时，差额加到所跨的最后一行。
  * - 被合并的单元格（`hMerge`、`vMerge`）不绘制；合并起点的单元格覆盖 `gridSpan × rowSpan` 的区域。
  * - 绘制顺序：表格背景、各单元格填充、各单元格文字、各单元格边框（上、下、左、右、两条对角线）。
- *   相邻单元格共用的边由两侧各画一次。
+ *   相邻单元格共用的边两侧的线相同时只画一次，不同时两侧各画一次。
+ * - 边框的线宽按设备像素四舍五入（至少 1 个设备像素），不足 1 磅的边框另把不透明度乘以磅数；线的位置不取整。
+ *   实测（WPS 演示导出图，2 × 2 表格四边同线宽，0.5–4.5 磅，边框在像素内的 4 种位置）：内部竖线与横线的覆盖量
+ *   0.5 磅为 0.5 像素、0.75 磅为 0.75 像素、1 磅（1.33 像素）为 1 像素、2 磅（2.67 像素）为 3 像素，与只画一次相同。
+ *   不要把取整移到形状共用的 `lineWidth`：语料中形状的虚线曲线取整后线段变短变细（精创第 2 页下降 0.0049）。
  * - `vert`、`vert270` 的单元格文字按旋转绘制；其他竖排方式不绘制（计入 `verticalText`）。
  */
 
@@ -20,7 +24,12 @@ import {
   setMatrix,
   translation,
 } from '../../drawingml/paint/context.ts'
-import { type PaintResources, paintFill, traceRect } from '../../drawingml/paint/fill.ts'
+import {
+  deviceScale,
+  type PaintResources,
+  paintFill,
+  traceRect,
+} from '../../drawingml/paint/fill.ts'
 import { paintLine } from '../../drawingml/paint/line.ts'
 import {
   type BodyLayout,
@@ -31,6 +40,7 @@ import {
 import type { Table, TableCell } from '../model.ts'
 
 const EMU_PER_PX = 9525
+const EMU_PER_PT = 12700
 const PX_PER_PT = 4 / 3
 /** 按旋转绘制的文字方向；其余竖排方式不绘制。 */
 const ROTATED = new Set(['vert', 'vert270'])
@@ -209,8 +219,24 @@ export function paintTable(
       [b.diagonalUp, edge(c.x, y1, x1, c.y)],
     )
   }
+  const drawn = new Set<string>()
+  const device = deviceScale(matrix)
   for (const [line, paths] of borders) {
     if (line === null) continue
-    paintLine(ctx, paths, line, { width, height, matrix }, res, canvas)
+    const key = JSON.stringify([line, paths])
+    if (drawn.has(key)) continue
+    drawn.add(key)
+    const px = Math.max(1, Math.round((line.width / EMU_PER_PX) * device)) / device
+    ctx.save()
+    if (line.width > 0) ctx.globalAlpha *= Math.min(1, line.width / EMU_PER_PT)
+    paintLine(
+      ctx,
+      paths,
+      { ...line, width: px * EMU_PER_PX },
+      { width, height, matrix },
+      res,
+      canvas,
+    )
+    ctx.restore()
   }
 }

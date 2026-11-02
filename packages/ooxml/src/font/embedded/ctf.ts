@@ -7,7 +7,8 @@
  *   与其余指令相接。
  * - CFF 轮廓的字体（`OTTO`）没有 `glyf`，各表原样保留。
  * - 输出的 `loca` 为长格式（`head.indexToLocFormat` 置 1）；`maxp.maxSizeOfInstructions` 不小于重新生成的指令长度。
- *   表的顺序与其余表的字节保持不变，校验和重新计算。
+ *   表的顺序与其余表的字节保持不变，校验和重新计算。浏览器拒绝的两种内容在此修正：长度为 0 的表不写出，
+ *   `cmap` 格式 12、13 子表的语言字段置 0。
  */
 
 import { FontFormatError } from '../sfnt.ts'
@@ -548,6 +549,26 @@ function buildSfnt(version: number, tables: readonly Table[]): Uint8Array {
   return font
 }
 
+/**
+ * `cmap` 中格式 12、13 子表的语言字段置 0（规范要求非 Macintosh 平台为 0）。PowerPoint 的子集化在该字段写入
+ * 非 0 的值（语料中 3 个等线子集），浏览器的字体校验（OTS）因此拒绝整个字体。
+ */
+function clearCmapLanguage(data: Uint8Array): Uint8Array {
+  const count = readU16(data, 2)
+  let out = data
+  for (let i = 0; i < count; i++) {
+    const at = 4 + 8 * i
+    const platform = readU16(data, at)
+    const offset = ((readU16(data, at + 4) << 16) | readU16(data, at + 6)) >>> 0
+    const format = readU16(data, offset)
+    if (platform === 1 || (format !== 12 && format !== 13) || offset + 12 > data.length) continue
+    if (data.subarray(offset + 8, offset + 12).every((b) => b === 0)) continue
+    if (out === data) out = data.slice()
+    out.fill(0, offset + 8, offset + 12)
+  }
+  return out
+}
+
 /** 由三个解压后的数据块还原 TrueType 字体字节。 */
 export function ctfToTrueType(rest: Uint8Array, push: Uint8Array, code: Uint8Array): Uint8Array {
   const r = new Reader(rest)
@@ -604,6 +625,9 @@ export function ctfToTrueType(rest: Uint8Array, push: Uint8Array, code: Uint8Arr
       case 'VDMX':
         data = decodeVdmx(data)
         break
+      case 'cmap':
+        data = clearCmapLanguage(data)
+        break
       case 'head': {
         if (glyphs === null) break
         data = data.slice()
@@ -621,7 +645,8 @@ export function ctfToTrueType(rest: Uint8Array, push: Uint8Array, code: Uint8Arr
         break
       }
     }
-    tables.push({ tag: t.tag, data })
+    // 长度为 0 的表不写出：表中没有数据，浏览器的字体校验（OTS）拒绝含这种表的字体（语料中腾讯体有 3 个）。
+    if (data.length > 0) tables.push({ tag: t.tag, data })
   }
   if (glyphs !== null && !raw.has('loca')) tables.push({ tag: 'loca', data: glyphs.loca })
   return buildSfnt(version, tables)

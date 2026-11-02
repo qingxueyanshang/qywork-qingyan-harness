@@ -5,12 +5,17 @@
  * - 填充区域为形状框 `[0, width] × [0, height]`；渐变的起止与图片的拉伸区域都相对形状框计算。
  * - 线性渐变：角度为颜色变化方向，顺时针；`scaled` 时角度在单位正方形中定义再随形状框拉伸。
  *   渐变长度为形状框在该方向上的投影长度。
+ * - 色标间的颜色按 `addStops` 插值：只有位于 0 与 1 的两个色标时颜色通道不按线性变化。
  * - 路径渐变：色标位置 0 位于 `fillToRect` 所指的焦点区域，1 位于形状框边缘。`circle` 在单位正方形中
  *   以焦点中心到最远角的距离为半径，再随形状框拉伸；`rect` 与 `shape` 均按矩形绘制（`shape` 不沿形状轮廓）。
  * - `rotWithShape` 为假时，渐变方向与平铺图片按幻灯片坐标轴绘制，不随形状旋转。
- * - 平铺图片按 96 dpi 计算图片的原始尺寸（不读取图片文件中的分辨率）。
+ * - 图片的解码与按裁剪比例绘制见 `picture.ts`（位图与图元文件）。
+ * - 平铺的单元尺寸为图片像素数按图片文件记录的分辨率换算为 96 dpi 像素后四舍五入（图元文件为图片框按 96 dpi 的尺寸，
+ *   先栅格化），再乘以 `sx`、`sy`。实测（WPS 演示导出图）：120 × 90 的图片在 150 dpi 时单元为 77 × 58 像素，150 × 75 dpi 时为
+ *   77 × 115 像素。
  */
 
+import type { MetafileFonts } from '../../metafile/index.ts'
 import { type Color, colorToCss } from '../color.ts'
 import type { Fill, GradientStop, ImageFill, RelativeRect } from '../fill.ts'
 import type { Segment } from '../geometry/path.ts'
@@ -26,6 +31,13 @@ import {
   translation,
 } from './context.ts'
 import { patternBits } from './pattern.ts'
+import {
+  drawCropped,
+  drawPicture,
+  type PaintPicture,
+  pictureRaster,
+  pictureSize,
+} from './picture.ts'
 
 export interface FillArea {
   readonly width: number
@@ -35,9 +47,11 @@ export interface FillArea {
 }
 
 export interface PaintResources {
-  /** 图片部件的位图；未加载或无法解码时为 `null`。 */
-  image(part: string): PaintImage | null
+  /** 图片部件；未加载或无法解码时为 `null`。 */
+  image(part: string): PaintPicture | null
   readonly createCanvas: CreateCanvas
+  /** 图元文件中文字的字体；没有时含文字的图元文件不绘制。 */
+  readonly metafileFonts?: MetafileFonts
 }
 
 /** 局部坐标中每单位对应的设备像素数（取两个方向的平均值）。 */
@@ -82,7 +96,34 @@ export function traceRect(ctx: PaintContext, width: number, height: number, marg
   ctx.rect(-margin, -margin, width + 2 * margin, height + 2 * margin)
 }
 
+/**
+ * 只有位于 0 与 1 的两个色标时，颜色通道在四分点处的取值占两端之差的比例（通道增大时；减小时取其镜像，
+ * 即偏向较大的一端），四分点之间线性；透明度线性。实测（WPS 演示导出图，线性 0° 与 90°、circle 与 rect
+ * 路径渐变，黑白、灰白、红蓝与 5 组彩色）：黑 → 白在 1/4、1/2、3/4 处为 107、185、235，白 → 黑为 235、185、108，
+ * 灰 128 → 白为 181、220、245。三个以上的色标、色标不在两端（20% 与 80%）时为线性插值。
+ */
+const RISE = [0, 0.42, 0.7245, 0.92, 1] as const
+
+function riseChannel(from: number, to: number, k: number): number {
+  return from <= to ? from + (to - from) * RISE[k]! : to + (from - to) * RISE[4 - k]!
+}
+
 function addStops(g: PaintGradient, stops: readonly GradientStop<Color>[]): void {
+  const [a, b] = stops
+  if (stops.length === 2 && a!.position === 0 && b!.position === 1) {
+    const x = a!.color
+    const y = b!.color
+    for (let k = 0; k <= 4; k++) {
+      const c: Color = {
+        r: riseChannel(x.r, y.r, k),
+        g: riseChannel(x.g, y.g, k),
+        b: riseChannel(x.b, y.b, k),
+        a: x.a + ((y.a - x.a) * k) / 4,
+      }
+      g.addColorStop(k / 4, colorToCss(c))
+    }
+    return
+  }
   for (const s of stops) g.addColorStop(Math.min(1, Math.max(0, s.position)), colorToCss(s.color))
 }
 
@@ -288,49 +329,6 @@ function paintRectGradient(
   ])
 }
 
-/** 图片缩放的插值质量：`high` 与 WPS 导出图更接近（实测 37 页平均分 0.9016 → 0.9024）。 */
-const IMAGE_QUALITY = 'high'
-
-/**
- * 按 `srcRect` 裁剪绘制图片到目标矩形：裁剪比例为负时图片在目标矩形内缩小，超出原图的部分透明。
- */
-export function drawCropped(
-  ctx: PaintContext,
-  image: PaintImage,
-  crop: RelativeRect,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-): void {
-  const iw = image.width
-  const ih = image.height
-  const sx0 = crop.left * iw
-  const sx1 = iw - crop.right * iw
-  const sy0 = crop.top * ih
-  const sy1 = ih - crop.bottom * ih
-  if (sx1 <= sx0 || sy1 <= sy0 || w === 0 || h === 0) return
-  const kx = w / (sx1 - sx0)
-  const ky = h / (sy1 - sy0)
-  const cx0 = Math.max(0, sx0)
-  const cx1 = Math.min(iw, sx1)
-  const cy0 = Math.max(0, sy0)
-  const cy1 = Math.min(ih, sy1)
-  if (cx1 <= cx0 || cy1 <= cy0) return
-  if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = IMAGE_QUALITY
-  ctx.drawImage(
-    image,
-    cx0,
-    cy0,
-    cx1 - cx0,
-    cy1 - cy0,
-    x + (cx0 - sx0) * kx,
-    y + (cy0 - sy0) * ky,
-    (cx1 - cx0) * kx,
-    (cy1 - cy0) * ky,
-  )
-}
-
 /** 图片填充：拉伸到 `fillRect` 所指区域，或按 `tile` 平铺。调用方已裁剪到形状路径。 */
 export function paintImageFill(
   ctx: PaintContext,
@@ -338,36 +336,42 @@ export function paintImageFill(
   area: FillArea,
   res: PaintResources,
 ): void {
-  const bitmap = image.part === null ? null : res.image(image.part)
-  if (bitmap === null) return
+  const picture = image.part === null ? null : res.image(image.part)
+  if (picture === null) return
+  const fonts = res.metafileFonts ?? null
   const { width, height } = area
   ctx.globalAlpha *= image.alpha
   if (image.tile === null) {
     const r = image.stretch ?? { left: 0, top: 0, right: 0, bottom: 0 }
     const x = r.left * width
     const y = r.top * height
-    drawCropped(
-      ctx,
-      bitmap,
-      image.crop,
+    const rect = {
       x,
       y,
-      width - r.right * width - x,
-      height - r.bottom * height - y,
-    )
+      width: width - r.right * width - x,
+      height: height - r.bottom * height - y,
+    }
+    drawPicture(ctx, picture, image.crop, rect, area.matrix, 'high', fonts)
     return
   }
   const tile = image.tile
+  const bitmap = pictureRaster(picture, res.createCanvas, fonts)
+  if (bitmap === null) return
   const source = tileSource(bitmap, image.crop, tile.flip, res.createCanvas)
   if (source === null) return
   const pattern = ctx.createPattern(source.canvas, 'repeat')
   if (pattern === null) return
-  const tw = (source.width * tile.scaleX) / (tile.flip === 'x' || tile.flip === 'xy' ? 2 : 1)
-  const th = (source.height * tile.scaleY) / (tile.flip === 'y' || tile.flip === 'xy' ? 2 : 1)
+  const { width: pw, height: ph, resolution } = pictureSize(picture)
+  const kx = Math.max(1, Math.round((pw * 96) / resolution.x)) / bitmap.width
+  const ky = Math.max(1, Math.round((ph * 96) / resolution.y)) / bitmap.height
+  const sx = tile.scaleX * kx
+  const sy = tile.scaleY * ky
+  const tw = (source.width * sx) / (tile.flip === 'x' || tile.flip === 'xy' ? 2 : 1)
+  const th = (source.height * sy) / (tile.flip === 'y' || tile.flip === 'xy' ? 2 : 1)
   const { x: ax, y: ay } = alignTile(tile.align, width - tw, height - th)
   const ox = ax + tile.offsetX / EMU_PER_PX
   const oy = ay + tile.offsetY / EMU_PER_PX
-  let m = multiply(translation(ox, oy), scaling(tile.scaleX, tile.scaleY))
+  let m = multiply(translation(ox, oy), scaling(sx, sy))
   if (!image.rotateWithShape) {
     const s = deviceScale(area.matrix)
     const am = area.matrix
@@ -424,7 +428,7 @@ function tileSource(
         i === 1 ? 2 * w : 0,
         j === 1 ? 2 * h : 0,
       )
-      drawCropped(c, bitmap, crop, 0, 0, w, h)
+      drawCropped(c, bitmap, 'high', crop, 0, 0, w, h)
     }
   }
   return { canvas, width: w * fx, height: h * fy }

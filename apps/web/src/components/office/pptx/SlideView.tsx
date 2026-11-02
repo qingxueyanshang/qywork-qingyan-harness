@@ -9,20 +9,27 @@
  * - 嵌入字体每次加载以新的族名注册，文档被替换或卸载时从 `document.fonts` 删除，尚未完成的还原结果丢弃：
  *   不同文件嵌入同名字体的不同子集时，族名相同会使绘制取到另一份字形。
  * - 缺少字体与缺字时使用宋体；主机没有宋体时取文档字体中主机已有的第一个。
- * - 图片在幻灯片首次进入可见区域时读取并解码，按部件缓存到文档被替换为止。
+ * - 图片（位图与图元文件）在幻灯片首次进入可见区域时读取并解码，按部件缓存到文档被替换为止。
  *
  * 默认导出供 `lazy()` 使用：解析与绘制代码只在打开演示文稿时下载。
  */
 
-import type { CreateCanvas, PaintCanvas, PaintContext, PaintImage } from '@qywork/ooxml/drawingml'
-import { readFaces, readMetrics, readVerticalMetrics } from '@qywork/ooxml/font'
+import {
+  type CreateCanvas,
+  decodePicture,
+  type ImageDecoder,
+  type PaintCanvas,
+  type PaintContext,
+  type PaintPicture,
+} from '@qywork/ooxml/drawingml'
 import {
   type EmbeddedFont,
   type Presentation,
   paintSlide,
   presentationFonts,
-  type SlideFont,
-  type SlideFontSource,
+  readSlideFace,
+  type SlideFace,
+  type SlideFonts,
   slideImages,
   type UnsupportedKind,
 } from '@qywork/ooxml/pptx'
@@ -62,13 +69,18 @@ const UNSUPPORTED_LABEL: Record<UnsupportedKind, string> = {
 const FALLBACK = '宋体'
 const EMU_PER_PX = 9525
 
+const imageDecoder: ImageDecoder = {
+  file: (bytes, type) => createImageBitmap(new Blob([bytes], { type })),
+  pixels: (width, height, data) => createImageBitmap(new ImageData(data, width, height)),
+}
+
 interface Doc {
   readonly presentation: Presentation
   /** 主机字体与已注册的嵌入字体；嵌入字体注册后，此后的绘制即取到它。 */
-  readonly fonts: SlideFontSource
+  readonly fonts: SlideFonts
   readonly channel: WorkerChannel<PptxRequest, PptxReplies>
   /** 已解码的图片部件；无法解码的为 `null`。 */
-  readonly images: Map<string, PaintImage | null>
+  readonly images: Map<string, PaintPicture | null>
   /** 正在读取的图片部件。 */
   readonly reading: Map<string, Promise<void>>
   /**
@@ -80,25 +92,14 @@ interface Doc {
   readonly dispose: () => void
 }
 
-/** 字体的排版度量，按字体缓存；字体表不完整时为 `null`，按主机上没有该字体处理。 */
-const slideFonts = new WeakMap<HostFace, SlideFont | null>()
+/** 字体的排版度量与点阵，按字体缓存；字体表不完整时为 `null`，按主机上没有该字体处理。 */
+const slideFonts = new WeakMap<HostFace, SlideFace | null>()
 
-function slideFont(host: HostFace): SlideFont | null {
+function slideFont(host: HostFace): SlideFace | null {
   let font = slideFonts.get(host)
   if (font === undefined) {
     try {
-      const sfnt = readFaces(host.bytes)[0]
-      font = sfnt
-        ? {
-            face: {
-              metrics: readMetrics(host.bytes, sfnt),
-              vertical: readVerticalMetrics(host.bytes, sfnt),
-            },
-            family: host.family,
-            bold: host.bold,
-            italic: host.italic,
-          }
-        : null
+      font = readSlideFace(host.bytes, host.family, host.bold, host.italic)
     } catch {
       font = null
     }
@@ -107,7 +108,7 @@ function slideFont(host: HostFace): SlideFont | null {
   return font
 }
 
-function pick(list: readonly SlideFont[], bold: boolean, italic: boolean): SlideFont | null {
+function pick(list: readonly SlideFace[], bold: boolean, italic: boolean): SlideFace | null {
   return (
     list.find((f) => f.bold === bold && f.italic === italic) ??
     list.find((f) => f.bold === bold) ??
@@ -152,12 +153,17 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
     }
     const presentation = parsed.value
     const host = await loadHostFaces([...presentationFonts(presentation), FALLBACK])
-    const fonts = new Map<string, SlideFont[]>()
+    // 按文件中的字体名与按族名各记一份：绘制时按族名取得点阵（`SlideFonts.family`）。
+    const fonts = new Map<string, SlideFace[]>()
+    const families = new Map<string, SlideFace[]>()
+    const add = (name: string, font: SlideFace) => {
+      fonts.set(name, [...(fonts.get(name) ?? []), font])
+      const same = families.get(font.family) ?? []
+      if (!same.includes(font)) families.set(font.family, [...same, font])
+    }
     for (const [name, list] of host) {
-      fonts.set(
-        name,
-        list.map(slideFont).filter((f) => f !== null),
-      )
+      fonts.set(name, [])
+      for (const font of list.map(slideFont)) if (font !== null) add(name, font)
     }
     const fallback =
       pick(fonts.get(FALLBACK) ?? [], false, false) ??
@@ -186,14 +192,18 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
         embedded.push(face)
         const font = slideFont({ family, bold: f.bold, italic: f.italic, bytes })
         if (!font) continue
-        fonts.set(f.typeface, [...(fonts.get(f.typeface) ?? []), font])
+        add(f.typeface, font)
         onFont(f.typeface)
       }
     }
     signal.removeEventListener('abort', dispose)
     return {
       presentation,
-      fonts: { face: (name, bold, italic) => pick(fonts.get(name) ?? [], bold, italic), fallback },
+      fonts: {
+        face: (name, bold, italic) => pick(fonts.get(name) ?? [], bold, italic),
+        fallback,
+        family: (name) => families.get(name) ?? [],
+      },
       channel,
       images: new Map(),
       reading: new Map(),
@@ -224,13 +234,11 @@ export default function SlideView(props: { path: string; mtime: number }) {
     if (unread.length > 0) {
       const done = d.channel.request({ kind: 'images', parts: unread }).then(
         async (found) => {
-          const decoded = new Map<string, PaintImage | null>()
+          const decoded = new Map<string, PaintPicture | null>()
           await Promise.all(
             found.map(async ([part, img]) => {
-              const blob = new Blob([img.bytes as Uint8Array<ArrayBuffer>], {
-                type: img.contentType,
-              })
-              decoded.set(part, await createImageBitmap(blob).catch(() => null))
+              const bytes = img.bytes as Uint8Array<ArrayBuffer>
+              decoded.set(part, await decodePicture(bytes, img.contentType, imageDecoder))
             }),
           )
           for (const part of unread) d.images.set(part, decoded.get(part) ?? null)
@@ -250,8 +258,12 @@ export default function SlideView(props: { path: string; mtime: number }) {
   const paint = (index: number, canvas: HTMLCanvasElement) => {
     const d = doc()
     const slide = d?.presentation.slides[index]
-    const ctx = canvas.getContext('2d') as PaintContext | null
+    // 不透明画布：浏览器对不透明画布上的文字使用子像素抗锯齿，与 WPS 屏幕显示（ClearType）相同，透明画布只用灰度抗锯齿。
+    // 初始像素为黑色，先以白色铺满：画布高度按 CSS 尺寸取整，`paintSlide` 按宽度求比例，最后一行像素可能只被部分覆盖。
+    const ctx = canvas.getContext('2d', { alpha: false }) as PaintContext | null
     if (!d || !slide || !ctx) return
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
     const scale = canvas.width / (d.presentation.width / EMU_PER_PX)
     paintSlide(
       ctx,

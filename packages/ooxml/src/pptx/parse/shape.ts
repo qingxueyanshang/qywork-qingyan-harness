@@ -2,11 +2,13 @@
  * 形状树：`spTree` 与 `grpSp` 中的 `sp`、`pic`、`grpSp`、`cxnSp`、`graphicFrame`、`contentPart`。
  *
  * - 只记录文档中出现的属性（`spPr` 各项缺失时为 `null`），占位符继承、样式引用与坐标换算在 `resolve/` 中完成。
- * - `AlternateContent` 取 `Fallback`：墨迹（`contentPart`）与公式的替代图片按普通图片读取；
- *   不带替代内容的 `contentPart` 计为 `ink`。
+ * - `AlternateContent` 的分支由扫描器按 `../load.ts` 声明的扩展选择：墨迹取 `contentPart`，公式取 `Fallback` 中的
+ *   替代图片（按普通图片读取）。
  * - 每个形状的 `found` 记录该形状自身（含其文字与表格）遇到的未实现元素；组合的 `found` 不含子形状。
+ * - 图表、SmartArt 与墨迹只记录部件名，能否绘制在求值时判定并计数。
  */
 
+import { type DiagramParts, readDiagramParts } from '../../drawingml/diagram/read.ts'
 import { type ImageFill, readFill, ZERO_RECT } from '../../drawingml/fill.ts'
 import {
   countOtherEffects,
@@ -22,7 +24,7 @@ import {
   type Xfrm,
 } from '../../drawingml/shape/read.ts'
 import { type RawTextBody, readTextBody, type TextContext } from '../../drawingml/text/read.ts'
-import { eachChild, int, relAttr, type Scanner, skip } from '../../opc/read.ts'
+import { eachChild, int, relAttr, type Scanner } from '../../opc/read.ts'
 import type { PlaceholderType, UnsupportedKind } from '../model.ts'
 import { type RawTable, readTable } from './table.ts'
 
@@ -80,6 +82,16 @@ export interface RawGraphic extends RawBase {
   readonly content: 'chart' | 'smartArt' | 'ole' | 'graphic'
   /** `c:chart` 引用的图表部件名；扩展图表（`cx:chart`）与关系缺失时为 `null`。 */
   readonly chart: string | null
+  /** SmartArt 的部件名；数据部件的关系缺失时为 `null`。 */
+  readonly diagram: DiagramParts | null
+}
+
+/** 墨迹（`contentPart`）。 */
+export interface RawInk extends RawBase {
+  readonly kind: 'ink'
+  readonly xfrm: Xfrm | null
+  /** `r:id` 所指的 InkML 部件名；关系缺失或为外部链接时为 `null`。 */
+  readonly part: string | null
 }
 
 export type RawShape =
@@ -89,6 +101,7 @@ export type RawShape =
   | RawGroup
   | RawTableFrame
   | RawGraphic
+  | RawInk
 
 const PLACEHOLDER_TYPES = new Set<string>([
   'title',
@@ -112,12 +125,13 @@ const PLACEHOLDER_TYPES = new Set<string>([
 const MEDIA_ELEMENTS = new Set(['videoFile', 'audioFile', 'wavAudioFile', 'quickTimeFile', 'media'])
 
 const CHART_URI = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+const DIAGRAM_URI = 'http://schemas.openxmlformats.org/drawingml/2006/diagram'
 
 const GRAPHIC_KINDS: Record<string, RawGraphic['content'] | 'table'> = {
   'http://schemas.openxmlformats.org/drawingml/2006/table': 'table',
   [CHART_URI]: 'chart',
   'http://schemas.microsoft.com/office/drawing/2014/chartex': 'chart',
-  'http://schemas.openxmlformats.org/drawingml/2006/diagram': 'smartArt',
+  [DIAGRAM_URI]: 'smartArt',
   'http://schemas.openxmlformats.org/presentationml/2006/ole': 'ole',
 }
 
@@ -230,6 +244,7 @@ function readGraphicFrame(x: Scanner, rels: TextContext['rels']): RawTableFrame 
   let content: RawGraphic['content'] = 'graphic'
   let table = null as RawTable | null
   let chart: string | null = null
+  let diagram: DiagramParts | null = null
   eachChild(x, (local) => {
     if (local === 'nvGraphicFramePr') nv = readSlideNonVisual(x)
     else if (local === 'xfrm') xfrm = readXfrm(x)
@@ -240,6 +255,12 @@ function readGraphicFrame(x: Scanner, rels: TextContext['rels']): RawTableFrame 
         const kind = GRAPHIC_KINDS[uri] ?? 'graphic'
         if (kind !== 'table') {
           content = kind
+          if (uri === DIAGRAM_URI) {
+            eachChild(x, (c) => {
+              if (c === 'relIds') diagram = readDiagramParts(x, rels)
+            })
+            return
+          }
           if (uri !== CHART_URI) return
           eachChild(x, (c) => {
             if (c !== 'chart') return
@@ -255,9 +276,21 @@ function readGraphicFrame(x: Scanner, rels: TextContext['rels']): RawTableFrame 
     }
   })
   if (table !== null) return { kind: 'table', ...base(nv, found), xfrm, table }
-  // 有图表部件的图表在求值时按能否绘制计数。
-  if (chart === null) found.push(content)
-  return { kind: 'graphic', ...base(nv, found), xfrm, content, chart }
+  if (chart === null && diagram === null) found.push(content)
+  return { kind: 'graphic', ...base(nv, found), xfrm, content, chart, diagram }
+}
+
+/** `contentPart`：非可视属性与位置尺寸在 `p14` 命名空间中，按本地名读取。 */
+function readContentPart(x: Scanner, rels: TextContext['rels']): RawInk {
+  const rel = rels.byId(relAttr(x, 'id') ?? '')
+  let nv = EMPTY_SLIDE_NON_VISUAL
+  let xfrm: Xfrm | null = null
+  eachChild(x, (local) => {
+    if (local === 'nvContentPartPr') nv = readSlideNonVisual(x)
+    else if (local === 'xfrm') xfrm = readXfrm(x)
+  })
+  const part = rel === null || rel.external ? null : rel.part
+  return { kind: 'ink', ...base(nv, []), xfrm, part }
 }
 
 function readGroup(x: Scanner, rels: TextContext['rels']): RawGroup {
@@ -269,19 +302,13 @@ function readGroup(x: Scanner, rels: TextContext['rels']): RawGroup {
   eachChild(x, (local) => {
     if (local === 'nvGrpSpPr') nv = readSlideNonVisual(x)
     else if (local === 'grpSpPr') props = readShapeProps(x, cx)
-    else readMember(x, local, rels, children, found)
+    else readMember(x, local, rels, children)
   })
   countOtherEffects(props, found)
   return { kind: 'group', ...base(nv, found), props, children }
 }
 
-function readMember(
-  x: Scanner,
-  local: string,
-  rels: TextContext['rels'],
-  out: RawShape[],
-  found: UnsupportedKind[],
-): void {
+function readMember(x: Scanner, local: string, rels: TextContext['rels'], out: RawShape[]): void {
   switch (local) {
     case 'sp':
       out.push(readAutoShape(x, rels))
@@ -299,22 +326,14 @@ function readMember(
       out.push(readGraphicFrame(x, rels))
       return
     case 'contentPart':
-      found.push('ink')
-      skip(x)
+      out.push(readContentPart(x, rels))
       return
   }
 }
 
-/**
- * 在 `spTree` 的开始标签处调用。`spTree` 本身的变换不参与坐标换算；
- * 直接位于 `spTree` 下且不属于任何形状的未实现元素记入 `found`。
- */
-export function readShapeTree(
-  x: Scanner,
-  rels: TextContext['rels'],
-): { shapes: RawShape[]; found: UnsupportedKind[] } {
+/** 在 `spTree` 的开始标签处调用。`spTree` 本身的变换不参与坐标换算。 */
+export function readShapeTree(x: Scanner, rels: TextContext['rels']): RawShape[] {
   const shapes: RawShape[] = []
-  const found: UnsupportedKind[] = []
-  eachChild(x, (local) => readMember(x, local, rels, shapes, found))
-  return { shapes, found }
+  eachChild(x, (local) => readMember(x, local, rels, shapes))
+  return shapes
 }

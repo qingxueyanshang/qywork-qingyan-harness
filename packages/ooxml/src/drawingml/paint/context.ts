@@ -115,9 +115,9 @@ export interface PaintContext {
   ): void
 }
 
-/** 可作为图片绘制的图层。 */
+/** 可作为图片绘制的图层。逐像素读写的图层以 `willReadFrequently` 取得上下文（CPU 光栅化）。 */
 export interface PaintCanvas extends PaintImage {
-  getContext(kind: '2d'): PaintContext | null
+  getContext(kind: '2d', options?: { readonly willReadFrequently: boolean }): PaintContext | null
 }
 
 export type CreateCanvas = (width: number, height: number) => PaintCanvas

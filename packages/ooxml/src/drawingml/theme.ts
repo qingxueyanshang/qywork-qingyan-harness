@@ -31,8 +31,9 @@ import {
   readEffects,
   readFill,
   readLine,
-  readThreeD,
 } from './fill.ts'
+import type { Scene3D, Shape3D } from './three/model.ts'
+import { readScene3D, readShape3D } from './three/read.ts'
 
 export interface FontCollection {
   readonly latin: string
@@ -50,8 +51,9 @@ export interface FontScheme {
 
 export interface EffectStyle {
   readonly effects: readonly EffectSpec[]
-  /** 样式中的 `scene3d` 或 `sp3d` 改变外观（见 `readThreeD`）。 */
-  readonly threeD: boolean
+  /** 样式中的 `scene3d` 与 `sp3d`；未写出时为 `null`。 */
+  readonly scene3d: Scene3D | null
+  readonly shape3d: Shape3D | null
 }
 
 /** 各列表按文档顺序；`fmtScheme` 缺失时均为空。 */
@@ -100,18 +102,23 @@ function emptyFonts(): MutableFonts {
 function readEffectStyle(x: Reader): EffectStyle {
   const depth = x.depth
   let effects: EffectSpec[] = []
-  let threeD = false
+  let scene3d: Scene3D | null = null
+  let shape3d: Shape3D | null = null
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t === 'end' && x.depth === depth) break
     if (t !== 'start' || x.depth !== depth + 1) continue
     if (x.local === 'effectLst') effects = readEffects(x)
     else if (x.local === 'effectDag') effects = [{ kind: 'other', name: 'effectDag' }]
-    else if ((x.local === 'scene3d' || x.local === 'sp3d') && readThreeD(x)) threeD = true
+    else if (x.local === 'scene3d') scene3d = readScene3D(x)
+    else if (x.local === 'sp3d') shape3d = readShape3D(x)
   }
-  return { effects, threeD }
+  return { effects, scene3d, shape3d }
 }
 
-/** `relationships` 为主题部件的关系表，只用于格式方案中的图片填充；缺省时图片部件为 `null`。 */
+/**
+ * 读取主题部件，或图表的主题覆盖部件（根元素为 `themeOverride`，结构相同而没有 `themeElements` 一层）。
+ * `relationships` 为主题部件的关系表，只用于格式方案中的图片填充；缺省时图片部件为 `null`。
+ */
 export function parseTheme(xml: string, relationships: Relationships | null = null): Theme {
   const x = new PartScanner(xml)
   let name = ''
@@ -131,15 +138,21 @@ export function parseTheme(xml: string, relationships: Relationships | null = nu
   const backgroundFills: FillSpec[] = []
   // 每层最近一个开始标签的本地名：处理某个元素时，`at[1..depth-1]` 即其祖先。
   const at: string[] = []
+  // 主题覆盖（`a:themeOverride`）的三种方案直接位于根元素之下：按多一层 `themeElements` 处理。
+  let shift = 0
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t !== 'start') continue
-    const depth = x.depth
     const local = x.local
-    at[depth] = local
-    if (depth === 1) {
+    if (x.depth === 1) {
       name = x.attr('name') ?? ''
+      if (local === 'themeOverride') {
+        shift = 1
+        at[2] = 'themeElements'
+      }
       continue
     }
+    const depth = x.depth + shift
+    at[depth] = local
     if (depth < 3 || at[2] !== 'themeElements') continue
     const section = at[3]
     if (depth === 3) {

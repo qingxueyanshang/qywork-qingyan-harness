@@ -5,9 +5,9 @@
  *   未写出 `c:style` 时的 WPS 显示求值（见 `resolve.ts`）。
  * - 布尔元素（`CT_Boolean`）的 `val` 缺省为真：`<c:delete/>` 即删除。
  * - 实现的图表类型见 `PLOT_TYPES`（三维图表只实现三维饼图）；其余类型（其他三维图表、面积图、雷达图、气泡图、股价图、曲面图、复合饼图），
- *   以及系列轴、对数刻度、显示单位、次要网格线与次要刻度线、数据表、趋势线、误差线、涨跌柱、
- *   高低点连线、垂直线与系列线、负值反色、图例项标示与单个数据标签的自定义文字，使整个图表不绘制：
- *   读取结果的 `unsupported` 为真。
+ *   以及系列轴、对数刻度、显示单位、次要网格线与次要刻度线、数据表、线性以外的趋势线（另见 `Reader.trendline`）、误差线、涨跌柱、
+ *   高低点连线与系列线、负值反色、图例项标示，单个数据标签中含字段或引用单元格的自定义文字与按绝对位置（`edge`）的手动位置，使整个图表不绘制：
+ *   读取结果的 `unsupported` 为真。垂直线（`dropLines`）与线性趋势线已实现。
  * - 缓存数据按 `pt/@idx` 放入数组，缺失的点为 `null`；`ptCount` 决定数组长度。多级分类只取最内层。
  *   引用（`c:f`）原文一并记录：有工作簿的格式按引用从单元格重新取值（见 `resolve.ts` 的 `ChartCells`）。
  */
@@ -56,6 +56,10 @@ export interface RawLabels {
   readonly separator: string | null
   readonly box: BoxSpec
   readonly txPr: RawTextBody | null
+  /** `c:dLbl/c:tx/c:rich`：单个标签的自定义文字。 */
+  readonly rich: RawTextBody | null
+  /** `c:dLbl/c:layout`：单个标签的手动位置。 */
+  readonly layout: ManualLayout | null
   /** `c:dLbl`：按点下标的单独标签。 */
   readonly points: ReadonlyMap<number, RawLabels>
 }
@@ -80,6 +84,12 @@ export interface RawData {
   readonly missing: ReadonlySet<number>
 }
 
+/** 线性趋势线（`c:trendline`）：`name` 为 `c:name`，未写出为 `null`。 */
+export interface RawTrendline {
+  readonly name: string | null
+  readonly box: BoxSpec
+}
+
 export interface RawSeries {
   readonly index: number
   readonly order: number
@@ -94,6 +104,7 @@ export interface RawSeries {
   readonly values: RawData | null
   readonly smooth: boolean | null
   readonly explosion: number | null
+  readonly trendlines: readonly RawTrendline[]
 }
 
 export interface RawGroup {
@@ -113,6 +124,8 @@ export interface RawGroup {
   readonly markers: boolean | null
   /** `pie3DChart`。 */
   readonly threeD: boolean
+  /** 垂直线（`c:dropLines`）的格式；元素未出现时为 `null`。 */
+  readonly dropLines: BoxSpec | null
 }
 
 /** `c:view3D`：未写出的项为 `null`。 */
@@ -340,6 +353,8 @@ class Reader {
       separator: null as string | null,
       box: EMPTY_BOX,
       txPr: null as RawTextBody | null,
+      rich: null as RawTextBody | null,
+      layout: null as ManualLayout | null,
     }
     const points = new Map<number, RawLabels>()
     eachChild(x, (local) => {
@@ -357,9 +372,15 @@ class Reader {
       else if (local === 'showPercent') out.showPercent = flag(x)
       else if (local === 'showLegendKey') this.unsupported ||= flag(x)
       else if (local === 'tx') {
-        // 单个标签的自定义文字未实现。
-        this.unsupported = true
-        skip(x)
+        // 自定义文字只实现 `rich` 中的普通文字：字段（如数值、单元格区域）与引用单元格的文字未实现。
+        out.rich = this.tx().rich
+        this.unsupported ||=
+          out.rich === null ||
+          out.rich.paragraphs.some((p) => p.runs.some((r) => r.kind === 'field'))
+      } else if (local === 'layout') {
+        // 手动位置只实现相对自动位置的偏移（`factor`）。
+        out.layout = this.layout()
+        this.unsupported ||= out.layout?.xMode === 'edge' || out.layout?.yMode === 'edge'
       } else if (local === 'dLblPos') out.position = val(x)
       else if (local === 'numFmt') {
         if (bool(x, 'sourceLinked') !== true) out.format = x.attr('formatCode')
@@ -435,6 +456,29 @@ class Reader {
     return { index, box, marker, explosion }
   }
 
+  /**
+   * `c:trendline`：只实现不外推、不显示公式与 R²、截距自动的线性趋势线（WPS 实测的范围），其余使整个图表不绘制。
+   */
+  trendline(): RawTrendline {
+    const x = this.x
+    let name: string | null = null
+    let box = EMPTY_BOX
+    let linear = false
+    eachChild(x, (local) => {
+      if (local === 'name') name = readText(x)
+      else if (local === 'spPr') box = this.box()
+      else if (local === 'trendlineType') linear = val(x) === 'linear'
+      else if (local === 'forward' || local === 'backward') this.unsupported ||= numVal(x) !== 0
+      else if (local === 'dispRSqr' || local === 'dispEq') this.unsupported ||= flag(x)
+      else if (local === 'intercept' || local === 'trendlineLbl') {
+        this.unsupported = true
+        skip(x)
+      }
+    })
+    this.unsupported ||= !linear
+    return { name, box }
+  }
+
   series(): RawSeries {
     const x = this.x
     let index = 0
@@ -449,6 +493,7 @@ class Reader {
     let values: RawData | null = null
     let smooth: boolean | null = null
     let explosion: number | null = null
+    const trendlines: RawTrendline[] = []
     eachChild(x, (local) => {
       switch (local) {
         case 'idx':
@@ -492,8 +537,10 @@ class Reader {
         case 'explosion':
           explosion = numVal(x)
           return
-        case 'bubbleSize':
         case 'trendline':
+          trendlines.push(this.trendline())
+          return
+        case 'bubbleSize':
         case 'errBars':
           if (local !== 'bubbleSize') this.unsupported = true
           skip(x)
@@ -513,6 +560,7 @@ class Reader {
       values,
       smooth,
       explosion,
+      trendlines,
     }
   }
 
@@ -549,6 +597,7 @@ class Reader {
     let holeSize: number | null = null
     let scatterStyle: string | null = null
     let markers: boolean | null = null
+    let dropLines: BoxSpec | null = null
     eachChild(x, (local) => {
       switch (local) {
         case 'barDir':
@@ -589,9 +638,14 @@ class Reader {
         case 'marker':
           markers = flag(x)
           return
+        case 'dropLines':
+          dropLines = EMPTY_BOX
+          eachChild(x, (k) => {
+            if (k === 'spPr') dropLines = this.box()
+          })
+          return
         case 'upDownBars':
         case 'hiLowLines':
-        case 'dropLines':
         case 'serLines':
           this.unsupported = true
           skip(x)
@@ -599,6 +653,12 @@ class Reader {
       }
     })
     series.sort((a, b) => a.order - b.order)
+    // 散点图与堆积图的趋势线未经核对。`grouping` 在回调中赋值，此处按声明类型读取。
+    const mode = grouping as string | null
+    const stacked = mode === 'stacked' || mode === 'percentStacked'
+    if ((type === 'scatter' || stacked) && series.some((s) => s.trendlines.length > 0)) {
+      this.unsupported = true
+    }
     return {
       type,
       direction,
@@ -614,6 +674,7 @@ class Reader {
       scatterStyle,
       markers,
       threeD,
+      dropLines,
     }
   }
 

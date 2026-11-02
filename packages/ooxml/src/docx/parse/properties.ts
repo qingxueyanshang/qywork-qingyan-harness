@@ -197,23 +197,29 @@ const SIDE_NAMES: Readonly<Record<string, BorderSide>> = {
 }
 
 /**
- * 读取 `pBdr`、`tblBorders`、`tcBorders`、`pgBorders` 的各边，返回时位于其结束标签。`none` 与 `nil` 为明确无边框（`null`）。
- * 线宽 `sz` 为八分之一磅；艺术型边框（`w:val` 为艺术图案名）同样记录其名称与宽度。
+ * 读取 `pBdr`、`tblBorders`、`tcBorders`、`pgBorders` 的各边，返回时位于其结束标签。`none` 与 `nil` 为明确无边框（`null`）；
+ * `spaced` 为真（段落边框）时带非零 `space` 的 `none` 记为线型 `none`、线宽 0 的边框，保留其占用的高度（见
+ * `../layout.ts` 的 `borderExtents`）。线宽 `sz` 为八分之一磅；艺术型边框（`w:val` 为艺术图案名）同样记录其名称与宽度。
  */
-export function readBorderSides(x: Scanner): Partial<Record<BorderSide, RawBorder | null>> {
+export function readBorderSides(
+  x: Scanner,
+  spaced = false,
+): Partial<Record<BorderSide, RawBorder | null>> {
   const out: Partial<Record<BorderSide, RawBorder | null>> = {}
   eachChild(x, (local) => {
     const side = SIDE_NAMES[local]
     if (side !== undefined) {
       const val = wAttr(x, 'val') ?? 'none'
+      const space = wNum(x, 'space') ?? 0
+      const none = val === 'none' || val === 'nil'
       out[side] =
-        val === 'none' || val === 'nil'
+        none && !(spaced && space > 0)
           ? null
           : {
-              style: val,
-              width: (wNum(x, 'sz') ?? 4) / 8,
+              style: none ? 'none' : val,
+              width: none ? 0 : (wNum(x, 'sz') ?? 4) / 8,
               color: hexColor(wAttr(x, 'color')),
-              space: wNum(x, 'space') ?? 0,
+              space,
             }
     }
     skip(x)
@@ -222,7 +228,7 @@ export function readBorderSides(x: Scanner): Partial<Record<BorderSide, RawBorde
 }
 
 function readBorders(x: Scanner): RawBorders {
-  const sides = readBorderSides(x)
+  const sides = readBorderSides(x, true)
   const out: RawBorders = {}
   for (const side of ['top', 'bottom', 'left', 'right'] as const) {
     const b = sides[side]

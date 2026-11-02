@@ -4,7 +4,7 @@
  *
  * 用 Node 驱动 Playwright 打开 Edge（`channel: 'msedge'`），设备像素比 1；逐页调用页面的 `renderPage`，
  * 把视口调整到不小于画布后对画布元素截图，写入 `<输出目录>/<文档标识>/<真值文件名>`。本方没有的页不输出。
- * 每个文档另写 `pages.json`（本方页数与每页的表格、浮动对象个数）。单页失败时记录原因并继续，结束时以失败页数作为退出码。
+ * 每个文档另写 `pages.json`（本方页数与每页的表格、浮动对象、图表、SmartArt、绘制与未绘制的公式个数）。单页失败时记录原因并继续，结束时以失败页数作为退出码。
  */
 
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -41,7 +41,15 @@ try {
         )
         if (info === null) continue
         stats.pages = info.pages
-        stats.perPage.push({ n: p.n, tables: info.tables, floating: info.floating })
+        stats.perPage.push({
+          n: p.n,
+          tables: info.tables,
+          floating: info.floating,
+          charts: info.charts,
+          diagrams: info.diagrams,
+          formulas: info.formulas,
+          hiddenMath: info.hiddenMath,
+        })
         await page.setViewportSize({
           width: Math.max(p.width, 200),
           height: Math.max(p.height, 200),

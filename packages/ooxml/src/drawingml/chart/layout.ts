@@ -1,20 +1,22 @@
 /**
  * 图表布局：标题、图例、绘图区与坐标轴的位置，刻度范围与标签。单位为 96 dpi 像素，原点为图表区左上角。
  *
- * 规则取自 WPS 对照图（校准文件实测；f 为相关文字的字号换算的像素数）：
+ * 规则取自 WPS 对照图（校准文件实测，演示、表格与文字三个宿主相同；f 为相关文字的字号换算的像素数）：
+ * - 文字在布局中按文字框高度占位：文字高度加 `frameExcess`（上下沿较高的字体），文字位于框的顶端。
  * - 图表区四边留白 `PAD`。标题框顶在留白处、水平居中，标题框底与下一元素相距 `TITLE_GAP`。
- * - 绘图区内框（坐标轴围成的矩形）：上沿在外沿之下 max(4.91, 0.6f − 3.15)（f 为数值轴标签字号）；
- *   下沿留出分类标签：标签框顶距坐标轴线 0.943f − 2.35，旋转的标签按旋转后的高度计；右沿在外沿之内 `RIGHT_EXTRA`，
+ * - 绘图区内框（坐标轴围成的矩形）：上沿在外沿之下 max(4.91, 数值标签文字框高 / 2 − 3.08)；
+ *   下沿留出分类标签：0.943f − 2.35 加文字框高度，旋转的标签按旋转后的高度计；不旋转的标签顶距坐标轴线
+ *   `CATEGORY_LABEL_GAP` × f + 1。右沿在外沿之内 `RIGHT_EXTRA`，
  *   水平数值轴另保证末个标签的一半落在留白之内（再向外 2.4）；左沿留出数值轴标签，标签右对齐，距内框 0.92f − 3。
  *   坐标轴跨越另一条数值轴的内部（如数据有负值、轴在 0 处）且标签为 `nextTo` 时，标签随轴线位于内框内部，不另留空间（`low`、`high` 的标签在内框边缘，照常留出）。
- * - 数值轴区间数上限：竖直轴为 ⌊轴长 / (1.4f − 3.1)⌋（WPS 表格为 ⌊轴长 / (1.4f − 0.8)⌋，只核对过 9 磅），
- *   水平轴为 ⌊轴长 / (最宽标签 / 2 + 2.5f)⌋，且都不超过 10。
+ * - 数值轴区间数上限：竖直轴为 ⌊轴长 / (1.4f − 0.8)⌋，水平轴为 ⌊轴长 / (最宽标签 / 2 + 2.5f)⌋，且都不超过 10。
  * - 分类标签：最宽标签不超过分类宽度时不旋转；否则 −45°（文字框右上角对齐分类中心），旋转后仍超过时 −90°
  *   （文字框右端中点对齐分类中心）。
  *   `bodyPr/@rot` 为具体角度（含 0）时按该角度，不自动旋转。
  * - 图例：符号边长 0.63f，折线符号长 2.2f，符号与文字间隔 0.42f，横排条目间隔 0.3f，竖排行距 0.33f，框内边距 0.37f − 1.9。
- *   底部图例框底在留白处，框顶与分类标签相距 11.4；右侧图例框右沿在留白处，在标题以下的高度内竖直居中，
- *   与绘图区外沿相距 12.3；顶部图例与绘图区外沿相距 1.67f − 7.1。含折线条目的图例中条形的符号与折线符号同宽。
+ *   底部图例框底在留白处，框顶与分类标签相距 `LEGEND_BOTTOM_GAP` − 0.089f；右侧图例框右沿在留白处，在标题以下的高度内
+ *   竖直居中（见 `TITLE_SIDE_LEGEND`），与绘图区外沿相距 `LEGEND_SIDE_GAP` − 0.14f；顶部图例与绘图区外沿相距 1.67f − 7.1。
+ *   含折线条目的图例中条形的符号与折线符号同宽。
  * - 坐标轴按交叉位置分在绘图区四侧（`crosses` 为 `max` 时在右侧或上方，次坐标轴通常如此），各侧分别留出标签；
  *   右侧标签左对齐，距内框 0.92f − 3。
  * - 坐标轴标题在标签外侧，沿绘图区居中；竖直坐标轴的标题缺省旋转 −90°。
@@ -23,6 +25,7 @@
  */
 
 import { formatNumber, plainText } from '../../numfmt/format.ts'
+import { parseHexColor } from '../color.ts'
 import type { BodyLayout, TextSettings } from '../text/body.ts'
 import { layoutBody } from '../text/body.ts'
 import type { Paragraph, Run, RunStyle, TextBody } from '../text/model.ts'
@@ -35,19 +38,31 @@ import {
   dateScale,
   isDateFormat,
 } from './date-axis.ts'
-import type { Axis, Chart, DataLabels, Legend, PlotGroup, Series, TextStyle } from './model.ts'
+import type {
+  Axis,
+  Chart,
+  DataLabels,
+  Legend,
+  PlotGroup,
+  Series,
+  TextStyle,
+  Trendline,
+} from './model.ts'
 import { clean, type Scale, ticks, valueScale } from './scale.ts'
 
 const PX_PER_PT = 4 / 3
 const PAD = 9.25
 const RIGHT_EXTRA = 6.05
-const TITLE_GAP = 13.54
+const TITLE_GAP = 13.74
 /** 内框上沿在外沿之下的最小距离。 */
 const TOP_OFFSET = 4.91
 /** 没有底部标签时内框下沿在外沿之上的距离。 */
 const BOTTOM_OFFSET = 5.91
-const LEGEND_BOTTOM_GAP = 11.4
-const LEGEND_SIDE_GAP = 12.3
+/** 底部图例框顶与绘图区外沿的距离为 `LEGEND_BOTTOM_GAP` − 0.089f，右侧（左侧）图例为 `LEGEND_SIDE_GAP` − 0.14f（f 为图例字号）。 */
+const LEGEND_BOTTOM_GAP = 11.78
+const LEGEND_SIDE_GAP = 11.58
+/** 有标题时左右侧图例在标题框底以下 `TITLE_SIDE_LEGEND` 至图表区留白之间竖直居中。 */
+const TITLE_SIDE_LEGEND = 3.6
 /** 标题与顶部图例之间的间距。 */
 const TITLE_LEGEND_GAP = 11.36
 const MAX_INTERVALS = 10
@@ -65,8 +80,15 @@ const TITLE_LABEL_GAP_H = 5
 const DATE_FIT = 2.5
 const DATE_LABEL_GAP = 3
 const DATE_DIAGONAL = 1.78
+/**
+ * 底部不旋转的分类标签：标签顶距坐标轴线 `CATEGORY_LABEL_GAP` × f + 1；绘图区下沿留出的仍是 0.943f − 2.35 加文字框高度，
+ * 标签因此不贴着图表区下沿（实测宋体、微软雅黑、Noto Sans SC、Calibri 8–14 磅，字号越大离下沿越远）。
+ */
+const CATEGORY_LABEL_GAP = 0.58
 /** 旋转的首个分类标签与外沿之间至少留出的距离。 */
 const ROTATED_MARGIN = 5.5
+/** 手动布局的绘图区相对按比例求出的位置向左上平移的距离（见 `manualPlot`）。 */
+const MANUAL_SHIFT = 0.5
 
 type Side = 'l' | 'r' | 't' | 'b'
 
@@ -120,6 +142,8 @@ export interface LegendEntry {
   readonly series: Series
   /** 饼图与按点着色的图表：数据点下标；否则为 `null`。 */
   readonly point: number | null
+  /** 趋势线的图例项：该趋势线；否则为 `null`。 */
+  readonly trend: Trendline | null
   readonly group: PlotGroup
   /** 图例符号框。 */
   readonly symbol: Rect
@@ -140,6 +164,8 @@ interface Measured {
   readonly layout: BodyLayout
   readonly width: number
   readonly height: number
+  /** 布局占用的高度：`height` 加 `frameExcess`，文字位于其顶端。 */
+  readonly frame: number
 }
 
 // ── 文字 ──
@@ -205,6 +231,30 @@ function extent(layout: BodyLayout): number {
 }
 
 /**
+ * 文字框在布局中比文字高出的量（像素）：0.65 × max(0, H − 1.2) × 字号，H 为 `(usWinAscent + usWinDescent) / unitsPerEm`，
+ * 取框内各片段的最大值，多行文字也只计一次。实测（WPS 演示、表格与文字，8–18 磅）：分类标签使坐标轴线上移、数值标签
+ * 使首条网格线下移一半、标题使绘图区下移、图例每个条目的行距都按此增加；微软雅黑（H 1.32）约 0.08 倍字号、
+ * Noto Sans SC（1.45）约 0.15 倍、Calibri（1.22）约 0.01 倍，宋体、Arial 等 H 不超过 1.2 的字体为 0。
+ */
+function frameExcess(layout: BodyLayout, settings: TextSettings): number {
+  let out = 0
+  for (const p of layout.paragraphs) {
+    for (const line of p.block.lines) {
+      for (const f of line.fragments) {
+        const m = settings.faces.of(f.face).line
+        out = Math.max(out, 0.65 * Math.max(0, m.ascent + m.descent - 1.2) * f.size)
+      }
+    }
+  }
+  return out * PX_PER_PT
+}
+
+function measured(layout: BodyLayout, width: number, settings: TextSettings): Measured {
+  const height = layout.height * PX_PER_PT
+  return { layout, width, height, frame: height + frameExcess(layout, settings) }
+}
+
+/**
  * 排版文字，返回像素尺寸。`wrapWidth` 为像素，`null` 为不断行：先按左对齐求出最宽行，
  * 再以该宽度为文本区域排版，使多行文字按段落的对齐方式在框内对齐。
  */
@@ -219,12 +269,12 @@ export function measure(
       wrapWidth / PX_PER_PT,
       settings,
     )
-    return { layout, width: extent(layout) * PX_PER_PT, height: layout.height * PX_PER_PT }
+    return measured(layout, extent(layout) * PX_PER_PT, settings)
   }
   const left = { ...body, paragraphs: body.paragraphs.map((p) => ({ ...p, align: 'l' })) }
   const width = extent(layoutBody(left, 1e7, settings))
   const layout = layoutBody({ ...body, body: { ...body.body, wrap: false } }, width, settings)
-  return { layout, width: width * PX_PER_PT, height: layout.height * PX_PER_PT }
+  return measured(layout, width * PX_PER_PT, settings)
 }
 
 function fontPx(style: TextStyle): number {
@@ -237,6 +287,15 @@ function labelSize(text: string, style: TextStyle, settings: TextSettings): Meas
 
 export function formatValue(value: number, code: string, date1904: boolean): string {
   return plainText(formatNumber(clean(value), code, { date1904, palette: [] }))
+}
+
+/**
+ * 数字格式中的颜色（如 `[Red]`）作用于数值轴标签的文字（WPS 文字实测：格式 `0.000_);[Red]\(0.000\)` 的负值标签为红色）。
+ * 颜色为 `null` 时取坐标轴的文字样式。
+ */
+function colored(style: TextStyle, color: string | null): TextStyle {
+  const c = color === null ? null : parseHexColor(color.slice(1))
+  return c === null ? style : { ...style, run: { ...style.run, fill: { kind: 'solid', color: c } } }
 }
 
 // ── 坐标轴 ──
@@ -298,11 +357,18 @@ function dataRange(plan: AxisPlan): { min: number; max: number } {
   return min === Infinity ? { min: 0, max: 0 } : { min, max }
 }
 
+/**
+ * 数值轴标签的数字格式。链接到源时取第一个系列的格式，该系列的第一个点为空时为常规（WPS 文字、演示与表格实测：
+ * 第一个点为空、格式为 `0.00%` 或 `0.0` 的系列，其坐标轴标签按常规显示）。散点图的 x 轴取第一个系列 x 值的格式
+ * （WPS 演示实测：缓存格式 `#,##0` 显示为 3,500；WPS 表格按单元格的格式）。
+ */
 function axisFormat(plan: AxisPlan, percent: boolean): string {
   if (plan.axis.format !== null) return plan.axis.format
   if (percent) return '0%'
-  if (plan.xAxis) return 'General'
-  return plan.groups[0]?.series[0]?.format ?? 'General'
+  const first = plan.groups[0]?.series[0]
+  if (plan.xAxis) return first?.categoryFormat ?? 'General'
+  if (first === undefined || (first.values[0] == null && !first.missing.has(0))) return 'General'
+  return first.format
 }
 
 /** 数值轴：按轴长取刻度并排版标签。 */
@@ -311,7 +377,6 @@ function valueLabels(
   length: number,
   settings: TextSettings,
   date1904: boolean,
-  host: Chart['host'],
 ): { scale: Scale; labels: Labeled[] } {
   const a = plan.axis
   const range = dataRange(plan)
@@ -326,14 +391,14 @@ function valueLabels(
       maxIntervals: Math.max(1, Math.min(MAX_INTERVALS, limit)),
     })
     const labels = ticks(scale).map((v, slot) => {
-      const text = formatValue(v, code, date1904)
-      return { text, slot, ...labelSize(text, a.text, settings) }
+      const f = formatNumber(clean(v), code, { date1904, palette: [] })
+      const text = plainText(f)
+      return { text, slot, ...labelSize(text, colored(a.text, f.color), settings) }
     })
     return { scale, labels }
   }
   if (!plan.horizontal) {
-    const step = 1.4 * f - (host === 'sheet' ? 0.8 : 3.1)
-    return build(Math.floor(length / Math.max(1, step)))
+    return build(Math.floor(length / Math.max(1, 1.4 * f - 0.8)))
   }
   // 水平轴的区间数上限取决于标签宽度，标签又取决于刻度：从 10 个区间起按最宽标签逐步收紧。
   let limit = MAX_INTERVALS
@@ -363,7 +428,7 @@ function categoryRotation(axis: Axis, labels: readonly Measured[], band: number)
   if (axis.text.rotation !== null) return axis.text.rotation
   const widest = Math.max(0, ...labels.map((l) => l.width))
   const tallest = Math.max(0, ...labels.map((l) => l.height))
-  if (widest <= band - 2) return 0
+  if (widest <= band) return 0
   if (tallest / SQRT1_2 <= band) return -45
   return -90
 }
@@ -382,10 +447,10 @@ function leftExtent(l: Labeled, rotation: number, f: number, date: boolean): num
   )
 }
 
-/** 旋转后的标签在垂直于轴方向上占的高度。 */
+/** 旋转后的标签在垂直于轴方向上占的高度（按文字框）。 */
 function rotatedExtent(l: Measured, rotation: number): number {
   const a = (Math.abs(rotation) * Math.PI) / 180
-  return Math.abs(l.width * Math.sin(a)) + Math.abs(l.height * Math.cos(a))
+  return Math.abs(l.width * Math.sin(a)) + Math.abs(l.frame * Math.cos(a))
 }
 
 /**
@@ -417,9 +482,11 @@ function placeCategory(
 interface LegendItem {
   readonly series: Series
   readonly point: number | null
+  readonly trend: Trendline | null
   readonly group: PlotGroup
 }
 
+/** 图例项：各图表组的系列（或数据点），其后为各系列的趋势线（WPS 实测）。 */
 function legendItems(chart: Chart): LegendItem[] {
   const out: LegendItem[] = []
   for (const g of chart.plot.groups) {
@@ -427,25 +494,32 @@ function legendItems(chart: Chart): LegendItem[] {
     if (pie || (g.varyColors && g.series.length === 1 && g.type !== 'scatter')) {
       const s = g.series[0]
       if (s === undefined) continue
-      for (let i = 0; i < s.values.length; i++) out.push({ series: s, point: i, group: g })
+      for (let i = 0; i < s.values.length; i++)
+        out.push({ series: s, point: i, trend: null, group: g })
       continue
     }
-    const list = g.series.map((series) => ({ series, point: null, group: g }))
+    const list = g.series.map((series) => ({ series, point: null, trend: null, group: g }))
     // 横向条形图的图例按系列倒序排列（WPS 实测）。
     if (g.type === 'bar' && g.direction === 'bar') list.reverse()
     out.push(...list)
+  }
+  for (const g of chart.plot.groups) {
+    for (const series of g.series) {
+      for (const trend of series.trendlines) out.push({ series, point: null, trend, group: g })
+    }
   }
   const hidden = new Set(chart.legend?.hidden ?? [])
   return out.filter((_, i) => !hidden.has(i))
 }
 
 function itemText(item: LegendItem): string {
+  if (item.trend !== null) return item.trend.name
   if (item.point === null) return item.series.name
   return item.series.categories[item.point] ?? String(item.point + 1)
 }
 
 function lineItem(item: LegendItem): boolean {
-  return item.group.type === 'line' || item.group.type === 'scatter'
+  return item.trend !== null || item.group.type === 'line' || item.group.type === 'scatter'
 }
 
 interface LegendPlan {
@@ -490,8 +564,8 @@ function planLegend(
     for (const c of sized) {
       cells.push({ ...c, x: 0, y, symbolWidth: sw })
       width = Math.max(width, sw + gap + c.text.width)
-      height = y + c.text.height
-      y += c.text.height + rowGap
+      height = y + c.text.frame
+      y += c.text.frame + rowGap
     }
   } else {
     const rows: { start: number; width: number; height: number }[] = []
@@ -507,7 +581,7 @@ function planLegend(
       cells.push({ ...c, x, y, symbolWidth: sw })
       const row = rows.at(-1)!
       row.width = x + w
-      row.height = Math.max(row.height, c.text.height)
+      row.height = Math.max(row.height, c.text.frame)
       x += w + spacing
     })
     width = Math.max(0, ...rows.map((r) => r.width))
@@ -527,6 +601,7 @@ function legendEntries(plan: LegendPlan, x0: number, y0: number): LegendEntry[] 
     return {
       series: c.item.series,
       point: c.item.point,
+      trend: c.item.trend,
       group: c.item.group,
       symbol: { x: x0 + c.x, y: cy - plan.symbol / 2, w: c.symbolWidth, h: plan.symbol },
       text: {
@@ -600,11 +675,21 @@ function labelSide(p: AxisPlan): Side {
   return far ? 'r' : 'l'
 }
 
+/**
+ * 手动布局的绘图区：左上角在按比例求出的位置向左上各 `MANUAL_SHIFT` 像素，抵消绘制时图表整体的半像素平移，宽高不变。
+ * 实测（三个宿主相同）：WPS 文字 6 个、WPS 表格 9 个、WPS 演示 9 个手动布局的图表，平移后网格线所在的像素行与对照图一致
+ * （逐条核对 2 个图表共 16 条），所在页的分数升高 0.004–0.095。
+ */
 function manualPlot(chart: Chart, width: number, height: number): Rect | null {
   const l = chart.plot.layout
   if (l === null || l.xMode !== 'edge' || l.yMode !== 'edge') return null
   if (l.x === null || l.y === null || l.w === null || l.h === null) return null
-  return { x: l.x * width, y: l.y * height, w: l.w * width, h: l.h * height }
+  return {
+    x: l.x * width - MANUAL_SHIFT,
+    y: l.y * height - MANUAL_SHIFT,
+    w: l.w * width,
+    h: l.h * height,
+  }
 }
 
 function legendInset(f: number): number {
@@ -632,7 +717,7 @@ export function layoutChart(
     const y = manual?.yMode === 'edge' && manual.y !== null ? manual.y * height : PAD
     title = { layout: m.layout, x, y, width: m.width, height: m.height, rotation: 0 }
     if (!chart.title.overlay && manual === null) {
-      titleBottom = y + m.height
+      titleBottom = y + m.frame
       top = titleBottom + TITLE_GAP
     }
   }
@@ -649,7 +734,7 @@ export function layoutChart(
     if (lg.position === 'b') {
       box = { x: (width - bw) / 2, y: height - PAD - bh, w: bw, h: bh }
       if (!lg.overlay) {
-        bottom = box.y - LEGEND_BOTTOM_GAP
+        bottom = box.y - (LEGEND_BOTTOM_GAP - 0.089 * f)
         bare = 0
       }
     } else if (lg.position === 't') {
@@ -657,14 +742,15 @@ export function layoutChart(
       box = { x: (width - bw) / 2, y, w: bw, h: bh }
       if (!lg.overlay) top = y + bh + Math.max(2, 1.67 * f - 7.1)
     } else {
-      const span = chart.title !== null ? titleBottom : PAD
+      const span = chart.title !== null ? titleBottom + TITLE_SIDE_LEGEND : PAD
       const y = (span + height - PAD - bh) / 2
+      const gap = LEGEND_SIDE_GAP - 0.14 * f
       if (lg.position === 'l') {
         box = { x: PAD, y, w: bw, h: bh }
-        if (!lg.overlay) left = box.x + bw + LEGEND_SIDE_GAP
+        if (!lg.overlay) left = box.x + bw + gap
       } else {
         box = { x: width - PAD - bw, y, w: bw, h: bh }
-        if (!lg.overlay) right = box.x - LEGEND_SIDE_GAP
+        if (!lg.overlay) right = box.x - gap
       }
     }
     const manual = lg.layout
@@ -839,7 +925,7 @@ function layoutAxes(
     plans.forEach((p, i) => {
       const length = Math.max(1, p.horizontal ? rect.r - rect.l : rect.b - rect.t)
       if (p.value) {
-        const r = valueLabels(p, length, settings, date1904, chart.host)
+        const r = valueLabels(p, length, settings, date1904)
         scales[i] = r.scale
         labels[i] = r.labels
       } else if (p.dates !== null) {
@@ -858,8 +944,10 @@ function layoutAxes(
     let t = box.t + TOP_OFFSET
     let b = box.b - BOTTOM_OFFSET
     plans.forEach((p, i) => {
-      if (!p.horizontal && p.value && shown(p))
-        t = Math.max(t, box.t + Math.max(TOP_OFFSET, 0.6 * font[i]! - 3.15))
+      if (!p.horizontal && p.value && shown(p)) {
+        const frame = Math.max(1.2 * font[i]!, ...labels[i]!.map((l) => l.frame))
+        t = Math.max(t, box.t + Math.max(TOP_OFFSET, frame / 2 - 3.08))
+      }
     })
     plans.forEach((p, i) => {
       // 标签在绘图区边缘（`low`、`high`）时总要留出空间；随轴线位于内部时不留。
@@ -938,7 +1026,14 @@ function layoutAxes(
           out.push(
             far
               ? { ...l, x: cx - l.width / 2, y: labelY - l.height, rotation: 0 }
-              : placeCategory(l, cx, labelY, rotations[i]!, font[i]!, p.dates !== null),
+              : rotations[i] === 0
+                ? {
+                    ...l,
+                    x: cx - l.width / 2,
+                    y: edge + CATEGORY_LABEL_GAP * font[i]! + 1,
+                    rotation: 0,
+                  }
+                : placeCategory(l, cx, labelY, rotations[i]!, font[i]!, p.dates !== null),
           )
         }
       }

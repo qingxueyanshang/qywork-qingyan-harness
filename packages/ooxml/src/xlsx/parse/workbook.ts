@@ -84,11 +84,15 @@ async function readRels(pkg: OpcPackage, source: string): Promise<Relationships>
   return r.value
 }
 
-/** 已读取、待求值的图表：求值需要全部工作表的单元格，在全部工作表解析之后进行。`raw` 为 `null` 时部件缺失。 */
+/**
+ * 已读取、待求值的图表：求值需要全部工作表的单元格，在全部工作表解析之后进行。`raw` 为 `null` 时部件缺失；
+ * `theme` 为图表部件引用的主题覆盖，没有时为 `null`。
+ */
 interface PendingChart {
   readonly anchor: DrawingAnchor
   readonly order: number
   readonly raw: RawChart | null
+  readonly theme: Theme | null
 }
 
 interface SheetEntry {
@@ -194,6 +198,8 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
       defaultFont: sheet.defaultFont,
       colors: sheet.colors,
       fontNames,
+      dxfs: sheet.dxfs,
+      numFmts: sheet.numFmts,
     })
     const counts: UnsupportedCounts = { ...parsed.unsupported }
     const sheetRels = await readRels(pkg, rel.part)
@@ -237,16 +243,18 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
     })
     addCounts(unsupported, counts)
   }
-  // 图表按工作簿主题求值，数据按引用从单元格取；部件缺失或含不支持的内容时计入 `chart`。
+  // 图表按工作簿主题求值，引用主题覆盖时颜色方案与主题字体取自主题覆盖（WPS 表格实测）；数据按引用从单元格取；
+  // 部件缺失或含不支持的内容时计入 `chart`。
   const cells = workbookCells(sheets, sheet.styles)
   for (const p of pending) {
     for (const c of p.items) {
+      const own = c.theme ?? theme ?? EMPTY_THEME
       const chart =
         c.raw === null
           ? null
           : resolveChart(c.raw, {
-              theme: theme ?? EMPTY_THEME,
-              colors: { scheme: (theme ?? EMPTY_THEME).colors },
+              theme: own,
+              colors: { scheme: own.colors },
               host: 'sheet',
               cells,
             })
@@ -262,7 +270,6 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
   return {
     sheets,
     styles: sheet.styles,
-    dxfs: sheet.dxfs,
     defaultFont: sheet.defaultFont,
     minorFont: theme
       ? {
@@ -309,8 +316,16 @@ async function readDrawing(
   const charts: PendingChart[] = []
   for (const c of drawing.charts) {
     const chartXml = await readText(pkg, c.part)
-    const raw = chartXml === null ? null : readChart(chartXml, await readRels(pkg, c.part))
-    charts.push({ anchor: c.anchor, order: c.order, raw })
+    const chartRels = chartXml === null ? null : await readRels(pkg, c.part)
+    const raw = chartXml === null || chartRels === null ? null : readChart(chartXml, chartRels)
+    const override =
+      chartRels === null ? null : await readText(pkg, chartRels.part('themeOverride'))
+    charts.push({
+      anchor: c.anchor,
+      order: c.order,
+      raw,
+      theme: override === null ? null : parseTheme(override),
+    })
   }
   return { images, shapes: drawing.shapes, charts }
 }

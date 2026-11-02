@@ -3,15 +3,27 @@
  *
  * - DrawingML：图片（`pic:pic`）为图片填充的矩形；形状（`wps:wsp`）的几何、填充、线条与效果经 `../../drawingml/`
  *   按主题求值，文本框（`wps:txbx`）的内容由调用方读取；组合（`wpg:wgp`）的子坐标系按 `chOff`、`chExt` 换算到对象框。
- *   图表、SmartArt、画布等没有可绘制的内容（`drawing` 为 `null`），按种类计数。
+ *   图表（`c:chart`）由调用方按关系标识取得已求值的图表，对象框即图表区；SmartArt（`dgm:relIds`）由调用方按四个部件名
+ *   取得已求值的图示，在对象框中排版。画布、扩展图表（`chartex`）与含未实现内容的图表、SmartArt 没有可绘制的内容
+ *   （`drawing` 为 `null`），按种类计数。
  * - 顶层形状的 `xfrm` 映射到对象框（`wp:extent`），原点在对象框左上角。
  * - 文本框的内缩：DrawingML 的 `bodyPr` 缺省为左右 7.2 磅、上下 3.6 磅；VML 的 `v:textbox/@inset` 缺省相同。
  * - VML：`style` 中的 `margin-left`、`margin-top`、`width`、`height` 与 `mso-position-*` 给出定位，`w10:wrap` 给出环绕，
  *   没有 `w10:wrap` 时为浮于文字上方；`z-index` 为负时衬于文字下方。组合等其他 VML 计为 `vml`。
  */
 
+import type { Chart } from '../../drawingml/chart/model.ts'
 import { parseHexColor } from '../../drawingml/color.ts'
-import { type Effect, type Line, readFill, type ShapeFill } from '../../drawingml/fill.ts'
+import type { Diagram } from '../../drawingml/diagram/model.ts'
+import { type DiagramParts, readDiagramParts } from '../../drawingml/diagram/read.ts'
+import {
+  type Effect,
+  type Line,
+  type RelativeRect,
+  readFill,
+  type ShapeFill,
+  ZERO_RECT,
+} from '../../drawingml/fill.ts'
 import type { Geometry } from '../../drawingml/geometry/model.ts'
 import type { DrawingFinding, FindingSink, Frame } from '../../drawingml/shape/model.ts'
 import {
@@ -32,18 +44,39 @@ import {
   resolveShapeFill,
   resolveShapeLine,
   type StyleScope,
+  shapeThreeD,
   type Transform,
 } from '../../drawingml/shape/resolve.ts'
+import { visibleThreeD } from '../../drawingml/three/camera.ts'
 import type { Relationships } from '../../opc/package.ts'
-import type { AnchorPosition, Edges, UnsupportedKind, Wrap } from '../model.ts'
+import type { AnchorPosition, DrawingGraphic, Edges, UnsupportedKind, Wrap } from '../model.ts'
 import { eachChild, type Scanner, skip } from './xml.ts'
 
 const EMU_PER_POINT = 12700
 const RELATIONSHIPS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const RECT: Geometry = { kind: 'preset', name: 'rect', adjust: [] }
 const NO_FILL: ShapeFill = { kind: 'none' }
+const ZERO_EDGES: Edges = { left: 0, top: 0, right: 0, bottom: 0 }
 /** 文本框缺省内缩（磅）：左右 0.1 英寸，上下 0.05 英寸。 */
 const DEFAULT_INSET: Edges = { left: 7.2, top: 3.6, right: 7.2, bottom: 3.6 }
+
+/** `graphicData/@uri` 为图表时的后缀；扩展图表（`chartex`）不在其中。 */
+export const CHART_URI = '/drawingml/2006/chart'
+/** `graphicData/@uri` 为 SmartArt 时的后缀。 */
+export const DIAGRAM_URI = '/drawingml/2006/diagram'
+
+/** 图表与 SmartArt 的对象框（EMU）：宽高为 `wp:extent`（磅）。 */
+export function graphicFrame(width: number, height: number): Frame {
+  return {
+    x: 0,
+    y: 0,
+    width: width * EMU_PER_POINT,
+    height: height * EMU_PER_POINT,
+    rotation: 0,
+    flipH: false,
+    flipV: false,
+  }
+}
 
 const GRAPHIC_KINDS: readonly (readonly [string, UnsupportedKind])[] = [
   ['/drawingml/2006/chart', 'chart'],
@@ -67,6 +100,7 @@ export interface PendingTextBox<C> {
   readonly inset: Edges
   readonly anchor: 'top' | 'center' | 'bottom'
   readonly autoFit: boolean
+  readonly wrap: boolean
 }
 
 export type PendingNode<C> =
@@ -85,12 +119,14 @@ export type PendingNode<C> =
       readonly effects: readonly Effect[]
       readonly children: readonly PendingNode<C>[]
     }
+  | DrawingGraphic
 
 export interface PendingAnchor<C> {
   readonly horizontal: AnchorPosition
   readonly vertical: AnchorPosition
   readonly width: number
   readonly height: number
+  readonly effect: Edges
   readonly wrap: Wrap
   readonly behind: boolean
   readonly z: number
@@ -105,6 +141,10 @@ export interface DrawingContext<C> {
   readonly image: (part: string) => void
   /** 在 `txbxContent` 的开始标签处调用：读取其中的块，返回时位于其结束标签。 */
   readonly content: () => C
+  /** 关系标识引用的图表；部件不存在或图表含未实现内容时为 `null`。 */
+  readonly chart: (id: string) => Chart | null
+  /** 四个部件名引用的 SmartArt；数据部件不存在或含未实现内容时为 `null`。 */
+  readonly diagram: (parts: DiagramParts) => Diagram | null
 }
 
 function emu(x: Scanner, name: string): number {
@@ -165,14 +205,27 @@ function boxTransform(xfrm: Xfrm | null, width: number, height: number): Transfo
   return { sx, sy, tx: -xfrm.x * sx, ty: -xfrm.y * sy }
 }
 
+/** docx 不绘制三维效果：改变外观的三维设置（相机、旋转、棱台、挤出、轮廓）登记 `effect3d`。 */
+function countThreeD(
+  props: ShapeProps,
+  style: StyleRefs | null,
+  scope: StyleScope,
+  found: FindingSink,
+): void {
+  const t = shapeThreeD([props], style, scope)
+  if (visibleThreeD(t.scene, t.shape)) found.push('effect3d')
+}
+
 /** 在 `bodyPr` 的开始标签处调用，返回时位于其结束标签。 */
 function readBodyInset(x: Scanner): {
   inset: Edges
   anchor: 'top' | 'center' | 'bottom'
   autoFit: boolean
+  wrap: boolean
 } {
   const ins = (name: string, fallback: number) => (x.attr(name) === null ? fallback : emu(x, name))
   const a = x.attr('anchor')
+  const wrap = x.attr('wrap') !== 'none'
   const inset = {
     left: ins('lIns', DEFAULT_INSET.left),
     top: ins('tIns', DEFAULT_INSET.top),
@@ -184,7 +237,12 @@ function readBodyInset(x: Scanner): {
     if (local === 'spAutoFit') autoFit = true
     skip(x)
   })
-  return { inset, anchor: a === 'ctr' ? 'center' : a === 'b' ? 'bottom' : 'top', autoFit }
+  return {
+    inset,
+    anchor: a === 'ctr' ? 'center' : a === 'b' ? 'bottom' : 'top',
+    autoFit,
+    wrap,
+  }
 }
 
 /** `pic:pic`、`wps:wsp`、`wpg:wgp`、`wpg:grpSp` 的开始标签处调用；其他元素返回 `null`。 */
@@ -217,6 +275,7 @@ function readNode<C>(
         } else if (child === 'spPr') props = readShapeProps(x, text)
         else skip(x)
       })
+      countThreeD(props, null, scope, found)
       const { frame: f } = frame(props)
       return {
         kind: 'shape',
@@ -234,6 +293,7 @@ function readNode<C>(
         inset: DEFAULT_INSET,
         anchor: 'top' as 'top' | 'center' | 'bottom',
         autoFit: false,
+        wrap: true,
       }
       eachChild(x, (child) => {
         if (child === 'spPr') props = readShapeProps(x, text)
@@ -248,6 +308,7 @@ function readNode<C>(
       })
       const { frame: f } = frame(props)
       countOtherEffects(props, found)
+      countThreeD(props, style, scope, found)
       const effects = resolveShapeEffects(props.effects, style, scope)
       countEffects(effects, found)
       const fill = resolveShapeFill(props.fill, style, NO_FILL, scope)
@@ -262,7 +323,13 @@ function readNode<C>(
         text:
           content === null
             ? null
-            : { content, inset: body.inset, anchor: body.anchor, autoFit: body.autoFit },
+            : {
+                content,
+                inset: body.inset,
+                anchor: body.anchor,
+                autoFit: body.autoFit,
+                wrap: body.wrap,
+              },
       }
     }
     case 'wgp':
@@ -273,6 +340,7 @@ function readNode<C>(
       eachChild(x, (child) => {
         if (child === 'grpSpPr') {
           props = readShapeProps(x, text)
+          countThreeD(props, null, scope, found)
           const r = frame(props)
           groupFrame = r.frame
           inner = r.inner
@@ -314,6 +382,7 @@ export function readAnchor<C>(x: Scanner, cx: DrawingContext<C>): PendingAnchor<
   let simplePos = { x: 0, y: 0 }
   let width = 0
   let height = 0
+  let effect: Edges = ZERO_EDGES
   let wrap: Wrap = { type: 'none', side: 'bothSides', distance }
   let drawing: PendingNode<C> | null = null
   let kind: UnsupportedKind | null = null
@@ -332,6 +401,9 @@ export function readAnchor<C>(x: Scanner, cx: DrawingContext<C>): PendingAnchor<
         width = emu(x, 'cx')
         height = emu(x, 'cy')
         break
+      case 'effectExtent':
+        effect = { left: emu(x, 'l'), top: emu(x, 't'), right: emu(x, 'r'), bottom: emu(x, 'b') }
+        break
       case 'graphic':
         eachChild(x, (data) => {
           if (data !== 'graphicData') {
@@ -341,6 +413,21 @@ export function readAnchor<C>(x: Scanner, cx: DrawingContext<C>): PendingAnchor<
           const uri = x.attr('uri') ?? ''
           for (const [suffix, k] of GRAPHIC_KINDS) if (uri.endsWith(suffix)) kind = k
           eachChild(x, (obj) => {
+            if (uri.endsWith(CHART_URI) && obj === 'chart') {
+              const id = x.attrNs(RELATIONSHIPS, 'id')
+              const chart = id === null ? null : cx.chart(id)
+              if (chart !== null)
+                drawing = { kind: 'chart', frame: graphicFrame(width, height), chart }
+              skip(x)
+              return
+            }
+            if (uri.endsWith(DIAGRAM_URI) && obj === 'relIds') {
+              const parts = readDiagramParts(x, cx.rels)
+              const diagram = parts === null ? null : cx.diagram(parts)
+              if (diagram !== null)
+                drawing = { kind: 'diagram', frame: graphicFrame(width, height), diagram }
+              return
+            }
             const node = kind === null ? readNode(x, obj, cx, null, { width, height }) : null
             if (node !== null) drawing = node
             else skip(x)
@@ -359,7 +446,7 @@ export function readAnchor<C>(x: Scanner, cx: DrawingContext<C>): PendingAnchor<
     horizontal = { from: 'page', align: null, offset: simplePos.x }
     vertical = { from: 'page', align: null, offset: simplePos.y }
   }
-  return { horizontal, vertical, width, height, wrap, behind, z, drawing }
+  return { horizontal, vertical, width, height, effect, wrap, behind, z, drawing }
 }
 
 /** CSS 长度换算为磅：`pt`、`in`、`cm`、`mm`、`px`（0.75 磅），无单位按像素。 */
@@ -427,6 +514,60 @@ const VML_RELATIVE_V: Readonly<Record<string, string>> = {
 }
 
 const VML_SHAPES = new Set(['shape', 'rect', 'roundrect', 'oval'])
+
+/** `w:object` 中显示对象的 VML 形状：`style` 的宽高（磅）、`v:imagedata` 的图片部件与裁剪比例。 */
+export interface ObjectShape {
+  readonly width: number
+  readonly height: number
+  readonly picture: string | null
+  readonly crop: RelativeRect
+}
+
+/** VML 的裁剪比例：以 `f` 结尾时单位为 1/65536，否则为小数。 */
+function vmlFraction(v: string | null): number {
+  if (v === null) return 0
+  const t = v.trim()
+  const n = t.endsWith('f') ? Number(t.slice(0, -1)) / 65536 : Number(t)
+  return Number.isFinite(n) ? n : 0
+}
+
+/**
+ * 在 `w:object` 的开始标签处调用，返回时位于其结束标签。取第一个 VML 形状；没有形状时返回 `null`。
+ * 嵌入对象（`o:OLEObject`）本身不读取：WPS 显示的是该形状的图片。
+ */
+export function readObjectShape(x: Scanner, rels: Relationships): ObjectShape | null {
+  let out: ObjectShape | null = null
+  eachChild(x, (local) => {
+    if (!VML_SHAPES.has(local) || out !== null) {
+      skip(x)
+      return
+    }
+    const css = cssStyle(x.attr('style') ?? '')
+    let picture: string | null = null
+    let crop = ZERO_RECT
+    eachChild(x, (child) => {
+      if (child === 'imagedata' && picture === null) {
+        const id = x.attrNs(RELATIONSHIPS, 'id')
+        const rel = id === null ? null : rels.byId(id)
+        if (rel !== null && !rel.external) picture = rel.part ?? null
+        crop = {
+          left: vmlFraction(x.attr('cropleft')),
+          top: vmlFraction(x.attr('croptop')),
+          right: vmlFraction(x.attr('cropright')),
+          bottom: vmlFraction(x.attr('cropbottom')),
+        }
+      }
+      skip(x)
+    })
+    out = {
+      width: cssLength(css.get('width')) ?? 0,
+      height: cssLength(css.get('height')) ?? 0,
+      picture,
+      crop,
+    }
+  })
+  return out
+}
 
 /**
  * 在 `w:pict` 的开始标签处调用，返回时位于其结束标签。只转换绝对定位的单个形状；其余返回 `null` 并计为 `vml`。
@@ -595,6 +736,7 @@ function readVmlShape<C>(
     vertical,
     width,
     height,
+    effect: ZERO_EDGES,
     wrap,
     behind: z < 0,
     z: Math.abs(z),
@@ -614,6 +756,7 @@ function readVmlShape<C>(
               anchor:
                 textAnchor === 'middle' ? 'center' : textAnchor === 'bottom' ? 'bottom' : 'top',
               autoFit: css.get('mso-fit-shape-to-text') === 't',
+              wrap: css.get('mso-wrap-style') !== 'none',
             },
     },
   }
