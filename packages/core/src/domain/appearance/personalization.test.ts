@@ -15,9 +15,24 @@ const sample: Personalization = {
   fog: { color: '#ffffff', density: 0.5, speed: 0.4 },
   opacity: 0.7,
   accent: '#7c3aed',
+  flow: '#16a34a',
 }
 
 describe('parsePersonalization', () => {
+  test('流动色为颜色或 null；此前保存的内容没有该字段时按 null 读取；非法颜色被拒绝', () => {
+    expect(parsePersonalization({ ...sample, flow: '#16A34A' })).toEqual({
+      ok: true,
+      value: sample,
+    })
+    expect(parsePersonalization({ ...sample, flow: null })).toEqual({
+      ok: true,
+      value: { ...sample, flow: null },
+    })
+    const { flow: _, ...saved } = sample
+    expect(parsePersonalization(saved)).toEqual({ ok: true, value: { ...sample, flow: null } })
+    expect(parsePersonalization({ ...sample, flow: 'purple' }).ok).toBe(false)
+  })
+
   test('合法内容原样通过，颜色统一为小写', () => {
     expect(parsePersonalization({ ...sample, accent: '#7C3AED' })).toEqual({
       ok: true,
@@ -91,6 +106,7 @@ describe('mergePersonalization', () => {
 test('默认值判定', () => {
   expect(isDefaultPersonalization(DEFAULT_PERSONALIZATION)).toBe(true)
   expect(isDefaultPersonalization({ ...DEFAULT_PERSONALIZATION, accent: '#7c3aed' })).toBe(false)
+  expect(isDefaultPersonalization({ ...DEFAULT_PERSONALIZATION, flow: '#16a34a' })).toBe(false)
 })
 
 test('图片文件名', () => {

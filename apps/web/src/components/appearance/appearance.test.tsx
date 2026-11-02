@@ -30,6 +30,7 @@ const sample: Personalization = {
   fog: { color: '#ffffff', density: 0.5, speed: 0.5 },
   opacity: 0.5,
   accent: '#7c3aed',
+  flow: null,
 }
 
 describe('color', () => {
@@ -105,6 +106,21 @@ describe('外观权威', () => {
       expect(fg(grey)).toBe('#ffffff')
     for (const white of ['#ffffff', '#f5f5f5', '#f2f2f2', '#ebebeb'])
       expect(fg(white)).toBe('#16161a')
+  })
+
+  test('设置流动色时由它推导生成进度的整套色阶，500 即流动色；清除后移除，恢复默认紫色；强调色不影响色阶', async () => {
+    const store = await import('../../lib/store/index.ts')
+    const root = document.documentElement
+    store.paintPersonalization({ personalization: { ...sample, flow: '#16a34a' }, imageUrl: null })
+    expect(root.style.getPropertyValue('--vivid-500')).toBe('rgba(22, 163, 74, 1)')
+    for (const step of [100, 200, 300, 400, 600, 700, 800]) {
+      expect(root.style.getPropertyValue(`--vivid-${step}`)).not.toBe('')
+    }
+    expect(root.style.getPropertyValue('--vivid-100')).toBe('rgba(222, 242, 230, 1)')
+    expect(root.style.getPropertyValue('--vivid-800')).toBe('rgba(14, 104, 47, 1)')
+    store.paintPersonalization({ personalization: { ...sample, flow: null }, imageUrl: null })
+    expect(root.style.getPropertyValue('--vivid-500')).toBe('')
+    expect(root.style.getPropertyValue('--accent')).toBe('rgba(124, 58, 237, 1)')
   })
 
   test('默认令牌即推导规则作用于主题强调色的结果', async () => {

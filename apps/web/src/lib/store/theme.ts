@@ -32,6 +32,21 @@ export interface PaintedPersonalization {
 const THEME_KEY = 'qywork.theme'
 
 /**
+ * 流动色推导的色阶：步号与由流动色向白色（正数）或黑色（负数）混合的比例，500 即流动色本身。
+ * 比例按默认紫色色阶（`tokens.css` 的 `--vivid-*`）的浅色一侧拟合，深色一侧等距加深。
+ */
+const FLOW_STEPS: readonly (readonly [number, number])[] = [
+  [100, 0.86],
+  [200, 0.74],
+  [300, 0.52],
+  [400, 0.27],
+  [500, 0],
+  [600, -0.12],
+  [700, -0.24],
+  [800, -0.36],
+]
+
+/**
  * 个性化写入 `document.documentElement` 行内样式的变量。清除时逐一移除，恢复 `tokens.css` 的值。
  *
  * 半透明底色与悬停色由当前明暗的令牌值计算，切换主题或系统明暗后须重新计算（`repaint`）。
@@ -46,6 +61,7 @@ const PERSONAL_VARIABLES = [
   '--accent-hover',
   '--accent-soft',
   '--accent-fg',
+  ...FLOW_STEPS.map(([step]) => `--vivid-${step}`),
 ]
 
 function load(key: string): string | null {
@@ -86,6 +102,7 @@ function applyDataTheme(pref: ThemePref): void {
 }
 
 const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 1 }
+const BLACK: Rgba = { r: 0, g: 0, b: 0, a: 1 }
 
 /**
  * 白色系的界限：强调色与白色的对比度低于此值时，白色的文字与圆钮在强调色上无法区分
@@ -123,6 +140,16 @@ export function accentPalette(accent: Rgba, page: Rgba): Record<string, string> 
   }
 }
 
+/** 流动色的色阶（`--vivid-100` 至 `--vivid-800`）。没有设置流动色时不写入，沿用 `tokens.css` 的默认紫色。 */
+export function flowPalette(flow: Rgba): Record<string, string> {
+  return Object.fromEntries(
+    FLOW_STEPS.map(([step, t]) => [
+      `--vivid-${step}`,
+      toCss(t >= 0 ? mix(flow, WHITE, t) : mix(flow, BLACK, -t)),
+    ]),
+  )
+}
+
 /**
  * 个性化的强调色与其上的文字色。null 表示使用主题的强调色。供桌面宠物窗口的角标使用：
  * 宠物窗口不读取个性化，由主窗口随状态推送（`appearance/pet-window.ts`）。
@@ -158,6 +185,10 @@ function writeVariables(p: Personalization | null): void {
     for (const [name, value] of Object.entries(accentPalette(accent, content))) {
       style.setProperty(name, value)
     }
+  }
+  const flow = p.flow ? parseColor(p.flow) : null
+  if (flow) {
+    for (const [name, value] of Object.entries(flowPalette(flow))) style.setProperty(name, value)
   }
 }
 
