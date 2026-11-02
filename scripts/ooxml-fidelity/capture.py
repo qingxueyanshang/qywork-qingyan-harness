@@ -5,7 +5,7 @@
 WPS 退出时才写入界面布局等记录，比对不能早于退出。页面先写入调用目录，记录无变化且核对通过后才移入真值目录；
 记录有变化即停止，不再处理后续文档。
 
-docx：ActivePane.Pages(n).EnhMetaFileBits 取每页 EMF（屏幕排版的页面），由 emf.render 回放。
+docx：ActivePane.Pages(n).EnhMetaFileBits 取每页 EMF（屏幕排版的页面），由 emf.render_screen 按屏幕显示的字体质量回放。
   核对：EMF 图片框与节的页面尺寸一致；绘制范围不超出图片框；窗格页数与 ComputeStatistics 页数一致。
   回放由 GDI 栅格化文字：96 dpi 下宋体等带点阵字形的字体在小字号使用点阵字形，192 dpi 下为轮廓字形，
   两种 dpi 的真值不可混用。
@@ -81,7 +81,7 @@ def _docx(inst, src, out_dir: Path, dpi: float) -> dict:
         for n in range(1, count + 1):
             bits = bytes(pane.Pages(n).EnhMetaFileBits)
             h = emf.header(bits)
-            img = emf.render(bits, dpi)
+            img = emf.render_screen(bits, dpi)
             png = out_dir / f"page-{n:04d}.png"
             img.save(png)
             pages.append({"n": n, "file": png.name, "width": img.width, "height": img.height,
@@ -93,7 +93,7 @@ def _docx(inst, src, out_dir: Path, dpi: float) -> dict:
               "section_sizes_mm": [tuple(round(v, 2) for v in s) for s in sizes],
               "size_mismatch_pages": [p["n"] for p in pages if not p["size_ok"]],
               "max_overflow_mm": max((p["overflow_mm"] for p in pages), default=0.0)}
-    return {"method": "ActivePane.Pages(n).EnhMetaFileBits + GDI PlayEnhMetaFile", "dpi": dpi,
+    return {"method": "ActivePane.Pages(n).EnhMetaFileBits + lfQuality 6 + GDI PlayEnhMetaFile", "dpi": dpi,
             "pages": pages, "checks": checks}
 
 

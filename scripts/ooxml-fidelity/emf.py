@@ -13,6 +13,9 @@ from PIL import Image
 EMF_SIGNATURE = 0x464D4520
 HALFTONE = 4
 WHITENESS = 0x00FF0062
+EMR_EXTCREATEFONTINDIRECTW = 82
+# lfQuality 在记录中的偏移：记录头 8 字节与 ihFont 4 字节之后为 LOGFONTW，lfQuality 是其第 26 字节。
+LF_QUALITY_OFFSET = 12 + 26
 
 
 def header(data: bytes) -> dict:
@@ -33,6 +36,36 @@ def header(data: bytes) -> dict:
     frame_box_mm = tuple(v / 100 for v in frame)
     return {"bounds": bounds, "frame": frame, "device": device, "millimeters": millimeters,
             "frame_mm": frame_mm, "bounds_mm": bounds_mm, "frame_box_mm": frame_box_mm}
+
+
+def with_font_quality(data: bytes, quality: int) -> bytes:
+    """把每条 EMR_EXTCREATEFONTINDIRECTW 记录的 lfQuality 改为 quality，其余字节不变。
+    只处理顶层记录；记录长度无效时报错，不返回部分改写的数据。"""
+    header(data)
+    out = bytearray(data)
+    off = 0
+    while off < len(out):
+        if off + 8 > len(out):
+            raise ValueError(f"EMF 记录头不完整：偏移 {off}")
+        itype, size = struct.unpack_from("<II", out, off)
+        if size < 8 or size % 4 or off + size > len(out):
+            raise ValueError(f"EMF 记录长度无效：偏移 {off}，长度 {size}")
+        if itype == EMR_EXTCREATEFONTINDIRECTW:
+            if size <= LF_QUALITY_OFFSET:
+                raise ValueError(f"EMR_EXTCREATEFONTINDIRECTW 记录过短：偏移 {off}")
+            out[off + LF_QUALITY_OFFSET] = quality
+        off += size
+    return bytes(out)
+
+
+# 页面 EMF 中字体的 lfQuality 为 0（缺省），GDI 回放时按 ClearType 兼容宽度绘制；
+# WPS 在屏幕上绘制时请求的是 CLEARTYPE_NATURAL_QUALITY（自然宽度）。不改写时真值的字形与屏幕显示不一致。
+CLEARTYPE_NATURAL_QUALITY = 6
+
+
+def render_screen(data: bytes, dpi: float) -> Image.Image:
+    """按 WPS 屏幕显示的字体质量回放 WPS 页面 EMF。docx 真值与公式校准的采集都经此处，不要直接调用 render。"""
+    return render(with_font_quality(data, CLEARTYPE_NATURAL_QUALITY), dpi)
 
 
 class _BitmapInfoHeader(ctypes.Structure):

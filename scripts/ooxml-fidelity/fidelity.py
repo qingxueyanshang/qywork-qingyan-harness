@@ -2,9 +2,9 @@
 
 运行（解释器与 office 工具相同，见 packages/runtime/src/office.ts 的 findPython）：
   python scripts/ooxml-fidelity/fidelity.py corpus [--must <路径>]   检索语料，写入 corpus.json
-  python scripts/ooxml-fidelity/fidelity.py truth [--only <标识或格式>] [--dpi 96] [--out <目录>]
-                                                        采集真值，缺省写入 truth/<文档标识>/
-  python scripts/ooxml-fidelity/fidelity.py pdf [--only …]   导出 PDF 并栅格化，写入 candidates/wps-pdf/（只用于检验打分流程）
+  python scripts/ooxml-fidelity/fidelity.py truth [--corpus <文件>] [--only <标识或格式>] [--dpi 96] [--out <目录>]
+                                                        采集真值，缺省写入 truth/<文档标识>/；--corpus 缺省为 corpus.json
+  python scripts/ooxml-fidelity/fidelity.py pdf [--corpus <文件>] [--only …]   导出 PDF 并栅格化，写入 candidates/wps-pdf/（只用于检验打分流程）
   python scripts/ooxml-fidelity/fidelity.py score --candidates <目录> [--truth <目录>] [--format <格式>…] [--name report]
                                                         打分，写入 <name>.md 与 <name>.json；--format 只计入给定格式的文档
   python scripts/ooxml-fidelity/fidelity.py restore-clipboard   采集异常结束后写回用户剪贴板
@@ -101,7 +101,7 @@ def cmd_corpus(args):
 
 
 def _load_corpus(args):
-    data = json.loads((OUT / "corpus.json").read_text("utf-8"))
+    data = json.loads(Path(args.corpus).read_text("utf-8"))
     docs = data["documents"]
     if args.only:
         docs = [d for d in docs if d["id"] in args.only or d["format"] in args.only]
@@ -163,6 +163,8 @@ def main():
     c.add_argument("--xlsx", type=int, default=5)
     for name in ("truth", "pdf"):
         s = sub.add_parser(name)
+        s.add_argument("--corpus", default=str(OUT / "corpus.json"),
+                       help="文档列表文件，格式同 corpus 子命令的输出；缺省为 corpus.json")
         s.add_argument("--only", nargs="*", help="只处理给定标识或格式")
         s.add_argument("--dpi", type=float, default=96.0, help="docx 的输出分辨率；xlsx 与 pptx 固定为 96 dpi")
         s.add_argument("--out", help="输出目录，缺省为 truth/ 或 candidates/wps-pdf/")

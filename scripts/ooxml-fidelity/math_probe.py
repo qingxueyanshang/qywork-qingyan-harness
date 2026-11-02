@@ -80,7 +80,7 @@ def run_one(path: Path, out: Path, call_dir: Path, dpi=96.0):
             for k in range(1, pane.Pages.Count + 1):
                 bits = bytes(pane.Pages(k).EnhMetaFileBits)
                 (out / f"{path.stem}-p{k}.emf").write_bytes(bits)
-                emf.render(bits, dpi).save(out / f"{path.stem}-p{k}.png")
+                emf.render_screen(bits, dpi).save(out / f"{path.stem}-p{k}.png")
                 pages.append(f"{path.stem}-p{k}.png")
             data = {"id": path.stem, "renderer": {k: inst.info.get(k) for k in ("progid", "version")},
                     "pages": pages, **chars(doc)}
