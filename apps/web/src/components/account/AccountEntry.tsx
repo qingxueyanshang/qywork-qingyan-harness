@@ -3,6 +3,7 @@ import { Show } from 'solid-js'
 import { cloudState } from '../../lib/store/cloud.ts'
 import { setAccountOpen } from '../../lib/store/index.ts'
 import { IconUser } from '../Icons.tsx'
+import { AccountAvatar } from './Avatar.tsx'
 
 type SignedIn = Extract<CloudState, { state: 'signed_in' }>
 
@@ -17,11 +18,7 @@ export function AccountEntry() {
       <li>
         <button class="nav-item account-entry" type="button" onClick={() => setAccountOpen(true)}>
           <Show when={signed()} fallback={<IconUser size={15} />}>
-            {(s) => (
-              <span class="account-avatar sm" aria-hidden="true">
-                {(s().email[0] ?? '?').toUpperCase()}
-              </span>
-            )}
+            {(s) => <AccountAvatar email={s().email} avatar={s().avatar} small />}
           </Show>
           <span class="account-entry-name">{signed()?.email ?? '登录'}</span>
         </button>

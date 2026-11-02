@@ -1,5 +1,5 @@
 /**
- * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`，以及账号界面的 `usage`、`requests`。
+ * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`、`avatar`，以及账号界面的 `models`、`usage`、`requests`。
  *
  * 账号对象由 `server.ts` 按进程创建一个。未配置云端地址时（`cloud/origins.ts`）为 null，只回答 `unavailable`，
  * 界面据此不显示账号入口。登录、注册与读取失败以 400 返回可直接显示的原因。
@@ -36,7 +36,15 @@ export const handleCloudApi: ApiHandler = async (url, req, d) => {
       await account.logout()
       return json(await account.state())
     }
+    if (p === '/api/cloud/avatar' && req.method === 'PUT') {
+      const body = (await req.json().catch(() => ({}))) as { image?: unknown }
+      if (typeof body.image !== 'string') {
+        return json({ error: 'invalid_request', message: '缺少头像图片' }, 400)
+      }
+      return json(await account.setAvatar(body.image))
+    }
     if (p === '/api/cloud/usage' && req.method === 'GET') return json(await account.usage())
+    if (p === '/api/cloud/models' && req.method === 'GET') return json(await account.models())
     if (p === '/api/cloud/requests' && req.method === 'GET') {
       return json(await account.requests(url.searchParams.get('before'), PAGE))
     }

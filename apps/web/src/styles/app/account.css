@@ -23,6 +23,21 @@
   color: var(--text-primary);
   font-size: var(--fs-lg);
   font-weight: 600;
+  overflow: hidden;
+}
+.account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* 点击头像选择图片；悬停时加一圈描边表示可点击。 */
+.account-avatar-edit {
+  flex: none;
+  border-radius: var(--r-full);
+  cursor: pointer;
+}
+.account-avatar-edit:hover .account-avatar {
+  box-shadow: 0 0 0 2px var(--border-strong);
 }
 .account-avatar.sm {
   width: 18px;
@@ -72,7 +87,8 @@
   padding-right: var(--s-8);
 }
 .account-email {
-  flex: 1;
+  /* 不占满整行：退出按钮紧跟在邮箱之后。 */
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -121,6 +137,35 @@
   margin: var(--s-6) 0 var(--s-3);
   font-size: var(--fs-md);
   font-weight: 600;
+}
+/* 两张表沿用模型库的表格样式（settings.css 的 `.lib-table`）。列数与模型库不同，
+   取消模型库按列序固定的列宽与最小宽度，列宽按内容分配。 */
+.lib-table.account-table {
+  min-width: 0;
+  table-layout: auto;
+}
+.lib-table.account-table th:nth-child(n) {
+  width: auto;
+}
+.lib-table.account-table td {
+  white-space: nowrap;
+}
+/* 边框不合并：合并模式下 tbody 只有一行时，Chromium 把表头与该行共用的边框画两遍，线的颜色加深一倍
+   （可用模型只有一个型号、使用记录只有一条时即出现）。分离模式下这条线只由表头画一次；
+   表头底色不铺到边框下，线画在白底上，颜色与模型库相同。 */
+.lib-table.account-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.lib-table.account-table thead th {
+  background-clip: padding-box;
+}
+/* 标题后的单位：与标题同行，字号与颜色同表头。 */
+.account-unit {
+  margin-left: var(--s-2);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--text-tertiary);
 }
 .account-failed {
   color: var(--danger);

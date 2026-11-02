@@ -21,6 +21,7 @@ const SIGNED_IN: CloudState = {
   state: 'signed_in',
   email: 'me@example.com',
   credits: 12.5,
+  avatar: null,
   provider: 'qywork',
 }
 
@@ -74,7 +75,20 @@ beforeAll(async () => {
       cloud = { state: 'signed_out' }
       return structuredClone(cloud) as T
     }
+    if (path === '/api/cloud/avatar') {
+      const { image } = JSON.parse(String(init?.body)) as { image: string }
+      cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), avatar: image }
+      return structuredClone(cloud) as T
+    }
     if (path === '/api/cloud/usage') return structuredClone(USAGE) as T
+    if (path === '/api/cloud/models') {
+      return [
+        {
+          id: 'claude-opus-5-5',
+          price: { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 },
+        },
+      ] as T
+    }
     if (path.startsWith('/api/cloud/requests')) return (pages.shift() ?? []) as T
     throw new Error(`unexpected ${path}`)
   }
@@ -180,6 +194,10 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
   // 累计 Token 为四项之和；「输入」含缓存命中。
   expect(view.text()).toContain('3.5K')
   expect(view.text()).toContain('完成')
+  // 可用模型与单价（积分 / 百万 token）；读取后模型列表随之刷新。
+  await until(() => view.text().includes('claude-opus-5-5'))
+  expect(view.text()).toContain('1,500.00')
+  expect(calls).toContain('GET /api/models')
   // 不足一页：没有更早的记录。
   expect(view.button('加载更早的记录')).toBeUndefined()
   view.close()
@@ -192,7 +210,10 @@ test('使用记录满一页时可继续加载，续页位置为上一页最后�
   const view = await dialog()
   await until(() => view.button('加载更早的记录') !== undefined)
   view.button('加载更早的记录')?.click()
-  await until(() => view.host.querySelectorAll('tbody tr').length === 51)
+  // 使用记录是弹窗中的最后一张表，上方还有「可用模型」表。
+  const records = () =>
+    [...view.host.querySelectorAll('.lib-table')].at(-1)?.querySelectorAll('tbody tr').length
+  await until(() => records() === 51)
   const last = calls.filter((c) => c.startsWith('GET /api/cloud/requests')).at(-1)
   expect(last).toContain(`before=${encodeURIComponent(record('50').startedAt)}`)
   expect(view.button('加载更早的记录')).toBeUndefined()
@@ -203,8 +224,8 @@ test('退出登录后弹窗显示登录表单', async () => {
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()
   const view = await dialog()
-  await until(() => view.button('退出登录') !== undefined)
-  view.button('退出登录')?.click()
+  await until(() => view.host.querySelector('button[aria-label="退出登录"]') !== null)
+  ;(view.host.querySelector('button[aria-label="退出登录"]') as HTMLButtonElement).click()
   await until(() => view.host.querySelector('.account-form') !== null)
   expect(calls).toContain('POST /api/cloud/logout')
   view.close()
@@ -265,4 +286,70 @@ test('Token 活动：53 列 × 7 行，今天之后不绘制，按有请求日�
   // 11 月 1 日是周日，位于倒数第二列。
   expect(months.at(-2)).toBe('11月')
   expect(months).toHaveLength(53)
+})
+
+test('模型下拉列表：已登录时账号的模型排在最前，分组名为「账号订阅」', async () => {
+  const row = (id: string) => ({
+    id,
+    label: id,
+    effortLevels: [],
+    effort: null,
+    currency: 'USD',
+    vision: null,
+    video: false,
+    known: true,
+  })
+  providers = [
+    { name: 'mine', models: [row('m1')] },
+    { name: 'qywork', models: [row('claude-sonnet-5-5')] },
+  ]
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  await (await import('../../lib/store/settings.ts')).reloadModelCatalog()
+  store.setState({
+    activeConversation: 'cv',
+    conversations: [{ id: 'cv', provider: 'mine', model: 'm1' } as never],
+    busyConversations: [],
+    views: {},
+  })
+  const { ModelPicker } = await import('../ModelPicker.tsx')
+  const view = await mount(() => <ModelPicker />)
+  try {
+    ;(view.host.querySelector('.mode-chip') as HTMLButtonElement).click()
+    const entry = [...view.host.querySelectorAll<HTMLButtonElement>('.model-entry')].find((b) =>
+      b.textContent?.includes('模型'),
+    )
+    entry?.click()
+    await until(() => view.host.querySelectorAll('.model-group-name').length === 2)
+    expect(
+      [...view.host.querySelectorAll('.model-group-name')].map((g) => g.textContent?.trim()),
+    ).toEqual(['账号订阅', 'mine'])
+  } finally {
+    view.close()
+    store.setState({
+      activeConversation: null,
+      conversations: [],
+      busyConversations: [],
+      views: {},
+    })
+  }
+})
+
+test('更换头像后，侧栏入口与账号弹窗显示头像图片，不再显示首字母', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  const side = await entry()
+  const view = await dialog()
+  await until(() => view.host.querySelector('.account-head .account-avatar') !== null)
+  expect(view.host.querySelector('.account-head .account-avatar img')).toBeNull()
+  const image = 'data:image/webp;base64,UklGRg=='
+  await cloudStore.setCloudAvatar(image)
+  await until(() => view.host.querySelector('.account-head .account-avatar img') !== null)
+  expect(view.host.querySelector('.account-head .account-avatar img')?.getAttribute('src')).toBe(
+    image,
+  )
+  expect(side.host.querySelector('.account-avatar img')?.getAttribute('src')).toBe(image)
+  expect(calls).toContain('PUT /api/cloud/avatar')
+  side.close()
+  view.close()
 })

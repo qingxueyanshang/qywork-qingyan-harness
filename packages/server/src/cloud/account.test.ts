@@ -18,6 +18,9 @@ const cloud = {
   /** 云端收到的最后一次 `/v1/usage` 查询串与 `/v1/requests` 查询串。 */
   usageQuery: '',
   requestsQuery: '',
+  /** 价格清单中是否包含后上架的型号。 */
+  extraModel: false,
+  avatar: null as string | null,
 }
 
 const server: ReturnType<typeof Bun.serve> = Bun.serve({
@@ -65,7 +68,20 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
       const code = cloud.me === 'revoked' ? 'device_revoked' : 'invalid_key'
       return Response.json({ error: { code, message: code } }, { status: 401 })
     }
-    if (path === '/v1/me') return Response.json({ email: 'me@example.com', credits: 12.5 })
+    if (path === '/v1/me') {
+      return Response.json({ email: 'me@example.com', credits: 12.5, avatar: cloud.avatar })
+    }
+    if (path === '/v1/me/avatar' && req.method === 'PUT' && authed) {
+      const { image } = (await req.json()) as { image: string }
+      if (!image.startsWith('data:image/')) {
+        return Response.json(
+          { error: { code: 'invalid_request', message: '头像须为 PNG、JPEG 或 WebP 图片' } },
+          { status: 400 },
+        )
+      }
+      cloud.avatar = image
+      return new Response(null, { status: 204 })
+    }
     if (path === '/v1/usage' && authed) {
       cloud.usageQuery = url.search
       return Response.json({ requests: 3, credits: 1.5, days: [] })
@@ -88,7 +104,11 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         supported_endpoint_types: [type],
       })
       return Response.json({
-        data: [entry('claude-sonnet-5-5', 'anthropic'), entry('gpt-5', 'openai-response')],
+        data: [
+          entry('claude-sonnet-5-5', 'anthropic'),
+          entry('gpt-5', 'openai-response'),
+          ...(cloud.extraModel ? [entry('claude-opus-5-5', 'anthropic')] : []),
+        ],
         group_ratio: { default: 1 },
       })
     }
@@ -106,7 +126,15 @@ let live: QyConfig
 let account: CloudAccount
 
 beforeEach(async () => {
-  Object.assign(cloud, { me: 'ok', revoked: 0, signedOut: 0, usageQuery: '', requestsQuery: '' })
+  Object.assign(cloud, {
+    me: 'ok',
+    revoked: 0,
+    signedOut: 0,
+    usageQuery: '',
+    requestsQuery: '',
+    extraModel: false,
+    avatar: null,
+  })
   live = await loadConfig()
   delete live.providers[CLOUD_PROVIDER]
   delete live.active
@@ -119,6 +147,7 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
     state: 'signed_in',
     email: 'me@example.com',
     credits: 12.5,
+    avatar: null,
     provider: CLOUD_PROVIDER,
   })
   const provider = live.providers[CLOUD_PROVIDER]!
@@ -204,4 +233,25 @@ test('读取用量时设备已被移除：删除本地接口，接口以 400 返
   expect(await res?.json()).toEqual({ error: 'cloud', message: '设备已被移除' })
   expect(live.providers[CLOUD_PROVIDER]).toBeUndefined()
   expect(await account.state()).toEqual({ state: 'signed_out', reason: 'revoked' })
+})
+
+test('可用模型实时读取云端价格清单，单价为积分 / 百万 token；新上架的型号同时写入配置', async () => {
+  await account.login('me@example.com', PASSWORD)
+  cloud.extraModel = true
+  const models = await account.models()
+  expect(models.map((m) => m.id)).toEqual(['claude-sonnet-5-5', 'gpt-5', 'claude-opus-5-5'])
+  expect(models[1]?.price).toMatchObject({ input: 300, output: 1500 })
+  expect(Object.keys(live.providers[CLOUD_PROVIDER]?.models ?? {})).toContain('claude-opus-5-5')
+  expect(Object.keys((await loadConfig()).providers[CLOUD_PROVIDER]?.models ?? {})).toContain(
+    'claude-opus-5-5',
+  )
+})
+
+test('更换头像：以设备密钥写入云端，状态中带头像；格式不对时给出云端的原因', async () => {
+  await account.login('me@example.com', PASSWORD)
+  const image = 'data:image/webp;base64,UklGRg=='
+  expect(await account.setAvatar(image)).toMatchObject({ state: 'signed_in', avatar: image })
+  await expect(account.setAvatar('data:text/html;base64,PGI+')).rejects.toThrow(
+    '头像须为 PNG、JPEG 或 WebP 图片',
+  )
 })
