@@ -47,7 +47,7 @@ const origin: string = `http://127.0.0.1:${server.port}`
 const previous = process.env.QYWORK_CLOUD
 
 beforeAll(() => {
-  process.env.QYWORK_CLOUD = `${origin},${origin}`
+  process.env.QYWORK_CLOUD = origin
 })
 
 afterAll(() => {

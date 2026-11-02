@@ -82,13 +82,14 @@ export const [petsChange, setPetsChange] = createSignal<{
 export const [petApply, setPetApply] = createSignal<{ id: string | null; seq: number } | null>(null)
 
 /**
- * 连接状态写入 `state`。经 console 打开时本页在 iframe 中：电脑端重启后令牌改变、握手被拒，
- * 此时通知 console 重新取得令牌并刷新本页。消息不含令牌，因此不限定接收方的来源。
+ * 连接状态写入 `state`。经 console 打开时本页在 iframe 中，握手被拒（电脑端重启后令牌改变）与断线重连时
+ * 以 `qywork.connection` 通知 console：前者由 console 重新取得令牌并刷新本页，后者由 console 查询电脑是否
+ * 仍在线、已移除时改为显示对应状态。消息只含状态名、不含令牌，因此不限定接收方的来源。
  */
 export function onConnectionState(s: ConnectionState, detail?: string): void {
   setState({ connection: s, connectionDetail: detail ?? '' })
-  if (s === 'unauthorized' && window.parent !== window) {
-    window.parent.postMessage({ type: 'qywork.unauthorized' }, '*')
+  if ((s === 'unauthorized' || s === 'reconnecting') && window.parent !== window) {
+    window.parent.postMessage({ type: 'qywork.connection', state: s }, '*')
   }
 }
 

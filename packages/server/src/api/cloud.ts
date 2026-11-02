@@ -1,7 +1,7 @@
 /**
  * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`、`avatar`，以及账号界面的 `models`、`usage`、`requests`。
  *
- * 账号对象由 `server.ts` 按进程创建一个。未配置云端地址时（`cloud/origins.ts`）为 null，只回答 `unavailable`，
+ * 账号对象由 `server.ts` 按进程创建一个。未配置云端地址时（`cloud/origin.ts`）为 null，只回答 `unavailable`，
  * 界面据此不显示账号入口。登录、注册与读取失败以 400 返回可直接显示的原因。
  */
 

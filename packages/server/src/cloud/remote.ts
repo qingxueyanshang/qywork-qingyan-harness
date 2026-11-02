@@ -11,7 +11,6 @@
 import type { QyConfig } from '@qywork/runtime'
 import { writeConfig } from '../api/config.ts'
 import { cloudProviderOf } from './account.ts'
-import type { CloudOrigins } from './origins.ts'
 import { TunnelClient, type TunnelClientOptions, type TunnelStatus } from './tunnel.ts'
 
 /** 远程监听器：只绑定 127.0.0.1 的随机端口，`start` 返回端口，重复调用返回同一个。 */
@@ -30,7 +29,7 @@ export interface RemoteSnapshot {
 
 export interface RemoteAccessDeps {
   config: QyConfig
-  origins: CloudOrigins | null
+  origin: string | null
   listener: RemoteListener
   pairing: () => { token: string; deviceName: string }
   onRevoked: () => Promise<void>
@@ -69,11 +68,11 @@ export class RemoteAccess {
     const want = key !== null && this.deps.config.remote === true
     if (want && this.tunnel && this.key === key) return
     this.halt()
-    if (!want || !this.deps.origins) return
+    if (!want || !this.deps.origin) return
     this.key = key
     this.status = { state: 'connecting' }
     const tunnel = new TunnelClient({
-      apiOrigin: this.deps.origins.api,
+      apiOrigin: this.deps.origin,
       key,
       localPort: this.deps.listener.start(),
       pairing: this.deps.pairing,
@@ -106,7 +105,7 @@ export class RemoteAccess {
   }
 
   private deviceKey(): string | null {
-    if (!this.deps.origins) return null
-    return cloudProviderOf(this.deps.config, this.deps.origins)?.apiKey ?? null
+    if (!this.deps.origin) return null
+    return cloudProviderOf(this.deps.config, this.deps.origin)?.apiKey ?? null
   }
 }
