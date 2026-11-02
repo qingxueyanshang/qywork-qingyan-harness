@@ -24,22 +24,17 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
       revoked++
       return new Response(null, { status: 204 })
     }
-    if (path === '/api/pricing') {
+    if (path === '/v1/catalog') {
       return Response.json({
-        data: [
+        models: [
           {
-            model_name: 'claude-sonnet-5-5',
-            quota_type: 0,
-            model_ratio: 150,
-            completion_ratio: 5,
-            enable_groups: ['default'],
-            supported_endpoint_types: ['anthropic'],
+            id: 'claude-sonnet-5-5',
+            protocol: 'anthropic_messages',
+            price: { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 },
           },
         ],
-        group_ratio: { default: 1 },
       })
     }
-    if (path === '/api/status') return Response.json({ data: {} })
     return new Response('not found', { status: 404 })
   },
 })
