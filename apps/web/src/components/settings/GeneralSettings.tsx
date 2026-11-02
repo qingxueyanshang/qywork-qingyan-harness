@@ -18,7 +18,6 @@ import {
   workspace,
 } from '../../lib/store/index.ts'
 import { DEFAULT_PET } from '../appearance/pet-default.ts'
-import PairPanel from '../PairPanel.tsx'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import {
   config,
@@ -299,8 +298,6 @@ export function GeneralSettings() {
           </div>
         </section>
       </Show>
-
-      <PairPanel />
 
       <Show when={config()}>
         <ConfigStatus />

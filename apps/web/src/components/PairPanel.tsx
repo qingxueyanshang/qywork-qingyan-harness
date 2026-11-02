@@ -33,9 +33,8 @@ const offlineMessage = (t: TunnelStatus | null) => (t?.state === 'offline' ? t.m
 /**
  * 手机接入：经云端远程访问本机。
  *
- * 二维码是 console 中本设备的地址，不含令牌：手机扫码后登录同一账号才能打开本设备。
- * 它是「通用」页中的一节（改变的是本应用的访问方式，不是 agent 的能力模块），整节由本组件输出，
- * 未登录时不出现。
+ * 二维码是 cloud 站中本设备的地址，不含令牌：手机扫码后登录同一账号才能打开本设备。
+ * 它是账号窗口中的一节（远程访问依赖账号），整节由本组件输出，未登录时不出现。
  */
 export default function PairPanel() {
   const [info, { refetch, mutate }] = createResource(() => client.api<RemoteInfo>('/api/pairing'))
@@ -75,8 +74,8 @@ export default function PairPanel() {
   // 使用 `loaded()` 而不是 `info()`：后者出错时会 `throw`，获取期间会挂起设置内容区的 Suspense。
   return (
     <Show when={loaded(info)?.available || info.error}>
-      <section class="settings-block">
-        <h3 class="settings-block-head">手机接入</h3>
+      <section class="pair-section">
+        <h3 class="account-section">手机接入</h3>
         <Show
           when={loaded(info)}
           fallback={<p class="pair-hint">{explainApiError(info.error, '无法读取接入信息')}</p>}

@@ -122,12 +122,12 @@ export class CloudAccount {
 
   /** 以邮箱密码登录。已登录时直接返回当前状态。 */
   login(email: string, password: string): Promise<CloudState> {
-    return this.signIn('sign-in/email', { email, password })
+    return this.signIn('/v1/login', email, password)
   }
 
-  /** 注册并登录：云端开启了注册后自动登录，注册的响应即带会话令牌。 */
+  /** 注册并登录。 */
   register(email: string, password: string): Promise<CloudState> {
-    return this.signIn('sign-up/email', { email, password, name: email })
+    return this.signIn('/v1/register', email, password)
   }
 
   /**
@@ -202,30 +202,35 @@ export class CloudAccount {
     await this.remove()
   }
 
-  /** 登录或注册：取得会话令牌后登记设备。失败抛出 `CloudAccountError`，状态仍为未登录。 */
-  private async signIn(path: string, body: Record<string, string>): Promise<CloudState> {
+  /**
+   * 登录或注册：云端在一次请求中完成登录与登记本设备，返回设备密钥（`/v1/login`、`/v1/register`）。
+   * 失败抛出 `CloudAccountError`，状态仍为未登录。
+   */
+  private async signIn(path: string, email: string, password: string): Promise<CloudState> {
     if (cloudProviderOf(this.live, this.origins)) return this.state()
     let res: Response
     try {
-      res = await fetch(`${this.origins.app}/api/auth/${path}`, json(body))
+      res = await fetch(
+        `${this.origins.api}${path}`,
+        json({ email, password, name: hostLabel(), platform: process.platform }),
+      )
     } catch (err) {
       throw unreachable(err)
     }
     const reply = (await res.json().catch(() => ({}))) as {
-      token?: string
-      code?: string
-      message?: string
+      key?: string
+      error?: { code?: string; message?: string }
     }
-    if (!res.ok || !reply.token) {
-      const known = reply.code ? AUTH_ERRORS[reply.code] : undefined
+    if (!res.ok || !reply.key) {
+      const known = reply.error?.code ? AUTH_ERRORS[reply.error.code] : undefined
       if (known) throw new CloudAccountError(known)
       if (res.status === 429) throw new CloudAccountError('尝试次数过多，请稍后再试')
       throw new CloudAccountError(
-        `账号服务返回 ${res.status}${reply.message ? `：${reply.message}` : ''}`,
+        `账号服务返回 ${res.status}${reply.error?.message ? `：${reply.error.message}` : ''}`,
       )
     }
     try {
-      await this.complete(reply.token)
+      await this.complete(reply.key)
     } catch (err) {
       throw new CloudAccountError(err instanceof Error ? err.message : String(err))
     }
@@ -260,19 +265,12 @@ export class CloudAccount {
     )
   }
 
-  /** 登录完成：登记设备取得设备密钥，注销这次的会话，写入云端接口与型号。 */
-  private async complete(sessionToken: string): Promise<void> {
+  /** 登录完成：以设备密钥写入云端接口与型号。 */
+  private async complete(key: string): Promise<void> {
     const existing = this.live.providers[CLOUD_PROVIDER]
     if (existing && existing.baseUrl !== this.origins.api) {
       throw new Error(`已有名为「${CLOUD_PROVIDER}」的接口，请先在模型设置中改名`)
     }
-    const res = await fetch(
-      `${this.origins.app}/api/devices`,
-      json({ name: hostLabel(), platform: process.platform }, sessionToken),
-    )
-    if (!res.ok) throw new Error(`登记设备失败（${res.status}）`)
-    const { key } = (await res.json()) as { key: string }
-    void fetch(`${this.origins.app}/api/auth/sign-out`, json({}, sessionToken)).catch(() => {})
     const models = await this.pulled(key)
     const result = await writeConfig(this.live, (current) => {
       const first = Object.keys(models)[0]
