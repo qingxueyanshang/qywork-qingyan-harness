@@ -104,6 +104,7 @@ export async function submitMessage(
     deps,
     item.attachments,
     item.origin ? { kind: 'receipt', origin: item.origin } : undefined,
+    item.viewing,
   )
 }
 
@@ -125,6 +126,8 @@ export async function startRun(
   deps: Omit<CommandDeps, 'ws'>,
   attachments?: Attachment[],
   source?: RoundSource,
+  /** 发送时界面右侧面板显示的工作区文件，写入本轮的上下文快照。 */
+  viewing?: string,
 ): Promise<void> {
   /*
    * 占位与检查必须在同一个同步步骤中完成：只检查不占位时，此处到 `runs.register()`
@@ -310,6 +313,7 @@ export async function startRun(
         ...(attachments?.length ? { attachments } : {}),
         // 由回执启动的一轮，消息行必须标明投递方：界面据此渲染为回执行，而不是用户气泡。
         ...(source?.kind === 'receipt' ? { origin: source.origin } : {}),
+        ...(viewing ? { viewing } : {}),
       })) {
         // 并非所有事件都带 runId（git.state / file.changed 是工作区级的），
         // 读取前先收窄类型，不能假设字段存在。
@@ -445,6 +449,7 @@ function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDep
       deps,
       item.attachments,
       item.origin ? { kind: 'receipt', origin: item.origin } : undefined,
+      item.viewing,
     )
   }, 0)
   return true

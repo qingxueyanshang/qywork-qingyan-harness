@@ -128,6 +128,8 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line:
       '- 电脑控制：已有桌面窗口及其内容属于用户。操作本机应用应使用 desktop_windows → desktop_observe → desktop_act，不得通过 run_command 截图或注入鼠标、键盘事件。' +
       '执行命令、启动应用优先使用 run_command；任务针对已打开终端中正在运行的程序（等待输入的提示、需要停止的服务、已登录的远程会话），或用户指定该终端窗口时，才用电脑控制操作终端。' +
+      'qywork 自身的画布、文件与生成模型以上下文（界面右侧面板当前打开的文件、「可用的生成模型」）与对应的工具为准，优先使用这些来源；' +
+      'qywork 的界面本身是任务对象时（排查界面问题、核对布局与显示效果），使用电脑控制观察与操作 qywork 窗口。' +
       '操作前，应依据最新观察确认目标。系统窗口标题仅用于识别窗口，不作为当前页面或会话的确认依据。' +
       '桌面结果中的 foregroundEnabled 表示当前前台操作开关；为 false 时只使用可用的后台动作，任务必须使用前台操作时说明限制并等待用户开启，不得重试或自行更改设置。' +
       '前台操作开启且自绘界面缺少可操作控件时，使用观察结果附带的截图定位。截图包含同一应用位于该窗口之上的下拉框、菜单与搜索结果等弹出窗口，回执写明其位置；输入文字后应重新截图查看弹出的内容，再按图点击其中的项目。同一窗口内的连续动作使用 desktop_act_sequence。' +
@@ -356,8 +358,15 @@ function mentionNote(style: MentionStyle): string {
   return `提示词中指代参考素材：${kinds.join('，')}，按类别分别计数，顺序与参数中的 images / videos / audios 相同`
 }
 
-/** 生成模型及其参数表。参数名是接口原生字段，原样写入 `params_json`。 */
-function mediaModelsNote(models: MediaModelEntry[]): string {
+/**
+ * 生成模型及其参数表。参数名是接口原生字段，原样写入 `params_json`。
+ * 轮次开始时写入快照；轮次进行中配置变化时，以另一标题随注入的用户消息附上（`runtime/session.ts`）。
+ */
+export function mediaModelsNote(
+  models: MediaModelEntry[],
+  heading = '可用的生成模型（本次运行快照）',
+): string {
+  if (!models.some((m) => !m.delisted)) return `## ${heading}\n当前没有可用的生成模型。`
   const sections: string[] = []
   for (const output of MEDIA_OUTPUTS) {
     // 已下架的型号提交即被拒绝，不列给大模型。
@@ -387,10 +396,18 @@ function mediaModelsNote(models: MediaModelEntry[]): string {
     sections.push(lines.join('\n'))
   }
   return (
-    `## 可用的生成模型（本次运行快照）\n${sections.join('\n\n')}\n\n` +
+    `## ${heading}\n${sections.join('\n\n')}\n\n` +
     'params_json 仅使用所选模型列出的参数，取值依据用户要求（尺寸、比例、清晰度、数量等）或自行判断，无需设置的参数省略；' +
-    'provider 与 model 须取自同一行，两者均省略时使用默认模型。'
+    'provider 与 model 须取自同一行，两者均省略时使用默认模型。' +
+    '本清单为本轮开始时的配置；用户在本轮进行中更改配置时，当前清单随其消息附上。生成工具按当前配置校验 provider 与 model。'
   )
+}
+
+/**
+ * 界面右侧面板当前打开的文件。轮次开始时写入快照；轮次进行中用户切换到另一个文件后发送消息时，随该消息附上。
+ */
+export function viewingLine(path: string): string {
+  return `界面右侧面板当前打开：\`${path}\`。用户说「这个画布」「这个文件」等而未写路径时，指这一项。`
 }
 
 /**
@@ -435,6 +452,8 @@ export function buildTailNotes(input: {
    * 参数表取自生成目录，与发送前的校验使用同一份数据，不会出现参数表列出而校验拒绝的情况。
    */
   mediaModels?: MediaModelEntry[]
+  /** 发送消息时界面右侧面板显示的工作区文件（`SendMessageCommand.viewing`）。 */
+  viewing?: string
   /** 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有任务派发能力。 */
   team?: {
     roles: {
@@ -480,6 +499,7 @@ export function buildTailNotes(input: {
     `平台：${osName(input.platform)}`,
     `当前日期：${today}`,
   ]
+  if (input.viewing) lines.push(viewingLine(input.viewing))
   if (input.gitBranch) lines.push(`git 分支：${input.gitBranch}`)
   if (input.tempDir) lines.push(`本会话临时目录：${input.tempDir}`)
   lines.push(

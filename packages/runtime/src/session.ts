@@ -131,6 +131,7 @@ import { RuntimeCompaction } from './compaction.ts'
 import {
   collectSecrets,
   listMediaModels,
+  type MediaModelEntry,
   type ModelRef,
   NO_MODEL_MESSAGE,
   type QyConfig,
@@ -142,7 +143,7 @@ import { acquireExtensions, type Extensions, releaseExtensions } from './extensi
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { makeMediaPort } from './media.ts'
 import { findPython } from './office.ts'
-import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
+import { buildSystemPrompt, buildTailNotes, mediaModelsNote, viewingLine } from './prompt.ts'
 import { requestPersistence } from './request-persistence.ts'
 import { RuntimeSink } from './sink.ts'
 import { makeSummarizer } from './summarizer.ts'
@@ -226,6 +227,17 @@ export interface SessionOptions {
   followUps?: (conversationId: ConversationId) => FollowUp[]
 }
 
+/**
+ * 模型在本轮已知的上下文：生成模型清单（以 `MEDIA_CHANGED_HEADING` 为标题的全文，便于直接比较）与面板文件。
+ * 轮次开始时取自快照，跟进消息告知变化后随之更新。
+ */
+interface KnownContext {
+  media: string
+  viewing?: string
+}
+
+const MEDIA_CHANGED_HEADING = '可用的生成模型（本轮进行中配置已更改，以下为当前配置）'
+
 export interface AskOptions {
   /** 本轮强制使用该模型；未传入时使用会话当前模型。 */
   model?: string
@@ -244,6 +256,8 @@ export interface AskOptions {
    * 写入 `messages.origin`，界面据此区分回执行与用户气泡。
    */
   origin?: 'subagent' | 'workflow'
+  /** 发送时界面右侧面板显示的工作区文件（`SendMessageCommand.viewing`），写入本轮的上下文快照。 */
+  viewing?: string
   /**
    * 本轮由哪次任务派发产生：父会话中派发卡的 step 与卡上对应的节点。
    * 写入 `runs.dispatch_step_id / dispatch_node_id`，变更投影据此将本轮的写入归入父轮次。
@@ -407,6 +421,32 @@ export class Session {
     }
   }
 
+  /** 本会话可用的生成模型：只列出已注册生成工具的类别，与轮次快照使用同一判据。 */
+  private registeredMediaModels(): MediaModelEntry[] {
+    return listMediaModels(this.opts.config).filter((m) =>
+      this.registry.has(MEDIA_TOOLS[m.output].name),
+    )
+  }
+
+  /**
+   * 跟进消息注入时，与模型已知内容不同的上下文：生成模型清单（配置在本轮进行中被修改）与右侧面板打开的文件。
+   * 有变化时返回要告知模型的文字并更新 `known`；没有变化时返回 null。
+   * 模型只在轮次开始时得到快照；不告知时，它无法得知中途新增的型号，只能去界面中查找。
+   */
+  private changedContext(known: KnownContext, viewing: string | undefined): string | null {
+    const out: string[] = []
+    const media = mediaModelsNote(this.registeredMediaModels(), MEDIA_CHANGED_HEADING)
+    if (media !== known.media) {
+      known.media = media
+      out.push(media)
+    }
+    if (viewing && viewing !== known.viewing) {
+      known.viewing = viewing
+      out.push(viewingLine(viewing))
+    }
+    return out.length ? out.join('\n\n') : null
+  }
+
   /**
    * 每轮新建 loop：adapter 绑定具体模型，而模型可能刚被切换。
    *
@@ -417,6 +457,7 @@ export class Session {
     target: string | ModelRef,
     adapter: LlmAdapter,
     conversationId: ConversationId,
+    known: KnownContext,
     compaction?: CompactionPort,
   ): AgentLoop {
     // 能力段按已注册的工具名过滤：shell、任务派发、编排、外部工具都按通道注册。
@@ -435,8 +476,10 @@ export class Session {
         ? {
             followUps: async () => {
               const taken = this.opts.followUps?.(conversationId) ?? []
+              // 按注入顺序逐条比较：同一变化只随第一条消息告知，之后的消息以更新后的值为基准。
+              const facts = taken.map((f) => this.changedContext(known, f.viewing))
               return Promise.all(
-                taken.map(async (f) => ({
+                taken.map(async (f, i) => ({
                   id: f.id,
                   text: f.content,
                   content: f.attachments?.length
@@ -444,6 +487,7 @@ export class Session {
                     : f.content,
                   ...(f.attachments?.length ? { attachments: f.attachments } : {}),
                   ...(f.origin ? { origin: f.origin } : {}),
+                  ...(facts[i] ? { facts: facts[i] } : {}),
                 })),
               )
             },
@@ -527,9 +571,12 @@ export class Session {
       this.registry.has(name),
     )
     // 只列出本会话实际拥有工具的类别：角色只指定了视频工具时，不提供图像模型的参数表。
-    const mediaModels = listMediaModels(config).filter((m) =>
-      this.registry.has(MEDIA_TOOLS[m.output].name),
-    )
+    const mediaModels = this.registeredMediaModels()
+    // 跟进消息注入时的比较基准：本轮快照中的生成模型与面板文件（`changedContext`）。
+    const known: KnownContext = {
+      media: mediaModelsNote(mediaModels, MEDIA_CHANGED_HEADING),
+      ...(options?.viewing ? { viewing: options.viewing } : {}),
+    }
     // 角色、外部 CLI、本会话已有的子 agent：模型据此按 id 引用，不推测名称。
     const delegateFacts =
       canAssignModels && this.opts.delegate
@@ -577,6 +624,7 @@ export class Session {
       ...delegateFacts,
       // 参数表随生成工具提供：工具未注册（未配置模型、角色未指定）时不提供。
       ...(mediaModels.length ? { mediaModels } : {}),
+      ...(options?.viewing ? { viewing: options.viewing } : {}),
       externalTools: this.pendingTools?.index() ?? [],
       pendingMcp: this.extensions?.mcpConfig.pending ?? [],
       todos: latestTodos(store, conversationId),
@@ -768,7 +816,7 @@ export class Session {
      */
     let failure: { message: string; code: string } | null = null
     try {
-      for await (const ev of this.makeLoop(target, adapter, conversationId, compaction).run({
+      for await (const ev of this.makeLoop(target, adapter, conversationId, known, compaction).run({
         runId: run.id,
         history,
         ...(effort ? { effort } : {}),

@@ -768,6 +768,20 @@ export const [accountOpen, setAccountOpen] = sessionSignal<boolean>('qywork.acco
 export const [openFile, setOpenFile] = sessionSignal<string | null>('qywork.file.open', null)
 
 /**
+ * 右侧面板当前显示的工作区文件：画布页、文件预览页，或文件页中打开的文件。面板收起或显示其他页时为 undefined。
+ * 随消息发送（`SendMessageCommand.viewing`），模型据此理解「这个画布」「这个文件」。
+ */
+export function viewingFile(): string | undefined {
+  const page = sidePanel()
+  if (page === null) return undefined
+  if (typeof page === 'object') {
+    const tab = panelTabs().find((t) => t.id === page.tab)
+    return tab && (tab.kind === 'canvas' || tab.kind === 'file') ? tab.path : undefined
+  }
+  return page === 'files' ? (openFile() ?? undefined) : undefined
+}
+
+/**
  * 当前项目。
  *
  * 会话、文件树、git、扩展清单都按它获取；`client.api` 也按它为每个 REST 请求

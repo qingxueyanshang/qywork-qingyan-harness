@@ -1067,6 +1067,11 @@ export interface FollowUp {
    * `payload.origin`，开始新一轮时写入 `messages.origin`。
    */
   origin?: 'subagent' | 'workflow'
+  /**
+   * 发送时界面右侧面板显示的工作区文件，同 `SendMessageCommand.viewing`。开始新一轮时写入上下文快照；
+   * 注入当前轮次时与本轮已知的值不同才告知模型。
+   */
+  viewing?: string
 }
 
 // ─────────────────────────── 中间资源 ───────────────────────────
