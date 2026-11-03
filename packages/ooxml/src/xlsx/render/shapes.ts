@@ -260,20 +260,30 @@ function lineMargin(line: Line | null): number {
   return w * 2 + Math.max(w, 2) * 5
 }
 
-function shadowMargin(effects: readonly Effect[], frame: Frame): number {
+/**
+ * 外部阴影、发光与映像超出形状框的最大范围（像素）。映像以对齐点翻转，与形状框不重叠，按缩放后的整个尺寸外扩；
+ * 发光的模糊范围小于其半径（`../../drawingml/paint/effects.ts`）。
+ */
+function effectMargin(effects: readonly Effect[], frame: Frame): number {
+  const size = Math.max(frame.width, frame.height) / EMU_PER_PX
   let out = 0
   for (const e of effects) {
-    if (e.kind !== 'outerShadow') continue
-    const grow = Math.max(0, Math.abs(e.scaleX) - 1, Math.abs(e.scaleY) - 1)
-    const size = Math.max(frame.width, frame.height) / EMU_PER_PX
-    out = Math.max(out, (e.distance + e.blur) / EMU_PER_PX + grow * size)
+    if (e.kind === 'glow') out = Math.max(out, e.radius / EMU_PER_PX)
+    if (e.kind === 'outerShadow') {
+      const grow = Math.max(0, Math.abs(e.scaleX) - 1, Math.abs(e.scaleY) - 1)
+      out = Math.max(out, (e.distance + e.blur) / EMU_PER_PX + grow * size)
+    }
+    if (e.kind === 'reflection') {
+      const scale = Math.max(Math.abs(e.scaleX), Math.abs(e.scaleY))
+      out = Math.max(out, (e.distance + e.blur) / EMU_PER_PX + scale * size)
+    }
   }
   return out
 }
 
-/** 线条、箭头与外部阴影超出形状框的最大范围（像素）。 */
+/** 线条、箭头、外部阴影、发光与映像超出形状框的最大范围（像素）。 */
 function margin(n: ShapeNode): number {
-  const own = shadowMargin(n.effects, n.frame)
+  const own = effectMargin(n.effects, n.frame)
   if (n.kind === 'group') return Math.max(own, ...n.children.map(margin))
   return Math.max(own, lineMargin(n.line))
 }

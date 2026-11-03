@@ -89,6 +89,17 @@ describe('部件定位', () => {
     expect(doc.unsupported.nesting).toBeUndefined()
   })
 
+  test('嵌套过深的内容所在的顶层内容控件中有分节符时，去掉该控件分节之后的内容，分节之前的块保留', async () => {
+    let deep = p(r('x'))
+    for (let k = 0; k < 120; k++)
+      deep = `<w:tbl><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>${deep}</w:tc></w:tr></w:tbl>`
+    const sdt = `<w:sdt><w:sdtContent>${p(r('控件'), '<w:sectPr/>')}${deep}</w:sdtContent></w:sdt>`
+    const doc = await parse({ body: p(r('甲')) + p(r('乙')) + sdt + p(r('后文')) })
+    expect(paragraphs(doc).map(text)).toEqual(['甲', '乙', '控件'])
+    expect(doc.sections).toHaveLength(1)
+    expect(doc.unsupported.nesting).toBe(1)
+  })
+
   test('缺少样式、编号、设置与主题部件时按缺省值解析', async () => {
     const doc = await parse({ body: p(r('汉字Abc')) })
     const para = paragraphs(doc)[0]!

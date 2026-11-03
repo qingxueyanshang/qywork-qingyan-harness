@@ -924,6 +924,36 @@ describe.skipIf(process.platform !== 'win32')('build：制表位前导符（本�
     expect([(plain.leader.x * 4) / 3, plain.leader.text.length]).toEqual([132, 125])
   })
 
+  test('目录域结果中标题已到达页码左端时不排前导符', async () => {
+    // 制表符宽度为 0 至半个步进时，内缩半个步进后能容纳的个数为负数。
+    const TNR =
+      '<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman"/><w:sz w:val="24"/>'
+    const field =
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    const tabs = '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8303"/></w:tabs>'
+    const sect =
+      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" ' +
+      'w:header="851" w:footer="992" w:gutter="0"/></w:sectPr>'
+    const title = `${'E'.repeat(54)}iii`
+    const line = `${r(title, TNR)}<w:r><w:rPr>${TNR}</w:rPr><w:tab/></w:r>${r('23', TNR)}`
+    const body = p(field + line, tabs) + p('<w:r><w:fldChar w:fldCharType="end"/></w:r>') + sect
+    const result = await parseDocx(buildDocx({ body, settings: COMPAT14 }))
+    if (!result.ok) throw new Error('解析失败')
+    const face = loadDocxFace(
+      new Uint8Array(readFileSync(join(FONTS, 'times.ttf'))),
+      'Times New Roman',
+    )
+    const { pages } = layoutPages(
+      result.value,
+      new DocxFonts([face], 'Times New Roman'),
+      NO_HOST_FAMILIES,
+    )
+    const item = pages.pages[0]!.body[0]!
+    if (item.kind !== 'paragraph') throw new Error('不是段落')
+    expect(item.lines.map((l) => l.fragments.map((f) => f.text))).toEqual([[title, '23']])
+  })
+
   test('目录域以外的点前导符：Times New Roman，字号取制表符所在的字段，自制表符起点排起', async () => {
     // WPS 实测（构造文档 w13 l1、m1–m4）：制表符字段为 15 磅宋体时前导符为 15 磅 Times New Roman，每个 5 像素，
     // 第一个点位于制表符起点，余量留在页码之前。

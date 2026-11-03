@@ -295,16 +295,20 @@ export class BodyReader {
    * 当前元素（`body` 或页眉页脚的根元素）的各块。嵌套过深时去掉正在读取的顶层块，返回 `false`，调用方不再读取其后的内容。
    */
   private readBlocks(): boolean {
-    let kept = this.pending.length
+    let list = this.pending
+    let kept = list.length
     try {
       eachChild(this.x, (local) => {
-        kept = this.pending.length
+        list = this.pending
+        kept = list.length
         this.readBlock(local)
       })
       return true
     } catch (e) {
       if (!(e instanceof NestingError)) throw e
-      this.pending.length = kept
+      // 顶层块中的分节符（`sdt` 等容器内段落的 sectPr）会替换 `pending`：此时其中只有该块分节之后的内容，全部去掉。
+      // 不要直接按 `kept` 截断：新数组短于 `kept` 时，设置 length 会补入空位，`endSection` 读取空位时抛出。
+      this.pending.length = this.pending === list ? kept : 0
       this.target = this.pending
       this.count('nesting')
       return false

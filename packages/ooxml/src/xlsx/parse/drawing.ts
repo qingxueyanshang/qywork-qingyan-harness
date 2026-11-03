@@ -333,7 +333,8 @@ class Resolver {
       scope,
     )
     countOtherEffects(raw.props, scope.found)
-    countEffects(effects, scope.found)
+    // 自选图形与组合经过效果图层绘制（`../render/shapes.ts` 的 `paintShapeNode`），连接线不经过。
+    countEffects(effects, scope.found, raw.kind !== 'connector')
     // 工作表不绘制三维效果：改变外观的三维设置（相机、旋转、棱台、挤出、轮廓）登记 `effect3d`。
     const three = shapeThreeD([raw.props], raw.kind === 'group' ? null : raw.style, scope)
     if (visibleThreeD(three.scene, three.shape)) scope.found.push('effect3d')

@@ -363,7 +363,8 @@ function readNode<C>(
       countOtherEffects(props, found)
       countThreeD(props, style, scope, found)
       const effects = resolveShapeEffects(props.effects, style, scope)
-      countEffects(effects, found)
+      // 形状经过效果图层绘制（`../render/paint.ts` 的 `paintAutoShape`）。
+      countEffects(effects, found, true)
       const fill = resolveShapeFill(props.fill, style, NO_FILL, scope)
       if (fill.kind === 'picture' && fill.image.part !== null) cx.image(fill.image.part)
       return {

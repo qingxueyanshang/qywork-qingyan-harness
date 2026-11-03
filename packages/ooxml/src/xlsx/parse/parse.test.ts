@@ -667,7 +667,8 @@ describe('形状', () => {
     expect(group.children[0]?.kind === 'shape' && solidHex(group.children[0].fill)).toBe('FF0000')
 
     expect(warp?.kind).toBe('shape')
-    // 组内图表、组内图片、缺少 xfrm 的顶层形状；艺术字的变形、竖排、发光与棱台。隐藏的组合及其中的发光、棱台与图表不计数。
+    // 组内图表、组内图片、缺少 xfrm 的顶层形状；艺术字的变形、竖排与棱台（发光经效果图层绘制，不计）。隐藏的组合及其中的
+    // 棱台与图表不计数。
     expect(s.unsupported).toEqual({
       comment: 2,
       table: 1,
@@ -679,10 +680,25 @@ describe('形状', () => {
       graphic: 1,
       textWarp: 1,
       verticalText: 1,
-      effect: 1,
       effect3d: 1,
     })
   })
+  test('自选图形与组合的发光、柔化边缘与映像经效果图层绘制，不计数；连接线上的计为 effect', async () => {
+    const glow =
+      '<a:effectLst><a:glow rad="12700"><a:srgbClr val="FF0000"/></a:glow><a:softEdge rad="12700"/></a:effectLst>'
+    const drawing = (body: string) => `<xdr:wsDr ${XDR}>${two(body)}</xdr:wsDr>`
+    const shape = drawing(
+      `<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="2" name="形状"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr>${xfrm(0, 0, 100, 100)}${glow}</xdr:spPr></xdr:sp>`,
+    )
+    const connector = drawing(
+      `<xdr:cxnSp><xdr:nvCxnSpPr><xdr:cNvPr id="2" name="连接线"/><xdr:cNvCxnSpPr/></xdr:nvCxnSpPr><xdr:spPr>${xfrm(0, 0, 100, 0)}${glow}</xdr:spPr></xdr:cxnSp>`,
+    )
+    const of = async (xml: string) =>
+      (await parsed({ 'xl/drawings/drawing1.xml': xml })).sheets[0]!.unsupported.effect
+    expect(await of(shape)).toBeUndefined()
+    expect(await of(connector)).toBe(2)
+  })
+
   test('形状文字未指定的字号为 11 磅，字体为主题正文字体', async () => {
     const plain = `<xdr:wsDr ${XDR}>${two(`<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="3" name="文本"/><xdr:cNvSpPr/></xdr:nvSpPr>
 <xdr:spPr>${xfrm(0, 0, 3000, 4000)}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>
