@@ -6,12 +6,12 @@
  * 可在服务商规定的结果保留期内用同一任务号接续取回。只有远端明确报告失败才是终态。
  */
 
+import { log } from '@qywork/core'
 import { sendJson, transientFailure } from './http.ts'
 import { MediaError, type MediaRunOptions, type MediaUsage } from './types.ts'
 
 const FIRST_INTERVAL_MS = 5_000
 const MAX_INTERVAL_MS = 15_000
-const MAX_QUERY_FAILURES = 3
 
 /** 提交只执行一次；任务号缺失或为空时沿用 HTTP 诊断标为结果未知，不能当作明确拒绝后重发。 */
 export async function postTask(
@@ -127,7 +127,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 /**
  * 等待任务完成，返回结果地址与计量。首次查询不等待：接续取回时任务通常已完成。
  * 查询遇到可重发的失败（`transientFailure`：连接中断、静默超时、408 / 429 / 5xx）时按间隔继续查询，
- * 连续三次查询失败则结束本地等待；不把查询异常当作生成失败，由 `afterSubmit` 附带任务号供取回。
+ * 不计次数：远端任务不因本地网络波动而改变状态，结束等待只会把仍在生成的任务交给用户手动取回。
+ * 其余查询错误结束本地等待，由 `afterSubmit` 附带任务号供取回。
  * 状态变化时经 `onStatus` 回报一次，不按查询次数回报。
  */
 export async function waitTask<T = TaskOutput>(
@@ -136,19 +137,13 @@ export async function waitTask<T = TaskOutput>(
 ): Promise<TaskDone<T>> {
   let interval = FIRST_INTERVAL_MS
   let last = ''
-  let failures = 0
   for (;;) {
     opts.signal.throwIfAborted()
     const s = await check().catch((err: unknown) => {
       if (opts.signal.aborted || !transientFailure(err)) throw err
-      if (++failures >= MAX_QUERY_FAILURES)
-        throw new MediaError(
-          `连续 ${failures} 次任务查询失败，已停止等待：${err instanceof Error ? err.message : String(err)}`,
-          { cause: err },
-        )
+      log.warn('media', `${err instanceof Error ? err.message : String(err)}；继续查询原任务`)
       return null
     })
-    if (s) failures = 0
     if (s?.state === 'done') return s
     if (s?.state === 'failed') throw new RemoteTaskFailed(`远端任务失败：${s.message}`)
     if (s && s.status !== last) {
