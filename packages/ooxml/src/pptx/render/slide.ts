@@ -265,6 +265,8 @@ export function paintSlide(
       null,
       slideGlyphs(res.fonts),
       res.clearType === null ? null : slideClearType(res.fonts, res.clearType, ctx, deferred),
+      false,
+      res.fonts.families,
     ),
     slideNumber: slide.number,
     pictures: (part) => res.image(part),

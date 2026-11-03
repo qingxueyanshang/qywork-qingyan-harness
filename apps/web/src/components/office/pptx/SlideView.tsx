@@ -4,8 +4,9 @@
  *
  * - 重新加载完成后保留滚动位置与缩放比例。存在未显示的内容时显示一行能力边界，计数为整个文件之和。
  * - Worker 在文档显示期间保留，嵌入字体与图片从中读取；文档被替换、加载失败或组件卸载时结束。
- * - 字体：主机字体经 `../fonts.ts` 取得后即显示，主机没有的字体先按替代规则绘制（`FaceCache`：西文为 Segoe Print，
- *   其余为缺少字体时的字体）。文件中的嵌入字体在显示后逐个还原，每注册一个即重绘用到它的可见幻灯片。
+ * - 字体：主机字体与主机字体的族名经 `../fonts.ts` 取得后即显示，主机没有的字体先按替代规则绘制（`FaceCache`：WPS 演示
+ *   自带度量的字体、前缀匹配，都没有时西文为 Segoe Print，其余为缺少字体时的字体）。文件中的嵌入字体在显示后逐个还原，
+ *   每注册一个即重绘用到它的可见幻灯片。
  * - 嵌入字体每次加载以新的族名注册，文档被替换或卸载时从 `document.fonts` 删除，尚未完成的还原结果丢弃：
  *   不同文件嵌入同名字体的不同子集时，族名相同会使绘制取到另一份字形。
  * - 缺少字体与缺字时使用宋体；主机没有宋体时取文档字体中主机已有的第一个。
@@ -36,6 +37,7 @@ import {
   slideImages,
   type UnsupportedKind,
 } from '@qywork/ooxml/pptx'
+import type { HostFamilies } from '@qywork/ooxml/text'
 import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
 import {
   boundaryText,
@@ -44,7 +46,13 @@ import {
   failureText,
   type WorkerChannel,
 } from '../document.ts'
-import { type HostFace, loadClearType, loadHostFaces, registerFace } from '../fonts.ts'
+import {
+  type HostFace,
+  loadClearType,
+  loadHostFaces,
+  loadHostFamilies,
+  registerFace,
+} from '../fonts.ts'
 import type { ViewPosition } from '../viewport.ts'
 import type { PptxReplies, PptxRequest } from './pptx-worker.ts'
 import { createSlideViewport, type SlideViewport } from './slide-viewport.ts'
@@ -124,8 +132,8 @@ function pick(list: readonly SlideFace[], bold: boolean, italic: boolean): Slide
 }
 
 /** 第 `index` 张幻灯片用到的字体名：按只含该幻灯片的演示文稿求 `presentationFonts`。 */
-function slideFontNames(p: Presentation, index: number): string[] {
-  return presentationFonts({ ...p, slides: p.slides.slice(index, index + 1) })
+function slideFontNames(p: Presentation, index: number, host: HostFamilies): string[] {
+  return presentationFonts({ ...p, slides: p.slides.slice(index, index + 1) }, host)
 }
 
 /** 嵌入字体族名的序号，使每次注册的族名不同。 */
@@ -157,17 +165,15 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
       return failureText(parsed.failure)
     }
     const presentation = parsed.value
-    const [host, clearType] = await Promise.all([
-      loadHostFaces([...presentationFonts(presentation), FALLBACK]),
-      loadClearType(),
-    ])
+    const [families, clearType] = await Promise.all([loadHostFamilies(), loadClearType()])
+    const host = await loadHostFaces([...presentationFonts(presentation, families), FALLBACK])
     // 按文件中的字体名与按族名各记一份：绘制时按族名取得点阵（`SlideFonts.family`）。
     const fonts = new Map<string, SlideFace[]>()
-    const families = new Map<string, SlideFace[]>()
+    const byFamily = new Map<string, SlideFace[]>()
     const add = (name: string, font: SlideFace) => {
       fonts.set(name, [...(fonts.get(name) ?? []), font])
-      const same = families.get(font.family) ?? []
-      if (!same.includes(font)) families.set(font.family, [...same, font])
+      const same = byFamily.get(font.family) ?? []
+      if (!same.includes(font)) byFamily.set(font.family, [...same, font])
     }
     for (const [name, list] of host) {
       fonts.set(name, [])
@@ -210,7 +216,8 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
       fonts: {
         face: (name, bold, italic) => pick(fonts.get(name) ?? [], bold, italic),
         fallback,
-        family: (name) => families.get(name) ?? [],
+        family: (name) => byFamily.get(name) ?? [],
+        families,
       },
       clearType,
       channel,
@@ -308,7 +315,8 @@ export default function SlideView(props: { path: string; mtime: number }) {
   const repaintUsing = (d: Doc, typeface: string) => {
     if (doc() !== d) return
     d.presentation.slides.forEach((_, index) => {
-      if (slideFontNames(d.presentation, index).includes(typeface)) viewport?.repaint(index)
+      if (slideFontNames(d.presentation, index, d.fonts.families).includes(typeface))
+        viewport?.repaint(index)
     })
   }
 

@@ -14,6 +14,7 @@ import {
   collectTextFonts,
   MISSING_LATIN,
   type PaintFace,
+  presentationFontNames,
   type ScreenGlyph,
   type ScreenText,
   type SlideFont,
@@ -43,6 +44,7 @@ import {
 } from '../../glyph/cleartype/index.ts'
 import { MATH_SETTINGS_DEFAULTS, type MathFont, readMathFont } from '../../math/index.ts'
 import type { MetafileFace, MetafileFonts } from '../../metafile/index.ts'
+import type { HostFamilies } from '../../text/index.ts'
 import type { Presentation, Shape } from '../model.ts'
 
 function addShape(out: Set<string>, s: Shape): void {
@@ -55,11 +57,15 @@ function addShape(out: Set<string>, s: Shape): void {
   }
 }
 
-/** 演示文稿中出现的全部字体名（含图元文件文字的字体），按首次出现的顺序，不含空串；末项为 `MISSING_LATIN`。 */
-export function presentationFonts(p: Presentation): string[] {
+/**
+ * 演示文稿中出现的全部字体名（含图元文件文字的字体），以及主机没有其中的字体名时 WPS 演示的替代规则所用的字体名
+ * （`presentationFontNames`，`host` 为主机字体的族名），按首次出现的顺序，不含空串；末项为 `MISSING_LATIN`。
+ */
+export function presentationFonts(p: Presentation, host: HostFamilies): string[] {
   const out = new Set<string>()
   for (const slide of p.slides) for (const s of slide.shapes) addShape(out, s)
   for (const name of p.metafileFonts) out.add(name)
+  for (const name of [...out]) for (const n of presentationFontNames(name, host)) out.add(n)
   out.delete(MISSING_LATIN)
   out.add(MISSING_LATIN)
   return [...out]
@@ -82,6 +88,8 @@ export interface SlideFace extends SlideFont {
 export interface SlideFonts extends SlideFontSource {
   face(name: string, bold: boolean, italic: boolean): SlideFace | null
   readonly fallback: SlideFace
+  /** 主机字体的族名：主机没有的字体名按 WPS 演示的规则替代（`FaceCache` 的 `presentation`）。 */
+  readonly families: HostFamilies
   /** 族名（`SlideFont.family`）为 `family` 的各字形；绘制时按族名取得点阵。 */
   family(family: string): readonly SlideFace[]
 }

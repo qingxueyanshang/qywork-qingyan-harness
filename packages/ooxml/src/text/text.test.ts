@@ -3,7 +3,7 @@
  * `line-height.ts`（单倍行高、上下沿、行距规则、网格与基线）、`layout.ts`（断行、悬挂、中西文间距、对齐、制表符、行高与片段，
  * 上下标、字符间距、基线提升、字距调整、`wordWrap` 关闭与单双字节宽度协调、行内对象、段落标记计入行高的条件、最小与最大内容宽度）、
  * `punctuation.ts`（相邻标点压缩与压缩标点）、`font-substitutes.ts`（Windows 字体替换表的大小写与按主机字体族名的前缀匹配）、
- * `wps-fonts.ts`（页面 EMF 中 WPS 自带字体名的对应），
+ * `wps-fonts.ts`（页面 EMF 中 WPS 自带字体名的对应、按数据表排版的字体的字形编号），
  * 以及 `../font/vertical.ts`（`hhea` 与 `OS/2` 纵向度量、上下标字号）与 `../font/features/kern.ts`（`kern` 表的字偶）。
  *
  * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
@@ -41,6 +41,8 @@ import {
   WPS_METRIC_FONTS,
   windowsFontSubstitute,
   wpsEmfFaces,
+  wpsMetricFace,
+  wpsPresentationFace,
 } from './index.ts'
 
 const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
@@ -180,9 +182,9 @@ describe('主机没有的字体名', () => {
       'Calibri',
     ])
     // 西文在页面 EMF 中为宋体或 Segoe Print 的字体名没有自带字体名。
-    expect(WPS_METRIC_FONTS.get('华文楷体')!.emf).toBeNull()
+    expect(WPS_METRIC_FONTS.get('华文楷体')!.writer!.emf).toBeNull()
     expect(Object.keys(faces)).toHaveLength(
-      4 * [...WPS_METRIC_FONTS.values()].filter((f) => f.emf !== null).length,
+      4 * [...WPS_METRIC_FONTS.values()].filter((f) => (f.writer?.emf ?? null) !== null).length,
     )
   })
 })
@@ -1324,5 +1326,29 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
         6,
       )
     })
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('WPS 自带度量的字体', () => {
+  /**
+   * 原始失败形状：字形编号一律取自 `other`，公式中的普通文字按此编号取绘制字体（西文部分为 `asciiDraw`）的字形与轮廓，
+   * 画出另一个字。
+   */
+  test('U+0020–U+007E 的字形编号取自绘制该部分的字体，其余取自 other', () => {
+    // Arial Narrow 的西文以 Calibri 绘制，两个字体中「A」的字形编号不同。
+    const font = WPS_METRIC_FONTS.get('Arial Narrow')!
+    const simsun = face('simsun.ttc')
+    const calibri = face('calibri.ttf')
+    const A = 0x41
+    const GUO = 0x56fd
+    expect(calibri.metrics.glyphId(A)).not.toBe(simsun.metrics.glyphId(A))
+    const faces = [
+      wpsMetricFace(font.writer!, font.latin, simsun, null, calibri),
+      wpsPresentationFace(font, font.presentation!, simsun, null, calibri),
+    ]
+    for (const f of faces) {
+      expect(f.metrics.glyphId(A)).toBe(calibri.metrics.glyphId(A))
+      expect(f.metrics.glyphId(GUO)).toBe(simsun.metrics.glyphId(GUO))
+    }
   })
 })

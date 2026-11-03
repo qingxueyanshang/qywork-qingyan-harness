@@ -283,6 +283,11 @@ const PPTX_RESULTS: Record<string, PptxResult> = {
       [textSlide(1, '甲'), textSlide(2, '乙', '/ppt/media/image1.png')],
     ),
   },
+  /** 主机没有的字体名：第 1 张为 WPS 演示自带度量的字体，第 2 张按前缀匹配为 Courier New。 */
+  substitute: {
+    ok: true,
+    value: presentation(2, {}, [], [textSlide(1, '华文楷体'), textSlide(2, 'Courier')]),
+  },
   ...FAILURES,
 }
 
@@ -1039,6 +1044,23 @@ describe('演示文稿预览', () => {
     dispose?.()
     dispose = undefined
     expect(workers.terminated()).toBe(1)
+  })
+
+  /** 原始失败形状：只按文件中的字体名取得字体，WPS 演示替代所用的字体（自带度量的绘制字体、前缀匹配的结果）未取得。 */
+  test('主机没有的字体名另取得 WPS 演示替代所用的字体', async () => {
+    fakeWorker()
+    const { fontRequests } = await fakeServer({ bytes: () => 'substitute' })
+    const host = await mountFileView(
+      () => 'substitute.pptx',
+      () => 0,
+    )
+    await waitFor(
+      () => host.querySelector<HTMLElement>('.slide-scroll')?.hidden === false,
+      () => fontRequests.join(','),
+    )
+    expect(fontRequests).toEqual(
+      expect.arrayContaining(['华文楷体', 'Yu Gothic UI', '微软雅黑', 'Courier', 'Courier New']),
+    )
   })
 
   test('四类失败各显示一句原因，不显示幻灯片与能力边界', async () => {

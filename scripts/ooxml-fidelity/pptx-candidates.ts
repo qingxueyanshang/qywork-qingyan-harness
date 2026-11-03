@@ -3,8 +3,8 @@
  *
  *   bun run scripts/ooxml-fidelity/pptx-candidates.ts [--only <文档标识>…] [--out <目录>]
  *
- * 分工与 xlsx 相同：本脚本（Bun）打包浏览器入口 `pptx-page.ts`，以本地 HTTP 服务提供页面、pptx 字节与本机字体
- * （取自服务端字体接口的同一份索引：`hostFaces`、`faceBytes`）；
+ * 分工与 xlsx 相同：本脚本（Bun）打包浏览器入口 `pptx-page.ts`，以本地 HTTP 服务提供页面、pptx 字节、本机字体与本机字体的族名
+ * （取自服务端字体接口的同一份索引：`hostFaces`、`faceBytes`、`hostFamilies`）；
  * `pptx-shoot.mjs`（Node）驱动 Playwright 打开 Edge，设备像素比 1，逐页调用 `renderPage` 并对画布截图。
  *
  * 真值清单的每页取 `file` 与幻灯片序号（`slide`，从 1 起；缺省为页序号 `n`），画布尺寸取真值图片的宽高。
@@ -20,6 +20,7 @@ import {
   fontSmoothing,
   type HostFace,
   hostFaces,
+  hostFamilies,
   type SmoothingParameters,
 } from '../../packages/server/src/api/fonts.ts'
 
@@ -106,6 +107,7 @@ if (!built.success) {
   process.exit(1)
 }
 
+const families = await hostFamilies()
 /** `/font` 下发过的字体：标识为文件路径与合集序号。 */
 const faceIds = new Map<string, HostFace>()
 
@@ -140,6 +142,7 @@ const server = Bun.serve({
       if (!face) return new Response('', { status: 404 })
       return new Response((await faceBytes(face)).slice())
     }
+    if (url.pathname === '/families') return Response.json(families)
     if (url.pathname === '/jobs') return Response.json(jobs)
     return new Response('', { status: 404 })
   },

@@ -61,8 +61,12 @@ export {
 export {
   WPS_METRIC_FONTS,
   type WpsMetricFont,
+  type WpsMetricHost,
+  type WpsPresentationFont,
+  type WpsWriterFont,
   wpsEmfFaces,
   wpsExtentFace,
   wpsMetricFace,
   wpsMetricFontNames,
+  wpsPresentationFace,
 } from './wps-fonts.ts'

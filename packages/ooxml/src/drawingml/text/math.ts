@@ -97,7 +97,7 @@ function environment(
               ? faces.get(s.ea, s.bold, s.italic)
               : slot === 'cs'
                 ? faces.get(s.cs, s.bold, s.italic)
-                : faces.latin(s.latin, s.latinCharset, s.bold, s.italic)
+                : faces.latin(s.latin, s.latinCharset, s.bold, s.italic, slot)
           if (f.face.metrics.glyphId(cp) === 0) f = faces.fallback
           return {
             face: f.face,

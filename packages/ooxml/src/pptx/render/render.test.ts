@@ -35,6 +35,7 @@ import { autoNumberText, symbolChar } from '../../drawingml/text/bullet.ts'
 import {
   FaceCache,
   MISSING_LATIN,
+  SINGLE_LINE,
   type SlideFont,
   type SlideFontSource,
 } from '../../drawingml/text/fonts.ts'
@@ -45,7 +46,7 @@ import type { FontMetrics } from '../../font/metrics.ts'
 import type { VerticalMetrics } from '../../font/vertical.ts'
 import type { ClearTypeDisplay, ClearTypeGlyphs, PixelData } from '../../glyph/cleartype/index.ts'
 import { readMetafile } from '../../metafile/index.ts'
-import type { TextFace } from '../../text/index.ts'
+import { type HostFamilies, NO_HOST_FAMILIES, type TextFace } from '../../text/index.ts'
 import { parsePptx } from '../load.ts'
 import type { Presentation, Shape, Table } from '../model.ts'
 import { buildPptx, type DeckSpec, para, run, slideXml, sp, text, xfrm } from '../test-helper.ts'
@@ -110,12 +111,16 @@ function slideFace(
 
 const FALLBACK = slideFace({ face: FACE, family: '宋体', bold: false, italic: false })
 
-function fonts(known: Record<string, SlideFace> = {}): SlideFonts {
+function fonts(
+  known: Record<string, SlideFace> = {},
+  families: HostFamilies = NO_HOST_FAMILIES,
+): SlideFonts {
   const all = [FALLBACK, ...Object.values(known)]
   return {
     face: (name) => known[name] ?? null,
     fallback: FALLBACK,
     family: (family) => all.filter((f) => f.family === family),
+    families,
   }
 }
 
@@ -396,7 +401,7 @@ describe('图片与墨迹', () => {
       },
     })
     expect(p.slides[0]!.unsupported).toEqual({ imageFormat: 1 })
-    expect(presentationFonts(p)).toContain('Arial')
+    expect(presentationFonts(p, NO_HOST_FAMILIES)).toContain('Arial')
     const ctx = new PixelContext()
     const metafile = readMetafile(RED_RECT_WMF)!
     paintSlide(
@@ -1017,7 +1022,7 @@ describe('文字输入换算', () => {
         },
       ],
     })
-    expect(presentationFonts(p)).toContain('Yu Gothic')
+    expect(presentationFonts(p, NO_HOST_FAMILIES)).toContain('Yu Gothic')
   })
 
   /**
@@ -1055,7 +1060,7 @@ describe('文字输入换算', () => {
     })
     const s = find(p, 10)
     if (s.kind !== 'shape' || s.text === null) throw new Error('不是文本框')
-    expect(presentationFonts(p)).toContain('Wingdings')
+    expect(presentationFonts(p, NO_HOST_FAMILIES)).toContain('Wingdings')
     const faces = new FaceCache(fonts({ Wingdings: wingdings }))
     const q = layoutBody(s.text, 400, { faces, slideNumber: 1 }).paragraphs[0]!
     expect(q.runs[0]!.text).toBe('\uf0a1\t')
@@ -1187,7 +1192,7 @@ describe('公式', () => {
     expect(t.paragraphs[0]!.runs.map((r) => r.kind)).toEqual(['text', 'math'])
     expect(JSON.stringify(t)).not.toContain('FALLBACK')
     expect(p.slides[0]!.unsupported.math).toBe(1)
-    expect(presentationFonts(p)).toContain('Cambria Math')
+    expect(presentationFonts(p, NO_HOST_FAMILIES)).toContain('Cambria Math')
   })
 
   /**
@@ -1362,7 +1367,13 @@ describe('求值阶段为绘制补充的内容', () => {
       ],
       media: { 'ppt/media/image1.png': new Uint8Array([1, 2, 3]) },
     })
-    expect(presentationFonts(p)).toEqual(['Arial', 'Calibri', 'Consolas', '等线', MISSING_LATIN])
+    expect(presentationFonts(p, NO_HOST_FAMILIES)).toEqual([
+      'Arial',
+      'Calibri',
+      'Consolas',
+      '等线',
+      MISSING_LATIN,
+    ])
     expect(slideImages(p.slides[0]!)).toEqual(['/ppt/media/image1.png'])
     const s = find(p, 10)
     const first = s.kind === 'shape' ? s.text?.paragraphs[0] : undefined
@@ -1545,6 +1556,21 @@ describe('嵌入字体', () => {
     const out = await readEmbeddedFonts(bytes, r.value.embeddedFonts)
     expect(out.fonts.map((f) => [f.typeface, f.bold, f.bytes.length])).toEqual([['甲', false, 28]])
     expect(out.failed).toEqual(['/ppt/fonts/font2.fntdata'])
+  })
+
+  /** 原始失败形状：按元素名查普通对象，`constructor` 等元素取到原型属性，列出粗体与斜体为 `undefined` 的嵌入字体。 */
+  test('embeddedFont 中名为原型属性的元素不列出', async () => {
+    const spec: DeckSpec = {
+      slides: [{ xml: slideXml('') }],
+      presentationRels: [['rIdF1', 'font', 'fonts/font1.fntdata']],
+      presentationExtra:
+        '<p:embeddedFontLst><p:embeddedFont><p:font typeface="甲"/><p:constructor r:id="rIdF1"/>' +
+        '<p:toString r:id="rIdF1"/><p:hasOwnProperty r:id="rIdF1"/></p:embeddedFont></p:embeddedFontLst>',
+      media: { 'ppt/fonts/font1.fntdata': new Uint8Array([1, 2, 3]) },
+    }
+    const r = await parsePptx(buildPptx(spec))
+    if (!r.ok) throw new Error('解析失败')
+    expect(r.value.embeddedFonts).toEqual([])
   })
 })
 
@@ -1756,5 +1782,129 @@ describe('ClearType 字形', () => {
     expect(ctx.writes[1]).toBeGreaterThan(green)
     // 四个文本框的字都已写入：每个字一个文字颜色的像素。
     expect(ctx.find([0xc0, 0, 0])).toHaveLength(8)
+  })
+})
+
+describe('WPS 演示的字体替代', () => {
+  /** 主机字体的族名：前缀匹配只用 `local`。 */
+  const HOST: HostFamilies = {
+    local: [
+      'Calibri',
+      'Courier New',
+      'Cambria',
+      'Yu Gothic UI',
+      'Microsoft Sans Serif',
+      'Arial',
+      '微软雅黑',
+      '黑体',
+      '宋体',
+    ],
+    names: [
+      'calibri',
+      'courier new',
+      'cambria',
+      'yu gothic ui',
+      'microsoft sans serif',
+      'arial',
+      '微软雅黑',
+      '黑体',
+      '宋体',
+    ],
+    language: 0x804,
+  }
+  const named = (family: string, width = 600) =>
+    slideFace({ face: fakeFace(() => width), family, bold: false, italic: false })
+  const hostFonts = () => fonts(Object.fromEntries(HOST.local.map((n) => [n, named(n)])), HOST)
+  const W = 0x57
+
+  /**
+   * 原始失败形状：主机没有华文楷体时，charset 为 GB2312 的西文字段按宋体排版与绘制，东亚字段为回退字体。WPS 演示实测
+   * （构造文件 p10-c，60 磅）：「W」宽 0.885 em，与 Yu Gothic UI 的字形最接近；东亚字段与微软雅黑逐像素相同。
+   * 西文字段中 U+0080 起的字符按 other 排版与绘制（真值中 STKaiti 字段的「……」与宋体的字形与位置相同）。
+   */
+  test('自带度量的字体：西文字段按 WPS 演示的宽度表排版并以 asciiDraw 绘制，其余字符与东亚字段为 other', async () => {
+    const rPr =
+      '<a:rPr lang="zh-CN" sz="6000"><a:latin typeface="华文楷体" charset="-122"/><a:ea typeface="华文楷体" charset="-122"/></a:rPr>'
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 600 * EMU, 200 * EMU),
+              body: text(para(run('Wé国', rPr)), '<a:bodyPr wrap="none" lIns="0" tIns="0"/>'),
+            }),
+          ),
+        },
+      ],
+    })
+    const { ctx } = paint(p, {}, hostFonts())
+    const calls = ctx.named('fillText')
+    const w = calls.find((c) => c.args[0] === 'W')!
+    const accent = calls.find((c) => c.args[0] === 'é')!
+    const han = calls.find((c) => c.args[0] === '国')!
+    expect(w.font).toContain('"Yu Gothic UI"')
+    expect(accent.font).toContain('"微软雅黑"')
+    expect(han.font).toContain('"微软雅黑"')
+    // 文字按磅绘制；「é」的宽度取自 other（测试字体为 0.6 em）。
+    expect((accent.args[1] as number) - (w.args[1] as number)).toBeCloseTo(0.885 * 60, 6)
+    expect((han.args[1] as number) - (accent.args[1] as number)).toBeCloseTo(0.6 * 60, 6)
+    expect(presentationFonts(p, HOST)).toEqual(
+      expect.arrayContaining(['华文楷体', 'Yu Gothic UI', '微软雅黑']),
+    )
+  })
+
+  /**
+   * WPS 演示实测（构造文件 p9-b，40 磅单行锚定顶端、上边距为 0）：H 的底边距文本框顶边 47.0（华文楷体）、53.8（思源黑体）、
+   * 51.33（Helvetica）像素。
+   */
+  test('自带度量的字体的基线：中日韩字体去掉 WPS 文字的 1.3 倍增量后按中日韩字体的纵向中心，Helvetica 按西文字体', async () => {
+    const faces = new FaceCache(hostFonts(), SINGLE_LINE, null, null, null, false, HOST)
+    const baseline = async (name: string) => {
+      const rPr = `<a:rPr lang="en-US" sz="4000"><a:latin typeface="${name}" charset="-122"/></a:rPr>`
+      const p = await parse({
+        slides: [{ xml: slideXml(sp(10, { body: text(para(run('H', rPr))) })) }],
+      })
+      const s = find(p, 10)
+      if (s.kind !== 'shape' || s.text === null) throw new Error('没有文字')
+      const line = layoutBody(s.text, 400, { faces, slideNumber: 1 }).paragraphs[0]!.block.lines[0]!
+      return (line.baseline * 4) / 3
+    }
+    expect(Math.abs((await baseline('华文楷体')) - 47.0)).toBeLessThan(0.5)
+    expect(Math.abs((await baseline('思源黑体')) - 53.8)).toBeLessThan(0.5)
+    expect(Math.abs((await baseline('Helvetica')) - 51.33)).toBeLessThan(0.5)
+  })
+
+  /**
+   * WPS 演示实测（构造文件 p9-a、p10-c）：STKaiti 在 charset 为 GB2312 时按自带度量排版，为 0 或未写时为 Segoe Print；
+   * 华文楷体与 charset 无关。东亚字段的 STKaiti 为宋体。
+   */
+  test('只在 charset 为 GB2312 时按数据表排版的字体名', () => {
+    const faces = new FaceCache(hostFonts(), SINGLE_LINE, null, null, null, false, HOST)
+    expect(faces.latin('STKaiti', -122, false, false).family).toBe('Cambria')
+    expect(faces.latin('STKaiti', -122, false, false).face.metrics.advance(W, 1000)).toBe(885)
+    expect(faces.latin('STKaiti', 0, false, false).family).toBe('宋体')
+    expect(faces.latin('STKaiti', undefined, false, false).family).toBe('宋体')
+    expect(faces.latin('华文楷体', 0, false, false).family).toBe('Yu Gothic UI')
+    expect(faces.get('STKaiti', false, false).family).toBe('宋体')
+    // U+0080 起的字符按 other 本身排版：同一行中不按数据表的上下沿。
+    expect(faces.latin('STKaiti', -122, false, false, 'hAnsi')).toBe(
+      faces.get('宋体', false, false),
+    )
+  })
+
+  /**
+   * WPS 演示实测（构造文件 p10-d，与参照行逐像素相同）：charset 为 0 时 ` Calibri Fake` 与 `calibri fake` 为 Calibri、
+   * `Courier` 为 Courier New；charset 为 GB2312 时 `Courier` 为宋体；东亚字段同样按前缀匹配。
+   */
+  test('前缀匹配：去掉首尾空白、不区分大小写，charset 为 GB2312 时不做', () => {
+    const faces = new FaceCache(hostFonts(), SINGLE_LINE, null, null, null, false, HOST)
+    expect(faces.latin(' Calibri Fake', 0, false, false).family).toBe('Calibri')
+    expect(faces.latin('calibri fake', undefined, false, false).family).toBe('Calibri')
+    expect(faces.latin('Courier', 0, false, false).family).toBe('Courier New')
+    expect(faces.latin('Courier', -122, false, false).family).toBe('宋体')
+    expect(faces.get('Yu Gothic UI X', false, false).family).toBe('Yu Gothic UI')
+    // WPS 表格与 WPS 文字的图形文字不按 WPS 演示的规则替代。
+    expect(new FaceCache(hostFonts()).latin('calibri fake', 0, false, false).family).toBe('宋体')
   })
 })

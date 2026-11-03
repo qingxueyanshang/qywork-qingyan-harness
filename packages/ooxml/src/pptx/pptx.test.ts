@@ -11,6 +11,7 @@ import { type Color, colorToHex } from '../drawingml/color.ts'
 import { CHEVRON, colorsXml, dataXml, STYLES } from '../drawingml/diagram/test-helper.ts'
 import type { ShapeFill } from '../drawingml/fill.ts'
 import type { Paragraph } from '../drawingml/text/model.ts'
+import { NO_HOST_FAMILIES } from '../text/index.ts'
 import { parsePptx } from './load.ts'
 import type { AutoShape, Group, Ink, Picture, Presentation, Shape, Slide, Table } from './model.ts'
 import { presentationFonts } from './render/fonts.ts'
@@ -314,7 +315,7 @@ describe('占位符匹配与继承', () => {
     expect(ph(18)).toEqual({ type: 'body', idx: 13, layoutShape: 5, masterShape: 3 })
   })
 
-  test('bodyPr 的锚定与自动调整逐字段继承，边距只取形状自身的值', async () => {
+  test('bodyPr 的锚定、自动调整与边距逐字段继承', async () => {
     const p = await parse({
       layouts: [layout],
       slides: [
@@ -334,8 +335,9 @@ describe('占位符匹配与继承', () => {
     })
     const slide = p.slides[0]!
     const body = autoShape(slide, 12).text!.body
+    // 母版正文占位符的 lIns 为 10000、版式的 tIns 为 20000：WPS 演示导出图中版式与母版占位符的边距都被继承。
     expect([body.insetLeft, body.insetTop, body.insetRight, body.insetBottom]).toEqual([
-      91440, 45720, 50000, 45720,
+      10000, 20000, 50000, 45720,
     ])
     expect(body.autofit).toEqual({ kind: 'normal', fontScale: 0.625, lineSpacingReduction: 0.2 })
     expect(autoShape(slide, 11).text!.body.anchor).toBe('ctr')
@@ -1045,6 +1047,6 @@ describe('SmartArt', () => {
     const missing = byId(slide, 8)
     expect(missing.kind === 'graphic' ? missing.content : null).toBe('smartArt')
     expect(slide.unsupported).toEqual({ smartArt: 1 })
-    expect(presentationFonts(p)).toContain('等线')
+    expect(presentationFonts(p, NO_HOST_FAMILIES)).toContain('等线')
   })
 })
