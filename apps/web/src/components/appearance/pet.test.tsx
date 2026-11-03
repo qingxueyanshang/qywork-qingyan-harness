@@ -452,6 +452,26 @@ describe('宠物组件', () => {
         { width: 244, height: 40 },
       ])
 
+      // 内容相同的推送不重建行：重建会使按下与抬起落在不同的节点上，点击丢失。
+      // 主窗口每次推送的都是新对象（经 IPC 序列化），因此传副本。
+      const row = host.querySelector('.petw-row-main')
+      shell.emit('pet://state', await petState(structuredClone(running), { bubble }))
+      await flush()
+      expect(host.querySelector('.petw-row-main')).toBe(row)
+
+      // 打开期间新增条目时高度随之增加，不在框内滚动。
+      const two = [
+        ...running,
+        { conversationId: 'cv_run2', title: '第二个任务', status: 'running' },
+      ]
+      shell.emit('pet://state', await petState(two, { bubble }))
+      await until(() => placeCalls().length === 5 && !!host.querySelector('.petw-menu'))
+      expect(host.querySelectorAll('.petw-row-main')).toHaveLength(2)
+      expect(placeCalls().slice(3)).toEqual([
+        { width: 0, height: 0 },
+        { width: 244, height: 70 },
+      ])
+
       ;(host.querySelector('.petw-stop') as HTMLButtonElement).click()
       ;(host.querySelector('.petw-row-main') as HTMLButtonElement).click()
       await flush()
@@ -469,7 +489,7 @@ describe('宠物组件', () => {
       })
       // 打开会话后列表关闭，回到气泡：同样先缩小再展开。
       await until(() => !!host.querySelector('.petw-bubble'))
-      expect(placeCalls().slice(3)).toEqual([
+      expect(placeCalls().slice(5)).toEqual([
         { width: 0, height: 0 },
         { width: 244, height: 34 },
       ])

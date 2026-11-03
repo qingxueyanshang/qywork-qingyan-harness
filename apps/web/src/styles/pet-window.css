@@ -158,8 +158,8 @@ button {
 }
 
 /*
- * 列表：铺满任务框窗口。窗口高度由 `PetBox.tsx` 在打开时按行数确定，打开期间不变，
- * 多出的行在框内滚动（B9）。完整规则，不与气泡共用选择器。
+ * 列表：铺满任务框窗口。窗口高度由 `PetBox.tsx` 按条目数确定，超过上限的行在框内用滚轮滚动，
+ * 不显示滚动条。完整规则，不与气泡共用选择器。
  */
 .petw-menu {
   position: absolute;
@@ -175,23 +175,7 @@ button {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-}
-/* 滚动条与主界面一致（数值同 base.css）。本页不加载 base.css，不写时显示带箭头的系统滚动条。 */
-.petw-list::-webkit-scrollbar {
-  width: 12px;
-}
-.petw-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-.petw-list::-webkit-scrollbar-thumb {
-  background: var(--border-subtle);
-  border-radius: var(--r-full);
-  border: 2px solid transparent;
-  background-clip: content-box;
-}
-.petw-list::-webkit-scrollbar-thumb:hover {
-  background: var(--border-strong);
-  background-clip: content-box;
+  scrollbar-width: none;
 }
 .petw-row {
   display: flex;
