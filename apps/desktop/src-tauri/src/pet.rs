@@ -234,16 +234,36 @@ fn follow_box(app: &AppHandle) {
 }
 
 /// 唤起主窗口并把要打开的会话交给它。主窗口可能已隐藏到托盘或最小化。
+///
+/// 唤起失败只记入日志，不阻止发送 `pet://open`：主窗口未能置前时仍应切换到该会话。
+/// 任务框页面不显示报错，这些日志是「点击后没有跳转」的唯一记录。
+///
+/// 先短暂置顶再取消：Windows 的前台锁会拒绝 `set_focus` 且不报错，主窗口留在其他窗口之下；
+/// 被遮挡的 WebView 不重绘，用户看到的是切换前的画面，表现为「点击没有反应」。
 #[tauri::command]
 pub fn pet_open_main(app: AppHandle, conversation_id: String) -> Result<(), String> {
-    let main = app
-        .get_webview_window(MAIN)
-        .ok_or_else(|| "主窗口不存在".to_string())?;
-    main.show().map_err(|e| e.to_string())?;
-    main.unminimize().map_err(|e| e.to_string())?;
-    main.set_focus().map_err(|e| e.to_string())?;
+    log::info!("宠物列表打开会话 {conversation_id}");
+    match app.get_webview_window(MAIN) {
+        Some(main) => {
+            for (step, result) in [
+                ("显示", main.show()),
+                ("还原", main.unminimize()),
+                ("置顶", main.set_always_on_top(true)),
+                ("取消置顶", main.set_always_on_top(false)),
+                ("置前", main.set_focus()),
+            ] {
+                if let Err(e) = result {
+                    log::warn!("主窗口{step}失败：{e}");
+                }
+            }
+        }
+        None => log::warn!("主窗口不存在"),
+    }
     app.emit_to(MAIN, "pet://open", conversation_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            log::warn!("会话未能交给主窗口：{e}");
+            e.to_string()
+        })
 }
 
 /// 宠物窗口移动后把窗口左上角的逻辑坐标交给宠物页面，由它换算为宠物的左下角后交给主窗口保存；
