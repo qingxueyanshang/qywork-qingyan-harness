@@ -7,10 +7,22 @@
  *   外壳只在第一次显示时不激活窗口，之后每次 `show()` 都会把它激活为前台窗口。
  * - 改变尺寸前先清空内容并缩小，等待空白画面显示后再展开：展开的那一帧 WebView 仍显示上一帧画面，
  *   上一帧为空白时这一帧不可见；直接从气泡改为列表时，这一帧显示的是错位的气泡。
- * - 列表的高度在打开时按行数确定，打开期间不随内容变化（B9），多出的行在框内滚动。
+ * - 列表的高度随条目数变化（打开期间新增或减少条目同样调整），最多 `MENU_MAX_ROWS` 行，更多的行在框内滚动。
+ *   用户要求不出现滚动条，因此不按 B9 固定高度。
+ * - 行按位置复用（`Index`），不要改回 `For`：主窗口每次推送的都是新对象，`For` 会重建全部行，
+ *   按下与抬起落在新旧两个节点上时不产生 click，运行中推送频繁，点击随之丢失。
  */
 
-import { createEffect, createMemo, createSignal, For, Match, onMount, Show, Switch } from 'solid-js'
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  Index,
+  Match,
+  onMount,
+  Show,
+  Switch,
+} from 'solid-js'
 import {
   PET_ACTION_EVENT,
   PET_BOX_TOGGLE_EVENT,
@@ -49,24 +61,23 @@ function openConversation(id: string): void {
 
 export function PetBox() {
   const view = petView()
-  /** 列表打开时的行数，0 表示关闭。 */
-  const [menuRows, setMenuRows] = createSignal(0)
+  const [menuOpen, setMenuOpen] = createSignal(false)
+  const entryCount = () => view()?.entries.length ?? 0
 
   // 列表只列出运行中的会话与未查看的结果，没有条目时不显示空框。
   createEffect(() => {
-    if (view()?.entries.length === 0) setMenuRows(0)
+    if (entryCount() === 0) setMenuOpen(false)
   })
   onMount(() => {
     void tauriListen(PET_BOX_TOGGLE_EVENT, () => {
-      const count = view()?.entries.length ?? 0
-      setMenuRows(menuRows() ? 0 : Math.min(count, MENU_MAX_ROWS))
+      setMenuOpen(!menuOpen() && entryCount() > 0)
     }).catch(() => undefined)
   })
 
   /** 应当显示的内容与高度。只在种类或高度变化时改变，内容变化在原尺寸内更新。 */
   const wanted = createMemo<Box | null>(
     () => {
-      const rows = menuRows()
+      const rows = menuOpen() ? Math.min(entryCount(), MENU_MAX_ROWS) : 0
       if (rows) return { kind: 'menu', height: rows * ROW_H + MENU_CHROME }
       return view()?.bubble ? { kind: 'bubble', height: BUBBLE_H } : null
     },
@@ -103,42 +114,42 @@ export function PetBox() {
           <Match when={shown()?.kind === 'menu'}>
             <div class="petw-menu">
               <div class="petw-list">
-                <For each={v().entries}>
+                <Index each={v().entries}>
                   {(e) => (
                     <div class="petw-row">
                       <button
                         class="petw-row-main"
                         type="button"
                         onClick={() => {
-                          setMenuRows(0)
-                          openConversation(e.conversationId)
+                          setMenuOpen(false)
+                          openConversation(e().conversationId)
                         }}
                       >
-                        <span class={`petw-row-icon ${e.status}`}>
-                          <Show
-                            when={e.status === 'running'}
-                            fallback={
-                              e.status === 'done' ? <IconCheck size={13} /> : <IconX size={13} />
-                            }
-                          >
-                            <IconSpinner size={13} />
-                          </Show>
+                        <span class={`petw-row-icon ${e().status}`}>
+                          <Switch fallback={<IconX size={13} />}>
+                            <Match when={e().status === 'running'}>
+                              <IconSpinner size={13} />
+                            </Match>
+                            <Match when={e().status === 'done'}>
+                              <IconCheck size={13} />
+                            </Match>
+                          </Switch>
                         </span>
-                        <span class="petw-title">{e.title}</span>
+                        <span class="petw-title">{e().title}</span>
                       </button>
-                      <Show when={e.status === 'running'}>
+                      <Show when={e().status === 'running'}>
                         <button
                           class="petw-stop"
                           type="button"
                           aria-label="停止"
-                          onClick={() => act({ type: 'stop', id: e.conversationId })}
+                          onClick={() => act({ type: 'stop', id: e().conversationId })}
                         >
                           <IconStop size={12} />
                         </button>
                       </Show>
                     </div>
                   )}
-                </For>
+                </Index>
               </div>
             </div>
           </Match>
