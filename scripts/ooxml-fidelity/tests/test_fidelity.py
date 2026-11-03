@@ -268,6 +268,13 @@ class EmfTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             emf.with_font_quality(default[:-4], 6)
 
+    def test_face_name_ignores_bytes_after_nul(self):
+        """lfFaceName 在第一个 NUL 处结束；其后的字节未定义，含不成对的代理项时同样只取 NUL 之前的名称。"""
+        import emf
+        name = "KSOF0000TEST".encode("utf-16-le") + b"\0\0" + b"\x00\xd8\x41\x00"
+        record = bytes(emf.LF_FACE_OFFSET) + name + bytes(2 * emf.LF_FACE_CHARS - len(name))
+        self.assertEqual(emf._face_name(record, 0), "KSOF0000TEST")
+
     def test_wps_faces_are_rewritten_and_unknown_ones_are_reported(self):
         """页面 EMF 中 WPS 自带的字体（KSOF 开头）按对应改写字体名后与原字体的 EMF 回放逐像素相同，长度不变；GDI 回放时
         不认识该字体名，另取的字体与原字体不同。不在对应中的 KSOF 字体由 unmapped_faces 列出，其余字体名不变。"""
