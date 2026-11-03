@@ -84,8 +84,12 @@ def with_font_quality(data: bytes, quality: int) -> bytes:
 
 
 def _face_name(data, off: int) -> str:
+    """lfFaceName 是定长的 WCHAR 数组，名称止于第一个 NUL。NUL 之后的字节未定义（GDI 写出 EMF 时不清零），
+    不要整段解码：其中可能含不成对的代理项，解码会随机失败。"""
     at = off + LF_FACE_OFFSET
-    return bytes(data[at:at + 2 * LF_FACE_CHARS]).decode("utf-16-le").split(chr(0), 1)[0]
+    raw = bytes(data[at:at + 2 * LF_FACE_CHARS])
+    end = next((i for i in range(0, len(raw), 2) if raw[i:i + 2] == b"\0\0"), len(raw))
+    return raw[:end].decode("utf-16-le")
 
 
 def unmapped_faces(data: bytes, faces: dict) -> set:
