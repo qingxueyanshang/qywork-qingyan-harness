@@ -12,6 +12,11 @@ import { MediaError, type MediaRunOptions, type MediaUsage } from './types.ts'
 
 const FIRST_INTERVAL_MS = 5_000
 const MAX_INTERVAL_MS = 15_000
+/**
+ * 查询连续失败的容忍时长。等待中的画布卡片计入服务器的忙碌状态（阻止应用更新与系统睡眠），
+ * 启动时又会自动取回：服务商长期不可达时不设上限会使应用一直处于忙碌状态。
+ */
+const MAX_FAILING_MS = 600_000
 
 /** 提交只执行一次；任务号缺失或为空时沿用 HTTP 诊断标为结果未知，不能当作明确拒绝后重发。 */
 export async function postTask(
@@ -127,8 +132,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 /**
  * 等待任务完成，返回结果地址与计量。首次查询不等待：接续取回时任务通常已完成。
  * 查询遇到可重发的失败（`transientFailure`：连接中断、静默超时、408 / 429 / 5xx）时按间隔继续查询，
- * 不计次数：远端任务不因本地网络波动而改变状态，结束等待只会把仍在生成的任务交给用户手动取回。
- * 其余查询错误结束本地等待，由 `afterSubmit` 附带任务号供取回。
+ * 连续失败超过 `MAX_FAILING_MS` 才结束本地等待；不按次数计算，短时的网络波动不结束等待。
+ * 其余查询错误立即结束本地等待。两种情况都由 `afterSubmit` 附带任务号供取回。
  * 状态变化时经 `onStatus` 回报一次，不按查询次数回报。
  */
 export async function waitTask<T = TaskOutput>(
@@ -137,13 +142,22 @@ export async function waitTask<T = TaskOutput>(
 ): Promise<TaskDone<T>> {
   let interval = FIRST_INTERVAL_MS
   let last = ''
+  let failingSince: number | undefined
   for (;;) {
     opts.signal.throwIfAborted()
     const s = await check().catch((err: unknown) => {
       if (opts.signal.aborted || !transientFailure(err)) throw err
-      log.warn('media', `${err instanceof Error ? err.message : String(err)}；继续查询原任务`)
+      const reason = err instanceof Error ? err.message : String(err)
+      failingSince ??= Date.now()
+      if (Date.now() - failingSince >= MAX_FAILING_MS)
+        throw new MediaError(
+          `任务查询连续失败超过 ${MAX_FAILING_MS / 1000} 秒，已停止等待：${reason}`,
+          { cause: err },
+        )
+      log.warn('media', `${reason}；继续查询原任务`)
       return null
     })
+    if (s) failingSince = undefined
     if (s?.state === 'done') return s
     if (s?.state === 'failed') throw new RemoteTaskFailed(`远端任务失败：${s.message}`)
     if (s && s.status !== last) {
