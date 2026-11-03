@@ -387,5 +387,6 @@ async function* injectFollowUps(
       // 与上方写入数据库的字段取值相同：两侧口径不一致时，实时事件渲染为消息气泡，刷新后渲染为执行记录。
       ...(f.origin ? { origin: f.origin } : {}),
     }
+    if (f.facts) run.notify(f.facts)
   }
 }

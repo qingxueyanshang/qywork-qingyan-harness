@@ -17,6 +17,9 @@ import type { ServerWebSocket } from 'bun'
 import type { CommandDeps, SocketData } from './deps.ts'
 import { compactConversation, resumeGoal, setGoal, submitMessage } from './run-control.ts'
 
+/** `message.send` 中 `viewing` 的长度上限：一条工作区相对路径。 */
+const VIEWING_MAX = 500
+
 export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Promise<void> {
   if (!deps.ws.data.authed) return
   if (deps.runs.updating && cmd.type !== 'subscribe' && cmd.type !== 'conversation.interrupt') {
@@ -104,6 +107,10 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
           content: cmd.content,
           ...(cmd.attachments?.length ? { attachments: cmd.attachments } : {}),
           steer: cmd.steer === true,
+          // 写入提示词，只接受较短的文本；其他值视为未提供。
+          ...(typeof cmd.viewing === 'string' && cmd.viewing && cmd.viewing.length <= VIEWING_MAX
+            ? { viewing: cmd.viewing }
+            : {}),
         },
         deps,
         cmd.model,

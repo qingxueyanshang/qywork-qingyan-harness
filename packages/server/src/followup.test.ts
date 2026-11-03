@@ -557,6 +557,103 @@ describe('注入当前一轮', () => {
   }, 30_000)
 })
 
+/**
+ * 原始失败形状（会话 cv_0mvzff0980000upz5o4）：用户在一轮进行中把视频模型换成新型号，随后注入「换这个模型」，
+ * 而本轮快照中没有该型号；用户说「这个画布」时上下文中也没有界面打开的文件。模型两次改用电脑控制读取 qywork 自身窗口。
+ */
+describe('注入时告知已变化的上下文', () => {
+  const VIDEO = 'fake-video'
+  /** 请求中一条消息的正文文本；函数调用等条目没有正文，返回空串。 */
+  const text = (m: { content: unknown } | undefined) => JSON.stringify(m?.content ?? '')
+  const send = (
+    cv: ConversationId,
+    id: string,
+    text: string,
+    extra: Record<string, unknown>,
+    sock: ReturnType<typeof socket>,
+  ) =>
+    handleCommand(
+      {
+        type: 'message.send',
+        clientRequestId: id,
+        conversationId: cv,
+        content: text,
+        ...extra,
+      } as never,
+      { ...deps(), ws: sock.ws },
+    )
+
+  test('一轮进行中修改了生成模型：注入的消息之后附上当前清单，只告知一次，下一轮投影后仍在原位', async () => {
+    config.providers[VIDEO] = {
+      kind: 'openai_chat_completions',
+      apiKey: 'sk-video',
+      baseUrl: 'http://127.0.0.1:9/v1',
+      models: {},
+      media: { 'bb-2.5-old': { kind: 'openai_videos' } },
+    }
+    try {
+      const cv = conversation()
+      const held = gate(toolTurn('call_m1'))
+      const second = gate(toolTurn('call_m2'))
+      script = [held.turn, second.turn, ok(textTurn('已换。'))]
+      const sock = socket()
+
+      await send(cv, 'req-m0', '批量生成这个画布', {}, sock)
+      await waitFor((e) => e.type === 'run.started')
+      // 用户在设置中换掉了视频模型。
+      config.providers[VIDEO] = {
+        ...config.providers[VIDEO],
+        media: { 'HC-Seedance-2.5-720p': { kind: 'openai_videos' } },
+      }
+      await send(cv, 'req-m1', '换这个模型', { steer: true }, sock)
+      held.release()
+      await waitFor((e) => e.type === 'message.injected')
+      await send(cv, 'req-m2', '直接安排生成', { steer: true }, sock)
+      second.release()
+      await idle(cv)
+
+      const first = JSON.stringify(sentMessages(bodies[0] ?? ''))
+      expect(first).toContain('bb-2.5-old')
+      expect(first).not.toContain('HC-Seedance-2.5-720p')
+      const after = sentMessages(bodies[1] ?? '')
+      const at = after.findIndex((m) => text(m).includes('换这个模型'))
+      expect(at).toBeGreaterThan(0)
+      const fact = text(after[at + 1])
+      expect(fact).toContain('本轮进行中配置已更改')
+      expect(fact).toContain('HC-Seedance-2.5-720p')
+      expect(fact).not.toContain('bb-2.5-old')
+      // 第二条跟进消息到达时配置未再变化，不重复附上。
+      const last = JSON.stringify(sentMessages(bodies[2] ?? ''))
+      expect(last.split('本轮进行中配置已更改').length - 1).toBe(1)
+
+      const history = await buildHistory(store, cv, null, async (text) => text)
+      const injected = history.findIndex((m) => m.role === 'user' && m.content === '换这个模型')
+      expect(JSON.stringify(history[injected + 1]?.content)).toContain('HC-Seedance-2.5-720p')
+    } finally {
+      delete config.providers[VIDEO]
+    }
+  }, 30_000)
+
+  test('消息带有界面打开的文件：写入本轮快照；轮次中切换到另一个文件后发送的消息附上新文件', async () => {
+    const cv = conversation()
+    const held = gate(toolTurn('call_v1'))
+    script = [held.turn, ok(textTurn('好。'))]
+    const sock = socket()
+
+    await send(cv, 'req-v0', '批量生成这个画布', { viewing: '作品/甲/甲_第五版.canvas.json' }, sock)
+    await waitFor((e) => e.type === 'run.started')
+    await send(cv, 'req-v1', '这个也一样', { steer: true, viewing: '作品/乙/乙.canvas.json' }, sock)
+    held.release()
+    await idle(cv)
+
+    const first = JSON.stringify(sentMessages(bodies[0] ?? ''))
+    expect(first).toContain('界面右侧面板当前打开：`作品/甲/甲_第五版.canvas.json`')
+    const after = sentMessages(bodies[1] ?? '')
+    const at = after.findIndex((m) => text(m).includes('这个也一样'))
+    expect(text(after[at + 1])).toContain('界面右侧面板当前打开：`作品/乙/乙.canvas.json`')
+  }, 30_000)
+})
+
 describe('队列卡片上的两个操作', () => {
   test('翻转去向；会话空闲时同一条指令立即发起一轮', async () => {
     const cv = conversation()

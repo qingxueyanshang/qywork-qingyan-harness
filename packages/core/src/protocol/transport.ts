@@ -253,6 +253,11 @@ export interface SendMessageCommand {
    * 会话空闲时该字段无意义：两种取值都立即开始一轮。
    */
   steer?: boolean
+  /**
+   * 发送时界面右侧面板显示的工作区文件（画布页或文件预览，工作区相对路径）；面板收起或显示其他页时省略。
+   * 用户说「这个画布」「这个文件」时据此确定所指，见 `FollowUp.viewing`。
+   */
+  viewing?: string
 }
 
 /**
