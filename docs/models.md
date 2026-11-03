@@ -495,8 +495,10 @@ hongcheng 与木木的型号不再写在代码中，模型库也不列出。代�
   2026-10-21 鸿呈seedance-2.5-GG-ndwx-6 只发顶层字段时，两次均以「提示词引用的参考素材缺失」失败。
   参数为 `seconds`、`duration`（整数秒）、`aspect_ratio`（同时发送 `ratio`）与 `resolution`，提示词以 `@Image1`、`@Video1`、`@Audio1` 引用素材。
   按秒型号的报价按所选时长计算，生成费用按接口回报秒数计量；缺少回报时长时不推算费用。
-- **木木**（Base URL：`https://api.mumugofe.com/v1`）：使用 `/videos` 提交、`/video/generations/{id}` 查询、
-  成功响应中的 `data.data.download_url` 直链下载，接口凭证不携带到外部成片地址。`seconds` 使用字符串整数，尺寸为 `宽x高`。
+- **木木**（Base URL：`https://api.mumugofe.com/v1`）：使用 `/videos` 提交、`/video/generations/{id}` 查询，
+  成功后从文件列表 `/tasks/{id}/artifacts` 取得视频文件的签名地址下载，接口凭证不携带到外部成片地址。
+  查询回执中的 `data.data` 是上游原始回执，2026-11-03 核对：video-sd25-30s 的成功回执没有 `download_url`，
+  同一任务的文件列表含有视频文件。`seconds` 使用字符串整数，尺寸为 `宽x高`。
   目录的素材传递方式为 `public_urls` 时，本地图片经 `PUT /v1/studio/assets/{sha256}` 上传原始字节，校验回执中的哈希、大小与
   同源签名地址后放入 `images`；为 `json` 时以含 MIME 的 base64 数据地址直接提交；为 `multipart`（sd-2.0-vip）时
   参数作为表单文本字段，参考图逐张放入同名文件字段 `input_reference`，没有参考图时按 JSON 提交。计费清单的

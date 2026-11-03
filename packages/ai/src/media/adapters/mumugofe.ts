@@ -1,4 +1,4 @@
-/** Mumugofe 的原图上传与回执校验、任务扣费的折算；任务生命周期仍由 OpenAIVideosAdapter 负责。 */
+/** Mumugofe 的原图上传与回执校验、成片地址、任务扣费的折算；任务生命周期仍由 OpenAIVideosAdapter 负责。 */
 import { createHash } from 'node:crypto'
 import type { Currency } from '@qywork/core'
 import { quotaAmount } from '../../pull/pricing.ts'
@@ -21,6 +21,29 @@ export async function mumugofeBilled(
     if (!(err instanceof MediaError)) throw err
     return undefined
   }
+}
+
+/**
+ * 成功任务的成片地址：渠道文件列表 `GET {base}/tasks/{id}/artifacts` 中的视频文件。
+ * 不要改用任务查询回执中的 `data.download_url`：它是上游原始回执的字段，部分上游（如 video-sd25-30s）成功时不返回。
+ * 地址带有时效的签名参数；下载失败后接续取回时重新读取文件列表。
+ */
+export async function mumugofeArtifact(
+  base: string,
+  taskId: string,
+  auth: Record<string, string>,
+  signal: AbortSignal,
+): Promise<string> {
+  const body = await getJson(`${base}/tasks/${encodeURIComponent(taskId)}/artifacts`, auth, signal)
+  const artifacts: unknown[] = Array.isArray(body.artifacts) ? body.artifacts : []
+  const video = artifacts.find(
+    (a): a is { content_url?: unknown } =>
+      !!a && typeof a === 'object' && (a as { type?: unknown }).type === 'video',
+  )
+  const url = typeof video?.content_url === 'string' ? URL.parse(video.content_url) : null
+  if (!url || !['https:', 'http:'].includes(url.protocol) || url.username || url.password)
+    throw new MediaError('任务成功但未返回有效成片地址')
+  return url.href
 }
 
 export async function uploadMumugofeReference(

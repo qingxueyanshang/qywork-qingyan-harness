@@ -2,7 +2,7 @@
  * `openai_videos`：中转站的 `/v1/videos`（New API 等按 OpenAI 视频接口的形状转发各家视频模型）。
  *
  * 提交 `POST {base}/videos`，查询 `GET {base}/videos/{id}`（Mumugofe 为 `GET {base}/video/generations/{id}`），
- * 通用视频从 `GET {base}/videos/{id}/content` 取回，Mumugofe 使用上游回执的 `download_url`。
+ * 通用视频从 `GET {base}/videos/{id}/content` 取回，Mumugofe 使用渠道文件列表中的成片地址（`mumugofeArtifact`）。
  * 厂商扩展结构由目录声明，素材与参数按对应结构发送。
  */
 
@@ -31,7 +31,7 @@ import {
 import { arkVideoContent, ENDED } from './ark-videos.ts'
 import { dashScopeVideoPayload } from './dashscope.ts'
 import { hongchengVideoPayload } from './hongcheng.ts'
-import { mumugofeBilled, uploadMumugofeReference } from './mumugofe.ts'
+import { mumugofeArtifact, mumugofeBilled, uploadMumugofeReference } from './mumugofe.ts'
 
 /**
  * 按目录声明构造已核实的中转请求；未知型号只发送通用字段。
@@ -172,7 +172,7 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     const path = `${base}/videos/${encodeURIComponent(taskId)}`
     if (this.spec.videoFormat === 'mumugofe') {
       // 任务失败时 `/videos/{id}` 只返回「The video generation task failed.」，拒绝原因（如版权保护拒绝）
-      // 只在任务接口的 `fail_reason` 中。成功后按上游回执的下载直链取回，避免经过渠道的内容转发接口。
+      // 只在任务接口的 `fail_reason` 中。成功后的成片地址取自渠道文件列表（`mumugofeArtifact`）。
       // 扣费取任务记录的 `quota`：各上游回执中的时长、尺寸字段不一致，常常缺失。
       const body = await getJson(
         `${base}/video/generations/${encodeURIComponent(taskId)}`,
@@ -183,19 +183,16 @@ export class OpenAIVideosAdapter implements MediaAdapter {
         status?: unknown
         fail_reason?: unknown
         quota?: unknown
-        data?: { download_url?: unknown; duration?: unknown }
+        data?: { duration?: unknown }
       }
       const status = String(task.status ?? '').toLowerCase()
       if (status === 'success') {
-        const value = task.data?.download_url
-        const url = typeof value === 'string' ? URL.parse(value) : null
-        if (!url || !['https:', 'http:'].includes(url.protocol) || url.username || url.password)
-          throw new MediaError('任务成功但未返回有效成片地址')
+        const url = await mumugofeArtifact(base, taskId, auth, signal)
         const quota = typeof task.quota === 'number' && task.quota > 0 ? task.quota : undefined
         const billed = quota === undefined ? undefined : await mumugofeBilled(base, quota, signal)
         return {
           state: 'done',
-          url: url.href,
+          url,
           usage: defined<MediaUsage>({ seconds: count(task.data?.duration), billed }),
         }
       }

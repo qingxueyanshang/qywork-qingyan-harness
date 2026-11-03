@@ -193,8 +193,17 @@ beforeAll(() => {
             progress: '100%',
             result_url: `http://127.0.0.1:${server.port}/v1/videos/${TASK}/content`,
             ...(quota === undefined ? {} : { quota }),
-            data: { download_url: resultUrl, ...(duration === undefined ? {} : { duration }) },
+            // 2026-11-03 实测：video-sd25-30s 等上游的成功回执中没有 download_url。
+            data: duration === undefined ? {} : { duration },
           },
+        })
+      if (req.method === 'GET' && path === `/v1/tasks/${TASK}/artifacts`)
+        return Response.json({
+          artifacts:
+            status === 'completed' && resultUrl !== undefined
+              ? [{ key: 'video', type: 'video', content_url: resultUrl }]
+              : [],
+          task_id: TASK,
         })
       if (req.method === 'GET' && path === `/generated/${TASK}.mp4`)
         return new Response(contentStatus === 200 ? MP4 : 'forbidden', {
@@ -297,6 +306,7 @@ test.each([{}, { seconds: '5', size: '1280x720' }])(
     expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
       'POST /v1/videos',
       `GET /v1/video/generations/${TASK}`,
+      `GET /v1/tasks/${TASK}/artifacts`,
       `GET /generated/${TASK}.mp4`,
     ])
     expect(seen.every((s) => s.auth === 'Bearer test-only-key')).toBe(true)
@@ -452,11 +462,22 @@ test('下载失败保留任务号，恢复只查询下载，不重复提交', as
   expect(await port.generate(call({ resumeTaskId: TASK }), signal())).toMatchObject({ ok: true })
   expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
     `GET /v1/video/generations/${TASK}`,
+    `GET /v1/tasks/${TASK}/artifacts`,
     `GET /generated/${TASK}.mp4`,
   ])
 })
 
-test('成片直链跨源下载不携带接口凭证，恢复不经过内容转发端点', async () => {
+test('成功回执不含 download_url 时按文件列表取回成片，不重新提交', async () => {
+  const result = await makeMediaPort(config()).generate(call({ resumeTaskId: TASK }), signal())
+  expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4, mime: 'video/mp4' }] })
+  expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+    `GET /v1/video/generations/${TASK}`,
+    `GET /v1/tasks/${TASK}/artifacts`,
+    `GET /generated/${TASK}.mp4`,
+  ])
+})
+
+test('成片地址跨源时下载不携带接口凭证，恢复不经过内容转发端点', async () => {
   let headers: Headers | undefined
   const asset = Bun.serve({
     hostname: '127.0.0.1',
@@ -474,8 +495,11 @@ test('成片直链跨源下载不携带接口凭证，恢复不经过内容转�
     expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4, mime: 'video/mp4' }] })
     expect(headers?.get('authorization')).toBeNull()
     expect(headers?.get('x-provider-key')).toBeNull()
-    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([`GET /v1/video/generations/${TASK}`])
-    expect(seen[0]?.auth).toBe('Bearer test-only-key')
+    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+      `GET /v1/video/generations/${TASK}`,
+      `GET /v1/tasks/${TASK}/artifacts`,
+    ])
+    expect(seen.every((s) => s.auth === 'Bearer test-only-key')).toBe(true)
   } finally {
     asset.stop(true)
   }
@@ -487,13 +511,16 @@ test.each([
   'invalid-url',
   'file:///result.mp4',
   'https://user:secret@media.test/v.mp4',
-])('成功回执缺少有效成片直链时保留任务，不重新提交：%s', async (url) => {
+])('文件列表缺少有效成片地址时保留任务，不重新提交：%s', async (url) => {
   resultUrl = url
   const result = await makeMediaPort(config()).generate(call({ resumeTaskId: TASK }), signal())
   expect(result).toMatchObject({ ok: false, pendingTaskId: TASK })
   if (result.ok) throw new Error('expected failure')
   expect(result.message).toContain('任务成功但未返回有效成片地址')
-  expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([`GET /v1/video/generations/${TASK}`])
+  expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+    `GET /v1/video/generations/${TASK}`,
+    `GET /v1/tasks/${TASK}/artifacts`,
+  ])
 })
 
 test('远端明确失败时返回任务接口中的拒绝原因，不下载或重新生成', async () => {
@@ -557,6 +584,7 @@ test.each([undefined, '4', '17', '30'])(
     expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
       'POST /v1/videos',
       `GET /v1/video/generations/${TASK}`,
+      `GET /v1/tasks/${TASK}/artifacts`,
       `GET /generated/${TASK}.mp4`,
     ])
     expect(seen[0]?.body).toEqual({
@@ -851,6 +879,7 @@ test.each([EXCLUSIVE, FULL_PARAMS, MODEL, SERIES_007, SERIES_X])(
     ).toMatchObject({ ok: true, model })
     expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
       `GET /v1/video/generations/${TASK}`,
+      `GET /v1/tasks/${TASK}/artifacts`,
       `GET /generated/${TASK}.mp4`,
     ])
   },
@@ -972,6 +1001,7 @@ test('满血全参版混合素材分别进入 images、videos、audios 并保持
   expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
     'POST /v1/videos',
     `GET /v1/video/generations/${TASK}`,
+    `GET /v1/tasks/${TASK}/artifacts`,
     `GET /generated/${TASK}.mp4`,
   ])
 })
@@ -1087,6 +1117,7 @@ test('任务记录中的扣费额度按站点充值价折算后记账，优先�
   expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
     'POST /v1/videos',
     `GET /v1/video/generations/${TASK}`,
+    `GET /v1/tasks/${TASK}/artifacts`,
     'GET /api/status',
     `GET /generated/${TASK}.mp4`,
   ])
