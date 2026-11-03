@@ -236,7 +236,7 @@ const LAYER_EFFECTS: ReadonlySet<Effect['kind']> = new Set(['glow', 'softEdge', 
 
 /**
  * 未绘制的效果：预设阴影与模糊；`layered` 为假时另含发光、柔化边缘与映像。`layered` 只在该元素经过效果图层绘制时为真
- * （演示文稿的自选图形、图片与组合；连接线与三维形状不经过）。`other` 已在读取时登记。内部阴影画在形状的填充区域内
+ * （演示文稿的自选图形、图片与组合，文字处理文档的形状，工作表的自选图形与组合；连接线与演示文稿的三维形状不经过）。`other` 已在读取时登记。内部阴影画在形状的填充区域内
  * （`../shape/paint.ts`）。
  */
 export function countEffects(

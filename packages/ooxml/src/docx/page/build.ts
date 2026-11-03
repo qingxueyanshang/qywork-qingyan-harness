@@ -1445,7 +1445,8 @@ function fragments(
     const advance = leaderAdvance(face, l.char, l.size)
     const offset = inset ? advance / 2 : 0
     const count = advance > 0 ? Math.floor((l.width - offset + LEADER_TOLERANCE) / advance) : 0
-    if (count === 0) continue
+    // 制表位宽度可为 0（文字已到达制表位），内缩半个前导符后 count 为负数。
+    if (count <= 0) continue
     out.push({
       face: fonts.ref(face),
       size: l.size,

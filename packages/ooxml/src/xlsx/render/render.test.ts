@@ -1780,6 +1780,44 @@ describe('形状', () => {
     expect(inPx(placed.node.children[0]!.frame)).toEqual([100, 0, 50, 50])
   })
 
+  test('形状的绘制范围计入发光与映像：效果越过区域边界时，相邻区域同样绘制该形状', () => {
+    const at = (x: number, y: number, width: number, height: number) => () => ({
+      x,
+      y,
+      width,
+      height,
+    })
+    const outset = (effects: ShapeNode['effects']) => {
+      const shape = { ...rectShape(framePx(0, 0, 100, 50)), effects }
+      const b = placeShape(
+        { anchor: absolute(0, 0, 1, 1), order: 0, shape },
+        at(0, 0, 100, 50),
+      ).bounds
+      return Math.round(-b.x * 1e6) / 1e6
+    }
+    expect(outset([])).toBe(2)
+    expect(outset([{ kind: 'glow', color: RED.color, radius: 10 * EMU }])).toBe(12)
+    // 映像沿对齐点翻转，与形状框相接：外扩为缩放后的整个尺寸加距离。
+    const reflection = {
+      kind: 'reflection',
+      blur: 0,
+      distance: 4 * EMU,
+      direction: 90,
+      scaleX: 1,
+      scaleY: -1,
+      skewX: 0,
+      skewY: 0,
+      align: 'bl',
+      rotateWithShape: false,
+      startAlpha: 0.5,
+      startPosition: 0,
+      endAlpha: 0,
+      endPosition: 0.9,
+      fadeDirection: 90,
+    } as const
+    expect(outset([reflection])).toBe(106)
+  })
+
   test('图片与形状按锚点序号交错绘制；形状以调用方的变换为基准并按区域平移；区域外的形状不绘制', () => {
     const shape: SheetShape = {
       anchor: absolute(100, 20, 40, 30),
