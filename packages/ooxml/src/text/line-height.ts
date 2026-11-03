@@ -14,7 +14,8 @@
 
 import type { VerticalMetrics } from '../font/vertical.ts'
 
-const EAST_ASIAN_FACTOR = 1.3
+/** 代码页含中日韩的字体的单倍行高与 win 上下沿之和之比（`faceExtent`）。 */
+export const EAST_ASIAN_FACTOR = 1.3
 /** 固定行高时基线距行顶的比例，与字体无关。 */
 const EXACT_BASELINE = 0.8
 /** 多倍行距小于 1 且不对齐网格时，减少的行高中取自基线以上的比例，其余取自基线以下。 */

@@ -122,7 +122,7 @@ export function metafileFontSubstitute(font: {
 
 /** 主机字体的族名，由调用方取得（服务端 `/api/fonts/families`）。 */
 export interface HostFamilies {
-  /** 各字体按主机界面语言取的族名（没有该语言的名称时取英文名），区分大小写：前缀匹配只用这些名称。 */
+  /** 各字体按主机界面语言取的族名（没有该语言的名称时取英文名）：前缀匹配只用这些名称（`prefixFont`）。 */
   readonly local: readonly string[]
   /** 各字体全部语言的族名，小写并去掉首尾空白：主机有某个字体名，即该名称如此处理后在其中。 */
   readonly names: readonly string[]
@@ -134,25 +134,34 @@ export interface HostFamilies {
 export const NO_HOST_FAMILIES: HostFamilies = { local: [], names: [], language: LANGUAGE_EN_US }
 
 /**
- * 按主机字体族名的前缀为主机没有的字体名取替代字体；没有时为 `null`。名称按空格分词，区分大小写，只用 `local` 中的族名：
+ * 按主机字体族名的前缀为主机没有的字体名取替代字体；没有时为 `null`。名称按空格分词，只用 `local` 中的族名，返回该族名：
  * 1. 名称的前若干词（不含全部）正好是主机字体名时，取词数最少的一个（`Calibri Light Fake` 取 Calibri，`Yu Gothic UI X`
  *    取 Yu Gothic，`等线 Fake` 取等线）；
  * 2. 否则取以「名称 + 空格」开头的主机字体中字母序（UTF-16 码元）第一个（`Courier` 取 Courier New，`Noto Serif CJK SC` 取
  *    Noto Serif CJK SC Medium，`Sitka` 取 Sitka Banner）。
+ * `ignoreCase` 由宿主给出：WPS 文字区分大小写，WPS 演示不区分（WPS 演示的调用方另去掉名称的首尾空白）。
  * WPS 文字实测（构造文档 w13 p1、q01–q18、w15 p1、p2，西文与东亚字段相同）：`Calibri  Fake`（两个空格）取 Calibri，
  * ` Calibri Fake`（以空格开头）、`calibri fake`、`Cour`、`SimHei Fake`（SimHei 是黑体的英文名）不匹配。
- * 与本规则不同的实测：`Microsoft` 取 Microsoft JhengHei，字母序第一个为 Microsoft Himalaya（主机中只有这一个前缀能区分，
- * 原因未查明）。
+ * WPS 演示实测（构造文件 p10-d，charset 为 0 的西文字段与东亚字段，与参照行逐像素相同）：上述各例中只有 ` Calibri Fake` 与
+ * `calibri fake` 不同，都取 Calibri。
+ * 与本规则不同的实测：`Microsoft` 取 Microsoft JhengHei，字母序第一个为 Microsoft Himalaya（两个宿主相同；主机中只有这一个
+ * 前缀能区分，原因未查明）。
  */
-export function prefixFont(name: string, local: readonly string[]): string | null {
-  const words = name.split(' ')
+export function prefixFont(
+  name: string,
+  local: readonly string[],
+  ignoreCase = false,
+): string | null {
+  const fold = (s: string) => (ignoreCase ? s.toLowerCase() : s)
+  const folded = local.map(fold)
+  const words = fold(name).split(' ')
   for (let k = 1; k < words.length; k++) {
-    const head = words.slice(0, k).join(' ')
-    if (local.includes(head)) return head
+    const i = folded.indexOf(words.slice(0, k).join(' '))
+    if (i >= 0) return local[i]!
   }
-  const start = `${name} `
+  const start = `${fold(name)} `
   let first: string | null = null
-  for (const family of local)
-    if (family.startsWith(start) && (first === null || family < first)) first = family
+  for (const [i, family] of local.entries())
+    if (folded[i]!.startsWith(start) && (first === null || family < first)) first = family
   return first
 }

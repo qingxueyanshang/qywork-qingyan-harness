@@ -357,8 +357,8 @@ export function requiredFonts(doc: DocxDocument, host: HostFamilies): string[] {
   const present = new Set(host.names)
   for (const name of [...names]) {
     if (present.has(name.trim().toLowerCase())) continue
-    const metric = WPS_METRIC_FONTS.get(name)
-    if (metric !== undefined) for (const n of wpsMetricFontNames(metric)) names.add(n)
+    const metric = WPS_METRIC_FONTS.get(name)?.writer ?? null
+    if (metric !== null) for (const n of wpsMetricFontNames(metric)) names.add(n)
     for (const use of ['other', 'eastAsia'] as const)
       for (const c of substitutes(name, use, doc.fontTable, host.local)) names.add(c.name)
   }

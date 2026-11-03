@@ -1,10 +1,10 @@
 /**
  * WPS 按自带度量排版的字体：主机没有这些字体名时，WPS 不按替代字体排版，而按自带的度量（行高与西文字符宽度）排版，
- * 字形取自其他字体。表中只有与宿主无关的内容（字体名、绘制所用的字体与度量），由宿主在替代规则之前查询：WPS 文字排在
- * `substitutes` 的各步之前（`../docx/layout.ts` 的 `ParagraphLayouter.face`）。数据取自 WPS 文字；WPS 演示中缺失的隶书
- * 同样以微软雅黑绘制，其余字体名与度量是否相同未实测。
+ * 字形取自其他字体。每个字体名有 WPS 文字（`writer`）与 WPS 演示（`presentation`）各自的宽度与绘制字体，上沿与下沿共用；
+ * 为 `null` 的宿主不按数据表排版该字体名。WPS 文字排在 `substitutes` 的各步之前（`../docx/layout.ts` 的
+ * `ParagraphLayouter.face`），WPS 演示排在替代规则之前（`../drawingml/text/fonts.ts` 的 `FaceCache`）。
  *
- * WPS 实测（构造文档 f1-fonts、f1-widths、f1-vert、f2-lh2、f2-lh3，页面 EMF 的段落底纹矩形、文字记录的参考点与前进宽度）：
+ * WPS 文字实测（构造文档 f1-fonts、f1-widths、f1-vert、f2-lh2、f2-lh3，页面 EMF 的段落底纹矩形、文字记录的参考点与前进宽度）：
  * - 行高与基线：上沿、下沿与字号成正比，行的位置连续累加、不按缇取整。上沿与下沿之和取 9–26 磅六行段落的行距按字号拟合的值
  *   （千分之一 em，误差约 0.1）；两者之比取 100 磅单行的测量值。西文字段与东亚字段分别测量；`eastAsia` 为 `null` 的字体只有
  *   西文由其排版，汉字为宋体。
@@ -24,23 +24,41 @@
  *   时行高为 1.540 em，与两者都不同，按后者。
  * - 不列入：DFKai-SB（汉字由 Microsoft JhengHei Light 绘制，msjhl.ttc 拆出的字体 Edge 的 `FontFace` 无法加载，列入后
  *   整份文档无法打开）。
+ *
+ * WPS 演示实测（构造文件 p9-a、p9-b、p10-c、p10-d：导出图中红色竖线之间的距离、字形的上下边与逐字比对）：
+ * - 西文字符的宽度：60 磅每组 3 个相同字符，每个字符的前进宽度按缇取整（误差 0.42/1000 em）。与 WPS 文字的数据表相同的只有
+ *   取自主机字体的 Helvetica、楷体_GB2312、仿宋_GB2312、隶书；其余相差 2–13/1000 em（多为空格），另列宽度表。华文楷体、华文仿宋、
+ *   华文宋体的宽度相同。Arial Narrow 的「11」「ff」有字距调整，本表不处理，「1」「f」取 WPS 文字的值。粗体：华文楷体与常规字形
+ *   同宽，楷体_GB2312 每字加宽 5 缇（60 磅），与仿粗体（`emboldened`）相同。
+ * - 东亚字段按 `other` 排版与绘制：40 磅「国」的上下边与该主机字体逐像素相同，不按数据表的上下沿；粗体不加宽。
+ * - 西文字段的纵向位置：见 `wpsPresentationFace`。40 磅单行锚定顶端与锚定底端时 H 的底边与之相差不超过 0.55 像素。
+ * - `charset`：英文名 STKaiti 等与华文新魏只在 `latin` 的 charset 为 GB2312 时按数据表排版，为 0 或未写时与主机没有的西文字体
+ *   相同（Segoe Print）；其余字体名与 charset 无关。东亚字段与 charset 无关。
+ * - 字形：导出图中 16 个西文字符与主机字体（Windows 自带字体的各字形）按同一原点与基线逐字比对，模糊后取相关系数，各字符
+ *   平均值最高者为 `asciiDraw`（得分 0.57–0.82；主机有该字体时为 0.96）。与 WPS 文字的 `asciiDraw` 相差不超过 0.02 时取后者。
+ *   Arial Unicode MS 与 Arial Narrow 的字形随 charset 变化，取 charset 为 GB2312 时的结果。
+ * - Source Han Sans CN Regular 的 `presentation` 为 `null`：charset 为 GB2312 时另有自带度量（宽度与思源黑体相近，上下沿与之
+ *   不同），未实现；为 0 时与主机没有的西文字体相同。
+ * - 西文字段中 U+0080 起的字符按 `other` 本身排版与绘制（`FaceCache` 的 `hAnsi` 位置）。
  */
 
 import type { FontMetrics } from '../font/metrics.ts'
 import type { VerticalMetrics } from '../font/vertical.ts'
 import type { TextFace } from './layout.ts'
+import { EAST_ASIAN_FACTOR } from './line-height.ts'
 
-export interface WpsMetricFont {
+/** 一个宿主按数据表排版该字体名时的宽度与绘制字体。 */
+export interface WpsMetricHost {
   /** U+0020–U+007E 的宽度（千分之一 em，下标为码位减 0x20），或取其宽度的主机字体名。 */
   readonly ascii: readonly number[] | string
   /** 绘制 U+0020–U+007E 的主机字体。 */
   readonly asciiDraw: string
   /** 其余字符的主机字体：宽度与字形都取自它；东亚字段的字形同样取自它。 */
   readonly other: string
-  /** 西文字段的上沿与下沿（千分之一 em）。 */
-  readonly latin: readonly [number, number]
-  /** 东亚字段的上沿与下沿；`null` 时 WPS 不以该字体排版东亚字段，东亚字段按 `substitutes` 替代。 */
-  readonly eastAsia: readonly [number, number] | null
+}
+
+/** WPS 文字的排版方式。 */
+export interface WpsWriterFont extends WpsMetricHost {
   /** 有同名字体时上下沿仍取数据表（`wpsExtentFace`）。 */
   readonly fixed: boolean
   /**
@@ -49,27 +67,50 @@ export interface WpsMetricFont {
   readonly emf: readonly [string, string, string, string] | null
 }
 
+/** WPS 演示的排版方式：东亚字段按 `other` 本身排版，只有西文字段按数据表排版（`wpsPresentationFace`）。 */
+export interface WpsPresentationFont extends WpsMetricHost {
+  /** `latin` 的 charset（换算为无符号）为该值时才按数据表排版；为 `null` 时与 charset 无关。 */
+  readonly charset: number | null
+  /** 自带字体的代码页含中日韩字符集：西文字段按中日韩字体的纵向位置排版（见 `wpsPresentationFace`）。 */
+  readonly eastAsianCodePage: boolean
+}
+
+export interface WpsMetricFont {
+  /**
+   * 西文字段的上沿与下沿（千分之一 em），WPS 文字的测量值；`writer` 为 `null` 的字体名为按 WPS 演示的测量换算的值。
+   */
+  readonly latin: readonly [number, number]
+  /** 东亚字段的上沿与下沿；`null` 时 WPS 文字不以该字体排版东亚字段，东亚字段按 `substitutes` 替代。 */
+  readonly eastAsia: readonly [number, number] | null
+  readonly writer: WpsWriterFont | null
+  readonly presentation: WpsPresentationFont | null
+}
+
 /** 排版与绘制该字体所需的主机字体名，供调用方预先取得（WPS 文字为 `requiredFonts`）。 */
-export function wpsMetricFontNames(font: WpsMetricFont): string[] {
-  const names = [font.asciiDraw, font.other]
-  if (typeof font.ascii === 'string') names.push(font.ascii)
+export function wpsMetricFontNames(host: WpsMetricHost): string[] {
+  const names = [host.asciiDraw, host.other]
+  if (typeof host.ascii === 'string') names.push(host.ascii)
   return [...new Set(names)]
 }
 
 const UNITS = 1000
 
 /**
- * 按数据表排版的字体：度量取自 `font` 的 `part`（上沿与下沿），U+0020–U+007E 的宽度取自 `font.ascii`（为字体名时为
- * `ascii` 的宽度），其余字符的宽度、字形编号与其余纵向度量取自 `other`。
+ * 按数据表排版的字体：U+0020–U+007E 的宽度取自 `host.ascii`（为字体名时为 `ascii` 的宽度），其余字符的宽度取自 `other`；
+ * 上沿与下沿为 `vertical`（千分之一 em）。字形编号与绘制所用的字体一致：U+0020–U+007E 取自 `draw`（绘制该字段的字体），
+ * 其余取自 `other`。不要一律取自 `other`：公式中的普通文字按字形编号取绘制字体的字形与轮廓（`../math/`），编号取自另一个
+ * 字体时画出的是另一个字。
  */
-export function wpsMetricFace(
-  font: WpsMetricFont,
-  part: readonly [number, number],
+function metricFace(
+  host: WpsMetricHost,
+  vertical: VerticalMetrics,
   other: TextFace,
   ascii: TextFace | null,
+  draw: TextFace,
 ): TextFace {
   const om = other.metrics
-  const table = typeof font.ascii === 'string' ? null : font.ascii
+  const dm = draw.metrics
+  const table = typeof host.ascii === 'string' ? null : host.ascii
   const scaled = (m: FontMetrics, cp: number) => (m.advanceWidth(cp) * UNITS) / m.unitsPerEm
   const width = (cp: number): number => {
     if (cp < 0x20 || cp > 0x7e) return scaled(om, cp)
@@ -79,15 +120,51 @@ export function wpsMetricFace(
   const metrics: FontMetrics = {
     unitsPerEm: UNITS,
     numGlyphs: om.numGlyphs,
-    glyphId: (cp) => om.glyphId(cp),
+    glyphId: (cp) => (cp < 0x20 || cp > 0x7e ? om : dm).glyphId(cp),
     advanceWidth: width,
     advance: (cp, size) => (width(cp) * size) / UNITS,
   }
-  return { metrics, vertical: extentVertical(part, other.vertical) }
+  return { metrics, vertical }
+}
+
+/**
+ * WPS 文字按数据表排版的字体：度量见 `metricFace`，上沿与下沿为 `part`（字段的西文或东亚部分），`draw` 为绘制该部分的字体
+ * （西文部分为 `asciiDraw`，东亚部分为 `other`）。
+ */
+export function wpsMetricFace(
+  host: WpsMetricHost,
+  part: readonly [number, number],
+  other: TextFace,
+  ascii: TextFace | null,
+  draw: TextFace,
+): TextFace {
+  return metricFace(host, extentVertical(part, other.vertical, false), other, ascii, draw)
+}
+
+/**
+ * WPS 演示按数据表排版的西文字段：度量见 `metricFace`，`draw` 为 `asciiDraw`。自带字体的代码页含中日韩字符集时，上沿与下沿为 `latin` 去掉 WPS 文字
+ * 给中日韩字体加的增量（单倍行高为 win 上下沿之和的 1.3 倍，上下各加一半，见 `faceExtent`），并标为中日韩字体，纵向位置按
+ * 演示文稿中日韩字体的规则（`FaceCache`）；否则为 `latin` 本身，按西文字体。
+ */
+export function wpsPresentationFace(
+  font: WpsMetricFont,
+  host: WpsPresentationFont,
+  other: TextFace,
+  ascii: TextFace | null,
+  draw: TextFace,
+): TextFace {
+  const [a, d] = font.latin
+  const half = host.eastAsianCodePage ? ((a + d) * (1 - 1 / EAST_ASIAN_FACTOR)) / 2 : 0
+  const vertical = extentVertical([a - half, d - half], other.vertical, host.eastAsianCodePage)
+  return metricFace(host, vertical, other, ascii, draw)
 }
 
 /** 上沿与下沿为 `part`（千分之一 em）的纵向度量，其余取自 `base`。 */
-function extentVertical(part: readonly [number, number], base: VerticalMetrics): VerticalMetrics {
+function extentVertical(
+  part: readonly [number, number],
+  base: VerticalMetrics,
+  eastAsianCodePage: boolean,
+): VerticalMetrics {
   const s = UNITS / base.unitsPerEm
   const [ascent, descent] = part
   return {
@@ -99,7 +176,7 @@ function extentVertical(part: readonly [number, number], base: VerticalMetrics):
     winDescent: descent,
     useTypoMetrics: false,
     averageWidth: base.averageWidth * s,
-    eastAsianCodePage: false,
+    eastAsianCodePage,
     codePages: base.codePages ?? 0,
     superscriptSize: base.superscriptSize * s,
     superscriptOffset: base.superscriptOffset * s,
@@ -114,17 +191,20 @@ function extentVertical(part: readonly [number, number], base: VerticalMetrics):
 export function wpsExtentFace(font: WpsMetricFont, face: TextFace): TextFace {
   return {
     metrics: face.metrics,
-    vertical: extentVertical(font.eastAsia ?? font.latin, face.vertical),
+    vertical: extentVertical(font.eastAsia ?? font.latin, face.vertical, false),
   }
 }
 
 /** 页面 EMF 中 WPS 自带的字体名到真值回放所用的主机字体（`emf` 到 `asciiDraw`），供 `scripts/ooxml-fidelity/emf.py`。 */
 export function wpsEmfFaces(): Record<string, string> {
   const out: Record<string, string> = {}
-  for (const font of WPS_METRIC_FONTS.values())
-    for (const name of font.emf ?? []) out[name] = font.asciiDraw
+  for (const { writer } of WPS_METRIC_FONTS.values())
+    if (writer !== null) for (const name of writer.emf ?? []) out[name] = writer.asciiDraw
   return out
 }
+
+/** `charset` 的 GB2312 字符集（无符号值）。 */
+const GB2312 = 134
 
 /**
  * 西文字符宽度表（千分之一 em，U+0020–U+007E）。名称取宽度相同的字体中第一个：方正小标宋简体与方正小标宋_GBK、方正黑体_GBK
@@ -249,317 +329,820 @@ const STXIHEI = [
  */
 const SONG_EXTENT: readonly [number, number] = [(258 / 256) * 1000, (74 / 256) * 1000]
 
-export const WPS_METRIC_FONTS: ReadonlyMap<string, WpsMetricFont> = new Map([
+/**
+ * WPS 演示的西文字符宽度表（千分之一 em，U+0020–U+007E，60 磅的测量值取整）。名称取宽度相同的字体中第一个：华文楷体、华文仿宋、
+ * 华文宋体与 STKaiti、STSong、STFangsong 的宽度相同，其余英文名与对应的中文名相同；方正小标宋简体与方正小标宋_GBK、
+ * 方正仿宋_GB2312 与方正仿宋简体的宽度相同。Arial Unicode MS 除「_」外与 Arial 相同，思源黑体与本机的 yyb 字体相同。
+ */
+const PRESENTATION_ARIAL_UNICODE_MS = [
+  278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556,
+  556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667,
+  611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667,
+  667, 611, 278, 278, 278, 469, 500, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500,
+  222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
+]
+
+const PRESENTATION_STKAITI = [
+  250, 219, 406, 667, 448, 823, 729, 177, 292, 292, 427, 667, 219, 313, 219, 500, 469, 469, 469,
+  469, 469, 469, 469, 469, 469, 469, 219, 219, 667, 667, 667, 365, 917, 677, 615, 635, 771, 656,
+  563, 771, 760, 354, 333, 740, 573, 833, 771, 781, 563, 771, 625, 479, 615, 708, 677, 885, 698,
+  656, 656, 271, 500, 271, 500, 500, 333, 406, 510, 417, 500, 417, 323, 448, 510, 229, 229, 469,
+  229, 771, 510, 510, 510, 490, 333, 365, 292, 490, 469, 667, 458, 417, 427, 479, 500, 479, 667,
+]
+
+const PRESENTATION_ARIAL_NARROW = [
+  228, 228, 291, 456, 456, 729, 547, 158, 273, 273, 319, 479, 228, 273, 228, 228, 456, 455, 456,
+  456, 456, 456, 456, 456, 456, 456, 228, 228, 479, 479, 479, 456, 832, 547, 547, 592, 592, 547,
+  501, 638, 592, 228, 410, 547, 456, 683, 592, 638, 547, 638, 592, 547, 501, 592, 547, 774, 547,
+  547, 501, 228, 228, 228, 385, 456, 273, 456, 456, 410, 456, 456, 225, 456, 456, 182, 182, 410,
+  182, 683, 456, 456, 456, 456, 273, 410, 228, 456, 410, 592, 410, 410, 410, 274, 212, 274, 479,
+]
+
+const PRESENTATION_STZHONGSONG = [
+  320, 300, 380, 600, 620, 900, 800, 220, 300, 300, 440, 600, 320, 400, 320, 600, 620, 620, 620,
+  620, 620, 620, 620, 620, 620, 620, 320, 320, 600, 600, 600, 540, 944, 680, 740, 740, 800, 720,
+  640, 800, 800, 340, 600, 720, 600, 920, 740, 800, 620, 800, 720, 660, 620, 780, 700, 960, 720,
+  640, 640, 300, 600, 300, 600, 500, 340, 580, 620, 520, 620, 520, 320, 540, 660, 300, 300, 620,
+  300, 940, 660, 560, 620, 580, 440, 520, 380, 680, 520, 780, 560, 540, 480, 280, 600, 280, 600,
+]
+
+const PRESENTATION_HELVETICA_NEUE = [
+  278, 259, 426, 556, 556, 1000, 630, 278, 259, 259, 352, 600, 278, 389, 278, 333, 556, 556, 556,
+  556, 556, 556, 556, 556, 556, 556, 278, 278, 600, 600, 600, 556, 800, 648, 685, 722, 704, 611,
+  574, 759, 722, 259, 519, 667, 556, 871, 722, 760, 648, 760, 685, 648, 574, 722, 611, 926, 611,
+  648, 611, 259, 333, 259, 600, 500, 222, 537, 593, 537, 593, 537, 296, 574, 556, 222, 222, 519,
+  222, 853, 556, 574, 593, 593, 333, 500, 315, 556, 500, 758, 518, 500, 480, 333, 222, 333, 600,
+]
+
+const PRESENTATION_FZ_DABIAOSONG = [
+  332, 312, 551, 668, 477, 894, 750, 278, 352, 352, 519, 664, 312, 664, 312, 528, 500, 500, 500,
+  500, 500, 500, 500, 500, 500, 500, 312, 312, 664, 664, 664, 363, 926, 738, 695, 738, 820, 644,
+  594, 778, 832, 363, 344, 738, 602, 926, 812, 844, 644, 844, 769, 562, 727, 769, 750, 1000, 801,
+  750, 750, 363, 528, 363, 332, 500, 332, 477, 570, 488, 570, 477, 320, 551, 562, 289, 278, 539,
+  269, 926, 570, 570, 570, 570, 394, 375, 344, 570, 519, 778, 528, 519, 508, 394, 562, 394, 519,
+]
+
+const PRESENTATION_FZ_XIAOBIAOSONG = [
+  250, 332, 555, 500, 500, 1000, 832, 278, 332, 332, 500, 567, 250, 567, 250, 278, 500, 500, 500,
+  500, 500, 500, 500, 500, 500, 500, 332, 332, 567, 567, 567, 500, 930, 719, 664, 719, 719, 664,
+  609, 778, 778, 387, 500, 778, 664, 942, 719, 778, 609, 778, 719, 555, 664, 719, 719, 1000, 719,
+  719, 664, 332, 278, 332, 332, 500, 332, 500, 555, 442, 555, 442, 332, 500, 555, 278, 332, 555,
+  278, 832, 555, 500, 555, 555, 442, 387, 332, 555, 500, 719, 500, 500, 442, 391, 219, 391, 519,
+]
+
+const PRESENTATION_FZ_HEITI_GBK = [
+  278, 278, 352, 555, 555, 887, 664, 188, 332, 332, 387, 582, 278, 582, 278, 278, 555, 555, 555,
+  555, 555, 555, 555, 555, 555, 555, 278, 278, 582, 582, 582, 555, 1012, 664, 664, 719, 719, 664,
+  609, 778, 719, 278, 500, 664, 555, 832, 719, 778, 664, 778, 719, 664, 609, 719, 664, 942, 664,
+  664, 609, 278, 278, 278, 332, 555, 332, 555, 555, 500, 555, 555, 278, 555, 555, 219, 219, 500,
+  219, 832, 555, 555, 555, 555, 332, 500, 278, 555, 500, 719, 500, 500, 500, 332, 258, 332, 582,
+]
+
+const PRESENTATION_FZ_HEITI = [
+  278, 278, 352, 555, 555, 887, 664, 188, 328, 328, 387, 582, 278, 582, 278, 278, 555, 555, 555,
+  555, 555, 555, 555, 555, 555, 555, 278, 278, 582, 582, 582, 555, 1012, 664, 664, 719, 719, 664,
+  606, 778, 719, 278, 500, 664, 555, 828, 719, 778, 664, 778, 719, 664, 606, 719, 664, 942, 664,
+  664, 606, 278, 278, 278, 328, 555, 328, 555, 555, 500, 555, 555, 278, 555, 555, 219, 219, 500,
+  219, 828, 555, 555, 555, 555, 328, 500, 278, 555, 500, 719, 500, 500, 500, 332, 258, 332, 582,
+]
+
+const PRESENTATION_FZ_FANGSONG_GBK = [
+  449, 282, 293, 602, 469, 535, 519, 152, 312, 312, 523, 644, 234, 644, 297, 285, 484, 481, 496,
+  504, 539, 484, 484, 508, 519, 477, 297, 234, 516, 644, 516, 422, 695, 504, 504, 500, 512, 516,
+  488, 516, 523, 391, 465, 500, 481, 582, 512, 512, 481, 516, 504, 492, 523, 519, 433, 472, 410,
+  418, 488, 410, 285, 410, 269, 618, 242, 461, 516, 453, 516, 500, 453, 508, 484, 391, 442, 442,
+  363, 625, 512, 484, 516, 516, 442, 410, 461, 512, 418, 512, 488, 512, 488, 344, 160, 344, 722,
+]
+
+const PRESENTATION_FZ_FANGSONG = [
+  445, 282, 289, 598, 465, 535, 519, 152, 308, 308, 523, 644, 231, 644, 297, 285, 484, 481, 492,
+  504, 539, 484, 481, 508, 519, 477, 297, 231, 516, 644, 516, 422, 695, 504, 504, 500, 512, 516,
+  488, 516, 523, 391, 465, 500, 477, 582, 512, 512, 481, 516, 504, 492, 523, 519, 430, 472, 410,
+  418, 484, 410, 285, 410, 269, 618, 242, 461, 516, 453, 516, 500, 453, 508, 484, 391, 442, 442,
+  363, 625, 512, 484, 516, 516, 438, 410, 457, 512, 418, 512, 484, 512, 488, 340, 160, 340, 719,
+]
+
+const PRESENTATION_FZ_KAITI_GBK = [
+  278, 258, 402, 668, 457, 719, 727, 176, 301, 301, 508, 664, 258, 664, 258, 457, 488, 488, 488,
+  488, 488, 488, 488, 488, 488, 488, 258, 258, 664, 664, 664, 352, 914, 676, 632, 727, 758, 594,
+  528, 738, 789, 332, 301, 695, 551, 914, 812, 820, 562, 820, 801, 488, 676, 789, 688, 1000, 750,
+  707, 676, 301, 457, 301, 332, 500, 332, 394, 500, 426, 500, 438, 269, 469, 519, 258, 250, 500,
+  238, 789, 519, 519, 500, 500, 332, 301, 289, 519, 477, 738, 488, 469, 402, 477, 508, 477, 539,
+]
+
+const PRESENTATION_FZ_KAITI = [
+  278, 258, 402, 664, 453, 715, 727, 176, 301, 301, 508, 664, 258, 664, 258, 453, 484, 484, 484,
+  484, 484, 484, 484, 484, 484, 484, 258, 258, 664, 664, 664, 352, 914, 676, 632, 727, 758, 590,
+  528, 734, 789, 328, 301, 695, 551, 914, 808, 820, 558, 820, 801, 484, 676, 789, 683, 1000, 750,
+  703, 676, 301, 453, 301, 328, 500, 328, 394, 500, 426, 500, 433, 269, 465, 519, 258, 250, 500,
+  234, 789, 519, 519, 500, 500, 328, 301, 289, 519, 477, 734, 484, 465, 402, 477, 508, 477, 539,
+]
+
+const PRESENTATION_STXINGKAI = [
+  244, 344, 302, 608, 736, 688, 490, 219, 333, 333, 323, 667, 333, 510, 333, 281, 438, 271, 438,
+  510, 427, 427, 417, 437, 448, 458, 333, 333, 667, 667, 667, 323, 1010, 635, 552, 604, 646, 615,
+  563, 563, 646, 438, 375, 656, 594, 833, 573, 573, 625, 646, 656, 646, 573, 625, 427, 698, 604,
+  552, 542, 292, 281, 365, 469, 500, 333, 406, 323, 292, 417, 292, 271, 385, 365, 229, 281, 365,
+  229, 552, 365, 313, 406, 375, 292, 312, 250, 385, 323, 490, 292, 375, 302, 417, 542, 417, 667,
+]
+
+const PRESENTATION_SOURCE_HAN_SANS = [
+  224, 323, 474, 555, 555, 921, 680, 278, 338, 338, 467, 555, 278, 347, 278, 392, 555, 555, 555,
+  555, 555, 555, 555, 555, 555, 555, 278, 278, 555, 555, 555, 474, 946, 608, 657, 638, 688, 589,
+  552, 689, 728, 293, 535, 646, 543, 812, 723, 742, 633, 742, 635, 596, 599, 721, 575, 878, 573,
+  531, 603, 338, 392, 338, 555, 559, 606, 563, 618, 510, 620, 554, 325, 564, 607, 275, 275, 552,
+  284, 926, 610, 606, 620, 620, 388, 468, 377, 607, 521, 802, 498, 521, 475, 338, 270, 338, 555,
+]
+
+const PRESENTATION_STLITI = [
+  244, 280, 220, 680, 440, 680, 780, 160, 260, 264, 420, 520, 220, 280, 220, 340, 440, 440, 440,
+  440, 440, 440, 440, 440, 440, 440, 260, 240, 520, 520, 520, 380, 700, 620, 600, 520, 700, 620,
+  580, 620, 680, 380, 400, 660, 580, 840, 700, 600, 540, 600, 600, 460, 500, 740, 640, 880, 560,
+  560, 620, 240, 480, 320, 520, 500, 220, 420, 420, 340, 440, 340, 320, 400, 440, 240, 220, 440,
+  240, 620, 460, 400, 440, 400, 300, 320, 320, 460, 440, 680, 420, 400, 440, 240, 520, 240, 520,
+]
+
+const PRESENTATION_STXIHEI = [
+  250, 295, 309, 720, 554, 775, 757, 198, 369, 369, 425, 606, 277, 332, 277, 437, 554, 554, 554,
+  554, 554, 554, 554, 554, 554, 554, 277, 277, 606, 606, 606, 591, 867, 740, 574, 813, 744, 536,
+  485, 872, 683, 226, 482, 591, 462, 919, 740, 869, 592, 871, 607, 498, 426, 655, 702, 960, 609,
+  592, 480, 351, 605, 351, 672, 500, 378, 683, 682, 647, 685, 650, 314, 673, 610, 200, 203, 502,
+  200, 938, 610, 655, 682, 682, 301, 388, 339, 608, 554, 831, 480, 536, 425, 351, 672, 351, 606,
+]
+
+const PRESENTATION_STXINWEI = [
+  244, 301, 331, 556, 569, 993, 701, 180, 352, 352, 500, 673, 285, 308, 285, 370, 588, 398, 569,
+  569, 569, 569, 569, 569, 569, 569, 308, 308, 833, 833, 833, 396, 1000, 666, 588, 657, 729, 513,
+  525, 734, 794, 294, 394, 623, 466, 951, 802, 838, 546, 838, 639, 431, 597, 752, 657, 1009, 657,
+  595, 578, 352, 370, 352, 1000, 500, 500, 498, 558, 424, 579, 491, 310, 502, 551, 252, 264, 502,
+  259, 851, 562, 600, 581, 567, 361, 343, 331, 546, 539, 822, 507, 522, 449, 352, 500, 352, 833,
+]
+
+/**
+ * 华文新魏的上沿与下沿：WPS 演示 40 磅单行锚定顶端与锚定底端的基线位置只确定上沿与下沿之差（按中日韩字体换算后为
+ * 0.5426 em），两者之和取 1.3 em（换算后为 1 em；换算后不超过 1.1 em 时排版结果相同）。
+ */
+const STXINWEI_EXTENT: readonly [number, number] = [921.28, 378.72]
+
+export const WPS_METRIC_FONTS: ReadonlyMap<string, WpsMetricFont> = new Map<string, WpsMetricFont>([
   [
     'Arial Unicode MS',
     {
-      ascii: ARIAL_UNICODE_MS,
-      asciiDraw: 'Microsoft Sans Serif',
-      other: 'Arial',
       latin: [1266.33, 475.94],
       eastAsia: null,
-      fixed: false,
-      emf: ['KSOF6398537F', 'KSOF987E8EC0', 'KSOFCD64CA01', 'KSOF024B0542'],
+      writer: {
+        ascii: ARIAL_UNICODE_MS,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: 'Arial',
+        fixed: false,
+        emf: ['KSOF6398537F', 'KSOF987E8EC0', 'KSOFCD64CA01', 'KSOF024B0542'],
+      },
+      presentation: {
+        ascii: PRESENTATION_ARIAL_UNICODE_MS,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '宋体',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     'Helvetica',
     {
-      ascii: 'Arial',
-      asciiDraw: 'Microsoft Sans Serif',
-      other: 'Arial',
       latin: [953.33, 221.96],
       eastAsia: null,
-      fixed: false,
-      emf: ['KSOF7FC4CF2A', 'KSOFB4AB0A6B', 'KSOFE99145AC', 'KSOF1E7780ED'],
+      writer: {
+        ascii: 'Arial',
+        asciiDraw: 'Microsoft Sans Serif',
+        other: 'Arial',
+        fixed: false,
+        emf: ['KSOF7FC4CF2A', 'KSOFB4AB0A6B', 'KSOFE99145AC', 'KSOF1E7780ED'],
+      },
+      presentation: {
+        ascii: 'Arial',
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '宋体',
+        charset: null,
+        eastAsianCodePage: false,
+      },
     },
   ],
   [
     '楷体_GB2312',
     {
-      ascii: '宋体',
-      asciiDraw: '黑体',
-      other: '楷体',
       latin: SONG_EXTENT,
       eastAsia: SONG_EXTENT,
-      fixed: true,
-      emf: ['KSOFF9CBECC6', 'KSOFF9CC6125', 'KSOFF9CCD584', 'KSOFF9CD49E3'],
+      writer: {
+        ascii: '宋体',
+        asciiDraw: '黑体',
+        other: '楷体',
+        fixed: true,
+        emf: ['KSOFF9CBECC6', 'KSOFF9CC6125', 'KSOFF9CCD584', 'KSOFF9CD49E3'],
+      },
+      presentation: {
+        ascii: '宋体',
+        asciiDraw: '宋体',
+        other: '宋体',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '华文楷体',
     {
-      ascii: '宋体',
-      asciiDraw: '宋体',
-      other: '宋体',
       latin: [1026.62, 429.34],
       eastAsia: [1026.62, 429.34],
-      fixed: true,
-      emf: null,
+      writer: {
+        ascii: '宋体',
+        asciiDraw: '宋体',
+        other: '宋体',
+        fixed: true,
+        emf: null,
+      },
+      presentation: {
+        ascii: PRESENTATION_STKAITI,
+        asciiDraw: 'Yu Gothic UI',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     'Arial Narrow',
     {
-      ascii: ARIAL_NARROW,
-      asciiDraw: 'Calibri',
-      other: 'Arial',
       latin: [933.63, 213.91],
       eastAsia: null,
-      fixed: false,
-      emf: ['KSOF3D47F291', 'KSOF722E2DD2', 'KSOFA7146913', 'KSOFDBFAA454'],
+      writer: {
+        ascii: ARIAL_NARROW,
+        asciiDraw: 'Calibri',
+        other: 'Arial',
+        fixed: false,
+        emf: ['KSOF3D47F291', 'KSOF722E2DD2', 'KSOFA7146913', 'KSOFDBFAA454'],
+      },
+      presentation: {
+        ascii: PRESENTATION_ARIAL_NARROW,
+        asciiDraw: 'Calibri',
+        other: '宋体',
+        charset: null,
+        eastAsianCodePage: false,
+      },
     },
   ],
   [
     '仿宋_GB2312',
     {
-      ascii: '宋体',
-      asciiDraw: '宋体',
-      other: '仿宋',
       latin: SONG_EXTENT,
       eastAsia: SONG_EXTENT,
-      fixed: true,
-      emf: ['KSOFE44F9426', 'KSOFE4500885', 'KSOFE4507CE4', 'KSOFE450F143'],
+      writer: {
+        ascii: '宋体',
+        asciiDraw: '宋体',
+        other: '仿宋',
+        fixed: true,
+        emf: ['KSOFE44F9426', 'KSOFE4500885', 'KSOFE4507CE4', 'KSOFE450F143'],
+      },
+      presentation: {
+        ascii: '宋体',
+        asciiDraw: '宋体',
+        other: '仿宋',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '华文中宋',
     {
-      ascii: '宋体',
-      asciiDraw: '宋体',
-      other: '宋体',
       latin: [1079.84, 399.1],
       eastAsia: [1079.84, 399.1],
-      fixed: true,
-      emf: null,
+      writer: {
+        ascii: '宋体',
+        asciiDraw: '宋体',
+        other: '宋体',
+        fixed: true,
+        emf: null,
+      },
+      presentation: {
+        ascii: PRESENTATION_STZHONGSONG,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '宋体',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '华文仿宋',
     {
-      ascii: STFANGSONG,
-      asciiDraw: 'Palatino Linotype',
-      other: '仿宋',
       latin: [1025.64, 430.35],
       eastAsia: [1025.64, 430.35],
-      fixed: true,
-      emf: ['KSOF0B7949D1', 'KSOF0B79BE30', 'KSOF0B7A328F', 'KSOF0B7AA6EE'],
+      writer: {
+        ascii: STFANGSONG,
+        asciiDraw: 'Palatino Linotype',
+        other: '仿宋',
+        fixed: true,
+        emf: ['KSOF0B7949D1', 'KSOF0B79BE30', 'KSOF0B7A328F', 'KSOF0B7AA6EE'],
+      },
+      presentation: {
+        ascii: PRESENTATION_STKAITI,
+        asciiDraw: 'Cambria',
+        other: '仿宋',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     'Helvetica Neue',
     {
-      ascii: HELVETICA_NEUE,
-      asciiDraw: 'Ebrima',
-      other: 'Times New Roman',
       latin: [982.06, 210.91],
       eastAsia: null,
-      fixed: false,
-      emf: ['KSOFE816CA0F', 'KSOF38C0A810', 'KSOF896A8611', 'KSOFDA146412'],
+      writer: {
+        ascii: HELVETICA_NEUE,
+        asciiDraw: 'Ebrima',
+        other: 'Times New Roman',
+        fixed: false,
+        emf: ['KSOFE816CA0F', 'KSOF38C0A810', 'KSOF896A8611', 'KSOFDA146412'],
+      },
+      presentation: {
+        ascii: PRESENTATION_HELVETICA_NEUE,
+        asciiDraw: 'Ebrima',
+        other: '宋体',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正大标宋简体',
     {
-      ascii: FZ_DABIAOSONG,
-      asciiDraw: 'Microsoft Sans Serif',
-      other: '微软雅黑',
       latin: [1041.23, 443.03],
       eastAsia: [1041.23, 443.03],
-      fixed: true,
-      emf: ['KSOF5FA7FF03', 'KSOF615CD7A2', 'KSOF6311B041', 'KSOF64C688E0'],
+      writer: {
+        ascii: FZ_DABIAOSONG,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOF5FA7FF03', 'KSOF615CD7A2', 'KSOF6311B041', 'KSOF64C688E0'],
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_DABIAOSONG,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '隶书',
     {
-      ascii: '宋体',
-      asciiDraw: '黑体',
-      other: '微软雅黑',
       latin: SONG_EXTENT,
       eastAsia: SONG_EXTENT,
-      fixed: true,
-      emf: ['KSOF4F9C2767', 'KSOF51510006', 'KSOF5305D8A5', 'KSOF54BAB144'],
+      writer: {
+        ascii: '宋体',
+        asciiDraw: '黑体',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOF4F9C2767', 'KSOF51510006', 'KSOF5305D8A5', 'KSOF54BAB144'],
+      },
+      presentation: {
+        ascii: '宋体',
+        asciiDraw: '黑体',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正小标宋简体',
     {
-      ascii: FZ_XIAOBIAOSONG,
-      asciiDraw: 'Microsoft Sans Serif',
-      other: '黑体',
       latin: [1036.08, 487.31],
       eastAsia: [1036.08, 487.31],
-      fixed: true,
-      emf: ['KSOF439EEF50', 'KSOF439F63AF', 'KSOF439FD80E', 'KSOF43A04C6D'],
+      writer: {
+        ascii: FZ_XIAOBIAOSONG,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '黑体',
+        fixed: true,
+        emf: ['KSOF439EEF50', 'KSOF439F63AF', 'KSOF439FD80E', 'KSOF43A04C6D'],
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_XIAOBIAOSONG,
+        asciiDraw: 'Segoe UI Semibold',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正小标宋_GBK',
     {
-      ascii: FZ_XIAOBIAOSONG,
-      asciiDraw: 'Microsoft Sans Serif',
-      other: '微软雅黑',
       latin: [1039.08, 484.31],
       eastAsia: [1039.08, 484.31],
-      fixed: true,
-      emf: ['KSOF8080F95D', 'KSOF8235D1FC', 'KSOF83EAAA9B', 'KSOF859F833A'],
+      writer: {
+        ascii: FZ_XIAOBIAOSONG,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOF8080F95D', 'KSOF8235D1FC', 'KSOF83EAAA9B', 'KSOF859F833A'],
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_XIAOBIAOSONG,
+        asciiDraw: 'Segoe UI Semibold',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正黑体_GBK',
     {
-      ascii: FZ_HEITI,
-      asciiDraw: 'Microsoft Sans Serif',
-      other: '微软雅黑',
       latin: [1058.13, 398.86],
       eastAsia: [1058.13, 398.86],
-      fixed: true,
-      emf: ['KSOFEC83043A', 'KSOFEE37DCD9', 'KSOFEFECB578', 'KSOFF1A18E17'],
+      writer: {
+        ascii: FZ_HEITI,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOFEC83043A', 'KSOFEE37DCD9', 'KSOFEFECB578', 'KSOFF1A18E17'],
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_HEITI_GBK,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正仿宋_GBK',
     {
-      ascii: FZ_FANGSONG_GBK,
-      asciiDraw: 'Trebuchet MS',
-      other: '微软雅黑',
       latin: [1025.33, 423.83],
       eastAsia: [1025.33, 423.83],
-      fixed: true,
-      emf: ['KSOFD8A28030', 'KSOFDA5758CF', 'KSOFDC0C316E', 'KSOFDDC10A0D'],
+      writer: {
+        ascii: FZ_FANGSONG_GBK,
+        asciiDraw: 'Trebuchet MS',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOFD8A28030', 'KSOFDA5758CF', 'KSOFDC0C316E', 'KSOFDDC10A0D'],
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_FANGSONG_GBK,
+        asciiDraw: '黑体',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正仿宋_GB2312',
     {
-      ascii: FZ_FANGSONG,
-      asciiDraw: '宋体',
-      other: '仿宋',
       latin: [1026.31, 422.82],
       eastAsia: [1026.31, 422.82],
-      fixed: true,
-      emf: ['KSOFE8852770', 'KSOFE8859BCF', 'KSOFE886102E', 'KSOFE886848D'],
+      writer: {
+        ascii: FZ_FANGSONG,
+        asciiDraw: '宋体',
+        other: '仿宋',
+        fixed: true,
+        emf: ['KSOFE8852770', 'KSOFE8859BCF', 'KSOFE886102E', 'KSOFE886848D'],
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_FANGSONG,
+        asciiDraw: '宋体',
+        other: '仿宋',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正楷体_GBK',
     {
-      ascii: FZ_KAITI_GBK,
-      asciiDraw: 'Microsoft Sans Serif',
-      other: '微软雅黑',
       latin: [1019.93, 401.87],
       eastAsia: [1019.93, 401.87],
-      fixed: true,
-      emf: ['KSOFF21A05E0', 'KSOFF3CEDE7F', 'KSOFF583B71E', 'KSOFF7388FBD'],
+      writer: {
+        ascii: FZ_KAITI_GBK,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOFF21A05E0', 'KSOFF3CEDE7F', 'KSOFF583B71E', 'KSOFF7388FBD'],
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_KAITI_GBK,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '华文行楷',
     {
-      ascii: STXINGKAI,
-      asciiDraw: 'Trebuchet MS',
-      other: '微软雅黑',
       latin: [917.89, 448.08],
       eastAsia: [917.89, 448.08],
-      fixed: true,
-      emf: ['KSOF22E28EF3', 'KSOF24976792', 'KSOF264C4031', 'KSOF280118D0'],
+      writer: {
+        ascii: STXINGKAI,
+        asciiDraw: 'Trebuchet MS',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOF22E28EF3', 'KSOF24976792', 'KSOF264C4031', 'KSOF280118D0'],
+      },
+      presentation: {
+        ascii: PRESENTATION_STXINGKAI,
+        asciiDraw: 'MS UI Gothic',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '思源黑体',
     {
-      ascii: SOURCE_HAN_SANS,
-      asciiDraw: 'Malgun Gothic',
-      other: '黑体',
       latin: [1376.87, 505.12],
       eastAsia: [1376.87, 505.12],
-      fixed: true,
-      emf: ['KSOF4CF9F437', 'KSOF4CFA6896', 'KSOF4CFADCF5', 'KSOF4CFB5154'],
+      writer: {
+        ascii: SOURCE_HAN_SANS,
+        asciiDraw: 'Malgun Gothic',
+        other: '黑体',
+        fixed: true,
+        emf: ['KSOF4CF9F437', 'KSOF4CFA6896', 'KSOF4CFADCF5', 'KSOF4CFB5154'],
+      },
+      presentation: {
+        ascii: PRESENTATION_SOURCE_HAN_SANS,
+        asciiDraw: 'Arial',
+        other: '黑体',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     'Source Han Sans CN Regular',
     {
-      ascii: 'Segoe Print',
-      asciiDraw: 'Segoe Print',
-      other: 'Segoe Print',
       latin: [1289.64, 303.41],
       eastAsia: null,
-      fixed: true,
-      emf: null,
+      writer: {
+        ascii: 'Segoe Print',
+        asciiDraw: 'Segoe Print',
+        other: 'Segoe Print',
+        fixed: true,
+        emf: null,
+      },
+      presentation: null,
     },
   ],
   [
     '华文隶书',
     {
-      ascii: STLITI,
-      asciiDraw: 'Franklin Gothic Medium',
-      other: '微软雅黑',
       latin: [901.88, 413.07],
       eastAsia: [901.88, 413.07],
-      fixed: true,
-      emf: ['KSOF9F9B138E', 'KSOFA14FEC2D', 'KSOFA304C4CC', 'KSOFA4B99D6B'],
+      writer: {
+        ascii: STLITI,
+        asciiDraw: 'Franklin Gothic Medium',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOF9F9B138E', 'KSOFA14FEC2D', 'KSOFA304C4CC', 'KSOFA4B99D6B'],
+      },
+      presentation: {
+        ascii: PRESENTATION_STLITI,
+        asciiDraw: 'Calibri',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '华文细黑',
     {
-      ascii: STXIHEI,
-      asciiDraw: 'Segoe UI',
-      other: '微软雅黑',
       latin: [1033.84, 369.11],
       eastAsia: [1033.84, 369.11],
-      fixed: true,
-      emf: ['KSOF429D5CD3', 'KSOF44523572', 'KSOF46070E11', 'KSOF47BBE6B0'],
+      writer: {
+        ascii: STXIHEI,
+        asciiDraw: 'Segoe UI',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOF429D5CD3', 'KSOF44523572', 'KSOF46070E11', 'KSOF47BBE6B0'],
+      },
+      presentation: {
+        ascii: PRESENTATION_STXIHEI,
+        asciiDraw: 'Segoe UI Semibold',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正黑体简体',
     {
-      ascii: FZ_HEITI,
-      asciiDraw: 'Microsoft Sans Serif',
-      other: '微软雅黑',
       latin: [1073.72, 453.63],
       eastAsia: [1073.72, 453.63],
-      fixed: true,
-      emf: ['KSOFD7C1B938', 'KSOFD97691D7', 'KSOFDB2B6A76', 'KSOFDCE04315'],
+      writer: {
+        ascii: FZ_HEITI,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOFD7C1B938', 'KSOFD97691D7', 'KSOFDB2B6A76', 'KSOFDCE04315'],
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_HEITI,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正仿宋简体',
     {
-      ascii: FZ_FANGSONG,
-      asciiDraw: 'Trebuchet MS',
-      other: '微软雅黑',
       latin: [1026.33, 422.93],
       eastAsia: [1049.95, 410.98],
-      fixed: true,
-      emf: ['KSOF025BBAAE', 'KSOF0410934D', 'KSOF05C56BEC', 'KSOF077A448B'],
+      writer: {
+        ascii: FZ_FANGSONG,
+        asciiDraw: 'Trebuchet MS',
+        other: '微软雅黑',
+        fixed: true,
+        emf: ['KSOF025BBAAE', 'KSOF0410934D', 'KSOF05C56BEC', 'KSOF077A448B'],
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_FANGSONG,
+        asciiDraw: '黑体',
+        other: '微软雅黑',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '方正楷体简体',
     {
-      ascii: '宋体',
-      asciiDraw: '宋体',
-      other: '宋体',
       latin: [1022.4, 395.61],
       eastAsia: [1022.4, 395.61],
-      fixed: true,
-      emf: null,
+      writer: {
+        ascii: '宋体',
+        asciiDraw: '宋体',
+        other: '宋体',
+        fixed: true,
+        emf: null,
+      },
+      presentation: {
+        ascii: PRESENTATION_FZ_KAITI,
+        asciiDraw: 'Palatino Linotype',
+        other: '宋体',
+        charset: null,
+        eastAsianCodePage: true,
+      },
     },
   ],
   [
     '华文宋体',
     {
-      ascii: '宋体',
-      asciiDraw: '宋体',
-      other: '宋体',
       latin: [1023.52, 432.3],
       eastAsia: [1023.52, 432.3],
-      fixed: true,
-      emf: null,
+      writer: {
+        ascii: '宋体',
+        asciiDraw: '宋体',
+        other: '宋体',
+        fixed: true,
+        emf: null,
+      },
+      presentation: {
+        ascii: PRESENTATION_STKAITI,
+        asciiDraw: 'Cambria',
+        other: '宋体',
+        charset: null,
+        eastAsianCodePage: true,
+      },
+    },
+  ],
+  [
+    'STKaiti',
+    {
+      latin: [1026.62, 429.34],
+      eastAsia: null,
+      writer: null,
+      presentation: {
+        ascii: PRESENTATION_STKAITI,
+        asciiDraw: 'Cambria',
+        other: '宋体',
+        charset: GB2312,
+        eastAsianCodePage: true,
+      },
+    },
+  ],
+  [
+    'STSong',
+    {
+      latin: [1023.52, 432.3],
+      eastAsia: null,
+      writer: null,
+      presentation: {
+        ascii: PRESENTATION_STKAITI,
+        asciiDraw: 'Cambria',
+        other: '宋体',
+        charset: GB2312,
+        eastAsianCodePage: true,
+      },
+    },
+  ],
+  [
+    'STFangsong',
+    {
+      latin: [1025.64, 430.35],
+      eastAsia: null,
+      writer: null,
+      presentation: {
+        ascii: PRESENTATION_STKAITI,
+        asciiDraw: 'Cambria',
+        other: '宋体',
+        charset: GB2312,
+        eastAsianCodePage: true,
+      },
+    },
+  ],
+  [
+    'STXihei',
+    {
+      latin: [1033.84, 369.11],
+      eastAsia: null,
+      writer: null,
+      presentation: {
+        ascii: PRESENTATION_STXIHEI,
+        asciiDraw: 'Malgun Gothic',
+        other: '宋体',
+        charset: GB2312,
+        eastAsianCodePage: true,
+      },
+    },
+  ],
+  [
+    'STZhongsong',
+    {
+      latin: [1079.84, 399.1],
+      eastAsia: null,
+      writer: null,
+      presentation: {
+        ascii: PRESENTATION_STZHONGSONG,
+        asciiDraw: 'Microsoft Sans Serif',
+        other: '宋体',
+        charset: GB2312,
+        eastAsianCodePage: true,
+      },
+    },
+  ],
+  [
+    'STXingkai',
+    {
+      latin: [917.89, 448.08],
+      eastAsia: null,
+      writer: null,
+      presentation: {
+        ascii: PRESENTATION_STXINGKAI,
+        asciiDraw: 'Cambria',
+        other: '宋体',
+        charset: GB2312,
+        eastAsianCodePage: true,
+      },
+    },
+  ],
+  [
+    'STLiti',
+    {
+      latin: [901.88, 413.07],
+      eastAsia: null,
+      writer: null,
+      presentation: {
+        ascii: PRESENTATION_STLITI,
+        asciiDraw: 'Cambria',
+        other: '宋体',
+        charset: GB2312,
+        eastAsianCodePage: true,
+      },
+    },
+  ],
+  [
+    '华文新魏',
+    {
+      latin: STXINWEI_EXTENT,
+      eastAsia: null,
+      writer: null,
+      presentation: {
+        ascii: PRESENTATION_STXINWEI,
+        asciiDraw: 'Palatino Linotype',
+        other: '宋体',
+        charset: GB2312,
+        eastAsianCodePage: true,
+      },
     },
   ],
 ])

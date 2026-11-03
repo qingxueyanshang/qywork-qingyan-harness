@@ -64,12 +64,16 @@ export interface RawPresentation {
   }[]
 }
 
-const EMBEDDED_STYLES: Readonly<Record<string, [bold: boolean, italic: boolean]>> = {
-  regular: [false, false],
-  bold: [true, false],
-  italic: [false, true],
-  boldItalic: [true, true],
-}
+/** `embeddedFont` 中各字形元素的粗体与斜体。按元素名查表：不要改为普通对象，元素名为 `constructor` 等时取到原型属性。 */
+const EMBEDDED_STYLES: ReadonlyMap<string, readonly [bold: boolean, italic: boolean]> = new Map<
+  string,
+  readonly [boolean, boolean]
+>([
+  ['regular', [false, false]],
+  ['bold', [true, false]],
+  ['italic', [false, true]],
+  ['boldItalic', [true, true]],
+])
 
 const SLOTS = new Set<string>(SCHEME_SLOTS)
 
@@ -195,7 +199,7 @@ export function readPresentation(x: Scanner, rels: Relationships): RawPresentati
           let typeface = ''
           eachChild(x, (child) => {
             if (child === 'font') typeface = x.attr('typeface') ?? ''
-            const style = EMBEDDED_STYLES[child]
+            const style = EMBEDDED_STYLES.get(child)
             const id = relAttr(x, 'id')
             if (style !== undefined && id !== null) {
               embeddedFonts.push({ typeface, bold: style[0], italic: style[1], id })

@@ -3,7 +3,8 @@
  *
  * 页面向 `window` 暴露 `renderPage(id, slide, width, height, clearType)`（`clearType` 为采集时显示器的 ClearType 设置），
  * 返回画布尺寸；截图由 Node 驱动的 Playwright 完成。
- * 主机没有的字体取文件中的嵌入字体；缺少字体与缺少字形时使用宋体。本文件只声明用到的浏览器接口，不引入 DOM 类型库。
+ * 主机字体的族名取自 `/families`（WPS 演示的替代规则所用）；主机没有的字体取文件中的嵌入字体；缺少字体与缺少字形时使用宋体。
+ * 本文件只声明用到的浏览器接口，不引入 DOM 类型库。
  */
 
 import {
@@ -29,6 +30,7 @@ import {
   type SlideFonts,
   slideImages,
 } from '../../packages/ooxml/src/pptx/index.ts'
+import type { HostFamilies } from '../../packages/ooxml/src/text/index.ts'
 
 interface CanvasElement {
   width: number
@@ -122,7 +124,8 @@ function loadDoc(id: string): Promise<Doc> {
       const parsed = await parsePptx(bytes)
       if (!parsed.ok) throw new Error(`解析失败：${JSON.stringify(parsed.failure)}`)
       const presentation = parsed.value
-      const names = [...new Set([...presentationFonts(presentation), FALLBACK])]
+      const families = (await (await fetch('/families')).json()) as HostFamilies
+      const names = [...new Set([...presentationFonts(presentation, families), FALLBACK])]
       // 每个字体以文件中的字体名注册，族名与键相同。
       const loaded = new Map<string, SlideFace[]>()
       for (const name of names) loaded.set(name, await loadFamily(name))
@@ -152,6 +155,7 @@ function loadDoc(id: string): Promise<Doc> {
         face: (name, bold, italic) => pick(loaded.get(name) ?? [], bold, italic),
         fallback,
         family: (name) => loaded.get(name) ?? [],
+        families,
       }
       return { bytes, presentation, fonts }
     })()

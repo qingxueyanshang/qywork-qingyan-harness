@@ -2,9 +2,9 @@
  * DrawingML 文字的绘制用字体：调用方按字体名提供字体文件的度量与浏览器中注册的族名，本模块按字形缓存并处理仿粗体。
  *
  * - 排版宽度只取自字体文件（`../../text/`），绘制时以 `family` 引用调用方注册的同名 `FontFace`。
- * - 主机没有的符号字体名改用 `MISSING_SYMBOL` 中的字体，其余主机没有的字体与空字体名改用 `fallback`，西文字体例外
- *   （`missingLatin`）；请求粗体而返回的不是粗体字形时
- *   按仿粗体排版（`emboldened`），绘制时由浏览器合成粗体。
+ * - 主机没有的符号字体名改用 `MISSING_SYMBOL` 中的字体；演示文稿另按 WPS 演示的替代规则（自带度量的字体与前缀匹配，见
+ *   `FaceCache` 的 `presentation`）。其余主机没有的字体与空字体名改用 `fallback`，西文字体例外（`missingLatin`）；请求粗体
+ *   而返回的不是粗体字形时按仿粗体排版（`emboldened`），绘制时由浏览器合成粗体。
  * - 每个绘制字形（字体文件、族名、请求的粗体与斜体）有自己的排版字体对象，`FaceCache.of` 按对象取回：合成斜体与正体的度量
  *   相同，共用一个对象时排版结果无法区分两者。
  * - 行高与字体无关：WPS 演示的单倍行高为字号的 `SINGLE_LINE` 倍（其他宿主由 `FaceCache` 的参数给出），
@@ -12,14 +12,22 @@
  *   排版前把每个字体的纵向度量换算为满足这两点的上下沿（`lineFace`），排版模块的行高与基线即按此计算；
  *   中日韩字体不再乘 1.3，也不加外部行距。
  * - `collectTextFonts` 收集文本框用到的字体名（含按 `charset` 的西文替代字体）；调用方据此并加上 `MISSING_LATIN`
- *   预先取得字体。
+ *   预先取得字体，演示文稿另加 `presentationFontNames`。
  * - 屏幕显示的字形（`ScreenText`、`TextClearType`）由宿主提供：不平滑字号的单色字形与平滑字号的 ClearType 字形。
  */
 
 import type { BitmapGlyph } from '../../font/index.ts'
 import type { CoverageGlyph, GlyphRun, PixelCanvas } from '../../glyph/cleartype/index.ts'
 import { MATH_SETTINGS_DEFAULTS, mathPropsOf } from '../../math/index.ts'
-import { emboldened, type TextFace } from '../../text/index.ts'
+import {
+  emboldened,
+  type HostFamilies,
+  prefixFont,
+  type TextFace,
+  WPS_METRIC_FONTS,
+  wpsMetricFontNames,
+  wpsPresentationFace,
+} from '../../text/index.ts'
 import type { PaintContext } from '../paint/context.ts'
 import type { Bullet, RunStyle, TextBody } from './model.ts'
 
@@ -107,10 +115,7 @@ function slideCenterEastAsian(v: TextFace['vertical']): number {
  * 主机没有西文字体、其 `charset` 不在 `MISSING_LATIN_BY_CHARSET` 中时，西文字符改用的字体；主机也没有该字体时用
  * `fallback`。实测：WPS 演示导出图中，11 个不存在的西文字体名（东亚字体为宋体、微软雅黑、楷体、黑体、仿宋或同样不存在，
  * 语言为中文或英文，`charset` 为 0 或未写）的西文字符一律以 Segoe Print 绘制，粗体取其粗体字形，均不取东亚字体；
- * `charset` 为 1（DEFAULT）与 2（SYMBOL）时同样为 Segoe Print。
- * 不符合本规则的情况：名称包含已安装字体的家族名时（如 `Calibri Fake`、`思源黑体 CN Fake`）WPS 取该字体；`STKaiti`
- * （`charset` 为 -122）等 WPS 自带度量的字体名按其度量排版；`Helvetica Neue` 等个别名称 WPS 取其他字体。字体来源不列出
- * 主机字体，这些情况按本规则处理。
+ * `charset` 为 1（DEFAULT）与 2（SYMBOL）时同样为 Segoe Print。演示文稿中先于本规则的替代见 `FaceCache.latin`。
  */
 export const MISSING_LATIN = 'Segoe Print'
 
@@ -138,10 +143,36 @@ const MISSING_SYMBOL: ReadonlyMap<string, string> = new Map([
   ['Wingdings 3', 'Symbol'],
 ])
 
+/** `charset` 的 GB2312 字符集（无符号值）。 */
+const GB2312_CHARSET = 134
+
+/** `charset` 换算为 GDI 字符集的无符号值。 */
+function unsignedCharset(charset: number): number {
+  return ((charset % 256) + 256) % 256
+}
+
 /** 主机没有 `charset` 为该值的西文字体时，西文字符改用的字体名。 */
 export function missingLatin(charset: number | undefined): string {
   if (charset === undefined) return MISSING_LATIN
-  return MISSING_LATIN_BY_CHARSET.get(((charset % 256) + 256) % 256) ?? MISSING_LATIN
+  return MISSING_LATIN_BY_CHARSET.get(unsignedCharset(charset)) ?? MISSING_LATIN
+}
+
+/** WPS 演示的前缀匹配（`prefixFont`）：名称去掉首尾空白，不区分大小写。 */
+function presentationPrefix(name: string, host: HostFamilies): string | null {
+  return prefixFont(name.trim(), host.local, true)
+}
+
+/**
+ * 主机没有 `name` 时 WPS 演示的替代规则可能用到的主机字体名：自带度量的字体所需的字体（`wpsMetricFontNames`）与前缀匹配的
+ * 结果；主机有该字体名时为空。调用方据此预先取得字体。
+ */
+export function presentationFontNames(name: string, host: HostFamilies): string[] {
+  if (host.names.includes(name.trim().toLowerCase())) return []
+  const metric = WPS_METRIC_FONTS.get(name)?.presentation ?? null
+  const names = metric === null ? [] : wpsMetricFontNames(metric)
+  const prefix = presentationPrefix(name, host)
+  if (prefix !== null) names.push(prefix)
+  return names
 }
 
 /** 纵向度量换算为上沿、下沿之和为 `single` 倍字号、纵向中心距行顶 `center` 倍字号的度量。 */
@@ -219,6 +250,8 @@ export class FaceCache {
   /** 换算后的字体文件 → 族名与请求的字形 → 绘制字形。 */
   private readonly variants = new Map<TextFace, Map<string, PaintFace>>()
   private readonly byFace = new Map<TextFace, PaintFace>()
+  /** WPS 演示按数据表排版的西文字段（`metricLatin`），键为字体名与请求的字形。 */
+  private readonly metrics = new Map<string, PaintFace | null>()
   readonly fallback: PaintFace
 
   /**
@@ -226,7 +259,8 @@ export class FaceCache {
    * `glyphs` 只决定绘制（基线取整与点阵），缺省与 `screen` 相同；`screen` 为 `null` 而 `glyphs` 不为 `null` 时
    * 行高、基线与纵向中心仍按演示文稿的规则。`clearType` 只决定绘制，`glyphs` 为 `null` 时不使用；缺省为 `null`
    * （平滑字号以 `fillText` 绘制）。`wholeSizeLine` 为真时单倍行高按行内最大字号的整数部分计算（见 `body.ts` 的
-   * `singleLine`），缺省与是否按屏幕显示排版相同。
+   * `singleLine`），缺省与是否按屏幕显示排版相同。`presentation` 为主机字体的族名时，主机没有的字体名按 WPS 演示的规则
+   * 替代（见 `find`、`latin`）；缺省为 `null`，不做这些替代（WPS 表格与 WPS 文字的图形文字，未实测）。
    */
   constructor(
     private readonly source: SlideFontSource,
@@ -235,6 +269,7 @@ export class FaceCache {
     readonly glyphs: ScreenText | null = screen,
     readonly clearType: TextClearType | null = null,
     readonly wholeSizeLine: boolean = screen !== null,
+    private readonly presentation: HostFamilies | null = null,
   ) {
     this.fallback = this.variant(source.fallback, false, false)
   }
@@ -299,12 +334,25 @@ export class FaceCache {
   }
 
   /** 字体名对应的主机字体：主机没有时取 `MISSING_SYMBOL` 中的替代字体，都没有时为 `null`。 */
-  private find(name: string, bold: boolean, italic: boolean): SlideFont | null {
+  private hostFont(name: string, bold: boolean, italic: boolean): SlideFont | null {
     if (name === '') return null
     const found = this.source.face(name, bold, italic)
     if (found !== null) return found
     const symbol = MISSING_SYMBOL.get(name)
     return symbol === undefined ? null : this.source.face(symbol, bold, italic)
+  }
+
+  /**
+   * 字体名对应的字体（`hostFont`）。按 WPS 演示的规则时，主机没有该字体名再取自带度量的字体的 `other`（东亚字段按该字体
+   * 本身排版，见 `WpsPresentationFont`），不是自带度量的字体名时取前缀匹配的主机字体。都没有时为 `null`。
+   */
+  private find(name: string, bold: boolean, italic: boolean): SlideFont | null {
+    const found = this.hostFont(name, bold, italic)
+    if (found !== null || this.presentation === null || name === '') return found
+    const metric = WPS_METRIC_FONTS.get(name)?.presentation ?? null
+    if (metric !== null) return this.hostFont(metric.other, bold, italic)
+    const prefix = presentationPrefix(name, this.presentation)
+    return prefix === null ? null : this.hostFont(prefix, bold, italic)
   }
 
   get(name: string, bold: boolean, italic: boolean): PaintFace {
@@ -317,10 +365,77 @@ export class FaceCache {
     return f
   }
 
-  /** 西文字符的字体：主机没有 `name`（及其替代的符号字体）时取 `missingLatin(charset)`。 */
-  latin(name: string, charset: number | undefined, bold: boolean, italic: boolean): PaintFace {
-    const found = this.find(name, false, false) !== null
-    return this.get(found ? name : missingLatin(charset), bold, italic)
+  /**
+   * 西文字符的字体，`slot` 为字段中的位置（`fontSlot` 的 `ascii` 或 `hAnsi`）。主机没有 `name`（及其替代的符号字体）时取
+   * `missingLatin(charset)`；按 WPS 演示的规则时在此之前依次取按数据表的排版（`metricLatin`）与前缀匹配的主机字体（`charset`
+   * 为 GB2312 时不做前缀匹配）。
+   * WPS 演示实测（构造文件 p10-d，与参照行逐像素相同）：`charset` 为 0 或未写时 `Calibri Light Fake` 为 Calibri、`Courier`
+   * 为 Courier New，为 GB2312 时两者都为宋体。名称含「黑」「楷」的字体名 WPS 演示另取黑体或宋体（`微软雅黑 Fake` 为黑体，
+   * `华文楷体 Fake` 为宋体，先于前缀匹配），本方未实现。
+   */
+  latin(
+    name: string,
+    charset: number | undefined,
+    bold: boolean,
+    italic: boolean,
+    slot: 'ascii' | 'hAnsi' = 'ascii',
+  ): PaintFace {
+    if (this.hostFont(name, false, false) !== null) return this.get(name, bold, italic)
+    if (this.presentation === null) return this.get(missingLatin(charset), bold, italic)
+    const metric = this.metricLatin(name, charset, bold, italic, slot)
+    if (metric !== null) return metric
+    const gb2312 = charset !== undefined && unsignedCharset(charset) === GB2312_CHARSET
+    const prefix = gb2312 ? null : presentationPrefix(name, this.presentation)
+    return this.get(prefix ?? missingLatin(charset), bold, italic)
+  }
+
+  /**
+   * WPS 演示按数据表排版的西文字段：`ascii` 位置按 `wpsPresentationFace` 排版、以 `asciiDraw` 绘制；`hAnsi` 位置（U+0080 起
+   * 的字符）按 `other` 本身排版与绘制，与东亚字段相同。该字体名不在数据表中、`charset` 不符或主机缺少所需的字体时为 `null`。
+   * 不要让 `hAnsi` 位置取数据表的度量或 `asciiDraw`：真值中 STKaiti 字段的「“”……」与宋体的字形与位置逐像素相同，取数据表的
+   * 上下沿时整行高 2 像素，以 `asciiDraw` 绘制时为西文省略号。
+   */
+  private metricLatin(
+    name: string,
+    charset: number | undefined,
+    bold: boolean,
+    italic: boolean,
+    slot: 'ascii' | 'hAnsi',
+  ): PaintFace | null {
+    const font = WPS_METRIC_FONTS.get(name)
+    const host = font?.presentation ?? null
+    if (font === undefined || host === null) return null
+    if (
+      host.charset !== null &&
+      (charset === undefined || unsignedCharset(charset) !== host.charset)
+    )
+      return null
+    if (slot === 'hAnsi')
+      return this.hostFont(host.other, bold, italic) === null
+        ? null
+        : this.get(host.other, bold, italic)
+    const key = `${name}\u0000${bold ? 1 : 0}${italic ? 1 : 0}`
+    let f = this.metrics.get(key)
+    if (f === undefined) {
+      const draw = this.hostFont(host.asciiDraw, bold, italic)
+      const other = this.hostFont(host.other, bold, italic)
+      const ascii = typeof host.ascii === 'string' ? this.hostFont(host.ascii, bold, italic) : null
+      f =
+        draw === null || other === null || (typeof host.ascii === 'string' && ascii === null)
+          ? null
+          : this.variant(
+              {
+                face: wpsPresentationFace(font, host, other.face, ascii?.face ?? null, draw.face),
+                family: draw.family,
+                bold: draw.bold,
+                italic: draw.italic,
+              },
+              bold,
+              italic,
+            )
+      this.metrics.set(key, f)
+    }
+    return f
   }
 
   /** 排版结果中的字形对应的绘制信息。 */

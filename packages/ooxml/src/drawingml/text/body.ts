@@ -201,10 +201,16 @@ function runText(run: Exclude<Run, { kind: 'math' }>, slideNumber: number | null
 
 function textRun(text: string, style: RunStyle, scale: number, faces: FaceCache): TextRun {
   const face = (name: string) => faces.get(name, style.bold, style.italic).face
-  const latin = faces.latin(style.latin, style.latinCharset, style.bold, style.italic).face
+  const latin = (slot: 'ascii' | 'hAnsi') =>
+    faces.latin(style.latin, style.latinCharset, style.bold, style.italic, slot).face
   const run: TextRun = {
     text,
-    fonts: { ascii: latin, hAnsi: latin, eastAsia: face(style.ea), cs: face(style.cs) },
+    fonts: {
+      ascii: latin('ascii'),
+      hAnsi: latin('hAnsi'),
+      eastAsia: face(style.ea),
+      cs: face(style.cs),
+    },
     size: style.size * scale,
     slots: {
       eastAsiaHint: EAST_ASIAN_LANG.test(style.lang),

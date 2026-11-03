@@ -40,6 +40,7 @@ import {
   type TextFace,
   WPS_METRIC_FONTS,
   type WpsMetricFont,
+  type WpsWriterFont,
   wpsExtentFace,
   wpsMetricFace,
 } from '../../text/index.ts'
@@ -291,7 +292,7 @@ export class DocxFonts {
       const syntheticBold = bold && !f.bold
       const syntheticItalic = italic && !f.italic
       const metric = WPS_METRIC_FONTS.get(name)
-      let text = metric?.fixed === true ? wpsExtentFace(metric, f.text) : f.text
+      let text = metric?.writer?.fixed === true ? wpsExtentFace(metric, f.text) : f.text
       if (syntheticBold) text = emboldened(text)
       else if (syntheticItalic && text === f.text)
         text = { metrics: text.metrics, vertical: text.vertical }
@@ -305,8 +306,8 @@ export class DocxFonts {
   }
 
   /**
-   * WPS 按自带度量排版的字体（`WPS_METRIC_FONTS`）：度量见 `wpsMetricFace`，西文部分的字形取自 `asciiDraw`，东亚部分取自
-   * `other`，按所请求的字形选取，没有该字形时合成。
+   * WPS 按自带度量排版的字体（`WPS_METRIC_FONTS` 的 `writer`）：度量见 `wpsMetricFace`，西文部分的字形取自 `asciiDraw`，
+   * 东亚部分取自 `other`，按所请求的字形选取，没有该字形时合成。
    */
   private metricMatch(
     name: string,
@@ -318,7 +319,10 @@ export class DocxFonts {
     let m = this.metrics.get(id)
     if (m === undefined) {
       const font = WPS_METRIC_FONTS.get(name)
-      m = font === undefined ? null : this.metricFace(font, part, bold, italic)
+      m =
+        font === undefined || font.writer === null
+          ? null
+          : this.metricFace(font, font.writer, part, bold, italic)
       this.metrics.set(id, m)
     }
     return m
@@ -326,17 +330,18 @@ export class DocxFonts {
 
   private metricFace(
     font: WpsMetricFont,
+    host: WpsWriterFont,
     part: 'latin' | 'eastAsia',
     bold: boolean,
     italic: boolean,
   ): FontMatch | null {
     const extent = part === 'latin' ? font.latin : font.eastAsia
-    const owner = this.pick(part === 'latin' ? font.asciiDraw : font.other, bold, italic)
-    const other = this.pick(font.other, bold, italic)
-    const ascii = typeof font.ascii === 'string' ? this.pick(font.ascii, bold, italic) : null
+    const owner = this.pick(part === 'latin' ? host.asciiDraw : host.other, bold, italic)
+    const other = this.pick(host.other, bold, italic)
+    const ascii = typeof host.ascii === 'string' ? this.pick(host.ascii, bold, italic) : null
     if (extent === null || owner === null || other === null) return null
-    if (typeof font.ascii === 'string' && ascii === null) return null
-    const base = wpsMetricFace(font, extent, other.text, ascii?.text ?? null)
+    if (typeof host.ascii === 'string' && ascii === null) return null
+    const base = wpsMetricFace(host, extent, other.text, ascii?.text ?? null, owner.text)
     const text = bold && !owner.bold ? emboldened(base) : base
     this.register(text, owner, bold, italic)
     return { face: text, bold: bold || owner.bold }
