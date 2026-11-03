@@ -2,15 +2,26 @@
  * 覆盖范围：`fill.ts`（线性渐变起止点、路径渐变焦点、圆形与矩形路径渐变、图片裁剪与拉伸、平铺、图案、明暗修饰）、
  * `picture.ts`（位图裁剪，图元文件的图片填充、平铺与缺少字体时不绘制）、`resolution.ts`（PNG、JPEG、BMP 文件头中的分辨率）、
  * `line.ts`（线宽、虚线、端点与连接、内侧对齐、复合线、箭头与线条缩短、非纯色线条的图层）、
- * `shadow.ts`（阴影变换、只绘制阴影的偏移、带阴影绘制的图层顺序）、`context.ts`（矩阵运算）。
+ * `shadow.ts`（阴影变换、只绘制阴影的偏移、内部阴影的裁剪与偏移方向）、`effects.ts`（发光与柔化边缘的剖面、膨胀量、
+ * 图层效果的合成顺序、映像的渐变与变换）、`context.ts`（矩阵运算）、`recolor.ts`（图片效果的像素运算与运算顺序）。
+ * 期望值取自 WPS 演示导出图。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { readMetafile } from '../../metafile/index.ts'
 import type { Color } from '../color.ts'
-import type { Fill, ImageFill, Line } from '../fill.ts'
+import type { Fill, ImageEffect, ImageFill, Line } from '../fill.ts'
 import type { ShapePath } from '../geometry/path.ts'
 import { apply, invert, multiply, rotation, scaling, translation } from './context.ts'
+import {
+  glowAlpha,
+  glowSpread,
+  NO_EFFECTS,
+  paintWithEffects,
+  type Reflection,
+  softEdgeInset,
+  softEdgeMask,
+} from './effects.ts'
 import {
   focusRect,
   linearGradientLine,
@@ -21,8 +32,9 @@ import {
 } from './fill.ts'
 import { dashPattern, lineWidth, paintLine } from './line.ts'
 import { drawCropped, drawPicture, type PaintPicture } from './picture.ts'
+import { recolorPixels } from './recolor.ts'
 import { type ImageResolution, imageResolution, SCREEN_RESOLUTION } from './resolution.ts'
-import { type OuterShadow, paintWithShadows, shadowMatrix } from './shadow.ts'
+import { type InnerShadow, type OuterShadow, paintInnerShadows, shadowMatrix } from './shadow.ts'
 import { canvasFactory, placeableWmf, RED_RECT_WMF, RecordingContext } from './test-helper.ts'
 
 const RED: Color = { r: 1, g: 0, b: 0, a: 1 }
@@ -637,9 +649,9 @@ describe('外部阴影', () => {
   test('先绘制阴影（图层移出画布、阴影偏移移回），再绘制图层本身', () => {
     const ctx = new RecordingContext()
     const { res, created } = resources()
-    paintWithShadows(
+    paintWithEffects(
       ctx,
-      [base],
+      { ...NO_EFFECTS, shadows: [base] },
       { matrix: I, width: 10, height: 10, scale: 1 },
       { x: 5, y: 6, w: 10, h: 10 },
       res,
@@ -653,6 +665,135 @@ describe('外部阴影', () => {
     expect(draws[0]!.matrix).toEqual({ a: 1, b: 0, c: 0, d: 1, e: -away, f: 10 })
     expect(draws[1]!.matrix).toEqual(I)
     expect(draws[1]!.args.slice(1)).toEqual([5, 6])
+  })
+
+  test('内部阴影：裁剪到形状区域后填充区域之外的轮廓，阴影向 dir 的反方向偏移而出现在 dir 一侧', () => {
+    const ctx = new RecordingContext()
+    const inner: InnerShadow = {
+      kind: 'innerShadow',
+      color: RED,
+      blur: 9525 * 4,
+      distance: 9525 * 10,
+      direction: 45,
+    }
+    const append = () => ctx.rect(0, 0, 20, 10)
+    paintInnerShadows(ctx, append, [inner], {
+      matrix: scaling(2, 2),
+      width: 20,
+      height: 10,
+      scale: 2,
+    })
+    const names = ctx.calls.map((c) => c.name).filter((n) => n === 'clip' || n === 'fill')
+    expect(names).toEqual(['clip', 'fill'])
+    expect(ctx.named('fill')[0]!.args).toEqual(['evenodd'])
+    expect(ctx.shadowOffsetX).toBeCloseTo(-20 * Math.SQRT1_2, 9)
+    expect(ctx.shadowOffsetY).toBeCloseTo(-20 * Math.SQRT1_2, 9)
+    expect(ctx.shadowBlur).toBe(8)
+  })
+})
+
+describe('发光、柔化边缘与映像', () => {
+  /** 宽 `w` 高 `h` 的不透明矩形放在四周留白 `pad` 的图层中。 */
+  const rect = (w: number, h: number, pad: number) => {
+    const W = w + 2 * pad
+    const H = h + 2 * pad
+    const a = new Float32Array(W * H)
+    for (let y = pad; y < pad + h; y++) a.fill(1, y * W + pad, y * W + pad + w)
+    return { a, W, H }
+  }
+
+  test('膨胀量：发光为半径的 0.425 倍、柔化边缘为 0.83 倍（向下取整，设备像素）', () => {
+    // WPS 演示实测：发光 2、4、8、12、16、20、28 磅，柔化边缘 2、4、8、12、16、24 磅。
+    expect([2, 4, 8, 12, 16, 20, 28].map((pt) => glowSpread((pt * 4) / 3))).toEqual([
+      1, 2, 4, 6, 9, 11, 15,
+    ])
+    expect([2, 4, 8, 12, 16, 24].map((pt) => softEdgeInset((pt * 4) / 3))).toEqual([
+      2, 4, 8, 13, 17, 26,
+    ])
+  })
+
+  test('矩形 12 磅发光的边缘剖面', () => {
+    const { a, W } = rect(160, 80, 30)
+    const g = glowAlpha(a, W, 140, glowSpread(16))
+    const row = 30 + 40
+    // 自矩形左边向外第 1–12 个像素（WPS 演示导出图，白底红色发光）。
+    const wps = [0.992, 0.973, 0.929, 0.855, 0.749, 0.6, 0.4, 0.247, 0.141, 0.071, 0.027, 0.004]
+    for (const [i, v] of wps.entries())
+      expect(Math.abs(g[row * W + 29 - i]! - v)).toBeLessThan(0.02)
+    // 形状内部同样有发光（半透明填充之下可见）。
+    expect(g[row * W + 100]!).toBeCloseTo(1, 3)
+  })
+
+  test('矩形 12 磅柔化边缘的边缘剖面', () => {
+    const { a, W } = rect(200, 120, 5)
+    const m = softEdgeMask(a, W, 130, softEdgeInset(16))
+    const row = 5 + 60
+    // 自矩形左边向内第 1–24 个像素（WPS 演示导出图，白底黑色矩形）。
+    const wps = [
+      0, 0.004, 0.008, 0.02, 0.031, 0.055, 0.082, 0.118, 0.161, 0.216, 0.278, 0.357, 0.447, 0.549,
+      0.639, 0.718, 0.78, 0.835, 0.882, 0.918, 0.945, 0.965, 0.98, 0.988,
+    ]
+    for (const [i, v] of wps.entries()) expect(Math.abs(m[row * W + 5 + i]! - v)).toBeLessThan(0.02)
+  })
+
+  test('合成顺序：映像、阴影、内容；映像按对称轴翻转，渐变自对称轴由 stA 变为 endA', () => {
+    const ctx = new RecordingContext()
+    const { res, created } = resources()
+    const reflection: Reflection = {
+      kind: 'reflection',
+      blur: 0,
+      distance: 0,
+      direction: 90,
+      scaleX: 1,
+      scaleY: -1,
+      skewX: 0,
+      skewY: 0,
+      align: 'bl',
+      rotateWithShape: false,
+      startAlpha: 0.5,
+      startPosition: 0,
+      endAlpha: 0,
+      endPosition: 0.5,
+      fadeDirection: 90,
+    }
+    const shadow = {
+      kind: 'outerShadow' as const,
+      color: { r: 0, g: 0, b: 0, a: 0.5 },
+      blur: 0,
+      distance: 9525,
+      direction: 0,
+      scaleX: 1,
+      scaleY: 1,
+      skewX: 0,
+      skewY: 0,
+      align: 'b',
+      rotateWithShape: false,
+    }
+    paintWithEffects(
+      ctx,
+      { ...NO_EFFECTS, shadows: [shadow], reflection },
+      { matrix: translation(10, 20), width: 100, height: 40, scale: 1 },
+      { x: 10, y: 20, w: 100, h: 40 },
+      res,
+      { width: 400, height: 400 },
+      (c) => c.fillRect(0, 0, 1, 1),
+    )
+    const draws = ctx.named('drawImage')
+    expect(draws.length).toBe(3)
+    // 映像：内容图层的副本，以底边 y = 60 为对称轴翻转。
+    expect(draws[0]!.args[0]).toBe(created[1])
+    expect(apply(draws[0]!.matrix, 50, 60)).toEqual({ x: 50, y: 60 })
+    expect(apply(draws[0]!.matrix, 50, 20)).toEqual({ x: 50, y: 100 })
+    expect(draws[2]!.args[0]).toBe(created[0])
+    // 渐变在局部坐标中自底边（对称轴）指向顶边。
+    const fill = created[1]!.context.named('fillRect')[0]!
+    const g = fill.fillStyle as { points: number[]; stops: [number, string][] }
+    expect(fill.composite).toBe('destination-in')
+    for (const [i, v] of [0, 40, 0, 0].entries()) expect(g.points[i]!).toBeCloseTo(v, 9)
+    expect(g.stops).toEqual([
+      [0, 'rgba(0,0,0,0.5)'],
+      [0.5, 'rgba(0,0,0,0)'],
+    ])
   })
 })
 
@@ -755,5 +896,80 @@ describe('imageResolution', () => {
     expect(imageResolution(bmp).x).toBeCloseTo(150.01, 2)
     expect(imageResolution(new Uint8Array(chars('GIF89a')))).toEqual(SCREEN_RESOLUTION)
     expect(imageResolution(new Uint8Array([0xff, 0xd8, 0xff]))).toEqual(SCREEN_RESOLUTION)
+  })
+})
+
+describe('recolorPixels', () => {
+  /** 每个像素一组 `[r, g, b, a]`。 */
+  const run = (pixels: readonly (readonly number[])[], effects: readonly ImageEffect[]) => {
+    const data = new Uint8ClampedArray(pixels.flat())
+    recolorPixels(data, effects)
+    return Array.from({ length: pixels.length }, (_, i) =>
+      Array.from(data.subarray(4 * i, 4 * i + 4)),
+    )
+  }
+  const BLACK: Color = { r: 0, g: 0, b: 0, a: 1 }
+  const WHITE: Color = { r: 1, g: 1, b: 1, a: 1 }
+  const ORANGE: Color = { r: 1, g: 128 / 255, b: 0, a: 1 }
+
+  test('灰度为 (55 R + 183 G + 18 B) >> 8；黑白阈值 50% 的分界为灰度 128', () => {
+    const rgb = [
+      [255, 0, 0, 255],
+      [0, 255, 0, 255],
+      [0, 0, 255, 255],
+    ]
+    expect(run(rgb, [{ kind: 'grayscale' }]).map((p) => p[0])).toEqual([54, 182, 17])
+    const gray = [
+      [127, 127, 127, 255],
+      [128, 128, 128, 255],
+    ]
+    expect(run(gray, [{ kind: 'biLevel', threshold: 0.5 }]).map((p) => p[0])).toEqual([0, 255])
+  })
+
+  test('亮度与对比度：亮度 −24% 时 255 → 194、64 → 3；亮度 70% 对比度 −70% 时 64 → 224、0 → 205', () => {
+    const px = [
+      [255, 255, 255, 255],
+      [64, 64, 64, 255],
+      [0, 0, 0, 255],
+    ]
+    const dark = run(px, [{ kind: 'luminance', bright: -0.24, contrast: 0 }])
+    expect(dark.map((p) => p[0])).toEqual([194, 3, 0])
+    const washout = run(px, [{ kind: 'luminance', bright: 0.7, contrast: -0.7 }])
+    expect(washout.map((p) => p[0])).toEqual([255, 224, 205])
+  })
+
+  test('双色调按灰度插值：白到黑时红色为 200，红到蓝时灰度 128 为 (127, 0, 128)；透明度不变', () => {
+    const px = [
+      [255, 0, 0, 255],
+      [128, 128, 128, 128],
+    ]
+    expect(run(px, [{ kind: 'duotone', dark: WHITE, light: BLACK }])[0]).toEqual([
+      200, 200, 200, 255,
+    ])
+    const rb = run(px, [{ kind: 'duotone', dark: RED, light: { ...BLUE, a: 1 } }])
+    expect(rb[1]).toEqual([127, 0, 128, 128])
+  })
+
+  test('透明色：不透明且各通道相差不超过 1 的像素变为透明，clrTo 不参与；半透明的像素不变', () => {
+    const px = [
+      [255, 255, 255, 255],
+      [254, 254, 254, 255],
+      [253, 253, 253, 255],
+      [255, 255, 254, 255],
+      [255, 255, 255, 128],
+    ]
+    const out = run(px, [{ kind: 'colorChange', from: WHITE }])
+    expect(out.map((p) => p[3])).toEqual([0, 0, 255, 0, 128])
+  })
+
+  test('运算顺序与文档顺序无关：亮度在双色调之后；黑白、灰度与双色调同时出现时只按优先的一种', () => {
+    const black = [[0, 0, 0, 255]]
+    const duo: ImageEffect = { kind: 'duotone', dark: BLACK, light: ORANGE }
+    const lum: ImageEffect = { kind: 'luminance', bright: 0.2, contrast: 0 }
+    expect(run(black, [duo, lum])[0]).toEqual([50, 50, 50, 255])
+    expect(run(black, [lum, duo])[0]).toEqual([50, 50, 50, 255])
+    const white = [[255, 255, 255, 255]]
+    expect(run(white, [{ kind: 'biLevel', threshold: 0.5 }, duo])[0]).toEqual([255, 255, 255, 255])
+    expect(run(white, [duo, { kind: 'grayscale' }])[0]).toEqual([255, 255, 255, 255])
   })
 })

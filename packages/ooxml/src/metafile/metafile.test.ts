@@ -8,6 +8,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { PaintContext } from '../drawingml/paint/context.ts'
 import { placeableWmf, RecordingContext } from '../drawingml/paint/test-helper.ts'
+import { metafileFontSubstitute } from '../text/font-substitutes.ts'
 import { decodeDib } from './dib.ts'
 import { type MetafileFace, type MetafileFonts, playMetafile, readMetafile } from './index.ts'
 
@@ -97,8 +98,13 @@ function dib1(): { bmi: Bytes; bits: Bytes } {
 
 /**
  * 字形宽度为 ppem 一半的等宽字体；上升为 ppem 的 0.8，下降为 0.2，平均字符宽度为 em 的一半。`symbol` 为真时是符号字体。
+ * `has` 为主机有的字体名，缺省为全部都有；`seen` 记录每次按名称取字体的请求，回退字体记为 `fallback`。
  */
-function testFonts(seen: { name: string; bold: boolean }[] = [], symbol = false): MetafileFonts {
+function testFonts(
+  seen: { name: string; bold: boolean }[] = [],
+  symbol = false,
+  has: (name: string) => boolean = () => true,
+): MetafileFonts {
   const face: MetafileFace = {
     vertical: (ppem) => ({ ascent: Math.round(ppem * 0.8), descent: Math.round(ppem * 0.2) }),
     emPerCell: 1,
@@ -113,6 +119,10 @@ function testFonts(seen: { name: string; bold: boolean }[] = [], symbol = false)
   return {
     face: (name, bold) => {
       seen.push({ name, bold })
+      return has(name) ? face : null
+    },
+    fallback: (bold) => {
+      seen.push({ name: 'fallback', bold })
       return face
     },
   }
@@ -203,7 +213,7 @@ describe('WMF 的读取', () => {
       ]),
     )!
     expect(mf.unsupported).toEqual([])
-    expect(mf.fonts).toEqual(['Sym', 'TNR', '宋体'])
+    expect(mf.fonts).toEqual(['Sym', 'Wingdings', 'TNR', '宋体'])
     const texts = mf.ops.flatMap((o) => (o.op === 'text' ? [[o.text, o.dx, o.symbol]] : []))
     expect(texts).toEqual([
       ['\uf061\uf062', [5, 6], null],
@@ -443,9 +453,20 @@ describe('EMF 的读取', () => {
       ]),
     )!
     expect(ok.unsupported).toEqual([])
-    expect(ok.fonts).toEqual(['Arial'])
+    expect(ok.fonts).toEqual(['Arial', '宋体'])
     expect(ok.ops).toEqual([
-      { op: 'font', font: { height: -20, width: 0, weight: 700, italic: false, face: 'Arial' } },
+      {
+        op: 'font',
+        font: {
+          height: -20,
+          width: 0,
+          weight: 700,
+          italic: false,
+          face: 'Arial',
+          charset: 1,
+          pitchAndFamily: 0,
+        },
+      },
       {
         op: 'text',
         p: { x: 5, y: 6 },
@@ -802,5 +823,100 @@ describe('绘制', () => {
     const ctx = new RecordingContext()
     playMetafile(ctx, mf, [], { x: 0, y: 0, width: 100, height: 50 }, testFonts())
     expect(ctx.calls).toEqual([])
+  })
+})
+
+describe('主机没有的字体名', () => {
+  test('按 Windows 字体替换表，再按字符集与字体族替代（WPS 文字与 WPS 演示实测）', () => {
+    const cases: [string, number, number, string | null][] = [
+      ['NoSuchFontQY', 0, 0x00, 'Arial'],
+      ['Bookman Old Style', 0, 0x10, 'Times New Roman'],
+      ['NoSuchFontQY', 0, 0x12, 'Times New Roman'],
+      ['NoSuchFontQY', 0, 0x30, 'Courier New'],
+      ['NoSuchFontQY', 0, 0x32, 'Arial'],
+      ['NoSuchFontQY', 0, 0x01, 'Courier New'],
+      ['NoSuchFontQY', 0, 0x40, 'Arial'],
+      ['NoSuchFontQY', 1, 0x00, '宋体'],
+      ['Euclid', 1, 0x10, 'Times New Roman'],
+      ['NoSuchFontQY', 1, 0x01, '新宋体'],
+      ['NoSuchFontQY', 2, 0x00, 'Wingdings'],
+      ['NoSuchFontQY', 2, 0x10, 'Symbol'],
+      ['NoSuchFontQY', 2, 0x01, 'Symbol'],
+      ['NoSuchFontQY', 2, 0x30, 'Wingdings'],
+      ['仿宋_GB2312', 134, 0x31, '新宋体'],
+      ['宋体-方正超大字符集', 134, 0x40, '宋体'],
+      ['NoSuchFontQY', 134, 0x10, 'MingLiU-ExtB'],
+      ['NoSuchFontQY', 128, 0x00, 'MS PGothic'],
+      ['NoSuchFontQY', 128, 0x30, 'MS Gothic'],
+      ['NoSuchFontQY', 129, 0x20, 'Gadugi'],
+      ['NoSuchFontQY', 136, 0x00, 'Ebrima'],
+      ['NoSuchFontQY', 204, 0x01, 'Consolas'],
+      ['NoSuchFontQY', 238, 0x30, 'Courier New'],
+      ['NoSuchFontQY', 161, 0x40, 'Segoe Script'],
+      ['NoSuchFontQY', 255, 0x50, 'Gabriola'],
+      ['times', 0, 0x20, 'Times New Roman'],
+      ['HELVETICA', 0, 0x10, 'Arial'],
+      ['MS Shell Dlg', 0, 0x10, 'Microsoft Sans Serif'],
+      ['FangSong_GB2312', 134, 0x00, '仿宋'],
+      ['Helv', 0, 0x10, 'Times New Roman'],
+      ['NoSuchFontQY', 222, 0x00, null],
+    ]
+    for (const [face, charset, pitchAndFamily, expected] of cases)
+      expect([
+        face,
+        charset,
+        pitchAndFamily,
+        metafileFontSubstitute({ face, charset, pitchAndFamily }),
+      ]).toEqual([face, charset, pitchAndFamily, expected])
+  })
+
+  test('绘制时依次取字体名、替代字体与回退字体；字体名列表含替代字体', () => {
+    const font = (charset: number, pitch: number, face: string) => [
+      -20 & 0xffff,
+      0,
+      0,
+      0,
+      400,
+      ...words([0, 0, 0, charset, 0, 0, 0, pitch, ...[...face].map((c) => c.charCodeAt(0)), 0]),
+    ]
+    const mf = readMetafile(
+      wmf([
+        [0x02fb, ...font(0, 0x10, 'Bookman Old Style')],
+        [0x012d, 0],
+        [0x0a32, 30, 4, 1, 0, 0x41],
+        [0x02fb, ...font(2, 0, 'NoSym')],
+        [0x012d, 1],
+        [0x0a32, 30, 4, 1, 0, 0x61],
+        [0x02fb, ...font(222, 0, 'NoThai')],
+        [0x012d, 2],
+        [0x0a32, 30, 4, 1, 0, 0x41],
+      ]),
+    )!
+    expect(mf.unsupported).toEqual([])
+    expect(mf.fonts).toEqual([
+      'Bookman Old Style',
+      'Times New Roman',
+      'NoSym',
+      'Wingdings',
+      'NoThai',
+    ])
+    const seen: { name: string; bold: boolean }[] = []
+    const has = (name: string) => name === 'Times New Roman'
+    playMetafile(
+      new RecordingContext(),
+      mf,
+      [],
+      { x: 0, y: 0, width: 100, height: 50 },
+      testFonts(seen, false, has),
+    )
+    expect(seen.map((s) => s.name)).toEqual([
+      'Bookman Old Style',
+      'Times New Roman',
+      'NoSym',
+      'Wingdings',
+      'fallback',
+      'NoThai',
+      'fallback',
+    ])
   })
 })

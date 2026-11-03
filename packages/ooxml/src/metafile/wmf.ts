@@ -487,7 +487,6 @@ function record(
     }
     case 0x02fb: {
       const bytes = p.bytes(0, 18)
-      const charset = bytes[13] ?? 0
       const font = fontObject(
         {
           height: p.s(0),
@@ -495,13 +494,14 @@ function record(
           weight: p.s(4),
           italic: (bytes[10] ?? 0) !== 0,
           face: decodeFaceName(p.bytes(9, 32)),
+          charset: bytes[13] ?? 0,
+          pitchAndFamily: bytes[17] ?? 0,
         },
         {
           escapement: p.s(2),
           orientation: p.s(3),
           underline: (bytes[11] ?? 0) !== 0,
           strikeOut: (bytes[12] ?? 0) !== 0,
-          charset,
         },
       )
       create({ kind: 'font', font })
@@ -567,7 +567,7 @@ function text(
   }
   const f = out.textFont()
   if (f === null) return
-  const decoded = decodeAnsi(bytes, f.charset, dx)
+  const decoded = decodeAnsi(bytes, f.font.charset, dx)
   if (typeof decoded === 'string') {
     out.unsupported(decoded)
     return

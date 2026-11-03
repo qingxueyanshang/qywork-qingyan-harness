@@ -2,8 +2,9 @@
  * OPC 包：内容类型、部件关系与目标路径解析。
  *
  * - 部件名以 `/` 开头，存储为 ZIP 成员名时去掉开头的 `/`。`[Content_Types].xml` 不是部件，不列入 `parts`。
- * - 部件名比较先做百分号解码，再按 ASCII 不区分大小写：关系目标可能写成 `%E5%9B%BE.png`，
- *   而 ZIP 成员名可能是解码后的字符。百分号序列不合法时按原文比较。
+ * - 部件名比较先做百分号解码，再把 `\` 视为 `/`，最后按 ASCII 不区分大小写：关系目标可能写成 `%E5%9B%BE.png`，
+ *   而 ZIP 成员名可能是解码后的字符。百分号序列不合法时按原文比较。成员名中的 `\` 在 `parts` 中写为 `/`，
+ *   内容类型部件同样按比较键查找（WPS 实测：成员名为 `xl\workbook.xml` 与小写 `[content_types].xml` 的文件正常打开）。
  * - 结果一律以 `OpcResult` 返回。ZIP 层的失败原样传出；缺少 `[Content_Types].xml` 为 `not-office`；
  *   内容类型或关系部件的 XML 无法解析为 `corrupt`。部件没有关系部件时关系表为空，不是失败。
  * - 关系条目缺少 `Id`、`Type` 或 `Target` 时跳过该条目，其余条目照常返回。
@@ -68,7 +69,7 @@ export interface OpcPackage {
   text(part: string): Promise<OpcResult<string | null>>
 }
 
-const CONTENT_TYPES = '[Content_Types].xml'
+const CONTENT_TYPES = '/[Content_Types].xml'
 
 function fail(failure: OpcFailure): { readonly ok: false; readonly failure: OpcFailure } {
   return { ok: false, failure }
@@ -85,19 +86,21 @@ function percentDecode(s: string): string {
 
 /** 部件名的比较键。只折叠 ASCII 字母：OPC 规定部件名按 ASCII 不区分大小写比较。 */
 function partKey(part: string): string {
-  return percentDecode(part).replace(/[A-Z]/g, (c) => c.toLowerCase())
+  return percentDecode(part)
+    .replaceAll('\\', '/')
+    .replace(/[A-Z]/g, (c) => c.toLowerCase())
 }
 
 /**
  * 按 URI 相对引用的规则，以源部件名为基准解析关系目标，返回百分号解码后的部件名。
  *
- * - 以 `/` 开头的目标是绝对路径；其余相对于源部件所在目录，包关系（源为 `/`）相对于根。
+ * - 以 `/` 开头的目标是绝对路径；其余相对于源部件所在目录，包关系（源为 `/`）相对于根。`\` 与 `/` 同为分隔符。
  * - `#` 之后的片段不属于部件名，去掉；`.` 与 `..` 段按层消去，`..` 超出根时停在根。
  * - 只用于内部关系。外部关系的目标是任意 URI，不按部件名解析。
  */
 export function resolveTarget(source: string, target: string): string {
   const hash = target.indexOf('#')
-  const path = hash < 0 ? target : target.slice(0, hash)
+  const path = (hash < 0 ? target : target.slice(0, hash)).replaceAll('\\', '/')
   const joined = path.startsWith('/') ? path : source.slice(0, source.lastIndexOf('/') + 1) + path
   const out: string[] = []
   for (const segment of joined.split('/')) {
@@ -244,7 +247,23 @@ export async function openPackage(data: Uint8Array<ArrayBuffer>): Promise<OpcRes
   const opened = openZip(data)
   if (!opened.ok) return opened
   const zip = opened.value
-  const read = await zip.text(CONTENT_TYPES)
+  const parts: string[] = []
+  const members = new Map<string, string>()
+  const typesKey = partKey(CONTENT_TYPES)
+  let typesMember: string | null = null
+  for (const path of zip.paths) {
+    const part = `/${path.replaceAll('\\', '/')}`
+    if (part.endsWith('/')) continue
+    const key = partKey(part)
+    if (key === typesKey) {
+      typesMember ??= path
+      continue
+    }
+    parts.push(part)
+    if (!members.has(key)) members.set(key, path)
+  }
+  if (typesMember === null) return fail({ kind: 'not-office' })
+  const read = await zip.text(typesMember)
   if (!read.ok) return read
   if (read.value === null) return fail({ kind: 'not-office' })
   let types: ContentTypes
@@ -253,15 +272,6 @@ export async function openPackage(data: Uint8Array<ArrayBuffer>): Promise<OpcRes
   } catch (e) {
     if (e instanceof XmlSyntaxError) return fail({ kind: 'corrupt', reason: 'content-types' })
     throw e
-  }
-  const parts: string[] = []
-  const members = new Map<string, string>()
-  for (const path of zip.paths) {
-    if (path === CONTENT_TYPES || path.endsWith('/')) continue
-    const part = `/${path}`
-    parts.push(part)
-    const key = partKey(part)
-    if (!members.has(key)) members.set(key, path)
   }
   return { ok: true, value: new Package(zip, parts, members, types) }
 }

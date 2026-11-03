@@ -2,7 +2,8 @@
  * 文字排版。覆盖 `classify.ts`（字体选择与字符类别）、`breaking.ts`（断点与禁则）、
  * `line-height.ts`（单倍行高、上下沿、行距规则、网格与基线）、`layout.ts`（断行、悬挂、中西文间距、对齐、制表符、行高与片段，
  * 上下标、字符间距、基线提升、字距调整、`wordWrap` 关闭与单双字节宽度协调、行内对象、段落标记计入行高的条件、最小与最大内容宽度）、
- * `punctuation.ts`（相邻标点压缩与压缩标点）、`font-substitutes.ts`（Windows 字体替换表的大小写与按主机字体族名的前缀匹配），
+ * `punctuation.ts`（相邻标点压缩与压缩标点）、`font-substitutes.ts`（Windows 字体替换表的大小写与按主机字体族名的前缀匹配）、
+ * `wps-fonts.ts`（页面 EMF 中 WPS 自带字体名的对应），
  * 以及 `../font/vertical.ts`（`hhea` 与 `OS/2` 纵向度量、上下标字号）与 `../font/features/kern.ts`（`kern` 表的字偶）。
  *
  * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
@@ -37,7 +38,9 @@ import {
   type TextBlock,
   type TextFace,
   type TextRun,
+  WPS_METRIC_FONTS,
   windowsFontSubstitute,
+  wpsEmfFaces,
 } from './index.ts'
 
 const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
@@ -164,6 +167,24 @@ describe('主机没有的字体名', () => {
     for (const [name, expected] of cases)
       expect([name, prefixFont(name, local)]).toEqual([name, expected])
   })
+
+  test('WPS 自带度量的字体：页面 EMF 中各字形的自带字体名对应数据表的西文绘制字体', () => {
+    // WPS 文字（构造文档 f2-ksof、f2-ksof-bi）：常规、粗体、斜体、粗斜体各为一个 KSOF 字体名；asciiDraw 取自 PDF 中字形的比对。
+    const faces = wpsEmfFaces()
+    expect(
+      ['KSOF7FC4CF2A', 'KSOFB4AB0A6B', 'KSOFE99145AC', 'KSOF1E7780ED'].map((n) => faces[n]),
+    ).toEqual(Array(4).fill('Microsoft Sans Serif'))
+    expect([faces.KSOFF9CBECC6, faces.KSOFE44F9426, faces.KSOF3D47F291]).toEqual([
+      '黑体',
+      '宋体',
+      'Calibri',
+    ])
+    // 西文在页面 EMF 中为宋体或 Segoe Print 的字体名没有自带字体名。
+    expect(WPS_METRIC_FONTS.get('华文楷体')!.emf).toBeNull()
+    expect(Object.keys(faces)).toHaveLength(
+      4 * [...WPS_METRIC_FONTS.values()].filter((f) => f.emf !== null).length,
+    )
+  })
 })
 
 describe('断点', () => {
@@ -205,6 +226,13 @@ describe('断点', () => {
     expect(can('汉', '—')).toBe(false)
     expect(can('—', '汉')).toBe(true)
     expect(can('—', '—')).toBe(true)
+  })
+
+  test('希腊字母按东亚字符判定：两侧可断（WPS：单元格中「激活α1/β」在 α 之后断开）', () => {
+    expect(can('α', '1')).toBe(true)
+    expect(can('/', 'β')).toBe(true)
+    expect(can('α', 'β')).toBe(true)
+    expect(can('1', '/')).toBe(false)
   })
 
   test('最小内容宽度的断点：东亚字符与连字符之间可断；压缩标点时连字符与其后的西文之间不断', () => {
@@ -261,6 +289,8 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
         hheaLineGap: 36,
         winAscent: 220,
         winDescent: 36,
+        typoAscender: 220,
+        typoDescender: -36,
         useTypoMetrics: false,
         averageWidth: 128,
         eastAsianCodePage: true,
@@ -456,6 +486,21 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
       expect(counts(layoutParagraph([run(`${H.repeat(39)}？${H.repeat(20)}`)], style()))).toEqual([
         38, 22,
       ])
+    })
+
+    test('希腊字母落在东亚字体时两侧可断，落在西文字体时与西文字母相同、不断开', () => {
+      // WPS：行宽 3 字时，东亚提示的「激活α1/β，」为「激活α」「1/β，」；无提示时为「激活」「α1/β，」，与「a1/b」相同。
+      const text = '激活α1/β，阻断K+通道'
+      const width = 31.5
+      const lines = (slots?: TextRun['slots']) =>
+        layoutParagraph(
+          [run(text, slots ? { slots } : {})],
+          style({ width, align: 'left' }),
+        ).lines.map((l) => text.slice(l.start, l.end))
+      expect(
+        lines({ eastAsiaHint: true, complexScript: false, chineseCharset: false }).slice(0, 2),
+      ).toEqual(['激活α', '1/β，'])
+      expect(lines().slice(0, 2)).toEqual(['激活', 'α1/β，'])
     })
 
     test('悬挂后下一字仍不得位于行首时不悬挂；悬挂关闭时回退', () => {

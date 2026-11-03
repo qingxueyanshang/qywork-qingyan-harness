@@ -101,6 +101,11 @@ export function isEastAsian(cp: number): boolean {
   return fontSlot(cp, DEFAULT_SLOT_CONTEXT) === 'eastAsia'
 }
 
+/** 希腊字母（希腊字母与科普特字母区）。 */
+export function isGreek(cp: number): boolean {
+  return cp >= 0x370 && cp <= 0x3ff
+}
+
 /**
  * 中西文自动间距中「东亚文字」一侧：汉字、假名、谚文字母。
  * CJK 标点与全角形式不在其内：全角逗号、括号与西文相邻时不加间距。

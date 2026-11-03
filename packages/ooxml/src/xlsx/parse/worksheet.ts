@@ -71,6 +71,7 @@ export interface ParsedWorksheet {
 
 const DEFAULT_VIEW: SheetView = {
   showGridLines: true,
+  gridColor: null,
   zoom: 100,
   rightToLeft: false,
   frozenRows: 0,
@@ -108,6 +109,7 @@ export function parseWorksheet(xml: string, ctx: WorksheetContext): ParsedWorksh
     customHeight: false,
     defaultColWidth: null,
     baseColWidth: 8,
+    declared: false,
   }
   let view: SheetView | null = null
   let autoFilter: CellRange | null = null
@@ -185,10 +187,11 @@ export function parseWorksheet(xml: string, ctx: WorksheetContext): ParsedWorksh
           customHeight: boolAttr(x, 'customHeight', false),
           defaultColWidth: numAttr(x, 'defaultColWidth'),
           baseColWidth: numAttr(x, 'baseColWidth') ?? 8,
+          declared: true,
         }
         break
       case 'sheetView':
-        if (view === null) view = readView(x)
+        if (view === null) view = readView(x, ctx.colors.palette)
         else skipElement(x)
         break
       case 'mergeCell': {
@@ -296,10 +299,12 @@ function readCell(
   }
 }
 
-function readView(x: Scanner): SheetView {
+function readView(x: Scanner, palette: readonly string[]): SheetView {
   const topLeft = parseCellRef(x.attr('topLeftCell') ?? 'A1') ?? { row: 0, col: 0 }
+  const colorId = numAttr(x, 'colorId')
   let view: SheetView = {
     showGridLines: boolAttr(x, 'showGridLines', true),
+    gridColor: colorId === null ? null : (palette[colorId] ?? null),
     zoom: numAttr(x, 'zoomScale') ?? 100,
     rightToLeft: boolAttr(x, 'rightToLeft', false),
     frozenRows: 0,

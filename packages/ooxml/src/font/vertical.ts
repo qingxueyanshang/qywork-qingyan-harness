@@ -1,6 +1,6 @@
 /**
- * 纵向度量与平均字宽：`hhea` 的上下沿与行距、`OS/2` 的 Windows 上下沿、`USE_TYPO_METRICS` 标志、平均字宽、代码页与上下标的
- * 字号与偏移。
+ * 纵向度量与平均字宽：`hhea` 的上下沿与行距、`OS/2` 的 typo 上下沿、Windows 上下沿、`USE_TYPO_METRICS` 标志、平均字宽、
+ * 代码页与上下标的字号与偏移。
  *
  * 只读取原始字段，不做取舍：行高取哪一组字段、怎样换算由排版模块决定。
  */
@@ -31,6 +31,12 @@ export interface VerticalMetrics {
   winAscent: number
   /** `OS/2.usWinDescent`，字体单位，非负（向下为正）。 */
   winDescent: number
+  /**
+   * `OS/2.sTypoAscender` 与 `sTypoDescender`，字体单位，向上为正（`typoDescender` 通常为负）。不来自字体文件的度量可以省略，
+   * 按 `winAscent` 与 `-winDescent`。
+   */
+  typoAscender?: number
+  typoDescender?: number
   /**
    * `OS/2.fsSelection` 设置了 `USE_TYPO_METRICS`。不限 `OS/2` 版本：版本 3 的 Cambria Math 已设置该位。
    * 不来自字体文件的度量可以省略，按未设置。
@@ -77,6 +83,8 @@ export function readVerticalMetrics(bytes: Uint8Array, face: SfntFace): Vertical
     hheaLineGap: h.getInt16(8),
     winAscent: o.getUint16(74),
     winDescent: o.getUint16(76),
+    typoAscender: o.getInt16(68),
+    typoDescender: o.getInt16(70),
     useTypoMetrics: (o.getUint16(OS2_FS_SELECTION) & USE_TYPO_METRICS) !== 0,
     averageWidth: o.getInt16(2),
     eastAsianCodePage: (codePageRange1(os2) & EAST_ASIAN_CODE_PAGES) !== 0,

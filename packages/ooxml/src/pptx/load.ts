@@ -82,11 +82,14 @@ function addCounts(target: UnsupportedCounts, kinds: readonly UnsupportedKind[])
 }
 
 /**
- * 幻灯片、版式与母版声明支持 PowerPoint 2010 扩展（`p14`）：`AlternateContent` 中要求 `p14` 的分支被选中，墨迹因此取
- * `contentPart`（WPS 演示按其中的 InkML 绘制笔画，不显示替代图片），`p14` 的切换效果同样只计数；要求其他扩展的分支
- * （如公式的 `a14`）取 `Fallback`。
+ * 幻灯片、版式与母版声明支持 PowerPoint 2010 扩展（`p14`）与 DrawingML 2010 扩展（`a14`）：`AlternateContent` 中要求它们的
+ * 分支被选中。墨迹因此取 `contentPart`（WPS 演示按其中的 InkML 绘制笔画，不显示替代图片），`p14` 的切换效果同样只计数；
+ * 公式取含 `a14:m` 的形状（WPS 演示按其中的 OMML 排版绘制，不显示替代图片）。要求其他扩展的分支取 `Fallback`。
  */
-const SLIDE_EXTENSIONS = ['http://schemas.microsoft.com/office/powerpoint/2010/main']
+const SLIDE_EXTENSIONS = [
+  'http://schemas.microsoft.com/office/powerpoint/2010/main',
+  'http://schemas.microsoft.com/office/drawing/2010/main',
+]
 
 /** 形状树中引用的图表部件名、SmartArt 部件与墨迹部件名（含组合内）。 */
 function graphicParts(

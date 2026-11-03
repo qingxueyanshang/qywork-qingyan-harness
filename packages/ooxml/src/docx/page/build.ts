@@ -21,8 +21,9 @@
  *   位于本段顶边时上一段移到对象下方）。环绕方式：
  *   避让矩形为对象框加 `effectExtent` 与距正文的距离（WPS 实测：effectExtent 底边 0.9 磅的上下型 SmartArt 使其下的行
  *   再下移 0.9 磅）。上下型（`topAndBottom`）使与矩形重叠的行（行底恰好接触矩形顶边的行见 `overlaps`）下移到其下方；
- *   四周型、紧密型与穿越型按矩形避让，一行依次排入对象两侧宽度足够的区段（不足 `MIN_SEGMENT`
- *   的区段不用），没有可用区段时下移到对象下方；衬于文字下方（`behindDoc`）不改变环绕；`wrapNone` 不避让。
+ *   四周型、紧密型与穿越型按矩形避让（紧密型与穿越型有环绕多边形时取其外接矩形，见 `exclusionOf`），一行依次排入对象两侧
+ *   宽度足够的区段（不足 `MIN_SEGMENT` 的区段不用），没有可用区段时下移到对象下方；衬于文字下方（`behindDoc`）不改变环绕；
+ *   `wrapNone` 不避让。
  *   锚定段落的行不因本段的四周型、紧密型与穿越型对象移出正文区（留在原处与对象重叠）；与本段上下型对象重叠的行
  *   照常下移，本页容纳不下时移到下一页（WPS 实测：语料中图片位于第一行之下，其余各行移到下一页）。结束一节且没有
  *   文字的段落不避让（WPS 实测：整页图片之后的分节段落留在原处，节中的空段落照常下移）。
@@ -53,7 +54,14 @@ import {
   mathText,
 } from '../../math/index.ts'
 import { readMetafile } from '../../metafile/index.ts'
-import type { HostFamilies, LineArea, TextFace, TextLine } from '../../text/index.ts'
+import {
+  type HostFamilies,
+  type LineArea,
+  type TextFace,
+  type TextLine,
+  WPS_METRIC_FONTS,
+  wpsMetricFontNames,
+} from '../../text/index.ts'
 import { borderStrokes } from '../border.ts'
 import {
   contextSpacing,
@@ -72,6 +80,7 @@ import type {
   DocxDocument,
   DrawingGraphic,
   DrawingNode,
+  Edges,
   Paragraph,
   PartRefs,
   Run,
@@ -323,8 +332,8 @@ function graphicFontNames(graphics: readonly DrawingGraphic[]): string[] {
 
 /**
  * 文档所需的全部字体名：正文、表格、文本框、各节引用的页眉页脚、图表、SmartArt 与图元文件，以及主机没有其中的字体时所用的替代字体
- * （`substitutes`，数学字体的替代为 Cambria Math）。调用方据此预先取得字体文件。`host` 为主机字体的族名：主机有的字体名不列出
- * 其替代字体，主机没有的字体名按它做前缀匹配。
+ * （`substitutes`，数学字体的替代为 Cambria Math）与 WPS 按自带度量排版时的绘制字体（`wpsMetricFontNames`）。调用方据此
+ * 预先取得字体文件。`host` 为主机字体的族名：主机有的字体名不列出其替代字体，主机没有的字体名按它做前缀匹配。
  */
 export function requiredFonts(doc: DocxDocument, host: HostFamilies): string[] {
   const names = new Set<string>()
@@ -348,6 +357,8 @@ export function requiredFonts(doc: DocxDocument, host: HostFamilies): string[] {
   const present = new Set(host.names)
   for (const name of [...names]) {
     if (present.has(name.trim().toLowerCase())) continue
+    const metric = WPS_METRIC_FONTS.get(name)
+    if (metric !== undefined) for (const n of wpsMetricFontNames(metric)) names.add(n)
     for (const use of ['other', 'eastAsia'] as const)
       for (const c of substitutes(name, use, doc.fontTable, host.local)) names.add(c.name)
   }
@@ -407,6 +418,8 @@ interface Placed {
   /** 所在区域（栏、单元格文字区等）的左边与宽度。 */
   readonly regionLeft: number
   readonly regionWidth: number
+  /** 按本页其他对象环绕后的排版（见 `AnchorSite.wrapped`）；没有时为 `null`。 */
+  readonly wrapped: ParagraphLayout | null
 }
 
 /** 段落的一部分按 `site` 放置时的位置：相对段落的对象以 `site.top` 为基准，各行行顶自 `site.lineTop` 起。 */
@@ -421,6 +434,7 @@ function placedAt(p: Paragraph, site: AnchorSite, section: Section): Placed {
     top: site.top,
     regionLeft: site.x,
     regionWidth: section.columns[0]!.width,
+    wrapped: site.wrapped,
   }
 }
 
@@ -471,11 +485,22 @@ function anchorRect(
         case 'rightMargin':
           return { start: s.pageWidth - s.marginRight, size: s.marginRight }
         case 'character': {
-          const l = placed.layout.text.lines[placed.first + line]
+          const l = (placed.wrapped ?? placed.layout).text.lines[placed.first + line]
           return { start: placed.regionLeft + placed.layout.left + (l?.left ?? 0), size: 0 }
         }
-        default:
-          return { start: frame.columnLeft, size: frame.columnWidth }
+        default: {
+          // 相对栏按偏移定位：锚定行的第一个区段因本页其他对象的环绕右移时，自该区段的左端起，与首行缩进、左缩进无关
+          // （WPS 实测：左侧 200 磅四周型或穿越型图片使锚定行自 281 磅起时，偏移 20 磅的对象位于 301 磅，相对字符时相同；
+          // 首行缩进 2 字、左缩进 30 磅时相同；相对页边距、页面与图片在右侧时不右移）。
+          const k = placed.first + line
+          const own = placed.layout.text.lines[k]?.origin ?? 0
+          const moved =
+            pos.align === null ? (placed.wrapped?.text.lines[k]?.origin ?? own) - own : 0
+          return {
+            start: moved > 0 ? placed.regionLeft + placed.layout.left + moved : frame.columnLeft,
+            size: frame.columnWidth,
+          }
+        }
       }
     }
     switch (pos.from) {
@@ -529,7 +554,12 @@ function exclusionOf(
 ): Exclusion | null {
   if (a.wrap.type === 'none') return null
   const d = a.wrap.distance
-  const e = a.effect
+  // 紧密型与穿越型有环绕多边形时按其外接矩形，不加 `effectExtent`（见 `../parse/drawing.ts` 的 `readPolygon`）。
+  const poly = a.wrap.polygon
+  const e: Edges =
+    poly === null
+      ? a.effect
+      : { left: -poly.left, top: -poly.top, right: -poly.right, bottom: -poly.bottom }
   return {
     left: r.x - e.left - d.left,
     right: r.x + r.width + e.right + d.right,
@@ -1041,6 +1071,7 @@ class PageBuilder {
       top: (placement.tops[0] ?? 0) - placement.space,
       regionLeft: placement.x - lay.left,
       regionWidth: lay.width + p.props.left + p.props.right,
+      wrapped: null,
     }
     p.anchors.forEach((raw, k) => {
       const r = rectOf(k)
@@ -1143,6 +1174,7 @@ class PageBuilder {
           top: (tops[0] ?? 0) - it.space,
           regionLeft: x,
           regionWidth: region,
+          wrapped: null,
         }
         it.paragraph.anchors.forEach((raw) => {
           const a = this.fit(raw)
@@ -1225,8 +1257,11 @@ class PageBuilder {
           whole ? null : { from: seg.from[k]!, to: seg.to[k]! },
         )
       })
-      // 横向边框：本段上沿。
-      const line = (seg.pageTop ? t.pageTop : t.horizontal)[seg.row] ?? []
+      // 横向边框：本段上沿；紧接在续页重复的标题行之后的整行为标题行底边与本行顶边的取舍。
+      const afterRepeat =
+        segs[si - 1]?.repeat === true && !seg.repeat && seg.from.every((v) => v === 0)
+      const line =
+        (seg.pageTop ? t.pageTop : afterRepeat ? t.afterHeader : t.horizontal)[seg.row] ?? []
       for (let c = 0; c < cols; c++) {
         const b = line[c]
         if (b === undefined) continue
@@ -1406,14 +1441,15 @@ function fragments(
     const src = lay.runs[l.run]!
     const run = src < 0 ? null : p.runs[src]!
     const props = run?.props ?? p.numbering!.props
-    const { face, end, rise } = layouter.leaderStyle(l.face, l.size, props, run?.field ?? null)
+    const { face, inset, rise } = layouter.leaderStyle(l.face, l.size, props, run?.field ?? null)
     const advance = leaderAdvance(face, l.char, l.size)
-    const count = advance > 0 ? Math.floor(l.width / advance + 1e-6) : 0
+    const offset = inset ? advance / 2 : 0
+    const count = advance > 0 ? Math.floor((l.width - offset + LEADER_TOLERANCE) / advance) : 0
     if (count === 0) continue
     out.push({
       face: fonts.ref(face),
       size: l.size,
-      x: x0 + l.x + (end ? l.width - count * advance : 0),
+      x: Math.floor(((x0 + l.x + offset) * 4) / 3 + LEADER_PIXEL_BIAS) * 0.75,
       baseline: line.baseline + dy - rise,
       text: l.char.repeat(count),
       advances: Array.from({ length: count }, () => advance),
@@ -1427,10 +1463,19 @@ function fragments(
 }
 
 /**
+ * 前导符的个数为自起点（`LeaderStyle.inset` 时右移半个步进）至制表段终点能容纳的整步进数，容差 `LEADER_TOLERANCE`；
+ * 绘制起点取 96 dpi 的整像素：起点像素坐标加 `LEADER_PIXEL_BIAS` 后向下取整。WPS 实测（页面 EMF 中前导符的起点与个数）：
+ * 构造文档 272 行（Times New Roman 9 至 14 磅、等线、宋体、Calibri、Arial，目录域与普通段落）个数全部一致、起点 268 行一致，
+ * 两份语料文档的目录页 153 行起点与个数全部一致。该值在 0.47 至 0.49 之间时结果相同；不要把起点改为四舍五入：语料只有
+ * 102 行一致；目录域中不要改为整数个前导符与终点相接：个数多 1 至 2 个。
+ */
+const LEADER_TOLERANCE = 0.075
+const LEADER_PIXEL_BIAS = 0.48
+
+/**
  * 前导符字符的步进（磅）：线性宽度四舍五入到 96 dpi 的整像素。WPS 实测（构造文档 w13 l1 的 28 行与 w14 v1 的 224 行，页面 EMF
- * 中前导符的字距与个数）：12 磅 Times New Roman 的「-」「·」为 5 像素、「_」为 8 像素，10 磅的「.」为 3 像素，个数为前导符的
- * 宽度除以该步进取整，全部一致。不要改为 GDI 的整数像素宽度：12 磅的「-」为 6 像素，个数少 12 个；按线性宽度时 12 磅的
- * 「-」「·」各少 4 个，10 磅的「.」少 13 个。
+ * 中前导符的字距与个数）：12 磅 Times New Roman 的「-」「·」为 5 像素、「_」为 8 像素，10 磅的「.」为 3 像素。不要改为 GDI
+ * 的整数像素宽度：12 磅的「-」为 6 像素，个数少 12 个；按线性宽度时 12 磅的「-」「·」各少 4 个，10 磅的「.」少 13 个。
  */
 function leaderAdvance(face: TextFace, char: string, size: number): number {
   const px = Math.round((face.metrics.advance(char.codePointAt(0)!, size) * 4) / 3)

@@ -122,6 +122,26 @@ export interface PaintCanvas extends PaintImage {
 
 export type CreateCanvas = (width: number, height: number) => PaintCanvas
 
+/** 逐像素数据（`ImageData`）：按行排列的非预乘 RGBA，每通道 0–255。 */
+export interface PixelData {
+  readonly width: number
+  readonly height: number
+  readonly data: Uint8ClampedArray
+}
+
+/** 可逐像素读写的图层上下文：浏览器的二维上下文都满足。 */
+export interface PixelContext extends PaintContext {
+  getImageData(x: number, y: number, w: number, h: number): PixelData
+  putImageData(data: PixelData, x: number, y: number): void
+}
+
+/** 图层上下文能逐像素读写时返回它，否则为 `null`。 */
+export function pixelContext(ctx: PaintContext | null): PixelContext | null {
+  return ctx !== null && 'getImageData' in ctx && 'putImageData' in ctx
+    ? (ctx as PixelContext)
+    : null
+}
+
 export const IDENTITY: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
 
 /** `m · n`：先施加 `n`，再施加 `m`。 */

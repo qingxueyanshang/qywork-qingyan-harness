@@ -118,13 +118,12 @@ const SHEET_TEXT_DEFAULTS: ListStyleSpec = {
   levels: Array.from({ length: 9 }, () => ({ run: { size: 11, latin: '+mn-lt', ea: '+mn-ea' } })),
 }
 
-/** 形状中未绘制的部分在工作表计数中的种类；图片项目符号与图片格式归入未显示的图片。 */
+/** 形状中未绘制的部分在工作表计数中的种类；图片格式（含图片项目符号）归入未显示的图片。 */
 const FINDING_KIND: Record<DrawingFinding, UnsupportedKind> = {
   textWarp: 'textWarp',
   effect3d: 'effect3d',
   effect: 'effect',
   verticalText: 'verticalText',
-  pictureBullet: 'image',
   imageFormat: 'image',
 }
 
@@ -352,7 +351,12 @@ class Resolver {
                 bodies: [],
               })
         if (text !== null) {
-          countText(text, scope.found, (f) => this.countFill(f))
+          countText(
+            text,
+            scope.found,
+            (f) => this.countFill(f),
+            () => scope.found.push('imageFormat'),
+          )
           collectTextFonts(this.fontNames, text)
           this.fontNames.add(MISSING_LATIN)
         }

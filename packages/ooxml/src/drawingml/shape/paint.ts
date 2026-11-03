@@ -5,10 +5,15 @@
  *   `parent` 为外层坐标（EMU ÷ 9525）到设备坐标的变换，`ShapeScene.scale` 为每个 96 dpi 像素对应的设备像素数。
  * - 变换：形状绕自身中心旋转与翻转；组合的旋转与翻转以组合框中心为原点作用于全部后代。
  *   文字不随水平翻转镜像：变换含镜像时，文字在形状框内另施加一次水平翻转，垂直翻转因此表现为旋转 180°。
- * - 形状内的绘制顺序：各路径的填充与明暗修饰、线条、文字。
- * - 外部阴影：形状有填充或线条时，阴影取填充与线条的轮廓；都没有时作用于文字。组合的阴影取全部后代的轮廓。
+ * - 形状内的绘制顺序：各路径的填充与明暗修饰、内部阴影（填充区域内，见 `../paint/shadow.ts` 的 `paintInnerShadows`）、
+ *   线条、文字。
+ * - 外部阴影、发光、柔化边缘与映像（见 `../paint/effects.ts`）：形状有填充或线条时作用于填充与线条（不含文字）；都没有时
+ *   外部阴影作用于文字，映像与柔化边缘作用于文字图层并以形状框为准（映像以形状框底边为对称轴），发光不绘制（WPS 演示实测：
+ *   没有填充与线条的文本框，形状的发光不显示，映像为整个文本框的镜像）。组合的效果取全部后代。
+ * - 锚定居中与底端：内容高度另加首行的 `BodyLayout.overhang`。
  * - 自动调整：`normAutofit` 的缩放见 `../text/body.ts`；`spAutoFit` 不改变形状尺寸，按文件中保存的尺寸绘制。
- * - 不绘制：竖排方式为 `eaVert` 等的文字（求值时已登记）。
+ * - 竖排：`vert` 与 `eaVert` 顺时针转 90°、`vert270` 逆时针转 90° 绘制，`eaVert` 的东亚文字直立（见 `../text/body.ts`）；
+ *   不绘制竖排方式为 `wordArtVert` 等的文字（求值时已登记）。
  */
 
 import type { Effect, Line, ShapeFill } from '../fill.ts'
@@ -24,9 +29,28 @@ import {
   setMatrix,
   translation,
 } from '../paint/context.ts'
-import { type PaintResources, paintFill, paintFillModifier, tracePath } from '../paint/fill.ts'
+import {
+  hasLayerEffects,
+  type LayerEffects,
+  layerEffects,
+  NO_EFFECTS,
+  paintWithEffects,
+} from '../paint/effects.ts'
+import {
+  appendPath,
+  type PaintResources,
+  paintFill,
+  paintFillModifier,
+  tracePath,
+} from '../paint/fill.ts'
 import { lineWidth, paintLine } from '../paint/line.ts'
-import { deviceBounds, type OuterShadow, paintWithShadows, pathBounds } from '../paint/shadow.ts'
+import {
+  deviceBounds,
+  type InnerShadow,
+  type OuterShadow,
+  paintInnerShadows,
+  pathBounds,
+} from '../paint/shadow.ts'
 import { layoutBody, paintBody, type TextSettings } from '../text/body.ts'
 import type { TextBody } from '../text/model.ts'
 import type { ThreeD } from '../three/model.ts'
@@ -36,7 +60,12 @@ import type { Frame } from './model.ts'
 export const EMU_PER_PX = 9525
 const PX_PER_PT = 4 / 3
 /** 按旋转绘制的文字方向；其余竖排方式不绘制。 */
-const ROTATED_TEXT: Readonly<Record<string, number>> = { horz: 0, vert: 90, vert270: -90 }
+const ROTATED_TEXT: Readonly<Record<string, number>> = {
+  horz: 0,
+  vert: 90,
+  vert270: -90,
+  eaVert: 90,
+}
 
 export interface ShapeScene {
   readonly ctx: PaintContext
@@ -108,6 +137,26 @@ export function shadowsOf(effects: readonly Effect[]): OuterShadow[] {
   return effects.filter((e): e is OuterShadow => e.kind === 'outerShadow')
 }
 
+export function innerShadowsOf(effects: readonly Effect[]): InnerShadow[] {
+  return effects.filter((e): e is InnerShadow => e.kind === 'innerShadow')
+}
+
+/** 内部阴影画在全部有填充的路径合成的区域内。 */
+export function paintInnerShadowsOf(
+  ctx: PaintContext,
+  outline: ShapeOutline,
+  inner: readonly InnerShadow[],
+  placed: Placed,
+  scale: number,
+): void {
+  if (inner.length === 0) return
+  const filled = outline.paths.filter((p) => p.fill !== 'none')
+  const append = () => {
+    for (const p of filled) appendPath(ctx, p.segments)
+  }
+  paintInnerShadows(ctx, append, inner, { ...placed, scale })
+}
+
 export function outlineOf(shape: { geometry: Geometry; frame: Frame }): ShapeOutline {
   return shapeOutline(shape.geometry, shape.frame.width, shape.frame.height, 1 / EMU_PER_PX)
 }
@@ -118,7 +167,7 @@ export function strokeMargin(shape: { line: Line | null }, placed: Placed): numb
   return w * 2 + Math.max(w, 2) * 5 + 2
 }
 
-/** `fill` 为 `null` 时只画线条（连接线）。 */
+/** `fill` 为 `null` 时只画线条（连接线）；`inner` 为内部阴影，形状有填充时绘制。 */
 function paintGeometry(
   scene: ShapeScene,
   ctx: PaintContext,
@@ -126,6 +175,7 @@ function paintGeometry(
   line: Line | null,
   outline: ShapeOutline,
   placed: Placed,
+  inner: readonly InnerShadow[],
 ): void {
   const area = { width: placed.width, height: placed.height, matrix: placed.matrix }
   if (fill !== null) {
@@ -136,6 +186,7 @@ function paintGeometry(
       paintFill(ctx, trace, fill, area, scene.res)
       if (fill.kind !== 'none') paintFillModifier(ctx, trace, path.fill)
     }
+    if (fill.kind !== 'none') paintInnerShadowsOf(ctx, outline, inner, placed, scene.scale)
   }
   if (line !== null) paintLine(ctx, outline.paths, line, area, scene.res, scene.canvas)
 }
@@ -147,9 +198,16 @@ function hasGeometryPaint(shape: PaintableShape): boolean {
 export function paintAutoShape(scene: ShapeScene, shape: PaintableShape, parent: Matrix): void {
   const placed = placeFrame(shape.frame, parent)
   const outline = outlineOf(shape)
-  const shadows = shadowsOf(shape.effects)
-  const geometryShadows = hasGeometryPaint(shape) ? shadows : []
-  if (geometryShadows.length > 0) {
+  const effects = layerEffects(shape.effects)
+  const inner = innerShadowsOf(shape.effects)
+  const frame = {
+    matrix: placed.matrix,
+    width: placed.width,
+    height: placed.height,
+    scale: scene.scale,
+  }
+  const geometry = hasGeometryPaint(shape)
+  if (geometry && hasLayerEffects(effects)) {
     const bounds = pathBounds(
       outline.paths,
       placed.matrix,
@@ -157,27 +215,58 @@ export function paintAutoShape(scene: ShapeScene, shape: PaintableShape, parent:
       scene.canvas,
     )
     if (bounds !== null) {
-      paintWithShadows(
-        scene.ctx,
-        geometryShadows,
-        { matrix: placed.matrix, width: placed.width, height: placed.height, scale: scene.scale },
-        bounds,
-        scene.res,
-        scene.canvas,
-        (c, offset) =>
-          paintGeometry(scene, c, shape.fill, shape.line, outline, {
-            ...placed,
-            matrix: multiply(offset, placed.matrix),
-          }),
+      paintWithEffects(scene.ctx, effects, frame, bounds, scene.res, scene.canvas, (c, offset) =>
+        paintGeometry(
+          scene,
+          c,
+          shape.fill,
+          shape.line,
+          outline,
+          { ...placed, matrix: multiply(offset, placed.matrix) },
+          inner,
+        ),
       )
     }
   } else {
-    paintGeometry(scene, scene.ctx, shape.fill, shape.line, outline, placed)
+    paintGeometry(scene, scene.ctx, shape.fill, shape.line, outline, placed, inner)
   }
-  if (shape.text !== null && scene.settings !== null) {
-    const textShadows = hasGeometryPaint(shape) ? [] : shadows
-    paintShapeText(scene, scene.settings, shape.text, outline, placed, textShadows)
+  if (shape.text === null || scene.settings === null) return
+  const settings = scene.settings
+  const text = shape.text
+  if (geometry) {
+    paintShapeText(scene, settings, text, outline, placed, [])
+    return
   }
+  const box: LayerEffects = {
+    ...NO_EFFECTS,
+    softEdge: effects.softEdge,
+    reflection: effects.reflection,
+  }
+  if (!hasLayerEffects(box)) {
+    paintShapeText(scene, settings, text, outline, placed, effects.shadows)
+    return
+  }
+  // 文字可能超出形状框：图层取形状框外扩一个框的大小。
+  const bounds = deviceBounds(
+    placed.matrix,
+    0,
+    0,
+    placed.width,
+    placed.height,
+    (placed.width + placed.height) * scene.scale,
+    scene.canvas,
+  )
+  if (bounds === null) return
+  paintWithEffects(scene.ctx, box, frame, bounds, scene.res, scene.canvas, (c, offset) =>
+    paintShapeText(
+      { ...scene, ctx: c },
+      settings,
+      text,
+      outline,
+      { ...placed, matrix: multiply(offset, placed.matrix) },
+      effects.shadows,
+    ),
+  )
 }
 
 /**
@@ -203,7 +292,7 @@ export function paintAutoShapeThreeD(
     (c, offset, size) => {
       const inner: ShapeScene = { ...scene, ctx: c, canvas: size }
       const p = { ...placed, matrix: multiply(offset, placed.matrix) }
-      paintGeometry(inner, c, shape.fill, shape.line, outline, p)
+      paintGeometry(inner, c, shape.fill, shape.line, outline, p, innerShadowsOf(shape.effects))
       if (shape.text !== null && scene.settings !== null)
         paintShapeText(inner, scene.settings, shape.text, outline, p, geometry ? [] : shadows)
     },
@@ -231,7 +320,7 @@ function paintShapeText(
   const aw = vertical ? h : w
   const ah = vertical ? w : h
   const layout = layoutBody(text, aw / PX_PER_PT, settings)
-  const free = ah / PX_PER_PT - layout.height
+  const free = ah / PX_PER_PT - layout.height - layout.overhang
   const dy = body.anchor === 'ctr' ? free / 2 : body.anchor === 'b' ? free : 0
   let dx = 0
   if (body.anchorCenter) {
@@ -276,12 +365,12 @@ function paintShapeText(
 
 export function paintConnector(scene: ShapeScene, shape: PaintableConnector, parent: Matrix): void {
   const placed = placeFrame(shape.frame, parent)
-  paintGeometry(scene, scene.ctx, null, shape.line, outlineOf(shape), placed)
+  paintGeometry(scene, scene.ctx, null, shape.line, outlineOf(shape), placed, [])
 }
 
 /**
- * 组合：`paintChildren` 以组合对后代施加的变换绘制全部子形状。组合有外部阴影时，子形状先画到图层，
- * 阴影取图层中全部后代的轮廓。
+ * 组合：`paintChildren` 以组合对后代施加的变换绘制全部子形状。组合有图层效果（外部阴影、发光、柔化边缘、映像）时，
+ * 子形状先画到图层，效果取图层中全部后代。
  */
 export function paintGroup<S extends ShapeScene>(
   scene: S,
@@ -290,8 +379,8 @@ export function paintGroup<S extends ShapeScene>(
   paintChildren: (scene: S, inner: Matrix) => void,
 ): void {
   const inner = groupMatrix(group.frame, parent)
-  const shadows = shadowsOf(group.effects)
-  if (shadows.length === 0) {
+  const effects = layerEffects(group.effects)
+  if (!hasLayerEffects(effects)) {
     paintChildren(scene, inner)
     return
   }
@@ -306,9 +395,9 @@ export function paintGroup<S extends ShapeScene>(
     scene.canvas,
   )
   if (bounds === null) return
-  paintWithShadows(
+  paintWithEffects(
     scene.ctx,
-    shadows,
+    effects,
     { matrix: placed.matrix, width: placed.width, height: placed.height, scale: scene.scale },
     bounds,
     scene.res,

@@ -38,7 +38,7 @@ import type { NumberingState } from './numbering.ts'
 
 /** 未指定字号时的字号：WPS 打开没有字号设置的文档时为 10.5 磅（实测）。 */
 const DEFAULT_SIZE = 10.5
-/** HTML 自动段间距。 */
+/** HTML 自动段间距：与字号无关（WPS 实测：10.5、12、16、24 磅的段落均为 14 磅）；不留的情形见 `../layout.ts` 的 `contextSpacing`。 */
 const AUTO_SPACING = 14
 
 function mergeIndent(
@@ -346,10 +346,7 @@ export function paragraphProps(
     twips: number | undefined,
     auto: boolean | undefined,
   ) => {
-    if (auto === true) {
-      count('autoSpacing')
-      return AUTO_SPACING
-    }
+    if (auto === true) return AUTO_SPACING
     return lines !== undefined && lines !== 0 ? (lines / 100) * lineUnit : (twips ?? 0) / 20
   }
   const tabs: TabStop[] = []
@@ -375,6 +372,8 @@ export function paragraphProps(
     before: spaceOf(s.beforeLines, s.before, s.beforeAuto),
     after: spaceOf(s.afterLines, s.after, s.afterAuto),
     contextualSpacing: p.contextualSpacing === true,
+    autoSpacing: { before: s.beforeAuto === true, after: s.afterAuto === true },
+    list: ctx.numbering?.numId ?? null,
     lineSpacing: lineSpacing(s),
     snapToGrid: p.snapToGrid !== false && section.gridType !== 'default',
     kinsoku: p.kinsoku !== false,

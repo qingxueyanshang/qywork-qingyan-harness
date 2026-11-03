@@ -3,22 +3,18 @@
  *
  * - 元素按本地名匹配；属性先按元素自身的前缀取，取不到再按 WordprocessingML 命名空间匹配。
  * - 开关值（`ST_OnOff`）：缺少 `w:val` 为真；`true`、`1`、`on` 为真，`false`、`0`、`off` 为假。
- * - 元素嵌套超过 `MAX_DEPTH` 层时 `eachChild` 抛出 `NestingError`：解析与排版按嵌套逐层递归，层数不设上限时由输入决定调用栈深度。
+ * - 元素嵌套超过 `MAX_DEPTH`（`../../xml/index.ts`）层时 `eachChild` 抛出 `NestingError`：正文与页眉页脚中由 `body.ts`
+ *   截断，其余部件按结构错误处理（`../load.ts` 返回 `corrupt('xml')`）。
  */
 
 import type { PartScanner } from '../../opc/scanner.ts'
+import { MAX_DEPTH } from '../../xml/index.ts'
 
 export type Scanner = PartScanner
 
 export const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
-/**
- * 元素嵌套层数的上限。网络语料 1728 份 docx 中最深为 53 层（其中表格嵌套最多 5 层）；5000 层嵌套表格的文档在解析时
- * 溢出调用栈。
- */
-export const MAX_DEPTH = 256
-
-/** 部件中的元素嵌套超过 `MAX_DEPTH` 层：按结构错误处理（`../load.ts` 返回 `corrupt('xml')`）。 */
+/** 部件中的元素嵌套超过 `MAX_DEPTH` 层。 */
 export class NestingError extends Error {
   constructor() {
     super(`元素嵌套超过 ${MAX_DEPTH} 层`)

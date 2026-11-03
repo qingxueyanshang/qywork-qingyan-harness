@@ -7,13 +7,15 @@
  * 3. 空格之后、制表符两侧可断；连字符与破折号之后可断。
  * 4. `wordWrap` 开启时连字符与破折号之前不断；不压缩标点时汉字与破折号之间也不断，压缩标点时东亚字符与其后的
  *    连字符、破折号之间可断（WPS 实测：只随压缩标点设置变化，与兼容模式、对齐方式、字距调整无关）。
- * 5. 两侧任一为东亚字符时可断；两侧都是西文时不断（单词保持完整），`wordWrap` 为 `false` 时可断。
+ * 5. 两侧任一为东亚字符时可断；两侧都是西文时不断（单词保持完整），`wordWrap` 为 `false` 时可断。希腊字母按东亚字符判定
+ *    （WPS 实测：表格单元格中「激活α1/β」可在 α 之后断开；文字中东亚提示使希腊字母落在东亚字体时，「α1/β」可在 α 之后、
+ *    β 之前断开）；文字中落在西文字体的希腊字母不断开（「α1/β」与「a1/b」相同），由调用方按 `western` 传入。
  *
  * `wordWrap` 为 `false` 时空格是普通字符：可以在其前断行，排不下时移到下一行行首（WPS 实测）。
  * 行内对象按其断行类别（`BreakUnit`）判定：不属于任何禁则表，不是空格、制表符或连字符。
  */
 
-import { isEastAsian } from './classify.ts'
+import { isEastAsian, isGreek } from './classify.ts'
 
 /** 字符串中各字符的码位集合。 */
 export function codePointSet(chars: string): ReadonlySet<number> {
@@ -67,7 +69,7 @@ export interface BreakRules {
 export type BreakUnit = number | 'ideographic' | 'western'
 
 function eastAsian(u: BreakUnit): boolean {
-  return typeof u === 'number' ? isEastAsian(u) : u === 'ideographic'
+  return typeof u === 'number' ? isEastAsian(u) || isGreek(u) : u === 'ideographic'
 }
 
 /**

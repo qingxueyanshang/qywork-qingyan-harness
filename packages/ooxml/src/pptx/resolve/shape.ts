@@ -2,7 +2,7 @@
  * 形状求值：占位符继承、样式引用、组合坐标换算与组合填充，产出 `Shape`。
  *
  * - 幻灯片上的占位符依次继承匹配到的版式占位符与母版占位符（见 `placeholder.ts`）：`spPr` 的位置尺寸、几何、填充、效果
- *   取链上第一个出现的值，线条按字段逐层覆盖；`p:style` 取链上第一个；`bodyPr` 逐字段继承（边距除外，见 `../../drawingml/text/resolve.ts`）。
+ *   取链上第一个出现的值，线条按字段逐层覆盖；`p:style` 取链上第一个；`bodyPr` 逐字段继承（见 `../../drawingml/text/resolve.ts`）。
  * - 文字的列表样式依次为：形状 `lstStyle`、`fontRef`、版式占位符与母版占位符的 `lstStyle`，最后一层按占位符类型选择：
  *   标题类取母版 `titleStyle`，正文类取母版 `bodyStyle`，其余占位符与非占位符形状取 `defaultTextStyle`。
  *   母版 `otherStyle` 只用于表格。WPS 实测：标题与正文占位符不回落到 `defaultTextStyle`，文本框与日期、页脚占位符
@@ -17,7 +17,7 @@
 
 import { resolveChart } from '../../drawingml/chart/resolve.ts'
 import { resolveDiagram } from '../../drawingml/diagram/resolve.ts'
-import type { ShapeFill } from '../../drawingml/fill.ts'
+import { type ImageFill, resolveImageFill, type ShapeFill } from '../../drawingml/fill.ts'
 import type { Geometry } from '../../drawingml/geometry/model.ts'
 import { EMPTY_PROPS, type ShapeProps, type StyleRefs } from '../../drawingml/shape/read.ts'
 import {
@@ -40,6 +40,7 @@ import type { TextBody } from '../../drawingml/text/model.ts'
 import type { RawTextBody } from '../../drawingml/text/read.ts'
 import { resolveTextBody } from '../../drawingml/text/resolve.ts'
 import { resolveThreeD, visibleThreeD } from '../../drawingml/three/camera.ts'
+import { hasUnsupportedMath } from '../../math/index.ts'
 import type { Placeholder, Shape } from '../model.ts'
 import type { RawShape } from '../parse/shape.ts'
 import { resolveInk } from './ink.ts'
@@ -73,33 +74,58 @@ function textOf(s: RawShape | null): RawTextBody | null {
   return s?.kind === 'shape' ? s.text : null
 }
 
-/** 部件不在包中时不登记：没有可绘制的内容。 */
-function countPart(part: string | null, scope: SlideScope): void {
-  countImage(part === null ? null : scope.imageDrawable(part), scope.found)
+/** 部件不在包中时不登记格式：没有可绘制的内容。 */
+function countPicture(image: ImageFill, scope: SlideScope): void {
+  countImage(image.part === null ? null : scope.imageDrawable(image.part), scope.found)
+  if (image.effects.some((e) => e.kind === 'other')) scope.found.push('imageEffect')
 }
 
 function countFill(fill: ShapeFill, scope: SlideScope): void {
-  if (fill.kind === 'picture') countPart(fill.image.part, scope)
+  if (fill.kind === 'picture') countPicture(fill.image, scope)
 }
 
-/** 绘制端不实现的内容：无法解码的图片格式、竖排文字、图片项目符号与外部阴影之外的效果。 */
+function countBullet(part: string | null, scope: SlideScope): void {
+  if (part !== null) countImage(scope.imageDrawable(part), scope.found)
+}
+
+/** 含未实现结构的公式不绘制，每个公式计一次。 */
+function countMath(text: TextBody, scope: SlideScope): void {
+  for (const p of text.paragraphs)
+    for (const r of p.runs)
+      if (r.kind === 'math' && r.zones.some(hasUnsupportedMath)) scope.found.push('math')
+}
+
+/**
+ * 绘制端不实现的内容：无法解码的图片格式（含图片项目符号）、未实现的图片效果、竖排文字、未绘制的效果（见 `countEffects`）
+ * 与含未实现结构的公式。
+ */
 function countUnpainted(shape: Shape, scope: SlideScope): void {
   switch (shape.kind) {
     case 'shape':
       countFill(shape.fill, scope)
-      countEffects(shape.effects, scope.found)
-      if (shape.text !== null) countText(shape.text, scope.found, (f) => countFill(f, scope))
+      countEffects(shape.effects, scope.found, shape.threeD === null)
+      if (shape.text !== null) {
+        countText(
+          shape.text,
+          scope.found,
+          (f) => countFill(f, scope),
+          (part) => countBullet(part, scope),
+        )
+        countMath(shape.text, scope)
+      }
       return
     case 'picture':
-      countPart(shape.image.part, scope)
+      countPicture(shape.image, scope)
       countFill(shape.fill, scope)
-      countEffects(shape.effects, scope.found)
+      countEffects(shape.effects, scope.found, shape.threeD === null)
       return
     case 'connector':
       countEffects(shape.effects, scope.found)
       return
     case 'group':
-      countEffects(shape.effects, scope.found)
+      // 组合不绘制内部阴影：组合的填充区域是全部后代的合成。
+      countEffects(shape.effects, scope.found, true)
+      if (shape.effects.some((e) => e.kind === 'innerShadow')) scope.found.push('effect')
       return
     case 'table':
       countFill(shape.fill, scope)
@@ -108,7 +134,13 @@ function countUnpainted(shape: Shape, scope: SlideScope): void {
           if (cell.hMerge || cell.vMerge) continue
           countFill(cell.fill, scope)
           if (unpaintedVertical(cell.vertical)) scope.found.push('verticalText')
-          countText(cell.text, scope.found, (f) => countFill(f, scope))
+          countText(
+            cell.text,
+            scope.found,
+            (f) => countFill(f, scope),
+            (part) => countBullet(part, scope),
+          )
+          countMath(cell.text, scope)
         }
       }
       return
@@ -192,7 +224,7 @@ export class ShapeResolver {
         return {
           kind: 'picture',
           ...common,
-          image: raw.image,
+          image: resolveImageFill(raw.image, scope.colors),
           geometry: geometry ?? RECT,
           fill: resolveShapeFill(fillSpec, style, group, scope),
           line: resolveShapeLine(lines, style, scope),

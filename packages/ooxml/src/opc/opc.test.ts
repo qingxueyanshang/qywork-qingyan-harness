@@ -150,6 +150,33 @@ describe('内容类型', () => {
   test('部件列表不含内容类型部件与目录项', async () => {
     const pkg = await open({ '[Content_Types].xml': CONTENT_TYPES, 'xl/': '', 'xl/a.xml': '<a/>' })
     expect(pkg.parts).toEqual(['/xl/a.xml'])
+    expect(pkg.has('/[Content_Types].xml')).toBe(false)
+  })
+
+  test('成员名用反斜杠分隔、内容类型部件名为小写时照常打开（WPS 实测）', async () => {
+    const pkg = await open({
+      '[content_types].xml': CONTENT_TYPES,
+      '_rels\\.rels': rels(rel('rId1', `${T_REL}/officeDocument`, '/xl/workbook.xml')),
+      'xl\\workbook.xml': '<workbook/>',
+      'xl\\_rels\\workbook.xml.rels': rels(
+        rel('rId1', `${T_REL}/worksheet`, 'worksheets\\sheet1.xml'),
+      ),
+      'xl\\worksheets\\sheet1.xml': '<worksheet/>',
+      'xl\\': '',
+    })
+    expect(pkg.parts).toEqual([
+      '/_rels/.rels',
+      '/xl/workbook.xml',
+      '/xl/_rels/workbook.xml.rels',
+      '/xl/worksheets/sheet1.xml',
+    ])
+    const main = unwrap(await pkg.relationships('/')).part('officeDocument')!
+    expect(pkg.contentType(main)).toBe(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml',
+    )
+    const sheet = unwrap(await pkg.relationships(main)).part('worksheet')!
+    expect(sheet).toBe('/xl/worksheets/sheet1.xml')
+    expect(unwrap(await pkg.text(sheet))).toBe('<worksheet/>')
   })
 })
 
@@ -167,15 +194,16 @@ describe('失败分类', () => {
   })
 
   test('内容类型 XML 无法解析为 corrupt', async () => {
-    expect(
-      await openPackage(buildZip({ '[Content_Types].xml': '<Types><Default></Types>' })),
-    ).toEqual({ ok: false, failure: { kind: 'corrupt', reason: 'content-types' } })
+    expect(await openPackage(buildZip({ '[Content_Types].xml': '<Types><Default>' }))).toEqual({
+      ok: false,
+      failure: { kind: 'corrupt', reason: 'content-types' },
+    })
   })
 
   test('关系部件 XML 无法解析为 corrupt，不影响其他部件的关系', async () => {
     const pkg = await open({
       '[Content_Types].xml': CONTENT_TYPES,
-      '_rels/.rels': '<Relationships><Relationship Id="a"></Relationships>',
+      '_rels/.rels': '<Relationships><Relationship Id="a">',
       'a.xml': '<a/>',
       '_rels/a.xml.rels': rels(rel('r', `${T_REL}/theme`, 'b.xml')),
     })

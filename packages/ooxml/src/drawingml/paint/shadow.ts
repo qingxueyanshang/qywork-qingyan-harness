@@ -1,5 +1,5 @@
 /**
- * 外部阴影（`outerShdw`）：先把内容绘制到图层，再以图层的不透明度为轮廓绘制阴影，最后绘制图层本身。
+ * 外部阴影（`outerShdw`）：以内容图层的不透明度为轮廓绘制阴影（图层与各效果的合成顺序见 `effects.ts`）。
  *
  * - 阴影只取内容的轮廓：填充与线条重叠处不重复加深，半透明内容的阴影按其不透明度减淡。
  * - 偏移与缩放、倾斜在幻灯片坐标中施加（`rotWithShape` 为真时随形状旋转）；缩放与倾斜以 `algn`
@@ -26,6 +26,7 @@ import {
 import { deviceScale, type PaintResources } from './fill.ts'
 
 export type OuterShadow = Extract<EffectOf<Color>, { readonly kind: 'outerShadow' }>
+export type InnerShadow = Extract<EffectOf<Color>, { readonly kind: 'innerShadow' }>
 
 const EMU_PER_PX = 9525
 
@@ -131,12 +132,18 @@ function alignPoint(align: string): { x: number; y: number } {
   return { x: h === 'l' ? 0 : h === 'r' ? 1 : 0.5, y: v === 't' ? 0 : v === 'b' ? 1 : 0.5 }
 }
 
+/** 外部阴影与映像共有的变换参数。 */
+export type ShadowTransform = Pick<
+  OuterShadow,
+  'distance' | 'direction' | 'scaleX' | 'scaleY' | 'skewX' | 'skewY' | 'align' | 'rotateWithShape'
+>
+
 /**
- * 阴影在设备坐标中的变换。`shape` 为形状局部坐标到设备坐标的变换，`width`、`height` 为形状框（局部单位）；
+ * 阴影（与映像）在设备坐标中的变换。`shape` 为形状局部坐标到设备坐标的变换，`width`、`height` 为形状框（局部单位）；
  * `scale` 为每个 96 dpi 像素对应的设备像素数，用于换算以 EMU 计的距离。
  */
 export function shadowMatrix(
-  shadow: OuterShadow,
+  shadow: ShadowTransform,
   shape: Matrix,
   width: number,
   height: number,
@@ -201,29 +208,45 @@ export function paintShadows(
   }
 }
 
+/**
+ * 内部阴影（`innerShdw`）：裁剪到形状区域后，以区域之外（外扩的矩形减去区域）为轮廓绘制阴影，只有落入区域的部分可见。
+ * 轮廓向 `dir` 的反方向偏移，阴影因此出现在 `dir` 所指的一侧（WPS 演示实测：`dir` 为 45° 时在右侧与下侧，225° 时在
+ * 左侧与上侧）。偏移按设备坐标施加，模糊半径与外部阴影相同按 `shadowBlur` 的同值设备像素。`append` 在当前路径上追加
+ * 形状区域（局部坐标），不开始新路径。
+ */
+export function paintInnerShadows(
+  ctx: PaintContext,
+  append: () => void,
+  shadows: readonly InnerShadow[],
+  frame: ShadowFrame,
+): void {
+  const { width, height, scale } = frame
+  for (const shadow of shadows) {
+    const dist = (shadow.distance / EMU_PER_PX) * scale
+    const dir = (shadow.direction * Math.PI) / 180
+    const margin = width + height + (shadow.distance + shadow.blur) / EMU_PER_PX
+    ctx.save()
+    setMatrix(ctx, frame.matrix)
+    ctx.beginPath()
+    append()
+    ctx.clip()
+    ctx.beginPath()
+    append()
+    ctx.rect(-margin, -margin, width + 2 * margin, height + 2 * margin)
+    ctx.shadowColor = colorToCss(shadow.color)
+    ctx.shadowBlur = (shadow.blur / EMU_PER_PX) * scale
+    ctx.shadowOffsetX = -dist * Math.cos(dir)
+    ctx.shadowOffsetY = -dist * Math.sin(dir)
+    ctx.fillStyle = '#000'
+    ctx.fill('evenodd')
+    ctx.restore()
+  }
+}
+
 /** 把图层按设备坐标原样画到画布上。 */
 export function drawLayerOnto(ctx: PaintContext, layer: PaintCanvas, bounds: DeviceRect): void {
   ctx.save()
   setMatrix(ctx, IDENTITY)
   ctx.drawImage(layer, bounds.x, bounds.y)
   ctx.restore()
-}
-
-/**
- * 带外部阴影绘制：`draw` 把内容画到图层（参数同 `drawLayer`），随后依次绘制各阴影与图层本身。
- * `bounds` 为内容在设备坐标中的外接矩形。
- */
-export function paintWithShadows(
-  ctx: PaintContext,
-  shadows: readonly OuterShadow[],
-  frame: ShadowFrame,
-  bounds: DeviceRect,
-  res: PaintResources,
-  canvas: { width: number; height: number },
-  draw: (ctx: PaintContext, offset: Matrix) => void,
-): void {
-  const layer = drawLayer(bounds, res, draw)
-  if (layer === null) return
-  paintShadows(ctx, layer, bounds, shadows, frame, canvas)
-  drawLayerOnto(ctx, layer, bounds)
 }

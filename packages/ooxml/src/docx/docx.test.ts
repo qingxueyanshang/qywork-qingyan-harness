@@ -3,7 +3,8 @@
  * `resolve/`（样式继承与切换属性、编号计数与格式、主题字体）与 `layout.ts`（转换为 `layoutParagraph` 的输入，
  * 含字符间距、上下标、基线提升、字距调整、东亚语言、压缩标点与单双字节宽度协调的传递），
  * 以及 `../text/layout.ts` 中为编号字段补充的规则（编号对齐、编号后缀制表符、编号与正文之间的中西文间距、缺字回退）、
- * `table/layout.ts` 的 `layoutStack`（文本框中的段落不悬挂行尾标点），`../font/cmap.ts`（符号编码子表）。
+ * `table/layout.ts` 的 `layoutStack`（文本框中的段落不悬挂行尾标点），`../font/cmap.ts`（符号编码子表），
+ * `render/fonts.ts` 的 `embeddedFaces` 与 `DocxFonts`（嵌入字体的选取、WPS 自带度量的字体名有同名字体时的度量）。
  *
  * 期望值取自 WPS 12.1 只读打开同样内容的文档后取得的结果（`Paragraph.Format`、`Range.Font`、`ListFormat.ListString`
  * 与逐字的 `Information`），不由本模块计算；少数按 ISO/IEC 29500 规定的项在用例名中注明。
@@ -13,17 +14,20 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { readFaces, readMetrics, readVerticalMetrics } from '../font/index.ts'
+import { extractFace, readFaces, readMetrics, readVerticalMetrics } from '../font/index.ts'
 import { MATH_SETTINGS_DEFAULTS } from '../math/index.ts'
 import { NO_HOST_FAMILIES, type TextFace } from '../text/index.ts'
 import {
   type Block,
   type DocxDocument,
+  DocxFonts,
+  embeddedFaces,
   layoutDocument,
+  loadDocxFace,
   type Paragraph,
   parseDocx,
 } from './index.ts'
-import { ParagraphLayouter } from './layout.ts'
+import { contextSpacing, ParagraphLayouter } from './layout.ts'
 import { formatNumber } from './resolve/number-format.ts'
 import { layoutStack, layoutTable } from './table/layout.ts'
 import { buildDocx, type DocxParts, numPr, p, r, singleLevel, style, theme } from './test-helper.ts'
@@ -60,21 +64,29 @@ describe('部件定位', () => {
       }),
     )
     expect(wrong).toEqual({ ok: false, failure: { kind: 'corrupt', reason: 'document' } })
-    const bad = await parseDocx(buildDocx({ body: '<w:p><w:r></w:p>' }))
+    const bad = await parseDocx(buildDocx({ body: '<w:p><w:r w:rsidR=00/></w:p>' }))
     expect(bad).toEqual({ ok: false, failure: { kind: 'corrupt', reason: 'xml' } })
   })
 
-  test('元素嵌套超过 256 层时为 corrupt(xml)，不溢出调用栈：5000 层嵌套表格；嵌套 20 层表格照常解析', async () => {
+  test('元素嵌套超过 256 层时该顶层块与其后的内容不显示，计一次 nesting，不溢出调用栈；嵌套 20 层表格照常解析', async () => {
+    // WPS：5000 层嵌套表格之前的段落按缺省页边距显示，表格、其后的段落与正文末尾的 sectPr 都不读取。
     const nested = (n: number) => {
       let inner = p(r('x'))
       for (let k = 0; k < n; k++)
         inner = `<w:tbl><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>${inner}</w:tc></w:tr></w:tbl>`
       return inner
     }
-    const deep = await parseDocx(buildDocx({ body: nested(5000) }))
-    expect(deep).toEqual({ ok: false, failure: { kind: 'corrupt', reason: 'xml' } })
+    const sect =
+      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr>'
+    const deep = await parse({ body: p(r('前文')) + nested(5000) + p(r('后文')) + sect })
+    expect(paragraphs(deep).map(text)).toEqual(['前文'])
+    expect(deep.body).toHaveLength(1)
+    expect(deep.sections).toHaveLength(1)
+    expect([deep.sections[0]!.marginLeft, deep.sections[0]!.marginTop]).toEqual([90, 72])
+    expect(deep.unsupported.nesting).toBe(1)
     const doc = await parse({ body: nested(20) })
     expect(doc.body[0]!.kind).toBe('table')
+    expect(doc.unsupported.nesting).toBeUndefined()
   })
 
   test('缺少样式、编号、设置与主题部件时按缺省值解析', async () => {
@@ -477,6 +489,55 @@ describe('编号', () => {
     })
     expect(paragraphs(doc)[0]!.numbering!.text).toBe('四十七')
     expect(doc.unsupported.numberFormat).toBe(1)
+  })
+})
+
+describe('HTML 自动段间距', () => {
+  test('14 磅；容器第一段之前、没有编号的最后一段之后与编号相同的相邻段落之间不留', async () => {
+    // WPS：文档第一段段前为 0；同一编号的列表项之间为 0，不同编号的列表之间、列表项与普通段落之间为 14 磅；单元格中第一段
+    // 段前、最后一段段后为 0，最后一段为列表项时段后仍为 14 磅。
+    const AUTO =
+      '<w:spacing w:before="100" w:beforeAutospacing="1" w:after="100" w:afterAutospacing="1"/>'
+    const level = '<w:start w:val="1"/><w:lvlText w:val="%1."/>'
+    const cell = (content: string) =>
+      `<w:tbl><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>${content}</w:tc></w:tr></w:tbl>`
+    const doc = await parse({
+      styles: DEFAULTS,
+      numbering: singleLevel(1, level) + singleLevel(2, level),
+      body:
+        p(r('甲'), AUTO) +
+        p(r('乙'), AUTO) +
+        p(r('一'), numPr(1) + AUTO) +
+        p(r('二'), numPr(1) + AUTO) +
+        p(r('三'), numPr(2) + AUTO) +
+        p(r('丙')) +
+        cell(p(r('格甲'), AUTO) + p(r('格乙'), AUTO)) +
+        cell(p(r('项一'), numPr(1) + AUTO) + p(r('项二'), numPr(1) + AUTO)) +
+        p(r('丁')),
+    })
+    const spacing = (blocks: readonly Block[]) =>
+      blocks.map((_, i) => {
+        const s = contextSpacing(blocks, i)
+        return [s.before, s.after]
+      })
+    expect(spacing(doc.body.slice(0, 6))).toEqual([
+      [0, 14],
+      [14, 14],
+      [14, 0],
+      [0, 14],
+      [14, 14],
+      [0, 0],
+    ])
+    const cellBlocks = (b: Block | undefined) =>
+      b?.kind === 'table' ? b.rows[0]!.cells[0]!.content : []
+    expect(spacing(cellBlocks(doc.body[6]))).toEqual([
+      [0, 14],
+      [14, 0],
+    ])
+    expect(spacing(cellBlocks(doc.body[7]))).toEqual([
+      [0, 0],
+      [0, 14],
+    ])
   })
 })
 
@@ -1066,6 +1127,27 @@ describe('分页与绘制所需的属性', () => {
     })
   })
 
+  test('缺少 w:val 的 w:u 不生效：不画下划线，也不覆盖字符样式与段落样式中的下划线', async () => {
+    // WPS：直接格式、只带颜色的与字符样式中的空 w:u 都不画下划线；字符样式或段落样式为单线时其上的空 w:u 仍画单线。
+    const doc = await parse({
+      styles:
+        DEFAULTS +
+        style('character', 'CharU', '<w:rPr><w:u w:val="single"/></w:rPr>') +
+        style('character', 'CharEmpty', '<w:rPr><w:u/></w:rPr>') +
+        style('paragraph', 'ParaU', '<w:rPr><w:u w:val="single"/></w:rPr>'),
+      body:
+        p(
+          r('a', '<w:u/>') +
+            r('b', '<w:u w:color="FF0000"/>') +
+            r('c', '<w:rStyle w:val="CharU"/><w:u/>') +
+            r('d', '<w:rStyle w:val="CharEmpty"/>'),
+        ) + p(r('e', '<w:u/>'), '<w:pStyle w:val="ParaU"/>'),
+    })
+    expect(
+      paragraphs(doc).flatMap((x) => x.runs.map((rn) => rn.props.underline?.style ?? null)),
+    ).toEqual([null, null, 'single', null, 'single'])
+  })
+
   test('分页符为 \\f、分栏符为 \\v；字段记录所在域名；节的开始方式、首页、页码与页眉页脚引用；奇偶页设置', async () => {
     const fld = (t: string) => `<w:r><w:fldChar w:fldCharType="${t}"/></w:r>`
     const doc = await parse({
@@ -1306,6 +1388,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
   const source = {
     face: (name: string) =>
       FILES[name] === undefined ? null : { face: load(FILES[name]!), bold: false },
+    metric: () => null,
     math: () => null,
     outlines: () => null,
     get fallback() {
@@ -1461,6 +1544,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     const fonts = {
       face: (name: string) =>
         files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+      metric: () => null,
       math: () => null,
       outlines: () => null,
       get fallback() {
@@ -1529,6 +1613,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     const fonts = {
       face: (name: string) =>
         files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+      metric: () => null,
       math: () => null,
       outlines: () => null,
       get fallback() {
@@ -1577,6 +1662,72 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     expect(byFile.get(face)).toBe('Segoe Print')
   })
 
+  test('主机没有的字体：WPS 自带的替换不区分大小写，西文与东亚字体相同，在 altName 之后、名称关键字、charset 86 与前缀匹配之前', async () => {
+    // WPS（构造文档 f2-subst-a、b、c，12 磅，页面 EMF 中的字体名）：Hei、HEI、方正行楷简体的西文与汉字为微软雅黑；Times-Roman、
+    // TIMES-ROMAN 的西文为 Times New Roman，Lucida Grande 的西文为 Courier New（主机有 Lucida Console 与 Lucida Sans Unicode），
+    // 汉字为宋体；charset 为 86 时相同；altName 为 Georgia 时四者的西文都为 Georgia；方正行楷简体 X 的西文与汉字为宋体。
+    const files: Record<string, string> = {
+      宋体: 'simsun.ttc',
+      'Segoe Print': 'segoepr.ttf',
+      微软雅黑: 'msyh.ttc',
+      'Times New Roman': 'times.ttf',
+      'Courier New': 'cour.ttf',
+      Georgia: 'georgia.ttf',
+      'Lucida Console': 'lucon.ttf',
+    }
+    const fonts = {
+      face: (name: string) =>
+        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+      metric: () => null,
+      math: () => null,
+      outlines: () => null,
+      get fallback() {
+        return load('simsun.ttc')
+      },
+    }
+    const host = { local: ['Lucida Console', 'Lucida Sans Unicode'], names: [], language: 0x0804 }
+    const byFile = new Map(Object.entries(files).map(([name, file]) => [load(file), name]))
+    const used = async (names: readonly string[], table: string) => {
+      const doc = await parse({
+        styles: DEFAULTS,
+        settings: SETTINGS,
+        fonts: table,
+        body: names
+          .map((n) => p(r('H汉', `<w:rFonts w:ascii="${n}" w:hAnsi="${n}" w:eastAsia="${n}"/>`)))
+          .join(''),
+      })
+      return layoutDocument(doc, fonts, host).paragraphs.map((pl) =>
+        pl.text.lines[0]!.fragments.flatMap((f) =>
+          [...text(paragraphs(doc)[pl.block]!).slice(f.start, f.end)].map(() => byFile.get(f.face)),
+        ),
+      )
+    }
+    const names = ['Hei', '方正行楷简体', 'Times-Roman', 'Lucida Grande']
+    expect(await used([...names, 'HEI', 'TIMES-ROMAN', '方正行楷简体 X'], '')).toEqual([
+      ['微软雅黑', '微软雅黑'],
+      ['微软雅黑', '微软雅黑'],
+      ['Times New Roman', '宋体'],
+      ['Courier New', '宋体'],
+      ['微软雅黑', '微软雅黑'],
+      ['Times New Roman', '宋体'],
+      ['宋体', '宋体'],
+    ])
+    const entries = (inner: string) =>
+      names.map((n) => `<w:font w:name="${n}">${inner}</w:font>`).join('')
+    expect(await used(names, entries('<w:charset w:val="86"/>'))).toEqual([
+      ['微软雅黑', '微软雅黑'],
+      ['微软雅黑', '微软雅黑'],
+      ['Times New Roman', '宋体'],
+      ['Courier New', '宋体'],
+    ])
+    expect((await used(names, entries('<w:altName w:val="Georgia"/>'))).map((u) => u[0])).toEqual([
+      'Georgia',
+      'Georgia',
+      'Georgia',
+      'Georgia',
+    ])
+  })
+
   test('主机没有的字体：按主机字体族名的前缀匹配，在关键字与 charset 86 之后、charset 80 之前；同一用途中只差大小写的名称沿用第一次的结果', async () => {
     // WPS（构造文档 w13 p1、q01–q31，w15 p1、p2，12 磅，页面 EMF 中的字体名）：Calibri Light Fake 为 Calibri，Courier 为
     // Courier New，Sitka 为 Sitka Banner，等线 Fake 的西文与汉字都为等线；charset 为 80、altName 为本机没有的字体的
@@ -1595,6 +1746,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     const fonts = {
       face: (name: string) =>
         files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+      metric: () => null,
       math: () => null,
       outlines: () => null,
       get fallback() {
@@ -1613,6 +1765,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
         '楷体',
       ],
       names: [],
+      language: 0x0804,
     }
     const entry = (name: string, alt: string, charset: string) =>
       `<w:font w:name="${name}"><w:altName w:val="${alt}"/><w:charset w:val="${charset}"/></w:font>`
@@ -1686,6 +1839,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     const fonts = {
       face: (name: string) =>
         files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+      metric: () => null,
       math: () => null,
       outlines: () => null,
       get fallback() {
@@ -1883,5 +2037,202 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     const line = inBox.layout.text.lines[0]!
     expect(body.end - body.start).toBe(35)
     expect(line.end - line.start).toBe(33)
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('WPS 按自带度量排版的字体', () => {
+  const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
+  const face = (file: string, family: string) =>
+    loadDocxFace(new Uint8Array(readFileSync(join(FONTS, file))), family)
+  const run = (font: string, half: number, body: string) =>
+    `<w:r><w:rPr><w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:eastAsia="${font}"/>` +
+    `<w:sz w:val="${half}"/></w:rPr><w:t>${body}</w:t></w:r>`
+  const single =
+    '<w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
+  const page = (grid: string) =>
+    `<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/>${grid}</w:sectPr>`
+
+  test('主机没有方正小标宋简体与方正仿宋_GBK 时按 WPS 的行高与西文宽度排版，汉字与西文的字形取自数据表的字体', async () => {
+    const doc = await parse({
+      body: `<w:p>${single}${run('方正小标宋简体', 44, 'Rgx数学')}</w:p><w:p>${single}${run('方正仿宋_GBK', 24, '0Rgx数学')}</w:p>${page('')}`,
+    })
+    const fonts = new DocxFonts(
+      [
+        face('simsun.ttc', '宋体'),
+        face('simhei.ttf', '黑体'),
+        face('msyh.ttc', '微软雅黑'),
+        face('micross.ttf', 'Microsoft Sans Serif'),
+        face('trebuc.ttf', 'Trebuchet MS'),
+      ],
+      '宋体',
+    )
+    const [title, body] = layoutDocument(doc, fonts.source, NO_HOST_FAMILIES).paragraphs
+    // WPS 实测（构造文档 f1-vert）：22 磅 671 缇，12 磅 348 缇；本方替代为宋体时为 571 与 312 缇。
+    const twips = (h: number) => Math.round(h * 20)
+    expect(Math.abs(twips(title!.text.lines[0]!.height) - 671)).toBeLessThanOrEqual(2)
+    expect(Math.abs(twips(body!.text.lines[0]!.height) - 348)).toBeLessThanOrEqual(2)
+    const family = (p: typeof title) =>
+      p!.text.lines[0]!.fragments.map((f) => [
+        f.end - f.start,
+        fonts.refs[fonts.ref(f.face)]!.family,
+      ])
+    expect(family(title)).toEqual([
+      [3, 'Microsoft Sans Serif'],
+      [2, '黑体'],
+    ])
+    expect(family(body)).toEqual([
+      [4, 'Trebuchet MS'],
+      [2, '微软雅黑'],
+    ])
+    // 方正仿宋_GBK 的「0」为 0.484 em（构造文档 f1-widths），宋体为 0.5 em；汉字为 1 em。
+    expect(body!.text.lines[0]!.fragments[0]!.advances[0]).toBeCloseTo(0.484 * 12, 3)
+    expect(body!.text.lines[0]!.fragments[1]!.advances[0]).toBeCloseTo(12, 3)
+  })
+
+  test('多行段落的行距连续累加，不按缇取整：六行段落首末行顶之差与 WPS 一致', async () => {
+    // WPS 实测（构造文档 f2-lh2、f2-lh3，单倍行距，每段 6 行，页面 EMF 中各行底纹的上沿）：首末行顶之差（缇）。
+    // 行的位置取整到缇，单项误差不超过 1 缇；数据表的上下沿之和偏大 0.5/1000 em 时，各项之和偏大 7 缇以上。
+    const cases: [string, number, number][] = [
+      ['方正小标宋简体', 52, 3961],
+      ['方正小标宋简体', 44, 3351],
+      ['思源黑体', 52, 4893],
+      ['方正大标宋简体', 44, 3265],
+      ['华文宋体', 52, 3786],
+      ['Helvetica Neue', 44, 2625],
+    ]
+    const doc = await parse({
+      body:
+        cases
+          .map(
+            ([font, half]) =>
+              `<w:p>${single}<w:r><w:rPr><w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:eastAsia="${font}"/>` +
+              `<w:sz w:val="${half}"/></w:rPr><w:t>Rgx</w:t><w:br/><w:t>Rgx</w:t><w:br/><w:t>Rgx</w:t>` +
+              '<w:br/><w:t>Rgx</w:t><w:br/><w:t>Rgx</w:t><w:br/><w:t>Rgx</w:t></w:r></w:p>',
+          )
+          .join('') + page(''),
+    })
+    const fonts = new DocxFonts(
+      [
+        face('simsun.ttc', '宋体'),
+        face('simhei.ttf', '黑体'),
+        face('msyh.ttc', '微软雅黑'),
+        face('times.ttf', 'Times New Roman'),
+        face('micross.ttf', 'Microsoft Sans Serif'),
+        face('malgun.ttf', 'Malgun Gothic'),
+        face('ebrima.ttf', 'Ebrima'),
+      ],
+      '宋体',
+    )
+    const spans = layoutDocument(doc, fonts.source, NO_HOST_FAMILIES).paragraphs.map((pl) => {
+      const lines = pl.text.lines
+      return (lines[5]!.top - lines[0]!.top) * 20
+    })
+    const errors = spans.map((span, i) => span - cases[i]![2])
+    for (const e of errors) expect(Math.abs(e)).toBeLessThanOrEqual(1)
+    expect(Math.abs(errors.reduce((a, b) => a + b, 0))).toBeLessThanOrEqual(2)
+  })
+
+  test('15.6 磅行网格中 22 磅方正小标宋简体的标题占 3 格（WPS 实测：cn-docx-000 第 3 页）', async () => {
+    const doc = await parse({
+      body: `<w:p>${single}${run('方正小标宋简体', 44, '关于印发')}</w:p>${page('<w:docGrid w:type="lines" w:linePitch="312"/>')}`,
+    })
+    const fonts = new DocxFonts([face('simsun.ttc', '宋体'), face('simhei.ttf', '黑体')], '宋体')
+    const [title] = layoutDocument(doc, fonts.source, NO_HOST_FAMILIES).paragraphs
+    expect(title!.text.lines[0]!.height).toBeCloseTo(3 * 15.6, 6)
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('嵌入字体', () => {
+  const FONTS = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
+  const file = (name: string, index = 0) => {
+    const bytes = new Uint8Array(readFileSync(join(FONTS, name)))
+    return name.endsWith('.ttc') ? extractFace(bytes, index) : bytes
+  }
+  const KEY = '{00112233-4455-6677-8899-AABBCCDDEEFF}'
+  const MASK = [
+    0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0,
+  ]
+  const obfuscate = (bytes: Uint8Array) => bytes.map((b, i) => (i < 32 ? b ^ MASK[i % 16]! : b))
+  const embed = (name: string, inner: string) => `<w:font w:name="${name}">${inner}</w:font>`
+  const ref = (kind: string, id: string, key: string | null) =>
+    `<w:${kind} r:id="${id}"${key === null ? '' : ` w:fontKey="${key}"`}/>`
+
+  test('字体表中的嵌入字体按 fontKey 去混淆；同名条目只取第一个，部件不存在或无法还原的不列出', async () => {
+    const georgia = file('georgia.ttf')
+    const doc = await parse({
+      body: p(r('a')),
+      fonts:
+        embed('Georgia', ref('embedRegular', 'rId1', KEY) + ref('embedBold', 'rId2', null)) +
+        embed('Georgia', ref('embedItalic', 'rId1', KEY)) +
+        embed('Missing', ref('embedRegular', 'rId9', KEY)) +
+        embed('Broken', ref('embedRegular', 'rId3', '{not-a-guid}')),
+      fontParts: [
+        { id: 'rId1', name: 'fonts/font1.odttf', content: obfuscate(georgia) },
+        { id: 'rId2', name: 'fonts/font2.ttf', content: file('georgiab.ttf') },
+        { id: 'rId3', name: 'fonts/font3.odttf', content: obfuscate(georgia) },
+      ],
+    })
+    expect(doc.embeddedFonts.map((f) => [f.name, f.bold, f.italic, f.bytes.length])).toEqual([
+      ['Georgia', false, false, georgia.length],
+      ['Georgia', true, false, file('georgiab.ttf').length],
+    ])
+    expect(Array.from(doc.embeddedFonts[0]!.bytes)).toEqual(Array.from(georgia))
+  })
+
+  test('嵌入字体以按主机界面语言取的家族名为字体名，与 w:name 无关；主机有该字体名时不用', async () => {
+    // WPS 实测（构造文档 f2-emb、f2-emb3，中文界面）：家族名为 QyEmbInner、w:name 为 QyEmbB 的嵌入字体，字段字体为 QyEmbInner
+    // 时取它，为 QyEmbB 时按主机没有替代；w:name 与家族名都为 Arial 而主机有 Arial 时用主机字体。
+    const doc = await parse({
+      body: p(r('a')),
+      fonts:
+        embed('QyEmbB', ref('embedRegular', 'rId1', null)) +
+        embed('Fake', ref('embedRegular', 'rId2', null)),
+      fontParts: [
+        { id: 'rId1', name: 'fonts/font1.ttf', content: file('simsun.ttc') },
+        { id: 'rId2', name: 'fonts/font2.ttf', content: file('georgia.ttf') },
+      ],
+    })
+    const families = (language: number, names: string[]) =>
+      embeddedFaces(doc, { local: [], names, language }).map((f) => f.family)
+    expect(families(0x0804, [])).toEqual(['宋体', 'Georgia'])
+    expect(families(0x0409, [])).toEqual(['SimSun', 'Georgia'])
+    expect(families(0x0804, ['georgia'])).toEqual(['宋体'])
+  })
+
+  test('WPS 按自带度量排版的字体名有同名字体时，字形与宽度取该字体；fixed 的字体上下沿取数据表，其余取该字体', async () => {
+    // WPS 实测（构造文档 f2-emb3、f2-emb4，12 磅，等线与 Comic Sans MS 改名后嵌入）：方正小标宋简体的西文段落行高 366 缇
+    // （数据表 365.6 缇，等线为 325 缇），方正仿宋简体的西文段落 350.3–350.7 缇（数据表的东亚上下沿），Helvetica 为 334–335 缇
+    // （Comic Sans MS 为 334.5 缇）；宽度都为嵌入字体的宽度。
+    const run = (font: string) =>
+      p(
+        r(
+          'Rgx',
+          `<w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:eastAsia="${font}"/><w:sz w:val="24"/>`,
+        ),
+        '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>',
+      )
+    const doc = await parse({
+      body: run('方正小标宋简体') + run('方正仿宋简体') + run('Helvetica'),
+    })
+    const deng = file('Deng.ttf')
+    const comic = file('comic.ttf')
+    const fonts = new DocxFonts(
+      [
+        loadDocxFace(deng, '方正小标宋简体'),
+        loadDocxFace(deng, '方正仿宋简体'),
+        loadDocxFace(comic, 'Helvetica'),
+        loadDocxFace(file('simsun.ttc'), '宋体'),
+      ],
+      '宋体',
+    )
+    const lines = layoutDocument(doc, fonts.source, NO_HOST_FAMILIES).paragraphs.map(
+      (pl) => pl.text.lines[0]!,
+    )
+    expect(lines.map((l) => Math.round(l.height * 20 * 2) / 2)).toEqual([365.5, 350.5, 334.5])
+    const r0 = (face: Uint8Array) => {
+      const m = readMetrics(face, readFaces(face)[0]!)
+      return (m.advanceWidth(0x52) * 12) / m.unitsPerEm
+    }
+    expect(lines.map((l) => l.fragments[0]!.advances[0])).toEqual([r0(deng), r0(deng), r0(comic)])
   })
 })

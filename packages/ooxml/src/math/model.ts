@@ -153,6 +153,97 @@ export interface MathZone<P> {
   readonly nodes: MathArg<P>
 }
 
+/** 公式树中的字符属性逐个换算为 `f` 的结果，结构不变。 */
+export function mapMathZone<P, Q>(zone: MathZone<P>, f: (props: P) => Q): MathZone<Q> {
+  const props = (p: P | null): Q | null => (p === null ? null : f(p))
+  const arg = (a: MathArg<P>): MathArg<Q> => a.map(node)
+  const node = (n: MathNode<P>): MathNode<Q> => {
+    switch (n.kind) {
+      case 'unsupported':
+        return n
+      case 'run':
+        return { ...n, props: props(n.props) }
+      case 'f':
+        return { ...n, num: arg(n.num), den: arg(n.den), props: props(n.props) }
+      case 'sSup':
+      case 'sSub':
+      case 'sSubSup':
+        return { ...n, base: arg(n.base), sub: arg(n.sub), sup: arg(n.sup), props: props(n.props) }
+      case 'rad':
+        return { ...n, degree: arg(n.degree), base: arg(n.base), props: props(n.props) }
+      case 'nary':
+        return {
+          ...n,
+          sub: arg(n.sub),
+          sup: arg(n.sup),
+          base: arg(n.base),
+          props: props(n.props),
+        }
+      case 'd':
+        return { ...n, items: n.items.map(arg), props: props(n.props) }
+      case 'eqArr':
+        return { ...n, rows: n.rows.map(arg), props: props(n.props) }
+      case 'func':
+        return { ...n, name: arg(n.name), base: arg(n.base), props: props(n.props) }
+      case 'acc':
+      case 'bar':
+      case 'box':
+        return { ...n, base: arg(n.base), props: props(n.props) }
+      case 'limLow':
+      case 'limUpp':
+        return { ...n, base: arg(n.base), limit: arg(n.limit), props: props(n.props) }
+    }
+  }
+  return { nodes: arg(zone.nodes) }
+}
+
+/** 公式树中的全部字符属性，按出现顺序。 */
+export function mathPropsOf<P>(zone: MathZone<P>): P[] {
+  const out: P[] = []
+  mapMathZone(zone, (props) => {
+    out.push(props)
+    return props
+  })
+  return out
+}
+
+/** 公式树中有未实现的结构（`MathUnsupported`）。 */
+export function hasUnsupportedMath<P>(zone: MathZone<P>): boolean {
+  const any = (a: MathArg<P>): boolean => a.some(unsupported)
+  const unsupported = (n: MathNode<P>): boolean => {
+    switch (n.kind) {
+      case 'unsupported':
+        return true
+      case 'run':
+        return false
+      case 'f':
+        return any(n.num) || any(n.den)
+      case 'sSup':
+      case 'sSub':
+      case 'sSubSup':
+        return any(n.base) || any(n.sub) || any(n.sup)
+      case 'rad':
+        return any(n.degree) || any(n.base)
+      case 'nary':
+        return any(n.sub) || any(n.sup) || any(n.base)
+      case 'd':
+        return n.items.some(any)
+      case 'eqArr':
+        return n.rows.some(any)
+      case 'func':
+        return any(n.name) || any(n.base)
+      case 'acc':
+      case 'bar':
+      case 'box':
+        return any(n.base)
+      case 'limLow':
+      case 'limUpp':
+        return any(n.base) || any(n.limit)
+    }
+  }
+  return any(zone.nodes)
+}
+
 export type MathJustification = 'left' | 'right' | 'center' | 'centerGroup'
 
 /** 一个 `m:oMathPara`：每个 `m:oMath` 独占一行显示。`justification` 为 `null` 时按文档设置（`defJc`）。 */

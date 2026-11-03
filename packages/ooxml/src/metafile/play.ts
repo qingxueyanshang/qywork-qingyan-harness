@@ -11,7 +11,8 @@
  *   图元文件，含 `COLORONCOLOR` 放大 3 倍的渐变与 1 位棋盘格）：缩放均为平滑插值；区域 SSIM 之和为 5.95，按模式区分平滑并
  *   取整到像素时为 5.76，坐标加 0.5 像素时为 5.56。
  * - 文字逐字绘制：字号为 `lfHeight` 换算到目标后取整的 ppem，字的横坐标为参考点加前进宽度之和换算后取整；对齐方式按
- *   `TA_*`，背景模式为不透明时以背景色填充字符单元。字形由 `MetafileFonts` 绘制。`lfWidth` 不为 0 时字形与按字体度量的
+ *   `TA_*`，背景模式为不透明时以背景色填充字符单元。字形由 `MetafileFonts` 绘制，主机没有字体对象的字体名时
+ *   按字符集与字体族替代（`metafileFontSubstitute`）。`lfWidth` 不为 0 时字形与按字体度量的
  *   前进宽度横向缩放为 `lfWidth` 与字体平均字符宽度之比（WPS 实测：Times New Roman 20 像素，`lfWidth` 6 与 14 的字形宽度）。
  * - `TA_UPDATECP`：参考点为当前位置；左对齐时绘制后当前位置移到文字右端，右对齐时移到文字左端，居中时不移动
  *   （WPS 实测：构造文件中连续三段文字与其后的 LINETO）。
@@ -26,6 +27,7 @@ import {
   type PaintContext,
   type PaintImage,
 } from '../drawingml/paint/context.ts'
+import { metafileFontSubstitute } from '../text/font-substitutes.ts'
 import type { Box, Brush, Font, Metafile, MetaOp, Pen, Point, Rgb } from './model.ts'
 
 /** 绘制文字所用的字体。 */
@@ -57,9 +59,15 @@ export interface MetafileFace {
   ): void
 }
 
+/**
+ * 图元文件文字的字体来源。字体对象的字体名主机没有时取 `metafileFontSubstitute` 的替代字体，也没有时取 `fallback`
+ * （选取规则见 `Player.face`，宿主只按名称提供字体）。
+ */
 export interface MetafileFonts {
-  /** 按字体名与字形取得字体；主机没有该字体时由调用方返回回退字体。 */
-  face(name: string, bold: boolean, italic: boolean): MetafileFace
+  /** 按字体名与字形取得字体；主机没有该字体时为 `null`。 */
+  face(name: string, bold: boolean, italic: boolean): MetafileFace | null
+  /** 字体名与其替代字体主机都没有时所用的字体（宿主的回退字体）。 */
+  fallback(bold: boolean, italic: boolean): MetafileFace
 }
 
 /** 图片框映射到的矩形（调用方上下文的坐标）。 */
@@ -601,6 +609,17 @@ class Player {
     ctx.restore()
   }
 
+  /** 字体对象所用的字体：字体名，主机没有时为其替代字体（`metafileFontSubstitute`），都没有时为宿主的回退字体。 */
+  private face(font: Font): MetafileFace {
+    const bold = font.weight >= 600
+    const substitute = metafileFontSubstitute(font)
+    return (
+      this.fonts.face(font.face, bold, font.italic) ??
+      (substitute === null ? null : this.fonts.face(substitute, bold, font.italic)) ??
+      this.fonts.fallback(bold, font.italic)
+    )
+  }
+
   private text(o: Extract<MetaOp, { op: 'text' }>): void {
     const s = this.s
     const m = this.matrix()
@@ -625,7 +644,7 @@ class Player {
       ctx.clip()
     }
     const scaleY = Math.abs(m.d)
-    const face = this.fonts.face(font.face, font.weight >= 600, font.italic)
+    const face = this.face(font)
     const ppem = Math.round(
       font.height < 0 ? -font.height * scaleY : font.height * scaleY * face.emPerCell,
     )

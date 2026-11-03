@@ -62,7 +62,24 @@ export interface ImageTile {
   readonly align: string
 }
 
-export interface ImageFill {
+/**
+ * 图片效果（`blip` 的子元素），按文档顺序逐个作用于图片像素。`bright`、`contrast`、`threshold` 为小数。
+ * 扩展中的图片效果（`a14:imgEffect` 的艺术效果、亮度对比度、饱和度、背景删除）不在其中：`blip` 引用的图片已含这些效果，
+ * 原图在 `a14:imgLayer` 中（WPS 演示实测：两者不同时显示 `blip` 的图片）。
+ */
+export type ImageEffectOf<C> =
+  | { readonly kind: 'luminance'; readonly bright: number; readonly contrast: number }
+  | { readonly kind: 'grayscale' }
+  | { readonly kind: 'biLevel'; readonly threshold: number }
+  | { readonly kind: 'duotone'; readonly dark: C; readonly light: C }
+  /** `clrChange`：与 `from` 相近的像素变为透明，`clrTo` 不参与（WPS 演示实测）。 */
+  | { readonly kind: 'colorChange'; readonly from: C }
+  /** 未实现的效果（如 `hsl`、`tint`、`alphaInv`），只记录元素本地名。 */
+  | { readonly kind: 'other'; readonly name: string }
+
+export type ImageEffect = ImageEffectOf<Color>
+
+export interface ImageFillOf<C> {
   /** 图片部件名。 */
   readonly part: string | null
   /** `srcRect`：从原图四边裁去的比例，负值为向外扩展。 */
@@ -72,10 +89,12 @@ export interface ImageFill {
   readonly tile: ImageTile | null
   /** `alphaModFix` 的不透明度，缺省为 1。 */
   readonly alpha: number
-  /** 未实现的图片效果的元素本地名（如 `duotone`、`grayscl`、`artisticPhotocopy`），按出现顺序。 */
-  readonly effects: readonly string[]
+  readonly effects: readonly ImageEffectOf<C>[]
   readonly rotateWithShape: boolean
 }
+
+export type ImageFillSpec = ImageFillOf<ColorSpec | null>
+export type ImageFill = ImageFillOf<Color>
 
 export type FillOf<C> =
   | { readonly kind: 'none' }
@@ -87,7 +106,7 @@ export type FillOf<C> =
       readonly flip: TileFlip
       readonly rotateWithShape: boolean
     }
-  | { readonly kind: 'picture'; readonly image: ImageFill }
+  | { readonly kind: 'picture'; readonly image: ImageFillOf<C> }
   | {
       readonly kind: 'pattern'
       /** `ST_PresetPatternVal`，如 `pct20`、`horz`、`smCheck`。 */
@@ -203,8 +222,6 @@ const FILL_ELEMENTS = new Set([
   'pattFill',
   'grpFill',
 ])
-/** `blip` 的子元素中可解析为不透明度的效果；其余效果按名称记入 `effects`。 */
-const BLIP_IGNORED = new Set(['alphaModFix', 'extLst'])
 const DEFAULT_LINE_END: LineEnd = { type: 'none', width: 'med', length: 'med' }
 
 function eachChild(x: Reader, visit: (local: string) => void): void {
@@ -315,14 +332,46 @@ function readGradient(x: Reader): FillSpec {
   return { kind: 'gradient', stops, shade, flip, rotateWithShape }
 }
 
-function readImageFill(x: Reader, rels: Relationships | null): ImageFill {
+/** 在 `blip` 子元素的开始标签处调用；`alphaModFix` 与 `extLst` 由调用方处理。 */
+function readImageEffect(x: Reader): ImageEffectOf<ColorSpec | null> {
+  switch (x.local) {
+    case 'lum':
+      return {
+        kind: 'luminance',
+        bright: percent(x, 'bright', 0),
+        contrast: percent(x, 'contrast', 0),
+      }
+    case 'grayscl':
+      return { kind: 'grayscale' }
+    case 'biLevel':
+      return { kind: 'biLevel', threshold: percent(x, 'thresh', 0) }
+    case 'duotone': {
+      const colors: (ColorSpec | null)[] = []
+      eachChild(x, (local) => {
+        if (isColorElement(local)) colors.push(readColor(x))
+      })
+      return { kind: 'duotone', dark: colors[0] ?? null, light: colors[1] ?? null }
+    }
+    case 'clrChange': {
+      let from: ColorSpec | null = null
+      eachChild(x, (local) => {
+        if (local === 'clrFrom') from = readChildColor(x)
+      })
+      return { kind: 'colorChange', from }
+    }
+    default:
+      return { kind: 'other', name: x.local }
+  }
+}
+
+function readImageFill(x: Reader, rels: Relationships | null): ImageFillSpec {
   const rotateWithShape = bool(x, 'rotWithShape', true)
   let part: string | null = null
   let crop = ZERO_RECT
   let stretch: RelativeRect | null = null
   let tile: ImageTile | null = null
   let alpha = 1
-  const effects: string[] = []
+  const effects: ImageEffectOf<ColorSpec | null>[] = []
   eachChild(x, (local) => {
     if (local === 'blip') {
       const embed = x.attrNs(NS.relationships, 'embed')
@@ -330,10 +379,9 @@ function readImageFill(x: Reader, rels: Relationships | null): ImageFill {
         const r = rels.byId(embed)
         part = r !== null && !r.external ? r.part : null
       }
-      eachChild(x, (effect) => {
-        if (effect === 'alphaModFix') alpha = percent(x, 'amt', 1)
-        else if (effect === 'extLst') readImageExtensions(x, effects)
-        else if (!BLIP_IGNORED.has(effect)) effects.push(effect)
+      eachChild(x, (child) => {
+        if (child === 'alphaModFix') alpha = percent(x, 'amt', 1)
+        else if (child !== 'extLst') effects.push(readImageEffect(x))
       })
     } else if (local === 'srcRect') {
       crop = readRelativeRect(x)
@@ -354,23 +402,6 @@ function readImageFill(x: Reader, rels: Relationships | null): ImageFill {
     }
   })
   return { part, crop, stretch, tile, alpha, effects, rotateWithShape }
-}
-
-/** 扩展中的图片效果（艺术效果、亮度对比度、背景删除）记入 `effects`；其余扩展（SVG 原图、本地 DPI）不影响位图显示。 */
-function readImageExtensions(x: Reader, effects: string[]): void {
-  const depth = x.depth
-  let effectDepth = -1
-  for (let t = x.next(); t !== null; t = x.next()) {
-    if (t === 'end') {
-      if (x.depth === depth) return
-      if (x.depth === effectDepth) effectDepth = -1
-      continue
-    }
-    if (t !== 'start') continue
-    if (effectDepth >= 0 && x.depth === effectDepth + 1) effects.push(x.local)
-    else if (x.local === 'imgEffect') effectDepth = x.depth
-    else if (x.local === 'backgroundRemoval') effects.push('backgroundRemoval')
-  }
 }
 
 function readPattern(x: Reader): FillSpec {
@@ -525,9 +556,29 @@ export function resolveFill(spec: FillSpec, context: ColorContext): Fill {
         foreground: color(spec.foreground, context) ?? BLACK,
         background: color(spec.background, context) ?? WHITE,
       }
+    case 'picture':
+      return { kind: 'picture', image: resolveImageFill(spec.image, context) }
     default:
       return spec
   }
+}
+
+/** 图片效果中的颜色求值；颜色无法确定的效果整项去掉。 */
+export function resolveImageFill(spec: ImageFillSpec, context: ColorContext): ImageFill {
+  const effects: ImageEffect[] = []
+  for (const e of spec.effects) {
+    if (e.kind === 'duotone') {
+      const dark = color(e.dark, context)
+      const light = color(e.light, context)
+      if (dark !== null && light !== null) effects.push({ kind: 'duotone', dark, light })
+    } else if (e.kind === 'colorChange') {
+      const from = color(e.from, context)
+      if (from !== null) effects.push({ kind: 'colorChange', from })
+    } else {
+      effects.push(e)
+    }
+  }
+  return { ...spec, effects }
 }
 
 /** 没有线条（缺少填充或为无填充、组合填充）时为 `null`。 */

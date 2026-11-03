@@ -159,6 +159,42 @@ describe.skipIf(!HAS_FONTS)('公式的排版与分页', () => {
     expect(grid[4]).toBeCloseTo(31.2, 6)
   })
 
+  test('显示公式的行高取整缇；底式中的汉字使上标按宋体单倍行高的上沿、下标按其下沿下降', async () => {
+    // WPS（构造文档：正文样式西文为 Cambria Math、东亚为宋体、10.5 磅，公式段落关闭 snapToGrid、1.15 倍行距，段落行顶之差）：
+    // x²、汉²、汉₂、汉字=汉字、汉/汉、x/y 的行高为 291、393、372、339、683、510 缇。
+    const styles =
+      '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体" ' +
+      'w:cs="Times New Roman"/><w:lang w:val="en-US" w:eastAsia="zh-CN"/></w:rPr></w:rPrDefault></w:docDefaults>' +
+      '<w:style w:type="paragraph" w:default="1" w:styleId="a"><w:name w:val="Normal"/><w:rPr><w:rFonts w:ascii="Cambria Math" ' +
+      'w:hAnsi="Cambria Math"/><w:kern w:val="2"/><w:sz w:val="21"/><w:szCs w:val="24"/></w:rPr></w:style>'
+    const ppr =
+      '<w:snapToGrid w:val="0"/><w:spacing w:line="276" w:lineRule="auto"/>' +
+      '<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/></w:rPr>'
+    const t = (x: string, eastAsia = false) =>
+      `<m:r><m:rPr><m:sty m:val="p"/></m:rPr>${eastAsia ? '<w:rPr><w:rFonts w:hint="eastAsia"/></w:rPr>' : ''}<m:t>${x}</m:t></m:r>`
+    const x = '<m:r><m:t>x</m:t></m:r>'
+    const y = '<m:r><m:t>y</m:t></m:r>'
+    const formulas = [
+      `<m:sSup><m:e>${x}</m:e><m:sup>${t('2')}</m:sup></m:sSup>`,
+      `<m:sSup><m:e>${t('汉', true)}</m:e><m:sup>${t('2')}</m:sup></m:sSup>`,
+      `<m:sSub><m:e>${t('汉', true)}</m:e><m:sub>${t('2')}</m:sub></m:sSub>`,
+      `${t('汉字', true)}${t('=')}${t('汉字', true)}`,
+      `<m:f><m:num>${t('汉', true)}</m:num><m:den>${t('汉', true)}</m:den></m:f>`,
+      `<m:f><m:num>${x}</m:num><m:den>${y}</m:den></m:f>`,
+    ]
+    const result = await parseDocx(
+      buildDocx({
+        styles,
+        body: formulas.map((z) => p(para(z), ppr)).join('') + SECT(GRID),
+      }),
+    )
+    if (!result.ok) throw new Error('解析失败')
+    const heights = layouts(result.value).map(
+      (l) => Math.round(l.text.lines[0]!.height * 20 * 1000) / 1000,
+    )
+    expect(heights).toEqual([291, 393, 372, 339, 683, 510])
+  })
+
   test('设置了 adjustLineHeightInTable 时显示公式段落对齐行网格，关闭 snapToGrid 的段落不对齐', async () => {
     const f1 =
       `<m:f><m:num>${mr('F')}</m:num><m:den>${mr('S')}</m:den></m:f>${mr('=')}${mr('E')}` +

@@ -25,6 +25,7 @@ export {
   type MathSlash,
 } from './layout.ts'
 export {
+  hasUnsupportedMath,
   MATH_SETTINGS_DEFAULTS,
   type MathAccent,
   type MathArg,
@@ -47,6 +48,8 @@ export {
   type MathStyle,
   type MathUnsupported,
   type MathZone,
+  mapMathZone,
+  mathPropsOf,
 } from './model.ts'
 export {
   fillAliased,

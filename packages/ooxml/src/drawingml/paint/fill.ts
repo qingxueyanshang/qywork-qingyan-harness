@@ -9,7 +9,7 @@
  * - 路径渐变：色标位置 0 位于 `fillToRect` 所指的焦点区域，1 位于形状框边缘。`circle` 在单位正方形中
  *   以焦点中心到最远角的距离为半径，再随形状框拉伸；`rect` 与 `shape` 均按矩形绘制（`shape` 不沿形状轮廓）。
  * - `rotWithShape` 为假时，渐变方向与平铺图片按幻灯片坐标轴绘制，不随形状旋转。
- * - 图片的解码与按裁剪比例绘制见 `picture.ts`（位图与图元文件）。
+ * - 图片的解码与按裁剪比例绘制见 `picture.ts`（位图与图元文件），图片效果见 `recolor.ts`。
  * - 平铺的单元尺寸为图片像素数按图片文件记录的分辨率换算为 96 dpi 像素后四舍五入（图元文件为图片框按 96 dpi 的尺寸，
  *   先栅格化），再乘以 `sx`、`sy`。实测（WPS 演示导出图）：120 × 90 的图片在 150 dpi 时单元为 77 × 58 像素，150 × 75 dpi 时为
  *   77 × 115 像素。
@@ -38,6 +38,8 @@ import {
   pictureRaster,
   pictureSize,
 } from './picture.ts'
+import { recolorImage, recolors } from './recolor.ts'
+import { SCREEN_RESOLUTION } from './resolution.ts'
 
 export interface FillArea {
   readonly width: number
@@ -329,6 +331,24 @@ function paintRectGradient(
   ])
 }
 
+/**
+ * 施加图片效果后的图片（见 `recolor.ts`）：位图逐像素运算；图元文件先按图片框栅格化（`pictureRaster`），
+ * 无法栅格化时为 `null`。
+ */
+function withEffects(
+  picture: PaintPicture,
+  image: ImageFill,
+  res: PaintResources,
+): PaintPicture | null {
+  if (!recolors(image.effects)) return picture
+  if (picture.kind === 'bitmap')
+    return { ...picture, bitmap: recolorImage(picture.bitmap, image.effects, res.createCanvas) }
+  const raster = pictureRaster(picture, res.createCanvas, res.metafileFonts)
+  if (raster === null) return null
+  const bitmap = recolorImage(raster, image.effects, res.createCanvas)
+  return { kind: 'bitmap', bitmap, resolution: SCREEN_RESOLUTION }
+}
+
 /** 图片填充：拉伸到 `fillRect` 所指区域，或按 `tile` 平铺。调用方已裁剪到形状路径。 */
 export function paintImageFill(
   ctx: PaintContext,
@@ -336,7 +356,8 @@ export function paintImageFill(
   area: FillArea,
   res: PaintResources,
 ): void {
-  const picture = image.part === null ? null : res.image(image.part)
+  const decoded = image.part === null ? null : res.image(image.part)
+  const picture = decoded === null ? null : withEffects(decoded, image, res)
   if (picture === null) return
   const fonts = res.metafileFonts
   const { width, height } = area

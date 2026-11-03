@@ -193,12 +193,46 @@ describe('跳过的结构', () => {
   })
 })
 
-describe('结构错误', () => {
-  test('结束标签不匹配或没有对应的开始标签', () => {
-    expect(syntaxError('<a><b></a>').message).toContain('与 <b> 不匹配')
-    expect(syntaxError('<a></a></b>').message).toContain('没有对应的开始标签')
+describe('不配对的结束标签', () => {
+  test('与已打开的祖先同名时依次关闭到该祖先，中间各层逐个产出结束事件', () => {
+    expect(events('<a><b><c>x</a>')).toEqual([
+      'start:a@1',
+      'start:b@2',
+      'start:c@3',
+      'text:x',
+      'end:c@3',
+      'end:b@2',
+      'end:a@1',
+    ])
   })
 
+  test('与任何已打开的元素都不同名时忽略', () => {
+    expect(events('<r><t>a</s></r>')).toEqual([
+      'start:r@1',
+      'start:t@2',
+      'text:a',
+      'end:t@2',
+      'end:r@1',
+    ])
+    expect(events('<a>x</b>y</a>')).toEqual(['start:a@1', 'text:x', 'text:y', 'end:a@1'])
+    expect(events('<a></a></b>')).toEqual(['start:a@1', 'end:a@1'])
+  })
+
+  test('关闭到祖先之后继续读取其后的元素', () => {
+    expect(events('<a><b><c></b><d/></a>')).toEqual([
+      'start:a@1',
+      'start:b@2',
+      'start:c@3',
+      'end:c@3',
+      'end:b@2',
+      'start:d@2',
+      'end:d@2',
+      'end:a@1',
+    ])
+  })
+})
+
+describe('结构错误', () => {
   test('输入结束时元素未闭合', () => {
     const e = syntaxError('<a><b>text')
     expect(e.message).toContain('<b> 未闭合')

@@ -3,7 +3,8 @@
  *
  *   bun run scripts/ooxml-fidelity/pptx-candidates.ts [--only <文档标识>…] [--out <目录>]
  *
- * 分工与 xlsx 相同：本脚本（Bun）打包浏览器入口 `pptx-page.ts`，以本地 HTTP 服务提供页面、pptx 字节与本机字体；
+ * 分工与 xlsx 相同：本脚本（Bun）打包浏览器入口 `pptx-page.ts`，以本地 HTTP 服务提供页面、pptx 字节与本机字体
+ * （取自服务端字体接口的同一份索引：`hostFaces`、`faceBytes`）；
  * `pptx-shoot.mjs`（Node）驱动 Playwright 打开 Edge，设备像素比 1，逐页调用 `renderPage` 并对画布截图。
  *
  * 真值清单的每页取 `file` 与幻灯片序号（`slide`，从 1 起；缺省为页序号 `n`），画布尺寸取真值图片的宽高。
@@ -14,9 +15,13 @@
 
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { extractFace } from '../../packages/ooxml/src/font/index.ts'
-import { fontSmoothing, type SmoothingParameters } from '../../packages/server/src/api/fonts.ts'
-import { facesFor, type IndexedFace, indexFonts } from './font-index.ts'
+import {
+  faceBytes,
+  fontSmoothing,
+  type HostFace,
+  hostFaces,
+  type SmoothingParameters,
+} from '../../packages/server/src/api/fonts.ts'
 
 const ROOT = join(import.meta.dir, '..', '..')
 const OUT = join(ROOT, '.tmp', 'ooxml-fidelity')
@@ -101,9 +106,8 @@ if (!built.success) {
   process.exit(1)
 }
 
-const fonts: IndexedFace[] = await indexFonts()
-const faceIds = new Map<string, IndexedFace>()
-for (const f of fonts) faceIds.set(`${f.file}#${f.index}`, f)
+/** `/font` 下发过的字体：标识为文件路径与合集序号。 */
+const faceIds = new Map<string, HostFace>()
 
 const html = `<!doctype html><meta charset="utf-8"><body style="margin:0;background:#fff">
 <canvas id="slide" style="display:block"></canvas><script type="module" src="/page.js"></script>`
@@ -121,17 +125,20 @@ const server = Bun.serve({
       return doc ? new Response(Bun.file(doc.path)) : new Response('', { status: 404 })
     }
     if (url.pathname === '/font') {
-      const list = facesFor(fonts, url.searchParams.get('name') ?? '')
+      const list = await hostFaces(url.searchParams.get('name') ?? '')
       if (list.length === 0) return new Response('[]', { status: 404 })
       return Response.json(
-        list.map((f) => ({ id: `${f.file}#${f.index}`, bold: f.bold, italic: f.italic })),
+        list.map((f) => {
+          const id = `${f.path}#${f.index}`
+          faceIds.set(id, f)
+          return { id, bold: f.bold, italic: f.italic }
+        }),
       )
     }
     if (url.pathname === '/font-face') {
       const face = faceIds.get(url.searchParams.get('id') ?? '')
       if (!face) return new Response('', { status: 404 })
-      const bytes = new Uint8Array(await Bun.file(face.file).arrayBuffer())
-      return new Response(extractFace(bytes, face.index).slice())
+      return new Response((await faceBytes(face)).slice())
     }
     if (url.pathname === '/jobs') return Response.json(jobs)
     return new Response('', { status: 404 })

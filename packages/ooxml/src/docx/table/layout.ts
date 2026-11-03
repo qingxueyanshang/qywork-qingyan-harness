@@ -78,6 +78,8 @@ export interface RowBox {
   readonly border: number
   /** 本行整行位于续页部分开头时顶边框占用的高度（`TableLayout.pageTop`）。 */
   readonly pageBorder: number
+  /** 本行整行紧接在续页重复的标题行之后时顶边框占用的高度（`TableLayout.afterHeader`）。 */
+  readonly headerBorder: number
   /** 本行为页面部分的最后一行时底边框占用的高度（`TableLayout.pageBottom`；最后一行即表格底边框）。 */
   readonly pageBottomBorder: number
   /** 不含行顶边框的最小高度：最小行高的设定值加单元格上下边距；其他行为 0。切开后续页的部分同样不小于此值。 */
@@ -119,6 +121,11 @@ export interface TableLayout {
   /** 第 `r` 行位于续页部分开头时的顶边、位于页面部分末尾时的底边（见文件头）：`[r][c]`，没有单元格处为 `undefined`。 */
   readonly pageTop: readonly (readonly (Border | null | undefined)[])[]
   readonly pageBottom: readonly (readonly (Border | null | undefined)[])[]
+  /**
+   * 第 `r` 行紧接在续页重复的标题行之后时的顶边：标题行最后一行的底边与本行顶边取舍，`[r][c]`（WPS 实测：标题行底边
+   * 1.25 磅、数据行顶边为 nil 时续页绘制该线，其后各行下移 0.25 磅，与第一页标题行之下相同）。没有标题行时各行为空。
+   */
+  readonly afterHeader: readonly (readonly (Border | null | undefined)[])[]
 }
 
 export interface TableContext {
@@ -198,19 +205,20 @@ function rowTopSpace(
     c: number,
   ) => Border | null | undefined,
   continued: { readonly top: Border | null; readonly margin: number } | null,
+  upper = r - 1,
 ): number {
   const below = grid[r]?.[c] ?? null
-  const above = r > 0 ? (grid[r - 1]?.[c] ?? null) : null
+  const above = upper >= 0 ? (grid[upper]?.[c] ?? null) : null
   if (below === null && above === null) return 0
   if (below === above) {
     if (continued === null) return 0
     const own = borderSpace(continued.top)
     return Math.max(own, borderSpace(edge(above, 'bottom', r - 1, c)) - continued.margin)
   }
-  if (below === null) return borderSpace(edge(above, 'bottom', r - 1, c))
+  if (below === null) return borderSpace(edge(above, 'bottom', upper, c))
   const own = borderSpace(edge(below, 'top', r, c))
   if (above === null) return own
-  return Math.max(own, borderSpace(edge(above, 'bottom', r - 1, c)) - below.cell.margins.top)
+  return Math.max(own, borderSpace(edge(above, 'bottom', upper, c)) - below.cell.margins.top)
 }
 
 /** 两侧边框的取舍（见文件头）。`undefined` 为该侧没有单元格。 */
@@ -336,6 +344,23 @@ export function layoutTable(t: TableBlock, region: number, cx: TableContext): Ta
     }
     vertical.push(line)
   }
+  let headerRows = 0
+  while (headerRows <= lastRow && t.rows[headerRows]!.header) headerRows++
+  const lastHeader = headerRows - 1
+  const afterHeader: (Border | null | undefined)[][] = []
+  for (let r = 0; r <= lastRow; r++) {
+    const line: (Border | null | undefined)[] = []
+    for (let c = 0; c < columnsCount && headerRows > 0 && r > lastHeader; c++) {
+      const above = grid[lastHeader]?.[c] ?? null
+      const below = grid[r]?.[c] ?? null
+      line.push(
+        (above === null && below === null) || above === below
+          ? undefined
+          : resolveEdge(edge(above, 'bottom', lastHeader, c), edge(below, 'top', r, c)),
+      )
+    }
+    afterHeader.push(line)
+  }
   const pageTop: (Border | null | undefined)[][] = []
   const pageBottom: (Border | null | undefined)[][] = []
   for (let r = 0; r <= lastRow; r++) {
@@ -369,10 +394,13 @@ export function layoutTable(t: TableBlock, region: number, cx: TableContext): Ta
   t.rows.forEach((row, r) => {
     let border = 0
     let pageBorder = 0
+    let headerBorder = 0
     let pageBottomBorder = 0
     for (let c = 0; c < columnsCount; c++) {
       border = Math.max(border, rowTopSpace(grid, r, c, edge, continuedAt(r, c)))
       pageBorder = Math.max(pageBorder, borderSpace(pageTop[r]?.[c]))
+      if (r > lastHeader && headerRows > 0)
+        headerBorder = Math.max(headerBorder, rowTopSpace(grid, r, c, edge, null, lastHeader))
       pageBottomBorder = Math.max(pageBottomBorder, borderSpace(pageBottom[r]?.[c]))
     }
     const cells: CellBox[] = []
@@ -413,6 +441,7 @@ export function layoutTable(t: TableBlock, region: number, cx: TableContext): Ta
       height,
       border,
       pageBorder,
+      headerBorder,
       pageBottomBorder,
       minimum,
       rule,
@@ -446,6 +475,7 @@ export function layoutTable(t: TableBlock, region: number, cx: TableContext): Ta
     vertical,
     pageTop,
     pageBottom,
+    afterHeader,
   }
 }
 

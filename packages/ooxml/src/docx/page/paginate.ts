@@ -105,7 +105,10 @@ export interface RowSegment {
   readonly repeat: boolean
   /** 续页部分的第一段（不含重复的标题行）：顶边绘制 `TableLayout.pageTop`。 */
   readonly pageTop: boolean
-  /** 本段顶边框占用的高度：续页部分开头的整行为 `RowBox.pageBorder`，其余（含切开的行在续页的部分）为 `RowBox.border`。 */
+  /**
+   * 本段顶边框占用的高度：续页部分开头的整行为 `RowBox.pageBorder`，紧接在续页重复的标题行之后的整行为
+   * `RowBox.headerBorder`，其余（含切开的行在续页的部分）为 `RowBox.border`。
+   */
   readonly border: number
 }
 
@@ -186,6 +189,11 @@ export interface AnchorSite {
   readonly x: number
   readonly area: BodyArea
   readonly layout: ParagraphLayout
+  /**
+   * 段落的第一部分按本页已有对象环绕后的排版（不计段内对象）：相对栏按偏移定位的对象以其中锚定行区段的左端为基准
+   * （见 `build.ts` 的 `anchorRect`）。本页没有其他对象与其他部分为 `null`。
+   */
+  readonly wrapped: ParagraphLayout | null
 }
 
 export interface PaginateOptions {
@@ -615,7 +623,13 @@ export function paginate(
         const pageTop = resumed && segments.length === 0
         const continued = from.some((v) => v > 0)
         // WPS 实测：续页开头的整行下移表格上框线的高度；切开的行在续页的部分只占本行的行顶边框，顶部同样绘制上框线。
-        const border = pageTop && !continued ? row.pageBorder : row.border
+        const afterRepeat = segments.at(-1)?.repeat === true
+        const border =
+          pageTop && !continued
+            ? row.pageBorder
+            : afterRepeat && !continued
+              ? row.headerBorder
+              : row.border
         const rest = continued
           ? border + continuedHeight(row, from)
           : row.rule === 'exact'
@@ -811,6 +825,7 @@ export function paginate(
           x: lefts[column]!,
           area: page.area,
           layout: initial,
+          wrapped: null,
         }
         if (!empty && options.mustMove(b, site)) {
           cursor = { block: b, line: 0, table: false }
@@ -820,11 +835,11 @@ export function paginate(
         const pageIndex = pages.length - 1
         // 段内对象的位置按本页已有对象环绕后的段落位置求得（不计段内对象本身）。
         const others = exclusionsOf(pageIndex)
-        const moved =
+        const wrapped =
           block.anchors.length > 0 && others.length > 0
-            ? (options.wrap(b, lefts[column]!, top, page.area.bottom, others, true, own)?.text
-                .lines[0]?.skip ?? 0)
-            : 0
+            ? options.wrap(b, lefts[column]!, top, page.area.bottom, others, true, own)
+            : null
+        const moved = wrapped?.text.lines[0]?.skip ?? 0
         const restart = addAnchors(b, {
           section: block.section,
           first: 0,
@@ -833,6 +848,7 @@ export function paginate(
           x: lefts[column]!,
           area: page.area,
           layout: initial,
+          wrapped,
         })
         const from = regionAt()
         if (restart && from !== null && !from.table && from.line === 0) {
@@ -853,6 +869,7 @@ export function paginate(
           x: lefts[column]!,
           area: page.area,
           layout: lay,
+          wrapped: null,
         })
       }
       const lines = lay.text.lines

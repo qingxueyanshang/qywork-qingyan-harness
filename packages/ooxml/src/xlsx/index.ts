@@ -39,6 +39,7 @@ export type {
   ColumnSpec,
   ConditionalFormat,
   ConnectorNode,
+  DifferentialFill,
   DifferentialStyle,
   DrawingAnchor,
   FontStyle,

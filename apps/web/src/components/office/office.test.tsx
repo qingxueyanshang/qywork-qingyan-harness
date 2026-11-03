@@ -106,10 +106,12 @@ function sheet(name: string, over: Partial<Worksheet> = {}): Worksheet {
       customHeight: false,
       defaultColWidth: null,
       baseColWidth: 8,
+      declared: true,
     },
     merges: [],
     view: {
       showGridLines: true,
+      gridColor: null,
       zoom: 100,
       rightToLeft: false,
       frozenRows: 0,
@@ -170,6 +172,7 @@ const ZOOMED = workbook([
   sheet('甲', {
     view: {
       showGridLines: true,
+      gridColor: null,
       zoom: 85,
       rightToLeft: false,
       frozenRows: 0,
@@ -258,13 +261,13 @@ const PPTX_RESULTS: Record<string, PptxResult> = {
       media: 1,
       ink: 1,
       imageFormat: 1,
-      pictureBullet: 1,
       verticalText: 1,
       textWarp: 1,
       tableStyle: 1,
       effect3d: 1,
       imageEffect: 1,
       effect: 1,
+      math: 1,
       animation: 1,
       transition: 1,
     }),
@@ -309,7 +312,11 @@ function docPages(pages: Page[]): DocumentPages {
 }
 
 /** 假服务端的主机字体族名（`/api/fonts/families`）。 */
-const HOST_FAMILIES = { local: ['宋体', 'Courier New'], names: ['courier new', 'simsun', '宋体'] }
+const HOST_FAMILIES = {
+  local: ['宋体', 'Courier New'],
+  names: ['courier new', 'simsun', '宋体'],
+  language: 0x0804,
+}
 
 /** 第 4 页为横向，其余为纵向。 */
 const REPORT_SIZES = Array.from({ length: 10 }, (_, i) => (i === 3 ? A4_LANDSCAPE : A4))
@@ -320,18 +327,29 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
     parsed: {
       ok: true,
       fonts: ['宋体', 'SimSun', '黑体'],
+      embedded: [],
       unsupported: { chart: 2, decimalTab: 3 },
     },
     pages: docPages(REPORT_SIZES.map((size) => docPage(size))),
   },
   revised: {
-    parsed: { ok: true, fonts: ['宋体'], unsupported: {} },
+    parsed: { ok: true, fonts: ['宋体'], embedded: [], unsupported: {} },
     pages: docPages(REPORT_SIZES.map((size, i) => docPage(size, i === 0 ? 1 : 0))),
+  },
+  embedded: {
+    parsed: {
+      ok: true,
+      fonts: ['宋体', '方正小标宋简体'],
+      embedded: [{ family: '方正小标宋简体', bold: false, italic: false, bytes: tinyFont() }],
+      unsupported: {},
+    },
+    pages: docPages([docPage(A4)]),
   },
   kinds: {
     parsed: {
       ok: true,
       fonts: [],
+      embedded: [],
       unsupported: {
         frame: 1,
         floatingTable: 1,
@@ -371,7 +389,7 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
         revision: 1,
         dynamicField: 1,
         numberFormat: 1,
-        autoSpacing: 1,
+        nesting: 1,
       },
     },
     pages: docPages([docPage(A4, 1), docPage(A4)]),
@@ -1057,8 +1075,8 @@ describe('演示文稿预览', () => {
       () => host.innerHTML.slice(0, 300),
     )
     expect(boundary(host)).toBe(
-      '未显示：图表 1、SmartArt 1、嵌入对象 1、其他对象 1、音视频 1、墨迹 1、图片 1、图片项目符号 1、' +
-        '竖排文字 1、文字变形 1、表格样式 1、三维效果 1、图片效果 1、其他效果 1、动画 1、切换效果 1',
+      '未显示：图表 1、SmartArt 1、嵌入对象 1、其他对象 1、音视频 1、墨迹 1、图片 1、' +
+        '竖排文字 1、文字变形 1、表格样式 1、三维效果 1、图片效果 1、其他效果 1、公式 1、动画 1、切换效果 1',
     )
   })
 
@@ -1459,7 +1477,7 @@ describe('文档预览', () => {
     expect(boundary(host)).toBe(
       '未显示：图片 2、图表 1、SmartArt 1、形状 1、组合 1、绘图画布 1、其他对象 2、嵌入对象 1、公式 1、墨迹 1、' +
         '其他效果 1、图文框 1、浮动表格 1、外部内容 1、子文档 1、脚注 1、尾注 1、批注 1、修订 1、域 1、分栏 1、' +
-        '文字方向 1、行号 1、字符网格 1、艺术型页面边框 1、编号格式 1、自动段间距 1、' +
+        '文字方向 1、行号 1、字符网格 1、艺术型页面边框 1、编号格式 1、嵌套过深的内容 1、' +
         '小数点对齐制表位 1、竖线对齐制表位 1、对齐方式选项卡 1、字符缩放 1、着重号 1、小型大写字母 1、中文版式 1、' +
         '调整宽度 1、从右向左 1、拼音指南 1、可选连字符 1',
     )
@@ -1557,6 +1575,38 @@ describe('文档预览', () => {
   })
 
   /** 原始失败形状：AI 改写文件后预览不刷新；或刷新后回到第一页、缩放复原。 */
+  test('嵌入字体随解析结果取得，每次加载以新的族名注册并与主机字体一同排版，文档被替换与卸载时删除', async () => {
+    const workers = fakeWorker()
+    let mtime = 1
+    const { families } = await fakeServer({ bytes: () => 'embedded', mtime: () => mtime })
+    const { createSignal } = await import('solid-js')
+    const [refresh, setRefresh] = createSignal(0)
+    const host = await mountFileView(() => 'embedded.docx', refresh)
+    const embedded = () => families().filter((f) => f.startsWith('方正小标宋简体 '))
+    await waitFor(
+      () => workers.layouts.length === 1 && embedded().length === 1,
+      () => host.innerHTML.slice(0, 300),
+    )
+    const layout = workers.layouts[0]!
+    expect(layout.families).toEqual([
+      ['宋体', [0]],
+      ['方正小标宋简体', [1]],
+    ])
+    expect(layout.files).toHaveLength(2)
+    const first = embedded()
+
+    mtime = 2
+    setRefresh(1)
+    await waitFor(
+      () => workers.layouts.length === 2 && embedded().length === 1 && embedded()[0] !== first[0],
+      () => families().join(','),
+    )
+
+    dispose?.()
+    dispose = undefined
+    expect(embedded()).toEqual([])
+  })
+
   test('改写后按修改时间重新加载，保留滚动位置与缩放比例；修改时间不变时不重新获取', async () => {
     fakeWorker()
     let mtime = 1

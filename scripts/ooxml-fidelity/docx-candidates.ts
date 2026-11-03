@@ -4,7 +4,7 @@
  *   bun run scripts/ooxml-fidelity/docx-candidates.ts [--only <文档标识>…] [--out <目录>] [--truth <目录>]
  *
  * 分工：本脚本（Bun）打包浏览器入口 `docx-page.ts`，并以本地 HTTP 服务提供页面、docx 字节、本机字体与本机字体的族名
- * （取自服务端 `/api/fonts/families` 的同一份索引）；
+ * （取自服务端字体接口的同一份索引：`hostFaces`、`faceBytes`、`hostFamilies`）；
  * `docx-shoot.mjs`（Node）驱动 Playwright 打开 Edge，设备像素比 1，逐页调用 `renderPage` 并对画布截图。
  * 画布尺寸取真值清单中该页的像素尺寸，页数以真值为准：本方页数不足时缺页由打分记 0 分，多出的页不输出。
  * 文字按真值清单记录的采集时系统字体平滑设置（`font_smoothing`）绘制，与界面按主机设置绘制的规则相同（`fontSmoothing`）；
@@ -17,13 +17,14 @@
 
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { extractFace } from '../../packages/ooxml/src/font/index.ts'
 import {
+  faceBytes,
   fontSmoothing,
+  type HostFace,
+  hostFaces,
   hostFamilies,
   type SmoothingParameters,
 } from '../../packages/server/src/api/fonts.ts'
-import { facesFor, type IndexedFace, indexFonts } from './font-index.ts'
 
 const ROOT = join(import.meta.dir, '..', '..')
 const OUT = join(ROOT, '.tmp', 'ooxml-fidelity')
@@ -99,10 +100,9 @@ if (!built.success) {
   process.exit(1)
 }
 
-const fonts: IndexedFace[] = await indexFonts()
 const families = await hostFamilies()
-const faceIds = new Map<string, IndexedFace>()
-for (const f of fonts) faceIds.set(`${f.file}#${f.index}`, f)
+/** `/font` 下发过的字体：标识为文件路径与合集序号。 */
+const faceIds = new Map<string, HostFace>()
 
 const html = `<!doctype html><meta charset="utf-8"><body style="margin:0;background:#fff">
 <canvas id="page" style="display:block"></canvas><script type="module" src="/page.js"></script>`
@@ -120,17 +120,20 @@ const server = Bun.serve({
       return doc ? new Response(Bun.file(doc.path)) : new Response('', { status: 404 })
     }
     if (url.pathname === '/font') {
-      const list = facesFor(fonts, url.searchParams.get('name') ?? '')
+      const list = await hostFaces(url.searchParams.get('name') ?? '')
       if (list.length === 0) return new Response('[]', { status: 404 })
       return Response.json(
-        list.map((f) => ({ id: `${f.file}#${f.index}`, bold: f.bold, italic: f.italic })),
+        list.map((f) => {
+          const id = `${f.path}#${f.index}`
+          faceIds.set(id, f)
+          return { id, bold: f.bold, italic: f.italic }
+        }),
       )
     }
     if (url.pathname === '/font-face') {
       const face = faceIds.get(url.searchParams.get('id') ?? '')
       if (!face) return new Response('', { status: 404 })
-      const bytes = new Uint8Array(await Bun.file(face.file).arrayBuffer())
-      return new Response(extractFace(bytes, face.index).slice())
+      return new Response((await faceBytes(face)).slice())
     }
     if (url.pathname === '/families') return Response.json(families)
     if (url.pathname === '/jobs') return Response.json(jobs)

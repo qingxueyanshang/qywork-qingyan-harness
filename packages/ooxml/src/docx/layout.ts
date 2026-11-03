@@ -4,12 +4,13 @@
  * - `ParagraphLayouter` 在给定区域宽度（栏、单元格或文本框的文字区）中排版一段，可附带环绕查询；正文、单元格、
  *   文本框与页眉页脚共用。`layoutDocument` 排版正文的顶层段落，区域宽度为所在节第一栏的宽度。
  * - 可用宽度为区域宽度减去左右缩进；制表位与制表起点换算为相对左缩进的行坐标。
- * - 字体由调用方按字体名与字形提供（`FontSource.face`）。返回 `null` 的字体记入 `missingFonts`，按 `substitutes` 的替代字体
- *   排版，都没有时改用 `fallback`；前缀匹配所用的主机字体族名由调用方给出（`HostFamilies`）。请求粗体而返回的不是粗体字形时
- *   按仿粗体（`emboldened`）排版。
+ * - 字体由调用方按字体名与字形提供（`FontSource.face`）。返回 `null` 的字体记入 `missingFonts`，WPS 按自带度量排版的字体
+ *   按其度量（`FontSource.metric`），其余按 `substitutes` 的替代字体排版，都没有时改用 `fallback`；前缀匹配所用的主机字体族名
+ *   由调用方给出（`HostFamilies`）。请求粗体而返回的不是粗体字形时按仿粗体（`emboldened`）排版。
  * - 文档的数学字体主机没有时改用 Cambria Math（WPS 实测：数学字体为 STIX Math 的文档按 Cambria Math 排版与绘制）。
  * - 段前段后间距按 `contextualSpacing` 抵消（`contextSpacing`）：同一容器中相邻段落样式相同时，设置了该项的段落
- *   不留对应一侧的间距。段落上下边框占用的高度见 `borderExtents`，由调用方加在段前间距之后与最后一行之后，不与间距合并。
+ *   不留对应一侧的间距。HTML 自动段间距在容器的第一段之前、没有编号的最后一段之后与同一列表的相邻段落之间不留。段落上下边框占用的
+ *   高度见 `borderExtents`，由调用方加在段前间距之后与最后一行之后，不与间距合并。
  * - 全部大写（`caps`）按大写字母排版；大小写转换改变字符数的字符保持原样，使片段的位置与字段文字一一对应。
  * - 分页符与分栏符按强制换行排版（一个字符换一个字符，位置不变），换页与换栏由分页处理。
  * - 嵌入式对象（图片、图表、文本框等）与行内公式的各段是 `../text/` 的行内对象（`InlineObject`），在段落文字中不占位置；
@@ -23,8 +24,8 @@
  *   不断开，与汉字之间可断，其后各段之前可断（WPS 实测）。
  * - 显示公式段落的行由 `layoutMathParagraph` 给出（断行与横向位置），不按段落的对齐方式与首行缩进。行高按 `lineBox`：
  *   上下沿为公式所在行的上下沿，多倍行距增加的部分按段落标记字体的单倍行高计（WPS 实测：10.5 磅三种公式在 1、1.15、1.5、
- *   2 倍行距下增加 (倍数 − 1) × 12.1 磅，段落标记为 16 磅时 × 18.4 磅）。只在设置了 `adjustLineHeightInTable` 时对齐行网格
- *   （`gridPitch`）。
+ *   2 倍行距下增加 (倍数 − 1) × 12.1 磅，段落标记为 16 磅时 × 18.4 磅），再向下取整到缇。只在设置了
+ *   `adjustLineHeightInTable` 时对齐行网格（`gridPitch`）。
  * - 公式含未实现的结构或主机没有数学字体时不排版：行内公式宽度为 0、上下沿取其字段属性的字体，显示公式段落按空段落排版。
  */
 
@@ -75,6 +76,11 @@ export interface FontMatch {
 export interface FontSource {
   /** 按字体名与字形取得最接近的字体；主机没有该字体时返回 `null`。 */
   face(name: string, bold: boolean, italic: boolean): FontMatch | null
+  /**
+   * WPS 按自带度量排版的字体（`../text/wps-fonts.ts` 的 `WPS_METRIC_FONTS`）：`part` 为字段的西文或东亚部分。数据表中
+   * 没有该字体名、该部分不由其排版或主机没有所需的字体时返回 `null`。
+   */
+  metric(name: string, part: 'latin' | 'eastAsia', bold: boolean, italic: boolean): FontMatch | null
   /** 按字体名取得数学字体（带 `MATH` 表）；主机没有该字体或该字体不是数学字体时返回 `null`。 */
   math(name: string): MathFont<TextFace> | null
   /** `face` 或 `fallback` 返回的字形的 TrueType 轮廓；其他字形与没有轮廓的字体为 `null`。 */
@@ -158,12 +164,12 @@ export const LEADER_FONT = 'Times New Roman'
 const LEADER_LIFT = 0.05
 
 /**
- * 前导符的字体、对齐与纵向位置：`end` 为整数个前导符与制表位的终点相接，否则自制表符的起点排起；`rise` 为前导符基线
- * 在所在行基线之上的距离（磅）。
+ * 前导符的字体、起点与纵向位置：`inset` 为前导符自制表符起点右移半个步进排起（目录域结果），否则自制表符起点排起；
+ * `rise` 为前导符基线在所在行基线之上的距离（磅）。个数与绘制位置见 `../page/build.ts` 的 `LEADER_TOLERANCE`。
  */
 export interface LeaderStyle {
   readonly face: TextFace
-  readonly end: boolean
+  readonly inset: boolean
   readonly rise: number
 }
 const EMOJI_RANGES: readonly (readonly [number, number])[] = [
@@ -310,7 +316,12 @@ function borderExtents(blocks: readonly Block[], i: number, p: Paragraph): Block
   return { before: 0, after: 0, borderTop: top, borderBottom: bottom }
 }
 
-/** 同一容器中第 `i` 块段落的段前段后间距（已按 `contextualSpacing` 抵消）与上下边框占用的高度。 */
+/**
+ * 同一容器中第 `i` 块段落的段前段后间距与上下边框占用的高度。间距按 `contextualSpacing` 抵消；HTML 自动段间距在容器
+ * （正文、单元格等）的第一段之前、没有编号的最后一段之后，以及与编号 `w:numId` 相同的相邻段落之间不留（WPS 实测：
+ * 自动段间距为 14 磅，单元格中单段的段前段后均为 0，多段时只留段与段之间的，最后一段为列表项时其后仍留 14 磅；同一编号的
+ * 列表项之间为 0，不同编号的列表之间、列表项与普通段落之间为 14 磅，编号来自段落样式与级别不同时相同；文档第一段的段前为 0）。
+ */
 export function contextSpacing(blocks: readonly Block[], i: number): BlockSpacing {
   const p = blocks[i]
   if (p === undefined || p.kind !== 'paragraph') return NO_SPACING
@@ -319,10 +330,17 @@ export function contextSpacing(blocks: readonly Block[], i: number): BlockSpacin
     return b !== undefined && b.kind === 'paragraph' && b.style === p.style
   }
   const q = p.props
+  const sameList = (k: number) => {
+    const b = blocks[k]
+    return b !== undefined && b.kind === 'paragraph' && q.list !== null && b.props.list === q.list
+  }
+  const autoBefore = q.autoSpacing.before && (i === 0 || sameList(i - 1))
+  const autoAfter =
+    q.autoSpacing.after && (i === blocks.length - 1 ? q.list === null : sameList(i + 1))
   return {
     ...borderExtents(blocks, i, p),
-    before: q.contextualSpacing && same(i - 1) ? 0 : q.before,
-    after: q.contextualSpacing && same(i + 1) ? 0 : q.after,
+    before: (q.contextualSpacing && same(i - 1)) || autoBefore ? 0 : q.before,
+    after: (q.contextualSpacing && same(i + 1)) || autoAfter ? 0 : q.after,
   }
 }
 
@@ -374,7 +392,12 @@ export class ParagraphLayouter {
       let found = this.source.face(name, bold, italic)
       if (found === null) {
         this.missing.add(name)
-        found = this.substitute(name, bold, italic, use)
+        // 取自主题的东亚字体不按替代规则，直接为回退字体（见 `substitutes`）。
+        const metric =
+          use === 'themeEastAsia'
+            ? null
+            : this.source.metric(name, use === 'other' ? 'latin' : 'eastAsia', bold, italic)
+        found = metric ?? this.substitute(name, bold, italic, use)
       }
       const base = found?.face ?? this.source.fallback
       f = bold && found?.bold !== true ? emboldened(base) : base
@@ -385,23 +408,23 @@ export class ParagraphLayouter {
 
   /**
    * 制表位前导符的绘制方式：`tab` 为制表符的字体（`LineLeader.face`），`size` 为其字号，`props` 与 `field` 为制表符所在的字段；
-   * 粗体与斜体取该字段。目录域结果中字体为 `tab`，整数个前导符与制表位的终点相接，基线与所在行相同；其余为 `LEADER_FONT`，
+   * 粗体与斜体取该字段。目录域结果中字体为 `tab`，自制表符起点右移半个步进排起，基线与所在行相同；其余为 `LEADER_FONT`，
    * 自制表符的起点排起，基线上移 `tab` 与 `LEADER_FONT` 的上沿之差（`faceExtent`）再加 `LEADER_LIFT`。
    * WPS 实测（构造文档 w13 l1、m1–m4、n1–n7，w14 v1，与语料目录页）：
    * - 字体：目录域以外，制表符字段为黑体、Arial、Courier New、微软雅黑、Segoe Print 等，或文档缺省字体、缺省段落样式、段落样式与
    *   字符样式另设字体时，前导符都为 Times New Roman，第一个点位于制表符起点，余量留在页码之前；目录域结果中制表符字段为 Arial
-   *   时为 Arial，最后一个点止于页码左端。起作用的是目录域，与超链接和 `webHidden` 无关（只有超链接或只有 `webHidden` 时为
+   *   时为 Arial。起作用的是目录域，与超链接和 `webHidden` 无关（只有超链接或只有 `webHidden` 时为
    *   Times New Roman，目录域中没有超链接时为 Arial）。
    * - 纵向：目录域以外 244 行（v1 224 行与 l1 20 行，14 种制表符字体，10、10.5、12、15 磅，行顶的小数部分逐项变化）的前导符
    *   像素位置全部一致；上移量在 0.045–0.059 磅之间时都一致，不加 `LEADER_LIFT` 时 24 行低 1 像素。目录域结果中语料 153 行
    *   与所在行基线相同（再上移 0.05 磅时 17 行高 1 像素）。
    */
   leaderStyle(tab: TextFace, size: number, props: RunProps, field: string | null): LeaderStyle {
-    if (field === 'TOC') return { face: tab, end: true, rise: 0 }
+    if (field === 'TOC') return { face: tab, inset: true, rise: 0 }
     const face = this.face(LEADER_FONT, props.bold, props.italic)
     const rise =
       faceExtent(tab.vertical, size).ascent - faceExtent(face.vertical, size).ascent + LEADER_LIFT
-    return { face, end: false, rise }
+    return { face, inset: false, rise }
   }
 
   /**
@@ -597,12 +620,14 @@ export class ParagraphLayouter {
         p.props.lineSpacing,
         grid,
       )
+      // 行高取整缇的部分，基线位置不变（WPS 实测：各式行高为按上下沿求得的值向下取整到缇，291.69 缇为 291 缇）。
+      const height = Math.floor(box.height * 20 + 1e-6) / 20
       const baseline = top + box.baseline
       lines.push({
         start: k === 0 ? 0 : end,
         end,
         top,
-        height: box.height,
+        height,
         baseline,
         left: l.x,
         width: l.width,
@@ -615,7 +640,7 @@ export class ParagraphLayouter {
       })
       formulas.push({ line: k, x: l.x, baseline, layout: bare(l) })
       descents.set(k, l.lineDescent)
-      top += box.height
+      top += height
     })
     return { text: { lines, height: top }, formulas, descents }
   }

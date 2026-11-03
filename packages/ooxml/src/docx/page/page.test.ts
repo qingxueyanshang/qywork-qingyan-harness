@@ -172,6 +172,7 @@ function tableOf(rows: readonly RowSpec[]): TableLayout {
       height: r.height,
       border: 0,
       pageBorder: 0,
+      headerBorder: 0,
       pageBottomBorder: 0,
       minimum: 0,
       rule: 'auto',
@@ -193,6 +194,7 @@ function tableOf(rows: readonly RowSpec[]): TableLayout {
     vertical: [],
     pageTop: [],
     pageBottom: [],
+    afterHeader: [],
   }
 }
 
@@ -674,6 +676,7 @@ describe('build：页眉页脚与所需字体', () => {
     const host = {
       local: ['Courier New', 'Microsoft YaHei UI', '宋体', '微软雅黑'],
       names: ['courier new', 'microsoft yahei', 'microsoft yahei ui', 'simsun', '宋体', '微软雅黑'],
+      language: 0x0804,
     }
     const names = requiredFonts(d, host)
     expect(names).toContain('Courier New')
@@ -871,8 +874,8 @@ describe.skipIf(process.platform !== 'win32')('build：制表位前导符（本�
   const TABS = '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8306"/></w:tabs>'
   const SONG = '<w:rFonts w:ascii="宋体" w:hAnsi="宋体" w:eastAsia="宋体"/><w:sz w:val="30"/>'
 
-  async function leaderLine(body: string, char = '.') {
-    const result = await parseDocx(buildDocx({ body: body + SECT(), settings: COMPAT14 }))
+  async function leaderLine(body: string, char = '.', sect = SECT()) {
+    const result = await parseDocx(buildDocx({ body: body + sect, settings: COMPAT14 }))
     if (!result.ok) throw new Error('解析失败')
     const faces = [
       loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0),
@@ -895,23 +898,30 @@ describe.skipIf(process.platform !== 'win32')('build：制表位前导符（本�
     }
   }
 
-  test('目录域结果中的点前导符：以制表符字体的「.」填满，按其宽度取整数个并与页码左端相接（WPS：目录行 132 个点，每个 4 像素，止于页码左端）', async () => {
+  test('目录域结果中的点前导符：以制表符字体的「.」，自制表符起点右移半个步进排起，个数为至页码左端能容纳的整步进数，起点取整像素', async () => {
+    // WPS 实测（构造文档：Times New Roman 12 磅「Entry」、制表符与「23」，右对齐点前导符制表位 8303 缇，左边距 1440 缇，
+    // 页面 EMF）：目录域中第一个点位于 134 像素，125 个，每个 4 像素；目录域以外第一个点位于 132 像素，125 个。
     const field =
       '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" </w:instrText></w:r>' +
       '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
-    const body =
-      p(
-        `${field}${r('第1章 绪论', SONG)}<w:r><w:rPr>${SONG}</w:rPr><w:tab/></w:r>${r('1', SONG)}`,
-        TABS,
-      ) + p('<w:r><w:fldChar w:fldCharType="end"/></w:r>')
-    const { leader, family, start, number } = await leaderLine(body)
-    const dot = leader.advances[0]!
-    expect(family).toBe('宋体')
-    expect(dot).toBeCloseTo(7.5, 6)
-    expect(new Set(leader.text)).toEqual(new Set(['.']))
-    expect(leader.advances.every((a) => a === dot)).toBe(true)
-    expect(leader.x + leader.text.length * dot).toBeCloseTo(number.x, 6)
-    expect(leader.text.length).toBe(Math.floor((number.x - start) / dot))
+    const TNR =
+      '<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman"/><w:sz w:val="24"/>'
+    const tabs = '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8303"/></w:tabs>'
+    const sect =
+      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" ' +
+      'w:header="851" w:footer="992" w:gutter="0"/></w:sectPr>'
+    const line = `${r('Entry', TNR)}<w:r><w:rPr>${TNR}</w:rPr><w:tab/></w:r>${r('23', TNR)}`
+    const toc = await leaderLine(
+      p(field + line, tabs) + p('<w:r><w:fldChar w:fldCharType="end"/></w:r>'),
+      '.',
+      sect,
+    )
+    const plain = await leaderLine(p(line, tabs), '.', sect)
+    expect(toc.family).toBe('Times New Roman')
+    expect(new Set(toc.leader.text)).toEqual(new Set(['.']))
+    expect(toc.leader.advances.every((a) => a === 3)).toBe(true)
+    expect([(toc.leader.x * 4) / 3, toc.leader.text.length]).toEqual([134, 125])
+    expect([(plain.leader.x * 4) / 3, plain.leader.text.length]).toEqual([132, 125])
   })
 
   test('目录域以外的点前导符：Times New Roman，字号取制表符所在的字段，自制表符起点排起', async () => {

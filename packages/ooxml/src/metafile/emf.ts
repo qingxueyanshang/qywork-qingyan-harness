@@ -268,13 +268,20 @@ function logFont(r: Rec): FontObject {
     face += String.fromCharCode(c)
   }
   return fontObject(
-    { height: r.i32(12), width: r.i32(16), weight: r.i32(28), italic: bytes[20] !== 0, face },
+    {
+      height: r.i32(12),
+      width: r.i32(16),
+      weight: r.i32(28),
+      italic: bytes[20] !== 0,
+      face,
+      charset: bytes[23] ?? 0,
+      pitchAndFamily: bytes[27] ?? 0,
+    },
     {
       escapement: r.i32(20),
       orientation: r.i32(24),
       underline: bytes[21] !== 0,
       strikeOut: bytes[22] !== 0,
-      charset: bytes[23] ?? 0,
     },
   )
 }
@@ -616,7 +623,7 @@ function record(type: number, r: Rec, out: Builder, objects: Map<number, EmfObje
       }
       const f = out.textFont()
       if (f === null) return
-      const decoded = decodeAnsi(r.bytes(strAt, n), f.charset, dx)
+      const decoded = decodeAnsi(r.bytes(strAt, n), f.font.charset, dx)
       if (typeof decoded === 'string') out.unsupported(decoded)
       else out.text(p, decoded.text, decoded.dx, decoded.symbol, opaque, clip)
       return

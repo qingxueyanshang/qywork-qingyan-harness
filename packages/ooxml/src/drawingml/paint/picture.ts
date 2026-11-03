@@ -189,6 +189,9 @@ const NO_FONTS: MetafileFonts = {
   face: () => {
     throw new Error('图元文件没有文字记录')
   },
+  fallback: () => {
+    throw new Error('图元文件没有文字记录')
+  },
 }
 
 function intersect(a: PictureRect, b: PictureRect): PictureRect | null {

@@ -191,41 +191,45 @@ export function chartFaces(
 }
 
 /**
- * 图片中图元文件文字的字体：按字体名与字形取得字体集中的字体，没有时取 `fallbackFace`。字形按形状文字的点阵条件绘制
- * （`screenBitmap`），其余按族名交给浏览器；请求粗体或斜体而字体没有该字形时由点阵或浏览器合成。字体集中没有可用字体时为 `null`。
+ * 图片中图元文件文字的字体：按字体名与字形取得字体集中的字体，没有时为 `null`（由图元文件按其替代规则另取），`fallback` 为
+ * `fallbackFace`。字形按形状文字的点阵条件绘制（`screenBitmap`），其余按族名交给浏览器；请求粗体或斜体而字体没有该字形时
+ * 由点阵或浏览器合成。字体集中没有可用字体时为 `null`。
  */
 export function metafileFonts(workbook: Workbook, fonts: FontSet): MetafileFonts | null {
   const fallback = fallbackFace(workbook, fonts)
   if (fallback === null) return null
   const cache = new Map<string, MetafileFace>()
+  const resolve = (key: string, f: LoadedFace, bold: boolean, italic: boolean): MetafileFace => {
+    const known = cache.get(key)
+    if (known !== undefined) return known
+    const v = f.text.vertical
+    const css = `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}`
+    const out: MetafileFace = {
+      vertical: (ppem) => f.vertical(ppem),
+      emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
+      averageWidth: v.averageWidth / v.unitsPerEm,
+      // `OS/2.ulCodePageRange1` 的第 31 位：符号字符集。
+      symbol: ((v.codePages ?? 0) & 0x80000000) !== 0,
+      advance: (cp, ppem) => f.pixelAdvance(cp, ppem) ?? f.metrics.advance(cp, ppem),
+      draw: (c, text, x, baseline, ppem) => {
+        const g = screenBitmap(fonts, f.family, bold, italic, text.codePointAt(0)!, ppem)
+        if (g !== null) {
+          fillBitmap(c, g.glyph, x, baseline, g.ascent, g.descent)
+          return
+        }
+        c.font = `${css}${ppem}px "${f.family.replace(/["\\]/g, '')}"`
+        c.fillText(text, x, baseline)
+      },
+    }
+    cache.set(key, out)
+    return out
+  }
   return {
     face(name, bold, italic) {
-      const key = `${name}|${bold}|${italic}`
-      const known = cache.get(key)
-      if (known !== undefined) return known
-      const f = fonts.face(name, bold, italic) ?? fallback
-      const v = f.text.vertical
-      const css = `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}`
-      const out: MetafileFace = {
-        vertical: (ppem) => f.vertical(ppem),
-        emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
-        averageWidth: v.averageWidth / v.unitsPerEm,
-        // `OS/2.ulCodePageRange1` 的第 31 位：符号字符集。
-        symbol: ((v.codePages ?? 0) & 0x80000000) !== 0,
-        advance: (cp, ppem) => f.pixelAdvance(cp, ppem) ?? f.metrics.advance(cp, ppem),
-        draw: (c, text, x, baseline, ppem) => {
-          const g = screenBitmap(fonts, f.family, bold, italic, text.codePointAt(0)!, ppem)
-          if (g !== null) {
-            fillBitmap(c, g.glyph, x, baseline, g.ascent, g.descent)
-            return
-          }
-          c.font = `${css}${ppem}px "${f.family.replace(/["\\]/g, '')}"`
-          c.fillText(text, x, baseline)
-        },
-      }
-      cache.set(key, out)
-      return out
+      const f = fonts.face(name, bold, italic)
+      return f === null ? null : resolve(`${name}|${bold}|${italic}`, f, bold, italic)
     },
+    fallback: (bold, italic) => resolve(`\u0000|${bold}|${italic}`, fallback, bold, italic),
   }
 }
 

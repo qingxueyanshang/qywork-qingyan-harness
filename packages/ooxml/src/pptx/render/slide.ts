@@ -10,7 +10,7 @@
  *   旋转的文字、没有 TrueType 轮廓的字体、半透明的文字与画到图层上的文字以 `fillText` 绘制（见 `TextClearType`）。
  *   形状与表格的文字暂存，在下一个不是只有文字的形状与表格边框之前一并混合；图表与 SmartArt 的文字与其他绘制交错，
  *   每段立即混合。
- * - 图片的外部阴影取图片区域与线条的轮廓。图片可以是位图或图元文件（`../../drawingml/paint/picture.ts`），
+ * - 图片的外部阴影、发光、柔化边缘与映像取图片区域与线条（`../../drawingml/paint/effects.ts`），内部阴影画在图片区域内、线条之下。图片可以是位图或图元文件（`../../drawingml/paint/picture.ts`），
  *   图元文件文字的字体取自幻灯片字体（`slideMetafileFonts`）。
  * - 三维效果（相机旋转、透视与光照）见 `../../drawingml/three/paint.ts`，图片与自选图形相同。
  * - 图表见 `../../drawingml/chart/paint.ts`，SmartArt 见 `../../drawingml/diagram/paint.ts`，墨迹见 `./ink.ts`。
@@ -27,6 +27,7 @@ import {
   scaling,
   setMatrix,
 } from '../../drawingml/paint/context.ts'
+import { hasLayerEffects, layerEffects, paintWithEffects } from '../../drawingml/paint/effects.ts'
 import {
   appendPath,
   type PaintResources,
@@ -35,15 +36,17 @@ import {
   traceRect,
 } from '../../drawingml/paint/fill.ts'
 import { paintLine } from '../../drawingml/paint/line.ts'
-import { paintWithShadows, pathBounds } from '../../drawingml/paint/shadow.ts'
+import { pathBounds } from '../../drawingml/paint/shadow.ts'
 import {
   EMU_PER_PX,
+  innerShadowsOf,
   outlineOf,
   type Placed,
   paintAutoShape,
   paintAutoShapeThreeD,
   paintConnector,
   paintGroup,
+  paintInnerShadowsOf,
   placeFrame,
   type ShapeScene,
   shadowsOf,
@@ -54,7 +57,13 @@ import { FaceCache, SINGLE_LINE } from '../../drawingml/text/fonts.ts'
 import { paintThreeD } from '../../drawingml/three/paint.ts'
 import type { ClearTypeDisplay, PixelCanvas } from '../../glyph/cleartype/index.ts'
 import type { Picture, Presentation, Shape, Slide } from '../model.ts'
-import { type SlideFonts, slideClearType, slideGlyphs, slideMetafileFonts } from './fonts.ts'
+import {
+  type SlideFonts,
+  slideClearType,
+  slideGlyphs,
+  slideMath,
+  slideMetafileFonts,
+} from './fonts.ts'
 import { paintInk } from './ink.ts'
 import { layoutTable, paintTable } from './table.ts'
 
@@ -77,13 +86,14 @@ interface SlideScene extends ShapeScene {
   readonly immediate: TextSettings
 }
 
-/** 只画文字的形状（没有填充、线条与三维效果）：其文字可以与前后形状的文字一并混合。 */
+/** 只画文字的形状（没有填充、线条、三维效果与作用于文本框的映像、柔化边缘）：其文字可以与前后形状的文字一并混合。 */
 function textOnly(shape: Shape): boolean {
   return (
     shape.kind === 'shape' &&
     shape.fill.kind === 'none' &&
     shape.line === null &&
-    shape.threeD === null
+    shape.threeD === null &&
+    !shape.effects.some((e) => e.kind === 'reflection' || e.kind === 'softEdge')
   )
 }
 
@@ -137,6 +147,7 @@ function paintPictureBody(
   setMatrix(ctx, snapped)
   paintImageFill(ctx, shape.image, { ...area, matrix: snapped }, scene.res)
   ctx.restore()
+  paintInnerShadowsOf(ctx, outline, innerShadowsOf(shape.effects), placed, scene.scale)
   if (shape.line !== null) paintLine(ctx, outline.paths, shape.line, area, scene.res, scene.canvas)
 }
 
@@ -159,15 +170,16 @@ function paintPicture(scene: SlideScene, shape: Picture, parent: Matrix): void {
     )
     return
   }
-  if (shadows.length === 0) {
+  const effects = layerEffects(shape.effects)
+  if (!hasLayerEffects(effects)) {
     paintPictureBody(scene, scene.ctx, shape, outline, placed)
     return
   }
   const bounds = pathBounds(outline.paths, placed.matrix, strokeMargin(shape, placed), scene.canvas)
   if (bounds === null) return
-  paintWithShadows(
+  paintWithEffects(
     scene.ctx,
-    shadows,
+    effects,
     { matrix: placed.matrix, width: placed.width, height: placed.height, scale: scene.scale },
     bounds,
     scene.res,
@@ -182,8 +194,9 @@ function paintPicture(scene: SlideScene, shape: Picture, parent: Matrix): void {
 
 function paintShape(scene: SlideScene, shape: Shape, parent: Matrix): void {
   if (shape.hidden) return
-  // 组合本身不绘制（有阴影时除外），其子形状各自判定。
-  const draws = shape.kind === 'group' ? shadowsOf(shape.effects).length > 0 : !textOnly(shape)
+  // 组合本身不绘制（有图层效果时除外），其子形状各自判定。
+  const draws =
+    shape.kind === 'group' ? hasLayerEffects(layerEffects(shape.effects)) : !textOnly(shape)
   if (draws) scene.settings.faces.clearType?.flush()
   scene.ctx.save()
   switch (shape.kind) {
@@ -254,6 +267,8 @@ export function paintSlide(
       res.clearType === null ? null : slideClearType(res.fonts, res.clearType, ctx, deferred),
     ),
     slideNumber: slide.number,
+    pictures: (part) => res.image(part),
+    math: slideMath(res.fonts),
   })
   const scene: SlideScene = {
     ctx,

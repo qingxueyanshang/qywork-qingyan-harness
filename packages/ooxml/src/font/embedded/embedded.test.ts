@@ -1,16 +1,17 @@
 /**
  * 覆盖范围：`ctf.ts`（简单字形的三元组与包围盒、组合字形、入栈数据的 HOP 码与 255SHORT、重新生成的入栈指令、
  * `loca` 长格式与 `head`、`maxp` 的修正、`cvt `、`hdmx` 的还原、长度为 0 的表与 `cmap` 语言字段、CFF 字体各表原样保留）、
- * `eot.ts`（文件头、家族名、异或与未压缩的字体数据）。
+ * `eot.ts`（文件头、家族名、异或与未压缩的字体数据）、`part.ts`（按 `fontKey` 去混淆、sfnt 原样使用与 EOT 还原）。
  *
  * LZCOMP（`lzcomp.ts`）由真实文件核对：语料中 2 份 pptx 的 24 个嵌入字体全部还原，字形数与 `name` 表一致，
  * 绘制结果与 WPS 导出图一致；仓库内没有 MicroType Express 的压缩端，不构造压缩数据。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { readFaces, tableBytes } from '../sfnt.ts'
+import { FontFormatError, readFaces, tableBytes } from '../sfnt.ts'
 import { ctfToTrueType } from './ctf.ts'
 import { readEmbeddedOpenType } from './eot.ts'
+import { decodeEmbeddedFont } from './part.ts'
 
 class Bytes {
   readonly out: number[] = []
@@ -267,5 +268,40 @@ describe('EOT', () => {
     const bad = eot(new Uint8Array([1]), 0)
     bad[34] = 0
     expect(() => readEmbeddedOpenType(bad)).toThrow()
+  })
+})
+
+describe('嵌入字体部件', () => {
+  const font = () =>
+    sfnt(0x00010000, [
+      ['head', head()],
+      ['maxp', maxp(2)],
+      ['hhea', hhea(2)],
+    ])
+
+  test('按 fontKey 去混淆：前 32 字节与 GUID 自末尾起每两位一字节的密钥逐字节异或，其余字节不变', () => {
+    // 密钥为 {00112233-4455-6677-8899-AABBCCDDEEFF}：第 0 字节与 0xFF 异或，第 15 与第 31 字节与 0x00 异或。
+    const key = '{00112233-4455-6677-8899-AABBCCDDEEFF}'
+    const plain = font()
+    const mask = [
+      0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0,
+    ]
+    const obfuscated = plain.map((b, i) => (i < 32 ? b ^ mask[i % 16]! : b))
+    const before = Array.from(obfuscated)
+    expect(Array.from(decodeEmbeddedFont(obfuscated, key))).toEqual(Array.from(plain))
+    expect(Array.from(obfuscated)).toEqual(before)
+    expect(Array.from(decodeEmbeddedFont(obfuscated, key.replace(/[{}-]/g, '')))).toEqual(
+      Array.from(plain),
+    )
+  })
+
+  test('没有 fontKey 时 sfnt 原样使用；密钥不是 GUID、部件过短或不是字体时抛出 FontFormatError', () => {
+    const plain = font()
+    expect(decodeEmbeddedFont(plain, null)).toBe(plain)
+    expect(() => decodeEmbeddedFont(plain, '{not-a-guid}')).toThrow(FontFormatError)
+    expect(() =>
+      decodeEmbeddedFont(plain.slice(0, 31), '{00112233-4455-6677-8899-AABBCCDDEEFF}'),
+    ).toThrow(FontFormatError)
+    expect(() => decodeEmbeddedFont(new Uint8Array(100), null)).toThrow(FontFormatError)
   })
 })

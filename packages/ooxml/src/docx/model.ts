@@ -33,7 +33,7 @@ import type { Alignment, LineSpacing } from '../text/index.ts'
  * - 文字效果：`characterScale`、`emphasisMark`、`smallCaps`、`eastAsianLayout`、
  *   `fitText`、`rtl`、`charGrid`（字符网格）、`decimalTab`、`barTab`、`ruby`、`ptab`、`softHyphen`。
  * - 内容：`revision`（修订标记，按最终状态显示）、`dynamicField`（打开时由应用重新计算的域，显示文件中缓存的结果）、
- *   `numberFormat`（未实现的编号格式，按中文计数显示）、`autoSpacing`（HTML 自动段间距）。
+ *   `numberFormat`（未实现的编号格式，按中文计数显示）、`nesting`（嵌套过深而不显示的内容，见 `parse/body.ts`）。
  */
 export type UnsupportedKind =
   | 'frame'
@@ -74,7 +74,7 @@ export type UnsupportedKind =
   | 'revision'
   | 'dynamicField'
   | 'numberFormat'
-  | 'autoSpacing'
+  | 'nesting'
 
 export type UnsupportedCounts = Partial<Record<UnsupportedKind, number>>
 
@@ -230,10 +230,14 @@ export interface ParagraphProps {
    * `firstLineChars="200"` 排版按 24 磅、自动调整列宽按 21 磅；段落样式另设字号时仍按缺省段落样式）。
    */
   readonly contentIndent: { readonly left: number; readonly firstLine: number }
-  /** 段前段后间距，未计入 `contextualSpacing` 的抵消。 */
+  /** 段前段后间距，未计入 `contextualSpacing` 与 HTML 自动段间距的抵消（见 `layout.ts` 的 `contextSpacing`）。 */
   readonly before: number
   readonly after: number
   readonly contextualSpacing: boolean
+  /** 段前、段后为 HTML 自动段间距（`beforeAutospacing`、`afterAutospacing`）。 */
+  readonly autoSpacing: { readonly before: boolean; readonly after: boolean }
+  /** 编号所用的 `w:numId`（含来自段落样式的）；没有编号时为 `null`。 */
+  readonly list: number | null
   readonly lineSpacing: LineSpacing
   /** 对齐行网格：所在节的网格类型不为 `default` 且段落未关闭 `snapToGrid`。 */
   readonly snapToGrid: boolean
@@ -387,6 +391,10 @@ export interface Wrap {
   readonly side: 'bothSides' | 'left' | 'right' | 'largest'
   /** 距正文的距离（磅）。 */
   readonly distance: Edges
+  /**
+   * 紧密型与穿越型的环绕多边形（`wp:wrapPolygon`）的外接矩形相对对象框四边的内缩（磅，向内为正）；没有多边形时为 `null`。
+   */
+  readonly polygon: Edges | null
 }
 
 /** 文本框：内容与文字区域相对形状框的内缩（磅）。 */
@@ -549,12 +557,27 @@ export interface FontTableEntry {
   readonly charset: number | null
 }
 
+/** 字体表中的嵌入字体：每种字形一项。 */
+export interface EmbeddedFont {
+  /** 字体表条目的 `w:name`。 */
+  readonly name: string
+  readonly bold: boolean
+  readonly italic: boolean
+  /** 已去混淆的 TrueType 或 CFF 字体字节，可读取字体目录与 `name` 表。 */
+  readonly bytes: Uint8Array
+}
+
 export interface DocxDocument {
   readonly sections: readonly Section[]
   readonly body: readonly Block[]
   readonly settings: DocumentSettings
   /** 字体表：字体名的第一个条目，供字体选择判断中文字符集与主机没有该字体时的替代（见 `resolve/fonts.ts`）。 */
   readonly fontTable: ReadonlyMap<string, FontTableEntry>
+  /**
+   * 字体表中的嵌入字体，按文档顺序；部件不存在、为外部链接、无法还原或 `name` 表无法读取的项不列出（排版所用的项见
+   * `render/fonts.ts` 的 `embeddedFaces`）。
+   */
+  readonly embeddedFonts: readonly EmbeddedFont[]
   readonly unsupported: UnsupportedCounts
   /** 页眉页脚部件中的段落与表格，按关系标识（`Section.headers`、`Section.footers`）。 */
   readonly parts: Readonly<Record<string, readonly Block[]>>

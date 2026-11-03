@@ -4,6 +4,7 @@
  *
  * - 字体来源除排版度量外另带内嵌点阵与 ClearType 字形：WPS 演示的形状、表格与图表文字按 GDI 的点阵条件绘制
  *   （`slideGlyphs`），其余字号在显示器使用 ClearType 时按 ClearType 绘制（`slideClearType`）。
+ * - 公式按数学字体（`MATH_SETTINGS_DEFAULTS.font` 的 `SlideFace.math`）与各字体的 TrueType 轮廓排版（`slideMath`）。
  */
 
 import { collectChartFonts } from '../../drawingml/chart/resolve.ts'
@@ -19,12 +20,15 @@ import {
   type SlideFontSource,
   type TextClearType,
 } from '../../drawingml/text/fonts.ts'
+import type { TextMathFonts } from '../../drawingml/text/math.ts'
 import {
   type EmbeddedBitmaps,
   emboldenBitmap,
+  type GlyphOutlines,
   type PixelVerticalMetrics,
   readEmbeddedBitmaps,
   readFaces,
+  readGlyphOutlines,
   readMetrics,
   readPixelVerticalMetrics,
   readVerticalMetrics,
@@ -37,6 +41,7 @@ import {
   paintGlyphRuns,
   readClearTypeGlyphs,
 } from '../../glyph/cleartype/index.ts'
+import { MATH_SETTINGS_DEFAULTS, type MathFont, readMathFont } from '../../math/index.ts'
 import type { MetafileFace, MetafileFonts } from '../../metafile/index.ts'
 import type { Presentation, Shape } from '../model.ts'
 
@@ -68,6 +73,10 @@ export interface SlideFace extends SlideFont {
   readonly pixelVertical: (ppem: number) => PixelVerticalMetrics
   /** ClearType 字形；字体没有 TrueType 轮廓时为 `null`。 */
   readonly clearType: ClearTypeGlyphs | null
+  /** TrueType 字形轮廓（公式中普通文字的墨迹与按轮廓绘制的字形）；CFF 轮廓的字体为 `null`。 */
+  readonly outlines: GlyphOutlines | null
+  /** 数学字体（带 `MATH` 表与 TrueType 轮廓）；其他字体为 `null`。 */
+  readonly math: MathFont<null> | null
 }
 
 export interface SlideFonts extends SlideFontSource {
@@ -94,6 +103,16 @@ export function readSlideFace(
     bitmaps: readEmbeddedBitmaps(bytes, sfnt),
     pixelVertical: readPixelVerticalMetrics(bytes, sfnt),
     clearType: readClearTypeGlyphs(bytes, sfnt),
+    outlines: readGlyphOutlines(bytes, sfnt),
+    math: readMathFont(bytes, 0, null),
+  }
+}
+
+/** 幻灯片文字中公式所用的字体：数学字体取 `MATH_SETTINGS_DEFAULTS.font` 的常规字形，轮廓按族名与字形取得。 */
+export function slideMath(fonts: SlideFonts): TextMathFonts {
+  return {
+    font: fonts.face(MATH_SETTINGS_DEFAULTS.font, false, false)?.math ?? null,
+    outlines: (face) => familyFace(fonts, face)?.outlines ?? null,
   }
 }
 
@@ -177,38 +196,42 @@ function quote(family: string): string {
 }
 
 /**
- * 图元文件中文字的字体：按字体名与字形取得幻灯片字体，主机没有时取 `fallback`。字形按幻灯片文字的点阵条件绘制
- * （`slideGlyphs`），其余按族名交给浏览器；请求粗体或斜体而字体没有该字形时由点阵或浏览器合成。
+ * 图元文件中文字的字体：按字体名与字形取得幻灯片字体，主机没有时为 `null`（由图元文件按其替代规则另取），`fallback` 为
+ * `SlideFonts.fallback`。字形按幻灯片文字的点阵条件绘制（`slideGlyphs`），其余按族名交给浏览器；请求粗体或斜体而字体没有
+ * 该字形时由点阵或浏览器合成。
  */
 export function slideMetafileFonts(fonts: SlideFonts): MetafileFonts {
   const cache = new Map<string, MetafileFace>()
+  const resolve = (key: string, f: SlideFace, bold: boolean, italic: boolean): MetafileFace => {
+    const known = cache.get(key)
+    if (known !== undefined) return known
+    const v = f.face.vertical
+    const paint = { family: f.family, bold, italic }
+    const css = `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}`
+    const out: MetafileFace = {
+      vertical: (ppem) => f.pixelVertical(ppem),
+      emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
+      averageWidth: v.averageWidth / v.unitsPerEm,
+      symbol: ((v.codePages ?? 0) & SYMBOL_CODE_PAGE) !== 0,
+      advance: (cp, ppem) => f.face.metrics.advance(cp, ppem),
+      draw: (c, text, x, baseline, ppem) => {
+        const g = slideBitmap(fonts, paint, text.codePointAt(0)!, ppem)
+        if (g !== null) {
+          fillBitmap(c, g.glyph, x, baseline, g.ascent, g.descent)
+          return
+        }
+        c.font = `${css}${ppem}px ${quote(f.family)}`
+        c.fillText(text, x, baseline)
+      },
+    }
+    cache.set(key, out)
+    return out
+  }
   return {
     face: (name, bold, italic) => {
-      const key = `${name}|${bold}|${italic}`
-      const known = cache.get(key)
-      if (known !== undefined) return known
-      const f = fonts.face(name, bold, italic) ?? fonts.fallback
-      const v = f.face.vertical
-      const paint = { family: f.family, bold, italic }
-      const css = `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}`
-      const out: MetafileFace = {
-        vertical: (ppem) => f.pixelVertical(ppem),
-        emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
-        averageWidth: v.averageWidth / v.unitsPerEm,
-        symbol: ((v.codePages ?? 0) & SYMBOL_CODE_PAGE) !== 0,
-        advance: (cp, ppem) => f.face.metrics.advance(cp, ppem),
-        draw: (c, text, x, baseline, ppem) => {
-          const g = slideBitmap(fonts, paint, text.codePointAt(0)!, ppem)
-          if (g !== null) {
-            fillBitmap(c, g.glyph, x, baseline, g.ascent, g.descent)
-            return
-          }
-          c.font = `${css}${ppem}px ${quote(f.family)}`
-          c.fillText(text, x, baseline)
-        },
-      }
-      cache.set(key, out)
-      return out
+      const f = fonts.face(name, bold, italic)
+      return f === null ? null : resolve(`${name}|${bold}|${italic}`, f, bold, italic)
     },
+    fallback: (bold, italic) => resolve(`\u0000|${bold}|${italic}`, fonts.fallback, bold, italic),
   }
 }

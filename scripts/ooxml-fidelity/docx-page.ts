@@ -5,12 +5,15 @@
  * ClearType 设置，返回本方总页数与该页统计）与 `pageCount(id)`；截图由 Node 驱动的 Playwright 完成。
  * 本文件只声明用到的浏览器接口，不引入 DOM 类型库。
  * 字体按 `requiredFonts` 的字体名取得，含公式所用的数学字体；主机字体的族名（`/families`）与界面相同，供前缀匹配。
+ * 文档的嵌入字体按 `embeddedFaces` 选出，与界面相同：每个以新的族名注册，排版时以其家族名引用，绘制时换算为注册的族名。
  */
 
 import {
   type DocumentPages,
   type DocxFace,
   DocxFonts,
+  embeddedFaces,
+  type FaceRef,
   layoutPages,
   loadDocxFace,
   type Page,
@@ -101,7 +104,12 @@ interface Doc {
   readonly pages: DocumentPages
   readonly fonts: DocxFonts
   readonly images: readonly (PaintPicture | null)[]
+  /** 嵌入字体：家族名（排版所用的字体名）到注册的族名。 */
+  readonly embedded: ReadonlyMap<string, string>
 }
+
+/** 嵌入字体族名的序号，使每次注册的族名不同。 */
+let embeddedSerial = 0
 
 const docs = new Map<string, Promise<Doc>>()
 
@@ -118,6 +126,19 @@ function loadDoc(id: string): Promise<Doc> {
       const host = (await (await fetch('/families')).json()) as HostFamilies
       const names = [...new Set([...requiredFonts(doc, host), FALLBACK])]
       const faces = (await Promise.all(names.map(loadFamily))).flat()
+      const embedded = new Map<string, string>()
+      for (const f of embeddedFaces(doc, host)) {
+        const family = embedded.get(f.family) ?? `${f.family} ${++embeddedSerial}`
+        const face = new FontFace(family, f.bytes.slice().buffer, {
+          weight: f.bold ? '700' : '400',
+          style: f.italic ? 'italic' : 'normal',
+        })
+        // 与界面一致：浏览器拒绝的嵌入字体跳过，按主机没有该字体处理。
+        if ((await face.load().catch(() => null)) === null) continue
+        document.fonts.add(face)
+        embedded.set(f.family, family)
+        faces.push(loadDocxFace(f.bytes, f.family))
+      }
       const fonts = new DocxFonts(faces, FALLBACK)
       const { pages } = layoutPages(doc, fonts, host)
       const decoder: ImageDecoder = {
@@ -127,7 +148,7 @@ function loadDoc(id: string): Promise<Doc> {
       const images = await Promise.all(
         pages.images.map((im) => decodePicture(im.bytes, im.contentType, decoder)),
       )
-      return { pages, fonts, images }
+      return { pages, fonts, images, embedded }
     })()
     docs.set(id, pending)
   }
@@ -184,7 +205,7 @@ async function renderPage(
   formulas: number
   hiddenMath: number
 } | null> {
-  const { pages, fonts, images } = await loadDoc(id)
+  const { pages, fonts, images, embedded } = await loadDoc(id)
   const page = pages.pages[n - 1]
   if (!page) return null
   const canvas = document.getElementById('page')
@@ -194,10 +215,18 @@ async function renderPage(
   canvas.style.height = `${height}px`
   // ClearType 字形读写画布像素。画布元素在各页之间复用，绘制上下文的选项取第一页的设置。
   const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: clearType !== null })
+  const names = new Map([...embedded].map(([name, family]) => [family, name]))
+  const css = (ref: FaceRef): FaceRef => {
+    const family = embedded.get(ref.family)
+    return family === undefined ? ref : { ...ref, family }
+  }
   paintPage(
     ctx,
     page,
-    { faces: pages.faces, draw: (ref) => fonts.draw(ref) },
+    {
+      faces: pages.faces.map(css),
+      draw: (ref) => fonts.draw({ ...ref, family: names.get(ref.family) ?? ref.family }),
+    },
     {
       images,
       parts: pages.images.map((im) => im.part),

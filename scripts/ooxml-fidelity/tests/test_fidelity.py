@@ -1,5 +1,5 @@
 """覆盖 score.py（SSIM、报告的页数对齐规则与按格式筛选）、fidelity.py 的 score 子命令（--format 参数）
-与 emf.py（按图片框回放、超出部分裁去、字体质量的改写）。
+与 emf.py（按图片框回放、超出部分裁去、字体质量与 WPS 自带字体名的改写、GDI 拒绝创建的对象与其余回放失败）。
 
 运行：python -m unittest discover -s scripts/ooxml-fidelity/tests
 临时文件位于 .tmp/ooxml-fidelity/tests。emf 的用例调用 GDI，只在 Windows 上运行。
@@ -216,6 +216,46 @@ class EmfTest(unittest.TestCase):
         gdi32.DeleteEnhMetaFile(hemf)
         return buf.raw
 
+    @staticmethod
+    def _records_emf(records: list) -> bytes:
+        """100×50 像素（96 dpi）的图片框，依次写入 records（[(类型, 参数字节)]）与 EMR_EOF。"""
+        import struct
+
+        body = b"".join(struct.pack("<II", t, 8 + len(p)) + p for t, p in records)
+        eof = struct.pack("<IIIII", 14, 20, 0, 16, 20)
+        size = 88 + len(body) + len(eof)
+        head = (struct.pack("<II4i4i", 1, 88, 0, 0, 99, 49, 0, 0, 2645, 1322)
+                + struct.pack("<IIIIHHIII", 0x464D4520, 0x10000, size, len(records) + 2, 2, 0, 0, 0, 0)
+                + struct.pack("<4i", 960, 540, 254, 143))
+        return head + body + eof
+
+    def _line(self, pen: list) -> bytes:
+        import struct
+
+        line = [(27, struct.pack("<ii", 10, 25)), (54, struct.pack("<ii", 90, 25))]
+        return self._records_emf(pen[:-1] + line + pen[-1:] if pen else line)
+
+    def test_rejected_object_replays_like_gdi(self):
+        """WPS 页面 EMF 中宽度为 2 的修饰画笔：GDI 拒绝创建，选入与删除随之失败，直线以原先选入的画笔绘制。"""
+        import struct
+
+        import emf
+
+        pen = [(95, struct.pack("<11I", 1, 0, 0, 0, 0, 0x1200, 2, 0, 0, 0, 0)), (37, struct.pack("<I", 1)),
+               (40, struct.pack("<I", 1))]
+        img = emf.render(self._line(pen), 96)
+        self.assertEqual(np.asarray(img).tobytes(), np.asarray(emf.render(self._line([]), 96)).tobytes())
+        self.assertLess(np.asarray(img.convert("L"))[20:30, 20:80].min(), 128)
+
+    def test_other_failed_records_are_reported(self):
+        """选入从未创建的句柄不是 GDI 拒绝创建的对象，回放报错。"""
+        import struct
+
+        import emf
+
+        with self.assertRaises(RuntimeError):
+            emf.render(self._line([(37, struct.pack("<I", 1)), (40, struct.pack("<I", 1))]), 96)
+
     def test_font_quality_rewrite_replays_as_natural_cleartype(self):
         """WPS 页面 EMF 的字体 lfQuality 为 0；改写为 CLEARTYPE_NATURAL_QUALITY 后与以该质量创建字体的 EMF 回放逐像素相同。"""
         import emf
@@ -227,6 +267,23 @@ class EmfTest(unittest.TestCase):
         self.assertEqual(np.asarray(emf.render(rewritten, 96)).tobytes(), np.asarray(emf.render(natural, 96)).tobytes())
         with self.assertRaises(ValueError):
             emf.with_font_quality(default[:-4], 6)
+
+    def test_wps_faces_are_rewritten_and_unknown_ones_are_reported(self):
+        """页面 EMF 中 WPS 自带的字体（KSOF 开头）按对应改写字体名后与原字体的 EMF 回放逐像素相同，长度不变；GDI 回放时
+        不认识该字体名，另取的字体与原字体不同。不在对应中的 KSOF 字体由 unmapped_faces 列出，其余字体名不变。"""
+        import emf
+
+        times = self._text_emf(6)
+        ksof = emf.with_faces(times, {"Times New Roman": "KSOF0000TEST"})
+        back = emf.with_faces(ksof, {"KSOF0000TEST": "Times New Roman"})
+        self.assertEqual(len(back), len(times))
+        pixels = np.asarray(emf.render(times, 96)).tobytes()
+        self.assertEqual(np.asarray(emf.render(back, 96)).tobytes(), pixels)
+        self.assertNotEqual(np.asarray(emf.render(ksof, 96)).tobytes(), pixels)
+        self.assertEqual(emf.unmapped_faces(ksof, {}), {"KSOF0000TEST"})
+        self.assertEqual(emf.unmapped_faces(ksof, {"KSOF0000TEST": "Times New Roman"}), set())
+        self.assertEqual(emf.unmapped_faces(times, {}), set())
+        self.assertEqual(emf.with_faces(times, {"KSOF0000TEST": "Arial"}), times)
 
 
 if __name__ == "__main__":

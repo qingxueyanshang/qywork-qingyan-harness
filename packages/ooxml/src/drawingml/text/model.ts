@@ -4,8 +4,10 @@
  * - 字号、字距、磅值行距为磅；边距、缩进、制表位为 EMU；角度为度；百分比为小数。
  * - 颜色已求值。字号为自动调整缩放之前的值，缩放比例见 `BodyProperties.autofit`。
  * - 链上都未指定的西文字体为 Arial（WPS 实测），东亚、复杂文种与符号字体为空串。
+ * - 超链接的字段（`link` 不为 `null`）已按 WPS 的显示改写样式：主题的超链接色、单下划线（见 `resolve.ts`）。
  */
 
+import type { MathJustification, MathZone } from '../../math/index.ts'
 import type { Color } from '../color.ts'
 import type { Effect, Line, ShapeFill } from '../fill.ts'
 
@@ -38,6 +40,8 @@ export interface BodyProperties {
 export interface RunStyle {
   /** 实际字体名：主题字体已换算；西文字体未指定时为 Arial，其余未指定时为空串。 */
   readonly latin: string
+  /** 西文字体的 `charset`（有符号字节，如 GB2312 为 -122），决定主机没有该字体时的替代；文件未写时省略。 */
+  readonly latinCharset?: number
   readonly ea: string
   readonly cs: string
   readonly sym: string
@@ -59,6 +63,9 @@ export interface RunStyle {
   readonly lang: string
 }
 
+/**
+ * `link` 为超链接（`hlinkClick`，没有时取 `hlinkMouseOver`）的目标；没有超链接时为 `null`，只有动作而没有目标时为空串。
+ */
 export type Run =
   | {
       readonly kind: 'text'
@@ -74,6 +81,16 @@ export type Run =
       readonly text: string
       readonly style: RunStyle
       readonly link: string | null
+    }
+  | {
+      /** 公式（`a14:m`）。 */
+      readonly kind: 'math'
+      /** 各 `m:oMath`；显示公式（`m:oMathPara`）中每个独占一行。 */
+      readonly zones: readonly MathZone<RunStyle>[]
+      /** 显示公式的对齐（`m:jc`，未写时为 `centerGroup`）；行内公式为 `null`。 */
+      readonly display: MathJustification | null
+      /** 公式中没有字符属性的部分所用的样式：段落的缺省字符属性。 */
+      readonly style: RunStyle
     }
 
 /** 项目符号的字体、颜色与字号已解决：跟随文字时取段落第一个字段（没有字段时取段落结束符）的样式。 */

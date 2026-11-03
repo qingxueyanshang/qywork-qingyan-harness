@@ -16,6 +16,9 @@
  *   图表、SmartArt（见 `BodyEnv.chart`、`BodyEnv.diagram`）不计数，其余按种类计数。`w:object` 的对象框为其中 VML 形状的宽高。
  *   浮动对象（`wp:anchor`、绝对定位的 VML）记入段落的 `anchors`（见 `drawing.ts`）。
  * - 段落中的 `sectPr` 结束其所在的节（只在正文顶层），该段落属于这一节；正文末尾的 `sectPr` 为最后一节。
+ * - 元素嵌套超过 `MAX_DEPTH` 层（`NestingError`）时，所在的顶层块与其后的全部内容（含正文末尾的 `sectPr`）不读取，
+ *   计一次 `nesting`；之前的块照常显示，最后一节按缺省版面（WPS 实测：500 与 5000 层嵌套表格之前的段落按缺省页边距显示，
+ *   表格与其后的段落不显示）。
  * - 表格与文本框中的段落不悬挂行尾标点；表格中的段落不对齐行网格，除非设置了 `adjustLineHeightInTable`
  *   （均为 WPS 实测，见 `placeProps`）。
  * - 公式：每个 `m:oMath`（含 `m:oMathPara` 中的各个）为一个字段（`Run.math`），文字为空串；公式中的 `w:rPr` 按所在
@@ -91,7 +94,7 @@ import {
   readRowProps,
   readTableProps,
 } from './table.ts'
-import { eachChild, readText, type Scanner, skip, wAttr } from './xml.ts'
+import { eachChild, NestingError, readText, type Scanner, skip, wAttr } from './xml.ts'
 
 /** 打开文档时由应用重新计算结果的域。 */
 const DYNAMIC_FIELDS = new Set(['DATE', 'TIME', 'PAGE', 'NUMPAGES', 'SECTIONPAGES', 'SECTION'])
@@ -268,7 +271,7 @@ export class BodyReader {
     for (let t = x.next(); t !== null; t = x.next()) {
       if (t !== 'start' || x.depth !== 2) continue
       if (x.local === 'background') background = this.readBackground()
-      else if (x.local === 'body') eachChild(x, (local) => this.readBlock(local))
+      else if (x.local === 'body' && !this.readBlocks()) break
     }
     if (this.pending.length > 0 || this.sections.length === 0) this.endSection(DEFAULT_SECTION)
     return { body: this.blocks, sections: this.sections, background }
@@ -280,12 +283,32 @@ export class BodyReader {
     const x = this.x
     for (let t = x.next(); t !== null; t = x.next()) {
       if (t === 'start' && x.depth === 1) {
-        eachChild(x, (local) => this.readBlock(local))
+        this.readBlocks()
         break
       }
     }
     this.endSection(section)
     return this.blocks
+  }
+
+  /**
+   * 当前元素（`body` 或页眉页脚的根元素）的各块。嵌套过深时去掉正在读取的顶层块，返回 `false`，调用方不再读取其后的内容。
+   */
+  private readBlocks(): boolean {
+    let kept = this.pending.length
+    try {
+      eachChild(this.x, (local) => {
+        kept = this.pending.length
+        this.readBlock(local)
+      })
+      return true
+    } catch (e) {
+      if (!(e instanceof NestingError)) throw e
+      this.pending.length = kept
+      this.target = this.pending
+      this.count('nesting')
+      return false
+    }
   }
 
   /**

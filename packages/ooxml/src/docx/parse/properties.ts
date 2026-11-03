@@ -347,9 +347,13 @@ export function readRunProps(x: Scanner): RawRunProps {
       case 'color':
         if (wAttr(x, 'val') !== null) out.color = hexColor(wAttr(x, 'val'))
         break
-      case 'u':
-        out.underline = { style: wAttr(x, 'val') ?? 'single', color: hexColor(wAttr(x, 'color')) }
+      case 'u': {
+        // 缺少 `w:val` 的 `w:u` 不生效，也不覆盖样式中的下划线（WPS 实测：直接格式或样式中的空 `w:u` 不画下划线，
+        // 字符样式与段落样式为单线时其上的空 `w:u` 仍画单线）。
+        const v = wAttr(x, 'val')
+        if (v !== null) out.underline = { style: v, color: hexColor(wAttr(x, 'color')) }
         break
+      }
       case 'highlight': {
         const v = wAttr(x, 'val')
         if (v !== null) out.highlight = HIGHLIGHT[v] ?? null

@@ -6,7 +6,7 @@
  * - 上标只在根号内按紧缩移位（见 `Style.cramped`）；没有映射为数学字母的拉丁字符与东亚提示的希腊、西里尔字母按字段字体排版
  *   （见 `mathGlyphId`）。
  * - 显示公式中分数的分子分母不缩小字号，嵌套的分数按非显示参数移位；行内公式中分子分母缩小一级。
- * - 底式为字段时上下标不按底式高度下降，为结构时下降（见 `scripts`）；上下标同时存在且间隙小于 `subSuperscriptGapMin` 时，
+ * - 底式为结构时上下标按底式高度下降，为字段时只按其中按文字字体单倍行高排版的字符下降（见 `scripts`）；上下标同时存在且间隙小于 `subSuperscriptGapMin` 时，
  *   不足部分由上标上移与下标下移各分一半；上标不加斜体校正。
  * - 原子间距按左右原子的类别查表，数值为经验拟合（见 `THIN` 等常量）；分数为内部原子，n 元运算符（连同被积式）为大型运算符
  *   原子，两者与普通原子之间均加细间距。
@@ -228,10 +228,15 @@ interface Box<F> {
   /** `hlist` 中各括号原子的 `fence`。 */
   readonly fences?: readonly { readonly char: string; readonly level: number }[]
   /**
-   * 作上下标的底式时计算下降所用的上下沿（见 `scripts`）：括号与重音的内容恰为一个结构时取内容的，否则为 `null`（不下降）；
-   * 其余结构没有该项，取盒子本身的。
+   * 作上下标的底式时计算下降所用的上下沿（见 `scripts`）：括号与重音的内容恰为一个结构时取内容的，括号的内容为字段时取其
+   * `text`，否则为 `null`（不下降）；其余结构没有该项，取盒子本身的。
    */
   readonly core?: { readonly height: number; readonly depth: number } | null
+  /**
+   * 按文字字体单倍行高排版的字符（见 `textExtent`）的上下沿：字段中这类字符的最大值，横向排列取其中各字段的最大值，
+   * 结构不带该项。作上下标的底式时按其下降（见 `scripts`）。
+   */
+  readonly text?: { readonly height: number; readonly depth: number }
   /** 上下极限（`m:limLow`、`m:limUpp`）：在横向排列中内容右移，见 `hlist`。 */
   readonly limit?: boolean
 }
@@ -252,6 +257,17 @@ class Unsupported extends Error {
 }
 
 const EMPTY_BOX: Box<never> = { width: 0, height: 0, depth: 0, items: [], italic: 0, cls: 'ord' }
+
+/**
+ * 数学字体中没有字形的全角形式（U+FF00 至 U+FFEF）定界符：左侧按「(」、右侧按「)」的字形绘制。WPS 实测（Cambria Math，
+ * 10.5 磅）：「（」「）」「［」「］」「｛」「｝」「｜」与半角圆括号的字形、伸展与宽度相同；「〈」「《」「「」「【」等
+ * 不在该区的括号不按此绘制。
+ */
+function fenceSubstitute(ch: string, side: 'open' | 'close' | 'separator'): string | null {
+  const cp = ch.codePointAt(0)!
+  if (side === 'separator' || cp < 0xff00 || cp > 0xffef) return null
+  return side === 'open' ? '(' : ')'
+}
 
 /** 原子间距（em），经验拟合：WPS 逐字横坐标在 12 至 96 磅下的结果。 */
 const THIN = 0.17
@@ -543,8 +559,15 @@ class Engine<P, F> {
     let x = 0
     let height = 0
     let depth = 0
+    /** `Box.text` 的上下沿；没有这类字符时 `textHeight` 为 -1。 */
+    let textHeight = -1
+    let textDepth = 0
     for (let i = 0; i < atoms.length; i++) {
       const a = atoms[i]!
+      if (a.text !== undefined) {
+        textHeight = Math.max(textHeight, a.text.height)
+        textDepth = Math.max(textDepth, a.text.depth)
+      }
       if (i > 0) {
         const gap = gaps[i]!
         const [op, other] =
@@ -584,6 +607,7 @@ class Engine<P, F> {
       spans,
       fences,
       ...(only?.core !== undefined ? { core: only.core } : {}),
+      ...(textHeight < 0 ? {} : { text: { height: textHeight, depth: textDepth } }),
     }
   }
 
@@ -660,6 +684,7 @@ class Engine<P, F> {
         width: t.face.metrics.advance(cp, size),
         height,
         depth,
+        ...(lineExtent ? { text: { height, depth } } : {}),
         items: [
           {
             kind: 'glyph',
@@ -859,7 +884,7 @@ class Engine<P, F> {
     return { ...box, width: box.width + 2 * pad, items: shift(box.items, pad, 0) }
   }
 
-  /** 上下标的移位：上标不低于 `superscriptShiftUp`，下标不高于 `subscriptShiftDown`，不按底字高度下降（WPS 实测）。 */
+  /** 上下标的移位：上标不低于 `superscriptShiftUp`，下标不高于 `subscriptShiftDown`；`drop` 为底式下降所用的上下沿（见 `scripts`）。 */
   private scriptShifts(
     sup: Box<F> | null,
     sub: Box<F> | null,
@@ -894,9 +919,11 @@ class Engine<P, F> {
 
   /**
    * 上下标。底式恰为一个结构（不是字段）时移位按底式的上下沿下降（`superscriptBaselineDropMax`、
-   * `subscriptBaselineDropMin`）；括号与重音只在其内容恰为一个结构时下降，按内容的上下沿；底式为字段（单字或多字）时不下降。
+   * `subscriptBaselineDropMin`）；括号与重音只在其内容恰为一个结构时下降，按内容的上下沿；底式为字段时只按其中按文字字体
+   * 单倍行高排版的字符（`Box.text`）下降，西文字符不下降。
    * WPS 实测（10.5 至 24 磅）：分数、根号、上横线、括住分数的括号作底式时上下标随之移位，括住字段的括号（x 与 a+b）、
-   * 字母上的重音、多字字段不移位。
+   * 字母上的重音、多字字段不移位；10.5 与 12 磅的「汉」「（1+i）」与括住「汉」的括号作底式时，上标按宋体单倍行高的上沿、
+   * 下标按其下沿下降（10.5 磅时上标移位 8.25 磅、下标 4.5 磅，误差为 1 像素）。
    */
   private scripts(n: MathScripts<P>, style: Style): Box<F> {
     const base = this.list(n.base, style)
@@ -904,7 +931,7 @@ class Engine<P, F> {
     const s = scriptStyle(style)
     const sup = n.kind === 'sSub' ? null : this.list(n.sup, s)
     const sub = n.kind === 'sSup' ? null : this.list(n.sub, s)
-    const drop = single(n.base) ? (base.core === undefined ? base : base.core) : null
+    const drop = single(n.base) ? (base.core === undefined ? base : base.core) : (base.text ?? null)
     const { up, down } = this.scriptShifts(sup, sub, size, style, drop)
     const x = base.width
     const items: MathItem<F>[] = [...base.items]
@@ -1096,6 +1123,7 @@ class Engine<P, F> {
    */
   private fence(
     ch: string,
+    side: 'open' | 'close' | 'separator',
     height: number,
     depth: number,
     size: number,
@@ -1104,7 +1132,8 @@ class Engine<P, F> {
     above: number,
   ): Box<F> {
     if (ch === '') return EMPTY_BOX
-    const base = this.glyphOf(ch)
+    const substitute = fenceSubstitute(ch, side)
+    const base = this.glyphOf(ch) || (substitute === null ? 0 : this.glyphOf(substitute))
     if (base === 0) throw new Unsupported([`d/${ch}`])
     const axis = this.k('axisHeight', size)
     const variants = grow ? (this.table.vertical(base)?.variants ?? []) : []
@@ -1158,14 +1187,15 @@ class Engine<P, F> {
         (p.fences ?? []).filter((f) => f.char === n.open).map((f) => f.level),
       ),
     )
-    const fence = (ch: string) => this.fence(ch, height, depth, size, color, n.grow, above)
-    const left = fence(n.open)
+    const fence = (ch: string, side: 'open' | 'close' | 'separator') =>
+      this.fence(ch, side, height, depth, size, color, n.grow, above)
+    const left = fence(n.open, 'open')
     const seq: Box<F>[] = [left]
     parts.forEach((p, i) => {
-      if (i > 0) seq.push(fence(n.separator))
+      if (i > 0) seq.push(fence(n.separator, 'separator'))
       seq.push(p)
     })
-    seq.push(fence(n.close))
+    seq.push(fence(n.close, 'close'))
     // 只有一项时括号整体取内容的类别（WPS 实测相邻的两个括住分数的括号之间加细间距，括住字母的不加），且可在括号内断行。
     const only = parts.length === 1 ? parts[0]! : null
     const open = seq[0]!.width
@@ -1187,7 +1217,7 @@ class Engine<P, F> {
         span(right, row.width - right.width),
       ],
       ...(left.fence ? { fence: left.fence } : {}),
-      core: n.items.length === 1 && single(n.items[0]!) ? { height, depth } : null,
+      core: n.items.length === 1 && single(n.items[0]!) ? { height, depth } : (only?.text ?? null),
     }
   }
 
