@@ -35,37 +35,52 @@ test('状态回调中停止时立即退出，不因错过中止事件阻塞于�
   expect(queries).toBe(1)
 })
 
-test('连续查询失败有限重试并保留任务，成功查询会重置计数，长期真实排队不判失败', async () => {
+test('查询暂时失败不结束等待，远端完成后返回结果；其他查询错误结束等待并保留任务号', async () => {
   const original = globalThis.setTimeout
   const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void) =>
     original(fn, 1)) as typeof setTimeout)
   try {
-    for (const states of [
-      [false, false, false],
-      [false, false, true, false, false, true, true, true, false, false, false],
-    ]) {
-      const abort = new AbortController()
-      const add = spyOn(abort.signal, 'addEventListener')
-      const remove = spyOn(abort.signal, 'removeEventListener')
-      let queries = 0
-      const run = afterSubmit('original', abort.signal, () =>
-        waitTask(
-          async () => {
-            if (!states[queries++]) throw new MediaError('网关错误', { status: 503 })
-            return { state: 'pending', status: 'queued' }
-          },
-          { signal: abort.signal },
-        ),
-      )
-      await expect(run).rejects.toMatchObject({
-        pendingTaskId: 'original',
-        message: expect.stringContaining('连续 3 次任务查询失败'),
-      })
-      expect(queries).toBe(states.length)
-      expect(remove.mock.calls.length).toBe(add.mock.calls.length)
-      add.mockRestore()
-      remove.mockRestore()
-    }
+    const abort = new AbortController()
+    const add = spyOn(abort.signal, 'addEventListener')
+    const remove = spyOn(abort.signal, 'removeEventListener')
+    const transient = [
+      new MediaError('网关错误', { status: 503 }),
+      new MediaError('限流', { status: 429 }),
+      new MediaError('连接被断开', {
+        diagnostic: {
+          stage: 'query',
+          kind: 'connection',
+          outcome: 'unknown',
+          host: 'relay.test',
+          elapsedMs: 1,
+        },
+      }),
+    ]
+    let queries = 0
+    const done = await waitTask(
+      async () => {
+        const failure = transient[queries++ % transient.length]
+        if (queries <= 12) throw failure
+        return { state: 'done', url: 'https://relay.test/v.mp4' }
+      },
+      { signal: abort.signal },
+    )
+    expect(done).toMatchObject({ state: 'done', url: 'https://relay.test/v.mp4' })
+    expect(queries).toBe(13)
+    expect(remove.mock.calls.length).toBe(add.mock.calls.length)
+
+    queries = 0
+    const rejected = afterSubmit('original', abort.signal, () =>
+      waitTask(
+        async () => {
+          queries++
+          throw new MediaError('任务查询失败：HTTP 401 未授权', { status: 401 })
+        },
+        { signal: abort.signal },
+      ),
+    )
+    await expect(rejected).rejects.toMatchObject({ pendingTaskId: 'original' })
+    expect(queries).toBe(1)
   } finally {
     timers.mockRestore()
   }
