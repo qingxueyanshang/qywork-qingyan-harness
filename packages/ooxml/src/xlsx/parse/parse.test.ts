@@ -15,6 +15,7 @@ import { MISSING_LATIN } from '../../drawingml/text/fonts.ts'
 import type { Workbook } from '../model.ts'
 import { applyTint, DEFAULT_PALETTE } from './color.ts'
 import { parseCellRef, parseRange, shiftFormula } from './refs.ts'
+import { parseStyles } from './styles.ts'
 import { parseXlsx } from './workbook.ts'
 
 const encoder = new TextEncoder()
@@ -134,7 +135,7 @@ const SST = `<sst xmlns="${NS}" count="3" uniqueCount="3">
 
 const SHEET1 = `<worksheet xmlns="${NS}" xmlns:r="${R}">
 <sheetPr><tabColor rgb="FFFF0000"/></sheetPr>
-<sheetViews><sheetView showGridLines="0" zoomScale="85" workbookViewId="0"><pane xSplit="1" ySplit="2" topLeftCell="C5" activePane="bottomRight" state="frozen"/></sheetView></sheetViews>
+<sheetViews><sheetView showGridLines="0" zoomScale="85" defaultGridColor="1" colorId="1" workbookViewId="0"><pane xSplit="1" ySplit="2" topLeftCell="C5" activePane="bottomRight" state="frozen"/></sheetView></sheetViews>
 <sheetFormatPr defaultRowHeight="13.5" baseColWidth="10" customHeight="1"/>
 <cols><col min="1" max="2" width="12.5" customWidth="1"/><col min="4" max="4" width="9" hidden="1" style="3"/></cols>
 <sheetData>
@@ -337,6 +338,32 @@ describe('样式', () => {
     const a1 = wb.sheets[0]!.cells.get(0)?.get(0)?.value
     expect(a1?.type === 'string' && a1.runs?.map((r) => r.font?.name)).toEqual(['等线'])
   })
+  test('没有主题部件时带 scheme 的字体取宋体（WPS 实测）', () => {
+    const sheet = parseStyles(
+      `<styleSheet xmlns="${NS}"><fonts count="2">` +
+        '<font><sz val="11"/><name val="Calibri"/><scheme val="minor"/></font>' +
+        '<font><sz val="11"/><name val="Calibri"/></font></fonts>' +
+        '<cellXfs count="2"><xf fontId="0"/><xf fontId="1"/></cellXfs></styleSheet>',
+      null,
+    )
+    expect(sheet.styles.map((s) => s.font.name)).toEqual(['宋体', 'Calibri'])
+  })
+
+  test('差异样式缺失的填充颜色保留为 null，纯色只取 bgColor（WPS 实测）', () => {
+    const sheet = parseStyles(
+      `<styleSheet xmlns="${NS}"><dxfs count="3">` +
+        '<dxf><fill><patternFill patternType="lightUp"/></fill></dxf>' +
+        '<dxf><fill><patternFill patternType="solid"><fgColor rgb="FFFF0000"/></patternFill></fill></dxf>' +
+        '<dxf><fill><patternFill patternType="lightUp"><fgColor rgb="FFFF0000"/></patternFill></fill></dxf>' +
+        '</dxfs></styleSheet>',
+      null,
+    )
+    expect(sheet.dxfs.map((d) => d.fill)).toEqual([
+      { kind: 'pattern', pattern: 'lightUp', fg: null, bg: null },
+      { kind: 'pattern', pattern: 'solid', fg: null, bg: null },
+      { kind: 'pattern', pattern: 'lightUp', fg: '#ff0000', bg: null },
+    ])
+  })
   test('差异样式的纯色填充取背景色', async () => {
     const wb = await parsed()
     expect(wb.sheets[0]!.conditionalFormats[0]!.rules[0]!.dxf).toMatchObject({
@@ -411,10 +438,12 @@ describe('单元格', () => {
       customHeight: true,
       defaultColWidth: null,
       baseColWidth: 10,
+      declared: true,
     })
     expect(s.merges).toEqual([{ top: 4, left: 1, bottom: 5, right: 3 }])
     expect(s.view).toEqual({
       showGridLines: false,
+      gridColor: '#111111',
       zoom: 85,
       rightToLeft: false,
       frozenRows: 2,
@@ -573,7 +602,7 @@ ${two(`<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="3" name="按钮"/><xdr:cNvSpPr/></xdr:
 ${two(`<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="10" name="艺术字"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr>${xfrm(0, 0, 100, 100)}
 <a:effectLst><a:glow rad="12700"><a:srgbClr val="FF0000"/></a:glow></a:effectLst>
 <a:scene3d><a:camera prst="orthographicFront"/><a:lightRig rig="threePt" dir="t"/></a:scene3d><a:sp3d><a:bevelT/></a:sp3d></xdr:spPr>
-<xdr:txBody><a:bodyPr vert="eaVert"><a:prstTxWarp prst="textWave1"><a:avLst/></a:prstTxWarp></a:bodyPr><a:p><a:r><a:t>波浪</a:t></a:r></a:p></xdr:txBody></xdr:sp>`)}
+<xdr:txBody><a:bodyPr vert="wordArtVert"><a:prstTxWarp prst="textWave1"><a:avLst/></a:prstTxWarp></a:bodyPr><a:p><a:r><a:t>波浪</a:t></a:r></a:p></xdr:txBody></xdr:sp>`)}
 ${two(`<xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id="11" name="隐藏" hidden="1"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr>${xfrm(0, 0, 100, 100)}</xdr:grpSpPr>
 <xdr:sp><xdr:nvSpPr><xdr:cNvPr id="13" name="隐藏组内"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr>${xfrm(0, 0, 100, 100)}<a:effectLst><a:glow rad="12700"><a:srgbClr val="FF0000"/></a:glow></a:effectLst><a:sp3d><a:bevelT/></a:sp3d></xdr:spPr></xdr:sp>
 <xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="14" name="隐藏组内图表"/></xdr:nvGraphicFramePr><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"/></a:graphic></xdr:graphicFrame></xdr:grpSp>`)}

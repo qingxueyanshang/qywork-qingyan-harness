@@ -2,18 +2,23 @@
  * DrawingML 文字的绘制用字体：调用方按字体名提供字体文件的度量与浏览器中注册的族名，本模块按字形缓存并处理仿粗体。
  *
  * - 排版宽度只取自字体文件（`../../text/`），绘制时以 `family` 引用调用方注册的同名 `FontFace`。
- * - 主机没有的字体与空字体名改用 `fallback`，西文字体例外（`MISSING_LATIN`）；请求粗体而返回的不是粗体字形时
+ * - 主机没有的符号字体名改用 `MISSING_SYMBOL` 中的字体，其余主机没有的字体与空字体名改用 `fallback`，西文字体例外
+ *   （`missingLatin`）；请求粗体而返回的不是粗体字形时
  *   按仿粗体排版（`emboldened`），绘制时由浏览器合成粗体。
+ * - 每个绘制字形（字体文件、族名、请求的粗体与斜体）有自己的排版字体对象，`FaceCache.of` 按对象取回：合成斜体与正体的度量
+ *   相同，共用一个对象时排版结果无法区分两者。
  * - 行高与字体无关：WPS 演示的单倍行高为字号的 `SINGLE_LINE` 倍（其他宿主由 `FaceCache` 的参数给出），
  *   字体的纵向中心位于行顶以下 `CENTER_OTHER`、`CENTER_EAST_ASIAN` 或 `slideCenterEastAsian` 倍字号。
  *   排版前把每个字体的纵向度量换算为满足这两点的上下沿（`lineFace`），排版模块的行高与基线即按此计算；
  *   中日韩字体不再乘 1.3，也不加外部行距。
- * - `collectTextFonts` 收集文本框用到的字体名；调用方据此并加上 `MISSING_LATIN` 预先取得字体。
+ * - `collectTextFonts` 收集文本框用到的字体名（含按 `charset` 的西文替代字体）；调用方据此并加上 `MISSING_LATIN`
+ *   预先取得字体。
  * - 屏幕显示的字形（`ScreenText`、`TextClearType`）由宿主提供：不平滑字号的单色字形与平滑字号的 ClearType 字形。
  */
 
 import type { BitmapGlyph } from '../../font/index.ts'
 import type { CoverageGlyph, GlyphRun, PixelCanvas } from '../../glyph/cleartype/index.ts'
+import { MATH_SETTINGS_DEFAULTS, mathPropsOf } from '../../math/index.ts'
 import { emboldened, type TextFace } from '../../text/index.ts'
 import type { PaintContext } from '../paint/context.ts'
 import type { Bullet, RunStyle, TextBody } from './model.ts'
@@ -39,6 +44,19 @@ export interface FaceLine {
   readonly ascent: number
   readonly descent: number
   readonly center: number
+  /**
+   * 竖排中直立的字在字框中转回直立时，旋转中心在基线以上的距离与字号之比：`OS/2` 的 `sTypoAscender` 与 `sTypoDescender`
+   * 的中点。WPS 演示实测（`eaVert`，20、32、48 磅「国」的列位置）：Microsoft JhengHei、Yu Gothic、Noto Sans SC 的列中心与
+   * typo 中点相差不超过 1 像素（与 win 中点相差 1–4 像素），微软雅黑与 Yu Gothic UI 与 typo 中点相差 1–3 像素（与 win 中点
+   * 相差 3–9 像素）；`USE_TYPO_METRICS` 均未设置。宋体、MS Gothic、等线的两种中点相同。
+   */
+  readonly upright: number
+  /**
+   * 单倍行距时字体下沿距行顶的距离与字号之比：上下沿以纵向中心为中点，中心取 `CENTER_OTHER`，东亚字体取
+   * `BOTTOM_CENTER_EAST_ASIAN`；设置了 `USE_TYPO_METRICS` 的字体按 typo 上下沿，其余按 win 上下沿。只用于锚定（见
+   * `body.ts` 的 `anchorOverhang`）。
+   */
+  readonly bottom: number
 }
 
 /** 排版与绘制共用的字形：`face` 已按仿粗体换算；`bold`、`italic` 为请求的字形，绘制时写入 `ctx.font`。 */
@@ -66,6 +84,13 @@ export const SINGLE_LINE = 1.2
  */
 const CENTER_EAST_ASIAN = 0.5825
 const CENTER_OTHER = 0.6012
+/**
+ * 东亚字体按单倍行距的下沿（`FaceLine.bottom`）所用的纵向中心系数。经验拟合（机制未查明）：WPS 演示导出图中锚定底端与居中
+ * 的单行，微软雅黑、Noto Sans SC、Microsoft JhengHei、Malgun Gothic、Yu Gothic 40 与 80 磅，下沿按 0.626 + H / 2
+ * 计算时误差不超过 1 像素（H 为 win 上下沿之和与 em 之比）；西文字体（10 种，20–80 磅）为 `CENTER_OTHER` + H / 2。
+ * 不要改为与基线相同的 `slideCenterEastAsian`：微软雅黑 80 磅锚定底端时文字低约 5 像素。
+ */
+const BOTTOM_CENTER_EAST_ASIAN = 0.626
 
 /**
  * 演示文稿中代码页含中日韩的字体的纵向中心系数：0.5825 − 0.03 × max(0, H − 1.1)，H 为 `(usWinAscent + usWinDescent) /
@@ -79,14 +104,45 @@ function slideCenterEastAsian(v: TextFace['vertical']): number {
 }
 
 /**
- * 主机没有西文字体时，西文字符改用的字体；主机也没有该字体时用 `fallback`。实测：WPS 演示导出图中，11 个不存在的
- * 西文字体名（东亚字体为宋体、微软雅黑、楷体、黑体、仿宋或同样不存在，语言为中文或英文，`charset` 为 0 或未写）
- * 的西文字符一律以 Segoe Print 绘制，粗体取其粗体字形，均不取东亚字体。
- * 不符合本规则的情况：`charset="-122"` 的缺失字体 WPS 取宋体；名称包含已安装字体的家族名时
- * （如 `Calibri Fake`、`思源黑体 CN Fake`）WPS 取该字体；`Helvetica Neue` 等个别名称 WPS 取其他字体。
- * 模型不保留 `charset`，字体来源也不列出主机字体，这些情况按本规则处理。
+ * 主机没有西文字体、其 `charset` 不在 `MISSING_LATIN_BY_CHARSET` 中时，西文字符改用的字体；主机也没有该字体时用
+ * `fallback`。实测：WPS 演示导出图中，11 个不存在的西文字体名（东亚字体为宋体、微软雅黑、楷体、黑体、仿宋或同样不存在，
+ * 语言为中文或英文，`charset` 为 0 或未写）的西文字符一律以 Segoe Print 绘制，粗体取其粗体字形，均不取东亚字体；
+ * `charset` 为 1（DEFAULT）与 2（SYMBOL）时同样为 Segoe Print。
+ * 不符合本规则的情况：名称包含已安装字体的家族名时（如 `Calibri Fake`、`思源黑体 CN Fake`）WPS 取该字体；`STKaiti`
+ * （`charset` 为 -122）等 WPS 自带度量的字体名按其度量排版；`Helvetica Neue` 等个别名称 WPS 取其他字体。字体来源不列出
+ * 主机字体，这些情况按本规则处理。
  */
 export const MISSING_LATIN = 'Segoe Print'
+
+/**
+ * 主机没有西文字体时按其 `charset`（换算为 GDI 字符集的无符号值）改用的字体。WPS 演示实测（构造文件，不存在的西文字体名，
+ * 东亚字体为宋体，20 磅，按各词起点与字形比对）：GB2312（-122，`pitchFamily` 为 18、34、49 时相同）为宋体，SHIFTJIS（-128）
+ * 为 Yu Gothic，HANGUL（-127）为 Malgun Gothic，CHINESEBIG5（-120）为 MingLiU-ExtB。
+ */
+const MISSING_LATIN_BY_CHARSET: ReadonlyMap<number, string> = new Map([
+  [134, '宋体'],
+  [128, 'Yu Gothic'],
+  [129, 'Malgun Gothic'],
+  [136, 'MingLiU-ExtB'],
+])
+
+/**
+ * 主机没有的符号字体名改用的字体，项目符号与字段相同。WPS 演示实测（构造文件，`pitchFamily` 为 18、`charset` 为 2）：
+ * Wingdings 2 的 6 个常用项目符号字符（U+F097、U+00A1、U+F096、U+00DE、U+00DF、U+F09E）与字段文字都以 Wingdings 中
+ * 同一码位的字形绘制，ZapfDingbats 与 Monotype Sorts 同样取 Wingdings；Wingdings 3 取 Symbol（U+F075 显示为 υ）。
+ */
+const MISSING_SYMBOL: ReadonlyMap<string, string> = new Map([
+  ['Wingdings 2', 'Wingdings'],
+  ['ZapfDingbats', 'Wingdings'],
+  ['Monotype Sorts', 'Wingdings'],
+  ['Wingdings 3', 'Symbol'],
+])
+
+/** 主机没有 `charset` 为该值的西文字体时，西文字符改用的字体名。 */
+export function missingLatin(charset: number | undefined): string {
+  if (charset === undefined) return MISSING_LATIN
+  return MISSING_LATIN_BY_CHARSET.get(((charset % 256) + 256) % 256) ?? MISSING_LATIN
+}
 
 /** 纵向度量换算为上沿、下沿之和为 `single` 倍字号、纵向中心距行顶 `center` 倍字号的度量。 */
 export function lineFace(face: TextFace, single: number, center: number): TextFace {
@@ -160,6 +216,8 @@ export interface TextClearType {
 export class FaceCache {
   private readonly lines = new Map<TextFace, { readonly face: TextFace; readonly line: FaceLine }>()
   private readonly faces = new Map<string, PaintFace>()
+  /** 换算后的字体文件 → 族名与请求的字形 → 绘制字形。 */
+  private readonly variants = new Map<TextFace, Map<string, PaintFace>>()
   private readonly byFace = new Map<TextFace, PaintFace>()
   readonly fallback: PaintFace
 
@@ -178,14 +236,7 @@ export class FaceCache {
     readonly clearType: TextClearType | null = null,
     readonly wholeSizeLine: boolean = screen !== null,
   ) {
-    const fallback = this.line(source.fallback.face)
-    this.fallback = this.register({
-      face: fallback.face,
-      family: source.fallback.family,
-      bold: false,
-      italic: false,
-      line: fallback.line,
-    })
+    this.fallback = this.variant(source.fallback, false, false)
   }
 
   /** 同一字体文件只换算一次：排版模块按对象判定字体是否相同。 */
@@ -204,6 +255,19 @@ export class FaceCache {
           ascent: v.winAscent / v.unitsPerEm,
           descent: v.winDescent / v.unitsPerEm,
           center,
+          upright:
+            ((v.typoAscender ?? v.winAscent) + (v.typoDescender ?? -v.winDescent)) /
+            2 /
+            v.unitsPerEm,
+          bottom:
+            (v.eastAsianCodePage ? BOTTOM_CENTER_EAST_ASIAN : CENTER_OTHER) +
+            (v.useTypoMetrics === true &&
+            v.typoAscender !== undefined &&
+            v.typoDescender !== undefined
+              ? v.typoAscender - v.typoDescender
+              : v.winAscent + v.winDescent) /
+              2 /
+              v.unitsPerEm,
         },
       }
       this.lines.set(face, out)
@@ -211,34 +275,52 @@ export class FaceCache {
     return out
   }
 
-  private register(f: PaintFace): PaintFace {
-    this.byFace.set(f.face, f)
+  /**
+   * 字体文件 `base` 按请求的粗体与斜体绘制时的绘制字形。每个绘制字形的 `face` 是新建的对象，`byFace` 中一个对象只登记一次：
+   * 不要让两个绘制字形共用换算后的字体对象，`of` 按对象取回绘制字形。
+   */
+  private variant(base: SlideFont, bold: boolean, italic: boolean): PaintFace {
+    const converted = this.line(base.face)
+    let styles = this.variants.get(converted.face)
+    if (styles === undefined) {
+      styles = new Map()
+      this.variants.set(converted.face, styles)
+    }
+    const key = `${bold ? 1 : 0}${italic ? 1 : 0}${base.family}`
+    let f = styles.get(key)
+    if (f === undefined) {
+      const c = converted.face
+      const face = bold && !base.bold ? emboldened(c) : { metrics: c.metrics, vertical: c.vertical }
+      f = { face, family: base.family, bold, italic, line: converted.line }
+      styles.set(key, f)
+      this.byFace.set(face, f)
+    }
     return f
+  }
+
+  /** 字体名对应的主机字体：主机没有时取 `MISSING_SYMBOL` 中的替代字体，都没有时为 `null`。 */
+  private find(name: string, bold: boolean, italic: boolean): SlideFont | null {
+    if (name === '') return null
+    const found = this.source.face(name, bold, italic)
+    if (found !== null) return found
+    const symbol = MISSING_SYMBOL.get(name)
+    return symbol === undefined ? null : this.source.face(symbol, bold, italic)
   }
 
   get(name: string, bold: boolean, italic: boolean): PaintFace {
     const key = `${name}\u0000${bold ? 1 : 0}${italic ? 1 : 0}`
     let f = this.faces.get(key)
     if (f === undefined) {
-      const found = name === '' ? null : this.source.face(name, bold, italic)
-      const base = found ?? this.source.fallback
-      const converted = this.line(base.face)
-      f = this.register({
-        face: bold && !base.bold ? emboldened(converted.face) : converted.face,
-        family: base.family,
-        bold,
-        italic,
-        line: converted.line,
-      })
+      f = this.variant(this.find(name, bold, italic) ?? this.source.fallback, bold, italic)
       this.faces.set(key, f)
     }
     return f
   }
 
-  /** 西文字符的字体：主机没有 `name` 时取 `MISSING_LATIN`。 */
-  latin(name: string, bold: boolean, italic: boolean): PaintFace {
-    const found = name !== '' && this.source.face(name, false, false) !== null
-    return this.get(found ? name : MISSING_LATIN, bold, italic)
+  /** 西文字符的字体：主机没有 `name`（及其替代的符号字体）时取 `missingLatin(charset)`。 */
+  latin(name: string, charset: number | undefined, bold: boolean, italic: boolean): PaintFace {
+    const found = this.find(name, false, false) !== null
+    return this.get(found ? name : missingLatin(charset), bold, italic)
   }
 
   /** 排版结果中的字形对应的绘制信息。 */
@@ -247,19 +329,36 @@ export class FaceCache {
   }
 }
 
+/** 字体名及其替代的符号字体（`MISSING_SYMBOL`）加入 `out`，不含空串。 */
+function addName(out: Set<string>, name: string): void {
+  if (name === '') return
+  out.add(name)
+  const symbol = MISSING_SYMBOL.get(name)
+  if (symbol !== undefined) out.add(symbol)
+}
+
 function addRun(out: Set<string>, s: RunStyle): void {
-  for (const name of [s.latin, s.ea, s.cs, s.sym]) if (name !== '') out.add(name)
+  for (const name of [s.latin, s.ea, s.cs, s.sym]) addName(out, name)
+  if (s.latinCharset !== undefined) out.add(missingLatin(s.latinCharset))
 }
 
 function addBullet(out: Set<string>, b: Bullet): void {
-  if ((b.kind === 'char' || b.kind === 'number') && b.font !== '') out.add(b.font)
+  if (b.kind === 'char' || b.kind === 'number') addName(out, b.font)
 }
 
-/** 文本框用到的字体名加入 `out`：各字段、段落结束符与项目符号的字体，不含空串。 */
+/**
+ * 文本框用到的字体名加入 `out`：各字段、段落结束符与项目符号的字体及其替代的符号字体，有公式时另加公式各字段的字体与数学字体，
+ * 不含空串。
+ */
 export function collectTextFonts(out: Set<string>, t: TextBody): void {
   for (const p of t.paragraphs) {
     addBullet(out, p.bullet)
     addRun(out, p.end)
-    for (const r of p.runs) addRun(out, r.style)
+    for (const r of p.runs) {
+      addRun(out, r.style)
+      if (r.kind !== 'math') continue
+      out.add(MATH_SETTINGS_DEFAULTS.font)
+      for (const zone of r.zones) for (const s of mathPropsOf(zone)) addRun(out, s)
+    }
   }
 }

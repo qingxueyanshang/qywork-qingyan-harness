@@ -428,8 +428,8 @@ interface PictureFonts {
 }
 
 /**
- * 图元文件文字的字体：按 `GraphicFonts` 中的字体名取得登记的字形，主机没有的字体取其回退字体；请求粗体或斜体而字体没有
- * 该字形时仿粗体、仿斜体。本页没有字体表或回退字体没有绘制度量时为 `null`。
+ * 图元文件文字的字体：按 `GraphicFonts` 中的字体名取得登记的字形（主机没有的字体名为 `null`，由图元文件按其替代规则另取），
+ * `fallback` 为文档的回退字体；请求粗体或斜体而字体没有该字形时仿粗体、仿斜体。本页没有字体表或回退字体没有绘制度量时为 `null`。
  *
  * WPS 文字把图元文件栅格化为单色或灰度的蒙版（页面 EMF 中的 ALPHABLEND 位图），文字不用 ClearType：字体对象的逻辑字高
  * 不小于 `SMOOTH_HEIGHT` 且 `gasp` 在该 ppem 要求灰度平滑时平滑（按族名交给浏览器），否则为单色字形（有该 ppem 的点阵时
@@ -450,41 +450,59 @@ function metafileFonts(table: GraphicFonts | null, fonts: PageFonts): MetafileFo
     if (e !== null) named.set(namedFontKey(n.name, n.bold, n.italic), e)
   }
   const cache = new Map<string, MetafileFace>()
+  const resolve = (
+    key: string,
+    face: { ref: FaceRef; face: DocxFace },
+    bold: boolean,
+    italic: boolean,
+  ): MetafileFace => {
+    const known = cache.get(key)
+    if (known !== undefined) return known
+    const out = metafileFace(face, bold, italic)
+    cache.set(key, out)
+    return out
+  }
   return {
     face: (name, bold, italic) => {
       const key = namedFontKey(name, bold, italic)
-      const known = cache.get(key)
-      if (known !== undefined) return known
-      const { ref: base, face } = named.get(key) ?? fallback
-      const ref: FaceRef = {
-        ...base,
-        syntheticBold: bold && !base.bold,
-        syntheticItalic: italic && !base.italic,
+      const found = named.get(key)
+      return found === undefined ? null : resolve(key, found, bold, italic)
+    },
+    fallback: (bold, italic) => resolve(`\u0000${bold}${italic}`, fallback, bold, italic),
+  }
+}
+
+/** 登记的字形按图元文件文字的规则绘制（见 `metafileFonts`）。 */
+function metafileFace(
+  { ref: base, face }: { ref: FaceRef; face: DocxFace },
+  bold: boolean,
+  italic: boolean,
+): MetafileFace {
+  const ref: FaceRef = {
+    ...base,
+    syntheticBold: bold && !base.bold,
+    syntheticItalic: italic && !base.italic,
+  }
+  const v = face.text.vertical
+  return {
+    vertical: (ppem) => face.pixelVertical(ppem),
+    emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
+    averageWidth: v.averageWidth / v.unitsPerEm,
+    symbol: ((v.codePages ?? 0) & SYMBOL_CODE_PAGE) !== 0,
+    advance: (cp, ppem) => face.pixelAdvance(cp, ppem) ?? face.text.metrics.advance(cp, ppem),
+    draw: (c, text, x, baseline, ppem, height) => {
+      const glyph = face.text.metrics.glyphId(text.codePointAt(0)!)
+      const mono =
+        glyph === 0 || (height >= SMOOTH_HEIGHT && face.grayscale(ppem))
+          ? null
+          : monochromeGlyph(face, ref, glyph, ppem)
+      if (mono !== null) {
+        const { ascent, descent } = face.pixelVertical(ppem)
+        fillBitmap(c, mono, x, baseline, ascent, descent)
+        return
       }
-      const v = face.text.vertical
-      const out: MetafileFace = {
-        vertical: (ppem) => face.pixelVertical(ppem),
-        emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
-        averageWidth: v.averageWidth / v.unitsPerEm,
-        symbol: ((v.codePages ?? 0) & SYMBOL_CODE_PAGE) !== 0,
-        advance: (cp, ppem) => face.pixelAdvance(cp, ppem) ?? face.text.metrics.advance(cp, ppem),
-        draw: (c, text, x, baseline, ppem, height) => {
-          const glyph = face.text.metrics.glyphId(text.codePointAt(0)!)
-          const mono =
-            glyph === 0 || (height >= SMOOTH_HEIGHT && face.grayscale(ppem))
-              ? null
-              : monochromeGlyph(face, ref, glyph, ppem)
-          if (mono !== null) {
-            const { ascent, descent } = face.pixelVertical(ppem)
-            fillBitmap(c, mono, x, baseline, ascent, descent)
-            return
-          }
-          c.font = cssFont(ref, ppem)
-          c.fillText(text, x, baseline)
-        },
-      }
-      cache.set(key, out)
-      return out
+      c.font = cssFont(ref, ppem)
+      c.fillText(text, x, baseline)
     },
   }
 }

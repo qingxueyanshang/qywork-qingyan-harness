@@ -6,8 +6,8 @@
  * - 填充、线条与效果同样先读成规格（`readFill`、`readLine`、`readEffects`），再由 `resolveFill`、`resolveLine`、`resolveEffects` 求值。
  * - `rgbToHsl`、`hslToRgb`、`srgbToLinear`、`linearToSrgb` 为色彩空间换算工具，SpreadsheetML 的 `tint` 算法复用前两者。
  * - 几何：`Geometry` 为预设或自定义几何的定义，`shapeOutline` 求值为路径段与文本矩形（预设定义见 `geometry/preset.ts`）。
- * - 绘制：`PaintContext` 为 Canvas 2D 子集；`paintFill`、`paintLine`、`paintWithShadows` 在形状局部坐标中绘制填充、
- *   线条与外部阴影，docx 与 pptx 共用。图片（位图与图元文件）由 `decodePicture` 解码为 `PaintPicture`，三种文档共用。
+ * - 绘制：`PaintContext` 为 Canvas 2D 子集；`paintFill`、`paintLine`、`paintWithEffects` 在形状局部坐标中绘制填充、
+ *   线条与图层效果（外部阴影、发光、柔化边缘、映像），docx 与 pptx 共用。图片（位图与图元文件）由 `decodePicture` 解码为 `PaintPicture`，三种文档共用。
  * - 形状与文字：`shape/` 读取与求值形状属性并绘制自选图形、连接线与组合，`text/` 读取、求值、排版与绘制文本框，
  *   pptx 与 xlsx 共用；模型类型 `Frame`、`TextBody` 等在此导出。
  */
@@ -106,6 +106,7 @@ export type {
   PaintImage,
   PaintPattern,
 } from './paint/context.ts'
+export { type LayerEffects, layerEffects, paintWithEffects } from './paint/effects.ts'
 export {
   type FillArea,
   type PaintResources,
@@ -116,12 +117,7 @@ export {
 export { paintLine } from './paint/line.ts'
 export { decodePicture, type ImageDecoder, type PaintPicture } from './paint/picture.ts'
 export { type ImageResolution, imageResolution } from './paint/resolution.ts'
-export {
-  type DeviceRect,
-  type OuterShadow,
-  paintWithShadows,
-  type ShadowFrame,
-} from './paint/shadow.ts'
+export type { DeviceRect, OuterShadow, ShadowFrame } from './paint/shadow.ts'
 export type { Frame } from './shape/model.ts'
 export type {
   Autofit,

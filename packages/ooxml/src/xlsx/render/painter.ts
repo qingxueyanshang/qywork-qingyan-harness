@@ -4,9 +4,10 @@
  * 坐标：第 c 列的左网格线位于 x = X_c（`cols.offset(c)`），该列占 [X_c, X_{c+1})；行同理。
  * 绘制顺序与覆盖规则（对照 WPS 屏幕显示）：
  * 1. 白色底。
- * 2. 网格线（`showGridLines` 为真时），颜色 `#e6e6e6`。与有填充的单元格相邻的线段、合并区域内部的线段、
- *    被溢出文字覆盖的竖线段不画。
- * 3. 填充：覆盖单元格内部及其四周的网格线，区域左沿（上沿）恰为网格线时不覆盖该线。按填充分组绘制，
+ * 2. 网格线（`showGridLines` 为真时）：未指定 `gridColor` 时为 `#e6e6e6` 实线，指定时为该颜色的点线，
+ *    横线在相对区域左沿的偶数像素、竖线在相对区域上沿的偶数像素着色（WPS 实测，区域起点换为奇数坐标时随之平移）。
+ *    与有填充的单元格相邻的线段、合并区域内部的线段、被溢出文字覆盖的竖线段不画。
+ * 3. 填充：覆盖单元格内部及其四周的网格线，区域左沿（上沿）恰为网格线时不覆盖该线。图案填充见 `PATTERN_BITS`。按填充分组绘制，
  *    组的先后为区域内按行优先首次出现的先后，两种填充之间的线因此取后出现者的颜色（与两格的左右上下位置无关）。
  * 4. 数据条，5. 边框（同一条边两侧都指定时取较粗者），6. 文字，7. 绘图对象（图片、形状与图表，按锚点在绘图部件中的顺序，
  *    形状见 `shapes.ts`，图表见 `../../drawingml/chart/paint.ts`，图表区即锚点矩形），8. 自动筛选按钮。
@@ -46,6 +47,7 @@ import type {
   CellStyle,
   DrawingAnchor,
   FontStyle,
+  PatternType,
   SheetChart,
   Workbook,
   Worksheet,
@@ -53,7 +55,7 @@ import type {
 import { type CellBox, type CellTextLayout, cellContent, layoutCell } from './cell-text.ts'
 import { type CfEffect, ConditionalFormats } from './conditional.ts'
 import type { FaceSegment, FontSet, LoadedFace } from './fonts.ts'
-import { buildGeometry, type SheetGeometry } from './geometry.ts'
+import { buildGeometry, indentPixels, type SheetGeometry } from './geometry.ts'
 import {
   chartFaces,
   metafileFonts,
@@ -263,9 +265,13 @@ export function paintRegion(
   }
 
   if (sheet.view.showGridLines) {
-    drawGridLines(ctx, scene, { r0, r1, c0, c1 }, filled, covered, tx, ty)
+    drawGridLines(ctx, scene, { r0, r1, c0, c1 }, filled, covered, tx, ty, originX, originY)
   }
-  drawFills(ctx, scene, { r0, r1, c0, c1 }, region, infoAt, tx, ty)
+  drawFills(ctx, scene, { r0, r1, c0, c1 }, region, infoAt, tx, ty, {
+    createCanvas: res.createCanvas,
+    x: tx(0),
+    y: ty(0),
+  })
   drawBorders(ctx, scene, { r0, r1, c0, c1 }, infoAt, tx, ty, originX, originY)
   // ClearType 字形读写画布像素：各单元格的字形收集后一次混合，在边框之后、绘图对象之前。
   const runs: GlyphRun[] | null = res.clearType ? [] : null
@@ -357,7 +363,9 @@ function cellInfo(scene: SheetScene, r: number, c: number): CellInfo {
     : scene.conditional.at(anchorRow, anchorCol, anchorCell?.value ?? null)
   return {
     style: anchorStyle,
-    fill: effect?.fill ?? anchorStyle.fill,
+    fill: effect?.fill
+      ? scene.conditional.overlay(effect.fill, anchorStyle.fill)
+      : anchorStyle.fill,
     border: mergeBorder(own.border, effect?.border ?? null),
     effect,
     merge,
@@ -427,7 +435,7 @@ function layoutText(
       font: effectiveFont(info.style, info.effect),
       colorOverride: info.effect?.color ?? null,
       fonts: scene.fonts,
-      indentUnit: 3 * mdw,
+      indentUnit: indentPixels(mdw),
     },
     box,
   )
@@ -444,6 +452,9 @@ function insideMerge(m: CellRange | null, r: number, c: number): boolean {
   return m !== null && r >= m.top && r <= m.bottom && c >= m.left && c <= m.right
 }
 
+/** 指定颜色的网格线：隔一像素一点，周期起点为区域沿线方向的起点。 */
+const GRID_DOTS: Dash = { period: 2, on: [[0, 1]] }
+
 function drawGridLines(
   ctx: PaintContext,
   scene: SheetScene,
@@ -452,9 +463,24 @@ function drawGridLines(
   covered: Map<number, [number, number][]>,
   tx: (x: number) => number,
   ty: (y: number) => number,
+  originX: number,
+  originY: number,
 ): void {
   const { cols, rows } = scene.geometry
-  ctx.fillStyle = GRID_COLOR
+  const color = scene.sheet.view.gridColor
+  ctx.fillStyle = color ?? GRID_COLOR
+  const segment = (horizontal: boolean, x: number, y: number, length: number) => {
+    if (color === null) {
+      if (horizontal) ctx.fillRect(x, y, length, 1)
+      else ctx.fillRect(x, y, 1, length)
+      return
+    }
+    const start = horizontal ? x : y
+    for (const [a, n] of dashRuns(GRID_DOTS, start, length, horizontal ? originX : originY)) {
+      if (horizontal) ctx.fillRect(a, y, n, 1)
+      else ctx.fillRect(x, a, 1, n)
+    }
+  }
   // 横线：第 r 行上沿，按列分段。
   for (let r = range.r0; r <= range.r1 + 1; r++) {
     const y = ty(rows.offset(r))
@@ -464,7 +490,7 @@ function drawGridLines(
       if (filled(r - 1, c) || filled(r, c)) continue
       const m = scene.mergeAt(r, c)
       if (m && r > m.top && insideMerge(m, r - 1, c)) continue
-      ctx.fillRect(tx(cols.offset(c)), y, w + 1, 1)
+      segment(true, tx(cols.offset(c)), y, w + 1)
     }
   }
   // 竖线：第 c 列左沿，按行分段。
@@ -478,41 +504,66 @@ function drawGridLines(
       if (m && c > m.left && insideMerge(m, r, c - 1)) continue
       const spans = covered.get(r)
       if (spans?.some(([a, b]) => c > a && c <= b)) continue
-      ctx.fillRect(x, ty(rows.offset(r)), 1, h + 1)
+      segment(false, x, ty(rows.offset(r)), h + 1)
     }
   }
 }
 
-const PATTERN_DENSITY: Record<string, number> = {
-  darkGray: 0.75,
-  mediumGray: 0.5,
-  lightGray: 0.25,
-  gray125: 0.125,
-  gray0625: 0.0625,
-  darkHorizontal: 0.5,
-  darkVertical: 0.5,
-  darkDown: 0.5,
-  darkUp: 0.5,
-  darkGrid: 0.5,
-  darkTrellis: 0.75,
-  lightHorizontal: 0.25,
-  lightVertical: 0.25,
-  lightDown: 0.25,
-  lightUp: 0.25,
-  lightGrid: 0.4,
-  lightTrellis: 0.4,
-}
-
-function mix(bg: string, fg: string, t: number): string {
-  const a = Number.parseInt(bg.slice(1), 16)
-  const b = Number.parseInt(fg.slice(1), 16)
-  const ch = (s: number) => Math.round(((a >> s) & 0xff) * (1 - t) + ((b >> s) & 0xff) * t)
-  return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0')}`
-}
-
 /**
- * 图案填充以前景色按图案的覆盖比例与背景色混合后的纯色近似：像素级图案在 100% 缩放下与混合色的平均亮度一致。
+ * 图案填充的 8×8 像素单元：每行一个字节，最高位为最左一列，置位处为图案色（`fg`），其余为底色（`bg`）。
+ * WPS 屏幕显示实测（构造文件经 `Range.CopyPicture`，17 种图案各取无颜色与两种颜色）：单元以工作表左上角为原点平铺，
+ * 与单元格位置和取图区域的起点无关（区域起点右移 98 像素时图案不随之平移，网格线则随之平移）。不要改为按覆盖比例混合的纯色：混合色与 WPS 的像素图案在结构上不一致。
  */
+const PATTERN_BITS: Record<Exclude<PatternType, 'solid'>, readonly number[]> = {
+  gray125: [0x00, 0x44, 0x00, 0x11, 0x00, 0x44, 0x00, 0x11],
+  gray0625: [0x00, 0x40, 0x00, 0x04, 0x00, 0x40, 0x00, 0x04],
+  lightGray: [0x11, 0x44, 0x11, 0x44, 0x11, 0x44, 0x11, 0x44],
+  mediumGray: [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
+  darkGray: [0xee, 0xbb, 0xee, 0xbb, 0xee, 0xbb, 0xee, 0xbb],
+  darkHorizontal: [0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00],
+  darkVertical: [0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc],
+  darkDown: [0x99, 0xcc, 0x66, 0x33, 0x99, 0xcc, 0x66, 0x33],
+  darkUp: [0x99, 0x33, 0x66, 0xcc, 0x99, 0x33, 0x66, 0xcc],
+  darkGrid: [0x99, 0x66, 0x66, 0x99, 0x99, 0x66, 0x66, 0x99],
+  darkTrellis: [0x99, 0xff, 0x66, 0xff, 0x99, 0xff, 0x66, 0xff],
+  lightHorizontal: [0x00, 0xff, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00],
+  lightVertical: [0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44],
+  lightDown: [0x88, 0x44, 0x22, 0x11, 0x88, 0x44, 0x22, 0x11],
+  lightUp: [0x11, 0x22, 0x44, 0x88, 0x11, 0x22, 0x44, 0x88],
+  lightGrid: [0x44, 0xff, 0x44, 0x44, 0x44, 0xff, 0x44, 0x44],
+  lightTrellis: [0x88, 0x55, 0x22, 0x55, 0x88, 0x55, 0x22, 0x55],
+}
+
+/** 图案填充的平铺：单元由 `createCanvas` 绘制，原点为工作表左上角在画布上的位置 `(x, y)`。 */
+interface PatternSource {
+  readonly createCanvas: CreateCanvas
+  readonly x: number
+  readonly y: number
+}
+
+function patternStyle(
+  ctx: PaintContext,
+  fill: Extract<CellFill, { kind: 'pattern' }>,
+  source: PatternSource,
+): unknown {
+  if (fill.pattern === 'solid') return fill.fg
+  const tile = source.createCanvas(8, 8)
+  const c = tile.getContext('2d')
+  if (c === null) return fill.bg
+  const bits = PATTERN_BITS[fill.pattern]
+  c.fillStyle = fill.bg
+  c.fillRect(0, 0, 8, 8)
+  c.fillStyle = fill.fg
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) if (bits[y]! & (0x80 >> x)) c.fillRect(x, y, 1, 1)
+  }
+  // 单元画完后再创建平铺：浏览器在 createPattern 时复制图层的当前像素，之后的绘制不进入平铺。
+  const pattern = ctx.createPattern(tile, 'repeat')
+  if (pattern === null) return fill.bg
+  pattern.setTransform({ a: 1, b: 0, c: 0, d: 1, e: source.x, f: source.y })
+  return pattern
+}
+
 function fillStyleOf(
   ctx: PaintContext,
   fill: CellFill,
@@ -520,12 +571,9 @@ function fillStyleOf(
   y: number,
   w: number,
   h: number,
+  source: PatternSource,
 ): unknown {
-  if (fill.kind === 'pattern') {
-    return fill.pattern === 'solid'
-      ? fill.fg
-      : mix(fill.bg, fill.fg, PATTERN_DENSITY[fill.pattern] ?? 0.5)
-  }
+  if (fill.kind === 'pattern') return patternStyle(ctx, fill, source)
   if (fill.type === 'path') {
     const stops = fill.stops
     return stops[stops.length - 1]?.color ?? WHITE
@@ -556,6 +604,7 @@ function drawFills(
   infoAt: (r: number, c: number) => CellInfo,
   tx: (x: number) => number,
   ty: (y: number) => number,
+  source: PatternSource,
 ): void {
   const { cols, rows } = scene.geometry
   const done = new Set<CellRange>()
@@ -597,14 +646,19 @@ function drawFills(
       if (bar) bars.push({ bar, left, top, right, bottom })
     }
   }
+  ctx.save()
+  // 图案单元按整像素平铺，缩放时不插值。
+  ctx.imageSmoothingEnabled = false
   for (const [fill, rects] of groups) {
+    const pattern = fill.kind === 'pattern' ? patternStyle(ctx, fill, source) : null
     for (const { x0, y0, x1, y1 } of rects) {
       const x = tx(x0)
       const y = ty(y0)
-      ctx.fillStyle = fillStyleOf(ctx, fill, x, y, x1 - x0 + 1, y1 - y0 + 1)
+      ctx.fillStyle = pattern ?? fillStyleOf(ctx, fill, x, y, x1 - x0 + 1, y1 - y0 + 1, source)
       ctx.fillRect(x, y, x1 - x0 + 1, y1 - y0 + 1)
     }
   }
+  ctx.restore()
   for (const { bar, left, top, right, bottom } of bars) {
     drawDataBar(
       ctx,

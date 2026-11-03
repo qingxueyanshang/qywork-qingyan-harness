@@ -4,6 +4,9 @@
  * - 规则按 `priority` 升序求值，同一属性取优先级最高的命中规则；命中 `stopIfTrue` 的规则后不再求值更低的规则。
  * - 规则引用的公式（`cellIs` 的操作数、`expression`）由 `formula.ts` 求值，相对引用以规则第一个区域的
  *   左上角为基准平移。无法求值的公式（未支持的函数或语法、错误值）不命中。
+ * - `cellIs` 中空白单元格（含文件中没有的单元格）按空值参与比较，即与 0 和空串相等（WPS 实测：等于空白单元格、
+ *   等于 0、等于 `""`、小于 5、介于 −1 与 1 均命中，等于 `" "` 不命中）；没有缓存值的公式不参与。
+ * - 差异样式的填充以 `overlay` 叠加到单元格原填充上，缺失的颜色按其规则补齐。
  * - 色阶、数据条、前 N 项、高于平均值、重复值按规则全部区域内的值统计，统计结果按规则缓存。
  */
 
@@ -22,13 +25,14 @@ import type {
   CellValue,
   CfRule,
   CfThreshold,
+  DifferentialFill,
   UnderlineStyle,
   Workbook,
   Worksheet,
 } from '../model.ts'
 
 export interface CfEffect {
-  readonly fill: CellFill | null
+  readonly fill: DifferentialFill | null
   readonly color: string | null
   readonly bold: boolean | null
   readonly italic: boolean | null
@@ -66,6 +70,8 @@ export class ConditionalFormats {
   private readonly entries: Entry[]
   /** 同一 `conditionalFormatting` 下的规则共用区域，统计按区域数组缓存。 */
   private readonly stats = new Map<readonly CellRange[], Stats>()
+  /** `overlay` 的结果按两个输入对象缓存：绘制按填充对象分组，相同输入须得到同一对象。 */
+  private readonly overlays = new Map<DifferentialFill, Map<CellFill | null, CellFill>>()
 
   constructor(
     private readonly wb: Workbook,
@@ -83,6 +89,28 @@ export class ConditionalFormats {
     return this.entries.length === 0
   }
 
+  /**
+   * 差异样式的填充叠加到单元格原填充 `base` 上。WPS 实测：图案色缺失时为黑色；底色缺失时取单元格原填充的纯色，
+   * 没有纯色填充时为白色（只有 `fgColor` 的纯色差异样式因此不改变单元格的颜色，但照常遮住网格线）。
+   */
+  overlay(fill: DifferentialFill, base: CellFill | null): CellFill {
+    if (fill.kind === 'gradient') return fill
+    let cache = this.overlays.get(fill)
+    if (!cache) {
+      cache = new Map()
+      this.overlays.set(fill, cache)
+    }
+    let out = cache.get(base)
+    if (!out) {
+      const under = base?.kind === 'pattern' && base.pattern === 'solid' ? base.fg : '#ffffff'
+      const bg = fill.bg ?? under
+      const fg = fill.pattern === 'solid' ? bg : (fill.fg ?? '#000000')
+      out = { kind: 'pattern', pattern: fill.pattern, fg, bg }
+      cache.set(base, out)
+    }
+    return out
+  }
+
   at(row: number, col: number, value: CellValue | null): CfEffect | null {
     if (this.entries.length === 0) return null
     let effect:
@@ -91,9 +119,10 @@ export class ConditionalFormats {
         }
       | null = null
     const v = scalarOf(value)
+    const unknown = value?.type === 'formula'
     for (const { rule, ranges } of this.entries) {
       if (!inRanges(ranges, row, col)) continue
-      const e = this.evaluate(rule, ranges, row, col, v)
+      const e = this.evaluate(rule, ranges, row, col, v, unknown)
       if (!e) continue
       effect ??= {
         fill: null,
@@ -122,6 +151,7 @@ export class ConditionalFormats {
     row: number,
     col: number,
     v: Scalar,
+    unknown: boolean,
   ): Partial<CfEffect> | null {
     const anchor = ranges[0] ?? { top: row, left: col, bottom: row, right: col }
     const evalFormula = (f: string) =>
@@ -140,7 +170,7 @@ export class ConditionalFormats {
         return { bar: { ratio: Math.min(1, Math.max(0, ratio)), color: rule.color } }
       }
       case 'cellIs': {
-        if (v === null || isError(v)) return null
+        if (unknown || isError(v)) return null
         const ops = rule.formulas.map(evalFormula)
         if (ops.some((o) => o === undefined || isError(o))) return null
         matched = compareOperator(rule.operator, v, ops as Scalar[])

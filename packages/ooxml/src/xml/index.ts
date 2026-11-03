@@ -7,11 +7,19 @@
  * - 不读取 DTD：遇到 `<!DOCTYPE` 抛出 `XmlSyntaxError`。OOXML 部件不允许包含 DTD，
  *   因此可用的实体只有五个预定义实体与数字字符引用。
  * - 命名空间不解析为 URI，只拆出前缀与本地名。
- * - 结构错误（标签未结束、结束标签不匹配、元素未闭合、缺少根元素）由 `next()` 抛出；
+ * - 结束标签与当前元素不配对时：与某个已打开的祖先同名则依次关闭到该祖先，中间各层逐个产出 `end`；与任何已打开的元素
+ *   都不同名时忽略该标签（WPS 实测：`<m:r><m:t>a</m:sPre></m:r>` 显示为「a」）。格式良好的输入不受影响。
+ * - 其余结构错误（标签未结束、元素未闭合、缺少根元素）由 `next()` 抛出；
  *   文本与属性值在读取时才解码，其中的非法实体在读取时抛出，未读取的部分不检查。
  */
 
 export type XmlToken = 'start' | 'end' | 'text'
+
+/**
+ * 按元素嵌套逐层递归的读取（docx 正文与部件、OMML）所接受的层数上限：层数不设上限时由输入决定调用栈深度。网络语料 1728 份
+ * docx 中最深为 53 层；WPS 在约 1024 层处停止读取（实测：1005 层照常显示，1052 层起不显示该块及其后的内容）。
+ */
+export const MAX_DEPTH = 256
 
 export class XmlSyntaxError extends Error {
   /** 出错位置，按输入字符串的下标计。 */
@@ -54,6 +62,8 @@ export class XmlScanner {
   private popPending = false
   /** 上一个事件是自闭合标签的 `start`，下一次 `next()` 产出对应的 `end`。 */
   private endPending = false
+  /** 不配对的结束标签关闭到祖先时，当前 `end` 之后还要产出的 `end` 个数。 */
+  private closesPending = 0
   private sawRoot = false
   private tokenName = ''
   private textStart = 0
@@ -130,6 +140,12 @@ export class XmlScanner {
     this.attrLength = 0
     this.textStart = 0
     this.textEnd = 0
+    if (this.closesPending > 0) {
+      this.closesPending--
+      this.tokenName = this.stack.at(-1)!
+      this.popPending = true
+      return 'end'
+    }
     if (this.endPending) {
       this.endPending = false
       this.popPending = true
@@ -153,7 +169,10 @@ export class XmlScanner {
         return this.setText(at, lt, false)
       }
       const c = s.charCodeAt(at + 1)
-      if (c === SLASH) return this.endTag(at)
+      if (c === SLASH) {
+        if (this.endTag(at)) return 'end'
+        continue
+      }
       if (c === QUESTION) {
         this.pos = this.skipTo('?>', at + 2, '处理指令未结束', at)
         continue
@@ -262,7 +281,8 @@ export class XmlScanner {
     return 'start'
   }
 
-  private endTag(at: number): 'end' {
+  /** 结束标签：产出 `end` 时返回 `true`；与任何已打开的元素都不同名时忽略，返回 `false`。 */
+  private endTag(at: number): boolean {
     const s = this.s
     const length = s.length
     const nameStart = at + 2
@@ -275,24 +295,19 @@ export class XmlScanner {
     const nameEnd = p
     while (p < length && isSpace(s.charCodeAt(p))) p++
     if (p >= length || s.charCodeAt(p) !== GT) throw new XmlSyntaxError('结束标签未结束', at)
-    const open = this.stack.at(-1)
-    if (
-      open === undefined ||
-      nameEnd - nameStart !== open.length ||
-      !s.startsWith(open, nameStart)
-    ) {
-      const found = s.slice(nameStart, nameEnd)
-      throw new XmlSyntaxError(
-        open === undefined
-          ? `结束标签 </${found}> 没有对应的开始标签`
-          : `结束标签 </${found}> 与 <${open}> 不匹配`,
-        at,
-      )
-    }
     this.pos = p + 1
-    this.tokenName = open
+    const stack = this.stack
+    let i = stack.length - 1
+    while (i >= 0) {
+      const open = stack[i]!
+      if (nameEnd - nameStart === open.length && s.startsWith(open, nameStart)) break
+      i--
+    }
+    if (i < 0) return false
+    this.closesPending = stack.length - 1 - i
+    this.tokenName = stack.at(-1)!
     this.popPending = true
-    return 'end'
+    return true
   }
 }
 

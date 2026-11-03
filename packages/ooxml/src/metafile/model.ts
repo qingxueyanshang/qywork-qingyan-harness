@@ -62,6 +62,10 @@ export interface Font {
   readonly weight: number
   readonly italic: boolean
   readonly face: string
+  /** `lfCharSet`：8 位文字按它解码；主机没有 `face` 时与 `pitchAndFamily` 一起决定替代字体（`metafileFontSubstitute`）。 */
+  readonly charset: number
+  /** `lfPitchAndFamily`：低 2 位为字距方式（`FIXED_PITCH`、`VARIABLE_PITCH`），高 4 位为字体族（`FF_ROMAN` 等）。 */
+  readonly pitchAndFamily: number
 }
 
 export type MetaOp =
@@ -178,7 +182,10 @@ export interface Metafile {
   readonly size: { readonly width: number; readonly height: number }
   readonly ops: readonly MetaOp[]
   readonly bitmaps: readonly Pixels[]
-  /** 文字记录使用的字体名（去重）。 */
+  /**
+   * 文字记录使用的字体名，与主机没有这些字体时的替代字体名（`metafileFontSubstitute`），去重：调用方据此预先取得字体。
+   * 不为空即含有文字。
+   */
   readonly fonts: readonly string[]
   /** 未实现的记录与参数取值（去重）。 */
   readonly unsupported: readonly string[]

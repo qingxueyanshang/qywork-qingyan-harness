@@ -5,10 +5,12 @@
  * - 字符属性（`m:r` 与 `m:ctrlPr` 中非 `m:` 命名空间的 `rPr`）交给调用方的 `readProps` 读取：回调须读到该元素的结束标签。
  * - 修订：`ins`、`moveTo` 中的内容按最终状态保留，`del`、`moveFrom` 中的内容丢弃。书签、校对与批注范围标记忽略。
  *   `m:r` 中的可选连字符（`w:softHyphen`）不显示（WPS 实测，构造文档 w16 fm：「a」可选连字符「+b」显示为 a+b，行高与 a+b 相同）。
- * - 其余未识别的元素记为 `unsupported` 节点，排版时整个公式不绘制。
+ * - 其余未识别的元素记为 `unsupported` 节点，排版时整个公式不绘制。嵌套超过 `MAX_DEPTH` 层的结构同样记为 `unsupported`，
+ *   其内容按层数不递归地跳过。
  */
 
 import type { PartScanner } from '../opc/scanner.ts'
+import { MAX_DEPTH } from '../xml/index.ts'
 import {
   MATH_SETTINGS_DEFAULTS,
   type MathArg,
@@ -133,6 +135,11 @@ class Reader<P> {
   }
 
   private node(x: PartScanner, local: string, out: MathNode<P>[]): void {
+    if (x.depth >= MAX_DEPTH) {
+      out.push({ kind: 'unsupported', name: 'depth' })
+      skip(x)
+      return
+    }
     switch (local) {
       case 'r':
         out.push(this.run(x))

@@ -1,5 +1,5 @@
 /**
- * 覆盖 `index.ts`（`openZip` 的 ZIP 部分与成员读取）、`crc32.ts`、`cp437.ts`。CFB 的分类见 `cfb.test.ts`。
+ * 覆盖 `index.ts`（`openZip` 的 ZIP 部分、ZIP64 与成员读取）、`cp437.ts`。CFB 的分类见 `cfb.test.ts`。
  *
  * 夹具由测试内的 ZIP 写入函数生成：deflate 使用 `Bun.deflateSync`，CRC 使用 `Bun.hash.crc32`，
  * 与被测实现互相独立。失败用例在生成的字节上改写指定字段。
@@ -7,7 +7,6 @@
 
 import { describe, expect, test } from 'bun:test'
 import { decodeCp437 } from './cp437.ts'
-import { crc32 } from './crc32.ts'
 import { openZip, type ZipArchive, type ZipResult } from './index.ts'
 
 interface Member {
@@ -110,6 +109,62 @@ function pseudoRandom(length: number, seed: number): Uint8Array<ArrayBuffer> {
   return out
 }
 
+/**
+ * 把 `buildZip` 的结果改写为 ZIP64：每个中央目录项的两个长度与本地文件头位置写标记值，真实值移入 ZIP64 扩展字段；
+ * 结束记录的成员数、中央目录长度与起点写标记值，真实值写入其前的 ZIP64 结束记录，再由定位记录指向它。
+ */
+function toZip64(built: Built): Uint8Array<ArrayBuffer> {
+  const { bytes, view, offsets, end } = built
+  const directoryStart = view.getUint32(end + 16, true)
+  const centrals: Uint8Array[] = []
+  for (const { central } of offsets) {
+    const nameLength = view.getUint16(central + 28, true)
+    const record = bytes.slice(central, central + 46 + nameLength)
+    const rv = new DataView(record.buffer)
+    const extra = new Uint8Array(4 + 24)
+    const ev = new DataView(extra.buffer)
+    ev.setUint16(0, 0x0001, true)
+    ev.setUint16(2, 24, true)
+    ev.setBigUint64(4, BigInt(rv.getUint32(24, true)), true)
+    ev.setBigUint64(12, BigInt(rv.getUint32(20, true)), true)
+    ev.setBigUint64(20, BigInt(rv.getUint32(42, true)), true)
+    for (const at of [20, 24, 42]) rv.setUint32(at, 0xffffffff, true)
+    rv.setUint16(30, extra.length, true)
+    const out = new Uint8Array(record.length + extra.length)
+    out.set(record)
+    out.set(extra, record.length)
+    centrals.push(out)
+  }
+  const directorySize = centrals.reduce((n, c) => n + c.length, 0)
+  const record64 = directoryStart + directorySize
+  const total = record64 + 56 + 20 + 22
+  const out = new Uint8Array(total)
+  out.set(bytes.subarray(0, directoryStart))
+  let p = directoryStart
+  for (const c of centrals) {
+    out.set(c, p)
+    p += c.length
+  }
+  const ov = new DataView(out.buffer)
+  ov.setUint32(record64, 0x06064b50, true)
+  ov.setBigUint64(record64 + 4, 44n, true)
+  ov.setBigUint64(record64 + 24, BigInt(offsets.length), true)
+  ov.setBigUint64(record64 + 32, BigInt(offsets.length), true)
+  ov.setBigUint64(record64 + 40, BigInt(directorySize), true)
+  ov.setBigUint64(record64 + 48, BigInt(directoryStart), true)
+  const locator = record64 + 56
+  ov.setUint32(locator, 0x07064b50, true)
+  ov.setBigUint64(locator + 8, BigInt(record64), true)
+  ov.setUint32(locator + 16, 1, true)
+  const eocd = locator + 20
+  ov.setUint32(eocd, 0x06054b50, true)
+  ov.setUint16(eocd + 8, 0xffff, true)
+  ov.setUint16(eocd + 10, 0xffff, true)
+  ov.setUint32(eocd + 12, 0xffffffff, true)
+  ov.setUint32(eocd + 16, 0xffffffff, true)
+  return out
+}
+
 function archiveOf(bytes: Uint8Array<ArrayBuffer>): ZipArchive {
   const opened = openZip(bytes)
   if (!opened.ok) throw new Error(`期望打开成功，实际为 ${JSON.stringify(opened.failure)}`)
@@ -209,6 +264,87 @@ describe('正常读取', () => {
     expect(await zip.bytes('s.xml')).toEqual({ ok: true, value: SHEET })
   })
 
+  test('ZIP64：结束记录与中央目录项的标记值取 ZIP64 记录中的值', async () => {
+    const zip = archiveOf(
+      toZip64(
+        buildZip([
+          { name: 'a.xml', data: SHEET, method: 8 },
+          { name: 'b.xml', data: encoder.encode('<b/>') },
+        ]),
+      ),
+    )
+    expect(zip.paths).toEqual(['a.xml', 'b.xml'])
+    expect(await zip.bytes('a.xml')).toEqual({ ok: true, value: SHEET })
+    expect(await zip.text('b.xml')).toEqual({ ok: true, value: '<b/>' })
+  })
+
+  test('ZIP64：只有中央目录项使用扩展字段时照常读取', async () => {
+    const built = buildZip([{ name: 'a.xml', data: SHEET, method: 8 }])
+    const wide = toZip64(built)
+    const view = new DataView(wide.buffer)
+    const eocd = wide.length - 22
+    const directoryStart = built.view.getUint32(built.end + 16, true)
+    const directorySize = view.getUint32(eocd - 20 - 56 + 40, true)
+    const plain = new Uint8Array(eocd - 20 - 56 + 22)
+    plain.set(wide.subarray(0, eocd - 20 - 56))
+    const pv = new DataView(plain.buffer)
+    const end = plain.length - 22
+    pv.setUint32(end, 0x06054b50, true)
+    pv.setUint16(end + 8, 1, true)
+    pv.setUint16(end + 10, 1, true)
+    pv.setUint32(end + 12, directorySize, true)
+    pv.setUint32(end + 16, directoryStart, true)
+    expect(await archiveOf(plain).bytes('a.xml')).toEqual({ ok: true, value: SHEET })
+  })
+
+  test('CRC 与中央目录不一致时照常返回数据（WPS 实测：照常使用该成员）', async () => {
+    const stored = buildZip([{ name: 'a.xml', data: SHEET }])
+    const at = stored.offsets[0]!.data + 5
+    stored.bytes[at] = stored.bytes[at]! ^ 0xff
+    const changed = SHEET.slice()
+    changed[5] = changed[5]! ^ 0xff
+    expect(await archiveOf(stored.bytes).bytes('a.xml')).toEqual({ ok: true, value: changed })
+
+    const deflated = buildZip([{ name: 'a.xml', data: SHEET, method: 8 }])
+    deflated.view.setUint32(deflated.offsets[0]!.central + 16, 0x12345678, true)
+    expect(await archiveOf(deflated.bytes).bytes('a.xml')).toEqual({ ok: true, value: SHEET })
+  })
+
+  test('没有字节序标记时按 XML 声明的编码解码（WPS 实测：ISO-8859-1 的工作表按该编码显示）', async () => {
+    const latin = (xml: string) => Uint8Array.from(xml, (c) => c.charCodeAt(0))
+    const zip = archiveOf(
+      buildZip([
+        {
+          name: 'a.xml',
+          data: latin(
+            '<?xml version="1.0" encoding="ISO-8859-1" standalone="yes"?><t>S\u00e9rie</t>',
+          ),
+          method: 8,
+        },
+        {
+          name: 'b.xml',
+          data: latin("<?xml version='1.0' encoding='windows-1252'?><t>\u00c7</t>"),
+        },
+        {
+          name: 'c.xml',
+          data: encoder.encode('<?xml version="1.0" encoding="utf-8"?><t>中文</t>'),
+        },
+      ]).bytes,
+    )
+    expect(await zip.text('a.xml')).toEqual({
+      ok: true,
+      value: '<?xml version="1.0" encoding="ISO-8859-1" standalone="yes"?><t>Série</t>',
+    })
+    expect(await zip.text('b.xml')).toEqual({
+      ok: true,
+      value: "<?xml version='1.0' encoding='windows-1252'?><t>Ç</t>",
+    })
+    expect(await zip.text('c.xml')).toEqual({
+      ok: true,
+      value: '<?xml version="1.0" encoding="utf-8"?><t>中文</t>',
+    })
+  })
+
   test('输入是更大缓冲区的视图时按视图起点解析', async () => {
     const inner = built.bytes
     const outer = new Uint8Array(inner.length + 16)
@@ -251,23 +387,6 @@ describe('失败分类', () => {
         reason: 'end-record',
       })
     }
-  })
-
-  test('存储成员内容被改写时 CRC 不一致', async () => {
-    const built = buildZip([{ name: 'a.xml', data: SHEET }])
-    const at = built.offsets[0]!.data + 5
-    built.bytes[at] = built.bytes[at]! ^ 0xff
-    const zip = archiveOf(built.bytes)
-    expect(failureOf(await zip.bytes('a.xml'))).toEqual({ kind: 'corrupt', reason: 'crc' })
-  })
-
-  test('中央目录记录的 CRC 与解压结果不一致', async () => {
-    const built = buildZip([{ name: 'a.xml', data: SHEET, method: 8 }])
-    built.view.setUint32(built.offsets[0]!.central + 16, 0x12345678, true)
-    expect(failureOf(await archiveOf(built.bytes).bytes('a.xml'))).toEqual({
-      kind: 'corrupt',
-      reason: 'crc',
-    })
   })
 
   test('解压长度与中央目录不一致', async () => {
@@ -347,7 +466,7 @@ describe('失败分类', () => {
     })
   })
 
-  test('出现 ZIP64 标记值判为已损坏', () => {
+  test('出现 ZIP64 标记值而没有 ZIP64 记录判为已损坏', () => {
     const count = buildZip([{ name: 'a.xml', data: SHEET }])
     count.view.setUint16(count.end + 10, 0xffff, true)
     expect(failureOf(openZip(count.bytes))).toEqual({ kind: 'corrupt', reason: 'zip64' })
@@ -365,22 +484,25 @@ describe('失败分类', () => {
         { name: 'b.xml', data: new Uint8Array([0xff, 0xfe, 0x3c, 0x00, 0x61]) },
         // 孤立的高位代理。
         { name: 'c.xml', data: new Uint8Array([0xfe, 0xff, 0xd8, 0x00, 0x00, 0x61]) },
+        // 声明的编码无法识别。
+        { name: 'd.xml', data: encoder.encode('<?xml version="1.0" encoding="x-unknown"?><t/>') },
+        // 声明为 UTF-16 而没有字节序标记，按 UTF-8 判定。
+        {
+          name: 'e.xml',
+          data: new Uint8Array([
+            ...encoder.encode('<?xml version="1.0" encoding="UTF-16"?>'),
+            0xe9,
+          ]),
+        },
       ]).bytes,
     )
-    for (const name of ['a.xml', 'b.xml', 'c.xml']) {
+    for (const name of ['a.xml', 'b.xml', 'c.xml', 'd.xml', 'e.xml']) {
       expect(failureOf(await zip.text(name))).toEqual({ kind: 'corrupt', reason: 'encoding' })
     }
   })
 })
 
 describe('辅助实现', () => {
-  test('CRC-32 与 Bun.hash.crc32 一致', () => {
-    for (const length of [0, 1, 7, 1000, 65537]) {
-      const data = pseudoRandom(length, length + 11)
-      expect(crc32(data)).toBe(Bun.hash.crc32(data))
-    }
-  })
-
   test('CP437 高位字符', () => {
     const high = decodeCp437(Uint8Array.from({ length: 128 }, (_, i) => 0x80 + i))
     expect(high.length).toBe(128)

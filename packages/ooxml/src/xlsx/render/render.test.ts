@@ -2,12 +2,12 @@
  * 覆盖：`axis.ts`（偏移、区段与二分查找）、`fonts.ts`（字体链回退、合成粗体加宽、逐字分段、整数前进宽度、
  * 主机上没有的字体的替代字体）、
  * `geometry.ts`（最大数字宽度、列宽与行高换算、按内容推算行高、未写出单元格按行样式与列样式取行高、标准行高、
- * 默认行高的 customHeight、含相邻行的边框增量、随数字宽度变化的留白）、
+ * 默认行高的 customHeight、含相邻行的边框增量、随数字宽度变化的留白、缩进宽度）、
  * `text.ts`（自动换行、单行行高 `lineBox`、自动换行各行按实际使用的字体取行高）、
  * `cell-text.ts`（「常规」对齐、溢出、`#` 填充、常规格式按宽度取舍、填充对齐、分散对齐、旋转、居中的行位置、
  * 留白与自动换行行宽、数字格式空白的宽度与自动换行时末尾空白、自动换行的行居中取整、逻辑值不按行排版）、
- * `conditional.ts` 与 `../formula.ts`（条件格式规则与公式求值）、`painter.ts`（以记录调用的上下文检查
- * 网格线与填充的覆盖规则、各线型边框相对网格线的位置、文字与筛选按钮、点阵绘制与逐字定位、合成粗体的两次绘制、
+ * `conditional.ts` 与 `../formula.ts`（条件格式规则与公式求值、空白单元格的比较、差异样式填充的叠加）、`painter.ts`（以记录调用的上下文检查
+ * 网格线与填充的覆盖规则、指定颜色的点线网格线、图案填充的像素单元、各线型边框相对网格线的位置、文字与筛选按钮、点阵绘制与逐字定位、合成粗体的两次绘制、
  * 绘图对象的上下次序、图片按共用图片接口绘制、冻结窗格各块的平移、区域外的形状）、`shapes.ts`（锚点换算、旋转接近 90° 时的宽高互换、组合内的换算、绘制范围、形状文字的字体与单倍行高、形状与图表文字的 ClearType 字形）。
  * Bun 中没有 Canvas，像素结果由对比基准验证。
  * 「本机字体的单行行高」读取 Windows 字体目录中的真实文件，其他平台跳过；期望值取自 WPS 实测（含缺失字体的行高与留白分界）。
@@ -22,7 +22,12 @@ import { DEFAULT_COLOR_MAP } from '../../drawingml/color.ts'
 import type { Matrix } from '../../drawingml/paint/context.ts'
 import type { PaintPicture } from '../../drawingml/paint/picture.ts'
 import { SCREEN_RESOLUTION } from '../../drawingml/paint/resolution.ts'
-import { canvasFactory, placeableWmf, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import {
+  canvasFactory,
+  placeableWmf,
+  type RecordingCanvas,
+  RecordingContext,
+} from '../../drawingml/paint/test-helper.ts'
 import type { Frame } from '../../drawingml/shape/model.ts'
 import { layoutBody } from '../../drawingml/text/body.ts'
 import { FaceCache } from '../../drawingml/text/fonts.ts'
@@ -59,6 +64,7 @@ import {
   columnPixels,
   defaultColumnPixels,
   fontLineHeight,
+  indentPixels,
   maxDigitWidth,
   rowPixels,
   standardRowHeight,
@@ -72,7 +78,7 @@ import {
   type SheetResources,
 } from './painter.ts'
 import { placeShape, shapeFaces } from './shapes.ts'
-import { lineBox, lineMetrics, makeRun, wrappedLineMetrics, wrapRuns } from './text.ts'
+import { lineBox, lineBoxOf, lineMetrics, makeRun, wrappedLineMetrics, wrapRuns } from './text.ts'
 
 /**
  * 等宽测试字体：ASCII 半角（0.5 em），汉字全角（1 em）；`cjk` 为假时没有汉字字形。
@@ -220,10 +226,12 @@ function sheetOf(cells: Record<string, Cell>, over: Partial<Worksheet> = {}): Wo
       customHeight: false,
       defaultColWidth: 10,
       baseColWidth: 8,
+      declared: true,
     },
     merges: [],
     view: {
       showGridLines: true,
+      gridColor: null,
       zoom: 100,
       rightToLeft: false,
       frozenRows: 0,
@@ -330,7 +338,11 @@ describe('行高与列宽', () => {
     expect(columnPixels(9.140625, 7)).toBe(64)
     expect(columnPixels(9, 8)).toBe(72)
     expect(columnPixels(102.4140625, 8)).toBe(819)
-    expect(
+    expect(rowPixels(26)).toBe(34)
+    expect(rowPixels(13.5)).toBe(18)
+  })
+  test('未指定 defaultColWidth 时默认列宽为 baseColWidth + 1 个字符；没有 sheetFormatPr 时为 72 像素（WPS 实测）', () => {
+    const width = (baseColWidth: number, declared: boolean, mdw: number) =>
       defaultColumnPixels(
         sheetOf(
           {},
@@ -340,15 +352,18 @@ describe('行高与列宽', () => {
               zeroHeight: false,
               customHeight: false,
               defaultColWidth: null,
-              baseColWidth: 8,
+              baseColWidth,
+              declared,
             },
           },
         ),
-        7,
-      ),
-    ).toBe(64)
-    expect(rowPixels(26)).toBe(34)
-    expect(rowPixels(13.5)).toBe(18)
+        mdw,
+      )
+    expect([6, 7, 8, 10, 12, 14, 16, 19].map((m) => width(8, true, m))).toEqual([
+      54, 63, 72, 90, 108, 126, 144, 171,
+    ])
+    expect(width(10, true, 7)).toBe(77)
+    expect([6, 7, 8, 10].map((m) => width(8, false, m))).toEqual([72, 72, 72, 72])
   })
   test('指定行高向下取整；其余行按字体与换行推算，保存的 ht 不参与', () => {
     const wrap = style({
@@ -422,6 +437,7 @@ describe('单行行高、标准行高与边框增量', () => {
             customHeight,
             defaultColWidth: 10,
             baseColWidth: 8,
+            declared: true,
           },
         },
       )
@@ -482,22 +498,36 @@ describe('单行行高、标准行高与边框增量', () => {
     expect([0, 1, 2].map((r) => h.rows.size(r))).toEqual([20, 33, 33])
   })
 
-  test('默认行高带 customHeight 的工作表：没有自定义行高的行不按内容推算', () => {
+  test('默认行高带 customHeight 的工作表：文件中有的行按内容推算，只有文件中没有的行取默认行高（WPS 实测）', () => {
     const big = style({ font: sized(20) })
+    const row = (height: number | null, custom: boolean) => ({
+      height,
+      custom,
+      hidden: false,
+      style: null,
+    })
     const sheet = sheetOf(
       { A1: str('x', 1) },
       {
         format: {
-          defaultRowHeight: 13.5,
+          defaultRowHeight: 30,
           zeroHeight: false,
           customHeight: true,
           defaultColWidth: 10,
           baseColWidth: 8,
+          declared: true,
         },
-        rows: new Map([[0, { height: 30, custom: false, hidden: false, style: null }]]),
+        rows: new Map([
+          [0, row(115.65, false)],
+          [1, row(30, false)],
+          [2, row(null, false)],
+          [3, row(10, true)],
+        ]),
       },
     )
-    expect(buildGeometry(workbook(sheet, [style(), big]), sheet, fonts).rows.size(0)).toBe(18)
+    const g = buildGeometry(workbook(sheet, [style(), big]), sheet, fonts)
+    // 第 1 行 20 磅：27 + 5 + 1；第 2、3 行没有单元格，按样式 0 的 12 磅：16 + 3 + 1，低于默认行高 40。
+    expect([0, 1, 2, 3, 4].map((r) => g.rows.size(r))).toEqual([33, 20, 20, 13, 40])
   })
 
   test('边框：两行之间的横线逐列取较宽的一条，上行加 ⌊w/2⌋、下行加 ⌊(w − 1)/2⌋', () => {
@@ -654,6 +684,14 @@ describe('自动换行', () => {
     expect(lines('一二三四五', 40)).toEqual(['一二', '三四', '五'])
     expect(lines('abcdefghij', 30)).toEqual(['abc', 'def', 'ghi', 'j'])
     expect(lines('ab\ncd', 100)).toEqual(['ab', 'cd'])
+  })
+
+  test('文字以换行符结尾时其后另有一个空行，行高取换行符所在段的字体（WPS 实测）', () => {
+    expect(lines('ab\n', 100)).toEqual(['ab', ''])
+    expect(lines('ab\n\n', 100)).toEqual(['ab', '', ''])
+    expect(lines('\nab', 100)).toEqual(['', 'ab'])
+    const out = wrapRuns([makeRun('ab\n', font, fonts)], 100)
+    expect(out.map((l) => lineBoxOf(l).height)).toEqual([20, 20])
   })
 
   // 每个汉字与全角标点 16 像素，行宽 40 像素容纳两个。
@@ -986,6 +1024,71 @@ describe('公式与条件格式', () => {
       cf.at(2, 0, { type: 'number', value: 10 })?.fill?.kind === 'pattern' &&
         cf.at(2, 0, { type: 'number', value: 10 })?.fill,
     ).toMatchObject({ fg: '#808080' })
+  })
+
+  test('cellIs 中空白单元格按空值参与比较，没有缓存值的公式不参与（WPS 实测）', () => {
+    const rule = (operator: 'equal' | 'lessThan', formula: string): CfRule => ({
+      type: 'cellIs',
+      operator,
+      formulas: [formula],
+      priority: 1,
+      stopIfTrue: false,
+      dxf: redBold,
+    })
+    const hit = (r: CfRule, value: Cell['value']) =>
+      new ConditionalFormats(
+        wb,
+        sheetOf(
+          {},
+          {
+            conditionalFormats: [
+              { ranges: [{ top: 0, left: 0, bottom: 0, right: 2 }], rules: [r] },
+            ],
+          },
+        ),
+      ).at(0, 1, value) !== null
+    expect(hit(rule('equal', '$Z$1'), null)).toBe(true)
+    expect(hit(rule('equal', '0'), null)).toBe(true)
+    expect(hit(rule('equal', '""'), null)).toBe(true)
+    expect(hit(rule('lessThan', '5'), null)).toBe(true)
+    expect(hit(rule('equal', '" "'), null)).toBe(false)
+    expect(hit(rule('equal', '""'), { type: 'number', value: 0 })).toBe(false)
+    expect(hit(rule('equal', '$Z$1'), { type: 'formula', value: '=A1' })).toBe(false)
+  })
+
+  test('差异样式的填充：图案色缺失为黑色，底色缺失取单元格的纯色填充或白色（WPS 实测）', () => {
+    const cf = new ConditionalFormats(wb, sheetOf({}))
+    const blue = { kind: 'pattern', pattern: 'solid', fg: '#99ccff', bg: '#99ccff' } as const
+    const hatch = { kind: 'pattern', pattern: 'lightUp', fg: null, bg: null } as const
+    expect(cf.overlay(hatch, blue)).toEqual({
+      kind: 'pattern',
+      pattern: 'lightUp',
+      fg: '#000000',
+      bg: '#99ccff',
+    })
+    expect(cf.overlay(hatch, null)).toEqual({
+      kind: 'pattern',
+      pattern: 'lightUp',
+      fg: '#000000',
+      bg: '#ffffff',
+    })
+    expect(cf.overlay({ ...hatch, fg: '#ff0000', bg: '#ffff00' }, blue)).toEqual({
+      kind: 'pattern',
+      pattern: 'lightUp',
+      fg: '#ff0000',
+      bg: '#ffff00',
+    })
+    // 只有 fgColor 的纯色差异样式：颜色缺失，取单元格自身的填充色。
+    const solidFg = { kind: 'pattern', pattern: 'solid', fg: null, bg: null } as const
+    expect(cf.overlay(solidFg, blue)).toEqual(blue)
+    expect(cf.overlay(solidFg, null)).toEqual({
+      kind: 'pattern',
+      pattern: 'solid',
+      fg: '#ffffff',
+      bg: '#ffffff',
+    })
+    // 相同输入得到同一对象：绘制按填充对象分组。
+    expect(cf.overlay(hatch, blue)).toBe(cf.overlay(hatch, blue))
   })
 })
 
@@ -1359,6 +1462,112 @@ describe('绘制', () => {
     expect(grid).toContainEqual(['#e6e6e6', w, 0, w + 1, 1])
   })
 
+  test('指定 gridColor 时网格线为该颜色的点线，横线在相对区域左沿的偶数像素着色（WPS 实测）', () => {
+    const view = {
+      showGridLines: true,
+      gridColor: '#ff0000',
+      zoom: 100,
+      rightToLeft: false,
+      frozenRows: 0,
+      frozenCols: 0,
+      topLeft: { row: 0, col: 0 },
+    }
+    /** 第 2 行上沿横线与第 2 列左沿竖线的着色像素（画布坐标）。 */
+    const inked = (regionX: number, regionY: number) => {
+      const sheet = sheetOf({ A1: str('x') }, { maxRow: 3, maxCol: 3, view })
+      const scene = createScene(workbook(sheet, [style()]), sheet, fonts)
+      const { ctx, rects } = recorder()
+      paintRegion(ctx, scene, { x: regionX, y: regionY, width: 200, height: 60 }, resources())
+      const y = scene.geometry.rows.offset(1) - regionY
+      const x = scene.geometry.cols.offset(1) - regionX
+      const xs: number[] = []
+      const ys: number[] = []
+      for (const [color, rx, ry, w, h] of rects) {
+        if (color !== '#ff0000') continue
+        expect(w * h).toBe(1)
+        if (ry === y) xs.push(rx)
+        if (rx === x) ys.push(ry)
+      }
+      return { xs, ys }
+    }
+    for (const [rx, ry] of [
+      [0, 0],
+      [3, 5],
+    ] as const) {
+      const { xs, ys } = inked(rx, ry)
+      expect(xs.length).toBeGreaterThan(20)
+      expect(xs.every((x) => x % 2 === 0)).toBe(true)
+      expect(ys.length).toBeGreaterThan(5)
+      expect(ys.every((y) => y % 2 === 0)).toBe(true)
+    }
+  })
+
+  test('图案填充以 8×8 像素单元平铺，原点为工作表左上角（WPS 实测）', () => {
+    const hatch = style({
+      fill: { kind: 'pattern', pattern: 'lightUp', fg: '#000000', bg: '#ffffff' },
+    })
+    const sheet = sheetOf({ B2: { value: null, style: 1 } }, { maxRow: 3, maxCol: 3 })
+    const scene = createScene(workbook(sheet, [style(), hatch]), sheet, fonts)
+    const factory = canvasFactory()
+    const { ctx, rects } = recorder()
+    // 浏览器在 createPattern 时复制图层像素：创建平铺时单元必须已画完（底色 1 次加 16 个点）。
+    const drawnAtCreate: number[] = []
+    const create = ctx.createPattern.bind(ctx)
+    ctx.createPattern = (image, repetition) => {
+      drawnAtCreate.push((image as RecordingCanvas).context.named('fillRect').length)
+      return create(image, repetition)
+    }
+    paintRegion(
+      ctx,
+      scene,
+      { x: 10, y: 4, width: 240, height: 60 },
+      {
+        images: [],
+        createCanvas: factory.create,
+        clearType: null,
+      },
+    )
+    const tile = factory.created.find((c) => c.width === 8 && c.height === 8)!
+    const ink = tile.context
+      .named('fillRect')
+      .filter((c) => c.fillStyle === '#000000')
+      .map((c) => [c.args[0], c.args[1]])
+    // lightUp：每行一点，x + y ≡ 3（模 4）。
+    expect(ink).toEqual(
+      Array.from({ length: 8 }, (_, y) => [0, 1].map((k) => [((3 - y) & 3) + 4 * k, y]))
+        .flat()
+        .sort((a, b) => a[1]! - b[1]! || a[0]! - b[0]!),
+    )
+    const filled = rects.find((r) => r[0].includes('object'))
+    expect(filled).toBeDefined()
+    const pattern = ctx.named('fillRect').find((c) => typeof c.fillStyle === 'object')!
+      .fillStyle as { transform: { e: number; f: number } }
+    expect([pattern.transform.e, pattern.transform.f]).toEqual([-10, -4])
+    expect(drawnAtCreate).toEqual([17])
+  })
+
+  test('缩进一级为 2·MDW + 2·⌈MDW/12⌉ 像素，与单元格字体无关（WPS 实测）', () => {
+    expect([6, 7, 8, 9, 12, 13, 16, 19, 24, 32].map(indentPixels)).toEqual([
+      14, 16, 18, 20, 26, 30, 36, 42, 52, 70,
+    ])
+    const indented = style({
+      alignment: {
+        horizontal: 'left',
+        vertical: 'bottom',
+        wrap: false,
+        shrink: false,
+        rotation: 0,
+        indent: 2,
+      },
+    })
+    const sheet = sheetOf({ A1: str('ab', 1) }, { maxRow: 1, maxCol: 1 })
+    const scene = createScene(workbook(sheet, [style(), indented]), sheet, fonts)
+    const { ctx, texts } = recorder()
+    paintRegion(ctx, scene, { x: 0, y: 0, width: 200, height: 40 }, resources())
+    const pad = textPadding(font, fonts).left
+    expect(texts[0]?.[1]).toBe(pad + 2 * indentPixels(scene.geometry.mdw))
+  })
+
   test('两种填充之间的线归区域内首次出现较晚的填充，与两格的左右上下位置无关', () => {
     const solid = (c: string) =>
       style({ fill: { kind: 'pattern', pattern: 'solid', fg: c, bg: c } })
@@ -1394,6 +1603,7 @@ describe('绘制', () => {
       {
         view: {
           showGridLines: false,
+          gridColor: null,
           zoom: 100,
           rightToLeft: false,
           frozenRows: 0,
@@ -1652,6 +1862,7 @@ describe('形状', () => {
   test('冻结窗格：跨越冻结线的形状在四块中各绘制一次，可滚动的块随滚动量平移', () => {
     const view = {
       showGridLines: true,
+      gridColor: null,
       zoom: 100,
       rightToLeft: false,
       frozenRows: 1,

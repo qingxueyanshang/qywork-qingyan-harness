@@ -10,6 +10,7 @@
  *   DEFAULT_CHARSET 字节 E5 显示为「∑」。
  */
 
+import { metafileFontSubstitute } from '../text/font-substitutes.ts'
 import { decodeDib, type Pixels } from './dib.ts'
 import type {
   BitmapRop,
@@ -25,7 +26,6 @@ import type {
 /** 字体对象：`issue` 为第一个未实现的参数取值，只在用它绘制文字时计入不支持。 */
 export interface FontObject {
   readonly font: Font
-  readonly charset: number
   readonly issue: string | null
 }
 
@@ -44,7 +44,6 @@ export function fontObject(
     readonly orientation: number
     readonly underline: boolean
     readonly strikeOut: boolean
-    readonly charset: number
   },
 ): FontObject {
   const issue =
@@ -57,7 +56,7 @@ export function fontObject(
           : font.height === 0
             ? 'font:defaultHeight'
             : null
-  return { font, charset: p.charset, issue }
+  return { font, issue }
 }
 
 const SYMBOL_CHARSET = 2
@@ -243,7 +242,11 @@ export class Builder {
     if (text !== '') {
       const f = this.textFont()
       if (f === null) return
-      if (text.trim() !== '') this.fontNames.add(f.font.face)
+      if (text.trim() !== '') {
+        this.fontNames.add(f.font.face)
+        const substitute = metafileFontSubstitute(f.font)
+        if (substitute !== null) this.fontNames.add(substitute)
+      }
     }
     this.op({ op: 'text', p, text, dx, symbol, opaque, clip })
   }

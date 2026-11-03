@@ -2,8 +2,8 @@
  * 形状树：`spTree` 与 `grpSp` 中的 `sp`、`pic`、`grpSp`、`cxnSp`、`graphicFrame`、`contentPart`。
  *
  * - 只记录文档中出现的属性（`spPr` 各项缺失时为 `null`），占位符继承、样式引用与坐标换算在 `resolve/` 中完成。
- * - `AlternateContent` 的分支由扫描器按 `../load.ts` 声明的扩展选择：墨迹取 `contentPart`，公式取 `Fallback` 中的
- *   替代图片（按普通图片读取）。
+ * - `AlternateContent` 的分支由扫描器按 `../load.ts` 声明的扩展选择：墨迹取 `contentPart`，公式取 `Choice` 中的形状
+ *   （公式为文字中的 `a14:m`，见 `../../drawingml/text/read.ts`）。
  * - OLE 对象（`graphicFrame` 中的 `p:oleObj`）按其中的替代图片（`p:pic`）读取为图片，位置尺寸取 `graphicFrame` 的
  *   `xfrm`，非可视属性取 `graphicFrame` 的。WPS 演示实测（构造文件）：替代图片自身的 `xfrm` 与外框不同时按外框显示；
  *   没有替代图片的 OLE 对象（嵌入数据不是可识别的对象）不显示，计入 `ole`。PowerPoint 写出的 OLE 对象把 `p:pic` 放在
@@ -13,7 +13,7 @@
  */
 
 import { type DiagramParts, readDiagramParts } from '../../drawingml/diagram/read.ts'
-import { type ImageFill, readFill, ZERO_RECT } from '../../drawingml/fill.ts'
+import { type ImageFillSpec, readFill, ZERO_RECT } from '../../drawingml/fill.ts'
 import {
   countOtherEffects,
   EMPTY_NON_VISUAL,
@@ -57,7 +57,7 @@ export interface RawPicture extends RawBase {
   readonly kind: 'picture'
   readonly props: ShapeProps
   readonly style: StyleRefs | null
-  readonly image: ImageFill
+  readonly image: ImageFillSpec
 }
 
 export interface RawConnector extends RawBase {
@@ -203,7 +203,7 @@ function readPicture(x: Scanner, rels: TextContext['rels']): RawPicture {
   let nv = EMPTY_SLIDE_NON_VISUAL
   let props = EMPTY_PROPS
   let style: StyleRefs | null = null
-  let image: ImageFill = {
+  let image: ImageFillSpec = {
     part: null,
     crop: ZERO_RECT,
     stretch: ZERO_RECT,
@@ -221,7 +221,6 @@ function readPicture(x: Scanner, rels: TextContext['rels']): RawPicture {
     else if (local === 'style') style = readStyle(x)
   })
   if (nv.media) found.push('media')
-  if (image.effects.length > 0) found.push('imageEffect')
   countOtherEffects(props, found)
   return { kind: 'picture', ...base(nv, found), props, style, image }
 }

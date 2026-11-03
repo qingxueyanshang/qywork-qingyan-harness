@@ -29,13 +29,14 @@ import type { ThreeD } from '../drawingml/three/model.ts'
  * - `media`：带音视频的图片（显示其封面图片）。`ink`：部件缺失或没有笔画的墨迹（`contentPart`）。
  * - `animation`：有动画的形状数；`transition`：带切换效果的幻灯片。
  * - `effect3d`：绘制端未实现的三维设置（挤出、轮廓、棱台、斜二测与 `legacy*` 相机、未实测的光照方案，见
- *   `../drawingml/three/camera.ts`；相机旋转、透视与光照照常绘制）；`textWarp`：艺术字变形；`imageEffect`：图片效果（不含透明度）；
+ *   `../drawingml/three/camera.ts`；相机旋转、透视与光照照常绘制）；`textWarp`：艺术字变形；
  *   `effect`：`fillOverlay`、`effectDag` 等未实现的效果。
  * - `tableStyle`：表格引用的样式不在表格样式部件中，也不在收录的内置样式中，按无样式处理。
- * - 以下由求值阶段按绘制端的能力计数：`effect` 另含外部阴影之外的已识别效果（内阴影、发光、柔化边缘、映像、
- *   模糊、预设阴影；文字中的这类效果每个文本框计一次）；`imageFormat`：无法绘制的图片（TIFF 等浏览器无法解码的位图、含未实现内容的图元文件）；
- *   `verticalText`：`eaVert`、`wordArtVert` 等竖排文字（`vert`、`vert270` 按旋转绘制，不计）；
- *   `pictureBullet`：图片项目符号。
+ * - 以下由求值阶段按绘制端的能力计数：`effect` 另含模糊与预设阴影、连接线与三维形状上的发光、柔化边缘与映像、文字中
+ *   外部阴影、发光与映像之外的效果（每个文本框计一次）、组合的内部阴影；`imageFormat`：无法绘制的图片（TIFF 等浏览器无法解码的
+ *   位图、含未实现内容的图元文件；含图片项目符号的图片）；`imageEffect`：亮度对比度、灰度、黑白、双色调与透明色之外的
+ *   图片效果（如 `hsl`、`tint`），图片形状与形状、表格、文字的图片填充都计；`verticalText`：`wordArtVert`、`mongolianVert` 等竖排文字
+ *   （`vert`、`vert270`、`eaVert` 按旋转绘制，不计）；`math`：含未实现结构（如矩阵）的公式，每个公式计一次。
  */
 export type UnsupportedKind =
   | 'chart'
@@ -53,7 +54,7 @@ export type UnsupportedKind =
   | 'tableStyle'
   | 'imageFormat'
   | 'verticalText'
-  | 'pictureBullet'
+  | 'math'
 
 export type UnsupportedCounts = Partial<Record<UnsupportedKind, number>>
 

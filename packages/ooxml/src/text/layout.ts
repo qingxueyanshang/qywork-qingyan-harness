@@ -32,6 +32,7 @@ import {
   type FontSlot,
   fontSlot,
   isEastAsian,
+  isGreek,
   isIdeographic,
   type SlotContext,
 } from './classify.ts'
@@ -91,8 +92,14 @@ export interface TextRun {
   /**
    * 列表编号字段，只能是第一个字段，文字为编号与后缀。`align` 为编号相对首行起点的对齐：居中与右对齐时编号向左伸出。
    * 悬挂缩进的首行中，编号后缀制表符在隐含制表位与默认制表位中取较近者；其他制表符优先取隐含制表位（WPS 实测）。
+   * `indentTab` 为真时（DrawingML 的项目符号）后缀制表符改为跳到左缩进处，编号已到达或越过左缩进时不占宽度，自定义制表位与
+   * 默认制表位都不取（WPS 演示实测：悬挂缩进 56 至 150 像素，默认制表位间距 30 至 96 像素，左缩进之前有自定义制表位，
+   * 编号宽于悬挂缩进）。
    */
-  readonly numbering?: { readonly align: 'left' | 'center' | 'right' }
+  readonly numbering?: {
+    readonly align: 'left' | 'center' | 'right'
+    readonly indentTab?: boolean
+  }
   /** 字符间距（磅）：加在每个字符（含空格）的步进之后，计入行宽。缺省为 0。 */
   readonly spacing?: number
   /**
@@ -552,7 +559,9 @@ function pairKerning(a: Unit, b: Unit): number {
   return units === 0 ? 0 : (units * a.extentSize) / m.unitsPerEm
 }
 
-const breakUnit = (u: Unit): BreakUnit => (u.object === null ? u.cp : u.object.breaks)
+/** 断行判定的一方：不落在东亚字体中的希腊字母按西文字母判定（见 `breaking.ts` 的规则 5）。 */
+const breakUnit = (u: Unit): BreakUnit =>
+  u.object !== null ? u.object.breaks : u.slot !== 'eastAsia' && isGreek(u.cp) ? 'western' : u.cp
 
 /** 单元有宽度：文字、制表符或行内对象。 */
 function visible(u: Unit): boolean {
@@ -675,6 +684,10 @@ export function layoutParagraph(runs: readonly ParagraphRun[], style: ParagraphS
     return { position: style.tabOrigin + k * d, align: 'left' }
   }
   const tabAdvance = (x: number, i: number, firstLine: boolean): number => {
+    if (numbering?.indentTab === true && units[i]!.run === 0) {
+      leaderOf[i] = undefined
+      return Math.max(0, -x)
+    }
     let stop: TabStop | undefined = style.tabStops.find((t) => t.position > x + EPSILON)
     // 悬挂缩进的首行，左缩进处是一个隐含的左对齐制表位。
     if (firstLine && style.firstLineIndent < 0 && x < -EPSILON && (!stop || stop.position > 0)) {

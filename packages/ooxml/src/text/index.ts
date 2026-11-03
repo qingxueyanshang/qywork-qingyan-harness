@@ -58,3 +58,11 @@ export {
   lineBox,
   singleLineHeight,
 } from './line-height.ts'
+export {
+  WPS_METRIC_FONTS,
+  type WpsMetricFont,
+  wpsEmfFaces,
+  wpsExtentFace,
+  wpsMetricFace,
+  wpsMetricFontNames,
+} from './wps-fonts.ts'

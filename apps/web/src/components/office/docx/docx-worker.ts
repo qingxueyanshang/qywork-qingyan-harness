@@ -3,6 +3,7 @@
  * 主线程取得字体后发出 `layout`，Worker 以同样的字体字节排版、分页，回复纯数据的分页结果。请求与回复的格式见 `../document.ts`。
  *
  * - 排版度量与绘制必须来自同一份字体字节：`layout` 中的字节即主线程注册 `FontFace` 与读取绘制度量所用的字节。
+ *   文档的嵌入字体随 `parse` 的回复交给主线程（`embeddedFaces`），由主线程注册后与主机字体一同在 `layout` 中发回。
  * - 分页结果中的字形以文档中的字体名为族名（`DocumentPages.faces`），主线程按字体名换算为注册的族名。
  * - 回复中图片的字节转移给主线程。只转移独占整个缓冲区的字节：结构化复制一个视图会复制它所在的整个缓冲区。
  */
@@ -13,6 +14,8 @@ import {
   type DocxFace,
   type DocxFailure,
   DocxFonts,
+  type EmbeddedFace,
+  embeddedFaces,
   layoutPages,
   loadDocxFace,
   parseDocx,
@@ -44,6 +47,8 @@ export type DocxParsed =
       readonly ok: true
       /** 排版所需的全部字体名。 */
       readonly fonts: readonly string[]
+      /** 排版所用的嵌入字体：主机没有其字体名（见 `embeddedFaces`）。 */
+      readonly embedded: readonly EmbeddedFace[]
       readonly unsupported: UnsupportedCounts
     }
   | { readonly ok: false; readonly failure: DocxFailure }
@@ -83,7 +88,12 @@ async function handle(
     doc = parsed.value
     host = body.host
     return {
-      reply: { ok: true, fonts: requiredFonts(doc, host), unsupported: doc.unsupported },
+      reply: {
+        ok: true,
+        fonts: requiredFonts(doc, host),
+        embedded: embeddedFaces(doc, host),
+        unsupported: doc.unsupported,
+      },
       transfer: [],
     }
   }

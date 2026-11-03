@@ -90,7 +90,6 @@ const FINDING_KINDS: Readonly<Record<DrawingFinding, UnsupportedKind>> = {
   effect3d: 'effect',
   effect: 'effect',
   verticalText: 'effect',
-  pictureBullet: 'effect',
   imageFormat: 'imageFormat',
 }
 
@@ -187,6 +186,41 @@ const WRAP_TYPES: Readonly<Record<string, Wrap['type']>> = {
 
 function wrapSide(v: string | null): Wrap['side'] {
   return v === 'left' || v === 'right' || v === 'largest' ? v : 'bothSides'
+}
+
+/** 多边形顶点的坐标单位：对象框的宽或高为 21600。 */
+const POLYGON_UNIT = 21600
+
+/**
+ * `wp:wrapPolygon` 各顶点的外接矩形相对对象框（宽 `width`、高 `height` 磅）四边的内缩。WPS 实测：穿越型图片的多边形右端为
+ * 21445 时其右侧文字自对象框右边内缩 1.65 磅处加距正文的距离排起，下端为 21488 时其下的段落自对象框底边上方 0.85 磅处排起，
+ * 与 `effectExtent` 无关。没有顶点时为 `null`。
+ */
+function readPolygon(x: Scanner, width: number, height: number): Edges | null {
+  let left = Number.POSITIVE_INFINITY
+  let top = Number.POSITIVE_INFINITY
+  let right = Number.NEGATIVE_INFINITY
+  let bottom = Number.NEGATIVE_INFINITY
+  eachChild(x, (local) => {
+    if (local === 'start' || local === 'lineTo') {
+      const px = Number(x.attr('x'))
+      const py = Number(x.attr('y'))
+      if (Number.isFinite(px) && Number.isFinite(py)) {
+        left = Math.min(left, px)
+        right = Math.max(right, px)
+        top = Math.min(top, py)
+        bottom = Math.max(bottom, py)
+      }
+    }
+    skip(x)
+  })
+  if (left > right) return null
+  return {
+    left: (left / POLYGON_UNIT) * width,
+    top: (top / POLYGON_UNIT) * height,
+    right: (1 - right / POLYGON_UNIT) * width,
+    bottom: (1 - bottom / POLYGON_UNIT) * height,
+  }
 }
 
 function sink<C>(cx: DrawingContext<C>): FindingSink {
@@ -403,7 +437,7 @@ export function readAnchor<C>(x: Scanner, cx: DrawingContext<C>): PendingAnchor<
   let width = 0
   let height = 0
   let effect: Edges = ZERO_EDGES
-  let wrap: Wrap = { type: 'none', side: 'bothSides', distance }
+  let wrap: Wrap = { type: 'none', side: 'bothSides', distance, polygon: null }
   let drawing: PendingNode<C> | null = null
   let kind: UnsupportedKind | null = null
   eachChild(x, (local) => {
@@ -456,7 +490,16 @@ export function readAnchor<C>(x: Scanner, cx: DrawingContext<C>): PendingAnchor<
         return
       default: {
         const type = WRAP_TYPES[local]
-        if (type !== undefined) wrap = { type, side: wrapSide(x.attr('wrapText')), distance }
+        if (type === undefined) break
+        const side = wrapSide(x.attr('wrapText'))
+        let polygon: Edges | null = null
+        eachChild(x, (inner) => {
+          if (inner === 'wrapPolygon' && (type === 'tight' || type === 'through'))
+            polygon = readPolygon(x, width, height)
+          else skip(x)
+        })
+        wrap = { type, side, distance, polygon }
+        return
       }
     }
     skip(x)
@@ -651,6 +694,7 @@ function readVmlShape<C>(
     type: 'none',
     side: 'bothSides',
     distance: { left: 9, right: 9, top: 0, bottom: 0 },
+    polygon: null,
   }
   const textAnchor = css.get('v-text-anchor')
   eachChild(x, (child) => {

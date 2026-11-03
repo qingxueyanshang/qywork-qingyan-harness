@@ -142,6 +142,19 @@ export interface CellStyle {
   readonly numFmt: string
 }
 
+/**
+ * 差异样式的填充。图案填充中缺失的颜色为 `null`，叠加到单元格时补齐（见 `../render/conditional.ts` 的 `overlay`）：
+ * `fg` 为图案色，`bg` 为底色，纯色填充显示 `bg`（`fg` 与 `bg` 相同）。
+ */
+export type DifferentialFill =
+  | Extract<CellFill, { readonly kind: 'gradient' }>
+  | {
+      readonly kind: 'pattern'
+      readonly pattern: PatternType
+      readonly fg: string | null
+      readonly bg: string | null
+    }
+
 /** 条件格式命中后叠加的差异样式（`dxf`）。未出现的部分为 `null`，表示不改变单元格样式。 */
 export interface DifferentialStyle {
   readonly bold: boolean | null
@@ -149,7 +162,7 @@ export interface DifferentialStyle {
   readonly strike: boolean | null
   readonly underline: UnderlineStyle | null
   readonly color: string | null
-  readonly fill: CellFill | null
+  readonly fill: DifferentialFill | null
   readonly border: CellBorder | null
   readonly numFmt: string | null
 }
@@ -208,15 +221,22 @@ export interface SheetFormat {
   readonly defaultRowHeight: number
   /** 未列出的行默认隐藏。 */
   readonly zeroHeight: boolean
-  /** 默认行高由用户指定（`customHeight`）：没有自定义行高的行一律取默认行高，不按内容推算。 */
+  /** 默认行高由用户指定（`customHeight`）：文件中没有的行取默认行高，文件中有的行仍按内容推算。 */
   readonly customHeight: boolean
-  /** Excel 字符宽度单位，`null` 为未指定（按 `baseColWidth` 推算）。 */
+  /** Excel 字符宽度单位，`null` 为未指定（按 `baseColWidth` 推算，见 `../render/geometry.ts`）。 */
   readonly defaultColWidth: number | null
   readonly baseColWidth: number
+  /** 文件中写出了 `sheetFormatPr`。没有时默认列宽不按字体推算（见 `defaultColumnPixels`）。 */
+  readonly declared: boolean
 }
 
 export interface SheetView {
   readonly showGridLines: boolean
+  /**
+   * `colorId` 指定的网格线颜色（索引色），`null` 为未指定。WPS 实测：指定时网格线为该颜色隔一像素一点的点线，
+   * 与 `defaultGridColor` 无关；未指定时为浅灰实线。
+   */
+  readonly gridColor: string | null
   /** 百分比，100 为原始大小。 */
   readonly zoom: number
   readonly rightToLeft: boolean
@@ -398,7 +418,7 @@ export interface SheetChart {
  * - `graphic`：未绘制的图形对象：SmartArt 等非图表的 `graphicFrame`、墨迹（`contentPart`）、锚点不完整或缺少 `xfrm`
  *   的形状，组合内的逐个计数。
  * - 形状中未绘制的部分（形状本身照常绘制）：`textWarp` 艺术字变形；`effect3d` 改变外观的三维设置（按平面绘制）；
- *   `effect` 外部阴影之外的效果；`verticalText` 按旋转绘制之外的竖排文字（`eaVert` 等，该文字不绘制）。
+ *   `effect` 外部阴影之外的效果；`verticalText` 未绘制的竖排文字（`wordArtVert` 等；按旋转绘制的竖排与 `eaVert` 照常绘制）。
  * - `pivotTable`、`slicer`、`sparkline`、`table`（表格样式的条纹与标题填充）。
  * - `comment`：批注。
  * - `control`：表单控件与 ActiveX 控件。

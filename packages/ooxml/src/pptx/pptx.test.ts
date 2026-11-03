@@ -539,6 +539,49 @@ describe('文字样式链', () => {
     ])
   })
 
+  /**
+   * 原始失败形状：超链接只记录目标，字段按自身的填充与下划线显示。WPS 演示实测（构造文件）：外部链接、幻灯片跳转、只有动作、
+   * 只有 `hlinkMouseOver` 的字段都以主题的 `hlink` 色加单下划线显示，显式填充与 `u="none"` 不起作用。
+   */
+  test('超链接的字段取主题的超链接色与单下划线；西文字体的 charset 随字体名保留', async () => {
+    const red = '<a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>'
+    const slide = await deck(
+      sp(10, {
+        txBox: true,
+        spPr: xfrm(0, 0, 1, 1),
+        body: text(
+          para(
+            run('甲', `<a:rPr lang="zh-CN" u="none">${red}<a:hlinkClick r:id="rIdLink"/></a:rPr>`) +
+              run('乙', `<a:rPr lang="zh-CN">${red}<a:hlinkMouseOver r:id="rIdLink"/></a:rPr>`) +
+              run(
+                '丙',
+                `<a:rPr lang="zh-CN">${red}<a:hlinkClick r:id="" action="ppaction://hlinkshowjump?jump=nextslide"/></a:rPr>`,
+              ) +
+              run('丁', `<a:rPr lang="zh-CN">${red}<a:latin typeface="Arial"/></a:rPr>`) +
+              run('戊', '<a:rPr lang="zh-CN"><a:latin typeface="STKaiti" charset="-122"/></a:rPr>'),
+          ),
+        ),
+      }),
+    )
+    const runs = paragraphs(slide, 10)[0]!.runs
+    const shown = runs.map((r) => [hex(r.style.fill), r.style.underline])
+    expect(shown).toEqual([
+      ['0563C1', 'sng'],
+      ['0563C1', 'sng'],
+      ['0563C1', 'sng'],
+      ['FF0000', 'none'],
+      ['000000', 'none'],
+    ])
+    expect(runs.map((r) => (r.kind === 'text' ? r.link : null))).toEqual(['', '', '', null, null])
+    expect(runs.map((r) => r.style.latinCharset)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      -122,
+    ])
+  })
+
   test('字段属性：粗斜体、下划线、上标、字距、高亮、超链接与行距段距', async () => {
     const slide = await deck(
       sp(10, {
@@ -813,7 +856,7 @@ describe('图片、几何与未实现元素', () => {
     })
   })
 
-  test('图表、SmartArt、墨迹、媒体、动画、切换、艺术字变形与图片效果按种类计数；母版装饰按出现的幻灯片计数', async () => {
+  test('图表、SmartArt、墨迹、媒体、动画、切换、艺术字变形与未实现的图片效果按种类计数（双色调与扩展中的效果不计）；母版装饰按出现的幻灯片计数', async () => {
     const shapes =
       frame(50, 'http://schemas.openxmlformats.org/drawingml/2006/chart') +
       frame(51, 'http://schemas.openxmlformats.org/drawingml/2006/diagram') +
@@ -821,9 +864,13 @@ describe('图片、几何与未实现元素', () => {
       `<mc:AlternateContent ${MC} ${P14}><mc:Choice Requires="p14"><p:contentPart r:id="rIdInk"/></mc:Choice>` +
       `<mc:Fallback>${pic(52, '<a:blip r:embed="rIdImg"/>')}</mc:Fallback></mc:AlternateContent>` +
       pic(53, '<a:blip r:embed="rIdImg"/>', '<p:nvPr><a:videoFile r:link="rIdVideo"/></p:nvPr>') +
+      pic(54, '<a:blip r:embed="rIdImg"><a:hsl hue="0" sat="0" lum="0"/></a:blip>') +
       pic(
-        54,
-        '<a:blip r:embed="rIdImg"><a:duotone><a:srgbClr val="000000"/><a:srgbClr val="FFFFFF"/></a:duotone></a:blip>',
+        56,
+        '<a:blip r:embed="rIdImg"><a:duotone><a:srgbClr val="000000"/><a:srgbClr val="FFFFFF"/></a:duotone>' +
+          '<a:extLst><a:ext uri="{BEBA8EAE-BF5A-486C-A8C5-ECC9F3942E4B}"><a14:imgProps xmlns:a14="urn:a14">' +
+          '<a14:imgLayer r:embed="rIdImg"><a14:imgEffect><a14:saturation sat="33000"/></a14:imgEffect></a14:imgLayer>' +
+          '</a14:imgProps></a:ext></a:extLst></a:blip>',
       ) +
       sp(55, {
         spPr: xfrm(0, 0, 10, 10),

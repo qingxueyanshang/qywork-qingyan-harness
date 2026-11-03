@@ -190,13 +190,17 @@ function textDefaults(style: StyleRefs | null, color: ColorSpec | null): ListSty
 }
 
 function hasText(raw: RawTextBody): boolean {
-  return raw.paragraphs.some((p) => p.runs.some((r) => r.kind !== 'break' && r.text !== ''))
+  return raw.paragraphs.some((p) =>
+    p.runs.some((r) => r.kind === 'math' || (r.kind !== 'break' && r.text !== '')),
+  )
 }
 
 /** 文字中写明字号的字段与段落结束符：这类文字的显示未核对，按未实现处理。 */
 function customSize(raw: RawTextBody): boolean {
   return raw.paragraphs.some(
-    (p) => p.end?.size !== undefined || p.runs.some((r) => r.props.size !== undefined),
+    (p) =>
+      p.end?.size !== undefined ||
+      p.runs.some((r) => r.kind !== 'math' && r.props.size !== undefined),
   )
 }
 

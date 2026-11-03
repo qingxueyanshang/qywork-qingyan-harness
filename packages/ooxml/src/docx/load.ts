@@ -4,7 +4,8 @@
  * - 部件按关系定位：包关系的 `officeDocument` 为主文档，其关系给出样式、编号、设置、字体表与主题；
  *   缺少的部件按空部件处理。
  * - 主文档的内容类型不是 WordprocessingML 文档（含启用宏的文档与模板）或主文档不存在时返回 `corrupt('document')`；
- *   部件 XML 结构错误或元素嵌套过深（`parse/xml.ts` 的 `MAX_DEPTH`）时返回 `corrupt('xml')`。ZIP 与 OPC 层的失败原样返回。
+ *   部件 XML 结构错误时返回 `corrupt('xml')`；元素嵌套过深（`parse/xml.ts` 的 `NestingError`）时主文档与页眉页脚截断
+ *   （见 `parse/body.ts`），其余部件返回 `corrupt('xml')`。ZIP 与 OPC 层的失败原样返回。
  * - `AlternateContent` 选择 WordprocessingML 2010 扩展、绘图形状、组合与画布的分支，使其中的对象按 DrawingML 计数。
  * - 各节引用的页眉页脚部件按引用它的第一节的版面解析；图片（嵌入式图片、浮动对象、页面背景）按所在部件的关系
  *   取得部件字节，同一部件只读取一次。部件不存在时该页眉页脚没有内容，图片的 `media` 为 -1。
@@ -17,6 +18,8 @@
  * - SmartArt：主文档与页眉页脚部件引用的数据、布局、样式、颜色部件在读取其内容之前读取文字（`loadDiagramParts`），
  *   读到 `dgm:relIds` 时按其中的四个部件名读取并按文档主题求值。
  * - 页面背景（颜色与整页图片）只在设置开启 `displayBackgroundShape` 时保留（WPS 实测：未开启时颜色与图片都不显示）。
+ * - 字体表中的嵌入字体在解析时读取并去混淆（`decodeEmbeddedFont`），并读取一次 `name` 表；无法还原或 `name` 表无法读取的
+ *   部件不列出。
  */
 
 import type { Chart } from '../drawingml/chart/model.ts'
@@ -26,6 +29,9 @@ import { type DiagramParts, readDiagram } from '../drawingml/diagram/read.ts'
 import { resolveDiagram } from '../drawingml/diagram/resolve.ts'
 import { countImage, drawableImage } from '../drawingml/shape/resolve.ts'
 import { EMPTY_THEME, parseTheme } from '../drawingml/theme.ts'
+import { decodeEmbeddedFont } from '../font/embedded/part.ts'
+import { readFamilyNames } from '../font/name.ts'
+import { FontFormatError, readFaces, tableBytes } from '../font/sfnt.ts'
 import {
   type OpcFailure,
   type OpcPackage,
@@ -34,7 +40,14 @@ import {
 } from '../opc/package.ts'
 import { PartScanner } from '../opc/scanner.ts'
 import { XmlSyntaxError } from '../xml/index.ts'
-import type { Block, DocxDocument, MediaPart, UnsupportedCounts, UnsupportedKind } from './model.ts'
+import type {
+  Block,
+  DocxDocument,
+  EmbeddedFont,
+  MediaPart,
+  UnsupportedCounts,
+  UnsupportedKind,
+} from './model.ts'
 import { type BodyEnv, BodyReader } from './parse/body.ts'
 import { EMPTY_NUMBERING, readNumbering } from './parse/numbering.ts'
 import { DEFAULT_SETTINGS, readFontTable, readSettings } from './parse/settings.ts'
@@ -174,8 +187,33 @@ async function parsePackage(pkg: OpcPackage): Promise<DocxDocument> {
   const settingsXml = await part('settings')
   const settings =
     settingsXml === null ? DEFAULT_SETTINGS : readSettings(new PartScanner(settingsXml))
-  const fontTableXml = await part('fontTable')
-  const fontTable = fontTableXml === null ? new Map() : readFontTable(new PartScanner(fontTableXml))
+  const fontTablePart = rels.value.part('fontTable')
+  const fontTableXml = await partText(pkg, fontTablePart)
+  const fonts =
+    fontTableXml === null
+      ? { entries: new Map(), embedded: [] }
+      : readFontTable(new PartScanner(fontTableXml))
+  const embeddedFonts: EmbeddedFont[] = []
+  if (fontTablePart !== null && fonts.embedded.length > 0) {
+    const fontRels = await pkg.relationships(fontTablePart)
+    if (!fontRels.ok) throw new PartError(fontRels.failure)
+    for (const f of fonts.embedded) {
+      const rel = fontRels.value.byId(f.id)
+      if (rel === null || rel.external || rel.part === null) continue
+      const r = await pkg.bytes(rel.part)
+      if (!r.ok) throw new PartError(r.failure)
+      if (r.value === null) continue
+      try {
+        const bytes = decodeEmbeddedFont(r.value, f.key)
+        const face = readFaces(bytes)[0]
+        if (face === undefined || !face.tables.has('name')) continue
+        readFamilyNames(tableBytes(bytes, face, 'name'))
+        embeddedFonts.push({ name: f.name, bold: f.bold, italic: f.italic, bytes })
+      } catch (e) {
+        if (!(e instanceof FontFormatError)) throw e
+      }
+    }
+  }
   const themeXml = await part('theme')
   const theme = themeXml === null ? null : parseTheme(themeXml)
 
@@ -310,7 +348,8 @@ async function parsePackage(pkg: OpcPackage): Promise<DocxDocument> {
       gridInTables: settings.adjustLineHeightInTable,
       math: settings.math,
     },
-    fontTable,
+    fontTable: fonts.entries,
+    embeddedFonts,
     unsupported,
     parts,
     media: mediaList,

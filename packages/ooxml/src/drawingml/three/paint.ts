@@ -5,7 +5,7 @@
  *
  * - 坐标：形状局部坐标（像素，原点为形状框左上角）经投影后再经 `placed.matrix` 到设备坐标；形状自身的旋转与翻转
  *   在投影之后施加。
- * - 图层按设备像素分配；平面图层或结果图层超过 `MAX_PIXELS` 时按平面绘制（不投影、不着色）。
+ * - 图层按设备像素分配；平面图层或结果图层超过 `MAX_PIXELS`，或图层不能逐像素读写时按平面绘制（不投影、不着色）。
  */
 
 import {
@@ -14,6 +14,7 @@ import {
   type Matrix,
   multiply,
   type PaintContext,
+  pixelContext,
   translation,
 } from '../paint/context.ts'
 import { drawLayerOnto, type OuterShadow, paintShadows } from '../paint/shadow.ts'
@@ -22,25 +23,6 @@ import { projector } from './camera.ts'
 import type { ThreeD } from './model.ts'
 
 const MAX_PIXELS = 1 << 24
-
-/** 逐像素数据（`ImageData`）：按行排列的非预乘 RGBA，每通道 0–255。 */
-export interface PixelData {
-  readonly width: number
-  readonly height: number
-  readonly data: Uint8ClampedArray
-}
-
-/** 可逐像素读写的图层上下文：浏览器的二维上下文都满足；不满足时按平面绘制。 */
-export interface PixelContext extends PaintContext {
-  getImageData(x: number, y: number, w: number, h: number): PixelData
-  putImageData(data: PixelData, x: number, y: number): void
-}
-
-function pixelContext(ctx: PaintContext | null): PixelContext | null {
-  return ctx !== null && 'getImageData' in ctx && 'putImageData' in ctx
-    ? (ctx as PixelContext)
-    : null
-}
 
 interface Box {
   readonly x: number

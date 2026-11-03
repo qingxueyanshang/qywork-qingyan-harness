@@ -5,11 +5,13 @@
  *   不按 `apply*` 属性回退到 `cellStyleXfs`：Excel 写入时已把生效的值写在 `cellXfs` 中，
  *   `apply*` 只记录用户是否改过该项。没有 `alignment` 子元素时为默认对齐（常规、靠下）。
  * - 颜色在整个样式表读完后再换算：`indexedColors` 位于样式表末尾，而字体与填充在其前引用索引色。
- * - `dxf` 中的纯色填充颜色写在 `bgColor`（与 `cellXfs` 的 `fgColor` 相反），缺失 `patternType` 时按纯色处理。
+ * - `dxf` 中的纯色填充颜色写在 `bgColor`（与 `cellXfs` 的 `fgColor` 相反），缺失 `patternType` 时按纯色处理；
+ *   缺失的颜色保留为 `null`，不以另一方或黑白补齐（WPS 实测：只有 `fgColor` 的纯色差异样式不改变单元格的填充色）。
  * - 「常规」样式：`cellStyles` 中 `builtinId="0"` 的条目所指的 `cellStyleXfs` 的字体；没有时取第一个字体。
  * - 带 `scheme` 的字体（含富文本的 `rPr`）换为主题字体：`minor` 取正文字体、`major` 取标题字体，依次取 `Hans` 文种、
  *   `ea`、`latin` 中第一个非空的字体名，`name` 不参与。WPS 实测：Calibri（`scheme="minor"`、主题 `Hans` 为宋体）
  *   的西文与汉字都以宋体绘制，行高也按宋体；主题没有 `Hans` 文种且 `ea` 为空时按 `latin`。
+ *   没有主题部件时取宋体（WPS 实测：`scheme="minor"` 的 Calibri 11 的行高与最大数字宽度均与宋体 11 相同；`major` 未实测）。
  */
 
 import type { Theme } from '../../drawingml/index.ts'
@@ -22,6 +24,7 @@ import type {
   CellBorder,
   CellFill,
   CellStyle,
+  DifferentialFill,
   DifferentialStyle,
   FontStyle,
   GradientStop,
@@ -413,7 +416,7 @@ export function parseStyles(xml: string | null, theme: Theme | null): StyleSheet
   const defaultSource = fonts[styleXfs[normalXf ?? 0]?.fontId ?? 0] ?? fonts[0]
   const defaultFont = defaultSource ? resolveFont(defaultSource, FALLBACK_FONT, ctx) : FALLBACK_FONT
   const resolvedFonts = fonts.map((f) => resolveFont(f, defaultFont, ctx))
-  const resolvedFills = fills.map((f) => resolveFill(f, ctx, false))
+  const resolvedFills = fills.map((f) => resolveFill(f, ctx))
   const resolvedBorders = borders.map((b) => resolveBorder(b, ctx))
   const xfs = cellXfs.length > 0 ? cellXfs : [readDefaultXf()]
   const styles = xfs.map(
@@ -454,9 +457,12 @@ function readPalette(x: Scanner): string[] {
   return out
 }
 
-/** 主题字体名，见文件头；没有主题或各项均为空时为 `null`。 */
+/** 没有主题部件时的主题字体名。 */
+const UNTHEMED_SCHEME_FONT = '宋体'
+
+/** 主题字体名，见文件头；主题中各项均为空时为 `null`。 */
 function schemeFont(scheme: 'major' | 'minor', theme: Theme | null): string | null {
-  if (theme === null) return null
+  if (theme === null) return UNTHEMED_SCHEME_FONT
   const set = scheme === 'major' ? theme.fonts.major : theme.fonts.minor
   return set.scripts.get('Hans') || set.ea || set.latin || null
 }
@@ -476,37 +482,38 @@ export function resolveFont(raw: RawFont, base: FontStyle, ctx: ColorContext): F
   }
 }
 
-function resolveFill(
-  raw: RawFill | null,
+function resolveGradient(
+  raw: Extract<RawFill, { kind: 'gradient' }>,
   ctx: ColorContext,
-  differential: boolean,
-): CellFill | null {
-  if (raw === null) return null
-  if (raw.kind === 'gradient') {
-    const stops: GradientStop[] = raw.stops.map((s) => ({
-      position: s.position,
-      color: resolveRawColor(s.color, ctx) ?? '#ffffff',
-    }))
-    if (stops.length === 0) return null
-    return {
-      kind: 'gradient',
-      type: raw.type,
-      degree: raw.degree,
-      left: raw.left,
-      right: raw.right,
-      top: raw.top,
-      bottom: raw.bottom,
-      stops,
-    }
+): Extract<CellFill, { kind: 'gradient' }> | null {
+  const stops: GradientStop[] = raw.stops.map((s) => ({
+    position: s.position,
+    color: resolveRawColor(s.color, ctx) ?? '#ffffff',
+  }))
+  if (stops.length === 0) return null
+  return {
+    kind: 'gradient',
+    type: raw.type,
+    degree: raw.degree,
+    left: raw.left,
+    right: raw.right,
+    top: raw.top,
+    bottom: raw.bottom,
+    stops,
   }
-  const pattern = raw.pattern ?? (differential ? 'solid' : 'none')
+}
+
+function resolveFill(raw: RawFill | null, ctx: ColorContext): CellFill | null {
+  if (raw === null) return null
+  if (raw.kind === 'gradient') return resolveGradient(raw, ctx)
+  const pattern = raw.pattern ?? 'none'
   if (!PATTERNS.has(pattern)) return null
   const fg = resolveRawColor(raw.fg, ctx)
   const bg = resolveRawColor(raw.bg, ctx)
   if (pattern === 'solid') {
-    // 单元格样式取前景色；差异样式取背景色。缺失的一方用另一方补齐。
-    const color = differential ? (bg ?? fg) : (fg ?? bg)
-    return { kind: 'pattern', pattern: 'solid', fg: color ?? '#000000', bg: color ?? '#000000' }
+    // 单元格样式取前景色，缺失时用背景色。
+    const color = fg ?? bg ?? '#000000'
+    return { kind: 'pattern', pattern: 'solid', fg: color, bg: color }
   }
   return {
     kind: 'pattern',
@@ -514,6 +521,17 @@ function resolveFill(
     fg: fg ?? '#000000',
     bg: bg ?? '#ffffff',
   }
+}
+
+/** 差异样式的填充：纯色取 `bgColor`；缺失的颜色为 `null`。 */
+function resolveDifferentialFill(raw: RawFill | null, ctx: ColorContext): DifferentialFill | null {
+  if (raw === null) return null
+  if (raw.kind === 'gradient') return resolveGradient(raw, ctx)
+  const pattern = raw.pattern ?? 'solid'
+  if (!PATTERNS.has(pattern)) return null
+  const bg = resolveRawColor(raw.bg, ctx)
+  const fg = pattern === 'solid' ? bg : resolveRawColor(raw.fg, ctx)
+  return { kind: 'pattern', pattern: pattern as PatternType, fg, bg }
 }
 
 function resolveSide(side: RawBorderSide, ctx: ColorContext): BorderLine | null {
@@ -558,7 +576,7 @@ function resolveDxf(raw: RawDxf, ctx: ColorContext): DifferentialStyle {
     strike: font?.strike ?? null,
     underline: font?.underline ?? null,
     color: font ? resolveRawColor(font.color, ctx) : null,
-    fill: resolveFill(raw.fill, ctx, true),
+    fill: resolveDifferentialFill(raw.fill, ctx),
     border: raw.border ? resolveBorder(raw.border, ctx) : null,
     numFmt: raw.numFmt,
   }

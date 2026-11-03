@@ -92,6 +92,12 @@ export interface DocxParts {
   readonly settings?: string
   /** `w:fonts` 的内容。 */
   readonly fonts?: string
+  /** 字体表部件关系引用的部件（嵌入字体），按给出的关系标识登记为 `font` 关系，写在 `word/` 之下。 */
+  readonly fontParts?: readonly {
+    readonly id: string
+    readonly name: string
+    readonly content: Uint8Array
+  }[]
   /** 完整的主题部件。 */
   readonly theme?: string
   /** `w:document` 中 `w:body` 之前的内容（如 `w:background`）。 */
@@ -138,6 +144,12 @@ export function buildDocx(parts: DocxParts): Uint8Array<ArrayBuffer> {
       '<Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>',
     )
     docRels.push([`rId${docRels.length + 1}`, 'theme', 'theme/theme1.xml'])
+  }
+  if (parts.fontParts !== undefined) {
+    for (const f of parts.fontParts) members[`word/${f.name}`] = f.content
+    members['word/_rels/fontTable.xml.rels'] = rels(
+      parts.fontParts.map((f) => [f.id, 'font', f.name] as const),
+    )
   }
   for (const e of parts.extra ?? []) {
     members[`word/${e.name}`] = e.content

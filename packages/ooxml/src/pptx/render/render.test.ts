@@ -2,14 +2,19 @@
  * 覆盖范围：`slide.ts`（画布尺寸、背景、形状与组合的变换复合、文字不随水平翻转镜像、阴影与隐藏形状，经由
  * `../../drawingml/shape/paint.ts`；图片绘制矩形取整，图元文件的图片与 `slideMetafileFonts`）、`ink.ts`（墨迹线段与圆点）、`../../drawingml/text/body.ts`
  * （行高与基线、行距与段间距换算、项目符号不计入行高、自动调整缩放、字符间距、
- * 项目符号与悬挂缩进、自动编号、`slidenum`、不断行时的对齐平移）、`table.ts`（行高随文字增高、合并单元格的区域、边框）、
- * `../../drawingml/text/bullet.ts`、`fonts.ts` 与 `../../drawingml/text/fonts.ts`（字体名收集、仿粗体、缺少字体、
- * 西文字体缺失时的替代字体、点阵字形、ClearType 字形）、`resources.ts`（图片部件收集、嵌入字体读取）；`../parse/slide.ts` 与 `../load.ts` 的
+ * 项目符号与悬挂缩进、图片项目符号、`eaVert` 的直立东亚文字、自动编号、`slidenum`、不断行时的对齐平移）、`table.ts`（行高随文字增高、合并单元格的区域、边框）、
+ * `../../drawingml/text/bullet.ts`、`fonts.ts` 与 `../../drawingml/text/fonts.ts`（字体名收集、仿粗体、合成斜体与正体各自的
+ * 绘制字形、缺少字体、西文字体缺失时按 `charset` 的替代字体、缺少的符号字体、竖排直立字的旋转中心、点阵字形、ClearType 字形）、
+ * `../../drawingml/text/math.ts`（公式取 `a14` 分支、行内与显示公式的行高与对齐、有项目符号时按行内排版、未实现的公式计数）、
+ * `resources.ts`（图片部件收集、嵌入字体读取）；`../../drawingml/text/body.ts` 与 `../../drawingml/shape/paint.ts` 的锚定
+ * （首行下沿超出行高的部分）与文字映像；`../parse/slide.ts` 与 `../load.ts` 的
  * `embeddedFontLst` 与可以绘制的图元文件；以及 `../resolve/` 与 `../../drawingml/shape/resolve.ts` 中为绘制补充的部分（内置表格样式、
- * 未指定西文字体为 Arial、竖排文字、图片项目符号、无法绘制的图片与外部阴影之外的效果的计数）。
+ * 未指定西文字体为 Arial、竖排文字、图片项目符号、无法绘制的图片与未绘制的效果的计数）。
  */
 
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { PaintImage } from '../../drawingml/paint/context.ts'
 import { decodePicture } from '../../drawingml/paint/picture.ts'
 import { SCREEN_RESOLUTION } from '../../drawingml/paint/resolution.ts'
@@ -35,6 +40,7 @@ import {
 } from '../../drawingml/text/fonts.ts'
 import type { TextBody } from '../../drawingml/text/model.ts'
 import type { BitmapGlyph, EmbeddedBitmaps } from '../../font/bitmap.ts'
+import { extractFace } from '../../font/index.ts'
 import type { FontMetrics } from '../../font/metrics.ts'
 import type { VerticalMetrics } from '../../font/vertical.ts'
 import type { ClearTypeDisplay, ClearTypeGlyphs, PixelData } from '../../glyph/cleartype/index.ts'
@@ -43,7 +49,13 @@ import type { TextFace } from '../../text/index.ts'
 import { parsePptx } from '../load.ts'
 import type { Presentation, Shape, Table } from '../model.ts'
 import { buildPptx, type DeckSpec, para, run, slideXml, sp, text, xfrm } from '../test-helper.ts'
-import { presentationFonts, type SlideFace, type SlideFonts } from './fonts.ts'
+import {
+  presentationFonts,
+  readSlideFace,
+  type SlideFace,
+  type SlideFonts,
+  slideMath,
+} from './fonts.ts'
 import { readEmbeddedFonts, readImages, slideImages } from './resources.ts'
 import { paintSlide, slideSize } from './slide.ts'
 import { layoutTable } from './table.ts'
@@ -93,7 +105,7 @@ function slideFace(
     internalLeading: 0,
     externalLeading: 0,
   })
-  return { ...font, bitmaps, pixelVertical: ppem, clearType }
+  return { ...font, bitmaps, pixelVertical: ppem, clearType, outlines: null, math: null }
 }
 
 const FALLBACK = slideFace({ face: FACE, family: '宋体', bold: false, italic: false })
@@ -626,6 +638,229 @@ describe('文字输入换算', () => {
     expect(frags[1]!.size).toBe(10)
   })
 
+  test('图片项目符号：高度为项目符号字号的 0.68 倍、宽度按宽高比，中心在首行的纵向中心；悬挂缩进不足或缩进为正时正文紧接图片右侧', async () => {
+    const bullet = (rel: string, ppr: string) =>
+      para(
+        run('甲乙', '<a:rPr lang="zh-CN" sz="2400"/>'),
+        `<a:pPr ${ppr}><a:buBlip><a:blip r:embed="${rel}"/></a:buBlip></a:pPr>`,
+      )
+    const hanging = 'marL="342900" indent="-342900"'
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 400 * EMU, 300 * EMU),
+              body: text(
+                bullet('rIdSq', hanging) +
+                  bullet('rIdWide', hanging) +
+                  bullet('rIdSq', 'marL="228600" indent="228600"'),
+              ),
+            }),
+          ),
+          rels: [
+            ['rIdSq', 'image', '../media/sq.png'],
+            ['rIdWide', 'image', '../media/wide.png'],
+          ],
+        },
+      ],
+    })
+    const s = find(p, 10)
+    if (s.kind !== 'shape' || s.text === null) throw new Error('不是文本框')
+    const sizes: Record<string, { width: number; height: number }> = {
+      '/ppt/media/sq.png': { width: 40, height: 40 },
+      '/ppt/media/wide.png': { width: 80, height: 40 },
+    }
+    const pictures = (part: string) => {
+      const bitmap = sizes[part]
+      return bitmap === undefined
+        ? null
+        : { kind: 'bitmap' as const, bitmap, resolution: SCREEN_RESOLUTION }
+    }
+    const faces = new FaceCache(fonts())
+    const layout = layoutBody(s.text, 300, { faces, slideNumber: 1, pictures })
+    const [sq, wide, positive] = layout.paragraphs
+    const textX = (q: typeof sq) => q!.x + q!.block.lines[0]!.fragments[0]!.x
+    // 字号 24 磅：高 16.32 磅。悬挂缩进 27 磅足够时正文从左缩进处开始。
+    expect(sq!.bullet).toMatchObject({ part: '/ppt/media/sq.png', x: 0 })
+    expect(sq!.bullet!.height).toBeCloseTo(16.32, 6)
+    expect(sq!.bullet!.width).toBeCloseTo(16.32, 6)
+    expect(textX(sq)).toBeCloseTo(27, 6)
+    // 字框上沿 0.8、下沿 0.2：纵向中心在基线之上 0.3 倍字号。
+    const line = sq!.block.lines[0]!
+    expect(sq!.bullet!.y + sq!.bullet!.height / 2).toBeCloseTo(sq!.y + line.baseline - 7.2, 6)
+    // 宽高比 2:1 的图片宽 32.64 磅，超出悬挂缩进：正文紧接图片右侧。
+    expect(wide!.bullet!.width).toBeCloseTo(32.64, 6)
+    expect(textX(wide)).toBeCloseTo(32.64, 6)
+    // 首行缩进为正：图片在左缩进处，正文从首行缩进处开始。
+    expect(positive!.bullet!.x).toBeCloseTo(18, 6)
+    expect(textX(positive)).toBeCloseTo(36, 6)
+  })
+
+  /**
+   * 原始失败形状：项目符号之后的制表符套用 WordprocessingML 列表的规则，取左缩进之前较近的默认制表位，正文比 WPS 靠左。
+   * WPS 演示实测（构造文件）：左缩进 104 像素、悬挂 56 像素、默认制表位 96 像素时正文仍从左缩进处开始；左缩进之前的默认制表位
+   * 与自定义制表位都不取；编号宽于悬挂缩进时正文紧接编号。
+   */
+  test('项目符号之后的正文从左缩进处开始，不取左缩进之前的制表位；项目符号越过左缩进时紧接其后', async () => {
+    const r = run('甲乙', '<a:rPr lang="zh-CN" sz="2000"/>')
+    const num = '<a:buFontTx/><a:buAutoNum type="arabicPeriod"/>'
+    const dot = '<a:buFont typeface="Arial"/><a:buChar char="•"/>'
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 400 * EMU, 300 * EMU),
+              body: text(
+                para(r, `<a:pPr marL="990600" indent="-533400" defTabSz="914400">${num}</a:pPr>`) +
+                  para(
+                    r,
+                    `<a:pPr marL="1905000" indent="-1428750" defTabSz="476250">${dot}</a:pPr>`,
+                  ) +
+                  para(
+                    r,
+                    `<a:pPr marL="952500" indent="-952500">${dot}<a:tabLst><a:tab pos="571500" algn="l"/></a:tabLst></a:pPr>`,
+                  ) +
+                  para(
+                    r,
+                    '<a:pPr marL="285750" indent="-285750"><a:buFontTx/><a:buAutoNum type="arabicPeriod" startAt="10"/></a:pPr>',
+                  ),
+                '<a:bodyPr lIns="0" rIns="0"/>',
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+    const s = find(p, 10)
+    if (s.kind !== 'shape' || s.text === null) throw new Error('不是文本框')
+    const layout = layoutBody(s.text, 300, { faces: new FaceCache(fonts()), slideNumber: 1 })
+    const textX = (i: number) => {
+      const q = layout.paragraphs[i]!
+      return q.x + q.block.lines[0]!.fragments[1]!.x
+    }
+    expect(textX(0)).toBeCloseTo(78, 6)
+    expect(textX(1)).toBeCloseTo(150, 6)
+    expect(textX(2)).toBeCloseTo(75, 6)
+    // 「10.」三个半角字符宽 30 磅，越过 22.5 磅的左缩进。
+    expect(textX(3)).toBeCloseTo(30, 6)
+  })
+
+  /**
+   * 原始失败形状：合成斜体与正体共用一个排版字体对象，`of` 取到最后登记的绘制字形，页面上只要有一处斜体，同一字体的正文
+   * 全部画成斜体（WPS 的导出图中正文为正体）。
+   */
+  test('同一字体的正体与合成斜体各有绘制字形：段落中正体、斜体、正体交替时各按其字形绘制', async () => {
+    const regular = slideFace({ face: FACE, family: '甲', bold: false, italic: false })
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 400 * EMU, 100 * EMU),
+              body: text(
+                para(
+                  run('正', '<a:rPr lang="zh-CN"><a:ea typeface="甲"/></a:rPr>') +
+                    run('斜', '<a:rPr lang="zh-CN" i="1"><a:ea typeface="甲"/></a:rPr>') +
+                    run('正', '<a:rPr lang="zh-CN"><a:ea typeface="甲"/></a:rPr>'),
+                ),
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+    const s = find(p, 10)
+    if (s.kind !== 'shape' || s.text === null) throw new Error('不是文本框')
+    const faces = new FaceCache(fonts({ 甲: regular }))
+    const frags = layoutBody(s.text, 400, { faces, slideNumber: 1 }).paragraphs[0]!.block.lines[0]!
+      .fragments
+    expect(frags.map((f) => faces.of(f.face).italic)).toEqual([false, true, false])
+    expect(frags.map((f) => faces.of(f.face).family)).toEqual(['甲', '甲', '甲'])
+  })
+
+  /** 原始失败形状：直立的字按 win 上下沿的中点转回直立，微软雅黑的列比 WPS 偏 4–9 像素。 */
+  test('eaVert：直立的字以 typo 上下沿的中点为旋转中心', async () => {
+    const typo = slideFace({
+      face: { ...FACE, vertical: { ...FACE.vertical, typoAscender: 700, typoDescender: -300 } },
+      family: '直',
+      bold: false,
+      italic: false,
+    })
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 100 * EMU, 400 * EMU),
+              body: text(
+                para(run('甲', '<a:rPr lang="zh-CN" sz="2000"><a:ea typeface="直"/></a:rPr>')),
+                '<a:bodyPr vert="eaVert"/>',
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+    const { ctx } = paint(p, {}, fonts({ 直: typo }))
+    const han = ctx.named('fillText').find((c) => c.args[0] === '甲')
+    // typo 上下沿 700、-300 的中点在基线之上 0.2 倍字号（win 上下沿 800、200 时为 0.3 倍）。
+    expect(han?.args[2]).toBeCloseTo(0.2 * 20, 6)
+  })
+
+  test('eaVert：文本区域按 vert 旋转，汉字与顿号转回直立，西文随文字方向旋转', async () => {
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 100 * EMU, 400 * EMU),
+              body: text(para(run('甲a、')), '<a:bodyPr vert="eaVert"/>'),
+            }),
+          ),
+        },
+      ],
+    })
+    const { ctx } = paint(p)
+    const calls = new Map(ctx.named('fillText').map((c) => [c.args[0], c.matrix]))
+    const han = calls.get('甲')
+    const latin = calls.get('a')
+    const comma = calls.get('、')
+    expect([han?.a, han?.b, han?.c, han?.d].map((v) => Math.round(v ?? 9))).toEqual([1, 0, 0, 1])
+    expect([comma?.a, comma?.b].map((v) => Math.round(v ?? 9))).toEqual([1, 0])
+    expect([latin?.a, latin?.b, latin?.c, latin?.d].map((v) => Math.round(v ?? 9))).toEqual([
+      0, 1, -1, 0,
+    ])
+  })
+
+  test('eaVert：形状旋转 270° 与竖排相抵时按横排绘制，汉字不再转回', async () => {
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 100 * EMU, 400 * EMU, ' rot="16200000"'),
+              body: text(para(run('甲a')), '<a:bodyPr vert="eaVert"/>'),
+            }),
+          ),
+        },
+      ],
+    })
+    const { ctx } = paint(p)
+    for (const c of ctx.named('fillText')) {
+      const m = c.matrix
+      expect([m.a, m.b, m.c, m.d].map((v) => Math.round(v) + 0)).toEqual([1, 0, 0, 1])
+    }
+    expect(ctx.named('fillText').length).toBe(2)
+  })
+
   test('项目符号的字体与字号不改变行高与基线', async () => {
     const tall = slideFace({
       face: { ...FACE, vertical: { ...FACE.vertical, winAscent: 1100, winDescent: 300 } },
@@ -737,6 +972,98 @@ describe('文字输入换算', () => {
   })
 
   /**
+   * 原始失败形状：模型不保留 `charset`，`charset="-122"` 的缺失西文字体以 Segoe Print 绘制。WPS 演示实测（构造文件）：GB2312
+   * 为宋体、SHIFTJIS 为 Yu Gothic、HANGUL 为 Malgun Gothic、CHINESEBIG5 为 MingLiU-ExtB，0、1、2 与未写时为 Segoe Print。
+   */
+  test('缺失西文字体按 charset 取替代字体，替代字体名计入字体收集', async () => {
+    const named = (family: string) => slideFace({ face: FACE, family, bold: false, italic: false })
+    const source = fonts({
+      宋体: FALLBACK,
+      'Yu Gothic': named('Yu Gothic'),
+      'Malgun Gothic': named('Malgun Gothic'),
+      'MingLiU-ExtB': named('MingLiU-ExtB'),
+      [MISSING_LATIN]: named(MISSING_LATIN),
+    })
+    const cache = new FaceCache(source)
+    const family = (charset: number | undefined) =>
+      cache.latin('QyMissing', charset, false, false).family
+    expect([-122, -128, -127, -120, 0, 1, 2, undefined].map(family)).toEqual([
+      '宋体',
+      'Yu Gothic',
+      'Malgun Gothic',
+      'MingLiU-ExtB',
+      MISSING_LATIN,
+      MISSING_LATIN,
+      MISSING_LATIN,
+      MISSING_LATIN,
+    ])
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 400 * EMU, 100 * EMU),
+              body: text(
+                para(
+                  run(
+                    'Ab',
+                    '<a:rPr lang="en-US"><a:latin typeface="QyMissing" charset="-128"/></a:rPr>',
+                  ),
+                ),
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+    expect(presentationFonts(p)).toContain('Yu Gothic')
+  })
+
+  /**
+   * 原始失败形状：主机没有 Wingdings 2 时项目符号「¡」以回退字体显示为「¡」。WPS 演示实测：以 Wingdings 中同一码位的
+   * 字形绘制（○）；Wingdings 3 取 Symbol。
+   */
+  test('缺少的符号字体：项目符号与字段改用替代的符号字体，字符换算到其符号码位', async () => {
+    const symbolOnly = fakeFace(
+      () => 1000,
+      (cp) => (cp >= 0xf020 && cp <= 0xf0ff ? 5 : 0),
+    )
+    const wingdings = slideFace({
+      face: symbolOnly,
+      family: 'Wingdings',
+      bold: false,
+      italic: false,
+    })
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 400 * EMU, 100 * EMU),
+              body: text(
+                para(
+                  run('甲', '<a:rPr lang="zh-CN"/>'),
+                  '<a:pPr marL="254000" indent="-254000"><a:buFont typeface="Wingdings 2" pitchFamily="18" charset="2"/><a:buChar char="¡"/></a:pPr>',
+                ),
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+    const s = find(p, 10)
+    if (s.kind !== 'shape' || s.text === null) throw new Error('不是文本框')
+    expect(presentationFonts(p)).toContain('Wingdings')
+    const faces = new FaceCache(fonts({ Wingdings: wingdings }))
+    const q = layoutBody(s.text, 400, { faces, slideNumber: 1 }).paragraphs[0]!
+    expect(q.runs[0]!.text).toBe('\uf0a1\t')
+    expect(faces.of(q.block.lines[0]!.fragments[0]!.face).family).toBe('Wingdings')
+    expect(faces.get('Wingdings 2', false, false).family).toBe('Wingdings')
+  })
+
+  /**
    * 原始失败形状：西文字体缺失时改用该字段的东亚字体。WPS 演示的导出图中，缺失西文字体的西文字符以 Segoe Print 绘制，
    * 与东亚字体无关。
    */
@@ -760,12 +1087,18 @@ describe('文字输入换算', () => {
       fallback: FALLBACK,
     }
     const cache = new FaceCache(source)
-    expect(cache.latin('QyMissingLatinA', false, false).family).toBe(MISSING_LATIN)
-    expect(cache.latin('QyMissingLatinA', true, false).face.metrics.advance(0x41, 1000)).toBe(700)
-    expect(cache.latin('微软雅黑', false, false).family).toBe('微软雅黑')
+    expect(cache.latin('QyMissingLatinA', undefined, false, false).family).toBe(MISSING_LATIN)
     expect(
-      new FaceCache(fonts({ 微软雅黑: slideFace(yahei) })).latin('QyMissingLatinA', false, false)
-        .family,
+      cache.latin('QyMissingLatinA', undefined, true, false).face.metrics.advance(0x41, 1000),
+    ).toBe(700)
+    expect(cache.latin('微软雅黑', undefined, false, false).family).toBe('微软雅黑')
+    expect(
+      new FaceCache(fonts({ 微软雅黑: slideFace(yahei) })).latin(
+        'QyMissingLatinA',
+        undefined,
+        false,
+        false,
+      ).family,
     ).toBe('宋体')
 
     const p = await parse({
@@ -803,6 +1136,121 @@ describe('文字输入换算', () => {
   })
 })
 
+const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
+const windows = process.platform === 'win32'
+
+/** 本机的 Cambria Math（cambria.ttc 第 2 个字体）。 */
+function cambriaMath(): SlideFace {
+  const bytes = extractFace(new Uint8Array(readFileSync(join(FONTS, 'cambria.ttc'))), 1)
+  const face = readSlideFace(bytes, 'Cambria Math', false, false)
+  if (face === null || face.math === null) throw new Error('Cambria Math 没有 MATH 表')
+  return face
+}
+
+describe('公式', () => {
+  const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
+  const mr = (t: string) =>
+    `<m:r><a:rPr lang="en-US" sz="2400" i="1"><a:latin typeface="Cambria Math"/></a:rPr><m:t>${t}</m:t></m:r>`
+  const fraction = `${mr('𝑥')}${mr('=')}<m:f><m:num>${mr('𝑎')}${mr('+')}${mr('𝑏')}</m:num><m:den>${mr('2')}</m:den></m:f>`
+  const display = (jc: string) =>
+    `<a14:m><m:oMathPara xmlns:m="${M}"><m:oMathParaPr><m:jc m:val="${jc}"/></m:oMathParaPr><m:oMath>${fraction}</m:oMath></m:oMathPara></a14:m>`
+  const inline = `<a14:m><m:oMath xmlns:m="${M}">${fraction}</m:oMath></a14:m>`
+  const words = (t: string) => run(t, '<a:rPr lang="zh-CN" sz="2400"/>')
+  /** 公式所在的形状放在要求 `a14` 的分支中，替代分支是写着 FALLBACK 的形状（与 PowerPoint 写出的结构相同）。 */
+  const alternate = (body: string) =>
+    '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" ' +
+    'xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"><mc:Choice Requires="a14">' +
+    sp(10, { txBox: true, spPr: xfrm(0, 0, 400 * EMU, 400 * EMU), body }) +
+    '</mc:Choice><mc:Fallback>' +
+    sp(10, {
+      txBox: true,
+      spPr: xfrm(0, 0, 400 * EMU, 400 * EMU),
+      body: text(para(words('FALLBACK'))),
+    }) +
+    '</mc:Fallback></mc:AlternateContent>'
+
+  async function formulaText(body: string) {
+    const p = await parse({ slides: [{ xml: slideXml(alternate(body)) }] })
+    const s = find(p, 10)
+    if (s.kind !== 'shape' || s.text === null) throw new Error('不是文本框')
+    return { p, text: s.text }
+  }
+
+  /** 原始失败形状：取了替代分支，显示 PowerPoint 的替代图片（其中只有空格的段落带着占位符的项目符号）。 */
+  test('取要求 a14 的分支，公式为字段；含矩阵的公式计入未实现的公式', async () => {
+    const { p, text: t } = await formulaText(
+      text(
+        para(words('甲') + inline) +
+          para(`<a14:m><m:oMath xmlns:m="${M}"><m:m/></m:oMath></a14:m>`),
+      ),
+    )
+    expect(t.paragraphs[0]!.runs.map((r) => r.kind)).toEqual(['text', 'math'])
+    expect(JSON.stringify(t)).not.toContain('FALLBACK')
+    expect(p.slides[0]!.unsupported.math).toBe(1)
+    expect(presentationFonts(p)).toContain('Cambria Math')
+  })
+
+  /**
+   * WPS 演示实测（构造文件，24 磅；语料中强制换行之后的行内公式）：显示公式按 `m:jc` 对齐而与段落 `algn` 无关；只含显示
+   * 分数的行高为公式的上下沿之和；行内分数使所在行增高；有项目符号的段落中的显示公式按行内样式排版（分数缩小）；强制换行
+   * 之后独占一行的行内公式按显示样式排版。
+   */
+  test.skipIf(!windows)(
+    '显示公式按 m:jc 对齐、行高为公式的上下沿之和；行内分数增高所在行；有项目符号时按行内排版',
+    async () => {
+      const source = fonts({ 'Cambria Math': cambriaMath() })
+      const settings = { faces: new FaceCache(source), slideNumber: 1, math: slideMath(source) }
+      const flat = '<a:bodyPr lIns="0" tIns="0" rIns="0" bIns="0"/>'
+      const right = await formulaText(text(para(display('right'), '<a:pPr algn="l"/>'), flat))
+      const r = layoutBody(right.text, 300, settings).paragraphs[0]!
+      const line = r.block.lines[0]!
+      const last = line.objects.at(-1)!
+      const segments = line.objects.map((o) => r.runs[o.run]!.formula!.layout)
+      expect(r.x + r.shifts[0]! + last.x + segments.at(-1)!.width).toBeCloseTo(300, 6)
+      const ascent = Math.max(...segments.map((g) => g.lineAscent))
+      const descent = Math.max(...segments.map((g) => g.lineDescent))
+      expect(line.height).toBeCloseTo(ascent + descent, 6)
+      expect(line.height).toBeGreaterThan(24 * 1.2)
+
+      const mixed = await formulaText(text(para(words('甲') + inline) + para(words('乙')), flat))
+      const plain = await formulaText(text(para(words('甲')) + para(words('乙')), flat))
+      const second = (t: TextBody) => layoutBody(t, 300, settings).paragraphs[1]!.y
+      expect(second(mixed.text)).toBeGreaterThan(second(plain.text))
+
+      const bulleted = await formulaText(
+        text(
+          para(
+            display('centerGroup'),
+            '<a:pPr marL="508000" indent="-508000"><a:buChar char="•"/></a:pPr>',
+          ),
+          flat,
+        ),
+      )
+      const centered = await formulaText(text(para(display('centerGroup')), flat))
+      // 墨迹的高度：行内样式的分数（分子分母缩小）低于显示样式。
+      const height = (t: TextBody) =>
+        Math.max(
+          ...layoutBody(t, 300, settings).paragraphs[0]!.runs.map((x) =>
+            x.formula === null ? 0 : x.formula.layout.ascent + x.formula.layout.descent,
+          ),
+        )
+      expect(height(bulleted.text)).toBeLessThan(height(centered.text))
+
+      const broken = await formulaText(
+        text(para(`${words('甲')}<a:br><a:rPr lang="zh-CN" sz="2400"/></a:br>${inline}`), flat),
+      )
+      const own = layoutBody(broken.text, 300, settings).paragraphs[0]!
+      const formulaLine = own.block.lines.findIndex((l) => l.objects.length > 0)
+      expect(height(broken.text)).toBeCloseTo(height(centered.text), 6)
+      const objects = own.block.lines[formulaLine]!.objects
+      const lastSegment = own.runs[objects.at(-1)!.run]!.formula!.layout
+      const start = own.x + own.shifts[formulaLine]! + objects[0]!.x
+      const end = own.x + own.shifts[formulaLine]! + objects.at(-1)!.x + lastSegment.width
+      expect((start + end) / 2).toBeCloseTo(150, 6)
+    },
+  )
+})
+
 describe('表格', () => {
   const cell = (t: string, attrs = '') =>
     `<a:tc${attrs}><a:txBody><a:bodyPr/><a:lstStyle/>${para(run(t, '<a:rPr lang="zh-CN" sz="2000"/>'))}</a:txBody>` +
@@ -819,7 +1267,7 @@ describe('表格', () => {
       `<a:tr h="${10 * EMU}">${cell('甲', ' gridSpan="2"')}${cell('', ' hMerge="1"')}</a:tr>` +
       `<a:tr h="${40 * EMU}">${cell('乙')}${cell('丙')}</a:tr>`
     const p = await parse({
-      slides: [{ xml: slideXml(table('{5940675A-B579-460E-94D1-54222C63F5DA}', rows)) }],
+      slides: [{ xml: slideXml(table('{00000000-0000-0000-0000-000000000001}', rows)) }],
     })
     const t = find(p, 30) as Table
     const layout = layoutTable(t, { faces: new FaceCache(fonts()), slideNumber: 1 })
@@ -863,6 +1311,32 @@ describe('表格', () => {
     })
     expect(t.rows[1]!.cells[0]!.fill.kind).toBe('solid')
   })
+
+  test('只写样式 ID 的「无样式，网格」「无样式，无网格」与中度样式 2 的深色与强调色 6', async () => {
+    const rows = `<a:tr h="${10 * EMU}">${cell('甲')}${cell('乙')}</a:tr><a:tr h="${10 * EMU}">${cell('丙')}${cell('丁')}</a:tr>`
+    const resolve = async (id: string) => {
+      const p = await parse({ slides: [{ xml: slideXml(table(id, rows)) }] })
+      expect(p.slides[0]!.unsupported.tableStyle).toBeUndefined()
+      return find(p, 30) as Table
+    }
+    // WPS 演示导出图：网格为黑色 1 磅边框、无填充；无网格没有边框与填充；深色样式的首行为黑色，强调色 6 的首行为绿色。
+    const grid = await resolve('{5940675A-B579-460E-94D1-54222C63F5DA}')
+    expect(grid.rows[1]!.cells[0]!.borders.left?.width).toBe(12700)
+    expect(grid.rows[1]!.cells[0]!.fill.kind).toBe('none')
+    const plain = await resolve('{2D5ABB26-0587-4C30-8999-92F81FD0307C}')
+    expect(plain.rows[1]!.cells[0]!.borders.left).toBeNull()
+    expect(plain.rows[1]!.cells[0]!.fill.kind).toBe('none')
+    const dark = await resolve('{073A0DAA-6AF3-43AB-8588-CEC1D06C72B9}')
+    expect(dark.rows[0]!.cells[0]!.fill).toEqual({
+      kind: 'solid',
+      color: { r: 0, g: 0, b: 0, a: 1 },
+    })
+    const green = await resolve('{93296810-A885-4BE3-A3E7-6D5BEEA58F35}')
+    expect(green.rows[0]!.cells[0]!.fill).toEqual({
+      kind: 'solid',
+      color: { r: 112 / 255, g: 173 / 255, b: 71 / 255, a: 1 },
+    })
+  })
 })
 
 describe('求值阶段为绘制补充的内容', () => {
@@ -895,26 +1369,36 @@ describe('求值阶段为绘制补充的内容', () => {
     expect([first?.end.latin, first?.end.ea]).toEqual(['Arial', ''])
   })
 
-  test('竖排文字、图片项目符号、无法解码的图片与外部阴影之外的效果分别计数', async () => {
+  test('竖排文字、无法解码的图片（含图片项目符号）与未绘制的效果（预设阴影）分别计数；eaVert、可以绘制的图片项目符号与形状的内部阴影不计数', async () => {
     const pic = (id: number, rid: string) =>
       `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="图片"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>` +
       `<p:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>` +
       `<p:spPr>${xfrm(0, 0, 10, 10)}${rect}</p:spPr></p:pic>`
-    const glow = '<a:effectLst><a:glow rad="1000"><a:srgbClr val="FF0000"/></a:glow></a:effectLst>'
+    const preset =
+      '<a:effectLst><a:prstShdw prst="shdw1" dist="1000"><a:srgbClr val="000000"/></a:prstShdw></a:effectLst>'
+    const innerShadow =
+      '<a:effectLst><a:innerShdw blurRad="1000" dist="1000"><a:srgbClr val="000000"/></a:innerShdw></a:effectLst>'
     const p = await parse({
       slides: [
         {
           xml: slideXml(
             sp(10, {
-              spPr: `${xfrm(0, 0, 10, 10)}${rect}${glow}`,
+              spPr: `${xfrm(0, 0, 10, 10)}${rect}${preset}`,
               body: text(
-                para(run('甲'), '<a:pPr><a:buBlip><a:blip r:embed="rIdPng"/></a:buBlip></a:pPr>'),
-                '<a:bodyPr vert="eaVert"/>',
+                para(run('甲'), '<a:pPr><a:buBlip><a:blip r:embed="rIdEmf"/></a:buBlip></a:pPr>'),
+                '<a:bodyPr vert="wordArtVert"/>',
               ),
             }) +
               sp(11, {
-                spPr: xfrm(0, 0, 10, 10),
+                spPr: `${xfrm(0, 0, 10, 10)}${rect}${solid('FF0000')}${innerShadow}`,
                 body: text(para(run('乙')), '<a:bodyPr vert="vert270"/>'),
+              }) +
+              sp(12, {
+                spPr: xfrm(0, 0, 10, 10),
+                body: text(
+                  para(run('丙'), '<a:pPr><a:buBlip><a:blip r:embed="rIdPng"/></a:buBlip></a:pPr>'),
+                  '<a:bodyPr vert="eaVert"/>',
+                ),
               }) +
               pic(20, 'rIdEmf') +
               pic(21, 'rIdPng'),
@@ -932,10 +1416,102 @@ describe('求值阶段为绘制补充的内容', () => {
     })
     expect(p.slides[0]!.unsupported).toEqual({
       verticalText: 1,
-      pictureBullet: 1,
-      imageFormat: 1,
+      imageFormat: 2,
       effect: 1,
     })
+    expect(slideImages(p.slides[0]!)).toEqual(['/ppt/media/image1.emf', '/ppt/media/image2.png'])
+  })
+})
+
+describe('锚定与文字映像', () => {
+  /** 纵向度量取自字体文件（Segoe Print、微软雅黑）的字体，em 为 1000。 */
+  const metricFace = (family: string, ascent: number, descent: number, eastAsian: boolean) =>
+    slideFace({
+      face: {
+        ...FACE,
+        vertical: {
+          ...FACE.vertical,
+          winAscent: ascent,
+          winDescent: descent,
+          hheaAscender: ascent,
+          hheaDescender: -descent,
+          eastAsianCodePage: eastAsian,
+        },
+      },
+      family,
+      bold: false,
+      italic: false,
+    })
+  const source = fonts({
+    印: metricFace('印', 1247.6, 495.1, false),
+    雅: metricFace('雅', 1058.1, 261.7, true),
+  })
+  const box = (id: number, x: number, anchor: string, font: string, size: number, effect = '') =>
+    sp(id, {
+      txBox: true,
+      spPr: xfrm(x * EMU, 0, 300 * EMU, 150 * EMU),
+      body: text(
+        para(
+          run(
+            `${id}`,
+            `<a:rPr lang="en-US" sz="${size * 100}">${effect}<a:latin typeface="${font}"/><a:ea typeface="${font}"/></a:rPr>`,
+          ),
+        ),
+        `<a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="${anchor}"><a:noAutofit/></a:bodyPr>`,
+      ),
+    })
+  /** 各文本框文字基线的设备纵坐标。 */
+  const baselines = (p: Presentation) => {
+    const { ctx } = paint(p, {}, source)
+    return new Map(
+      ctx
+        .named('fillText')
+        .map((c) => [c.args[0], c.matrix.d * (c.args[2] as number) + c.matrix.f]),
+    )
+  }
+
+  /** 原始失败形状：锚定居中的 72 磅 Segoe Print 比 WPS 演示低 13 像素，锚定底端的 80 磅微软雅黑低 9 像素。 */
+  test('锚定居中与底端时内容高度另加首行下沿超出行高的部分；锚定顶端不变', async () => {
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            box(1, 0, 't', '印', 72) +
+              box(2, 310, 'ctr', '印', 72) +
+              box(3, 620, 't', '雅', 80) +
+              box(4, 930, 'b', '雅', 80),
+          ),
+        },
+      ],
+    })
+    const y = baselines(p)
+    // WPS 演示导出图：相对锚定顶端，居中的 72 磅 Segoe Print 下移 (150 − 115.2) / 2 − 13 像素，
+    // 底端的 80 磅微软雅黑下移 150 − 128 − 9 像素。
+    expect(Math.abs(y.get('2')! - y.get('1')! - ((150 - 115.2) / 2 - 13))).toBeLessThanOrEqual(1)
+    expect(Math.abs(y.get('4')! - y.get('3')! - (150 - 128 - 9))).toBeLessThanOrEqual(1)
+  })
+
+  test('文字映像逐行以基线为对称轴；dist 把映像框延长 dist × 字号 / 34.9，映像起点距基线为其两倍', async () => {
+    const reflection = (dist: number) =>
+      `<a:effectLst><a:reflection stA="100000" endA="0" endPos="100000" dist="${dist}" dir="5400000" sy="-100000" algn="bl" rotWithShape="0"/></a:effectLst>`
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            box(1, 0, 't', '印', 48, reflection(0)) + box(2, 310, 't', '印', 48, reflection(76200)),
+          ),
+        },
+      ],
+    })
+    const y = baselines(p)
+    const { ctx } = paint(p, {}, source)
+    const flips = ctx.named('drawImage').filter((c) => c.matrix.d < 0)
+    expect(flips.length).toBe(2)
+    // 映像变换下基线 y 的像（绘制的基线取整到设备像素）：dist 为 0 时不动；dist 为 6 磅（48 磅）时 WPS 演示导出图中
+    // 映像起点距基线 22 像素。
+    const image = (m: { d: number; f: number }, v: number) => m.d * v + m.f
+    expect(Math.abs(image(flips[0]!.matrix, y.get('1')!) - y.get('1')!)).toBeLessThanOrEqual(1)
+    expect(Math.abs(image(flips[1]!.matrix, y.get('2')!) - y.get('2')! - 22)).toBeLessThanOrEqual(1)
   })
 })
 

@@ -3,7 +3,8 @@
  *
  * - 自动换行：断点与行首行尾禁则取 `../../text` 的 `canBreakBetween` 与简体中文缺省禁则表，与 Word、PPT 共用一套规则。
  *   逐行贪心：空格不换到下一行，超出行宽的字符回退到本行最近的断点，没有断点时在超出处断开。
- *   显式换行符强制断行；自动换行产生的行不以空格开头，行末的空格不计宽度、不显示。
+ *   显式换行符强制断行，文字以换行符结尾时其后另有一个空行（WPS 实测：宋体 11 的「甲⏎」行高 36、「甲⏎⏎」54）；
+ *   自动换行产生的行不以空格开头，行末的空格不计宽度、不显示。
  * - 行高：单行为 `lineBox` 的 `height`（WPS 的单行行高），自动换行时每行按 `lineBoxOf` 取行高；单位为像素。
  */
 
@@ -33,7 +34,9 @@ export interface TextRun {
 export interface TextLine {
   readonly runs: readonly TextRun[]
   readonly width: number
-  /** 以换行符结束的行为换行符所在的段，否则为 `null`；换行符计入行度量，见 `lineBoxOf`。 */
+  /**
+   * 以换行符结束的行与文字末尾换行符之后的空行为该换行符所在的段，否则为 `null`；换行符计入行度量，见 `lineBoxOf`。
+   */
   readonly breakRun: TextRun | null
 }
 
@@ -191,6 +194,8 @@ export function wrapRuns(runs: readonly TextRun[], maxWidth: number): TextLine[]
     lines.push(lineOf(runs, units, s, end, forced ? runs[units[end]!.run]! : null))
     i = forced ? end + 1 : end
   } while (i < n)
+  const last = units[n - 1]
+  if (last?.cp === NEWLINE) lines.push({ runs: [], width: 0, breakRun: runs[last.run]! })
   return lines
 }
 

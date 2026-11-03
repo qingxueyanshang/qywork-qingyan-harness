@@ -209,8 +209,8 @@ const DECODABLE_IMAGES = new Set([
   'image/bmp',
   'image/webp',
 ])
-/** 绘制端不实现的文字方向；`vert`、`vert270` 按旋转绘制。 */
-const UNPAINTED_VERTICAL = new Set(['eaVert', 'wordArtVert', 'mongolianVert', 'wordArtVertRtl'])
+/** 绘制端不实现的文字方向；`vert`、`vert270`、`eaVert` 按旋转绘制。 */
+const UNPAINTED_VERTICAL = new Set(['wordArtVert', 'mongolianVert', 'wordArtVertRtl'])
 
 /**
  * 图片部件能否绘制：内容类型为浏览器可解码的位图，或字节为没有未实现内容的图元文件（按字节识别，与
@@ -231,10 +231,28 @@ export function countImage(drawable: boolean | null, found: FindingSink): void {
   if (drawable === false) found.push('imageFormat')
 }
 
-/** 外部阴影之外的效果；`other` 已在读取时登记。 */
-export function countEffects(effects: readonly Effect[], found: FindingSink): void {
-  for (const e of effects) if (e.kind !== 'outerShadow' && e.kind !== 'other') found.push('effect')
+/** 绘制端在图层上实现的效果（`../paint/effects.ts`）。 */
+const LAYER_EFFECTS: ReadonlySet<Effect['kind']> = new Set(['glow', 'softEdge', 'reflection'])
+
+/**
+ * 未绘制的效果：预设阴影与模糊；`layered` 为假时另含发光、柔化边缘与映像。`layered` 只在该元素经过效果图层绘制时为真
+ * （演示文稿的自选图形、图片与组合；连接线与三维形状不经过）。`other` 已在读取时登记。内部阴影画在形状的填充区域内
+ * （`../shape/paint.ts`）。
+ */
+export function countEffects(
+  effects: readonly Effect[],
+  found: FindingSink,
+  layered = false,
+): void {
+  for (const e of effects) {
+    if (e.kind === 'outerShadow' || e.kind === 'innerShadow' || e.kind === 'other') continue
+    if (layered && LAYER_EFFECTS.has(e.kind)) continue
+    found.push('effect')
+  }
 }
+
+/** 绘制端实现的文字效果（`../text/body.ts`）。 */
+const TEXT_EFFECTS: ReadonlySet<Effect['kind']> = new Set(['outerShadow', 'glow', 'reflection'])
 
 /** 竖排文字方向是否按旋转绘制之外的方式书写。 */
 export function unpaintedVertical(vertical: string): boolean {
@@ -242,17 +260,22 @@ export function unpaintedVertical(vertical: string): boolean {
 }
 
 /**
- * 文字中绘制端不实现的内容：竖排、图片项目符号、外部阴影之外的文字效果（每个文本框登记一次）。
- * `fill` 处理字段的填充（图片填充的格式由调用方按部件判断）。
+ * 文字中绘制端不实现的内容：竖排、外部阴影、发光与映像之外的文字效果（每个文本框登记一次）。`fill` 处理字段的填充（图片填充的格式
+ * 由调用方按部件判断），`bullet` 处理图片项目符号的部件（由调用方按宿主能否绘制登记）。
  */
-export function countText(text: TextBody, found: FindingSink, fill: (f: ShapeFill) => void): void {
+export function countText(
+  text: TextBody,
+  found: FindingSink,
+  fill: (f: ShapeFill) => void,
+  bullet: (part: string | null) => void,
+): void {
   if (unpaintedVertical(text.body.vertical)) found.push('verticalText')
   let effect = false
   for (const p of text.paragraphs) {
-    if (p.bullet.kind === 'picture') found.push('pictureBullet')
+    if (p.bullet.kind === 'picture') bullet(p.bullet.part)
     for (const r of p.runs) {
       fill(r.style.fill)
-      if (r.style.effects.some((e) => e.kind !== 'outerShadow')) effect = true
+      if (r.style.effects.some((e) => !TEXT_EFFECTS.has(e.kind))) effect = true
     }
   }
   if (effect) found.push('effect')

@@ -8,26 +8,28 @@
  *   ZIP 的结构、解压与校验错误为已损坏。
  * - 压缩方法只支持 0（存储）与 8（deflate）。deflate 由 `DecompressionStream('deflate-raw')` 解压，
  *   Bun、Worker 与各端 WebView 共用这一条路径。运行环境缺少该接口时抛出，不归入已损坏。
- * - 不支持 ZIP64：遇到 ZIP64 标记值时返回已损坏。
+ * - ZIP64：结束记录的成员数、中央目录长度或起点为标记值时取 ZIP64 结束记录中的值；中央目录项的长度或本地文件头
+ *   位置为标记值时取该项 ZIP64 扩展字段（`0x0001`）中的值。标记值没有对应的 ZIP64 记录时为已损坏。
+ * - 不校验 CRC：WPS 打开 CRC 与中央目录不一致的成员并使用其数据（实测：演示文稿的母版与图片两个成员 CRC 不符，
+ *   WPS 照常显示版式中的该图片）。解压失败与长度不一致仍为已损坏。
  * - 成员名按通用标志位第 11 位选择 UTF-8 或 CP437 解码；查找按成员名精确匹配。
- * - 成员按文本读取时以字节序标记选择编码：`FF FE` 为 UTF-16LE，`FE FF` 为 UTF-16BE，其余按严格 UTF-8；
- *   XML 声明中的 `encoding` 不参与判断。
+ * - 成员按文本读取时以字节序标记选择编码：`FF FE` 为 UTF-16LE，`FE FF` 为 UTF-16BE；没有标记时按 XML 声明的
+ *   `encoding` 解码（WPS 实测：声明为 ISO-8859-1 的工作表按该编码显示），没有声明或声明为 UTF-16 时按严格 UTF-8。
  */
 
 import { cfbRootStreams } from './cfb.ts'
 import { decodeCp437 } from './cp437.ts'
-import { crc32 } from './crc32.ts'
 
 /**
  * 已损坏的具体原因，供日志与测试区分。界面只按 `ZipFailure.kind` 显示。
  *
  * - `end-record`：未找到中央目录结束记录，截断的文件落入此类。
  * - `central-directory` / `local-header`：记录签名错误或超出数据范围。
- * - `zip64`：出现 ZIP64 标记值。
+ * - `zip64`：出现 ZIP64 标记值而没有对应的 ZIP64 结束记录或扩展字段。
  * - `method`：压缩方法不是 0 或 8。
  * - `inflate`：deflate 数据无法解压。
- * - `size` / `crc`：解压结果的长度或 CRC 与中央目录不一致。
- * - `encoding`：按文本读取时不是合法的 UTF-8 或带字节序标记的 UTF-16。
+ * - `size`：解压结果的长度与中央目录不一致。
+ * - `encoding`：按文本读取时内容不符合所用的编码，或 XML 声明的编码无法识别。
  * - `cfb-structure`：CFB 文件头、FAT 或目录不完整。
  * - `cfb-unrecognized`：CFB 根存储下既没有加密包，也没有旧二进制格式的文档流。
  */
@@ -39,7 +41,6 @@ export type ZipCorruptReason =
   | 'method'
   | 'inflate'
   | 'size'
-  | 'crc'
   | 'encoding'
   | 'cfb-structure'
   | 'cfb-unrecognized'
@@ -65,7 +66,6 @@ export interface ZipArchive {
 
 interface Entry {
   readonly method: number
-  readonly crc: number
   readonly compressedSize: number
   readonly size: number
   readonly headerOffset: number
@@ -74,6 +74,12 @@ interface Entry {
 const SIG_LOCAL = 0x04034b50
 const SIG_CENTRAL = 0x02014b50
 const SIG_END = 0x06054b50
+const SIG_END64 = 0x06064b50
+const SIG_LOCATOR64 = 0x07064b50
+const LOCATOR64_SIZE = 20
+const END64_SIZE = 56
+/** ZIP64 扩展字段的标识。 */
+const EXTRA_ZIP64 = 0x0001
 const LOCAL_SIZE = 30
 const CENTRAL_SIZE = 46
 const END_SIZE = 22
@@ -93,11 +99,28 @@ const utf8Decoder = new TextDecoder('utf-8', { fatal: true })
  */
 const utf16Decoder = new TextDecoder('utf-16', { fatal: true })
 
-/** 按字节序标记解码，标记不计入结果。内容不合法时抛出。 */
+/** XML 声明在文件开头的最大长度；只在这一段内查找 `encoding`。 */
+const DECLARATION_LIMIT = 256
+const DECLARATION = /^<\?xml\s[^>]*?\bencoding\s*=\s*["']([A-Za-z0-9._:-]+)["']/
+
+/**
+ * 没有字节序标记时 XML 声明的编码；没有声明时为 `null`。声明的编码无法识别时抛出。
+ * 声明为 UTF-16 时返回 `null`：声明本身以单字节读出，内容不可能是 UTF-16。
+ * 标签以 `as 'utf-8'` 传入：Bun 的类型声明只列出三个标签，运行时接受全部 WHATWG 标签。
+ */
+function declaredDecoder(bytes: Uint8Array): TextDecoder | null {
+  const head = String.fromCharCode(...bytes.subarray(0, DECLARATION_LIMIT))
+  const label = DECLARATION.exec(head)?.[1]
+  if (label === undefined) return null
+  const decoder = new TextDecoder(label as 'utf-8', { fatal: true })
+  return decoder.encoding.startsWith('utf-16') ? null : decoder
+}
+
+/** 按字节序标记或 XML 声明解码，标记不计入结果。内容不合法或声明的编码无法识别时抛出。 */
 function decodeText(bytes: Uint8Array): string {
   if (bytes[0] === 0xff && bytes[1] === 0xfe) return utf16Decoder.decode(bytes)
   if (bytes[0] === 0xfe && bytes[1] === 0xff) return utf16Decoder.decode(swapPairs(bytes))
-  return utf8Decoder.decode(bytes)
+  return (declaredDecoder(bytes) ?? utf8Decoder).decode(bytes)
 }
 
 /** 逐对交换字节。长度为奇数时末字节原样保留，解码时按内容不完整报错。 */
@@ -133,14 +156,11 @@ export function openZip(data: Uint8Array<ArrayBuffer>): ZipResult<ZipArchive> {
 
   const end = findEndRecord(view)
   if (end < 0) return corrupt('end-record')
-  const count = view.getUint16(end + 10, true)
-  const directorySize = view.getUint32(end + 12, true)
-  const directoryStart = view.getUint32(end + 16, true)
-  if (count === U16_MAX || directorySize === U32_MAX || directoryStart === U32_MAX) {
-    return corrupt('zip64')
-  }
-  const directoryEnd = directoryStart + directorySize
-  if (directoryEnd > end) return corrupt('central-directory')
+  const directory = readDirectoryBounds(view, end)
+  if (directory === null) return corrupt('zip64')
+  const { count, start: directoryStart } = directory
+  const directoryEnd = directoryStart + directory.size
+  if (directoryEnd > directory.limit) return corrupt('central-directory')
 
   const paths: string[] = []
   const entries = new Map<string, Entry>()
@@ -151,26 +171,17 @@ export function openZip(data: Uint8Array<ArrayBuffer>): ZipResult<ZipArchive> {
     }
     const flags = view.getUint16(p + 8, true)
     const nameLength = view.getUint16(p + 28, true)
-    const next =
-      p + CENTRAL_SIZE + nameLength + view.getUint16(p + 30, true) + view.getUint16(p + 32, true)
+    const extraStart = p + CENTRAL_SIZE + nameLength
+    const extraEnd = extraStart + view.getUint16(p + 30, true)
+    const next = extraEnd + view.getUint16(p + 32, true)
     if (next > directoryEnd) return corrupt('central-directory')
-    const compressedSize = view.getUint32(p + 20, true)
-    const size = view.getUint32(p + 24, true)
-    const headerOffset = view.getUint32(p + 42, true)
-    if (compressedSize === U32_MAX || size === U32_MAX || headerOffset === U32_MAX) {
-      return corrupt('zip64')
-    }
+    const sizes = readEntrySizes(view, p, extraStart, extraEnd)
+    if (sizes === null) return corrupt('zip64')
     if (flags & FLAG_ENCRYPTED) return fail({ kind: 'encrypted' })
-    const rawName = data.subarray(p + CENTRAL_SIZE, p + CENTRAL_SIZE + nameLength)
+    const rawName = data.subarray(p + CENTRAL_SIZE, extraStart)
     const path = flags & FLAG_UTF8 ? nameDecoder.decode(rawName) : decodeCp437(rawName)
     paths.push(path)
-    entries.set(path, {
-      method: view.getUint16(p + 10, true),
-      crc: view.getUint32(p + 16, true),
-      compressedSize,
-      size,
-      headerOffset,
-    })
+    entries.set(path, { method: view.getUint16(p + 10, true), ...sizes })
     p = next
   }
   return ok(new Archive(data, view, paths, entries))
@@ -182,6 +193,74 @@ function classifyCfb(view: DataView): ZipFailure {
   if (streams.has('ENCRYPTEDPACKAGE')) return { kind: 'encrypted' }
   if (LEGACY_STREAMS.some((name) => streams.has(name))) return { kind: 'legacy' }
   return { kind: 'corrupt', reason: 'cfb-unrecognized' }
+}
+
+/** 无符号 64 位整数；超出安全整数范围的值必然超出数据范围，由调用方按越界处理。 */
+function getUint64(view: DataView, p: number): number {
+  return view.getUint32(p, true) + view.getUint32(p + 4, true) * 2 ** 32
+}
+
+/**
+ * 中央目录的成员数、长度与起点，`limit` 为中央目录不得越过的位置。结束记录中有标记值时取 ZIP64 结束记录
+ * （位置由紧邻结束记录之前的 ZIP64 定位记录给出）；有标记值而没有 ZIP64 结束记录时返回 `null`。
+ */
+function readDirectoryBounds(
+  view: DataView,
+  end: number,
+): { count: number; size: number; start: number; limit: number } | null {
+  const count = view.getUint16(end + 10, true)
+  const size = view.getUint32(end + 12, true)
+  const start = view.getUint32(end + 16, true)
+  if (count !== U16_MAX && size !== U32_MAX && start !== U32_MAX) {
+    return { count, size, start, limit: end }
+  }
+  const locator = end - LOCATOR64_SIZE
+  if (locator < 0 || view.getUint32(locator, true) !== SIG_LOCATOR64) return null
+  const record = getUint64(view, locator + 8)
+  if (record + END64_SIZE > locator || view.getUint32(record, true) !== SIG_END64) return null
+  return {
+    count: getUint64(view, record + 32),
+    size: getUint64(view, record + 40),
+    start: getUint64(view, record + 48),
+    limit: record,
+  }
+}
+
+/**
+ * 中央目录项 `p` 的压缩长度、解压长度与本地文件头位置。为标记值的字段按解压长度、压缩长度、本地文件头位置的
+ * 顺序依次取 ZIP64 扩展字段中的值；扩展字段缺失或长度不足时返回 `null`。
+ */
+function readEntrySizes(
+  view: DataView,
+  p: number,
+  extraStart: number,
+  extraEnd: number,
+): { compressedSize: number; size: number; headerOffset: number } | null {
+  const size = view.getUint32(p + 24, true)
+  const compressedSize = view.getUint32(p + 20, true)
+  const headerOffset = view.getUint32(p + 42, true)
+  if (size !== U32_MAX && compressedSize !== U32_MAX && headerOffset !== U32_MAX) {
+    return { compressedSize, size, headerOffset }
+  }
+  let q = extraStart
+  while (q + 4 <= extraEnd && view.getUint16(q, true) !== EXTRA_ZIP64) {
+    q += 4 + view.getUint16(q + 2, true)
+  }
+  if (q + 4 > extraEnd) return null
+  let field = q + 4
+  const fieldEnd = Math.min(extraEnd, field + view.getUint16(q + 2, true))
+  const wide = (value: number): number | null => {
+    if (value !== U32_MAX) return value
+    if (field + 8 > fieldEnd) return null
+    const v = getUint64(view, field)
+    field += 8
+    return v
+  }
+  const realSize = wide(size)
+  const realCompressed = wide(compressedSize)
+  const realOffset = wide(headerOffset)
+  if (realSize === null || realCompressed === null || realOffset === null) return null
+  return { compressedSize: realCompressed, size: realSize, headerOffset: realOffset }
 }
 
 /** 结束记录之后最多跟 65535 字节注释，因此只在末尾这一段内反向查找签名。 */
@@ -253,7 +332,6 @@ class Archive implements ZipArchive {
       return corrupt('method')
     }
     if (out.length !== entry.size) return corrupt('size')
-    if (crc32(out) !== entry.crc) return corrupt('crc')
     return ok(out)
   }
 

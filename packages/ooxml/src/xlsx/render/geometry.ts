@@ -3,13 +3,13 @@
  *
  * - 列宽：Excel 字符宽度单位按默认字体的最大数字宽度（MDW）换算，`px = ⌊(256w + ⌊128/MDW⌋)/256 × MDW⌋`。
  *   MDW 为「常规」字体在整数像素字号（磅换算后四舍五入）下数字 0–9 的最大前进宽度，四舍五入为整数。
- *   未指定 `defaultColWidth` 时，默认列宽为 `baseColWidth` 个数字加 5 像素，向上取整到 8 的倍数。
+ *   未指定 `defaultColWidth` 时见 `defaultColumnPixels`。
  * - 行高：指定了 `customHeight` 的行按磅值（缺少 `ht` 时为标准行高）换算后向下取整；文件中没有的行取标准行高。
- *   其余行按内容推算，保存的 `ht` 不参与（WPS 对没有 `customHeight` 的行一律按内容重新推算），取以下各项的最大值再加边框增量：
+ *   其余行按内容推算，保存的 `ht` 与默认行高的 `customHeight` 都不参与（WPS 实测：默认行高带 `customHeight` 的工作表中，
+ *   文件中有的行同样按内容推算，只有文件中没有的行取默认行高），取以下各项的最大值再加边框增量：
  *   文件中写出的单元格（含没有值的单元格）不换行时为主字体的单行行高（`lineBox`），自动换行时为各行行高之和
  *   （`lineBoxOf`）；未写出的单元格按其样式（行样式优先，其次列样式，其余为样式 0）取单行行高。
  *   标准行高不是下限：写出的单元格字体较小时，行高可低于标准行高。
- *   默认行高带 `customHeight` 的工作表不按内容推算，没有自定义行高的行一律取标准行高。
  * - 标准行高见 `standardRowHeight`；`defaultRowHeight` 只在带 `customHeight` 时使用。
  */
 
@@ -70,10 +70,29 @@ export function columnPixels(width: number, mdw: number): number {
   return Math.floor(((256 * width + Math.floor(128 / mdw)) / 256) * mdw)
 }
 
+/** 文件中没有 `sheetFormatPr` 时的默认列宽（像素）。 */
+const UNDECLARED_COLUMN_PIXELS = 72
+
+/**
+ * 默认列宽（像素）。未指定 `defaultColWidth` 时按 `baseColWidth + 1` 个字符换算；文件中没有 `sheetFormatPr` 时
+ * 固定为 72 像素，与字体无关。WPS 实测（构造文件经 `Range.CopyPicture`）：有 `sheetFormatPr` 时 MDW 6、7、8、10、12、14、
+ * 16、19 与 `baseColWidth` 为 10 的列宽全部一致；没有时 MDW 6、7、8、10 均为 72。不要改为「数字宽度加 5 像素后取整到
+ * 8 的倍数」：MDW 为 7 时得 64，WPS 为 63。
+ */
 export function defaultColumnPixels(sheet: Worksheet, mdw: number): number {
   const f = sheet.format
   if (f.defaultColWidth !== null) return columnPixels(f.defaultColWidth, mdw)
-  return Math.ceil((f.baseColWidth * mdw + 5) / 8) * 8
+  if (!f.declared) return UNDECLARED_COLUMN_PIXELS
+  return columnPixels(f.baseColWidth + 1, mdw)
+}
+
+/**
+ * 缩进一级的像素宽度 `2·MDW + 2·⌈MDW/12⌉`，MDW 为默认字体的最大数字宽度，与单元格字体无关。
+ * 经验拟合（机制未查明）：WPS 屏幕显示中以宋体、Calibri、Arial 为默认字体的 22 种字号（MDW 6–19、24、32），
+ * 每种 4–16 个缩进级数全部一致，靠左与靠右的缩进相同。
+ */
+export function indentPixels(mdw: number): number {
+  return 2 * mdw + 2 * Math.ceil(mdw / 12)
 }
 
 /** 指定行高（磅）换算为像素，向下取整。 */
@@ -203,7 +222,6 @@ export function buildGeometry(wb: Workbook, sheet: Worksheet, fonts: FontSet): S
     if (!spec) heights[r] = defaultRow
     else if (spec.hidden) heights[r] = 0
     else if (spec.custom) heights[r] = spec.height === null ? standard : rowPixels(spec.height)
-    else if (sheet.format.customHeight) heights[r] = standard
     else heights[r] = autoRowHeight(wb, sheet, r, spec.style, cols, fonts, merged.get(r), defaults)
   }
   const rows = new Axis(heights, defaultRow, [], MAX_ROW + 1)

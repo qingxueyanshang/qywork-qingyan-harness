@@ -297,6 +297,28 @@ describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）
     throw new Error(`未找到 ${text}`)
   }
 
+  test('续页重复的标题行之后：顶边为标题行底边与首行顶边的取舍，绘制该线，首行按其占用的高度下移', async () => {
+    // WPS（语料 docx-0824436d 第 12 页）：标题行底边 1.25 磅、数据行顶边为 nil 且上边距 1 磅时，续页标题行下绘制 1.25 磅的
+    // 线，第一行数据的行顶在标题行底边之下 1.25 磅，与第一页相同。
+    const head =
+      '<w:tcBorders><w:top w:val="single" w:sz="14" w:color="000000"/><w:bottom w:val="single" w:sz="10" w:color="000000"/></w:tcBorders>'
+    const data =
+      '<w:tcBorders><w:top w:val="nil"/><w:bottom w:val="nil"/></w:tcBorders><w:tcMar><w:top w:w="20" w:type="dxa"/><w:bottom w:w="20" w:type="dxa"/></w:tcMar>'
+    const rows = [
+      { trPr: '<w:tblHeader/>', cells: [{ text: '标题', tcPr: head }] },
+      ...Array.from({ length: 80 }, (_, k) => ({ cells: [{ text: `行${k}`, tcPr: data }] })),
+    ]
+    const d = await parse(table([4000], rows, '', null))
+    const pages = layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages
+    const table1 = pages[1]!.body.find((it) => it.kind === 'table')!
+    if (table1.kind !== 'table') throw new Error('不是表格')
+    const lines = table1.edges.filter((e) => !e.vertical && e.line !== null).map((e) => e.y)
+    const first = cells(d)[1]!.find((c) => c.text.startsWith('行'))!
+    const headerBottom = lines.find((y) => y > table1.top)!
+    expect(lines.filter((y) => y > table1.top + 1)).toHaveLength(1)
+    near(first.y - headerBottom, 1.25)
+  })
+
   test('横向位置：兼容模式 14 文字与 tblInd 对齐，15 单元格左边在 tblInd 加左边框一半处；居中按网格宽度；右对齐两种模式不同', async () => {
     const body =
       p(r('A:')) +

@@ -10,7 +10,7 @@
  *   实测（WPS 演示导出图，2 × 2 表格四边同线宽，0.5–4.5 磅，边框在像素内的 4 种位置）：内部竖线与横线的覆盖量
  *   0.5 磅为 0.5 像素、0.75 磅为 0.75 像素、1 磅（1.33 像素）为 1 像素、2 磅（2.67 像素）为 3 像素，与只画一次相同。
  *   不要把取整移到形状共用的 `lineWidth`：语料中形状的虚线曲线取整后线段变短变细（精创第 2 页下降 0.0049）。
- * - `vert`、`vert270` 的单元格文字按旋转绘制；其他竖排方式不绘制（计入 `verticalText`）。
+ * - `vert`、`eaVert`、`vert270` 的单元格文字按旋转绘制（`eaVert` 的东亚文字直立）；其他竖排方式不绘制（计入 `verticalText`）。
  */
 
 import type { Line } from '../../drawingml/fill.ts'
@@ -43,7 +43,7 @@ const EMU_PER_PX = 9525
 const EMU_PER_PT = 12700
 const PX_PER_PT = 4 / 3
 /** 按旋转绘制的文字方向；其余竖排方式不绘制。 */
-const ROTATED = new Set(['vert', 'vert270'])
+const ROTATED = new Set(['vert', 'vert270', 'eaVert'])
 
 export interface CellLayout {
   readonly cell: TableCell
@@ -149,7 +149,11 @@ function cellTextFrame(
   const aw = vertical ? h : w
   const ah = vertical ? w : h
   const angle =
-    cell.vertical === 'vert' ? Math.PI / 2 : cell.vertical === 'vert270' ? -Math.PI / 2 : 0
+    cell.vertical === 'vert' || cell.vertical === 'eaVert'
+      ? Math.PI / 2
+      : cell.vertical === 'vert270'
+        ? -Math.PI / 2
+        : 0
   const m = multiply(
     matrix,
     multiply(

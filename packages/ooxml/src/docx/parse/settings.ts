@@ -6,9 +6,11 @@
  * - 自定义禁则字符（`noLineBreaksBefore`、`noLineBreaksAfter`）不区分 `w:lang`，出现即替换缺省表。
  * - 公式设置（`m:mathPr`）缺失时取 `MATH_SETTINGS_DEFAULTS`。
  * - 字体表中同名的条目只取第一个：WPS 实测（构造文档 f4、f5）两个同名条目的 `w:altName` 不同时按第一个替代。
+ *   嵌入字体（`w:embedRegular` 等）同样只取第一个条目中的。
  */
 
 import { MATH_SETTINGS_DEFAULTS, type MathSettings, readMathSettings } from '../../math/index.ts'
+import { relAttr } from '../../opc/read.ts'
 import type { FontTableEntry } from '../model.ts'
 import { eachChild, onOff, type Scanner, skip, wAttr, wNum } from './xml.ts'
 
@@ -121,23 +123,54 @@ export function readSettings(x: Scanner): RawSettings {
   }
 }
 
-/** 根元素为 `fonts` 的部件：各字体名的第一个条目。`w:charset` 为十六进制，不是十六进制数时按未指定。 */
-export function readFontTable(x: Scanner): Map<string, FontTableEntry> {
-  const out = new Map<string, FontTableEntry>()
+/** 字体表中的嵌入字体：字形由元素名给出，部件为字体表部件的关系 `id`。 */
+export interface RawEmbeddedFont {
+  readonly name: string
+  readonly bold: boolean
+  readonly italic: boolean
+  readonly id: string
+  /** `w:fontKey`；没有该属性时部件未混淆。 */
+  readonly key: string | null
+}
+
+const EMBED_STYLES: ReadonlyMap<string, readonly [bold: boolean, italic: boolean]> = new Map([
+  ['embedRegular', [false, false]],
+  ['embedBold', [true, false]],
+  ['embedItalic', [false, true]],
+  ['embedBoldItalic', [true, true]],
+])
+
+/**
+ * 根元素为 `fonts` 的部件：各字体名的第一个条目与其中的嵌入字体。`w:charset` 为十六进制，不是十六进制数时按未指定。
+ */
+export function readFontTable(x: Scanner): {
+  entries: Map<string, FontTableEntry>
+  embedded: RawEmbeddedFont[]
+} {
+  const entries = new Map<string, FontTableEntry>()
+  const embedded: RawEmbeddedFont[] = []
   for (let t = x.next(); t !== null; t = x.next()) {
     if (t !== 'start' || x.depth !== 2 || x.local !== 'font') continue
     const name = wAttr(x, 'name')
     let altName = ''
     let charset: number | null = null
+    const embeds: RawEmbeddedFont[] = []
     eachChild(x, (local) => {
+      const style = EMBED_STYLES.get(local)
       if (local === 'altName') altName = (wAttr(x, 'val') ?? '').trim()
       else if (local === 'charset') {
         const v = wAttr(x, 'val') ?? ''
         if (/^[0-9a-f]{1,2}$/i.test(v)) charset = Number.parseInt(v, 16)
+      } else if (style !== undefined && name !== null) {
+        const id = relAttr(x, 'id')
+        if (id !== null)
+          embeds.push({ name, bold: style[0], italic: style[1], id, key: wAttr(x, 'fontKey') })
       }
       skip(x)
     })
-    if (name !== null && !out.has(name)) out.set(name, { altName, charset })
+    if (name === null || entries.has(name)) continue
+    entries.set(name, { altName, charset })
+    embedded.push(...embeds)
   }
-  return out
+  return { entries, embedded }
 }

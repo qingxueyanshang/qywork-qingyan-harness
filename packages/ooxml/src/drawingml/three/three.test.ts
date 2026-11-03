@@ -5,13 +5,13 @@
 
 import { describe, expect, test } from 'bun:test'
 import { PartScanner } from '../../opc/scanner.ts'
-import type { Matrix, PaintCanvas, PaintContext } from '../paint/context.ts'
+import type { Matrix, PaintCanvas, PaintContext, PixelData } from '../paint/context.ts'
 import { RecordingContext } from '../paint/test-helper.ts'
 import type { DrawingFinding } from '../shape/model.ts'
 import type { ShapeScene } from '../shape/paint.ts'
 import { projector, resolveThreeD, visibleThreeD } from './camera.ts'
 import type { Scene3D, ThreeD } from './model.ts'
-import { type PixelData, paintThreeD } from './paint.ts'
+import { paintThreeD } from './paint.ts'
 import { readScene3D, readShape3D } from './read.ts'
 
 const A = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'

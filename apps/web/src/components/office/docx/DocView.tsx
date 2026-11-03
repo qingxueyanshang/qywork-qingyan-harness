@@ -9,6 +9,8 @@
  *   绘制前换算为注册时的族名：文档以另一个名称引用已注册的字体时（如 `SimSun` 与 `宋体`），注册的族名是首次注册时的名称。
  * - 缺少字体与缺字时使用宋体；主机没有宋体时取文档字体中主机已有的第一个。主机字体的族名在解析前取得（`loadHostFamilies`），
  *   Worker 据此为主机没有的字体名做前缀匹配。
+ * - 文档的嵌入字体（主机没有其字体名的项）随解析结果取得，每次加载以新的族名注册，与主机字体一同排版；文档被替换、加载失败
+ *   或组件卸载时从 `document.fonts` 删除：不同文件嵌入同名字体的不同子集时，族名相同会使绘制取到另一份字形。
  * - 主机显示器的 ClearType 设置随文档一同取得（`loadClearType`）：不为 `null` 时平滑字号的文字以 ClearType 字形写入画布像素，
  *   画布按频繁读取像素创建。
  * - 图片在页面首次进入可见区域时解码，按下标缓存到文档被替换为止。
@@ -37,7 +39,13 @@ import {
 } from '@qywork/ooxml/drawingml'
 import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
 import { boundaryText, connectWorker, createDocumentLoader, failureText } from '../document.ts'
-import { type HostFace, loadClearType, loadHostFaces, loadHostFamilies } from '../fonts.ts'
+import {
+  type HostFace,
+  loadClearType,
+  loadHostFaces,
+  loadHostFamilies,
+  registerFace,
+} from '../fonts.ts'
 import type { ViewPosition } from '../viewport.ts'
 import type { DocxReplies, DocxRequest } from './docx-worker.ts'
 import { createPageViewport, type PageViewport } from './page-viewport.ts'
@@ -75,7 +83,7 @@ const UNSUPPORTED_LABEL: Record<BoundaryKind, string> = {
   charGrid: '字符网格',
   artBorder: '艺术型页面边框',
   numberFormat: '编号格式',
-  autoSpacing: '自动段间距',
+  nesting: '嵌套过深的内容',
   decimalTab: '小数点对齐制表位',
   barTab: '竖线对齐制表位',
   ptab: '对齐方式选项卡',
@@ -105,7 +113,12 @@ interface Doc {
   readonly decoding: Map<number, Promise<void>>
   /** 解码已完成（含无法解码）的图片下标。 */
   readonly decoded: Set<number>
+  /** 删除本次注册的嵌入字体。 */
+  readonly dispose: () => void
 }
+
+/** 嵌入字体族名的序号，使每次注册的族名不同。 */
+let embeddedSerial = 0
 
 /** 字体的绘制度量，按字体缓存；字体表不完整时为 `null`，按主机上没有该字体处理（Worker 中同样跳过）。 */
 const docxFaces = new WeakMap<HostFace, DocxFace | null>()
@@ -173,15 +186,29 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
   const channel = connectWorker<DocxRequest, DocxReplies>(
     new Worker(new URL('./docx-worker.ts', import.meta.url), { type: 'module' }),
   )
+  const embedded: FontFace[] = []
+  const dispose = () => {
+    for (const face of embedded) document.fonts.delete(face)
+  }
   signal.addEventListener('abort', () => channel.close(), { once: true })
   try {
     const hostFamilies = await loadHostFamilies()
     const parsed = await channel.request({ kind: 'parse', bytes, host: hostFamilies }, [bytes])
     if (!parsed.ok) return failureText(parsed.failure)
-    const [host, clearType] = await Promise.all([
+    const [loaded, clearType] = await Promise.all([
       loadHostFaces([...parsed.fonts, FALLBACK]),
       loadClearType(),
     ])
+    const host = new Map(loaded)
+    for (const f of parsed.embedded) {
+      const family = `${f.family} ${++embeddedSerial}`
+      const bytes = f.bytes as Uint8Array<ArrayBuffer>
+      const face = await registerFace(family, bytes, f.bold, f.italic).catch(() => null)
+      if (!face) continue
+      embedded.push(face)
+      const list = host.get(f.family) ?? []
+      host.set(f.family, [...list, { family, bold: f.bold, italic: f.italic, bytes }])
+    }
     const files: HostFace[] = []
     const families: [string, number[]][] = []
     for (const [name, list] of host) {
@@ -213,7 +240,11 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
       images: pages.images.map(() => null),
       decoding: new Map(),
       decoded: new Set(),
+      dispose,
     }
+  } catch (e) {
+    dispose()
+    throw e
   } finally {
     channel.close()
   }
@@ -264,7 +295,9 @@ export default function DocView(props: { path: string; mtime: number }) {
 
   const showDoc = (next: Doc) => {
     nextPosition = viewport?.position() ?? null
+    const previous = doc()
     setDoc(next)
+    previous?.dispose()
   }
 
   const error = createDocumentLoader(() => props, loadDoc, showDoc)
@@ -278,7 +311,10 @@ export default function DocView(props: { path: string; mtime: number }) {
     }),
   )
 
-  onCleanup(() => viewport?.destroy())
+  onCleanup(() => {
+    viewport?.destroy()
+    doc()?.dispose()
+  })
 
   const boundary = () => {
     const d = doc()

@@ -7,7 +7,8 @@
  * - `layoutPages` 在逐段排版之上排版表格、定位浮动对象、分页并排列页眉页脚，输出纯数据的 `DocumentPages`；
  *   `paintPage` 把一页（含页面背景、表格与浮动对象）绘制到 Canvas，`pageImages` 列出它读取的图片；图片（位图与图元文件）由
  *   `../drawingml/` 的 `decodePicture` 解码。
- *   字体经 `DocxFonts` 提供（`requiredFonts` 列出所需字体名，`loadDocxFace` 读取字体文件）。
+ *   字体经 `DocxFonts` 提供（`requiredFonts` 列出所需字体名，`loadDocxFace` 读取字体文件；文档的嵌入字体由 `embeddedFaces`
+ *   选出，与主机字体一同交给 `DocxFonts`）。
  */
 
 export {
@@ -34,6 +35,7 @@ export type {
   DrawingNode,
   DrawingShape,
   Edges,
+  EmbeddedFont,
   FontNames,
   Numbering,
   PageBorders,
@@ -81,7 +83,13 @@ export type {
   Underline,
   UnderlineStyle,
 } from './page/model.ts'
-export { type DocxFace, DocxFonts, loadDocxFace } from './render/fonts.ts'
+export {
+  type DocxFace,
+  DocxFonts,
+  type EmbeddedFace,
+  embeddedFaces,
+  loadDocxFace,
+} from './render/fonts.ts'
 export {
   type PageClearType,
   type PageContext,

@@ -100,7 +100,7 @@ describe('readFill', () => {
     ])
   })
 
-  test('图片：关系解析为部件，裁剪、平铺、透明度与未实现的图片效果', () => {
+  test('图片：关系解析为部件，裁剪、平铺、透明度与图片效果；扩展中的效果不记录', () => {
     const spec = readFill(
       at(
         `<a:blipFill ${A} ${R}><a:blip r:embed="rId1"><a:alphaModFix amt="40000"/><a:grayscl/>` +
@@ -118,12 +118,43 @@ describe('readFill', () => {
         stretch: null,
         tile: { offsetX: 10, offsetY: 20, scaleX: 0.5, scaleY: 0.5, flip: 'xy', align: 'ctr' },
         alpha: 0.4,
-        effects: ['grayscl', 'artisticBlur'],
+        effects: [{ kind: 'grayscale' }],
         rotateWithShape: true,
       },
     })
     const noRels = readFill(at(`<a:blipFill ${A} ${R}><a:blip r:embed="rId1"/></a:blipFill>`), null)
     expect(noRels.kind === 'picture' ? noRels.image.part : 'x').toBeNull()
+  })
+
+  test('图片效果：亮度对比度、黑白阈值、双色调与透明色按文档顺序读取，颜色求值失败的效果去掉', () => {
+    const spec = readFill(
+      at(
+        `<a:blipFill ${A} ${R}><a:blip r:embed="rId1"><a:lum bright="-24000" contrast="66000"/><a:biLevel thresh="50000"/>` +
+          '<a:duotone><a:prstClr val="black"/><a:schemeClr val="accent1"><a:tint val="45000"/></a:schemeClr></a:duotone>' +
+          '<a:clrChange><a:clrFrom><a:srgbClr val="FFFFFF"/></a:clrFrom><a:clrTo><a:srgbClr val="FFFFFF"><a:alpha val="0"/></a:srgbClr></a:clrTo></a:clrChange>' +
+          '<a:duotone><a:srgbClr val="000000"/></a:duotone><a:hsl hue="0" sat="0" lum="0"/></a:blip></a:blipFill>',
+      ),
+      RELS,
+    )
+    const fill = resolveFill(spec, CONTEXT)
+    const effects = fill.kind === 'picture' ? fill.image.effects : []
+    expect(effects.map((e) => e.kind)).toEqual([
+      'luminance',
+      'biLevel',
+      'duotone',
+      'colorChange',
+      'other',
+    ])
+    expect(effects[0]).toEqual({ kind: 'luminance', bright: -0.24, contrast: 0.66 })
+    expect(effects[1]).toEqual({ kind: 'biLevel', threshold: 0.5 })
+    const duo = effects[2]
+    expect(duo?.kind === 'duotone' ? [colorToHex(duo.dark), duo.light.r < 1] : null).toEqual([
+      '000000',
+      true,
+    ])
+    const change = effects[3]
+    expect(change?.kind === 'colorChange' ? colorToHex(change.from) : null).toBe('FFFFFF')
+    expect(effects[4]).toEqual({ kind: 'other', name: 'hsl' })
   })
 
   test('图案：前景背景缺失时求值为黑与白', () => {

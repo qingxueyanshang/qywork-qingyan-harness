@@ -246,6 +246,71 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
     expect(pages.map((pg) => pg.floats[0]!.x)).toEqual([595.3 - 300, 90 + 400, 0])
   })
 
+  test('相对栏与相对字符按偏移定位的对象：锚定行因其他对象的环绕右移时自该行区段的左端起，与首行缩进、左缩进无关', async () => {
+    // WPS（构造文档：左边距 72 磅，第一段左侧 200 磅宽的四周型图片，距正文 9 磅；第二段与之重叠，锚定偏移 20 磅的
+    // 100 磅宽图片，页面 EMF）：相对栏与相对字符时位于 301 磅，第二段首行缩进 2 字或左缩进 30 磅时相同；
+    // 相对页边距时位于 92 磅；第一段的图片在右侧时位于 92 磅。
+    const square = '<wp:wrapSquare wrapText="bothSides"/>'
+    const big = (h: readonly [string, number]) => anchor(200, 150, h, ['paragraph', 0], square)
+    const small = (from: string) => anchor(100, 50, [from, 20], ['paragraph', 10], '<wp:wrapNone/>')
+    const sect =
+      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" ' +
+      'w:header="851" w:footer="992" w:gutter="0"/></w:sectPr>'
+    const page = '<w:r><w:br w:type="page"/></w:r>'
+    const cases: [readonly [string, number], string, string][] = [
+      [['column', 0], 'column', ''],
+      [['column', 0], 'character', ''],
+      [['column', 0], 'column', '<w:ind w:firstLineChars="200" w:firstLine="420"/>'],
+      [['column', 0], 'column', '<w:ind w:left="600"/>'],
+      [['column', 0], 'margin', ''],
+      [['column', 251.3], 'column', ''],
+    ]
+    const body = cases
+      .map(([h, from, ind], i) =>
+        [
+          p(big(h) + r('甲段')),
+          p(small(from) + r('乙段文字'), ind),
+          p(r('丙段') + (i < cases.length - 1 ? page : '')),
+        ].join(''),
+      )
+      .join('')
+    const pages = layoutPages(await parse(body + sect), load(), NO_HOST_FAMILIES).pages.pages
+    expect(
+      pages.map((pg) => Math.round(pg.floats.find((f) => f.width === 100)!.x * 100) / 100),
+    ).toEqual([301, 301, 301, 301, 92, 92])
+  })
+
+  test('紧密型与穿越型按环绕多边形的外接矩形避让，不加 effectExtent', async () => {
+    // WPS（下载语料实验报告第 3、4 页，页面 EMF 与逐段位置）：宽 229.65 磅、多边形右端 21445 的穿越型图片位于 53.05 磅时，
+    // 其右侧的文字自 290.05 磅排起（距正文 9 磅）；高 164.05 磅、多边形下端 21488 的图片之下的段落自图片顶边之下
+    // 163.2 磅处排起（effectExtent 的右边与下边为 0.75 与 2.75 磅）。
+    const through = (w: number, h: number, x: number, right: number, bottom: number) =>
+      '<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="1" ' +
+      'behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>' +
+      `<wp:positionH relativeFrom="column"><wp:posOffset>${Math.round(x * EMU)}</wp:posOffset></wp:positionH>` +
+      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>' +
+      `<wp:extent cx="${Math.round(w * EMU)}" cy="${Math.round(h * EMU)}"/><wp:effectExtent l="0" t="0" r="9525" b="34925"/>` +
+      `<wp:wrapThrough wrapText="bothSides"><wp:wrapPolygon edited="0"><wp:start x="0" y="0"/><wp:lineTo x="0" y="${bottom}"/>` +
+      `<wp:lineTo x="${right}" y="${bottom}"/><wp:lineTo x="${right}" y="0"/><wp:lineTo x="0" y="0"/></wp:wrapPolygon></wp:wrapThrough>` +
+      `<wp:docPr id="1" name="图片"/><a:graphic><a:graphicData uri="${PIC}">${pic(w, h)}</a:graphicData></a:graphic>` +
+      '</wp:anchor></w:drawing></w:r>'
+    const sect =
+      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" ' +
+      'w:header="851" w:footer="992" w:gutter="0"/></w:sectPr>'
+    const body =
+      p(through(229.65, 172.25, -18.95, 21445, 21518) + r('甲')) +
+      p(r('乙')) +
+      p('<w:r><w:br w:type="page"/></w:r>') +
+      p(through(440, 164.05, 0, 21600, 21488) + r('丙')) +
+      p(r('丁'))
+    const pages = layoutPages(await parse(body + sect), load(), NO_HOST_FAMILIES).pages.pages
+    const second = paragraphsOf(pages[0]!)[1]!
+    expect(second.lines[0]!.fragments[0]!.x).toBeCloseTo(290.05, 1)
+    const image = pages[1]!.floats[0]!
+    const below = paragraphsOf(pages[1]!)[1]!
+    expect(Math.abs(below.lines[0]!.top - image.y - (164.05 * 21488) / 21600)).toBeLessThan(0.05)
+  })
+
   test('不换行且根据文字调整大小的文本框：宽度取文字宽度，按调整后的宽度对齐；换行的文本框保持记录的宽度', async () => {
     // WPS（x-autofit-width）：记录宽高 144 磅、内容为「48」的文本框相对页边距左、中、右对齐时，数字分别位于页边距
     // 左端、版心中央与右端；wrap 为 square 时文本框仍宽 144 磅，居中时左边在版心中央减 72 磅。

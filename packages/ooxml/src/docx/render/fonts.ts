@@ -4,17 +4,21 @@
  * - `source` 交给 `layoutDocument`。请求粗体而字体没有粗体字形时，返回已按仿粗体换算（`emboldened`）的字形并标为粗体，
  *   使排版结果中的每个 `TextFace` 都是本字体集登记过的对象，分页时可由 `ref` 找回字体与字形。
  * - 主机没有的字体由 `layoutDocument` 按替代字体（`../resolve/fonts.ts` 的 `substitutes`）排版并记入 `missingFonts`，
- *   没有替代字体时改用 `fallback`。
+ *   没有替代字体时改用 `fallback`。WPS 按自带度量排版的字体（`../../text/wps-fonts.ts`）由 `source.metric` 给出：度量取自
+ *   数据表，字形登记为数据表中的绘制字体。字体集中有该字体名的字体（嵌入字体）时由 `source.face` 给出，`fixed` 的字体
+ *   上下沿取数据表（`wpsExtentFace`）。
  * - 平滑字号的 ClearType 字形取自 `DocxFace.clearType`（`../../glyph/cleartype/`）。
  * - 带 `MATH` 表与 TrueType 轮廓的字体另读取为数学字体（`DocxFace.math`），供公式排版（`source.math`）与按轮廓绘制；
  *   公式中的普通文字按其字体的轮廓取墨迹（`source.outlines`）。
  * - `blockFonts` 列出段落用到的字体名，含公式中的字符属性与数学字体（文档所需的全部字体名见 `requiredFonts`）。
+ * - 文档的嵌入字体按 `embeddedFaces` 选出后由调用方与主机字体一同交给字体集，族名为其家族名。
  */
 
 import {
   type EmbeddedBitmaps,
   type GlyphHinting,
   type GlyphOutlines,
+  localFamilyName,
   type PixelVerticalMetrics,
   readEmbeddedBitmaps,
   readFaces,
@@ -30,9 +34,17 @@ import {
 } from '../../font/index.ts'
 import { type ClearTypeGlyphs, readClearTypeGlyphs } from '../../glyph/cleartype/index.ts'
 import { type MathArg, type MathFont, readMathFont } from '../../math/index.ts'
-import { emboldened, type TextFace } from '../../text/index.ts'
+import {
+  emboldened,
+  type HostFamilies,
+  type TextFace,
+  WPS_METRIC_FONTS,
+  type WpsMetricFont,
+  wpsExtentFace,
+  wpsMetricFace,
+} from '../../text/index.ts'
 import { EMOJI_FALLBACK, emojiFallback, type FontMatch, type FontSource } from '../layout.ts'
-import type { Block, RunProps } from '../model.ts'
+import type { Block, DocxDocument, RunProps } from '../model.ts'
 import type { FaceRef } from '../page/model.ts'
 
 export interface DocxFace {
@@ -100,6 +112,36 @@ function readGrayscaleRanges(bytes: Uint8Array, face: SfntFace): (ppem: number) 
 
 function key(name: string): string {
   return name.trim().toLowerCase()
+}
+
+/** 排版与绘制所用的嵌入字体：`family` 为文档引用它所用的字体名。 */
+export interface EmbeddedFace {
+  readonly family: string
+  readonly bold: boolean
+  readonly italic: boolean
+  readonly bytes: Uint8Array
+}
+
+/**
+ * 排版与绘制所用的嵌入字体：每个嵌入字体以其按主机界面语言取的家族名（`localFamilyName`）为字体名，主机有该字体名时不用。
+ * WPS 实测（构造文档 f2-emb、f2-emb3：Comic Sans MS 与等线改名后嵌入，中文界面）：
+ * - 字体表条目的 `w:name` 不起作用：家族名为 QyEmbInner、`w:name` 为 QyEmbB 时，字段字体 QyEmbB 按主机没有替代，QyEmbInner
+ *   用该嵌入字体；家族名为 FZXiaoBiaoSong-B05S（英文）与方正小标宋简体（简体中文）时，方正小标宋简体用该嵌入字体，
+ *   FZXiaoBiaoSong-B05S 按主机没有替代。
+ * - 主机有的字体名（Arial）用主机字体。
+ * - WPS 按自带度量排版的字体名（Helvetica、Arial Narrow、Helvetica Neue、方正小标宋简体）用嵌入字体的字形与宽度。
+ * - 只嵌入粗体的字体名，常规字段同样用该粗体字形；请求粗体而只嵌入常规字形时按仿粗体。
+ */
+export function embeddedFaces(doc: DocxDocument, host: HostFamilies): EmbeddedFace[] {
+  const present = new Set(host.names)
+  const out: EmbeddedFace[] = []
+  for (const f of doc.embeddedFonts) {
+    const face = readFaces(f.bytes)[0]!
+    const family = localFamilyName(tableBytes(f.bytes, face, 'name'), host.language)
+    if (family === null || present.has(key(family))) continue
+    out.push({ family, bold: f.bold, italic: f.italic, bytes: f.bytes })
+  }
+  return out
 }
 
 function addRunFonts(out: Set<string>, p: RunProps): void {
@@ -185,6 +227,8 @@ export function blockFonts(
 export class DocxFonts {
   private readonly byName = new Map<string, DocxFace[]>()
   private readonly matches = new Map<string, FontMatch | null>()
+  /** `metricMatch` 的结果：键同 `matches`，另含字段部分。 */
+  private readonly metrics = new Map<string, FontMatch | null>()
   private readonly refIndex = new Map<TextFace, number>()
   private readonly refList: FaceRef[] = []
   /** 已登记字形所属的字体。 */
@@ -205,6 +249,7 @@ export class DocxFonts {
     this.register(fb.text, fb, false, false)
     this.source = {
       face: (name, bold, italic) => this.match(name, bold, italic),
+      metric: (name, part, bold, italic) => this.metricMatch(name, part, bold, italic),
       math: (name) => this.mathFont(name),
       outlines: (face) => this.owners.get(face)?.outlines ?? null,
       fallback: fb.text,
@@ -241,19 +286,60 @@ export class DocxFonts {
     const f = this.pick(name, bold, italic)
     let m: FontMatch | null = null
     if (f !== null) {
-      // 合成字形各用一个新的 `TextFace` 对象，使 `ref` 能按对象区分合成与否；度量与原字形相同（仿粗体除外）。
+      // 合成字形与按数据表取上下沿的字形各用一个新的 `TextFace` 对象，使 `ref` 能按对象区分；度量与原字形相同（仿粗体与
+      // 上下沿除外）。
       const syntheticBold = bold && !f.bold
       const syntheticItalic = italic && !f.italic
-      let text = f.text
+      const metric = WPS_METRIC_FONTS.get(name)
+      let text = metric?.fixed === true ? wpsExtentFace(metric, f.text) : f.text
       if (syntheticBold) text = emboldened(text)
-      else if (syntheticItalic) text = { metrics: text.metrics, vertical: text.vertical }
-      if (syntheticBold || syntheticItalic) this.register(text, f, bold, italic)
+      else if (syntheticItalic && text === f.text)
+        text = { metrics: text.metrics, vertical: text.vertical }
+      if (text !== f.text) this.register(text, f, bold, italic)
       else if (!this.refIndex.has(text)) this.register(text, f, false, false)
       // 已按仿粗体换算的字形标为粗体，`layoutDocument` 不再换算一次。
       m = { face: text, bold: bold || f.bold }
     }
     this.matches.set(id, m)
     return m
+  }
+
+  /**
+   * WPS 按自带度量排版的字体（`WPS_METRIC_FONTS`）：度量见 `wpsMetricFace`，西文部分的字形取自 `asciiDraw`，东亚部分取自
+   * `other`，按所请求的字形选取，没有该字形时合成。
+   */
+  private metricMatch(
+    name: string,
+    part: 'latin' | 'eastAsia',
+    bold: boolean,
+    italic: boolean,
+  ): FontMatch | null {
+    const id = `${key(name)}\u0000${part}${bold ? 1 : 0}${italic ? 1 : 0}`
+    let m = this.metrics.get(id)
+    if (m === undefined) {
+      const font = WPS_METRIC_FONTS.get(name)
+      m = font === undefined ? null : this.metricFace(font, part, bold, italic)
+      this.metrics.set(id, m)
+    }
+    return m
+  }
+
+  private metricFace(
+    font: WpsMetricFont,
+    part: 'latin' | 'eastAsia',
+    bold: boolean,
+    italic: boolean,
+  ): FontMatch | null {
+    const extent = part === 'latin' ? font.latin : font.eastAsia
+    const owner = this.pick(part === 'latin' ? font.asciiDraw : font.other, bold, italic)
+    const other = this.pick(font.other, bold, italic)
+    const ascii = typeof font.ascii === 'string' ? this.pick(font.ascii, bold, italic) : null
+    if (extent === null || owner === null || other === null) return null
+    if (typeof font.ascii === 'string' && ascii === null) return null
+    const base = wpsMetricFace(font, extent, other.text, ascii?.text ?? null)
+    const text = bold && !owner.bold ? emboldened(base) : base
+    this.register(text, owner, bold, italic)
+    return { face: text, bold: bold || owner.bold }
   }
 
   /** 字体名对应的常规字形的数学字体，登记其字形后返回。 */

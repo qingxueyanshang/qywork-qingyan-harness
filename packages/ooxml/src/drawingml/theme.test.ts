@@ -144,6 +144,6 @@ describe('parseTheme', () => {
   })
 
   test('XML 结构错误时抛出 XmlSyntaxError', () => {
-    expect(() => parseTheme('<a:theme><a:themeElements></a:theme>')).toThrow(XmlSyntaxError)
+    expect(() => parseTheme('<a:theme><a:themeElements>')).toThrow(XmlSyntaxError)
   })
 })

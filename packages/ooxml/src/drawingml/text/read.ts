@@ -6,8 +6,18 @@
  * - `buClrTx`、`buSzTx`、`buFontTx`（跟随文字）分别记为 `bulletColor`、`bulletSize`、`bulletFont` 的 `null`。
  * - 列表样式只读 `lvl1pPr`–`lvl9pPr`，不读 `defPPr`：WPS 不使用任何层级的 `defPPr`（实测形状 `lstStyle` 与
  *   `defaultTextStyle` 中的 `defPPr` 字号均不生效）。
+ * - 段落中的公式（`a14:m`，其中为 `m:oMath` 或 `m:oMathPara`）只出现在扫描器选中要求 `a14` 的 `AlternateContent` 分支时，
+ *   字符属性（`a:rPr`）按字段属性读取。
  */
 
+import {
+  MATH_NS,
+  MATH_SETTINGS_DEFAULTS,
+  type MathJustification,
+  type MathZone,
+  readMath,
+  readMathParagraph,
+} from '../../math/index.ts'
 import type { Relationships } from '../../opc/package.ts'
 import { bool, eachChild, int, num, readText, relAttr, type Scanner, skip } from '../../opc/read.ts'
 import { type ColorSpec, isColorElement, parsePercentage, readColor } from '../color.ts'
@@ -53,6 +63,8 @@ export interface RunSpec {
   readonly kern?: number
   /** 字体名原文，主题字体为 `+mj-lt`、`+mn-ea` 等形式。 */
   readonly latin?: string
+  /** `latin` 元素的 `charset`；元素没有该属性时为 `null`（与 `latin` 同处取值，不从链上更低处继承）。 */
+  readonly latinCharset?: number | null
   readonly ea?: string
   readonly cs?: string
   readonly sym?: string
@@ -116,6 +128,7 @@ export interface BodySpec {
   readonly autofit?: Autofit
 }
 
+/** `link` 见 `model.ts` 的 `Run`。 */
 export type RawRun =
   | {
       readonly kind: 'text'
@@ -131,6 +144,12 @@ export type RawRun =
       readonly text: string
       readonly props: RunSpec
       readonly link: string | null
+    }
+  | {
+      readonly kind: 'math'
+      readonly zones: readonly MathZone<RunSpec>[]
+      /** 显示公式的对齐；行内公式为 `null`。 */
+      readonly display: MathJustification | null
     }
 
 export interface RawParagraph {
@@ -182,16 +201,17 @@ function readColorChild(x: Scanner): ColorSpec | null {
   return color
 }
 
-function readLink(x: Scanner, rels: Relationships): string | null {
+/** 超链接的目标；没有目标（只有动作，或关系不存在）时为空串。 */
+function readLink(x: Scanner, rels: Relationships): string {
   const id = relAttr(x, 'id')
-  if (id === null || id === '') return null
+  if (id === null || id === '') return ''
   const r = rels.byId(id)
-  if (r === null) return null
-  return r.external ? r.target : r.part
+  if (r === null) return ''
+  return r.external ? r.target : (r.part ?? '')
 }
 
 /**
- * 在 `rPr`、`defRPr` 或 `endParaRPr` 的开始标签处调用。`hlinkClick` 的目标经 `link` 返回：
+ * 在 `rPr`、`defRPr` 或 `endParaRPr` 的开始标签处调用。超链接经 `link` 返回（见 `model.ts` 的 `Run`）：
  * 它只属于该字段，不参与继承。
  */
 export function readRunProps(x: Scanner, cx: TextContext): { props: RunSpec; link: string | null } {
@@ -228,7 +248,9 @@ export function readRunProps(x: Scanner, cx: TextContext): { props: RunSpec; lin
     else if (local === 'latin' || local === 'ea' || local === 'cs' || local === 'sym') {
       const typeface = x.attr('typeface')
       if (typeface !== null) out[local] = typeface
+      if (local === 'latin') out.latinCharset = num(x, 'charset')
     } else if (local === 'hlinkClick') link = readLink(x, cx.rels)
+    else if (local === 'hlinkMouseOver') link ??= readLink(x, cx.rels)
   })
   return { props: out, link }
 }
@@ -395,7 +417,10 @@ export function readBodyProps(x: Scanner, cx: TextContext): BodySpec {
   return out
 }
 
+const A14_NS = 'http://schemas.microsoft.com/office/drawing/2010/main'
+
 function readParagraph(x: Scanner, cx: TextContext): RawParagraph {
+  const readProps = (s: Scanner) => readRunProps(s, cx).props
   let level = 0
   let props: ParagraphSpec = {}
   const runs: RawRun[] = []
@@ -426,6 +451,20 @@ function readParagraph(x: Scanner, cx: TextContext): RawParagraph {
       runs.push({ kind: 'break', props: run })
     } else if (local === 'endParaRPr') {
       end = readRunProps(x, cx).props
+    } else if (local === 'm' && x.namespace === A14_NS) {
+      eachChild(x, (child) => {
+        if (x.namespace !== MATH_NS) skip(x)
+        else if (child === 'oMath')
+          runs.push({ kind: 'math', zones: [readMath(x, readProps)], display: null })
+        else if (child === 'oMathPara') {
+          const para = readMathParagraph(x, readProps)
+          runs.push({
+            kind: 'math',
+            zones: para.zones,
+            display: para.justification ?? MATH_SETTINGS_DEFAULTS.defaultJustification,
+          })
+        } else skip(x)
+      })
     }
   })
   return { level, props, runs, end }

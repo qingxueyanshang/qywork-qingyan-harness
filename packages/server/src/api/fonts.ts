@@ -8,22 +8,24 @@
  *   地址由内容决定，响应按一年缓存并标为不可变；文件内容改变后哈希随之改变，原地址返回 404。
  * - `GET /api/fonts/smoothing`：`{ clearType: { contrast } | null }`，每次请求时读取系统的当前值（见 `fontSmoothing`），
  *   不缓存。系统接口调用失败时返回 500。
- * - `GET /api/fonts/families`：主机字体的族名（`hostFamilies`），`{ local, names }`：`local` 为各字体按界面语言取的族名
- *   （区分大小写，见 `localFamilyName`），`names` 为全部语言的族名（小写，与 `?name=` 的查找方式相同）。
+ * - `GET /api/fonts/families`：主机字体的族名（`hostFamilies`），`{ local, names, language }`：`local` 为各字体按界面语言
+ *   取的族名（区分大小写，见 `localFamilyName`），`names` 为全部语言的族名（小写，与 `?name=` 的查找方式相同），`language`
+ *   为界面语言的 Windows 语言标识。
  *
  * 边界：
- * - 只读取系统与当前用户的字体目录（`fontRoots`），不跟随符号链接。字体名只用于查询内存中的索引，
- *   不参与拼接路径；含 `..`、`/`、`\` 或控制字符的参数返回 422。
+ * - 只读取系统与当前用户的字体目录（`fontRoots`），以及 Windows 注册表中登记的字体文件（`registeredFonts`），
+ *   不跟随符号链接。字体名只用于查询内存中的索引，不参与拼接路径；含 `..`、`/`、`\` 或控制字符的参数返回 422。
  * - 字节与哈希在每次请求时由文件计算，响应后释放，不常驻、不落盘。
- * - 索引（家族名到文件与合集序号）只在内存中。每次请求核对已扫描目录的修改时间，有变化即重建：
- *   字体安装到上述目录后，下一次请求即可见。原地覆盖同名文件不改变目录修改时间，
+ * - 索引（家族名到文件与合集序号）只在内存中。每次请求核对已扫描目录的修改时间与注册表两个键的最后写入时间，
+ *   有变化即重建：字体安装到上述目录或登记到注册表后，下一次请求即可见。原地覆盖同名文件不改变目录修改时间，
  *   此时家族名沿用索引中的值，字节与哈希仍取自当前文件。
+ * - 候选截图脚本（`scripts/ooxml-fidelity/*-candidates.ts`）经 `hostFaces`、`faceBytes`、`hostFamilies` 使用同一份索引。
  */
 
 import { dlopen, FFIType, ptr } from 'bun:ffi'
 import { createHash } from 'node:crypto'
 import type { Dirent } from 'node:fs'
-import { type FileHandle, open, readdir, readFile, stat } from 'node:fs/promises'
+import { type FileHandle, lstat, open, readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, posix, win32 } from 'node:path'
 import { log } from '@qywork/core'
@@ -67,26 +69,125 @@ export function fontRoots(
 const FONT_FILE = /\.(ttf|otf|ttc|otc)$/i
 
 /**
+ * Windows 注册表中登记字体文件的键，`HKLM` 与 `HKCU` 下相同。值的数据为字体文件的绝对路径，或相对于系统字体目录的文件名。
+ * WPS 把 MT Extra 等字体安装在自己的目录中，只以绝对路径登记在这里，字体目录中没有这些文件。
+ */
+const FONTS_KEY = 'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts'
+/** 64 位进程中的预定义句柄是符号扩展后的值，不要写成 0x80000001：零扩展的值不是预定义句柄。 */
+const HKEY_CURRENT_USER = 0xffffffff80000001n
+const HKEY_LOCAL_MACHINE = 0xffffffff80000002n
+const KEY_READ = 0x20019
+const REG_SZ = 1
+
+/**
+ * 注册表中登记的字体文件：绝对路径直接使用，文件名相对于系统字体目录 `fontsDir`；扩展名不是 TrueType 或 OpenType 的
+ * （`.fon` 等点阵字体）不列出。`values` 为各值的数据。
+ */
+export function registeredFonts(values: readonly string[], fontsDir: string): string[] {
+  return values
+    .filter((v) => FONT_FILE.test(v))
+    .map((v) => (win32.isAbsolute(v) ? v : win32.join(fontsDir, v)))
+}
+
+type Advapi = ReturnType<typeof openAdvapi>
+
+function openAdvapi() {
+  const p = FFIType.ptr
+  return dlopen('advapi32.dll', {
+    RegOpenKeyExW: { args: [FFIType.u64, p, FFIType.u32, FFIType.u32, p], returns: FFIType.i32 },
+    RegQueryInfoKeyW: {
+      args: [FFIType.u64, p, p, p, p, p, p, p, p, p, p, p],
+      returns: FFIType.i32,
+    },
+    RegEnumValueW: { args: [FFIType.u64, FFIType.u32, p, p, p, p, p, p], returns: FFIType.i32 },
+    RegCloseKey: { args: [FFIType.u64], returns: FFIType.i32 },
+  }).symbols
+}
+
+let advapi: Advapi | null = null
+
+/**
+ * 键的最后写入时间与值的数据（`withValues` 为真时，只取 `REG_SZ`）；键不存在时为 `null`。只以 `KEY_READ` 打开，不写入。
+ */
+function readFontsKey(
+  root: bigint,
+  withValues: boolean,
+): { values: string[]; written: bigint } | null {
+  advapi ??= openAdvapi()
+  const subKey = new Uint16Array(FONTS_KEY.length + 1)
+  for (let i = 0; i < FONTS_KEY.length; i++) subKey[i] = FONTS_KEY.charCodeAt(i)
+  const handle = new BigUint64Array(1)
+  if (advapi.RegOpenKeyExW(root, subKey, 0, KEY_READ, handle) !== 0) return null
+  const key = handle[0]!
+  try {
+    const count = new Uint32Array(1)
+    const maxName = new Uint32Array(1)
+    const maxData = new Uint32Array(1)
+    const written = new BigUint64Array(1)
+    const n = null
+    if (advapi.RegQueryInfoKeyW(key, n, n, n, n, n, n, count, maxName, maxData, n, written) !== 0) {
+      return null
+    }
+    const name = new Uint16Array(maxName[0]! + 1)
+    // 值的数据为 UTF-16 字符串，长度按字节计。
+    const data = new Uint16Array((maxData[0]! >> 1) + 1)
+    const nameLength = new Uint32Array(1)
+    const dataLength = new Uint32Array(1)
+    const type = new Uint32Array(1)
+    const values: string[] = []
+    for (let i = 0; withValues && i < count[0]!; i++) {
+      nameLength[0] = name.length
+      dataLength[0] = data.byteLength
+      if (advapi.RegEnumValueW(key, i, name, nameLength, n, type, data, dataLength) !== 0) continue
+      if (type[0] !== REG_SZ) continue
+      const text = String.fromCharCode(...data.subarray(0, dataLength[0]! >> 1))
+      values.push(text.replace(/\0+$/, ''))
+    }
+    return { values, written: written[0]! }
+  } finally {
+    advapi.RegCloseKey(key)
+  }
+}
+
+/**
+ * 注册表中登记的字体：两个键的值的数据（`HKLM` 在前，`withValues` 为假时为空）与表示两键最后写入时间的标记。
+ * Windows 以外的平台为空。
+ */
+function fontRegistry(withValues: boolean): { values: string[]; stamp: string } {
+  if (process.platform !== 'win32') return { values: [], stamp: '' }
+  const keys = [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER].map((root) => readFontsKey(root, withValues))
+  return {
+    values: keys.flatMap((k) => k?.values ?? []),
+    stamp: keys.map((k) => k?.written ?? -1).join(','),
+  }
+}
+
+/**
  * 建立索引时每个文件只读取开头这一段，从中解析合集头与全部表目录，再按表记录单独读取 `name` 与 `head`。
  * 实测 Windows 字体目录（164 个文件，2026-11-01）中表目录的最大结束位置为 1944 字节；
  * 表目录超出这一段的文件按无法解析处理。
  */
 const DIRECTORY_PROBE = 64 * 1024
 
-interface FaceLocation {
-  path: string
+/** 主机上的一个字体：所在文件、合集中的序号与字形。 */
+export interface HostFace {
+  readonly path: string
   /** 合集中的序号；单个字体文件为 0。 */
-  index: number
-  bold: boolean
-  italic: boolean
-  contentType: 'font/otf' | 'font/ttf'
+  readonly index: number
+  readonly bold: boolean
+  readonly italic: boolean
+  readonly contentType: 'font/otf' | 'font/ttf'
 }
 
 interface FontIndex {
   /** 已扫描的目录及其修改时间；不存在的目录记为 -1，之后出现时同样触发重建。 */
   dirs: Map<string, number>
+  /** 注册表两个键的最后写入时间（`fontRegistry` 的 `stamp`）。 */
+  registry: string
+  /** 已索引的文件（小写路径）：注册表登记的文件在字体目录中时不重复读取。 */
+  files: Set<string>
   /** 键为 `familyKey` 处理后的家族名。同一家族中粗体与斜体组合相同的字体只保留先扫描到的一个。 */
-  families: Map<string, FaceLocation[]>
+  families: Map<string, HostFace[]>
   /** 各字体按界面语言取的族名（`localFamilyName`）。 */
   local: Set<string>
 }
@@ -110,7 +211,7 @@ async function readAt(fh: FileHandle, offset: number, length: number): Promise<U
   return buf
 }
 
-type IndexedFace = FaceLocation & { names: string[]; local: string }
+type IndexedFace = HostFace & { names: string[]; local: string }
 
 let uiLanguage: number | null = null
 
@@ -150,9 +251,33 @@ function reason(err: unknown): string {
 }
 
 /**
- * 递归扫描一个目录。`Dirent` 按 lstat 判定类型，符号链接既不算文件也不算目录，因此不被跟随。
- * 无法读取的目录与无法解析的文件只跳过自身并记录日志：字体目录中存在扩展名为 `.ttf`
+ * 把一个字体文件的各字体加入索引。无法解析的文件只跳过自身并记录日志：字体目录中存在扩展名为 `.ttf`
  * 而内容不是字体的文件（如 Windows 的 mstmc.ttf）。
+ */
+async function addFile(path: string, index: FontIndex): Promise<void> {
+  index.files.add(path.toLowerCase())
+  let faces: IndexedFace[]
+  try {
+    faces = await readFileFaces(path)
+  } catch (err) {
+    log.warn('fonts', '字体文件无法解析，已跳过', { path, reason: reason(err) })
+    return
+  }
+  for (const { names, local, ...location } of faces) {
+    index.local.add(local)
+    for (const name of names) {
+      const key = familyKey(name)
+      const list = index.families.get(key) ?? []
+      if (list.some((f) => f.bold === location.bold && f.italic === location.italic)) continue
+      list.push(location)
+      index.families.set(key, list)
+    }
+  }
+}
+
+/**
+ * 递归扫描一个目录。`Dirent` 按 lstat 判定类型，符号链接既不算文件也不算目录，因此不被跟随。
+ * 无法读取的目录只跳过自身并记录日志。
  */
 async function scanDir(dir: string, index: FontIndex): Promise<void> {
   const mtime = await dirMtime(dir)
@@ -168,38 +293,40 @@ async function scanDir(dir: string, index: FontIndex): Promise<void> {
   entries.sort((a, b) => (a.name < b.name ? -1 : 1))
   for (const entry of entries) {
     const path = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      await scanDir(path, index)
-      continue
-    }
-    if (!entry.isFile() || !FONT_FILE.test(entry.name)) continue
-    let faces: IndexedFace[]
-    try {
-      faces = await readFileFaces(path)
-    } catch (err) {
-      log.warn('fonts', '字体文件无法解析，已跳过', { path, reason: reason(err) })
-      continue
-    }
-    for (const { names, local, ...location } of faces) {
-      index.local.add(local)
-      for (const name of names) {
-        const key = familyKey(name)
-        const list = index.families.get(key) ?? []
-        if (list.some((f) => f.bold === location.bold && f.italic === location.italic)) continue
-        list.push(location)
-        index.families.set(key, list)
-      }
-    }
+    if (entry.isDirectory()) await scanDir(path, index)
+    else if (entry.isFile() && FONT_FILE.test(entry.name)) await addFile(path, index)
   }
 }
 
+/**
+ * 字体目录之后读取注册表中登记、不在已扫描目录中的字体文件。登记的文件不存在、不是普通文件（含符号链接）时跳过：
+ * 卸载字体的程序可能留下登记。
+ */
 async function buildIndex(): Promise<FontIndex> {
-  const index: FontIndex = { dirs: new Map(), families: new Map(), local: new Set() }
+  const registry = fontRegistry(true)
+  const index: FontIndex = {
+    dirs: new Map(),
+    registry: registry.stamp,
+    files: new Set(),
+    families: new Map(),
+    local: new Set(),
+  }
   for (const root of fontRoots()) await scanDir(root, index)
+  const windir = process.env.WINDIR ?? process.env.SystemRoot
+  if (windir === undefined) return index
+  for (const path of registeredFonts(registry.values, win32.join(windir, 'Fonts'))) {
+    if (index.files.has(path.toLowerCase())) continue
+    const isFile = await lstat(path).then(
+      (s) => s.isFile(),
+      () => false,
+    )
+    if (isFile) await addFile(path, index)
+  }
   return index
 }
 
 async function unchanged(index: FontIndex): Promise<boolean> {
+  if (fontRegistry(false).stamp !== index.registry) return false
   const checks = await Promise.all(
     [...index.dirs].map(async ([dir, mtime]) => (await dirMtime(dir)) === mtime),
   )
@@ -221,9 +348,17 @@ function fontIndex(): Promise<FontIndex> {
 }
 
 /** 主机字体的族名（见文件头 `/api/fonts/families`），各自按 UTF-16 码元排序。 */
-export async function hostFamilies(): Promise<{ local: string[]; names: string[] }> {
+export async function hostFamilies(): Promise<{
+  local: string[]
+  names: string[]
+  language: number
+}> {
   const index = await fontIndex()
-  return { local: [...index.local].sort(), names: [...index.families.keys()].sort() }
+  return {
+    local: [...index.local].sort(),
+    names: [...index.families.keys()].sort(),
+    language: hostLanguage(),
+  }
 }
 
 /** 字体名只用于查询索引；与路径形状相关的值一律拒绝，不做改写。 */
@@ -239,8 +374,14 @@ function validName(name: string | null): name is string {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
 
-async function faceBytes(location: FaceLocation): Promise<Uint8Array> {
-  return extractFace(new Uint8Array(await readFile(location.path)), location.index)
+/** 家族名（不区分大小写）在主机上的各个字体；主机没有该家族时为空数组。字体名只用于查询索引。 */
+export async function hostFaces(name: string): Promise<readonly HostFace[]> {
+  return (await fontIndex()).families.get(familyKey(name)) ?? []
+}
+
+/** 字体的字节：合集中的字体拆为独立的 sfnt，单个字体文件为原字节。 */
+export async function faceBytes(face: HostFace): Promise<Uint8Array> {
+  return extractFace(new Uint8Array(await readFile(face.path)), face.index)
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -331,8 +472,10 @@ export const handleFontsApi: ApiHandler = async (url, req) => {
     return json({ error: 'invalid', message: '字体标识不合法' }, 422)
   }
 
-  const locations = (await fontIndex()).families.get(familyKey(name))
-  if (!locations) return json({ error: 'not_found', message: `主机上没有字体 ${name}` }, 404)
+  const locations = await hostFaces(name)
+  if (locations.length === 0) {
+    return json({ error: 'not_found', message: `主机上没有字体 ${name}` }, 404)
+  }
 
   if (p === '/api/fonts') {
     const faces: { id: string; bold: boolean; italic: boolean }[] = []

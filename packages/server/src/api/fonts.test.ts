@@ -1,20 +1,28 @@
 /**
- * 主机字体接口（`api/fonts.ts`）：字体目录表、按字体名解析、按标识取字节、TTC 拆分结果、主机字体的族名（按界面语言取的族名与
- * 全部语言的族名）、参数校验、未找到、缓存头、字体安装后下一次请求可见、字体平滑设置，以及在派发器中的注册。
+ * 主机字体接口（`api/fonts.ts`）：字体目录表、注册表登记的字体文件、按字体名解析、按标识取字节、TTC 拆分结果、主机字体的族名
+ * （按界面语言取的族名与全部语言的族名）、参数校验、未找到、缓存头、字体安装后下一次请求可见、字体平滑设置，以及在派发器中的注册。
  *
- * 系统字体取自本机 Windows 字体目录；用户字体目录指向临时目录，用例之间不受本机已安装的用户字体影响。
+ * 系统字体取自本机 Windows 字体目录与注册表；用户字体目录指向临时目录，注册表中登记的用户字体照常进入索引。
  * 环境变量在任何请求之前设置：索引按首次请求时的目录清单建立。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { localFamilyName, readFaces, readFamilyNames, tableBytes } from '@qywork/ooxml/font'
 import { Store, upsertWorkspace } from '@qywork/store'
-import { fontRoots, fontSmoothing, handleFontsApi, readSmoothingParameters } from './fonts.ts'
+import {
+  faceBytes,
+  fontRoots,
+  fontSmoothing,
+  handleFontsApi,
+  hostFaces,
+  readSmoothingParameters,
+  registeredFonts,
+} from './fonts.ts'
 import { type ApiDeps, handleApi } from './index.ts'
 
 describe('字体目录', () => {
@@ -59,6 +67,32 @@ interface Face {
   bold: boolean
   italic: boolean
 }
+
+describe('注册表登记的字体文件', () => {
+  test('绝对路径直接使用，文件名相对于系统字体目录；点阵字体等其他扩展名不列出', () => {
+    expect(
+      registeredFonts(
+        [
+          'arial.ttf',
+          'C:\\ProgramData\\Kingsoft\\office6\\mtfont\\mtextra.ttf',
+          'simsun.ttc',
+          'SourceHanSans.OTF',
+          'app850.fon',
+          'modern.fon',
+        ],
+        'C:\\Windows\\Fonts',
+      ),
+    ).toEqual([
+      'C:\\Windows\\Fonts\\arial.ttf',
+      'C:\\ProgramData\\Kingsoft\\office6\\mtfont\\mtextra.ttf',
+      'C:\\Windows\\Fonts\\simsun.ttc',
+      'C:\\Windows\\Fonts\\SourceHanSans.OTF',
+    ])
+  })
+})
+
+/** WPS 安装的 MT Extra：只以绝对路径登记在 HKLM 的 Fonts 键中，字体目录中没有该文件。 */
+const MT_EXTRA = 'C:\\ProgramData\\Kingsoft\\office6\\mtfont\\mtextra.ttf'
 
 describe.skipIf(process.platform !== 'win32')('本机字体', () => {
   let local = ''
@@ -139,14 +173,31 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
     expect(localFamilyName(nameTable('msjh.ttc'), 0x0404)).toBe('微軟正黑體')
     const res = await get('/api/fonts/families')
     expect(res?.status).toBe(200)
-    const body = (await res!.json()) as { local: string[]; names: string[] }
+    const body = (await res!.json()) as { local: string[]; names: string[]; language: number }
     expect(body.local).toContain('Arial')
+    // `language` 为 `local` 所按的界面语言：简体中文界面中宋体的族名为「宋体」。
+    expect(body.local.includes('宋体')).toBe(body.language === 0x0804)
     expect(body.names).toContain('simsun')
     expect(body.names).toContain('宋体')
     expect(body.names).toContain('arial')
     expect(body.local.includes('宋体') !== body.local.includes('SimSun')).toBe(true)
     expect([...body.local].sort()).toEqual(body.local)
   })
+
+  test.skipIf(!existsSync(MT_EXTRA))(
+    '只登记在注册表中的字体进入索引，界面接口与候选脚本都能取得',
+    async () => {
+      const list = await hostFaces('MT Extra')
+      expect(list.map((f) => f.path)).toEqual([MT_EXTRA])
+      const bytes = await faceBytes(list[0]!)
+      expect(new Uint8Array(bytes)).toEqual(new Uint8Array(readFileSync(MT_EXTRA)))
+      const { status, body } = await faces('mt extra')
+      expect(status).toBe(200)
+      expect(body.faces).toEqual([{ id: sha256(bytes), bold: false, italic: false }])
+      const families = (await (await get('/api/fonts/families'))!.json()) as { names: string[] }
+      expect(families.names).toContain('mt extra')
+    },
+  )
 
   test('主机上没有的字体名与不匹配的标识返回 404', async () => {
     expect((await faces('qywork 不存在的字体')).status).toBe(404)

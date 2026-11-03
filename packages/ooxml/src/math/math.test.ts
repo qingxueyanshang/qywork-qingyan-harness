@@ -127,6 +127,13 @@ describe('OMML 读取', () => {
     expect(z.nodes.map((n) => (n.kind === 'run' ? n.text : n.kind))).toEqual(['a', 'c'])
   })
 
+  test('嵌套超过 256 层的结构记为 unsupported 节点，不溢出调用栈', () => {
+    const z = zone(`${'<m:d><m:e>'.repeat(5000)}${r('x')}${'</m:e></m:d>'.repeat(5000)}`)
+    const find = (nodes: MathZone<Props>['nodes']): boolean =>
+      nodes.some((n) => n.kind === 'unsupported' || (n.kind === 'd' && find(n.items[0]!)))
+    expect(find(z.nodes)).toBe(true)
+  })
+
   test('未实现的结构记为 unsupported 节点', () => {
     const z = zone(`<m:m><m:mr><m:e>${r('a')}</m:e></m:mr></m:m><m:groupChr><m:e/></m:groupChr>`)
     expect(z.nodes).toEqual([
@@ -615,6 +622,23 @@ describe.skipIf(!windows)('排版（与 WPS 实测比较）', () => {
     expect(-sup(r('xy')).y).toBeCloseTo((750 * 12) / 2048, 6)
   })
 
+  test('全角形式的定界符按半角圆括号的字形绘制：左侧为「(」、右侧为「)」；「〈」不替代', () => {
+    // WPS（Cambria Math 10.5 磅显示公式，页面 EMF）：「（」「）」「［」「］」「｛」「｝」「｜」与半角圆括号的轮廓、伸展与
+    // 内容的位置相同；「〈」不按此绘制。
+    const frac = `<m:f><m:num>${r('a')}</m:num><m:den>${r('b')}</m:den></m:f>`
+    const d = (beg: string, end: string) =>
+      `<m:d><m:dPr><m:begChr m:val="${beg}"/><m:endChr m:val="${end}"/></m:dPr><m:e>${frac}</m:e></m:d>`
+    const ref = layout(d('(', ')'), 10.5, true)
+    for (const [beg, end] of [
+      ['（', '）'],
+      ['［', '］'],
+      ['｛', '｝'],
+      ['｜', '｜'],
+    ] as const)
+      expect(layout(d(beg, end), 10.5, true)).toEqual(ref)
+    expect(layoutMath(zone(d('〈', '〉')), env(10.5), true).kind).toBe('unsupported')
+  })
+
   test('普通文字（m:nor）按字形墨迹取上下沿', () => {
     const l = layout(r('x', '<m:rPr><m:nor/></m:rPr>'), 12, true)
     const b = cambria().outlines.bounds(glyphs(l)[0]!.glyph)!
@@ -657,6 +681,25 @@ describe.skipIf(!windows)('排版（与 WPS 实测比较）', () => {
     expect(
       sum(height(r('x', CM) + r('x', `${NOR}<w:rPr><w:rFonts w:ascii="宋体"/></w:rPr>`), 10.5)),
     ).toBeCloseTo(12.3, 1)
+  })
+
+  test('上下标：底式字段中按宋体单倍行高排版的字符使上标按其上沿、下标按其下沿下降；西文字符不下降', () => {
+    // WPS（10.5 磅显示公式，页面 EMF 字形基线，±0.75）：「汉」「（1+i）」与括住「汉」的括号作底式时，上标基线高于底式基线
+    // 8.25 磅；「汉」的下标低 4.5 磅；「x」的上标高 3.75 磅。
+    const shift = (inner: string, script: string) => {
+      const g = glyphs(height(inner, 10.5))
+      return g.find((x) => x.text === script)!.y - g[0]!.y
+    }
+    const sup = (base: string, s: string) =>
+      `<m:sSup><m:e>${base}</m:e><m:sup>${r(s)}</m:sup></m:sSup>`
+    expect(Math.abs(-shift(sup(r('汉'), '2'), '2') - 8.25)).toBeLessThan(0.75)
+    expect(Math.abs(-shift(sup(r('（') + r('1+i') + r('）'), '2'), '2') - 8.25)).toBeLessThan(0.75)
+    expect(Math.abs(-shift(sup(`<m:d><m:e>${r('汉')}</m:e></m:d>`, '2'), '2') - 8.25)).toBeLessThan(
+      0.75,
+    )
+    const sub = `<m:sSub><m:e>${r('汉')}</m:e><m:sub>${r('2')}</m:sub></m:sSub>`
+    expect(Math.abs(shift(sub, '2') - 4.5)).toBeLessThan(0.75)
+    expect(Math.abs(-shift(sup(r('x'), '汉'), '汉') - 3.75)).toBeLessThan(0.75)
   })
 
   test('没有 ctrlPr 的结构按前一个字段的字符属性，公式开头时按缺省字符属性', () => {
