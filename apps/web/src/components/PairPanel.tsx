@@ -29,6 +29,15 @@ const POLL_MS = 2000
 
 const offlineMessage = (t: TunnelStatus | null) => (t?.state === 'offline' ? t.message : null)
 
+/** 开关左侧的状态：圆点加一句话，过长时截断，完整内容见悬停提示。 */
+function Status(props: { tone: 'success' | 'muted' | 'danger' | 'warning'; text: string }) {
+  return (
+    <span class={`pair-status pair-status-${props.tone}`} data-tip={props.text}>
+      {props.text}
+    </span>
+  )
+}
+
 /**
  * 远程访问：开启后，在任何设备上登录同一账号的云端网页即可打开并使用本机，无需另行配对。
  * 它是账号窗口中的一节（远程访问依赖账号），整节由本组件输出，未登录时不出现。
@@ -78,32 +87,34 @@ export default function PairPanel() {
           fallback={<p class="pair-hint">{explainApiError(info.error, '无法读取接入信息')}</p>}
         >
           {(d) => (
-            <div class="pair-body">
-              <label class="pair-toggle">
-                <input
-                  type="checkbox"
-                  checked={d().enabled}
-                  disabled={busy()}
-                  onChange={(e) => void toggle(e.currentTarget)}
-                />
-                <span>允许从云端网页使用这台电脑</span>
-              </label>
-              <Show when={toggleError()}>{(m) => <p class="pair-hint">{m()}</p>}</Show>
+            // 状态与开关同在一行：开关切换不改变本节高度，下方各节不随之移动。
+            <label class="pair-toggle">
+              <span class="pair-label">允许从云端网页使用这台电脑</span>
               <Switch>
+                <Match when={toggleError()}>{(m) => <Status tone="danger" text={m()} />}</Match>
                 <Match when={d().tunnel?.state === 'online'}>
-                  <p class="pair-hint">已连接</p>
+                  <Status tone="success" text="已连接" />
                 </Match>
                 <Match when={d().tunnel?.state === 'connecting'}>
-                  <p class="pair-hint">连接中</p>
+                  <Status tone="muted" text="连接中" />
                 </Match>
                 <Match when={offlineMessage(d().tunnel)}>
-                  {(m) => <p class="pair-hint">{m()}</p>}
+                  {(m) => <Status tone="danger" text={m()} />}
                 </Match>
                 <Match when={d().tunnel?.state === 'outdated'}>
-                  <p class="pair-hint">需要更新应用</p>
+                  <Status tone="warning" text="需要更新应用" />
                 </Match>
               </Switch>
-            </div>
+              <input
+                class="switch"
+                type="checkbox"
+                role="switch"
+                aria-checked={d().enabled}
+                checked={d().enabled}
+                disabled={busy()}
+                onChange={(e) => void toggle(e.currentTarget)}
+              />
+            </label>
           )}
         </Show>
       </section>
