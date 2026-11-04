@@ -12,6 +12,7 @@
 
 // 个性化：格式、校验与合并。个性化接口、personalize 工具与界面共用
 export {
+  backdropVisible,
   DEFAULT_PERSONALIZATION,
   GRADIENT_ANGLE,
   GRADIENT_DIRECTIONS,
@@ -27,6 +28,8 @@ export {
   type Personalization,
   type PersonalizationEntry,
   parsePersonalization,
+  REVEAL_OPACITY,
+  revealBackdrop,
 } from './domain/appearance/personalization.ts'
 // 宠物包：格式与校验。宠物库接口、pet 工具与界面共用
 export {

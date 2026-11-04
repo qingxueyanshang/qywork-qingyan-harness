@@ -1,6 +1,7 @@
 /**
  * 通用设置：新对话默认权限（配置读取、即时保存、连续切换、失败回滚，不修改当前会话）；
- * 主题三项始终可选；「个性化」一行打开个性化弹窗（颜色选择可选空值，修改后保存，恢复默认需确认）。
+ * 主题三项始终可选；「个性化」一行打开个性化弹窗（颜色选择可选空值，修改后保存，恢复默认需确认）；
+ * 个性化弹窗中选择图片后界面与服务端一致（`PersonalizationDialog.tsx`）。
  */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -235,5 +236,60 @@ test('个性化一行打开弹窗：雾面可选颜色与「无」，修改后�
   } finally {
     store.paintPersonalization(null)
     view.close()
+  }
+})
+
+/**
+ * 原始失败形状：选择图片后服务端保存了 85% 的不透明度，界面仍为 100%，图片被骨架遮住，刷新后才显示。
+ * 服务端先广播 `personalization.changed` 再返回响应；广播触发的读取晚于后续预览到达时覆盖预览。
+ */
+test('从看不到背景改为图片：只发一次请求，变更广播触发的读取到达后界面与服务端一致', async () => {
+  const { revealBackdrop } = await import('@qywork/core')
+  const { setPersonalizationChange } = await import('../../lib/store/connection.ts')
+  const { render } = await import('solid-js/web')
+  const { PersonalizationDialog } = await import('./PersonalizationDialog.tsx')
+  let server = DEFAULT_PERSONALIZATION
+  let seq = 100
+  const requests: string[] = []
+  const api = store.client.api
+  store.client.api = (async (path: string, init?: RequestInit) => {
+    const method = init?.method ?? 'GET'
+    requests.push(`${method} ${path.split('?')[0]}`)
+    if (path.startsWith('/api/personalization/image')) {
+      server = revealBackdrop(server, {
+        ...server,
+        background: { kind: 'image', file: 'bg.png', fit: 'cover', dim: 0.2, blur: 0 },
+      })
+    } else if (method === 'PUT') server = JSON.parse(String(init?.body))
+    if (method === 'PUT') {
+      setPersonalizationChange(++seq)
+      await new Promise((r) => setTimeout(r, 1))
+      return { personalization: server, updatedAt: seq }
+    }
+    const snapshot = server
+    await new Promise((r) => setTimeout(r, 20))
+    return { personalization: snapshot, updatedAt: seq }
+  }) as typeof api
+  store.paintPersonalization({ personalization: DEFAULT_PERSONALIZATION, imageUrl: null })
+  const stop = store.observePersonalization()
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <PersonalizationDialog onClose={() => {}} />, host)
+  try {
+    const input = host.querySelector<HTMLInputElement>('input.personal-file')!
+    const file = new File([new Uint8Array([1, 2, 3])], 'bg.png', { type: 'image/png' })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    input.dispatchEvent(new Event('change'))
+    await until(() => requests.includes('GET /api/personalization'))
+    await new Promise((r) => setTimeout(r, 400))
+    expect(requests).toEqual(['PUT /api/personalization/image', 'GET /api/personalization'])
+    expect(server.opacity).toBe(0.85)
+    expect(store.currentPersonalization()).toEqual(server)
+  } finally {
+    dispose()
+    host.remove()
+    stop()
+    store.client.api = api
+    store.paintPersonalization(null)
   }
 })

@@ -19,10 +19,14 @@
   inset: 0;
 }
 
+/*
+ * 图片遮罩取当前主题的内容底色，使图片向骨架底色靠拢、文字对比度随之提高。
+ * 不要改为固定的黑色：浅色主题下文字为深色，压暗图片会降低文字对比度。
+ */
 .personal-dim {
   position: absolute;
   inset: 0;
-  background: var(--media-black);
+  background: var(--bg-app);
 }
 
 /*

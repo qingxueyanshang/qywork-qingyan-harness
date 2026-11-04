@@ -1,4 +1,4 @@
-/** 覆盖 `personalization.ts`：个性化的校验、合并、默认值判定与文件名判定。 */
+/** 覆盖 `personalization.ts`：个性化的校验、合并、默认值判定、背景显现时的不透明度与文件名判定。 */
 
 import { describe, expect, test } from 'bun:test'
 import {
@@ -8,6 +8,8 @@ import {
   mergePersonalization,
   type Personalization,
   parsePersonalization,
+  REVEAL_OPACITY,
+  revealBackdrop,
 } from './personalization.ts'
 
 const sample: Personalization = {
@@ -107,6 +109,16 @@ test('默认值判定', () => {
   expect(isDefaultPersonalization(DEFAULT_PERSONALIZATION)).toBe(true)
   expect(isDefaultPersonalization({ ...DEFAULT_PERSONALIZATION, accent: '#7c3aed' })).toBe(false)
   expect(isDefaultPersonalization({ ...DEFAULT_PERSONALIZATION, flow: '#16a34a' })).toBe(false)
+})
+
+test('背景层由看不到变为看得到且不透明度为 1 时改为 85%，其余情形不变', () => {
+  const opaque = { ...sample, opacity: 1 }
+  expect(revealBackdrop(DEFAULT_PERSONALIZATION, opaque).opacity).toBe(REVEAL_OPACITY)
+  expect(REVEAL_OPACITY).toBe(0.85)
+  expect(revealBackdrop(sample, opaque).opacity).toBe(1)
+  expect(revealBackdrop(DEFAULT_PERSONALIZATION, sample).opacity).toBe(0.7)
+  const accent = { ...DEFAULT_PERSONALIZATION, accent: '#7c3aed' }
+  expect(revealBackdrop(DEFAULT_PERSONALIZATION, accent)).toEqual(accent)
 })
 
 test('图片文件名', () => {

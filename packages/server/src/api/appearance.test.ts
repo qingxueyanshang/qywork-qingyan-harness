@@ -84,6 +84,25 @@ describe('个性化接口', () => {
     expect((await call('/api/personalization/files/missing.png')).status).toBe(404)
   })
 
+  test('原先看不到背景时，设置图片在同一次保存中把不透明度改为 85%；已看得到背景时保持原值', async () => {
+    const bytes = new Uint8Array([1, 2, 3])
+    const first = await call('/api/personalization/image?name=a.png', {
+      method: 'PUT',
+      body: bytes,
+    })
+    expect((await read(first)).personalization.opacity).toBe(0.85)
+    expect((await read(await call('/api/personalization'))).personalization.opacity).toBe(0.85)
+    expect(events).toEqual([{ type: 'personalization.changed' }])
+
+    const current = (await read(await call('/api/personalization'))).personalization
+    await call('/api/personalization', put({ ...current, opacity: 0.5 }))
+    const second = await call('/api/personalization/image?name=b.png', {
+      method: 'PUT',
+      body: bytes,
+    })
+    expect((await read(second)).personalization.opacity).toBe(0.5)
+  })
+
   test('图片文件名不合法时返回 422', async () => {
     const r = await call('/api/personalization/image?name=a.svg', { method: 'PUT', body: 'x' })
     expect(r.status).toBe(422)

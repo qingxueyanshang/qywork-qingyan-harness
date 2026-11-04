@@ -41,7 +41,7 @@ function patchOf(raw: unknown): Record<string, unknown> | string {
 
 /**
  * 把工作区中的图片设为背景：读取字节，并把 `background` 改为引用该文件名的图片背景。
- * 填充方式、暗度与模糊依次取 `json` 中给出的值、原图片背景的值、默认值。
+ * 填充方式、遮罩与模糊依次取 `json` 中给出的值、原图片背景的值、默认值。
  */
 async function withImage(
   ctx: ToolContext,

@@ -89,6 +89,28 @@ export const DEFAULT_PERSONALIZATION: Personalization = {
   flow: null,
 }
 
+/**
+ * 背景层从看不到改为看得到时采用的界面不透明度。背景与雾面位于界面骨架之下，
+ * 不透明度为 1 时被完全遮住，设置了背景却看不到变化。
+ */
+export const REVEAL_OPACITY = 0.85
+
+/** 是否看得到背景层：纯色背景的颜色为 null 且没有雾面时，骨架下方只有页面底色。 */
+export function backdropVisible(p: Personalization): boolean {
+  return !(p.background.kind === 'color' && p.background.color === null) || p.fog !== null
+}
+
+/**
+ * 一次修改使背景层从看不到变为看得到、且界面不透明度为 1 时，同一次修改把不透明度改为 `REVEAL_OPACITY`。
+ * 设置页的编辑与设置背景图片的接口共用本规则。不要改为先保存修改、再单独保存不透明度：
+ * 第一次保存的广播触发其他读取，读取结果晚于第二次的预览到达时覆盖预览，界面停留在不透明度 1。
+ */
+export function revealBackdrop(before: Personalization, after: Personalization): Personalization {
+  return !backdropVisible(before) && backdropVisible(after) && after.opacity === 1
+    ? { ...after, opacity: REVEAL_OPACITY }
+    : after
+}
+
 /** 是否与默认值相同。 */
 export function isDefaultPersonalization(p: Personalization): boolean {
   return (

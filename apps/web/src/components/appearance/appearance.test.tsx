@@ -1,7 +1,7 @@
 /**
  * 覆盖 `lib/store/theme.ts`（外观权威：主题、个性化变量与强调色派生）、`lib/store/appearance/personalization.ts`
  * （个性化的读取、编辑与变更）、`lib/color.ts`、`PersonalBackdrop.tsx`，以及 `styles/tokens.css`、
- * `styles/app/shell.css`、`styles/app/panel.css` 中骨架底色的绘制位置。
+ * `styles/app/shell.css`、`styles/app/panel.css` 中骨架底色的绘制位置与 `styles/app/appearance.css` 中图片遮罩的底色。
  *
  * 测试 DOM 在本文件内注册，结束后注销，理由同 `settings/LoadState.test.tsx`。
  * 令牌以一段样式表注入：骨架半透明底色由当前明暗的 `--bg-*` 计算，缺少令牌时无法验证取值。
@@ -192,6 +192,41 @@ describe('PersonalBackdrop', () => {
     } finally {
       dispose()
       host.remove()
+      store.paintPersonalization(null)
+    }
+  })
+
+  test('图片遮罩取当前主题的内容底色：浅色主题下为白色，不压暗深色文字下方的图片', async () => {
+    const store = await import('../../lib/store/index.ts')
+    const { render } = await import('solid-js/web')
+    const { PersonalBackdrop } = await import('./PersonalBackdrop.tsx')
+    const style = document.createElement('style')
+    style.textContent = readFileSync(
+      new URL('../../styles/app/appearance.css', import.meta.url),
+      'utf8',
+    )
+    document.head.append(style)
+    const host = document.createElement('div')
+    document.body.append(host)
+    store.paintPersonalization({
+      personalization: {
+        ...sample,
+        background: { kind: 'image', file: 'bg.jpg', fit: 'cover', dim: 0.4, blur: 0 },
+      },
+      imageUrl: 'http://localhost/bg.jpg',
+    })
+    const dispose = render(() => <PersonalBackdrop />, host)
+    try {
+      const dim = host.querySelector<HTMLElement>('.personal-dim')!
+      store.setTheme('light')
+      expect(getComputedStyle(dim).backgroundColor).toBe('#ffffff')
+      store.setTheme('dark')
+      expect(getComputedStyle(dim).backgroundColor).toBe('#0c0c0d')
+    } finally {
+      dispose()
+      host.remove()
+      style.remove()
+      store.setTheme('light')
       store.paintPersonalization(null)
     }
   })
