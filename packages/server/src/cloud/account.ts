@@ -128,6 +128,11 @@ export class CloudAccountError extends Error {}
 export interface CloudAccountOptions {
   /** 云端接口写入或删除之后。 */
   onChange?: () => void
+  /**
+   * 每个云端请求的超时，默认 20 秒。请求都必须带上：账号窗口与登录按钮等待请求返回，
+   * 连接停滞而没有超时时，界面一直停在读取中，不显示失败原因，也无法重试。
+   */
+  timeoutMs?: number
 }
 
 /** 网关返回的请求记录：失败以状态码与网关的错误码表示，转为界面文字后交给账号界面。 */
@@ -178,6 +183,7 @@ export class CloudAccount {
   private email: string | null = null
   private refreshed = false
   private readonly onChange: () => void
+  private readonly timeoutMs: number
 
   constructor(
     private readonly live: QyConfig,
@@ -185,6 +191,11 @@ export class CloudAccount {
     options: CloudAccountOptions = {},
   ) {
     this.onChange = options.onChange ?? (() => {})
+    this.timeoutMs = options.timeoutMs ?? 20_000
+  }
+
+  private timeout(): AbortSignal {
+    return AbortSignal.timeout(this.timeoutMs)
   }
 
   async state(): Promise<CloudState> {
@@ -281,7 +292,10 @@ export class CloudAccount {
     this.email = null
     const provider = cloudProviderOf(this.live, this.origin)
     if (provider?.apiKey) {
-      await fetch(`${this.origin}/v1/device/revoke`, json({}, provider.apiKey)).catch(() => {})
+      await fetch(`${this.origin}/v1/device/revoke`, {
+        ...json({}, provider.apiKey),
+        signal: this.timeout(),
+      }).catch(() => {})
     }
     await this.remove()
   }
@@ -303,10 +317,10 @@ export class CloudAccount {
     }
     let res: Response
     try {
-      res = await fetch(
-        `${this.origin}${path}`,
-        json({ email, password, name: hostLabel(), platform: process.platform }),
-      )
+      res = await fetch(`${this.origin}${path}`, {
+        ...json({ email, password, name: hostLabel(), platform: process.platform }),
+        signal: this.timeout(),
+      })
     } catch (err) {
       throw unreachable(err)
     }
@@ -340,6 +354,7 @@ export class CloudAccount {
       res = await fetch(`${this.origin}${path}`, {
         ...init,
         headers: { ...init.headers, authorization: `Bearer ${provider.apiKey}` },
+        signal: this.timeout(),
       })
     } catch (err) {
       throw unreachable(err)
@@ -389,7 +404,7 @@ export class CloudAccount {
   private async catalog(key: string): Promise<CatalogModel[]> {
     const res = await fetch(`${this.origin}/v1/catalog`, {
       headers: { authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(20_000),
+      signal: this.timeout(),
     })
     if (!res.ok) throw new Error(`读取型号清单失败：${res.status} ${httpStatusName(res.status)}`)
     return ((await res.json()) as { models: CatalogModel[] }).models
@@ -432,6 +447,7 @@ export class CloudAccount {
     try {
       const res = await fetch(`${this.origin}/v1/me`, {
         headers: { authorization: `Bearer ${key}` },
+        signal: this.timeout(),
       })
       if (res.ok) {
         const me = (await res.json()) as { email: string; credits: number; avatar?: string | null }

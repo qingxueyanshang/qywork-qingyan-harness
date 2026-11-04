@@ -247,6 +247,29 @@ test('账号服务无法连接时给出原因', async () => {
   await expect(offline.login('me@example.com', PASSWORD)).rejects.toThrow('无法连接账号服务')
 })
 
+test('账号服务接受连接但不响应时，读取在超时后失败并给出原因；状态仍为已登录、余额未知', async () => {
+  const stalled = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () => new Promise<Response>(() => {}),
+  })
+  try {
+    const origin = `http://127.0.0.1:${stalled.port}`
+    live.providers[CLOUD_PROVIDER] = {
+      kind: 'anthropic_messages',
+      baseUrl: origin,
+      apiKey: 'qyd_device_key',
+      models: {},
+    }
+    const slow = new CloudAccount(live, origin, { timeoutMs: 50 })
+    await expect(slow.models()).rejects.toThrow('无法连接账号服务')
+    await expect(slow.usage()).rejects.toThrow('无法连接账号服务')
+    expect(await slow.state()).toMatchObject({ state: 'signed_in', credits: null })
+  } finally {
+    stalled.stop(true)
+  }
+})
+
 test('网关返回 device_revoked 时删除本地接口并清除当前模型；其他 401 不删除', async () => {
   await account.login('me@example.com', PASSWORD)
   cloud.me = 'invalid'
