@@ -93,7 +93,7 @@
   padding-right: var(--s-8);
 }
 .account-email {
-  /* 不占满整行：退出按钮紧跟在邮箱之后。 */
+  /* 不占满整行：官网与退出按钮紧跟在邮箱之后。 */
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -105,6 +105,12 @@
      上移 1px 后与头像、图标按钮的中心在同一水平线上。 */
   position: relative;
   top: -1px;
+}
+/* 官网与退出按钮成组，间距与顶栏的图标按钮相同；与邮箱之间仍是头部的 gap。 */
+.account-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
 }
 .account-error {
   margin: var(--s-2) 0 0;
