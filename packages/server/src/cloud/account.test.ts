@@ -423,6 +423,7 @@ test('可用模型实时读取云端型号清单，单价为积分 / 百万 toke
   ])
   expect(models[1]?.price).toMatchObject({ input: 300, output: 1500 })
   expect(models[0]?.ratio).toBe(0.5)
+  expect(models.map((m) => m.official)).toEqual([true, false, false, false])
   // 云端按官方价计价且本机模型库有单价的型号只写倍率；其余写单价。
   const stored = live.providers[CLOUD_PROVIDER]?.models ?? {}
   expect(stored['claude-sonnet-5-5']?.price).toEqual({ scale: 0.5, currency: 'CREDIT' })

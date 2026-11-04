@@ -260,7 +260,12 @@ export class CloudAccount {
   async models(): Promise<CloudModel[]> {
     const list = await this.call<{ models: CatalogModel[] }>('/v1/catalog')
     await this.applyModels(list.models)
-    return list.models.map((m) => ({ id: m.id, ratio: m.ratio, price: m.price }))
+    return list.models.map((m) => ({
+      id: m.id,
+      ratio: m.ratio,
+      official: m.official === true,
+      price: m.price,
+    }))
   }
 
   /**

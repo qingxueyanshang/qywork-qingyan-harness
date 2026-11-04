@@ -250,7 +250,7 @@ function ModelTable() {
               <thead>
                 <tr>
                   <th>型号</th>
-                  <th class="num">倍率</th>
+                  <th class="num">倍率（官方价）</th>
                   <th class="num">输入</th>
                   <th class="num">输出</th>
                   <th class="num">缓存读取</th>
@@ -264,7 +264,8 @@ function ModelTable() {
                       <td>
                         <code class="lib-id">{m.id}</code>
                       </td>
-                      <td class="num">{formatRatio(m.ratio)}</td>
+                      {/* 按单价计价的型号没有官方价，单价列即最终单价。 */}
+                      <td class="num">{m.official ? formatRatio(m.ratio) : '—'}</td>
                       <td class="num">{m.price ? formatCredits(m.price.input) : '—'}</td>
                       <td class="num">{m.price ? formatCredits(m.price.output) : '—'}</td>
                       <td class="num">{m.price ? formatCredits(m.price.cacheRead) : '—'}</td>
