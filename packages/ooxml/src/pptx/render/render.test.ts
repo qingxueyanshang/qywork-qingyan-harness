@@ -2,8 +2,9 @@
  * 覆盖范围：`slide.ts`（画布尺寸、背景、形状与组合的变换复合、文字不随水平翻转镜像、阴影与隐藏形状，经由
  * `../../drawingml/shape/paint.ts`；图片绘制矩形取整，图元文件的图片与 `slideMetafileFonts`）、`ink.ts`（墨迹线段与圆点）、`../../drawingml/text/body.ts`
  * （行高与基线、行距与段间距换算、项目符号不计入行高、自动调整缩放、字符间距、
- * 项目符号与悬挂缩进、图片项目符号、`eaVert` 的直立东亚文字、自动编号、`slidenum`、不断行时的对齐平移）、`table.ts`（行高随文字增高、合并单元格的区域、边框）、
- * `../../drawingml/text/bullet.ts`、`fonts.ts` 与 `../../drawingml/text/fonts.ts`（字体名收集、仿粗体、合成斜体与正体各自的
+ * 项目符号与悬挂缩进、图片项目符号、`eaVert` 的直立东亚文字、自动编号、`slidenum`、日期字段（`../../drawingml/text/date.ts`）、
+ * 不断行时的对齐平移）、`table.ts`（行高随文字增高、合并单元格的区域、边框）、
+ * `../../drawingml/text/bullet.ts`、`fonts.ts` 与 `../../drawingml/text/fonts.ts`（字体名收集、字体集的选取与登记、仿粗体、合成斜体与正体各自的
  * 绘制字形、缺少字体、西文字体缺失时按 `charset` 的替代字体、缺少的符号字体、竖排直立字的旋转中心、点阵字形、ClearType 字形）、
  * `../../drawingml/text/math.ts`（公式取 `a14` 分支、行内与显示公式的行高与对齐、有项目符号时按行内排版、未实现的公式计数）、
  * `resources.ts`（图片部件收集、嵌入字体读取）；`../../drawingml/text/body.ts` 与 `../../drawingml/shape/paint.ts` 的锚定
@@ -32,13 +33,8 @@ import {
   paragraphSpace,
 } from '../../drawingml/text/body.ts'
 import { autoNumberText, symbolChar } from '../../drawingml/text/bullet.ts'
-import {
-  FaceCache,
-  MISSING_LATIN,
-  SINGLE_LINE,
-  type SlideFont,
-  type SlideFontSource,
-} from '../../drawingml/text/fonts.ts'
+import type { FieldDate } from '../../drawingml/text/date.ts'
+import { FaceCache, MISSING_LATIN, SINGLE_LINE } from '../../drawingml/text/fonts.ts'
 import type { TextBody } from '../../drawingml/text/model.ts'
 import type { BitmapGlyph, EmbeddedBitmaps } from '../../font/bitmap.ts'
 import { extractFace } from '../../font/index.ts'
@@ -46,7 +42,12 @@ import type { FontMetrics } from '../../font/metrics.ts'
 import type { VerticalMetrics } from '../../font/vertical.ts'
 import type { ClearTypeDisplay, ClearTypeGlyphs, PixelData } from '../../glyph/cleartype/index.ts'
 import { readMetafile } from '../../metafile/index.ts'
-import { type HostFamilies, NO_HOST_FAMILIES, type TextFace } from '../../text/index.ts'
+import {
+  type FontSource,
+  type HostFamilies,
+  NO_HOST_FAMILIES,
+  type TextFace,
+} from '../../text/index.ts'
 import { parsePptx } from '../load.ts'
 import type { Presentation, Shape, Table } from '../model.ts'
 import { buildPptx, type DeckSpec, para, run, slideXml, sp, text, xfrm } from '../test-helper.ts'
@@ -54,6 +55,7 @@ import {
   presentationFonts,
   readSlideFace,
   type SlideFace,
+  SlideFontSet,
   type SlideFonts,
   slideMath,
 } from './fonts.ts'
@@ -73,6 +75,7 @@ function fakeFace(
     glyphId: glyph,
     advanceWidth: width,
     advance: (cp, size) => (width(cp) * size) / 1000,
+    kerning: () => 0,
   }
   const vertical: VerticalMetrics = {
     unitsPerEm: 1000,
@@ -81,8 +84,12 @@ function fakeFace(
     hheaLineGap: 0,
     winAscent: 800,
     winDescent: 200,
+    typoAscender: 800,
+    typoDescender: -200,
+    useTypoMetrics: false,
     averageWidth: 500,
     eastAsianCodePage: false,
+    codePages: 0,
     superscriptSize: 650,
     superscriptOffset: 450,
     subscriptSize: 650,
@@ -94,8 +101,11 @@ function fakeFace(
 /** 拉丁字符半宽、其余全宽；单倍行高为字号。 */
 const FACE = fakeFace((cp) => (cp < 0x80 ? 500 : 1000))
 
+/** `slideFace` 的输入：字体文件的度量、族名与字形。 */
+type FaceSpec = Pick<SlideFace, 'face' | 'family' | 'bold' | 'italic'>
+
 function slideFace(
-  font: SlideFont,
+  font: FaceSpec,
   bitmaps: EmbeddedBitmaps | null = null,
   clearType: ClearTypeGlyphs | null = null,
 ): SlideFace {
@@ -195,6 +205,17 @@ class PixelContext extends RecordingContext {
   }
 }
 
+/** 日期字段显示的日期：2026-11-03（星期二）17:29:05。 */
+const DATE: FieldDate = {
+  year: 2026,
+  month: 11,
+  day: 3,
+  weekday: 2,
+  hour: 17,
+  minute: 29,
+  second: 5,
+}
+
 function paint(
   p: Presentation,
   images: Record<string, PaintImage> = {},
@@ -211,6 +232,7 @@ function paint(
     {
       fonts: source,
       clearType,
+      date: DATE,
       image: (part) => {
         const bitmap = images[part]
         return bitmap === undefined
@@ -411,6 +433,7 @@ describe('图片与墨迹', () => {
       {
         fonts: fonts(),
         clearType: null,
+        date: DATE,
         image: (part) =>
           part === '/ppt/media/image1.emf' ? { kind: 'metafile', metafile, images: [] } : null,
         createCanvas: canvasFactory().create,
@@ -641,6 +664,33 @@ describe('文字输入换算', () => {
     expect(frags[0]!.x + para0.x).toBe(0)
     expect(frags[1]!.x + para0.x).toBe(20)
     expect(frags[1]!.size).toBe(10)
+  })
+
+  test('自动调整缩放后的字号四舍五入为整磅', async () => {
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 400 * EMU, 200 * EMU),
+              body: text(
+                para(run('甲乙', '<a:rPr lang="zh-CN" sz="3200"/>')) +
+                  para(run('丙', '<a:rPr lang="zh-CN" sz="2800"/>')),
+                '<a:bodyPr><a:normAutofit fontScale="92500"/></a:bodyPr>',
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+    const s = find(p, 10)
+    if (s.kind !== 'shape' || s.text === null) throw new Error('不是文本框')
+    const layout = layoutBody(s.text, 300, { faces: new FaceCache(fonts()), slideNumber: 1 })
+    expect(layout.paragraphs.map((q) => q.block.lines[0]!.fragments.map((f) => f.size))).toEqual([
+      [30],
+      [26],
+    ])
   })
 
   test('图片项目符号：高度为项目符号字号的 0.68 倍、宽度按宽高比，中心在首行的纵向中心；悬挂缩进不足或缩进为正时正文紧接图片右侧', async () => {
@@ -922,6 +972,58 @@ describe('文字输入换算', () => {
     expect(layout.paragraphs[0]!.shifts[0]).toBeCloseTo(85, 9)
   })
 
+  test('日期字段按传入的日期与字段的语言显示（没有语言时按英语），不显示文件中保存的文字；未核对的格式与没有传入日期时显示保存的文字', async () => {
+    const field = (type: string, lang: string) =>
+      para(
+        `<a:fld id="{2}" type="${type}"><a:rPr lang="${lang}" sz="1000"/><a:t>2001/1/1</a:t></a:fld>`,
+      )
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 400 * EMU, 200 * EMU),
+              body: text(
+                field('datetime1', 'zh-CN') +
+                  field('datetime', 'en-US') +
+                  field('datetime2', 'en-US') +
+                  field('datetime3', 'ja-JP') +
+                  field('datetime9', 'zh-CN') +
+                  field('datetime13', 'en-US') +
+                  field('datetime1', '') +
+                  field('datetime8', 'zh-TW') +
+                  field('datetime4', 'zh-TW'),
+                '<a:bodyPr wrap="none"/>',
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+    const s = find(p, 10)
+    if (s.kind !== 'shape' || s.text === null) throw new Error('不是文本框')
+    const faces = new FaceCache(fonts())
+    const texts = (date: FieldDate | undefined) =>
+      layoutBody(s.text!, 400, {
+        faces,
+        slideNumber: 1,
+        ...(date === undefined ? {} : { date }),
+      }).paragraphs.map((q) => q.runs.map((r) => r.text).join(''))
+    expect(texts(DATE)).toEqual([
+      '2026-11-3',
+      '11/3/2026',
+      'Tuesday, November 03, 2026',
+      '令和8年11月3日',
+      '2026年11月3日星期二17时29分5秒',
+      '5:29:05 PM',
+      '11/3/2026',
+      '二〇二六年十一月三日',
+      '2001/1/1',
+    ])
+    expect(texts(undefined)).toEqual(Array(9).fill('2001/1/1'))
+  })
+
   test('字符间距乘以自动调整的字号缩放后计入每个字的步进', async () => {
     const p = await parse({
       slides: [
@@ -966,7 +1068,7 @@ describe('文字输入换算', () => {
   })
 
   test('仿粗体：请求粗体而返回常规字形时每字加宽字号的 1/256；缺少字体与空字体名用回退字体', () => {
-    const regular: SlideFont = { face: FACE, family: '甲', bold: false, italic: false }
+    const regular: FaceSpec = { face: FACE, family: '甲', bold: false, italic: false }
     const cache = new FaceCache(fonts({ 甲: slideFace(regular) }))
     const bold = cache.get('甲', true, false)
     expect(bold.face.metrics.advance(0x41, 256)).toBe(128 + 1)
@@ -1073,20 +1175,20 @@ describe('文字输入换算', () => {
    * 与东亚字体无关。
    */
   test('西文字体缺失时西文字符取 Segoe Print 而不取东亚字体，粗体取其粗体字形；主机没有 Segoe Print 时用回退字体', async () => {
-    const yahei: SlideFont = {
+    const yahei: FaceSpec = {
       face: fakeFace((cp) => (cp < 0x80 ? 550 : 1000)),
       family: '微软雅黑',
       bold: false,
       italic: false,
     }
-    const print: SlideFont = {
+    const print: FaceSpec = {
       face: fakeFace(() => 600),
       family: MISSING_LATIN,
       bold: false,
       italic: false,
     }
-    const printBold: SlideFont = { ...print, face: fakeFace(() => 700), bold: true }
-    const source: SlideFontSource = {
+    const printBold: FaceSpec = { ...print, face: fakeFace(() => 700), bold: true }
+    const source: FontSource = {
       face: (name, bold) =>
         name === '微软雅黑' ? yahei : name === MISSING_LATIN ? (bold ? printBold : print) : null,
       fallback: FALLBACK,
@@ -1431,6 +1533,37 @@ describe('求值阶段为绘制补充的内容', () => {
       effect: 1,
     })
     expect(slideImages(p.slides[0]!)).toEqual(['/ppt/media/image1.emf', '/ppt/media/image2.png'])
+  })
+})
+
+describe('幻灯片字体集', () => {
+  test('按字体名选取最接近的字形，缺少字体时的字体取第一个有字体的字体名；登记的字体此后即可取到，按族名查找时同一字形只列一次', () => {
+    const face = (family: string, bold: boolean, italic: boolean) =>
+      slideFace({ face: FACE, family, bold, italic })
+    const regular = face('甲', false, false)
+    const bold = face('甲', true, false)
+    const italic = face('甲', false, true)
+    const other = face('乙', false, false)
+    const loaded = new Map([
+      ['甲', [italic, bold, regular]],
+      ['乙', [other]],
+      ['丙', []],
+    ])
+    expect(SlideFontSet.of(loaded, ['丁', '丙'], NO_HOST_FAMILIES)).toBeNull()
+    const set = SlideFontSet.of(loaded, ['丙', '乙', '甲'], NO_HOST_FAMILIES)!
+    expect(set.fallback).toBe(other)
+    expect(set.face('甲', true, true)).toBe(bold)
+    expect(set.face('甲', false, true)).toBe(italic)
+    expect(set.face('甲', false, false)).toBe(regular)
+    expect(set.face('丙', false, false)).toBeNull()
+    const embedded = face('丙 1', false, false)
+    set.add('丙', embedded)
+    set.add('丁', embedded)
+    expect(set.face('丙', true, false)).toBe(embedded)
+    expect(set.face('丁', false, false)).toBe(embedded)
+    expect(set.family('丙 1')).toEqual([embedded])
+    expect(set.family('甲')).toEqual([italic, bold, regular])
+    expect(set.fallback).toBe(other)
   })
 })
 

@@ -624,9 +624,18 @@ function labelPosition(g: RawGroup): string {
   return 'r'
 }
 
-/** 含未实现的内容时返回 `null`，调用方计入未显示的图表。 */
+/**
+ * 含未实现的内容时返回 `null`，调用方计入未显示的图表。散点图与堆积图的趋势线未经核对，同样返回 `null`
+ * （xlsx 与 .xls 两种规格来源共用这一规则）。
+ */
 export function resolveChart(raw: RawChart, scope: ChartScope): Chart | null {
   if (raw.unsupported) return null
+  const unchecked = raw.groups.some(
+    (g) =>
+      (g.type === 'scatter' || g.grouping === 'stacked' || g.grouping === 'percentStacked') &&
+      g.series.some((s) => s.trendlines.length > 0),
+  )
+  if (unchecked) return null
   return new Resolver(raw, scope).chart()
 }
 

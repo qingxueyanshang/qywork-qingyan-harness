@@ -3,7 +3,7 @@
  * pptx 候选截图的浏览器驱动：由 `pptx-candidates.ts` 启动，参数为页面地址与输出目录。
  *
  * 用 Node 驱动 Playwright 打开 Edge（`channel: 'msedge'`），设备像素比 1；逐页调用页面的
- * `renderPage(id, slide, width, height, clearType)`，把视口调整到不小于画布后对画布元素截图，
+ * `renderPage(id, slide, width, height, clearType, date)`，把视口调整到不小于画布后对画布元素截图，
  * 写入 `<输出目录>/<文档标识>/<真值文件名>`。单页失败时记录原因并继续，结束时以失败页数作为退出码。
  *
  * 画布由 CPU 光栅化（`--disable-accelerated-2d-canvas`）：GPU 光栅化时抗锯齿字形边缘的像素在不同的浏览器进程之间
@@ -45,9 +45,9 @@ try {
       const started = Date.now()
       try {
         const size = await page.evaluate(
-          ([id, slide, width, height, clearType]) =>
-            window.renderPage(id, slide, width, height, clearType),
-          [job.id, p.slide, p.width, p.height, job.clearType],
+          ([id, slide, width, height, clearType, date]) =>
+            window.renderPage(id, slide, width, height, clearType, date),
+          [job.id, p.slide, p.width, p.height, job.clearType, job.date],
         )
         await page.setViewportSize({
           width: Math.max(size.width, 200),

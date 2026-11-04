@@ -23,7 +23,6 @@ import type {
   Workbook,
   Worksheet,
 } from '../model.ts'
-import { MAX_COL, MAX_ROW } from '../parse/refs.ts'
 import { Axis, type AxisRun } from './axis.ts'
 import { type FaceChain, type FontSet, pixelSize } from './fonts.ts'
 import { lineBox, lineBoxOf, lineMetrics, makeRun, wrapRuns } from './text.ts'
@@ -105,8 +104,14 @@ export function fontLineHeight(font: FontStyle, fonts: FontSet): number {
   return lineBox(fonts.chain(font.name, font.bold, font.italic).faces[0], font.size).height
 }
 
-/** 参与行高推算的最后一列：第 16384 列（XFD）不参与（WPS 实测：列样式覆盖第 1–16383 列时，标准行高只取列样式的字体）。 */
-const LAST_HEIGHT_COL = MAX_COL - 1
+/**
+ * 参与行高推算的最后一列：网格的末列不参与（WPS 实测 xlsx：列样式覆盖第 1–16383 列时，标准行高只取列样式的字体）。
+ * 网格列数取 `Workbook.gridSize`：xls 只有 256 列，按 xlsx 的列数推算时第 257 列起取样式 0（WPS 实测：
+ * 列样式覆盖第 11–257 列、样式 0 字号较大的 xls，行高按列样式的字体）。xls 中末列是否参与未实测。
+ */
+function lastHeightCol(wb: Workbook): number {
+  return wb.gridSize.cols - 2
+}
 
 /** 默认样式相同的一段连续列，`height` 为该样式字体的单行行高。 */
 interface ColumnDefault {
@@ -119,15 +124,16 @@ function styleLineHeight(wb: Workbook, style: number, fonts: FontSet): number {
   return fontLineHeight((wb.styles[style] ?? wb.styles[0]!).font, fonts)
 }
 
-/** 第 0 列至 `LAST_HEIGHT_COL` 列按列默认样式分段，升序且无间隙；`<col>` 未指定样式与未列出的列取样式 0。 */
+/** 第 0 列至 `lastHeightCol` 列按列默认样式分段，升序且无间隙；`<col>` 未指定样式与未列出的列取样式 0。 */
 function columnDefaults(wb: Workbook, sheet: Worksheet, fonts: FontSet): ColumnDefault[] {
   const normal = styleLineHeight(wb, 0, fonts)
+  const last = lastHeightCol(wb)
   const out: ColumnDefault[] = []
   let next = 0
   for (const c of sheet.cols) {
-    if (c.min > LAST_HEIGHT_COL) break
+    if (c.min > last) break
     if (c.min > next) out.push({ from: next, to: c.min - 1, height: normal })
-    const to = Math.min(c.max, LAST_HEIGHT_COL)
+    const to = Math.min(c.max, last)
     out.push({
       from: c.min,
       to,
@@ -135,7 +141,7 @@ function columnDefaults(wb: Workbook, sheet: Worksheet, fonts: FontSet): ColumnD
     })
     next = to + 1
   }
-  if (next <= LAST_HEIGHT_COL) out.push({ from: next, to: LAST_HEIGHT_COL, height: normal })
+  if (next <= last) out.push({ from: next, to: last, height: normal })
   return out
 }
 
@@ -208,7 +214,7 @@ export function buildGeometry(wb: Workbook, sheet: Worksheet, fonts: FontSet): S
     to: c.max,
     size: c.hidden ? 0 : c.width === null ? defaultCol : columnPixels(c.width, mdw),
   }))
-  const cols = new Axis([], defaultCol, colRuns, MAX_COL + 1)
+  const cols = new Axis([], defaultCol, colRuns, wb.gridSize.cols)
 
   const defaults = columnDefaults(wb, sheet, fonts)
   const standard = standardRowHeight(wb, sheet, fonts)
@@ -224,7 +230,7 @@ export function buildGeometry(wb: Workbook, sheet: Worksheet, fonts: FontSet): S
     else if (spec.custom) heights[r] = spec.height === null ? standard : rowPixels(spec.height)
     else heights[r] = autoRowHeight(wb, sheet, r, spec.style, cols, fonts, merged.get(r), defaults)
   }
-  const rows = new Axis(heights, defaultRow, [], MAX_ROW + 1)
+  const rows = new Axis(heights, defaultRow, [], wb.gridSize.rows)
   return { cols, rows, mdw }
 }
 
@@ -237,9 +243,10 @@ function absentHeight(
   fonts: FontSet,
 ): number {
   const written = new Uint32Array(defaults.length)
+  const last = lastHeightCol(wb)
   let total = 0
   for (const col of line?.keys() ?? []) {
-    if (col > LAST_HEIGHT_COL) continue
+    if (col > last) continue
     total++
     let lo = 0
     let hi = defaults.length - 1
@@ -250,7 +257,7 @@ function absentHeight(
     }
     written[lo]!++
   }
-  if (rowStyle !== null) return total <= LAST_HEIGHT_COL ? styleLineHeight(wb, rowStyle, fonts) : 0
+  if (rowStyle !== null) return total <= last ? styleLineHeight(wb, rowStyle, fonts) : 0
   let height = 0
   defaults.forEach((d, i) => {
     if (written[i]! < d.to - d.from + 1) height = Math.max(height, d.height)

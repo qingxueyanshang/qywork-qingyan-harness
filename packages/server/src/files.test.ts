@@ -220,11 +220,26 @@ describe('按名称搜索', () => {
       ((await (await find(query)).json()) as { matches: { path: string }[] }).matches
         .map((m) => m.path)
         .sort()
-    expect(await paths('office=xlsx')).toEqual(['sheets/a.xlsx', 'sheets/b.XLSM', 'sheets/c.xltx'])
+    expect(await paths('office=xlsx')).toEqual([
+      'sheets/a.xlsx',
+      'sheets/b.XLSM',
+      'sheets/c.xltx',
+      'sheets/e.xls',
+    ])
     expect(await paths('q=b&office=xlsx')).toEqual(['sheets/b.XLSM'])
-    expect(await paths('office=pptx')).toEqual(['slides/a.pptx', 'slides/b.PPTM', 'slides/c.potx'])
+    expect(await paths('office=pptx')).toEqual([
+      'slides/a.pptx',
+      'slides/b.PPTM',
+      'slides/c.potx',
+      'slides/d.ppt',
+    ])
     expect(await paths('q=b&office=pptx')).toEqual(['slides/b.PPTM'])
-    expect(await paths('office=docx')).toEqual(['docs/a.docx', 'docs/b.DOCM', 'docs/c.dotx'])
+    expect(await paths('office=docx')).toEqual([
+      'docs/a.docx',
+      'docs/b.DOCM',
+      'docs/c.dotx',
+      'docs/d.doc',
+    ])
     expect(await paths('q=b&office=docx')).toEqual(['docs/b.DOCM'])
     expect((await find('office=doc')).status).toBe(422)
     expect((await find('office=xlsx&kinds=image')).status).toBe(422)
@@ -241,40 +256,38 @@ describe('预览分类', () => {
     expect(classify('x.qwerty')).toEqual({ kind: 'text', mime: 'text/plain' })
   })
 
-  test('xlsx、带宏的 xlsm 与模板 xltx 归入 Office 族的 xlsx 格式；xls、ods 不在此列，csv 仍为表格族', () => {
-    for (const name of ['a.xlsx', 'b.xlsm', 'c.xltx', 'D.XLSX']) {
+  test('xlsx、带宏的 xlsm、模板 xltx 与 xls 归入 Office 族的 xlsx 格式；ods 不在此列，csv 仍为表格族', () => {
+    for (const name of ['a.xlsx', 'b.xlsm', 'c.xltx', 'D.XLSX', 'e.xls']) {
       expect(classify(name)).toEqual({
         kind: 'office',
         mime: 'application/octet-stream',
         office: 'xlsx',
       })
     }
-    expect(classify('a.xls')).toEqual({ kind: 'text', mime: 'text/plain' })
     expect(classify('a.ods')).toEqual({ kind: 'text', mime: 'text/plain' })
     expect(classify('a.csv').kind).toBe('tabular')
   })
 
-  test('pptx、带宏的 pptm 与模板 potx 归入 Office 族的 pptx 格式；ppt、odp 不在此列', () => {
-    for (const name of ['a.pptx', 'b.pptm', 'c.potx', 'D.PPTX']) {
+  test('pptx、带宏的 pptm、模板 potx 与 ppt 归入 Office 族的 pptx 格式；odp 不在此列', () => {
+    for (const name of ['a.pptx', 'b.pptm', 'c.potx', 'D.PPTX', 'e.ppt']) {
       expect(classify(name)).toEqual({
         kind: 'office',
         mime: 'application/octet-stream',
         office: 'pptx',
       })
     }
-    expect(classify('a.ppt')).toEqual({ kind: 'text', mime: 'text/plain' })
     expect(classify('a.odp')).toEqual({ kind: 'text', mime: 'text/plain' })
   })
 
-  test('docx、带宏的 docm 与模板 dotx 归入 Office 族的 docx 格式；doc、odt、rtf 不在此列', () => {
-    for (const name of ['a.docx', 'b.docm', 'c.dotx', 'D.DOCX']) {
+  test('docx、带宏的 docm、模板 dotx 与 doc 归入 Office 族的 docx 格式；odt、rtf 不在此列', () => {
+    for (const name of ['a.docx', 'b.docm', 'c.dotx', 'D.DOCX', 'e.doc']) {
       expect(classify(name)).toEqual({
         kind: 'office',
         mime: 'application/octet-stream',
         office: 'docx',
       })
     }
-    for (const name of ['a.doc', 'a.odt', 'a.rtf']) {
+    for (const name of ['a.odt', 'a.rtf']) {
       expect(classify(name)).toEqual({ kind: 'text', mime: 'text/plain' })
     }
   })
@@ -319,8 +332,8 @@ describe('预览', () => {
     }
   })
 
-  /** 原始失败形状：xlsx 归入表格族后按文本解码，经 `looksBinary` 判定后显示「无法以文本预览」。 */
-  test('Office 文档只返回元数据与格式，不内联内容；xls 仍按二进制显示', async () => {
+  /** 原始失败形状：xlsx 与 xls 按文本解码，经 `looksBinary` 判定后显示「无法以文本预览」。 */
+  test('Office 文档只返回元数据与格式，不内联内容；xls 进入 Excel 预览', async () => {
     const dir = await workspace()
     const abs = join(dir, 'book.xlsx')
     await writeFile(
@@ -339,9 +352,14 @@ describe('预览', () => {
     })
     const legacy = join(dir, 'old.xls')
     await writeFile(legacy, new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0, 0, 0, 0]))
-    expect(await preview(legacy, 'old.xls')).toMatchObject({
-      kind: 'binary',
-      note: '二进制内容，无法以文本预览',
+    expect(await preview(legacy, 'old.xls')).toEqual({
+      path: 'old.xls',
+      kind: 'office',
+      office: 'xlsx',
+      mime: 'application/octet-stream',
+      size: 8,
+      mtime: (await stat(legacy)).mtimeMs,
+      truncated: false,
     })
   })
 })

@@ -27,7 +27,7 @@ import {
   type Paragraph,
   parseDocx,
 } from './index.ts'
-import { contextSpacing, ParagraphLayouter } from './layout.ts'
+import { contextSpacing, lineAt, type ParagraphLayout, ParagraphLayouter } from './layout.ts'
 import { formatNumber } from './resolve/number-format.ts'
 import { layoutStack, layoutTable } from './table/layout.ts'
 import { buildDocx, type DocxParts, numPr, p, r, singleLevel, style, theme } from './test-helper.ts'
@@ -889,6 +889,64 @@ describe('正文内容', () => {
     expect(doc.unsupported.revision).toBe(2)
   })
 
+  test('段落标记隐藏的段落与下一段接排：段落属性取前一段，字段保留各自的属性', async () => {
+    const hidden = '<w:rPr><w:vanish/></w:rPr>'
+    const doc = await parse({
+      styles: DEFAULTS,
+      body:
+        p(r('甲甲甲', '<w:b/>'), hidden) +
+        p(r('乙乙乙'), '<w:jc w:val="center"/>') +
+        p(r('间隔')) +
+        p(
+          r('丙丙丙'),
+          `<w:ind w:firstLineChars="400" w:firstLine="1280"/><w:jc w:val="right"/>${hidden}`,
+        ) +
+        p(r('丁丁丁')) +
+        p(r('戊戊戊')) +
+        p(r('己己己'), '<w:jc w:val="center"/>'),
+    })
+    const list = paragraphs(doc)
+    expect(list.map(text)).toEqual(['甲甲甲乙乙乙', '间隔', '丙丙丙丁丁丁', '戊戊戊', '己己己'])
+    expect(list.map((x) => x.props.align)).toEqual(['left', 'left', 'right', 'left', 'center'])
+    expect(list[0]!.runs.map((x) => [x.text, x.props.bold])).toEqual([
+      ['甲甲甲', true],
+      ['乙乙乙', false],
+    ])
+  })
+
+  test('段落标记隐藏时编号取前一段，后一段的编号照常计数；单元格中的最后一段与节的最后一段不接排', async () => {
+    const hidden = '<w:rPr><w:vanish/></w:rPr>'
+    const num = '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'
+    const doc = await parse({
+      styles: DEFAULTS,
+      numbering: singleLevel(
+        1,
+        '<w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/>',
+      ),
+      body:
+        p(r('甲甲甲'), num + hidden) +
+        p(r('乙乙乙')) +
+        p(r('丙丙丙'), num) +
+        p(r('丁丁丁'), hidden) +
+        p(r('戊戊戊'), num) +
+        p(r('己己己'), num) +
+        `<w:tbl><w:tr><w:tc>${p(r('格'), hidden)}</w:tc></w:tr></w:tbl>` +
+        p(r('庚'), `${hidden}<w:sectPr/>`) +
+        p(r('辛')),
+    })
+    const list = paragraphs(doc)
+    expect(list.map((x) => [x.numbering?.text ?? null, text(x)])).toEqual([
+      ['1.', '甲甲甲乙乙乙'],
+      ['2.', '丙丙丙'],
+      [null, '丁丁丁戊戊戊'],
+      ['4.', '己己己'],
+      [null, '庚'],
+      [null, '辛'],
+    ])
+    const table = doc.body.find((b) => b.kind === 'table')!
+    expect(table.kind === 'table' && table.rows[0]!.cells[0]!.content.length).toBe(1)
+  })
+
   test('段落中的 sectPr 结束所在的节；版心按页宽减左右页边距与装订线，等宽分栏均分', async () => {
     const doc = await parse({
       styles: DEFAULTS,
@@ -1398,12 +1456,12 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
   }
   const source = {
     face: (name: string) =>
-      FILES[name] === undefined ? null : { face: load(FILES[name]!), bold: false },
+      FILES[name] === undefined ? null : { face: load(FILES[name]!), family: name, bold: false },
     metric: () => null,
     math: () => null,
     outlines: () => null,
     get fallback() {
-      return load('simsun.ttc')
+      return { face: load('simsun.ttc'), family: '宋体', bold: false }
     },
   }
   const SETTINGS =
@@ -1422,12 +1480,46 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     const symbols = {
       ...source,
       face: (name: string) =>
-        name === 'Wingdings' ? { face: wingdings, bold: false } : source.face(name),
+        name === 'Wingdings'
+          ? { face: wingdings, family: 'Wingdings', bold: false }
+          : source.face(name),
     }
     const frag = layoutDocument(doc, symbols, NO_HOST_FAMILIES).paragraphs[0]!.text.lines[0]!
       .fragments[0]!
     expect(frag.face).toBe(wingdings)
     expect(Math.abs(frag.advances[0]! - 14.25)).toBeLessThan(0.1)
+  })
+
+  test('以分页符开始的段落：分页符单独一行，编号与首行缩进作用于其后一行，位置仍按段落文字的坐标（WPS：构造文档 pb1）', async () => {
+    const brk = '<w:r><w:br w:type="page"/></w:r>'
+    const doc = await parse({
+      styles: DEFAULTS,
+      settings: SETTINGS,
+      numbering: singleLevel(
+        1,
+        '<w:start w:val="1"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="0" w:firstLine="420"/></w:pPr>',
+      ),
+      body:
+        p(brk + r('带编号'), numPr(1)) +
+        p(brk + r('首行缩进'), '<w:ind w:firstLine="420"/>') +
+        p(r('段中') + brk + r('之后'), numPr(1)),
+    })
+    const [numbered, indented, middle] = layoutDocument(doc, source, NO_HOST_FAMILIES).paragraphs
+    const shown = (pl: ParagraphLayout, k: number) =>
+      pl.text.lines[k]!.fragments.map((f) => {
+        const src = pl.runs[f.run]!
+        const para = paragraphs(doc)[pl.block]!
+        return src < 0 ? para.numbering!.text : para.runs[src]!.text.slice(f.start, f.end)
+      })
+    expect(numbered!.text.lines).toHaveLength(2)
+    expect(shown(numbered!, 0)).toEqual([])
+    expect(shown(numbered!, 1)).toEqual(['1.', '带编号'])
+    expect(numbered!.text.lines[1]!.fragments[0]!.x).toBeCloseTo(21, 6)
+    // 分页符位于编号与后缀制表符之后：所在的行为只有分页符的第一行。
+    expect(lineAt(numbered!.text.lines, '1.\t'.length)).toBe(0)
+    expect(shown(indented!, 1)).toEqual(['首行缩进'])
+    expect(indented!.text.lines[1]!.fragments[0]!.x).toBeCloseTo(21, 6)
+    expect(shown(middle!, 0)).toEqual(['2.', '段中'])
   })
 
   /** 各段第一个正文字符相对版心左边的横坐标。 */
@@ -1533,7 +1625,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
       [0, 0],
     ])
     expect(layout.missingFonts).toEqual(['NoSuchFont'])
-    expect(layout.paragraphs[2]!.text.lines[0]!.fragments[0]!.face).toBe(source.fallback)
+    expect(layout.paragraphs[2]!.text.lines[0]!.fragments[0]!.face).toBe(source.fallback.face)
     expect(layout.paragraphs[0]!.width).toBeCloseTo((11906 - 3600) / 20, 9)
   })
 
@@ -1554,12 +1646,12 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     }
     const fonts = {
       face: (name: string) =>
-        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+        files[name] === undefined ? null : { face: load(files[name]!), family: name, bold: false },
       metric: () => null,
       math: () => null,
       outlines: () => null,
       get fallback() {
-        return load('simsun.ttc')
+        return { face: load('simsun.ttc'), family: '宋体', bold: false }
       },
     }
     const entry = (name: string, alt: string, charset: string) =>
@@ -1623,12 +1715,12 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     }
     const fonts = {
       face: (name: string) =>
-        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+        files[name] === undefined ? null : { face: load(files[name]!), family: name, bold: false },
       metric: () => null,
       math: () => null,
       outlines: () => null,
       get fallback() {
-        return load('simsun.ttc')
+        return { face: load('simsun.ttc'), family: '宋体', bold: false }
       },
     }
     const entry = (name: string, alt: string, charset: string) =>
@@ -1688,12 +1780,12 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     }
     const fonts = {
       face: (name: string) =>
-        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+        files[name] === undefined ? null : { face: load(files[name]!), family: name, bold: false },
       metric: () => null,
       math: () => null,
       outlines: () => null,
       get fallback() {
-        return load('simsun.ttc')
+        return { face: load('simsun.ttc'), family: '宋体', bold: false }
       },
     }
     const host = { local: ['Lucida Console', 'Lucida Sans Unicode'], names: [], language: 0x0804 }
@@ -1756,12 +1848,12 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     }
     const fonts = {
       face: (name: string) =>
-        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+        files[name] === undefined ? null : { face: load(files[name]!), family: name, bold: false },
       metric: () => null,
       math: () => null,
       outlines: () => null,
       get fallback() {
-        return load('simsun.ttc')
+        return { face: load('simsun.ttc'), family: '宋体', bold: false }
       },
     }
     const host = {
@@ -1849,12 +1941,12 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
     }
     const fonts = {
       face: (name: string) =>
-        files[name] === undefined ? null : { face: load(files[name]!), bold: false },
+        files[name] === undefined ? null : { face: load(files[name]!), family: name, bold: false },
       metric: () => null,
       math: () => null,
       outlines: () => null,
       get fallback() {
-        return load('simsun.ttc')
+        return { face: load('simsun.ttc'), family: '宋体', bold: false }
       },
     }
     const entry = (name: string, alt: string, charset: string) =>

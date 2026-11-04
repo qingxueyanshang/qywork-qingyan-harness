@@ -9,12 +9,13 @@
  *
  * 真值清单的每页取 `file` 与幻灯片序号（`slide`，从 1 起；缺省为页序号 `n`），画布尺寸取真值图片的宽高。
  * 文字按真值清单记录的采集时系统字体平滑设置（`font_smoothing`）绘制，与界面按主机设置绘制的规则相同（`fontSmoothing`）；
- * 清单没有该记录时停止。
+ * 日期字段按采集时间显示（`capturedAt`）。清单没有这两项记录时停止。
  * 输出：`<out>/<文档标识>/<真值文件名>`，缺省输出目录为 `.tmp/ooxml-fidelity/candidates/ooxml-pptx`。
  */
 
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { type FieldDate, fieldDate } from '../../packages/ooxml/src/pptx/index.ts'
 import {
   faceBytes,
   fontSmoothing,
@@ -25,6 +26,29 @@ import {
 } from '../../packages/server/src/api/fonts.ts'
 
 const ROOT = join(import.meta.dir, '..', '..')
+
+/** 真值清单中的一次采集：阶段目录名为开始时间（`YYYYMMDD-HHMMSS`，本地时间），`records_clean` 列出采集的文档。 */
+interface TruthRun {
+  readonly call_dir: string
+  readonly records_clean?: Record<string, boolean>
+}
+
+/** 文档的采集时间：含该文档的最后一次采集的开始时间；没有时为 `null`。 */
+function capturedAt(runs: readonly TruthRun[], id: string): FieldDate | null {
+  const run = runs.findLast((r) => r.records_clean !== undefined && id in r.records_clean)
+  const m =
+    run === undefined ? null : /(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(run.call_dir)
+  if (m === null) return null
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ]
+  return fieldDate(new Date(y, mo - 1, d, h, mi, s))
+}
 const OUT = join(ROOT, '.tmp', 'ooxml-fidelity')
 
 interface CorpusDoc {
@@ -67,6 +91,7 @@ const corpus = JSON.parse(readFileSync(join(OUT, 'corpus.json'), 'utf8')) as {
 }
 const truthTop = JSON.parse(readFileSync(join(truth, 'manifest.json'), 'utf8')) as {
   documents: { id: string; status: string }[]
+  runs?: TruthRun[]
 }
 const docs = corpus.documents.filter(
   (d) =>
@@ -83,9 +108,15 @@ const jobs = docs.map((d) => {
     console.error(`真值清单没有记录字体平滑设置：${d.id}`)
     process.exit(1)
   }
+  const date = capturedAt(truthTop.runs ?? [], d.id)
+  if (date === null) {
+    console.error(`真值清单没有记录采集时间：${d.id}`)
+    process.exit(1)
+  }
   return {
     id: d.id,
     clearType: fontSmoothing(manifest.font_smoothing).clearType,
+    date,
     pages: manifest.pages.map((p) => ({
       file: p.file,
       slide: p.slide ?? p.n,

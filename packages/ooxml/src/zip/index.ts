@@ -1,11 +1,10 @@
 /**
  * ZIP 读取：反扫中央目录取得成员表，按需解压单个成员。
  *
- * - 结果一律以 `ZipResult` 返回，文件内容引起的失败不抛出。失败分四类：
- *   CFB 复合文档按根存储下的流区分：`EncryptedPackage` 为已加密，`Workbook`、`WordDocument`、
- *   `PowerPoint Document` 为旧二进制格式，两者都没有或结构不完整为已损坏；
- *   既不是 CFB 也不以 ZIP 本地文件头开始为不是 Office 文件；ZIP 成员设置加密标志位为已加密；
- *   ZIP 的结构、解压与校验错误为已损坏。
+ * - 结果一律以 `ZipResult` 返回，文件内容引起的失败不抛出。失败分三类：
+ *   CFB 复合文档按 `openLegacy` 分类，其中旧二进制格式不是 ZIP 包，为已损坏（`cfb-format`）：各格式的解析入口在打开 ZIP 之前
+ *   调用 `openLegacy` 取走自身的格式，到达此处的是扩展名与内容不是同一种应用的文件，与 OOXML 包中主文档类型不符同为已损坏；
+ *   既不是 CFB 也不以 ZIP 本地文件头开始为不是 Office 文件；ZIP 成员设置加密标志位为已加密；ZIP 的结构、解压与校验错误为已损坏。
  * - 压缩方法只支持 0（存储）与 8（deflate）。deflate 由 `DecompressionStream('deflate-raw')` 解压，
  *   Bun、Worker 与各端 WebView 共用这一条路径。运行环境缺少该接口时抛出，不归入已损坏。
  * - ZIP64：结束记录的成员数、中央目录长度或起点为标记值时取 ZIP64 结束记录中的值；中央目录项的长度或本地文件头
@@ -17,7 +16,7 @@
  *   `encoding` 解码（WPS 实测：声明为 ISO-8859-1 的工作表按该编码显示），没有声明或声明为 UTF-16 时按严格 UTF-8。
  */
 
-import { cfbRootStreams } from './cfb.ts'
+import { type CfbFile, openCfb } from './cfb.ts'
 import { decodeCp437 } from './cp437.ts'
 
 /**
@@ -31,7 +30,8 @@ import { decodeCp437 } from './cp437.ts'
  * - `size`：解压结果的长度与中央目录不一致。
  * - `encoding`：按文本读取时内容不符合所用的编码，或 XML 声明的编码无法识别。
  * - `cfb-structure`：CFB 文件头、FAT 或目录不完整。
- * - `cfb-unrecognized`：CFB 根存储下既没有加密包，也没有旧二进制格式的文档流。
+ * - `cfb-unrecognized`：CFB 根存储下既没有判为已加密的流，也没有旧二进制格式的主文档流。
+ * - `cfb-format`：CFB 中是旧二进制格式的文件，不是 ZIP 包。
  */
 export type ZipCorruptReason =
   | 'end-record'
@@ -44,16 +44,24 @@ export type ZipCorruptReason =
   | 'encoding'
   | 'cfb-structure'
   | 'cfb-unrecognized'
+  | 'cfb-format'
 
 export type ZipFailure =
   | { readonly kind: 'not-office' }
   | { readonly kind: 'encrypted' }
-  | { readonly kind: 'legacy' }
   | { readonly kind: 'corrupt'; readonly reason: ZipCorruptReason }
 
 export type ZipResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly failure: ZipFailure }
+
+export type LegacyFormat = 'xls' | 'doc' | 'ppt'
+
+/** 旧二进制格式的文件：`format` 由根存储下的主文档流决定。 */
+export interface LegacyFile {
+  readonly format: LegacyFormat
+  readonly file: CfbFile
+}
 
 export interface ZipArchive {
   /** 全部成员名，按中央目录顺序。 */
@@ -84,8 +92,17 @@ const LOCAL_SIZE = 30
 const CENTRAL_SIZE = 46
 const END_SIZE = 22
 const CFB_SIGNATURE = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]
-/** 旧二进制格式的主文档流：Excel 97–2003、Word 97–2003、PowerPoint 97–2003。名称为大写。 */
-const LEGACY_STREAMS = ['WORKBOOK', 'WORDDOCUMENT', 'POWERPOINT DOCUMENT']
+/** 旧二进制格式的主文档流（大写）与格式：Excel 97–2003、Word 97–2003、PowerPoint 97–2003。 */
+const LEGACY_STREAMS: readonly (readonly [string, LegacyFormat])[] = [
+  ['WORKBOOK', 'xls'],
+  ['WORDDOCUMENT', 'doc'],
+  ['POWERPOINT DOCUMENT', 'ppt'],
+]
+/**
+ * 判为已加密的流：`EncryptedPackage` 为加密的 OOXML；`WpsContent` 为 WPS 私密文档，真实内容经账号加密存放在该流中，
+ * 其余流只是一张提示用 WPS 打开的占位内容。
+ */
+const ENCRYPTED_STREAMS = ['ENCRYPTEDPACKAGE', 'WPSCONTENT']
 const FLAG_ENCRYPTED = 0x0001
 const FLAG_UTF8 = 0x0800
 const U16_MAX = 0xffff
@@ -148,10 +165,9 @@ function corrupt(reason: ZipCorruptReason) {
 
 /** 只解析中央目录，不解压任何成员。 */
 export function openZip(data: Uint8Array<ArrayBuffer>): ZipResult<ZipArchive> {
+  const legacy = openLegacy(data)
+  if (legacy !== null) return legacy.ok ? corrupt('cfb-format') : fail(legacy.failure)
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  if (data.length >= CFB_SIGNATURE.length && CFB_SIGNATURE.every((b, i) => data[i] === b)) {
-    return fail(classifyCfb(view))
-  }
   if (data.length < 4 || view.getUint32(0, true) !== SIG_LOCAL) return fail({ kind: 'not-office' })
 
   const end = findEndRecord(view)
@@ -187,12 +203,19 @@ export function openZip(data: Uint8Array<ArrayBuffer>): ZipResult<ZipArchive> {
   return ok(new Archive(data, view, paths, entries))
 }
 
-function classifyCfb(view: DataView): ZipFailure {
-  const streams = cfbRootStreams(view)
-  if (streams === null) return { kind: 'corrupt', reason: 'cfb-structure' }
-  if (streams.has('ENCRYPTEDPACKAGE')) return { kind: 'encrypted' }
-  if (LEGACY_STREAMS.some((name) => streams.has(name))) return { kind: 'legacy' }
-  return { kind: 'corrupt', reason: 'cfb-unrecognized' }
+/**
+ * CFB 复合文档按根存储下的流分类：`ENCRYPTED_STREAMS` 中的流为已加密，其次按 `LEGACY_STREAMS` 给出旧二进制格式，
+ * 都没有为已损坏（`cfb-unrecognized`），结构不完整为已损坏（`cfb-structure`）。`data` 不以 CFB 签名开始时返回 `null`。
+ */
+export function openLegacy(data: Uint8Array<ArrayBuffer>): ZipResult<LegacyFile> | null {
+  if (data.length < CFB_SIGNATURE.length || !CFB_SIGNATURE.every((b, i) => data[i] === b)) {
+    return null
+  }
+  const file = openCfb(new DataView(data.buffer, data.byteOffset, data.byteLength))
+  if (file === null) return corrupt('cfb-structure')
+  if (ENCRYPTED_STREAMS.some((name) => file.names.has(name))) return fail({ kind: 'encrypted' })
+  const format = LEGACY_STREAMS.find(([name]) => file.names.has(name))?.[1]
+  return format === undefined ? corrupt('cfb-unrecognized') : ok({ format, file })
 }
 
 /** 无符号 64 位整数；超出安全整数范围的值必然超出数据范围，由调用方按越界处理。 */
@@ -278,6 +301,7 @@ function findEndRecord(view: DataView): number {
 }
 
 /**
+ * 解压 deflate 数据：`deflate-raw` 为不带头的数据（ZIP 成员），`deflate` 为带 zlib 头的数据（OfficeArt 图元文件）。
  * 解压失败返回 `null`。
  *
  * - `DecompressionStream` 在 `try` 之外构造：环境缺少该接口时不得归入已损坏。
@@ -285,8 +309,11 @@ function findEndRecord(view: DataView): number {
  *   成员上千的文件累计数百毫秒。
  * - 写入、关闭与读取放在同一个 `Promise.all` 中：三者必须同时进行，且任一方的拒绝都须有处理方。
  */
-async function inflateRaw(raw: Uint8Array<ArrayBuffer>): Promise<Uint8Array | null> {
-  const stream = new DecompressionStream('deflate-raw')
+export async function inflate(
+  raw: Uint8Array<ArrayBuffer>,
+  format: 'deflate' | 'deflate-raw',
+): Promise<Uint8Array | null> {
+  const stream = new DecompressionStream(format)
   const writer = stream.writable.getWriter()
   try {
     const [, , out] = await Promise.all([
@@ -325,7 +352,7 @@ class Archive implements ZipArchive {
     if (entry.method === 0) {
       out = raw.slice()
     } else if (entry.method === 8) {
-      const inflated = await inflateRaw(raw)
+      const inflated = await inflate(raw, 'deflate-raw')
       if (inflated === null) return corrupt('inflate')
       out = inflated
     } else {

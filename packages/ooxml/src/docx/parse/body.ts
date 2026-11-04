@@ -26,9 +26,11 @@
  */
 
 import type { Chart } from '../../drawingml/chart/model.ts'
+import { parseHexColor } from '../../drawingml/color.ts'
 import type { Diagram } from '../../drawingml/diagram/model.ts'
 import { type DiagramParts, readDiagramParts } from '../../drawingml/diagram/read.ts'
-import { readRelativeRect, ZERO_RECT } from '../../drawingml/fill.ts'
+import { readRelativeRect, type ShapeFill, ZERO_RECT } from '../../drawingml/fill.ts'
+import type { Geometry } from '../../drawingml/geometry/model.ts'
 import type { StyleScope } from '../../drawingml/shape/resolve.ts'
 import { type MathJustification, readMath, readMathParagraph } from '../../math/index.ts'
 import type { Relationships } from '../../opc/package.ts'
@@ -79,6 +81,7 @@ import {
 } from './drawing.ts'
 import {
   hexColor,
+  type RawFrame,
   type RawParaProps,
   type RawRunProps,
   readParaProps,
@@ -99,7 +102,16 @@ import { eachChild, NestingError, readText, type Scanner, skip, wAttr } from './
 /** 打开文档时由应用重新计算结果的域。 */
 const DYNAMIC_FIELDS = new Set(['DATE', 'TIME', 'PAGE', 'NUMPAGES', 'SECTIONPAGES', 'SECTION'])
 /** 由分页按页生成文字的域。 */
-const PAGE_FIELDS = new Set(['PAGE', 'NUMPAGES', 'SECTIONPAGES'])
+export const PAGE_FIELDS = new Set(['PAGE', 'NUMPAGES', 'SECTIONPAGES'])
+
+/**
+ * 域代码为 `instr` 的域计入 `dynamicField`：打开时由应用重新计算结果的域；页眉页脚（`story`）中的页码域由分页按页生成，
+ * 不计入。
+ */
+export function dynamicField(instr: string, story: boolean): boolean {
+  const name = fieldNameOf(instr)
+  return DYNAMIC_FIELDS.has(name) && !(story && PAGE_FIELDS.has(name))
+}
 
 const INLINE_KINDS: readonly (readonly [string, UnsupportedKind])[] = [
   ['/drawingml/2006/picture', 'picture'],
@@ -136,15 +148,18 @@ interface Field {
 }
 
 /** 段落中第一个有内容的字段：`object` 为对象所在的字段（嵌入式或浮动对象）。 */
-interface FirstContent {
+export interface FirstContent {
   readonly props: RunProps
   readonly object: boolean
 }
 
-interface PendingParagraph {
+/** 已读取、尚未按所在节解决段落属性的段落；.doc 的正文（`../binary/`）同样产出此结构。 */
+export interface PendingParagraph {
   readonly ctx: ParagraphContext
   readonly runs: readonly Run[]
   readonly mark: RunProps
+  /** 段落标记隐藏（最终的字段属性带 `vanish`）：与其后的段落接排，见 `joinHiddenMarks`。 */
+  readonly hiddenMark: boolean
   readonly numbering: Numbering | null
   readonly first: FirstContent | null
   readonly images: readonly InlineImage[]
@@ -154,27 +169,429 @@ interface PendingParagraph {
   }[]
 }
 
-interface PendingCell {
+export interface PendingCell {
   props: RawCellProps
   format: TableFormat | null
   readonly content: Pending[]
 }
 
-interface PendingRow {
+export interface PendingRow {
   props: RawRowProps
   readonly cells: PendingCell[]
 }
 
-interface PendingTable {
+export interface PendingTable {
   props: RawTableProps
   chain: TableStyleChain
   readonly grid: number[]
   readonly rows: PendingRow[]
 }
 
-type Pending =
+export type Pending =
   | { readonly kind: 'paragraph'; readonly p: PendingParagraph }
   | { readonly kind: 'table'; readonly t: PendingTable }
+
+/** 块的解决所需的环境：计数、是否页眉页脚部件（`readStory`）与 `adjustLineHeightInTable`。 */
+export interface ResolveEnv {
+  readonly count: (kind: UnsupportedKind) => void
+  readonly story: boolean
+  readonly gridInTables: boolean
+}
+
+/** 块所在的容器：正文（含页眉页脚）、表格单元格或文本框。 */
+export type BlockPlace = 'body' | 'cell' | 'textbox'
+
+/**
+ * 一个容器（正文中的一节、单元格、文本框、页眉页脚）中的块：先经 `joinHiddenMarks` 接排，再逐块解决。`place` 为块所在的
+ * 容器，段落属性按 `placeProps` 调整。
+ */
+export function resolveBlocks(
+  list: readonly Pending[],
+  index: number,
+  section: Section,
+  place: BlockPlace,
+  env: ResolveEnv,
+): Block[] {
+  const joined = joinHiddenMarks(list)
+  const blocks = joined.map((b) =>
+    b.kind === 'paragraph'
+      ? resolveParagraph(b.p, index, section, place, env)
+      : resolveTable(b.t, index, section, env),
+  )
+  const frames = joined.map((b) => (b.kind === 'paragraph' ? frameOf(b.p.ctx.pPr.frame) : null))
+  return withFrames(blocks, frames, place === 'body', section, env)
+}
+
+/** 构成图文框的属性：有位置、大小、环绕或首字下沉之一（与样式合并后）；否则为 `null`。 */
+function frameOf(f: RawFrame | undefined): RawFrame | null {
+  if (f === undefined) return null
+  const framed =
+    (f.x ?? 0) !== 0 ||
+    (f.y ?? 0) !== 0 ||
+    f.xAlign !== undefined ||
+    f.yAlign !== undefined ||
+    (f.w ?? 0) > 0 ||
+    (f.h ?? 0) > 0 ||
+    f.wrap !== undefined ||
+    (f.dropCap !== undefined && f.dropCap !== 'none')
+  return framed ? f : null
+}
+
+const FRAME_H_FROM: Readonly<Record<string, string>> = { margin: 'margin', page: 'page' }
+const FRAME_V_FROM: Readonly<Record<string, string>> = { text: 'paragraph', page: 'page' }
+const TWIPS = 20
+const RECT: Geometry = { kind: 'preset', name: 'rect', adjust: [] }
+
+/**
+ * 图文框（WPS 实测，构造文档 fr1、fr2 与 .doc 语料的页码图文框）：同一容器中相邻、属性相同的图文框段落为一个图文框，从排列中
+ * 移出，换算为其后第一个段落的浮动对象（偏移位于该段开头）。缺省基准横向为栏、纵向为页边距；纵向相对文字时以其后段落的顶边为
+ * 基准；`notBeside` 为上下型，其余环绕方式（含 `none`、`through`）都为四周型；距正文的距离左右取 `hSpace`、上下取 `vSpace`。
+ * 不换算的按普通段落排在原位置并计入 `frame`：首字下沉、纵向为 `inline`、其后没有段落（其后为表格或容器结束）、位于表格
+ * 单元格或文本框中（`body` 为假；单元格中的图文框 WPS 使整个表格按图文框定位，未实现）。
+ */
+function withFrames(
+  blocks: readonly Block[],
+  frames: readonly (RawFrame | null)[],
+  body: boolean,
+  section: Section,
+  env: ResolveEnv,
+): Block[] {
+  const out: Block[] = []
+  let held: Block[] = []
+  let groups: { key: string; frame: RawFrame; content: Paragraph[] }[] = []
+  const release = () => {
+    for (const b of held) {
+      env.count('frame')
+      out.push(b)
+    }
+    held = []
+    groups = []
+  }
+  blocks.forEach((b, i) => {
+    const f = frames[i] ?? null
+    const anchored =
+      f !== null &&
+      body &&
+      b.kind === 'paragraph' &&
+      (f.dropCap ?? 'none') === 'none' &&
+      f.yAlign !== 'inline'
+    if (anchored) {
+      // 属性相同按逐项比较：两个读取器给出各项的先后可以不同。
+      const key = JSON.stringify(Object.entries(f).sort(([a], [c]) => (a < c ? -1 : 1)))
+      const last = groups.at(-1)
+      if (last !== undefined && last.key === key) last.content.push(b)
+      else groups.push({ key, frame: f, content: [b] })
+      held.push(b)
+      return
+    }
+    if (f !== null) env.count('frame')
+    if (groups.length > 0 && b.kind === 'paragraph') {
+      out.push({
+        ...b,
+        anchors: [...groups.map((g) => frameAnchor(g.frame, g.content, section)), ...b.anchors],
+      })
+      held = []
+      groups = []
+      return
+    }
+    release()
+    out.push(b)
+  })
+  release()
+  return out
+}
+
+/**
+ * 图文框的填充：各段的段落底纹相同时铺满图文框（WPS 实测，构造文档 fr1：带底纹的固定高与最小高图文框整框为底纹色），否则无填充。
+ * 各段底纹不同时未实测。
+ */
+function frameFill(content: readonly Paragraph[]): ShapeFill {
+  const shade = content[0]?.props.shading ?? null
+  const color = shade === null ? null : parseHexColor(shade.slice(1))
+  return color !== null && content.every((p) => p.props.shading === shade)
+    ? { kind: 'solid', color }
+    : { kind: 'none' }
+}
+
+function frameAnchor(f: RawFrame, content: readonly Paragraph[], section: Section): Anchor {
+  const exact = f.hRule === 'exact' && (f.h ?? 0) > 0
+  const height = f.hRule === 'auto' || f.hRule === undefined ? 0 : (f.h ?? 0) / TWIPS
+  const width = (f.w ?? 0) / TWIPS
+  const h = (f.hSpace ?? 0) / TWIPS
+  const v = (f.vSpace ?? 0) / TWIPS
+  const box = exact ? height : 0
+  return {
+    offset: 0,
+    horizontal: {
+      from: FRAME_H_FROM[f.hAnchor ?? ''] ?? 'column',
+      align: f.xAlign ?? null,
+      offset: (f.x ?? 0) / TWIPS,
+    },
+    vertical: {
+      from: FRAME_V_FROM[f.vAnchor ?? ''] ?? 'margin',
+      align: f.yAlign ?? null,
+      offset: (f.y ?? 0) / TWIPS,
+    },
+    width,
+    height: box,
+    effect: ZERO_EDGES,
+    wrap: {
+      type: f.wrap === 'notBeside' ? 'topAndBottom' : 'square',
+      side: 'bothSides',
+      distance: { left: h, top: v, right: h, bottom: v },
+      polygon: null,
+    },
+    behind: false,
+    z: 0,
+    drawing: {
+      kind: 'shape',
+      frame: {
+        x: 0,
+        y: 0,
+        width: width * EMU_PER_POINT,
+        height: box * EMU_PER_POINT,
+        rotation: 0,
+        flipH: false,
+        flipV: false,
+      },
+      geometry: RECT,
+      fill: frameFill(content),
+      line: null,
+      effects: [],
+      text: {
+        content,
+        inset: ZERO_EDGES,
+        anchor: 'top',
+        autoFit: false,
+        wrap: true,
+        turned: 0,
+      },
+    },
+    frame: {
+      width,
+      maxWidth: section.pageWidth - section.marginLeft - section.marginRight - section.gutter,
+      height,
+      rule: exact ? 'exact' : f.hRule === 'atLeast' && height > 0 ? 'atLeast' : 'auto',
+    },
+  }
+}
+
+/**
+ * 段落标记隐藏的段落与其后的段落接排为一段：字段依次相接并保留各自的属性，嵌入式对象与浮动对象的位置随之后移；段落属性
+ * 与编号取前一段，段落标记取后一段，后一段的编号照常计数而不显示（WPS 实测，构造文档 hm1、hm2：左对齐的前一段与居中的
+ * 后一段接排为左对齐的一行；带编号的前一段显示「1.」，不带编号的前一段与带编号的后一段接排时不显示编号，下一个编号为「4.」）。
+ * 其后不是段落时保留为单独的段落；节的最后一段不与下一节接排（各节分别调用）。
+ */
+function joinHiddenMarks(list: readonly Pending[]): Pending[] {
+  const out: Pending[] = []
+  let carry: PendingParagraph | null = null
+  for (const b of list) {
+    if (b.kind !== 'paragraph') {
+      if (carry !== null) out.push({ kind: 'paragraph', p: carry })
+      carry = null
+      out.push(b)
+      continue
+    }
+    const p: PendingParagraph = carry === null ? b.p : joinParagraphs(carry, b.p)
+    carry = null
+    if (p.hiddenMark) carry = p
+    else out.push({ kind: 'paragraph', p })
+  }
+  if (carry !== null) out.push({ kind: 'paragraph', p: carry })
+  return out
+}
+
+function joinParagraphs(a: PendingParagraph, b: PendingParagraph): PendingParagraph {
+  const runs = a.runs.length
+  const length = a.runs.reduce((n, r) => n + r.text.length, 0)
+  return {
+    ...a,
+    runs: [...a.runs, ...b.runs],
+    mark: b.mark,
+    hiddenMark: b.hiddenMark,
+    first: a.first ?? b.first,
+    images: [...a.images, ...b.images.map((im) => ({ ...im, run: im.run + runs }))],
+    anchors: [...a.anchors, ...b.anchors.map((x) => ({ ...x, offset: x.offset + length }))],
+  }
+}
+
+/**
+ * 单元格与文本框中段落的排版规则（WPS 实测）：不悬挂行尾标点，越界的标点与其前一字移到下一行（兼容模式 14 与 15
+ * 相同，单元格中显式设置 `overflowPunct` 也不悬挂；文本框见构造文档 w11d）；单元格中未设置 `adjustLineHeightInTable`
+ * 时不对齐行网格。页眉页脚部件中的段落与其中单元格的段落不对齐行网格（WPS 实测，构造文档 w16 hf：网格 579、312、
+ * `linesAndChars` 与没有网格时页眉页脚各行的位置相同，设置 `adjustLineHeightInTable` 时单元格同样如此；其中文本框未实测）。
+ */
+function placeProps(props: ParagraphProps, place: BlockPlace, env: ResolveEnv): ParagraphProps {
+  if (place === 'textbox') return { ...props, overflowPunct: false }
+  const grid = props.snapToGrid && !env.story
+  if (place === 'body') return grid === props.snapToGrid ? props : { ...props, snapToGrid: grid }
+  return { ...props, overflowPunct: false, snapToGrid: grid && env.gridInTables }
+}
+
+function resolveParagraph(
+  pp: PendingParagraph,
+  index: number,
+  section: Section,
+  place: BlockPlace,
+  env: ResolveEnv,
+): Paragraph {
+  const { ctx, runs, mark, numbering, images } = pp
+  // 首行缩进的字符单位取段落第一个有内容的字段的字号加两倍字符间距，对象所在的字段不加间距；没有这样的字段时取
+  // 段落标记的属性。WPS 实测（构造文档 w13 a1）：文字 12 磅、间距 1 磅时两个字符为 28 磅；12 磅字段中的图片在前、
+  // 段落标记 18 磅时为 24 磅，间距 1 磅时仍为 24 磅；隐藏文字与浮动对象所在的字段同样计入，空字段与只有
+  // `lastRenderedPageBreak` 的字段不计入。上下标字段按原字号计算。
+  const first = pp.first?.props ?? mark
+  const spacing = pp.first?.object === true ? 0 : first.spacing
+  const unit = (first.complexScript ? first.sizeCs : first.size) + 2 * spacing
+  const props = paragraphProps(ctx, section, unit, env.count)
+  return {
+    kind: 'paragraph',
+    section: index,
+    style: ctx.style,
+    props: placeProps(props, place, env),
+    runs,
+    mark,
+    numbering,
+    images,
+    anchors: pp.anchors.map(
+      (a): Anchor => ({
+        offset: a.offset,
+        horizontal: a.anchor.horizontal,
+        vertical: a.anchor.vertical,
+        width: a.anchor.width,
+        height: a.anchor.height,
+        effect: a.anchor.effect,
+        wrap: a.anchor.wrap,
+        behind: a.anchor.behind,
+        z: a.anchor.z,
+        drawing:
+          a.anchor.drawing === null ? null : resolveNode(a.anchor.drawing, index, section, env),
+        frame: null,
+      }),
+    ),
+  }
+}
+
+function resolveNode(
+  n: PendingNode<Pending[]>,
+  index: number,
+  section: Section,
+  env: ResolveEnv,
+): DrawingNode {
+  if (n.kind === 'chart' || n.kind === 'diagram') return n
+  if (n.kind === 'group') {
+    return {
+      kind: 'group',
+      frame: n.frame,
+      effects: n.effects,
+      children: n.children.map((c) => resolveNode(c, index, section, env)),
+    }
+  }
+  return {
+    ...n,
+    text:
+      n.text === null
+        ? null
+        : {
+            content: resolveBlocks(n.text.content, index, section, 'textbox', env),
+            inset: n.text.inset,
+            anchor: n.text.anchor,
+            autoFit: n.text.autoFit,
+            wrap: n.text.wrap,
+            turned: n.text.turned,
+          },
+  }
+}
+
+function resolveTable(
+  t: PendingTable,
+  index: number,
+  section: Section,
+  env: ResolveEnv,
+): TableBlock {
+  const tbl = mergeTableProps(t.chain.whole.tblPr, t.props)
+  const margins = edges(tbl.margins, ZERO_EDGES)
+  if (tbl.float !== undefined) env.count('floatingTable')
+  const last = t.rows.length - 1
+  return {
+    kind: 'table',
+    section: index,
+    grid: t.grid,
+    width: tbl.width ?? null,
+    layout: tbl.layout ?? 'autofit',
+    indent: tbl.indent ?? 0,
+    align: tbl.align ?? 'left',
+    borders: tableBorders(tbl.borders),
+    margins,
+    float: tbl.float ?? null,
+    rows: t.rows.map((row, r) => ({
+      height: row.props.height ?? null,
+      header: row.props.header ?? false,
+      cantSplit: row.props.cantSplit ?? false,
+      gridBefore: row.props.gridBefore ?? 0,
+      cells: row.cells.map((cell, c) => {
+        const own = cell.props
+        const format = cell.format ?? cellFormat(t.chain, (row.props.cnf ?? 0) | (own.cnf ?? 0))
+        const style = format.tcPr
+        return {
+          span: own.span ?? 1,
+          vMerge: own.vMerge ?? null,
+          content: resolveBlocks(cell.content, index, section, 'cell', env),
+          width: own.width ?? null,
+          borders: cellBorders(own.borders, style.borders, {
+            first: c === 0,
+            last: c === row.cells.length - 1,
+            top: r === 0,
+            bottom: r === last,
+          }),
+          shading:
+            own.shading !== undefined
+              ? own.shading
+              : style.shading !== undefined
+                ? style.shading
+                : (tbl.shading ?? null),
+          margins: edges(own.margins, edges(style.margins, margins)),
+          vAlign: own.vAlign ?? style.vAlign ?? 'top',
+          noWrap: own.noWrap ?? false,
+        }
+      }),
+    })),
+  }
+}
+
+/** 段落的编号：段落标记的字段属性 `markRaw` 叠加编号级别的字段属性；段落没有编号或编号不存在时为 `null`。 */
+export function paragraphNumbering(
+  r: Resolver,
+  ctx: ParagraphContext,
+  markRaw: RawRunProps,
+): Numbering | null {
+  if (ctx.numbering === null) return null
+  const n = r.numbering.next(ctx.numbering.numId, ctx.numbering.ilvl)
+  if (n === null) return null
+  return {
+    text: n.text,
+    props: r.runProps(mergeRun(markRaw, n.level.rPr)),
+    suffix: n.level.suffix,
+    align: n.level.align,
+  }
+}
+
+/** 段落属性中未实现的项：从右向左、竖排的文字方向（图文框见 `withFrames`）。 */
+export function countParagraph(p: RawParaProps, count: (kind: UnsupportedKind) => void): void {
+  if (p.bidi === true) count('rtl')
+  if (p.textDirection !== undefined && p.textDirection !== 'lrTb' && p.textDirection !== 'tb')
+    count('textDirection')
+}
+
+/** 字段属性中未实现的项，每个字段计一次。 */
+export function countRunEffects(eff: RawRunProps, count: (kind: UnsupportedKind) => void): void {
+  if (eff.scale !== undefined && eff.scale !== 100) count('characterScale')
+  if (eff.emphasis !== undefined && eff.emphasis !== 'none') count('emphasisMark')
+  if (eff.smallCaps === true) count('smallCaps')
+  if (eff.eastAsianLayout === true) count('eastAsianLayout')
+  if (eff.fitText === true) count('fitText')
+  if (eff.rtl === true) count('rtl')
+}
 
 export interface BodyResult {
   readonly body: readonly Block[]
@@ -347,147 +764,14 @@ export class BodyReader {
   private endSection(section: Section): void {
     const index = this.sections.length
     this.sections.push(section)
-    for (const b of this.pending) this.blocks.push(this.resolveBlock(b, index, section, 'body'))
+    const env: ResolveEnv = {
+      count: this.count,
+      story: this.story,
+      gridInTables: this.env.gridInTables,
+    }
+    for (const b of resolveBlocks(this.pending, index, section, 'body', env)) this.blocks.push(b)
     this.pending = []
     this.target = this.pending
-  }
-
-  /** `place`：块所在的容器，段落属性按 `placeProps` 调整。 */
-  private resolveBlock(b: Pending, index: number, section: Section, place: BlockPlace): Block {
-    if (b.kind === 'paragraph') return this.resolveParagraph(b.p, index, section, place)
-    return this.resolveTable(b.t, index, section)
-  }
-
-  /**
-   * 单元格与文本框中段落的排版规则（WPS 实测）：不悬挂行尾标点，越界的标点与其前一字移到下一行（兼容模式 14 与 15
-   * 相同，单元格中显式设置 `overflowPunct` 也不悬挂；文本框见构造文档 w11d）；单元格中未设置 `adjustLineHeightInTable`
-   * 时不对齐行网格。页眉页脚部件中的段落与其中单元格的段落不对齐行网格（WPS 实测，构造文档 w16 hf：网格 579、312、
-   * `linesAndChars` 与没有网格时页眉页脚各行的位置相同，设置 `adjustLineHeightInTable` 时单元格同样如此；其中文本框未实测）。
-   */
-  private placeProps(props: ParagraphProps, place: BlockPlace): ParagraphProps {
-    if (place === 'textbox') return { ...props, overflowPunct: false }
-    const grid = props.snapToGrid && !this.story
-    if (place === 'body') return grid === props.snapToGrid ? props : { ...props, snapToGrid: grid }
-    return { ...props, overflowPunct: false, snapToGrid: grid && this.env.gridInTables }
-  }
-
-  private resolveParagraph(
-    pp: PendingParagraph,
-    index: number,
-    section: Section,
-    place: BlockPlace,
-  ): Paragraph {
-    const { ctx, runs, mark, numbering, images } = pp
-    // 首行缩进的字符单位取段落第一个有内容的字段的字号加两倍字符间距，对象所在的字段不加间距；没有这样的字段时取
-    // 段落标记的属性。WPS 实测（构造文档 w13 a1）：文字 12 磅、间距 1 磅时两个字符为 28 磅；12 磅字段中的图片在前、
-    // 段落标记 18 磅时为 24 磅，间距 1 磅时仍为 24 磅；隐藏文字与浮动对象所在的字段同样计入，空字段与只有
-    // `lastRenderedPageBreak` 的字段不计入。上下标字段按原字号计算。
-    const first = pp.first?.props ?? mark
-    const spacing = pp.first?.object === true ? 0 : first.spacing
-    const unit = (first.complexScript ? first.sizeCs : first.size) + 2 * spacing
-    const props = paragraphProps(ctx, section, unit, this.count)
-    return {
-      kind: 'paragraph',
-      section: index,
-      style: ctx.style,
-      props: this.placeProps(props, place),
-      runs,
-      mark,
-      numbering,
-      images,
-      anchors: pp.anchors.map(
-        (a): Anchor => ({
-          offset: a.offset,
-          horizontal: a.anchor.horizontal,
-          vertical: a.anchor.vertical,
-          width: a.anchor.width,
-          height: a.anchor.height,
-          effect: a.anchor.effect,
-          wrap: a.anchor.wrap,
-          behind: a.anchor.behind,
-          z: a.anchor.z,
-          drawing:
-            a.anchor.drawing === null ? null : this.resolveNode(a.anchor.drawing, index, section),
-        }),
-      ),
-    }
-  }
-
-  private resolveNode(n: PendingNode<Pending[]>, index: number, section: Section): DrawingNode {
-    if (n.kind === 'chart' || n.kind === 'diagram') return n
-    if (n.kind === 'group') {
-      return {
-        kind: 'group',
-        frame: n.frame,
-        effects: n.effects,
-        children: n.children.map((c) => this.resolveNode(c, index, section)),
-      }
-    }
-    return {
-      ...n,
-      text:
-        n.text === null
-          ? null
-          : {
-              content: n.text.content.map((b) => this.resolveBlock(b, index, section, 'textbox')),
-              inset: n.text.inset,
-              anchor: n.text.anchor,
-              autoFit: n.text.autoFit,
-              wrap: n.text.wrap,
-              turned: n.text.turned,
-            },
-    }
-  }
-
-  private resolveTable(t: PendingTable, index: number, section: Section): TableBlock {
-    const tbl = mergeTableProps(t.chain.whole.tblPr, t.props)
-    const margins = edges(tbl.margins, ZERO_EDGES)
-    if (tbl.float !== undefined) this.count('floatingTable')
-    const last = t.rows.length - 1
-    return {
-      kind: 'table',
-      section: index,
-      grid: t.grid,
-      width: tbl.width ?? null,
-      layout: tbl.layout ?? 'autofit',
-      indent: tbl.indent ?? 0,
-      align: tbl.align ?? 'left',
-      borders: tableBorders(tbl.borders),
-      margins,
-      float: tbl.float ?? null,
-      rows: t.rows.map((row, r) => ({
-        height: row.props.height ?? null,
-        header: row.props.header ?? false,
-        cantSplit: row.props.cantSplit ?? false,
-        gridBefore: row.props.gridBefore ?? 0,
-        cells: row.cells.map((cell, c) => {
-          const own = cell.props
-          const format = cell.format ?? cellFormat(t.chain, (row.props.cnf ?? 0) | (own.cnf ?? 0))
-          const style = format.tcPr
-          return {
-            span: own.span ?? 1,
-            vMerge: own.vMerge ?? null,
-            content: cell.content.map((b) => this.resolveBlock(b, index, section, 'cell')),
-            width: own.width ?? null,
-            borders: cellBorders(own.borders, style.borders, {
-              first: c === 0,
-              last: c === row.cells.length - 1,
-              top: r === 0,
-              bottom: r === last,
-            }),
-            shading:
-              own.shading !== undefined
-                ? own.shading
-                : style.shading !== undefined
-                  ? style.shading
-                  : (tbl.shading ?? null),
-            margins: edges(own.margins, edges(style.margins, margins)),
-            vAlign: own.vAlign ?? style.vAlign ?? 'top',
-            noWrap: own.noWrap ?? false,
-          }
-        }),
-      })),
-    }
   }
 
   /** 读取当前元素的子块到新的去处（单元格或文本框），返回读到的块。 */
@@ -640,27 +924,13 @@ export class BodyReader {
     ctx ??= this.resolver.paragraph(direct, layer)
     const r = this.resolver
     const markRaw = r.effectiveRun(ctx, directMark)
-    let numbering: Numbering | null = null
-    if (ctx.numbering !== null) {
-      const n = r.numbering.next(ctx.numbering.numId, ctx.numbering.ilvl)
-      if (n !== null) {
-        numbering = {
-          text: n.text,
-          props: r.runProps(mergeRun(markRaw, n.level.rPr)),
-          suffix: n.level.suffix,
-          align: n.level.align,
-        }
-      }
-    }
-    const p = ctx.pPr
-    if (p.frame === true) this.count('frame')
-    if (p.bidi === true) this.count('rtl')
-    if (p.textDirection !== undefined && p.textDirection !== 'lrTb' && p.textDirection !== 'tb')
-      this.count('textDirection')
+    const numbering = paragraphNumbering(r, ctx, markRaw)
+    countParagraph(ctx.pPr, this.count)
     const pending: PendingParagraph = {
       ctx,
       runs: this.displayFormula(runs),
       mark: r.runProps(markRaw),
+      hiddenMark: markRaw.vanish === true,
       numbering,
       first: this.first,
       images: this.images,
@@ -818,11 +1088,8 @@ export class BodyReader {
     this.first ??= { props, object }
   }
 
-  /** 打开时重新计算的域计入 `dynamicField`；页眉页脚中的页码域由分页按页生成，不计入。 */
   private dynamic(instr: string): void {
-    const name = fieldNameOf(instr)
-    if (DYNAMIC_FIELDS.has(name) && !(this.story && PAGE_FIELDS.has(name)))
-      this.count('dynamicField')
+    if (dynamicField(instr, this.story)) this.count('dynamicField')
   }
 
   /** 最内层处于结果部分的域的域名。 */
@@ -839,11 +1106,8 @@ export class BodyReader {
 
   /** 目录域结果中的字段去掉超链接字符样式（见文件头）。 */
   private tocRun(direct: RawRunProps): RawRunProps {
-    if (direct.style === undefined) return direct
     if (!this.fields.some((f) => f.result && fieldNameOf(f.instr) === 'TOC')) return direct
-    if (this.env.styles.byId.get(direct.style)?.name.toLowerCase() !== 'hyperlink') return direct
-    const { style: _, ...rest } = direct
-    return rest
+    return withoutHyperlinkStyle(direct, this.env.styles)
   }
 
   private readRun(ctx: ParagraphContext, runs: Run[]): void {
@@ -870,7 +1134,7 @@ export class BodyReader {
       if (eff.vanish === true) return
       if (!counted) {
         counted = true
-        this.countRun(eff)
+        countRunEffects(eff, this.count)
       }
       const p = override ? r.runProps(mergeRun(eff, override)) : base
       const field = this.fieldName()
@@ -997,15 +1261,6 @@ export class BodyReader {
     }
   }
 
-  private countRun(eff: RawRunProps): void {
-    if (eff.scale !== undefined && eff.scale !== 100) this.count('characterScale')
-    if (eff.emphasis !== undefined && eff.emphasis !== 'none') this.count('emphasisMark')
-    if (eff.smallCaps === true) this.count('smallCaps')
-    if (eff.eastAsianLayout === true) this.count('eastAsianLayout')
-    if (eff.fitText === true) this.count('fitText')
-    if (eff.rtl === true) this.count('rtl')
-  }
-
   /**
    * `w:drawing`：浮动对象交给 `readAnchor`；嵌入式对象按 `graphicData/@uri` 分类，记入段落的 `images`（字段隐藏时不记），
    * 有图片部件的图片不计数。返回时位于其结束标签。
@@ -1091,12 +1346,17 @@ export class BodyReader {
   }
 }
 
-/** 块所在的容器：正文（含页眉页脚）、表格单元格或文本框。 */
-type BlockPlace = 'body' | 'cell' | 'textbox'
-
 /** 域代码的域名（第一个词，大写）。 */
-function fieldNameOf(instr: string): string {
+export function fieldNameOf(instr: string): string {
   return instr.trim().split(/\s+/, 1)[0]?.toUpperCase() ?? ''
+}
+
+/** 目录域结果中的字段：去掉名为 `Hyperlink` 的字符样式（见文件头）。 */
+export function withoutHyperlinkStyle(direct: RawRunProps, styles: Styles): RawRunProps {
+  if (direct.style === undefined) return direct
+  if (styles.byId.get(direct.style)?.name.toLowerCase() !== 'hyperlink') return direct
+  const { style: _, ...rest } = direct
+  return rest
 }
 
 /** STYLEREF 的样式参数无效时 WPS 显示的文字。 */

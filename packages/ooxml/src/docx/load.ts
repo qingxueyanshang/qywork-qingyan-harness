@@ -3,6 +3,8 @@
  *
  * - 部件按关系定位：包关系的 `officeDocument` 为主文档，其关系给出样式、编号、设置、字体表与主题；
  *   缺少的部件按空部件处理。
+ * - 文件为含 `WordDocument` 流的 CFB 复合文档（.doc）时交给 `binary/` 解析，FIB、表流或片段表缺失时返回 `corrupt('doc')`；
+ *   其余 CFB 由 ZIP 层分类。
  * - 主文档的内容类型不是 WordprocessingML 文档（含启用宏的文档与模板）或主文档不存在时返回 `corrupt('document')`；
  *   部件 XML 结构错误时返回 `corrupt('xml')`；元素嵌套过深（`parse/xml.ts` 的 `NestingError`）时主文档与页眉页脚截断
  *   （见 `parse/body.ts`），其余部件返回 `corrupt('xml')`。ZIP 与 OPC 层的失败原样返回。
@@ -40,6 +42,8 @@ import {
 } from '../opc/package.ts'
 import { PartScanner } from '../opc/scanner.ts'
 import { XmlSyntaxError } from '../xml/index.ts'
+import { openLegacy } from '../zip/index.ts'
+import { parseDoc } from './binary/document.ts'
 import type {
   Block,
   DocxDocument,
@@ -58,7 +62,7 @@ import { NumberingState } from './resolve/numbering.ts'
 
 export type DocxFailure =
   | OpcFailure
-  | { readonly kind: 'corrupt'; readonly reason: 'document' | 'xml' }
+  | { readonly kind: 'corrupt'; readonly reason: 'document' | 'xml' | 'doc' }
 
 export type DocxResult =
   | { readonly ok: true; readonly value: DocxDocument }
@@ -154,6 +158,8 @@ async function loadDiagramParts(
 }
 
 export async function parseDocx(data: Uint8Array<ArrayBuffer>): Promise<DocxResult> {
+  const legacy = openLegacy(data)
+  if (legacy?.ok && legacy.value.format === 'doc') return parseDoc(legacy.value.file)
   const opened = await openPackage(data)
   if (!opened.ok) return opened
   try {

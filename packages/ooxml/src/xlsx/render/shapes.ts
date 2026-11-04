@@ -26,7 +26,6 @@ import {
   type ScreenGlyph,
   type ScreenText,
   SINGLE_LINE,
-  type SlideFont,
   type TextClearType,
 } from '../../drawingml/text/fonts.ts'
 import { emboldenBitmap } from '../../font/index.ts'
@@ -37,6 +36,7 @@ import {
   paintGlyphRuns,
 } from '../../glyph/cleartype/index.ts'
 import type { MetafileFace, MetafileFonts } from '../../metafile/index.ts'
+import type { FontMatch, FontSource } from '../../text/index.ts'
 import type { DrawingAnchor, ShapeNode, SheetShape, Workbook } from '../model.ts'
 import { type FontSet, fallbackFonts, type LoadedFace } from './fonts.ts'
 
@@ -54,8 +54,8 @@ export interface PlacedShape {
   readonly bounds: Rect
 }
 
-function slideFont(f: LoadedFace): SlideFont {
-  return { face: f.text, family: f.family, bold: f.bold, italic: f.italic }
+function fontMatch(f: LoadedFace): FontMatch {
+  return { face: f.text, family: f.family, bold: f.bold }
 }
 
 /**
@@ -102,15 +102,15 @@ function fallbackFace(workbook: Workbook, fonts: FontSet): LoadedFace | null {
   return null
 }
 
-function faceSource(workbook: Workbook, fonts: FontSet) {
+function faceSource(workbook: Workbook, fonts: FontSet): FontSource | null {
   const fallback = fallbackFace(workbook, fonts)
   if (fallback === null) return null
   return {
     face(name: string, bold: boolean, italic: boolean) {
       const f = fonts.face(name, bold, italic)
-      return f === null ? null : slideFont(f)
+      return f === null ? null : fontMatch(f)
     },
-    fallback: slideFont(fallback),
+    fallback: fontMatch(fallback),
   }
 }
 
@@ -209,7 +209,7 @@ export function metafileFonts(workbook: Workbook, fonts: FontSet): MetafileFonts
       emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
       averageWidth: v.averageWidth / v.unitsPerEm,
       // `OS/2.ulCodePageRange1` 的第 31 位：符号字符集。
-      symbol: ((v.codePages ?? 0) & 0x80000000) !== 0,
+      symbol: (v.codePages & 0x80000000) !== 0,
       advance: (cp, ppem) => f.pixelAdvance(cp, ppem) ?? f.metrics.advance(cp, ppem),
       draw: (c, text, x, baseline, ppem) => {
         const g = screenBitmap(fonts, f.family, bold, italic, text.codePointAt(0)!, ppem)

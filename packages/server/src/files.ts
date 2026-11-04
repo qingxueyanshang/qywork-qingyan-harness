@@ -146,15 +146,19 @@ const EXT_KIND: Record<string, PreviewKind> = {
 
 /**
  * Office 族的扩展名与格式。带宏的文件与模板的内部结构与对应格式相同，按对应格式预览：
- * 预览只解析，不执行宏。新增格式时在此登记扩展名，并在界面为该格式增加渲染器。
+ * 预览只解析，不执行宏。格式指渲染器而不是文件结构：.xls、.doc、.ppt 由 Excel、Word、PPT 渲染器按内容（CFB 中的二进制格式）解析。
+ * 新增格式时在此登记扩展名，并在界面为该格式增加渲染器。
  */
 const EXT_OFFICE: Record<string, OfficeFormat> = {
+  '.xls': 'xlsx',
   '.xlsx': 'xlsx',
   '.xlsm': 'xlsx',
   '.xltx': 'xlsx',
+  '.ppt': 'pptx',
   '.pptx': 'pptx',
   '.pptm': 'pptx',
   '.potx': 'pptx',
+  '.doc': 'docx',
   '.docx': 'docx',
   '.docm': 'docx',
   '.dotx': 'docx',

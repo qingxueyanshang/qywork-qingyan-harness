@@ -1,6 +1,7 @@
 /**
  * 绘制所需的图片与嵌入字体：从文件字节中读取（可在 Worker 中运行）。
  *
+ * - .ppt 的图片（部件名 `Pictures/<pib>`）从图片库读取（`../binary/presentation.ts` 的 `readPptImages`）。
  * - 图片的引用来源：图片形状、形状与表格单元格的图片填充、文字的图片填充与图片项目符号、背景、组合内的后代。
  *   解码由调用方完成（`../../drawingml/paint/picture.ts` 的 `decodePicture`：位图与图元文件）；无法绘制的图片已在解析时
  *   计入 `imageFormat`。
@@ -14,6 +15,8 @@ import type { TextBody } from '../../drawingml/text/model.ts'
 import { decodeEmbeddedFont } from '../../font/embedded/part.ts'
 import { FontFormatError } from '../../font/sfnt.ts'
 import { openPackage } from '../../opc/package.ts'
+import { openLegacy } from '../../zip/index.ts'
+import { readPptImages } from '../binary/presentation.ts'
 import type { EmbeddedFont, Shape, Slide } from '../model.ts'
 
 function addFill(out: Set<string>, fill: ShapeFill | null): void {
@@ -73,6 +76,8 @@ export async function readImages(
   data: Uint8Array<ArrayBuffer>,
   parts: readonly string[],
 ): Promise<Map<string, ImagePart>> {
+  const legacy = openLegacy(data)
+  if (legacy?.ok && legacy.value.format === 'ppt') return readPptImages(legacy.value.file, parts)
   const out = new Map<string, ImagePart>()
   const opened = await openPackage(data)
   if (!opened.ok) return out

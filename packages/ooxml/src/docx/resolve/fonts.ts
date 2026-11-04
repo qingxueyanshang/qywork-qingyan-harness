@@ -163,7 +163,7 @@ const NAME_KEYWORDS: readonly (readonly [string, string])[] = [
  * 8. 东亚字体为宋体；其余字体为 Segoe Print（`MISSING_LATIN`），与 `w:family`、`w:pitch` 无关。
  * 取自主题的东亚字体不按以上各步替代，直接为宋体（WPS 实测：主题的 Hans 或 Jpan 字体为本机没有的字体时，字体表中 altName 为楷体、
  * Yu Gothic 的条目不起作用；取自主题的西文字体照常替代）。
- * WPS 按自带度量排版的字体（`../../text/wps-fonts.ts` 的 `WPS_METRIC_FONTS`）先于以上各步，不经本函数（`FontSource.metric`）；
+ * WPS 按自带度量排版的字体（`../../text/wps-fonts.ts` 的 `WPS_METRIC_FONTS`）先于以上各步，不经本函数（`DocxFontSource.metric`）；
  * 文档的嵌入字体与主机字体同样经 `FontSource.face` 取得，先于自带度量（见 `../render/fonts.ts` 的 `embeddedFaces`）。
  * 未实现：按 `w:panose1` 或 `w:sig` 匹配主机字体；没有西文字形的字体（Segoe MDL2 Assets、HoloLens MDL2 Assets）WPS 以 Arial
  * 排版与绘制西文，本方按缺字形改用 `FontSource.fallback`。

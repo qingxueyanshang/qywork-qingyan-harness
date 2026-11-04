@@ -22,11 +22,11 @@ describe.skipIf(process.platform !== 'win32')('字体特性表（本机字体）
   test('kern 表：Times New Roman 的 AV 为 -264；Calibri 的 26706 个字偶超出子表长度字段后照常读取', () => {
     const times = open('times.ttf')
     const m = readMetrics(times.bytes, times.face)
-    expect(m.kerning?.(0x41, 0x56)).toBe(-264)
-    expect(m.kerning?.(0x41, 0x42)).toBe(0)
+    expect(m.kerning(0x41, 0x56)).toBe(-264)
+    expect(m.kerning(0x41, 0x42)).toBe(0)
     const calibri = open('calibri.ttf')
     const c = readMetrics(calibri.bytes, calibri.face)
-    const pair = (a: string, b: string) => c.kerning?.(a.codePointAt(0)!, b.codePointAt(0)!)
+    const pair = (a: string, b: string) => c.kerning(a.codePointAt(0)!, b.codePointAt(0)!)
     expect([pair('A', 'V'), pair('T', 'q'), pair('y', 'o')]).toEqual([-89, -147, -24])
     // 表中最后一个字偶（字形 1231 与 1231）位于 16 位长度字段所示范围之外。
     expect(readKerning(calibri.bytes, calibri.face)?.(1231, 1231)).toBe(10)
@@ -36,7 +36,7 @@ describe.skipIf(process.platform !== 'win32')('字体特性表（本机字体）
     for (const file of ['georgia.ttf', 'simsun.ttc']) {
       const f = open(file)
       expect(readKerning(f.bytes, f.face)).toBeNull()
-      expect(readMetrics(f.bytes, f.face).kerning?.(0x41, 0x56)).toBe(0)
+      expect(readMetrics(f.bytes, f.face).kerning(0x41, 0x56)).toBe(0)
     }
   })
 

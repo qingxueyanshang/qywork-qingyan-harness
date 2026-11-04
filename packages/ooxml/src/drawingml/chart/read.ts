@@ -5,7 +5,8 @@
  *   未写出 `c:style` 时的 WPS 显示求值（见 `resolve.ts`）。
  * - 布尔元素（`CT_Boolean`）的 `val` 缺省为真：`<c:delete/>` 即删除。
  * - 实现的图表类型见 `PLOT_TYPES`（三维图表只实现三维饼图）；其余类型（其他三维图表、面积图、雷达图、气泡图、股价图、曲面图、复合饼图），
- *   以及系列轴、对数刻度、显示单位、次要网格线与次要刻度线、数据表、线性以外的趋势线（另见 `Reader.trendline`）、误差线、涨跌柱、
+ *   以及系列轴、对数刻度、显示单位、次要网格线与次要刻度线、数据表、线性以外的趋势线（另见 `Reader.trendline`；散点图与堆积图的趋势线见
+ *   `resolve.ts` 的 `resolveChart`）、误差线、涨跌柱、
  *   高低点连线与系列线、负值反色、图例项标示，单个数据标签中含字段或引用单元格的自定义文字与按绝对位置（`edge`）的手动位置，使整个图表不绘制：
  *   读取结果的 `unsupported` 为真。垂直线（`dropLines`）与线性趋势线已实现。
  * - 缓存数据按 `pt/@idx` 放入数组，缺失的点为 `null`；`ptCount` 决定数组长度。多级分类只取最内层。
@@ -653,12 +654,6 @@ class Reader {
       }
     })
     series.sort((a, b) => a.order - b.order)
-    // 散点图与堆积图的趋势线未经核对。`grouping` 在回调中赋值，此处按声明类型读取。
-    const mode = grouping as string | null
-    const stacked = mode === 'stacked' || mode === 'percentStacked'
-    if ((type === 'scatter' || stacked) && series.some((s) => s.trendlines.length > 0)) {
-      this.unsupported = true
-    }
     return {
       type,
       direction,

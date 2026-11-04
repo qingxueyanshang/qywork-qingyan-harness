@@ -1,5 +1,5 @@
 """覆盖 slides.py 的纯逻辑（导出尺寸换算、分块 SSIM、导出图与缩略图的比较、不一致原因的分类、拒绝写入的判定、
-按放映顺序取每页使用的嵌入且未安装的字体、关系目标按 OPC 规则解析）与 clipboard.dib_image（CF_DIB 解码）。
+按放映顺序取每页使用的嵌入且未安装的字体（不是 zip 包时为 None）、关系目标按 OPC 规则解析）与 clipboard.dib_image（CF_DIB 解码）。
 
 运行：python -m unittest discover -s scripts/ooxml-fidelity/tests
 临时文件位于 .tmp/ooxml-fidelity/tests-slides。
@@ -132,6 +132,17 @@ class SlidesTest(unittest.TestCase):
         self.assertTrue(slides.installed("Arial"))
         self.assertFalse(slides.installed(MISSING))
         self.assertEqual(slides.embedded_faces(path), [[MISSING], []])
+
+    def test_embedded_faces_none_for_ole_file_with_embedded_zip(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+        TMP.mkdir(parents=True)
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as z:
+            z.writestr("a.xml", "<a/>")
+        path = TMP / "doc.ppt"
+        path.write_bytes(bytes.fromhex("d0cf11e0a1b11ae1") + bytes(504) + inner.getvalue())
+        self.assertTrue(zipfile.is_zipfile(path))
+        self.assertIsNone(slides.embedded_faces(path))
 
     def test_absolute_relationship_targets_resolve_from_package_root(self):
         shutil.rmtree(TMP, ignore_errors=True)

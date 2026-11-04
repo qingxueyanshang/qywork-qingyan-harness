@@ -48,6 +48,7 @@ import type {
   DrawingAnchor,
   FontStyle,
   PatternType,
+  RatioMarker,
   SheetChart,
   Workbook,
   Worksheet,
@@ -1150,6 +1151,20 @@ export function anchorRect(geometry: SheetGeometry, a: DrawingAnchor): Rect {
       y: a.y / EMU_PER_PX,
       width: a.width / EMU_PER_PX,
       height: a.height / EMU_PER_PX,
+    }
+  }
+  if (a.kind === 'cellRatio') {
+    const at = (m: RatioMarker) => ({
+      x: cols.offset(m.col) + m.colRatio * cols.size(m.col),
+      y: rows.offset(m.row) + m.rowRatio * rows.size(m.row),
+    })
+    const from = at(a.from)
+    const to = at(a.to)
+    return {
+      x: from.x,
+      y: from.y,
+      width: Math.max(0, to.x - from.x),
+      height: Math.max(0, to.y - from.y),
     }
   }
   const x = cols.offset(a.from.col) + a.from.colOff / EMU_PER_PX

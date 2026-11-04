@@ -1,14 +1,16 @@
 /**
- * 覆盖 `cfb.ts` 与 `index.ts` 中 `openZip` 的 CFB 分类：加密包、三种旧二进制格式、只计根存储的直接子项、
- * 名称不区分大小写、左右兄弟的遍历、目录占多个扇区、4096 字节扇区、经 DIFAT 扇区定位的 FAT、
- * 文件头无效、结构截断与目录树成环。
+ * 覆盖 `cfb.ts` 与 `index.ts` 中 `openLegacy`、`openZip` 的 CFB 分类与流读取：加密包、WPS 私密文档、三种旧二进制格式
+ * （`openZip` 判为已损坏）、RTF 与 HTML 判为不是 Office 文件、
+ * 只计根存储的直接子项、名称不区分大小写、左右兄弟的遍历、目录占多个扇区、4096 字节扇区、经 DIFAT 扇区定位的 FAT、
+ * 文件头无效、结构截断与目录树成环；普通流与迷你流的读取、链不完整的流。
  *
- * 夹具由测试内的 CFB 写入函数按扇区布局生成。
+ * 分类的夹具由测试内的 CFB 写入函数按扇区布局生成，流读取的夹具由 `test-helper.ts` 的 `buildCfb` 生成。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { cfbRootStreams } from './cfb.ts'
-import { openZip } from './index.ts'
+import { openCfb } from './cfb.ts'
+import { openLegacy, openZip } from './index.ts'
+import { buildCfb } from './test-helper.ts'
 
 const FREE = 0xffffffff
 const END = 0xfffffffe
@@ -115,6 +117,12 @@ function failureOf(bytes: Uint8Array<ArrayBuffer>) {
   return opened.ok ? null : opened.failure
 }
 
+/** `openLegacy` 给出的旧二进制格式；不是 CFB 时为 `null`，分类失败时为失败原因。 */
+function formatOf(bytes: Uint8Array<ArrayBuffer>) {
+  const r = openLegacy(bytes)
+  return r === null ? null : r.ok ? r.value.format : r.failure
+}
+
 function viewOf(bytes: Uint8Array<ArrayBuffer>): DataView {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 }
@@ -131,9 +139,24 @@ describe('按根存储下的流分类', () => {
     expect(failureOf(file)).toEqual({ kind: 'encrypted' })
   })
 
-  test('Workbook 判为旧二进制格式', () => {
+  test('WPS 私密文档（含 WpsContent）判为已加密，即使另有 Workbook 流', () => {
+    const file = cfbFile(rootWith(stream('Workbook'), stream('WpsContent'), stream('WpsExtData')))
+    expect(failureOf(file)).toEqual({ kind: 'encrypted' })
+    expect(openLegacy(file)).toEqual({ ok: false, failure: { kind: 'encrypted' } })
+  })
+
+  test('Workbook 判为 xls；旧二进制格式不是 ZIP 包，openZip 判为已损坏', () => {
     const file = cfbFile(rootWith(stream('Workbook'), stream('\u0005SummaryInformation')))
-    expect(failureOf(file)).toEqual({ kind: 'legacy' })
+    expect(formatOf(file)).toBe('xls')
+    expect(failureOf(file)).toEqual({ kind: 'corrupt', reason: 'cfb-format' })
+  })
+
+  test('既不是 CFB 也不是 ZIP 的 RTF 与 HTML 判为不是 Office 文件', () => {
+    const bytes = (text: string) => new TextEncoder().encode(text) as Uint8Array<ArrayBuffer>
+    for (const text of ['{\\rtf1\\ansi 甲}', '<html><body>甲</body></html>']) {
+      expect(formatOf(bytes(text))).toBeNull()
+      expect(failureOf(bytes(text))).toEqual({ kind: 'not-office' })
+    }
   })
 
   test('WordDocument 判为旧二进制格式，左右兄弟都遍历', () => {
@@ -143,8 +166,8 @@ describe('按根存储下的流分类', () => {
       { name: 'Data', type: 2, left: 1, right: 3 },
       stream('1Table'),
     ])
-    expect(cfbRootStreams(viewOf(file))).toEqual(new Set(['WORDDOCUMENT', 'DATA', '1TABLE']))
-    expect(failureOf(file)).toEqual({ kind: 'legacy' })
+    expect(openCfb(viewOf(file))?.names).toEqual(new Set(['WORDDOCUMENT', 'DATA', '1TABLE']))
+    expect(formatOf(file)).toBe('doc')
   })
 
   test('PowerPoint Document 判为旧二进制格式，目录占两个扇区', () => {
@@ -158,11 +181,11 @@ describe('按根存储下的流分类', () => {
       ),
     )
     expect(file.length).toBe(512 * 4)
-    expect(failureOf(file)).toEqual({ kind: 'legacy' })
+    expect(formatOf(file)).toBe('ppt')
   })
 
   test('名称不区分大小写', () => {
-    expect(failureOf(cfbFile(rootWith(stream('WORKBOOK'))))).toEqual({ kind: 'legacy' })
+    expect(formatOf(cfbFile(rootWith(stream('WORKBOOK'))))).toBe('xls')
   })
 
   test('嵌套存储中的流不计入，两者都没有时判为已损坏', () => {
@@ -172,7 +195,7 @@ describe('按根存储下的流分类', () => {
       stream('Workbook'),
       stream('\u0005SummaryInformation'),
     ])
-    expect(cfbRootStreams(viewOf(file))).toEqual(new Set(['\u0005SUMMARYINFORMATION']))
+    expect(openCfb(viewOf(file))?.names).toEqual(new Set(['\u0005SUMMARYINFORMATION']))
     expect(failureOf(file)).toEqual({ kind: 'corrupt', reason: 'cfb-unrecognized' })
   })
 
@@ -185,7 +208,7 @@ describe('按根存储下的流分类', () => {
 
   test('目录扇区所在的 FAT 扇区经 DIFAT 扇区定位', () => {
     const file = cfbFile(rootWith(stream('Workbook')), { directoryAt: 109 * 128 })
-    expect(failureOf(file)).toEqual({ kind: 'legacy' })
+    expect(formatOf(file)).toBe('xls')
   })
 })
 
@@ -229,5 +252,47 @@ describe('结构不完整判为已损坏', () => {
       { name: 'B', type: 2, right: 1 },
     ])
     expect(failureOf(tree)).toEqual({ kind: 'corrupt', reason: 'cfb-structure' })
+  })
+})
+
+describe('流读取', () => {
+  const bytesOf = (n: number, seed: number) =>
+    Uint8Array.from({ length: n }, (_, i) => (i * 7 + seed) % 251)
+
+  test('普通扇区与迷你流中的流逐字节读出，按格式给出主文档流', () => {
+    const big = bytesOf(5000, 1)
+    const small = bytesOf(130, 2)
+    const opened = openLegacy(buildCfb({ Workbook: big, '\u0005SummaryInformation': small }))
+    if (!opened?.ok) throw new Error('应为旧二进制格式')
+    expect(opened.value.format).toBe('xls')
+    expect(opened.value.file.stream('WORKBOOK')).toEqual(big)
+    expect(opened.value.file.stream('\u0005summaryinformation')).toEqual(small)
+    expect(opened.value.file.stream('Book')).toBeNull()
+  })
+
+  test('普通流的扇区链成环或越界时该流为空，其余流照常读取', () => {
+    const file = buildCfb({ WordDocument: bytesOf(4600, 3), Data: bytesOf(10, 4) })
+    const view = viewOf(file)
+    // 目录在扇区 1，WordDocument 为目录项 1；改写其首个扇区在 FAT（扇区 0）中的后继。
+    const start = view.getUint32(1024 + 128 + 116, true)
+    const slot = 512 + start * 4
+    const saved = view.getUint32(slot, true)
+    view.setUint32(slot, start, true)
+    expect(openCfb(view)?.stream('WordDocument')).toBeNull()
+    view.setUint32(slot, 0x7fffffff, true)
+    expect(openCfb(view)?.stream('WordDocument')).toBeNull()
+    expect(openCfb(view)?.stream('Data')).toEqual(bytesOf(10, 4))
+    view.setUint32(slot, saved, true)
+    expect(openCfb(view)?.stream('WordDocument')).toEqual(bytesOf(4600, 3))
+  })
+
+  test('迷你流中的流链提前结束时该流为空', () => {
+    const file = buildCfb({ Workbook: bytesOf(200, 5) })
+    const view = viewOf(file)
+    const cfb = openCfb(view)!
+    expect(cfb.stream('Workbook')).toEqual(bytesOf(200, 5))
+    // 迷你 FAT 在目录之后的扇区 2：第 0 项改为链尾，200 字节需要 4 个迷你扇区。
+    view.setUint32(1536, 0xfffffffe, true)
+    expect(openCfb(view)?.stream('Workbook')).toBeNull()
   })
 })

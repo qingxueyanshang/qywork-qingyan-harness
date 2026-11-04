@@ -2,7 +2,9 @@
  * 预设图案（`pattFill` 的 `prst`）的 8 × 8 位图：每行一个字节，最高位为最左像素，1 为前景色。
  *
  * - 未知名称按 `pct5` 处理（规范的缺省值）。
- * - 位图未经 WPS 屏幕真值核对；百分比图案的前景占比与名称中的百分数不完全相同。
+ * - WPS 演示导出图核对（构造文件，原点见 `fill.ts`）：pct20、pct30、smCheck、dotGrid 相同；ltDnDiag（WPS 周期为 4 像素）与
+ *   dkHorz 不同，其余未核对。.ppt 的图案位图按本表识别名称（`patternName`），改动位图须同时核对 .ppt 语料。
+ *   百分比图案的前景占比与名称中的百分数不完全相同。
  */
 
 const PATTERNS: Readonly<Record<string, readonly number[]>> = {
@@ -65,4 +67,12 @@ const PATTERNS: Readonly<Record<string, readonly number[]>> = {
 /** 图案的 8 行位图。 */
 export function patternBits(preset: string): readonly number[] {
   return PATTERNS[preset] ?? PATTERNS.pct5!
+}
+
+/** 与 8 行位图相同的预设图案名；没有时为 `null`。 */
+export function patternName(rows: readonly number[]): string | null {
+  for (const [name, bits] of Object.entries(PATTERNS)) {
+    if (bits.every((b, i) => b === rows[i])) return name
+  }
+  return null
 }

@@ -139,6 +139,7 @@ function workbook(sheets: Worksheet[], over: Partial<Workbook> = {}): Workbook {
     date1904: false,
     palette: [],
     activeSheet: 0,
+    gridSize: { rows: 1_048_576, cols: 16_384 },
     fontNames: ['宋体'],
     unsupported: {},
     ...over,
@@ -162,7 +163,6 @@ const SECOND = workbook(
 
 const FAILURES = {
   encrypted: { ok: false, failure: { kind: 'encrypted' } },
-  legacy: { ok: false, failure: { kind: 'legacy' } },
   corrupt: { ok: false, failure: { kind: 'corrupt', reason: 'end-record' } },
   plain: { ok: false, failure: { kind: 'not-office' } },
 } as const
@@ -400,7 +400,6 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
     pages: docPages([docPage(A4, 1), docPage(A4)]),
   },
   encrypted: { parsed: FAILURES.encrypted },
-  legacy: { parsed: FAILURES.legacy },
   corrupt: { parsed: FAILURES.corrupt },
   plain: { parsed: FAILURES.plain },
 }
@@ -737,7 +736,7 @@ describe('表格预览', () => {
     expect(fontRequests.indexOf('Arial')).toBeGreaterThan(fontRequests.indexOf('Inherit'))
   })
 
-  test('四类失败各显示一句原因，不显示工作表签', async () => {
+  test('三类失败各显示一句原因，不显示工作表签', async () => {
     fakeWorker()
     await fakeServer({ bytes: (path) => path.replace(/\.xlsx$/, '') })
     const { createSignal } = await import('solid-js')
@@ -745,7 +744,6 @@ describe('表格预览', () => {
     const host = await mountFileView(path, () => 0)
     for (const [file, text] of [
       ['encrypted.xlsx', '文件已加密'],
-      ['legacy.xlsx', '旧格式文件，暂不支持预览'],
       ['corrupt.xlsx', '文件已损坏'],
       ['plain.xlsx', '不是 Office 文件'],
     ] as const) {
@@ -1063,7 +1061,7 @@ describe('演示文稿预览', () => {
     )
   })
 
-  test('四类失败各显示一句原因，不显示幻灯片与能力边界', async () => {
+  test('三类失败各显示一句原因，不显示幻灯片与能力边界', async () => {
     fakeWorker()
     await fakeServer({ bytes: (path) => path.replace(/\.pptx$/, '') })
     const { createSignal } = await import('solid-js')
@@ -1071,7 +1069,6 @@ describe('演示文稿预览', () => {
     const host = await mountFileView(path, () => 0)
     for (const [file, text] of [
       ['encrypted.pptx', '文件已加密'],
-      ['legacy.pptx', '旧格式文件，暂不支持预览'],
       ['corrupt.pptx', '文件已损坏'],
       ['plain.pptx', '不是 Office 文件'],
     ] as const) {
@@ -1463,7 +1460,7 @@ describe('文档预览', () => {
     expect(layout.fallback).toBe('宋体')
   })
 
-  test('四类失败各显示一句原因，不显示页面与能力边界', async () => {
+  test('三类失败各显示一句原因，不显示页面与能力边界', async () => {
     fakeWorker()
     await fakeServer({ bytes: (path) => path.replace(/\.docx$/, '') })
     const { createSignal } = await import('solid-js')
@@ -1471,7 +1468,6 @@ describe('文档预览', () => {
     const host = await mountFileView(path, () => 0)
     for (const [file, text] of [
       ['encrypted.docx', '文件已加密'],
-      ['legacy.docx', '旧格式文件，暂不支持预览'],
       ['corrupt.docx', '文件已损坏'],
       ['plain.docx', '不是 Office 文件'],
     ] as const) {

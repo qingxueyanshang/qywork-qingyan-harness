@@ -6,7 +6,7 @@ import sys
 import unittest
 import zipfile
 
-from helpers import TempDir
+from helpers import TempDir, ole_file
 
 import com
 import util
@@ -47,6 +47,25 @@ class UtilTest(unittest.TestCase):
             self.assertEqual((d / "dst").read_bytes(), b"new")
             self.assertEqual(sorted(p.name for p in d.iterdir()), ["dst", "src", "y.xlsx"])
         self.assertEqual(util.col_letter(28), "AB")
+
+    def test_ole_macro_storages(self):
+        doc = [("WordDocument", 2), ("1Table", 2), ("Data", 2), ("ObjectPool", 1)]
+        with TempDir() as d:
+            self.assertTrue(util.has_macros(ole_file(d / "a.doc", doc + [("Macros", 1)])))
+            self.assertTrue(util.has_macros(ole_file(d / "b.xls", [("Workbook", 2), ("_VBA_PROJECT_CUR", 1)])))
+            self.assertFalse(util.has_macros(ole_file(d / "c.doc", doc)))
+            self.assertFalse(util.has_macros(ole_file(d / "d.xls", [("Workbook", 2), ("VBA", 2)])))
+
+    def test_ppt_vba_project(self):
+        """.ppt 的 VBA 工程由 PowerPoint Document 流中 VBAInfoAtom 的 persistIdRef 指向，目录中没有宏存储。"""
+        def ppt(name, ref):
+            info = bytes.fromhex("1f00ff0314000000020000040c000000")
+            stream = bytes(1000) + info + ref.to_bytes(4, "little") + bytes(4000)
+            return ole_file(name, [("Current User", 2), ("PowerPoint Document", 2, stream), ("Pictures", 2)])
+
+        with TempDir() as d:
+            self.assertTrue(util.has_macros(ppt(d / "a.ppt", 828)))
+            self.assertFalse(util.has_macros(ppt(d / "b.ppt", 0)))
 
 
 class ValidateTest(unittest.TestCase):

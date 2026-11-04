@@ -10,14 +10,10 @@
 import { describe, expect, test } from 'bun:test'
 import { canvasFactory, RecordingContext } from '../../drawingml/paint/test-helper.ts'
 import { layoutBody, paintBody } from '../../drawingml/text/body.ts'
-import {
-  FaceCache,
-  type ScreenText,
-  SINGLE_LINE,
-  type SlideFont,
-} from '../../drawingml/text/fonts.ts'
+import { FaceCache, type ScreenText, SINGLE_LINE } from '../../drawingml/text/fonts.ts'
 import type { Paragraph, RunStyle, TextBody } from '../../drawingml/text/model.ts'
 import type { FontMetrics, PixelVerticalMetrics } from '../../font/index.ts'
+import type { FontMatch } from '../../text/index.ts'
 import type { CellStyle, FontStyle, Workbook } from '../model.ts'
 import { type CellBox, cellContent, layoutCell } from './cell-text.ts'
 import { FontSet, type LoadedFace } from './fonts.ts'
@@ -36,6 +32,7 @@ function face(family: string, cjk: boolean, vertical: Vertical): LoadedFace {
     glyphId: (cp) => (has(cp) ? (cp >= 0x2e80 ? 2 : 1) : 0),
     advanceWidth: (cp) => unit(cp) * 1000,
     advance: (cp, size) => unit(cp) * size,
+    kerning: () => 0,
   }
   return {
     family,
@@ -62,8 +59,12 @@ function face(family: string, cjk: boolean, vertical: Vertical): LoadedFace {
         hheaLineGap: 0,
         winAscent: 860,
         winDescent: 140,
+        typoAscender: 860,
+        typoDescender: -140,
+        useTypoMetrics: false,
         averageWidth: 500,
         eastAsianCodePage: cjk,
+        codePages: 0,
         superscriptSize: 650,
         superscriptOffset: 350,
         subscriptSize: 650,
@@ -259,7 +260,7 @@ function body(size: number, lineSpacing: Paragraph['lineSpacing'], count = 2): T
   }
 }
 
-const slideFont: SlideFont = { face: song.text, family: '宋体', bold: false, italic: false }
+const slideFont: FontMatch = { face: song.text, family: '宋体', bold: false }
 const source = { face: () => slideFont, fallback: slideFont }
 const none: ScreenText = { bitmap: () => null }
 const single = { unit: 'percent', value: 1 } as const
@@ -305,7 +306,7 @@ describe('形状文字的屏幕显示', () => {
   })
 
   test('纵向中心按代码页分两组，屏幕显示与演示文稿相同', () => {
-    const western: SlideFont = { face: latin.text, family: '西文', bold: false, italic: false }
+    const western: FontMatch = { face: latin.text, family: '西文', bold: false }
     const westernSource = { face: () => western, fallback: western }
     const baseline = (faces: FaceCache) =>
       layoutBody(body(12, single, 1), 200, { faces, slideNumber: null }).paragraphs[0]!.block

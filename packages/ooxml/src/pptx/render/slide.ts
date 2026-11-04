@@ -53,6 +53,7 @@ import {
   strokeMargin,
 } from '../../drawingml/shape/paint.ts'
 import type { TextSettings } from '../../drawingml/text/body.ts'
+import type { FieldDate } from '../../drawingml/text/date.ts'
 import { FaceCache, SINGLE_LINE } from '../../drawingml/text/fonts.ts'
 import { paintThreeD } from '../../drawingml/three/paint.ts'
 import type { ClearTypeDisplay, PixelCanvas } from '../../glyph/cleartype/index.ts'
@@ -72,6 +73,8 @@ export interface SlideResources extends Omit<PaintResources, 'metafileFonts'> {
   readonly fonts: SlideFonts
   /** 显示器的 ClearType 设置；为 `null` 时文字以浏览器字体绘制（不平滑的字号仍按点阵）。 */
   readonly clearType: ClearTypeDisplay | null
+  /** 日期字段显示的日期：预览为当天（`fieldDate(new Date())`），对照基准为真值的采集时间。 */
+  readonly date: FieldDate
 }
 
 /** 绘制幻灯片的上下文：ClearType 字形读写画布像素（`getImageData`、`putImageData`）。 */
@@ -184,8 +187,8 @@ function paintPicture(scene: SlideScene, shape: Picture, parent: Matrix): void {
     bounds,
     scene.res,
     scene.canvas,
-    (c, offset) =>
-      paintPictureBody(scene, c, shape, outline, {
+    (c, offset, res) =>
+      paintPictureBody({ ...scene, res }, c, shape, outline, {
         ...placed,
         matrix: multiply(offset, placed.matrix),
       }),
@@ -269,6 +272,7 @@ export function paintSlide(
       res.fonts.families,
     ),
     slideNumber: slide.number,
+    date: res.date,
     pictures: (part) => res.image(part),
     math: slideMath(res.fonts),
   })

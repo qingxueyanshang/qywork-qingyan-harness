@@ -13,7 +13,8 @@
  *   与下段同页的段落（可连续多段）与下一段的第一行（下一块为表格时为表格的第一行）不在同一页时，整组移到下页。
  *   正文区为空时以上规则不生效，
  *   避免无法容纳的内容无限换页。
- * - 段内分页符之后的行从下一页开始；分栏符之后的行从下一栏开始，在最后一栏时从下一页开始。
+ * - 段内分页符之后的行从下一页开始；分栏符之后的行从下一栏开始，在最后一栏时从下一页开始。除分页符外没有内容的行
+ *   不必容纳在本页（见 `breakOnly`）。
  *   兼容模式 14 及以上，段落以分页符结束（其后没有嵌入式对象）时段落标记留在本页，下一段从下一页开始；
  *   兼容模式低于 14，或该段落结束一节时，段落标记单独占一行移到下一页。
  * - 节：`nextPage` 从新页开始；`continuous` 在当前位置继续，各栏的顶边为当前位置（页面尺寸不同时从新页开始，
@@ -171,6 +172,8 @@ export interface Exclusion {
   readonly side: 'bothSides' | 'left' | 'right' | 'largest'
   /** 锚定段落的块下标。 */
   readonly owner: number
+  /** 与矩形相邻的区段须宽于此值（磅）才排入文字（见 `build.ts` 的 `wrapArea`）。 */
+  readonly minSegment: number
 }
 
 /** 段落的一部分在一页中放置时的位置：供求浮动对象的位置。 */
@@ -881,7 +884,8 @@ export function paginate(
       for (let j = i; j < n; j++) {
         const border = j === lines.length - 1 ? lay.borderBottom : 0
         const need = lineNeed(lay, block.props, j, strip(j)) + border
-        if (bottom + need > page.area.bottom + FIT_EPSILON && !sectionMark(doc, b, lay)) break
+        const over = bottom + need > page.area.bottom + FIT_EPSILON
+        if (over && !sectionMark(doc, b, lay) && !breakOnly(lay, j, forced)) break
         bottom += lines[j]!.height - strip(j)
         fit++
         if (forced.has(j)) {
@@ -972,6 +976,25 @@ function sectionMark(doc: DocxDocument, b: number, layout: ParagraphLayout): boo
     lines.length === 1 &&
     line!.start === line!.end &&
     line!.objects.length === 0
+  )
+}
+
+/**
+ * 除分页符外没有内容的行（没有文字片段、行内对象与前导符）：超出正文区底边时留在本页，其后的行从下一页开始，不为这一行
+ * 另起一页（WPS 实测：.doc 语料 zju-doc-050、051、060 中表格或段落之后以分页符开始的段落，第一行在本页容纳不下时留在本页，
+ * 下一页从该段的第二行开始）。以分页符开始的段落的编号与首行缩进在第二行（见 `../layout.ts`），第一行同样只有分页符。
+ */
+function breakOnly(
+  layout: ParagraphLayout,
+  line: number,
+  forced: ReadonlyMap<number, 'page' | 'column'>,
+): boolean {
+  const l = layout.text.lines[line]!
+  return (
+    forced.get(line) === 'page' &&
+    l.fragments.length === 0 &&
+    l.objects.length === 0 &&
+    l.leaders.length === 0
   )
 }
 
