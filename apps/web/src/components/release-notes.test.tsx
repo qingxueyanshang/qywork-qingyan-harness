@@ -1,5 +1,5 @@
 /**
- * 本版说明：`lib/store/release-notes.ts`（启动时显示一次的判定与记录）与 `ReleaseNotesDialog.tsx`（读取、失败重试、没有说明）。
+ * 本版说明：`lib/store/release-notes.ts`（启动时显示一次的判定与记录）与 `ReleaseNotesDialog.tsx`（正文渲染与关闭）。
  * 服务端接口以替身代替。
  */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
@@ -56,9 +56,9 @@ const unavailable = () =>
 test('没有记录时读取并显示一次，关闭后记录当前版本，同一版本不再读取', async () => {
   await notesStore.showReleaseNotesOnce('0.3.12')
   expect(calls).toEqual(['/api/cloud/release-notes?version=0.3.12'])
-  expect(notesStore.releaseNotesView()).toEqual({ version: '0.3.12', notes: NOTES })
+  expect(notesStore.releaseNotesShown()).toEqual(NOTES)
   notesStore.closeReleaseNotes()
-  expect(notesStore.releaseNotesView()).toBeNull()
+  expect(notesStore.releaseNotesShown()).toBeNull()
   await notesStore.showReleaseNotesOnce('0.3.12')
   expect(calls).toHaveLength(1)
   // 升级到下一个版本时再显示一次。
@@ -69,13 +69,13 @@ test('没有记录时读取并显示一次，关闭后记录当前版本，同�
 test('读取失败或该版本没有说明时不显示、不记录，下次启动再读取', async () => {
   reply = unavailable()
   await notesStore.showReleaseNotesOnce('0.3.12')
-  expect(notesStore.releaseNotesView()).toBeNull()
+  expect(notesStore.releaseNotesShown()).toBeNull()
   reply = null
   await notesStore.showReleaseNotesOnce('0.3.12')
-  expect(notesStore.releaseNotesView()).toBeNull()
+  expect(notesStore.releaseNotesShown()).toBeNull()
   reply = NOTES
   await notesStore.showReleaseNotesOnce('0.3.12')
-  expect(notesStore.releaseNotesView()?.notes).toEqual(NOTES)
+  expect(notesStore.releaseNotesShown()).toEqual(NOTES)
   expect(calls).toHaveLength(3)
 })
 
@@ -87,15 +87,14 @@ async function until(check: () => boolean) {
   }
 }
 
-async function mount(view: import('../lib/store/release-notes.ts').ReleaseNotesView) {
+async function mount(notes: ReleaseNotes) {
   const { render } = await import('solid-js/web')
   const { default: ReleaseNotesDialog } = await import('./ReleaseNotesDialog.tsx')
   const host = document.createElement('div')
   document.body.append(host)
-  const dispose = render(() => <ReleaseNotesDialog view={view} />, host)
+  const dispose = render(() => <ReleaseNotesDialog notes={notes} />, host)
   return {
     host,
-    text: () => host.textContent ?? '',
     button: (label: string) =>
       [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === label),
     close: () => {
@@ -105,8 +104,8 @@ async function mount(view: import('../lib/store/release-notes.ts').ReleaseNotesV
   }
 }
 
-test('启动时已读取到的说明直接显示，不再请求；正文按 Markdown 渲染', async () => {
-  const view = await mount({ version: '0.3.12', notes: NOTES })
+test('弹窗显示标题，正文按 Markdown 渲染', async () => {
+  const view = await mount(NOTES)
   expect(view.host.querySelector('h2')?.textContent).toBe('qywork 0.3.12 更新')
   await until(() => view.host.querySelector('.markdown li') !== null)
   expect(view.host.querySelector('.markdown li')?.textContent).toBe('更新后显示本版说明')
@@ -114,30 +113,12 @@ test('启动时已读取到的说明直接显示，不再请求；正文按 Mark
   view.close()
 })
 
-test('从设置页打开：读取失败时显示原因与重试，重试成功后显示说明；没有说明时写明', async () => {
-  reply = unavailable()
-  const view = await mount({ version: '0.3.12' })
-  await until(() => view.button('重试') !== undefined)
-  expect(view.text()).toContain('无法连接账号服务')
-  reply = NOTES
-  view.button('重试')?.click()
-  await until(() => view.host.querySelector('.markdown li') !== null)
-  expect(calls).toHaveLength(2)
-  view.close()
-
-  reply = null
-  const empty = await mount({ version: '0.3.12' })
-  await until(() => empty.text().includes('暂无说明'))
-  expect(empty.host.querySelector('h2')?.textContent).toBe('qywork 0.3.12')
-  empty.close()
-})
-
 test('关闭按钮关闭弹窗并记录版本', async () => {
-  notesStore.openReleaseNotes('0.3.12')
-  const view = await mount({ version: '0.3.12', notes: NOTES })
-  view.button('关闭')?.click()
-  expect(notesStore.releaseNotesView()).toBeNull()
   await notesStore.showReleaseNotesOnce('0.3.12')
-  expect(calls).toHaveLength(0)
+  const view = await mount(NOTES)
+  view.button('关闭')?.click()
+  expect(notesStore.releaseNotesShown()).toBeNull()
+  await notesStore.showReleaseNotesOnce('0.3.12')
+  expect(calls).toHaveLength(1)
   view.close()
 })

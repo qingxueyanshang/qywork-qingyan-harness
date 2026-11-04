@@ -1,26 +1,16 @@
-import { createResource, onCleanup, onMount, Show } from 'solid-js'
+import type { ReleaseNotes } from '@qywork/core'
+import { onCleanup, onMount } from 'solid-js'
 import { renderMarkdown } from '../lib/markdown.ts'
-import { loaded } from '../lib/resource.ts'
 import { holdOverlay } from '../lib/store/index.ts'
-import {
-  closeReleaseNotes,
-  fetchReleaseNotes,
-  type ReleaseNotesView,
-} from '../lib/store/release-notes.ts'
-import { LoadState } from './settings/LoadState.tsx'
+import { closeReleaseNotes } from '../lib/store/release-notes.ts'
 
 /**
  * 本版说明弹窗（`lib/store/release-notes.ts`）。尺寸固定（CLAUDE.md B9），正文在框内滚动。
  * 正文经 `renderMarkdown` 净化后写入；其中的链接由根节点的 `openLink` 在右侧面板打开。
  */
-export default function ReleaseNotesDialog(props: { view: ReleaseNotesView }) {
+export default function ReleaseNotesDialog(props: { notes: ReleaseNotes }) {
   holdOverlay(() => true)
   let dialog!: HTMLDialogElement
-  const [notes, { refetch }] = createResource(
-    () => props.view.version,
-    (version) => props.view.notes ?? fetchReleaseNotes(version),
-  )
-  const ready = () => notes.state === 'ready' || notes.state === 'refreshing'
 
   onMount(() => dialog.showModal())
   onCleanup(() => dialog.close())
@@ -35,20 +25,13 @@ export default function ReleaseNotesDialog(props: { view: ReleaseNotesView }) {
         closeReleaseNotes()
       }}
       onKeyDown={(e) => {
-        // Escape 只关闭本窗口，不把后面的设置窗口一起关闭。
+        // Escape 只关闭本窗口，不把后面打开的窗口一起关闭。
         if (e.key === 'Escape') e.stopPropagation()
       }}
     >
-      <h2 class="confirm-title">{loaded(notes)?.title ?? `qywork ${props.view.version}`}</h2>
+      <h2 class="confirm-title">{props.notes.title}</h2>
       <div class="release-notes-body">
-        <Show
-          when={ready()}
-          fallback={<LoadState error={notes.error} onRetry={refetch} lines={8} />}
-        >
-          <Show when={loaded(notes)} fallback={<p class="release-notes-empty">暂无说明</p>}>
-            {(n) => <div class="markdown" innerHTML={renderMarkdown(n().body)} />}
-          </Show>
-        </Show>
+        <div class="markdown" innerHTML={renderMarkdown(props.notes.body)} />
       </div>
       <div class="confirm-actions">
         <button class="btn-primary" type="button" onClick={closeReleaseNotes}>

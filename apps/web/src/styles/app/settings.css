@@ -113,12 +113,10 @@
 .app-update-heading {
   justify-content: space-between;
 }
-/* 左侧自动外边距：区头中另有「本版说明」时，版本号与它一起靠右，不按 space-between 分到中间。 */
 .app-update-version {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  margin-left: auto;
   font-size: var(--fs-xs);
   white-space: nowrap;
 }

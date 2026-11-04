@@ -64,7 +64,7 @@ import {
   view,
   workspace,
 } from './lib/store/index.ts'
-import { releaseNotesView, showReleaseNotesOnce } from './lib/store/release-notes.ts'
+import { releaseNotesShown, showReleaseNotesOnce } from './lib/store/release-notes.ts'
 
 /**
  * 正文中的链接在右侧面板打开：有内置浏览器时打开真实网页，否则打开网页预览；
@@ -377,10 +377,10 @@ export function App() {
           <AccountDialog />
         </Suspense>
       </Show>
-      <Show when={releaseNotesView()}>
-        {(v) => (
+      <Show when={releaseNotesShown()}>
+        {(n) => (
           <Suspense>
-            <ReleaseNotesDialog view={v()} />
+            <ReleaseNotesDialog notes={n()} />
           </Suspense>
         )}
       </Show>
