@@ -45,10 +45,10 @@ const OFFSCREEN: (f64, f64) = (-8000.0, -8000.0);
 /// 子视图创建时的尺寸。尚未放置过的页移出可视区时也使用该尺寸。
 const DEFAULT_SIZE: (f64, f64) = (1280.0, 800.0);
 
-/// 创建页面后等待目标文档加载的时间上限。
+/// 创建页面后等待目标文档加载的时间上限，只用于 `OpenSpec::await_document` 为真的页。
 ///
 /// `add_child` 返回时子视图仍处于 `about:blank`，注入的标记在目标文档创建后才存在；
-/// 实测该间隔约为 700 ms。不等待就返回时，调用方必然无法按标记识别页面。
+/// 实测该间隔约为 700 ms。不等待就返回时，调用方无法立即按标记识别页面。
 const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
 
 /// 将下载钩子绑定到原生对象的等待上限。
@@ -97,6 +97,7 @@ impl Engine {
             .get_window("main")
             .ok_or("主窗口不存在，无法创建子视图")?;
         let url = navigation_url(spec.url)?;
+        let requested = url.to_string();
         let args =
             format!("{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port={}", self.debug_port);
 
@@ -151,10 +152,15 @@ impl Engine {
             return Err(e);
         }
 
-        if !blank_target && loaded_rx.recv_timeout(FIRST_LOAD_WAIT).is_err() {
-            log::warn!("子视图 {} 未在期限内加载首个文档", spec.tab_id);
-        }
-        let url = webview.url().map(|u| u.to_string()).unwrap_or_else(|_| spec.url.to_owned());
+        // 不等待时子视图仍是 `about:blank`，返回请求的地址；实际地址随导航事件更新。
+        let url = if spec.await_document && !blank_target {
+            if loaded_rx.recv_timeout(FIRST_LOAD_WAIT).is_err() {
+                log::warn!("子视图 {} 未在期限内加载首个文档", spec.tab_id);
+            }
+            webview.url().map(|u| u.to_string()).unwrap_or(requested)
+        } else {
+            requested
+        };
 
         Ok(Opened {
             page: Page { webview, size: (DEFAULT_SIZE.0 as u32, DEFAULT_SIZE.1 as u32) },

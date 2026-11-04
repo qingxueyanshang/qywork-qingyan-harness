@@ -85,7 +85,7 @@ pub struct Runtime {
     pub version: String,
 }
 
-/// 创建页面时交给引擎的三项参数：页面 id、注入的标记、目标地址。
+/// 创建页面时交给引擎的参数：页面 id、注入的标记、目标地址，以及两项按创建者区分的行为。
 #[cfg(desktop)]
 pub struct OpenSpec<'a> {
     pub tab_id: &'a str,
@@ -95,6 +95,10 @@ pub struct OpenSpec<'a> {
     /// 嵌入式引擎的页一律不获取焦点，放入面板后才可见，因此忽略该字段。
     #[cfg_attr(windows, allow(dead_code))]
     pub background: bool,
+    /// 返回前等待目标文档加载（上限 `FIRST_LOAD_WAIT`）。AI 创建的页为真：服务端随即按标记附加，
+    /// 标记在目标文档创建后才存在。用户新建的页为假：界面在返回后才显示面板，等待会使面板
+    /// 推迟到网页加载完才出现（网络慢时数秒）；用户页只在 AI 接管时才按标记附加。
+    pub await_document: bool,
 }
 
 /// 引擎创建的页面：原生句柄，以及返回时的地址与标题。
@@ -415,13 +419,16 @@ impl BrowserHost {
             (format!("bt_{}", state.next_tab), crate::next_created_seq(), new_host_key())
         };
         // 在锁外创建页面：引擎需要等待主线程或 CDP 响应，而它们的回调需要获取同一把锁。
+        // 带会话的页由 AI 创建，不带会话的页由用户新建（`user_open`）。
+        let by_ai = conversation_id.is_some();
         let opened = self.engine.open(
             app,
             OpenSpec {
                 tab_id: &tab_id,
                 marker: &marker,
                 url,
-                background: conversation_id.is_some(),
+                background: by_ai,
+                await_document: by_ai,
             },
         )?;
         let tab = Tab {

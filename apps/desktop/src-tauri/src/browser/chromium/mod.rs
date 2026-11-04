@@ -48,7 +48,8 @@ pub const PRESENTATION: &str = "window";
 
 /// 宿主新建页面后等待页面附加并放行的上限。附加与放行都在本机毫秒级完成。
 const ATTACH_WAIT: Duration = Duration::from_secs(10);
-/// 新建页面后等待目标文档导航完成的上限，与 Windows 等待首个文档的上限取同一值。
+/// 新建页面后等待目标文档导航完成的上限，与 Windows 等待首个文档的上限取同一值；
+/// 只用于 `OpenSpec::await_document` 为真的页。
 const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
 /// 调试连接断开或请求关闭之后，等待浏览器进程自行退出的上限。超时后强制终止：
 /// 不等待即强制终止会中断其写入 profile。
@@ -661,7 +662,7 @@ impl Instance {
             let nav = self.call("Page.navigate", json!({ "url": url }), Some(&session))?;
             let settled = nav.get("errorText").is_some()
                 || nav.get("isDownload").and_then(Value::as_bool) == Some(true);
-            if !settled && !self.wait_loaded(target) {
+            if spec.await_document && !settled && !self.wait_loaded(target) {
                 log::warn!("新页面 {} 在期限内未完成首个导航", spec.tab_id);
             }
         }
