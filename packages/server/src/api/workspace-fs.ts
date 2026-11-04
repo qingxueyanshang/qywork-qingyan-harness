@@ -12,6 +12,8 @@
  * `followFinalSymlink: false`：跟随末段符号链接时，删除与重命名会作用于链接指向的目标。
  */
 
+import { realpath } from 'node:fs/promises'
+import { basename, dirname, relative, resolve } from 'node:path'
 import { CANVAS_FILE_KINDS, canvasFileKind } from '@qywork/core'
 import { resolveInWorkspace } from '@qywork/tools'
 import {
@@ -27,6 +29,16 @@ import {
   renameEntry,
 } from '../files.ts'
 import { type ApiHandler, json } from './types.ts'
+
+/**
+ * 解析后的目标是否为项目根目录本身。`.`、`./`、`a/..` 都解析为根目录；仅检查输入是否为空串时，这些写法均可通过。
+ * 比较方式与 `resolveInWorkspace` 在 `followFinalSymlink: false` 下相同：父目录取 realpath，末段保留原名。
+ */
+async function isWorkspaceRoot(root: string, abs: string): Promise<boolean> {
+  const literal = resolve(root)
+  const parent = await realpath(dirname(literal)).catch(() => dirname(literal))
+  return relative(resolve(parent, basename(literal)), abs) === ''
+}
 
 export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
@@ -123,6 +135,10 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     } catch {
       return json({ error: 'invalid', message: `${rel} 不在当前项目中` }, 422)
     }
+    // 根目录改名即把整个项目文件夹移到别处。
+    if (await isWorkspaceRoot(d.workspaceRoot, abs)) {
+      return json({ error: 'invalid', message: '不能重命名项目根目录' }, 422)
+    }
     try {
       return json({ node: await renameEntry(abs, rel, name) })
     } catch (err) {
@@ -134,7 +150,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
 
   /*
    * 删除。目录连同其内容一并删除；确认在界面一侧完成（`ConfirmDialog`），
-   * 此处不再确认。空路径直接拒绝：空路径指向工作区根目录本身。
+   * 此处不再确认。解析后的目标是项目根目录时拒绝，否则删除整个项目。
    */
   if (p === '/api/files/delete' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { path?: string } | null
@@ -149,6 +165,9 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
       })
     } catch {
       return json({ error: 'invalid', message: `${rel} 不在当前项目中` }, 422)
+    }
+    if (await isWorkspaceRoot(d.workspaceRoot, abs)) {
+      return json({ error: 'invalid', message: '不能删除项目根目录' }, 422)
     }
     await deleteEntry(abs)
     return json({ ok: true })
