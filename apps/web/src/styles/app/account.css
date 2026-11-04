@@ -130,9 +130,10 @@
   font-size: var(--fs-sm);
   color: var(--danger);
 }
-/* 充值按钮紧跟在公告、官网与退出三个图标之后，高度与图标按钮相近。 */
+/* 充值按钮在头部行尾，紧靠关闭按钮留出的位置；高度与图标按钮相近。 */
 .account-recharge {
   flex: none;
+  margin-left: auto;
   height: 24px;
   padding: 0 var(--s-3);
   font-size: var(--fs-xs);
@@ -141,10 +142,11 @@
 /* ── 充值窗口 ──
  * 选择金额与付款码两步共用同一个固定尺寸（B9）：高度取两步中较高的一步，切换时窗口不变形。 */
 .recharge-dialog {
+  position: relative;
   width: min(380px, calc(100vw - 32px));
-  height: min(420px, calc(100vh - 48px));
+  height: min(396px, calc(100vh - 48px));
   box-sizing: border-box;
-  padding: var(--s-5);
+  padding: var(--s-4) var(--s-5) var(--s-5);
   border: 1px solid var(--border-default);
   border-radius: var(--r-lg);
   background: var(--bg-raised);
@@ -159,14 +161,16 @@
 .recharge-dialog::backdrop {
   background: var(--scrim);
 }
+/* 标题行只有文字的高度：关闭按钮定位在右上角，不撑高标题行。右侧留出关闭按钮的位置。 */
 .recharge-head {
   display: flex;
-  align-items: center;
-  gap: var(--s-3);
+  align-items: baseline;
+  gap: var(--s-2);
+  padding-right: var(--s-6);
 }
 .recharge-title {
   margin: 0;
-  font-size: var(--fs-lg);
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .recharge-balance {
@@ -175,14 +179,16 @@
   color: var(--text-secondary);
 }
 .recharge-close {
-  margin-right: calc(-1 * var(--s-2));
+  position: absolute;
+  top: var(--s-2);
+  right: var(--s-2);
 }
 .recharge-step {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin-top: var(--s-4);
+  margin-top: var(--s-3);
 }
 .recharge-presets {
   display: grid;

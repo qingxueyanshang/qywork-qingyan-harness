@@ -485,7 +485,7 @@ test('更换头像后，侧栏入口与账号弹窗显示头像图片，不再�
   view.close()
 })
 
-test('充值按钮：云端开通充值时紧跟在头部图标之后，未开通时不显示；点击打开充值窗口，关闭按钮移除窗口', async () => {
+test('充值按钮：云端开通充值时显示在头部行尾，未开通时不显示；点击打开充值窗口，关闭按钮移除窗口', async () => {
   cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), recharge: false }
   await cloudStore.refreshCloudState()
   const off = await dialog()
