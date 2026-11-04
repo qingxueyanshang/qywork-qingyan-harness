@@ -485,7 +485,7 @@ test('更换头像后，侧栏入口与账号弹窗显示头像图片，不再�
   view.close()
 })
 
-test('充值按钮：云端开通充值时显示在头部行尾，未开通时不显示；点击打开充值窗口，关闭后窗口移除', async () => {
+test('充值按钮：云端开通充值时紧跟在头部图标之后，未开通时不显示；点击打开充值窗口，关闭按钮移除窗口', async () => {
   cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), recharge: false }
   await cloudStore.refreshCloudState()
   const off = await dialog()
@@ -497,13 +497,13 @@ test('充值按钮：云端开通充值时显示在头部行尾，未开通时�
   await cloudStore.refreshCloudState()
   const view = await dialog()
   await until(() => view.button('充值') !== undefined)
-  expect(view.host.querySelector('.account-head')?.lastElementChild?.textContent?.trim()).toBe(
-    '充值',
+  expect(view.button('充值')?.previousElementSibling?.classList.contains('account-actions')).toBe(
+    true,
   )
   view.button('充值')?.click()
   await until(() => view.host.querySelector('.recharge-dialog') !== null)
   expect(view.host.querySelector<HTMLDialogElement>('.recharge-dialog')?.open).toBe(true)
-  view.button('关闭')?.click()
+  view.host.querySelector<HTMLButtonElement>('.recharge-close')?.click()
   await until(() => view.host.querySelector('.recharge-dialog') === null)
   view.close()
 })
@@ -512,45 +512,76 @@ async function recharge() {
   const { default: RechargeDialog } = await import('./RechargeDialog.tsx')
   let closed = 0
   const view = await mount(() => <RechargeDialog pollMs={5} onClose={() => closed++} />)
-  return { view, closed: () => closed }
+  const submit = () => (view.host.querySelector('form') as HTMLFormElement).requestSubmit()
+  return { view, submit, closed: () => closed }
 }
 
-test('充值窗口：生成付款码后读取状态，读取失败时显示原因并继续读取；到账后刷新余额并停止读取', async () => {
+const posted = () => calls.filter((c) => c === 'POST /api/cloud/recharge').length
+
+test('充值窗口：默认 50 元，可选预设金额或输入其他金额；其他金额不合法时不能提交', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  const { view, submit } = await recharge()
+  expect(view.text()).toContain('余额 12.50 积分')
+  expect(view.host.querySelector('.recharge-preset.active')?.textContent).toContain('¥50')
+  expect(view.host.querySelector('.recharge-submit')?.textContent).toBe('微信支付 ¥50')
+  view.button('¥100100 积分')?.click()
+  expect(view.host.querySelector('.recharge-submit')?.textContent).toBe('微信支付 ¥100')
+  view.fill('number', '0')
+  expect(view.host.querySelector('.recharge-preset.active')).toBeNull()
+  expect(view.host.querySelector<HTMLButtonElement>('.recharge-submit')?.disabled).toBe(true)
+  submit()
+  expect(posted()).toBe(0)
+  view.fill('number', '8')
+  expect(view.host.querySelector('.recharge-submit')?.textContent).toBe('微信支付 ¥8')
+  submit()
+  await until(() => view.host.querySelector('.recharge-qr img') !== null)
+  expect(view.text()).toContain('¥8.00')
+  view.close()
+})
+
+test('充值窗口：生成付款码后读取状态，读取失败时显示原因并继续读取；到账后刷新余额并停止读取，可继续充值', async () => {
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()
   rechargeReplies = ['pending', new Error('无法连接账号服务'), 'pending', 'paid']
-  const { view } = await recharge()
-  expect(view.host.querySelector('.recharge-qr img')).toBeNull()
-  view.fill('number', '50')
-  ;(view.host.querySelector('form') as HTMLFormElement).requestSubmit()
+  const { view, submit, closed } = await recharge()
+  submit()
   await until(() => view.host.querySelector('.recharge-qr img') !== null)
   expect(calls).toContain('POST /api/cloud/recharge')
   expect(view.host.querySelector('.recharge-qr img')?.getAttribute('src')).toStartWith(
     'data:image/svg+xml;utf8,',
   )
-  expect(view.text()).toContain('微信扫码支付 50 元，到账 50 积分')
+  expect(view.text()).toContain('微信扫码支付 · 到账 50 积分 · ')
   await until(() => view.text().includes('无法连接账号服务'))
   await until(() => view.text().includes('已到账 50 积分'))
+  expect(view.host.querySelector('.recharge-qr img')).toBeNull()
   await until(() => (cloudStore.cloudState() as { credits?: number }).credits === 62.5)
   const polls = calls.filter((c) => c.startsWith('GET /api/cloud/recharge/')).length
   expect(polls).toBe(4)
   await new Promise((resolve) => setTimeout(resolve, 30))
   expect(calls.filter((c) => c.startsWith('GET /api/cloud/recharge/')).length).toBe(polls)
+  view.button('继续充值')?.click()
+  await until(() => view.host.querySelector('.recharge-presets') !== null)
+  view.button('完成')?.click()
+  expect(closed()).toBe(0)
   view.close()
 })
 
-test('充值窗口：付款码过期后停止读取，可重新生成；关闭按钮与 Escape 交给调用方关闭', async () => {
+test('充值窗口：付款码过期后停止读取，可按原金额重新生成或更换金额；关闭按钮与 Escape 交给调用方关闭', async () => {
   rechargeReplies = ['expired']
-  const { view, closed } = await recharge()
+  const { view, submit, closed } = await recharge()
   view.fill('number', '8')
-  ;(view.host.querySelector('form') as HTMLFormElement).requestSubmit()
+  submit()
   await until(() => view.text().includes('付款码已过期'))
   expect(view.host.querySelector('.recharge-qr')?.classList.contains('done')).toBe(true)
-  ;(view.host.querySelector('form') as HTMLFormElement).requestSubmit()
-  await until(() => view.text().includes('微信扫码支付 8 元'))
-  expect(calls.filter((c) => c === 'POST /api/cloud/recharge')).toHaveLength(2)
+  expect(view.host.querySelector('.recharge-qr')?.classList.contains('paid')).toBe(false)
+  view.button('重新生成')?.click()
   await until(() => calls.includes('GET /api/cloud/recharge/QY2'))
-  view.button('关闭')?.click()
+  expect(posted()).toBe(2)
+  expect(view.text()).toContain('¥8.00')
+  view.button('更换金额')?.click()
+  await until(() => view.host.querySelector('.recharge-presets') !== null)
+  view.host.querySelector<HTMLButtonElement>('.recharge-close')?.click()
   view.host
     .querySelector('.recharge-dialog')
     ?.dispatchEvent(new Event('cancel', { cancelable: true }))
@@ -569,7 +600,7 @@ test('充值窗口打开时按 Escape 只关闭充值窗口：焦点不在窗口
   ;(document.activeElement as HTMLElement | null)?.blur()
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
   expect(store.accountOpen()).toBe(true)
-  view.button('关闭')?.click()
+  view.host.querySelector<HTMLButtonElement>('.recharge-close')?.click()
   await until(() => view.host.querySelector('.recharge-dialog') === null)
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
   expect(store.accountOpen()).toBe(false)
