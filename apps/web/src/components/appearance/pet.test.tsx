@@ -494,7 +494,7 @@ describe('宠物组件', () => {
         { width: 244, height: 34 },
       ])
 
-      // 没有气泡与条目时收起；没有条目时单击不展开。
+      // 没有气泡与条目时收起；没有条目时单击不展开，改为只唤起主窗口（不带会话）。
       shell.emit('pet://state', await petState([]))
       await until(() => !host.querySelector('.petw-bubble'))
       expect(placeCalls().at(-1)).toEqual({ width: 0, height: 0 })
@@ -503,6 +503,7 @@ describe('宠物组件', () => {
       await new Promise((r) => setTimeout(r, 150))
       expect(placeCalls()).toHaveLength(count)
       expect(host.querySelector('.petw-menu')).toBeNull()
+      expect(shell.calls.at(-1)).toEqual({ cmd: 'pet_open_main', args: {} })
     } finally {
       shell.restore()
       dispose()

@@ -55,8 +55,9 @@ function act(a: PetWindowAction): void {
   void tauriEmitTo(MAIN_WINDOW, PET_ACTION_EVENT, a).catch(() => undefined)
 }
 
-function openConversation(id: string): void {
-  void tauriInvoke('pet_open_main', { conversationId: id }).catch(() => undefined)
+/** 唤起主窗口；给出会话时主窗口随后打开它。 */
+function openMain(id?: string): void {
+  void tauriInvoke('pet_open_main', id ? { conversationId: id } : {}).catch(() => undefined)
 }
 
 export function PetBox() {
@@ -64,13 +65,15 @@ export function PetBox() {
   const [menuOpen, setMenuOpen] = createSignal(false)
   const entryCount = () => view()?.entries.length ?? 0
 
-  // 列表只列出运行中的会话与未查看的结果，没有条目时不显示空框。
+  // 列表只列出运行中的会话与未查看的结果，没有条目时不显示空框，单击宠物改为唤起主窗口：
+  // 主窗口隐藏到托盘后，这是从宠物回到客户端的唯一路径。
   createEffect(() => {
     if (entryCount() === 0) setMenuOpen(false)
   })
   onMount(() => {
     void tauriListen(PET_BOX_TOGGLE_EVENT, () => {
-      setMenuOpen(!menuOpen() && entryCount() > 0)
+      if (!menuOpen() && entryCount() === 0) return openMain()
+      setMenuOpen(!menuOpen())
     }).catch(() => undefined)
   })
 
@@ -122,7 +125,7 @@ export function PetBox() {
                         type="button"
                         onClick={() => {
                           setMenuOpen(false)
-                          openConversation(e().conversationId)
+                          openMain(e().conversationId)
                         }}
                       >
                         <span class={`petw-row-icon ${e().status}`}>
@@ -158,7 +161,7 @@ export function PetBox() {
               <button
                 class="petw-bubble"
                 type="button"
-                onClick={() => openConversation(b().conversationId)}
+                onClick={() => openMain(b().conversationId)}
               >
                 <span class="petw-title">{b().title}</span>
                 <span class="petw-bubble-state" classList={{ failed: b().outcome === 'failed' }}>
