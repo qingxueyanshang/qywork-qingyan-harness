@@ -1,6 +1,7 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { listSkillSources, type SkillSourceListing } from '../../lib/store/index.ts'
 import { IconChevron, IconFile, IconFolder } from '../Icons.tsx'
+import { Skeleton } from './LoadState.tsx'
 
 /** 文件夹和 ZIP 共用一个选择窗口，不要求用户预选来源类型。 */
 export function SkillImportDialog(props: {
@@ -111,7 +112,7 @@ export function SkillImportDialog(props: {
           </For>
         </nav>
         <section class="skill-import-list" aria-label="文件夹和 ZIP" aria-busy={loading()}>
-          <Show when={!loading()} fallback={<p class="skill-import-hint">读取中…</p>}>
+          <Show when={!loading()} fallback={<Skeleton lines={5} />}>
             <Show when={listing()}>
               {(current) => (
                 <>

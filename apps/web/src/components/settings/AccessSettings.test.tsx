@@ -44,7 +44,7 @@ const desktop = (over: Partial<DesktopCapability>): DesktopCapability => ({
 
 test('状态依次显示：宿主未连接 → 组件未就绪 → 系统未授权 → 已就绪', async () => {
   const { desktopStatus } = await import('./AccessSettings.tsx')
-  expect(desktopStatus(undefined)).toBe('读取中…')
+  expect(desktopStatus(undefined)).toBeNull()
   expect(desktopStatus(desktop({ connected: false, workerReady: false, authorized: false }))).toBe(
     '宿主未连接',
   )

@@ -2,6 +2,7 @@ import { MEDIA_OUTPUTS, type MediaOutput } from '@qywork/core'
 import { createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { modelCatalog, type PullResult, pullModels } from '../../lib/store/index.ts'
 import { config, replaceConfig } from './configStore.ts'
+import { Skeleton } from './LoadState.tsx'
 import {
   addPulled,
   type ClassifiedModel,
@@ -157,7 +158,14 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
         <Show
           when={result()}
           fallback={
-            <Show when={error()} fallback={<p class="pull-state pull-full">读取中…</p>}>
+            <Show
+              when={error()}
+              fallback={
+                <div class="pull-full">
+                  <Skeleton lines={8} />
+                </div>
+              }
+            >
               {(message) => (
                 <p class="pull-error pull-full" role="alert">
                   {message()}

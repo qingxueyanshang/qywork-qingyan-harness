@@ -10,7 +10,7 @@ import {
 import { IconChevron } from '../Icons.tsx'
 import { config, ensureConfig, patchConfig } from './configStore.ts'
 import { environment, environmentError, reloadEnvironment } from './environmentStore.ts'
-import { LoadState } from './LoadState.tsx'
+import { LoadState, PendingText } from './LoadState.tsx'
 import { OnOff } from './OnOff.tsx'
 
 /**
@@ -42,9 +42,10 @@ interface Module {
    */
   toggle?: { on: () => boolean; onPick: (on: boolean) => void }
   /** 分组标题旁的运行环境状态，与模块启用开关独立。 */
-  environment?: () => { text: string; missing: boolean }
+  /** `text` 为 null 表示尚未读取到（界面显示占位）。 */
+  environment?: () => { text: string | null; missing: boolean }
   /** 不由工具承担的部分。文案取自实时状态，因此是函数。 */
-  notes?: { label: string; text: () => string; warn?: () => boolean }[]
+  notes?: { label: string; text: () => string | null; warn?: () => boolean }[]
 }
 
 const sandbox = () => state.capabilities?.sandbox ?? null
@@ -78,24 +79,24 @@ export function mediaSwitchOn(cfg: { mediaEnabled?: boolean } | null): boolean {
  * Office 分组的可用状态：Python 与文档库均已安装才可用，缺失项在「通用 → 运行环境」中安装。
  * 与该页的两行读取同一份检测结果（`environmentStore.ts`）。
  */
-function officeState(): { text: string; missing: boolean } {
+function officeState(): { text: string | null; missing: boolean } {
   const failed = environmentError()
   if (failed) return { text: explainApiError(failed, '读取失败'), missing: true }
   const rows = environment()
   const python = rows?.find((d) => d.id === 'python')
   const libs = rows?.find((d) => d.id === 'office-libs')
-  if (!python || !libs) return { text: '读取中…', missing: false }
+  if (!python || !libs) return { text: null, missing: false }
   if (!python.path) return { text: '需要安装 Python', missing: true }
   if (!libs.path) return { text: '需要安装 Office 文档库', missing: true }
   return { text: '可用', missing: false }
 }
 
 /** 命令语法由检测结果决定（bash → pwsh 7 → Windows PowerShell 5.1）；运行环境表只报告 bash 一项。 */
-function shellNote(): string {
+function shellNote(): string | null {
   const failed = environmentError()
   if (failed) return explainApiError(failed, '读取失败')
   const row = environment()?.find((d) => d.id === 'bash')
-  if (!row) return '读取中…'
+  if (!row) return null
   if (row.path) return '已检测到 bash，命令使用 POSIX 语法。'
   if (row.required) return '未检测到可用的 shell，run_command 未注册。'
   return '未检测到 bash，命令使用 PowerShell 语法。'
@@ -129,7 +130,7 @@ const MODULES: Module[] = [
         label: 'sandbox',
         text: () => {
           const sb = sandbox()
-          if (!sb) return '读取中…'
+          if (!sb) return null
           return sb.active ? `已启用 · ${sb.backend}` : '无内核沙箱，命令直接在本机执行'
         },
         warn: () => sandbox()?.active === false,
@@ -418,7 +419,8 @@ export function ModulesSettings() {
               <Show when={g.mod.environment?.()}>
                 {(environment) => (
                   <span class="module-environment" classList={{ warn: environment().missing }}>
-                    运行环境：{environment().text}
+                    运行环境：
+                    <PendingText value={environment().text} />
                   </span>
                 )}
               </Show>
@@ -471,7 +473,9 @@ export function ModulesSettings() {
                 {(n) => (
                   <div class="setting-row stack" classList={{ warn: n.warn?.() === true }}>
                     <code class="module-name">{n.label}</code>
-                    <span class="setting-row-hint">{n.text()}</span>
+                    <span class="setting-row-hint">
+                      <PendingText value={n.text()} />
+                    </span>
                   </div>
                 )}
               </For>

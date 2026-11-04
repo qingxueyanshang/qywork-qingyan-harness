@@ -23,7 +23,7 @@ import {
 import { explainApiError, holdOverlay, setAccountOpen } from '../../lib/store/index.ts'
 import { IconLogOut, IconX } from '../Icons.tsx'
 import PairPanel from '../PairPanel.tsx'
-import { LoadState } from '../settings/LoadState.tsx'
+import { LoadState, Skeleton } from '../settings/LoadState.tsx'
 import { ActivityGrid } from './ActivityGrid.tsx'
 import { AccountAvatar, squareAvatar } from './Avatar.tsx'
 import { formatCredits, formatRatio } from './format.ts'
@@ -146,7 +146,10 @@ function AccountView(props: { signed: SignedIn }) {
       </header>
       <Show when={error()}>{(m) => <p class="account-error">{m()}</p>}</Show>
 
-      <Show when={loaded(usage)} fallback={<LoadState error={usage.error} onRetry={refetch} />}>
+      <Show
+        when={loaded(usage)}
+        fallback={<LoadState error={usage.error} onRetry={refetch} lines={6} />}
+      >
         {(u) => (
           <>
             <dl class="account-stats">
@@ -195,7 +198,10 @@ function AccountView(props: { signed: SignedIn }) {
 function ModelTable() {
   const [models, { refetch }] = createResource(fetchCloudModels)
   return (
-    <Show when={loaded(models)} fallback={<LoadState error={models.error} onRetry={refetch} />}>
+    <Show
+      when={loaded(models)}
+      fallback={<LoadState error={models.error} onRetry={refetch} lines={4} />}
+    >
       {(list) => (
         <section class="lib-card">
           <div class="lib-scroll">
@@ -272,6 +278,9 @@ function RequestTable() {
 
   return (
     <>
+      <Show when={rows().length === 0 && loading()}>
+        <Skeleton lines={4} />
+      </Show>
       <Show when={rows().length > 0}>
         <section class="lib-card">
           <div class="lib-scroll">
