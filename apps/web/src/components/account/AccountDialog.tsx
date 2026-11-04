@@ -138,29 +138,31 @@ function AccountView(props: { signed: SignedIn }) {
           />
         </label>
         <span class="account-email">{props.signed.email}</span>
-        {/* 官网在右侧面板打开，同时关闭本窗口，否则窗口遮住面板。 */}
-        <button
-          type="button"
-          class="icon-btn"
-          aria-label="打开官网"
-          data-tip="打开官网"
-          onClick={() => {
-            openLinkInPanel(`${props.signed.origin}/`)
-            close()
-          }}
-        >
-          <IconHome size={16} />
-        </button>
-        <button
-          type="button"
-          class="icon-btn"
-          aria-label="退出登录"
-          data-tip="退出登录"
-          disabled={busy()}
-          onClick={logout}
-        >
-          <IconLogOut size={16} stroke={1.8} />
-        </button>
+        <div class="account-actions">
+          {/* 官网在右侧面板打开，同时关闭本窗口，否则窗口遮住面板。 */}
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="打开官网"
+            data-tip="打开官网"
+            onClick={() => {
+              openLinkInPanel(`${props.signed.origin}/`)
+              close()
+            }}
+          >
+            <IconHome size={16} stroke={1.8} />
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="退出登录"
+            data-tip="退出登录"
+            disabled={busy()}
+            onClick={logout}
+          >
+            <IconLogOut size={16} stroke={1.8} />
+          </button>
+        </div>
       </header>
       <Show when={error()}>{(m) => <p class="account-error">{m()}</p>}</Show>
 
