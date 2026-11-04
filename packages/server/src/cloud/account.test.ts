@@ -209,6 +209,26 @@ test('密码错误时给出原因，不写入接口，状态仍为未登录', as
   expect(await account.state()).toEqual({ state: 'signed_out' })
 })
 
+test('已有名为 qywork 但地址不同的接口时：不请求云端（不登记设备），不覆盖该接口，提示中写明其地址', async () => {
+  live.providers[CLOUD_PROVIDER] = {
+    kind: 'anthropic_messages',
+    baseUrl: 'http://localhost:8080',
+    apiKey: 'old-key',
+    models: {},
+  }
+  await expect(account.login('me@example.com', PASSWORD)).rejects.toThrow(
+    new CloudAccountError(
+      '已有名为「qywork」的接口（http://localhost:8080），请先在模型设置中改名或删除',
+    ),
+  )
+  expect(cloud.logins).toEqual([])
+  expect(live.providers[CLOUD_PROVIDER]).toMatchObject({
+    baseUrl: 'http://localhost:8080',
+    apiKey: 'old-key',
+  })
+  expect(await account.state()).toEqual({ state: 'signed_out' })
+})
+
 test('注册：邮箱已注册时给出原因；新邮箱注册后直接登录', async () => {
   await expect(account.register('taken@example.com', PASSWORD)).rejects.toThrow('该邮箱已注册')
   expect((await account.register('new@example.com', PASSWORD)).state).toBe('signed_in')

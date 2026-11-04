@@ -275,9 +275,18 @@ export class CloudAccount {
   /**
    * 登录或注册：云端在一次请求中完成登录与登记本设备，返回设备密钥（`/v1/login`、`/v1/register`）。
    * 失败抛出 `CloudAccountError`，状态仍为未登录。
+   *
+   * 已有名为 `CLOUD_PROVIDER` 但地址不是本云端的接口时拒绝：它可能是用户自建的接口，不覆盖。
+   * 这项检查须在请求云端之前：云端登录成功即登记本设备，本地拒绝写入时该设备记录不再使用。
    */
   private async signIn(path: string, email: string, password: string): Promise<CloudState> {
     if (cloudProviderOf(this.live, this.origin)) return this.state()
+    const existing = this.live.providers[CLOUD_PROVIDER]
+    if (existing) {
+      throw new CloudAccountError(
+        `已有名为「${CLOUD_PROVIDER}」的接口（${existing.baseUrl}），请先在模型设置中改名或删除`,
+      )
+    }
     let res: Response
     try {
       res = await fetch(
@@ -337,10 +346,6 @@ export class CloudAccount {
 
   /** 登录完成：以设备密钥写入云端接口与型号。 */
   private async complete(key: string): Promise<void> {
-    const existing = this.live.providers[CLOUD_PROVIDER]
-    if (existing && existing.baseUrl !== this.origin) {
-      throw new Error(`已有名为「${CLOUD_PROVIDER}」的接口，请先在模型设置中改名`)
-    }
     const list = await this.catalog(key)
     const models = storedModels(list)
     const result = await writeConfig(this.live, (current) => {
