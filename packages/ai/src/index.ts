@@ -91,6 +91,8 @@ export {
   pullModels,
 } from './pull/index.ts'
 export type { ChatPrice } from './pull/pricing.ts'
+// 模型网关只转发适配器会发送的请求字段
+export { REQUEST_FIELDS } from './request-fields.ts'
 export { readSse, SSE_DONE, type SseFrame, sseJson } from './sse.ts'
 // 字符估算：agent 在没有 count_tokens 的端点上将其作为后备
 export {
