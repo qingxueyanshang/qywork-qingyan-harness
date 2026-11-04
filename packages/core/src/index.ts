@@ -369,6 +369,7 @@ export type {
   ConversationRunsResponse,
   ConversationUsageResponse,
   LiveRequestSnapshot,
+  ReleaseNotes,
   UsageResponse,
 } from './protocol/http.ts'
 // 原生浏览器宿主连接的帧与操作枚举：Rust 宿主与 server 两侧按同一份定义编解码

@@ -1,5 +1,6 @@
 /**
- * 云端账号：电脑端以邮箱密码登录或注册、退出、内置模型的接口，以及账号界面读取的用量与使用记录。
+ * 云端账号：电脑端以邮箱密码登录或注册、退出、内置模型的接口，以及账号界面读取的用量与使用记录；
+ * 另有不需要登录的本版说明（云端的版本公告）。
  *
  * 不变量：
  * - 已登录以配置中存在云端接口为准；本对象只另记「设备已被移除」这一个退出原因。
@@ -12,7 +13,14 @@
  */
 
 import { httpStatusName, lookupModel } from '@qywork/ai'
-import type { CloudModel, CloudRequest, CloudState, CloudUsage, ProviderKind } from '@qywork/core'
+import type {
+  CloudModel,
+  CloudRequest,
+  CloudState,
+  CloudUsage,
+  ProviderKind,
+  ReleaseNotes,
+} from '@qywork/core'
 import {
   catalogKey,
   type QyConfig,
@@ -220,6 +228,7 @@ export class CloudAccount {
         credits: me.credits,
         avatar: me.avatar,
         provider: CLOUD_PROVIDER,
+        origin: this.origin,
       }
     }
     // 云端暂时无法访问：仍视为已登录，余额与头像未知。
@@ -229,6 +238,7 @@ export class CloudAccount {
       credits: null,
       avatar: null,
       provider: CLOUD_PROVIDER,
+      origin: this.origin,
     }
   }
 
@@ -250,6 +260,29 @@ export class CloudAccount {
     const list = await this.call<{ models: CatalogModel[] }>('/v1/catalog')
     await this.applyModels(list.models)
     return list.models.map((m) => ({ id: m.id, ratio: m.ratio, price: m.price }))
+  }
+
+  /**
+   * 该版本已发布的版本公告（云端 `GET /api/announcements?version=`），不需要登录；没有时为 null。
+   * 版本号须为 `x.y.z`。
+   */
+  async releaseNotes(version: string): Promise<ReleaseNotes | null> {
+    if (!/^\d+\.\d+\.\d+$/.test(version)) throw new CloudAccountError(`版本号无效：${version}`)
+    let res: Response
+    try {
+      res = await fetch(`${this.origin}/api/announcements?version=${version}`, {
+        signal: this.timeout(),
+      })
+    } catch (err) {
+      throw unreachable(err)
+    }
+    if (!res.ok) {
+      throw new CloudAccountError(`账号服务返回 ${res.status} ${httpStatusName(res.status)}`)
+    }
+    const notes = (await res.json()) as Omit<ReleaseNotes, 'version'> | null
+    return (
+      notes && { version, title: notes.title, body: notes.body, publishedAt: notes.publishedAt }
+    )
   }
 
   /** 更换头像。`image` 是客户端裁剪编码后的 data URL，格式与大小由云端校验。 */

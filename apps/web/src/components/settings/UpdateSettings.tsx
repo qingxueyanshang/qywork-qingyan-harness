@@ -1,6 +1,8 @@
 import { Show } from 'solid-js'
 import { sessionSignal } from '../../lib/session.ts'
 import { actOnUpdate, appUpdate, updatePresentation } from '../../lib/store/app-update.ts'
+import { cloudState } from '../../lib/store/cloud.ts'
+import { openReleaseNotes } from '../../lib/store/release-notes.ts'
 import { config, replaceConfig } from './configStore.ts'
 
 const MODES = {
@@ -30,6 +32,16 @@ export function UpdateSettings() {
                 <span>{value().currentVersion}</span>
                 <span>{MODES[value().mode]}</span>
               </div>
+              {/* 本版说明来自云端；未配置云端时没有来源，不显示入口。 */}
+              <Show when={cloudState() && cloudState()?.state !== 'unavailable'}>
+                <button
+                  class="app-update-notes-link"
+                  type="button"
+                  onClick={() => openReleaseNotes(value().currentVersion)}
+                >
+                  本版说明
+                </button>
+              </Show>
             </div>
             <Show
               when={value().mode !== 'manual'}

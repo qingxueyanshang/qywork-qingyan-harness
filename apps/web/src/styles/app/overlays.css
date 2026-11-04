@@ -171,6 +171,45 @@
   gap: var(--s-2);
   margin-top: var(--s-4);
 }
+/* 本版说明窗口（`ReleaseNotesDialog.tsx`）：尺寸固定（min / max 取同一个值），读取完成后正文在框内滚动，
+   关闭按钮位置不变。 */
+.release-notes-dialog {
+  width: min(560px, calc(100vw - 32px));
+  height: min(520px, calc(100vh - 48px));
+  min-height: min(520px, calc(100vh - 48px));
+  max-height: min(520px, calc(100vh - 48px));
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+/* 只在打开时改为纵向排列：写在未打开的 dialog 上会覆盖浏览器的 `display: none`。 */
+.release-notes-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.release-notes-dialog::backdrop {
+  background: var(--scrim);
+}
+
+.release-notes-body {
+  flex: 1;
+  min-height: 0;
+  margin-top: var(--s-3);
+  overflow: auto;
+  font-size: var(--fs-sm);
+}
+
+.release-notes-empty {
+  margin: 0;
+  color: var(--text-tertiary);
+}
+
 /* 取消按钮不使用 `align-self: flex-start`：它在该行中须与确认按钮同高。 */
 .confirm-actions > .btn-ghost {
   align-self: auto;

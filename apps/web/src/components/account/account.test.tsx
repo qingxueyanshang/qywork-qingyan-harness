@@ -25,6 +25,7 @@ const SIGNED_IN: CloudState = {
   credits: 12.5,
   avatar: null,
   provider: 'qywork',
+  origin: 'https://qywork.io',
 }
 
 const USAGE: CloudUsage = {
@@ -237,6 +238,25 @@ test('退出登录后弹窗显示登录表单', async () => {
   ;(view.host.querySelector('button[aria-label="退出登录"]') as HTMLButtonElement).click()
   await until(() => view.host.querySelector('.account-form') !== null)
   expect(calls).toContain('POST /api/cloud/logout')
+  view.close()
+})
+
+test('网页账号页按钮：在右侧面板打开云端地址下的 /account，并关闭账号弹窗', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  // 右侧面板的页签属于工作区，没有工作区时不打开。
+  store.setWorkspace({ id: 'ws_account', root: 'C:/ws', name: 'ws' })
+  store.setAccountOpen(true)
+  const view = await dialog()
+  const button = () =>
+    view.host.querySelector('button[aria-label="打开网页账号页"]') as HTMLButtonElement | null
+  await until(() => button() !== null)
+  button()?.click()
+  expect(
+    store.panelTabs().some((t) => t.kind === 'preview' && t.url === 'https://qywork.io/account'),
+  ).toBe(true)
+  expect(store.accountOpen()).toBe(false)
+  store.setWorkspace(null)
   view.close()
 })
 

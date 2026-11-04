@@ -16,7 +16,7 @@ import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
 import { ApiError } from './lib/client.ts'
 import { localHtmlUrl, workspaceFile } from './lib/links.ts'
-import { observeAppUpdate } from './lib/store/app-update.ts'
+import { appUpdate, observeAppUpdate } from './lib/store/app-update.ts'
 
 // 懒加载：该模块包含 CodeMirror 核心，约 300 kB。
 // 只使用聊天功能的用户不应为文件预览承担首屏加载成本。
@@ -29,6 +29,7 @@ const SettingsDialog = lazy(() =>
 )
 // 账号弹窗同样仅在打开时下载。
 const AccountDialog = lazy(() => import('./components/account/AccountDialog.tsx'))
+const ReleaseNotesDialog = lazy(() => import('./components/ReleaseNotesDialog.tsx'))
 
 import { IconCheck, IconChevron, IconDownload, IconPanel } from './components/Icons.tsx'
 import { LoginGate } from './components/LoginGate.tsx'
@@ -61,6 +62,7 @@ import {
   view,
   workspace,
 } from './lib/store/index.ts'
+import { releaseNotesView, showReleaseNotesOnce } from './lib/store/release-notes.ts'
 
 /**
  * 正文中的链接在右侧面板打开：有内置浏览器时打开真实网页，否则打开网页预览；
@@ -193,6 +195,15 @@ export function App() {
       void refreshCloudState().catch(() => {})
     }
     return ready
+  }, false)
+
+  // 本版说明：当前版本取自更新状态，连接可用后读取一次（`release-notes.ts`）。读取后不再订阅。
+  createEffect((done: boolean) => {
+    if (done) return true
+    const version = appUpdate()?.currentVersion
+    if (!version || state.connection !== 'ready') return false
+    void showReleaseNotesOnce(version)
+    return true
   }, false)
 
   onMount(() => {
@@ -362,6 +373,13 @@ export function App() {
         <Suspense>
           <AccountDialog />
         </Suspense>
+      </Show>
+      <Show when={releaseNotesView()}>
+        {(v) => (
+          <Suspense>
+            <ReleaseNotesDialog view={v()} />
+          </Suspense>
+        )}
       </Show>
       <LoginGate />
     </div>
