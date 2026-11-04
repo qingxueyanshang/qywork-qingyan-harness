@@ -9,6 +9,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, type Paragraph, parseDocx } from '../index.ts'
 import { DocxFonts, loadDocxFace } from '../render/fonts.ts'
@@ -97,7 +98,7 @@ describe('STYLEREF 的解析', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('STYLEREF 按页求出的文字（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('STYLEREF 按页求出的文字（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const fonts = () =>
     new DocxFonts(

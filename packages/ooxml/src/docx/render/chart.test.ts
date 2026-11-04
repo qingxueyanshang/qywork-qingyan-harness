@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import type { Chart } from '../../drawingml/chart/model.ts'
 import { parseHexColor } from '../../drawingml/color.ts'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, type Paragraph, parseDocx } from '../index.ts'
 import type { InlineImage } from '../model.ts'
@@ -194,7 +195,7 @@ describe('图表的读取与求值', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('图表的放置与绘制（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('图表的放置与绘制（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const simsun = () =>
     loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)

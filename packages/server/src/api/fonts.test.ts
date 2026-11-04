@@ -25,6 +25,9 @@ import {
 } from './fonts.ts'
 import { type ApiDeps, handleApi } from './index.ts'
 
+/** 本机字体用例只在 Windows 开发机上运行：GitHub Actions 的 Windows 映像缺少中文补充字体，Arial 的版本也不同。 */
+const LOCAL_FONTS = process.platform === 'win32' && process.env.GITHUB_ACTIONS !== 'true'
+
 describe('字体目录', () => {
   test('Windows 为系统目录与当前用户目录，环境变量缺失时略去对应目录', () => {
     const env = { WINDIR: 'C:\\Windows', LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }
@@ -94,7 +97,7 @@ describe('注册表登记的字体文件', () => {
 /** WPS 安装的 MT Extra：只以绝对路径登记在 HKLM 的 Fonts 键中，字体目录中没有该文件。 */
 const MT_EXTRA = 'C:\\ProgramData\\Kingsoft\\office6\\mtfont\\mtextra.ttf'
 
-describe.skipIf(process.platform !== 'win32')('本机字体', () => {
+describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
   let local = ''
   let userFonts = ''
   const previous = process.env.LOCALAPPDATA
@@ -286,18 +289,15 @@ describe('字体平滑', () => {
     expect(readSmoothingParameters('linux')).toBe(null)
   })
 
-  test.skipIf(process.platform !== 'win32')(
-    'Windows 上按系统的当前设置下发，不需要字体名',
-    async () => {
-      const res = await get('/api/fonts/smoothing')
-      expect(res?.status).toBe(200)
-      const body = (await res!.json()) as { clearType: { contrast: number } | null }
-      expect(body).toEqual(fontSmoothing(readSmoothingParameters()))
-      if (body.clearType) {
-        expect(Number.isInteger(body.clearType.contrast)).toBe(true)
-        expect(body.clearType.contrast).toBeGreaterThanOrEqual(1000)
-        expect(body.clearType.contrast).toBeLessThanOrEqual(2200)
-      }
-    },
-  )
+  test.skipIf(!LOCAL_FONTS)('Windows 上按系统的当前设置下发，不需要字体名', async () => {
+    const res = await get('/api/fonts/smoothing')
+    expect(res?.status).toBe(200)
+    const body = (await res!.json()) as { clearType: { contrast: number } | null }
+    expect(body).toEqual(fontSmoothing(readSmoothingParameters()))
+    if (body.clearType) {
+      expect(Number.isInteger(body.clearType.contrast)).toBe(true)
+      expect(body.clearType.contrast).toBeGreaterThanOrEqual(1000)
+      expect(body.clearType.contrast).toBeLessThanOrEqual(2200)
+    }
+  })
 })

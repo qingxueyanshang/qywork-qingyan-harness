@@ -12,6 +12,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { type HintedOutline, readFaces, readMetrics } from '../../font/index.ts'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { type PixelData, paintGlyphRuns } from './blend.ts'
 import { type CoverageGlyph, emboldenSamples, filterSamples, sampleOutline } from './coverage.ts'
 import { readClearTypeGlyphs } from './glyphs.ts'
@@ -101,7 +102,7 @@ function inked(g: CoverageGlyph): [number, number, number, number, string[]] {
 
 const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
 
-describe.skipIf(process.platform !== 'win32')('本机字体的 ClearType 字形', () => {
+describe.skipIf(!LOCAL_FONTS)('本机字体的 ClearType 字形', () => {
   /** 字体文件 `file` 中字符 `ch` 在 `ppem` 下的 ClearType 覆盖。 */
   const glyph = (file: string, ch: string, ppem: number) => {
     const bytes = new Uint8Array(readFileSync(join(FONTS, file)))

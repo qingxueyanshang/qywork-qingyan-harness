@@ -9,6 +9,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import type { BitmapGlyph } from '../bitmap.ts'
 import { readEmbeddedBitmaps, readFaces, readMetrics } from '../index.ts'
 import type { HintedOutline } from './glyph.ts'
@@ -168,7 +169,7 @@ describe('扫描转换', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('本机字体（宋体，与 WPS 表格的屏幕显示对照）', () => {
+describe.skipIf(!LOCAL_FONTS)('本机字体（宋体，与 WPS 表格的屏幕显示对照）', () => {
   // 字体在 beforeAll 中读取：跳过的 describe 回调同样在收集用例时执行，在此处读取会使其他平台报错。
   let bytes!: Uint8Array
   let face!: ReturnType<typeof readFaces>[number]

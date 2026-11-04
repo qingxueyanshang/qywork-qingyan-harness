@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
 import type { BitmapGlyph, EmbeddedBitmaps } from '../../font/index.ts'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import {
   NO_HOST_FAMILIES,
   type TextBlock,
@@ -878,7 +879,7 @@ describe('paintPage：逐字定位与点阵模式', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('build：制表位前导符（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('build：制表位前导符（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
 
   const TABS = '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8306"/></w:tabs>'
@@ -1038,7 +1039,7 @@ describe.skipIf(process.platform !== 'win32')('build：制表位前导符（本�
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('build：行顶取整到缇（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('build：行顶取整到缇（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const STYLES =
     '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体" ' +
@@ -1075,7 +1076,7 @@ describe.skipIf(process.platform !== 'win32')('build：行顶取整到缇（本�
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('build：独占一行的嵌入式图片（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('build：独占一行的嵌入式图片（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const picture =
     '<w:r><w:drawing><wp:inline><wp:extent cx="1270000" cy="635000"/>' +
@@ -1155,7 +1156,7 @@ describe.skipIf(process.platform !== 'win32')('build：独占一行的嵌入式�
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('paginate：对齐网格的多倍行距（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('paginate：对齐网格的多倍行距（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const COMPAT15 = COMPAT14.replace('w:val="14"', 'w:val="15"')
 
@@ -1188,7 +1189,7 @@ describe.skipIf(process.platform !== 'win32')('paginate：对齐网格的多倍�
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('build：页眉页脚与行网格（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('build：页眉页脚与行网格（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
   const part = (root: 'hdr' | 'ftr', body: string) =>

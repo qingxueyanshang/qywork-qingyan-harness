@@ -15,6 +15,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, parseDocx, type TableBlock } from '../index.ts'
 import { ParagraphLayouter } from '../layout.ts'
@@ -255,7 +256,7 @@ describe('解析：表格属性、表格样式与条件格式', () => {
 
 const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
 
-describe.skipIf(process.platform !== 'win32')('排版与分页（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('排版与分页（本机字体）', () => {
   let fonts: DocxFonts | null = null
   const load = (): DocxFonts => {
     if (fonts !== null) return fonts
