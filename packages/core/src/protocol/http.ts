@@ -172,7 +172,22 @@ export type CloudState =
       provider: string
       /** 云端地址：账号窗口据此打开官网首页。 */
       origin: string
+      /** 云端已开通微信支付充值；false 时账号窗口不显示「充值」。云端暂时无法访问时为 false。 */
+      recharge: boolean
     }
+
+/** `POST /api/cloud/recharge`：一笔充值订单。1 元充值 1 积分。 */
+export interface CloudRechargeOrder {
+  orderNo: string
+  /** 付款码的内容，界面据此绘制二维码。 */
+  codeUrl: string
+  /** 金额（元），等于到账的积分。 */
+  amount: number
+  expiresAt: string
+}
+
+/** `GET /api/cloud/recharge/:orderNo`：pending 待支付，paid 已到账，expired 付款码已过期。 */
+export type CloudRechargeStatus = 'pending' | 'paid' | 'expired'
 
 /**
  * `GET /api/cloud/release-notes?version=`：云端为该版本发布的版本公告。没有、已撤回或未配置云端时为 null。

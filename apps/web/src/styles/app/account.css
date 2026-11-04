@@ -130,6 +130,78 @@
   font-size: var(--fs-sm);
   color: var(--danger);
 }
+/* 充值按钮在头部行尾，紧靠关闭按钮留出的位置。 */
+.account-recharge {
+  margin-left: auto;
+}
+
+/* ── 充值窗口 ──
+ * 尺寸不随状态变化（B9）：付款码区域固定为正方形，生成前留空；状态行固定一行高度。 */
+.recharge-dialog {
+  width: min(340px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+.recharge-dialog::backdrop {
+  background: var(--scrim);
+}
+.recharge-form {
+  display: flex;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+.recharge-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.recharge-unit {
+  flex: none;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+/* 二维码保持白底黑码：深色模式下反色的二维码部分扫码软件无法识别。 */
+.recharge-qr {
+  width: 200px;
+  height: 200px;
+  margin: var(--s-4) auto 0;
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  overflow: hidden;
+}
+.recharge-qr img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.recharge-qr.done img {
+  opacity: 0.15;
+}
+.recharge-line {
+  display: block;
+  min-height: 1.5em;
+  max-height: 1.5em;
+  margin: var(--s-3) 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.recharge-line.paid {
+  color: var(--success);
+}
+.recharge-line.error {
+  color: var(--danger);
+}
 
 /* 四个统计并排等宽，铺满整行。 */
 .account-stats {

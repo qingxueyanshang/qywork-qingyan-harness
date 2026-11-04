@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`，`api/cloud.ts` 的错误返回、本版说明与公告列表。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
+ * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`，`api/cloud.ts` 的错误返回、充值、本版说明与公告列表。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
 
@@ -115,7 +115,30 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
       return Response.json({ error: { code, message: code } }, { status: 401 })
     }
     if (path === '/v1/me') {
-      return Response.json({ email: 'me@example.com', credits: 12.5, avatar: cloud.avatar })
+      return Response.json({
+        email: 'me@example.com',
+        credits: 12.5,
+        avatar: cloud.avatar,
+        recharge: true,
+      })
+    }
+    if (path === '/v1/recharge' && req.method === 'POST' && authed) {
+      const { amount } = (await req.json()) as { amount: number }
+      if (!Number.isInteger(amount) || amount < 1) {
+        return Response.json(
+          { error: { code: 'invalid_request', message: '充值金额须为 1–10000 的整数（元）' } },
+          { status: 400 },
+        )
+      }
+      return Response.json({
+        orderNo: 'QY20261104120000abcdef0123456789',
+        codeUrl: 'weixin://wxpay/bizpayurl?pr=TEST',
+        amount,
+        expiresAt: '2026-11-04T04:05:00.000Z',
+      })
+    }
+    if (path === '/v1/recharge/QY20261104120000abcdef0123456789' && authed) {
+      return Response.json({ status: 'paid' })
     }
     if (path === '/v1/me/avatar' && req.method === 'PUT' && authed) {
       const { image } = (await req.json()) as { image: string }
@@ -225,6 +248,7 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
     avatar: null,
     provider: CLOUD_PROVIDER,
     origin,
+    recharge: true,
   })
   const provider = live.providers[CLOUD_PROVIDER]!
   expect(provider).toMatchObject({ baseUrl: origin, apiKey: 'qyd_device_key' })
@@ -505,6 +529,34 @@ test('更换头像：以设备密钥写入云端，状态中带头像；格式�
   await expect(account.setAvatar('data:text/html;base64,PGI+')).rejects.toThrow(
     '头像须为 PNG、JPEG 或 WebP 图片',
   )
+})
+
+test('充值：经本机接口下单与读取状态；缺少金额时不请求云端，云端拒绝的金额以 400 返回原因', async () => {
+  await account.login('me@example.com', PASSWORD)
+  const deps = { cloud: account } as unknown as ApiRequestDeps
+  const call = (path: string, init?: RequestInit) =>
+    handleCloudApi(new URL(`http://x${path}`), new Request(`http://x${path}`, init), deps)
+  const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) })
+
+  const created = await call('/api/cloud/recharge', post({ amount: 50 }))
+  expect(await created?.json()).toEqual({
+    orderNo: 'QY20261104120000abcdef0123456789',
+    codeUrl: 'weixin://wxpay/bizpayurl?pr=TEST',
+    amount: 50,
+    expiresAt: '2026-11-04T04:05:00.000Z',
+  })
+  const status = await call('/api/cloud/recharge/QY20261104120000abcdef0123456789')
+  expect(await status?.json()).toEqual({ status: 'paid' })
+
+  const missing = await call('/api/cloud/recharge', post({}))
+  expect(missing?.status).toBe(400)
+  expect(await missing?.json()).toEqual({ error: 'invalid_request', message: '缺少充值金额' })
+  const refused = await call('/api/cloud/recharge', post({ amount: 0 }))
+  expect(refused?.status).toBe(400)
+  expect(await refused?.json()).toEqual({
+    error: 'cloud',
+    message: '账号服务返回 400：充值金额须为 1–10000 的整数（元）',
+  })
 })
 
 test('云端地址：去掉首尾空白与末尾斜杠；带路径或多个地址时报错', () => {

@@ -38,6 +38,7 @@ import { ActivityGrid } from './ActivityGrid.tsx'
 import { AccountAvatar, squareAvatar } from './Avatar.tsx'
 import { formatCredits, formatRatio } from './format.ts'
 import { LoginForm } from './LoginForm.tsx'
+import RechargeDialog from './RechargeDialog.tsx'
 
 /** 使用记录每页条数，与服务端 `/api/cloud/requests` 相同：返回不足一页即没有更早的记录。 */
 const PAGE = 50
@@ -47,7 +48,7 @@ type SignedIn = Extract<CloudState, { state: 'signed_in' }>
 const close = () => setAccountOpen(false)
 
 /**
- * 账号弹窗：已登录时显示账号、统计、Token 活动与使用记录，数据全部取自云端；未登录时显示登录表单。
+ * 账号弹窗：已登录时显示账号、充值入口、统计、Token 活动与使用记录，数据全部取自云端；未登录时显示登录表单。
  * 两种状态各为固定尺寸（B9），内容在弹窗内滚动。未登录时是窄的登录框（`.signin`）：尺寸只在登录成功、
  * 内容整体换成账号页时改变一次，此时登录表单的按钮已不存在，不会移动用户正在瞄准的目标。
  */
@@ -56,8 +57,10 @@ export default function AccountDialog() {
   void refreshCloudState().catch(() => {})
 
   createEffect(() => {
+    // 上层有打开的窗口（公告、充值，均为模态 `<dialog>`）时，Escape 由该窗口的 cancel 事件关闭，本窗口保留。
+    // 不能依靠上层窗口在 keydown 中阻止冒泡：焦点所在的按钮被禁用后焦点落到 body，keydown 不经过上层窗口。
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !document.querySelector('dialog[open]')) {
         e.preventDefault()
         close()
       }
@@ -100,6 +103,7 @@ function AccountView(props: { signed: SignedIn }) {
   const [usage, { refetch }] = createResource(fetchCloudUsage)
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
+  const [recharging, setRecharging] = createSignal(false)
 
   const logout = async () => {
     setBusy(true)
@@ -184,7 +188,21 @@ function AccountView(props: { signed: SignedIn }) {
             <IconLogOut size={16} stroke={1.8} />
           </button>
         </div>
+        {/* 云端未开通充值时不显示（B5）。 */}
+        <Show when={props.signed.recharge}>
+          <button
+            type="button"
+            class="btn-primary account-recharge"
+            aria-haspopup="dialog"
+            onClick={() => setRecharging(true)}
+          >
+            充值
+          </button>
+        </Show>
       </header>
+      <Show when={recharging()}>
+        <RechargeDialog onClose={() => setRecharging(false)} />
+      </Show>
       <Show when={error()}>{(m) => <p class="account-error">{m()}</p>}</Show>
 
       <Show
