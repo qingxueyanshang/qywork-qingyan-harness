@@ -37,7 +37,8 @@ interface TruthPage {
   readonly n: number
   readonly file: string
   readonly sheet: string
-  readonly range: string
+  /** 图表工作表的页为 `null`。 */
+  readonly range: string | null
   readonly width: number
   readonly height: number
 }

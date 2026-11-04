@@ -3,7 +3,7 @@
  * `conditional.ts`、`chart.ts`，`officeart/` 的图片库与形状树，`xlsx/render/painter.ts` 中 `anchorRect` 的比例锚点，
  * 以及 `parseXlsx` 对 CFB 的分派：MD5 与 RC4、缺省密码解密与无法解密、WPS 私密文档、单元格各类型、跨 CONTINUE 的共享字符串与富文本、
  * XF 与 XFEXT 换算的样式、行列与工作表格式、合并与视图、工作表种类与能力边界计数、图片与组合内的图片、
- * 公式反编译、条件格式、嵌入图表。
+ * 公式反编译、条件格式、嵌入图表与图表工作表。
  *
  * 夹具由 `test-helper.ts` 按记录生成。
  */
@@ -11,7 +11,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { buildCfb } from '../../zip/test-helper.ts'
-import type { Workbook } from '../model.ts'
+import type { Workbook, Worksheet } from '../model.ts'
 import { parseXlsx } from '../parse/workbook.ts'
 import { Axis } from '../render/axis.ts'
 import { ConditionalFormats } from '../render/conditional.ts'
@@ -44,8 +44,15 @@ async function open(bytes: Uint8Array<ArrayBuffer>): Promise<Workbook> {
   return r.value
 }
 
+/** 第 `index` 个页面，须为工作表。 */
+function worksheetAt(wb: Workbook, index: number): Worksheet {
+  const s = wb.sheets[index]
+  if (s?.kind !== 'worksheet') throw new Error(`第 ${index} 个页面不是工作表`)
+  return s
+}
+
 function value(wb: Workbook, row: number, col: number, sheet = 0) {
-  return wb.sheets[sheet]!.cells.get(row)?.get(col)?.value
+  return worksheetAt(wb, sheet).cells.get(row)?.get(col)?.value
 }
 
 describe('MD5 与 RC4', () => {
@@ -180,14 +187,14 @@ describe('单元格', () => {
     expect(value(wb, 0, 1)).toEqual({ type: 'number', value: 77 })
     expect(value(wb, 1, 2)).toEqual({ type: 'number', value: 1 })
     expect(value(wb, 1, 3)).toEqual({ type: 'number', value: 2.5 })
-    expect(wb.sheets[0]!.cells.get(2)?.get(1)).toEqual({ value: null, style: 1 })
+    expect(worksheetAt(wb, 0).cells.get(2)?.get(1)).toEqual({ value: null, style: 1 })
     // XF 15 是第一个单元格 XF，即样式 0：没有值的样式 0 单元格不计入范围。
-    expect(wb.sheets[0]!.cells.get(2)?.get(5)).toEqual({ value: null, style: 0 })
+    expect(worksheetAt(wb, 0).cells.get(2)?.get(5)).toEqual({ value: null, style: 0 })
     expect(value(wb, 3, 0)).toEqual({ type: 'boolean', value: true })
     expect(value(wb, 3, 1)).toEqual({ type: 'error', value: '#DIV/0!' })
     expect(value(wb, 4, 0)).toEqual({ type: 'string', value: '中文 label', runs: null })
-    expect(wb.sheets[0]!.maxRow).toBe(4)
-    expect(wb.sheets[0]!.maxCol).toBe(3)
+    expect(worksheetAt(wb, 0).maxRow).toBe(4)
+    expect(worksheetAt(wb, 0).maxCol).toBe(3)
   })
 
   test('公式显示缓存值：数值、其后 STRING 中的字符串、逻辑值、错误值、空串', async () => {
@@ -355,7 +362,7 @@ describe('样式', () => {
     const b = wb.styles[2]!
     expect(b.fill).toEqual({ kind: 'pattern', pattern: 'gray125', fg: '#abcdef', bg: '#ffffff' })
     expect(b.font.color).toBe('#123456')
-    expect(wb.sheets[0]!.cells.get(0)?.get(1)?.style).toBe(2)
+    expect(worksheetAt(wb, 0).cells.get(0)?.get(1)?.style).toBe(2)
   })
 })
 
@@ -396,7 +403,7 @@ describe('行列、合并与视图', () => {
         },
       ]),
     )
-    const s = wb.sheets[0]!
+    const s = worksheetAt(wb, 0)
     expect(s.format).toEqual({
       defaultRowHeight: 15,
       zeroHeight: false,
@@ -424,7 +431,7 @@ describe('行列、合并与视图', () => {
 })
 
 describe('工作表种类与能力边界', () => {
-  test('图表工作表、宏表、隐藏工作表与活动工作表；嵌入图表、控件、批注、图片、条件格式计数', async () => {
+  test('图表工作表按工作簿顺序列出，宏表计数，隐藏工作表与活动工作表；嵌入图表、控件、批注、图片、条件格式计数', async () => {
     const obj = (type: number, id: number) =>
       rec(
         R.OBJ,
@@ -471,14 +478,17 @@ describe('工作表种类与能力边界', () => {
         { name: '乙', state: 1, records: [cell(R.NUMBER, 0, 0, 15, fields([8, 1]))] },
       ]),
     )
-    expect(wb.sheets.map((s) => [s.name, s.state])).toEqual([
-      ['甲', 'visible'],
-      ['乙', 'hidden'],
+    expect(wb.sheets.map((s) => [s.kind, s.name, s.state])).toEqual([
+      ['chartsheet', '图表', 'visible'],
+      ['worksheet', '甲', 'visible'],
+      ['worksheet', '乙', 'hidden'],
     ])
-    expect(wb.activeSheet).toBe(1)
+    expect(wb.activeSheet).toBe(2)
+    // 没有 Chart 记录的图表工作表计入 chart。
+    expect([wb.sheets[0]!.charts, wb.sheets[0]!.unsupported]).toEqual([[], { chart: 1 }])
     // 嵌入图表子流中的单元格记录不进入工作表。
-    expect(wb.sheets[0]!.cells.size).toBe(0)
-    expect(wb.sheets[0]!.unsupported).toEqual({
+    expect(worksheetAt(wb, 1).cells.size).toBe(0)
+    expect(worksheetAt(wb, 1).unsupported).toEqual({
       chart: 1,
       control: 1,
       image: 1,
@@ -487,9 +497,8 @@ describe('工作表种类与能力边界', () => {
       conditionalFormat: 1,
     })
     expect(wb.unsupported).toEqual({
-      chartsheet: 1,
       otherSheet: 1,
-      chart: 1,
+      chart: 2,
       control: 1,
       image: 1,
       graphic: 1,
@@ -585,7 +594,7 @@ describe('图片', () => {
         },
       ]),
     )
-    const sheet = wb.sheets[0]!
+    const sheet = worksheetAt(wb, 0)
     expect(sheet.images).toEqual([
       {
         anchor: {
@@ -629,7 +638,7 @@ describe('图片', () => {
         { name: 'S', records: [rec(0x00ec, dg), objRecord(8, 1), objRecord(8, 2)] },
       ]),
     )
-    const sheet = wb.sheets[0]!
+    const sheet = worksheetAt(wb, 0)
     expect(
       sheet.images.map((i) => [i.contentType, [...i.bytes.subarray(0, 2)], i.bytes.length]),
     ).toEqual([['image/bmp', [0x42, 0x4d], 14 + dib.length]])
@@ -753,7 +762,7 @@ describe('条件格式', () => {
         },
       ]),
     )
-    const sheet = wb.sheets[0]!
+    const sheet = worksheetAt(wb, 0)
     expect(sheet.conditionalFormats).toEqual([
       {
         ranges: [{ top: 0, bottom: 0, left: 1, right: 1 }],
@@ -868,73 +877,82 @@ function chartStream(
   extra: Uint8Array[] = [],
   values: [number, number] = [1, 3],
 ): Uint8Array {
+  return join(
+    rec(R.BOF, fields([2, 0x0600], [2, 0x0020], [2, 0], [2, 0], [4, 0], [4, 0])),
+    chartBody(group, extra, values),
+    rec(R.EOF),
+  )
+}
+
+/** 图表子流中 BOF 与 EOF 之间的部分，参数同 `chartStream`；图表区为 300×200 磅。 */
+function chartBody(
+  group: Uint8Array,
+  extra: Uint8Array[] = [],
+  values: [number, number] = [1, 3],
+): Uint8Array {
   const zeros16: [4, number][] = [
     [4, 0],
     [4, 0],
     [4, 0],
     [4, 0],
   ]
-  return join(
-    rec(R.BOF, fields([2, 0x0600], [2, 0x0020], [2, 0], [2, 0], [4, 0], [4, 0])),
+  return block(
+    rec(CH.CHART, fields([4, 0], [4, 0], [4, 300 << 16], [4, 200 << 16])),
     block(
-      rec(CH.CHART, fields([4, 0], [4, 0], [4, 300 << 16], [4, 200 << 16])),
-      block(
-        rec(CH.FRAME, fields([2, 0], [2, 2])),
-        lineFormat([0, 0, 0]),
-        areaFormat([255, 255, 255]),
-      ),
-      block(
-        rec(CH.SERIES, fields([2, 1], [2, 1], [2, 3], [2, 3], [2, 1], [2, 0])),
-        rec(CH.BRAI, fields([1, 0], [1, 1], [2, 0], [2, 0], [2, 0])),
-        brai(1, 1, ...values),
-        brai(2, 0),
-        rec(CH.SERTOCRT, fields([2, 0])),
-      ),
-      rec(CH.SHTPROPS, fields([2, 0x0a], [1, 0], [1, 0])),
-      block(
-        rec(CH.AXISPARENT, fields([2, 0], ...zeros16)),
-        rec(
-          CH.POS,
-          fields(
-            [2, 2],
-            [2, 2],
-            [2, 400],
-            [2, 0],
-            [2, 200],
-            [2, 0],
-            [2, 3000],
-            [2, 0],
-            [2, 3600],
-            [2, 0],
-          ),
-        ),
-        block(rec(CH.AXIS, fields([2, 0], ...zeros16)), valueRange(10, 0x1e)),
-        block(
-          rec(CH.AXIS, fields([2, 1], ...zeros16)),
-          valueRange(0, 0x1f),
-          rec(CH.AXISLINE, fields([2, 1])),
-          lineFormat([128, 128, 128]),
-        ),
-        rec(CH.PLOTAREA),
-        block(
-          rec(CH.FRAME, fields([2, 0], [2, 3])),
-          lineFormat([0, 0, 0], 5),
-          areaFormat([192, 192, 192]),
-        ),
-        block(
-          rec(CH.CHARTFORMAT, fields(...zeros16, [2, 0], [2, 0])),
-          group,
-          block(
-            rec(
-              CH.LEGEND,
-              fields([4, 3200], [4, 1600], [4, 400], [4, 300], [1, 7], [1, 1], [2, 0x12]),
-            ),
-          ),
-        ),
-      ),
-      ...extra,
+      rec(CH.FRAME, fields([2, 0], [2, 2])),
+      lineFormat([0, 0, 0]),
+      areaFormat([255, 255, 255]),
     ),
-    rec(R.EOF),
+    block(
+      rec(CH.SERIES, fields([2, 1], [2, 1], [2, 3], [2, 3], [2, 1], [2, 0])),
+      rec(CH.BRAI, fields([1, 0], [1, 1], [2, 0], [2, 0], [2, 0])),
+      brai(1, 1, ...values),
+      brai(2, 0),
+      rec(CH.SERTOCRT, fields([2, 0])),
+    ),
+    rec(CH.SHTPROPS, fields([2, 0x0a], [1, 0], [1, 0])),
+    block(
+      rec(CH.AXISPARENT, fields([2, 0], ...zeros16)),
+      rec(
+        CH.POS,
+        fields(
+          [2, 2],
+          [2, 2],
+          [2, 400],
+          [2, 0],
+          [2, 200],
+          [2, 0],
+          [2, 3000],
+          [2, 0],
+          [2, 3600],
+          [2, 0],
+        ),
+      ),
+      block(rec(CH.AXIS, fields([2, 0], ...zeros16)), valueRange(10, 0x1e)),
+      block(
+        rec(CH.AXIS, fields([2, 1], ...zeros16)),
+        valueRange(0, 0x1f),
+        rec(CH.AXISLINE, fields([2, 1])),
+        lineFormat([128, 128, 128]),
+      ),
+      rec(CH.PLOTAREA),
+      block(
+        rec(CH.FRAME, fields([2, 0], [2, 3])),
+        lineFormat([0, 0, 0], 5),
+        areaFormat([192, 192, 192]),
+      ),
+      block(
+        rec(CH.CHARTFORMAT, fields(...zeros16, [2, 0], [2, 0])),
+        group,
+        block(
+          rec(
+            CH.LEGEND,
+            fields([4, 3200], [4, 1600], [4, 400], [4, 300], [1, 7], [1, 1], [2, 0x12]),
+          ),
+        ),
+      ),
+    ),
+    ...extra,
   )
 }
 
@@ -977,7 +995,7 @@ describe('嵌入图表', () => {
         },
       ]),
     )
-    const sheet = wb.sheets[0]!
+    const sheet = worksheetAt(wb, 0)
     expect(sheet.unsupported).toEqual({ chart: 1 })
     expect(sheet.charts.map((c) => c.order)).toEqual([0])
     const chart = sheet.charts[0]!.chart
@@ -1014,6 +1032,32 @@ describe('嵌入图表', () => {
     expect(y!.majorGridlines?.fill.kind === 'solid' && hex(y!.majorGridlines.fill.color)).toBe(
       '#808080',
     )
+  })
+
+  test('图表工作表：图表区为 Chart 记录的宽高各减 1 像素，缩放比例取图表块中的 SCL；不支持的图表计入 chart', async () => {
+    const scl = rec(R.SCL, fields([2, 3], [2, 4]))
+    const area = chartBody(rec(CH.AREA, fields([2, 0])))
+    const wb = await open(
+      buildXls(globals, [
+        { name: 'S', records: data },
+        { name: '图', type: 2, bofType: 0x0020, records: [chartBody(scatter, [scl])] },
+        { name: '面积', type: 2, bofType: 0x0020, records: [area] },
+      ]),
+    )
+    expect(wb.sheets.map((s) => [s.kind, s.name])).toEqual([
+      ['worksheet', 'S'],
+      ['chartsheet', '图'],
+      ['chartsheet', '面积'],
+    ])
+    const sheet = wb.sheets[1]!
+    expect(sheet.kind === 'chartsheet' && sheet.view.zoom).toBe(75)
+    expect(sheet.charts.map((c) => c.anchor)).toEqual([
+      { kind: 'absolute', x: 0, y: 0, width: 300 * 12700 - 9525, height: 200 * 12700 - 9525 },
+    ])
+    expect(sheet.charts[0]!.chart.plot.groups[0]!.series[0]!.values).toEqual([1, 2, 3])
+    expect(sheet.unsupported).toEqual({})
+    expect([wb.sheets[2]!.charts, wb.sheets[2]!.unsupported]).toEqual([[], { chart: 1 }])
+    expect(wb.unsupported).toEqual({ chart: 1 })
   })
 
   test('CrtLayout12A 的内框优先于坐标轴组的 Pos', async () => {

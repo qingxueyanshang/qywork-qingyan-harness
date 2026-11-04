@@ -1,6 +1,6 @@
 /**
  * 覆盖 `office/SheetView.tsx`、`office/pptx/SlideView.tsx` 与 `office/docx/DocView.tsx`（经 `FileView.tsx` 的 Office 分支：
- * 加载态、四类失败、能力边界、工作表签、改写后刷新、主机上没有的字体改取替代字体、嵌入字体还原前先绘制与还原后只重绘用到它的幻灯片、文档的字体请求）、
+ * 加载态、四类失败、能力边界、工作表签与图表工作表、改写后刷新、主机上没有的字体改取替代字体、嵌入字体还原前先绘制与还原后只重绘用到它的幻灯片、文档的字体请求）、
  * `office/document.ts`（加载与重新加载、Worker 请求与回复、Worker 出错、失败与能力边界文案）、
  * `office/fonts.ts`（主机上没有的字体按缺失处理、嵌入字体的注册）、`office/viewport.ts`、`office/sheet-viewport.ts`、
  * `office/pptx/slide-viewport.ts` 与 `office/docx/page-viewport.ts`（只为可见的幻灯片与页面创建画布并绘制、首次显示的缩放比例、
@@ -25,7 +25,7 @@ import type {
   Slide,
   UnsupportedCounts,
 } from '@qywork/ooxml/pptx'
-import type { CellStyle, Workbook, Worksheet, XlsxResult } from '@qywork/ooxml/xlsx'
+import type { CellStyle, Chartsheet, Workbook, Worksheet, XlsxResult } from '@qywork/ooxml/xlsx'
 import type { WorkerReply, WorkerRequest } from './document.ts'
 import type { DocxParsed, DocxRequest } from './docx/docx-worker.ts'
 import type { PptxRequest } from './pptx/pptx-worker.ts'
@@ -95,6 +95,7 @@ const style: CellStyle = {
 
 function sheet(name: string, over: Partial<Worksheet> = {}): Worksheet {
   return {
+    kind: 'worksheet',
     name,
     state: 'visible',
     cells: new Map(),
@@ -130,7 +131,19 @@ function sheet(name: string, over: Partial<Worksheet> = {}): Worksheet {
   }
 }
 
-function workbook(sheets: Worksheet[], over: Partial<Workbook> = {}): Workbook {
+/** 没有可绘制图表的图表工作表：测试中画布没有绘制上下文，不绘制图表。 */
+function chartsheet(name: string, zoom = 100): Chartsheet {
+  return {
+    kind: 'chartsheet',
+    name,
+    state: 'visible',
+    view: { zoom },
+    charts: [],
+    unsupported: { chart: 1 },
+  }
+}
+
+function workbook(sheets: Workbook['sheets'], over: Partial<Workbook> = {}): Workbook {
   return {
     sheets,
     styles: [style],
@@ -146,19 +159,25 @@ function workbook(sheets: Worksheet[], over: Partial<Workbook> = {}): Workbook {
   }
 }
 
-/** 第一版：两个可见工作表与一个隐藏工作表，「甲」有图表与批注，工作簿另有一张图表工作表。 */
+/** 第一版：两个可见工作表、一个隐藏工作表与一张图表工作表，「甲」有图表与批注，工作簿另有一张宏表。 */
 const FIRST = workbook(
   [
     sheet('甲', { unsupported: { chart: 2, comment: 1 } }),
     sheet('隐', { state: 'hidden', unsupported: { graphic: 9 } }),
+    chartsheet('图'),
     sheet('乙'),
   ],
-  { unsupported: { chart: 2, comment: 1, graphic: 9, chartsheet: 1 } },
+  { unsupported: { chart: 3, comment: 1, graphic: 9, otherSheet: 1 } },
 )
 /** 改写后的版本：「乙」多了未绘制的图形对象。 */
 const SECOND = workbook(
-  [sheet('甲'), sheet('隐', { state: 'hidden' }), sheet('乙', { unsupported: { graphic: 3 } })],
-  { unsupported: { graphic: 3, chartsheet: 1 } },
+  [
+    sheet('甲'),
+    sheet('隐', { state: 'hidden' }),
+    chartsheet('图'),
+    sheet('乙', { unsupported: { graphic: 3 } }),
+  ],
+  { unsupported: { chart: 1, graphic: 3, otherSheet: 1 } },
 )
 
 const FAILURES = {
@@ -182,9 +201,13 @@ const ZOOMED = workbook([
   }),
 ])
 
+/** 打开时显示缩放比例为 75% 的图表工作表。 */
+const CHARTSHEET = workbook([sheet('甲'), chartsheet('图', 75)], { activeSheet: 1 })
+
 /** 文件字节（文本）到 xlsx 解析结果的对应。 */
 const XLSX_RESULTS: Record<string, XlsxResult> = {
   first: { ok: true, value: FIRST },
+  chartsheet: { ok: true, value: CHARTSHEET },
   'missing-font': { ok: true, value: workbook([sheet('甲')], { fontNames: ['Inherit', '宋体'] }) },
   second: { ok: true, value: SECOND },
   zoomed: { ok: true, value: ZOOMED },
@@ -757,7 +780,7 @@ describe('表格预览', () => {
     }
   })
 
-  test('只列出可见工作表；能力边界按当前工作表与工作簿级的种类列出', async () => {
+  test('按工作簿顺序列出可见的工作表与图表工作表；能力边界按当前页面与工作簿级的种类列出', async () => {
     fakeWorker()
     await fakeServer({ bytes: () => 'first' })
     const host = await mountFileView(
@@ -768,16 +791,44 @@ describe('表格预览', () => {
       () => tabNames(host).length > 0,
       () => host.innerHTML.slice(0, 300),
     )
-    expect(tabNames(host)).toEqual(['甲', '乙'])
+    expect(tabNames(host)).toEqual(['甲', '图', '乙'])
     expect(activeTab(host)).toBe('甲')
-    expect(boundary(host)).toBe('未显示：图表 2、图表工作表 1、批注 1')
+    expect(boundary(host)).toBe('未显示：图表 2、宏表与对话框表 1、批注 1')
 
     host.querySelectorAll<HTMLButtonElement>('.sheet-tab')[1]!.click()
+    await waitFor(
+      () => activeTab(host) === '图',
+      () => host.innerHTML.slice(0, 300),
+    )
+    expect(boundary(host)).toBe('未显示：图表 1、宏表与对话框表 1')
+
+    host.querySelectorAll<HTMLButtonElement>('.sheet-tab')[2]!.click()
     await waitFor(
       () => activeTab(host) === '乙',
       () => host.innerHTML.slice(0, 300),
     )
-    expect(boundary(host)).toBe('未显示：图表工作表 1')
+    expect(boundary(host)).toBe('未显示：宏表与对话框表 1')
+  })
+
+  /** 原始失败形状：图表工作表不进入工作表签，只计入能力边界。 */
+  test('图表工作表按其缩放比例显示，只绘制白色底与图表，没有网格线', async () => {
+    fakeWorker()
+    const contexts = recordContexts()
+    await fakeServer({ bytes: () => 'chartsheet' })
+    sizeScrollers()
+    const host = await mountFileView(
+      () => 'a.xlsx',
+      () => 0,
+    )
+    await waitFor(
+      () => contexts[0] !== undefined && contexts[0].fills.length > 1,
+      () => host.innerHTML.slice(0, 300),
+    )
+    expect(activeTab(host)).toBe('图')
+    const { fills } = contexts[0]!
+    expect(fills.slice(1).map((f) => [f.transform, f.fillStyle])).toEqual([
+      [[0.75, 0, 0, 0.75, 0, 0], '#ffffff'],
+    ])
   })
 
   /**
@@ -798,7 +849,7 @@ describe('表格预览', () => {
       () => tabNames(host).length > 0,
       () => host.innerHTML.slice(0, 300),
     )
-    host.querySelectorAll<HTMLButtonElement>('.sheet-tab')[1]!.click()
+    host.querySelectorAll<HTMLButtonElement>('.sheet-tab')[2]!.click()
     await waitFor(
       () => activeTab(host) === '乙',
       () => host.innerHTML.slice(0, 300),
@@ -811,7 +862,7 @@ describe('表格预览', () => {
     mtime = 2
     setRefresh(2)
     await waitFor(
-      () => boundary(host) === '未显示：图表工作表 1、其他对象 3',
+      () => boundary(host) === '未显示：宏表与对话框表 1、其他对象 3',
       () => `raw=${server.raw.length} ${host.innerHTML.slice(0, 300)}`,
     )
     expect(server.raw).toHaveLength(2)

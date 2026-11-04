@@ -12,7 +12,7 @@ import { colorToHex } from '../../drawingml/color.ts'
 import type { ShapeFill } from '../../drawingml/fill.ts'
 import { placeableWmf, RED_RECT_WMF } from '../../drawingml/paint/test-helper.ts'
 import { MISSING_LATIN } from '../../drawingml/text/fonts.ts'
-import type { Workbook } from '../model.ts'
+import type { Workbook, Worksheet } from '../model.ts'
 import { applyTint, DEFAULT_PALETTE } from './color.ts'
 import { parseCellRef, parseRange, shiftFormula } from './refs.ts'
 import { parseStyles } from './styles.ts'
@@ -220,25 +220,85 @@ function workbookPackage(
   })
 }
 
+/** 第 `index` 个页面，须为工作表。 */
+function worksheetAt(wb: Workbook, index: number): Worksheet {
+  const s = wb.sheets[index]
+  if (s?.kind !== 'worksheet') throw new Error(`第 ${index} 个页面不是工作表`)
+  return s
+}
+
 async function parsed(overrides: Record<string, string> = {}): Promise<Workbook> {
   const r = await parseXlsx(workbookPackage(overrides))
   if (!r.ok) throw new Error(JSON.stringify(r.failure))
   return r.value
 }
 
+const CHART_NS = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+const DRAWING_NS = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+const CHART_FRAME =
+  '<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="图表 1"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>' +
+  '<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic>' +
+  `<a:graphicData uri="${CHART_NS}"><c:chart xmlns:c="${CHART_NS}" r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame>`
+/** 柱形图：值取「数据」B1，缓存值为 1。 */
+const BAR_CHART =
+  `<c:chartSpace xmlns:c="${CHART_NS}" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:layout/>` +
+  '<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/>' +
+  '<c:val><c:numRef><c:f>数据!$B$1</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="1"/>' +
+  '<c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart>' +
+  '<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx>' +
+  '<c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx>' +
+  '</c:plotArea></c:chart></c:chartSpace>'
+/** 「图表」的部件：缩放 87% 且带 zoomToFit；绘图部件中一个绝对锚点的柱形图与一个单元格锚点的图表。 */
+const CHARTSHEET: Record<string, string> = {
+  'xl/chartsheets/sheet1.xml': `<chartsheet xmlns="${NS}" xmlns:r="${R}"><sheetViews><sheetView zoomScale="87" workbookViewId="0" zoomToFit="1"/></sheetViews><drawing r:id="rId1"/></chartsheet>`,
+  'xl/chartsheets/_rels/sheet1.xml.rels': rels(rel('rId1', 'drawing', '../drawings/drawing2.xml')),
+  'xl/drawings/drawing2.xml':
+    `<xdr:wsDr xmlns:xdr="${DRAWING_NS}" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${R}">` +
+    `<xdr:absoluteAnchor><xdr:pos x="12700" y="25400"/><xdr:ext cx="3810000" cy="2540000"/>${CHART_FRAME}<xdr:clientData/></xdr:absoluteAnchor>` +
+    '<xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>' +
+    `<xdr:ext cx="10" cy="10"/>${CHART_FRAME}<xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>`,
+  'xl/drawings/_rels/drawing2.xml.rels': rels(rel('rId1', 'chart', '../charts/chart1.xml')),
+  'xl/charts/chart1.xml': BAR_CHART,
+}
+
 describe('工作簿结构', () => {
-  test('工作表按工作簿顺序，图表工作表计数，隐藏状态与打开时的工作表', async () => {
-    const wb = await parsed()
-    expect(wb.sheets.map((s) => [s.name, s.state])).toEqual([
-      ['数据', 'visible'],
-      ['隐藏', 'hidden'],
+  test('工作表与图表工作表按工作簿顺序，隐藏状态与打开时的工作表；图表工作表取绝对锚点的图表与缩放比例', async () => {
+    const wb = await parsed(CHARTSHEET)
+    expect(wb.sheets.map((s) => [s.kind, s.name, s.state])).toEqual([
+      ['worksheet', '数据', 'visible'],
+      ['chartsheet', '图表', 'visible'],
+      ['worksheet', '隐藏', 'hidden'],
     ])
-    expect(wb.activeSheet).toBe(0)
-    expect(wb.unsupported.chartsheet).toBe(1)
+    expect(wb.activeSheet).toBe(1)
+    const chartsheet = wb.sheets[1]!
+    expect(chartsheet.kind === 'chartsheet' && chartsheet.view).toEqual({ zoom: 87 })
+    expect(chartsheet.charts.map((c) => c.anchor)).toEqual([
+      { kind: 'absolute', x: 12700, y: 25400, width: 3810000, height: 2540000 },
+    ])
+    // 系列按引用从工作表取值，不取缓存值。
+    expect(chartsheet.charts[0]!.chart.plot.groups[0]!.series[0]!.values).toEqual([12.25])
+    expect(chartsheet.unsupported).toEqual({ chart: 1 })
+    expect(wb.unsupported.otherSheet).toBeUndefined()
     expect(wb.minorFont).toEqual({ latin: 'Calibri', eastAsian: '等线' })
   })
+  test('部件缺失的图表工作表计入其他工作表；绘图部件中没有图表的图表工作表计入 chart', async () => {
+    const missing = await parsed()
+    expect(missing.sheets.map((s) => s.name)).toEqual(['数据', '隐藏'])
+    expect(missing.activeSheet).toBe(0)
+    expect(missing.unsupported.otherSheet).toBe(1)
+    const empty = await parsed({
+      'xl/chartsheets/sheet1.xml': `<chartsheet xmlns="${NS}"><sheetViews><sheetView workbookViewId="0"/></sheetViews></chartsheet>`,
+    })
+    const chartsheet = empty.sheets[1]!
+    expect([chartsheet.kind, chartsheet.charts, chartsheet.unsupported]).toEqual([
+      'chartsheet',
+      [],
+      { chart: 1 },
+    ])
+    expect(chartsheet.kind === 'chartsheet' && chartsheet.view.zoom).toBe(100)
+  })
   test('未实现的内容按种类计数', async () => {
-    const s = (await parsed()).sheets[0]!
+    const s = worksheetAt(await parsed(), 0)
     expect(s.unsupported).toEqual({
       chart: 1,
       graphic: 1,
@@ -335,7 +395,7 @@ describe('样式', () => {
     // 主题正文字体 Hans 为等线；标题字体没有 Hans 文种且 ea 为空，取 latin。
     expect(wb.styles.map((s) => s.font.name)).toEqual(['等线', 'Calibri Light', 'Calibri'])
     expect(wb.defaultFont.name).toBe('等线')
-    const a1 = wb.sheets[0]!.cells.get(0)?.get(0)?.value
+    const a1 = worksheetAt(wb, 0).cells.get(0)?.get(0)?.value
     expect(a1?.type === 'string' && a1.runs?.map((r) => r.font?.name)).toEqual(['等线'])
   })
   test('没有主题部件时带 scheme 的字体取宋体（WPS 实测）', () => {
@@ -366,7 +426,7 @@ describe('样式', () => {
   })
   test('差异样式的纯色填充取背景色', async () => {
     const wb = await parsed()
-    expect(wb.sheets[0]!.conditionalFormats[0]!.rules[0]!.dxf).toMatchObject({
+    expect(worksheetAt(wb, 0).conditionalFormats[0]!.rules[0]!.dxf).toMatchObject({
       bold: true,
       italic: null,
       color: '#9c0006',
@@ -377,7 +437,7 @@ describe('样式', () => {
 
 describe('单元格', () => {
   test('各类型的值与共享字符串', async () => {
-    const s = (await parsed()).sheets[0]!
+    const s = worksheetAt(await parsed(), 0)
     const v = (ref: string) => {
       const p = parseCellRef(ref)!
       return s.cells.get(p.row)?.get(p.col)?.value
@@ -400,7 +460,7 @@ describe('单元格', () => {
     expect(v('C2')).toEqual({ type: 'string', value: '行一\r行二', runs: null })
   })
   test('公式：有缓存值时显示缓存值，没有时显示公式文本，共享公式按偏移平移', async () => {
-    const s = (await parsed()).sheets[0]!
+    const s = worksheetAt(await parsed(), 0)
     const v = (ref: string) => {
       const p = parseCellRef(ref)!
       return s.cells.get(p.row)?.get(p.col)?.value
@@ -418,13 +478,13 @@ describe('单元格', () => {
       'xl/worksheets/sheet2.xml': `<worksheet xmlns="${NS}"><sheetData>
 <row r="3"><c r="A3" s="1"/><c r="C3"/></row><row r="5"><c r="B5"/></row></sheetData></worksheet>`,
     })
-    const s = wb.sheets[1]!
+    const s = worksheetAt(wb, 1)
     expect(s.cells.get(2)?.get(2)).toEqual({ value: null, style: 0 })
     expect(s.cells.get(4)?.get(1)).toEqual({ value: null, style: 0 })
     expect([s.maxRow, s.maxCol]).toEqual([2, 0])
   })
   test('行列、合并、冻结窗格、网格线、自动筛选与条件格式', async () => {
-    const s = (await parsed()).sheets[0]!
+    const s = worksheetAt(await parsed(), 0)
     expect(s.cols).toEqual([
       { min: 0, max: 1, width: 12.5, hidden: false, style: null },
       { min: 3, max: 3, width: 9, hidden: true, style: 3 },
@@ -471,7 +531,7 @@ describe('单元格', () => {
     expect(s.maxCol).toBe(6)
   })
   test('2010 扩展条件格式：公式在 xm:f、差异样式内嵌、区域在规则之后；数据条扩展不读入', async () => {
-    const s = (await parsed()).sheets[0]!
+    const s = worksheetAt(await parsed(), 0)
     expect(s.conditionalFormats).toHaveLength(3)
     expect(s.conditionalFormats[2]).toMatchObject({
       ranges: [{ top: 0, left: 2, bottom: 1, right: 2 }],
@@ -487,7 +547,7 @@ describe('单元格', () => {
     expect(s.conditionalFormats[2]!.rules).toHaveLength(1)
   })
   test('图片的锚点、裁剪与字节', async () => {
-    const s = (await parsed()).sheets[0]!
+    const s = worksheetAt(await parsed(), 0)
     expect(s.images).toHaveLength(1)
     expect(s.images[0]).toMatchObject({
       anchor: {
@@ -526,7 +586,7 @@ describe('单元格', () => {
       }),
     )
     if (!r.ok) throw new Error('解析失败')
-    const s = r.value.sheets[0]!
+    const s = worksheetAt(r.value, 0)
     expect(r.value.fontNames).toContain('Verdana')
     expect(s.images.map((i) => i.order)).toEqual([0, 3])
     expect(s.images[1]!.anchor).toEqual({
@@ -557,7 +617,7 @@ ${blip}</c:plotArea></c:chart>${blip}</c:chartSpace>`
       }),
     )
     if (!r.ok) throw new Error('解析失败')
-    const s = r.value.sheets[0]!
+    const s = worksheetAt(r.value, 0)
     expect(s.charts).toHaveLength(1)
     expect(s.unsupported.image).toBe(1)
     expect(r.value.unsupported.image).toBe(1)
@@ -619,7 +679,7 @@ describe('形状', () => {
       'xl/drawings/drawing1.xml': SHAPES,
       'xl/theme/theme1.xml': THEME_WITH_FORMATS,
     })
-    const s = wb.sheets[0]!
+    const s = worksheetAt(wb, 0)
     expect(s.images.map((i) => i.order)).toEqual([0])
     expect(s.shapes.map((x) => x.order)).toEqual([1, 2, 3, 4])
     const [button, connector, group, warp] = s.shapes.map((x) => x.shape)
@@ -694,7 +754,7 @@ describe('形状', () => {
       `<xdr:cxnSp><xdr:nvCxnSpPr><xdr:cNvPr id="2" name="连接线"/><xdr:cNvCxnSpPr/></xdr:nvCxnSpPr><xdr:spPr>${xfrm(0, 0, 100, 0)}${glow}</xdr:spPr></xdr:cxnSp>`,
     )
     const of = async (xml: string) =>
-      (await parsed({ 'xl/drawings/drawing1.xml': xml })).sheets[0]!.unsupported.effect
+      worksheetAt(await parsed({ 'xl/drawings/drawing1.xml': xml }), 0).unsupported.effect
     expect(await of(shape)).toBeUndefined()
     expect(await of(connector)).toBe(2)
   })
@@ -703,7 +763,7 @@ describe('形状', () => {
     const plain = `<xdr:wsDr ${XDR}>${two(`<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="3" name="文本"/><xdr:cNvSpPr/></xdr:nvSpPr>
 <xdr:spPr>${xfrm(0, 0, 3000, 4000)}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>
 <xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="zh-CN"/><a:t>默认</a:t></a:r></a:p></xdr:txBody></xdr:sp>`)}</xdr:wsDr>`
-    const s = (await parsed({ 'xl/drawings/drawing1.xml': plain })).sheets[0]!
+    const s = worksheetAt(await parsed({ 'xl/drawings/drawing1.xml': plain }), 0)
     const shape = s.shapes[0]?.shape
     const run = shape?.kind === 'shape' ? shape.text?.paragraphs[0]?.runs[0] : undefined
     expect(run?.style).toMatchObject({ size: 11, latin: 'Calibri', ea: '等线' })

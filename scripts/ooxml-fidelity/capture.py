@@ -14,6 +14,9 @@ docx：ActivePane.Pages(n).EnhMetaFileBits 取每页 EMF（屏幕排版的页面
 xlsx：Range.CopyPicture(xlScreen, xlBitmap) 取每个可见工作表 A1 起的区域（最多 MAX_ROWS 行、MAX_COLS 列），
   读取剪贴板的 CF_DIB。该取法按 100% 缩放输出，与窗口缩放比例无关；空白单元格为白底，网格线随工作表的显示设置。
   不要改用 xlPicture：其 PNG 中空白单元格是透明像素，去掉透明通道后为黑色。
+  可见的图表工作表排在全部工作表之后（工作表的页号不受影响），以 Chart.CopyPicture(xlScreen, xlBitmap) 取图表区，
+  页的 range 为 null。WPS 实测文件保存的缩放比例为 100% 时位图即图表区；不是 100% 时图表按另一高度重新排版
+  （同一图表 75% 时位图高 421 像素、100% 时 428 像素），成因未查明，打开后改设窗口缩放比例不改变位图。
 pptx：见 slides.py。Slide.Export 的导出图经 Slide.Copy 缩略图逐页核对，任一页不一致时整份不写入。
 每份文档的清单记录采集时系统的字体平滑设置（font_smoothing）：WPS 经 GDI 绘制的文字随 ClearType 对比度改变，
 xlsx 候选按清单中的对比度绘制。只读取，不修改系统设置。
@@ -103,12 +106,20 @@ def _docx(inst, src, out_dir: Path, dpi: float) -> dict:
             "dpi": dpi, "pages": pages, "checks": checks}
 
 
+def _copy_bitmap(target, backup: Path, restores: list):
+    """target.CopyPicture(xlScreen, xlBitmap) 后读取剪贴板的 CF_DIB；没有时返回 None。剪贴板的写回结果加入 restores。"""
+    with clipboard.Borrowed(backup) as borrowed:
+        target.CopyPicture(XL_SCREEN, XL_BITMAP)
+        data = clipboard.read_formats({clipboard.CF_DIB})
+        borrowed.copy_seen()
+    restores.append(borrowed.outcome)
+    return clipboard.dib_image(data[clipboard.CF_DIB]) if clipboard.CF_DIB in data else None
+
+
 def _xlsx(inst, src, out_dir: Path, backup: Path) -> dict:
     wb = inst.open(src)
     pages, skipped, restores = [], [], []
     try:
-        for i in range(1, wb.Charts.Count + 1):
-            skipped.append({"sheet": wb.Charts(i).Name, "reason": "图表工作表，未采集"})
         for i in range(1, wb.Worksheets.Count + 1):
             ws = wb.Worksheets(i)
             name = ws.Name
@@ -119,15 +130,10 @@ def _xlsx(inst, src, out_dir: Path, backup: Path) -> dict:
             last_row = min(used.Row + used.Rows.Count - 1, MAX_ROWS)
             last_col = min(used.Column + used.Columns.Count - 1, MAX_COLS)
             rng = ws.Range(ws.Cells(1, 1), ws.Cells(last_row, last_col))
-            with clipboard.Borrowed(backup) as borrowed:
-                rng.CopyPicture(XL_SCREEN, XL_BITMAP)
-                data = clipboard.read_formats({clipboard.CF_DIB})
-                borrowed.copy_seen()
-            restores.append(borrowed.outcome)
-            if clipboard.CF_DIB not in data:
+            img = _copy_bitmap(rng, backup, restores)
+            if img is None:
                 skipped.append({"sheet": name, "reason": "剪贴板中没有 CF_DIB"})
                 continue
-            img = clipboard.dib_image(data[clipboard.CF_DIB])
             n = len(pages) + 1
             png = out_dir / f"page-{n:04d}.png"
             img.save(png)
@@ -135,6 +141,23 @@ def _xlsx(inst, src, out_dir: Path, backup: Path) -> dict:
             pages.append({"n": n, "file": png.name, "sheet": name, "range": rng.Address.replace("$", ""),
                           "width": img.width, "height": img.height, "expected_100pct": expected,
                           "shapes": ws.Shapes.Count})
+        for i in range(1, wb.Charts.Count + 1):
+            chart = wb.Charts(i)
+            name = chart.Name
+            if chart.Visible != -1:
+                skipped.append({"sheet": name, "reason": "隐藏"})
+                continue
+            img = _copy_bitmap(chart, backup, restores)
+            if img is None:
+                skipped.append({"sheet": name, "reason": "剪贴板中没有 CF_DIB"})
+                continue
+            n = len(pages) + 1
+            png = out_dir / f"page-{n:04d}.png"
+            img.save(png)
+            area = chart.ChartArea
+            expected = (round(area.Width * 96 / 72), round(area.Height * 96 / 72))
+            pages.append({"n": n, "file": png.name, "sheet": name, "range": None,
+                          "width": img.width, "height": img.height, "expected_100pct": expected})
     finally:
         inst.close_doc(wb)
     checks = {"skipped_sheets": skipped, "clipboard": restores,

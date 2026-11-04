@@ -3,7 +3,7 @@
  *
  * - 加载、改写后重新加载与失败文案见 `document.ts`。重新加载完成后按名称保留当前工作表，并保留滚动位置与缩放比例。
  * - 存在未显示的内容时显示一行能力边界：当前工作表的计数、工作簿级的种类与无法解码的图片。
- * - 工作表签只列出可见的工作表，隐藏与深度隐藏的不列出。
+ * - 工作表签按工作簿顺序列出可见的工作表与图表工作表，隐藏与深度隐藏的不列出。
  *
  * 默认导出供 `lazy()` 使用：解析与绘制代码只在打开表格文件时下载。
  */
@@ -37,7 +37,6 @@ interface Doc {
 /** 能力边界中各种类的名称，按此顺序列出。 */
 const UNSUPPORTED_LABEL: Record<UnsupportedKind, string> = {
   chart: '图表',
-  chartsheet: '图表工作表',
   otherSheet: '宏表与对话框表',
   graphic: '其他对象',
   textWarp: '文字变形',
@@ -176,6 +175,7 @@ export default function SheetView(props: { path: string; mtime: number }) {
       nextPosition = null
       const mine = ++decoding
       setUndecoded(0)
+      if (sheet.kind !== 'worksheet') return
       void Promise.all(
         sheet.images.map((img) => decodePicture(img.bytes.slice(), img.contentType, imageDecoder)),
       ).then((images) => {
@@ -199,7 +199,6 @@ export default function SheetView(props: { path: string; mtime: number }) {
     return boundaryText(
       {
         ...sheet.unsupported,
-        chartsheet: book.chartsheet ?? 0,
         otherSheet: book.otherSheet ?? 0,
         image: (sheet.unsupported.image ?? 0) + undecoded(),
       },

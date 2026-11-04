@@ -12,8 +12,10 @@
  * 4. 数据条，5. 边框（同一条边两侧都指定时取较粗者），6. 文字，7. 绘图对象（图片、形状与图表，按锚点在绘图部件中的顺序，
  *    形状见 `shapes.ts`，图表见 `../../drawingml/chart/paint.ts`，图表区即锚点矩形），8. 自动筛选按钮。
  * 图片（位图与图元文件）按 `../../drawingml/paint/picture.ts` 的 `drawPicture` 绘制到锚点矩形，位图的插值质量为 `medium`。
+ * 图表工作表（`ChartsheetScene`）只有白色底与图表，图表的绘制与工作表中的图表相同（`drawChart`）。
  */
 
+import type { Chart } from '../../drawingml/chart/model.ts'
 import { paintChart } from '../../drawingml/chart/paint.ts'
 import {
   type CreateCanvas,
@@ -25,7 +27,7 @@ import {
 import { deviceScale } from '../../drawingml/paint/fill.ts'
 import { drawPicture, type PaintPicture } from '../../drawingml/paint/picture.ts'
 import type { ShapeScene } from '../../drawingml/shape/paint.ts'
-import type { FaceCache } from '../../drawingml/text/fonts.ts'
+import type { FaceCache, TextClearType } from '../../drawingml/text/fonts.ts'
 import { emboldenBitmap } from '../../font/index.ts'
 import { fillBitmap } from '../../glyph/bitmap.ts'
 import {
@@ -38,6 +40,7 @@ import {
 } from '../../glyph/cleartype/index.ts'
 import type { MetafileFonts } from '../../metafile/index.ts'
 import type {
+  AbsoluteAnchor,
   BorderLine,
   BorderLineStyle,
   Cell,
@@ -45,10 +48,12 @@ import type {
   CellFill,
   CellRange,
   CellStyle,
+  Chartsheet,
   DrawingAnchor,
   FontStyle,
   PatternType,
   RatioMarker,
+  Sheet,
   SheetChart,
   Workbook,
   Worksheet,
@@ -98,6 +103,7 @@ export type SheetDrawing =
   | { readonly kind: 'chart'; readonly chart: SheetChart; readonly rect: Rect }
 
 export interface SheetScene {
+  readonly kind: 'worksheet'
   readonly workbook: Workbook
   readonly sheet: Worksheet
   readonly geometry: SheetGeometry
@@ -112,13 +118,31 @@ export interface SheetScene {
   readonly metafileFonts: MetafileFonts | null
 }
 
+/** 图表工作表：图表附图表区矩形（工作表像素），按锚点顺序。 */
+export interface ChartsheetScene {
+  readonly kind: 'chartsheet'
+  readonly workbook: Workbook
+  readonly sheet: Chartsheet
+  readonly fonts: FontSet
+  readonly charts: readonly { readonly chart: Chart; readonly rect: Rect }[]
+}
+
+/** 一个页面的绘制场景：工作表或图表工作表。绘制函数按 `kind` 分派一次。 */
+export type PageScene = SheetScene | ChartsheetScene
+
 const GRID_COLOR = '#e6e6e6'
 const WHITE = '#ffffff'
 const EMU_PER_PX = 9525
 /** 溢出文字向两侧最多查找的列数，与 `cell-text.ts` 的上限一致。 */
 const SPILL_WINDOW = 64
 
-export function createScene(workbook: Workbook, sheet: Worksheet, fonts: FontSet): SheetScene {
+export function createScene(workbook: Workbook, sheet: Worksheet, fonts: FontSet): SheetScene
+export function createScene(workbook: Workbook, sheet: Sheet, fonts: FontSet): PageScene
+export function createScene(workbook: Workbook, sheet: Sheet, fonts: FontSet): PageScene {
+  if (sheet.kind === 'chartsheet') {
+    const charts = sheet.charts.map((c) => ({ chart: c.chart, rect: absoluteRect(c.anchor) }))
+    return { kind: 'chartsheet', workbook, sheet, fonts, charts }
+  }
   const geometry = buildGeometry(workbook, sheet, fonts)
   const merges = new Map<number, CellRange[]>()
   for (const m of sheet.merges) {
@@ -147,6 +171,7 @@ export function createScene(workbook: Workbook, sheet: Worksheet, fonts: FontSet
   ]
   ordered.sort((a, b) => a.order - b.order)
   return {
+    kind: 'worksheet',
     workbook,
     sheet,
     geometry,
@@ -194,12 +219,16 @@ interface CellInfo {
  */
 export function paintRegion(
   ctx: PaintContext,
-  scene: SheetScene,
+  scene: PageScene,
   region: PaintRegion,
   res: SheetResources,
   originX = 0,
   originY = 0,
 ): void {
+  if (scene.kind === 'chartsheet') {
+    paintChartsheet(ctx, scene, region, res, originX, originY)
+    return
+  }
   const { cols, rows } = scene.geometry
   const { sheet } = scene
   const base = ctx.getTransform()
@@ -298,8 +327,9 @@ export interface PaintView {
   readonly height: number
 }
 
-/** 打开工作表时的滚动量：可滚动窗格的左上角为 `view.topLeft`。 */
-export function initialScroll(scene: SheetScene): { scrollX: number; scrollY: number } {
+/** 打开工作表时的滚动量：可滚动窗格的左上角为 `view.topLeft`；图表工作表从左上角开始。 */
+export function initialScroll(scene: PageScene): { scrollX: number; scrollY: number } {
+  if (scene.kind === 'chartsheet') return { scrollX: 0, scrollY: 0 }
   const { cols, rows } = scene.geometry
   const v = scene.sheet.view
   return {
@@ -311,14 +341,46 @@ export function initialScroll(scene: SheetScene): { scrollX: number; scrollY: nu
 const FREEZE_LINE = '#9e9e9e'
 
 /**
- * 按冻结窗格分四块绘制可见区域：冻结的行与列固定，其余随滚动量移动；冻结边界画一条细线。
+ * 页面的范围（工作表像素）：`used` 为含内容的范围，`total` 为可以滚动到的范围。工作表的 `used` 到含内容的最后一行与列，
+ * `total` 为整个网格；图表工作表两者都到图表区的右下角，含右侧与下侧边框的 1 像素。
+ */
+export function pageExtent(scene: PageScene): {
+  used: { width: number; height: number }
+  total: { width: number; height: number }
+} {
+  if (scene.kind === 'chartsheet') {
+    let width = 0
+    let height = 0
+    for (const { rect } of scene.charts) {
+      width = Math.max(width, Math.ceil(rect.x + rect.width) + 1)
+      height = Math.max(height, Math.ceil(rect.y + rect.height) + 1)
+    }
+    return { used: { width, height }, total: { width, height } }
+  }
+  const { cols, rows } = scene.geometry
+  return {
+    used: {
+      width: cols.offset(scene.sheet.maxCol + 1),
+      height: rows.offset(scene.sheet.maxRow + 1),
+    },
+    total: { width: cols.total, height: rows.total },
+  }
+}
+
+/**
+ * 按冻结窗格分四块绘制可见区域：冻结的行与列固定，其余随滚动量移动；冻结边界画一条细线。图表工作表没有冻结窗格。
  */
 export function paintView(
   ctx: PaintContext,
-  scene: SheetScene,
+  scene: PageScene,
   view: PaintView,
   res: SheetResources,
 ): void {
+  if (scene.kind === 'chartsheet') {
+    const { scrollX: x, scrollY: y, width, height } = view
+    paintRegion(ctx, scene, { x, y, width, height }, res)
+    return
+  }
   const { cols, rows } = scene.geometry
   const { frozenRows, frozenCols } = scene.sheet.view
   const fw = Math.min(view.width, cols.offset(frozenCols))
@@ -1142,17 +1204,19 @@ function clearTypeRun(m: Matrix, s: SegmentPlacement, clip: DeviceRect): GlyphRu
   }
 }
 
+function absoluteRect(a: AbsoluteAnchor): Rect {
+  return {
+    x: a.x / EMU_PER_PX,
+    y: a.y / EMU_PER_PX,
+    width: a.width / EMU_PER_PX,
+    height: a.height / EMU_PER_PX,
+  }
+}
+
 /** 锚点换算为工作表像素矩形。 */
 export function anchorRect(geometry: SheetGeometry, a: DrawingAnchor): Rect {
   const { cols, rows } = geometry
-  if (a.kind === 'absolute') {
-    return {
-      x: a.x / EMU_PER_PX,
-      y: a.y / EMU_PER_PX,
-      width: a.width / EMU_PER_PX,
-      height: a.height / EMU_PER_PX,
-    }
-  }
+  if (a.kind === 'absolute') return absoluteRect(a)
   if (a.kind === 'cellRatio') {
     const at = (m: RatioMarker) => ({
       x: cols.offset(m.col) + m.colRatio * cols.size(m.col),
@@ -1207,22 +1271,9 @@ function drawDrawings(
   const dx = at.originX - at.region.x
   const dy = at.originY - at.region.y
   const { workbook, fonts } = scene
-  const clearType =
-    res.clearType === null
-      ? null
-      : sheetClearType(
-          fonts,
-          res.clearType,
-          ctx,
-          deviceRect(at.base, {
-            left: at.originX,
-            top: at.originY,
-            right: at.originX + at.region.width + 1,
-            bottom: at.originY + at.region.height + 1,
-          }),
-        )
-  let shapes: { scene: ShapeScene; parent: Matrix } | null = null
-  let charts: { scene: ShapeScene; parent: Matrix } | null = null
+  const clearType = regionClearType(ctx, fonts, res, at)
+  let shapes: Layer | null = null
+  let charts: Layer | null = null
   for (const d of scene.drawings) {
     if (d.kind === 'image') {
       drawImage(ctx, scene, d.index, res.images[d.index] ?? null, dx, dy, at.base)
@@ -1231,17 +1282,7 @@ function drawDrawings(
     if (d.kind === 'chart') {
       if (!intersects(d.rect, at.region)) continue
       charts ??= shapeScene(ctx, res, at, chartFaces(workbook, fonts, clearType))
-      const r = d.rect
-      const frame = {
-        x: r.x * EMU_PER_PX,
-        y: r.y * EMU_PER_PX,
-        width: r.width * EMU_PER_PX,
-        height: r.height * EMU_PER_PX,
-        rotation: 0,
-        flipH: false,
-        flipV: false,
-      }
-      paintChart(charts.scene, d.chart.chart, frame, charts.parent)
+      drawChart(charts, d.chart.chart, d.rect)
       continue
     }
     if (!intersects(d.shape.bounds, at.region)) continue
@@ -1250,23 +1291,102 @@ function drawDrawings(
   }
 }
 
+/** 区域中形状或图表共用的绘制上下文（`shapeScene`）。 */
+interface Layer {
+  readonly scene: ShapeScene
+  readonly parent: Matrix
+}
+
+/** 区域中形状与图表文字的 ClearType 设置，像素裁到区域之内；显示器不使用 ClearType 时为 `null`。 */
+function regionClearType(
+  ctx: PaintContext,
+  fonts: FontSet,
+  res: SheetResources,
+  at: Placement,
+): TextClearType | null {
+  if (res.clearType === null) return null
+  return sheetClearType(
+    fonts,
+    res.clearType,
+    ctx,
+    deviceRect(at.base, {
+      left: at.originX,
+      top: at.originY,
+      right: at.originX + at.region.width + 1,
+      bottom: at.originY + at.region.height + 1,
+    }),
+  )
+}
+
+/** 图表绘制到工作表像素矩形 `rect`（图表区）。 */
+function drawChart(layer: Layer, chart: Chart, rect: Rect): void {
+  const frame = {
+    x: rect.x * EMU_PER_PX,
+    y: rect.y * EMU_PER_PX,
+    width: rect.width * EMU_PER_PX,
+    height: rect.height * EMU_PER_PX,
+    rotation: 0,
+    flipH: false,
+    flipV: false,
+  }
+  paintChart(layer.scene, chart, frame, layer.parent)
+}
+
+/** 图表工作表的区域：白色底，其上为与区域相交的图表；范围与坐标同 `paintRegion`。 */
+function paintChartsheet(
+  ctx: PaintContext,
+  scene: ChartsheetScene,
+  region: PaintRegion,
+  res: SheetResources,
+  originX: number,
+  originY: number,
+): void {
+  const at: Placement = { base: ctx.getTransform(), region, originX, originY }
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(originX, originY, region.width + 1, region.height + 1)
+  ctx.clip()
+  if ('fontKerning' in ctx) ctx.fontKerning = 'none'
+  ctx.fillStyle = WHITE
+  ctx.fillRect(originX, originY, region.width + 1, region.height + 1)
+  let layer: Layer | null = null
+  for (const c of scene.charts) {
+    if (!intersects(c.rect, region)) continue
+    layer ??= shapeScene(
+      ctx,
+      res,
+      at,
+      chartFaces(scene.workbook, scene.fonts, regionClearType(ctx, scene.fonts, res, at)),
+    )
+    drawChart(layer, c.chart, c.rect)
+  }
+  ctx.restore()
+}
+
 /**
  * 形状绘制的上下文：工作表像素经区域平移与调用方的变换换算为设备坐标；图层边界以区域右下角的设备坐标为限。
  * 形状与图表的图片填充不绘制（已计入未显示的图片）。
+ * 图案按工作表的设备坐标对齐：`origin` 为画布左上角相对工作表原点的设备坐标，滚动与冻结窗格中图案随形状移动。
  */
 function shapeScene(
   ctx: PaintContext,
   res: SheetResources,
   at: Placement,
   faces: FaceCache | null,
-): { scene: ShapeScene; parent: Matrix } {
+): Layer {
   const { base, region, originX, originY } = at
   const right = originX + region.width + 1
   const bottom = originY + region.height + 1
+  const dx = originX - region.x
+  const dy = originY - region.y
+  const origin = {
+    x: -(base.a * dx + base.c * dy + base.e),
+    y: -(base.b * dx + base.d * dy + base.f),
+  }
   return {
     scene: {
       ctx,
-      res: { image: () => null, createCanvas: res.createCanvas, metafileFonts: null },
+      res: { image: () => null, createCanvas: res.createCanvas, metafileFonts: null, origin },
       scale: deviceScale(base),
       canvas: {
         width: Math.ceil(base.a * right + base.c * bottom + base.e),

@@ -3,7 +3,7 @@
  *
  * - 引用形如 `Sheet1!$A$2:$A$6`、`'数据 表'!$B$1`，多区域写为 `(区域,区域)`，按区域顺序连接；整列与整行引用（到达工作簿网格的
  *   末行或末列，见 `Workbook.gridSize`）截到含内容的范围。
- *   外部工作簿（`[1]Sheet1!…`）、名称、缺少工作表名与二维区域无法解析，返回 `null`，调用方改用缓存值。
+ *   外部工作簿（`[1]Sheet1!…`）、名称、缺少工作表名、图表工作表与二维区域无法解析，返回 `null`，调用方改用缓存值。
  * - `visibleOnly` 为真时略去隐藏行（含未列出且 `zeroHeight` 为真的行、行高为 0 的行）与隐藏列中的单元格。
  * - 没有缓存值的公式单元格按空单元格处理（WPS 会重新计算该公式，此处不计算）。
  */
@@ -21,6 +21,7 @@ import type {
   CellRange,
   CellStyle,
   DrawingAnchor,
+  Sheet,
   SheetChart,
   UnsupportedCounts,
   Workbook,
@@ -101,13 +102,14 @@ function datum(
   return { kind: 'text', text: v.value }
 }
 
-/** 工作簿的图表单元格取值；`sheets` 为全部已解析的工作表（含隐藏的工作表），`grid` 为网格的行数与列数。 */
+/** 工作簿的图表单元格取值；`sheets` 为全部已解析的页面（含隐藏的工作表），`grid` 为网格的行数与列数。 */
 export function workbookCells(
-  sheets: readonly Worksheet[],
+  sheets: readonly Sheet[],
   styles: readonly CellStyle[],
   grid: Workbook['gridSize'],
 ): ChartCells {
-  const byName = new Map(sheets.map((s) => [s.name, s]))
+  const byName = new Map<string, Worksheet>()
+  for (const s of sheets) if (s.kind === 'worksheet') byName.set(s.name, s)
   return {
     read(ref, visibleOnly) {
       const areas: Area[] = []
@@ -135,18 +137,18 @@ export function workbookCells(
  * 已读取、待求值的图表：求值需要全部工作表的单元格，在全部工作表解析之后进行。`raw` 为 `null` 时部件缺失；
  * `theme` 为图表部件引用的主题覆盖，没有时为 `null`。
  */
-export interface PendingChart {
-  readonly anchor: DrawingAnchor
+export interface PendingChart<A extends DrawingAnchor = DrawingAnchor> {
+  readonly anchor: A
   readonly order: number
   readonly raw: RawChart | null
   readonly theme: Theme | null
 }
 
-/** 一张工作表的待求值图表；求值结果加入 `charts`，未绘制的计入 `counts`。 */
-export interface SheetCharts {
-  readonly charts: SheetChart[]
+/** 一张工作表或图表工作表的待求值图表；求值结果加入 `charts`，未绘制的计入 `counts`。 */
+export interface SheetCharts<A extends DrawingAnchor = DrawingAnchor> {
+  readonly charts: SheetChart<A>[]
   readonly counts: UnsupportedCounts
-  readonly items: readonly PendingChart[]
+  readonly items: readonly PendingChart<A>[]
 }
 
 /**
@@ -156,7 +158,7 @@ export interface SheetCharts {
  */
 export function resolveSheetCharts(
   pending: readonly SheetCharts[],
-  sheets: readonly Worksheet[],
+  sheets: readonly Sheet[],
   styles: readonly CellStyle[],
   grid: Workbook['gridSize'],
   theme: Theme | null,
