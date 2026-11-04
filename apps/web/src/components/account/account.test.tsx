@@ -86,6 +86,7 @@ beforeAll(async () => {
       return [
         {
           id: 'claude-opus-5-5',
+          ratio: 0.85,
           price: { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 },
         },
       ] as T
@@ -195,9 +196,10 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
   // 累计 Token 为四项之和；「输入」含缓存命中。
   expect(view.text()).toContain('3.5K')
   expect(view.text()).toContain('完成')
-  // 可用模型与单价（积分 / 百万 token）；读取后模型列表随之刷新。
+  // 可用模型、倍率与单价（积分 / 百万 token）；读取后模型列表随之刷新。
   await until(() => view.text().includes('claude-opus-5-5'))
   expect(view.text()).toContain('1,500.00')
+  expect(view.text()).toContain('0.85×')
   expect(calls).toContain('GET /api/models')
   // 不足一页：没有更早的记录。
   expect(view.button('加载更早的记录')).toBeUndefined()

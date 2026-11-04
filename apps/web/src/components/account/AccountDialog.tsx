@@ -26,7 +26,7 @@ import PairPanel from '../PairPanel.tsx'
 import { LoadState } from '../settings/LoadState.tsx'
 import { ActivityGrid } from './ActivityGrid.tsx'
 import { AccountAvatar, squareAvatar } from './Avatar.tsx'
-import { formatCredits } from './format.ts'
+import { formatCredits, formatRatio } from './format.ts'
 import { LoginForm } from './LoginForm.tsx'
 
 /** 使用记录每页条数，与服务端 `/api/cloud/requests` 相同：返回不足一页即没有更早的记录。 */
@@ -191,7 +191,7 @@ function AccountView(props: { signed: SignedIn }) {
   )
 }
 
-/** 云端当前提供的型号与单价，每次打开弹窗时读取。 */
+/** 云端当前提供的型号、倍率与单价，每次打开弹窗时读取。 */
 function ModelTable() {
   const [models, { refetch }] = createResource(fetchCloudModels)
   return (
@@ -203,6 +203,7 @@ function ModelTable() {
               <thead>
                 <tr>
                   <th>型号</th>
+                  <th class="num">倍率</th>
                   <th class="num">输入</th>
                   <th class="num">输出</th>
                   <th class="num">缓存读取</th>
@@ -216,6 +217,7 @@ function ModelTable() {
                       <td>
                         <code class="lib-id">{m.id}</code>
                       </td>
+                      <td class="num">{formatRatio(m.ratio)}</td>
                       <td class="num">{m.price ? formatCredits(m.price.input) : '—'}</td>
                       <td class="num">{m.price ? formatCredits(m.price.output) : '—'}</td>
                       <td class="num">{m.price ? formatCredits(m.price.cacheRead) : '—'}</td>

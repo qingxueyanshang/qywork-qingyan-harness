@@ -101,14 +101,21 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
     }
     if (path === '/v1/catalog' && authed) {
       const price = { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 }
+      const flat = { ratio: 1, official: false, price }
       return Response.json({
         models: [
-          { id: 'claude-sonnet-5-5', protocol: 'anthropic_messages', price },
-          { id: 'gpt-5', protocol: 'openai_responses', price },
+          {
+            id: 'claude-sonnet-5-5',
+            protocol: 'anthropic_messages',
+            ratio: 0.5,
+            official: true,
+            price,
+          },
+          { id: 'gpt-5', protocol: 'openai_responses', ...flat },
           {
             id: 'claude-next',
             protocol: 'anthropic_messages',
-            price,
+            ...flat,
             ...(cloud.nextSpec
               ? {
                   spec: {
@@ -302,7 +309,18 @@ test('可用模型实时读取云端型号清单，单价为积分 / 百万 toke
     'claude-opus-5-5',
   ])
   expect(models[1]?.price).toMatchObject({ input: 300, output: 1500 })
-  expect(Object.keys(live.providers[CLOUD_PROVIDER]?.models ?? {})).toContain('claude-opus-5-5')
+  expect(models[0]?.ratio).toBe(0.5)
+  // 云端按官方价计价且本机模型库有单价的型号只写倍率；其余写单价。
+  const stored = live.providers[CLOUD_PROVIDER]?.models ?? {}
+  expect(stored['claude-sonnet-5-5']?.price).toEqual({ scale: 0.5, currency: 'CREDIT' })
+  expect(stored['gpt-5']?.price).toEqual({
+    input: 300,
+    output: 1500,
+    cacheRead: 30,
+    cacheWrite: 375,
+    currency: 'CREDIT',
+  })
+  expect(Object.keys(stored)).toContain('claude-opus-5-5')
   expect(Object.keys((await loadConfig()).providers[CLOUD_PROVIDER]?.models ?? {})).toContain(
     'claude-opus-5-5',
   )

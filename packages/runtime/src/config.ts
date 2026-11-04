@@ -370,8 +370,13 @@ export interface StoredModel {
   delisted?: true
 }
 
-/** 每百万 Token 的价格，字段与模型库覆盖的价格字段相同。 */
-export interface ModelPrice {
+/**
+ * 每百万 Token 的价格，字段与模型库覆盖的价格字段相同。两种形状：四项单价；或倍率 `scale`（模型库官方价乘以该值，
+ * 长上下文分档保留）。云端内置模型在模型库中有官方价时写入倍率，否则写入单价。
+ */
+export type ModelPrice = UnitModelPrice | { scale: number; currency: Currency }
+
+export interface UnitModelPrice {
   input: number
   output: number
   cacheRead: number
@@ -838,7 +843,20 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
       }
       // 价格直接进入账本，不合法的值会使该接口全部用量记错。
       const price = m.price
-      if (
+      const scale = (price as { scale?: unknown } | undefined)?.scale
+      if (price && scale !== undefined) {
+        if (
+          typeof scale !== 'number' ||
+          !Number.isFinite(scale) ||
+          scale <= 0 ||
+          !CURRENCIES.includes(price.currency) ||
+          Object.keys(price).some((k) => k !== 'scale' && k !== 'currency')
+        ) {
+          problems.push(
+            `${name} / ${id} 的 price 为倍率时只包含正数 scale 与 currency（${CURRENCIES.join('、')}）。`,
+          )
+        }
+      } else if (
         price !== undefined &&
         (!price ||
           !['input', 'output', 'cacheRead', 'cacheWrite'].every((k) => {
@@ -850,7 +868,7 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         problems.push(
           `${name} / ${id} 的 price 必须包含非负数 input、output、cacheRead、cacheWrite 与 currency（${CURRENCIES.join('、')}）。`,
         )
-      } else if (price && invalidOffPeak(price.offPeak)) {
+      } else if (price && 'offPeak' in price && invalidOffPeak(price.offPeak)) {
         problems.push(`${name} / ${id} 的 price.${OFF_PEAK_RULE}。`)
       }
       if (m.delisted !== undefined && m.delisted !== true)

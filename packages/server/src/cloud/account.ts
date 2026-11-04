@@ -28,22 +28,36 @@ export const CLOUD_PROVIDER = 'qywork'
 /** 云端接口的默认协议；网关上协议不同的型号带各自的 `kind`。 */
 const DEFAULT_KIND = 'anthropic_messages'
 
-/** 云端 `/v1/catalog` 中的一个型号。单价单位为积分 / 百万 token。 */
+/** 云端 `/v1/catalog` 中的一个型号。单价为基础档单价乘以倍率，单位为积分 / 百万 token。 */
 interface CatalogModel {
   id: string
   protocol: ProviderKind
+  /** 售价倍率。 */
+  ratio: number
+  /** true：云端按模型库的官方价乘以倍率计价；false：按后台填写的单价乘以倍率计价。 */
+  official: boolean
   price: { input: number; output: number; cacheRead: number; cacheWrite: number }
   /** 云端为模型库中没有的型号填写的规格。 */
   spec?: { displayName: string; base?: string; contextWindow?: number; maxOutputTokens?: number }
 }
 
-/** 云端型号在配置中的形状：协议与默认协议不同时带 `kind`，价格记为积分，与账号余额同一单位。 */
+/**
+ * 云端型号在配置中的形状：协议与默认协议不同时带 `kind`，价格记为积分，与账号余额同一单位。
+ * 云端按官方价计价、且本机模型库有该型号单价时只写倍率：运行面板按模型库的长上下文分档计算，与云端扣费一致。
+ * 其余写单价。
+ */
 function storedModels(list: readonly CatalogModel[]): Record<string, StoredModel> {
   const models: Record<string, StoredModel> = {}
   for (const m of list) {
+    const local = lookupModel(m.id, m.protocol, Date.now(), m.spec?.base)
+    const scaled =
+      m.official &&
+      local.catalogued !== false &&
+      local.pricing.input !== null &&
+      local.pricing.output !== null
     models[m.id] = {
       ...(m.protocol !== DEFAULT_KIND ? { kind: m.protocol } : {}),
-      price: { ...m.price, currency: 'CREDIT' },
+      price: scaled ? { scale: m.ratio, currency: 'CREDIT' } : { ...m.price, currency: 'CREDIT' },
     }
   }
   return models
@@ -224,7 +238,7 @@ export class CloudAccount {
   async models(): Promise<CloudModel[]> {
     const list = await this.call<{ models: CatalogModel[] }>('/v1/catalog')
     await this.applyModels(list.models)
-    return list.models.map((m) => ({ id: m.id, price: m.price }))
+    return list.models.map((m) => ({ id: m.id, ratio: m.ratio, price: m.price }))
   }
 
   /** 更换头像。`image` 是客户端裁剪编码后的 data URL，格式与大小由云端校验。 */

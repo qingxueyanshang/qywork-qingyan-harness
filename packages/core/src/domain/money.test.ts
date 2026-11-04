@@ -20,7 +20,8 @@ describe('单币种', () => {
   test('积分以单位后缀显示，与账号余额同一单位；不与美元合计', () => {
     expect(formatMoney(12.5, 'CREDIT')).toBe('12.50 积分')
     expect(formatMoney(0, 'CREDIT')).toBe('0 积分')
-    expect(formatMoney(0.001, 'CREDIT')).toBe('<0.01 积分')
+    expect(formatMoney(0.0034, 'CREDIT')).toBe('0.0034 积分')
+    expect(formatMoney(0.00001, 'CREDIT')).toBe('<0.0001 积分')
     expect(formatCosts({ CREDIT: 3, USD: 0.5 })).toBe('3.00 积分 + $0.50')
   })
 
