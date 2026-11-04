@@ -34,10 +34,7 @@ export function UpdateSettings() {
             <Show
               when={value().mode !== 'manual'}
               fallback={
-                <a
-                  class="app-update-notes-link"
-                  href="https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest"
-                >
+                <a class="app-update-notes-link" href="https://qywork.io/#download">
                   下载新版本
                 </a>
               }

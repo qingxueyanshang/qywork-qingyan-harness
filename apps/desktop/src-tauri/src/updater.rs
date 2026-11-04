@@ -10,7 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-const ENDPOINT: &str = "https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest/download/latest.json";
+/// 官网服务器同步的 GitHub 最新正式版本的更新清单，其中的下载地址指向同一服务器。
+/// 公开发布后最多 10 分钟才同步到这里，同步之前清单中仍是已同步的版本。
+const ENDPOINT: &str = "https://qywork.io/download/latest.json";
 const CHECK_INTERVAL: u64 = 6 * 60 * 60 * 1000;
 
 #[derive(Clone, Serialize)]
