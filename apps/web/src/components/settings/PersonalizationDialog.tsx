@@ -13,7 +13,7 @@ import {
   mergePersonalization,
   PERSONAL_LIMITS,
   type PersonalBackground,
-  type Personalization,
+  revealBackdrop,
 } from '@qywork/core'
 import { createSignal, For, type JSX, onCleanup, onMount, Show } from 'solid-js'
 import {
@@ -53,12 +53,6 @@ const GRADIENT_TO = '#06b6d4'
 /** 设置雾面时浓度与速度的初始值。 */
 const FOG_DENSITY = 0.5
 const FOG_SPEED = 0.4
-
-/**
- * 从「看不到背景」改为有背景或雾面时采用的界面不透明度。背景与雾面位于界面骨架之下，
- * 不透明度为 100% 时被完全遮住，选了颜色却看不到变化。
- */
-const REVEAL_OPACITY = 0.85
 
 function Seg<T extends string>(props: {
   items: { id: T; label: string }[]
@@ -112,11 +106,6 @@ function Slider(props: {
 
 const percent = (v: number) => `${Math.round(v * 100)}%`
 
-/** 是否看得到背景层：纯色背景的颜色为空且没有雾面时，骨架下方只有页面底色。 */
-function backdropVisible(p: Personalization): boolean {
-  return !(p.background.kind === 'color' && p.background.color === null) || p.fog !== null
-}
-
 /**
  * 恢复默认的确认。个性化弹窗是原生模态窗口，位于顶层；普通的确认浮层会被它遮住，
  * 因此确认同样用原生模态窗口，叠在其上。
@@ -162,20 +151,13 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
 
   const p = currentPersonalization
 
-  /**
-   * 合并一项修改并预览。`reveal` 为真且修改前看不到背景时，同一次修改把 100% 的不透明度降为
-   * `REVEAL_OPACITY`，理由见该常量。
-   */
-  const edit = (patch: Record<string, unknown>, reveal = false) => {
+  /** 合并一项修改并预览。修改使背景层变为看得到时，不透明度按 `revealBackdrop` 调整。 */
+  const edit = (patch: Record<string, unknown>) => {
     const before = p()
-    const next =
-      reveal && !backdropVisible(before) && before.opacity === 1
-        ? { ...patch, opacity: REVEAL_OPACITY }
-        : patch
-    const merged = mergePersonalization(before, next)
+    const merged = mergePersonalization(before, patch)
     if (merged.ok) {
       setError(null)
-      editPersonalization(merged.value)
+      editPersonalization(revealBackdrop(before, merged.value))
     } else setError(merged.error)
   }
 
@@ -191,11 +173,7 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
 
   const pickImage = (file: File | undefined) => {
     if (!file) return
-    const reveal = !backdropVisible(p()) && p().opacity === 1
-    void run(async () => {
-      await setPersonalImage(file.name, file)
-      if (reveal) edit({ opacity: REVEAL_OPACITY })
-    }, '更换图片失败')
+    void run(() => setPersonalImage(file.name, file), '更换图片失败')
   }
 
   const pickKind = (next: PersonalBackground['kind']) => {
@@ -206,17 +184,14 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
     }
     if (next === 'color') edit({ background: { kind: 'color', color: null } })
     else
-      edit(
-        {
-          background: {
-            kind: 'gradient',
-            from: GRADIENT_FROM,
-            to: GRADIENT_TO,
-            direction: 'diagonal-down',
-          },
+      edit({
+        background: {
+          kind: 'gradient',
+          from: GRADIENT_FROM,
+          to: GRADIENT_TO,
+          direction: 'diagonal-down',
         },
-        true,
-      )
+      })
   }
 
   const backgroundRows = (): JSX.Element => {
@@ -228,7 +203,7 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
             label="背景颜色"
             value={bg.color}
             emptyLabel="默认"
-            onPick={(color) => edit({ background: { color } }, color !== null)}
+            onPick={(color) => edit({ background: { color } })}
           />
         </Row>
       )
@@ -271,7 +246,7 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
           <Seg items={FITS} value={bg.fit} onPick={(fit) => edit({ background: { fit } })} />
         </Row>
         <Slider
-          label="暗度"
+          label="遮罩"
           value={bg.dim}
           range={PERSONAL_LIMITS.dim}
           step={0.05}
@@ -331,7 +306,7 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
                   ? edit({ fog: null })
                   : p().fog
                     ? edit({ fog: { color } })
-                    : edit({ fog: { color, density: FOG_DENSITY, speed: FOG_SPEED } }, true)
+                    : edit({ fog: { color, density: FOG_DENSITY, speed: FOG_SPEED } })
               }
             />
           </Row>

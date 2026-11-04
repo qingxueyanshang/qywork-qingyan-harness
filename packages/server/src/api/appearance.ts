@@ -8,7 +8,7 @@
  * `personalize` 工具修改同一份个性化，其他屏幕据此重新读取。
  */
 
-import { isPersonalImageName } from '@qywork/core'
+import { isPersonalImageName, revealBackdrop } from '@qywork/core'
 import {
   deletePet,
   listPets,
@@ -52,7 +52,8 @@ export const handleAppearanceApi: ApiHandler = async (url, req, d) => {
    * 设置背景图片：写入图片并把背景改为该图片，一次完成。
    *
    * 不拆为「上传图片」与「修改背景」两个请求：目录中只保留当前引用的图片（见 `savePersonalization`），
-   * 单独上传的图片在下一次保存时即被删除。填充方式、暗化与模糊沿用原图片背景的值，原背景不是图片时取默认值。
+   * 单独上传的图片在下一次保存时即被删除。填充方式、遮罩与模糊沿用原图片背景的值，原背景不是图片时取默认值。
+   * 原先看不到背景时，不透明度在同一次保存中按 `revealBackdrop` 调整。
    */
   if (p === '/api/personalization/image' && req.method === 'PUT') {
     const name = url.searchParams.get('name') ?? ''
@@ -68,8 +69,11 @@ export const handleAppearanceApi: ApiHandler = async (url, req, d) => {
     const rest =
       bg.kind === 'image'
         ? { fit: bg.fit, dim: bg.dim, blur: bg.blur }
-        : { fit: 'cover', dim: 0.2, blur: 0 }
-    const next = { ...value, background: { kind: 'image', file: name, ...rest } }
+        : { fit: 'cover' as const, dim: 0.2, blur: 0 }
+    const next = revealBackdrop(value, {
+      ...value,
+      background: { kind: 'image', file: name, ...rest },
+    })
     return saved(d.bus, await savePersonalization(next, [{ name, bytes }]))
   }
 
