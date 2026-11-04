@@ -15,7 +15,7 @@ import {
   patchConfig,
   reloadConfig,
 } from './configStore.ts'
-import { LoadState } from './LoadState.tsx'
+import { LoadState, PendingText } from './LoadState.tsx'
 import { OnOff } from './OnOff.tsx'
 import { Field, Row } from './Row.tsx'
 
@@ -24,10 +24,10 @@ import { Field, Row } from './Row.tsx'
  *
  * 三项能力位依次成立，只显示第一个不成立的步骤：若三项各占一行，
  * 宿主未连接时后两行也会显示「未连接」，同一信息重复显示三次。授权事实由 worker 报告，
- * 因此组件未就绪排在系统未授权之前。
+ * 因此组件未就绪排在系统未授权之前。尚未读取到能力时为 null（界面显示占位）。
  */
-export function desktopStatus(d: DesktopCapability | undefined): string {
-  if (!d) return '读取中…'
+export function desktopStatus(d: DesktopCapability | undefined): string | null {
+  if (!d) return null
   if (!d.connected) return '宿主未连接'
   if (!d.workerReady) return '组件未就绪'
   if (!d.authorized) return '系统未授权'
@@ -44,10 +44,10 @@ const GRANTS: Record<DesktopGrant, { label: string; value: string; pane: boolean
   accessibility_bus: { label: '无障碍总线', value: '不可用', pane: false },
 }
 
-/** 浏览器控制当前阻塞于哪一步。宿主已连接但没有浏览器时显示原因，版本不达标时手动浏览仍可用。 */
-function browserStatus(): string {
+/** 浏览器控制当前阻塞于哪一步。宿主已连接但没有浏览器时显示原因，版本不达标时手动浏览仍可用；尚未读取到时为 null。 */
+function browserStatus(): string | null {
   const b = state.capabilities?.browser
-  if (!b) return '读取中…'
+  if (!b) return null
   if (b.connected) return b.runtimeSupported ? '已就绪' : '浏览器版本过低'
   return browserUnavailableText() ?? '宿主未连接'
 }
@@ -132,7 +132,9 @@ export function AccessSettings() {
                 />
               </Row>
               <Row label="状态">
-                <span class="setting-row-hint">{desktopStatus(state.capabilities?.desktop)}</span>
+                <span class="setting-row-hint">
+                  <PendingText value={desktopStatus(state.capabilities?.desktop)} />
+                </span>
               </Row>
               <For each={state.capabilities?.desktop.missing ?? []}>
                 {(grant) => (
@@ -160,7 +162,9 @@ export function AccessSettings() {
             <h3 class="settings-block-head">浏览器控制</h3>
             <div class="setting-rows">
               <Row label="状态">
-                <span class="setting-row-hint">{browserStatus()}</span>
+                <span class="setting-row-hint">
+                  <PendingText value={browserStatus()} />
+                </span>
               </Row>
             </div>
           </section>

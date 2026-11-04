@@ -8,6 +8,7 @@ import {
   type MediaOperationName,
 } from '../../lib/store/index.ts'
 import { IconChevron } from '../Icons.tsx'
+import { Skeleton } from './LoadState.tsx'
 
 type Category = 'chat' | MediaOutput
 
@@ -101,7 +102,11 @@ export function ModelLibrary(props: {
       when={!props.loading && !props.error}
       fallback={
         <div class="lib-state">
-          {props.error ? explainApiError(props.error, '无法读取内置模型库') : '读取中…'}
+          {props.error ? (
+            explainApiError(props.error, '无法读取内置模型库')
+          ) : (
+            <Skeleton lines={6} />
+          )}
         </div>
       }
     >

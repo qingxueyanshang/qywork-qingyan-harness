@@ -466,10 +466,6 @@
   flex-direction: column;
   gap: var(--s-4);
 }
-.settings-loading {
-  color: var(--text-tertiary);
-  font-size: var(--fs-sm);
-}
 /* 失败状态的样式必须与加载中不同，并提供重试操作。 */
 .settings-error {
   display: flex;
@@ -1720,7 +1716,6 @@ textarea.code-area::placeholder {
   white-space: nowrap;
 }
 
-.skill-import-hint,
 .skill-import-selection {
   margin: 10px 0;
   color: var(--text-secondary);
@@ -1794,6 +1789,11 @@ textarea.code-area::placeholder {
   grid-column: 1 / -1;
 }
 
+/* 拉取窗口读取中的占位：列表没有内边距，占位与边框之间留出间距。 */
+.pull-full > .skeleton {
+  padding: 12px;
+}
+
 /* 拉取对话框的读取失败。只属于该对话框（B8）。 */
 .pull-error {
   margin: 12px;
@@ -1812,12 +1812,6 @@ textarea.code-area::placeholder {
   white-space: nowrap;
   font-size: var(--fs-sm);
   color: var(--danger);
-}
-
-.pull-state {
-  margin: 12px;
-  color: var(--text-secondary);
-  font-size: var(--fs-xs);
 }
 
 /* 行高固定：带对应型号下拉框的行与其他行同高。 */

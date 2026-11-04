@@ -16,6 +16,8 @@ let cloud: CloudState
 let providers: unknown[]
 let calls: string[]
 let pages: CloudRequest[][]
+/** 使用记录的读取在它完成前不返回。 */
+let requestsGate: Promise<void>
 
 const SIGNED_IN: CloudState = {
   state: 'signed_in',
@@ -91,7 +93,10 @@ beforeAll(async () => {
         },
       ] as T
     }
-    if (path.startsWith('/api/cloud/requests')) return (pages.shift() ?? []) as T
+    if (path.startsWith('/api/cloud/requests')) {
+      await requestsGate
+      return (pages.shift() ?? []) as T
+    }
     throw new Error(`unexpected ${path}`)
   }
 })
@@ -101,6 +106,7 @@ beforeEach(async () => {
   providers = []
   calls = []
   pages = []
+  requestsGate = Promise.resolve()
   store.setAccountOpen(false)
 })
 
@@ -231,6 +237,24 @@ test('退出登录后弹窗显示登录表单', async () => {
   ;(view.host.querySelector('button[aria-label="退出登录"]') as HTMLButtonElement).click()
   await until(() => view.host.querySelector('.account-form') !== null)
   expect(calls).toContain('POST /api/cloud/logout')
+  view.close()
+})
+
+test('使用记录读取超过 200 毫秒时显示占位，读取到后显示记录', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  let release!: () => void
+  requestsGate = new Promise((resolve) => {
+    release = resolve
+  })
+  pages = [[record('1')]]
+  const view = await dialog()
+  await new Promise((resolve) => setTimeout(resolve, 260))
+  // 统计与可用模型已返回，只有使用记录仍在读取。
+  expect(view.host.querySelectorAll('.skeleton')).toHaveLength(1)
+  release()
+  await until(() => view.text().includes('完成'))
+  expect(view.host.querySelector('.skeleton')).toBeNull()
   view.close()
 })
 
