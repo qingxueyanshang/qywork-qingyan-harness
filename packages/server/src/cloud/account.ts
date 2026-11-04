@@ -153,6 +153,8 @@ type GatewayRequest = Omit<CloudRequest, 'failure'> & { status: number; errorCod
 function failure(status: number, errorCode: string | null): string | null {
   if (!errorCode) return null
   if (errorCode === 'stream_interrupted') return '连接中断'
+  // 云端服务在请求进行中崩溃，预扣已全额退回（云端 `gateway/holds.ts`）。
+  if (errorCode === 'service_interrupted') return '服务中断，积分已退回'
   if (errorCode === 'upstream_unreachable') return '无法连接模型服务'
   if (errorCode.startsWith('upstream_')) return `${status} ${httpStatusName(status)}`
   return errorCode

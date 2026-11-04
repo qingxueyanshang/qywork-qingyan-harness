@@ -161,6 +161,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         { id: 'r1', credits: 0.5, status: 200, errorCode: null },
         { id: 'r2', credits: 0, status: 429, errorCode: 'upstream_429' },
         { id: 'r3', credits: 0.1, status: 200, errorCode: 'stream_interrupted' },
+        { id: 'r4', credits: 0, status: 0, errorCode: 'service_interrupted' },
       ])
     }
     if (path === '/v1/catalog' && authed) {
@@ -366,6 +367,7 @@ test('用量与使用记录以设备密钥读取：用量带本机时区，记�
     { id: 'r1', credits: 0.5, failure: null },
     { id: 'r2', credits: 0, failure: '429 请求过多' },
     { id: 'r3', credits: 0.1, failure: '连接中断' },
+    { id: 'r4', credits: 0, failure: '服务中断，积分已退回' },
   ] as never)
   expect(Object.fromEntries(new URLSearchParams(cloud.requestsQuery))).toEqual({
     limit: '50',
