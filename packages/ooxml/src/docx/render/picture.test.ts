@@ -8,7 +8,7 @@
  * 其他平台跳过。
  */
 
-import { describe, expect, test } from 'bun:test'
+import { beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { decodePicture, type ImageDecoder } from '../../drawingml/paint/picture.ts'
@@ -153,9 +153,14 @@ describe('图元文件的解析与计数', () => {
 
 describe.skipIf(process.platform !== 'win32')('图元文件的排版与绘制（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
-  const simsun = loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)
-  const arial = loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'arial.ttf'))), 'Arial', 0)
-  const faces = [simsun, arial]
+  // 字体在 beforeAll 中读取：跳过的 describe 回调同样在收集用例时执行，在此处读取会使其他平台报错。
+  let arial!: ReturnType<typeof loadDocxFace>
+  let faces: ReturnType<typeof loadDocxFace>[] = []
+  beforeAll(() => {
+    const simsun = loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)
+    arial = loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'arial.ttf'))), 'Arial', 0)
+    faces = [simsun, arial]
+  })
 
   test('requiredFonts 含图元文件文字的字体；有图元文件的页面带字体表，绘制时按裁剪比例映射到对象框并裁剪到对象框', async () => {
     const doc = await parse(
