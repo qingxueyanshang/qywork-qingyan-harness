@@ -219,6 +219,8 @@ export interface CloudUsage {
 export interface CloudModel {
   id: string
   ratio: number
+  /** true：售价为官方价乘以倍率；false：售价为后台填写的单价乘以倍率，界面不列出倍率。 */
+  official: boolean
   price: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
 }
 

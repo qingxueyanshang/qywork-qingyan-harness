@@ -92,7 +92,14 @@ beforeAll(async () => {
         {
           id: 'claude-opus-5-5',
           ratio: 0.85,
+          official: true,
           price: { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 },
+        },
+        {
+          id: 'relay-model',
+          ratio: 1,
+          official: false,
+          price: { input: 100, output: 200, cacheRead: 10, cacheWrite: 0 },
         },
       ] as T
     }
@@ -211,6 +218,12 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
   await until(() => view.text().includes('claude-opus-5-5'))
   expect(view.text()).toContain('1,500.00')
   expect(view.text()).toContain('0.85×')
+  // 倍率只相对官方价列出；按单价计价的型号此列为「—」。
+  expect(view.text()).toContain('倍率（官方价）')
+  const relay = [...view.host.querySelectorAll('tr')].find((r) =>
+    r.textContent?.includes('relay-model'),
+  )
+  expect(relay?.querySelectorAll('td')[1]?.textContent).toBe('—')
   expect(calls).toContain('GET /api/models')
   // 不足一页：没有更早的记录。
   expect(view.button('加载更早的记录')).toBeUndefined()
