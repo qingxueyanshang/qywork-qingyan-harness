@@ -210,6 +210,19 @@
   color: var(--text-tertiary);
 }
 
+/* 本版说明与公告的滑块比全局更淡：全局滑块为 6% 黑，在纯白底上、且正文长而滑块长时比在灰底面板上显得重。
+   悬停时与全局相同。写 `background` 时必须同时写 `background-clip`，否则透明边框处也被填色，滑块变宽。 */
+.release-notes-body::-webkit-scrollbar-thumb,
+.announcements-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--border-subtle) 60%, transparent);
+  background-clip: content-box;
+}
+.release-notes-body::-webkit-scrollbar-thumb:hover,
+.announcements-list::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: content-box;
+}
+
 /* 公告窗口：尺寸固定，列表在框内滚动。 */
 .announcements-dialog {
   width: min(560px, calc(100vw - 32px));
