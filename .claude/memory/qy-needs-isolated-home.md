@@ -11,6 +11,9 @@ metadata:
 
 **How to apply:** 被钩子拦截时不要改变写法绕过，应改为带 `QYWORK_HOME` 的命令。多进程测试同样使用独立的 home（全新库并发迁移的问题见 [[db-concurrency]]）。操作用户真实数据前先备份整个数据库（`VACUUM INTO` 到 `.tmp/scratch/dbbackup/`），并使用 store 自身的函数修改，不手写 SQL。
 
-`bun test` 只在仓库根目录执行（`bun test packages/server/src/x.test.ts`），不要先进入包目录：包目录中没有 `bunfig.toml`，
-根目录的预载 `scripts/test-setup.ts` 不会加载，`QYWORK_HOME` 未设置，测试直接读写用户真实的 `~/.qywork`，钩子不拦截这种写法。
-2026-11-02 在 `packages/server` 中执行 `account.test.ts`，删除了用户真实配置中刚登录写入的云端接口。
+单个测试文件只经测试入口在仓库根目录执行：`bun run test packages/server/src/x.test.ts`。根目录直接 `bun test` 时预载报
+「测试必须通过 bun run test 启动」并失败，这是安全的；危险的是先进入包目录再 `bun test`：包目录中没有 `bunfig.toml`，
+预载 `scripts/test-setup.ts` 不会加载，`QYWORK_HOME` 未设置，测试直接读写用户真实的 `~/.qywork`，钩子不拦截这种写法。
+同一个文件 `account.test.ts` 在包目录中执行过两次：2026-11-02 删除了用户真实配置中刚登录写入的云端接口；
+2026-11-04 再次覆盖了用户已登录 qywork.io 的云端接口（设备密钥丢失，须重新登录），并写入三条测试用的模型库条目。
+第二次的恢复方法：与最近的配置备份逐键比较，只删除测试写入的键。
