@@ -5,7 +5,7 @@
  * 本机开发时以环境变量 `QYWORK_CLOUD` 指向本机云端服务，例如 `QYWORK_CLOUD=http://localhost:8080`。
  */
 
-const RELEASE: string | null = null
+const RELEASE: string | null = 'https://qywork.io'
 
 export function cloudOrigin(env: Record<string, string | undefined> = process.env): string | null {
   const raw = env.QYWORK_CLOUD?.trim().replace(/\/+$/, '')
