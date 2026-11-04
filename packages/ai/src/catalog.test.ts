@@ -121,6 +121,16 @@ test('Claude Sonnet 5.5 使用官方规格与缓存价格，长上下文不加�
       cacheWriteTokens: 200_000,
     }),
   ).toBe(0.86)
+  // 缓存写入中按 1 小时档写入的 5 万 token 按 1 小时档单价计：15 万 × 2.5 + 5 万 × 4。
+  expect(
+    computeCost(sonnet, {
+      inputTokens: 100_000,
+      outputTokens: 10_000,
+      cachedTokens: 600_000,
+      cacheWriteTokens: 200_000,
+      cacheWrite1hTokens: 50_000,
+    }),
+  ).toBe(0.935)
   expect(lookupModel('claude-sonnet-5', 'anthropic_messages').pricing.cacheRead).toBe(0.2)
 })
 

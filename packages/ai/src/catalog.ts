@@ -2296,7 +2296,10 @@ export function computeCost(
     inputTokens: number
     outputTokens: number
     cachedTokens?: number | null
+    /** 全部缓存写入量，含 1 小时档。 */
     cacheWriteTokens?: number | null
+    /** 其中按 1 小时档写入的部分。 */
+    cacheWrite1hTokens?: number | null
   },
   now = Date.now(),
 ): number {
@@ -2316,17 +2319,21 @@ export function computeCost(
     promptTokens: usage.inputTokens + (usage.cachedTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
     outputTokens: usage.outputTokens,
   })
-  // 只按 5 分钟档计算：全项目从不请求 1 小时缓存。`cacheWrite1h` 保留在价目表中作为
-  // **参考数据**（它是真实价格），不是可达的代码分支。不要为它添加 cacheTtl 参数：
-  // 没有调用方会传入，1h 分支永远不可达。
-  const writeRate = p.cacheWrite5m
+  // 1 小时档只由云端网关传入：电脑端从不请求 1 小时缓存，而网关转发的请求体由客户端决定，
+  // 上游按 1 小时档的单价计费，须按上游回报的写入量分档计价。
+  const writes1h = usage.cacheWrite1hTokens ?? 0
+  const writes5m = Math.max(0, (usage.cacheWriteTokens ?? 0) - writes1h)
   // 沿用运行用量中「0 表示金额不明」的约定；没有单价时不估算订阅费用。
-  if (p.input === null || p.output === null || p.cacheRead === null || writeRate === null) return 0
+  if (p.input === null || p.output === null || p.cacheRead === null || p.cacheWrite5m === null) {
+    return 0
+  }
+  if (writes1h > 0 && p.cacheWrite1h === null) return 0
   const total =
     (usage.inputTokens * p.input +
       usage.outputTokens * p.output +
       (usage.cachedTokens ?? 0) * p.cacheRead +
-      (usage.cacheWriteTokens ?? 0) * writeRate) /
+      writes5m * p.cacheWrite5m +
+      writes1h * (p.cacheWrite1h ?? 0)) /
     1e6
   return round(total)
 }
