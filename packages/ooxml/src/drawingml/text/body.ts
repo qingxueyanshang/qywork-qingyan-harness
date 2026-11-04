@@ -3,7 +3,7 @@
  *
  * - 断行与对齐由 `layoutParagraph` 完成，行高与基线再按宿主的规则换算（`hostBlock`）；本模块换算输入：
  *   - 行距 `spcPct` 为单倍行高的倍数（`proportional`），`spcPts` 为固定行高（`fixed`），与单倍行高之差按 `hostBlock`
- *     分配在文字上下；`normAutofit` 的 `lnSpcReduction` 从百分比行距中减去，`fontScale` 乘到字号上。
+ *     分配在文字上下；`normAutofit` 的 `lnSpcReduction` 从百分比行距中减去，`fontScale` 乘到字号上（`scaledSize`）。
  *   - 段前段后的 `spcPts` 为磅值，`spcPct` 为该段首行（段后取末行）单倍行高（`singleLine`）的倍数，与行距无关；
  *     首段不加段前间距。实测（WPS 演示导出图，等线、宋体、Arial 12–24 磅，行距 100% 与 150%）：段前与此一致；
  *     段后为单倍行高的 1.03–1.12 倍（随字体不同，机制未查明）。
@@ -15,7 +15,8 @@
  *     （行内公式缺省为 `centerGroup`）；其余按行内样式排版，随段落对齐。
  * - `eaVert`：排版与 `vert` 相同（调用方旋转文本区域），绘制时东亚文字在字框中转回直立（见 `orientation`）。
  * - `wrap` 为假时不断行：按不限宽度排版后，各行在文本区域内按段落对齐方式整体平移。
- * - 字段 `slidenum` 显示 `TextSettings.slideNumber`（为 `null` 时与其余字段相同），其余字段显示文件中保存的文字。
+ * - 字段 `slidenum` 显示 `TextSettings.slideNumber`（为 `null` 时与其余字段相同），日期字段按 `TextSettings.date` 显示
+ *   （见 `date.ts`，没有时与其余字段相同），其余字段显示文件中保存的文字。
  *   全部大写（`caps="all"`）按大写字母排版。字符间距（`spc`）乘以自动调整的字号缩放。
  * - 绘制：每个字逐个定位，与排版的步进一致；`FaceCache.glyphs` 不为 `null` 时按屏幕显示绘制（见 `drawGlyphs`），
  *   `FaceCache.clearType` 不为 `null` 时平滑字号以 ClearType 字形写入画布像素。
@@ -76,6 +77,7 @@ import {
   paintShadows,
 } from '../paint/shadow.ts'
 import { autoNumberText, symbolChar } from './bullet.ts'
+import { dateFieldText, type FieldDate } from './date.ts'
 import {
   type FaceCache,
   type PaintFace,
@@ -161,6 +163,8 @@ export interface TextSettings {
   readonly pictures?: (part: string) => PaintPicture | null
   /** 公式所用的字体。只有幻灯片上的文字提供：工作表与文档的 DrawingML 文字不读取公式。 */
   readonly math?: TextMathFonts
+  /** 日期字段显示的日期。只有幻灯片上的文字提供：工作表与文档中的日期字段显示文件中保存的文字。 */
+  readonly date?: FieldDate
 }
 
 const ALIGN: Readonly<Record<string, Alignment>> = {
@@ -190,13 +194,26 @@ function upper(text: string): string {
   return out
 }
 
-function runText(run: Exclude<Run, { kind: 'math' }>, slideNumber: number | null): string {
+function runText(run: Exclude<Run, { kind: 'math' }>, settings: TextSettings): string {
   if (run.kind === 'break') return '\n'
-  const text =
-    run.kind === 'field' && run.field === 'slidenum' && slideNumber !== null
-      ? String(slideNumber)
-      : run.text
+  let text = run.text
+  if (run.kind === 'field') {
+    if (run.field === 'slidenum' && settings.slideNumber !== null)
+      text = String(settings.slideNumber)
+    else if (settings.date !== undefined) {
+      text = dateFieldText(run.field, run.style.lang, settings.date) ?? text
+    }
+  }
   return run.style.caps === 'all' ? upper(text) : text
+}
+
+/**
+ * 自动调整后的字号：`fontScale` 乘到字号上后四舍五入为整磅（文字与段落结束符）。WPS 演示实测（.ppt 的 metroBlob，
+ * `fontScale` 为 70%–92.5% 的 8 页）：取整后 7 页上升（29.6 → 30 磅的一页 0.72 → 0.94）、1 页下降 0.006；
+ * 按半磅取整时 3 页上升、4 页下降。
+ */
+function scaledSize(size: number, scale: number): number {
+  return scale === 1 ? size : Math.round(size * scale)
 }
 
 function textRun(text: string, style: RunStyle, scale: number, faces: FaceCache): TextRun {
@@ -211,7 +228,7 @@ function textRun(text: string, style: RunStyle, scale: number, faces: FaceCache)
       eastAsia: face(style.ea),
       cs: face(style.cs),
     },
-    size: style.size * scale,
+    size: scaledSize(style.size, scale),
     slots: {
       eastAsiaHint: EAST_ASIAN_LANG.test(style.lang),
       complexScript: false,
@@ -284,7 +301,7 @@ function paragraphRuns(
       })
       return
     }
-    const text = runText(r, settings.slideNumber)
+    const text = runText(r, settings)
     if (text === '') return
     runs.push(textRun(text, r.style, scale, settings.faces))
     paints.push({ style: r.style, fill: r.style.fill, text, formula: null })
@@ -377,7 +394,7 @@ function paragraphStyle(
     defaultTabStop: p.defaultTabSize / EMU_PER_PT,
     tabOrigin: -marL,
     fallback: () => faces.fallback.face,
-    mark: { face: end.face, size: p.end.size * scale.font },
+    mark: { face: end.face, size: scaledSize(p.end.size, scale.font) },
   }
 }
 

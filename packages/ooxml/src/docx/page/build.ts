@@ -4,7 +4,9 @@
  * - 页眉页脚：节未引用某类部件时沿用上一节同类的部件；首页部件只在节设置 `titlePg` 时用于节的第一页，
  *   偶数页部件只在 `evenAndOddHeaders` 时用于页码为偶数的页（含重新编号），其余页用缺省部件；所需部件不存在时该处为空。
  * - 页眉自页面顶边下 `header` 处向下排列，页脚的底边位于页面底边上 `footer` 处；宽度为版心宽度（不分栏）。
- * - 正文区：页眉底边超过上边距时正文自页眉底边开始，页脚顶边高于下边距时正文在页脚顶边结束。
+ * - 正文区：页眉底边超过上边距时正文自页眉底边开始，页脚顶边高于下边距时正文在页脚顶边结束；没有页眉（页脚）部件时取
+ *   上（下）边距，与页眉（页脚）距离无关（WPS 实测：.doc 语料 zju-doc-030 上边距 5.1 磅、页眉距离 42.55 磅而没有页眉时，
+ *   正文自 5.1 磅处开始）。
  * - 页码域（`PAGE`、`NUMPAGES`、`SECTIONPAGES`）按页重新生成文字后排版：`PAGE` 按节的页码格式，其余为十进制；
  *   STYLEREF 域按页取正文中该样式的段落文字（见 `styleRefText`）。
  * - 嵌入式对象：图片、图表与 SmartArt 绘制在排版给出的位置（`ParagraphLayout.images`：对象框左端与底边），其余嵌入式对象
@@ -136,8 +138,13 @@ import {
   type TablePlacement,
 } from './paginate.ts'
 
-/** 四周型环绕中可排入文字的最小区段宽度（磅）：WPS 实测 15.3 磅的空隙不排、20 磅的排入。 */
+/** 四周型环绕中可排入文字的区段须宽于此值（磅）：WPS 实测 15.3 磅的空隙不排、20 磅的排入。 */
 const MIN_SEGMENT = 18
+/**
+ * 图文框旁可排入文字的区段须宽于此值（磅，1 英寸）：WPS 实测（构造文档 fr1、fr2），54 磅与 72 磅的空隙不排，73 至 104 磅的
+ * 排入，与字号无关（20 磅文字同样）。
+ */
+const FRAME_MIN_SEGMENT = 72
 const EMU_PER_POINT = 12700
 
 interface PartLayout {
@@ -542,7 +549,8 @@ function anchorRect(
   if (area !== null && flowing && a.wrap.type !== 'none' && a.vertical.align === null)
     y = keepOnPage(y, a.height, area, frame.compatibilityMode, s.pageHeight)
   let x = place(a.horizontal, true, a.width)
-  if (a.wrap.type !== 'none') x = Math.max(0, Math.min(x, s.pageWidth - a.width))
+  if (a.wrap.type !== 'none' && a.frame === null)
+    x = Math.max(0, Math.min(x, s.pageWidth - a.width))
   return { x, y, width: a.width, height: a.height }
 }
 
@@ -569,6 +577,7 @@ function exclusionOf(
     touchesEarlier: mode < 15 && a.wrap.type === 'topAndBottom',
     side: a.wrap.side,
     owner,
+    minSegment: a.frame === null ? MIN_SEGMENT : FRAME_MIN_SEGMENT,
   }
 }
 
@@ -622,7 +631,8 @@ function wrapArea(
         }
         segments = next
       }
-      const usable = segments.filter((g) => g.right - g.left >= MIN_SEGMENT)
+      const least = Math.max(...hit.map((e) => e.minSegment))
+      const usable = segments.filter((g) => g.right - g.left > least)
       if (usable.length === 0 && hit.length > 0) {
         y = twipBelow(Math.min(...hit.map((e) => e.bottom)))
         continue
@@ -640,14 +650,30 @@ function wrapArea(
  * 根据文字调整大小的文本框（顶层形状的 `autoFit`）：形状高度取内容高度加上下内缩（WPS 实测：记录高度为 0.05 磅的
  * 图注文本框按一行文字的高度避让）；文字不换行（`TextBox.wrap` 为假）时宽度另取内容不换行的宽度加左右内缩，对齐方式
  * 按调整后的宽度求位置（WPS 实测：记录宽度 144 磅、内容为两位数字的页码文本框相对页边距居中时，数字居中）。
- * 其余对象原样返回。
+ * 图文框按 `Anchor.frame`（WPS 实测，构造文档 fr1、fr2：自动宽度的长段落取版心宽度并在此换行，相对页面右移时超出页面
+ * 而不缩窄；最小值 36 磅、内容三行时取内容高度，最小值 144 磅、内容一行时为 144 磅）。其余对象原样返回。
  */
 function fitAnchor(a: Anchor, cx: TableContext, cache: Map<Anchor, Anchor>): Anchor {
   const known = cache.get(a)
   if (known !== undefined) return known
   let out = a
   const n = a.drawing
-  if (n !== null && n.kind === 'shape' && n.text !== null && n.text.autoFit) {
+  if (a.frame !== null && n !== null && n.kind === 'shape' && n.text !== null) {
+    const f = a.frame
+    const width = f.width > 0 ? f.width : Math.min(unwrappedWidth(n.text.content, cx), f.maxWidth)
+    const content = layoutStack(n.text.content, width, cx).height
+    const height =
+      f.rule === 'exact' ? f.height : f.rule === 'atLeast' ? Math.max(f.height, content) : content
+    out = {
+      ...a,
+      width,
+      height,
+      drawing: {
+        ...n,
+        frame: { ...n.frame, width: width * EMU_PER_POINT, height: height * EMU_PER_POINT },
+      },
+    }
+  } else if (n !== null && n.kind === 'shape' && n.text !== null && n.text.autoFit) {
     const inset = n.text.inset
     const inner = n.text.wrap
       ? Math.max(0, n.frame.width / EMU_PER_POINT - inset.left - inset.right)
@@ -752,8 +778,11 @@ export function layoutPages(doc: DocxDocument, fonts: DocxFonts, host: HostFamil
     const hh = h === null ? 0 : (partLayout(h, s, null)?.stack.height ?? 0)
     const fh = f === null ? 0 : (partLayout(f, s, null)?.stack.height ?? 0)
     return {
-      top: Math.max(sec.marginTop, sec.header + hh),
-      bottom: Math.min(sec.pageHeight - sec.marginBottom, sec.pageHeight - sec.footer - fh),
+      top: h === null ? sec.marginTop : Math.max(sec.marginTop, sec.header + hh),
+      bottom:
+        f === null
+          ? sec.pageHeight - sec.marginBottom
+          : Math.min(sec.pageHeight - sec.marginBottom, sec.pageHeight - sec.footer - fh),
     }
   }
 

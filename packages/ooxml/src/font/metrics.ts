@@ -39,11 +39,8 @@ export interface FontMetrics {
   advanceWidth(codePoint: number): number
   /** 按字号换算，单位与 `size` 相同（传入 px 得 px，传入 pt 得 pt）。 */
   advance(codePoint: number, size: number): number
-  /**
-   * 两个码位之间的字偶调整值（字体单位，负值为收紧），取自 `kern` 表（见 `features/kern.ts`）；没有该字偶时为 0。
-   * 不来自字体文件的度量可以省略，按没有字偶。
-   */
-  kerning?(left: number, right: number): number
+  /** 两个码位之间的字偶调整值（字体单位，负值为收紧），取自 `kern` 表（见 `features/kern.ts`）；没有该字偶时为 0。 */
+  kerning(left: number, right: number): number
 }
 
 /** `bytes` 是整个文件的字节（单个字体或 TTC），`face` 取自 `readFaces(bytes)`。 */

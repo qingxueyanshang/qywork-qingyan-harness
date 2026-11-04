@@ -105,6 +105,33 @@ export interface RawTab {
   readonly leader: string | null
 }
 
+/**
+ * 图文框（`w:framePr`；.doc 为 sprmPPc、sprmPDxaAbs 等）的属性，取值与 docx 的属性相同，长度为缇。与样式中的图文框逐项合并；
+ * 缺少的项取缺省值，是否构成图文框与换算见 `body.ts` 的 `frameOf`。
+ */
+export interface RawFrame {
+  /** `text`（栏）、`margin`、`page`。 */
+  hAnchor?: string
+  /** `text`（段落）、`margin`、`page`。 */
+  vAnchor?: string
+  x?: number
+  /** `left`、`center`、`right`、`inside`、`outside`；给出时不用 `x`。 */
+  xAlign?: string
+  y?: number
+  /** `inline`、`top`、`center`、`bottom`、`inside`、`outside`；给出时不用 `y`。 */
+  yAlign?: string
+  w?: number
+  h?: number
+  /** `auto`、`atLeast`、`exact`。 */
+  hRule?: string
+  /** `ST_Wrap` 的取值。 */
+  wrap?: string
+  hSpace?: number
+  vSpace?: number
+  /** `none`、`drop`、`margin`。 */
+  dropCap?: string
+}
+
 export interface RawParaProps {
   style?: string
   numId?: number
@@ -126,7 +153,7 @@ export interface RawParaProps {
   widowControl?: boolean
   shading?: string | null
   borders?: RawBorders
-  frame?: boolean
+  frame?: RawFrame
   textDirection?: string
   tabs?: readonly RawTab[]
 }
@@ -444,6 +471,23 @@ function isParaFlag(local: string): local is ParaFlag {
   return PARA_FLAG_SET.has(local)
 }
 
+const FRAME_TEXT = ['hAnchor', 'vAnchor', 'xAlign', 'yAlign', 'hRule', 'wrap', 'dropCap'] as const
+const FRAME_NUMBERS = ['x', 'y', 'w', 'h', 'hSpace', 'vSpace'] as const
+
+/** 当前 `framePr` 元素的属性。 */
+function readFrame(x: Scanner): RawFrame {
+  const out: RawFrame = {}
+  for (const k of FRAME_TEXT) {
+    const v = wAttr(x, k)
+    if (v !== null) out[k] = v
+  }
+  for (const k of FRAME_NUMBERS) {
+    const v = wNum(x, k)
+    if (v !== null) out[k] = v
+  }
+  return out
+}
+
 export interface ParagraphPropertiesHandlers {
   /** `pPr/rPr`：段落标记的字段属性。 */
   mark?: (props: RawRunProps) => void
@@ -492,7 +536,7 @@ export function readParaProps(
         out.tabs = readTabs(x)
         return
       case 'framePr':
-        out.frame = true
+        out.frame = readFrame(x)
         break
       case 'shd':
         out.shading = readShading(x)

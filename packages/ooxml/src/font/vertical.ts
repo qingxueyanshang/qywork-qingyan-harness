@@ -31,26 +31,17 @@ export interface VerticalMetrics {
   winAscent: number
   /** `OS/2.usWinDescent`，字体单位，非负（向下为正）。 */
   winDescent: number
-  /**
-   * `OS/2.sTypoAscender` 与 `sTypoDescender`，字体单位，向上为正（`typoDescender` 通常为负）。不来自字体文件的度量可以省略，
-   * 按 `winAscent` 与 `-winDescent`。
-   */
-  typoAscender?: number
-  typoDescender?: number
-  /**
-   * `OS/2.fsSelection` 设置了 `USE_TYPO_METRICS`。不限 `OS/2` 版本：版本 3 的 Cambria Math 已设置该位。
-   * 不来自字体文件的度量可以省略，按未设置。
-   */
-  useTypoMetrics?: boolean
+  /** `OS/2.sTypoAscender` 与 `sTypoDescender`，字体单位，向上为正（`typoDescender` 通常为负）。 */
+  typoAscender: number
+  typoDescender: number
+  /** `OS/2.fsSelection` 设置了 `USE_TYPO_METRICS`。不限 `OS/2` 版本：版本 3 的 Cambria Math 已设置该位。 */
+  useTypoMetrics: boolean
   /** `OS/2.xAvgCharWidth`，字体单位。 */
   averageWidth: number
   /** `OS/2.ulCodePageRange1` 含中文、日文或韩文代码页。版本 0 的表没有该字段，为 `false`。 */
   eastAsianCodePage: boolean
-  /**
-   * `OS/2.ulCodePageRange1`（位 17 日文、18 简体中文、19 韩文、20 繁体中文）。版本 0 的表没有该字段，为 0。
-   * 不来自字体文件的度量可以省略，按 0。
-   */
-  codePages?: number
+  /** `OS/2.ulCodePageRange1`（位 17 日文、18 简体中文、19 韩文、20 繁体中文）。版本 0 的表没有该字段，为 0。 */
+  codePages: number
   /** `OS/2.ySuperscriptYSize`，字体单位：上标字号为原字号乘以该值除以 `unitsPerEm`。 */
   superscriptSize: number
   /** `OS/2.ySuperscriptYOffset`，字体单位，基线向上为正。 */

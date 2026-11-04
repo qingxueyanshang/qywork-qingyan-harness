@@ -70,7 +70,7 @@ export function faceExtent(v: VerticalMetrics, size: number): FaceExtent {
     const descent = (v.winDescent + half) * scale
     return { ascent, descent, single: ascent + descent }
   }
-  if (v.useTypoMetrics === true) {
+  if (v.useTypoMetrics) {
     const ascent = (v.hheaAscender + v.hheaLineGap) * scale
     const descent = -v.hheaDescender * scale
     return { ascent, descent, single: ascent + descent }

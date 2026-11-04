@@ -2,7 +2,7 @@
  * 文字排版：PPT 文本框与 Word 段落共用的字体选择、断行、对齐与行高。
  *
  * - `fontSlot` 按码位在字段的四种字体中选择；`layoutParagraph` 输出带坐标的行、片段与行内对象。
- * - 宽度与行高均由字体文件计算（`../font`），调用方负责按字体名找到字体文件并读取度量；主机没有的字体名按 Windows 字体替换表
+ * - 宽度与行高均由字体文件计算（`../font`），调用方按字体名找到字体文件并读取度量（`FontSource`）；主机没有的字体名按 Windows 字体替换表
  *   替换的结果见 `windowsFontSubstitute`，按主机字体族名的前缀匹配见 `prefixFont`。
  */
 
@@ -29,10 +29,13 @@ export {
   prefixFont,
   windowsFontSubstitute,
 } from './font-substitutes.ts'
+export { languageTag } from './language.ts'
 export {
   type Alignment,
   contentWidths,
   emboldened,
+  type FontMatch,
+  type FontSource,
   type InlineObject,
   type LineArea,
   type LineLeader,

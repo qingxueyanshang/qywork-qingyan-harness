@@ -36,6 +36,7 @@ import { type ClearTypeGlyphs, readClearTypeGlyphs } from '../../glyph/cleartype
 import { type MathArg, type MathFont, readMathFont } from '../../math/index.ts'
 import {
   emboldened,
+  type FontMatch,
   type HostFamilies,
   type TextFace,
   WPS_METRIC_FONTS,
@@ -44,7 +45,7 @@ import {
   wpsExtentFace,
   wpsMetricFace,
 } from '../../text/index.ts'
-import { EMOJI_FALLBACK, emojiFallback, type FontMatch, type FontSource } from '../layout.ts'
+import { type DocxFontSource, EMOJI_FALLBACK, emojiFallback } from '../layout.ts'
 import type { Block, DocxDocument, RunProps } from '../model.ts'
 import type { FaceRef } from '../page/model.ts'
 
@@ -235,7 +236,7 @@ export class DocxFonts {
   /** 已登记字形所属的字体。 */
   private readonly owners = new Map<TextFace, DocxFace>()
   private readonly fallbackFace: DocxFace
-  readonly source: FontSource
+  readonly source: DocxFontSource
 
   /** `fallback` 为缺字与缺少字体时使用的字体（常规字形），须在 `faces` 中。 */
   constructor(faces: readonly DocxFace[], fallback: string) {
@@ -253,7 +254,7 @@ export class DocxFonts {
       metric: (name, part, bold, italic) => this.metricMatch(name, part, bold, italic),
       math: (name) => this.mathFont(name),
       outlines: (face) => this.owners.get(face)?.outlines ?? null,
-      fallback: fb.text,
+      fallback: { face: fb.text, family: fb.family, bold: fb.bold },
     }
   }
 
@@ -299,7 +300,7 @@ export class DocxFonts {
       if (text !== f.text) this.register(text, f, bold, italic)
       else if (!this.refIndex.has(text)) this.register(text, f, false, false)
       // 已按仿粗体换算的字形标为粗体，`layoutDocument` 不再换算一次。
-      m = { face: text, bold: bold || f.bold }
+      m = { face: text, family: f.family, bold: bold || f.bold }
     }
     this.matches.set(id, m)
     return m
@@ -344,7 +345,7 @@ export class DocxFonts {
     const base = wpsMetricFace(host, extent, other.text, ascii?.text ?? null, owner.text)
     const text = bold && !owner.bold ? emboldened(base) : base
     this.register(text, owner, bold, italic)
-    return { face: text, bold: bold || owner.bold }
+    return { face: text, family: owner.family, bold: bold || owner.bold }
   }
 
   /** 字体名对应的常规字形的数学字体，登记其字形后返回。 */

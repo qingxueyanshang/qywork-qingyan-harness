@@ -70,6 +70,23 @@ export function emboldened(face: TextFace): TextFace {
   }
 }
 
+/** 按字体名与字形取得的字体（`FontSource.face`）。 */
+export interface FontMatch {
+  readonly face: TextFace
+  /** CSS 族名，与调用方注册的 `FontFace` 族名相同。 */
+  readonly family: string
+  /** 返回的是粗体字形；请求粗体而该项为 `false` 时按仿粗体排版。 */
+  readonly bold: boolean
+}
+
+/** 调用方按字体名提供的字体：Word 段落与 DrawingML 文字共用。 */
+export interface FontSource {
+  /** 按字体名与字形取得最接近的字体；主机没有该字体时返回 `null`。 */
+  face(name: string, bold: boolean, italic: boolean): FontMatch | null
+  /** 缺少字体与缺少字形时使用的字体（常规字形）。 */
+  readonly fallback: FontMatch
+}
+
 /**
  * 字段的四种字体。DrawingML 的 `latin` 同时作为 `ascii` 与 `hAnsi`。
  * `eastAsia` 为 Times New Roman 时照常使用，不改用 `ascii`（WPS 不按字体名特殊处理）。
@@ -555,7 +572,7 @@ function measure(runs: readonly ParagraphRun[], style: ParagraphStyle): Measured
 function pairKerning(a: Unit, b: Unit): number {
   if ((a.kind !== TEXT && a.kind !== SPACE) || (b.kind !== TEXT && b.kind !== SPACE)) return 0
   const m = a.face!.metrics
-  const units = m.kerning?.(a.cp, b.cp) ?? 0
+  const units = m.kerning(a.cp, b.cp)
   return units === 0 ? 0 : (units * a.extentSize) / m.unitsPerEm
 }
 

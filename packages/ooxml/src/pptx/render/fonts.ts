@@ -17,8 +17,6 @@ import {
   presentationFontNames,
   type ScreenGlyph,
   type ScreenText,
-  type SlideFont,
-  type SlideFontSource,
   type TextClearType,
 } from '../../drawingml/text/fonts.ts'
 import type { TextMathFonts } from '../../drawingml/text/math.ts'
@@ -44,7 +42,7 @@ import {
 } from '../../glyph/cleartype/index.ts'
 import { MATH_SETTINGS_DEFAULTS, type MathFont, readMathFont } from '../../math/index.ts'
 import type { MetafileFace, MetafileFonts } from '../../metafile/index.ts'
-import type { HostFamilies } from '../../text/index.ts'
+import type { FontMatch, FontSource, HostFamilies } from '../../text/index.ts'
 import type { Presentation, Shape } from '../model.ts'
 
 function addShape(out: Set<string>, s: Shape): void {
@@ -72,7 +70,8 @@ export function presentationFonts(p: Presentation, host: HostFamilies): string[]
 }
 
 /** 幻灯片字体：排版度量之外另带内嵌点阵与 ppem 下的纵向度量。 */
-export interface SlideFace extends SlideFont {
+export interface SlideFace extends FontMatch {
+  readonly italic: boolean
   /** 内嵌点阵；字体没有点阵时为 `null`。 */
   readonly bitmaps: EmbeddedBitmaps | null
   /** ppem 下的 GDI 纵向度量：点阵超出基线以上 `ascent`、以下 `descent` 的行不绘制。 */
@@ -85,13 +84,71 @@ export interface SlideFace extends SlideFont {
   readonly math: MathFont<null> | null
 }
 
-export interface SlideFonts extends SlideFontSource {
+export interface SlideFonts extends FontSource {
   face(name: string, bold: boolean, italic: boolean): SlideFace | null
   readonly fallback: SlideFace
   /** 主机字体的族名：主机没有的字体名按 WPS 演示的规则替代（`FaceCache` 的 `presentation`）。 */
   readonly families: HostFamilies
-  /** 族名（`SlideFont.family`）为 `family` 的各字形；绘制时按族名取得点阵。 */
+  /** 族名（`FontMatch.family`）为 `family` 的各字形；绘制时按族名取得点阵。 */
   family(family: string): readonly SlideFace[]
+}
+
+function pick(list: readonly SlideFace[], bold: boolean, italic: boolean): SlideFace | null {
+  return (
+    list.find((f) => f.bold === bold && f.italic === italic) ??
+    list.find((f) => f.bold === bold) ??
+    list.find((f) => !f.bold && !f.italic) ??
+    list[0] ??
+    null
+  )
+}
+
+/**
+ * 按字体名登记的幻灯片字体（`SlideFonts`），宿主读取字体后交给它。`add` 登记的字体（还原的嵌入字体）此后的查询即取到；
+ * 缺少字体时的字体在创建时选定，此后不变。
+ */
+export class SlideFontSet implements SlideFonts {
+  private readonly byName = new Map<string, SlideFace[]>()
+  private readonly byFamily = new Map<string, SlideFace[]>()
+
+  private constructor(
+    fonts: ReadonlyMap<string, readonly SlideFace[]>,
+    readonly fallback: SlideFace,
+    readonly families: HostFamilies,
+  ) {
+    for (const [name, list] of fonts) for (const font of list) this.add(name, font)
+  }
+
+  /**
+   * `fonts` 为各字体名的字形。缺少字体与缺字时的字体为 `fallbacks` 中第一个有字体的字体名按常规字形选取的结果；
+   * 都没有字体时为 `null`。
+   */
+  static of(
+    fonts: ReadonlyMap<string, readonly SlideFace[]>,
+    fallbacks: readonly string[],
+    families: HostFamilies,
+  ): SlideFontSet | null {
+    for (const name of fallbacks) {
+      const fallback = pick(fonts.get(name) ?? [], false, false)
+      if (fallback !== null) return new SlideFontSet(fonts, fallback, families)
+    }
+    return null
+  }
+
+  /** 字体名 `name` 增加一个字形；`family` 的结果中同一字形只列一次。 */
+  add(name: string, font: SlideFace): void {
+    this.byName.set(name, [...(this.byName.get(name) ?? []), font])
+    const same = this.byFamily.get(font.family) ?? []
+    if (!same.includes(font)) this.byFamily.set(font.family, [...same, font])
+  }
+
+  face(name: string, bold: boolean, italic: boolean): SlideFace | null {
+    return pick(this.byName.get(name) ?? [], bold, italic)
+  }
+
+  family(family: string): readonly SlideFace[] {
+    return this.byFamily.get(family) ?? []
+  }
 }
 
 /** 读取字体字节（字体合集取第一个字体）；没有字体时为 `null`，字体表不完整时抛出 `FontFormatError`。 */
@@ -220,7 +277,7 @@ export function slideMetafileFonts(fonts: SlideFonts): MetafileFonts {
       vertical: (ppem) => f.pixelVertical(ppem),
       emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
       averageWidth: v.averageWidth / v.unitsPerEm,
-      symbol: ((v.codePages ?? 0) & SYMBOL_CODE_PAGE) !== 0,
+      symbol: (v.codePages & SYMBOL_CODE_PAGE) !== 0,
       advance: (cp, ppem) => f.face.metrics.advance(cp, ppem),
       draw: (c, text, x, baseline, ppem) => {
         const g = slideBitmap(fonts, paint, text.codePointAt(0)!, ppem)

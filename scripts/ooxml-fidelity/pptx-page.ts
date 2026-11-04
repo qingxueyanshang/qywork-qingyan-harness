@@ -1,8 +1,8 @@
 /**
  * pptx 候选截图的浏览器入口（由 `pptx-candidates.ts` 打包）：解析 pptx、以字节注册字体并读取度量与点阵、解码图片并绘制指定幻灯片。
  *
- * 页面向 `window` 暴露 `renderPage(id, slide, width, height, clearType)`（`clearType` 为采集时显示器的 ClearType 设置），
- * 返回画布尺寸；截图由 Node 驱动的 Playwright 完成。
+ * 页面向 `window` 暴露 `renderPage(id, slide, width, height, clearType, date)`（`clearType` 为采集时显示器的 ClearType 设置，
+ * `date` 为日期字段显示的采集时间），返回画布尺寸；截图由 Node 驱动的 Playwright 完成。
  * 主机字体的族名取自 `/families`（WPS 演示的替代规则所用）；主机没有的字体取文件中的嵌入字体；缺少字体与缺少字形时使用宋体。
  * 本文件只声明用到的浏览器接口，不引入 DOM 类型库。
  */
@@ -18,6 +18,7 @@ import {
 } from '../../packages/ooxml/src/drawingml/index.ts'
 import {
   type ClearTypeDisplay,
+  type FieldDate,
   type Presentation,
   paintSlide,
   parsePptx,
@@ -27,7 +28,7 @@ import {
   readSlideFace,
   type SlideContext,
   type SlideFace,
-  type SlideFonts,
+  SlideFontSet,
   slideImages,
 } from '../../packages/ooxml/src/pptx/index.ts'
 import type { HostFamilies } from '../../packages/ooxml/src/text/index.ts'
@@ -96,20 +97,10 @@ function loadFamily(name: string): Promise<SlideFace[]> {
   return pending
 }
 
-function pick(list: readonly SlideFace[], bold: boolean, italic: boolean): SlideFace | null {
-  return (
-    list.find((f) => f.bold === bold && f.italic === italic) ??
-    list.find((f) => f.bold === bold) ??
-    list.find((f) => !f.bold && !f.italic) ??
-    list[0] ??
-    null
-  )
-}
-
 interface Doc {
   readonly bytes: Uint8Array<ArrayBuffer>
   readonly presentation: Presentation
-  readonly fonts: SlideFonts
+  readonly fonts: SlideFontSet
 }
 
 const docs = new Map<string, Promise<Doc>>()
@@ -149,14 +140,8 @@ function loadDoc(id: string): Promise<Doc> {
         if (font === null) continue
         loaded.set(f.typeface, [...(loaded.get(f.typeface) ?? []), font])
       }
-      const fallback = pick(loaded.get(FALLBACK) ?? [], false, false)
-      if (fallback === null) throw new Error('本机没有宋体')
-      const fonts: SlideFonts = {
-        face: (name, bold, italic) => pick(loaded.get(name) ?? [], bold, italic),
-        fallback,
-        family: (name) => loaded.get(name) ?? [],
-        families,
-      }
+      const fonts = SlideFontSet.of(loaded, [FALLBACK], families)
+      if (fonts === null) throw new Error('本机没有宋体')
       return { bytes, presentation, fonts }
     })()
     docs.set(id, pending)
@@ -178,6 +163,7 @@ async function renderPage(
   width: number,
   height: number,
   clearType: ClearTypeDisplay | null,
+  date: FieldDate,
 ): Promise<{ width: number; height: number }> {
   const { bytes, presentation, fonts } = await loadDoc(id)
   const slide = presentation.slides[slideNumber - 1]
@@ -198,7 +184,7 @@ async function renderPage(
     ctx,
     presentation,
     slide,
-    { fonts, image: (part) => images.get(part) ?? null, createCanvas, clearType },
+    { fonts, image: (part) => images.get(part) ?? null, createCanvas, clearType, date },
     scale,
   )
   return { width, height }

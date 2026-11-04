@@ -13,8 +13,7 @@
 
 export {
   type DocumentLayout,
-  type FontMatch,
-  type FontSource,
+  type DocxFontSource,
   layoutDocument,
   type ParagraphLayout,
 } from './layout.ts'

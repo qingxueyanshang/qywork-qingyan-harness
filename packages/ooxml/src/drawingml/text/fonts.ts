@@ -1,5 +1,5 @@
 /**
- * DrawingML 文字的绘制用字体：调用方按字体名提供字体文件的度量与浏览器中注册的族名，本模块按字形缓存并处理仿粗体。
+ * DrawingML 文字的绘制用字体：调用方按字体名提供字体文件的度量与浏览器中注册的族名（`FontSource`），本模块按字形缓存并处理仿粗体。
  *
  * - 排版宽度只取自字体文件（`../../text/`），绘制时以 `family` 引用调用方注册的同名 `FontFace`。
  * - 主机没有的符号字体名改用 `MISSING_SYMBOL` 中的字体；演示文稿另按 WPS 演示的替代规则（自带度量的字体与前缀匹配，见
@@ -21,6 +21,8 @@ import type { CoverageGlyph, GlyphRun, PixelCanvas } from '../../glyph/cleartype
 import { MATH_SETTINGS_DEFAULTS, mathPropsOf } from '../../math/index.ts'
 import {
   emboldened,
+  type FontMatch,
+  type FontSource,
   type HostFamilies,
   prefixFont,
   type TextFace,
@@ -30,22 +32,6 @@ import {
 } from '../../text/index.ts'
 import type { PaintContext } from '../paint/context.ts'
 import type { Bullet, RunStyle, TextBody } from './model.ts'
-
-export interface SlideFont {
-  readonly face: TextFace
-  /** CSS 族名，与调用方注册的 `FontFace` 族名相同。 */
-  readonly family: string
-  /** 返回的是粗体字形；请求粗体而该项为 `false` 时按仿粗体排版。 */
-  readonly bold: boolean
-  readonly italic: boolean
-}
-
-export interface SlideFontSource {
-  /** 按字体名与字形取得最接近的字体；主机没有该字体时返回 `null`。 */
-  face(name: string, bold: boolean, italic: boolean): SlideFont | null
-  /** 缺少字体与缺少字形时使用的字体（常规字形）。 */
-  readonly fallback: SlideFont
-}
 
 /** 字体 `usWinAscent`、`usWinDescent` 与 `unitsPerEm` 之比，以及该字体的纵向中心系数（见 `lineFace`）。 */
 export interface FaceLine {
@@ -263,7 +249,7 @@ export class FaceCache {
    * 替代（见 `find`、`latin`）；缺省为 `null`，不做这些替代（WPS 表格与 WPS 文字的图形文字，未实测）。
    */
   constructor(
-    private readonly source: SlideFontSource,
+    private readonly source: FontSource,
     private readonly single = SINGLE_LINE,
     readonly screen: ScreenText | null = null,
     readonly glyphs: ScreenText | null = screen,
@@ -290,17 +276,10 @@ export class FaceCache {
           ascent: v.winAscent / v.unitsPerEm,
           descent: v.winDescent / v.unitsPerEm,
           center,
-          upright:
-            ((v.typoAscender ?? v.winAscent) + (v.typoDescender ?? -v.winDescent)) /
-            2 /
-            v.unitsPerEm,
+          upright: (v.typoAscender + v.typoDescender) / 2 / v.unitsPerEm,
           bottom:
             (v.eastAsianCodePage ? BOTTOM_CENTER_EAST_ASIAN : CENTER_OTHER) +
-            (v.useTypoMetrics === true &&
-            v.typoAscender !== undefined &&
-            v.typoDescender !== undefined
-              ? v.typoAscender - v.typoDescender
-              : v.winAscent + v.winDescent) /
+            (v.useTypoMetrics ? v.typoAscender - v.typoDescender : v.winAscent + v.winDescent) /
               2 /
               v.unitsPerEm,
         },
@@ -314,7 +293,7 @@ export class FaceCache {
    * 字体文件 `base` 按请求的粗体与斜体绘制时的绘制字形。每个绘制字形的 `face` 是新建的对象，`byFace` 中一个对象只登记一次：
    * 不要让两个绘制字形共用换算后的字体对象，`of` 按对象取回绘制字形。
    */
-  private variant(base: SlideFont, bold: boolean, italic: boolean): PaintFace {
+  private variant(base: FontMatch, bold: boolean, italic: boolean): PaintFace {
     const converted = this.line(base.face)
     let styles = this.variants.get(converted.face)
     if (styles === undefined) {
@@ -334,7 +313,7 @@ export class FaceCache {
   }
 
   /** 字体名对应的主机字体：主机没有时取 `MISSING_SYMBOL` 中的替代字体，都没有时为 `null`。 */
-  private hostFont(name: string, bold: boolean, italic: boolean): SlideFont | null {
+  private hostFont(name: string, bold: boolean, italic: boolean): FontMatch | null {
     if (name === '') return null
     const found = this.source.face(name, bold, italic)
     if (found !== null) return found
@@ -346,7 +325,7 @@ export class FaceCache {
    * 字体名对应的字体（`hostFont`）。按 WPS 演示的规则时，主机没有该字体名再取自带度量的字体的 `other`（东亚字段按该字体
    * 本身排版，见 `WpsPresentationFont`），不是自带度量的字体名时取前缀匹配的主机字体。都没有时为 `null`。
    */
-  private find(name: string, bold: boolean, italic: boolean): SlideFont | null {
+  private find(name: string, bold: boolean, italic: boolean): FontMatch | null {
     const found = this.hostFont(name, bold, italic)
     if (found !== null || this.presentation === null || name === '') return found
     const metric = WPS_METRIC_FONTS.get(name)?.presentation ?? null
@@ -428,7 +407,6 @@ export class FaceCache {
                 face: wpsPresentationFace(font, host, other.face, ascii?.face ?? null, draw.face),
                 family: draw.family,
                 bold: draw.bold,
-                italic: draw.italic,
               },
               bold,
               italic,

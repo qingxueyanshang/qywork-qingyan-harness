@@ -360,7 +360,8 @@ function readConditionalFormatting(
   return { ranges, rules }
 }
 
-function formulasEvaluable(rule: CfRule): boolean {
+/** 规则引用的公式都能求值；.xls 的条件格式（`../biff/sheet.ts`）按同一规则计数。 */
+export function formulasEvaluable(rule: CfRule): boolean {
   if (rule.type === 'expression') return canEvaluate(rule.formula)
   if (rule.type === 'cellIs') return rule.formulas.every(canEvaluate)
   return true

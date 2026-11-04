@@ -5,7 +5,8 @@
  *   不含类实例与函数。
  * - 行号与列号一律从 0 起算；区域两端都包含在内。
  * - 颜色一律为 `#rrggbb` 小写十六进制；主题色、索引色与 tint 在解析时已换算完毕。
- * - 长度单位：字号、行高为磅（pt），列宽为 Excel 字符宽度单位，绘图对象的锚点偏移与形状坐标为 EMU。
+ * - 长度单位：字号、行高为磅（pt），列宽为 Excel 字符宽度单位，绘图对象的锚点偏移与形状坐标为 EMU
+ *   （.xls 的锚点偏移为单元格宽高的比例，见 `RatioMarker`）。
  *   换算为像素在 `render/geometry.ts` 中进行，依赖默认字体的度量。
  */
 
@@ -324,6 +325,17 @@ export interface AnchorMarker {
 }
 
 /**
+ * .xls 锚点的一端：单元格内偏移为该列宽度、该行高度的比例（0–1，文件中为列宽的 1/1024 与行高的 1/256）。
+ * 不能在解析时换算为 EMU：列宽像素取决于默认字体的最大数字宽度，只在绘制时可知。
+ */
+export interface RatioMarker {
+  readonly col: number
+  readonly colRatio: number
+  readonly row: number
+  readonly rowRatio: number
+}
+
+/**
  * 绘图对象的锚点，决定对象在工作表上的矩形。`twoCellAnchor` 的 `editAs` 只决定编辑时调整行列尺寸的行为，
  * 不改变显示位置，不进入模型。
  */
@@ -335,6 +347,7 @@ export type DrawingAnchor =
       readonly width: number
       readonly height: number
     }
+  | { readonly kind: 'cellRatio'; readonly from: RatioMarker; readonly to: RatioMarker }
   /** 绝对位置与尺寸，EMU。 */
   | {
       readonly kind: 'absolute'
@@ -487,6 +500,8 @@ export interface Workbook {
   readonly palette: readonly string[]
   /** 打开时显示的工作表，`sheets` 的下标。 */
   readonly activeSheet: number
+  /** 工作表网格的行数与列数：xlsx 为 1048576 × 16384，xls 为 65536 × 256。 */
+  readonly gridSize: { readonly rows: number; readonly cols: number }
   /** 样式、富文本与形状文字中出现的全部字体名，供调用方按名取得字体文件。 */
   readonly fontNames: readonly string[]
   /** 全部工作表的计数之和，加上工作簿级的内容（图表工作表、宏表）。 */

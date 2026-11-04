@@ -604,6 +604,17 @@ function paintTrendlines(s: Scene, series: Series, m: Mapping): void {
   ctx.restore()
 }
 
+/**
+ * 数据点在绘图区之外（坐标轴的固定最小值、最大值之外）时不画标记与数据标签。WPS 实测：xls-689ed697 的散点图中
+ * x 为 0 而横坐标轴最小值为 6,000 的点不显示；不跳过时标记画在图表区之外，落在相邻的图表上。
+ */
+function outside(plot: Rect, p: { x: number; y: number }): boolean {
+  const e = 0.5
+  return (
+    p.x < plot.x - e || p.x > plot.x + plot.w + e || p.y < plot.y - e || p.y > plot.y + plot.h + e
+  )
+}
+
 function paintLines(
   s: Scene,
   g: PlotGroup,
@@ -649,7 +660,7 @@ function paintLines(
       }
     }
     for (const p of pts) {
-      if (p === null) continue
+      if (p === null || outside(plot, p)) continue
       const marker = pointMarker(series, p.i)
       if (marker !== null) paintMarker(s, marker, p.x, p.y)
       const labels = labelsAt(series, p.i)

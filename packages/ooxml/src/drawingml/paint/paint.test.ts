@@ -135,6 +135,16 @@ describe('渐变参数', () => {
       bottom: 0,
     })
   })
+
+  test('左右（上下）内缩之和超过形状框时，焦点区域在该方向的宽度为 0，位于左（上）内缩处', () => {
+    expect(focusRect({ left: 0.6, top: 0.8, right: 0.6, bottom: 0.8 }, 200, 100)).toEqual({
+      left: 120,
+      right: 120,
+      top: 80,
+      bottom: 80,
+    })
+    expect(focusRect({ left: 0, top: 1.1, right: 0, bottom: 1 }, 200, 100).top).toBeCloseTo(110, 9)
+  })
 })
 
 describe('填充', () => {
@@ -211,36 +221,49 @@ describe('填充', () => {
     ])
   })
 
-  test('圆形路径渐变在单位正方形中绘制，半径为焦点到最远角的距离', () => {
-    const ctx = new RecordingContext()
-    const fill: Fill = {
-      kind: 'gradient',
-      stops: [
-        { position: 0, color: RED },
-        { position: 1, color: BLUE },
-      ],
-      shade: {
-        kind: 'path',
-        path: 'circle',
-        focus: { left: 0.5, top: 0.5, right: 0.5, bottom: 0.5 },
-      },
-      flip: 'none',
-      rotateWithShape: true,
+  test('圆形路径渐变：外圆以形状框中心为圆心、过四角，不随宽高比拉伸；焦点为一点时以外圆到焦点、色标反向的径向渐变绘制', () => {
+    const paint = (focus: { left: number; top: number; right: number; bottom: number }) => {
+      const ctx = new RecordingContext()
+      const fill: Fill = {
+        kind: 'gradient',
+        stops: [
+          { position: 0, color: RED },
+          { position: 1, color: BLUE },
+        ],
+        shade: { kind: 'path', path: 'circle', focus },
+        flip: 'none',
+        rotateWithShape: true,
+      }
+      const { res } = resources()
+      paintFill(
+        ctx,
+        () => traceRect(ctx, 200, 100),
+        fill,
+        { width: 200, height: 100, matrix: I },
+        res,
+      )
+      return ctx
     }
-    const { res } = resources()
-    paintFill(
-      ctx,
-      () => traceRect(ctx, 200, 100),
-      fill,
-      { width: 200, height: 100, matrix: I },
-      res,
-    )
-    const rect = ctx.named('fillRect')[0]!
-    expect(rect.matrix).toEqual({ a: 200, b: 0, c: 0, d: 100, e: 0, f: 0 })
-    const g = rect.fillStyle as { points: number[] }
-    expect(g.points.slice(0, 2)).toEqual([0.5, 0.5])
-    expect(g.points[5]).toBeCloseTo(Math.SQRT1_2, 9)
-    expect(ctx.named('clip').length).toBe(1)
+    const center = paint({ left: 0.5, top: 0.5, right: 0.5, bottom: 0.5 })
+    const rect = center.named('fillRect')[0]!
+    expect(rect.matrix).toEqual(I)
+    const g = rect.fillStyle as { points: number[]; stops: [number, string][] }
+    expect(g.points.map((v) => Math.round(v * 1000) / 1000)).toEqual([100, 50, 111.803, 100, 50, 0])
+    expect(g.stops[0]![0]).toBe(0)
+    expect(g.stops.at(-1)![0]).toBe(1)
+    expect(center.named('clip').length).toBe(1)
+    // 上下内缩之和超过形状框：高度为 0，位于上内缩处（焦点在形状框之下）。
+    const below = paint({ left: 0.5, top: 1.1, right: 0.5, bottom: 1 })
+    const h = below.named('fillRect')[0]!.fillStyle as { points: number[] }
+    expect(h.points.slice(3).map((v) => Math.round(v * 1000) / 1000)).toEqual([100, 110, 0])
+    // 焦点区域不为一点：按方向分扇区，最后以首个色标的颜色填充内边界。
+    const area = paint({ left: 0.25, top: 0.25, right: 0.25, bottom: 0.25 })
+    const fills = area.named('fill')
+    expect(fills.length).toBe(361)
+    expect(
+      fills.slice(0, 360).every((c) => (c.fillStyle as { kind?: string }).kind === 'linear'),
+    ).toBe(true)
+    expect(typeof fills.at(-1)!.fillStyle).toBe('string')
   })
 
   test('矩形路径渐变：焦点区域为首个色标的颜色，上下为竖直渐变带，左右为水平渐变的梯形', () => {
@@ -434,6 +457,27 @@ describe('填充', () => {
     expect(pattern.transform.d! * 90).toBeCloseTo(115, 9)
   })
 
+  test('平铺单元在乘以缩放之后取整', () => {
+    const ctx = new RecordingContext()
+    const { res } = resources({ p: { width: 5, height: 5 } }, { x: 72, y: 72 })
+    const fill: Fill = {
+      kind: 'picture',
+      image: {
+        part: 'p',
+        crop: { left: 0, top: 0, right: 0, bottom: 0 },
+        stretch: null,
+        tile: { offsetX: 0, offsetY: 0, scaleX: 0.65, scaleY: 0.65, flip: 'none', align: 'tl' },
+        alpha: 1,
+        effects: [],
+        rotateWithShape: true,
+      },
+    }
+    paintFill(ctx, () => traceRect(ctx, 40, 40), fill, { width: 40, height: 40, matrix: I }, res)
+    const pattern = ctx.named('fillRect')[0]!.fillStyle as { transform: Record<string, number> }
+    expect(pattern.transform.a! * 5).toBeCloseTo(4, 9)
+    expect(pattern.transform.d! * 5).toBeCloseTo(4, 9)
+  })
+
   test('图案填充：8 × 8 图层按前景与背景色绘制，关闭平滑', () => {
     const ctx = new RecordingContext()
     const { res, created } = resources()
@@ -445,6 +489,27 @@ describe('填充', () => {
     expect(cells.slice(1).map((c) => c.args)).toEqual(
       Array.from({ length: 8 }, (_, x) => [x, 0, 1, 1]),
     )
+  })
+
+  test('图案按设备坐标对齐：不随形状的位置与旋转改变，原点为 (−1, −1) 个图案像素，图层中按 origin 平移', () => {
+    const fill: Fill = { kind: 'pattern', preset: 'pct20', foreground: RED, background: BLUE }
+    const matrix = multiply(translation(37, 11), multiply(rotation(Math.PI / 2), scaling(2, 2)))
+    const device = (origin?: { x: number; y: number }) => {
+      const ctx = new RecordingContext()
+      const { res } = resources()
+      paintFill(
+        ctx,
+        () => traceRect(ctx, 10, 10),
+        fill,
+        { width: 10, height: 10, matrix },
+        origin === undefined ? res : { ...res, origin },
+      )
+      const pattern = ctx.named('fill')[0]!.fillStyle as { transform: typeof I }
+      const m = multiply(matrix, pattern.transform)
+      return Object.values(m).map((v) => Math.round(v * 1e9) / 1e9 + 0)
+    }
+    expect(device()).toEqual([2, 0, 0, 2, -2, -2])
+    expect(device({ x: 5, y: 3 })).toEqual([2, 0, 0, 2, -7, -5])
   })
 
   test('明暗修饰叠加半透明白色或黑色', () => {
@@ -665,6 +730,22 @@ describe('外部阴影', () => {
     expect(draws[0]!.matrix).toEqual({ a: 1, b: 0, c: 0, d: 1, e: -away, f: 10 })
     expect(draws[1]!.matrix).toEqual(I)
     expect(draws[1]!.args.slice(1)).toEqual([5, 6])
+  })
+
+  test('带图层效果绘制时，传给绘制函数的 origin 为图层左上角在页面中的位置', () => {
+    const ctx = new RecordingContext()
+    const { res } = resources()
+    const origins: unknown[] = []
+    paintWithEffects(
+      ctx,
+      { ...NO_EFFECTS, shadows: [base] },
+      { matrix: I, width: 10, height: 10, scale: 1 },
+      { x: 5, y: 6, w: 10, h: 10 },
+      { ...res, origin: { x: 100, y: 200 } },
+      { width: 100, height: 100 },
+      (_c, _offset, r) => origins.push(r.origin),
+    )
+    expect(origins).toEqual([{ x: 105, y: 206 }])
   })
 
   test('内部阴影：裁剪到形状区域后填充区域之外的轮廓，阴影向 dir 的反方向偏移而出现在 dir 一侧', () => {

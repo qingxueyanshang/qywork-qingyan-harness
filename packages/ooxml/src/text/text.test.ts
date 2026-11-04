@@ -4,6 +4,7 @@
  * 上下标、字符间距、基线提升、字距调整、`wordWrap` 关闭与单双字节宽度协调、行内对象、段落标记计入行高的条件、最小与最大内容宽度）、
  * `punctuation.ts`（相邻标点压缩与压缩标点）、`font-substitutes.ts`（Windows 字体替换表的大小写与按主机字体族名的前缀匹配）、
  * `wps-fonts.ts`（页面 EMF 中 WPS 自带字体名的对应、按数据表排版的字体的字形编号），
+ * `language.ts`（Windows 语言标识到语言标记），
  * 以及 `../font/vertical.ts`（`hhea` 与 `OS/2` 纵向度量、上下标字号）与 `../font/features/kern.ts`（`kern` 表的字偶）。
  *
  * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
@@ -27,6 +28,7 @@ import {
   type InlineObject,
   isEastAsian,
   isIdeographic,
+  languageTag,
   layoutParagraph,
   lineBox,
   type ObjectRun,
@@ -1350,5 +1352,27 @@ describe.skipIf(process.platform !== 'win32')('WPS 自带度量的字体', () =>
       expect(f.metrics.glyphId(A)).toBe(calibri.metrics.glyphId(A))
       expect(f.metrics.glyphId(GUO)).toBe(simsun.metrics.glyphId(GUO))
     }
+  })
+})
+
+describe('语言标识', () => {
+  test('中文按完整的语言标识区分简体与繁体，其余子语言按主语言；中日韩以外的语言为空串', () => {
+    expect(
+      [0x0804, 0x1004, 0x0404, 0x0c04, 0x1404, 0x7804, 0x0411, 0x0412, 0x0812, 0x0409, 0].map(
+        languageTag,
+      ),
+    ).toEqual([
+      'zh-CN',
+      'zh-CN',
+      'zh-TW',
+      'zh-HK',
+      'zh-MO',
+      'zh-CN',
+      'ja-JP',
+      'ko-KR',
+      'ko-KR',
+      '',
+      '',
+    ])
   })
 })

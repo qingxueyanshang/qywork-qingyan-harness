@@ -21,7 +21,6 @@ export type OpcCorruptReason = ZipCorruptReason | 'content-types' | 'relationshi
 export type OpcFailure =
   | { readonly kind: 'not-office' }
   | { readonly kind: 'encrypted' }
-  | { readonly kind: 'legacy' }
   | { readonly kind: 'corrupt'; readonly reason: OpcCorruptReason }
 
 export type OpcResult<T> =
@@ -164,7 +163,8 @@ function parseRelationships(xml: string, source: string): Relationships {
   return new RelationshipList(source, list)
 }
 
-class RelationshipList implements Relationships {
+/** 关系列表；`list` 中各项的 `part` 已解析。 */
+export class RelationshipList implements Relationships {
   constructor(
     readonly source: string,
     readonly list: readonly Relationship[],

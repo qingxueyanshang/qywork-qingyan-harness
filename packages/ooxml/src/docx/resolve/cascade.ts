@@ -25,6 +25,7 @@ import type {
 import type { Level } from '../parse/numbering.ts'
 import {
   type RawBorder,
+  type RawFrame,
   type RawIndent,
   type RawParaProps,
   type RawRunProps,
@@ -79,6 +80,16 @@ function mergeTabs(
   return [...byPos.values()].sort((a, b) => a.pos - b.pos)
 }
 
+/** 图文框逐项合并；横向（纵向）的偏移与对齐互斥，`over` 给出其中一项时去掉 `base` 的另一项。 */
+function mergeFrame(base: RawFrame, over: RawFrame): RawFrame {
+  const out: RawFrame = { ...base, ...over }
+  if (over.x !== undefined && over.xAlign === undefined) delete out.xAlign
+  if (over.xAlign !== undefined && over.x === undefined) delete out.x
+  if (over.y !== undefined && over.yAlign === undefined) delete out.yAlign
+  if (over.yAlign !== undefined && over.y === undefined) delete out.y
+  return out
+}
+
 export function mergePara(base: RawParaProps, over: RawParaProps): RawParaProps {
   const out: RawParaProps = { ...base, ...over }
   const ind = mergeIndent(base.ind, over.ind)
@@ -87,6 +98,8 @@ export function mergePara(base: RawParaProps, over: RawParaProps): RawParaProps 
   if (spacing !== undefined) out.spacing = spacing
   const tabs = mergeTabs(base.tabs, over.tabs)
   if (tabs !== undefined) out.tabs = tabs
+  if (base.frame !== undefined && over.frame !== undefined)
+    out.frame = mergeFrame(base.frame, over.frame)
   return out
 }
 

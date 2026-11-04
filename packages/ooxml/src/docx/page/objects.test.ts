@@ -2,7 +2,8 @@
  * docx 中对象的放置、页面边框与计数。覆盖 `../layout.ts`（独占一行的嵌入式对象的纵向位置）、`build.ts`（影响环绕的浮动
  * 对象横向不超出页面、纵向按兼容模式调整（`keepOnPage`）、不换行且根据文字调整大小的文本框的宽度（`fitAnchor`）、竖排文字与形状旋转
  * 相抵的文本框的文字区（`textBoxes`，含 `../parse/drawing.ts` 的 `turnedText`）、上下型对象使锚定段落移页、对象所属的页、页面边框的矩形、
- * 页眉页脚中未绘制图片与公式的计数、同页分为几部分的段落中的对象只放置一次、被推到上下型对象下方的行另加本段段前间距）、
+ * 页眉页脚中未绘制图片与公式的计数、同页分为几部分的段落中的对象只放置一次、被推到上下型对象下方的行另加本段段前间距、
+ * 没有页眉页脚部件时的正文区）、
  * `paginate.ts`（相对段落的对象的基准、与下段同页的段落组整体移页时舍弃已记录的对象、`overlaps` 中上一段与
  * 上下型对象相接的行、`fitRatio`）、`../render/paint.ts`（页面边框的线与四角）、
  * `../parse/body.ts` 与 `../load.ts`（页眉页脚中未实现元素按部件计数）、`../border.ts`（线型的线与间距）与段落边框占用的
@@ -179,6 +180,17 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
   }
   const paragraphsOf = (page: Page) =>
     page.body.filter((it): it is PageParagraph => it.kind === 'paragraph')
+
+  test('没有页眉页脚部件时正文区取上下边距，与页眉页脚距离无关（WPS：上边距 5.1 磅、页眉距离 42.55 磅时正文自 5.1 磅处开始）', async () => {
+    const sect =
+      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="102" w:right="1800" w:bottom="102" w:left="1800" ' +
+      'w:header="851" w:footer="992" w:gutter="0"/></w:sectPr>'
+    const d = await parse(p(r('文字')).repeat(80) + sect)
+    const items = paragraphsOf(layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages[0]!)
+    expect(items[0]!.lines[0]!.top).toBeCloseTo(5.1, 6)
+    const last = items.at(-1)!.lines.at(-1)!
+    expect(last.top + last.height).toBeGreaterThan(841.9 - 49.6)
+  })
 
   test('所在字段的基线提升使嵌入式图片与行的上下沿随之移动（WPS：w9-raise，30 磅图片下降 5 磅时行高 30 磅，提升 3 磅时 36.05 磅）', async () => {
     const raised = (pos: number) =>
@@ -886,5 +898,160 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
         borderSpace({ style, width: 1.5, color: null, space: 0 }),
       ),
     ).toEqual([1.5, 4.5, 7.5, 3, 0])
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('图文框（本机字体）', () => {
+  const FONTS = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
+  let fonts: DocxFonts | null = null
+  const load = (): DocxFonts => {
+    fonts ??= new DocxFonts(
+      [loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)],
+      '宋体',
+    )
+    return fonts
+  }
+  const W =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+  const SONG = '<w:rPr><w:rFonts w:ascii="宋体" w:hAnsi="宋体" w:eastAsia="宋体"/></w:rPr>'
+  const frame = (attrs: string) => `<w:framePr ${attrs}/>`
+  const FILL = r('正文用于观察环绕的文字。'.repeat(8), SONG)
+  const paragraphsOf = (page: Page) =>
+    page.body.filter((it): it is PageParagraph => it.kind === 'paragraph')
+
+  test('页脚中的页码图文框不占页脚高度，按内容宽度相对页边距居中（WPS：构造文档 fr1 与 .doc 语料 zju-doc-068 的页脚）', async () => {
+    const footer =
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr ${W}>` +
+      p(
+        '<w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple>',
+        frame('w:wrap="around" w:vAnchor="text" w:hAnchor="margin" w:xAlign="center" w:y="1"'),
+      ) +
+      p('') +
+      '</w:ftr>'
+    const d = await parse(p(FILL) + SECT('<w:footerReference w:type="default" r:id="rIdFtr"/>'), [
+      {
+        id: 'rIdFtr',
+        type: 'footer',
+        name: 'footer1.xml',
+        content: footer,
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml',
+      },
+    ])
+    expect(d.unsupported).toEqual({})
+    const part = d.parts[d.sections[0]!.footers.default!]!
+    expect(part).toHaveLength(1)
+    const page = layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages[0]!
+    expect(page.footer).toHaveLength(1)
+    const number = page.floats[0]!
+    const item = page.footer[0] as PageParagraph
+    // 行顶在绘制时取整到缇，对象按未取整的段落顶边定位：相差不到 1 缇。
+    expect(Math.abs(number.y - (item.lines[0]!.top + 0.05))).toBeLessThan(0.05)
+    expect(number.x + number.width / 2).toBeCloseTo(90 + 415.3 / 2, 6)
+    expect(number.texts[0]!.items).toHaveLength(1)
+  })
+
+  test('相邻、属性相同的图文框段落为一个对象，记入其后的段落；单元格中与其后没有段落的图文框按普通段落并计数', async () => {
+    const shade = '<w:shd w:val="clear" w:color="auto" w:fill="C0C0C0"/>'
+    const same = `${frame('w:w="4000" w:wrap="around" w:vAnchor="text" w:hAnchor="margin" w:xAlign="center" w:y="200"')}${shade}`
+    const d = await parse(
+      p(r('开头')) +
+        p(r('同框一'), same) +
+        p(r('同框二'), same) +
+        p(
+          r('异框'),
+          frame(
+            'w:w="1500" w:hAnchor="page" w:vAnchor="page" w:x="2880" w:y="4320" w:wrap="notBeside"',
+          ),
+        ) +
+        p(FILL) +
+        '<w:tbl><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>' +
+        p(r('格'), frame('w:wrap="around" w:hAnchor="margin" w:xAlign="center" w:y="166"')) +
+        '</w:tc></w:tr></w:tbl>' +
+        p(r('末段'), frame('w:wrap="around" w:x="100" w:y="100"')) +
+        SECT(),
+    )
+    expect(d.body.map((b) => b.kind)).toEqual(['paragraph', 'paragraph', 'table', 'paragraph'])
+    expect(d.unsupported).toEqual({ frame: 2 })
+    const host = d.body[1] as DocxDocument['body'][number] & { kind: 'paragraph' }
+    const size = (a: (typeof host.anchors)[number]) =>
+      a.frame === null ? null : { ...a.frame, maxWidth: Math.round(a.frame.maxWidth * 10) / 10 }
+    expect(host.anchors.map((a) => [a.horizontal, a.vertical, a.wrap.type, size(a)])).toEqual([
+      [
+        { from: 'margin', align: 'center', offset: 0 },
+        { from: 'paragraph', align: null, offset: 10 },
+        'square',
+        { width: 200, maxWidth: 415.3, height: 0, rule: 'auto' },
+      ],
+      [
+        { from: 'page', align: null, offset: 144 },
+        { from: 'page', align: null, offset: 216 },
+        'topAndBottom',
+        { width: 75, maxWidth: 415.3, height: 0, rule: 'auto' },
+      ],
+    ])
+    const content = host.anchors[0]!.drawing
+    expect(content?.kind === 'shape' && content.text?.content.length).toBe(2)
+    // 各段底纹相同的图文框以底纹填充，没有底纹的无填充。
+    const fills = host.anchors.map((a) => (a.drawing?.kind === 'shape' ? a.drawing.fill : null))
+    expect(fills).toEqual([
+      { kind: 'solid', color: { r: 0xc0 / 255, g: 0xc0 / 255, b: 0xc0 / 255, a: 1 } },
+      { kind: 'none' },
+    ])
+  })
+
+  test('图文框旁可排入文字的区段须宽于 1 英寸（WPS：构造文档 fr1、fr2，72 磅的空隙不排，73 磅的排入）', async () => {
+    const firstX = async (gap: number) => {
+      const d = await parse(
+        p(
+          r('框', SONG),
+          frame(
+            `w:w="1500" w:wrap="around" w:hAnchor="margin" w:vAnchor="text" w:x="${gap * 20}" w:y="0"`,
+          ),
+        ) +
+          p(FILL) +
+          SECT(),
+      )
+      const line = paragraphsOf(layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages[0]!)[0]!
+        .lines[0]!
+      return line.fragments[0]!.x
+    }
+    expect(await firstX(72)).toBeCloseTo(90 + 72 + 75, 6)
+    expect(await firstX(73)).toBeCloseTo(90, 6)
+  })
+
+  test('图文框的宽高：自动宽度的长段落取版心宽度，相对页面右移时不缩回页面之内；最小值取内容高度与最小值中的较大者（WPS：构造文档 fr1、fr2）', async () => {
+    const d = await parse(
+      p(FILL, frame('w:wrap="around" w:hAnchor="page" w:vAnchor="page" w:x="4320" w:y="2000"')) +
+        p(
+          r('一行', SONG),
+          frame(
+            'w:w="2000" w:h="2880" w:hRule="atLeast" w:wrap="around" w:hAnchor="margin" w:vAnchor="margin" w:x="0" w:y="6000"',
+          ),
+        ) +
+        p(
+          r('三行三行三行三行三行三行三行三行三行三行三行三行三行三行三行三行', SONG),
+          frame(
+            'w:w="2000" w:h="720" w:hRule="atLeast" w:wrap="around" w:hAnchor="margin" w:vAnchor="margin" w:x="0" w:y="12000"',
+          ),
+        ) +
+        p(
+          r('固定', SONG),
+          frame(
+            'w:w="2000" w:h="1440" w:hRule="exact" w:wrap="around" w:hAnchor="margin" w:vAnchor="margin" w:x="0" w:y="18000"',
+          ),
+        ) +
+        p(FILL) +
+        SECT(),
+    )
+    const floats = layoutPages(d, load(), NO_HOST_FAMILIES).pages.pages[0]!.floats
+    expect(floats.map((f) => [f.x, f.y])).toEqual([
+      [216, 100],
+      [90, 372],
+      [90, 672],
+      [90, 972],
+    ])
+    expect(floats[0]!.width).toBeCloseTo(415.3, 6)
+    expect(floats.slice(1).map((f) => f.height)).toEqual([144, floats[2]!.height, 72])
+    expect(floats[2]!.height).toBeGreaterThan(36)
   })
 })

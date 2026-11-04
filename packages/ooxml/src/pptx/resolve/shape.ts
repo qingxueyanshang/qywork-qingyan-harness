@@ -17,7 +17,12 @@
 
 import { resolveChart } from '../../drawingml/chart/resolve.ts'
 import { resolveDiagram } from '../../drawingml/diagram/resolve.ts'
-import { type ImageFill, resolveImageFill, type ShapeFill } from '../../drawingml/fill.ts'
+import {
+  type ImageFill,
+  resolveFill,
+  resolveImageFill,
+  type ShapeFill,
+} from '../../drawingml/fill.ts'
 import type { Geometry } from '../../drawingml/geometry/model.ts'
 import { EMPTY_PROPS, type ShapeProps, type StyleRefs } from '../../drawingml/shape/read.ts'
 import {
@@ -29,6 +34,7 @@ import {
   fontRefStyle,
   frameOf,
   IDENTITY_TRANSFORM,
+  matrixFill,
   resolveShapeEffects,
   resolveShapeFill,
   resolveShapeLine,
@@ -42,7 +48,8 @@ import { resolveTextBody } from '../../drawingml/text/resolve.ts'
 import { resolveThreeD, visibleThreeD } from '../../drawingml/three/camera.ts'
 import { hasUnsupportedMath } from '../../math/index.ts'
 import type { Placeholder, Shape } from '../model.ts'
-import type { RawShape } from '../parse/shape.ts'
+import type { RawPlaceholder, RawShape } from '../parse/shape.ts'
+import type { BackgroundSpec } from '../parse/slide.ts'
 import { resolveInk } from './ink.ts'
 import { matchLayoutPlaceholder, matchMasterPlaceholder, textStyleKind } from './placeholder.ts'
 import type { SlideScope } from './scope.ts'
@@ -152,12 +159,22 @@ function countUnpainted(shape: Shape, scope: SlideScope): void {
   }
 }
 
+/** 背景：`bgRef` 取主题的背景填充样式，`bgPr` 为组合填充时按无填充。 */
+export function resolveBackground(spec: BackgroundSpec, scope: SlideScope): ShapeFill {
+  if (spec.kind === 'ref') return matrixFill(scope, spec.idx, spec.color)
+  const fill = resolveFill(spec.fill, scope.colors)
+  return fill.kind === 'group' ? NONE : fill
+}
+
 export class ShapeResolver {
   constructor(private readonly scope: SlideScope) {}
 
-  /** `origin` 为 `slide` 时解决占位符继承；母版与版式只传入非占位符形状。 */
-  resolve(raw: readonly RawShape[], origin: Shape['origin']): Shape[] {
-    return raw.map((s) => this.shape(s, origin, IDENTITY_TRANSFORM, NONE))
+  /**
+   * `origin` 为 `slide` 时解决占位符继承；母版与版式只传入非占位符形状。`t` 为所在组合的坐标变换，顶层形状为
+   * `IDENTITY_TRANSFORM`。
+   */
+  resolve(raw: readonly RawShape[], origin: Shape['origin'], t = IDENTITY_TRANSFORM): Shape[] {
+    return raw.map((s) => this.shape(s, origin, t, NONE))
   }
 
   private shape(raw: RawShape, origin: Shape['origin'], t: Transform, group: ShapeFill): Shape {
@@ -207,7 +224,10 @@ export class ShapeResolver {
 
     switch (raw.kind) {
       case 'shape': {
-        const text = raw.text === null ? null : this.text(raw.text, raw, layoutPh, masterPh, style)
+        const text =
+          raw.text === null
+            ? null
+            : this.text(raw.text, textStyleKind(raw.placeholder), layoutPh, masterPh, style)
         return {
           kind: 'shape',
           ...common,
@@ -304,9 +324,29 @@ export class ShapeResolver {
     }
   }
 
+  /**
+   * 幻灯片上不是 DrawingML 形状的文字（.ppt 旧格式记录换算的文字规格）：按 `placeholder` 匹配版式与母版占位符（不是占位符时为
+   * `null`），经与幻灯片形状的文字相同的继承链求值；母版文字样式的类别由调用方给出（.ppt 按文字类型）。
+   */
+  slideText(
+    raw: RawTextBody,
+    placeholder: RawPlaceholder | null,
+    kind: 'title' | 'body' | 'other',
+  ): TextBody {
+    const layoutPh =
+      placeholder === null ? null : matchLayoutPlaceholder(placeholder, this.scope.layout.shapes)
+    const masterPh =
+      placeholder === null
+        ? null
+        : matchMasterPlaceholder(layoutPh?.placeholder ?? placeholder, this.scope.master.shapes)
+    let style: StyleRefs | null = null
+    for (const ph of [layoutPh, masterPh]) if (ph !== null) style ??= styleOf(ph)
+    return this.text(raw, kind, layoutPh, masterPh, style)
+  }
+
   private text(
     raw: RawTextBody,
-    shape: RawShape,
+    kind: 'title' | 'body' | 'other',
     layoutPh: RawShape | null,
     masterPh: RawShape | null,
     style: StyleRefs | null,
@@ -314,7 +354,6 @@ export class ShapeResolver {
     const scope = this.scope
     const layoutText = textOf(layoutPh)
     const masterText = textOf(masterPh)
-    const kind = textStyleKind(shape.placeholder)
     const bodies = [layoutText?.body, masterText?.body].filter((b) => b !== undefined)
     return resolveTextBody(raw, {
       theme: scope.theme,

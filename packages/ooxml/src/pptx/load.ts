@@ -1,6 +1,8 @@
 /**
  * pptx 解析入口：由文件字节得到 `Presentation`。纯函数，不依赖 DOM，可在 Worker 中运行。
  *
+ * - 文件为含 `PowerPoint Document` 流的 CFB 复合文档（.ppt）时交给 `binary/` 解析，结构错误时返回 `corrupt('ppt')`；
+ *   其余 CFB 由 ZIP 层分类。
  * - 部件按关系定位：包关系的 `officeDocument` 为演示文稿，其关系给出各幻灯片、母版与表格样式；
  *   幻灯片关系给出版式，版式关系给出母版，母版关系给出主题。版式、母版与主题按部件缓存，部件按顺序读取。
  * - 主文档的内容类型不是演示文稿（含启用宏的演示文稿与模板）、幻灯片关系指向不存在的部件时返回 `corrupt('presentation')`；
@@ -17,8 +19,8 @@ import { type RawChart, readChart } from '../drawingml/chart/read.ts'
 import { DEFAULT_COLOR_MAP } from '../drawingml/color.ts'
 import type { RawDiagram } from '../drawingml/diagram/model.ts'
 import { type DiagramParts, readDiagram } from '../drawingml/diagram/read.ts'
-import { resolveFill, type ShapeFill } from '../drawingml/fill.ts'
-import { decodableImage, matrixFill } from '../drawingml/shape/resolve.ts'
+import type { ShapeFill } from '../drawingml/fill.ts'
+import { decodableImage } from '../drawingml/shape/resolve.ts'
 import { EMPTY_THEME, parseTheme, type Theme } from '../drawingml/theme.ts'
 import { type Metafile, readMetafile } from '../metafile/index.ts'
 import {
@@ -29,6 +31,8 @@ import {
 } from '../opc/package.ts'
 import { PartScanner } from '../opc/scanner.ts'
 import { XmlSyntaxError } from '../xml/index.ts'
+import { openLegacy } from '../zip/index.ts'
+import { parsePpt } from './binary/presentation.ts'
 import type {
   EmbeddedFont,
   Presentation,
@@ -38,14 +42,14 @@ import type {
 } from './model.ts'
 import { type RawInkStroke, readInk } from './parse/ink.ts'
 import type { RawShape } from './parse/shape.ts'
-import { type RawPart, readPresentation, readSlidePart } from './parse/slide.ts'
+import { type RawPart, readPresentation, readSlidePart, SLIDE_EXTENSIONS } from './parse/slide.ts'
 import { readTableStyles, type TableStyle } from './parse/table.ts'
 import type { SlideScope } from './resolve/scope.ts'
-import { ShapeResolver } from './resolve/shape.ts'
+import { resolveBackground, ShapeResolver } from './resolve/shape.ts'
 
 export type PptxFailure =
   | OpcFailure
-  | { readonly kind: 'corrupt'; readonly reason: 'presentation' | 'xml' }
+  | { readonly kind: 'corrupt'; readonly reason: 'presentation' | 'xml' | 'ppt' }
 
 export type PptxResult =
   | { readonly ok: true; readonly value: Presentation }
@@ -80,16 +84,6 @@ function emptyPart(part: string, rels: Relationships): RawPart {
 function addCounts(target: UnsupportedCounts, kinds: readonly UnsupportedKind[]): void {
   for (const k of kinds) target[k] = (target[k] ?? 0) + 1
 }
-
-/**
- * 幻灯片、版式与母版声明支持 PowerPoint 2010 扩展（`p14`）与 DrawingML 2010 扩展（`a14`）：`AlternateContent` 中要求它们的
- * 分支被选中。墨迹因此取 `contentPart`（WPS 演示按其中的 InkML 绘制笔画，不显示替代图片），`p14` 的切换效果同样只计数；
- * 公式取含 `a14:m` 的形状（WPS 演示按其中的 OMML 排版绘制，不显示替代图片）。要求其他扩展的分支取 `Fallback`。
- */
-const SLIDE_EXTENSIONS = [
-  'http://schemas.microsoft.com/office/powerpoint/2010/main',
-  'http://schemas.microsoft.com/office/drawing/2010/main',
-]
 
 /** 形状树中引用的图表部件名、SmartArt 部件与墨迹部件名（含组合内）。 */
 function graphicParts(
@@ -197,6 +191,8 @@ class Loader {
 }
 
 export async function parsePptx(data: Uint8Array<ArrayBuffer>): Promise<PptxResult> {
+  const legacy = openLegacy(data)
+  if (legacy?.ok && legacy.value.format === 'ppt') return parsePpt(legacy.value.file)
   const opened = await openPackage(data)
   if (!opened.ok) return opened
   try {
@@ -331,8 +327,5 @@ function background(
   scope: SlideScope,
 ): ShapeFill | null {
   const spec = slide.background ?? layout.background ?? master.background
-  if (spec === null) return null
-  if (spec.kind === 'ref') return matrixFill(scope, spec.idx, spec.color)
-  const fill = resolveFill(spec.fill, scope.colors)
-  return fill.kind === 'group' ? { kind: 'none' } : fill
+  return spec === null ? null : resolveBackground(spec, scope)
 }

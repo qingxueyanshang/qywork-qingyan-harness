@@ -22,6 +22,44 @@ class TempDir:
         shutil.rmtree(self.path, ignore_errors=True)
 
 
+def ole_file(path, entries):
+    """OLE 复合文件（版本 3，512 字节扇区）：entries 为 (名称, 类型) 或 (名称, 类型, 内容) 的列表，类型 1 为存储、2 为流，
+    依次为根存储的子项。
+
+    第 0 个扇区为 FAT，目录自第 1 个扇区起经 FAT 链接，每个扇区 4 项；流的内容不短于 4096 字节（普通扇区），
+    依次写在目录之后，没有内容的项长度为 0。
+    """
+    import struct
+
+    end, free, fat_sector, none = 0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFD, 0xFFFFFFFF
+    items = [("Root Entry", 5, b"")] + [(*e, b"")[:3] for e in entries]
+    count = (len(items) + 3) // 4
+    fat = [fat_sector] + [s + 1 for s in range(1, count)] + [end]
+    starts, body = [], bytearray()
+    for _, _, data in items:
+        sectors = (len(data) + 511) // 512
+        starts.append(len(fat) if sectors else end)
+        fat += [len(fat) + k + 1 for k in range(sectors - 1)] + ([end] if sectors else [])
+        body += data + bytes(sectors * 512 - len(data))
+    fat += [free] * (128 - len(fat))
+    header = bytearray(512)
+    header[0:8] = bytes.fromhex("d0cf11e0a1b11ae1")
+    struct.pack_into("<HHHHH", header, 24, 0x3E, 3, 0xFFFE, 9, 6)
+    struct.pack_into("<IIIIIIII", header, 44, 1, 1, 0, 4096, end, 0, end, 0)
+    struct.pack_into("<109I", header, 76, 0, *([free] * 108))
+    directory = bytearray(count * 512)
+    for i, (name, kind, data) in enumerate(items):
+        p = i * 128
+        raw = name.encode("utf-16-le")
+        directory[p:p + len(raw)] = raw
+        right = i + 1 if 0 < i < len(items) - 1 else none
+        child = 1 if i == 0 and len(items) > 1 else none
+        struct.pack_into("<HBBIII", directory, p + 64, len(raw) + 2, kind, 1, none, right, child)
+        struct.pack_into("<II", directory, p + 116, starts[i], len(data))
+    Path(path).write_bytes(bytes(header) + struct.pack("<128I", *fat) + bytes(directory) + bytes(body))
+    return path
+
+
 def toc_docx(path, prefix_title=False):
     """带一个 TOC 域（占位结果，dirty）和两级标题的 docx。"""
     from docx import Document

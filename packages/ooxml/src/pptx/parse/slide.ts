@@ -77,7 +77,19 @@ const EMBEDDED_STYLES: ReadonlyMap<string, readonly [bold: boolean, italic: bool
 
 const SLOTS = new Set<string>(SCHEME_SLOTS)
 
-function readColorMap(x: Scanner): ColorMap {
+/**
+ * 幻灯片、版式与母版声明支持 PowerPoint 2010 扩展（`p14`）与 DrawingML 2010 扩展（`a14`）：`AlternateContent` 中要求它们的
+ * 分支被选中。墨迹因此取 `contentPart`（WPS 演示按其中的 InkML 绘制笔画，不显示替代图片），`p14` 的切换效果同样只计数；
+ * 公式取含 `a14:m` 的形状（WPS 演示按其中的 OMML 排版绘制，不显示替代图片）。要求其他扩展的分支取 `Fallback`。
+ * 部件的扫描器以此构造。
+ */
+export const SLIDE_EXTENSIONS = [
+  'http://schemas.microsoft.com/office/powerpoint/2010/main',
+  'http://schemas.microsoft.com/office/drawing/2010/main',
+]
+
+/** 在 `clrMap` 或 `overrideClrMapping` 的开始标签处调用。 */
+export function readColorMap(x: Scanner): ColorMap {
   const out = { ...DEFAULT_COLOR_MAP } as Record<ColorMapKey, SchemeSlot>
   for (const key of Object.keys(DEFAULT_COLOR_MAP) as ColorMapKey[]) {
     const v = x.attr(key)
@@ -86,7 +98,8 @@ function readColorMap(x: Scanner): ColorMap {
   return out
 }
 
-function readBackground(x: Scanner, rels: Relationships): BackgroundSpec | null {
+/** 在 `bg`（或同结构的 `background`）的开始标签处调用。 */
+export function readBackground(x: Scanner, rels: Relationships): BackgroundSpec | null {
   let out: BackgroundSpec | null = null
   eachChild(x, (local) => {
     if (local === 'bgPr') {
@@ -118,6 +131,19 @@ function countAnimations(x: Scanner): number {
   return targets.size
 }
 
+/** 在 `txStyles` 的开始标签处调用。 */
+export function readTextStyles(x: Scanner, cx: TextContext): TextStyles {
+  let title: ListStyleSpec | null = null
+  let body: ListStyleSpec | null = null
+  let other: ListStyleSpec | null = null
+  eachChild(x, (child) => {
+    if (child === 'titleStyle') title = readListStyle(x, cx)
+    else if (child === 'bodyStyle') body = readListStyle(x, cx)
+    else if (child === 'otherStyle') other = readListStyle(x, cx)
+  })
+  return { title, body, other }
+}
+
 /** 解析幻灯片、版式或母版部件。`part` 为部件名，`rels` 为其关系表。 */
 export function readSlidePart(x: Scanner, part: string, rels: Relationships): RawPart {
   let hidden = false
@@ -145,15 +171,7 @@ export function readSlidePart(x: Scanner, part: string, rels: Relationships): Ra
           if (child === 'overrideClrMapping') colorMap = readColorMap(x)
         })
       } else if (local === 'txStyles') {
-        let title: ListStyleSpec | null = null
-        let body: ListStyleSpec | null = null
-        let other: ListStyleSpec | null = null
-        eachChild(x, (child) => {
-          if (child === 'titleStyle') title = readListStyle(x, cx)
-          else if (child === 'bodyStyle') body = readListStyle(x, cx)
-          else if (child === 'otherStyle') other = readListStyle(x, cx)
-        })
-        textStyles = { title, body, other }
+        textStyles = readTextStyles(x, cx)
       } else if (local === 'timing') {
         for (let n = countAnimations(x); n > 0; n--) found.push('animation')
       } else if (local === 'transition') {

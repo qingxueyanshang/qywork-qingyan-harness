@@ -371,6 +371,16 @@ describe('paginate：分页符与分栏符', () => {
     expect(where(pages).get(1)).toEqual({ page: 2, top: 72 + 12.05 + 20, lines: 1 })
   })
 
+  test('只有分页符的行在页底容纳不下时留在本页，其后的行从下一页开始（WPS：.doc 语料 zju-doc-060 不多出空白页）', async () => {
+    // 前 34 段各 20 磅，排到 752 磅；第 35 段以分页符开始，第一行 20 磅超出正文区底边 769.9 磅。
+    const d = tweak(await doc(paras(35) + SECT()), { text: (b) => (b === 34 ? '\fx' : null) })
+    const heights = Array.from({ length: 35 }, (_, i) => (i === 34 ? [20, 20] : [20]))
+    const pages = paginate(d, layout(heights), options())
+    expect(pages.length).toBe(2)
+    expect(pages[0]!.items.at(-1)).toMatchObject({ block: 34, first: 0, tops: [752] })
+    expect(pages[1]!.items[0]).toMatchObject({ block: 34, first: 1, tops: [72] })
+  })
+
   test('两栏时分栏符之后从第二栏顶部开始', async () => {
     const two = tweak(await doc(paras(1) + SECT('<w:cols w:num="2" w:space="425"/>')), {
       text: () => '\v',
@@ -1276,6 +1286,6 @@ describe('DocxFonts：登记字形', () => {
       syntheticItalic: false,
     })
     expect(fonts.source.face('不存在的字体', false, false)).toBeNull()
-    expect(fonts.refs[fonts.ref(fonts.source.fallback)]!.syntheticBold).toBe(false)
+    expect(fonts.refs[fonts.ref(fonts.source.fallback.face)]!.syntheticBold).toBe(false)
   })
 })

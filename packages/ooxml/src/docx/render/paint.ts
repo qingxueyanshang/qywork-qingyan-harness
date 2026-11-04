@@ -488,7 +488,7 @@ function metafileFace(
     vertical: (ppem) => face.pixelVertical(ppem),
     emPerCell: v.unitsPerEm / (v.winAscent + v.winDescent || v.unitsPerEm),
     averageWidth: v.averageWidth / v.unitsPerEm,
-    symbol: ((v.codePages ?? 0) & SYMBOL_CODE_PAGE) !== 0,
+    symbol: (v.codePages & SYMBOL_CODE_PAGE) !== 0,
     advance: (cp, ppem) => face.pixelAdvance(cp, ppem) ?? face.text.metrics.advance(cp, ppem),
     draw: (c, text, x, baseline, ppem, height) => {
       const glyph = face.text.metrics.glyphId(text.codePointAt(0)!)

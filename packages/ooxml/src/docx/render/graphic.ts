@@ -10,7 +10,8 @@
 import type { Chart } from '../../drawingml/chart/model.ts'
 import { collectChartImages } from '../../drawingml/chart/resolve.ts'
 import type { TextSettings } from '../../drawingml/text/body.ts'
-import { FaceCache, SINGLE_LINE, type SlideFont } from '../../drawingml/text/fonts.ts'
+import { FaceCache, SINGLE_LINE } from '../../drawingml/text/fonts.ts'
+import type { FontMatch, FontSource } from '../../text/index.ts'
 import type { GraphicFonts } from '../page/model.ts'
 import { chartClearType, chartGlyphs } from './chart.ts'
 import type { PageClearType, PageFonts } from './paint.ts'
@@ -29,22 +30,21 @@ export function graphicSettings(
   fonts: PageFonts,
   clearType: PageClearType | null,
 ): TextSettings | null {
-  const slide = (index: number): SlideFont | null => {
+  const match = (index: number): FontMatch | null => {
     const ref = fonts.faces[index]
     const face = ref === undefined ? null : fonts.draw(ref)
     if (ref === undefined || face === null) return null
-    return { face: face.text, family: ref.family, bold: ref.bold, italic: ref.italic }
+    return { face: face.text, family: ref.family, bold: ref.bold }
   }
-  const fallback = slide(table.fallback)
+  const fallback = match(table.fallback)
   if (fallback === null) return null
-  const named = new Map<string, SlideFont>()
+  const named = new Map<string, FontMatch>()
   for (const n of table.named) {
-    const f = slide(n.face)
+    const f = match(n.face)
     if (f !== null) named.set(namedFontKey(n.name, n.bold, n.italic), f)
   }
-  const source = {
-    face: (name: string, bold: boolean, italic: boolean) =>
-      named.get(namedFontKey(name, bold, italic)) ?? null,
+  const source: FontSource = {
+    face: (name, bold, italic) => named.get(namedFontKey(name, bold, italic)) ?? null,
     fallback,
   }
   return {

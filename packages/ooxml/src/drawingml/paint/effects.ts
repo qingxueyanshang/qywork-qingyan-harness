@@ -384,8 +384,9 @@ function blurPixels(c: PixelContext, w: number, h: number, sigma: number): void 
 }
 
 /**
- * 带图层效果绘制：`draw` 把内容画到图层（`offset` 须左乘到其使用的设备变换上），随后按映像、外部阴影、发光、内容的
- * 顺序画到 `ctx`。`bounds` 为内容在设备坐标中的外接矩形；有发光时图层向四周扩展发光的范围。
+ * 带图层效果绘制：`draw` 把内容画到图层（`offset` 须左乘到其使用的设备变换上，填充改用传入的 `res`：其 `origin` 为图层
+ * 左上角的位置），随后按映像、外部阴影、发光、内容的顺序画到 `ctx`。`bounds` 为内容在设备坐标中的外接矩形；有发光时图层向
+ * 四周扩展发光的范围。
  */
 export function paintWithEffects(
   ctx: PaintContext,
@@ -394,7 +395,7 @@ export function paintWithEffects(
   bounds: DeviceRect,
   res: PaintResources,
   canvas: { width: number; height: number },
-  draw: (ctx: PaintContext, offset: Matrix) => void,
+  draw: (ctx: PaintContext, offset: Matrix, res: PaintResources) => void,
 ): void {
   const glow = effects.glow
   const spread = glow === null ? 0 : glowSpread((glow.radius / EMU_PER_PX) * frame.scale)
@@ -418,7 +419,8 @@ export function paintWithEffects(
   const layer = res.createCanvas(at.w, at.h)
   const c = layer.getContext('2d', { willReadFrequently: pixels })
   if (c === null) return
-  draw(c, translation(-at.x, -at.y))
+  const origin = { x: (res.origin?.x ?? 0) + at.x, y: (res.origin?.y ?? 0) + at.y }
+  draw(c, translation(-at.x, -at.y), { ...res, origin })
   const px = pixels ? pixelContext(c) : null
   if (inset > 0 && px !== null) soften(px, at.w, at.h, inset)
   if (effects.reflection !== null) paintReflection(ctx, layer, at, effects.reflection, frame, res)

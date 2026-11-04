@@ -123,6 +123,8 @@ function metricFace(
     glyphId: (cp) => (cp < 0x20 || cp > 0x7e ? om : dm).glyphId(cp),
     advanceWidth: width,
     advance: (cp, size) => (width(cp) * size) / UNITS,
+    // 数据表只有前进宽度，没有字偶值。
+    kerning: () => 0,
   }
   return { metrics, vertical }
 }
@@ -159,7 +161,10 @@ export function wpsPresentationFace(
   return metricFace(host, vertical, other, ascii, draw)
 }
 
-/** 上沿与下沿为 `part`（千分之一 em）的纵向度量，其余取自 `base`。 */
+/**
+ * 上沿与下沿为 `part`（千分之一 em）的纵向度量，其余取自 `base`。数据表只有一组上下沿，hhea、typo 与 win 三组都取它，
+ * 不设 `USE_TYPO_METRICS`。
+ */
 function extentVertical(
   part: readonly [number, number],
   base: VerticalMetrics,
@@ -174,10 +179,12 @@ function extentVertical(
     hheaLineGap: 0,
     winAscent: ascent,
     winDescent: descent,
+    typoAscender: ascent,
+    typoDescender: -descent,
     useTypoMetrics: false,
     averageWidth: base.averageWidth * s,
     eastAsianCodePage,
-    codePages: base.codePages ?? 0,
+    codePages: base.codePages,
     superscriptSize: base.superscriptSize * s,
     superscriptOffset: base.superscriptOffset * s,
     subscriptSize: base.subscriptSize * s,

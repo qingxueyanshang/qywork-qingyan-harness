@@ -136,11 +136,16 @@ def _cSld(xml: str) -> str:
     return m.group(0) if m else ""
 
 
-def embedded_faces(path) -> list:
-    """每页（按放映顺序）使用的、文件嵌入而本机未安装的字体名。
+def embedded_faces(path):
+    """每页（按放映顺序）使用的、文件嵌入而本机未安装的字体名；不是 zip 包（.ppt）时为 None，各页按没有嵌入字体核对，
+    导出图与缩略图不一致的页归入「其他」。
 
     取幻灯片、其版式与母版的形状树中的字体；幻灯片含占位符时另取母版文字样式（占位符文字从中继承字体）。
     """
+    # 按文件头判断：zipfile.is_zipfile 在文件末尾查找结束记录，.ppt 中内嵌的 ZIP 数据会使它返回真。
+    with open(path, "rb") as f:
+        if f.read(4) != b"PK\x03\x04":
+            return None
     with zipfile.ZipFile(path) as z:
         pres_part = "ppt/presentation.xml"
         pres = z.read(pres_part).decode("utf-8")
@@ -223,7 +228,7 @@ def capture(inst, src, out_dir, backup, accepted: dict) -> dict:
                 page = {"n": n, "slide": n, "file": png.name, "width": im.width, "height": im.height,
                         "mode": im.mode, "hidden": bool(slide.SlideShowTransition.Hidden),
                         "thumb_size": thumb.size, "thumb_format": "PNG" if "PNG" in data else "CF_DIB",
-                        "embedded_fonts": faces[n - 1], **compare(im, thumb)}
+                        "embedded_fonts": [] if faces is None else faces[n - 1], **compare(im, thumb)}
             pages.append({**page, **classify(page, accepted)})
     finally:
         inst.close_doc(pres)

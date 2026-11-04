@@ -5,18 +5,15 @@
  *   工作表关系给出绘图、批注、表格、数据透视表、控件与嵌入对象。部件按顺序读取（并发读取 ZIP 成员更慢）。
  * - ActiveX 控件按其替代图片显示（WPS 表格实测：复选框与文本控件显示替代图片），作为图片排在绘图部件的对象之后；
  *   没有替代图片或锚点的计入 `control`。表单控件按关系计数。
+ * - 文件为含 `Workbook` 流的 CFB 复合文档（.xls）时交给 `../biff/` 解析，记录结构错误时返回 `corrupt('biff')`；
+ *   其余 CFB 由 ZIP 层分类。
  * - 主文档的内容类型不是 SpreadsheetML 工作簿时返回 `corrupt('workbook')`；部件 XML 结构错误时返回 `corrupt('xml')`。
  *   ZIP 与 OPC 层的失败原样返回。
  * - 已识别但未实现的内容逐项计入 `unsupported`，见 `model.ts` 的 `UnsupportedKind`。
  * - 可以绘制的图元文件图片中文字的字体加入 `fontNames`；位图能否解码由调用方解码时判定（`decodePicture`）。
  */
 
-import { type RawChart, readChart } from '../../drawingml/chart/read.ts'
-import {
-  collectChartFonts,
-  collectChartImages,
-  resolveChart,
-} from '../../drawingml/chart/resolve.ts'
+import { readChart } from '../../drawingml/chart/read.ts'
 import { EMPTY_THEME, parseTheme, type Theme } from '../../drawingml/theme.ts'
 import { readMetafile } from '../../metafile/index.ts'
 import {
@@ -26,9 +23,9 @@ import {
   type Relationships,
 } from '../../opc/index.ts'
 import { XmlScanner, XmlSyntaxError } from '../../xml/index.ts'
+import { openLegacy } from '../../zip/index.ts'
+import { parseBiff } from '../biff/workbook.ts'
 import type {
-  DrawingAnchor,
-  SheetChart,
   SheetImage,
   SheetShape,
   UnsupportedCounts,
@@ -36,8 +33,9 @@ import type {
   Workbook,
   Worksheet,
 } from '../model.ts'
-import { workbookCells } from './chart-cells.ts'
+import { type PendingChart, resolveSheetCharts, type SheetCharts } from './chart-cells.ts'
 import { parseDrawing, type RawControl, readControls } from './drawing.ts'
+import { MAX_COL, MAX_ROW } from './refs.ts'
 import { parseSharedStrings } from './shared-strings.ts'
 import { parseStyles } from './styles.ts'
 import { parseWorksheet } from './worksheet.ts'
@@ -45,7 +43,7 @@ import { boolAttr, numAttr, relAttr } from './xml-util.ts'
 
 export type XlsxFailure =
   | OpcFailure
-  | { readonly kind: 'corrupt'; readonly reason: 'workbook' | 'xml' }
+  | { readonly kind: 'corrupt'; readonly reason: 'workbook' | 'xml' | 'biff' }
 
 export type XlsxResult =
   | { readonly ok: true; readonly value: Workbook }
@@ -92,17 +90,6 @@ async function readRels(pkg: OpcPackage, source: string): Promise<Relationships>
   return r.value
 }
 
-/**
- * 已读取、待求值的图表：求值需要全部工作表的单元格，在全部工作表解析之后进行。`raw` 为 `null` 时部件缺失；
- * `theme` 为图表部件引用的主题覆盖，没有时为 `null`。
- */
-interface PendingChart {
-  readonly anchor: DrawingAnchor
-  readonly order: number
-  readonly raw: RawChart | null
-  readonly theme: Theme | null
-}
-
 interface SheetEntry {
   readonly name: string
   readonly state: Worksheet['state']
@@ -145,6 +132,8 @@ function countComments(xml: string): number {
 }
 
 export async function parseXlsx(data: Uint8Array<ArrayBuffer>): Promise<XlsxResult> {
+  const legacy = openLegacy(data)
+  if (legacy?.ok && legacy.value.format === 'xls') return parseBiff(legacy.value.file)
   const opened = await openPackage(data)
   if (!opened.ok) return opened
   try {
@@ -181,7 +170,7 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
 
   const unsupported: UnsupportedCounts = {}
   const sheets: Worksheet[] = []
-  const pending: { charts: SheetChart[]; counts: UnsupportedCounts; items: PendingChart[] }[] = []
+  const pending: SheetCharts[] = []
   let activeSheet = 0
   for (const [index, entry] of info.sheets.entries()) {
     const rel = rels.byId(entry.relId)
@@ -221,7 +210,7 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
       fontNames,
       counts,
     )
-    const charts: SheetChart[] = []
+    const charts: SheetCharts['charts'] = []
     pending.push({ charts, counts, items: drawing.charts })
     for (const r of sheetRels.list) {
       const counted =
@@ -253,36 +242,8 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
     })
     addCounts(unsupported, counts)
   }
-  // 图表按工作簿主题求值，引用主题覆盖时颜色方案与主题字体取自主题覆盖（WPS 表格实测）；数据按引用从单元格取；
-  // 部件缺失或含不支持的内容时计入 `chart`。图片填充不绘制，引用的图片按部件计入 `image`。
-  const cells = workbookCells(sheets, sheet.styles)
-  for (const p of pending) {
-    for (const c of p.items) {
-      const own = c.theme ?? theme ?? EMPTY_THEME
-      const chart =
-        c.raw === null
-          ? null
-          : resolveChart(c.raw, {
-              theme: own,
-              colors: { scheme: own.colors },
-              host: 'sheet',
-              cells,
-            })
-      if (chart === null) {
-        p.counts.chart = (p.counts.chart ?? 0) + 1
-        unsupported.chart = (unsupported.chart ?? 0) + 1
-        continue
-      }
-      collectChartFonts(fontNames, chart)
-      const fills = new Set<string>()
-      collectChartImages(fills, chart)
-      if (fills.size > 0) {
-        p.counts.image = (p.counts.image ?? 0) + fills.size
-        unsupported.image = (unsupported.image ?? 0) + fills.size
-      }
-      p.charts.push({ anchor: c.anchor, order: c.order, chart })
-    }
-  }
+  const gridSize = { rows: MAX_ROW + 1, cols: MAX_COL + 1 }
+  resolveSheetCharts(pending, sheets, sheet.styles, gridSize, theme, fontNames, unsupported)
   return {
     sheets,
     styles: sheet.styles,
@@ -296,6 +257,7 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
     date1904: info.date1904,
     palette: sheet.palette,
     activeSheet,
+    gridSize,
     fontNames: [...fontNames],
     unsupported,
   }

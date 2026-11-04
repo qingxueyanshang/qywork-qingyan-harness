@@ -3,7 +3,7 @@
  *
  * - 长度单位为磅；字号为磅。缩进、间距、制表位均已按所在节的文档网格与字符单位换算。
  * - 正文为节内的顶层段落与表格；单元格与文本框的内容同为段落与表格，可以嵌套。
- *   页眉页脚部件的段落在 `parts` 中，按关系标识索引。浮动对象（`wp:anchor` 与 VML）记在所在段落的 `anchors` 中。
+ *   页眉页脚部件的段落在 `parts` 中，按关系标识索引。浮动对象（`wp:anchor`、VML 与图文框）记在所在段落的 `anchors` 中。
  * - 表格样式与条件格式已解决：单元格的边框、底纹、边距与单元格中段落的属性都是最终值。
  * - 隐藏文字（`vanish`）、域代码、删除的修订不出现在字段文字中；域只取结果文字，字段记录所在域名。
  */
@@ -18,7 +18,8 @@ import type { Alignment, LineSpacing } from '../text/index.ts'
 
 /**
  * 遇到但未实现的元素与属性，按出现次数计数：
- * - 正文结构：`frame`（`framePr` 段落）、`floatingTable`（`tblpPr`：按普通表格排在原位置，横向按其偏移，纵向相对文字时
+ * - 正文结构：`frame`（不能换算为浮动对象的图文框段落，按普通段落排在原位置：首字下沉、纵向为 `inline`、其后没有段落、
+ *   位于表格单元格或文本框中）、`floatingTable`（`tblpPr`：按普通表格排在原位置，横向按其偏移，纵向相对文字时
  *   下移其偏移；文字不环绕表格）、
  *   `altChunk` 与 `subDocument`（外部内容）。
  * - 对象：`picture`、`chart`、`smartArt`、`shape`、`group`、`canvas`、`drawing`（其他 DrawingML 对象）、
@@ -454,7 +455,18 @@ export type DrawingGraphic = DrawingChart | DrawingDiagram
 
 export type DrawingNode = DrawingShape | DrawingGroup | DrawingGraphic
 
-/** 浮动对象（`wp:anchor` 与 VML）。 */
+/**
+ * 图文框的大小规则（磅）：`width` 为 0 时宽度取内容不换行的宽度，不超过 `maxWidth`（版心宽度，内容在此宽度处换行）；
+ * 高度规则 `auto` 取内容高度，`atLeast` 取内容高度与 `height` 中的较大者，`exact` 为 `height`。
+ */
+export interface FrameSize {
+  readonly width: number
+  readonly maxWidth: number
+  readonly height: number
+  readonly rule: 'auto' | 'atLeast' | 'exact'
+}
+
+/** 浮动对象（`wp:anchor` 与 VML），以及图文框（`framePr`）换算的对象。 */
 export interface Anchor {
   /** 段落文字（各字段依次相接）中的位置。 */
   readonly offset: number
@@ -472,6 +484,12 @@ export interface Anchor {
   readonly z: number
   /** 可绘制的内容；画布、含未实现内容的图表与 SmartArt 等为 `null`，只占位置。 */
   readonly drawing: DrawingNode | null
+  /**
+   * 图文框换算的对象（`drawing` 为内缩为 0 的矩形文本框，内容为图文框中的段落，各段底纹相同时以底纹填充）：
+   * 大小按 `FrameSize`；四周型环绕中可排入文字的区段须宽于 1 英寸，横向不按页面边缘调整（见 `page/build.ts`）。
+   * 其余对象为 `null`。
+   */
+  readonly frame: FrameSize | null
 }
 
 /** 页面背景：`w:background` 的颜色与填充。 */

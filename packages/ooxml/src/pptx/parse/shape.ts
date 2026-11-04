@@ -2,7 +2,7 @@
  * 形状树：`spTree` 与 `grpSp` 中的 `sp`、`pic`、`grpSp`、`cxnSp`、`graphicFrame`、`contentPart`。
  *
  * - 只记录文档中出现的属性（`spPr` 各项缺失时为 `null`），占位符继承、样式引用与坐标换算在 `resolve/` 中完成。
- * - `AlternateContent` 的分支由扫描器按 `../load.ts` 声明的扩展选择：墨迹取 `contentPart`，公式取 `Choice` 中的形状
+ * - `AlternateContent` 的分支由扫描器按 `./slide.ts` 的 `SLIDE_EXTENSIONS` 选择：墨迹取 `contentPart`，公式取 `Choice` 中的形状
  *   （公式为文字中的 `a14:m`，见 `../../drawingml/text/read.ts`）。
  * - OLE 对象（`graphicFrame` 中的 `p:oleObj`）按其中的替代图片（`p:pic`）读取为图片，位置尺寸取 `graphicFrame` 的
  *   `xfrm`，非可视属性取 `graphicFrame` 的。WPS 演示实测（构造文件）：替代图片自身的 `xfrm` 与外框不同时按外框显示；
@@ -333,7 +333,13 @@ function readGroup(x: Scanner, rels: TextContext['rels']): RawGroup {
   return { kind: 'group', ...base(nv, found), props, children }
 }
 
-function readMember(x: Scanner, local: string, rels: TextContext['rels'], out: RawShape[]): void {
+/** 在形状元素（`local` 为其本地名）的开始标签处调用，读取结果追加到 `out`；不是形状元素时不读取。 */
+export function readMember(
+  x: Scanner,
+  local: string,
+  rels: TextContext['rels'],
+  out: RawShape[],
+): void {
   switch (local) {
     case 'sp':
       out.push(readAutoShape(x, rels))

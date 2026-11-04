@@ -112,6 +112,7 @@ function fakeFace(): TextFace {
       glyphId: () => 1,
       advanceWidth: () => 500,
       advance: (_cp: number, size: number) => size / 2,
+      kerning: () => 0,
     },
     vertical: {
       unitsPerEm: 1000,
@@ -120,8 +121,12 @@ function fakeFace(): TextFace {
       hheaLineGap: 0,
       winAscent: 800,
       winDescent: 200,
+      typoAscender: 800,
+      typoDescender: -200,
+      useTypoMetrics: false,
       averageWidth: 500,
       eastAsianCodePage: false,
+      codePages: 0,
       superscriptSize: 650,
       superscriptOffset: 450,
       subscriptSize: 650,
@@ -133,7 +138,7 @@ function fakeFace(): TextFace {
 const SETTINGS = {
   faces: new FaceCache({
     face: () => null,
-    fallback: { face: fakeFace(), family: 'F', bold: false, italic: false },
+    fallback: { face: fakeFace(), family: 'F', bold: false },
   }),
   slideNumber: null,
 }
@@ -373,9 +378,8 @@ describe('布局', () => {
     }
     const settings = {
       faces: new FaceCache({
-        face: (name) =>
-          name === 'Tall' ? { face, family: 'Tall', bold: false, italic: false } : null,
-        fallback: { face: fakeFace(), family: 'F', bold: false, italic: false },
+        face: (name) => (name === 'Tall' ? { face, family: 'Tall', bold: false } : null),
+        fallback: { face: fakeFace(), family: 'F', bold: false },
       }),
       slideNumber: null,
     }
@@ -551,6 +555,42 @@ describe('绘制', () => {
     const empty = new RecordingContext()
     paintChart({ ...scene, ctx: empty, settings: null }, chart, frame, identity)
     expect(empty.calls.length).toBe(0)
+  })
+
+  test('坐标轴固定范围之外的数据点不画标记', () => {
+    const scatter = (xs: readonly number[]) =>
+      resolved(
+        chartXml(
+          '<c:scatterChart><c:scatterStyle val="marker"/><c:ser><c:idx val="0"/><c:order val="0"/>' +
+            `<c:xVal><c:numRef><c:f>S!$A$2</c:f>${numCache(xs)}</c:numRef></c:xVal>` +
+            `<c:yVal><c:numRef><c:f>S!$B$2</c:f>${numCache([1, 2])}</c:numRef></c:yVal></c:ser>` +
+            '<c:axId val="1"/><c:axId val="2"/></c:scatterChart>' +
+            '<c:valAx><c:axId val="1"/><c:scaling><c:min val="3500"/></c:scaling><c:axPos val="b"/><c:crossAx val="2"/></c:valAx>' +
+            '<c:valAx><c:axId val="2"/><c:scaling/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx>',
+        ),
+      )
+    const fills = (chart: Chart) => {
+      const ctx = new RecordingContext()
+      const frame = {
+        x: 0,
+        y: 0,
+        width: 300 * 9525,
+        height: 200 * 9525,
+        rotation: 0,
+        flipH: false,
+        flipV: false,
+      }
+      const scene = {
+        ctx,
+        res: { image: () => null, createCanvas: canvasFactory().create, metafileFonts: null },
+        scale: 1,
+        canvas: { width: 300, height: 200 },
+        settings: SETTINGS,
+      }
+      paintChart(scene, chart, frame, { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 })
+      return ctx.named('fill').length
+    }
+    expect(fills(scatter([3800, 4000])) - fills(scatter([0, 4000]))).toBe(1)
   })
 })
 

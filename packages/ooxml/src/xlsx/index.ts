@@ -47,6 +47,7 @@ export type {
   GroupNode,
   HorizontalAlign,
   PatternType,
+  RatioMarker,
   RichRun,
   RowSpec,
   ShapeNode,

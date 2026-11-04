@@ -138,8 +138,6 @@ export function failureText(failure: { readonly kind: OpcFailure['kind'] }): str
   switch (failure.kind) {
     case 'encrypted':
       return '文件已加密'
-    case 'legacy':
-      return '旧格式文件，暂不支持预览'
     case 'not-office':
       return '不是 Office 文件'
     case 'corrupt':

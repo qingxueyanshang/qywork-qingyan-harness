@@ -27,13 +27,14 @@ import {
 import {
   type ClearTypeDisplay,
   type EmbeddedFont,
+  fieldDate,
   type Presentation,
   paintSlide,
   presentationFonts,
   readSlideFace,
   type SlideContext,
   type SlideFace,
-  type SlideFonts,
+  SlideFontSet,
   slideImages,
   type UnsupportedKind,
 } from '@qywork/ooxml/pptx'
@@ -88,7 +89,7 @@ const imageDecoder: ImageDecoder = {
 interface Doc {
   readonly presentation: Presentation
   /** 主机字体与已注册的嵌入字体；嵌入字体注册后，此后的绘制即取到它。 */
-  readonly fonts: SlideFonts
+  readonly fonts: SlideFontSet
   /** 主机显示器的 ClearType 设置；为 `null` 时文字以浏览器字体绘制。 */
   readonly clearType: ClearTypeDisplay | null
   readonly channel: WorkerChannel<PptxRequest, PptxReplies>
@@ -119,16 +120,6 @@ function slideFont(host: HostFace): SlideFace | null {
     slideFonts.set(host, font)
   }
   return font
-}
-
-function pick(list: readonly SlideFace[], bold: boolean, italic: boolean): SlideFace | null {
-  return (
-    list.find((f) => f.bold === bold && f.italic === italic) ??
-    list.find((f) => f.bold === bold) ??
-    list.find((f) => !f.bold && !f.italic) ??
-    list[0] ??
-    null
-  )
 }
 
 /** 第 `index` 张幻灯片用到的字体名：按只含该幻灯片的演示文稿求 `presentationFonts`。 */
@@ -167,23 +158,14 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
     const presentation = parsed.value
     const [families, clearType] = await Promise.all([loadHostFamilies(), loadClearType()])
     const host = await loadHostFaces([...presentationFonts(presentation, families), FALLBACK])
-    // 按文件中的字体名与按族名各记一份：绘制时按族名取得点阵（`SlideFonts.family`）。
-    const fonts = new Map<string, SlideFace[]>()
-    const byFamily = new Map<string, SlideFace[]>()
-    const add = (name: string, font: SlideFace) => {
-      fonts.set(name, [...(fonts.get(name) ?? []), font])
-      const same = byFamily.get(font.family) ?? []
-      if (!same.includes(font)) byFamily.set(font.family, [...same, font])
-    }
+    const loaded = new Map<string, SlideFace[]>()
     for (const [name, list] of host) {
-      fonts.set(name, [])
-      for (const font of list.map(slideFont)) if (font !== null) add(name, font)
+      const faces = list.map(slideFont).filter((f) => f !== null)
+      loaded.set(name, faces)
     }
-    const fallback =
-      pick(fonts.get(FALLBACK) ?? [], false, false) ??
-      [...fonts.values()].map((list) => pick(list, false, false)).find((f) => f !== null)
-    if (!fallback) throw new Error('主机上没有可用于排版的字体')
-    const missing = presentation.embeddedFonts.filter((f) => !fonts.get(f.typeface)?.length)
+    const fonts = SlideFontSet.of(loaded, [FALLBACK, ...loaded.keys()], families)
+    if (fonts === null) throw new Error('主机上没有可用于排版的字体')
+    const missing = presentation.embeddedFonts.filter((f) => !loaded.get(f.typeface)?.length)
     const request = (f: EmbeddedFont | undefined) =>
       f ? channel.request({ kind: 'font', font: f }).catch(() => null) : null
     // 收到一个字体后先请求下一个再注册：Worker 在主线程注册期间继续还原，且任一时刻只有一个字体请求未回复，
@@ -206,19 +188,14 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
         embedded.push(face)
         const font = slideFont({ family, bold: f.bold, italic: f.italic, bytes })
         if (!font) continue
-        add(f.typeface, font)
+        fonts.add(f.typeface, font)
         onFont(f.typeface)
       }
     }
     signal.removeEventListener('abort', dispose)
     return {
       presentation,
-      fonts: {
-        face: (name, bold, italic) => pick(fonts.get(name) ?? [], bold, italic),
-        fallback,
-        family: (name) => byFamily.get(name) ?? [],
-        families,
-      },
+      fonts,
       clearType,
       channel,
       images: new Map(),
@@ -294,6 +271,7 @@ export default function SlideView(props: { path: string; mtime: number }) {
         image: (part) => d.images.get(part) ?? null,
         createCanvas,
         clearType: d.clearType,
+        date: fieldDate(new Date()),
       },
       scale,
     )

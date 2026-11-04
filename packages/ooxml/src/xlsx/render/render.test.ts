@@ -105,6 +105,7 @@ function fakeFace(
     glyphId: (cp) => (has(cp) ? (cp >= 0x2e80 ? 2 : 1) : 0),
     advanceWidth: (cp) => unit(cp) * 1000,
     advance: (cp, size) => unit(cp) * size,
+    kerning: () => 0,
   }
   return {
     family,
@@ -134,8 +135,12 @@ function fakeFace(
         hheaLineGap: 0,
         winAscent: 800,
         winDescent: 200,
+        typoAscender: 800,
+        typoDescender: -200,
+        useTypoMetrics: false,
         averageWidth: 500,
         eastAsianCodePage: opts.cjk,
+        codePages: 0,
         superscriptSize: 650,
         superscriptOffset: 350,
         subscriptSize: 650,
@@ -200,6 +205,7 @@ function workbook(sheet: Worksheet, styles: CellStyle[] = [style()]): Workbook {
     date1904: false,
     palette: [],
     activeSheet: 0,
+    gridSize: { rows: 1_048_576, cols: 16_384 },
     fontNames: ['西文'],
     unsupported: {},
   }
@@ -459,6 +465,11 @@ describe('单行行高、标准行高与边框增量', () => {
     expect(std(fmt(15, false, [col(0, 16382, 2)]))).toBe(15)
     expect(std(fmt(15, false, [col(0, 16381, 2)]))).toBe(20)
     expect(std(fmt(15.75, true, [col(2, 2, 1)]))).toBe(21)
+    // xls 只有 256 列：列样式覆盖第 1–255 列时，第 257 列起不按样式 0 参与。
+    const xls = fmt(15, false, [col(0, 254, 2)])
+    const grid = { rows: 65_536, cols: 256 }
+    expect(standardRowHeight({ ...workbook(xls, styles), gridSize: grid }, xls, fonts)).toBe(15)
+    expect(std(xls)).toBe(20)
   })
 
   test('按内容推算：未写出的单元格按行样式、列样式或样式 0 取行高；写出的单元格（含没有值的）按自身样式；标准行高不是下限', () => {

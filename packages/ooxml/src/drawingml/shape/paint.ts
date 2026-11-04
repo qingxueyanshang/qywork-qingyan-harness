@@ -215,16 +215,23 @@ export function paintAutoShape(scene: ShapeScene, shape: PaintableShape, parent:
       scene.canvas,
     )
     if (bounds !== null) {
-      paintWithEffects(scene.ctx, effects, frame, bounds, scene.res, scene.canvas, (c, offset) =>
-        paintGeometry(
-          scene,
-          c,
-          shape.fill,
-          shape.line,
-          outline,
-          { ...placed, matrix: multiply(offset, placed.matrix) },
-          inner,
-        ),
+      paintWithEffects(
+        scene.ctx,
+        effects,
+        frame,
+        bounds,
+        scene.res,
+        scene.canvas,
+        (c, offset, res) =>
+          paintGeometry(
+            { ...scene, res },
+            c,
+            shape.fill,
+            shape.line,
+            outline,
+            { ...placed, matrix: multiply(offset, placed.matrix) },
+            inner,
+          ),
       )
     }
   } else {
@@ -257,9 +264,9 @@ export function paintAutoShape(scene: ShapeScene, shape: PaintableShape, parent:
     scene.canvas,
   )
   if (bounds === null) return
-  paintWithEffects(scene.ctx, box, frame, bounds, scene.res, scene.canvas, (c, offset) =>
+  paintWithEffects(scene.ctx, box, frame, bounds, scene.res, scene.canvas, (c, offset, res) =>
     paintShapeText(
-      { ...scene, ctx: c },
+      { ...scene, ctx: c, res },
       settings,
       text,
       outline,
@@ -402,6 +409,6 @@ export function paintGroup<S extends ShapeScene>(
     bounds,
     scene.res,
     scene.canvas,
-    (c, offset) => paintChildren({ ...scene, ctx: c }, multiply(offset, inner)),
+    (c, offset, res) => paintChildren({ ...scene, ctx: c, res }, multiply(offset, inner)),
   )
 }

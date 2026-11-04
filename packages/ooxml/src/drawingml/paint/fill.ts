@@ -6,13 +6,19 @@
  * - 线性渐变：角度为颜色变化方向，顺时针；`scaled` 时角度在单位正方形中定义再随形状框拉伸。
  *   渐变长度为形状框在该方向上的投影长度。
  * - 色标间的颜色按 `addStops` 插值：只有位于 0 与 1 的两个色标时颜色通道不按线性变化。
- * - 路径渐变：色标位置 0 位于 `fillToRect` 所指的焦点区域，1 位于形状框边缘。`circle` 在单位正方形中
- *   以焦点中心到最远角的距离为半径，再随形状框拉伸；`rect` 与 `shape` 均按矩形绘制（`shape` 不沿形状轮廓）。
+ * - 路径渐变：色标位置 0 位于 `fillToRect` 所指的焦点区域，1 位于外边界。`circle` 见 `paintCircleGradient`；
+ *   `rect` 与 `shape` 均按矩形绘制（`shape` 不沿形状轮廓），外边界为形状框边缘。
  * - `rotWithShape` 为假时，渐变方向与平铺图片按幻灯片坐标轴绘制，不随形状旋转。
  * - 图片的解码与按裁剪比例绘制见 `picture.ts`（位图与图元文件），图片效果见 `recolor.ts`。
- * - 平铺的单元尺寸为图片像素数按图片文件记录的分辨率换算为 96 dpi 像素后四舍五入（图元文件为图片框按 96 dpi 的尺寸，
- *   先栅格化），再乘以 `sx`、`sy`。实测（WPS 演示导出图）：120 × 90 的图片在 150 dpi 时单元为 77 × 58 像素，150 × 75 dpi 时为
- *   77 × 115 像素。
+ * - 图案按页面设备坐标对齐：原点为页面的 (−1, −1) 像素（图层中按 `PaintResources.origin` 换算），不随形状的位置、旋转与
+ *   翻转改变。WPS 演示实测（构造文件，6 种图案的形状各平移 0、1、2、3、5、7 像素）：按设备坐标取模的 8 × 8 图样在各位置
+ *   相同；原点取 (−1, −1) 时 pct20、pct30、smCheck、dotGrid 与导出图逐像素相同，取 (0, 0) 时都不同。zju-ppt-021 第 15 页
+ *   旋转 270° 的 pct20、pct30 形状在导出图中未旋转。ltDnDiag 与 dkHorz 的位图与 WPS 不同（WPS 的 ltDnDiag 周期为 4 像素），
+ *   见 `pattern.ts`。
+ * - 平铺的单元尺寸为图片像素数按图片文件记录的分辨率换算为 96 dpi 像素、乘以 `sx`、`sy` 后四舍五入（图元文件为图片框按
+ *   96 dpi 的尺寸，先栅格化）。实测（WPS 演示导出图）：120 × 90 的图片在 150 dpi 时单元为 77 × 58 像素，150 × 75 dpi 时为
+ *   77 × 115 像素；5 × 5 的图片在 72 dpi、`sx` 与 `sy` 为 65% 时单元为 4 × 4 像素。不要在乘以缩放之前取整：后者单元为
+ *   4.55 像素，与真值的 4 像素周期不同。
  */
 
 import type { MetafileFonts } from '../../metafile/index.ts'
@@ -54,6 +60,11 @@ export interface PaintResources {
   readonly createCanvas: CreateCanvas
   /** 图元文件中文字的字体；为 `null` 时含文字的图元文件不绘制。 */
   readonly metafileFonts: MetafileFonts | null
+  /**
+   * 当前画布的左上角在页面设备坐标中的位置：图层（`../paint/effects.ts` 的 `paintWithEffects`）为图层的左上角，缺省为页面原点。
+   * 图案按页面设备坐标对齐。
+   */
+  readonly origin?: { readonly x: number; readonly y: number }
 }
 
 /** 局部坐标中每单位对应的设备像素数（取两个方向的平均值）。 */
@@ -110,8 +121,14 @@ function riseChannel(from: number, to: number, k: number): number {
   return from <= to ? from + (to - from) * RISE[k]! : to + (from - to) * RISE[4 - k]!
 }
 
-function addStops(g: PaintGradient, stops: readonly GradientStop<Color>[]): void {
+/** `reverse` 为真时色标位置取 1 − 位置（位置相同的色标按相反顺序加入）。 */
+function addStops(g: PaintGradient, stops: readonly GradientStop<Color>[], reverse = false): void {
+  const at = (position: number) => {
+    const p = Math.min(1, Math.max(0, position))
+    return reverse ? 1 - p : p
+  }
   const [a, b] = stops
+  const added: [number, string][] = []
   if (stops.length === 2 && a!.position === 0 && b!.position === 1) {
     const x = a!.color
     const y = b!.color
@@ -122,11 +139,13 @@ function addStops(g: PaintGradient, stops: readonly GradientStop<Color>[]): void
         b: riseChannel(x.b, y.b, k),
         a: x.a + ((y.a - x.a) * k) / 4,
       }
-      g.addColorStop(k / 4, colorToCss(c))
+      added.push([at(k / 4), colorToCss(c)])
     }
-    return
+  } else {
+    for (const s of stops) added.push([at(s.position), colorToCss(s.color)])
   }
-  for (const s of stops) g.addColorStop(Math.min(1, Math.max(0, s.position)), colorToCss(s.color))
+  if (reverse) added.reverse()
+  for (const [offset, color] of added) g.addColorStop(offset, color)
 }
 
 /** 局部坐标中的方向：`rotWithShape` 为假时，把设备坐标中的方向换算回局部坐标。 */
@@ -164,21 +183,23 @@ export function linearGradientLine(
   return { x0: cx - ux * half, y0: cy - uy * half, x1: cx + ux * half, y1: cy + uy * half }
 }
 
-/** 路径渐变焦点区域（局部坐标）。 */
+/**
+ * 路径渐变焦点区域（局部坐标）。左右（上下）内缩之和超过形状框时该方向的宽度为 0，位于左（上）内缩处。WPS 演示实测
+ * （构造文件，`l` 与 `r` 都为 60% 时焦点在 60% 处，`t` 与 `b` 都为 80% 时在 80% 处，`t` 为 110% 而 `b` 为 100% 时与
+ * `b` 为 −10% 相同）。
+ */
 export function focusRect(
   focus: RelativeRect,
   width: number,
   height: number,
 ): { left: number; top: number; right: number; bottom: number } {
   const left = focus.left * width
-  const right = width - focus.right * width
   const top = focus.top * height
-  const bottom = height - focus.bottom * height
   return {
-    left: Math.min(left, right),
-    right: Math.max(left, right),
-    top: Math.min(top, bottom),
-    bottom: Math.max(top, bottom),
+    left,
+    right: Math.max(left, width - focus.right * width),
+    top,
+    bottom: Math.max(top, height - focus.bottom * height),
   }
 }
 
@@ -243,6 +264,12 @@ export function paintFill(
         ctx.fill()
         return
       }
+      // 图案按设备坐标轴对齐：不随形状旋转与翻转，图案的一个像素为 `deviceScale` 个设备像素。
+      const k = deviceScale(area.matrix)
+      const o = res.origin ?? { x: 0, y: 0 }
+      pattern.setTransform(
+        multiply(invert(area.matrix), multiply(translation(-k - o.x, -k - o.y), scaling(k, k))),
+      )
       ctx.save()
       ctx.imageSmoothingEnabled = false
       ctx.fillStyle = pattern
@@ -253,6 +280,21 @@ export function paintFill(
   }
 }
 
+/** 焦点区域不为一点的圆形路径渐变按方向分成的扇区数。 */
+const CIRCLE_SECTORS = 360
+
+/**
+ * 圆形路径渐变：外边界为以形状框中心为圆心、过四角的圆（局部坐标中的圆，不随宽高比拉伸）。自焦点中心 F 出发的每个方向上，
+ * 外边界点 B 为射线与外圆较远的交点，内边界点为 F + S·(B − O)（O 为外圆圆心，S 为焦点区域宽与高占形状框的比例，即内边界
+ * 是以 F 为中心、半轴为外圆半径乘 S 的椭圆），色标位置 0 至 1 依次位于内边界点至外边界点的线段上；内边界以内为位置 0 的
+ * 颜色。焦点中心可以在外圆之外。
+ * - 焦点区域为一点时内边界点即 F：以外圆为起点、F 为终点、色标反向的径向渐变绘制（画布对每一点取满足条件的最大参数，
+ *   即较远的交点），逐像素与上述定义相同。
+ * - 其余按方向分为 `CIRCLE_SECTORS` 个扇区，每个扇区以内外边界中点之间的线性渐变绘制，相邻扇区重叠以免露出接缝。
+ * WPS 演示实测（构造文件，280 × 210 像素，15 种焦点）：焦点为一点时与导出图逐像素平均相差 0.2–0.6 个色阶（按单位正方形
+ * 求半径再拉伸为椭圆时 11–24 个色阶）；焦点区域为矩形或线段时 1.1–1.5 个色阶（内边界取 F + S·(B − F) 时，焦点区域
+ * 偏离中心的一例为 9.9 个色阶）。
+ */
 function paintCircleGradient(
   ctx: PaintContext,
   stops: readonly GradientStop<Color>[],
@@ -261,20 +303,67 @@ function paintCircleGradient(
   height: number,
 ): void {
   if (width <= 0 || height <= 0) return
-  const f = focusRect(focus, 1, 1)
-  const cx = (f.left + f.right) / 2
-  const cy = (f.top + f.bottom) / 2
-  const r = Math.max(
-    Math.hypot(cx, cy),
-    Math.hypot(1 - cx, cy),
-    Math.hypot(cx, 1 - cy),
-    Math.hypot(1 - cx, 1 - cy),
-  )
-  ctx.transform(width, 0, 0, height, 0, 0)
-  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
-  addStops(g, stops)
-  ctx.fillStyle = g
-  ctx.fillRect(-1, -1, 3, 3)
+  const f = focusRect(focus, width, height)
+  const fx = (f.left + f.right) / 2
+  const fy = (f.top + f.bottom) / 2
+  const sx = (f.right - f.left) / width
+  const sy = (f.bottom - f.top) / height
+  const radius = Math.hypot(width, height) / 2
+  if (sx === 0 && sy === 0) {
+    const g = ctx.createRadialGradient(width / 2, height / 2, radius, fx, fy, 0)
+    addStops(g, stops, true)
+    ctx.fillStyle = g
+    ctx.fillRect(-width, -height, 3 * width, 3 * height)
+    return
+  }
+  const ox = fx - width / 2
+  const oy = fy - height / 2
+  const outer = (angle: number): [number, number] => {
+    const ux = Math.cos(angle)
+    const uy = Math.sin(angle)
+    const b = ox * ux + oy * uy
+    const d = b * b - (ox * ox + oy * oy - radius * radius)
+    const t = -b + Math.sqrt(Math.max(d, 0))
+    return [fx + t * ux, fy + t * uy]
+  }
+  const inner = ([x, y]: [number, number]): [number, number] => [
+    fx + sx * (x - width / 2),
+    fy + sy * (y - height / 2),
+  ]
+  ctx.fillStyle = colorToCss(stops.at(-1)!.color)
+  ctx.fillRect(-width, -height, 3 * width, 3 * height)
+  const step = (2 * Math.PI) / CIRCLE_SECTORS
+  const rim: [number, number][] = []
+  for (let k = 0; k < CIRCLE_SECTORS; k++) {
+    const o0 = outer((k - 0.5) * step)
+    const o1 = outer((k + 1.5) * step)
+    const i0 = inner(o0)
+    const i1 = inner(o1)
+    rim.push(inner(outer(k * step)))
+    const g = ctx.createLinearGradient(
+      (i0[0] + i1[0]) / 2,
+      (i0[1] + i1[1]) / 2,
+      (o0[0] + o1[0]) / 2,
+      (o0[1] + o1[1]) / 2,
+    )
+    addStops(g, stops)
+    ctx.beginPath()
+    ctx.moveTo(i0[0], i0[1])
+    ctx.lineTo(o0[0], o0[1])
+    ctx.lineTo(o1[0], o1[1])
+    ctx.lineTo(i1[0], i1[1])
+    ctx.closePath()
+    ctx.fillStyle = g
+    ctx.fill()
+  }
+  ctx.beginPath()
+  for (const [i, [x, y]] of rim.entries()) {
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.closePath()
+  ctx.fillStyle = colorToCss(stops[0]!.color)
+  ctx.fill()
 }
 
 /**
@@ -383,10 +472,8 @@ export function paintImageFill(
   const pattern = ctx.createPattern(source.canvas, 'repeat')
   if (pattern === null) return
   const { width: pw, height: ph, resolution } = pictureSize(picture)
-  const kx = Math.max(1, Math.round((pw * 96) / resolution.x)) / bitmap.width
-  const ky = Math.max(1, Math.round((ph * 96) / resolution.y)) / bitmap.height
-  const sx = tile.scaleX * kx
-  const sy = tile.scaleY * ky
+  const sx = Math.max(1, Math.round((pw * 96 * tile.scaleX) / resolution.x)) / bitmap.width
+  const sy = Math.max(1, Math.round((ph * 96 * tile.scaleY) / resolution.y)) / bitmap.height
   const tw = (source.width * sx) / (tile.flip === 'x' || tile.flip === 'xy' ? 2 : 1)
   const th = (source.height * sy) / (tile.flip === 'y' || tile.flip === 'xy' ? 2 : 1)
   const { x: ax, y: ay } = alignTile(tile.align, width - tw, height - th)

@@ -5,14 +5,15 @@
  *   文本框与页眉页脚共用。`layoutDocument` 排版正文的顶层段落，区域宽度为所在节第一栏的宽度。
  * - 可用宽度为区域宽度减去左右缩进；制表位与制表起点换算为相对左缩进的行坐标。
  * - 字体由调用方按字体名与字形提供（`FontSource.face`）。返回 `null` 的字体记入 `missingFonts`，WPS 按自带度量排版的字体
- *   按其度量（`FontSource.metric`），其余按 `substitutes` 的替代字体排版，都没有时改用 `fallback`；前缀匹配所用的主机字体族名
+ *   按其度量（`DocxFontSource.metric`），其余按 `substitutes` 的替代字体排版，都没有时改用 `fallback`；前缀匹配所用的主机字体族名
  *   由调用方给出（`HostFamilies`）。请求粗体而返回的不是粗体字形时按仿粗体（`emboldened`）排版。
  * - 文档的数学字体主机没有时改用 Cambria Math（WPS 实测：数学字体为 STIX Math 的文档按 Cambria Math 排版与绘制）。
  * - 段前段后间距按 `contextualSpacing` 抵消（`contextSpacing`）：同一容器中相邻段落样式相同时，设置了该项的段落
  *   不留对应一侧的间距。HTML 自动段间距在容器的第一段之前、没有编号的最后一段之后与同一列表的相邻段落之间不留。段落上下边框占用的
  *   高度见 `borderExtents`，由调用方加在段前间距之后与最后一行之后，不与间距合并。
  * - 全部大写（`caps`）按大写字母排版；大小写转换改变字符数的字符保持原样，使片段的位置与字段文字一一对应。
- * - 分页符与分栏符按强制换行排版（一个字符换一个字符，位置不变），换页与换栏由分页处理。
+ * - 分页符与分栏符按强制换行排版（一个字符换一个字符，位置不变），换页与换栏由分页处理。以分页符开始的段落，分页符单独
+ *   排为一行，编号与首行缩进作用于其后的一行（`leadingBreak`）。
  * - 嵌入式对象（图片、图表、文本框等）与行内公式的各段是 `../text/` 的行内对象（`InlineObject`），在段落文字中不占位置；
  *   行高与多倍行距的基数见 `../text/layout.ts` 的 `lineExtent`。
  * - 嵌入式对象：宽度与上沿为对象框（含 `effectExtent`），下沿为 0，底边位于所在行的基线（WPS 实测：30 磅固定行距中
@@ -47,6 +48,8 @@ import {
   DEFAULT_NO_LINE_BREAK_AFTER,
   DEFAULT_NO_LINE_BREAK_BEFORE,
   emboldened,
+  type FontMatch,
+  type FontSource,
   faceExtent,
   fontSlot,
   type HostFamilies,
@@ -67,15 +70,8 @@ import { borderSpace } from './border.ts'
 import type { Block, DocxDocument, InlineImage, Paragraph, RunMath, RunProps } from './model.ts'
 import { type FontUse, substitutes } from './resolve/fonts.ts'
 
-export interface FontMatch {
-  readonly face: TextFace
-  /** 返回的是粗体字形；请求粗体而该项为 `false` 时按仿粗体排版。 */
-  readonly bold: boolean
-}
-
-export interface FontSource {
-  /** 按字体名与字形取得最接近的字体；主机没有该字体时返回 `null`。 */
-  face(name: string, bold: boolean, italic: boolean): FontMatch | null
+/** 段落排版所用的字体：`FontSource` 之外另有 WPS 文字自带度量的字体、数学字体与字形轮廓。 */
+export interface DocxFontSource extends FontSource {
   /**
    * WPS 按自带度量排版的字体（`../text/wps-fonts.ts` 的 `WPS_METRIC_FONTS`）：`part` 为字段的西文或东亚部分。数据表中
    * 没有该字体名、该部分不由其排版或主机没有所需的字体时返回 `null`。
@@ -85,8 +81,6 @@ export interface FontSource {
   math(name: string): MathFont<TextFace> | null
   /** `face` 或 `fallback` 返回的字形的 TrueType 轮廓；其他字形与没有轮廓的字体为 `null`。 */
   outlines(face: TextFace): GlyphOutlines | null
-  /** 缺少字形与缺少字体（没有可用的替代字体）时使用的字体（常规字形）。 */
-  readonly fallback: TextFace
 }
 
 export interface ParagraphLayout {
@@ -364,7 +358,7 @@ export class ParagraphLayouter {
   /** `host` 为主机字体的族名，用于主机没有的字体名的前缀匹配（见 `substitutes`）。 */
   constructor(
     private readonly doc: DocxDocument,
-    private readonly source: FontSource,
+    private readonly source: DocxFontSource,
     private readonly host: HostFamilies,
   ) {
     this.chinese = new Set()
@@ -399,7 +393,7 @@ export class ParagraphLayouter {
             : this.source.metric(name, use === 'other' ? 'latin' : 'eastAsia', bold, italic)
         found = metric ?? this.substitute(name, bold, italic, use)
       }
-      const base = found?.face ?? this.source.fallback
+      const base = found?.face ?? this.source.fallback.face
       f = bold && found?.bold !== true ? emboldened(base) : base
       this.faces.set(key, f)
     }
@@ -438,7 +432,7 @@ export class ParagraphLayouter {
     if (chosen !== undefined) return chosen === null ? null : this.source.face(chosen, bold, italic)
     for (const c of substitutes(name, use, this.doc.fontTable, this.host.local)) {
       const found = this.source.face(c.name, bold, italic)
-      if (found !== null && ((found.face.vertical.codePages ?? 0) & c.codePages) === c.codePages) {
+      if (found !== null && (found.face.vertical.codePages & c.codePages) === c.codePages) {
         this.substituted.set(key, c.name)
         return found
       }
@@ -454,7 +448,7 @@ export class ParagraphLayouter {
         this.emoji = this.source.face(EMOJI_FALLBACK, false, false)?.face ?? null
       if (this.emoji !== null && this.emoji.metrics.glyphId(cp) !== 0) return this.emoji
     }
-    return this.source.fallback
+    return this.source.fallback.face
   }
 
   private slots(p: RunProps): SlotContext {
@@ -662,7 +656,13 @@ export class ParagraphLayouter {
     const markExtent = faceExtent(mark.vertical, p.mark.size)
     const display = displayOf(p)
     const shown = display === null ? null : this.displayLines(p, display, width, markExtent.single)
-    const { runs, map, sources, style } = this.textInput(p, width, props, display !== null)
+    const lead = display === null ? leadingBreak(p) : null
+    const { runs, map, sources, style } = this.textInput(
+      lead?.tail ?? p,
+      width,
+      props,
+      display !== null,
+    )
     const lineArea =
       area === undefined
         ? undefined
@@ -676,8 +676,17 @@ export class ParagraphLayouter {
             }
             return { top: a.top, segments: segments.length > 0 ? segments : [{ left: 0, width }] }
           }
+    const laid = lineArea === undefined ? style : { ...style, lineArea }
     const text =
-      shown?.text ?? layoutParagraph(runs, lineArea === undefined ? style : { ...style, lineArea })
+      shown?.text ??
+      (lead === null
+        ? layoutParagraph(runs, laid)
+        : this.afterBreak(
+            lead,
+            runs,
+            laid,
+            runs.findIndex((_, k) => map[k] === lead.run && sources[k] === null),
+          ))
     const placed = placeObjects(p, text, sources)
     if (shown !== null) for (const [k, d] of shown.descents) placed.descents.set(k, d)
     const ls = props.lineSpacing
@@ -700,6 +709,59 @@ export class ParagraphLayouter {
       images: placed.images,
       formulas: shown?.formulas ?? placed.formulas,
     }
+  }
+
+  /**
+   * 以分页符开始的段落：分页符单独排为一行（不带编号、不缩进），其余部分（`runs`，编号与分页符之后的文字）按段落格式接在其后。
+   * 行与片段的位置换回段落文字的坐标：分页符位于编号之后，`k` 为去掉分页符的字段在 `runs` 中的序号。
+   */
+  private afterBreak(
+    lead: LeadingBreak,
+    runs: readonly ParagraphRun[],
+    style: ParagraphStyle,
+    k: number,
+  ): TextBlock {
+    const head = layoutParagraph([this.textRun('\f'.repeat(lead.count), lead.props)], {
+      ...style,
+      firstLineIndent: 0,
+    }).lines.slice(0, lead.count)
+    const shift = head.reduce((h, l) => h + l.height, 0)
+    const area = style.lineArea
+    const tail = layoutParagraph(
+      runs,
+      area === undefined
+        ? style
+        : {
+            ...style,
+            lineArea: (top, height, final) => {
+              const a = area(top + shift, height, final)
+              return { ...a, top: a.top - shift }
+            },
+          },
+    )
+    const first = runs[0]
+    const numbered = first !== undefined && !('object' in first) && first.numbering !== undefined
+    const before = numbered ? first.text.length : 0
+    const at = (position: number) => (position >= before ? position + lead.count : position)
+    const lines: TextLine[] = head.map((l) => ({
+      ...l,
+      start: l.start + before,
+      end: l.end + before,
+    }))
+    for (const l of tail.lines)
+      lines.push({
+        ...l,
+        start: at(l.start),
+        end: at(l.end),
+        top: l.top + shift,
+        baseline: l.baseline + shift,
+        fragments: l.fragments.map((f) => ({
+          ...f,
+          baseline: f.baseline + shift,
+          ...(f.run === k ? { start: f.start + lead.count, end: f.end + lead.count } : {}),
+        })),
+      })
+    return { lines, height: shift + tail.height }
   }
 
   /**
@@ -807,6 +869,29 @@ export class ParagraphLayouter {
 
 const NO_LINES: ReadonlyMap<number, number> = new Map()
 
+/** 以分页符开始的段落：分页符所在的字段、分页符的个数、该字段的属性与去掉分页符之后的段落。 */
+interface LeadingBreak {
+  readonly run: number
+  readonly count: number
+  readonly props: RunProps
+  readonly tail: Paragraph
+}
+
+/**
+ * 段落文字以分页符开始（其前没有嵌入式对象与公式）时的分页符（WPS 实测，构造文档 pb1：带编号的段落以分页符开始时，编号、
+ * 编号的首行缩进与文字在下一页的第一行，只有分页符的行留在上一页；首行缩进同样作用于分页符之后的一行；分页符在段中时编号仍在
+ * 第一行）；否则为 `null`。
+ */
+function leadingBreak(p: Paragraph): LeadingBreak | null {
+  const run = p.runs.findIndex((r) => r.text !== '' || r.math !== undefined)
+  const r = p.runs[run]
+  if (r === undefined || r.math !== undefined || !r.text.startsWith('\f')) return null
+  if (p.images.some((im) => im.run <= run)) return null
+  const count = r.text.length - r.text.replace(/^\f+/, '').length
+  const runs = p.runs.map((x, i) => (i === run ? { ...x, text: x.text.slice(count) } : x))
+  return { run, count, props: r.props, tail: { ...p, runs } }
+}
+
 interface PlacedObjects {
   readonly images: LineImage[]
   readonly formulas: LineFormula[]
@@ -861,7 +946,7 @@ function textBottoms(
 /** 正文顶层段落的排版：区域为所在节第一栏。`host` 为主机字体的族名，用于主机没有的字体名的前缀匹配。 */
 export function layoutDocument(
   doc: DocxDocument,
-  source: FontSource,
+  source: DocxFontSource,
   host: HostFamilies,
 ): DocumentLayout {
   const layouter = new ParagraphLayouter(doc, source, host)
