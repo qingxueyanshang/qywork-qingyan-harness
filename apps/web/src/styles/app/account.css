@@ -106,11 +106,24 @@
   position: relative;
   top: -1px;
 }
-/* 官网与退出按钮成组，间距与顶栏的图标按钮相同；与邮箱之间仍是头部的 gap。 */
+/* 公告、官网与退出按钮成组，间距与顶栏的图标按钮相同；与邮箱之间仍是头部的 gap。 */
 .account-actions {
   display: flex;
   flex: none;
   gap: 2px;
+}
+/* 公告按钮：最新一条未读时右上角带圆点，颜色与「系统设置」的新版本圆点相同。 */
+.account-bell {
+  position: relative;
+}
+.account-bell-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
 }
 .account-error {
   margin: var(--s-2) 0 0;

@@ -5,7 +5,7 @@
  */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import type { CloudRequest, CloudState, CloudUsage } from '@qywork/core'
+import type { Announcement, CloudRequest, CloudState, CloudUsage } from '@qywork/core'
 import type { JSX } from 'solid-js'
 
 let store: typeof import('../../lib/store/index.ts')
@@ -18,6 +18,8 @@ let calls: string[]
 let pages: CloudRequest[][]
 /** 使用记录的读取在它完成前不返回。 */
 let requestsGate: Promise<void>
+/** 云端已发布的公告，新者在前。 */
+let notices: Announcement[]
 
 const SIGNED_IN: CloudState = {
   state: 'signed_in',
@@ -98,6 +100,7 @@ beforeAll(async () => {
       await requestsGate
       return (pages.shift() ?? []) as T
     }
+    if (path === '/api/cloud/announcements') return structuredClone(notices) as T
     throw new Error(`unexpected ${path}`)
   }
 })
@@ -108,6 +111,7 @@ beforeEach(async () => {
   calls = []
   pages = []
   requestsGate = Promise.resolve()
+  notices = []
   store.setAccountOpen(false)
 })
 
@@ -257,6 +261,50 @@ test('官网按钮：在右侧面板打开云端地址的首页，并关闭账�
   ).toBe(true)
   expect(store.accountOpen()).toBe(false)
   store.setWorkspace(null)
+  view.close()
+})
+
+test('公告：未读时侧栏入口与账号窗口的铃铛带圆点，打开公告后都消失；未登录时入口不带圆点；没有公告时没有铃铛', async () => {
+  const feed = await import('../../lib/store/announcements.ts')
+  const unread = (host: HTMLElement) => host.querySelector('[aria-label="有新公告"]') !== null
+  notices = [
+    {
+      id: '7',
+      kind: 'notice',
+      version: null,
+      title: '服务维护',
+      body: '今晚维护。',
+      publishedAt: '2026-11-05T08:00:00.000Z',
+    },
+  ]
+  await feed.loadAnnouncements()
+
+  cloud = { state: 'signed_out' }
+  await cloudStore.refreshCloudState()
+  const out = await entry()
+  expect(unread(out.host)).toBe(false)
+  out.close()
+
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  const side = await entry()
+  expect(unread(side.host)).toBe(true)
+  store.setAccountOpen(true)
+  const view = await dialog()
+  const bell = () =>
+    view.host.querySelector('button[aria-label="公告"]') as HTMLButtonElement | null
+  await until(() => bell() !== null)
+  expect(unread(bell() as HTMLElement)).toBe(true)
+  bell()?.click()
+  expect(feed.announcementsOpen()).toBe(true)
+  expect(unread(bell() as HTMLElement)).toBe(false)
+  expect(unread(side.host)).toBe(false)
+  feed.closeAnnouncements()
+
+  notices = []
+  await feed.loadAnnouncements()
+  expect(bell()).toBeNull()
+  side.close()
   view.close()
 })
 
