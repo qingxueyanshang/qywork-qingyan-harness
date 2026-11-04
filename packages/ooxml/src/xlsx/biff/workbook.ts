@@ -4,24 +4,32 @@
  * - 有 FILEPASS 时按缺省密码解密（`crypto.ts`），不能解密时返回已加密。
  * - 首条记录须为 BIFF8（版本 0x0600）工作簿全局子流的 BOF，否则为已损坏（`biff`）：`Workbook` 流只存放 BIFF8，
  *   BIFF5 位于 `Book` 流，在 CFB 分类时已判为无法识别。
- * - 工作表按 BOUNDSHEET 的子流位置读取：图表工作表计入 `chartsheet`，宏表、VBA 模块、对话框表与位置无效的子流计入 `otherSheet`。
+ * - 工作表按 BOUNDSHEET 的子流位置读取，宏表、VBA 模块、对话框表与位置无效的子流计入 `otherSheet`。
+ * - 图表工作表：图表区见 `chart.ts` 的 `chartsheetAnchor`，缩放比例取子流中的 SCL；没有 Chart 记录时计入 `chart`。
  * - 自动筛选与数据有效性不读取。条件格式见 `conditional.ts`。
  * - 图片见 `drawing.ts`；未绘制的图片对象计入 `image`。图元文件图片（只含可以绘制的）中文字的字体加入 `fontNames`（与 xlsx 相同）。
- * - 嵌入图表由 `chart.ts` 读为规格，全部工作表读完后与 xlsx 经同一个 `resolveSheetCharts` 求值；
+ * - 嵌入图表与图表工作表的图表由 `chart.ts` 读为规格，全部工作表读完后与 xlsx 经同一个 `resolveSheetCharts` 求值；
  *   组合内的图表、没有子流的图表对象计入 `chart`，图表子流中的其他图形对象计入 `graphic`。
  */
 
 import { readMetafile } from '../../metafile/index.ts'
 import type { CfbFile } from '../../zip/cfb.ts'
-import type { UnsupportedCounts, UnsupportedKind, Workbook, Worksheet } from '../model.ts'
+import type {
+  AbsoluteAnchor,
+  Sheet,
+  SheetChart,
+  UnsupportedCounts,
+  UnsupportedKind,
+  Workbook,
+} from '../model.ts'
 import { type PendingChart, resolveSheetCharts, type SheetCharts } from '../parse/chart-cells.ts'
 import type { XlsxResult } from '../parse/workbook.ts'
-import { readBiffChart } from './chart.ts'
+import { chartsheetAnchor, readBiffChart } from './chart.ts'
 import { decryptWorkbook, findFilepass } from './crypto.ts'
 import { readBlips, readDrawing } from './drawing.ts'
 import { readGlobals } from './globals.ts'
-import { Bytes, RT, readRecords } from './records.ts'
-import { OBJ_CHART, OBJ_PICTURE, readSheet } from './sheet.ts'
+import { type BiffRecord, Bytes, RT, readRecords } from './records.ts'
+import { OBJ_CHART, OBJ_PICTURE, readSheet, scaleZoom } from './sheet.ts'
 
 const BIFF8 = 0x0600
 const GLOBALS = 0x0005
@@ -32,6 +40,21 @@ const GRID_SIZE = { rows: 65_536, cols: 256 }
 
 function add(target: UnsupportedCounts, kind: UnsupportedKind, n = 1): void {
   target[kind] = (target[kind] ?? 0) + n
+}
+
+/** 图表子流中的图形对象（OBJ 的对象类型不为 0），计入 `graphic`。 */
+function chartShapes(records: readonly BiffRecord[]): number {
+  return records.filter((r) => r.id === RT.OBJ && new Bytes(r.data).u16(4) !== 0).length
+}
+
+/** 子流自 `start`（BOF）起，返回同层 EOF 的下标；没有时为记录总数。 */
+function substreamEnd(list: readonly BiffRecord[], start: number): number {
+  let depth = 0
+  for (let i = start; i < list.length; i++) {
+    if (list[i]!.id === RT.BOF) depth++
+    else if (list[i]!.id === RT.EOF && --depth === 0) return i
+  }
+  return list.length
 }
 
 export async function parseBiff(file: CfbFile): Promise<XlsxResult> {
@@ -53,17 +76,41 @@ export async function parseBiff(file: CfbFile): Promise<XlsxResult> {
   const fontNames = new Set(g.fontNames)
 
   const unsupported: UnsupportedCounts = {}
-  const sheets: Worksheet[] = []
+  const sheets: Sheet[] = []
   const pending: SheetCharts[] = []
   let activeSheet = 0
   for (const [index, entry] of g.sheets.entries()) {
-    if (entry.type === SHEET_CHART) {
-      add(unsupported, 'chartsheet')
+    const start = at.get(entry.offset)
+    const known = entry.type === SHEET_WORKSHEET || entry.type === SHEET_CHART
+    if (!known || start === undefined || list[start]!.id !== RT.BOF) {
+      add(unsupported, 'otherSheet')
       continue
     }
-    const start = at.get(entry.offset)
-    if (entry.type !== SHEET_WORKSHEET || start === undefined || list[start]!.id !== RT.BOF) {
-      add(unsupported, 'otherSheet')
+    if (entry.type === SHEET_CHART) {
+      const records = list.slice(start + 1, substreamEnd(list, start))
+      const counts: UnsupportedCounts = {}
+      const shapes = chartShapes(records)
+      if (shapes > 0) add(counts, 'graphic', shapes)
+      const anchor = chartsheetAnchor(records)
+      if (anchor === null) add(counts, 'chart')
+      const items: PendingChart<AbsoluteAnchor>[] =
+        anchor === null ? [] : [{ anchor, order: 0, raw: readBiffChart(records, g), theme: null }]
+      const scl = records.find((r) => r.id === RT.SCL)
+      const zoom = scl === undefined ? null : scaleZoom(new Bytes(scl.data))
+      const charts: SheetChart<AbsoluteAnchor>[] = []
+      pending.push({ charts, counts, items })
+      if (index === g.activeTab) activeSheet = sheets.length
+      sheets.push({
+        kind: 'chartsheet',
+        name: entry.name,
+        state: entry.state,
+        view: { zoom: zoom ?? 100 },
+        charts,
+        unsupported: counts,
+      })
+      for (const [kind, n] of Object.entries(counts) as [UnsupportedKind, number][]) {
+        add(unsupported, kind, n)
+      }
       continue
     }
     const parsed = readSheet(list, start, g)
@@ -84,8 +131,8 @@ export async function parseBiff(file: CfbFile): Promise<XlsxResult> {
       const stream = parsed.charts.find((s) => s.object === c.object)
       if (stream === undefined) continue
       const records = list.slice(stream.start, stream.end)
-      const shapes = records.filter((r) => r.id === RT.OBJ && new Bytes(r.data).u16(4) !== 0)
-      if (shapes.length > 0) add(counts, 'graphic', shapes.length)
+      const shapes = chartShapes(records)
+      if (shapes > 0) add(counts, 'graphic', shapes)
       items.push({ anchor: c.anchor, order: c.order, raw: readBiffChart(records, g), theme: null })
     }
     const chartObjects = parsed.objects.filter((o) => o.type === OBJ_CHART).length
@@ -94,6 +141,7 @@ export async function parseBiff(file: CfbFile): Promise<XlsxResult> {
     pending.push({ charts, counts, items })
     if (index === g.activeTab) activeSheet = sheets.length
     sheets.push({
+      kind: 'worksheet',
       name: entry.name,
       state: entry.state,
       cells: parsed.cells,

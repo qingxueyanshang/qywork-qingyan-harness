@@ -6,8 +6,8 @@
  *    `workbook.unsupported` 为未显示内容的计数，界面据此显示一行能力边界。
  * 2. 按 `workbook.fontNames`（含图片中图元文件文字的字体）与 `fallbackFonts(workbook)` 取得字体文件，主机上没有的字体名再取得 `substituteFont(name)`：
  *    每个字体以同一族名注册为浏览器 `FontFace`，并以 `loadFace` 读取度量，组成 `FontSet`。
- * 3. `createScene(workbook, sheet, fonts)` 计算行高列宽并换算形状的位置；`sheet.images` 由调用方以 `../drawingml/` 的
- *    `decodePicture` 解码（位图与图元文件）。
+ * 3. `createScene(workbook, sheet, fonts)` 计算行高列宽并换算形状的位置，图表工作表换算图表区；工作表的 `sheet.images`
+ *    由调用方以 `../drawingml/` 的 `decodePicture` 解码（位图与图元文件）。`pageExtent` 给出页面的滚动范围。
  * 4. `paintView`（按冻结窗格）或 `paintRegion`（任意区域）绘制到 Canvas 2D 或 `OffscreenCanvas` 上下文；
  *    `SheetResources` 提供解码后的图片、形状所需的图层与显示器的 ClearType 设置。只访问可见区域，滚动时重绘即可。
  */
@@ -36,6 +36,8 @@ export type {
   CfRule,
   CfRuleKind,
   CfThreshold,
+  Chartsheet,
+  ChartsheetView,
   ColumnSpec,
   ConditionalFormat,
   ConnectorNode,
@@ -51,6 +53,7 @@ export type {
   RichRun,
   RowSpec,
   ShapeNode,
+  Sheet,
   SheetChart,
   SheetFormat,
   SheetImage,
@@ -78,11 +81,14 @@ export {
 export type { SheetGeometry } from './render/geometry.ts'
 export {
   anchorRect,
+  type ChartsheetScene,
   createScene,
   initialScroll,
+  type PageScene,
   type PaintContext,
   type PaintRegion,
   type PaintView,
+  pageExtent,
   paintRegion,
   paintView,
   type SheetDrawing,

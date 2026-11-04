@@ -71,6 +71,11 @@ const OBJ_CONTROLS = new Set([7, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
 /** BOF 的子流类型：图表。 */
 const CHART_STREAM = 0x0020
 
+/** SCL 记录的缩放比例（百分比）：分子除以分母；分母为 0 时为 `null`。工作表与图表工作表共用。 */
+export function scaleZoom(b: Bytes): number | null {
+  return b.u16(2) > 0 ? Math.round((b.u16(0) * 100) / b.u16(2)) : null
+}
+
 /** RK 编码的数值：第 0 位为除以 100，第 1 位为 30 位有符号整数，否则为双精度数的高 30 位。 */
 export function decodeRk(rk: number): number {
   let value: number
@@ -285,7 +290,7 @@ export function readSheet(list: readonly BiffRecord[], start: number, g: Globals
         pane = b
         break
       case RT.SCL:
-        if (b.u16(2) > 0) zoom = Math.round((b.u16(0) * 100) / b.u16(2))
+        zoom = scaleZoom(b) ?? zoom
         break
       case RT.WSBOOL:
         dialog = (b.u8(0) & 0x10) !== 0

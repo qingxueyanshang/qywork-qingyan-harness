@@ -1,8 +1,9 @@
 /**
  * 工作表视口：画布叠在原生滚动容器上方，只绘制可见区域。滚动位置的记录与缩放手势见 `viewport.ts`，内容坐标为工作表像素。
+ * 工作表与图表工作表共用，页面的范围取 `pageExtent`。
  *
- * - 滚动范围由占位元素的尺寸决定：已用区域之后再加一屏，滚动到末端附近时再延长一屏，上限为工作表总尺寸
- *   （`geometry.total`）与 `MAX_EXTENT`。不要直接取总尺寸：工作表固定有 1048576 行，默认行高下约 2100 万像素，
+ * - 滚动范围由占位元素的尺寸决定：已用区域之后再加一屏，滚动到末端附近时再延长一屏，上限为页面总尺寸
+ *   与 `MAX_EXTENT`。不要直接取总尺寸：工作表固定有 1048576 行，默认行高下约 2100 万像素，
  *   放大后超出浏览器的元素尺寸上限，滚动条也无法用于定位内容。
  * - 画布按 `devicePixelRatio` 分配像素，CSS 尺寸取画布像素除以设备像素比，使画布像素与屏幕像素一一对应；
  *   缩放与设备像素比以画布变换施加，绘制仍按工作表像素计算。
@@ -17,9 +18,10 @@ import type { CreateCanvas, PaintCanvas, PaintPicture } from '@qywork/ooxml/draw
 import {
   type ClearTypeDisplay,
   initialScroll,
+  type PageScene,
   type PaintContext,
+  pageExtent,
   paintView,
-  type SheetScene,
 } from '@qywork/ooxml/xlsx'
 import { createZoomScroll, type ViewPosition } from './viewport.ts'
 
@@ -28,8 +30,8 @@ export interface SheetViewport {
    * 显示工作表并定位到 `at`；`at` 为 `null` 时取工作表保存的打开位置与缩放比例。`clearType` 为主机显示器的 ClearType 设置，
    * 为 `null` 时单元格、形状与图表文字以浏览器字体绘制。
    */
-  show(scene: SheetScene, at: ViewPosition | null, clearType: ClearTypeDisplay | null): void
-  /** 图片解码完成后传入（`decodePicture`），与 `scene.sheet.images` 逐项对应，无法解码的为 `null`。 */
+  show(scene: PageScene, at: ViewPosition | null, clearType: ClearTypeDisplay | null): void
+  /** 工作表的图片解码完成后传入（`decodePicture`），与 `scene.sheet.images` 逐项对应，无法解码的为 `null`。 */
   setImages(images: readonly (PaintPicture | null)[]): void
   /** 当前位置；尚未显示工作表时为 `null`。 */
   position(): ViewPosition | null
@@ -54,7 +56,7 @@ export function createSheetViewport(els: {
   canvas: HTMLCanvasElement
 }): SheetViewport {
   const { scroller, extent, canvas } = els
-  let scene: SheetScene | null = null
+  let scene: PageScene | null = null
   let clearType: ClearTypeDisplay | null = null
   let images: readonly (PaintPicture | null)[] = []
   let frame = 0
@@ -62,13 +64,11 @@ export function createSheetViewport(els: {
   /** 按滚动位置 (`x`, `y`)（工作表像素）设置占位元素的尺寸，使该位置可以到达。 */
   const fitExtent = (x: number, y: number, zoom: number) => {
     if (!scene) return
-    const { cols, rows } = scene.geometry
+    const { used, total } = pageExtent(scene)
     const viewW = scroller.clientWidth / zoom
     const viewH = scroller.clientHeight / zoom
-    const usedW = cols.offset(scene.sheet.maxCol + 1)
-    const usedH = rows.offset(scene.sheet.maxRow + 1)
-    const w = Math.min(cols.total, Math.max(usedW + viewW, x + 2 * viewW))
-    const h = Math.min(rows.total, Math.max(usedH + viewH, y + 2 * viewH))
+    const w = Math.min(total.width, Math.max(used.width + viewW, x + 2 * viewW))
+    const h = Math.min(total.height, Math.max(used.height + viewH, y + 2 * viewH))
     extent.style.width = `${Math.min(w * zoom, MAX_EXTENT)}px`
     extent.style.height = `${Math.min(h * zoom, MAX_EXTENT)}px`
   }

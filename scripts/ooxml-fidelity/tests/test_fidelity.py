@@ -1,5 +1,6 @@
-"""覆盖 score.py（SSIM、报告的页数对齐规则与按格式筛选）、fidelity.py 的 score 子命令（--format 参数）
-与 emf.py（按图片框回放、超出部分裁去、字体质量与 WPS 自带字体名的改写、GDI 拒绝创建的对象与其余回放失败）。
+"""覆盖 score.py（SSIM、报告的页数对齐规则与按格式筛选）、fidelity.py 的 score 子命令（--format 参数）、
+emf.py（按图片框回放、超出部分裁去、字体质量与 WPS 自带字体名的改写、GDI 拒绝创建的对象与其余回放失败）
+与 capture.py 的 xlsx 取图（工作表与图表工作表的页；COM 与剪贴板以替身代替）。
 
 运行：python -m unittest discover -s scripts/ooxml-fidelity/tests
 临时文件位于 .tmp/ooxml-fidelity/tests。emf 的用例调用 GDI，只在 Windows 上运行。
@@ -10,9 +11,11 @@ import json
 import shutil
 import subprocess
 import sys
+import types
 import unittest
 from ctypes import wintypes
 from pathlib import Path
+from unittest import mock
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
@@ -291,6 +294,100 @@ class EmfTest(unittest.TestCase):
         self.assertEqual(emf.unmapped_faces(ksof, {"KSOF0000TEST": "Times New Roman"}), set())
         self.assertEqual(emf.unmapped_faces(times, {}), set())
         self.assertEqual(emf.with_faces(times, {"KSOF0000TEST": "Arial"}), times)
+
+
+class _Sheet:
+    """工作表或图表工作表的替身：CopyPicture 记下调用的对象与参数。"""
+
+    def __init__(self, log, name, visible=-1, size=(40, 30)):
+        self.log, self.Name, self.Visible, self.size = log, name, visible, size
+        self.Shapes = types.SimpleNamespace(Count=0)
+        self.ChartArea = types.SimpleNamespace(Width=size[0] * 0.75, Height=size[1] * 0.75)
+        self.UsedRange = types.SimpleNamespace(Row=1, Column=1, Rows=types.SimpleNamespace(Count=2),
+                                               Columns=types.SimpleNamespace(Count=2))
+        self.Width, self.Height = size[0] * 0.75, size[1] * 0.75
+
+    def Cells(self, row, col):
+        return (row, col)
+
+    def Range(self, first, last):
+        rng = types.SimpleNamespace(Width=self.Width, Height=self.Height, Address="$A$1:$B$2")
+        rng.CopyPicture = lambda *a: self.CopyPicture(*a)
+        return rng
+
+    def CopyPicture(self, *args):
+        self.log.append((self.Name, args))
+        _Clipboard.size = self.size
+
+
+class _Collection:
+    def __init__(self, items):
+        self.items = items
+        self.Count = len(items)
+
+    def __call__(self, i):
+        return self.items[i - 1]
+
+
+class _Clipboard:
+    """替换 capture.clipboard：不访问系统剪贴板，位图尺寸取最近一次 CopyPicture 的对象。"""
+
+    CF_DIB = 8
+    size = (0, 0)
+
+    class Borrowed:
+        outcome = "restored"
+
+        def __init__(self, backup):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def copy_seen(self):
+            pass
+
+    @staticmethod
+    def read_formats(wanted):
+        return {8: b""}
+
+    @staticmethod
+    def dib_image(data):
+        return Image.new("RGB", _Clipboard.size, "white")
+
+
+@unittest.skipUnless(sys.platform == "win32", "capture.py 依赖 Windows 的剪贴板与 COM")
+class CaptureXlsxTest(unittest.TestCase):
+    """capture._xlsx：可见工作表的页在前、取法不变；可见图表工作表排在其后，以同一取法取图表区，页的 range 为 None；
+    隐藏的工作表与图表工作表跳过。"""
+
+    def setUp(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+        TMP.mkdir(parents=True)
+
+    def test_chartsheets_follow_worksheets(self):
+        sys.path.insert(0, str(ROOT / "packages" / "runtime" / "office"))
+        import capture
+
+        log = []
+        wb = types.SimpleNamespace(
+            Worksheets=_Collection([_Sheet(log, "甲"), _Sheet(log, "隐", visible=0)]),
+            Charts=_Collection([_Sheet(log, "图", size=(64, 48)), _Sheet(log, "藏", visible=0)]))
+        inst = types.SimpleNamespace(open=lambda src: wb, close_doc=lambda doc: None)
+        with mock.patch.object(capture, "clipboard", _Clipboard):
+            data = capture._xlsx(inst, "a.xlsx", TMP, TMP / "backup")
+        pages = [(p["n"], p["file"], p["sheet"], p["range"], p["width"], p["height"], tuple(p["expected_100pct"]))
+                 for p in data["pages"]]
+        self.assertEqual(pages, [(1, "page-0001.png", "甲", "A1:B2", 40, 30, (40, 30)),
+                                 (2, "page-0002.png", "图", None, 64, 48, (64, 48))])
+        self.assertEqual(log, [("甲", (1, 2)), ("图", (1, 2))])
+        self.assertEqual(data["checks"]["skipped_sheets"], [{"sheet": "隐", "reason": "隐藏"},
+                                                            {"sheet": "藏", "reason": "隐藏"}])
+        self.assertEqual(data["checks"]["clipboard"], ["restored", "restored"])
+        self.assertTrue((TMP / "page-0002.png").exists())
 
 
 if __name__ == "__main__":

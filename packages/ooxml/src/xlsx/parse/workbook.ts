@@ -5,6 +5,7 @@
  *   工作表关系给出绘图、批注、表格、数据透视表、控件与嵌入对象。部件按顺序读取（并发读取 ZIP 成员更慢）。
  * - ActiveX 控件按其替代图片显示（WPS 表格实测：复选框与文本控件显示替代图片），作为图片排在绘图部件的对象之后；
  *   没有替代图片或锚点的计入 `control`。表单控件按关系计数。
+ * - 图表工作表见 `readChartsheet`；部件缺失的工作表与图表工作表计入 `otherSheet`。
  * - 文件为含 `Workbook` 流的 CFB 复合文档（.xls）时交给 `../biff/` 解析，记录结构错误时返回 `corrupt('biff')`；
  *   其余 CFB 由 ZIP 层分类。
  * - 主文档的内容类型不是 SpreadsheetML 工作簿时返回 `corrupt('workbook')`；部件 XML 结构错误时返回 `corrupt('xml')`。
@@ -26,12 +27,15 @@ import { XmlScanner, XmlSyntaxError } from '../../xml/index.ts'
 import { openLegacy } from '../../zip/index.ts'
 import { parseBiff } from '../biff/workbook.ts'
 import type {
+  AbsoluteAnchor,
+  Chartsheet,
+  Sheet,
+  SheetChart,
   SheetImage,
   SheetShape,
   UnsupportedCounts,
   UnsupportedKind,
   Workbook,
-  Worksheet,
 } from '../model.ts'
 import { type PendingChart, resolveSheetCharts, type SheetCharts } from './chart-cells.ts'
 import { parseDrawing, type RawControl, readControls } from './drawing.ts'
@@ -92,7 +96,7 @@ async function readRels(pkg: OpcPackage, source: string): Promise<Relationships>
 
 interface SheetEntry {
   readonly name: string
-  readonly state: Worksheet['state']
+  readonly state: Sheet['state']
   readonly relId: string
 }
 
@@ -169,23 +173,27 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
   )
 
   const unsupported: UnsupportedCounts = {}
-  const sheets: Worksheet[] = []
+  const sheets: Sheet[] = []
   const pending: SheetCharts[] = []
   let activeSheet = 0
   for (const [index, entry] of info.sheets.entries()) {
     const rel = rels.byId(entry.relId)
     const kind = rel?.kind ?? ''
-    if (kind === 'chartsheet') {
-      unsupported.chartsheet = (unsupported.chartsheet ?? 0) + 1
-      continue
-    }
-    if (kind !== 'worksheet' || !rel?.part) {
+    if ((kind !== 'worksheet' && kind !== 'chartsheet') || !rel?.part) {
       unsupported.otherSheet = (unsupported.otherSheet ?? 0) + 1
       continue
     }
     const xml = await readText(pkg, rel.part)
     if (xml === null) {
       unsupported.otherSheet = (unsupported.otherSheet ?? 0) + 1
+      continue
+    }
+    if (kind === 'chartsheet') {
+      const page = await readChartsheet(pkg, rel.part, xml, entry, theme ?? EMPTY_THEME, fontNames)
+      pending.push(page.pending)
+      if (index === info.activeTab) activeSheet = sheets.length
+      sheets.push(page.sheet)
+      addCounts(unsupported, page.sheet.unsupported)
       continue
     }
     const parsed = parseWorksheet(xml, {
@@ -223,6 +231,7 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
     }
     if (index === info.activeTab) activeSheet = sheets.length
     sheets.push({
+      kind: 'worksheet',
       name: entry.name,
       state: entry.state,
       cells: parsed.cells,
@@ -260,6 +269,53 @@ async function parsePackage(pkg: OpcPackage): Promise<Workbook> {
     gridSize,
     fontNames: [...fontNames],
     unsupported,
+  }
+}
+
+/**
+ * 图表工作表：缩放比例取 `sheetView` 的 `zoomScale`，图表取绘图部件中绝对锚点（`absoluteAnchor`）的图表。
+ * 其余锚点的图表计入 `chart`，图片计入 `image`，形状计入 `graphic`；绘图部件中没有图表时计入 `chart`。
+ */
+async function readChartsheet(
+  pkg: OpcPackage,
+  part: string,
+  xml: string,
+  entry: SheetEntry,
+  theme: Theme,
+  fontNames: Set<string>,
+): Promise<{ sheet: Chartsheet; pending: SheetCharts<AbsoluteAnchor> }> {
+  const x = new XmlScanner(xml)
+  let zoom = 100
+  let drawingId: string | null = null
+  for (let t = x.next(); t !== null; t = x.next()) {
+    if (t !== 'start') continue
+    if (x.local === 'sheetView') zoom = numAttr(x, 'zoomScale') ?? 100
+    else if (x.local === 'drawing') drawingId = relAttr(x, 'id')
+  }
+  const counts: UnsupportedCounts = {}
+  const rels = await readRels(pkg, part)
+  const drawing = await readDrawing(pkg, rels, drawingId, [], theme, fontNames, counts)
+  const items = drawing.charts.filter(
+    (c): c is PendingChart<AbsoluteAnchor> => c.anchor.kind === 'absolute',
+  )
+  const skipped: [UnsupportedKind, number][] = [
+    ['chart', drawing.charts.length - items.length],
+    ['image', drawing.images.length],
+    ['graphic', drawing.shapes.length],
+  ]
+  for (const [kind, n] of skipped) if (n > 0) counts[kind] = (counts[kind] ?? 0) + n
+  if (drawing.charts.length === 0 && !counts.chart) counts.chart = 1
+  const charts: SheetChart<AbsoluteAnchor>[] = []
+  return {
+    sheet: {
+      kind: 'chartsheet',
+      name: entry.name,
+      state: entry.state,
+      view: { zoom },
+      charts,
+      unsupported: counts,
+    },
+    pending: { charts, counts, items },
   }
 }
 

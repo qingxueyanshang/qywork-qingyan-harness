@@ -1,5 +1,5 @@
 /**
- * .xls 嵌入图表：图表子流读为图表规格 `RawChart`，求值与绘制同 xlsx（`../../drawingml/chart/resolve.ts`）。
+ * .xls 嵌入图表与图表工作表：图表子流读为图表规格 `RawChart`，求值与绘制同 xlsx（`../../drawingml/chart/resolve.ts`）。
  *
  * - 子流按 Begin/End 组织为记录树；记录的含义取决于所在的块（图表、系列、坐标轴组、图表组、图例、文字）。
  * - BIFF 的「自动」格式在此换算为显式规格，不使用 DrawingML 的主题配色：系列的线条与标记取调色板第 32 起、填充取第 24 起的颜色，
@@ -36,7 +36,7 @@ import {
 import type { ColorSpec } from '../../drawingml/color.ts'
 import type { FillSpec, LineSpec } from '../../drawingml/fill.ts'
 import type { RawRun, RawTextBody, RunSpec } from '../../drawingml/text/read.ts'
-import type { FontStyle } from '../model.ts'
+import type { AbsoluteAnchor, FontStyle } from '../model.ts'
 import { formulaText } from './formula.ts'
 import { type BiffRecord, Bytes, RT, readChars, unicodeString } from './records.ts'
 
@@ -567,6 +567,27 @@ function readCache(nodes: readonly Node[]): Map<number, Map<number, Map<number, 
     points.set(n.b.u16(0), n.id === RT.NUMBER ? n.b.f64(6) : unicodeString(n.b, 6).text)
   }
   return out
+}
+
+/** 1 像素的 EMU 数。 */
+const EMU_PER_PX = 9525
+
+/**
+ * 图表工作表的图表区：Chart 记录的位置与宽高（磅，16.16 定点数）。WPS 实测图表区比记录的宽高各小 1 像素：
+ * thu-xls-008「图表3」记录 734.303×449.25 磅，WPS 的图表区为 733.55×448.5 磅，另 3 张同样。没有 Chart 记录时为 `null`。
+ */
+export function chartsheetAnchor(list: readonly BiffRecord[]): AbsoluteAnchor | null {
+  const chart = list.find((r) => r.id === C.CHART)
+  if (chart === undefined) return null
+  const b = new Bytes(chart.data)
+  const emu = (p: number) => (b.i32(p) / 65536) * 12700
+  return {
+    kind: 'absolute',
+    x: emu(0),
+    y: emu(4),
+    width: Math.max(0, emu(8) - EMU_PER_PX),
+    height: Math.max(0, emu(12) - EMU_PER_PX),
+  }
 }
 
 /** 一个图表子流（BOF 与 EOF 之间的记录）读为规格。 */

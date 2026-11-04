@@ -357,6 +357,8 @@ export type DrawingAnchor =
       readonly height: number
     }
 
+export type AbsoluteAnchor = Extract<DrawingAnchor, { readonly kind: 'absolute' }>
+
 export interface SheetImage {
   readonly anchor: DrawingAnchor
   /** 锚点在绘图部件中的序号（从 0 起），与 `SheetShape.order` 共用：序号大的绘制在上层。 */
@@ -416,8 +418,8 @@ export interface SheetShape {
 }
 
 /** 锚定在工作表上的图表：锚点矩形即图表区。 */
-export interface SheetChart {
-  readonly anchor: DrawingAnchor
+export interface SheetChart<A extends DrawingAnchor = DrawingAnchor> {
+  readonly anchor: A
   /** 锚点在绘图部件中的序号，与 `SheetImage.order` 共用。 */
   readonly order: number
   readonly chart: Chart
@@ -426,7 +428,7 @@ export interface SheetChart {
 /**
  * 已识别但未实现的内容种类。预览按计数显示一行能力边界，不静默丢弃。
  *
- * - `chart`：未绘制的图表（扩展图表、含不支持内容的图表、组合内的图表）；`chartsheet`：图表工作表；
+ * - `chart`：未绘制的图表（扩展图表、含不支持内容的图表、组合内的图表、没有可绘制图表的图表工作表）；
  *   `otherSheet`：宏表与对话框表。
  * - `graphic`：未绘制的图形对象：SmartArt 等非图表的 `graphicFrame`、墨迹（`contentPart`）、锚点不完整或缺少 `xfrm`
  *   的形状，组合内的逐个计数。
@@ -442,7 +444,6 @@ export interface SheetChart {
  */
 export type UnsupportedKind =
   | 'chart'
-  | 'chartsheet'
   | 'otherSheet'
   | 'graphic'
   | 'textWarp'
@@ -463,6 +464,7 @@ export type UnsupportedKind =
 export type UnsupportedCounts = Partial<Record<UnsupportedKind, number>>
 
 export interface Worksheet {
+  readonly kind: 'worksheet'
   readonly name: string
   readonly state: 'visible' | 'hidden' | 'veryHidden'
   /** 按行、再按列索引的稀疏单元格表。 */
@@ -485,9 +487,30 @@ export interface Worksheet {
   readonly unsupported: UnsupportedCounts
 }
 
+export interface ChartsheetView {
+  /** 百分比，100 为原始大小。`zoomToFit` 不进入模型：WPS 实测带该属性时显示比例仍为此值。 */
+  readonly zoom: number
+}
+
+/**
+ * 图表工作表：只显示图表、没有单元格的页面。图表的锚点为绝对位置（EMU），即图表区在页面上的矩形：xlsx 取绘图部件的
+ * `absoluteAnchor`，.xls 取 Chart 记录（见 `../biff/chart.ts` 的 `chartsheetAnchor`）；页面设置不改变图表区（WPS 实测）。
+ */
+export interface Chartsheet {
+  readonly kind: 'chartsheet'
+  readonly name: string
+  readonly state: Worksheet['state']
+  readonly view: ChartsheetView
+  /** 可以绘制的图表，通常只有一个；没有时页面空白，图表计入 `unsupported.chart`。 */
+  readonly charts: readonly SheetChart<AbsoluteAnchor>[]
+  readonly unsupported: UnsupportedCounts
+}
+
+export type Sheet = Worksheet | Chartsheet
+
 export interface Workbook {
-  /** 按工作簿顺序，含隐藏的工作表；图表工作表等不在其中，计入 `unsupported`。 */
-  readonly sheets: readonly Worksheet[]
+  /** 按工作簿顺序，含隐藏的工作表与图表工作表；宏表与对话框表不在其中，计入 `unsupported`。 */
+  readonly sheets: readonly Sheet[]
   /** 单元格样式表（`cellXfs` 逐项解析的结果）。 */
   readonly styles: readonly CellStyle[]
   /** 「常规」样式的字体，列宽换算与行高推算以它为准。 */
@@ -504,6 +527,6 @@ export interface Workbook {
   readonly gridSize: { readonly rows: number; readonly cols: number }
   /** 样式、富文本与形状文字中出现的全部字体名，供调用方按名取得字体文件。 */
   readonly fontNames: readonly string[]
-  /** 全部工作表的计数之和，加上工作簿级的内容（图表工作表、宏表）。 */
+  /** 全部工作表的计数之和，加上工作簿级的内容（宏表与对话框表）。 */
   readonly unsupported: UnsupportedCounts
 }

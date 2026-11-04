@@ -337,7 +337,11 @@ function evalNode(n: Node, ctx: EvalContext): Scalar | undefined {
     case 'lit':
       return n.v
     case 'ref': {
-      const sheet = n.sheet === null ? ctx.sheet : ctx.wb.sheets.find((s) => s.name === n.sheet)
+      // 图表工作表没有单元格，引用它与引用不存在的工作表相同。
+      const sheet =
+        n.sheet === null
+          ? ctx.sheet
+          : ctx.wb.sheets.find((s): s is Worksheet => s.kind === 'worksheet' && s.name === n.sheet)
       if (!sheet) return { error: '#REF!' }
       const row = n.rowAbs ? n.row : n.row + ctx.dRow
       const col = n.colAbs ? n.col : n.col + ctx.dCol

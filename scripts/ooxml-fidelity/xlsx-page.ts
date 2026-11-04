@@ -3,6 +3,7 @@
  *
  * 页面向 `window` 暴露 `renderPage(id, sheet, range, width, height, clearType)`（`width`、`height` 为真值位图的尺寸，
  * `clearType` 为采集时显示器的 ClearType 设置），返回画布尺寸与本方区域尺寸；截图由 Node 驱动的 Playwright 完成。
+ * 图表工作表的页 `range` 为 `null`：区域为第一个图表的图表区，见 `pageRegion`。
  * 本文件只声明用到的浏览器接口，不引入 DOM 类型库（`scripts` 的类型检查环境不含 DOM）。
  */
 
@@ -21,7 +22,9 @@ import {
   fallbackFonts,
   type LoadedFace,
   loadFace,
+  type PageScene,
   type PaintContext,
+  type PaintRegion,
   paintRegion,
   parseXlsx,
   substituteFont,
@@ -136,6 +139,31 @@ function lastCell(range: string): { row: number; col: number } {
 }
 
 /**
+ * 绘制区域：工作表为 A1 至 `range` 末格；图表工作表为第一个图表的图表区（宽高向上取整），左上角各向外扩 1 像素。
+ * 真值取图（`Chart.CopyPicture`）的位图只含图表区，且图表比工作表中的显示右移、下移 1 像素：同一嵌入图表的
+ * `Chart.CopyPicture` 位图与图表工作表的位图逐像素相同，而在 `Range.CopyPicture` 中不移动（构造文件 c1-emb）。
+ */
+function pageRegion(scene: PageScene, range: string | null): PaintRegion {
+  if (scene.kind === 'chartsheet') {
+    const rect = scene.charts[0]?.rect ?? { x: 0, y: 0, width: 0, height: 0 }
+    return {
+      x: rect.x - 1,
+      y: rect.y - 1,
+      width: Math.ceil(rect.width) + 1,
+      height: Math.ceil(rect.height) + 1,
+    }
+  }
+  if (range === null) throw new Error('工作表的页没有区域')
+  const end = lastCell(range)
+  return {
+    x: 0,
+    y: 0,
+    width: scene.geometry.cols.offset(end.col + 1),
+    height: scene.geometry.rows.offset(end.row + 1),
+  }
+}
+
+/**
  * 画布尺寸取真值位图的尺寸（与 docx 候选一致），区域之外为白色，打分时不重采样。
  * 返回值中的 `region` 是本方区域尺寸（含右侧与下侧的网格线），与位图尺寸不同时由驱动脚本输出。
  * WPS 对保存的缩放比例不是 100% 的部分工作表，`CopyPicture` 的位图在右侧或下方多出 1 像素白边，取整规则未查明。
@@ -143,7 +171,7 @@ function lastCell(range: string): { row: number; col: number } {
 async function renderPage(
   id: string,
   sheetName: string,
-  range: string,
+  range: string | null,
   truthWidth: number,
   truthHeight: number,
   clearType: ClearTypeDisplay | null,
@@ -152,12 +180,13 @@ async function renderPage(
   const sheet = workbook.sheets.find((s) => s.name === sheetName)
   if (!sheet) throw new Error(`没有工作表：${sheetName}`)
   const scene = createScene(workbook, sheet, fonts)
-  const end = lastCell(range)
-  const width = scene.geometry.cols.offset(end.col + 1)
-  const height = scene.geometry.rows.offset(end.row + 1)
-  const images = await Promise.all(
-    sheet.images.map((img) => decodePicture(img.bytes.slice(), img.contentType, decoder)),
-  )
+  const region = pageRegion(scene, range)
+  const images =
+    sheet.kind === 'worksheet'
+      ? await Promise.all(
+          sheet.images.map((img) => decodePicture(img.bytes.slice(), img.contentType, decoder)),
+        )
+      : []
   const canvas = document.getElementById('sheet')
   canvas.width = truthWidth
   canvas.height = truthHeight
@@ -168,11 +197,11 @@ async function renderPage(
   const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: clearType !== null })
   ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, canvas.width, canvas.height)
-  paintRegion(ctx, scene, { x: 0, y: 0, width, height }, { images, createCanvas, clearType })
+  paintRegion(ctx, scene, region, { images, createCanvas, clearType })
   return {
     width: canvas.width,
     height: canvas.height,
-    region: { width: width + 1, height: height + 1 },
+    region: { width: region.width + 1, height: region.height + 1 },
   }
 }
 
