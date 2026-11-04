@@ -1,5 +1,5 @@
 /**
- * 云端账号：电脑端以邮箱密码登录或注册、退出、内置模型的接口，以及账号界面读取的用量与使用记录；
+ * 云端账号：电脑端以邮箱密码登录或注册、退出、内置模型的接口，以及账号界面读取的用量、使用记录与充值；
  * 另有不需要登录的本版说明（云端的版本公告）与公告列表。
  *
  * 不变量：
@@ -16,6 +16,8 @@ import { httpStatusName, lookupModel } from '@qywork/ai'
 import type {
   Announcement,
   CloudModel,
+  CloudRechargeOrder,
+  CloudRechargeStatus,
   CloudRequest,
   CloudState,
   CloudUsage,
@@ -230,6 +232,7 @@ export class CloudAccount {
         avatar: me.avatar,
         provider: CLOUD_PROVIDER,
         origin: this.origin,
+        recharge: me.recharge,
       }
     }
     // 云端暂时无法访问：仍视为已登录，余额与头像未知。
@@ -240,6 +243,7 @@ export class CloudAccount {
       avatar: null,
       provider: CLOUD_PROVIDER,
       origin: this.origin,
+      recharge: false,
     }
   }
 
@@ -326,6 +330,23 @@ export class CloudAccount {
       ...r,
       failure: failure(status, errorCode),
     }))
+  }
+
+  /** 微信支付充值下单，金额为整数元，范围由云端校验。 */
+  recharge(amount: number): Promise<CloudRechargeOrder> {
+    return this.call<CloudRechargeOrder>('/v1/recharge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amount }),
+    })
+  }
+
+  /** 充值订单的状态。云端在未到账时向微信支付查单，支付成功即入账。 */
+  async rechargeStatus(orderNo: string): Promise<CloudRechargeStatus> {
+    const reply = await this.call<{ status: CloudRechargeStatus }>(
+      `/v1/recharge/${encodeURIComponent(orderNo)}`,
+    )
+    return reply.status
   }
 
   /** 云端答复本设备已被移除（网关或隧道）：删除本地接口，账号界面显示原因。 */
@@ -492,15 +513,27 @@ export class CloudAccount {
 
   private async me(
     key: string,
-  ): Promise<{ email: string; credits: number; avatar: string | null } | 'revoked' | null> {
+  ): Promise<
+    { email: string; credits: number; avatar: string | null; recharge: boolean } | 'revoked' | null
+  > {
     try {
       const res = await fetch(`${this.origin}/v1/me`, {
         headers: { authorization: `Bearer ${key}` },
         signal: this.timeout(),
       })
       if (res.ok) {
-        const me = (await res.json()) as { email: string; credits: number; avatar?: string | null }
-        return { email: me.email, credits: me.credits, avatar: me.avatar ?? null }
+        const me = (await res.json()) as {
+          email: string
+          credits: number
+          avatar?: string | null
+          recharge?: boolean
+        }
+        return {
+          email: me.email,
+          credits: me.credits,
+          avatar: me.avatar ?? null,
+          recharge: me.recharge === true,
+        }
       }
       const body = (await res.json().catch(() => null)) as { error?: { code?: string } } | null
       return res.status === 401 && body?.error?.code === 'device_revoked' ? 'revoked' : null

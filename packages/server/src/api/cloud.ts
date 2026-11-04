@@ -1,5 +1,6 @@
 /**
  * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`、`avatar`，账号界面的 `models`、`usage`、`requests`，
+ * 充值的 `recharge`（下单）与 `recharge/:orderNo`（状态），
  * 以及不需要登录的本版说明 `release-notes` 与公告列表 `announcements`。
  *
  * 账号对象由 `server.ts` 按进程创建一个。未配置云端地址时（`cloud/origin.ts`）为 null，只回答 `unavailable`，
@@ -54,6 +55,17 @@ export const handleCloudApi: ApiHandler = async (url, req, d) => {
     if (p === '/api/cloud/models' && req.method === 'GET') return json(await account.models())
     if (p === '/api/cloud/requests' && req.method === 'GET') {
       return json(await account.requests(url.searchParams.get('before'), PAGE))
+    }
+    if (p === '/api/cloud/recharge' && req.method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as { amount?: unknown }
+      if (typeof body.amount !== 'number') {
+        return json({ error: 'invalid_request', message: '缺少充值金额' }, 400)
+      }
+      return json(await account.recharge(body.amount))
+    }
+    const order = /^\/api\/cloud\/recharge\/([^/]+)$/.exec(p)?.[1]
+    if (order && req.method === 'GET') {
+      return json({ status: await account.rechargeStatus(decodeURIComponent(order)) })
     }
   } catch (err) {
     if (err instanceof CloudAccountError) {

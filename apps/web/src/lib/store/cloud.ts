@@ -3,7 +3,14 @@
  * 每次读取与操作后以服务端返回为准。
  */
 
-import type { CloudModel, CloudRequest, CloudState, CloudUsage } from '@qywork/core'
+import type {
+  CloudModel,
+  CloudRechargeOrder,
+  CloudRechargeStatus,
+  CloudRequest,
+  CloudState,
+  CloudUsage,
+} from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { client } from './connection.ts'
 import { reloadModelCatalog } from './settings.ts'
@@ -71,6 +78,22 @@ export function fetchCloudRequests(before: string | null): Promise<CloudRequest[
   return readCloud<CloudRequest[]>(
     `/api/cloud/requests${before ? `?before=${encodeURIComponent(before)}` : ''}`,
   )
+}
+
+/** 微信支付充值下单，`amount` 为整数元。失败时抛出可直接显示的原因。 */
+export function createRecharge(amount: number): Promise<CloudRechargeOrder> {
+  return client.api<CloudRechargeOrder>('/api/cloud/recharge', {
+    method: 'POST',
+    body: JSON.stringify({ amount }),
+  })
+}
+
+/** 充值订单的状态；到账后余额以 `refreshCloudState` 重新读取。 */
+export async function fetchRechargeStatus(orderNo: string): Promise<CloudRechargeStatus> {
+  const reply = await client.api<{ status: CloudRechargeStatus }>(
+    `/api/cloud/recharge/${encodeURIComponent(orderNo)}`,
+  )
+  return reply.status
 }
 
 /** 退出登录的原因，显示在登录表单上方。 */

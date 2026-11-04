@@ -358,6 +358,8 @@ export { SUBAGENT_NODE_ID } from './protocol/events.ts'
 export type {
   Announcement,
   CloudModel,
+  CloudRechargeOrder,
+  CloudRechargeStatus,
   CloudRequest,
   CloudState,
   CloudUsage,
