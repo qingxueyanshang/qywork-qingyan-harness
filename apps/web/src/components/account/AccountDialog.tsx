@@ -141,7 +141,7 @@ function AccountView(props: { signed: SignedIn }) {
           disabled={busy()}
           onClick={logout}
         >
-          <IconLogOut size={15} />
+          <IconLogOut size={16} stroke={1.8} />
         </button>
       </header>
       <Show when={error()}>{(m) => <p class="account-error">{m()}</p>}</Show>
