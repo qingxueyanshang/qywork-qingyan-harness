@@ -12,6 +12,11 @@ import {
 import { loaded } from '../../lib/resource.ts'
 import { compact } from '../../lib/step-view.ts'
 import {
+  announcements,
+  announcementsUnread,
+  openAnnouncements,
+} from '../../lib/store/announcements.ts'
+import {
   cloudLogout,
   cloudState,
   fetchCloudModels,
@@ -26,7 +31,7 @@ import {
   openLinkInPanel,
   setAccountOpen,
 } from '../../lib/store/index.ts'
-import { IconHome, IconLogOut, IconX } from '../Icons.tsx'
+import { IconBell, IconHome, IconLogOut, IconX } from '../Icons.tsx'
 import PairPanel from '../PairPanel.tsx'
 import { LoadState, Skeleton } from '../settings/LoadState.tsx'
 import { ActivityGrid } from './ActivityGrid.tsx'
@@ -139,6 +144,22 @@ function AccountView(props: { signed: SignedIn }) {
         </label>
         <span class="account-email">{props.signed.email}</span>
         <div class="account-actions">
+          {/* 公告窗口打开在本窗口之上；最新一条未读时带圆点，侧栏的账号入口同时带圆点。 */}
+          <Show when={announcements().length > 0}>
+            <button
+              type="button"
+              class="icon-btn account-bell"
+              aria-label="公告"
+              aria-haspopup="dialog"
+              data-tip="公告"
+              onClick={openAnnouncements}
+            >
+              <IconBell size={16} stroke={1.8} />
+              <Show when={announcementsUnread()}>
+                <span class="account-bell-dot" role="img" aria-label="有新公告" />
+              </Show>
+            </button>
+          </Show>
           {/* 官网在右侧面板打开，同时关闭本窗口，否则窗口遮住面板。 */}
           <button
             type="button"
