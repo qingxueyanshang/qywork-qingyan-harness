@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts` 与 `api/cloud.ts` 的错误返回。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
+ * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`，`api/cloud.ts` 的错误返回与本版说明。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
 
@@ -29,6 +29,8 @@ const cloud = {
   /** 后上架的型号（模型库已收录）是否带规格。 */
   opusSpec: false,
   avatar: null as string | null,
+  /** 云端收到的版本公告查询次数。 */
+  notesQueries: 0,
 }
 
 const server: ReturnType<typeof Bun.serve> = Bun.serve({
@@ -64,6 +66,23 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         )
       }
       return Response.json({ key: 'qyd_device_key' })
+    }
+    if (path === '/api/announcements') {
+      cloud.notesQueries++
+      const version = url.searchParams.get('version')
+      if (version === '9.9.9') return Response.json({ error: 'boom' }, { status: 500 })
+      return Response.json(
+        version === '0.3.11'
+          ? {
+              id: '1',
+              kind: 'release',
+              version,
+              title: 'qywork 0.3.11 更新',
+              body: '- 安装包改从官网下载',
+              publishedAt: '2026-11-04T11:22:21.544Z',
+            }
+          : null,
+      )
     }
     if (path === '/v1/device/revoke') {
       cloud.revoked++
@@ -166,6 +185,7 @@ beforeEach(async () => {
     nextBase: 'claude-sonnet-5-5',
     opusSpec: false,
     avatar: null,
+    notesQueries: 0,
   })
   live = await loadConfig()
   delete live.catalog
@@ -182,6 +202,7 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
     credits: 12.5,
     avatar: null,
     provider: CLOUD_PROVIDER,
+    origin,
   })
   const provider = live.providers[CLOUD_PROVIDER]!
   expect(provider).toMatchObject({ baseUrl: origin, apiKey: 'qyd_device_key' })
@@ -319,6 +340,39 @@ test('读取用量时设备已被移除：删除本地接口，接口以 400 返
   expect(await res?.json()).toEqual({ error: 'cloud', message: '设备已被移除' })
   expect(live.providers[CLOUD_PROVIDER]).toBeUndefined()
   expect(await account.state()).toEqual({ state: 'signed_out', reason: 'revoked' })
+})
+
+test('本版说明：未登录也可读取；没有该版本的公告时为 null；版本号无效时不请求云端；云端出错时给出原因', async () => {
+  expect(await account.releaseNotes('0.3.11')).toEqual({
+    version: '0.3.11',
+    title: 'qywork 0.3.11 更新',
+    body: '- 安装包改从官网下载',
+    publishedAt: '2026-11-04T11:22:21.544Z',
+  })
+  expect(await account.releaseNotes('0.3.12')).toBeNull()
+  expect(cloud.notesQueries).toBe(2)
+  await expect(account.releaseNotes('0.3.12&x=1')).rejects.toThrow('版本号无效')
+  expect(cloud.notesQueries).toBe(2)
+  await expect(account.releaseNotes('9.9.9')).rejects.toThrow('账号服务返回 500')
+  await expect(new CloudAccount(live, 'http://127.0.0.1:9').releaseNotes('0.3.11')).rejects.toThrow(
+    '无法连接账号服务',
+  )
+})
+
+test('本版说明接口：未配置云端时为 null；版本号无效时以 400 返回原因', async () => {
+  const get = (cloud: CloudAccount | null, version: string) =>
+    handleCloudApi(
+      new URL(`http://x/api/cloud/release-notes?version=${encodeURIComponent(version)}`),
+      new Request('http://x/api/cloud/release-notes'),
+      { cloud } as unknown as ApiRequestDeps,
+    )
+  const none = await get(null, '0.3.11')
+  expect(none?.status).toBe(200)
+  expect(await none?.json()).toBeNull()
+  expect(await (await get(account, '0.3.11'))?.json()).toMatchObject({ version: '0.3.11' })
+  const bad = await get(account, 'latest')
+  expect(bad?.status).toBe(400)
+  expect(await bad?.json()).toEqual({ error: 'cloud', message: '版本号无效：latest' })
 })
 
 test('可用模型实时读取云端型号清单，单价为积分 / 百万 token；新上架的型号同时写入配置', async () => {

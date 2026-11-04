@@ -170,7 +170,20 @@ export type CloudState =
       /** 头像的 data URL；未设置或云端暂时无法访问时为 null。 */
       avatar: string | null
       provider: string
+      /** 云端地址：账号窗口据此打开网页账号页 `<origin>/account`。 */
+      origin: string
     }
+
+/**
+ * `GET /api/cloud/release-notes?version=`：云端为该版本发布的版本公告。没有、已撤回或未配置云端时为 null。
+ * `body` 是 Markdown。
+ */
+export interface ReleaseNotes {
+  version: string
+  title: string
+  body: string
+  publishedAt: string
+}
 
 /**
  * `GET /api/cloud/usage`：云端统计的本账号用量。token 四项与云端计费口径相同：输入不含缓存命中与缓存写入。
