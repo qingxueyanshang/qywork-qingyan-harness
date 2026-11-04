@@ -25,8 +25,11 @@ import { transformSync } from '@babel/core'
 import presetTypeScript from '@babel/preset-typescript'
 import presetSolid from 'babel-preset-solid'
 import { plugin } from 'bun'
+import { installRmGuard } from './rm-guard.ts'
 
 const root = resolve(import.meta.dir, '..')
+// 测试进程的当前目录是仓库根：空路径或指向仓库根的删除会清空整个仓库，包括 `.git`（`rm-guard.ts`）。
+installRmGuard([root])
 const testTemp = process.env.QYWORK_TEST_TEMP
 if (!testTemp) throw new Error('测试必须通过 bun run test 启动')
 const testTempPath = relative(root, resolve(testTemp)).replaceAll('\\', '/')
