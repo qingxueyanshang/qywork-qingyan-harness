@@ -210,6 +210,64 @@
   color: var(--text-tertiary);
 }
 
+/* 公告窗口：尺寸固定，列表在框内滚动。 */
+.announcements-dialog {
+  width: min(560px, calc(100vw - 32px));
+  height: min(600px, calc(100vh - 48px));
+  min-height: min(600px, calc(100vh - 48px));
+  max-height: min(600px, calc(100vh - 48px));
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+/* 只在打开时改为纵向排列：写在未打开的 dialog 上会覆盖浏览器的 `display: none`。 */
+.announcements-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.announcements-dialog::backdrop {
+  background: var(--scrim);
+}
+
+.announcements-list {
+  flex: 1;
+  min-height: 0;
+  margin-top: var(--s-3);
+  overflow: auto;
+  font-size: var(--fs-sm);
+}
+
+.announcements-item {
+  padding: var(--s-3) 0;
+}
+
+.announcements-item + .announcements-item {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.announcements-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+
+.announcements-title {
+  margin: var(--s-1) 0 var(--s-2);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+/* 正文中的小标题不大于公告标题。 */
+.announcements-item .markdown :is(h1, h2, h3, h4) {
+  margin: var(--s-2) 0 var(--s-1);
+  font-size: var(--fs-sm);
+}
+
 /* 取消按钮不使用 `align-self: flex-start`：它在该行中须与确认按钮同高。 */
 .confirm-actions > .btn-ghost {
   align-self: auto;

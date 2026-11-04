@@ -198,6 +198,23 @@ export const IconGlobe = (p: IconProps) => (
   </Svg>
 )
 
+/** 首页：账号窗口中打开官网。 */
+export const IconHome = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3.8 11.2 12 4.4l8.2 6.8" />
+    <path d="M5.9 9.5v8.7a1.8 1.8 0 0 0 1.8 1.8h8.6a1.8 1.8 0 0 0 1.8-1.8V9.5" />
+    <path d="M10 20v-4.4a2 2 0 0 1 4 0V20" />
+  </Svg>
+)
+
+/** 铃铛：顶栏的公告，与官网顶栏的铃铛同形。 */
+export const IconBell = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6 9a6 6 0 1 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9z" />
+    <path d="M10.2 20.5a2 2 0 0 0 3.6 0" />
+  </Svg>
+)
+
 export const IconPackage = (p: IconProps) => (
   <Svg {...p}>
     <path d="M20 8.4v7.2a2 2 0 0 1-1.05 1.76l-6 3.2a2 2 0 0 1-1.9 0l-6-3.2A2 2 0 0 1 4 15.6V8.4a2 2 0 0 1 1.05-1.76l6-3.2a2 2 0 0 1 1.9 0l6 3.2A2 2 0 0 1 20 8.4z" />

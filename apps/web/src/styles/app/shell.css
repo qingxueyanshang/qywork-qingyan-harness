@@ -736,6 +736,20 @@
   gap: 2px;
 }
 
+/* 公告铃铛：最新一条未读时右上角带圆点，颜色与设置页「更新」的新版本圆点相同。 */
+.topbar-bell {
+  position: relative;
+}
+.topbar-bell-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
 .drawer-toggle {
   display: none;
 }

@@ -101,6 +101,10 @@
   white-space: nowrap;
   font-size: var(--fs-lg);
   font-weight: 600;
+  /* 邮箱多为数字与带下伸部分的 q、g、@，字形的视觉中心比行框中心低约 1px；
+     上移 1px 后与头像、图标按钮的中心在同一水平线上。 */
+  position: relative;
+  top: -1px;
 }
 .account-error {
   margin: var(--s-2) 0 0;
