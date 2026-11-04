@@ -7,13 +7,14 @@
  * 界面隐藏某个条目即等同于该条目不存在）、新建与改名均不覆盖、删除不存在的条目必须抛出
  * （不静默成功）、搜索跳过噪音目录（与文件树的规则不同，属于有意设计）、分类的回退规则、
  * Office 族的分类与按 Office 格式搜索、Office 文档的预览只返回元数据、
- * 预览只读取上限以内的字节，以及接口按字面值解析路径、删除软链接只删除目录项本身。
+ * 预览只读取上限以内的字节，以及接口按字面值解析路径、删除软链接只删除目录项本身、
+ * 路径解析为项目根目录时拒绝删除与重命名。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { lstat, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { handleWorkspaceFsApi } from './api/workspace-fs.ts'
 import {
   classify,
@@ -411,6 +412,16 @@ describe('文件接口的路径解析', () => {
     expect((await call(dir, '/api/files/delete', { path: 'src-link' })).status).toBe(200)
     expect(await lstat(join(dir, 'src-link')).catch(() => null)).toBeNull()
     expect(await readFile(join(dir, 'src', 'main.ts'), 'utf8')).toBe('export const b = 2\n')
+  })
+
+  test('路径解析为项目根目录时，删除与重命名都返回 422，项目内容保留', async () => {
+    const dir = await workspace()
+    for (const path of ['.', './', 'src/..']) {
+      expect((await call(dir, '/api/files/delete', { path })).status).toBe(422)
+      expect((await call(dir, '/api/files/rename', { path, name: 'moved' })).status).toBe(422)
+    }
+    expect(await readFile(join(dir, 'src', 'main.ts'), 'utf8')).toBe('export const b = 2\n')
+    expect(await stat(join(dirname(dir), 'moved')).catch(() => null)).toBeNull()
   })
 
   /** 文件改写后同一地址对应另一份内容，浏览器缓存会使预览停留在旧版本。 */

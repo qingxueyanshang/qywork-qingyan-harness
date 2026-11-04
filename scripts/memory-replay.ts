@@ -660,6 +660,8 @@ async function main(): Promise<void> {
   if (scoreOf) return score(scoreOf, all)
   const out = arg('out')
   if (!out) throw new Error('用法见文件头：--list、--out=<名称> 或 --score=<名称>')
+  // 输出目录在运行前整体删除：名称带分隔符或 `..` 时，`--out=../..` 指向仓库根目录。
+  if (/[/\\]|\.\./.test(out)) throw new Error(`--out 只接受单个名称：${out}`)
   await runAll(points, out, Number(arg('samples') ?? 1), Number(arg('parallel') ?? 4))
 }
 
