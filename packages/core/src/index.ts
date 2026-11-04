@@ -356,6 +356,7 @@ export type {
 // 单次派发任务卡上子节点的 id：服务端发送事件、前端绘制节点，两侧必须使用同一个值
 export { SUBAGENT_NODE_ID } from './protocol/events.ts'
 export type {
+  Announcement,
   CloudModel,
   CloudRequest,
   CloudState,

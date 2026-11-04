@@ -26,7 +26,7 @@ import {
   openLinkInPanel,
   setAccountOpen,
 } from '../../lib/store/index.ts'
-import { IconGlobe, IconLogOut, IconX } from '../Icons.tsx'
+import { IconHome, IconLogOut, IconX } from '../Icons.tsx'
 import PairPanel from '../PairPanel.tsx'
 import { LoadState, Skeleton } from '../settings/LoadState.tsx'
 import { ActivityGrid } from './ActivityGrid.tsx'
@@ -138,18 +138,18 @@ function AccountView(props: { signed: SignedIn }) {
           />
         </label>
         <span class="account-email">{props.signed.email}</span>
-        {/* 网页账号页另有邀请返利、积分记录与修改密码；在右侧面板打开，同时关闭本窗口，否则窗口遮住面板。 */}
+        {/* 官网在右侧面板打开，同时关闭本窗口，否则窗口遮住面板。 */}
         <button
           type="button"
           class="icon-btn"
-          aria-label="打开网页账号页"
-          data-tip="打开网页账号页"
+          aria-label="打开官网"
+          data-tip="打开官网"
           onClick={() => {
-            openLinkInPanel(`${props.signed.origin}/account`)
+            openLinkInPanel(`${props.signed.origin}/`)
             close()
           }}
         >
-          <IconGlobe size={16} />
+          <IconHome size={16} />
         </button>
         <button
           type="button"

@@ -1,9 +1,10 @@
 /**
- * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`，`api/cloud.ts` 的错误返回与本版说明。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
+ * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`，`api/cloud.ts` 的错误返回、本版说明与公告列表。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
 
 import { afterAll, beforeEach, expect, test } from 'bun:test'
+import type { Announcement } from '@qywork/core'
 import { loadConfig, type QyConfig } from '@qywork/runtime'
 import { handleCloudApi } from '../api/cloud.ts'
 import { writeConfig } from '../api/config.ts'
@@ -12,6 +13,26 @@ import { CLOUD_PROVIDER, CloudAccount, CloudAccountError } from './account.ts'
 import { cloudOrigin } from './origin.ts'
 
 const PASSWORD = 'password-123'
+
+/** 云端公开的公告列表，新者在前。 */
+const ANNOUNCEMENTS: Announcement[] = [
+  {
+    id: '2',
+    kind: 'notice',
+    version: null,
+    title: '服务维护',
+    body: '今晚 23:00 维护。',
+    publishedAt: '2026-11-05T08:00:00.000Z',
+  },
+  {
+    id: '1',
+    kind: 'release',
+    version: '0.3.11',
+    title: 'qywork 0.3.11 更新',
+    body: '- 安装包改从官网下载',
+    publishedAt: '2026-11-04T11:22:21.544Z',
+  },
+]
 
 const cloud = {
   me: 'ok' as 'ok' | 'revoked' | 'invalid',
@@ -70,6 +91,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
     if (path === '/api/announcements') {
       cloud.notesQueries++
       const version = url.searchParams.get('version')
+      if (version === null) return Response.json(ANNOUNCEMENTS)
       if (version === '9.9.9') return Response.json({ error: 'boom' }, { status: 500 })
       return Response.json(
         version === '0.3.11'
@@ -373,6 +395,20 @@ test('本版说明接口：未配置云端时为 null；版本号无效时以 40
   const bad = await get(account, 'latest')
   expect(bad?.status).toBe(400)
   expect(await bad?.json()).toEqual({ error: 'cloud', message: '版本号无效：latest' })
+})
+
+test('公告列表：未登录也可读取，原样返回云端的顺序；未配置云端时接口返回空数组', async () => {
+  expect(await account.announcements()).toEqual(ANNOUNCEMENTS)
+  const get = (cloud: CloudAccount | null) =>
+    handleCloudApi(
+      new URL('http://x/api/cloud/announcements'),
+      new Request('http://x/api/cloud/announcements'),
+      { cloud } as unknown as ApiRequestDeps,
+    )
+  expect(await (await get(account))?.json()).toEqual(ANNOUNCEMENTS)
+  const none = await get(null)
+  expect(none?.status).toBe(200)
+  expect(await none?.json()).toEqual([])
 })
 
 test('可用模型实时读取云端型号清单，单价为积分 / 百万 token；新上架的型号同时写入配置', async () => {

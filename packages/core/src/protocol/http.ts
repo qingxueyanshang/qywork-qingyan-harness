@@ -170,7 +170,7 @@ export type CloudState =
       /** 头像的 data URL；未设置或云端暂时无法访问时为 null。 */
       avatar: string | null
       provider: string
-      /** 云端地址：账号窗口据此打开网页账号页 `<origin>/account`。 */
+      /** 云端地址：账号窗口据此打开官网首页。 */
       origin: string
     }
 
@@ -180,6 +180,21 @@ export type CloudState =
  */
 export interface ReleaseNotes {
   version: string
+  title: string
+  body: string
+  publishedAt: string
+}
+
+/**
+ * `GET /api/cloud/announcements`：云端已发布的公告，新者在前，与官网顶栏的公告相同。未配置云端时为空数组。
+ * `body` 是 Markdown。
+ */
+export interface Announcement {
+  id: string
+  /** release 版本更新，notice 通知。 */
+  kind: 'release' | 'notice'
+  /** 版本公告的版本号；通知为 null。 */
+  version: string | null
   title: string
   body: string
   publishedAt: string

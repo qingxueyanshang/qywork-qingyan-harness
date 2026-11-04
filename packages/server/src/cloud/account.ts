@@ -1,6 +1,6 @@
 /**
  * 云端账号：电脑端以邮箱密码登录或注册、退出、内置模型的接口，以及账号界面读取的用量与使用记录；
- * 另有不需要登录的本版说明（云端的版本公告）。
+ * 另有不需要登录的本版说明（云端的版本公告）与公告列表。
  *
  * 不变量：
  * - 已登录以配置中存在云端接口为准；本对象只另记「设备已被移除」这一个退出原因。
@@ -14,6 +14,7 @@
 
 import { httpStatusName, lookupModel } from '@qywork/ai'
 import type {
+  Announcement,
   CloudModel,
   CloudRequest,
   CloudState,
@@ -268,21 +269,31 @@ export class CloudAccount {
    */
   async releaseNotes(version: string): Promise<ReleaseNotes | null> {
     if (!/^\d+\.\d+\.\d+$/.test(version)) throw new CloudAccountError(`版本号无效：${version}`)
+    const notes = await this.publicGet<Omit<ReleaseNotes, 'version'> | null>(
+      `/api/announcements?version=${version}`,
+    )
+    return (
+      notes && { version, title: notes.title, body: notes.body, publishedAt: notes.publishedAt }
+    )
+  }
+
+  /** 云端已发布的公告（`GET /api/announcements`），新者在前，不需要登录。 */
+  announcements(): Promise<Announcement[]> {
+    return this.publicGet<Announcement[]>('/api/announcements')
+  }
+
+  /** 读取云端不需要登录的接口。 */
+  private async publicGet<T>(path: string): Promise<T> {
     let res: Response
     try {
-      res = await fetch(`${this.origin}/api/announcements?version=${version}`, {
-        signal: this.timeout(),
-      })
+      res = await fetch(`${this.origin}${path}`, { signal: this.timeout() })
     } catch (err) {
       throw unreachable(err)
     }
     if (!res.ok) {
       throw new CloudAccountError(`账号服务返回 ${res.status} ${httpStatusName(res.status)}`)
     }
-    const notes = (await res.json()) as Omit<ReleaseNotes, 'version'> | null
-    return (
-      notes && { version, title: notes.title, body: notes.body, publishedAt: notes.publishedAt }
-    )
+    return (await res.json()) as T
   }
 
   /** 更换头像。`image` 是客户端裁剪编码后的 data URL，格式与大小由云端校验。 */

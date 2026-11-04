@@ -30,10 +30,18 @@ const SettingsDialog = lazy(() =>
 // 账号弹窗同样仅在打开时下载。
 const AccountDialog = lazy(() => import('./components/account/AccountDialog.tsx'))
 const ReleaseNotesDialog = lazy(() => import('./components/ReleaseNotesDialog.tsx'))
+const AnnouncementsDialog = lazy(() => import('./components/AnnouncementsDialog.tsx'))
 
-import { IconCheck, IconChevron, IconDownload, IconPanel } from './components/Icons.tsx'
+import { IconBell, IconCheck, IconChevron, IconDownload, IconPanel } from './components/Icons.tsx'
 import { LoginGate } from './components/LoginGate.tsx'
 import { WindowControls } from './components/WindowControls.tsx'
+import {
+  announcements,
+  announcementsOpen,
+  announcementsUnread,
+  loadAnnouncements,
+  openAnnouncements,
+} from './lib/store/announcements.ts'
 import { cloudState, refreshCloudState } from './lib/store/cloud.ts'
 import {
   accountOpen,
@@ -193,6 +201,7 @@ export function App() {
       })
       // 侧栏的账号入口与首次启动的登录页依据账号状态显示，同样在每次连接可用时读取。
       void refreshCloudState().catch(() => {})
+      void loadAnnouncements()
     }
     return ready
   }, false)
@@ -305,6 +314,21 @@ export function App() {
         <h1 class="title truncate">{activeTitle()}</h1>
         <span class="spacer" />
         <div class="topbar-tools">
+          <Show when={announcements().length > 0}>
+            <button
+              class="icon-btn topbar-bell"
+              type="button"
+              aria-label="公告"
+              aria-haspopup="dialog"
+              data-tip="公告"
+              onClick={openAnnouncements}
+            >
+              <IconBell size={16} />
+              <Show when={announcementsUnread()}>
+                <span class="topbar-bell-dot" />
+              </Show>
+            </button>
+          </Show>
           <button
             class="icon-btn"
             type="button"
@@ -380,6 +404,11 @@ export function App() {
             <ReleaseNotesDialog view={v()} />
           </Suspense>
         )}
+      </Show>
+      <Show when={announcementsOpen()}>
+        <Suspense>
+          <AnnouncementsDialog />
+        </Suspense>
       </Show>
       <LoginGate />
     </div>
