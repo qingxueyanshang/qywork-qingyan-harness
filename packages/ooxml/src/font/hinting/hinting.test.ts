@@ -6,7 +6,7 @@
  * 其他平台跳过这些用例。
  */
 
-import { describe, expect, test } from 'bun:test'
+import { beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BitmapGlyph } from '../bitmap.ts'
@@ -169,12 +169,19 @@ describe('扫描转换', () => {
 })
 
 describe.skipIf(process.platform !== 'win32')('本机字体（宋体，与 WPS 表格的屏幕显示对照）', () => {
-  const bytes = new Uint8Array(
-    readFileSync(join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts', 'simsun.ttc')),
-  )
-  const face = readFaces(bytes)[0]!
-  const metrics = readMetrics(bytes, face)
-  const hinting = readGlyphHinting(bytes, face)!
+  // 字体在 beforeAll 中读取：跳过的 describe 回调同样在收集用例时执行，在此处读取会使其他平台报错。
+  let bytes!: Uint8Array
+  let face!: ReturnType<typeof readFaces>[number]
+  let metrics!: ReturnType<typeof readMetrics>
+  let hinting!: NonNullable<ReturnType<typeof readGlyphHinting>>
+  beforeAll(() => {
+    bytes = new Uint8Array(
+      readFileSync(join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts', 'simsun.ttc')),
+    )
+    face = readFaces(bytes)[0]!
+    metrics = readMetrics(bytes, face)
+    hinting = readGlyphHinting(bytes, face)!
+  })
   const glyph = (ch: string, ppem: number, oblique = false) =>
     hinting.glyph(metrics.glyphId(ch.codePointAt(0)!), ppem, oblique)
 
