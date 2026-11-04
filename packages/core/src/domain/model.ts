@@ -499,8 +499,8 @@ export interface Run {
 export type Currency = 'USD' | 'CNY' | 'CREDIT'
 
 /**
- * 全部币种，配置校验使用。`CREDIT` 是云端账号的积分（1 积分 = 0.01 美元）：内置模型的价格与费用以积分计，
- * 与账号余额同一单位；不要折算为美元显示，否则同一界面上余额与费用的单位不一致。
+ * 全部币种，配置校验使用。`CREDIT` 是云端账号的积分：与模型的官方价同一数值（美元与人民币标价都按数值计，不换算），
+ * 内置模型的价格与费用以积分计，与账号余额同一单位；不要折算为美元显示，否则同一界面上余额与费用的单位不一致。
  */
 export const CURRENCIES: readonly Currency[] = ['USD', 'CNY', 'CREDIT']
 
@@ -518,10 +518,11 @@ export const CURRENCY_SYMBOL: Record<Exclude<Currency, 'CREDIT'>, string> = {
  * 「金额过小无法显示」与「没有费用」是不同的情况。
  */
 export function formatMoney(amount: number, currency: Currency = 'USD'): string {
-  // 积分以单位后缀显示；最小单位 0.01 积分即 0.0001 美元，小额规则与美元相同。
+  // 积分以单位后缀显示，不带币种符号；小额规则与美元相同。
   if (currency === 'CREDIT') {
     if (amount === 0) return '0 积分'
-    if (amount < 0.01) return '<0.01 积分'
+    if (amount < 0.0001) return '<0.0001 积分'
+    if (amount < 0.01) return `${amount.toFixed(4)} 积分`
     return `${amount.toFixed(2)} 积分`
   }
   const s = CURRENCY_SYMBOL[currency] ?? '$'

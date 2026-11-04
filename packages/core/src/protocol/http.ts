@@ -187,9 +187,10 @@ export interface CloudUsage {
   days: { day: string; requests: number; tokens: number; credits: number }[]
 }
 
-/** `GET /api/cloud/models`：云端当前提供的对话型号与单价，单位为积分 / 百万 token；云端未定价时为 null。 */
+/** `GET /api/cloud/models`：云端当前提供的对话型号、售价倍率与单价（基础档乘以倍率），单位为积分 / 百万 token；云端未定价时为 null。 */
 export interface CloudModel {
   id: string
+  ratio: number
   price: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
 }
 

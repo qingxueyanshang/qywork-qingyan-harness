@@ -15,6 +15,7 @@ import {
   resolveMediaModel,
   resolveModel,
   saveConfig,
+  type UnitModelPrice,
 } from './config.ts'
 
 function cfg(over: Partial<QyConfig> = {}): QyConfig {
@@ -295,7 +296,10 @@ describe('模型解析', () => {
     // 2026-10-21 是周三。模型库中 DeepSeek 的高峰含 UTC 02:00、不含 UTC 12:00，该接口相反。
     expect(priceAt(spec, { now: Date.UTC(2026, 9, 21, 12) }).input).toBe(1.04)
     expect(priceAt(spec, { now: Date.UTC(2026, 9, 21, 2) }).input).toBe(0.52)
-    priced.providers.mirror!.models['deepseek-v4-flash']!.price!.offPeak = { ...offPeak, rate: 2 }
+    ;(priced.providers.mirror!.models['deepseek-v4-flash']!.price as UnitModelPrice).offPeak = {
+      ...offPeak,
+      rate: 2,
+    }
     expect(diagnoseConfig(priced)[0]).toContain('price.offPeak 必须包含')
   })
 

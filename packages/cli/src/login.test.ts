@@ -30,6 +30,8 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
           {
             id: 'claude-sonnet-5-5',
             protocol: 'anthropic_messages',
+            ratio: 1,
+            official: true,
             price: { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 },
           },
         ],

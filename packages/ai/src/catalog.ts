@@ -2013,6 +2013,12 @@ export interface SpecOverride {
    */
   cacheWrite?: number
   currency?: Currency
+  /**
+   * 价格倍率：目录的单价与长上下文各档乘以该值，币种取 `currency`，分档与时段折扣保留。
+   * 云端内置模型按「官方价 × 倍率」计价，写入该项而不写单价，使运行面板与云端扣费按同一分档计算。
+   * 目录中该型号没有单价时不生效。
+   */
+  scale?: number
   /** 分时段折扣，替换目录中的折扣。中转价格按计费公式折算得到，模型库界面不编辑该项。 */
   offPeak?: OffPeakDiscount
   /**
@@ -2057,14 +2063,17 @@ export interface SpecOverride {
  *   「已收录」，计价仍为 0 而提醒消失：账本继续显示 $0，且不再有任何提示。
  * - **覆盖改变币种时去掉目录中的长上下文档与时段折扣。** 二者的单价按目录币种填写，
  *   与覆盖后的币种混用会使长提示词按另一币种的数字记账。覆盖中的时段折扣是系数，与币种无关，始终生效。
+ *   例外是 `scale`：单价与各档按同一倍率换算为覆盖的币种，分档与时段折扣保留；单价字段再覆盖其上。
  */
 export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined): ModelSpec {
   if (!o) return spec
-  const priced = o.input !== undefined || o.output !== undefined
-  const recurrency = o.currency !== undefined && o.currency !== (spec.pricing.currency ?? 'USD')
-  const { longContext: _long, offPeak: _offPeak, ...flat } = spec
+  const base = scaledSpec(spec, o.scale)
+  const priced = o.input !== undefined || o.output !== undefined || base !== spec
+  const recurrency =
+    base === spec && o.currency !== undefined && o.currency !== (spec.pricing.currency ?? 'USD')
+  const { longContext: _long, offPeak: _offPeak, ...flat } = base
   return {
-    ...(recurrency ? flat : spec),
+    ...(recurrency ? flat : base),
     ...(o.displayName ? { displayName: o.displayName } : {}),
     ...(o.vendor ? { vendor: o.vendor } : {}),
     ...(o.contextWindow ? { contextWindow: o.contextWindow } : {}),
@@ -2080,7 +2089,7 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
     ...(o.thinksByDefault !== undefined ? { thinksByDefault: o.thinksByDefault } : {}),
     ...(o.offPeak ? { offPeak: o.offPeak } : {}),
     pricing: {
-      ...spec.pricing,
+      ...base.pricing,
       ...(o.input !== undefined ? { input: o.input } : {}),
       ...(o.output !== undefined ? { output: o.output } : {}),
       ...(o.cacheRead !== undefined ? { cacheRead: o.cacheRead } : {}),
@@ -2088,6 +2097,39 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
       ...(o.currency ? { currency: o.currency } : {}),
     },
     ...(priced ? { catalogued: true } : {}),
+  }
+}
+
+/** 目录单价与长上下文各档乘以 `scale`。没有倍率、型号未收录（单价为占位的 0）或目录没有单价时原样返回（同一对象）。 */
+function scaledSpec(spec: ModelSpec, scale: number | undefined): ModelSpec {
+  const p = spec.pricing
+  if (scale === undefined || spec.catalogued === false || p.input === null || p.output === null) {
+    return spec
+  }
+  const by = (n: number) => round(n * scale)
+  const maybe = (n: number | null) => (n === null ? null : by(n))
+  return {
+    ...spec,
+    pricing: {
+      ...p,
+      input: by(p.input),
+      output: by(p.output),
+      cacheRead: maybe(p.cacheRead),
+      cacheWrite5m: maybe(p.cacheWrite5m),
+      cacheWrite1h: maybe(p.cacheWrite1h),
+    },
+    ...(spec.longContext
+      ? {
+          longContext: spec.longContext.map((t) => ({
+            ...t,
+            input: by(t.input),
+            output: by(t.output),
+            cacheRead: by(t.cacheRead),
+            ...(t.cacheWrite5m !== undefined ? { cacheWrite5m: by(t.cacheWrite5m) } : {}),
+            ...(t.cacheWrite1h !== undefined ? { cacheWrite1h: by(t.cacheWrite1h) } : {}),
+          })),
+        }
+      : {}),
   }
 }
 

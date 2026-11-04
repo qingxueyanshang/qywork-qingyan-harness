@@ -1064,4 +1064,28 @@ describe('对应型号与接口价格', () => {
     )
     expect(applySpecOverride(deepseek, { input: 1, currency: 'USD' }).offPeak).toBeUndefined()
   })
+
+  /** 原始失败形状：云端型号以单价写入，币种改为积分后长上下文档被去掉，272K 以上的请求按基础档计价。 */
+  test('倍率覆盖按倍率换算单价与各档，币种改为积分时保留分档与时段折扣', () => {
+    const sol = lookupModel('gpt-6.1-sol', 'openai_responses')
+    const cloud = applySpecOverride(sol, { scale: 0.5, currency: 'CREDIT' })
+    expect(cloud.catalogued).toBe(true)
+    expect(priceAt(cloud, { promptTokens: 1000 })).toMatchObject({
+      input: 1,
+      output: 5,
+      cacheRead: 0.05,
+      cacheWrite5m: 1.25,
+      currency: 'CREDIT',
+    })
+    expect(priceAt(cloud, { promptTokens: 300_000 })).toMatchObject({ input: 2, output: 7.5 })
+    // 300K × 4 + 1000 × 15 = 1.215 官方价，倍率 0.5。
+    expect(computeCost(cloud, { inputTokens: 300_000, outputTokens: 1000 })).toBeCloseTo(0.6075, 10)
+    const deepseek = lookupModel('deepseek-flash', 'openai_chat_completions')
+    const scaled = applySpecOverride(deepseek, { scale: 2, currency: 'CREDIT' })
+    expect(scaled.offPeak).toEqual(deepseek.offPeak)
+    expect(scaled.pricing.input).toBe(4)
+    // 目录没有单价时倍率不生效。
+    const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
+    expect(applySpecOverride(unknown, { scale: 2, currency: 'CREDIT' }).catalogued).toBe(false)
+  })
 })
