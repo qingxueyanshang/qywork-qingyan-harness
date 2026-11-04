@@ -171,7 +171,7 @@
   gap: var(--s-2);
   margin-top: var(--s-4);
 }
-/* 本版说明窗口（`ReleaseNotesDialog.tsx`）：尺寸固定（min / max 取同一个值），读取完成后正文在框内滚动，
+/* 本版说明窗口（`ReleaseNotesDialog.tsx`）：尺寸固定（min / max 取同一个值），正文在框内滚动，
    关闭按钮位置不变。 */
 .release-notes-dialog {
   width: min(560px, calc(100vw - 32px));
@@ -203,11 +203,6 @@
   margin-top: var(--s-3);
   overflow: auto;
   font-size: var(--fs-sm);
-}
-
-.release-notes-empty {
-  margin: 0;
-  color: var(--text-tertiary);
 }
 
 /* 本版说明与公告的滑块比全局更淡：全局滑块为 6% 黑，在纯白底上、且正文长而滑块长时比在灰底面板上显得重。
