@@ -16,6 +16,7 @@ import { beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readFaces, readMetrics, readVerticalMetrics } from '../font/index.ts'
+import { LOCAL_FONTS } from '../test-fonts.ts'
 import {
   canBreakBetween,
   canBreakForWidth,
@@ -249,7 +250,7 @@ describe('断点', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('本机字体', () => {
+describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
   let song: TextFace
   let times: TextFace
   let arial: TextFace
@@ -1331,7 +1332,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('WPS 自带度量的字体', () => {
+describe.skipIf(!LOCAL_FONTS)('WPS 自带度量的字体', () => {
   /**
    * 原始失败形状：字形编号一律取自 `other`，公式中的普通文字按此编号取绘制字体（西文部分为 `asciiDraw`）的字形与轮廓，
    * 画出另一个字。

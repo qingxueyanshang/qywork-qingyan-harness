@@ -18,6 +18,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { borderSpace, borderStrokes } from '../border.ts'
 import { type DocxDocument, parseDocx } from '../index.ts'
@@ -168,7 +169,7 @@ describe('paintPage：页面边框', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('build：对象的位置（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   let fonts: DocxFonts | null = null
   const load = (): DocxFonts => {
@@ -901,7 +902,7 @@ describe.skipIf(process.platform !== 'win32')('build：对象的位置（本机�
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('图文框（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('图文框（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
   let fonts: DocxFonts | null = null
   const load = (): DocxFonts => {

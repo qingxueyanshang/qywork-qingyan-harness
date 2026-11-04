@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { extractFace, readFaces, readMetrics, readVerticalMetrics } from '../font/index.ts'
 import { MATH_SETTINGS_DEFAULTS } from '../math/index.ts'
+import { LOCAL_FONTS } from '../test-fonts.ts'
 import { NO_HOST_FAMILIES, type TextFace } from '../text/index.ts'
 import {
   type Block,
@@ -1436,7 +1437,7 @@ describe('分页与绘制所需的属性', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('排版（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const FILES: Record<string, string> = {
     'Times New Roman': 'times.ttf',
@@ -2143,7 +2144,7 @@ describe.skipIf(process.platform !== 'win32')('排版（本机字体）', () => 
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('WPS 按自带度量排版的字体', () => {
+describe.skipIf(!LOCAL_FONTS)('WPS 按自带度量排版的字体', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const face = (file: string, family: string) =>
     loadDocxFace(new Uint8Array(readFileSync(join(FONTS, file))), family)
@@ -2245,7 +2246,7 @@ describe.skipIf(process.platform !== 'win32')('WPS 按自带度量排版的字�
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('嵌入字体', () => {
+describe.skipIf(!LOCAL_FONTS)('嵌入字体', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
   const file = (name: string, index = 0) => {
     const bytes = new Uint8Array(readFileSync(join(FONTS, name)))

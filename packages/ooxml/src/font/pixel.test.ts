@@ -12,6 +12,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { LOCAL_FONTS } from '../test-fonts.ts'
 import {
   type BitmapGlyph,
   emboldenBitmap,
@@ -202,7 +203,7 @@ const GLYPHS: GlyphCase[] = [
   },
 ]
 
-describe.skipIf(process.platform !== 'win32')('本机字体', () => {
+describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
   describe('点阵字形', () => {
     test.each(GLYPHS)('$name', (c) => {
       const bytes = load(c.file)
@@ -310,7 +311,7 @@ describe.skipIf(process.platform !== 'win32')('本机字体', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('整数前进宽度', () => {
+describe.skipIf(!LOCAL_FONTS)('整数前进宽度', () => {
   const cases: [string, string, number, number, string, number[]][] = [
     // [说明, 文件, 字体序号, ppem, 字符, GDI ClearType 宽度]
     ['Arial 15：取 hdmx', 'arial.ttf', 0, 15, 'AWi1', [9, 15, 3, 8]],

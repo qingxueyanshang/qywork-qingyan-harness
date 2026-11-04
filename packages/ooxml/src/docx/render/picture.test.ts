@@ -18,6 +18,7 @@ import {
   RecordingCanvas,
   RecordingContext,
 } from '../../drawingml/paint/test-helper.ts'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, parseDocx } from '../index.ts'
 import { layoutPages, requiredFonts } from '../page/build.ts'
@@ -151,7 +152,7 @@ describe('图元文件的解析与计数', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('图元文件的排版与绘制（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('图元文件的排版与绘制（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   // 字体在 beforeAll 中读取：跳过的 describe 回调同样在收集用例时执行，在此处读取会使其他平台报错。
   let arial!: ReturnType<typeof loadDocxFace>

@@ -18,6 +18,7 @@ import {
   THEME_XML,
 } from '../../drawingml/diagram/test-helper.ts'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, type Paragraph, parseDocx } from '../index.ts'
 import { layoutPages, requiredFonts } from '../page/build.ts'
@@ -167,7 +168,7 @@ describe('SmartArt 的读取与求值', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('SmartArt 的放置与绘制（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('SmartArt 的放置与绘制（本机字体）', () => {
   const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const simsun = () =>
     loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)

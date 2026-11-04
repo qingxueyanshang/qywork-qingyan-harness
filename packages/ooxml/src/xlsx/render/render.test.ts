@@ -42,6 +42,7 @@ import {
 } from '../../font/index.ts'
 import type { CoverageGlyph, PixelData } from '../../glyph/cleartype/index.ts'
 import { readMetafile } from '../../metafile/index.ts'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { canEvaluate, evaluateFormula } from '../formula.ts'
 import type {
   BorderLineStyle,
@@ -602,7 +603,7 @@ describe('单行行高、标准行高与边框增量', () => {
   })
 })
 
-describe.skipIf(process.platform !== 'win32')('本机字体的单行行高（WPS 实测）', () => {
+describe.skipIf(!LOCAL_FONTS)('本机字体的单行行高（WPS 实测）', () => {
   const dir = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
   const face = (file: string, family: string, index = 0) =>
     loadFace(extractFace(new Uint8Array(readFileSync(join(dir, file))), index), family)
@@ -1302,53 +1303,50 @@ describe('绘制', () => {
     expect(rgbAt(plain.ctx, 3, 19)).toEqual([255, 255, 255])
   })
 
-  test.skipIf(process.platform !== 'win32')(
-    '楷体 12 磅的数字与 WPS 屏幕显示逐像素相同（对比度 1200）',
-    () => {
-      // 期望值：对比基准「2025AA企模研究生中科大校赛市场3(1)」第 3 页「初期」D13「706065.00」的墨迹框（WPS 表格，
-      // CopyPicture 的位图，系统 ClearType 对比度 1200），每像素 6 位十六进制 RGB。
-      const expected = [
-        'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdbdbffffffffffffffffffffffffffffffffffffffffffffffffffdbdbdbffffffffffffffffffffffffffffffffffffdbdbffffffffffffffffffffffffffffffffffffffffffffffffffdbdbdbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdbdbffffffffffffffffffffffffffffffffffffffffffffdbdbffffffffffffffffffffff',
-        'ffb66600000000000000000000000000000000000066b6ffffffffffffdb903a000000000000003a66b6dbffffffffffffffffffffffffffffffffb666000066b6ffffffffffffffffffffffffdb903a000000000000003a66b6dbffffffffffffffffffffffffffffffffb666000066b6ffffffffffffffffffffffb6660000000000000000000000000066b6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdb903a000000000000003a66b6dbffffffffffffffffffffdb903a000000000000003a66b6dbffffffffff',
-        'ffffffdbdbdbdbdbdbdbdbdbdbdbdbdbdb903a003a90dbffffffffb66600003a90dbffffffdbb66600003a90dbffffffffffffffffffffffffb66600003a90dbffffffffffffffffffffffb66600003a90dbffffffdbb66600003a90dbffffffffffffffffffffffffb66600003a90dbffffffffffffffffffffffdb903a0066b6dbdbdbdbdbdbdbdbdbdbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb66600003a90dbffffffdbb66600003a90dbffffffffffffb66600003a90dbffffffdbb66600003a90dbffffff',
-        'ffffffffffffffffffffffffffffffb666003a90dbffffffffdb903a000066b6ffffffffffffffffb666003a90dbffffffffffffffffffb66600003a90dbffffffffffffffffffffffdb903a000066b6ffffffffffffffffb666003a90dbffffffffffffffffffb66600003a90dbffffffffffffffffffffffffdb903a003a90dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdb903a000066b6ffffffffffffffffb666003a90dbffffffdb903a000066b6ffffffffffffffffb666003a90dbffff',
-        'ffffffffffffffffffffffffffdb903a0066b6ffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffffffffffb66600003a90b6dbdbdbffffffffffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffffffffffb66600003a90b6dbdbdbffffffffffffffffffffffb666003a66b6b690906690b6b6dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffb666000066b6ffffffffffffffffffdb903a0066b6ffff',
-        'ffffffffffffffffffffffffb666003a90dbffffffffffffdb903a003a90dbffffffffffffffffffdb903a003a90dbffffffffdb903a00000000003a3a000000003a6690dbffffffdb903a003a90dbffffffffffffffffffdb903a003a90dbffffffffdb903a00000000003a3a000000003a6690dbffffffffdb903a0000003a3a666666663a0000003a66b6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffdb903a003a90dbffffffffffffffffffdb903a003a90dbffdb903a003a90dbffffffffffffffffffdb903a003a90dbff',
-        'ffffffffffffffffffffdb903a003a90dbffffffffffffffdb903a003a90dbffffffffffffffffffffb666003a90dbffffffb66600003a90dbffffffffffffdbb6903a000066b6ffdb903a003a90dbffffffffffffffffffffb666003a90dbffffffb66600003a90dbffffffffffffdbb6903a000066b6ffffdbb69090b6ffffffffffffffffffb66600003a90dbffffffffffffffffffffffffffffffffffffffffffffffffffffdb903a003a90dbffffffffffffffffffffb666003a90dbffdb903a003a90dbffffffffffffffffffffb666003a90dbff',
-        'ffffffffffffffffffdb903a0066b6ffffffffffffffffffffb666003a90dbffffffffffffffffffdb903a003a90dbffffb666000066b6ffffffffffffffffffffdb903a003a90dbffb666003a90dbffffffffffffffffffdb903a003a90dbffffb666000066b6ffffffffffffffffffffdb903a003a90dbffffffffffffffffffffffffffffffffdb903a0066b6ffffffffffffffffffffffffffffffffffffffffffffffffffffffb666003a90dbffffffffffffffffffdb903a003a90dbffffb666003a90dbffffffffffffffffffdb903a003a90dbff',
-        'ffffffffffffffffb666000066b6ffffffffffffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffb666000066b6ffffffffffffffffffffdb903a003a90dbffb666000066b6ffffffffffffffffffdb903a0066b6ffffffb666000066b6ffffffffffffffffffffdb903a003a90dbffffffdbffffffffffffffffffffffffb666000066b6ffffffffffffffffffffffffffffffffffffffffffffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffb666000066b6ffffffffffffffffffdb903a0066b6ffff',
-        'ffffffffffffffb666000066b6ffffffffffffffffffffffffffb66600003a90dbffffffffffffdb903a003a90dbffffffdb903a003a90dbffffffffffffffffffb666000066b6ffffffb66600003a90dbffffffffffffdb903a003a90dbffffffdb903a003a90dbffffffffffffffffffb666000066b6ffb666000066b6ffffffffffffffffffdb903a003a90dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffb66600003a90dbffffffffffffdb903a003a90dbffffffffb66600003a90dbffffffffffffdb903a003a90dbffff',
-        'ffffffffffffb66600003a90dbffffffffffffffffffffffffffffdb903a00003a6690b6b6903a00000066b6ffffffffffffdb903a0000003a90b6b6b6b690663a00003a90dbffffffffffdb903a00003a6690b6b6903a00000066b6ffffffffffffdb903a0000003a90b6b6b6b690663a00003a90dbffffffdb903a00003a6690b6b6b690663a00000066b6ffffffffffffdbb666000066b6dbffffffffffffffffffffffffffffffffffdb903a00003a6690b6b6903a00000066b6ffffffffffffffdb903a00003a6690b6b6903a00000066b6ffffffff',
-        'ffffffffffdbb6906690b6dbffffffffffffffffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffffffffffffffdbb690663a3a3a3a3a3a3a66b6dbffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffffffffffffffdbb690663a3a3a3a3a3a3a66b6dbffffffffffffffffffdbb6663a3a3a3a3a3a3a66b6dbdbffffffffffffffffffb6663a3a66b6ffffffffffffffffffffffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffff',
-      ]
-      const dir = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
-      const kai = loadFace(new Uint8Array(readFileSync(join(dir, 'simkai.ttf'))), '楷体')
-      const set = new FontSet([kai], [])
-      const sheet = sheetOf({ A1: str('706065.00', 1) }, { maxRow: 1, maxCol: 1 })
-      const kaiStyle = style({ font: { ...font, name: '楷体' } })
-      const scene = createScene(workbook(sheet, [style(), kaiStyle]), sheet, set)
-      const r = recorder()
-      paintRegion(r.ctx, scene, { x: 0, y: 0, width: 200, height: 40 }, resources(1200))
-      const hex = (x: number, y: number) =>
-        rgbAt(r.ctx, x, y)
-          .map((v) => v.toString(16).padStart(2, '0'))
-          .join('')
-      // 墨迹框：非白色像素的范围（网格线在第 0 行、第 0 列之外不计）。
-      let x0 = Infinity
-      let y0 = Infinity
-      for (let y = 1; y < 30; y++)
-        for (let x = 1; x < 150; x++)
-          if (hex(x, y) !== 'ffffff') {
-            x0 = Math.min(x0, x)
-            y0 = Math.min(y0, y)
-          }
-      const width = expected[0]!.length / 6
-      const actual = expected.map((_, y) =>
-        Array.from({ length: width }, (_, x) => hex(x0 + x, y0 + y)).join(''),
-      )
-      expect(actual).toEqual(expected)
-    },
-  )
+  test.skipIf(!LOCAL_FONTS)('楷体 12 磅的数字与 WPS 屏幕显示逐像素相同（对比度 1200）', () => {
+    // 期望值：对比基准「2025AA企模研究生中科大校赛市场3(1)」第 3 页「初期」D13「706065.00」的墨迹框（WPS 表格，
+    // CopyPicture 的位图，系统 ClearType 对比度 1200），每像素 6 位十六进制 RGB。
+    const expected = [
+      'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdbdbffffffffffffffffffffffffffffffffffffffffffffffffffdbdbdbffffffffffffffffffffffffffffffffffffdbdbffffffffffffffffffffffffffffffffffffffffffffffffffdbdbdbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdbdbffffffffffffffffffffffffffffffffffffffffffffdbdbffffffffffffffffffffff',
+      'ffb66600000000000000000000000000000000000066b6ffffffffffffdb903a000000000000003a66b6dbffffffffffffffffffffffffffffffffb666000066b6ffffffffffffffffffffffffdb903a000000000000003a66b6dbffffffffffffffffffffffffffffffffb666000066b6ffffffffffffffffffffffb6660000000000000000000000000066b6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdb903a000000000000003a66b6dbffffffffffffffffffffdb903a000000000000003a66b6dbffffffffff',
+      'ffffffdbdbdbdbdbdbdbdbdbdbdbdbdbdb903a003a90dbffffffffb66600003a90dbffffffdbb66600003a90dbffffffffffffffffffffffffb66600003a90dbffffffffffffffffffffffb66600003a90dbffffffdbb66600003a90dbffffffffffffffffffffffffb66600003a90dbffffffffffffffffffffffdb903a0066b6dbdbdbdbdbdbdbdbdbdbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb66600003a90dbffffffdbb66600003a90dbffffffffffffb66600003a90dbffffffdbb66600003a90dbffffff',
+      'ffffffffffffffffffffffffffffffb666003a90dbffffffffdb903a000066b6ffffffffffffffffb666003a90dbffffffffffffffffffb66600003a90dbffffffffffffffffffffffdb903a000066b6ffffffffffffffffb666003a90dbffffffffffffffffffb66600003a90dbffffffffffffffffffffffffdb903a003a90dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdb903a000066b6ffffffffffffffffb666003a90dbffffffdb903a000066b6ffffffffffffffffb666003a90dbffff',
+      'ffffffffffffffffffffffffffdb903a0066b6ffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffffffffffb66600003a90b6dbdbdbffffffffffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffffffffffb66600003a90b6dbdbdbffffffffffffffffffffffb666003a66b6b690906690b6b6dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffb666000066b6ffffffffffffffffffdb903a0066b6ffff',
+      'ffffffffffffffffffffffffb666003a90dbffffffffffffdb903a003a90dbffffffffffffffffffdb903a003a90dbffffffffdb903a00000000003a3a000000003a6690dbffffffdb903a003a90dbffffffffffffffffffdb903a003a90dbffffffffdb903a00000000003a3a000000003a6690dbffffffffdb903a0000003a3a666666663a0000003a66b6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffdb903a003a90dbffffffffffffffffffdb903a003a90dbffdb903a003a90dbffffffffffffffffffdb903a003a90dbff',
+      'ffffffffffffffffffffdb903a003a90dbffffffffffffffdb903a003a90dbffffffffffffffffffffb666003a90dbffffffb66600003a90dbffffffffffffdbb6903a000066b6ffdb903a003a90dbffffffffffffffffffffb666003a90dbffffffb66600003a90dbffffffffffffdbb6903a000066b6ffffdbb69090b6ffffffffffffffffffb66600003a90dbffffffffffffffffffffffffffffffffffffffffffffffffffffdb903a003a90dbffffffffffffffffffffb666003a90dbffdb903a003a90dbffffffffffffffffffffb666003a90dbff',
+      'ffffffffffffffffffdb903a0066b6ffffffffffffffffffffb666003a90dbffffffffffffffffffdb903a003a90dbffffb666000066b6ffffffffffffffffffffdb903a003a90dbffb666003a90dbffffffffffffffffffdb903a003a90dbffffb666000066b6ffffffffffffffffffffdb903a003a90dbffffffffffffffffffffffffffffffffdb903a0066b6ffffffffffffffffffffffffffffffffffffffffffffffffffffffb666003a90dbffffffffffffffffffdb903a003a90dbffffb666003a90dbffffffffffffffffffdb903a003a90dbff',
+      'ffffffffffffffffb666000066b6ffffffffffffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffb666000066b6ffffffffffffffffffffdb903a003a90dbffb666000066b6ffffffffffffffffffdb903a0066b6ffffffb666000066b6ffffffffffffffffffffdb903a003a90dbffffffdbffffffffffffffffffffffffb666000066b6ffffffffffffffffffffffffffffffffffffffffffffffffffffffb666000066b6ffffffffffffffffffdb903a0066b6ffffffb666000066b6ffffffffffffffffffdb903a0066b6ffff',
+      'ffffffffffffffb666000066b6ffffffffffffffffffffffffffb66600003a90dbffffffffffffdb903a003a90dbffffffdb903a003a90dbffffffffffffffffffb666000066b6ffffffb66600003a90dbffffffffffffdb903a003a90dbffffffdb903a003a90dbffffffffffffffffffb666000066b6ffb666000066b6ffffffffffffffffffdb903a003a90dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffb66600003a90dbffffffffffffdb903a003a90dbffffffffb66600003a90dbffffffffffffdb903a003a90dbffff',
+      'ffffffffffffb66600003a90dbffffffffffffffffffffffffffffdb903a00003a6690b6b6903a00000066b6ffffffffffffdb903a0000003a90b6b6b6b690663a00003a90dbffffffffffdb903a00003a6690b6b6903a00000066b6ffffffffffffdb903a0000003a90b6b6b6b690663a00003a90dbffffffdb903a00003a6690b6b6b690663a00000066b6ffffffffffffdbb666000066b6dbffffffffffffffffffffffffffffffffffdb903a00003a6690b6b6903a00000066b6ffffffffffffffdb903a00003a6690b6b6903a00000066b6ffffffff',
+      'ffffffffffdbb6906690b6dbffffffffffffffffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffffffffffffffdbb690663a3a3a3a3a3a3a66b6dbffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffffffffffffffdbb690663a3a3a3a3a3a3a66b6dbffffffffffffffffffdbb6663a3a3a3a3a3a3a66b6dbdbffffffffffffffffffb6663a3a66b6ffffffffffffffffffffffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffff',
+    ]
+    const dir = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
+    const kai = loadFace(new Uint8Array(readFileSync(join(dir, 'simkai.ttf'))), '楷体')
+    const set = new FontSet([kai], [])
+    const sheet = sheetOf({ A1: str('706065.00', 1) }, { maxRow: 1, maxCol: 1 })
+    const kaiStyle = style({ font: { ...font, name: '楷体' } })
+    const scene = createScene(workbook(sheet, [style(), kaiStyle]), sheet, set)
+    const r = recorder()
+    paintRegion(r.ctx, scene, { x: 0, y: 0, width: 200, height: 40 }, resources(1200))
+    const hex = (x: number, y: number) =>
+      rgbAt(r.ctx, x, y)
+        .map((v) => v.toString(16).padStart(2, '0'))
+        .join('')
+    // 墨迹框：非白色像素的范围（网格线在第 0 行、第 0 列之外不计）。
+    let x0 = Infinity
+    let y0 = Infinity
+    for (let y = 1; y < 30; y++)
+      for (let x = 1; x < 150; x++)
+        if (hex(x, y) !== 'ffffff') {
+          x0 = Math.min(x0, x)
+          y0 = Math.min(y0, y)
+        }
+    const width = expected[0]!.length / 6
+    const actual = expected.map((_, y) =>
+      Array.from({ length: width }, (_, x) => hex(x0 + x, y0 + y)).join(''),
+    )
+    expect(actual).toEqual(expected)
+  })
 
   test('中粗类边框占网格线及其上方或左方 1 像素，粗线以网格线为中心并向两端各延长 1 像素，细线占网格线', () => {
     const edge = (s: BorderLineStyle) => ({ style: s, color: '#123456' })

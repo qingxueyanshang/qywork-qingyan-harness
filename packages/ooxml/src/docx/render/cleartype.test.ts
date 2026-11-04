@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
 import type { ClearTypeGlyphs, PixelData } from '../../glyph/cleartype/index.ts'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { parseDocx } from '../index.ts'
 import { layoutPages } from '../page/build.ts'
@@ -136,7 +137,7 @@ function paint(pg: Page, face: DocxFace, clearType: boolean, synthetic = false) 
   return ctx
 }
 
-describe.skipIf(process.platform !== 'win32')('正文文字的 ClearType 字形（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('正文文字的 ClearType 字形（本机字体）', () => {
   const times = () =>
     loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'times.ttf'))), 'Times New Roman')
   const simsun = () =>
@@ -263,7 +264,7 @@ const INLINE_CHART =
   `<a:graphic><a:graphicData uri="${C}"><c:chart xmlns:c="${C}" r:id="rIdChart"/></a:graphicData></a:graphic>` +
   '</wp:inline></w:drawing></w:r>'
 
-describe.skipIf(process.platform !== 'win32')('图表文字的 ClearType 字形（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('图表文字的 ClearType 字形（本机字体）', () => {
   test('主机使用 ClearType 时图表的平滑字号以 ClearType 字形写入画布像素，不调用 fillText', async () => {
     const parsed = await parseDocx(
       buildDocx({

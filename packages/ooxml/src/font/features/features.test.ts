@@ -9,6 +9,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { LOCAL_FONTS } from '../../test-fonts.ts'
 import { readFaces, readMetrics, readSingleSubstitution, readVerticalMetrics } from '../index.ts'
 import { readKerning } from './kern.ts'
 
@@ -18,7 +19,7 @@ const open = (file: string, index = 0) => {
   return { bytes, face: readFaces(bytes)[index]! }
 }
 
-describe.skipIf(process.platform !== 'win32')('字体特性表（本机字体）', () => {
+describe.skipIf(!LOCAL_FONTS)('字体特性表（本机字体）', () => {
   test('kern 表：Times New Roman 的 AV 为 -264；Calibri 的 26706 个字偶超出子表长度字段后照常读取', () => {
     const times = open('times.ttf')
     const m = readMetrics(times.bytes, times.face)

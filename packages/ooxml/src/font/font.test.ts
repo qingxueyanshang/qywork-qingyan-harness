@@ -9,6 +9,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { LOCAL_FONTS } from '../test-fonts.ts'
 import {
   extractFace,
   FontFormatError,
@@ -137,7 +138,7 @@ const EXPECTED: Expected[] = [
   },
 ]
 
-describe.skipIf(process.platform !== 'win32')('本机字体', () => {
+describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
   test.each(EXPECTED)('$file 第 $face 个字体的家族名、字形编号与前进宽度', (e) => {
     const bytes = load(e.file)
     const face = readFaces(bytes)[e.face]!
