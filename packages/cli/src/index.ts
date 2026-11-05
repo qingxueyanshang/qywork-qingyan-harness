@@ -375,8 +375,8 @@ async function runServe(args: string[]): Promise<number> {
 
   // 任务运行期间阻止系统睡眠、按定时任务唤醒系统。不按是否由桌面外壳启动区分：经局域网连接的客户端发起的任务同样需要。
   const power = systemPowerPort()
-  // 网页来源，二选一：`--static` 指定的目录、编译时嵌入的网页；供本机浏览器打开。
-  // 远程打开时界面由云端按本机上报的版本提供，不经本服务。
+  // 网页来源，二选一：`--static` 指定的目录、编译时嵌入的网页。供本机浏览器打开，也经隧道提供给远程访问
+  // （云端按设备缓存入口页与带哈希的文件）。源码运行时由 scripts/dev.ts 以 `--static` 传入构建产物。
   const web = flags.static
     ? fileSource(directoryAssets(resolve(flags.static)))
     : embeddedWeb

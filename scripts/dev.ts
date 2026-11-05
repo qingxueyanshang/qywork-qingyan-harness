@@ -35,7 +35,8 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { join } from 'node:path'
+import { rmSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { externalBinPath } from './external-bin.ts'
 import {
   createReloadSupervisor,
@@ -43,6 +44,7 @@ import {
   isSourceChange,
   isWebSourceChange,
 } from './reload-supervisor.ts'
+import { createRemoteWebBuilder, pruneBuilds } from './remote-web.ts'
 import { watchSource } from './source-watch.ts'
 import { requestUpdateClaim } from './update/claim.ts'
 import { handoffSourceUpdate } from './update/handoff.ts'
@@ -162,7 +164,40 @@ async function ensureSidecarBin(): Promise<void> {
 
 if (MODE === 'desktop') await ensureSidecarBin()
 
+/**
+ * 远程访问的网页（`remote-web.ts`）：手机经云端打开本机时由 sidecar 以 `--static` 提供。
+ * 目录按端口区分：端口已在上方确认可绑定，同一端口上没有另一个运行中的实例，清空该目录不影响其他实例。
+ */
+const REMOTE_WEB_ROOT = join(ROOT, '.tmp', 'dev-web', String(PORT))
+rmSync(REMOTE_WEB_ROOT, { recursive: true, force: true })
+let remoteWebSeq = 0
+/** 进行中的网页构建；退出时一并结束。 */
+let webBuild: ReturnType<typeof Bun.spawn> | undefined
+const remoteWeb = createRemoteWebBuilder({
+  // 带 `VITE_QYWORK_COORDINATED_RELOAD`（见 `env`）：远程页面收到 sidecar 换代信号后整页刷新。
+  build: async (dir) => {
+    webBuild = Bun.spawn(
+      [BUN, 'run', '--cwd', join(ROOT, 'apps/web'), 'build', '--outDir', dir, '--emptyOutDir'],
+      { cwd: ROOT, env, stdout: 'ignore', stderr: 'inherit', stdin: 'ignore' },
+    )
+    const code = await webBuild.exited
+    webBuild = undefined
+    return code === 0 && (await Bun.file(join(dir, 'index.html')).exists())
+  },
+  nextDir: () => join(REMOTE_WEB_ROOT, String(++remoteWebSeq)),
+  onBuilt: () => {
+    if (supervising) supervisor.onChange()
+  },
+  debounceMs: 300,
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log: (line) => void process.stderr.write(`[dev] ${line}\n`),
+})
+/** 当前 sidecar 提供的远程网页目录。 */
+let servedWeb = ''
+
 function spawnAgent(): ReturnType<typeof Bun.spawn> {
+  servedWeb = remoteWeb.current()
   return Bun.spawn(
     [
       BUN,
@@ -173,6 +208,8 @@ function spawnAgent(): ReturnType<typeof Bun.spawn> {
       // 只绑定本机：局域网接入由应用内显式开启，开发脚本不替用户做此决定。
       '--host',
       '127.0.0.1',
+      '--static',
+      servedWeb,
       // 本脚本被强制关闭（关闭窗口、任务管理器）时 sidecar 随之退出：
       // shutdown 没有机会执行时，sidecar 必须自行结束。
       '--parent-pid',
@@ -210,6 +247,7 @@ function shutdown(code: number): never {
   stopping = true
   updater?.close()
   agent?.kill()
+  if (webBuild) killTree(webBuild)
   if (web) killTree(web)
   if (shell) killTree(shell)
   process.exit(code)
@@ -234,6 +272,7 @@ function startAgent(): void {
   })
 }
 
+remoteWeb.start()
 process.stderr.write(`[dev] 从源码启动 sidecar，端口 ${PORT}\n`)
 startAgent()
 if (!(await waitReady())) {
@@ -261,6 +300,7 @@ supervisor = createReloadSupervisor({
     await agent.exited
     startAgent()
     if (!(await waitReady())) throw new Error('启动超时（30 秒内未就绪），详见上方输出')
+    pruneBuilds(REMOTE_WEB_ROOT, basename(servedWeb))
   },
   debounceMs: 300,
   // 一轮执行通常需要几分钟，每两秒检查一次已足够频繁。
@@ -271,11 +311,13 @@ supervisor = createReloadSupervisor({
 })
 supervising = true
 
-watchSource(join(ROOT, 'packages'), isSourceChange, () => supervisor.onChange())
+// 源码变化先构建远程访问的网页，成功后才进入空闲检查（`remote-web.ts` 的 `onBuilt`）：
+// packages 中的代码同样进入网页的模块图，sidecar 与远程网页因此来自同一份源码。
+watchSource(join(ROOT, 'packages'), isSourceChange, () => remoteWeb.changed())
 
 // 前端也必须经过同一个空闲检查。只监视 packages 会使 Vite 页面先换代，这正是
 // 「新建 subagent 后状态条消失」的根因；此处只登记变化，不在运行期间终止进程。
-watchSource(join(ROOT, 'apps/web/src'), isWebSourceChange, () => supervisor.onChange())
+watchSource(join(ROOT, 'apps/web/src'), isWebSourceChange, () => remoteWeb.changed())
 
 /*
  * **不设置 `QYWORK_WORKSPACE`。**

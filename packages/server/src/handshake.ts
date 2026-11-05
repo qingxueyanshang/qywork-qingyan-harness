@@ -29,7 +29,7 @@ import type { RunManager } from './runs.ts'
  * 本包版本。**真源是根 `VERSION`**，由 `bun run scripts/sync-version.ts` 写入
  * 各包的 package.json；手写字面量不在该脚本的覆盖范围内，升级版本时不会更新。
  */
-export const PKG_VERSION: string = pkg.version
+const PKG_VERSION: string = pkg.version
 
 export function handleHello(
   ws: ServerWebSocket<SocketData>,

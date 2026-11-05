@@ -10,7 +10,6 @@
 
 import type { QyConfig } from '@qywork/runtime'
 import { writeConfig } from '../api/config.ts'
-import { PKG_VERSION } from '../handshake.ts'
 import { cloudProviderOf } from './account.ts'
 import { TunnelClient, type TunnelClientOptions, type TunnelStatus } from './tunnel.ts'
 
@@ -75,7 +74,6 @@ export class RemoteAccess {
     const tunnel = new TunnelClient({
       apiOrigin: this.deps.origin,
       key,
-      version: PKG_VERSION,
       localPort: this.deps.listener.start(),
       pairing: this.deps.pairing,
       onStatus: (status) => {

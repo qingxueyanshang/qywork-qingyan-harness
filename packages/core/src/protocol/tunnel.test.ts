@@ -71,13 +71,6 @@ describe('控制帧', () => {
     }
     expect(parseControl(JSON.stringify(frame))).toEqual(frame)
     expect(parseControl('{"type":"close","sid":2}')).toEqual({ type: 'close', sid: 2 })
-    const hello = { type: 'hello', protocol: 2, key: 'k', version: '0.3.13' }
-    expect(parseControl(JSON.stringify(hello))).toEqual(hello as TunnelControl)
-    expect(parseControl('{"type":"hello","protocol":2,"key":"k"}')).toEqual({
-      type: 'hello',
-      protocol: 2,
-      key: 'k',
-    })
   })
 
   test('类型未登记、字段缺失或类型不符时返回 null', () => {
@@ -89,7 +82,6 @@ describe('控制帧', () => {
     expect(parseControl('{"type":"end","sid":1.5}')).toBeNull()
     expect(parseControl('{"type":"http.head","sid":1,"status":200,"headers":[["a"]]}')).toBeNull()
     expect(parseControl('{"type":"close","sid":1,"code":"x"}')).toBeNull()
-    expect(parseControl('{"type":"hello","protocol":2,"key":"k","version":3}')).toBeNull()
   })
 })
 

@@ -14,6 +14,21 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>qywork</title>
+    <script>
+      // 入口模块或其依赖未能取得时，入口脚本元素触发 error（不冒泡，在捕获阶段监听）：
+      // 显示加载失败并在 3 秒后重新加载。不处理时页面停在空白，且外层页面无从得知。
+      addEventListener(
+        'error',
+        (e) => {
+          const el = e.target
+          if (!el || el.tagName !== 'SCRIPT' || el.type !== 'module') return
+          const root = document.getElementById('root')
+          if (root) root.textContent = '加载失败，3 秒后重试'
+          setTimeout(() => location.reload(), 3000)
+        },
+        true,
+      )
+    </script>
   </head>
   <body>
     <div id="root"></div>
