@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "qy-computer-host"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "atspi",
  "block2",
