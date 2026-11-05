@@ -3,19 +3,32 @@
 **多模型接入、多 Agent 协作的轻量化开源 Agent Harness。**
 
 Agent = Model + Harness。模型负责推理，qywork 提供工具执行、上下文管理、记忆、技能与任务编排，
-并将它们集成到本地工作台。可以直接用于编程，也可以组合领域知识、工具和角色，定制自己的 Agent。
+并将它们集成到本地工作台。可以直接用于编程，也可以制作 PPT、在画布中生成图像与视频，
+或组合领域知识、工具和角色，定制自己的 Agent。
 
-[下载 Windows / macOS / Linux 版](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) ·
+[官网](https://qywork.io) · [下载 Windows / macOS / Linux 版](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) ·
 [快速开始](#快速开始) · [从源码启动](#从源码启动) · [文档](docs/INDEX.md)
 
-![qywork 工作台：项目与会话、并行子 Agent、工作区文件](docs/images/qywork-workbench-dark.png)
+![qywork 工作台：会话与画布，画布中批量生成的角色、场景图片与分镜视频](docs/images/qywork-workbench.jpg)
+
+## 作品
+
+[![短剧《送错了》，点击在官网播放](docs/images/songcuole-poster.jpg)](https://qywork.io/#showcase)
+
+**短剧《送错了》（3 分钟，[在官网播放](https://qywork.io/#showcase)）**：剧本与镜头提示词由 Agent 在会话中编写，
+角色图、场景图与 9 段视频在画布中生成。
+
+| 画布 | PPT |
+|---|---|
+| ![画布中的文本卡与生成卡：角色定妆照、三视图与场景图](docs/images/canvas-batch.webp) | ![由 qywork 制作的一页 PPT：任务分派表格、柱状图与结论条](docs/images/ppt-editable.webp) |
+| 文本卡连到生成卡，批量生成角色定妆照、三视图与场景图 | PPT 的实际渲染：文字与表格可直接编辑 |
 
 ## 核心特色
 
 ### 多模型接入，自由组合模型与服务
 
-- 支持 **Anthropic Messages、OpenAI Chat Completions、OpenAI Responses** 三类接口，可接入官方服务、中转站和兼容协议的本地模型服务。
-- 同时配置多个服务与模型，在会话中切换；支持自定义模型 ID，不受内置模型目录限制。
+- 对话模型支持 **Anthropic Messages、OpenAI Chat Completions、OpenAI Responses** 三类接口，可接入官方服务、中转站和兼容协议的本地模型服务。
+- 同时配置多个服务与模型，在会话中切换；可从接口或中转站拉取模型及价格，也可填写自定义模型 ID。
 - 按模型能力选择思考档位，查看上下文容量、价格与实际用量；支持检测当前端点的思考参数。
 - 主 Agent 与子 Agent 可以使用不同的模型，同一张任务图可以跨模型、跨服务分工。
 
@@ -63,7 +76,7 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 | **Skills** | 导入技能目录或 ZIP，保存可复用的操作步骤与领域方法；支持项目和全局作用域，正文按需读取 |
 | **Memory** | 保存项目约定、用户偏好与任务结论；支持项目和全局作用域、检索与迁移 |
 | **MCP** | 接入外部工具与资源，在设置中管理项目或全局服务；保存后连接并更新工具，失败原因直接显示 |
-| **Plugins** | 通过独立进程提供自定义工具，声明所需宿主能力 |
+| **Plugins** | 通过独立进程提供自定义工具，声明所需宿主能力；插件提供的网页可在右侧面板中打开 |
 | **Agent Team** | 配置角色提示词、模型、思考档位和工具范围，供单个子任务或 Graph 使用 |
 
 这些模块均有对应的设置与管理入口，无需仅通过编辑配置文件管理。
@@ -72,9 +85,9 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 
 ### 轻量交付，小系统提示词
 
-- **约 30 MiB 的 Windows x64 安装包**：2026-09-11 发布包实测，包含 Bun 编译的执行内核；Tauri 2 桌面外壳使用系统 WebView。
+- **约 38 MiB 的 Windows x64 安装包**：2026-11-05 v0.3.12 发布包实测，包含 Bun 编译的执行内核；Tauri 2 桌面外壳使用系统 WebView。
 - **安装即可运行**：桌面版无需另行安装 Bun、Rust 或部署后端。
-- **基础系统提示正文 1,120 字符**，启用全部内置能力说明后为 **2,468 字符**：2026-09-11 [源码测量](packages/runtime/src/prompt.ts)，不包含工具参数、角色提示和会话上下文。
+- **基础系统提示正文 3,188 字符**，启用全部内置能力说明后为 **6,700 字符**：2026-11-05 [源码测量](packages/runtime/src/prompt.ts)，不包含工具参数、角色提示和会话上下文。
 - **按需装配上下文**：Skills、Memory 先提供索引，再读取正文；外部工具说明超过预算时转为按需加载。
 
 ### 工作台覆盖执行、协作与产出检查
@@ -86,18 +99,18 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 | 文件与变更 | 浏览文件树，查看和编辑源码，检查文件差异 |
 | 浏览器与终端 | 多标签浏览器预览、桌面端交互式终端，可与任务并排查看 |
 | 产出预览 | 查看图片、PDF、音视频、文本文件，以及 Word、PPT、Excel 文档 |
-| 画布 | 在画布中编排图像与视频生成节点及其连线，运行生成、截取视频帧、导出时间线成片；Agent 可读取、修改与运行画布 |
-| Office 文档 | Agent 读取、制作与修改 Word、PPT、Excel，查看渲染后的页面；渲染依赖本机的 Word 或 WPS，仅支持 Windows |
+| 画布 | 在画布中编排图像、视频与音频生成卡及其连线，运行生成、截取视频帧、导出时间线成片；Agent 可新建、读取、修改与运行画布，也可以在会话中直接生成图像、视频与音频。生成模型可挂在自行添加的模型服务下，登录 qywork 账号后也可直接使用云端提供的生成模型 |
+| Office 文档 | Agent 读取、制作与修改 Word、PPT、Excel，查看渲染后的页面；PPT 的表格与图表使用原生对象，整页为图片的 PPT 可保留版式，重建为可编辑的 PPT。Office 工具需要本机 Python；Agent 查看渲染页面依赖本机的 Word 或 WPS，仅支持 Windows，工作台的产出预览不依赖办公软件 |
 | 运行与用量 | 查看逐次模型请求、token、缓存、费用和停止原因；汇总内置子 Agent 用量 |
 
-支持明暗主题、可调整侧栏与多标签面板。流式回复采用增量 Markdown 渲染，
+支持明暗主题与个性化、可调整侧栏与多标签面板；运行环境支持语音识别时，输入区提供语音输入。流式回复采用增量 Markdown 渲染，
 复用已完成的内容；代码编辑器、终端和子会话等面板按需加载。
 
 ### 长任务管理：上下文、目标与定时任务
 
 - **上下文压缩**：长输出先保存为可按需读取的资源，长会话再生成摘要；原始消息与工具结果保留，可查阅历史。
 - **目标与待办**：待办跟进具体步骤；用户设定目标后可跨轮次继续推进，直至完成、受阻或由用户停止。
-- **定时任务**：为项目设置重复执行的任务，支持暂停、修改和立即运行；仅在应用运行时触发。
+- **定时任务**：在会话中让 Agent 创建定时任务，到时把指令发回该会话；可停用、立即运行或删除，仅在应用运行时触发。
 - **执行记录**：刷新或重新连接后仍可查看已保存的步骤、工具结果与文件变化，并导出会话或诊断信息。
 
 ### 本地数据，同一服务多端访问
@@ -105,7 +118,8 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 无需注册 qywork 账号，配置、会话、记忆与用量保存在本机。模型请求发送至所配置的服务，
 不提供 qywork 云同步，也不采集产品遥测。
 
-桌面和浏览器共用同一内核；登录 qywork 账号并开启远程访问后，手机经云端打开本机页面。
+登录 qywork 账号后可使用云端提供的对话模型与图像、视频、音频生成模型：对话按 token 用量、生成按张数或时长扣除积分，
+可在应用内充值。桌面和浏览器共用同一内核；开启远程访问后，可在手机或其他电脑的浏览器中登录同一账号，经云端使用本机。
 交互式终端仅在桌面端提供。
 
 运行日志位于 `~/.qywork/logs/`（设置了 `QYWORK_HOME` 时以该目录为根）：`qy.log` 为服务端日志，
@@ -115,7 +129,7 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 ## 快速开始
 
 1. 从 [GitHub Releases](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) 下载对应系统与架构的安装包：Windows x64 `.exe`、macOS Intel / Apple Silicon `.dmg`、Linux x64 `.deb` 或 `.AppImage`。
-2. 打开“系统设置”，添加模型服务，填写接口地址、API Key 和模型名称。
+2. 首次启动时登录 qywork 账号即可使用内置模型；也可选择“使用自己的 API key”，在“系统设置”中填写接口地址、API Key 和模型名称。
 3. 点击“新建 work”，选择项目目录，输入任务。
 
 关闭窗口会最小化到系统托盘；完全退出需使用托盘菜单中的“退出”。
@@ -124,20 +138,20 @@ Release 中各平台的 `SHA256SUMS-*.txt` 可用于校验文件完整性。
 
 ## Linux 与 macOS
 
-从 v0.1.19 起，Releases 同步提供 Linux x86_64 的 `.deb`、`.AppImage` 与 macOS Intel / Apple Silicon 的 `.dmg`，
+Releases 同时提供 Linux x86_64 的 `.deb`、`.AppImage` 与 macOS Intel / Apple Silicon 的 `.dmg`，
 均由[发布工作流](.github/workflows/)构建。应用内自动安装更新目前仅支持 Windows；macOS 与 Linux 需下载新安装包进行更新。
 
 - **deb**：依赖已写入包内（`at-spi2-core`，推荐 PipeWire 与 `xdg-desktop-portal`），
   `sudo apt install ./qywork_*.deb` 会一并安装。
 - **AppImage**：系统需已安装 `fuse3`、`libegl1`、`libgles2` 与 `at-spi2-core`；
   未安装 FUSE 时添加 `--appimage-extract-and-run` 参数运行。
-- **浏览器控制**：使用本机已安装的 Chrome、Edge 或 Chromium，安装包不附带浏览器。
+- **浏览器控制**：使用本机已安装的 Chrome、Edge 或 Chromium，受控页面在浏览器的独立窗口中打开；安装包不附带浏览器。
 - **电脑控制（macOS）**：需在系统设置中授予“辅助功能”权限，截图另需“屏幕录制”权限。
 - **macOS 签名**：当前未进行 Apple Developer ID 签名与公证，Gatekeeper 可能阻止直接打开；更新包签名不替代 Apple 代码签名。
 
 ## 从源码启动
 
-安装 [Bun](https://bun.sh) 1.4.2 或更新版本后克隆仓库：
+安装 [Bun](https://bun.sh) 1.4.2 后克隆仓库：
 
 ```powershell
 git clone https://github.com/qingxueyanshang/qywork-qingyan-harness.git
