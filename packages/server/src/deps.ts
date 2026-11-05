@@ -47,6 +47,8 @@ export interface CommandDeps {
   canvas?: CanvasService
   /** Office 执行程序的宿主。会话按其当前是否提供端口决定是否注册 `office`。 */
   office?: OfficeHost
+  /** 从云端读取当前的型号与倍率并写入配置。未配置云端地址时不传入。 */
+  syncCloudPrices?: () => Promise<void>
 }
 
 /** 会话装配时的 Office 端口：宿主当前提供端口时附带，否则不附带（工具不注册）。 */

@@ -4,8 +4,9 @@
  */
 
 import { afterAll, beforeEach, expect, test } from 'bun:test'
+import { stat } from 'node:fs/promises'
 import type { Announcement } from '@qywork/core'
-import { loadConfig, type QyConfig } from '@qywork/runtime'
+import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
 import { handleCloudApi } from '../api/cloud.ts'
 import { writeConfig } from '../api/config.ts'
 import type { ApiRequestDeps } from '../api/types.ts'
@@ -52,6 +53,10 @@ const cloud = {
   avatar: null as string | null,
   /** 云端收到的版本公告查询次数。 */
   notesQueries: 0,
+  /** claude-sonnet-5-5 的售价倍率，后台可随时调整。 */
+  sonnetRatio: 0.5,
+  /** 云端收到的型号清单请求次数。 */
+  catalogReads: 0,
 }
 
 const server: ReturnType<typeof Bun.serve> = Bun.serve({
@@ -165,6 +170,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
       ])
     }
     if (path === '/v1/catalog' && authed) {
+      cloud.catalogReads++
       const price = { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 }
       const flat = { ratio: 1, official: false, price }
       return Response.json({
@@ -172,7 +178,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
           {
             id: 'claude-sonnet-5-5',
             protocol: 'anthropic_messages',
-            ratio: 0.5,
+            ratio: cloud.sonnetRatio,
             official: true,
             price,
           },
@@ -232,6 +238,8 @@ beforeEach(async () => {
     opusSpec: false,
     avatar: null,
     notesQueries: 0,
+    sonnetRatio: 0.5,
+    catalogReads: 0,
   })
   live = await loadConfig()
   delete live.catalog
@@ -464,6 +472,25 @@ test('可用模型实时读取云端型号清单，单价为积分 / 百万 toke
   expect(Object.keys((await loadConfig()).providers[CLOUD_PROVIDER]?.models ?? {})).toContain(
     'claude-opus-5-5',
   )
+})
+
+/** 原始失败形状：后台把倍率从 0.5 改为 0.35 后，电脑端仍按 0.5 记账，直到打开账号窗口。 */
+test('同步型号清单：后台调价后配置中的倍率随之更新；清单未变时不重写配置文件；未登录时不请求云端', async () => {
+  await account.syncModels()
+  expect(cloud.catalogReads).toBe(0)
+  await account.login('me@example.com', PASSWORD)
+  const price = () => live.providers[CLOUD_PROVIDER]?.models['claude-sonnet-5-5']?.price
+  expect(price()).toEqual({ scale: 0.5, currency: 'CREDIT' })
+  cloud.sonnetRatio = 0.35
+  await account.syncModels()
+  expect(price()).toEqual({ scale: 0.35, currency: 'CREDIT' })
+  expect(
+    (await loadConfig()).providers[CLOUD_PROVIDER]?.models['claude-sonnet-5-5']?.price,
+  ).toEqual({ scale: 0.35, currency: 'CREDIT' })
+  const before = (await stat(configPath())).mtimeMs
+  await Bun.sleep(20)
+  await account.syncModels()
+  expect((await stat(configPath())).mtimeMs).toBe(before)
 })
 
 /** 以配置接口写入一条模型库覆盖，与用户在模型库中修改的写入路径相同。 */

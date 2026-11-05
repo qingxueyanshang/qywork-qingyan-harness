@@ -225,6 +225,8 @@ export async function writeConfig(
     adoptConfig(live, await loadConfig())
     const next = change(live)
     if (next instanceof Response) return next
+    // 返回原对象表示没有修改，不写入文件。
+    if (next === live) return { config: live }
     const problems = diagnoseConfig(next)
     if (problems.length) return { problems }
     await saveConfig(next)
