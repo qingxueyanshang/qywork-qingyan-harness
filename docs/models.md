@@ -393,6 +393,13 @@ Flash 读取 `input_tokens` / `output_tokens` 计价；Next 官方响应目前�
 不发送 `input_fidelity`。价格与 2.5 系列相同：文字输入 $5、图片输入 $8、图片输出 $30，每百万 Token。
 依据：[模型页](https://developers.openai.com/api/docs/models/gpt-image-2)、[图片生成](https://developers.openai.com/api/docs/guides/image-generation)、[价格](https://developers.openai.com/api/docs/pricing)。
 
+2026-11-05 补充 `gpt-image-2.6-flare`、`gpt-image-2.6-sunburst`：生成与修改，最多 16 张参考图；质量档位与 2.5 系列相同，
+尺寸与背景的约束官方只对 2.5 写明，沿用 2.5。新增复杂度 `complexity`（`low` / `medium` / `high`，省略时为 `high`，不另计费）
+与 GIF 输出：只在生成接口可用，帧数 `frame_count` 2–16（指南写 2–64，以 generations 参数表为准），帧时长
+`frame_duration_ms` 20–2000 毫秒。SVG 输出未接入：它另按编写模型的费率计费，官方未给出该费率。标注修改（markup）未接入。
+价格与 2.5 系列相同：文字输入 $5、图片输入 $8、图片输出 $30，每百万 Token。2.5 系列未弃用，保留。
+依据：[Sunburst 模型页](https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst)、[Flare 模型页](https://developers.openai.com/api/docs/models/gpt-image-2.6-flare)、[图片生成](https://developers.openai.com/api/docs/guides/image-generation)、[生成接口](https://developers.openai.com/api/reference/resources/images/methods/generate)、[修改接口](https://developers.openai.com/api/reference/resources/images/methods/edit)、[价格](https://developers.openai.com/api/docs/pricing)。
+
 2026-10-22 新增 MiniMax 语音合成，接入方式「MiniMax」（`minimax_speech`），非流式 `POST {Base URL}/t2a_v2`：
 
 | 模型 ID | 输入与控制 | 原价（元/万字符） |
@@ -568,6 +575,7 @@ xAI 状态含义依据[官方视频生成文档](https://docs.x.ai/developers/mo
 | `gemini-3.1-flash-lite-image`、`gemini-3.1-flash-image`、`gemini-3-pro-image` | 生成和修改，最多 14 张参考图；分别按型号提供图片尺寸 |
 | `grok-imagine-image-2.0` | 生成和修改，最多 5 张参考图；原生图片接口保留分辨率、质量和张数 |
 | `gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` | 生成和修改，最多 16 张参考图；修改使用 multipart，质量与尺寸分别校验 |
+| `gpt-image-2.6-flare`、`gpt-image-2.6-sunburst`（2026-11-05 补充） | 同 2.5 系列；另有复杂度，GIF 输出只在生成时可用 |
 | `doubao-seedream-5-0-pro-260628`、`doubao-seedream-5-0-flash-260915` | 生成和修改，最多 10 张参考图；使用 JSON `image` 数组 |
 | `qwen-image-3.0-pro`、`qwen-image-3.0` | 最多 3 张参考图；修复兼容协议误用 multipart、尺寸分隔符错误，使用 JSON 图片数组和 `宽x高` |
 | `wan2.7-image-pro`、`wan2.7-image` | 最多 9 张参考图；兼容协议同样使用 JSON 图片数组和 `宽x高`；Pro 的 4K 仅限文生单图 |

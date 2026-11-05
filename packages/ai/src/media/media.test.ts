@@ -190,6 +190,18 @@ describe('界面参数', () => {
       tiers: ['1K', '2K', '4K'],
       side: 3840,
     },
+    'gpt-image-2.6-flare': {
+      area: [655360, 8294400],
+      ratio: 3,
+      tiers: ['1K', '2K', '4K'],
+      side: 3840,
+    },
+    'gpt-image-2.6-sunburst': {
+      area: [655360, 8294400],
+      ratio: 3,
+      tiers: ['1K', '2K', '4K'],
+      side: 3840,
+    },
     'doubao-seedream-5-0-pro-260628': {
       area: [921600, 4624220],
       ratio: 16,

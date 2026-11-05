@@ -4,7 +4,7 @@
  * 按「模型 id × 协议」精确匹配，或使用该模型已声明的协议映射；其他组合使用协议默认规格。
  * 字段与对话目录不同：生成模型没有上下文窗口与思考档位，只有操作与参数表。
  *
- * 只收录官方模型：各厂商当前最新一代，以及中转站仍普遍提供的上一代（gpt-image-2）。
+ * 只收录官方模型：各厂商当前最新一代，以及中转站仍普遍提供的上一代（gpt-image-2、gpt-image-2.5）。
  * 中转渠道的型号不在此登记：拉取时由渠道目录生成规格并保存在配置中（`channels.ts`）。
  * 未收录的型号仍可经接口调用，使用协议默认的参数表。
  *
@@ -292,7 +292,8 @@ function perMillionOutputTokens(
 }
 
 // ── 价格（2026-09-26 核对官方价格页，均为原价，不计限时折扣与免费额度）──
-// OpenAI「Pricing」图像生成：GPT Image 2 与 2.5 文字输入 $5、图片输入 $8、图片输出 $30，每百万 token（2026-10-22 核对 2）；
+// OpenAI「Pricing」图像生成：GPT Image 2、2.5 与 2.6 文字输入 $5、图片输入 $8、图片输出 $30，每百万 token
+// （2026-10-22 核对 2，2026-11-05 核对 2.6）；
 // Images API 不计缓存输入。
 const gptImagePrice: MediaPrice = {
   currency: 'USD',
@@ -460,6 +461,66 @@ const gptImage2Params: readonly MediaParamSpec[] = gptImageParams.map((p) => {
   const { rules: _rules, ...rest } = p
   return { ...rest, values: ['opaque', 'auto'], description: '背景' }
 })
+
+// GPT Image 2.6 Sunburst / Flare（2026-11-05 核对图像生成指南、generations 与 edits 参考）：质量档位与 2.5 相同；
+// 尺寸与背景的约束官方只对 2.5 写明，沿用 2.5。新增 complexity（low / medium / high，指南写明省略时为 high，
+// 不另计费）与 GIF 输出：只在生成接口可用，frame_count 取 generations 参考的 2–16（指南写 2–64，以接口参数表为准），
+// frame_duration_ms 取指南的 20–2000 毫秒，GIF 不接受自定义 output_compression。
+// 不收录 SVG 输出：SVG 另按编写模型的费率计 token，官方未给出该费率，按图像单价记账会得出错误的金额。
+const NOT_GIF = ['png', 'jpeg', 'webp']
+const gptImage26Params: readonly MediaParamSpec[] = [
+  ...gptImageParams.map((p): MediaParamSpec => {
+    if (p.name === 'output_format') {
+      // 两条规则依次收紧：修改接口不输出 GIF；透明背景只能是 png 或 webp。透明背景一条须在后。
+      return {
+        ...p,
+        values: [...NOT_GIF, 'gif'],
+        rules: [{ when: { operations: ['edit'] }, values: NOT_GIF }, ...(p.rules ?? [])],
+        description: '输出格式；gif 仅生成时可用',
+      }
+    }
+    if (p.name === 'output_compression') {
+      return {
+        ...p,
+        rules: [{ when: { params: { output_format: ['png', 'gif'] } }, available: false }],
+      }
+    }
+    return p
+  }),
+  {
+    name: 'complexity',
+    label: '复杂度',
+    type: 'enum',
+    values: ['low', 'medium', 'high'],
+    valueLabels: { low: '低', medium: '中', high: '高' },
+    default: 'high',
+    description: '构图规划的投入，与生成质量 quality 分别设置；不另计费',
+  },
+  {
+    name: 'frame_count',
+    label: '帧数',
+    advanced: true,
+    type: 'integer',
+    min: 2,
+    max: 16,
+    default: 9,
+    operations: ['generate'],
+    rules: [{ when: { params: { output_format: NOT_GIF } }, available: false }],
+    description: 'GIF 的帧数，仅 output_format 为 gif 时有效',
+  },
+  {
+    name: 'frame_duration_ms',
+    label: '帧时长',
+    advanced: true,
+    type: 'integer',
+    min: 20,
+    max: 2000,
+    default: 200,
+    operations: ['generate'],
+    rules: [{ when: { params: { output_format: NOT_GIF } }, available: false }],
+    description: 'GIF 每帧时长（毫秒），按 10 毫秒取整，仅 output_format 为 gif 时有效',
+  },
+]
 
 // ── 火山方舟 Seedream 5.0（2026-09-25 核对方舟「图片生成 API」与模型列表）──
 const seedreamParams: readonly MediaParamSpec[] = [
@@ -1222,6 +1283,26 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 16, maxVideos: 0, transport: 'multipart' },
     gptImageParams,
+    gptImagePrice,
+  ),
+  spec(
+    'gpt-image-2.6-flare',
+    'GPT Image 2.6 Flare',
+    'OpenAI',
+    'openai_images',
+    IMAGE_OPERATIONS,
+    { maxImages: 16, maxVideos: 0, transport: 'multipart' },
+    gptImage26Params,
+    gptImagePrice,
+  ),
+  spec(
+    'gpt-image-2.6-sunburst',
+    'GPT Image 2.6 Sunburst',
+    'OpenAI',
+    'openai_images',
+    IMAGE_OPERATIONS,
+    { maxImages: 16, maxVideos: 0, transport: 'multipart' },
+    gptImage26Params,
     gptImagePrice,
   ),
   spec(

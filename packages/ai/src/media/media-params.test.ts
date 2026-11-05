@@ -171,3 +171,54 @@ describe('带对照表与预设的参数只有一套取值', () => {
     })
   })
 })
+
+test('GPT Image 2.6：复杂度三档、缺省 high；GIF 只在生成时可选，帧数与帧时长只随 GIF 生效；不提供 SVG；素材上限与单价同 2.5', () => {
+  const none = { images: 0, videos: 0 }
+  for (const id of ['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst']) {
+    const model = findMediaModel(id)!
+    const param = (name: string) => model.params.find((p) => p.name === name)!
+    const resolved = (name: string, op: MediaOperation, prefs: Record<string, unknown>) =>
+      resolveMediaParam(
+        param(name),
+        op,
+        mediaParamValues(model.params, prefs),
+        op === 'edit' ? 1 : 0,
+      )
+
+    expect(param('complexity')).toMatchObject({
+      values: ['low', 'medium', 'high'],
+      default: 'high',
+    })
+    expect(resolved('output_format', 'generate', {}).values).toEqual(['png', 'jpeg', 'webp', 'gif'])
+    expect(resolved('output_format', 'edit', {}).values).toEqual(['png', 'jpeg', 'webp'])
+    expect(resolved('output_format', 'edit', { background: 'transparent' }).values).toEqual([
+      'png',
+      'webp',
+    ])
+    expect(resolved('output_format', 'generate', { background: 'transparent' }).values).toEqual([
+      'png',
+      'webp',
+    ])
+    for (const name of ['frame_count', 'frame_duration_ms']) {
+      expect(resolved(name, 'generate', {}).available).toBe(false)
+      expect(resolved(name, 'generate', { output_format: 'gif' }).available).not.toBe(false)
+      expect(resolved(name, 'edit', { output_format: 'gif' }).available).toBe(false)
+    }
+    expect(resolved('output_compression', 'generate', { output_format: 'gif' }).available).toBe(
+      false,
+    )
+
+    expect(
+      validateMediaCall(model, 'generate', { output_format: 'gif', frame_count: 16 }, none),
+    ).toEqual([])
+    expect(
+      validateMediaCall(model, 'generate', { output_format: 'gif', frame_count: 17 }, none),
+    ).not.toEqual([])
+    expect(validateMediaCall(model, 'generate', { output_format: 'svg' }, none)).not.toEqual([])
+    expect(
+      validateMediaCall(model, 'edit', { output_format: 'gif' }, { images: 1, videos: 0 }),
+    ).not.toEqual([])
+    expect(model.inputs.maxImages).toBe(16)
+    expect(model.price).toBe(findMediaModel('gpt-image-2.5-flare')!.price)
+  }
+})
