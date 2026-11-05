@@ -44,7 +44,11 @@ const USAGE: CloudUsage = {
   days: [],
 }
 
-function record(id: string, failure: string | null = null): CloudRequest {
+function record(
+  id: string,
+  failure: string | null = null,
+  terms: Partial<Pick<CloudRequest, 'longContext' | 'offPeak' | 'cacheWrite1hTokens'>> = {},
+): CloudRequest {
   return {
     id,
     modelId: 'claude-sonnet-5-5',
@@ -52,7 +56,11 @@ function record(id: string, failure: string | null = null): CloudRequest {
     inputTokens: 10,
     outputTokens: 5,
     cacheReadTokens: 0,
-    cacheWriteTokens: 0,
+    cacheWriteTokens: terms.cacheWrite1hTokens ?? 0,
+    cacheWrite1hTokens: 0,
+    longContext: false,
+    offPeak: false,
+    ...terms,
     credits: 0.25,
     startedAt: new Date(Date.UTC(2026, 10, 1) + Number(id) * 60_000).toISOString(),
   }
@@ -216,10 +224,16 @@ test('侧栏入口：未配置云端服务时不出现；未登录显示「登�
   view.close()
 })
 
-test('登录表单：密码错误时显示原因；登录成功后弹窗显示账号、统计与使用记录', async () => {
+test('登录表单：密码错误时显示原因；登录成功后弹窗显示账号、统计与使用记录，积分前标注计价条件', async () => {
   cloud = { state: 'signed_out' }
   await cloudStore.refreshCloudState()
-  pages = [[record('2'), record('1', '429 请求过多')]]
+  pages = [
+    [
+      record('3', null, { longContext: true, cacheWrite1hTokens: 100 }),
+      record('2', null, { offPeak: true }),
+      record('1', '429 请求过多'),
+    ],
+  ]
   const view = await dialog()
   await until(() => view.host.querySelector('.account-form') !== null)
 
@@ -237,6 +251,16 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
   // 累计 Token 为四项之和；「输入」含缓存命中。
   expect(view.text()).toContain('3.5K')
   expect(view.text()).toContain('完成')
+  const terms = (id: string) => {
+    const at = new Date(record(id).startedAt).getMinutes().toString().padStart(2, '0')
+    const row = [...view.host.querySelectorAll('tbody tr')].find((r) =>
+      r.querySelector('td')?.textContent?.endsWith(`:${at}`),
+    )
+    return [...(row?.querySelectorAll('.account-term') ?? [])].map((t) => t.textContent)
+  }
+  expect(terms('3')).toEqual(['长上下文', '1 小时缓存'])
+  expect(terms('2')).toEqual(['空闲时段'])
+  expect(terms('1')).toEqual([])
   // 可用模型、倍率与单价（积分 / 百万 token）；读取后模型列表随之刷新。
   await until(() => view.text().includes('claude-opus-5-5'))
   expect(view.text()).toContain('1,500.00')

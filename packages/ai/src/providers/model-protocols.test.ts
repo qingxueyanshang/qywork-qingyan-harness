@@ -160,9 +160,10 @@ describe('MiniMax M3.1 与 Step 5 协议映射', () => {
       expect(usage).toMatchObject({
         usage: { inputTokens: 79, cachedTokens: 512, outputTokens: 120, source: 'provider' },
       })
+      // 79 × ¥7 + 512 × ¥0.7 + 120 × ¥20 = 3311.4 / 百万。
       if (model === 'step-5-preview' && usage?.type === 'usage')
         expect(computeCost(lookupModel(model, 'openai_chat_completions'), usage.usage)).toBe(
-          0.003132,
+          0.003311,
         )
     }
   })

@@ -675,7 +675,7 @@ describe('模型目录', () => {
     ])
     const minimax = response.library.find((v) => v.id === 'minimax')!.models
     expect(minimax.map((m) => m.id)).toEqual(['MiniMax-M3.1-Flash', 'MiniMax-M3'])
-    expect(minimax[0]).toMatchObject({ input: 0.15, output: 0.6, cacheRead: 0.015 })
+    expect(minimax[0]).toMatchObject({ input: 1, output: 4, cacheRead: 0.1, currency: 'CNY' })
     expect(
       (await models(withConfig('anthropic_messages', 'step-5-preview')))[0]?.defaultBaseUrl,
     ).toBe('https://api.stepfun.com')

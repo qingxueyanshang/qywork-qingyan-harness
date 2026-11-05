@@ -249,6 +249,12 @@ export interface CloudRequest {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  /** 缓存写入中按 1 小时档计价的部分。 */
+  cacheWrite1hTokens: number
+  /** 按长上下文档计价。 */
+  longContext: boolean
+  /** 按空闲时段的折扣价计价。 */
+  offPeak: boolean
   /** 本次扣除的积分。 */
   credits: number
   startedAt: string

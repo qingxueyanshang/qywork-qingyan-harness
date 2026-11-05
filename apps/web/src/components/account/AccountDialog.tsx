@@ -322,6 +322,15 @@ function when(iso: string): string {
   })
 }
 
+/** 本次请求偏离基础档的计价条件，由云端结算时与扣费同一次判定写入。 */
+function priceTerms(r: CloudRequest): string[] {
+  return [
+    ...(r.longContext ? ['长上下文'] : []),
+    ...(r.offPeak ? ['空闲时段'] : []),
+    ...(r.cacheWrite1hTokens > 0 ? ['1 小时缓存'] : []),
+  ]
+}
+
 /** 逐条请求记录，按时间倒序分页读取。「输入」含缓存命中与缓存写入，与「用量」页同一口径。 */
 function RequestTable() {
   const [rows, setRows] = createSignal<CloudRequest[]>([])
@@ -377,7 +386,12 @@ function RequestTable() {
                       </td>
                       <td class="num">{compact(r.outputTokens)}</td>
                       <td class="num">{compact(r.cacheReadTokens)}</td>
-                      <td class="num">{formatCredits(r.credits)}</td>
+                      <td class="num">
+                        <For each={priceTerms(r)}>
+                          {(t) => <span class="account-term">{t}</span>}
+                        </For>
+                        {formatCredits(r.credits)}
+                      </td>
                       <td classList={{ 'account-failed': r.failure !== null }}>
                         {r.failure ?? '完成'}
                       </td>
