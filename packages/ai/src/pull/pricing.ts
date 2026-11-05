@@ -9,7 +9,7 @@
  */
 
 import type { ChannelPrice, Currency } from '@qywork/core'
-import type { OffPeakDiscount } from '../catalog.ts'
+import type { LongContextTier, OffPeakDiscount } from '../catalog.ts'
 import { type Billing, compileBilling, UnsupportedBilling } from './expression.ts'
 
 /** `/api/pricing` 的 `data[]` 中与价格有关的字段。 */
@@ -46,6 +46,8 @@ export interface ChatPrice {
   currency: Currency
   /** 分时段折扣。此时四项单价是高峰价。 */
   offPeak?: OffPeakDiscount
+  /** 用量阶梯价，四项单价为基础档。 */
+  longContext?: readonly LongContextTier[]
 }
 
 /**

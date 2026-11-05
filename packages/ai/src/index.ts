@@ -23,6 +23,7 @@ export {
   computeCost,
   costTerms,
   effortIsTransmittable,
+  type LongContextTier,
   lookupModel,
   type ModelSpec,
   type OffPeakDiscount,
@@ -93,6 +94,7 @@ export {
   type PullTarget,
   pullModels,
 } from './pull/index.ts'
+export type { PulledPrice } from './pull/plaza.ts'
 export type { ChatPrice } from './pull/pricing.ts'
 // 模型网关只转发适配器会发送的请求字段
 export { REQUEST_FIELDS } from './request-fields.ts'
