@@ -63,7 +63,7 @@ function record(
   id: string,
   failure: string | null = null,
   terms: Partial<
-    Pick<CloudRequest, 'longContext' | 'offPeak' | 'cacheWrite1hTokens' | 'mediaMeter'>
+    Pick<CloudRequest, 'longContext' | 'offPeak' | 'cacheWrite1hTokens' | 'mediaMeter' | 'modelId'>
   > = {},
 ): CloudRequest {
   return {
@@ -778,13 +778,14 @@ test('可用模型、生成模型与使用记录显示模型目录中的名称�
   }
 })
 
-test('使用记录中的生成任务：三个 token 列合为一格显示计量（数量、单位与分辨率档位）', async () => {
+test('使用记录中的生成任务：三个 token 列合为一格显示计量（数量、单位与分辨率档位）；型号未知时显示「—」', async () => {
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()
   pages = [
     [
       record('2', null, { mediaMeter: { units: 30, unit: 'second', resolution: '720p' } }),
       record('1', '结果不明，积分已退回', { mediaMeter: { units: 2, unit: 'image' } }),
+      record('0', '积分不足', { modelId: null }),
     ],
   ]
   const view = await dialog()
@@ -795,5 +796,7 @@ test('使用记录中的生成任务：三个 token 列合为一格显示计量�
       ?.querySelectorAll('td')
   expect(cells('30 秒 · 720p')?.length).toBe(5)
   expect(cells('2 张')?.[4]?.textContent).toBe('结果不明，积分已退回')
+  // 读取请求之前被拒时型号未知。
+  expect(cells('积分不足')?.[1]?.textContent).toBe('—')
   view.close()
 })
