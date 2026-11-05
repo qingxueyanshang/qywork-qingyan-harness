@@ -63,6 +63,8 @@ export class CloudMediaAdapter implements MediaAdapter {
     let id = opts.resumeTaskId
     if (!id) {
       const form = new FormData()
+      // 素材类型随请求正文提交，与 `input.<用途>` 文件按顺序对应：Bun 1.4.2 解析 multipart 时不读取各部分的
+      // Content-Type，只按文件名扩展名与 PNG / JPEG 文件头判定，WAV、MP3 等素材的类型为空。
       form.set(
         'request',
         JSON.stringify({
@@ -70,6 +72,7 @@ export class CloudMediaAdapter implements MediaAdapter {
           operation: req.operation,
           prompt: req.prompt,
           params: req.params,
+          mimes: req.inputs.map((i) => i.mime),
         }),
       )
       for (const input of req.inputs) {
