@@ -191,6 +191,7 @@ export default function RechargeDialog(props: { onClose: () => void; pollMs?: nu
               />
               <span>元</span>
             </label>
+            <p class="recharge-note">如有问题，请联系客服，微信：li1573i</p>
             <output class="recharge-error">{error() ?? ''}</output>
             <button
               type="submit"

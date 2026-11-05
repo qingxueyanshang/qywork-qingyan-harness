@@ -133,7 +133,7 @@ function AccountView(props: { signed: SignedIn }) {
   }
 
   return (
-    <div class="account-scroll">
+    <>
       <header class="account-head">
         <label class="account-avatar-edit" data-tip="更换头像">
           <AccountAvatar email={props.signed.email} avatar={props.signed.avatar} />
@@ -203,53 +203,61 @@ function AccountView(props: { signed: SignedIn }) {
       <Show when={recharging()}>
         <RechargeDialog onClose={() => setRecharging(false)} />
       </Show>
-      <Show when={error()}>{(m) => <p class="account-error">{m()}</p>}</Show>
+      {/* 头部在滚动区外：滚动条从头部下方开始，不经过关闭按钮。 */}
+      <div class="account-scroll">
+        <Show when={error()}>{(m) => <p class="account-error">{m()}</p>}</Show>
 
-      <Show
-        when={loaded(usage)}
-        fallback={<LoadState error={usage.error} onRetry={refetch} lines={6} />}
-      >
-        {(u) => (
-          <>
-            <dl class="account-stats">
-              <div>
-                <dt>积分余额</dt>
-                <dd>{props.signed.credits === null ? '—' : formatCredits(props.signed.credits)}</dd>
-              </div>
-              <div>
-                <dt>累计消耗积分</dt>
-                <dd>{formatCredits(u().credits)}</dd>
-              </div>
-              <div>
-                <dt>累计 Token</dt>
-                <dd>
-                  {compact(
-                    u().inputTokens + u().outputTokens + u().cacheReadTokens + u().cacheWriteTokens,
-                  )}
-                </dd>
-              </div>
-              <div>
-                <dt>请求次数</dt>
-                <dd>{u().requests.toLocaleString()}</dd>
-              </div>
-            </dl>
+        <Show
+          when={loaded(usage)}
+          fallback={<LoadState error={usage.error} onRetry={refetch} lines={6} />}
+        >
+          {(u) => (
+            <>
+              <dl class="account-stats">
+                <div>
+                  <dt>积分余额</dt>
+                  <dd>
+                    {props.signed.credits === null ? '—' : formatCredits(props.signed.credits)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>累计消耗积分</dt>
+                  <dd>{formatCredits(u().credits)}</dd>
+                </div>
+                <div>
+                  <dt>累计 Token</dt>
+                  <dd>
+                    {compact(
+                      u().inputTokens +
+                        u().outputTokens +
+                        u().cacheReadTokens +
+                        u().cacheWriteTokens,
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>请求次数</dt>
+                  <dd>{u().requests.toLocaleString()}</dd>
+                </div>
+              </dl>
 
-            <h3 class="account-section">Token 活动</h3>
-            <ActivityGrid days={u().days} />
-          </>
-        )}
-      </Show>
+              <h3 class="account-section">Token 活动</h3>
+              <ActivityGrid days={u().days} />
+            </>
+          )}
+        </Show>
 
-      <PairPanel />
+        <PairPanel />
 
-      <h3 class="account-section">
-        可用模型<span class="account-unit">积分 / 百万 token</span>
-      </h3>
-      <ModelTable />
+        <h3 class="account-section">
+          可用模型<span class="account-unit">积分 / 百万 token</span>
+        </h3>
+        <ModelTable />
 
-      <h3 class="account-section">使用记录</h3>
-      <RequestTable />
-    </div>
+        <h3 class="account-section">使用记录</h3>
+        <RequestTable />
+      </div>
+    </>
   )
 }
 
