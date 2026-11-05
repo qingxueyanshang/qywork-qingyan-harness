@@ -2712,15 +2712,81 @@ describe('画布：生成卡与生成面板', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await switchTo('GPT Image 2.5 Sunburst')
     expect(paramsButton().textContent).toContain('生成质量最高')
-    expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual({
-      quality: 'max',
-    })
+    // 卡片保留全部选择；GPT 不接受随机种子与排除内容，参数按钮与发送都按 GPT 的参数过滤。
+    const kept = { quality: 'max', seed: 12345, negative_prompt: '文字、水印' }
+    expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual(kept)
     await switchTo('Qwen Image 3.0')
-    expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual({
-      seed: 12345,
-      negative_prompt: '文字、水印',
-    })
+    expect(paramsButton().textContent).not.toContain('生成质量')
+    expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual(kept)
     expect(host.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  test('视频卡切换模型：两个模型都接受的时长与宽高比随之继承，新模型不接受的分辨率按其缺省值', async () => {
+    const seedance = {
+      provider: 'relay',
+      id: 'seedance-2.5',
+      kind: 'openai_videos',
+      output: 'video',
+      label: 'Seedance 2.5',
+      operations: ['text_to_video', 'image_to_video', 'reference_to_video'],
+      isDefault: false,
+      known: true,
+      params: [
+        {
+          name: 'ratio',
+          label: '宽高比',
+          type: 'enum',
+          values: ['16:9', '9:16', '1:1'],
+          default: '9:16',
+        },
+        {
+          name: 'resolution',
+          label: '分辨率',
+          type: 'enum',
+          values: ['480p', '720p'],
+          default: '480p',
+        },
+        { name: 'duration', label: '时长', type: 'integer', min: 4, max: 12, default: 8 },
+      ],
+    }
+    const { host, server, refs } = await mount(
+      [
+        {
+          op: 'add_generate',
+          ref: '$v',
+          output: 'video',
+          provider: 'qwen',
+          model: 'wan3.0-video',
+          params: { ratio: '16:9', resolution: '720P', duration: 4 },
+        },
+      ],
+      {},
+      { ...MODELS, media: [...MODELS.media, seedance] },
+    )
+    await select(host, refs.$v!)
+    const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')
+    await waitFor(
+      () => chip()?.textContent?.includes('720P') === true,
+      () => chip()?.textContent ?? '',
+    )
+    host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.model')!.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-bar-menu'),
+      () => '',
+    )
+    ;[...document.querySelectorAll<HTMLButtonElement>('.canvas-bar-menu button')]
+      .find((b) => b.textContent === 'Seedance 2.5')!
+      .click()
+    await waitFor(
+      () => host.querySelector('.canvas-bar .mode-chip.model')?.textContent === 'Seedance 2.5',
+      () => host.textContent ?? '',
+    )
+    expect(chip()?.textContent).toBe('16:9 · 480p · 4 秒')
+    expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual({
+      ratio: '16:9',
+      resolution: '720P',
+      duration: 4,
+    })
   })
 
   test('时长加减：到达下限后再减为「自动」，不经过下限以下的值；从「自动」增加时回到下限', async () => {

@@ -109,7 +109,10 @@ export interface CanvasGenerateNode {
   provider?: string
   model?: string
   params: Record<string, unknown>
-  /** 各模型的参数选择；当前模型以 params 为准，键是 [provider, model] 的 JSON。 */
+  /**
+   * 各模型离开时的参数选择，键是 [provider, model] 的 JSON。切换模型时保留当前的 `params`，
+   * 再以目标模型以前的选择补上当前没有的项；新模型不接受的取值在使用时按其缺省值（`activeMediaParams`）。
+   */
   paramsByModel?: Record<string, Record<string, unknown>>
   versions: CanvasVersion[]
   /** 有版本时必须存在。 */
@@ -1167,7 +1170,8 @@ function applyOne(
       ])
       if (beforeModel !== afterModel) {
         node.paramsByModel = { ...node.paramsByModel, [beforeModel]: structuredClone(node.params) }
-        node.params = structuredClone(node.paramsByModel[afterModel] ?? {})
+        // 保留当前选择（时长、宽高比等两模型都接受的取值随之继承），目标模型以前的选择只补当前没有的项。
+        node.params = structuredClone({ ...node.paramsByModel[afterModel], ...node.params })
       }
       if (op.params !== undefined) node.params = op.params
       if (op.current !== undefined) {

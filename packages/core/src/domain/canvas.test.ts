@@ -71,27 +71,23 @@ function sample(): CanvasDoc {
 }
 
 describe('画布：格式', () => {
-  test('模型参数按节点与接口分别保存，切换回原接口和重新打开画布后均恢复', () => {
+  test('切换模型时保留当前参数，目标模型以前的选择只补当前没有的项；重新打开画布后同样恢复', () => {
     let doc = apply(emptyCanvas(), [
       {
         op: 'add_generate',
-        output: 'image',
+        output: 'video',
         provider: 'a',
-        model: 'gpt',
-        params: { quality: 'max' },
+        model: 'x',
+        params: { duration: 4, ratio: '16:9', camera_fixed: true },
       },
     ])
-    doc = apply(doc, [{ op: 'update', id: 'a1', provider: 'b', model: 'qwen' }])
-    expect(gen(doc, 'a1').params).toEqual({})
-    doc = apply(doc, [{ op: 'update', id: 'a1', params: { seed: 42 } }])
+    doc = apply(doc, [{ op: 'update', id: 'a1', provider: 'b', model: 'y' }])
+    expect(gen(doc, 'a1').params).toEqual({ duration: 4, ratio: '16:9', camera_fixed: true })
+    doc = apply(doc, [{ op: 'update', id: 'a1', params: { duration: 8, ratio: '16:9' } }])
     const reopened = parseCanvas(serializeCanvas(doc))
     if (!reopened.ok) throw new Error(reopened.error)
-    doc = apply(reopened.doc, [{ op: 'update', id: 'a1', provider: 'a', model: 'gpt' }])
-    expect(gen(doc, 'a1').params).toEqual({ quality: 'max' })
-    doc = apply(doc, [{ op: 'update', id: 'a1', provider: 'b', model: 'qwen' }])
-    expect(gen(doc, 'a1').params).toEqual({ seed: 42 })
-    doc = apply(doc, [{ op: 'update', id: 'a1', provider: 'other', model: 'qwen' }])
-    expect(gen(doc, 'a1').params).toEqual({})
+    doc = apply(reopened.doc, [{ op: 'update', id: 'a1', provider: 'a', model: 'x' }])
+    expect(gen(doc, 'a1').params).toEqual({ duration: 8, ratio: '16:9', camera_fixed: true })
   })
   test('文件类别按扩展名判定：图片、视频、音频、HTML、正文，其余返回 null', () => {
     expect(
