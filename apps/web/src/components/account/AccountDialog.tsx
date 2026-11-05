@@ -46,9 +46,10 @@ import PairPanel from '../PairPanel.tsx'
 import { config, configBusy, ensureConfig, replaceConfig } from '../settings/configStore.ts'
 import { DefaultToggle, withoutActive, withoutMediaDefault } from '../settings/DefaultToggle.tsx'
 import { LoadState, Skeleton } from '../settings/LoadState.tsx'
+import { referenceLimits } from '../settings/pulled.ts'
 import { ActivityGrid } from './ActivityGrid.tsx'
 import { AccountAvatar, squareAvatar } from './Avatar.tsx'
-import { formatCredits, formatRatio } from './format.ts'
+import { durationRange, formatCredits, formatRatio, formatUnitPrice } from './format.ts'
 import { LoginForm } from './LoginForm.tsx'
 import RechargeDialog from './RechargeDialog.tsx'
 
@@ -286,6 +287,16 @@ function modelName(provider: string, id: string): string {
   )
 }
 
+/**
+ * 生成模型的参数摘要：时长范围与参考素材上限，写法与拉取模型对话框相同，如「5–30秒 · 图≤30、视频≤10、音频≤10」。
+ * 取自模型目录中该型号的规格；目录中没有该型号或没有可列出的参数时为「—」。
+ */
+function mediaParams(provider: string, id: string): string {
+  const m = modelCatalog()?.media.find((x) => x.provider === provider && x.id === id)
+  if (!m) return '—'
+  return [durationRange(m.params), referenceLimits(m)].filter(Boolean).join(' · ') || '—'
+}
+
 /** 云端当前提供的型号、倍率与单价，每次打开弹窗时读取。 */
 /** 生成型号的类别标题与计费单位的名称。 */
 const MEDIA_SECTION: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
@@ -312,9 +323,9 @@ function meterText(m: NonNullable<CloudRequest['mediaMeter']>): string {
 
 /** 生成型号的单价：一个数，或逐档「档位 单价」。 */
 function unitPriceText(p: UnitPrice): string {
-  if (typeof p === 'number') return formatCredits(p)
+  if (typeof p === 'number') return formatUnitPrice(p)
   return Object.entries(p)
-    .map(([tier, credits]) => `${tier} ${formatCredits(credits)}`)
+    .map(([tier, credits]) => `${tier} ${formatUnitPrice(credits)}`)
     .join(' · ')
 }
 
@@ -345,6 +356,7 @@ function MediaTables(props: {
                 <thead>
                   <tr>
                     <th>模型</th>
+                    <th>参数</th>
                     <th>计费单位</th>
                     <th class="num">单价</th>
                     <th />
@@ -355,6 +367,7 @@ function MediaTables(props: {
                     {(m) => (
                       <tr>
                         <td>{modelName(props.provider, m.id)}</td>
+                        <td>{mediaParams(props.provider, m.id)}</td>
                         <td>{UNIT_LABEL[m.unit]}</td>
                         <td class="num">{unitPriceText(m.unitPrice)}</td>
                         <td class="account-default">
@@ -427,10 +440,10 @@ function ModelTable(props: { provider: string }) {
                           <td>{modelName(props.provider, m.id)}</td>
                           {/* 按单价计价的型号没有官方价，单价列即最终单价。 */}
                           <td class="num">{m.official ? formatRatio(m.ratio) : '—'}</td>
-                          <td class="num">{m.price ? formatCredits(m.price.input) : '—'}</td>
-                          <td class="num">{m.price ? formatCredits(m.price.output) : '—'}</td>
-                          <td class="num">{m.price ? formatCredits(m.price.cacheRead) : '—'}</td>
-                          <td class="num">{m.price ? formatCredits(m.price.cacheWrite) : '—'}</td>
+                          <td class="num">{m.price ? formatUnitPrice(m.price.input) : '—'}</td>
+                          <td class="num">{m.price ? formatUnitPrice(m.price.output) : '—'}</td>
+                          <td class="num">{m.price ? formatUnitPrice(m.price.cacheRead) : '—'}</td>
+                          <td class="num">{m.price ? formatUnitPrice(m.price.cacheWrite) : '—'}</td>
                           <td class="account-default">
                             <DefaultToggle
                               on={isDefault(m.id)}
