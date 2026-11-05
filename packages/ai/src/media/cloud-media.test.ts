@@ -92,7 +92,13 @@ test('云端规格：参数表与操作按原协议取得，协议为云端协�
 test('提交到云端任务接口，取回全部结果文件；金额取云端回报的扣费', async () => {
   const result = await run('cloud-image')
   expect(submitted.at(-1)).toEqual({
-    request: { model: 'cloud-image', operation: 'generate', prompt: '猫', params: { n: 2 } },
+    request: {
+      model: 'cloud-image',
+      operation: 'generate',
+      prompt: '猫',
+      params: { n: 2 },
+      mimes: ['image/png'],
+    },
     files: ['input.reference'],
   })
   expect(result.files).toHaveLength(2)
