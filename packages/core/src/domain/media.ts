@@ -30,8 +30,26 @@ export const MEDIA_KINDS = [
   'dashscope_speech',
   'minimax_speech',
   'mimo_speech',
+  'qywork_images',
+  'qywork_videos',
+  'qywork_speech',
 ] as const
 export type MediaKind = (typeof MEDIA_KINDS)[number]
+
+/**
+ * 经云端生成的三种协议，每个类别一种：电脑端把请求提交到云端的生成任务接口，云端以上游接口运行原协议的适配器。
+ * 只出现在电脑端的云端接口中；云端型号表不使用它们（`isCloudMediaKind`）。
+ */
+export const CLOUD_MEDIA_KINDS = ['qywork_images', 'qywork_videos', 'qywork_speech'] as const
+export type CloudMediaKind = (typeof CLOUD_MEDIA_KINDS)[number]
+export const isCloudMediaKind = (kind: MediaKind): kind is CloudMediaKind =>
+  (CLOUD_MEDIA_KINDS as readonly MediaKind[]).includes(kind)
+
+/** 生成型号的计费单位：每张、每秒、每次、每万字符。 */
+export const MEDIA_UNITS = ['image', 'second', 'request', '10k_chars'] as const
+export type MediaUnit = (typeof MEDIA_UNITS)[number]
+/** 单价：一个数，或按分辨率档位的「档位 → 单价」。 */
+export type UnitPrice = number | Readonly<Record<string, number>>
 
 /**
  * 中转渠道的视频请求格式。请求字段、素材上传与任务查询由 `@qywork/ai` 按格式实现；
@@ -104,8 +122,21 @@ export interface MediaBaseSpec {
   base: string
 }
 
-/** 生成型号保存的规格来源：渠道规格，或对应的目录型号。两者互斥，保存在同一字段（`spec`）中。 */
-export type StoredMediaSpec = ChannelSpec | MediaBaseSpec
+/**
+ * 云端生成型号的规格：原协议、原协议上的规格来源，以及云端的计费单位与单价（积分）。由云端型号清单写入。
+ * 参数表与能力按原协议取得（`lookupMediaModel`），请求经云端协议提交。
+ */
+export interface CloudMediaSpec {
+  cloud: {
+    kind: MediaKind
+    spec?: ChannelSpec | MediaBaseSpec
+    unit: MediaUnit
+    unitPrice: UnitPrice
+  }
+}
+
+/** 生成型号保存的规格来源：渠道规格、对应的目录型号或云端规格。三者互斥，保存在同一字段（`spec`）中。 */
+export type StoredMediaSpec = ChannelSpec | MediaBaseSpec | CloudMediaSpec
 
 /** 保存的规格是渠道规格时返回它；对应型号或未保存时返回 undefined。 */
 export function channelSpecOf(spec: StoredMediaSpec | undefined): ChannelSpec | undefined {
@@ -277,6 +308,39 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   dashscope_speech: 'audio',
   minimax_speech: 'audio',
   mimo_speech: 'audio',
+  qywork_images: 'image',
+  qywork_videos: 'video',
+  qywork_speech: 'audio',
+}
+
+/** 各类别的云端生成协议。 */
+export const CLOUD_MEDIA_KIND: Record<MediaOutput, CloudMediaKind> = {
+  image: 'qywork_images',
+  video: 'qywork_videos',
+  audio: 'qywork_speech',
+}
+
+/** 配置中保存的云端规格不合法时返回原因。原协议须与云端协议同类别，且不能是云端协议。 */
+export function cloudMediaSpecProblem(value: unknown, kind: MediaKind): string | null {
+  const c = (value as Partial<CloudMediaSpec> | null)?.cloud
+  if (!c || typeof c !== 'object') return '缺少 cloud'
+  if (!MEDIA_KINDS.includes(c.kind as MediaKind) || isCloudMediaKind(c.kind as MediaKind))
+    return '原协议不是有效值'
+  if (MEDIA_KIND_OUTPUT[c.kind as MediaKind] !== MEDIA_KIND_OUTPUT[kind]) return '原协议与类别不符'
+  if (!MEDIA_UNITS.includes(c.unit as MediaUnit)) return '计费单位不是有效值'
+  const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0
+  const price = c.unitPrice
+  if (
+    !positive(price) &&
+    !(
+      price &&
+      typeof price === 'object' &&
+      Object.values(price).length > 0 &&
+      Object.values(price).every(positive)
+    )
+  )
+    return '单价须为正数，或按档位分别填写的正数'
+  return null
 }
 
 /**

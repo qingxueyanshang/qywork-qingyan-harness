@@ -38,6 +38,9 @@ export const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
   minimax_images: 'MiniMax',
   minimax_videos: 'MiniMax',
   mimo_speech: 'MiMo',
+  qywork_images: '账号订阅',
+  qywork_videos: '账号订阅',
+  qywork_speech: '账号订阅',
 }
 
 const OPERATION_LABEL: Record<MediaOperationName, string> = {

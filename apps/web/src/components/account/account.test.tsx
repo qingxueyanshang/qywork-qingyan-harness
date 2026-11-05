@@ -129,16 +129,24 @@ beforeAll(async () => {
     if (path === '/api/cloud/models') {
       return [
         {
+          output: 'chat',
           id: 'claude-opus-5-5',
           ratio: 0.85,
           official: true,
           price: { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 },
         },
         {
+          output: 'chat',
           id: 'relay-model',
           ratio: 1,
           official: false,
           price: { input: 100, output: 200, cacheRead: 10, cacheWrite: 0 },
+        },
+        {
+          output: 'video',
+          id: 'doubao-seedance-2-0-260128',
+          unit: 'second',
+          unitPrice: { '720p': 0.2, '1080p': 0.4 },
         },
       ] as T
     }
@@ -299,6 +307,14 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
     r.textContent?.includes('relay-model'),
   )
   expect(relay?.querySelectorAll('td')[1]?.textContent).toBe('—')
+  // 生成型号按类别单独成表：计费单位与逐档单价。
+  expect(view.text()).toContain('视频')
+  const seedance = [...view.host.querySelectorAll('tr')].find((r) =>
+    r.textContent?.includes('doubao-seedance-2-0-260128'),
+  )
+  expect(
+    [...(seedance?.querySelectorAll('td') ?? [])].slice(1, 3).map((td) => td.textContent),
+  ).toEqual(['每秒', '720p 0.20 · 1080p 0.40'])
   expect(calls).toContain('GET /api/models')
   // 不足一页：没有更早的记录。
   expect(view.button('加载更早的记录')).toBeUndefined()

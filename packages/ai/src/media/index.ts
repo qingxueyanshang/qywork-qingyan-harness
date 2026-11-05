@@ -20,6 +20,7 @@ import {
 import { OpenAIImagesAdapter } from './adapters/openai-images.ts'
 import { OpenAISpeechAdapter } from './adapters/openai-speech.ts'
 import { OpenAIVideosAdapter } from './adapters/openai-videos.ts'
+import { CloudMediaAdapter } from './adapters/qywork.ts'
 import { XaiImagesAdapter, XaiVideosAdapter } from './adapters/xai.ts'
 import { lookupMediaModel } from './catalog.ts'
 import type { MediaAdapter, MediaProfile } from './types.ts'
@@ -60,5 +61,9 @@ export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {
       return new MiniMaxVideosAdapter(profile, spec)
     case 'mimo_speech':
       return new MiMoSpeechAdapter(profile, spec)
+    case 'qywork_images':
+    case 'qywork_videos':
+    case 'qywork_speech':
+      return new CloudMediaAdapter(profile, spec)
   }
 }

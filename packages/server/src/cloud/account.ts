@@ -13,21 +13,29 @@
  */
 
 import { httpStatusName, lookupModel } from '@qywork/ai'
-import type {
-  Announcement,
-  CloudModel,
-  CloudRechargeOrder,
-  CloudRechargeStatus,
-  CloudRequest,
-  CloudState,
-  CloudUsage,
-  ProviderKind,
-  ReleaseNotes,
+import {
+  type Announcement,
+  type ChannelSpec,
+  CLOUD_MEDIA_KIND,
+  type CloudModel,
+  type CloudRechargeOrder,
+  type CloudRechargeStatus,
+  type CloudRequest,
+  type CloudState,
+  type CloudUsage,
+  type MediaBaseSpec,
+  type MediaKind,
+  type MediaOutput,
+  type MediaUnit,
+  type ProviderKind,
+  type ReleaseNotes,
+  type UnitPrice,
 } from '@qywork/core'
 import {
   catalogKey,
   type QyConfig,
   type StoredCatalogEntry,
+  type StoredMediaModel,
   type StoredModel,
   type StoredProvider,
 } from '@qywork/runtime'
@@ -38,6 +46,44 @@ import { hostLabel } from '../http-util.ts'
 export const CLOUD_PROVIDER = 'qywork'
 /** 云端接口的默认协议；网关上协议不同的型号带各自的 `kind`。 */
 const DEFAULT_KIND = 'anthropic_messages'
+
+/** 云端 `/v1/catalog` 中的一个生成型号：原协议、规格来源、计费单位与单价（积分 / 单位）。 */
+interface CatalogMediaModel {
+  id: string
+  output: MediaOutput
+  protocol: MediaKind
+  spec?: ChannelSpec | MediaBaseSpec
+  unit: MediaUnit
+  unitPrice: UnitPrice
+}
+
+/** 云端 `/v1/catalog`；`media` 在云端未提供生成任务时为空。 */
+interface Catalog {
+  models: CatalogModel[]
+  media?: CatalogMediaModel[]
+}
+
+/**
+ * 云端生成型号在配置中的形状：协议为该类别的云端生成协议，规格中记下原协议、原协议的规格来源与单价，
+ * 参数表按原协议取得（`lookupMediaModel`）。
+ */
+function storedMedia(list: readonly CatalogMediaModel[]): Record<string, StoredMediaModel> {
+  const media: Record<string, StoredMediaModel> = {}
+  for (const m of list) {
+    media[m.id] = {
+      kind: CLOUD_MEDIA_KIND[m.output],
+      spec: {
+        cloud: {
+          kind: m.protocol,
+          ...(m.spec ? { spec: m.spec } : {}),
+          unit: m.unit,
+          unitPrice: m.unitPrice,
+        },
+      },
+    }
+  }
+  return media
+}
 
 /** 云端 `/v1/catalog` 中的一个型号。单价为基础档单价乘以倍率，单位为积分 / 百万 token。 */
 interface CatalogModel {
@@ -264,14 +310,25 @@ export class CloudAccount {
    * 账号弹窗列出的型号与模型下拉列表一致，管理员调价或上架后无需重启。
    */
   async models(): Promise<CloudModel[]> {
-    const list = await this.call<{ models: CatalogModel[] }>('/v1/catalog')
-    await this.applyModels(list.models)
-    return list.models.map((m) => ({
+    const list = await this.call<Catalog>('/v1/catalog')
+    await this.applyModels(list)
+    const media: CloudModel[] = (list.media ?? []).map((m) => ({
+      output: m.output,
       id: m.id,
-      ratio: m.ratio,
-      official: m.official === true,
-      price: m.price,
+      unit: m.unit,
+      unitPrice: m.unitPrice,
     }))
+    return list.models
+      .map(
+        (m): CloudModel => ({
+          output: 'chat',
+          id: m.id,
+          ratio: m.ratio,
+          official: m.official === true,
+          price: m.price,
+        }),
+      )
+      .concat(media)
   }
 
   /**
@@ -448,17 +505,24 @@ export class CloudAccount {
   /** 登录完成：以设备密钥写入云端接口与型号。 */
   private async complete(key: string): Promise<void> {
     const list = await this.catalog(key)
-    const models = storedModels(list)
+    const models = storedModels(list.models)
+    const media = storedMedia(list.media ?? [])
     const result = await writeConfig(this.live, (current) => {
       const first = Object.keys(models)[0]
-      const catalog = withSpecs(current.catalog, list)
+      const catalog = withSpecs(current.catalog, list.models)
       const { catalog: _catalog, ...rest } = current
       return {
         ...rest,
         ...(catalog ? { catalog } : {}),
         providers: {
           ...current.providers,
-          [CLOUD_PROVIDER]: { kind: DEFAULT_KIND, baseUrl: this.origin, apiKey: key, models },
+          [CLOUD_PROVIDER]: {
+            kind: DEFAULT_KIND,
+            baseUrl: this.origin,
+            apiKey: key,
+            models,
+            ...(Object.keys(media).length ? { media } : {}),
+          },
         },
         ...(current.active || !first ? {} : { active: { provider: CLOUD_PROVIDER, model: first } }),
       }
@@ -473,13 +537,13 @@ export class CloudAccount {
   }
 
   /** 以设备密钥读取云端型号清单（登录完成时尚未写入接口，因此不经 `call`）。 */
-  private async catalog(key: string, signal = this.timeout()): Promise<CatalogModel[]> {
+  private async catalog(key: string, signal = this.timeout()): Promise<Catalog> {
     const res = await fetch(`${this.origin}/v1/catalog`, {
       headers: { authorization: `Bearer ${key}` },
       signal,
     })
     if (!res.ok) throw new Error(`读取型号清单失败：${res.status} ${httpStatusName(res.status)}`)
-    return ((await res.json()) as { models: CatalogModel[] }).models
+    return (await res.json()) as Catalog
   }
 
   /**
@@ -503,8 +567,9 @@ export class CloudAccount {
   }
 
   /** 写入清单中的型号与价格；与配置中已有的内容相同时不写入。 */
-  private async applyModels(list: readonly CatalogModel[]): Promise<void> {
-    const listed = storedModels(list)
+  private async applyModels(list: Catalog): Promise<void> {
+    const listed = storedModels(list.models)
+    const listedMedia = storedMedia(list.media ?? [])
     await writeConfig(this.live, (current) => {
       const provider = cloudProviderOf(current, this.origin)
       if (!provider) return current
@@ -515,18 +580,28 @@ export class CloudAccount {
         models[id] = hit ? { ...rest, ...hit } : { ...m, delisted: true }
       }
       for (const [id, m] of Object.entries(listed)) models[id] ??= m
-      const catalog = withSpecs(current.catalog, list)
+      // 生成型号的协议与规格全部由清单决定；清单中已没有的型号标记已下架。
+      const media: Record<string, StoredMediaModel> = {}
+      for (const [id, m] of Object.entries(provider.media ?? {}))
+        media[id] = listedMedia[id] ?? { ...m, delisted: true }
+      for (const [id, m] of Object.entries(listedMedia)) media[id] ??= m
+      const catalog = withSpecs(current.catalog, list.models)
       if (
         JSON.stringify(models) === JSON.stringify(provider.models) &&
+        JSON.stringify(media) === JSON.stringify(provider.media ?? {}) &&
         JSON.stringify(catalog) === JSON.stringify(current.catalog)
       ) {
         return current
       }
       const { catalog: _catalog, ...rest } = current
+      const { media: _media, ...base } = provider
       return {
         ...rest,
         ...(catalog ? { catalog } : {}),
-        providers: { ...current.providers, [CLOUD_PROVIDER]: { ...provider, models } },
+        providers: {
+          ...current.providers,
+          [CLOUD_PROVIDER]: { ...base, models, ...(Object.keys(media).length ? { media } : {}) },
+        },
       }
     })
   }

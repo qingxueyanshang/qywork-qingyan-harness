@@ -16,6 +16,7 @@ import {
   CACHE_ROUTINGS,
   CURRENCIES,
   EFFORT_ORDER,
+  isCloudMediaKind,
   MEDIA_KIND_OUTPUT,
   MEDIA_KINDS,
   MEDIA_OUTPUTS,
@@ -124,7 +125,23 @@ export function sampleConfig(): QyConfig {
     }
     const media: Record<string, StoredMediaModel> = {}
     for (const [m, mediaKind] of MEDIA_KINDS.entries()) {
-      if (m % PROVIDER_KINDS.length === p) media[`media-${mediaKind}`] = { kind: mediaKind }
+      if (m % PROVIDER_KINDS.length !== p) continue
+      // 云端协议的条目必须带云端规格：原协议取同类别的第一个上游协议。
+      media[`media-${mediaKind}`] = isCloudMediaKind(mediaKind)
+        ? {
+            kind: mediaKind,
+            spec: {
+              cloud: {
+                kind: MEDIA_KINDS.find(
+                  (k) =>
+                    !isCloudMediaKind(k) && MEDIA_KIND_OUTPUT[k] === MEDIA_KIND_OUTPUT[mediaKind],
+                )!,
+                unit: 'request',
+                unitPrice: { '720p': 1, '1080p': 2 },
+              },
+            },
+          }
+        : { kind: mediaKind }
     }
     if ('media-openai_videos' in media) {
       for (const [c, channel] of VIDEO_CHANNELS.entries()) {
