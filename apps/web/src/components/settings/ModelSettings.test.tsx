@@ -1,4 +1,4 @@
-/** 覆盖接口改名、名称冲突、默认模型操作、检测结果显示、Base URL 的官方地址占位符，以及已登录时云端接口不在本页列出。 */
+/** 覆盖接口改名、名称冲突、默认模型的设置与取消（`DefaultToggle.tsx`）、检测结果显示、Base URL 的官方地址占位符，以及已登录时云端接口不在本页列出。 */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { ProbeResult, ProviderRename, RedactedConfig } from '../../lib/store/index.ts'
@@ -102,6 +102,27 @@ for (const [index, output] of ['chat', 'video'].entries()) {
       await idle()
       const ref = output === 'chat' ? stored().active : stored().mediaDefaults?.video
       expect(ref).toEqual({ provider: 'first', model: output })
+    })
+  })
+
+  test(`默认${output}模型的按钮显示「默认」，点击取消默认，配置中不再有该默认值`, async () => {
+    await settingsFixture(async ({ host, stored, idle }) => {
+      const second = [...host.querySelectorAll<HTMLButtonElement>('.tab-chip')].find(
+        (button) => button.textContent === 'second',
+      )!
+      second.click()
+      await idle()
+      const pick = host.querySelectorAll<HTMLButtonElement>('.model-pick')[index]!
+      expect(pick.classList.contains('on')).toBe(true)
+      expect(pick.querySelector('.model-pick-state')?.textContent).toBe('默认')
+      expect(pick.querySelector('.model-pick-undo')?.textContent).toBe('取消默认')
+      pick.click()
+      await idle()
+      if (output === 'chat') expect(stored().active).toBeUndefined()
+      else expect(stored().mediaDefaults).toBeUndefined()
+      expect(host.querySelectorAll<HTMLButtonElement>('.model-pick')[index]?.textContent).toBe(
+        '设为默认',
+      )
     })
   })
 }

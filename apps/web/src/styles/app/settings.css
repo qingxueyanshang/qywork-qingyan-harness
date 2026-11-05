@@ -867,8 +867,10 @@ textarea.code-area::placeholder {
   font-family: var(--font-mono);
   white-space: nowrap;
 }
+/* 宽度固定为四个字：「默认」悬停时换成「取消默认」，宽度随文字变化时同一行右侧的控件会移动（B9）。 */
 .model-pick {
   flex: none;
+  min-width: calc(4em + 2 * var(--s-2));
   padding: 2px var(--s-2);
   border-radius: var(--r-xs);
   font-size: var(--fs-xs);
@@ -879,8 +881,17 @@ textarea.code-area::placeholder {
   color: var(--text-primary);
 }
 .model-pick:disabled {
-  color: var(--accent);
   cursor: default;
+}
+.model-pick.on {
+  color: var(--accent);
+}
+.model-pick.on .model-pick-undo,
+.model-pick.on:hover:not(:disabled) .model-pick-state {
+  display: none;
+}
+.model-pick.on:hover:not(:disabled) .model-pick-undo {
+  display: inline;
 }
 /* 最后一行用于添加模型：主操作与空状态位于同一位置，接口没有任何模型时它是唯一的一行。
    **输入框需要单独定义样式**：上方的表单样式限定在 `.setting-row` / `.field` 下，

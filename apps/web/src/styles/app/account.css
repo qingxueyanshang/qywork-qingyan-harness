@@ -428,6 +428,12 @@
 .account-failed {
   color: var(--danger);
 }
+/* 可用模型的最后一列：「设为默认」靠右，与模型设置页同一个按钮（`DefaultToggle`）。 */
+.lib-table.account-table td.account-default {
+  padding-top: 0;
+  padding-bottom: 0;
+  text-align: right;
+}
 /* 积分前的计价条件标记（长上下文、空闲时段、1 小时缓存）。 */
 .account-term {
   display: inline-block;

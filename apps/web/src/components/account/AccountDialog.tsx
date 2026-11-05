@@ -33,6 +33,8 @@ import {
 } from '../../lib/store/index.ts'
 import { IconBell, IconHome, IconLogOut, IconX } from '../Icons.tsx'
 import PairPanel from '../PairPanel.tsx'
+import { config, configBusy, ensureConfig, replaceConfig } from '../settings/configStore.ts'
+import { DefaultToggle, withoutActive } from '../settings/DefaultToggle.tsx'
 import { LoadState, Skeleton } from '../settings/LoadState.tsx'
 import { ActivityGrid } from './ActivityGrid.tsx'
 import { AccountAvatar, squareAvatar } from './Avatar.tsx'
@@ -252,7 +254,7 @@ function AccountView(props: { signed: SignedIn }) {
         <h3 class="account-section">
           可用模型<span class="account-unit">积分 / 百万 token</span>
         </h3>
-        <ModelTable />
+        <ModelTable provider={props.signed.provider} />
 
         <h3 class="account-section">使用记录</h3>
         <RequestTable />
@@ -262,8 +264,13 @@ function AccountView(props: { signed: SignedIn }) {
 }
 
 /** 云端当前提供的型号、倍率与单价，每次打开弹窗时读取。 */
-function ModelTable() {
+function ModelTable(props: { provider: string }) {
   const [models, { refetch }] = createResource(fetchCloudModels)
+  ensureConfig()
+  // 默认值与模型设置页写入同一处（配置的默认对话模型）；云端接口不在模型设置页列出，两处不会同时显示同一型号。
+  const isDefault = (id: string) =>
+    config()?.active?.provider === props.provider && config()?.active?.model === id
+  const listed = (id: string) => Boolean(config()?.providers[props.provider]?.models[id])
   return (
     <Show
       when={loaded(models)}
@@ -281,6 +288,7 @@ function ModelTable() {
                   <th class="num">输出</th>
                   <th class="num">缓存读取</th>
                   <th class="num">缓存写入</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -296,6 +304,19 @@ function ModelTable() {
                       <td class="num">{m.price ? formatCredits(m.price.output) : '—'}</td>
                       <td class="num">{m.price ? formatCredits(m.price.cacheRead) : '—'}</td>
                       <td class="num">{m.price ? formatCredits(m.price.cacheWrite) : '—'}</td>
+                      <td class="account-default">
+                        <DefaultToggle
+                          on={isDefault(m.id)}
+                          disabled={!listed(m.id) || configBusy()}
+                          onSet={() =>
+                            void replaceConfig((cur) => ({
+                              ...cur,
+                              active: { provider: props.provider, model: m.id },
+                            }))
+                          }
+                          onUnset={() => void replaceConfig(withoutActive)}
+                        />
+                      </td>
                     </tr>
                   )}
                 </For>

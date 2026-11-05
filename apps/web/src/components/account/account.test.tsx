@@ -23,6 +23,19 @@ let requestsGate: Promise<void>
 let notices: Announcement[]
 /** 充值订单状态的依次答复；`Error` 表示该次读取失败。 */
 let rechargeReplies: (string | Error)[]
+/** 服务端配置：云端接口下有两个型号，默认对话模型是本地接口的型号。 */
+let stored: Record<string, unknown> = {}
+const STORED = {
+  providers: {
+    local: { kind: 'openai_chat_completions', hasApiKey: true, models: { mine: {} } },
+    qywork: {
+      kind: 'anthropic_messages',
+      hasApiKey: true,
+      models: { 'claude-opus-5-5': {}, 'relay-model': {} },
+    },
+  },
+  active: { provider: 'local', model: 'mine' },
+}
 
 const SIGNED_IN: CloudState = {
   state: 'signed_in',
@@ -97,6 +110,20 @@ beforeAll(async () => {
       cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), avatar: image }
       return structuredClone(cloud) as T
     }
+    if (path === '/api/config') {
+      if (init?.method === 'PUT') {
+        stored = JSON.parse(String(init.body)).config
+        return { ok: true } as T
+      }
+      return {
+        config: structuredClone(stored),
+        path: '',
+        version: 'v',
+        notices: [],
+        problems: [],
+        defaultEnvAllowList: [],
+      } as T
+    }
     if (path === '/api/pairing') return { available: false, enabled: false, tunnel: null } as T
     if (path === '/api/cloud/usage') return structuredClone(USAGE) as T
     if (path === '/api/cloud/models') {
@@ -150,6 +177,7 @@ beforeEach(async () => {
   requestsGate = Promise.resolve()
   notices = []
   rechargeReplies = []
+  stored = structuredClone(STORED)
   store.setAccountOpen(false)
 })
 
@@ -629,5 +657,34 @@ test('充值窗口打开时按 Escape 只关闭充值窗口：焦点不在窗口
   await until(() => view.host.querySelector('.recharge-dialog') === null)
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
   expect(store.accountOpen()).toBe(false)
+  view.close()
+})
+
+test('可用模型可设为默认对话模型，写入与模型设置页同一处；再次点击取消默认', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  const { reloadConfig, configBusy } = await import('../settings/configStore.ts')
+  await reloadConfig()
+  const view = await dialog()
+  const row = () =>
+    [...view.host.querySelectorAll('tr')].find((r) => r.textContent?.includes('claude-opus-5-5'))
+  await until(() => row()?.querySelector('.model-pick')?.hasAttribute('disabled') === false)
+  const pick = () => row()?.querySelector<HTMLButtonElement>('.model-pick')
+  expect(pick()?.textContent).toBe('设为默认')
+  pick()?.click()
+  await until(() => !configBusy() && pick()?.classList.contains('on') === true)
+  expect(stored.active).toEqual({ provider: 'qywork', model: 'claude-opus-5-5' })
+  pick()?.click()
+  await until(() => !configBusy() && pick()?.classList.contains('on') === false)
+  expect(stored.active).toBeUndefined()
+  // 云端清单中有、配置的云端接口下还没有的型号不能设为默认。
+  delete (stored.providers as Record<string, { models: Record<string, unknown> }>).qywork!.models[
+    'relay-model'
+  ]
+  await reloadConfig()
+  const relay = [...view.host.querySelectorAll('tr')].find((r) =>
+    r.textContent?.includes('relay-model'),
+  )
+  await until(() => relay?.querySelector('.model-pick')?.hasAttribute('disabled') === true)
   view.close()
 })
