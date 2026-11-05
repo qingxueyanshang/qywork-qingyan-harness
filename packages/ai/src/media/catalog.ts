@@ -27,8 +27,10 @@ import {
   type MediaKind,
   type MediaParamDefinition,
   type MediaQuote,
+  type MediaUnit,
   type MentionStyle,
   type StoredMediaSpec,
+  type UnitPrice,
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import { MIMO_AUDIO_MODELS, MIMO_SPEECH_DEFAULT } from './catalog-mimo-audio.ts'
@@ -1510,8 +1512,26 @@ const SEEDS: readonly MediaModelSpec[] = [
  *
  * 参数表取保守写法：多写一个接口不接受的字段会导致请求被拒绝；少写只使大模型少一个可调参数。
  */
+/**
+ * 云端协议的协议默认：只在配置中缺少云端规格时使用（配置校验拒绝这种情形）。有云端规格时参数表取原协议的规格。
+ */
+const cloudDefault = (
+  kind: MediaKind,
+  operations: readonly MediaOperation[],
+): Omit<MediaModelSpec, 'id' | 'displayName'> => ({
+  vendor: null,
+  kind,
+  operations,
+  inputs: { maxImages: 0, maxVideos: 0, transport: 'json' },
+  params: [],
+  catalogued: false,
+})
+
 const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayName'>> = {
   ...GOOGLE_XAI_DEFAULTS,
+  qywork_images: cloudDefault('qywork_images', IMAGE_OPERATIONS),
+  qywork_videos: cloudDefault('qywork_videos', VIDEO_OPERATIONS),
+  qywork_speech: cloudDefault('qywork_speech', SPEECH_OPERATIONS),
   openai_images: {
     vendor: null,
     kind: 'openai_images',
@@ -1638,6 +1658,110 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
 }
 
 /** 内置的全部生成模型，供模型库页使用。 */
+/** 各协议中表示张数、时长（秒）与分辨率档位的参数名。协议决定请求形状，同一协议的参数名相同。 */
+const METER_PARAMS: Readonly<
+  Record<MediaKind, { count?: string; seconds?: string; resolution?: string }>
+> = {
+  openai_images: { count: 'n', resolution: 'resolution' },
+  dashscope_images: { count: 'n' },
+  gemini_images: { resolution: 'image_size' },
+  xai_images: { count: 'n', resolution: 'resolution' },
+  minimax_images: { count: 'n' },
+  openai_videos: { seconds: 'seconds', resolution: 'resolution' },
+  ark_videos: { seconds: 'duration', resolution: 'resolution' },
+  dashscope_videos: { seconds: 'duration', resolution: 'resolution' },
+  kling_videos: { seconds: 'duration', resolution: 'resolution' },
+  gemini_videos: { resolution: 'resolution' },
+  veo_videos: { seconds: 'durationSeconds', resolution: 'resolution' },
+  xai_videos: { seconds: 'duration', resolution: 'resolution' },
+  minimax_videos: { seconds: 'duration', resolution: 'resolution' },
+  openai_speech: {},
+  dashscope_speech: {},
+  minimax_speech: {},
+  mimo_speech: {},
+  // 云端协议按原协议计量（`lookupMediaModel` 的云端规格）。
+  qywork_images: {},
+  qywork_videos: {},
+  qywork_speech: {},
+}
+
+/** 型号规格中作为计量参数的参数；规格中没有的参数为 undefined。`kind` 为规格所属的协议（云端型号为原协议）。 */
+export function meterParamsOf(spec: MediaModelSpec, kind: MediaKind) {
+  const names = METER_PARAMS[kind]
+  const param = (name: string | undefined) =>
+    name === undefined ? undefined : spec.params.find((p) => p.name === name)
+  return {
+    count: param(names.count),
+    seconds: param(names.seconds),
+    resolution: param(names.resolution),
+  }
+}
+
+/**
+ * 按参数推算计量（计费单位的数量与档位）。参数未填写时取规格的默认值。无法确定时返回 null：
+ * 按秒计费而规格没有时长参数、按档位定价而没有档位参数或档位不在单价表中。`prompt` 只用于按字符计费，
+ * 发送前尚无提示词时传 null，按字符计费的计量随之不明。
+ */
+export function meterFromParams(
+  spec: MediaModelSpec,
+  kind: MediaKind,
+  unit: MediaUnit,
+  price: UnitPrice,
+  params: Record<string, unknown>,
+  prompt: string | null,
+): { units: number; resolution?: string } | null {
+  const p = meterParamsOf(spec, kind)
+  const value = (param: { name: string; default?: unknown } | undefined) =>
+    param === undefined ? undefined : (params[param.name] ?? param.default)
+  let resolution: string | undefined
+  if (typeof price !== 'number') {
+    const v = value(p.resolution)
+    if (v === undefined || price[String(v)] === undefined) return null
+    resolution = String(v)
+  }
+  let units: number
+  if (unit === 'request') units = 1
+  else if (unit === 'image') units = p.count ? Number(value(p.count) ?? 1) : 1
+  else if (unit === 'second') units = Number(value(p.seconds))
+  else if (prompt === null) return null
+  else units = Array.from(prompt).length / 10_000
+  if (!Number.isFinite(units) || units <= 0) return null
+  return { units, ...(resolution !== undefined ? { resolution } : {}) }
+}
+
+/**
+ * 云端型号的价格：发送前的计量按参数推算（与云端结算同一函数），金额为计量 × 单价，币种为积分。
+ * 生成完成后的金额取云端回报的扣费（`MediaUsage.billed`），不按本地计量计算。
+ */
+function unitMediaPrice(
+  spec: MediaModelSpec,
+  kind: MediaKind,
+  unit: MediaUnit,
+  price: UnitPrice,
+): MediaPrice {
+  const rate = (resolution: string | undefined) =>
+    typeof price === 'number' ? price : resolution === undefined ? undefined : price[resolution]
+  return {
+    currency: 'CREDIT',
+    usageOf(params) {
+      const m = meterFromParams(spec, kind, unit, price, params, null)
+      if (!m) return null
+      const tier = m.resolution !== undefined ? { resolution: m.resolution } : {}
+      if (unit === 'image') return { images: m.units, ...tier }
+      if (unit === 'second') return { seconds: m.units, ...tier }
+      return tier
+    },
+    cost(u) {
+      const r = rate(u.resolution)
+      if (r === undefined) return null
+      if (unit === 'image') return u.images === undefined ? null : u.images * r
+      if (unit === 'second') return u.seconds === undefined ? null : u.seconds * r
+      if (unit === 'request') return r
+      return u.characters === undefined ? null : (u.characters / 10_000) * r
+    },
+  }
+}
+
 export function mediaCatalog(): readonly MediaModelSpec[] {
   return SEEDS
 }
@@ -1667,6 +1791,11 @@ export function lookupMediaModel(
   kind: MediaKind,
   saved?: StoredMediaSpec,
 ): MediaModelSpec {
+  if (saved && 'cloud' in saved) {
+    const { kind: original, spec, unit, unitPrice } = saved.cloud
+    const { price: _price, mappings: _mappings, ...rest } = lookupMediaModel(id, original, spec)
+    return { ...rest, kind, price: unitMediaPrice(rest, original, unit, unitPrice) }
+  }
   if (saved && 'base' in saved) {
     const { price: _price, ...rest } = lookupMediaModel(saved.base, kind)
     return { ...rest, id, displayName: id }

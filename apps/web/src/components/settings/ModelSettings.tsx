@@ -35,7 +35,7 @@ import {
   replaceConfig,
   reportConfigWriteError,
 } from './configStore.ts'
-import { DefaultToggle, withoutActive } from './DefaultToggle.tsx'
+import { DefaultToggle, withoutActive, withoutMediaDefault } from './DefaultToggle.tsx'
 import { LoadState } from './LoadState.tsx'
 import { MEDIA_KIND_LABEL, ModelLibrary } from './ModelLibrary.tsx'
 import { ProviderTabs } from './ProviderTabs.tsx'
@@ -749,13 +749,6 @@ function firstMediaRef(
     }
   }
   return null
-}
-
-/** 取消某一类别的默认生成模型；所有类别都没有默认值时省略整个字段。 */
-function withoutMediaDefault(cur: RedactedConfig, output: MediaOutput): RedactedConfig {
-  const { [output]: _drop, ...kept } = cur.mediaDefaults ?? {}
-  const { mediaDefaults: _all, ...rest } = cur
-  return Object.keys(kept).length ? { ...rest, mediaDefaults: kept } : rest
 }
 
 /** 接口表中第一个已添加的模型。删除当前默认接口或默认模型后，用它选择新的默认值。 */

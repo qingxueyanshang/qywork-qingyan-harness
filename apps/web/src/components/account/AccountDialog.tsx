@@ -1,4 +1,12 @@
-import type { CloudRequest, CloudState } from '@qywork/core'
+import {
+  type CloudModel,
+  type CloudRequest,
+  type CloudState,
+  MEDIA_OUTPUTS,
+  type MediaOutput,
+  type MediaUnit,
+  type UnitPrice,
+} from '@qywork/core'
 import {
   createEffect,
   createResource,
@@ -34,7 +42,7 @@ import {
 import { IconBell, IconHome, IconLogOut, IconX } from '../Icons.tsx'
 import PairPanel from '../PairPanel.tsx'
 import { config, configBusy, ensureConfig, replaceConfig } from '../settings/configStore.ts'
-import { DefaultToggle, withoutActive } from '../settings/DefaultToggle.tsx'
+import { DefaultToggle, withoutActive, withoutMediaDefault } from '../settings/DefaultToggle.tsx'
 import { LoadState, Skeleton } from '../settings/LoadState.tsx'
 import { ActivityGrid } from './ActivityGrid.tsx'
 import { AccountAvatar, squareAvatar } from './Avatar.tsx'
@@ -252,7 +260,7 @@ function AccountView(props: { signed: SignedIn }) {
         <PairPanel />
 
         <h3 class="account-section">
-          可用模型<span class="account-unit">积分 / 百万 token</span>
+          对话<span class="account-unit">积分 / 百万 token</span>
         </h3>
         <ModelTable provider={props.signed.provider} />
 
@@ -264,6 +272,95 @@ function AccountView(props: { signed: SignedIn }) {
 }
 
 /** 云端当前提供的型号、倍率与单价，每次打开弹窗时读取。 */
+/** 生成型号的类别标题与计费单位的名称。 */
+const MEDIA_SECTION: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
+const UNIT_LABEL: Record<MediaUnit, string> = {
+  image: '每张',
+  second: '每秒',
+  request: '每次',
+  '10k_chars': '每万字符',
+}
+
+/** 生成型号的单价：一个数，或逐档「档位 单价」。 */
+function unitPriceText(p: UnitPrice): string {
+  if (typeof p === 'number') return formatCredits(p)
+  return Object.entries(p)
+    .map(([tier, credits]) => `${tier} ${formatCredits(credits)}`)
+    .join(' · ')
+}
+
+/**
+ * 云端生成型号，按类别各一张表。「设为默认」写入该类别的默认生成模型，与模型设置页写入同一处。
+ * 没有生成型号的类别不显示。
+ */
+function MediaTables(props: {
+  provider: string
+  models: readonly Extract<CloudModel, { output: MediaOutput }>[]
+}) {
+  const isDefault = (output: MediaOutput, id: string) => {
+    const ref = config()?.mediaDefaults?.[output]
+    return ref?.provider === props.provider && ref.model === id
+  }
+  const listed = (id: string) => Boolean(config()?.providers[props.provider]?.media?.[id])
+  return (
+    <For each={MEDIA_OUTPUTS.filter((o) => props.models.some((m) => m.output === o))}>
+      {(output) => (
+        <>
+          <h3 class="account-section">
+            {MEDIA_SECTION[output]}
+            <span class="account-unit">积分</span>
+          </h3>
+          <section class="lib-card">
+            <div class="lib-scroll">
+              <table class="lib-table account-table">
+                <thead>
+                  <tr>
+                    <th>型号</th>
+                    <th>计费单位</th>
+                    <th class="num">单价</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={props.models.filter((m) => m.output === output)}>
+                    {(m) => (
+                      <tr>
+                        <td>
+                          <code class="lib-id">{m.id}</code>
+                        </td>
+                        <td>{UNIT_LABEL[m.unit]}</td>
+                        <td class="num">{unitPriceText(m.unitPrice)}</td>
+                        <td class="account-default">
+                          <DefaultToggle
+                            on={isDefault(output, m.id)}
+                            disabled={!listed(m.id) || configBusy()}
+                            onSet={() =>
+                              void replaceConfig((cur) => ({
+                                ...cur,
+                                mediaDefaults: {
+                                  ...cur.mediaDefaults,
+                                  [output]: { provider: props.provider, model: m.id },
+                                },
+                              }))
+                            }
+                            onUnset={() =>
+                              void replaceConfig((cur) => withoutMediaDefault(cur, output))
+                            }
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </>
+      )}
+    </For>
+  )
+}
+
 function ModelTable(props: { provider: string }) {
   const [models, { refetch }] = createResource(fetchCloudModels)
   ensureConfig()
@@ -276,55 +373,62 @@ function ModelTable(props: { provider: string }) {
       when={loaded(models)}
       fallback={<LoadState error={models.error} onRetry={refetch} lines={4} />}
     >
-      {(list) => (
-        <section class="lib-card">
-          <div class="lib-scroll">
-            <table class="lib-table account-table">
-              <thead>
-                <tr>
-                  <th>型号</th>
-                  <th class="num">倍率（官方价）</th>
-                  <th class="num">输入</th>
-                  <th class="num">输出</th>
-                  <th class="num">缓存读取</th>
-                  <th class="num">缓存写入</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                <For each={list()}>
-                  {(m) => (
+      {(all) => {
+        const list = () => all().flatMap((m) => (m.output === 'chat' ? [m] : []))
+        const media = () => all().flatMap((m) => (m.output === 'chat' ? [] : [m]))
+        return (
+          <>
+            <section class="lib-card">
+              <div class="lib-scroll">
+                <table class="lib-table account-table">
+                  <thead>
                     <tr>
-                      <td>
-                        <code class="lib-id">{m.id}</code>
-                      </td>
-                      {/* 按单价计价的型号没有官方价，单价列即最终单价。 */}
-                      <td class="num">{m.official ? formatRatio(m.ratio) : '—'}</td>
-                      <td class="num">{m.price ? formatCredits(m.price.input) : '—'}</td>
-                      <td class="num">{m.price ? formatCredits(m.price.output) : '—'}</td>
-                      <td class="num">{m.price ? formatCredits(m.price.cacheRead) : '—'}</td>
-                      <td class="num">{m.price ? formatCredits(m.price.cacheWrite) : '—'}</td>
-                      <td class="account-default">
-                        <DefaultToggle
-                          on={isDefault(m.id)}
-                          disabled={!listed(m.id) || configBusy()}
-                          onSet={() =>
-                            void replaceConfig((cur) => ({
-                              ...cur,
-                              active: { provider: props.provider, model: m.id },
-                            }))
-                          }
-                          onUnset={() => void replaceConfig(withoutActive)}
-                        />
-                      </td>
+                      <th>型号</th>
+                      <th class="num">倍率（官方价）</th>
+                      <th class="num">输入</th>
+                      <th class="num">输出</th>
+                      <th class="num">缓存读取</th>
+                      <th class="num">缓存写入</th>
+                      <th />
                     </tr>
-                  )}
-                </For>
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+                  </thead>
+                  <tbody>
+                    <For each={list()}>
+                      {(m) => (
+                        <tr>
+                          <td>
+                            <code class="lib-id">{m.id}</code>
+                          </td>
+                          {/* 按单价计价的型号没有官方价，单价列即最终单价。 */}
+                          <td class="num">{m.official ? formatRatio(m.ratio) : '—'}</td>
+                          <td class="num">{m.price ? formatCredits(m.price.input) : '—'}</td>
+                          <td class="num">{m.price ? formatCredits(m.price.output) : '—'}</td>
+                          <td class="num">{m.price ? formatCredits(m.price.cacheRead) : '—'}</td>
+                          <td class="num">{m.price ? formatCredits(m.price.cacheWrite) : '—'}</td>
+                          <td class="account-default">
+                            <DefaultToggle
+                              on={isDefault(m.id)}
+                              disabled={!listed(m.id) || configBusy()}
+                              onSet={() =>
+                                void replaceConfig((cur) => ({
+                                  ...cur,
+                                  active: { provider: props.provider, model: m.id },
+                                }))
+                              }
+                              onUnset={() => void replaceConfig(withoutActive)}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+            <MediaTables provider={props.provider} models={media()} />
+          </>
+        )
+      }}
     </Show>
   )
 }

@@ -5,6 +5,7 @@
 
 import { afterAll, beforeEach, expect, test } from 'bun:test'
 import { stat } from 'node:fs/promises'
+import { lookupMediaModel, quoteMedia } from '@qywork/ai'
 import type { Announcement } from '@qywork/core'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
 import { handleCloudApi } from '../api/cloud.ts'
@@ -57,6 +58,8 @@ const cloud = {
   sonnetRatio: 0.5,
   /** 云端收到的型号清单请求次数。 */
   catalogReads: 0,
+  /** 型号清单中是否有生成型号。 */
+  media: false,
 }
 
 const server: ReturnType<typeof Bun.serve> = Bun.serve({
@@ -211,6 +214,17 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
               ]
             : []),
         ],
+        media: cloud.media
+          ? [
+              {
+                id: 'doubao-seedance-2-0-260128',
+                output: 'video',
+                protocol: 'ark_videos',
+                unit: 'second',
+                unitPrice: { '480p': 0.1, '720p': 0.2, '1080p': 0.4, '4k': 0.8 },
+              },
+            ]
+          : [],
       })
     }
     return new Response('not found', { status: 404 })
@@ -240,6 +254,7 @@ beforeEach(async () => {
     notesQueries: 0,
     sonnetRatio: 0.5,
     catalogReads: 0,
+    media: false,
   })
   live = await loadConfig()
   delete live.catalog
@@ -455,9 +470,10 @@ test('可用模型实时读取云端型号清单，单价为积分 / 百万 toke
     'claude-next',
     'claude-opus-5-5',
   ])
-  expect(models[1]?.price).toMatchObject({ input: 300, output: 1500 })
-  expect(models[0]?.ratio).toBe(0.5)
-  expect(models.map((m) => m.official)).toEqual([true, false, false, false])
+  const chat = models.flatMap((m) => (m.output === 'chat' ? [m] : []))
+  expect(chat[1]?.price).toMatchObject({ input: 300, output: 1500 })
+  expect(chat[0]?.ratio).toBe(0.5)
+  expect(chat.map((m) => m.official)).toEqual([true, false, false, false])
   // 云端按官方价计价且本机模型库有单价的型号只写倍率；其余写单价。
   const stored = live.providers[CLOUD_PROVIDER]?.models ?? {}
   expect(stored['claude-sonnet-5-5']?.price).toEqual({ scale: 0.5, currency: 'CREDIT' })
@@ -593,4 +609,36 @@ test('云端地址：去掉首尾空白与末尾斜杠；带路径或多个地�
   for (const raw of ['http://localhost:8080/v1', 'http://localhost:8080,http://127.0.0.1:8080']) {
     expect(() => cloudOrigin({ QYWORK_CLOUD: raw })).toThrow('QYWORK_CLOUD 须为云端服务的地址')
   }
+})
+
+test('生成型号：登录时写入云端生成协议，规格带原协议与单价，参数表按原协议取得；清单中没有后标记已下架', async () => {
+  cloud.media = true
+  await account.login('me@example.com', PASSWORD)
+  const stored = live.providers[CLOUD_PROVIDER]?.media?.['doubao-seedance-2-0-260128']
+  expect(stored).toEqual({
+    kind: 'qywork_videos',
+    spec: {
+      cloud: {
+        kind: 'ark_videos',
+        unit: 'second',
+        unitPrice: { '480p': 0.1, '720p': 0.2, '1080p': 0.4, '4k': 0.8 },
+      },
+    },
+  })
+  const spec = lookupMediaModel('doubao-seedance-2-0-260128', 'qywork_videos', stored?.spec)
+  expect(spec.kind).toBe('qywork_videos')
+  expect(spec.params.map((p) => p.name)).toContain('duration')
+  // 发送前报价：10 秒 720p × 0.2 积分。
+  expect(quoteMedia(spec, { duration: 10, resolution: '720p' }, { images: 0, videos: 0 })).toEqual({
+    cost: 2,
+    currency: 'CREDIT',
+  })
+  const models = await account.models()
+  expect(models.find((m) => m.output === 'video')).toMatchObject({
+    id: 'doubao-seedance-2-0-260128',
+    unit: 'second',
+  })
+  cloud.media = false
+  await account.models()
+  expect(live.providers[CLOUD_PROVIDER]?.media?.['doubao-seedance-2-0-260128']?.delisted).toBe(true)
 })

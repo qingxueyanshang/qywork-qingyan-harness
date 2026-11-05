@@ -26,8 +26,10 @@ import {
   type Currency,
   channelImageSpecProblem,
   channelVideoSpecProblem,
+  cloudMediaSpecProblem,
   EFFORT_ORDER,
   type EffortLevel,
+  isCloudMediaKind,
   MEDIA_KIND_OUTPUT,
   MEDIA_KINDS,
   MEDIA_OUTPUTS,
@@ -995,9 +997,14 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         )
       }
       // 保存的规格直接决定请求字段与素材上限，不合法的规格会使画布开放渠道不接受的素材。
+      // 云端协议的参数表与单价都在云端规格中，没有规格时无法校验参数与报价。
+      if (m && MEDIA_KINDS.includes(m.kind) && isCloudMediaKind(m.kind) && m.spec === undefined) {
+        problems.push(`${name} / ${id} 缺少云端规格；退出账号后重新登录即可写入。`)
+      }
       if (m?.spec !== undefined) {
-        const problem =
-          m.spec && typeof m.spec === 'object' && 'base' in m.spec
+        const problem = isCloudMediaKind(m.kind)
+          ? cloudMediaSpecProblem(m.spec, m.kind)
+          : m.spec && typeof m.spec === 'object' && 'base' in m.spec
             ? mediaBaseProblem(m.spec, m.kind)
             : m.kind === 'openai_videos'
               ? channelVideoSpecProblem(m.spec)

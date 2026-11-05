@@ -12,6 +12,7 @@
  */
 
 import type { MessageId } from '../domain/ids.ts'
+import type { MediaOutput, MediaUnit, UnitPrice } from '../domain/media.ts'
 import type {
   FileChange,
   Message,
@@ -230,14 +231,25 @@ export interface CloudUsage {
   days: { day: string; requests: number; tokens: number; credits: number }[]
 }
 
-/** `GET /api/cloud/models`：云端当前提供的对话型号、售价倍率与单价（基础档乘以倍率），单位为积分 / 百万 token；云端未定价时为 null。 */
-export interface CloudModel {
-  id: string
-  ratio: number
-  /** true：售价为官方价乘以倍率；false：售价为后台填写的单价乘以倍率，界面不列出倍率。 */
-  official: boolean
-  price: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
-}
+/**
+ * `GET /api/cloud/models`：云端当前提供的型号。对话型号为售价倍率与单价（基础档乘以倍率），单位为积分 / 百万 token，
+ * 云端未定价时为 null；生成型号为计费单位与单价（积分 / 单位），可按分辨率档位分别定价。
+ */
+export type CloudModel =
+  | {
+      output: 'chat'
+      id: string
+      ratio: number
+      /** true：售价为官方价乘以倍率；false：售价为后台填写的单价乘以倍率，界面不列出倍率。 */
+      official: boolean
+      price: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
+    }
+  | {
+      output: MediaOutput
+      id: string
+      unit: MediaUnit
+      unitPrice: UnitPrice
+    }
 
 /** `GET /api/cloud/requests`：云端的一条请求记录，按时间倒序分页。 */
 export interface CloudRequest {
