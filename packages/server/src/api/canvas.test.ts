@@ -313,6 +313,8 @@ describe('画布接口', () => {
       expect(models.media.find((model) => model.id === id)).toMatchObject({
         known: true,
         operations: ['text_to_video', 'reference_to_video'],
+        maxImages: 30,
+        maxVideos: 0,
         maxAudios,
       })
       expect(models.mediaLibrary.some((model) => model.id === id)).toBe(false)

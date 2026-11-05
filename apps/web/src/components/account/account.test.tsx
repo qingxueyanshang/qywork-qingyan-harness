@@ -145,7 +145,7 @@ beforeAll(async () => {
           id: 'relay-model',
           ratio: 1,
           official: false,
-          price: { input: 100, output: 200, cacheRead: 10, cacheWrite: 0 },
+          price: { input: 100, output: 200, cacheRead: 0.0175, cacheWrite: 0 },
         },
         {
           output: 'video',
@@ -310,7 +310,7 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
   expect(terms('1')).toEqual([])
   // 可用模型、倍率与单价（积分 / 百万 token）；读取后模型列表随之刷新。
   await until(() => view.text().includes('claude-opus-5-5'))
-  expect(view.text()).toContain('1,500.00')
+  expect(view.text()).toContain('1,500')
   expect(view.text()).toContain('0.85×')
   // 倍率只相对官方价列出；按单价计价的型号此列为「—」。
   expect(view.text()).toContain('倍率（官方价）')
@@ -318,14 +318,18 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
     r.textContent?.includes('relay-model'),
   )
   expect(relay?.querySelectorAll('td')[1]?.textContent).toBe('—')
-  // 生成型号按类别单独成表：计费单位与逐档单价。
+  // 单价按实际值显示，不按金额保留两位小数：0.0175 不显示为 0.02，0 不显示为 0.00。
+  expect(
+    [...(relay?.querySelectorAll('td') ?? [])].slice(2, 6).map((td) => td.textContent),
+  ).toEqual(['100', '200', '0.0175', '0'])
+  // 生成型号按类别单独成表：参数、计费单位与逐档单价；模型目录中没有该型号时参数为「—」。
   expect(view.text()).toContain('视频')
   const seedance = [...view.host.querySelectorAll('tr')].find((r) =>
     r.textContent?.includes('doubao-seedance-2-0-260128'),
   )
   expect(
-    [...(seedance?.querySelectorAll('td') ?? [])].slice(1, 3).map((td) => td.textContent),
-  ).toEqual(['每秒', '720p 0.20 · 1080p 0.40'])
+    [...(seedance?.querySelectorAll('td') ?? [])].slice(1, 4).map((td) => td.textContent),
+  ).toEqual(['—', '每秒', '720p 0.2 · 1080p 0.4'])
   expect(calls).toContain('GET /api/models')
   // 不足一页：没有更早的记录。
   expect(view.button('加载更早的记录')).toBeUndefined()
@@ -716,7 +720,7 @@ test('可用模型可设为默认对话模型，写入与模型设置页同一�
   view.close()
 })
 
-test('可用模型、生成模型与使用记录显示模型目录中的名称；目录中没有的型号显示型号本身', async () => {
+test('可用模型、生成模型与使用记录显示模型目录中的名称，生成模型列出时长与素材上限；目录中没有的型号显示型号本身', async () => {
   const row = (id: string, label: string) => ({
     id,
     label,
@@ -746,7 +750,10 @@ test('可用模型、生成模型与使用记录显示模型目录中的名称�
       operations: [],
       isDefault: false,
       known: true,
-      params: [],
+      maxImages: 9,
+      maxVideos: 3,
+      maxAudios: 3,
+      params: [{ name: 'duration', label: '时长', type: 'integer', min: 4, max: 15 }],
     },
   ]
   pages = [[record('1')]]
@@ -764,6 +771,11 @@ test('可用模型、生成模型与使用记录显示模型目录中的名称�
         .includes(text)
     expect(first('Claude Opus 5.5')).toBe(true)
     expect(first('Seedance 2.0')).toBe(true)
+    // 生成模型的参数：时长范围与参考素材上限。
+    const seedance = [...view.host.querySelectorAll('tbody tr')].find(
+      (r) => r.querySelector('td')?.textContent === 'Seedance 2.0',
+    )
+    expect(seedance?.querySelectorAll('td')[1]?.textContent).toBe('4–15秒 · 图≤9、视频≤3、音频≤3')
     // 目录中没有的型号（尚未同步到本机配置）显示型号本身。
     expect(first('relay-model')).toBe(true)
     expect(view.text()).not.toContain('claude-opus-5-5')

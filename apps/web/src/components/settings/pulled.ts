@@ -165,17 +165,25 @@ export function durationSummary(model: PulledModel): string {
   return first === last ? `${first}秒` : `${first}–${last}秒`
 }
 
-/** 参考素材上限，写法与模型库表格相同。没有渠道规格时为空串。 */
-export function referenceSummary(model: PulledModel): string {
-  if (model.output === 'chat' || model.output === 'unknown' || !model.spec) return ''
-  const s = model.spec
+/** 参考素材上限的写法，如「图≤30、视频≤10、音频≤10」；为 0 或省略的项不写。拉取对话框与账号窗口共用。 */
+export function referenceLimits(l: {
+  maxImages?: number
+  maxVideos?: number
+  maxAudios?: number
+}): string {
   return [
-    s.maxImages ? `图≤${s.maxImages}` : '',
-    'maxVideos' in s && s.maxVideos ? `视频≤${s.maxVideos}` : '',
-    'maxAudios' in s && s.maxAudios ? `音频≤${s.maxAudios}` : '',
+    l.maxImages ? `图≤${l.maxImages}` : '',
+    l.maxVideos ? `视频≤${l.maxVideos}` : '',
+    l.maxAudios ? `音频≤${l.maxAudios}` : '',
   ]
     .filter(Boolean)
     .join('、')
+}
+
+/** 参考素材上限，写法与模型库表格相同。没有渠道规格时为空串。 */
+export function referenceSummary(model: PulledModel): string {
+  if (model.output === 'chat' || model.output === 'unknown' || !model.spec) return ''
+  return referenceLimits(model.spec)
 }
 
 /**
