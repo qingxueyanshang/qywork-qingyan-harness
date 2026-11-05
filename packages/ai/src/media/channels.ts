@@ -56,8 +56,9 @@ export function hongchengVideoSpec(entry: Record<string, unknown>): ChannelVideo
 
 /**
  * 木木目录（`/docs/typetale-models.json` 的 `models[]`）中的一条视频型号。
- * 目录只给出参考图数量，参考视频与参考音频按 0 处理；`transport` 为 `public_urls` 时素材先上传到渠道，
- * 为 `multipart` 时参考图以表单文件随提交上传。
+ * 参考图、参考视频与参考音频的上限取 `refs`、`video_refs`、`audio_refs`（后两项缺省为 0）；
+ * `transport` 为 `public_urls` 时素材先上传到渠道，为 `multipart` 时参考图以表单文件随提交上传。
+ * `multipart` 的型号参考视频与参考音频为 0：表单中全部素材放入同一个文件字段，无法区分用途（`openai-videos.ts`）。
  */
 export function mumugofeVideoSpec(entry: Record<string, unknown>): ChannelVideoSpec | null {
   if (entry.kind !== 'video' || entry.protocol !== 'video_v1') return null
@@ -96,8 +97,8 @@ export function mumugofeVideoSpec(entry: Record<string, unknown>): ChannelVideoS
     resolutions,
     sizes,
     maxImages,
-    maxVideos: 0,
-    maxAudios: 0,
+    maxVideos: entry.transport === 'multipart' ? 0 : (count(entry.video_refs) ?? 0),
+    maxAudios: entry.transport === 'multipart' ? 0 : (count(entry.audio_refs) ?? 0),
     ...(entry.transport === 'public_urls' ? { publicUrls: true as const } : {}),
     ...(entry.transport === 'multipart' ? { multipart: true as const } : {}),
   }

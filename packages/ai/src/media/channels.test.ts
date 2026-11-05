@@ -96,6 +96,18 @@ describe('木木', () => {
     expect(mumugofeVideoSpec(typetale('gpt-image-2'))).toBeNull()
   })
 
+  test('目录给出参考视频与参考音频上限时按其保存；表单上传的型号仍为 0', () => {
+    const entry = typetale('X-SD25-301010')
+    expect(mumugofeVideoSpec({ ...entry, video_refs: 10, audio_refs: 3 })).toMatchObject({
+      maxImages: 30,
+      maxVideos: 10,
+      maxAudios: 3,
+    })
+    expect(
+      mumugofeVideoSpec({ ...typetale('sd-2.0-vip'), video_refs: 3, audio_refs: 3 }),
+    ).toMatchObject({ maxVideos: 0, maxAudios: 0, multipart: true })
+  })
+
   test('表单上传：生成规格的素材传递方式；按 resolution 计价时尺寸对应档位', () => {
     const saved = mumugofeVideoSpec(typetale('sd-2.0-vip'))!
     expect(channelMediaSpec('sd-2.0-vip', saved).inputs.transport).toBe('multipart')
