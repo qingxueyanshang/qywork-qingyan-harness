@@ -35,6 +35,7 @@ import {
   replaceConfig,
   reportConfigWriteError,
 } from './configStore.ts'
+import { DefaultToggle, withoutActive } from './DefaultToggle.tsx'
 import { LoadState } from './LoadState.tsx'
 import { MEDIA_KIND_LABEL, ModelLibrary } from './ModelLibrary.tsx'
 import { ProviderTabs } from './ProviderTabs.tsx'
@@ -500,20 +501,17 @@ export function ModelSettings() {
                               <div class="model-row-main">
                                 {/* 「默认」指新会话使用的接口与模型。已有会话各自保存接口与模型，
                                     修改此处不影响它们。 */}
-                                <button
-                                  class="model-pick"
-                                  type="button"
-                                  disabled={isDefault()}
-                                  onClick={() => {
+                                <DefaultToggle
+                                  on={isDefault()}
+                                  onSet={() => {
                                     const provider = name()
                                     void replaceConfig((cur) => ({
                                       ...cur,
                                       active: { provider, model: id },
                                     }))
                                   }}
-                                >
-                                  {isDefault() ? '默认' : '设为默认'}
-                                </button>
+                                  onUnset={() => void replaceConfig(withoutActive)}
+                                />
                                 <span class="model-id">{id}</span>
                                 <Show when={p().models[id]?.delisted}>
                                   <span class="model-delisted">已下架</span>
@@ -575,11 +573,9 @@ export function ModelSettings() {
                           return (
                             <div class="model-row" classList={{ active: isDefault() }}>
                               <div class="model-row-main">
-                                <button
-                                  class="model-pick"
-                                  type="button"
-                                  disabled={isDefault()}
-                                  onClick={() => {
+                                <DefaultToggle
+                                  on={isDefault()}
+                                  onSet={() => {
                                     const provider = name()
                                     void replaceConfig((cur) => ({
                                       ...cur,
@@ -589,9 +585,10 @@ export function ModelSettings() {
                                       },
                                     }))
                                   }}
-                                >
-                                  {isDefault() ? '默认' : '设为默认'}
-                                </button>
+                                  onUnset={() =>
+                                    void replaceConfig((cur) => withoutMediaDefault(cur, output))
+                                  }
+                                />
                                 <span class="model-id">{id}</span>
                                 <span class="model-output">{OUTPUT_LABEL[output]}</span>
                                 <Show when={m.delisted}>
@@ -752,6 +749,13 @@ function firstMediaRef(
     }
   }
   return null
+}
+
+/** 取消某一类别的默认生成模型；所有类别都没有默认值时省略整个字段。 */
+function withoutMediaDefault(cur: RedactedConfig, output: MediaOutput): RedactedConfig {
+  const { [output]: _drop, ...kept } = cur.mediaDefaults ?? {}
+  const { mediaDefaults: _all, ...rest } = cur
+  return Object.keys(kept).length ? { ...rest, mediaDefaults: kept } : rest
 }
 
 /** 接口表中第一个已添加的模型。删除当前默认接口或默认模型后，用它选择新的默认值。 */
