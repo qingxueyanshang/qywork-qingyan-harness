@@ -277,13 +277,32 @@ test('上传的连接失败和无效响应均不误报生成结果未知，连�
  * 网关错误不能证明计费请求没有到达上游；保留 HTTP 状态和服务商原文，不自动重新提交。
  * 生成的 5xx 与 408 判为结果未知，不按暂时故障的间隔重试：重新提交可能重复计费。
  */
-test('客户端拒绝与网关结果未知分开报告，保留原文且生成只 POST 一次', async () => {
+test('接口答复的错误与网关的结果未知分开报告，保留原文且生成只 POST 一次', async () => {
   for (const [status, content, outcome, message] of [
     [
       503,
       '{"error":{"message":"No available compatible accounts","type":"api_error"}}',
+      'rejected',
+      'HTTP 503 服务不可用：No available compatible accounts',
+    ],
+    // 原始失败形状：中转站对审核未通过的出图请求返回 502 与接口错误对象，曾判为结果未知。
+    [
+      502,
+      '{"error":{"message":"提示词未过审","type":"new_api_error"}}',
+      'rejected',
+      'HTTP 502 网关错误：提示词未过审',
+    ],
+    [
+      500,
+      '{"code":"InternalError","message":"internal"}',
+      'rejected',
+      'HTTP 500 服务器内部错误：internal',
+    ],
+    [
+      504,
+      '{"message":"Endpoint request timed out"}',
       'unknown',
-      'HTTP 503 服务不可用：No available compatible accounts；远端结果未知',
+      'HTTP 504 网关超时：Endpoint request timed out；远端结果未知',
     ],
     [400, 'bad input', 'rejected', 'HTTP 400 请求无效：bad input'],
     [502, 'gateway', 'unknown', 'HTTP 502 网关错误：gateway；远端结果未知'],
@@ -310,7 +329,7 @@ test('客户端拒绝与网关结果未知分开报告，保留原文且生成�
     expect(error.diagnostic).toMatchObject({ status, outcome })
     expect(error.message).toBe(message)
   }
-  expect(hits).toEqual(['POST', 'POST', 'POST', 'POST', 'POST', 'POST', 'POST', 'POST'])
+  expect(hits).toEqual(Array(11).fill('POST'))
 })
 
 const limited = () =>

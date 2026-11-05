@@ -77,6 +77,16 @@ function errorBodyOf(text: string): unknown {
   }
 }
 
+/**
+ * 正文是否为接口的错误对象：JSON 对象带 `error`（OpenAI 格式的接口与中转站为对象，部分接口为字符串）
+ * 或顶层错误码 `code`（百炼、可灵）。接口前的网关返回 HTML 页、空正文或只有 `message` 的 JSON，不满足。
+ */
+function apiError(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return false
+  const o = body as Record<string, unknown>
+  return o.error != null || o.code != null
+}
+
 /** 读完响应体，每收到一段数据调用一次 `heard`。 */
 async function readBody(res: Response, heard: () => void): Promise<Uint8Array> {
   const chunks: Uint8Array[] = []
@@ -103,12 +113,12 @@ async function readBody(res: Response, heard: () => void): Promise<Uint8Array> {
 /**
  * 生成与上传的失败是否按暂时故障的间隔（`TRANSIENT_RETRY_DELAYS_MS`）重试。
  *
- * 只重试接口未受理的暂时故障（`outcome: 'rejected'` 且 `transientFailure`），重试不会重复提交或计费：
- * 限流（429 且不是额度用尽）、连接在发出请求之前失败，以及素材上传的 408 / 5xx 与连接中断（上传在提交生成之前）。
+ * 只重试接口未受理的暂时故障（`outcome: 'rejected'`），重试不会重复提交或计费：
+ * 生成为限流（429 且不是额度用尽）与连接在发出请求之前失败；素材上传另加 408 / 5xx 与连接中断（上传在提交生成之前）。
+ * 生成的 408 / 5xx 不要加入：接口答复的这类错误中有审核拒绝（中转站以 502 返回「提示词未过审」），
+ * 重试得到同样的结果，且每次都要再等待一次生成耗时；正文不是接口错误对象的 408 / 5xx 为结果未知，只能取回，不能重新提交。
  * 静默超时（`kind: 'timeout'`）不重试：已连续数分钟没有收到任何数据，重试通常得到同样的结果，
- * 而每次重试都要再等待一个静默上限。
- * 生成请求发出之后的连接中断与 408 / 5xx 判为结果未知（`outcome: 'unknown'`），远端可能已经受理并计费，
- * 不要加入：结果未知只能取回，不能重新提交。额度、余额或配额用尽的 429（`quotaExhausted`，与对话请求同一判定）
+ * 而每次重试都要再等待一个静默上限。额度、余额或配额用尽的 429（`quotaExhausted`，与对话请求同一判定）
  * 等待不会改变结果，同样不重试。查询与下载由调用方重试（`waitTask`、`download`），此处不叠加一层。
  */
 function retriesSubmission(
@@ -116,13 +126,10 @@ function retriesSubmission(
   failure: MediaError,
   quota: boolean,
 ): boolean {
-  return (
-    (stage === 'generate' || stage === 'upload') &&
-    failure.diagnostic?.outcome === 'rejected' &&
-    failure.diagnostic.kind !== 'timeout' &&
-    transientFailure(failure) &&
-    !quota
-  )
+  const facts = failure.diagnostic
+  if (facts?.outcome !== 'rejected' || facts.kind === 'timeout' || quota) return false
+  if (stage === 'upload') return transientFailure(failure)
+  return stage === 'generate' && (facts.kind === 'connection' || failure.status === 429)
 }
 
 /** 重试用尽后的报错：原文之后写明已做的自动重试，模型与界面据此不再重复同一操作。 */
@@ -227,14 +234,12 @@ export async function send(
       const message = providerMessage(res, text)
       quota = res.status === 429 && quotaExhausted(errorBodyOf(text), message)
       retryAfter = retryAfterOf(res)
-      // 生成的 408 / 5xx 可能来自网关，不能据此断言上游未受理。明确的客户端拒绝才可视为未生成。
+      // 正文为接口错误对象的错误状态是接口自身的答复，远端不会再返回结果，判为被拒绝。
+      // 生成的 408 / 5xx 而正文不是接口错误对象时，可能来自接口前的网关，接口仍可能在生成并计费，判为结果未知。
       // 上传错误发生在提交生成之前；下载失败时产物仍在远端，保持可取回。
       const facts = diagnostic('http')
-      if (
-        stage !== 'download' &&
-        !(stage === 'generate' && (res.status === 408 || res.status >= 500))
-      )
-        facts.outcome = 'rejected'
+      const gateway = (res.status === 408 || res.status >= 500) && !apiError(errorBodyOf(text))
+      if (stage !== 'download' && !(stage === 'generate' && gateway)) facts.outcome = 'rejected'
       failure = new MediaError(
         stageMessage(stage, `HTTP ${res.status} ${httpStatusName(res.status)}：${message}`, facts),
         { status: res.status, diagnostic: facts },
