@@ -14,6 +14,7 @@ import {
   applyTransportCapabilities,
   builtinCatalog,
   computeCost,
+  costTerms,
   effortIsTransmittable,
   lookupModel,
   priceAt,
@@ -42,7 +43,8 @@ test('MiniMax 与阶跃星辰只收录当前型号，能力按已接通的协议
       vision: true,
       video: kind === 'openai_chat_completions',
       thinksByDefault: true,
-      pricing: { input: 0.15, output: 0.6, cacheRead: 0.015 },
+      // 默认端点是国内站，按国内站的人民币价目计价。
+      pricing: { currency: 'CNY', input: 1, output: 4, cacheRead: 0.1 },
     })
     expect(minimax.longContext).toBeUndefined()
   }
@@ -54,7 +56,7 @@ test('MiniMax 与阶跃星辰只收录当前型号，能力按已接通的协议
       vision: true,
       video: kind === 'openai_chat_completions',
       thinksByDefault: true,
-      pricing: { currency: 'CNY', input: 7, output: 20, cacheRead: 0.35, cacheWrite5m: 7 },
+      pricing: { currency: 'CNY', input: 7, output: 20, cacheRead: 0.7, cacheWrite5m: 7 },
     })
   }
   expect(catalog.some((m) => m.id === 'step-5-preview' && m.provider === 'openai_responses')).toBe(
@@ -759,8 +761,35 @@ describe('长上下文阶梯价', () => {
 
   test('MiniMax M3 以 512K 为价格分界', () => {
     const m3 = lookupModel('MiniMax-M3', 'openai_chat_completions')
-    expect(priceAt(m3, { promptTokens: 524_288 }).input).toBe(0.3)
-    expect(priceAt(m3, { promptTokens: 524_289 }).input).toBe(0.6)
+    expect(priceAt(m3, { promptTokens: 524_288 })).toMatchObject({ input: 2.1, currency: 'CNY' })
+    expect(priceAt(m3, { promptTokens: 524_289 })).toMatchObject({ input: 4.2, currency: 'CNY' })
+  })
+
+  test('GPT-5.6 Sol 的促销价截至 2026-11-30，之后按标准价 $5 / $30 计，长上下文档同步换算', () => {
+    const at = (now: number) => lookupModel('gpt-5.6-sol', 'openai_chat_completions', now)
+    const promo = at(Date.UTC(2026, 10, 30, 23, 59, 59))
+    expect(promo.pricing).toMatchObject({ input: 4, output: 20, cacheRead: 0.4, cacheWrite5m: 5 })
+    expect(priceAt(promo, { promptTokens: 272_001 })).toMatchObject({ input: 8, output: 30 })
+    const after = at(Date.UTC(2026, 11, 1))
+    expect(after.pricing).toMatchObject({
+      input: 5,
+      output: 30,
+      cacheRead: 0.5,
+      cacheWrite5m: 6.25,
+    })
+    expect(after.pricing.note).toBeUndefined()
+    expect(priceAt(after, { promptTokens: 272_001 })).toMatchObject({
+      input: 10,
+      output: 45,
+      cacheRead: 1,
+      cacheWrite5m: 12.5,
+    })
+  })
+
+  test('GPT-5.6 Cyber 提示词超过 272K 后整条请求按 2 倍输入、1.5 倍输出计价', () => {
+    const cyber = lookupModel('gpt-5.6-cyber', 'openai_chat_completions')
+    expect(priceAt(cyber, { promptTokens: 272_000 }).input).toBe(12.5)
+    expect(priceAt(cyber, { promptTokens: 272_001 })).toMatchObject({ input: 25, output: 112.5 })
   })
 
   test('GLM-4.7 国内站按输入与输出双轴换档', () => {
@@ -1057,22 +1086,32 @@ describe('对应型号与接口价格', () => {
     ).toBe(false)
   })
 
-  test('覆盖改变币种时去掉按原币种填写的长上下文档与时段折扣', () => {
-    const gpt = lookupModel('gpt-5.6-sol', 'openai_chat_completions')
+  /** 原始失败形状：中转站按官方价 0.33 倍以美元单价写入，30 万 token 的请求按官方长档全价 $4 / $15 记账。 */
+  test('单价覆盖不分档、不随时段打折，币种与目录相同时同样如此', () => {
+    const gpt = lookupModel('gpt-6-sol', 'openai_responses')
     expect(gpt.longContext?.length).toBeGreaterThan(0)
-    const relay = applySpecOverride(gpt, { input: 2.08, output: 12.48, currency: 'CNY' })
-    expect(relay.longContext).toBeUndefined()
-    expect(priceAt(relay, { promptTokens: 400_000 })).toMatchObject({
-      input: 2.08,
-      currency: 'CNY',
-    })
-    // 币种不变时保留目录的档位。
-    expect(applySpecOverride(gpt, { input: 3 }).longContext).toEqual(gpt.longContext)
+    const usage = { inputTokens: 300_000, outputTokens: 1000 }
+    for (const currency of ['USD', 'CNY'] as const) {
+      const relay = applySpecOverride(gpt, {
+        input: 0.66,
+        output: 3.3,
+        cacheRead: 0.066,
+        cacheWrite: 0.825,
+        currency,
+      })
+      expect(relay.longContext).toBeUndefined()
+      // 300K × 0.66 + 1000 × 3.3 = 0.2013。
+      expect(computeCost(relay, usage)).toBeCloseTo(0.2013, 10)
+    }
+    expect(applySpecOverride(gpt, { input: 3 }).longContext).toBeUndefined()
     const deepseek = lookupModel('deepseek-flash', 'openai_chat_completions')
-    expect(applySpecOverride(deepseek, { input: 1, currency: 'CNY' }).offPeak).toEqual(
-      deepseek.offPeak,
-    )
-    expect(applySpecOverride(deepseek, { input: 1, currency: 'USD' }).offPeak).toBeUndefined()
+    const offPeakMonday = Date.UTC(2026, 10, 2, 12)
+    const relay = applySpecOverride(deepseek, { input: 1, output: 4, currency: 'CNY' })
+    expect(relay.offPeak).toBeUndefined()
+    expect(priceAt(relay, { now: offPeakMonday }).input).toBe(1)
+    // 计费公式折算出的时段折扣写在覆盖中，始终生效。
+    const formula = applySpecOverride(deepseek, { input: 1, output: 4, offPeak: deepseek.offPeak! })
+    expect(priceAt(formula, { now: offPeakMonday }).input).toBe(0.5)
   })
 
   /** 原始失败形状：云端型号以单价写入，币种改为积分后长上下文档被去掉，272K 以上的请求按基础档计价。 */
@@ -1097,5 +1136,27 @@ describe('对应型号与接口价格', () => {
     // 目录没有单价时倍率不生效。
     const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
     expect(applySpecOverride(unknown, { scale: 2, currency: 'CREDIT' }).catalogued).toBe(false)
+  })
+
+  test('计价条件与同一时刻的扣费为同一次判定：提示词含缓存命中与写入，边界值不进入高档', () => {
+    const gpt = lookupModel('gpt-6-sol', 'openai_responses')
+    const at = (input: number) => ({
+      inputTokens: input,
+      outputTokens: 10,
+      cachedTokens: 200_000,
+      cacheWriteTokens: 72_000,
+    })
+    expect(costTerms(gpt, at(0)).tier).toBeNull()
+    expect(costTerms(gpt, at(1)).tier?.thresholdTokens).toBe(272_001)
+    expect(computeCost(gpt, at(1))).toBeGreaterThan(computeCost(gpt, at(0)) * 1.5)
+
+    const deepseek = lookupModel('deepseek-flash', 'openai_chat_completions')
+    const usage = { inputTokens: 1_000_000, outputTokens: 0 }
+    // 2026-11-02 是周一：UTC 02:00 为北京时间 10:00，高峰；UTC 12:00 为北京时间 20:00，空闲。
+    const peak = Date.UTC(2026, 10, 2, 2)
+    const idle = Date.UTC(2026, 10, 2, 12)
+    expect(costTerms(deepseek, usage, peak)).toEqual({ tier: null, offPeak: false })
+    expect(costTerms(deepseek, usage, idle)).toEqual({ tier: null, offPeak: true })
+    expect(computeCost(deepseek, usage, idle)).toBe(computeCost(deepseek, usage, peak) / 2)
   })
 })

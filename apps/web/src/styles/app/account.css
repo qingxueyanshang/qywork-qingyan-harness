@@ -428,6 +428,17 @@
 .account-failed {
   color: var(--danger);
 }
+/* 积分前的计价条件标记（长上下文、空闲时段、1 小时缓存）。 */
+.account-term {
+  display: inline-block;
+  margin-right: var(--s-1);
+  padding: 0 6px;
+  border-radius: var(--r-full);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  line-height: 18px;
+}
 .account-more {
   margin-top: var(--s-3);
 }

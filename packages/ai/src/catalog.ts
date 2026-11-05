@@ -621,14 +621,47 @@ const GPT_6_LUNA_LONG: LongContextTier = {
   note: '提示词超过 272K token 后整条请求按 $0.2 / $0.75（缓存 $0.02）计价',
 }
 
-const GPT_56_SOL_LONG: LongContextTier = {
+/**
+ * GPT-5.6 Sol 的促销价截至 2026-11-30：$4 / $20，型号页写明比标准价低 20% 与 33%，即标准价 $5 / $30。
+ * 与 `geminiFlashPromo` 相同，按当前时间取值，不硬编码，否则自 12 月 1 日起账单会静默算错。
+ * 缓存命中为输入的 0.1 倍，缓存写入为 1.25 倍；提示词超过 272K 后整条请求输入 2 倍、输出 1.5 倍。
+ */
+const GPT_56_SOL_PROMO_ENDS = Date.UTC(2026, 10, 30, 23, 59, 59)
+
+function gpt56Sol(now: number): Pick<ModelSpec, 'pricing' | 'longContext'> {
+  const promo = now <= GPT_56_SOL_PROMO_ENDS
+  const [input, output] = promo ? [4, 20] : [5, 30]
+  const long = { input: input * 2, output: output * 1.5, cacheRead: round(input * 0.2) }
+  return {
+    pricing: {
+      input,
+      output,
+      cacheRead: round(input * 0.1),
+      cacheWrite5m: round(input * 1.25),
+      cacheWrite1h: round(input * 1.25),
+      ...(promo ? { note: '促销价截至 2026-11-30，之后为 $5 / $30' } : {}),
+    },
+    longContext: [
+      {
+        thresholdTokens: 272_001,
+        ...long,
+        cacheWrite5m: round(long.input * 1.25),
+        cacheWrite1h: round(long.input * 1.25),
+        note: `提示词超过 272K token 后整条请求按 $${long.input} / $${long.output}（缓存 $${long.cacheRead}）计价`,
+      },
+    ],
+  }
+}
+
+/** GPT-5.6 Cyber 的型号页写明同一规则：提示词超过 272K 后整条请求输入 2 倍、输出 1.5 倍。 */
+const GPT_56_CYBER_LONG: LongContextTier = {
   thresholdTokens: 272_001,
-  input: 8,
-  output: 30,
-  cacheRead: 0.8,
-  cacheWrite5m: 10,
-  cacheWrite1h: 10,
-  note: '提示词超过 272K token 后整条请求按 $8 / $30（缓存 $0.8）计价',
+  input: 25,
+  output: 112.5,
+  cacheRead: 2.5,
+  cacheWrite5m: 31.25,
+  cacheWrite1h: 31.25,
+  note: '提示词超过 272K token 后整条请求按 $25 / $112.5（缓存 $2.5）计价',
 }
 
 const GPT_56_TERRA_LONG: LongContextTier = {
@@ -669,12 +702,13 @@ const GROK_45_LONG: LongContextTier = {
   note: '提示词满 20 万 token 后整条请求按 $4 / $12（缓存 $0.6）计价',
 }
 
+/** 国内站价目（默认端点 `api.minimax.cn`），与基础档同为人民币。 */
 const MINIMAX_M3_LONG: LongContextTier = {
   thresholdTokens: 524_289,
-  input: 0.6,
-  output: 2.4,
-  cacheRead: 0.12,
-  note: '输入超过 512K token 后整条请求按 $0.6 / $2.4（缓存 $0.12）计价',
+  input: 4.2,
+  output: 16.8,
+  cacheRead: 0.84,
+  note: '输入超过 512K token 后整条请求按 ¥4.2 / ¥16.8（缓存 ¥0.84）计价',
 }
 
 /* 智谱国内站按千 token 分界，因此此处的 32K 为 32,000，不是 32,768。 */
@@ -717,13 +751,16 @@ const GLM_46V_LONG: LongContextTier = {
  * 区间为左开右闭（「32K-256K」不含 32,000），因此第一个进入高档的值为边界 + 1。
  */
 
-/** qwen3.7-plus：超过 256K 后整条请求按 ¥6 / ¥24 / 命中 ¥1.2 计价。 */
+/**
+ * qwen3.7-plus：价目页标「原价 2 / 8 元、6 / 24 元（限时 8 折）」，未写截止日期，按折后价填写。
+ * 命中价为输入价的 20%，按折后的输入价计算。超过 256K 后整条请求按高档计价。
+ */
 const QWEN_37_PLUS_LONG: LongContextTier = {
   thresholdTokens: 256_001,
-  input: 6,
-  output: 24,
-  cacheRead: 1.2,
-  note: '输入超过 256K token 后整条请求按 ¥6 / ¥24（缓存 ¥1.2）计价',
+  input: 4.8,
+  output: 19.2,
+  cacheRead: 0.96,
+  note: '输入超过 256K token 后整条请求按 ¥4.8 / ¥19.2（缓存 ¥0.96）计价',
 }
 
 /** qwen3.7-flash：三档，官方页面逐档给出了命中价。 */
@@ -784,39 +821,61 @@ const QWEN_VL_FLASH_LONG: readonly LongContextTier[] = [
   },
 ]
 
+/** 请求的时刻与大小，取价的依据。 */
+export interface PriceContext {
+  now?: number
+  promptTokens?: number
+  outputTokens?: number
+}
+
+/**
+ * 一次请求取价时生效的、偏离标准价的条件。`priceAt` 按它取价，账单按它标注：两处读取同一次判定，
+ * 不要在调用方按阈值另行判断，阈值含与不含边界的写法不同时，标注与扣费会不一致。
+ */
+export interface PriceTerms {
+  /** 生效的用量阶梯档（`longContext` 中的一档）；未进入任何一档时为 null。 */
+  tier: LongContextTier | null
+  /** 处于分时段折扣的空闲时段，单价已乘以折扣系数。 */
+  offPeak: boolean
+}
+
+export function priceTerms(spec: ModelSpec, ctx: PriceContext = {}): PriceTerms {
+  let offPeak = false
+  if (spec.offPeak) {
+    const d = new Date(ctx.now ?? Date.now())
+    const hour = d.getUTCHours() + d.getUTCMinutes() / 60
+    offPeak = !(
+      spec.offPeak.peakWeekdaysUtc.includes(d.getUTCDay()) &&
+      spec.offPeak.peakWindowsUtc.some(([from, to]) => hour >= from && hour < to)
+    )
+  }
+  // 取提示词达到的**最高**一档。依赖 `longContext` 升序排列，该约定写在字段注释上。
+  let tier: LongContextTier | null = null
+  for (const t of spec.longContext ?? []) {
+    if (
+      (ctx.promptTokens ?? 0) >= t.thresholdTokens &&
+      (ctx.outputTokens ?? 0) >= (t.minOutputTokens ?? 0)
+    ) {
+      tier = t
+    }
+  }
+  return { tier, offPeak }
+}
+
 /**
  * 计算给定时刻、给定大小的请求的实际单价。
  *
  * **目录中的价格是厂商公布的标准价**，本函数在其上叠加两种偏离标准价的情况：
- * 分时段折扣（按星期与小时）与长上下文档（按提示词大小）。两者相互独立，
+ * 分时段折扣（按星期与小时）与长上下文档（按提示词大小），判定见 `priceTerms`。两者相互独立，
  * 直接连乘：目前没有厂商同时采用两者，但代码无需为此增加分支。
  *
  * 两者均不适用时返回 `spec.pricing` 本身，**即同一个对象引用**：
  * 绝大多数模型属于此情形，无需每次新建对象。
  */
-export function priceAt(
-  spec: ModelSpec,
-  ctx: { now?: number; promptTokens?: number; outputTokens?: number } = {},
-): Pricing {
-  let rate = 1
-  if (spec.offPeak) {
-    const d = new Date(ctx.now ?? Date.now())
-    const hour = d.getUTCHours() + d.getUTCMinutes() / 60
-    const peak =
-      spec.offPeak.peakWeekdaysUtc.includes(d.getUTCDay()) &&
-      spec.offPeak.peakWindowsUtc.some(([from, to]) => hour >= from && hour < to)
-    if (!peak) rate *= spec.offPeak.rate
-  }
-  // 取提示词达到的**最高**一档。依赖 `longContext` 升序排列，该约定写在字段注释上。
-  let long: LongContextTier | undefined
-  for (const tier of spec.longContext ?? []) {
-    if (
-      (ctx.promptTokens ?? 0) >= tier.thresholdTokens &&
-      (ctx.outputTokens ?? 0) >= (tier.minOutputTokens ?? 0)
-    ) {
-      long = tier
-    }
-  }
+export function priceAt(spec: ModelSpec, ctx: PriceContext = {}): Pricing {
+  const terms = priceTerms(spec, ctx)
+  const rate = terms.offPeak && spec.offPeak ? spec.offPeak.rate : 1
+  const long = terms.tier
   if (rate === 1 && !long) return spec.pricing
   const p = spec.pricing
   const base = long
@@ -1373,7 +1432,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     /*
      * ── OpenAI GPT-5.6 ──
      *
-     * 官方价目页（2026-08）的短上下文档，逐字：
+     * 官方价目页（2026-11-04 核对）的短上下文档，逐字：
      *
      * | 模型 | 输入 | 缓存输入 | 输出 |
      * |---|---|---|---|
@@ -1382,9 +1441,9 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * | luna | $0.20 | $0.02 | $1.20 |
      * | cyber | $12.50 | $1.25 | $75.00 |
      *
-     * Sol / Terra / Luna 窗口 1.05M、最大输出 128K；Cyber 窗口 400K。
-     * 三个 1.05M 模型在提示词超过 272K 后，整条请求输入 2 倍、输出 1.5 倍，
-     * 缓存写入按高档未命中输入价的 1.25 倍。
+     * Sol 为促销价，见 `gpt56Sol`。Sol / Terra / Luna 窗口 1.05M、最大输出 128K；Cyber 窗口 400K。
+     * 四个型号在提示词超过 272K 后，整条请求输入 2 倍、输出 1.5 倍，缓存写入按高档未命中输入价的 1.25 倍。
+     * 缓存写入只有 30 分钟（默认）与 12 小时两档，电脑端不请求 12 小时档；`cacheWrite1h` 取 30 分钟档的值。
      */
     {
       ...base,
@@ -1395,8 +1454,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
-      pricing: usd(4, 20, 0.4, 5),
-      longContext: [GPT_56_SOL_LONG],
+      ...gpt56Sol(now),
     },
     {
       ...base,
@@ -1432,6 +1490,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       contextWindow: 400_000,
       maxOutputTokens: 128_000,
       pricing: usd(12.5, 75, 1.25, 15.625),
+      longContext: [GPT_56_CYBER_LONG],
     },
 
     /*
@@ -1708,7 +1767,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       videoSeconds: { min: 2, max: 7200 },
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
-      pricing: cny(2, 8, 0.4),
+      pricing: { ...cny(1.6, 6.4, 0.32), note: '限时 8 折，原价 ¥2 / ¥8' },
       longContext: [QWEN_37_PLUS_LONG],
     },
     {
@@ -1941,8 +2000,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
         video: provider === 'openai_chat_completions',
         contextWindow: 1_000_000,
         maxOutputTokens: 524_288,
-        // 2026-10-27 核对国际站按量价目：不分长上下文档。
-        pricing: usd(0.15, 0.6, 0.015),
+        // 默认端点是国内站（`api.minimax.cn`），按国内站价目计价；2026-11-04 核对：不分长上下文档。
+        pricing: cny(1, 4, 0.1),
       }),
     ),
     {
@@ -1956,7 +2015,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       contextWindow: 1_000_000,
       // OpenAI 兼容接口：推荐 131,072，参数最大可设 524,288。
       maxOutputTokens: 524_288,
-      pricing: usd(0.3, 1.2, 0.06),
+      pricing: cny(2.1, 8.4, 0.42),
       longContext: [MINIMAX_M3_LONG],
     },
     // ── 阶跃星辰 ──
@@ -1976,7 +2035,13 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
         video: provider === 'openai_chat_completions',
         contextWindow: 1_000_000,
         maxOutputTokens: 64_000,
-        pricing: { ...cny(7, 20, 0.35), cacheWrite5m: 7, cacheWrite1h: 7 },
+        // 2026-10-14 起缓存命中为 ¥0.70；此前已调用过的账号仍按 ¥0.35 计。
+        pricing: {
+          ...cny(7, 20, 0.7),
+          cacheWrite5m: 7,
+          cacheWrite1h: 7,
+          note: '2026-10-14 前已调用过的账号缓存命中按 ¥0.35 计',
+        },
       }),
     ),
   ]
@@ -2007,9 +2072,8 @@ export interface SpecOverride {
   /** 缓存命中价。 */
   cacheRead?: number
   /**
-   * 缓存写入价。**只覆盖 5 分钟档**：`computeCost` 只按该档计算，
-   * 全项目从不请求 1 小时缓存。`cacheWrite1h` 保留在价目表中作为参考数据，
-   * 没有可达的代码分支，因此不提供修改入口。
+   * 缓存写入价。**只覆盖 5 分钟档**：电脑端从不请求 1 小时缓存。1 小时档只由云端网关按上游回报的写入量计价，
+   * 取目录价目，因此不提供修改入口。
    */
   cacheWrite?: number
   currency?: Currency
@@ -2061,19 +2125,24 @@ export interface SpecOverride {
  *   （Anthropic 写入为 1.25x，DeepSeek 写入免费）。
  * - **`catalogued` 只在覆盖中包含单价时才设为 true。** 若只修改显示名就标记为
  *   「已收录」，计价仍为 0 而提醒消失：账本继续显示 $0，且不再有任何提示。
- * - **覆盖改变币种时去掉目录中的长上下文档与时段折扣。** 二者的单价按目录币种填写，
- *   与覆盖后的币种混用会使长提示词按另一币种的数字记账。覆盖中的时段折扣是系数，与币种无关，始终生效。
- *   例外是 `scale`：单价与各档按同一倍率换算为覆盖的币种，分档与时段折扣保留；单价字段再覆盖其上。
+ * - **覆盖中含单价时去掉目录中的长上下文档与时段折扣，单价即全部请求的价格。** 目录各档是按官方价填写的绝对单价，
+ *   套在中转价或手填价上时，长提示词按官方全价记账（同币种）或按另一币种的数字记账；时段折扣同理，
+ *   中转站按固定倍率计费时不随时段打折。覆盖中的时段折扣来自计费公式，始终生效。
+ *   需要保留官方的分档与折扣时写 `scale`：单价与各档按同一倍率换算为覆盖的币种；单价字段再覆盖其上。
  */
 export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined): ModelSpec {
   if (!o) return spec
   const base = scaledSpec(spec, o.scale)
+  const unit =
+    base === spec &&
+    (o.input !== undefined ||
+      o.output !== undefined ||
+      o.cacheRead !== undefined ||
+      o.cacheWrite !== undefined)
   const priced = o.input !== undefined || o.output !== undefined || base !== spec
-  const recurrency =
-    base === spec && o.currency !== undefined && o.currency !== (spec.pricing.currency ?? 'USD')
   const { longContext: _long, offPeak: _offPeak, ...flat } = base
   return {
-    ...(recurrency ? flat : base),
+    ...(unit ? flat : base),
     ...(o.displayName ? { displayName: o.displayName } : {}),
     ...(o.vendor ? { vendor: o.vendor } : {}),
     ...(o.contextWindow ? { contextWindow: o.contextWindow } : {}),
@@ -2284,41 +2353,51 @@ export function reasoningReplay(spec: ModelSpec): ReasoningReplay {
   return { opaque: false, text: spec.chatReasoningProtocol === 'standard' ? 'tool_turns' : 'all' }
 }
 
+/** 一次请求的用量。 */
+export interface CostUsage {
+  inputTokens: number
+  outputTokens: number
+  cachedTokens?: number | null
+  /** 全部缓存写入量，含 1 小时档。 */
+  cacheWriteTokens?: number | null
+  /** 其中按 1 小时档写入的部分。 */
+  cacheWrite1hTokens?: number | null
+}
+
+/**
+ * 按用量取价的依据。单价**按计费时刻与本次请求的大小取值**，不按创建 adapter 的时刻取值。
+ *
+ * adapter 每个 run 创建一次，而 run 可能持续很长时间：DeepSeek 的高峰时段每天有两段，
+ * 08:55 开始、运行超过 09:00 的 run，若按创建 adapter 的时刻取价，整轮都会按空闲价计费。
+ * 计费按请求逐次调用（`agent/loop/attempt.ts` 每收到一次 usage 计算一次），
+ * 调用方传入的时刻即对应该次请求结束的时刻。
+ *
+ * 提示词大小同理：它随请求逐次增长，长上下文档必须按**本次请求**的大小判定，
+ * 按整个 run 的最大值或首次请求的值判定都会算错部分请求。
+ * 三项之和才是本次请求的提示词大小：三个数互不重叠，遗漏缓存写入项会使长上下文档
+ * 在冷启动请求上判定失效，而冷启动正是写入量最大的请求。
+ */
+function usageContext(usage: CostUsage, now: number): PriceContext {
+  return {
+    now,
+    promptTokens: usage.inputTokens + (usage.cachedTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
+    outputTokens: usage.outputTokens,
+  }
+}
+
+/** 本次请求计价时生效的条件，与同一时刻的 `computeCost` 为同一次判定。 */
+export function costTerms(spec: ModelSpec, usage: CostUsage, now = Date.now()): PriceTerms {
+  return priceTerms(spec, usageContext(usage, now))
+}
+
 /**
  * 按 usage 计算本次请求的费用。
  *
  * **币种为 `spec.pricing.currency`，不一定是美元**：阿里、月之暗面、智谱、
  * DeepSeek 等按人民币标价。本函数只返回数值，币种由调用方一并记入账本。
  */
-export function computeCost(
-  spec: ModelSpec,
-  usage: {
-    inputTokens: number
-    outputTokens: number
-    cachedTokens?: number | null
-    /** 全部缓存写入量，含 1 小时档。 */
-    cacheWriteTokens?: number | null
-    /** 其中按 1 小时档写入的部分。 */
-    cacheWrite1hTokens?: number | null
-  },
-  now = Date.now(),
-): number {
-  // 单价**按计费时刻与本次请求的大小取值**，不按创建 adapter 的时刻取值。
-  //
-  // adapter 每个 run 创建一次，而 run 可能持续很长时间：DeepSeek 的高峰时段每天有两段，
-  // 08:55 开始、运行超过 09:00 的 run，若按创建 adapter 的时刻取价，整轮都会按空闲价计费。
-  // 计费按请求逐次调用（`agent/loop/attempt.ts` 每收到一次 usage 计算一次），
-  // 在此处取时间即对应该次请求结束的时刻。
-  //
-  // 提示词大小同理：它随请求逐次增长，长上下文档必须按**本次请求**的大小判定，
-  // 按整个 run 的最大值或首次请求的值判定都会算错部分请求。
-  // 三项之和才是本次请求的提示词大小：三个数互不重叠，遗漏缓存写入项会使长上下文档
-  // 在冷启动请求上判定失效，而冷启动正是写入量最大的请求。
-  const p = priceAt(spec, {
-    now,
-    promptTokens: usage.inputTokens + (usage.cachedTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
-    outputTokens: usage.outputTokens,
-  })
+export function computeCost(spec: ModelSpec, usage: CostUsage, now = Date.now()): number {
+  const p = priceAt(spec, usageContext(usage, now))
   // 1 小时档只由云端网关传入：电脑端从不请求 1 小时缓存，而网关转发的请求体由客户端决定，
   // 上游按 1 小时档的单价计费，须按上游回报的写入量分档计价。
   const writes1h = usage.cacheWrite1hTokens ?? 0
