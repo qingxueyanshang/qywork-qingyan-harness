@@ -522,10 +522,10 @@ function RequestTable(props: { provider: string }) {
                       <td class="num">{compact(r.outputTokens)}</td>
                       <td class="num">{compact(r.cacheReadTokens)}</td>
                       <td class="num">
+                        {formatCredits(r.credits)}
                         <For each={priceTerms(r)}>
                           {(t) => <span class="account-term">{t}</span>}
                         </For>
-                        {formatCredits(r.credits)}
                       </td>
                       <td classList={{ 'account-failed': r.failure !== null }}>
                         {r.failure ?? '完成'}

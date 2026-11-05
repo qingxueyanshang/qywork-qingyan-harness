@@ -263,7 +263,7 @@ test('侧栏入口：未配置云端服务时不出现；未登录显示「登�
   view.close()
 })
 
-test('登录表单：密码错误时显示原因；登录成功后弹窗显示账号、统计与使用记录，积分前标注计价条件', async () => {
+test('登录表单：密码错误时显示原因；登录成功后弹窗显示账号、统计与使用记录，积分后标注计价条件', async () => {
   cloud = { state: 'signed_out' }
   await cloudStore.refreshCloudState()
   pages = [
@@ -290,15 +290,20 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
   // 累计 Token 为四项之和；「输入」含缓存命中。
   expect(view.text()).toContain('3.5K')
   expect(view.text()).toContain('完成')
-  const terms = (id: string) => {
+  const rowOf = (id: string) => {
     const at = new Date(record(id).startedAt).getMinutes().toString().padStart(2, '0')
-    const row = [...view.host.querySelectorAll('tbody tr')].find((r) =>
+    return [...view.host.querySelectorAll('tbody tr')].find((r) =>
       r.querySelector('td')?.textContent?.endsWith(`:${at}`),
     )
-    return [...(row?.querySelectorAll('.account-term') ?? [])].map((t) => t.textContent)
   }
+  const terms = (id: string) =>
+    [...(rowOf(id)?.querySelectorAll('.account-term') ?? [])].map((t) => t.textContent)
   expect(terms('3')).toEqual(['长上下文', '1 小时缓存'])
   expect(terms('2')).toEqual(['空闲时段'])
+  // 积分在前、标记在后。
+  expect(rowOf('2')?.querySelector('.account-term')?.parentElement?.textContent).toBe(
+    '0.25空闲时段',
+  )
   expect(terms('1')).toEqual([])
   // 可用模型、倍率与单价（积分 / 百万 token）；读取后模型列表随之刷新。
   await until(() => view.text().includes('claude-opus-5-5'))
