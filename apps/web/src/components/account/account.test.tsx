@@ -15,6 +15,8 @@ let originalApi: typeof store.client.api
 let ApiError: typeof import('../../lib/client.ts').ApiError
 let cloud: CloudState
 let providers: unknown[]
+/** 模型目录中已配置的生成模型。 */
+let media: unknown[]
 let calls: string[]
 let pages: CloudRequest[][]
 /** 使用记录的读取在它完成前不返回。 */
@@ -90,7 +92,7 @@ beforeAll(async () => {
   store.client.api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
     calls.push(`${init?.method ?? 'GET'} ${path}`)
     if (path === '/api/models') {
-      return { providers, media: [], mediaLibrary: [], library: [] } as T
+      return { providers, media, mediaLibrary: [], library: [] } as T
     }
     if (path === '/api/cloud/state') return structuredClone(cloud) as T
     if (path === '/api/cloud/login') {
@@ -180,6 +182,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   cloud = { state: 'signed_out' }
   providers = []
+  media = []
   calls = []
   pages = []
   requestsGate = Promise.resolve()
@@ -703,4 +706,66 @@ test('可用模型可设为默认对话模型，写入与模型设置页同一�
   )
   await until(() => relay?.querySelector('.model-pick')?.hasAttribute('disabled') === true)
   view.close()
+})
+
+test('可用模型、生成模型与使用记录显示模型目录中的名称；目录中没有的型号显示型号本身', async () => {
+  const row = (id: string, label: string) => ({
+    id,
+    label,
+    effortLevels: [],
+    effort: null,
+    currency: 'USD',
+    vision: null,
+    video: false,
+    known: true,
+  })
+  providers = [
+    {
+      name: 'qywork',
+      models: [
+        row('claude-opus-5-5', 'Claude Opus 5.5'),
+        row('claude-sonnet-5-5', 'Claude Sonnet 5.5'),
+      ],
+    },
+  ]
+  media = [
+    {
+      provider: 'qywork',
+      id: 'doubao-seedance-2-0-260128',
+      kind: 'ark_video',
+      output: 'video',
+      label: 'Seedance 2.0',
+      operations: [],
+      isDefault: false,
+      known: true,
+      params: [],
+    },
+  ]
+  pages = [[record('1')]]
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  await (await import('../../lib/store/settings.ts')).reloadModelCatalog()
+  const view = await dialog()
+  try {
+    await until(
+      () => view.text().includes('Claude Opus 5.5') && view.text().includes('Claude Sonnet 5.5'),
+    )
+    const first = (text: string) =>
+      [...view.host.querySelectorAll('tbody tr')]
+        .map((r) => r.querySelector('td')?.textContent)
+        .includes(text)
+    expect(first('Claude Opus 5.5')).toBe(true)
+    expect(first('Seedance 2.0')).toBe(true)
+    // 目录中没有的型号（尚未同步到本机配置）显示型号本身。
+    expect(first('relay-model')).toBe(true)
+    expect(view.text()).not.toContain('claude-opus-5-5')
+    expect(view.text()).not.toContain('doubao-seedance-2-0-260128')
+    // 使用记录的型号同样显示名称。
+    expect(view.text()).not.toContain('claude-sonnet-5-5')
+  } finally {
+    view.close()
+    providers = []
+    media = []
+    await (await import('../../lib/store/settings.ts')).reloadModelCatalog()
+  }
 })

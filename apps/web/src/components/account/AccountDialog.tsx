@@ -34,8 +34,10 @@ import {
   setCloudAvatar,
 } from '../../lib/store/cloud.ts'
 import {
+  ensureModelCatalog,
   explainApiError,
   holdOverlay,
+  modelCatalog,
   openLinkInPanel,
   setAccountOpen,
 } from '../../lib/store/index.ts'
@@ -265,9 +267,22 @@ function AccountView(props: { signed: SignedIn }) {
         <ModelTable provider={props.signed.provider} />
 
         <h3 class="account-section">使用记录</h3>
-        <RequestTable />
+        <RequestTable provider={props.signed.provider} />
       </div>
     </>
+  )
+}
+
+/**
+ * 云端型号在界面上的名称：取模型目录（`modelCatalog`）中该接口下的显示名称，与输入框的模型选择相同；
+ * 目录中没有时（尚未同步到本机配置、或已下架）为型号本身。
+ */
+function modelName(provider: string, id: string): string {
+  const catalog = modelCatalog()
+  return (
+    catalog?.providers.find((p) => p.name === provider)?.models.find((m) => m.id === id)?.label ??
+    catalog?.media.find((m) => m.provider === provider && m.id === id)?.label ??
+    id
   )
 }
 
@@ -315,7 +330,7 @@ function MediaTables(props: {
               <table class="lib-table account-table">
                 <thead>
                   <tr>
-                    <th>型号</th>
+                    <th>模型</th>
                     <th>计费单位</th>
                     <th class="num">单价</th>
                     <th />
@@ -325,9 +340,7 @@ function MediaTables(props: {
                   <For each={props.models.filter((m) => m.output === output)}>
                     {(m) => (
                       <tr>
-                        <td>
-                          <code class="lib-id">{m.id}</code>
-                        </td>
+                        <td>{modelName(props.provider, m.id)}</td>
                         <td>{UNIT_LABEL[m.unit]}</td>
                         <td class="num">{unitPriceText(m.unitPrice)}</td>
                         <td class="account-default">
@@ -364,6 +377,7 @@ function MediaTables(props: {
 function ModelTable(props: { provider: string }) {
   const [models, { refetch }] = createResource(fetchCloudModels)
   ensureConfig()
+  void ensureModelCatalog()
   // 默认值与模型设置页写入同一处（配置的默认对话模型）；云端接口不在模型设置页列出，两处不会同时显示同一型号。
   const isDefault = (id: string) =>
     config()?.active?.provider === props.provider && config()?.active?.model === id
@@ -383,7 +397,7 @@ function ModelTable(props: { provider: string }) {
                 <table class="lib-table account-table">
                   <thead>
                     <tr>
-                      <th>型号</th>
+                      <th>模型</th>
                       <th class="num">倍率（官方价）</th>
                       <th class="num">输入</th>
                       <th class="num">输出</th>
@@ -396,9 +410,7 @@ function ModelTable(props: { provider: string }) {
                     <For each={list()}>
                       {(m) => (
                         <tr>
-                          <td>
-                            <code class="lib-id">{m.id}</code>
-                          </td>
+                          <td>{modelName(props.provider, m.id)}</td>
                           {/* 按单价计价的型号没有官方价，单价列即最终单价。 */}
                           <td class="num">{m.official ? formatRatio(m.ratio) : '—'}</td>
                           <td class="num">{m.price ? formatCredits(m.price.input) : '—'}</td>
@@ -457,7 +469,7 @@ function priceTerms(r: CloudRequest): string[] {
 }
 
 /** 逐条请求记录，按时间倒序分页读取。「输入」含缓存命中与缓存写入，与「用量」页同一口径。 */
-function RequestTable() {
+function RequestTable(props: { provider: string }) {
   const [rows, setRows] = createSignal<CloudRequest[]>([])
   const [done, setDone] = createSignal(false)
   const [loading, setLoading] = createSignal(false)
@@ -490,7 +502,7 @@ function RequestTable() {
               <thead>
                 <tr>
                   <th>时间</th>
-                  <th>型号</th>
+                  <th>模型</th>
                   <th class="num">输入</th>
                   <th class="num">输出</th>
                   <th class="num">缓存读取</th>
@@ -503,9 +515,7 @@ function RequestTable() {
                   {(r) => (
                     <tr>
                       <td>{when(r.startedAt)}</td>
-                      <td>
-                        <code class="lib-id">{r.modelId}</code>
-                      </td>
+                      <td>{modelName(props.provider, r.modelId)}</td>
                       <td class="num">
                         {compact(r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens)}
                       </td>
