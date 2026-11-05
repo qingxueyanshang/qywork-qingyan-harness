@@ -200,6 +200,8 @@ function failure(status: number, errorCode: string | null): string | null {
   if (!errorCode) return null
   if (errorCode === 'insufficient_credits') return '积分不足'
   if (errorCode === 'stream_interrupted') return '连接中断'
+  // 本机停止本轮或连接断开，云端随即中止上游并按估算结算。
+  if (errorCode === 'client_disconnected') return '已中断'
   // 云端服务在请求进行中崩溃，预扣已全额退回（云端 `gateway/holds.ts`）。
   if (errorCode === 'service_interrupted') return '服务中断，积分已退回'
   if (errorCode === 'upstream_unreachable') return '无法连接模型服务'
