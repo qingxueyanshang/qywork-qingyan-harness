@@ -77,6 +77,16 @@ export {
   type MediaRunOptions,
   type MediaUsage,
 } from './media/types.ts'
+export {
+  MEDIA_UNITS,
+  type MediaUnit,
+  meterMedia,
+  UNITS_BY_OUTPUT,
+  type UnitMeter,
+  type UnitPrice,
+  unitAmount,
+  unitProblem,
+} from './media/units.ts'
 // 能力探测：cli 的 probe 子命令与设置页的「检测」按钮
 export {
   describeProbe,
