@@ -198,6 +198,7 @@ type GatewayRequest = Omit<CloudRequest, 'failure'> & { status: number; errorCod
 /** 网关错误码对应的说明。`upstream_<状态码>` 写成「状态码 名称」，与运行页的报错写法相同。 */
 function failure(status: number, errorCode: string | null): string | null {
   if (!errorCode) return null
+  if (errorCode === 'insufficient_credits') return '积分不足'
   if (errorCode === 'stream_interrupted') return '连接中断'
   // 云端服务在请求进行中崩溃，预扣已全额退回（云端 `gateway/holds.ts`）。
   if (errorCode === 'service_interrupted') return '服务中断，积分已退回'

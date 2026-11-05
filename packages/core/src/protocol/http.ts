@@ -254,7 +254,8 @@ export type CloudModel =
 /** `GET /api/cloud/requests`：云端的一条请求记录，按时间倒序分页。 */
 export interface CloudRequest {
   id: string
-  modelId: string
+  /** 余额不大于 0 时云端在读取请求之前拒绝，型号未知，为 null。 */
+  modelId: string | null
   /** 失败原因（如「429 请求过多」「连接中断」）；成功为 null。 */
   failure: string | null
   inputTokens: number

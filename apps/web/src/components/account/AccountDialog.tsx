@@ -529,7 +529,7 @@ function RequestTable(props: { provider: string }) {
                   {(r) => (
                     <tr>
                       <td>{when(r.startedAt)}</td>
-                      <td>{modelName(props.provider, r.modelId)}</td>
+                      <td>{r.modelId === null ? '—' : modelName(props.provider, r.modelId)}</td>
                       {/* 生成任务没有 token，三列合为一格显示计量。 */}
                       <Show
                         when={r.mediaMeter}
