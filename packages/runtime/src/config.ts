@@ -13,6 +13,7 @@ import {
   CHAT_REASONING_PROTOCOLS,
   type ChatReasoningProtocol,
   findMediaModel,
+  type LongContextTier,
   lookupModel,
   type ModelSpec,
   type OffPeakDiscount,
@@ -294,6 +295,8 @@ export interface StoredCatalogEntry {
   currency?: Currency
   /** 分时段折扣，替换目录中的折扣。接口价格（`ModelPrice`）经 `resolveModel` 合成到此处；模型库界面不编辑该项。 */
   offPeak?: OffPeakDiscount
+  /** 用量阶梯价，替换目录中的分档。来源与合成方式同 `offPeak`。 */
+  longContext?: LongContextTier[]
   thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
   thinksByDefault?: boolean
@@ -384,6 +387,32 @@ export interface UnitModelPrice {
   currency: Currency
   /** 分时段折扣。此时四项单价是高峰价。 */
   offPeak?: OffPeakDiscount
+  /** 用量阶梯价（中转站自己的分档），四项单价为基础档。 */
+  longContext?: LongContextTier[]
+}
+
+/** 用量阶梯价不合法时返回 true：阈值须为正整数且升序，各档单价为非负数，说明为字符串。 */
+function invalidTiers(value: unknown): boolean {
+  if (value === undefined) return false
+  if (!Array.isArray(value)) return true
+  const price = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0
+  let last = 0
+  for (const t of value as Partial<LongContextTier>[]) {
+    if (
+      !t ||
+      !Number.isInteger(t.thresholdTokens) ||
+      (t.thresholdTokens as number) <= last ||
+      !price(t.input) ||
+      !price(t.output) ||
+      !price(t.cacheRead) ||
+      (t.cacheWrite5m !== undefined && !price(t.cacheWrite5m)) ||
+      (t.cacheWrite1h !== undefined && !price(t.cacheWrite1h)) ||
+      typeof t.note !== 'string'
+    )
+      return true
+    last = t.thresholdTokens as number
+  }
+  return false
 }
 
 /** 分时段折扣不合法时返回 true。折扣直接参与计价：结构错误时计价抛出异常，取值越界时金额记错。 */
@@ -403,12 +432,17 @@ function invalidOffPeak(value: unknown): boolean {
     ) &&
     Array.isArray(o.peakWeekdaysUtc) &&
     o.peakWeekdaysUtc.every((d) => Number.isInteger(d) && d >= 0 && d <= 6) &&
+    (o.holidays === undefined ||
+      (Array.isArray(o.holidays.dates) &&
+        o.holidays.dates.every((d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) &&
+        typeof o.holidays.utcOffsetHours === 'number' &&
+        Math.abs(o.holidays.utcOffsetHours) <= 14)) &&
     (o.note === undefined || typeof o.note === 'string')
   )
 }
 
 const OFF_PEAK_RULE =
-  'offPeak 必须包含 0 到 1 之间的 rate、UTC 小时区间数组 peakWindowsUtc 与星期数组 peakWeekdaysUtc（0 为周日）'
+  'offPeak 必须包含 0 到 1 之间的 rate、UTC 小时区间数组 peakWindowsUtc 与星期数组 peakWeekdaysUtc（0 为周日）；holidays 为日期数组 dates（YYYY-MM-DD）与时区偏移 utcOffsetHours'
 
 /**
  * 把接口层与模型配置项展开为一次请求所需的全部信息。
@@ -870,6 +904,10 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         )
       } else if (price && 'offPeak' in price && invalidOffPeak(price.offPeak)) {
         problems.push(`${name} / ${id} 的 price.${OFF_PEAK_RULE}。`)
+      } else if (price && 'longContext' in price && invalidTiers(price.longContext)) {
+        problems.push(
+          `${name} / ${id} 的 price.longContext 必须是按阈值升序的数组，每档含正整数 thresholdTokens、非负数单价与 note。`,
+        )
       }
       if (m.delisted !== undefined && m.delisted !== true)
         problems.push(`${name} / ${id} 的 delisted 只能为 true。`)
@@ -937,6 +975,10 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
       )
     }
     if (invalidOffPeak(entry.offPeak)) problems.push(`模型库 "${key}" 的 ${OFF_PEAK_RULE}。`)
+    if (invalidTiers(entry.longContext))
+      problems.push(
+        `模型库 "${key}" 的 longContext 必须是按阈值升序的数组，每档含正整数 thresholdTokens、非负数单价与 note。`,
+      )
   }
 
   /*

@@ -1,5 +1,6 @@
 /**
- * 拉取接口上的型号：中转的公开计费清单（New API 的 `/api/pricing`）优先，没有时退回 OpenAI 兼容的 `{base}/models`。
+ * 拉取接口上的型号：中转的公开计费清单（New API 的 `/api/pricing`）优先，没有时退回 OpenAI 兼容的 `{base}/models`；
+ * 退回时若站点有模型广场（`/api/v1/model-plaza`），对话型号的价格按 `plaza.ts` 折算。
  *
  * 计费清单给出每个型号的接口类型，据此区分对话、图像与视频；价格按 `pricing.ts` 折算。
  * 接口地址是渠道商表中的中转站（`channelVendorOf`）时，视频型号再按该渠道的目录（hongcheng 型号列表的 `parameters`、
@@ -31,8 +32,8 @@ import {
 } from '../media/channels.ts'
 import { normalizeBaseUrl } from '../providers/openai-compat.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
+import { type PulledPrice, plazaPrices } from './plaza.ts'
 import {
-  type ChatPrice,
   chatPriceOf,
   imagePriceOf,
   type NewApiPricingEntry,
@@ -59,7 +60,7 @@ export type PulledModel =
       kind?: ProviderKind
       /** 模型库中有同名型号，规格按模型库取得。 */
       known: boolean
-      price?: ChatPrice
+      price?: PulledPrice
     }
   | {
       id: string
@@ -373,7 +374,11 @@ function declaredOutput(entry: Record<string, unknown>): 'chat' | MediaOutput | 
  * 模型库中的名称归入对话，其余归为未知。列表中没有的厂商自有协议型号按目录补齐（`ownProtocolModels`）。
  * 类别为生成而目录中没有该名称时，协议按接口地址取默认值（`defaultMediaKind`），不带规格。
  */
-function fromModelList(entries: Record<string, unknown>[], target: PullTarget): PullResult {
+function fromModelList(
+  entries: Record<string, unknown>[],
+  target: PullTarget,
+  prices: ReadonlyMap<string, PulledPrice> | null,
+): PullResult {
   const listed = new Map<string, PulledModel>()
   for (const entry of entries) {
     const id = entry.id
@@ -386,7 +391,8 @@ function fromModelList(entries: Record<string, unknown>[], target: PullTarget): 
     if (output === 'unknown') {
       listed.set(id, { id, output })
     } else if (output === 'chat') {
-      listed.set(id, { id, output, known })
+      const price = prices?.get(id)
+      listed.set(id, { id, output, known, ...(price ? { price } : {}) })
     } else if (media?.output === output) {
       listed.set(id, {
         id,
@@ -423,8 +429,11 @@ export async function pullModels(target: PullTarget, signal: AbortSignal): Promi
   )
   if (entries?.length) return fromPricing(entries, pricing, origin, base, auth, target, signal)
 
-  const listed = await getJson(`${base}/models`, auth, signal)
+  const [listed, plaza] = await Promise.all([
+    getJson(`${base}/models`, auth, signal),
+    optional(getJson(`${origin}/api/v1/model-plaza`, {}, signal)),
+  ])
   const models = listOf(listed, 'data')
   if (!models) throw new PullError(`${new URL(base).pathname}/models 返回的格式无法识别`)
-  return fromModelList(models, target)
+  return fromModelList(models, target, plaza ? plazaPrices(plaza, target.kind) : null)
 }

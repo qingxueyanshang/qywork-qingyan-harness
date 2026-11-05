@@ -186,6 +186,7 @@ export function priceSummary(model: PulledModel): string {
   if (model.output === 'chat') {
     const price = model.price
     if (!price) return ''
+    if ('scale' in price) return `官方价 × ${price.scale}`
     const discount = price.offPeak
       ? ` · 空闲时段 ${Math.round(price.offPeak.rate * 100) / 10} 折`
       : ''

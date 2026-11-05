@@ -419,7 +419,7 @@ describe('装配', () => {
     const native = buildAdapter({
       kind: 'openai_responses',
       apiKey: 'sk-x',
-      model: 'gemini-3.7-flash',
+      model: 'gemini-3.8-flash',
       baseUrl: 'https://relay.example/v1',
     })
     expect(native.transmits).toEqual({ effort: true })

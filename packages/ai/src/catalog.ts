@@ -537,17 +537,48 @@ export interface OffPeakDiscount {
    * 全天按空闲价。星期与小时必须同为 UTC：混用两个时区会在时段跨零点时错开一天。
    */
   peakWeekdaysUtc: readonly number[]
+  /**
+   * 全天按空闲价的日期，如中国法定节假日。`dates` 是厂商所在时区的日历日（`YYYY-MM-DD`），
+   * `utcOffsetHours` 是该时区相对 UTC 的小时数：同一时刻在 UTC 与北京时间可能属于不同的日期。
+   */
+  holidays?: { dates: readonly string[]; utcOffsetHours: number }
   /** 单句说明，模型库直接显示，不另行拼接。中转价格的折扣由计费公式折算，没有说明。 */
   note?: string
 }
 
 /**
- * DeepSeek 的高峰时段：北京时间**周一至周五** 9:00-12:00、14:00-18:00（UTC+8），
- * 周六、周日全天按空闲价。
+ * 中国法定节假日的放假日期（含调休放假日），取自国务院办公厅每年发布的次年节假日安排通知。
+ * 调休上班的周末不列入：DeepSeek 的规则是周末全天按空闲价。
+ *
+ * 2026 年：国办发明电〔2025〕7 号（2025-11-04）。2027 年的通知发布前只列元旦（法定日期 1 月 1 日），
+ * 通知发布后按原文补入全年。
+ */
+const CN_HOLIDAYS: readonly string[] = [
+  '2026-01-01',
+  '2026-01-02',
+  '2026-01-03',
+  ...['15', '16', '17', '18', '19', '20', '21', '22', '23'].map((d) => `2026-02-${d}`),
+  '2026-04-04',
+  '2026-04-05',
+  '2026-04-06',
+  ...['01', '02', '03', '04', '05'].map((d) => `2026-05-${d}`),
+  '2026-06-19',
+  '2026-06-20',
+  '2026-06-21',
+  '2026-09-25',
+  '2026-09-26',
+  '2026-09-27',
+  ...['01', '02', '03', '04', '05', '06', '07'].map((d) => `2026-10-${d}`),
+  '2027-01-01',
+]
+
+/**
+ * DeepSeek 的高峰时段：北京时间**周一至周五（不含中国法定节假日）** 9:00-12:00、14:00-18:00（UTC+8），
+ * 周六、周日与法定节假日全天按空闲价。
  *
  * 换算为 UTC 为 01:00-04:00 与 06:00-10:00，星期无需调整：两段时段均位于同一个
  * UTC 日内。时段若改为跨零点，星期表需相应顺移一天。
- * 数据来源：官方文档「模型 & 价格」页（2026-08-17 生效的价目）。
+ * 数据来源：官方文档「模型 & 价格」页（2026-11-04 核对）。
  */
 const DEEPSEEK_OFF_PEAK: OffPeakDiscount = {
   rate: 0.5,
@@ -556,7 +587,8 @@ const DEEPSEEK_OFF_PEAK: OffPeakDiscount = {
     [6, 10],
   ],
   peakWeekdaysUtc: [1, 2, 3, 4, 5],
-  note: '空闲时段 5 折（高峰＝北京时间周一至周五 9:00-12:00、14:00-18:00）',
+  holidays: { dates: CN_HOLIDAYS, utcOffsetHours: 8 },
+  note: '空闲时段 5 折（高峰＝北京时间周一至周五 9:00-12:00、14:00-18:00，法定节假日除外）',
 }
 
 /**
@@ -842,12 +874,21 @@ export interface PriceTerms {
 export function priceTerms(spec: ModelSpec, ctx: PriceContext = {}): PriceTerms {
   let offPeak = false
   if (spec.offPeak) {
-    const d = new Date(ctx.now ?? Date.now())
+    const now = ctx.now ?? Date.now()
+    const d = new Date(now)
     const hour = d.getUTCHours() + d.getUTCMinutes() / 60
-    offPeak = !(
-      spec.offPeak.peakWeekdaysUtc.includes(d.getUTCDay()) &&
-      spec.offPeak.peakWindowsUtc.some(([from, to]) => hour >= from && hour < to)
-    )
+    const holidays = spec.offPeak.holidays
+    const holiday = holidays
+      ? holidays.dates.includes(
+          new Date(now + holidays.utcOffsetHours * 3_600_000).toISOString().slice(0, 10),
+        )
+      : false
+    offPeak =
+      holiday ||
+      !(
+        spec.offPeak.peakWeekdaysUtc.includes(d.getUTCDay()) &&
+        spec.offPeak.peakWindowsUtc.some(([from, to]) => hour >= from && hour < to)
+      )
   }
   // 取提示词达到的**最高**一档。依赖 `longContext` 升序排列，该约定写在字段注释上。
   let tier: LongContextTier | null = null
@@ -1503,14 +1544,14 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * | gemini-4-argon | 2.00 | 10.00 | 0.10 | 促销至 2026-11-30，之后 4.00 / 20.00 / 0.20 |
      * | gemini-3.1-pro-preview | 2.00 | 12.00 | 0.20 | >200k：4.00 / 18.00 / 0.40 |
      * | gemini-3.8-flash | 0.75 | 3.75 | 0.075 | 促销至 2026-12-31，之后 1.50 / 7.50 / 0.15 |
-     * | gemini-3.7-flash | 0.75 | 3.75 | 0.075 | 促销至 2026-12-31，之后 1.50 / 7.50 / 0.15 |
      * | gemini-3.6-flash | 0.75 | 3.75 | 0.075 | 同上 |
-     * | gemini-3.5-flash | 1.50 | 9.00 | 0.15 | |
+     *
+     * gemini-3.7-flash 与 gemini-3.5-flash 已于 2026-10-08 弃用（请求分别路由到 3.8 与 3.6），不收录。
      *
      * **以下三点容易记错**：Flash 不是 0.3/2.5；Pro 有长上下文档；
      * Pro 的 id 是 `gemini-3.1-pro-preview`。
      *
-     * 3.6 / 3.5 Flash 另有 `minimal`；3.8 / 3.7 Flash 与 3.1 Pro 从 `low` 起。
+     * 3.6 Flash 另有 `minimal`；3.8 Flash 与 3.1 Pro 从 `low` 起。
      * 3.x 给出 1,048,576 输入与 65,536 输出上限。Argon 的输入、思考和输出共用 1M 窗口；
      * 当前 Chat 接入单次输出上限为 65,536，1M 长输出需另行接入后台续接。
      */
@@ -1557,18 +1598,6 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     },
     {
       ...base,
-      ...effort(['low', 'medium', 'high']),
-      id: 'gemini-3.7-flash',
-      displayName: 'Gemini 3.7 Flash',
-      vendor: 'google',
-      vision: true,
-      density: DEFAULT_DENSITY,
-      contextWindow: 1_048_576,
-      maxOutputTokens: 65_536,
-      pricing: geminiFlashPromo(now),
-    },
-    {
-      ...base,
       ...effort(['minimal', 'low', 'medium', 'high']),
       id: 'gemini-3.6-flash',
       displayName: 'Gemini 3.6 Flash',
@@ -1578,18 +1607,6 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       contextWindow: 1_048_576,
       maxOutputTokens: 65_536,
       pricing: geminiFlashPromo(now),
-    },
-    {
-      ...base,
-      ...effort(['minimal', 'low', 'medium', 'high']),
-      id: 'gemini-3.5-flash',
-      displayName: 'Gemini 3.5 Flash',
-      vendor: 'google',
-      vision: true,
-      density: DEFAULT_DENSITY,
-      contextWindow: 1_048_576,
-      maxOutputTokens: 65_536,
-      pricing: usd(1.5, 9, 0.15),
     },
 
     // ── xAI ──
@@ -2085,6 +2102,8 @@ export interface SpecOverride {
   scale?: number
   /** 分时段折扣，替换目录中的折扣。中转价格按计费公式折算得到，模型库界面不编辑该项。 */
   offPeak?: OffPeakDiscount
+  /** 用量阶梯价，替换目录中的分档，与单价同一币种。中转价格按站点的分档折算得到，模型库界面不编辑该项。 */
+  longContext?: readonly LongContextTier[]
   /**
    * 思考相关的三项是用户明确维护的模型规格。端点探测只判定某条链路是否透传思考控制参数，
    * 不覆盖官方档位或默认思考行为。
@@ -2127,7 +2146,7 @@ export interface SpecOverride {
  *   「已收录」，计价仍为 0 而提醒消失：账本继续显示 $0，且不再有任何提示。
  * - **覆盖中含单价时去掉目录中的长上下文档与时段折扣，单价即全部请求的价格。** 目录各档是按官方价填写的绝对单价，
  *   套在中转价或手填价上时，长提示词按官方全价记账（同币种）或按另一币种的数字记账；时段折扣同理，
- *   中转站按固定倍率计费时不随时段打折。覆盖中的时段折扣来自计费公式，始终生效。
+ *   中转站按固定倍率计费时不随时段打折。覆盖中的时段折扣与分档来自站点的计费规则，始终生效。
  *   需要保留官方的分档与折扣时写 `scale`：单价与各档按同一倍率换算为覆盖的币种；单价字段再覆盖其上。
  */
 export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined): ModelSpec {
@@ -2157,6 +2176,7 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
     // `thinksByDefault` 是布尔值，`false` 是有效覆盖，只能按 `undefined` 判定缺省。
     ...(o.thinksByDefault !== undefined ? { thinksByDefault: o.thinksByDefault } : {}),
     ...(o.offPeak ? { offPeak: o.offPeak } : {}),
+    ...(o.longContext ? { longContext: o.longContext } : {}),
     pricing: {
       ...base.pricing,
       ...(o.input !== undefined ? { input: o.input } : {}),

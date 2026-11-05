@@ -528,7 +528,6 @@ describe('视频输入', () => {
 
   test('原生模型支持但当前协议未接通时仍不放行', () => {
     expect(lookupModel('gemini-3.8-flash', 'openai_chat_completions').video).toBe(false)
-    expect(lookupModel('gemini-3.7-flash', 'openai_chat_completions').video).toBe(false)
     expect(lookupModel('gpt-5.6-sol', 'openai_chat_completions').video).toBe(false)
     expect(lookupModel('claude-opus-5', 'anthropic_messages').video).toBe(false)
     expect(lookupModel('deepseek-flash', 'openai_chat_completions').video).toBe(false)
@@ -886,16 +885,15 @@ describe('目录中的价格与档位', () => {
     expect(flash.pricing).toMatchObject({ input: 0.75, output: 3.75, cacheRead: 0.075 })
   })
 
-  test('Gemini Flash 三代促销价相同，3.5 价格更高', () => {
-    // 四个型号均不是 0.3/2.5。
+  test('Gemini Flash 两代促销价相同；已弃用的 3.7 与 3.5 不收录', () => {
+    // 两个型号均不是 0.3/2.5。
     expect(spec('gemini-3.8-flash').pricing.output).toBe(3.75)
-    expect(spec('gemini-3.7-flash').pricing.output).toBe(3.75)
     expect(spec('gemini-3.6-flash').pricing.output).toBe(3.75)
-    expect(spec('gemini-3.5-flash').pricing.input).toBe(1.5)
-    expect(spec('gemini-3.5-flash').pricing.output).toBe(9)
     expect(spec('gemini-3.6-flash').effortLevels).toEqual(['minimal', 'low', 'medium', 'high'])
-    expect(spec('gemini-3.7-flash').contextWindow).toBe(1_048_576)
-    expect(spec('gemini-3.7-flash').maxOutputTokens).toBe(65_536)
+    expect(spec('gemini-3.8-flash').contextWindow).toBe(1_048_576)
+    expect(spec('gemini-3.8-flash').maxOutputTokens).toBe(65_536)
+    for (const id of ['gemini-3.7-flash', 'gemini-3.5-flash'])
+      expect(lookupModel(id, 'openai_chat_completions').catalogued).toBe(false)
   })
 
   test('Gemini 3.8 Flash 在促销结束后恢复标准价', () => {
@@ -1136,6 +1134,21 @@ describe('对应型号与接口价格', () => {
     // 目录没有单价时倍率不生效。
     const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
     expect(applySpecOverride(unknown, { scale: 2, currency: 'CREDIT' }).catalogued).toBe(false)
+  })
+
+  test('DeepSeek 法定节假日全天按空闲价，按北京时间的日期判定；调休上班的周末仍按空闲价', () => {
+    const deepseek = lookupModel('deepseek-flash', 'openai_chat_completions')
+    const usage = { inputTokens: 1_000_000, outputTokens: 0 }
+    // 2026-10-08 周四北京时间 10:00：国庆假期之后的工作日，高峰。
+    expect(costTerms(deepseek, usage, Date.UTC(2026, 9, 8, 2)).offPeak).toBe(false)
+    // 2026-10-05 周一北京时间 10:00：国庆假期，空闲。
+    expect(costTerms(deepseek, usage, Date.UTC(2026, 9, 5, 2)).offPeak).toBe(true)
+    // 2026-12-31 周四北京时间 10:00 为高峰；2027-01-01 周五北京时间 09:30 为元旦，空闲。
+    expect(costTerms(deepseek, usage, Date.UTC(2026, 11, 31, 2)).offPeak).toBe(false)
+    expect(costTerms(deepseek, usage, Date.UTC(2027, 0, 1, 1, 30)).offPeak).toBe(true)
+    // 2026-10-10 周六调休上班：周末，空闲。
+    expect(costTerms(deepseek, usage, Date.UTC(2026, 9, 10, 2)).offPeak).toBe(true)
+    expect(computeCost(deepseek, usage, Date.UTC(2026, 9, 5, 2))).toBe(1)
   })
 
   test('计价条件与同一时刻的扣费为同一次判定：提示词含缓存命中与写入，边界值不进入高档', () => {

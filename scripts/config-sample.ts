@@ -76,6 +76,16 @@ export function sampleConfig(): QyConfig {
           cacheWrite: 1.25,
           currency: pick(CURRENCIES, n + 1),
           offPeak: { rate: 0.5, peakWindowsUtc: [[1, 4]], peakWeekdaysUtc: [1, 2, 3, 4, 5] },
+          longContext: [
+            {
+              thresholdTokens: 200_001,
+              input: 2 + n,
+              output: 4 + n,
+              cacheRead: 0.2,
+              cacheWrite5m: 2.5,
+              note: '分档',
+            },
+          ],
         },
         delisted: true,
       }
@@ -97,6 +107,16 @@ export function sampleConfig(): QyConfig {
         reasoningEcho: pick(REASONING_ECHOES, n),
         cacheRouting: pick(CACHE_ROUTINGS, n),
         offPeak: { rate: 0.75, peakWindowsUtc: [[0, 12]], peakWeekdaysUtc: [0, 6] },
+        longContext: [
+          {
+            thresholdTokens: 200_001,
+            input: 2 + n,
+            output: 4 + n,
+            cacheRead: 0.2,
+            cacheWrite5m: 2.5,
+            note: '分档',
+          },
+        ],
         base: pick(builtinCatalog(), n).id,
         cloud: true,
       }
