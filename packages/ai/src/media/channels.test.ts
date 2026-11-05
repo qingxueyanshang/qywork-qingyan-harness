@@ -96,6 +96,18 @@ describe('服务商B', () => {
     expect(providerbVideoSpec(catalog('gpt-image-2'))).toBeNull()
   })
 
+  test('目录给出参考视频与参考音频上限时按其保存；表单上传的型号仍为 0', () => {
+    const entry = catalog('X-SD25-301010')
+    expect(providerbVideoSpec({ ...entry, video_refs: 10, audio_refs: 3 })).toMatchObject({
+      maxImages: 30,
+      maxVideos: 10,
+      maxAudios: 3,
+    })
+    expect(
+      providerbVideoSpec({ ...catalog('sd-2.0-vip'), video_refs: 3, audio_refs: 3 }),
+    ).toMatchObject({ maxVideos: 0, maxAudios: 0, multipart: true })
+  })
+
   test('表单上传：生成规格的素材传递方式；按 resolution 计价时尺寸对应档位', () => {
     const saved = providerbVideoSpec(catalog('sd-2.0-vip'))!
     expect(channelMediaSpec('sd-2.0-vip', saved).inputs.transport).toBe('multipart')
