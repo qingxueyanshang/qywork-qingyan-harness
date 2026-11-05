@@ -139,6 +139,53 @@ test('切换会话与项目时草稿各自保留，发送只清空当前会话',
   }
 })
 
+test('输入法组合期间与确认选词的回车不发送，组合结束后的回车发送', async () => {
+  const store = await import('../lib/store/index.ts')
+  const conversationsBefore = [...store.state.conversations]
+  store.setState({
+    activeConversation: 'cv_ime',
+    busyConversations: [],
+    followUps: [],
+    conversations: [{ id: 'cv_ime', provider: 'test', model: 'test-model' }] as never,
+  })
+  const { dispose, textarea } = await mountComposer(false)
+  const beforeSend = store.client.send
+  const commands: unknown[] = []
+  store.client.send = (command) => commands.push(command)
+  /** 回车的 keydown；`keyCode` 以属性写入：事件构造参数不接受它。 */
+  const enter = (init: { isComposing?: boolean; keyCode?: number }) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+      isComposing: init.isComposing ?? false,
+    })
+    if (init.keyCode !== undefined) Object.defineProperty(event, 'keyCode', { value: init.keyCode })
+    textarea.dispatchEvent(event)
+  }
+  try {
+    input(textarea, '你好')
+    enter({ isComposing: true })
+    // macOS 的 WebKit：先结束组合，确认选词的 keydown 中 isComposing 为 false、keyCode 为 229。
+    enter({ keyCode: 229 })
+    expect(commands).toEqual([])
+    expect(textarea.value).toBe('你好')
+    enter({})
+    expect(commands).toContainEqual(
+      expect.objectContaining({ type: 'message.send', conversationId: 'cv_ime', content: '你好' }),
+    )
+  } finally {
+    store.client.send = beforeSend
+    dispose()
+    store.setState({
+      activeConversation: null,
+      busyConversations: [],
+      followUps: [],
+      conversations: conversationsBefore,
+    })
+  }
+})
+
 test('附件上传期间切换会话，完成后只加入原会话草稿', async () => {
   const store = await import('../lib/store/index.ts')
   store.setState('activeConversation', 'cv_upload_a')

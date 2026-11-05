@@ -16,6 +16,7 @@ import {
   Switch,
 } from 'solid-js'
 import type { OfficeFormat } from '../lib/file-search.ts'
+import { composing } from '../lib/input/composing.ts'
 import { createRefreshKey, loaded } from '../lib/resource.ts'
 import { MAP_CODEC, SET_CODEC, sessionSignal } from '../lib/session.ts'
 import { clamp, diffFrom, firstString } from '../lib/step-view.ts'
@@ -1364,7 +1365,7 @@ function NameRow(props: {
         value={name()}
         onInput={(e) => setName(e.currentTarget.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') props.ctx.submitName(name())
+          if (e.key === 'Enter' && !composing(e)) props.ctx.submitName(name())
           if (e.key === 'Escape') props.ctx.cancelName()
         }}
         onBlur={() => {

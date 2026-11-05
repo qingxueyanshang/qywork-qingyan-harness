@@ -11,6 +11,7 @@ import {
   type VideoChannel,
 } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
+import { composing } from '../../lib/input/composing.ts'
 import { sessionSignal } from '../../lib/session.ts'
 import { cloudState, refreshCloudState } from '../../lib/store/cloud.ts'
 import {
@@ -660,7 +661,7 @@ export function ModelSettings() {
                           type="text"
                           placeholder="模型 ID，回车添加"
                           onKeyDown={(e) => {
-                            if (e.key !== 'Enter') return
+                            if (e.key !== 'Enter' || composing(e)) return
                             addModel(name(), e.currentTarget.value.trim())
                             e.currentTarget.value = ''
                           }}

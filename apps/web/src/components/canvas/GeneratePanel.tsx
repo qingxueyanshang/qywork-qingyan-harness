@@ -47,6 +47,7 @@ import {
   Show,
   Switch,
 } from 'solid-js'
+import { composing } from '../../lib/input/composing.ts'
 import { loaded } from '../../lib/resource.ts'
 import { readSession, sessionSignal, writeSession } from '../../lib/session.ts'
 import {
@@ -713,7 +714,13 @@ export function GeneratePanel(props: {
         e.preventDefault()
         openPicker(el)
       }
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && draft().trim() && !running()) {
+      if (
+        e.key === 'Enter' &&
+        (e.ctrlKey || e.metaKey) &&
+        !composing(e) &&
+        draft().trim() &&
+        !running()
+      ) {
         e.preventDefault()
         send()
       }

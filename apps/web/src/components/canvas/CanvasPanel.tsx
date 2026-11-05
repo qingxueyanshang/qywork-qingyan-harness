@@ -50,6 +50,7 @@ import {
   untrack,
 } from 'solid-js'
 import { Portal } from 'solid-js/web'
+import { composing } from '../../lib/input/composing.ts'
 import { loaded } from '../../lib/resource.ts'
 import { readSession, SET_CODEC, sessionSignal } from '../../lib/session.ts'
 import {
@@ -1900,7 +1901,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
               value={displayNameOf(n())}
               ref={(el) => requestAnimationFrame(() => el.select())}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') commitName(e.currentTarget.value)
+                if (e.key === 'Enter' && !composing(e)) commitName(e.currentTarget.value)
                 if (e.key === 'Escape') setRenaming(null)
               }}
               onBlur={(e) => commitName(e.currentTarget.value)}

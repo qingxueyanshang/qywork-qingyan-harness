@@ -1,5 +1,6 @@
 import type { Conversation } from '@qywork/core'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { composing } from '../lib/input/composing.ts'
 import { archiveConversation, deleteConversation, renameConversation } from '../lib/store/index.ts'
 import { AnchoredMenu } from './AnchoredMenu.tsx'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
@@ -245,7 +246,7 @@ function RenameInput(props: {
       value={name()}
       onInput={(e) => setName(e.currentTarget.value)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') submit()
+        if (e.key === 'Enter' && !composing(e)) submit()
         if (e.key === 'Escape') props.onCancel()
       }}
       onBlur={() => props.onCancel()}

@@ -2,6 +2,7 @@ import type { Attachment, FollowUp } from '@qywork/core'
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from 'solid-js'
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { matchesMention, mentionQuery, replaceMention } from '../lib/composer-suggestions.ts'
+import { composing } from '../lib/input/composing.ts'
 import { sessionSignal } from '../lib/session.ts'
 import { slashDispatch } from '../lib/slash.ts'
 import {
@@ -53,7 +54,7 @@ type ComposerDraft = { text: string; attachments: Attachment[] }
  * 输入区。
  *
  * 三条交互约定：
- * - Enter 发送、Shift+Enter 换行。中文输入法组合期间（isComposing）必须放行，
+ * - Enter 发送、Shift+Enter 换行。中文输入法组合期间（`composing`）必须放行，
  *   否则用拼音选词时按回车会把未完成的拼音发送出去。
  * - 会话运行中仍可发送：该条消息进入队列，去向由默认档位决定，
  *   `Ctrl+Enter` 使单条消息使用相反的档位。默认档位在设置页设置，不在此处常驻显示。
@@ -650,7 +651,7 @@ export function Composer(props: { empty: boolean }) {
             onKeyDown={(e) => {
               const hits = pickerOptions()
               const open = pickerOpen()
-              if (open && !e.isComposing) {
+              if (open && !composing(e)) {
                 if (e.key === 'ArrowDown') {
                   e.preventDefault()
                   if (hits.length) setMenuCursor((c) => Math.min(c + 1, hits.length - 1))
@@ -684,9 +685,9 @@ export function Composer(props: { empty: boolean }) {
                 ta.blur()
                 return
               }
-              // isComposing：中文/日文输入法组合期间的回车用于选词，不能作为发送。
+              // 输入法组合期间的回车用于选词，不能作为发送（`composing`）。
               // Ctrl/Cmd+Enter 使用与默认档位相反的档位；会话空闲时两者等价。
-              if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+              if (e.key === 'Enter' && !e.shiftKey && !composing(e)) {
                 e.preventDefault()
                 submit(e.ctrlKey || e.metaKey)
               }
