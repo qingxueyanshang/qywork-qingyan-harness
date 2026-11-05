@@ -473,10 +473,10 @@ export class CloudAccount {
   }
 
   /** 以设备密钥读取云端型号清单（登录完成时尚未写入接口，因此不经 `call`）。 */
-  private async catalog(key: string): Promise<CatalogModel[]> {
+  private async catalog(key: string, signal = this.timeout()): Promise<CatalogModel[]> {
     const res = await fetch(`${this.origin}/v1/catalog`, {
       headers: { authorization: `Bearer ${key}` },
-      signal: this.timeout(),
+      signal,
     })
     if (!res.ok) throw new Error(`读取型号清单失败：${res.status} ${httpStatusName(res.status)}`)
     return ((await res.json()) as { models: CatalogModel[] }).models
@@ -491,6 +491,18 @@ export class CloudAccount {
     await this.applyModels(await this.catalog(key))
   }
 
+  /**
+   * 一轮使用云端型号之前读取当前的型号与倍率。后台可随时调整倍率，配置中的副本只在登录、进程首次确认登录与
+   * 打开账号窗口时更新；不在开始前同步时，调价之后的轮次按旧倍率记账，与云端扣费不一致。
+   * 读取超时 3 秒，失败时抛出，由调用方沿用已保存的价格。
+   */
+  async syncModels(): Promise<void> {
+    const provider = cloudProviderOf(this.live, this.origin)
+    if (!provider?.apiKey) return
+    await this.applyModels(await this.catalog(provider.apiKey, AbortSignal.timeout(3000)))
+  }
+
+  /** 写入清单中的型号与价格；与配置中已有的内容相同时不写入。 */
   private async applyModels(list: readonly CatalogModel[]): Promise<void> {
     const listed = storedModels(list)
     await writeConfig(this.live, (current) => {
@@ -504,6 +516,12 @@ export class CloudAccount {
       }
       for (const [id, m] of Object.entries(listed)) models[id] ??= m
       const catalog = withSpecs(current.catalog, list)
+      if (
+        JSON.stringify(models) === JSON.stringify(provider.models) &&
+        JSON.stringify(catalog) === JSON.stringify(current.catalog)
+      ) {
+        return current
+      }
       const { catalog: _catalog, ...rest } = current
       return {
         ...rest,

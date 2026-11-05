@@ -1,7 +1,7 @@
 /**
  * 启动轮次前被拒绝时发出的事件序列。
  *
- * **覆盖范围**：`run-control.ts` 中 `startRun` 的六个拒绝出口（占位失败、未找到项目
+ * **覆盖范围**：`run-control.ts` 中 `startRun` 使用云端型号时的价格同步，以及六个拒绝出口（占位失败、未找到项目
  * 目录、三处均无法取得模型、会话装配抛错、装配 adapter 抛错、会话被另一个进程占用），
  * 以及 `runs.ts` 在释放占位时的忙闲广播。这六个出口都不产生 run 行，因此**不会有 `run.finished`**，
  * 终态是 `conversation.busy: false`（约定写在 `core` 的 `RunErrorEvent` 上）。
@@ -255,4 +255,47 @@ test('未找到会话的项目目录：占位立即释放', async () => {
 
   expect(trace()).toEqual(['busy=true', 'run.error internal_error runId=""', 'busy=false'])
   expect(runs.hasRun(cv)).toBe(false)
+})
+
+test('使用云端型号的轮次先同步云端价格；同步失败时沿用已保存的价格继续；其他接口的轮次不同步', async () => {
+  const cloudConfig = {
+    ...config(''),
+    providers: {
+      ...config('').providers,
+      qywork: { kind: 'anthropic_messages', apiKey: '', models: { 'claude-sonnet-5-5': {} } },
+    },
+  } as QyConfig
+  // 前一个用例删除了共用的项目，本用例使用自己的项目。
+  const ws = upsertWorkspace(store, dir, 'cloud-ws').id as never
+  const order: string[] = []
+  const sync = (fail: boolean) => async () => {
+    order.push('sync')
+    if (fail) throw new Error('云端无法访问')
+  }
+  for (const fail of [false, true]) {
+    events = []
+    order.length = 0
+    const cv = createConversation(store, {
+      workspaceId: ws,
+      provider: 'qywork',
+      model: 'claude-sonnet-5-5',
+    }).id
+    const idle = waitForIdle(cv)
+    await startRun(cv, '你好', undefined, { ...deps(cloudConfig), syncCloudPrices: sync(fail) })
+    await idle
+    // 同步之后才装配 adapter：本例未配置 key，装配时报 no_api_key。
+    expect(order).toEqual(['sync'])
+    expect(trace()).toEqual(['busy=true', 'run.error no_api_key runId=""', 'busy=false'])
+  }
+  order.length = 0
+  events = []
+  const local = createConversation(store, {
+    workspaceId: ws,
+    provider: 'fake',
+    model: 'deepseek-v4-flash',
+  }).id
+  const idle = waitForIdle(local)
+  await startRun(local, '你好', undefined, { ...deps(cloudConfig), syncCloudPrices: sync(false) })
+  await idle
+  expect(order).toEqual([])
 })

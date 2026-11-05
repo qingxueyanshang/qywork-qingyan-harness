@@ -55,6 +55,7 @@ import {
 import { redactSecrets } from '@qywork/tools'
 import { personalizationPort, petPort } from './appearance.ts'
 import { artRenderOf, canvasPort } from './canvas.ts'
+import { CLOUD_PROVIDER } from './cloud/account.ts'
 import { makeDelegate } from './delegate.ts'
 import { type CommandDeps, officePortOf } from './deps.ts'
 import { publishGitState } from './http-util.ts'
@@ -166,8 +167,8 @@ export async function startRun(
    * 工具注册冲突）都不会释放占位，此后该会话的每条消息都以
    * 「已有任务在执行」被拒绝，直到进程重启。
    *
-   * 准备阶段全部同步执行，因此 `startRun` 返回之前它已执行完毕，启动一轮的判定条件
-   * 仍然是「检查与占位在同一个同步块中」。
+   * 启动一轮的判定条件是「检查与占位在同一个同步块中」（上方的 `reserve`）。准备阶段只有同步云端价格一处 await
+   * （使用云端型号时），其余步骤同步执行。
    */
   void (async () => {
     /*
@@ -230,14 +231,31 @@ export async function startRun(
        * （与 `session.ask` 相同），三者皆空表示用户尚未配置模型。**在此处拦截并返回结构化的
        * `no_model`**，而不是向不存在的接口发出请求后等待 401。界面另有就地拦截，此处为后备处理。
        */
-      const runModel =
-        model || getConversation(deps.store, conversationId)?.model || deps.config.active?.model
+      const conversation = getConversation(deps.store, conversationId)
+      const runModel = model || conversation?.model || deps.config.active?.model
       if (!runModel) {
         deps.bus.publish(
           { type: 'run.error', runId: '' as RunId, code: 'no_model', message: NO_MODEL_MESSAGE },
           conversationId,
         )
         return
+      }
+
+      /*
+       * 使用云端型号时先同步云端的当前倍率：后台调价后，配置中的旧倍率会使本轮按旧价记账，与云端扣费不一致。
+       * 同步失败（云端无法访问、超时）时沿用已保存的价格，不阻止本轮。只有这一处 await 位于准备阶段，
+       * 占位已在上方同步完成，同一会话的另一条消息仍按「已有任务在执行」排队。
+       */
+      const runProvider = resolveModel(
+        deps.config,
+        conversation?.provider && !model
+          ? { provider: conversation.provider, model: runModel }
+          : runModel,
+      )?.provider
+      if (deps.syncCloudPrices && runProvider === CLOUD_PROVIDER) {
+        await deps.syncCloudPrices().catch((err) => {
+          log.warn('cloud', `同步云端价格失败，沿用已保存的价格：${String(err)}`)
+        })
       }
 
       session = new Session({

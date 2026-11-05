@@ -365,6 +365,12 @@ export function serve(opts: ServeOptions) {
 
   const unsubscribers = new Map<string, () => void>()
 
+  const origin = cloudOrigin()
+  const cloud = origin
+    ? new CloudAccount(opts.config, origin, { onChange: () => remote.sync() })
+    : null
+  const syncCloudPrices = cloud ? { syncCloudPrices: () => cloud.syncModels() } : {}
+
   /*
    * 交付一次定时触发：认领时新建的会话先广播，再把 prompt 作为一条用户消息发送。
    *
@@ -391,6 +397,7 @@ export function serve(opts: ServeOptions) {
         office,
         ...(browser ? { browser } : {}),
         ...(desktop ? { desktop } : {}),
+        ...syncCloudPrices,
       },
     )
   }
@@ -459,12 +466,8 @@ export function serve(opts: ServeOptions) {
 
   /*
    * 云端账号与远程访问。未配置云端地址时账号为 null（`/api/cloud/state` 回答 unavailable），远程访问始终不可用。
-   * 登录与退出改变云端接口后，远程访问按新的登录状态启停隧道。
+   * 登录与退出改变云端接口后，远程访问按新的登录状态启停隧道。账号在运行依赖之前声明。
    */
-  const origin = cloudOrigin()
-  const cloud = origin
-    ? new CloudAccount(opts.config, origin, { onChange: () => remote.sync() })
-    : null
   const remote: RemoteAccess = new RemoteAccess({
     config: opts.config,
     origin,
@@ -686,6 +689,7 @@ export function serve(opts: ServeOptions) {
             office,
             ...(browser ? { browser } : {}),
             ...(desktop ? { desktop } : {}),
+            ...syncCloudPrices,
           })
         } catch (err) {
           const detail = err instanceof Error ? err.message : String(err)
