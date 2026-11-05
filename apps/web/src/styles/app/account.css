@@ -60,18 +60,20 @@
   box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
+/* 固定在右上角，不占用头部行。 */
 .account-close {
   position: absolute;
-  top: var(--s-2);
-  right: var(--s-2);
+  top: var(--dialog-close-inset);
+  right: var(--dialog-close-inset);
   z-index: 1;
 }
+/* 只有头部以下滚动：头部在滚动区外，滚动条不经过关闭按钮。 */
 .account-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   scrollbar-gutter: stable;
-  padding: var(--s-6);
+  padding: 0 var(--s-6) var(--s-6);
 }
 /* 未登录时的登录框：宽度与登录表单相称，高度固定（标志、标题、切换、两个输入框、按钮与报错行）。 */
 .account-dialog.signin {
@@ -85,12 +87,14 @@
   padding: var(--s-6) var(--s-6) var(--s-5);
 }
 
+/* 右内距 = 滚动区右内距 + 滚动条槽宽 12px（`base.css`），行尾的充值按钮与下方内容右缘对齐。
+   下内距是滚动中的内容与头部之间的间隙。 */
 .account-head {
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--s-3);
-  /* 右侧留出关闭按钮的位置。 */
-  padding-right: var(--s-8);
+  padding: var(--s-5) calc(var(--s-6) + 12px) var(--s-3) var(--s-6);
 }
 .account-email {
   /* 不占满整行：官网与退出按钮紧跟在邮箱之后。 */
@@ -130,8 +134,11 @@
   font-size: var(--fs-sm);
   color: var(--danger);
 }
-/* 充值按钮在头部行尾，紧靠关闭按钮留出的位置；高度与图标按钮相近。 */
+/* 充值按钮在头部行尾，右缘与下方内容对齐；高度与图标按钮相近。
+   上移 2px：带底色的按钮与线条图标按几何中心对齐时，视觉上偏下。 */
 .account-recharge {
+  position: relative;
+  top: -2px;
   flex: none;
   margin-left: auto;
   height: 24px;
@@ -180,8 +187,8 @@
 }
 .recharge-close {
   position: absolute;
-  top: var(--s-2);
-  right: var(--s-2);
+  top: var(--dialog-close-inset);
+  right: var(--dialog-close-inset);
 }
 .recharge-step {
   flex: 1;
@@ -248,6 +255,11 @@
   color: var(--text-primary);
   font: inherit;
   font-size: var(--fs-md);
+}
+.recharge-note {
+  margin: var(--s-3) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
 }
 .recharge-error {
   display: block;
@@ -352,7 +364,7 @@
 .account-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  margin: var(--s-5) 0 0;
+  margin: var(--s-2) 0 0;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
 }
@@ -552,8 +564,11 @@
     padding-top: var(--safe-top);
     padding-bottom: var(--safe-bottom);
   }
+  .account-head {
+    padding-left: var(--s-4);
+  }
   .account-scroll {
-    padding: var(--s-4);
+    padding: 0 var(--s-4) var(--s-4);
   }
   .account-stats {
     grid-template-columns: repeat(2, 1fr);

@@ -518,11 +518,12 @@ async function recharge() {
 
 const posted = () => calls.filter((c) => c === 'POST /api/cloud/recharge').length
 
-test('充值窗口：默认 50 元，可选预设金额或输入其他金额；其他金额不合法时不能提交', async () => {
+test('充值窗口：默认 50 元，可选预设金额或输入其他金额；其他金额不合法时不能提交；显示客服微信', async () => {
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()
   const { view, submit } = await recharge()
   expect(view.text()).toContain('余额 12.50 积分')
+  expect(view.text()).toContain('如有问题，请联系客服，微信：li1573i')
   expect(view.host.querySelector('.recharge-preset.active')?.textContent).toContain('¥50')
   expect(view.host.querySelector('.recharge-submit')?.textContent).toBe('微信支付 ¥50')
   view.button('¥100100 积分')?.click()

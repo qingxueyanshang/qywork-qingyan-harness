@@ -40,8 +40,8 @@
    类目栏下方，不会覆盖最后一个类目。 */
 .settings-close {
   position: absolute;
-  top: var(--s-2);
-  right: var(--s-2);
+  top: var(--dialog-close-inset);
+  right: var(--dialog-close-inset);
   z-index: 1;
 }
 /* 滚动条只在内容区，不在对话框上：外层滚动时标题与类目栏会随之移出视口，
