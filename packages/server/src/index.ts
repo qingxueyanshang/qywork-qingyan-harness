@@ -9,7 +9,7 @@
 export { CloudAccount, CloudAccountError } from './cloud/account.ts'
 export { cloudOrigin } from './cloud/origin.ts'
 // 网页构建产物的两种来源：CLI 的 `qy serve` 按 `--static` 或编译时嵌入的内容选择其一，传给 serve
-export { devServerSource, directoryAssets, embeddedAssets, fileSource } from './http-util.ts'
+export { directoryAssets, embeddedAssets, fileSource } from './http-util.ts'
 // 当前平台的系统电源接口；CLI 的 `qy serve` 创建后传给 serve
 export { systemPowerPort } from './power.ts'
 // 桌面外壳异常重启后的单次退出信息；CLI 解析后交给 serve 的恢复路径。

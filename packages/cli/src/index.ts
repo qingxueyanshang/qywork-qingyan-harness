@@ -32,7 +32,6 @@ import {
   Session,
 } from '@qywork/runtime'
 import {
-  devServerSource,
   directoryAssets,
   embeddedAssets,
   fileSource,
@@ -77,7 +76,6 @@ const USAGE = `qy —— qywork 编码 agent
     --host <地址>         默认 127.0.0.1（手机经云端远程访问，不直接连接本服务）
     --cwd <路径>          指定工作区
     --static <目录>       前端构建产物目录（默认使用编译时嵌入的网页）
-    --web-dev-server <地址>  源码运行时由该 Vite 开发服务器提供网页（scripts/dev.ts 传入）
     --print-token         将令牌输出到 stdout（供 Tauri 读取）
     --parent-pid <pid>    父进程退出时一并退出，避免留下孤儿服务
 
@@ -377,15 +375,13 @@ async function runServe(args: string[]): Promise<number> {
 
   // 任务运行期间阻止系统睡眠、按定时任务唤醒系统。不按是否由桌面外壳启动区分：经局域网连接的客户端发起的任务同样需要。
   const power = systemPowerPort()
-  // 网页来源，三选一：`--static` 指定的目录、`--web-dev-server` 指定的 Vite 开发服务器、编译时嵌入的网页。
-  // 远程访问经本服务取得页面：源码运行时没有嵌入内容，不传 `--web-dev-server` 时远程只能得到纯文本响应。
+  // 网页来源，二选一：`--static` 指定的目录、编译时嵌入的网页；供本机浏览器打开。
+  // 远程打开时界面由云端按本机上报的版本提供，不经本服务。
   const web = flags.static
     ? fileSource(directoryAssets(resolve(flags.static)))
-    : flags.webDevServer
-      ? devServerSource(flags.webDevServer)
-      : embeddedWeb
-        ? fileSource(embeddedAssets(embeddedWeb))
-        : null
+    : embeddedWeb
+      ? fileSource(embeddedAssets(embeddedWeb))
+      : null
   const handle = serve({
     store,
     config,
@@ -518,7 +514,6 @@ interface Flags {
   port?: number
   host?: string
   static?: string
-  webDevServer?: string
   printToken?: boolean
   parentPid?: number
 }
@@ -542,10 +537,6 @@ function parseFlags(args: string[]): Flags {
     } else if (a === '--static') {
       const [v, ni] = takeValue(i)
       if (v) out.static = v
-      i = ni
-    } else if (a === '--web-dev-server') {
-      const [v, ni] = takeValue(i)
-      if (v) out.webDevServer = v
       i = ni
     } else if (a === '--port') {
       const [v, ni] = takeValue(i)

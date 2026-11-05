@@ -407,11 +407,11 @@ export type CommandRejectReason =
 // ─────────────────────────────── 配对 ───────────────────────────────
 
 /**
- * 二维码中编码的内容。手机扫码后直接打开该 URL，token 放在 fragment 中
+ * 设备页面的地址：云端打开设备时返回，入口为 `/`，token 放在 fragment 中
  * （fragment 不进入服务端日志，也不进入 Referer）。
  */
 export interface PairingPayload {
-  /** 形如 http://192.168.1.20:7717 */
+  /** 设备页面的来源，形如 https://<设备标识>.qywork.io */
   url: string
   token: string
   /** 桌面端主机名，手机上显示「已连接到 <name>」。 */
@@ -423,7 +423,7 @@ export function encodePairingUrl(p: PairingPayload): string {
     t: p.token,
     n: p.deviceName,
   })
-  return `${p.url}/m#${frag.toString()}`
+  return `${p.url}/#${frag.toString()}`
 }
 
 /**

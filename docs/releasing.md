@@ -74,7 +74,9 @@ git diff --check
 
 官网（`https://qywork.io`）的下载按钮与桌面端的应用内更新都从官网服务器取得安装包，不直接访问 GitHub。
 服务器每 10 分钟检查一次 GitHub 最新的正式版本，下载全部附件并按各平台的 `SHA256SUMS` 核对，
-全部通过后才切换到新版本；草稿不会被同步。公开发布后 10 分钟内确认：
+全部通过后才切换到新版本；草稿不会被同步。Linux 工作流另外上传网页构建产物 `qywork-web_<版本>.tar.gz`
+（计入 `SHA256SUMS-linux-x86_64.txt`），服务器解压到该版本目录的 `web/`，手机远程打开电脑时的界面由此提供；
+缺少该附件时同步失败、不切换版本。公开发布后 10 分钟内确认：
 
 ```bash
 curl -s https://qywork.io/download/latest.json | head -c 200   # version 为本次版本，下载地址指向 qywork.io

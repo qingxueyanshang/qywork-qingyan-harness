@@ -173,9 +173,6 @@ function spawnAgent(): ReturnType<typeof Bun.spawn> {
       // 只绑定本机：局域网接入由应用内显式开启，开发脚本不替用户做此决定。
       '--host',
       '127.0.0.1',
-      // 远程访问经 sidecar 取得页面，源码运行时页面由下方启动的 Vite 提供。
-      '--web-dev-server',
-      WEB_ORIGIN,
       // 本脚本被强制关闭（关闭窗口、任务管理器）时 sidecar 随之退出：
       // shutdown 没有机会执行时，sidecar 必须自行结束。
       '--parent-pid',

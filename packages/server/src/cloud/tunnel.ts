@@ -39,6 +39,8 @@ export interface TunnelClientOptions {
   /** 云端接口来源，例如 `https://api.example.com`。 */
   apiOrigin: string
   key: string
+  /** 应用版本，经 `hello` 上报；云端按它提供设备页面的界面。 */
+  version: string
   /** 远程监听器的端口。 */
   localPort: number
   /** 当前进程的配对令牌与设备名，应答 `pair.request`。 */
@@ -131,7 +133,12 @@ export class TunnelClient {
     }, TUNNEL_PING_MS)
     ws.onopen = () => {
       ws.send(
-        JSON.stringify({ type: 'hello', protocol: TUNNEL_PROTOCOL_VERSION, key: this.opts.key }),
+        JSON.stringify({
+          type: 'hello',
+          protocol: TUNNEL_PROTOCOL_VERSION,
+          key: this.opts.key,
+          version: this.opts.version,
+        }),
       )
     }
     ws.onmessage = (e) => {
