@@ -32,7 +32,7 @@ type Received =
 /** 模拟的隧道中心：接受 hello、应答 welcome，按测试的需要向电脑端发起请求。 */
 class FakeCloud {
   readonly server: ReturnType<typeof Bun.serve<undefined>>
-  hellos: { protocol: number; key: string; version?: string }[] = []
+  hellos: { protocol: number; key: string }[] = []
   /** 设定后，下一次 hello 以该关闭码拒绝。 */
   reject: number | null = null
   ws: ServerWebSocket<undefined> | null = null
@@ -219,7 +219,6 @@ describe('隧道客户端', () => {
     client = new TunnelClient({
       apiOrigin: cloud.origin,
       key: 'qyd_key',
-      version: '9.8.7',
       localPort: local.port ?? 0,
       pairing: () => pairing,
       onStatus: (s) => statuses.push(s),
@@ -240,14 +239,13 @@ describe('隧道客户端', () => {
     local.stop(true)
   })
 
-  test('握手携带设备密钥、协议版本与应用版本，welcome 后状态为在线', async () => {
+  test('握手携带设备密钥与协议版本，welcome 后状态为在线', async () => {
     const c = start()
     await until(() => c.status.state === 'online')
     expect(cloud.hellos.at(-1)).toEqual({
       type: 'hello',
       protocol: TUNNEL_PROTOCOL_VERSION,
       key: 'qyd_key',
-      version: '9.8.7',
     } as never)
     expect(c.status).toEqual({ state: 'online' })
   })
@@ -374,10 +372,6 @@ describe('远程访问经 serve() 装配', () => {
     })
     await until(() => handle?.remote.snapshot().tunnel?.state === 'online')
     expect(cloud.hellos.at(-1)?.key).toBe('qyd_device')
-    // 上报的是本包的版本，与根 `VERSION` 相同。
-    expect(cloud.hellos.at(-1)?.version).toBe(
-      (await Bun.file(join(import.meta.dir, '../../../../VERSION')).text()).trim(),
-    )
 
     const internal = await cloud.request('POST', '/internal/app-update', [
       ['x-qywork-update-key', 'update-key'],

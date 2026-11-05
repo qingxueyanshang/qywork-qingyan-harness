@@ -114,11 +114,13 @@ export const client = new QyClient({
      * 桌面源码开发采用「前后端原子换代」：Vite 不先热替换页面，所有源码改动都先
      * 等待当前 run 执行完毕，再由 dev.ts 重启 sidecar。streamId 变更是后端换代完成的
      * 可靠信号，此时刷新整页，才会加载与后端同一版本源码的 UI。
+     * 该标志由 dev.ts 设置，同时作用于 Vite 页面与 dev.ts 为远程访问构建的产物：
+     * 开发实例的令牌在换代间不变，远程页面不会经 `unauthorized` 重新打开，只能在此刷新。
      *
      * 不能把刷新挂到普通 reconnect 或 resync 上：网络闪断也会触发这两条路径，
      * 手机端与打包版不应因此整页刷新。
      */
-    if (import.meta.env.DEV && import.meta.env.VITE_QYWORK_COORDINATED_RELOAD === '1') {
+    if (import.meta.env.VITE_QYWORK_COORDINATED_RELOAD === '1') {
       location.reload()
     }
   },

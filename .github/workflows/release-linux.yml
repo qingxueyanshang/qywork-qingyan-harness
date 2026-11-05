@@ -84,12 +84,6 @@ jobs:
           }
           sum_one "$bundle/deb" "*.deb"
           sum_one "$bundle/appimage" "*.AppImage"
-          # 设备页面的界面：云端同步脚本解压到该版本目录的 web/，按电脑端上报的版本提供。
-          # apps/web/dist 由上一步 Tauri 的 beforeBuildCommand 构建。
-          version="$(tr -d '[:space:]' < VERSION)"
-          [ -f apps/web/dist/index.html ] || { echo "apps/web/dist 中没有 index.html" >&2; exit 1; }
-          tar -czf "qywork-web_${version}.tar.gz" -C apps/web/dist .
-          sha256sum "qywork-web_${version}.tar.gz" >> SHA256SUMS-linux-x86_64.txt
 
       - name: Upload checksum to draft release
         shell: bash
@@ -97,4 +91,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
-          gh release upload "v$version" SHA256SUMS-linux-x86_64.txt "qywork-web_${version}.tar.gz" --clobber
+          gh release upload "v$version" SHA256SUMS-linux-x86_64.txt --clobber
