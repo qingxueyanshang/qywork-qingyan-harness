@@ -48,7 +48,8 @@ export type TunnelHeaders = [string, string][]
 export type TunnelNotifyEvent = 'run.finished' | 'run.error'
 
 export type TunnelControl =
-  | { type: 'hello'; protocol: number; key: string }
+  /** `version` 是电脑端的应用版本，云端按它提供设备页面的界面；缺省时云端不提供界面，打开设备返回 426。 */
+  | { type: 'hello'; protocol: number; key: string; version?: string }
   | { type: 'welcome' }
   | { type: 'ping' }
   | { type: 'pong' }
@@ -70,7 +71,7 @@ type FieldKind = 'string' | 'number' | 'headers' | 'string?' | 'number?'
 
 /** 每种控制帧的字段与类型。`parseControl` 只按此表校验，新增帧类型时在此登记。 */
 const FIELDS: { [T in TunnelControl['type']]: Record<string, FieldKind> } = {
-  hello: { protocol: 'number', key: 'string' },
+  hello: { protocol: 'number', key: 'string', version: 'string?' },
   welcome: {},
   ping: {},
   pong: {},

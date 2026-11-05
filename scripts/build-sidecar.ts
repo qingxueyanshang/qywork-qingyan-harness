@@ -68,7 +68,7 @@ const embedPhotonWasm: BunPlugin = {
 }
 
 /**
- * 网页构建产物的嵌入点。`qy serve` 未指定 `--static` 时提供嵌入的网页，手机经此取得页面。
+ * 网页构建产物的嵌入点。`qy serve` 未指定 `--static` 时提供嵌入的网页，供本机浏览器打开。
  *
  * 网页在此处单独构建到临时目录，不读取 `apps/web/dist`：发布流程与门禁都在构建网页之前编译 sidecar
  * （`.github/actions/setup-build/action.yml` 的 Build sidecar 步骤），读取 `apps/web/dist` 得到的是缺失或过期的内容。

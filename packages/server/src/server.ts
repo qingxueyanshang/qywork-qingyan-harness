@@ -625,7 +625,7 @@ export function serve(opts: ServeOptions) {
 
       // ── 静态资源 ──
       if (opts.web) {
-        const served = await opts.web(url, req)
+        const served = await opts.web(url)
         if (served) return served
       }
       return new Response('qywork server', { status: 200 })

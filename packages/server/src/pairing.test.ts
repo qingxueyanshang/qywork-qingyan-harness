@@ -18,7 +18,7 @@ describe('配对令牌', () => {
     expect(p.verify('injected-by-deskto')).toBe(false)
   })
 
-  test('设备页面地址中令牌放在 fragment 中，不放入 query（不会被日志与 Referer 捕获）', () => {
+  test('设备页面地址的入口为 `/`，令牌放在 fragment 中，不放入 query（不会被日志与 Referer 捕获）', () => {
     const p = new Pairing({ deviceName: 'testbox' })
     const url = encodePairingUrl({
       url: 'https://abc.example.com',
@@ -26,7 +26,7 @@ describe('配对令牌', () => {
       deviceName: p.deviceName,
     })
     const [beforeHash] = url.split('#')
-    expect(beforeHash).not.toContain(p.token)
+    expect(beforeHash).toBe('https://abc.example.com/')
     expect(url).toContain('#')
 
     const decoded = decodePairingUrl(url)
