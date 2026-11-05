@@ -296,6 +296,20 @@ const UNIT_LABEL: Record<MediaUnit, string> = {
   '10k_chars': '每万字符',
 }
 
+/** 计量单位的名称：「30 秒」「2 张」「0.12 万字符」。 */
+const METER_UNIT: Record<MediaUnit, string> = {
+  image: '张',
+  second: '秒',
+  request: '次',
+  '10k_chars': '万字符',
+}
+
+/** 生成任务的计量：数量、单位，按分辨率计价时带档位。 */
+function meterText(m: NonNullable<CloudRequest['mediaMeter']>): string {
+  const units = Number.isInteger(m.units) ? String(m.units) : String(Number(m.units.toFixed(4)))
+  return `${units} ${METER_UNIT[m.unit]}${m.resolution ? ` · ${m.resolution}` : ''}`
+}
+
 /** 生成型号的单价：一个数，或逐档「档位 单价」。 */
 function unitPriceText(p: UnitPrice): string {
   if (typeof p === 'number') return formatCredits(p)
@@ -516,11 +530,21 @@ function RequestTable(props: { provider: string }) {
                     <tr>
                       <td>{when(r.startedAt)}</td>
                       <td>{modelName(props.provider, r.modelId)}</td>
-                      <td class="num">
-                        {compact(r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens)}
-                      </td>
-                      <td class="num">{compact(r.outputTokens)}</td>
-                      <td class="num">{compact(r.cacheReadTokens)}</td>
+                      {/* 生成任务没有 token，三列合为一格显示计量。 */}
+                      <Show
+                        when={r.mediaMeter}
+                        fallback={
+                          <>
+                            <td class="num">
+                              {compact(r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens)}
+                            </td>
+                            <td class="num">{compact(r.outputTokens)}</td>
+                            <td class="num">{compact(r.cacheReadTokens)}</td>
+                          </>
+                        }
+                      >
+                        {(m) => <td colSpan={3}>{meterText(m())}</td>}
+                      </Show>
                       <td class="num">
                         {formatCredits(r.credits)}
                         <For each={priceTerms(r)}>

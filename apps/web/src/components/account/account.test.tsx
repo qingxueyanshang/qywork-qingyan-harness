@@ -62,7 +62,9 @@ const USAGE: CloudUsage = {
 function record(
   id: string,
   failure: string | null = null,
-  terms: Partial<Pick<CloudRequest, 'longContext' | 'offPeak' | 'cacheWrite1hTokens'>> = {},
+  terms: Partial<
+    Pick<CloudRequest, 'longContext' | 'offPeak' | 'cacheWrite1hTokens' | 'mediaMeter'>
+  > = {},
 ): CloudRequest {
   return {
     id,
@@ -75,6 +77,7 @@ function record(
     cacheWrite1hTokens: 0,
     longContext: false,
     offPeak: false,
+    mediaMeter: null,
     ...terms,
     credits: 0.25,
     startedAt: new Date(Date.UTC(2026, 10, 1) + Number(id) * 60_000).toISOString(),
@@ -773,4 +776,24 @@ test('可用模型、生成模型与使用记录显示模型目录中的名称�
     media = []
     await (await import('../../lib/store/settings.ts')).reloadModelCatalog()
   }
+})
+
+test('使用记录中的生成任务：三个 token 列合为一格显示计量（数量、单位与分辨率档位）', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  pages = [
+    [
+      record('2', null, { mediaMeter: { units: 30, unit: 'second', resolution: '720p' } }),
+      record('1', '结果不明，积分已退回', { mediaMeter: { units: 2, unit: 'image' } }),
+    ],
+  ]
+  const view = await dialog()
+  await until(() => view.text().includes('30 秒 · 720p'))
+  const cells = (text: string) =>
+    [...view.host.querySelectorAll('tbody tr')]
+      .find((r) => r.textContent?.includes(text))
+      ?.querySelectorAll('td')
+  expect(cells('30 秒 · 720p')?.length).toBe(5)
+  expect(cells('2 张')?.[4]?.textContent).toBe('结果不明，积分已退回')
+  view.close()
 })

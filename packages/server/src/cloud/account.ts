@@ -203,6 +203,10 @@ function failure(status: number, errorCode: string | null): string | null {
   if (errorCode === 'service_interrupted') return '服务中断，积分已退回'
   if (errorCode === 'upstream_unreachable') return '无法连接模型服务'
   if (errorCode.startsWith('upstream_')) return `${status} ${httpStatusName(status)}`
+  // 生成任务的三种不计费终态（云端 `media/runner.ts`）：预扣全额退回。
+  if (errorCode === 'media_failed') return '生成失败，积分已退回'
+  if (errorCode === 'media_cancelled') return '已撤销，积分已退回'
+  if (errorCode.startsWith('media_unknown_')) return '结果不明，积分已退回'
   return errorCode
 }
 

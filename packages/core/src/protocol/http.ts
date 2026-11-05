@@ -267,6 +267,8 @@ export interface CloudRequest {
   longContext: boolean
   /** 按空闲时段的折扣价计价。 */
   offPeak: boolean
+  /** 生成任务的计量：张数、秒数、次数或万字符，按分辨率计价时带档位；对话请求为 null，token 四项为 0。 */
+  mediaMeter: { units: number; unit: MediaUnit; resolution?: string } | null
   /** 本次扣除的积分。 */
   credits: number
   startedAt: string
