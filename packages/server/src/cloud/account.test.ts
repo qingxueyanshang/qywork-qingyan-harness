@@ -174,6 +174,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         { id: 'r6', credits: 0, status: 0, errorCode: 'media_cancelled' },
         { id: 'r7', credits: 0, status: 0, errorCode: 'media_unknown_stuck' },
         { id: 'r8', credits: 0, status: 402, errorCode: 'insufficient_credits' },
+        { id: 'r9', credits: 0.02, status: 200, errorCode: 'client_disconnected' },
       ])
     }
     if (path === '/v1/catalog' && authed) {
@@ -399,6 +400,7 @@ test('用量与使用记录以设备密钥读取：用量带本机时区，记�
     { id: 'r6', credits: 0, failure: '已撤销，积分已退回' },
     { id: 'r7', credits: 0, failure: '结果不明，积分已退回' },
     { id: 'r8', credits: 0, failure: '积分不足' },
+    { id: 'r9', credits: 0.02, failure: '已中断' },
   ] as never)
   expect(Object.fromEntries(new URLSearchParams(cloud.requestsQuery))).toEqual({
     limit: '50',
