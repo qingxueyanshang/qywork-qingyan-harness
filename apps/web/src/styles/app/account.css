@@ -300,14 +300,15 @@
   font-weight: 600;
   color: #333;
 }
+/* 到账标记用强调色（浅底与勾号），与「完成」按钮同色：界面上不另加第二种彩色（tokens.css 开头的规则）。 */
 .recharge-paid-mark {
   display: grid;
   place-items: center;
   width: 64px;
   height: 64px;
   border-radius: 50%;
-  background: var(--success);
-  color: #fff;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
 }
 .recharge-amount {
   margin-top: var(--s-4);
@@ -330,7 +331,7 @@
   font-variant-numeric: tabular-nums;
 }
 .recharge-line.paid {
-  color: var(--success);
+  color: var(--text-primary);
 }
 .recharge-line.error {
   color: var(--danger);
