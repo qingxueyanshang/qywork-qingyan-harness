@@ -1452,11 +1452,96 @@ textarea.code-area::placeholder {
   color: var(--text-secondary);
 }
 
-/* 「宠物」一行：下拉框与删除按钮。 */
+/* 「宠物皮肤」一行：自绘下拉框（`PetPicker.tsx`）。宽度固定，与行内原生下拉框一致；
+   名称在框内单行截断，不换行撑高整行。 */
 .pet-pick {
   display: flex;
+  width: 176px;
+}
+.pet-pick-trigger {
+  display: flex;
   align-items: center;
-  gap: var(--s-1);
+  justify-content: space-between;
+  gap: var(--s-2);
+  width: 100%;
+  min-width: 0;
+  padding: 6px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.pet-pick-trigger[aria-expanded="true"],
+.pet-pick-trigger:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+}
+.pet-pick-trigger > svg {
+  flex: none;
+}
+/* 菜单为 fixed，坐标由 `AnchoredMenu` 写入；全部属性写在本规则中，不与其他浮层共用选择器。 */
+.pet-pick-menu {
+  position: fixed;
+  z-index: 100;
+  width: max-content;
+  min-width: 176px;
+  max-width: min(280px, calc(100vw - 16px));
+  max-height: min(320px, calc(100dvh - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.pet-option {
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-xs);
+}
+.pet-option:hover,
+.pet-option:focus-within {
+  background: var(--bg-hover);
+}
+.pet-option > button[data-pet-option] {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--s-2);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.pet-option > button[data-pet-option] > svg {
+  flex: none;
+  color: var(--accent);
+}
+/* 删除按钮只在悬停或聚焦该行时显示，避免每行都有一个醒目的垃圾桶。 */
+.pet-option-remove {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-right: 2px;
+  border-radius: var(--r-xs);
+  color: var(--text-tertiary);
+  opacity: 0;
+}
+.pet-option:hover .pet-option-remove,
+.pet-option:focus-within .pet-option-remove {
+  opacity: 1;
+}
+.pet-option-remove:hover,
+.pet-option-remove:focus-visible {
+  color: var(--danger);
+  background: var(--bg-active);
 }
 
 /* ───────────────────────── 插件 ───────────────────────── */
