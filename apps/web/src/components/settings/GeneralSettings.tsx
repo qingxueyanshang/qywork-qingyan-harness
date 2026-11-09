@@ -6,10 +6,8 @@ import {
   type FollowUpMode,
   followUpMode,
   isDesktopShell,
-  petLibrary,
   petPrefs,
   refreshPetLibrary,
-  removePet,
   setFollowUpMode,
   setPetPrefs,
   setTheme,
@@ -17,7 +15,6 @@ import {
   theme,
   workspace,
 } from '../../lib/store/index.ts'
-import { DEFAULT_PET } from '../appearance/pet-default.ts'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import {
   config,
@@ -31,6 +28,7 @@ import { environment, environmentError, reloadEnvironment } from './environmentS
 import { LoadState } from './LoadState.tsx'
 import { OnOff } from './OnOff.tsx'
 import { PersonalizationDialog } from './PersonalizationDialog.tsx'
+import { PetPicker } from './PetPicker.tsx'
 import { PathRow, Row } from './Row.tsx'
 import { UpdateSettings } from './UpdateSettings.tsx'
 
@@ -198,34 +196,7 @@ export function GeneralSettings() {
               />
             </Row>
             <Row label="宠物皮肤">
-              <div class="pet-pick">
-                <select
-                  aria-label="宠物皮肤"
-                  value={petPrefs().pack ?? ''}
-                  onChange={(e) => setPetPrefs({ pack: e.currentTarget.value || null })}
-                >
-                  <option value="">{DEFAULT_PET.name}</option>
-                  <For each={petLibrary() ?? []}>
-                    {(entry) => <option value={entry.id}>{entry.pack.name}</option>}
-                  </For>
-                </select>
-                <Show when={petPrefs().pack}>
-                  {(id) => (
-                    <button
-                      class="btn-ghost sm"
-                      type="button"
-                      onClick={() => {
-                        setPetError(null)
-                        void removePet(id()).catch((e: unknown) =>
-                          setPetError(e instanceof Error ? e.message : String(e)),
-                        )
-                      }}
-                    >
-                      删除
-                    </button>
-                  )}
-                </Show>
-              </div>
+              <PetPicker onError={setPetError} />
             </Row>
             <Show when={petError()}>{(e) => <div class="settings-error">{e()}</div>}</Show>
           </Show>
