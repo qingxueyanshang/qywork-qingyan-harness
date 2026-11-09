@@ -782,6 +782,9 @@ function ownsLive(v: ConversationView, runId: string): boolean {
 /**
  * 把一条事件折叠进当前请求投影。序号不大于该会话实时读数序号的事件一律丢弃：
  * 快照与实时事件经由同一路径进入，先后只由序号裁决（见 `ConversationView.liveSeq`）。
+ *
+ * 没有投影可更新的事件不推进序号：它未折叠进投影，推进后在途快照中的请求阶段会被判为旧数据，
+ * 本轮输出期间刷新页面时状态停留在「正在请求…」，直到下一次请求开始。
  */
 function writeRequest(
   cid: string,
@@ -794,9 +797,11 @@ function writeRequest(
       const v = s.views[cid]
       if (!v) return
       if (seq <= v.liveSeq) return
-      v.liveSeq = seq
-      v.request = next(v.request)
       if (generatingToolCall !== undefined) v.generatingToolCall = generatingToolCall
+      const request = next(v.request)
+      if (request === null && v.request === null) return
+      v.liveSeq = seq
+      v.request = request
     }),
   )
 }
@@ -890,7 +895,7 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
       /*
        * 内容事件不带 requestId，因此只更新已有投影的阶段与最后内容时刻。
        * 没有投影时不生成请求阶段：这表示 `run.request` 尚未到达（首屏加载期间），
-       * 补充 requestId 与次数属于编造；内容类型仍可供当前思考折叠显示。
+       * 补充 requestId 与次数属于编造；请求阶段由在途的快照恢复，内容类型仍可供当前思考折叠显示。
        */
       writeRequest(
         cid,
