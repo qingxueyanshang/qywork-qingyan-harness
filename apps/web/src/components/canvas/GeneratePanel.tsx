@@ -409,10 +409,9 @@ export function GeneratePanel(props: {
    * 卡片可选的模型。art 卡使用对话模型：列出配置中的全部接口 × 模型，缺省为当前默认模型，参数只有尺寸。
    * 经 memo 计算：菜单按对象判定当前项，每次读取都新建对象时判定不成立。
    */
-  const models = createMemo((): CardModel[] => {
+  const known = createMemo((): (CardModel & { delisted?: true; used?: true })[] => {
     const catalog = modelCatalog()
     if (props.node.output !== 'art') {
-      // 已下架的型号仍列出（卡片可能正在使用它），名称后标出状态；提交时由服务端拒绝。
       return (catalog?.media ?? [])
         .filter((m) => m.output === props.node.output)
         .map((m) => (m.delisted ? { ...m, label: `${m.label}（已下架）` } : m))
@@ -428,10 +427,18 @@ export function GeneratePanel(props: {
       })),
     )
   })
-  const model = (): CardModel | undefined =>
-    props.node.provider && props.node.model
-      ? models().find((m) => m.provider === props.node.provider && m.id === props.node.model)
-      : (models().find((m) => m.isDefault) ?? models()[0])
+  /**
+   * 菜单中的型号：已下架的型号只在用它生成过结果时列出，名称后标出「（已下架）」；从未用过的不列出。
+   * 卡片已选定的型号由 `known` 解析，不在菜单中时按钮上仍显示它；已下架的型号提交时由生成端口拒绝。
+   */
+  const models = createMemo(() => known().filter((m) => !m.delisted || m.used))
+  const model = (): CardModel | undefined => {
+    if (props.node.provider && props.node.model)
+      return known().find((m) => m.provider === props.node.provider && m.id === props.node.model)
+    // 未选定型号的卡片显示可用的默认型号，默认型号已下架时取第一个可用的型号。
+    const usable = known().filter((m) => !m.delisted)
+    return usable.find((m) => m.isDefault) ?? usable[0]
+  }
   const modelParams = createMemo(() => model()?.params ?? [])
   const audioReferences = () => (model()?.maxAudios ?? 0) > 0
   const showInputs = () => props.node.output !== 'audio' || audioReferences() || edges().length > 0
@@ -580,7 +587,14 @@ export function GeneratePanel(props: {
 
   const send = () => {
     const d = draft()
-    props.run(d === props.node.prompt ? [] : [{ op: 'update', id: props.node.id, prompt: d }])
+    const ops: CanvasOp[] =
+      d === props.node.prompt ? [] : [{ op: 'update', id: props.node.id, prompt: d }]
+    // 未选定型号的卡片由服务端取默认型号。默认型号已下架时按钮显示的是另一个型号，
+    // 先把显示的型号写入卡片，发送的即是界面上看到的型号。
+    const m = model()
+    if (props.node.output !== 'art' && !props.node.model && m && !m.isDefault)
+      ops.push({ op: 'update', id: props.node.id, provider: m.provider, model: m.id })
+    props.run(ops)
   }
 
   /** 选择素材后建立连接所用的用途；由 `@` 打开时没有用途。 */

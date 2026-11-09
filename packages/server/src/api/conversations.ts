@@ -58,6 +58,7 @@ import {
   setConversationTitle,
   usageEntries,
   usageTotals,
+  usedMediaModels,
 } from '@qywork/store'
 import { attachmentsDirOf } from './attachments.ts'
 import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
@@ -143,6 +144,8 @@ export interface MediaModelRow {
   params: MediaParamRow[]
   /** 上一次拉取时渠道已不再提供该型号，生成工具不向它提交。 */
   delisted?: true
+  /** 已下架且用它生成过结果：生成卡的菜单仍列出并标出已下架，从未用过的已下架型号不列出。 */
+  used?: true
 }
 
 /** 生成面板上的一个参数控件，取自目录的 `MediaParamSpec`，不含提供给大模型的说明。 */
@@ -378,6 +381,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
           }
         }),
       }))
+    const used = usedMediaModels(d.store)
     const media: MediaModelRow[] = listMediaModels(d.config).map((m) => {
       const spec = lookupMediaModel(m.model, m.kind, m.spec)
       return {
@@ -396,6 +400,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
           label ? [{ ...rest, label }] : [],
         ),
         ...(m.delisted ? { delisted: true as const } : {}),
+        ...(m.delisted && used.has(`${m.kind}|${m.model}`) ? { used: true as const } : {}),
       }
     })
     const mediaLibrary: MediaLibraryModel[] = mediaCatalog().map((spec) => ({
