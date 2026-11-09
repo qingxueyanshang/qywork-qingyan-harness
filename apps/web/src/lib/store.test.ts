@@ -3163,6 +3163,53 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     expect(viewOf('cv_live').request).toMatchObject({ requestId: 'pr_mid', phase: 'sent' })
   })
 
+  /**
+   * 原始失败形状：本轮输出正文期间刷新页面，历史请求在途期间先到达一段正文增量。该事件没有投影可更新，
+   * 却推进了序号，快照中的请求阶段被丢弃，正文仍在输出而状态显示「正在请求…」。
+   */
+  test('中途打开运行中的会话：未折叠的正文增量不使快照中的请求阶段作废', async () => {
+    setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
+    freshView('cv_live')
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
+      if (!p.includes('/history')) throw new Error('这个接口不在本组范围内')
+      applyEvent({
+        seq: 151,
+        at: 0,
+        conversationId: 'cv_live',
+        event: { type: 'text.delta', runId: 'rn_mid', stepId: 'st_mid', delta: '正文', at: 9_000 },
+      } as never)
+      return {
+        messages: [],
+        runs: [],
+        steps: [],
+        todos: [],
+        workflowStarts: [],
+        nextCursor: null,
+        live: snapshot(
+          {
+            ...baseRequest,
+            attempt: 0,
+            retryReason: null,
+            status: 'received',
+            headersAt: 2_000,
+            firstContentAt: 3_000,
+            lastContentAt: 8_000,
+            lastContentKind: 'text',
+            lastVisibleAt: 8_000,
+          },
+          150,
+        ),
+      }
+    }
+    await reloadActiveConversation()
+
+    expect(viewOf('cv_live').request).toMatchObject({
+      requestId: 'pr_live',
+      phase: 'content',
+      lastContentKind: 'text',
+    })
+  })
+
   /** 原始失败形状：较早一轮的结束事件迟到，撤掉了当前一轮的运行栏，报错写进了当前一轮的收尾条。 */
   test('较早一轮迟到的收尾不撤掉当前一轮的运行栏，收尾条照常写入会话流', () => {
     setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
