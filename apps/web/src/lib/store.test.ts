@@ -3123,6 +3123,46 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     expect(state.lastRunId).toBe('rn_new')
   })
 
+  /**
+   * 原始失败形状：本轮运行中途刷新页面，历史请求在途期间先到达一条请求进度事件，快照整体作废，
+   * 开始事件不会再次发送，本轮剩余时间不显示耗时，而用量照常更新。
+   */
+  test('中途打开运行中的会话：先到达的进度事件不使快照中的轮次身份作废', async () => {
+    setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
+    freshView('cv_live')
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
+      if (!p.includes('/history')) throw new Error('这个接口不在本组范围内')
+      requested('rn_mid', 'pr_mid', 151)
+      return {
+        messages: [],
+        runs: [
+          {
+            id: 'rn_mid',
+            userMessageId: 'ms_mid',
+            createdAt: 1_000,
+            finishedAt: null,
+            usage: { inputTokens: 1, outputTokens: 1 },
+            stopReason: null,
+            errorMessage: null,
+          },
+        ],
+        steps: [],
+        todos: [],
+        workflowStarts: [],
+        nextCursor: null,
+        live: { runId: 'rn_mid', seq: 150, request: null },
+      }
+    }
+    await reloadActiveConversation()
+
+    expect(viewOf('cv_live').runId).toBe('rn_mid')
+    expect(viewOf('cv_live').runStartedAt).toBe(1_000)
+    expect(viewOf('cv_live').runUserMessageId).toBe('ms_mid')
+    expect(state.lastRunId).toBe('rn_mid')
+    // 请求进度取先到达的实时事件，快照中较旧的进度不覆盖它。
+    expect(viewOf('cv_live').request).toMatchObject({ requestId: 'pr_mid', phase: 'sent' })
+  })
+
   /** 原始失败形状：较早一轮的结束事件迟到，撤掉了当前一轮的运行栏，报错写进了当前一轮的收尾条。 */
   test('较早一轮迟到的收尾不撤掉当前一轮的运行栏，收尾条照常写入会话流', () => {
     setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })

@@ -104,7 +104,10 @@ export const client = new QyClient({
     // 不归零时，服务端重启后序号从头开始，新事件与新快照都会被判为旧数据而丢弃。
     setState(
       produce((s) => {
-        for (const v of Object.values(s.views)) v.liveSeq = 0
+        for (const v of Object.values(s.views)) {
+          v.liveSeq = 0
+          v.runSeq = 0
+        }
       }),
     )
     void reloadActiveConversation()
@@ -814,6 +817,7 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
           // 快照已包含该事件：快照之后迟到的开始事件不得重置计时与读数。
           if (!v || seq <= v.liveSeq) return
           v.liveSeq = seq
+          v.runSeq = seq
           v.runId = ev.runId
           v.runStartedAt = Date.now()
           v.runUserMessageId = ev.userMessageId
@@ -927,6 +931,7 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
             v.usage = null
             v.runId = null
             v.liveSeq = Math.max(v.liveSeq, seq)
+            v.runSeq = Math.max(v.runSeq, seq)
           }
           v.request = null
           v.generatingToolCall = false
@@ -1094,10 +1099,10 @@ function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
 }
 
 /**
- * 把快照写入一条会话的实时读数，返回是否写入。
+ * 把快照写入一条会话的实时读数，返回轮次身份是否写入。
  *
- * 序号小于实时读数序号的快照整体丢弃：加载期间先到达的实时事件比它新，其中包括
- * 「没有运行中的轮次」的快照之后才到达的 `run.started`。
+ * 请求进度与轮次身份分别按 `liveSeq` 与 `runSeq` 裁决，序号小于对应序号的部分不写入：
+ * 加载期间先到达的实时事件比它新，其中包括「没有运行中的轮次」的快照之后才到达的 `run.started`。
  *
  * 运行中的轮次只取快照的 `runId`（服务端 `RunManager` 的当前轮次），不按 runs 行的状态列推断：
  * 服务进程崩溃后账本中的行可能仍处于 `running`。快照所指的仍是视图已在跟踪的那一轮时，
@@ -1108,16 +1113,19 @@ function restoreLive(
   live: ConversationLiveSnapshot,
   runs: readonly Run[],
 ): boolean {
-  if (live.seq < v.liveSeq) return false
   const row = live.runId ? (runs.find((r) => r.id === live.runId) ?? null) : null
   const same = live.runId !== null && v.runId === live.runId
-  v.liveSeq = live.seq
+  if (live.seq >= v.liveSeq) {
+    v.liveSeq = live.seq
+    v.usage = same ? v.usage : (row?.usage ?? null)
+    v.request = live.runId ? projectLive(live) : null
+    v.generatingToolCall = v.request?.lastContentKind === 'tool_arguments'
+  }
+  if (live.seq < v.runSeq) return false
+  v.runSeq = live.seq
   v.runId = live.runId
   v.runStartedAt = same ? v.runStartedAt : (row?.createdAt ?? null)
   v.runUserMessageId = same ? v.runUserMessageId : (row?.userMessageId ?? null)
-  v.usage = same ? v.usage : (row?.usage ?? null)
-  v.request = live.runId ? projectLive(live) : null
-  v.generatingToolCall = v.request?.lastContentKind === 'tool_arguments'
   return true
 }
 

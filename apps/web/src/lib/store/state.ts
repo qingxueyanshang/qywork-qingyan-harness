@@ -223,13 +223,22 @@ export interface ConversationView {
    */
   runId: string | null
   /**
-   * 最近一次写入实时读数的事件或快照的序号，先后只按它裁决。
+   * 最近一次写入请求进度（`request`、`generatingToolCall`、`usage`）的事件或快照的序号。
    *
-   * 序号不大于它的事件已折叠在内，予以丢弃；序号更小的快照整体丢弃：加载期间先到达的新事件
-   * 不会被较旧的快照覆盖，「没有运行中的轮次」的旧快照也不会清空已开始的一轮。
-   * 事件流无法补发或已更换时归零（`onResync`）：两段事件流的序号不可比较。
+   * 序号不大于它的事件已折叠在内，予以丢弃；序号更小的快照不写入这三项：加载期间先到达的
+   * 进度事件比快照新。事件流无法补发或已更换时与 `runSeq` 一同归零（`onResync`）：
+   * 两段事件流的序号不可比较。
    */
   liveSeq: number
+  /**
+   * 最近一次写入轮次身份（`runId`、`runStartedAt`、`runUserMessageId`）的事件或快照的序号。
+   *
+   * 只由轮次的开始、结束事件与快照推进，不要并入 `liveSeq`：请求进度事件不改变哪一轮在运行，
+   * 并入后历史请求在途期间到达的一条进度事件会使快照中的轮次身份作废，而开始事件只发送一次，
+   * 本轮的耗时因此无法恢复。「没有运行中的轮次」的旧快照不会清空已开始的一轮：开始事件推进了它。
+   * 开始与结束事件同时推进两个序号，因此它不大于 `liveSeq`。
+   */
+  runSeq: number
   /** 来自 tool.generating；参数尚未接收完整，工具尚未开始执行。 */
   generatingToolCall: boolean
   /**
@@ -259,6 +268,7 @@ const EMPTY_VIEW: ConversationView = Object.freeze({
   usage: null,
   runId: null,
   liveSeq: 0,
+  runSeq: 0,
   generatingToolCall: false,
   request: null,
   error: null,
@@ -427,6 +437,7 @@ export function openView(id: string): void {
     usage: null,
     runId: null,
     liveSeq: 0,
+    runSeq: 0,
     generatingToolCall: false,
     request: null,
     error: null,

@@ -82,6 +82,7 @@ async function afterPreviousRun() {
         runStartedAt: null,
         runId: null,
         liveSeq: 0,
+        runSeq: 0,
         usage: null,
         generatingToolCall: false,
         request: null,
