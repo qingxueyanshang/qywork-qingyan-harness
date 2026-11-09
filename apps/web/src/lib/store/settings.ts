@@ -316,6 +316,8 @@ export interface MediaModelOption {
   params: MediaParamOption[]
   /** 上一次拉取时渠道已不再提供该型号，生成时被拒绝。 */
   delisted?: true
+  /** 已下架且用它生成过结果。 */
+  used?: true
 }
 
 /** 生成面板上的一个参数控件。取值约束与服务端的参数校验使用同一份目录。 */

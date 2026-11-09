@@ -575,6 +575,39 @@ describe('模型目录', () => {
     },
   )
 
+  test('已下架的生成型号：用它生成过结果时标记 used，按协议与型号匹配生成账目', async () => {
+    const d = withConfig('openai_chat_completions', 'm')
+    d.config.providers.p!.media = {
+      'old-used': { kind: 'openai_videos', delisted: true },
+      'old-unused': { kind: 'openai_videos', delisted: true },
+      'live-used': { kind: 'openai_videos' },
+    }
+    for (const model of ['old-used', 'live-used'])
+      recordUsage(d.store, {
+        kind: 'media',
+        model,
+        provider: 'openai_videos',
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: 1,
+      })
+    // 协议不同的同名账目不算作用过。
+    recordUsage(d.store, {
+      kind: 'media',
+      model: 'old-unused',
+      provider: 'dashscope_videos',
+      inputTokens: 0,
+      outputTokens: 0,
+      cost: 1,
+    })
+    const media = (await body(d)).media
+    const row = (id: string) => media.find((m) => m.id === id)!
+    expect(row('old-used')).toMatchObject({ delisted: true, used: true })
+    expect(row('old-unused').delisted).toBe(true)
+    expect(row('old-unused').used).toBeUndefined()
+    expect(row('live-used').used).toBeUndefined()
+  })
+
   test('千问音频 3.1 的两种输入能力和各自参数进入模型库与画布', async () => {
     const d = withConfig('openai_chat_completions', 'm')
     d.config.providers.p!.media = {

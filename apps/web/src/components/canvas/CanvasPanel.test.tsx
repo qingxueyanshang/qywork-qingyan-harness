@@ -2789,6 +2789,75 @@ describe('画布：生成卡与生成面板', () => {
     })
   })
 
+  test('已下架的型号：用它生成过的列出并标出已下架，从未用过的不列出；默认型号下架时新卡发送界面上显示的型号', async () => {
+    const video = MODELS.media[0]!
+    const gone = { ...video, provider: 'relay', id: 'sx-2.5', label: 'SX-2.5', delisted: true }
+    const usedGone = {
+      ...video,
+      provider: 'relay',
+      id: 'sd-2.5',
+      label: 'SD-2.5',
+      isDefault: false,
+      delisted: true,
+      used: true,
+    }
+    const live = { ...video, provider: 'relay', id: 'hc-2.5', label: 'HC 2.5', isDefault: false }
+    const catalog = {
+      ...MODELS,
+      media: [{ ...gone, isDefault: true }, usedGone, live, { ...video, isDefault: false }],
+    }
+    const { host, server, refs } = await mount(
+      [
+        {
+          op: 'add_generate',
+          ref: '$old',
+          output: 'video',
+          provider: 'relay',
+          model: 'sx-2.5',
+          x: 0,
+          y: 0,
+        },
+        { op: 'add_generate', ref: '$new', output: 'video', prompt: '镜头推进', x: 600, y: 0 },
+      ],
+      {},
+      catalog,
+    )
+    const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.model')
+    const items = () =>
+      [...document.querySelectorAll<HTMLButtonElement>('.canvas-bar-menu button')].map(
+        (b) => b.textContent ?? '',
+      )
+
+    await select(host, refs.$old!)
+    await waitFor(
+      () => chip()?.textContent === 'SX-2.5（已下架）',
+      () => chip()?.textContent ?? '',
+    )
+    chip()!.click()
+    await waitFor(
+      () => items().length > 0,
+      () => '',
+    )
+    expect(items().some((t) => t.includes('SX-2.5'))).toBe(false)
+    expect(items()).toContain('SD-2.5（已下架）')
+    expect(items()).toContain('HC 2.5')
+    chip()!.click()
+
+    await select(host, refs.$new!)
+    await waitFor(
+      () => chip()?.textContent === 'HC 2.5',
+      () => chip()?.textContent ?? '',
+    )
+    host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.click()
+    await waitFor(
+      () => server.runs.length === 1,
+      () => JSON.stringify(server.runs),
+    )
+    expect(server.runs[0]?.ops).toEqual([
+      { op: 'update', id: refs.$new!, provider: 'relay', model: 'hc-2.5' },
+    ])
+  })
+
   test('时长加减：到达下限后再减为「自动」，不经过下限以下的值；从「自动」增加时回到下限', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
