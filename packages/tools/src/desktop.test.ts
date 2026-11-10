@@ -4244,3 +4244,152 @@ describe('set_value 回执中的原值', () => {
     expect(r.message).not.toContain('→ 现值')
   })
 })
+
+/**
+ * 自绘窗口的控件表只含窗口根与渲染面，动作前后逐字相同：按差异投递时计数恒为零，
+ * 与画面是否变化无关。回执改为整份投递、注明「无可操作控件」并附图。
+ */
+describe('自绘窗口的动作与等待回执', () => {
+  const 渲染面: DesktopElement = {
+    ref: 'e22',
+    parentRef: 'e1',
+    depth: 1,
+    role: 'pane',
+    name: '',
+    automationId: '',
+    enabled: true,
+    offscreen: false,
+    actions: [],
+  }
+  const BARE = [自绘窗口, 渲染面]
+
+  /** 观察、动作与等待都返回 `table` 的快照；等待一律到期。 */
+  function tablePort(table: DesktopElement[] = BARE): { port: DesktopPort; calls: Recorded[] } {
+    const calls: Recorded[] = []
+    let n = 1
+    const next = () => {
+      n += 1
+      return snapshot({ observationId: `do_${n}`, elements: table })
+    }
+    const port: DesktopPort = {
+      foregroundEnabled: () => true,
+      windows: async () => [{ windowId: 'dw_1', app: '自绘', title: '自绘' }],
+      observe: async (input) => {
+        calls.push({ method: 'observe', input })
+        return snapshot({ elements: table })
+      },
+      elements: (windowId) => (windowId === 'dw_1' ? table : null),
+      captureImage: async (input) => {
+        calls.push({ method: 'captureImage', input })
+        return image()
+      },
+      act: async (input) => {
+        calls.push({ method: 'act', input })
+        return { dispatch: 'submitted', actionId: `da_${n}`, observation: next() }
+      },
+      readText: async () => {
+        throw new Error('不读取文本')
+      },
+      wait: async (input) => {
+        calls.push({ method: 'wait', input })
+        return { found: false, reason: 'timeout', observation: next() }
+      },
+      release: async () => {},
+    }
+    return { port, calls }
+  }
+
+  /** 先整份观察一次：此后动作与等待的重读才有差异基底。 */
+  async function observed(table?: DesktopElement[]) {
+    const { port, calls } = tablePort(table)
+    const ctx = ctxWith(port)
+    await run(desktopObserveTool, { windowId: 'dw_1', capture: 'structure' }, ctx)
+    calls.length = 0
+    return { ctx, calls }
+  }
+
+  test('按图点击之后的回执不输出差异计数，注明无可操作控件并附图一次', async () => {
+    const { ctx, calls } = await observed()
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', action: 'click', imageRef: 'di_1', imageX: 40, imageY: 50 },
+      ctx,
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).not.toContain('新增 0、改变 0、消失 0')
+    expect(r.message).toContain('无可操作控件')
+    expect(calls.map((c) => c.method)).toEqual(['act', 'captureImage'])
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
+  })
+
+  test('投递给窗口焦点的 type_text 与 press_key 附图', async () => {
+    for (const args of [
+      { action: 'type_text', text: '好的' },
+      { action: 'press_key', key: 'enter' },
+    ]) {
+      const { ctx, calls } = await observed()
+      const r = await run(desktopActTool, { windowId: 'dw_1', ...args }, ctx)
+      expect(r.message).toContain('无可操作控件')
+      expect(r.message).not.toContain('新增 0、改变 0、消失 0')
+      expect(calls.map((c) => c.method)).toEqual(['act', 'captureImage'])
+    }
+  })
+
+  test('只含 type_text 的序列附图一次', async () => {
+    const { ctx, calls } = await observed()
+    const r = await run(
+      desktopActSequenceTool,
+      { windowId: 'dw_1', steps: [{ action: 'type_text', text: '好的' }] },
+      ctx,
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('无可操作控件')
+    expect(r.message).not.toContain('新增 0、改变 0、消失 0')
+    expect(calls.map((c) => c.method)).toEqual(['act', 'captureImage'])
+  })
+
+  test('模型不接受图片时只注明无可操作控件，不采集图像', async () => {
+    const { port, calls } = tablePort()
+    const ctx = { ...ctxWith(port), vision: false }
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', action: 'type_text', text: '好的' },
+      ctx,
+    )
+    expect(r.message).toContain('无可操作控件')
+    expect(calls.map((c) => c.method)).toEqual(['act'])
+  })
+
+  test('等待到期：回执注明无可操作控件并附图，不输出差异计数', async () => {
+    const { ctx, calls } = await observed()
+    const r = await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', until: 'appears', name: '项目群', timeoutMs: 1_000 },
+      ctx,
+    )
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'desktop_wait_timeout',
+    })
+    expect(r.message).toContain('无可操作控件')
+    expect(r.message).not.toContain('新增 0、改变 0、消失 0')
+    expect(calls.map((c) => c.method)).toEqual(['wait', 'captureImage'])
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
+  })
+
+  test('有业务控件的窗口上，等待到期与控件接口动作的回执照常输出差异计数，不附图', async () => {
+    const { ctx, calls } = await observed(TABLE)
+    const waited = await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', until: 'appears', name: '确定', timeoutMs: 1_000 },
+      ctx,
+    )
+    expect(waited.message).toContain('新增 0、改变 0、消失 0')
+    expect(waited.message).not.toContain('无可操作控件')
+    const acted = await run(desktopActTool, { windowId: 'dw_1', action: 'invoke', ref: 'e3' }, ctx)
+    expect(acted.message).toContain('新增 0、改变 0、消失 0')
+    expect(acted.message).not.toContain('无可操作控件')
+    expect(calls.map((c) => c.method)).toEqual(['wait', 'act'])
+  })
+})
