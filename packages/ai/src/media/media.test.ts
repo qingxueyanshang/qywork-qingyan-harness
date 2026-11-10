@@ -332,6 +332,21 @@ describe('openai_images', () => {
     expect(out.files).toEqual([{ bytes: JPEG, mime: 'image/jpeg' }])
   })
 
+  // 2026-11-10 www.moyu.cn 转发 qwen-image-3.0-pro 的响应形状：两个字段都写，b64_json 为空串，图片在 url。
+  test('b64_json 为空串时按 url 下载，不当作空图片', async () => {
+    reply = () =>
+      Response.json({
+        created: 1794294833,
+        data: [{ url: `${origin()}/files/out.jpg`, b64_json: '', revised_prompt: '' }],
+        usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 },
+      })
+    const out = await adapter('doubao-seedream-5-0-pro-260628').run(
+      { operation: 'generate', prompt: '猫', inputs: [], params: {} },
+      { signal: signal() },
+    )
+    expect(out.files).toEqual([{ bytes: JPEG, mime: 'image/jpeg' }])
+  })
+
   test('非 2xx 带状态码与接口原文，不重试', async () => {
     reply = () => Response.json({ error: { message: 'Invalid size' } }, { status: 400 })
     const err = await adapter('gpt-image-2.5-flare')
