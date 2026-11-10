@@ -113,7 +113,23 @@ export default function AccountDialog() {
 }
 
 function AccountView(props: { signed: SignedIn }) {
-  const [usage, { refetch }] = createResource(fetchCloudUsage)
+  const [usage, { refetch: refetchUsage }] = createResource(fetchCloudUsage)
+  const [models, { refetch: refetchModels }] = createResource(fetchCloudModels)
+  const requests = createRequestPages()
+  ensureConfig()
+  void ensureModelCatalog()
+  // 三项读取经同一个云端服务，失败原因相同：只显示一处原因与一个重试，读取失败的各节不显示。
+  // 已有记录时续页的失败不计入：它显示在使用记录表的下方。
+  const requestsFailed = () => (requests.rows().length === 0 ? requests.error() : null)
+  const failure = () => usage.error ?? models.error ?? requestsFailed()
+  const retrying = () => usage.loading || models.loading || requests.loading()
+  // 读取失败时账号状态同样未取得（余额未知、充值入口不显示），重试时一并重新读取。
+  const retry = () => {
+    void refreshCloudState().catch(() => {})
+    if (usage.error) void refetchUsage()
+    if (models.error) void refetchModels()
+    if (requestsFailed()) void requests.more()
+  }
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [recharging, setRecharging] = createSignal(false)
@@ -220,9 +236,17 @@ function AccountView(props: { signed: SignedIn }) {
       <div class="account-scroll">
         <Show when={error()}>{(m) => <p class="account-error">{m()}</p>}</Show>
 
+        <Show when={failure()}>
+          {(e) => <LoadState error={e()} onRetry={retry} busy={retrying()} />}
+        </Show>
+
         <Show
           when={loaded(usage)}
-          fallback={<LoadState error={usage.error} onRetry={refetch} lines={6} />}
+          fallback={
+            <Show when={!usage.error}>
+              <Skeleton lines={6} />
+            </Show>
+          }
         >
           {(u) => (
             <>
@@ -262,13 +286,19 @@ function AccountView(props: { signed: SignedIn }) {
 
         <PairPanel />
 
-        <h3 class="account-section">
-          对话<span class="account-unit">积分 / 百万 token</span>
-        </h3>
-        <ModelTable provider={props.signed.provider} />
+        <Show when={!models.error}>
+          <h3 class="account-section">
+            对话<span class="account-unit">积分 / 百万 token</span>
+          </h3>
+          <Show when={loaded(models)} fallback={<Skeleton lines={4} />}>
+            {(all) => <ModelTable provider={props.signed.provider} models={all()} />}
+          </Show>
+        </Show>
 
-        <h3 class="account-section">使用记录</h3>
-        <RequestTable provider={props.signed.provider} />
+        <Show when={!requestsFailed()}>
+          <h3 class="account-section">使用记录</h3>
+          <RequestTable provider={props.signed.provider} pages={requests} />
+        </Show>
       </div>
     </>
   )
@@ -401,74 +431,62 @@ function MediaTables(props: {
   )
 }
 
-function ModelTable(props: { provider: string }) {
-  const [models, { refetch }] = createResource(fetchCloudModels)
-  ensureConfig()
-  void ensureModelCatalog()
+function ModelTable(props: { provider: string; models: readonly CloudModel[] }) {
   // 默认值与模型设置页写入同一处（配置的默认对话模型）；云端接口不在模型设置页列出，两处不会同时显示同一型号。
   const isDefault = (id: string) =>
     config()?.active?.provider === props.provider && config()?.active?.model === id
   const listed = (id: string) => Boolean(config()?.providers[props.provider]?.models[id])
+  const list = () => props.models.flatMap((m) => (m.output === 'chat' ? [m] : []))
+  const media = () => props.models.flatMap((m) => (m.output === 'chat' ? [] : [m]))
   return (
-    <Show
-      when={loaded(models)}
-      fallback={<LoadState error={models.error} onRetry={refetch} lines={4} />}
-    >
-      {(all) => {
-        const list = () => all().flatMap((m) => (m.output === 'chat' ? [m] : []))
-        const media = () => all().flatMap((m) => (m.output === 'chat' ? [] : [m]))
-        return (
-          <>
-            <section class="lib-card">
-              <div class="lib-scroll">
-                <table class="lib-table account-table">
-                  <thead>
-                    <tr>
-                      <th>模型</th>
-                      <th class="num">倍率（官方价）</th>
-                      <th class="num">输入</th>
-                      <th class="num">输出</th>
-                      <th class="num">缓存读取</th>
-                      <th class="num">缓存写入</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <For each={list()}>
-                      {(m) => (
-                        <tr>
-                          <td>{modelName(props.provider, m.id)}</td>
-                          {/* 按单价计价的型号没有官方价，单价列即最终单价。 */}
-                          <td class="num">{m.official ? formatRatio(m.ratio) : '—'}</td>
-                          <td class="num">{m.price ? formatUnitPrice(m.price.input) : '—'}</td>
-                          <td class="num">{m.price ? formatUnitPrice(m.price.output) : '—'}</td>
-                          <td class="num">{m.price ? formatUnitPrice(m.price.cacheRead) : '—'}</td>
-                          <td class="num">{m.price ? formatUnitPrice(m.price.cacheWrite) : '—'}</td>
-                          <td class="account-default">
-                            <DefaultToggle
-                              on={isDefault(m.id)}
-                              disabled={!listed(m.id) || configBusy()}
-                              onSet={() =>
-                                void replaceConfig((cur) => ({
-                                  ...cur,
-                                  active: { provider: props.provider, model: m.id },
-                                }))
-                              }
-                              onUnset={() => void replaceConfig(withoutActive)}
-                            />
-                          </td>
-                        </tr>
-                      )}
-                    </For>
-                  </tbody>
-                </table>
-              </div>
-            </section>
-            <MediaTables provider={props.provider} models={media()} />
-          </>
-        )
-      }}
-    </Show>
+    <>
+      <section class="lib-card">
+        <div class="lib-scroll">
+          <table class="lib-table account-table">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th class="num">倍率（官方价）</th>
+                <th class="num">输入</th>
+                <th class="num">输出</th>
+                <th class="num">缓存读取</th>
+                <th class="num">缓存写入</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              <For each={list()}>
+                {(m) => (
+                  <tr>
+                    <td>{modelName(props.provider, m.id)}</td>
+                    {/* 按单价计价的型号没有官方价，单价列即最终单价。 */}
+                    <td class="num">{m.official ? formatRatio(m.ratio) : '—'}</td>
+                    <td class="num">{m.price ? formatUnitPrice(m.price.input) : '—'}</td>
+                    <td class="num">{m.price ? formatUnitPrice(m.price.output) : '—'}</td>
+                    <td class="num">{m.price ? formatUnitPrice(m.price.cacheRead) : '—'}</td>
+                    <td class="num">{m.price ? formatUnitPrice(m.price.cacheWrite) : '—'}</td>
+                    <td class="account-default">
+                      <DefaultToggle
+                        on={isDefault(m.id)}
+                        disabled={!listed(m.id) || configBusy()}
+                        onSet={() =>
+                          void replaceConfig((cur) => ({
+                            ...cur,
+                            active: { provider: props.provider, model: m.id },
+                          }))
+                        }
+                        onUnset={() => void replaceConfig(withoutActive)}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </For>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <MediaTables provider={props.provider} models={media()} />
+    </>
   )
 }
 
@@ -495,8 +513,11 @@ function priceTerms(r: CloudRequest): string[] {
   ]
 }
 
-/** 逐条请求记录，按时间倒序分页读取。「输入」含缓存命中与缓存写入，与「用量」页同一口径。 */
-function RequestTable(props: { provider: string }) {
+/**
+ * 使用记录的分页读取，按时间倒序；创建时读取第一页。
+ * `error` 保留到下一次读取完成：重试期间原因仍显示，与 `createResource` 的 `error` 相同。
+ */
+function createRequestPages() {
   const [rows, setRows] = createSignal<CloudRequest[]>([])
   const [done, setDone] = createSignal(false)
   const [loading, setLoading] = createSignal(false)
@@ -504,11 +525,11 @@ function RequestTable(props: { provider: string }) {
 
   const more = async () => {
     setLoading(true)
-    setError(null)
     try {
       const page = await fetchCloudRequests(rows().at(-1)?.startedAt ?? null)
       setRows((prev) => [...prev, ...page])
       if (page.length < PAGE) setDone(true)
+      setError(null)
     } catch (e) {
       setError(e)
     } finally {
@@ -516,6 +537,12 @@ function RequestTable(props: { provider: string }) {
     }
   }
   void more()
+  return { rows, done, loading, error, more }
+}
+
+/** 逐条请求记录。「输入」含缓存命中与缓存写入，与「用量」页同一口径。 */
+function RequestTable(props: { provider: string; pages: ReturnType<typeof createRequestPages> }) {
+  const { rows, done, loading, error, more } = props.pages
 
   return (
     <>
@@ -575,7 +602,9 @@ function RequestTable(props: { provider: string }) {
           </div>
         </section>
       </Show>
-      <Show when={error()}>{(e) => <LoadState error={e()} onRetry={() => void more()} />}</Show>
+      <Show when={rows().length > 0 && error()}>
+        {(e) => <LoadState error={e()} onRetry={() => void more()} busy={loading()} />}
+      </Show>
       <Show when={!done() && !error() && rows().length > 0}>
         <button type="button" class="btn-ghost sm account-more" disabled={loading()} onClick={more}>
           加载更早的记录

@@ -11,7 +11,12 @@
 
 import { describe, expect, test } from 'bun:test'
 import { APIConnectionError } from 'openai'
-import { classifyProviderError, classifyStreamError, ProviderError } from './errors.ts'
+import {
+  classifyProviderError,
+  classifyStreamError,
+  ProviderError,
+  transportFailureKind,
+} from './errors.ts'
 import { drainAdapter, FAULT_PROTOCOLS, withFault } from './providers/fault-server.test-helper.ts'
 
 const P = 'openai_responses' as const
@@ -193,6 +198,17 @@ describe('SDK 包装保留具体的传输失败原因', () => {
       const e = classifyProviderError(P, new APIConnectionError({ cause: wrapped }))
       expect(e.message).toContain('TLS 握手失败')
     }
+  })
+
+  test('传输失败的类别：证书、断开、超时、无法连接；不是传输失败时为 null', () => {
+    const kind = (code: string, message: string) => transportFailureKind(transport(code, message))
+    expect(
+      kind('UNKNOWN_CERTIFICATE_VERIFICATION_ERROR', 'unknown certificate verification error'),
+    ).toBe('tls')
+    expect(kind('ECONNRESET', 'read')).toBe('closed')
+    expect(kind('', 'The operation timed out.')).toBe('timeout')
+    expect(kind('ConnectionRefused', 'Unable to connect.')).toBe('unreachable')
+    expect(transportFailureKind(new Error('invalid json'))).toBeNull()
   })
 
   test('底层文案没有线索也能靠错误码识别连接重置', () => {

@@ -38,8 +38,16 @@ export function Skeleton(props: { lines?: number }) {
   )
 }
 
-/** 读取中为占位，失败为原因与重试。`lines` 取接近读取完成后内容的行数，占位与内容的高度相近。 */
-export function LoadState(props: { error: unknown; onRetry: () => void; lines?: number }) {
+/**
+ * 读取中为占位，失败为原因与重试。`lines` 取接近读取完成后内容的行数，占位与内容的高度相近。
+ * `busy` 为重试进行中：原因保留，按钮禁用。
+ */
+export function LoadState(props: {
+  error: unknown
+  onRetry: () => void
+  lines?: number
+  busy?: boolean
+}) {
   return (
     <Show
       when={props.error}
@@ -47,7 +55,7 @@ export function LoadState(props: { error: unknown; onRetry: () => void; lines?: 
     >
       <div class="settings-error">
         <span>{explainApiError(props.error, '读取失败')}</span>
-        <button class="btn-ghost" type="button" onClick={props.onRetry}>
+        <button class="btn-ghost" type="button" disabled={props.busy} onClick={props.onRetry}>
           重试
         </button>
       </div>

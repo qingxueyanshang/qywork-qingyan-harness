@@ -358,11 +358,46 @@ test('账号服务接受连接但不响应时，读取在超时后失败并给�
       models: {},
     }
     const slow = new CloudAccount(live, origin, { timeoutMs: 50 })
-    await expect(slow.models()).rejects.toThrow('无法连接账号服务')
-    await expect(slow.usage()).rejects.toThrow('无法连接账号服务')
+    await expect(slow.models()).rejects.toThrow('无法连接账号服务：请求超时')
+    await expect(slow.usage()).rejects.toThrow('无法连接账号服务：请求超时')
     expect(await slow.state()).toMatchObject({ state: 'signed_in', credits: null })
   } finally {
     stalled.stop(true)
+  }
+})
+
+test('读取请求的连接被断开时重发：前两次连接失败，第三次取得结果；三次都失败时给出原因', async () => {
+  let connections = 0
+  let failing = 2
+  const body = JSON.stringify([])
+  const flaky = Bun.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: {
+      open(socket) {
+        connections++
+        if (connections <= failing) socket.end()
+      },
+      data(socket) {
+        socket.end(
+          `HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`,
+        )
+      },
+    },
+  })
+  try {
+    const origin = `http://127.0.0.1:${flaky.port}`
+    const reader = new CloudAccount(live, origin, { resendDelaysMs: [0, 0] })
+    expect(await reader.announcements()).toEqual([])
+    expect(connections).toBe(3)
+
+    connections = 0
+    failing = 3
+    // 原因按类别给出，不带运行时的英文原文。
+    await expect(reader.announcements()).rejects.toThrow(/^无法连接账号服务：连接被断开$/)
+    expect(connections).toBe(3)
+  } finally {
+    flaky.stop(true)
   }
 })
 

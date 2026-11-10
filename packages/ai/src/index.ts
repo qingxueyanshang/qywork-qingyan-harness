@@ -43,6 +43,7 @@ export {
   failureDiagnostics,
   httpStatusName,
   ProviderError,
+  transportFailureKind,
 } from './errors.ts'
 // 唯一的 adapter 构造入口
 export { buildAdapter } from './factory.ts'

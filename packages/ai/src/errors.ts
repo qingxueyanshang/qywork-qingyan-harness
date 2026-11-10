@@ -507,19 +507,24 @@ function looksRetryableRejection(status: number, message: string): boolean {
  * 后者代价高得多，因此选择前者；但文案必须**同时指出**这两种可能，以免代理配置错误的用户依据「无法连接」
  * 长时间排查网络。
  */
+export type TransportFailureKind = 'tls' | 'closed' | 'timeout' | 'unreachable'
+
 const TRANSPORT_SHAPES: {
+  kind: TransportFailureKind
   code: RegExp
   message: RegExp
   text: string
   timedOut: boolean
 }[] = [
   {
+    kind: 'tls',
     code: /CERT|SSL|TLS|SELF_SIGNED|LEAF_SIGNATURE/,
     message: /certificate|ssl|tls handshake/i,
     text: 'TLS 握手失败：可能是网络不稳定，也可能是代理或自签名证书未被信任',
     timedOut: false,
   },
   {
+    kind: 'closed',
     code: /^(ECONNRESET|ECONNABORTED|EPIPE|ERR_SOCKET_CLOSED|UND_ERR_SOCKET|CONNECTION(CLOSED|RESET|ABORTED))/,
     message:
       /socket connection was closed|socket hang up|premature close|http\/2 stream failed|connection (closed|reset|aborted)|\b(ECONNRESET|ECONNABORTED|EPIPE)\b/i,
@@ -527,12 +532,14 @@ const TRANSPORT_SHAPES: {
     timedOut: false,
   },
   {
+    kind: 'timeout',
     code: /^(ETIMEDOUT|ERR_TIMEOUT|TIMEOUT|CONNECTIONTIMEOUT|UND_ERR_(HEADERS|BODY)_TIMEOUT)/,
     message: /timed out|timeout|\bETIMEDOUT\b/i,
     text: '请求超时',
     timedOut: true,
   },
   {
+    kind: 'unreachable',
     code: /^(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EAI_AGAIN|ERR_NETWORK|UND_ERR_|CONNECTION)/,
     message:
       /fetch failed|unable to connect|connection (refused|error)|network|\b(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EAI_AGAIN)\b/i,
@@ -541,7 +548,9 @@ const TRANSPORT_SHAPES: {
   },
 ]
 
-function classifyTransport(err: unknown): { text: string; timedOut: boolean } | null {
+function classifyTransport(
+  err: unknown,
+): { kind: TransportFailureKind; text: string; timedOut: boolean } | null {
   // SDK 的 Connection error. 把具体 errno 放在 cause 中。复用有界、去环的原因链，
   // 按从具体到泛化的既有顺序检查整条链，避免包装层先命中「无法连接」而掩盖证书或断流原因。
   const causes = failureCauseChain(err)
@@ -552,10 +561,18 @@ function classifyTransport(err: unknown): { text: string; timedOut: boolean } | 
           shape.code.test((cause.code ?? '').toUpperCase()) || shape.message.test(cause.message),
       )
     ) {
-      return { text: shape.text, timedOut: shape.timedOut }
+      return { kind: shape.kind, text: shape.text, timedOut: shape.timedOut }
     }
   }
   return null
+}
+
+/**
+ * 传输层失败的形状，不是传输层失败时为 null。供模型接口以外的请求使用：
+ * 它们的文案不提「接口地址」，只需要与 `TRANSPORT_SHAPES` 相同的判定。
+ */
+export function transportFailureKind(err: unknown): TransportFailureKind | null {
+  return classifyTransport(err)?.kind ?? null
 }
 
 /**
