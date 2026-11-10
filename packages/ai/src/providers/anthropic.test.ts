@@ -262,7 +262,7 @@ describe('思考档位严格遵守用户选择', () => {
 })
 
 describe('工具结果带图片', () => {
-  test('tool_result 位于 user 轮中，text 与 image 块保持原顺序', async () => {
+  test('tool_result 只含文本，图片作为并列块排在其后并注明所属调用', async () => {
     const body = await send([
       { role: 'user', content: '看图' },
       {
@@ -287,15 +287,55 @@ describe('工具结果带图片', () => {
     )
     expect(toolTurn).toBeDefined()
     expect(toolTurn!.role).toBe('user')
-    // 合并用的内部标记不得进入请求体。
+    // 内部字段不得进入请求体。
     expect('_toolBatch' in toolTurn!).toBe(false)
-    const block = (toolTurn!.content as Record<string, unknown>[]).find(
-      (b) => b.type === 'tool_result',
-    )!
-    expect(block.tool_use_id).toBe('c_img')
-    expect(block.content).toEqual([
-      { type: 'text', text: '{"status":"success"}' },
+    expect('_media' in toolTurn!).toBe(false)
+    expect(toolTurn!.content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'c_img',
+        content: [{ type: 'text', text: '{"status":"success"}' }],
+      },
+      { type: 'text', text: '工具调用 c_img 返回的图片：' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'QUJD' } },
+    ])
+  })
+
+  test('同一轮多个带图片的结果：全部 tool_result 在前，各组图片按调用顺序在后', async () => {
+    const image = (data: string) =>
+      ({ type: 'image', mimeType: 'image/png', source: { kind: 'base64', data } }) as const
+    const body = await send([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'c_1', name: 'read_file', arguments: { path: 'a.png' } },
+          { id: 'c_2', name: 'read_file', arguments: { path: 'b.ts' } },
+          { id: 'c_3', name: 'read_file', arguments: { path: 'c.png' } },
+        ],
+      },
+      { role: 'tool', toolCallId: 'c_1', content: [{ type: 'text', text: '甲' }, image('QUJD')] },
+      { role: 'tool', toolCallId: 'c_2', content: '乙' },
+      { role: 'tool', toolCallId: 'c_3', content: [{ type: 'text', text: '丙' }, image('REVG')] },
+    ])
+    const messages = body.messages as { role: string; content: unknown }[]
+    const toolTurn = messages.find(
+      (m) =>
+        Array.isArray(m.content) &&
+        (m.content as { type?: string }[]).some((b) => b.type === 'tool_result'),
+    )
+    expect(
+      (toolTurn!.content as { type: string; text?: string; tool_use_id?: string }[]).map(
+        (b) => b.tool_use_id ?? b.text ?? b.type,
+      ),
+    ).toEqual([
+      'c_1',
+      'c_2',
+      'c_3',
+      '工具调用 c_1 返回的图片：',
+      'image',
+      '工具调用 c_3 返回的图片：',
+      'image',
     ])
   })
 
