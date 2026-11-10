@@ -1749,6 +1749,11 @@ function planAct(
       action: buildAction([], pointTarget(), kind, args, params),
     }
   }
+  if (!targetGiven(args) && (given(args.imageX) || given(args.imageY))) {
+    throw new ArgError(
+      '未执行 · 提供了 imageX / imageY 但缺少 imageRef · imageRef 取自最近一次采图回执中的 imageRef',
+    )
+  }
   const toWindow = WINDOW_TARGET_ACTIONS.includes(kind)
   if (toWindow && !targetGiven(args)) return toFocus(kind, args, params)
   const element =

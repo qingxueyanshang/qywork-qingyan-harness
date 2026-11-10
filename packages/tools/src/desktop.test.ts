@@ -2263,6 +2263,21 @@ describe('前台动作', () => {
     })
   })
 
+  /** 原始失败形状：只给坐标或把 imageRef 填成 "null" 时，报错只列出控件定位方式，未提到 imageRef。 */
+  test('按图点击缺少 imageRef 时，报错指出缺少的是 imageRef', async () => {
+    const { port, calls } = 自绘Port()
+    for (const extra of [{}, { imageRef: 'null' }]) {
+      const r = await run(
+        desktopActTool,
+        { windowId: 'dw_1', action: 'click', imageX: 200, imageY: 633, ...extra },
+        ctxWith(port),
+      )
+      expect(r.status).toBe('failure')
+      expect(r.message).toContain('缺少 imageRef')
+    }
+    expect(calls).toHaveLength(0)
+  })
+
   /** 原始失败形状：activate 未提供 ref 时以「未指定目标」被拒绝，而 worker 执行它只需要窗口句柄。 */
   test('activate 未提供目标时作用于窗口，发出的请求带窗口根的 ref', async () => {
     const { port, calls } = 自绘Port()
