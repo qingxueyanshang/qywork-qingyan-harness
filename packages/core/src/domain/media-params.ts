@@ -207,6 +207,26 @@ export function ratioOf(p: MediaParamDefinition, v: unknown): string | null {
   return typeof v === 'string' && RATIO_RE.test(v) ? v : 'auto'
 }
 
+/**
+ * 尺寸取值换用对照表的分隔符：同一型号的原生协议写「宽*高」、兼容协议写「宽x高」（如百炼图像与 OpenAI Images），
+ * 型号改用另一协议后，画布与提交中保存的取值按对照表换成当前写法，不因格式不符被丢弃或拒绝。
+ * 只改对照表中有对应项的取值，其余原样返回。
+ */
+export function alignSizeSeparator(
+  specs: readonly MediaParamDefinition[],
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  let out = params
+  for (const p of specs) {
+    const value = params[p.name]
+    if (!p.shapes || typeof value !== 'string' || !/^\d+[*x]\d+$/.test(value)) continue
+    if (p.shapes.some((s) => s.value === value)) continue
+    const swapped = value.includes('*') ? value.replace('*', 'x') : value.replace('x', '*')
+    if (p.shapes.some((s) => s.value === swapped)) out = { ...out, [p.name]: swapped }
+  }
+  return out
+}
+
 /** 画布保存选择偏好，只发送当前模式允许的值；直接生成工具仍逐项报错。 */
 export function activeMediaParams(
   specs: readonly MediaParamDefinition[],
@@ -214,7 +234,7 @@ export function activeMediaParams(
   params: Record<string, unknown>,
   imageCount = 0,
 ): Record<string, unknown> {
-  let active = params
+  let active = alignSizeSeparator(specs, params)
   // 每轮只会删键；某个偏好被隐藏后，其余参数再按实际缺省值校验。
   for (;;) {
     const values = mediaParamValues(specs, active)
