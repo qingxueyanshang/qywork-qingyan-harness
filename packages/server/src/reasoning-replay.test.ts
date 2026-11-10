@@ -314,6 +314,8 @@ test('受阻结束、下轮解释与明确接续都以同一份待办账本裁�
     stopDetail: '需要用户提供：用户补充页面缺少的信息',
   })
 
+  // 受阻项在等待用户补充信息，「为什么暂停」是询问受阻条件，只回答、不认领。
+  // 追问未完成且未受阻的项即要求完成，判定写在系统提示中，执行循环不替模型判断消息的意图。
   await startRun(cv, '为什么暂停', undefined, deps())
   await finished(before + 2)
   expect(bodies).toHaveLength(4)

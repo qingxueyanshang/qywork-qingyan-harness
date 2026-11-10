@@ -50,7 +50,7 @@ export function PetPicker(props: { onError: (message: string | null) => void }) 
     )
   }
 
-  // 确认框打开时，Escape 只取消删除。设置弹窗同样在 window 上监听 Escape，此处在 document 的捕获阶段拦下，
+  // 确认框打开时，Escape 只取消删除。设置弹窗同样在 window 上监听 Escape，此处在 document 的捕获阶段拦截，
   // 否则一次 Escape 会连同设置弹窗一起关闭。
   createEffect(() => {
     if (!doomed()) return

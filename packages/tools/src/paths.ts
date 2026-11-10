@@ -64,7 +64,7 @@ export class PathEscapeError extends Error {
       `${paramPrefix(param)}路径越界，已拒绝：${attempted}\n` +
         '该路径不在工作区（以及配置中显式放行的额外目录）之内，' +
         '且当前为「自动审批」模式。\n' +
-        '要么改用工作区内的路径继续，要么停止并告知用户，由用户二选一：' +
+        '要么改用工作区内的路径继续，要么用 write_todos 把该项标为 blocked（user_only），由用户二选一：' +
         '切换到「完全访问」（放开全部权限，包括路径），' +
         '或将该目录加入配置的 additionalDirectories（仅放开该目录）。' +
         '这是本次路径参数的边界；run_command 的命令内容由命令权限规则另行裁决。',

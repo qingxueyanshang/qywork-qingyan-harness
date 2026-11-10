@@ -17,13 +17,19 @@
  * 失去意义，而这正是该面板存在的理由。受阻与失败的条目不计入这一条。
  * 违反时拒绝并说明，不静默纠正：静默改写等于告诉模型清单已被原样接受。
  *
- * 硬约束：blocked 必须带 `blocker`（`TODO_BLOCKERS` 之一）与 `need`，failed 必须带 `cause` 与 `attempts`，
- * 其余状态都不带。执行循环据此判定本轮是继续、停下等待用户还是结束（`agent/loop/turn-end.ts`），
+ * 硬约束：blocked 必须带 `blocker`（`TODO_BLOCKERS` 之一）与 `need`，failed 必须带 `failure`（`TODO_FAILURES` 之一）、
+ * `cause` 与 `attempts`，其余状态都不带。执行循环据此判定本轮是继续、停下等待用户还是结束（`agent/loop/turn-end.ts`），
  * 缺少原因的受阻与失败无法审计，也无法在最终回复中逐项说明。
  */
 
 import type { ToolSpec } from '@qywork/agent'
-import { TODO_BLOCKERS, TODO_STATUSES, type TodoItem, todoProgress } from '@qywork/core'
+import {
+  TODO_BLOCKERS,
+  TODO_FAILURES,
+  TODO_STATUSES,
+  type TodoItem,
+  todoProgress,
+} from '@qywork/core'
 
 /** 待办条目上限。超过此数说明应拆分任务，而不是把清单当作笔记使用。 */
 const MAX_ITEMS = 40
@@ -35,7 +41,7 @@ export const writeTodosTool: ToolSpec = {
   description:
     '提交或更新当前任务的待办清单。' +
     '每次提交**完整的**清单（整表替换），不是增量：未变化的条目也需原样包含。' +
-    '同一时刻只能有一条 in_progress。标为 blocked 的条目必须填写 blocker 与 need，标为 failed 的条目必须填写 cause 与 attempts，其余状态都不填写。',
+    '同一时刻只能有一条 in_progress。标为 blocked 的条目必须填写 blocker 与 need，标为 failed 的条目必须填写 failure、cause 与 attempts，其余状态都不填写。',
   parameters: {
     type: 'object',
     properties: {
@@ -59,6 +65,11 @@ export const writeTodosTool: ToolSpec = {
             need: {
               type: 'string',
               description: '仅 status 为 blocked 时填写：需要谁提供什么，一句话',
+            },
+            failure: {
+              type: 'string',
+              enum: [...TODO_FAILURES],
+              description: '失败类别，仅 status 为 failed 时填写',
             },
             cause: {
               type: 'string',
@@ -159,9 +170,9 @@ function filled(value: unknown): boolean {
 /** 各状态允许填写的原因字段。不在其中的字段一律拒绝。 */
 const REASON_FIELDS = {
   blocked: ['blocker', 'need'],
-  failed: ['cause', 'attempts'],
+  failed: ['failure', 'cause', 'attempts'],
 } as const
-const ALL_REASON_FIELDS = ['blocker', 'need', 'cause', 'attempts'] as const
+const ALL_REASON_FIELDS = ['blocker', 'need', 'failure', 'cause', 'attempts'] as const
 
 /** 去掉首尾空白后的字符串；不是字符串时为空串。 */
 function trimmed(value: unknown): string {
@@ -210,7 +221,7 @@ function parseTodos(raw: unknown): ParseResult {
     if (extra.length) {
       return {
         ok: false,
-        message: `第 ${i + 1} 条的 status 为 ${status}，不填写 ${extra.join('、')}；blocked 只填写 blocker 与 need，failed 只填写 cause 与 attempts，其余状态都不填写。`,
+        message: `第 ${i + 1} 条的 status 为 ${status}，不填写 ${extra.join('、')}；blocked 只填写 blocker 与 need，failed 只填写 failure、cause 与 attempts，其余状态都不填写。`,
       }
     }
     if (status === 'blocked') {
@@ -226,15 +237,16 @@ function parseTodos(raw: unknown): ParseResult {
       continue
     }
     if (status === 'failed') {
+      const failure = TODO_FAILURES.find((f) => f === row.failure)
       const cause = trimmed(row.cause)
       const attempts = trimmed(row.attempts)
-      if (!cause || !attempts) {
+      if (!failure || !cause || !attempts) {
         return {
           ok: false,
-          message: `第 ${i + 1} 条标为 failed，必须填写 cause（失败原因）与 attempts（做过的尝试，包括次数与每次的改动）。`,
+          message: `第 ${i + 1} 条标为 failed，必须填写 failure（${TODO_FAILURES.join('、')} 之一）、cause（失败原因）与 attempts（做过的尝试，包括次数与每次的改动）。不属于这些类别的原因不是失败：原因在工作区的文件、脚本或画布中时修改它，该项保持 in_progress。`,
         }
       }
-      todos.push({ id, content, status, cause, attempts })
+      todos.push({ id, content, status, failure, cause, attempts })
       continue
     }
     todos.push({ id, content, status })

@@ -48,12 +48,13 @@ describe('待办清单', () => {
     dispose()
   })
 
-  test('失败条目带失败标记，并在名称下方显示失败原因与做过的尝试', async () => {
+  test('失败条目带失败标记，并在名称下方显示失败类别、原因与做过的尝试', async () => {
     const { host, dispose } = await mount([
       {
         id: 'todo_1',
         content: '生成第 4 页',
         status: 'failed',
+        failure: 'transient',
         cause: 'HTTP 429 限流',
         attempts: '系统在 30 秒、2 分钟、5 分钟后各重试一次',
       },
@@ -61,7 +62,7 @@ describe('待办清单', () => {
     const row = host.querySelector('.todo-item')!
     expect(row.classList.contains('failed')).toBe(true)
     expect(row.querySelector('.todo-need')?.textContent).toBe(
-      '失败：HTTP 429 限流，已尝试：系统在 30 秒、2 分钟、5 分钟后各重试一次',
+      '暂时故障：HTTP 429 限流，已尝试：系统在 30 秒、2 分钟、5 分钟后各重试一次',
     )
     dispose()
   })

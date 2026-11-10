@@ -4,7 +4,7 @@
  */
 
 import type { AgentEvent } from '@qywork/core'
-import { envelopeHeadTokens, log, TODO_BLOCKERS, todoReason } from '@qywork/core'
+import { envelopeHeadTokens, log, TODO_BLOCKERS, TODO_FAILURES, todoReason } from '@qywork/core'
 import { cycleFingerprint } from '../progress.ts'
 import { envelopeHashOf } from './request.ts'
 import type { RunState, TurnState } from './run-state.ts'
@@ -30,11 +30,12 @@ const TRUNCATED_NOTICE =
  *
  * 提示以用户消息送达，须写明它不是用户的回复、不代表任何确认：只写「继续执行」时，模型把它当作
  * 用户对样张的确认，未等用户查看就生成了其余 27 页（宁德视觉升级 2026-10-21）。
- * 受阻与失败的判定标准只写在系统提示中，此处只列字段与类别取值。不要加入「把等待中的项改回 pending
+ * 完成、受阻与失败的判定标准只写在系统提示中，此处只引用并列出类别取值：此处另写一种表述时，
+ * 模型会按两处中较宽松的一种收尾。不要加入「把等待中的项改回 pending
  * 后结束本轮」一类的出口：pending 不带原因，任何困难都能借此停下询问用户。
  */
 function continueNotice(items: string[]): string {
-  return `本轮待办尚有未完成的项：${items.join('；')}。这是系统的自动提示，不是用户的回复，不表示用户确认或授权了任何事项。继续执行这些项；需要在几种做法之间选择时，按最接近用户要求的做法执行，并在最终回复中说明。执行失败时按系统提示中的失败处理方式重试或调整，处理后仍无法完成的项用 write_todos 标为 failed，填写 cause 与 attempts。只有某一项在等待用户，属于受阻类别（${TODO_BLOCKERS.join('、')}）时，例如样张等待用户查看，才标为 blocked 并填写 blocker 与 need。清单中没有 pending 与 in_progress 后本轮结束。`
+  return `本轮待办尚有未完成的项：${items.join('；')}。这是系统的自动提示，不是用户的回复，不表示用户确认或授权了任何事项。继续执行这些项，直至每一项按系统提示「工作方式」一节的定义完成、受阻（${TODO_BLOCKERS.join('、')}）或失败（${TODO_FAILURES.join('、')}）。清单中没有 pending 与 in_progress 后本轮结束。`
 }
 
 /**

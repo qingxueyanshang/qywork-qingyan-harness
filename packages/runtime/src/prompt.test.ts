@@ -2,8 +2,9 @@
  * 上下文末尾注记的装配。
  *
  * 覆盖范围：`prompt.ts` 的 `buildTailNotes`，`buildSystemPrompt` 中能力段各行的措辞、
- * 停下等待用户的判定（受阻四类与不是受阻的情形）、执行失败的五类处理方式与末尾的 `outputLimitNote`
- * （前缀稳定性由 `agent/prefix-audit.test.ts` 审查）。
+ * 完成的定义、停下等待用户的判定（受阻四类与不是受阻的情形）、执行失败的七类处理方式、追问的意图、
+ * 内置工具说明中不出现第二种收尾写法（覆盖 `@qywork/tools` 全部内置工具的 description）
+ * 与末尾的 `outputLimitNote`（前缀稳定性由 `agent/prefix-audit.test.ts` 审查）。
  *
  * 锁定的约束是技能、记忆、外部工具都只放入标题：正文（外部工具为完整参数说明）
  * 一旦放回上下文末尾，每轮都要全量重发，且不会产生任何报错，
@@ -11,7 +12,9 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { TODO_BLOCKERS } from '@qywork/core'
+import { ToolRegistry } from '@qywork/agent'
+import { TODO_BLOCKERS, TODO_FAILURES } from '@qywork/core'
+import { registerBuiltinTools } from '@qywork/tools'
 import { buildSystemPrompt, buildTailNotes, outputLimitNote } from './prompt.ts'
 
 const base = { workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' as const }
@@ -290,8 +293,11 @@ describe('上下文末尾注记', () => {
    * 复现原始失败形状：清单剩两条未完成，模型在一次修复之后结束本轮，
    * 转而询问用户下一条修复哪一项。成因是清单只在 `write_todos` 调用中出现一次，
    * 之后既不重发，压缩时也不进入事实清单。
+   *
+   * 另一侧的原始失败形状（rn_0mw836uj900011mjmsy）：清单有未完成项，用户问「为什么又停下来」，
+   * 快照写着「不是继续执行的指令」，模型只解释、不执行。追问未完成的项即要求接续。
    */
-  test('待办每次请求重发保留进度，跨轮清单不成为执行指令', () => {
+  test('待办每次请求重发保留进度；要求继续或追问未完成的项时接续，无关的消息不接续', () => {
     const notes = buildTailNotes({
       ...base,
       todos: [
@@ -306,8 +312,11 @@ describe('上下文末尾注记', () => {
     expect(todo).toContain('3. [未开始] 汇总 bug 与证据')
     // 枚举原值不写入提示词，理由同「平台：win32」一条。
     expect(todo).not.toContain('in_progress')
-    expect(todo).toContain('跨轮保留的任务进度，不是继续执行的指令')
-    expect(todo).toContain('接续时先用 write_todos 提交清单')
+    expect(todo).toContain(
+      '追问其中某项为什么没有完成、为什么停下时，先用 write_todos 提交清单并认领该项',
+    )
+    expect(todo).toContain('本次消息与这些项无关时不接续')
+    expect(todo).not.toContain('不是继续执行的指令')
     expect(todo).not.toContain('清单还有未完成项时本轮不结束')
     // 任务派发的规则只写在工具参数中，待办注记不重复。
     expect(todo).not.toContain('parentTodo')
@@ -330,6 +339,7 @@ describe('上下文末尾注记', () => {
           id: 'todo_3',
           content: '生成第 4 页',
           status: 'failed',
+          failure: 'denied',
           cause: 'HTTP 403 无访问权限',
           attempts: '不重试',
         },
@@ -337,7 +347,7 @@ describe('上下文末尾注记', () => {
     })
     const todo = notes.at(-1)?.content ?? ''
     expect(todo).toContain('2. [受阻] 生成其余 17 页（花费待确认：用户同意生成其余 17 页的费用）')
-    expect(todo).toContain('3. [失败] 生成第 4 页（失败：HTTP 403 无访问权限，已尝试：不重试）')
+    expect(todo).toContain('3. [失败] 生成第 4 页（无法重试：HTTP 403 无访问权限，已尝试：不重试）')
   })
 
   test('旧清单全部完成后不再作为下一轮的当前待办', () => {
@@ -369,34 +379,52 @@ describe('上下文末尾注记', () => {
 /**
  * 原始失败形状：没有任何事项需要用户时，模型结束本轮并询问用户，核对与查找也交给用户；
  * 一次运行失败即停止整项工作。停下的条件分散在系统提示、待办段落与画布工具说明中，
- * 且标准含糊（「实质不同的结果」「需要用户决定的事」）。判定只写在一处：四类受阻与五类失败处理。
+ * 且标准含糊（「实质不同的结果」「需要用户决定的事」）。
+ *
+ * 第二个原始失败形状（rn_0mw82olx30000u8rlnp）：联动检查仍报 82 条，模型按「处理后仍存在的差异在最终回复中说明，
+ * 该项按完成处理」把清单全部标为 completed。完成只在一处定义，未完成的项只能以受阻或失败结束。
  */
-describe('停下等待用户与执行失败的判定', () => {
+describe('完成、停下等待用户与执行失败的判定', () => {
   const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows', 'run_canvas']))
 
-  test('受阻四类各定义一次，取值与 write_todos 的 blocker 枚举一致，外部服务故障不在其中', () => {
+  test('完成只定义一次：结果满足要求且已核对；说明差异不使它成为完成', () => {
+    expect(prompt.split('一项工作完成，指').length).toBe(2)
+    expect(prompt).toContain('结果满足用户的要求，并且已经实际核对')
+    expect(prompt).toContain(
+      '检查器或脚本报告错误、审核未通过、核对发现结果与要求不一致时，该项未完成',
+    )
+    expect(prompt).toContain('在最终回复中说明差异不使它成为完成')
+    expect(prompt).toContain('本轮只有两种结束方式')
+    expect(prompt).not.toContain('按完成处理')
+  })
+
+  test('受阻四类各定义一次，取值与 write_todos 的 blocker 枚举一致，单步任务同样经由受阻停下', () => {
     expect(TODO_BLOCKERS).toEqual(['spend', 'user_only', 'review', 'irreversible'])
     for (const kind of TODO_BLOCKERS) expect(prompt.split(`- ${kind}：`)).toHaveLength(2)
     expect(prompt).not.toContain('- service：')
-    expect(prompt).toContain('停下等待用户只有一种方式：用 write_todos 把该项标为 blocked')
+    expect(prompt).toContain(
+      '停下等待用户只有一种方式：用 write_todos 把该项标为 blocked（单步任务同样如此）',
+    )
     expect(prompt).toContain('受阻只有以下四类，每一类都是在等待用户')
     expect(prompt).toContain(
       '清单中没有 pending 与 in_progress 且有受阻项时，在回复中说明需要用户做什么，本轮随即结束',
     )
   })
 
-  test('执行失败按原因分五类处理，间隔取自重试间隔表，处理后仍无法完成的项标为 failed', () => {
+  test('执行失败按七类处理，取值与 write_todos 的 failure 枚举一致，间隔取自重试间隔表', () => {
     expect(prompt).toContain('执行失败不是受阻，不等待用户')
+    for (const kind of TODO_FAILURES) expect(prompt.split(`- ${kind} `)).toHaveLength(2)
     for (const line of [
-      '- 暂时故障（5xx、429 限流、请求得到应答之前连接中断）：以相同参数在 30 秒、2 分钟、5 分钟后各重试一次。',
+      '- transient 暂时故障（5xx、429 限流、请求得到应答之前连接中断）：以相同参数在 30 秒、2 分钟、5 分钟后各重试一次。',
       '生成的提交与子 agent 的派发由系统按这一间隔自动重试，回执报告失败时这些重试已经完成。',
-      '- 请求有误（4xx 参数校验失败、参考图数量不符、引用失效、参数取值无效）：按原因修改输入后重试；同一错误再次出现时换一种改法，共尝试 3 次。',
-      '- 结果不符合要求：查明原因，修改提示词后重新运行；同一张卡片的图片最多重新运行 3 次，视频最多 2 次，用尽后保留最接近要求的版本，该项按完成处理',
-      '- 重试无法解决（余额或额度用尽、403 无访问权限、接口要求重新登录）：不重试。',
-      '- 结果未知（请求已发出，但没有收到应答或任务号，或发出后超时）：远端可能已经受理并计费，先取回，不重新提交。',
-      // 生成请求的 5xx 可能来自网关，回执写明远端结果未知（`ai/media/http.ts`），按结果未知处理，不重新提交。
-      '接口返回了明确的 HTTP 错误即请求已得到应答，按前四类处理；请求发出后没有任何应答，或回执写明远端结果未知，按结果未知处理。',
-      '用 write_todos 标为 failed，cause 写失败原因，attempts 写做过的尝试及每次的改动',
+      '- invalid_request 请求有误（4xx 参数校验失败、参考图数量不符、引用失效、参数取值无效）：按原因修改输入后重试；同一错误再次出现时换一种改法，共尝试 3 次。',
+      '- denied 重试无法解决（余额或额度用尽、403 无访问权限、接口要求重新登录）：不重试。',
+      '- unknown 结果未知（请求已发出，但没有收到应答或任务号，或发出后超时）：远端可能已经受理并计费，先取回，不重新提交',
+      '- retry_limit 生成结果不符合要求：查明原因，修改提示词后重新运行；同一张卡片的图片最多重新运行 3 次，视频最多 2 次',
+      '- no_progress 检查或审核未通过：按报告修改后重新核对；连续三轮修改后问题数没有减少、评分没有提高时停止，attempts 写出每一轮的问题数或评分。',
+      '接口返回了明确的 HTTP 错误即请求已得到应答，按前三类处理；请求发出后没有任何应答，或回执写明远端结果未知，按结果未知处理。',
+      '原因位于工作区的文件、脚本或画布中、可以修改时，不属于以上任何一类：修改它后继续。',
+      '用 write_todos 标为 failed，failure 填写对应的类别，cause 写失败原因，attempts 写做过的尝试及每次的改动',
       '最终回复在一处列出每个失败项的原因、尝试次数与每次的改动，以及仍缺少的内容',
     ]) {
       expect(prompt).toContain(line)
@@ -423,6 +451,86 @@ describe('停下等待用户与执行失败的判定', () => {
     expect(prompt).not.toContain('需要用户决定的事在回复中提出')
     expect(prompt).not.toContain('以相同参数立即再试一次')
   })
+
+  /**
+   * 原始失败形状：用户连续发「为什么不解决？」「为什么又停下来」，模型两轮都以 0 次工具调用结束，
+   * 自述「把你上一句当成了只需解释的问题」。成因是系统提示把这类反问归入「只询问原因，不恢复旧任务」。
+   * 另一侧（rn_0mw9ivl4b0000vid6ut）：用户提问后模型不回答即连续执行。
+   */
+  test('追问为什么没有做是要求完成：先答后做；只询问信息或无关时只回答', () => {
+    expect(prompt).toContain(
+      '用户追问某件事为什么没有做、为什么停下、为什么结果没有达到要求时，这是要求把它完成：先用一两句回答原因，再在同一轮中执行。',
+    )
+    expect(prompt).toContain('只询问信息、与当前任务无关或明确要求暂停时只回答。')
+    expect(prompt).toContain('用户的消息包含问题时，开始执行之前先用一两句回答。')
+    expect(prompt).not.toContain('用户只询问原因、进度或要求暂停时，不恢复旧任务')
+  })
+
+  /** 原始失败形状（rn_0mw7zod8p0001f21jpy）：用户纠正后本轮唯一的动作是 write_memory。 */
+  test('写记忆在完成纠正所要求的修改之后', () => {
+    const withMemory = buildSystemPrompt(new Set(['write_memory']))
+    expect(withMemory).toContain('写记忆是纠正之后的附带动作：先完成本次纠正所要求的修改。')
+  })
+})
+
+/**
+ * 完成与停下的定义只在系统提示「工作方式」一节。工具说明与系统提示同时发送给模型，
+ * 其中任何一处另写一种收尾方式，模型就会按较宽松的一种结束本轮：账本中的实例是画布工具说明的
+ * 「该节点按完成处理」与系统提示的「差异在最终回复中说明，该项按完成处理」。
+ * 本组对全部内置工具的说明与系统提示一并扫描，新增工具写入这类句式时门禁失败。
+ */
+describe('工具说明不另写收尾方式', () => {
+  const registry = new ToolRegistry()
+  registerBuiltinTools(registry, {
+    delegate: true,
+    plugins: true,
+    mcpConfig: true,
+    browser: true,
+    desktop: true,
+    canvas: true,
+    panel: true,
+    personalization: true,
+    pets: true,
+    office: true,
+    media: ['image', 'video', 'audio'],
+  })
+  const specs = registry.list()
+  const prompt = buildSystemPrompt(new Set(specs.map((s) => s.name)))
+  const texts = [
+    { name: '系统提示', text: prompt },
+    ...specs.map((s) => ({ name: s.name, text: s.description })),
+  ]
+  const EXITS = [
+    '按完成处理',
+    '视为完成',
+    '停止并告知用户',
+    '请告知用户',
+    '并等待用户',
+    '由用户决定',
+    '先询问用户',
+    '向用户确认',
+    '带问题继续',
+    '不恢复旧任务',
+  ]
+
+  test('注册的内置工具包含画布、桌面与待办：扫描范围覆盖已知的出口位置', () => {
+    for (const name of [
+      'run_canvas',
+      'desktop_windows',
+      'desktop_act',
+      'write_todos',
+      'update_goal',
+    ]) {
+      expect(specs.some((s) => s.name === name)).toBe(true)
+    }
+  })
+
+  for (const phrase of EXITS) {
+    test(`不出现「${phrase}」`, () => {
+      const hits = texts.filter((t) => t.text.includes(phrase)).map((t) => t.name)
+      expect(hits).toEqual([])
+    })
+  }
 })
 
 describe('能力段', () => {
