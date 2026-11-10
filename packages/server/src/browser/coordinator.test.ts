@@ -2242,3 +2242,34 @@ test('多事件动作中途失败时仍返回后续观察，回执如实标注�
   expect(r.execution?.reason).toContain('Input.dispatchKeyEvent')
   expect(r.observation.observationId).not.toBe(ob?.observationId)
 })
+
+test('动作缺省 screenshot 时观察不带截图，也不发出截图命令', async () => {
+  const { devtools, click } = await clickOnce()
+  const plain = await click()
+  if (plain.observation === null) throw new Error('这次动作本应带回观察')
+  expect(plain.observation.image).toBeUndefined()
+  expect(devtools.calls.filter((c) => c.method === 'Page.captureScreenshot')).toHaveLength(0)
+})
+
+test('screenshot=true 的动作回执观察带截图；动作未完成时同样带截图', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
+  const base = {
+    tabId: tab?.tabId ?? '',
+    observationId: ob?.observationId ?? '',
+    ref: firstRef(ob),
+    screenshot: true,
+  }
+
+  const clicked = await port?.act({ ...base, action: 'click' })
+  if (!clicked || clicked.observation === null) throw new Error('这次动作本应带回观察')
+  expect(clicked.observation.image?.data).toBe(SHOT)
+
+  devtools.failKeyAt = 3
+  const typed = await port?.act({ ...base, action: 'type', text: 'ab' })
+  if (!typed || typed.observation === null) throw new Error('这次动作本应带回观察')
+  expect(typed.execution).toMatchObject({ state: 'partial' })
+  expect(typed.observation.image?.data).toBe(SHOT)
+})

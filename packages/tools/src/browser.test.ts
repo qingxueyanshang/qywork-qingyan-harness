@@ -794,6 +794,75 @@ describe('观察的投递', () => {
     expect(data(r).elements).toHaveLength(1)
   })
 
+  test('act 的 screenshot 适用于全部动作，传给端口，截图经由 images 返回', async () => {
+    const image = { data: 'QUJD', mime: 'image/png' }
+    const { port, calls } = fakeBrowser({
+      act: async (input) => {
+        calls.push({ method: 'act', input })
+        return {
+          element: 'button 提交',
+          observation: input.screenshot ? { ...OB, image } : OB,
+          settle: 'quiet',
+        }
+      },
+    })
+    const ctx = ctxWith('/w', port)
+    const clicked = await browserActTool.fn(
+      { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1', screenshot: true },
+      ctx,
+    )
+    expect(calls.at(-1)?.input).toMatchObject({ screenshot: true })
+    expect(data(clicked).images).toEqual([image])
+    expect(data(clicked)).not.toHaveProperty('image')
+
+    const pressed = await browserActTool.fn(
+      {
+        tabId: 'bt_1',
+        observationId: 'ob_0',
+        action: 'press',
+        phases: [{ keys: ['Enter'] }],
+        screenshot: true,
+      },
+      ctx,
+    )
+    expect(pressed.status).toBe('success')
+    expect(data(pressed).images).toEqual([image])
+
+    for (const screenshot of [undefined, null, false]) {
+      const plain = await browserActTool.fn(
+        { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1', screenshot },
+        ctx,
+      )
+      expect(calls.at(-1)?.input).not.toHaveProperty('screenshot')
+      expect(data(plain)).not.toHaveProperty('images')
+    }
+  })
+
+  test('动作未完成时 act 的截图同样经由 images 返回', async () => {
+    const image = { data: 'QUJD', mime: 'image/png' }
+    const { port } = fakeBrowser({
+      act: async () => ({
+        element: 'input 姓名',
+        execution: { state: 'partial', confirmedUnits: 1 },
+        observation: { ...OB, image },
+        settle: 'quiet',
+      }),
+    })
+    const r = await browserActTool.fn(
+      {
+        tabId: 'bt_1',
+        observationId: 'ob_0',
+        action: 'type',
+        ref: 'e1',
+        text: 'ab',
+        screenshot: true,
+      },
+      ctxWith('/w', port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'browser_partial' })
+    expect(data(r).images).toEqual([image])
+  })
+
   test('navigate 同样返回观察，不另外返回 tab/url/title', async () => {
     const { port } = fakeBrowser()
     const r = await browserNavigateTool.fn(

@@ -832,6 +832,7 @@ export const browserActTool: ToolSpec = {
     'settle=quiet 表示动作之后页面发出的 XHR / fetch 请求均已结束且页面短暂没有变化；' +
     'deadline 表示到达等待上限时仍有请求未结束或页面仍在变化；' +
     '两者都不代表网站业务已完成，后续目标尚未出现时用 browser_wait。' +
+    'screenshot=true 时动作之后的新观察附带截图，仅在元素表不足以判断画面时使用。' +
     '页面未跳转时先前观察的元素编号仍然有效，同一个 observationId 可以在同一轮中发出多个动作，' +
     '按发出顺序依次执行；同一轮中前一个动作失败不会阻止后续动作执行。' +
     '输入后页面重建了节点时，后续动作因编号失效被拒绝，用最新的 observationId 重发。' +
@@ -895,6 +896,7 @@ export const browserActTool: ToolSpec = {
       },
       deltaX: { type: 'number', description: 'scroll 的横向滚动量，向右为正' },
       deltaY: { type: 'number', description: 'scroll 的滚动量，向下为正' },
+      screenshot: { type: 'boolean' },
     },
     required: ['tabId', 'observationId', 'action'],
     additionalProperties: false,
@@ -939,6 +941,7 @@ export const browserActTool: ToolSpec = {
         ...(path ? { path } : {}),
         ...(given(args.deltaX) ? { deltaX: finite(args.deltaX, 'deltaX') } : {}),
         ...(given(args.deltaY) ? { deltaY: finite(args.deltaY, 'deltaY') } : {}),
+        ...(args.screenshot === true ? { screenshot: true } : {}),
       }
       const r = await send(() => browser.act(input))
       const receipt = receiptOf(r)

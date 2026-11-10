@@ -310,6 +310,8 @@ export interface BrowserActInput {
   deltaX?: number
   /** `scroll` 的滚动量，向下为正。 */
   deltaY?: number
+  /** 动作之后的观察附带截图。动作未完成时同样附带。 */
+  screenshot?: boolean
 }
 
 /**
