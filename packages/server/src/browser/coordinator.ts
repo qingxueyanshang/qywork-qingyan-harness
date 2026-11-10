@@ -173,7 +173,8 @@ interface NavWatch {
    * 订阅建立之后页会话发出、尚未结束的 XHR / fetch 请求数。
    *
    * 订阅之前发出的请求不在其中，其结束事件忽略。只统计这两类：图片、媒体与 EventSource 长连接
-   * 会使每次动作都等到上限，文档导航已由帧事件覆盖。
+   * 会使每次动作都等到上限，文档导航已由帧事件覆盖。响应类型为 `text/event-stream` 的请求
+   * 在响应头到达时移出，理由相同。
    */
   requests(): number
   /** 已收到导航提交的证据。 */
@@ -799,6 +800,12 @@ export class BrowserCoordinator {
       }
       if (event.method === 'Network.loadingFinished' || event.method === 'Network.loadingFailed') {
         requests.delete(String(params.requestId))
+        return
+      }
+      if (event.method === 'Network.responseReceived') {
+        // 以 fetch 读取的事件流不产生结束事件，响应头到达即不再等待。
+        const mime = (params.response as { mimeType?: string } | undefined)?.mimeType
+        if (mime === 'text/event-stream') requests.delete(String(params.requestId))
         return
       }
       if (event.method === 'Page.frameStartedLoading' && mine(params.frameId)) {
