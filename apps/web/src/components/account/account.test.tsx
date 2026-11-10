@@ -245,9 +245,9 @@ async function entry() {
   ))
 }
 
-async function dialog() {
+async function dialog(retryMs?: number) {
   const { default: AccountDialog } = await import('./AccountDialog.tsx')
-  return mount(() => <AccountDialog />)
+  return mount(() => <AccountDialog {...(retryMs === undefined ? {} : { retryMs })} />)
 }
 
 test('侧栏入口：未配置云端服务时不出现；未登录显示「登录」，已登录显示邮箱；点击打开账号弹窗', async () => {
@@ -474,6 +474,29 @@ test('用量、可用模型与使用记录都读取失败时只显示一处原�
   expect(view.text()).toContain('累计 Token')
   expect(view.host.querySelector('.settings-error')).toBeNull()
   expect(stateReads()).toBeGreaterThan(before)
+  view.close()
+})
+
+test('读取失败后不经操作自动重新读取：云端恢复后各节出现，报错消失', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  cloudDown = true
+  pages = [[record('1')]]
+  const view = await dialog(20)
+  await until(() => view.button('重试') !== undefined)
+  // 云端未恢复期间持续重新读取，报错始终只有一处。
+  const usageReads = () => calls.filter((c) => c === 'GET /api/cloud/usage').length
+  await until(() => usageReads() >= 3)
+  expect(view.host.querySelectorAll('.settings-error')).toHaveLength(1)
+
+  cloudDown = false
+  await until(() => view.text().includes('完成') && view.text().includes('claude-opus-5-5'))
+  expect(view.text()).toContain('累计 Token')
+  expect(view.host.querySelector('.settings-error')).toBeNull()
+  // 成功后不再读取。
+  const settled = usageReads()
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  expect(usageReads()).toBe(settled)
   view.close()
 })
 
