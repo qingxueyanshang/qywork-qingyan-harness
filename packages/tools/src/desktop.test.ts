@@ -2056,7 +2056,7 @@ describe('前台动作', () => {
       ctxWith(port),
     )
     expect(r.status).toBe('success')
-    expect(calls).toEqual([
+    expect(calls.filter((c) => c.method === 'act')).toEqual([
       {
         method: 'act',
         input: {
@@ -2167,7 +2167,8 @@ describe('前台动作', () => {
       { windowId: 'dw_1', action: 'click', ref: 'e16', count: 2 },
       ctxWith(port),
     )
-    expect((calls[0]?.input as { action: unknown }).action).toEqual({
+    const acts = () => calls.filter((c) => c.method === 'act')
+    expect((acts()[0]?.input as { action: unknown }).action).toEqual({
       kind: 'click',
       button: 'left',
       count: 2,
@@ -2179,7 +2180,7 @@ describe('前台动作', () => {
     )
     // 越界时截断到上限，不拒绝：三击没有额外语义，两次点击即为双击。
     expect(r.status).toBe('success')
-    expect((calls[1]?.input as { action: { count: number } }).action.count).toBe(2)
+    expect((acts()[1]?.input as { action: { count: number } }).action.count).toBe(2)
   })
 
   test('键盘动作只附加在持有焦点的控件上', async () => {
@@ -2326,7 +2327,7 @@ describe('前台动作', () => {
         ctxWith(port),
       )
       expect(r.status).toBe('success')
-      expect(calls).toEqual([
+      expect(calls.filter((c) => c.method === 'act')).toEqual([
         {
           method: 'act',
           input: { windowId: 'dw_1', action: { kind: 'press_key', key: 'escape', modifiers: [] } },
@@ -2651,7 +2652,7 @@ describe('前台动作', () => {
       ctxWith(port),
     )
     expect(win).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
-    expect(calls).toHaveLength(1)
+    expect(calls.filter((c) => c.method === 'act')).toHaveLength(1)
   })
 
   test('拖拽终点二选一：控件或像素偏移，同时提供即拒绝', async () => {
@@ -2807,10 +2808,43 @@ describe('前台动作', () => {
     expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
   })
 
-  test('按控件定位的动作不附图：控件表本身即可说明动作后的状态', async () => {
+  /** 点击、按键与激活的效果只体现在画面上，控件表无法说明，按控件定位时同样附图。 */
+  test('按控件点击附图', async () => {
     const { port, calls } = foregroundPort()
-    await run(desktopActTool, { windowId: 'dw_1', action: 'click', ref: 'e16' }, ctxWith(port))
-    expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', action: 'click', ref: 'e16' },
+      ctxWith(port),
+    )
+    expect(calls.map((c) => c.method)).toEqual(['act', 'captureImage'])
+    expect(r.message).toContain('di_1')
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
+  })
+
+  test('activate 与 press_key 附图', async () => {
+    for (const args of [
+      { action: 'activate' },
+      { action: 'press_key', key: 'enter' },
+      { action: 'press_key', ref: 'e17', key: 'enter' },
+    ]) {
+      const { port, calls } = foregroundPort()
+      await run(desktopActTool, { windowId: 'dw_1', ...args }, ctxWith(port))
+      expect(calls.map((c) => c.method)).toEqual(['act', 'captureImage'])
+    }
+  })
+
+  test('控件接口动作不附图：回读与控件变化可以核验', async () => {
+    const { port, calls } = foregroundPort()
+    await run(desktopActTool, { windowId: 'dw_1', action: 'invoke', ref: 'e16' }, ctxWith(port))
+    expect(calls.map((c) => c.method)).toEqual(['act'])
+  })
+
+  test('模型不接受图片时按控件点击不附图', async () => {
+    const { port, calls } = foregroundPort()
+    const ctx = { ...ctxWith(port), vision: false }
+    const r = await run(desktopActTool, { windowId: 'dw_1', action: 'click', ref: 'e16' }, ctx)
+    expect(r.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['act'])
   })
 
   test('失效的 imageRef 由端口拒绝，回执记为未执行', async () => {
@@ -3172,7 +3206,7 @@ describe('有限动作序列', () => {
     expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
   })
 
-  test('整组都按控件定位时不附图', async () => {
+  test('整组都是控件接口动作时不附图', async () => {
     const { port, calls } = sequencePort()
     await run(
       desktopActSequenceTool,
@@ -3180,6 +3214,27 @@ describe('有限动作序列', () => {
       ctxWith(port),
     )
     expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
+  })
+
+  test('含按控件点击的序列附图一次', async () => {
+    const { port, calls } = sequencePort()
+    let captured = 0
+    port.captureImage = async () => {
+      captured += 1
+      return image()
+    }
+    port.elements = (windowId) => (windowId === 'dw_1' ? FOREGROUND_TABLE : null)
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'click', ref: 'e16' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+      ]),
+      ctxWith(port),
+    )
+    expect(calls.map((c) => c.method)).toEqual(['act', 'act'])
+    expect(captured).toBe(1)
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
   })
 
   test('按图定位的步骤不接受 expect：没有可判定的控件', async () => {
