@@ -1,5 +1,6 @@
 /**
- * run 内压缩的三个调用点：发送前按占用触发、执行工具之前按占用触发，以及 provider 容量拒绝后压缩一次再重发。
+ * run 内压缩的三个调用点：发送前按占用触发、执行工具之前按占用或上一次决策的部分投递触发，
+ * 以及 provider 容量拒绝后压缩一次再重发。
  *
  * 三处调用同一个 `CompactionPort.run()`、写入同一份 manifest、使用同一条落库路径，
  * 它们是调用点，不是三个权威。
@@ -9,7 +10,7 @@ import type { ProviderError } from '@qywork/ai'
 import { estimateMessages, estimateRequest } from '@qywork/ai'
 import type { AgentEvent, CompactionStage } from '@qywork/core'
 import { envelopeHeadTokens, log } from '@qywork/core'
-import { tailRetain } from '../delivery.ts'
+import { batchCapped } from '../delivery.ts'
 import { drainUntil } from '../event-queue.ts'
 import { markCompacted } from '../registry.ts'
 import { breakdownOf, envelopeHashOf, softLimit } from './request.ts'
@@ -52,7 +53,7 @@ export async function* compactBeforeSend(
   const done = yield* compactOverSoftLimit(host, run, turn, {
     occupancy: run.occupancyOf(turn.req),
     estimated: estimateRequest(turn.req, run.density),
-    threshold: softLimit(run.adapter.spec),
+    capped: false,
     summaryTurn: run.requestTurn,
     latestUnitSeen: false,
   })
@@ -60,19 +61,19 @@ export async function* compactBeforeSend(
 }
 
 /**
- * 执行工具之前的检查点：软阈值以下的余量不足一份尾部保留量时先压缩一次。
+ * 执行工具之前的检查点：占用超过软阈值，或上一次决策的投递触及单次上限（`batchCapped`）时先压缩一次。
  * 返回当前的占用读数与估算折算比，投递额度按这两个数值开立；
  * 返回 `interrupted` 时 `run.stopReason` 已置为 `user_interrupt`。
  *
  * 折算比是整份请求的本地估算与 provider 真值之比，只缩小不放大（上限为 1）：它是平均值，
  * 单段结果的比值可能低得多。按放大后的比值开立额度时，一次完整读取 62 万字的生僻字文件，
  * 下一次请求的真值为 101.7 万，超出 1M 窗口（实测）。
- * 触发线与投递额度必须使用同一个比值：触发线按放大后的比值计算、额度按未放大的比值计算时，
- * 余量只够容纳一小段而触发线尚未达到，续读段在压缩之前缩小为两份半保留量（实测）。
  *
- * 触发线比发送前的触发线低一份尾部保留量（按两种估算的比值折算为真值）：余量不足该值时，
- * 本次决策只能容纳一小段，甚至一行都无法容纳。本次响应的输出使占用超过软阈值时同理，此时额度为 0。
- * 软阈值以下时端口只执行回收量足够大的收纳、不摘要，无法回收时不做改动，本次决策按剩余余量部分投递。
+ * 触及上限的决策投递的是一段部分投递，模型随后续读：下一次决策开始前必须先收纳该段，否则余量只够
+ * 容纳一小段，续读段大小交替变化。不要改为「软阈值以下的余量不足一份尾部保留量即压缩」：常规任务在占用
+ * 约为窗口的 55% 时较早的工具结果即被收纳，每次收纳使收纳点之后的前缀缓存失效。
+ * 软阈值以下时端口只执行回收量足够大的收纳、不摘要，无法回收时不做改动，本次决策按剩余余量投递。
+ * 本次响应的输出使占用超过软阈值时照常压缩：不压缩时本次决策的额度为 0。
  *
  * **必须在打开第一条工具记录之前调用。** 压缩记录占用一个 step 序号，位于同一批次的工具记录之间时，
  * `runtime/transcript.ts` 的 `stepsToUnits` 只收集连续的同批次记录，本次决策会被拆成两个单元：
@@ -95,10 +96,11 @@ export async function* compactBeforeTools(
   // 上一次尝试已看到本次响应之前的全部历史：本次响应属于最后一个单元，不可折叠，不再重试。
   if (run.compactedAt >= turn.unitStart) return { occupancy, scale }
   // 本轮的编号已被刚完成的主请求占用：摘要请求占用下一个编号，下一轮主请求再顺延。
+  // 上一次决策的账目在此之后才由 `openBatchBudget` 重开。
   const done = yield* compactOverSoftLimit(host, run, turn, {
     occupancy,
     estimated,
-    threshold: softLimit(run.adapter.spec) - tailRetain(run.adapter.spec.contextWindow) / scale,
+    capped: batchCapped(run.ctx.state),
     summaryTurn: run.requestTurn + 1,
     latestUnitSeen: true,
   })
@@ -114,7 +116,7 @@ export async function* compactBeforeTools(
 }
 
 /**
- * 占用超过 `threshold` 时压缩一次。
+ * 占用超过软阈值，或 `capped`（上一次决策的投递触及单次上限）时压缩一次。
  *
  * 占用未超过软阈值时端口只收纳或跳过、不调用模型（`CompactionRunInput.occupancy` 的约定），
  * 因此不发送开始事件；此时的跳过也不写入记录、不发送事件：没有任何改动，也没有需要告知用户的状态。
@@ -127,22 +129,22 @@ async function* compactOverSoftLimit(
   at: {
     occupancy: number
     estimated: number
-    threshold: number
+    capped: boolean
     summaryTurn: number
     latestUnitSeen: boolean
   },
 ): AsyncGenerator<AgentEvent, 'compacted' | 'unchanged' | 'interrupted', unknown> {
   const { adapter, input, persist, density } = run
   const { occupancy } = at
-  if (occupancy <= at.threshold) return 'unchanged'
+  const overLine = occupancy > softLimit(adapter.spec)
+  if (!overLine && !at.capped) return 'unchanged'
 
   run.compactedAt = run.transcript.length
-  log.info('agent', '占用超过压缩阈值，触发压缩', {
+  log.info('agent', '触发压缩', {
     occupancy,
-    threshold: Math.round(at.threshold),
     softLimit: softLimit(adapter.spec),
+    capped: at.capped,
   })
-  const overLine = occupancy > softLimit(adapter.spec)
   const stepSeq = run.nextSeq()
   if (overLine) yield compactionProgress(run, stepSeq, 'preparing')
   // 摘要请求按当前轮次记账，等待期间持续发送进度。

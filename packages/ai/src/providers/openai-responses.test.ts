@@ -119,6 +119,39 @@ describe('input 是条目序列，不是消息序列', () => {
     ])
   })
 
+  /** `features` 只用于估算：请求体中的文本块只有类型与正文。 */
+  test('工具结果的附带文本块按原顺序发送，不带特征计数', () => {
+    const features = {
+      cjk: 2,
+      rareCjk: 0,
+      word: 0,
+      letter: 0,
+      caseBreak: 0,
+      digit: 0,
+      punctRun: 0,
+      punct: 0,
+      space: 0,
+      other: 0,
+    }
+    const items = buildInput(
+      [
+        {
+          role: 'tool',
+          toolCallId: 'call_skill',
+          content: [
+            { type: 'text', text: '{"status":"success"}' },
+            { type: 'text', text: '标记', features },
+          ],
+        },
+      ],
+      'none',
+    )
+    expect(items[0]!.output).toEqual([
+      { type: 'input_text', text: '{"status":"success"}' },
+      { type: 'input_text', text: '标记' },
+    ])
+  })
+
   test('多模态：图片使用 input_image 的 data URL', () => {
     const msg: WireMessage = {
       role: 'user',

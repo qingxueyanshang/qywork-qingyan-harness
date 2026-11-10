@@ -109,6 +109,17 @@ export type { PulledPrice } from './pull/plaza.ts'
 export type { ChatPrice } from './pull/pricing.ts'
 // 模型网关只转发适配器会发送的请求字段
 export { REQUEST_FIELDS } from './request-fields.ts'
+// 云端技能标记：云端签发、校验与替换，本机解析与回传
+export {
+  isSkillPackageId,
+  issueSkillMarker,
+  parseSkillMarker,
+  SKILL_MARKER_PREFIX,
+  SKILL_MARKER_VERSION,
+  type SkillMarker,
+  type SkillSegmentRef,
+  verifySkillMarker,
+} from './skill-marker/marker.ts'
 export { readSse, SSE_DONE, type SseFrame, sseJson } from './sse.ts'
 // 字符估算：agent 在没有 count_tokens 的端点上将其作为后备
 export {
@@ -126,8 +137,11 @@ export {
   type FrameRule,
   type ImageRule,
   imageSizeOfBase64,
+  TEXT_FEATURES,
+  type TextFeature,
   THUMBNAIL_EDGE,
   type TokenDensity,
+  textFeatures,
   type VideoOutOfRange,
   type VideoRange,
   type VideoRule,
@@ -145,6 +159,7 @@ export type {
   ProviderProfile,
   ProviderUsage,
   SystemBlock,
+  TextFeatureCounts,
   ToolSchema,
   TransportCapabilities,
   VideoMeta,

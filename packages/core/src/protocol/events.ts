@@ -348,6 +348,14 @@ export type ErrorCode =
    * 本码始终不会，因此不在 `agent` 的重发表中。
    */
   | 'invalid_request'
+  /**
+   * 云端网关拒绝了请求中的技能标记：未获得技能包的使用权益（`skill_not_granted`）、标记无效（`skill_marker_invalid`）、
+   * 替换技能内容后请求体超过上限（`skill_content_too_large`）。正文是网关的说明。
+   *
+   * 不要归入 `auth_failed`：设备密钥有效，检查密钥不能解决。也不要归入 `invalid_request`：400 的该码会使 `agent` 按
+   * 「接口拒绝图片」移除图片后重发。同一份请求重发得到同一个拒绝，不在重发表中。
+   */
+  | 'skill_rejected'
   | 'provider_unavailable'
   | 'network_error'
   | 'stream_idle_timeout'

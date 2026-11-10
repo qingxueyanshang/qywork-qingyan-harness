@@ -471,13 +471,18 @@ async function readScript(window: number, files: { name: string; tokens: number 
   }
   // 请求与压缩按 step 序号交错：压缩记录的 seq 位于前后两次请求的工具记录之间。
   const steps = listSteps(store, run.id)
-  return { stop, steps, recoveries }
+  return { stop, steps, recoveries, sizes }
+}
+
+/** 结果带 `nextOffset` 的读取：本次投递按单次上限截短。 */
+function partialRead(step: { payload: unknown }): boolean {
+  const outcome = (step.payload as { outcome?: { data?: { nextOffset?: unknown } } }).outcome
+  return typeof outcome?.data?.nextOffset === 'number'
 }
 
 /**
- * 占用位于「软阈值 − 尾部保留量」与软阈值之间时，执行工具之前的检查点在每次决策时都会尝试压缩。
- * 若只要存在新的可折叠单元就收纳，每次收纳几乎不释放空间却改写投影，下一次请求仍然变大；
- * 无法收纳时又会写入一连串跳过记录。收纳必须使下一次请求变小，跳过不留记录，读取全部成功。
+ * 软阈值以下时，执行工具之前的检查点只在上一次决策的投递触及单次上限后尝试压缩，此时收纳必须至少释放
+ * 半份保留量，否则不改写投影、不写入跳过记录。读取全部成功。
  */
 describe('压缩阈值附近的收纳必须释放空间', () => {
   const tiny = (i: number) => ({ name: `s${i}.txt`, tokens: 0 })
@@ -500,21 +505,53 @@ describe('压缩阈值附近的收纳必须释放空间', () => {
     ],
   ] as const) {
     test(label, async () => {
-      const { stop, steps, recoveries } = await readScript(200_000, [...files])
+      const window = 200_000
+      const { stop, steps, recoveries } = await readScript(window, [...files])
       expect(stop).toBe('completed')
       for (const s of steps.filter((step) => step.kind === 'tool_action')) {
         expect(s.status).toBe('success')
       }
-      // 没有跳过记录：软阈值以下无法收纳时不留记录，本组不涉及越过软阈值的场景。
+      // 没有跳过记录：软阈值以下无法收纳时不留记录。
       for (const s of steps.filter((step) => step.kind === 'compaction')) {
         expect((s.payload as { phase?: string }).phase).toBe('done')
       }
-      // 软阈值以下的每次收纳至少释放半份保留量。
+      // 软阈值以下的收纳只出现在部分投递之后的那次决策。
+      let lastBatchPartial = false
+      for (const s of steps) {
+        if (s.kind === 'tool_action') lastBatchPartial = partialRead(s)
+        if (s.kind !== 'compaction') continue
+        const occupancy = (s.payload as { occupancy?: number }).occupancy ?? 0
+        if (occupancy <= softLimit({ contextWindow: window })) expect(lastBatchPartial).toBe(true)
+      }
       const below = recoveries.filter((r) => !r.overLine)
       expect(below.length).toBeGreaterThan(0)
-      for (const r of below) expect(r.recovered).toBeGreaterThanOrEqual(tailRetain(200_000) / 2)
+      for (const r of below) expect(r.recovered).toBeGreaterThanOrEqual(tailRetain(window) / 2)
     }, 120_000)
   }
+})
+
+/**
+ * 占用在「软阈值 − 尾部保留量」与软阈值之间读取能够整份投递的文件：没有部分投递，执行工具之前的检查点不收纳，
+ * 较早的工具结果在此后的请求中保持原文。
+ */
+describe('占用在 55% 至 80% 之间执行普通工具，历史不被替换', () => {
+  test('逐个读完一组整份投递的文件，占用进入该区间，不发生压缩', async () => {
+    const window = 200_000
+    const files = Array.from({ length: 8 }, (_, i) => ({ name: `f${i}.txt`, tokens: 10_000 }))
+    const { stop, steps, recoveries, sizes } = await readScript(window, files)
+    expect(stop).toBe('completed')
+    const reads = steps.filter((s) => s.kind === 'tool_action')
+    expect(reads).toHaveLength(files.length)
+    for (const s of reads) {
+      expect(s.status).toBe('success')
+      expect(partialRead(s)).toBe(false)
+    }
+    const peak = Math.max(...sizes)
+    expect(peak).toBeGreaterThan(window * 0.55)
+    expect(peak).toBeLessThan(softLimit({ contextWindow: window }))
+    expect(steps.filter((s) => s.kind === 'compaction')).toEqual([])
+    expect(recoveries).toEqual([])
+  }, 120_000)
 })
 
 /**
@@ -557,9 +594,8 @@ describe('远大于窗口的文件每段都能读满', () => {
 })
 
 /**
- * 本地估算高于 provider 真值时（实测 Flash 上读取代码约为 1.7 倍），执行工具之前的触发阈值与投递额度必须使用同一
- * 折算比：触发阈值按放大后的比值计算、额度按未放大的比值计算时，余量只够半份保留量而触发阈值尚未达到，压缩之前
- * 多读取的两段被限制为半份保留量的小段。
+ * 本地估算高于 provider 真值时（实测 Flash 上读取代码约为 1.7 倍），投递额度按不放大的折算比开立：
+ * 每段触及单次上限后，下一次决策开始前先收纳该段，续读段不会被限制为半份保留量的小段。
  */
 describe('估算偏高时续读段不受限于半份保留量', () => {
   test('除最后一段外，每段都大于半份保留量', async () => {

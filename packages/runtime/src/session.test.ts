@@ -20,6 +20,7 @@ import {
   lookupModel,
   type ProviderProfile,
   type TokenDensity,
+  textFeatures,
 } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import { parseMcpConfig } from '@qywork/mcp'
@@ -1392,6 +1393,51 @@ describe('带图执行记录的读取', () => {
     const text = ctx.history?.byCallId('call_plain')
     expect(text).not.toHaveProperty('images')
     expect(JSON.parse(text?.outcome ?? '{}')).toMatchObject({ data: { lines: 3 } })
+    store.close()
+  })
+
+  /** 附带文本块的标记必须独立成块：写入 outcome 文本后既不能整块替换，估算也只按标记计。 */
+  test('附带文本块拆分为独立的块并保留声明的特征计数，outcome 文本不含标记', async () => {
+    const { s, store } = await session()
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'c1',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const marker = '[[cloud:pkg/SKILL.md#sha256:77aa]]'
+    const features = textFeatures('技能主文档的正文。'.repeat(1000))
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'read_skill',
+      toolCallId: 'call_declared',
+      providerBatchId: 'bt_1',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, step.id, 'success', {
+      kind: 'tool_result',
+      args: { name: 'pkg' },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '读取 SKILL.md',
+        data: { path: 'SKILL.md', texts: [{ text: marker, features }] },
+      },
+    } as never)
+
+    const ctx = toolContext(s, run.id, 'm', conv.id)
+    const record = ctx.history?.byCallId('call_declared')
+    expect(record?.texts).toEqual([{ type: 'text', text: marker, features }])
+    expect(record?.outcome).not.toContain(marker)
+    expect(JSON.parse(record?.outcome ?? '{}')).toMatchObject({ data: { path: 'SKILL.md' } })
     store.close()
   })
 })

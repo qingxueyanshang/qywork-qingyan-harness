@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`compaction.ts`（选界 / 收纳 / 摘要接入 / 三区投影 / 落库守卫）。
+ * 覆盖范围：`compaction.ts`（选界 / 收纳 / 摘要接入 / 三区投影 / 落库守卫，含附带文本块按声明大小计量）。
  * 压缩算法本身由 `agent/compaction.test.ts` 覆盖，与主循环的接入由
  * `agent/src/loop/compact.test.ts` 覆盖。
  */
@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test'
 import type { CompactionRunInput, Summarizer } from '@qywork/agent'
 import { softLimit } from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
-import { DEFAULT_DENSITY, estimateMessages } from '@qywork/ai'
+import { DEFAULT_DENSITY, estimateMessages, estimateText, textFeatures } from '@qywork/ai'
 import type { MessageId } from '@qywork/core'
 import {
   appendMessage,
@@ -980,6 +980,68 @@ describe('模型已查看的超大单元在压缩时一并收纳', () => {
     const p = port(store, conv.id)
     await p.run({ ...(await pressure(store, conv.id)), latestUnitSeen: false })
     expect(lastTool(p.project(await history(store, conv.id)))).toContain('y'.repeat(1000))
+    store.close()
+  })
+})
+
+/**
+ * 附带文本块（`outcome.data.texts`）的正文在请求经过网关时才替换进来，账本中只有几十个字符的标记。
+ * 单元体积、选界与回收量必须按声明的特征计数计，与请求侧的估算一致：只按标记计时，
+ * 一段十万 token 的资料被当作一行处理，既不会被选入收纳区，收纳后也不计回收。
+ */
+describe('附带文本块按声明的大小选界与回收', () => {
+  const body = '技能参考资料的正文。Reference text for the skill, section 7.\n'.repeat(3000)
+  const marker = '[[cloud:pkg/references/a.md#sha256:9c1d]]'
+
+  test('模型已查看的附带文本块单元被选入收纳区，标记移除，回收量包含声明的大小，读数与投影一致', async () => {
+    const { store, ws, conv, ids } = fresh(2)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'declared-read',
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
+    })
+    const step = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'read_skill',
+      toolCallId: 'call_declared',
+      providerBatchId: 'bt_declared',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, step.id, 'success', {
+      kind: 'tool_result',
+      args: { name: 'pkg' },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '读取 references/a.md',
+        data: { path: 'references/a.md', texts: [{ text: marker, features: textFeatures(body) }] },
+      },
+    })
+
+    const before = await history(store, conv.id)
+    expect(JSON.stringify(before)).toContain(marker)
+    const declared = estimateText(body, DEFAULT_DENSITY)
+    const load = await pressure(store, conv.id)
+    expect(load.occupancy).toBeGreaterThan(declared)
+
+    const p = port(store, conv.id)
+    const outcome = await p.run({ ...load, latestUnitSeen: true })
+    expect(outcome.status === 'compacted' && outcome.summarized).toBe(false)
+    const after = p.project(before)
+    expect(JSON.stringify(after)).not.toContain(marker)
+    const recovered =
+      estimateMessages(before, DEFAULT_DENSITY) - estimateMessages(after, DEFAULT_DENSITY)
+    expect(recovered).toBeGreaterThan(declared)
+    expect(getConversation(store, conv.id)!.compactionManifest!.contextAfter!.measured).toBe(
+      estimateMessages(after, DEFAULT_DENSITY),
+    )
     store.close()
   })
 })

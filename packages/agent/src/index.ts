@@ -25,6 +25,7 @@ export {
 } from './compaction.ts'
 // 投递额度：一次 provider 决策共用一份额度，超出时保存正文并续读
 export {
+  batchCapped,
   batchRemaining,
   boundExecutedOutcome,
   chargeBatchBudget,
@@ -40,6 +41,7 @@ export {
   openBatchBudget,
   outcomeTokens,
   recordBatchSpent,
+  recordCappedSpent,
   tailRetain,
   tokensToBytes,
   tokensToMaxBytes,
@@ -83,11 +85,13 @@ export {
 export { MAX_RESENDS, transientErrorCode } from './loop/attempt.ts'
 export { AgentLoop } from './loop/index.ts'
 export {
+  type DeclaredText,
   envelopeResult,
   imagesOf,
   omitImages,
   runDensity,
   softLimit,
+  textsOf,
   toolResultContent,
   type VideoDelivery,
   videoDelivery,
@@ -124,6 +128,10 @@ export {
   type CanvasEditResult,
   type CanvasPort,
   type CanvasRender,
+  type CloudSkillErrorCode,
+  type CloudSkillPort,
+  type CloudSkillResult,
+  type CloudSkillSegment,
   compactionEpoch,
   type DelegatePort,
   type FileReadPort,

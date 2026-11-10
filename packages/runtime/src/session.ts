@@ -11,6 +11,7 @@ import {
   AgentLoop,
   type BrowserPort,
   type CanvasPort,
+  type CloudSkillPort,
   type CompactionPort,
   type DelegatePort,
   type DesktopPort,
@@ -28,6 +29,7 @@ import {
   runDensity,
   type ToolContextBase,
   ToolRegistry,
+  textsOf,
   videoMetaOf,
   videosOf,
 } from '@qywork/agent'
@@ -216,6 +218,12 @@ export interface SessionOptions {
    * 不传入，本轮没有 Office 工具。
    */
   office?: OfficePort
+  /**
+   * 云端技能通道。见 `CloudSkillPort`。
+   *
+   * 由装配方为使用云端技能的会话传入；未传入时读取类工具不识别云端技能的路径。
+   */
+  cloudSkills?: CloudSkillPort
   /**
    * 取出当前标记为「调整方向」的跟进消息。每个 step 边界调用一次。
    *
@@ -1325,6 +1333,7 @@ export class Session {
       ...(this.opts.canvas ? { canvas: this.opts.canvas } : {}),
       ...(this.opts.personalization ? { personalization: this.opts.personalization } : {}),
       ...(this.opts.pets ? { pets: this.opts.pets } : {}),
+      ...(this.opts.cloudSkills ? { cloudSkills: this.opts.cloudSkills } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
       skillSourcePaths: () =>
         listMessages(store, conversationId, null).flatMap((m) => m.attachments.map((a) => a.path)),
@@ -1458,7 +1467,8 @@ async function encodedAttachment(
 
 /**
  * 执行记录的取回形式：图像字节从 outcome 中拆出、作为图像块返回，outcome 文本中不保留 base64。
- * 取回的图片与 `read_file` 写入执行记录时的字节相同。
+ * 取回的图片与 `read_file` 写入执行记录时的字节相同。附带文本块（`textsOf`）同样拆出，
+ * 取回结果中仍是独立的文本块并带声明的特征计数。
  */
 function stepRecord(st: Step): HistoryStep {
   const payload = (st.payload ?? {}) as { args?: unknown; outcome?: Record<string, unknown> }
@@ -1472,6 +1482,7 @@ function stepRecord(st: Step): HistoryStep {
     i.source.kind === 'base64' ? [{ data: i.source.data, mime: i.mime }] : [],
   )
   const videos = videosOf(data)
+  const texts = textsOf(data)
   const rest = envelopeResult(data)
   const { data: _dropped, ...withoutData } = outcome
   return {
@@ -1481,6 +1492,7 @@ function stepRecord(st: Step): HistoryStep {
     outcome: JSON.stringify(data ? { ...withoutData, ...(rest ? { data: rest } : {}) } : outcome),
     ...(images.length ? { images } : {}),
     ...(videos.length ? { videos } : {}),
+    ...(texts.length ? { texts } : {}),
   }
 }
 

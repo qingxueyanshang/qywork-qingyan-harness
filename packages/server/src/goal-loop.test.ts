@@ -3,7 +3,7 @@
  *
  * **覆盖范围**：`run-control.ts` 的自动继续判定（`startRun` 的 finally、排队、
  * 陈旧拒绝、停止的三个出口）、用户设立目标的路径（`setGoal`）、`commands.ts` 的
- * `goal.set` 分支、`runs.ts` 的自动继续标记，以及 `runtime/session.ts` 把
+ * `goal.set` 与 `goal.resume` 分支（含对子会话的拒绝）、`runs.ts` 的自动继续标记，以及 `runtime/session.ts` 把
  * `run.error` 的正文写入 run 行的步骤（此处已有真实链路与会失败的假 provider）。
  * 目标本身的生命周期规则由 `store/goals.test.ts` 覆盖，工具层由 `tools/goals.test.ts` 覆盖。
  *
@@ -541,6 +541,83 @@ describe('goal.set 指令', () => {
     expect(sock.sent).toHaveLength(1)
     expect(sock.sent[0]?.type).toBe('command.rejected')
   })
+
+  /**
+   * 子会话只由创建它的图管理。经 `goal.set` / `goal.resume` 发起的轮次按顶层会话装配，
+   * 子会话会因此取得派发能力；两条指令都在发起轮次之前拒绝，与 `message.send` 使用同一项检查。
+   */
+  test('对子会话设立或继续目标被拒绝，不写入目标、不发起轮次', async () => {
+    const parent = conversation()
+    const child = createConversation(store, {
+      workspaceId: workspaceId as never,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      source: 'temp',
+      sourceRef: 'ad-hoc',
+      parentConversationId: parent,
+    }).id
+    const sock = socket()
+
+    await handleCommand(
+      { type: 'goal.set', conversationId: child, objective: '再派发一次' } as never,
+      {
+        ...deps(),
+        ws: sock.ws,
+      },
+    )
+    expect(currentGoal(store, child)).toBeNull()
+
+    const paused = createGoal(store, { conversationId: child, objective: '已有的目标' })
+    if (!paused.ok) throw new Error(paused.message)
+    await handleCommand({ type: 'goal.resume', conversationId: child } as never, {
+      ...deps(),
+      ws: sock.ws,
+    })
+    await settle()
+
+    expect(sock.sent.map((f) => [f.type, f.command, f.reason])).toEqual([
+      ['command.rejected', 'goal.set', 'conflict'],
+      ['command.rejected', 'goal.resume', 'conflict'],
+    ])
+    expect(listRuns(store, child)).toEqual([])
+    expect(runs.isBusy(child)).toBe(false)
+    expect(bodies).toEqual([])
+  })
+
+  test('顶层会话不受该检查影响：经指令继续目标照常发起一轮', async () => {
+    const cv = conversation()
+    const goal = seed(cv)
+    expect(
+      updateGoal(store, {
+        conversationId: cv,
+        goalId: goal.id,
+        revision: goal.revision,
+        action: 'pause',
+      }).ok,
+    ).toBe(true)
+    runs.disarm(cv)
+    // 本轮即结束目标：循环没有上限，不结束时会持续占用后续用例的脚本。
+    script = [
+      () => {
+        const g = currentGoal(store, cv)
+        return new Response(
+          toolTurn('update_goal', { goal_id: g?.id, revision: g?.revision, action: 'complete' }),
+          { headers: SSE_HEADERS },
+        )
+      },
+      ok(textTurn('做完了。')),
+    ]
+    const sock = socket()
+
+    await handleCommand({ type: 'goal.resume', conversationId: cv } as never, {
+      ...deps(),
+      ws: sock.ws,
+    })
+    await waitFor((e) => e.type === 'goal' && e.goal.status === 'completed')
+    await settle()
+    expect(sock.sent).toHaveLength(0)
+    expect(bodies[0]).toContain('慢慢做这件事')
+  }, 20_000)
 })
 
 /**

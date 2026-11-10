@@ -344,6 +344,35 @@ describe('子会话不接受直接消息', () => {
     expect(listRuns(store, child)).toEqual([])
     expect(listMessages(store, child)).toEqual([])
   })
+
+  /** 空闲时 `followup.steer` 取出条目并发起一轮，与 `message.send` 使用同一项检查。 */
+  test('子会话空闲时把排队消息改为立即发送被拒绝，条目留在队列中、不发起新一轮', async () => {
+    const parent = conversation()
+    const child = createConversation(store, {
+      workspaceId: workspaceId as never,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+      source: 'temp',
+      sourceRef: 'ad-hoc',
+      parentConversationId: parent,
+    }).id
+    runs.enqueue(child, { id: 'req-child-q', content: '排队的一句', steer: false })
+    const sock = socket()
+    await handleCommand(
+      { type: 'followup.steer', conversationId: child, id: 'req-child-q', steer: true } as never,
+      { ...deps(), ws: sock.ws },
+    )
+    expect(sock.sent.at(-1)).toMatchObject({
+      type: 'command.rejected',
+      command: 'followup.steer',
+      reason: 'conflict',
+    })
+    expect(runs.queueOf(child).map((f) => f.id)).toEqual(['req-child-q'])
+    expect(runs.isBusy(child)).toBe(false)
+    expect(listRuns(store, child)).toEqual([])
+    expect(listMessages(store, child)).toEqual([])
+    runs.removeFollowUp(child, 'req-child-q')
+  })
 })
 
 describe('收尾之后发起下一轮', () => {

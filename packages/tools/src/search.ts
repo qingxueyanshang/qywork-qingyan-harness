@@ -13,8 +13,16 @@ import {
   deliveredTokens,
   recordBatchSpent,
   type ToolContext,
+  type ToolOutcome,
   type ToolSpec,
 } from '@qywork/agent'
+import {
+  type CloudTarget,
+  cloudFailure,
+  cloudSkillDir,
+  cloudTarget,
+  hiddenPath,
+} from './cloud-skills/source.ts'
 import { toLf } from './eol.ts'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './sandbox.ts'
@@ -122,6 +130,8 @@ export const globTool: ToolSpec = {
   permissionEffect: 'read',
   parallelSafe: true,
   async fn(args, ctx) {
+    const cloud = cloudTarget(ctx, args.path)
+    if (cloud) return 'status' in cloud ? cloud : globCloud(cloud, String(args.pattern))
     const root = await resolveInWorkspace(rootsOf(ctx), String(args.path ?? '.'), {
       mustExist: true,
     })
@@ -175,6 +185,8 @@ export const grepTool: ToolSpec = {
   permissionEffect: 'read',
   parallelSafe: true,
   async fn(args, ctx) {
+    const cloud = cloudTarget(ctx, args.path)
+    if (cloud) return 'status' in cloud ? cloud : grepCloud(ctx, cloud, args)
     const target = await resolveInWorkspace(rootsOf(ctx), String(args.path ?? '.'), {
       mustExist: true,
     })
@@ -276,6 +288,96 @@ export const grepTool: ToolSpec = {
       data: { matches: fit.matches, truncated: truncated || fit.trimmed, engine: 'builtin' },
     }
   },
+}
+
+/** `glob` 在云端技能目录中按技能包的文件清单匹配。没有修改时间，按路径排序。 */
+async function globCloud(target: CloudTarget, pattern: string): Promise<ToolOutcome> {
+  const listed = await target.port.files(target.pkg)
+  if (!listed.ok) return cloudFailure(listed, target)
+  const glob = new Bun.Glob(pattern)
+  const prefix = target.path ? `${target.path}/` : ''
+  const hits = listed.value
+    .map((f) => f.path)
+    .filter((p) => p.startsWith(prefix))
+    .filter((p) => !hiddenPath(p.slice(prefix.length)) && glob.match(p.slice(prefix.length)))
+    .map((p) => `${cloudSkillDir(target.pkg)}/${p}`)
+  const truncated = hits.length > MAX_RESULTS
+  const files = hits.slice(0, MAX_RESULTS)
+  return {
+    status: 'success',
+    message: `匹配 ${files.length} 个文件${truncated ? '（已截断）' : ''}`,
+    data: { files, truncated },
+  }
+}
+
+/**
+ * 正则中只匹配字面文本的写法转为该文本；含其他正则语法时返回 null。云端只支持字面检索。
+ * 未转义的 `.` 按字面处理：检索文件名与代码中的点号最常见，此时字面结果是正则结果的子集。
+ */
+function literalOf(pattern: string): string | null {
+  let out = ''
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i] ?? ''
+    if (c === '\\') {
+      const next = pattern[i + 1]
+      if (next === undefined || /[\p{L}\p{N}]/u.test(next)) return null
+      out += next
+      i++
+    } else if ('*+?^$|()[]{}'.includes(c)) return null
+    else out += c
+  }
+  return out || null
+}
+
+/**
+ * `grep` 在云端技能目录中检索：云端只返回位置，命中写作 `路径:行号`，不含正文，内容按行号用 `read_file` 读取。
+ * 条数上限、单文件上限与按额度裁剪与本地两种引擎相同。
+ */
+async function grepCloud(
+  ctx: ToolContext,
+  target: CloudTarget,
+  args: Record<string, unknown>,
+): Promise<ToolOutcome> {
+  const literal = literalOf(String(args.pattern ?? ''))
+  if (literal === null) {
+    return {
+      status: 'failure',
+      message: '云端技能只支持按字面文本检索，pattern 中不要使用正则语法',
+      errorKind: 'invalid_args',
+    }
+  }
+  if (args.case_insensitive === true) {
+    return {
+      status: 'failure',
+      message: '云端技能的检索区分大小写，不支持 case_insensitive',
+      errorKind: 'invalid_args',
+    }
+  }
+  const found = await target.port.search(target.pkg, literal, target.path)
+  if (!found.ok) return cloudFailure(found, target)
+  const nameGlob = typeof args.glob === 'string' ? new Bun.Glob(args.glob) : null
+  const lines: string[] = []
+  let truncated = found.value.truncated
+  for (const m of found.value.matches) {
+    if (target.path && m.path !== target.path && !m.path.startsWith(`${target.path}/`)) continue
+    if (nameGlob && !nameGlob.match(basename(m.path))) continue
+    if (m.lines.length > MAX_PER_FILE) truncated = true
+    for (const line of m.lines.slice(0, MAX_PER_FILE)) {
+      if (lines.length >= MAX_RESULTS) {
+        truncated = true
+        break
+      }
+      lines.push(`${cloudSkillDir(target.pkg)}/${m.path}:${line}`)
+    }
+  }
+  const fit = fitBudget(ctx, lines)
+  return {
+    status: 'success',
+    message:
+      `命中 ${fit.matches.length} 行（云端技能，只返回位置，内容用 read_file 按行号读取）` +
+      (fit.trimmed ? '，已按上下文剩余空间截断，收窄模式或范围可查看更多' : ''),
+    data: { matches: fit.matches, truncated: truncated || fit.trimmed, engine: 'cloud' },
+  }
 }
 
 async function runRipgrep(

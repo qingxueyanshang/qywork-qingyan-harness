@@ -5,7 +5,12 @@
  * 在界面上与「服务端正在处理」无法区分。
  */
 
-import type { ClientCommand, CommandRejectedFrame, CommandRejectReason } from '@qywork/core'
+import type {
+  ClientCommand,
+  CommandRejectedFrame,
+  CommandRejectReason,
+  ConversationId,
+} from '@qywork/core'
 import {
   getConversation,
   interruptRunningNodes,
@@ -86,18 +91,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
        * 忙碌判定与发起轮次在 `submitMessage` 中完成，子 agent 的回执使用同一个函数：
        * 该段必须是同一个同步块（理由见该函数的注释与 `runs.ts` 的 `reserve`）。
        */
-      // 子会话只由创建它的图管理：直接发送消息会绕过 workflow 的回执与续接，图的投影
-      // 无法得知该轮次。界面没有此入口，配对端使用同一条指令，因此边界在此处检查。
-      if (getConversation(deps.store, cmd.conversationId)?.source) {
-        reject(
-          deps.ws,
-          cmd.type,
-          'conflict',
-          '子会话只能由父会话的 workflow 续发',
-          cmd.clientRequestId,
-        )
-        return
-      }
+      if (rejectChildConversation(deps, cmd.type, cmd.conversationId, cmd.clientRequestId)) return
       // 附件随消息一同转发。协议、存储与模型侧均已支持，遗漏 `cmd.attachments`
       // 会使整条链路只有类型而没有数据。
       await submitMessage(
@@ -130,6 +124,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
         }
         return
       }
+      if (rejectChildConversation(deps, cmd.type, cmd.conversationId)) return
       const item = deps.runs.queueOf(cmd.conversationId).find((f) => f.id === cmd.id)
       if (!item || !deps.runs.removeFollowUp(cmd.conversationId, cmd.id)) {
         reject(deps.ws, cmd.type, 'conflict', '该跟进消息已不在队列中')
@@ -209,6 +204,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
     case 'goal.set': {
       // 设立目标的唯一入口：模型没有 create_goal 工具。空正文等校验在账本中执行，
       // 此处只将拒绝理由原样返回。
+      if (rejectChildConversation(deps, cmd.type, cmd.conversationId)) return
       const result = setGoal(cmd.conversationId, cmd.objective, deps)
       if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
       return
@@ -218,6 +214,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       // 重新运行已停止的目标，并立即发起一轮：不能等待其他 run 收尾。
       // 没有对应的 pause 指令：运行之后停止目标的方式是中断该会话（`conversation.interrupt`），
       // run 收尾时会将目标置回 paused。
+      if (rejectChildConversation(deps, cmd.type, cmd.conversationId)) return
       const result = resumeGoal(cmd.conversationId, deps)
       if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
       return
@@ -253,6 +250,23 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       return
     }
   }
+}
+
+/**
+ * 子会话只由创建它的图管理：经指令发起轮次会绕过 workflow 的回执与续接，图的投影无法得知该轮次；
+ * 该轮次按顶层会话装配（`startRun`），子会话因此取得派发能力。界面没有这些入口，配对端使用同一组指令，
+ * 因此边界在指令处检查。发起轮次的指令（`message.send`、`goal.set`、`goal.resume`、空闲时的
+ * `followup.steer`）都经过本函数。返回 true 时已发送拒绝回执。
+ */
+function rejectChildConversation(
+  deps: CommandDeps,
+  command: string,
+  conversationId: ConversationId,
+  clientRequestId?: string,
+): boolean {
+  if (!getConversation(deps.store, conversationId)?.source) return false
+  reject(deps.ws, command, 'conflict', '子会话只能由父会话的 workflow 续发', clientRequestId)
+  return true
 }
 
 /** 指令回执只发送给发起方：其他客户端未发送该指令，无需收到回执。 */

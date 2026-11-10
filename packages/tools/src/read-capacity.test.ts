@@ -1,8 +1,8 @@
 /**
  * `read_file` 按本次决策的投递额度交付文本。
  *
- * 覆盖范围：`files.ts` 的 `read_file` 文本分支（整份优先、部分投递与续读位置、单行超出额度时
- * 经 `sink.ts` 的 `deliverReadable` 存入正文库并按字节续读）与读取记录的登记时机（失败的读取
+ * 覆盖范围：`files.ts` 的 `read_file` 文本分支（整份优先、部分投递与续读位置、部分投递记为触及单次上限、
+ * 单行超出额度时经 `sink.ts` 的 `deliverReadable` 存入正文库并按字节续读）与读取记录的登记时机（失败的读取
  * 不能作为 `edit_file` 的前置条件）。
  *
  * 窗口与密度采用 DeepSeek V4.1 Flash（`deepseek-flash`）的模型目录规格：原始失败发生在 1M 窗口。
@@ -13,6 +13,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  batchCapped,
   openBatchBudget,
   outcomeTokens,
   type SinkPort,
@@ -119,6 +120,24 @@ describe('无法容纳时部分投递并给出续读位置', () => {
     )
     const whole = await r.execute('read_file', { path: 'big.ts' }, ctx(root, 1_000_000))
     expect(`${contentOf(first)}\n${contentOf(rest)}`).toBe(contentOf(whole))
+  })
+
+  /**
+   * 执行工具之前的检查点据此在下一次决策开始前收纳该段（`@qywork/agent` 的 `batchCapped`）。
+   * 余量 10K 时整份准入被拒绝；余量 3K 时按上限换算的扫描字节数不到文件末尾，不经过整份准入。
+   */
+  test('部分投递记为触及单次上限，整份投递不记', async () => {
+    const root = await workspace()
+    const r = registry()
+    for (const room of [10_000, 3_000]) {
+      const c = ctx(root, room)
+      const part = await r.execute('read_file', { path: 'big.ts' }, c)
+      expect(typeof part.data?.nextOffset).toBe('number')
+      expect(batchCapped(c.state)).toBe(true)
+    }
+    const whole = ctx(root, 1_000_000)
+    await r.execute('read_file', { path: 'big.ts' }, whole)
+    expect(batchCapped(whole.state)).toBe(false)
   })
 
   test('单行无法容纳：该行存储一次，投递开头部分并给出按字节续读的位置与下一行', async () => {

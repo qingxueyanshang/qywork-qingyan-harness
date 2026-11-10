@@ -12,14 +12,18 @@ import {
   type HistoryPort,
   type HistoryStep,
   openBatchBudget,
+  outcomeTokens,
   type SinkPort,
   type ToolContext,
+  toolResultContent,
 } from '@qywork/agent'
-import { DEFAULT_DENSITY } from '@qywork/ai'
+import { DEFAULT_DENSITY, estimateText, textFeatures } from '@qywork/ai'
 import { readHistoryTool } from './history.ts'
 import { MIN_DELIVERY_BYTES } from './sink.ts'
 
 const LONG = '甲'.repeat(60_000)
+const DECLARED_MARKER = '[[cloud:pkg/SKILL.md#sha256:51be]]'
+const DECLARED_BODY = '技能主文档的正文。'.repeat(2000)
 
 function memHistory(): HistoryPort {
   const messages: Record<string, { role: 'user' | 'assistant'; content: string }> = {
@@ -39,6 +43,13 @@ function memHistory(): HistoryPort {
       args: '{"path":"shot.png"}',
       outcome: '{"status":"success","message":"读取 shot.png（图片）"}',
       images: [{ data: 'QUJD', mime: 'image/png' }],
+    },
+    'rn_1:11': {
+      tool: 'read_skill',
+      status: 'success',
+      args: '{"name":"pkg"}',
+      outcome: '{"status":"success","message":"读取 SKILL.md","data":{"path":"SKILL.md"}}',
+      texts: [{ type: 'text', text: DECLARED_MARKER, features: textFeatures(DECLARED_BODY) }],
     },
   }
   // 已收纳的工具结果只剩信封，信封中的 call_id 是它唯一的定位标识。
@@ -187,6 +198,29 @@ describe('取回原文', () => {
     expect(d.images).toEqual([{ data: 'QUJD', mime: 'image/png' }])
     expect(d.outcome).not.toContain('QUJD')
     expect(r.message).toContain('含图片')
+  })
+
+  /**
+   * 附带文本块随取回结果原样交付：仍是信封之后的独立文本块，额度按声明的大小扣除，
+   * 与原结果进入请求时的估算相同。
+   */
+  test('带附带文本块的执行记录：文本块独立交付并带声明的特征计数，额度按声明的大小扣除', async () => {
+    const c = ctx(memHistory())
+    openBatchBudget(c.state, 1_000_000)
+    const before = batchRemaining(c)
+    const r = await readHistoryTool.fn({ step_id: 'rn_1:11' }, c)
+    expect(r.status).toBe('success')
+    const blocks = toolResultContent('{}', r.data)
+    expect(Array.isArray(blocks) && blocks[1]).toEqual({
+      type: 'text',
+      text: DECLARED_MARKER,
+      features: textFeatures(DECLARED_BODY),
+    })
+    expect((r.data as { outcome: string }).outcome).not.toContain(DECLARED_MARKER)
+    expect(before - batchRemaining(c)).toBe(outcomeTokens(r, DEFAULT_DENSITY))
+    expect(outcomeTokens(r, DEFAULT_DENSITY)).toBeGreaterThan(
+      estimateText(DECLARED_BODY, DEFAULT_DENSITY),
+    )
   })
 
   test('执行记录返回参数与结果', async () => {

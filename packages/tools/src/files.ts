@@ -21,6 +21,7 @@ import {
   deliveryCap,
   outcomeTokens,
   recordBatchSpent,
+  recordCappedSpent,
   type ToolContext,
   type ToolOutcome,
   type ToolSpec,
@@ -32,6 +33,7 @@ import {
 import type { FileChange } from '@qywork/core'
 import { imageSizeOf, isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
+import { cloudReadOnly, cloudTarget, listCloudDir, readCloudFile } from './cloud-skills/source.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import {
   downscaleNote,
@@ -395,6 +397,8 @@ export const readFileTool: ToolSpec = {
   parallelSafe: true,
   resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
   async fn(args, ctx) {
+    const cloud = cloudTarget(ctx, args.path)
+    if (cloud) return 'status' in cloud ? cloud : readCloudFile(ctx, cloud, args)
     const abs = await resolveInWorkspace(rootsOf(ctx), String(args.path), { mustExist: true })
     const info = await stat(abs)
     if (info.isDirectory()) {
@@ -632,8 +636,7 @@ export const readFileTool: ToolSpec = {
     }
     if (fit > 0) {
       const part = firstLines(fit)
-      const tokens = outcomeTokens(part, ctx.density)
-      if (!chargeBatchBudget(ctx, tokens).ok) recordBatchSpent(ctx, tokens)
+      recordCappedSpent(ctx, outcomeTokens(part, ctx.density))
       markRead()
       return { status: 'success', ...part }
     }
@@ -713,6 +716,8 @@ export const writeFileTool: ToolSpec = {
   targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
+    const cloud = cloudTarget(ctx, args.path)
+    if (cloud) return 'status' in cloud ? cloud : cloudReadOnly(cloud)
     const mode = args.mode
     const conflict = args.on_conflict ?? (mode === 'create' ? 'rename' : 'error')
     if (
@@ -872,6 +877,8 @@ export const editFileTool: ToolSpec = {
   targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
+    const cloud = cloudTarget(ctx, args.path)
+    if (cloud) return 'status' in cloud ? cloud : cloudReadOnly(cloud)
     const abs = await resolveWritablePath(rootsOf(ctx), String(args.path), {
       mustExist: true,
     })
@@ -997,6 +1004,8 @@ export const listDirTool: ToolSpec = {
   permissionEffect: 'read',
   parallelSafe: true,
   async fn(args, ctx) {
+    const cloud = cloudTarget(ctx, args.path)
+    if (cloud) return 'status' in cloud ? cloud : listCloudDir(cloud)
     const abs = await resolveInWorkspace(rootsOf(ctx), String(args.path ?? '.'), {
       mustExist: true,
     })
