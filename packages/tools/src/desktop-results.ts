@@ -132,7 +132,8 @@ export interface DesktopResultInput {
   includeRect?: boolean
   /**
    * 动作与等待之后的重读传 true：条件成立时只投递与上一份整份投递相比的变化。
-   * `desktop_observe` 不传，一律整份投递：模型主动观察时需要整张表。
+   * `desktop_observe` 不传，一律整份投递：模型主动观察时需要整张表。自绘窗口的重读同样
+   * 不传：其差异计数恒为零，判定见 `desktop.ts` 的 `followResult`。
    */
   incremental?: boolean
   /** message 的执行事实部分。控件内容不进入 message。 */

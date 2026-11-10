@@ -52,7 +52,12 @@ import type {
   DesktopWindowState,
 } from '@qywork/core'
 import { imageSizeOf, screenPointToImage } from '@qywork/core'
-import { type DesktopResultParts, desktopResult, MAX_TITLE_CHARS } from './desktop-results.ts'
+import {
+  type DesktopResultInput,
+  type DesktopResultParts,
+  desktopResult,
+  MAX_TITLE_CHARS,
+} from './desktop-results.ts'
 import { MAX_EDGE, shrinkImage } from './image.ts'
 
 /** 一次读取控件树的节点数上限。端口会再截断一次，此处拦截明显越界的请求。 */
@@ -846,7 +851,8 @@ function operableCount(table: DesktopElement[]): number {
  * 只在整窗、未截断、未筛选的观察上判定：筛选结果为零个控件与窗口没有控件含义不同，
  * 混为一谈会使一次 `role=button` 的空结果被描述为应用不暴露控件。
  *
- * 这是「是否附图」与「回执是否输出该说明」的共同判据，两处不要各自判定。
+ * 这是「是否附图」「回执是否输出该说明」与「动作和等待之后是否按差异投递」的共同判据，
+ * 各处不要各自判定。
  */
 function isBareWindow(s: DesktopSnapshot): boolean {
   if (s.truncated || s.filteredBy.length > 0) return false
@@ -862,6 +868,26 @@ function isBareWindow(s: DesktopSnapshot): boolean {
 function bareWindowNote(s: DesktopSnapshot, foregroundEnabled: boolean): string {
   if (!isBareWindow(s)) return ''
   return ` · 无可操作控件${foregroundEnabled ? '' : ' · 前台操作已关闭'}`
+}
+
+/**
+ * 动作、序列与等待之后的观察投递。
+ *
+ * 自绘窗口整份投递并在读数行末尾注明，不按差异投递：其控件表只含窗口根与渲染面，
+ * 差异计数恒为零，与画面是否变化无关。
+ */
+function followResult(
+  ctx: ToolContext,
+  input: Omit<DesktopResultInput, 'ctx' | 'place' | 'incremental'>,
+): DesktopResultParts {
+  const bare = isBareWindow(input.snapshot)
+  return desktopResult({
+    ...input,
+    ctx,
+    place: 'observation',
+    incremental: !bare,
+    lead: `${input.lead}${bareWindowNote(input.snapshot, ctx.desktop?.foregroundEnabled() !== false)}`,
+  })
 }
 
 /** 一份观察的单行读数：控件数、截断与筛选各说明一次。 */
@@ -960,12 +986,9 @@ function actOutcome(
     const lead = `${action.kind} 未执行 · ${r.reason ?? '宿主拒绝'}`
     const parts = r.observation
       ? delivered(
-          desktopResult({
-            ctx,
+          followResult(ctx, {
             toolName: 'desktop_act',
             snapshot: r.observation,
-            place: 'observation',
-            incremental: true,
             receipt,
             targetRef: ref || null,
             lead: `${lead} · ${snapshotLine(r.observation)}`,
@@ -994,12 +1017,9 @@ function actOutcome(
     const typed = field && r.observation.elements.find((e) => e.ref === field.ref)
     const readback = typedReadback(action, field ? typed : target)
     const failed = unknown || readback === 'mismatch'
-    const parts = desktopResult({
-      ctx,
+    const parts = followResult(ctx, {
       toolName: 'desktop_act',
       snapshot: r.observation,
-      place: 'observation',
-      incremental: true,
       receipt,
       targetRef: ref || null,
       before,
@@ -1066,12 +1086,9 @@ function waitOutcome(
       ? `未满足 · ${ref ?? '目标控件'} 已不在窗口中，条件不会再成立`
       : `未满足 · ${reason ?? 'timeout'}`
   if (follow.observation) {
-    const parts = desktopResult({
-      ctx,
+    const parts = followResult(ctx, {
       toolName: 'desktop_wait',
       snapshot: follow.observation,
-      place: 'observation',
-      incremental: true,
       receipt: { found, ...(reason ? { reason } : {}) },
       targetRef: ref ?? null,
       before,
@@ -1172,7 +1189,8 @@ function imageAreaOf(g: DesktopImageGeometry, rect: DesktopRect): DesktopRect | 
 }
 
 /**
- * 按图定位的动作与 `SHOT_ACTIONS` 中的动作在回执上附一张动作后的整窗图。
+ * 按图定位的动作与 `SHOT_ACTIONS` 中的动作在回执上附一张动作后的整窗图；动作、序列或等待
+ * 之后的快照为自绘窗口（`isBareWindow`）时同样附图。
  *
  * 在动作回执返回后立即采集；控件重读不保证异步界面状态已稳定，任务结果仍需依据观察核验。
  * 请求动作或窗口准备使旧观察失效时附图；纯拒绝且旧观察仍有效时不附图。
@@ -1545,12 +1563,13 @@ export const desktopActTool: ToolSpec = {
     '恢复或置前窗口直接使用 activate，它会恢复最小化窗口并将其置前；set_window_state 只用于指定窗口状态，不能据此确认窗口已在前台。' +
     'type_text 指定控件时要求该控件此刻持有键盘焦点，先 click 该控件；自绘界面不提供控件，输入投递给窗口。' +
     '按控件执行的指针动作落在该控件包围盒的中心；控件比其中的可见内容宽时（例如聊天记录中占满整行的一条消息），中心可能是空白处，此时按图像坐标定位到内容上。' +
-    '指针动作可使用 imageRef 与 imageX / imageY 定位。指针、按键与激活动作的回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
+    '指针动作可使用 imageRef 与 imageX / imageY 定位。指针、按键与激活动作的回执附带操作后的整窗截图，用于核验结果；' +
+    '动作后的窗口无可操作控件时，各类动作的回执都附带整窗截图。证据不足或状态尚未确定时，应重新观察。' +
     'dispatch 表示动作派发状态：not_dispatched 未执行，submitted 已提交，unknown 结果未确认。动作提交成功不等于任务完成；结果未确认时应先观察，不得直接重复执行。' +
     '「回读不一致」时同样不要重发同一段文字。' +
     'not_dispatched 只表示请求动作未派发，窗口准备可能已改变界面；有新观察时使用新编号，观察失效时先重新观察。' +
     '动作之后在同一次调用中带回新观察；弹出新窗口时改为带回 blocking，对新窗口继续观察。' +
-    '本工具、desktop_act_sequence 与 desktop_wait 带回的观察在多数控件未变化时只提供变化：' +
+    '本工具、desktop_act_sequence 与 desktop_wait 带回的观察在多数控件未变化时只提供变化，无可操作控件的窗口除外：' +
     'since 是该窗口上一份整份控件表的 observationId，added 与 changed 整行给出并附带 parentRef，' +
     'removed 是消失的编号；未列出的控件与 since 对应的控件表相同，编号继续有效。' +
     '对同一个窗口连续执行多个动作时用 desktop_act_sequence，一次调用执行完毕。',
@@ -1636,7 +1655,8 @@ export const desktopActTool: ToolSpec = {
       const field = writes(action) ? inputField(table, aim.element) : undefined
       const r = await send(() => desktop.act({ windowId, ...aim.input, action }))
       const outcome = actOutcome(ctx, action, aim, r, before, field)
-      if (aim.input.at === undefined && !SHOT_ACTIONS.includes(kind)) return outcome
+      const bare = r.observation ? isBareWindow(r.observation) : false
+      if (aim.input.at === undefined && !SHOT_ACTIONS.includes(kind) && !bare) return outcome
       const refresh =
         r.dispatch !== 'not_dispatched' || r.observation !== null || !desktop.elements(windowId)
       return withShot(outcome, refresh, desktop, send, windowId, ctx)
@@ -2042,12 +2062,9 @@ function sequenceOutcome(
       ...(halt ? { errorKind: halt.errorKind } : {}),
     }
   }
-  const parts = desktopResult({
-    ctx,
+  const parts = followResult(ctx, {
     toolName: 'desktop_act_sequence',
     snapshot: cursor.last,
-    place: 'observation',
-    incremental: true,
     receipt,
     targetRef: done.at(-1)?.target ?? null,
     before,
@@ -2272,7 +2289,8 @@ export const desktopActSequenceTool: ToolSpec = {
     'set_window_state / move_window / resize_window / close_window 不接受，它们会使后续步骤的 imageRef 失效。' +
     '自绘界面的「点击输入框 → type_text → press_key」这类连续操作使用本工具，一次调用执行完毕。' +
     '第一步按本轮对该窗口最近一份观察解析目标，之后每一步按上一步带回的新观察解析；' +
-    '按图定位的步骤使用 imageRef 与 imageX / imageY。序列包含按图定位的步骤，或已执行指针、按键与激活动作时，回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
+    '按图定位的步骤使用 imageRef 与 imageX / imageY。序列包含按图定位的步骤、已执行指针、按键与激活动作，' +
+    '或最后一份观察中的窗口无可操作控件时，回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
     '全部提交仅表示动作已提交，不代表任务完成；expect 仅表示所指定的后置条件是否满足。' +
     '某步未执行、结果未确认、后置条件未满足、调用未返回或本次执行被停止，即停在该步并放弃后续步骤。' +
     '结果中 dispatched 与 notExecuted 分别列出；停止后按最后一份观察重新规划，不要重发整组。',
@@ -2413,14 +2431,15 @@ export const desktopActSequenceTool: ToolSpec = {
       }
 
       const outcome = sequenceOutcome(ctx, plans, done, halt, cursor, before)
-      // 该组中有按图定位的步骤，或已派发 `SHOT_ACTIONS` 中的动作：末尾补充一张动作后的
-      // 整窗图，判据与单动作相同，见 `withShot`。
+      // 该组中有按图定位的步骤、已派发 `SHOT_ACTIONS` 中的动作，或最后一份观察是自绘窗口：
+      // 末尾补充一张动作后的整窗图，判据与单动作相同，见 `withShot`。
       const byImage = plans.some((p) => given(p.args.imageRef))
       const dispatched = done.some((r) => r.dispatch !== 'not_dispatched')
       const onScreen = done.some(
         (r) => r.dispatch !== 'not_dispatched' && SHOT_ACTIONS.includes(r.action),
       )
-      if (!byImage && !onScreen) return outcome
+      const bare = cursor.last ? isBareWindow(cursor.last) : false
+      if (!byImage && !onScreen && !bare) return outcome
       const refresh = dispatched || cursor.last !== null || cursor.table === null
       return withShot(outcome, refresh, desktop, send, windowId, ctx)
     }),
@@ -2434,7 +2453,7 @@ export const desktopWaitTool: ToolSpec = {
     '条件取自已经观察到的内容：确认页面跳转或提交生效，用 gone 等待当前页上刚点击过的按钮或链接消失，' +
     '或用 value 等待地址栏、输入框变为某个值；appears 的 name 只用确定会出现的文字，不按常识推测' +
     '（登录后的链接，有的网站称为「退出」，有的称为「注销」）。推测错误的条件只能等到超时。' +
-    '到期如实返回未满足与到期时的控件表。',
+    '到期如实返回未满足与到期时的控件表。等待结束时窗口无可操作控件，回执附带整窗截图。',
   parameters: {
     type: 'object',
     properties: {
@@ -2498,7 +2517,10 @@ export const desktopWaitTool: ToolSpec = {
             : DEFAULT_WAIT_MS,
         }),
       )
-      return waitOutcome(ctx, r.found, r.reason, ref, r, before)
+      const outcome = waitOutcome(ctx, r.found, r.reason, ref, r, before)
+      // 自绘窗口的控件表不含业务控件，等待结束时的状态只能依据图像核对。判据见 `isBareWindow`。
+      if (!r.observation || !isBareWindow(r.observation)) return outcome
+      return withShot(outcome, true, desktop, send, windowId, ctx)
     }),
 }
 
