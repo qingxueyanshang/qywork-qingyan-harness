@@ -137,6 +137,8 @@ export interface ServeOptions {
    * 连接后云端会关闭桌面端正在使用的隧道（同一设备只保留一条）。
    */
   remote?: boolean
+  /** 浏览器动作之后等待未结束请求的上限，毫秒。缺省为 `NETWORK_LIMIT_MS`，仅用于回归测试。 */
+  browserNetworkLimitMs?: number
 }
 
 /** 首次运行时创建的工作区名称。已写入磁盘的目录名是历史事实，不要修改（D2）。 */
@@ -224,6 +226,7 @@ export function serve(opts: ServeOptions) {
         browserBridge,
         () => opts.config.browserEnabled !== false,
         () => `http://127.0.0.1:${boundPort}`,
+        opts.browserNetworkLimitMs,
       )
     : null
   /*

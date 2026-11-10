@@ -136,6 +136,13 @@ interface Devtools {
   onCommand: ((method: string, expression: string) => void) | null
   /** 收到的全部命令与参数，按到达顺序。 */
   calls: { method: string; params: Record<string, unknown> }[]
+  /**
+   * 每次点击时页面发出的请求：`type` 是资源类型，`finishMs` 毫秒后结束，结束时链接名称改为
+   * 「已加载」并产生一次 DOM 变更；`finishMs` 为 `null` 表示请求不结束。
+   */
+  request: { type: string; finishMs: number | null } | null
+  /** 向页会话发送一条协议事件。 */
+  emit: (method: string, params: Record<string, unknown>) => void
 }
 
 /** 假调试端点对 `Page.captureScreenshot` 返回的截图。 */
@@ -155,6 +162,13 @@ function fakeDevtools(marker: string): Devtools {
   let keys = 0
   let mutations = 0
   let commands = 0
+  let requests = 0
+  let linkName = '下载'
+  const send = (method: string, params: Record<string, unknown>) => {
+    for (const socket of sockets) {
+      socket.send(JSON.stringify({ method, sessionId: 'sess-1', params }))
+    }
+  }
   const state: Devtools = {
     port: 0,
     disconnect: (index) => {
@@ -174,6 +188,8 @@ function fakeDevtools(marker: string): Devtools {
     failKeyAt: null,
     onCommand: null,
     calls: [],
+    request: null,
+    emit: send,
   }
   const server = Bun.serve({
     port: 0,
@@ -261,7 +277,7 @@ function fakeDevtools(marker: string): Devtools {
         if (cmd.method === 'Accessibility.getFullAXTree') {
           result = {
             nodes: [
-              { backendDOMNodeId: 9, role: { value: 'link' }, name: { value: '下载' } },
+              { backendDOMNodeId: 9, role: { value: 'link' }, name: { value: linkName } },
               { backendDOMNodeId: 12, role: { value: 'combobox' }, name: { value: '选择' } },
             ],
           }
@@ -309,6 +325,25 @@ function fakeDevtools(marker: string): Devtools {
         }
         if (cmd.method === 'Input.dispatchMouseEvent' && cmd.params?.type === 'mousePressed') {
           clicks += 1
+        }
+        // 点击的处理函数在松开时运行，请求事件先于该命令的回包到达，与真实浏览器一致。
+        if (
+          cmd.method === 'Input.dispatchMouseEvent' &&
+          cmd.params?.type === 'mouseReleased' &&
+          state.request
+        ) {
+          requests += 1
+          const requestId = `req-${requests}`
+          const { type, finishMs } = state.request
+          send('Network.requestWillBeSent', { requestId, type })
+          if (finishMs !== null) {
+            const timer = setTimeout(() => {
+              linkName = '已加载'
+              mutations += 1
+              send('Network.loadingFinished', { requestId })
+            }, finishMs)
+            cleanups.push(() => clearTimeout(timer))
+          }
         }
         if (cmd.method === 'Input.dispatchKeyEvent') {
           keys += 1
@@ -558,7 +593,8 @@ interface Fixture {
   workspaceId: WorkspaceId
 }
 
-function fresh(): Fixture {
+/** `networkLimitMs` 缩短等待未结束请求的上限，请求不结束的用例据此不按真实时间等待 5 秒。 */
+function fresh(networkLimitMs?: number): Fixture {
   const dir = mkdtempSync(join(tmpdir(), 'qywork-coord-'))
   const dbPath = join(dir, 'a.sqlite3')
   const store = new Store({ path: dbPath })
@@ -572,6 +608,7 @@ function fresh(): Fixture {
     port: 0,
     host: '127.0.0.1',
     hostKey: HOST_KEY,
+    ...(networkLimitMs === undefined ? {} : { browserNetworkLimitMs: networkLimitMs }),
   })
   cleanups.push(() => {
     handle.stop()
@@ -585,8 +622,10 @@ function fresh(): Fixture {
   return { handle, store, content, dir, workspaceId }
 }
 
-async function ready(): Promise<Fixture & { host: AutoHost; devtools: Devtools }> {
-  const fixture = fresh()
+async function ready(
+  networkLimitMs?: number,
+): Promise<Fixture & { host: AutoHost; devtools: Devtools }> {
+  const fixture = fresh(networkLimitMs)
   const host = await AutoHost.connect(fixture.handle.port)
   const devtools = fakeDevtools(host.marker)
   host.ready(devtools.port)
@@ -1860,6 +1899,81 @@ test('探针读数缺少字段时不报告静默，按阶段上限如实标注',
   })
   if (!r || r.observation === null) throw new Error('这次动作本应带回观察')
   expect(r.settle).toBe('deadline')
+})
+
+/** 打开一页、观察一次，返回点击第一个元素的调用。 */
+async function clickOnce(
+  networkLimitMs?: number,
+): Promise<{ devtools: Devtools; click: () => ReturnType<BrowserPort['act']> }> {
+  const { handle, devtools } = await ready(networkLimitMs)
+  const port = handle.browser?.portFor('cv_1', WS)
+  if (!port) throw new Error('浏览器端口本应可用')
+  const tab = await port.open('http://127.0.0.1:1/page')
+  const ob = await port.observe({ tabId: tab.tabId })
+  const click = () =>
+    port.act({
+      tabId: tab.tabId,
+      observationId: ob.observationId,
+      action: 'click',
+      ref: firstRef(ob),
+    })
+  return { devtools, click }
+}
+
+test('点击发出的 XHR 结束之后才采集观察，回执是请求返回后的页面', async () => {
+  const { devtools, click } = await clickOnce()
+  devtools.request = { type: 'XHR', finishMs: 800 }
+  const r = await click()
+  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  expect(r.settle).toBe('quiet')
+  expect(r.observation.elements[0]?.name).toBe('已加载')
+})
+
+test('请求持续超过静默阶段上限时继续等待，请求结束后报告静默', async () => {
+  const { devtools, click } = await clickOnce()
+  devtools.request = { type: 'Fetch', finishMs: 1_800 }
+  const r = await click()
+  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  expect(r.settle).toBe('quiet')
+  expect(r.observation.elements[0]?.name).toBe('已加载')
+})
+
+test('请求不结束时到达上限报告 deadline，观察照常返回', async () => {
+  const { devtools, click } = await clickOnce(300)
+  devtools.request = { type: 'Fetch', finishMs: null }
+  const r = await click()
+  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  expect(r.settle).toBe('deadline')
+  expect(r.observation.elements[0]?.name).toBe('下载')
+})
+
+test('图片与 EventSource 请求不影响静默判定', async () => {
+  const { devtools, click } = await clickOnce(300)
+  for (const type of ['Image', 'EventSource']) {
+    devtools.request = { type, finishMs: null }
+    const r = await click()
+    if (r.observation === null) throw new Error('这次动作本应带回观察')
+    expect(r.settle).toBe('quiet')
+  }
+})
+
+test('动作之前发出的请求不计入，其结束事件不抵消动作之后发出的请求', async () => {
+  const { devtools, click } = await clickOnce()
+  devtools.emit('Network.requestWillBeSent', { requestId: 'early-1', type: 'XHR' })
+  devtools.emit('Network.requestWillBeSent', { requestId: 'early-2', type: 'XHR' })
+  // 等待两条事件先于动作到达客户端。
+  await settle()
+  // 动作之前发出的两个请求：一个在点击时结束，另一个始终不结束。
+  devtools.onCommand = (method) => {
+    if (method === 'Input.dispatchMouseEvent') {
+      devtools.emit('Network.loadingFinished', { requestId: 'early-2' })
+    }
+  }
+  devtools.request = { type: 'XHR', finishMs: 800 }
+  const r = await click()
+  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  expect(r.settle).toBe('quiet')
+  expect(r.observation.elements[0]?.name).toBe('已加载')
 })
 
 test('取消之后不再开始新观察，仍能返回动作回执', async () => {

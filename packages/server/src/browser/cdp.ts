@@ -8,7 +8,8 @@
  *    不得完成另一请求。
  * 2. 取消之后发送通道只放行 teardown。清理命令（detach、等待器 dispose、收尾 keyUp 与
  *    mouseReleased）必须能够发出，否则页面保持按下状态，人工接管后输入行为异常。
- * 3. 方法集为白名单。不对上层暴露任意方法调用，`Browser` 域只放行 `getVersion`。
+ * 3. 方法集为白名单。不对上层暴露任意方法调用，`Browser` 域只放行 `getVersion`，
+ *    `Network` 域只放行 `enable`。
  * 4. 等待只观察，不执行动作。页内等待器使用 `MutationObserver` 加定时复核，
  *    不使用 `requestAnimationFrame`：子视图移出可视区时不再产生帧，依赖帧驱动的轮询会停滞。
  */
@@ -26,8 +27,13 @@ const ALLOWED_DOMAINS = new Set([
   'Emulation',
 ])
 
-/** `Browser` 域只用于读取版本，下载行为一律经由宿主的原生钩子。 */
-const ALLOWED_BROWSER_METHODS = new Set(['Browser.getVersion'])
+/**
+ * 所在域未整体放行、按方法单独放行的命令。
+ *
+ * `Browser` 域只用于读取版本，下载行为一律经由宿主的原生钩子。`Network` 域只启用事件，
+ * 供动作之后的静默判定统计未结束的请求；读取响应正文等其他方法一律拒绝。
+ */
+const ALLOWED_METHODS = new Set(['Browser.getVersion', 'Network.enable'])
 
 /**
  * 取消之后仍允许发出的命令。
@@ -431,15 +437,24 @@ export class CdpClient {
   /**
    * 页会话初始化。
    *
-   * 焦点仿真被拒绝时撤销控制，不换用其他命令重试：缺少焦点仿真时，网页中的输入框焦点判定不成立。
-   * 是否生效只依据命令回包：CDP 合成点击会使 `document.hasFocus()` 变为 true 并保持，
+   * 网络事件或焦点仿真被拒绝时撤销控制，不换用其他命令重试：缺少网络事件时，动作之后的
+   * 静默判定不包含未结束的请求；缺少焦点仿真时，网页中的输入框焦点判定不成立。
+   * 焦点仿真是否生效只依据命令回包：CDP 合成点击会使 `document.hasFocus()` 变为 true 并保持，
    * 依据它判定会得到假阳性。
+   *
+   * `Network.enable` 只在页会话上发送，子会话不启用：跨站 iframe 发出的请求不计入静默判定。
    */
   async #initPageSession(sessionId: string): Promise<void> {
     await this.#watchFrames(sessionId)
     await this.send('Runtime.enable', {}, { sessionId })
     await this.send('DOM.enable', {}, { sessionId })
     await this.send('Accessibility.enable', {}, { sessionId })
+    try {
+      await this.send('Network.enable', {}, { sessionId })
+    } catch (err) {
+      if (err instanceof CdpDisconnectedError) throw err
+      throw new CdpInitError(`网络事件被拒绝：${err instanceof Error ? err.message : String(err)}`)
+    }
     // 跨站 iframe 以子会话形式附加；子会话 id 由 Target.attachedToTarget 事件收集。
     await this.send(
       'Target.setAutoAttach',
@@ -594,8 +609,8 @@ export class CdpClient {
    * 订阅一个页会话上的协议事件，返回取消函数。
    *
    * 只服务一次调用：在发送命令之前建立，结束时必须调用返回的函数。不调用时订阅表会随
-   * 轮数增长，且上一次调用的判定会被本次的事件改写。`Page` 域的事件由
-   * `Page.enable` 发布，页会话初始化时已启用。
+   * 轮数增长，且上一次调用的判定会被本次的事件改写。`Page` 与 `Network` 域的事件由
+   * 页会话初始化时的 `Page.enable`、`Network.enable` 发布。
    */
   onSessionEvent(sessionId: string, listener: (event: CdpEvent) => void): () => void {
     const entry = { sessionId, listener }
@@ -1056,7 +1071,7 @@ function unconfirmed(err: unknown): boolean {
 }
 
 export function allowedMethod(method: string): boolean {
-  if (ALLOWED_BROWSER_METHODS.has(method)) return true
+  if (ALLOWED_METHODS.has(method)) return true
   const domain = method.split('.')[0] ?? ''
   return ALLOWED_DOMAINS.has(domain)
 }

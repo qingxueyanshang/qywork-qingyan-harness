@@ -324,7 +324,8 @@ export type FollowUpObservation =
       /**
        * 快照的采集条件。
        *
-       * `quiet`：短暂静默后采集；`deadline`：静默等待达到阶段上限，但仍在总预算内采集到有效快照。
+       * `quiet`：动作之后发出的 XHR / fetch 请求均已结束、页面短暂静默后采集；
+       * `deadline`：静默等待达到上限时仍有请求未结束或页面仍在变化，但仍在总预算内采集到有效快照。
        * 两者都只说明采集时的快照可用，**不表示网站业务已经完成**。`wait` 不带此字段。
        */
       settle?: 'quiet' | 'deadline'
