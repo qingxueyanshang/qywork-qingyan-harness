@@ -472,7 +472,7 @@ describe('失败：重试之后仍无法完成的终态', () => {
       expect(r.message).toContain(
         'transient、invalid_request、denied、unknown、retry_limit、no_progress、dependency 之一',
       )
-      expect(r.message).toContain('原因在工作区的文件、脚本或画布中时修改它')
+      expect(r.message).toContain('原因位于工作区的文件、脚本或画布中时，修改该处')
       expect(c.emitted).toHaveLength(0)
     }
   })
