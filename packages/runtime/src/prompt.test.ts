@@ -557,7 +557,7 @@ describe('能力段', () => {
     expect(prompt).toContain('使用观察结果附带的截图定位')
     // 原始失败形状：模型看不到微信搜索框弹出的结果列表，改为请用户自行打开会话。截图已合成同一应用的弹出窗口。
     expect(prompt).toContain(
-      '截图包含同一应用位于该窗口之上的下拉框、菜单与搜索结果等弹出窗口，回执写明其位置；输入文字后应重新截图查看弹出的内容，再按图点击其中的项目。',
+      '截图包含同一应用位于该窗口之上的下拉框、菜单与搜索结果等弹出窗口，回执写明其位置；输入文字后依据回执附带的截图查看弹出的内容，再按图点击其中的项目。',
     )
     expect(prompt).toContain('desktop_act_sequence')
     expect(prompt).toContain('foregroundEnabled')
