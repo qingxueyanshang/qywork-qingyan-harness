@@ -135,12 +135,14 @@ export const IMAGES_OMITTED =
 
 function condenseToolResult(content: WireMessage['content']): WireMessage['content'] {
   /*
-   * 块数组：丢弃媒体块，只收纳文本信封，并在信封中标记 `images_omitted`。
+   * 块数组：丢弃媒体块与信封之后的附带文本块（`loop/request.ts` 的 `textsOf`），只收纳文本信封，
+   * 丢弃媒体时在信封中标记 `images_omitted`，丢弃附带文本块时标记 `result_omitted`。
    *
    * 装配时仍保留的媒体（`loop/request.ts` 的 `evictedMedia` 未换出的部分）位于收纳线之前时同样丢弃：
    * 触发压缩说明上下文空间已紧张，较早轮次的媒体最先移出。标记不可省略：收纳后的信封与新生成的
    * 成功信封形状相同，缺少该字段时模型会认为图像仍然可见。需要再次查看时按原路径重新 `read_file`，
-   * 或用 `call_id` 经 `read_history` 取回。
+   * 或用 `call_id` 经 `read_history` 取回。附带文本块是结果正文，只有它时信封中没有 `result`，
+   * 不另行标记时模型无法得知正文已移除。
    *
    * 不要改为 `return content` 原样返回，否则带图的工具结果永远无法收纳。
    */
@@ -150,8 +152,13 @@ function condenseToolResult(content: WireMessage['content']): WireMessage['conte
     const env = parseEnvelope(text.text)
     if (!env) return text.text
     const dropped = content.some((b) => b.type === 'image' || b.type === 'video')
+    const droppedText = content.some((b) => b.type === 'text' && b !== text)
     return condenseToolResult(
-      JSON.stringify(dropped ? { ...env, images_omitted: IMAGES_OMITTED } : env),
+      JSON.stringify({
+        ...env,
+        ...(dropped ? { images_omitted: IMAGES_OMITTED } : {}),
+        ...(droppedText ? { result_omitted: true } : {}),
+      }),
     )
   }
   const env = parseEnvelope(content)

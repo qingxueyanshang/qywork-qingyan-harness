@@ -266,6 +266,29 @@ export function quotaExhausted(err: unknown, message: string): boolean {
   )
 }
 
+/** 云端网关拒绝请求中的技能标记时的错误码（`skill-marker/marker.ts`），归为 `skill_rejected`。 */
+const SKILL_REJECTIONS: ReadonlySet<string> = new Set([
+  'skill_marker_invalid',
+  'skill_not_granted',
+  'skill_content_too_large',
+])
+
+/**
+ * 网关的技能拒绝码；不是时返回 null。网关正文为 `{ type: 'error', error: { type, code, message } }`：
+ * OpenAI SDK 把 `error.code` 放在错误对象上，Anthropic SDK 不放，因此再从传输层读取的正文中取。
+ */
+function gatewaySkillRejection(err: unknown, errorBody: string | null): string | null {
+  let code = providerErrorField(err, 'code')
+  if (!code && errorBody) {
+    try {
+      code = stringField((JSON.parse(errorBody) as { error?: unknown }).error, 'code')
+    } catch {
+      code = null
+    }
+  }
+  return code && SKILL_REJECTIONS.has(code) ? code : null
+}
+
 /** 判断是「未配置 key」还是「key 错误」：两者的引导文案完全不同。 */
 function looksUnconfigured(err: unknown): boolean {
   const m = messageOf(err).toLowerCase()
@@ -377,6 +400,19 @@ function classify(provider: ProviderKind, err: unknown, errorBody: string | null
   // 中断不是错误：用户点击了停止，不应显示错误，也不应重试。
   if (err instanceof Error && (err.name === 'AbortError' || err.name === 'APIUserAbortError')) {
     return build('internal_error', '已取消')
+  }
+
+  // 先于容量分类与状态码分支：这三个码的状态是 400 / 403 / 413，落入状态码分支会归为参数错误或鉴权失败。
+  const skillCode = status === undefined ? null : gatewaySkillRejection(err, errorBody)
+  if (skillCode) {
+    return new ProviderError({
+      code: 'skill_rejected',
+      message: text,
+      provider,
+      ...(status !== undefined ? { status } : {}),
+      detail: { ...detail, providerCode: skillCode },
+      cause: err,
+    })
   }
 
   // 上下文超限先于状态码分支判定：它涉及 400/413/422 三个状态码，且判据比状态码可靠得多

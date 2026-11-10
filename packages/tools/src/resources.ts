@@ -24,6 +24,7 @@ import {
   headBytesWithin,
   outcomeTokens,
   recordBatchSpent,
+  recordCappedSpent,
   type ToolContext,
   type ToolOutcome,
   type ToolSpec,
@@ -177,7 +178,13 @@ export const readResourceTool: ToolSpec = {
       stat.mimeType,
     )
     // 页长已按余额确定，此处记录实际投递量；码点补全最多多出 3 字节。
-    recordBatchSpent(ctx, outcomeTokens(outcome, ctx.density))
+    // 未到末尾且少于所请求的长度时，页长受单次上限限制，记为触及上限。
+    const tokens = outcomeTokens(outcome, ctx.density)
+    if (start + page.consumed < stat.sizeBytes && page.consumed < rawLength) {
+      recordCappedSpent(ctx, tokens)
+    } else {
+      recordBatchSpent(ctx, tokens)
+    }
     return outcome
   },
 }

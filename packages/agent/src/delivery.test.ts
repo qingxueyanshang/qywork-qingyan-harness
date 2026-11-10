@@ -2,8 +2,8 @@
  * 投递额度与续读落盘。
  *
  * 覆盖范围：`delivery.ts` 的 `openBatchBudget` / `chargeBatchBudget` / `recordBatchSpent` /
- * `batchRemaining` / `outcomeTokens` / `tokensToBytes` / `landHead` / `continuationNote` /
- * `boundExecutedOutcome`。
+ * `recordCappedSpent` / `batchCapped` / `batchRemaining` / `outcomeTokens` / `tokensToBytes` /
+ * `landHead` / `continuationNote` / `boundExecutedOutcome`。
  *
  * 本组测试锁定三项行为：一次决策只有一份额度，读取与已执行的结果从同一份额度中扣除；
  * 超出额度时正文不丢失，投递头部、完整内容可续读；已执行的结果不改报失败，
@@ -13,6 +13,7 @@
 import { describe, expect, test } from 'bun:test'
 import { DEFAULT_DENSITY, estimateImage } from '@qywork/ai'
 import {
+  batchCapped,
   batchRemaining,
   boundExecutedOutcome,
   chargeBatchBudget,
@@ -23,6 +24,7 @@ import {
   openBatchBudget,
   outcomeTokens,
   recordBatchSpent,
+  recordCappedSpent,
   tailRetain,
   tokensToBytes,
 } from './delivery.ts'
@@ -103,6 +105,45 @@ describe('一次决策一份额度', () => {
   test('保留量按窗口比例计算，不设固定上限', () => {
     expect(tailRetain(1_000_000)).toBe(250_000)
     expect(tailRetain(200_000)).toBe(50_000)
+  })
+})
+
+/**
+ * 执行工具之前的检查点据「上一次决策的投递触及单次上限」决定软阈值以下是否收纳，
+ * 记录只来自超出上限的准入、按上限截短的投递与已执行结果的超额定稿，开账时清零。
+ */
+describe('触及单次上限的记录', () => {
+  test('准入被拒绝或按上限截短的投递记为触及上限，整份放行与已执行的记账不记', () => {
+    const fits = ctx(10_000)
+    chargeBatchBudget(fits, 5_000)
+    recordBatchSpent(fits, 50_000)
+    expect(batchCapped(fits.state)).toBe(false)
+
+    const refused = ctx(10_000)
+    expect(chargeBatchBudget(refused, 20_000).ok).toBe(false)
+    expect(batchCapped(refused.state)).toBe(true)
+
+    const cut = ctx(10_000)
+    expect(recordCappedSpent(cut, 4_000).remaining).toBe(6_000)
+    expect(batchCapped(cut.state)).toBe(true)
+  })
+
+  test('已执行的结果超出上限时记为触及上限', () => {
+    const c = { ...ctx(500), sink: fakeSink(), density: DEFAULT_DENSITY }
+    boundExecutedOutcome(
+      c,
+      { status: 'success', executed: true, message: '输出。'.repeat(5000) },
+      { toolName: 'mcp__srv__tool', sourceType: 'mcp' },
+    )
+    expect(batchCapped(c.state)).toBe(true)
+  })
+
+  test('尚未开账时不算触及上限，重新开账时清零', () => {
+    expect(batchCapped(new Map())).toBe(false)
+    const c = ctx(10_000)
+    chargeBatchBudget(c, 20_000)
+    openBatchBudget(c.state, 10_000)
+    expect(batchCapped(c.state)).toBe(false)
   })
 })
 

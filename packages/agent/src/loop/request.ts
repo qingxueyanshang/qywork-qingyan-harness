@@ -11,6 +11,7 @@ import type {
   ImageSource,
   LlmAdapter,
   ReasoningReplay,
+  TextFeatureCounts,
   TokenDensity,
   VideoMeta,
   VideoRange,
@@ -26,6 +27,7 @@ import {
   estimateSchemas,
   estimateText,
   STREAM_IDLE_TIMEOUT_MS,
+  TEXT_FEATURES,
   THUMBNAIL_EDGE,
   videoOutOfRange,
 } from '@qywork/ai'
@@ -397,7 +399,7 @@ export function toolOutcomeContent(
  * 工具结果的模型可见内容。
  *
  * 信封 JSON 不得改动：估算（`breakdownOf`）与收纳（`condenseMessage`）都依赖解析它。
- * 图片作为并列的内容块放在信封之后，不写入信封。
+ * 附带文本块（`textsOf`）、图片与视频依次作为并列的内容块放在信封之后，不写入信封。
  *
  * 图像块使用正文库引用（或尚未写入账本的 base64），视频块带路径与容器索引中的元数据（`videoMetaOf`，同步读取并缓存），
  * 均不读取正文，因此本函数是同步的，投影侧（`runtime/transcript.ts` 的 `toolContent`）才能用同一形状重建历史：
@@ -410,11 +412,13 @@ export function toolResultContent(
   envelope: string,
   data: Record<string, unknown> | undefined,
 ): string | ContentBlock[] {
+  const texts = textsOf(data)
   const images = imagesOf(data)
   const videos = videosOf(data)
-  if (!images.length && !videos.length) return envelope
+  if (!texts.length && !images.length && !videos.length) return envelope
   return [
     { type: 'text', text: envelope },
+    ...texts,
     ...images.map((i): ContentBlock => ({ type: 'image', mimeType: i.mime, source: i.source })),
     ...videos.map(
       (v): ContentBlock => ({
@@ -425,6 +429,40 @@ export function toolResultContent(
       }),
     ),
   ]
+}
+
+/** 声明了特征计数的文本块（`ContentBlock` 的 `features`）。 */
+export type DeclaredText = { type: 'text'; text: string; features: TextFeatureCounts }
+
+/**
+ * `outcome.data.texts` 中的附带文本块：`text` 是请求经过网关时被替换的标记，`features` 是替换后正文的
+ * 文本特征计数（`@qywork/ai` 的 `textFeatures`）。每项成为信封之后的一个独立文本块，估算按 `features`
+ * 乘以本轮密度计（`estimateContent`），投递额度（`outcomeTokens`）、占用读数与压缩回收量因此取同一个值。
+ *
+ * 缺少的计数项按 0 计；`text` 不是字符串或 `features` 不是对象的项不予采用，与 `imagesOf` 对不合法项的处理相同。
+ * 返回值即内容块，请求装配与额度估算直接使用，不另行构造。
+ */
+export function textsOf(data: Record<string, unknown> | undefined): DeclaredText[] {
+  const raw = data?.texts
+  if (!Array.isArray(raw)) return []
+  const out: DeclaredText[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const { text, features } = item as { text?: unknown; features?: unknown }
+    if (typeof text !== 'string' || !features || typeof features !== 'object') continue
+    const counts = features as Record<string, unknown>
+    out.push({
+      type: 'text',
+      text,
+      features: Object.fromEntries(
+        TEXT_FEATURES.map((k) => {
+          const n = counts[k]
+          return [k, typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0]
+        }),
+      ) as TextFeatureCounts,
+    })
+  }
+  return out
 }
 
 /**
@@ -666,9 +704,9 @@ export const IMAGES_REDUCED = `此图像此前已按原尺寸随请求发送给�
  *
  * - `thumbnail`：图片块标记 `thumbnail`，由 `materialize` 生成缩略图字节。工具结果的信封中加入
  *   `images_reduced`（`IMAGES_REDUCED`），用户消息在正文前加一行 `ATTACHMENT_IMAGES_REDUCED`。
- * - `omitted`：工具结果替换为只有信封的形态，信封中的 `images_omitted` 注明图片已发送过（`IMAGES_OMITTED`），
- *   与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）。模型据此字段得知图片已不在请求中，
- *   缺少该字段时会认为图片仍然可见。`result` 保留，只移除媒体块。用户消息的媒体块替换为一行
+ * - `omitted`：工具结果移除媒体块，信封中的 `images_omitted` 注明图片已发送过（`IMAGES_OMITTED`），
+ *   没有附带文本块时与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）。模型据此字段得知图片已不在请求中，
+ *   缺少该字段时会认为图片仍然可见。`result` 与附带文本块（`textsOf`）保留，只移除媒体块。用户消息的媒体块替换为一行
  *   `ATTACHMENT_MEDIA_OMITTED`，正文不变。
  *
  * 输出必须逐字稳定，且无媒体时返回原引用：投影在每次构造请求时都会执行，输出不稳定会使缓存
@@ -705,7 +743,9 @@ export function omitImages(m: WireMessage, level: MediaLevel): WireMessage {
       content: m.content.map((b) => (b === text ? { type: 'text', text: marked } : reduce(b))),
     }
   }
-  return { ...m, content: JSON.stringify({ ...env, images_omitted: IMAGES_OMITTED }) }
+  const omitted = JSON.stringify({ ...env, images_omitted: IMAGES_OMITTED })
+  const texts = m.content.filter((b) => b.type === 'text' && b !== text)
+  return { ...m, content: texts.length ? [{ type: 'text', text: omitted }, ...texts] : omitted }
 }
 
 /**
@@ -751,12 +791,13 @@ export function imagesOf(
  * 必须移除图像字节：信封是一段 JSON 文本，保留 `images` 会使同一份
  * base64 在请求体中出现两次，一次在图像块中，一次在信封文本中；后者对模型
  * 没有用处（模型无法解读 base64 文本），只会按 token 计费。
+ * 附带文本块（`texts`）同样移除：标记必须独立成块，写入信封的 JSON 字符串时网关无法整块替换。
  */
 export function envelopeResult(
   data: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
-  if (!data || !('images' in data || 'videos' in data)) return data
-  const { images: _bytes, videos: _paths, ...rest } = data
+  if (!data || !('images' in data || 'videos' in data || 'texts' in data)) return data
+  const { images: _bytes, videos: _paths, texts: _texts, ...rest } = data
   return Object.keys(rest).length ? rest : undefined
 }
 

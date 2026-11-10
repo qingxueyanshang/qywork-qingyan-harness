@@ -1,9 +1,16 @@
 /**
- * 覆盖 `resources.ts`（`read_resource` 的前置校验、字节分页、query 搜索与续查、按投递额度分页）。
+ * 覆盖 `resources.ts`（`read_resource` 的前置校验、字节分页、query 搜索与续查、按投递额度分页、
+ * 按余额截短的一页记为触及单次上限）。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { openBatchBudget, outcomeTokens, type SinkPort, type ToolContext } from '@qywork/agent'
+import {
+  batchCapped,
+  openBatchBudget,
+  outcomeTokens,
+  type SinkPort,
+  type ToolContext,
+} from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { readResourceTool } from './resources.ts'
 import { MIN_DELIVERY_BYTES } from './sink.ts'
@@ -440,5 +447,19 @@ describe('按本次决策的投递额度分页', () => {
       withRoom(sink, 1_000_000),
     )
     expect(page.content + (rest.data as unknown as Page).content).toBe(body)
+  })
+
+  /** 执行工具之前的检查点据此在下一次决策开始前收纳该页（`@qywork/agent` 的 `batchCapped`）。 */
+  test('按余额截短的一页记为触及单次上限；读到末尾或按 length 截取的不记', async () => {
+    const cut = withRoom(memSink(body), 5_000)
+    await readResourceTool.fn({ resource_id: 'rs_1' }, cut)
+    expect(batchCapped(cut.state)).toBe(true)
+    const whole = withRoom(memSink(body), 1_000_000)
+    await readResourceTool.fn({ resource_id: 'rs_1' }, whole)
+    expect(batchCapped(whole.state)).toBe(false)
+    const ranged = withRoom(memSink(body), 1_000_000)
+    const page = await readResourceTool.fn({ resource_id: 'rs_1', length: 300 }, ranged)
+    expect((page.data as unknown as Page).nextOffset).not.toBeNull()
+    expect(batchCapped(ranged.state)).toBe(false)
   })
 })

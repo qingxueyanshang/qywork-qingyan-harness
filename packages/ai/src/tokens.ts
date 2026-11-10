@@ -20,7 +20,14 @@
 
 import { type ImageSize, imageSizeOf } from '@qywork/core'
 import { COMMON_HANZI } from './common-hanzi.ts'
-import type { ChatRequest, ContentBlock, ToolSchema, VideoMeta, WireMessage } from './types.ts'
+import type {
+  ChatRequest,
+  ContentBlock,
+  TextFeatureCounts,
+  ToolSchema,
+  VideoMeta,
+  WireMessage,
+} from './types.ts'
 
 /**
  * 常用汉字的码元集合（GB2312 一级汉字，`common-hanzi.ts`）。
@@ -350,7 +357,11 @@ export function textFeatures(text: string): Record<TextFeature, number> {
 
 function count(text: string, d: TokenDensity): number {
   if (!text) return 0
-  const f = textFeatures(text)
+  return weigh(textFeatures(text), d)
+}
+
+/** 十项计数乘以系数之和。正文与声明了特征计数的文本块（`ContentBlock` 的 `features`）共用。 */
+function weigh(f: TextFeatureCounts, d: TokenDensity): number {
   let total = 0
   for (const k of TEXT_FEATURES) total += f[k] * d[k]
   return Math.ceil(total)
@@ -377,6 +388,7 @@ export function estimateJson(value: unknown, d: TokenDensity): number {
  *
  * 图片按宽高计算（`estimateImage`），视频按时长与画面尺寸计算（`estimateVideo`）；
  * 不得经由 JSON 序列化估算：按 base64 长度估算正是暴涨的来源。
+ * 声明了特征计数的文本块按该计数计、不按 `text` 计：发出的是另一段内容，`text` 只是它的标记。
  */
 export function estimateContent(
   content: string | ContentBlock[] | undefined,
@@ -386,7 +398,8 @@ export function estimateContent(
   if (typeof content === 'string') return count(content, d)
   let total = 0
   for (const block of content) {
-    if (block.type === 'text') total += count(block.text, d)
+    if (block.type === 'text')
+      total += block.features ? weigh(block.features, d) : count(block.text, d)
     else if (block.type === 'image') total += estimateImage(imageBlockSize(block), d)
     else total += estimateVideo(block.meta, d)
   }

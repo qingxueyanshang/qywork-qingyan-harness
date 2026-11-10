@@ -299,6 +299,45 @@ describe('工具结果带图片', () => {
     ])
   })
 
+  /** `features` 只用于估算：请求体中的文本块只有类型与正文。 */
+  test('附带文本块按原顺序进入 tool_result，不带特征计数', async () => {
+    const features = {
+      cjk: 9,
+      rareCjk: 0,
+      word: 1,
+      letter: 5,
+      caseBreak: 0,
+      digit: 0,
+      punctRun: 0,
+      punct: 0,
+      space: 0,
+      other: 0,
+    }
+    const body = await send([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c_skill', name: 'read_skill', arguments: {} }],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'c_skill',
+        content: [
+          { type: 'text', text: '{"status":"success"}' },
+          { type: 'text', text: '标记', features },
+        ],
+      },
+    ])
+    const messages = body.messages as { role: string; content: unknown }[]
+    const result = messages
+      .flatMap((m) => (Array.isArray(m.content) ? (m.content as Record<string, unknown>[]) : []))
+      .find((b) => b.type === 'tool_result')
+    expect(result?.content).toEqual([
+      { type: 'text', text: '{"status":"success"}' },
+      { type: 'text', text: '标记' },
+    ])
+  })
+
   test('收纳后的图片省略标记逐字进入 tool_result', async () => {
     const omitted = '{"call_id":"c_img","status":"success","images_omitted":true}'
     const body = await send([

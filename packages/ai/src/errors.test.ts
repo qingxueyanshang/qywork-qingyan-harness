@@ -362,6 +362,37 @@ describe('按用户的下一步动作分类', () => {
     )
   })
 
+  /**
+   * 原始失败形状：网关以 403 `skill_not_granted` 拒绝含标记的请求时归为鉴权失败，界面引导用户检查密钥；
+   * 400 `skill_marker_invalid` 归为参数错误，带图片的请求会被按「接口拒绝图片」移除图片后重发。
+   * 经三种协议的真实适配器发送 HTTP 请求，断言错误码、状态码与正文。
+   */
+  test('网关拒绝技能标记的三个码归为 skill_rejected，正文是网关的说明', async () => {
+    const cases = [
+      ['skill_marker_invalid', 'HTTP 400 请求无效：技能标记无效：demo/SKILL.md'],
+      ['skill_not_granted', 'HTTP 403 禁止访问：未获得技能包的使用权益：demo'],
+      ['skill_content_too_large', 'HTTP 413 请求内容过大：替换技能内容后请求体超过 67108864 字节'],
+    ] as const
+    for (const [mode, message] of cases) {
+      for (const { kind, model } of FAULT_PROTOCOLS) {
+        const { err } = await withFault(mode, (fault) =>
+          drainAdapter({ fault, kind, model, idleTimeoutMs: 5_000 }),
+        )
+        expect(err).toBeInstanceOf(ProviderError)
+        const pe = err as ProviderError
+        expect([kind, pe.code, pe.message, pe.detail?.providerCode]).toEqual([
+          kind,
+          'skill_rejected',
+          message,
+          mode,
+        ])
+        expect(pe.capacity).toBeUndefined()
+      }
+    }
+    // 其他 403 不受影响。
+    expect(classifyProviderError(P, http(403, 'Forbidden')).code).toBe('auth_failed')
+  })
+
   /** 中转站余额耗尽时返回 403；按 Anthropic 与 OpenAI 两种正文格式各取一份原文。 */
   test('403 带余额不足正文归账户额度不足，其余 403 仍是无权访问', () => {
     const anthropic = Object.assign(new Error('403 insufficient balance'), {

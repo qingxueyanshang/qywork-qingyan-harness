@@ -9,6 +9,7 @@
  */
 
 import {
+  estimateContent,
   estimateImage,
   estimateJson,
   estimateVideo,
@@ -18,11 +19,13 @@ import {
 } from '@qywork/ai'
 import type { ImageSize, IntermediateResourceRef, ResourceCoverage, ResourceId } from '@qywork/core'
 import { isStoredToolImage } from '@qywork/store'
+import { textsOf } from './loop/request.ts'
 import type { SinkPort, ToolContext, ToolOutcome } from './registry.ts'
 import { videoMetaOf } from './video-meta.ts'
 
 const SPENT_KEY = 'ctx.batchSpent'
 const ROOM_KEY = 'ctx.batchRoom'
+const CAPPED_KEY = 'ctx.batchCapped'
 
 /**
  * 开账。每次 provider 决策调用一次，全部批次共用。返回传入的 `state`。
@@ -32,7 +35,19 @@ const ROOM_KEY = 'ctx.batchRoom'
 export function openBatchBudget<T extends Map<string, unknown>>(state: T, room: number): T {
   state.set(ROOM_KEY, Math.max(0, Math.floor(room)))
   state.set(SPENT_KEY, 0)
+  state.set(CAPPED_KEY, false)
   return state
+}
+
+/**
+ * 当前账目所属的决策中是否有投递触及单次上限：超出 `deliveryCap` 的准入被拒绝（`chargeBatchBudget`），
+ * 或正文按该上限截短后部分投递（`recordCappedSpent`、`boundExecutedOutcome`）。
+ *
+ * 执行工具之前的检查点在开立下一次决策的账目之前读取它（`loop/compact.ts` 的 `compactBeforeTools`）。
+ * 尚未开账时为 false。
+ */
+export function batchCapped(state: ReadonlyMap<string, unknown>): boolean {
+  return state.get(CAPPED_KEY) === true
 }
 
 function account(state: Map<string, unknown>): { room: number; spent: number } {
@@ -66,9 +81,8 @@ export function tailRetain(contextWindow: number): number {
  * 被模型看到、不能收纳，只能调用模型写摘要。实测 1M 窗口读取约 3 倍窗口大小的文件：不留余量时
  * 11 次压缩中有 5 次是模型摘要。
  *
- * 也不要留满一份：执行工具之前的检查点在余量不足一份保留量时才压缩，留满一份时两者处于同一条线上，
- * 相差几十个 token 即决定下一次决策是否压缩，续读段大小交替变化。留半份时，下一次决策开始前
- * 必定先收纳上一段。
+ * 按该上限截短的投递记为触及上限（`batchCapped`）：下一次决策开始前，执行工具之前的检查点先收纳该段，
+ * 续读的下一段因此能读满余量。
  */
 export function deliveryCap(ctx: Pick<ToolContext, 'state' | 'contextWindow'>): number {
   const remaining = batchRemaining(ctx)
@@ -93,7 +107,21 @@ export function recordBatchSpent(
 }
 
 /**
- * 只读工具的准入：不超过 `deliveryCap` 时记账并放行，超过时不记账。`cap` 是当前单次投递的上限，
+ * 记录一笔按单次投递上限截短的投递（部分投递），并记为触及上限（`batchCapped`）。
+ *
+ * 用于不经 `chargeBatchBudget` 的拒绝、直接按 `deliveryCap` 确定投递大小的调用方。不要改用
+ * `recordBatchSpent`：不记为触及上限时，下一次决策开始前不收纳该段，续读段大小交替变化。
+ */
+export function recordCappedSpent(
+  ctx: Pick<ToolContext, 'state'>,
+  tokens: number,
+): { remaining: number } {
+  ctx.state.set(CAPPED_KEY, true)
+  return recordBatchSpent(ctx, tokens)
+}
+
+/**
+ * 只读工具的准入：不超过 `deliveryCap` 时记账并放行，超过时不记账、记为触及上限。`cap` 是当前单次投递的上限，
  * 无法整份投递的调用方据此确定部分投递的大小。
  *
  * 写入类工具不要使用它：副作用已经发生时报告「超出额度」等于告知模型操作未成功。
@@ -103,7 +131,10 @@ export function chargeBatchBudget(
   tokens: number,
 ): { ok: boolean; cap: number } {
   const cap = deliveryCap(ctx)
-  if (tokens > cap) return { ok: false, cap }
+  if (tokens > cap) {
+    ctx.state.set(CAPPED_KEY, true)
+    return { ok: false, cap }
+  }
   const { spent } = account(ctx.state)
   ctx.state.set(SPENT_KEY, spent + tokens)
   return { ok: true, cap: deliveryCap(ctx) }
@@ -156,7 +187,8 @@ function outcomeVideoMeta(entry: unknown): VideoMeta | null {
 
 /**
  * 一条结果放入信封后的占用：message 与 data 按写入 JSON 后的形式估算，计入换行等转义字符；
- * 图片按宽高、视频按时长与画面尺寸计（`estimateImage`、`estimateVideo`），与请求侧的计算方法一致。
+ * 图片按宽高、视频按时长与画面尺寸计（`estimateImage`、`estimateVideo`），附带文本块按声明的特征计数计
+ * （`loop/request.ts` 的 `textsOf`，经 `estimateContent`），与请求侧的计算方法一致。
  *
  * 信封中 `call_id` / `tool` / `status` 等固定键约几十 token，不在此计算，由软阈值以上的预留空间覆盖。
  */
@@ -167,9 +199,10 @@ export function outcomeTokens(
   const data = parts.data ?? {}
   const images = Array.isArray(data.images) ? data.images : []
   const videos = Array.isArray(data.videos) ? data.videos : []
-  const { images: _bytes, videos: _paths, ...rest } = data
+  const { images: _bytes, videos: _paths, texts: _texts, ...rest } = data
   return (
     deliveredTokens(JSON.stringify({ summary: parts.message, result: rest }), density) +
+    estimateContent(textsOf(data), density) +
     images.reduce((n: number, e) => n + estimateImage(outcomeImageSize(e), density), 0) +
     videos.reduce((n: number, e) => n + estimateVideo(outcomeVideoMeta(e), density), 0)
   )
@@ -368,6 +401,7 @@ export function boundExecutedOutcome(
     recordBatchSpent(ctx, outcomeTokens(outcome, ctx.density))
     return outcome
   }
+  ctx.state.set(CAPPED_KEY, true)
 
   const resources = [...(outcome.resources ?? [])]
   let message = outcome.message

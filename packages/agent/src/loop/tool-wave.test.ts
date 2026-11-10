@@ -1560,21 +1560,59 @@ describe('投递额度按决策计算', () => {
   })
 
   /**
-   * 软阈值以下时压缩端口只收纳或跳过，不调用模型：跳过时没有任何改动，不发出开始事件，也不写入记录。
+   * 两次决策：第一次调用 `grab` 申请 `first` 的额度，第二次响应报告的输入量为 `reported`、调用 `grab` 申请 1。
+   * `first` 超出单次投递上限时，第一次决策的投递触及上限。
+   */
+  function twoDecisions(
+    first: number,
+    reported: number,
+  ): { adapter: LlmAdapter; registry: ToolRegistry } {
+    const base = fakeAdapter([[call('grab')], [call('grab')], null])
+    let turn = 0
+    const amounts = [first, 1]
+    const registry = new ToolRegistry()
+    registry.register({
+      ...grabRegistry(1, []).get('grab')!,
+      async fn(_args, ctx) {
+        const ok = chargeBatchBudget(ctx, amounts.shift() ?? 1).ok
+        return { status: ok ? 'success' : 'failure', message: ok ? 'ok' : '装不下' }
+      },
+    })
+    return {
+      registry,
+      adapter: {
+        ...base,
+        async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+          const second = turn++ === 1
+          for await (const ev of base.stream(req)) {
+            if (second && ev.type === 'usage') {
+              yield { ...ev, usage: { ...ev.usage, inputTokens: reported, outputTokens: 0 } }
+            } else yield ev
+          }
+        },
+      },
+    }
+  }
+
+  /**
+   * 执行工具之前的检查点在占用超过软阈值、或上一次决策的投递触及单次上限时调用压缩端口。
+   * 软阈值以下时端口只收纳或跳过，不调用模型：跳过时没有任何改动，不发出开始事件，也不写入记录。
    * 超过软阈值时，跳过仍发出事件并写入记录：上下文仍在软阈值以上。
    */
-  test('软阈值以下的跳过不发出事件、不写入记录；超过软阈值时照常发出并记录', async () => {
-    const cases: [number, { events: string[]; recorded: boolean }][] = [
-      [790_000, { events: [], recorded: false }],
-      [850_000, { events: ['started', 'skipped'], recorded: true }],
+  test('软阈值以下只在上一次决策触及单次上限时检查，跳过不发出事件、不写入记录；超过软阈值时照常发出并记录', async () => {
+    const cases: [number, number, { checked: boolean; events: string[]; recorded: boolean }][] = [
+      [1, 790_000, { checked: false, events: [], recorded: false }],
+      [2_000_000, 790_000, { checked: true, events: [], recorded: false }],
+      [1, 850_000, { checked: true, events: ['started', 'skipped'], recorded: true }],
     ]
-    for (const [reported, expected] of cases) {
+    for (const [first, reported, expected] of cases) {
       const persist = noopPersistence()
       let records = 0
       let runs = 0
+      const { adapter, registry } = twoDecisions(first, reported)
       const loop = new AgentLoop({
-        adapter: adapterWithUsage([call('grab')], () => reported),
-        registry: grabRegistry(1, []),
+        adapter,
+        registry,
         systemPrompt: 'sys',
         persist: {
           ...persist,
@@ -1600,8 +1638,57 @@ describe('投递额度按决策计算', () => {
       })) {
         if (ev.type === 'compaction') events.push(ev.phase)
       }
-      expect(runs).toBeGreaterThan(0)
-      expect({ events: events.slice(0, 2), recorded: records > 0 }).toEqual(expected)
+      expect({ checked: runs > 0, events: events.slice(0, 2), recorded: records > 0 }).toEqual(
+        expected,
+      )
+    }
+  })
+
+  /**
+   * 占用位于软阈值减一份尾部保留量与软阈值之间、上一次决策没有触及单次上限时，执行工具之前的检查点
+   * 不调用压缩端口：常规任务的工具结果保留原文，直到占用越过软阈值。
+   */
+  test('占用在 55% 至 80% 之间执行普通工具，历史不被替换', async () => {
+    for (const reported of [560_000, 790_000]) {
+      let runs = 0
+      const sent: ChatRequest[] = []
+      const base = adapterWithUsage([call('grab')], () => reported)
+      const loop = new AgentLoop({
+        adapter: {
+          ...base,
+          async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+            sent.push(req)
+            yield* base.stream(req)
+          },
+        },
+        registry: grabRegistry(1, []),
+        systemPrompt: 'sys',
+        persist: noopPersistence(),
+        makeToolContext: (runId) => baseCtx(runId),
+        compaction: {
+          project: (messages) =>
+            runs > 0 ? messages.map((m) => ({ ...m, content: '折' })) : messages,
+          run: async () => {
+            runs++
+            return {
+              status: 'compacted',
+              summarized: false,
+              manifest: {
+                revision: 1,
+                compactedThroughMessageId: null,
+                compactedMessageCount: 0,
+                summary: '摘要',
+                facts: { filesTouched: [], openItems: [], userConstraints: [] },
+                createdAt: 0,
+              },
+            }
+          },
+        },
+      })
+      await drain(loop, large)
+      expect(runs).toBe(0)
+      expect(sent).toHaveLength(2)
+      expect(sent[1]!.messages[0]!.content).toBe(large[0]!.content)
     }
   })
 })

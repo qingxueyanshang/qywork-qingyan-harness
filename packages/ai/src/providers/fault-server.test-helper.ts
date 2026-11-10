@@ -45,6 +45,10 @@ export type FaultMode =
   | 'gateway_html'
   /** 首次交付完整工具调用（参数原文取 `toolArguments`），其后正常完成。 */
   | 'tool_then_complete'
+  /** 云端网关拒绝技能标记的三种响应，状态码、错误码与说明取网关的实现。 */
+  | 'skill_marker_invalid'
+  | 'skill_not_granted'
+  | 'skill_content_too_large'
 
 export interface FaultServer {
   /** Anthropic Messages 的 baseUrl；SDK 自行拼接 `/v1/messages`。 */
@@ -508,8 +512,24 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
         '<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n',
         { status: 502, headers: { 'content-type': 'text/html' } },
       )
+    case 'skill_marker_invalid':
+    case 'skill_not_granted':
+    case 'skill_content_too_large': {
+      const { status, message } = SKILL_REJECTIONS[fault.mode]
+      return Response.json(
+        { type: 'error', error: { type: fault.mode, code: fault.mode, message } },
+        { status },
+      )
+    }
   }
 }
+
+/** 网关拒绝技能标记时的状态码与说明。 */
+const SKILL_REJECTIONS = {
+  skill_marker_invalid: { status: 400, message: '技能标记无效：demo/SKILL.md' },
+  skill_not_granted: { status: 403, message: '未获得技能包的使用权益：demo' },
+  skill_content_too_large: { status: 413, message: '替换技能内容后请求体超过 67108864 字节' },
+} as const
 
 export function startFaultServer(mode: FaultMode): FaultServer {
   const fault: FaultServer = {

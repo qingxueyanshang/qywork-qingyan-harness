@@ -18,6 +18,10 @@ import type {
   ToolCallCheck,
 } from '@qywork/core'
 import type { ModelSpec, SpecOverride } from './catalog.ts'
+import type { TextFeature } from './tokens.ts'
+
+/** 一段文本按 `textFeatures` 得到的十项计数。乘以模型的 `TokenDensity` 即该段的估算。 */
+export type TextFeatureCounts = Readonly<Record<TextFeature, number>>
 
 // ─────────────────────────────── 配置 ───────────────────────────────
 
@@ -251,7 +255,12 @@ export interface VideoMeta {
  * 图片和视频保留路径引用，请求发出前才读取字节。
  */
 export type ContentBlock =
-  | { type: 'text'; text: string }
+  /**
+   * `features` 只用于估算，适配器不发送：存在时估算按它乘以本轮密度计（`estimateContent`），不按 `text` 计。
+   * 用于正文在请求经过网关时才替换为另一段内容的文本块，`text` 只是该内容的标记；取值是被替换内容的
+   * 文本特征计数（`textFeatures`）。工具结果经 `outcome.data.texts` 声明（`agent` 的 `textsOf`）。
+   */
+  | { type: 'text'; text: string; features?: TextFeatureCounts }
   /**
    * `thumbnail` 只在请求装配中出现：换出把较早的图片标记为缩略图（`agent` 的 `omitImages`），
    * `materialize` 据此生成缩略图字节并去掉该字段，适配器不会收到它。

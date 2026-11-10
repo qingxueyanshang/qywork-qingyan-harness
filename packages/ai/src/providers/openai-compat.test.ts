@@ -302,7 +302,23 @@ describe('工具结果带图片', () => {
           toolCallId: 'c_t',
           content: [
             { type: 'text', text: '甲' },
-            { type: 'text', text: '乙' },
+            {
+              type: 'text',
+              text: '乙',
+              // 只用于估算，不进入请求体。
+              features: {
+                cjk: 1,
+                rareCjk: 0,
+                word: 0,
+                letter: 0,
+                caseBreak: 0,
+                digit: 0,
+                punctRun: 0,
+                punct: 0,
+                space: 0,
+                other: 0,
+              },
+            },
           ],
         },
       ],

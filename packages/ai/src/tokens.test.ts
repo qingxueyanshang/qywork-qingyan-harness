@@ -401,3 +401,33 @@ describe('整个请求', () => {
     expect(total).toBe(10 + estimateSchemas(req.tools, d) + estimateMessages(req.messages, d))
   })
 })
+
+/**
+ * 声明了特征计数的文本块：发出的是另一段内容，`text` 只是它的标记。估算必须按声明的计数计，
+ * 否则占用读数、锚点准入与投递额度都只计入标记的几十个字符。
+ */
+describe('声明了特征计数的文本块', () => {
+  const body = '技能主文档的正文。Skill body with mixedCase words, 42 digits; 生僻字龘。\n'.repeat(
+    500,
+  )
+  const marker = '[[skill:pkg/SKILL.md#sha256:ab12]]'
+
+  test('按声明的计数乘以本轮密度计，等于被替换正文本身的估算，与标记无关', () => {
+    for (const d of [
+      DEFAULT_DENSITY,
+      lookupModel('deepseek-flash', 'openai_chat_completions').density,
+    ]) {
+      const block = { type: 'text' as const, text: marker, features: textFeatures(body) }
+      expect(estimateContent([block], d)).toBe(estimateText(body, d))
+      expect(estimateMessage({ role: 'tool', content: [block] }, d)).toBe(
+        estimateMessage({ role: 'tool', content: [{ type: 'text', text: body }] }, d),
+      )
+    }
+  })
+
+  test('没有声明时按正文计', () => {
+    expect(estimateContent([{ type: 'text', text: marker }], DEFAULT_DENSITY)).toBe(
+      estimateText(marker, DEFAULT_DENSITY),
+    )
+  })
+})
