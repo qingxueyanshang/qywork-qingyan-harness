@@ -177,15 +177,17 @@ describe('canvas 工具', () => {
   /**
    * 原始失败形状：重试一次仍不符合时，模型按「由用户决定」停下，其余卡片未生成；
    * 用户要求换模型重新生成时，模型按「先询问用户」停下询问已有结果的卡。
-   * 重新运行的上限与系统提示中「结果不符合要求」一类相同：图片 3 次，视频 2 次。
+   * 重新运行的上限与系统提示中的 retry_limit 相同：图片 3 次，视频 2 次。
+   * 用尽后记为失败而不是完成：「说明差异后按完成处理」使不符合要求的结果以完成结束本轮。
    */
-  test('运行说明不把重试上限与换模型作为停下询问用户的理由', () => {
+  test('运行说明不把重试上限与换模型作为停下询问用户的理由，用尽上限记为失败', () => {
     expect(runCanvasTool.description).toContain(
-      '同一张卡片的图片最多重新运行 3 次，视频最多 2 次；用尽后把最接近要求的版本设为当前版本，继续其余节点，在最终回复中说明差异，该节点按完成处理。',
+      '同一张卡片的图片最多重新运行 3 次，视频最多 2 次；用尽后把最接近要求的版本设为当前版本，继续其余节点，该节点按系统提示中的 retry_limit 记为失败。',
     )
     expect(runCanvasTool.description).toContain(
       '只运行尚无可用结果的卡，在最终回复中列出未重新生成的卡。',
     )
+    expect(runCanvasTool.description).not.toContain('按完成处理')
     expect(runCanvasTool.description).not.toContain('由用户决定')
     expect(runCanvasTool.description).not.toContain('询问用户')
   })

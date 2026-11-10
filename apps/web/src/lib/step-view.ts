@@ -14,6 +14,7 @@ import {
   type StopReason,
   SUBAGENT_NODE_ID,
   TODO_BLOCKERS,
+  TODO_FAILURES,
   TODO_STATUSES,
   type TodoItem,
 } from '@qywork/core'
@@ -221,7 +222,7 @@ export function argsRows(args: Record<string, unknown>): [string, string][] {
 }
 
 /**
- * 待办清单型参数：`{ todos: [{ content, status, blocker?, need?, cause?, attempts? }, …] }`。
+ * 待办清单型参数：`{ todos: [{ content, status, blocker?, need?, failure?, cause?, attempts? }, …] }`。
  *
  * 按形状识别，不按工具名识别：同文件的 `listOf` / `diffFrom` 采用相同做法，
  * 展开内容中的 Switch 不判断步骤由哪个工具调用。
@@ -247,7 +248,16 @@ export function todosOf(args: Record<string, unknown>): TodoItem[] | null {
       out.push({ id, content: t.content, status, blocker, need: t.need })
     } else if (status === 'failed') {
       if (typeof t.cause !== 'string' || typeof t.attempts !== 'string') return null
-      out.push({ id, content: t.content, status, cause: t.cause, attempts: t.attempts })
+      // 较早写入账本的失败条目没有类别，仍按失败显示。
+      const failure = TODO_FAILURES.find((f) => f === t.failure)
+      out.push({
+        id,
+        content: t.content,
+        status,
+        ...(failure ? { failure } : {}),
+        cause: t.cause,
+        attempts: t.attempts,
+      })
     } else {
       out.push({ id, content: t.content, status })
     }

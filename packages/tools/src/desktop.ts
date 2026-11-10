@@ -1232,7 +1232,7 @@ export const desktopWindowsTool: ToolSpec = {
     'title 为系统窗口标题，可能与当前页面或会话不一致；操作目标应依据最新截图或控件确认。' +
     'windowId 是后续调用的入口，窗口重建后失效。' +
     'foregroundEnabled 是当前前台操作开关；为 false 时只能使用 background 动作，' +
-    '需要前台操作的任务应说明限制并等待用户开启，不要重试或更换目标绕过。',
+    '需要前台操作的任务用 write_todos 把该项标为 blocked（user_only），由用户开启，不要重试或更换目标绕过。',
   parameters: { type: 'object', properties: {}, additionalProperties: false },
   actionKind: 'read',
   summary: '列出可操作的桌面窗口',
@@ -1534,7 +1534,7 @@ export const desktopActTool: ToolSpec = {
     'move_window / resize_window / close_window 使用指针、键盘或窗口接口，要求 foregroundEnabled 为 true；' +
     '指针与键盘动作执行前无需 activate。' +
     'hover 将真实指针移到落点并停留，执行前目标窗口置于前台；悬停时才出现的按钮与菜单项，先 hover 再操作。' +
-    '为 false 时应说明前台操作已关闭并等待用户开启；动作表中没有某个动作表示该控件不提供它，不能据此推断开关状态。' +
+    '为 false 时用 write_todos 把该项标为 blocked（user_only），由用户开启前台操作；动作表中没有某个动作表示该控件不提供它，不能据此推断开关状态。' +
     '恢复或置前窗口直接使用 activate，它会恢复最小化窗口并将其置前；set_window_state 只用于指定窗口状态，不能据此确认窗口已在前台。' +
     'type_text 指定控件时要求该控件此刻持有键盘焦点，先 click 该控件；自绘界面不提供控件，输入投递给窗口。' +
     '按控件执行的指针动作落在该控件包围盒的中心；控件比其中的可见内容宽时（例如聊天记录中占满整行的一条消息），中心可能是空白处，此时按图像坐标定位到内容上。' +

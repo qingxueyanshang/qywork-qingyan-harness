@@ -633,11 +633,11 @@ describe('被拒绝时返回的说明', () => {
     return v
   }
 
-  test('给出「由用户提升权限」与「跳过」两种处理方式', async () => {
+  test('给出「由用户提升权限」的处理方式，并按受阻规则停下，而不是自由文字的「告知用户」', async () => {
     const v = await denyFor('rm -rf ~/')
     expect(v.allowed).toBe(false)
     expect(v.reason).toContain('完全访问')
-    expect(v.reason).toContain('跳过')
+    expect(v.reason).toContain('blocked（user_only）')
   })
 
   test('不引导更换写法：提及「换」之处必须都是否定句', async () => {

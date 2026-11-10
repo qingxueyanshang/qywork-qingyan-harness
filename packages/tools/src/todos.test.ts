@@ -371,6 +371,7 @@ describe('提交的清单与本轮结束', () => {
             {
               content: '并行生成视频',
               status: 'failed',
+              failure: 'denied',
               cause: '余额不足',
               attempts: '额度用尽不重试',
             },
@@ -381,7 +382,7 @@ describe('提交的清单与本轮结束', () => {
     ])
     expect(finished).toMatchObject({ status: 'done', stopReason: 'completed' })
     expect(finished.type === 'run.finished' && finished.stopDetail).toBe(
-      '失败：余额不足，已尝试：额度用尽不重试',
+      '无法重试：余额不足，已尝试：额度用尽不重试',
     )
   })
 
@@ -412,12 +413,13 @@ describe('提交的清单与本轮结束', () => {
 })
 
 describe('失败：重试之后仍无法完成的终态', () => {
-  test('failed 带原因与尝试时接受，回执写明其余步骤失败', async () => {
+  test('failed 带类别、原因与尝试时接受，回执写明其余步骤失败', async () => {
     const { r, c } = await run([
       { content: '生成样张', status: 'completed' },
       {
         content: '生成第 4 页',
         status: 'failed',
+        failure: 'transient',
         cause: 'HTTP 429 限流',
         attempts: '系统在 30 秒、2 分钟、5 分钟后各重试一次',
         blocker: null,
@@ -430,29 +432,62 @@ describe('失败：重试之后仍无法完成的终态', () => {
       id: 'todo_2',
       content: '生成第 4 页',
       status: 'failed',
+      failure: 'transient',
       cause: 'HTTP 429 限流',
       attempts: '系统在 30 秒、2 分钟、5 分钟后各重试一次',
     })
   })
 
-  test('failed 缺少原因或尝试时拒绝', async () => {
+  test('failed 缺少类别、原因或尝试时拒绝', async () => {
     for (const row of [
       { content: '乙', status: 'failed' },
-      { content: '乙', status: 'failed', cause: 'HTTP 403' },
-      { content: '乙', status: 'failed', attempts: '未重试' },
+      { content: '乙', status: 'failed', failure: 'denied', cause: 'HTTP 403' },
+      { content: '乙', status: 'failed', failure: 'denied', attempts: '未重试' },
+      { content: '乙', status: 'failed', cause: 'HTTP 403', attempts: '不重试' },
     ]) {
       const { r, c } = await run([row])
       expect(r.status).toBe('failure')
-      expect(r.message).toContain('第 1 条标为 failed，必须填写 cause')
+      expect(r.message).toContain('第 1 条标为 failed，必须填写 failure')
       expect(c.emitted).toHaveLength(0)
     }
+  })
+
+  /**
+   * 原始失败形状（rn_0mw9ia8s70001waoi80）：工作区技能中的核对脚本有匹配问题，模型未修改脚本，
+   * 把剩余两项标为 failed（cause 写脚本的匹配问题），本轮以 completed 结束。
+   * 失败只有闭集中的类别，类别之外的原因被拒绝，拒绝信息指向修改工作区中的原因。
+   */
+  test('失败类别不在闭集内时拒绝，拒绝信息指向修改工作区中的原因', async () => {
+    for (const failure of ['script_error', 'check_failed', 'other']) {
+      const { r, c } = await run([
+        {
+          content: '完成 OCR 核对并合成 PPTX',
+          status: 'failed',
+          failure,
+          cause: 'check_text.py 与当前画布提示词存在匹配问题',
+          attempts: '多轮 OCR 检查',
+        },
+      ])
+      expect(r.status).toBe('failure')
+      expect(r.message).toContain(
+        'transient、invalid_request、denied、unknown、retry_limit、no_progress、dependency 之一',
+      )
+      expect(r.message).toContain('原因在工作区的文件、脚本或画布中时修改它')
+      expect(c.emitted).toHaveLength(0)
+    }
+  })
+
+  test('非失败条目填写 failure 时拒绝', async () => {
+    const { r } = await run([{ content: '甲', status: 'completed', failure: 'transient' }])
+    expect(r.status).toBe('failure')
+    expect(r.message).toContain('不填写 failure')
   })
 
   test('受阻与失败并存时回执分别计数', async () => {
     const { r } = await run([
       { content: '甲', status: 'completed' },
       { content: '乙', status: 'blocked', blocker: 'review', need: '用户查看样张' },
-      { content: '丙', status: 'failed', cause: 'HTTP 403', attempts: '不重试' },
+      { content: '丙', status: 'failed', failure: 'denied', cause: 'HTTP 403', attempts: '不重试' },
     ])
     expect(r.message).toBe('已完成 1/3 步，其余 1 步受阻、1 步失败')
   })

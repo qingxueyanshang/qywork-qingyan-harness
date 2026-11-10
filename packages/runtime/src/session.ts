@@ -1213,7 +1213,7 @@ export class Session {
       allowed: false,
       reason:
         `权限规则拒绝执行此命令：${d.reason}。当前为「自动审批」模式。` +
-        `请告知用户由其改为「完全访问」，或跳过此步骤；不要以其他写法执行同一操作。`,
+        `需要该操作时用 write_todos 把该项标为 blocked（user_only），由用户改为「完全访问」；不要以其他写法执行同一操作。`,
     }
   }
 

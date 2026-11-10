@@ -679,7 +679,37 @@ export const TODO_BLOCKER_LABEL: Record<TodoBlocker, string> = {
 }
 
 /**
- * 待办条目。`blocked` 必须带类别与所需条件，`failed` 必须带失败原因与做过的尝试，其余状态都不带，
+ * 待办失败的类别，闭集。执行失败按系统提示中的处理方式处理之后仍无法完成时才标为 `failed`；
+ * 各类别的判定标准只写在系统提示中（`runtime/prompt.ts`），工具参数只列取值。
+ *
+ * 与 `TODO_BLOCKERS` 同理：不要加入「其他」「工作区内的问题」之类的开放类别。失败项不触发继续提示，
+ * 开放类别使任何未完成的工作（脚本有误、检查未通过）都能以失败结束本轮。
+ * 原因位于工作区之内、可以修改时不是失败。
+ */
+export const TODO_FAILURES = [
+  'transient',
+  'invalid_request',
+  'denied',
+  'unknown',
+  'retry_limit',
+  'no_progress',
+  'dependency',
+] as const
+export type TodoFailure = (typeof TODO_FAILURES)[number]
+
+/** 失败类别的中文名称，界面、提示词中的待办快照与停止依据共用。 */
+export const TODO_FAILURE_LABEL: Record<TodoFailure, string> = {
+  transient: '暂时故障',
+  invalid_request: '请求有误',
+  denied: '无法重试',
+  unknown: '结果未知',
+  retry_limit: '重新运行次数用尽',
+  no_progress: '修改无进展',
+  dependency: '依赖项失败',
+}
+
+/**
+ * 待办条目。`blocked` 必须带类别与所需条件，`failed` 必须带失败类别、失败原因与做过的尝试，其余状态都不带，
  * 由 `write_todos` 校验。
  *
  * 账本中的 `write_todos` 参数在 strict 模式下对未填写的字段写入 null，
@@ -699,6 +729,8 @@ export type TodoItem =
       id: string
       content: string
       status: 'failed'
+      /** 失败类别。`write_todos` 写入的条目都带该字段；账本中较早写入的条目没有，显示为「失败」。 */
+      failure?: TodoFailure
       /** 失败原因。 */
       cause: string
       /** 做过的尝试：次数与每次的改动。 */
@@ -710,7 +742,10 @@ export type TodoItem =
  */
 export function todoReason(todo: TodoItem): string | null {
   if (todo.status === 'blocked') return `${TODO_BLOCKER_LABEL[todo.blocker]}：${todo.need}`
-  if (todo.status === 'failed') return `失败：${todo.cause}，已尝试：${todo.attempts}`
+  if (todo.status === 'failed') {
+    const label = todo.failure ? TODO_FAILURE_LABEL[todo.failure] : '失败'
+    return `${label}：${todo.cause}，已尝试：${todo.attempts}`
+  }
   return null
 }
 

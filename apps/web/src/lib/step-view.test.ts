@@ -496,7 +496,20 @@ describe('待办清单参数识别', () => {
     ])
   })
 
-  test('识别失败条目的原因与尝试', () => {
+  test('识别失败条目的类别、原因与尝试；较早写入、没有类别的条目同样识别', () => {
+    expect(
+      todosOf({
+        todos: [
+          {
+            content: '生成第 4 页',
+            status: 'failed',
+            failure: 'denied',
+            cause: 'HTTP 403',
+            attempts: '不重试',
+          },
+        ],
+      })?.[0],
+    ).toMatchObject({ failure: 'denied' })
     const list = todosOf({
       todos: [{ content: '生成第 4 页', status: 'failed', cause: 'HTTP 403', attempts: '不重试' }],
     })

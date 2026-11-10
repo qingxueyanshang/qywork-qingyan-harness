@@ -14,7 +14,13 @@ const list = (...statuses: TodoStatus[]): TodoItem[] =>
     const base = { id: `todo_${i + 1}`, content: `第 ${i + 1} 条` }
     if (status === 'blocked') return { ...base, status, blocker: 'review', need: '用户查看样张' }
     if (status === 'failed')
-      return { ...base, status, cause: 'HTTP 429 限流', attempts: '重试 3 次' }
+      return {
+        ...base,
+        status,
+        failure: 'transient',
+        cause: 'HTTP 429 限流',
+        attempts: '重试 3 次',
+      }
     return { ...base, status }
   })
 
@@ -68,10 +74,23 @@ describe('第几步', () => {
 })
 
 describe('受阻与失败的说明', () => {
-  test('受阻写类别名称与所需条件，失败写原因与尝试，其余状态没有说明', () => {
+  test('受阻写类别名称与所需条件，失败写失败类别、原因与尝试，其余状态没有说明', () => {
     const [blocked, failed, pending] = list('blocked', 'failed', 'pending')
     expect(todoReason(blocked!)).toBe('等待用户查看：用户查看样张')
-    expect(todoReason(failed!)).toBe('失败：HTTP 429 限流，已尝试：重试 3 次')
+    expect(todoReason(failed!)).toBe('暂时故障：HTTP 429 限流，已尝试：重试 3 次')
     expect(todoReason(pending!)).toBeNull()
+  })
+
+  /** 账本中较早写入的失败条目没有类别，仍需读取与显示。 */
+  test('没有失败类别的条目显示为「失败」', () => {
+    expect(
+      todoReason({
+        id: 'todo_1',
+        content: '甲',
+        status: 'failed',
+        cause: 'HTTP 403',
+        attempts: '不重试',
+      }),
+    ).toBe('失败：HTTP 403，已尝试：不重试')
   })
 })

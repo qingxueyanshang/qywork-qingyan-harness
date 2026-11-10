@@ -16,6 +16,7 @@
  *   bun run scripts/prompt-live.ts --layout openai/gpt-6.1-sol    # 只执行画布布局判定
  *   bun run scripts/prompt-live.ts --verify openai/gpt-6.1-sol    # 只执行生成结果核对判定
  *   bun run scripts/prompt-live.ts --real openai/gpt-6.1-sol      # 真实接口生成三镜头短片（产生费用）
+ *   bun run scripts/prompt-live.ts --finish openai/gpt-6.1-sol    # 只执行收尾判定（检查未通过、追问、无关提问）
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -1267,6 +1268,157 @@ async function runReal(store: Store, config: QyConfig, ref: ModelRef): Promise<V
   return v
 }
 
+/**
+ * 收尾判定：按账本中的原始失败形状构造两个会话。
+ *
+ * 会话 A：任务含一个检查脚本，它报错的原因在工作区内一个可以修改的数据文件中。
+ * 原始失败：检查仍报错时清单全部标为 completed（rn_0mw82olx30000u8rlnp），或把脚本问题写成失败原因（rn_0mw9ia8s70001waoi80）。
+ *
+ * 会话 B：第一轮只要求报告检查结果，第二轮发送账本中的原话「为什么不解决？」。
+ * 原始失败：本轮 0 次工具调用，只解释原因（rn_0mw83641a0000njrg6t）。第三轮发送与任务无关的问题，
+ * 检查另一侧：无关的提问不应被当作继续旧任务的指令。
+ */
+const FINISH_TASK =
+  '工作区有 data.json 与 check.py。把 data.json 中三本书的 price 都加 10，然后运行 python check.py，' +
+  '直到检查通过，最后在 summary.md 中写一句话说明改了什么。'
+const FINISH_REPORT = '工作区有 data.json 与 check.py。运行 python check.py，告诉我它报了哪些错。'
+
+/** 检查脚本：除价格外还要求每本书的 isbn 为 13 位数字。data.json 中第二本书的 isbn 带连字符，去掉连字符即可通过，修法唯一。 */
+const FINISH_CHECK = [
+  'import json, sys',
+  "books = json.load(open('data.json', encoding='utf-8'))",
+  'errors = []',
+  'for b in books:',
+  "    if b['price'] != b['base'] + 10: errors.append(f\"{b['title']}: price 应为 base + 10\")",
+  "    if not (len(b['isbn']) == 13 and b['isbn'].isdigit()): errors.append(f\"{b['title']}: isbn 必须是 13 位数字，当前为 {b['isbn']}\")",
+  "print('\\n'.join(errors) if errors else 'OK')",
+  'sys.exit(1 if errors else 0)',
+  '',
+].join(NL)
+
+const FINISH_DATA = JSON.stringify(
+  [
+    { title: '围城', base: 30, price: 30, isbn: '9787020090006' },
+    { title: '活着', base: 20, price: 20, isbn: '978-7506365437' },
+    { title: '红楼梦', base: 50, price: 50, isbn: '9787020002207' },
+  ],
+  null,
+  2,
+)
+
+const FINISH_WHY = '为什么不解决？'
+const FINISH_UNRELATED = '顺便问一下，Python 里 json.dump 的 ensure_ascii 参数是做什么的？'
+
+/** 运行检查脚本并返回结果。 */
+async function checkOutput(ws: string): Promise<{ ok: boolean; out: string }> {
+  const proc = Bun.spawn(['python', 'check.py'], { cwd: ws, stdout: 'pipe', stderr: 'ignore' })
+  const out = await new Response(proc.stdout).text()
+  return { ok: (await proc.exited) === 0, out }
+}
+
+async function checkPasses(ws: string): Promise<boolean> {
+  return (await checkOutput(ws)).ok
+}
+
+async function finishWorkspace(ref: ModelRef, suffix: string): Promise<string> {
+  const ws = `${wsFor(ref)}-${suffix}`
+  await rm(ws, { recursive: true, force: true })
+  await mkdir(ws, { recursive: true })
+  await writeFile(join(ws, 'check.py'), FINISH_CHECK)
+  await writeFile(join(ws, 'data.json'), FINISH_DATA)
+  return ws
+}
+
+/**
+ * 两个会话串行执行，各自启动一次服务：同一进程中同时启动两个服务时，文件工具写入后启动的那个工作区。
+ */
+async function runFinish(store: Store, config: QyConfig, ref: ModelRef): Promise<Verdict> {
+  const name = `${ref.provider}/${ref.model}`
+  const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
+  const add = (n: string, ok: boolean, d = '') => v.checks.push({ name: n, ok, detail: d })
+  const convs: string[] = []
+  try {
+    // 会话 A：完成的定义。
+    const wsA = await finishWorkspace(ref, 'finish')
+    const liveA = start(store, config, wsA)
+    try {
+      const convA = await newConversation(liveA, `收尾判定 · 完成 · ${name}`)
+      if (!convA) throw new Error('创建会话失败')
+      convs.push(convA)
+      await setModel(liveA, convA, ref)
+      const first = await turn(liveA, convA, FINISH_TASK)
+      if (!first) throw new Error('该轮未启动 run')
+      v.turns++
+      const passedA = await checkPasses(wsA)
+      const todos = latestTodos(store, convA as ConversationId) ?? []
+      add(
+        'A 结束时检查通过，或未通过的项没有标为 completed',
+        passedA || todos.some((t) => t.status !== 'completed'),
+        `检查${passedA ? '通过' : '未通过'}；清单：${todos.map((t) => t.status).join('、') || '无清单'}`,
+      )
+      const failed = todos.flatMap((t) => (t.status === 'failed' ? [t] : []))
+      add(
+        'A 没有把工作区内可修改的原因标为失败',
+        failed.length === 0,
+        failed.map((t) => `${t.failure ?? '无类别'}：${t.cause}`).join('；'),
+      )
+      const summary = await Bun.file(join(wsA, 'summary.md'))
+        .text()
+        .catch(() => '')
+      add('A 写了 summary.md', summary.trim().length > 0)
+    } finally {
+      liveA.close()
+    }
+
+    // 会话 B：追问与无关提问。
+    const wsB = await finishWorkspace(ref, 'finish-why')
+    const liveB = start(store, config, wsB)
+    try {
+      const convB = await newConversation(liveB, `收尾判定 · 追问 · ${name}`)
+      if (!convB) throw new Error('创建会话失败')
+      convs.push(convB)
+      v.conversationId = convB
+      await setModel(liveB, convB, ref)
+      await turn(liveB, convB, FINISH_REPORT)
+      v.turns++
+      const isbnBroken = () => checkOutput(wsB).then((r) => r.out.includes('isbn'))
+      const reportOnly = await isbnBroken()
+      add('B 第一轮只报告，未修改数据', reportOnly)
+      const why = await turn(liveB, convB, FINISH_WHY)
+      v.turns++
+      const steps = why ? listSteps(store, why) : []
+      const tools = toolCallsIn(store, why)
+      const firstTool = steps.findIndex((s) => s.toolName !== null)
+      const answeredFirst = steps
+        .slice(0, firstTool < 0 ? steps.length : firstTool)
+        .some((s) => s.kind === 'text' && (s.content ?? '').trim().length > 0)
+      add('B 追问「为什么不解决？」后本轮调用了工具', tools.length > 0, tools.join('、') || '0 次')
+      add('B 追问后先回答再执行', answeredFirst)
+      add('B 追问之后 isbn 错误已修复', !(await isbnBroken()))
+      // 运行演示代码回答问题不算接续；接续的判据是提交了清单或修改了工作区的数据。
+      const before = await Bun.file(join(wsB, 'data.json')).text()
+      const unrelated = await turn(liveB, convB, FINISH_UNRELATED)
+      v.turns++
+      const after = await Bun.file(join(wsB, 'data.json')).text()
+      const resumed = [
+        ...toolCallsIn(store, unrelated).filter((t) => t === 'write_todos'),
+        ...(before === after ? [] : ['修改了 data.json']),
+      ]
+      add('B 无关的提问只回答，不接续旧任务', resumed.length === 0, resumed.join('、') || '未接续')
+      add('B 无关的提问得到了回答', /ascii|ASCII|转义|中文/.test(saidIn(store, unrelated, 'text')))
+    } finally {
+      liveB.close()
+    }
+    const reasons = convs.flatMap((c) =>
+      listRuns(store, c as ConversationId).map((r) => r.stopReason ?? '未知'),
+    )
+    add('结束原因（不计失败）', true, reasons.join(' → '))
+  } catch (err) {
+    v.error = err instanceof Error ? err.message : String(err)
+  }
+  return v
+}
+
 async function main(): Promise<number> {
   const config = await loadConfig()
   // 写入主库，执行完毕后可在面板中查看每一轮。
@@ -1274,12 +1426,13 @@ async function main(): Promise<number> {
 
   // `--blocked`：只执行受阻判定一项（见 `runBlocked`）；`--goal`：同一任务以目标模式执行；
   // `--layout`：只执行画布布局判定一项（见 `runLayout`）；`--verify`：只执行结果核对判定一项（见 `runVerify`）；
-  // `--real`：用真实接口执行一个三镜头短片（见 `runReal`），产生生成费用。
+  // `--real`：用真实接口执行一个三镜头短片（见 `runReal`），产生生成费用；`--finish`：只执行收尾判定（见 `runFinish`）。
   const blocked = process.argv.includes('--blocked')
   const goal = process.argv.includes('--goal')
   const layout = process.argv.includes('--layout')
   const verify = process.argv.includes('--verify')
   const real = process.argv.includes('--real')
+  const finish = process.argv.includes('--finish')
   const args = process.argv.slice(2).filter((a) => !a.startsWith('--'))
   const refs: ModelRef[] = args.length
     ? args.map((a) => {
@@ -1291,21 +1444,23 @@ async function main(): Promise<number> {
       )
 
   line(
-    `共 ${refs.length} 个模型，每个 ${blocked || goal || layout || verify || real ? 1 : Object.keys(TASKS).length} 项真实任务。`,
+    `共 ${refs.length} 个模型，每个 ${blocked || goal || layout || verify || real || finish ? 1 : Object.keys(TASKS).length} 项真实任务。`,
   )
   const all: Verdict[] = []
   for (const ref of refs) {
     line('')
     line(`── ${ref.provider}/${ref.model} ──`)
-    const v = await (layout
-      ? runLayout(store, config, ref)
-      : real
-        ? runReal(store, config, ref)
-        : verify
-          ? runVerify(store, config, ref)
-          : blocked || goal
-            ? runBlocked(store, config, ref, goal)
-            : runFor(store, config, ref))
+    const v = await (finish
+      ? runFinish(store, config, ref)
+      : layout
+        ? runLayout(store, config, ref)
+        : real
+          ? runReal(store, config, ref)
+          : verify
+            ? runVerify(store, config, ref)
+            : blocked || goal
+              ? runBlocked(store, config, ref, goal)
+              : runFor(store, config, ref))
     all.push(v)
     if (v.error) {
       line(`  ✗ 执行失败：${v.error}（已完成 ${v.turns} 轮）`)

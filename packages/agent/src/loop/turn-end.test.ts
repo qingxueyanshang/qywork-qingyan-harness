@@ -501,6 +501,7 @@ describe('正常响应结束不等于任务完成', () => {
     id: 'todo_2',
     content: '生成第 4 页',
     status: 'failed',
+    failure: 'transient',
     cause: 'HTTP 429 限流',
     attempts: '系统在 30 秒、2 分钟、5 分钟后各重试一次，仍失败',
   }
@@ -516,7 +517,12 @@ describe('正常响应结束不等于任务完成', () => {
     expect(notice).toContain('本轮待办尚有未完成的项：核验已生成的音色。')
     expect(notice).not.toContain('发送预览文件')
     expect(notice).not.toContain('生成第 4 页')
-    expect(notice).toContain('标为 failed，填写 cause 与 attempts')
+    // 完成、受阻与失败的判定只引用系统提示，提示中不另写一种可以收尾的表述。
+    expect(notice).toContain('按系统提示「工作方式」一节的定义完成')
+    expect(notice).toContain(
+      'transient、invalid_request、denied、unknown、retry_limit、no_progress、dependency',
+    )
+    expect(notice).not.toContain('在最终回复中说明')
   })
 
   /** 失败按重试规则处理完毕，不等待任何一方：本轮执行完毕，停止依据列出失败原因供最终回复与审计。 */
@@ -524,7 +530,7 @@ describe('正常响应结束不等于任务完成', () => {
     const end = await endWith([doneItem, failedItem], 'rn_failed_only')
     expect(end).toMatchObject({ status: 'done', stopReason: 'completed' })
     expect(end.stopDetail).toBe(
-      '失败：HTTP 429 限流，已尝试：系统在 30 秒、2 分钟、5 分钟后各重试一次，仍失败',
+      '暂时故障：HTTP 429 限流，已尝试：系统在 30 秒、2 分钟、5 分钟后各重试一次，仍失败',
     )
     expect(end.tails).toHaveLength(1)
   })
@@ -533,7 +539,7 @@ describe('正常响应结束不等于任务完成', () => {
     const end = await endWith([failedItem, doneItem, blockedItem], 'rn_blocked_and_failed')
     expect(end).toMatchObject({ status: 'done', stopReason: 'awaiting_user' })
     expect(end.stopDetail).toBe(
-      '需要用户提供：用户在手机上扫码登录微信；失败：HTTP 429 限流，已尝试：系统在 30 秒、2 分钟、5 分钟后各重试一次，仍失败',
+      '需要用户提供：用户在手机上扫码登录微信；暂时故障：HTTP 429 限流，已尝试：系统在 30 秒、2 分钟、5 分钟后各重试一次，仍失败',
     )
     expect(end.tails).toHaveLength(1)
   })
