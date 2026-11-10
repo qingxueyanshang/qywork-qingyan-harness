@@ -137,6 +137,13 @@ const SEQUENCE_ACTIONS: readonly DesktopActionKind[] = ACTIONS.filter(
 /** 接受图像点作为落点的动作。其余动作不接受图像点：键盘动作省略 ref 时投递给窗口焦点，其余按控件执行。 */
 const POINTER_ACTIONS: readonly DesktopActionKind[] = ['click', 'hover', 'drag', 'wheel']
 /**
+ * 回执附带动作后整窗图的动作，与是否按图定位无关。
+ *
+ * 这些动作的效果只体现在画面上；控件接口类动作有回读与控件变化可以核验，`type_text` 有回读核验。
+ * 不要加入 `close_window` 与其余改变窗口的动作：窗口消失或几何变化后采集失败或没有依据。
+ */
+const SHOT_ACTIONS: readonly DesktopActionKind[] = [...POINTER_ACTIONS, 'press_key', 'activate']
+/**
  * 可以不指定控件、直接投递给窗口的动作。
  *
  * 键盘输入的目标是目标窗口内焦点所在的位置，不是某个被指定的控件。自绘界面不暴露业务控件，
@@ -1165,7 +1172,7 @@ function imageAreaOf(g: DesktopImageGeometry, rect: DesktopRect): DesktopRect | 
 }
 
 /**
- * 按图定位的动作在回执上附一张动作后的整窗图。
+ * 按图定位的动作与 `SHOT_ACTIONS` 中的动作在回执上附一张动作后的整窗图。
  *
  * 在动作回执返回后立即采集；控件重读不保证异步界面状态已稳定，任务结果仍需依据观察核验。
  * 请求动作或窗口准备使旧观察失效时附图；纯拒绝且旧观察仍有效时不附图。
@@ -1538,7 +1545,7 @@ export const desktopActTool: ToolSpec = {
     '恢复或置前窗口直接使用 activate，它会恢复最小化窗口并将其置前；set_window_state 只用于指定窗口状态，不能据此确认窗口已在前台。' +
     'type_text 指定控件时要求该控件此刻持有键盘焦点，先 click 该控件；自绘界面不提供控件，输入投递给窗口。' +
     '按控件执行的指针动作落在该控件包围盒的中心；控件比其中的可见内容宽时（例如聊天记录中占满整行的一条消息），中心可能是空白处，此时按图像坐标定位到内容上。' +
-    '指针动作可使用 imageRef 与 imageX / imageY 定位；回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
+    '指针动作可使用 imageRef 与 imageX / imageY 定位。指针、按键与激活动作的回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
     'dispatch 表示动作派发状态：not_dispatched 未执行，submitted 已提交，unknown 结果未确认。动作提交成功不等于任务完成；结果未确认时应先观察，不得直接重复执行。' +
     '「回读不一致」时同样不要重发同一段文字。' +
     'not_dispatched 只表示请求动作未派发，窗口准备可能已改变界面；有新观察时使用新编号，观察失效时先重新观察。' +
@@ -1629,7 +1636,7 @@ export const desktopActTool: ToolSpec = {
       const field = writes(action) ? inputField(table, aim.element) : undefined
       const r = await send(() => desktop.act({ windowId, ...aim.input, action }))
       const outcome = actOutcome(ctx, action, aim, r, before, field)
-      if (aim.input.at === undefined) return outcome
+      if (aim.input.at === undefined && !SHOT_ACTIONS.includes(kind)) return outcome
       const refresh =
         r.dispatch !== 'not_dispatched' || r.observation !== null || !desktop.elements(windowId)
       return withShot(outcome, refresh, desktop, send, windowId, ctx)
@@ -2265,7 +2272,7 @@ export const desktopActSequenceTool: ToolSpec = {
     'set_window_state / move_window / resize_window / close_window 不接受，它们会使后续步骤的 imageRef 失效。' +
     '自绘界面的「点击输入框 → type_text → press_key」这类连续操作使用本工具，一次调用执行完毕。' +
     '第一步按本轮对该窗口最近一份观察解析目标，之后每一步按上一步带回的新观察解析；' +
-    '按图定位的步骤使用 imageRef 与 imageX / imageY，序列包含此类步骤时，回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
+    '按图定位的步骤使用 imageRef 与 imageX / imageY。序列包含按图定位的步骤，或已执行指针、按键与激活动作时，回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
     '全部提交仅表示动作已提交，不代表任务完成；expect 仅表示所指定的后置条件是否满足。' +
     '某步未执行、结果未确认、后置条件未满足、调用未返回或本次执行被停止，即停在该步并放弃后续步骤。' +
     '结果中 dispatched 与 notExecuted 分别列出；停止后按最后一份观察重新规划，不要重发整组。',
@@ -2406,11 +2413,14 @@ export const desktopActSequenceTool: ToolSpec = {
       }
 
       const outcome = sequenceOutcome(ctx, plans, done, halt, cursor, before)
-      // 该组中有按图定位的步骤，说明调用方依据图像而非控件表：末尾补充一张动作后的
+      // 该组中有按图定位的步骤，或已派发 `SHOT_ACTIONS` 中的动作：末尾补充一张动作后的
       // 整窗图，判据与单动作相同，见 `withShot`。
       const byImage = plans.some((p) => given(p.args.imageRef))
       const dispatched = done.some((r) => r.dispatch !== 'not_dispatched')
-      if (!byImage) return outcome
+      const onScreen = done.some(
+        (r) => r.dispatch !== 'not_dispatched' && SHOT_ACTIONS.includes(r.action),
+      )
+      if (!byImage && !onScreen) return outcome
       const refresh = dispatched || cursor.last !== null || cursor.table === null
       return withShot(outcome, refresh, desktop, send, windowId, ctx)
     }),
