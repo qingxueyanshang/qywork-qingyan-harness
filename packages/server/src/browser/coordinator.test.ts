@@ -140,7 +140,7 @@ interface Devtools {
    * 每次点击时页面发出的请求：`type` 是资源类型，`finishMs` 毫秒后结束，结束时链接名称改为
    * 「已加载」并产生一次 DOM 变更；`finishMs` 为 `null` 表示请求不结束。
    */
-  request: { type: string; finishMs: number | null } | null
+  request: { type: string; finishMs: number | null; mimeType?: string } | null
   /** 向页会话发送一条协议事件。 */
   emit: (method: string, params: Record<string, unknown>) => void
 }
@@ -334,8 +334,9 @@ function fakeDevtools(marker: string): Devtools {
         ) {
           requests += 1
           const requestId = `req-${requests}`
-          const { type, finishMs } = state.request
+          const { type, finishMs, mimeType } = state.request
           send('Network.requestWillBeSent', { requestId, type })
+          if (mimeType) send('Network.responseReceived', { requestId, response: { mimeType } })
           if (finishMs !== null) {
             const timer = setTimeout(() => {
               linkName = '已加载'
@@ -1955,6 +1956,14 @@ test('图片与 EventSource 请求不影响静默判定', async () => {
     if (r.observation === null) throw new Error('这次动作本应带回观察')
     expect(r.settle).toBe('quiet')
   }
+})
+
+test('以 fetch 读取的事件流在响应头到达后不再等待', async () => {
+  const { devtools, click } = await clickOnce(300)
+  devtools.request = { type: 'Fetch', finishMs: null, mimeType: 'text/event-stream' }
+  const r = await click()
+  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  expect(r.settle).toBe('quiet')
 })
 
 test('动作之前发出的请求不计入，其结束事件不抵消动作之后发出的请求', async () => {
