@@ -56,6 +56,9 @@ import RechargeDialog from './RechargeDialog.tsx'
 /** 使用记录每页条数，与服务端 `/api/cloud/requests` 相同：返回不足一页即没有更早的记录。 */
 const PAGE = 50
 
+/** 读取失败后自动重新读取的间隔。 */
+const RETRY_MS = 3000
+
 type SignedIn = Extract<CloudState, { state: 'signed_in' }>
 
 const close = () => setAccountOpen(false)
@@ -65,7 +68,7 @@ const close = () => setAccountOpen(false)
  * 两种状态各为固定尺寸（B9），内容在弹窗内滚动。未登录时是窄的登录框（`.signin`）：尺寸只在登录成功、
  * 内容整体换成账号页时改变一次，此时登录表单的按钮已不存在，不会移动用户正在瞄准的目标。
  */
-export default function AccountDialog() {
+export default function AccountDialog(props: { retryMs?: number }) {
   holdOverlay(() => true)
   void refreshCloudState().catch(() => {})
 
@@ -98,7 +101,7 @@ export default function AccountDialog() {
           </button>
           <Switch>
             <Match when={cloudState()?.state === 'signed_in' && (cloudState() as SignedIn)}>
-              {(signed) => <AccountView signed={signed()} />}
+              {(signed) => <AccountView signed={signed()} retryMs={props.retryMs ?? RETRY_MS} />}
             </Match>
             <Match when={cloudState()?.state === 'signed_out'}>
               <div class="account-signin">
@@ -112,7 +115,7 @@ export default function AccountDialog() {
   )
 }
 
-function AccountView(props: { signed: SignedIn }) {
+function AccountView(props: { signed: SignedIn; retryMs: number }) {
   const [usage, { refetch: refetchUsage }] = createResource(fetchCloudUsage)
   const [models, { refetch: refetchModels }] = createResource(fetchCloudModels)
   const requests = createRequestPages()
@@ -125,11 +128,19 @@ function AccountView(props: { signed: SignedIn }) {
   const retrying = () => usage.loading || models.loading || requests.loading()
   // 读取失败时账号状态同样未取得（余额未知、充值入口不显示），重试时一并重新读取。
   const retry = () => {
+    if (retrying()) return
     void refreshCloudState().catch(() => {})
     if (usage.error) void refetchUsage()
     if (models.error) void refetchModels()
     if (requestsFailed()) void requests.more()
   }
+  // 读取失败后每隔 `retryMs` 自动重新读取，直到成功或窗口关闭：到云端的新建连接会在数十秒的时段内
+  // 连续被断开，时段结束后读取即可成功，不需要用户操作。
+  createEffect(() => {
+    if (!failure() || retrying()) return
+    const timer = setTimeout(retry, props.retryMs)
+    onCleanup(() => clearTimeout(timer))
+  })
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [recharging, setRecharging] = createSignal(false)
@@ -236,9 +247,7 @@ function AccountView(props: { signed: SignedIn }) {
       <div class="account-scroll">
         <Show when={error()}>{(m) => <p class="account-error">{m()}</p>}</Show>
 
-        <Show when={failure()}>
-          {(e) => <LoadState error={e()} onRetry={retry} busy={retrying()} />}
-        </Show>
+        <Show when={failure()}>{(e) => <LoadState error={e()} onRetry={retry} />}</Show>
 
         <Show
           when={loaded(usage)}
