@@ -176,9 +176,12 @@ test('白名单之外的方法在发出之前即被拒绝，对端收不到任�
   const client = await connect(endpoint)
   expect((await failure(client.send('Browser.setDownloadBehavior', {}))).message).toMatch(/白名单/)
   expect((await failure(client.send('Fetch.enable', {}))).message).toMatch(/白名单/)
+  expect((await failure(client.send('Network.getResponseBody', {}))).message).toMatch(/白名单/)
   expect(endpoint.methods()).toEqual([])
-  // 读取版本是 Browser 域中唯一放行的命令。
+  // 读取版本是 Browser 域中唯一放行的命令，启用事件是 Network 域中唯一放行的命令。
   expect(allowedMethod('Browser.getVersion')).toBe(true)
+  expect(allowedMethod('Network.enable')).toBe(true)
+  expect(allowedMethod('Network.getResponseBody')).toBe(false)
   await client.send('Browser.getVersion')
   expect(endpoint.methods()).toEqual(['Browser.getVersion'])
 })
@@ -192,9 +195,35 @@ test('按标记识别页面：同 URL 的另一页被附加后立即 detach', as
 
   const detached = endpoint.received.filter((c) => c.method === 'Target.detachFromTarget')
   expect(detached.map((c) => c.params?.sessionId)).toEqual(['sess-t1'])
-  // 页会话初始化按顺序执行完毕，其中包含焦点仿真。
+  // 页会话初始化按顺序执行完毕，其中包含焦点仿真与网络事件。
   expect(endpoint.methods()).toContain('Emulation.setFocusEmulationEnabled')
   expect(endpoint.methods()).toContain('Target.setAutoAttach')
+  const network = endpoint.received.filter((c) => c.method === 'Network.enable')
+  expect(network.map((c) => c.sessionId)).toEqual(['sess-t2'])
+  // 不传缓冲参数。
+  expect(network[0]?.params).toEqual({})
+})
+
+test('网络事件被拒绝时报告初始化失败，不换用其他命令重试', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  endpoint.replies.set('Network.enable', () => ({ error: 'not supported' }))
+  const client = await connect(endpoint)
+  expect(await failure(client.attachByMarker('marker-a'))).toBeInstanceOf(CdpInitError)
+  expect(endpoint.methods().filter((m) => m === 'Network.enable')).toHaveLength(1)
+})
+
+test('子会话不启用网络事件', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+  endpoint.emit(sessionId, 'Target.attachedToTarget', {
+    sessionId: 'child-1',
+    targetInfo: { targetId: 'frame-a', type: 'iframe' },
+  })
+  await new Promise((r) => setTimeout(r, 100))
+  expect(client.childSessionsOf(sessionId)).toEqual([{ sessionId: 'child-1', targetId: 'frame-a' }])
+  const network = endpoint.received.filter((c) => c.method === 'Network.enable')
+  expect(network.map((c) => c.sessionId)).toEqual([sessionId])
 })
 
 test('焦点仿真被拒绝时报告初始化失败，不换用其他命令重试', async () => {

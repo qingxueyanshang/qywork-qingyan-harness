@@ -828,8 +828,10 @@ export const browserActTool: ToolSpec = {
     'execution.state=completed 只表示输入已全部发出并确认，不代表网站业务完成；' +
     'partial 或 unknown 时查看 reason 与 unreleased，先观察确认，不要重放。' +
     '动作之后取得新观察时，结果中直接返回新的元素表与 observationId，据此继续下一步，' +
-    '不必再调用 browser_observe；settle=quiet 只表示页面短暂没有变化，不代表网站业务已完成，' +
-    '后续目标尚未出现时用 browser_wait。' +
+    '不必再调用 browser_observe。' +
+    'settle=quiet 表示动作之后页面发出的 XHR / fetch 请求均已结束且页面短暂没有变化；' +
+    'deadline 表示到达等待上限时仍有请求未结束或页面仍在变化；' +
+    '两者都不代表网站业务已完成，后续目标尚未出现时用 browser_wait。' +
     '页面未跳转时先前观察的元素编号仍然有效，同一个 observationId 可以在同一轮中发出多个动作，' +
     '按发出顺序依次执行；同一轮中前一个动作失败不会阻止后续动作执行。' +
     '输入后页面重建了节点时，后续动作因编号失效被拒绝，用最新的 observationId 重发。' +

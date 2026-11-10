@@ -115,6 +115,13 @@ const MAX_OBSERVATIONS = 8
 const FOLLOW_UP_BUDGET_MS = 10_000
 /** 静默等待的阶段上限。到时即采集，采集成功时按 `deadline` 如实标注。 */
 const QUIET_LIMIT_MS = 1_500
+/**
+ * 有未结束的 XHR / fetch 请求时静默等待的上限，从动作完成时起算。
+ *
+ * 取值依据：点击之后模型自选的等待时长 90% 不超过 5 秒。不要提高到接近 `FOLLOW_UP_BUDGET_MS`：
+ * 该预算还要覆盖观察采集。
+ */
+const NETWORK_LIMIT_MS = 5_000
 /** 静默采样间隔。 */
 const QUIET_SAMPLE_MS = 100
 /** 探针命令的单条上限；剩余预算更短时取剩余预算。 */
@@ -154,14 +161,21 @@ function firstOf(pending: Promise<void>, ms: number): Promise<boolean> {
  * 一次动作或导航期间的框架事件。
  *
  * 在发送命令之前建立，结束时调用 `stop`：事件可能先于命令响应到达，判断「这段时间内是否发生
- * 导航」必须覆盖命令本身。`Page` 域事件由页会话初始化时的 `Page.enable` 发布，
- * 此处不另建事件源。
+ * 导航」必须覆盖命令本身。`Page` 与 `Network` 域事件由页会话初始化时的 `Page.enable`、
+ * `Network.enable` 发布，此处不另建事件源。
  */
 interface NavWatch {
   /** 收到的导航事件条数。静默采样据其是否增长判断本次窗口内是否发生导航。 */
   events(): number
   /** 导航已开始但尚未收到结束事件。 */
   loading(): boolean
+  /**
+   * 订阅建立之后页会话发出、尚未结束的 XHR / fetch 请求数。
+   *
+   * 订阅之前发出的请求不在其中，其结束事件忽略。只统计这两类：图片、媒体与 EventSource 长连接
+   * 会使每次动作都等到上限，文档导航已由帧事件覆盖。
+   */
+  requests(): number
   /** 已收到导航提交的证据。 */
   committed(): boolean
   /** 导航提交时兑现；等待导航确认时使用它，不轮询。 */
@@ -238,11 +252,19 @@ export class BrowserCoordinator {
   #rendering = new Set<string>()
   #offHostChange: () => void
   #offClosed: () => void
+  /** 见 `NETWORK_LIMIT_MS`。只有回归测试传入其他值，以免按真实时间等待 5 秒。 */
+  #networkLimitMs: number
 
-  constructor(bridge: BrowserBridge, enabled: () => boolean, sidecar: () => string) {
+  constructor(
+    bridge: BrowserBridge,
+    enabled: () => boolean,
+    sidecar: () => string,
+    networkLimitMs = NETWORK_LIMIT_MS,
+  ) {
     this.#bridge = bridge
     this.#enabled = enabled
     this.#sidecar = sidecar
+    this.#networkLimitMs = networkLimitMs
     // 断开与重连均使全部控制失效：重连后的调试端点已更换，旧连接上的页会话已不存在。
     this.#offHostChange = bridge.onHostChange(() => this.#dropAll())
     // 宿主侧关闭的页（用户关闭、按会话关闭）须从持有它的控制槽中移除会话，
@@ -757,6 +779,8 @@ export class BrowserCoordinator {
     let events = 0
     let inflight = 0
     let committed = false
+    // 重定向沿用同一个 requestId，按集合去重。
+    const requests = new Set<string>()
     let settle: () => void = () => {}
     const commit = new Promise<void>((resolve) => {
       settle = resolve
@@ -765,6 +789,14 @@ export class BrowserCoordinator {
     const off = page.client.onSessionEvent(page.sessionId, (event) => {
       const params = event.params
       const frame = params.frame as { id?: string } | undefined
+      if (event.method === 'Network.requestWillBeSent') {
+        if (params.type === 'XHR' || params.type === 'Fetch') requests.add(String(params.requestId))
+        return
+      }
+      if (event.method === 'Network.loadingFinished' || event.method === 'Network.loadingFailed') {
+        requests.delete(String(params.requestId))
+        return
+      }
       if (event.method === 'Page.frameStartedLoading' && mine(params.frameId)) {
         events += 1
         inflight += 1
@@ -786,6 +818,7 @@ export class BrowserCoordinator {
     return {
       events: () => events,
       loading: () => inflight > 0,
+      requests: () => requests.size,
       committed: () => committed,
       commit,
       stop: off,
@@ -813,9 +846,13 @@ export class BrowserCoordinator {
   /**
    * 动作之后的有界静默等待。
    *
-   * 连续两次采样 `readyState` 均为 complete 且 DOM 变更计数不变才视为静默；期间收到导航
-   * 事件即重新计数，正在加载的旧文档不得提前通过。静默只表示此刻可以采集快照：
-   * 尚未发出的延迟请求无法预知，静默不表示网站业务已经完成。
+   * 连续两次采样 `readyState` 均为 complete、DOM 变更计数不变，且订阅建立之后发出的
+   * XHR / fetch 请求均已结束，才视为静默；期间收到导航事件即重新计数，正在加载的旧文档
+   * 不得提前通过。静默只表示此刻可以采集快照：尚未发出的延迟请求无法预知，
+   * 静默不表示网站业务已经完成。
+   *
+   * 阶段上限为 `QUIET_LIMIT_MS`。采样时有未结束的请求，阶段上限顺延到此后三个采样间隔，
+   * 至多到动作完成后 `#networkLimitMs`。跨站 iframe 的请求在子会话上，不计入。
    *
    * 探针读数缺少字段时按未静默处理：将缺失视为 complete 会使仍在加载的页面通过。
    */
@@ -826,7 +863,8 @@ export class BrowserCoordinator {
   ): Promise<'quiet' | 'deadline'> {
     const { client, sessionId } = page
     if (client.cancelled) return 'deadline'
-    const stage = Math.min(deadline, Date.now() + QUIET_LIMIT_MS)
+    const network = Math.min(deadline, Date.now() + this.#networkLimitMs)
+    let stage = Math.min(deadline, Date.now() + QUIET_LIMIT_MS)
     try {
       let probe = await client.startProbe(sessionId, probeTimeout(deadline))
       try {
@@ -837,7 +875,12 @@ export class BrowserCoordinator {
           const read = await client.readProbe(sessionId, probe, probeTimeout(deadline))
           const moved = watch.events() !== seen
           seen = watch.events()
-          if (moved || watch.loading()) {
+          const requesting = watch.requests() > 0
+          // 请求结束之后仍须连续两次采样无变化，三个采样间隔为此留出余量。
+          if (requesting) {
+            stage = Math.min(network, Math.max(stage, Date.now() + 3 * QUIET_SAMPLE_MS))
+          }
+          if (moved || watch.loading() || requesting) {
             previous = null
             continue
           }
