@@ -187,6 +187,7 @@ export {
 export { mediaBoxAt, movieMetadataOf, videoMetadataOf } from './domain/media-container.ts'
 export {
   activeMediaParams,
+  alignSizeSeparator,
   type MediaParamDefinition,
   type MediaParamValue,
   mediaOperationFor,
