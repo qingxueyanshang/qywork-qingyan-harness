@@ -483,11 +483,14 @@ export interface AnthropicBlock {
  *
  * `_toolBatch` 不是协议字段，而是「同一轮的多个工具结果须合并为同一条 user 消息」时使用的
  * 内部标记，发送前必须删除；保留会使其进入请求体，破坏缓存前缀。
+ *
+ * `_media` 同为内部字段：该条消息中各工具结果的图片，发送前追加到全部 tool_result 之后。
  */
 export interface AnthropicOutMessage {
   role: 'user' | 'assistant'
   content: string | AnthropicBlock[]
   _toolBatch?: boolean
+  _media?: AnthropicBlock[]
 }
 
 /**
@@ -522,16 +525,26 @@ function buildMessages(
       // Anthropic 的工具结果是 user 轮中的 tool_result block。
       // 同一轮的多个结果必须合并为一条 user 消息；拆成多条会使模型
       // 倾向于不再并行调用工具。
+      // 图片不放入 tool_result：部分中转渠道在 tool_result 同时含文本与图片时丢弃文本，
+      // 模型只收到图片。图片改为同一条 user 消息中排在全部 tool_result 之后的并列块，
+      // 每组之前用一个文本块注明所属的调用。协议要求 tool_result 排在该消息的最前。
+      const blocks = typeof m.content === 'string' ? [] : toBlocks(m.content)
+      const images = blocks.filter((b) => b.type === 'image')
       const block = {
         type: 'tool_result',
         tool_use_id: m.toolCallId,
-        content: typeof m.content === 'string' ? m.content : toBlocks(m.content),
+        content:
+          typeof m.content === 'string' ? m.content : blocks.filter((b) => b.type !== 'image'),
       }
+      const media: AnthropicBlock[] = images.length
+        ? [{ type: 'text', text: `工具调用 ${m.toolCallId} 返回的图片：` }, ...images]
+        : []
       const last = out[out.length - 1]
       if (last?.role === 'user' && Array.isArray(last.content) && last._toolBatch) {
         last.content.push(block)
+        last._media = [...(last._media ?? []), ...media]
       } else {
-        out.push({ role: 'user', content: [block], _toolBatch: true })
+        out.push({ role: 'user', content: [block], _toolBatch: true, _media: media })
       }
       if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
       continue
@@ -555,6 +568,10 @@ function buildMessages(
     })
     if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
   }
+  // 先追加图片再设置断点：断点须位于该消息的最后一个内容块上。
+  for (const m of out) {
+    if (m._media?.length && Array.isArray(m.content)) m.content.push(...m._media)
+  }
   for (const at of marks) {
     const entry = out[at]
     if (!entry) continue
@@ -568,8 +585,11 @@ function buildMessages(
     )
     if (last) last.cache_control = { type: 'ephemeral' as const }
   }
-  // 清除仅用于合并的内部标记，避免其进入请求体并破坏缓存前缀。
-  for (const m of out) delete m._toolBatch
+  // 清除内部字段，避免其进入请求体并破坏缓存前缀。
+  for (const m of out) {
+    delete m._toolBatch
+    delete m._media
+  }
   return out as unknown as Anthropic.MessageParam[]
 }
 
