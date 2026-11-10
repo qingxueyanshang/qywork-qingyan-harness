@@ -379,20 +379,25 @@ export function defaultMediaKind(
 const SUFFIX_SEPARATORS = ['-', '.', '_']
 
 /**
- * 按名称识别生成模型。与目录 id 完全一致时使用目录协议；目录 id 之后带分隔符与后缀时（中转站的自定义名称，
- * 如 `gpt-image-2.5-sunburst-4k`），`base` 为该目录 id，协议按接口地址取默认值：中转站以自身的接口格式提供该名称，
- * 不一定提供目录协议（如 Gemini 原生接口）。多个目录 id 都是前缀时取最长的一个；都不成立时返回 undefined。
+ * 按名称识别生成模型。与目录 id 完全一致时使用目录协议；接口地址是中转站且该条目登记了通用协议的兼容映射（`kinds`）时
+ * 改用通用协议：中转站以自身的接口格式提供该名称，不提供厂商的原生路径（New API 对百炼原生路径返回 404）。
+ * 没有兼容映射的条目（如 Gemini 图像）与未填写接口地址时沿用目录协议。目录 id 之后带分隔符与后缀时
+ * （中转站的自定义名称，如 `gpt-image-2.5-sunburst-4k`），`base` 为该目录 id，协议按接口地址取默认值。
+ * 多个目录 id 都是前缀时取最长的一个；都不成立时返回 undefined。
  *
  * 拉取模型与手动添加共用此函数：两处各写一份时，同一个名称在两处可能识别为不同类别。
  */
 export function identifyMediaModel(
   id: string,
-  catalog: readonly { id: string; kind: MediaKind }[],
+  catalog: readonly { id: string; kind: MediaKind; kinds?: readonly MediaKind[] }[],
   baseUrl: string | undefined,
 ): { output: MediaOutput; kind: MediaKind; base?: string } | undefined {
   const exact = catalog.find((m) => m.id === id)
   if (exact) {
     const output = MEDIA_KIND_OUTPUT[exact.kind]
+    const generic = defaultMediaKind(output, undefined)
+    const relay = !!baseUrl?.trim() && defaultMediaKind(output, baseUrl) === generic
+    if (relay && exact.kinds?.includes(generic)) return { output, kind: generic }
     return { output, kind: defaultMediaKind(output, baseUrl, exact.kind) }
   }
   let base: { id: string; kind: MediaKind } | undefined

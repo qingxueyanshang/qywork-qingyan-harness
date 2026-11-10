@@ -23,7 +23,7 @@ import {
 } from '@qywork/core'
 import { lookupModel } from '../catalog.ts'
 import { bodyMessage, httpStatusName } from '../errors.ts'
-import { mediaCatalog } from '../media/catalog.ts'
+import { mediaCatalog, mediaKindsOf } from '../media/catalog.ts'
 import {
   channelMediaSpec,
   hongchengVideoSpec,
@@ -186,10 +186,14 @@ function catalogFields(
   baseUrl: string,
 ): { known: boolean; base?: string } {
   if (spec) return { known: true }
-  const hit = identifyMediaModel(id, mediaCatalog(), baseUrl)
+  const hit = identifyMediaModel(id, mediaLibrary(), baseUrl)
   if (!hit || hit.output !== output) return { known: false }
   return hit.base ? { known: false, base: hit.base } : { known: true }
 }
+
+/** 供 `identifyMediaModel` 识别的生成目录：带各条目已核实的协议，中转站据此改用通用协议。 */
+const mediaLibrary = () =>
+  mediaCatalog().map((m) => ({ id: m.id, kind: m.kind, kinds: mediaKindsOf(m) }))
 
 /** 接口地址所属渠道商有自己的视频格式时返回该渠道，其余返回 null。 */
 function videoChannelOf(baseUrl: string): VideoChannel | null {
@@ -385,7 +389,7 @@ function fromModelList(
     if (typeof id !== 'string' || listed.has(id)) continue
     const declared = declaredOutput(entry)
     if (declared === null) continue
-    const media = identifyMediaModel(id, mediaCatalog(), target.baseUrl)
+    const media = identifyMediaModel(id, mediaLibrary(), target.baseUrl)
     const known = lookupModel(id, target.kind).catalogued !== false
     const output = declared ?? media?.output ?? (known ? 'chat' : 'unknown')
     if (output === 'unknown') {

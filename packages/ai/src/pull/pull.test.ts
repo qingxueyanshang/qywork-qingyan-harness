@@ -6,6 +6,7 @@
 import { afterAll, afterEach, expect, spyOn, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { identifyMediaModel } from '@qywork/core'
 import { PullError, pullModels } from './index.ts'
 
 const fixture = (name: string) =>
@@ -247,10 +248,34 @@ test('没有计费清单时退回型号列表，带凭证请求，按生成目�
     source: 'models',
     models: [
       { id: 'gpt-5.6-sol', output: 'chat', known: true },
-      { id: 'veo-3.1-generate-preview', output: 'video', kind: 'veo_videos', known: true },
+      { id: 'veo-3.1-generate-preview', output: 'video', kind: 'openai_videos', known: true },
     ],
   })
   expect(seen.find((s) => s.path === '/v1/models')?.auth).toBe('Bearer sk-test')
+})
+
+// 2026-11-10 www.moyu.cn：按目录协议添加为百炼图像，原生路径 /api/v1/services/aigc/multimodal-generation/generation 返回 404。
+test('中转站上与目录 id 相同、登记了兼容映射的厂商型号使用通用协议，官方地址与未填地址仍用厂商协议', async () => {
+  const { target } = site({
+    '/v1/models': { data: [{ id: 'qwen-image-3.0-pro' }, { id: 'wan2.7-image' }] },
+  })
+  const relay = await pullModels(target, signal())
+  expect(relay.models).toHaveLength(2)
+  for (const m of relay.models) expect(m).toMatchObject({ output: 'image', kind: 'openai_images' })
+  const library = [
+    {
+      id: 'qwen-image-3.0-pro',
+      kind: 'dashscope_images' as const,
+      kinds: ['dashscope_images', 'openai_images'] as const,
+    },
+  ]
+  expect(
+    identifyMediaModel('qwen-image-3.0-pro', library, 'https://dashscope.aliyuncs.com/api/v1'),
+  ).toEqual({ output: 'image', kind: 'dashscope_images' })
+  expect(identifyMediaModel('qwen-image-3.0-pro', library, undefined)).toEqual({
+    output: 'image',
+    kind: 'dashscope_images',
+  })
 })
 
 // 2026-10-22 ai.apii.cn 的 /v1/models 原样：只有名称，没有计费清单；其中 5 个曾被归为对话。

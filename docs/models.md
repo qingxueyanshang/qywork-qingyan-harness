@@ -468,6 +468,8 @@ MiniMax 官方的 `/v1/models` 只列出对话型号。拉取模型时，若接�
   含 `image-generation` 的为图像，其余对话类接口为对话。没有该接口时改读 `{Base URL}/models`（带 Key），
   只有型号名：与生成目录 id 相同的按目录归类；目录 id 之后带 `-`、`.` 或 `_` 开头的后缀的（如 `gpt-image-2.5-sunburst-4k`、
   `gemini-3-pro-image-preview`）按该目录 id 归类，取最长的目录 id，协议按接口地址取默认值；其余作为对话型号。
+  名称与目录 id 完全相同、目录协议是厂商自有协议（如百炼图像）而接口地址是中转站时，若该型号登记了通用协议的兼容映射，
+  改用通用协议（OpenAI Images / Videos）：中转站不提供厂商的原生路径。官方地址与未登记映射的型号仍用目录协议。
   手动输入型号 ID 添加时使用同一规则。
 - 价格 = 计费量 ×「站点状态」`/api/status` 的充值价 `price` × 分组倍率。对话按倍率计费时每百万 Token 为
   `model_ratio × 2`，按次、按秒为 `model_price`；公式计费（`tiered_expr`）在本地求值。
