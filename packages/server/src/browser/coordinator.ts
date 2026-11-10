@@ -754,6 +754,7 @@ export class BrowserCoordinator {
     page: PageHandle,
     deadline: number,
     settle?: 'quiet' | 'deadline',
+    screenshot?: boolean,
   ): Promise<FollowUpObservation> {
     if (!page.client.connected) {
       return {
@@ -765,7 +766,10 @@ export class BrowserCoordinator {
       return { observation: null, observationError: '已取消，动作之后未再观察' }
     }
     try {
-      const observation = await this.#observeInto(control, page, { deadline })
+      const observation = await this.#observeInto(control, page, {
+        deadline,
+        ...(screenshot ? { screenshot } : {}),
+      })
       return settle === undefined ? { observation } : { observation, settle }
     } catch (err) {
       return {
@@ -923,7 +927,10 @@ export class BrowserCoordinator {
       const receipt = await actOnPage(page, record, input)
       const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
       const settle = await this.#quietWait(page, watch, deadline)
-      return { ...receipt, ...(await this.#followUp(control, page, deadline, settle)) }
+      return {
+        ...receipt,
+        ...(await this.#followUp(control, page, deadline, settle, input.screenshot)),
+      }
     } finally {
       watch.stop()
     }
