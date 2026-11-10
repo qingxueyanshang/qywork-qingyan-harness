@@ -19,6 +19,11 @@ export const handlePairingApi: ApiHandler = async (url, req, d) => {
     return json(d.remote.snapshot())
   }
 
+  if (p === '/api/pairing/reconnect' && req.method === 'POST') {
+    d.remote.reconnect()
+    return json(d.remote.snapshot())
+  }
+
   if (p === '/api/pairing' && req.method === 'GET') return json(d.remote.snapshot())
 
   return null

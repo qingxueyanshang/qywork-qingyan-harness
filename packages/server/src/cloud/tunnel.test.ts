@@ -322,6 +322,16 @@ describe('隧道客户端', () => {
     await until(() => statuses.length >= 4)
     expect(statuses.slice(2).map((s) => s.state)).toEqual(['offline', 'online'])
   })
+
+  test('被同一设备的另一条隧道替换时进入 replaced 且不再重连', async () => {
+    const c = start()
+    await until(() => c.status.state === 'online')
+    const hellos = cloud.hellos.length
+    cloud.ws?.close(TUNNEL_CLOSE.replaced)
+    await until(() => c.status.state === 'replaced')
+    await Bun.sleep(100)
+    expect(cloud.hellos.length).toBe(hellos)
+  })
 })
 
 describe('远程访问经 serve() 装配', () => {
@@ -361,6 +371,22 @@ describe('远程访问经 serve() 装配', () => {
     const dbPath = join(dir, 'db.sqlite3')
     store = new Store({ path: dbPath })
     content = new ContentStore(contentPathFor(dbPath))
+
+    // 未传入 remote 的 serve()（测试与脚本）即使配置开启了远程访问也不连接云端：
+    // 否则会以同一设备密钥顶掉桌面端的隧道。
+    const quiet = serve({
+      store,
+      config: await loadConfig(),
+      workspaceRoot: dir,
+      content,
+      port: 0,
+      host: '127.0.0.1',
+    })
+    await Bun.sleep(200)
+    expect(cloud.hellos.length).toBe(0)
+    expect(quiet.remote.snapshot().tunnel).toBeNull()
+    quiet.stop()
+
     handle = serve({
       store,
       config: await loadConfig(),
@@ -369,6 +395,7 @@ describe('远程访问经 serve() 装配', () => {
       port: 0,
       host: '127.0.0.1',
       updateHostKey: 'update-key',
+      remote: true,
     })
     await until(() => handle?.remote.snapshot().tunnel?.state === 'online')
     expect(cloud.hellos.at(-1)?.key).toBe('qyd_device')
@@ -388,9 +415,16 @@ describe('远程访问经 serve() 装配', () => {
     ])
     expect(authed.status).toBe(200)
 
-    // 关闭开关：隧道断开，开关写入配置。
+    // 另一个进程接管了隧道：状态为 replaced，重新连接后恢复在线。
     const base = `http://127.0.0.1:${handle.port}`
     const auth = { authorization: `Bearer ${handle.token}` }
+    cloud.ws?.close(TUNNEL_CLOSE.replaced)
+    await until(() => handle?.remote.snapshot().tunnel?.state === 'replaced')
+    const again = await fetch(`${base}/api/pairing/reconnect`, { method: 'POST', headers: auth })
+    expect(again.status).toBe(200)
+    await until(() => handle?.remote.snapshot().tunnel?.state === 'online')
+
+    // 关闭开关：隧道断开，开关写入配置。
     const off = await fetch(`${base}/api/pairing/remote`, {
       method: 'POST',
       headers: auth,

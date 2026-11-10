@@ -101,6 +101,7 @@ function deps(root = '/ws/demo'): ApiDeps & { wsId: string } {
         this.enabled = on
         return null
       },
+      reconnect() {},
       snapshot() {
         return { available: true, enabled: this.enabled, tunnel: null }
       },

@@ -5,6 +5,7 @@
  * - 本模块不做鉴权：请求原样交给远程监听器，令牌由本机服务校验（`Pairing.verify`）。云端只能经 `pair.request` 取得当前令牌。
  * - `deviceRevoked` 与 `outdated` 是终态，不再重连；前者交由调用方删除本地的云端接口。
  *   `replaced` 也不再重连：同一份配置的另一个进程已经连接，两者交替重连会互相断开。
+ *   它以独立的状态报告，界面据此提供重新连接（`RemoteAccess.reconnect`）。
  * - 连接断开时中止全部流：进行中的本机请求被取消，本机 WebSocket 被关闭。
  */
 
@@ -34,6 +35,8 @@ export type TunnelStatus =
   | { state: 'offline'; message: string }
   | { state: 'outdated' }
   | { state: 'revoked' }
+  /** 同一设备的另一条隧道取代了本连接，不再重连。 */
+  | { state: 'replaced' }
 
 export interface TunnelClientOptions {
   /** 云端接口来源，例如 `https://api.example.com`。 */
@@ -63,7 +66,6 @@ interface WsStream {
 const OFFLINE_MESSAGE: Record<number, string> = {
   [TUNNEL_CLOSE.invalidKey]: '设备密钥无效',
   [TUNNEL_CLOSE.accountBanned]: '账号已被停用',
-  [TUNNEL_CLOSE.replaced]: '本设备已在另一个进程中连接',
 }
 
 /** 退避：1 秒起每次加倍，上限 30 秒，另加至多 1 秒的随机量，使云端重启后各设备错开重连。 */
@@ -160,11 +162,12 @@ export class TunnelClient {
       this.setStatus({ state: 'outdated' })
       return
     }
-    this.setStatus({ state: 'offline', message: OFFLINE_MESSAGE[code] ?? '无法连接云端服务' })
     if (code === TUNNEL_CLOSE.replaced) {
       this.stopped = true
+      this.setStatus({ state: 'replaced' })
       return
     }
+    this.setStatus({ state: 'offline', message: OFFLINE_MESSAGE[code] ?? '无法连接云端服务' })
     const delay =
       code === TUNNEL_CLOSE.restarting ? Math.random() * 1000 : this.backoff(this.attempt)
     this.attempt = code === TUNNEL_CLOSE.restarting ? 0 : this.attempt + 1

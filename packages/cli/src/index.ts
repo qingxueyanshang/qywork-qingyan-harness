@@ -402,6 +402,7 @@ async function runServe(args: string[]): Promise<number> {
     ...(process.env.QYWORK_UPDATE_KEY ? { updateHostKey: process.env.QYWORK_UPDATE_KEY } : {}),
     ...(previousProcessExit ? { previousProcessExit } : {}),
     ...(power ? { power } : {}),
+    remote: true,
   })
   startupStage('发送就绪回执')
 
