@@ -25,6 +25,8 @@ let requestsGate: Promise<void>
 let notices: Announcement[]
 /** 充值订单状态的依次答复；`Error` 表示该次读取失败。 */
 let rechargeReplies: (string | Error)[]
+/** 为真时用量、可用模型与使用记录的读取全部失败。 */
+let cloudDown: boolean
 /** 服务端配置：云端接口下有两个型号，默认对话模型是本地接口的型号。 */
 let stored: Record<string, unknown> = {}
 const STORED = {
@@ -130,6 +132,9 @@ beforeAll(async () => {
       } as T
     }
     if (path === '/api/pairing') return { available: false, enabled: false, tunnel: null } as T
+    if (cloudDown && /^\/api\/cloud\/(usage|models|requests)/.test(path)) {
+      throw new ApiError(400, path, JSON.stringify({ error: 'cloud', message: '无法连接账号服务' }))
+    }
     if (path === '/api/cloud/usage') return structuredClone(USAGE) as T
     if (path === '/api/cloud/models') {
       return [
@@ -191,6 +196,7 @@ beforeEach(async () => {
   requestsGate = Promise.resolve()
   notices = []
   rechargeReplies = []
+  cloudDown = false
   stored = structuredClone(STORED)
   store.setAccountOpen(false)
 })
@@ -442,6 +448,32 @@ test('使用记录读取超过 200 毫秒时显示占位，读取到后显示记
   release()
   await until(() => view.text().includes('完成'))
   expect(view.host.querySelector('.skeleton')).toBeNull()
+  view.close()
+})
+
+test('用量、可用模型与使用记录都读取失败时只显示一处原因与一个重试；重试后重新读取账号状态并显示各节', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  cloudDown = true
+  pages = [[record('1')]]
+  const view = await dialog()
+  await until(() => view.button('重试') !== undefined)
+  // 三项读取都已失败之后再断言。
+  await until(() => calls.filter((c) => c.startsWith('GET /api/cloud/requests')).length === 1)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  expect(view.text().split('无法连接账号服务')).toHaveLength(2)
+  expect(view.host.querySelectorAll('.settings-error')).toHaveLength(1)
+  expect(view.text()).not.toContain('使用记录')
+  expect(view.text()).not.toContain('积分 / 百万 token')
+
+  cloudDown = false
+  const stateReads = () => calls.filter((c) => c === 'GET /api/cloud/state').length
+  const before = stateReads()
+  view.button('重试')?.click()
+  await until(() => view.text().includes('完成') && view.text().includes('claude-opus-5-5'))
+  expect(view.text()).toContain('累计 Token')
+  expect(view.host.querySelector('.settings-error')).toBeNull()
+  expect(stateReads()).toBeGreaterThan(before)
   view.close()
 })
 

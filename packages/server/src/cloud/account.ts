@@ -12,7 +12,7 @@
  *   写入的条目带 `cloud` 标记；覆盖层仍是模型库之上唯一的一层，所有权规则见 `withSpecs`。
  */
 
-import { httpStatusName, lookupModel } from '@qywork/ai'
+import { httpStatusName, lookupModel, transportFailureKind } from '@qywork/ai'
 import {
   type Announcement,
   type ChannelSpec,
@@ -190,6 +190,8 @@ export interface CloudAccountOptions {
    * 连接停滞而没有超时时，界面一直停在读取中，不显示失败原因，也无法重试。
    */
   timeoutMs?: number
+  /** 读取请求连接失败后各次重发之前的等待，毫秒；默认重发两次。 */
+  resendDelaysMs?: readonly number[]
 }
 
 /** 网关返回的请求记录：失败以状态码与网关的错误码表示，转为界面文字后交给账号界面。 */
@@ -238,10 +240,17 @@ const json = (body: unknown, token?: string): RequestInit => ({
   body: JSON.stringify(body),
 })
 
+/** 连接失败的原因，按传输层失败的类别给出；无法归类时不附原因，不显示运行时的英文原文。 */
+const UNREACHABLE_REASON = {
+  tls: '：TLS 握手失败，网络不稳定或代理证书未被信任',
+  closed: '：连接被断开',
+  timeout: '：请求超时',
+  unreachable: '',
+} as const
+
 function unreachable(err: unknown): CloudAccountError {
-  return new CloudAccountError(
-    `无法连接账号服务：${err instanceof Error ? err.message : String(err)}`,
-  )
+  const kind = transportFailureKind(err)
+  return new CloudAccountError(`无法连接账号服务${kind ? UNREACHABLE_REASON[kind] : ''}`)
 }
 
 export class CloudAccount {
@@ -250,6 +259,7 @@ export class CloudAccount {
   private refreshed = false
   private readonly onChange: () => void
   private readonly timeoutMs: number
+  private readonly resendDelaysMs: readonly number[]
 
   constructor(
     private readonly live: QyConfig,
@@ -258,10 +268,29 @@ export class CloudAccount {
   ) {
     this.onChange = options.onChange ?? (() => {})
     this.timeoutMs = options.timeoutMs ?? 20_000
+    this.resendDelaysMs = options.resendDelaysMs ?? [300, 1000]
   }
 
   private timeout(): AbortSignal {
     return AbortSignal.timeout(this.timeoutMs)
+  }
+
+  /**
+   * 发出读取请求（GET），连接失败时重发。
+   * 网络不稳定时 TLS 握手失败（Bun 报 `unknown certificate verification error`），随后的重发通常成功；
+   * 不重发时账号窗口的每项读取都以该错误结束，须由用户逐次重试。
+   * 超时不重发：等待时间会按重发次数成倍增加。不要用于写入请求：连接失败时无法确定云端是否已收到。
+   */
+  private async read(path: string, headers: Record<string, string> = {}): Promise<Response> {
+    for (const delay of this.resendDelaysMs) {
+      try {
+        return await fetch(`${this.origin}${path}`, { headers, signal: this.timeout() })
+      } catch (err) {
+        if ((err as { name?: string } | null)?.name === 'TimeoutError') throw err
+        await Bun.sleep(delay)
+      }
+    }
+    return fetch(`${this.origin}${path}`, { headers, signal: this.timeout() })
   }
 
   async state(): Promise<CloudState> {
@@ -361,7 +390,7 @@ export class CloudAccount {
   private async publicGet<T>(path: string): Promise<T> {
     let res: Response
     try {
-      res = await fetch(`${this.origin}${path}`, { signal: this.timeout() })
+      res = await this.read(path)
     } catch (err) {
       throw unreachable(err)
     }
@@ -486,12 +515,15 @@ export class CloudAccount {
     const provider = cloudProviderOf(this.live, this.origin)
     if (!provider?.apiKey) throw new CloudAccountError('未登录')
     let res: Response
+    const authorization = `Bearer ${provider.apiKey}`
     try {
-      res = await fetch(`${this.origin}${path}`, {
-        ...init,
-        headers: { ...init.headers, authorization: `Bearer ${provider.apiKey}` },
-        signal: this.timeout(),
-      })
+      res = init.method
+        ? await fetch(`${this.origin}${path}`, {
+            ...init,
+            headers: { ...init.headers, authorization },
+            signal: this.timeout(),
+          })
+        : await this.read(path, { authorization })
     } catch (err) {
       throw unreachable(err)
     }
@@ -619,10 +651,7 @@ export class CloudAccount {
     { email: string; credits: number; avatar: string | null; recharge: boolean } | 'revoked' | null
   > {
     try {
-      const res = await fetch(`${this.origin}/v1/me`, {
-        headers: { authorization: `Bearer ${key}` },
-        signal: this.timeout(),
-      })
+      const res = await this.read('/v1/me', { authorization: `Bearer ${key}` })
       if (res.ok) {
         const me = (await res.json()) as {
           email: string
