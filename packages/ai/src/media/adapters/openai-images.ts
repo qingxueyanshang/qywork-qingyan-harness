@@ -190,15 +190,18 @@ function readUsage(body: Record<string, unknown>, received: number): MediaUsage 
   })
 }
 
-/** 响应中的 `data[]`：每项是 `b64_json` 或 `url`。单项失败（火山逐张报错）合并到消息中，不静默丢弃。 */
+/**
+ * 响应中的 `data[]`：每项是 `b64_json` 或 `url`。单项失败（火山逐张报错）合并到消息中，不静默丢弃。
+ * 空串按缺少处理：New API 转发百炼时两个字段都写，`b64_json` 为空串、图片在 `url`。
+ */
 export function readImages(body: Record<string, unknown>, usage?: MediaUsage): MediaImageResult {
   const data = Array.isArray(body.data) ? (body.data as Record<string, unknown>[]) : []
   const sources: MediaImageResult['sources'] = []
   const errors: string[] = []
   for (const item of data) {
-    if (typeof item.b64_json === 'string')
+    if (typeof item.b64_json === 'string' && item.b64_json)
       sources.push({ base64: item.b64_json, mime: 'image/png' })
-    else if (typeof item.url === 'string') sources.push({ url: item.url })
+    else if (typeof item.url === 'string' && item.url) sources.push({ url: item.url })
     else if (item.error && typeof item.error === 'object')
       errors.push(String((item.error as Record<string, unknown>).message ?? '单张生成失败'))
   }
