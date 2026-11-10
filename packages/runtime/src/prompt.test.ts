@@ -387,13 +387,13 @@ describe('上下文末尾注记', () => {
 describe('完成、停下等待用户与执行失败的判定', () => {
   const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows', 'run_canvas']))
 
-  test('完成只定义一次：结果满足要求且已核对；说明差异不使它成为完成', () => {
+  test('完成只定义一次：结果满足要求且已核对；说明差异之后该项仍未完成', () => {
     expect(prompt.split('一项工作完成，指').length).toBe(2)
     expect(prompt).toContain('结果满足用户的要求，并且已经实际核对')
     expect(prompt).toContain(
       '检查器或脚本报告错误、审核未通过、核对发现结果与要求不一致时，该项未完成',
     )
-    expect(prompt).toContain('在最终回复中说明差异不使它成为完成')
+    expect(prompt).toContain('在最终回复中说明差异之后，该项仍未完成')
     expect(prompt).toContain('本轮只有两种结束方式')
     expect(prompt).not.toContain('按完成处理')
   })
@@ -423,7 +423,7 @@ describe('完成、停下等待用户与执行失败的判定', () => {
       '- retry_limit 生成结果不符合要求：查明原因，修改提示词后重新运行；同一张卡片的图片最多重新运行 3 次，视频最多 2 次',
       '- no_progress 检查或审核未通过：按报告修改后重新核对；连续三轮修改后问题数没有减少、评分没有提高时停止，attempts 写出每一轮的问题数或评分。',
       '接口返回了明确的 HTTP 错误即请求已得到应答，按前三类处理；请求发出后没有任何应答，或回执写明远端结果未知，按结果未知处理。',
-      '原因位于工作区的文件、脚本或画布中、可以修改时，不属于以上任何一类：修改它后继续。',
+      '原因位于工作区的文件、脚本或画布中且可以修改时，不属于以上任何一类：修改该处后继续执行。',
       '用 write_todos 标为 failed，failure 填写对应的类别，cause 写失败原因，attempts 写做过的尝试及每次的改动',
       '最终回复在一处列出每个失败项的原因、尝试次数与每次的改动，以及仍缺少的内容',
     ]) {
@@ -445,7 +445,7 @@ describe('完成、停下等待用户与执行失败的判定', () => {
     expect(prompt).toContain('需求存在几种理解时，按最接近用户意图的一种执行')
   })
 
-  test('不再出现分散的出口：向用户确认、改回 pending 后结束、在回复中提出需要用户决定的事', () => {
+  test('不再出现分散的停止写法：向用户确认、改回 pending 后结束、在回复中提出需要用户决定的事', () => {
     expect(prompt).not.toContain('才向用户确认')
     expect(prompt).not.toContain('改回 pending')
     expect(prompt).not.toContain('需要用户决定的事在回复中提出')
@@ -457,19 +457,19 @@ describe('完成、停下等待用户与执行失败的判定', () => {
    * 自述「把你上一句当成了只需解释的问题」。成因是系统提示把这类反问归入「只询问原因，不恢复旧任务」。
    * 另一侧（rn_0mw9ivl4b0000vid6ut）：用户提问后模型不回答即连续执行。
    */
-  test('追问为什么没有做是要求完成：先答后做；只询问信息或无关时只回答', () => {
+  test('追问为什么没有执行即要求完成：先回答再执行；只询问信息或无关时只回答', () => {
     expect(prompt).toContain(
-      '用户追问某件事为什么没有做、为什么停下、为什么结果没有达到要求时，这是要求把它完成：先用一两句回答原因，再在同一轮中执行。',
+      '用户追问某项工作为什么没有执行、为什么中止、结果为什么未达到要求时，该追问即要求完成这项工作：先简要说明原因，再在同一轮中执行。',
     )
-    expect(prompt).toContain('只询问信息、与当前任务无关或明确要求暂停时只回答。')
-    expect(prompt).toContain('用户的消息包含问题时，开始执行之前先用一两句回答。')
+    expect(prompt).toContain('用户只询问信息、所问内容与当前任务无关或明确要求暂停时，只作回答。')
+    expect(prompt).toContain('用户的消息包含问题时，开始执行之前先简要回答。')
     expect(prompt).not.toContain('用户只询问原因、进度或要求暂停时，不恢复旧任务')
   })
 
   /** 原始失败形状（rn_0mw7zod8p0001f21jpy）：用户纠正后本轮唯一的动作是 write_memory。 */
   test('写记忆在完成纠正所要求的修改之后', () => {
     const withMemory = buildSystemPrompt(new Set(['write_memory']))
-    expect(withMemory).toContain('写记忆是纠正之后的附带动作：先完成本次纠正所要求的修改。')
+    expect(withMemory).toContain('先完成本次纠正所要求的修改，再写入记忆。')
   })
 })
 
@@ -513,7 +513,7 @@ describe('工具说明不另写收尾方式', () => {
     '不恢复旧任务',
   ]
 
-  test('注册的内置工具包含画布、桌面与待办：扫描范围覆盖已知的出口位置', () => {
+  test('注册的内置工具包含画布、桌面与待办：扫描范围覆盖已知的停止写法所在位置', () => {
     for (const name of [
       'run_canvas',
       'desktop_windows',

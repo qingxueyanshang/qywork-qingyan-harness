@@ -243,7 +243,7 @@ function parseTodos(raw: unknown): ParseResult {
       if (!failure || !cause || !attempts) {
         return {
           ok: false,
-          message: `第 ${i + 1} 条标为 failed，必须填写 failure（${TODO_FAILURES.join('、')} 之一）、cause（失败原因）与 attempts（做过的尝试，包括次数与每次的改动）。不属于这些类别的原因不是失败：原因在工作区的文件、脚本或画布中时修改它，该项保持 in_progress。`,
+          message: `第 ${i + 1} 条标为 failed，必须填写 failure（${TODO_FAILURES.join('、')} 之一）、cause（失败原因）与 attempts（做过的尝试，包括次数与每次的改动）。不属于这些类别的原因不记为失败：原因位于工作区的文件、脚本或画布中时，修改该处，该项保持 in_progress。`,
         }
       }
       todos.push({ id, content, status, failure, cause, attempts })
