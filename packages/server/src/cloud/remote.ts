@@ -6,6 +6,8 @@
  *   登录、退出与开关变化后都调用 `sync`。
  * - 停止时关闭远程监听器的全部连接，手机上已打开的页面立即断开。
  * - 隧道以「设备已被移除」关闭时，经 `onRevoked` 删除本地的云端接口，与网关返回 `device_revoked` 的处理相同。
+ * - `tunnel` 为 false 时从不连接云端，理由见 `ServeOptions.remote`。
+ * - 隧道被同一设备的另一条连接替换后不自动重连（见 `tunnel.ts`），由用户经 `reconnect` 重新连接。
  */
 
 import type { QyConfig } from '@qywork/runtime'
@@ -30,6 +32,8 @@ export interface RemoteSnapshot {
 export interface RemoteAccessDeps {
   config: QyConfig
   origin: string | null
+  /** 为 false 时不连接云端隧道，开关仍可读写。 */
+  tunnel: boolean
   listener: RemoteListener
   pairing: () => { token: string; deviceName: string }
   onRevoked: () => Promise<void>
@@ -65,7 +69,7 @@ export class RemoteAccess {
 
   sync(): void {
     const key = this.deviceKey()
-    const want = key !== null && this.deps.config.remote === true
+    const want = this.deps.tunnel && key !== null && this.deps.config.remote === true
     if (want && this.tunnel && this.key === key) return
     this.halt()
     if (!want || !this.deps.origin) return
@@ -85,6 +89,12 @@ export class RemoteAccess {
     })
     this.tunnel = tunnel
     tunnel.start()
+  }
+
+  /** 丢弃当前隧道并按配置重新连接；用于被另一个进程替换之后。 */
+  reconnect(): void {
+    this.halt()
+    this.sync()
   }
 
   /** 上送一轮结束的通知；隧道未连接时不发送。 */

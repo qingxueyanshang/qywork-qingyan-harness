@@ -130,6 +130,13 @@ export interface ServeOptions {
   power?: PowerPort
   /** 电源状态的同步间隔，毫秒。理由同 `schedulerTickMs`，仅用于回归测试。 */
   powerTickMs?: number
+  /**
+   * 是否按配置连接云端隧道（远程访问）。只有 `qy serve` 传入 true。
+   *
+   * 缺省不连接：测试与脚本启动的服务常读取用户的真实配置，设备密钥与桌面端相同，
+   * 连接后云端会关闭桌面端正在使用的隧道（同一设备只保留一条）。
+   */
+  remote?: boolean
 }
 
 /** 首次运行时创建的工作区名称。已写入磁盘的目录名是历史事实，不要修改（D2）。 */
@@ -471,6 +478,7 @@ export function serve(opts: ServeOptions) {
   const remote: RemoteAccess = new RemoteAccess({
     config: opts.config,
     origin,
+    tunnel: opts.remote === true,
     listener: remoteListener,
     pairing: () => ({ token: pairing.token, deviceName: pairing.deviceName }),
     onRevoked: () => cloud?.revoked() ?? Promise.resolve(),

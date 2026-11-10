@@ -16,6 +16,7 @@ type TunnelStatus =
   | { state: 'offline'; message: string }
   | { state: 'outdated' }
   | { state: 'revoked' }
+  | { state: 'replaced' }
 
 export interface RemoteInfo {
   /** 已登录云端账号；未登录时没有远程访问的路径，本节不出现。 */
@@ -77,6 +78,21 @@ export default function PairPanel() {
     }
   }
 
+  /** 被另一个进程替换后重新连接；对方若仍在线，被替换的是对方。 */
+  const reconnect = async (e: MouseEvent) => {
+    // 按钮位于 label 内：不阻止默认行为时，点击会同时切换开关。
+    e.preventDefault()
+    setBusy(true)
+    setToggleError(null)
+    try {
+      mutate(await client.api<RemoteInfo>('/api/pairing/reconnect', { method: 'POST' }))
+    } catch (err) {
+      setToggleError(explainApiError(err, '无法重新连接'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   // 使用 `loaded()` 而不是 `info()`：后者出错时会 `throw`，获取期间会挂起设置内容区的 Suspense。
   return (
     <Show when={loaded(info)?.available || info.error}>
@@ -103,6 +119,17 @@ export default function PairPanel() {
                 </Match>
                 <Match when={d().tunnel?.state === 'outdated'}>
                   <Status tone="warning" text="需要更新应用" />
+                </Match>
+                <Match when={d().tunnel?.state === 'replaced'}>
+                  <Status tone="warning" text="已由另一个 qywork 进程接管" />
+                  <button
+                    type="button"
+                    class="btn-ghost sm"
+                    disabled={busy()}
+                    onClick={(e) => void reconnect(e)}
+                  >
+                    重新连接
+                  </button>
                 </Match>
               </Switch>
               <input
