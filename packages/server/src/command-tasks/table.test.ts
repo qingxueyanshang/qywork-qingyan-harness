@@ -6,7 +6,7 @@
  * `store/src/repos.ts` 的 `appendStepFileChanges` 与 `listConversationChangesPage`、
  * `run-control.ts` 的端口装配与回执入口、`commands.ts` 的 `command.stop`、
  * `runtime/session.ts` 的通道注入与权限裁决、`agent/loop` 在工具结束后注入「调整方向」消息。
- * `background_command` 的取舍由 `tools/src/shell.test.ts` 覆盖。
+ * `background_command` 的取舍由 `tools/src/shell.test.ts` 覆盖，此处只覆盖它经由任务表在本轮内等待命令结束。
  *
  * 必须使用真实链路与真实进程：被测的行为是「工具等待结束而进程仍存活」「停止本轮不结束后台命令」，
  * 替换为桩只能验证桩被调用。进程是否存活按 pid 查询，命令把自身 pid 写入工作区文件。
@@ -425,6 +425,49 @@ describe('后台命令结束时的回执', () => {
     await idle(cv)
     expect(commands.listOf(cv)).toEqual([])
     expect(listMessages(store, cv).map((m) => m.origin)).toEqual([null, 'command'])
+  }, 30_000)
+})
+
+describe('在本轮内等待后台命令', () => {
+  test('background_command 带 wait_seconds 时等到命令结束才返回，回执在同一轮作为下一条消息送达', async () => {
+    const cv = conversation()
+    // 任务编号在登记时生成：第一批中的前台命令 W2 使本轮停留到编号可读，再写入后续的脚本。
+    script.push(
+      callsTurn([
+        run('call_w', { command: hold('W'), background: true }),
+        run('call_w2', { command: hold('W2') }),
+      ]),
+    )
+
+    void startRun(cv, '后台构建并等待结果', undefined, deps())
+    await pidOf('W2')
+    await until(() => commands.listOf(cv).length === 1, '后台命令登记')
+    const [task] = commands.listOf(cv)
+    script.push(
+      callsTurn([
+        {
+          id: 'call_wait',
+          name: 'background_command',
+          args: { task_id: task!.id, wait_seconds: 600 },
+        },
+      ]),
+      textTurn('构建已完成。'),
+    )
+    await writeFile(join(dir, 'W2.go'), '')
+    await until(() => bodies.length === 2, '等待调用发出')
+    await Bun.sleep(150)
+    expect(bodies.length).toBe(2)
+    expect(runs.isBusy(cv)).toBe(true)
+
+    await writeFile(join(dir, 'W.go'), '')
+    await until(() => bodies.length === 3, '等待结束后的请求')
+    const third = bodies[2]!
+    expect(third).toContain(`后台命令 ${task!.id} 已结束，结果见下一条回执消息`)
+    expect(third).toContain(`[后台命令回执] 任务 ${task!.id} 已结束：命令执行成功`)
+    expect(third).toContain('W finished')
+    await idle(cv)
+    expect(commands.listOf(cv)).toEqual([])
+    expect(bodies.length).toBe(3)
   }, 30_000)
 })
 

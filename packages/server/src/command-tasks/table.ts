@@ -28,7 +28,8 @@ import {
 import { appendStepFileChanges, type Store } from '@qywork/store'
 import type { RunManager } from '../runs.ts'
 
-type Task = Parameters<CommandPort['adopt']>[0]
+/** 任务表中的一条：端口交来的句柄，以及收尾（移除、投递回执）完成时兑现的 `ended`，值为是否投递了回执。 */
+type Task = Parameters<CommandPort['adopt']>[0] & { ended: Promise<boolean> }
 
 /** 单次等待队列变化的上限。队列每次变化都会唤醒等待，到期只是重新检查一次。 */
 const RECHECK_MS = 60_000
@@ -48,13 +49,14 @@ export class CommandTaskTable {
    * 登记一条转入后台的命令，返回任务编号。命令结束时先追加文件改动，再移除并投递回执；回执为 null
    * （被停止）时只移除。`settled` 拒绝时投递一条写明原因的回执：不投递时模型无从得知该命令已结束。
    */
-  adopt(conversationId: ConversationId, task: Task, deliver: (followUp: FollowUp) => void): string {
+  adopt(
+    conversationId: ConversationId,
+    task: Parameters<CommandPort['adopt']>[0],
+    deliver: (followUp: FollowUp) => void,
+  ): string {
     const id = `cmd_${crypto.randomUUID().slice(0, 8)}`
     const table = this.byConversation.get(conversationId) ?? new Map<string, Task>()
-    table.set(id, task)
-    this.byConversation.set(conversationId, table)
-    this.announce(conversationId)
-    void task.settled
+    const ended = task.settled
       .then(
         (end) => {
           this.record(conversationId, task.stepId, end.fileChanges)
@@ -68,8 +70,18 @@ export class CommandTaskTable {
         if (content !== null) {
           deliver({ id: `rc_${crypto.randomUUID()}`, content, steer: true, origin: 'command' })
         }
+        return content !== null
       })
+    // 收尾的回调在 `settled` 兑现之后异步执行，晚于以下登记。
+    table.set(id, { ...task, ended })
+    this.byConversation.set(conversationId, table)
+    this.announce(conversationId)
     return id
+  }
+
+  /** 该会话中一条后台命令的结束信号，见 `CommandPort.ended`；不在表中时为 null。 */
+  ended(conversationId: ConversationId, id: string): Promise<boolean> | null {
+    return this.byConversation.get(conversationId)?.get(id)?.ended ?? null
   }
 
   /** 该会话正在后台运行的命令，按登记顺序。 */
@@ -171,5 +183,6 @@ export function commandPortOf(
     list: () => table.listOf(conversationId),
     output: (id) => table.output(conversationId, id),
     stop: (id) => table.stop(conversationId, id),
+    ended: (id) => table.ended(conversationId, id),
   }
 }

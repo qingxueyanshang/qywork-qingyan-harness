@@ -333,7 +333,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
       (opts.background
         ? '未指定 background 时等待命令结束；等待期间用户发来消息时，命令转入后台继续运行，本次结果给出任务编号与已产生的输出。' +
-          '后台命令结束时结果作为回执消息送达；用 background_command 按任务编号读取至今的输出或停止命令。'
+          '后台命令结束时结果作为回执消息送达；用 background_command 按任务编号读取至今的输出、等待命令结束或停止命令。'
         : '') +
       '读取文件用 read_file，查找文件用 glob/grep：二者更快且更节省上下文，不要用 cat/find/grep 代替。' +
       // 输出限长已由本工具完成，这一句用于消除模型自行追加 `| tail` 的理由：
@@ -345,7 +345,10 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       // 固定时长的 `sleep` 不感知任务是否完成：`sleep 580; ls …` 在任务一分钟内完成时仍阻塞 580 秒。
       // 带退出条件的循环在任务结束时返回。
       '等待后台任务时不要 sleep 固定的长时间，用带退出条件的循环' +
-      '（如 `for i in $(seq 60); do [ -f 完成标志 ] && break; sleep 10; done`），任务结束即返回。',
+      '（如 `for i in $(seq 60); do [ -f 完成标志 ] && break; sleep 10; done`），任务结束即返回。' +
+      (opts.background
+        ? '等待本工具转入后台的命令时优先用 background_command 的 wait_seconds，命令结束即返回。'
+        : ''),
     parameters: {
       type: 'object',
       properties: {
@@ -718,22 +721,69 @@ function receiptBody(
   return lines.join('\n')
 }
 
+/** `wait_seconds` 的上限（秒）。等待期间本轮保持运行，到达上限后由模型决定继续等待还是先做其他工作。 */
+const MAX_WAIT_SECONDS = 1800
+
 /**
- * 读取或停止本会话的一条后台命令。
+ * 在本轮内等待一条后台命令结束：命令结束、用户发来「调整方向」消息、到达 `timeoutMs` 三者中最先发生的一项。
+ * `signal` 中止时以中止原因拒绝。端口的 `steered` 因其他原因拒绝时继续等待其余两项。
+ */
+async function endedFirst(
+  port: CommandPort,
+  ended: Promise<boolean>,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<'receipt' | 'stopped' | 'message' | 'timeout'> {
+  signal.throwIfAborted()
+  const done = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort = () => {}
+  try {
+    return await Promise.race([
+      ended.then((receipt) => (receipt ? ('receipt' as const) : ('stopped' as const))),
+      port.steered(done.signal).then(
+        () => 'message' as const,
+        () => new Promise<never>(() => {}),
+      ),
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), timeoutMs)
+      }),
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(signal.reason)
+        signal.addEventListener('abort', onAbort, { once: true })
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+    signal.removeEventListener('abort', onAbort)
+    done.abort()
+  }
+}
+
+/**
+ * 读取、等待或停止本会话的一条后台命令。
  *
  * 只经由端口访问本会话的任务表：其他会话的后台命令不可见，无法读取或停止。
  * 读取到的是至今保留的输出（每条流最近的一段），经过与 `run_command` 相同的投递限制。
+ * 等待只报告命令已结束，不返回回执内容：回执只经由队列送达，工具结果中再写一份时模型会收到两次。
  */
 export const backgroundCommandTool: ToolSpec = {
   name: 'background_command',
   description:
     '读取本会话一条后台命令至今的输出（stdout / stderr）；stop 为 true 时结束该命令的进程树，返回停止前的输出。' +
-    '后台命令由 run_command 转入后台，任务编号见其结果。命令结束时结果作为回执消息送达，被停止的命令不发送回执。',
+    '后台命令由 run_command 转入后台，任务编号见其结果。命令结束时结果作为回执消息送达，被停止的命令不发送回执。' +
+    '本轮后续工作需要该命令的结果时，用 wait_seconds 在本轮内等待它结束；等待期间不调用模型。',
   parameters: {
     type: 'object',
     properties: {
       task_id: { type: 'string', description: 'run_command 结果中的任务编号' },
       stop: { type: 'boolean', description: '为 true 时停止该命令' },
+      wait_seconds: {
+        type: 'number',
+        description:
+          `最长等待秒数，上限 ${MAX_WAIT_SECONDS}。提供时等待该命令结束后返回，回执作为下一条消息送达；` +
+          '用户发来消息或到达该秒数时返回至今的输出，命令继续运行。不能与 stop 同时使用',
+      },
     },
     required: ['task_id'],
     additionalProperties: false,
@@ -742,7 +792,7 @@ export const backgroundCommandTool: ToolSpec = {
   objectLabel: '后台命令',
   category: 'code',
   facet: '执行',
-  summary: '读取或停止后台命令',
+  summary: '读取、等待或停止后台命令',
   targetExtractor: (a) => (typeof a.task_id === 'string' ? a.task_id : null),
   // 只读取或停止本会话自己转入后台的命令；命令启动时已经过权限判定。
   permissionEffect: 'internal_control',
@@ -764,15 +814,59 @@ export const backgroundCommandTool: ToolSpec = {
       }
     }
     const stopping = args.stop === true
+    const wait = args.wait_seconds
+    if (wait !== undefined) {
+      if (stopping) {
+        return {
+          status: 'failure',
+          executed: false,
+          message: 'wait_seconds 与 stop 不能同时使用',
+          errorKind: 'bad_request',
+        }
+      }
+      if (typeof wait !== 'number' || !Number.isFinite(wait) || wait <= 0) {
+        return {
+          status: 'failure',
+          executed: false,
+          message: 'wait_seconds 必须是正数',
+          errorKind: 'bad_request',
+        }
+      }
+    }
+    let state = '仍在运行，输出为至今的内容'
+    let latest = found
+    if (typeof wait === 'number') {
+      const seconds = Math.min(wait, MAX_WAIT_SECONDS)
+      const ended = port.ended(id)
+      const result = ended ? await endedFirst(port, ended, seconds * 1000, ctx.signal) : 'receipt'
+      if (result === 'receipt') {
+        return {
+          status: 'success',
+          message: `后台命令 ${id} 已结束，结果见下一条回执消息`,
+          data: { taskId: id },
+        }
+      }
+      if (result === 'stopped') {
+        return {
+          status: 'success',
+          message: `后台命令 ${id} 已被停止，没有回执`,
+          data: { taskId: id },
+        }
+      }
+      latest = port.output(id) ?? found
+      state =
+        result === 'message'
+          ? '仍在运行，用户发来消息，内容见下一条消息；输出为至今的内容'
+          : `在等待的 ${seconds} 秒内没有结束，仍在运行，输出为至今的内容`
+    }
     if (stopping) port.stop(id)
-    const delivered = deliverStreams(ctx, found.command, found.stdout, found.stderr)
+    const delivered = deliverStreams(ctx, latest.command, latest.stdout, latest.stderr)
     return {
       status: 'success',
       message:
         (stopping
           ? `已停止后台命令 ${id}（${found.command}），输出为停止前的内容`
-          : `后台命令 ${id}（${found.command}）仍在运行，输出为至今的内容`) +
-        droppedNote(found.dropped),
+          : `后台命令 ${id}（${found.command}）${state}`) + droppedNote(latest.dropped),
       data: { taskId: id, ...delivered.data },
       ...(delivered.resources.length ? { resources: delivered.resources } : {}),
     }
