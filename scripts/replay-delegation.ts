@@ -745,9 +745,9 @@ function injectedSteps(conversationId: ConversationId) {
  * 回执写入哪一处取决于投递时父会话是否在运行：空闲时发起新一轮，写入 `messages.origin`；
  * 运行中则注入当前轮，写入 step 的 `payload.origin`。判据必须识别两处，只识别一处会把另一种形状判定为没有标记。
  */
-function originLanded(conversationId: ConversationId): ('subagent' | 'workflow')[] {
+function originLanded(conversationId: ConversationId): ('subagent' | 'workflow' | 'command')[] {
   const fromMessages = originMessages(conversationId).map(
-    (m) => m.origin as 'subagent' | 'workflow',
+    (m) => m.origin as 'subagent' | 'workflow' | 'command',
   )
   const fromSteps = injectedSteps(conversationId).flatMap((s) =>
     s.payload?.kind === 'user' && s.payload.origin ? [s.payload.origin] : [],

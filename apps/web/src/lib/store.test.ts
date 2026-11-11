@@ -175,6 +175,7 @@ test('刷新恢复压缩后继续更新同一进度条，旧快照不覆盖新�
     if (path.includes('/context')) return { context: null }
     if (path.includes('/goal')) return { goal: null }
     if (path.includes('/queue')) return { queue: [] }
+    if (path.includes('/commands')) return { commands: [] }
     throw new Error(`未预期请求：${path}`)
   }
   try {
@@ -841,6 +842,7 @@ describe('整页刷新后回到刷新前的会话', () => {
         return { conversations: list }
       }
       if (p.includes('/queue')) return { queue: [] }
+      if (p.includes('/commands')) return { commands: [] }
       return { messages: [], runs: [], steps: [], todos: [], workflowStarts: [], nextCursor: null }
     }
     try {
@@ -1027,6 +1029,7 @@ describe('事件按会话归属过滤', () => {
       if (path.includes('/context')) return { context: null }
       if (path.includes('/goal')) return { goal: null }
       if (path.includes('/queue')) return { queue: path.includes('/cv_queue_a/') ? [receipt] : [] }
+      if (path.includes('/commands')) return { commands: [] }
       throw new Error(`未预期请求：${path}`)
     }
     const loading = selectConversation('cv_queue_b')
@@ -1918,12 +1921,19 @@ describe('文件快照失效序号', () => {
     } as never)
 
   test('每条事件推进一次，同一文件的连续修改也不遗漏', () => {
-    setState({ activeConversation: 'cv_1', fileChanges: [], fileVersion: 0 })
+    setState({ activeConversation: 'cv_1', fileChanges: [], fileVersion: 0, lastRunId: 'run_1' })
     changed(1, 'src/main.ts', 3, 1)
     expect(state.fileVersion).toBe(1)
     changed(2, 'src/main.ts', 2, 0)
     expect(state.fileChanges.length).toBe(2)
     expect(state.fileVersion).toBe(2)
+  })
+
+  test('其他轮次的写入（后台命令结束时追加）推进序号，不进入「本轮改动」', () => {
+    setState({ activeConversation: 'cv_1', fileChanges: [], fileVersion: 0, lastRunId: 'run_2' })
+    changed(4, 'late/a.txt', 2, 0)
+    expect(state.fileVersion).toBe(1)
+    expect(state.fileChanges.length).toBe(0)
   })
 
   test('画布服务写入磁盘时的空 changes 只推进序号，不进入「本轮改动」', () => {
@@ -2450,6 +2460,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
       if (path.includes('/context')) return { context: null }
       if (path.includes('/goal')) return { goal: null }
       if (path.includes('/queue')) return { queue: [] }
+      if (path.includes('/commands')) return { commands: [] }
       throw new Error(`未预期请求：${path}`)
     }
 
@@ -2516,6 +2527,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
       if (path.includes('/context')) return { context: null }
       if (path.includes('/goal')) return { goal: null }
       if (path.includes('/queue')) return { queue: [] }
+      if (path.includes('/commands')) return { commands: [] }
       throw new Error(`未预期请求：${path}`)
     }
 
@@ -2566,6 +2578,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
           return queue
         }
         if (path.endsWith('/queue')) return { queue: [] }
+        if (path.endsWith('/commands')) return { commands: [] }
         if (path.endsWith('/goal')) return { goal: null }
         return { context: null }
       }
@@ -4376,6 +4389,91 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
     }
   })
 
+  test('其他轮次的写入（后台命令结束时追加到更早一轮）：从首页重新读取，更早的分页随之替换；运行中一轮的写入不触发读取', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
+    freshView('cv_1')
+    const requested: string[] = []
+    let phase = 0
+    const turn = (id: string, text: string, steps: unknown[]) => ({
+      userMessageId: id,
+      text,
+      origin: null,
+      createdAt: 1,
+      steps,
+    })
+    const restore = stubApi(async (p) => {
+      requested.push(p)
+      if (phase === 0 && p.includes('before=ms_2')) {
+        return {
+          turns: [turn('ms_1', '后台构建', [wireStep('st_1', 'a.ts', 1, 0)])],
+          totals: { paths: ['a.ts', 'b.ts'], additions: 3, deletions: 0 },
+          nextCursor: null,
+          live: NO_LIVE,
+        }
+      }
+      if (phase === 0) {
+        return {
+          turns: [turn('ms_2', '再改', [wireStep('st_2', 'b.ts', 2, 0)])],
+          totals: { paths: ['a.ts', 'b.ts'], additions: 3, deletions: 0 },
+          nextCursor: 'ms_2',
+          live: NO_LIVE,
+        }
+      }
+      return {
+        turns: [
+          turn('ms_2', '再改', [wireStep('st_2', 'b.ts', 2, 0)]),
+          turn('ms_1', '后台构建', [
+            {
+              ...wireStep('st_1', 'a.ts', 1, 0),
+              fileChanges: [change('a.ts', 1, 0), { path: 'late.txt', changeType: 'created' }],
+            },
+          ]),
+        ],
+        totals: { paths: ['a.ts', 'b.ts', 'late.txt'], additions: 3, deletions: 0 },
+        nextCursor: null,
+        live: NO_LIVE,
+      }
+    })
+    const fileChanged = (runId: string) =>
+      applyEvent({
+        seq: 5,
+        at: 0,
+        conversationId: 'cv_1',
+        event: {
+          type: 'file.changed',
+          runId,
+          changes: [{ path: 'late.txt', changeType: 'created' }],
+        },
+      } as never)
+    try {
+      await loadConversationChanges('cv_1')
+      expect(await loadOlderConversationChanges('cv_1')).toBe(true)
+      setState('views', 'cv_1', 'runId', 'rn_live')
+      fileChanged('rn_live')
+      expect(requested).toHaveLength(2)
+
+      phase = 1
+      fileChanged('rn_1')
+      for (let i = 0; i < 50 && viewOf('cv_1').changes?.loading !== null; i += 1) await Bun.sleep(5)
+      expect(requested).toHaveLength(3)
+      expect(requested[2]).not.toContain('before=')
+      const changes = viewOf('cv_1').changes
+      expect(changes?.turns.map((t) => [t.userMessageId, t.steps.map((s) => s.id)])).toEqual([
+        ['ms_2', ['st_2']],
+        ['ms_1', ['st_1']],
+      ])
+      expect(changes?.turns[1]?.steps[0]?.fileChanges.map((c) => c.path)).toEqual([
+        'a.ts',
+        'late.txt',
+      ])
+      expect(changes?.totals.paths).toEqual(['a.ts', 'b.ts', 'late.txt'])
+      expect(changes?.nextCursor).toBeNull()
+    } finally {
+      restore()
+      dropView('cv_1')
+    }
+  })
+
   test('首页请求失败时有终态，再次调用即重试', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
@@ -4465,6 +4563,7 @@ describe('会话的辅助读取失败时显示原因', () => {
         if (fail === 'queue') throw new ApiError(500, p, '{"error":"队列读取失败"}')
         return { queue: [] }
       }
+      if (p.includes('/commands')) return { commands: [] }
       throw new Error(`未预期请求：${p}`)
     }
   }

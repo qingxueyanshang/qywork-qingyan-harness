@@ -1884,3 +1884,45 @@ describe('迁移 71：权限模式由会话保存', () => {
     db.close()
   })
 })
+
+describe('迁移 74：消息来源增加后台命令', () => {
+  test('存量消息逐列保留，来源可写入 command，其他取值仍被拒绝', () => {
+    const db = dbBefore(74)
+    db.exec(`
+INSERT INTO messages (id, conversation_id, role, content, attachments, created_at, origin)
+VALUES ('ms_1', 'cv', 'user', '改一下登录页', '[]', 1, NULL),
+       ('ms_2', 'cv', 'user', '子任务回执', NULL, 2, 'subagent');
+`)
+    expect(() =>
+      db.exec(
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, origin) VALUES ('ms_x', 'cv', 'user', 'x', 3, 'command')",
+      ),
+    ).toThrow()
+    applyOne(db, 74)
+
+    db.exec(
+      "INSERT INTO messages (id, conversation_id, role, content, created_at, origin) VALUES ('ms_3', 'cv', 'user', '后台命令回执', 3, 'command')",
+    )
+    expect(
+      db
+        .query('SELECT id, content, attachments, created_at, origin FROM messages ORDER BY id')
+        .all(),
+    ).toEqual([
+      { id: 'ms_1', content: '改一下登录页', attachments: '[]', created_at: 1, origin: null },
+      { id: 'ms_2', content: '子任务回执', attachments: null, created_at: 2, origin: 'subagent' },
+      { id: 'ms_3', content: '后台命令回执', attachments: null, created_at: 3, origin: 'command' },
+    ])
+    expect(() =>
+      db.exec(
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, origin) VALUES ('ms_4', 'cv', 'user', 'x', 4, 'other')",
+      ),
+    ).toThrow()
+    expect(
+      db
+        .query<{ name: string }, []>("PRAGMA index_list('messages')")
+        .all()
+        .map((i) => i.name),
+    ).toContain('idx_msg_conv')
+    db.close()
+  })
+})

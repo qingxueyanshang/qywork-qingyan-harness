@@ -13,6 +13,7 @@
 import type {
   ActionDescriptor,
   Attachment,
+  BackgroundCommand,
   CompactionStage,
   ContextBreakdown,
   ContextOmitted,
@@ -88,7 +89,7 @@ export interface TranscriptItem {
   /** kind='user' 专有：该消息携带的附件，只保存定位信息，不保存字节。 */
   attachments?: Attachment[]
   /** kind='receipt' 专有：回执的投递方。标题行据此决定移除哪一个来源前缀。 */
-  origin?: 'subagent' | 'workflow'
+  origin?: 'subagent' | 'workflow' | 'command'
   /** kind='tool' 专有 */
   toolName?: string
   action?: ActionDescriptor
@@ -128,7 +129,7 @@ export type ChangeStep = ConversationChangeStep
 export interface ChangeTurn {
   userMessageId: string
   text: string
-  origin: 'subagent' | 'workflow' | null
+  origin: 'subagent' | 'workflow' | 'command' | null
   createdAt: number
   steps: ChangeStep[]
 }
@@ -328,6 +329,11 @@ export interface AppState {
    * 不维护本地增量：服务端按 id 去重一条时，两份增量记录必然不一致。
    */
   followUps: FollowUp[]
+  /**
+   * 当前会话正在后台运行的命令。整表快照语义：`commands.changed` 每次整体替换；
+   * 打开会话时从 `/api/conversations/:id/commands` 读取，两者是服务端同一张任务表的投影。
+   */
+  backgroundCommands: BackgroundCommand[]
   /** 当前待办清单。整表快照语义：每次 todos 事件整体替换。 */
   todos: TodoItem[]
   /**
@@ -396,6 +402,7 @@ const initial: AppState = {
   git: null,
   desktopTargets: [],
   followUps: [],
+  backgroundCommands: [],
   todos: [],
   goal: null,
   lastRunId: null,
@@ -519,7 +526,7 @@ export function conversationRunClosed(id: string | null): boolean {
 }
 
 /**
- * 输入框上方是否存在附加块：整轮状态条 / 目标条 / 排队中的跟进消息。
+ * 输入框上方是否存在附加块：整轮状态条 / 目标条 / 后台命令 / 排队中的跟进消息。
  *
  * 会话流底部的留白据此确定。下方紧邻附加块时贴近该块，间距与输入框上方
  * 各块之间的间距相同；下方直接是输入框时需为正文留出较大间距。
@@ -529,6 +536,7 @@ export function composerStackAbove(): boolean {
   return (
     hasRunStatus() ||
     state.followUps.length > 0 ||
+    state.backgroundCommands.length > 0 ||
     (state.goal !== null && state.goal.status !== 'completed')
   )
 }

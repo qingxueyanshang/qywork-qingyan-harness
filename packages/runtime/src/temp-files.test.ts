@@ -64,7 +64,7 @@ type Fixture = Awaited<ReturnType<typeof fixture>>
 
 function release(
   f: Fixture,
-  over: Partial<{ stopReason: StopReason; topLevel: boolean; subagentsRunning: boolean }> = {},
+  over: Partial<{ stopReason: StopReason; topLevel: boolean; backgroundRunning: boolean }> = {},
 ) {
   return releaseRunTemp({
     store: f.store,
@@ -73,7 +73,7 @@ function release(
     runId: f.run,
     stopReason: 'completed',
     topLevel: true,
-    subagentsRunning: false,
+    backgroundRunning: false,
     ...over,
   })
 }
@@ -96,7 +96,7 @@ describe('一轮结束时的临时目录', () => {
     ['本轮没有待办', null, {}],
     ['等待用户回复', done, { stopReason: 'awaiting_user' as const }],
     ['被中断', done, { stopReason: 'user_interrupt' as const }],
-    ['仍有子 agent 在运行', done, { subagentsRunning: true }],
+    ['仍有子 agent 或后台命令在运行', done, { backgroundRunning: true }],
     ['子会话的轮次', done, { topLevel: false }],
   ])('%s：只删除本轮的 Office 目录，会话临时目录保留', async (_, todos, over) => {
     const f = await fixture(todos)

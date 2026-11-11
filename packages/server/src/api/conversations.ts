@@ -579,7 +579,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   }
 
   const convMatch =
-    /^\/api\/conversations\/([^/]+)\/(history|changes|messages|runs|usage|queue)$/.exec(p)
+    /^\/api\/conversations\/([^/]+)\/(history|changes|messages|runs|usage|queue|commands)$/.exec(p)
   if (convMatch) {
     const id = convMatch[1] as ConversationId
     if (!getConversation(d.store, id))
@@ -635,6 +635,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     // 排队中的跟进消息。刷新与重连之后卡片据此重建；与 `queue.changed` 同源，
     // 均读取 `RunManager` 中的同一份队列，快照与增量因此不会不一致。
     if (convMatch[2] === 'queue') return json({ queue: d.runs.queueOf(id) })
+    // 正在后台运行的命令。与 `commands.changed` 同源，均读取同一张任务表。
+    if (convMatch[2] === 'commands') return json({ commands: d.commands.listOf(id) })
     // 本会话的完整花费。真源是账本而不是 `runs` 上的 usage：压缩摘要调用同样由本会话
     // 引发并计费，但不属于任何一轮，将各 run 相加必然少计。
     // 不设时间窗：查询的是本会话的总花费，从会话创建时起算。

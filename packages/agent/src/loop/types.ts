@@ -160,8 +160,8 @@ export interface FollowUpInput {
   /** 装配后的正文（附件已解析为内容块），写入 transcript。 */
   content: string | ContentBlock[]
   attachments?: Attachment[]
-  /** 消息来源：子 agent 的回执、workflow 的回执；缺失表示用户本人。 */
-  origin?: 'subagent' | 'workflow'
+  /** 消息来源：子 agent 的回执、workflow 的回执、后台命令的回执；缺失表示用户本人。 */
+  origin?: 'subagent' | 'workflow' | 'command'
   /**
    * 该消息到达时，与本轮快照不同的上下文（例如本轮进行中修改的生成模型清单）。
    * 注入后以执行事实追加在该消息之后（`RunState.notify`），与消息同一位置持久化与投影。
@@ -184,7 +184,7 @@ export interface LoopPersistence {
     input: {
       text: string
       attachments?: Attachment[]
-      origin?: 'subagent' | 'workflow'
+      origin?: 'subagent' | 'workflow' | 'command'
       notice?: true
       /** 执行事实是「接口拒绝了包含图片的请求」，见 `core` 的 `StepPayload`。 */
       imagesRejected?: { provider: string; model: string }

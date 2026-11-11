@@ -1,30 +1,43 @@
 /**
  * 覆盖 `canvas.ts` 的 `canvasPort`：Agent 经由端口与界面经由 HTTP 使用同一个画布服务。
  *
- * 锁定五项行为：同一批操作经两条路径写出的文件逐字节相同；经端口与经 HTTP 取帧写出的画布与图片逐字节相同；Agent 与用户同时修改时，双方的改动均保留；
+ * 锁定的行为：同一批操作经两条路径写出的文件逐字节相同；经端口与经 HTTP 取帧写出的画布与图片逐字节相同；Agent 与用户同时修改时，双方的改动均保留；
  * 经端口运行视频时，任务节点在端口返回（工具结束）之前已写入画布并发出通知；
  * 经端口的修改按卡片名称引用、名称不重复、参数按模型参数表核对，经端口读取的生成卡参数为实际发送的参数
- * （`canvas-agent-ops.ts`）。
+ * （`canvas-agent-ops.ts`）；本轮中止只结束端口的等待，生成照常完成并写回画布；
+ * `cancel_canvas` 经端口与界面的取消调用同一个 `CanvasService.cancel` 与撤销函数（`tools/canvas.ts` 的工具经此覆盖）。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { CanvasEditResult, MediaCallResult, MediaPort } from '@qywork/agent'
+import {
+  type CanvasEditResult,
+  type CanvasPort,
+  type MediaCall,
+  type MediaCallResult,
+  type MediaPort,
+  type ToolContext,
+  ToolRegistry,
+} from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   type AgentEvent,
   applyCanvasOps,
   type CanvasOp,
+  type CanvasRunResult,
   displayNameOf,
   emptyCanvas,
   type MediaParamDefinition,
   parseCanvas,
   serializeCanvas,
 } from '@qywork/core'
+import { cancelMediaTask, makeMediaPort, type QyConfig } from '@qywork/runtime'
 import { Store, upsertWorkspace } from '@qywork/store'
+import { registerBuiltinTools } from '@qywork/tools'
 import { type ApiDeps, handleApi } from './api/index.ts'
-import { CanvasService, canvasPort } from './canvas.ts'
+import { type CanvasCancelTask, CanvasService, canvasPort } from './canvas.ts'
 
 const PATH = 'board.canvas.json'
 const OPS: CanvasOp[] = [
@@ -710,5 +723,341 @@ describe('画布端口', () => {
     )
     expect(new Uint8Array(await readFile(join(viaHttp.root, landed.path)))).toEqual(PNG)
     expect(new Uint8Array(await readFile(join(viaPort.root, landed.path)))).toEqual(PNG)
+  })
+})
+
+/** 一次生成调用：`submit` 回报任务号，`finish` 使调用返回；中止信号到达时以中止原因拒绝，与真实端口一致。 */
+interface Held {
+  call: MediaCall
+  signal: AbortSignal
+  submit(taskId: string): Promise<void>
+  finish(result: MediaCallResult): void
+}
+
+function heldPort(): { port: MediaPort; calls: Held[]; next(): Promise<Held> } {
+  const calls: Held[] = []
+  const waiters: ((held: Held) => void)[] = []
+  let claimed = 0
+  const port: MediaPort = {
+    generate: (call, signal) =>
+      new Promise((resolve, reject) => {
+        if (!call.resumeTaskId) call.onSubmit?.()
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        const held: Held = {
+          call,
+          signal,
+          submit: async (taskId) => {
+            await call.onTask?.({ taskId, provider: 'ark', model: 'seedance' })
+          },
+          finish: resolve,
+        }
+        calls.push(held)
+        waiters.shift()?.(held)
+      }),
+  }
+  const next = () =>
+    new Promise<Held>((resolve) => {
+      const ready = calls[claimed]
+      if (ready) {
+        claimed++
+        resolve(ready)
+        return
+      }
+      waiters.push((held) => {
+        claimed++
+        resolve(held)
+      })
+    })
+  return { port, calls, next }
+}
+
+/** 等到条件成立：端口的等待结束之后，生成在服务中继续进行，只能按画布状态判断进度。 */
+async function until(check: () => Promise<boolean>, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error('等待超时')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
+/** 经工具注册表执行 `cancel_canvas`，与会话中调用该工具相同。 */
+async function cancelCanvas(port: CanvasPort, args: Record<string, unknown>) {
+  const registry = new ToolRegistry()
+  registerBuiltinTools(registry, { canvas: true })
+  const ctx: ToolContext = {
+    workspaceRoot: '/w',
+    conversationId: 'cv_test',
+    runId: 'rn_test',
+    model: 'test',
+    contextWindow: 200_000,
+    density: DEFAULT_DENSITY,
+    vision: null,
+    resources: new Map(),
+    state: new Map(),
+    sink: null,
+    signal: new AbortController().signal,
+    emit: () => {},
+    requestPermission: async () => ({ allowed: true }),
+    canvas: port,
+  }
+  return registry.execute('cancel_canvas', args, ctx)
+}
+
+const MP4 = new Uint8Array([0, 0, 0, 24])
+const VIDEO_DONE: MediaCallResult = {
+  ok: true,
+  provider: 'ark',
+  model: 'seedance',
+  files: [{ bytes: MP4, mime: 'video/mp4' }],
+}
+const STOPPED_WAIT: CanvasRunResult = {
+  ok: false,
+  message: '已停止等待；该卡的生成照常进行，结束后写回画布',
+  pending: false,
+}
+
+describe('画布端口：本轮中止与取消', () => {
+  /**
+   * 原始失败形状：Agent 经 run_canvas 提交视频后用户停止会话，本轮的中止信号并入了生成的轮询，
+   * 轮询随之中止，收尾按失败处理：卡片显示生成失败，远端任务既未撤销也不再被等待。
+   */
+  test('经端口运行后本轮中止：等待结束，生成照常进行，完成后写回画布，记录与广播都不是 failed', async () => {
+    const root = await workspace()
+    const r = applyCanvasOps(emptyCanvas(), OPS)
+    if (!r.ok) throw new Error(r.error)
+    await writeFile(join(root, PATH), serializeCanvas(r.doc))
+    const events: AgentEvent[] = []
+    const service = new CanvasService({ publish: (e) => events.push(e) })
+    const port = canvasPort(service, { id: 'ws', root })
+    const id = r.refs.$v!
+    const fake = heldPort()
+    const stop = new AbortController()
+    const waiting = port.run(PATH, id, fake.port, stop.signal)
+    const held = await fake.next()
+    await held.submit('t-1')
+    stop.abort(new Error('用户停止'))
+    expect(await waiting).toEqual(STOPPED_WAIT)
+    expect(held.signal.aborted).toBe(false)
+    expect((await service.read(root, PATH)).states[id]).toMatchObject({
+      state: 'running',
+      taskId: 't-1',
+    })
+
+    held.finish(VIDEO_DONE)
+    await until(async () => (await service.read(root, PATH)).states[id]?.state === 'normal')
+    const { doc } = await service.read(root, PATH)
+    expect(doc.runs?.map((x) => [x.action, x.result, x.task])).toEqual([['run', 'done', 't-1']])
+    const card = doc.nodes.find((n) => n.id === id)
+    expect(card?.type === 'generate' && card.versions.map((v) => v.path)).toEqual([
+      expect.stringMatching(/\.mp4$/),
+    ])
+    const published = events.filter((e) => e.type === 'canvas.run')
+    expect(published.at(-1)).toMatchObject({ nodeId: id, state: 'done' })
+    expect(published.some((e) => e.type === 'canvas.run' && e.state === 'failed')).toBe(false)
+  })
+
+  test('经端口取回后本轮中止：取回照常进行，完成后写回画布', async () => {
+    const root = await workspace()
+    const r = applyCanvasOps(emptyCanvas(), OPS)
+    if (!r.ok) throw new Error(r.error)
+    await writeFile(join(root, PATH), serializeCanvas(r.doc))
+    const service = new CanvasService({ publish: () => {} })
+    const ws = { id: 'ws', root }
+    const id = r.refs.$v!
+    const fake = heldPort()
+    const first = await service.run(ws, PATH, id, { media: fake.port })
+    const submitted = await fake.next()
+    await submitted.submit('t-9')
+    submitted.finish({ ok: false, message: '等待超时', pendingTaskId: 't-9' })
+    await first.done
+
+    const stop = new AbortController()
+    const waiting = canvasPort(service, ws).retrieve(PATH, id, undefined, fake.port, stop.signal)
+    const resume = await fake.next()
+    expect(resume.call.resumeTaskId).toBe('t-9')
+    stop.abort()
+    expect(await waiting).toEqual(STOPPED_WAIT)
+    expect(resume.signal.aborted).toBe(false)
+    resume.finish(VIDEO_DONE)
+    await until(async () => (await service.read(root, PATH)).states[id]?.state === 'normal')
+    expect((await service.read(root, PATH)).doc.runs?.map((x) => [x.action, x.result])).toEqual([
+      ['run', 'pending'],
+      ['retrieve', 'done'],
+    ])
+  })
+
+  /** 已经向服务商发出的节点继续生成；尚未派发的节点在中止后不再提交，不产生费用。 */
+  test('经端口批量运行后本轮中止：已开始的节点照常完成并写回，排队的节点不再提交', async () => {
+    const root = await workspace()
+    const service = new CanvasService({ publish: () => {} })
+    const port = canvasPort(service, { id: 'ws', root })
+    const { refs } = await port.edit(
+      PATH,
+      Array.from({ length: 5 }, (_, i) => ({
+        op: 'add_generate' as const,
+        output: 'image' as const,
+        ref: `$${i}`,
+        name: `p${i}`,
+        prompt: `p${i}`,
+      })),
+    )
+    const ids = Object.values(refs)
+    const fake = heldPort()
+    const stop = new AbortController()
+    const batch = port.runBatch(PATH, ids, fake.port, stop.signal)
+    const started = await Promise.all(Array.from({ length: 4 }, () => fake.next()))
+    stop.abort()
+    const results = await batch
+    expect(results.filter((x) => !x.skipped).map((x) => x.result)).toEqual(
+      Array(4).fill(STOPPED_WAIT),
+    )
+    const skipped = results.filter((x) => x.skipped)
+    expect(skipped.map((x) => x.result)).toEqual([
+      { ok: false, message: '运行已中止，未提交生成', pending: false },
+    ])
+    expect(started.some((h) => h.signal.aborted)).toBe(false)
+
+    for (const held of started) {
+      held.finish({
+        ok: true,
+        provider: 'q',
+        model: 'm',
+        files: [{ bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), mime: 'image/png' }],
+      })
+    }
+    await until(async () => (await service.read(root, PATH)).doc.runs?.length === 4)
+    const view = await service.read(root, PATH)
+    expect(view.doc.runs?.map((x) => x.result)).toEqual(['done', 'done', 'done', 'done'])
+    expect(fake.calls).toHaveLength(4)
+    expect(view.states[skipped[0]!.node]).toEqual({ state: 'empty' })
+  })
+
+  /** 撤销方式与界面的取消相同：同一个 `CanvasService.cancel`，撤销请求经 `cancelMediaTask` 发给服务商。 */
+  test('cancel_canvas 对可撤销的视频任务发出撤销请求并得到 cancelled，卡片恢复到生成之前', async () => {
+    const requests: string[] = []
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req) {
+        requests.push(`${req.method} ${new URL(req.url).pathname}`)
+        if (req.method === 'POST') return Response.json({ id: 'ark-1' })
+        if (req.method === 'DELETE') return Response.json({})
+        return Response.json({ id: 'ark-1', status: 'queued' })
+      },
+    })
+    const model = 'doubao-seedance-2-5-260628'
+    const config: QyConfig = {
+      providers: {
+        channel: {
+          kind: 'openai_chat_completions',
+          apiKey: 'test-only',
+          models: {},
+          baseUrl: `http://127.0.0.1:${server.port}`,
+          media: { [model]: { kind: 'ark_videos' } },
+        },
+      },
+      mediaDefaults: { video: { provider: 'channel', model } },
+    }
+    const service = new CanvasService({
+      publish: () => {},
+      cancelTask: (task) => cancelMediaTask(config, task, AbortSignal.timeout(10_000)),
+    })
+    try {
+      const root = await workspace()
+      const { refs } = await service.apply(root, PATH, [
+        { op: 'add_generate', ref: '$v', output: 'video', name: '日落', prompt: '海边日落' },
+      ])
+      const id = refs.$v!
+      const run = await service.run({ id: 'ws', root }, PATH, id, {
+        media: makeMediaPort(config),
+      })
+      await until(async () => {
+        const state = (await service.read(root, PATH)).states[id]
+        return state?.state === 'running' && state.taskId === 'ark-1'
+      })
+      const out = await cancelCanvas(canvasPort(service, { id: 'ws', root }), {
+        path: PATH,
+        node: '日落',
+      })
+      expect(out).toMatchObject({ status: 'success', data: { outcome: 'cancelled' } })
+      expect(out.message).toContain('已撤销「日落」的生成')
+      expect(requests).toContain('DELETE /contents/generations/tasks/ark-1')
+      expect(await run.done).toEqual({ ok: false, message: '已取消生成', pending: false })
+      expect((await service.read(root, PATH)).states[id]).toEqual({ state: 'empty' })
+    } finally {
+      await service.stop()
+      server.stop(true)
+    }
+  })
+
+  test('cancel_canvas 对没有任务号的单次请求返回 stopped；对未在生成的卡片返回失败，均不调用撤销', async () => {
+    const root = await workspace()
+    const asked: unknown[] = []
+    const service = new CanvasService({
+      publish: () => {},
+      cancelTask: async (task) => {
+        asked.push(task)
+        return 'cancelled'
+      },
+    })
+    const port = canvasPort(service, { id: 'ws', root })
+    const { refs } = await port.edit(PATH, [
+      { op: 'add_generate', output: 'image', ref: '$g', name: '海报', prompt: '海报' },
+    ])
+    const fake = heldPort()
+    const waiting = port.run(PATH, refs.$g!, fake.port, new AbortController().signal)
+    await fake.next()
+    const out = await cancelCanvas(port, { path: PATH, node: '海报' })
+    expect(out).toMatchObject({ status: 'success', data: { outcome: 'stopped' } })
+    expect(out.message).toContain('没有可撤销的远端任务，远端结果未知')
+    expect(await waiting).toEqual({
+      ok: false,
+      message: '已停止等待；远端结果未知',
+      pending: false,
+    })
+
+    expect(await cancelCanvas(port, { path: PATH, node: '海报' })).toMatchObject({
+      status: 'failure',
+      executed: false,
+      message: '该卡片未在生成',
+    })
+    expect(asked).toEqual([])
+  })
+
+  test('界面的取消与 cancel_canvas 调用同一个撤销函数', async () => {
+    const root = await workspace()
+    const r = applyCanvasOps(emptyCanvas(), OPS)
+    if (!r.ok) throw new Error(r.error)
+    await writeFile(join(root, PATH), serializeCanvas(r.doc))
+    const asked: string[] = []
+    const cancelTask: CanvasCancelTask = async (task) => {
+      asked.push(task.taskId)
+      return 'cancelled'
+    }
+    const service = new CanvasService({ publish: () => {}, cancelTask })
+    const store = new Store({ path: ':memory:' })
+    const ws = upsertWorkspace(store, root, 'demo')
+    const at = { id: ws.id, root: ws.rootPath }
+    const id = r.refs.$v!
+    const fake = heldPort()
+
+    const viaUi = await service.run(at, PATH, id, { media: fake.port })
+    await (await fake.next()).submit('t-ui')
+    const url = `http://127.0.0.1/api/canvas/cancel?ws=${ws.id}`
+    const res = await handleApi(
+      new URL(url),
+      new Request(url, { method: 'POST', body: JSON.stringify({ path: PATH, nodeId: id }) }),
+      { store, canvas: service } as unknown as ApiDeps,
+    )
+    expect(await res?.json()).toEqual({ outcome: 'cancelled' })
+    await viaUi.done
+
+    const viaAgent = await service.run(at, PATH, id, { media: fake.port })
+    await (await fake.next()).submit('t-agent')
+    const out = await cancelCanvas(canvasPort(service, at), { path: PATH, node: id })
+    expect(out.data).toEqual({ outcome: 'cancelled' })
+    await viaAgent.done
+    expect(asked).toEqual(['t-ui', 't-agent'])
+    store.close()
   })
 })

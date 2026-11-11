@@ -3,10 +3,18 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { batchRemaining, chargeBatchBudget, openBatchBudget, type ToolContext } from '@qywork/agent'
+import {
+  batchRemaining,
+  type CommandPort,
+  chargeBatchBudget,
+  openBatchBudget,
+  type ToolContext,
+  ToolRegistry,
+} from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { registerBuiltinTools } from './index.ts'
 import { BASH_PATH_ENV, commandShell } from './sandbox.ts'
-import { commandEnv, makeShellTool } from './shell.ts'
+import { backgroundCommandTool, commandEnv, makeShellTool } from './shell.ts'
 
 const shell = { path: 'unused', argv: [], hint: '测试 shell。' }
 
@@ -23,6 +31,7 @@ test('同一轮内安装 Git 后已创建的工具仍使用声明的 PowerShell�
   const ctx = () =>
     ({
       workspaceRoot: root,
+      signal: new AbortController().signal,
       conversationId: 'cv_shell',
       emit: () => {},
       sink: null,
@@ -57,6 +66,7 @@ describe('run_command 参数校验', () => {
     const tool = makeShellTool(shell)
     const outcome = await tool.fn({ command: 'echo ok', probe_url: 'null' }, {
       workspaceRoot: process.cwd(),
+      signal: new AbortController().signal,
     } as ToolContext)
 
     expect(outcome).toMatchObject({
@@ -69,7 +79,10 @@ describe('run_command 参数校验', () => {
 
   test('空命令同样明确回报未执行', async () => {
     const tool = makeShellTool(shell)
-    const outcome = await tool.fn({}, { workspaceRoot: process.cwd() } as ToolContext)
+    const outcome = await tool.fn({}, {
+      workspaceRoot: process.cwd(),
+      signal: new AbortController().signal,
+    } as ToolContext)
     expect(outcome).toMatchObject({ status: 'failure', executed: false, message: '命令为空' })
   })
 
@@ -77,7 +90,10 @@ describe('run_command 参数校验', () => {
   test('工作目录不存在时报错写明参数 cwd', async () => {
     const tool = makeShellTool(shell)
     await expect(
-      tool.fn({ command: 'echo ok', cwd: 'null' }, { workspaceRoot: process.cwd() } as ToolContext),
+      tool.fn({ command: 'echo ok', cwd: 'null' }, {
+        workspaceRoot: process.cwd(),
+        signal: new AbortController().signal,
+      } as ToolContext),
     ).rejects.toThrow('参数 cwd 的路径不存在：null')
   })
 })
@@ -97,6 +113,7 @@ describe('run_command 的子进程环境', () => {
 
     const outcome = await makeShellTool(found).fn({ command: `bun "${script}"` }, {
       workspaceRoot: root,
+      signal: new AbortController().signal,
       conversationId: 'cv_shell',
       emit: () => {},
       sink: null,
@@ -140,6 +157,7 @@ describe('run_command 的子进程环境', () => {
       const ctx = (root: string, full = false) =>
         ({
           workspaceRoot: root,
+          signal: new AbortController().signal,
           conversationId: 'cv_shell',
           emit: () => {},
           sink: null,
@@ -187,6 +205,7 @@ describe('run_command 的子进程环境', () => {
       for (const full of [false, true]) {
         const outcome = await makeShellTool(found).fn({ command }, {
           workspaceRoot: root,
+          signal: new AbortController().signal,
           conversationId: 'cv_shell',
           emit: () => {},
           sink: null,
@@ -214,6 +233,7 @@ describe('run_command 的用量记账', () => {
 
     const ctx = {
       workspaceRoot: root,
+      signal: new AbortController().signal,
       conversationId: 'cv_shell',
       contextWindow: 200_000,
       density: DEFAULT_DENSITY,
@@ -245,6 +265,7 @@ describe('run_command 的管道退出码', () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-shell-pipe-'))
     return makeShellTool(bash!).fn({ command }, {
       workspaceRoot: root,
+      signal: new AbortController().signal,
       conversationId: 'cv_shell',
       emit: () => {},
       sink: null,
@@ -291,6 +312,7 @@ describe('run_command 的管道退出码', () => {
       const root = await mkdtemp(join(tmpdir(), 'qywork-shell-pipe-'))
       const out = await makeShellTool(bash!).fn({ command: 'seq 1 100000 | head -n 1; exit 7' }, {
         workspaceRoot: root,
+        signal: new AbortController().signal,
         conversationId: 'cv_shell',
         emit: () => {},
         sink: null,
@@ -304,4 +326,121 @@ describe('run_command 的管道退出码', () => {
       expect(await readdir(join(root, '.tmp', 'cv_shell'))).toEqual([])
     },
   )
+})
+
+describe('后台命令的工具形态', () => {
+  /** 一个只记录调用的端口：任务表本身由服务端实现，此处只验证工具一侧的取舍。 */
+  function fakePort(
+    running: Record<
+      string,
+      {
+        command: string
+        stdout: string
+        stderr: string
+        dropped?: { stdout: number; stderr: number }
+      }
+    >,
+  ) {
+    const stopped: string[] = []
+    const port: CommandPort = {
+      steered: () => new Promise(() => {}),
+      adopt: () => {
+        throw new Error('本组用例不应启动命令')
+      },
+      list: () => Object.entries(running).map(([id, r]) => ({ id, command: r.command })),
+      output: (id) => (running[id] ? { dropped: { stdout: 0, stderr: 0 }, ...running[id] } : null),
+      stop: (id) => {
+        if (!running[id]) return null
+        stopped.push(id)
+        return running[id].command
+      },
+    }
+    return { port, stopped }
+  }
+
+  function ctxWith(port: CommandPort | undefined): ToolContext {
+    return {
+      workspaceRoot: process.cwd(),
+      signal: new AbortController().signal,
+      conversationId: 'cv_bg',
+      stepId: 'st_bg',
+      sink: null,
+      density: DEFAULT_DENSITY,
+      contextWindow: 200_000,
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+      ...(port ? { commands: port } : {}),
+    } as unknown as ToolContext
+  }
+
+  test('没有后台命令通道时规格不含 background，也不注册 background_command', () => {
+    const plain = makeShellTool(shell)
+    expect(Object.keys((plain.parameters as { properties: object }).properties)).not.toContain(
+      'background',
+    )
+    expect(plain.description).not.toContain('background_command')
+    const withPort = makeShellTool(shell, { background: true })
+    expect(Object.keys((withPort.parameters as { properties: object }).properties)).toContain(
+      'background',
+    )
+
+    if (!commandShell()) return
+    const without = new ToolRegistry()
+    registerBuiltinTools(without)
+    expect(without.has('background_command')).toBe(false)
+    const withCommands = new ToolRegistry()
+    registerBuiltinTools(withCommands, { commands: true })
+    expect(withCommands.has('background_command')).toBe(true)
+  })
+
+  test('background 与 probe_url 同时提供时不启动命令，明确回报未执行', async () => {
+    const { port } = fakePort({})
+    const outcome = await makeShellTool(shell, { background: true }).fn(
+      { command: 'echo ok', background: true, probe_url: 'http://127.0.0.1:3000/' },
+      ctxWith(port),
+    )
+    expect(outcome).toMatchObject({ status: 'failure', executed: false, errorKind: 'bad_request' })
+  })
+
+  test('按任务编号读取至今的输出；编号不在本会话时列出运行中的命令', async () => {
+    const { port, stopped } = fakePort({
+      cmd_1: { command: 'npm run dev', stdout: 'ready on 3000\n', stderr: '' },
+    })
+    const read = await backgroundCommandTool.fn({ task_id: 'cmd_1' }, ctxWith(port))
+    expect(read.status).toBe('success')
+    expect(read.message).toContain('仍在运行')
+    expect(read.data?.stdout).toBe('ready on 3000\n')
+    expect(stopped).toEqual([])
+
+    const missing = await backgroundCommandTool.fn({ task_id: 'cmd_9' }, ctxWith(port))
+    expect(missing.status).toBe('failure')
+    expect(missing.message).toContain('cmd_1（npm run dev）')
+  })
+
+  test('stop 为真时停止该命令，并返回停止前的输出', async () => {
+    const { port, stopped } = fakePort({
+      cmd_1: { command: 'npm run dev', stdout: 'ready on 3000\n', stderr: 'warn\n' },
+    })
+    const out = await backgroundCommandTool.fn({ task_id: 'cmd_1', stop: true }, ctxWith(port))
+    expect(out.status).toBe('success')
+    expect(out.message).toContain('已停止后台命令 cmd_1')
+    expect(out.data?.stderr).toBe('warn\n')
+    expect(stopped).toEqual(['cmd_1'])
+  })
+
+  test('丢弃过输出时读取结果写明各流丢弃的字符数；没有丢弃时不附加说明', async () => {
+    const { port } = fakePort({
+      cmd_1: {
+        command: 'npm run dev',
+        stdout: 'tail\n',
+        stderr: '',
+        dropped: { stdout: 2048, stderr: 0 },
+      },
+      cmd_2: { command: 'npm run watch', stdout: 'ok\n', stderr: '' },
+    })
+    const read = await backgroundCommandTool.fn({ task_id: 'cmd_1' }, ctxWith(port))
+    expect(read.message).toContain('stdout 已丢弃最早的 2048 个字符')
+    expect(read.message).not.toContain('stderr 已丢弃')
+    const whole = await backgroundCommandTool.fn({ task_id: 'cmd_2' }, ctxWith(port))
+    expect(whole.message).not.toContain('已丢弃')
+  })
 })

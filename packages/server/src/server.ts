@@ -28,6 +28,7 @@ import {
 import type { QyConfig } from '@qywork/runtime'
 import {
   acquireExtensions,
+  cancelMediaTask,
   collectResourceGarbage,
   collectSecrets,
   configDir,
@@ -62,6 +63,7 @@ import { CloudAccount } from './cloud/account.ts'
 import { watchRunEnds } from './cloud/notify.ts'
 import { cloudOrigin } from './cloud/origin.ts'
 import { RemoteAccess } from './cloud/remote.ts'
+import { CommandTaskTable } from './command-tasks/table.ts'
 import { handleCommand, reject } from './commands.ts'
 import type { SocketData } from './deps.ts'
 import { DesktopBridge } from './desktop/bridge.ts'
@@ -193,6 +195,11 @@ export function serve(opts: ServeOptions) {
   // 运行中的子 agent 与 run 同级：它们的生命周期跟随会话，而非派发它们的那一轮。
   const subagents = new SubagentRegistry()
   const runs = new RunManager(opts.store, bus, subagents)
+  // 转入后台的命令同样不归属任何一轮；快照只发给打开该会话的客户端。
+  const commands = new CommandTaskTable(
+    (event, conversationId) => bus.publish(event, conversationId),
+    opts.store,
+  )
   // 画布的写入与画布上的生成仅经由此实例；事件不带会话 id，推送给所有客户端。
   // art 使用对话模型，参数表与指代写法是固定的，不查生成目录。
   const canvas = new CanvasService({
@@ -210,6 +217,8 @@ export function serve(opts: ServeOptions) {
             .map((m) => m.provider),
     publish: (event) => bus.publish(event),
     updating: () => runs.updating,
+    // 撤销请求最长等待 10 秒：超时按撤销失败处理，停止本地等待并保留任务。
+    cancelTask: (task) => cancelMediaTask(opts.config, task, AbortSignal.timeout(10_000)),
     mentionStyleOf: (output, pick) => {
       if (output === 'art') return ART_MENTION
       const target = resolveMediaModel(opts.config, output, pick)
@@ -403,6 +412,7 @@ export function serve(opts: ServeOptions) {
         bus,
         runs,
         subagents,
+        commands,
         canvas,
         office,
         ...(browser ? { browser } : {}),
@@ -591,6 +601,7 @@ export function serve(opts: ServeOptions) {
             config: opts.config,
             bus,
             runs,
+            commands,
             canvas,
             pairing,
             token,
@@ -696,6 +707,7 @@ export function serve(opts: ServeOptions) {
             bus,
             runs,
             subagents,
+            commands,
             canvas,
             office,
             ...(browser ? { browser } : {}),
@@ -820,6 +832,8 @@ export function serve(opts: ServeOptions) {
       runs.interruptAll()
       // 子 agent 跟随会话而非 run，关闭服务时需单独停止：否则会留下一批无人接收回执的进程。
       subagents.interruptAll()
+      // 后台命令同理：应用退出即结束全部命令。
+      commands.stopAll()
       await canvas.stop()
       offRunNotify()
       remote.stop()

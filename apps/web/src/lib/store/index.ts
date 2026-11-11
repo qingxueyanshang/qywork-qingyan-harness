@@ -33,6 +33,7 @@ export {
   setMode,
   setModel,
   steerFollowUp,
+  stopBackgroundCommand,
   type TeamRoleRow,
 } from './actions.ts'
 export {

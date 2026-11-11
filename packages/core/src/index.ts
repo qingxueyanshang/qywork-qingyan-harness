@@ -201,6 +201,7 @@ export {
 export {
   type Attachment,
   attachmentTypeOf,
+  type BackgroundCommand,
   baseNameOf,
   CACHE_ROUTINGS,
   type CacheRouting,

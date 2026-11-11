@@ -13,7 +13,8 @@
  *
  * 每个工作区根只打开一个 `fs.watch`，窗口按打开顺序排队；同一时刻有多个窗口打开时，
  * 事件与扫描结果都归属最早打开的窗口，后续窗口从前一个窗口收尾时起才开始拥有事件与扫描结果。
- * 因此并行执行时的归属是估算。
+ * 转入后台的命令把窗口转为后台观察（`detach`）：后台观察不占用队列，事件同时进入队首窗口与全部后台观察，
+ * 收尾扫描也各自进行，同一次改动可能同时出现在两份结果中。因此并行执行时的归属是估算。
  *
  * **工作区根先取 realpath，watch、共享键、标记路径、扫描与 stat 都使用该路径。** FSEvents 按真实路径
  * 报告事件，watch 的路径经过符号链接时前缀不一致，收不到任何事件，收尾的屏障只能等待到上限。
@@ -23,7 +24,7 @@
  *
  * **收尾时先等待在途事件全部交付，再移交归属。** 事件从发生到进入回调存在延迟（macOS 的 FSEvents 每 50 ms
  * 合批交付一次），收尾时直接关闭 watcher 或把事件改归下一个窗口，此前发生、尚未交付的事件会丢失或归入错误的窗口。
- * 排在最前的窗口收尾时在 `<root>/.tmp` 下写入一个唯一命名的标记文件，收到该文件的事件后才移交归属：
+ * 排在最前的窗口与后台观察收尾时在 `<root>/.tmp` 下写入一个唯一命名的标记文件，收到该文件的事件后才移交归属：
  * FSEvents、inotify、ReadDirectoryChangesW 对同一个 watcher 都按发生顺序交付，标记之前的事件
  * 此时都已进入回调。标记无法写入，或到 `BARRIER_TIMEOUT_MS` 仍未收到时，结果标记为 `incomplete`。
  * `.tmp` 必须在创建 watcher 之前创建：Linux 的递归 watch 由读线程为之后出现的目录追加监视，
@@ -33,10 +34,11 @@
  * 无法取得改动前的内容，因此修改与删除的文件不带行数；新建的文本文件按写入磁盘的内容计算行数，
  * 计算方式与文件工具相同（`countDiff` 对空的旧内容：新内容按 `\n` 分割的段数）。
  * `changeType` 按收尾时的磁盘状态判定：不存在 = deleted；创建时间不早于窗口起点 = created；其余为 modified。
- * **窗口起点与文件时间戳取自同一个时钟。** 新建 watcher 时等待文件时间戳越过当前刻度，以越过后的值为
- * 起点（`stampTick`）：打开前写入的文件时间戳都小于起点，打开后写入的都不小于起点。调用方必须在
+ * **窗口起点与文件时间戳取自同一个时钟。** 队列为空时打开的窗口立即拥有事件，此时等待文件时间戳越过当前刻度，
+ * 以越过后的值为起点（`stampTick`）：打开前写入的文件时间戳都小于起点，打开后写入的都不小于起点。调用方必须在
  * 窗口打开之后才开始写入；因此打开操作最多多阻塞一个刻度（Linux 按 HZ 为 1–10 ms）。排队的窗口以前一个
- * 窗口收尾时的 `Date.now()` 为起点，文件时间戳比它落后至多一个刻度，此后一个刻度内新建的文件判定为 modified。
+ * 窗口收尾时的 `Date.now()` 为起点，后台观察以转入后台时的 `Date.now()` 为起点，文件时间戳比它落后至多一个刻度，
+ * 此后一个刻度内新建的文件判定为 modified。
  * 临时文件（窗口内创建、收尾前删除）不进入结果，前提是观察器在它消失之前 stat 过它：存在时间短于
  * 事件交付延迟的临时文件判定为 deleted。原子保存（写入临时文件再改名）判定为 created。
  * 结果中只有文件：仍在磁盘上的按 `stat` 判定，已不存在的按同一批中是否有路径以它为父段判定。
@@ -92,6 +94,11 @@ export interface ObservedChanges {
 export interface ChangeWindow {
   /** 收尾：停止归集，按此刻的磁盘状态判定每个路径的变更类型。 */
   close(): Promise<ObservedChanges>
+  /**
+   * 转为后台观察：与 `close` 相同地交出至今的改动并让出队列，此后继续收集事件，直到返回的后台观察收尾。
+   * 后台观察收尾时只报告转入后台之后的改动，`reported` 沿用打开窗口时传入的集合。
+   */
+  detach(): Promise<{ observed: ObservedChanges; background: Pick<ChangeWindow, 'close'> }>
 }
 
 export interface ChangeWindowOptions {
@@ -141,8 +148,8 @@ interface FirstSeen {
 
 interface Window {
   /**
-   * 本窗口开始拥有事件与扫描结果的时刻。新建 watcher 的窗口取 `stampTick` 的返回值，
-   * 与文件时间戳取自同一个时钟；排队的窗口取前一个窗口收尾时的 `Date.now()`。
+   * 本窗口开始拥有事件与扫描结果的时刻。队列为空时打开的窗口取 `stampTick` 的返回值，
+   * 与文件时间戳取自同一个时钟；排队的窗口取前一个窗口收尾时的 `Date.now()`，后台观察取转入后台时的 `Date.now()`。
    */
   startedAt: number
   paths: Map<string, Promise<FirstSeen | null>>
@@ -153,6 +160,8 @@ interface Window {
 interface Shared {
   watcher: FSWatcher
   windows: Window[]
+  /** 后台观察：不在队列中，与队首窗口同时收到事件。 */
+  background: Set<Window>
   /** 包含工作区根的 Git 仓库根；null = 不在仓库中。 */
   repoRoot: string | null
   /** 工作区根相对仓库根的路径，使用 posix 分隔符；工作区即仓库根时为空串。 */
@@ -440,14 +449,15 @@ async function goneFrom(
 }
 
 /**
- * 文件时间戳越过当前刻度之后的第一个值，作为新建 watcher 的窗口起点。
+ * 文件时间戳越过当前刻度之后的第一个值，作为队列为空时打开的窗口的起点。
  *
  * 在 `.tmp` 下反复改写同一个探针文件，直到其 mtime 大于首次写入时的值：此前写入的文件
  * 时间戳都不大于首次的值，此后写入的都不小于返回值，窗口两侧的写入不会处于同一个刻度。
  * 不要换成 `Date.now()`：文件时间戳按刻度取值，比它落后至多一个刻度，打开后同一刻度内新建的文件
  * 会判定为 modified；它又按毫秒取整，打开前同一毫秒内写入的文件会判定为窗口内新建。
  *
- * 在创建 watcher 之前调用，避免探针写入进入观察范围。探针无法写入时返回
+ * 新建 watcher 时在创建之前调用，避免探针写入进入观察范围；watcher 已打开时探针的事件位于 `.tmp`，
+ * 一律不报告。探针无法写入时返回
  * `Date.now()`，收尾的屏障同样无法写入标记，结果标记为 `incomplete`；`STAMP_TICK_LIMIT_MS`
  * 内时间戳未前进时同样返回 `Date.now()`。
  */
@@ -511,8 +521,97 @@ export async function settleEvents(workspaceRoot: string): Promise<boolean> {
   const owner = shared.get(root)
   if (!owner) return false
   const arrived = await barrier(root, owner)
-  await Promise.all(owner.windows.flatMap((w) => [...w.paths.values()]))
+  await Promise.all([...owner.windows, ...owner.background].flatMap((w) => [...w.paths.values()]))
   return arrived
+}
+
+/** 没有排队的窗口也没有后台观察时关闭 watcher。 */
+function releaseIfIdle(root: string, owner: Shared): void {
+  if (owner.windows.length > 0 || owner.background.size > 0) return
+  owner.watcher.close()
+  if (shared.get(root) === owner) shared.delete(root)
+}
+
+/** 窗口收尾时的结果。`settled` 为 false 表示收尾前未等到在途事件全部交付，结果标记为 `incomplete`。 */
+async function collect(
+  root: string,
+  owner: Shared,
+  window: Window,
+  closedAt: number,
+  settled: boolean,
+  opts: ChangeWindowOptions,
+): Promise<ObservedChanges> {
+  const until = closedAt + CLOCK_SLACK_MS
+  const limit = opts.walkLimit ?? MAX_WALK_ENTRIES
+  let walked = await touchedSince(root, window.startedAt, until, limit)
+  /*
+   * 达到上限时剪去 Git 忽略的目录后重扫一遍。被忽略目录中的未跟踪文件本就不报告，
+   * 而渲染产物、缓存这类目录动辄数万个文件，不剪枝时扫描耗尽上限，每条命令都标记观察范围不完整，
+   * 真正需要提示的情况被淹没。剪去的目录与运行产物目录相同，其中已跟踪的文件仍由索引补齐。
+   * 重扫后仍达到上限的是未被忽略的文件过多，照常标记不完整。
+   */
+  if (walked.truncated && owner.repoRoot !== null) {
+    const ignored = await gitIgnoredDirs(owner.repoRoot, owner.prefix)
+    if (ignored?.size) walked = await touchedSince(root, window.startedAt, until, limit, ignored)
+  }
+  const walkOnly = walked.paths.filter((rel) => !window.paths.has(rel))
+  const prunedDirs = [...new Set([...window.prunedDirs, ...walked.pruned])]
+
+  let incomplete = walked.truncated || !settled
+  let tracked: string[] = []
+  if (owner.repoRoot !== null && prunedDirs.length > 0) {
+    const got = await trackedInPruned(
+      owner.repoRoot,
+      owner.prefix,
+      root,
+      prunedDirs,
+      window.startedAt,
+      until,
+    )
+    if (got === null) incomplete = true
+    else tracked = got
+  }
+
+  const candidates = [...window.paths.keys(), ...walkOnly, ...tracked]
+  const ignored =
+    owner.repoRoot === null || candidates.length === 0
+      ? new Set<string>()
+      : await gitIgnored(owner.repoRoot, owner.prefix, candidates)
+  if (ignored === null) incomplete = true
+  const skip = ignored ?? new Set<string>()
+
+  const changes: FileChange[] = []
+  for (const [rel, seen] of window.paths) {
+    const first = await seen
+    if (skip.has(rel)) continue
+    try {
+      const change = await describe(root, rel, window.startedAt)
+      if (change) changes.push(change)
+    } catch {
+      // 窗口内出现、收尾前消失：属于临时文件，而不是用户文件被删除。
+      if (first?.bornInWindow) continue
+      changes.push({ path: rel, changeType: 'deleted' })
+    }
+  }
+  for (const rel of [...walkOnly, ...tracked]) {
+    if (skip.has(rel)) continue
+    const change = await describe(root, rel, window.startedAt).catch(() => null)
+    if (change) changes.push(change)
+  }
+  if (opts.reported) {
+    // 本轮报告过、本窗口两个来源都未观察到的路径按磁盘状态核对。这些路径上次报告时
+    // 已经过忽略判定，不再重复判定。
+    const seen = new Set([...window.paths.keys(), ...walkOnly, ...tracked])
+    for (const rel of await goneFrom(root, opts.reported, seen)) {
+      changes.push({ path: rel, changeType: 'deleted' })
+    }
+  }
+  // 只对删除判定：仍在磁盘上的路径已由 `describe` 按 `stat` 排除了目录。
+  const dirs = parentsOf(changes)
+  return {
+    changes: changes.filter((c) => c.changeType !== 'deleted' || !dirs.has(c.path)),
+    incomplete,
+  }
 }
 
 export function openChangeWindow(
@@ -526,6 +625,7 @@ export function openChangeWindow(
     const repoRoot = repoRootOf(root)
     const created: Shared = {
       windows: [],
+      background: new Set(),
       watcher: null as unknown as FSWatcher,
       repoRoot,
       prefix: repoRoot === null ? '' : relative(repoRoot, resolve(root)).replaceAll('\\', '/'),
@@ -542,8 +642,9 @@ export function openChangeWindow(
       if (typeof filename !== 'string' || !filename) return
       const rel = filename.replaceAll('\\', '/')
       created.barriers.get(rel)?.(true)
-      const owner = created.windows[0]
-      if (!owner) return
+      const head = created.windows[0]
+      const owners = head ? [head, ...created.background] : [...created.background]
+      if (owners.length === 0) return
       const segments = rel.split('/')
       let prunedAt: string | null = null
       for (const [i, segment] of segments.entries()) {
@@ -551,12 +652,10 @@ export function openChangeWindow(
         if (skip === 'hard') return
         if (skip === 'pruned' && prunedAt === null) prunedAt = segments.slice(0, i + 1).join('/')
       }
-      if (prunedAt !== null) {
-        owner.prunedDirs.add(prunedAt)
-        return
+      for (const owner of owners) {
+        if (prunedAt !== null) owner.prunedDirs.add(prunedAt)
+        else if (!owner.paths.has(rel)) owner.paths.set(rel, firstSeen(root, rel, owner.startedAt))
       }
-      if (owner.paths.has(rel)) return
-      owner.paths.set(rel, firstSeen(root, rel, owner.startedAt))
     })
     created.watcher.on('error', () => {
       created.watcher.close()
@@ -565,98 +664,55 @@ export function openChangeWindow(
     })
     shared.set(root, created)
     entry = created
+  } else if (entry.windows.length === 0) {
+    // 后台观察使 watcher 在队列为空时保持打开：本窗口同样立即拥有事件，起点同样按刻度取得。
+    window.startedAt = stampTick(root)
   }
   const owner = entry
   owner.windows.push(window)
 
+  /**
+   * 让出队列。排在最前的窗口先等待在途事件全部交付，`onLeave` 与让出在等到或放弃时同步执行；
+   * 事件只进入排在最前的窗口，排队中的窗口直接让出。返回 false = 未等到。
+   */
+  const leaveQueue = async (closedAt: number, onLeave: () => void = () => {}) => {
+    const leave = () => {
+      onLeave()
+      owner.windows.splice(owner.windows.indexOf(window), 1)
+      const next = owner.windows[0]
+      if (next) next.startedAt = Math.max(next.startedAt, closedAt)
+      else releaseIfIdle(root, owner)
+    }
+    if (owner.windows[0] === window) return barrier(root, owner, leave)
+    leave()
+    return true
+  }
+
   return {
     async close() {
       const closedAt = Date.now()
-      const handOff = () => {
-        owner.windows.splice(owner.windows.indexOf(window), 1)
-        const next = owner.windows[0]
-        if (next) next.startedAt = Math.max(next.startedAt, closedAt)
-        else {
-          owner.watcher.close()
-          if (shared.get(root) === owner) shared.delete(root)
-        }
-      }
-      // 事件只进入排在最前的窗口，只有该窗口需要等待在途事件。
-      let settled = true
-      if (owner.windows[0] === window) settled = await barrier(root, owner, handOff)
-      else handOff()
+      const settled = await leaveQueue(closedAt)
+      return collect(root, owner, window, closedAt, settled, opts)
+    },
 
-      const until = closedAt + CLOCK_SLACK_MS
-      const limit = opts.walkLimit ?? MAX_WALK_ENTRIES
-      let walked = await touchedSince(root, window.startedAt, until, limit)
-      /*
-       * 达到上限时剪去 Git 忽略的目录后重扫一遍。被忽略目录中的未跟踪文件本就不报告，
-       * 而渲染产物、缓存这类目录动辄数万个文件，不剪枝时扫描耗尽上限，每条命令都标记观察范围不完整，
-       * 真正需要提示的情况被淹没。剪去的目录与运行产物目录相同，其中已跟踪的文件仍由索引补齐。
-       * 重扫后仍达到上限的是未被忽略的文件过多，照常标记不完整。
-       */
-      if (walked.truncated && owner.repoRoot !== null) {
-        const ignored = await gitIgnoredDirs(owner.repoRoot, owner.prefix)
-        if (ignored?.size)
-          walked = await touchedSince(root, window.startedAt, until, limit, ignored)
-      }
-      const walkOnly = walked.paths.filter((rel) => !window.paths.has(rel))
-      const prunedDirs = [...new Set([...window.prunedDirs, ...walked.pruned])]
-
-      let incomplete = walked.truncated || !settled
-      let tracked: string[] = []
-      if (owner.repoRoot !== null && prunedDirs.length > 0) {
-        const got = await trackedInPruned(
-          owner.repoRoot,
-          owner.prefix,
-          root,
-          prunedDirs,
-          window.startedAt,
-          until,
-        )
-        if (got === null) incomplete = true
-        else tracked = got
-      }
-
-      const candidates = [...window.paths.keys(), ...walkOnly, ...tracked]
-      const ignored =
-        owner.repoRoot === null || candidates.length === 0
-          ? new Set<string>()
-          : await gitIgnored(owner.repoRoot, owner.prefix, candidates)
-      if (ignored === null) incomplete = true
-      const skip = ignored ?? new Set<string>()
-
-      const changes: FileChange[] = []
-      for (const [rel, seen] of window.paths) {
-        const first = await seen
-        if (skip.has(rel)) continue
-        try {
-          const change = await describe(root, rel, window.startedAt)
-          if (change) changes.push(change)
-        } catch {
-          // 窗口内出现、收尾前消失：属于临时文件，而不是用户文件被删除。
-          if (first?.bornInWindow) continue
-          changes.push({ path: rel, changeType: 'deleted' })
-        }
-      }
-      for (const rel of [...walkOnly, ...tracked]) {
-        if (skip.has(rel)) continue
-        const change = await describe(root, rel, window.startedAt).catch(() => null)
-        if (change) changes.push(change)
-      }
-      if (opts.reported) {
-        // 本轮报告过、本窗口两个来源都未观察到的路径按磁盘状态核对。这些路径上次报告时
-        // 已经过忽略判定，不再重复判定。
-        const seen = new Set([...window.paths.keys(), ...walkOnly, ...tracked])
-        for (const rel of await goneFrom(root, opts.reported, seen)) {
-          changes.push({ path: rel, changeType: 'deleted' })
-        }
-      }
-      // 只对删除判定：仍在磁盘上的路径已由 `describe` 按 `stat` 排除了目录。
-      const dirs = parentsOf(changes)
+    async detach() {
+      const closedAt = Date.now()
+      // 后台观察在让出队列的同一时刻加入：标记之前的事件归属本窗口，之后的进入后台观察。
+      const late: Window = { startedAt: closedAt, paths: new Map(), prunedDirs: new Set() }
+      const settled = await leaveQueue(closedAt, () => owner.background.add(late))
+      const observed = await collect(root, owner, window, closedAt, settled, opts)
       return {
-        changes: changes.filter((c) => c.changeType !== 'deleted' || !dirs.has(c.path)),
-        incomplete,
+        observed,
+        background: {
+          async close() {
+            const lateClosedAt = Date.now()
+            const lateSettled = await barrier(root, owner, () => {
+              owner.background.delete(late)
+              releaseIfIdle(root, owner)
+            })
+            return collect(root, owner, late, lateClosedAt, lateSettled, opts)
+          },
+        },
       }
     },
   }

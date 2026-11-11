@@ -300,6 +300,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
       office: true,
       videoDecoder: true,
       delegate: true,
+      commands: true,
       media: MEDIA_OUTPUTS,
     })
     /*

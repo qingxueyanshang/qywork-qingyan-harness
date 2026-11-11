@@ -94,6 +94,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line: '- 命令：用 run_command 执行 shell 命令。临时文件与缓存放在本会话临时目录（运行上下文中列出，命令的 TMP、TEMP、TMPDIR 指向它），该目录不计入变更。待办全部完成后系统删除该目录，交给用户的文件与之后还要用到的文件放在工作区的其他位置。启动 Chrome 时必须指定 --user-data-dir=.tmp/chrome，否则每次启动都会在临时目录留下一份无法删除的崩溃指标文件。',
   },
   {
+    tool: 'background_command',
+    line: '- 后台命令：开发服务器、监听进程等不自行退出的命令，以及之后再查看结果的长时间命令，用 run_command 的 background 启动，命令在后台继续运行；结束时结果作为回执消息送达。用 background_command 按任务编号读取至今的输出或停止命令。',
+  },
+  {
     tool: 'create_canvas',
     line: '- 画布创建：新建 *.canvas.json 使用 create_canvas，path 可指定目录与名称；已有画布使用 edit_canvas 修改。',
   },
@@ -112,6 +116,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   {
     tool: 'retrieve_canvas',
     line: '- 画布取回：取回已有远端视频结果使用 retrieve_canvas，不重新提交生成。',
+  },
+  {
+    tool: 'cancel_canvas',
+    line: '- 画布取消：取消生成卡正在进行的生成使用 cancel_canvas，与界面卡片上的取消相同。',
   },
   {
     tool: 'capture_canvas_frame',

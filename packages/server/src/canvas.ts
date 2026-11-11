@@ -270,6 +270,8 @@ export interface CanvasServiceDeps {
   publish(event: AgentEvent): void
   /** 与对话共用更新占位；文件校验结束后、开始生成前再检查一次。 */
   updating?(): boolean
+  /** 按配置撤销远端任务，见 `CanvasService.cancelTask`。只在服务端装配时提供。 */
+  cancelTask?: CanvasCancelTask
   /** 本次生成所用模型在提示词中指代素材的方式；未提供时按节点名写入提示词。 */
   mentionStyleOf?(
     output: GenerateOutput,
@@ -337,18 +339,20 @@ export type ArtRender = (page: {
 }) => Promise<{ png: string; errors: string[] }>
 
 /**
- * 运行或取回的计费归属与中止时机由调用方提供：界面发起时使用服务端创建的端口（花费记为不属于任何轮次），
- * Agent 发起时使用其本轮的 `ctx.media`（花费计入本轮）与本轮的中止信号。
+ * 运行或取回的计费归属由调用方提供：界面发起时使用服务端创建的端口（花费记为不属于任何轮次），
+ * Agent 发起时使用其本轮的 `ctx.media`（花费计入本轮）。
  */
 export interface CanvasRunOptions {
   media: MediaPort
+  /**
+   * 调用方的等待时限（Agent 本轮的中止信号）。中止时 `done` 立即兑现为停止等待，生成照常进行并写回画布：
+   * 生成归画布所有，只由卡片自身的停止（`cancel`）与应用关闭结束。已中止时不开始生成。
+   * 不要并入生成的执行信号：收尾只把卡片自身的停止视为停止等待，其他中止记为生成失败。
+   */
   signal?: AbortSignal
   /** 批量派发时再次检查已有远端任务，防止等待期间新出现的待取回版本被重复提交。 */
   rejectPending?: true
-  /**
-   * 该卡正在生成时不重复提交，返回该次生成的结果（大模型的画布端口）。不给出时以 409 拒绝（界面）。
-   * `signal` 只结束本次等待，不停止该次生成。
-   */
+  /** 该卡正在生成时不重复提交，返回该次生成的结果（大模型的画布端口）。不给出时以 409 拒绝（界面）。 */
   join?: true
 }
 
@@ -542,8 +546,8 @@ export class CanvasService {
 
   /**
    * 只调度本次指定的节点，不自动扩展到其他上游。执行仍走 run，共用状态、版本与计费。
-   * 批内依赖失败时跳过下游，独立节点最多并行 4 个；中止后不再派发等待中的节点。
-   * 正在生成的节点不重复提交，等待该次生成的结果（`join`）。
+   * 批内依赖失败时跳过下游，独立节点最多并行 4 个；中止后已开始的节点照常生成（`CanvasRunOptions.signal`），
+   * 等待中的节点不再派发。正在生成的节点不重复提交，等待该次生成的结果（`join`）。
    */
   async runBatch(
     ws: CanvasWorkspace,
@@ -732,7 +736,7 @@ export class CanvasService {
       const outcome = await generateMedia({
         roots: ws.root,
         media: opts.media,
-        signal: this.signalFor(entry, opts.signal),
+        signal: this.signalFor(entry),
         onSubmit: () => {
           entry.requestSent = true
           this.deps.publish({
@@ -796,8 +800,8 @@ export class CanvasService {
       // 成功的结果一定经过 `attach`。
       return written.result!
     })
-    this.running.get(key)!.done = done
-    return { done }
+    entry.done = done
+    return { done: this.joined(entry, opts.signal) }
   }
 
   /**
@@ -888,6 +892,7 @@ export class CanvasService {
       start: new Date().toISOString(),
       version: version.id,
     }
+    opts.signal?.throwIfAborted()
     const entry = this.begin(key, ws, rel, nodeId, 'retrieve')
     entry.version = version.id
     entry.record = { path: version.path, key: keyOf(ws.root, version.path) }
@@ -906,7 +911,7 @@ export class CanvasService {
       const outcome = await resumeMedia({
         roots: ws.root,
         media: opts.media,
-        signal: this.signalFor(entry, opts.signal),
+        signal: this.signalFor(entry),
         onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
         onSpend: (spend) => {
           facts.cost = spend.cost
@@ -938,8 +943,8 @@ export class CanvasService {
       // 成功的结果一定经过 `attach`。
       return written.result!
     })
-    this.running.get(key)!.done = done
-    return { done }
+    entry.done = done
+    return { done: this.joined(entry, opts.signal) }
   }
 
   /** 运行与取回共用的前置检查：画布、节点，以及该卡是否正在生成或取回（`entryOf`），由调用方决定并入还是拒绝。 */
@@ -1068,8 +1073,18 @@ export class CanvasService {
     })
   }
 
-  private signalFor(entry: RunEntry, signal?: AbortSignal): AbortSignal {
-    return AbortSignal.any([entry.stop.signal, this.shutdown.signal, ...(signal ? [signal] : [])])
+  /** 生成与轮询的中止信号：只有卡片自身的停止与应用关闭。调用方的信号只结束等待（`joined`）。 */
+  private signalFor(entry: RunEntry): AbortSignal {
+    return AbortSignal.any([entry.stop.signal, this.shutdown.signal])
+  }
+
+  /**
+   * 撤销远端任务，交给 `cancel`：界面的取消与大模型的 `cancel_canvas` 使用同一个函数（`deps.cancelTask`）。
+   * 未提供时抛出，`cancel` 按撤销请求失败处理：停止本地等待并保留任务。
+   */
+  readonly cancelTask: CanvasCancelTask = (task) => {
+    if (!this.deps.cancelTask) throw new Error('未配置撤销远端任务的方式')
+    return this.deps.cancelTask(task)
   }
 
   /** 任务记录中的任务号、接口与模型；无法读取时返回 null（取消时视为无法撤销）。 */
@@ -2389,11 +2404,6 @@ function changesOf(
   return { changed, moved, removed, replaced }
 }
 
-/**
- * 提供给会话的画布端口：使用同一个画布服务，绑定该会话所在的项目。
- * 运行与取回在工具中等待至结束；中止信号来自本轮，停止本轮即停止等待，视频版本保留以待取回。
- * 修改按大模型的规则核对（`prepareAgentOps`），读取的生成卡参数为实际发送的参数（`agentView`）。
- */
 /** 绑定到一条会话的设计稿渲染：渲染页归该会话所有（`BrowserCoordinator.renderArt`）。 */
 export function artRenderOf(
   browser: BrowserCoordinator,
@@ -2404,6 +2414,12 @@ export function artRenderOf(
   return (page) => browser.renderArt(conversationId, workspaceId, { ...page, workspaceRoot })
 }
 
+/**
+ * 提供给会话的画布端口：使用同一个画布服务，绑定该会话所在的项目。
+ * 运行与取回在工具中等待至结束；中止信号来自本轮，停止本轮只结束等待，生成照常进行并写回画布。
+ * 取消与界面的取消按钮相同（`CanvasService.cancel` 与 `cancelTask`）。
+ * 修改按大模型的规则核对（`prepareAgentOps`），读取的生成卡参数为实际发送的参数（`agentView`）。
+ */
 export function canvasPort(
   service: CanvasService,
   ws: CanvasWorkspace,
@@ -2436,6 +2452,7 @@ export function canvasPort(
       service.runBatch(ws, path, nodeIds, { media, signal }),
     retrieve: async (path, nodeId, version, media, signal) =>
       (await service.retrieve(ws, path, nodeId, version, { media, signal })).done,
+    cancel: (path, nodeId) => service.cancel(ws.root, path, nodeId, service.cancelTask),
     captureFrame: (path, nodeId, label, png) =>
       service.captureFrame(ws.root, path, nodeId, label, png),
   }

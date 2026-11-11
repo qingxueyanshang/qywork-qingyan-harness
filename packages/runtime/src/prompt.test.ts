@@ -483,6 +483,7 @@ describe('工具说明不另写收尾方式', () => {
   const registry = new ToolRegistry()
   registerBuiltinTools(registry, {
     delegate: true,
+    commands: true,
     plugins: true,
     mcpConfig: true,
     browser: true,
@@ -592,6 +593,7 @@ describe('能力段', () => {
         'edit_canvas',
         'run_canvas',
         'retrieve_canvas',
+        'cancel_canvas',
         'capture_canvas_frame',
         'desktop_windows',
       ]),
@@ -604,6 +606,7 @@ describe('能力段', () => {
     expect(prompt).toContain('使用 edit_canvas')
     expect(prompt).toContain('使用 run_canvas')
     expect(prompt).toContain('使用 retrieve_canvas')
+    expect(prompt).toContain('使用 cancel_canvas')
     expect(prompt).toContain('使用 capture_canvas_frame')
     expect(prompt).not.toContain('不得使用电脑控制')
     expect(prompt.indexOf('- 画布：')).toBeLessThan(prompt.indexOf('- 电脑控制：'))

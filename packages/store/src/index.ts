@@ -14,7 +14,9 @@ export { listLoadedTools, recordLoadedTools } from './loaded-tools.ts'
 // 读写：会话、消息、run、step、工作区
 export {
   appendMessage,
+  appendRunMedia,
   appendStep,
+  appendStepFileChanges,
   appendTextToStep,
   archiveConversation,
   archiveWorkspaceConversations,
@@ -77,7 +79,6 @@ export {
   settleToolStep,
   setWorkspacePinned,
   touchRun,
-  updateRunMedia,
   updateRunUsage,
   upsertWorkspace,
   workspaceOf,

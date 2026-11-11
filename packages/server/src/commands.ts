@@ -144,6 +144,14 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       return
     }
 
+    case 'command.stop': {
+      // 只停止这一条后台命令，会话中的其他执行不受影响。不在表中只有一种可能：该命令已结束。
+      if (!deps.commands?.stop(cmd.conversationId, cmd.id)) {
+        reject(deps.ws, cmd.type, 'conflict', '该命令已结束')
+      }
+      return
+    }
+
     case 'conversation.setModel': {
       // 接口必须在配置中实际存在。放行不存在的接口名会使会话指向
       // 无法发送请求的接口，且报错要到下一轮才出现。

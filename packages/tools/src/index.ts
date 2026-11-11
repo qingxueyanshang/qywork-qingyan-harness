@@ -17,7 +17,7 @@ import { readResourceTool } from './resources.ts'
 import { commandShell } from './sandbox.ts'
 import { createScheduleTool, deleteScheduleTool, listSchedulesTool } from './schedules.ts'
 import { globTool, grepTool } from './search.ts'
-import { makeShellTool } from './shell.ts'
+import { backgroundCommandTool, makeShellTool } from './shell.ts'
 import { importSkillTool, moveSkillTool, readSkillTool, writeSkillTool } from './skills.ts'
 import { writeTodosTool } from './todos.ts'
 import { webFetchTool, webSearchTool } from './web.ts'
@@ -144,6 +144,7 @@ import type { MediaOutput } from '@qywork/core'
 import { personalizeTool } from './appearance/personalize.ts'
 import { petTool } from './appearance/pet.ts'
 import {
+  cancelCanvasTool,
   captureCanvasFrameTool,
   createCanvasTool,
   editCanvasTool,
@@ -175,6 +176,8 @@ export function registerBuiltinTools(
   registry: ToolRegistry,
   opts: {
     delegate?: boolean
+    /** 有后台命令通道（服务端为顶层会话注入了 `CommandPort`）。 */
+    commands?: boolean
     plugins?: boolean
     mcpConfig?: boolean
     browser?: boolean
@@ -208,7 +211,9 @@ export function registerBuiltinTools(
     listDirTool,
     globTool,
     grepTool,
-    ...(shell ? [makeShellTool(shell)] : []),
+    // 后台命令按通道注册：没有任务表时 `background` 无法兑现，读取与停止也没有对象。
+    ...(shell ? [makeShellTool(shell, { background: opts.commands === true })] : []),
+    ...(shell && opts.commands ? [backgroundCommandTool] : []),
     readResourceTool,
     readHistoryTool,
     writeTodosTool,
@@ -244,6 +249,7 @@ export function registerBuiltinTools(
           editCanvasTool,
           runCanvasTool,
           retrieveCanvasTool,
+          cancelCanvasTool,
           exportTimelineTool,
         ]
       : []),

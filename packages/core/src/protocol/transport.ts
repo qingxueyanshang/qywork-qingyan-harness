@@ -233,6 +233,7 @@ export type ClientCommand =
   | GoalSetCommand
   | FollowUpSteerCommand
   | FollowUpDropCommand
+  | CommandStopCommand
 
 export interface SendMessageCommand {
   type: 'message.send'
@@ -315,6 +316,14 @@ export interface FollowUpSteerCommand {
 export interface FollowUpDropCommand {
   type: 'followup.drop'
   conversationId: ConversationId
+  id: string
+}
+
+/** 停止会话中一条后台命令，结束其进程树。被停止的命令不发送回执。 */
+export interface CommandStopCommand {
+  type: 'command.stop'
+  conversationId: ConversationId
+  /** 任务编号，即 `BackgroundCommand.id`。 */
   id: string
 }
 

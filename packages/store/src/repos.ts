@@ -531,7 +531,7 @@ export function appendMessage(
     content: string
     attachments?: Message['attachments']
     /** 缺失表示用户本人发送，写入 NULL。见 `Message.origin`。 */
-    origin?: 'subagent' | 'workflow'
+    origin?: 'subagent' | 'workflow' | 'command'
   },
 ): Message {
   const msg: Message = {
@@ -1162,9 +1162,14 @@ export function updateRunUsage(store: Store, id: RunId, usage: RunUsage): void {
     )
 }
 
-/** 整份写入本轮的生成花费。只由会话层在每次生成成功时调用，与模型用量分列，两者互不覆盖。 */
-export function updateRunMedia(store: Store, id: RunId, media: MediaSpend[]): void {
-  store.db.query('UPDATE runs SET media_usage = ? WHERE id = ?').run(JSON.stringify(media), id)
+/**
+ * 向该轮的生成花费追加一笔。只由会话层在每次生成成功时调用，与模型用量分列，两者互不覆盖。
+ * 不要改为整份写入内存中的列表：画布生成可以在轮次结束之后完成，那时会话已不再持有该轮的列表。
+ */
+export function appendRunMedia(store: Store, id: RunId, spend: MediaSpend): void {
+  store.db
+    .query(`UPDATE runs SET media_usage = json_insert(media_usage, '$[#]', json(?)) WHERE id = ?`)
+    .run(JSON.stringify(spend), id)
 }
 
 /** 没有生成时不含 `media` 键，与 `RunUsage.media` 的约定一致。 */
@@ -2101,6 +2106,57 @@ export function settleToolStep(
       .query('UPDATE steps SET status = ?, payload = ?, duration_ms = ? WHERE id = ?')
       .run(status, writeJson(settled), durationMs ?? null, id)
     return settled
+  })
+}
+
+/**
+ * 把后台命令转入后台之后的文件改动追加到发起它的 step 的 `outcome.fileChanges`，返回实际追加的改动与该 step 所属的 run。
+ * step 已不存在（会话已删除）时返回 null；尚未写入结果时抛出，不要改为跳过：那样改动会静默丢失。
+ *
+ * 同一会话中该 step 及其后的 step 已报告为新建或修改的路径不再追加：后台观察与转入后台前的窗口在交界处重叠，
+ * 与其间打开的观察窗口、文件工具也会观察到同一次改动，重复追加时合计中的行数计入两次。删除照常追加。
+ * 调用时 step 已写入结果：`run_command` 返回后 loop 在同一批微任务中写入结果，命令结束后的观察器收尾至少经过一次文件 I/O 回调。
+ */
+export function appendStepFileChanges(
+  store: Store,
+  id: StepId,
+  changes: FileChange[],
+): { runId: RunId; changes: FileChange[] } | null {
+  return store.tx(() => {
+    const row = store.db
+      .query<
+        { payload: string | null; run_id: string; conversation_id: string; ord: number },
+        [string]
+      >(
+        `SELECT s.payload, s.run_id, r.conversation_id, s.rowid AS ord
+         FROM steps s JOIN runs r ON r.id = s.run_id WHERE s.id = ?`,
+      )
+      .get(id)
+    if (!row) return null
+    const payload = readJson<Step['payload']>(row.payload, null)
+    if (payload?.kind !== 'tool_result')
+      throw new Error(`执行记录 ${id} 尚未写入结果，无法追加文件改动`)
+    const reported = new Set(
+      store.db
+        .query<{ path: string }, [string, number]>(
+          `SELECT DISTINCT json_extract(c.value, '$.path') AS path
+           FROM runs r JOIN steps s ON s.run_id = r.id
+           JOIN json_each(s.payload, '$.outcome.fileChanges') c
+           WHERE r.conversation_id = ? AND s.rowid >= ?
+             AND json_extract(c.value, '$.changeType') != 'deleted'`,
+        )
+        .all(row.conversation_id, row.ord)
+        .map((r) => r.path),
+    )
+    const appended = changes.filter((c) => c.changeType === 'deleted' || !reported.has(c.path))
+    if (appended.length > 0) {
+      store.db
+        .query(
+          `UPDATE steps SET payload = json_set(payload, '$.outcome.fileChanges', json(?)) WHERE id = ?`,
+        )
+        .run(JSON.stringify([...(payload.outcome.fileChanges ?? []), ...appended]), id)
+    }
+    return { runId: row.run_id as RunId, changes: appended }
   })
 }
 

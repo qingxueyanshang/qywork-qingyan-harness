@@ -5,6 +5,7 @@ import { Store } from './db.ts'
 import {
   appendMessage,
   appendStep,
+  appendStepFileChanges,
   archiveConversation,
   conversationRejectsImages,
   createConversation,
@@ -1303,6 +1304,98 @@ describe('变更页按写过文件的轮分页', () => {
       additions: 9,
       deletions: 9,
     })
+    store.close()
+  })
+})
+
+describe('后台命令结束时追加文件改动', () => {
+  test('追加到原 step；该 step 及其后同一会话已报告为新建或修改的路径不追加，删除照常追加', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const other = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    let seq = 0
+    const runOf = (conversationId: typeof conv.id, content: string) => {
+      const user = appendMessage(store, { conversationId, role: 'user', content })
+      return createRun(store, {
+        conversationId,
+        workspaceId: ws.id,
+        model: 'm',
+        clientRequestId: `append-${++seq}`,
+        userMessageId: user.id,
+        messageIdUpperBound: user.id,
+        contextSnapshot: [],
+      }).id
+    }
+    const write = (runId: string, toolName: string, fileChanges: FileChange[]) =>
+      appendStep(store, {
+        runId: runId as never,
+        seq: ++seq,
+        kind: 'tool_action',
+        toolName,
+        status: 'success',
+        payload: {
+          kind: 'tool_result',
+          args: {},
+          outcome: { status: 'success', executed: true, message: '', fileChanges },
+        },
+      })
+
+    const first = runOf(conv.id, '后台构建')
+    const origin = write(first, 'run_command', [{ path: 'dist.txt', changeType: 'created' }])
+    write(first, 'write_file', [
+      { path: 'a.ts', changeType: 'created', additions: 2, deletions: 0 },
+    ])
+    finishRun(store, first as never, { status: 'done', stopReason: 'completed' })
+    const second = runOf(conv.id, '再改')
+    write(second, 'edit_file', [{ path: 'b.ts', changeType: 'deleted' }])
+    write(runOf(other.id, '别的会话'), 'write_file', [{ path: 'c.ts', changeType: 'created' }])
+
+    const appended = appendStepFileChanges(store, origin.id, [
+      { path: 'dist.txt', changeType: 'modified' },
+      { path: 'a.ts', changeType: 'created', additions: 2, deletions: 0 },
+      { path: 'a.ts', changeType: 'deleted' },
+      { path: 'b.ts', changeType: 'created', additions: 1, deletions: 0 },
+      { path: 'c.ts', changeType: 'created', additions: 4, deletions: 0 },
+    ])
+    const expected: FileChange[] = [
+      { path: 'a.ts', changeType: 'deleted' },
+      { path: 'b.ts', changeType: 'created', additions: 1, deletions: 0 },
+      { path: 'c.ts', changeType: 'created', additions: 4, deletions: 0 },
+    ]
+    expect(appended).toEqual({ runId: first as never, changes: expected })
+
+    const page = listConversationChangesPage(store, conv.id, { limit: 10 })
+    const step = page.turns.flatMap((t) => t.steps).find((s) => s.id === origin.id)
+    expect(step?.fileChanges).toEqual([{ path: 'dist.txt', changeType: 'created' }, ...expected])
+    // a.ts 只按 write_file 的报告计入一次行数。
+    expect(page.totals.additions).toBe(7)
+    store.close()
+  })
+
+  test('step 不存在时返回 null；尚未写入结果时抛出，不静默跳过', () => {
+    const { store, ws } = fresh()
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const user = appendMessage(store, { conversationId: conv.id, role: 'user', content: '构建' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'append-running',
+      userMessageId: user.id,
+      messageIdUpperBound: user.id,
+      contextSnapshot: [],
+    })
+    const running = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'run_command',
+      status: 'running',
+      payload: { kind: 'tool_call', args: {} },
+    })
+    const change: FileChange = { path: 'x.txt', changeType: 'created' }
+    expect(appendStepFileChanges(store, 'st_missing' as never, [change])).toBeNull()
+    expect(() => appendStepFileChanges(store, running.id, [change])).toThrow('尚未写入结果')
     store.close()
   })
 })

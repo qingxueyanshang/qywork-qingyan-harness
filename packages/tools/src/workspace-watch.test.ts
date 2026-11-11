@@ -1,5 +1,5 @@
 /**
- * 覆盖 `workspace-watch.ts`：执行窗口内的路径归集、忽略判定与收尾时的变更类型判定。
+ * 覆盖 `workspace-watch.ts`：执行窗口内的路径归集、忽略判定、收尾时的变更类型判定与后台观察。
  */
 import { describe, expect, test } from 'bun:test'
 import { rmSync } from 'node:fs'
@@ -600,5 +600,49 @@ describe('执行窗口内的工作区变更', () => {
 
     expect(firstChanges.changes.map((c) => c.path)).toEqual(['a.txt'])
     expect(secondChanges.changes.map((c) => c.path)).toEqual(['b.txt'])
+  })
+
+  /**
+   * 后台观察不占用队列：其后打开的窗口立即拥有事件，同一次改动同时进入后台观察。
+   * 其后打开的窗口在队列为空时打开，起点按刻度取得，打开后立即新建的文件仍判为 created。
+   * 删除只能由事件观察到，用它断言事件同时进入两者。
+   */
+  test('转为后台观察后，其后打开的窗口照常拥有事件，事件同时进入后台观察', async () => {
+    const root = await gitRepo()
+    await writeFile(join(root, 'gone.txt'), 'x\n')
+    await Bun.sleep(20)
+
+    const first = openChangeWindow(root)
+    await settle()
+    await writeFile(join(root, 'a.txt'), 'a\n')
+    await settle()
+    const { observed, background } = await first.detach()
+
+    const second = openChangeWindow(root)
+    await writeFile(join(root, 'c.txt'), 'c\n')
+    await settle()
+    await rm(join(root, 'gone.txt'))
+    const secondChanges = await second.close()
+    await writeFile(join(root, 'b.txt'), 'b\n')
+    const late = await background.close()
+
+    expect(observed).toEqual({
+      changes: [{ path: 'a.txt', changeType: 'created', additions: 2, deletions: 0 }],
+      incomplete: false,
+    })
+    expect(typeOf(secondChanges.changes)).toEqual(
+      new Map([
+        ['c.txt', 'created'],
+        ['gone.txt', 'deleted'],
+      ]),
+    )
+    expect(typeOf(late.changes)).toEqual(
+      new Map([
+        ['c.txt', 'created'],
+        ['gone.txt', 'deleted'],
+        ['b.txt', 'created'],
+      ]),
+    )
+    expect(late.incomplete).toBe(false)
   })
 })
