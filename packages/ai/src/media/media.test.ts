@@ -358,6 +358,16 @@ describe('openai_images', () => {
     expect(validateMediaCall(spec, 'generate', { size: '512x512' }, none)).toHaveLength(1)
   })
 
+  test('Muse Image 只登记生成，每张 $0.01', () => {
+    const muse = lookupMediaModel('muse-image-1.0', 'openai_images')
+    expect(muse.operations).toEqual(['generate'])
+    expect(mediaCost(muse, { images: 3 })).toEqual({
+      cost: expect.closeTo(0.03, 10),
+      currency: 'USD',
+    })
+    expect(quoteMedia(muse, { n: 2 }, { images: 0, videos: 0 })?.cost).toBeCloseTo(0.02, 10)
+  })
+
   /** 火山 Seedream 与百炼兼容模式生成图像：参考图是 JSON 中的 data URI，结果是临时地址，取得后立即下载。 */
   test('目录声明 JSON 的模型修改图像时仍使用 /generations，结果按地址下载', async () => {
     reply = () => Response.json({ data: [{ url: `${origin()}/files/out.jpg` }] })

@@ -70,6 +70,28 @@ Fable 5.2 的思考档位为 `low / medium / high / xhigh / max`。Carbon 的思
 [Gemini 4 Carbon](https://aistudio.google.com/docs/models/gemini-4-carbon)、[Google 价格](https://aistudio.google.com/docs/pricing)、
 [GPT-6 Cyber](https://developers.openai.com/api/docs/models/gpt-6-cyber)、[OpenAI 价格](https://developers.openai.com/api/docs/pricing)。
 
+## Meta Muse
+
+官方 Base URL：OpenAI Chat Completions 与 OpenAI Responses 为 `https://api.meta.ai/v1`，Anthropic Messages 为 `https://api.meta.ai`。
+各款上下文为 1,048,576 token，支持文本与图片输入；思考无法关闭。
+
+| 模型 ID | 价格（美元 / 百万 token：输入 / 输出 / 缓存输入） | 思考档位 |
+|---|---|---|
+| `muse-wonder-1.0` | 4.00 / 20.00 / 0.20 | minimal 至 max，默认 max |
+| `muse-spark-1.3` | 1.25 / 4.25 / 0.15 | minimal 至 max，默认 high |
+| `muse-ember-1.0` | 0.10 / 0.50 / 0.004；提示词超过 200K 后整条请求 0.30 / 1.50 / 0.012 | minimal 至 max，默认 max |
+
+只收录各系列的最新版本，Spark 的旧版本与 Contributor 型号未收录。只有 Muse Ember 的型号页写明最大输出（524,288 token），其余不申报输出上限。
+Responses 以加密推理条目跨轮回放思考；Chat Completions 不返回可回放的思考；Messages 的思考档位只有 low / medium / high / xhigh。
+缓存为自动前缀缓存，不收写入费。模型另接受视频、音频与 PDF 输入，当前未接入。
+
+图像生成型号 `muse-image-1.0` 使用 OpenAI 兼容图片接入，每张 $0.01；`size` 只决定宽高比。当前只接入文生图，参考图修改未接入。
+Meta 的 Muse Video 尚无官方接口（官方原文为「coming soon」），未收录。全部型号均未用官方端点实测。
+
+2026-11-11 核对：[型号](https://dev.meta.ai/docs/models)、[价格](https://dev.meta.ai/docs/pricing-rate-limits)、
+[思考](https://dev.meta.ai/docs/reasoning)、[缓存](https://dev.meta.ai/docs/prompt-caching)、
+[Messages](https://dev.meta.ai/docs/protocols/messages)、[图像生成](https://dev.meta.ai/docs/image-generation)。
+
 ## 2026-11-11 接入的生成型号
 
 | 类别 | 模型 ID | 接入方式 | 价格 |

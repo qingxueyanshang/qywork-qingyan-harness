@@ -401,6 +401,15 @@ export const VENDORS: readonly Vendor[] = [
     },
   },
   {
+    id: 'meta',
+    displayName: 'Meta',
+    baseUrls: {
+      openai_chat_completions: 'https://api.meta.ai/v1',
+      openai_responses: 'https://api.meta.ai/v1',
+      anthropic_messages: 'https://api.meta.ai',
+    },
+  },
+  {
     id: 'deepseek',
     displayName: 'DeepSeek',
     baseUrls: {
@@ -726,6 +735,18 @@ const GPT_56_LUNA_LONG: LongContextTier = {
   cacheWrite5m: 0.5,
   cacheWrite1h: 0.5,
   note: '提示词超过 272K token 后整条请求按 $0.4 / $1.8（缓存 $0.04）计价',
+}
+
+/**
+ * Muse Ember 的长上下文档：价目页写「A request with up to 200K input tokens is billed at the rates in the first column.
+ * A request with more is billed at the long-context rates in full」，第一个进入高档的值是 200001；输入量含缓存命中。
+ */
+const MUSE_EMBER_LONG: LongContextTier = {
+  thresholdTokens: 200_001,
+  input: 0.3,
+  output: 1.5,
+  cacheRead: 0.012,
+  note: '提示词超过 20 万 token 后整条请求按 $0.3 / $1.5（缓存 $0.012）计价',
 }
 
 /** xAI 官方价目表：提示词达到 20 万后，整条请求按 $4 / $12 / 缓存 $1 计价。 */
@@ -1542,6 +1563,63 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       pricing: usd(12.5, 75, 1.25, 15.625),
       longContext: [GPT_56_CYBER_LONG],
     },
+
+    /*
+     * ── Meta Muse ──
+     *
+     * 官方价目页与各型号页（2026-11-11 核对），Standard 模式，单位 $/百万：
+     *
+     * | 模型 | 输入 | 缓存输入 | 输出 | 思考档位 |
+     * |---|---|---|---|---|
+     * | muse-wonder-1.0 | 4.00 | 0.20 | 20.00 | minimal 至 max，默认 max |
+     * | muse-spark-1.3 | 1.25 | 0.15 | 4.25 | minimal 至 max，默认 high |
+     * | muse-ember-1.0 | 0.10 | 0.004 | 0.50 | minimal 至 max，默认 max；超过 200K 后 0.30 / 0.012 / 1.50 |
+     *
+     * 各款窗口 1,048,576；只有 Ember 的型号页写明最大输出 524,288，其余不申报。思考无法关闭。
+     * 只收录各系列的最新版本；Spark 的旧版本与 Contributor 型号不收录。
+     *
+     * 三种协议的差别：Responses 以加密推理条目跨轮回放；Chat Completions 返回的 `reasoning_content` 为空，没有可回放的内容；
+     * Messages 的 `output_config.effort` 只透传 low / medium / high / xhigh。缓存为自动前缀缓存，不收写入费，
+     * Responses 与 Chat Completions 接受 `prompt_cache_key`。工具定义的 `strict` 默认为 false，保留原生的必填与可选结构。
+     * 模型接受视频输入，本协议适配器尚未核实，不声明。
+     */
+    ...(
+      [
+        ['muse-wonder-1.0', 'Muse Wonder 1.0', usd(4, 20, 0.2), {}],
+        ['muse-spark-1.3', 'Muse Spark 1.3', usd(1.25, 4.25, 0.15), {}],
+        [
+          'muse-ember-1.0',
+          'Muse Ember 1.0',
+          usd(0.1, 0.5, 0.004),
+          { maxOutputTokens: 524_288, longContext: [MUSE_EMBER_LONG] },
+        ],
+      ] as const
+    ).flatMap(([id, displayName, pricing, extra]): ModelSpec[] => {
+      const chat: ModelSpec = {
+        ...base,
+        ...effort(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
+        id,
+        displayName,
+        vendor: 'meta',
+        vision: true,
+        contextWindow: 1_048_576,
+        maxOutputTokens: null,
+        chatToolSchema: 'native',
+        pricing,
+        ...extra,
+      }
+      return [
+        { ...chat, provider: 'openai_responses', reasoningEcho: 'encrypted_content' },
+        chat,
+        {
+          ...chat,
+          provider: 'anthropic_messages',
+          thinking: 'adaptive_only',
+          effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          cacheRouting: 'none',
+        },
+      ]
+    }),
 
     /*
      * ── Google Gemini ──
