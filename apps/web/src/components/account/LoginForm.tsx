@@ -4,12 +4,13 @@ import mark from './mark.png'
 
 /**
  * 邮箱密码的登录与注册表单，顶部为应用标志与标题。账号弹窗与首次启动的登录页共用。
- * 两种方式字段相同，切换时表单高度不变（B9）；失败原因显示在按钮下方的固定高度行中。
+ * 邀请码一栏只在注册时显示，登录时保留其位置，切换时表单高度不变（B9）；失败原因显示在按钮下方的固定高度行中。
  */
 export function LoginForm() {
   const [mode, setMode] = createSignal<'login' | 'register'>('login')
   const [email, setEmail] = createSignal('')
   const [password, setPassword] = createSignal('')
+  const [invite, setInvite] = createSignal('')
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
 
@@ -18,7 +19,7 @@ export function LoginForm() {
     setBusy(true)
     setError(null)
     try {
-      await cloudSignIn(mode(), email().trim(), password())
+      await cloudSignIn(mode(), email().trim(), password(), invite().trim())
       setPassword('')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -80,6 +81,17 @@ export function LoginForm() {
           required
           value={password()}
           onInput={(e) => setPassword(e.currentTarget.value)}
+        />
+      </label>
+      <label class="account-field" classList={{ 'account-field-hidden': mode() === 'login' }}>
+        <span class="account-label">邀请码（选填）</span>
+        <input
+          class="account-input"
+          autocomplete="off"
+          maxLength={6}
+          disabled={mode() === 'login'}
+          value={invite()}
+          onInput={(e) => setInvite(e.currentTarget.value)}
         />
       </label>
       <button type="submit" class="btn-primary account-submit" disabled={busy()}>

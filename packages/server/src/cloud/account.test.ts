@@ -75,8 +75,15 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         password: string
         name: string
         platform: string
+        inviteCode?: string
       }
       cloud.logins.push(body)
+      if (path === '/v1/register' && body.inviteCode === 'ZZZZZZ') {
+        return Response.json(
+          { error: { code: 'invite_not_found', message: '邀请码不存在' } },
+          { status: 400 },
+        )
+      }
       if (path === '/v1/login' && body.password !== PASSWORD) {
         return Response.json(
           { error: { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid email or password' } },
@@ -332,8 +339,12 @@ test('已有名为 qywork 但地址不同的接口时：不请求云端（不登
   expect(await account.state()).toEqual({ state: 'signed_out' })
 })
 
-test('注册：邮箱已注册时给出原因；新邮箱注册后直接登录', async () => {
+test('注册：邮箱已注册时给出原因；邀请码随注册请求发送，不存在时给出原因；新邮箱注册后直接登录', async () => {
   await expect(account.register('taken@example.com', PASSWORD)).rejects.toThrow('该邮箱已注册')
+  await expect(account.register('new@example.com', PASSWORD, 'ZZZZZZ')).rejects.toThrow(
+    '邀请码不存在',
+  )
+  expect(cloud.logins.at(-1)).toMatchObject({ inviteCode: 'ZZZZZZ' })
   expect((await account.register('new@example.com', PASSWORD)).state).toBe('signed_in')
   expect(live.providers[CLOUD_PROVIDER]?.apiKey).toBe('qyd_device_key')
 })

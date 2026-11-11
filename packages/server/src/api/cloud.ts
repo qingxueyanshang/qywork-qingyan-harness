@@ -29,7 +29,11 @@ export const handleCloudApi: ApiHandler = async (url, req, d) => {
     if (notes) return json(await account.releaseNotes(url.searchParams.get('version') ?? ''))
     if (listing) return json(await account.announcements())
     if ((p === '/api/cloud/login' || p === '/api/cloud/register') && req.method === 'POST') {
-      const body = (await req.json().catch(() => ({}))) as { email?: unknown; password?: unknown }
+      const body = (await req.json().catch(() => ({}))) as {
+        email?: unknown
+        password?: unknown
+        inviteCode?: unknown
+      }
       if (typeof body.email !== 'string' || typeof body.password !== 'string') {
         return json({ error: 'invalid_request', message: '缺少邮箱或密码' }, 400)
       }
@@ -37,7 +41,13 @@ export const handleCloudApi: ApiHandler = async (url, req, d) => {
       return json(
         p === '/api/cloud/login'
           ? await account.login(email, body.password)
-          : await account.register(email, body.password),
+          : await account.register(
+              email,
+              body.password,
+              typeof body.inviteCode === 'string' && body.inviteCode.trim()
+                ? body.inviteCode.trim()
+                : undefined,
+            ),
       )
     }
     if (p === '/api/cloud/logout' && req.method === 'POST') {
