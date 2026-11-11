@@ -15,7 +15,14 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { QyConfig } from '@qywork/runtime'
-import { handleConfigApi, mergeConfig, type RedactedConfig, redactConfig } from './config.ts'
+import {
+  handleConfigApi,
+  mergeConfig,
+  type RedactedConfig,
+  redactConfig,
+  watchConfig,
+  writeConfig,
+} from './config.ts'
 import type { ApiDeps } from './types.ts'
 
 const cfg = (): QyConfig => ({
@@ -651,6 +658,29 @@ describe('落盘门禁', () => {
       // 不携带 baseVersion：此类客户端同样放行。
       const legacy = await put(d, body)
       expect(legacy!.status).toBe(200)
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
+  /** 原始失败形状：云端型号清单同步写入配置后没有任何通知，界面的模型目录保持为首次读取的内容。 */
+  test('配置落盘后调用 watchConfig 登记的回调，被拒绝或没有修改的写入不调用', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      const live = cfg()
+      let written = 0
+      watchConfig(live, () => written++)
+
+      await writeConfig(live, (current) => current)
+      await writeConfig(live, () => new Response(null, { status: 409 }))
+      await writeConfig(live, (current) => ({ ...current, active: { provider: '', model: '' } }))
+      expect(written).toBe(0)
+
+      await writeConfig(live, (current) => ({ ...current, mode: 'full' }))
+      expect(written).toBe(1)
     } finally {
       if (prev === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = prev

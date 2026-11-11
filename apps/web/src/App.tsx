@@ -44,6 +44,7 @@ import {
   isDesktopShell,
   loadConversations,
   loadWorkspace,
+  observeModelCatalog,
   observePersonalization,
   observePet,
   observePetWindow,
@@ -216,6 +217,9 @@ export function App() {
       if (document.visibilityState !== 'visible' || state.connection !== 'ready') return
       void refreshCloudState().catch(() => {})
       void loadAnnouncements()
+      // 窗口不在前台期间其他程序可能改动了工作区文件，这类改动没有 `file.changed`；按无明细的失效处理，文件树与画布重新读取。
+      setState('fileVersion', (n) => n + 1)
+      setState('fileTouched', null)
     }
     window.addEventListener('focus', refreshAccount)
     document.addEventListener('visibilitychange', refreshAccount)
@@ -226,6 +230,7 @@ export function App() {
     const stopUpdates = observeAppUpdate()
     onCleanup(stopUpdates)
     onCleanup(observePersonalization())
+    onCleanup(observeModelCatalog())
     // 宠物只显示在桌面外壳的宠物窗口中；其他端不推导，避免每次会话变闲都读取一次轮次。
     if (isDesktopShell()) {
       onCleanup(observePet())

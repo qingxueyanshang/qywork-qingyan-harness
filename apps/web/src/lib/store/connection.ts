@@ -76,6 +76,9 @@ export const [petsChange, setPetsChange] = createSignal<{
   seq: number
 } | null>(null)
 
+/** 最近一次配置落盘（`config.changed`）的帧序号。模型目录监听它重新读取，理由同 `personalizationChange`。 */
+export const [configChange, setConfigChange] = createSignal<number | null>(null)
+
 /**
  * 当前会话中 `pet` 工具最近一次成功的 `apply`：`id` 为 null 表示切回内置宠物。
  * 宠物模块监听它执行切换，理由同 `personalizationChange`；`seq` 逐次加一，使连续两次切换到同一只宠物都生效。
@@ -382,6 +385,10 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     setPersonalizationChange(frame.seq)
     return
   }
+  if (ev.type === 'config.changed') {
+    setConfigChange(frame.seq)
+    return
+  }
   if (ev.type === 'pets.changed') {
     setPetsChange({ id: ev.id, removed: ev.removed, seq: frame.seq })
     return
@@ -606,6 +613,10 @@ function foldContent(cid: string, ev: AgentEvent): void {
           'move_skill',
           'write_mcp_server',
           'move_mcp_server',
+          'write_memory',
+          'delete_memory',
+          'move_memory',
+          'install_plugin',
         ].includes(
           state.views[cid]?.transcript.find((item) => item.id === ev.stepId)?.toolName ?? '',
         )

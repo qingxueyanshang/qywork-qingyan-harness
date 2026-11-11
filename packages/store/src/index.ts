@@ -115,6 +115,5 @@ export {
   usageBy,
   usageEntries,
   usageTotals,
-  usedMediaModels,
 } from './usage.ts'
 export { latestSubagentPhases, listWorkflowRecords, workflowIdsOf } from './workflow.ts'

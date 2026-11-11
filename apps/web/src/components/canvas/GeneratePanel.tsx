@@ -409,7 +409,7 @@ export function GeneratePanel(props: {
    * 卡片可选的模型。art 卡使用对话模型：列出配置中的全部接口 × 模型，缺省为当前默认模型，参数只有尺寸。
    * 经 memo 计算：菜单按对象判定当前项，每次读取都新建对象时判定不成立。
    */
-  const known = createMemo((): (CardModel & { delisted?: true; used?: true })[] => {
+  const known = createMemo((): (CardModel & { delisted?: true })[] => {
     const catalog = modelCatalog()
     if (props.node.output !== 'art') {
       return (catalog?.media ?? [])
@@ -428,10 +428,23 @@ export function GeneratePanel(props: {
     )
   })
   /**
-   * 菜单中的型号：已下架的型号只在用它生成过结果时列出，名称后标出「（已下架）」；从未用过的不列出。
+   * 菜单中的型号：已下架的型号只在当前画布有它的生成记录时列出，名称后标出「（已下架）」；其余不列出。
+   * 按当前画布判定，不按账号的全部用量判定：在其他画布用过的已下架型号不出现在本画布的菜单中。
    * 卡片已选定的型号由 `known` 解析，不在菜单中时按钮上仍显示它；已下架的型号提交时由生成端口拒绝。
    */
-  const models = createMemo(() => known().filter((m) => !m.delisted || m.used))
+  const madeHere = createMemo(
+    () =>
+      new Set(
+        props.view.doc.nodes.flatMap((n) =>
+          n.type === 'generate'
+            ? n.versions.map((v) => JSON.stringify([v.made.provider, v.made.model]))
+            : [],
+        ),
+      ),
+  )
+  const models = createMemo(() =>
+    known().filter((m) => !m.delisted || madeHere().has(JSON.stringify([m.provider, m.id]))),
+  )
   const model = (): CardModel | undefined => {
     if (props.node.provider && props.node.model)
       return known().find((m) => m.provider === props.node.provider && m.id === props.node.model)

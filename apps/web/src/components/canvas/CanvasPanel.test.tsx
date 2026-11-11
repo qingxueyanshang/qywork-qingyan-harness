@@ -2789,7 +2789,8 @@ describe('画布：生成卡与生成面板', () => {
     })
   })
 
-  test('已下架的型号：用它生成过的列出并标出已下架，从未用过的不列出；默认型号下架时新卡发送界面上显示的型号', async () => {
+  /** 原始失败形状：在其他画布用过一次的已下架型号，出现在从未用过它的画布的菜单中。 */
+  test('已下架的型号：当前画布有它的生成记录时列出并标出已下架，没有时不列出；默认型号下架时新卡发送界面上显示的型号', async () => {
     const video = MODELS.media[0]!
     const gone = { ...video, provider: 'relay', id: 'sx-2.5', label: 'SX-2.5', delisted: true }
     const usedGone = {
@@ -2799,7 +2800,6 @@ describe('画布：生成卡与生成面板', () => {
       label: 'SD-2.5',
       isDefault: false,
       delisted: true,
-      used: true,
     }
     const live = { ...video, provider: 'relay', id: 'hc-2.5', label: 'HC 2.5', isDefault: false }
     const catalog = {
@@ -2822,6 +2822,21 @@ describe('画布：生成卡与生成面板', () => {
       {},
       catalog,
     )
+    // 本画布的生成记录中只有 sd-2.5；sx-2.5 只是卡片选定的型号，没有生成记录。
+    const doc = server.doc()
+    const old = doc.nodes.find((n) => n.id === refs.$old)!
+    if (old.type !== 'generate') throw new Error('不是生成卡')
+    old.versions = [
+      {
+        id: 'v1',
+        path: 'generated/a.mp4',
+        made: { prompt: 'p', provider: 'relay', model: 'sd-2.5', params: {}, inputs: [], at: 't' },
+      },
+    ]
+    old.current = 'v1'
+    server.setView({ doc })
+    const store = await import('../../lib/store/index.ts')
+    store.setState('canvasVersion', (v) => v + 1)
     const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.model')
     const items = () =>
       [...document.querySelectorAll<HTMLButtonElement>('.canvas-bar-menu button')].map(
@@ -2832,6 +2847,12 @@ describe('画布：生成卡与生成面板', () => {
     await waitFor(
       () => chip()?.textContent === 'SX-2.5（已下架）',
       () => chip()?.textContent ?? '',
+    )
+    await waitFor(
+      () =>
+        node(host, refs.$old!).querySelector('.canvas-node-title .model')?.textContent ===
+        'SD-2.5（已下架）',
+      () => node(host, refs.$old!).textContent ?? '',
     )
     chip()!.click()
     await waitFor(

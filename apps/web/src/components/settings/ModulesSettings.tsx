@@ -3,6 +3,7 @@ import { loaded } from '../../lib/resource.ts'
 import {
   client,
   explainApiError,
+  extensionsRevision,
   type SettingsPage,
   setSettingsPage,
   state,
@@ -369,7 +370,10 @@ export function ModulesSettings() {
   // 分组标题的开关读写同一份服务端配置，与各设置页共用（见 `configStore.ts`）。
   ensureConfig()
   void reloadEnvironment()
-  const [data, { refetch }] = createResource(() => client.api<{ tools: ToolRow[] }>('/api/tools'))
+  // 技能、MCP 服务与插件变更后工具列表随之变化，按 `extensionsRevision` 重新读取。
+  const [data, { refetch }] = createResource(extensionsRevision, () =>
+    client.api<{ tools: ToolRow[] }>('/api/tools'),
+  )
 
   /** 后端已按类目排序，此处只分组，不重新排序；只有说明行、没有工具的模块追加在末尾。 */
   const groups = () => {

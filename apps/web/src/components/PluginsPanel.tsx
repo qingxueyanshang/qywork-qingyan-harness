@@ -3,6 +3,7 @@ import { loaded } from '../lib/resource.ts'
 import {
   askInChat,
   client,
+  extensionsRevision,
   installPlugin,
   isDesktopShell,
   pickWorkspace,
@@ -61,7 +62,10 @@ const NEW_PLUGIN =
   '新建一个插件。请先说明插件在 qywork 中如何加载、运行在何处、可获得哪些权限，以及目录需包含哪些文件；然后询问该插件要提供哪些工具。'
 
 export function PluginsPanel() {
-  const [data, { refetch }] = createResource(() => client.api<PluginsPayload>('/api/plugins'))
+  // 会话中的 `install_plugin` 完成后 `extensionsRevision` 递增，本页随之重新读取。
+  const [data, { refetch }] = createResource(extensionsRevision, () =>
+    client.api<PluginsPayload>('/api/plugins'),
+  )
   const [busy, setBusy] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [okMsg, setOkMsg] = createSignal<string | null>(null)

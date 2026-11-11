@@ -23,10 +23,11 @@ import type {
   ToolCallCheck,
   ToolSchemaMode,
 } from '@qywork/core'
-import { createSignal } from 'solid-js'
+import { createEffect, createRoot, createSignal, on } from 'solid-js'
 import { ApiError } from '../client.ts'
-import { client, invalidateExtensions } from './connection.ts'
+import { client, configChange, invalidateExtensions } from './connection.ts'
 import { tauriInvoke } from './shell.ts'
+import { state } from './state.ts'
 import type { WorkspaceInfo } from './ui.ts'
 
 // ───────────────────────── 配置 ─────────────────────────
@@ -316,8 +317,6 @@ export interface MediaModelOption {
   params: MediaParamOption[]
   /** 上一次拉取时渠道已不再提供该型号，生成时被拒绝。 */
   delisted?: true
-  /** 已下架且用它生成过结果。 */
-  used?: true
 }
 
 /** 生成面板上的一个参数控件。取值约束与服务端的参数校验使用同一份目录。 */
@@ -399,6 +398,31 @@ export async function reloadModelCatalog(): Promise<void> {
   } finally {
     if (seq === catalogSeq) setModelCatalogLoading(false)
   }
+}
+
+/**
+ * 配置落盘（`config.changed`）与重新连接时重新读取模型目录；目录尚未被任何组件使用时不读取。
+ *
+ * 由入口在挂载后调用，不在模块顶层执行：顶层的 effect 会随 import 在单测中运行并发起请求。
+ * 重新连接时也读取：断线期间的 `config.changed` 已丢失。
+ */
+export function observeModelCatalog(): () => void {
+  const refresh = () => {
+    if (modelCatalog() || modelCatalogLoading()) void reloadModelCatalog()
+  }
+  return createRoot((dispose) => {
+    createEffect(
+      on(
+        () => state.connection === 'ready',
+        (ready) => {
+          if (ready) refresh()
+        },
+        { defer: true },
+      ),
+    )
+    createEffect(on(configChange, refresh, { defer: true }))
+    return dispose
+  })
 }
 
 // ───────────────────────── 连接测试 ─────────────────────────

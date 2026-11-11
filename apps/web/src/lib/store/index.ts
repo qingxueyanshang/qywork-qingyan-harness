@@ -154,6 +154,7 @@ export {
   modelCatalog,
   modelCatalogError,
   modelCatalogLoading,
+  observeModelCatalog,
   type ProbeResult,
   type ProviderRename,
   type PulledModel,
