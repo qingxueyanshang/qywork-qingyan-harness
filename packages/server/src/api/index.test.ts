@@ -1144,6 +1144,7 @@ describe('模型目录', () => {
       'anthropic',
       'deepseek',
       'google',
+      'meta',
       'minimax',
       'moonshot',
       'openai',

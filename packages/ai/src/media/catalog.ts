@@ -592,6 +592,49 @@ const h3ImageParams: readonly MediaParamSpec[] = [
   },
 ]
 
+// ── Meta Muse Image（2026-11-11 核对「Image generation」与价目页）──
+// 接口为 OpenAI 形状的 `/v1/images/generations`，默认返回 `b64_json`；每张生成的图片 $0.01，与提示词长度和 reasoning_strength 无关。
+// `size` 只决定宽高比，实际像素由模型决定；接口拒绝未列出的顶层字段。
+// 修改接口的 multipart 字段名要求为 `image` 或 `image[N]`，与本协议适配器发送的字段名不同，只登记生成。
+const museImageParams: readonly MediaParamSpec[] = [
+  {
+    name: 'size',
+    label: '尺寸',
+    type: 'string',
+    pattern: '^\\d+x\\d+$',
+    sizeLimits: { minPixels: 1, maxPixels: 4096 ** 2, maxRatio: 16 },
+    shapes: sizeTable({ tiers: [TIER_1K], sep: 'x', shorthand: false }),
+    description: '宽x高，只决定宽高比，实际像素由模型决定；不填写时使用默认宽高比',
+  },
+  {
+    name: 'n',
+    label: '张数',
+    type: 'integer',
+    min: 1,
+    max: 10,
+    default: 1,
+    description: '一次生成的张数',
+  },
+  {
+    name: 'reasoning_strength',
+    label: '生成质量',
+    type: 'enum',
+    values: ['high', 'low'],
+    valueLabels: { high: '高', low: '低' },
+    default: 'high',
+    description: 'high 经多轮完善后返回，low 一轮后返回、速度较快；不影响价格',
+  },
+  {
+    name: 'output_format',
+    label: '输出格式',
+    advanced: true,
+    type: 'enum',
+    values: ['webp', 'png', 'jpeg'],
+    default: 'webp',
+    description: '输出格式',
+  },
+]
+
 // ── 火山方舟 Seedream 5.0（2026-09-25 核对方舟「图片生成 API」与模型列表）──
 const seedreamParams: readonly MediaParamSpec[] = [
   {
@@ -1374,6 +1417,16 @@ const SEEDS: readonly MediaModelSpec[] = [
     { maxImages: 16, maxVideos: 0, transport: 'multipart' },
     gptImage26Params,
     gptImagePrice,
+  ),
+  spec(
+    'muse-image-1.0',
+    'Muse Image 1.0',
+    'Meta',
+    'openai_images',
+    ['generate'],
+    { maxImages: 0, maxVideos: 0, transport: 'json' },
+    museImageParams,
+    { ...perImage('USD', () => 0.01), usageOf: (p) => ({ images: Number(p.n) }) },
   ),
   spec(
     'MiniMax-H3-Image',

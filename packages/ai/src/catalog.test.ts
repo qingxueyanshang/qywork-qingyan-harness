@@ -17,6 +17,7 @@ import {
   costTerms,
   effortIsTransmittable,
   lookupModel,
+  officialBaseUrl,
   priceAt,
   reasoningReplay,
 } from './catalog.ts'
@@ -980,6 +981,34 @@ describe('目录中的价格与档位', () => {
     })
   })
 
+  test('Meta Muse 的价格、档位与三种协议的差别', () => {
+    const wonder = lookupModel('muse-wonder-1.0', 'openai_responses')
+    expect(wonder.vendor).toBe('meta')
+    expect(wonder.contextWindow).toBe(1_048_576)
+    expect(wonder.maxOutputTokens).toBeNull()
+    expect(wonder.pricing).toMatchObject({ input: 4, output: 20, cacheRead: 0.2, cacheWrite5m: 0 })
+    expect(wonder.effortLevels).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    expect(wonder.reasoningEcho).toBe('encrypted_content')
+    expect(officialBaseUrl(wonder)).toBe('https://api.meta.ai/v1')
+    const chat = spec('muse-spark-1.3')
+    expect(chat.reasoningEcho).toBe('none')
+    expect(chat.pricing).toMatchObject({ input: 1.25, output: 4.25, cacheRead: 0.15 })
+    // 只收录各系列的最新版本。
+    for (const id of ['muse-spark-1.2', 'muse-spark-1.1', 'muse-spark-1.3-contributor'])
+      expect(spec(id).catalogued).toBe(false)
+    const messages = spec('muse-spark-1.3', 'anthropic_messages')
+    expect(messages.effortLevels).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(officialBaseUrl(messages)).toBe('https://api.meta.ai')
+    const ember = spec('muse-ember-1.0')
+    expect(ember.maxOutputTokens).toBe(524_288)
+    expect(priceAt(ember, { promptTokens: 200_000 })).toMatchObject({ input: 0.1, output: 0.5 })
+    expect(priceAt(ember, { promptTokens: 200_001 })).toMatchObject({
+      input: 0.3,
+      output: 1.5,
+      cacheRead: 0.012,
+    })
+  })
+
   test('GLM-5.3 Flash 按原价计价', () => {
     expect(spec('glm-5.3-flash').pricing).toMatchObject({
       input: 0.8,
@@ -1085,15 +1114,21 @@ describe('目录中的价格与档位', () => {
     }
   })
 
-  test('官方可确认的输出上限已收录；Grok 不推测独立上限', () => {
+  test('官方可确认的输出上限已收录；Grok 与型号页未写明上限的 Muse 不推测上限', () => {
     expect(spec('MiniMax-M3').maxOutputTokens).toBe(524_288)
     expect(spec('glm-4.6v').maxOutputTokens).toBe(32_768)
     expect(spec('kimi-k3').maxOutputTokens).toBe(1_048_576)
-    expect(
-      builtinCatalog()
-        .filter((m) => m.maxOutputTokens === null)
-        .map((m) => m.id),
-    ).toEqual(['grok-4.7', 'grok-4.7', 'grok-4.6', 'grok-4.5'])
+    const undeclared = builtinCatalog().filter((m) => m.maxOutputTokens === null)
+    expect(undeclared.filter((m) => m.vendor !== 'meta').map((m) => m.id)).toEqual([
+      'grok-4.7',
+      'grok-4.7',
+      'grok-4.6',
+      'grok-4.5',
+    ])
+    expect([...new Set(undeclared.filter((m) => m.vendor === 'meta').map((m) => m.id))]).toEqual([
+      'muse-wonder-1.0',
+      'muse-spark-1.3',
+    ])
   })
 })
 
