@@ -438,12 +438,14 @@
   background: var(--bg-app);
 }
 
+/* 高度由表单决定；上缘固定在注册表单垂直居中时的位置（251px 为注册时卡片高度的一半），
+   切换登录与注册时切换控件位置不变。 */
 .login-gate-card {
   width: min(360px, calc(100vw - 32px));
-  height: 460px;
+  align-self: start;
+  margin-top: max(16px, calc(50vh - 251px));
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   gap: 14px;
 }
