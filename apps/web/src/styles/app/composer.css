@@ -872,8 +872,20 @@
   .composer-bar {
     gap: 0;
   }
+  /* 模型选择器占用其余控件留下的宽度：固定上限在 360px 及更窄的屏幕上会把发送按钮推出输入框。
+     档位随模型名一起收缩，否则最窄时模型名的宽度为 0。 */
+  .model-picker {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
   .model-picker .mode-chip {
-    max-width: 140px;
+    max-width: 100%;
+  }
+  .model-chip-effort {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* 两栏并排在该宽度下会超出窗口。改为叠放在一级面板正上方，左边沿对齐。 */
   .model-sub {

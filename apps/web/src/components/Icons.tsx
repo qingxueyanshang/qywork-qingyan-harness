@@ -345,6 +345,13 @@ export const IconUpload = (p: IconProps) => (
   </Svg>
 )
 
+/** 窄屏顶栏的侧栏开关：三条横线。 */
+export const IconMenu = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4.5 7h15M4.5 12h15M4.5 17h15" />
+  </Svg>
+)
+
 const CHEVRON: Record<'down' | 'up' | 'right' | 'left', string> = {
   down: 'M5.6 9.5 12 16l6.4-6.5',
   up: 'M5.6 14.5 12 8l6.4 6.5',

@@ -23,6 +23,22 @@ export async function refreshCloudState(): Promise<void> {
   setCloudState(await client.api<CloudState>('/api/cloud/state'))
 }
 
+/**
+ * 把公告的已读位置写到云端账号。先改本地状态使圆点立即消失，再以服务端返回为准；
+ * 写入失败时保留本地的值，下一次读取账号状态时恢复为云端的值。
+ */
+export async function markAnnouncementSeen(id: string): Promise<void> {
+  const current = cloudState()
+  if (current?.state !== 'signed_in') return
+  setCloudState({ ...current, announcementSeen: id })
+  setCloudState(
+    await client.api<CloudState>('/api/cloud/announcements/seen', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    }),
+  )
+}
+
 /** 登录或注册。失败时抛出可直接显示的原因，状态不变。成功后内置模型已写入配置，模型列表随之刷新。 */
 export async function cloudSignIn(
   mode: 'login' | 'register',

@@ -150,7 +150,25 @@
 .head-actions {
   margin-left: auto;
   display: flex;
+  align-items: center;
   gap: 2px;
+}
+
+/* 经云端网页打开时回到电脑列表的入口（`embed.ts`）。 */
+.sidebar-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 4px 0 var(--s-2);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.sidebar-back:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .icon-btn {
@@ -779,8 +797,9 @@
     display: none;
   }
   /* 窄屏的左栏是浮动抽屉，收起由抽屉机制处理；
-     该按钮在窄屏下会成为第二套机制，因此不显示。 */
-  .sidebar-expand {
+     展开与收起两个按钮在窄屏下会成为第二套机制，因此不显示。 */
+  .sidebar-expand,
+  .sidebar-collapse {
     display: none;
   }
 }

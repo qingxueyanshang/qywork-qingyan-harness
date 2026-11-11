@@ -49,6 +49,7 @@ const SIGNED_IN: CloudState = {
   provider: 'qywork',
   origin: 'https://qywork.io',
   recharge: true,
+  announcementSeen: null,
 }
 
 const USAGE: CloudUsage = {
@@ -165,6 +166,11 @@ beforeAll(async () => {
       return (pages.shift() ?? []) as T
     }
     if (path === '/api/cloud/announcements') return structuredClone(notices) as T
+    if (path === '/api/cloud/announcements/seen') {
+      const { id } = JSON.parse(String(init?.body)) as { id: string }
+      cloud = { ...(cloud as Extract<CloudState, { state: 'signed_in' }>), announcementSeen: id }
+      return structuredClone(cloud) as T
+    }
     if (path === '/api/cloud/recharge') {
       const { amount } = JSON.parse(String(init?.body)) as { amount: number }
       return {
@@ -425,6 +431,16 @@ test('公告：未读时侧栏入口与账号窗口的铃铛带圆点，打开�
   expect(unread(bell() as HTMLElement)).toBe(false)
   expect(unread(side.host)).toBe(false)
   feed.closeAnnouncements()
+  // 已读位置写在云端账号上：另一端读取账号状态后同样没有圆点。
+  await until(() => calls.includes('POST /api/cloud/announcements/seen'))
+  expect((cloud as Extract<CloudState, { state: 'signed_in' }>).announcementSeen).toBe('7')
+  // 另一端读到了更新的一条公告之后，本端重新读取账号状态，圆点随之消失。
+  notices = [{ ...notices[0]!, id: '8' }]
+  await feed.loadAnnouncements()
+  expect(unread(side.host)).toBe(true)
+  cloud = { ...(cloud as Extract<CloudState, { state: 'signed_in' }>), announcementSeen: '8' }
+  await cloudStore.refreshCloudState()
+  expect(unread(side.host)).toBe(false)
 
   notices = []
   await feed.loadAnnouncements()

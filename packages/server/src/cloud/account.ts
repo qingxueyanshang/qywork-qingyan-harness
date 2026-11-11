@@ -318,6 +318,7 @@ export class CloudAccount {
         provider: CLOUD_PROVIDER,
         origin: this.origin,
         recharge: me.recharge,
+        announcementSeen: me.announcementSeen,
       }
     }
     // 云端暂时无法访问：仍视为已登录，余额与头像未知。
@@ -329,6 +330,7 @@ export class CloudAccount {
       provider: CLOUD_PROVIDER,
       origin: this.origin,
       recharge: false,
+      announcementSeen: null,
     }
   }
 
@@ -385,6 +387,16 @@ export class CloudAccount {
   /** 云端已发布的公告（`GET /api/announcements`），新者在前，不需要登录。 */
   announcements(): Promise<Announcement[]> {
     return this.publicGet<Announcement[]>('/api/announcements')
+  }
+
+  /** 把已读位置写到云端账号（`PUT /v1/me/announcement-seen`），返回写入后的账号状态。 */
+  async markAnnouncementSeen(id: string): Promise<CloudState> {
+    await this.call('/v1/me/announcement-seen', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    return this.state()
   }
 
   /** 读取云端不需要登录的接口。 */
@@ -657,10 +669,16 @@ export class CloudAccount {
     })
   }
 
-  private async me(
-    key: string,
-  ): Promise<
-    { email: string; credits: number; avatar: string | null; recharge: boolean } | 'revoked' | null
+  private async me(key: string): Promise<
+    | {
+        email: string
+        credits: number
+        avatar: string | null
+        recharge: boolean
+        announcementSeen: string | null
+      }
+    | 'revoked'
+    | null
   > {
     try {
       const res = await this.read('/v1/me', { authorization: `Bearer ${key}` })
@@ -670,12 +688,14 @@ export class CloudAccount {
           credits: number
           avatar?: string | null
           recharge?: boolean
+          announcementSeen?: string | null
         }
         return {
           email: me.email,
           credits: me.credits,
           avatar: me.avatar ?? null,
           recharge: me.recharge === true,
+          announcementSeen: me.announcementSeen ?? null,
         }
       }
       const body = (await res.json().catch(() => null)) as { error?: { code?: string } } | null

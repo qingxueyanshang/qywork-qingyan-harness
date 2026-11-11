@@ -1,4 +1,5 @@
 import { createEffect, createResource, createSignal, For, Show } from 'solid-js'
+import { embedded, postBack } from '../lib/embed.ts'
 import { loaded } from '../lib/resource.ts'
 import { sessionSignal } from '../lib/session.ts'
 import { hasAppUpdate } from '../lib/store/app-update.ts'
@@ -18,7 +19,7 @@ import {
 } from '../lib/store/index.ts'
 import { AccountEntry } from './account/AccountEntry.tsx'
 import { ConversationRow } from './ConversationRow.tsx'
-import { IconPanel, IconPlus, IconSettings } from './Icons.tsx'
+import { IconChevron, IconPanel, IconPlus, IconSettings } from './Icons.tsx'
 import { NewProjectDialog } from './NewProjectDialog.tsx'
 import { ProjectRow } from './ProjectRow.tsx'
 
@@ -60,6 +61,8 @@ export function Sidebar(props: { onClose?: () => void }) {
    * 因此弹窗中只有该按钮按 `canPickFolder` 隐藏（B5）。
    */
   const desktop = isDesktopShell()
+  // 返回入口随侧栏渲染，此时告知云端网页（约定见 `embed.ts`）。
+  if (embedded) postBack('available')
   const [known, { refetch: refetchWorkspaces }] = createResource(loadKnownWorkspaces)
   const [error, setError] = createSignal<string | null>(null)
   const [collapsedPath, setCollapsedPath] = sessionSignal<string | null>(
@@ -121,9 +124,15 @@ export function Sidebar(props: { onClose?: () => void }) {
             提示一个不存在的交互比没有交互更糟。 */}
         <span class="brand">QyWork</span>
         <div class="head-actions">
+          <Show when={embedded}>
+            <button class="sidebar-back" type="button" onClick={() => postBack('requested')}>
+              返回
+              <IconChevron size={14} dir="right" />
+            </button>
+          </Show>
           {/* 收起左栏的按钮放在此处：该操作只适合位于左栏内部。 */}
           <button
-            class="icon-btn"
+            class="icon-btn sidebar-collapse"
             type="button"
             aria-label="收起会话面板"
             data-tip="收起会话面板"

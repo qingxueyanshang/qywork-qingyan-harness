@@ -52,6 +52,7 @@ const cloud = {
   /** 后上架的型号（模型库已收录）是否带规格。 */
   opusSpec: false,
   avatar: null as string | null,
+  announcementSeen: null as string | null,
   /** 云端收到的版本公告查询次数。 */
   notesQueries: 0,
   /** claude-sonnet-5-5 的售价倍率，后台可随时调整。 */
@@ -135,6 +136,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         credits: 12.5,
         avatar: cloud.avatar,
         recharge: true,
+        announcementSeen: cloud.announcementSeen,
       })
     }
     if (path === '/v1/recharge' && req.method === 'POST' && authed) {
@@ -154,6 +156,10 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
     }
     if (path === '/v1/recharge/QY20261104120000abcdef0123456789' && authed) {
       return Response.json({ status: 'paid' })
+    }
+    if (path === '/v1/me/announcement-seen' && req.method === 'PUT' && authed) {
+      cloud.announcementSeen = ((await req.json()) as { id: string }).id
+      return new Response(null, { status: 204 })
     }
     if (path === '/v1/me/avatar' && req.method === 'PUT' && authed) {
       const { image } = (await req.json()) as { image: string }
@@ -263,6 +269,7 @@ beforeEach(async () => {
     nextBase: 'claude-sonnet-5-5',
     opusSpec: false,
     avatar: null,
+    announcementSeen: null,
     notesQueries: 0,
     sonnetRatio: 0.5,
     catalogReads: 0,
@@ -285,6 +292,7 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
     provider: CLOUD_PROVIDER,
     origin,
     recharge: true,
+    announcementSeen: null,
   })
   const provider = live.providers[CLOUD_PROVIDER]!
   expect(provider).toMatchObject({ baseUrl: origin, apiKey: 'qyd_device_key' })
@@ -621,6 +629,15 @@ test('本机模型库已收录的型号：带来源标记的条目删除云端�
   expect(live.catalog?.[haiku]).toBeUndefined()
   expect(live.catalog?.[sonnet]).toEqual({ base: 'claude-haiku-5-5' })
   expect((await loadConfig()).catalog?.[haiku]).toBeUndefined()
+})
+
+test('公告已读位置：以设备密钥写入云端账号，状态中带该位置', async () => {
+  expect(await account.login('me@example.com', PASSWORD)).toMatchObject({ announcementSeen: null })
+  expect(await account.markAnnouncementSeen('7')).toMatchObject({
+    state: 'signed_in',
+    announcementSeen: '7',
+  })
+  expect(cloud.announcementSeen).toBe('7')
 })
 
 test('更换头像：以设备密钥写入云端，状态中带头像；格式不对时给出云端的原因', async () => {

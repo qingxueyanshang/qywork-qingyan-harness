@@ -175,6 +175,11 @@ export type CloudState =
       origin: string
       /** 云端已开通微信支付充值；false 时账号窗口不显示「充值」。云端暂时无法访问时为 false。 */
       recharge: boolean
+      /**
+       * 本账号读到的最新一条公告的 id，保存在云端账号上，官网与各台电脑读写同一个值；
+       * 没有记录或云端暂时无法访问时为 null。
+       */
+      announcementSeen: string | null
     }
 
 /** `POST /api/cloud/recharge`：一笔充值订单。1 元充值 1 积分。 */
