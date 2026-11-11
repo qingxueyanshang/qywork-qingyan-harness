@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`cloud/tunnel.ts`、`cloud/remote.ts`，以及 `server.ts` 的远程监听器。
+ * 覆盖范围：`cloud/tunnel.ts`、`cloud/remote.ts`、`cloud/remote-transfer.ts`，以及 `server.ts` 的远程监听器。
  * 云端是本文件中的模拟隧道中心，帧格式与云端仓库的隧道中心相同；本机一侧前半部分是一个简单的 HTTP 与 WebSocket 服务，
  * 后半部分是完整的 `serve()`。
  */
@@ -8,7 +8,7 @@ import { afterAll, afterEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { gzipSync } from 'node:zlib'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import {
   decodeData,
   encodeData,
@@ -414,6 +414,28 @@ describe('远程访问经 serve() 装配', () => {
       ['authorization', `Bearer ${token}`],
     ])
     expect(authed.status).toBe(200)
+
+    // JSON 响应在本机压缩并带 etag；再次请求携带 if-none-match 时应答 304，正文不经隧道。
+    const header = (r: { headers: [string, string][] }, name: string) =>
+      r.headers.find(([k]) => k.toLowerCase() === name)?.[1] ?? null
+    const bearer: [string, string] = ['authorization', `Bearer ${token}`]
+    const plain = await cloud.request('GET', '/api/tools', [bearer])
+    expect(header(plain, 'content-encoding')).toBeNull()
+    expect(plain.body.length).toBeGreaterThan(1024)
+    const packed = await cloud.request('GET', '/api/tools', [bearer, ['accept-encoding', 'gzip']])
+    expect(header(packed, 'content-encoding')).toBe('gzip')
+    expect(packed.body.length).toBeLessThan(plain.body.length)
+    expect(Buffer.from(gunzipSync(packed.body)).equals(Buffer.from(plain.body))).toBe(true)
+    const etag = header(packed, 'etag')
+    expect(etag).toBe(header(plain, 'etag'))
+    expect(header(packed, 'cache-control')).toBe('private, no-cache')
+    const unchanged = await cloud.request('GET', '/api/tools', [
+      bearer,
+      ['accept-encoding', 'gzip'],
+      ['if-none-match', etag ?? ''],
+    ])
+    expect(unchanged.status).toBe(304)
+    expect(unchanged.body.length).toBe(0)
 
     // 另一个进程接管了隧道：状态为 replaced，重新连接后恢复在线。
     const base = `http://127.0.0.1:${handle.port}`

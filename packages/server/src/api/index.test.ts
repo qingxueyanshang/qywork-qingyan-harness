@@ -1607,7 +1607,17 @@ describe('会话历史分页接口', () => {
         messageIdUpperBound: msg.id,
         contextSnapshot: [],
       })
-      appendStep(d.store, { runId: run.id, seq: 1, kind: 'text', content: `答案 ${i}` })
+      appendStep(d.store, {
+        runId: run.id,
+        seq: 1,
+        kind: 'thinking',
+        content: `思考 ${i}`,
+        payload: {
+          kind: 'response_reasoning',
+          reasoning: { items: [{ type: 'reasoning', encrypted_content: 'x' }], tokens: 1 },
+        },
+      })
+      appendStep(d.store, { runId: run.id, seq: 2, kind: 'text', content: `答案 ${i}` })
       finishRun(d.store, run.id, { status: 'done', stopReason: 'completed' })
     }
 
@@ -1616,7 +1626,9 @@ describe('会话历史分页接口', () => {
     const page = (await res?.json()) as ConversationHistoryPageResponse
     expect(page.messages.map((m) => m.content)).toEqual(['问题 2'])
     expect(page.runs).toHaveLength(1)
-    expect(page.steps.map((s) => s.content)).toEqual(['答案 2'])
+    expect(page.steps.map((s) => s.content)).toEqual(['思考 2', '答案 2'])
+    // 回传给模型接口的原始条目不随历史返回，思考只带正文。
+    expect(page.steps[0]?.payload).toBeNull()
     expect(page.nextCursor).toBe(ids[1]!)
     // 没有运行中的 run 时快照的 runId 为 null，界面因此不会把已结束的轮次渲染为执行中；
     // 序号照常携带，客户端据此判定它与已收到的事件孰新。

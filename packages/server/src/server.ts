@@ -63,6 +63,7 @@ import { CloudAccount } from './cloud/account.ts'
 import { watchRunEnds } from './cloud/notify.ts'
 import { cloudOrigin } from './cloud/origin.ts'
 import { RemoteAccess } from './cloud/remote.ts'
+import { remoteTransfer } from './cloud/remote-transfer.ts'
 import { CommandTaskTable } from './command-tasks/table.ts'
 import { handleCommand, reject } from './commands.ts'
 import type { SocketData } from './deps.ts'
@@ -462,7 +463,7 @@ export function serve(opts: ServeOptions) {
     start: (): number => {
       remoteServer ??= Bun.serve<SocketData>({
         ...handlers,
-        fetch(req: Request, srv: Bun.Server<SocketData>) {
+        async fetch(req: Request, srv: Bun.Server<SocketData>) {
           const { pathname } = new URL(req.url)
           if (
             pathname.startsWith('/internal/') ||
@@ -471,7 +472,8 @@ export function serve(opts: ServeOptions) {
           ) {
             return new Response('not found', { status: 404 })
           }
-          return handlers.fetch(req, srv)
+          const res = await handlers.fetch(req, srv)
+          return res && remoteTransfer(req, res)
         },
         port: 0,
         hostname: '127.0.0.1',
