@@ -1,7 +1,13 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
 import { sessionSignal } from '../../lib/session.ts'
-import { askInChat, deleteMemory, loadMemory, type Scope } from '../../lib/store/index.ts'
+import {
+  askInChat,
+  deleteMemory,
+  extensionsRevision,
+  loadMemory,
+  type Scope,
+} from '../../lib/store/index.ts'
 import { IconTrash } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
@@ -22,7 +28,8 @@ import { newMemoryPrompt } from './ScopePrompts.ts'
  * 页头显示该层的目录，卡片显示键名，两者拼接即为文件路径。
  */
 export default function MemorySettings() {
-  const [mem, { refetch }] = createResource(loadMemory)
+  // 会话中的记忆工具写入后 `extensionsRevision` 递增，本页随之重新读取。
+  const [mem, { refetch }] = createResource(extensionsRevision, loadMemory)
   /** 当前查看的层级。新建的条目也写入该层，因为用户正在查看它。 */
   const [scope, setScope] = sessionSignal<Scope>('qywork.settings.memory.scope', 'project')
   const [busy, setBusy] = createSignal(false)

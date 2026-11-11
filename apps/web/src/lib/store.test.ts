@@ -16,7 +16,7 @@
  * 覆盖范围（B6：一个 test 覆盖多个源文件时须在此列明）：`store/ui.ts` 的面板宽度、
  * 页签与刷新后的恢复、`store/browser.ts` 的内置浏览器归属、`store/connection.ts` 的 `applyEvent`
  * 归属过滤与能力投影替换、`store/actions.ts` 切换会话时的队列重置、
- * `store/settings.ts` 的 API 错误解释。
+ * `store/settings.ts` 的 API 错误解释与模型目录的重新读取。
  *
  * 不要在此断言模块加载时读取的宽度：`bun test` 一次执行多个文件时共用一份
  * 模块表，`client.test.ts` 先行 import 了 `client.ts`，`store/ui.ts` 在此处
@@ -74,6 +74,7 @@ const {
   client,
   dropView,
   modelCatalog,
+  observeModelCatalog,
   closePanel,
   closePanelTab,
   explainApiError,
@@ -3360,6 +3361,34 @@ describe('读取配置后模型目录随之重新计算', () => {
     expect(modelCatalog()?.providers[0]?.models[0]?.effortLevels).toEqual(['low', 'high'])
     // 目录在保存之后获取：顺序相反时取到的是落盘前的版本，看起来如同保存未生效。
     expect(calls.indexOf('GET /api/models')).toBeGreaterThan(calls.indexOf('PUT /api/config'))
+  })
+
+  /** 原始失败形状：服务端同步云端型号清单后写入配置，界面的目录保持为首次读取的内容，重新加载页面才更新。 */
+  test('收到 config.changed 后重新读取目录', async () => {
+    const originalApi = client.api
+    let ids = ['a']
+    client.api = async <T>(path: string): Promise<T> => {
+      if (path === '/api/models') {
+        return {
+          providers: [],
+          media: ids.map((id) => ({ provider: 'p', id, output: 'video' })),
+          mediaLibrary: [],
+          library: [],
+        } as T
+      }
+      throw new Error(`unexpected ${path}`)
+    }
+    const stop = observeModelCatalog()
+    try {
+      await reloadModelCatalog()
+      ids = ['a', 'b']
+      applyEvent({ seq: 9001, at: 0, event: { type: 'config.changed' } } as never)
+      await new Promise((r) => setTimeout(r, 0))
+      expect(modelCatalog()?.media.map((m) => m.id)).toEqual(['a', 'b'])
+    } finally {
+      stop()
+      client.api = originalApi
+    }
   })
 })
 

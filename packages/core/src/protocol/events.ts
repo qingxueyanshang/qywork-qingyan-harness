@@ -87,6 +87,7 @@ export type AgentEvent =
   | DesktopTargetEvent
   | PersonalizationChangedEvent
   | PetsChangedEvent
+  | ConfigChangedEvent
   // ── 多智能体 ──
   | TeamMemberEvent
   | TeamOutputEvent
@@ -642,6 +643,16 @@ export interface PetsChangedEvent {
   type: 'pets.changed'
   id: string
   removed: boolean
+}
+
+/**
+ * 配置已写入磁盘。工作区级事件，所有客户端都能收到。
+ *
+ * 设置页保存、云端登录与退出、云端型号清单同步都会写入配置；各屏幕据此重新读取模型目录。
+ * 不携带内容：配置含密钥，各屏幕经已有的读取接口取得脱敏后的结果。
+ */
+export interface ConfigChangedEvent {
+  type: 'config.changed'
 }
 
 export interface GitStateEvent {

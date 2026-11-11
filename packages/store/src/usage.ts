@@ -309,19 +309,6 @@ export function pruneUsage(store: Store, before: number): number {
 }
 
 /**
- * 生成过结果的生成型号，键为「协议|型号」。生成账目的 `provider` 列记的是协议（`MediaSpend.kind`），不是接口名。
- * 只有服务商返回了结果才记账，提交被拒绝的型号不在其中。
- */
-export function usedMediaModels(store: Store): Set<string> {
-  const rows = store.db
-    .query<{ provider: string; model: string }, []>(
-      `SELECT DISTINCT provider, model FROM usage_ledger WHERE kind = 'media'`,
-    )
-    .all()
-  return new Set(rows.map((r) => `${r.provider}|${r.model}`))
-}
-
-/**
  * 摘要调用**实际输出长度**的分位数（输出 token）。
  *
  * 压缩的摘要预算取可容纳长度与实际所需长度的较小者，本函数给出后者：

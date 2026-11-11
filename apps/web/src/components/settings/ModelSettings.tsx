@@ -679,7 +679,7 @@ export function ModelSettings() {
             <ModelLibrary
               vendors={modelCatalog()?.library ?? []}
               media={modelCatalog()?.mediaLibrary ?? []}
-              loading={modelCatalogLoading()}
+              loading={modelCatalogLoading() && !modelCatalog()}
               error={modelCatalogError()}
             />
           </Show>

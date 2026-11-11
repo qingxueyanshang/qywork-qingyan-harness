@@ -216,6 +216,7 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
  * - 只依据 `diagnoseConfig`（结构不合法）拒绝。不要加入 `diagnoseRunnable`：未配置 key 是配置中间态，
  *   拒绝会使「新增接口 → 新增模型 → 再填写 key」这一流程无法完成。结构不合法时不落盘：写入后 CLI 将无法启动。
  * - `change` 返回 Response 时不写入，原样返回该 Response（版本冲突等拒绝）。
+ * - 落盘后调用 `watchConfig` 为该配置对象登记的回调；没有修改时不调用。
  */
 export async function writeConfig(
   live: QyConfig,
@@ -231,6 +232,17 @@ export async function writeConfig(
     if (problems.length) return { problems }
     await saveConfig(next)
     adoptConfig(live, next)
+    watchers.get(live)?.()
     return { config: live }
   })
+}
+
+const watchers = new WeakMap<QyConfig, () => void>()
+
+/**
+ * 登记配置落盘后的回调，按运行中的配置对象登记，每个对象一个。
+ * 回调在 `writeConfig` 内调用，因此全部写入方都会触发，调用方不需要各自通知。
+ */
+export function watchConfig(live: QyConfig, onWritten: () => void): void {
+  watchers.set(live, onWritten)
 }

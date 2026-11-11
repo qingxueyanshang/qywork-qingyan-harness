@@ -52,6 +52,7 @@ import {
 } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import { uiMediaPort } from './api/canvas.ts'
+import { watchConfig } from './api/config.ts'
 import { handleApi, json } from './api/index.ts'
 import { serveArt } from './art.ts'
 import { BrowserBridge } from './browser/bridge.ts'
@@ -193,6 +194,7 @@ function bootstrapWorkspace(store: Store, explicitRoot?: string): string {
 
 export function serve(opts: ServeOptions) {
   const bus = new EventBus()
+  watchConfig(opts.config, () => bus.publish({ type: 'config.changed' }))
   // 运行中的子 agent 与 run 同级：它们的生命周期跟随会话，而非派发它们的那一轮。
   const subagents = new SubagentRegistry()
   const runs = new RunManager(opts.store, bus, subagents)
