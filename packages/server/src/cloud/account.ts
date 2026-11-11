@@ -215,7 +215,7 @@ function failure(status: number, errorCode: string | null): string | null {
   return errorCode
 }
 
-/** Better Auth 的错误码对应的说明；未列出的错误码显示状态码与原文。 */
+/** Better Auth 的错误码与云端注册的 `invite_not_found` 对应的说明；未列出的错误码显示状态码与原文。 */
 const AUTH_ERRORS: Record<string, string> = {
   INVALID_EMAIL_OR_PASSWORD: '邮箱或密码错误',
   INVALID_EMAIL: '邮箱格式不正确',
@@ -223,6 +223,7 @@ const AUTH_ERRORS: Record<string, string> = {
   USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: '该邮箱已注册',
   PASSWORD_TOO_SHORT: '密码至少 8 位',
   BANNED_USER: '账号已被停用',
+  invite_not_found: '邀请码不存在',
 }
 
 /** 配置中的云端接口：名称为 `CLOUD_PROVIDER` 且地址为网关。 */
@@ -336,9 +337,9 @@ export class CloudAccount {
     return this.signIn('/v1/login', email, password)
   }
 
-  /** 注册并登录。 */
-  register(email: string, password: string): Promise<CloudState> {
-    return this.signIn('/v1/register', email, password)
+  /** 注册并登录。`inviteCode` 为邀请人的邀请码，可省略；云端在创建账号之前检查，不存在时注册失败。 */
+  register(email: string, password: string, inviteCode?: string): Promise<CloudState> {
+    return this.signIn('/v1/register', email, password, inviteCode)
   }
 
   /**
@@ -472,7 +473,12 @@ export class CloudAccount {
    * 已有名为 `CLOUD_PROVIDER` 但地址不是本云端的接口时拒绝：它可能是用户自建的接口，不覆盖。
    * 这项检查须在请求云端之前：云端登录成功即登记本设备，本地拒绝写入时该设备记录不再使用。
    */
-  private async signIn(path: string, email: string, password: string): Promise<CloudState> {
+  private async signIn(
+    path: string,
+    email: string,
+    password: string,
+    inviteCode?: string,
+  ): Promise<CloudState> {
     if (cloudProviderOf(this.live, this.origin)) return this.state()
     const existing = this.live.providers[CLOUD_PROVIDER]
     if (existing) {
@@ -483,7 +489,13 @@ export class CloudAccount {
     let res: Response
     try {
       res = await fetch(`${this.origin}${path}`, {
-        ...json({ email, password, name: hostLabel(), platform: process.platform }),
+        ...json({
+          email,
+          password,
+          name: hostLabel(),
+          platform: process.platform,
+          ...(inviteCode ? { inviteCode } : {}),
+        }),
         signal: this.timeout(),
       })
     } catch (err) {

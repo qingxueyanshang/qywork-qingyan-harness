@@ -28,10 +28,15 @@ export async function cloudSignIn(
   mode: 'login' | 'register',
   email: string,
   password: string,
+  inviteCode = '',
 ): Promise<void> {
   const state = await client.api<CloudState>(`/api/cloud/${mode}`, {
     method: 'POST',
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({
+      email,
+      password,
+      ...(mode === 'register' && inviteCode ? { inviteCode } : {}),
+    }),
   })
   setCloudState(state)
   void reloadModelCatalog()
