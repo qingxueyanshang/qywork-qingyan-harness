@@ -17,6 +17,7 @@ import type { EventBus } from '../bus.ts'
 import type { CanvasService } from '../canvas.ts'
 import type { CloudAccount } from '../cloud/account.ts'
 import type { RemoteAccess } from '../cloud/remote.ts'
+import type { CommandTaskTable } from '../command-tasks/table.ts'
 import type { Pairing } from '../pairing.ts'
 import type { RunManager } from '../runs.ts'
 
@@ -25,6 +26,8 @@ export interface ApiDeps {
   config: QyConfig
   bus: EventBus
   runs: RunManager
+  /** 转入后台的命令。刷新与重连之后，界面按会话读取它的快照。 */
+  commands: CommandTaskTable
   /** 画布服务：界面与 Agent 共用同一个实例，画布的写入与生成只经由它。 */
   canvas: CanvasService
   pairing: Pairing

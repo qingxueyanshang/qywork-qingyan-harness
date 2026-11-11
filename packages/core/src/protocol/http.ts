@@ -121,7 +121,7 @@ export interface ConversationChangesPageResponse {
 export interface ConversationChangeTurn {
   userMessageId: MessageId
   text: string
-  origin: 'subagent' | 'workflow' | null
+  origin: 'subagent' | 'workflow' | 'command' | null
   createdAt: number
   /** 本轮中的每一次写入，按发生顺序排列。 */
   steps: ConversationChangeStep[]

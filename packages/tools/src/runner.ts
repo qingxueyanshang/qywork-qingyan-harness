@@ -258,20 +258,34 @@ export function runCommandRunner(): void {
   const reply = (msg: Reply) => process.send?.(msg)
 
   /*
-   * 父进程退出后随之退出。**不终止已在运行的命令**：它们派生的服务是用户需要的
-   * 进程，且不持有监听句柄，保留它们不会占用任何端口。
+   * 父进程退出后随之退出，退出前终止尚未退出的命令的进程树。
+   *
+   * 父进程正常停止时自行终止这些命令（前台命令随本轮停止，后台命令由任务表的 `stopAll` 终止）。
+   * 父进程被直接终止时（桌面外壳退出时发送 SIGKILL）该路径不执行，而命令在非 Windows 平台上以 detached
+   * 启动、自成会话，不随父进程结束，此处是唯一仍在运行的一方。
+   * 已退出的命令留下的后代进程不终止：它们是命令有意启动的服务，父进程正常停止时同样保留，
+   * 且不持有监听句柄，不占用端口。
    *
    * 两条判据都需要：IPC 通道关闭是正常退出路径；父进程被强制终止时该事件不一定到达，
    * 因此另外轮询父进程 pid。
+   *
+   * 终止信号同样经由 `leave` 退出。终端发出的 SIGINT（Ctrl-C）与 SIGHUP（关闭终端）送达整个前台
+   * 进程组，runner 与父进程同时收到；runner 按默认动作退出时，父进程一侧对这些命令的等待随之以错误结束
+   * （`startCommandRunner` 的 `onExit`），父进程随后执行的停止路径不再终止它们。
    */
-  process.on('disconnect', () => process.exit(0))
+  const leave = (): void => {
+    for (const c of live.values()) if (!c.exited) killTreeHere(c.proc)
+    process.exit(0)
+  }
+  process.on('disconnect', leave)
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(signal, leave)
   const parent = process.ppid
   const watch = setInterval(() => {
     try {
       process.kill(parent, 0)
     } catch {
       clearInterval(watch)
-      process.exit(0)
+      leave()
     }
   }, 3000)
   watch.unref?.()
@@ -304,7 +318,7 @@ export function runCommandRunner(): void {
       /*
        * **与 runner 的生命周期解耦。** 不调用 unref 时，runner 退出时 Bun 会一并结束它启动的
        * 子进程，而这些正是命令留下的服务，用户需要它们继续运行。
-       * runner 退出不应结束任何子进程。
+       * runner 退出时终止哪些命令只由 `leave` 决定，不由 Bun 的子进程回收决定。
        */
       proc.unref()
       const call: Call = { proc, dropped: { out: false, err: false }, exited: false, open: 2 }

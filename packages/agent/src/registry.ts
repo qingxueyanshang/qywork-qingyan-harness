@@ -22,6 +22,7 @@ import type {
   ActionDescriptor,
   ActionKind,
   CanvasBatchRunResult,
+  CanvasCancelOutcome,
   CanvasOp,
   CanvasRunResult,
   CanvasView,
@@ -465,16 +466,22 @@ export interface CanvasPort {
    * `removed` 为本批删除的节点名称，`replaced` 为每条 `replace_text` 在该卡提示词中替换的处数（按 `ops` 的序号）。
    */
   edit(path: string, ops: CanvasOp[]): Promise<CanvasEditResult>
-  /** 运行一张生成卡并等待结束。花费记入 `media`：Agent 传入本轮的 `ctx.media`，花费计入本轮。 */
+  /**
+   * 运行一张生成卡并等待结束。花费记入 `media`：Agent 传入本轮的 `ctx.media`，花费计入本轮。
+   * 生成归画布所有：`signal` 中止时只结束等待，生成照常进行并写回画布。
+   */
   run(path: string, nodeId: string, media: MediaPort, signal: AbortSignal): Promise<CanvasRunResult>
-  /** 只运行指定节点，独立节点有界并行，批内依赖按顺序执行。 */
+  /**
+   * 只运行指定节点，独立节点有界并行，批内依赖按顺序执行。`signal` 中止后已开始的节点照常生成，
+   * 尚未派发的节点不再提交。
+   */
   runBatch(
     path: string,
     nodeIds: string[],
     media: MediaPort,
     signal: AbortSignal,
   ): Promise<CanvasBatchRunResult>
-  /** 取回仍在远端的某一版视频。省略 `version` 时取当前版本或最新的待取回版本。 */
+  /** 取回仍在远端的某一版视频。省略 `version` 时取当前版本或最新的待取回版本。`signal` 同 `run`。 */
   retrieve(
     path: string,
     nodeId: string,
@@ -482,6 +489,11 @@ export interface CanvasPort {
     media: MediaPort,
     signal: AbortSignal,
   ): Promise<CanvasRunResult>
+  /**
+   * 取消一张卡正在进行的生成，与界面卡片上的取消相同：视频任务按接口能力向服务商撤销，
+   * 无法撤销时停止等待并保留任务。该卡未在生成时抛出。
+   */
+  cancel(path: string, nodeId: string): Promise<CanvasCancelOutcome>
   /**
    * 保存从视频卡截取的一帧（PNG）并在该卡右侧添加引用它的图片卡，与界面取帧相同。
    * `label` 为帧的名称（`frameLabel`）。返回新卡的 id 与文件的工作区路径。
@@ -754,6 +766,53 @@ export interface DelegatePort {
     /** 本次推进之后整张图是否已全部处于终态且全部批准。 */
     completed?: boolean
   }>
+}
+
+/**
+ * 后台命令端口：`run_command` 结束等待而命令仍在运行时，命令交给装配方的进程级任务表持有。
+ *
+ * 端口的理由同 `DelegatePort`：任务表跨越多轮存在，回执经由会话的投递入口送达，二者都在 server。
+ * 端口按会话绑定，方法不带会话参数：其他会话的后台命令在此不可见。
+ *
+ * 命令的启动、等待与收尾只在 `run_command` 中执行，任务表只持有转入后台之后的句柄：
+ * 命令结束时先把转入后台之后的文件改动追加到 `stepId` 的 `outcome.fileChanges`，再投递回执；
+ * 被停止的命令同样追加改动，不投递回执。
+ *
+ * 未接入时 `run_command` 没有 `background` 参数，前台等待不会提前结束，`background_command` 不注册。
+ */
+export interface CommandPort {
+  /**
+   * 等到本会话的投递队列中出现用户发来的「调整方向」消息（`FollowUp.steer` 为真且没有 `origin`）后兑现；
+   * 已存在时立即兑现。`signal` 中止时以中止原因拒绝。信号来源与 `DelegatePort.awaitReceipt` 相同。
+   */
+  steered(signal: AbortSignal): Promise<void>
+  /** 登记一条转入后台的命令，返回任务编号。登记之后本轮停止不再影响该命令。 */
+  adopt(task: {
+    command: string
+    /** 发起该命令的 `run_command` 调用的 step。转入后台之后的文件改动归属它。 */
+    stepId: string
+    output(): CommandOutput
+    /** 结束命令的进程树。之后 `settled` 兑现，`receipt` 为 null。 */
+    stop(): void
+    /**
+     * 命令结束时兑现。`receipt` 是回执正文，被停止时为 null；`fileChanges` 是转入后台之后观察到的文件改动，
+     * 两种结束方式都有。
+     */
+    settled: Promise<{ receipt: string | null; fileChanges: FileChange[] }>
+  }): string
+  /** 本会话正在后台运行的命令。 */
+  list(): { id: string; command: string }[]
+  /** 某条后台命令至今的输出。不在本会话的任务表中（已结束、已停止或编号有误）时为 null。 */
+  output(id: string): ({ command: string } & CommandOutput) | null
+  /** 停止某条后台命令，返回其命令文本；不在任务表中时为 null。被停止的命令不发送回执。 */
+  stop(id: string): string | null
+}
+
+/** 后台命令至今保留的输出，已脱敏。每条流只保留最近的一段，`dropped` 是各流从头部丢弃的字符数。 */
+export interface CommandOutput {
+  stdout: string
+  stderr: string
+  dropped: { stdout: number; stderr: number }
 }
 
 /**
@@ -1211,6 +1270,8 @@ export interface ToolContext {
    * 未接入时 `subagent` 工具不注册，因此工具实现中可以断言它存在。
    */
   delegate?: DelegatePort
+  /** 后台命令通道。见 `CommandPort`。只接入顶层会话：回执须能发起该会话的一轮。 */
+  commands?: CommandPort
   /**
    * 插件安装通道。见 `PluginPort`。
    *
@@ -1285,8 +1346,9 @@ export interface ToolContext {
    * 本次工具调用的 step id。**理由同 `emit`，由 loop 补充**：它在创建 step 时
    * 才产生，装配方无法构造。
    *
-   * 用途是让工具向服务端告知进度事件所属的卡片：`workflow` 的图卡依靠它认领
-   * `team.member`。不要将它作为本次调用的身份四处传递：卡片之外没有第二个消费者。
+   * 用途有两个：工具向服务端告知进度事件所属的卡片（`workflow` 的图卡依靠它认领 `team.member`）；
+   * `run_command` 转入后台时把它交给 `CommandPort.adopt`，命令结束时的文件改动追加到这条 step。
+   * 不要将它作为本次调用的身份传给其他消费者。
    *
    * 可选而不是必填：直接构造 `ToolContext` 的位置（测试夹具）不应被迫编造 id。
    * 使用它的工具必须自行判空并**如实报错**：无法关联卡片的进度事件到达前端后同样会被静默丢弃，

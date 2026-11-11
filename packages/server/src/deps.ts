@@ -12,6 +12,7 @@ import type { ServerWebSocket } from 'bun'
 import type { BrowserCoordinator } from './browser/coordinator.ts'
 import type { EventBus } from './bus.ts'
 import type { CanvasService } from './canvas.ts'
+import type { CommandTaskTable } from './command-tasks/table.ts'
 import type { DesktopCoordinator } from './desktop/coordinator.ts'
 import type { RunManager } from './runs.ts'
 import type { SubagentRegistry } from './subagents.ts'
@@ -33,6 +34,11 @@ export interface CommandDeps {
   runs: RunManager
   /** 运行中的子 agent。生命期跟随会话，因此它与 `runs` 同级，不归属于任务派发通道。 */
   subagents: SubagentRegistry
+  /**
+   * 转入后台的命令。理由同 `subagents`：命令的生命期不归属任何一轮。
+   * 未传入时会话中的 `run_command` 没有 `background` 参数，前台等待不会提前结束。
+   */
+  commands?: CommandTaskTable
   /**
    * 内置浏览器的控制协调器。**没有原生宿主时不传入**：会话装配据此决定
    * 本轮是否提供浏览器能力，不提供必然报错的端口。

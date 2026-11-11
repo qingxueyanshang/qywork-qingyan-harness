@@ -1,12 +1,12 @@
 /**
  * 画布工具：大模型经画布端口（`ctx.canvas`）创建、读取、修改、运行工作区中的 `*.canvas.json`。
  *
- * 读取、编辑、运行、取回与取帧分别声明工具及参数；取回只查询已有任务，不重新提交生成；
- * 取帧经 Office 执行程序解码视频，落盘与界面取帧相同。
+ * 读取、编辑、运行、取回、取消与取帧分别声明工具及参数；取回只查询已有任务，不重新提交生成；
+ * 取消与界面卡片上的取消相同；取帧经 Office 执行程序解码视频，落盘与界面取帧相同。
  *
  * 读写与运行全部由服务端画布服务执行，与界面共用同一个实例：写入次序、运行中状态与失败原文只有一份，
  * 大模型写入的节点在写入时即推送给界面，不等待本次工具调用结束。
- * 运行使用本轮的生成端口（`ctx.media`），费用计入本轮。
+ * 运行使用本轮的生成端口（`ctx.media`），费用计入本轮；本轮的中止信号只结束等待，生成归画布所有。
  */
 
 import { readFile } from 'node:fs/promises'
@@ -22,7 +22,9 @@ import {
   ART_SIZE_PARAM,
   CARD_GAP,
   type CanvasBatchRunResult,
+  type CanvasCancelOutcome,
   type CanvasNode,
+  type CanvasNodeState,
   type CanvasOp,
   type CanvasRunResult,
   type CanvasView,
@@ -853,6 +855,81 @@ export const retrieveCanvasTool: ToolSpec = {
       return generationReceipt(
         await canvas.retrieve(path, ids[0]!, text(args.version), ctx.media, ctx.signal),
       )
+    } catch (err) {
+      return { status: 'failure', executed: true, message: (err as Error).message }
+    }
+  },
+}
+
+/**
+ * 取消的回执。`stopped` 按收尾后的卡片状态区分：任务记录保留时可取回，否则远端结果未知。
+ */
+function cancelReceipt(
+  name: string,
+  outcome: CanvasCancelOutcome,
+  state?: CanvasNodeState,
+): string {
+  switch (outcome) {
+    case 'cancelled':
+      return `已撤销「${name}」的生成：服务商已确认撤销，本次的占位版本与任务记录已删除。`
+    case 'not_submitted':
+      return `已取消「${name}」的生成：请求尚未发给服务商，不产生生成费用。`
+    case 'ended':
+      return `「${name}」的生成在取消之前已结束，结果已写回画布。`
+    case 'stopped':
+      return state?.state === 'pending'
+        ? `已停止等待「${name}」的生成：远端任务未能撤销，可能继续生成并计费；任务记录已保留（版本 ${state.version}），用 retrieve_canvas 取回结果。`
+        : `已停止等待「${name}」的生成：没有可撤销的远端任务，远端结果未知。`
+  }
+}
+
+export const cancelCanvasTool: ToolSpec = {
+  name: 'cancel_canvas',
+  description:
+    '取消画布上 node 指定生成卡正在进行的生成，与界面卡片上的取消相同，生成由界面、本轮或之前的轮次发起均可。' +
+    '视频任务在接口支持撤销时向服务商发出撤销请求，撤销后删除本次的占位版本；接口不支持撤销或撤销失败时停止等待，' +
+    '任务记录保留，可用 retrieve_canvas 取回。图像、音频等单次请求没有可撤销的远端任务，只停止等待，远端结果未知。' +
+    '请求尚未发给服务商时取消即不再发出，不产生生成费用。回执写明属于哪一种结果。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '画布文件的工作区路径' },
+      node: { type: 'string', description: '正在生成的生成卡名称' },
+    },
+    required: ['path', 'node'],
+    additionalProperties: false,
+  },
+  actionKind: 'edit',
+  objectLabel: '画布',
+  category: 'media',
+  facet: '生成',
+  summary: '取消画布卡片正在进行的生成',
+  targetExtractor: (a) => text(a.path) ?? null,
+  permissionEffect: 'write',
+  async fn(args, ctx) {
+    const canvas = ctx.canvas
+    if (!canvas) return failure('本次执行没有画布通道')
+    const path = text(args.path)
+    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+    const ref = text(args.node)
+    if (!ref) return failure('缺少 node', 'invalid_tool_arguments')
+    let id: string
+    let name: string
+    let outcome: CanvasCancelOutcome
+    try {
+      const { doc } = await canvas.read(path)
+      const found = cardIdOf(doc, ref)
+      if (!found.ok) return failure(found.error, 'invalid_tool_arguments')
+      id = found.id
+      name = displayNameOf(doc.nodes.find((n) => n.id === id)!)
+      outcome = await canvas.cancel(path, id)
+    } catch (err) {
+      // 画布无法读取、卡片未在生成时，`cancel` 在停止任何生成之前抛出。
+      return failure((err as Error).message)
+    }
+    try {
+      const state = outcome === 'stopped' ? (await canvas.read(path)).states[id] : undefined
+      return { status: 'success', message: cancelReceipt(name, outcome, state), data: { outcome } }
     } catch (err) {
       return { status: 'failure', executed: true, message: (err as Error).message }
     }

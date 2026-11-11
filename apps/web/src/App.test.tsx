@@ -236,6 +236,7 @@ describe('连接恢复', () => {
       if (path.startsWith('/api/conversations/cv_restore/context')) return { context: null }
       if (path.startsWith('/api/conversations/cv_restore/goal')) return { goal: null }
       if (path.startsWith('/api/conversations/cv_restore/queue')) return { queue: [] }
+      if (path.startsWith('/api/conversations/cv_restore/commands')) return { commands: [] }
       if (path.startsWith('/api/conversations')) {
         workspaceAtConversationLoads.push(store.workspace()?.id ?? null)
         return {
@@ -310,6 +311,7 @@ test('快速切换会话时保持已确认的布局，重复选择不重新获�
     if (path.endsWith('/context')) return { context: null } as T
     if (path.endsWith('/goal')) return { goal: null } as T
     if (path.endsWith('/queue')) return { queue: [] } as T
+    if (path.endsWith('/commands')) return { commands: [] } as T
     throw new Error(`未预期请求：${path}`)
   }
   store.setWorkspace(null)

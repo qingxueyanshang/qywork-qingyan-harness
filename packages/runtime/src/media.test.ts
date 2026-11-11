@@ -13,9 +13,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { CanvasPort, OfficePort } from '@qywork/agent'
+import type { CanvasPort, MediaPort, OfficePort } from '@qywork/agent'
 import { lookupMediaModel, validateMediaCall } from '@qywork/ai'
-import { type AgentEvent, type MediaInputRole, runCosts } from '@qywork/core'
+import {
+  type AgentEvent,
+  applyCanvasOps,
+  emptyCanvas,
+  type MediaInputRole,
+  runCosts,
+} from '@qywork/core'
 import { ContentStore, getRun, Store } from '@qywork/store'
 import type { QyConfig } from './config.ts'
 import { listMediaModels } from './config.ts'
@@ -250,8 +256,14 @@ describe('生成端口', () => {
   })
 })
 
-/** 对话接口的 SSE 正文：第一次请求调用图片生成工具，下一次请求结束本轮。 */
-function chatTurn(turn: number): string {
+/** 对话接口的 SSE 正文：第一次请求调用 `tool`（缺省为图片生成工具），下一次请求结束本轮。 */
+function chatTurn(
+  turn: number,
+  tool: { name: string; args: Record<string, unknown> } = {
+    name: 'generate_image',
+    args: { prompt: '一只猫' },
+  },
+): string {
   const chunk = (body: unknown) => `data: ${JSON.stringify(body)}\n\n`
   if (turn === 1) {
     return (
@@ -265,8 +277,8 @@ function chatTurn(turn: number): string {
                   id: 'call_img',
                   type: 'function',
                   function: {
-                    name: 'generate_image',
-                    arguments: JSON.stringify({ prompt: '一只猫' }),
+                    name: tool.name,
+                    arguments: JSON.stringify(tool.args),
                   },
                 },
               ],
@@ -363,6 +375,81 @@ describe('生成花费', () => {
       store.close()
     }
   })
+
+  /**
+   * 原始失败形状：画布生成归画布所有，本轮停止后照常完成，花费在轮次结束之后经本轮的生成端口到达。
+   * 记账放在轮次收尾时，这笔花费不进入账本，`runs.media_usage` 被只含这一笔的列表覆盖，本轮先前的花费随之丢失。
+   */
+  test('轮次结束之后到达的画布生成花费仍记入该轮的 runs 行与账本，不覆盖先前的花费', async () => {
+    let turn = 0
+    chat = () =>
+      chatTurn(++turn, { name: 'run_canvas', args: { path: 'board.canvas.json', node: ['海报'] } })
+    reply = () =>
+      Response.json({
+        output: {
+          choices: [
+            { message: { content: [{ image: `http://127.0.0.1:${server.port}/files/out.jpg` }] } },
+          ],
+        },
+        usage: { output_image_count: 1, input_image_count: 0, output_image_type: 'qima_output_1k' },
+      })
+    const board = applyCanvasOps(emptyCanvas(), [
+      { op: 'add_generate', output: 'image', name: '海报' },
+    ])
+    if (!board.ok) throw new Error(board.error)
+    // 端口在本轮内完成一次生成后结束等待，留下生成端口：本轮结束之后由它完成第二次生成。
+    let held: MediaPort | undefined
+    const canvas = {
+      read: async () => ({ path: 'board.canvas.json', doc: board.doc, states: {} }),
+      run: async (_path: string, _node: string, media: MediaPort, runSignal: AbortSignal) => {
+        held = media
+        await media.generate(call(), runSignal)
+        return {
+          ok: false,
+          message: '已停止等待；该卡的生成照常进行，结束后写回画布',
+          pending: false,
+        }
+      },
+    } as unknown as CanvasPort
+    const store = new Store({ path: ':memory:' })
+    const s = new Session({
+      content: blobs,
+      store,
+      config: {
+        ...config(),
+        active: { provider: 'qwen', model: 'qwen-test' },
+        providers: {
+          qwen: { ...config().providers.qwen!, models: { 'qwen-test': {} } },
+        },
+        mode: 'full',
+      },
+      workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-media-late-')),
+      signal: new AbortController().signal,
+      canvas,
+    })
+    try {
+      const events: AgentEvent[] = []
+      for await (const ev of s.ask('生成海报')) events.push(ev)
+      const finished = events.find((e) => e.type === 'run.finished')
+      if (finished?.type !== 'run.finished') throw new Error('没有收尾事件')
+      expect(finished.usage.media).toHaveLength(1)
+
+      expect(await held!.generate(call(), signal())).toMatchObject({ ok: true })
+      const spend = expect.objectContaining({ model: 'qwen-image-3.0', cost: 0.18 })
+      expect(getRun(store, finished.runId)?.usage.media).toEqual([spend, spend])
+      expect(
+        store.db
+          .query("SELECT run_id, cost FROM usage_ledger WHERE kind = 'media' ORDER BY id")
+          .all(),
+      ).toEqual([
+        { run_id: finished.runId, cost: 0.18 },
+        { run_id: finished.runId, cost: 0.18 },
+      ])
+    } finally {
+      s.dispose()
+      store.close()
+    }
+  })
 })
 
 describe('画布与生成开关', () => {
@@ -393,6 +480,7 @@ describe('画布与生成开关', () => {
       'edit_canvas',
       'run_canvas',
       'retrieve_canvas',
+      'cancel_canvas',
       'generate_image',
     ]
     expect(await names({})).toEqual(expect.arrayContaining(tools))

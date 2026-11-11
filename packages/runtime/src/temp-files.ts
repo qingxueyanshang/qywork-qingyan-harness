@@ -60,8 +60,8 @@ export async function removeConversationTemp(
 
 /**
  * 一轮结束时的删除。任务完成的判据：顶层会话、本轮正常结束、本轮所接续的待办存在且全部完成、
- * 没有运行中的子 agent。待办按 `latestTodos` 的接续规则读取：用户新发起的一轮只看本轮提交的清单，
- * 回执发起的一轮沿用会话清单。
+ * 没有运行中的子 agent 与后台命令。待办按 `latestTodos` 的接续规则读取：用户新发起的一轮只看本轮提交的清单，
+ * 回执发起的一轮沿用会话清单。后台命令的 TMP / TEMP / TMPDIR 指向会话临时目录，运行期间不能移走该目录。
  */
 export async function releaseRunTemp(input: {
   store: Store
@@ -70,14 +70,15 @@ export async function releaseRunTemp(input: {
   runId: RunId
   stopReason: StopReason | null
   topLevel: boolean
-  subagentsRunning: boolean
+  /** 本会话仍有运行中的子 agent 或后台命令。 */
+  backgroundRunning: boolean
 }): Promise<void> {
   const { store, workspaceRoot, conversationId, runId } = input
   const dirs = [officeRunDir(workspaceRoot, conversationId, runId)]
   const todos = latestTodos(store, conversationId, runId)
   const taskCompleted =
     input.topLevel &&
-    !input.subagentsRunning &&
+    !input.backgroundRunning &&
     input.stopReason === 'completed' &&
     !!todos?.length &&
     todos.every((todo) => todo.status === 'completed')

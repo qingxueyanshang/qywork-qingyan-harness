@@ -9,6 +9,7 @@
 
 import type {
   AgentEvent,
+  BackgroundCommand,
   CommandRejectedFrame,
   ContextBreakdown,
   ContextOmitted,
@@ -452,6 +453,15 @@ function foldContent(cid: string, ev: AgentEvent): void {
       )
       if (NODE_SETTLED.has(ev.state.phase)) void refreshLatestChangeTurn(cid)
       return
+
+    case 'file.changed': {
+      // 运行中一轮的写入由 `tool.finished` 追加；其他轮次的写入见 `reloadConversationChanges`。
+      const v = state.views[cid]
+      if (v && ev.runId !== null && ev.runId !== v.runId && ev.changes.length > 0) {
+        void reloadConversationChanges(cid)
+      }
+      return
+    }
 
     case 'message.injected':
       setState(
@@ -961,6 +971,11 @@ function foldRunState(ev: AgentEvent): void {
       setState('followUps', ev.queue)
       return
 
+    case 'commands.changed':
+      // 整体替换：服务端发送的是该会话后台命令的完整快照。
+      setState('backgroundCommands', ev.commands)
+      return
+
     case 'message.injected':
       // 移除对应卡片：队列的权威仍是 `queue.changed`，此处提前移除是为了
       // 避免卡片与气泡同时出现（服务端两条事件之间间隔一次落库）。
@@ -1007,7 +1022,8 @@ function foldRunState(ev: AgentEvent): void {
           s.fileTouched = ev.changes.length
             ? ev.changes.flatMap((c) => (c.renamedFrom ? [c.path, c.renamedFrom] : [c.path]))
             : null
-          s.fileChanges.push(...ev.changes)
+          // 本轮读数只计本轮的写入：后台命令结束时追加的改动带发起它的那一轮的 runId，计入那一轮。
+          if (ev.runId === s.lastRunId) s.fileChanges.push(...ev.changes)
         }),
       )
       return
@@ -1492,6 +1508,26 @@ export async function loadConversationChanges(id: string): Promise<void> {
   if (!current) return
   if (current.changes && (current.changes.loading !== null || current.changes.error === null))
     return
+  await readFirstChangesPage(id)
+}
+
+/**
+ * 已读取过的变更面板从首页重新读取；没有读取过或读取在途时不读取。
+ *
+ * 后台命令结束时，转入后台之后的改动追加到发起它的 step（`file.changed` 的 runId 不是运行中的一轮），
+ * 该 step 所在的轮次不一定是最新一轮，只重新读取最新一轮（`refreshLatestChangeTurn`）会遗漏它。
+ * 已加载的更早分页随之丢弃，由哨兵按新游标重新读取。
+ */
+async function reloadConversationChanges(id: string): Promise<void> {
+  if (state.views[id]?.changes?.loading !== null) return
+  await readFirstChangesPage(id)
+}
+
+async function readFirstChangesPage(id: string): Promise<void> {
+  const current = state.views[id]
+  if (!current) return
+  // 请求发出前已在表中的写入不并回：首页没有的是更早的分页，按新游标重新读取。
+  const earlier = new Set(current.changes?.turns.flatMap((t) => t.steps.map((s) => s.id)) ?? [])
   if (current.changes) {
     setState('views', id, 'changes', { loading: 'initial', error: null })
   } else {
@@ -1512,7 +1548,7 @@ export async function loadConversationChanges(id: string): Promise<void> {
         const known = new Set(page.turns.flatMap((t) => t.steps.map((step) => step.id)))
         const pending = changes.turns.map((turn) => ({
           turn,
-          steps: turn.steps.filter((step) => !known.has(step.id)),
+          steps: turn.steps.filter((step) => !known.has(step.id) && !earlier.has(step.id)),
         }))
         changes.turns = page.turns
         changes.totals = page.totals
@@ -1639,6 +1675,7 @@ export async function reloadActiveConversation(): Promise<void> {
   const initialGoal = state.goal
   const initialQueue = state.followUps
   const initialQueueLength = initialQueue.length
+  const initialCommands = state.backgroundCommands
   const current = () =>
     state.activeConversation === id &&
     activeHistoryLease === lease &&
@@ -1650,7 +1687,7 @@ export async function reloadActiveConversation(): Promise<void> {
   })
 
   try {
-    // 四份投影并行读取、分别发布。正文只依赖历史，辅助接口缓慢或失败不阻挡它。
+    // 各份投影并行读取、分别发布。正文只依赖历史，辅助接口缓慢或失败不阻挡它。
     // 共用本次加载租约：切换会话、重试与超时仍从同一个出口取消全部请求。
     await Promise.all([
       fetchConversationPage(id, null, lease.controller.signal).then((folded) => {
@@ -1726,6 +1763,17 @@ export async function reloadActiveConversation(): Promise<void> {
             state.followUps.length === initialQueueLength
           ) {
             setState('followUps', queue)
+          }
+        }),
+      // 读取失败同样使整次加载失败，理由同队列：按空处理时正在运行的后台命令从界面上消失。
+      client
+        .api<{ commands: BackgroundCommand[] }>(`/api/conversations/${id}/commands`, {
+          signal: lease.controller.signal,
+        })
+        .then((r) => {
+          // 请求期间已有实时快照写入时，较早发起的读取不得覆盖它。
+          if (current() && state.backgroundCommands === initialCommands) {
+            setState('backgroundCommands', r.commands)
           }
         }),
     ])

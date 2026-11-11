@@ -118,6 +118,7 @@ async function turn(conversationId: ConversationId, text: string, tags: string[]
     const outcome = await runCommand.fn({ command: command(tag) }, {
       workspaceRoot: dir,
       conversationId,
+      signal: new AbortController().signal,
       emit: () => {},
       sink: null,
       state,

@@ -8,7 +8,8 @@
  * 1. 每次调用都经过权限检查（`auto` 模式下由硬边界与静态规则裁决，不弹出确认框）。
  * 2. cwd 强制限定在允许的根目录内（工作区 + 显式配置的额外目录）。
  * 3. 凭证不进入子进程，输出中出现的凭证明文也要屏蔽，见下。
- * 4. 硬性超时与输出上限，防止耗尽内存与上下文。
+ * 4. 前台命令按停滞判定终止，输出经投递限制后交给模型，防止耗尽上下文；转入后台的命令由
+ *    服务进程级的任务表持有（`CommandPort`），由模型、用户或应用退出结束，每条输出流只保留最近的一段。
  * 5. 不对 shell 解释符做「安全化」处理，原样执行裁决过的命令。
  * 6. 在有内核沙箱的平台上再加一层（`sandbox.ts`）：这一层不检查命令文本，
  *    它弥补的正是前五条无法覆盖的部分，即未预料到的写法。
@@ -34,8 +35,15 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import { delimiter, join } from 'node:path'
-import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
+import {
+  type CommandPort,
+  deliveredTokens,
+  recordBatchSpent,
+  type ToolContext,
+  type ToolSpec,
+} from '@qywork/agent'
 import type { FileChange, IntermediateResourceRef } from '@qywork/core'
+import { idArg } from './args.ts'
 import { classifyAddress } from './net-safety.ts'
 import {
   conversationTempDir,
@@ -47,6 +55,7 @@ import {
   writableRoots,
 } from './paths.ts'
 import {
+  type CollectedProcess,
   type CommandShell,
   collectProcess,
   killTree,
@@ -86,6 +95,55 @@ const BACKGROUND_HELD =
  */
 const WATCH_INCOMPLETE =
   '。注意：本次文件改动的观察范围不完整，清单可能有遗漏，也可能混入了被忽略的产物。'
+
+/**
+ * 后台命令每条输出流至少保留的字符数，超出后从头部按块丢弃（`RecentOutput`）。
+ *
+ * 取值依据：本仓库全量测试的完整输出实测约 24 万字节，此值能完整容纳一次长时间构建或测试的输出；
+ * 超出它的是持续运行的服务日志，有用的是最近的部分。每次读取都把保留的内容整份写入正文库，此值同时限制单次写入量。
+ */
+const KEPT_OUTPUT_CHARS = 1 << 20
+/** 丢弃的单位：保留量在上限与上限加一块之间，每片输出不触发对整串的切分。 */
+const KEPT_BLOCK_CHARS = 1 << 16
+
+/** 一条输出流最近的一段。末块未满时并入末块，去掉首块后仍不少于上限时整块丢弃首块。 */
+class RecentOutput {
+  private readonly blocks: string[] = []
+  private size = 0
+  /** 已从头部丢弃的字符数。 */
+  dropped = 0
+
+  push(text: string): void {
+    const tail = this.blocks.at(-1)
+    if (tail !== undefined && tail.length < KEPT_BLOCK_CHARS) {
+      this.blocks[this.blocks.length - 1] = tail + text
+    } else {
+      this.blocks.push(text)
+    }
+    this.size += text.length
+    while (this.blocks.length > 1) {
+      const head = this.blocks[0] as string
+      if (this.size - head.length < KEPT_OUTPUT_CHARS) break
+      this.blocks.shift()
+      this.size -= head.length
+      this.dropped += head.length
+    }
+  }
+
+  text(): string {
+    return this.blocks.join('')
+  }
+}
+
+/** 后台命令丢弃过输出时的说明：模型据此知道读到的不是全文。没有丢弃时为空串。 */
+function droppedNote(dropped: { stdout: number; stderr: number }): string {
+  const parts = (['stdout', 'stderr'] as const)
+    .filter((channel) => dropped[channel] > 0)
+    .map((channel) => `${channel} 已丢弃最早的 ${dropped[channel]} 个字符`)
+  return parts.length
+    ? `。注意：后台命令每条输出流只保留最近的约 ${KEPT_OUTPUT_CHARS} 个字符，${parts.join('，')}`
+    : ''
+}
 
 /**
  * 本轮已报告的工作区相对路径，存放在 `ctx.state`（run 级，每条消息一个）。
@@ -258,8 +316,11 @@ export function resolveCommandTimeout(timeoutMs: unknown): number {
  *
  * 不写成「仅非 bash 时前置」：那是一条按语法分叉的排版规则，分叉的风险是某一档
  * 遗漏前置，且只在对应的机器上才能发现。三档共用同一份排版。
+ *
+ * `background` 为真时规格带 `background` 参数与后台命令的说明，装配方据此与 `CommandPort`
+ * 同时提供：没有端口时该参数无法兑现。
  */
-export function makeShellTool(shell: CommandShell): ToolSpec {
+export function makeShellTool(shell: CommandShell, opts: { background?: boolean } = {}): ToolSpec {
   return {
     name: 'run_command',
     description:
@@ -270,6 +331,10 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       '执行其他解释器的脚本需显式调用对应解释器。' +
       '在工作区中执行一条命令并返回 stdout/stderr 与退出码。' +
       '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
+      (opts.background
+        ? '未指定 background 时等待命令结束；等待期间用户发来消息时，命令转入后台继续运行，本次结果给出任务编号与已产生的输出。' +
+          '后台命令结束时结果作为回执消息送达；用 background_command 按任务编号读取至今的输出或停止命令。'
+        : '') +
       '读取文件用 read_file，查找文件用 glob/grep：二者更快且更节省上下文，不要用 cat/find/grep 代替。' +
       // 输出限长已由本工具完成，这一句用于消除模型自行追加 `| tail` 的理由：
       // 这类命令要等输入 EOF，而后台进程持有管道时 EOF 永不到达，
@@ -300,6 +365,17 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
             '提供该参数时，执行流程变为「启动服务 → 等待就绪 → 获取一次响应 → 关闭」：' +
             '命令无需自行退出，探测成功即停止。用于验证 dev server、静态服务器能否启动、页面能否打开。',
         },
+        ...(opts.background
+          ? {
+              background: {
+                type: 'boolean',
+                description:
+                  '为 true 时命令启动后立即返回任务编号，命令在后台继续运行。' +
+                  '用于开发服务器、监听进程等不自行退出的命令，以及之后再查看结果的长时间命令。' +
+                  '后台命令不按 timeout_ms 判定停滞。不能与 probe_url 同时使用',
+              },
+            }
+          : {}),
       },
       required: ['command'],
       additionalProperties: false,
@@ -344,6 +420,20 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
             errorKind: 'bad_request',
           }
         probeUrl = checked.url
+      }
+
+      // 没有端口时规格中不含 `background`，参数即使出现也按前台执行。转入后台之后的文件改动归属本次调用的 step，
+      // 没有 step id（直接构造 ToolContext 的测试夹具）时同样只能前台执行。
+      const owner =
+        ctx.commands && ctx.stepId !== undefined ? { port: ctx.commands, stepId: ctx.stepId } : null
+      const background = owner !== null && args.background === true
+      if (background && probeUrl !== null) {
+        return {
+          status: 'failure',
+          executed: false,
+          message: 'background 与 probe_url 不能同时使用：probe_url 在获取一次响应后结束命令',
+          errorKind: 'bad_request',
+        }
       }
 
       // 缺少 secrets 时按空集合处理：含义是没有已知凭证，而不是无需剥离。
@@ -400,9 +490,29 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         stdout: createStreamRedactor(secrets),
         stderr: createStreamRedactor(secrets),
       }
-      // 回传发生在脱敏之后：先回传再脱敏等于先发出明文再补救。
+      /*
+       * 命令的中止信号。前台等待期间随本轮的停止而中止（结束进程树）；转入后台之后与本轮解除关联，
+       * 只由任务表中止。不要把 `ctx.signal` 直接交给 `collectProcess`：那样本轮停止时后台命令也被结束。
+       */
+      const halt = new AbortController()
+      const haltWithRun = () => halt.abort()
+      ctx.signal.addEventListener('abort', haltWithRun, { once: true })
+      // 转入后台之后：输出不再回传到本次调用的工具卡，也不再按停滞终止。
+      let detached = false
+      // 至今的输出（已脱敏），每条流只保留最近的一段；转入后台时随结果交出，之后按任务编号读取。
+      const recent = { stdout: new RecentOutput(), stderr: new RecentOutput() }
+      const keptOutput = () => ({
+        stdout: recent.stdout.text(),
+        stderr: recent.stderr.text(),
+        dropped: { stdout: recent.stdout.dropped, stderr: recent.stderr.dropped },
+      })
+      // 回传发生在脱敏之后：先回传再脱敏等于先发出明文再补救。转入后台之后返回空串：
+      // `collectProcess` 不再累加第二份，读取与回执使用 `recent`。
       const emit = (channel: 'stdout' | 'stderr', text: string): string => {
-        if (text) ctx.emit(channel, text)
+        if (!text) return text
+        recent[channel].push(text)
+        if (detached) return ''
+        ctx.emit(channel, text)
         return text
       }
 
@@ -414,10 +524,12 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       // 15–20 分钟，模型连续四次在 600 秒被终止后改为放到后台轮询，又重复启动一份）。
       // 没有输出满 `timeout` 时检查进程树是否仍在占用 CPU 或读写磁盘，都没有才终止。不设总时长：
       // 仍在工作的命令没有理由被终止，持续输出却不会结束的命令由用户停止。
+      // 后台命令（服务进程、监听进程）长时间无输出是常态：转入后台之后不按停滞终止，
+      // 检查进程树期间转入后台的同样不终止。
       const collecting = collectProcess(proc, {
         idleMs: timeout,
-        busy: () => treeBusy(proc.pid),
-        signal: ctx.signal,
+        busy: async () => detached || (await treeBusy(proc.pid)) || detached,
+        signal: halt.signal,
         onText: (channel, text) => emit(channel, redactors[channel].push(text)),
         // 不调用 flush 会静默丢弃输出末尾，这比泄露更难发现，因为无人逐字节核对。
         onEnd: (channel) => emit(channel, redactors[channel].flush()),
@@ -426,6 +538,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       if (probeUrl !== null) {
         const probe = await probeThenKill(probeUrl, proc, timeout, ctx.signal)
         const got = await collecting
+        ctx.signal.removeEventListener('abort', haltWithRun)
         await pipe?.read()
         const watched = await closeWindow()
         const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
@@ -442,49 +555,228 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         }
       }
 
+      /*
+       * 等待在三种情况下结束：命令退出；`background` 为真（不等待）；等待期间本会话收到用户的
+       * 「调整方向」消息。后两种命令继续运行，句柄交给任务表，本次结果写明任务编号与已产生的输出。
+       */
+      const handOff = owner !== null && (background || (await steeredFirst(owner.port, collecting)))
+      if (owner !== null && handOff) {
+        ctx.signal.removeEventListener('abort', haltWithRun)
+        detached = true
+        // 观察窗口转为后台观察：至今的改动随本次结果交出，之后的改动在命令结束时追加到本次调用的 step。
+        // 不要改为关闭窗口：关闭后转入后台之后的改动不进入任何清单。后台观察不占用队列，之后打开的窗口照常收到事件。
+        const { observed: watched, background: lateWindow } = await changeWindow.detach()
+        trackReported(reported, watched.changes)
+        const id = owner.port.adopt({
+          command,
+          stepId: owner.stepId,
+          output: keptOutput,
+          stop: () => halt.abort(),
+          settled: collecting.then(async (got) => {
+            const late = await lateWindow.close()
+            trackReported(reported, late.changes)
+            const statuses = (await pipe?.read()) ?? null
+            if (halt.signal.aborted) return { receipt: null, fileChanges: late.changes }
+            // `got` 只含转入后台之前的输出，判定与回执使用保留的那份：`pipelineExit` 与 `sandboxHint` 读取 stderr 的末尾。
+            const out = keptOutput()
+            const kept = { ...got, stdout: out.stdout, stderr: out.stderr }
+            const summary = settledSummary(kept, statuses, sandbox.active, timeout, args.timeout_ms)
+            const notes = droppedNote(out.dropped) + (late.incomplete ? WATCH_INCOMPLETE : '')
+            return {
+              receipt: receiptBody(ctx, command, summary.message + notes, kept),
+              fileChanges: late.changes,
+            }
+          }),
+        })
+        const now = keptOutput()
+        const delivered = deliverStreams(ctx, command, now.stdout, now.stderr)
+        return {
+          status: 'success',
+          message:
+            (background ? '命令已在后台启动' : '等待期间用户发来消息，命令转入后台继续运行') +
+            `，任务编号 ${id}；结束时结果作为回执消息送达，已产生的输出见 stdout / stderr` +
+            droppedNote(now.dropped) +
+            (watched.incomplete ? WATCH_INCOMPLETE : ''),
+          data: { taskId: id, ...delivered.data },
+          ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
+          ...(delivered.resources.length ? { resources: delivered.resources } : {}),
+        }
+      }
+
+      // 前台等待期间保持与本轮停止的关联，命令退出之后才解除。
       const got = await collecting
+      ctx.signal.removeEventListener('abort', haltWithRun)
       const statuses = (await pipe?.read()) ?? null
       const watched = await closeWindow()
       const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
       const watchNote = watched.incomplete ? WATCH_INCOMPLETE : ''
-
-      if (got.timedOut) {
-        // 请求的时限超过上限时必须说明：实测模型传 2400000 后在 600 秒被终止，
-        // 不说明时它无从得知是上限所致，会按「命令出错」处理。
-        const requested = Number(args.timeout_ms)
-        const capped =
-          requested > MAX_TIMEOUT_MS
-            ? `；请求的 ${requested}ms 超过上限，按 ${MAX_TIMEOUT_MS}ms 执行`
-            : ''
-        return {
-          status: 'failure',
-          message:
-            `命令连续 ${timeout / 1000} 秒没有输出，检查时它的进程树也没有占用 CPU、没有读写磁盘，` +
-            `判定为停滞，已终止${capped}。常见原因：等待输入、等待网络、后台进程未结束` +
-            `${got.backgroundHeld ? BACKGROUND_HELD : ''}${watchNote}`,
-          data: { ...delivered.data, timedOut: true },
-          ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
-          ...(delivered.resources.length ? { resources: delivered.resources } : {}),
-          errorKind: 'timeout',
-        }
-      }
-
-      const exit = pipelineExit(got.exitCode, statuses, got.stderr)
+      const summary = settledSummary(got, statuses, sandbox.active, timeout, args.timeout_ms)
       return {
         // 非零退出码是事实而不是异常：模型需要看到失败输出才能修复。
-        status: exit.exitCode === 0 ? 'success' : 'failure',
-        message:
-          (exit.exitCode === 0
-            ? `命令执行成功${exit.note}`
-            : `命令退出码 ${exit.exitCode}${exit.note}${sandboxHint(sandbox.active, got.stderr)}`) +
-          (got.backgroundHeld ? BACKGROUND_HELD : '') +
-          watchNote,
-        data: { exitCode: exit.exitCode, ...delivered.data },
+        status: summary.ok ? 'success' : 'failure',
+        message: summary.message + watchNote,
+        data: got.timedOut
+          ? { ...delivered.data, timedOut: true }
+          : { exitCode: summary.exitCode, ...delivered.data },
         ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
         ...(delivered.resources.length ? { resources: delivered.resources } : {}),
+        ...(got.timedOut ? { errorKind: 'timeout' } : {}),
       }
     },
   }
+}
+
+/**
+ * 前台等待：命令退出时兑现为 false；等待期间本会话收到用户的「调整方向」消息时兑现为 true。
+ *
+ * `steered` 只因本函数的中止而拒绝；其他原因的拒绝同样按 false 处理，即继续等待命令退出，
+ * 命令不因端口故障失去持有方。
+ */
+async function steeredFirst(port: CommandPort, collecting: Promise<unknown>): Promise<boolean> {
+  const done = new AbortController()
+  try {
+    return await Promise.race([
+      collecting.then(() => false),
+      port.steered(done.signal).then(
+        () => true,
+        () => false,
+      ),
+    ])
+  } finally {
+    done.abort()
+  }
+}
+
+/**
+ * 命令结束后的判定与说明：前台结果与后台回执共用。观察范围与输出丢弃的说明不在此处，由两处各自附加。
+ * `requestedTimeout` 是调用参数中的 `timeout_ms` 原值。
+ */
+function settledSummary(
+  got: CollectedProcess,
+  statuses: readonly number[] | null,
+  sandboxActive: boolean,
+  timeout: number,
+  requestedTimeout: unknown,
+): { ok: boolean; message: string; exitCode: number } {
+  const held = got.backgroundHeld ? BACKGROUND_HELD : ''
+  if (got.timedOut) {
+    // 请求的时限超过上限时必须说明：实测模型传 2400000 后在 600 秒被终止，
+    // 不说明时它无从得知是上限所致，会按「命令出错」处理。
+    const requested = Number(requestedTimeout)
+    const capped =
+      requested > MAX_TIMEOUT_MS
+        ? `；请求的 ${requested}ms 超过上限，按 ${MAX_TIMEOUT_MS}ms 执行`
+        : ''
+    return {
+      ok: false,
+      exitCode: got.exitCode,
+      message:
+        `命令连续 ${timeout / 1000} 秒没有输出，检查时它的进程树也没有占用 CPU、没有读写磁盘，` +
+        `判定为停滞，已终止${capped}。常见原因：等待输入、等待网络、后台进程未结束${held}`,
+    }
+  }
+  const exit = pipelineExit(got.exitCode, statuses, got.stderr)
+  return {
+    ok: exit.exitCode === 0,
+    exitCode: exit.exitCode,
+    message:
+      (exit.exitCode === 0
+        ? `命令执行成功${exit.note}`
+        : `命令退出码 ${exit.exitCode}${exit.note}${sandboxHint(sandboxActive, got.stderr)}`) +
+      held,
+  }
+}
+
+/**
+ * 后台命令结束时的回执正文：判定说明、命令原文与两条输出流的摘录。
+ *
+ * 摘录尺寸与前台结果的默认摘录相同，超出部分写入正文库，正文中保留定位符。
+ * 不计入投递额度（不调用 `recordBatchSpent`）：回执在任何一次决策之外产生，理由同 `deliverAgentOutput`。
+ */
+function receiptBody(
+  ctx: ToolContext,
+  command: string,
+  summary: string,
+  got: CollectedProcess,
+): string {
+  const encoder = new TextEncoder()
+  const lines = [summary, `命令：${command}`]
+  for (const [channel, text] of [
+    ['stdout', got.stdout],
+    ['stderr', got.stderr],
+  ] as const) {
+    if (!text) continue
+    const landed = deliver(ctx.sink, {
+      toolName: 'run_command',
+      sourceType: `shell:${channel}`,
+      body: encoder.encode(text),
+      mimeType: 'text/plain',
+      query: command,
+    })
+    lines.push(`${channel}：\n${landed.text}`)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 读取或停止本会话的一条后台命令。
+ *
+ * 只经由端口访问本会话的任务表：其他会话的后台命令不可见，无法读取或停止。
+ * 读取到的是至今保留的输出（每条流最近的一段），经过与 `run_command` 相同的投递限制。
+ */
+export const backgroundCommandTool: ToolSpec = {
+  name: 'background_command',
+  description:
+    '读取本会话一条后台命令至今的输出（stdout / stderr）；stop 为 true 时结束该命令的进程树，返回停止前的输出。' +
+    '后台命令由 run_command 转入后台，任务编号见其结果。命令结束时结果作为回执消息送达，被停止的命令不发送回执。',
+  parameters: {
+    type: 'object',
+    properties: {
+      task_id: { type: 'string', description: 'run_command 结果中的任务编号' },
+      stop: { type: 'boolean', description: '为 true 时停止该命令' },
+    },
+    required: ['task_id'],
+    additionalProperties: false,
+  },
+  actionKind: (a) => (a.stop === true ? 'edit' : 'read'),
+  objectLabel: '后台命令',
+  category: 'code',
+  facet: '执行',
+  summary: '读取或停止后台命令',
+  targetExtractor: (a) => (typeof a.task_id === 'string' ? a.task_id : null),
+  // 只读取或停止本会话自己转入后台的命令；命令启动时已经过权限判定。
+  permissionEffect: 'internal_control',
+  parallelSafe: false,
+
+  async fn(args, ctx) {
+    const port = ctx.commands
+    if (!port) {
+      // 正常情况下不会执行到此处：没有后台命令通道时本工具不注册。
+      return { status: 'failure', message: '本次执行没有后台命令通道' }
+    }
+    const id = idArg(args.task_id)
+    const found = id ? port.output(id) : null
+    if (!found) {
+      const running = port.list().map((c) => `${c.id}（${c.command}）`)
+      return {
+        status: 'failure',
+        message: `本会话没有运行中的后台命令 ${id}；运行中：${running.join('、') || '无'}`,
+      }
+    }
+    const stopping = args.stop === true
+    if (stopping) port.stop(id)
+    const delivered = deliverStreams(ctx, found.command, found.stdout, found.stderr)
+    return {
+      status: 'success',
+      message:
+        (stopping
+          ? `已停止后台命令 ${id}（${found.command}），输出为停止前的内容`
+          : `后台命令 ${id}（${found.command}）仍在运行，输出为至今的内容`) +
+        droppedNote(found.dropped),
+      data: { taskId: id, ...delivered.data },
+      ...(delivered.resources.length ? { resources: delivered.resources } : {}),
+    }
+  },
 }
 
 /**
@@ -661,17 +953,10 @@ const PROBE_INTERVAL_MS = 200
 /**
  * 轮询直到服务就绪，获取一次响应，然后无条件终止进程树。
  *
- * 此操作必须是原子的：`run_command` 是同步的，启动一个不会自行退出的服务器会阻塞直至超时。
- * 「启动服务 → 检查页面能否打开」是编码 agent 的常规操作，仅靠 `run_command` 无法完成；
- * 原因不是权限拦截，而是执行方式本身不支持（实测：用户开启完全访问后仍只能等到 `output_truncated`）。
- *
- * 不采用「后台运行 + 另一个工具读取输出」：那需要一张跨调用存在的进程表，而 Session
- * 每条消息创建一个（见 `server/src/run-control.ts`），进程表挂在其上时生命周期不超过这条
- * 消息；放在别处则新增一套与 run 并列的生命周期，这是 A2 默认否决的第一条。
- *
- * 因此收敛为一次调用内的原子操作：进程生命周期不超出本函数，没有 id、没有进程表、
- * 没有 dispose 依赖。代价是无法验证「修改代码 → 热重载 → 再次查看」这类交互式调试，
- * 该边界已写入工具描述。
+ * 这是一次调用内完成的操作：进程生命周期不超出本函数，探测结束即终止，因此与 `background` 互斥。
+ * 「启动服务 → 检查页面能否打开」只需一次响应时使用本流程。需要服务持续运行（修改代码 → 热重载
+ * → 再次查看）时由 `background` 启动：进程交给服务进程级的后台命令任务表持有（见 `CommandPort`），
+ * 不随本轮或 Session 结束，由模型、用户或应用退出结束。
  *
  * 失败时也要带回进程输出。探测失败时最有用的信息通常在服务器自己的 stderr 中（端口被占用、
  * 模块缺失）。调用方收到 `ok:false` 后仍会把 out/err 拼入结果，因此此处只返回判定。

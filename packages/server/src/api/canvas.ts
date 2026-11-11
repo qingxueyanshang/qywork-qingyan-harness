@@ -15,7 +15,7 @@ import {
   type MediaQuote,
   parseCanvasOps,
 } from '@qywork/core'
-import { cancelMediaTask, makeMediaPort, resolveMediaModel } from '@qywork/runtime'
+import { makeMediaPort, resolveMediaModel } from '@qywork/runtime'
 import { recordUsage } from '@qywork/store'
 import { CanvasFailure, type CanvasStep } from '../canvas.ts'
 import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
@@ -248,9 +248,7 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
     // 优先撤销可取消的任务；无法撤销时暂停本地等待，保留原任务供取回。
     if (p === '/api/canvas/cancel') {
       try {
-        const outcome = await d.canvas.cancel(d.workspaceRoot, path, nodeId, (task) =>
-          cancelMediaTask(d.config, task, AbortSignal.timeout(10_000)),
-        )
+        const outcome = await d.canvas.cancel(d.workspaceRoot, path, nodeId, d.canvas.cancelTask)
         return json({ outcome })
       } catch (err) {
         if (!(err instanceof MediaError)) throw err

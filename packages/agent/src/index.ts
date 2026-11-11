@@ -132,6 +132,7 @@ export {
   type CloudSkillPort,
   type CloudSkillResult,
   type CloudSkillSegment,
+  type CommandPort,
   compactionEpoch,
   type DelegatePort,
   type FileReadPort,

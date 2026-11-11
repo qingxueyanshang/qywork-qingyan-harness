@@ -105,8 +105,8 @@ export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
 export async function selectConversation(id: string): Promise<void> {
   const current = state.views[id]
   if (state.activeConversation === id && current && current.history.loading !== 'unloaded') return
-  // 队列只属于当前会话；切换时立即撤下，不能等历史请求返回后再替换。
-  setState({ activeConversation: id, followUps: [], fileChanges: [] })
+  // 队列与后台命令只属于当前会话；切换时立即撤下，不能等历史请求返回后再替换。
+  setState({ activeConversation: id, followUps: [], backgroundCommands: [], fileChanges: [] })
   writeSession(conversationKey(), id)
   discardPace()
   // 在此处显式建立视图表并订阅，不等待 effect 执行：下方紧接着 await，
@@ -388,7 +388,7 @@ async function dropConversation(id: string): Promise<void> {
   const wasActive = state.activeConversation === id
   setState('conversations', (list) => list.filter((c) => c.id !== id))
   if (!wasActive) return
-  setState({ activeConversation: null, followUps: [], fileChanges: [] })
+  setState({ activeConversation: null, followUps: [], backgroundCommands: [], fileChanges: [] })
   syncViews()
   await loadConversations()
 }
@@ -490,4 +490,14 @@ export function dropFollowUp(id: string): void {
   const conversationId = state.activeConversation
   if (!conversationId) return
   client.send({ type: 'followup.drop', conversationId: conversationId as never, id })
+}
+
+/**
+ * 停止当前会话的一条后台命令。该行由服务端的 `commands.changed` 移除，此处不预先移除：
+ * 停止被拒绝（命令已结束）时，行的去留同样以服务端快照为准。
+ */
+export function stopBackgroundCommand(id: string): void {
+  const conversationId = state.activeConversation
+  if (!conversationId) return
+  client.send({ type: 'command.stop', conversationId: conversationId as never, id })
 }

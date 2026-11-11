@@ -12,6 +12,7 @@
 import type { ConversationId, MessageId, RunId, StepId } from '../domain/ids.ts'
 import type {
   Attachment,
+  BackgroundCommand,
   CompactionManifest,
   CompactionStage,
   ContextBreakdown,
@@ -92,6 +93,8 @@ export type AgentEvent =
   // ── 跟进消息 ──
   | QueueChangedEvent
   | MessageInjectedEvent
+  // ── 后台命令 ──
+  | CommandsChangedEvent
 
 // ─────────────────────────────── 会话 ───────────────────────────────
 
@@ -188,7 +191,21 @@ export interface MessageInjectedEvent {
    * 界面据此决定将该帧渲染为回执条目还是用户气泡。必须与落库一侧取值相同
    * （step 的 `payload.origin`），否则实时渲染为气泡、刷新后又变为回执条目。
    */
-  origin?: 'subagent' | 'workflow'
+  origin?: 'subagent' | 'workflow' | 'command'
+}
+
+// ─────────────────────────────── 后台命令 ───────────────────────────────
+
+/**
+ * 会话中正在后台运行的命令。内容是完整快照，理由同 `QueueChangedEvent`。
+ *
+ * 按会话过滤下发：只在打开该会话的客户端显示。快照的另一个来源是
+ * `GET /api/conversations/:id/commands`，两者读取服务端同一张任务表。
+ */
+export interface CommandsChangedEvent {
+  type: 'commands.changed'
+  conversationId: ConversationId
+  commands: BackgroundCommand[]
 }
 
 // ─────────────────────────────── run 生命周期 ───────────────────────────────
@@ -217,7 +234,7 @@ export interface RunStartedEvent {
   userMessage: {
     content: string
     attachments?: Attachment[]
-    origin?: 'subagent' | 'workflow'
+    origin?: 'subagent' | 'workflow' | 'command'
   } | null
 }
 

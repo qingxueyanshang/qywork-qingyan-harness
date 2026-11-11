@@ -12,6 +12,7 @@ import {
   type BrowserPort,
   type CanvasPort,
   type CloudSkillPort,
+  type CommandPort,
   type CompactionPort,
   type DelegatePort,
   type DesktopPort,
@@ -71,6 +72,7 @@ import {
 } from '@qywork/core'
 import {
   appendMessage,
+  appendRunMedia,
   appendStep,
   appendTextToStep,
   type ContentStore,
@@ -108,7 +110,6 @@ import {
   settleToolStep,
   touchRun,
   updateGoal,
-  updateRunMedia,
   upsertWorkspace,
   workflowIdsOf,
 } from '@qywork/store'
@@ -180,6 +181,13 @@ export interface SessionOptions {
    * 递归派发任务在结构上不可能发生。
    */
   delegate?: DelegatePort
+  /**
+   * 后台命令通道。见 `CommandPort`。
+   *
+   * 只传给顶层会话：回执发起的一轮只能属于顶层会话（子会话只由父会话的图续发）。
+   * 未传入时 `run_command` 没有 `background` 参数，前台等待不会提前结束。
+   */
+  commands?: CommandPort
   /**
    * 插件安装通道。见 `PluginPort`。
    *
@@ -260,10 +268,10 @@ export interface AskOptions {
    */
   attachments?: Attachment[]
   /**
-   * 该消息的来源：子 agent 的回执、workflow 的回执，缺省为用户本人。
+   * 该消息的来源：子 agent 的回执、workflow 的回执、后台命令的回执，缺省为用户本人。
    * 写入 `messages.origin`，界面据此区分回执行与用户气泡。
    */
-  origin?: 'subagent' | 'workflow'
+  origin?: 'subagent' | 'workflow' | 'command'
   /** 发送时界面右侧面板显示的工作区文件（`SendMessageCommand.viewing`），写入本轮的上下文快照。 */
   viewing?: string
   /**
@@ -324,8 +332,8 @@ export class Session {
   private skillDirs: string[] = []
 
   /**
-   * 各轮次的生成花费。生成通道成功时追加并写入 `runs.media_usage`（`recordMediaSpend`），
-   * 本轮 usage 事件经过 `ask` 时附加，轮次结束时逐条记账后清除。
+   * 运行中各轮次已发生的生成花费，只用于附加到本轮的 usage 事件（`ask`）。轮次开始时建立、结束时清除；
+   * 账本与 `runs.media_usage` 在每笔花费到达时写入（`recordMediaSpend`），不依赖此表。
    */
   private readonly mediaSpends = new Map<RunId, MediaSpend[]>()
   /** 各轮次最近一次的模型用量。生成花费到达时补发 usage 事件，以该用量为基础。 */
@@ -368,6 +376,7 @@ export class Session {
     const mediaOn = opts.config.mediaEnabled !== false
     const withDelegate = {
       delegate: opts.delegate !== undefined,
+      commands: opts.commands !== undefined,
       plugins: opts.plugins !== undefined,
       mcpConfig: true,
       browser: opts.browser !== undefined,
@@ -811,6 +820,7 @@ export class Session {
      */
     const heartbeat = setInterval(() => touchRun(store, run.id), HEARTBEAT_MS)
     heartbeat.unref?.()
+    this.mediaSpends.set(run.id, [])
 
     let finished = false
     /*
@@ -894,7 +904,9 @@ export class Session {
             runId: run.id,
             stopReason: ev.stopReason,
             topLevel: !conversation?.parentConversationId,
-            subagentsRunning: (this.opts.delegate?.inflight().length ?? 0) > 0,
+            backgroundRunning:
+              (this.opts.delegate?.inflight().length ?? 0) > 0 ||
+              (this.opts.commands?.list().length ?? 0) > 0,
           })
         }
         yield out
@@ -917,22 +929,6 @@ export class Session {
       // 先停止心跳。停止较晚不影响正确性（只更新 running 的行），但最先停止才能保证
       // 无论下面哪一步抛出异常，都不会留下仍在推送心跳的定时器。
       clearInterval(heartbeat)
-      // 生成花费逐条记账。放在此处而不是 `run.finished` 分支：被中断或连接关闭的轮次同样已经扣费。
-      for (const spend of this.mediaSpends.get(run.id) ?? []) {
-        recordUsage(store, {
-          kind: 'media',
-          runId: run.id,
-          conversationId,
-          workspaceId: this.workspaceId,
-          model: spend.model,
-          provider: spend.kind,
-          inputTokens: 0,
-          outputTokens: 0,
-          cost: spend.cost,
-          currency: spend.currency,
-          occurredAt: spend.at,
-        })
-      }
       this.mediaSpends.delete(run.id)
       this.modelUsage.delete(run.id)
       // 生成器被提前关闭（用户 Ctrl-C、客户端断开连接）时也须为 run 写入终态，
@@ -1226,13 +1222,34 @@ export class Session {
   }
 
   /**
-   * 记录一次生成花费：写入本轮的 `runs.media_usage`，并补发一次 usage 事件，使读数条与面板在轮次运行期间即可显示。
-   * 事件中的模型用量取本轮最近一次的值，生成花费由 `ask` 统一附加。
+   * 记录一次生成花费：立即记入账本并追加到该轮的 `runs.media_usage`。画布生成在本轮停止后照常完成，
+   * 花费可能在轮次结束之后到达，因此记账不放在轮次收尾，也不依赖 `mediaSpends`。
+   * 轮次仍在运行时另补发一次 usage 事件，使读数条与面板即时显示；事件中的模型用量取本轮最近一次的值，生成花费由 `ask` 统一附加。
    */
-  private recordMediaSpend(runId: RunId, spend: MediaSpend, emit: (e: AgentEvent) => void): void {
-    const spends = [...(this.mediaSpends.get(runId) ?? []), spend]
-    this.mediaSpends.set(runId, spends)
-    updateRunMedia(this.opts.store, runId, spends)
+  private recordMediaSpend(
+    runId: RunId,
+    conversationId: ConversationId,
+    spend: MediaSpend,
+    emit: (e: AgentEvent) => void,
+  ): void {
+    const store = this.opts.store
+    recordUsage(store, {
+      kind: 'media',
+      runId,
+      conversationId,
+      workspaceId: this.workspaceId,
+      model: spend.model,
+      provider: spend.kind,
+      inputTokens: 0,
+      outputTokens: 0,
+      cost: spend.cost,
+      currency: spend.currency,
+      occurredAt: spend.at,
+    })
+    appendRunMedia(store, runId, spend)
+    const spends = this.mediaSpends.get(runId)
+    if (!spends) return
+    this.mediaSpends.set(runId, [...spends, spend])
     const usage = this.modelUsage.get(runId)
     if (usage) emit({ type: 'usage', runId, usage })
   }
@@ -1327,6 +1344,7 @@ export class Session {
       // 派发通道原样传递：是否可以派发、派发给谁由装配方（server）决定，
       // 此处不在缺失时构造空通道，否则 `subagent` 已注册却无法派发。
       ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
+      ...(this.opts.commands ? { commands: this.opts.commands } : {}),
       ...(this.opts.plugins ? { plugins: this.opts.plugins } : {}),
       ...(this.opts.browser ? { browser: this.opts.browser } : {}),
       ...(this.opts.desktop ? { desktop: this.opts.desktop } : {}),
@@ -1341,7 +1359,7 @@ export class Session {
       ...(listMediaModels(this.opts.config).length || this.opts.canvas
         ? {
             media: makeMediaPort(this.opts.config, (spend) =>
-              this.recordMediaSpend(runId, spend, emit),
+              this.recordMediaSpend(runId, conversationId, spend, emit),
             ),
           }
         : {}),

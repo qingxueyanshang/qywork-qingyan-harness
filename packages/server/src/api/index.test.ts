@@ -1505,6 +1505,7 @@ describe('工具清单', () => {
       'edit_canvas',
       'run_canvas',
       'retrieve_canvas',
+      'cancel_canvas',
       'capture_canvas_frame',
       'retrieve_media',
       'generate_image',
@@ -1547,7 +1548,13 @@ describe('工具清单', () => {
       { name: 'save_to', required: false },
     ])
     for (const name of ['subagent', 'workflow', 'define_role']) expect(names).toContain(name)
-    for (const name of ['create_canvas', 'edit_canvas', 'run_canvas', 'retrieve_canvas']) {
+    for (const name of [
+      'create_canvas',
+      'edit_canvas',
+      'run_canvas',
+      'retrieve_canvas',
+      'cancel_canvas',
+    ]) {
       expect(
         rows.find((row) => row.name === name)?.params.map((param) => param.name),
       ).not.toContain('action')
@@ -1557,15 +1564,18 @@ describe('工具清单', () => {
   /**
    * `write_todos` 首次创建时为「创建」、之后为「修改」；write_file 按 mode 区分新建与覆盖修改；
    * `browser_tabs` 的 list 读取清单，create / bind / close 改变本会话持有的页，
+   * `background_command` 不带 stop 时读取输出、带 stop 时停止命令，
    * 这些动作随参数变化，工具清单如实显示「不固定」。
    * 权限效果不得为函数：该列是安全边界，不固定等于未声明。
    */
-  test('待办、文件写入与浏览器标签按参数区分动作，权限效果固定', async () => {
+  test('待办、文件写入、浏览器标签与后台命令按参数区分动作，权限效果固定', async () => {
     for (const row of await tools()) {
       expect(row.permissionEffect).not.toBe('不固定')
       expect(row.objectLabel).not.toBe('不固定')
       if (row.actionKind === '不固定')
-        expect(['write_todos', 'write_file', 'browser_tabs']).toContain(row.name)
+        expect(['write_todos', 'write_file', 'browser_tabs', 'background_command']).toContain(
+          row.name,
+        )
     }
   })
 })

@@ -251,16 +251,16 @@ export interface Message {
   content: string
   attachments: Attachment[]
   /**
-   * 该消息的来源：子 agent 的回执、workflow 的回执；`null` 表示用户本人。
+   * 该消息的来源：子 agent 的回执、workflow 的回执、后台命令的回执；`null` 表示用户本人。
    *
-   * 在 wire 上三者都是 user 角色（provider 不接受脱离调用的 tool 角色），
+   * 在 wire 上这几种都是 user 角色（provider 不接受脱离调用的 tool 角色），
    * 只能依据该字段区分：界面据此决定渲染为回执行还是用户气泡，
    * 账本据此区分用户输入与回执。
    *
    * 必填且允许 `null`，不要写成可选：落盘列可空，读取结果必须是显式的 `null`；
    * 缺少该键时，消费方会把「没有来源」与「记录未携带来源」判定为同一种情况。
    */
-  origin: 'subagent' | 'workflow' | null
+  origin: 'subagent' | 'workflow' | 'command' | null
   createdAt: number
 }
 
@@ -1035,7 +1035,7 @@ export type StepPayload =
       kind: 'user'
       attachments?: Attachment[]
       /** 同 `Message.origin`：该消息的来源，缺失表示用户本人。 */
-      origin?: 'subagent' | 'workflow'
+      origin?: 'subagent' | 'workflow' | 'command'
       /**
        * 装配层交给模型的执行事实（待办未完成、重复告警、断流后续发），不是任何参与者的发言：
        * 界面与导出不显示，投影到历史时归入运行上下文。
@@ -1102,12 +1102,22 @@ export interface FollowUp {
    * 队列不落盘，该字段只负责把来源传递到落库环节：注入时写入 step 的
    * `payload.origin`，开始新一轮时写入 `messages.origin`。
    */
-  origin?: 'subagent' | 'workflow'
+  origin?: 'subagent' | 'workflow' | 'command'
   /**
    * 发送时界面右侧面板显示的工作区文件，同 `SendMessageCommand.viewing`。开始新一轮时写入上下文快照；
    * 注入当前轮次时与本轮已知的值不同才告知模型。
    */
   viewing?: string
+}
+
+/**
+ * 一条正在后台运行的命令：`background` 为真启动，或前台等待期间收到用户消息后转入。
+ * 进程内的句柄，不写入任何表；命令结束、被停止或应用退出时移除。
+ */
+export interface BackgroundCommand {
+  /** 任务编号。模型按它读取输出与停止，界面按它停止。 */
+  id: string
+  command: string
 }
 
 // ─────────────────────────── 中间资源 ───────────────────────────

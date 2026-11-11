@@ -56,6 +56,7 @@ import { redactSecrets } from '@qywork/tools'
 import { personalizationPort, petPort } from './appearance.ts'
 import { artRenderOf, canvasPort } from './canvas.ts'
 import { CLOUD_PROVIDER } from './cloud/account.ts'
+import { commandPortOf } from './command-tasks/table.ts'
 import { makeDelegate } from './delegate.ts'
 import { type CommandDeps, officePortOf } from './deps.ts'
 import { publishGitState } from './http-util.ts'
@@ -71,13 +72,13 @@ import type { GoalArm } from './runs.ts'
  */
 export type RoundSource =
   | { kind: 'goal'; arm: GoalArm }
-  | { kind: 'receipt'; origin: 'subagent' | 'workflow' }
+  | { kind: 'receipt'; origin: 'subagent' | 'workflow' | 'command' }
 
 /**
  * 向会话投递一条消息：有 run 在运行时排入队列，空闲时立即启动一轮。
  *
- * **用户消息、子 agent 回执与定时触发经由同一个函数。** 三处分别实现时，
- * 「忙碌判定与启动一轮在同一个同步块中」这一约束需要维护三次，遗漏的一处不会报错。
+ * **用户消息、子 agent 与后台命令的回执、定时触发经由同一个函数。** 各处分别实现时，
+ * 「忙碌判定与启动一轮在同一个同步块中」这一约束需要在每处各维护一次，遗漏的一处不会报错。
  *
  * **判定条件是 `hasRun` 而不是 `isBusy`**：只有子 agent 在运行时，该会话没有可注入消息的一轮，
  * 排入队列后无人消费。
@@ -258,6 +259,21 @@ export async function startRun(
         })
       }
 
+      // 子 agent 与后台命令的回执可能在本轮结束很久之后才到达，那时该 Session 已经 dispose：
+      // 投递经由会话级路径，与用户发送消息使用同一个函数。
+      const deliverReceipt = (followUp: FollowUp): void => {
+        void submitMessage(conversationId, followUp, deps).catch((err) => {
+          deps.bus.publish(
+            {
+              type: 'run.error',
+              runId: '' as RunId,
+              code: 'internal_error',
+              message: err instanceof Error ? err.message : String(err),
+            },
+            conversationId,
+          )
+        })
+      }
       session = new Session({
         store: deps.store,
         config: deps.config,
@@ -270,22 +286,12 @@ export async function startRun(
           deps,
           workspaceRoot: ws.rootPath,
           conversationId,
-          // 回执可能在本轮结束很久之后才到达，那时该 Session 已经 dispose：
-          // 投递经由会话级路径，与用户发送消息使用同一个函数。
-          deliver: (followUp) => {
-            void submitMessage(conversationId, followUp, deps).catch((err) => {
-              deps.bus.publish(
-                {
-                  type: 'run.error',
-                  runId: '' as RunId,
-                  code: 'internal_error',
-                  message: err instanceof Error ? err.message : String(err),
-                },
-                conversationId,
-              )
-            })
-          },
+          deliver: deliverReceipt,
         }),
+        // 后台命令同样只提供给顶层会话：回执发起的一轮只能属于顶层会话。
+        ...(deps.commands
+          ? { commands: commandPortOf(deps.commands, deps.runs, conversationId, deliverReceipt) }
+          : {}),
         // 插件安装端口同样只提供给顶层会话：成员会话不应为整台机器安装插件。
         plugins: makePluginPort({ workspaceRoot: ws.rootPath }),
         /*

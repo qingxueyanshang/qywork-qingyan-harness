@@ -178,15 +178,16 @@
   color: var(--danger);
 }
 
-/* 等待队列是 `.composer` 的顶部扩展栏，不在输入框外另建悬浮卡片。
- * 每行固定高度，正文过长时在本行截断；多条队列之间只用一条分隔线。 */
+/* 后台命令与等待队列是 `.composer` 的顶部扩展栏，两组使用同一行形态，不在输入框外另建悬浮卡片。
+ * 每行固定高度，正文过长时在本行截断；行与行、组与组之间只用一条分隔线。 */
 .followup-cards {
   display: flex;
   flex-direction: column;
   gap: 0;
   background: transparent;
 }
-.goal-chip + .followup-cards {
+.goal-chip + .followup-cards,
+.followup-cards + .followup-cards {
   border-top: 1px solid var(--border-subtle);
 }
 .followup-card {

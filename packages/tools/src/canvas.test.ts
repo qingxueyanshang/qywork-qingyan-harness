@@ -1,5 +1,5 @@
 /**
- * 覆盖 `canvas.ts` 的读取、编辑、运行、取回与取帧工具，`index.ts` 中按通道注册的逻辑，
+ * 覆盖 `canvas.ts` 的读取、编辑、运行、取回、取消与取帧工具，`index.ts` 中按通道注册的逻辑，
  * 以及 `files.ts` 写入文本文件后附上的画布引用说明。取帧的 worker 由 `office-worker.test-helper.ts` 代替 Python，
  * `office-worker.ts` 的 `grabVideoFrame` 经此覆盖。
  *
@@ -28,6 +28,7 @@ import {
   emptyCanvas,
 } from '@qywork/core'
 import {
+  cancelCanvasTool,
   captureCanvasFrameTool,
   createCanvasTool,
   editCanvasTool,
@@ -71,6 +72,7 @@ interface Seen {
     media: MediaPort
     signal: AbortSignal
   }[]
+  cancels: { path: string; node: string }[]
 }
 
 function ctx(port: CanvasPort | undefined, media?: MediaPort): ToolContext {
@@ -109,7 +111,7 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
   port: CanvasPort
   seen: Seen
 } {
-  const seen: Seen = { creates: [], edits: [], batches: [], runs: [], retrieves: [] }
+  const seen: Seen = { creates: [], edits: [], batches: [], runs: [], retrieves: [], cancels: [] }
   return {
     seen,
     port: {
@@ -144,6 +146,10 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
         seen.retrieves.push({ path, node, version, media, signal })
         return result
       },
+      cancel: async (path, node) => {
+        seen.cancels.push({ path, node })
+        return 'cancelled'
+      },
       captureFrame: async () => {
         throw new Error('不该调用取帧')
       },
@@ -167,7 +173,13 @@ describe('canvas 工具', () => {
     const withPort = new ToolRegistry()
     registerBuiltinTools(withPort, { canvas: true })
     expect(withPort.has('canvas')).toBe(false)
-    for (const name of ['create_canvas', 'edit_canvas', 'run_canvas', 'retrieve_canvas']) {
+    for (const name of [
+      'create_canvas',
+      'edit_canvas',
+      'run_canvas',
+      'retrieve_canvas',
+      'cancel_canvas',
+    ]) {
       expect(none.has(name)).toBe(false)
       expect(withPort.has(name)).toBe(true)
     }
@@ -192,19 +204,23 @@ describe('canvas 工具', () => {
     expect(runCanvasTool.description).not.toContain('询问用户')
   })
 
-  test('画布工具分别声明动作，编辑、运行与取回均需要写权限', () => {
+  test('画布工具分别声明动作，编辑、运行、取回与取消均需要写权限', () => {
     expect(readCanvasTool.actionKind).toBe('read')
     expect(readCanvasTool.permissionEffect).toBe('read')
     expect(editCanvasTool.actionKind).toBe('edit')
     expect(createCanvasTool.actionKind).toBe('write')
     expect(runCanvasTool.actionKind).toBe('run')
-    for (const tool of [createCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool]) {
-      expect(tool.permissionEffect).toBe('write')
-    }
+    expect(cancelCanvasTool.actionKind).toBe('edit')
+    const writers = [
+      createCanvasTool,
+      editCanvasTool,
+      runCanvasTool,
+      retrieveCanvasTool,
+      cancelCanvasTool,
+    ]
+    for (const tool of writers) expect(tool.permissionEffect).toBe('write')
     expect(editCanvasTool.requireOneOf).toEqual([['ops_json', 'ops_path']])
-    for (const tool of [createCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool]) {
-      expect(tool.parameters.properties).not.toHaveProperty('action')
-    }
+    for (const tool of writers) expect(tool.parameters.properties).not.toHaveProperty('action')
   })
 
   test('创建返回文件改动；缺参、非画布路径或权限拒绝不创建', async () => {
@@ -819,7 +835,7 @@ describe('canvas 工具', () => {
     }
     const registry = new ToolRegistry()
     registerBuiltinTools(registry, { canvas: true })
-    for (const name of ['edit_canvas', 'run_canvas', 'retrieve_canvas']) {
+    for (const name of ['edit_canvas', 'run_canvas', 'retrieve_canvas', 'cancel_canvas']) {
       for (const args of [{}, { path: 'board.canvas.json' }]) {
         expect(await registry.execute(name, args, c)).toMatchObject({
           status: 'failure',
@@ -829,7 +845,61 @@ describe('canvas 工具', () => {
       }
     }
     expect(permissions).toEqual([])
-    expect(seen).toEqual({ creates: [], edits: [], batches: [], runs: [], retrieves: [] })
+    expect(seen).toEqual({
+      creates: [],
+      edits: [],
+      batches: [],
+      runs: [],
+      retrieves: [],
+      cancels: [],
+    })
+  })
+
+  /**
+   * 回执按端口返回的结果写明撤销、未发出、已结束；`stopped` 按收尾后的卡片状态区分任务可取回与结果未知。
+   * 卡片未在生成时端口抛出，回执为未执行的失败。
+   */
+  test('cancel_canvas 按卡片名称取消，回执按结果写明；未在生成时为未执行的失败', async () => {
+    const { port, seen } = fakePort(DONE)
+    const c = ctx(port)
+    const args = { path: 'board.canvas.json', node: 'id2' }
+    const cancel = async (
+      outcome: Awaited<ReturnType<CanvasPort['cancel']>>,
+      after?: CanvasView['states'][string],
+    ) => {
+      port.cancel = async (path, node) => {
+        seen.cancels.push({ path, node })
+        return outcome
+      }
+      port.read = async () => (after ? { ...view(), states: { id2: after } } : view())
+      return cancelCanvasTool.fn(args, c)
+    }
+
+    const cancelled = await cancel('cancelled')
+    expect(cancelled).toMatchObject({ status: 'success', data: { outcome: 'cancelled' } })
+    expect(cancelled.message).toContain('服务商已确认撤销，本次的占位版本与任务记录已删除')
+    expect(seen.cancels).toEqual([{ path: 'board.canvas.json', node: 'id2' }])
+    expect((await cancel('not_submitted')).message).toContain('请求尚未发给服务商，不产生生成费用')
+    expect((await cancel('ended')).message).toContain('在取消之前已结束，结果已写回画布')
+    expect((await cancel('stopped', { state: 'pending', version: 'v1' })).message).toContain(
+      '远端任务未能撤销，可能继续生成并计费；任务记录已保留（版本 v1），用 retrieve_canvas 取回结果',
+    )
+    expect(
+      (await cancel('stopped', { state: 'unknown', message: '已停止等待；远端结果未知' })).message,
+    ).toContain('没有可撤销的远端任务，远端结果未知')
+
+    port.cancel = async () => {
+      throw new Error('该卡片未在生成')
+    }
+    port.read = async () => view()
+    expect(await cancelCanvasTool.fn(args, c)).toMatchObject({
+      status: 'failure',
+      executed: false,
+      message: '该卡片未在生成',
+    })
+    const missing = await cancelCanvasTool.fn({ ...args, node: '镜头Z' }, c)
+    expect(missing).toMatchObject({ executed: false, errorKind: 'invalid_tool_arguments' })
+    expect(seen.cancels).toHaveLength(5)
   })
 })
 
