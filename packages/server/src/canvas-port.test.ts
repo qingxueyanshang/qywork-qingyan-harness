@@ -887,20 +887,21 @@ describe('画布端口：本轮中止与取消', () => {
   })
 
   /** 已经向服务商发出的节点继续生成；尚未派发的节点在中止后不再提交，不产生费用。 */
-  test('经端口批量运行后本轮中止：已开始的节点照常完成并写回，排队的节点不再提交', async () => {
+  test('经端口批量运行后本轮中止：已开始的节点照常完成并写回，等待上游的节点不再提交', async () => {
     const root = await workspace()
     const service = new CanvasService({ publish: () => {} })
     const port = canvasPort(service, { id: 'ws', root })
-    const { refs } = await port.edit(
-      PATH,
-      Array.from({ length: 5 }, (_, i) => ({
+    // 最后一个节点以第一个节点为输入，上游结束之前不提交。
+    const { refs } = await port.edit(PATH, [
+      ...Array.from({ length: 5 }, (_, i) => ({
         op: 'add_generate' as const,
         output: 'image' as const,
         ref: `$${i}`,
         name: `p${i}`,
         prompt: `p${i}`,
       })),
-    )
+      { op: 'connect' as const, from: '$0', to: '$4', role: 'reference' as const },
+    ])
     const ids = Object.values(refs)
     const fake = heldPort()
     const stop = new AbortController()

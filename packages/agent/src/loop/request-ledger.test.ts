@@ -23,6 +23,7 @@ import {
   startFaultServer,
 } from '@qywork/ai/fault-server.test-helper'
 import type { AgentEvent, ProviderRequest, RunId } from '@qywork/core'
+import { RESEND_LIMIT } from '@qywork/core'
 import {
   createConversation,
   createRun,
@@ -39,7 +40,6 @@ import {
 } from '@qywork/store'
 import { AgentLoop, type LoopPersistence, type ToolContextBase } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
-import { MAX_RESENDS } from './attempt.ts'
 import { fakeAdapter } from './fixtures.test-helper.ts'
 
 interface Ledger {
@@ -163,8 +163,8 @@ test('503 退避重发：接收次数与已发送行数相等，退避期间没�
         baseUrl: fault.openaiBaseUrl,
         model: 'deepseek-flash',
       },
-      // 本用例验证退避期间没有新接收，因此按真实计时等待夹具给出的 Retry-After。
-      (ms) => Bun.sleep(ms),
+      // 本用例验证退避期间没有新接收，因此按真实计时等待；时长不超过 1 秒，退避间隔本身不短于 2 秒。
+      (ms) => Bun.sleep(Math.min(ms, 1_000)),
     )
     const rows = led.rows()
     expect(fault.receipts.length).toBe(2)
@@ -212,7 +212,7 @@ test('连接被拒：每一行都不是 received，用量全为 null', async () 
       model: 'deepseek-flash',
     })
     const rows = led.rows()
-    expect(rows.length).toBe(MAX_RESENDS + 1)
+    expect(rows.length).toBe(RESEND_LIMIT + 1)
     for (const row of rows) {
       expect(row.status).not.toBe('received')
       // 连接未建立，响应头时刻为空：与远端拒绝是两种不同的失败。

@@ -35,6 +35,26 @@ test('状态回调中停止时立即退出，不因错过中止事件阻塞于�
   expect(queries).toBe(1)
 })
 
+/**
+ * 云端按失败码替换运营方一侧的原文（`MediaError.code`）。上游报告的任务失败没有状态码，原因提及余额或额度用尽时同样记为额度用尽，
+ * 否则云端把运营方的余额原文显示给用户。
+ */
+test('上游报告的任务失败提及余额不足时失败码为额度用尽，其余失败没有失败码', async () => {
+  const fail = (message: string): Promise<MediaError> =>
+    waitTask(async (): Promise<TaskState> => ({ state: 'failed', message }), {
+      signal: new AbortController().signal,
+    }).then(
+      () => {
+        throw new Error('应以远端失败结束')
+      },
+      (err: unknown) => err as MediaError,
+    )
+  const quota = await fail('账户余额不足')
+  expect(quota.message).toBe('远端任务失败：账户余额不足')
+  expect(quota.code).toBe('insufficient_quota')
+  expect((await fail('内容不合规')).code).toBeUndefined()
+})
+
 test('查询暂时失败在 600 秒内不结束等待，成功查询重新计时；持续失败或其他查询错误结束等待并保留任务号', async () => {
   const original = globalThis.setTimeout
   const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void) =>
@@ -47,8 +67,8 @@ test('查询暂时失败在 600 秒内不结束等待，成功查询重新计时
     const add = spyOn(abort.signal, 'addEventListener')
     const remove = spyOn(abort.signal, 'removeEventListener')
     const transient = [
-      new MediaError('网关错误', { status: 503 }),
-      new MediaError('限流', { status: 429 }),
+      new MediaError('网关错误', { status: 503, code: 'provider_unavailable' }),
+      new MediaError('限流', { status: 429, code: 'rate_limited' }),
       new MediaError('连接被断开', {
         diagnostic: {
           stage: 'query',
@@ -102,7 +122,10 @@ test('查询暂时失败在 600 秒内不结束等待，成功查询重新计时
       waitTask(
         async () => {
           queries++
-          throw new MediaError('任务查询失败：HTTP 401 未授权', { status: 401 })
+          throw new MediaError('任务查询失败：HTTP 401 未授权', {
+            status: 401,
+            code: 'auth_failed',
+          })
         },
         { signal: abort.signal },
       ),

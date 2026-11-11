@@ -9,13 +9,23 @@
  * `minimax_videos`：视频生成 V2，路径不在版本段之下：提交 `POST {根}/v2/video_generation`，
  * 查询 `GET {根}/v2/query/video_generation/{id}`。素材结构与方舟相同，见 `arkVideoContent`。
  *
- * 语音与图像在 HTTP 200 时 `base_resp.status_code` 非 0 仍是失败；视频接口以 HTTP 状态码报告失败。
+ * 语音与图像在 HTTP 200 时 `base_resp.status_code` 非 0 仍是失败，按接口拒绝处理，错误码按 MiniMax 的错误码归类
+ * （`upstreamFailureCode`）；视频接口以 HTTP 状态码报告失败。
  */
 
 import { resolveMediaParam } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, postJson, sniffMime } from '../http.ts'
+import {
+  count,
+  dataUri,
+  defined,
+  download,
+  getJson,
+  postJson,
+  type RequestPolicy,
+  sniffMime,
+} from '../http.ts'
 import { resolveImages } from '../image-result.ts'
 import {
   afterSubmit,
@@ -50,13 +60,17 @@ function auth(profile: MediaProfile): Record<string, string> {
   return { authorization: `Bearer ${profile.apiKey}`, ...profile.headers }
 }
 
-/** `base_resp.status_code` 非 0 时抛出接口原文。 */
-function rejectStatus(body: Record<string, unknown>): void {
-  const status = body.base_resp as { status_code?: unknown; status_msg?: unknown } | undefined
-  if (typeof status?.status_code === 'number' && status.status_code !== 0)
-    throw new MediaError(
-      `接口拒绝生成：${failureDetail(status.status_code, status.status_msg, '未提供原因')}`,
-    )
+/** `base_resp.status_code` 非 0 时为接口拒绝，报错为错误码与接口原文。 */
+const BASE_RESP: RequestPolicy = {
+  upstream: {
+    vendor: 'minimax',
+    refused(body) {
+      const status = body.base_resp as { status_code?: unknown; status_msg?: unknown } | undefined
+      return typeof status?.status_code === 'number' && status.status_code !== 0
+        ? `接口拒绝生成：${failureDetail(status.status_code, status.status_msg, '未提供原因')}`
+        : undefined
+    },
+  },
 }
 
 export class MiniMaxSpeechAdapter implements MediaAdapter {
@@ -93,8 +107,8 @@ export class MiniMaxSpeechAdapter implements MediaAdapter {
       },
       auth(this.profile),
       opts.signal,
+      BASE_RESP,
     )
-    rejectStatus(body)
     const hex = (body.data as { audio?: unknown } | null | undefined)?.audio
     if (typeof hex !== 'string' || !hex) throw new MediaError('接口没有返回音频')
     const bytes = new Uint8Array(Buffer.from(hex, 'hex'))
@@ -141,8 +155,8 @@ export class MiniMaxImagesAdapter implements MediaAdapter {
       },
       auth(this.profile),
       opts.signal,
+      BASE_RESP,
     )
-    rejectStatus(body)
     const listed = (body.data as { image_urls?: unknown } | null | undefined)?.image_urls
     const urls = Array.isArray(listed)
       ? listed.filter((u): u is string => typeof u === 'string')

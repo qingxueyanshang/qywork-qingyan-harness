@@ -31,6 +31,7 @@ import {
   mediaDurationOfFile,
 } from '@qywork/agent'
 import { type TaskPhase, taskPhase } from '@qywork/ai'
+import type { RetryWait } from '@qywork/core'
 import {
   type AgentEvent,
   activeMediaParams,
@@ -390,6 +391,8 @@ interface RunEntry {
   task?: CanvasTask
   /** 平台报告的排队中 / 生成中；报告之前不存在。 */
   phase?: TaskPhase
+  /** 请求被拒绝后正在等待自动重试；不在等待时不存在。 */
+  retry?: RetryWait
   /** 远端已撤销：收尾时删除该版本与任务记录，不记录失败。 */
   cancelled?: true
   /**
@@ -546,7 +549,7 @@ export class CanvasService {
 
   /**
    * 只调度本次指定的节点，不自动扩展到其他上游。执行仍走 run，共用状态、版本与计费。
-   * 批内依赖失败时跳过下游，独立节点最多并行 4 个；中止后已开始的节点照常生成（`CanvasRunOptions.signal`），
+   * 批内依赖失败时跳过下游，依赖已满足的节点全部同时提交，不设并发上限：并发由接口一侧决定；中止后已开始的节点照常生成（`CanvasRunOptions.signal`），
    * 等待中的节点不再派发。正在生成的节点不重复提交，等待该次生成的结果（`join`）。
    */
   async runBatch(
@@ -612,7 +615,6 @@ export class CanvasService {
           skip(id, `已有待取回版本 ${state.version}，请使用 retrieve_canvas`, true)
           continue
         }
-        if (active.size >= 4) break
         waiting.delete(id)
         active.set(
           id,
@@ -748,6 +750,7 @@ export class CanvasService {
           })
         },
         onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
+        onRetry: (retry) => this.retrying(entry, ws, rel, nodeId, retry),
         onSpend: (spend) => {
           facts.cost = spend.cost
           facts.currency = spend.currency
@@ -774,7 +777,8 @@ export class CanvasService {
           facts.provider = provider
           facts.model = model
           await this.remodel(ws.root, record, provider, model)
-          if (taskId)
+          // 只有视频任务按任务号撤销（`cancel`）；走云端的图片与音频的任务号只用于取回，停止时只结束本地等待。
+          if (taskId && node.output === 'video')
             this.submitted(entry, ws, rel, nodeId, {
               taskId,
               provider,
@@ -901,7 +905,7 @@ export class CanvasService {
         return { ok: false, message: `任务记录已不存在：${version.path}`, pending: false }
       }
       const task = await this.readTask(ws.root, version.path)
-      if (task)
+      if (task && node.output === 'video')
         this.submitted(entry, ws, rel, nodeId, {
           ...task,
           record: version.path,
@@ -913,6 +917,7 @@ export class CanvasService {
         media: opts.media,
         signal: this.signalFor(entry),
         onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
+        onRetry: (retry) => this.retrying(entry, ws, rel, nodeId, retry),
         onSpend: (spend) => {
           facts.cost = spend.cost
           facts.currency = spend.currency
@@ -1064,6 +1069,30 @@ export class CanvasService {
     const phase = taskPhase(status)
     if (!phase || phase === entry.phase) return
     entry.phase = phase
+    this.deps.publish({
+      type: 'canvas.run',
+      workspaceId: ws.id,
+      path: rel,
+      nodeId,
+      state: 'running',
+    })
+  }
+
+  /**
+   * 请求被拒绝后的重试等待（`MediaCall.onRetry`），生成与取回共用：记在运行条目上供卡片显示，发送一条 `canvas.run`。
+   * 取回的重试来自云端一侧（走云端的任务在云端被上游拒绝后重试）。
+   */
+  private retrying(
+    entry: RunEntry,
+    ws: CanvasWorkspace,
+    rel: string,
+    nodeId: string,
+    retry: RetryWait | null,
+  ): void {
+    if (retry) entry.retry = retry
+    else delete entry.retry
+    // 等待重试期间接口没有受理请求，此时停止不产生费用；请求重新发出后恢复为已发出。
+    if (entry.requestSent !== undefined && !entry.task) entry.requestSent = retry === null
     this.deps.publish({
       type: 'canvas.run',
       workspaceId: ws.id,
@@ -2206,6 +2235,7 @@ export class CanvasService {
           : {}),
         ...(run.task ? { taskId: run.task.taskId } : {}),
         ...(run.phase ? { phase: run.phase } : {}),
+        ...(run.retry ? { retry: run.retry } : {}),
       }
     }
     const tasks = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))

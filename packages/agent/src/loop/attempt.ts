@@ -5,7 +5,7 @@
 import type { ProviderEvent, WireMessage } from '@qywork/ai'
 import { estimateRequest, failureDiagnostics, ProviderError, providerContentKind } from '@qywork/ai'
 import type { AgentEvent, ProviderRetryDecision, StepId } from '@qywork/core'
-import { log } from '@qywork/core'
+import { log, RESEND_LIMIT, resendDelay } from '@qywork/core'
 import { concurrencyRejected, type SendOutcome, sendLane, sendLimiter } from '../send-limit.ts'
 import { videoMetaOf } from '../video-meta.ts'
 import { recoverFromOverflow } from './compact.ts'
@@ -25,24 +25,11 @@ import type { LoopHost, RunState, TurnState } from './run-state.ts'
 const NEWLINE = String.fromCharCode(10)
 
 /**
- * 一轮之内原样重发的最大次数。**对可重发集合中的每个码一视同仁。**
- *
- * **该数值只在此处定义**，界面上「正在重连 N / M」中的 M 由 `run.retrying` 事件
- * 传递，不得在前端重复定义。
- *
- * 取 5 的依据是 2026-08-22 的一次实测：长思考请求 11/11 在 `reasoning_content`
- * 中途干净 EOF（无 `finish_reason`、无 `[DONE]`、无网络错误），短请求正常收尾。
- * 中断的是上游的某条线路而不是整条链路，重发一次不足以恢复；而每次尝试本身需要运行几十秒到
- * 两分钟，5 次不构成对上游的密集请求。
+ * 会自动重发的失败码。次数上限为 `RESEND_LIMIT`（`core`），**对集合中的每个码一视同仁**；等待时长见 `resendBackoffMs`。
  *
  * 重发形式由尝试循环按正文是否已显示决定：未显示时原样重发；已显示时把正文作为
  * 上一条消息推进 transcript，携带当前上下文续发。两种形式共用同一上限，续发的下一轮
  * 沿用上一轮的计数（`carriedResends`）。
- */
-export const MAX_RESENDS = 5
-
-/**
- * 会自动重发的失败码。次数上限见 `MAX_RESENDS`，等待时长见 `resendBackoffMs`。
  *
  * 该集合只决定「是否重发」，**不决定「以何种形式重发」**：原样重发还是携带当前上下文
  * 续发，由尝试循环按正文是否已显示决定。
@@ -76,27 +63,16 @@ export function transientErrorCode(code: string): boolean {
   return RESENDABLE_CODES.has(code)
 }
 
-/** 指数退避的首个间隔。中转侧故障的恢复为秒级，更短的首个间隔等于不退避地反复请求对端。 */
-const RESEND_BACKOFF_BASE_MS = 2_000
-
-/** 单次退避上限。取 30 秒时，首发加五次重发的总等待时间为分钟量级。 */
-const RESEND_BACKOFF_MAX_MS = 30_000
-
-/** 抖动比例，只向上增加：同时被拒的多个请求需要错开重发时刻，下限仍是退避间隔本身。 */
-const RESEND_BACKOFF_JITTER = 0.1
-
 /**
  * 重发前的等待时长。不可重发的失败返回 undefined。
  *
- * **可重发的失败一律先等待。** 上游提供 `Retry-After` 时按其等待，否则按指数退避。
- * 连接层失败后立即原样重发不能加快恢复，只会在对端仍不可用时把五次额度
- * 在几毫秒内耗尽。
+ * **可重发的失败一律先等待**，时长由 `resendDelay`（`core`）按指数退避与上游给出的 `Retry-After` 计算，
+ * 与生成的重试相同。不要在此另行处理 `Retry-After`：连接层失败或上游给出 0 秒后立即原样重发不能加快恢复，
+ * 只会在对端仍不可用时把五次额度在几毫秒内耗尽。
  */
 function resendBackoffMs(error: ProviderError, resends: number): number | undefined {
   if (!RESENDABLE_CODES.has(error.code)) return undefined
-  if (error.retryAfterMs !== null) return Math.max(0, error.retryAfterMs)
-  const step = Math.min(RESEND_BACKOFF_BASE_MS * 2 ** resends, RESEND_BACKOFF_MAX_MS)
-  return Math.round(step * (1 + Math.random() * RESEND_BACKOFF_JITTER))
+  return resendDelay(resends, error.retryAfterMs)
 }
 
 /**
@@ -128,7 +104,7 @@ interface StreamProbe {
 }
 
 /**
- * ── 发送与消费：一次尝试，中断后携带当前上下文重新发送，至多 `MAX_RESENDS` 次 ──
+ * ── 发送与消费：一次尝试，中断后携带当前上下文重新发送，至多 `RESEND_LIMIT` 次 ──
  *
  * 断开时已收到的内容按两种情形处置，与 `runtime/transcript.ts` 的投影形式一致：
  *
@@ -154,7 +130,7 @@ export async function* sendTurn(
   /** 本轮已开的请求记录行数。`uq_provider_run_turn` 的第三列取该值。 */
   const ledger = { sendIndex: 0 }
   /**
-   * 本轮自动重发的次数。上限为 `MAX_RESENDS`；携带上下文续发的一轮沿用上一轮的计数。
+   * 本轮自动重发的次数。上限为 `RESEND_LIMIT`；携带上下文续发的一轮沿用上一轮的计数。
    *
    * **不要用 `sendIndex` 代替它计数**：`sendIndex` 还会因压缩后重发而递增，共用同一计数
    * 会使每次压缩都消耗一次重发额度，界面上报告的次数也随之偏高。
@@ -216,7 +192,7 @@ export async function* sendTurn(
         requestId: turn.requestId,
         phase: 'sent',
         attempt: resends,
-        max: MAX_RESENDS,
+        max: RESEND_LIMIT,
         at: Date.now(),
       }
       yield* consumeStream(host, run, turn, stream, probe, resends)
@@ -247,7 +223,7 @@ export async function* sendTurn(
           silentMs,
           assistantChars: turn.assistantText.length,
           toolCallCount: turn.calls.length,
-          retry: { decision, attempt, max: MAX_RESENDS, backoffMs, at },
+          retry: { decision, attempt, max: RESEND_LIMIT, backoffMs, at },
         })
       }
 
@@ -341,7 +317,7 @@ export async function* sendTurn(
        * **额度按整轮计算，不按错误码分别计数。** 一轮中先断流再被拒时，之前用掉的
        * 次数照常计入：该轮已实际发送过这些次数，错误码变化不应使计数清零。
        */
-      if (resends < MAX_RESENDS) {
+      if (resends < RESEND_LIMIT) {
         // 等待起点只取一次，诊断与事件使用同一个值：两处分别取值会使刷新后的
         // 倒计时与实时倒计时相差这两行之间的毫秒数。
         const waitingSince = Date.now()
@@ -372,13 +348,13 @@ export async function* sendTurn(
             runId: input.runId,
             requestId,
             attempt: resends,
-            max: MAX_RESENDS,
+            max: RESEND_LIMIT,
             reason: pe.message,
             backoffMs,
             at: waitingSince,
             failedThinkingStepIds: [...turn.attemptThinking],
           }
-          if (backoffMs > 0) await host.backoff(backoffMs, input.signal)
+          await host.backoff(backoffMs, input.signal)
           continue
         }
 
@@ -406,17 +382,17 @@ export async function* sendTurn(
           runId: input.runId,
           requestId,
           attempt: resends,
-          max: MAX_RESENDS,
+          max: RESEND_LIMIT,
           reason: pe.message,
           backoffMs,
           at: waitingSince,
           failedThinkingStepIds: [],
         }
-        if (backoffMs > 0) await host.backoff(backoffMs, input.signal)
+        await host.backoff(backoffMs, input.signal)
         return 'continued'
       }
 
-      recordDecision(resends >= MAX_RESENDS ? 'limit_exhausted' : 'not_retryable')
+      recordDecision(resends >= RESEND_LIMIT ? 'limit_exhausted' : 'not_retryable')
 
       /* 分类短语 + 已证实的超时读数 + 自动重发次数，合并为一行。 */
       const headline = pe.message.split(NEWLINE)[0]?.trim() || '模型服务出错'
@@ -653,7 +629,7 @@ async function* consumeStream(
           requestId: turn.requestId,
           phase: 'headers',
           attempt: resends,
-          max: MAX_RESENDS,
+          max: RESEND_LIMIT,
           at: ev.headersAt,
         }
         break

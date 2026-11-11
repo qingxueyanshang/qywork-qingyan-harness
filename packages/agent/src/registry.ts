@@ -40,6 +40,7 @@ import type {
   PetEntry,
   PetPack,
   ResourceCoverage,
+  RetryWait,
   RunId,
   Schedule,
   ScheduleDraft,
@@ -98,6 +99,8 @@ export interface MediaCall {
   onSubmit?: () => void
   /** 远端任务状态变化时回报一条状态文字。 */
   onStatus?: (status: string) => void
+  /** 请求被拒绝后进入重试等待时回报第几次、上限与原因，等待结束时回报 `null`。 */
+  onRetry?: (retry: RetryWait | null) => void
   /** 本次生成的花费，取得服务商结果时回报一次；恢复下载不再次回报。 */
   onSpend?: (spend: MediaSpend) => void
 }
@@ -472,7 +475,7 @@ export interface CanvasPort {
    */
   run(path: string, nodeId: string, media: MediaPort, signal: AbortSignal): Promise<CanvasRunResult>
   /**
-   * 只运行指定节点，独立节点有界并行，批内依赖按顺序执行。`signal` 中止后已开始的节点照常生成，
+   * 只运行指定节点，依赖已满足的节点同时提交，批内依赖按顺序执行。`signal` 中止后已开始的节点照常生成，
    * 尚未派发的节点不再提交。
    */
   runBatch(

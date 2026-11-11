@@ -35,6 +35,7 @@ import {
   type MediaOutput,
 } from './media.ts'
 import { baseNameOf, isInlineImage, isInlineVideo } from './model.ts'
+import { type RetryWait, retryAttemptText } from './retry.ts'
 
 /** 写入文件的 `version`。格式变化时加一，读取时遇到未知版本直接拒绝。 */
 export const CANVAS_SCHEMA_VERSION = 1
@@ -218,19 +219,26 @@ export type CanvasNodeState =
       action?: 'run' | 'retrieve'
       version?: string
       stage?: 'preparing' | 'submitting'
+      /** 请求被拒绝后正在等待自动重试；不在等待时不存在。 */
+      retry?: RetryWait
     }
   /** `version`：点击「取回」时取回的版本。 */
   | { state: 'pending'; version: string }
   | { state: 'failed'; message: string }
   | { state: 'unknown'; message: string }
 
+/** 远端任务阶段的名称，画布卡片的状态标签与生成工具的进度共用。 */
+export function taskPhaseLabel(phase: 'queued' | 'running'): string {
+  return phase === 'queued' ? '排队中' : '生成中'
+}
+
 /** 界面与画布工具共用阶段名称；只有平台明确回报排队时才显示排队中。 */
 export function canvasRunLabel(
   output: GenerateOutput,
   state: Extract<CanvasNodeState, { state: 'running' }>,
 ): string {
-  if (state.phase === 'queued') return '排队中'
-  if (state.phase === 'running') return '生成中'
+  if (state.retry) return retryAttemptText(state.retry)
+  if (state.phase) return taskPhaseLabel(state.phase)
   if (state.action === 'retrieve') return '取回中'
   return output === 'video'
     ? state.taskId

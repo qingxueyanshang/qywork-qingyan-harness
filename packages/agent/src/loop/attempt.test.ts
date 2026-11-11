@@ -14,10 +14,10 @@ import {
   startFaultServer,
 } from '@qywork/ai/fault-server.test-helper'
 import type { AgentEvent, ProviderRequestDiagnostic } from '@qywork/core'
+import { RESEND_LIMIT } from '@qywork/core'
 import { AgentLoop, type LoopPersistence } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
 import { sendLane, sendLimiter } from '../send-limit.ts'
-import { MAX_RESENDS } from './attempt.ts'
 import {
   baseCtx,
   call,
@@ -341,12 +341,12 @@ describe('流停滞时必须有终态，不能无限期挂起', () => {
   test('正文之前的静默原样重发，额度用尽后才进入终态', async () => {
     const result = await runAgainst('headers_then_silence', 'rn_2')
     expect(result.code).toBe('stream_idle_timeout')
-    expect(result.types.filter((t) => t === 'run.retrying')).toHaveLength(MAX_RESENDS)
+    expect(result.types.filter((t) => t === 'run.retrying')).toHaveLength(RESEND_LIMIT)
     expect(result.message).toMatch(
-      new RegExp(`^模型响应中断，\\d+ 秒未收到后续数据，已重发 ${MAX_RESENDS} 次$`),
+      new RegExp(`^模型响应中断，\\d+ 秒未收到后续数据，已重发 ${RESEND_LIMIT} 次$`),
     )
     // 每次尝试都已实际发出：服务端的接收次数等于首发次数加重发次数。
-    expect(result.receipts).toBe(MAX_RESENDS + 1)
+    expect(result.receipts).toBe(RESEND_LIMIT + 1)
   }, 20_000)
 
   test('保活行维持的流不受影响：超时按字节间隔计算，不按总时长', async () => {
@@ -971,7 +971,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
         { name: 'ProviderError', code: 'network_error', message: '连接被断开' },
         { name: 'Error', code: 'ECONNRESET' },
       ],
-      retry: { decision: 'resend', attempt: 1, max: MAX_RESENDS },
+      retry: { decision: 'resend', attempt: 1, max: RESEND_LIMIT },
     })
     // 传输失败同样先等待：立即重发不能加快恢复，只会在几毫秒内耗尽五次额度。
     expectBackoff(rec.diagnostics[0]?.retry.backoffMs, 0)
@@ -1079,11 +1079,11 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     expect(rec.diagnostics[0]?.retry).toMatchObject({
       decision: 'resend',
       attempt: 1,
-      max: MAX_RESENDS,
+      max: RESEND_LIMIT,
     })
     expectBackoff(rec.diagnostics[0]?.retry.backoffMs, 0)
     expect(events.filter((e) => e.type === 'run.retrying')).toEqual([
-      expect.objectContaining({ attempt: 1, max: MAX_RESENDS }),
+      expect.objectContaining({ attempt: 1, max: RESEND_LIMIT }),
     ])
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
   })
@@ -1093,14 +1093,14 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
 
     expect(rec.opened).toEqual([0, 1])
     expect(events.filter((e) => e.type === 'run.retrying')).toEqual([
-      expect.objectContaining({ attempt: 1, max: MAX_RESENDS }),
+      expect.objectContaining({ attempt: 1, max: RESEND_LIMIT }),
     ])
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
   })
 
   test('无参数细节的 400 连续失败：五次额度耗尽后保留上游原文', async () => {
     const { rec, events } = await collect(
-      scriptedAdapter(Array(MAX_RESENDS + 1).fill('reject-opaque-invalid')),
+      scriptedAdapter(Array(RESEND_LIMIT + 1).fill('reject-opaque-invalid')),
     )
 
     expect(rec.opened).toEqual([0, 1, 2, 3, 4, 5])
@@ -1172,12 +1172,12 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
   /** 请求行与轮次是同一次失败的两层，正文须一致；轮次只追加重发次数。 */
   test('429 重发耗尽后轮次与请求行使用同一段正文', async () => {
     const { rec, events } = await collect(
-      scriptedAdapter(Array(MAX_RESENDS + 1).fill('rate-limit')),
+      scriptedAdapter(Array(RESEND_LIMIT + 1).fill('rate-limit')),
     )
 
     const err = events.find((e) => e.type === 'run.error')
     expect(err?.type === 'run.error' && err.message).toBe(
-      `HTTP 429 请求过多：Rate limit reached，已重发 ${MAX_RESENDS} 次`,
+      `HTTP 429 请求过多：Rate limit reached，已重发 ${RESEND_LIMIT} 次`,
     )
     expect(rec.settled.at(-1)?.errorMessage).toBe('HTTP 429 请求过多：Rate limit reached')
   })
@@ -1207,24 +1207,24 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
   })
 
   test('重发后仍不可用：正文不得附带传输读数，上游已明确答复，请求已送达', async () => {
-    const { events } = await collect(scriptedAdapter(Array(MAX_RESENDS + 1).fill('reject')))
+    const { events } = await collect(scriptedAdapter(Array(RESEND_LIMIT + 1).fill('reject')))
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
     expect(message).toContain('HTTP 503 服务不可用：No available accounts')
-    expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
+    expect(message).toContain(`已重发 ${RESEND_LIMIT} 次`)
     // 「N 秒未收到响应」是传输层的读数，附加该读数等于告知用户请求未发出。
     expect(message).not.toMatch(/秒未收到响应/)
   })
 
   test('无状态码的协议失败不显示为超时，重试说明保留在首行', async () => {
     const { events } = await collect(
-      scriptedAdapter(Array(MAX_RESENDS + 1).fill('protocol-failure')),
+      scriptedAdapter(Array(RESEND_LIMIT + 1).fill('protocol-failure')),
     )
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
-    expect(message).toBe(`响应为 200 但不含任何 SSE 数据，已重发 ${MAX_RESENDS} 次`)
+    expect(message).toBe(`响应为 200 但不含任何 SSE 数据，已重发 ${RESEND_LIMIT} 次`)
     expect(message).not.toContain('秒未收到')
     expect(message).not.toContain('\n')
   })
@@ -1290,29 +1290,29 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
   })
 
   test('正文已显示后连续断开：续发次数与原样重发共用额度，用尽后才进入终态', async () => {
-    const adapter = scriptedAdapter(Array(MAX_RESENDS + 1).fill('break-after-text'))
+    const adapter = scriptedAdapter(Array(RESEND_LIMIT + 1).fill('break-after-text'))
     const { events } = await collect(adapter)
 
-    expect(adapter.requests).toHaveLength(MAX_RESENDS + 1)
-    // 每次续发都携带上一段正文：最后一次请求中包含之前全部 MAX_RESENDS 段。
-    const final = adapter.requests[MAX_RESENDS] ?? []
+    expect(adapter.requests).toHaveLength(RESEND_LIMIT + 1)
+    // 每次续发都携带上一段正文：最后一次请求中包含之前全部 RESEND_LIMIT 段。
+    const final = adapter.requests[RESEND_LIMIT] ?? []
     expect(final.filter((m) => m.role === 'assistant' && m.content === '我先看看')).toHaveLength(
-      MAX_RESENDS,
+      RESEND_LIMIT,
     )
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
-    expect(message).toBe(`连接被断开，已重发 ${MAX_RESENDS} 次`)
+    expect(message).toBe(`连接被断开，已重发 ${RESEND_LIMIT} 次`)
   })
 
   test('重发后仍立即断开：只报告重发次数，不伪造超时读数', async () => {
-    const { events } = await collect(scriptedAdapter(Array(MAX_RESENDS + 1).fill('break')))
+    const { events } = await collect(scriptedAdapter(Array(RESEND_LIMIT + 1).fill('break')))
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
     // ECONNRESET 是立即断开，不是计时器超时，不得附加「N 秒未收到响应」。
     expect(message).toContain('连接被断开')
     expect(message).not.toMatch(/秒未收到/)
-    expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
+    expect(message).toContain(`已重发 ${RESEND_LIMIT} 次`)
   })
 
   /**
@@ -1330,43 +1330,43 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
 
   test('连接超时直至额度用尽：终态包含读数与重发次数，读数只出现一次', async () => {
     const { events } = await collect(
-      scriptedAdapter(Array.from({ length: MAX_RESENDS + 1 }, () => 'connect-timeout' as const)),
+      scriptedAdapter(Array.from({ length: RESEND_LIMIT + 1 }, () => 'connect-timeout' as const)),
     )
 
     const err = events.find((e) => e.type === 'run.error')
     const message = err?.type === 'run.error' ? err.message : ''
     expect(message).toContain('连接超时')
     expect(message.match(/未收到响应/g)).toHaveLength(1)
-    expect(message).toContain(`已重发 ${MAX_RESENDS} 次`)
+    expect(message).toContain(`已重发 ${RESEND_LIMIT} 次`)
   })
 
   /*
    * 原始失败形状：`ox-alpha-free` 连续中断 4 次、第 5 次成功。只重发一次无法恢复的正是
    * 这种连续中断：锁定的是「第 5 次仍会重发」，而不是「发生过重发」。
    */
-  test(`连续中断 ${MAX_RESENDS} 次：额度用满之前持续重发，最后一次成功时视为无事发生`, async () => {
+  test(`连续中断 ${RESEND_LIMIT} 次：额度用满之前持续重发，最后一次成功时视为无事发生`, async () => {
     const { rec, events } = await collect(
-      scriptedAdapter([...Array(MAX_RESENDS).fill('break'), 'ok']),
+      scriptedAdapter([...Array(RESEND_LIMIT).fill('break'), 'ok']),
     )
 
-    // 账本中每次发送单独一行：实际发送了 MAX_RESENDS + 1 次。
-    expect(rec.opened).toEqual([...Array(MAX_RESENDS + 1).keys()])
+    // 账本中每次发送单独一行：实际发送了 RESEND_LIMIT + 1 次。
+    expect(rec.opened).toEqual([...Array(RESEND_LIMIT + 1).keys()])
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 
-  test('额度用满后不再重发：第 MAX_RESENDS + 1 次断流直接报错', async () => {
-    const { rec } = await collect(scriptedAdapter(Array(MAX_RESENDS + 2).fill('break')))
+  test('额度用满后不再重发：第 RESEND_LIMIT + 1 次断流直接报错', async () => {
+    const { rec } = await collect(scriptedAdapter(Array(RESEND_LIMIT + 2).fill('break')))
 
-    expect(rec.opened).toHaveLength(MAX_RESENDS + 1)
+    expect(rec.opened).toHaveLength(RESEND_LIMIT + 1)
   })
 
   // 额度对重发集合中的每个码一视同仁，上游答复的不可用同样使用这一额度。
   test('上游连续报告不可用：同样重发直至额度用满', async () => {
-    const { rec } = await collect(scriptedAdapter(Array(MAX_RESENDS + 2).fill('reject')))
+    const { rec } = await collect(scriptedAdapter(Array(RESEND_LIMIT + 2).fill('reject')))
 
-    expect(rec.opened).toHaveLength(MAX_RESENDS + 1)
+    expect(rec.opened).toHaveLength(RESEND_LIMIT + 1)
   })
 
   test('每次重发报告一次进度：界面据此显示「正在重连 N / M」', async () => {
@@ -1375,7 +1375,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     const retrying = events.filter((e) => e.type === 'run.retrying')
     expect(retrying.map((e) => (e.type === 'run.retrying' ? e.attempt : 0))).toEqual([1, 2])
     // 上限由事件传给界面，前端不自行固定该数值。
-    expect(retrying.every((e) => e.type === 'run.retrying' && e.max === MAX_RESENDS)).toBe(true)
+    expect(retrying.every((e) => e.type === 'run.retrying' && e.max === RESEND_LIMIT)).toBe(true)
   })
 
   test('已输出正文后立即断流：同样不伪造为超时', async () => {

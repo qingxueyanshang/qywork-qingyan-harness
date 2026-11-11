@@ -15,11 +15,19 @@ import {
   type MediaCallResult,
   type MediaPort,
   mediaDurationOfFile,
+  type ToolContext,
   type ToolOutcome,
   type ToolSpec,
 } from '@qywork/agent'
-import { isImageResult, type MediaFile, type MediaImageResult, type MediaInput } from '@qywork/ai'
 import {
+  isImageResult,
+  type MediaFile,
+  type MediaImageResult,
+  type MediaInput,
+  taskPhase,
+} from '@qywork/ai'
+import {
+  GENERATE_OUTPUTS,
   type GenerateOutput,
   imageSizeOf,
   isInlineAudio,
@@ -30,6 +38,10 @@ import {
   type MediaOutput,
   type MediaSpend,
   mimeOf,
+  type RetryWait,
+  retryAttemptText,
+  retryCauseText,
+  taskPhaseLabel,
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
 import {
@@ -204,10 +216,15 @@ async function reserveDefault(roots: RootsInput): Promise<{ target: string; rele
 
 /**
  * 一次生成的任务记录，在提交之前写入，生成结束后删除。画布卡片的占位版本引用它，归属以此为准。
- * 取得任务号（视频）或图片来源（异步图片）后写入对应字段，此后可以取回，不重新提交生成；
- * 两者都没有时（同步生成、视频尚未取得任务号）没有可取回的结果。
+ * 适配器交出任务号或图片来源（异步图片）后写入对应字段，此后可以取回，不重新提交生成，不按类别区分：
+ * 走云端的图片与音频同样有任务号。两者都没有时（直连的同步生成、视频尚未取得任务号）没有可取回的结果。
  */
 interface TaskRecord {
+  /**
+   * 生成的类别，取回时按它选择模型。早于该字段写入的记录没有它：其中有图片来源的是图片，有任务号的是视频，
+   * 不要删除这一推断，否则这些记录中已提交的任务无法取回。
+   */
+  type?: GenerateOutput
   /** 提交时卡片选定的接口与模型；使用默认模型时在取得任务号或结果之后写入。 */
   provider?: string
   model?: string
@@ -303,7 +320,7 @@ export interface GenerateRequest {
    * 抛出异常时删除记录、不提交生成（未产生费用）：使用方没有登记时，生成结束后无法确定产物的归属。
    */
   onRecord?: (record: string) => Promise<void>
-  /** 取得任务号（视频）或图片来源（异步图片）并写入任务记录后回调。图片没有远端任务号。 */
+  /** 取得任务号或图片来源（异步图片）并写入任务记录后回调；只有图片来源时没有 `taskId`。 */
   onTask?: (task: {
     record: string
     taskId?: string
@@ -312,6 +329,8 @@ export interface GenerateRequest {
   }) => void | Promise<void>
   onStatus?: (status: string) => void
   onSubmit?: () => void
+  /** 请求被拒绝后的重试等待，见 `MediaCall.onRetry`。 */
+  onRetry?: MediaCall['onRetry']
   /** 取得结果时回报本次的花费。 */
   onSpend?: (spend: MediaSpend) => void
   attach?: Attach
@@ -411,6 +430,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
   try {
     const target = await resolveWritablePath(req.roots, slot.target, { followFinalSymlink: false })
     const recordPath = await writeRecord(req.roots, slot.target, {
+      type: req.type,
       ...(req.pick ?? {}),
       params: req.params,
       output: slot.target,
@@ -434,6 +454,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       params: req.params,
       ...(req.pick ?? {}),
       ...(req.onSpend ? { onSpend: req.onSpend } : {}),
+      ...(req.onRetry ? { onRetry: req.onRetry } : {}),
     }
     if (req.type === 'image') {
       call.onImageResult = async (result, provider, model) => {
@@ -441,14 +462,12 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
         await req.onTask?.({ record, provider, model })
       }
     }
-    if (req.type === 'video') {
-      if (req.onSubmit) call.onSubmit = req.onSubmit
-      call.onTask = async ({ taskId, provider, model }) => {
-        await updateRecord(recordPath, { provider, model, taskId })
-        await req.onTask?.({ record, taskId, provider, model })
-      }
-      if (req.onStatus) call.onStatus = req.onStatus
+    call.onTask = async ({ taskId, provider, model }) => {
+      await updateRecord(recordPath, { provider, model, taskId })
+      await req.onTask?.({ record, taskId, provider, model })
     }
+    if (req.type === 'video' && req.onSubmit) call.onSubmit = req.onSubmit
+    if (req.onStatus) call.onStatus = req.onStatus
     let result: MediaCallResult
     try {
       result = await req.media.generate(call, req.signal)
@@ -477,6 +496,8 @@ export async function resumeMedia(req: {
   /** 任务记录的路径。 */
   record: string
   onStatus?: (status: string) => void
+  /** 远端一侧的重试等待（走云端的任务在云端被上游拒绝后重试），见 `MediaCall.onRetry`。 */
+  onRetry?: MediaCall['onRetry']
   onSpend?: (spend: MediaSpend) => void
   attach?: Attach
 }): Promise<GenerateOutcome> {
@@ -515,6 +536,7 @@ export async function resumeMedia(req: {
     !record.provider ||
     typeof record.model !== 'string' ||
     !record.model ||
+    (record.type !== undefined && !GENERATE_OUTPUTS.includes(record.type)) ||
     (record.imageResult !== undefined
       ? !isImageResult(record.imageResult)
       : pending && (typeof record.taskId !== 'string' || !record.taskId))
@@ -536,8 +558,9 @@ export async function resumeMedia(req: {
       req.attach,
     )
   }
+  // 图片来源与任务号是两种取回方式，记录中有图片来源时按它重新下载，否则按任务号查询。
   const call: MediaCall = {
-    type: record.imageResult ? 'image' : 'video',
+    type: record.type ?? (record.imageResult ? 'image' : 'video'),
     prompt: '',
     inputs: [],
     params: record.params ?? {},
@@ -547,6 +570,7 @@ export async function resumeMedia(req: {
       ? { resumeImageResult: record.imageResult }
       : { resumeTaskId: record.taskId! }),
     ...(req.onSpend ? { onSpend: req.onSpend } : {}),
+    ...(req.onRetry ? { onRetry: req.onRetry } : {}),
   }
   if (req.onStatus) call.onStatus = req.onStatus
   const result = await req.media.generate(call, req.signal)
@@ -774,6 +798,32 @@ function receipt(
   }
 }
 
+/**
+ * 生成工具在对话的工具卡片上显示的进度（`progress`）：远端任务的阶段与重试等待，写法与画布卡片相同
+ * （`taskPhaseLabel`、`retryAttemptText`、`retryCauseText`）。无法识别的状态不输出；重试等待结束不输出。
+ * 与上一行相同时不再输出：两个上游原词可能是同一阶段，走云端的任务每次查询都回报正在进行的重试等待。
+ */
+function progressOf(ctx: ToolContext): {
+  onStatus: (status: string) => void
+  onRetry: (retry: RetryWait | null) => void
+} {
+  let last = ''
+  const line = (text: string) => {
+    if (text === last) return
+    last = text
+    ctx.emit('progress', `${text}\n`)
+  }
+  return {
+    onStatus(status) {
+      const phase = taskPhase(status)
+      if (phase) line(taskPhaseLabel(phase))
+    },
+    onRetry(retry) {
+      if (retry) line(`${retryAttemptText(retry)} · ${retryCauseText(retry.reason)}`)
+    },
+  }
+}
+
 /** 三个生成工具共用的参数说明。 */
 const PARAMS_NOTE =
   'params_json 仅使用本轮「可用的生成模型」中该模型列出的参数，取值依据用户要求或自行判断，无需设置的参数省略。' +
@@ -839,6 +889,7 @@ export const generateImageTool: ToolSpec = {
       params: common.params,
       ...(common.pick ? { pick: common.pick } : {}),
       ...(common.output ? { output: common.output } : {}),
+      ...progressOf(ctx),
     })
     return receipt(outcome, (n) => ` ${n} 张`, rootsOf(ctx))
   },
@@ -894,7 +945,6 @@ export const generateVideoTool: ToolSpec = {
   permissionEffect: 'write',
   async fn(args, ctx) {
     if (!ctx.media) return failure('本次执行没有生成通道')
-    const onStatus = (status: string) => ctx.emit('progress', `${status}\n`)
     const common = commonArgs(args)
     if ('status' in common) return common
     const inputs = (
@@ -918,7 +968,7 @@ export const generateVideoTool: ToolSpec = {
       ...(common.output ? { output: common.output } : {}),
       onTask: ({ taskId, record }) =>
         ctx.emit('progress', `已提交远端任务 ${taskId}，记录位于 ${record}\n`),
-      onStatus,
+      ...progressOf(ctx),
     })
     return receipt(outcome, () => '视频', rootsOf(ctx))
   },
@@ -927,7 +977,7 @@ export const generateVideoTool: ToolSpec = {
 export const retrieveMediaTool: ToolSpec = {
   name: 'retrieve_media',
   description:
-    '根据 generate_image 或 generate_video 返回的 .task.json 记录取回原结果，不重新提交生成、不重复计费。' +
+    '根据 generate_image、generate_video 或 generate_audio 返回的 .task.json 记录取回原结果，不重新提交生成、不重复计费。' +
     '模型、结果引用与输出位置均从记录中读取；画布中的待取回版本使用 retrieve_canvas。' +
     DISPLAY_NOTE,
   parameters: {
@@ -942,7 +992,7 @@ export const retrieveMediaTool: ToolSpec = {
   objectLabel: '生成结果',
   category: 'media',
   facet: '生成',
-  summary: '取回已有的图片或视频结果',
+  summary: '取回已有的图片、视频或音频结果',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
   async fn(args, ctx) {
@@ -954,7 +1004,7 @@ export const retrieveMediaTool: ToolSpec = {
       media: ctx.media,
       signal: ctx.signal,
       record: path,
-      onStatus: (status: string) => ctx.emit('progress', `${status}\n`),
+      ...progressOf(ctx),
     })
     return receipt(outcome, () => '产物', rootsOf(ctx))
   },
@@ -1015,6 +1065,7 @@ export const generateAudioTool: ToolSpec = {
       params: common.params,
       ...(common.pick ? { pick: common.pick } : {}),
       ...(common.output ? { output: common.output } : {}),
+      ...progressOf(ctx),
     })
     return receipt(outcome, () => '音频', rootsOf(ctx))
   },

@@ -119,6 +119,7 @@ export {
   serializeCanvas,
   settleVersion,
   TIMELINE_W,
+  taskPhaseLabel,
   textReferenceProblems,
   validateCanvas,
 } from './domain/canvas.ts'
@@ -299,6 +300,11 @@ export {
   type Workspace,
 } from './domain/model.ts'
 export {
+  RESEND_LIMIT,
+  type RetryWait,
+  resendDelay,
+  retryAttemptText,
+  retryCauseText,
   retryScheduleText,
   TRANSIENT_RETRY_DELAYS_MS,
   transientRetryDelay,

@@ -1,10 +1,13 @@
 /**
- * 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、提交遇到暂时故障时按 30 秒、2 分钟、5 分钟重试
- * （假计时器推进等待）、结果未知不重试、下载重试及取消，不调用付费接口。
+ * 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、失败码与对话请求同一分类（`errors.ts` 的 `httpFailureCode`）、
+ * 提交被限流、请求未发出与素材上传暂时不可用时按 2 秒起加倍的间隔重试（假计时器推进等待）、结果未知不重试、下载重试及取消，
+ * 以及在正文中给出错误码的上游（MiniMax、可灵、百炼的适配器与 `errors.ts` 的 `upstreamFailureCode`）按其错误码重试或不重试，不调用付费接口。
  */
 import { afterAll, afterEach, beforeAll, expect, jest, spyOn, test } from 'bun:test'
 import { log } from '@qywork/core'
-import { download, postJson, send, sendJson } from './http.ts'
+import { classifyProviderError } from '../errors.ts'
+import { download, postJson, reportingRetries, send, sendJson } from './http.ts'
+import { buildMediaAdapter } from './index.ts'
 import { MediaError } from './types.ts'
 
 let server: ReturnType<typeof Bun.serve>
@@ -59,9 +62,9 @@ function retryClock() {
     },
   }
 }
-/** 间隔表的三次等待。 */
-const SCHEDULE = [30_000, 120_000, 300_000] as const
-const EXHAUSTED = '；已在 30 秒、2 分钟、5 分钟后各自动重试一次，仍失败'
+/** 被限流、请求未发出或上传暂时不可用后的五次等待：与对话请求的重发相同，2 秒起每次加倍，不超过 30 秒。 */
+const BACKOFF = [2_000, 4_000, 8_000, 16_000, 30_000] as const
+const BACKOFF_EXHAUSTED = '；已自动重试 5 次，仍失败'
 async function failure(work: Promise<unknown>): Promise<MediaError> {
   try {
     await work
@@ -225,8 +228,11 @@ test.each([false, true])(
   },
 )
 
-/** 上传在提交生成之前，连接中断不会重复提交或计费：按间隔重试，用尽后仍报告未提交生成。 */
-test('上传的连接失败和无效响应均不误报生成结果未知，连接失败按间隔重试', async () => {
+/**
+ * 上传在提交生成之前，连接中断不会重复提交或计费：与对话请求的重发相同，按 2 秒起加倍的间隔重试 5 次，用尽后仍报告未提交生成。
+ * 原始失败形状：上传的连接失败按 30 秒、2 分钟、5 分钟重试，短时断网要等约 7 分半才报告失败。
+ */
+test('上传的连接失败和无效响应均不误报生成结果未知，连接失败按 2 秒起加倍的间隔重试', async () => {
   let connections = 0
   const closed = Bun.listen({
     hostname: '127.0.0.1',
@@ -246,19 +252,19 @@ test('上传的连接失败和无效响应均不误报生成结果未知，连�
         stage: 'upload',
       }),
     )
-    for (const [i, ms] of SCHEDULE.entries()) {
+    for (const [i, ms] of BACKOFF.entries()) {
       await clock.waiting(i + 1)
       await clock.elapse(ms)
     }
     const error = await work
-    expect(connections).toBe(4)
+    expect(connections).toBe(6)
     expect(error.diagnostic).toMatchObject({
       stage: 'upload',
       kind: 'connection',
       outcome: 'rejected',
     })
     expect(error.message).toContain('未提交生成')
-    expect(error.message).toEndWith(EXHAUSTED)
+    expect(error.message).toEndWith(BACKOFF_EXHAUSTED)
   } finally {
     clock.restore()
     closed.stop(true)
@@ -271,6 +277,31 @@ test('上传的连接失败和无效响应均不误报生成结果未知，连�
     outcome: 'rejected',
   })
   expect(invalid.message).toBe('素材上传失败，未提交生成：响应无法解析')
+})
+
+/**
+ * 素材上传得到接口的 408 / 5xx 答复：接口已答复，不是连接失败，与连接失败分开计数；次数与间隔与对话请求对 5xx 的重发相同。
+ * 原始失败形状：按 30 秒、2 分钟、5 分钟重试，上传服务持续 503 时约 7 分半后才报告失败。
+ */
+test('上传得到 503 时按 2 秒起加倍的间隔重试 5 次，用尽后报告已做的重试', async () => {
+  const clock = retryClock()
+  try {
+    reply = () => new Response('busy', { status: 503 })
+    const work = failure(sendJson(url(), { method: 'POST' }, signal(), { stage: 'upload' }))
+    for (const [i, ms] of BACKOFF.entries()) {
+      await clock.waiting(i + 1)
+      await clock.elapse(ms)
+    }
+    const error = await work
+    expect(hits).toHaveLength(6)
+    expect(error.message).toBe(
+      `素材上传失败，未提交生成：HTTP 503 服务不可用：busy${BACKOFF_EXHAUSTED}`,
+    )
+    expect(error.retryReceipt).toBe(BACKOFF_EXHAUSTED.slice(1))
+    expect(error.code).toBe('provider_unavailable')
+  } finally {
+    clock.restore()
+  }
 })
 
 /**
@@ -340,23 +371,43 @@ const limited = () =>
 
 /**
  * 原始失败形状：画布批量出图时千问图像接口对并发的提交返回 429「Requests rate limit exceeded」，卡片直接记为失败。
- * 429 表示未受理，生成与上传按 30 秒、2 分钟、5 分钟重试；等待未满时不发出请求。
+ * 429 表示未受理。接口立即答复拒绝，生成的提交按对话请求重发的次数与间隔重试；等待未满时不发出请求。
+ * 按 30 秒、2 分钟、5 分钟的间隔重试时，用尽约 7 分半。
  */
-test('生成遇到限流按 30 秒、2 分钟、5 分钟重试，受理后返回结果', async () => {
+test('生成遇到限流按 2 秒起加倍的间隔重试，受理后返回结果；每次等待的开始与结束各回报一次', async () => {
   const clock = retryClock()
   try {
     let left = 3
     reply = () => (left-- > 0 ? limited() : Response.json({ output: { task_id: 't-1' } }))
-    const work = postJson(url(), {}, {}, signal())
-    for (const [i, ms] of SCHEDULE.entries()) {
+    const reports: unknown[] = []
+    const failures: unknown[] = []
+    const work = reportingRetries(
+      (retry, failure) => {
+        reports.push(retry)
+        failures.push(failure?.status)
+      },
+      () => postJson(url(), {}, {}, signal()),
+    )
+    for (const [i, ms] of BACKOFF.slice(0, 3).entries()) {
       await clock.waiting(i + 1)
       expect(hits).toHaveLength(i + 1)
       await clock.elapse(ms)
     }
     expect(await work).toEqual({ output: { task_id: 't-1' } })
     expect(hits).toEqual(['POST', 'POST', 'POST', 'POST'])
-    expect(clock.warnings()[0]).toContain('30 秒后第 1 次重试')
-    expect(clock.warnings()[2]).toContain('300 秒后第 3 次重试')
+    expect(clock.warnings()[0]).toContain('2 秒后第 1 次重试')
+    expect(clock.warnings()[2]).toContain('8 秒后第 3 次重试')
+    const reason = 'HTTP 429 请求过多：Requests rate limit exceeded, please try again later.'
+    expect(reports).toEqual([
+      { attempt: 1, max: 5, reason },
+      null,
+      { attempt: 2, max: 5, reason },
+      null,
+      { attempt: 3, max: 5, reason },
+      null,
+    ])
+    // 进入等待时同时交出引起等待的失败，等待结束时没有失败。
+    expect(failures).toEqual([429, undefined, 429, undefined, 429, undefined])
   } finally {
     clock.restore()
   }
@@ -367,16 +418,17 @@ test('重试用尽后报告原文与已做的重试，判为被拒绝；上传�
   try {
     reply = limited
     const work = failure(postJson(url(), {}, {}, signal()))
-    for (const [i, ms] of SCHEDULE.entries()) {
+    for (const [i, ms] of BACKOFF.entries()) {
       await clock.waiting(i + 1)
       await clock.elapse(ms)
     }
     const error = await work
     expect(error.message).toBe(
-      `HTTP 429 请求过多：Requests rate limit exceeded, please try again later.${EXHAUSTED}`,
+      `HTTP 429 请求过多：Requests rate limit exceeded, please try again later.${BACKOFF_EXHAUSTED}`,
     )
+    expect(error.retryReceipt).toBe(BACKOFF_EXHAUSTED.slice(1))
     expect(error.diagnostic).toMatchObject({ stage: 'generate', status: 429, outcome: 'rejected' })
-    expect(hits).toHaveLength(4)
+    expect(hits).toHaveLength(6)
 
     hits = []
     let left = 1
@@ -384,8 +436,9 @@ test('重试用尽后报告原文与已做的重试，判为被拒绝；上传�
     const form = new FormData()
     form.append('file', new Blob([new Uint8Array([1, 2, 3])]), 'a.png')
     const upload = send(url(), { method: 'POST', body: form }, signal(), { stage: 'upload' })
-    await clock.waiting(4)
-    await clock.elapse(SCHEDULE[0])
+    // 上传被限流与提交被限流相同。
+    await clock.waiting(6)
+    await clock.elapse(BACKOFF[0])
     expect((await upload).status).toBe(200)
     expect(hits).toEqual(['POST', 'POST'])
 
@@ -399,19 +452,106 @@ test('重试用尽后报告原文与已做的重试，判为被拒绝；上传�
   }
 })
 
-test('Retry-After 长于间隔时按 Retry-After 等待', async () => {
+/**
+ * Retry-After 的规则与对话请求的重发相同（`resendDelay`）：按其等待，不短于退避间隔，不超过 60 秒。
+ * 原始失败形状：生成对 Retry-After 取不超过 30 秒，对话完全按其等待，两处规则不同。
+ */
+test('限流时按 Retry-After 等待：长于 60 秒时等待 60 秒，短于退避间隔时按退避间隔', async () => {
+  const clock = retryClock()
+  try {
+    const waits = ['90', '1', '10']
+    reply = () => {
+      const after = waits.shift()
+      return after === undefined
+        ? Response.json({ ok: true })
+        : new Response('slow down', { status: 429, headers: { 'retry-after': after } })
+    }
+    const work = postJson(url(), {}, {}, signal())
+    await clock.waiting(1)
+    await clock.elapse(60_000)
+    // 第 2 次的退避间隔 4 秒长于 Retry-After 1 秒。
+    await clock.waiting(2)
+    await clock.elapse(BACKOFF[1])
+    // 第 3 次的退避间隔 8 秒短于 Retry-After 10 秒。
+    await clock.waiting(3)
+    await clock.elapse(10_000)
+    expect(await work).toEqual({ ok: true })
+    expect(hits).toHaveLength(4)
+  } finally {
+    clock.restore()
+  }
+})
+
+/**
+ * 原始失败形状：限流与请求未发出共用一个计数。先被限流一次、之后连接被拒绝时，连接失败的第一次等待跳过第一档，
+ * 上限少一次，回执把限流的那次也计入。
+ */
+test('限流与请求未发出交替出现时各自计数：间隔、上限与回执都按该类已做的重试计算', async () => {
+  const clock = retryClock()
+  const own = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => limited() })
+  const host = `127.0.0.1:${own.port}`
+  try {
+    const reports: ({ attempt: number; max: number } | null)[] = []
+    const work = failure(
+      reportingRetries(
+        (retry) => reports.push(retry),
+        () => postJson(`http://${host}/image`, {}, {}, signal()),
+      ),
+    )
+    // 第一次请求被限流；等待期间关闭接口，其后的请求连接被拒绝。
+    await clock.waiting(1)
+    await own.stop(true)
+    await clock.elapse(BACKOFF[0])
+    for (const [i, ms] of BACKOFF.entries()) {
+      await clock.waiting(i + 2)
+      await clock.elapse(ms)
+    }
+    expect((await work).message).toBe(`无法连接 ${host}${BACKOFF_EXHAUSTED}`)
+    expect(reports.flatMap((r) => (r ? [[r.attempt, r.max]] : []))).toEqual([
+      [1, 5],
+      [1, 5],
+      [2, 5],
+      [3, 5],
+      [4, 5],
+      [5, 5],
+    ])
+    expect(clock.warnings()[1]).toContain('2 秒后第 1 次重试')
+  } finally {
+    await own.stop(true)
+    clock.restore()
+  }
+})
+
+/**
+ * 原始失败形状：各协议的适配器不经同一处接通重试回报时，漏掉的协议在重试期间仍显示提交中。
+ * 回报在 `buildMediaAdapter` 统一接通，适配器的请求不需要各自传递。
+ */
+test('经 buildMediaAdapter 构造的适配器在提交被限流时向 onRetry 回报，适配器不传递回调', async () => {
   const clock = retryClock()
   try {
     let left = 1
-    reply = () =>
-      left-- > 0
-        ? new Response('slow down', { status: 429, headers: { 'retry-after': '90' } })
-        : Response.json({ ok: true })
-    const work = postJson(url(), {}, {}, signal())
+    reply = () => (left-- > 0 ? limited() : Response.json({ data: [{ b64_json: 'iVBORw0KGgo=' }] }))
+    const reports: unknown[] = []
+    const work = buildMediaAdapter({
+      kind: 'openai_images',
+      model: 'gpt-image-2',
+      apiKey: 'k',
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    }).run(
+      { operation: 'generate', prompt: '猫', inputs: [], params: {} },
+      { signal: signal(), onRetry: (retry) => reports.push(retry) },
+    )
     await clock.waiting(1)
-    await clock.elapse(90_000)
-    expect(await work).toEqual({ ok: true })
-    expect(hits).toHaveLength(2)
+    await clock.elapse(BACKOFF[0])
+    expect((await work).files).toHaveLength(1)
+    expect(reports).toEqual([
+      {
+        attempt: 1,
+        max: 5,
+        reason: 'HTTP 429 请求过多：Requests rate limit exceeded, please try again later.',
+      },
+      null,
+    ])
   } finally {
     clock.restore()
   }
@@ -424,10 +564,16 @@ test('重试等待期间停止即结束，不再发出请求', async () => {
     reply = limited
     const controller = new AbortController()
     const reason = new Error('用户停止')
-    const work = postJson(url(), {}, {}, controller.signal).catch((err: unknown) => err)
+    const reports: unknown[] = []
+    const work = reportingRetries(
+      (retry) => reports.push(retry),
+      () => postJson(url(), {}, {}, controller.signal),
+    ).catch((err: unknown) => err)
     await clock.waiting(1)
     controller.abort(reason)
     expect(await work).toBe(reason)
+    // 等待被中止时不回报结束：请求没有重新发出。
+    expect(reports).toHaveLength(1)
     jest.advanceTimersByTime(600_000)
     for (let i = 0; i < 50; i++) await clock.turn()
     expect(hits).toEqual(['POST'])
@@ -475,17 +621,17 @@ test.each([
     '中转站上游限流',
     '{"error":{"message":"Upstream rate limit exceeded, please retry later","type":"rate_limit_error"}}',
   ],
-] as const)('429 正文为「%s」：限流类按间隔重试 3 次', async (_, body) => {
+] as const)('429 正文为「%s」：限流类重试 5 次', async (_, body) => {
   const clock = retryClock()
   try {
     reply = () => new Response(body, { status: 429, headers: { 'retry-after': '0' } })
     const work = failure(postJson(url(), {}, {}, signal()))
-    for (const [i, ms] of SCHEDULE.entries()) {
+    for (const [i, ms] of BACKOFF.entries()) {
       await clock.waiting(i + 1)
       await clock.elapse(ms)
     }
     expect((await work).diagnostic).toMatchObject({ status: 429, outcome: 'rejected' })
-    expect(hits).toHaveLength(4)
+    expect(hits).toHaveLength(6)
   } finally {
     clock.restore()
   }
@@ -493,9 +639,10 @@ test.each([
 
 /**
  * 连接未建立时请求没有发出：端口拒绝连接与 TLS 握手失败均为被拒绝，不显示 Bun 的英文提示。
- * 请求未发出不会重复提交，按间隔重试。
+ * 请求未发出不会重复提交，与对话请求的重发相同，按 2 秒起加倍的间隔重试 5 次。
+ * 原始失败形状：请求未发出时按 30 秒、2 分钟、5 分钟重试，短时断网约 7 分半后才报告失败。
  */
-test('连接被拒绝或 TLS 握手失败时请求未发出，判为被拒绝并按间隔重试', async () => {
+test('连接被拒绝或 TLS 握手失败时请求未发出，判为被拒绝并按 2 秒起加倍的间隔重试', async () => {
   const clock = retryClock()
   const plain = Bun.listen({
     hostname: '127.0.0.1',
@@ -504,7 +651,7 @@ test('连接被拒绝或 TLS 握手失败时请求未发出，判为被拒绝并
   })
   try {
     const refusing = failure(postJson('http://127.0.0.1:1/image', {}, {}, signal()))
-    for (const [i, ms] of SCHEDULE.entries()) {
+    for (const [i, ms] of BACKOFF.entries()) {
       await clock.waiting(i + 1)
       await clock.elapse(ms)
     }
@@ -514,17 +661,17 @@ test('连接被拒绝或 TLS 握手失败时请求未发出，判为被拒绝并
       outcome: 'rejected',
       code: 'ConnectionRefused',
     })
-    expect(refused.message).toBe(`无法连接 127.0.0.1:1${EXHAUSTED}`)
+    expect(refused.message).toBe(`无法连接 127.0.0.1:1${BACKOFF_EXHAUSTED}`)
 
     const host = `127.0.0.1:${plain.port}`
     const handshake = failure(postJson(`https://${host}/image`, {}, {}, signal()))
-    for (const [i, ms] of SCHEDULE.entries()) {
-      await clock.waiting(i + 4)
+    for (const [i, ms] of BACKOFF.entries()) {
+      await clock.waiting(i + 6)
       await clock.elapse(ms)
     }
     const tls = await handshake
     expect(tls.diagnostic).toMatchObject({ kind: 'connection', outcome: 'rejected' })
-    expect(tls.message).toBe(`与 ${host} 的 TLS 握手失败${EXHAUSTED}`)
+    expect(tls.message).toBe(`与 ${host} 的 TLS 握手失败${BACKOFF_EXHAUSTED}`)
   } finally {
     clock.restore()
     plain.stop(true)
@@ -562,4 +709,190 @@ test('用户停止立即结束，不误报本地超时也不触发重试', async
   setTimeout(() => controller.abort(reason), 30)
   await expect(work).rejects.toBe(reason)
   expect(hits).toEqual(['POST'])
+})
+
+/**
+ * 同一个上游答复，生成请求的失败码与对话请求的分类相同（`classifyProviderError`），重试与云端的文字都按它判断。
+ * 原始失败形状：生成一侧自行判断状态码，403 `billing_error`（中转站的余额耗尽）按状态码判为鉴权失败，对话一侧判为额度用尽。
+ * 生成一侧另对全部状态码判定额度（百炼以 400 `Arrearage` 报告欠费），该项不与对话比较。
+ */
+test.each([
+  [403, 'insufficient_quota', '{"error":{"type":"billing_error","message":"分组余额不足"}}'],
+  [403, 'auth_failed', '{"error":{"type":"permission_error","message":"no access"}}'],
+  [401, 'auth_failed', '{"error":{"message":"Incorrect API key provided"}}'],
+  [402, 'insufficient_quota', '{"error":{"message":"payment required"}}'],
+  [404, 'model_not_found', '{"error":{"message":"model not found"}}'],
+  [429, 'rate_limited', '{"error":{"message":"slow down","type":"rate_limit_error"}}'],
+  [400, 'invalid_request', '{"error":{"message":"size 不合法"}}'],
+  [400, 'provider_unavailable', '{"error":{"message":"上游负载已饱和，请稍后再试"}}'],
+  [503, 'provider_unavailable', '{"error":{"message":"No available compatible accounts"}}'],
+] as const)('HTTP %d 归为 %s：生成请求的失败码与对话请求相同', async (status, code, body) => {
+  reply = () => new Response(body, { status })
+  const error = await failure(send(url(), { method: 'GET' }, signal()))
+  const chat = classifyProviderError(
+    'openai_chat_completions',
+    { status, ...(JSON.parse(body) as object), message: body },
+    null,
+    body,
+  )
+  expect(error.code).toBe(code)
+  expect(chat.code).toBe(code)
+})
+
+test('额度判定覆盖全部状态码：百炼以 400 Arrearage 报告欠费时为额度用尽，不重试', async () => {
+  reply = () =>
+    Response.json(
+      {
+        code: 'Arrearage',
+        message: 'Access denied, please make sure your account is in good standing.',
+      },
+      { status: 400 },
+    )
+  const error = await failure(postJson(url(), {}, {}, signal()))
+  expect(error.code).toBe('insufficient_quota')
+  expect(hits).toHaveLength(1)
+})
+
+/** MiniMax 语音的成功答复：音频为 hex，`base_resp.status_code` 为 0。 */
+const minimaxSpoken = () =>
+  Response.json({
+    data: { audio: Buffer.from('ID3').toString('hex') },
+    base_resp: { status_code: 0, status_msg: 'success' },
+  })
+const minimaxStatus = (status_code: number, status_msg: string) =>
+  Response.json({ base_resp: { status_code, status_msg } })
+const speak = () =>
+  buildMediaAdapter({
+    kind: 'minimax_speech',
+    model: 'speech-2.8-hd',
+    apiKey: 'k',
+    baseUrl: `http://127.0.0.1:${server.port}/v1`,
+  }).run({ operation: 'speech', prompt: 'x', inputs: [], params: {} }, { signal: signal() })
+
+/**
+ * MiniMax 在 HTTP 200 的正文中报告失败（`base_resp.status_code`）。错误码含义取自 MiniMax 错误码文档：1002 请求频率超限，1008 余额不足。
+ * 原始失败形状：正文中的失败不经过重试判定，1002 限流时不重试，直接失败；1008 余额不足时没有失败码，云端不替换。
+ */
+test('MiniMax 正文报告 1002 限流时按限流重试，受理后返回结果；1008 余额不足为额度用尽，不重试', async () => {
+  const clock = retryClock()
+  try {
+    let left = 2
+    reply = () => (left-- > 0 ? minimaxStatus(1002, 'rate limit') : minimaxSpoken())
+    const reports: unknown[] = []
+    const work = buildMediaAdapter({
+      kind: 'minimax_speech',
+      model: 'speech-2.8-hd',
+      apiKey: 'k',
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    }).run(
+      { operation: 'speech', prompt: 'x', inputs: [], params: {} },
+      { signal: signal(), onRetry: (retry) => reports.push(retry) },
+    )
+    for (const [i, ms] of BACKOFF.slice(0, 2).entries()) {
+      await clock.waiting(i + 1)
+      await clock.elapse(ms)
+    }
+    expect((await work).files).toHaveLength(1)
+    expect(hits).toHaveLength(3)
+    expect(reports[0]).toEqual({ attempt: 1, max: 5, reason: '接口拒绝生成：1002：rate limit' })
+
+    hits = []
+    reply = () => minimaxStatus(1008, 'insufficient balance')
+    const quota = await failure(speak())
+    expect(hits).toHaveLength(1)
+    expect(quota.code).toBe('insufficient_quota')
+    expect(quota.message).toBe('接口拒绝生成：1008：insufficient balance')
+    expect(quota.diagnostic).toMatchObject({ stage: 'generate', outcome: 'rejected', status: 200 })
+  } finally {
+    clock.restore()
+  }
+})
+
+/** 文档没有写明为限流或额度的错误码不归类：保留原文，不重试。 */
+test('MiniMax 正文报告未收录的错误码（2013 参数异常）时保留原文，不重试', async () => {
+  reply = () => minimaxStatus(2013, 'invalid params')
+  const error = await failure(speak())
+  expect(hits).toHaveLength(1)
+  expect(error.code).toBeUndefined()
+  expect(error.message).toBe('接口拒绝生成：2013：invalid params')
+})
+
+/**
+ * 可灵以 HTTP 429 同时报告限流与欠费，业务码区分两者。错误码含义取自可灵开放平台错误码文档：1302 API请求过快，超过平台速率限制；
+ * 1102 资源包已用完/已过期。原始失败形状：429 一律按限流重试 5 次，资源包用尽时约一分钟后才报告失败，云端显示「上游请求过多」。
+ */
+test('可灵 429 业务码 1302 为限流，重试；1102 资源包用完为额度用尽，不重试', async () => {
+  const clock = retryClock()
+  try {
+    const answers = [
+      Response.json({ code: 1302, message: 'too many requests' }, { status: 429 }),
+      Response.json({ code: 1102, message: 'resource pack exhausted' }, { status: 429 }),
+    ]
+    reply = () => answers.shift() ?? new Response('', { status: 500 })
+    const work = failure(
+      buildMediaAdapter({
+        kind: 'kling_videos',
+        model: 'kling-3.0',
+        apiKey: 'k',
+        baseUrl: `http://127.0.0.1:${server.port}`,
+      }).run(
+        { operation: 'text_to_video', prompt: 'x', inputs: [], params: {} },
+        { signal: signal() },
+      ),
+    )
+    await clock.waiting(1)
+    await clock.elapse(BACKOFF[0])
+    const error = await work
+    expect(hits).toEqual(['POST', 'POST'])
+    expect(error.code).toBe('insufficient_quota')
+    expect(error.message).toBe('HTTP 429 请求过多：resource pack exhausted')
+  } finally {
+    clock.restore()
+  }
+})
+
+/**
+ * 百炼 `Throttling.AllocationQuota` 的 `You exceeded your current quota` 在百炼错误码文档中是 TPS / TPM 限流，
+ * 与 OpenAI 额度用尽的原文相同；按百炼的错误码归类为限流并重试。百炼同步出图在 HTTP 200 而没有图片、正文带错误码时按接口拒绝处理。
+ */
+test('百炼同步出图：429 的 TPM 限流重试，200 正文带 Throttling 错误码重试，Arrearage 为额度用尽', async () => {
+  const clock = retryClock()
+  try {
+    const answers = [
+      Response.json(
+        {
+          code: 'Throttling.AllocationQuota',
+          message: 'You exceeded your current quota, please check your plan and billing details.',
+        },
+        { status: 429 },
+      ),
+      Response.json({ code: 'Throttling.RateQuota', message: 'Requests rate limit exceeded' }),
+      Response.json({
+        code: 'Arrearage',
+        message: 'Access denied, please make sure your account is in good standing.',
+      }),
+    ]
+    reply = () => answers.shift() ?? new Response('', { status: 500 })
+    const work = failure(
+      buildMediaAdapter({
+        kind: 'dashscope_images',
+        model: 'qwen-image-3.0',
+        apiKey: 'k',
+        baseUrl: `http://127.0.0.1:${server.port}`,
+      }).run({ operation: 'generate', prompt: 'x', inputs: [], params: {} }, { signal: signal() }),
+    )
+    // 两类原因（错误状态与 200 正文）都是限流，同一计数：第 1、2 次等待。
+    await clock.waiting(1)
+    await clock.elapse(BACKOFF[0])
+    await clock.waiting(2)
+    await clock.elapse(BACKOFF[1])
+    const error = await work
+    expect(hits).toEqual(['POST', 'POST', 'POST'])
+    expect(error.code).toBe('insufficient_quota')
+    expect(error.message).toBe(
+      '接口没有返回图片：Arrearage Access denied, please make sure your account is in good standing.',
+    )
+  } finally {
+    clock.restore()
+  }
 })

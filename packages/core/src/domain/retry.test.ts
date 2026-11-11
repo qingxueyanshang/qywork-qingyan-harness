@@ -1,11 +1,12 @@
 /**
- * 暂时故障的重试间隔与可取消的等待。覆盖 `domain/retry.ts`。
+ * 暂时故障的重试间隔、重发的退避与 Retry-After、可取消的等待。覆盖 `domain/retry.ts`。
  *
  * 等待使用假计时器推进，不实际等待 30 秒以上。
  */
 
 import { afterEach, describe, expect, jest, spyOn, test } from 'bun:test'
 import {
+  resendDelay,
   retryScheduleText,
   TRANSIENT_RETRY_DELAYS_MS,
   transientRetryDelay,
@@ -45,6 +46,33 @@ describe('重试间隔', () => {
     expect(at(0, 90_000)).toBe(90_000)
     expect(at(0, 3_600_000)).toBe(300_000)
     expect(at(1, 1_000)).toBe(120_000)
+  })
+})
+
+describe('重发的等待', () => {
+  const at = (resends: number, retryAfterMs: number | null, r = 0) => {
+    const random = spyOn(Math, 'random').mockReturnValue(r)
+    const wait = resendDelay(resends, retryAfterMs)
+    random.mockRestore()
+    return wait
+  }
+
+  test('没有 Retry-After 时 2 秒起每次加倍，不超过 30 秒，随机延后至多十分之一', () => {
+    expect([0, 1, 2, 3, 4, 5].map((n) => at(n, null))).toEqual([
+      2_000, 4_000, 8_000, 16_000, 30_000, 30_000,
+    ])
+    expect(at(0, null, 1)).toBe(2_200)
+  })
+
+  /**
+   * 对话请求与生成的重试共用这一规则。原始失败形状：对话完全按 Retry-After 等待（给出 0 秒时立即重发，
+   * 给出 10 分钟时等待 10 分钟），生成取不超过 30 秒，两处规则不同。
+   */
+  test('有 Retry-After 时按其等待，不短于退避间隔，不超过 60 秒', () => {
+    expect(at(0, 10_000)).toBe(10_000)
+    expect(at(0, 0)).toBe(2_000)
+    expect(at(2, 1_000)).toBe(8_000)
+    expect(at(0, 600_000)).toBe(60_000)
   })
 })
 

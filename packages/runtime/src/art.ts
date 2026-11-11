@@ -2,6 +2,7 @@
  * 生成端口中 `art` 类别的实现：由对话模型写出一个 HTML 页面。
  *
  * 一次请求，不带工具：系统提示词规定页面的运行环境，用户消息依次是参考图、当前页面（在其上修改）与要求。
+ * 被限流或暂时故障、尚未收到正文时按对话请求的重发规则重试。
  * 回复中取出 `<!doctype html>` … `</html>`，按尺寸参数写入 viewport 标签后作为 `text/html` 产物返回，
  * 落盘、命名与版本由调用方（`generateMedia`、画布服务）按生成产物的规则处理。
  *
@@ -16,6 +17,7 @@ import {
   type SendOutcome,
   sendLane,
   sendLimiter,
+  transientErrorCode,
 } from '@qywork/agent'
 import {
   buildAdapter,
@@ -26,7 +28,15 @@ import {
   type ProviderUsage,
   STREAM_IDLE_TIMEOUT_MS,
 } from '@qywork/ai'
-import { ART_MENTION, artSizeOf, type MediaSpend, withArtViewport } from '@qywork/core'
+import {
+  ART_MENTION,
+  artSizeOf,
+  type MediaSpend,
+  RESEND_LIMIT,
+  resendDelay,
+  waitOrAbort,
+  withArtViewport,
+} from '@qywork/core'
 import { type QyConfig, resolveModel } from './config.ts'
 
 /** 页面可用的 three.js 附加模块。与 sidecar 的 `/art/lib/addons/` 一一对应，修改时两处同时修改。 */
@@ -142,37 +152,60 @@ export async function generateArt(
   let text = ''
   let usage: ProviderUsage | null = null
   let truncated = false
-  // 与对话请求取得同一个在途名额：中转的并发按请求方计算（`sendLimiter`）。
-  let release: ((outcome: SendOutcome) => void) | null = null
-  try {
-    const granted = await sendLimiter.acquire(sendLane(adapter), signal)
-    release = granted
-    for await (const ev of adapter.stream(req)) {
-      if (ev.type === 'text_delta') text += ev.delta
-      else if (ev.type === 'usage') usage = ev.usage
-      else if (ev.type === 'done') truncated = ev.stopReason === 'max_tokens'
-    }
-    granted('completed')
-  } catch (err) {
-    release?.(concurrencyRejected(err) ? 'concurrency_rejected' : 'failed')
-    if (signal.aborted || !(err instanceof ProviderError)) throw err
-    return { ok: false, message: `${label}：${err.message}` }
-  } finally {
-    // 对话接口按 token 计费，回复不完整同样计费：收到用量即记账。
-    if (usage) {
-      const spend: MediaSpend = {
-        kind: adapter.kind,
-        provider: target.provider,
-        model: target.model,
-        output: 'art',
-        quantity: usage.outputTokens,
-        cost: computeCost(adapter.spec, usage),
-        currency: adapter.spec.pricing.currency ?? 'USD',
-        at: Date.now(),
+  for (let resends = 0; ; resends++) {
+    let failed: ProviderError | null = null
+    // 与对话请求取得同一个在途名额：中转的并发按请求方计算（`sendLimiter`）。
+    let release: ((outcome: SendOutcome) => void) | null = null
+    try {
+      const granted = await sendLimiter.acquire(sendLane(adapter), signal)
+      release = granted
+      for await (const ev of adapter.stream(req)) {
+        if (ev.type === 'text_delta') text += ev.delta
+        else if (ev.type === 'usage') usage = ev.usage
+        else if (ev.type === 'done') truncated = ev.stopReason === 'max_tokens'
       }
-      onSpend?.(spend)
-      call.onSpend?.(spend)
+      granted('completed')
+    } catch (err) {
+      release?.(concurrencyRejected(err) ? 'concurrency_rejected' : 'failed')
+      if (signal.aborted || !(err instanceof ProviderError)) throw err
+      failed = err
+    } finally {
+      // 对话接口按 token 计费，回复不完整同样计费：收到用量即记账。收到用量的请求不重发，用量只记一次。
+      if (usage) {
+        const spend: MediaSpend = {
+          kind: adapter.kind,
+          provider: target.provider,
+          model: target.model,
+          output: 'art',
+          quantity: usage.outputTokens,
+          cost: computeCost(adapter.spec, usage),
+          currency: adapter.spec.pricing.currency ?? 'USD',
+          at: Date.now(),
+        }
+        onSpend?.(spend)
+        call.onSpend?.(spend)
+      }
     }
+    if (!failed) break
+    /*
+     * 与对话请求的重发同一判定（`transientErrorCode`）与同一套次数、间隔（`RESEND_LIMIT`、`resendDelay`），
+     * 重试经 `call.onRetry` 回报，卡片显示与其他类别相同。只重发尚未收到正文与用量的请求：已收到部分页面时重发即重新生成整页，
+     * 按失败返回；收到用量（用量事件或随失败附带的 `usage`）的请求已计费。
+     */
+    if (
+      text ||
+      usage ||
+      failed.usage ||
+      !transientErrorCode(failed.code) ||
+      resends >= RESEND_LIMIT
+    ) {
+      const receipt = resends ? `；已自动重试 ${resends} 次，仍失败` : ''
+      return { ok: false, message: `${label}：${failed.message}${receipt}` }
+    }
+    call.onRetry?.({ attempt: resends + 1, max: RESEND_LIMIT, reason: failed.message })
+    // 等待被中止时不回报结束：请求没有重新发出。
+    await waitOrAbort(resendDelay(resends, failed.retryAfterMs), signal)
+    call.onRetry?.(null)
   }
 
   const html = extractHtml(text)

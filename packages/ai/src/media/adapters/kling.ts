@@ -5,6 +5,7 @@
  * 文生视频只发送 `prompt`；其余操作将文字与图片一起放入 `contents[]`。参数原样放入 `settings`。
  * 查询 `GET /tasks?task_ids={id}`，状态 `submitted / processing / succeeded / failed`，视频位于 `outputs[]` 中 `type: video` 的条目。
  *
+ * 提交的失败以 HTTP 状态码与正文的业务码 `code` 同时报告，业务码按可灵的错误码归类（`upstreamFailureCode`）：429 同时用于限流与欠费。
  * 鉴权只使用 API Key（`Authorization: Bearer`）。AccessKey / SecretKey 签名只适用于按 `model_name` 字段选择模型的接口，此处不使用。
  * 图片按 base64 发送，不带 `data:` 前缀；视频素材接口只接受 URL，因此该协议不接受参考视频。
  */
@@ -100,12 +101,13 @@ export class KlingVideosAdapter implements MediaAdapter {
         payload,
         auth,
         opts,
-        (body) => {
-          if (typeof body.code === 'number' && body.code !== 0)
-            throw new MediaError(
-              `接口拒绝生成：${failureDetail(body.code, body.message, '未提供原因')}`,
-            )
-          return body.code === 0 ? (body.data as { id?: unknown } | undefined)?.id : undefined
+        (body) => (body.code === 0 ? (body.data as { id?: unknown } | undefined)?.id : undefined),
+        {
+          vendor: 'kling',
+          refused: (body) =>
+            typeof body.code === 'number' && body.code !== 0
+              ? `接口拒绝生成：${failureDetail(body.code, body.message, '未提供原因')}`
+              : undefined,
         },
       )
       taskId = submitted.taskId

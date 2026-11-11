@@ -1845,6 +1845,62 @@ describe('定稿的正文不随会话流的增长重建', () => {
   })
 
   /**
+   * 受阻项的条件与失败项的原因已显示在待办清单每一行下方，读数条不再显示。
+   * 原始失败形状：一轮以等待用户回复结束时，读数条显示「需要用户提供：…；失败：…」，与待办清单、agent 的回复各重复一份；
+   * 以完成结束而有失败项时同样显示失败原因。
+   */
+  test('以等待用户回复结束的一轮只显示停止原因的名称；以完成结束的一轮不显示停止依据', async () => {
+    const store = await import('../lib/store/index.ts')
+    const run = (runId: string, stopReason: string, errorMessage: string) => ({
+      id: `run-${runId}`,
+      kind: 'run',
+      text: '',
+      run: { runId, stopReason, usage: null, startedAt: 1_000, endedAt: 1_500, errorMessage },
+    })
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      lastRunId: 'run_done',
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
+          runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
+          runSeq: 0,
+          error: null,
+          transcript: [
+            { id: 'u-wait', kind: 'user', text: '部署' },
+            run(
+              'run_wait',
+              'awaiting_user',
+              '需要用户提供：服务器地址；失败：无法连接，已尝试：重试三次',
+            ),
+            { id: 'u-done', kind: 'user', text: '继续' },
+            run('run_done', 'completed', '失败：无法连接，已尝试：重试三次'),
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+    try {
+      const reasons = [...host.querySelectorAll('.run-reason')]
+      expect(reasons.map((r) => r.textContent)).toEqual(['等待用户回复'])
+      expect(reasons[0]?.hasAttribute('data-tip')).toBe(false)
+      expect(host.textContent).not.toContain('服务器地址')
+      expect(host.textContent).not.toContain('无法连接')
+    } finally {
+      dispose()
+    }
+  })
+
+  /**
    * 原始失败形状：失败分支只显示错误行与参数表，参数表跳过超过 400 字的值，
    * 长命令在展开后不显示，只能靠悬停标题行查看。
    */
