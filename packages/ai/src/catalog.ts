@@ -696,6 +696,18 @@ const GPT_56_CYBER_LONG: LongContextTier = {
   note: '提示词超过 272K token 后整条请求按 $25 / $112.5（缓存 $2.5）计价',
 }
 
+/**
+ * GPT-6 Cyber 的型号页（2026-11-11 核对）：「For requests with more than 272K input tokens, Standard prices
+ * per 1M tokens are $40 for input, $4 for cached input, and $150 for output」。价目页未列该档的缓存写入价，沿用基础档。
+ */
+const GPT_6_CYBER_LONG: LongContextTier = {
+  thresholdTokens: 272_001,
+  input: 40,
+  output: 150,
+  cacheRead: 4,
+  note: '提示词超过 272K token 后整条请求按 $40 / $150（缓存 $4）计价',
+}
+
 const GPT_56_TERRA_LONG: LongContextTier = {
   thresholdTokens: 272_001,
   input: 4,
@@ -965,39 +977,11 @@ function geminiFlashPromo(now: number): Pricing {
     : { input: 1.5, output: 7.5, cacheRead: 0.15, cacheWrite5m: 0, cacheWrite1h: 0 }
 }
 
-/** Argon 的标准处理促销截至 2026-11-30；只提供隐式缓存，不另收缓存写入费。 */
-function geminiArgonPromo(now: number): Pricing {
+/** Carbon 与 Argon 的标准处理促销截至 2026-11-30，两款同价；只提供隐式缓存，不另收缓存写入费。 */
+function gemini4Promo(now: number): Pricing {
   return now < Date.UTC(2026, 11, 1)
     ? { input: 2, output: 10, cacheRead: 0.1, cacheWrite5m: 0, cacheWrite1h: 0 }
     : { input: 4, output: 20, cacheRead: 0.2, cacheWrite5m: 0, cacheWrite1h: 0 }
-}
-
-/**
- * GLM-5.3-Flash 国内站限时半价，有效期至 2026-08-31；北京时间九月一日零点恢复原价。
- *
- * 与 `geminiFlashPromo` 结构与理由相同：**按当前时间取值，不硬编码**，
- * 否则自九月一日起账单会静默算错。
- */
-const GLM_53_FLASH_PROMO_EXPIRES = Date.UTC(2026, 7, 31, 16, 0, 0)
-
-function glm53FlashPromo(now: number): Pricing {
-  return now < GLM_53_FLASH_PROMO_EXPIRES
-    ? {
-        input: 0.4,
-        output: 1.4,
-        cacheRead: 0.115,
-        cacheWrite5m: 0,
-        cacheWrite1h: 0,
-        currency: 'CNY',
-      }
-    : {
-        input: 0.8,
-        output: 2.8,
-        cacheRead: 0.23,
-        cacheWrite5m: 0,
-        cacheWrite1h: 0,
-        currency: 'CNY',
-      }
 }
 
 /**
@@ -1062,6 +1046,15 @@ export function claudeCatalog(): ModelSpec[] {
       // 2026-10-24 核对：https://platform.claude.com/docs/en/about-claude/pricing
       pricing: anthropicPricing(0.1, 0.5),
       longContext: [CLAUDE_HAIKU_55_LONG],
+      thinksByDefault: true,
+      minCacheablePrefix: 512,
+    },
+    {
+      ...CLAUDE_BASE,
+      id: 'claude-fable-5-2',
+      displayName: 'Claude Fable 5.2',
+      // 2026-11-11 核对官方价目页：缓存读取是输入价的 0.025 倍；写入仍是 1.25 / 2 倍。
+      pricing: { ...anthropicPricing(8, 40), cacheRead: 0.2 },
       thinksByDefault: true,
       minCacheablePrefix: 512,
     },
@@ -1470,6 +1463,22 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       pricing: usd(0.1, 0.5, 0.01, 0.125),
       longContext: [GPT_6_LUNA_LONG],
     },
+    {
+      ...base,
+      // 型号页只写明支持推理，未列出档位，不声明强度。
+      ...thinksNoDial,
+      id: 'gpt-6-cyber',
+      displayName: 'GPT-6 Cyber',
+      vendor: 'openai',
+      // 2026-11-11 核对：https://developers.openai.com/api/docs/models/gpt-6-cyber
+      // 须经 Trusted Access 批准后才能调用。
+      provider: 'openai_responses',
+      vision: true,
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(20, 100, 2, 25),
+      longContext: [GPT_6_CYBER_LONG],
+    },
     /*
      * ── OpenAI GPT-5.6 ──
      *
@@ -1537,11 +1546,12 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     /*
      * ── Google Gemini ──
      *
-     * 官方定价页（Argon 于 2026-10-14 核对），单位 $/百万：
+     * 官方定价页（2026-11-11 核对），单位 $/百万：
      *
      * | 模型 | 输入 | 输出 | 缓存 | 备注 |
      * |---|---|---|---|---|
-     * | gemini-4-argon | 2.00 | 10.00 | 0.10 | 促销至 2026-11-30，之后 4.00 / 20.00 / 0.20 |
+     * | gemini-4-carbon | 2.00 | 10.00 | 0.10 | 促销至 2026-11-30，之后 4.00 / 20.00 / 0.20 |
+     * | gemini-4-argon | 2.00 | 10.00 | 0.10 | 同上 |
      * | gemini-3.1-pro-preview | 2.00 | 12.00 | 0.20 | >200k：4.00 / 18.00 / 0.40 |
      * | gemini-3.8-flash | 0.75 | 3.75 | 0.075 | 促销至 2026-12-31，之后 1.50 / 7.50 / 0.15 |
      * | gemini-3.6-flash | 0.75 | 3.75 | 0.075 | 同上 |
@@ -1552,9 +1562,25 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * Pro 的 id 是 `gemini-3.1-pro-preview`。
      *
      * 3.6 Flash 另有 `minimal`；3.8 Flash 与 3.1 Pro 从 `low` 起。
-     * 3.x 给出 1,048,576 输入与 65,536 输出上限。Argon 的输入、思考和输出共用 1M 窗口；
+     * 3.x 给出 1,048,576 输入与 65,536 输出上限。Carbon 与 Argon 的输入、思考和输出共用 1M 窗口；
      * 当前 Chat 接入单次输出上限为 65,536，1M 长输出需另行接入后台续接。
+     * Carbon 的型号页：思考档位 low / medium / high，只提供隐式缓存；分词器未标定，使用上界档。
      */
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high']),
+      id: 'gemini-4-carbon',
+      displayName: 'Gemini 4 Carbon',
+      vendor: 'google',
+      vision: true,
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+      chatReasoningProtocol: 'google_signatures',
+      chatToolSchema: 'native',
+      cacheRouting: 'none',
+      minCacheablePrefix: 4096,
+      pricing: gemini4Promo(now),
+    },
     {
       ...base,
       ...effort(['low', 'medium', 'high']),
@@ -1569,7 +1595,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       chatToolSchema: 'native',
       cacheRouting: 'none',
       minCacheablePrefix: 4096,
-      pricing: geminiArgonPromo(now),
+      pricing: gemini4Promo(now),
     },
     {
       ...base,
@@ -1876,12 +1902,12 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     /*
      * ── 智谱 ──
      *
-     * 价目来源：智谱国内站价目表（2026-09-22 核对），单位 ¥/百万：
+     * 价目来源：智谱国内站价目表（2026-11-11 核对），单位 ¥/百万：
      *
      * | 模型 | 输入 | 缓存命中 | 输出 |
      * |---|---|---|---|
      * | glm-5.3 | 8 | 2 | 28 |
-     * | glm-5.3-flash | 0.8（限时 0.4） | 0.23（限时 0.115） | 2.8（限时 1.4） |
+     * | glm-5.3-flash | 0.8 | 0.23 | 2.8 |
      * | glm-5.3-flashx | 2 | 0.57 | 7 |
      * | glm-5.2 | 8 | 2 | 28 |
      * | glm-4.7 | 2 | 0.4 | 8 |
@@ -1911,7 +1937,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
         id: 'glm-5.3-flash',
         displayName: 'GLM-5.3 Flash',
         vision: true,
-        pricing: glm53FlashPromo(now),
+        pricing: cny(0.8, 2.8, 0.23),
       },
       {
         id: 'glm-5.3-flashx',

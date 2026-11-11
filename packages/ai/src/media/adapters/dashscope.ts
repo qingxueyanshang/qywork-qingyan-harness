@@ -208,15 +208,16 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
     )
     const audio = (body.output as { audio?: { url?: unknown; data?: unknown } } | undefined)?.audio
     const raw = (body.usage ?? {}) as Record<string, unknown>
-    // 新系列按 Token 计费；Next 的 duration 不能代替 Token。旧系列仍按 characters。
-    const usage = defined<MediaUsage>(
-      format
-        ? {
-            inputTokens: count(raw.input_tokens),
-            outputTokens: count(raw.output_tokens),
-          }
-        : { characters: count(raw.characters) },
-    )
+    // 新系列中 Flash 与 Next 按 Token 计费，Plus 按字符计费：回报了 Token 时取 Token，否则取 characters。
+    // Next 的 duration 不能代替 Token。旧系列只按 characters。
+    const tokens = defined<MediaUsage>({
+      inputTokens: count(raw.input_tokens),
+      outputTokens: count(raw.output_tokens),
+    })
+    const usage =
+      format && Object.keys(tokens).length
+        ? tokens
+        : defined<MediaUsage>({ characters: count(raw.characters) })
     if (typeof audio?.url === 'string' && audio.url) {
       const file = await download(audio.url, signal)
       return { files: [{ ...file, bytes: wavWithActualLengths(file.bytes) }], usage }

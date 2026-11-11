@@ -291,17 +291,28 @@ function perMillionOutputTokens(
   }
 }
 
-// ── 价格（2026-09-26 核对官方价格页，均为原价，不计限时折扣与免费额度）──
+// ── 价格（2026-09-26 核对官方价格页，不计免费额度；除万相视频 3.0 外均为原价）──
 // OpenAI「Pricing」图像生成：GPT Image 2、2.5 与 2.6 文字输入 $5、图片输入 $8、图片输出 $30，每百万 token
 // （2026-10-22 核对 2，2026-11-05 核对 2.6）；
 // Images API 不计缓存输入。
-const gptImagePrice: MediaPrice = {
-  currency: 'USD',
+const imageTokenPrice = (
+  currency: Currency,
+  text: number,
+  image: number,
+  output: number,
+): MediaPrice => ({
+  currency,
   cost: (u) =>
     u.outputTokens === undefined
       ? null
-      : ((u.inputTextTokens ?? 0) * 5 + (u.inputImageTokens ?? 0) * 8 + u.outputTokens * 30) / 1e6,
-}
+      : ((u.inputTextTokens ?? 0) * text +
+          (u.inputImageTokens ?? 0) * image +
+          u.outputTokens * output) /
+        1e6,
+})
+const gptImagePrice = imageTokenPrice('USD', 5, 8, 30)
+// MiniMax 价格页（2026-11-11 核对）：H3-Image 文本输入 ¥15、图片输入 ¥10、图片输出 ¥25，每百万 token；
+// Highspeed 的图片输入 ¥20、图片输出 ¥50。4K 的限时五折截至 2026-11-18，不计入。
 // 火山方舟「模型价格」：Seedream 5.0 Pro 单图 ≤ 261 万像素 ¥0.30、> 261 万像素 ¥0.60，输入图首张免费、第 2 张起 ¥0.02；
 // 像素按 `output_tokens`（像素总数 / 256）折算每张。Flash 每张 ¥0.12，输入图免费。
 const seedreamProPrice = perImage(
@@ -336,12 +347,14 @@ const qwenImagePrice = (rates: Record<string, number>): MediaPrice => ({
   },
 })
 // 千问图像 2.1 Pro（2026-10-14 核对官方型号页）：北京地域每张输出 ¥0.25，参考图不另计费。
-const qwenImage21ProPrice: MediaPrice = {
-  ...perImage('CNY', () => 0.25),
+// 2.1 Turbo（2026-11-11 核对价格页）：北京地域每张输出 ¥0.1。
+const qwenImage21Price = (rate: number): MediaPrice => ({
+  ...perImage('CNY', () => rate),
   usageOf: (p) => ({ images: Number(p.n) }),
-}
+})
 // 万相图像 2.7 Pro ¥0.50、2.7 ¥0.20 每张，只按输出计费。
-// 万相视频 3.0 Prime 480P ¥0.45、720P ¥0.9、1080P ¥1.8 每秒；3.0 ¥0.3、¥0.6、¥1.2；计费秒数含输入视频时长。
+// 万相视频 3.0 Prime 480P ¥0.45、720P ¥0.9、1080P ¥1.8 每秒；计费秒数含输入视频时长。
+// 3.0 原价 ¥0.3、¥0.6、¥1.2，价目页标「限时 7 折」且未写截止日期（2026-11-11 核对），目录按折后价填写。
 const wanVideoPrice = (rates: Record<string, number>): MediaPrice => ({
   ...perSecond('CNY', (u) => tier(rates, u.resolution)),
   // 有参考视频时计费秒数含输入视频时长，发送前无法确定，不估算；-1（由模型决定）同样不估算。
@@ -522,6 +535,63 @@ const gptImage26Params: readonly MediaParamSpec[] = [
   },
 ]
 
+// ── MiniMax H3-Image（2026-11-11 核对「文生图」「图片编辑」接口）──
+// 接口为 OpenAI 形状的 `/v1/images/generations` 与 multipart `/v1/images/edits`，同步返回，默认返回 24 小时有效的地址。
+// 尺寸只提供「宽x高」：省略尺寸时接口按 4K 出图。不提供 `aspect_ratio` 与 `area`，两者与「宽x高」互斥。
+const h3ImageParams: readonly MediaParamSpec[] = [
+  {
+    name: 'size',
+    label: '尺寸',
+    type: 'string',
+    pattern: '^\\d+x\\d+$',
+    default: '2048x2048',
+    sizeLimits: { minPixels: 655_360, maxPixels: 20_000_000, maxRatio: 3 },
+    shapes: sizeTable({
+      tiers: [TIER_1K, TIER_2K, { tier: '4K', side: 4096 }],
+      sep: 'x',
+      shorthand: false,
+    }).filter((s) => s.value !== undefined),
+    description: '输出尺寸，宽x高；总像素 655,360 至 20,000,000，宽高比不超过 3:1',
+  },
+  {
+    name: 'n',
+    label: '张数',
+    type: 'integer',
+    min: 1,
+    max: 10,
+    default: 1,
+    description: '一次生成的张数',
+  },
+  {
+    name: 'output_format',
+    label: '输出格式',
+    advanced: true,
+    type: 'enum',
+    values: ['png', 'jpeg', 'webp'],
+    default: 'jpeg',
+    description: '输出格式',
+  },
+  {
+    name: 'output_compression',
+    label: '压缩质量',
+    advanced: true,
+    type: 'integer',
+    min: 0,
+    max: 100,
+    default: 95,
+    rules: [{ when: { params: { output_format: ['png'] } }, available: false }],
+    description: 'jpeg / webp 的压缩质量',
+  },
+  {
+    name: 'aigc_watermark',
+    label: '水印',
+    advanced: true,
+    type: 'boolean',
+    default: false,
+    description: '在图片上添加可见的 AIGC 标识',
+  },
+]
+
 // ── 火山方舟 Seedream 5.0（2026-09-25 核对方舟「图片生成 API」与模型列表）──
 const seedreamParams: readonly MediaParamSpec[] = [
   {
@@ -654,7 +724,7 @@ const qwenImageParams: readonly MediaParamSpec[] = [
   },
 ]
 
-// 2.1 Pro（2026-10-14 核对同一 API）：最多 10 张参考图，不支持 negative_prompt。
+// 2.1 Pro 与 2.1 Turbo（2026-11-11 核对同一 API，两款的参数在 2.1 系列下合并说明）：最多 10 张参考图，不支持 negative_prompt。
 // 透明背景由提示词控制，输出 PNG；接口未提供 background、output_format 或独立 mask 字段。
 const qwenImage21Params = qwenImageParams.filter((p) => p.name !== 'negative_prompt')
 
@@ -1306,6 +1376,26 @@ const SEEDS: readonly MediaModelSpec[] = [
     gptImagePrice,
   ),
   spec(
+    'MiniMax-H3-Image',
+    'MiniMax H3 Image',
+    'MiniMax',
+    'openai_images',
+    IMAGE_OPERATIONS,
+    { maxImages: 16, maxVideos: 0, transport: 'multipart' },
+    h3ImageParams,
+    imageTokenPrice('CNY', 15, 10, 25),
+  ),
+  spec(
+    'MiniMax-H3-Image-Highspeed',
+    'MiniMax H3 Image Highspeed',
+    'MiniMax',
+    'openai_images',
+    IMAGE_OPERATIONS,
+    { maxImages: 16, maxVideos: 0, transport: 'multipart' },
+    h3ImageParams,
+    imageTokenPrice('CNY', 15, 20, 50),
+  ),
+  spec(
     'doubao-seedream-5-0-pro-260628',
     'Seedream 5.0 Pro',
     '火山引擎',
@@ -1357,7 +1447,19 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 10, maxVideos: 0, transport: 'json' },
     qwenImage21Params,
-    qwenImage21ProPrice,
+    qwenImage21Price(0.25),
+    undefined,
+    { openai_images: { params: compatibleImageParams(qwenImage21Params) } },
+  ),
+  spec(
+    'qwen-image-2.1-turbo',
+    'Qwen Image 2.1 Turbo',
+    '阿里云',
+    'dashscope_images',
+    IMAGE_OPERATIONS,
+    { maxImages: 10, maxVideos: 0, transport: 'json' },
+    qwenImage21Params,
+    qwenImage21Price(0.1),
     undefined,
     { openai_images: { params: compatibleImageParams(qwenImage21Params) } },
   ),
@@ -1393,7 +1495,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     VIDEO_OPERATIONS,
     { maxImages: 10, maxVideos: 5, maxAudios: 5, transport: 'json' },
     wanVideoParams,
-    wanVideoPrice({ '480p': 0.3, '720p': 0.6, '1080p': 1.2 }),
+    wanVideoPrice({ '480p': 0.21, '720p': 0.42, '1080p': 0.84 }),
     WAN_MENTION,
     WAN_VIDEO_MAPPING,
   ),
@@ -1760,6 +1862,7 @@ const METER_PARAMS: Readonly<
   dashscope_speech: {},
   minimax_speech: {},
   mimo_speech: {},
+  gemini_speech: {},
   // 云端协议按原协议计量（`lookupMediaModel` 的云端规格）。
   qywork_images: {},
   qywork_videos: {},

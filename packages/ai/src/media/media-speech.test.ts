@@ -1,8 +1,9 @@
 /**
- * 语音合成：四个语音适配器与按文件头识别格式。
+ * 语音合成：五个语音适配器与按文件头识别格式。
  *
  * 覆盖范围：`media/adapters/openai-speech.ts`、`media/adapters/dashscope.ts` 的 `DashScopeSpeechAdapter`、
- * `media/adapters/minimax.ts`、`media/adapters/mimo.ts` 实际发出的请求与响应的解析方式，`media/http.ts` 的 `sniffMime` 对音视频文件头的识别，
+ * `media/adapters/minimax.ts`、`media/adapters/mimo.ts`、`media/adapters/google.ts` 的 `GeminiSpeechAdapter`
+ * 实际发出的请求与响应的解析方式，`media/http.ts` 的 `sniffMime` 对音视频文件头的识别，
  * `catalog-minimax-audio.ts` 的单价。
  */
 
@@ -463,6 +464,130 @@ describe('Qwen-Audio 3.1', () => {
     expect(validateMediaCall(spec(next), 'speech', {}, { ...counts, audios: 3 })).toEqual([])
     expect(validateMediaCall(spec(next), 'speech', {}, { ...counts, audios: 4 })).toHaveLength(1)
     expect(validateMediaCall(spec(flash), 'speech', {}, { ...counts, audios: 1 })).toHaveLength(1)
+  })
+})
+
+describe('Qwen-Audio 3.1 Plus', () => {
+  const plus = 'qwen-audio-3.1-tts-plus'
+  const spec = lookupMediaModel(plus, 'dashscope_speech')
+
+  test('与 Flash 同一端点；按接口回报的字符数计价，每万字符 ¥1.4', async () => {
+    reply = () =>
+      Response.json({
+        output: { audio: { url: `${origin()}/files/out.mp3` } },
+        usage: { characters: 20_000 },
+      })
+    const out = await buildMediaAdapter({
+      kind: 'dashscope_speech',
+      model: plus,
+      apiKey: 'sk',
+      baseUrl: `${origin()}/ali/compatible-mode/v1`,
+    }).run({ operation: 'speech', prompt: '你好。', inputs: [], params: {} }, signal())
+    expect(seen[0]?.path).toBe('/ali/api/v1/services/audio/tts/SpeechSynthesizer')
+    expect(seen[0]?.json).toMatchObject({
+      model: plus,
+      input: { text: '你好。', voice: 'longanhuan_v3.1', format: 'mp3' },
+    })
+    expect(out.usage).toEqual({ characters: 20_000 })
+    expect(mediaCost(spec, out.usage ?? {})).toEqual({
+      cost: expect.closeTo(2.8, 10),
+      currency: 'CNY',
+    })
+    // 接口只回报 token 时没有字符数，金额不明。
+    expect(mediaCost(spec, { inputTokens: 10, outputTokens: 10 }).cost).toBe(0)
+  })
+
+  test('音色只有 Plus 列表中的四个', () => {
+    const voice = spec.params.find((p) => p.name === 'voice')
+    expect(voice?.presets).toEqual([
+      'longanlingxin_v3.1',
+      'xunanchuan_v3.1',
+      'longanhuan_v3.1',
+      'longanfengyue_v3.1',
+    ])
+    expect(Object.keys(voice?.valueLabels ?? {})).toHaveLength(4)
+  })
+})
+
+describe('gemini_speech', () => {
+  const model = 'gemini-3.8-flash-tts'
+  const adapter = () =>
+    buildMediaAdapter({
+      kind: 'gemini_speech',
+      model,
+      apiKey: 'key',
+      baseUrl: `${origin()}/v1beta`,
+    })
+  const ok = () =>
+    Response.json({
+      status: 'completed',
+      steps: [
+        {
+          type: 'model_output',
+          content: [
+            { type: 'audio', mime_type: 'audio/wav', data: Buffer.from(WAV).toString('base64') },
+          ],
+        },
+      ],
+      usage: {
+        total_input_tokens: 1_000_000,
+        total_output_tokens: 1_000_000,
+        output_tokens_by_modality: [{ modality: 'audio', tokens: 1_000_000 }],
+      },
+    })
+
+  test('朗读文本放入文字块，朗读要求作为注记，音色放入 speech_config', async () => {
+    reply = ok
+    const out = await adapter().run(
+      {
+        operation: 'speech',
+        prompt: 'Have a wonderful day!',
+        inputs: [],
+        params: { voice: 'Puck', style: 'cheerful and friendly' },
+      },
+      signal(),
+    )
+    expect(seen[0]).toEqual({
+      path: '/v1beta/interactions',
+      json: {
+        model,
+        input: [
+          {
+            type: 'user_input',
+            content: [
+              {
+                type: 'text',
+                text: 'Have a wonderful day!',
+                annotations: [{ type: 'speech_metadata', style: 'cheerful and friendly' }],
+              },
+            ],
+          },
+        ],
+        response_format: { type: 'audio' },
+        generation_config: { speech_config: [{ voice: 'Puck' }] },
+      },
+    })
+    expect(out.files).toEqual([{ bytes: WAV, mime: 'audio/wav' }])
+    // 促销期内：输入 $0.5、音频输出 $9 每百万 token。
+    const cost = mediaCost(lookupMediaModel(model, 'gemini_speech'), out.usage ?? {}).cost
+    expect(cost).toBeCloseTo(Date.now() < Date.UTC(2027, 0, 1) ? 9.5 : 19, 10)
+  })
+
+  test('未填写时使用目录的默认音色，不发送注记；没有音频时报错', async () => {
+    reply = ok
+    await adapter().run({ operation: 'speech', prompt: 'Hi.', inputs: [], params: {} }, signal())
+    expect(seen[0]?.json?.generation_config).toEqual({ speech_config: [{ voice: 'Kore' }] })
+    expect(JSON.stringify(seen[0]?.json)).not.toContain('annotations')
+    reply = () => Response.json({ status: 'failed', error: { message: 'blocked' } })
+    await expect(
+      adapter().run({ operation: 'speech', prompt: 'Hi.', inputs: [], params: {} }, signal()),
+    ).rejects.toThrow('接口没有返回音频')
+  })
+
+  test('Google 官方地址的音频默认使用该协议', () => {
+    expect(defaultMediaKind('audio', 'https://generativelanguage.googleapis.com/v1beta')).toBe(
+      'gemini_speech',
+    )
   })
 })
 

@@ -938,6 +938,57 @@ describe('目录中的价格与档位', () => {
     expect(spec('claude-fable-5', 'anthropic_messages').pricing.cacheRead).toBe(1)
   })
 
+  test('Claude Fable 5.2 的价格逐项与官方价目页一致', () => {
+    const fable = spec('claude-fable-5-2', 'anthropic_messages')
+    expect(fable.displayName).toBe('Claude Fable 5.2')
+    expect(fable.contextWindow).toBe(1_000_000)
+    expect(fable.maxOutputTokens).toBe(128_000)
+    expect(fable.minCacheablePrefix).toBe(512)
+    expect(fable.pricing).toMatchObject({
+      input: 8,
+      output: 40,
+      cacheRead: 0.2,
+      cacheWrite5m: 10,
+      cacheWrite1h: 16,
+    })
+  })
+
+  test('Gemini 4 Carbon 与 Argon 同价，促销结束后恢复标准价', () => {
+    const carbon = spec('gemini-4-carbon')
+    expect(carbon.vendor).toBe('google')
+    expect(carbon.contextWindow).toBe(1_048_576)
+    expect(carbon.maxOutputTokens).toBe(65_536)
+    expect(carbon.effortLevels).toEqual(['low', 'medium', 'high'])
+    expect(carbon.chatReasoningProtocol).toBe('google_signatures')
+    for (const id of ['gemini-4-carbon', 'gemini-4-argon']) {
+      const at = (now: number) => lookupModel(id, 'openai_chat_completions', now).pricing
+      expect(at(Date.UTC(2026, 10, 30))).toMatchObject({ input: 2, output: 10, cacheRead: 0.1 })
+      expect(at(Date.UTC(2026, 11, 1))).toMatchObject({ input: 4, output: 20, cacheRead: 0.2 })
+    }
+  })
+
+  test('GPT-6 Cyber 的价格与长上下文档；不声明思考档位', () => {
+    const cyber = lookupModel('gpt-6-cyber', 'openai_responses')
+    expect(cyber.contextWindow).toBe(1_050_000)
+    expect(cyber.effortLevels).toEqual([])
+    expect(cyber.pricing).toMatchObject({ input: 20, output: 100, cacheRead: 2, cacheWrite5m: 25 })
+    expect(priceAt(cyber, { promptTokens: 272_001 })).toMatchObject({
+      input: 40,
+      output: 150,
+      cacheRead: 4,
+      cacheWrite5m: 25,
+    })
+  })
+
+  test('GLM-5.3 Flash 按原价计价', () => {
+    expect(spec('glm-5.3-flash').pricing).toMatchObject({
+      input: 0.8,
+      output: 2.8,
+      cacheRead: 0.23,
+      currency: 'CNY',
+    })
+  })
+
   test('Sonnet 5 的引入价已转为长期标准价', () => {
     const afterPlannedIncrease = lookupModel(
       'claude-sonnet-5',
@@ -979,21 +1030,6 @@ describe('目录中的价格与档位', () => {
     expect(spec('glm-5v-turbo').pricing.input).toBe(5)
     expect(spec('glm-4.6v').pricing.input).toBe(1)
     expect(spec('glm-5.3').effortLevels).toEqual(['low', 'high', 'max'])
-  })
-
-  test('GLM-5.3 Flash 国内站限时价在北京时间九月一日自动恢复', () => {
-    const before = lookupModel(
-      'glm-5.3-flash',
-      'openai_chat_completions',
-      Date.UTC(2026, 7, 31, 15, 59, 59),
-    ).pricing
-    expect(before).toMatchObject({ input: 0.4, output: 1.4, cacheRead: 0.115, currency: 'CNY' })
-    const after = lookupModel(
-      'glm-5.3-flash',
-      'openai_chat_completions',
-      Date.UTC(2026, 7, 31, 16),
-    ).pricing
-    expect(after).toMatchObject({ input: 0.8, output: 2.8, cacheRead: 0.23, currency: 'CNY' })
   })
 
   test('Kimi K3 系列三档，Qwen3.8 Max 与 Omni Flash 已收录', () => {

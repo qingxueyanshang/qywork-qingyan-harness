@@ -54,6 +54,45 @@
 [思考签名](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)、
 [价格](https://ai.google.dev/gemini-api/docs/pricing)。本地协议回归不等同于官方端点实测。
 
+## Claude Fable 5.2、Gemini 4 Carbon 与 GPT-6 Cyber
+
+| 模型 ID | 接口 | 上下文 / 输出上限 | 价格（美元 / 百万 token：输入 / 输出 / 缓存读取） |
+|---|---|---|---|
+| `claude-fable-5-2` | Anthropic Messages | 1,000,000 / 128,000 | 8 / 40 / 0.20，缓存写入 10（5 分钟）、16（1 小时） |
+| `gemini-4-carbon` | OpenAI Chat Completions | 1,048,576 / 65,536 | 与 Gemini 4 Argon 相同，同样自 2026-12-01 起恢复 4 / 20 / 0.20 |
+| `gpt-6-cyber` | OpenAI Responses | 1,050,000 / 128,000 | 20 / 100 / 2，缓存写入 25；提示词超过 272K 后整条请求 40 / 150 / 4 |
+
+Fable 5.2 的思考档位为 `low / medium / high / xhigh / max`。Carbon 的思考档位为 `low / medium / high`，仅支持隐式缓存，
+请求方式按 Argon 填写；tokenizer 密度未标定，使用通用保守估算。GPT-6 Cyber 须经 OpenAI Trusted Access 批准后才能调用，
+官方型号页未列出思考档位，目录不提供档位选择。三个型号均未用官方端点实测。
+
+2026-11-11 核对：[Anthropic 价格](https://platform.claude.com/docs/en/about-claude/pricing)、
+[Gemini 4 Carbon](https://aistudio.google.com/docs/models/gemini-4-carbon)、[Google 价格](https://aistudio.google.com/docs/pricing)、
+[GPT-6 Cyber](https://developers.openai.com/api/docs/models/gpt-6-cyber)、[OpenAI 价格](https://developers.openai.com/api/docs/pricing)。
+
+## 2026-11-11 接入的生成型号
+
+| 类别 | 模型 ID | 接入方式 | 价格 |
+|---|---|---|---|
+| 图像 | `MiniMax-H3-Image` | OpenAI 兼容图片，Base URL `https://api.minimax.cn/v1` | 每百万 token：文字输入 ¥15、图片输入 ¥10、图片输出 ¥25 |
+| 图像 | `MiniMax-H3-Image-Highspeed` | 同上 | 每百万 token：文字输入 ¥15、图片输入 ¥20、图片输出 ¥50 |
+| 音频 | `qwen-audio-3.1-tts-plus` | 百炼 | 每万字符 ¥1.4 |
+| 音频 | `gemini-3.8-flash-tts` | Gemini，Base URL `https://generativelanguage.googleapis.com/v1beta` | 每百万 token：文字输入 $0.5、音频输出 $9，2027-01-01 起两项均为 2 倍 |
+| 音频 | `gemini-3.8-flash-lite-tts` | 同上 | 每百万 token：文字输入 $0.5、音频输出 $6，2027-01-01 起两项均为 2 倍 |
+
+MiniMax H3-Image 支持文生图与最多 16 张参考图的修改，尺寸为「宽x高」（1K / 2K / 4K 各宽高比），默认 2048x2048；
+未接入 `aspect_ratio`、`area` 与流式输出。4K 的限时五折（截至 2026-11-18）不计入目录单价。
+`qwen-audio-3.1-tts-plus` 与 Flash 使用同一端点与参数，系统音色只有四个；金额按接口回报的字符数计算，接口未回报字符数时显示 N/A。
+Gemini 语音合成经 Interactions 接口同步返回 WAV（24 kHz、单声道），提供 30 个预置音色与朗读要求；未接入多说话人与流式输出。
+五个型号均通过本地请求捕获与计价回归，尚未用官方端点实测。
+
+依据：[MiniMax 文生图](https://platform.minimax.cn/docs/api-reference/image-generation-h3-generations)、
+[MiniMax 图片编辑](https://platform.minimax.cn/docs/api-reference/image-generation-h3-edits)、
+[MiniMax 价格](https://platform.minimax.cn/docs/pricing/overview)、
+[Qwen-Audio-TTS HTTP API](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-http-api)、
+[Qwen-Audio-TTS 音色列表](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list)、
+[Gemini 语音生成](https://aistudio.google.com/docs/speech-generation)、[Google 价格](https://aistudio.google.com/docs/pricing)。
+
 ## MiniMax M3.1 Flash 与 Step 5 Preview
 
 收录 `MiniMax-M3.1-Flash` 与 `step-5-preview`，不追加 MiniMax M2.x、Step 3.x 历史型号。
@@ -103,13 +142,20 @@ xAI 官方 Base URL 为 `https://api.x.ai/v1`；已收录生成模型默认使�
 |---|---|---|
 | 图像 | `gemini-3.1-flash-lite-image` | Nano Banana 2 Lite |
 | 图像 | `gemini-3.1-flash-image` | Nano Banana 2 |
+| 图像 | `gemini-nano-banana-2.1` | Nano Banana 2.1 |
 | 图像 | `gemini-3-pro-image` | Nano Banana Pro |
 | 图像 | `grok-imagine-image-2.0` | Grok Imagine Image 2.0 |
+| 视频 | `gemini-omni-1.2-flash` | Gemini Omni 1.2 Flash |
 | 视频 | `gemini-omni-1.1-flash` | Gemini Omni Flash |
 | 视频 | `veo-3.1-generate-preview` | Veo 3.1 |
 | 视频 | `veo-3.1-fast-generate-preview` | Veo 3.1 Fast |
 | 视频 | `veo-3.1-lite-generate-preview` | Veo 3.1 Lite |
 | 视频 | `grok-imagine-video-1.5` | Grok Imagine Video 1.5 |
+| 视频 | `grok-imagine-video-1.5-lite` | Grok Imagine Video 1.5 Lite |
+
+2026-11-11 核对官方价目页与弃用页：Nano Banana 2.1 支持 1K / 2K / 4K；`gemini-omni-1.1-flash` 自 2026-12-03 起由
+`gemini-omni-1.2-flash` 提供服务；Veo 3.1 三款已于 2026-10-22 在 Gemini API 关停，目录条目供仍提供该型号的中转站使用。
+Grok Imagine Video 1.5 Lite 接入文生与首帧，官方只公布 $0.020 每秒，发送前只对 480p 且没有输入图片的请求显示报价。
 
 Gemini 图片支持生成与参考图修改。Omni 接入文生、首帧、首尾帧、参考图和单个视频输入；
 Veo 接入文生、首帧、首尾帧，Standard / Fast 另支持参考图；Veo 的视频延长未接入。
@@ -368,6 +414,10 @@ Sub2API 提供 xAI 格式的 Grok 视频与方舟格式的 Seedance 接口时，
 新加坡地域价格不同，当前目录不按地域切换价格；兼容协议不继承原生单价。
 已通过本地请求捕获、参数校验、PNG 下载及计费回归，尚未进行此型号的真实云端生成。
 依据：[官方型号与价格](https://help.aliyun.com/zh/model-studio/qwen-image-2-1-pro)、[生成与编辑 API](https://help.aliyun.com/zh/model-studio/qwen-image-generation-and-editing-api-reference)。
+
+2026-11-11 补充 `qwen-image-2.1-turbo`（千问图像 2.1 Turbo）：参数与 2.1 Pro 相同，北京地域 ¥0.1/张输出。
+同日核对[百炼价格页](https://help.aliyun.com/zh/model-studio/model-pricing)：`wan3.0-video` 标「限时 7 折」且未写截止日期，
+目录按折后价 ¥0.21 / ¥0.42 / ¥0.84 每秒（480P / 720P / 1080P）计价。
 
 2026-10-14 新增千问音频 3.1，接入方式均为「百炼」，使用非流式 HTTP 获取完整音频文件：
 

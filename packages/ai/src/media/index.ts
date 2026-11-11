@@ -9,7 +9,7 @@ import {
   DashScopeSpeechAdapter,
   DashScopeVideosAdapter,
 } from './adapters/dashscope.ts'
-import { GeminiMediaAdapter, VeoVideosAdapter } from './adapters/google.ts'
+import { GeminiMediaAdapter, GeminiSpeechAdapter, VeoVideosAdapter } from './adapters/google.ts'
 import { KlingVideosAdapter } from './adapters/kling.ts'
 import { MiMoSpeechAdapter } from './adapters/mimo.ts'
 import {
@@ -61,6 +61,8 @@ export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {
       return new MiniMaxVideosAdapter(profile, spec)
     case 'mimo_speech':
       return new MiMoSpeechAdapter(profile, spec)
+    case 'gemini_speech':
+      return new GeminiSpeechAdapter(profile, spec)
     case 'qywork_images':
     case 'qywork_videos':
     case 'qywork_speech':
