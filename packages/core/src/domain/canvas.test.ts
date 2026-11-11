@@ -928,13 +928,18 @@ describe('画布：操作', () => {
 
     const plain = apply(doc, copyOps(doc, ['s1', 's3'], doc, { dx: 40, dy: 40 }, false), ids('c'))
     const card = gen(plain, 'c2')
-    expect(card).toMatchObject({ name: '视频1', x: 440, y: 40, params: { duration: 5 } })
+    expect(card).toMatchObject({ name: '视频1 副本', x: 440, y: 40, params: { duration: 5 } })
     expect(card.versions).toEqual([])
     expect(card.prompt).toBe('@[c1] 走过 街口')
     expect(plain.edges.filter((e) => e.to === 'c2').map((e) => e.from)).toEqual(['c1'])
 
     const linked = apply(doc, copyOps(doc, ['s3'], doc, { dx: 0, dy: 400 }, true), ids('c'))
     expect(gen(linked, 'c1').prompt).toBe('@[s1] 走过 @[s2]')
+    // 画布中已有「视频1 副本」时再加序号。
+    expect(
+      gen(apply(plain, copyOps(plain, ['s3'], plain, { dx: 0, dy: 800 }, true), ids('d')), 'd1')
+        .name,
+    ).toBe('视频1 副本 2')
     expect(
       linked.edges
         .filter((e) => e.to === 'c1')
@@ -949,7 +954,30 @@ describe('画布：操作', () => {
       ids('o'),
     )
     expect(gen(other, 'o1').prompt).toBe('小满 走过 街口')
+    expect(gen(other, 'o1').name).toBe('视频1')
     expect(other.edges).toEqual([])
+  })
+
+  test('复制带组的卡：副本不带组，删除副本后原列各卡的位置不变', () => {
+    const shot = (name: string): CanvasOp => ({
+      op: 'add_generate',
+      output: 'video',
+      name,
+      prompt: '',
+      params: {},
+      group: '分镜',
+    })
+    const doc = apply(emptyCanvas(), [shot('1-1'), shot('1-2'), shot('1-3')], ids('s'))
+    // 用户把一张卡拖离按组排位的位置。
+    const moved = apply(doc, [{ op: 'update', id: 's3', x: 3000, y: 2000 }])
+    const copied = apply(moved, copyOps(moved, ['s2'], moved, { dx: 40, dy: 40 }, true), ids('c'))
+    const copy = gen(copied, 'c1')
+    expect(copy.name).toBe('1-2 副本')
+    expect(copy.group).toBeUndefined()
+    const removed = apply(copied, [{ op: 'remove', id: 'c1' }])
+    expect(removed.nodes.map((n) => [n.id, n.x, n.y])).toEqual(
+      moved.nodes.map((n) => [n.id, n.x, n.y]),
+    )
   })
 
   test('near 以该点为中心放置，被占用时向下移动；坐标格式错误时整批拒绝', () => {
@@ -1924,7 +1952,7 @@ describe('画布：时间线', () => {
     const copied = apply(doc, copyOps(doc, ['a1'], doc, { dx: 0, dy: 400 }, false), ids('c'))
     expect(copied.nodes[1]).toMatchObject({
       type: 'timeline',
-      name: '粗剪',
+      name: '粗剪 副本',
       muted: true,
       clips: [clip('素材/a.mp4', 0.5, 2)],
       y: 400,

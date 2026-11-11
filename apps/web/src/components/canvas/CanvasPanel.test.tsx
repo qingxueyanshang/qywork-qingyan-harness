@@ -4235,7 +4235,7 @@ describe('画布：复制、剪切、粘贴', () => {
       () => JSON.stringify(server.ops),
     )
     expect(server.ops[0]).toHaveLength(1)
-    expect(server.ops[0]![0]).toMatchObject({ op: 'add_file', path: 'a.png', name: '小满' })
+    expect(server.ops[0]![0]).toMatchObject({ op: 'add_file', path: 'a.png', name: '小满 副本' })
     const copy = server.doc().nodes.at(-1)!
     await waitFor(
       () => !!host.querySelector(`[data-node="${copy.id}"].selected`),

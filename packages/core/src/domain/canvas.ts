@@ -1541,6 +1541,8 @@ function syncTextInputs(before: CanvasDoc, doc: CanvasDoc): void {
 
 /**
  * 复制一组节点：返回在 `target` 上添加副本的一批操作。副本与原节点设置相同、整体平移 `offset`；生成卡不带版本。
+ * 副本的名称与 `target` 中已有的名称相同时加「副本」，仍相同时再加序号；文件卡没有名称时不加。
+ * 副本不带组：位置由界面给出，不属于按组排位的列。不要保留组，带组的副本被删除时所在的列整体重排。
  *
  * 选区内部的连线照常复制，提示词中对选区内节点的 `@` 指向副本。从选区外连入的连线：`withInputs` 为真且 `target` 中有对应节点时
  * 一并连接到副本、保留 `@`；否则不连接，`@` 改为名称纯文本（与删除连线同一规则）。从选区连出的连线不复制。
@@ -1557,6 +1559,13 @@ export function copyOps(
   const inTarget = new Set(target.nodes.map((n) => n.id))
   const keepsInput = (from: string) => withInputs && inTarget.has(from)
   const byId = new Map(source.nodes.map((n) => [n.id, n]))
+  const taken = new Set(target.nodes.map(displayNameOf))
+  const copyName = (name: string): string => {
+    let next = name
+    for (let i = 1; taken.has(next); i++) next = i === 1 ? `${name} 副本` : `${name} 副本 ${i}`
+    taken.add(next)
+    return next
+  }
   const ops: CanvasOp[] = []
   for (const n of picked) {
     const box = { x: n.x + offset.dx, y: n.y + offset.dy, w: n.w, h: n.h }
@@ -1566,8 +1575,7 @@ export function copyOps(
         op: 'add_file',
         ref,
         path: n.path,
-        ...(n.name ? { name: n.name } : {}),
-        ...(n.group ? { group: n.group } : {}),
+        ...(n.name ? { name: copyName(n.name) } : {}),
         ...(n.excerpt ? { excerpt: structuredClone(n.excerpt) } : {}),
         ...box,
       })
@@ -1577,7 +1585,7 @@ export function copyOps(
       ops.push({
         op: 'add_timeline',
         ref,
-        name: n.name,
+        name: copyName(n.name),
         clips: structuredClone(n.clips),
         ...(n.muted ? { muted: true } : {}),
         x: box.x,
@@ -1597,12 +1605,11 @@ export function copyOps(
       op: 'add_generate',
       ref,
       output: n.output,
-      name: n.name,
+      name: copyName(n.name),
       prompt,
       params: structuredClone(n.params),
       ...(n.provider !== undefined ? { provider: n.provider } : {}),
       ...(n.model !== undefined ? { model: n.model } : {}),
-      ...(n.group ? { group: n.group } : {}),
       ...box,
     })
   }
