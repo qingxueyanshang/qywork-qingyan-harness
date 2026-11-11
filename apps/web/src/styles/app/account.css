@@ -75,10 +75,15 @@
   scrollbar-gutter: stable;
   padding: 0 var(--s-6) var(--s-6);
 }
-/* 未登录时的登录框：宽度与登录表单相称，高度固定（标志、标题、切换、两个输入框、按钮与报错行）。 */
+/* 未登录时的登录框：宽度与登录表单相称，高度由表单决定（注册比登录多一栏邀请码）。
+   上缘固定在注册表单垂直居中时的位置（269px = 背景层内距 16px + 注册时弹窗高度的一半），
+   不要改为垂直居中：切换登录与注册时弹窗上缘会移动，切换控件随之离开指针。 */
 .account-dialog.signin {
   width: min(400px, 100%);
-  height: min(472px, 100%);
+  height: auto;
+  max-height: 100%;
+  align-self: start;
+  margin-top: max(0px, calc(50vh - 269px));
 }
 .account-signin {
   flex: 1;
@@ -533,11 +538,6 @@
 .account-form-mode .seg-item {
   flex: 1;
 }
-/* 登录时邀请码一栏不显示但保留位置，表单高度不随登录与注册切换而变化。 */
-.account-field-hidden {
-  visibility: hidden;
-}
-
 .account-field {
   display: flex;
   flex-direction: column;
@@ -582,6 +582,7 @@
   .account-dialog,
   .account-dialog.signin {
     height: 100%;
+    margin-top: 0;
     border-radius: var(--r-lg) var(--r-lg) 0 0;
     padding-top: var(--safe-top);
     padding-bottom: var(--safe-bottom);
