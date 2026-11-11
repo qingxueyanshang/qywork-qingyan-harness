@@ -203,14 +203,15 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                       <select
                         class="pull-base"
                         aria-label={`类别 ${m.id}`}
-                        value=""
                         onChange={(e) => {
                           const value = e.currentTarget.value as Category
                           setCategories((prev) => ({ ...prev, [m.id]: value }))
                         }}
                       >
-                        {/* 占位项只在未选择时显示在框内，不出现在展开的列表中。 */}
-                        <option value="" disabled hidden>
+                        {/* 占位项只在未选择时显示在框内，不出现在展开的列表中。
+                            必须带 `selected`：`select` 上的静态 `value` 不生效，浏览器会选中第一个类别，
+                            选择该类别不产生 change 事件。 */}
+                        <option value="" disabled hidden selected>
                           类别
                         </option>
                         <For each={CATEGORIES}>

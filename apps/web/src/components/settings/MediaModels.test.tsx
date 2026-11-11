@@ -546,6 +546,46 @@ test('拉取模型：带后缀的生成型号预选对应型号，改选生成�
   }
 })
 
+test('拉取模型：未知型号的类别下拉框初始为占位项，选定对话后移到对话页签并可勾选', async () => {
+  const { render } = await import('solid-js/web')
+  const store = await import('../../lib/store/index.ts')
+  const { reloadConfig } = await import('./configStore.ts')
+  const { ModelSettings } = await import('./ModelSettings.tsx')
+  const state = { stored: relayConfig() }
+  relayApi(store, state, { source: 'models', models: [{ id: 'glm-5.1', output: 'unknown' }] })
+  await reloadConfig()
+  await store.reloadModelCatalog()
+
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <ModelSettings />, host as unknown as HTMLElement)
+  try {
+    fire(
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
+        (b) => b.textContent === 'apii',
+      )!,
+      'click',
+    )
+    fire(host.querySelector<HTMLButtonElement>('.pull-open')!, 'click')
+    expect(await until(() => !!document.querySelector('.pull-dialog .pull-row'))).toBe(true)
+    const dialog = document.querySelector<HTMLElement>('.pull-dialog')!
+    const box = () => dialog.querySelector<HTMLInputElement>('.pull-row input[type="checkbox"]')!
+    const category = dialog.querySelector<HTMLSelectElement>('select[aria-label="类别 glm-5.1"]')!
+    // 占位项须为选中项：框内显示第一个类别时，选择该类别不产生 change 事件，型号无法归类。
+    expect(category.selectedOptions[0]?.value).toBe('')
+    expect(box().disabled).toBe(true)
+    category.value = 'chat'
+    category.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(
+      Array.from(dialog.querySelectorAll<HTMLButtonElement>('.lib-tab'), (b) => b.textContent),
+    ).toEqual(['对话 1'])
+    expect(box().disabled).toBe(false)
+  } finally {
+    dispose()
+    host.remove()
+  }
+})
+
 test('模型库按类别分页签；生成类一张表，厂商是一列，参数由行末按钮展开到下一整行', async () => {
   const { render } = await import('solid-js/web')
   const { ModelLibrary } = await import('./ModelLibrary.tsx')
