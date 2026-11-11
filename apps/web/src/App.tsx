@@ -32,7 +32,7 @@ const AccountDialog = lazy(() => import('./components/account/AccountDialog.tsx'
 const ReleaseNotesDialog = lazy(() => import('./components/ReleaseNotesDialog.tsx'))
 const AnnouncementsDialog = lazy(() => import('./components/AnnouncementsDialog.tsx'))
 
-import { IconCheck, IconChevron, IconDownload, IconPanel } from './components/Icons.tsx'
+import { IconCheck, IconDownload, IconMenu, IconPanel } from './components/Icons.tsx'
 import { LoginGate } from './components/LoginGate.tsx'
 import { WindowControls } from './components/WindowControls.tsx'
 import { announcementsOpen, loadAnnouncements } from './lib/store/announcements.ts'
@@ -211,6 +211,18 @@ export function App() {
 
   onMount(() => {
     client.connect()
+    // 公告的已读位置与余额可能已在另一端改变（官网、另一台设备上打开的本界面），窗口重新可见或获得焦点时重新读取。
+    const refreshAccount = () => {
+      if (document.visibilityState !== 'visible' || state.connection !== 'ready') return
+      void refreshCloudState().catch(() => {})
+      void loadAnnouncements()
+    }
+    window.addEventListener('focus', refreshAccount)
+    document.addEventListener('visibilitychange', refreshAccount)
+    onCleanup(() => {
+      window.removeEventListener('focus', refreshAccount)
+      document.removeEventListener('visibilitychange', refreshAccount)
+    })
     const stopUpdates = observeAppUpdate()
     onCleanup(stopUpdates)
     onCleanup(observePersonalization())
@@ -290,7 +302,7 @@ export function App() {
           aria-label="打开侧栏"
           onClick={() => setDrawer(true)}
         >
-          <IconChevron size={16} dir="right" />
+          <IconMenu size={18} />
         </button>
         {/* 左栏收起后其自身的开关随之隐藏，展开入口只能放在顶栏。
             仅在收起时显示：左栏已展开时「展开」按钮没有作用。 */}

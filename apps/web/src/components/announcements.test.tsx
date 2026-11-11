@@ -1,17 +1,20 @@
 /**
- * 公告：`lib/store/announcements.ts`（读取、未读判定与已读记录）与 `AnnouncementsDialog.tsx`（列表渲染、关闭）。
- * 服务端接口以替身代替。
+ * 公告：`lib/store/announcements.ts`（读取、未读判定与已读记录）、`lib/store/cloud.ts` 的 `markAnnouncementSeen`
+ * 与 `AnnouncementsDialog.tsx`（列表渲染、关闭）。服务端接口以替身代替，已读位置在替身的账号状态中。
  */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import type { Announcement } from '@qywork/core'
+import type { Announcement, CloudState } from '@qywork/core'
 
 let store: typeof import('../lib/store/index.ts')
 let feed: typeof import('../lib/store/announcements.ts')
+let cloudStore: typeof import('../lib/store/cloud.ts')
 let originalApi: typeof store.client.api
 let calls: string[]
 /** 替身的返回：公告列表，或抛出的错误。 */
 let reply: Announcement[] | Error
+/** 替身的账号状态：已读位置保存在其中，与云端账号相同。 */
+let account: Extract<CloudState, { state: 'signed_in' }>
 
 const notice = (id: string, publishedAt: string): Announcement => ({
   id,
@@ -36,19 +39,39 @@ beforeAll(async () => {
   delegateEvents(['click'])
   store = await import('../lib/store/index.ts')
   feed = await import('../lib/store/announcements.ts')
+  cloudStore = await import('../lib/store/cloud.ts')
   originalApi = store.client.api
-  store.client.api = async <T,>(path: string): Promise<T> => {
+  store.client.api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
     calls.push(path)
+    if (path === '/api/cloud/state') return structuredClone(account) as T
+    if (path === '/api/cloud/announcements/seen') {
+      account = {
+        ...account,
+        announcementSeen: (JSON.parse(String(init?.body)) as { id: string }).id,
+      }
+      return structuredClone(account) as T
+    }
     if (path !== '/api/cloud/announcements') throw new Error(`unexpected ${path}`)
     if (reply instanceof Error) throw reply
     return structuredClone(reply) as T
   }
 })
 
-beforeEach(() => {
-  calls = []
+beforeEach(async () => {
+  account = {
+    state: 'signed_in',
+    email: 'me@example.com',
+    credits: 1,
+    avatar: null,
+    provider: 'qywork',
+    origin: 'https://qywork.io',
+    recharge: false,
+    announcementSeen: null,
+  }
   feed.closeAnnouncements()
-  localStorage.clear()
+  calls = []
+  await cloudStore.refreshCloudState()
+  calls = []
 })
 
 afterAll(async () => {
@@ -56,7 +79,7 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 
-test('最新一条未读时显示圆点；打开后记为已读并写入本机记录；有更新的公告时再次未读', async () => {
+test('最新一条未读时显示圆点；打开后记为已读并写入云端账号；另一端已读后本端读取账号状态即为已读；有更新的公告时再次未读', async () => {
   reply = [notice('2', '2026-11-05T08:00:00.000Z'), RELEASE]
   await feed.loadAnnouncements()
   expect(calls).toEqual(['/api/cloud/announcements'])
@@ -66,7 +89,10 @@ test('最新一条未读时显示圆点；打开后记为已读并写入本机�
   feed.openAnnouncements()
   expect(feed.announcementsOpen()).toBe(true)
   expect(feed.announcementsUnread()).toBe(false)
-  expect(localStorage.getItem('qywork.announcements.seen')).toBe('2')
+  await Bun.sleep(0)
+  expect(calls).toContain('/api/cloud/announcements/seen')
+  expect(account.announcementSeen).toBe('2')
+  expect(localStorage.getItem('qywork.announcements.seen')).toBeNull()
   feed.closeAnnouncements()
   expect(feed.announcementsOpen()).toBe(false)
 
@@ -79,6 +105,10 @@ test('最新一条未读时显示圆点；打开后记为已读并写入本机�
   ]
   await feed.loadAnnouncements()
   expect(feed.announcementsUnread()).toBe(true)
+  // 另一端（官网或另一台设备上打开的界面）读过之后，本端重新读取账号状态即为已读。
+  account = { ...account, announcementSeen: '3' }
+  await cloudStore.refreshCloudState()
+  expect(feed.announcementsUnread()).toBe(false)
 })
 
 test('读取失败时保留上一次的列表；没有公告时不算未读', async () => {

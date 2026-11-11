@@ -1,7 +1,7 @@
 /**
  * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`、`avatar`，账号界面的 `models`、`usage`、`requests`，
  * 充值的 `recharge`（下单）与 `recharge/:orderNo`（状态），
- * 以及不需要登录的本版说明 `release-notes` 与公告列表 `announcements`。
+ * 不需要登录的本版说明 `release-notes` 与公告列表 `announcements`，以及公告已读位置的写入 `announcements/seen`。
  *
  * 账号对象由 `server.ts` 按进程创建一个。未配置云端地址时（`cloud/origin.ts`）为 null，只回答 `unavailable`，
  * 界面据此不显示账号入口。登录、注册与读取失败以 400 返回可直接显示的原因。
@@ -53,6 +53,13 @@ export const handleCloudApi: ApiHandler = async (url, req, d) => {
     if (p === '/api/cloud/logout' && req.method === 'POST') {
       await account.logout()
       return json(await account.state())
+    }
+    if (p === '/api/cloud/announcements/seen' && req.method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as { id?: unknown }
+      if (typeof body.id !== 'string') {
+        return json({ error: 'invalid_request', message: '缺少公告 id' }, 400)
+      }
+      return json(await account.markAnnouncementSeen(body.id))
     }
     if (p === '/api/cloud/avatar' && req.method === 'PUT') {
       const body = (await req.json().catch(() => ({}))) as { image?: unknown }
