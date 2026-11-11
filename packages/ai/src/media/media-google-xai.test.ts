@@ -85,18 +85,21 @@ describe('Google 与 xAI 目录', () => {
       'gemini-3.1-flash-lite-image',
       'gemini-3.1-flash-image',
       'gemini-3-pro-image',
+      'gemini-nano-banana-2.1',
+      'gemini-omni-1.2-flash',
       'gemini-omni-1.1-flash',
       'veo-3.1-generate-preview',
       'veo-3.1-fast-generate-preview',
       'veo-3.1-lite-generate-preview',
       'grok-imagine-image-2.0',
       'grok-imagine-video-1.5',
+      'grok-imagine-video-1.5-lite',
     ]
     for (const id of ids) {
       const spec = findMediaModel(id)!
       expect(spec.catalogued).toBe(true)
       expect(mediaCatalog().filter((m) => m.id === id)).toHaveLength(1)
-      expect(MEDIA_KIND_OUTPUT[spec.kind]).toBe(id.includes('image') ? 'image' : 'video')
+      expect(MEDIA_KIND_OUTPUT[spec.kind]).toBe(/image|banana/.test(id) ? 'image' : 'video')
       expect(buildMediaAdapter({ kind: spec.kind, model: id, apiKey: 'key' }).spec.id).toBe(id)
     }
     expect(findMediaModel('gemini-2.5-flash-image')).toBeUndefined()
@@ -197,6 +200,26 @@ describe('Google 与 xAI 目录', () => {
       quoteMedia(findMediaModel('grok-imagine-image-2.0')!, {}, { images: 0, videos: 0 }),
     ).toBeNull()
     expect(mediaCost(findMediaModel('veo-3.1-fast-generate-preview')!, {}).cost).toBe(0)
+  })
+
+  test('Nano Banana 2.1 与 Omni 1.2 Flash 按各自的 token 单价计价', () => {
+    const usage = { inputTokens: 1_000_000, outputTextTokens: 1_000_000, outputMediaTokens: 1e6 }
+    expect(mediaCost(findMediaModel('gemini-nano-banana-2.1')!, usage).cost).toBeCloseTo(39)
+    expect(mediaCost(findMediaModel('gemini-omni-1.2-flash')!, usage).cost).toBeCloseTo(22.5)
+    expect(mediaCost(findMediaModel('gemini-omni-1.1-flash')!, usage).cost).toBeCloseTo(28)
+    const none = { images: 0, videos: 0 }
+    const banana = findMediaModel('gemini-nano-banana-2.1')!
+    expect(validateMediaCall(banana, 'generate', { image_size: '4K' }, none)).toEqual([])
+    expect(validateMediaCall(banana, 'generate', { image_size: '512' }, none)).toHaveLength(1)
+  })
+
+  test('Grok 视频 Lite 只对 480p 且没有输入图片的请求报价，不提供首尾帧与参考图', () => {
+    const lite = findMediaModel('grok-imagine-video-1.5-lite')!
+    const none = { images: 0, videos: 0 }
+    expect(lite.operations).toEqual(['text_to_video', 'image_to_video'])
+    expect(quoteMedia(lite, { duration: 10 }, none)).toEqual({ cost: 0.2, currency: 'USD' })
+    expect(quoteMedia(lite, { duration: 10, resolution: '720p' }, none)).toBeNull()
+    expect(quoteMedia(lite, { duration: 10 }, { images: 1, videos: 0 })).toBeNull()
   })
 })
 

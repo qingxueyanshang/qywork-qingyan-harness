@@ -1,4 +1,4 @@
-/** Gemini Interactions 的图片、视频生成，以及 Veo 的长任务接口。 */
+/** Gemini Interactions 的图片、视频生成与语音合成，以及 Veo 的长任务接口。 */
 import { channelVendorOf, type MediaKind } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, defined, download, getJson, postJson, sniffMime } from '../http.ts'
@@ -69,7 +69,7 @@ function readFile(
 
 function outputs(
   body: Record<string, unknown>,
-  type: 'image' | 'video',
+  type: 'image' | 'video' | 'audio',
 ): Record<string, unknown>[] {
   const steps = Array.isArray(body.steps) ? (body.steps as Record<string, unknown>[]) : []
   return steps.flatMap((step) =>
@@ -81,7 +81,7 @@ function outputs(
 
 function usageOf(
   body: Record<string, unknown>,
-  type: 'image' | 'video',
+  type: 'image' | 'video' | 'audio',
   images: number,
 ): MediaUsage {
   const u = (body.usage ?? {}) as Record<string, unknown>
@@ -236,6 +236,67 @@ export class GeminiMediaAdapter implements MediaAdapter {
       } else throw new MediaError('Gemini 输出缺少文件内容或下载地址')
     }
     return { files, usage: usageOf(body, type, files.length) }
+  }
+}
+
+/**
+ * `gemini_speech`：Gemini 语音合成，同步调用 `POST {base}/interactions`。
+ *
+ * 朗读文本原样放入 `input` 的文字块；`style` 有值时作为该文字块的 `speech_metadata` 注记发送，不写入朗读文本。
+ * 音色放入 `generation_config.speech_config`。不指定输出格式时接口返回带文件头的 WAV（24 kHz、单声道、16 位）。
+ */
+export class GeminiSpeechAdapter implements MediaAdapter {
+  readonly kind = 'gemini_speech' as const
+
+  constructor(
+    private readonly profile: MediaProfile,
+    readonly spec: MediaModelSpec,
+  ) {}
+
+  async run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult> {
+    const { base, auth } = connection(this.profile)
+    const { style, voice } = req.params
+    const body = await postJson(
+      `${base}/interactions`,
+      {
+        model: this.profile.model,
+        input: [
+          {
+            type: 'user_input',
+            content: [
+              {
+                type: 'text',
+                text: req.prompt,
+                ...(typeof style === 'string' && style
+                  ? { annotations: [{ type: 'speech_metadata', style }] }
+                  : {}),
+              },
+            ],
+          },
+        ],
+        response_format: { type: 'audio' },
+        generation_config: {
+          speech_config: [
+            { voice: voice ?? this.spec.params.find((p) => p.name === 'voice')?.default },
+          ],
+        },
+      },
+      auth,
+      opts.signal,
+    )
+    const data = outputs(body, 'audio').find((part) => typeof part.data === 'string' && part.data)
+      ?.data as string | undefined
+    if (!data)
+      throw new MediaError(
+        body.status === 'completed' || body.status === undefined
+          ? '接口没有返回音频'
+          : `接口没有返回音频：${interactionFailure(body)}`,
+      )
+    const bytes = new Uint8Array(Buffer.from(data, 'base64'))
+    return {
+      files: [{ bytes, mime: sniffMime(bytes) ?? 'audio/wav' }],
+      usage: usageOf(body, 'audio', 0),
+    }
   }
 }
 

@@ -241,7 +241,8 @@ describe('画布接口', () => {
         inputs: { images: 1, videos: 0 },
       })
     ).json()) as CanvasQuoteResponse
-    expect(video.quote?.cost).toBeCloseTo(3, 10)
+    // 万相 3.0 按限时 7 折计价：720P 每秒 ¥0.42。
+    expect(video.quote?.cost).toBeCloseTo(2.1, 10)
     const image = (await (
       await call(d, '/api/canvas/quote', { output: 'image', params: {} })
     ).json()) as CanvasQuoteResponse

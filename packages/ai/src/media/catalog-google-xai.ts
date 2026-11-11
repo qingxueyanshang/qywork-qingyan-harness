@@ -189,6 +189,10 @@ const xaiImagePrice: MediaPrice = {
       ? { images: p.n, inputImages: inputs.images, imageTier: `${p.resolution}:${p.quality}` }
       : null,
 }
+const xaiVideoUsage: NonNullable<MediaPrice['usageOf']> = (p, inputs) =>
+  typeof p.duration === 'number' && typeof p.resolution === 'string'
+    ? { seconds: p.duration, resolution: p.resolution, inputImages: inputs.images }
+    : null
 const xaiVideoPrice: MediaPrice = {
   currency: 'USD',
   cost(u) {
@@ -199,13 +203,91 @@ const xaiVideoPrice: MediaPrice = {
       ? null
       : rate * u.seconds + u.inputImages * 0.01
   },
-  usageOf: (p, inputs) =>
-    typeof p.duration === 'number' && typeof p.resolution === 'string'
-      ? { seconds: p.duration, resolution: p.resolution, inputImages: inputs.images }
+  usageOf: xaiVideoUsage,
+}
+// 2026-11-11 核对价目页：Lite 只列 $0.020 每秒，未列 720p、1080p 与输入图片的价格。
+// 只对默认的 480p 且没有输入图片的请求报价，其余金额不明。
+const xaiVideoLitePrice: MediaPrice = {
+  currency: 'USD',
+  cost: (u) =>
+    u.resolution === '480p' && u.seconds !== undefined && u.inputImages === 0
+      ? 0.02 * u.seconds
       : null,
+  usageOf: xaiVideoUsage,
 }
 
-type NativeKind = 'gemini_images' | 'gemini_videos' | 'veo_videos' | 'xai_images' | 'xai_videos'
+// 2026-11-11 核对语音生成指南的预置音色表。
+const GEMINI_VOICES = [
+  'Zephyr',
+  'Puck',
+  'Charon',
+  'Kore',
+  'Fenrir',
+  'Leda',
+  'Orus',
+  'Aoede',
+  'Callirrhoe',
+  'Autonoe',
+  'Enceladus',
+  'Iapetus',
+  'Umbriel',
+  'Algieba',
+  'Despina',
+  'Erinome',
+  'Algenib',
+  'Rasalgethi',
+  'Laomedeia',
+  'Achernar',
+  'Alnilam',
+  'Schedar',
+  'Gacrux',
+  'Pulcherrima',
+  'Achird',
+  'Zubenelgenubi',
+  'Vindemiatrix',
+  'Sadachbia',
+  'Sadaltager',
+  'Sulafat',
+]
+const speechParams: MediaParamSpec[] = [
+  {
+    name: 'voice',
+    label: '音色',
+    type: 'string',
+    presets: GEMINI_VOICES,
+    default: 'Kore',
+    description: '预置音色名称',
+  },
+  {
+    name: 'style',
+    type: 'string',
+    description: '语气、情绪、语速等朗读要求，用英文短语描述；不出现在合成语音中',
+  },
+]
+
+/**
+ * 价目页（2026-11-11 核对）：文字输入与音频输出按每百万 token 计价，促销价截至 2026-12-31，之后两项均为 2 倍。
+ * 按计费时刻取值，不硬编码，否则自 1 月 1 日起金额偏低一半。
+ */
+const GEMINI_TTS_PROMO_ENDS = Date.UTC(2027, 0, 1)
+function speechPrice(input: number, audio: number): MediaPrice {
+  return {
+    currency: 'USD',
+    cost(u) {
+      if (u.inputTokens === undefined || u.outputMediaTokens === undefined) return null
+      const scale = Date.now() < GEMINI_TTS_PROMO_ENDS ? 1 : 2
+      return ((u.inputTokens * input + u.outputMediaTokens * audio) * scale) / 1e6
+    },
+  }
+}
+
+type NativeKind =
+  | 'gemini_images'
+  | 'gemini_videos'
+  | 'veo_videos'
+  | 'xai_images'
+  | 'xai_videos'
+  | 'gemini_speech'
 type Defaults = Omit<MediaModelSpec, 'id' | 'displayName'>
 export const GOOGLE_XAI_DEFAULTS: Record<NativeKind, Defaults> = {
   gemini_images: {
@@ -244,6 +326,14 @@ export const GOOGLE_XAI_DEFAULTS: Record<NativeKind, Defaults> = {
     operations: ['generate', 'edit'],
     inputs: { maxImages: 5, maxVideos: 0, transport: 'json' },
     params: xaiImageParams,
+    catalogued: false,
+  },
+  gemini_speech: {
+    vendor: null,
+    kind: 'gemini_speech',
+    operations: ['speech'],
+    inputs: { maxImages: 0, maxVideos: 0, transport: 'json' },
+    params: speechParams,
     catalogued: false,
   },
   xai_videos: {
@@ -290,9 +380,15 @@ export const GOOGLE_XAI_MODELS: readonly MediaModelSpec[] = [
   model('gemini-3.1-flash-image', 'Nano Banana 2', 'gemini_images', tokenPrice(0.5, 3, 60), {
     params: imageParams(['512', '1K', '2K', '4K'], true),
   }),
+  // 2026-11-11 核对型号页与图像生成指南：1K / 2K / 4K，不支持 512；参考图上限与宽幅画幅同 Nano Banana 2。
+  model('gemini-nano-banana-2.1', 'Nano Banana 2.1', 'gemini_images', tokenPrice(1.5, 7.5, 30), {
+    params: imageParams(['1K', '2K', '4K'], true),
+  }),
   model('gemini-3-pro-image', 'Nano Banana Pro', 'gemini_images', tokenPrice(2, 12, 120), {
     params: imageParams(['1K', '2K', '4K']),
   }),
+  // 2026-11-11 核对：1.2 的视频输出为每百万 token $12；1.1 自 2026-12-03 起由 1.2 提供服务并按 1.2 计价。
+  model('gemini-omni-1.2-flash', 'Gemini Omni 1.2 Flash', 'gemini_videos', tokenPrice(1.5, 9, 12)),
   model('gemini-omni-1.1-flash', 'Gemini Omni Flash', 'gemini_videos', tokenPrice(1.5, 9, 17.5)),
   ...(
     [
@@ -323,6 +419,24 @@ export const GOOGLE_XAI_MODELS: readonly MediaModelSpec[] = [
         : {}),
     }),
   ),
+  model('gemini-3.8-flash-tts', 'Gemini 3.8 Flash TTS', 'gemini_speech', speechPrice(0.5, 9)),
+  model(
+    'gemini-3.8-flash-lite-tts',
+    'Gemini 3.8 Flash Lite TTS',
+    'gemini_speech',
+    speechPrice(0.5, 6),
+  ),
   model('grok-imagine-image-2.0', 'Grok Imagine Image 2.0', 'xai_images', xaiImagePrice),
   model('grok-imagine-video-1.5', 'Grok Imagine Video 1.5', 'xai_videos', xaiVideoPrice),
+  // 2026-11-11 核对视频生成指南：Lite 只写明文生视频与首帧生视频，未写明首尾帧与参考图。
+  model(
+    'grok-imagine-video-1.5-lite',
+    'Grok Imagine Video 1.5 Lite',
+    'xai_videos',
+    xaiVideoLitePrice,
+    {
+      operations: ['text_to_video', 'image_to_video'],
+      inputs: { maxImages: 0, maxVideos: 0, transport: 'json' },
+    },
+  ),
 ]

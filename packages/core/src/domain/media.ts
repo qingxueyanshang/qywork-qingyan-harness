@@ -30,6 +30,7 @@ export const MEDIA_KINDS = [
   'dashscope_speech',
   'minimax_speech',
   'mimo_speech',
+  'gemini_speech',
   'qywork_images',
   'qywork_videos',
   'qywork_speech',
@@ -308,6 +309,7 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   dashscope_speech: 'audio',
   minimax_speech: 'audio',
   mimo_speech: 'audio',
+  gemini_speech: 'audio',
   qywork_images: 'image',
   qywork_videos: 'video',
   qywork_speech: 'audio',
@@ -371,6 +373,7 @@ export function defaultMediaKind(
     case 'audio':
       if (vendor === 'alibaba') return 'dashscope_speech'
       if (vendor === 'xiaomi') return 'mimo_speech'
+      if (vendor === 'google') return 'gemini_speech'
       return vendor === 'minimax' ? 'minimax_speech' : 'openai_speech'
   }
 }

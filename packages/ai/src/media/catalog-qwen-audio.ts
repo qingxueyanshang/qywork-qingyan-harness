@@ -1,4 +1,4 @@
-/** 千问音频 3.1，2026-10-14 核对官方 HTTP API、音色列表和北京地域价格。 */
+/** 千问音频 3.1，2026-10-14 核对官方 HTTP API、音色列表和北京地域价格；Plus 于 2026-11-11 核对。 */
 import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
 import { QWEN_AUDIO_VOICES } from './catalog-qwen-voices.ts'
 
@@ -54,17 +54,44 @@ const watermark: MediaParamSpec = {
   advanced: true,
   description: '添加 AIGC 标识水印',
 }
+// Plus 按输入字符计价，每万字符 ¥1.4；接口未回报字符数时金额不明。
+const plusPrice: MediaPrice = {
+  currency: 'CNY',
+  cost: (u) => (u.characters === undefined ? null : (u.characters / 10_000) * 1.4),
+}
+// 音色列表中 Plus 只有四个系统音色，使用列表之外的音色时接口返回 InvalidParameter。
+const PLUS_VOICES = [
+  'longanlingxin_v3.1',
+  'xunanchuan_v3.1',
+  'longanhuan_v3.1',
+  'longanfengyue_v3.1',
+]
+const only = <T>(record: Record<string, T>) =>
+  Object.fromEntries(Object.entries(record).filter(([id]) => PLUS_VOICES.includes(id)))
+const plusVoice: MediaParamSpec = {
+  name: 'voice',
+  label: '音色',
+  type: 'string',
+  presets: PLUS_VOICES,
+  valueLabels: only(QWEN_AUDIO_VOICES.valueLabels),
+  valueDescriptions: only(QWEN_AUDIO_VOICES.valueDescriptions),
+  valueSamples: only(QWEN_AUDIO_VOICES.valueSamples),
+  default: 'longanhuan_v3.1',
+  description: 'Plus 的系统音色，区分大小写',
+}
 // 系统音色区分大小写，不能沿用 Qwen3-TTS 的 Cherry 等音色。
-const flashParams: MediaParamSpec[] = [
-  {
-    name: 'voice',
-    label: '音色',
-    type: 'string',
-    ...QWEN_AUDIO_VOICES,
-    default: 'longanhuan_v3.1',
-    description:
-      '3.1 系统音色，区分大小写；多语种与方言优先选 longanhuan、longanlingxin、longanfengyue 或 xunanchuan 的 v3.1 音色',
-  },
+const flashVoice: MediaParamSpec = {
+  name: 'voice',
+  label: '音色',
+  type: 'string',
+  ...QWEN_AUDIO_VOICES,
+  default: 'longanhuan_v3.1',
+  description:
+    '3.1 系统音色，区分大小写；多语种与方言优先选 longanhuan、longanlingxin、longanfengyue 或 xunanchuan 的 v3.1 音色',
+}
+/** Flash 与 Plus 使用同一端点与同一组参数，只有音色列表不同。 */
+const ttsParams = (voice: MediaParamSpec): MediaParamSpec[] => [
+  voice,
   {
     name: 'instruction',
     label: '朗读要求',
@@ -188,9 +215,21 @@ export const QWEN_AUDIO_MODELS: readonly MediaModelSpec[] = [
     kind: 'dashscope_speech',
     operations: ['speech'],
     inputs: { maxImages: 0, maxVideos: 0, transport: 'json' },
-    params: flashParams,
+    params: ttsParams(flashVoice),
     speechFormat: 'qwen-audio-tts',
     price: price(1.5),
+    catalogued: true,
+  },
+  {
+    id: 'qwen-audio-3.1-tts-plus',
+    displayName: 'Qwen Audio 3.1 TTS Plus',
+    vendor: '阿里云',
+    kind: 'dashscope_speech',
+    operations: ['speech'],
+    inputs: { maxImages: 0, maxVideos: 0, transport: 'json' },
+    params: ttsParams(plusVoice),
+    speechFormat: 'qwen-audio-tts',
+    price: plusPrice,
     catalogued: true,
   },
   {

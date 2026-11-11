@@ -217,6 +217,7 @@ describe('界面参数', () => {
     'qwen-image-3.0-pro': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
     'qwen-image-3.0': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
     'qwen-image-2.1-pro': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
+    'qwen-image-2.1-turbo': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
   }
 
   test('字符串参数提供选项、尺寸表，或受长度限制的高级文本输入', () => {
@@ -311,6 +312,50 @@ describe('openai_images', () => {
     expect(form?.get('output_compression')).toBe('90')
     const file = form?.get('image[]') as File
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(PNG)
+  })
+
+  test('MiniMax H3-Image 生成按地址下载，修改使用 multipart；按文字、图片输入与图片输出的 token 计价', async () => {
+    const usage = {
+      generated_images: 1,
+      input_tokens: 23_905,
+      output_tokens: 16_320,
+      input_tokens_details: { text_tokens: 12_093, image_tokens: 11_812 },
+    }
+    reply = () => Response.json({ data: [{ url: `${origin()}/files/out.jpg` }], usage })
+    const made = await adapter('MiniMax-H3-Image').run(
+      { operation: 'generate', prompt: '一只橘猫', inputs: [], params: { size: '2048x2048' } },
+      { signal: signal() },
+    )
+    expect(seen[0]?.path).toBe('/v1/images/generations')
+    expect(seen[0]?.json).toEqual({
+      model: 'MiniMax-H3-Image',
+      prompt: '一只橘猫',
+      size: '2048x2048',
+    })
+    expect(made.files).toHaveLength(1)
+    const spec = lookupMediaModel('MiniMax-H3-Image', 'openai_images')
+    expect(mediaCost(spec, made.usage ?? {})).toEqual({
+      cost: expect.closeTo((12_093 * 15 + 11_812 * 10 + 16_320 * 25) / 1e6, 10),
+      currency: 'CNY',
+    })
+    const fast = lookupMediaModel('MiniMax-H3-Image-Highspeed', 'openai_images')
+    expect(mediaCost(fast, made.usage ?? {}).cost).toBeCloseTo(
+      (12_093 * 15 + 11_812 * 20 + 16_320 * 50) / 1e6,
+      10,
+    )
+    await adapter('MiniMax-H3-Image').run(
+      {
+        operation: 'edit',
+        prompt: '把图1里的猫换成柴犬',
+        inputs: [{ role: 'reference', bytes: PNG, mime: 'image/png', path: '/w/a.png' }],
+        params: {},
+      },
+      { signal: signal() },
+    )
+    expect(seen[1]?.path).toBe('/v1/images/edits')
+    const none = { images: 0, videos: 0 }
+    expect(validateMediaCall(spec, 'generate', { size: '4096x4096' }, none)).toEqual([])
+    expect(validateMediaCall(spec, 'generate', { size: '512x512' }, none)).toHaveLength(1)
   })
 
   /** 火山 Seedream 与百炼兼容模式生成图像：参考图是 JSON 中的 data URI，结果是临时地址，取得后立即下载。 */
@@ -601,14 +646,14 @@ describe('发送前的花费', () => {
   const ledger = (id: string, kind: MediaKind, usage: MediaUsage) =>
     mediaCost(lookupMediaModel(id, kind), usage)
 
-  test('万相 3.0 720P 5 秒 ¥3.00，与账本金额一致；未填写的参数取接口默认值', () => {
+  test('万相 3.0 按限时 7 折计价：720P 5 秒 ¥2.10，与账本金额一致；未填写的参数取接口默认值', () => {
     const q = quote('wan3.0-video', 'dashscope_videos', { resolution: '720P', duration: 5 })
-    expect(q).toEqual({ cost: expect.closeTo(3, 10), currency: 'CNY' })
+    expect(q).toEqual({ cost: expect.closeTo(2.1, 10), currency: 'CNY' })
     expect(q).toEqual(
       ledger('wan3.0-video', 'dashscope_videos', { seconds: 5, resolution: '720p' }),
     )
     // 默认 1080P、5 秒。
-    expect(quote('wan3.0-video', 'dashscope_videos', {})?.cost).toBeCloseTo(6, 10)
+    expect(quote('wan3.0-video', 'dashscope_videos', {})?.cost).toBeCloseTo(4.2, 10)
   })
 
   test('可灵（百炼）按清晰度档位与声音估算，与账本金额一致', () => {
