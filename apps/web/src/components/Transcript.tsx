@@ -1,5 +1,11 @@
 import type { RunUsage, StopReason, SubagentKind } from '@qywork/core'
-import { formatCosts, runCosts, SUBAGENT_KIND_LABEL } from '@qywork/core'
+import {
+  formatCosts,
+  retryAttemptText,
+  retryCauseText,
+  runCosts,
+  SUBAGENT_KIND_LABEL,
+} from '@qywork/core'
 import type { Accessor, JSX, Setter } from 'solid-js'
 import {
   createContext,
@@ -504,7 +510,11 @@ function liveStatus(now: number, conversationId: string): string {
   if (!req) return '正在请求…'
   const waiting = (message: string): string =>
     req.attempt > 0
-      ? `第 ${req.attempt}/${req.max} 次重试 · ${message}${req.retryReason ? ` · 上次失败：${req.retryReason}` : ''}`
+      ? [
+          retryAttemptText(req),
+          message,
+          ...(req.retryReason ? [retryCauseText(req.retryReason)] : []),
+        ].join(' · ')
       : message
   switch (req.phase) {
     case 'backoff': {
@@ -838,7 +848,7 @@ function RunStatusBar(props: {
    * 持有逐秒更新的定时器；在此处读取 `Date.now()` 时，界面不会自动更新。
    */
   liveNote?: string
-  /** 错误正文，没有时为 null。存在时它替代停止原因，而不是与停止原因并列显示。 */
+  /** 错误正文或停止依据（`stopDetail`），没有时为 null。显示时它替代停止原因，而不是与停止原因并列显示。 */
   errorMessage?: string | null
 }) {
   const normal = () => !props.stopReason || props.stopReason === 'completed'
@@ -851,13 +861,17 @@ function RunStatusBar(props: {
    *
    * 正文在读数条中单行显示、超出部分省略，悬停提示显示全文。读数条只有一行，整段换行显示会撑高该行；
    * 而报错的后半段（对端原文、故障编号、request id）在其他位置都看不到，不能只取首行。
+   *
+   * 以等待用户回复或完成结束的一轮，正文是待办中受阻项的条件与失败项的原因（`agent/loop/turn-end.ts` 的 `stopDetail`），
+   * 待办清单每一行下方已显示同一内容：读数条不显示该正文，等待用户回复只显示停止原因的名称，完成不显示。
    */
-  const detail = () => props.errorMessage?.trim() || null
+  const detail = () =>
+    props.stopReason === 'awaiting_user' || props.stopReason === 'completed'
+      ? null
+      : props.errorMessage?.trim() || null
   const reason = () => detail() ?? (props.stopReason ? stopReasonLabel(props.stopReason) : null)
   const showReason = () =>
-    !props.running &&
-    Boolean(reason()) &&
-    (props.stopReason !== 'completed' || Boolean(props.errorMessage?.trim()))
+    !props.running && Boolean(reason()) && (props.stopReason !== 'completed' || Boolean(detail()))
 
   return (
     <div class="run-strip" classList={{ done: !props.running, abnormal: !normal() }}>

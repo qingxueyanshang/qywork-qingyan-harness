@@ -32,6 +32,7 @@ import {
   isTextCard,
   type MediaInputRole,
   modeOf,
+  retryCauseText,
 } from '@qywork/core'
 import {
   createEffect,
@@ -2105,7 +2106,16 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                       <span />
                       <span />
                     </span>
-                    <span class="phase" data-tip={s().taskId ? `任务号：${s().taskId}` : undefined}>
+                    <span
+                      class="phase"
+                      data-tip={
+                        s().retry
+                          ? retryCauseText(s().retry!.reason)
+                          : s().taskId
+                            ? `任务号：${s().taskId}`
+                            : undefined
+                      }
+                    >
                       {canvasRunLabel(p.node.output, s())}
                     </span>
                     <span class="time" data-tip="本次等待用时">

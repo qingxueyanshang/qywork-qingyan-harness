@@ -7,7 +7,8 @@
  */
 
 import { log } from '@qywork/core'
-import { sendJson, transientFailure } from './http.ts'
+import { quotaExhausted } from '../errors.ts'
+import { type RequestPolicy, sendJson, transientFailure } from './http.ts'
 import { MediaError, type MediaRunOptions, type MediaUsage } from './types.ts'
 
 const FIRST_INTERVAL_MS = 5_000
@@ -18,13 +19,17 @@ const MAX_INTERVAL_MS = 15_000
  */
 const MAX_FAILING_MS = 600_000
 
-/** 提交只执行一次；任务号缺失或为空时沿用 HTTP 诊断标为结果未知，不能当作明确拒绝后重发。 */
+/**
+ * 提交只执行一次；任务号缺失或为空时沿用 HTTP 诊断标为结果未知，不能当作明确拒绝后重发。
+ * `upstream`：在正文中给出错误码的上游，见 `RequestPolicy.upstream`。
+ */
 export async function postTask(
   url: string,
   payload: unknown,
   auth: Record<string, string>,
   opts: MediaRunOptions,
   idOf: (body: Record<string, unknown>) => unknown,
+  upstream?: RequestPolicy['upstream'],
 ): Promise<{ body: Record<string, unknown>; taskId: string }> {
   let taskId = ''
   opts.signal.throwIfAborted()
@@ -39,6 +44,7 @@ export async function postTask(
     },
     opts.signal,
     {
+      ...(upstream ? { upstream } : {}),
       validate(body) {
         const id = idOf(body)
         if (typeof id !== 'string' || !id.trim()) {
@@ -65,7 +71,8 @@ export type TaskState<T = TaskOutput> =
   | { state: 'pending'; status: string }
   /** `extra`：结果地址之外随任务返回的产物地址（方舟的尾帧图），与视频一同下载、一同落盘。 */
   | ({ state: 'done' } & T)
-  | { state: 'failed'; message: string }
+  /** `verbatim`：`message` 已是完整的报错文字，不加「远端任务失败」前缀（云端任务的失败原因即上游一侧的报错）。 */
+  | { state: 'failed'; message: string; verbatim?: true }
 
 /** 远端任务所处阶段：排队中或生成中。百炼与方舟可撤销排队中的任务，无法撤销生成中的任务。 */
 export type TaskPhase = 'queued' | 'running'
@@ -131,7 +138,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 /**
  * 等待任务完成，返回结果地址与计量。首次查询不等待：接续取回时任务通常已完成。
- * 查询遇到可重发的失败（`transientFailure`：连接中断、静默超时、408 / 429 / 5xx）时按间隔继续查询，
+ * 查询遇到可重发的失败（`transientFailure`：连接中断、静默超时、被限流或暂时不可用）时按间隔继续查询，
  * 连续失败超过 `MAX_FAILING_MS` 才结束本地等待；不按次数计算，短时的网络波动不结束等待。
  * 其余查询错误立即结束本地等待。两种情况都由 `afterSubmit` 附带任务号供取回。
  * 状态变化时经 `onStatus` 回报一次，不按查询次数回报。
@@ -159,7 +166,12 @@ export async function waitTask<T = TaskOutput>(
     })
     if (s) failingSince = undefined
     if (s?.state === 'done') return s
-    if (s?.state === 'failed') throw new RemoteTaskFailed(`远端任务失败：${s.message}`)
+    // 上游报告的失败原因提及额度或余额用尽时记为额度用尽：云端据此替换运营方一侧的原文（`MediaError.code`）。
+    if (s?.state === 'failed')
+      throw new RemoteTaskFailed(
+        s.verbatim ? s.message : `远端任务失败：${s.message}`,
+        quotaExhausted(null, s.message) ? { code: 'insufficient_quota' } : {},
+      )
     if (s && s.status !== last) {
       last = s.status
       opts.onStatus?.(s.status)

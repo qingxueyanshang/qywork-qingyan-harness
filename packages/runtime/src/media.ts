@@ -225,6 +225,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
                 }
               : {}),
             ...(call.onStatus ? { onStatus: call.onStatus } : {}),
+            ...(call.onRetry ? { onRetry: call.onRetry } : {}),
             ...(call.resumeTaskId ? { resumeTaskId: call.resumeTaskId } : {}),
           },
         )

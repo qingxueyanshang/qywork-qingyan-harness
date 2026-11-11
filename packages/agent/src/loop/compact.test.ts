@@ -20,6 +20,7 @@ import {
   STREAM_IDLE_TIMEOUT_MS,
 } from '@qywork/ai'
 import type { AgentEvent, RunUsage } from '@qywork/core'
+import { RESEND_LIMIT } from '@qywork/core'
 import {
   createConversation,
   createRun,
@@ -36,7 +37,6 @@ import { batchRemaining } from '../delivery.ts'
 import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from '../index.ts'
 import { AgentLoop } from '../index.ts'
 import { compactionEpoch, ToolRegistry } from '../registry.ts'
-import { MAX_RESENDS } from './attempt.ts'
 import { softLimit } from './request.ts'
 
 /** 压缩 step 的写入快照，供进度与终态断言读取。 */
@@ -758,7 +758,7 @@ describe('发送前检查：唯一的压缩触发', () => {
     // 拒绝次数比重发额度多一次：参数错误与「上游暂时不可用」同归入
     // `provider_unavailable`，会被自动重发（代价说明见 `loop/attempt.ts` 的 `RESENDABLE_CODES`）。
     // 拒绝次数不足时某一次会成功，断言的就是重发路径而不是上报路径。
-    const { adapter } = rejectingAdapter(MAX_RESENDS + 1, paramError)
+    const { adapter } = rejectingAdapter(RESEND_LIMIT + 1, paramError)
     const events = await collect(build(adapter, comp.port), 'rn_param')
     expect(comp.state.runs).toBe(0)
     expect(events.some((e) => e.type === 'run.error')).toBe(true)

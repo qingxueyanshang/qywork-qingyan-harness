@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`loop/attempt.ts` 的单一退避策略与重发预算（`resendBackoffMs`、`MAX_RESENDS`、
+ * 覆盖范围：`loop/attempt.ts` 的单一退避策略与重发预算（`resendBackoffMs`、`RESEND_LIMIT`、
  * `LoopDeps.sleep`），对 `@qywork/ai` 的 `providers/fault-server.test-helper.ts`
  * 三协议故障端点执行真实 HTTP 请求。
  *
@@ -18,9 +18,9 @@ import {
   startFaultServer,
 } from '@qywork/ai/fault-server.test-helper'
 import type { AgentEvent } from '@qywork/core'
+import { RESEND_LIMIT } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContextBase } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
-import { MAX_RESENDS } from './attempt.ts'
 
 const BACKOFF_STEPS = [2_000, 4_000, 8_000, 16_000, 30_000] as const
 const BACKOFF_JITTER_MAX = 1.1
@@ -132,6 +132,41 @@ test('503 带 Retry-After 60：按上游给出的 60 秒等待，随后一次成
   }
 }, 20_000)
 
+/**
+ * Retry-After 的规则与生成的重试相同（`core` 的 `resendDelay`）：不短于退避间隔，不超过 60 秒。
+ * 原始失败形状：完全按 Retry-After 等待，给出 600 秒时本轮停在等待中 10 分钟，给出 0 秒时不等待即重发。
+ */
+test.each([
+  [600, '等待 60 秒', 60_000],
+  [0, '按退避间隔等待', null],
+] as const)(
+  '503 带 Retry-After %d 秒：%s，随后一次成功',
+  async (seconds, _, expected) => {
+    const fault: FaultServer = startFaultServer('retry_after_then_ok')
+    fault.retryAfterSeconds = seconds
+    const backoffs: number[] = []
+    try {
+      const events = await runAgainst({
+        baseUrl: fault.openaiBaseUrl,
+        runId: `rn_retry_after_${seconds}`,
+        sleep: async (ms) => {
+          backoffs.push(ms)
+        },
+      })
+
+      expect(backoffs).toHaveLength(1)
+      if (expected === null) expectBackoff(backoffs[0], 0)
+      else expect(backoffs[0]).toBe(expected)
+      expect(fault.receipts.length).toBe(2)
+      const finished = events.find((e) => e.type === 'run.finished')
+      expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+    } finally {
+      fault.stop()
+    }
+  },
+  20_000,
+)
+
 /** 连接被拒时没有可用的等待时间，六次尝试之间按指数退避。 */
 test('连接被拒：首发加五次重发，间隔按 2 / 4 / 8 / 16 / 30 秒递增', async () => {
   const backoffs: number[] = []
@@ -143,13 +178,13 @@ test('连接被拒：首发加五次重发，间隔按 2 / 4 / 8 / 16 / 30 秒�
     },
   })
 
-  expect(backoffs).toHaveLength(MAX_RESENDS)
+  expect(backoffs).toHaveLength(RESEND_LIMIT)
   backoffs.forEach((ms, i) => {
     expectBackoff(ms, i)
   })
   const err = events.find((e) => e.type === 'run.error')
   expect(err?.type === 'run.error' && err.code).toBe('network_error')
-  expect(err?.type === 'run.error' && err.message).toContain(`已重发 ${MAX_RESENDS} 次`)
+  expect(err?.type === 'run.error' && err.message).toContain(`已重发 ${RESEND_LIMIT} 次`)
   const finished = events.find((e) => e.type === 'run.finished')
   expect(finished?.type === 'run.finished' && finished.stopReason).toBe('provider_error')
 }, 20_000)
@@ -184,8 +219,8 @@ test('可恢复错误交替出现：预算共用一份，尝试序号只增不�
         .filter((e) => e.type === 'run.retrying')
         .map((e) => (e.type === 'run.retrying' ? [e.attempt, e.max] : null)),
     ).toEqual([
-      [1, MAX_RESENDS],
-      [2, MAX_RESENDS],
+      [1, RESEND_LIMIT],
+      [2, RESEND_LIMIT],
     ])
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
     const finished = events.find((e) => e.type === 'run.finished')

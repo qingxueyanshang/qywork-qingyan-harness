@@ -1,10 +1,10 @@
 /**
- * 覆盖范围：`art.ts` 的 `generateArt`（经 `media.ts` 的 `makeMediaPort` 分派）与 `extractHtml`。
+ * 覆盖范围：`art.ts` 的 `generateArt`（经 `media.ts` 的 `makeMediaPort` 分派，含被限流时的重试）与 `extractHtml`。
  *
  * 对端是本机模拟的对话接口（OpenAI 兼容协议），按脚本返回 SSE 正文，并记录收到的请求体。
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, jest, spyOn, test } from 'bun:test'
 import type { MediaSpend } from '@qywork/core'
 import { artViewportOf } from '@qywork/core'
 import { extractHtml } from './art.ts'
@@ -17,6 +17,8 @@ const PAGE = '<!doctype html><html><head><title>旧</title></head><body>旧页�
 let server: ReturnType<typeof Bun.serve>
 let bodies: Record<string, unknown>[] = []
 let answer = ''
+/** 按顺序替代默认答复的响应；用完后返回 `answer`。 */
+let replies: (() => Response)[] = []
 
 const sse = (text: string) => {
   const chunk = (body: unknown) => `data: ${JSON.stringify(body)}\n\n`
@@ -36,6 +38,8 @@ beforeAll(() => {
     hostname: '127.0.0.1',
     async fetch(req) {
       bodies.push((await req.json()) as Record<string, unknown>)
+      const scripted = replies.shift()
+      if (scripted) return scripted()
       return new Response(sse(answer), { headers: { 'content-type': 'text/event-stream' } })
     },
   })
@@ -43,6 +47,7 @@ beforeAll(() => {
 afterAll(() => server.stop(true))
 beforeEach(() => {
   bodies = []
+  replies = []
 })
 
 const config = (): QyConfig => ({
@@ -124,6 +129,59 @@ describe('Art 生成', () => {
     })
     expect((bodies[0] as { model: string }).model).toBe('other-model')
     expect(spends).toHaveLength(1)
+  })
+
+  /**
+   * 同一上游限流时，图片与视频卡片重试，Art 卡片同样按对话请求的重发规则重试，重试经 `onRetry` 回报给卡片。
+   * 原始失败形状：一次 429 即失败，卡片显示「HTTP 429」而不重试。等待由假计时器推进。
+   */
+  test('被限流时按对话请求的重发间隔重试，回报第几次重试，重发被接受后返回页面', async () => {
+    jest.useFakeTimers()
+    const random = spyOn(Math, 'random').mockReturnValue(0)
+    try {
+      answer = '<!doctype html><html><body>页面</body></html>'
+      replies = [
+        () =>
+          Response.json({ error: { message: 'busy', type: 'rate_limit_error' } }, { status: 429 }),
+      ]
+      const reports: unknown[] = []
+      const work = generate({ onRetry: (retry: unknown) => reports.push(retry) })
+      for (let i = 0; i < 20_000 && reports.length === 0; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      expect(reports).toEqual([{ attempt: 1, max: 5, reason: 'HTTP 429 请求过多：busy' }])
+      jest.advanceTimersByTime(1_999)
+      for (let i = 0; i < 50; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(bodies).toHaveLength(1)
+      jest.advanceTimersByTime(1)
+      const result = await work
+      expect(result.ok).toBe(true)
+      expect(bodies).toHaveLength(2)
+      expect(reports).toEqual([{ attempt: 1, max: 5, reason: 'HTTP 429 请求过多：busy' }, null])
+    } finally {
+      jest.useRealTimers()
+      random.mockRestore()
+    }
+  })
+
+  /** 已收到部分页面后中断：重发即重新生成整页，按失败返回，不重发。 */
+  test('已收到部分正文后连接中断时不重发，按失败返回', async () => {
+    replies = [
+      () =>
+        new Response(
+          `data: ${JSON.stringify({ choices: [{ delta: { content: '<!doctype html><html>' }, finish_reason: null }] })}\n\n`,
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+    ]
+    const reports: unknown[] = []
+    const result = await generate({ onRetry: (retry: unknown) => reports.push(retry) })
+    // 中断属于可重发的失败（`network_error`），因已收到正文而不重发。
+    expect(result).toEqual({
+      ok: false,
+      message: 'relay / chat-model：流在 finish_reason 之前结束',
+    })
+    expect(bodies).toHaveLength(1)
+    expect(reports).toEqual([])
   })
 
   test('接口不存在时不发出请求，消息列出可选的对话模型', async () => {

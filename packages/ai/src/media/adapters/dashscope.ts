@@ -46,6 +46,29 @@ const ENDED: Record<string, string> = {
   CANCELED: '任务已取消',
 }
 
+/** 没有返回产物时的报错：带正文中的错误码与说明。 */
+function missing(what: string, body: Record<string, unknown>): string {
+  const code = typeof body.code === 'string' ? body.code : ''
+  const message = typeof body.message === 'string' ? body.message : ''
+  return `接口没有返回${what}${code || message ? `：${code} ${message}`.trimEnd() : ''}`
+}
+
+/**
+ * 同步生成的请求策略：错误状态的正文按百炼的错误码归类（`upstreamFailureCode`）；HTTP 200 而没有产物、正文带错误码时按接口拒绝处理。
+ * `produced` 判定正文中是否有产物。
+ */
+function syncPolicy(what: string, produced: (body: Record<string, unknown>) => boolean) {
+  return {
+    upstream: {
+      vendor: 'dashscope' as const,
+      refused: (body: Record<string, unknown>) =>
+        !produced(body) && typeof body.code === 'string' && body.code
+          ? missing(what, body)
+          : undefined,
+    },
+  }
+}
+
 export class DashScopeImagesAdapter implements MediaAdapter {
   readonly kind = 'dashscope_images' as const
 
@@ -69,15 +92,10 @@ export class DashScopeImagesAdapter implements MediaAdapter {
       },
       { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers },
       signal,
+      syncPolicy('图片', (b) => imageUrls(b).length > 0),
     )
     const urls = imageUrls(body)
-    if (urls.length === 0) {
-      const code = typeof body.code === 'string' ? body.code : ''
-      const message = typeof body.message === 'string' ? body.message : ''
-      throw new MediaError(
-        `接口没有返回图片${code || message ? `：${code} ${message}`.trimEnd() : ''}`,
-      )
-    }
+    if (urls.length === 0) throw new MediaError(missing('图片', body))
     return resolveImages(
       { sources: urls.map((url) => ({ url })), usage: imageUsage(body, urls.length) },
       opts,
@@ -152,6 +170,11 @@ function wavWithActualLengths(bytes: Uint8Array): Uint8Array {
   return out
 }
 
+/** 语音合成结果中的音频：地址或 base64。 */
+function audioOf(body: Record<string, unknown>): { url?: unknown; data?: unknown } | undefined {
+  return (body.output as { audio?: { url?: unknown; data?: unknown } } | undefined)?.audio
+}
+
 /**
  * 语音参数全部位于 `input`。旧 Qwen-TTS 使用多模态端点，新 Qwen-Audio 使用 SpeechSynthesizer；
  * Next 的正文为 text_prompt，参考音频为 references，且不能传 voice。结构由目录声明。
@@ -205,8 +228,15 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
       },
       { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers },
       signal,
+      syncPolicy('音频', (b) => {
+        const out = audioOf(b)
+        return (
+          !!(typeof out?.url === 'string' && out.url) ||
+          !!(typeof out?.data === 'string' && out.data)
+        )
+      }),
     )
-    const audio = (body.output as { audio?: { url?: unknown; data?: unknown } } | undefined)?.audio
+    const audio = audioOf(body)
     const raw = (body.usage ?? {}) as Record<string, unknown>
     // 新系列中 Flash 与 Next 按 Token 计费，Plus 按字符计费：回报了 Token 时取 Token，否则取 characters。
     // Next 的 duration 不能代替 Token。旧系列只按 characters。
@@ -226,11 +256,7 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
       const bytes = wavWithActualLengths(new Uint8Array(Buffer.from(audio.data, 'base64')))
       return { files: [{ bytes, mime: sniffMime(bytes) ?? 'audio/wav' }], usage }
     }
-    const code = typeof body.code === 'string' ? body.code : ''
-    const message = typeof body.message === 'string' ? body.message : ''
-    throw new MediaError(
-      `接口没有返回音频${code || message ? `：${code} ${message}`.trimEnd() : ''}`,
-    )
+    throw new MediaError(missing('音频', body))
   }
 }
 
@@ -293,6 +319,7 @@ export class DashScopeVideosAdapter implements MediaAdapter {
         },
         opts,
         (body) => (body.output as { task_id?: unknown } | undefined)?.task_id,
+        { vendor: 'dashscope' },
       )
       taskId = submitted.taskId
     }

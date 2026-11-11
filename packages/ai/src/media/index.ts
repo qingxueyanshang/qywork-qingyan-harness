@@ -23,9 +23,18 @@ import { OpenAIVideosAdapter } from './adapters/openai-videos.ts'
 import { CloudMediaAdapter } from './adapters/qywork.ts'
 import { XaiImagesAdapter, XaiVideosAdapter } from './adapters/xai.ts'
 import { lookupMediaModel } from './catalog.ts'
+import { reportingRetries } from './http.ts'
 import type { MediaAdapter, MediaProfile } from './types.ts'
 
+/** 各协议的 `run` 在此统一包一层：运行期间请求的重试等待回报给 `opts.onRetry`，适配器不需要各自传递。 */
 export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {
+  const adapter = construct(profile)
+  const run = adapter.run.bind(adapter)
+  adapter.run = (req, opts) => reportingRetries(opts.onRetry, () => run(req, opts))
+  return adapter
+}
+
+function construct(profile: MediaProfile): MediaAdapter {
   const spec = lookupMediaModel(profile.model, profile.kind, profile.spec)
   switch (profile.kind) {
     case 'gemini_images':

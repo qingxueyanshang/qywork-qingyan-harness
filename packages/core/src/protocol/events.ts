@@ -298,7 +298,7 @@ export interface RunRequestEvent {
   requestId: string
   phase: 'sent' | 'headers'
   attempt: number
-  /** 重发上限。真源是 `agent` 的 `MAX_RESENDS`，界面不硬编码该值。 */
+  /** 重发上限。真源是 `RESEND_LIMIT`，界面不硬编码该值。 */
   max: number
   /**
    * 该阶段的观察时刻。`headers` 取传输层记录的响应头到达时刻，不取事件产生时刻；
@@ -325,7 +325,7 @@ export interface RunRetryingEvent {
   requestId: string
   /** 重发序号，从 1 开始。 */
   attempt: number
-  /** 重发上限。真源是 `agent` 的 `MAX_RESENDS`，界面不硬编码该值。 */
+  /** 重发上限。真源是 `RESEND_LIMIT`，界面不硬编码该值。 */
   max: number
   /** 上次失败的分类说明，与请求诊断中的首个 cause 相同；旧服务端可省略。 */
   reason?: string

@@ -19,6 +19,7 @@ import {
   type CanvasDoc,
   type CanvasGenerateNode,
   type CanvasOp,
+  canvasRunLabel,
   emptyCanvas,
   parseCanvas,
   serializeCanvas,
@@ -173,7 +174,8 @@ describe('画布批量运行', () => {
     expect((await onDisk(ws.root)).runs).toHaveLength(3)
   })
 
-  test('最多 4 个在运行，完成一个就派发下一个，所有结果回写均保留', async () => {
+  /** 原始失败形状：一次批量最多同时提交 4 个节点，第 5 个起等待前面的节点结束。 */
+  test('互不依赖的节点全部同时提交，不设数量上限；所有结果回写均保留', async () => {
     const { ws, svc, ids } = await setup(
       Array.from({ length: 6 }, (_, i) => ({
         op: 'add_generate',
@@ -184,16 +186,10 @@ describe('画布批量运行', () => {
     )
     const fake = fakePort()
     const batch = svc.runBatch(ws, PATH, Object.values(ids), { media: fake.port })
-    const initial = await Promise.all(Array.from({ length: 4 }, () => fake.next()))
-    await Bun.sleep(0)
-    expect(fake.calls).toHaveLength(4)
-    initial[0]!.finish(success)
-    const fifth = await fake.next()
-    expect(fake.calls).toHaveLength(5)
-    fifth.finish(success)
-    const sixth = await fake.next()
-    sixth.finish(success)
-    for (const p of initial.slice(1)) p.finish(success)
+    // 六个调用都到达生成端口时没有任何一个已结束。
+    const all = await Promise.all(Array.from({ length: 6 }, () => fake.next()))
+    expect(fake.calls).toHaveLength(6)
+    for (const p of all) p.finish(success)
     expect((await batch).every((r) => r.result.ok)).toBe(true)
     expect((await onDisk(ws.root)).runs).toHaveLength(6)
     for (const id of Object.values(ids)) expect((await node(ws.root, id)).versions).toHaveLength(1)
@@ -248,15 +244,18 @@ describe('画布批量运行', () => {
     expect(fake.calls).toHaveLength(0)
   })
 
-  test('中止会停止在运行的等待，不再提交排队节点；预先中止时无调用', async () => {
-    const { ws, svc, ids } = await setup(
-      Array.from({ length: 6 }, (_, i) => ({
-        op: 'add_generate',
+  test('中止会停止在运行的等待，不再提交等待上游的节点；预先中止时无调用', async () => {
+    // 后两个节点以第一个节点为输入，上游结束之前不提交；其余四个互不依赖，同时提交。
+    const { ws, svc, ids } = await setup([
+      ...Array.from({ length: 6 }, (_, i) => ({
+        op: 'add_generate' as const,
         ref: `$${i}`,
-        output: 'image',
+        output: 'image' as const,
         prompt: `p${i}`,
       })),
-    )
+      { op: 'connect' as const, from: '$0', to: '$4', role: 'reference' as const },
+      { op: 'connect' as const, from: '$0', to: '$5', role: 'reference' as const },
+    ])
     const fake = fakePort()
     const stop = new AbortController()
     const selected = Object.values(ids)
@@ -284,6 +283,115 @@ describe('画布批量运行', () => {
     expect(results[0]).toMatchObject({ skipped: true, result: { ok: false, pending: true } })
     expect(fake.calls).toHaveLength(1)
     expect((await node(ws.root, ids.$v!)).versions).toHaveLength(1)
+  })
+
+  /**
+   * 原始失败形状：提交被接口以 429 拒绝后系统在等待重试，卡片显示「提交中」，与请求已发出时相同。
+   */
+  test('提交被拒绝后的重试等待显示为第几次重试并带上次失败的原因，等待结束后恢复原状态', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const call = await fake.next()
+    const state = async () => {
+      const s = (await svc.read(ws.root, PATH)).states[ids.$v!]
+      if (s?.state !== 'running') throw new Error('卡片不在运行中')
+      return s
+    }
+    expect(canvasRunLabel('video', await state())).toBe('提交中')
+    const retry = { attempt: 2, max: 5, reason: 'HTTP 429 请求过多：Requests rate limit exceeded' }
+    call.call.onRetry?.(retry)
+    expect((await state()).retry).toEqual(retry)
+    expect(canvasRunLabel('video', await state())).toBe('第 2/5 次重试')
+    call.call.onRetry?.(null)
+    expect((await state()).retry).toBeUndefined()
+    expect(canvasRunLabel('video', await state())).toBe('提交中')
+    call.finish({ ok: false, message: '上游拒绝' })
+    await run.done
+  })
+
+  /**
+   * 走云端的任务在云端一侧被上游拒绝后重试，取回时由云端任务的查询回报，卡片与生成时相同地显示重试。
+   * 原始失败形状：取回不接收重试回报，卡片在云端重试期间显示「取回中」。
+   */
+  test('取回时远端一侧的重试等待显示为第几次重试，等待结束后恢复原状态', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const made = await fake.next()
+    await made.submit('cloud-task')
+    made.finish({ ok: false, message: '等待超时', pendingTaskId: 'cloud-task' })
+    await first.done
+    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const resumed = await fake.next()
+    const state = async () => {
+      const s = (await svc.read(ws.root, PATH)).states[ids.$v!]
+      if (s?.state !== 'running') throw new Error('卡片不在运行中')
+      return s
+    }
+    const retry = { attempt: 1, max: 5, reason: '上游请求过多' }
+    resumed.call.onRetry?.(retry)
+    expect((await state()).retry).toEqual(retry)
+    expect(canvasRunLabel('video', await state())).toBe('第 1/5 次重试')
+    resumed.call.onRetry?.(null)
+    expect((await state()).retry).toBeUndefined()
+    resumed.finish({ ok: false, message: '上游拒绝' })
+    await again.done
+  })
+
+  /**
+   * 走云端的出图交出任务号：写入任务记录，停止时结束本地等待并保留记录供取回，不按视频任务向远端撤销。
+   * 原始失败形状：只有视频的任务号写入记录，出图的记录在停止后被删除，卡片记为「远端结果未知」，已扣费的结果无法取回。
+   */
+  test('走云端的出图：任务号写入任务记录，停止后可取回，不向远端撤销', async () => {
+    const { ws, svc, ids } = await setup([
+      { op: 'add_generate', ref: '$g', output: 'image', prompt: '猫' },
+    ])
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const call = await fake.next()
+    await call.submit('mj_0123456789abcdef')
+    let revoked = 0
+    const cancelled = await svc.cancel(ws.root, PATH, ids.$g!, async () => {
+      revoked++
+      return 'cancelled'
+    })
+    expect(cancelled).toBe('stopped')
+    expect(revoked).toBe(0)
+    expect(await run.done).toMatchObject({ ok: false, pending: true })
+    const version = (await node(ws.root, ids.$g!)).versions[0]!
+    expect(JSON.parse(await readFile(join(ws.root, version.path), 'utf8'))).toMatchObject({
+      type: 'image',
+      taskId: 'mj_0123456789abcdef',
+    })
+    const again = await svc.retrieve(ws, PATH, ids.$g!, undefined, { media: fake.port })
+    const resumed = await fake.next()
+    expect(resumed.call).toMatchObject({ type: 'image', resumeTaskId: 'mj_0123456789abcdef' })
+    resumed.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'seedance',
+      files: [{ bytes: PNG, mime: 'image/png' }],
+    })
+    expect(await again.done).toMatchObject({ ok: true })
+  })
+
+  /**
+   * 原始失败形状：重试等待期间停止视频卡，结果写为「已停止等待；远端结果未知」，而卡片显示的是第几次重试，
+   * 接口没有受理请求。
+   */
+  test('在重试等待中停止视频卡：记为已取消、未提交，不报告远端结果未知', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const call = await fake.next()
+    call.call.onRetry?.({ attempt: 1, max: 5, reason: 'HTTP 429 请求过多' })
+    await svc.cancel(ws.root, PATH, ids.$v!, async () => 'unsupported')
+    expect(await run.done).toEqual({
+      ok: false,
+      message: '已取消，未提交生成，不产生生成费用',
+      pending: false,
+    })
   })
 
   /**

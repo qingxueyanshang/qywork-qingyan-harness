@@ -1,6 +1,6 @@
 /**
- * 生成：`generate.ts` 的 `generate_image`、`generate_video`、`generate_audio`、`generateMedia`、`landFiles`，
- * 以及 `index.ts` 中按类别注册的逻辑。
+ * 生成：`generate.ts` 的 `generate_image`、`generate_video`、`generate_audio`、`retrieve_media`、`generateMedia`、`landFiles`，
+ * 工具卡片上的进度（阶段与重试，`@qywork/core` 的 `taskPhaseLabel` 与重试文字），以及 `index.ts` 中按类别注册的逻辑。
  *
  * 端口使用记录调用的模拟实现：此处验证工具一侧的行为，包括输入的读取、参数的解析、
  * 产物的写入位置、已存在的输出路径在调用接口之前被拒绝、视频任务记录的写入与删除时机。
@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type MediaCall, type MediaCallResult, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { canvasRunLabel } from '@qywork/core'
 import {
   generateAudioTool,
   generateImageTool,
@@ -92,6 +93,9 @@ describe('generate_image', () => {
     expect(out.status).toBe('success')
     expect(calls[0]).toEqual({
       onImageResult: expect.any(Function),
+      onTask: expect.any(Function),
+      onStatus: expect.any(Function),
+      onRetry: expect.any(Function),
       type: 'image',
       prompt: '一只猫',
       inputs: [],
@@ -247,6 +251,7 @@ describe('generate_video', () => {
     })
     expect(calls[0]?.inputs.map((i) => i.role)).toEqual(['first_frame', 'last_frame'])
     expect(JSON.parse(recordDuring)).toMatchObject({
+      type: 'video',
       provider: 'qwen',
       model: 'wan3.0-video',
       taskId: 'task-1',
@@ -591,6 +596,50 @@ describe('generateMedia / landFiles', () => {
     })
   })
 
+  /**
+   * 走云端的出图与音频同样由适配器交出任务号。原始失败形状：只有视频的任务号写入任务记录，提交结果未知而查询也失败时，
+   * 报错写「仍可取回」，记录却在结束时被删除，无法取回。
+   */
+  test.each([
+    ['image', generateImageTool],
+    ['audio', generateAudioTool],
+  ] as const)(
+    '%s：任务号写入任务记录，可接续的失败保留记录，按记录取回时按任务号查询同一类别',
+    async (type, tool) => {
+      const root = await mkdtemp(join(tmpdir(), 'qy-gen-task-'))
+      during = async (call) => {
+        await call.onTask?.({ taskId: 'mj_0123456789abcdef', provider: 'cloud', model: 'm' })
+      }
+      answer = {
+        ok: false,
+        message: '提交时连接被断开（远端任务 mj_0123456789abcdef 仍可取回）',
+        pendingTaskId: 'mj_0123456789abcdef',
+      }
+      const out = await tool.fn({ prompt: 'x', text: 'x', output: 'cloud' }, ctx(root))
+      expect(out.status).toBe('failure')
+      expect(out.message).toContain('cloud.task.json')
+      expect(JSON.parse(await readFile(join(root, 'cloud.task.json'), 'utf8'))).toMatchObject({
+        type,
+        provider: 'cloud',
+        model: 'm',
+        taskId: 'mj_0123456789abcdef',
+      })
+
+      calls = []
+      during = async () => {}
+      answer = {
+        ok: true,
+        provider: 'cloud',
+        model: 'm',
+        files: [{ bytes: PNG, mime: 'image/png' }],
+      }
+      expect((await retrieveMediaTool.fn({ path: 'cloud.task.json' }, ctx(root))).status).toBe(
+        'success',
+      )
+      expect(calls[0]).toMatchObject({ type, resumeTaskId: 'mj_0123456789abcdef' })
+    },
+  )
+
   test('art：当前页面（HTML）作为参考输入读取为 text/html，产物写入 generated/<时间>.html；其他类别不接受 HTML', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-art-'))
     await mkdir(join(root, 'generated'))
@@ -684,4 +733,93 @@ test('generate_audio 将有序 WAV 与 OGG Opus 参考音频交给统一生成�
   const bad = await generateVideoTool.fn({ prompt: '说话', audios: ['b.opus'] }, ctx(root))
   expect(bad.errorKind).toBe('invalid_tool_arguments')
   expect(calls).toHaveLength(1)
+})
+
+describe('工具卡片上的进度', () => {
+  /** 记录 `progress` 通道输出的上下文。 */
+  const recording = (root: string) => {
+    const lines: string[] = []
+    const context = ctx(root)
+    context.emit = (channel, delta) => {
+      if (channel === 'progress') lines.push(delta)
+    }
+    return { context, lines }
+  }
+  const retry = (attempt: number) => ({ attempt, max: 5, reason: 'HTTP 429 请求过多：busy' })
+
+  /**
+   * 不经画布直接调用生成工具时，对话的工具卡片是重试唯一的显示位置；写法与画布卡片的标签、悬停提示同源。
+   * 原始失败形状：三个生成工具都不接收重试回报，重试期间工具卡片没有任何输出。
+   */
+  test.each([
+    ['generate_image', generateImageTool],
+    ['generate_video', generateVideoTool],
+    ['generate_audio', generateAudioTool],
+  ] as const)(
+    '%s：进入重试等待时输出一行「第 N/M 次重试 · 上次失败：原因」，等待结束与重复的回报不输出',
+    async (_, tool) => {
+      const root = await mkdtemp(join(tmpdir(), 'qy-gen-retry-'))
+      const { context, lines } = recording(root)
+      during = async (call) => {
+        call.onRetry?.(retry(1))
+        call.onRetry?.(retry(1))
+        call.onRetry?.(null)
+        call.onRetry?.(retry(2))
+      }
+      await tool.fn({ prompt: 'x', text: 'x' }, context)
+      const label = canvasRunLabel('image', { state: 'running', startedAt: 0, retry: retry(1) })
+      expect(label).toBe('第 1/5 次重试')
+      expect(lines).toEqual([
+        `${label} · 上次失败：HTTP 429 请求过多：busy\n`,
+        '第 2/5 次重试 · 上次失败：HTTP 429 请求过多：busy\n',
+      ])
+    },
+  )
+
+  /**
+   * 上游状态用画布卡片已有的名称；同一阶段的不同原词只输出一次，无法识别的状态不输出。
+   * 原始失败形状：工具卡片逐行输出上游的原词（`PENDING`、`queued`、`RUNNING`）。
+   */
+  test('generate_video 与 retrieve_media 的上游状态输出为「排队中 / 生成中」', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gen-phase-'))
+    during = async (call) => {
+      for (const status of ['PENDING', 'queued', 'RUNNING', 'processing', 'weird']) {
+        call.onStatus?.(status)
+      }
+    }
+    const made = recording(root)
+    await generateVideoTool.fn({ prompt: 'x' }, made.context)
+    expect(made.lines).toEqual(['排队中\n', '生成中\n'])
+
+    await writeFile(
+      join(root, 'wave.task.json'),
+      JSON.stringify({ type: 'video', provider: 'qwen', model: 'v', taskId: 't', output: 'wave' }),
+    )
+    const fetched = recording(root)
+    await retrieveMediaTool.fn({ path: 'wave.task.json' }, fetched.context)
+    expect(fetched.lines).toEqual(['排队中\n', '生成中\n'])
+  })
+
+  /**
+   * 走云端的任务在云端一侧被上游拒绝后重试，取回时由云端任务的查询回报。原始失败形状：取回不接收重试回报，工具卡片不显示重试。
+   */
+  test('retrieve_media 取回时显示远端一侧的重试', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gen-resume-retry-'))
+    await writeFile(
+      join(root, 'cloud.task.json'),
+      JSON.stringify({
+        type: 'image',
+        provider: 'cloud',
+        model: 'm',
+        taskId: 'mj_1',
+        output: 'cloud',
+      }),
+    )
+    during = async (call) => {
+      call.onRetry?.(retry(3))
+    }
+    const { context, lines } = recording(root)
+    await retrieveMediaTool.fn({ path: 'cloud.task.json' }, context)
+    expect(lines).toEqual(['第 3/5 次重试 · 上次失败：HTTP 429 请求过多：busy\n'])
+  })
 })

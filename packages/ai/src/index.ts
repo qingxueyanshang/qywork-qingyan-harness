@@ -47,6 +47,8 @@ export {
 } from './errors.ts'
 // 唯一的 adapter 构造入口
 export { buildAdapter } from './factory.ts'
+// 云端任务号的格式：本机生成，云端按同一格式校验
+export { CLOUD_JOB_ID, newCloudJobId } from './media/adapters/qywork.ts'
 // 生成模型：目录（设置页与生成工具共用）、参数校验、发送前的花费、唯一的生成适配器构造入口
 export {
   findMediaModel,

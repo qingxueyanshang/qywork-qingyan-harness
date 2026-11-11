@@ -12,11 +12,12 @@
  * 服务端读取该行：把其中任何一段替换为桩，只能验证桩被调用。
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, ConversationId, EventEnvelope, FollowUp } from '@qywork/core'
+import * as core from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
   ContentStore,
@@ -33,6 +34,11 @@ import { EventBus } from './bus.ts'
 import { startRun, submitMessage } from './run-control.ts'
 import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
+
+/**
+ * 重发前的等待取 0。本文件验证回执的交付，不验证退避时长；按真实退避等待时，耗尽一轮的重发预算约需一分钟。
+ */
+mock.module('@qywork/core', () => ({ ...core, resendDelay: () => 0 }))
 
 // ───────────────────────── 假 provider ─────────────────────────
 
@@ -90,14 +96,11 @@ const ok =
     new Response(payload, { headers: SSE_HEADERS })
 
 /**
- * `Retry-After: 0` 的容量拒绝。退避读取上游给出的该值，因此全部重发预算在毫秒内耗尽，
+ * 容量拒绝（503）。重发前的等待已取 0（见文件开头），全部重发预算在毫秒内耗尽，
  * 「耗尽预算」这一终态在用例中数秒内即可到达。
  */
 const unavailable: Turn = () =>
-  new Response(JSON.stringify({ error: { message: '没有可用名额' } }), {
-    status: 503,
-    headers: { 'retry-after': '0' },
-  })
+  new Response(JSON.stringify({ error: { message: '没有可用名额' } }), { status: 503 })
 
 const unauthorized: Turn = () =>
   new Response(JSON.stringify({ error: { message: '密钥无效' } }), { status: 401 })

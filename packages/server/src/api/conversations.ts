@@ -1,7 +1,6 @@
 /** 模型目录、会话、消息与 run 的接口，前端首屏所需的数据均由此提供。 */
 
 import { rm } from 'node:fs/promises'
-import { MAX_RESENDS } from '@qywork/agent'
 import type { MediaOperation, MediaParamSpec, ModelSpec } from '@qywork/ai'
 import {
   applySpecOverride,
@@ -30,7 +29,7 @@ import type {
   RunId,
   ToolSchemaMode,
 } from '@qywork/core'
-import { MEDIA_KIND_OUTPUT } from '@qywork/core'
+import { MEDIA_KIND_OUTPUT, RESEND_LIMIT } from '@qywork/core'
 import {
   catalogKey,
   contextPanel,
@@ -322,7 +321,7 @@ function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSn
     request: {
       requestId: last.id,
       attempt: resend?.attempt ?? 0,
-      max: resend?.max ?? MAX_RESENDS,
+      max: resend?.max ?? RESEND_LIMIT,
       retryReason: resend ? (decided?.diagnostic?.causes[0]?.message ?? null) : null,
       status: last.status,
       sentAt: last.sentAt,

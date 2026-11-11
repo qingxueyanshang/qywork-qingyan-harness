@@ -6,9 +6,11 @@
 
 import type {
   Currency,
+  ErrorCode,
   MediaDiagnostic,
   MediaInputRole,
   MediaKind,
+  RetryWait,
   StoredMediaSpec,
 } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation } from './catalog.ts'
@@ -99,6 +101,12 @@ export interface MediaImageResult {
 
 export interface MediaRunOptions {
   signal: AbortSignal
+  /**
+   * 提交或上传被拒绝后进入重试等待时回报一次，等待结束、请求重新发出时以 `null` 回报一次；等待被中止时不回报 `null`。
+   * 调用方据此显示重试，等待期间远端没有受理请求。进入等待时 `failure` 为引起等待的失败，`retry.reason` 是它的报错原文；
+   * 调用方按失败类别改写显示的原因时读取 `failure`。
+   */
+  onRetry?: (retry: RetryWait | null, failure?: MediaError) => void
   /** 视频生成 POST 即将发出；素材上传不触发。用于区分未提交取消与受理结果未知。 */
   onSubmit?: () => void
   /** 在下载之前保存结果引用与计量；回调完成后才开始下载。 */
@@ -145,12 +153,21 @@ export class MediaError extends Error {
   readonly status: number | undefined
   readonly pendingTaskId: string | undefined
   readonly diagnostic: MediaDiagnostic | undefined
+  /**
+   * 失败的原因类别，与对话请求同一套失败码（`httpFailureCode`、`upstreamFailureCode`）：重试与云端给用户的文字按它判断。
+   * 接口答复了错误状态、在正文中报告了失败或上游报告任务失败时存在；连接失败与响应无法解析时缺省，按 `diagnostic` 判断。
+   */
+  readonly code: ErrorCode | undefined
+  /** 自动重试用尽后 `message` 末尾的一句，写明已做的重试（「已自动重试 5 次，仍失败」）；没有自动重试时缺省。 */
+  readonly retryReceipt: string | undefined
   constructor(
     message: string,
     opts: {
       status?: number
       pendingTaskId?: string
       diagnostic?: MediaDiagnostic
+      code?: ErrorCode
+      retryReceipt?: string
       cause?: unknown
     } = {},
   ) {
@@ -159,5 +176,7 @@ export class MediaError extends Error {
     this.status = opts.status
     this.pendingTaskId = opts.pendingTaskId
     this.diagnostic = opts.diagnostic
+    this.code = opts.code
+    this.retryReceipt = opts.retryReceipt
   }
 }

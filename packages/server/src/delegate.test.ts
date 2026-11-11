@@ -16,10 +16,11 @@
  * 实际 CLI 是否按约定输出由真机验收（`scripts/smoke-cli-receipt.ts`）。
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
+import * as core from '@qywork/core'
 import {
   type AgentEvent,
   type ConversationId,
@@ -56,6 +57,12 @@ import { EventBus } from './bus.ts'
 import { makeDelegate } from './delegate.ts'
 import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
+
+/**
+ * 子会话一轮之内重发前的等待取 0。本文件验证派发与回执，不验证退避时长；按真实退避等待时，
+ * 耗尽一轮的重发预算约需一分钟。
+ */
+mock.module('@qywork/core', () => ({ ...core, resendDelay: () => 0 }))
 
 const SSE_HEADERS = { 'content-type': 'text/event-stream' }
 
@@ -811,13 +818,13 @@ describe('回执是一条消息', () => {
  * 原始失败形状：子 agent 的模型请求被限流（HTTP 429），轮内重发 5 次后该轮失败，父会话随即收到
  * 「失败：[rate_limited]」的回执并停止整项工作。暂时故障在发送失败回执之前按 30 秒、2 分钟、5 分钟重新派发。
  *
- * 子会话一轮内的 5 次重发按 Retry-After: 0 立即进行；重新派发前的等待由注入的实现记录。
+ * 子会话一轮内的 5 次重发不等待（见文件开头）；重新派发前的等待由注入的实现记录。
  */
 describe('暂时故障时重新派发', () => {
   const limited = () =>
     new Response('{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}', {
       status: 429,
-      headers: { 'retry-after': '0', 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json' },
     })
   /** 子会话一轮内的请求次数：首次发送加 5 次重发。 */
   const PER_RUN = 6
