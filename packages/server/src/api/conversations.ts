@@ -598,11 +598,14 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       const page: ConversationHistoryPageResponse = {
         ...history,
         // 界面只显示声明 inline 的工具图像，只为这些 step 读取字节；其余 step 只带引用，页面不再携带图像字节。
+        // 思考步骤只带正文：`response_reasoning` 是回传给模型接口的原始条目，界面不读取，实测占一页字节的三成以上。
         steps: history.steps.map((step) =>
-          step.payload?.kind === 'tool_result' &&
-          step.payload.outcome.presentation?.images === 'inline'
-            ? d.loadToolImages([step])[0]!
-            : step,
+          step.payload?.kind === 'response_reasoning'
+            ? { ...step, payload: null }
+            : step.payload?.kind === 'tool_result' &&
+                step.payload.outcome.presentation?.images === 'inline'
+              ? d.loadToolImages([step])[0]!
+              : step,
         ),
         live: liveSnapshot(d, id),
       }
