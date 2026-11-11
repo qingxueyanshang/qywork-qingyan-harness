@@ -1233,7 +1233,12 @@ describe('画布运行：视频', () => {
     const fake = fakePort()
     const a = await svc.run(one.ws, PATH, id, { media: fake.port })
     const b = await svc.run({ id: 'ws2', root: two.ws.root }, PATH, id, { media: fake.port })
-    const [pa, pb] = [await fake.next(), await fake.next()]
+    // 两次调用各自异步到达端口，并发负载下第二个工作区的调用可能先到：按输出目录所在的工作区认领，不按到达顺序。
+    const first = [await fake.next(), await fake.next()]
+    const inRoot = (root: string) =>
+      first.find((p) => !relative(root, p.call.outputDir!).startsWith('..'))!
+    const [pa, pb] = [inRoot(one.ws.root), inRoot(two.ws.root)]
+    expect(pa).not.toBe(pb)
     pa.finish({ ok: false, message: 'a' })
     await a.done
     expect((await svc.read(two.ws.root, PATH)).states[id]).toMatchObject({ state: 'running' })
