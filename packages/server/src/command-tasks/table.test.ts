@@ -13,7 +13,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -153,6 +153,10 @@ const timer = setInterval(async () => {
 /**
  * 输出超过保留上限的命令：输出 1200 行、每行 1000 个字符后输出一行完成标记，
  * 等到 `.tmp/<名称>.go` 出现时输出结束行并退出。
+ *
+ * 完成标记必须用 `process.stdout.write`，不能用 `console.log`：管道写满时，Bun 1.4.2 在 Linux 与
+ * macOS 上直接丢弃紧随其后的 `console.log` 输出，而 `process.stdout.write` 的输出排队保留
+ * （WSL2 实测：读取方延迟 1 秒时 `console.log` 的一行三次全部丢失，`process.stdout.write` 三次全部到达）。
  */
 const FLOOD_SCRIPT = `
 import { writeFile } from 'node:fs/promises'
@@ -160,7 +164,7 @@ const name = process.argv[2]
 await writeFile('.tmp/' + name + '.pid', String(process.pid))
 const line = 'x'.repeat(999) + '\\n'
 for (let i = 0; i < 1200; i += 1) process.stdout.write(line)
-console.log(name + ' flooded')
+process.stdout.write(name + ' flooded\\n')
 const timer = setInterval(async () => {
   if (await Bun.file('.tmp/' + name + '.go').exists()) {
     clearInterval(timer)
@@ -256,11 +260,32 @@ function alive(pid: number): boolean {
   }
 }
 
-/** 等到命令在 `at` 目录（工作区相对）中写出 pid 文件，返回该 pid。 */
+/**
+ * 等到命令在 `at` 目录（工作区相对）中写出 pid 文件，返回该命令在宿主上的 pid，供 `alive` 查询。
+ *
+ * Linux 上命令运行在 bwrap 的 pid 命名空间中（`--unshare-pid`），脚本写出的 `process.pid` 是命名空间内的
+ * 编号（2、3…），按它查询宿主进程表查不到该命令，或查到无关的进程。因此在宿主的 /proc 中按命令行
+ * （`<bun> <脚本>.ts <名称> …`）与工作目录找到同一个进程。其他平台没有 pid 命名空间，脚本写出的即宿主 pid。
+ * 须在命令仍在运行时调用：已退出的进程不在进程表中。
+ */
 async function pidOf(name: string, at = ''): Promise<number> {
   const file = join(dir, at, `${name}.pid`)
   await until(() => existsSync(file) && readFileSync(file, 'utf8').length > 0, `${name} 的 pid`)
-  return Number(readFileSync(file, 'utf8'))
+  const written = Number(readFileSync(file, 'utf8'))
+  if (process.platform !== 'linux') return written
+  const cwd = realpathSync(dir)
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue
+    try {
+      const argv = readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\0')
+      if (argv[0] !== process.execPath || !argv[1]?.endsWith('.ts') || argv[2] !== name) continue
+      if (readlinkSync(`/proc/${entry}/cwd`) !== cwd) continue
+      return Number(entry)
+    } catch {
+      // 遍历期间退出的进程：读取失败，跳过。
+    }
+  }
+  throw new Error(`宿主进程表中找不到命令 ${name}`)
 }
 
 const run = (id: string, args: Record<string, unknown>) => ({ id, name: 'run_command', args })
