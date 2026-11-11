@@ -806,6 +806,11 @@ export interface CommandPort {
   output(id: string): ({ command: string } & CommandOutput) | null
   /** 停止某条后台命令，返回其命令文本；不在任务表中时为 null。被停止的命令不发送回执。 */
   stop(id: string): string | null
+  /**
+   * 某条后台命令结束并移出任务表后兑现：回执已进入投递队列时为 true，被停止而没有回执时为 false。
+   * 不在任务表中时为 null。只报告结束，不返回回执内容：回执只经由队列送达。
+   */
+  ended(id: string): Promise<boolean> | null
 }
 
 /** 后台命令至今保留的输出，已脱敏。每条流只保留最近的一段，`dropped` 是各流从头部丢弃的字符数。 */

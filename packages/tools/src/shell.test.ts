@@ -340,10 +340,12 @@ describe('后台命令的工具形态', () => {
         dropped?: { stdout: number; stderr: number }
       }
     >,
+    waits: { ended?: Record<string, Promise<boolean>>; steered?: Promise<void> } = {},
   ) {
     const stopped: string[] = []
     const port: CommandPort = {
-      steered: () => new Promise(() => {}),
+      steered: () => waits.steered ?? new Promise(() => {}),
+      ended: (id) => (running[id] ? (waits.ended?.[id] ?? new Promise(() => {})) : null),
       adopt: () => {
         throw new Error('本组用例不应启动命令')
       },
@@ -425,6 +427,62 @@ describe('后台命令的工具形态', () => {
     expect(out.message).toContain('已停止后台命令 cmd_1')
     expect(out.data?.stderr).toBe('warn\n')
     expect(stopped).toEqual(['cmd_1'])
+  })
+
+  test('wait_seconds 等到命令结束后返回，不带输出；被停止的命令写明没有回执', async () => {
+    const running = { command: 'bash wait.sh', stdout: 'tick\n', stderr: '' }
+    const done = Promise.withResolvers<boolean>()
+    const { port } = fakePort({ cmd_1: running }, { ended: { cmd_1: done.promise } })
+    const waiting = backgroundCommandTool.fn({ task_id: 'cmd_1', wait_seconds: 600 }, ctxWith(port))
+    const early = await Promise.race([waiting, Bun.sleep(30).then(() => 'pending')])
+    expect(early).toBe('pending')
+    done.resolve(true)
+    const out = await waiting
+    expect(out.status).toBe('success')
+    expect(out.message).toContain('已结束，结果见下一条回执消息')
+    expect(out.data?.stdout).toBeUndefined()
+
+    const halted = fakePort({ cmd_1: running }, { ended: { cmd_1: Promise.resolve(false) } })
+    const stopped = await backgroundCommandTool.fn(
+      { task_id: 'cmd_1', wait_seconds: 600 },
+      ctxWith(halted.port),
+    )
+    expect(stopped.message).toContain('已被停止，没有回执')
+  })
+
+  test('wait_seconds 等待期间用户发来消息或到达秒数时返回至今的输出，命令不被停止', async () => {
+    const running = { cmd_1: { command: 'bash wait.sh', stdout: 'tick\n', stderr: '' } }
+    const steered = fakePort(running, { steered: Promise.resolve() })
+    const onMessage = await backgroundCommandTool.fn(
+      { task_id: 'cmd_1', wait_seconds: 600 },
+      ctxWith(steered.port),
+    )
+    expect(onMessage.message).toContain('用户发来消息')
+    expect(onMessage.data?.stdout).toBe('tick\n')
+    expect(steered.stopped).toEqual([])
+
+    const quiet = fakePort(running)
+    const onTimeout = await backgroundCommandTool.fn(
+      { task_id: 'cmd_1', wait_seconds: 0.03 },
+      ctxWith(quiet.port),
+    )
+    expect(onTimeout.message).toContain('没有结束，仍在运行')
+    expect(onTimeout.data?.stdout).toBe('tick\n')
+    expect(quiet.stopped).toEqual([])
+  })
+
+  test('wait_seconds 与 stop 同时提供或不是正数时不等待也不停止', async () => {
+    const { port, stopped } = fakePort({
+      cmd_1: { command: 'bash wait.sh', stdout: '', stderr: '' },
+    })
+    for (const args of [
+      { task_id: 'cmd_1', wait_seconds: 60, stop: true },
+      { task_id: 'cmd_1', wait_seconds: 0 },
+    ]) {
+      const out = await backgroundCommandTool.fn(args, ctxWith(port))
+      expect(out).toMatchObject({ status: 'failure', executed: false, errorKind: 'bad_request' })
+    }
+    expect(stopped).toEqual([])
   })
 
   test('丢弃过输出时读取结果写明各流丢弃的字符数；没有丢弃时不附加说明', async () => {
