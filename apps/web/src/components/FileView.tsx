@@ -4,6 +4,7 @@ import {
   createMemo,
   createResource,
   createSignal,
+  For,
   lazy,
   Match,
   on,
@@ -15,6 +16,7 @@ import {
 import { ApiError } from '../lib/client.ts'
 import { createReadonlyEditor, scrollToLine, selectRange, topLine } from '../lib/editor.ts'
 import type { OfficeFormat } from '../lib/file-search.ts'
+import { renderMarkdown } from '../lib/markdown.ts'
 import { loaded } from '../lib/resource.ts'
 import { readSession, writeSession } from '../lib/session.ts'
 import {
@@ -23,6 +25,7 @@ import {
   explainApiError,
   fileSelectRequest,
   setFileSelectRequest,
+  workspace,
 } from '../lib/store/index.ts'
 import FileImageView from './FileImageView.tsx'
 import { IconX } from './Icons.tsx'
@@ -41,6 +44,7 @@ interface PreviewResult {
   content?: string
   language?: string
   office?: OfficeFormat
+  entries?: string[]
   truncated: boolean
   note?: string
 }
@@ -67,6 +71,15 @@ export default function FileView(props: { path: string; refresh?: number; onClos
     () => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(props.path)}`),
   )
 
+  /** Markdown 显示源码而不是渲染结果。不随文件切换重置。 */
+  const [source, setSource] = createSignal(false)
+  const markdown = () => loaded(result)?.language === 'markdown'
+  // 选中请求（画布摘录卡）按源码位置计算，只能在源码视图中执行；请求可能先于预览结果到达，两者都就绪后再判断。
+  createEffect(() => {
+    const req = fileSelectRequest()
+    if (req && markdown() && req.path === loaded(result)?.path) setSource(true)
+  })
+
   return (
     <div class="preview">
       <header class="preview-head">
@@ -78,6 +91,16 @@ export default function FileView(props: { path: string; refresh?: number; onClos
           <span dir="ltr">{absPath(props.path)}</span>
         </code>
         <span class="spacer" />
+        <Show when={markdown()}>
+          <span class="preview-mode">
+            <button type="button" aria-pressed={!source()} onClick={() => setSource(false)}>
+              预览
+            </button>
+            <button type="button" aria-pressed={source()} onClick={() => setSource(true)}>
+              源码
+            </button>
+          </span>
+        </Show>
         <Show when={props.onClose}>
           <button
             class="icon-btn"
@@ -104,6 +127,9 @@ export default function FileView(props: { path: string; refresh?: number; onClos
         >
           {(r) => (
             <Switch fallback={<div class="preview-note">{r().note ?? '无法预览'}</div>}>
+              <Match when={markdown() && !source()}>
+                <MarkdownView content={r().content ?? ''} path={r().path} mtime={r().mtime} />
+              </Match>
               <Match when={r().kind === 'text' || r().kind === 'tabular'}>
                 <CodeView content={r().content ?? ''} path={r().path} />
               </Match>
@@ -140,6 +166,13 @@ export default function FileView(props: { path: string; refresh?: number; onClos
               </Match>
               <Match when={r().kind === 'audio'}>
                 <audio class="preview-audio" src={client.fileUrl(r().path, r().mtime)} controls />
+              </Match>
+              <Match when={r().entries}>
+                {(entries) => (
+                  <ul class="archive-list">
+                    <For each={entries()}>{(entry) => <li>{entry}</li>}</For>
+                  </ul>
+                )}
               </Match>
             </Switch>
           )}
@@ -217,6 +250,22 @@ function PdfView(props: { path: string; mtime: number }) {
       {(u) => <iframe class="preview-frame" src={u()} title={props.path} />}
     </Show>
   )
+}
+
+/**
+ * Markdown 的渲染结果。链接点击由根节点的 `openLink` 处理；相对地址按文件所在目录解析，
+ * 工作区内的图片以直链内嵌。直链的版本取 Markdown 文件的修改时间：图片被改写而 Markdown 未改写时仍显示原图。
+ */
+function MarkdownView(props: { content: string; path: string; mtime: number }) {
+  const html = createMemo(() => {
+    const slash = props.path.lastIndexOf('/')
+    return renderMarkdown(props.content, {
+      dir: slash < 0 ? '' : props.path.slice(0, slash),
+      root: workspace()?.root ?? '',
+      url: (path) => client.fileUrl(path, props.mtime),
+    })
+  })
+  return <div class="markdown markdown-file" innerHTML={html()} />
 }
 
 /** 当前文本文件视口顶部的行。只记录一个文件，按路径区分：刷新后同一文件按记录恢复。 */

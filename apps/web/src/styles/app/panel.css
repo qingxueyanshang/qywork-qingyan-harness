@@ -954,6 +954,39 @@
 .code-view {
   height: 100%;
 }
+.preview-mode {
+  display: flex;
+  gap: 2px;
+}
+.preview-mode button {
+  padding: 1px var(--s-2);
+  border-radius: var(--r-sm);
+  white-space: nowrap;
+}
+.preview-mode button:hover,
+.preview-mode button[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* 字号与行距同会话正文（`.prose`）；`overflow-wrap` 防止长链接与长路径撑出横向滚动。 */
+.markdown-file {
+  padding: var(--s-4) var(--s-6);
+  font-size: var(--fs-prose);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.markdown-file img {
+  max-width: 100%;
+}
+.archive-list {
+  margin: 0;
+  padding: var(--s-2) var(--s-4);
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
 
 /* ── 会话变更记录 ──
  *

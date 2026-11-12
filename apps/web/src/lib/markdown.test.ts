@@ -145,6 +145,21 @@ describe('外部链接', () => {
     )
   })
 
+  test('渲染工作区文件时相对地址按文件所在目录解析，工作区内的图片内嵌，工作区外的仍为路径链接', () => {
+    const file = { dir: '资料 100%', root: 'C:/ws', url: (p: string) => `/raw?p=${p}` }
+    const html = renderMarkdown(
+      '[上级](../a.md) [网页](https://example.com) [锚点](#x)\n\n' +
+        '![相对](img/a.png) ![内部](C:/ws/b.png) ![外部](D:/other/c.png)',
+      file,
+    )
+    expect(html).toContain(`href="${encodeURIComponent('资料 100%')}/../a.md"`)
+    expect(html).toContain('href="https://example.com"')
+    expect(html).toContain('href="#x"')
+    expect(html).toContain('<img src="/raw?p=资料 100%/img/a.png" alt="相对">')
+    expect(html).toContain('<img src="/raw?p=b.png" alt="内部">')
+    expect(html).toContain('>D:/other/c.png</a>')
+  })
+
   test('模型提供的链接不可信，一律在新窗口打开并断开 opener', () => {
     const html = renderMarkdown('[example](https://example.com)')
     expect(html).toContain('target="_blank"')

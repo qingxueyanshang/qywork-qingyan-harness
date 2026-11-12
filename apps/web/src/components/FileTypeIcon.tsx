@@ -45,9 +45,23 @@ const STYLE = new Set(['css', 'scss', 'sass', 'less', 'styl'])
 const MARKUP = new Set(['html', 'htm', 'xml', 'vue', 'svelte', 'astro'])
 const SHELL = new Set(['sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd'])
 const CONFIG = new Set(['yaml', 'yml', 'toml', 'ini', 'conf', 'config', 'properties', 'env'])
-const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg'])
-const AUDIO = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac'])
-const VIDEO = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi'])
+const IMAGE = new Set([
+  'png',
+  'jpg',
+  'jpeg',
+  'jfif',
+  'pjpeg',
+  'pjp',
+  'gif',
+  'webp',
+  'bmp',
+  'ico',
+  'avif',
+  'apng',
+  'svg',
+])
+const AUDIO = new Set(['mp3', 'wav', 'ogg', 'oga', 'opus', 'flac', 'm4a', 'aac', 'mka'])
+const VIDEO = new Set(['mp4', 'm4v', '3gp', 'webm', 'mov', 'mkv', 'avi'])
 const ARCHIVE = new Set(['zip', 'tar', 'gz', 'tgz', '7z', 'rar', 'xz', 'bz2', 'whl', 'jar'])
 const TABLE = new Set(['csv', 'tsv', 'xlsx', 'xlsm', 'xltx', 'xls', 'ods'])
 const DOCUMENT = new Set(['doc', 'docx', 'docm', 'dotx', 'odt', 'rtf'])
