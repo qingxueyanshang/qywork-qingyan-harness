@@ -426,6 +426,7 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
   const queued = hasRun()
   setState(
     produce((s) => {
+      const v = s.views[id]
       /*
        * 乐观呈现，不等待服务端回执。忙碌与空闲两种状态写入不同位置：
        * 空闲时该消息是下一轮的开头，进入会话流；忙碌时它在队列中，进入卡片区。
@@ -442,14 +443,21 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
           steer,
         })
       } else {
-        s.views[id]?.transcript.push({
+        v?.transcript.push({
           id: `${LOCAL_ID_PREFIX}${Date.now()}`,
           kind: 'user',
           text: content,
           ...(attachments?.length ? { attachments } : {}),
         })
+        /*
+         * 本轮从按下发送开始计时，取本机时钟；`run.started` 到达后保留该值。不要等到 `run.started`
+         * 才写入：服务端发出它之前还有数秒准备步骤，耗时栏与整轮状态条都以开始时刻为显示条件，
+         * 会在这段时间之后才出现，推动下方布局。
+         * 文件读数随之清空，与 `run.started` 相同：状态条此时即显示，不清空时带着上一轮的读数出现。
+         */
+        if (v) v.runStartedAt = Date.now()
+        s.fileChanges = []
       }
-      const v = s.views[id]
       if (v) v.error = null
     }),
   )

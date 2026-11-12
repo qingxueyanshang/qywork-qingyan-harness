@@ -1,7 +1,8 @@
 /**
  * 启动轮次前被拒绝时发出的事件序列。
  *
- * **覆盖范围**：`run-control.ts` 中 `startRun` 使用云端型号时的价格同步，以及六个拒绝出口（占位失败、未找到项目
+ * **覆盖范围**：`run-control.ts` 中 `startRun` 使用云端型号时的价格同步与本轮开始时刻的取值
+ * （`runtime/session.ts` 写入 run 行与 `run.started`），以及六个拒绝出口（占位失败、未找到项目
  * 目录、三处均无法取得模型、会话装配抛错、装配 adapter 抛错、会话被另一个进程占用），
  * 以及 `runs.ts` 在释放占位时的忙闲广播。这六个出口都不产生 run 行，因此**不会有 `run.finished`**，
  * 终态是 `conversation.busy: false`（约定写在 `core` 的 `RunErrorEvent` 上）。
@@ -25,6 +26,7 @@ import {
   contentPathFor,
   createConversation,
   listMessages,
+  listRuns,
   Store,
   upsertWorkspace,
 } from '@qywork/store'
@@ -298,4 +300,53 @@ test('使用云端型号的轮次先同步云端价格；同步失败时沿用�
   await startRun(local, '你好', undefined, { ...deps(cloudConfig), syncCloudPrices: sync(false) })
   await idle
   expect(order).toEqual([])
+})
+
+/**
+ * 原始失败形状：本轮的开始时刻取建行时刻，建行之前的价格同步、Session 装配与目录扫描不计入，
+ * 界面耗时从准备阶段结束后才开始计算。价格同步在此延迟 20ms，使新旧两种取值必然不同。
+ */
+test('本轮的开始时刻取占位成功的时刻：准备阶段计入耗时，开始事件与 run 行取同一个值', async () => {
+  // 返回 401（`auth_failed`）：本轮立即结束且不重发，用例无需等待退避。
+  const provider = Bun.serve({ port: 0, fetch: () => new Response('未授权', { status: 401 }) })
+  try {
+    const cloudConfig = {
+      ...config('sk-fake'),
+      providers: {
+        qywork: {
+          kind: 'openai_responses',
+          apiKey: 'sk-fake',
+          baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+          models: { 'deepseek-v4-flash': {} },
+        },
+      },
+    } as QyConfig
+    const ws = upsertWorkspace(store, dir, 'started-ws').id as never
+    events = []
+    const cv = createConversation(store, {
+      workspaceId: ws,
+      provider: 'qywork',
+      model: 'deepseek-v4-flash',
+    }).id
+    let syncAt = 0
+    const idle = waitForIdle(cv)
+    const before = Date.now()
+    await startRun(cv, '你好', undefined, {
+      ...deps(cloudConfig),
+      syncCloudPrices: async () => {
+        syncAt = Date.now()
+        await Bun.sleep(20)
+      },
+    })
+    await idle
+
+    const started = events.map((f) => f.event).find((e) => e.type === 'run.started')
+    expect(started?.type).toBe('run.started')
+    if (started?.type !== 'run.started') return
+    expect(started.startedAt).toBeGreaterThanOrEqual(before)
+    expect(started.startedAt).toBeLessThanOrEqual(syncAt)
+    expect(listRuns(store, cv).map((r) => r.createdAt)).toEqual([started.startedAt])
+  } finally {
+    provider.stop(true)
+  }
 })

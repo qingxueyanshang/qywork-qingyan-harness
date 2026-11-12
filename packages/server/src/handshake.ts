@@ -135,6 +135,7 @@ export function handleHello(
       browser: deps.browser(),
       desktop: deps.desktop(),
     },
+    serverTime: Date.now(),
   }
   ws.send(JSON.stringify(ok))
   deps.announceGit()

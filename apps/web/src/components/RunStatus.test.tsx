@@ -1,9 +1,10 @@
 /**
  * 覆盖 `RunStatus.tsx`：整轮状态条的显示与隐藏时机。
  *
- * 锁定的失败形状：上一轮修改过文件，用户按下回车后忙碌状态被乐观设置，而本轮的
- * 文件读数要等服务端的 `run.started` 才清空。在此期间 chip 会带着上一轮的读数
- * 出现，随后缩小。
+ * 锁定的失败形状：
+ *
+ * - 上一轮修改过文件，用户按下回车后 chip 带着上一轮的读数出现，随后缩小。
+ * - chip 等到 `run.started` 才出现：服务端发出它之前有数秒准备步骤，chip 在发送数秒后弹出，推动下方布局。
  *
  * DOM 在本文件内注册、用后注销，使用动态 import 的理由同 `settings/LoadState.test.tsx`。
  */
@@ -111,6 +112,7 @@ const startedFrame = (runId: string) =>
       conversationId: CV,
       model: 'm',
       userMessageId: null,
+      startedAt: 0,
     },
   }) as never
 
@@ -184,27 +186,35 @@ describe('整轮状态条随轮次显示，不随忙碌状态显示', () => {
     }
   })
 
-  test('按下回车到 run.started 之间不显示，上一轮的文件读数不计入本轮', async () => {
+  test('按下回车即显示，上一轮的文件读数不计入本轮，run.started 到达时内容不变', async () => {
     const store = await afterPreviousRun()
     const { host, dispose } = await mount()
     expect(host.textContent).toBe('')
 
-    // `sendMessage` 在按下回车时乐观设置忙碌状态。
     store.sendMessage('接着干')
     expect(store.isRunning()).toBe(true)
-    expect(host.textContent).toBe('')
+    const chip = host.querySelector('.run-status')
+    expect(host.textContent).toContain('已完成 1 / 2')
+    expect(host.textContent).not.toContain('个文件')
+
+    const before = host.textContent
+    store.applyEvent(startedFrame('run_now'))
+    expect(host.querySelector('.run-status')).toBe(chip)
+    expect(host.textContent).toBe(before)
 
     dispose()
   })
 
-  test('收到 run.started 后才显示，显示的文件读数属于本轮（为空）', async () => {
+  test('发送被拒绝时 chip 随忙碌状态一并撤销', async () => {
     const store = await afterPreviousRun()
     const { host, dispose } = await mount()
+    // 恢复真实的 `client.send`：测试环境没有连接，指令立即以 `not_ready` 被拒绝。
+    ;(store.client as unknown as { send: typeof sendBefore }).send = sendBefore
     store.sendMessage('接着干')
-    store.applyEvent(startedFrame('run_now'))
 
-    expect(host.textContent).toContain('已完成 1 / 2')
-    expect(host.textContent).not.toContain('个文件')
+    expect(store.isRunning()).toBe(false)
+    expect(store.viewOf(CV).runStartedAt).toBe(null)
+    expect(host.textContent).toBe('')
 
     dispose()
   })

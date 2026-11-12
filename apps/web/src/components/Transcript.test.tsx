@@ -274,6 +274,7 @@ test('主会话派发任务结束后刷新或切回，显示子任务进度且�
         conversationId: id,
         model: 'm',
         userMessageId: null,
+        startedAt: 60_000,
       },
     } as never)
     expect(store.hasRun()).toBe(true)
@@ -290,7 +291,11 @@ test('主会话派发任务结束后刷新或切回，显示子任务进度且�
   }
 })
 
-test('从发送到轮次开始之间保留耗时列，开始时刻到达时同步计时且不重建运行条动画', async () => {
+/**
+ * 原始失败形状：服务端接受消息后先执行数秒准备步骤才发出开始事件，耗时按收到该事件的时刻起算：
+ * 发送后耗时栏空白数秒，随后从 0.0s 开始，这段等待不计入。
+ */
+test('按下发送即开始计时，开始事件到达时计时连续且不重建运行条动画', async () => {
   const store = await import('../lib/store/index.ts')
   const { render } = await import('solid-js/web')
   const { Transcript } = await import('./Transcript.tsx')
@@ -314,16 +319,23 @@ test('从发送到轮次开始之间保留耗时列，开始时刻到达时同�
   document.body.append(host)
   const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
   try {
+    const pressedAt = now
     store.sendMessage('开始')
     const strip = host.querySelector('.run-strip')
     const galaxy = host.querySelector('.run-galaxy')
     const elapsed = host.querySelector('.run-elapsed')
     expect(elapsed).not.toBeNull()
-    expect(elapsed?.textContent).toBe('')
+    expect(elapsed?.textContent).toBe('0.0s')
     expect(strip?.querySelector('.run-live')?.textContent).toBe('正在请求…')
 
-    // 确认事件在下一次 100ms 时钟更新前到达。
-    now += 60
+    // 服务端在按下发送 400ms 后接受消息，准备阶段持续 3 秒后才发出开始事件；本机按下的时刻保留不变。
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 120))
+    now += 1_500
+    await tick()
+    expect(elapsed?.textContent).toBe('1.5s')
+    now += 1_500
+    await tick()
+    expect(elapsed?.textContent).toBe('3.0s')
     store.applyEvent({
       seq: 1,
       at: now,
@@ -334,21 +346,75 @@ test('从发送到轮次开始之间保留耗时列，开始时刻到达时同�
         runId: 'rn_start_elapsed',
         model: 'm',
         userMessageId: null,
+        startedAt: pressedAt + 400,
       },
     } as never)
     expect(host.querySelector('.run-strip')).toBe(strip)
     expect(host.querySelector('.run-galaxy')).toBe(galaxy)
     expect(host.querySelector('.run-elapsed')).toBe(elapsed)
-    expect(elapsed?.textContent).toBe('0.0s')
+    expect(elapsed?.textContent).toBe('3.0s')
 
     now += 200
-    await new Promise((resolve) => setTimeout(resolve, 120))
-    expect(elapsed?.textContent).toBe('0.2s')
+    await tick()
+    expect(elapsed?.textContent).toBe('3.2s')
   } finally {
     dispose()
     host.remove()
     Date.now = nowBefore
     ;(store.client as unknown as { send: typeof sendBefore }).send = sendBefore
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+    store.setState('connection', connectionBefore)
+  }
+})
+
+/**
+ * 原始失败形状：本机时钟比服务端快 7 秒，服务端的开始时刻直接与本机时钟相减，
+ * 由其他设备发起、已运行 3 秒的一轮显示为 10.0s。
+ */
+test('其他设备发起的轮次：服务端的开始时刻按握手时差换算为本机时刻后计时', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { render } = await import('solid-js/web')
+  const { LiveRunBar } = await import('./Transcript.tsx')
+  const workspaceBefore = store.workspace()
+  const connectionBefore = store.state.connection
+  const nowBefore = Date.now
+  const localTimeBefore = store.client.localTime
+  const id = 'cv_other_device'
+  const now = 1_700_000_010_000
+  Date.now = () => now
+  ;(store.client as unknown as { localTime: (t: number) => number }).localTime = (t) => t + 7_000
+  store.setState({
+    activeConversation: id,
+    busyConversations: [id],
+    connection: 'ready',
+    views: {},
+  })
+  store.openView(id)
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <LiveRunBar conversationId={id} />, host as unknown as HTMLElement)
+  try {
+    // 服务端时钟比本机慢 7 秒：3 秒前接受消息，服务端时刻为 now - 3s - 7s。
+    store.applyEvent({
+      seq: 1,
+      at: now - 7_000,
+      conversationId: id,
+      event: {
+        type: 'run.started',
+        conversationId: id,
+        runId: 'rn_other_device',
+        model: 'm',
+        userMessageId: null,
+        startedAt: now - 10_000,
+      },
+    } as never)
+    expect(host.querySelector('.run-elapsed')?.textContent).toBe('3.0s')
+  } finally {
+    dispose()
+    host.remove()
+    Date.now = nowBefore
+    ;(store.client as unknown as { localTime: typeof localTimeBefore }).localTime = localTimeBefore
     await resetStore()
     store.setWorkspace(workspaceBefore)
     store.setState('connection', connectionBefore)

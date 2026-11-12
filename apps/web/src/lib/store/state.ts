@@ -205,11 +205,13 @@ export interface ConversationView {
    */
   runUserMessageId: string | null
   /**
-   * 本轮的开始时刻（本地时钟，毫秒）。`null` 表示未在运行。
+   * 本轮的开始时刻（毫秒）。`null` 表示未在运行。
    *
-   * 取本地收到事件的时刻，不取服务端时间戳：此处表示用户的等待时长，
-   * 而不是服务端的计算时长，手机使用蜂窝网络时两者可相差数百毫秒，
-   * 而用户参照的是本机时钟。执行完毕后耗时由条目记录，此处清空。
+   * 取本机时钟，与本机 `Date.now()` 相减得到耗时。本机按下发送时写入按下的时刻（`sendMessage`），
+   * `run.started` 到达后保留；其余情况由 `run.started` 或刷新快照写入服务端的开始时刻，
+   * 经 `client.localTime` 换算为本机时刻。不要直接写入服务端时刻，也不要改为本机收到该事件的时刻：
+   * 前者使两台设备的时钟差计入耗时；该事件在准备阶段结束后才发出，后者漏计发送后的数秒等待。
+   * 执行完毕或会话置闲时清空，执行完毕后耗时由条目记录。
    */
   runStartedAt: number | null
   /** 运行中这一轮的实时用量；收尾后转入 run 条目并清空。 */
@@ -579,10 +581,22 @@ export function ledgerRevision(): string {
   return marks.join(':')
 }
 
-/** 记录或清除会话的运行状态。幂等，重复到达的忙闲事件不会写入两行。 */
+/**
+ * 记录或清除会话的运行状态。幂等，重复到达的忙闲事件不会写入两行。
+ *
+ * 置闲时一并清除该会话的开始时刻：此时没有运行中的轮次。按回车时写入的开始时刻在指令被拒、
+ * 启动前报错时没有 `run.finished` 来清除，不清除时「开始时刻非空即有一轮在运行」不再成立。
+ */
 function markBusy(id: string, busy: boolean): void {
   setState('busyConversations', (list) =>
     busy ? (list.includes(id) ? list : [...list, id]) : list.filter((x) => x !== id),
+  )
+  if (busy) return
+  setState(
+    produce((s) => {
+      const v = s.views[id]
+      if (v) v.runStartedAt = null
+    }),
   )
 }
 
