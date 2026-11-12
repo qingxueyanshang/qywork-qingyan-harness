@@ -106,14 +106,23 @@ const KEPT_OUTPUT_CHARS = 1 << 20
 /** 丢弃的单位：保留量在上限与上限加一块之间，每片输出不触发对整串的切分。 */
 const KEPT_BLOCK_CHARS = 1 << 16
 
-/** 一条输出流最近的一段。末块未满时并入末块，去掉首块后仍不少于上限时整块丢弃首块。 */
-class RecentOutput {
+/**
+ * 一条输出流最近的一段。末块未满时并入末块，去掉首块后仍不少于上限时整块丢弃首块。
+ * 收到的文字按块长切分后写入：管道一次交来的文字可以超过上限，整段作为一块时没有可丢弃的首块，保留量不受上限约束。
+ */
+export class RecentOutput {
   private readonly blocks: string[] = []
   private size = 0
   /** 已从头部丢弃的字符数。 */
   dropped = 0
 
   push(text: string): void {
+    for (let at = 0; at < text.length; at += KEPT_BLOCK_CHARS) {
+      this.add(text.slice(at, at + KEPT_BLOCK_CHARS))
+    }
+  }
+
+  private add(text: string): void {
     const tail = this.blocks.at(-1)
     if (tail !== undefined && tail.length < KEPT_BLOCK_CHARS) {
       this.blocks[this.blocks.length - 1] = tail + text
