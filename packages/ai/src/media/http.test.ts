@@ -1,9 +1,15 @@
 /**
  * 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、失败码与对话请求同一分类（`errors.ts` 的 `httpFailureCode`）、
  * 提交被限流、请求未发出与素材上传暂时不可用时按 2 秒起加倍的间隔重试（假计时器推进等待）、结果未知不重试、下载重试及取消，
- * 以及在正文中给出错误码的上游（MiniMax、可灵、百炼的适配器与 `errors.ts` 的 `upstreamFailureCode`）按其错误码重试或不重试，不调用付费接口。
+ * 以及在正文中给出错误码的上游（MiniMax、可灵、百炼、火山方舟、Gemini API 的适配器，按接口地址判定上游的 OpenAI 形状出图，
+ * 与 `errors.ts` 的 `upstreamFailureCode`）在提交与查询中按其错误码重试或不重试，以及百炼视频适配器的临时上传
+ * （`adapters/dashscope.ts` 经 `send` 调用 `providers/openai-compat.ts` 的 `uploadDashScopeMedia`）的重试与 OSS 以 403 拒绝时的重新取凭证，
+ * 不调用付费接口。
  */
 import { afterAll, afterEach, beforeAll, expect, jest, spyOn, test } from 'bun:test'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { log } from '@qywork/core'
 import { classifyProviderError } from '../errors.ts'
 import { download, postJson, reportingRetries, send, sendJson } from './http.ts'
@@ -12,14 +18,14 @@ import { MediaError } from './types.ts'
 
 let server: ReturnType<typeof Bun.serve>
 let hits: string[] = []
-let reply: () => Response | Promise<Response> = () => Response.json({})
+let reply: (req: Request) => Response | Promise<Response> = () => Response.json({})
 beforeAll(() => {
   server = Bun.serve({
     port: 0,
     hostname: '127.0.0.1',
     fetch(req) {
       hits.push(req.method)
-      return reply()
+      return reply(req)
     },
   })
 })
@@ -892,6 +898,490 @@ test('百炼同步出图：429 的 TPM 限流重试，200 正文带 Throttling �
     expect(error.message).toBe(
       '接口没有返回图片：Arrearage Access denied, please make sure your account is in good standing.',
     )
+  } finally {
+    clock.restore()
+  }
+})
+
+/** 火山方舟视频任务：错误正文为 `{ error: { code, message, type } }`，取值取自火山方舟错误码文档。 */
+const arkVideo = (resumeTaskId?: string) =>
+  buildMediaAdapter({
+    kind: 'ark_videos',
+    model: 'doubao-seedance',
+    apiKey: 'k',
+    baseUrl: `http://127.0.0.1:${server.port}/api/v3`,
+  }).run(
+    { operation: 'text_to_video', prompt: 'x', inputs: [], params: {} },
+    { signal: signal(), ...(resumeTaskId ? { resumeTaskId } : {}) },
+  )
+const arkError = (status: number, code: string, message: string, type: string) =>
+  Response.json({ error: { code, message, param: '', type } }, { status })
+
+/**
+ * 原始失败形状：火山方舟以 403 报告欠费，按状态码归为鉴权失败，云端显示「上游拒绝访问」；以 429 报告额度用尽与用量上限，
+ * 按状态码归为限流，重试 5 次后显示「上游请求过多」。
+ */
+test.each([
+  [
+    403,
+    'AccountOverdueError',
+    'The request failed because your account has an overdue balance. Request ID: r.',
+    'Forbidden',
+  ],
+  [
+    403,
+    'OperationDenied.ServiceOverdue',
+    'Operation is denied because your account balance is overdue, please go to the Volc Trading Center to recharge.',
+    'Forbidden',
+  ],
+  [
+    429,
+    'AccountQuotaExceeded',
+    'The request has exceeded the quota. Request id: r.',
+    'TooManyRequests',
+  ],
+  [
+    429,
+    'SetLimitExceeded',
+    'Your account [a] has reached the set usage limit for the [m] model, and the model service has been paused. Request ID: r.',
+    'TooManyRequests',
+  ],
+  [
+    429,
+    'QuotaExceeded',
+    'Your account [a] has exhausted its free trial quota for the [m] model. Request ID: r.',
+    'TooManyRequests',
+  ],
+] as const)(
+  '火山方舟视频提交 %d %s 为额度用尽，只发送一次，不重试',
+  async (status, code, message, type) => {
+    reply = () => arkError(status, code, message, type)
+    const error = await failure(arkVideo())
+    expect(hits).toEqual(['POST'])
+    expect(error.code).toBe('insufficient_quota')
+    expect(error.diagnostic).toMatchObject({ status, outcome: 'rejected' })
+  },
+)
+
+/** 火山方舟 `QuotaExceeded` 的「The request has exceeded the quota」是排队中的任务数超过限制，文档要求稍后重试。 */
+test('火山方舟视频提交 429 QuotaExceeded 的排队任务数超限为限流，按 2 秒起加倍的间隔重试 5 次', async () => {
+  const clock = retryClock()
+  try {
+    reply = () =>
+      arkError(
+        429,
+        'QuotaExceeded',
+        'The request has exceeded the quota. Request ID: r.',
+        'TooManyRequests',
+      )
+    const work = failure(arkVideo())
+    for (const [i, ms] of BACKOFF.entries()) {
+      await clock.waiting(i + 1)
+      await clock.elapse(ms)
+    }
+    const error = await work
+    expect(hits).toHaveLength(6)
+    expect(error.code).toBe('rate_limited')
+    expect(error.retryReceipt).toBe('已自动重试 5 次，仍失败')
+  } finally {
+    clock.restore()
+  }
+})
+
+/**
+ * 查询请求同样按上游的错误码归类。原始失败形状：可灵以 429 + 1102（资源包已用完）答复查询时按限流继续查询 10 分钟；
+ * 429 + 1302（请求过快）是暂时失败，继续查询原任务。
+ */
+test('可灵查询 429 + 1302 继续查询，429 + 1102 资源包用完立即结束等待，任务保留可取回', async () => {
+  const clock = retryClock()
+  try {
+    const answers = [
+      Response.json({ code: 1302, message: 'too many requests' }, { status: 429 }),
+      Response.json({ code: 1102, message: 'resource pack exhausted' }, { status: 429 }),
+    ]
+    reply = () => answers.shift() ?? new Response('', { status: 500 })
+    const work = failure(
+      buildMediaAdapter({
+        kind: 'kling_videos',
+        model: 'kling-3.0',
+        apiKey: 'k',
+        baseUrl: `http://127.0.0.1:${server.port}`,
+      }).run(
+        { operation: 'text_to_video', prompt: 'x', inputs: [], params: {} },
+        { signal: signal(), resumeTaskId: 'kt-1' },
+      ),
+    )
+    // 查询的暂时失败记录一条日志后按 5 秒的间隔继续查询。
+    await clock.waiting(1)
+    jest.advanceTimersByTime(5_000)
+    const error = await work
+    expect(hits).toEqual(['GET', 'GET'])
+    expect(error.pendingTaskId).toBe('kt-1')
+    expect(error.message).toBe(
+      '任务查询失败：HTTP 429 请求过多：resource pack exhausted（远端任务 kt-1 仍可取回）',
+    )
+  } finally {
+    clock.restore()
+  }
+})
+
+/**
+ * 可灵以 429 报告账户异常（1100）与触发 IP 白名单策略（1304），文档没有写为限流。
+ * 原始失败形状：按 429 重试 5 次后显示「上游请求过多」。
+ */
+test.each([
+  [1100, 'account abnormal'],
+  [1304, 'ip whitelist'],
+] as const)('可灵 429 业务码 %d 为鉴权失败，只发送一次，不重试', async (code, message) => {
+  reply = () => Response.json({ code, message }, { status: 429 })
+  const error = await failure(
+    buildMediaAdapter({
+      kind: 'kling_videos',
+      model: 'kling-3.0',
+      apiKey: 'k',
+      baseUrl: `http://127.0.0.1:${server.port}`,
+    }).run(
+      { operation: 'text_to_video', prompt: 'x', inputs: [], params: {} },
+      { signal: signal() },
+    ),
+  )
+  expect(hits).toEqual(['POST'])
+  expect(error.code).toBe('auth_failed')
+})
+
+/**
+ * MiniMax 在 HTTP 200 的正文中报告的错误码，含义取自 MiniMax 错误码文档：2056 超出M Plan资源限制（等待下一个时间段），
+ * 2067 套餐额度已用完，1004 未授权，2049 无效的 API Key。原始失败形状：没有失败码，云端不替换上游原文。
+ */
+test.each([
+  [2056, 'usage limit exceeded', 'insufficient_quota'],
+  [2067, 'token plan exhausted', 'insufficient_quota'],
+  [1004, 'login fail', 'auth_failed'],
+  [2049, 'invalid api key', 'auth_failed'],
+] as const)('MiniMax 正文报告 %d 时只发送一次，不重试', async (code, message, expected) => {
+  reply = () => minimaxStatus(code, message)
+  const error = await failure(speak())
+  expect(hits).toEqual(['POST'])
+  expect(error.code).toBe(expected)
+})
+
+/** MiniMax 2046 / 2047 为用量与连接数增长超限，2062 为 M Plan 速率限制，2064 为服务集群负载较高，文档要求降低频率或稍后重试。 */
+test.each([2046, 2047, 2062, 2064] as const)(
+  'MiniMax 正文报告 %d 时按限流重试，受理后返回结果',
+  async (code) => {
+    const clock = retryClock()
+    try {
+      let left = 1
+      reply = () => (left-- > 0 ? minimaxStatus(code, 'retry later') : minimaxSpoken())
+      const work = speak()
+      await clock.waiting(1)
+      await clock.elapse(BACKOFF[0])
+      expect((await work).files).toHaveLength(1)
+      expect(hits).toEqual(['POST', 'POST'])
+    } finally {
+      clock.restore()
+    }
+  },
+)
+
+/**
+ * Gemini API 文档：429 `RESOURCE_EXHAUSTED` 是超过速率限制，按指数退避重试。正文的原文与 OpenAI 额度用尽相同时，
+ * 按原文判定会归为额度用尽而不重试；错误码先于原文判定。
+ */
+test('Gemini 出图 429 RESOURCE_EXHAUSTED 为限流，原文与额度用尽相同时仍按限流重试', async () => {
+  const clock = retryClock()
+  try {
+    reply = () =>
+      Response.json(
+        {
+          error: {
+            code: 429,
+            message: 'You exceeded your current quota, please check your plan and billing details.',
+            status: 'RESOURCE_EXHAUSTED',
+          },
+        },
+        { status: 429 },
+      )
+    const work = failure(
+      buildMediaAdapter({
+        kind: 'gemini_images',
+        model: 'gemini-image',
+        apiKey: 'k',
+        baseUrl: `http://127.0.0.1:${server.port}/v1beta`,
+      }).run({ operation: 'generate', prompt: 'x', inputs: [], params: {} }, { signal: signal() }),
+    )
+    for (const [i, ms] of BACKOFF.entries()) {
+      await clock.waiting(i + 1)
+      await clock.elapse(ms)
+    }
+    const error = await work
+    expect(hits).toHaveLength(6)
+    expect(error.code).toBe('rate_limited')
+  } finally {
+    clock.restore()
+  }
+})
+
+/**
+ * OpenAI 形状的出图协议按接口地址判定上游：发往火山方舟的地址时按火山方舟的错误码归类，
+ * 429 `SetLimitExceeded`（已达到设置的模型用量上限值）为额度用尽；地址不属于任何已收录的上游时按 429 归为限流。
+ */
+test('OpenAI 形状的出图发往火山方舟时按火山方舟的错误码归类，429 SetLimitExceeded 不重试', async () => {
+  const local = `http://127.0.0.1:${server.port}`
+  const realFetch = globalThis.fetch
+  const routed = spyOn(globalThis, 'fetch').mockImplementation(((
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) =>
+    realFetch(
+      String(input).replace('https://ark.cn-beijing.volces.com', local),
+      init,
+    )) as typeof fetch)
+  try {
+    reply = () =>
+      arkError(
+        429,
+        'SetLimitExceeded',
+        'Your account [a] has reached the set usage limit for the [m] model, and the model service has been paused. Request ID: r.',
+        'TooManyRequests',
+      )
+    const error = await failure(
+      buildMediaAdapter({
+        kind: 'openai_images',
+        model: 'doubao-seedream',
+        apiKey: 'k',
+        baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      }).run({ operation: 'generate', prompt: 'x', inputs: [], params: {} }, { signal: signal() }),
+    )
+    expect(hits).toEqual(['POST'])
+    expect(error.code).toBe('insufficient_quota')
+  } finally {
+    routed.mockRestore()
+  }
+})
+
+/** 百炼临时上传凭证中的 OSS 地址：必须为 `https://*.aliyuncs.com`，经拦截的 fetch 转到本机接口的 `/oss`。 */
+const OSS_HOST = 'bucket.oss-cn-beijing.aliyuncs.com'
+const DASHSCOPE_POLICY = {
+  data: {
+    policy: 'policy',
+    signature: 'signature',
+    upload_dir: 'dashscope-instant/test',
+    upload_host: `https://${OSS_HOST}`,
+    oss_access_key_id: 'test',
+    x_oss_object_acl: 'private',
+    x_oss_forbid_overwrite: 'true',
+  },
+}
+const OSS_BUSY =
+  '<Error><Code>ServiceUnavailable</Code><Message>Please try again later.</Message></Error>'
+const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
+
+/**
+ * 百炼视频任务，参考视频经临时上传：本机接口依次答复取凭证（`policies`）与 OSS 上传（`uploads`），各自用完后答复成功；
+ * 其后提交、查询到成功并下载。返回运行结果、OSS 每次收到的文件内容、取凭证次数与提交次数。
+ */
+async function dashScopeUpload(answers: {
+  policies: (() => Response)[]
+  uploads: (() => Response)[]
+}) {
+  const local = `http://127.0.0.1:${server.port}`
+  const dir = await mkdtemp(join(tmpdir(), 'dashscope-upload-'))
+  const path = join(dir, 'clip.mp4')
+  // 3 MB：大于一个读取分片，文件内容不完整时可以区分。
+  const video = new Uint8Array(3 * 1024 * 1024).map((_, i) => (i * 31 + 7) % 251)
+  await writeFile(path, video)
+  const received: Buffer[] = []
+  let submitted = 0
+  let policies = 0
+  reply = async (req) => {
+    const { pathname } = new URL(req.url)
+    if (pathname === '/api/v1/uploads') {
+      policies++
+      return answers.policies.shift()?.() ?? Response.json(DASHSCOPE_POLICY)
+    }
+    if (pathname === '/oss') {
+      const file = (await req.formData()).get('file') as File
+      received.push(Buffer.from(await file.arrayBuffer()))
+      return answers.uploads.shift()?.() ?? new Response('')
+    }
+    if (pathname.endsWith('/video-synthesis')) {
+      submitted++
+      return Response.json({ output: { task_id: 't-1', task_status: 'PENDING' } })
+    }
+    if (pathname === '/api/v1/tasks/t-1') {
+      return Response.json({ output: { task_status: 'SUCCEEDED', video_url: `${local}/out.mp4` } })
+    }
+    return new Response(MP4, { headers: { 'content-type': 'video/mp4' } })
+  }
+  const realFetch = globalThis.fetch
+  const routed = spyOn(globalThis, 'fetch').mockImplementation(((
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) =>
+    realFetch(String(input).replace(`https://${OSS_HOST}/`, `${local}/oss`), init)) as typeof fetch)
+  const run = buildMediaAdapter({
+    kind: 'dashscope_videos',
+    model: 'wan3.0-video',
+    apiKey: 'k',
+    baseUrl: local,
+  })
+    .run(
+      {
+        operation: 'video_to_video',
+        prompt: 'x',
+        inputs: [{ role: 'video', bytes: video, mime: 'video/mp4', path }],
+        params: {},
+      },
+      { signal: signal() },
+    )
+    .finally(() => routed.mockRestore())
+  return { run, video, received, policies: () => policies, submitted: () => submitted }
+}
+
+/**
+ * 原始失败形状：百炼的临时上传直接调用 fetch，取凭证被限流或上传到 OSS 得到 503 时一次失败即整张卡失败。
+ * 两次请求经 `send`（阶段为上传）：与其他上游的素材上传同样按 2 秒起加倍的间隔重试；重试时同一份表单重新发出，
+ * OSS 第二次收到的文件内容完整。
+ */
+test('百炼临时上传：取凭证被限流、上传到 OSS 得到 503 时各自重试，重试发出的文件内容完整，受理后提交生成', async () => {
+  const clock = retryClock()
+  try {
+    const upload = await dashScopeUpload({
+      policies: [
+        () =>
+          Response.json(
+            {
+              code: 'Throttling.RateQuota',
+              message: 'Requests rate limit exceeded, please try again later.',
+            },
+            { status: 429 },
+          ),
+      ],
+      uploads: [() => new Response(OSS_BUSY, { status: 503 })],
+    })
+    await clock.waiting(1)
+    await clock.elapse(BACKOFF[0])
+    await clock.waiting(2)
+    await clock.elapse(BACKOFF[0])
+    const result = await upload.run
+    expect(result.files[0]?.bytes).toEqual(MP4)
+    expect(clock.warnings()).toEqual([
+      '素材上传失败，未提交生成：HTTP 429 请求过多：Requests rate limit exceeded, please try again later.；2 秒后第 1 次重试',
+      `素材上传失败，未提交生成：HTTP 503 服务不可用：${OSS_BUSY}；2 秒后第 1 次重试`,
+    ])
+    expect(upload.received).toHaveLength(2)
+    for (const bytes of upload.received) expect(bytes.equals(Buffer.from(upload.video))).toBe(true)
+    expect(upload.submitted()).toBe(1)
+  } finally {
+    clock.restore()
+  }
+})
+
+/**
+ * 上传到 OSS 持续得到 503：重试 5 次后报告原文与已做的重试，判为上传阶段被拒绝，不提交生成。
+ * 诊断中的主机是 OSS 的主机（云端 `shownReason` 按它把文字中的主机名替换为「上游接口」）。
+ */
+test('百炼临时上传重试用尽：报告「素材上传失败，未提交生成」与已做的重试，诊断为 OSS 主机，不提交生成', async () => {
+  const clock = retryClock()
+  try {
+    const upload = await dashScopeUpload({
+      policies: [],
+      uploads: Array.from({ length: 6 }, () => () => new Response(OSS_BUSY, { status: 503 })),
+    })
+    for (const [i, ms] of BACKOFF.entries()) {
+      await clock.waiting(i + 1)
+      await clock.elapse(ms)
+    }
+    const error = await failure(upload.run)
+    expect(error.message).toBe(
+      `素材上传失败，未提交生成：HTTP 503 服务不可用：${OSS_BUSY}${BACKOFF_EXHAUSTED}`,
+    )
+    expect(error.retryReceipt).toBe(BACKOFF_EXHAUSTED.slice(1))
+    expect(error.code).toBe('provider_unavailable')
+    expect(error.diagnostic).toMatchObject({ stage: 'upload', outcome: 'rejected', host: OSS_HOST })
+    expect(upload.received).toHaveLength(6)
+    expect(upload.submitted()).toBe(0)
+  } finally {
+    clock.restore()
+  }
+})
+
+/** OSS 拒绝上传凭证时的答复：凭证中的签名策略已过期。 */
+const OSS_EXPIRED =
+  '<Error><Code>AccessDenied</Code><Message>Invalid according to Policy: Policy expired.</Message></Error>'
+
+/**
+ * 原始失败形状：OSS 以 403 拒绝上传（凭证过期、签名失效）时按鉴权失败立即失败，整张卡失败，云端提示上游密钥无效。
+ * 重新取一次凭证后再上传：取凭证两次，第二次上传的文件内容完整，受理后提交生成。重新取凭证不经 `send` 的重试，没有等待与重试回报。
+ */
+test('百炼临时上传：OSS 以 403 拒绝时重新取一次凭证后上传，第二次上传的文件内容完整，受理后提交生成', async () => {
+  const clock = retryClock()
+  try {
+    const upload = await dashScopeUpload({
+      policies: [],
+      uploads: [() => new Response(OSS_EXPIRED, { status: 403 })],
+    })
+    const result = await upload.run
+    expect(result.files[0]?.bytes).toEqual(MP4)
+    expect(upload.policies()).toBe(2)
+    expect(upload.received).toHaveLength(2)
+    expect(upload.received[1]?.equals(Buffer.from(upload.video))).toBe(true)
+    expect(upload.submitted()).toBe(1)
+    expect(clock.warnings()).toEqual([])
+  } finally {
+    clock.restore()
+  }
+})
+
+/**
+ * 重新取凭证后 OSS 仍以 403 拒绝：只重新取一次凭证，报错写明素材上传被拒绝与已重新获取凭证，失败码为 `invalid_request`
+ * （云端按它显示上游的说明，不按鉴权失败显示「上游密钥无效」），诊断为 OSS 主机，不提交生成。
+ */
+test('百炼临时上传连续两次被 OSS 以 403 拒绝：只重新取一次凭证，报告素材上传被拒绝，不归为鉴权失败，不提交生成', async () => {
+  const clock = retryClock()
+  try {
+    const upload = await dashScopeUpload({
+      policies: [],
+      uploads: [
+        () => new Response(OSS_EXPIRED, { status: 403 }),
+        () => new Response(OSS_EXPIRED, { status: 403 }),
+      ],
+    })
+    const error = await failure(upload.run)
+    expect(error.message).toBe(
+      `素材上传失败，未提交生成：HTTP 403 禁止访问：${OSS_EXPIRED}；已重新获取上传凭证，仍被拒绝`,
+    )
+    expect(error.code).toBe('invalid_request')
+    expect(error.status).toBe(403)
+    expect(error.diagnostic).toMatchObject({ stage: 'upload', outcome: 'rejected', host: OSS_HOST })
+    expect(upload.policies()).toBe(2)
+    expect(upload.received).toHaveLength(2)
+    expect(upload.submitted()).toBe(0)
+    expect(clock.warnings()).toEqual([])
+  } finally {
+    clock.restore()
+  }
+})
+
+/** 取凭证一步的 403 是接口密钥的问题：仍按鉴权失败处理，不重新取凭证，不上传。 */
+test('百炼临时上传取凭证得到 403：按鉴权失败处理，不重新取凭证', async () => {
+  const clock = retryClock()
+  try {
+    const upload = await dashScopeUpload({
+      policies: [
+        () =>
+          Response.json(
+            { code: 'InvalidApiKey', message: 'Invalid API-key provided.' },
+            { status: 403 },
+          ),
+      ],
+      uploads: [],
+    })
+    const error = await failure(upload.run)
+    expect(error.code).toBe('auth_failed')
+    expect(upload.policies()).toBe(1)
+    expect(upload.received).toHaveLength(0)
   } finally {
     clock.restore()
   }

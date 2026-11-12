@@ -19,14 +19,19 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-import type { EffortLevel } from '@qywork/core'
+import { type ChannelVendor, channelVendorOf, type EffortLevel } from '@qywork/core'
 import {
   effortIsTransmittable,
   type ModelSpec,
   type ReasoningReplay,
   reasoningReplay,
 } from '../catalog.ts'
-import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
+import {
+  classifyProviderError,
+  classifyStreamError,
+  ProviderError,
+  streamErrorOf,
+} from '../errors.ts'
 import { readSse, sseJson } from '../sse.ts'
 import {
   estimateMessage,
@@ -73,9 +78,12 @@ export class AnthropicAdapter implements LlmAdapter {
   }
   readonly spec: ModelSpec
   private readonly client: Anthropic
+  /** 接口地址所属的渠道商，错误码按该上游归类（`classifyProviderError`）。 */
+  private readonly vendor: ChannelVendor | null
 
   constructor(profile: ProviderProfile, spec: ModelSpec) {
     this.spec = spec
+    this.vendor = channelVendorOf(profile.baseUrl)
     this.client = new Anthropic({
       // 允许以空 key 构造：BYOK 模式下用户可能尚未配置 key，此时界面仍须能够启动。
       // 缺少 key 的错误在首次发送请求时抛出，由 classifyProviderError 归类为
@@ -155,6 +163,8 @@ export class AnthropicAdapter implements LlmAdapter {
         if (!parsed) continue
         // 本帧解析完成的时刻。带内容的事件统一使用该时刻，不由下游各自读取当前时刻。
         const at = Date.now()
+        const failure = streamErrorOf('anthropic_messages', frame.event, parsed)
+        if (failure) throw classifyStreamError('anthropic_messages', failure, this.vendor)
         // 事件名在 `event:` 行与 JSON 体的 `type` 中重复出现，中转站不一定两者都发送。
         const ev = parsed as unknown as AnthropicStreamEvent
         const type = typeof ev.type === 'string' && ev.type ? ev.type : (frame.event ?? '')
@@ -240,11 +250,6 @@ export class AnthropicAdapter implements LlmAdapter {
             // 收到终态即结束读取：读取器随即取消 body，不等待对端 FIN。
             settled = true
             break
-          case 'error':
-            throw classifyStreamError(
-              'anthropic_messages',
-              (parsed.error as Record<string, unknown>) ?? parsed,
-            )
           default:
             break
         }
@@ -291,7 +296,13 @@ export class AnthropicAdapter implements LlmAdapter {
       }
       if (calls.length) yield { type: 'tool_calls', calls, at: Date.now() }
     } catch (err) {
-      throw classifyProviderError('anthropic_messages', err, readTransport(trace), trace.errorBody)
+      throw classifyProviderError(
+        'anthropic_messages',
+        err,
+        readTransport(trace),
+        trace.errorBody,
+        this.vendor,
+      )
     }
 
     yield { type: 'usage', usage }

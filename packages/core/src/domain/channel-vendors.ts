@@ -1,5 +1,5 @@
 /**
- * 渠道商表：接口地址的主机名 → 渠道商。按渠道商处理的兼容差异（协议默认值、请求头、素材上传方式、
+ * 渠道商表：接口地址的主机名 → 渠道商。按渠道商处理的兼容差异（协议默认值、请求头、素材上传方式、错误码的含义、
  * 拉取时读取的渠道目录与提交格式）一律经 `channelVendorOf` 判定，不在各处另写主机名判断：
  * 分散的判断在渠道商更换域名时只会被改到其中一处。
  *
@@ -20,6 +20,7 @@ export const CHANNEL_VENDORS = [
   'opencode',
   'hongcheng',
   'mumugofe',
+  'zhipu',
 ] as const
 export type ChannelVendor = (typeof CHANNEL_VENDORS)[number]
 
@@ -50,6 +51,8 @@ const HOSTS: Readonly<Record<ChannelVendor, readonly (string | RegExp)[]>> = {
   hongcheng: ['hongcheng.lol'],
   // 中转站木木。拉取时读取 `/docs/typetale-models.json`，视频、图像按木木格式提交。
   mumugofe: ['api.mumugofe.com'],
+  // 智谱开放平台。对话的业务错误码按智谱的含义归类（`@qywork/ai` 的 `upstreamFailureCode`）。
+  zhipu: ['open.bigmodel.cn'],
 }
 
 /** 接口地址所属的渠道商；地址无效或不在表中时返回 null。 */

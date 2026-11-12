@@ -30,6 +30,9 @@ import {
 
 const DEFAULT_BASE = 'https://ark.cn-beijing.volces.com/api/v3'
 
+/** 提交与查询的错误码按火山方舟的错误码归类（`upstreamFailureCode`）：429 同时用于限流与额度用尽，403 用于欠费。 */
+const UPSTREAM = { vendor: 'volcengine' } as const
+
 /** 任务的终止状态及其说明；`expired` 为排队中或运行中超过 `execution_expires_after` 后被终止。 */
 /** 终态失败的状态说明，没有错误内容时显示。方舟与 OpenAI 视频对象使用同一组状态值。 */
 export const ENDED: Record<string, string> = {
@@ -93,6 +96,7 @@ export class ArkVideosAdapter implements MediaAdapter {
         auth,
         opts,
         (body) => body.id,
+        UPSTREAM,
       )
       taskId = submitted.taskId
     }
@@ -147,6 +151,7 @@ export class ArkVideosAdapter implements MediaAdapter {
       `${base}/contents/generations/tasks/${encodeURIComponent(taskId)}`,
       auth,
       signal,
+      { upstream: UPSTREAM },
     )
     const status = String(body.status ?? '')
     if (status === 'succeeded') {

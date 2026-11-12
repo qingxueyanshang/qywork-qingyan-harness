@@ -53,14 +53,17 @@ function missing(what: string, body: Record<string, unknown>): string {
   return `接口没有返回${what}${code || message ? `：${code} ${message}`.trimEnd() : ''}`
 }
 
+/** 提交与查询的错误码按百炼的错误码归类（`upstreamFailureCode`）。 */
+const UPSTREAM = { vendor: 'alibaba' } as const
+
 /**
- * 同步生成的请求策略：错误状态的正文按百炼的错误码归类（`upstreamFailureCode`）；HTTP 200 而没有产物、正文带错误码时按接口拒绝处理。
+ * 同步生成的请求策略：错误状态的正文按百炼的错误码归类；HTTP 200 而没有产物、正文带错误码时按接口拒绝处理。
  * `produced` 判定正文中是否有产物。
  */
 function syncPolicy(what: string, produced: (body: Record<string, unknown>) => boolean) {
   return {
     upstream: {
-      vendor: 'dashscope' as const,
+      ...UPSTREAM,
       refused: (body: Record<string, unknown>) =>
         !produced(body) && typeof body.code === 'string' && body.code
           ? missing(what, body)
@@ -319,7 +322,7 @@ export class DashScopeVideosAdapter implements MediaAdapter {
         },
         opts,
         (body) => (body.output as { task_id?: unknown } | undefined)?.task_id,
-        { vendor: 'dashscope' },
+        UPSTREAM,
       )
       taskId = submitted.taskId
     }
@@ -361,7 +364,12 @@ export class DashScopeVideosAdapter implements MediaAdapter {
     auth: Record<string, string>,
     signal: AbortSignal,
   ): Promise<TaskState> {
-    const body = await getJson(`${origin}/api/v1/tasks/${encodeURIComponent(taskId)}`, auth, signal)
+    const body = await getJson(
+      `${origin}/api/v1/tasks/${encodeURIComponent(taskId)}`,
+      auth,
+      signal,
+      { upstream: UPSTREAM },
+    )
     const out = (body.output ?? {}) as Record<string, unknown>
     const status = String(out.task_status ?? '')
     if (status === 'SUCCEEDED') {
@@ -378,7 +386,9 @@ export class DashScopeVideosAdapter implements MediaAdapter {
 
   /**
    * 小图像使用 data URI；视频、音频与超过内联上限的图像经临时上传转换为 `oss://` 地址，
-   * 与对话中的大附件使用同一套上传流程。
+   * 与对话中的大附件使用同一套上传流程。取凭证与上传到 OSS 的请求都经 `send`（阶段为上传）：
+   * 被限流、连接失败与 408 / 5xx 按素材上传重试，失败带阶段前缀、失败码、请求诊断与重试回执，原样抛出；
+   * OSS 以 403 拒绝时由 `uploadDashScopeMedia` 重新取一次凭证。其余失败是凭证内容与文件大小的本地判定，没有请求诊断。
    */
   private async source(input: MediaInput, signal: AbortSignal): Promise<string> {
     if (
@@ -397,13 +407,13 @@ export class DashScopeVideosAdapter implements MediaAdapter {
         path: input.path,
         size: input.bytes.length,
         signal,
+        fetcher: (url, init) =>
+          send(url.href, init, signal, { stage: 'upload', upstream: UPSTREAM }),
       })
     } catch (error) {
-      if (signal.aborted) throw error
-      const status = (error as { status?: number })?.status
+      if (signal.aborted || error instanceof MediaError) throw error
       throw new MediaError(
         `素材上传失败：${error instanceof Error ? error.message : String(error)}`,
-        typeof status === 'number' ? { status } : {},
       )
     }
   }

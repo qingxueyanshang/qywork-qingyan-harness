@@ -2,7 +2,8 @@
  * 覆盖 `openai-compat.ts` 的 `buildReasoning`（实际发送的思考控制字段）
  * 与 `createThinkingSplitter`（将正文中带思考标签的内容移到思考通道）、strict 参数约束、
  * `buildMessages` 对工具结果媒体的编码（观察消息），
- * 以及判定百炼官方端点所用的 `@qywork/core` 的 `channelVendorOf`。
+ * 判定百炼官方端点所用的 `@qywork/core` 的 `channelVendorOf`，以及百炼临时上传（`uploadDashScopeMedia`、
+ * 上传失败后同一适配器再次发送时重新上传、OSS 以 403 拒绝时重新取凭证、上传失败按百炼的错误码归类）。
  *
  * 必须检查真实请求体，不能只测试纯函数：目录声明了档位、界面渲染了控件
  * 而请求中没有对应字段时，两端均正确而取值在中间环节丢失，
@@ -11,12 +12,13 @@
  * 因此此处启动本机 server 作为端点，原样保存收到的 body。
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { channelVendorOf } from '@qywork/core'
 import { lookupModel, unknownModel } from '../catalog.ts'
+import { ProviderError } from '../errors.ts'
 import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderProfile, ToolSchema, WireMessage } from '../types.ts'
 import {
@@ -653,6 +655,264 @@ describe('百炼媒体上传', () => {
       }),
     ).rejects.toThrow(/0\.000001 MB/)
     expect(calls).toBe(1)
+  })
+
+  /**
+   * 对话请求的重发覆盖临时上传：上传失败归为可重发的失败码（`agent/loop/attempt.ts` 的重发表），失败的上传不留在
+   * 适配器的上传缓存中，重发时重新取凭证并上传。原始失败形状：缓存保留失败的上传时，每次重发立即得到同一个失败。
+   */
+  test('临时上传被限流时归为限流且不发出对话请求；同一适配器再次发送时重新取凭证并上传', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-dashscope-resend-'))
+    const path = join(dir, 'large.mp4')
+    await writeFile(path, Buffer.alloc(3 * 1024 * 1024))
+    const calls: string[] = []
+    let policies = 0
+    const realFetch = globalThis.fetch
+    const routed = spyOn(globalThis, 'fetch').mockImplementation((async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const url = String(input instanceof Request ? input.url : input)
+      if (url.includes('/api/v1/uploads')) {
+        calls.push('policy')
+        policies++
+        return policies === 1
+          ? Response.json(
+              { code: 'Throttling.RateQuota', message: 'Requests rate limit exceeded' },
+              { status: 429 },
+            )
+          : Response.json({
+              data: {
+                policy: 'policy',
+                signature: 'signature',
+                upload_dir: 'dashscope-instant/test',
+                upload_host: 'https://bucket.oss-cn-beijing.aliyuncs.com',
+                oss_access_key_id: 'temporary-key',
+                x_oss_object_acl: 'private',
+                x_oss_forbid_overwrite: 'true',
+              },
+            })
+      }
+      if (url.startsWith('https://bucket.oss-cn-beijing.aliyuncs.com')) {
+        calls.push('oss')
+        return new Response('', { status: 200 })
+      }
+      calls.push('chat')
+      return realFetch(
+        url.replace('https://dashscope.aliyuncs.com/compatible-mode/v1', base),
+        input instanceof Request ? input : init,
+      )
+    }) as typeof fetch)
+    const adapter = new OpenAICompatAdapter(
+      {
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-test',
+        model: 'qwen3.8-flash',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      },
+      lookupModel('qwen3.8-flash', 'openai_chat_completions'),
+    )
+    const request: ChatRequest = {
+      model: 'qwen3.8-flash',
+      system: [],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null },
+          ],
+        },
+      ],
+      tools: [],
+      maxOutputTokens: 16,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+    }
+    try {
+      const events: string[] = []
+      let failed: unknown = null
+      try {
+        for await (const ev of adapter.stream(request)) events.push(ev.type)
+      } catch (err) {
+        failed = err
+      }
+      expect(failed).toBeInstanceOf(ProviderError)
+      expect((failed as ProviderError).code).toBe('rate_limited')
+      expect(events).toEqual([])
+      expect(calls).toEqual(['policy'])
+
+      bodies.length = 0
+      for await (const _ of adapter.stream(request)) {
+        // 读完即可。
+      }
+      expect(calls).toEqual(['policy', 'policy', 'oss', 'chat'])
+      expect(JSON.stringify(bodies[0]?.messages)).toContain('oss://dashscope-instant/test/')
+    } finally {
+      routed.mockRestore()
+    }
+  })
+
+  /**
+   * 经百炼端点的对话适配器发送一段大于内联上限的视频：拦截的 fetch 依次答复取凭证（`policies`）与 OSS 上传（`uploads`），
+   * 各自用完后答复成功，对话请求转到本机端点。返回失败（成功时为 null）、请求的顺序、OSS 每次收到的文件与原文件。
+   */
+  async function dashScopeChat(answers: {
+    policies: (() => Response)[]
+    uploads: (() => Response)[]
+  }) {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-dashscope-chat-'))
+    const path = join(dir, 'large.mp4')
+    const video = Buffer.from(new Uint8Array(3 * 1024 * 1024).map((_, i) => (i * 31 + 7) % 251))
+    await writeFile(path, video)
+    const calls: string[] = []
+    const files: Buffer[] = []
+    const realFetch = globalThis.fetch
+    const routed = spyOn(globalThis, 'fetch').mockImplementation((async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const url = String(input instanceof Request ? input.url : input)
+      if (url.includes('/api/v1/uploads')) {
+        calls.push('policy')
+        return (
+          answers.policies.shift()?.() ??
+          Response.json({
+            data: {
+              policy: 'policy',
+              signature: 'signature',
+              upload_dir: 'dashscope-instant/test',
+              upload_host: 'https://bucket.oss-cn-beijing.aliyuncs.com',
+              oss_access_key_id: 'temporary-key',
+              x_oss_object_acl: 'private',
+              x_oss_forbid_overwrite: 'true',
+            },
+          })
+        )
+      }
+      if (url.startsWith('https://bucket.oss-cn-beijing.aliyuncs.com')) {
+        calls.push('oss')
+        const file = (init?.body as FormData).get('file') as File
+        files.push(Buffer.from(await file.arrayBuffer()))
+        return answers.uploads.shift()?.() ?? new Response('', { status: 200 })
+      }
+      calls.push('chat')
+      return realFetch(
+        url.replace('https://dashscope.aliyuncs.com/compatible-mode/v1', base),
+        input instanceof Request ? input : init,
+      )
+    }) as typeof fetch)
+    const adapter = new OpenAICompatAdapter(
+      {
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-test',
+        model: 'qwen3.8-flash',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      },
+      lookupModel('qwen3.8-flash', 'openai_chat_completions'),
+    )
+    let failed: unknown = null
+    try {
+      for await (const _ of adapter.stream({
+        model: 'qwen3.8-flash',
+        system: [],
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path }, meta: null },
+            ],
+          },
+        ],
+        tools: [],
+        maxOutputTokens: 16,
+        idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+      })) {
+        // 读完即可。
+      }
+    } catch (err) {
+      failed = err
+    } finally {
+      routed.mockRestore()
+    }
+    return { failed, calls, files, video }
+  }
+
+  /** OSS 拒绝上传凭证时的答复：凭证中的签名策略已过期。 */
+  const OSS_EXPIRED =
+    '<Error><Code>AccessDenied</Code><Message>Invalid according to Policy: Policy expired.</Message></Error>'
+
+  /**
+   * 原始失败形状：OSS 以 403 拒绝上传（凭证过期、签名失效）时按鉴权失败结束本轮，不重发。
+   * 重新取一次凭证后再上传：第二次上传的文件内容完整，随后发出对话请求。
+   */
+  test('OSS 以 403 拒绝时重新取一次凭证并再上传，第二次上传的文件内容完整，随后发出对话请求', async () => {
+    const run = await dashScopeChat({
+      policies: [],
+      uploads: [() => new Response(OSS_EXPIRED, { status: 403 })],
+    })
+    expect(run.failed).toBeNull()
+    expect(run.calls).toEqual(['policy', 'oss', 'policy', 'oss', 'chat'])
+    expect(run.files).toHaveLength(2)
+    expect(run.files[1]?.equals(run.video)).toBe(true)
+  })
+
+  /** 重新取凭证后仍为 403：只重新取一次凭证，报错写明素材上传被拒绝，失败码为 `invalid_request`（不重发），不是鉴权失败。 */
+  test('OSS 连续两次以 403 拒绝：只重新取一次凭证，报告素材上传被拒绝，不归为鉴权失败，不发出对话请求', async () => {
+    const run = await dashScopeChat({
+      policies: [],
+      uploads: [
+        () => new Response(OSS_EXPIRED, { status: 403 }),
+        () => new Response(OSS_EXPIRED, { status: 403 }),
+      ],
+    })
+    expect(run.failed).toBeInstanceOf(ProviderError)
+    const failed = run.failed as ProviderError
+    expect([failed.code, failed.status]).toEqual(['invalid_request', 403])
+    expect(failed.message).toBe(
+      `素材上传被拒绝：HTTP 403 禁止访问：${OSS_EXPIRED}；已重新获取上传凭证，仍被拒绝`,
+    )
+    expect(run.calls).toEqual(['policy', 'oss', 'policy', 'oss'])
+  })
+
+  /** 取凭证一步的 401 / 403 是接口密钥的问题：按鉴权失败处理，不重新取凭证。 */
+  test('取凭证得到 403：按鉴权失败处理，不重新取凭证，不上传', async () => {
+    const run = await dashScopeChat({
+      policies: [
+        () =>
+          Response.json(
+            { code: 'InvalidApiKey', message: 'Invalid API-key provided.' },
+            { status: 403 },
+          ),
+      ],
+      uploads: [],
+    })
+    expect((run.failed as ProviderError).code).toBe('auth_failed')
+    expect(run.calls).toEqual(['policy'])
+  })
+
+  /**
+   * 原始失败形状：上传失败归类时不带错误正文，百炼的错误码不参与归类；取凭证得到 429 `Throttling.AllocationQuota`
+   * 「You exceeded your current quota」（文档中为 TPS / TPM 限流）时按原文归为额度用尽，不重发。
+   * 带上错误正文与上游（百炼）后与对话请求本身同一归类：限流，在重发表中。
+   */
+  test('取凭证得到 429 Throttling.AllocationQuota：按百炼的错误码归为限流，不按原文归为额度用尽', async () => {
+    const run = await dashScopeChat({
+      policies: [
+        () =>
+          Response.json(
+            {
+              code: 'Throttling.AllocationQuota',
+              message:
+                'You exceeded your current quota, please check your plan and billing details.',
+              request_id: 'r-1',
+            },
+            { status: 429 },
+          ),
+      ],
+      uploads: [],
+    })
+    expect(run.failed).toBeInstanceOf(ProviderError)
+    expect((run.failed as ProviderError).code).toBe('rate_limited')
+    expect(run.calls).toEqual(['policy'])
   })
 
   test('临时文件协议的 1 GB 硬上限在获取凭证前生效', async () => {

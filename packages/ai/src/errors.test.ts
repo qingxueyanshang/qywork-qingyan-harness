@@ -15,6 +15,7 @@ import {
   classifyProviderError,
   classifyStreamError,
   ProviderError,
+  streamErrorOf,
   transportFailureKind,
 } from './errors.ts'
 import { drainAdapter, FAULT_PROTOCOLS, withFault } from './providers/fault-server.test-helper.ts'
@@ -326,6 +327,39 @@ describe('按用户的下一步动作分类', () => {
     expect(classifyStreamError(P, {}).message).toBe('模型服务返回错误事件')
   })
 
+  /** 适配器与云端网关共用这一判定：网关据此改写发给客户端的错误事件，取出的对象即被改写的对象。 */
+  test('流内错误事件的判定与错误对象：三种协议各自的形状，其余事件为 null', () => {
+    const inner = { type: 'overloaded_error', message: 'Overloaded' }
+    expect(streamErrorOf('anthropic_messages', 'error', { type: 'error', error: inner })).toBe(
+      inner,
+    )
+    // 中转站只发送 `event:` 行、JSON 体不带 `type` 时同样识别；`error` 字段缺失时错误对象为事件本身。
+    const bare = { message: 'Overloaded' }
+    expect(streamErrorOf('anthropic_messages', 'error', bare)).toBe(bare)
+    expect(streamErrorOf('anthropic_messages', 'message_stop', { type: 'message_stop' })).toBeNull()
+
+    const chat = { message: '额度不足', type: 'new_api_error' }
+    expect(streamErrorOf('openai_chat_completions', undefined, { error: chat })).toBe(chat)
+    expect(streamErrorOf('openai_chat_completions', undefined, { choices: [] })).toBeNull()
+    expect(streamErrorOf('openai_chat_completions', undefined, { error: null })).toBeNull()
+
+    const failed = { code: 'server_error', message: 'boom' }
+    expect(
+      streamErrorOf('openai_responses', 'response.failed', {
+        type: 'response.failed',
+        response: { status: 'failed', error: failed },
+      }),
+    ).toBe(failed)
+    const top = { type: 'error', code: 'rate_limit_exceeded', message: 'slow down' }
+    expect(streamErrorOf('openai_responses', 'error', top)).toBe(top)
+    // Responses 只按 JSON 体的 `type` 判定。
+    expect(streamErrorOf('openai_responses', 'error', { type: 'response.created' })).toBeNull()
+    // 错误字段不是对象：没有可读取的字段。
+    expect(streamErrorOf('anthropic_messages', undefined, { type: 'error', error: 'x' })).toEqual(
+      {},
+    )
+  })
+
   test('401 未配置与 401 key 无效是两条不同的引导', () => {
     expect(classifyProviderError(P, http(401, 'API key missing')).code).toBe('no_api_key')
     expect(classifyProviderError(P, http(401, 'Incorrect API key')).code).toBe('auth_failed')
@@ -360,6 +394,52 @@ describe('按用户的下一步动作分类', () => {
     expect(classifyProviderError(P, http(429, '账户余额不足，请充值')).code).toBe(
       'insufficient_quota',
     )
+  })
+
+  /**
+   * 错误码先于原文判定，同一个错误码按请求发往的上游取含义。百炼错误码文档：`Throttling.AllocationQuota/insufficient_quota`
+   * 的「You exceeded your current quota」是 TPS / TPM 限流；OpenAI 以同一错误码报告额度用尽。
+   * 原始失败形状：对话请求按原文判为额度用尽，不重发并提示额度不足。
+   */
+  test('百炼兼容接口的 insufficient_quota 按百炼的错误码归为限流，其余上游仍为额度用尽', () => {
+    const body =
+      '{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}'
+    const err = http(429, '429 status code (no body)')
+    expect(classifyProviderError(P, err, null, body, 'alibaba').code).toBe('rate_limited')
+    expect(classifyProviderError(P, err, null, body, null).code).toBe('insufficient_quota')
+    const free =
+      '{"error":{"message":"Free allocated quota exceeded.","type":"insufficient_quota","code":"insufficient_quota"}}'
+    expect(classifyProviderError(P, err, null, free, 'alibaba').code).toBe('insufficient_quota')
+  })
+
+  /** 数字业务码只在该上游内有含义：智谱的 1308 是使用上限，可灵的 1302 是限流。地址不属于该上游时不按其业务码归类。 */
+  test('数字业务码只在请求发往该上游时生效', () => {
+    const body =
+      '{"error":{"code":"1308","message":"已达到 5 小时 的使用上限。您的限额将在 t 重置"}}'
+    const err = http(429, '429 status code (no body)')
+    expect(classifyProviderError(P, err, null, body, 'zhipu').code).toBe('insufficient_quota')
+    expect(classifyProviderError(P, err, null, body, null).code).toBe('rate_limited')
+    expect(classifyProviderError(P, err, null, body, 'kling').code).toBe('rate_limited')
+  })
+
+  /**
+   * Anthropic 流内错误事件（SSE `event: error`）的 `error` 对象与 HTTP 错误同一结构。速率限制文档：月度支出上限的 429 类型同为
+   * `rate_limit_error`，以 `error.details.error_code` 的 `enforced_spend_limit_reached` 区分。
+   */
+  test('流内错误事件同样按错误码表归类：Anthropic 的 enforced_spend_limit_reached 为额度用尽', () => {
+    const e = classifyStreamError('anthropic_messages', {
+      type: 'rate_limit_error',
+      message:
+        'You have reached your API usage limits: your organization has crossed its monthly API usage threshold.',
+      details: { error_code: 'enforced_spend_limit_reached' },
+    })
+    expect(e.code).toBe('insufficient_quota')
+    const zhipu = classifyStreamError(
+      'openai_chat_completions',
+      { code: '1309', message: '您的 GLM Coding Plan 套餐已到期，暂无法使用' },
+      'zhipu',
+    )
+    expect(zhipu.code).toBe('insufficient_quota')
   })
 
   /**

@@ -17,6 +17,7 @@ test('各渠道商的官方地址与中转站地址判定为对应渠道商', ()
     ['https://opencode.ai/zen/v1', 'opencode'],
     ['https://hongcheng.lol', 'hongcheng'],
     ['https://api.mumugofe.com/v1', 'mumugofe'],
+    ['https://open.bigmodel.cn/api/paas/v4', 'zhipu'],
   ]
   for (const [url, vendor] of cases) expect([url, channelVendorOf(url)]).toEqual([url, vendor])
   expect(new Set(cases.map(([, v]) => v))).toEqual(new Set(CHANNEL_VENDORS))

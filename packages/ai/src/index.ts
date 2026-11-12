@@ -37,12 +37,14 @@ export {
   unknownModel,
   VENDORS,
 } from './catalog.ts'
-// 错误归类：agent 据此判定能否重试，server 据此决定前端引导动作
+// 错误归类：agent 据此判定能否重试，server 据此决定前端引导动作；云端网关按同一判定识别并改写流内错误事件
 export {
   classifyProviderError,
+  classifyStreamError,
   failureDiagnostics,
   httpStatusName,
   ProviderError,
+  streamErrorOf,
   transportFailureKind,
 } from './errors.ts'
 // 唯一的 adapter 构造入口
@@ -122,7 +124,15 @@ export {
   type SkillSegmentRef,
   verifySkillMarker,
 } from './skill-marker/marker.ts'
-export { readSse, SSE_DONE, type SseFrame, sseJson } from './sse.ts'
+// SSE 分帧：模型网关读取用量与原样转发字节时与适配器同一规则
+export {
+  readSse,
+  SSE_DONE,
+  type SseBlock,
+  type SseFrame,
+  SseSplitter,
+  sseJson,
+} from './sse.ts'
 // 字符估算：agent 在没有 count_tokens 的端点上将其作为后备
 export {
   ANY_VIDEO,

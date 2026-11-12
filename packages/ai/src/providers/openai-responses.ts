@@ -50,9 +50,14 @@
  * - 只有最后一轮工具调用会被检查；但每一轮都附带，不依赖该实现细节。
  */
 
-import type { ReasoningEcho } from '@qywork/core'
+import { type ChannelVendor, channelVendorOf, type ReasoningEcho } from '@qywork/core'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
-import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
+import {
+  classifyProviderError,
+  classifyStreamError,
+  ProviderError,
+  streamErrorOf,
+} from '../errors.ts'
 import { readSse, SSE_DONE, sseJson } from '../sse.ts'
 import { estimateRequest } from '../tokens.ts'
 import { newTrace, readTransport, traceFetch } from '../transport.ts'
@@ -83,12 +88,15 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
   readonly spec: ModelSpec
   private readonly baseUrl: string
   private readonly headers: Record<string, string>
+  /** 接口地址所属的渠道商，错误码按该上游归类（`classifyProviderError`）。 */
+  private readonly vendor: ChannelVendor | null
 
   constructor(profile: ProviderProfile, spec: ModelSpec) {
     this.spec = spec
     // 与兼容协议使用同一归一规则：缺少 `/v1` 的地址在多数中转站上会返回 200 的网页，
     // 而该失败是静默的（0 事件、0 token、记为正常完成）。
     this.baseUrl = normalizeBaseUrl(profile.baseUrl)
+    this.vendor = channelVendorOf(this.baseUrl)
     this.headers = {
       ...PROVIDER_HEADERS,
       'content-type': 'application/json',
@@ -174,7 +182,13 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           readTransport(trace),
         )
       }
-      throw classifyProviderError('openai_responses', err, readTransport(trace), trace.errorBody)
+      throw classifyProviderError(
+        'openai_responses',
+        err,
+        readTransport(trace),
+        trace.errorBody,
+        this.vendor,
+      )
     } finally {
       clearTimeout(timer)
     }
@@ -187,6 +201,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         'openai_responses',
         asError(res.status, text, res.headers),
         readTransport(trace),
+        null,
+        this.vendor,
       )
     }
     if (!res.body) {
@@ -323,15 +339,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
 
         // 流内错误。SSE 已返回 200，错误只能出现在事件中；不识别该事件时，
         // 流正常结束但没有任何内容。
-        if (type === 'response.failed' || type === 'error') {
-          // 顶层 `error` 事件本身即为错误对象，因此回退到 `event` 而不是空对象：
-          // 空对象会将 provider 原文替换为 `{}`。
-          const detail =
-            ((event.response as Record<string, unknown>)?.error as Record<string, unknown>) ??
-            (event.error as Record<string, unknown>) ??
-            event
-          throw classifyStreamError('openai_responses', detail)
-        }
+        const failure = streamErrorOf('openai_responses', frame.event, event)
+        if (failure) throw classifyStreamError('openai_responses', failure, this.vendor)
       }
 
       /*
@@ -356,7 +365,13 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         })
       }
     } catch (err) {
-      throw classifyProviderError('openai_responses', err, readTransport(trace), trace.errorBody)
+      throw classifyProviderError(
+        'openai_responses',
+        err,
+        readTransport(trace),
+        trace.errorBody,
+        this.vendor,
+      )
     }
 
     const calls = collectToolCalls(partial, 'openai_responses', req.model)

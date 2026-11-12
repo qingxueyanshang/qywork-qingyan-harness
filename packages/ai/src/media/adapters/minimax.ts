@@ -10,7 +10,7 @@
  * 查询 `GET {根}/v2/query/video_generation/{id}`。素材结构与方舟相同，见 `arkVideoContent`。
  *
  * 语音与图像在 HTTP 200 时 `base_resp.status_code` 非 0 仍是失败，按接口拒绝处理，错误码按 MiniMax 的错误码归类
- * （`upstreamFailureCode`）；视频接口以 HTTP 状态码报告失败。
+ * （`upstreamFailureCode`）；视频接口以 HTTP 状态码报告失败，错误码只出现在 `error.message` 的末尾，按状态码归类。
  */
 
 import { resolveMediaParam } from '@qywork/core'
