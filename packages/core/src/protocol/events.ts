@@ -218,6 +218,14 @@ export interface RunStartedEvent {
   model: string
   userMessageId: MessageId | null
   /**
+   * 本轮的开始时刻（服务端时钟，毫秒），与 `runs.created_at` 相同。
+   *
+   * 取服务端接受这条消息的时刻，早于本事件发出：其间还有同步云端价格、装配工具、扫描技能与运行环境等准备步骤。
+   * 界面的耗时从此处起算，不得改用收到本事件的时刻，否则准备阶段的等待不计入耗时。
+   * 客户端须先按握手时的时差换算为本机时刻（`HelloOkFrame.serverTime`），再与本机时钟比较。
+   */
+  startedAt: number
+  /**
    * 本轮回答的用户消息正文。服务端自行发起的轮次依靠它渲染用户气泡。
    *
    * 用户在界面上按回车时，气泡由客户端乐观插入；而目标自动继续、定时触发、

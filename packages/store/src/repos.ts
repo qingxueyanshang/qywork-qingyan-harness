@@ -1015,6 +1015,8 @@ export function createRun(
     contextSnapshot: RunContextSegment[]
     /** 由派发任务产生的轮次携带来源；用户会话不携带。 */
     dispatch?: { stepId: StepId; nodeId: string }
+    /** 本轮的开始时刻，写入 `created_at`。建行之前另有准备步骤的调用方传入接受消息的时刻；未传入时取建行时刻。 */
+    createdAt?: number
   },
 ): Run {
   return store.tx(() => {
@@ -1072,7 +1074,7 @@ function insertRun(store: Store, input: Parameters<typeof createRun>[1]): Run {
     errorMessage: null,
     errorCode: null,
     interruption: null,
-    createdAt: now,
+    createdAt: input.createdAt ?? now,
     finishedAt: null,
   }
   store.db
@@ -1095,7 +1097,7 @@ function insertRun(store: Store, input: Parameters<typeof createRun>[1]): Run {
       run.status,
       null,
       writeJson(input.contextSnapshot),
-      now,
+      run.createdAt,
       // 归属在建行时即写入。若延后到开始执行之后补写，createRun 后立即崩溃留下的
       // 无归属行仍会被下一个进程按无归属规则回收，结果正确；
       // 但同一条路径上会多出一段判据不同的时间窗口。

@@ -158,6 +158,12 @@ export async function startRun(
     )
     return
   }
+  /*
+   * 本轮的开始时刻取占位成功的时刻：之后的价格同步与 Session 装配都计入耗时（见 `AskOptions.startedAt`）。
+   * 不要改用客户端随指令发来的时刻：账本中的结束时刻取服务端时钟，开始时刻取客户端时钟时，
+   * 两台设备的时钟差会计入耗时。
+   */
+  const startedAt = Date.now()
 
   /*
    * 在后台运行，不阻塞 WebSocket 消息循环：否则一轮 agent 运行十分钟时，
@@ -338,6 +344,7 @@ export async function startRun(
         // 由回执启动的一轮，消息行必须标明投递方：界面据此渲染为回执行，而不是用户气泡。
         ...(source?.kind === 'receipt' ? { origin: source.origin } : {}),
         ...(viewing ? { viewing } : {}),
+        startedAt,
       })) {
         // 并非所有事件都带 runId（git.state / file.changed 是工作区级的），
         // 读取前先收窄类型，不能假设字段存在。

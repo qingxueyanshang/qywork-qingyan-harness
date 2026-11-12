@@ -116,6 +116,44 @@ describe('握手携带的忙闲状态交给调用方', () => {
   })
 })
 
+/**
+ * 原始失败形状：手机的时钟比电脑快 7 秒，界面用服务端的开始时刻直接与本机时钟相减，
+ * 运行 3 秒的一轮显示为 10 秒。
+ */
+describe('服务端时刻按握手时的时差换算为本机时刻', () => {
+  test('本机时钟比服务端快 7 秒：服务端时刻加 7 秒；再次握手按新的时差换算', () => {
+    const { c, sockets } = client()
+    const nowBefore = Date.now
+    try {
+      c.connect()
+      sockets[0]!.fire('open')
+      Date.now = () => 1_007_000
+      sockets[0]!.deliver({
+        type: 'hello.ok',
+        capabilities: {},
+        currentSeq: 0,
+        resync: false,
+        busyConversations: [],
+        serverTime: 1_000_000,
+      })
+      expect(c.localTime(997_000)).toBe(1_004_000)
+
+      Date.now = () => 2_000_000
+      sockets[0]!.deliver({
+        type: 'hello.ok',
+        capabilities: {},
+        currentSeq: 0,
+        resync: false,
+        busyConversations: [],
+        serverTime: 2_000_000,
+      })
+      expect(c.localTime(997_000)).toBe(997_000)
+    } finally {
+      Date.now = nowBefore
+    }
+  })
+})
+
 describe('握手被拒是终态', () => {
   /**
    * 复现原始失败形状：只把 `bad_token` 视为终态时，其他原因的拒绝在每次 close 后都会

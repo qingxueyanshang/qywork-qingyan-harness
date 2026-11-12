@@ -1283,6 +1283,7 @@ describe('事件按会话归属过滤', () => {
         conversationId: 'cv_other',
         model: 'm',
         userMessageId: null,
+        startedAt: 0,
       },
     } as never)
     expect(state.lastRunId).toBe(null)
@@ -1312,6 +1313,7 @@ describe('事件按会话归属过滤', () => {
         conversationId,
         model: 'm',
         userMessageId,
+        startedAt: 0,
         userMessage,
       },
     }) as never
@@ -1735,6 +1737,7 @@ describe('事件按会话归属过滤', () => {
         conversationId: 'cv_now',
         model: 'm',
         userMessageId: null,
+        startedAt: 0,
       },
     } as never)
     expect(viewOf('cv_now').request).toBe(null)
@@ -1840,6 +1843,7 @@ describe('账本修订号随落库更新', () => {
         conversationId: 'cv_1',
         model: 'm',
         userMessageId: null,
+        startedAt: 0,
       },
     } as never)
   }
@@ -3069,7 +3073,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
       seq,
       at: 0,
       conversationId: 'cv_live',
-      event: { type: 'run.started', runId, userMessageId: null },
+      event: { type: 'run.started', runId, userMessageId: null, startedAt: 500 },
     } as never)
 
   const requested = (runId: string, requestId: string, seq: number) =>
@@ -3616,6 +3620,7 @@ describe('收尾条写入即视为本轮结束，不等待忙闲', () => {
         conversationId: 'cv_tail',
         model: 'm',
         userMessageId: null,
+        startedAt: 0,
       },
     }) as never
 
@@ -3935,6 +3940,7 @@ describe('实时到达的回执同样建为回执条目', () => {
       conversationId: CV,
       model: 'm',
       userMessageId,
+      startedAt: 0,
       userMessage: { content, ...(origin ? { origin } : {}) },
     })
 
@@ -4242,6 +4248,7 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
           conversationId: 'cv_1',
           model: 'm',
           userMessageId: 'ms_2',
+          startedAt: 0,
           userMessage: { content: '再改' },
         },
       } as never)

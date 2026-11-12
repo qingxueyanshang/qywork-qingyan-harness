@@ -301,6 +301,11 @@ export interface AskOptions {
    * 调用方须已按该模型可发送的档位校验；不传入时取模型配置。
    */
   effort?: EffortLevel
+  /**
+   * 本轮的开始时刻：服务端接受这条消息的时刻。调用 `ask` 之前另有等待步骤的调用方必须传入
+   * （`run-control` 的 `startRun` 在调用前同步云端价格）；未传入时取调用 `ask` 的时刻。
+   */
+  startedAt?: number
 }
 
 export class Session {
@@ -527,6 +532,8 @@ export class Session {
     options?: AskOptions,
   ): AsyncGenerator<AgentEvent, void, unknown> {
     const { store, config } = this.opts
+    // 必须在下方的准备步骤之前取值：写入 run 之前的扩展装配与目录扫描同样是用户的等待时间。
+    const startedAt = options?.startedAt ?? Date.now()
 
     // 模型优先级：本轮显式指定 > 会话当前模型 > 配置默认。
     // 会话是权威：config 只在会话尚无模型时作为回退，否则用户在界面上切换模型后，
@@ -685,6 +692,7 @@ export class Session {
         messageIdUpperBound: userMessageId,
         contextSnapshot,
         ...(options?.dispatch ? { dispatch: options.dispatch } : {}),
+        createdAt: startedAt,
       })
       markRunRunning(store, created.id)
       return created
@@ -781,6 +789,7 @@ export class Session {
       conversationId,
       model,
       userMessageId: userMessageId ?? null,
+      startedAt: run.createdAt,
       // 正文一并发送：服务端自行发起的轮次（目标自动继续、定时触发、跟进消息发起）
       // 没有客户端的乐观插入，界面上显示的用户消息只能来自此处。
       userMessage: {

@@ -845,7 +845,12 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
           v.liveSeq = seq
           v.runSeq = seq
           v.runId = ev.runId
-          v.runStartedAt = Date.now()
+          /*
+           * 本机按下发送时已写入按下的时刻（`sendMessage`），保留它：计时的起止都取本机时钟。
+           * 其余情况（其他设备发送、服务端自行发起）把服务端的开始时刻换算为本机时刻。
+           * 不要直接写入 `ev.startedAt`：它取服务端时钟，与本机 `Date.now()` 相减时两台设备的时钟差计入耗时。
+           */
+          v.runStartedAt ??= client.localTime(ev.startedAt)
           v.runUserMessageId = ev.userMessageId
           v.error = null
           v.usage = null
@@ -1138,7 +1143,7 @@ function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
  *
  * 运行中的轮次只取快照的 `runId`（服务端 `RunManager` 的当前轮次），不按 runs 行的状态列推断：
  * 服务进程崩溃后账本中的行可能仍处于 `running`。快照所指的仍是视图已在跟踪的那一轮时，
- * 保留按本地时钟记录的开始时刻与已收到的用量。
+ * 保留已记录的开始时刻与已收到的用量。
  */
 function restoreLive(
   v: ConversationView,
@@ -1156,7 +1161,8 @@ function restoreLive(
   if (live.seq < v.runSeq) return false
   v.runSeq = live.seq
   v.runId = live.runId
-  v.runStartedAt = same ? v.runStartedAt : (row?.createdAt ?? null)
+  // 账本中的开始时刻取服务端时钟，换算为本机时刻后才与本机时钟比较。
+  v.runStartedAt = same ? v.runStartedAt : row ? client.localTime(row.createdAt) : null
   v.runUserMessageId = same ? v.runUserMessageId : (row?.userMessageId ?? null)
   return true
 }

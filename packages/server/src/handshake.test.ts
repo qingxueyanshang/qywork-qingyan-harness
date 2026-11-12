@@ -1,7 +1,7 @@
 /**
  * 握手时客户端的同步位置。
  *
- * 覆盖范围：`handshake.ts` 的补发分支（令牌校验由 `e2e.test.ts` 经由真实连接覆盖），
+ * 覆盖范围：`handshake.ts` 的补发分支与 `hello.ok` 携带的服务端时钟（令牌校验由 `e2e.test.ts` 经由真实连接覆盖），
  * 以及 `api/host.ts` 的运行环境依赖表（`probeEnvironment`）：该表同时供环境接口与安装路由使用，
  * 分别计算必然产生偏差。
  *
@@ -31,6 +31,7 @@ interface HelloOk {
   currentSeq: number
   resync: boolean
   busyConversations: string[]
+  serverTime: number
 }
 
 /** 最小的假 socket：只需要 `data` / `send` / `close`。 */
@@ -139,6 +140,14 @@ describe('断线重连的位置', () => {
   test('hello.ok 报告本进程当前流的身份，客户端据此判断是否重新拉取', () => {
     const bus = new EventBus()
     expect(shake(bus, {}).ok().streamId).toBe(bus.streamId)
+  })
+
+  // 客户端据此得出本机与服务端的时差，把服务端时刻换算为本机时刻后再计时。
+  test('hello.ok 报告发出时服务端的时钟', () => {
+    const before = Date.now()
+    const serverTime = shake(new EventBus(), {}).ok().serverTime
+    expect(serverTime).toBeGreaterThanOrEqual(before)
+    expect(serverTime).toBeLessThanOrEqual(Date.now())
   })
 })
 

@@ -218,6 +218,8 @@ export class QyClient {
    */
   private subscribed: string[] | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  /** 本机时钟减服务端时钟，每次握手按 `HelloOkFrame.serverTime` 更新。握手之前为 0。 */
+  private clockOffset = 0
 
   constructor(
     private readonly opts: ClientOptions,
@@ -240,6 +242,14 @@ export class QyClient {
   }
   get paired(): boolean {
     return this.endpoint.token.length > 0
+  }
+
+  /**
+   * 把服务端时刻换算为本机时刻。服务端时刻须经此换算后才能与 `Date.now()` 相减：
+   * 两台设备的时钟差会原样计入差值。换算误差为握手帧的传输时长。
+   */
+  localTime(serverTime: number): number {
+    return serverTime + this.clockOffset
   }
 
   connect(): void {
@@ -294,6 +304,7 @@ export class QyClient {
         const ok = msg as HelloOkFrame
         // 握手成功后才重置退避计数：open 事件不代表服务端接受了该连接。
         this.attempt = 0
+        this.clockOffset = Date.now() - ok.serverTime
         // 事件流已更换（服务端重启过）或服务端放弃补发时，本地的 seq
         // 都不再是有效位置，统一对齐到服务端当前值。
         const previousStreamId = this.streamId

@@ -85,6 +85,12 @@ export interface HelloOkFrame {
    */
   busyConversations: ConversationId[]
   capabilities: ServerCapabilities
+  /**
+   * 发出本帧时服务端的时钟（epoch ms）。客户端据此得出本机与服务端的时差，把事件与快照中的
+   * 服务端时刻（如 `run.started.startedAt`）换算为本机时刻后再与本机时钟比较。
+   * 两台设备的时钟可能相差数秒，不经换算直接相减时，该时差会计入耗时。
+   */
+  serverTime: number
 }
 
 export interface ServerCapabilities {
