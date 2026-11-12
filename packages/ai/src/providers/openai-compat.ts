@@ -14,10 +14,16 @@
 
 import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
-import { channelVendorOf } from '@qywork/core'
+import { type ChannelVendor, channelVendorOf } from '@qywork/core'
 import OpenAI from 'openai'
 import { effortIsTransmittable, type ModelSpec, reasoningReplay } from '../catalog.ts'
-import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
+import {
+  classifyProviderError,
+  classifyStreamError,
+  ProviderError,
+  streamErrorOf,
+} from '../errors.ts'
+import { MediaError } from '../media/types.ts'
 import { readSse, SSE_DONE, sseJson } from '../sse.ts'
 import { estimateRequest } from '../tokens.ts'
 import { newTrace, readTransport, traceFetch } from '../transport.ts'
@@ -79,14 +85,16 @@ export class OpenAICompatAdapter implements LlmAdapter {
    * 检测与压缩摘要等不带 `cacheKey` 的请求使用按适配器实例生成的值。其他端点为 null。
    */
   private readonly openCodeSession: string | null
+  /** 接口地址所属的渠道商，错误码按该上游归类（`classifyProviderError`）。 */
+  private readonly vendor: ChannelVendor | null
 
   constructor(profile: ProviderProfile, spec: ModelSpec) {
     this.spec = spec
     this.apiKey = profile.apiKey || 'unset'
     this.baseUrl = normalizeBaseUrl(profile.baseUrl)
-    const vendor = channelVendorOf(this.baseUrl)
-    this.dashScopeMedia = vendor === 'alibaba'
-    this.openCodeSession = vendor === 'opencode' ? crypto.randomUUID() : null
+    this.vendor = channelVendorOf(this.baseUrl)
+    this.dashScopeMedia = this.vendor === 'alibaba'
+    this.openCodeSession = this.vendor === 'opencode' ? crypto.randomUUID() : null
     this.client = new OpenAI({
       apiKey: this.apiKey,
       ...PROVIDER_HTTP,
@@ -105,7 +113,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       mediaHeaders = dashScopeMediaHeaders(this.dashScopeMedia, prepared)
     } catch (err) {
       // 本地读取与临时上传均发生在主模型请求之前；失败时不得先报告 request_prepared，
-      // 否则上层会将尚未发出的模型请求标记为 sent。
+      // 否则上层会将尚未发出的模型请求标记为 sent。上传的错误状态已在发出处归类（`providerHttpError`）。
       throw classifyProviderError('openai_chat_completions', err)
     }
 
@@ -186,13 +194,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
         if (!parsed) continue
         // 本帧解析完成的时刻。带内容的事件统一使用该时刻，不由下游各自读取当前时刻。
         const at = Date.now()
-        // 流内错误。SSE 已返回 200，错误只能出现在 chunk 中。
-        const inlineError = parsed.error
-        if (inlineError && typeof inlineError === 'object') {
-          throw classifyStreamError(
-            'openai_chat_completions',
-            inlineError as Record<string, unknown>,
-          )
+        const inlineError = streamErrorOf('openai_chat_completions', frame.event, parsed)
+        if (inlineError) {
+          throw classifyStreamError('openai_chat_completions', inlineError, this.vendor)
         }
         const chunk = parsed as unknown as CompatChunk
         chunks++
@@ -333,6 +337,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
         err,
         readTransport(trace),
         trace.errorBody,
+        this.vendor,
       )
     }
 
@@ -511,18 +516,75 @@ export function dashScopeBaseUrl(baseUrl?: string): string {
   return `${url.origin}${prefix}`
 }
 
-export async function uploadDashScopeMedia(input: {
+interface DashScopeUpload {
   apiKey: string
   baseUrl: string
   model: string
   path: string
   size: number
   signal?: AbortSignal
-  fetcher?: typeof fetch
-}): Promise<string> {
+  fetcher?: (url: URL, init: RequestInit) => Promise<Response>
+}
+
+/**
+ * 百炼临时文件上传：取上传凭证，再以表单上传到凭证给出的 OSS 地址，返回 `oss://` 地址。
+ * `fetcher` 发出这两次请求，未提供时为 `fetch`，错误状态由 `providerHttpError` 归类；生成一侧传入经 `send` 的请求
+ * （重试与请求诊断），错误状态由 `send` 抛出。同一份请求参数可能被重复发出：表单中的文件是 `Bun.file`，每次发出时重新读取文件。
+ *
+ * OSS 以 403 拒绝上传时重新取一次凭证并再上传一次：凭证是带有效期的签名，过期或失效时重新取得即可能恢复，
+ * 与接口密钥无效不是一回事。仍为 403 时报告素材上传被拒绝（`uploadRejected`）。取凭证一步的 401 / 403 是接口密钥的问题，
+ * 不重新取凭证。重新取凭证只在本函数中做一次，与 `send` 对限流、连接失败与 5xx 的重试各自计数：`send` 不重试 403。
+ */
+export async function uploadDashScopeMedia(input: DashScopeUpload): Promise<string> {
   if (input.size > DASHSCOPE_TEMP_FILE_MAX_BYTES) {
     throw new Error('媒体超过百炼临时文件协议的 1 GB 上限')
   }
+  // 取凭证在 `try` 之外：它的 403 是接口密钥的问题，不重新取凭证。
+  const policy = await uploadPolicy(input)
+  try {
+    return await uploadFile(input, policy)
+  } catch (err) {
+    if (!ossRejected(err)) throw err
+  }
+  const renewed = await uploadPolicy(input)
+  try {
+    return await uploadFile(input, renewed)
+  } catch (err) {
+    throw ossRejected(err) ? uploadRejected(err) : err
+  }
+}
+
+/** OSS 拒绝了上传凭证：上传一步的失败带有 403（`fetch` 一侧为 `providerHttpError`，`send` 一侧为 `MediaError`）。 */
+function ossRejected(err: unknown): boolean {
+  return (err as { status?: unknown } | null)?.status === 403
+}
+
+/**
+ * 重新取凭证后 OSS 仍以 403 拒绝：失败码为 `invalid_request`（同一份请求再次发出得到同一个拒绝），
+ * 不按 403 归为鉴权失败：接口密钥已在取凭证一步通过，被拒绝的是素材上传。
+ * 生成一侧的失败是 `send` 抛出的 `MediaError`，保留其请求诊断（云端按其中的 OSS 主机名替换报错中的主机名）。
+ */
+function uploadRejected(cause: unknown): Error {
+  const receipt = '已重新获取上传凭证，仍被拒绝'
+  if (cause instanceof MediaError) {
+    return new MediaError(`${cause.message}；${receipt}`, {
+      status: 403,
+      code: 'invalid_request',
+      ...(cause.diagnostic ? { diagnostic: cause.diagnostic } : {}),
+      cause,
+    })
+  }
+  return new ProviderError({
+    code: 'invalid_request',
+    message: `素材上传被拒绝：${cause instanceof Error ? cause.message : String(cause)}；${receipt}`,
+    provider: 'openai_chat_completions',
+    status: 403,
+    cause,
+  })
+}
+
+/** 取上传凭证并校验其内容与文件大小上限。 */
+async function uploadPolicy(input: DashScopeUpload): Promise<DashScopeUploadPolicy> {
   const send = input.fetcher ?? fetch
   const policyUrl = new URL(`${dashScopeBaseUrl(input.baseUrl)}/api/v1/uploads`)
   policyUrl.searchParams.set('action', 'getPolicy')
@@ -561,7 +623,12 @@ export async function uploadDashScopeMedia(input: {
   ) {
     throw new Error(`媒体超过百炼上传凭证允许的 ${maxFileSizeMb} MB`)
   }
+  return ready
+}
 
+/** 以表单把文件上传到凭证给出的 OSS 地址，返回 `oss://` 地址。 */
+async function uploadFile(input: DashScopeUpload, ready: DashScopeUploadPolicy): Promise<string> {
+  const send = input.fetcher ?? fetch
   const uploadUrl = new URL(ready.upload_host)
   if (uploadUrl.protocol !== 'https:' || !uploadUrl.hostname.endsWith('.aliyuncs.com')) {
     throw new Error('百炼上传凭证返回了无效的 OSS 地址')
@@ -585,12 +652,22 @@ export async function uploadDashScopeMedia(input: {
   return `oss://${key}`
 }
 
-async function providerHttpError(response: Response): Promise<Error> {
-  const message = (await response.text().catch(() => '')).trim()
-  return Object.assign(new Error(message || `HTTP ${response.status}`), {
-    status: response.status,
-    headers: response.headers,
-  })
+/**
+ * 对话一侧上传请求的错误状态，与对话请求本身同一分类（`classifyProviderError`）：带错误正文，按百炼的错误码归类。
+ * 取凭证得到 429 `Throttling.AllocationQuota`「You exceeded your current quota」时按错误码归为限流（重发），不按原文归为额度用尽。
+ */
+async function providerHttpError(response: Response): Promise<ProviderError> {
+  const body = (await response.text().catch(() => '')).trim()
+  return classifyProviderError(
+    'openai_chat_completions',
+    Object.assign(new Error(body || `HTTP ${response.status}`), {
+      status: response.status,
+      headers: response.headers,
+    }),
+    null,
+    body || null,
+    'alibaba',
+  )
 }
 
 /**

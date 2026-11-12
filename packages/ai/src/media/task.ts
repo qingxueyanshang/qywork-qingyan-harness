@@ -140,7 +140,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * 等待任务完成，返回结果地址与计量。首次查询不等待：接续取回时任务通常已完成。
  * 查询遇到可重发的失败（`transientFailure`：连接中断、静默超时、被限流或暂时不可用）时按间隔继续查询，
  * 连续失败超过 `MAX_FAILING_MS` 才结束本地等待；不按次数计算，短时的网络波动不结束等待。
- * 其余查询错误立即结束本地等待。两种情况都由 `afterSubmit` 附带任务号供取回。
+ * 其余查询错误立即结束本地等待，其中包括错误码为额度用尽的 429（各适配器的查询带 `RequestPolicy.upstream`，按该上游的错误码归类）。
+ * 两种情况都由 `afterSubmit` 附带任务号供取回。
  * 状态变化时经 `onStatus` 回报一次，不按查询次数回报。
  */
 export async function waitTask<T = TaskOutput>(
@@ -170,7 +171,7 @@ export async function waitTask<T = TaskOutput>(
     if (s?.state === 'failed')
       throw new RemoteTaskFailed(
         s.verbatim ? s.message : `远端任务失败：${s.message}`,
-        quotaExhausted(null, s.message) ? { code: 'insufficient_quota' } : {},
+        quotaExhausted(s.message) ? { code: 'insufficient_quota' } : {},
       )
     if (s && s.status !== last) {
       last = s.status

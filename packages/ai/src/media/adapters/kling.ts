@@ -5,7 +5,8 @@
  * 文生视频只发送 `prompt`；其余操作将文字与图片一起放入 `contents[]`。参数原样放入 `settings`。
  * 查询 `GET /tasks?task_ids={id}`，状态 `submitted / processing / succeeded / failed`，视频位于 `outputs[]` 中 `type: video` 的条目。
  *
- * 提交的失败以 HTTP 状态码与正文的业务码 `code` 同时报告，业务码按可灵的错误码归类（`upstreamFailureCode`）：429 同时用于限流与欠费。
+ * 提交与查询的失败以 HTTP 状态码与正文的业务码 `code` 同时报告，业务码按可灵的错误码归类（`upstreamFailureCode`）：
+ * 429 同时用于限流、欠费与账户异常。
  * 鉴权只使用 API Key（`Authorization: Bearer`）。AccessKey / SecretKey 签名只适用于按 `model_name` 字段选择模型的接口，此处不使用。
  * 图片按 base64 发送，不带 `data:` 前缀；视频素材接口只接受 URL，因此该协议不接受参考视频。
  */
@@ -33,6 +34,9 @@ import {
 } from '../types.ts'
 
 const DEFAULT_BASE = 'https://api-beijing.klingai.com'
+
+/** 提交与查询的业务码按可灵的错误码归类（`upstreamFailureCode`）。 */
+const UPSTREAM = { vendor: 'kling' } as const
 
 const CONTENT_TYPE: Partial<Record<MediaInput['role'], string>> = {
   first_frame: 'first_frame',
@@ -103,7 +107,7 @@ export class KlingVideosAdapter implements MediaAdapter {
         opts,
         (body) => (body.code === 0 ? (body.data as { id?: unknown } | undefined)?.id : undefined),
         {
-          vendor: 'kling',
+          ...UPSTREAM,
           refused: (body) =>
             typeof body.code === 'number' && body.code !== 0
               ? `接口拒绝生成：${failureDetail(body.code, body.message, '未提供原因')}`
@@ -128,7 +132,14 @@ export class KlingVideosAdapter implements MediaAdapter {
     auth: Record<string, string>,
     signal: AbortSignal,
   ): Promise<TaskState> {
-    const body = await getJson(`${base}/tasks?task_ids=${encodeURIComponent(taskId)}`, auth, signal)
+    const body = await getJson(
+      `${base}/tasks?task_ids=${encodeURIComponent(taskId)}`,
+      auth,
+      signal,
+      {
+        upstream: UPSTREAM,
+      },
+    )
     const tasks = Array.isArray(body.data) ? (body.data as Record<string, unknown>[]) : []
     const task = tasks.find((t) => t.id === taskId)
     const status = String(task?.status ?? '')

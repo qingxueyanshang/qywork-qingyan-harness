@@ -39,6 +39,9 @@ function connection(profile: MediaProfile) {
   }
 }
 
+/** 提交与查询的错误按 Gemini API 的错误码归类（`upstreamFailureCode`）：429 `RESOURCE_EXHAUSTED` 是限流。 */
+const UPSTREAM = { vendor: 'google' } as const
+
 /** 交互的终止状态及其说明。 */
 const ENDED: Record<string, string> = {
   failed: '任务失败',
@@ -157,7 +160,9 @@ export class GeminiMediaAdapter implements MediaAdapter {
       }
       // 图片使用同步生成，恢复保存输出引用；视频保存任务号。
       if (type === 'image') {
-        initial = await postJson(`${base}/interactions`, payload, auth, opts.signal)
+        initial = await postJson(`${base}/interactions`, payload, auth, opts.signal, {
+          upstream: UPSTREAM,
+        })
         if (initial.status !== 'completed' || outputs(initial, type).length === 0) {
           throw new MediaError(
             initial.status === 'completed'
@@ -182,6 +187,7 @@ export class GeminiMediaAdapter implements MediaAdapter {
         auth,
         opts,
         (body) => body.id,
+        UPSTREAM,
       )
       initial = submitted.body
       taskId = submitted.taskId
@@ -191,7 +197,9 @@ export class GeminiMediaAdapter implements MediaAdapter {
       const done = await waitTask<{ body: Record<string, unknown> }>(async () => {
         const body =
           initial ??
-          (await getJson(`${base}/interactions/${encodeURIComponent(id)}`, auth, opts.signal))
+          (await getJson(`${base}/interactions/${encodeURIComponent(id)}`, auth, opts.signal, {
+            upstream: UPSTREAM,
+          }))
         initial = undefined
         const status = String(body.status ?? '')
         if (status === 'completed') {
@@ -283,6 +291,7 @@ export class GeminiSpeechAdapter implements MediaAdapter {
       },
       auth,
       opts.signal,
+      { upstream: UPSTREAM },
     )
     const data = outputs(body, 'audio').find((part) => typeof part.data === 'string' && part.data)
       ?.data as string | undefined
@@ -332,6 +341,7 @@ export class VeoVideosAdapter implements MediaAdapter {
         auth,
         opts,
         (body) => body.name,
+        UPSTREAM,
       )
       taskId = submitted.taskId
     }
@@ -345,7 +355,7 @@ export class VeoVideosAdapter implements MediaAdapter {
           ) {
             throw new MediaError('无法识别 Veo 任务号格式')
           }
-          const body = await getJson(`${base}/${id}`, auth, opts.signal)
+          const body = await getJson(`${base}/${id}`, auth, opts.signal, { upstream: UPSTREAM })
           // `error.code` 是 google.rpc.Code 的数值，不是 HTTP 状态码，只显示原文。
           const error = body.error as { message?: unknown } | undefined
           if (error)

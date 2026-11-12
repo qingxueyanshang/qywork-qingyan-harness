@@ -12,7 +12,7 @@
  */
 
 import { basename } from 'node:path'
-import { mediaParamValues } from '@qywork/core'
+import { channelVendorOf, mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, dataUri, defined, getJson, postJson, sendJson } from '../http.ts'
@@ -43,6 +43,8 @@ export class OpenAIImagesAdapter implements MediaAdapter {
     const base = normalizeBaseUrl(this.profile.baseUrl)
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     const multipart = req.inputs.length > 0 && this.spec.inputs.transport === 'multipart'
+    // 同一形状的接口来自不同上游，错误码按接口地址所属的上游归类：火山方舟的 429 `SetLimitExceeded` 是用量上限，不是限流。
+    const policy = { upstream: { vendor: channelVendorOf(base) } }
 
     let body: Record<string, unknown>
     if (multipart) {
@@ -57,6 +59,7 @@ export class OpenAIImagesAdapter implements MediaAdapter {
         `${base}/images/edits`,
         { method: 'POST', headers: auth, body: form },
         signal,
+        policy,
       )
     } else {
       body = await postJson(
@@ -69,6 +72,7 @@ export class OpenAIImagesAdapter implements MediaAdapter {
         },
         auth,
         signal,
+        policy,
       )
     }
     const result = readImages(body)

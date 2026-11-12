@@ -654,7 +654,9 @@ describe('生成模型协议映射', () => {
       },
       signal(),
     )
-    expect(!out.ok && out.message).toContain('素材上传失败：upload denied')
+    expect(!out.ok && out.message).toContain(
+      '素材上传失败，未提交生成：HTTP 403 禁止访问：upload denied',
+    )
     expect(hits).toEqual(['/api/v1/uploads'])
   })
   const image = (role: MediaInputRole = 'reference') => ({

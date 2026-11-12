@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`sse.ts` 的 `readSse` 与 `sseJson`。三种协议的适配器共用此分帧实现，
+ * 覆盖范围：`sse.ts` 的 `readSse`、`SseSplitter` 与 `sseJson`。三种协议的适配器与云端网关共用此分帧实现，
  * 各协议语义的测试位于 `providers/` 下。
  *
  * 本文件只输入内存流，不启动 HTTP 服务：分帧规则与传输无关。读取器在真实响应体上的取消行为
@@ -7,7 +7,7 @@
  */
 
 import { expect, test } from 'bun:test'
-import { readSse, SSE_DONE, type SseFrame, sseJson } from './sse.ts'
+import { readSse, SSE_DONE, type SseBlock, type SseFrame, SseSplitter, sseJson } from './sse.ts'
 
 const enc = new TextEncoder()
 
@@ -112,6 +112,68 @@ test('body 出错原样抛出，不改写成协议错误', async () => {
   }
   expect(seen).toEqual([{ data: '{"a":1}' }])
   expect(thrown).toBe(boom)
+})
+
+/** 逐段送入分帧器，返回交出的各段；`cuts` 为切分处的字节偏移。 */
+function split(bytes: Uint8Array, cuts: number[]): SseBlock[] {
+  const splitter = new SseSplitter()
+  const out: SseBlock[] = []
+  let from = 0
+  for (const cut of [...cuts, bytes.byteLength]) {
+    out.push(...splitter.push(bytes.slice(from, cut)))
+    from = cut
+  }
+  return [...out, ...splitter.end()]
+}
+
+const joined = (blocks: SseBlock[]) => Buffer.concat(blocks.map((b) => b.bytes))
+
+/**
+ * 原样转发字节的调用方（云端网关）逐段转发分帧器交出的字节。帧跨多个分片、一个分片含多帧、CRLF 行尾、
+ * 多字节字符被切开、帧中的注释行与末帧缺少空行时，各段拼接后与原字节相同，帧与 `readSse` 读到的相同。
+ */
+test('分帧器在任意位置切分时交出的字节与原文相同，帧与 readSse 相同', async () => {
+  const text =
+    ': ping\r\n\r\nevent: a\r\ndata: {"delta":"你好"}\r\n\r\ndata: 第一行\n: 帧中的注释\ndata: 第二行\n\nid: 7\n\ndata: [DONE]'
+  const bytes = enc.encode(text)
+  const expected = await collect(text)
+  expect(expected).toEqual([
+    { event: 'a', data: '{"delta":"你好"}' },
+    { data: '第一行\n第二行' },
+    { data: SSE_DONE },
+  ])
+  for (let cut = 1; cut < bytes.byteLength; cut++) {
+    const blocks = split(bytes, [cut])
+    expect(joined(blocks).equals(Buffer.from(bytes))).toBe(true)
+    expect(blocks.flatMap((b) => (b.frame ? [b.frame] : []))).toEqual(expected)
+  }
+  // 逐字节送入：每个分片都不含完整的一帧。
+  const single = split(
+    bytes,
+    Array.from({ length: bytes.byteLength - 1 }, (_, i) => i + 1),
+  )
+  expect(joined(single).equals(Buffer.from(bytes))).toBe(true)
+  expect(single.flatMap((b) => (b.frame ? [b.frame] : []))).toEqual(expected)
+})
+
+test('帧之外的注释行读到即交出，帧读到空行才交出', () => {
+  const splitter = new SseSplitter()
+  const ping = splitter.push(enc.encode(': ping\n'))
+  expect(ping.map((b) => [Buffer.from(b.bytes).toString(), b.frame])).toEqual([[': ping\n', null]])
+  expect(splitter.push(enc.encode('data: {"a":1}\n'))).toEqual([])
+  const frame = splitter.push(enc.encode('\n'))
+  expect(frame.map((b) => [Buffer.from(b.bytes).toString(), b.frame])).toEqual([
+    ['data: {"a":1}\n\n', { data: '{"a":1}' }],
+  ])
+  expect(splitter.end()).toEqual([])
+})
+
+test('只去除流开头的 BOM', async () => {
+  const bom = new Uint8Array([0xef, 0xbb, 0xbf])
+  const first = Buffer.concat([bom, enc.encode('data: 1\n\n')])
+  expect(await collect(first)).toEqual([{ data: '1' }])
+  const later = Buffer.concat([enc.encode('data: 1\n\n'), bom, enc.encode('data: 2\n\n')])
+  expect(await collect(later)).toEqual([{ data: '1' }])
 })
 
 test('非 JSON 与非对象的 data 解析为 null，不抛出异常', () => {

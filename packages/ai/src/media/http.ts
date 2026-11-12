@@ -1,6 +1,7 @@
 /** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import {
+  type ChannelVendor,
   type ErrorCode,
   log,
   type MediaDiagnostic,
@@ -12,9 +13,9 @@ import {
   bodyMessage,
   httpFailureCode,
   httpStatusName,
+  parsedBody,
   quotaExhausted,
   retryAfterOf,
-  type UpstreamVendor,
   upstreamFailureCode,
 } from '../errors.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
@@ -41,11 +42,12 @@ export interface RequestPolicy {
   /** 替换该阶段的静默上限（`IDLE_MS`）。 */
   idleMs?: number
   /**
-   * 在正文中给出错误码的上游。错误状态的正文按该上游的错误码归类（`failureCode`）；
+   * 请求发往的上游（`upstreamFailureCode`）：原生协议的适配器按协议给出，OpenAI 形状的协议按接口地址（`channelVendorOf`），
+   * 未收录的地址为 null。错误状态与 2xx 正文报告的失败按该上游的错误码归类（`failureCode`）；
    * `refused` 判定 HTTP 2xx 的正文是否报告了失败，报告时返回报错的原因，该次答复按被拒绝处理，与错误状态同样重试。
    */
   upstream?: {
-    vendor: UpstreamVendor
+    vendor: ChannelVendor | null
     refused?: (body: Record<string, unknown>) => string | undefined
   }
 }
@@ -120,29 +122,19 @@ function providerMessage(res: Response, text: string): string {
   return bodyMessage(text)?.slice(0, 500) || res.statusText
 }
 
-/** 正文按 JSON 解析后的值，供失败码的判定读取错误码；不是 JSON 时为 null。 */
-function errorBodyOf(text: string): unknown {
-  try {
-    return JSON.parse(text.trim())
-  } catch {
-    return null
-  }
-}
-
 /**
- * 错误状态的失败码。上游正文中的错误码已收录时以它为准（`upstreamFailureCode`）；其余与对话请求同一分类（`httpFailureCode`），
- * 额度判定（`quotaExhausted`）另覆盖全部状态码：百炼以 400 `Arrearage` 报告欠费，按状态码归为参数错误时，
- * 云端会把运营方的欠费原文显示给用户。对话分类未列出的状态码按类别归入：408 与其余 5xx 为暂时不可用，其余为请求被拒绝。
+ * 错误状态的失败码。正文中的错误码已收录时以它为准（`upstreamFailureCode`）；其余与对话请求同一分类（`httpFailureCode`），
+ * 原文的额度判定（`quotaExhausted`）另覆盖全部状态码。对话分类未列出的状态码按类别归入：408 与其余 5xx 为暂时不可用，其余为请求被拒绝。
  */
 function failureCode(
   status: number,
   body: unknown,
   message: string,
-  vendor: UpstreamVendor | undefined,
+  vendor: ChannelVendor | null,
 ): ErrorCode {
   return (
-    (vendor ? upstreamFailureCode(vendor, body) : null) ??
-    (quotaExhausted(body, message) ? 'insufficient_quota' : null) ??
+    upstreamFailureCode(vendor, [body], message) ??
+    (quotaExhausted(message) ? 'insufficient_quota' : null) ??
     httpFailureCode(status, body, message) ??
     (status === 408 || status >= 500 ? 'provider_unavailable' : 'invalid_request')
   )
@@ -153,10 +145,10 @@ async function refusalOf(
   res: Response,
   upstream: NonNullable<RequestPolicy['upstream']>,
 ): Promise<{ reason: string; code: ErrorCode | null } | null> {
-  const body = errorBodyOf(await res.clone().text())
+  const body = parsedBody(await res.clone().text())
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
   const reason = upstream.refused?.(body as Record<string, unknown>)
-  return reason ? { reason, code: upstreamFailureCode(upstream.vendor, body) } : null
+  return reason ? { reason, code: upstreamFailureCode(upstream.vendor, [body], reason) } : null
 }
 
 /**
@@ -336,7 +328,7 @@ export async function send(
     } else if (res) {
       const text = await res.text().catch(() => '')
       const message = providerMessage(res, text)
-      const body = errorBodyOf(text)
+      const body = parsedBody(text)
       retryAfter = retryAfterOf(res)
       // 正文为接口错误对象的错误状态是接口自身的答复，远端不会再返回结果，判为被拒绝。
       // 生成的 408 / 5xx 而正文不是接口错误对象时，可能来自接口前的网关，接口仍可能在生成并计费，判为结果未知。
@@ -349,7 +341,7 @@ export async function send(
         {
           status: res.status,
           diagnostic: facts,
-          code: failureCode(res.status, body, message, policy.upstream?.vendor),
+          code: failureCode(res.status, body, message, policy.upstream?.vendor ?? null),
         },
       )
     }
@@ -446,12 +438,14 @@ export async function postJson(
   )
 }
 
+/** 查询请求。`policy.upstream` 给出时，查询得到的错误状态同样按该上游的错误码归类。 */
 export async function getJson(
   url: string,
   headers: Record<string, string>,
   signal: AbortSignal,
+  policy: RequestPolicy = {},
 ): Promise<Record<string, unknown>> {
-  return sendJson(url, { method: 'GET', headers }, signal)
+  return sendJson(url, { method: 'GET', headers }, signal, policy)
 }
 
 /** 重试只读取同一个产物，不提交生成。跨源重定向不得携带接口凭证。 */
