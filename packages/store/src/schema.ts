@@ -2431,6 +2431,15 @@ ALTER TABLE messages_new RENAME TO messages;
 CREATE INDEX idx_msg_conv ON messages(conversation_id, id);
 `,
   },
+  {
+    id: 75,
+    name: 'provider_request_cloud_request_id',
+    /**
+     * 云端模型网关在响应头中返回的请求号，等于云端请求记录的 id，本机与云端按它对照同一次请求。
+     * 不是经云端的请求或迁移前的旧行为 NULL；不回填。
+     */
+    sql: `ALTER TABLE provider_requests ADD COLUMN cloud_request_id TEXT;`,
+  },
 ]
 
 /**
@@ -2594,6 +2603,8 @@ export interface ProviderRequestRow {
   input_image_batch_id: string | null
   sent_at: number | null
   headers_at: number | null
+  /** 云端模型网关返回的请求号；不是经云端的请求为 NULL。 */
+  cloud_request_id: string | null
   /** 补发第二份请求的时刻；未补发为 NULL。 */
   hedge_sent_at: number | null
   /** SQLite 没有布尔类型，使用 0/1。1 表示采用的是补发的一份；未补发为 NULL。 */
@@ -2754,6 +2765,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'input_image_batch_id',
     'sent_at',
     'headers_at',
+    'cloud_request_id',
     'hedge_sent_at',
     'hedge_won',
     'anchored',

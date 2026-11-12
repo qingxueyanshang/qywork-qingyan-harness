@@ -333,6 +333,8 @@ export interface GenerateRequest {
   onRetry?: MediaCall['onRetry']
   /** 取得结果时回报本次的花费。 */
   onSpend?: (spend: MediaSpend) => void
+  /** 发起方的日志标识，见 `MediaCall.logFields`；任务记录的路径由 `generateMedia` 加上。 */
+  logFields?: Record<string, string>
   attach?: Attach
 }
 
@@ -455,6 +457,8 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       ...(req.pick ?? {}),
       ...(req.onSpend ? { onSpend: req.onSpend } : {}),
       ...(req.onRetry ? { onRetry: req.onRetry } : {}),
+      // 同一会话的一次执行中可能并行调用多次生成，任务记录的路径区分其中的每一次。
+      logFields: { ...req.logFields, record },
     }
     if (req.type === 'image') {
       call.onImageResult = async (result, provider, model) => {
@@ -499,6 +503,8 @@ export async function resumeMedia(req: {
   /** 远端一侧的重试等待（走云端的任务在云端被上游拒绝后重试），见 `MediaCall.onRetry`。 */
   onRetry?: MediaCall['onRetry']
   onSpend?: (spend: MediaSpend) => void
+  /** 发起方的日志标识，见 `GenerateRequest.logFields`。 */
+  logFields?: Record<string, string>
   attach?: Attach
 }): Promise<GenerateOutcome> {
   const recordPath = await resolveWritablePath(req.roots, req.record, { mustExist: true })
@@ -571,6 +577,7 @@ export async function resumeMedia(req: {
       : { resumeTaskId: record.taskId! }),
     ...(req.onSpend ? { onSpend: req.onSpend } : {}),
     ...(req.onRetry ? { onRetry: req.onRetry } : {}),
+    logFields: { ...req.logFields, record: req.record },
   }
   if (req.onStatus) call.onStatus = req.onStatus
   const result = await req.media.generate(call, req.signal)
@@ -824,6 +831,11 @@ function progressOf(ctx: ToolContext): {
   }
 }
 
+/** 生成工具的日志标识（`GenerateRequest.logFields`）：工具调用所在的会话与执行，以及工具名。 */
+function callFields(ctx: ToolContext, tool: string): Record<string, string> {
+  return { conversation: ctx.conversationId, run: ctx.runId, tool }
+}
+
 /** 三个生成工具共用的参数说明。 */
 const PARAMS_NOTE =
   'params_json 仅使用本轮「可用的生成模型」中该模型列出的参数，取值依据用户要求或自行判断，无需设置的参数省略。' +
@@ -890,6 +902,7 @@ export const generateImageTool: ToolSpec = {
       ...(common.pick ? { pick: common.pick } : {}),
       ...(common.output ? { output: common.output } : {}),
       ...progressOf(ctx),
+      logFields: callFields(ctx, 'generate_image'),
     })
     return receipt(outcome, (n) => ` ${n} 张`, rootsOf(ctx))
   },
@@ -969,6 +982,7 @@ export const generateVideoTool: ToolSpec = {
       onTask: ({ taskId, record }) =>
         ctx.emit('progress', `已提交远端任务 ${taskId}，记录位于 ${record}\n`),
       ...progressOf(ctx),
+      logFields: callFields(ctx, 'generate_video'),
     })
     return receipt(outcome, () => '视频', rootsOf(ctx))
   },
@@ -1005,6 +1019,7 @@ export const retrieveMediaTool: ToolSpec = {
       signal: ctx.signal,
       record: path,
       ...progressOf(ctx),
+      logFields: callFields(ctx, 'retrieve_media'),
     })
     return receipt(outcome, () => '产物', rootsOf(ctx))
   },
@@ -1066,6 +1081,7 @@ export const generateAudioTool: ToolSpec = {
       ...(common.pick ? { pick: common.pick } : {}),
       ...(common.output ? { output: common.output } : {}),
       ...progressOf(ctx),
+      logFields: callFields(ctx, 'generate_audio'),
     })
     return receipt(outcome, () => '音频', rootsOf(ctx))
   },

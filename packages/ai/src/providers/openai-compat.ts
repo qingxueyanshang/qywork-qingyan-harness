@@ -14,7 +14,7 @@
 
 import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
-import { type ChannelVendor, channelVendorOf } from '@qywork/core'
+import { type ChannelVendor, channelVendorOf, log } from '@qywork/core'
 import OpenAI from 'openai'
 import { effortIsTransmittable, type ModelSpec, reasoningReplay } from '../catalog.ts'
 import {
@@ -23,6 +23,7 @@ import {
   ProviderError,
   streamErrorOf,
 } from '../errors.ts'
+import { runLogFields } from '../media/http.ts'
 import { MediaError } from '../media/types.ts'
 import { readSse, SSE_DONE, sseJson } from '../sse.ts'
 import { estimateRequest } from '../tokens.ts'
@@ -184,6 +185,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
         type: 'response_started',
         headersAt: trace.headersAt!,
         ...(trace.hedge ? { hedge: trace.hedge } : {}),
+        ...(trace.cloudRequestId ? { cloudRequestId: trace.cloudRequestId } : {}),
       }
 
       let chunks = 0
@@ -531,7 +533,7 @@ interface DashScopeUpload {
  * `fetcher` 发出这两次请求，未提供时为 `fetch`，错误状态由 `providerHttpError` 归类；生成一侧传入经 `send` 的请求
  * （重试与请求诊断），错误状态由 `send` 抛出。同一份请求参数可能被重复发出：表单中的文件是 `Bun.file`，每次发出时重新读取文件。
  *
- * OSS 以 403 拒绝上传时重新取一次凭证并再上传一次：凭证是带有效期的签名，过期或失效时重新取得即可能恢复，
+ * OSS 以 403 拒绝上传时写一行日志，重新取一次凭证并再上传一次：凭证是带有效期的签名，过期或失效时重新取得即可能恢复，
  * 与接口密钥无效不是一回事。仍为 403 时报告素材上传被拒绝（`uploadRejected`）。取凭证一步的 401 / 403 是接口密钥的问题，
  * 不重新取凭证。重新取凭证只在本函数中做一次，与 `send` 对限流、连接失败与 5xx 的重试各自计数：`send` 不重试 403。
  */
@@ -545,6 +547,12 @@ export async function uploadDashScopeMedia(input: DashScopeUpload): Promise<stri
     return await uploadFile(input, policy)
   } catch (err) {
     if (!ossRejected(err)) throw err
+    // 只写 OSS 的错误码，不写错误正文：签名不一致时正文带有提交的签名与待签字符串。
+    log.info('media', '百炼临时上传被 OSS 以 403 拒绝，重新获取上传凭证后再上传', {
+      host: URL.parse(policy.upload_host)?.host ?? '',
+      ossCode: ossErrorCode(err),
+      ...runLogFields(),
+    })
   }
   const renewed = await uploadPolicy(input)
   try {
@@ -557,6 +565,12 @@ export async function uploadDashScopeMedia(input: DashScopeUpload): Promise<stri
 /** OSS 拒绝了上传凭证：上传一步的失败带有 403（`fetch` 一侧为 `providerHttpError`，`send` 一侧为 `MediaError`）。 */
 function ossRejected(err: unknown): boolean {
   return (err as { status?: unknown } | null)?.status === 403
+}
+
+/** OSS 错误正文（XML）中的 `<Code>`，如 `AccessDenied`、`SignatureDoesNotMatch`；没有时为 `-`。 */
+function ossErrorCode(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err)
+  return /<Code>([\w.-]{1,64})<\/Code>/.exec(text)?.[1] ?? '-'
 }
 
 /**

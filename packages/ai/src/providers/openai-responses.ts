@@ -220,6 +220,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       type: 'response_started',
       headersAt: trace.headersAt!,
       ...(trace.hedge ? { hedge: trace.hedge } : {}),
+      ...(trace.cloudRequestId ? { cloudRequestId: trace.cloudRequestId } : {}),
     }
 
     try {

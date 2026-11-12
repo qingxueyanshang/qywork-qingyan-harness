@@ -21,7 +21,8 @@ export function requestPersistence(store: Store, config: QyConfig) {
     openRequest: (input) => openProviderRequest(store, input).id,
     saveUsage: (runId, usage) => updateRunUsage(store, runId, usage),
     markRequestSent: (id) => markProviderRequestSent(store, id as never),
-    markRequestHeaders: (id, at) => markProviderRequestHeaders(store, id as never, at),
+    markRequestHeaders: (id, at, cloudRequestId) =>
+      markProviderRequestHeaders(store, id as never, at, cloudRequestId),
     markRequestHedge: (id, hedge) => markProviderRequestHedge(store, id as never, hedge),
     markRequestFirstEvent: (id) => markProviderRequestFirstEvent(store, id as never),
     markRequestContent: (id, at, kind, visible) =>

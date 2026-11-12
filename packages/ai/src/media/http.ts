@@ -53,17 +53,37 @@ export interface RequestPolicy {
 }
 
 /**
- * 一次适配器运行期间接收重试回报的回调。经异步上下文传给 `send`，不经各适配器的请求参数：
- * 提交、同步出图、语音与素材上传共有十余个请求点，逐处传参时漏掉一处，该协议的重试就不显示。
+ * 一次适配器运行期间的提交与重试回报回调、日志标识。经异步上下文传给 `send` 与 `waitTask`，不经各适配器的请求参数：
+ * 提交、同步出图、语音与素材上传共有十余个请求点，逐处传参时漏掉一处，该协议的重试与提交时刻就不回报，日志也缺少标识。
  */
-const retryReports = new AsyncLocalStorage<NonNullable<MediaRunOptions['onRetry']>>()
+type RunContext = Pick<MediaRunOptions, 'onRetry' | 'onSubmit' | 'logFields'>
+const runContext = new AsyncLocalStorage<RunContext>()
 
-/** 执行 `work`，其间 `send` 进入与结束重试等待时回报给 `onRetry`（`MediaRunOptions.onRetry`）。 */
-export function reportingRetries<T>(
-  onRetry: MediaRunOptions['onRetry'],
+/**
+ * 执行 `work`，其间 `send` 每次发出生成请求之前回报给 `opts.onSubmit`，进入与结束重试等待时回报给 `opts.onRetry`，
+ * 重试与查询失败的日志带上 `opts.logFields`（`MediaRunOptions`）。
+ */
+export function reportingRetries<T>(opts: RunContext, work: () => Promise<T>): Promise<T> {
+  return opts.onRetry || opts.onSubmit || opts.logFields ? runContext.run(opts, work) : work()
+}
+
+/** 当前运行的日志标识（`MediaRunOptions.logFields`）；不在 `reportingRetries` 之内时为空对象。 */
+export function runLogFields(): Record<string, string> {
+  return runContext.getStore()?.logFields ?? {}
+}
+
+/**
+ * 一次查询（`waitTask` 的 `check`）期间最后收到的答复。上游在答复中报告任务失败时没有失败的请求，
+ * 该失败的诊断（主机、用时、状态码、请求号）取自这次答复。
+ */
+const answers = new AsyncLocalStorage<{ last?: MediaDiagnostic }>()
+
+/** 执行 `work`，其间 `send` 每收到一次答复即把该请求的事实写入 `seen.last`。 */
+export function recordingAnswers<T>(
+  seen: { last?: MediaDiagnostic },
   work: () => Promise<T>,
 ): Promise<T> {
-  return onRetry ? retryReports.run(onRetry, work) : work()
+  return answers.run(seen, work)
 }
 
 function stageOf(init: RequestInit, policy: RequestPolicy): MediaDiagnostic['stage'] {
@@ -125,8 +145,11 @@ function providerMessage(res: Response, text: string): string {
 /**
  * 错误状态的失败码。正文中的错误码已收录时以它为准（`upstreamFailureCode`）；其余与对话请求同一分类（`httpFailureCode`），
  * 原文的额度判定（`quotaExhausted`）另覆盖全部状态码。对话分类未列出的状态码按类别归入：408 与其余 5xx 为暂时不可用，其余为请求被拒绝。
+ * 查询与下载阶段的 404 是任务或结果不存在（超过保留期、地址失效），为请求被拒绝：`httpFailureCode` 的 404 是对话请求的型号不存在。
+ * 两者都不在重试范围内（`retriesSubmission` 只处理提交与上传，`transientFailure` 只认限流与暂时不可用），改动只影响失败码。
  */
 function failureCode(
+  stage: MediaDiagnostic['stage'],
   status: number,
   body: unknown,
   message: string,
@@ -135,6 +158,7 @@ function failureCode(
   return (
     upstreamFailureCode(vendor, [body], message) ??
     (quotaExhausted(message) ? 'insufficient_quota' : null) ??
+    (status === 404 && (stage === 'query' || stage === 'download') ? 'invalid_request' : null) ??
     httpFailureCode(status, body, message) ??
     (status === 408 || status >= 500 ? 'provider_unavailable' : 'invalid_request')
   )
@@ -232,8 +256,8 @@ function afterRetries(failure: MediaError, retries: number) {
 
 /**
  * 发出请求并读完响应体。期限按静默计算（`IDLE_MS`）：每收到一段数据重新计时。
- * 生成与上传被接口拒绝或请求未发出时自动重试（类别、次数与间隔见 `RetryClass`），每次等待连同该次失败回报给
- * `reportingRetries` 登记的回调，用户停止时等待随之取消；结果未知的失败不重试。
+ * 生成与上传被接口拒绝或请求未发出时自动重试（类别、次数与间隔见 `RetryClass`），每次等待写一行日志（带 `reportingRetries`
+ * 登记的日志标识），并连同该次失败回报给登记的回调，用户停止时等待随之取消；结果未知的失败不重试。
  *
  * fetch 必须展开 `PROVIDER_HTTP.fetchOptions`：Bun 的 socket 空闲超时默认 300 秒，缺少该选项时
  * 生成请求静默 300 秒即以 `The operation timed out.` 中断。
@@ -276,6 +300,8 @@ export async function send(
         : {}),
     })
     let res: Response | undefined
+    // 生成请求即将发出，每次发出（含重试）各回报一次；素材上传、查询与下载不回报。
+    if (stage === 'generate') runContext.getStore()?.onSubmit?.()
     try {
       heard()
       response = await fetch(url, {
@@ -293,6 +319,8 @@ export async function send(
         statusText: response.statusText,
         headers: response.headers,
       })
+      const seen = answers.getStore()
+      if (seen) seen.last = diagnostic('http')
     } catch (err) {
       if (signal.aborted) throw signal.reason
       const facts = diagnostic(silence.signal.aborted ? 'timeout' : 'connection')
@@ -341,7 +369,7 @@ export async function send(
         {
           status: res.status,
           diagnostic: facts,
-          code: failureCode(res.status, body, message, policy.upstream?.vendor ?? null),
+          code: failureCode(stage, res.status, body, message, policy.upstream?.vendor ?? null),
         },
       )
     }
@@ -356,8 +384,9 @@ export async function send(
     log.warn('media', `${failed.message}；${Math.round(wait / 1000)} 秒后第 ${retry + 1} 次重试`, {
       stage,
       host: new URL(url).host,
+      ...runLogFields(),
     })
-    const report = retryReports.getStore()
+    const report = runContext.getStore()?.onRetry
     report?.({ attempt: retry + 1, max: RESEND_LIMIT, reason: failed.message }, failed)
     // 等待被中止时不回报结束：请求没有重新发出，调用方据最后一次回报判定接口没有受理。
     await waitOrAbort(wait, signal)

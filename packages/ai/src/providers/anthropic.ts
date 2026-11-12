@@ -156,6 +156,7 @@ export class AnthropicAdapter implements LlmAdapter {
         type: 'response_started',
         headersAt: trace.headersAt!,
         ...(trace.hedge ? { hedge: trace.hedge } : {}),
+        ...(trace.cloudRequestId ? { cloudRequestId: trace.cloudRequestId } : {}),
       }
 
       for await (const frame of readSse(res.body)) {

@@ -257,6 +257,11 @@ function unreachable(err: unknown): CloudAccountError {
 export class CloudAccount {
   private wasRevoked = false
   private email: string | null = null
+  /**
+   * 上一次从云端取得的公告已读位置及取得它所用的设备密钥，云端暂时无法访问时沿用。按密钥对应：退出、设备被移除或
+   * 换账号登录后密钥不同，不沿用上一个账号的值。
+   */
+  private seen: { key: string; id: string | null } | null = null
   private refreshed = false
   private readonly onChange: () => void
   private readonly timeoutMs: number
@@ -306,6 +311,7 @@ export class CloudAccount {
     }
     if (me) {
       this.email = me.email
+      this.seen = { key: provider.apiKey, id: me.announcementSeen }
       if (!this.refreshed) {
         this.refreshed = true
         void this.refreshModels(provider.apiKey).catch(() => {})
@@ -321,7 +327,7 @@ export class CloudAccount {
         announcementSeen: me.announcementSeen,
       }
     }
-    // 云端暂时无法访问：仍视为已登录，余额与头像未知。
+    // 云端暂时无法访问：仍视为已登录，余额与头像未知；公告已读位置沿用本设备上一次取得的值，未取得过时缺省。
     return {
       state: 'signed_in',
       email: this.email ?? '',
@@ -330,7 +336,7 @@ export class CloudAccount {
       provider: CLOUD_PROVIDER,
       origin: this.origin,
       recharge: false,
-      announcementSeen: null,
+      ...(this.seen?.key === provider.apiKey ? { announcementSeen: this.seen.id } : {}),
     }
   }
 
@@ -389,13 +395,18 @@ export class CloudAccount {
     return this.publicGet<Announcement[]>('/api/announcements')
   }
 
-  /** 把已读位置写到云端账号（`PUT /v1/me/announcement-seen`），返回写入后的账号状态。 */
+  /**
+   * 把已读位置写到云端账号（`PUT /v1/me/announcement-seen`），返回写入后的账号状态。写入成功即更新沿用的值：
+   * 随后读取账号状态失败时，返回的仍是刚写入的位置。
+   */
   async markAnnouncementSeen(id: string): Promise<CloudState> {
+    const key = cloudProviderOf(this.live, this.origin)?.apiKey
     await this.call('/v1/me/announcement-seen', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id }),
     })
+    if (key) this.seen = { key, id }
     return this.state()
   }
 

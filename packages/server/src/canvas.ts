@@ -64,6 +64,7 @@ import {
   type GenerateOutput,
   inputsOf,
   isTextCard,
+  type MediaOutput,
   type MediaParamDefinition,
   type MentionStyle,
   mediaInputsOf,
@@ -360,11 +361,15 @@ export interface CanvasRunOptions {
 /** 生成记录中在开始时确定、在生成过程中补充的字段；结果、结束时刻与失败原文在收尾时补充。 */
 type RunFacts = Omit<CanvasRunRecord, 'node' | 'end' | 'result' | 'message'>
 
-/** 生成卡的一次远端视频任务，以及指向该任务的版本（取得任务号时未能写入画布则为 null）。 */
+/**
+ * 生成卡的一次远端任务（视频，以及走云端的出图与音频），以及指向该任务的版本（取得任务号时未能写入画布则为 null）。
+ * `type` 是卡片的生成类别，撤销时按它取得模型的配置。
+ */
 interface CanvasTask {
   taskId: string
   provider: string
   model: string
+  type: MediaOutput
   /** 任务记录的工作区路径。 */
   record: string
   versionId: string | null
@@ -375,6 +380,7 @@ export type CanvasCancelTask = (task: {
   taskId: string
   provider: string
   model: string
+  type: MediaOutput
 }) => Promise<'cancelled' | 'started' | 'unsupported'>
 
 /** 一张卡的一次生成（运行或取回）。 */
@@ -755,6 +761,7 @@ export class CanvasService {
           facts.cost = spend.cost
           facts.currency = spend.currency
         },
+        logFields: { canvas: rel, node: nodeId },
         type: node.output,
         prompt,
         inputs,
@@ -777,12 +784,14 @@ export class CanvasService {
           facts.provider = provider
           facts.model = model
           await this.remodel(ws.root, record, provider, model)
-          // 只有视频任务按任务号撤销（`cancel`）；走云端的图片与音频的任务号只用于取回，停止时只结束本地等待。
-          if (taskId && node.output === 'video')
+          // 有任务号的生成停止时按任务号撤销（`cancel`）：视频，以及走云端的出图与音频（云端撤销尚未发往上游的任务，
+          // 已发往上游的答复已开始）。Art 由对话模型生成，没有任务号。
+          if (taskId && node.output !== 'art')
             this.submitted(entry, ws, rel, nodeId, {
               taskId,
               provider,
               model,
+              type: node.output,
               record,
               versionId: entry.version ?? null,
             })
@@ -905,9 +914,12 @@ export class CanvasService {
         return { ok: false, message: `任务记录已不存在：${version.path}`, pending: false }
       }
       const task = await this.readTask(ws.root, version.path)
-      if (task && node.output === 'video')
+      if (task && node.output !== 'art')
         this.submitted(entry, ws, rel, nodeId, {
-          ...task,
+          taskId: task.taskId,
+          provider: task.provider,
+          model: task.model,
+          type: node.output,
           record: version.path,
           versionId: version.id,
         })
@@ -922,6 +934,7 @@ export class CanvasService {
           facts.cost = spend.cost
           facts.currency = spend.currency
         },
+        logFields: { canvas: rel, node: nodeId },
         record: version.path,
         attach: async (landed) => {
           const back = await this.attachResult(
@@ -1138,7 +1151,8 @@ export class CanvasService {
   /**
    * 取消一张卡片正在进行的生成。
    *
-   * 图像、音频等单次请求没有远端任务可撤销：停止本地等待，收尾时记为结果未知，返回 `stopped`。
+   * 直连接口的图像、音频等单次请求没有远端任务可撤销：停止本地等待，收尾时记为结果未知，返回 `stopped`。
+   * 走云端的出图与音频有任务号，与视频相同按任务号撤销：云端撤销尚未发往上游的任务并退回积分，已发往上游的答复已开始。
    * 不要改为继续等待：生成请求不设静默上限，远端既不返回也不断开连接时，停止是结束这次生成的唯一途径。
    *
    * 视频生成请求尚未发出（包含上传素材中）时正常取消，返回 `not_submitted`，不产生生成费用。

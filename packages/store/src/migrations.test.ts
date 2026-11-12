@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { executeMigration, Store } from './db.ts'
-import { recoverStaleRuns } from './repos.ts'
+import { listProviderRequests, markProviderRequestHeaders, recoverStaleRuns } from './repos.ts'
 import { MIGRATIONS, ROW_COLUMNS } from './schema.ts'
 
 /** 执行到指定迁移之前的库。外键默认关闭，因此可以只插入 steps 而不创建父行。 */
@@ -1924,5 +1924,70 @@ VALUES ('ms_1', 'cv', 'user', '改一下登录页', '[]', 1, NULL),
         .map((i) => i.name),
     ).toContain('idx_msg_conv')
     db.close()
+  })
+})
+
+describe('迁移 75：请求记录的云端请求号', () => {
+  /**
+   * 已有的库升级：启动时执行迁移 75，旧行逐列保留、云端请求号为 NULL（不回填），经仓储函数照常读取；
+   * 之后写入的请求号与响应头时刻一样只保留首次的值。
+   */
+  test('已有的库升级后旧行照常读取、请求号为 NULL；之后写入的请求号只保留首次的值', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'migration-75-'))
+    const path = join(dir, 'qywork.sqlite3')
+    try {
+      const raw = new Database(path, { create: true })
+      raw.exec(
+        'CREATE TABLE _migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)',
+      )
+      const insert = raw.query('INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)')
+      for (const migration of MIGRATIONS) {
+        if (migration.id >= 75) break
+        executeMigration(raw, migration)
+        insert.run(migration.id, migration.name, 0)
+      }
+      raw.exec(`
+INSERT INTO provider_requests
+  (id, run_id, turn_index, retry_index, purpose, model, status, measured_input_tokens,
+   sent_categories, omitted_categories, payload_hash, sent_at, headers_at, created_at)
+VALUES ('pr_old', 'rn_old', 0, 0, 'turn', 'm', 'received', 10, '{}', '{}', 'h', 5, 6, 5),
+       ('pr_new', 'rn_old', 1, 0, 'turn', 'm', 'received', 10, '{}', '{}', 'h', 7, NULL, 7);
+`)
+      raw.close()
+
+      const store = new Store({ path })
+      try {
+        expect(
+          store.db
+            .query<{ name: string }, [number]>('SELECT name FROM _migrations WHERE id = ?')
+            .get(75),
+        ).toEqual({ name: 'provider_request_cloud_request_id' })
+        const read = () =>
+          listProviderRequests(store, 'rn_old' as never).map((r) => ({
+            id: String(r.id),
+            sentAt: r.sentAt,
+            headersAt: r.headersAt,
+            cloudRequestId: r.cloudRequestId,
+            inputTokens: r.measuredInputTokens,
+          }))
+        expect(read()).toEqual([
+          { id: 'pr_old', sentAt: 5, headersAt: 6, cloudRequestId: null, inputTokens: 10 },
+          { id: 'pr_new', sentAt: 7, headersAt: null, cloudRequestId: null, inputTokens: 10 },
+        ])
+        markProviderRequestHeaders(store, 'pr_new' as never, 8, 'rq_first')
+        markProviderRequestHeaders(store, 'pr_new' as never, 9, 'rq_second')
+        expect(read()[1]).toEqual({
+          id: 'pr_new',
+          sentAt: 7,
+          headersAt: 8,
+          cloudRequestId: 'rq_first',
+          inputTokens: 10,
+        })
+      } finally {
+        store.close()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

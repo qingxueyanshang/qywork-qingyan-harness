@@ -61,7 +61,8 @@ export function createSummaryTrace(
       })
     },
     sent: (requestId: string): void => persist.markRequestSent(requestId),
-    headers: (requestId: string, at: number): void => persist.markRequestHeaders(requestId, at),
+    headers: (requestId: string, at: number, cloudRequestId: string | null): void =>
+      persist.markRequestHeaders(requestId, at, cloudRequestId),
     hedge: (requestId: string, hedge: ProviderHedge): void =>
       persist.markRequestHedge(requestId, hedge),
     firstEvent: (requestId: string): void => persist.markRequestFirstEvent(requestId),

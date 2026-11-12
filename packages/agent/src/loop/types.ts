@@ -308,9 +308,9 @@ export interface LoopPersistence {
   markRequestSent(requestId: string): void
   /**
    * 响应头到达。`at` 是传输层观察到的时刻，由 `response_started` 事件携带，
-   * 不是本方法被调用的时刻。
+   * 不是本方法被调用的时刻。`cloudRequestId` 是同一响应头中云端模型网关的请求号，不是经云端的请求时为 null。
    */
-  markRequestHeaders(requestId: string, at: number): void
+  markRequestHeaders(requestId: string, at: number, cloudRequestId: string | null): void
   /**
    * 响应头之前补发过第二份请求。成功时由 `response_started` 携带，失败时取自诊断中的传输读数；
    * 两份请求都没有返回响应头时同样记录。

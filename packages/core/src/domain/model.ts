@@ -1505,6 +1505,12 @@ export interface ProviderRequest {
    * 连接未建立与接收后等待在账本中无法区分。
    */
   headersAt: number | null
+  /**
+   * 云端模型网关返回的请求号，等于云端请求记录（`request_log`）的 id，两边按它对照同一次请求。
+   * 与 `headersAt` 同时写入：成功时经 `response_started`，失败时经诊断中的传输读数。
+   * 不是经云端的请求、未收到响应头或迁移前的旧行为 null。
+   */
+  cloudRequestId: string | null
   /** 响应头之前补发的第二份请求；未补发或迁移前的旧行为 null。 */
   hedge: ProviderHedge | null
   /** provider 返回的第一个流事件；不含本地 request_prepared 和响应头 response_started。 */
@@ -1575,6 +1581,8 @@ export interface ProviderTransportReading {
   sinceLastByteMs: number | null
   /** SSE 注释行（以 `:` 开头）的条数，即服务端排队时的保活行。 */
   keepAliveLines: number
+  /** 云端模型网关返回的请求号（`@qywork/ai` 的 `CLOUD_REQUEST_ID_HEADER`）；不是经云端的请求时不存在。 */
+  cloudRequestId?: string
   /** 响应头之前补发过第二份请求时存在。 */
   hedge?: ProviderHedge
   /**

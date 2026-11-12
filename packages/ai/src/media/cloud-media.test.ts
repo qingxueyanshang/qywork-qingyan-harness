@@ -1,10 +1,10 @@
 /**
- * 覆盖 `adapters/qywork.ts`（云端生成协议）与 `catalog.ts` 中云端规格的取得：参数表按原协议、报价按云端单价。
+ * 覆盖 `adapters/qywork.ts`（云端生成协议，含按任务号确认的日志）与 `catalog.ts` 中云端规格的取得：参数表按原协议、报价按云端单价。
  * 云端是本文件中的模拟服务，按云端 `/v1/media/jobs` 的形状应答。
  */
 
 import { afterAll, expect, jest, test } from 'bun:test'
-import type { StoredMediaSpec } from '@qywork/core'
+import { formatLogLine, type LogRecord, type StoredMediaSpec, setLogSink } from '@qywork/core'
 import { CLOUD_JOB_ID } from './adapters/qywork.ts'
 import { lookupMediaModel, quoteMedia } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
@@ -240,6 +240,80 @@ test('提交后应答丢失且查询失败：带任务号结束等待；之后�
   expect(resumed).toBeInstanceOf(MediaError)
   expect((resumed as MediaError).message).toBe('任务未建立，未扣费')
   expect((resumed as MediaError).pendingTaskId).toBeUndefined()
+})
+
+/**
+ * 原始失败形状：按任务号确认的经过不写日志，出现「已扣费而本机判为未建立」时本机没有可查的记录。
+ * 确认的发起（带原始失败的诊断）与三种结论各写一行，取回时云端答复任务不存在同样写一行；都带任务号与运行的日志标识，
+ * 不含设备密钥与提示词。日志经替换的 sink 记录，同时照常写到 stderr。
+ */
+test('提交结果未知后按任务号确认的经过写入日志：带任务号与日志标识，不含设备密钥与提示词', async () => {
+  const records: LogRecord[] = []
+  setLogSink((record) => {
+    records.push(record)
+    process.stderr.write(`${formatLogLine(record)}\n`)
+  })
+  try {
+    const logFields = { canvas: 'board.canvas.json', node: 'n3', record: 'generated/c.task.json' }
+    const prompt = '提示词特征串-cloud-mark-5e1f'
+    const go = (model: string, opts: Partial<MediaRunOptions> = {}) =>
+      adapter(model)
+        .run(
+          { operation: 'generate', prompt, inputs: [], params: {} },
+          { signal: new AbortController().signal, logFields, ...opts },
+        )
+        .catch((e: unknown) => e)
+    const lastId = () => (submitted.at(-1)?.request as { id: string }).id
+    const unknown = {
+      stage: 'generate',
+      kind: 'http',
+      outcome: 'unknown',
+      host: `127.0.0.1:${server.port}`,
+      status: 502,
+    }
+    const opening = (job: string) => ({
+      level: 'warn' as const,
+      scope: 'media',
+      message:
+        '提交结果未知，按任务号查询云端是否已建立任务：HTTP 502 网关错误：502 Bad Gateway；远端结果未知',
+      fields: { ...logFields, job, diagnostic: expect.objectContaining(unknown) },
+    })
+    const line = (level: LogRecord['level'], message: string, job: string) => ({
+      level,
+      scope: 'media',
+      message,
+      fields: { ...logFields, job },
+    })
+
+    await go('gateway-established')
+    const established = lastId()
+    await go('gateway-missing')
+    const missing = lastId()
+    await go('gateway-broken')
+    const broken = lastId()
+    answerLost.delete(broken)
+    await go('x', { resumeTaskId: broken })
+    expect(
+      records.map(({ level, scope, message, fields }) => ({ level, scope, message, fields })),
+    ).toEqual([
+      opening(established),
+      line('info', '云端已建立该任务，按已提交继续等待', established),
+      opening(missing),
+      line('warn', '云端答复任务不存在，判为未受理：任务未建立，未扣费', missing),
+      opening(broken),
+      line(
+        'warn',
+        '按任务号确认失败，带任务号结束等待：任务查询失败：HTTP 500 服务器内部错误：busy',
+        broken,
+      ),
+      line('warn', '云端答复任务不存在，判为任务未建立，未扣费', broken),
+    ])
+    const written = JSON.stringify(records)
+    expect(written).not.toContain('device-key')
+    expect(written).not.toContain(prompt)
+  } finally {
+    setLogSink(null)
+  }
 })
 
 test('撤销：云端回答上游已开始生成时为 started（按结果计费）', async () => {

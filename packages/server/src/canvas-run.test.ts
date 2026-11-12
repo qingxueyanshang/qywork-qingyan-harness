@@ -340,33 +340,81 @@ describe('画布批量运行', () => {
   })
 
   /**
-   * 走云端的出图交出任务号：写入任务记录，停止时结束本地等待并保留记录供取回，不按视频任务向远端撤销。
-   * 原始失败形状：只有视频的任务号写入记录，出图的记录在停止后被删除，卡片记为「远端结果未知」，已扣费的结果无法取回。
+   * 原始失败形状：重试日志对应不到画布卡片，运行记录中没有失败码。
+   * 生成与取回的调用带画布路径、节点与任务记录的路径（`MediaCall.logFields`）；请求诊断中的失败码随运行记录写入画布文件。
    */
-  test('走云端的出图：任务号写入任务记录，停止后可取回，不向远端撤销', async () => {
-    const { ws, svc, ids } = await setup([
-      { op: 'add_generate', ref: '$g', output: 'image', prompt: '猫' },
-    ])
+  test('生成与取回的调用带画布、节点与任务记录的日志标识；运行记录的诊断保留失败码', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const made = await fake.next()
+    const record = (await node(ws.root, ids.$v!)).versions[0]!.path
+    expect(made.call.logFields).toEqual({ canvas: PATH, node: ids.$v!, record })
+    await made.submit('task-fields')
+    made.finish({ ok: false, message: '等待超时', pendingTaskId: 'task-fields' })
+    await first.done
+    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const resumed = await fake.next()
+    expect(resumed.call.logFields).toEqual({ canvas: PATH, node: ids.$v!, record })
+    const diagnostic = {
+      stage: 'generate',
+      kind: 'http',
+      outcome: 'rejected',
+      host: 'relay.test',
+      elapsedMs: 1,
+      status: 429,
+      errorCode: 'rate_limited',
+    } as const
+    resumed.finish({
+      ok: false,
+      message: 'HTTP 429 请求过多：busy；已自动重试 5 次，仍失败',
+      diagnostic,
+    })
+    await again.done
+    expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({ result: 'failed', diagnostic })
+  })
+
+  /**
+   * 走云端的出图与音频交出任务号：写入任务记录，停止时与视频相同按任务号向云端撤销。
+   * 原始失败形状：只有视频按任务号撤销，停止走云端的出图或音频时只结束本地等待，云端任务照常执行并扣费。
+   * 云端撤销成功（请求尚未发往上游，积分已退回）时删除该版本与任务记录；云端答复已开始时保留记录，之后取回结果。
+   */
+  test.each([
+    ['image', 'cancelled'],
+    ['audio', 'cancelled'],
+    ['image', 'started'],
+  ] as const)('走云端的%s：停止时按任务号向云端撤销，云端答复 %s', async (output, remote) => {
+    const { ws, svc, ids } = await setup([{ op: 'add_generate', ref: '$g', output, prompt: '猫' }])
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
     const call = await fake.next()
     await call.submit('mj_0123456789abcdef')
-    let revoked = 0
-    const cancelled = await svc.cancel(ws.root, PATH, ids.$g!, async () => {
-      revoked++
-      return 'cancelled'
+    const asked: unknown[] = []
+    const outcome = await svc.cancel(ws.root, PATH, ids.$g!, async (task) => {
+      asked.push(task)
+      return remote
     })
-    expect(cancelled).toBe('stopped')
-    expect(revoked).toBe(0)
+    expect(asked).toEqual([
+      expect.objectContaining({ taskId: 'mj_0123456789abcdef', type: output }),
+    ])
+    if (remote === 'cancelled') {
+      expect(outcome).toBe('cancelled')
+      expect(await run.done).toEqual({ ok: false, message: '已取消生成', pending: false })
+      expect((await node(ws.root, ids.$g!)).versions).toEqual([])
+      expect(await readdir(join(ws.root, 'generated'))).toEqual([])
+      expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({ result: 'cancelled' })
+      return
+    }
+    expect(outcome).toBe('stopped')
     expect(await run.done).toMatchObject({ ok: false, pending: true })
     const version = (await node(ws.root, ids.$g!)).versions[0]!
     expect(JSON.parse(await readFile(join(ws.root, version.path), 'utf8'))).toMatchObject({
-      type: 'image',
+      type: output,
       taskId: 'mj_0123456789abcdef',
     })
     const again = await svc.retrieve(ws, PATH, ids.$g!, undefined, { media: fake.port })
     const resumed = await fake.next()
-    expect(resumed.call).toMatchObject({ type: 'image', resumeTaskId: 'mj_0123456789abcdef' })
+    expect(resumed.call).toMatchObject({ type: output, resumeTaskId: 'mj_0123456789abcdef' })
     resumed.finish({
       ok: true,
       provider: 'ark',
@@ -1388,6 +1436,7 @@ describe('画布运行：取消', () => {
         taskId: 't-1',
         provider: 'ark',
         model: 'seedance',
+        type: 'video',
         record: expect.any(String),
         versionId: expect.any(String),
       },

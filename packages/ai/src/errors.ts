@@ -144,7 +144,7 @@ export function httpStatusName(status: number): string {
 }
 
 /**
- * 错误正文中的说明：JSON 取 `error.message`、顶层 `message` 或字符串形式的 `error`；
+ * 错误正文中的说明：JSON 取 `error.message`、顶层 `message` 或字符串形式的 `error`（只含一个元素的数组按该元素，见 `singleElement`）；
  * HTML 错误页取 `<title>`，没有标题时取去除标签后的文字；其余取正文原文。生成一侧（`media/http.ts`）共用本函数。
  * 不要对 HTML 返回原文：网关与 CDN 以 HTML 页面报告 502 等失败，下游只显示首行，页面源码的首行是 `<html>`。
  */
@@ -154,7 +154,7 @@ export function bodyMessage(body: string): string | null {
   if (/^<(?:!doctype|html|head|body)\b/i.test(text)) return htmlMessage(text)
   let json: unknown
   try {
-    json = JSON.parse(text)
+    json = singleElement(JSON.parse(text))
   } catch {
     return text
   }
@@ -279,12 +279,22 @@ const ALLOCATION_QUOTA: CodeRule = [
 ]
 
 /**
+ * Gemini API 以 429 `RESOURCE_EXHAUSTED` 报告超过速率限制（按指数退避重试），也以同一错误码报告预付费额度用尽
+ * （`Your prepayment credits are depleted`，Gemini API 开发者论坛中的实际答复），按原文区分。
+ */
+const RESOURCE_EXHAUSTED: CodeRule = [
+  [/prepayment credits are depleted/i, 'insufficient_quota'],
+  [/^/, 'rate_limited'],
+]
+
+/**
  * 上游错误码表，对话（`classify`、`classifyStreamError`）与生成（`media/http.ts`）共用唯一的一份。
  * 只收录官方错误码文档写明为限流、并发超限、余额或额度用尽、鉴权失败，且只靠状态码与原文（`quotaExhausted`）无法正确归类的错误码；
  * 注释为文档给出的含义。文档没有写明的错误码不收录，按状态码与原文处理。键不区分大小写。
- * - `any`：取值本身写明含义、各上游没有不同用法的错误码，对全部请求生效。
+ * - `any`：取值本身写明含义、各上游没有不同用法的错误码，对全部请求生效，包括经中转站转发、上游按接口地址未收录（渠道商为 null）的请求。
  * - 渠道商分区（`channelVendorOf` 的渠道商）：只在该上游内有含义的错误码（数字业务码：MiniMax 的 1002 是限流，可灵的 1002 是鉴权失败），
- *   以及该上游另有用法的取值（百炼的 `insufficient_quota` 是限流）。只在请求发往该上游时生效，先于 `any` 判定。
+ *   以及该上游另有用法或取值是通用词的错误码（百炼的 `insufficient_quota` 是限流，与 OpenAI 的取值与原文都相同）。
+ *   只在请求发往该上游时生效，先于 `any` 判定。经中转站转发时这些错误码不按原厂的表归类：取值本身不能说明来源。
  */
 const UPSTREAM_CODES: Readonly<{ any: Codes } & Partial<Record<ChannelVendor, Codes>>> = {
   any: {
@@ -315,14 +325,14 @@ const UPSTREAM_CODES: Readonly<{ any: Codes } & Partial<Record<ChannelVendor, Co
     'OperationDenied.ServiceOverdue': 'insufficient_quota', // 403：账单已逾期
     'QuotaExceeded.AgentPlanQuotaExceeded': 'insufficient_quota', // 429：Agent Plan 套餐的 AFP 已耗尽
     'QuotaExceeded.DoubaoSearchFreeQuotaExceeded': 'insufficient_quota', // 403：豆包搜索的免费额度已耗尽
+    AccountQuotaExceeded: 'insufficient_quota', // 429：账户额度不足
+    SetLimitExceeded: 'insufficient_quota', // 429：已达到设置的模型或接入点用量上限值，服务已暂停
     // 月之暗面：429 账户欠费或已停用；账户 token 额度不足。
     exceeded_current_quota_error: 'insufficient_quota',
     // 阶跃星辰：429，与速率限制同一状态码。
     project_credit_limit_exceeded: 'insufficient_quota', // 项目达到当期 Credit 上限
     member_project_credit_limit_exceeded: 'insufficient_quota', // 成员在该项目内达到当期 Credit 上限
-  },
-  // 阿里云百炼（原生接口为顶层 `code`，兼容接口为 `error.code`）。
-  alibaba: {
+    // 阿里云百炼（原生接口为顶层 `code`，兼容接口为 `error.code`）。`Throttling` 在阿里云与 AWS 的接口中同为调用频率超限。
     Throttling: 'rate_limited', // 接口调用触发限流
     'Throttling.RateQuota': 'rate_limited', // 调用频率（RPS/RPM）触发限流
     'Throttling.BurstRate': 'rate_limited', // 调用频率骤增，触发系统稳定性保护机制
@@ -330,24 +340,25 @@ const UPSTREAM_CODES: Readonly<{ any: Codes } & Partial<Record<ChannelVendor, Co
     'Throttling.ServiceOverloaded': 'rate_limited', // 网络资源目前处于过载状态
     'Throttling.ResourceExhausted': 'rate_limited', // 网络资源目前处于饱和状态
     'Throttling.AllocationQuota': ALLOCATION_QUOTA,
+    // Gemini API（`error.status`；Interactions 为 `error.code`）。`RESOURCE_EXHAUSTED` 是 gRPC 的通用状态名，
+    // Google 的接口都用于配额与速率限制；`rate_limit_exceeded` 在 OpenAI 的接口中同为速率限制。
+    RESOURCE_EXHAUSTED,
+    rate_limit_exceeded: 'rate_limited', // 429：超过每分钟或每秒的请求数或 token 数限制
+    too_many_requests: 'rate_limited', // 429：短时间内请求过多
+  },
+  // 阿里云百炼的兼容接口以 `insufficient_quota` 报告限流（见 `ALLOCATION_QUOTA`）。
+  alibaba: {
     insufficient_quota: ALLOCATION_QUOTA,
   },
-  // 火山方舟（`error.code`）。`QuotaExceeded` 一个错误码对应三种原因，按原文区分。
+  // 火山方舟（`error.code`）。`QuotaExceeded` 一个错误码对应三种原因，按原文区分；火山引擎的其他服务（知识库）以它报告数据集配额，
+  // `QuotaExceeded` 与 `InvalidSubscription` 都是通用词，不放入 `any`。
   volcengine: {
-    AccountQuotaExceeded: 'insufficient_quota', // 429：账户额度不足
-    SetLimitExceeded: 'insufficient_quota', // 429：已达到设置的模型或接入点用量上限值
-    InvalidSubscription: 'insufficient_quota', // 400：Coding Plan 套餐未订阅或已过期
+    InvalidSubscription: 'insufficient_quota', // 403：Coding Plan 套餐未订阅或已过期
     QuotaExceeded: [
       [/free trial quota/i, 'insufficient_quota'], // 对该模型的免费试用额度已消耗完毕
       [/usage quota/i, 'insufficient_quota'], // 使用的额度超出 5 小时 / 周 / 月限额
       [/exceeded the quota/i, 'rate_limited'], // 处于排队中状态的任务数已超过限制，请稍后重试
     ],
-  },
-  // Gemini API（`error.status`；Interactions 为 `error.code`）。
-  google: {
-    RESOURCE_EXHAUSTED: 'rate_limited', // 429：超过速率限制（含按支出计算的速率限制），按指数退避重试
-    rate_limit_exceeded: 'rate_limited', // 429：超过每分钟或每秒的请求数或 token 数限制
-    too_many_requests: 'rate_limited', // 429：短时间内请求过多
   },
   // 可灵开放平台业务码（顶层 `code`），文档与 HTTP 429 成对给出。
   kling: {
@@ -450,11 +461,20 @@ export function upstreamFailureCode(
   return null
 }
 
-/** 错误正文按 JSON 解析后的值，供按错误码判定；不是 JSON 时为 null。对话与生成（`media/http.ts`）共用。 */
+/**
+ * 只含一个元素的数组取出该元素，其余值原样返回。Gemini API 的 OpenAI 兼容接口以这种数组返回错误正文
+ * （`[{"error":{"code":429,"status":"RESOURCE_EXHAUSTED",…}}]`），官方 SDK `google-genai` 的 `APIError` 同样先取出唯一的元素。
+ * 不取出时读取不到其中的错误码与说明：限流的原文与额度用尽相同，按原文归为额度用尽而不重发。
+ */
+function singleElement(value: unknown): unknown {
+  return Array.isArray(value) && value.length === 1 ? value[0] : value
+}
+
+/** 错误正文按 JSON 解析后的值（`singleElement`），供按错误码判定；不是 JSON 时为 null。对话与生成（`media/http.ts`）共用。 */
 export function parsedBody(text: string | null): unknown {
   if (!text) return null
   try {
-    return JSON.parse(text.trim())
+    return singleElement(JSON.parse(text.trim()))
   } catch {
     return null
   }
@@ -507,7 +527,7 @@ export function classifyProviderError(
 
 /**
  * 流内错误事件中的错误对象，交给 `classifyStreamError` 归类；不是错误事件时为 null。`event` 是 `event:` 行的值，
- * `data` 是该帧 `data` 解析后的对象。三个对话适配器与云端网关（改写发给客户端的错误事件）共用本函数：
+ * `data` 是该帧 `data` 解析后的对象。三个对话适配器使用本函数，云端网关（改写发给客户端的错误事件）使用同一判定的 `streamErrorAt`：
  * 两处判定不同时，适配器按错误处理而网关未识别的事件会带着上游原文到达用户。
  * - Anthropic：类型为 `error`（取 `type` 字段，没有时取 `event:` 行，中转站不一定两者都发送）；错误对象为 `error` 字段，没有时为事件本身。
  * - Chat Completions：带对象形式的 `error` 字段，即错误对象。SSE 已返回 200，错误只能出现在 chunk 中。
@@ -520,20 +540,37 @@ export function streamErrorOf(
   event: string | undefined,
   data: Record<string, unknown>,
 ): Record<string, unknown> | null {
-  let error: unknown
+  return streamErrorAt(provider, event, data)?.error ?? null
+}
+
+/**
+ * 流内错误事件中的错误字段：`error` 是 `streamErrorOf` 返回的错误对象；错误字段为 `holder[key]`，错误对象即事件本身时
+ * `key` 为 null、`holder` 为事件。错误字段不是对象时 `holder[key]` 是原值（如字符串），`error` 为新建的空对象。
+ * 云端网关按 `holder` 与 `key` 改写帧中的错误字段：只改写 `error` 时，不是对象的错误字段带着上游原文到达电脑端。
+ */
+export function streamErrorAt(
+  provider: ProviderKind,
+  event: string | undefined,
+  data: Record<string, unknown>,
+): { error: Record<string, unknown>; holder: Record<string, unknown>; key: string | null } | null {
+  const at = (holder: Record<string, unknown>, key: string | null) => ({
+    error: recordOf(key === null ? holder : holder[key]) ?? {},
+    holder,
+    key,
+  })
   if (provider === 'anthropic_messages') {
     const type = typeof data.type === 'string' && data.type ? data.type : (event ?? '')
     if (type !== 'error') return null
-    error = data.error ?? data
-  } else if (provider === 'openai_chat_completions') {
-    if (typeof data.error !== 'object' || data.error === null) return null
-    error = data.error
-  } else {
-    const type = String(data.type ?? '')
-    if (type !== 'error' && type !== 'response.failed') return null
-    error = recordOf(data.response)?.error ?? data.error ?? data
+    return at(data, data.error == null ? null : 'error')
   }
-  return recordOf(error) ?? {}
+  if (provider === 'openai_chat_completions') {
+    return typeof data.error === 'object' && data.error !== null ? at(data, 'error') : null
+  }
+  const type = String(data.type ?? '')
+  if (type !== 'error' && type !== 'response.failed') return null
+  const response = recordOf(data.response)
+  if (response?.error != null) return at(response, 'error')
+  return at(data, data.error == null ? null : 'error')
 }
 
 /**
@@ -570,7 +607,9 @@ export function classifyStreamError(
   const tabled = upstreamFailureCode(vendor, [event], message)
   if (tabled) return build(tabled)
   if (quotaExhausted(message)) return build('insufficient_quota')
-  if (/rate[\s_-]?limit|too[\s_-]?many[\s_-]?requests/.test(reported)) return build('rate_limited')
+  // 并发超限属于限流：中转站在 200 之后以错误事件报告（实际答复：`code` 为 `gateway_concurrency_limit`）。
+  if (/rate[\s_-]?limit|too[\s_-]?many[\s_-]?requests|concurrency[\s_-]?limit/.test(reported))
+    return build('rate_limited')
   if (/authentication|unauthorized|invalid[\s_-]?api[\s_-]?key|permission|forbidden/.test(reported))
     return build('auth_failed')
   if (/not[\s_-]?found/.test(reported)) return build('model_not_found')

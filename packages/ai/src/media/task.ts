@@ -6,9 +6,15 @@
  * 可在服务商规定的结果保留期内用同一任务号接续取回。只有远端明确报告失败才是终态。
  */
 
-import { log } from '@qywork/core'
+import { log, type MediaDiagnostic } from '@qywork/core'
 import { quotaExhausted } from '../errors.ts'
-import { type RequestPolicy, sendJson, transientFailure } from './http.ts'
+import {
+  type RequestPolicy,
+  recordingAnswers,
+  runLogFields,
+  sendJson,
+  transientFailure,
+} from './http.ts'
 import { MediaError, type MediaRunOptions, type MediaUsage } from './types.ts'
 
 const FIRST_INTERVAL_MS = 5_000
@@ -32,8 +38,6 @@ export async function postTask(
   upstream?: RequestPolicy['upstream'],
 ): Promise<{ body: Record<string, unknown>; taskId: string }> {
   let taskId = ''
-  opts.signal.throwIfAborted()
-  opts.onSubmit?.()
   opts.signal.throwIfAborted()
   const body = await sendJson(
     url,
@@ -141,8 +145,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * 查询遇到可重发的失败（`transientFailure`：连接中断、静默超时、被限流或暂时不可用）时按间隔继续查询，
  * 连续失败超过 `MAX_FAILING_MS` 才结束本地等待；不按次数计算，短时的网络波动不结束等待。
  * 其余查询错误立即结束本地等待，其中包括错误码为额度用尽的 429（各适配器的查询带 `RequestPolicy.upstream`，按该上游的错误码归类）。
- * 两种情况都由 `afterSubmit` 附带任务号供取回。
- * 状态变化时经 `onStatus` 回报一次，不按查询次数回报。
+ * 两种情况都由 `afterSubmit` 附带任务号供取回；持续失败而结束时，报错带最后一次查询失败的诊断与失败码。
+ * 状态变化时经 `onStatus` 回报一次并写一行日志（带 `reportingRetries` 登记的日志标识），不按查询次数回报。
  */
 export async function waitTask<T = TaskOutput>(
   check: () => Promise<TaskState<T>>,
@@ -153,28 +157,37 @@ export async function waitTask<T = TaskOutput>(
   let failingSince: number | undefined
   for (;;) {
     opts.signal.throwIfAborted()
-    const s = await check().catch((err: unknown) => {
+    const seen: { last?: MediaDiagnostic } = {}
+    const s = await recordingAnswers(seen, check).catch((err: unknown) => {
       if (opts.signal.aborted || !transientFailure(err)) throw err
       const reason = err instanceof Error ? err.message : String(err)
       failingSince ??= Date.now()
       if (Date.now() - failingSince >= MAX_FAILING_MS)
         throw new MediaError(
           `任务查询连续失败超过 ${MAX_FAILING_MS / 1000} 秒，已停止等待：${reason}`,
-          { cause: err },
+          {
+            cause: err,
+            ...(err instanceof MediaError && err.diagnostic ? { diagnostic: err.diagnostic } : {}),
+            ...(err instanceof MediaError && err.code ? { code: err.code } : {}),
+          },
         )
-      log.warn('media', `${reason}；继续查询原任务`)
+      log.warn('media', `${reason}；继续查询原任务`, runLogFields())
       return null
     })
     if (s) failingSince = undefined
     if (s?.state === 'done') return s
     // 上游报告的失败原因提及额度或余额用尽时记为额度用尽：云端据此替换运营方一侧的原文（`MediaError.code`）。
+    // 诊断取自报告失败的那次查询的答复，结果为 `failed`（远端受理后报告失败）。
     if (s?.state === 'failed')
-      throw new RemoteTaskFailed(
-        s.verbatim ? s.message : `远端任务失败：${s.message}`,
-        quotaExhausted(s.message) ? { code: 'insufficient_quota' } : {},
-      )
+      throw new RemoteTaskFailed(s.verbatim ? s.message : `远端任务失败：${s.message}`, {
+        ...(quotaExhausted(s.message) ? { code: 'insufficient_quota' as const } : {}),
+        ...(seen.last
+          ? { diagnostic: { ...seen.last, stage: 'query', kind: 'http', outcome: 'failed' } }
+          : {}),
+      })
     if (s && s.status !== last) {
       last = s.status
+      log.info('media', `上游任务状态：${s.status}`, runLogFields())
       opts.onStatus?.(s.status)
     }
     await sleep(interval, opts.signal)
@@ -185,6 +198,8 @@ export async function waitTask<T = TaskOutput>(
 /**
  * 包装任务号交出之后的全部步骤：远端失败与用户停止原样抛出；其余失败附带任务号，
  * 调用方据此保留任务记录，之后接续取回，不重新提交。
+ * 包装保留原错误的诊断与失败码，诊断的结果记为 `available`（远端任务仍在、可按任务号取回）。
+ * 不要保留查询请求自身的 `rejected`：调用方按该值判定生成没有被受理（`runtime` 的生成端口据此允许本轮重新提交）。
  */
 export async function afterSubmit<T>(
   taskId: string,
@@ -197,6 +212,13 @@ export async function afterSubmit<T>(
     if (signal.aborted || err instanceof RemoteTaskFailed) throw err
     if (err instanceof MediaError && err.pendingTaskId) throw err
     const reason = err instanceof Error ? err.message : String(err)
-    throw new MediaError(`${reason}（远端任务 ${taskId} 仍可取回）`, { pendingTaskId: taskId })
+    const facts = err instanceof MediaError ? err : undefined
+    throw new MediaError(`${reason}（远端任务 ${taskId} 仍可取回）`, {
+      pendingTaskId: taskId,
+      ...(facts?.diagnostic
+        ? { diagnostic: { ...facts.diagnostic, outcome: 'available' as const } }
+        : {}),
+      ...(facts?.code ? { code: facts.code } : {}),
+    })
   }
 }

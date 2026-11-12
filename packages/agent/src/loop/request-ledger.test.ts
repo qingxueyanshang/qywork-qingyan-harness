@@ -3,6 +3,8 @@
  * （`openRequest` / `markRequestSent` / `markRequestHeaders` / `markRequestHedge` / `settleRequest`），
  * 与 `@qywork/ai` 的 `providers/fault-server.test-helper.ts` 三协议故障端点。
  *
+ * 另覆盖响应头中的云端请求号（`@qywork/ai` 的 `CLOUD_REQUEST_ID_HEADER`）经三种协议的适配器写入账本行。
+ *
  * 请求账使用真实的 `@qywork/store`：断言检查的是数据库中记录行的内容，
  * 用替身记录调用序列无法验证。step 相关的钩子为空实现，不在本文件的范围内。
  *
@@ -12,6 +14,7 @@
 import { expect, test } from 'bun:test'
 import {
   buildAdapter,
+  CLOUD_REQUEST_ID_HEADER,
   DEFAULT_DENSITY,
   type LlmAdapter,
   ProviderError,
@@ -79,7 +82,8 @@ function ledger(): Ledger {
     recordCompaction: () => {},
     openRequest: (input) => openProviderRequest(store, input).id,
     markRequestSent: (id) => markProviderRequestSent(store, id as never),
-    markRequestHeaders: (id, at) => markProviderRequestHeaders(store, id as never, at),
+    markRequestHeaders: (id, at, cloudRequestId) =>
+      markProviderRequestHeaders(store, id as never, at, cloudRequestId),
     markRequestHedge: (id, hedge) => markProviderRequestHedge(store, id as never, hedge),
     markRequestFirstEvent: (id) => markProviderRequestFirstEvent(store, id as never),
     markRequestContent: (id, at) => markProviderRequestContent(store, id as never, at),
@@ -121,7 +125,11 @@ function baseCtx(runId: string): ToolContextBase {
 
 async function runAgainst(
   ledgerUnderTest: Ledger,
-  profile: { kind: 'openai_responses' | 'openai_chat_completions'; baseUrl: string; model: string },
+  profile: {
+    kind: 'openai_responses' | 'openai_chat_completions' | 'anthropic_messages'
+    baseUrl: string
+    model: string
+  },
   /**
    * 退避等待。默认实现立即返回：耗尽五次重发的两个用例按真实退避需等待约一分钟，
    * 而它们断言的是账本的行数与列值，不是等待时长。
@@ -314,3 +322,61 @@ test('补发记录写入请求账：两份都未返回时随失败写入，补�
     led.close()
   }
 })
+
+/**
+ * 原始失败形状：经云端网关的对话请求，本机账本与云端请求记录没有共同的请求号，只能按设备、型号与时刻近似对照。
+ * 网关在响应头中返回请求号；本机写入该次请求的账本行：成功经 `response_started`，被拒绝经诊断中的传输读数，三种协议相同。
+ * 本用例在故障端点之前放一个只添加该响应头的转发服务，代替网关；直连故障端点（没有该响应头）时为 null。
+ */
+test.each(['openai_chat_completions', 'openai_responses', 'anthropic_messages'] as const)(
+  '%s：响应头中的云端请求号写入账本行，成功与被拒绝相同；没有该响应头时为 null',
+  async (kind) => {
+    const fault = startFaultServer('complete')
+    let issued = 0
+    const gateway = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        const url = new URL(req.url)
+        const upstream = await fetch(`${new URL(fault.openaiBaseUrl).origin}${url.pathname}`, {
+          method: req.method,
+          headers: req.headers,
+          body: await req.arrayBuffer(),
+        })
+        const headers = new Headers(upstream.headers)
+        headers.set(CLOUD_REQUEST_ID_HEADER, `rq_${++issued}`)
+        return new Response(upstream.body, { status: upstream.status, headers })
+      },
+    })
+    const base = kind === 'anthropic_messages' ? fault.anthropicBaseUrl : fault.openaiBaseUrl
+    const viaGateway = base.replace(new URL(base).origin, `http://127.0.0.1:${gateway.port}`)
+    const run = async (baseUrl: string) => {
+      const led = ledger()
+      try {
+        await runAgainst(led, { kind, baseUrl, model: 'deepseek-flash' })
+        return led.rows()
+      } finally {
+        led.close()
+      }
+    }
+    try {
+      const [received] = await run(viaGateway)
+      expect([received?.status, received?.cloudRequestId]).toEqual(['received', 'rq_1'])
+
+      fault.mode = 'payment_required'
+      const [rejected] = await run(viaGateway)
+      expect([rejected?.status, rejected?.errorCode, rejected?.cloudRequestId]).toEqual([
+        'rejected',
+        'insufficient_quota',
+        'rq_2',
+      ])
+
+      fault.mode = 'complete'
+      const [direct] = await run(base)
+      expect([direct?.status, direct?.cloudRequestId]).toEqual(['received', null])
+    } finally {
+      gateway.stop(true)
+      fault.stop()
+    }
+  },
+)

@@ -15,6 +15,7 @@ import {
   classifyProviderError,
   classifyStreamError,
   ProviderError,
+  streamErrorAt,
   streamErrorOf,
   transportFailureKind,
 } from './errors.ts'
@@ -360,6 +361,40 @@ describe('按用户的下一步动作分类', () => {
     )
   })
 
+  /**
+   * 云端网关按错误字段的位置改写帧。原始失败形状：错误字段是字符串时只取得新建的空对象，网关改写的是该空对象，
+   * 帧中的原字符串（上游原文）随帧到达电脑端。
+   */
+  test('流内错误事件中错误字段的位置：对象、字符串与事件本身；错误对象与 streamErrorOf 相同', () => {
+    const cases: [Parameters<typeof streamErrorAt>, string | null][] = [
+      [
+        ['anthropic_messages', 'error', { type: 'error', error: { message: 'Overloaded' } }],
+        'error',
+      ],
+      [['anthropic_messages', 'error', { type: 'error', error: 'relay-x 分组额度不足' }], 'error'],
+      [['anthropic_messages', 'error', { message: 'Overloaded' }], null],
+      [['openai_chat_completions', undefined, { error: { message: 'busy' } }], 'error'],
+      [['openai_responses', 'error', { type: 'error', error: 'relay-x 分组额度不足' }], 'error'],
+      [['openai_responses', 'error', { type: 'error', code: 'server_error', message: 'x' }], null],
+    ]
+    for (const [args, key] of cases) {
+      const at = streamErrorAt(...args)
+      expect(at?.key).toBe(key)
+      expect(at?.holder).toBe(args[2])
+      expect(at?.error).toEqual(streamErrorOf(...args) as Record<string, unknown>)
+    }
+    const failed = {
+      type: 'response.failed',
+      response: { status: 'failed', error: '分组额度不足' },
+    }
+    const at = streamErrorAt('openai_responses', 'response.failed', failed)
+    expect(at?.holder).toBe(failed.response)
+    expect(at?.key).toBe('error')
+    expect(at?.error).toEqual({})
+    expect(streamErrorAt('openai_chat_completions', undefined, { error: 'x' })).toBeNull()
+    expect(streamErrorAt('anthropic_messages', 'message_stop', { type: 'message_stop' })).toBeNull()
+  })
+
   test('401 未配置与 401 key 无效是两条不同的引导', () => {
     expect(classifyProviderError(P, http(401, 'API key missing')).code).toBe('no_api_key')
     expect(classifyProviderError(P, http(401, 'Incorrect API key')).code).toBe('auth_failed')
@@ -420,6 +455,83 @@ describe('按用户的下一步动作分类', () => {
     expect(classifyProviderError(P, err, null, body, 'zhipu').code).toBe('insufficient_quota')
     expect(classifyProviderError(P, err, null, body, null).code).toBe('rate_limited')
     expect(classifyProviderError(P, err, null, body, 'kling').code).toBe('rate_limited')
+  })
+
+  /**
+   * 经中转站转发时接口地址不属于原厂（渠道商为 null），只有 `any` 分区生效。取值本身写明含义的错误码（百炼的 `Throttling.*`、
+   * 火山方舟的 `AccountQuotaExceeded` / `SetLimitExceeded`、Gemini 的 `RESOURCE_EXHAUSTED`）在 `any` 中，转发时同样按原厂的含义归类。
+   * 原始失败形状：经中转站转发的百炼 `Throttling.AllocationQuota`（原文与 OpenAI 额度用尽相同）与 Gemini 的 `RESOURCE_EXHAUSTED`
+   * 按原文归为额度用尽，不重发并提示额度不足。取值是通用词或与 OpenAI 相同的错误码仍只在原厂分区中。
+   */
+  test('经中转站转发的原厂错误码：取值写明含义的按原厂归类，通用词与数字业务码不归类', () => {
+    const err = http(429, '429 status code (no body)')
+    const quota = 'You exceeded your current quota, please check your plan and billing details.'
+    const relayed = (code: string, message = quota) =>
+      classifyProviderError(P, err, null, JSON.stringify({ error: { code, message } }), null).code
+    expect(
+      relayed(
+        'Throttling.AllocationQuota',
+        'Allocated quota exceeded, please increase your quota limit.',
+      ),
+    ).toBe('rate_limited')
+    expect(relayed('Throttling.RateQuota')).toBe('rate_limited')
+    expect(relayed('Throttling')).toBe('rate_limited')
+    expect(relayed('RESOURCE_EXHAUSTED')).toBe('rate_limited')
+    expect(relayed('rate_limit_exceeded')).toBe('rate_limited')
+    expect(relayed('AccountQuotaExceeded', 'The request has exceeded the quota.')).toBe(
+      'insufficient_quota',
+    )
+    expect(relayed('SetLimitExceeded', 'Your account has reached the set usage limit.')).toBe(
+      'insufficient_quota',
+    )
+    // 百炼兼容接口的 `insufficient_quota` 与 OpenAI 的取值、原文都相同，经中转站时无法区分，按 OpenAI 的含义。
+    expect(relayed('insufficient_quota')).toBe('insufficient_quota')
+    // `QuotaExceeded` 是通用词，经中转站时按状态码与原文：原文为排队任务数超限，429 为限流。
+    expect(relayed('QuotaExceeded', 'The request has exceeded the quota.')).toBe('rate_limited')
+    expect(relayed('1308', '已达到 5 小时 的使用上限')).toBe('rate_limited')
+    // 直连原厂时结果不变。
+    const direct = JSON.stringify({ error: { code: 'Throttling.RateQuota', message: quota } })
+    expect(classifyProviderError(P, err, null, direct, 'alibaba').code).toBe('rate_limited')
+  })
+
+  /**
+   * Gemini API 的 OpenAI 兼容接口以只含一个元素的数组返回错误正文（开发者论坛中的实际答复；官方 SDK `google-genai` 的 `APIError`
+   * 同样先取出唯一的元素）。原始失败形状：数组中的 `RESOURCE_EXHAUSTED` 读取不到，限流按原文「You exceeded your current quota」
+   * 归为额度用尽、不重发，说明显示整段 JSON。预付费额度用尽同为 429 `RESOURCE_EXHAUSTED`，原文为「Your prepayment credits are depleted」。
+   */
+  test('Gemini 兼容接口的数组错误正文：读取其中的错误码与说明；预付费额度用尽按原文归为额度用尽', () => {
+    const err = http(429, '429 status code (no body)')
+    const array = (message: string) =>
+      JSON.stringify([{ error: { code: 429, message, status: 'RESOURCE_EXHAUSTED' } }])
+    const limited = array(
+      'You exceeded your current quota, please check your plan and billing details.',
+    )
+    for (const vendor of ['google', null] as const) {
+      const e = classifyProviderError('openai_chat_completions', err, null, limited, vendor)
+      expect(e.code).toBe('rate_limited')
+      expect(e.message).toBe(
+        'HTTP 429 请求过多：You exceeded your current quota, please check your plan and billing details.',
+      )
+    }
+    const depleted = array(
+      'Your prepayment credits are depleted. Please go to AI Studio to manage your project and billing.',
+    )
+    expect(
+      classifyProviderError('openai_chat_completions', err, null, depleted, 'google').code,
+    ).toBe('insufficient_quota')
+    // 多个元素的数组不是错误对象，按状态码与整段原文。
+    const two = JSON.stringify([{ error: { status: 'RESOURCE_EXHAUSTED' } }, {}])
+    expect(classifyProviderError(P, err, null, two, 'google').code).toBe('rate_limited')
+  })
+
+  /** 原始失败形状：中转站在 200 之后以错误事件报告并发超限（`gateway_concurrency_limit`），归为上游暂时不可用。 */
+  test('流内错误事件报告并发超限归为限流', () => {
+    const e = classifyStreamError(P, {
+      code: 'gateway_concurrency_limit',
+      message: 'Concurrency limit exceeded for account, please retry later',
+    })
+    expect(e.code).toBe('rate_limited')
+    expect(e.message).toBe('Concurrency limit exceeded for account, please retry later')
   })
 
   /**

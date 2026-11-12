@@ -114,7 +114,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
           trace.firstEvent(requestId)
         }
         if (ev.type === 'response_started') {
-          trace.headers(requestId, ev.headersAt)
+          trace.headers(requestId, ev.headersAt, ev.cloudRequestId ?? null)
           if (ev.hedge) trace.hedge(requestId, ev.hedge)
         }
         const kind = providerContentKind(ev)
@@ -132,7 +132,9 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
       release?.(concurrencyRejected(err) ? 'concurrency_rejected' : 'failed')
       const pe = err instanceof ProviderError ? err : null
       // 非 2xx 响应的响应头不经过 `response_started`，其时刻只记录在传输读数中。规则与主请求相同。
-      if (pe?.transport?.headersAt != null) trace.headers(requestId, pe.transport.headersAt)
+      if (pe?.transport?.headersAt != null) {
+        trace.headers(requestId, pe.transport.headersAt, pe.transport.cloudRequestId ?? null)
+      }
       if (pe?.transport?.hedge) trace.hedge(requestId, pe.transport.hedge)
       // 与主请求使用同一套终态：被拒绝为 rejected，其余情况（流被截断、中断、连接断开）均为 uncertain。
       trace.settle(

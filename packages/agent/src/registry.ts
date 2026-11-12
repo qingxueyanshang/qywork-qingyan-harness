@@ -103,6 +103,11 @@ export interface MediaCall {
   onRetry?: (retry: RetryWait | null) => void
   /** 本次生成的花费，取得服务商结果时回报一次；恢复下载不再次回报。 */
   onSpend?: (spend: MediaSpend) => void
+  /**
+   * 写入重试与查询失败日志的标识，用于从日志对应到发起方：画布路径与节点，或工具调用所在的会话、执行与工具名，
+   * 另加任务记录的路径。不得放入密钥、提示词与素材内容。
+   */
+  logFields?: Record<string, string>
 }
 
 /**
@@ -493,7 +498,7 @@ export interface CanvasPort {
     signal: AbortSignal,
   ): Promise<CanvasRunResult>
   /**
-   * 取消一张卡正在进行的生成，与界面卡片上的取消相同：视频任务按接口能力向服务商撤销，
+   * 取消一张卡正在进行的生成，与界面卡片上的取消相同：有任务号的生成（视频，以及走云端的出图与音频）按接口能力撤销，
    * 无法撤销时停止等待并保留任务。该卡未在生成时抛出。
    */
   cancel(path: string, nodeId: string): Promise<CanvasCancelOutcome>

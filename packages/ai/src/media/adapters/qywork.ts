@@ -9,9 +9,16 @@
  * 金额取云端回报的扣费（`billed`，积分）：云端按请求参数计量，本地不另行计算。
  */
 
-import type { RetryWait } from '@qywork/core'
+import { log, type RetryWait } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
-import { confirmedRejected, download, getJson, sendJson } from '../http.ts'
+import {
+  confirmedRejected,
+  download,
+  getJson,
+  reportingRetries,
+  runLogFields,
+  sendJson,
+} from '../http.ts'
 import { afterSubmit, postTask, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
@@ -96,7 +103,13 @@ export class CloudMediaAdapter implements MediaAdapter {
           if (notFound(err)) return null
           throw err
         })) as CloudJob | null
-        if (!job) return { state: 'failed', message: NOT_ESTABLISHED, verbatim: true }
+        if (!job) {
+          log.warn('media', `云端答复任务不存在，判为${NOT_ESTABLISHED}`, {
+            ...runLogFields(),
+            job: taskId,
+          })
+          return { state: 'failed', message: NOT_ESTABLISHED, verbatim: true }
+        }
         if (job.status === 'succeeded') return { state: 'done', job }
         if (job.status === 'queued' || job.status === 'running') {
           // 云端一侧的重试与本机直连的重试经同一个回调回报，卡片的显示相同。
@@ -133,6 +146,10 @@ export class CloudMediaAdapter implements MediaAdapter {
    * 提交后没有收到有效应答（连接在发出后断开、网关的 5xx、响应无法解析）时按任务号查询一次：
    * 云端已建立任务则按已提交继续等待；答复任务不存在则判为未受理，可以重新提交；查询失败时带任务号结束等待，之后取回时再查询。
    * 查询之前先交出任务号（`onTask`）：确认期间停止或查询失败时，任务记录中已有任务号。
+   * 提交请求已发出、应答到达之前停止时同样交出任务号再结束：云端可能已建立任务并扣费，之后按任务号取回或确认未建立。
+   * 被拒绝后等待重试期间停止时不交出：上一次请求已被答复拒绝，下一次尚未发出，云端没有该任务，任务记录随之删除。
+   * 不要改为在发出之前交出任务号：调用方据此认定任务已提交（画布显示已提交、停止时向云端撤销），而此时云端还没有任务。
+   * 确认的发起（带原始失败的诊断）与结论各写一行日志，带任务号：已扣费而本机判为未建立时，据此与云端的任务记录对照。
    */
   private async submit(
     base: string,
@@ -158,21 +175,60 @@ export class CloudMediaAdapter implements MediaAdapter {
     for (const input of req.inputs) {
       form.append(`input.${input.role}`, new Blob([input.bytes], { type: input.mime }))
     }
+    // 提交请求已发出、尚未得到答复：每次发出时为 true，被拒绝而进入重试等待、收到任务号时为 false。
+    let pending = false
+    const watched: MediaRunOptions = {
+      ...opts,
+      onSubmit: () => {
+        pending = true
+        opts.onSubmit?.()
+      },
+      onRetry: (retry, failure) => {
+        if (retry) pending = false
+        opts.onRetry?.(retry, failure)
+      },
+      onTask: async (taskId) => {
+        pending = false
+        await opts.onTask?.(taskId)
+      },
+    }
     try {
-      return (await postTask(`${base}/v1/media/jobs`, form, auth, opts, (body) => body.id)).taskId
+      return (
+        await reportingRetries(watched, () =>
+          postTask(`${base}/v1/media/jobs`, form, auth, watched, (body) => body.id),
+        )
+      ).taskId
     } catch (err) {
+      if (opts.signal.aborted) {
+        const rejected = err instanceof MediaError && err.diagnostic?.outcome === 'rejected'
+        if (pending && !rejected) await opts.onTask?.(id)
+        throw err
+      }
       if (!(err instanceof MediaError) || err.diagnostic?.outcome !== 'unknown') throw err
+      const fields = { ...runLogFields(), job: id }
+      log.warn('media', `提交结果未知，按任务号查询云端是否已建立任务：${err.message}`, {
+        ...fields,
+        diagnostic: err.diagnostic,
+      })
       await afterSubmit(id, opts.signal, async () => opts.onTask?.(id))
       const established = await afterSubmit(id, opts.signal, () =>
         getJson(jobPath(base, id), auth, opts.signal).then(
           () => true,
           (query: unknown) => {
             if (notFound(query)) return false
+            if (!opts.signal.aborted) {
+              const reason = query instanceof Error ? query.message : String(query)
+              log.warn('media', `按任务号确认失败，带任务号结束等待：${reason}`, fields)
+            }
             throw query
           },
         ),
       )
-      if (!established) throw confirmedRejected(err, NOT_ESTABLISHED)
+      if (!established) {
+        log.warn('media', `云端答复任务不存在，判为未受理：${NOT_ESTABLISHED}`, fields)
+        throw confirmedRejected(err, NOT_ESTABLISHED)
+      }
+      log.info('media', '云端已建立该任务，按已提交继续等待', fields)
       return id
     }
   }

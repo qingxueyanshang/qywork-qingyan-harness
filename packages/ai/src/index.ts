@@ -44,6 +44,7 @@ export {
   failureDiagnostics,
   httpStatusName,
   ProviderError,
+  streamErrorAt,
   streamErrorOf,
   transportFailureKind,
 } from './errors.ts'
@@ -160,7 +161,7 @@ export {
   videoOutOfRange,
 } from './tokens.ts'
 // 流空闲上限的基准：agent 按思考档位放宽该值，runtime 的摘要直接使用该值
-export { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
+export { CLOUD_REQUEST_ID_HEADER, STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 // 协议无关的请求与事件形状
 export type {
   ChatRequest,
