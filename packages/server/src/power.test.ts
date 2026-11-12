@@ -170,10 +170,14 @@ test('定时任务触发的一轮运行期间阻止睡眠，结束后释放；�
   })
   try {
     await waitFor(() => port.held, '触发的一轮开始后持有请求')
-    const lastRunAt = store.db
-      .query<{ t: number }, [string]>('SELECT last_run_at AS t FROM schedules WHERE id = ?')
-      .get(made.id)!.t
-    await waitFor(() => port.wake === lastRunAt + 60_000, '唤醒时刻为下次触发')
+    // 每次判断时重新读取触发时刻：持有请求早于触发时刻落库时，只读取一次得到的是空值，条件永不成立。
+    const lastRun = store.db.query<{ t: number | null }, [string]>(
+      'SELECT last_run_at AS t FROM schedules WHERE id = ?',
+    )
+    await waitFor(() => {
+      const t = lastRun.get(made.id)?.t
+      return t != null && port.wake === t + 60_000
+    }, '唤醒时刻为下次触发')
 
     release()
     await waitFor(() => !port.held, '该轮结束后释放请求')
@@ -182,4 +186,5 @@ test('定时任务触发的一轮运行期间阻止睡眠，结束后释放；�
     store.close()
   }
   expect(port).toMatchObject({ held: false, wake: null })
-})
+  // 用例的期限须长于 `waitFor` 的期限：较短时超时不报告停在哪一步。
+}, 20_000)
