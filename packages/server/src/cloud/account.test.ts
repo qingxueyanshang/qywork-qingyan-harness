@@ -37,7 +37,10 @@ const ANNOUNCEMENTS: Announcement[] = [
 ]
 
 const cloud = {
-  me: 'ok' as 'ok' | 'revoked' | 'invalid',
+  /** `down`：只有 `/v1/me` 以 503 失败，其余接口照常。 */
+  me: 'ok' as 'ok' | 'revoked' | 'invalid' | 'down',
+  /** 登录时发给本机、此后接受的设备密钥。 */
+  key: 'qyd_device_key',
   revoked: 0,
   /** 云端收到的登录与注册请求。 */
   logins: [] as { email: string; password: string; name: string; platform: string }[],
@@ -69,7 +72,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
   async fetch(req): Promise<Response> {
     const url = new URL(req.url)
     const path = url.pathname
-    const authed = req.headers.get('authorization') === 'Bearer qyd_device_key'
+    const authed = req.headers.get('authorization') === `Bearer ${cloud.key}`
     if (path === '/v1/login' || path === '/v1/register') {
       const body = (await req.json()) as {
         email: string
@@ -102,7 +105,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
           { status: 422 },
         )
       }
-      return Response.json({ key: 'qyd_device_key' })
+      return Response.json({ key: cloud.key })
     }
     if (path === '/api/announcements') {
       cloud.notesQueries++
@@ -126,7 +129,8 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
       cloud.revoked++
       return new Response(null, { status: 204 })
     }
-    if (path.startsWith('/v1/') && cloud.me !== 'ok') {
+    if (path === '/v1/me' && cloud.me === 'down') return new Response('', { status: 503 })
+    if (path.startsWith('/v1/') && cloud.me !== 'ok' && cloud.me !== 'down') {
       const code = cloud.me === 'revoked' ? 'device_revoked' : 'invalid_key'
       return Response.json({ error: { code, message: code } }, { status: 401 })
     }
@@ -260,6 +264,7 @@ let account: CloudAccount
 beforeEach(async () => {
   Object.assign(cloud, {
     me: 'ok',
+    key: 'qyd_device_key',
     revoked: 0,
     logins: [],
     usageQuery: '',
@@ -638,6 +643,42 @@ test('公告已读位置：以设备密钥写入云端账号，状态中带该�
     announcementSeen: '7',
   })
   expect(cloud.announcementSeen).toBe('7')
+})
+
+/**
+ * 原始失败形状：`/v1/me` 读取失败时账号状态的已读位置为 null，与「未读过任何公告」相同，界面把最新一条判为未读，
+ * 窗口每次获得焦点时的读取失败一次，圆点就重新出现。
+ */
+test('公告已读位置：云端读取失败时沿用上一次取得的值；写入后读取失败仍为写入的值；从未取得或密钥已换时缺省', async () => {
+  cloud.announcementSeen = '7'
+  expect(await account.login('me@example.com', PASSWORD)).toMatchObject({ announcementSeen: '7' })
+  cloud.me = 'down'
+  expect(await account.state()).toMatchObject({ credits: null, announcementSeen: '7' })
+  cloud.me = 'ok'
+  cloud.announcementSeen = '8'
+  expect(await account.state()).toMatchObject({ credits: 12.5, announcementSeen: '8' })
+  cloud.me = 'down'
+  expect(await account.state()).toMatchObject({ credits: null, announcementSeen: '8' })
+
+  expect(await account.markAnnouncementSeen('9')).toMatchObject({
+    credits: null,
+    announcementSeen: '9',
+  })
+  expect(cloud.announcementSeen).toBe('9')
+
+  // 本次运行中从未取得：缺省，不是 null。
+  const fresh = new CloudAccount(live, origin)
+  const unknown = await fresh.state()
+  expect(unknown).toMatchObject({ state: 'signed_in', credits: null })
+  expect(unknown).not.toHaveProperty('announcementSeen')
+
+  // 退出后以另一个账号登录（云端发给新的设备密钥），读取失败时不沿用上一个账号的值。
+  await account.logout()
+  expect(await account.state()).toEqual({ state: 'signed_out' })
+  cloud.key = 'qyd_other_key'
+  const other = await account.login('other@example.com', PASSWORD)
+  expect(other).toMatchObject({ state: 'signed_in', credits: null })
+  expect(other).not.toHaveProperty('announcementSeen')
 })
 
 test('更换头像：以设备密钥写入云端，状态中带头像；格式不对时给出云端的原因', async () => {

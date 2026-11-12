@@ -19,12 +19,18 @@ const [open, setOpen] = createSignal(false)
 export const announcements = list
 export const announcementsOpen = open
 
-/** 最新一条未读。未登录时没有已读位置，不算未读。 */
+/**
+ * 最新一条未读。未登录或已读位置未取得（账号状态中缺省）时不算未读。不要把缺省与 null（未读过任何公告）
+ * 同等对待：缺省表示服务端从未取得云端的值，同等对待时云端读取失败即显示圆点。
+ */
 export function announcementsUnread(): boolean {
   const newest = list()[0]
   const account = cloudState()
   return (
-    newest !== undefined && account?.state === 'signed_in' && newest.id !== account.announcementSeen
+    newest !== undefined &&
+    account?.state === 'signed_in' &&
+    account.announcementSeen !== undefined &&
+    newest.id !== account.announcementSeen
   )
 }
 
@@ -37,10 +43,13 @@ export async function loadAnnouncements(): Promise<void> {
   }
 }
 
+/** 打开公告窗口即记为已读；已读位置未取得时同样写入。 */
 export function openAnnouncements(): void {
   setOpen(true)
   const newest = list()[0]?.id
-  if (newest && announcementsUnread()) void markAnnouncementSeen(newest).catch(() => {})
+  const account = cloudState()
+  if (newest && account?.state === 'signed_in' && account.announcementSeen !== newest)
+    void markAnnouncementSeen(newest).catch(() => {})
 }
 
 export function closeAnnouncements(): void {

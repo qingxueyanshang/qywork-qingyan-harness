@@ -334,8 +334,11 @@ export interface SummaryTrace {
   /** 发送前登记，返回请求 id。 */
   open(req: ChatRequest, adapter?: import('@qywork/ai').LlmAdapter): string
   sent(requestId: string): void
-  /** `at` 是 `response_started` 带来的传输层观察时刻，不是调用时刻。 */
-  headers(requestId: string, at: number): void
+  /**
+   * `at` 是 `response_started` 带来的传输层观察时刻，不是调用时刻；`cloudRequestId` 是云端模型网关的请求号，
+   * 不是经云端的请求时为 null。
+   */
+  headers(requestId: string, at: number, cloudRequestId: string | null): void
   /** 响应头之前补发过第二份请求；规则与主请求相同。 */
   hedge(requestId: string, hedge: ProviderHedge): void
   firstEvent(requestId: string): void

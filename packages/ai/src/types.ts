@@ -332,8 +332,9 @@ export type ProviderEvent =
    * 两者相差的毫秒数正是这一列要度量的首包等待时间。
    *
    * `hedge` 取 `TransportTrace.hedge`：响应头之前补发过第二份请求时存在。
+   * `cloudRequestId` 取 `TransportTrace.cloudRequestId`：经云端模型网关的请求时存在。
    */
-  | { type: 'response_started'; headersAt: number; hedge?: ProviderHedge }
+  | { type: 'response_started'; headersAt: number; hedge?: ProviderHedge; cloudRequestId?: string }
   /*
    * 带内容的五个事件都携带 `at`：该段内容**到达本地并解析完成**的时刻。
    *

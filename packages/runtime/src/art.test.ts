@@ -1,12 +1,12 @@
 /**
- * 覆盖范围：`art.ts` 的 `generateArt`（经 `media.ts` 的 `makeMediaPort` 分派，含被限流时的重试）与 `extractHtml`。
+ * 覆盖范围：`art.ts` 的 `generateArt`（经 `media.ts` 的 `makeMediaPort` 分派，含被限流时的重试与重试的日志）与 `extractHtml`。
  *
  * 对端是本机模拟的对话接口（OpenAI 兼容协议），按脚本返回 SSE 正文，并记录收到的请求体。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, jest, spyOn, test } from 'bun:test'
 import type { MediaSpend } from '@qywork/core'
-import { artViewportOf } from '@qywork/core'
+import { artViewportOf, log } from '@qywork/core'
 import { extractHtml } from './art.ts'
 import type { QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
@@ -161,6 +161,55 @@ describe('Art 生成', () => {
     } finally {
       jest.useRealTimers()
       random.mockRestore()
+    }
+  })
+
+  /**
+   * 原始失败形状：Art 卡片的重试没有日志，事后无法判断一次失败是否经过重试、属于哪一张卡。
+   * 每次重试写一行，带重试序号、失败码、等待秒数与发起方的日志标识；不含接口密钥与提示词。本用例的日志照常写出。
+   */
+  test('每次重试写一行日志：重试序号、失败码、等待秒数与日志标识，不含接口密钥与提示词', async () => {
+    jest.useFakeTimers()
+    const random = spyOn(Math, 'random').mockReturnValue(0)
+    const warn = spyOn(log, 'warn')
+    try {
+      answer = '<!doctype html><html><body>页面</body></html>'
+      replies = [
+        () =>
+          Response.json({ error: { message: 'busy', type: 'rate_limit_error' } }, { status: 429 }),
+      ]
+      const key = 'sk-art-mark-3b9f'
+      const prompt = '提示词特征串-art-mark-61d0'
+      const base = config()
+      const marked: QyConfig = {
+        ...base,
+        providers: { relay: { ...base.providers.relay!, apiKey: key } },
+      }
+      const logFields = { canvas: 'board.canvas.json', node: 'n4', record: 'pages/a.task.json' }
+      const work = makeMediaPort(marked).generate(
+        { type: 'art', prompt, inputs: [], params: {}, logFields },
+        new AbortController().signal,
+      )
+      const art = () => warn.mock.calls.filter(([scope]) => scope === 'art')
+      for (let i = 0; i < 20_000 && art().length === 0; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      jest.advanceTimersByTime(2_000)
+      expect((await work).ok).toBe(true)
+      expect(art()).toEqual([
+        [
+          'art',
+          '请求失败：HTTP 429 请求过多：busy',
+          { retry: 1, code: 'rate_limited', waitSeconds: 2, ...logFields },
+        ],
+      ])
+      const written = JSON.stringify(warn.mock.calls)
+      expect(written).not.toContain(key)
+      expect(written).not.toContain(prompt)
+    } finally {
+      jest.useRealTimers()
+      random.mockRestore()
+      warn.mockRestore()
     }
   })
 

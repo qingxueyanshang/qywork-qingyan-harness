@@ -5,6 +5,7 @@
  * 都按它分派，合并后每一处都必须排除生成协议。
  */
 
+import type { ErrorCode } from '../protocol/events.ts'
 import { channelVendorOf } from './channel-vendors.ts'
 import type { Currency, ProviderKind } from './model.ts'
 
@@ -280,14 +281,25 @@ export interface MediaSpend {
 export interface MediaDiagnostic {
   stage: 'upload' | 'generate' | 'query' | 'download'
   kind: 'timeout' | 'connection' | 'http' | 'response'
-  outcome: 'unknown' | 'rejected' | 'available'
+  /**
+   * 生成在远端的结果：`rejected` 接口没有受理，可以重新提交；`unknown` 无法确定是否受理；
+   * `available` 远端仍保留任务或产物，可按任务号或地址取回（下载失败、任务号交出之后的失败）；
+   * `failed` 远端受理后报告任务失败，为终态。
+   */
+  outcome: 'unknown' | 'rejected' | 'available' | 'failed'
   host: string
   elapsedMs: number
   /** 静默上限（毫秒）：连续这么久未收到数据即中止。生成请求不设上限，此项缺省。 */
   timeoutMs?: number
   status?: number
+  /** 连接层的错误码（`ECONNRESET`、`ConnectionRefused` 等）。 */
   code?: string
   requestId?: string
+  /**
+   * 失败码，与对话请求同一套（`@qywork/ai` 的 `MediaError.code`）：重试与云端给用户的文字按它判断。
+   * 接口答复了错误状态或在正文中报告了失败时存在；连接失败与响应无法解析时缺省。
+   */
+  errorCode?: ErrorCode
 }
 
 /** 协议决定类别。配置中不另存类别：两处各存一份可能导致不一致。 */

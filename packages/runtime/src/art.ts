@@ -31,6 +31,7 @@ import {
 import {
   ART_MENTION,
   artSizeOf,
+  log,
   type MediaSpend,
   RESEND_LIMIT,
   resendDelay,
@@ -202,9 +203,17 @@ export async function generateArt(
       const receipt = resends ? `；已自动重试 ${resends} 次，仍失败` : ''
       return { ok: false, message: `${label}：${failed.message}${receipt}` }
     }
+    const wait = resendDelay(resends, failed.retryAfterMs)
+    // 每次重试写一行，写法与对话请求的重发日志相同；`call.logFields` 对应到发起的画布卡片或工具调用。
+    log.warn('art', `请求失败：${failed.message}`, {
+      retry: resends + 1,
+      code: failed.code,
+      waitSeconds: Math.round(wait / 1000),
+      ...call.logFields,
+    })
     call.onRetry?.({ attempt: resends + 1, max: RESEND_LIMIT, reason: failed.message })
     // 等待被中止时不回报结束：请求没有重新发出。
-    await waitOrAbort(resendDelay(resends, failed.retryAfterMs), signal)
+    await waitOrAbort(wait, signal)
     call.onRetry?.(null)
   }
 

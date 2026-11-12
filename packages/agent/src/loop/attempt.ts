@@ -208,7 +208,11 @@ export async function* sendTurn(
       // 非 2xx 的响应头不经过 `response_started`（适配器在该路径上直接抛错），
       // 到达时刻只记录在传输读数中。响应头到达过就记录，账本因此能区分「无法连接」与「被拒绝」。
       if (pe?.transport?.headersAt != null) {
-        persist.markRequestHeaders(requestId, pe.transport.headersAt)
+        persist.markRequestHeaders(
+          requestId,
+          pe.transport.headersAt,
+          pe.transport.cloudRequestId ?? null,
+        )
       }
       if (pe?.transport?.hedge) persist.markRequestHedge(requestId, pe.transport.hedge)
       const recordDecision = (
@@ -621,7 +625,7 @@ async function* consumeStream(
         break
       case 'response_started':
         // 只作为传输遥测边界；不产生模型可见内容或 UI step。
-        persist.markRequestHeaders(turn.requestId, ev.headersAt)
+        persist.markRequestHeaders(turn.requestId, ev.headersAt, ev.cloudRequestId ?? null)
         if (ev.hedge) persist.markRequestHedge(turn.requestId, ev.hedge)
         yield {
           type: 'run.request',

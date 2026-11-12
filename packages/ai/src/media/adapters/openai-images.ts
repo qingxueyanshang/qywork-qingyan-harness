@@ -99,7 +99,6 @@ export class OpenAIImagesAdapter implements MediaAdapter {
       if (req.inputs.some((i) => i.role !== 'reference'))
         throw new MediaError('该模型只接受参考图；未提交生成')
       signal.throwIfAborted()
-      opts.onSubmit?.()
       const body = await postJson(
         `${base}/images/generations`,
         {

@@ -1,10 +1,12 @@
 /**
- * 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、失败码与对话请求同一分类（`errors.ts` 的 `httpFailureCode`）、
+ * 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、失败码与对话请求同一分类（`errors.ts` 的 `httpFailureCode`，
+ * 查询与下载阶段的 404 除外）、
  * 提交被限流、请求未发出与素材上传暂时不可用时按 2 秒起加倍的间隔重试（假计时器推进等待）、结果未知不重试、下载重试及取消，
  * 以及在正文中给出错误码的上游（MiniMax、可灵、百炼、火山方舟、Gemini API 的适配器，按接口地址判定上游的 OpenAI 形状出图，
  * 与 `errors.ts` 的 `upstreamFailureCode`）在提交与查询中按其错误码重试或不重试，以及百炼视频适配器的临时上传
  * （`adapters/dashscope.ts` 经 `send` 调用 `providers/openai-compat.ts` 的 `uploadDashScopeMedia`）的重试与 OSS 以 403 拒绝时的重新取凭证，
- * 不调用付费接口。
+ * 以及重试等待、重新取凭证与上游状态变化（`task.ts` 的 `waitTask`）的日志带上运行的日志标识（`reportingRetries`）、
+ * 不含密钥与提示词，不调用付费接口。
  */
 import { afterAll, afterEach, beforeAll, expect, jest, spyOn, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
@@ -12,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { log } from '@qywork/core'
 import { classifyProviderError } from '../errors.ts'
-import { download, postJson, reportingRetries, send, sendJson } from './http.ts'
+import { download, postJson, reportingRetries, send, sendJson, transientFailure } from './http.ts'
 import { buildMediaAdapter } from './index.ts'
 import { MediaError } from './types.ts'
 
@@ -50,7 +52,8 @@ function retryClock() {
     turn,
     /** 等到 `send` 第 `n` 次进入重试等待。 */
     async waiting(n: number) {
-      for (let i = 0; i < 20_000 && warn.mock.calls.length < n; i++) await turn()
+      // 让出次数的上限只决定失败时多久报告。不要调小：上传数 MB 文件的请求在机器负载高时需要数万次让出才完成。
+      for (let i = 0; i < 200_000 && warn.mock.calls.length < n; i++) await turn()
       expect(warn.mock.calls).toHaveLength(n)
     },
     /** 推进 `ms` 毫秒；推进到差 1 毫秒时确认请求数未变，即等待未满不发出请求。 */
@@ -388,9 +391,11 @@ test('生成遇到限流按 2 秒起加倍的间隔重试，受理后返回结�
     const reports: unknown[] = []
     const failures: unknown[] = []
     const work = reportingRetries(
-      (retry, failure) => {
-        reports.push(retry)
-        failures.push(failure?.status)
+      {
+        onRetry: (retry, failure) => {
+          reports.push(retry)
+          failures.push(failure?.status)
+        },
       },
       () => postJson(url(), {}, {}, signal()),
     )
@@ -499,9 +504,8 @@ test('限流与请求未发出交替出现时各自计数：间隔、上限与�
   try {
     const reports: ({ attempt: number; max: number } | null)[] = []
     const work = failure(
-      reportingRetries(
-        (retry) => reports.push(retry),
-        () => postJson(`http://${host}/image`, {}, {}, signal()),
+      reportingRetries({ onRetry: (retry) => reports.push(retry) }, () =>
+        postJson(`http://${host}/image`, {}, {}, signal()),
       ),
     )
     // 第一次请求被限流；等待期间关闭接口，其后的请求连接被拒绝。
@@ -563,6 +567,53 @@ test('经 buildMediaAdapter 构造的适配器在提交被限流时向 onRetry �
   }
 })
 
+/** 日志中不得出现的特征串：接口密钥与提示词。 */
+const KEY_MARK = 'sk-key-mark-7c41e9'
+const PROMPT_MARK = '提示词特征串-prompt-mark-9d2e'
+
+/**
+ * 原始失败形状：重试日志的字段只有阶段与主机，同时运行多个任务时无法判断一条重试属于哪一张卡、哪一个任务。
+ * 日志标识（`logFields`）经 `buildMediaAdapter` 接通的异步上下文附在重试日志上，适配器不传递；日志不含接口密钥与提示词。
+ * 本用例的日志照常写出（不替换 `log.warn`）。
+ */
+test('重试等待的日志带上本次运行的日志标识，不含接口密钥与提示词', async () => {
+  jest.useFakeTimers()
+  const random = spyOn(Math, 'random').mockReturnValue(0)
+  const warn = spyOn(log, 'warn')
+  const turn = () => new Promise<void>((resolve) => setImmediate(resolve))
+  try {
+    let left = 1
+    reply = () => (left-- > 0 ? limited() : Response.json({ data: [{ b64_json: 'iVBORw0KGgo=' }] }))
+    const logFields = { canvas: 'board.canvas.json', node: 'n1', record: 'generated/a.task.json' }
+    const work = buildMediaAdapter({
+      kind: 'openai_images',
+      model: 'gpt-image-2',
+      apiKey: KEY_MARK,
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    }).run(
+      { operation: 'generate', prompt: PROMPT_MARK, inputs: [], params: {} },
+      { signal: signal(), logFields },
+    )
+    for (let i = 0; i < 20_000 && warn.mock.calls.length === 0; i++) await turn()
+    jest.advanceTimersByTime(BACKOFF[0])
+    expect((await work).files).toHaveLength(1)
+    expect(warn.mock.calls).toEqual([
+      [
+        'media',
+        'HTTP 429 请求过多：Requests rate limit exceeded, please try again later.；2 秒后第 1 次重试',
+        { stage: 'generate', host: `127.0.0.1:${server.port}`, ...logFields },
+      ],
+    ])
+    const written = JSON.stringify(warn.mock.calls)
+    expect(written).not.toContain(KEY_MARK)
+    expect(written).not.toContain(PROMPT_MARK)
+  } finally {
+    jest.useRealTimers()
+    random.mockRestore()
+    warn.mockRestore()
+  }
+})
+
 /** 用户在等待期间停止：等待立即结束，以停止原因拒绝，之后不再发出请求。 */
 test('重试等待期间停止即结束，不再发出请求', async () => {
   const clock = retryClock()
@@ -571,9 +622,8 @@ test('重试等待期间停止即结束，不再发出请求', async () => {
     const controller = new AbortController()
     const reason = new Error('用户停止')
     const reports: unknown[] = []
-    const work = reportingRetries(
-      (retry) => reports.push(retry),
-      () => postJson(url(), {}, {}, controller.signal),
+    const work = reportingRetries({ onRetry: (retry) => reports.push(retry) }, () =>
+      postJson(url(), {}, {}, controller.signal),
     ).catch((err: unknown) => err)
     await clock.waiting(1)
     controller.abort(reason)
@@ -727,7 +777,6 @@ test.each([
   [403, 'auth_failed', '{"error":{"type":"permission_error","message":"no access"}}'],
   [401, 'auth_failed', '{"error":{"message":"Incorrect API key provided"}}'],
   [402, 'insufficient_quota', '{"error":{"message":"payment required"}}'],
-  [404, 'model_not_found', '{"error":{"message":"model not found"}}'],
   [429, 'rate_limited', '{"error":{"message":"slow down","type":"rate_limit_error"}}'],
   [400, 'invalid_request', '{"error":{"message":"size 不合法"}}'],
   [400, 'provider_unavailable', '{"error":{"message":"上游负载已饱和，请稍后再试"}}'],
@@ -743,6 +792,42 @@ test.each([
   )
   expect(error.code).toBe(code)
   expect(chat.code).toBe(code)
+})
+
+/**
+ * 原始失败形状：失败码只按状态码归类，结果下载或任务查询得到 404（结果已过期、地址失效、任务不存在）时记为型号不存在。
+ * 查询与下载阶段的 404 记为请求被拒绝；提交阶段的 404 仍为型号不存在，与对话请求相同。
+ * 三个阶段的报错文字、请求次数与诊断的结果都与改动前相同：404 在任何阶段都不重试（下载只重试暂时失败）。
+ */
+test('查询与下载阶段的 404 记为请求被拒绝，提交阶段仍为型号不存在；重试判定与报错文字不变', async () => {
+  const body = '{"error":{"message":"not found"}}'
+  reply = () => new Response(body, { status: 404 })
+  const submitted = await failure(send(url(), { method: 'POST' }, signal()))
+  const chat = classifyProviderError(
+    'openai_chat_completions',
+    { status: 404, ...(JSON.parse(body) as object), message: body },
+    null,
+    body,
+  )
+  expect([submitted.code, chat.code]).toEqual(['model_not_found', 'model_not_found'])
+  expect(submitted.message).toBe('HTTP 404 未找到：not found')
+  expect(hits).toEqual(['POST'])
+
+  hits = []
+  const query = await failure(send(url(), { method: 'GET' }, signal()))
+  expect(query.code).toBe('invalid_request')
+  expect(query.message).toBe('任务查询失败：HTTP 404 未找到：not found')
+  expect(query.diagnostic).toMatchObject({ stage: 'query', outcome: 'rejected', status: 404 })
+  expect(transientFailure(query)).toBe(false)
+  expect(hits).toEqual(['GET'])
+
+  hits = []
+  const fetched = await failure(download(url(), signal()))
+  expect(fetched.code).toBe('invalid_request')
+  expect(fetched.message).toBe('结果下载失败：HTTP 404 未找到：not found')
+  expect(fetched.diagnostic).toMatchObject({ stage: 'download', outcome: 'available', status: 404 })
+  expect(transientFailure(fetched)).toBe(false)
+  expect(hits).toEqual(['GET'])
 })
 
 test('额度判定覆盖全部状态码：百炼以 400 Arrearage 报告欠费时为额度用尽，不重试', async () => {
@@ -1180,16 +1265,20 @@ const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 /**
  * 百炼视频任务，参考视频经临时上传：本机接口依次答复取凭证（`policies`）与 OSS 上传（`uploads`），各自用完后答复成功；
  * 其后提交、查询到成功并下载。返回运行结果、OSS 每次收到的文件内容、取凭证次数与提交次数。
+ * `as` 替换接口密钥、提示词与运行的日志标识。
  */
-async function dashScopeUpload(answers: {
-  policies: (() => Response)[]
-  uploads: (() => Response)[]
-}) {
+async function dashScopeUpload(
+  answers: {
+    policies: (() => Response)[]
+    uploads: (() => Response)[]
+  },
+  as: { apiKey?: string; prompt?: string; logFields?: Record<string, string>; bytes?: number } = {},
+) {
   const local = `http://127.0.0.1:${server.port}`
   const dir = await mkdtemp(join(tmpdir(), 'dashscope-upload-'))
   const path = join(dir, 'clip.mp4')
-  // 3 MB：大于一个读取分片，文件内容不完整时可以区分。
-  const video = new Uint8Array(3 * 1024 * 1024).map((_, i) => (i * 31 + 7) % 251)
+  // 默认 3 MB：大于一个读取分片，文件内容不完整时可以区分。不核对文件内容的用例用 `bytes` 取较小的文件。
+  const video = new Uint8Array(as.bytes ?? 3 * 1024 * 1024).map((_, i) => (i * 31 + 7) % 251)
   await writeFile(path, video)
   const received: Buffer[] = []
   let submitted = 0
@@ -1223,17 +1312,17 @@ async function dashScopeUpload(answers: {
   const run = buildMediaAdapter({
     kind: 'dashscope_videos',
     model: 'wan3.0-video',
-    apiKey: 'k',
+    apiKey: as.apiKey ?? 'k',
     baseUrl: local,
   })
     .run(
       {
         operation: 'video_to_video',
-        prompt: 'x',
+        prompt: as.prompt ?? 'x',
         inputs: [{ role: 'video', bytes: video, mime: 'video/mp4', path }],
         params: {},
       },
-      { signal: signal() },
+      { signal: signal(), ...(as.logFields ? { logFields: as.logFields } : {}) },
     )
     .finally(() => routed.mockRestore())
   return { run, video, received, policies: () => policies, submitted: () => submitted }
@@ -1285,10 +1374,14 @@ test('百炼临时上传：取凭证被限流、上传到 OSS 得到 503 时各�
 test('百炼临时上传重试用尽：报告「素材上传失败，未提交生成」与已做的重试，诊断为 OSS 主机，不提交生成', async () => {
   const clock = retryClock()
   try {
-    const upload = await dashScopeUpload({
-      policies: [],
-      uploads: Array.from({ length: 6 }, () => () => new Response(OSS_BUSY, { status: 503 })),
-    })
+    // 六次上传只核对次数，不核对文件内容，用小文件。
+    const upload = await dashScopeUpload(
+      {
+        policies: [],
+        uploads: Array.from({ length: 6 }, () => () => new Response(OSS_BUSY, { status: 503 })),
+      },
+      { bytes: 64 * 1024 },
+    )
     for (const [i, ms] of BACKOFF.entries()) {
       await clock.waiting(i + 1)
       await clock.elapse(ms)
@@ -1361,6 +1454,104 @@ test('百炼临时上传连续两次被 OSS 以 403 拒绝：只重新取一次�
     expect(clock.warnings()).toEqual([])
   } finally {
     clock.restore()
+  }
+})
+
+/** OSS 以签名不一致拒绝时的答复：正文带有提交的签名与待签字符串。 */
+const OSS_SIGNATURE =
+  '<Error><Code>SignatureDoesNotMatch</Code><Message>The request signature we calculated does not match the signature you provided.</Message>' +
+  '<SignatureProvided>sig-mark-58c2</SignatureProvided><StringToSign>policy-mark-77d1</StringToSign></Error>'
+
+/**
+ * 原始失败形状：重新取凭证没有任何记录，事后无法判断一次上传是否被 OSS 拒绝过。
+ * 重新取凭证时写一行：OSS 主机、OSS 的错误码与运行的日志标识；不写 OSS 的错误正文（其中的签名）、接口密钥与提示词。
+ */
+test('百炼临时上传被 OSS 以 403 拒绝后重新取凭证时写一行日志，只带主机、OSS 的错误码与日志标识', async () => {
+  const info = spyOn(log, 'info')
+  try {
+    const logFields = { canvas: 'board.canvas.json', node: 'n2', record: 'clips/a.task.json' }
+    const upload = await dashScopeUpload(
+      { policies: [], uploads: [() => new Response(OSS_SIGNATURE, { status: 403 })] },
+      { apiKey: KEY_MARK, prompt: PROMPT_MARK, logFields },
+    )
+    await upload.run
+    expect(upload.policies()).toBe(2)
+    expect(info.mock.calls.filter(([, message]) => message.includes('OSS'))).toEqual([
+      [
+        'media',
+        '百炼临时上传被 OSS 以 403 拒绝，重新获取上传凭证后再上传',
+        { host: OSS_HOST, ossCode: 'SignatureDoesNotMatch', ...logFields },
+      ],
+    ])
+    const written = JSON.stringify(info.mock.calls)
+    for (const mark of [KEY_MARK, PROMPT_MARK, 'sig-mark-58c2', 'policy-mark-77d1']) {
+      expect(written).not.toContain(mark)
+    }
+  } finally {
+    info.mockRestore()
+  }
+})
+
+/**
+ * 原始失败形状：本机直连时上游报告的状态只进入卡片的内存状态，事后无法核对卡片显示过什么。
+ * 经 `buildMediaAdapter` 运行的百炼视频任务：状态变化时写一行，带运行的日志标识，同一状态不重复写；
+ * 日志不含接口密钥与提示词。查询间隔（5 秒起乘以 1.5）由假计时器推进。
+ */
+test('本机直连的任务查询：上游状态变化时写一行日志，带日志标识，不含接口密钥与提示词', async () => {
+  jest.useFakeTimers()
+  const info = spyOn(log, 'info')
+  const turn = () => new Promise<void>((resolve) => setImmediate(resolve))
+  const statusLines = () =>
+    info.mock.calls.filter(([, message]) => String(message).startsWith('上游任务状态'))
+  try {
+    const local = `http://127.0.0.1:${server.port}`
+    const states = ['PENDING', 'PENDING', 'RUNNING']
+    reply = (req) => {
+      const { pathname } = new URL(req.url)
+      if (pathname.endsWith('/video-synthesis')) {
+        return Response.json({ output: { task_id: 't-9', task_status: 'PENDING' } })
+      }
+      if (pathname === '/api/v1/tasks/t-9') {
+        const status = states.shift()
+        return Response.json({
+          output: status
+            ? { task_status: status }
+            : { task_status: 'SUCCEEDED', video_url: `${local}/out.mp4` },
+        })
+      }
+      return new Response(MP4, { headers: { 'content-type': 'video/mp4' } })
+    }
+    const logFields = { canvas: 'board.canvas.json', node: 'n3', record: 'clips/b.task.json' }
+    const work = buildMediaAdapter({
+      kind: 'dashscope_videos',
+      model: 'wan3.0-video',
+      apiKey: KEY_MARK,
+      baseUrl: local,
+    }).run(
+      { operation: 'text_to_video', prompt: PROMPT_MARK, inputs: [], params: {} },
+      { signal: signal(), logFields },
+    )
+    // 每让出一次事件循环只推进 25 毫秒，直到任务结束。不要按固定的让出次数判断「查询已答复、等待已开始」后一次推进整个间隔：
+    // 机器负载高时答复晚于推进，其后登记的等待不再到期。请求在途时的静默上限（60 秒）同样由假计时器计时，推进过快会先触发它。
+    let settled = false
+    const done = work.finally(() => {
+      settled = true
+    })
+    for (let i = 0; i < 20_000 && !settled; i++) {
+      jest.advanceTimersByTime(25)
+      await turn()
+    }
+    expect((await done).files).toHaveLength(1)
+    expect(statusLines()).toEqual([
+      ['media', '上游任务状态：PENDING', logFields],
+      ['media', '上游任务状态：RUNNING', logFields],
+    ])
+    const written = JSON.stringify(info.mock.calls)
+    expect(written).not.toContain(KEY_MARK)
+    expect(written).not.toContain(PROMPT_MARK)
+  } finally {
+    jest.useRealTimers()
+    info.mockRestore()
   }
 })
 

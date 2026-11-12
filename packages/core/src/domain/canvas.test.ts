@@ -152,15 +152,109 @@ describe('画布：格式', () => {
     expect(serializeCanvas(back.doc)).toBe(text)
   })
 
-  test('生成记录：结果值未知、含多余字段、输入不合法时均被拒绝', () => {
+  test('生成记录：写入时结果值未知、含多余字段、诊断不合法均被拒绝', () => {
     const base = { node: 'a1', action: 'run', start: 's', end: 'e', result: 'done' } as const
-    expect(recordRun(sample(), { ...base, result: 'ok' as 'done' }).ok).toBe(false)
-    const text = (run: unknown) =>
-      JSON.stringify({ ...JSON.parse(serializeCanvas(sample())), runs: [run] })
-    expect(parseCanvas(text(base)).ok).toBe(true)
-    expect(parseCanvas(text({ ...base, color: 'red' })).ok).toBe(false)
-    expect(parseCanvas(text({ ...base, inputs: [{ role: 'x', path: 'a.png' }] })).ok).toBe(false)
-    expect(parseCanvas(text({ ...base, cost: '1' })).ok).toBe(false)
+    const diagnostic = {
+      stage: 'generate',
+      kind: 'http',
+      outcome: 'rejected',
+      host: 'example.com',
+      elapsedMs: 1,
+    } as const
+    expect(recordRun(sample(), { ...base, diagnostic }).ok).toBe(true)
+    for (const bad of [
+      { ...base, result: 'ok' as 'done' },
+      { ...base, color: 'red' },
+      { ...base, diagnostic: { ...diagnostic, attempts: 2 } },
+      { ...base, diagnostic: { ...diagnostic, outcome: 'retrying' as 'unknown' } },
+      { ...base, diagnostic: { ...diagnostic, stage: 'transcode' as 'upload' } },
+    ]) {
+      expect(recordRun(sample(), bad).ok).toBe(false)
+    }
+  })
+
+  /**
+   * 原始失败形状：另一版本的程序写入的生成记录中，诊断带有本版本不认识的字段或取值（例如新加入的字段 `errorCode`
+   * 与 `outcome` 的取值 `failed`），整张画布校验失败、无法打开。
+   */
+  test('生成记录：读取时不认识的部分丢弃，画布照常打开，画布内容不变', () => {
+    const content = JSON.parse(serializeCanvas(sample()))
+    const base = { node: 'a3', action: 'run', start: 's', end: 'e', result: 'failed' } as const
+    const diagnostic = {
+      stage: 'generate',
+      kind: 'http',
+      outcome: 'rejected',
+      host: 'example.com',
+      elapsedMs: 1,
+      status: 429,
+    } as const
+    const runs = [
+      { ...base, message: '未知字段', diagnostic: { ...diagnostic, attempts: 2 } },
+      { ...base, message: '未知结果', diagnostic: { ...diagnostic, outcome: 'retrying' } },
+      { ...base, message: '未知阶段', diagnostic: { ...diagnostic, stage: 'transcode' } },
+      { ...base, message: '未知类别', diagnostic: { ...diagnostic, kind: 'quota' } },
+      { ...base, message: '多余字段', color: 'red' },
+      { ...base, message: '未知输入', inputs: [{ role: 'mask', path: 'a.png' }] },
+      { ...base, message: '取值类型', cost: '1' },
+      { ...base, result: 'rejected', message: '整条丢弃' },
+      { ...base, action: 'replay', message: '整条丢弃' },
+    ]
+    const r = parseCanvas(JSON.stringify({ ...content, runs }))
+    if (!r.ok) throw new Error(r.error)
+    expect(r.doc.runs).toEqual([
+      { ...base, message: '未知字段', diagnostic },
+      { ...base, message: '未知结果' },
+      { ...base, message: '未知阶段' },
+      { ...base, message: '未知类别' },
+      { ...base, message: '多余字段' },
+      { ...base, message: '未知输入' },
+      { ...base, message: '取值类型' },
+    ])
+    const text = serializeCanvas(r.doc)
+    expect(JSON.parse(text)).toEqual({ ...content, runs: r.doc.runs })
+    const again = parseCanvas(text)
+    if (!again.ok) throw new Error(again.error)
+    expect(serializeCanvas(again.doc)).toBe(text)
+  })
+
+  test('生成记录可读而画布内容不合法时仍然拒绝', () => {
+    type Raw = {
+      nodes: (Record<string, unknown> & { versions: Record<string, unknown>[] })[]
+      edges: Record<string, unknown>[]
+      runs: unknown
+    }
+    const runs = [{ node: 'a3', action: 'run', start: 's', end: 'e', result: 'done' }]
+    const broken = (edit: (doc: Raw) => void) => {
+      const doc: Raw = { ...JSON.parse(serializeCanvas(sample())), runs }
+      edit(doc)
+      return parseCanvas(JSON.stringify(doc))
+    }
+    expect(broken(() => {}).ok).toBe(true)
+    expect(
+      broken((d) => {
+        d.nodes[0]!.color = 'red'
+      }),
+    ).toEqual({ ok: false, error: '第 1 个节点 含有未知字段：color' })
+    expect(
+      broken((d) => {
+        d.nodes[2]!.versions[0]!.note = 'x'
+      }),
+    ).toEqual({ ok: false, error: '第 3 个节点的第 1 版 含有未知字段：note' })
+    expect(
+      broken((d) => {
+        d.nodes[2]!.versions[0]!.made = { ...made, inputs: [{ role: 'mask', path: 'a.png' }] }
+      }),
+    ).toMatchObject({ ok: false })
+    expect(
+      broken((d) => {
+        d.edges[0]!.role = 'mask'
+      }),
+    ).toMatchObject({ ok: false })
+    expect(
+      broken((d) => {
+        d.runs = {}
+      }),
+    ).toMatchObject({ ok: false })
   })
 
   test('手动修改后含悬空 @ 的文件无法读取', () => {

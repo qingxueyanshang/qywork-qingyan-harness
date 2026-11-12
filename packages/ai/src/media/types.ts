@@ -107,16 +107,27 @@ export interface MediaRunOptions {
    * 调用方按失败类别改写显示的原因时读取 `failure`。
    */
   onRetry?: (retry: RetryWait | null, failure?: MediaError) => void
-  /** 视频生成 POST 即将发出；素材上传不触发。用于区分未提交取消与受理结果未知。 */
+  /**
+   * 生成请求即将发出：每次发出各回报一次（含被拒绝后的重试，异步任务的提交与同步出图、语音都在内），素材上传、查询与下载不回报。
+   * 由 `send` 统一回报（`reportingRetries`），适配器不另行调用。用于区分未提交时的停止与受理结果未知。
+   */
   onSubmit?: () => void
   /** 在下载之前保存结果引用与计量；回调完成后才开始下载。 */
   onImageResult?: (result: MediaImageResult) => void | Promise<void>
-  /** 取得远端任务号后立即交出：调用方将其落盘，停止、超时或进程退出之后仍可取回。 */
+  /**
+   * 取得远端任务号后立即交出：调用方将其落盘，停止、超时或进程退出之后仍可取回。
+   * 任务号由本机生成的协议（云端）在提交结果未知、提交请求已发出而应答到达之前停止时同样交出：远端可能已建立该任务。
+   */
   onTask?: (taskId: string) => void | Promise<void>
   /** 状态变化时回报一次（排队、生成中），不按轮询次数回报。 */
   onStatus?: (status: string) => void
   /** 只查询与下载该已提交的任务，不再提交。 */
   resumeTaskId?: string
+  /**
+   * 本次运行的日志标识，附在重试等待、查询失败与按任务号确认的日志行中（`reportingRetries`）：本机为画布路径与节点或工具调用，
+   * 云端为任务号。值写入日志文件，不得放入密钥、提示词与素材内容。
+   */
+  logFields?: Record<string, string>
 }
 
 /**

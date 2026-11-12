@@ -1,7 +1,9 @@
 /**
  * 生成端口、参数表快照与生成花费的记账。
  *
- * 覆盖范围：`media.ts` 的 `makeMediaPort`（模型选择、发送前校验、接口错误的转述、成功时返回花费）与 `operationOf`，
+ * 覆盖范围：`media.ts` 的 `makeMediaPort`（模型选择、发送前校验、接口错误的转述与诊断中的失败码、调用的日志标识交给适配器、
+ * 成功时返回花费）与 `operationOf`，走云端的提交在应答到达之前停止时的任务记录（`ai/media/adapters/qywork.ts` 交出任务号，
+ * `tools/generate.ts` 的 `generateMedia` 与 `resumeMedia` 保留或删除记录），
  * `prompt.ts` 中「可用的生成模型」一节，`session.ts` 按 `mediaEnabled` 注册画布与生成工具，
  * 以及 `session.ts` 将生成花费写入本轮 usage、`runs` 行与账本。
  *
@@ -9,8 +11,8 @@
  * 记账一组另行启动模拟的对话接口，按脚本先调用图片生成工具、再结束本轮，执行完整的一轮。
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtemp } from 'node:fs/promises'
+import { afterAll, beforeAll, beforeEach, describe, expect, jest, spyOn, test } from 'bun:test'
+import { mkdtemp, readdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CanvasPort, MediaPort, OfficePort } from '@qywork/agent'
@@ -19,10 +21,12 @@ import {
   type AgentEvent,
   applyCanvasOps,
   emptyCanvas,
+  log,
   type MediaInputRole,
   runCosts,
 } from '@qywork/core'
 import { ContentStore, getRun, Store } from '@qywork/store'
+import { generateMedia, resumeMedia } from '@qywork/tools'
 import type { QyConfig } from './config.ts'
 import { listMediaModels } from './config.ts'
 import { makeMediaPort, operationOf } from './media.ts'
@@ -212,6 +216,133 @@ describe('生成端口', () => {
     expect(!out.ok && out.message).toBe('qwen / qwen-image-3.0：HTTP 400 请求无效：size 不合法')
   })
 
+  /**
+   * 原始失败形状：画布运行记录与工具结果中只有报错文字与请求诊断，没有失败码，无法判断为什么没有重试、为什么显示这句话。
+   * 诊断带上失败码（`MediaError.code`）。
+   */
+  test('接口报错时诊断带上失败码', async () => {
+    reply = () =>
+      Response.json({ code: 'InvalidParameter', message: 'size 不合法' }, { status: 400 })
+    const out = await makeMediaPort(config()).generate(call(), signal())
+    expect(!out.ok && out.diagnostic).toMatchObject({
+      stage: 'generate',
+      kind: 'http',
+      outcome: 'rejected',
+      status: 400,
+      errorCode: 'invalid_request',
+    })
+  })
+
+  /**
+   * 原始失败形状：生成端口不把发起方的标识交给适配器，重试日志对应不到画布卡片或工具调用。
+   * 调用的日志标识（`MediaCall.logFields`）随运行选项交给适配器；日志不含接口密钥与提示词。本用例的日志照常写出。
+   */
+  test('调用的日志标识交给适配器：被限流时的重试日志带上它，不含接口密钥与提示词', async () => {
+    jest.useFakeTimers()
+    const random = spyOn(Math, 'random').mockReturnValue(0)
+    const warn = spyOn(log, 'warn')
+    try {
+      const accepted = reply
+      let left = 1
+      reply = (req) =>
+        left-- > 0
+          ? Response.json(
+              { code: 'Throttling.RateQuota', message: 'Requests rate limit exceeded' },
+              { status: 429 },
+            )
+          : accepted(req)
+      const key = 'sk-qwen-mark-0a7c'
+      const prompt = '提示词特征串-port-mark-4c8b'
+      const cfg = config()
+      cfg.providers.qwen!.apiKey = key
+      const logFields = { canvas: 'board.canvas.json', node: 'n5', record: 'generated/e.task.json' }
+      const work = makeMediaPort(cfg).generate(call({ prompt, logFields }), signal())
+      const media = () => warn.mock.calls.filter(([scope]) => scope === 'media')
+      for (let i = 0; i < 20_000 && media().length === 0; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      jest.advanceTimersByTime(2_000)
+      expect((await work).ok).toBe(true)
+      expect(media()).toEqual([
+        [
+          'media',
+          'HTTP 429 请求过多：Requests rate limit exceeded；2 秒后第 1 次重试',
+          { stage: 'generate', host: `127.0.0.1:${server.port}`, ...logFields },
+        ],
+      ])
+      const written = JSON.stringify(warn.mock.calls)
+      expect(written).not.toContain(key)
+      expect(written).not.toContain(prompt)
+    } finally {
+      jest.useRealTimers()
+      random.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
+  /**
+   * 原始失败形状：取得任务号之后的失败与上游报告的任务失败没有请求诊断，诊断中也就没有失败码。
+   * 两者现在带诊断与失败码；本轮是否允许再次提交图片（按诊断的结果判定）与改动前相同：都不允许，
+   * 报错文字与改动前相同。经云端出图（`qywork_images`）的两种失败各一次。
+   */
+  test.each([
+    [
+      '查询被拒绝，任务仍可取回',
+      () => Response.json({ error: { message: 'denied' } }, { status: 401 }),
+      '任务查询失败：HTTP 401 未授权：denied（远端任务 mj_00000000000000e1 仍可取回）',
+      { stage: 'query', kind: 'http', outcome: 'available', status: 401, errorCode: 'auth_failed' },
+    ],
+    [
+      '上游报告任务失败',
+      () =>
+        Response.json({
+          status: 'failed',
+          error: '上游额度不足，请联系管理员',
+          unknownReason: null,
+          credits: 0,
+          files: 0,
+        }),
+      '上游额度不足，请联系管理员',
+      {
+        stage: 'query',
+        kind: 'http',
+        outcome: 'failed',
+        status: 200,
+        errorCode: 'insufficient_quota',
+      },
+    ],
+  ] as const)(
+    '%s：诊断带失败码，报错文字不变，本轮不再提交新的图片生成',
+    async (_name, answer, message, diagnostic) => {
+      reply = (req) => {
+        const path = new URL(req.url).pathname
+        if (req.method === 'POST' && path === '/v1/media/jobs')
+          return Response.json({ id: 'mj_00000000000000e1' }, { status: 201 })
+        if (path === '/v1/media/jobs/mj_00000000000000e1') return answer()
+        return new Response('not found', { status: 404 })
+      }
+      const port = makeMediaPort({
+        providers: {
+          cloud: {
+            kind: 'openai_chat_completions',
+            apiKey: 'qk-device',
+            baseUrl: `http://127.0.0.1:${server.port}`,
+            models: {},
+            media: { 'gpt-image-2': { kind: 'qywork_images' } },
+          },
+        },
+        mediaDefaults: { image: { provider: 'cloud', model: 'gpt-image-2' } },
+      })
+      const out = await port.generate(call(), signal())
+      expect(!out.ok && out.message).toBe(`cloud / gpt-image-2：${message}`)
+      expect(!out.ok && out.diagnostic).toMatchObject(diagnostic)
+      const again = await port.generate(call(), signal())
+      expect(again).toMatchObject({ ok: false, executed: false })
+      expect(!again.ok && again.message).toStartWith('本轮图片结果尚未确认')
+      expect(hits.filter((path) => path === '/v1/media/jobs')).toHaveLength(1)
+    },
+  )
+
   test('成功时按接口返回的计量给出花费（记账与本次调用各一份，数值相同），失败时不给出', async () => {
     reply = () =>
       Response.json({
@@ -303,6 +434,115 @@ function chatTurn(
     'data: [DONE]\n\n'
   )
 }
+
+/**
+ * 走云端的生成在提交应答到达之前停止。原始失败形状：提交请求已发出、云端可能已建立任务并扣费，停止后任务记录中没有任务号，
+ * 记录被删除，结果无法取回。经生成端口与 `generateMedia` 执行，任务记录写在临时工作区中。
+ */
+describe('走云端的提交在应答到达之前停止', () => {
+  const cloud = (): QyConfig => ({
+    providers: {
+      cloud: {
+        kind: 'openai_chat_completions',
+        apiKey: 'qk-device',
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        models: {},
+        media: { 'gpt-image-2': { kind: 'qywork_images' } },
+      },
+    },
+    mediaDefaults: { image: { provider: 'cloud', model: 'gpt-image-2' } },
+  })
+  const records = async (root: string) =>
+    (await readdir(join(root, 'generated')).catch(() => [])).filter((f) => f.endsWith('.task.json'))
+
+  async function start() {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-cloud-stop-'))
+    const stop = new AbortController()
+    const waiting = Promise.withResolvers<void>()
+    const done = generateMedia({
+      roots: root,
+      media: makeMediaPort(cloud()),
+      signal: stop.signal,
+      type: 'image',
+      prompt: '一只猫',
+      inputs: [],
+      params: {},
+      onRetry: (retry) => {
+        if (retry) waiting.resolve()
+      },
+    }).catch((err: unknown) => ({ thrown: err }))
+    return { root, stop, done, waiting: waiting.promise }
+  }
+
+  test('提交请求已发出、应答到达之前停止：任务号写入任务记录；取回时云端答复不存在，删除记录', async () => {
+    const arrived = Promise.withResolvers<string>()
+    const release = Promise.withResolvers<void>()
+    reply = async (req) => {
+      if (req.method === 'POST') {
+        const form = await req.formData()
+        arrived.resolve((JSON.parse(String(form.get('request'))) as { id: string }).id)
+        await release.promise
+        return Response.json({}, { status: 201 })
+      }
+      return new Response('not found', { status: 404 })
+    }
+    const { root, stop, done } = await start()
+    try {
+      const id = await arrived.promise
+      stop.abort()
+      expect(await done).toMatchObject({ thrown: expect.anything() })
+      const [file] = await records(root)
+      const record = JSON.parse(await readFile(join(root, 'generated', file!), 'utf8'))
+      expect(record).toMatchObject({ type: 'image', taskId: id, provider: 'cloud' })
+      const resumed = await resumeMedia({
+        roots: root,
+        media: makeMediaPort(cloud()),
+        signal: signal(),
+        record: `generated/${file}`,
+      })
+      expect(resumed).toMatchObject({
+        ok: false,
+        message: 'cloud / gpt-image-2：任务未建立，未扣费',
+      })
+      expect(await records(root)).toEqual([])
+    } finally {
+      release.resolve()
+    }
+  })
+
+  test('被拒绝后等待重试期间停止：任务号不写入，任务记录删除；提交被明确拒绝时同样删除', async () => {
+    reply = () =>
+      Response.json(
+        { type: 'error', error: { type: 'rate_limited', code: 'rate_limited', message: 'busy' } },
+        { status: 429 },
+      )
+    const waited = await start()
+    await waited.waiting
+    waited.stop.abort()
+    expect(await waited.done).toMatchObject({ thrown: expect.anything() })
+    expect(await records(waited.root)).toEqual([])
+    expect(hits.filter((path) => path === '/v1/media/jobs')).toHaveLength(1)
+
+    reply = () =>
+      Response.json(
+        {
+          type: 'error',
+          error: {
+            type: 'insufficient_credits',
+            code: 'insufficient_credits',
+            message: '积分不足',
+          },
+        },
+        { status: 402 },
+      )
+    const refused = await start()
+    expect(await refused.done).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('积分不足'),
+    })
+    expect(await records(refused.root)).toEqual([])
+  })
+})
 
 describe('生成花费', () => {
   /**

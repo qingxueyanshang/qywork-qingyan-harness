@@ -1674,6 +1674,7 @@ export function openProviderRequest(
     cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
     sentAt: null,
     headersAt: null,
+    cloudRequestId: null,
     hedge: null,
     firstEventAt: null,
     firstContentAt: null,
@@ -1724,14 +1725,22 @@ export function markProviderRequestSent(store: Store, id: ProviderRequestId): vo
 }
 
 /**
- * 响应头到达的时刻。`at` 由传输层观测，不要在此处取当前时刻：
+ * 响应头到达的时刻与其中云端模型网关的请求号。`at` 由传输层观测，不要在此处取当前时刻：
  * 事件从适配器传到此处已延迟若干毫秒，而该列的用途正是与 `sent_at`
- * 相减得出首包等待时间。重复调用时保留首次的值。
+ * 相减得出首包等待时间。重复调用时两列都保留首次的值。
  */
-export function markProviderRequestHeaders(store: Store, id: ProviderRequestId, at: number): void {
+export function markProviderRequestHeaders(
+  store: Store,
+  id: ProviderRequestId,
+  at: number,
+  cloudRequestId: string | null = null,
+): void {
   store.db
-    .query('UPDATE provider_requests SET headers_at = COALESCE(headers_at, ?) WHERE id = ?')
-    .run(at, id)
+    .query(
+      `UPDATE provider_requests SET headers_at = COALESCE(headers_at, ?),
+         cloud_request_id = COALESCE(cloud_request_id, ?) WHERE id = ?`,
+    )
+    .run(at, cloudRequestId, id)
 }
 
 /** 响应头之前补发的第二份请求。`hedge` 来自传输层读数：成功时经 `response_started`，失败时经诊断中的传输读数。 */
@@ -1914,6 +1923,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     cacheRouteFingerprint: r.cache_route_fingerprint,
     sentAt: r.sent_at,
     headersAt: r.headers_at,
+    cloudRequestId: r.cloud_request_id,
     hedge: r.hedge_sent_at === null ? null : { sentAt: r.hedge_sent_at, won: r.hedge_won === 1 },
     firstEventAt: r.first_event_at,
     firstContentAt: r.first_content_at,

@@ -23,6 +23,13 @@ import {
 } from '@qywork/core'
 import { ProviderError } from './errors.ts'
 
+/**
+ * 云端模型网关在响应头中返回的请求号，即云端请求记录（`request_log`）的 id。成功、失败与网关自身的拒绝都返回。
+ * 不使用 `x-request-id` 或 `request-id`：上游以这两个名称返回自己的请求号，同名时无法区分是哪一方的编号。
+ * 云端引用本常量，名称只定义一处。
+ */
+export const CLOUD_REQUEST_ID_HEADER = 'x-qywork-request-id'
+
 export interface TransportTrace {
   sentAt: number
   status: number | null
@@ -33,6 +40,8 @@ export interface TransportTrace {
   hedge: ProviderHedge | null
   /** 非 2xx 响应的正文（`boundedErrorBody` 读取的部分）。2xx 与未收到响应时为 null。 */
   errorBody: string | null
+  /** 响应头中的云端请求号（`CLOUD_REQUEST_ID_HEADER`）；未收到响应或不是经云端的请求时为 null。 */
+  cloudRequestId: string | null
   /** 补发择优尚未结束时，各份响应的实际读数；选定响应后清除。 */
   pending?: TransportTrace[]
 }
@@ -47,6 +56,7 @@ export function newTrace(now = Date.now()): TransportTrace {
     keepAliveLines: 0,
     hedge: null,
     errorBody: null,
+    cloudRequestId: null,
   }
 }
 
@@ -67,6 +77,7 @@ export function readTransport(trace: TransportTrace, now = Date.now()): Provider
     bytes: observed.bytes,
     sinceLastByteMs: observed.lastByteAt === null ? null : now - observed.lastByteAt,
     keepAliveLines: observed.keepAliveLines,
+    ...(observed.cloudRequestId ? { cloudRequestId: observed.cloudRequestId } : {}),
     ...(trace.hedge ? { hedge: { ...trace.hedge } } : {}),
     ...(pending
       ? {
@@ -248,8 +259,15 @@ function firstResponse(
     let done = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const selected = (copy: Copy, res: Response) => {
-      const { status, headersAt, bytes, lastByteAt, keepAliveLines } = copy.trace
-      Object.assign(trace, { status, headersAt, bytes, lastByteAt, keepAliveLines })
+      const { status, headersAt, bytes, lastByteAt, keepAliveLines, cloudRequestId } = copy.trace
+      Object.assign(trace, {
+        status,
+        headersAt,
+        bytes,
+        lastByteAt,
+        keepAliveLines,
+        cloudRequestId,
+      })
       delete trace.pending
       return {
         res,
@@ -294,6 +312,7 @@ function firstResponse(
     const arrived = (copy: Copy, res: Response) => {
       copy.trace.headersAt = Date.now()
       copy.trace.status = res.status
+      copy.trace.cloudRequestId = res.headers.get(CLOUD_REQUEST_ID_HEADER)
       if (done) {
         copy.closing.abort()
         return

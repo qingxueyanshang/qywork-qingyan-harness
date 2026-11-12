@@ -185,7 +185,7 @@ export interface CanvasRunRecord {
   /** 未发出请求即失败（没有可用模型）时缺省。 */
   provider?: string
   model?: string
-  /** 远端任务号。仅视频生成具有。 */
+  /** 远端任务号。视频生成，以及走云端的出图与音频具有。 */
   task?: string
   /** 该次生成或取回所属的版本；多次取回沿用同一个版本。 */
   version?: string
@@ -1823,6 +1823,9 @@ type Shape =
   | 'action'
   | 'result'
   | 'diagnostic'
+  | 'diagnosticStage'
+  | 'diagnosticKind'
+  | 'diagnosticOutcome'
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -1885,14 +1888,37 @@ function matches(v: unknown, shape: Shape): boolean {
         v === 'done' || v === 'failed' || v === 'pending' || v === 'cancelled' || v === 'unknown'
       )
     case 'diagnostic':
-      return (
-        isObject(v) &&
-        ['upload', 'generate', 'query', 'download'].includes(String(v.stage)) &&
-        ['timeout', 'connection', 'http', 'response'].includes(String(v.kind)) &&
-        ['unknown', 'rejected', 'available'].includes(String(v.outcome)) &&
-        checkFields('请求诊断', v, DIAGNOSTIC_FIELDS) === null
-      )
+      return checkFields('请求诊断', v, DIAGNOSTIC_FIELDS) === null
+    case 'diagnosticStage':
+      return (['upload', 'generate', 'query', 'download'] as unknown[]).includes(v)
+    case 'diagnosticKind':
+      return (['timeout', 'connection', 'http', 'response'] as unknown[]).includes(v)
+    case 'diagnosticOutcome':
+      return (['unknown', 'rejected', 'available', 'failed'] as unknown[]).includes(v)
   }
+}
+
+/**
+ * 按字段表取出生成记录中认识的部分：未知键丢弃，可选键取值不符时丢弃该键，必填键缺失或取值不符时返回 null。
+ * 诊断逐项取出，不认识的字段丢弃、必填项取值不认识时整条诊断丢弃。只用于读取生成记录：画布内容与写入一律经
+ * `checkFields` 严格核对。
+ */
+function pickFields(raw: unknown, fields: Record<string, Shape>): Record<string, unknown> | null {
+  if (!isObject(raw)) return null
+  const out: Record<string, unknown> = {}
+  for (const [key, shape] of Object.entries(fields)) {
+    const name = key.replace(/!$/, '')
+    const value = !Object.hasOwn(raw, name)
+      ? undefined
+      : shape === 'diagnostic'
+        ? (pickFields(raw[name], DIAGNOSTIC_FIELDS) ?? undefined)
+        : matches(raw[name], shape)
+          ? raw[name]
+          : undefined
+    if (value !== undefined) out[name] = value
+    else if (key.endsWith('!')) return null
+  }
+  return out
 }
 
 /** 按字段表核对一个对象：存在多余的键、缺少必填键或类型错误时均不合法。必填键以 `!` 结尾。 */
@@ -2096,15 +2122,16 @@ const MADE_FIELDS: Record<string, Shape> = {
 }
 const INPUT_FIELDS: Record<string, Shape> = { 'role!': 'role', 'path!': 'string' }
 const DIAGNOSTIC_FIELDS: Record<string, Shape> = {
-  'stage!': 'string',
-  'kind!': 'string',
-  'outcome!': 'string',
+  'stage!': 'diagnosticStage',
+  'kind!': 'diagnosticKind',
+  'outcome!': 'diagnosticOutcome',
   'host!': 'string',
   'elapsedMs!': 'number',
   timeoutMs: 'number',
   status: 'number',
   code: 'string',
   requestId: 'string',
+  errorCode: 'string',
 }
 const RUN_FIELDS: Record<string, Shape> = {
   diagnostic: 'diagnostic',
@@ -2136,7 +2163,11 @@ function boxRequired(): Record<string, Shape> {
   return { 'x!': 'number', 'y!': 'number', 'w!': 'number', 'h!': 'number' }
 }
 
-/** 读取画布文件。结构或不变式不成立时拒绝，不做修补：手动修改出错的文件由用户自行修正。 */
+/**
+ * 读取画布文件。画布内容（节点、连线、版本）的结构或不变式不成立时拒绝，不做修补：手动修改出错的文件由用户自行修正。
+ * 生成记录是历史记录，不参与画布内容，同一份文件会被不同版本的程序读取：其中不认识的部分按 `pickFields` 丢弃，
+ * 不使画布无法打开；丢弃的部分在下一次写入时不再写出。
+ */
 export function parseCanvas(
   text: string,
 ): { ok: true; doc: CanvasDoc } | { ok: false; error: string } {
@@ -2149,6 +2180,11 @@ export function parseCanvas(
   const problem = structureProblem(raw) ?? validateCanvas(raw as CanvasDoc)
   if (problem) return { ok: false, error: problem }
   const doc = raw as CanvasDoc
+  if (doc.runs) {
+    doc.runs = doc.runs.flatMap(
+      (r) => pickFields(r, RUN_FIELDS) ?? [],
+    ) as unknown as CanvasRunRecord[]
+  }
   // 音频节点使用 169×169 默认框时，读取时统一改为当前布局；自定义尺寸和其他媒体保持原样。
   for (const node of doc.nodes) {
     if (canvasMediaOf(node) === 'audio' && node.w === 169 && node.h === 169) {
@@ -2166,7 +2202,7 @@ function structureProblem(raw: unknown): string | null {
     runs: 'array',
   })
   if (top) return top
-  const doc = raw as { version: number; nodes: unknown[]; edges: unknown[]; runs?: unknown[] }
+  const doc = raw as { version: number; nodes: unknown[]; edges: unknown[] }
   if (doc.version !== CANVAS_SCHEMA_VERSION) return `未知的画布版本：${doc.version}`
   for (const [i, n] of doc.nodes.entries()) {
     const where = `第 ${i + 1} 个节点`
@@ -2198,10 +2234,6 @@ function structureProblem(raw: unknown): string | null {
   }
   for (const [i, e] of doc.edges.entries()) {
     const bad = checkFields(`第 ${i + 1} 条连线`, e, EDGE_FIELDS)
-    if (bad) return bad
-  }
-  for (const [i, r] of (doc.runs ?? []).entries()) {
-    const bad = checkFields(`第 ${i + 1} 条生成记录`, r, RUN_FIELDS)
     if (bad) return bad
   }
   return null
@@ -2282,7 +2314,7 @@ export function serializeCanvas(doc: CanvasDoc): string {
     start: r.start,
     end: r.end,
     result: r.result,
-    ...(r.diagnostic !== undefined ? { diagnostic: r.diagnostic } : {}),
+    ...(r.diagnostic !== undefined ? { diagnostic: orderedDiagnostic(r.diagnostic) } : {}),
     ...(r.provider !== undefined ? { provider: r.provider } : {}),
     ...(r.model !== undefined ? { model: r.model } : {}),
     ...(r.task !== undefined ? { task: r.task } : {}),
@@ -2301,4 +2333,20 @@ export function serializeCanvas(doc: CanvasDoc): string {
     ? { version: doc.version, nodes, edges, runs }
     : { version: doc.version, nodes, edges }
   return `${JSON.stringify(top, null, 2)}\n`
+}
+
+/** 诊断的键按 `DIAGNOSTIC_FIELDS` 的顺序写出：读取时按该表取出，不按固定顺序写出时读后再写字节会变化。 */
+function orderedDiagnostic(d: MediaDiagnostic): MediaDiagnostic {
+  return {
+    stage: d.stage,
+    kind: d.kind,
+    outcome: d.outcome,
+    host: d.host,
+    elapsedMs: d.elapsedMs,
+    ...(d.timeoutMs !== undefined ? { timeoutMs: d.timeoutMs } : {}),
+    ...(d.status !== undefined ? { status: d.status } : {}),
+    ...(d.code !== undefined ? { code: d.code } : {}),
+    ...(d.requestId !== undefined ? { requestId: d.requestId } : {}),
+    ...(d.errorCode !== undefined ? { errorCode: d.errorCode } : {}),
+  }
 }

@@ -101,6 +101,12 @@ describe('generate_image', () => {
       inputs: [],
       params: { size: '1024*1536' },
       outputDir: join(root, 'generated'),
+      logFields: {
+        conversation: 'cv_test',
+        run: 'rn_test',
+        tool: 'generate_image',
+        record: expect.stringMatching(/^generated\/\d{8}-\d{6}\.task\.json$/),
+      },
     })
     const [name] = await readdir(join(root, 'generated'))
     expect(name).toMatch(/^\d{8}-\d{6}\.png$/)
@@ -821,5 +827,39 @@ describe('工具卡片上的进度', () => {
     const { context, lines } = recording(root)
     await retrieveMediaTool.fn({ path: 'cloud.task.json' }, context)
     expect(lines).toEqual(['第 3/5 次重试 · 上次失败：HTTP 429 请求过多：busy\n'])
+  })
+
+  /**
+   * 原始失败形状：重试日志只有阶段与主机，同一执行中并行的几次生成无法区分，也对应不到工具调用。
+   * 三个生成工具与 retrieve_media 的调用带会话、执行、工具名与任务记录的路径（`MediaCall.logFields`）。
+   */
+  test('生成工具与 retrieve_media 的调用带会话、执行、工具名与任务记录路径的日志标识', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gen-fields-'))
+    for (const [name, tool] of [
+      ['generate_image', generateImageTool],
+      ['generate_video', generateVideoTool],
+      ['generate_audio', generateAudioTool],
+    ] as const) {
+      calls = []
+      await tool.fn({ prompt: 'x', text: 'x', output: `out/${name}` }, ctx(root))
+      expect(calls[0]?.logFields).toEqual({
+        conversation: 'cv_test',
+        run: 'rn_test',
+        tool: name,
+        record: `out/${name}.task.json`,
+      })
+    }
+    await writeFile(
+      join(root, 'wave.task.json'),
+      JSON.stringify({ type: 'video', provider: 'qwen', model: 'v', taskId: 't', output: 'wave' }),
+    )
+    calls = []
+    await retrieveMediaTool.fn({ path: 'wave.task.json' }, ctx(root))
+    expect(calls[0]?.logFields).toEqual({
+      conversation: 'cv_test',
+      run: 'rn_test',
+      tool: 'retrieve_media',
+      record: 'wave.task.json',
+    })
   })
 })

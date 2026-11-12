@@ -227,6 +227,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
             ...(call.onStatus ? { onStatus: call.onStatus } : {}),
             ...(call.onRetry ? { onRetry: call.onRetry } : {}),
             ...(call.resumeTaskId ? { resumeTaskId: call.resumeTaskId } : {}),
+            ...(call.logFields ? { logFields: call.logFields } : {}),
           },
         )
         reportSpend(result.usage ?? {})
@@ -254,12 +255,17 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         )
           unresolved.add(type)
         if (signal.aborted || !(err instanceof MediaError)) throw err
+        // 诊断带上失败码（`MediaError.code`）：画布运行记录与工具结果据此说明为什么没有重试、为什么显示这句话。
+        const diagnostic = err.diagnostic && {
+          ...err.diagnostic,
+          ...(err.code ? { errorCode: err.code } : {}),
+        }
         return {
           ok: false,
           message: `${target.provider} / ${target.model}：${err.message}`,
           ...(err.pendingTaskId ? { pendingTaskId: err.pendingTaskId } : {}),
           ...(receivedImage || call.resumeImageResult ? { recoverable: true } : {}),
-          ...(err.diagnostic ? { diagnostic: err.diagnostic } : {}),
+          ...(diagnostic ? { diagnostic } : {}),
         }
       }
     },
@@ -267,15 +273,19 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
 }
 
 /**
- * 撤销已提交的视频任务。`unsupported`：该接口不支持撤销，任务无法撤回，按结果计费。
+ * 撤销已提交的远端任务（视频，以及走云端的出图与音频）。`type` 是生成类别，按它取得模型的配置。
+ * `unsupported`：该接口不支持撤销，任务无法撤回，按结果计费。
  * 模型已从配置中删除或没有密钥时抛错：此时无法确定能否撤销，不能视为无法撤回。
  */
 export async function cancelMediaTask(
   config: QyConfig,
-  task: { provider: string; model: string; taskId: string },
+  task: { provider: string; model: string; taskId: string; type: MediaOutput },
   signal: AbortSignal,
 ): Promise<MediaCancel | 'unsupported'> {
-  const target = resolveMediaModel(config, 'video', { provider: task.provider, model: task.model })
+  const target = resolveMediaModel(config, task.type, {
+    provider: task.provider,
+    model: task.model,
+  })
   if (!target?.apiKey) {
     throw new MediaError(
       `接口 ${task.provider} / ${task.model} 不在配置中或未配置 API Key，未执行撤销`,
