@@ -34,7 +34,7 @@ import {
   getDefaultWhiteList,
   safeAttrValue,
 } from 'xss'
-import { localHtmlUrl, localPath } from './links.ts'
+import { localHtmlUrl, localPath, workspaceFile } from './links.ts'
 
 type Hljs = typeof import('highlight.js/lib/common').default
 
@@ -114,13 +114,36 @@ marked.use({
 })
 
 /**
+ * 被渲染的工作区文件。提供时相对地址按该文件所在目录解析，工作区内的图片内嵌显示；
+ * 不提供时（模型正文、公告）相对地址由 `openLink` 按工作区根解析，本机图片显示为路径链接。
+ */
+export interface MarkdownFile {
+  /** 文件所在目录的工作区相对路径，位于根目录时为空串。 */
+  dir: string
+  /** 工作区根的绝对路径，用于判定绝对路径的图片是否位于工作区内。 */
+  root: string
+  /** 工作区相对路径 → 图片地址。 */
+  url: (path: string) => string
+}
+
+/**
  * 创建渲染器。
  *
  * 每次渲染都新建：`Parser` 会把当次的 options 设置到 `marked.Renderer` 上，
  * 跨调用复用会使两次渲染共享可变状态。
  */
-function makeRenderer(ready: boolean): Renderer {
+function makeRenderer(ready: boolean, file?: MarkdownFile): Renderer {
   const renderer = new Renderer()
+
+  /**
+   * 相对地址前补文件所在目录；绝对路径、网址与锚点原样返回。
+   * 目录按段转义后再拼接：`localPath` 会对整个地址解码一次，目录名中的 `%` 不转义时会被误解码。
+   */
+  const resolve = (href: string): string => {
+    const path = localPath(href)
+    if (!file?.dir || !path || path.startsWith('/') || /^[a-z]:\//i.test(path)) return href
+    return `${file.dir.split('/').map(encodeURIComponent).join('/')}/${href}`
+  }
 
   renderer.code = ({ text, lang }) => {
     const language = (lang ?? '').trim().toLowerCase()
@@ -150,16 +173,20 @@ function makeRenderer(ready: boolean): Renderer {
   // 外部链接一律在新窗口打开并断开 opener：模型提供的链接不可信。
   renderer.link = ({ href, title, text }) => {
     const t = title ? ` title="${escapeHtml(title)}"` : ''
-    return `<a href="${escapeHtml(href ?? '')}"${t} target="_blank" rel="noreferrer noopener">${text}</a>`
+    return `<a href="${escapeHtml(resolve(href ?? ''))}"${t} target="_blank" rel="noreferrer noopener">${text}</a>`
   }
 
-  // 本机文件的图片不内嵌，显示为路径链接，点击后在右侧预览。不要改为 `<img>`：相对地址按应用页面的地址解析，
-  // 无法取得文件，净化也会将其清空，界面上显示为损坏的图片。
+  // 本机图片只在提供文件上下文且位于工作区内时内嵌，地址取 `file.url` 的直链。其余显示为路径链接，点击后在右侧预览。
+  // 不要直接以原地址写入 `<img>`：相对地址按应用页面的地址解析，无法取得文件，净化也会将其清空，显示为损坏的图片。
   const image = renderer.image.bind(renderer)
   renderer.image = (token) => {
     const path = localPath(token.href)
     if (!path) return image(token)
-    return `<a href="${escapeHtml(token.href)}" target="_blank" rel="noreferrer noopener">${escapeHtml(path)}</a>`
+    const href = resolve(token.href)
+    const inside = file && workspaceFile(href, file.root)
+    if (file && inside)
+      return `<img src="${escapeHtml(file.url(inside))}" alt="${escapeHtml(token.text)}">`
+    return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">${escapeHtml(path)}</a>`
   }
 
   return renderer
@@ -188,12 +215,12 @@ function finish(raw: string): string {
   })
 }
 
-/** 整段渲染。定稿时使用，纠正增量渲染的已知偏差。 */
-export function renderMarkdown(source: string): string {
+/** 整段渲染。定稿时使用，纠正增量渲染的已知偏差；渲染工作区中的 Markdown 文件时传入 `file`。 */
+export function renderMarkdown(source: string, file?: MarkdownFile): string {
   if (!source) return ''
   // 读取一次信号，使库加载完成后本次渲染自动失效并重新执行。
   const ready = hljsReady()
-  const renderer = makeRenderer(ready)
+  const renderer = makeRenderer(ready, file)
   return finish(marked.parse(source, { renderer, async: false }) as string)
 }
 

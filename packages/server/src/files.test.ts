@@ -6,7 +6,7 @@
  * 锁定以下行为：文件树不遗漏任何条目（依赖树、构建产物、以点开头的条目全部列出，
  * 界面隐藏某个条目即等同于该条目不存在）、新建与改名均不覆盖、删除不存在的条目必须抛出
  * （不静默成功）、搜索跳过噪音目录（与文件树的规则不同，属于有意设计）、分类的回退规则、
- * Office 族的分类与按 Office 格式搜索、Office 文档的预览只返回元数据、
+ * Office 族的分类与按 Office 格式搜索、Office 文档的预览只返回元数据、ZIP 归档按内容列出成员、
  * 预览只读取上限以内的字节，以及接口按字面值解析路径、删除软链接只删除目录项本身、
  * 路径解析为项目根目录时拒绝删除与重命名。
  */
@@ -42,6 +42,42 @@ async function workspace(): Promise<string> {
   await mkdir(join(dir, '.git'), { recursive: true })
   await writeFile(join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8')
   return dir
+}
+
+/** 只含空成员的存储方式 ZIP，成员名按 UTF-8 写入；`flags` 写入每个成员的通用标志位。 */
+function storedZip(names: string[], flags = 0): Uint8Array {
+  const encoder = new TextEncoder()
+  const locals: Uint8Array[] = []
+  const centrals: Uint8Array[] = []
+  let offset = 0
+  for (const name of names) {
+    const bytes = encoder.encode(name)
+    const local = new Uint8Array(30 + bytes.length)
+    const lv = new DataView(local.buffer)
+    lv.setUint32(0, 0x04034b50, true)
+    lv.setUint16(6, flags | 0x800, true)
+    lv.setUint16(26, bytes.length, true)
+    local.set(bytes, 30)
+    const central = new Uint8Array(46 + bytes.length)
+    const cv = new DataView(central.buffer)
+    cv.setUint32(0, 0x02014b50, true)
+    cv.setUint16(8, flags | 0x800, true)
+    cv.setUint16(28, bytes.length, true)
+    cv.setUint32(42, offset, true)
+    central.set(bytes, 46)
+    locals.push(local)
+    centrals.push(central)
+    offset += local.length
+  }
+  const size = centrals.reduce((n, c) => n + c.length, 0)
+  const end = new Uint8Array(22)
+  const ev = new DataView(end.buffer)
+  ev.setUint32(0, 0x06054b50, true)
+  ev.setUint16(8, names.length, true)
+  ev.setUint16(10, names.length, true)
+  ev.setUint32(12, size, true)
+  ev.setUint32(16, offset, true)
+  return new Uint8Array(Buffer.concat([...locals, ...centrals, end]))
 }
 
 /** 文件树的入口参数：工作区根的绝对路径与其显示路径。 */
@@ -251,7 +287,23 @@ describe('预览分类', () => {
   test('已识别的扩展名给出种类与语言，未识别的回退为 text', () => {
     expect(classify('a/b.ts')).toEqual({ kind: 'text', mime: 'text/plain', language: 'typescript' })
     expect(classify('x.png').kind).toBe('image')
+    expect(classify('x.SVG')).toEqual({ kind: 'image', mime: 'image/svg+xml' })
     expect(classify('x.pdf').kind).toBe('pdf')
+    // Edge 实测能解码的扩展名；未登记时按文本读取后判为二进制，显示「无法以文本预览」。
+    for (const [name, kind, mime] of [
+      ['a.jfif', 'image', 'image/jpeg'],
+      ['a.pjpeg', 'image', 'image/jpeg'],
+      ['a.pjp', 'image', 'image/jpeg'],
+      ['a.apng', 'image', 'image/apng'],
+      ['a.m4v', 'video', 'video/mp4'],
+      ['a.3gp', 'video', 'video/3gpp'],
+      ['a.aac', 'audio', 'audio/aac'],
+      ['a.opus', 'audio', 'audio/ogg'],
+      ['a.oga', 'audio', 'audio/ogg'],
+      ['a.mka', 'audio', 'audio/x-matroska'],
+    ] as const) {
+      expect(classify(name)).toEqual({ kind, mime })
+    }
     // 回退为 text 而不是 binary：扩展名无法穷举，未知扩展名按文本读取时最多显示乱码，
     // 按二进制处理则会使可读取的内容无法显示。
     expect(classify('x.qwerty')).toEqual({ kind: 'text', mime: 'text/plain' })
@@ -322,6 +374,7 @@ describe('预览', () => {
     for (const [name, kind] of [
       ['big.pdf', 'pdf'],
       ['big.png', 'image'],
+      ['big.svg', 'image'],
       ['big.mp4', 'video'],
     ] as const) {
       const abs = join(dir, name)
@@ -331,6 +384,38 @@ describe('预览', () => {
       expect('dataUri' in out).toBe(false)
       expect(out.note).toBeUndefined()
     }
+  })
+
+  /** 原始失败形状：ZIP 只显示「归档文件」，不列出成员。 */
+  test('ZIP 结构的归档按内容列出成员；其他归档格式与加密的 ZIP 只给出说明', async () => {
+    const dir = await workspace()
+    await writeFile(join(dir, 'pack.zip'), storedZip(['docs/', 'docs/说明.md', 'a.txt']))
+    expect(await preview(join(dir, 'pack.zip'), 'pack.zip')).toMatchObject({
+      kind: 'archive',
+      entries: ['docs/', 'docs/说明.md', 'a.txt'],
+      truncated: false,
+    })
+    await writeFile(join(dir, 'lib.jar'), storedZip(['META-INF/MANIFEST.MF']))
+    expect((await preview(join(dir, 'lib.jar'), 'lib.jar')).entries).toEqual([
+      'META-INF/MANIFEST.MF',
+    ])
+    await writeFile(join(dir, 'locked.zip'), storedZip(['a.txt'], 0x0001))
+    expect(await preview(join(dir, 'locked.zip'), 'locked.zip')).toMatchObject({
+      note: '归档已加密',
+    })
+    await writeFile(join(dir, 'a.7z'), new Uint8Array([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]))
+    const other = await preview(join(dir, 'a.7z'), 'a.7z')
+    expect(other).toMatchObject({ kind: 'archive', note: '归档文件' })
+    expect(other.entries).toBeUndefined()
+  })
+
+  test('ZIP 成员超过上限时截断并标记', async () => {
+    const dir = await workspace()
+    const names = Array.from({ length: 2001 }, (_, i) => `f${i}.txt`)
+    await writeFile(join(dir, 'many.zip'), storedZip(names))
+    const out = await preview(join(dir, 'many.zip'), 'many.zip')
+    expect(out.entries).toEqual(names.slice(0, 2000))
+    expect(out.truncated).toBe(true)
   })
 
   /** 原始失败形状：xlsx 与 xls 按文本解码，经 `looksBinary` 判定后显示「无法以文本预览」。 */
@@ -438,6 +523,9 @@ describe('文件接口的路径解析', () => {
     expect(res.headers.get('content-type')).toBe('application/pdf')
     expect(res.headers.get('cache-control')).toBe('no-store')
     expect(await res.text()).toBe('%PDF-1.4 x')
+    // 原始失败形状：SVG 以 text/plain 返回，`<img>` 加载失败，预览只能显示源码。
+    await writeFile(join(dir, 'a.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>')
+    expect((await get('a.svg')).headers.get('content-type')).toBe('image/svg+xml')
     expect((await get('src')).status).toBe(404)
   })
 })

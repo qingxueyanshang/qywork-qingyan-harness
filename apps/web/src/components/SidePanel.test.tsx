@@ -5,6 +5,7 @@
  * 原始失败形状：文件树请求已发出，右侧已打开的文件仍显示旧正文，按钮看起来没有响应。
  * 另覆盖右键菜单与预览切换时的树宽规则；实际尺寸由浏览器复测验证。
  * 覆盖资源管理器菜单的文件定位、目录打开参数与失败提示。
+ * 另覆盖文件预览中 Markdown 的渲染与源码切换、ZIP 归档的成员列表。
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
@@ -605,7 +606,7 @@ describe('文件页刷新', () => {
     )
   })
 
-  test('文件页执行选中请求：编辑器装配前到达的在装配后执行，已打开时立即执行，执行后清除', async () => {
+  test('文件页执行选中请求：Markdown 切换到源码，编辑器装配前到达的在装配后执行，已打开时立即执行，执行后清除', async () => {
     const store = await import('../lib/store/index.ts')
     const { EditorView } = await import('@codemirror/view')
     const originalApi = store.client.api
@@ -613,9 +614,10 @@ describe('文件页刷新', () => {
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async () => ({
       path: '脚本.md',
       kind: 'text',
-      mime: 'text/markdown',
+      mime: 'text/plain',
       size: content.length,
       content,
+      language: 'markdown',
       truncated: false,
     })
     restoreApi = () => {
@@ -1594,5 +1596,104 @@ describe('文件预览的切换与 PDF', () => {
       () => `html=${host.innerHTML.slice(0, 300)}`,
     )
     expect(rawCalls).toEqual([])
+  })
+})
+
+describe('文件预览的 Markdown 与归档', () => {
+  async function mount(result: Record<string, unknown>) {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    ;(store.client as unknown as { api: () => Promise<unknown> }).api = async () => result
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+    const { render } = await import('solid-js/web')
+    const { default: FileView } = await import('./FileView.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(
+      () => <FileView path={result.path as string} />,
+      host as unknown as HTMLElement,
+    )
+    return host
+  }
+
+  /** 原始失败形状：Markdown 只按源码显示。 */
+  test('Markdown 默认渲染，相对链接与图片按文件所在目录解析；切换后显示源码', async () => {
+    const content = '# 标题\n\n[下一篇](next.md)\n\n![图](img/a.png)\n'
+    const host = await mount({
+      path: 'docs/说明.md',
+      kind: 'text',
+      mime: 'text/plain',
+      size: content.length,
+      mtime: 7,
+      content,
+      language: 'markdown',
+      truncated: false,
+    })
+    await waitFor(
+      () => host.querySelector('.markdown-file h1') !== null,
+      () => `html=${host.innerHTML.slice(0, 300)}`,
+    )
+    expect(host.querySelector('.markdown-file h1')?.textContent).toBe('标题')
+    expect(host.querySelector('.markdown-file a')?.getAttribute('href')).toBe(
+      `${encodeURIComponent('docs')}/next.md`,
+    )
+    const img = host.querySelector('.markdown-file img')?.getAttribute('src') ?? ''
+    expect(img).toContain(`/api/files/raw?path=${encodeURIComponent('docs/img/a.png')}`)
+    expect(img).toContain('&v=7')
+
+    const button = (name: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>('.preview-mode button')].find(
+        (b) => b.textContent === name,
+      )
+    button('源码')?.click()
+    await waitFor(
+      () => host.querySelector('.cm-editor') !== null,
+      () => `html=${host.innerHTML.slice(0, 300)}`,
+    )
+    expect(host.querySelector('.markdown-file')).toBeNull()
+    button('预览')?.click()
+    await waitFor(
+      () => host.querySelector('.markdown-file h1') !== null,
+      () => `html=${host.innerHTML.slice(0, 300)}`,
+    )
+  })
+
+  test('非 Markdown 的文本不显示预览与源码切换', async () => {
+    const host = await mount({
+      path: 'a.txt',
+      kind: 'text',
+      mime: 'text/plain',
+      size: 1,
+      mtime: 1,
+      content: 'x',
+      truncated: false,
+    })
+    await waitFor(
+      () => host.querySelector('.cm-editor') !== null,
+      () => `html=${host.innerHTML.slice(0, 300)}`,
+    )
+    expect(host.querySelector('.preview-mode')).toBeNull()
+  })
+
+  test('ZIP 归档列出成员', async () => {
+    const host = await mount({
+      path: 'pack.zip',
+      kind: 'archive',
+      mime: 'application/octet-stream',
+      size: 100,
+      mtime: 1,
+      entries: ['docs/', 'docs/说明.md'],
+      truncated: false,
+    })
+    await waitFor(
+      () => host.querySelectorAll('.archive-list li').length === 2,
+      () => `html=${host.innerHTML.slice(0, 300)}`,
+    )
+    expect([...host.querySelectorAll('.archive-list li')].map((li) => li.textContent)).toEqual([
+      'docs/',
+      'docs/说明.md',
+    ])
   })
 })

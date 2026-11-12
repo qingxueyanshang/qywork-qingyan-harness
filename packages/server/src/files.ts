@@ -9,6 +9,7 @@
 
 import { mkdir, open, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, sep } from 'node:path'
+import { openZip } from '@qywork/ooxml/zip'
 import { IGNORED_DIRS } from '@qywork/tools'
 
 export type PreviewKind =
@@ -48,6 +49,8 @@ export interface PreviewResult {
   language?: string
   /** 仅 Office 族有。 */
   office?: OfficeFormat
+  /** 仅 ZIP 结构的归档有：成员路径，按中央目录顺序，目录以 `/` 结尾。 */
+  entries?: string[]
   truncated: boolean
   /** 无法内联时给出的说明，UI 直接显示。 */
   note?: string
@@ -55,6 +58,16 @@ export interface PreviewResult {
 
 /** 文本预览上限。超过即截断：把 5MB 的日志载入浏览器会使标签页无响应。 */
 const MAX_TEXT_BYTES = 512 * 1024
+
+/**
+ * 列出 ZIP 成员的文件大小上限。`openZip` 需要整个文件的字节，而预览在每次磁盘改动后重新获取，
+ * 超过上限的归档每次都整份读入内存。
+ */
+const MAX_ZIP_BYTES = 100 * 1024 * 1024
+/** 返回的成员数上限，超过即截断。 */
+const MAX_ZIP_ENTRIES = 2000
+/** ZIP 本地文件头签名 `PK\x03\x04`。 */
+const ZIP_SIGNATURE = [0x50, 0x4b, 0x03, 0x04]
 
 const EXT_LANGUAGE: Record<string, string> = {
   '.ts': 'typescript',
@@ -87,7 +100,6 @@ const EXT_LANGUAGE: Record<string, string> = {
   '.html': 'html',
   '.htm': 'html',
   '.xml': 'xml',
-  '.svg': 'xml',
   '.css': 'css',
   '.scss': 'scss',
   '.less': 'less',
@@ -116,19 +128,29 @@ const EXT_KIND: Record<string, PreviewKind> = {
   '.png': 'image',
   '.jpg': 'image',
   '.jpeg': 'image',
+  '.jfif': 'image',
+  '.pjpeg': 'image',
+  '.pjp': 'image',
   '.gif': 'image',
   '.webp': 'image',
   '.bmp': 'image',
   '.ico': 'image',
   '.avif': 'image',
-  '.svg': 'text', // SVG 既是图片也是文本；按文本返回以便直接编辑，由 UI 一侧叠加渲染
+  '.apng': 'image',
+  '.svg': 'image',
   '.pdf': 'pdf',
   '.mp3': 'audio',
   '.wav': 'audio',
   '.ogg': 'audio',
+  '.oga': 'audio',
+  '.opus': 'audio',
   '.flac': 'audio',
   '.m4a': 'audio',
+  '.aac': 'audio',
+  '.mka': 'audio',
   '.mp4': 'video',
+  '.m4v': 'video',
+  '.3gp': 'video',
   '.webm': 'video',
   '.mov': 'video',
   '.mkv': 'video',
@@ -171,18 +193,30 @@ const EXT_MIME: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.jfif': 'image/jpeg',
+  '.pjpeg': 'image/jpeg',
+  '.pjp': 'image/jpeg',
   '.gif': 'image/gif',
   '.webp': 'image/webp',
   '.bmp': 'image/bmp',
   '.ico': 'image/x-icon',
   '.avif': 'image/avif',
+  '.apng': 'image/apng',
+  // `<img>` 只按 `image/svg+xml` 渲染 SVG，以 `text/plain` 或 `application/octet-stream` 返回时加载失败。
+  '.svg': 'image/svg+xml',
   '.pdf': 'application/pdf',
   '.mp3': 'audio/mpeg',
   '.wav': 'audio/wav',
   '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.opus': 'audio/ogg',
   '.flac': 'audio/flac',
   '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.mka': 'audio/x-matroska',
   '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.3gp': 'video/3gpp',
   '.webm': 'video/webm',
   '.mov': 'video/quicktime',
 }
@@ -432,7 +466,26 @@ export async function preview(abs: string, relPath: string): Promise<PreviewResu
     return { ...base, content: text, truncated: info.size > MAX_TEXT_BYTES }
   }
 
-  return { ...base, note: kind === 'archive' ? '归档文件' : '二进制文件' }
+  if (kind === 'archive') return { ...base, ...(await archiveEntries(abs, info.size)) }
+  return { ...base, note: '二进制文件' }
+}
+
+/**
+ * 归档的成员列表。按内容判定：以 ZIP 本地文件头开始的文件交给 `openZip`，jar、whl 同为 ZIP 结构。
+ * 7z、rar、tar 等没有解压实现，与超过 `MAX_ZIP_BYTES` 的 ZIP 一样只给出说明。
+ */
+async function archiveEntries(
+  abs: string,
+  size: number,
+): Promise<Partial<Pick<PreviewResult, 'entries' | 'truncated' | 'note'>>> {
+  const head = await readHead(abs, ZIP_SIGNATURE.length)
+  if (size > MAX_ZIP_BYTES || !ZIP_SIGNATURE.every((b, i) => head[i] === b)) {
+    return { note: '归档文件' }
+  }
+  const zip = openZip(await Bun.file(abs).bytes())
+  if (!zip.ok) return { note: zip.failure.kind === 'encrypted' ? '归档已加密' : '归档已损坏' }
+  const { paths } = zip.value
+  return { entries: paths.slice(0, MAX_ZIP_ENTRIES), truncated: paths.length > MAX_ZIP_ENTRIES }
 }
 
 /** 文件的原始字节与类型。目录返回 `null`。字节以流读取，不整份载入内存。 */
