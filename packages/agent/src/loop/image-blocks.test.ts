@@ -721,9 +721,11 @@ describe('媒体按字节预算换出', () => {
   test('同一历史结果相同，追加消息不会恢复已换出的媒体', () => {
     const rank = { thumbnail: 1, omitted: 2 } as const
     const sizes = [MB, 2 * MB, MB, 3 * MB, MB, MB, 2 * MB, MB, ...Array(40).fill(MB)]
+    // 消息只构造一次，各步取前缀（每步两条）：逐步重新构造时共分配约 1.8 GB 的字符串，慢的机器上超过用例期限。
+    const all = steps(sizes)
     let previous = new Map<number, MediaLevel>()
     for (let n = 1; n <= sizes.length; n++) {
-      const messages = steps(sizes.slice(0, n))
+      const messages = all.slice(0, 2 * n)
       const evicted = evictedMedia(messages, CAPS)
       expect([...evictedMedia(messages, CAPS)]).toEqual([...evicted])
       for (const [i, level] of previous) {
