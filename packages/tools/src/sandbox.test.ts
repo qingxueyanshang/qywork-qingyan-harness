@@ -752,7 +752,7 @@ describe('静默计时', () => {
       // 启动就绪后才开始计算输出间隔；350ms 启动延迟用于锁定「启动耗时不计入静默时间」这一前提。
       const source =
         `setTimeout(()=>{process.stdout.write('ready\\n');` +
-        `process.stdin.once('data',()=>{${ticker(12)}})},${startupMs})`
+        `process.stdin.once('data',()=>{${ticker(30)}})},${startupMs})`
       const proc = Bun.spawn(['node', '-e', source], {
         stdout: 'pipe',
         stderr: 'pipe',
@@ -774,14 +774,15 @@ describe('静默计时', () => {
           clearTimeout(startupTimer)
           reader.releaseLock()
         }
-        // 12 行 × 50ms = 600ms，静默上限为 200ms：按总时长判定必然失败。
-        const collected = collectProcess(proc, { idleMs: 200 })
+        // 30 行 × 50ms = 1500ms，静默上限为 1000ms：按总时长判定必然失败。
+        // 静默上限取输出间隔的 20 倍：机器负载高时两行之间的停顿可达数百毫秒，上限过小时把停顿判为静默。
+        const collected = collectProcess(proc, { idleMs: 1000 })
         proc.stdin.write('start\n')
         proc.stdin.end()
         const got = await collected
         expect(got.timedOut).toBe(false)
         expect(got.exitCode).toBe(0)
-        expect(got.stdout.split('tick').length - 1).toBe(12)
+        expect(got.stdout.split('tick').length - 1).toBe(30)
       } finally {
         if (proc.exitCode === null) killTree(proc)
       }
