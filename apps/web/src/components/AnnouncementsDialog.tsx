@@ -7,6 +7,14 @@ import { holdOverlay } from '../lib/store/index.ts'
 const KIND_NAME: Record<Announcement['kind'], string> = { release: '版本更新', notice: '通知' }
 
 /**
+ * 发布日期 `YYYY-MM-DD`，按北京时间，与云端后台的发布时间、官网公告取同一日期。
+ * 不要截取 `publishedAt` 的前 10 位：它是 UTC 时刻，北京时间 0 点到 8 点发布的公告会显示为前一天。
+ */
+export function publishedDate(iso: string): string {
+  return new Date(Date.parse(iso) + 8 * 3_600_000).toISOString().slice(0, 10)
+}
+
+/**
  * 公告窗口（`lib/store/announcements.ts`），内容与官网顶栏的公告相同。尺寸固定（CLAUDE.md B9），列表在框内滚动。
  * 正文经 `renderMarkdown` 净化后写入；其中的链接由根节点的 `openLink` 在右侧面板打开。
  */
@@ -37,7 +45,7 @@ export default function AnnouncementsDialog() {
           {(a) => (
             <article class="announcements-item">
               <div class="announcements-meta">
-                {KIND_NAME[a.kind]} · {a.publishedAt.slice(0, 10)}
+                {KIND_NAME[a.kind]} · {publishedDate(a.publishedAt)}
               </div>
               <h3 class="announcements-title">{a.title}</h3>
               <div class="markdown" innerHTML={renderMarkdown(a.body)} />
