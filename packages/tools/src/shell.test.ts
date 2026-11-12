@@ -14,7 +14,7 @@ import {
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
 import { BASH_PATH_ENV, commandShell } from './sandbox.ts'
-import { backgroundCommandTool, commandEnv, makeShellTool } from './shell.ts'
+import { backgroundCommandTool, commandEnv, makeShellTool, RecentOutput } from './shell.ts'
 
 const shell = { path: 'unused', argv: [], hint: '测试 shell。' }
 
@@ -500,5 +500,29 @@ describe('后台命令的工具形态', () => {
     expect(read.message).not.toContain('stderr 已丢弃')
     const whole = await backgroundCommandTool.fn({ task_id: 'cmd_2' }, ctxWith(port))
     expect(whole.message).not.toContain('已丢弃')
+  })
+})
+
+/**
+ * 原始失败形状：管道一次交来超过上限的文字（Linux 上转入后台时常见）时，整段作为一块保留，没有丢弃，保留量不受上限约束。
+ */
+describe('后台命令的输出缓冲', () => {
+  test('一次写入超过上限的文字时同样丢弃最早的部分，保留的是结尾', () => {
+    const out = new RecentOutput()
+    const text = `${'x'.repeat(1_200_000)}结束`
+    out.push(text)
+    const kept = out.text()
+    expect(out.dropped).toBeGreaterThan(0)
+    expect(kept.length + out.dropped).toBe(text.length)
+    expect(kept.length).toBeLessThan((1 << 20) + (1 << 17))
+    expect(kept.endsWith('结束')).toBe(true)
+  })
+
+  test('未超过上限时不丢弃', () => {
+    const out = new RecentOutput()
+    out.push('a'.repeat(100_000))
+    out.push('b')
+    expect(out.dropped).toBe(0)
+    expect(out.text()).toBe(`${'a'.repeat(100_000)}b`)
   })
 })
