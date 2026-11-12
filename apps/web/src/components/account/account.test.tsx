@@ -365,6 +365,31 @@ test('使用记录满一页时可继续加载，续页位置为上一页最后�
   view.close()
 })
 
+/**
+ * 原始失败形状：使用记录按电脑的时区显示。电脑设为纽约时区时，北京时间 11-12 07:30 的记录显示为
+ * 11/11 18:30，与云端网页账号页的北京时间不一致。
+ */
+test('使用记录按北京时间显示，不随电脑的时区变化', async () => {
+  const tzBefore = process.env.TZ
+  process.env.TZ = 'America/New_York'
+  try {
+    // 前提：本进程的本地时区已切换为纽约。
+    expect(new Date('2026-11-11T23:30:00.000Z').getHours()).toBe(18)
+    cloud = SIGNED_IN
+    await cloudStore.refreshCloudState()
+    pages = [[{ ...record('1'), startedAt: '2026-11-11T23:30:00.000Z' }]]
+    const view = await dialog()
+    const firstCell = () =>
+      [...view.host.querySelectorAll('.lib-table')].at(-1)?.querySelector('tbody tr td')
+    await until(() => firstCell() != null)
+    expect(firstCell()?.textContent).toContain('11/12 07:30')
+    view.close()
+  } finally {
+    if (tzBefore === undefined) delete process.env.TZ
+    else process.env.TZ = tzBefore
+  }
+})
+
 test('退出登录后弹窗显示登录表单', async () => {
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()

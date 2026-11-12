@@ -499,11 +499,16 @@ function ModelTable(props: { provider: string; models: readonly CloudModel[] }) 
   )
 }
 
-/** 时间写到分钟；跨年的记录带年份。 */
+/** 云端记录的显示时区：与云端网页的账号页相同，不随电脑的时区设置变化。 */
+const BEIJING = 'Asia/Shanghai'
+const beijingYear = (d: Date) => d.toLocaleString('en-US', { timeZone: BEIJING, year: 'numeric' })
+
+/** 北京时间，写到分钟；跨年的记录带年份。 */
 function when(iso: string): string {
   const d = new Date(iso)
-  const sameYear = d.getFullYear() === new Date().getFullYear()
+  const sameYear = beijingYear(d) === beijingYear(new Date())
   return d.toLocaleString('zh-CN', {
+    timeZone: BEIJING,
     ...(sameYear ? {} : { year: 'numeric' }),
     month: '2-digit',
     day: '2-digit',
