@@ -968,6 +968,27 @@ describe('目录中的价格与档位', () => {
     }
   })
 
+  test('Gemini 4 Hydrogen 在 1M 窗口内不分档计价，思考档位含 xhigh', () => {
+    const hydrogen = spec('gemini-4-hydrogen')
+    expect(hydrogen.vendor).toBe('google')
+    expect(hydrogen.contextWindow).toBe(1_048_576)
+    expect(hydrogen.maxOutputTokens).toBe(65_536)
+    expect(hydrogen.effortLevels).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(hydrogen.chatReasoningProtocol).toBe('google_signatures')
+    expect(hydrogen.minCacheablePrefix).toBe(4096)
+    expect(hydrogen.pricing).toMatchObject({
+      input: 1.5,
+      output: 7.5,
+      cacheRead: 0.075,
+      cacheWrite5m: 0,
+    })
+    expect(priceAt(hydrogen, { promptTokens: 1_000_000 })).toMatchObject({
+      input: 1.5,
+      output: 7.5,
+      cacheRead: 0.075,
+    })
+  })
+
   test('GPT-6 Cyber 的价格与长上下文档；不声明思考档位', () => {
     const cyber = lookupModel('gpt-6-cyber', 'openai_responses')
     expect(cyber.contextWindow).toBe(1_050_000)

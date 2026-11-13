@@ -70,6 +70,20 @@ Fable 5.2 的思考档位为 `low / medium / high / xhigh / max`。Carbon 的思
 [Gemini 4 Carbon](https://aistudio.google.com/docs/models/gemini-4-carbon)、[Google 价格](https://aistudio.google.com/docs/pricing)、
 [GPT-6 Cyber](https://developers.openai.com/api/docs/models/gpt-6-cyber)、[OpenAI 价格](https://developers.openai.com/api/docs/pricing)。
 
+## Gemini 4 Hydrogen
+
+模型 ID 为 `gemini-4-hydrogen`，选择 OpenAI Chat Completions，请求方式与 Gemini 4 Argon 相同。
+支持文本、图片输入与文本输出；输入、思考和输出共用 1,048,576 token 窗口，当前接入的单次输出上限为 65,536 token。
+
+思考档位为 `low / medium / high / xhigh`，未选择时使用官方默认 `high`；`xhigh` 只有该型号接受，思考无法关闭。
+
+标准价格为美元 / 百万 token：输入 1.50、输出 7.50（含思考 token）、缓存读取 0.075，1M 窗口内不分档。
+仅支持隐式缓存，最小前缀为 4,096 token；tokenizer 密度未标定，使用通用保守估算。未用官方端点实测。
+
+2026-11-12 核对：[模型规格](https://aistudio.google.com/docs/models/gemini-4-hydrogen)、
+[迁移说明](https://aistudio.google.com/docs/whats-new-gemini-4-hydrogen)、[兼容接口](https://aistudio.google.com/docs/openai)、
+[缓存](https://aistudio.google.com/docs/caching)、[Google 价格](https://aistudio.google.com/docs/pricing)。
+
 ## Meta Muse
 
 官方 Base URL：OpenAI Chat Completions 与 OpenAI Responses 为 `https://api.meta.ai/v1`，Anthropic Messages 为 `https://api.meta.ai`。
