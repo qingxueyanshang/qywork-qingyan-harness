@@ -22,6 +22,10 @@ Thumbs.db
 # mcp.json 与 team.json 是**项目配置，应当入库**；plugins/ 是装进来的产物，不入库。
 .qy/plugins/
 
+# 在本仓库中使用 qywork 时生成的工作区技能、记忆与 MCP 配置 `<workspace>/.agents/`：
+# 内容是本机的工作记录，不入库。
+.agents/
+
 # 密钥与本地配置
 .env
 .env.local
