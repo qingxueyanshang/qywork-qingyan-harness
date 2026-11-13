@@ -13,6 +13,7 @@ export {
   type CompactionInput,
   type CompactionOutcome,
   compact,
+  compactionRecordOf,
   condenseCutOf,
   condenseMessage,
   cutKey,

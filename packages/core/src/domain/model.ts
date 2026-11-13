@@ -1016,6 +1016,7 @@ export type StepPayload =
        */
       phase: 'started' | 'done' | 'skipped' | 'failed'
       stage?: CompactionStage
+      /** 本次压缩写入的 manifest 修订号；未写入 manifest 时为 0。 */
       manifestRevision: number
       compactedMessages: number
       /** `phase='done'` 专有：摘要线随之前移（true），或只收纳了工具正文（false）。 */
@@ -1023,9 +1024,21 @@ export type StepPayload =
       reasonCode?: string
       message?: string
       trigger?: 'manual' | 'automatic' | 'overflow'
+      /** 压缩前占用。 */
       occupancy?: number
       estimatedOccupancy?: number
       contextWindow?: number
+      /**
+       * 压缩后占用：同一份 manifest 的 `contextAfter.total`，与 `occupancy` 同一口径。
+       *
+       * 本项与 `summaryCut`、`condenseCut` 在压缩写入 manifest 时写入，不按 phase 判断：
+       * 容量拒绝后请求未变小的 `failed` 记录同样带有。未写入 manifest 的记录与早于这三项的记录没有它们。
+       */
+      occupancyAfter?: number
+      /** 压缩后的摘要线，即最后一块摘要的 `through`；null 表示没有摘要块。 */
+      summaryCut?: CompactionCut | null
+      /** 压缩后的收纳线，manifest 缺少 `condensedThrough` 时取摘要线。 */
+      condenseCut?: CompactionCut | null
     }
   | {
       /**

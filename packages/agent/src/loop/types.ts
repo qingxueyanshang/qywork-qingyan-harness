@@ -14,6 +14,7 @@ import type {
   ActionDescriptor,
   AgentEvent,
   Attachment,
+  CompactionCut,
   CompactionManifest,
   CompactionStage,
   ContextBreakdown,
@@ -278,6 +279,10 @@ export interface LoopPersistence {
       occupancy?: number
       estimatedOccupancy?: number
       contextWindow?: number
+      /** 以下三项由 `compactionRecordOf` 取自端口返回的 manifest，含义见 `core` 的 `StepPayload`。 */
+      occupancyAfter?: number
+      summaryCut?: CompactionCut | null
+      condenseCut?: CompactionCut | null
     },
   ): void
   /**

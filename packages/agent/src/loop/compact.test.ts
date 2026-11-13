@@ -5,7 +5,8 @@
  * 重新装配**这条控制流确实能够执行。两者分开是因为前者是纯函数，后者需要构造占用压力，
  * 合在一起时，失败无法区分是算法错误还是接线错误。
  *
- * 覆盖范围：`loop/compact.ts` 的压缩触发与容量恢复，`loop/turn-end.ts` 的锚点准入。其中「压缩后重发在账本中另记一行」用例接入真实
+ * 覆盖范围：`loop/compact.ts` 的压缩触发、容量恢复与压缩记录（含 `compaction.ts` 的 `compactionRecordOf`），
+ * `loop/turn-end.ts` 的锚点准入。其中「压缩后重发在账本中另记一行」用例接入真实
  * `Store`，同时覆盖 `store/repos.ts` 的 `openProviderRequest` 在同一轮多次发送时
  * 与 `uq_provider_run_turn` 的关系；其他用例都把该端口打桩为常量。
  */
@@ -19,7 +20,7 @@ import {
   lookupModel,
   STREAM_IDLE_TIMEOUT_MS,
 } from '@qywork/ai'
-import type { AgentEvent, RunUsage } from '@qywork/core'
+import type { AgentEvent, MessageId, RunUsage } from '@qywork/core'
 import { RESEND_LIMIT } from '@qywork/core'
 import {
   createConversation,
@@ -37,6 +38,7 @@ import { batchRemaining } from '../delivery.ts'
 import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from '../index.ts'
 import { AgentLoop } from '../index.ts'
 import { compactionEpoch, ToolRegistry } from '../registry.ts'
+import { call, fakeAdapter } from './fixtures.test-helper.ts'
 import { softLimit } from './request.ts'
 
 /** 压缩 step 的写入快照，供进度与终态断言读取。 */
@@ -1490,6 +1492,176 @@ describe('结果形态对用户可见', () => {
     }
     expect(recorded.at(-1)?.phase).toBe('skipped')
     expect(recorded.at(-1)?.reasonCode).toBe('nothing_to_fold')
+  })
+})
+
+/**
+ * 压缩写入 manifest 的记录带压缩后占用、两条边界与实际修订号，全部取自端口返回的同一份 manifest。
+ * 记录写入整体覆盖 payload，因此断言比较完整的 payload：任一写入点漏带字段即失败。
+ */
+describe('压缩记录带压缩后占用与边界', () => {
+  const summaryCut = { messageId: 'ms_summary' as MessageId, step: stepStamp('rn_old', 3) }
+  const condenseCut = { messageId: 'ms_condense' as MessageId }
+  const rewritten: CompactionOutcome = {
+    status: 'compacted',
+    summarized: true,
+    manifest: {
+      revision: 7,
+      summaries: [{ text: '摘要', through: summaryCut }],
+      condensedThrough: condenseCut,
+      compactedMessageCount: 4,
+      facts: { filesTouched: [], openItems: [], userConstraints: [] },
+      contextAfter: {
+        basedOnProviderRequestId: null,
+        model: 'claude-opus-5',
+        total: 123_456,
+        measured: 120_000,
+      },
+      createdAt: 0,
+    },
+  }
+  const after = {
+    manifestRevision: 7,
+    compactedMessages: 4,
+    occupancyAfter: 123_456,
+    summaryCut,
+    condenseCut,
+  }
+  const contextWindow = lookupModel('claude-opus-5', 'anthropic_messages').contextWindow
+
+  function loopWith(
+    adapter: LlmAdapter,
+    port: CompactionPort,
+    recorded: RecordedCompaction[],
+    registry = new ToolRegistry(),
+  ): AgentLoop {
+    return new AgentLoop({
+      adapter,
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(recorded),
+      makeToolContext: makeCtx,
+      sleep: async () => {},
+      compaction: port,
+    })
+  }
+
+  test('发送前压缩', async () => {
+    const comp = fakeCompaction(rewritten)
+    const recorded: RecordedCompaction[] = []
+    for await (const _ of loopWith(okAdapter(), comp.port, recorded).run({
+      runId: 'rn_record_send' as never,
+      history: [],
+      anchor: {
+        tokens: 900_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
+      signal: new AbortController().signal,
+    })) {
+      // 只检查落库结果
+    }
+    expect(comp.state.seen.map((s) => s.latestUnitSeen)).toEqual([false])
+    expect(recorded.at(-1)).toEqual({
+      trigger: 'automatic',
+      occupancy: 900_000,
+      estimatedOccupancy: expect.any(Number),
+      contextWindow,
+      phase: 'done',
+      ...after,
+      summarized: true,
+    })
+  })
+
+  test('执行工具之前压缩', async () => {
+    const comp = fakeCompaction(rewritten)
+    const recorded: RecordedCompaction[] = []
+    const base = fakeAdapter([[call('noop')], null])
+    let first = true
+    // 第一次响应回报的输入量使执行工具之前的占用超过软阈值；发送前的估算约 57 万，不触发。
+    const adapter: LlmAdapter = {
+      ...base,
+      async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+        const reported = first
+        first = false
+        for await (const ev of base.stream(req)) {
+          if (reported && ev.type === 'usage') {
+            yield { ...ev, usage: { ...ev.usage, inputTokens: 850_000, outputTokens: 0 } }
+          } else yield ev
+        }
+      },
+    }
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'noop',
+      description: '不执行任何操作。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'read',
+      objectLabel: '测试',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      fn: async () => ({ status: 'success', message: 'ok' }),
+    })
+    for await (const _ of loopWith(adapter, comp.port, recorded, registry).run({
+      runId: 'rn_record_tools' as never,
+      history: [{ role: 'user', content: '甲'.repeat(520_000) }],
+      signal: new AbortController().signal,
+    })) {
+      // 只检查落库结果
+    }
+    expect(comp.state.seen.map((s) => s.latestUnitSeen)).toEqual([true])
+    expect(recorded.at(-1)).toEqual({
+      trigger: 'automatic',
+      occupancy: expect.any(Number),
+      estimatedOccupancy: expect.any(Number),
+      contextWindow,
+      phase: 'done',
+      ...after,
+      summarized: true,
+    })
+  })
+
+  test('容量拒绝后压缩使请求变小', async () => {
+    const comp = shrinkingCompaction(rewritten)
+    const recorded: RecordedCompaction[] = []
+    const { adapter } = rejectingAdapter(1)
+    const events = await collectWith(
+      loopWith(adapter, comp.port, recorded),
+      'rn_record_overflow',
+      bulkyHistory(),
+    )
+    expect(events.some((e) => e.type === 'run.error')).toBe(false)
+    expect(recorded.at(-1)).toEqual({
+      trigger: 'overflow',
+      occupancy: expect.any(Number),
+      estimatedOccupancy: expect.any(Number),
+      contextWindow,
+      phase: 'done',
+      ...after,
+      summarized: true,
+    })
+  })
+
+  test('容量拒绝后压缩已写入 manifest 而请求未变小：记录为失败，修订号与边界按实际写入', async () => {
+    const comp = fakeCompaction(rewritten)
+    const recorded: RecordedCompaction[] = []
+    const { adapter } = rejectingAdapter(1)
+    const events = await collect(loopWith(adapter, comp.port, recorded), 'rn_record_no_reduction')
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' && err.code).toBe('context_overflow')
+    expect(recorded.at(-1)).toEqual({
+      trigger: 'overflow',
+      occupancy: expect.any(Number),
+      estimatedOccupancy: expect.any(Number),
+      contextWindow,
+      phase: 'failed',
+      ...after,
+      reasonCode: 'no_reduction',
+    })
   })
 })
 
