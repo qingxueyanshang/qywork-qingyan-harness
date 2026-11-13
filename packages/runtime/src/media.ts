@@ -21,7 +21,13 @@ import {
   operationLabel,
   validateMediaCall,
 } from '@qywork/ai'
-import { type MediaKind, type MediaOutput, type MediaSpend, mediaOperationFor } from '@qywork/core'
+import {
+  log,
+  type MediaKind,
+  type MediaOutput,
+  type MediaSpend,
+  mediaOperationFor,
+} from '@qywork/core'
 import { generateArt } from './art.ts'
 import { listMediaModels, type QyConfig, resolveMediaModel } from './config.ts'
 
@@ -86,6 +92,10 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
       // art 使用对话模型，不经生成目录。
       if (call.type === 'art') return generateArt(config, call, signal, onSpend)
       if (unresolved.has(call.type) && !call.resumeImageResult && !call.resumeTaskId) {
+        log.warn('media', '本轮结果尚未确认，未提交新的生成', {
+          type: call.type,
+          ...call.logFields,
+        })
         return {
           ok: false,
           executed: false,
@@ -239,13 +249,14 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
           ...(result.warning ? { warning: result.warning } : {}),
         }
       } catch (err) {
-        if (
-          type === 'image' &&
-          (receivedImage ||
-            call.resumeImageResult ||
-            !(err instanceof MediaError) ||
-            err.diagnostic?.outcome !== 'rejected')
-        )
+        // 图片只在结果未知或仍可取回时限制本轮的新提交。被拒绝、远端受理后报告失败、请求发出之前的失败与
+        // 接口答复中没有图片都是终态，远端没有可取回的结果：不要记入 `unresolved`，否则本轮既不能提交也无结果可取回。
+        const open =
+          !(err instanceof MediaError) ||
+          !!err.pendingTaskId ||
+          err.diagnostic?.outcome === 'unknown' ||
+          err.diagnostic?.outcome === 'available'
+        if (type === 'image' && (receivedImage || call.resumeImageResult || open))
           unresolved.add(type)
         if (
           type === 'video' &&
@@ -260,6 +271,14 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
           ...err.diagnostic,
           ...(err.code ? { errorCode: err.code } : {}),
         }
+        // 每次失败的生成写一行：重试与状态变化之外，终态失败只在此处进入日志。
+        log.warn('media', `生成失败：${err.message}`, {
+          provider: target.provider,
+          model: target.model,
+          ...(err.pendingTaskId ? { task: err.pendingTaskId } : {}),
+          ...(diagnostic ? { diagnostic } : {}),
+          ...call.logFields,
+        })
         return {
           ok: false,
           message: `${target.provider} / ${target.model}：${err.message}`,
