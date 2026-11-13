@@ -102,6 +102,28 @@ export function condenseCutOf(m: CompactionManifest | null): CompactionCut | nul
 }
 
 /**
+ * 压缩记录中描述压缩结果的字段，全部取自端口返回的同一份 manifest。
+ *
+ * 端口返回 `compacted` 的每条记录都写入这些字段，不按 phase 判断：容量拒绝后请求未变小时
+ * manifest 同样已改写。记录写入是整体覆盖 payload，每次写入都须带上全部字段。
+ */
+export function compactionRecordOf(m: CompactionManifest): {
+  manifestRevision: number
+  compactedMessages: number
+  occupancyAfter?: number
+  summaryCut: CompactionCut | null
+  condenseCut: CompactionCut | null
+} {
+  return {
+    manifestRevision: m.revision,
+    compactedMessages: m.compactedMessageCount,
+    ...(m.contextAfter ? { occupancyAfter: m.contextAfter.total } : {}),
+    summaryCut: summaryCutOf(m),
+    condenseCut: condenseCutOf(m),
+  }
+}
+
+/**
  * 收纳一条消息：只保留信封，保留部分的字节不改写。
  *
  * 工具结果只保留 `call_id / tool / status / executed / summary` 与落盘定位符 `resources`，

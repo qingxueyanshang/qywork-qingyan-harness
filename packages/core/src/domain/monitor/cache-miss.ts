@@ -42,7 +42,7 @@ export type CacheMissRequest = Pick<
 /** 压缩记录：`createdAt` 取压缩步骤的创建时刻，其余字段取自压缩步骤的 payload。 */
 export interface CacheMissCompaction {
   createdAt: number
-  /** 0 表示未改写 manifest（跳过或失败），这类记录不参与归因。 */
+  /** 0 表示未改写 manifest，这类记录不参与归因。 */
   manifestRevision: number
   /** 压缩前占用。 */
   occupancy?: number

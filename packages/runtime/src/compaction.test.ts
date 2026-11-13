@@ -1,12 +1,14 @@
 /**
- * 覆盖范围：`compaction.ts`（选界 / 收纳 / 摘要接入 / 三区投影 / 落库守卫，含附带文本块按声明大小计量）。
+ * 覆盖范围：`compaction.ts`（选界 / 收纳 / 摘要接入 / 三区投影 / 落库守卫，含附带文本块按声明大小计量），
+ * 以及压缩记录不进入历史投影（`transcript.ts`）。
  * 压缩算法本身由 `agent/compaction.test.ts` 覆盖，与主循环的接入由
  * `agent/src/loop/compact.test.ts` 覆盖。
  */
 
 import { describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import type { CompactionRunInput, Summarizer } from '@qywork/agent'
-import { softLimit } from '@qywork/agent'
+import { compactionRecordOf, softLimit } from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
 import { DEFAULT_DENSITY, estimateMessages, estimateText, textFeatures } from '@qywork/ai'
 import type { MessageId } from '@qywork/core'
@@ -17,6 +19,8 @@ import {
   createConversation,
   createRun,
   getConversation,
+  listSteps,
+  recordCompactionStep,
   Store,
   settleToolStep,
   upsertWorkspace,
@@ -203,6 +207,72 @@ describe('压缩是投影，不销毁数据', () => {
     expect(reloaded!.contextAfter?.measured).toBeLessThan(
       (await pressure(store, conv.id)).estimatedOccupancy,
     )
+    store.close()
+  })
+})
+
+/**
+ * 压缩记录只供界面显示，不进入模型可见的历史。请求体中读取步骤表的只有历史投影，
+ * 因此投影的指纹不变即请求体不变。
+ */
+describe('压缩记录不进入历史投影', () => {
+  test('增加压缩记录、记录补上压缩后占用与边界，前后装配出的历史投影指纹相同', async () => {
+    const { store, ws, conv } = fresh()
+    const outcome = await port(store, conv.id).run(await pressure(store, conv.id))
+    if (outcome.status !== 'compacted') throw new Error(`压缩未写入 manifest：${outcome.status}`)
+    // 压缩之后的一轮：两次生成之间写入压缩记录，与发送前压缩的位置相同。
+    const message = appendMessage(store, { conversationId: conv.id, role: 'user', content: '继续' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'after-compaction',
+      userMessageId: message.id,
+      messageIdUpperBound: message.id,
+      contextSnapshot: [],
+    })
+    appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'text',
+      content: '第一段',
+      providerBatchId: 'bt_1',
+    })
+    appendStep(store, {
+      runId: run.id,
+      seq: 3,
+      kind: 'text',
+      content: '第二段',
+      providerBatchId: 'bt_2',
+    })
+    const fingerprint = async () =>
+      createHash('sha256')
+        .update(JSON.stringify(port(store, conv.id).project(await history(store, conv.id))))
+        .digest('hex')
+    const without = await fingerprint()
+
+    const payload = {
+      kind: 'compaction' as const,
+      phase: 'done' as const,
+      manifestRevision: outcome.manifest.revision,
+      compactedMessages: outcome.manifest.compactedMessageCount,
+      summarized: outcome.summarized,
+      trigger: 'automatic' as const,
+      occupancy: 900_000,
+      estimatedOccupancy: 900_000,
+      contextWindow: 1_000_000,
+    }
+    recordCompactionStep(store, run.id, 2, payload)
+    const before = await fingerprint()
+    recordCompactionStep(store, run.id, 2, { ...payload, ...compactionRecordOf(outcome.manifest) })
+    const after = await fingerprint()
+
+    expect(listSteps(store, run.id).find((s) => s.seq === 2)?.payload).toMatchObject({
+      occupancyAfter: getConversation(store, conv.id)!.compactionManifest!.contextAfter!.total,
+      condenseCut: getConversation(store, conv.id)!.compactionManifest!.condensedThrough,
+    })
+    expect(before).toBe(without)
+    expect(after).toBe(without)
     store.close()
   })
 })

@@ -10,6 +10,7 @@ import type { ProviderError } from '@qywork/ai'
 import { estimateMessages, estimateRequest } from '@qywork/ai'
 import type { AgentEvent, CompactionStage } from '@qywork/core'
 import { envelopeHeadTokens, log } from '@qywork/core'
+import { compactionRecordOf } from '../compaction.ts'
 import { batchCapped } from '../delivery.ts'
 import { drainUntil } from '../event-queue.ts'
 import { markCompacted } from '../registry.ts'
@@ -194,8 +195,7 @@ async function* compactOverSoftLimit(
       contextWindow: adapter.spec.contextWindow,
       ...('message' in outcome && outcome.message ? { message: outcome.message } : {}),
       phase: 'done',
-      manifestRevision: outcome.manifest.revision,
-      compactedMessages: outcome.manifest.compactedMessageCount,
+      ...compactionRecordOf(outcome.manifest),
       summarized: outcome.summarized,
       ...(outcome.reasonCode ? { reasonCode: outcome.reasonCode } : {}),
     })
@@ -366,8 +366,7 @@ export async function* recoverFromOverflow(
         contextWindow: adapter.spec.contextWindow,
         ...('message' in outcome && outcome.message ? { message: outcome.message } : {}),
         phase: 'done',
-        manifestRevision: outcome.manifest.revision,
-        compactedMessages: outcome.manifest.compactedMessageCount,
+        ...compactionRecordOf(outcome.manifest),
         summarized: outcome.summarized,
         ...(outcome.reasonCode ? { reasonCode: outcome.reasonCode } : {}),
       })
@@ -403,8 +402,10 @@ export async function* recoverFromOverflow(
     contextWindow: adapter.spec.contextWindow,
     ...('message' in outcome && outcome.message ? { message: outcome.message } : {}),
     phase,
-    manifestRevision: 0,
-    compactedMessages: 0,
+    // 请求未变小时 manifest 已改写，记录其实际修订号与边界。
+    ...(outcome.status === 'compacted'
+      ? compactionRecordOf(outcome.manifest)
+      : { manifestRevision: 0, compactedMessages: 0 }),
     reasonCode,
   })
   yield { type: 'compaction', runId: input.runId, stepSeq, phase, reasonCode }

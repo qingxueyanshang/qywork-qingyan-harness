@@ -13,7 +13,7 @@
  * 首要防止的情形。两处相差一个完整的生命周期。
  */
 
-import { createSummaryTrace, runDensity } from '@qywork/agent'
+import { compactionRecordOf, createSummaryTrace, runDensity } from '@qywork/agent'
 import { buildAdapter, ProviderError, type ProviderProfile } from '@qywork/ai'
 import type {
   AgentEvent,
@@ -898,10 +898,9 @@ export async function compactConversation(
     recordCompactionStep(deps.store, runId, stepSeq, {
       kind: 'compaction',
       phase,
-      manifestRevision: outcome.status === 'compacted' ? outcome.manifest.revision : 0,
-      compactedMessages:
-        outcome.status === 'compacted' ? outcome.manifest.compactedMessageCount : 0,
-      ...(outcome.status === 'compacted' ? { summarized: outcome.summarized } : {}),
+      ...(outcome.status === 'compacted'
+        ? { ...compactionRecordOf(outcome.manifest), summarized: outcome.summarized }
+        : { manifestRevision: 0, compactedMessages: 0 }),
       ...('reasonCode' in outcome ? { reasonCode: outcome.reasonCode } : {}),
       ...('message' in outcome && outcome.message ? { message: clean(outcome.message) } : {}),
       trigger: 'manual',

@@ -6,6 +6,7 @@ import { catalogKey, exportConversationDiagnostics, type QyConfig } from '@qywor
 import {
   appendMessage,
   createConversation,
+  getConversation,
   listConversationHistoryPage,
   Store,
   upsertWorkspace,
@@ -89,6 +90,73 @@ test('摘要尚未返回时历史页包含压缩进度，结束后更新同一�
   } finally {
     release()
     await work
+    store.close()
+    provider.stop(true)
+  }
+})
+
+test('手动压缩的记录带压缩后占用、两条边界与修订号，取自同一份 manifest', async () => {
+  const provider = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response(
+        [
+          { choices: [{ delta: { content: '已整理材料，继续核对。' }, finish_reason: null }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]
+          .map((row) => `data: ${JSON.stringify(row)}\n\n`)
+          .join(''),
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
+    },
+  })
+  const store = new Store({ path: ':memory:' })
+  try {
+    const ws = upsertWorkspace(store, resolve('.tmp/compaction-record'), 'record')
+    const cv = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'p',
+      model: 'diagnostic-model',
+    })
+    for (let i = 0; i < 5; i++)
+      appendMessage(store, {
+        conversationId: cv.id,
+        role: 'user',
+        content: `第${i}条${'核对材料。'.repeat(500)}`,
+      })
+    await compactConversation(cv.id, {
+      store,
+      config: {
+        providers: {
+          p: {
+            kind: 'openai_chat_completions',
+            apiKey: 'test',
+            baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+            models: { 'diagnostic-model': {} },
+          },
+        },
+      },
+      bus: { publish() {} },
+    } as unknown as CommandDeps)
+    const manifest = getConversation(store, cv.id)!.compactionManifest!
+    const summaryCut = manifest.summaries.at(-1)?.through ?? null
+    expect(summaryCut).not.toBeNull()
+    const [step] = listConversationHistoryPage(store, cv.id, { limit: 10 }).steps
+    expect(step?.payload).toEqual({
+      kind: 'compaction',
+      phase: 'done',
+      manifestRevision: manifest.revision,
+      compactedMessages: manifest.compactedMessageCount,
+      summarized: true,
+      trigger: 'manual',
+      occupancy: expect.any(Number),
+      estimatedOccupancy: expect.any(Number),
+      contextWindow: expect.any(Number),
+      occupancyAfter: manifest.contextAfter!.total,
+      summaryCut,
+      condenseCut: manifest.condensedThrough ?? summaryCut,
+    })
+  } finally {
     store.close()
     provider.stop(true)
   }
