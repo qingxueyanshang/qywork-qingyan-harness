@@ -1552,6 +1552,32 @@ describe('画布运行：取消', () => {
     },
   )
 
+  test('已有成片的卡片再次生成后暂停，取回失败时显示失败原因并保留原成片', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const id = ids.$v!
+    const first = await svc.run(ws, PATH, id, { media: fake.port })
+    const made = await fake.next()
+    await made.submit('first-task')
+    made.finish(finished)
+    await first.done
+    const kept = (await node(ws.root, id)).current!
+    const again = await svc.run(ws, PATH, id, { media: fake.port })
+    await (await fake.next()).submit('second-task')
+    await svc.cancel(ws.root, PATH, id, async () => 'unsupported')
+    await again.done
+    const paused = (await node(ws.root, id)).current!
+    const retrieve = await svc.retrieve(ws, PATH, id, paused, { media: fake.port })
+    ;(await fake.next()).finish({ ok: false, message: '任务未建立，未扣费' })
+    await retrieve.done
+    const failed = { state: 'failed', message: expect.stringContaining('任务未建立，未扣费') }
+    expect((await svc.read(ws.root, PATH)).states[id]).toMatchObject(failed)
+    const fresh = new CanvasService({ publish: () => {} })
+    expect((await fresh.read(ws.root, PATH)).states[id]).toMatchObject(failed)
+    const after = await node(ws.root, id)
+    expect([after.current, after.versions.map((v) => v.id)]).toEqual([kept, [kept]])
+  })
+
   test('视频尚未取得任务号时停止本地等待，不等任务号、不调用远端撤销；未在生成时返回 409', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
