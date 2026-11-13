@@ -1959,7 +1959,12 @@ export class CanvasService {
     )
     const revisions = await this.revisionsOf(workspaceRoot, doc)
     const lastRuns = new Map<string, CanvasRunRecord>()
-    for (const r of doc.runs ?? []) lastRuns.set(r.node, r)
+    /** 各节点最近一次生成（不含取回）建立的版本。 */
+    const newest = new Map<string, string>()
+    for (const r of doc.runs ?? []) {
+      lastRuns.set(r.node, r)
+      if (r.action === 'run' && r.version) newest.set(r.node, r.version)
+    }
     const canvasKey = keyOf(workspaceRoot, path)
     const results = await Promise.all(
       doc.nodes.map(async (node) => {
@@ -1968,7 +1973,7 @@ export class CanvasService {
             ? await this.textsOf(workspaceRoot, doc, node.id, read)
             : null
         const [state, nodeTasks] = await Promise.all([
-          this.stateOf(workspaceRoot, canvasKey, node, lastRuns.get(node.id)),
+          this.stateOf(workspaceRoot, canvasKey, node, lastRuns.get(node.id), newest.get(node.id)),
           node.type === 'generate'
             ? Promise.all(
                 node.versions
@@ -2237,6 +2242,7 @@ export class CanvasService {
     canvasKey: string,
     node: CanvasNode,
     lastRun?: CanvasRunRecord,
+    newest?: string,
   ): Promise<CanvasNodeState> {
     const exists = (path: string) =>
       stat(join(workspaceRoot, path)).then(
@@ -2269,8 +2275,15 @@ export class CanvasService {
     const tasks = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))
     const pending = tasks.find((v) => v.id === node.current)
     if (pending) return { state: 'pending', version: pending.id }
+    /*
+     * 取回的失败只在取回的是最近一次生成时显示：该版本取回失败后被删除，卡片恢复为之前的结果，
+     * 只比较当前版本时这次失败（含原因与是否扣费）不再显示。取回更早的任务失败时不显示：卡片上是之后生成的结果。
+     */
     const relevant =
-      lastRun?.action !== 'retrieve' || !node.current || lastRun.version === node.current
+      lastRun?.action !== 'retrieve' ||
+      !node.current ||
+      lastRun.version === node.current ||
+      lastRun.version === newest
     if (relevant && (lastRun?.result === 'unknown' || lastRun?.result === 'failed'))
       return {
         state: lastRun.result,
