@@ -84,7 +84,9 @@ export {
 // `transientErrorCode` 同理：子 agent 的重新派发与本轮内的重发使用同一份暂时故障分类
 export { transientErrorCode } from './loop/attempt.ts'
 export { AgentLoop } from './loop/index.ts'
+// `breakdownOf` 另有一个包外消费者：runtime 的消息条目重建按同一分组规则逐条估算
 export {
+  breakdownOf,
   type DeclaredText,
   envelopeResult,
   imagesOf,

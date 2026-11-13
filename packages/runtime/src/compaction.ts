@@ -90,7 +90,7 @@ export interface CompactionDeps {
 }
 
 /** 可折单元在账本侧的形态。切分边界只位于单元之间。 */
-interface Unit {
+export interface Unit {
   key: string
   cut: CompactionCut
   tokens: number
@@ -521,8 +521,11 @@ export class RuntimeCompaction implements CompactionPort {
    * 口径与 `buildHistory` 一致：被接替的 run 不收录（失败尝试中的输出不应进入摘要），
    * 仍在 running 的批次不收录（结果未知，不能视为已完成，`stepsToUnits` 整批跳过）。
    * 本 run 已终结的 step 包含在内：run 内增长的正是这些 step，不压缩它们就没有实际压缩效果。
+   *
+   * 只读，另由消息条目重建（`monitor/request-items.ts`）调用：条目必须按压缩所用的同一份单元划分，
+   * 否则边界判定落在不同的单元上。
    */
-  private collectUnits(density: TokenDensity): Unit[] {
+  collectUnits(density: TokenDensity): Unit[] {
     const { store, conversationId, messageIdUpperBound } = this.deps
     const byUser = new Map<string, ReturnType<typeof listRuns>>()
     for (const r of listRuns(store, conversationId)) {

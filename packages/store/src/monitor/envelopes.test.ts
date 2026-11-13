@@ -1,5 +1,6 @@
 /**
- * 覆盖 `monitor/envelopes.ts`：`saveRequestEnvelope`、`requestEnvelopeItems`、`pruneRequestEnvelopes`，
+ * 覆盖 `monitor/envelopes.ts`：`saveRequestEnvelope`、`requestEnvelopeItems`、`pruneRequestEnvelopes`；
+ * 读取时的按比例对齐由 core 的 `alignGroupItems` 完成，对齐的字面值在此锁定；
  * 以及 `repos.ts` 的 `deleteConversation` 删除会话后清除孤立明细。
  */
 

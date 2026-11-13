@@ -27,6 +27,7 @@ import type {
   ConversationRunsResponse,
   ConversationUsageResponse,
   MessageId,
+  RequestItemsResponse,
   RunId,
 } from '@qywork/core'
 import { emptyBreakdown, emptyOmitted } from '@qywork/core'
@@ -2346,5 +2347,69 @@ describe('会话级逐请求接口', () => {
       d,
     )
     expect(detail?.status).toBe(422)
+  })
+})
+
+describe('单次主请求的消息条目接口', () => {
+  test('分组占用与会话级逐请求接口的同一行相同；条目含本轮的用户消息', async () => {
+    const d = deps()
+    const conv = createConversation(d.store, {
+      workspaceId: d.wsId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const user = appendMessage(d.store, { conversationId: conv.id, role: 'user', content: '你好' })
+    const run = createRun(d.store, {
+      conversationId: conv.id,
+      workspaceId: d.wsId as never,
+      model: 'm',
+      clientRequestId: 'items',
+      userMessageId: user.id,
+      messageIdUpperBound: user.id,
+      contextSnapshot: [],
+    })
+    const open = (turnIndex: number, purpose: 'turn' | 'summary') => {
+      const id = openProviderRequest(d.store, {
+        runId: run.id,
+        turnIndex,
+        retryIndex: 0,
+        purpose,
+        providerName: 'p',
+        model: 'm',
+        measuredInputTokens: 100,
+        occupancyTokens: 120,
+        sentCategories: { ...emptyBreakdown(), historyMessages: 100 },
+        omittedCategories: emptyOmitted(),
+        payloadHash: `h${turnIndex}`,
+      }).id
+      settleProviderRequest(d.store, id, 'received', {
+        inputTokens: 150,
+        outputTokens: 10,
+        cachedTokens: null,
+        cacheWriteTokens: null,
+      })
+      return id
+    }
+    const turn = open(0, 'turn')
+    const summary = open(1, 'summary')
+
+    const res = await call(`/api/requests/${turn}/items`, undefined, d)
+    expect(res?.status).toBe(200)
+    const items = (await res?.json()) as RequestItemsResponse
+    const page = (await (
+      await call(`/api/conversations/${conv.id}/requests`, undefined, d)
+    )?.json()) as ConversationRequestsResponse
+    const row = page.requests.find((r) => r.id === turn)!
+    expect(items.breakdown).toEqual(row.breakdown)
+    expect(items.estimated).toBe(row.estimated)
+    expect(items.boundaryKnown).toBe(true)
+    expect(items.diff).toBeNull()
+    expect(items.userMessage).toBe('你好')
+    expect(items.items.map((it) => [it.messageId, it.label, it.tokens])).toEqual([
+      [user.id, '你好', 150],
+    ])
+
+    expect((await call(`/api/requests/${summary}/items`, undefined, d))?.status).toBe(422)
+    expect((await call('/api/requests/pr_missing/items', undefined, d))?.status).toBe(404)
   })
 })

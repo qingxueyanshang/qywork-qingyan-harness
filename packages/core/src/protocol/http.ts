@@ -15,6 +15,7 @@ import type { MessageId, ProviderRequestId, RunId } from '../domain/ids.ts'
 import type { MediaOutput, MediaUnit, UnitPrice } from '../domain/media.ts'
 import type {
   ContextBreakdown,
+  ContextGroup,
   ContextOmitted,
   Currency,
   FileChange,
@@ -372,6 +373,54 @@ export interface MonitorRequestDetail {
   toolMs: number | null
   /** 金额。只在带用量且状态为 `received` 的行上有值；该轮的用量账中没有对应记录时为 null。 */
   cost: { amount: number; currency: Currency } | null
+}
+
+/**
+ * `GET /api/requests/:id/items`：一次主请求的消息条目。摘要请求返回 422。
+ *
+ * 条目不逐请求保存，按账本的现状重建，一律是估算值：取该请求发出之前已存在的单元，按其前最近一次改写
+ * manifest 的压缩记录的两条边界判定每个单元是原文、已收纳还是已被摘要替代（后者不列出），逐条估算后
+ * 按 `breakdown` 等比对齐。待办清单、附件文件、摘要正文、媒体缩放与推理剥离取的是读取时的状态，
+ * 不是该请求发出时的状态。
+ */
+export interface RequestItemsResponse {
+  requestId: ProviderRequestId
+  /** 与 `/requests` 中该请求的 `breakdown`、`estimated` 相同。 */
+  breakdown: ContextBreakdown
+  estimated: boolean
+  /**
+   * 覆盖该请求的压缩记录带边界，或该请求之前没有压缩。为 false 时（早于边界字段的旧记录之后的请求）
+   * `items` 只含信封条目，消息部分只有 `breakdown` 的分组合计。
+   */
+  boundaryKnown: boolean
+  /** 摘要分组只有分组合计，没有条目；信封明细缺失时信封分组同样只有分组合计。 */
+  items: RequestItem[]
+  /** 与上一次主请求的条目差；没有上一次请求或任一方的边界未知时为 null。 */
+  diff: { added: RequestItem[]; removed: RequestItem[] } | null
+  /** 本轮的用户消息，取开头一段。 */
+  userMessage: string | null
+  /** 这次新进入的内容：`diff.added` 中各消息的名称，取开头一段。 */
+  entered: string | null
+  /** 这次的回复：本请求产生的正文，取开头一段；只调用了工具时为 null。 */
+  reply: string | null
+}
+
+/** 一个条目：一条消息在一个分组中的部分，或一项信封明细。工具结果分为执行记录与工具结果正文两个条目。 */
+export interface RequestItem {
+  /** 同一内容在相邻请求中相同，新增与移除按它比较。 */
+  id: string
+  group: ContextGroup
+  /** 消息条目所属的会话消息与单元戳；信封条目为 null。 */
+  messageId: MessageId | null
+  step: string | null
+  /** 信封条目为 null。 */
+  role: 'user' | 'assistant' | 'tool' | 'context' | null
+  /** `condensed` 表示该单元位于收纳线以内，工具正文已替换为信封。 */
+  state: 'raw' | 'condensed'
+  /** 工具名，或正文开头的一段；系统提示词为 null。 */
+  label: string | null
+  /** 估算值，已按比例对齐到 `breakdown` 中所在分组的值。 */
+  tokens: number
 }
 
 /** 一次改写了 manifest 的压缩。 */

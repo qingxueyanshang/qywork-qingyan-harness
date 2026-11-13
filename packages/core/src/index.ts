@@ -314,6 +314,8 @@ export {
   type UsageTotals,
   type Workspace,
 } from './domain/model.ts'
+// 逐项估算与分组值对齐：store 的信封明细与 runtime 的消息条目重建共用
+export { alignGroupItems } from './domain/monitor/align.ts'
 // 缓存未命中归因：读取请求行时计算，不落盘
 export {
   attributeCacheMisses,
@@ -425,6 +427,8 @@ export type {
   MonitorRequest,
   MonitorRequestDetail,
   ReleaseNotes,
+  RequestItem,
+  RequestItemsResponse,
   ToolCallTotal,
   UsageResponse,
 } from './protocol/http.ts'
