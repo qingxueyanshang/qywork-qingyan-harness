@@ -104,8 +104,8 @@ export const subagentTool: ToolSpec = {
           '不填 = 使用当前会话的模型（角色指定了模型时使用角色的模型）。只在新建时生效；外部 CLI 使用其自身的模型，填写会被拒绝。',
       },
       effort: {
-        type: ['string', 'null'],
-        enum: [...EFFORT_ORDER, null],
+        type: 'string',
+        enum: [...EFFORT_ORDER],
         description:
           '用户指定思考强度时填写，写在 task 正文里不生效。只作用于本次派发，新建与续接均可填写。' +
           '不填 = 子 agent 使用角色的模型时取角色设定的档位，否则取模型配置中该模型的档位。' +

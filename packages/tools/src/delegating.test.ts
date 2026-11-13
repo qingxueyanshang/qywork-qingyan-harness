@@ -253,7 +253,38 @@ describe('派发任务工具的注册条件', () => {
     expect(names).toContain('workflow')
   })
 
-  test('workflow schema 使用扁平的可空判别字段，不依赖 oneOf/anyOf', () => {
+  test('内置工具的 schema 只声明单一类型，可空由 strict 转换加入', () => {
+    const r = new ToolRegistry()
+    registerBuiltinTools(r, {
+      delegate: true,
+      commands: true,
+      plugins: true,
+      mcpConfig: true,
+      browser: true,
+      desktop: true,
+      canvas: true,
+      panel: true,
+      personalization: true,
+      pets: true,
+      office: true,
+      videoDecoder: true,
+      media: ['image', 'video'],
+    })
+    // 经 Anthropic 协议转接 Gemini 的端点以 HTTP 400 拒绝含类型数组的工具，整份请求随之失败。
+    const offenders: string[] = []
+    const walk = (node: unknown, path: string): void => {
+      if (!node || typeof node !== 'object') return
+      // 数组的下标同样作为键遍历。
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'type' && Array.isArray(value)) offenders.push(path)
+        walk(value, `${path}.${key}`)
+      }
+    }
+    for (const entry of r.schemas()) walk(entry.parameters, entry.name)
+    expect(offenders).toEqual([])
+  })
+
+  test('workflow schema 使用扁平的判别字段，不依赖 oneOf/anyOf', () => {
     const r = new ToolRegistry()
     registerBuiltinTools(r, { delegate: true })
     const schema = r.schemas().find((entry) => entry.name === 'workflow')
@@ -263,15 +294,15 @@ describe('派发任务工具的注册条件', () => {
     expect(encoded).not.toContain('anyOf')
     const properties = schema?.parameters.properties as Record<string, Record<string, unknown>>
     expect(properties.kind).toBeUndefined()
-    expect(properties.decision?.type).toEqual(['string', 'null'])
-    expect(properties.decision?.enum).toEqual(['approve', 'revise', null])
+    expect(properties.decision?.type).toBe('string')
+    expect(properties.decision?.enum).toEqual(['approve', 'revise'])
     const node = (properties.nodes?.items as Record<string, unknown>).properties as Record<
       string,
       Record<string, unknown>
     >
-    expect(node.kind?.type).toEqual(['string', 'null'])
+    expect(node.kind?.type).toBe('string')
     // kind 只标记检查点；子 agent 节点的种类由 role / cli / subagent / name 中填写的字段决定，不另设种类字段。
-    expect(node.kind?.enum).toEqual(['checkpoint', null])
+    expect(node.kind?.enum).toEqual(['checkpoint'])
     expect(node.subagent).toBeDefined()
     expect(node.agent).toBeUndefined()
     const single = r.schemas().find((entry) => entry.name === 'subagent')

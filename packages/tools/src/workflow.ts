@@ -38,8 +38,8 @@ export const workflowTool: ToolSpec = {
           properties: {
             id: { type: 'string', description: '节点唯一 ID' },
             kind: {
-              type: ['string', 'null'],
-              enum: ['checkpoint', null],
+              type: 'string',
+              enum: ['checkpoint'],
               description: 'checkpoint 节点填 checkpoint（当前会话审查关口）；子 agent 节点不填。',
             },
             role: {
@@ -79,8 +79,8 @@ export const workflowTool: ToolSpec = {
                 '不填 = 使用当前会话的模型（角色指定了模型时使用角色的模型）；指向已有子 agent 或外部 CLI 的节点不接受',
             },
             effort: {
-              type: ['string', 'null'],
-              enum: [...EFFORT_ORDER, null],
+              type: 'string',
+              enum: [...EFFORT_ORDER],
               description:
                 '用户指定思考强度时填写，写在 task 正文里不生效。该节点每次派发（含 revise）都使用此档位。' +
                 '不填 = 子 agent 使用角色的模型时取角色设定的档位，否则取模型配置中该模型的档位。' +
@@ -91,7 +91,7 @@ export const workflowTool: ToolSpec = {
         },
       },
       maxConcurrent: {
-        type: ['integer', 'null'],
+        type: 'integer',
         description:
           `同时运行的 agent 节点数上限，默认 ${DEFAULT_MAX_CONCURRENT}，超出的排队；` +
           '图中互不依赖的节点数多于该值时按需调高。只在首次调用填写。',
@@ -99,8 +99,8 @@ export const workflowTool: ToolSpec = {
       workflowId: { type: 'string', description: '续接既有 workflow 时使用首次返回的 ID' },
       checkpointId: { type: 'string', description: '当前待审查 checkpoint ID' },
       decision: {
-        type: ['string', 'null'],
-        enum: ['approve', 'revise', null],
+        type: 'string',
+        enum: ['approve', 'revise'],
         description: 'approve 进入下一批；revise 向指定节点的原有子会话续发',
       },
       note: { type: 'string', description: '本次审批或修订说明' },
