@@ -188,7 +188,7 @@ function context(
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink,
     signal: new AbortController().signal,
     emit: () => {},
@@ -724,7 +724,7 @@ describe('无法保存时如实说明', () => {
 describe('实际用量记账', () => {
   test('按实际投递量记录，只记录一次', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
-    openBatchBudget(ctx.state, 1_000_000)
+    openBatchBudget(ctx.state, 1_000_000, 25_000)
     const r = await browserActTool.fn(CLICK, ctx)
 
     expect(1_000_000 - batchRemaining(ctx)).toBe(sizeOf(r))
@@ -735,7 +735,7 @@ describe('实际用量记账', () => {
       fakeBrowser({ observe: async () => ({ ...大页, image: 大截图 }) }),
       fakeSink(),
     )
-    openBatchBudget(ctx.state, 1_000_000)
+    openBatchBudget(ctx.state, 1_000_000, 25_000)
     const r = await browserObserveTool.fn({ tabId: 'bt_1', screenshot: true }, ctx)
     const spent = 1_000_000 - batchRemaining(ctx)
 
@@ -745,7 +745,7 @@ describe('实际用量记账', () => {
 
   test('超出本次决策额度时动作不被拒绝，余额报告为 0，其后的读取准入不使用虚假余额', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
-    openBatchBudget(ctx.state, 1000)
+    openBatchBudget(ctx.state, 1000, 25_000)
     expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
     expect(batchRemaining(ctx)).toBe(200)
 

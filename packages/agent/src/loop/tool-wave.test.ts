@@ -62,6 +62,7 @@ describe('工具中途输出', () => {
     const types: string[] = []
     const it = loop
       .run({
+        compactPercent: 80,
         runId: 'rn_test' as never,
         history: [],
         signal: new AbortController().signal,
@@ -116,6 +117,7 @@ describe('工具中途输出', () => {
 
     const events: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       signal: new AbortController().signal,
@@ -160,6 +162,7 @@ describe('工具中途输出', () => {
 
     const types: string[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       signal: abort.signal,
@@ -232,6 +235,7 @@ describe('ToolContext 生命周期', () => {
 
     const events = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       signal: new AbortController().signal,
@@ -292,6 +296,7 @@ describe('ToolContext 生命周期', () => {
     })
 
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       signal: new AbortController().signal,
@@ -332,6 +337,7 @@ describe('工作区文件失效', () => {
 
     const invalidations: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_file_invalidation' as never,
       history: [],
       signal: new AbortController().signal,
@@ -397,6 +403,7 @@ describe('权限拒绝', () => {
 
     const events = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       signal: new AbortController().signal,
@@ -491,6 +498,7 @@ describe('重复无进展', () => {
     })
     const events: AgentEvent[] = []
     for await (const event of loop.run({
+      compactPercent: 80,
       runId: 'rn_missing_args' as never,
       history: [],
       signal: new AbortController().signal,
@@ -560,6 +568,7 @@ describe('重复无进展', () => {
 
     let stopReason: string | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_stuck' as never,
       history: [],
       signal: new AbortController().signal,
@@ -608,6 +617,7 @@ describe('重复无进展', () => {
     })
     let finished: Extract<AgentEvent, { type: 'run.finished' }> | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_stall_notice' as never,
       history: [],
       signal: new AbortController().signal,
@@ -662,6 +672,7 @@ describe('重复无进展', () => {
 
     let stopReason: string | null = null
     for await (const event of loop.run({
+      compactPercent: 80,
       runId: 'rn_pause_stuck' as never,
       history: [],
       signal: new AbortController().signal,
@@ -716,6 +727,7 @@ describe('重复无进展', () => {
 
     let stopReason: string | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_same_batch' as never,
       history: [],
       signal: new AbortController().signal,
@@ -768,6 +780,7 @@ describe('重复无进展', () => {
 
     let stopReason: string | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_ran_cmd' as never,
       history: [],
       signal: new AbortController().signal,
@@ -812,6 +825,7 @@ describe('重复无进展', () => {
       })
       let stopReason: string | null = null
       for await (const ev of loop.run({
+        compactPercent: 80,
         runId: 'rn_mixed_order' as never,
         history: [],
         signal: new AbortController().signal,
@@ -870,6 +884,7 @@ describe('重复无进展', () => {
 
     let stopReason: string | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_note_state' as never,
       history: [],
       signal: new AbortController().signal,
@@ -919,6 +934,7 @@ describe('重复无进展', () => {
     })
 
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_bad_args' as never,
       history: [],
       signal: new AbortController().signal,
@@ -981,6 +997,7 @@ describe('重复无进展', () => {
 
     let stopReason: string | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_poll' as never,
       history: [],
       signal: new AbortController().signal,
@@ -1027,6 +1044,7 @@ describe('重复无进展', () => {
 
     let stopReason: string | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_executed_changes' as never,
       history: [],
       signal: new AbortController().signal,
@@ -1066,6 +1084,7 @@ describe('注册表是工具的唯一权威', () => {
 
     const events = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_bogus' as never,
       history: [],
       signal: new AbortController().signal,
@@ -1114,6 +1133,7 @@ describe('注册表是工具的唯一权威', () => {
           })
           const events: AgentEvent[] = []
           for await (const ev of loop.run({
+            compactPercent: 80,
             runId: 'rn_args' as never,
             history: [],
             signal: new AbortController().signal,
@@ -1151,6 +1171,7 @@ describe('注册表是工具的唯一权威', () => {
     let stopReason: string | null = null
     const started: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_bogus_repeat' as never,
       history: [],
       signal: new AbortController().signal,
@@ -1181,6 +1202,7 @@ describe('注册表是工具的唯一权威', () => {
 
     let stopReason: string | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_bogus_changes' as never,
       history: [],
       signal: new AbortController().signal,
@@ -1212,6 +1234,7 @@ describe('注册表是工具的唯一权威', () => {
 
     let stopReason: string | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_mixed_bogus_changes' as never,
       history: [],
       signal: new AbortController().signal,
@@ -1281,6 +1304,7 @@ describe('停止能中止停滞的工具', () => {
     const events: string[] = []
     let finished: { status: string; stopReason: string } | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_hang' as never,
       history: [],
       signal: controller.signal,
@@ -1410,6 +1434,7 @@ describe('投递额度按决策计算', () => {
 
   async function drain(loop: AgentLoop, history: WireMessage[] = []): Promise<void> {
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_budget' as never,
       history,
       signal: new AbortController().signal,
@@ -1432,10 +1457,11 @@ describe('投递额度按决策计算', () => {
   test('三个波次共用一份额度，不逐波次清零', async () => {
     const admitted: boolean[] = []
     // 窗口 1M，软阈值 800K；占用为数十 token，余量在 80 万–94 万之间（本次响应的消息使真值与估算之比略大于 1）。
-    // 每次 35 万：两次之和在余量内，三次超出余量，与余量在该区间内的具体取值无关。
+    // 单次上限为余额减去预留量 12.5 万（半份尾部保留量）。每次 30 万：前两次在上限内，第三次超出，
+    // 与余量在该区间内的具体取值无关。
     const loop = new AgentLoop({
       adapter: adapterWithUsage([call('grab'), call('grab'), call('grab')], (e) => e),
-      registry: grabRegistry(350_000, admitted),
+      registry: grabRegistry(300_000, admitted),
       systemPrompt: 'sys',
       persist: noopPersistence(),
       makeToolContext: (runId) => baseCtx(runId),
@@ -1631,6 +1657,7 @@ describe('投递额度按决策计算', () => {
       })
       const events: string[] = []
       for await (const ev of loop.run({
+        compactPercent: 80,
         runId: 'rn_budget' as never,
         history: large,
         signal: new AbortController().signal,

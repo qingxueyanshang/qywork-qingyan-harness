@@ -137,8 +137,10 @@ export interface CompactionRunInput {
    * 没有锚点时它与 `occupancy` 相等，比值为 1，算式等同于直接相减。
    */
   estimatedOccupancy: number
-  /** 模型窗口。软阈值与保留预算都从它推导，不另传现成的数字。 */
+  /** 模型窗口。软阈值与保留预算都从它与 `compactPercent` 推导，不另传现成的数字。 */
   contextWindow: number
+  /** 窗口所在档已解析的触发比例，与触发判定使用同一个值（轮内取 `RunInput.compactPercent`）。 */
+  compactPercent: number
   /**
    * 会话主模型的估算密度，与 `estimatedOccupancy` 使用的相同。
    *
@@ -373,6 +375,11 @@ export interface RunInput {
   effort?: ChatRequest['effort']
   cacheKey?: string
   signal: AbortSignal
+  /**
+   * 本轮的自动压缩比例：窗口所在档已解析的设置值（`core` 的 `compactPercentOf`），由调用方在轮次开始时
+   * 解析一次。触发判定、投递额度、压缩端口、请求行的 `compactAt` 与上下文事件都取这一个值，一轮之内不变。
+   */
+  compactPercent: number
   /** 压缩后的派生估算。首个有效 usage 到达前，用同口径的请求估算差额推进读数。 */
   contextEstimate?: CompactionManifest['contextAfter']
   /**

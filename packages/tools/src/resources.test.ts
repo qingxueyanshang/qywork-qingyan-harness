@@ -47,7 +47,7 @@ function ctx(sink: SinkPort | null): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink,
     signal: new AbortController().signal,
     emit: () => {},
@@ -408,7 +408,7 @@ describe('query 跨页续查', () => {
 describe('按本次决策的投递额度分页', () => {
   const withRoom = (sink: SinkPort, room: number): ToolContext => ({
     ...ctx(sink),
-    state: openBatchBudget(new Map(), room),
+    state: openBatchBudget(new Map(), room, 25_000),
   })
   const body = `${'甲'.repeat(20_000)}尾部标记`
 

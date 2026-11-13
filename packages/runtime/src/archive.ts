@@ -42,7 +42,7 @@ import {
 } from '@qywork/store'
 import pkg from '../package.json' with { type: 'json' }
 import type { QyConfig } from './config.ts'
-import { resolveModel } from './config.ts'
+import { compactPercentFor, resolveModel } from './config.ts'
 import { contextPanel } from './context-panel.ts'
 
 export type ArchiveFormat = 'markdown' | 'json'
@@ -265,12 +265,17 @@ export function exportConversationDiagnostics(
     try {
       provider = diagnosticProvider(config, item.conversation!)
       if (provider)
-        context = contextPanel(store, item.conversation!.id, {
-          id: provider.model,
-          contextWindow: provider.effectiveModel.contextWindow,
-          providerName: provider.name,
-          providerKind: provider.kind,
-        })
+        context = contextPanel(
+          store,
+          item.conversation!.id,
+          {
+            id: provider.model,
+            contextWindow: provider.effectiveModel.contextWindow,
+            providerName: provider.name,
+            providerKind: provider.kind,
+          },
+          compactPercentFor(config, provider.effectiveModel.contextWindow),
+        )
     } catch (error) {
       item.collectionErrors.push({
         section: 'currentProfile',

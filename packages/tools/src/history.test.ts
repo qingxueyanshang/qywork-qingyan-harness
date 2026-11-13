@@ -94,7 +94,7 @@ function ctx(history: HistoryPort | undefined): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
     ...(history ? { history } : {}),
     signal: new AbortController().signal,
@@ -206,7 +206,7 @@ describe('取回原文', () => {
    */
   test('带附带文本块的执行记录：文本块独立交付并带声明的特征计数，额度按声明的大小扣除', async () => {
     const c = ctx(memHistory())
-    openBatchBudget(c.state, 1_000_000)
+    openBatchBudget(c.state, 1_000_000, 25_000)
     const before = batchRemaining(c)
     const r = await readHistoryTool.fn({ step_id: 'rn_1:11' }, c)
     expect(r.status).toBe('success')
@@ -265,7 +265,7 @@ describe('投递额度', () => {
   const budgeted = (room: number) => {
     const sink = fakeSink()
     const c = { ...ctx(memHistory()), sink }
-    openBatchBudget(c.state, room)
+    openBatchBudget(c.state, room, 25_000)
     return { c, sink }
   }
   const contentOf = (r: { data?: Record<string, unknown> }) =>

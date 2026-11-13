@@ -47,7 +47,7 @@ function context(): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Infinity),
+    state: openBatchBudget(new Map(), Infinity, 0),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},

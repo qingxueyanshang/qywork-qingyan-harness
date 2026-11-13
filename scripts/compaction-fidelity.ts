@@ -19,6 +19,7 @@
 
 import { createSummaryTrace } from '@qywork/agent'
 import { buildAdapter, estimateMessages, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
+import { COMPACT_PERCENT_DEFAULT } from '@qywork/core'
 import {
   buildHistory,
   loadConfig,
@@ -241,6 +242,7 @@ async function main(): Promise<number> {
       // 此处的占用本身是本地估算值，两种计量一致，比值为 1。
       estimatedOccupancy: occupancy,
       contextWindow,
+      compactPercent: COMPACT_PERCENT_DEFAULT,
       density: adapter.spec.density,
     })
     .catch((err: unknown) => {

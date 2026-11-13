@@ -217,6 +217,7 @@ describe('经 AgentLoop 的占用读数、锚点准入与投递额度', () => {
       makeToolContext: (runId) => baseCtx(runId),
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_declared' as never,
       history: [{ role: 'user', content: '读取技能' }],
       signal: new AbortController().signal,

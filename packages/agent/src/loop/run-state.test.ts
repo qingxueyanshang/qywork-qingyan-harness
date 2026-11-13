@@ -21,6 +21,7 @@ function state(anchor?: { model: string; headTokens: number; envelopeFingerprint
       makeToolContext: (runId) => baseCtx(runId),
     },
     {
+      compactPercent: 80,
       runId: 'rn_state' as never,
       history: [],
       signal: new AbortController().signal,
@@ -124,7 +125,12 @@ describe('执行事实', () => {
         persist,
         makeToolContext: (runId) => baseCtx(runId),
       },
-      { runId: 'rn_notice' as never, history: [], signal: new AbortController().signal },
+      {
+        compactPercent: 80,
+        runId: 'rn_notice' as never,
+        history: [],
+        signal: new AbortController().signal,
+      },
     )
     run.notify('本轮未结束。')
     expect(landed).toEqual([{ text: '本轮未结束。', notice: true }])

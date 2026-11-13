@@ -88,7 +88,7 @@ function ctx(root: string, office: OfficePort | null = PORT): ToolContext {
     density: videoDensity(false),
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), 100_000),
+    state: openBatchBudget(new Map(), 100_000, 25_000),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},

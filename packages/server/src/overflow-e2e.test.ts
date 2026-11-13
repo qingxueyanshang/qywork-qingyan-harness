@@ -142,7 +142,7 @@ test('容量拒绝 → 识别凭证 → 压缩一次 → 无法缩小时以 cont
   /*
    * 历史必须**超过保留预算**才能被压缩。
    *
-   * 保留预算是 `tailRetain`（`@qywork/agent`）：`min(窗口/4, 60_000)`，1M 窗口下为 60,000 token。
+   * 保留预算是 `tailRetain`（`@qywork/agent`）：触发线的 5/16，比例为 80 时为窗口的 1/4。
    * 历史不足时整段历史都位于保留区内，压缩返回「无可压缩内容」，
    * 测试结果为「恢复未触发」，而真正的原因是夹具过小。
    */
@@ -240,6 +240,7 @@ test('容量拒绝 → 识别凭证 → 压缩一次 → 无法缩小时以 cont
 
   const events: AgentEvent[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: 'rn_1' as RunId,
     history,
     signal: new AbortController().signal,

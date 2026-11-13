@@ -160,6 +160,7 @@ async function askOnce(
       : {}),
   })
   for await (const _ of loop.run({
+    compactPercent: 80,
     runId: runId as never,
     history,
     signal: new AbortController().signal,

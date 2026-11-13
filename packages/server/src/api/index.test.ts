@@ -2230,3 +2230,36 @@ describe('会话变更分页接口', () => {
     expect(res?.status).toBe(422)
   })
 })
+
+describe('上下文面板接口', () => {
+  /** 窗口取 `modelSpecOf`：与轮次装配的适配器相同，含模型库中对型号窗口的覆盖。 */
+  test('窗口含型号覆盖，触发线按覆盖后的窗口所在档的比例计算', async () => {
+    const d = deps()
+    d.config.catalog = { 'm|openai_chat_completions': { contextWindow: 300_000 } }
+    d.config.compactPercent = { medium: 50 }
+    const conv = createConversation(d.store, {
+      workspaceId: d.wsId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const res = await call(`/api/conversations/${conv.id}/context`, undefined, d)
+    expect(res?.status).toBe(200)
+    const { context } = (await res?.json()) as { context: { limit: number; compactAt: number } }
+    expect(context).toMatchObject({ limit: 300_000, compactAt: 150_000 })
+  })
+
+  test('配置文件中的比例不合法时返回与轮次启动相同的配置错误', async () => {
+    const d = deps()
+    d.config.compactPercent = { large: '50' } as never
+    const conv = createConversation(d.store, {
+      workspaceId: d.wsId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const res = await call(`/api/conversations/${conv.id}/context`, undefined, d)
+    expect(res?.status).toBe(409)
+    const { error } = (await res?.json()) as { error: string }
+    expect(error).toContain('自动压缩比例不合法')
+    expect(error).toContain('compactPercent.large')
+  })
+})

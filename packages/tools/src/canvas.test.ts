@@ -393,7 +393,7 @@ describe('canvas 工具', () => {
     const c = {
       ...ctx(port),
       workspaceRoot: dir,
-      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     }
     const created = await writeFileTool.fn(
       { path: '脚本.md', mode: 'create', content: '## 1-1\n推门。\n' },
@@ -1024,7 +1024,7 @@ describe('capture_canvas_frame', () => {
     return {
       ...ctx(port),
       workspaceRoot: root,
-      state: openBatchBudget(new Map(), 100_000),
+      state: openBatchBudget(new Map(), 100_000, 25_000),
       ...(office ? { office } : {}),
     }
   }

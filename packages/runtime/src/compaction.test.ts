@@ -8,7 +8,13 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import type { CompactionRunInput, Summarizer } from '@qywork/agent'
-import { compactionRecordOf, softLimit } from '@qywork/agent'
+import {
+  compactionRecordOf,
+  deliveryCap,
+  openBatchBudget,
+  softLimit,
+  tailRetain,
+} from '@qywork/agent'
 import type { WireMessage } from '@qywork/ai'
 import { DEFAULT_DENSITY, estimateMessages, estimateText, textFeatures } from '@qywork/ai'
 import type { MessageId } from '@qywork/core'
@@ -123,6 +129,7 @@ async function pressure(store: Store, conversationId: string): Promise<Compactio
     occupancy: total,
     estimatedOccupancy: total,
     contextWindow: total,
+    compactPercent: 80,
     density: DEFAULT_DENSITY,
   }
 }
@@ -915,6 +922,7 @@ describe('切分边界不会分开 tool_call 与 tool_result', () => {
     for (let window = 400; window <= total * 2; window += Math.max(1, Math.floor(total / 8))) {
       const p = port(store, conv.id)
       await p.run({
+        compactPercent: 80,
         trigger: 'automatic',
         model: 'm',
         latestUnitSeen: false,
@@ -1456,12 +1464,13 @@ describe('两种计量口径不得直接相减', () => {
       const before = await history(store, conv.id)
       const estimated = estimateMessages(before, DEFAULT_DENSITY)
       const occupancy = Math.round(estimated / K)
-      const limit = softLimit({ contextWindow })
+      const limit = softLimit({ contextWindow, compactPercent: 80 })
       // 前提：真值确实越过阈值，否则本轮不应压缩，用例即不针对该问题。
       expect(occupancy).toBeGreaterThan(limit)
 
       const p = port(store, conv.id)
       const outcome = await p.run({
+        compactPercent: 80,
         trigger: 'automatic',
         model: 'm',
         latestUnitSeen: false,
@@ -1476,5 +1485,78 @@ describe('两种计量口径不得直接相减', () => {
       expect(after).toBeLessThanOrEqual(limit)
       store.close()
     }
+  })
+})
+
+/**
+ * 最低触发线的最差情形：触发线 15 万（50 万窗口、比例 30）、信封（系统提示词与工具定义）5.5 万、
+ * 跨过保留预算的单元恰为尾部保留量 T，最后一个单元略小于 T，保留的尾部接近 2T。
+ * 此时 L − 信封 − 2T 约 1250，摘要与事实清单仍有空间，压缩之后不再越线，投递额度大于 0。
+ *
+ * 摘要器写入 500 token。预算不含投影的固定部分（摘要标题与说明、两条消息的开销）：摘要写满预算时
+ * 压缩后的占用超过触发线，与触发线的取值无关。
+ */
+describe('最低触发线的最差情形', () => {
+  const ENVELOPE = 55_000
+  const threshold = { contextWindow: 500_000, compactPercent: 30 }
+
+  /** 正文长度使单条消息的估算恰不超过 `target`。 */
+  function textOf(target: number): string {
+    let lo = 0
+    let hi = target * 8
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2)
+      const tokens = estimateMessages(
+        [{ role: 'assistant', content: 'z'.repeat(mid) }],
+        DEFAULT_DENSITY,
+      )
+      if (tokens <= target) lo = mid
+      else hi = mid - 1
+    }
+    return 'z'.repeat(lo)
+  }
+
+  test('保留的尾部接近 2T 时摘要照常生成，压缩之后不越线，投递额度大于 0', async () => {
+    const limit = softLimit(threshold)
+    const retain = tailRetain(threshold)
+    expect([limit, retain]).toEqual([150_000, 46_875])
+
+    const store = new Store({ path: ':memory:' })
+    const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    // 折叠区是助手正文，收纳不回收空间，必须生成摘要。
+    for (let i = 0; i < 8; i++) turn(store, ws.id, conv.id, `第 ${i} 个问题`, textOf(2500))
+    turn(store, ws.id, conv.id, '跨过保留预算的问题', textOf(retain))
+    turn(store, ws.id, conv.id, textOf(retain - 1), null)
+
+    const all = await history(store, conv.id)
+    const occupancy = ENVELOPE + estimateMessages(all, DEFAULT_DENSITY)
+    let budget = 0
+    const p = port(store, conv.id, async (_prompt, granted) => {
+      budget = granted
+      return textOf(500)
+    })
+    const outcome = await p.run({
+      trigger: 'automatic',
+      model: 'm',
+      latestUnitSeen: false,
+      occupancy,
+      estimatedOccupancy: occupancy,
+      ...threshold,
+      density: DEFAULT_DENSITY,
+    })
+
+    expect(outcome.status === 'compacted' && outcome.summarized).toBe(true)
+    expect(budget).toBeGreaterThan(500)
+    // 保留的尾部是最后两个单元：恰为 T 的单元与略小于 T 的单元。
+    const kept = p.project(all).filter((m) => m._group !== 'summary')
+    expect(estimateMessages(kept, DEFAULT_DENSITY)).toBe(2 * retain - 1)
+
+    const after = getConversation(store, conv.id)!.compactionManifest!.contextAfter!.total
+    expect(after).toBeLessThanOrEqual(limit)
+    const reserve = Math.floor(retain / 2)
+    const cap = deliveryCap({ state: openBatchBudget(new Map(), limit - after, reserve) })
+    expect(cap).toBeGreaterThan(0)
+    store.close()
   })
 })

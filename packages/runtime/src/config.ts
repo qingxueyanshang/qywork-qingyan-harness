@@ -22,11 +22,14 @@ import {
 import {
   CACHE_ROUTINGS,
   type CacheRouting,
+  type CompactPercentSetting,
   CURRENCIES,
   type Currency,
   channelImageSpecProblem,
   channelVideoSpecProblem,
   cloudMediaSpecProblem,
+  compactPercentOf,
+  compactPercentProblems,
   EFFORT_ORDER,
   type EffortLevel,
   isCloudMediaKind,
@@ -193,6 +196,11 @@ export interface QyConfig {
    * 已配置的 API Key，无论名称如何都必须剥离。
    */
   envAllowList?: string[]
+  /**
+   * 自动压缩的触发比例，按模型窗口分三档（`core` 的 `COMPACT_TIERS`），整数百分比，缺少的档取 80。
+   * 下一轮开始时生效，一轮之内不变。
+   */
+  compactPercent?: CompactPercentSetting
 }
 
 /**
@@ -665,6 +673,20 @@ export function modelSpecOf(cfg: QyConfig, ref: ModelRef): ModelSpec | undefined
   )
 }
 
+/**
+ * 窗口所在档的自动压缩比例，轮次启动、上下文面板与手动压缩各在使用前调用一次。
+ *
+ * 配置不合法（手工写入配置文件）时抛出配置错误，不改用缺省值：轮次在启动前终止，面板接口返回同一报错。
+ * 写接口已拒绝不合法的值（`diagnoseConfig`），只有绕过写接口的修改会到达此处。
+ */
+export function compactPercentFor(cfg: QyConfig, contextWindow: number): number {
+  const problems = compactPercentProblems(cfg.compactPercent)
+  if (problems.length) {
+    throw new Error(`配置文件 ${configPath()} 中的自动压缩比例不合法：${problems.join('；')}`)
+  }
+  return compactPercentOf(contextWindow, cfg.compactPercent)
+}
+
 /** 一次生成请求所需的全部信息。派生值，不落盘。 */
 export interface ResolvedMediaModel {
   /** 接口名，即 `providers` 的键。 */
@@ -843,6 +865,8 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   ) {
     problems.push('officePython 必须是 Python 解释器的绝对路径')
   }
+  // 不合法的比例落盘后，每一轮都在启动前以配置错误终止（`compactPercentFor`）。
+  problems.push(...compactPercentProblems(cfg.compactPercent))
 
   /*
    * 思考档位必须在词表里。

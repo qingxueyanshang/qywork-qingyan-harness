@@ -108,7 +108,7 @@ describe('逐请求账', () => {
     })
     expect(latestSentProviderRequest(store, conversationId)).toBeNull()
     // 未发送 = 未占用；窗口是模型的属性，仍可报告，面板显示 0 / 1M。
-    const panel = contextPanel(store, conversationId, M(1_000_000))
+    const panel = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(panel.total).toBe(0)
     expect(panel.percent).toBe(0)
     expect(panel.limit).toBe(1_000_000)
@@ -162,13 +162,13 @@ describe('上下文面板', () => {
     const model = M(1_000_000)
     expect(contextBasis(store, conversationId, model).anchored).toBeNull()
     expect(contextBasis(store, conversationId, model).compacted).toEqual(snapshot)
-    expect(contextPanel(store, conversationId, model)).toMatchObject({
+    expect(contextPanel(store, conversationId, model, 80)).toMatchObject({
       percent: 18.4,
       source: 'estimated',
     })
     for (const status of ['rejected', 'received'] as const) {
       const next = send(store, runId, { measured: 253_561, occupancy: 184_766 })
-      expect(contextPanel(store, conversationId, model)).toMatchObject({
+      expect(contextPanel(store, conversationId, model, 80)).toMatchObject({
         total: 184_766,
         source: 'estimated',
       })
@@ -181,7 +181,7 @@ describe('上下文面板', () => {
       )
       expect(contextBasis(store, conversationId, model).anchored).toBeNull()
       expect(contextBasis(store, conversationId, model).compacted).toEqual(snapshot)
-      expect(contextPanel(store, conversationId, model)).toMatchObject({
+      expect(contextPanel(store, conversationId, model, 80)).toMatchObject({
         total: 184_766,
         source: 'estimated',
       })
@@ -202,7 +202,7 @@ describe('上下文面板', () => {
       true,
     )
     expect(contextBasis(store, conversationId, model).compacted).toBeNull()
-    expect(contextPanel(store, conversationId, model)).toMatchObject({
+    expect(contextPanel(store, conversationId, model, 80)).toMatchObject({
       total: 181_413,
       percent: 18.1,
       source: 'actual',
@@ -240,7 +240,7 @@ describe('上下文面板', () => {
       createdAt: Date.now(),
     })
 
-    const compacted = contextPanel(store, conversationId, M(1_000_000))
+    const compacted = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(compacted.total).toBe(40_000)
     expect(compacted.measured).toBe(39_000)
     expect(compacted.percent).toBe(4)
@@ -258,7 +258,7 @@ describe('上下文面板', () => {
       null,
       true,
     )
-    const refreshed = contextPanel(store, conversationId, M(1_000_000))
+    const refreshed = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(refreshed.total).toBe(45_500)
     expect(refreshed.source).toBe('actual')
     store.close()
@@ -285,7 +285,7 @@ describe('上下文面板', () => {
       true,
     )
 
-    const panel = contextPanel(store, conversationId, M(1_000_000))
+    const panel = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(panel.total).toBe(9700)
     expect(panel.source).toBe('actual')
     expect(panel.freeSpace).toBe(1_000_000 - 9700)
@@ -314,7 +314,7 @@ describe('上下文面板', () => {
       null,
       true,
     )
-    const anchored = contextPanel(store, conversationId, M(1_000_000))
+    const anchored = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(anchored.total).toBe(33_000)
 
     // 第二次请求已发出，但 provider 未回报 usage。本地测得值远低于真值；发出时的运行中读数
@@ -322,7 +322,7 @@ describe('上下文面板', () => {
     const second = send(store, runId, { measured: 3200, occupancy: 33_200 })
     settleProviderRequest(store, second, 'received', null, null)
 
-    const after = contextPanel(store, conversationId, M(1_000_000))
+    const after = contextPanel(store, conversationId, M(1_000_000), 80)
     // 与运行中读数条数值相同，不退回本地估算 3,200。
     expect(after.total).toBe(33_200)
     expect(after.source).toBe('projected')
@@ -349,12 +349,12 @@ describe('上下文面板', () => {
       true,
     )
     send(store, runId, { measured: 143_310, occupancy: 135_600 })
-    const inFlight = contextPanel(store, conversationId, M(1_000_000))
+    const inFlight = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(inFlight.total).toBe(135_600)
     expect(inFlight.source).toBe('projected')
 
     send(store, runId, { measured: 150_000 })
-    const legacy = contextPanel(store, conversationId, M(1_000_000))
+    const legacy = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(legacy.total).toBe(150_000)
     expect(legacy.source).toBe('estimated')
   })
@@ -389,7 +389,7 @@ describe('上下文面板', () => {
       true,
     )
 
-    const panel = contextPanel(store, conversationId, M(1_000_000))
+    const panel = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(panel.total).toBe(6000)
     expect(sum(panel.breakdown)).toBe(6000)
     // 可逐字计数的三个桶保持原值：它们最准确，不参与分摊。
@@ -412,7 +412,7 @@ describe('上下文面板', () => {
       true,
     )
 
-    const panel = contextPanel(store, conversationId, M(1_000_000))
+    const panel = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(panel.breakdown.executionRecords).toBe(0)
     expect(panel.breakdown.historyMessages).toBe(700)
     expect(sum(panel.breakdown)).toBe(900)
@@ -423,7 +423,7 @@ describe('上下文面板', () => {
     const id = send(store, runId, { measured: 4242 })
     settleProviderRequest(store, id, 'rejected', null, 'context_overflow')
 
-    const panel = contextPanel(store, conversationId, M(1_000_000))
+    const panel = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(panel.total).toBe(4242)
     expect(panel.source).toBe('estimated')
   })
@@ -434,7 +434,7 @@ describe('上下文面板', () => {
     const id = send(store, runId, { measured: 2139 })
     settleProviderRequest(store, id, 'received', null, null)
 
-    expect(contextPanel(store, conversationId, M(1_000_000)).percent).toBe(0.2)
+    expect(contextPanel(store, conversationId, M(1_000_000), 80).percent).toBe(0.2)
   })
 
   /**
@@ -450,7 +450,7 @@ describe('上下文面板', () => {
     })
     settleProviderRequest(store, id, 'received', null, null)
 
-    const panel = contextPanel(store, conversationId, M(1_000_000))
+    const panel = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(panel.breakdown.systemTools).toBe(1519)
     expect(panel.breakdown.memory).toBe(823)
     // 落库使用 JSON，读取时必须补齐全部十个键：缺少键会使面板中对应行为 undefined。
@@ -487,13 +487,18 @@ describe('锚点按模型判定', () => {
       true,
     )
     // 同一个模型：照常锚定。
-    expect(contextPanel(store, conversationId, M(1_000_000)).source).toBe('actual')
+    expect(contextPanel(store, conversationId, M(1_000_000), 80).source).toBe('actual')
 
     // 会话切换到另一个模型：该回执描述的不是当前模型看到的上下文。
-    const other = contextPanel(store, conversationId, {
-      ...M(200_000),
-      id: 'other',
-    })
+    const other = contextPanel(
+      store,
+      conversationId,
+      {
+        ...M(200_000),
+        id: 'other',
+      },
+      80,
+    )
     expect(other.source).toBe('estimated')
     expect(other.total).not.toBe(33_000)
     expect(other.limit).toBe(200_000)
@@ -540,7 +545,7 @@ describe('锚点按模型判定', () => {
     )
 
     // 会话当前模型为 `m`，而最近一条回执属于 `other`：退回估算，不使用 5100 那条回执。
-    const panel = contextPanel(store, conversationId, M(1_000_000))
+    const panel = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(panel.source).toBe('estimated')
     expect(panel.total).not.toBe(5100)
     expect(panel.total).not.toBe(30_500)
@@ -566,11 +571,16 @@ describe('真值锚点按接口路线判定', () => {
       true,
     )
 
-    const otherRoute = contextPanel(store, conversationId, {
-      ...M(1_000_000),
-      providerName: 'relay-b',
-      providerKind: 'openai_chat_completions',
-    })
+    const otherRoute = contextPanel(
+      store,
+      conversationId,
+      {
+        ...M(1_000_000),
+        providerName: 'relay-b',
+        providerKind: 'openai_chat_completions',
+      },
+      80,
+    )
     expect(otherRoute.source).toBe('estimated')
     expect(otherRoute.total).toBe(3000)
   })
@@ -599,7 +609,7 @@ describe('真值锚点按接口路线判定', () => {
       true,
     )
 
-    const panel = contextPanel(store, conversationId, M(1_000_000))
+    const panel = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(panel.source).toBe('estimated')
     expect(panel.total).toBe(3000)
     store.close()
@@ -627,7 +637,7 @@ describe('收尾判定不作为锚点的回执', () => {
       null,
     )
     expect(contextBasis(store, conversationId, M(1_000_000)).anchored).toBeNull()
-    expect(contextPanel(store, conversationId, M(1_000_000))).toMatchObject({
+    expect(contextPanel(store, conversationId, M(1_000_000), 80)).toMatchObject({
       source: 'estimated',
       total: 179_230,
     })
@@ -647,7 +657,7 @@ describe('收尾判定不作为锚点的回执', () => {
       null,
       true,
     )
-    expect(contextPanel(store, conversationId, M(1_000_000))).toMatchObject({
+    expect(contextPanel(store, conversationId, M(1_000_000), 80)).toMatchObject({
       source: 'actual',
       total: 190_010,
     })
@@ -661,16 +671,16 @@ describe('压缩触发线', () => {
     const id = send(store, runId, { measured: 100 })
     settleProviderRequest(store, id, 'received', null, null)
 
-    expect(contextPanel(store, conversationId, M(1_000_000)).compactAt).toBe(
-      softLimit({ contextWindow: 1_000_000 }),
+    expect(contextPanel(store, conversationId, M(1_000_000), 80).compactAt).toBe(
+      softLimit({ contextWindow: 1_000_000, compactPercent: 80 }),
     )
-    expect(contextPanel(store, conversationId, M(200_000)).compactAt).toBe(160_000)
+    expect(contextPanel(store, conversationId, M(200_000), 80).compactAt).toBe(160_000)
   })
 
   /** 从未发送请求的会话同样给出触发线：窗口是模型的属性，不是请求的属性。 */
   test('新会话也给出触发线', () => {
     const { store, conversationId } = fixture()
-    expect(contextPanel(store, conversationId, M(200_000)).compactAt).toBe(160_000)
+    expect(contextPanel(store, conversationId, M(200_000), 80).compactAt).toBe(160_000)
   })
 })
 
@@ -764,7 +774,7 @@ describe('信封变化时只修正头部', () => {
       true,
     )
     // 信封相同：真值保持原值。
-    expect(contextPanel(store, conversationId, M(1_000_000)).total).toBe(101_000)
+    expect(contextPanel(store, conversationId, M(1_000_000), 80).total).toBe(101_000)
 
     // 安装 MCP 后：运行中按头部差 +4,000 修正锚点，再加上其后增量 300。
     send(store, runId, {
@@ -773,7 +783,7 @@ describe('信封变化时只修正头部', () => {
       categories: { systemPrompt: 1000, systemTools: 9000, mcpTools: 4000 },
       fingerprint: 'env-b',
     })
-    const panel = contextPanel(store, conversationId, M(1_000_000))
+    const panel = contextPanel(store, conversationId, M(1_000_000), 80)
     expect(panel.total).toBe(105_300)
     expect(panel.source).toBe('projected')
   })
@@ -795,10 +805,15 @@ describe('信封变化时只修正头部', () => {
       null,
       true,
     )
-    const other = contextPanel(store, conversationId, {
-      ...M(200_000),
-      id: 'other',
-    })
+    const other = contextPanel(
+      store,
+      conversationId,
+      {
+        ...M(200_000),
+        id: 'other',
+      },
+      80,
+    )
     expect(other.source).toBe('estimated')
     expect(other.total).toBe(3000)
   })

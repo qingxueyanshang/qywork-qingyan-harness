@@ -29,6 +29,7 @@ import type {
 import { log } from '@qywork/core'
 import {
   collectSecrets,
+  compactPercentFor,
   configPath,
   contextPanel,
   makeSummarizer,
@@ -867,11 +868,10 @@ export async function compactConversation(
     run.usage.currency = spec.pricing.currency ?? 'USD'
     const providerName = getConversation(deps.store, conversationId)?.provider
     if (!providerName) throw new Error('该会话未记录所属接口，请重新选择模型后继续')
-    const panel = contextPanel(deps.store, conversationId, {
-      ...spec,
-      providerName,
-      providerKind: adapter.kind,
-    })
+    // 按当前设置解析：手动压缩在两轮之间执行，与下一轮使用同一比例。配置不合法时以配置错误结束本次压缩。
+    const compactPercent = compactPercentFor(deps.config, spec.contextWindow)
+    const route = { ...spec, providerName, providerKind: adapter.kind }
+    const panel = contextPanel(deps.store, conversationId, route, compactPercent)
     const outcome = await compaction.run({
       onProgress,
       trace: createSummaryTrace(
@@ -890,6 +890,7 @@ export async function compactConversation(
       // 同一面板的两种计量，压缩按二者的比值折算回收量。
       estimatedOccupancy: panel.measured,
       contextWindow: spec.contextWindow,
+      compactPercent,
       // 与对话循环的压缩相同使用本轮密度：附件中不原生发送的视频不计入。
       density: runDensity(adapter),
     })
@@ -929,11 +930,7 @@ export async function compactConversation(
       })
       // 手动压缩后没有下一次 request_prepared 事件，必须从刚落库的同一份 manifest
       // 重算并广播；否则模型下一轮已看到压缩投影，面板仍显示压缩前的数值。
-      const updated = contextPanel(deps.store, conversationId, {
-        ...spec,
-        providerName,
-        providerKind: adapter.kind,
-      })
+      const updated = contextPanel(deps.store, conversationId, route, compactPercent)
       emit({
         type: 'context',
         runId,

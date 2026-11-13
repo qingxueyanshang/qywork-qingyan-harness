@@ -99,7 +99,8 @@ export const INLINE_BUDGET_BYTES = 8 * 1024
  * 观察视图与子任务摘录的单份尺寸（token）：窗口的 1/8，上限 30K。
  *
  * 这是可读性尺寸，不是容量限制：实际投递还受本次决策的剩余额度约束（`batchRemaining`）。
- * 压缩的尾部保留量取它的两倍（`runtime/compaction.ts` 的 `tailRetain`），一份整视图必然落在保留尾部之内。
+ * 压缩的尾部保留量（`agent` 的 `tailRetain`）不小于它的 1.56 倍（最低触发线处为 46,875 比 30,000），
+ * 一份整视图必然落在保留尾部之内。
  */
 export function observationBudget(contextWindow: number): number {
   return Math.min(Math.floor(contextWindow / 8), 30_000)
@@ -121,13 +122,13 @@ export function observationResultBudget(contextWindow: number): number {
 }
 
 /** 本次投递的实际上限：展示尺寸与单次投递上限（`deliveryCap`）中的较小值，至少为 1。 */
-export function viewLimit(ctx: Pick<ToolContext, 'state' | 'contextWindow'>, size: number): number {
+export function viewLimit(ctx: Pick<ToolContext, 'state'>, size: number): number {
   return Math.max(1, Math.min(size, deliveryCap(ctx)))
 }
 
 /** 摘录字节上限：展示尺寸（字节）与单次投递上限换算的字节数中的较小值。 */
 export function excerptBytes(
-  ctx: Pick<ToolContext, 'state' | 'density' | 'contextWindow'>,
+  ctx: Pick<ToolContext, 'state' | 'density'>,
   sizeBytes = INLINE_BUDGET_BYTES,
 ): number {
   return Math.min(sizeBytes, tokensToBytes(deliveryCap(ctx), ctx.density))
@@ -322,7 +323,7 @@ export const MIN_DELIVERY_BYTES = INLINE_BUDGET_BYTES
  * 续读说明约几十 token，不从头部中扣除，按实际投递量记账。
  */
 export function deliverReadable(
-  ctx: Pick<ToolContext, 'state' | 'sink' | 'density' | 'contextWindow'>,
+  ctx: Pick<ToolContext, 'state' | 'sink' | 'density'>,
   input: {
     toolName: string
     sourceType: string

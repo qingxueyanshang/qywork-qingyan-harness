@@ -198,7 +198,12 @@ async function drainRun(
     // 退避只会延长测试时间：本组验证的是消息边界，不是等待时长。
     sleep: async () => {},
   })
-  for await (const _ of loop.run({ runId, history, signal: new AbortController().signal })) {
+  for await (const _ of loop.run({
+    compactPercent: 80,
+    runId,
+    history,
+    signal: new AbortController().signal,
+  })) {
     // 事件在别处断言；这里只需执行完毕。
   }
 }

@@ -32,7 +32,7 @@ import {
   videoOutOfRange,
 } from '@qywork/ai'
 import type { ContextBreakdown, ProviderRequestConfiguration, RunUsage } from '@qywork/core'
-import { emptyBreakdown } from '@qywork/core'
+import { COMPACT_PERCENT_DEFAULT, COMPACT_TRIGGER_FLOOR, emptyBreakdown } from '@qywork/core'
 import { type EnvelopeItem, isStoredToolImage } from '@qywork/store'
 import { IMAGES_OMITTED } from '../compaction.ts'
 import type { SinkPort, ToolOutcome } from '../registry.ts'
@@ -75,25 +75,38 @@ export function idleTimeoutFor(effort: ChatRequest['effort']): number {
 }
 
 /**
- * 压缩触发阈值占窗口的比例，是压缩链路唯一的阈值常数。
- *
- * 预留 20% 给本轮尚未发生的占用：模型本轮的输出、下一批工具结果、
- * 估算与真值之间的残差。0.8 是通用取值，与模型无关，所有档位均为 80%。
- *
- * 不要再从中减去输出上限或投递预算：阈值会随模型的 `maxOutputTokens` 变化
- * （同为 1M 窗口的两个模型会得到 36.6% 与 62.2% 两个阈值），而请求合法性
- * 由申报钳位（`declaredMaxOutput`）保证，不由阈值保证。
+ * `softLimit` 与 `tailRetain` 的参数。`compactPercent` 是窗口所在档已解析的设置值
+ * （`core` 的 `compactPercentOf`），由调用方每轮解析一次，不在此处读取配置。
  */
-const TRIGGER_RATIO = 0.8
+export interface CompactThreshold {
+  contextWindow: number
+  compactPercent: number
+}
+
+/**
+ * 触发线乘以 100 的值，用整数运算避免浮点误差：窗口乘以比例，不低于最低触发线；
+ * 最低触发线不超过窗口乘以缺省比例，窗口不足 18.75 万时触发线固定为窗口的 80%。
+ */
+export function thresholdBasis({ contextWindow, compactPercent }: CompactThreshold): number {
+  return Math.max(
+    contextWindow * compactPercent,
+    Math.min(COMPACT_TRIGGER_FLOOR * 100, contextWindow * COMPACT_PERCENT_DEFAULT),
+  )
+}
 
 /**
  * 压缩的软阈值：占用超过该值时，在发出请求之前执行一次压缩。
  *
+ * 阈值以上的部分留给本轮尚未发生的占用：模型本轮的输出、下一批工具结果、估算与真值之间的残差。
+ * 不要再从中减去输出上限或投递预算：阈值会随模型的 `maxOutputTokens` 变化
+ * （同为 1M 窗口的两个模型会得到 36.6% 与 62.2% 两个阈值），而请求合法性
+ * 由申报钳位（`declaredMaxOutput`）保证，不由阈值保证。
+ *
  * 具名导出供上下文面板绘制同一条阈值线：两处计算结果不同时，界面上的刻度
  * 与实际触发点不一致。
  */
-export function softLimit(spec: { contextWindow: number }): number {
-  return Math.floor(spec.contextWindow * TRIGGER_RATIO)
+export function softLimit(threshold: CompactThreshold): number {
+  return Math.floor(thresholdBasis(threshold) / 100)
 }
 
 /**

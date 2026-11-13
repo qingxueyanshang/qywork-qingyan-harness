@@ -35,7 +35,7 @@ function ctx(root: string, approve = true): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},
@@ -312,7 +312,7 @@ describe('记忆与技能按投递额度交付', () => {
     await mkdir(join(root, MEMORY_DIR), { recursive: true })
     await writeFile(join(root, MEMORY_DIR, '长.md'), long)
     const sink = fakeSink()
-    const c = { ...ctx(root), sink, state: openBatchBudget(new Map(), 3000) }
+    const c = { ...ctx(root), sink, state: openBatchBudget(new Map(), 3000, 25_000) }
     const r = await readMemoryTool.fn({ key: '长' }, c)
     expect(r.status).toBe('success')
     expect(r.message.length).toBeLessThan(long.length)

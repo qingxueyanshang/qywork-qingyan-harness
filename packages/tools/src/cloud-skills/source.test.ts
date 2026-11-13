@@ -117,7 +117,7 @@ function ctx(
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), room),
+    state: openBatchBudget(new Map(), room, Math.floor(contextWindow / 8)),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},

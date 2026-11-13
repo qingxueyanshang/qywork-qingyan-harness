@@ -270,6 +270,7 @@ async function readVideoRun(path: string, input: number) {
   })
   const events: AgentEvent[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: 'rn_video' as never,
     history: [{ role: 'user', content: '看看这段视频' }],
     signal: new AbortController().signal,

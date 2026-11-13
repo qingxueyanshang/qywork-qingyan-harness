@@ -197,6 +197,7 @@ async function drainRun(opts: {
     sleep: async () => {},
   })
   for await (const _ of loop.run({
+    compactPercent: 80,
     runId: opts.runId,
     history: opts.history,
     signal: new AbortController().signal,

@@ -181,6 +181,7 @@ describe('循环集成', () => {
         makeToolContext: baseCtx,
       })
       for await (const _ of loop.run({
+        compactPercent: 80,
         runId: 'rn_claude_native' as never,
         history: [{ role: 'user', content: '读两个文件' }],
         signal: new AbortController().signal,

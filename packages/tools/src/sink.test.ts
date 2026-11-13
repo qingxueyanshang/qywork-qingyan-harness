@@ -322,12 +322,11 @@ describe('子 agent 产出的投递', () => {
  */
 describe('续读交付', () => {
   const body = `${'前段正文。'.repeat(2000)}尾部标记`
-  // 窗口取 0：尾部保留量为 0，单次上限等于余额。
+  // 预留量取 0：单次上限等于余额。
   const context = (room: number) => ({
     sink: fakeSink(),
     density: DEFAULT_DENSITY,
-    contextWindow: 0,
-    state: openBatchBudget(new Map<string, unknown>(), room),
+    state: openBatchBudget(new Map<string, unknown>(), room, 0),
   })
   const input = {
     toolName: 'read_history',

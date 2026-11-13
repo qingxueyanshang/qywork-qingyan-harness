@@ -236,6 +236,7 @@ async function readThrough() {
   }))
   let stop = ''
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: run.id,
     history,
     userMessageId: ask.id,
@@ -268,7 +269,7 @@ describe('远大于窗口的文件逐段读完', () => {
     expect(compactions.count).toBeGreaterThan(0)
     for (const req of seen)
       expect(estimateRequest(req, spec.density)).toBeLessThan(spec.contextWindow)
-    expect(softLimit(spec)).toBe(25_600)
+    expect(softLimit({ contextWindow: spec.contextWindow, compactPercent: 80 })).toBe(25_600)
   }, 60_000)
 
   /**
@@ -420,7 +421,7 @@ async function readScript(window: number, files: { name: string; tokens: number 
       const outcome = await port.run(input)
       if (outcome.status === 'compacted') {
         recoveries.push({
-          overLine: input.occupancy > softLimit({ contextWindow: window }),
+          overLine: input.occupancy > softLimit({ contextWindow: window, compactPercent: 80 }),
           recovered: before - estimateMessages(port.project(lastHistory), flash.density),
         })
       }
@@ -462,6 +463,7 @@ async function readScript(window: number, files: { name: string; tokens: number 
   }))
   let stop = ''
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: run.id,
     history,
     userMessageId: ask.id,
@@ -521,11 +523,15 @@ describe('压缩阈值附近的收纳必须释放空间', () => {
         if (s.kind === 'tool_action') lastBatchPartial = partialRead(s)
         if (s.kind !== 'compaction') continue
         const occupancy = (s.payload as { occupancy?: number }).occupancy ?? 0
-        if (occupancy <= softLimit({ contextWindow: window })) expect(lastBatchPartial).toBe(true)
+        if (occupancy <= softLimit({ contextWindow: window, compactPercent: 80 }))
+          expect(lastBatchPartial).toBe(true)
       }
       const below = recoveries.filter((r) => !r.overLine)
       expect(below.length).toBeGreaterThan(0)
-      for (const r of below) expect(r.recovered).toBeGreaterThanOrEqual(tailRetain(window) / 2)
+      for (const r of below)
+        expect(r.recovered).toBeGreaterThanOrEqual(
+          tailRetain({ contextWindow: window, compactPercent: 80 }) / 2,
+        )
     }, 120_000)
   }
 })
@@ -548,7 +554,7 @@ describe('占用在 55% 至 80% 之间执行普通工具，历史不被替换', 
     }
     const peak = Math.max(...sizes)
     expect(peak).toBeGreaterThan(window * 0.55)
-    expect(peak).toBeLessThan(softLimit({ contextWindow: window }))
+    expect(peak).toBeLessThan(softLimit({ contextWindow: window, compactPercent: 80 }))
     expect(steps.filter((s) => s.kind === 'compaction')).toEqual([])
     expect(recoveries).toEqual([])
   }, 120_000)
@@ -615,7 +621,9 @@ describe('估算偏高时续读段不受限于半份保留量', () => {
       )
     expect(reads.every((o) => o.status === 'success')).toBe(true)
     for (const o of reads.slice(0, -1)) {
-      expect(estimateText(o.data.content, flash.density)).toBeGreaterThan(tailRetain(window) / 2)
+      expect(estimateText(o.data.content, flash.density)).toBeGreaterThan(
+        tailRetain({ contextWindow: window, compactPercent: 80 }) / 2,
+      )
     }
   }, 120_000)
 })

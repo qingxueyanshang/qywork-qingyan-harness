@@ -72,6 +72,7 @@ test('Responses 密文随现有思考步骤落盘，下一轮工具结果仍携�
   })
   const events: AgentEvent[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: 'rn_cipher' as never,
     history: [],
     signal: new AbortController().signal,
@@ -136,6 +137,7 @@ describe('流式通道的顺序', () => {
 
     const deltas: { type: string; stepId: string }[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       signal: new AbortController().signal,
@@ -193,6 +195,7 @@ describe('流式通道的顺序', () => {
       makeToolContext: (runId) => baseCtx(runId),
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       signal: new AbortController().signal,
@@ -269,6 +272,7 @@ describe('流式通道的顺序', () => {
     })
     const textDeltas: string[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       signal: new AbortController().signal,
@@ -312,6 +316,7 @@ describe('流停滞时必须有终态，不能无限期挂起', () => {
     let message = ''
     try {
       for await (const ev of loopAgainst(fault).run({
+        compactPercent: 80,
         runId: runId as never,
         history: [],
         signal: new AbortController().signal,
@@ -392,6 +397,7 @@ describe('监督期间点击停止，不报告断流，也不再发送请求', (
     const timer = setTimeout(() => controller.abort(), abortAfterMs)
     try {
       for await (const ev of loop.run({
+        compactPercent: 80,
         runId: runId as never,
         history: [],
         signal: controller.signal,
@@ -637,6 +643,7 @@ describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
     })
     try {
       for await (const event of loop.run({
+        compactPercent: 80,
         runId: 'rn_progress' as never,
         history: [],
         signal: controller.signal,
@@ -730,6 +737,7 @@ describe('逐请求传输证据不改变请求内容', () => {
       makeToolContext: (runId) => baseCtx(runId),
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_metrics' as never,
       history: [],
       signal: new AbortController().signal,
@@ -950,7 +958,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
         backoffs.push(ms)
         if (sleepSignal.aborted) throw new DOMException('已中断', 'AbortError')
       },
-    }).run({ runId: 'rn_net' as never, history: [], signal })
+    }).run({ compactPercent: 80, runId: 'rn_net' as never, history: [], signal })
   }
 
   async function collect(adapter: LlmAdapter): Promise<{ rec: Recorded; events: AgentEvent[] }> {

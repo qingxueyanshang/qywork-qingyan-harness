@@ -131,6 +131,7 @@ async function runAgainst(led: Ledger, baseUrl: string): Promise<AgentEvent[]> {
   })
   const events: AgentEvent[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: led.runId,
     history: [],
     signal: new AbortController().signal,

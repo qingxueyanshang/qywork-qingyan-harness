@@ -217,6 +217,7 @@ export function sampleConfig(): QyConfig {
     additionalDirectories: ['/srv/qywork-sample'],
     sandboxNetwork: 'deny',
     envAllowList: ['GITHUB_TOKEN'],
+    compactPercent: { large: 50, medium: 60, small: 70 },
   } satisfies Required<QyConfig>
   return config
 }
@@ -254,6 +255,7 @@ export function meaningOf(cfg: QyConfig) {
     additionalDirectories: cfg.additionalDirectories,
     sandboxNetwork: cfg.sandboxNetwork,
     envAllowList: cfg.envAllowList,
+    compactPercent: cfg.compactPercent,
   }
   const models: Record<string, ReturnType<typeof resolved>> = {}
   for (const [provider, p] of Object.entries(cfg.providers)) {

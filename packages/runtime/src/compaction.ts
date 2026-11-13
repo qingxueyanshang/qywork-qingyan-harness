@@ -267,10 +267,11 @@ export class RuntimeCompaction implements CompactionPort {
 
     // 选界：从尾部逐单元累加到保留量为止，至少保留最后一个单元。
     const units = this.collectUnits(input.density)
-    const automaticRetain = tailRetain(input.contextWindow)
+    const threshold = { contextWindow: input.contextWindow, compactPercent: input.compactPercent }
+    const automaticRetain = tailRetain(threshold)
     /*
      * 自动压缩按 `tailRetain` 保留尾部；手动压缩发生在用户明确要求收纳时，
-     * 若仍以模型总窗口的 1/4 作为尾部预算，低占用会话的整段历史可能不足该数值，
+     * 若仍以 `tailRetain` 作为尾部预算，低占用会话的整段历史可能不足该数值，
      * `/compact` 只能返回 `nothing_to_fold`。手动入口仍使用同一个选界函数，只把
      * 保留量收敛到当前可折历史的 1/4，至少保留最后一个完整单元。
      */
@@ -330,7 +331,7 @@ export class RuntimeCompaction implements CompactionPort {
       condensedNew += condensed
     }
 
-    const limit = softLimit({ contextWindow: input.contextWindow })
+    const limit = softLimit(threshold)
     /*
      * 回收量先折算再相减。
      *

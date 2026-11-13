@@ -1434,6 +1434,11 @@ export interface ProviderRequestConfiguration {
   toolCount: number
   messageCount: number
   endpoint?: string | null
+  /**
+   * 本次请求所在轮次的压缩触发线（`agent` 的 `softLimit`）。只有主请求写入；摘要请求与迁移前的旧行没有该字段。
+   * 上下文面板优先取最近一次主请求的该值，运行中修改设置不改变本轮已显示的刻度。
+   */
+  compactAt?: number
 }
 
 /**

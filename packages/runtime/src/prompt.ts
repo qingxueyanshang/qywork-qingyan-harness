@@ -456,10 +456,10 @@ export function buildTailNotes(input: {
   mode: 'auto' | 'full'
   /**
    * 本轮开始时的上下文占用（`context-panel.ts` 的 `contextPanel`：与运行中读数、压缩触发同一口径）、
-   * 窗口与压缩触发线，单位 token。
+   * 窗口与本轮的压缩触发线（`softLimit`，与循环的触发判定取同一比例），单位 token。
    *
    * 必须告知模型：未告知时模型只能凭感觉判断剩余空间，实测 1M 窗口的模型在 50–67 万时多次向用户声称
-   * 「上下文快耗尽」，跳过验证并提前结束任务，而压缩在 80% 时自动执行。
+   * 「上下文快耗尽」，跳过验证并提前结束任务，而压缩在触发线处自动执行。
    */
   context?: { used: number; window: number; compactAt: number }
   /** 技能索引：只含 name 与 description，正文由模型按需通过 read_skill 读取。 */

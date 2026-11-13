@@ -84,7 +84,7 @@ function ctx(root: string, approve = true): ToolContext {
     density: videoDensity(false),
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},
@@ -1877,7 +1877,7 @@ describe('grep 计入投递额度', () => {
     await writeFile(join(root, 'noisy.txt'), Array.from({ length: 200 }, () => line).join('\n'))
 
     const { grepTool } = await import('./search.ts')
-    const tiny = { ...ctx(root), state: openBatchBudget(new Map(), 1000) }
+    const tiny = { ...ctx(root), state: openBatchBudget(new Map(), 1000, 25_000) }
     const out = await grepTool.fn!({ pattern: 'bug', path: '.' }, tiny)
 
     expect(out.status).toBe('success')

@@ -18,6 +18,7 @@ import {
   payloadSnapshotOf,
   reasoningPrefix,
   requestConfiguration,
+  softLimit,
   videoDelivery,
 } from './request.ts'
 import type { LoopHost, RunState, TurnState } from './run-state.ts'
@@ -164,7 +165,11 @@ export async function* sendTurn(
       measuredInputTokens: measured,
       // 与 `request_prepared` 时交给界面的读数采用同一估算口径、同一数值。
       occupancyTokens: run.meter(measured).tokens,
-      configuration: requestConfiguration(turn.req, adapter),
+      // 触发线随主请求写入：面板事后显示的刻度取自该值，不按读取时的设置重算。摘要请求不写。
+      configuration: {
+        ...requestConfiguration(turn.req, adapter),
+        compactAt: softLimit(run.threshold),
+      },
       sentCategories: turn.breakdown,
       omittedCategories: host.lastOmitted(),
       payloadHash: payload.hash,
