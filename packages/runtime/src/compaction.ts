@@ -375,11 +375,12 @@ export class RuntimeCompaction implements CompactionPort {
     }
 
     /*
-     * 投影总预算：摘要线推进到折叠线之后，新投影（全部摘要块与事实清单）还能容纳的 token 数。
+     * 投影总预算：摘要线推进到折叠线之后，新投影（`projectManifest` 的两条消息）还能容纳的 token 数。
      *
      * 被替换的是「收纳后的折叠区」与「上一份投影」：上一份投影整条重写，因此计为释放的空间；
      * 其中的旧摘要块原样进入新投影，在 `compact()` 中从新块的空间里扣除。
-     * 事实清单逐字优先占用，其次是旧块，新块使用剩余部分。全程以 token 计。
+     * 投影的固定部分（两条消息的协议开销、摘要消息的标题与说明）在 `compact()` 中先行扣除，
+     * 其次是逐字保留的事实清单与旧块，新块使用剩余部分。全程以 token 计。
      */
     const oldProjection = summary ? estimateMessages(projectManifest(previous!), input.density) : 0
     const latestContextUnit = [...units]

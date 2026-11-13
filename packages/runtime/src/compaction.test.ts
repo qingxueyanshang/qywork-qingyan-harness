@@ -308,7 +308,8 @@ describe('投影三区', () => {
   })
 
   test('最新运行上下文跨过摘要线时只保留一份，并紧邻摘要用户消息', async () => {
-    const { store, ws, conv, ids } = fresh(8)
+    // 8 条消息时投影预算小于投影的固定部分，摘要作废，投影中没有摘要消息。
+    const { store, ws, conv, ids } = fresh(12)
     createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
@@ -1245,7 +1246,8 @@ describe('增量压缩', () => {
 
   /** 摘要器只为新区段写摘要时，第一次摘要的内容不得随第二次摘要从投影中消失。 */
   test('第二次摘要追加新块，第一次摘要的内容仍在投影中', async () => {
-    const { store, conv } = fresh()
+    // 8 条消息时第一次压缩的投影预算小于投影的固定部分，第一次摘要作废。
+    const { store, conv } = fresh(12)
     let calls = 0
     const p = port(store, conv.id, async () =>
       ++calls === 1 ? '第一段：问题编号 QX-48213' : '第二段：新区段的结论',
@@ -1493,48 +1495,46 @@ describe('两种计量口径不得直接相减', () => {
  * 跨过保留预算的单元恰为尾部保留量 T，最后一个单元略小于 T，保留的尾部接近 2T。
  * 此时 L − 信封 − 2T 约 1250，摘要与事实清单仍有空间，压缩之后不再越线，投递额度大于 0。
  *
- * 摘要器写入 500 token。预算不含投影的固定部分（摘要标题与说明、两条消息的开销）：摘要写满预算时
- * 压缩后的占用超过触发线，与触发线的取值无关。
+ * 摘要器分别写入 500 token 与恰好写满所给预算。后者检查预算是否扣除了投影的固定部分
+ * （摘要消息的标题与说明、两条消息的协议开销）：未扣除时压缩之后的占用越过触发线，越线量与触发线的取值无关。
  */
 describe('最低触发线的最差情形', () => {
   const ENVELOPE = 55_000
   const threshold = { contextWindow: 500_000, compactPercent: 30 }
+  const limit = softLimit(threshold)
+  const retain = tailRetain(threshold)
 
-  /** 正文长度使单条消息的估算恰不超过 `target`。 */
-  function textOf(target: number): string {
+  /** 正文长度使 `measure` 的估算恰不超过 `target`；缺省按单条助手消息估算。 */
+  function textOf(
+    target: number,
+    measure = (text: string) =>
+      estimateMessages([{ role: 'assistant', content: text }], DEFAULT_DENSITY),
+  ): string {
     let lo = 0
     let hi = target * 8
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2)
-      const tokens = estimateMessages(
-        [{ role: 'assistant', content: 'z'.repeat(mid) }],
-        DEFAULT_DENSITY,
-      )
-      if (tokens <= target) lo = mid
+      if (measure('z'.repeat(mid)) <= target) lo = mid
       else hi = mid - 1
     }
     return 'z'.repeat(lo)
   }
 
-  test('保留的尾部接近 2T 时摘要照常生成，压缩之后不越线，投递额度大于 0', async () => {
-    const limit = softLimit(threshold)
-    const retain = tailRetain(threshold)
-    expect([limit, retain]).toEqual([150_000, 46_875])
-
+  /** 折叠区是助手正文，收纳不回收空间，必须生成摘要。`write` 按所给预算返回摘要正文。 */
+  async function compactWorstCase(write: (granted: number) => string) {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
-    // 折叠区是助手正文，收纳不回收空间，必须生成摘要。
     for (let i = 0; i < 8; i++) turn(store, ws.id, conv.id, `第 ${i} 个问题`, textOf(2500))
     turn(store, ws.id, conv.id, '跨过保留预算的问题', textOf(retain))
     turn(store, ws.id, conv.id, textOf(retain - 1), null)
 
     const all = await history(store, conv.id)
     const occupancy = ENVELOPE + estimateMessages(all, DEFAULT_DENSITY)
-    let budget = 0
-    const p = port(store, conv.id, async (_prompt, granted) => {
-      budget = granted
-      return textOf(500)
+    let granted = 0
+    const p = port(store, conv.id, async (_prompt, budget) => {
+      granted = budget
+      return write(budget)
     })
     const outcome = await p.run({
       trigger: 'automatic',
@@ -1545,18 +1545,35 @@ describe('最低触发线的最差情形', () => {
       ...threshold,
       density: DEFAULT_DENSITY,
     })
+    const manifest = getConversation(store, conv.id)!.compactionManifest
+    store.close()
+    return { all, p, outcome, granted, manifest }
+  }
+
+  test('保留的尾部接近 2T 时摘要照常生成，压缩之后不越线，投递额度大于 0', async () => {
+    expect([limit, retain]).toEqual([150_000, 46_875])
+    const { all, p, outcome, granted, manifest } = await compactWorstCase(() => textOf(500))
 
     expect(outcome.status === 'compacted' && outcome.summarized).toBe(true)
-    expect(budget).toBeGreaterThan(500)
+    expect(granted).toBeGreaterThan(500)
     // 保留的尾部是最后两个单元：恰为 T 的单元与略小于 T 的单元。
     const kept = p.project(all).filter((m) => m._group !== 'summary')
     expect(estimateMessages(kept, DEFAULT_DENSITY)).toBe(2 * retain - 1)
 
-    const after = getConversation(store, conv.id)!.compactionManifest!.contextAfter!.total
+    const after = manifest!.contextAfter!.total
     expect(after).toBeLessThanOrEqual(limit)
     const reserve = Math.floor(retain / 2)
     const cap = deliveryCap({ state: openBatchBudget(new Map(), limit - after, reserve) })
     expect(cap).toBeGreaterThan(0)
-    store.close()
+  })
+
+  test('摘要恰好写满所给预算时压缩之后不越线', async () => {
+    const { outcome, granted, manifest } = await compactWorstCase((budget) =>
+      textOf(budget, (text) => estimateText(text, DEFAULT_DENSITY)),
+    )
+
+    expect(outcome.status === 'compacted' && outcome.summarized).toBe(true)
+    expect(estimateText(manifest!.summaries.at(-1)!.text, DEFAULT_DENSITY)).toBe(granted)
+    expect(manifest!.contextAfter!.total).toBeLessThanOrEqual(limit)
   })
 })
