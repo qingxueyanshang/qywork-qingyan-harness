@@ -11,6 +11,13 @@ export { type RunOwner, Store } from './db.ts'
 export { createGoal, currentGoal, updateGoal } from './goals.ts'
 // 按需加载的外部工具：runtime 在装配工具表时读取、在 load_tool 成功后写入
 export { listLoadedTools, recordLoadedTools } from './loaded-tools.ts'
+// 工具调用统计：按会话取各工具的调用次数与累计时长，按请求取工具执行时长
+export {
+  batchToolDuration,
+  conversationToolTotals,
+  requestToolDurations,
+  type ToolCallTotal,
+} from './monitor/tool-usage.ts'
 // 读写：会话、消息、run、step、工作区
 export {
   appendMessage,
