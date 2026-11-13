@@ -337,4 +337,21 @@ describe('正文链接交给内置浏览器', () => {
     expect(state.notice?.message).toBe('未找到 Chrome、Edge 或 Chromium。')
     expect(invokes.some((i) => i.cmd === 'browser_open')).toBe(false)
   })
+
+  // 原始失败形状：同时运行两个 qywork 时，后启动的一个提示「尚未连接，请稍后重试」，而等待不会恢复。
+  test('浏览器配置被另一个 qywork 占用：提示原因，不提示稍后重试', () => {
+    reset()
+    const invokes: Invoke[] = []
+    restore = asShell(invokes)
+    setState(
+      'capabilities',
+      caps({ connected: false, runtimeSupported: false, unavailable: 'in_use' }),
+    )
+    setWorkspace(WS_A)
+
+    openLinkInPanel('page.html')
+
+    expect(state.notice?.message).toBe('另一个 qywork 正在使用内置浏览器。')
+    expect(invokes.some((i) => i.cmd === 'browser_open')).toBe(false)
+  })
 })

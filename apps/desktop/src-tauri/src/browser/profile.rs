@@ -5,7 +5,7 @@
 //! 使用同一份 `--user-data-dir` 的第二个 Chromium 进程会把请求转交给第一个进程后退出，
 //! 两种引擎自身都不会拒绝。
 //!
-//! 被占用时报错并停用该能力，不更换目录：更换目录会使用户的登录状态留在
+//! 被占用时宿主以 `IN_USE` 上报浏览器不可用，不更换目录：更换目录会使用户的登录状态留在
 //! 另一份 profile 中，而界面上无法察觉。
 
 use std::path::{Path, PathBuf};
@@ -14,6 +14,10 @@ use std::path::{Path, PathBuf};
 pub fn profile_dir() -> Option<PathBuf> {
     Some(crate::logfile::data_dir()?.join("browser").join("profiles").join("default"))
 }
+
+/// profile 已被另一个 qywork 进程占用时 `host.unavailable` 的原因，
+/// 与 `native-browser.ts` 的 `BrowserUnavailableReason` 逐字一致。
+pub const IN_USE: &str = "in_use";
 
 pub struct ProfileLock {
     /// 互斥体句柄的原始值。`HANDLE` 自身不是 `Send`，而该锁需要随宿主跨线程存在；
@@ -57,9 +61,9 @@ fn digest(path: &Path) -> String {
     format!("{hash:016x}")
 }
 
-/// 占用一份 profile 目录。已被另一个进程占用时返回用户可读的原因。
+/// 占用一份 profile 目录。已被另一个进程占用时返回 `Ok(None)`，其余失败返回原因。
 #[cfg(windows)]
-pub fn lock(dir: &Path) -> Result<ProfileLock, String> {
+pub fn lock(dir: &Path) -> Result<Option<ProfileLock>, String> {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
@@ -74,14 +78,14 @@ pub fn lock(dir: &Path) -> Result<ProfileLock, String> {
         unsafe {
             let _ = CloseHandle(handle);
         }
-        return Err("该浏览器配置不可打开".to_owned());
+        return Ok(None);
     }
-    Ok(ProfileLock { handle: handle.0 as isize, dir: dir.to_path_buf() })
+    Ok(Some(ProfileLock { handle: handle.0 as isize, dir: dir.to_path_buf() }))
 }
 
 /// 同一把锁在 unix 上使用 `flock` 的非阻塞独占锁。锁文件放在目录旁，不混入浏览器的用户数据。
 #[cfg(unix)]
-pub fn lock(dir: &Path) -> Result<ProfileLock, String> {
+pub fn lock(dir: &Path) -> Result<Option<ProfileLock>, String> {
     use std::os::fd::AsRawFd;
 
     const LOCK_EX: i32 = 2;
@@ -102,9 +106,9 @@ pub fn lock(dir: &Path) -> Result<ProfileLock, String> {
         .map_err(|e| format!("无法打开浏览器配置占用锁：{e}"))?;
     // SAFETY: fd 来自上方仍然有效的 File，操作码是 flock 定义的常量。
     if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } != 0 {
-        return Err("该浏览器配置不可打开".to_owned());
+        return Ok(None);
     }
-    Ok(ProfileLock { _file: file, dir: dir.to_path_buf() })
+    Ok(Some(ProfileLock { _file: file, dir: dir.to_path_buf() }))
 }
 
 #[cfg(test)]
@@ -138,12 +142,12 @@ mod tests {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../.tmp/cargo-tests")
             .join(format!("profile-lock-{}", std::process::id()));
-        let first = lock(&dir).expect("第一次占用应当成功");
-        let second = lock(&dir);
-        assert_eq!(second.err().as_deref(), Some("该浏览器配置不可打开"));
+        let first = lock(&dir).expect("第一次占用不应出错").expect("第一次占用应当成功");
+        let second = lock(&dir).expect("被占用不属于出错");
+        assert!(second.is_none());
         drop(first);
         // 释放之后同一目录可以再次占用。
-        let third = lock(&dir).expect("释放后应当可以再次占用");
+        let third = lock(&dir).expect("再次占用不应出错").expect("释放后应当可以再次占用");
         drop(third);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(dir.with_extension("lock"));
