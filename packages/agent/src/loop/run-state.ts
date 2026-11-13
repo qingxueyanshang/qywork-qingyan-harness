@@ -41,10 +41,7 @@ export interface LoopHost {
   readonly compaction: CompactionPort
   /** 可被中止信号提前结束的退避等待。 */
   backoff(ms: number, signal: AbortSignal): Promise<void>
-  summaryTrace(
-    run: RunState,
-    turnIndex: number,
-  ): SummaryTrace & { opened: boolean; merged: boolean }
+  summaryTrace(run: RunState, turnIndex: number): SummaryTrace & { opened: number; merged: boolean }
   openStream(run: RunState, req: ChatRequest): Promise<AsyncIterable<ProviderEvent>>
   buildRequest(run: RunState): ChatRequest
   /** 最近一次 `buildRequest` 算出的省略量。 */

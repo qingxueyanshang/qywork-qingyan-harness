@@ -172,8 +172,8 @@ async function* compactOverSoftLimit(
     ),
   )
   if (trace.opened) {
-    run.requestTurn++
-    run.turnIndex++
+    run.requestTurn += trace.opened
+    run.turnIndex += trace.opened
     if (trace.merged) {
       yield { type: 'usage', runId: input.runId, usage: structuredClone(run.usage) }
     }
@@ -343,8 +343,8 @@ export async function* recoverFromOverflow(
     ),
   )
   if (trace.opened) {
-    run.requestTurn += 2
-    run.turnIndex += 2
+    run.requestTurn += 1 + trace.opened
+    run.turnIndex += 1 + trace.opened
     attempt.ledger.sendIndex = 0
     if (trace.merged) {
       yield { type: 'usage', runId: input.runId, usage: structuredClone(run.usage) }
