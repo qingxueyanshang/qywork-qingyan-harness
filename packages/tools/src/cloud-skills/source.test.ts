@@ -146,6 +146,20 @@ describe('read_file 按行段读取云端技能文件', () => {
     expect(rest).toEqual({ startLine: 1, endLine: 6, totalLines: 6, truncated: false })
   })
 
+  test('可选参数以 null 填写时与缺省相同；region 有值时拒绝', async () => {
+    const root = await workspace()
+    const port = fakePort({ 'SKILL.md': SKILL_MD })
+    const path = 'cloud-skill://demo-pkg/SKILL.md'
+    const out = await readFileTool.fn(
+      { path, offset: null, limit: null, start: null, end: null, region: null },
+      ctx(root, port),
+    )
+    expect(out.status).toBe('success')
+    expect(out.data).toMatchObject({ startLine: 1, endLine: 6, totalLines: 6 })
+    const bad = await readFileTool.fn({ path, region: '0,0,10,10' }, ctx(root, port))
+    expect([bad.status, bad.errorKind]).toEqual(['failure', 'invalid_args'])
+  })
+
   test('超出单次投递上限时按行段部分投递，记为触及上限并给出续读位置', async () => {
     const root = await workspace()
     const port = fakePort({ 'SKILL.md': BIG })

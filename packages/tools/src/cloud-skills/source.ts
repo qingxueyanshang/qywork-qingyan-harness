@@ -177,7 +177,8 @@ export async function readCloudFile(
   target: CloudTarget,
   args: Record<string, unknown>,
 ): Promise<ToolOutcome> {
-  if (args.region !== undefined) {
+  // 严格模式的工具调用以 null 填写未使用的可选参数，与缺省同义。
+  if (args.region !== undefined && args.region !== null) {
     return failure(`region 只对图片有效，${target.shown} 不是图片`, 'invalid_args')
   }
   const rawOffset = intArg(args.offset, 1)
