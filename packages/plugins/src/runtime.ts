@@ -6,8 +6,7 @@
  * PATH 中没有 node 或版本低于 20 时报错，插件不加载。不要加回 bun 或宿主自身作为备选：
  * 两者没有权限模型，用它们运行等于插件不受隔离，而 auto 下模型可以自行安装插件。
  *
- * 不能使用 `process.execPath`：发布产物是 Bun 编译的单文件二进制，该路径是 `qy.exe` 本身，
- * 运行 `qy <插件入口>` 只输出「未知命令」与用法说明。
+ * 不能使用 `process.execPath`：该路径是 Bun 运行时，属于上述没有权限模型的备选。
  *
  * 实测：
  *
@@ -50,7 +49,6 @@ export interface RuntimeRequest {
 let nodeProbe: { path: string; major: number; minor: number } | null | undefined
 
 function which(cmd: string): string | null {
-  // Bun.which 在编译后的单文件二进制中同样可用。
   const found = (globalThis as { Bun?: { which(c: string): string | null } }).Bun?.which(cmd)
   return found ?? null
 }

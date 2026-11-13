@@ -166,7 +166,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === 'exec') return runExec(rest)
   /*
    * 命令 runner 一侧。**不写入 USAGE**：它不是供用户使用的子命令，而是
-   * `qy serve` 再次执行本二进制，作为「执行命令的父进程」。
+   * `qy serve` 再次执行本程序，作为「执行命令的父进程」。
    * 原因见 `tools/runner.ts` 的模块注释。
    */
   if (cmd === 'runner') {
@@ -364,13 +364,10 @@ async function runServe(args: string[]): Promise<number> {
    * 端口仍被占用（实测记录与分析见 `tools/runner.ts` 的模块注释）。
    * runner 在绑定端口之前创建，它及其后代进程都不持有该句柄。
    *
-   * 直接从源码运行时需要带上入口脚本（`bun <入口>.ts runner`），打包之后只有二进制
-   * 本身（`qy runner`）：判据是「当前进程是否为 bun 在运行一个脚本」。
+   * `process.execPath` 是 Bun 运行时，入口脚本必须一并传入：源码运行时是 `index.ts`，
+   * 安装后是脚本目录中的 `index.js`。
    */
-  const runnerArgv = Bun.main.endsWith('.ts')
-    ? [process.execPath, Bun.main, 'runner']
-    : [process.execPath, 'runner']
-  setCommandRunner(startCommandRunner(runnerArgv))
+  setCommandRunner(startCommandRunner([process.execPath, Bun.main, 'runner']))
   startupStage('启动服务')
 
   // 任务运行期间阻止系统睡眠、按定时任务唤醒系统。不按是否由桌面外壳启动区分：经局域网连接的客户端发起的任务同样需要。
@@ -581,8 +578,8 @@ function watchParent(pid: number, onGone: () => void): void {
 /**
  * 版本号。
  *
- * 编译期由 `--define QYWORK_VERSION` 内联；单文件二进制无法读取打包范围外的 VERSION
- * 文件（相对路径无法解析，实测会静默输出 0.0.0）。直接从源码运行时改为读取文件。
+ * 构建期由 `define` 内联 `QYWORK_VERSION`：安装目录中没有 VERSION 文件。
+ * 直接从源码运行时改为读取文件。
  */
 declare const QYWORK_VERSION: string | undefined
 
