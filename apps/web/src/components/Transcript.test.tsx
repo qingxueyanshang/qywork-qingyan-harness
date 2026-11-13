@@ -926,7 +926,7 @@ describe('工具图片回放', () => {
 })
 
 describe('编排画布', () => {
-  test('并行节点的列有最小宽度，宽度不足时由卡片内的滚动层横向滚动', async () => {
+  test('并行节点按等宽列排成一行，图直接位于卡片内，没有横向滚动层', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
     const host = document.createElement('div')
@@ -962,14 +962,420 @@ describe('编排画布', () => {
     try {
       const layers = host.querySelectorAll<HTMLElement>('.wf-layer')
       expect(layers).toHaveLength(3)
-      expect(layers[1]?.style.gridTemplateColumns).toBe('repeat(4, minmax(128px, 1fr))')
+      expect(layers[1]?.style.gridTemplateColumns).toBe('repeat(4, minmax(0, 1fr))')
       expect(layers[1]?.style.maxWidth).toBe('676px')
-      // 滚动层位于卡片内、图位于滚动层内：卡片宽度不随节点数变化，只有图所在的一层滚动。
-      expect(host.querySelector('.wf-card > .wf-scroll > .wf-graph')).not.toBeNull()
+      expect(host.querySelector('.wf-card > .wf-graph')).not.toBeNull()
       expect(layers[1]?.querySelector('.wf-node-name')?.classList.contains('truncate')).toBe(false)
     } finally {
       dispose()
     }
+  })
+
+  type WireNode = { key: string; needs: string[] }
+  type Segment = { axis: 'horizontal' | 'vertical'; fixed: number; from: number; to: number }
+
+  /**
+   * 按组件写入各层的样式推算节点位置并生成连线，再按图的读法核对：从一个上游的下边出发，
+   * 沿连线只向下或水平移动，能到达的节点必须恰好是依赖它的节点。
+   * 节点高 44、行距与层距 26，与样式表一致。
+   */
+  async function drawWorkflow(layers: WireNode[][], width: number) {
+    const mod = await import('./Transcript.tsx')
+    const plan = mod.layoutWorkflowGraph(layers, width)
+    const inner = width - mod.workflowRailWidth(plan.rails)
+    const px = (value: string) => Number.parseFloat(value)
+    let narrowest = Number.POSITIVE_INFINITY
+    const place = (lanes: readonly number[]) => {
+      const rects = new Map<string, { left: number; right: number; top: number; bottom: number }>()
+      let y = 0
+      for (const [li, layer] of layers.entries()) {
+        const style = mod.workflowLayerStyle(plan.layers[li]!, lanes[li] ?? 0)
+        const gap = px(style['column-gap'])
+        const [left, right] = style['padding-inline'].split(' ').map(px) as [number, number]
+        const outer = Math.min(inner, px(style['max-width']))
+        const cols = plan.layers[li]!.cols
+        const cell = (outer - left - right - (cols - 1) * gap) / cols
+        narrowest = Math.min(narrowest, cell)
+        if (li > 0) y += 26 + px(style['margin-top'])
+        for (const [i, n] of layer.entries()) {
+          const x = (inner - outer) / 2 + left + (i % cols) * (cell + gap)
+          const top = y + Math.floor(i / cols) * 70
+          rects.set(n.key, { left: x, right: x + cell, top, bottom: top + 44 })
+        }
+        y += Math.ceil(layer.length / cols) * 70 - 26
+      }
+      return rects
+    }
+    // 横线数只由横坐标决定：按它调整层间空白后再次布线，横线数必须不变。
+    const first = mod.routeWorkflowWires(plan, place([]), width)
+    const rects = place(first.lanes)
+    const routed = mod.routeWorkflowWires(plan, rects, width)
+    const stable = JSON.stringify(first.lanes) === JSON.stringify(routed.lanes)
+
+    // 长度为零的线段不绘制；多个目标共用的线段只保留一份。
+    const unique = new Map<string, Segment>()
+    for (const s of routed.segments) {
+      const from = Math.min(s.from, s.to)
+      const to = Math.max(s.from, s.to)
+      if (from < to) unique.set(`${s.axis}:${s.fixed}:${from}:${to}`, { ...s, from, to })
+    }
+    const segments = [...unique.values()]
+    const vertical = segments.filter((s) => s.axis === 'vertical')
+    const horizontal = segments.filter((s) => s.axis === 'horizontal')
+
+    // 穿过节点内部的线段。
+    const through = segments.filter((s) =>
+      [...rects.values()].some((r) => {
+        const [a0, a1, b0, b1] =
+          s.axis === 'horizontal'
+            ? [r.top, r.bottom, r.left, r.right]
+            : [r.left, r.right, r.top, r.bottom]
+        return s.fixed > a0 + 1 && s.fixed < a1 - 1 && s.to > b0 + 1 && s.from < b1 - 1
+      }),
+    )
+
+    // 平行、间距小于 4px 且有重叠区间的两条线段：图上无法分辨是一条线还是两条线。
+    let close = 0
+    for (const group of [vertical, horizontal]) {
+      for (const [i, a] of group.entries()) {
+        for (const b of group.slice(i + 1)) {
+          const apart = Math.abs(a.fixed - b.fixed)
+          if (apart > 0 && apart < 4 && a.from < b.to && b.from < a.to) close += 1
+        }
+      }
+    }
+
+    /*
+     * 线段在端点处相连：一条线段的端点落在另一条线段上时两者相连，垂直穿过而没有端点时只是相交。
+     * 竖线只能向下通行，横线双向通行。
+     */
+    const point = (x: number, y: number) => `${x},${y}`
+    const ends = new Set<string>()
+    const ysAt = new Map<number, number[]>()
+    const xsAt = new Map<number, number[]>()
+    for (const s of segments) {
+      for (const along of [s.from, s.to]) {
+        const [x, y] = s.axis === 'vertical' ? [s.fixed, along] : [along, s.fixed]
+        if (ends.has(point(x, y))) continue
+        ends.add(point(x, y))
+        ysAt.set(x, [...(ysAt.get(x) ?? []), y])
+        xsAt.set(y, [...(xsAt.get(y) ?? []), x])
+      }
+    }
+    const next = new Map<string, string[]>()
+    const link = (from: string, to: string) => next.set(from, [...(next.get(from) ?? []), to])
+    for (const s of vertical) {
+      const ys = (ysAt.get(s.fixed) ?? []).filter((y) => y >= s.from && y <= s.to)
+      ys.sort((a, b) => a - b)
+      for (let i = 1; i < ys.length; i += 1) {
+        link(point(s.fixed, ys[i - 1]!), point(s.fixed, ys[i]!))
+      }
+    }
+    for (const s of horizontal) {
+      const xs = (xsAt.get(s.fixed) ?? []).filter((x) => x >= s.from && x <= s.to)
+      xs.sort((a, b) => a - b)
+      for (let i = 1; i < xs.length; i += 1) {
+        link(point(xs[i - 1]!, s.fixed), point(xs[i]!, s.fixed))
+        link(point(xs[i]!, s.fixed), point(xs[i - 1]!, s.fixed))
+      }
+    }
+    const at = (v: number) => Math.round(v) + 0.5
+    /** 在节点下边开始（输出）或在节点上边结束（输入）的竖线端点。 */
+    const terminals = (key: string, side: 'top' | 'bottom') => {
+      const r = rects.get(key)!
+      return vertical
+        .filter(
+          (s) =>
+            s.fixed >= r.left &&
+            s.fixed <= r.right &&
+            (side === 'top' ? s.to : s.from) === at(r[side]),
+        )
+        .map((s) => point(s.fixed, at(r[side])))
+    }
+    const nodes = layers.flat()
+    const wrong: string[] = []
+    for (const source of nodes) {
+      const reached = new Set(terminals(source.key, 'bottom'))
+      const queue = [...reached]
+      for (let head = queue.shift(); head !== undefined; head = queue.shift()) {
+        for (const to of next.get(head) ?? []) {
+          if (reached.has(to)) continue
+          reached.add(to)
+          queue.push(to)
+        }
+      }
+      for (const target of nodes) {
+        const expected = target.needs.includes(source.key)
+        const drawn = terminals(target.key, 'top').some((end) => reached.has(end))
+        if (expected !== drawn) {
+          wrong.push(`${source.key}→${target.key} 应为 ${expected}，图中为 ${drawn}`)
+        }
+      }
+    }
+
+    // 相交而不相连的点：绘出的竖线在该点上下各断开 3px，其余位置与线段完全一致。
+    const crossed: { x: number; y: number }[] = []
+    for (const v of vertical) {
+      for (const h of horizontal) {
+        if (h.fixed <= v.from || h.fixed >= v.to || v.fixed <= h.from || v.fixed >= h.to) continue
+        if (ends.has(point(v.fixed, h.fixed))) continue
+        if (!crossed.some((c) => c.x === v.fixed && c.y === h.fixed)) {
+          crossed.push({ x: v.fixed, y: h.fixed })
+        }
+      }
+    }
+    const drawnVertical = mod
+      .mergeWorkflowEdgeSegments(routed.segments.map((segment) => ({ ...segment, live: false })))
+      .flatMap(({ d }) => {
+        const match = /^M([\d.]+) ([\d.]+)V([\d.]+)$/.exec(d)
+        return match ? [{ x: Number(match[1]), from: Number(match[2]), to: Number(match[3]) }] : []
+      })
+    const unbroken = crossed.filter(({ x, y }) =>
+      drawnVertical.some((v) => v.x === x && v.from < y + 3 && v.to > y - 3),
+    )
+    const spans = new Map<number, [number, number][]>()
+    for (const s of vertical) spans.set(s.fixed, [...(spans.get(s.fixed) ?? []), [s.from, s.to]])
+    let expectedLength = -6 * crossed.length
+    for (const list of spans.values()) {
+      let end = Number.NEGATIVE_INFINITY
+      for (const [from, to] of list.sort((a, b) => a[0] - b[0])) {
+        if (to > end) expectedLength += to - Math.max(from, end)
+        end = Math.max(end, to)
+      }
+    }
+    const drawnLength = drawnVertical.reduce((sum, v) => sum + v.to - v.from, 0)
+    // 画到图的左右边界之外的线段。
+    const outside = segments.filter((seg) =>
+      (seg.axis === 'vertical' ? [seg.fixed] : [seg.from, seg.to]).some(
+        (x) => x < 0 || x > width + routed.overflow,
+      ),
+    )
+
+    return {
+      plan,
+      lanes: routed.lanes,
+      overflow: routed.overflow,
+      stable,
+      narrowest,
+      outside,
+      through,
+      close,
+      crossings: crossed.length,
+      unbroken,
+      missing: expectedLength - drawnLength,
+      wrong,
+    }
+  }
+
+  const fan = (count: number, needs: string[], prefix: string): WireNode[] =>
+    Array.from({ length: count }, (_, i) => ({ key: `${prefix}${i + 1}`, needs }))
+
+  /** 一张图的全部缺陷：依赖连接有误、线段穿过节点、相交处没有断开、两条线过近、线段越出图的边界。 */
+  const faults = (drawn: Awaited<ReturnType<typeof drawWorkflow>>) => [
+    ...drawn.wrong,
+    ...(drawn.through.length > 0 ? [`穿过节点 ${drawn.through.length}`] : []),
+    ...(drawn.unbroken.length > 0 ? [`相交处未断开 ${drawn.unbroken.length}`] : []),
+    ...(drawn.missing !== 0 ? [`竖线长度相差 ${drawn.missing}`] : []),
+    ...(drawn.close > 0 ? [`间距过小 ${drawn.close}`] : []),
+    ...(drawn.outside.length > 0 ? [`越出边界 ${drawn.outside.length}`] : []),
+    ...(drawn.stable ? [] : ['横线数在第二次布线时变化']),
+  ]
+
+  /** 原始失败形状：一次派发多个子 agent，全部排在一行，图宽超出卡片。 */
+  test('图宽不足时一层分为节点数相近的多行，未测量时不换行', async () => {
+    const { layoutWorkflowGraph } = await import('./Transcript.tsx')
+    const cols = (count: number, width: number) =>
+      layoutWorkflowGraph(
+        [
+          [{ key: 'in', needs: [] }],
+          fan(count, ['in'], 'a'),
+          [{ key: 'out', needs: fan(count, [], 'a').map((n) => n.key) }],
+        ],
+        width,
+      ).layers[1]?.cols
+    expect(cols(6, 0)).toBe(6)
+    expect(cols(4, 650)).toBe(4)
+    expect(cols(6, 650)).toBe(3)
+    expect(cols(7, 650)).toBe(4)
+    expect(cols(6, 320)).toBe(2)
+    expect(cols(6, 100)).toBe(1)
+  })
+
+  test('七个并行节点换行后，每个节点各自连到入口与出口，连线不穿过节点、互不相交', async () => {
+    const a = fan(7, ['in'], 'a')
+    for (const width of [650, 420, 300]) {
+      const drawn = await drawWorkflow(
+        [[{ key: 'in', needs: [] }], a, [{ key: 'out', needs: a.map((n) => n.key) }]],
+        width,
+      )
+      expect(drawn.plan.layers[1]?.wrapped).toBe(true)
+      expect(faults(drawn)).toEqual([])
+      expect(drawn.crossings).toBe(0)
+    }
+  })
+
+  test('一一对应的两层都换行时，每条依赖单独成线，不与其他依赖相连', async () => {
+    const a = fan(6, ['in'], 'a')
+    const b = a.map((n, i) => ({ key: `b${i + 1}`, needs: [n.key] }))
+    for (const width of [650, 420]) {
+      const drawn = await drawWorkflow(
+        [[{ key: 'in', needs: [] }], a, b, [{ key: 'out', needs: b.map((n) => n.key) }]],
+        width,
+      )
+      expect(drawn.plan.layers[2]?.wrapped).toBe(true)
+      expect(faults(drawn)).toEqual([])
+      expect(drawn.crossings).toBe(0)
+    }
+  })
+
+  test('同一层内依赖不同的节点换行后各自连到自己的上游', async () => {
+    // b1 至 b3 依赖 x，b4 至 b6 依赖 y；下游 p 只依赖前三个，q 只依赖后三个。
+    const b = [...fan(3, ['x'], 'b'), ...fan(3, ['y'], 'c')]
+    const drawn = await drawWorkflow(
+      [
+        [{ key: 'in', needs: [] }],
+        [
+          { key: 'x', needs: ['in'] },
+          { key: 'y', needs: ['in'] },
+        ],
+        b,
+        [
+          { key: 'p', needs: ['b1', 'b2', 'b3'] },
+          { key: 'q', needs: ['c1', 'c2', 'c3'] },
+        ],
+      ],
+      420,
+    )
+    expect(drawn.plan.layers[2]?.wrapped).toBe(true)
+    expect(faults(drawn)).toEqual([])
+  })
+
+  test('跨层依赖沿图的右侧下行，不穿过中间换行的一层', async () => {
+    const a = fan(6, ['in'], 'a')
+    const drawn = await drawWorkflow(
+      [
+        [{ key: 'in', needs: [] }],
+        [
+          { key: 'x', needs: ['in'] },
+          { key: 'y', needs: ['in'] },
+        ],
+        fan(6, ['x'], 'a'),
+        [{ key: 'out', needs: [...a.map((n) => n.key), 'y'] }],
+      ],
+      650,
+    )
+    expect(drawn.plan.rails).toBe(1)
+    expect(faults(drawn)).toEqual([])
+  })
+
+  test('上下两层位置对齐、依赖交错时，正上方的节点不与正下方的节点相连', async () => {
+    // s2 位于 t2 正上方而 t2 不依赖 s2：两者的竖线横坐标相同，不能画在同一条竖线上。
+    const drawn = await drawWorkflow(
+      [
+        [{ key: 'in', needs: [] }],
+        fan(3, ['in'], 's'),
+        [
+          { key: 't1', needs: ['s2'] },
+          { key: 't2', needs: ['s1', 's3'] },
+          { key: 't3', needs: ['s2'] },
+        ],
+      ],
+      651,
+    )
+    expect(faults(drawn)).toEqual([])
+    expect(drawn.crossings).toBeGreaterThan(0)
+  })
+
+  test('一个上游通向两组依赖时，另一组的上游不沿它的输出线到达不依赖自己的节点', async () => {
+    // p 只依赖 x，q 依赖 x 与 y：y 的连线不能经 x 的输出线到达 p。
+    for (const order of [
+      ['p', 'q'],
+      ['q', 'p'],
+    ]) {
+      const drawn = await drawWorkflow(
+        [
+          [{ key: 'in', needs: [] }],
+          [
+            { key: 'x', needs: ['in'] },
+            { key: 'y', needs: ['in'] },
+          ],
+          order.map((key) => ({ key, needs: key === 'p' ? ['x'] : ['x', 'y'] })),
+        ],
+        650,
+      )
+      expect(faults(drawn)).toEqual([])
+    }
+  })
+
+  /**
+   * 固定种子的随机依赖图：失败时可按同一序列复现。乘法用 `Math.imul`：
+   * 普通乘法的结果超出双精度整数范围后低位恒定，取余得到的值不再变化。
+   */
+  const randomGraphs = (start: number) => {
+    let seed = start
+    const random = (n: number) => {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * n)
+    }
+    /** `sparse` 越大依赖越少：各组依赖互不相干时，多连的线才会被判为错误。 */
+    const graph = (sparse: number) => {
+      const layers: WireNode[][] = [[{ key: 'in', needs: [] }]]
+      const depth = 1 + random(4)
+      for (let li = 1; li <= depth; li += 1) {
+        const above = layers[li - 1]!
+        const earlier = layers.slice(0, li - 1).flat()
+        layers.push(
+          Array.from({ length: 1 + random(8) }, (_, i) => {
+            // 至少依赖上一层的一个节点，层号才等于最长依赖链的长度。
+            const needs = new Set([above[random(above.length)]!.key])
+            for (const n of above) if (random(3 * sparse) === 0) needs.add(n.key)
+            for (const n of earlier) if (random(6 * sparse) === 0) needs.add(n.key)
+            return { key: `n${li}_${i}`, needs: [...needs] }
+          }),
+        )
+      }
+      return layers
+    }
+    return { random, graph }
+  }
+
+  test('随机生成的依赖图在各种宽度下，每个上游沿连线向下只到达依赖它的节点', async () => {
+    const { random, graph } = randomGraphs(20261113)
+    const failures: string[] = []
+    let crossings = 0
+    let nodes = 0
+    for (let round = 0; round < 300; round += 1) {
+      const layers = graph(round % 2 === 0 ? 10 : 1)
+      const width = 300 + random(1100)
+      const drawn = await drawWorkflow(layers, width)
+      // 图宽容纳不下一列最小宽度的节点与它两侧的通道时没有可行的排列，不在核对范围内。
+      if (drawn.narrowest < 128) continue
+      crossings += drawn.crossings
+      nodes += layers.flat().length
+      const found = faults(drawn)
+      if (found.length > 0)
+        failures.push(`第 ${round} 轮 宽 ${width}：${found.slice(0, 3).join('；')}`)
+    }
+    expect(failures).toEqual([])
+    // 生成的图须有足够的规模与相交：序列退化为只含一两个节点的图时，上面的核对不再有意义。
+    expect(nodes).toBeGreaterThan(3000)
+    expect(crossings).toBeGreaterThan(1000)
+  })
+
+  test('图宽以内无法容纳全部连线时，多出的连线画在图的右侧并上报越出的宽度，依赖连接不变', async () => {
+    // 依赖密集的图配窄图宽，取序列中前几张无法容纳的图。
+    const { random, graph } = randomGraphs(7)
+    let overflowing = 0
+    for (let round = 0; round < 4000 && overflowing < 3; round += 1) {
+      const layers = graph(1)
+      const drawn = await drawWorkflow(layers, 330 + random(150))
+      if (drawn.narrowest < 128 || drawn.overflow === 0) continue
+      overflowing += 1
+      expect(faults(drawn)).toEqual([])
+    }
+    expect(overflowing).toBe(3)
   })
 
   test('共享入口的共线区间只生成一份路径', async () => {
