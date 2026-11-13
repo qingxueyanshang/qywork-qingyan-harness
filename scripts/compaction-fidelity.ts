@@ -266,15 +266,16 @@ async function main(): Promise<number> {
    */
   const projected = compaction.project(history)
   const projectedText = projected.map((p) => String(p.content)).join('\n\n')
+  // 本次压缩之前没有摘要，摘要块只有本次新写的一块。
+  const summaryText = outcome.manifest.summaries.map((block) => block.text).join('\n\n')
   const originalChars = FACTS.reduce((n, f) => n + f.text.length, 0) + TOTAL_TURNS * 480
   // 替换内容 = 摘要 + 事实清单，即 `projectManifest` 产出的两项。
-  const replacementChars =
-    outcome.manifest.summary.length + JSON.stringify(outcome.manifest.facts).length
+  const replacementChars = summaryText.length + JSON.stringify(outcome.manifest.facts).length
 
   process.stdout.write(
     `压缩完成：修订 ${outcome.manifest.revision}，` +
       `摘要段${outcome.summarized ? '跑了' : `没跑（${outcome.reasonCode ?? '未给原因'}）`}，` +
-      `摘要 ${outcome.manifest.summary.length} 字符，` +
+      `摘要 ${summaryText.length} 字符，` +
       `事实包 ${outcome.manifest.facts.userConstraints.length} 条约束\n` +
       `投影总长 ${projectedText.length} 字符（原会话约 ${originalChars} 字符，压到 ${Math.round((projectedText.length / originalChars) * 100)}%）\n\n`,
   )
@@ -309,12 +310,12 @@ async function main(): Promise<number> {
    * 前缀只供人阅读。要求模型逐字照抄前缀反而会使它连同 id 一起改写。
    */
   const marks = [
-    ...outcome.manifest.summary.matchAll(/\[(?:(?:message|action):)?((?:ms|rn)_[a-z0-9:]+)\]/gi),
+    ...summaryText.matchAll(/\[(?:(?:message|action):)?((?:ms|rn)_[a-z0-9:]+)\]/gi),
   ].map((m) => m[1] ?? '')
   check(
     `摘要里带回了 ${marks.length} 个定位符`,
     marks.length > 0,
-    `摘要前 300 字符：${outcome.manifest.summary.slice(0, 300)}`,
+    `摘要前 300 字符：${summaryText.slice(0, 300)}`,
   )
   // 摘要返回的标记必须指向真实存在的 id，编造的标记比缺失更有害：
   // 模型会用它调用 read_history，得到的结果全部是 not_found。

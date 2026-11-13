@@ -207,21 +207,12 @@ function selectPoints(db: Database): Point[] {
     const at = stepAt.get(runId, startSeq)?.created_at ?? info.created_at
     const bound = boundOf.get(runId)?.b ?? ''
     const manifest = JSON.parse(manifestOf.get(info.conversation_id)?.m ?? 'null') as {
-      compactedThroughMessageId?: string | null
-      compactedThroughStep?: string
+      summaries?: { through?: { messageId?: string; step?: string } }[]
       condensedThrough?: { messageId?: string; step?: string }
     } | null
     const kept =
       !manifest ||
-      (cutBefore(
-        {
-          messageId: manifest.compactedThroughMessageId ?? null,
-          ...(manifest.compactedThroughStep ? { step: manifest.compactedThroughStep } : {}),
-        },
-        bound,
-        runId,
-        startSeq,
-      ) &&
+      (cutBefore(manifest.summaries?.at(-1)?.through, bound, runId, startSeq) &&
         cutBefore(manifest.condensedThrough, bound, runId, startSeq))
     return {
       id: `${runId}:${startSeq}`,

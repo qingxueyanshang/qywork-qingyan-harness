@@ -38,6 +38,7 @@ import type {
   CompactionCut,
   CompactionFacts,
   CompactionManifest,
+  CompactionSummaryBlock,
   FileReadProgress,
   ProviderHedge,
 } from '@qywork/core'
@@ -56,6 +57,15 @@ const EXCERPT = 320
  * 因没有空间而失败，刚裁剪好的事实清单也随之作废：摘要线不变，事实清单不进入 manifest。
  */
 const FACTS_BUDGET_SHARE = 0.5
+
+/**
+ * 已有摘要块占摘要空间（投影预算扣除事实清单之后）的比例上限。
+ *
+ * 超过时先合并最早的若干块，其余空间留给本次的新块。取一半与事实清单的划分方式相同，
+ * 没有实测依据。判据只看合计量，不看块数：按块数合并时，每次合并都从合并处起使缓存失效，
+ * 而合计量很小的多个块不需要合并。
+ */
+const KEPT_SUMMARIES_SHARE = 0.5
 
 /**
  * 可折单元的戳记。
@@ -81,13 +91,9 @@ export function cutKey(cut: CompactionCut): string {
   return `${cut.messageId}|${cut.step ?? ''}`
 }
 
-/** 摘要线。 */
+/** 摘要线：最后一块摘要覆盖到的位置。没有摘要块时为 null。 */
 export function summaryCutOf(m: CompactionManifest | null): CompactionCut | null {
-  if (!m?.compactedThroughMessageId) return null
-  return {
-    messageId: m.compactedThroughMessageId,
-    ...(m.compactedThroughStep ? { step: m.compactedThroughStep } : {}),
-  }
+  return m?.summaries.at(-1)?.through ?? null
 }
 
 /** 收纳线。manifest 缺少该键时收纳线与摘要线重合。 */
@@ -280,7 +286,7 @@ export interface CompactionInput {
   }[]
   /** 同一区间内的工具动作事实。 */
   actions: CompactionAction[]
-  /** 上一份 manifest；增量压缩时在它基础上推进。 */
+  /** 上一份 manifest。它的摘要块原样保留，本次的新块追加在其后。 */
   previous: CompactionManifest | null
   /** 本次的折叠线。收纳线必定推进到此处；摘要线只在摘要段成功时推进到此处。 */
   fold: CompactionCut
@@ -291,7 +297,7 @@ export interface CompactionInput {
    * 改用摘要模型的密度等于用另一个 tokenizer 度量主模型的窗口。
    */
   density: TokenDensity
-  /** 投影总预算（token）。事实清单优先占用，摘要使用剩余部分。 */
+  /** 新投影（全部摘要块与事实清单）的总预算（token）。事实清单优先占用，其次是保留的旧块，新块使用剩余部分。 */
   projectionBudget: number
   /** 摘要输出长度的常态观测值（token，p95）。无观测时为 null，此时预算等于 headroom。 */
   typicalSummaryTokens: number | null
@@ -392,10 +398,33 @@ export async function compact(
   const advancesCondense = cutKey(fold) > (condensed ? cutKey(condensed) : '')
 
   if (input.condenseOnly) {
-    return { status: 'compacted', summarized: false, manifest: advanceCondense(previous, fold) }
+    return {
+      status: 'compacted',
+      summarized: false,
+      manifest: advanceCondense(previous, previous?.summaries ?? [], fold),
+    }
   }
 
-  /** 摘要段未完成时的终态：收纳线可前移时照常落库，无法前移时本次判定为失败。 */
+  const facts = fitFacts(
+    extractFacts(input.messages, input.actions, previous?.facts),
+    Math.floor(input.projectionBudget * FACTS_BUDGET_SHARE),
+    input.density,
+  )
+  // 事实清单逐字保留，优先占用预算；摘要块使用剩余部分。全程按 token 计，不做单位换算。
+  const room = input.projectionBudget - estimateText(factsContent(facts), input.density)
+
+  // 旧块原样保留并占用摘要空间，不计为被释放的空间；超过上限时先合并最早的若干块。
+  let kept = previous?.summaries ?? []
+  if (estimateText(summariesText(kept), input.density) > room * KEPT_SUMMARIES_SHARE) {
+    const merged = await mergeEarliest(kept, summarize, input.density, input.trace)
+    if (merged === null || signal?.aborted) return { status: 'aborted' }
+    kept = merged
+  }
+
+  /**
+   * 摘要段未完成时的终态：收纳线可前移时照常落库，无法前移时本次判定为失败。
+   * 本次已合并的旧块随收纳一同落库：合并产物小于被合并的各块之和，摘要线不变。
+   */
   const summaryFailed = (reasonCode: string, message: string): CompactionOutcome =>
     advancesCondense
       ? {
@@ -403,17 +432,11 @@ export async function compact(
           summarized: false,
           reasonCode,
           message,
-          manifest: advanceCondense(previous, fold),
+          manifest: advanceCondense(previous, kept, fold),
         }
       : { status: 'failed', reasonCode, message }
 
-  const facts = fitFacts(
-    extractFacts(input.messages, input.actions, previous?.facts),
-    Math.floor(input.projectionBudget * FACTS_BUDGET_SHARE),
-    input.density,
-  )
-  // 事实清单逐字保留，优先占用预算；摘要使用剩余部分。两个量全程按 token 计，不做单位换算。
-  const headroom = input.projectionBudget - estimateText(factsContent(facts), input.density)
+  const headroom = room - estimateText(summariesText(kept), input.density)
   const budget =
     input.typicalSummaryTokens === null ? headroom : Math.min(headroom, input.typicalSummaryTokens)
   if (budget <= 0) return summaryFailed('no_headroom', '折叠后仍没有容纳摘要的空间')
@@ -421,11 +444,7 @@ export async function compact(
   let summary: string | null
   try {
     summary = await summarize(
-      buildSummaryPrompt(
-        buildSegments(input.messages, input.actions),
-        previous?.summary ?? null,
-        budget,
-      ),
+      buildSummaryPrompt(buildSegments(input.messages, input.actions), kept, budget),
       budget,
       input.trace,
     )
@@ -440,7 +459,7 @@ export async function compact(
   if (signal?.aborted) return { status: 'aborted' }
   if (!summary?.trim()) return summaryFailed('summary_empty', '摘要为空或被输出上限截断')
   /*
-   * 「在预算内」检查：摘要超出事实清单之外的剩余预算时作废摘要段，提示词中已写明该限制。
+   * 「在预算内」检查：新块超出事实清单与旧块之外的剩余预算时作废摘要段，提示词中已写明该限制。
    * 只有下方的「必须更小」检查不够：被替换的区域很大时，远超预算的摘要同样比它小，
    * 压缩落库后占用仍在软阈值以上。
    */
@@ -450,11 +469,9 @@ export async function compact(
 
   const candidate: CompactionManifest = {
     revision: (previous?.revision ?? 0) + 1,
-    compactedThroughMessageId: fold.messageId,
-    ...(fold.step ? { compactedThroughStep: fold.step } : {}),
+    summaries: [...kept, { text: summary.trim(), through: fold }],
     condensedThrough: fold,
     compactedMessageCount: (previous?.compactedMessageCount ?? 0) + input.foldedMessageCount,
-    summary: summary.trim(),
     facts,
     createdAt: Date.now(),
   }
@@ -464,7 +481,7 @@ export async function compact(
    *
    * 两侧使用同一估算方法，系统性偏差同向抵消。条件不成立时作废摘要段：投影大于被替换的
    * 内容时，本次压缩反而增大上下文，且不产生任何错误。
-   * 该检查同时约束事实包跨多次压缩的累积：每次折叠后，模型看到的总量必须净减少。
+   * 该检查同时约束事实包与摘要块跨多次压缩的累积：每次折叠后，模型看到的总量必须净减少。
    */
   const replaced =
     (previous ? estimateMessages(projectManifest(previous), input.density) : 0) +
@@ -476,23 +493,55 @@ export async function compact(
   return { status: 'compacted', summarized: true, manifest: candidate }
 }
 
-/** 只前移收纳线：摘要线、事实包、消息计数原样沿用。 */
+/** 只前移收纳线：摘要线、事实包、消息计数原样沿用；摘要块取调用方给出的列表。 */
 function advanceCondense(
   previous: CompactionManifest | null,
+  summaries: CompactionSummaryBlock[],
   fold: CompactionCut,
 ): CompactionManifest {
   return {
     revision: (previous?.revision ?? 0) + 1,
-    compactedThroughMessageId: previous?.compactedThroughMessageId ?? null,
-    ...(previous?.compactedThroughStep
-      ? { compactedThroughStep: previous.compactedThroughStep }
-      : {}),
+    summaries,
     condensedThrough: fold,
     compactedMessageCount: previous?.compactedMessageCount ?? 0,
-    summary: previous?.summary ?? '',
     facts: previous?.facts ?? { filesTouched: [], openItems: [], userConstraints: [] },
     createdAt: Date.now(),
   }
+}
+
+/**
+ * 合并最早的若干块：从第一块起累加到合计量的一半以上，至少两块。不足两块时原样返回。
+ *
+ * 只在一次本来就要落地的压缩中调用。合并产物必须小于被合并各块之和，否则保留原块；
+ * 合并失败同样保留原块，不阻止追加新块。中断时返回 null。
+ * 合并后的块覆盖到被合并的最后一块的位置，摘要线不变。
+ */
+async function mergeEarliest(
+  blocks: CompactionSummaryBlock[],
+  summarize: Summarizer,
+  density: TokenDensity,
+  trace: SummaryTrace | undefined,
+): Promise<CompactionSummaryBlock[] | null> {
+  if (blocks.length < 2) return blocks
+  const sizes = blocks.map((block) => estimateText(block.text, density))
+  const total = sizes.reduce((sum, size) => sum + size, 0)
+  let count = 0
+  let merged = 0
+  while (count < blocks.length && (count < 2 || merged * 2 < total)) {
+    merged += sizes[count]!
+    count++
+  }
+  const earliest = blocks.slice(0, count)
+  const budget = Math.floor(merged / 2)
+  let text: string | null
+  try {
+    text = await summarize(buildMergePrompt(earliest, budget), budget, trace)
+  } catch (err) {
+    if (isAbortError(err)) return null
+    return blocks
+  }
+  if (!text?.trim() || estimateText(text.trim(), density) >= merged) return blocks
+  return [{ text: text.trim(), through: earliest.at(-1)!.through }, ...blocks.slice(count)]
 }
 
 /**
@@ -724,11 +773,15 @@ const CHARS_PER_TOKEN_ZH = 0.6
 
 function buildSummaryPrompt(
   segments: string[],
-  previousSummary: string | null,
+  previous: readonly CompactionSummaryBlock[],
   budgetTokens: number,
 ): string {
-  const head = previousSummary
-    ? `已有摘要（本次在其基础上续写，不要重复其中内容）：\n${previousSummary}\n\n`
+  /*
+   * 旧块原样保留在投影中，新块只覆盖本次折叠的区段，提示词因此写明新块的范围。
+   * 不要改为要求把旧摘要合并重写：每次重写都再压缩一次旧内容，实测编号与数值在重写中被删去。
+   */
+  const head = previous.length
+    ? `已有摘要（按时间先后排列，原样保留在上下文中；本次只为以下执行记录写新的一段）：\n${summariesText(previous)}\n\n`
     : ''
   return (
     `${head}将以下执行记录压缩为一份交接摘要，按下列各节输出，不要开场白：\n\n` +
@@ -763,6 +816,25 @@ function buildSummaryPrompt(
   )
 }
 
+/** 合并最早若干块的提示词。输出各节与摘要提示词相同，同一事项以较晚一段为准。 */
+function buildMergePrompt(blocks: readonly CompactionSummaryBlock[], budgetTokens: number): string {
+  return (
+    `以下是按时间先后排列的 ${blocks.length} 段交接摘要。把它们合并为一段，按原有各节输出，不要开场白；` +
+    `同一事项以较晚一段的状态为准。各段中的结论、编号、数值、文件路径与 \`[message:…]\`、\`[action:…]\` 标记原样保留。\n\n` +
+    `**整段控制在 ${Math.max(200, Math.floor(budgetTokens * CHARS_PER_TOKEN_ZH))} 字以内**，` +
+    `超出长度会被截断并整段作废。\n\n` +
+    blocks.map((block, i) => `### 第 ${i + 1} 段\n${block.text}`).join('\n\n')
+  )
+}
+
+/**
+ * 摘要块在投影中的正文：各块按先后顺序以分隔线相连，只有一块时即该块正文。
+ * 预算估算与投影共用它：两处分别拼接时估算结果会不一致。
+ */
+function summariesText(blocks: readonly CompactionSummaryBlock[]): string {
+  return blocks.map((block) => block.text).join('\n\n---\n\n')
+}
+
 /**
  * 把 manifest 投影为发给模型的消息。
  *
@@ -781,7 +853,7 @@ export function projectManifest(
       // 不要写入 `revision`：只推进收纳线也会使其递增，而该消息紧跟 system，内容一变，
       // 整段历史的缓存前缀全部失效。
       content:
-        `[此处是被压缩的早期对话摘要]\n\n${manifest.summary}\n\n` +
+        `[此处是被压缩的早期对话摘要]\n\n${summariesText(manifest.summaries)}\n\n` +
         `（摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）`,
     },
     { role: 'assistant', content: factsContent(manifest.facts) },

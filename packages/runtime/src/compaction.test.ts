@@ -865,7 +865,9 @@ describe('仅收纳段即足够时不调用模型', () => {
     expect(r.status).toBe('compacted')
     expect(r.status === 'compacted' && r.summarized).toBe(true)
     expect(calls).toBe(1)
-    expect(r.status === 'compacted' && r.manifest.summary).toBe('用户手动触发的摘要')
+    expect(r.status === 'compacted' && r.manifest.summaries.map((block) => block.text)).toEqual([
+      '用户手动触发的摘要',
+    ])
     store.close()
   })
 })
@@ -1107,6 +1109,30 @@ describe('增量压缩', () => {
     store.close()
   })
 
+  /** 摘要器只为新区段写摘要时，第一次摘要的内容不得随第二次摘要从投影中消失。 */
+  test('第二次摘要追加新块，第一次摘要的内容仍在投影中', async () => {
+    const { store, conv } = fresh()
+    let calls = 0
+    const p = port(store, conv.id, async () =>
+      ++calls === 1 ? '第一段：问题编号 QX-48213' : '第二段：新区段的结论',
+    )
+    const first = await p.run(await pressure(store, conv.id))
+    expect(first.status === 'compacted' && first.summarized).toBe(true)
+    for (let i = 0; i < 4; i++) {
+      turn(store, conv.workspaceId, conv.id, `新消息 ${i}`, `新回复 ${i} ${PAD}`)
+    }
+    const second = await p.run(await pressure(store, conv.id))
+    expect(second.status === 'compacted' && second.summarized).toBe(true)
+
+    const summary = p
+      .project(await history(store, conv.id))
+      .find((message) => message._group === 'summary' && message.role === 'user')
+    expect(String(summary?.content)).toContain('第一段：问题编号 QX-48213')
+    expect(String(summary?.content)).toContain('第二段：新区段的结论')
+    expect(getConversation(store, conv.id)!.compactionManifest!.summaries).toHaveLength(2)
+    store.close()
+  })
+
   test('没有新单元时跳过，不产生无效的摘要调用', async () => {
     const { store, conv } = fresh()
     let calls = 0
@@ -1139,7 +1165,7 @@ describe('摘要段失败不回退收纳段', () => {
     const landed = getConversation(store, conv.id)!.compactionManifest
     expect(landed).not.toBeNull()
     // 摘要线不动，收纳线前移。
-    expect(landed!.compactedThroughMessageId).toBeNull()
+    expect(landed!.summaries).toEqual([])
     expect(landed!.condensedThrough).toBeDefined()
     store.close()
   })

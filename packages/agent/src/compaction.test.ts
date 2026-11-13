@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { WireMessage } from '@qywork/ai'
-import { DEFAULT_DENSITY } from '@qywork/ai'
+import { DEFAULT_DENSITY, estimateText } from '@qywork/ai'
 import type { CompactionManifest, MessageId } from '@qywork/core'
 import {
   type CompactionAction,
@@ -114,9 +114,8 @@ describe('单元键与边界', () => {
   test('缺少 condensedThrough 的 manifest：收纳线与摘要线重合', () => {
     const m: CompactionManifest = {
       revision: 1,
-      compactedThroughMessageId: 'ms_004' as MessageId,
+      summaries: [{ text: 's', through: { messageId: 'ms_004' as MessageId } }],
       compactedMessageCount: 4,
-      summary: 's',
       facts: { filesTouched: [], openItems: [], userConstraints: [] },
       createdAt: 0,
     }
@@ -245,16 +244,15 @@ describe('收纳足够时不调用模型', () => {
     expect(r.reasonCode).toBeUndefined()
     expect(r.manifest.condensedThrough).toEqual({ messageId: 'ms_004' as MessageId })
     // 摘要线不变。
-    expect(r.manifest.compactedThroughMessageId).toBeNull()
+    expect(summaryCutOf(r.manifest)).toBeNull()
   })
 
   test('收纳线已在折叠线上时跳过收纳段，由摘要段推进摘要线', async () => {
     const previous: CompactionManifest = {
       revision: 1,
-      compactedThroughMessageId: null,
+      summaries: [],
       condensedThrough: { messageId: 'ms_004' as MessageId },
       compactedMessageCount: 0,
-      summary: '',
       facts: { filesTouched: [], openItems: [], userConstraints: [] },
       createdAt: 0,
     }
@@ -274,7 +272,7 @@ describe('摘要段失败不回退收纳段', () => {
     if (r.status !== 'compacted') throw new Error('收纳应当落库')
     expect(r.summarized).toBe(false)
     expect(r.reasonCode).toBe('summary_error')
-    expect(r.manifest.compactedThroughMessageId).toBeNull()
+    expect(summaryCutOf(r.manifest)).toBeNull()
     expect(r.manifest.condensedThrough).toEqual({ messageId: 'ms_004' as MessageId })
   })
 
@@ -286,10 +284,9 @@ describe('摘要段失败不回退收纳段', () => {
   test('收纳线也无法前移时才判定为整次失败', async () => {
     const previous: CompactionManifest = {
       revision: 1,
-      compactedThroughMessageId: 'ms_001' as MessageId,
+      summaries: [{ text: '旧摘要', through: { messageId: 'ms_001' as MessageId } }],
       condensedThrough: { messageId: 'ms_004' as MessageId },
       compactedMessageCount: 1,
-      summary: '旧摘要',
       facts: { filesTouched: [], openItems: [], userConstraints: [] },
       createdAt: 0,
     }
@@ -342,6 +339,119 @@ describe('摘要预算：取两者较小值，全程按 token 计', () => {
   })
 })
 
+describe('摘要块：旧块原样保留，新块只覆盖本次折叠的区段', () => {
+  const block = (text: string, id: string) => ({
+    text,
+    through: { messageId: id as MessageId },
+  })
+  const withBlocks = (summaries: CompactionManifest['summaries']): CompactionManifest => ({
+    revision: summaries.length,
+    summaries,
+    compactedMessageCount: 0,
+    facts: { filesTouched: [], openItems: [], userConstraints: [] },
+    createdAt: 0,
+  })
+  const isMerge = (prompt: string) => prompt.includes('把它们合并为一段')
+
+  /** 1.11 的失败形状：第二次摘要只写新区段时，第一块中的标识必须仍在投影中。 */
+  test('第二次摘要追加新块，第一块逐字保留在投影中', async () => {
+    const first = block('结论：构建缓存失效的问题编号为 QX-48213。', 'ms_000')
+    let prompt = ''
+    const r = await compact(input({ previous: withBlocks([first]) }), async (p) => {
+      prompt = p
+      return '第二段摘要'
+    })
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.summaries).toEqual([first, block('第二段摘要', 'ms_004')])
+    expect(summaryCutOf(r.manifest)).toEqual({ messageId: 'ms_004' as MessageId })
+    expect(prompt).toContain(first.text)
+    expect(prompt).toContain('本次只为以下执行记录写新的一段')
+    expect(projectManifest(r.manifest)[0]!.content).toContain('QX-48213')
+  })
+
+  test('各块合计未超出上限时不合并，只调用一次摘要器', async () => {
+    const calls: string[] = []
+    await compact(
+      input({ previous: withBlocks([block('甲', 'ms_000'), block('乙', 'ms_001')]) }),
+      async (p) => {
+        calls.push(p)
+        return '新摘要'
+      },
+    )
+    expect(calls).toHaveLength(1)
+    expect(isMerge(calls[0]!)).toBe(false)
+  })
+
+  describe('各块合计超出上限', () => {
+    const text = (label: string) => `${label}：${'这一段记录了较早的执行过程与结论。'.repeat(120)}`
+    const blocks = [
+      block(text('第一段'), 'ms_000'),
+      block(text('第二段'), 'ms_001'),
+      block(text('第三段'), 'ms_002'),
+    ]
+    const size = estimateText(blocks[0]!.text, DEFAULT_DENSITY)
+    // 三块合计超过摘要空间的一半，触发合并；不合并时剩余空间仍能容纳新块。
+    const over = () =>
+      input({
+        previous: withBlocks(blocks),
+        projectionBudget: 5 * size,
+        condensedRegionTokens: 50_000,
+      })
+
+    test('合并最早的若干块，合并产物更小时采用，合并后的块覆盖到被合并的最后一块', async () => {
+      const prompts: string[] = []
+      const r = await compact(over(), async (p) => {
+        prompts.push(p)
+        return isMerge(p) ? '合并后的较早摘要' : '新摘要'
+      })
+      if (r.status !== 'compacted') throw new Error('应当压缩成功')
+      expect(isMerge(prompts[0]!)).toBe(true)
+      expect(prompts[0]).toContain('第一段')
+      expect(prompts[0]).toContain('第二段')
+      expect(prompts[0]).not.toContain('第三段')
+      expect(r.manifest.summaries).toEqual([
+        block('合并后的较早摘要', 'ms_001'),
+        blocks[2]!,
+        block('新摘要', 'ms_004'),
+      ])
+    })
+
+    test('合并产物不小于被合并各块之和时保留原块，新块照常追加', async () => {
+      const r = await compact(over(), async (p) =>
+        isMerge(p) ? '合'.repeat(blocks[0]!.text.length * 3) : '新摘要',
+      )
+      if (r.status !== 'compacted') throw new Error('应当压缩成功')
+      expect(r.manifest.summaries.slice(0, 3)).toEqual(blocks)
+      expect(r.manifest.summaries[3]!.text).toBe('新摘要')
+    })
+
+    test('合并失败不阻止追加新块', async () => {
+      const r = await compact(over(), async (p) => {
+        if (isMerge(p)) throw new Error('上游服务暂时不可用')
+        return '新摘要'
+      })
+      if (r.status !== 'compacted') throw new Error('应当压缩成功')
+      expect(r.summarized).toBe(true)
+      expect(r.manifest.summaries.slice(0, 3)).toEqual(blocks)
+    })
+
+    test('合并时被中断：整次丢弃', async () => {
+      const r = await compact(over(), async () => {
+        throw new DOMException('aborted', 'AbortError')
+      })
+      expect(r).toEqual({ status: 'aborted' })
+    })
+
+    test('合并成功而新块作废时，合并后的块随收纳落库，摘要线不变', async () => {
+      const r = await compact(over(), async (p) => (isMerge(p) ? '合并后的较早摘要' : null))
+      if (r.status !== 'compacted') throw new Error('收纳应当落库')
+      expect(r.summarized).toBe(false)
+      expect(r.manifest.summaries).toEqual([block('合并后的较早摘要', 'ms_001'), blocks[2]!])
+      expect(summaryCutOf(r.manifest)).toEqual(blocks[2]!.through)
+    })
+  })
+})
+
 describe('「必须更小」检查', () => {
   test('新投影不小于被替换的内容时作废摘要段', async () => {
     const r = await compact(input({ condensedRegionTokens: 1 }), async () => '摘'.repeat(5_000))
@@ -353,7 +463,7 @@ describe('「必须更小」检查', () => {
     const r = await compact(input({ condensedRegionTokens: 5_000 }), ok)
     if (r.status !== 'compacted') throw new Error('应当压缩成功')
     expect(r.summarized).toBe(true)
-    expect(r.manifest.compactedThroughMessageId).toBe('ms_004' as MessageId)
+    expect(summaryCutOf(r.manifest)).toEqual({ messageId: 'ms_004' as MessageId })
     expect(r.manifest.condensedThrough).toEqual({ messageId: 'ms_004' as MessageId })
   })
 })
@@ -365,10 +475,9 @@ describe('「必须更小」检查', () => {
 describe('「在预算内」检查', () => {
   const previous: CompactionManifest = {
     revision: 1,
-    compactedThroughMessageId: 'ms_001' as MessageId,
+    summaries: [{ text: '旧摘要', through: { messageId: 'ms_001' as MessageId } }],
     condensedThrough: { messageId: 'ms_001' as MessageId },
     compactedMessageCount: 1,
-    summary: '旧摘要',
     facts: { filesTouched: ['a.ts'], openItems: [], userConstraints: ['不要动 legacy/'] },
     createdAt: 0,
   }
@@ -389,9 +498,9 @@ describe('「在预算内」检查', () => {
       tooLong,
     )
     if (r.status !== 'compacted') throw new Error('收纳线应当前移')
-    expect(r.manifest.summary).toBe('旧摘要')
+    expect(r.manifest.summaries).toEqual(previous.summaries)
     expect(r.manifest.facts).toEqual(previous.facts)
-    expect(r.manifest.compactedThroughMessageId).toBe('ms_001' as MessageId)
+    expect(summaryCutOf(r.manifest)).toEqual({ messageId: 'ms_001' as MessageId })
     expect(r.manifest.condensedThrough).toEqual({ messageId: 'ms_004' as MessageId })
   })
 
@@ -477,9 +586,8 @@ describe('事实包必须逐字保留，不经过模型', () => {
     })
     const previous: CompactionManifest = {
       revision: 1,
-      compactedThroughMessageId: 'ms_001' as MessageId,
+      summaries: [{ text: '上一份摘要', through: { messageId: 'ms_001' as MessageId } }],
       compactedMessageCount: 1,
-      summary: '上一份摘要',
       facts: {
         filesTouched: ['big.txt'],
         openItems: [],
@@ -539,9 +647,8 @@ describe('事实包必须逐字保留，不经过模型', () => {
   test('增量压缩合并旧事实：早期约束不随新一次压缩消失', async () => {
     const previous: CompactionManifest = {
       revision: 1,
-      compactedThroughMessageId: 'ms_000' as MessageId,
+      summaries: [{ text: '旧摘要', through: { messageId: 'ms_000' as MessageId } }],
       compactedMessageCount: 0,
-      summary: '旧摘要',
       facts: {
         filesTouched: ['src/legacy/keep.ts'],
         openItems: [],
@@ -644,9 +751,8 @@ describe('事实包必须逐字保留，不经过模型', () => {
   test('上一次压缩留下的失败项同样可以被核销', async () => {
     const previous: CompactionManifest = {
       revision: 1,
-      compactedThroughMessageId: 'ms_000' as MessageId,
+      summaries: [{ text: '旧摘要', through: { messageId: 'ms_000' as MessageId } }],
       compactedMessageCount: 0,
-      summary: '旧摘要',
       facts: {
         filesTouched: [],
         openItems: ['read_file a.ts 失败（path_not_found）'],
@@ -678,9 +784,10 @@ describe('事实包必须逐字保留，不经过模型', () => {
 describe('投影', () => {
   const manifest: CompactionManifest = {
     revision: 3,
-    compactedThroughMessageId: 'ms_010' as MessageId,
+    summaries: [
+      { text: '重构认证模块，已改完 token.ts', through: { messageId: 'ms_010' as MessageId } },
+    ],
     compactedMessageCount: 5,
-    summary: '重构认证模块，已改完 token.ts',
     facts: {
       filesTouched: ['src/auth/token.ts'],
       openItems: ['npm test 有 2 个用例失败'],
@@ -688,6 +795,27 @@ describe('投影', () => {
     },
     createdAt: 0,
   }
+
+  /** 迁移把旧摘要改写为只有一块的列表；投影正文必须与迁移前逐字相同，否则已有摘要的会话失去缓存前缀。 */
+  test('只有一块时投影正文与该块正文直接相连', () => {
+    expect(projectManifest(manifest)[0]!.content).toBe(
+      '[此处是被压缩的早期对话摘要]\n\n重构认证模块，已改完 token.ts\n\n' +
+        '（摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）',
+    )
+  })
+
+  test('多块按先后顺序输出在同一条消息中', () => {
+    const projected = projectManifest({
+      ...manifest,
+      summaries: [
+        { text: '第一段', through: { messageId: 'ms_005' as MessageId } },
+        { text: '第二段', through: { messageId: 'ms_010' as MessageId } },
+      ],
+    })
+    expect(projected).toHaveLength(2)
+    const content = projected[0]!.content
+    expect(content.indexOf('第一段')).toBeLessThan(content.indexOf('第二段'))
+  })
 
   test('产出两条消息：摘要与事实清单分开', () => {
     const projected = projectManifest(manifest)
