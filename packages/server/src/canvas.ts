@@ -64,6 +64,7 @@ import {
   type GenerateOutput,
   inputsOf,
   isTextCard,
+  log,
   type MediaOutput,
   type MediaParamDefinition,
   type MentionStyle,
@@ -1174,20 +1175,33 @@ export class CanvasService {
     const entry = node ? this.entryOf(workspaceRoot, canvasKey, node) : undefined
     if (!entry) throw new CanvasFailure('该卡片未在生成', 409)
     if (entry.cancelled) return 'cancelled'
+    // 每次停止写一行日志：停止之后仍被计费或仍有结果时，据此确认停止的时刻、停止时是否已有任务号与远端的答复。
+    const ended = (outcome: CanvasCancelOutcome, remote?: string): CanvasCancelOutcome => {
+      log.info('canvas', `停止生成：${outcome}`, {
+        canvas: path,
+        node: nodeId,
+        ...(entry.task ? { job: entry.task.taskId } : {}),
+        ...(remote ? { remote } : {}),
+      })
+      return outcome
+    }
     if (!entry.task) {
       entry.stop.abort()
       const result = await entry.done
-      return result?.ok ? 'ended' : entry.requestSent === false ? 'not_submitted' : 'stopped'
+      return ended(result?.ok ? 'ended' : entry.requestSent === false ? 'not_submitted' : 'stopped')
     }
     const task = entry.task
+    let remote: string
     try {
-      if ((await cancelTask(task)) === 'cancelled') entry.cancelled = true
+      remote = await cancelTask(task)
+      if (remote === 'cancelled') entry.cancelled = true
     } catch (err) {
+      remote = `failed: ${err instanceof Error ? err.message : String(err)}`
       entry.stopMessage = `未能确认远端取消：${err instanceof Error ? err.message : String(err)}`
     }
     entry.stop.abort()
     const result = await entry.done
-    return result?.ok ? 'ended' : entry.cancelled ? 'cancelled' : 'stopped'
+    return ended(result?.ok ? 'ended' : entry.cancelled ? 'cancelled' : 'stopped', remote)
   }
 
   /** 收尾：清除运行标记、记录失败、发送结束事件。`work` 抛出异常时同样记为失败，`done` 不会拒绝。 */
