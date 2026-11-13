@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { WireMessage } from '@qywork/ai'
-import { buildAdapter, DEFAULT_DENSITY, estimateText } from '@qywork/ai'
+import { buildAdapter, DEFAULT_DENSITY, estimateMessages, estimateText } from '@qywork/ai'
 import type { CompactionManifest, MessageId } from '@qywork/core'
 import {
   type CompactionAction,
@@ -601,6 +601,58 @@ describe('「在预算内」检查', () => {
   })
 })
 
+/**
+ * 投影预算是新投影两条消息的全部占用。摘要写满所给预算时，新投影不得超过投影预算：
+ * 摘要消息的标题与说明、两条消息的协议开销、新块之前的分隔线都在投影中，预算须扣除它们。
+ */
+describe('摘要写满所给预算', () => {
+  const BUDGET = 3_000
+
+  /** 正文的估算恰为 `target`。 */
+  function textOf(target: number): string {
+    let lo = 0
+    let hi = Math.max(1, target) * 8
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2)
+      if (estimateText('z'.repeat(mid), DEFAULT_DENSITY) <= target) lo = mid
+      else hi = mid - 1
+    }
+    return 'z'.repeat(lo)
+  }
+
+  const twoBlocks: CompactionManifest = {
+    revision: 2,
+    summaries: [
+      { text: '第一段摘要', through: { messageId: 'ms_000' as MessageId } },
+      { text: '第二段摘要', through: { messageId: 'ms_001' as MessageId } },
+    ],
+    compactedMessageCount: 1,
+    facts: { filesTouched: ['a.ts'], openItems: [], userConstraints: ['不要动 legacy/'] },
+    createdAt: 0,
+  }
+
+  for (const [label, previous] of [
+    ['没有旧块', null],
+    ['有两块旧摘要', twoBlocks],
+  ] as const) {
+    test(`${label}时新投影不超过投影预算`, async () => {
+      let granted = 0
+      const r = await compact(
+        input({ previous, projectionBudget: BUDGET, condensedRegionTokens: 50_000 }),
+        async (_p, budget) => {
+          granted = budget
+          return textOf(budget)
+        },
+      )
+      if (r.status !== 'compacted' || !r.summarized) throw new Error('应当生成摘要')
+      expect(estimateText(r.manifest.summaries.at(-1)!.text, DEFAULT_DENSITY)).toBe(granted)
+      expect(estimateMessages(projectManifest(r.manifest), DEFAULT_DENSITY)).toBeLessThanOrEqual(
+        BUDGET,
+      )
+    })
+  }
+})
+
 describe('中断即丢弃', () => {
   test('摘要调用抛出 AbortError 时返回 aborted，不写入任何记录', async () => {
     const r = await compact(input(), async () => {
@@ -768,7 +820,7 @@ describe('事实包必须逐字保留，不经过模型', () => {
       input({
         messages: [msg(1, 'user', '不要动 legacy/ 目录')],
         actions: many,
-        projectionBudget: 200,
+        projectionBudget: 450,
       }),
       ok,
     )

@@ -51,7 +51,7 @@ import type {
 const EXCERPT = 320
 
 /**
- * 事实清单占投影预算的比例上限。
+ * 事实清单占投影预算（扣除投影的固定部分之后）的比例上限。
  *
  * 逐字事实与叙事摘要各占一半。不划分时，事实清单在预算紧张时占满整份预算，摘要段随即
  * 因没有空间而失败，刚裁剪好的事实清单也随之作废：摘要线不变，事实清单不进入 manifest。
@@ -59,7 +59,7 @@ const EXCERPT = 320
 const FACTS_BUDGET_SHARE = 0.5
 
 /**
- * 已有摘要块占摘要空间（投影预算扣除事实清单之后）的比例上限。
+ * 已有摘要块占摘要空间（投影预算扣除投影的固定部分与事实清单之后）的比例上限。
  *
  * 超过时先合并最早的若干块，其余空间留给本次的新块。取一半与事实清单的划分方式相同，
  * 没有实测依据。判据只看合计量，不看块数：按块数合并时，每次合并都从合并处起使缓存失效，
@@ -319,7 +319,10 @@ export interface CompactionInput {
    * 改用摘要模型的密度等于用另一个 tokenizer 度量主模型的窗口。
    */
   density: TokenDensity
-  /** 新投影（全部摘要块与事实清单）的总预算（token）。事实清单优先占用，其次是保留的旧块，新块使用剩余部分。 */
+  /**
+   * 新投影（`projectManifest` 的两条消息）的总预算（token），含投影的固定部分。
+   * 固定部分先行扣除，其次是事实清单与保留的旧块，新块使用剩余部分。
+   */
   projectionBudget: number
   /** 摘要输出长度的常态观测值（token，p95）。无观测时为 null，此时预算等于 headroom。 */
   typicalSummaryTokens: number | null
@@ -432,13 +435,15 @@ export async function compact(
     }
   }
 
+  // 投影的固定部分不随内容变化，先行扣除；其余空间由事实清单与摘要块划分。
+  const contentBudget = input.projectionBudget - projectionFrame(input.density)
   const facts = fitFacts(
     extractFacts(input.messages, input.actions, previous?.facts),
-    Math.floor(input.projectionBudget * FACTS_BUDGET_SHARE),
+    Math.floor(contentBudget * FACTS_BUDGET_SHARE),
     input.density,
   )
   // 事实清单逐字保留，优先占用预算；摘要块使用剩余部分。全程按 token 计，不做单位换算。
-  const room = input.projectionBudget - estimateText(factsContent(facts), input.density)
+  const room = contentBudget - estimateText(factsContent(facts), input.density)
 
   // 旧块原样保留并占用摘要空间，不计为被释放的空间；超过上限时先合并最早的若干块。
   let kept = previous?.summaries ?? []
@@ -463,7 +468,9 @@ export async function compact(
         }
       : { status: 'failed', reasonCode, message }
 
-  const headroom = room - estimateText(summariesText(kept), input.density)
+  // 新块之前的正文：保留的旧块与新块之前的分隔线。有旧块时每追加一块多一条分隔线。
+  const headroom =
+    room - estimateText(summariesText([...kept, { text: '', through: fold }]), input.density)
   const budget =
     input.typicalSummaryTokens === null ? headroom : Math.min(headroom, input.typicalSummaryTokens)
   if (budget <= 0) return summaryFailed('no_headroom', '折叠后仍没有容纳摘要的空间')
@@ -486,7 +493,7 @@ export async function compact(
   if (signal?.aborted) return { status: 'aborted' }
   if (!summary?.trim()) return summaryFailed('summary_empty', '摘要为空或被输出上限截断')
   /*
-   * 「在预算内」检查：新块超出事实清单与旧块之外的剩余预算时作废摘要段，提示词中已写明该限制。
+   * 「在预算内」检查：新块超出投影的固定部分、事实清单与旧块之外的剩余预算时作废摘要段，提示词中已写明该限制。
    * 只有下方的「必须更小」检查不够：被替换的区域很大时，远超预算的摘要同样比它小，
    * 压缩落库后占用仍在软阈值以上。
    */
@@ -870,6 +877,24 @@ function summariesText(blocks: readonly CompactionSummaryBlock[]): string {
   return blocks.map((block) => block.text).join('\n\n---\n\n')
 }
 
+/** 摘要消息中摘要块正文之前的标题。以空白结尾，与摘要块正文不合并为同一个词或标点段。 */
+const SUMMARY_HEAD = '[此处是被压缩的早期对话摘要]\n\n'
+
+/**
+ * 摘要消息中摘要块正文之后的说明。以空白开头，与摘要块正文不合并为同一个词或标点段。
+ *
+ * 括号中的定义是能力边界而不是解释。该消息以 user 角色出现，没有时态说明时其中的任务状态与当前指令
+ * 无法区分；旧块不改写，其中的目标可能已过期，因此写明以待办清单与最后一段为准；缺少地址说明时，
+ * 模型不知道折叠的原文仍可取回，会将其视为已丢失，或重新执行一遍工作。
+ * 不要写入 `revision`：只推进收纳线也会使其递增，而该消息紧跟 system，内容一变，
+ * 整段历史的缓存前缀全部失效。
+ */
+const SUMMARY_NOTE =
+  `\n\n（摘要是历史记录，其中的任务状态是被压缩的那一段结束时的状态；摘要分为多段时按时间先后排列，` +
+  `同一事项以最后一段为准；当前要做的事项以待办清单为准。逐字引用的用户原话附 [message:…] 地址，` +
+  `没有地址的内容是转述；「未完成的目标」是待办清单之外尚未完成的目标。` +
+  `摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）`
+
 /**
  * 把 manifest 投影为发给模型的消息。
  *
@@ -881,22 +906,29 @@ export function projectManifest(
   manifest: CompactionManifest,
 ): { role: 'user' | 'assistant'; content: string }[] {
   return [
-    {
-      role: 'user',
-      // 括号中的定义是能力边界而不是解释。该消息以 user 角色出现，没有时态说明时其中的任务状态与当前指令
-      // 无法区分；旧块不改写，其中的目标可能已过期，因此写明以待办清单与最后一段为准；缺少地址说明时，
-      // 模型不知道折叠的原文仍可取回，会将其视为已丢失，或重新执行一遍工作。
-      // 不要写入 `revision`：只推进收纳线也会使其递增，而该消息紧跟 system，内容一变，
-      // 整段历史的缓存前缀全部失效。
-      content:
-        `[此处是被压缩的早期对话摘要]\n\n${summariesText(manifest.summaries)}\n\n` +
-        `（摘要是历史记录，其中的任务状态是被压缩的那一段结束时的状态；摘要分为多段时按时间先后排列，` +
-        `同一事项以最后一段为准；当前要做的事项以待办清单为准。逐字引用的用户原话附 [message:…] 地址，` +
-        `没有地址的内容是转述；「未完成的目标」是待办清单之外尚未完成的目标。` +
-        `摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）`,
-    },
+    { role: 'user', content: `${SUMMARY_HEAD}${summariesText(manifest.summaries)}${SUMMARY_NOTE}` },
     { role: 'assistant', content: factsContent(manifest.facts) },
   ]
+}
+
+/**
+ * 投影的固定部分（token）：`projectManifest` 两条消息的协议开销与摘要消息的标题、说明。
+ * 投影的其余部分是摘要块正文（含块间分隔线）与事实清单正文，由 `compact()` 分别估算。
+ *
+ * 按片段分别估算再相加，结果不低于整条投影的估算：各片段之间以空白相接，相接处不产生新的词或标点段，
+ * 分别取整只会偏高。不要改为对空摘要块的投影整条估算：标题末尾与说明开头的两段空白在空摘要时合并为一段，
+ * 结果偏低，摘要写满预算时投影超出预算。
+ */
+function projectionFrame(density: TokenDensity): number {
+  return (
+    estimateMessages(
+      [
+        { role: 'user', content: SUMMARY_HEAD },
+        { role: 'assistant', content: '' },
+      ],
+      density,
+    ) + estimateText(SUMMARY_NOTE, density)
+  )
 }
 
 /** 事实清单消息的正文。预算估算与投影共用它：两处分别拼接时估算结果会不一致。 */
