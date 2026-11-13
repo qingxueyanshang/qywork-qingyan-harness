@@ -19,6 +19,8 @@ import type {
   ConversationHistoryPageResponse,
   ConversationId,
   ConversationLiveSnapshot,
+  ConversationRequestDetailsResponse,
+  ConversationRequestsResponse,
   ConversationRunsResponse,
   ConversationUsageResponse,
   Currency,
@@ -26,6 +28,7 @@ import type {
   MediaKind,
   MediaOutput,
   MessageId,
+  ProviderRequestId,
   RunId,
   ToolSchemaMode,
 } from '@qywork/core'
@@ -44,6 +47,8 @@ import {
 } from '@qywork/runtime'
 import {
   archiveConversation,
+  conversationRequestDetails,
+  conversationRequests,
   createConversation,
   currentGoal,
   deleteConversation,
@@ -574,7 +579,9 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   }
 
   const convMatch =
-    /^\/api\/conversations\/([^/]+)\/(history|changes|messages|runs|usage|queue|commands)$/.exec(p)
+    /^\/api\/conversations\/([^/]+)\/(history|changes|messages|runs|usage|queue|commands|requests|request-details)$/.exec(
+      p,
+    )
   if (convMatch) {
     const id = convMatch[1] as ConversationId
     if (!getConversation(d.store, id))
@@ -629,6 +636,19 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         ),
       }
       return json(payload)
+    }
+    /*
+     * 本会话的主请求序列与逐请求明细，供运行面板的逐请求趋势使用。运行中带 `after=<请求编号>` 增量读取，
+     * 归因以整段为上下文在服务端计算，客户端不重算。
+     */
+    if (convMatch[2] === 'requests' || convMatch[2] === 'request-details') {
+      const after = (url.searchParams.get('after')?.trim() || null) as ProviderRequestId | null
+      const page: ConversationRequestsResponse | ConversationRequestDetailsResponse | null =
+        convMatch[2] === 'requests'
+          ? conversationRequests(d.store, id, after)
+          : conversationRequestDetails(d.store, id, after)
+      if (!page) return json({ error: 'after 不是本会话的主请求' }, 422)
+      return json(page)
     }
     // 排队中的跟进消息。刷新与重连之后卡片据此重建；与 `queue.changed` 同源，
     // 均读取 `RunManager` 中的同一份队列，快照与增量因此不会不一致。

@@ -17,13 +17,8 @@ export {
   requestEnvelopeItems,
   saveRequestEnvelope,
 } from './monitor/envelopes.ts'
-// 工具调用统计：按会话取各工具的调用次数与累计时长，按请求取工具执行时长
-export {
-  batchToolDuration,
-  conversationToolTotals,
-  requestToolDurations,
-  type ToolCallTotal,
-} from './monitor/tool-usage.ts'
+// 会话级逐请求序列与明细：server 的逐请求接口读取，含工具调用统计（`monitor/tool-usage.ts`）
+export { conversationRequestDetails, conversationRequests } from './monitor/requests.ts'
 // 读写：会话、消息、run、step、工作区
 export {
   appendMessage,

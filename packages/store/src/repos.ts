@@ -1906,7 +1906,8 @@ export function listProviderRequests(store: Store, runId: RunId): ProviderReques
     .map(rowToProviderRequest)
 }
 
-function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
+/** 只在包内使用：`monitor/` 的只读查询按同一份映射读取请求行。 */
+export function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
   return {
     id: r.id,
     runId: r.run_id,
