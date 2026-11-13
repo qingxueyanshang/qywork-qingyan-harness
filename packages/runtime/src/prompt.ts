@@ -360,6 +360,16 @@ const TODO_LABEL: Record<TodoItem['status'], string> = {
   completed: '已完成',
 }
 
+/** 待办清单的文本，每项一行。工作区状态中的待办快照与摘要提示词中的待办清单共用这一写法。 */
+export function todoListText(todos: readonly TodoItem[]): string {
+  return todos
+    .map((t, i) => {
+      const reason = todoReason(t)
+      return `${i + 1}. [${TODO_LABEL[t.status]}] ${t.content}${reason ? `（${reason}）` : ''}`
+    })
+    .join('\n')
+}
+
 const MEDIA_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
 
 /** 提示词中指代参考素材的写法，以一行提供给大模型。序号按类别分别计数，顺序与 images / videos / audios 参数相同。 */
@@ -643,12 +653,7 @@ export function buildTailNotes(input: {
    * 不产生第二份可写状态。
    */
   if (input.todos?.some((t) => t.status !== 'completed')) {
-    const list = input.todos
-      .map((t, i) => {
-        const reason = todoReason(t)
-        return `${i + 1}. [${TODO_LABEL[t.status]}] ${t.content}${reason ? `（${reason}）` : ''}`
-      })
-      .join('\n')
+    const list = todoListText(input.todos)
     notes.push({
       content: `## 当前待办清单（会话内最新一份，以此为准）\n${list}\n\n以上为上一轮保存的进度。本次消息要求继续，或追问其中某项为什么没有完成、为什么停下时，先用 write_todos 提交清单并认领该项，再执行；本次消息与这些项无关时不接续。进度变化时报告，没有变化不重复报告。`,
       group: 'workspaceState',

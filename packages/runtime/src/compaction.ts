@@ -40,6 +40,7 @@ import type {
   ConversationId,
   MessageId,
   Step,
+  TodoItem,
 } from '@qywork/core'
 import {
   type ImageSize,
@@ -59,6 +60,7 @@ import {
   summaryOutputPercentile,
 } from '@qywork/store'
 import { shrunkSize } from '@qywork/tools'
+import { todoListText } from './prompt.ts'
 import {
   attachmentsOf,
   latestContextSnapshot,
@@ -413,6 +415,7 @@ export class RuntimeCompaction implements CompactionPort {
         typicalSummaryTokens: summaryOutputPercentile(store, workspaceId, SUMMARY_PERCENTILE),
         condensedRegionTokens: condensedRegion,
         foldedMessageCount,
+        todos: todoTable ? todoListText(todoItemsOf(todoTable)) || null : null,
         ...(input.trace ? { trace: input.trace } : {}),
       },
       async (...args) => {
@@ -668,6 +671,14 @@ function currentTodoFacts(units: readonly { key: string; messages: WireMessage[]
  */
 function todoFactMessages(fact: TodoFact): WireMessage[] {
   return fact.messages.map((message) => condenseExcept(message, fact.pinned))
+}
+
+/** 整表事实中逐字保留的 `write_todos` 调用的条目，即投影中置顶的同一份待办清单。 */
+function todoItemsOf(table: TodoFact): TodoItem[] {
+  const todos = table.messages
+    .flatMap((message) => (message.role === 'assistant' ? (message.toolCalls ?? []) : []))
+    .findLast((call) => table.pinned.has(call.id))?.arguments.todos
+  return Array.isArray(todos) ? (todos as TodoItem[]) : []
 }
 
 /** 单元在收纳区中逐字保留的调用 id。只有最近整表所在的单元有此项。 */

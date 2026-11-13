@@ -74,6 +74,7 @@ function input(over: Partial<CompactionInput> = {}): CompactionInput {
     typicalSummaryTokens: null,
     condensedRegionTokens: 5_000,
     foldedMessageCount: 4,
+    todos: null,
     ...over,
   }
 }
@@ -336,6 +337,35 @@ describe('摘要预算：取两者较小值，全程按 token 计', () => {
     await compact(input({ projectionBudget: 1_000 }), capture)
     await compact(input({ projectionBudget: 50_000 }), capture)
     expect(seen[1]!).toBeGreaterThan(seen[0]!)
+  })
+})
+
+describe('摘要提示词：时态与待办清单', () => {
+  const promptOf = async (over: Partial<CompactionInput>) => {
+    let prompt = ''
+    await compact(input(over), async (p) => {
+      prompt = p
+      return '摘要'
+    })
+    return prompt
+  }
+
+  test('当前待办清单随提示词传入，「未完成的目标」定义为待办清单中没有的目标', async () => {
+    const prompt = await promptOf({ todos: '1. [已完成] 任务 A\n2. [进行中] 任务 B' })
+    expect(prompt).toContain('当前待办清单：\n1. [已完成] 任务 A\n2. [进行中] 任务 B')
+    expect(prompt).toContain('## 未完成的目标\n待办清单中没有的、尚未完成的目标，每条附原文地址。')
+    expect(prompt).not.toContain('## 下一步')
+  })
+
+  test('没有待办清单时写明「无」', async () => {
+    expect(await promptOf({ todos: null })).toContain('当前待办清单：无。')
+  })
+
+  test('写明摘要的时态、转述与以待办清单为准', async () => {
+    const prompt = await promptOf({})
+    expect(prompt).toContain('摘要是历史记录，其中的任务状态是这段执行记录结束时的状态')
+    expect(prompt).toContain('当前要做的事项以待办清单为准')
+    expect(prompt).toContain('没有地址的内容是转述')
   })
 })
 
@@ -800,7 +830,10 @@ describe('投影', () => {
   test('只有一块时投影正文与该块正文直接相连', () => {
     expect(projectManifest(manifest)[0]!.content).toBe(
       '[此处是被压缩的早期对话摘要]\n\n重构认证模块，已改完 token.ts\n\n' +
-        '（摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）',
+        '（摘要是历史记录，其中的任务状态是被压缩的那一段结束时的状态；摘要分为多段时按时间先后排列，' +
+        '同一事项以最后一段为准；当前要做的事项以待办清单为准。逐字引用的用户原话附 [message:…] 地址，' +
+        '没有地址的内容是转述；「未完成的目标」是待办清单之外尚未完成的目标。' +
+        '摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）',
     )
   })
 
