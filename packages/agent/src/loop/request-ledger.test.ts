@@ -3,7 +3,8 @@
  * （`openRequest` / `markRequestSent` / `markRequestHeaders` / `markRequestHedge` / `settleRequest`），
  * 与 `@qywork/ai` 的 `providers/fault-server.test-helper.ts` 三协议故障端点。
  *
- * 另覆盖响应头中的云端请求号（`@qywork/ai` 的 `CLOUD_REQUEST_ID_HEADER`）经三种协议的适配器写入账本行。
+ * 另覆盖响应头中的云端请求号（`@qywork/ai` 的 `CLOUD_REQUEST_ID_HEADER`）经三种协议的适配器写入账本行；
+ * 用量中缓存写入的 1 小时档经 `loop/request.ts` 的 `mergeUsage` 计价、经 `settleRequest` 写入账本行。
  *
  * 请求账使用真实的 `@qywork/store`：断言检查的是数据库中记录行的内容，
  * 用替身记录调用序列无法验证。step 相关的钩子为空实现，不在本文件的范围内。
@@ -17,6 +18,7 @@ import {
   CLOUD_REQUEST_ID_HEADER,
   DEFAULT_DENSITY,
   type LlmAdapter,
+  lookupModel,
   ProviderError,
   type ProviderEvent,
 } from '@qywork/ai'
@@ -320,6 +322,68 @@ test('补发记录写入请求账：两份都未返回时随失败写入，补�
     expect(received?.hedge).toEqual({ sentAt: 1_700_000_360_000, won: true })
   } finally {
     led.close()
+  }
+})
+
+/**
+ * 缓存写入的 1 小时档随用量写入账本行，并经 `mergeUsage` 按分档计价。上游回报分档的解析由 `@qywork/ai` 的
+ * `anthropic.test.ts` 覆盖；此处的适配器直接产出带分档值的用量。
+ */
+test('缓存写入的 1 小时档写入账本行并参与计价；未回报分档时该列为 null、金额按 5 分钟档', async () => {
+  for (const hour of [300, undefined]) {
+    const led = ledger()
+    let cost = Number.NaN
+    const adapter: LlmAdapter = {
+      ...fakeAdapter([null]),
+      spec: lookupModel('claude-opus-5-5', 'anthropic_messages'),
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        yield { type: 'request_prepared', measuredInputTokens: 1 }
+        yield { type: 'response_started', headersAt: Date.now() }
+        yield { type: 'text_delta', delta: '完成', at: Date.now() }
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: 100,
+            outputTokens: 10,
+            cachedTokens: 500,
+            cacheWriteTokens: 400,
+            ...(hour === undefined ? {} : { cacheWrite1hTokens: hour }),
+            reasoningTokens: 0,
+            source: 'provider',
+          },
+        }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'end_turn' }
+      },
+    }
+    try {
+      const loop = new AgentLoop({
+        adapter,
+        registry: new ToolRegistry(),
+        systemPrompt: 'sys',
+        makeToolContext: baseCtx,
+        persist: {
+          ...led.persist,
+          saveUsage: (_runId, usage) => {
+            cost = usage.cost
+          },
+        },
+        sleep: async () => {},
+      })
+      for await (const _ of loop.run({
+        runId: led.runId,
+        history: [],
+        signal: new AbortController().signal,
+      })) {
+        // 只需执行完毕
+      }
+      const [row] = led.rows()
+      expect(row?.providerCacheWriteTokens).toBe(400)
+      expect(row?.providerCacheWrite1hTokens).toBe(hour ?? null)
+      // 100 × 4 + 10 × 20 + 500 × 0.2 + 写入部分：全部按 5 分钟档为 400 × 5，含 1 小时档为 100 × 5 + 300 × 8。
+      expect(cost).toBe(hour === undefined ? 0.0027 : 0.0036)
+    } finally {
+      led.close()
+    }
   }
 })
 

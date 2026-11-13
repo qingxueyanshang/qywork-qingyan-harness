@@ -350,6 +350,22 @@ describe('计价', () => {
     // 同为一千个输入 token，大部分命中缓存时费用明显更低。两者相等则说明缓存未按折扣计价。
     expect(withCache).toBeLessThan(withoutCache)
   })
+
+  /** 其余协议与不回报分档的中转站：分档值为空时全部写入按 5 分钟档计。 */
+  test('缓存写入未回报分档时全部按 5 分钟档计价，回报时按分档计价', () => {
+    const opus = lookupModel('claude-opus-5-5', 'anthropic_messages')
+    const usage = {
+      inputTokens: 10_000,
+      outputTokens: 1000,
+      cachedTokens: 50_000,
+      cacheWriteTokens: 40_000,
+    }
+    // 1 万 × 4 + 1000 × 20 + 5 万 × 0.2 + 4 万 × 5 = 0.27。
+    expect(computeCost(opus, usage)).toBe(0.27)
+    expect(computeCost(opus, { ...usage, cacheWrite1hTokens: null })).toBe(0.27)
+    // 4 万中 3 万按 1 小时档：写入部分为 1 万 × 5 + 3 万 × 8。
+    expect(computeCost(opus, { ...usage, cacheWrite1hTokens: 30_000 })).toBe(0.36)
+  })
 })
 
 /**
@@ -394,6 +410,53 @@ describe('模型库覆盖', () => {
     const s = applySpecOverride(opus(), { input: 100, output: 200 })
     const cost = computeCost(s, { inputTokens: 1_000_000, outputTokens: 1_000_000 })
     expect(cost).toBe(300)
+  })
+
+  /** 原始失败形状：中转站型号的目录价是占位的 0，上游回报 1 小时档写入时该部分按 0 计价。 */
+  test('覆盖单价而未填 1 小时档写入价时，1 小时档写入按 5 分钟档的写入价计', () => {
+    const relayPrice = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
+    const usage = {
+      inputTokens: 1000,
+      outputTokens: 1000,
+      cachedTokens: 0,
+      cacheWriteTokens: 100_000,
+    }
+    const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
+    for (const relay of [
+      applySpecOverride(unknown, relayPrice),
+      applySpecOverride(opus(), relayPrice),
+    ]) {
+      // 1000 × 3 + 1000 × 15 + 10 万 × 3.75 = 0.393，与未回报分档时相同。
+      expect(computeCost(relay, usage)).toBe(0.393)
+      expect(computeCost(relay, { ...usage, cacheWrite1hTokens: 100_000 })).toBe(0.393)
+    }
+    expect(applySpecOverride(opus(), { input: 99 }).pricing.cacheWrite1h).toBe(
+      opus().pricing.cacheWrite5m,
+    )
+    // 倍率覆盖保留官方价的结构，1 小时档按目录价换算。
+    expect(applySpecOverride(opus(), { scale: 0.5, currency: 'CREDIT' }).pricing.cacheWrite1h).toBe(
+      (opus().pricing.cacheWrite1h ?? 0) * 0.5,
+    )
+  })
+
+  test('填写 1 小时档写入价时按该价计', () => {
+    const relay = applySpecOverride(lookupModel('中转站上的某个模型', 'openai_chat_completions'), {
+      input: 3,
+      output: 15,
+      cacheRead: 0.3,
+      cacheWrite: 3.75,
+      cacheWrite1h: 6,
+    })
+    // 1000 × 3 + 1000 × 15 + 4 万 × 3.75 + 6 万 × 6 = 0.528。
+    expect(
+      computeCost(relay, {
+        inputTokens: 1000,
+        outputTokens: 1000,
+        cachedTokens: 0,
+        cacheWriteTokens: 100_000,
+        cacheWrite1hTokens: 60_000,
+      }),
+    ).toBe(0.528)
   })
 
   /**

@@ -330,7 +330,7 @@ export interface LoopPersistence {
     visible?: boolean,
   ): void
   /**
-   * 请求终态。`usage` 为 null 表示 provider 未回报，四个字段写入 null 而不是 0：
+   * 请求终态。`usage` 为 null 表示 provider 未回报，各字段写入 null 而不是 0：
    * 中转站遗漏 usage 很常见，记为 0 会使上下文锚点误判为本次请求没有占用。
    */
   settleRequest(
@@ -341,6 +341,8 @@ export interface LoopPersistence {
       outputTokens: number
       cachedTokens: number | null
       cacheWriteTokens: number | null
+      /** 缺失表示上游未回报缓存写入的分档。 */
+      cacheWrite1hTokens?: number
     } | null,
     errorCode: string | null,
     /** provider 的原文。无法取得时为空串，不要编造：编造的值会使账本失真。 */

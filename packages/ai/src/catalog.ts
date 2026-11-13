@@ -2210,11 +2210,13 @@ export interface SpecOverride {
   output?: number
   /** 缓存命中价。 */
   cacheRead?: number
-  /**
-   * 缓存写入价。**只覆盖 5 分钟档**：电脑端从不请求 1 小时缓存。1 小时档只由云端网关按上游回报的写入量计价，
-   * 取目录价目，因此不提供修改入口。
-   */
+  /** 缓存写入价（5 分钟档）。 */
   cacheWrite?: number
+  /**
+   * 1 小时档的缓存写入价，只在配置文件中填写。覆盖中含单价而没有该项时取 5 分钟档的写入价，
+   * 不取目录价：目录的 1 小时档价是官方价，与覆盖的单价不是同一来源。
+   */
+  cacheWrite1h?: number
   currency?: Currency
   /**
    * 价格倍率：目录的单价与长上下文各档乘以该值，币种取 `currency`，分档与时段折扣保留。
@@ -2270,16 +2272,19 @@ export interface SpecOverride {
  *   套在中转价或手填价上时，长提示词按官方全价记账（同币种）或按另一币种的数字记账；时段折扣同理，
  *   中转站按固定倍率计费时不随时段打折。覆盖中的时段折扣与分档来自站点的计费规则，始终生效。
  *   需要保留官方的分档与折扣时写 `scale`：单价与各档按同一倍率换算为覆盖的币种；单价字段再覆盖其上。
+ * - **覆盖中含单价时，1 小时档的写入价取 `cacheWrite1h`，未填写时取 5 分钟档的写入价。** 不要改为保留目录的
+ *   1 小时档价：未收录型号的目录价是占位的 0，上游回报 1 小时档写入时金额归零。
  */
 export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined): ModelSpec {
   if (!o) return spec
   const base = scaledSpec(spec, o.scale)
-  const unit =
-    base === spec &&
-    (o.input !== undefined ||
-      o.output !== undefined ||
-      o.cacheRead !== undefined ||
-      o.cacheWrite !== undefined)
+  const unitPriced =
+    o.input !== undefined ||
+    o.output !== undefined ||
+    o.cacheRead !== undefined ||
+    o.cacheWrite !== undefined ||
+    o.cacheWrite1h !== undefined
+  const unit = base === spec && unitPriced
   const priced = o.input !== undefined || o.output !== undefined || base !== spec
   const { longContext: _long, offPeak: _offPeak, ...flat } = base
   return {
@@ -2305,6 +2310,9 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
       ...(o.output !== undefined ? { output: o.output } : {}),
       ...(o.cacheRead !== undefined ? { cacheRead: o.cacheRead } : {}),
       ...(o.cacheWrite !== undefined ? { cacheWrite5m: o.cacheWrite } : {}),
+      ...(unitPriced
+        ? { cacheWrite1h: o.cacheWrite1h ?? o.cacheWrite ?? base.pricing.cacheWrite5m }
+        : {}),
       ...(o.currency ? { currency: o.currency } : {}),
     },
     ...(priced ? { catalogued: true } : {}),
@@ -2540,8 +2548,8 @@ export function costTerms(spec: ModelSpec, usage: CostUsage, now = Date.now()): 
  */
 export function computeCost(spec: ModelSpec, usage: CostUsage, now = Date.now()): number {
   const p = priceAt(spec, usageContext(usage, now))
-  // 1 小时档只由云端网关传入：电脑端从不请求 1 小时缓存，而网关转发的请求体由客户端决定，
-  // 上游按 1 小时档的单价计费，须按上游回报的写入量分档计价。
+  // 请求中的断点不带有效期，中转站可改写为 1 小时档，上游按实际档位计费。上游回报分档时按分档计价；
+  // 未回报（`cacheWrite1hTokens` 为空）时全部写入按 5 分钟档计。
   const writes1h = usage.cacheWrite1hTokens ?? 0
   const writes5m = Math.max(0, (usage.cacheWriteTokens ?? 0) - writes1h)
   // 沿用运行用量中「0 表示金额不明」的约定；没有单价时不估算订阅费用。

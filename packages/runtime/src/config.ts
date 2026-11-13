@@ -292,8 +292,10 @@ export interface StoredCatalogEntry {
   output?: number
   /** 缓存命中价。 */
   cacheRead?: number
-  /** 缓存写入价。只覆盖 5 分钟一档：`computeCost` 只按该档计算。 */
+  /** 缓存写入价（5 分钟档）。 */
   cacheWrite?: number
+  /** 1 小时档的缓存写入价。只在配置文件中填写；覆盖中含单价而没有该项时取 5 分钟档的写入价。 */
+  cacheWrite1h?: number
   currency?: Currency
   /** 分时段折扣，替换目录中的折扣。接口价格（`ModelPrice`）经 `resolveModel` 合成到此处；模型库界面不编辑该项。 */
   offPeak?: OffPeakDiscount
@@ -386,6 +388,8 @@ export interface UnitModelPrice {
   output: number
   cacheRead: number
   cacheWrite: number
+  /** 1 小时档的缓存写入价。拉取不写入该项，只在配置文件中填写；缺省时取 `cacheWrite`。 */
+  cacheWrite1h?: number
   currency: Currency
   /** 分时段折扣。此时四项单价是高峰价。 */
   offPeak?: OffPeakDiscount
@@ -904,6 +908,16 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         problems.push(
           `${name} / ${id} 的 price 必须包含非负数 input、output、cacheRead、cacheWrite 与 currency（${CURRENCIES.join('、')}）。`,
         )
+      } else if (
+        price &&
+        'cacheWrite1h' in price &&
+        !(
+          typeof price.cacheWrite1h === 'number' &&
+          Number.isFinite(price.cacheWrite1h) &&
+          price.cacheWrite1h >= 0
+        )
+      ) {
+        problems.push(`${name} / ${id} 的 price.cacheWrite1h 必须是非负数。`)
       } else if (price && 'offPeak' in price && invalidOffPeak(price.offPeak)) {
         problems.push(`${name} / ${id} 的 price.${OFF_PEAK_RULE}。`)
       } else if (price && 'longContext' in price && invalidTiers(price.longContext)) {

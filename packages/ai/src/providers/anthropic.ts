@@ -431,12 +431,15 @@ function buildTools(tools: ToolSchema[]) {
  * 另建登记表会形成第二处声明协议维度的位置。各协议由各自的适配器描述。
  */
 
-/** usage 的四个数值。每个都可能缺失，缺失与 0 含义不同（见 `applyUsage`）。 */
+/** usage 的各项数值。每个都可能缺失，缺失与 0 含义不同（见 `applyUsage`）。 */
 interface AnthropicUsage {
   input_tokens?: number
   output_tokens?: number
   cache_read_input_tokens?: number
+  /** 缓存写入合计，含两档。 */
   cache_creation_input_tokens?: number
+  /** 缓存写入按有效期分档。中转站可把请求中的有效期改写为 1 小时档，此处回报的是实际档位。 */
+  cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number }
   /** 思考 token 是 `output_tokens` 的一部分，此处单独列出。 */
   output_tokens_details?: { thinking_tokens?: number }
 }
@@ -718,10 +721,13 @@ function normalizeStopReason(raw: string): ProviderStopReason {
 }
 
 /**
- * usage 累加。
+ * usage 累加。各字段出现即覆盖，缺失时保留此前的值：`message_start` 与 `message_delta` 各自只带一部分字段。
  *
  * `cachedTokens` 以 null 表示「provider 未回报」，与真实的 0 命中严格区分。
  * 两者混为 0 会使「缓存从未生效」与「缓存生效但未命中」无法区分，误导缓存问题的排查。
+ *
+ * 缓存写入的合计以回报的合计为准，合计未回报而分档已回报时取两档之和；1 小时档大于合计时取合计。
+ * 分档未回报时 `cacheWrite1hTokens` 不写入，计价按全部为 5 分钟档处理。
  */
 function applyUsage(acc: ProviderUsage, u: AnthropicUsage) {
   if (typeof u.input_tokens === 'number') acc.inputTokens = u.input_tokens
@@ -729,8 +735,19 @@ function applyUsage(acc: ProviderUsage, u: AnthropicUsage) {
   if (typeof u.cache_read_input_tokens === 'number') {
     acc.cachedTokens = u.cache_read_input_tokens
   }
+  const hour = u.cache_creation?.ephemeral_1h_input_tokens
+  const fiveMinutes = u.cache_creation?.ephemeral_5m_input_tokens
   if (typeof u.cache_creation_input_tokens === 'number') {
     acc.cacheWriteTokens = u.cache_creation_input_tokens
+  } else if (
+    acc.cacheWriteTokens === null &&
+    (typeof hour === 'number' || typeof fiveMinutes === 'number')
+  ) {
+    acc.cacheWriteTokens = (hour ?? 0) + (fiveMinutes ?? 0)
+  }
+  if (typeof hour === 'number') acc.cacheWrite1hTokens = hour
+  if (acc.cacheWrite1hTokens !== undefined && acc.cacheWriteTokens !== null) {
+    acc.cacheWrite1hTokens = Math.min(acc.cacheWrite1hTokens, acc.cacheWriteTokens)
   }
   if (typeof u.output_tokens_details?.thinking_tokens === 'number') {
     acc.reasoningTokens = u.output_tokens_details.thinking_tokens

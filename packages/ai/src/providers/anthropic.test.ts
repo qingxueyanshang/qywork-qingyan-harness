@@ -691,3 +691,96 @@ describe('原生思考块', () => {
     expect((body.messages as { content: unknown }[])[1]!.content).toBe('答')
   })
 })
+
+describe('缓存写入的档位', () => {
+  /** 一段正文的完整响应；`start` 与 `delta` 分别是 `message_start` 与 `message_delta` 中的 usage。 */
+  const textTurn = (start: Record<string, unknown>, delta: Record<string, unknown>) => [
+    { ...START, message: { ...START.message, usage: start } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '好' } },
+    { type: 'content_block_stop', index: 0 },
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: delta,
+    },
+    { type: 'message_stop' },
+  ]
+
+  async function usageOf(events: Record<string, unknown>[]) {
+    const usage = (await capture(events)).find((e) => e.type === 'usage')
+    if (usage?.type !== 'usage') throw new Error('响应中没有用量事件')
+    return usage.usage
+  }
+
+  test('分档值在 message_start 中回报时读出 1 小时档写入量', async () => {
+    const usage = await usageOf(
+      textTurn(
+        {
+          input_tokens: 10,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 33_851,
+          cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 33_851 },
+        },
+        { output_tokens: 5 },
+      ),
+    )
+    expect(usage.cacheWriteTokens).toBe(33_851)
+    expect(usage.cacheWrite1hTokens).toBe(33_851)
+  })
+
+  test('没有分档值时不写入 1 小时档，合计照常读出', async () => {
+    const usage = await usageOf(
+      textTurn(
+        { input_tokens: 10, output_tokens: 0, cache_creation_input_tokens: 2000 },
+        { output_tokens: 5 },
+      ),
+    )
+    expect(usage.cacheWriteTokens).toBe(2000)
+    expect('cacheWrite1hTokens' in usage).toBe(false)
+  })
+
+  test('分档值只在 message_delta 中回报时同样读出', async () => {
+    const usage = await usageOf(
+      textTurn(
+        { input_tokens: 10, output_tokens: 0, cache_creation_input_tokens: 5000 },
+        {
+          output_tokens: 5,
+          cache_creation: { ephemeral_5m_input_tokens: 1000, ephemeral_1h_input_tokens: 4000 },
+        },
+      ),
+    )
+    expect(usage.cacheWriteTokens).toBe(5000)
+    expect(usage.cacheWrite1hTokens).toBe(4000)
+  })
+
+  test('只有分档没有合计时合计取两档之和；1 小时档大于合计时取合计', async () => {
+    const tiersOnly = await usageOf(
+      textTurn(
+        {
+          input_tokens: 10,
+          output_tokens: 0,
+          cache_creation: { ephemeral_5m_input_tokens: 300, ephemeral_1h_input_tokens: 700 },
+        },
+        { output_tokens: 5 },
+      ),
+    )
+    expect(tiersOnly.cacheWriteTokens).toBe(1000)
+    expect(tiersOnly.cacheWrite1hTokens).toBe(700)
+
+    const overTotal = await usageOf(
+      textTurn(
+        {
+          input_tokens: 10,
+          output_tokens: 0,
+          cache_creation_input_tokens: 600,
+          cache_creation: { ephemeral_1h_input_tokens: 900 },
+        },
+        { output_tokens: 5 },
+      ),
+    )
+    expect(overTotal.cacheWriteTokens).toBe(600)
+    expect(overTotal.cacheWrite1hTokens).toBe(600)
+  })
+})

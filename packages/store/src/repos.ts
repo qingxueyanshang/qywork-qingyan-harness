@@ -1662,6 +1662,7 @@ export function openProviderRequest(
     providerOutputTokens: null,
     providerCachedTokens: null,
     providerCacheWriteTokens: null,
+    providerCacheWrite1hTokens: null,
     finishReason: '',
     sentCategories: input.sentCategories,
     omittedCategories: input.omittedCategories,
@@ -1789,8 +1790,9 @@ export function markProviderRequestContent(
 /**
  * 请求终态。
  *
- * `usage` 为 null 表示 provider 未回报，四个字段保持 null，不要填 0。
+ * `usage` 为 null 表示 provider 未回报，各字段保持 null，不要填 0。
  * 中转站缺失 usage 很常见，记为 0 会使上下文锚点误判为该请求未占用任何上下文。
+ * `cacheWrite1hTokens` 缺失表示上游未回报缓存写入的分档，同样写入 null。
  */
 export function settleProviderRequest(
   store: Store,
@@ -1801,6 +1803,7 @@ export function settleProviderRequest(
     outputTokens: number
     cachedTokens: number | null
     cacheWriteTokens: number | null
+    cacheWrite1hTokens?: number
   } | null,
   errorCode: string | null = null,
   finishReason = '',
@@ -1811,7 +1814,8 @@ export function settleProviderRequest(
     .query(
       `UPDATE provider_requests
        SET status = ?, provider_input_tokens = ?, provider_output_tokens = ?,
-           provider_cached_tokens = ?, provider_cache_write_tokens = ?, error_code = ?,
+           provider_cached_tokens = ?, provider_cache_write_tokens = ?,
+           provider_cache_write_1h_tokens = ?, error_code = ?,
            finish_reason = ?, error_message = ?, completed_at = ?, anchored = ?
        WHERE id = ?`,
     )
@@ -1821,6 +1825,7 @@ export function settleProviderRequest(
       usage?.outputTokens ?? null,
       usage?.cachedTokens ?? null,
       usage?.cacheWriteTokens ?? null,
+      usage?.cacheWrite1hTokens ?? null,
       errorCode,
       finishReason,
       errorMessage,
@@ -1911,6 +1916,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     providerOutputTokens: r.provider_output_tokens,
     providerCachedTokens: r.provider_cached_tokens,
     providerCacheWriteTokens: r.provider_cache_write_tokens,
+    providerCacheWrite1hTokens: r.provider_cache_write_1h_tokens,
     sentCategories: { ...emptyBreakdown(), ...readJson(r.sent_categories, {}) },
     omittedCategories: { ...emptyOmitted(), ...readJson(r.omitted_categories, {}) },
     errorCode: r.error_code,

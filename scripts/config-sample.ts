@@ -75,6 +75,7 @@ export function sampleConfig(): QyConfig {
           output: 2 + n,
           cacheRead: 0.1,
           cacheWrite: 1.25,
+          cacheWrite1h: 2,
           currency: pick(CURRENCIES, n + 1),
           offPeak: { rate: 0.5, peakWindowsUtc: [[1, 4]], peakWeekdaysUtc: [1, 2, 3, 4, 5] },
           longContext: [
@@ -100,6 +101,7 @@ export function sampleConfig(): QyConfig {
         output: 2 + n,
         cacheRead: 0.1,
         cacheWrite: 1.25,
+        cacheWrite1h: 2,
         currency: pick(CURRENCIES, n),
         thinking: pick(THINKING_MODES, n),
         effortLevels: EFFORT_ORDER.slice(n % EFFORT_ORDER.length),

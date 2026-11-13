@@ -1436,7 +1436,7 @@ export interface ProviderRequestConfiguration {
  * `uncertain` 不能合并到 `rejected`：被拒绝是 provider 给出的明确答复，超时表示送达状态未知；按拒绝
  * 处理会把一次可能已计费的请求记为未发生。
  *
- * usage 的四个字段允许为 null。`null` 表示 provider 未回报，与真实的 0 含义不同。中转站缺失 usage 是
+ * usage 的各字段允许为 null。`null` 表示 provider 未回报，与真实的 0 含义不同。中转站缺失 usage 是
  * 常见情况，把未回报记为 0 会使上下文锚点误判为「本次请求没有任何占用」。
  */
 export interface ProviderRequest {
@@ -1474,6 +1474,11 @@ export interface ProviderRequest {
   providerOutputTokens: number | null
   providerCachedTokens: number | null
   providerCacheWriteTokens: number | null
+  /**
+   * 缓存写入中按 1 小时档写入的部分，`providerCacheWriteTokens` 含该部分。
+   * null 表示上游未回报分档（其余协议、未回报的中转站、迁移前的旧行），不表示没有 1 小时档写入。
+   */
+  providerCacheWrite1hTokens: number | null
   /**
    * provider 返回的原始值（`stop` / `tool_calls` / `completed:max_output_tokens` …）。
    *
