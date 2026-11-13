@@ -194,14 +194,7 @@ pub(super) fn show(report: &Report, details: &str, location: &str) {
     let content = if report.policy_blocked() {
         format!("{target}请复制诊断信息联系开发者；单位设备请联系管理员。\n{location}")
     } else {
-        let error: String = report
-            .error_chain
-            .first()
-            .into_iter()
-            .flat_map(|s| s.chars())
-            .take(700)
-            .collect();
-        format!("{error}\n{location}")
+        format!("{}\n{location}", report.brief())
     };
     let content = HSTRING::from(content);
     let mut buttons = vec![TASKDIALOG_BUTTON {
