@@ -8,6 +8,7 @@
 import type {
   Attachment,
   ChannelSpec,
+  CompactPercentSetting,
   Conversation,
   Currency,
   EffortLevel,
@@ -144,6 +145,8 @@ export interface RedactedConfig {
   officeEnabled?: boolean
   /** 是否允许 agent 使用画布与生成工具。字段缺失视为启用，仅显式 `false` 表示关闭。 */
   mediaEnabled?: boolean
+  /** 自动压缩的触发比例，按窗口分三档（`COMPACT_TIERS`），缺少的档取 80。 */
+  compactPercent?: CompactPercentSetting
 }
 export interface ConfigPayload {
   path: string

@@ -2,7 +2,8 @@
  * 「模块」页的浏览器控制、电脑控制、Office 文档、画布与生成四组：分组标题中的开关读取并写入
  * `browserEnabled` / `desktopEnabled` / `officeEnabled` / `mediaEnabled`。
  *
- * 覆盖范围：`ModulesSettings.tsx` 的分组标题开关与工具行分组、`OnOff.tsx` 的两项开关。
+ * 覆盖范围：`ModulesSettings.tsx` 的分组标题开关、工具行分组与「上下文」组的自动压缩比例滑块、
+ * `OnOff.tsx` 的两项开关。
  *
  * 「字段缺失视为启用」由本文件与 `server/src/desktop/assembly.test.ts` 分别锁定一端：
  * 本文件锁定界面显示，后者锁定工具是否注册。两端判据必须一致，否则界面显示
@@ -181,6 +182,80 @@ test('分组标题开关：缺省视为启用，单击后写入 desktopEnabled',
     expect(config()?.browserEnabled).toBe(false)
     expect(await until(() => stored.browserEnabled === false)).toBe(true)
     expect(stored.mediaEnabled).toBe(false)
+  } finally {
+    dispose()
+    host.remove()
+  }
+})
+
+/** 「上下文」组中某一档的滑块。 */
+function sliderOf(host: HTMLElement, label: string): HTMLInputElement | null {
+  return host.querySelector<HTMLInputElement>(`input[type="range"][aria-label="${label}"]`)
+}
+
+/** 设置滑块的值并发出事件。`input` 冒泡到 Solid 在文档上的委托监听，`change` 直接绑定在元素上。 */
+function slide(input: HTMLInputElement, type: 'input' | 'change', value: number) {
+  input.value = String(value)
+  input.dispatchEvent(new Event(type, { bubbles: true }))
+}
+
+test('自动压缩比例：三档滑块的范围取自分档定义，拖动中只更新读数，松开时写入一次', async () => {
+  const { render } = await import('solid-js/web')
+  const store = await import('../../lib/store/index.ts')
+  const { config, reloadConfig } = await import('./configStore.ts')
+  const { ModulesSettings } = await import('./ModulesSettings.tsx')
+
+  let stored: Record<string, unknown> = { providers: {}, compactPercent: { small: 70 } }
+  let puts = 0
+  store.client.api = async <T,>(path: string, init?: RequestInit) => {
+    if (path === '/api/tools') return TOOLS as T
+    if (path === '/api/config' && init?.method === 'PUT') {
+      puts++
+      stored = (JSON.parse(String(init.body)) as { config: Record<string, unknown> }).config
+      return { ok: true } as T
+    }
+    if (path === '/api/config') {
+      return {
+        path: 'config.json',
+        config: stored,
+        notices: [],
+        problems: [],
+        defaultEnvAllowList: [],
+      } as T
+    }
+    throw new Error(`unexpected ${path}`)
+  }
+  await reloadConfig()
+
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <ModulesSettings />, host as unknown as HTMLElement)
+  try {
+    expect(await until(() => sliderOf(host, '256K') !== null)).toBe(true)
+    expect(host.textContent).toContain('compactPercent')
+    expect(host.textContent).not.toContain('TRIGGER_RATIO')
+    const ranges = ['1M', '500K', '256K'].map((label) => {
+      const input = sliderOf(host, label)!
+      return [label, input.min, input.max, input.step, input.value]
+    })
+    expect(ranges).toEqual([
+      ['1M', '30', '80', '5', '80'],
+      ['500K', '30', '80', '5', '80'],
+      ['256K', '60', '80', '5', '70'],
+    ])
+
+    const large = sliderOf(host, '1M')!
+    const readout = () => large.parentElement?.querySelector('.personal-slider-value')?.textContent
+    slide(large, 'input', 60)
+    slide(large, 'input', 50)
+    expect(readout()).toBe('50%')
+    expect(puts).toBe(0)
+
+    slide(large, 'change', 50)
+    expect(config()?.compactPercent).toEqual({ small: 70, large: 50 })
+    expect(await until(() => puts === 1)).toBe(true)
+    expect(stored.compactPercent).toEqual({ small: 70, large: 50 })
+    expect(readout()).toBe('50%')
   } finally {
     dispose()
     host.remove()
