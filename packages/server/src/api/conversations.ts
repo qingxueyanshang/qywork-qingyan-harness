@@ -29,6 +29,7 @@ import type {
   MediaOutput,
   MessageId,
   ProviderRequestId,
+  RequestItemsResponse,
   RunId,
   ToolSchemaMode,
 } from '@qywork/core'
@@ -42,6 +43,7 @@ import {
   modelSpecOf,
   type QyConfig,
   removeConversationTemp,
+  requestItems,
   resolveModel,
   type StoredCatalogEntry,
 } from '@qywork/runtime'
@@ -60,9 +62,11 @@ import {
   listConversations,
   listProviderRequests,
   listRuns,
+  requestWithPrevious,
   setConversationTitle,
   usageEntries,
   usageTotals,
+  workspaceOf,
 } from '@qywork/store'
 import { attachmentsDirOf } from './attachments.ts'
 import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
@@ -719,6 +723,19 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   const requestMatch = /^\/api\/runs\/([^/]+)\/requests$/.exec(p)
   if (requestMatch) {
     return json({ requests: listProviderRequests(d.store, requestMatch[1] as RunId) })
+  }
+
+  // 一次主请求的消息条目，按账本的现状重建，一律是估算值。摘要请求发送的不是会话上下文，没有条目。
+  const itemsMatch = /^\/api\/requests\/([^/]+)\/items$/.exec(p)
+  if (itemsMatch) {
+    const target = requestWithPrevious(d.store, itemsMatch[1] as ProviderRequestId)
+    if (!target) return json({ error: '请求不存在' }, 404)
+    if (target.request.purpose !== 'turn') return json({ error: '摘要请求没有消息条目' }, 422)
+    // 附件的相对路径按会话所属项目解析。
+    const ws = workspaceOf(d.store, target.conversationId)
+    if (!ws) return json({ error: '本会话未找到对应的项目目录' }, 409)
+    const items: RequestItemsResponse = requestItems(d.store, d.config, ws.rootPath, target)
+    return json(items)
   }
 
   return null

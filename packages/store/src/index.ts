@@ -17,8 +17,16 @@ export {
   requestEnvelopeItems,
   saveRequestEnvelope,
 } from './monitor/envelopes.ts'
-// 会话级逐请求序列与明细：server 的逐请求接口读取，含工具调用统计（`monitor/tool-usage.ts`）
-export { conversationRequestDetails, conversationRequests } from './monitor/requests.ts'
+// 会话级逐请求序列与明细：server 的逐请求接口读取，含工具调用统计（`monitor/tool-usage.ts`）。
+// 对账结果、压缩记录与按 id 读取请求另供 runtime 的消息条目重建使用
+export {
+  type CompactionRecord,
+  compactionRecords,
+  conversationRequestDetails,
+  conversationRequests,
+  requestBreakdown,
+  requestWithPrevious,
+} from './monitor/requests.ts'
 // 读写：会话、消息、run、step、工作区
 export {
   appendMessage,

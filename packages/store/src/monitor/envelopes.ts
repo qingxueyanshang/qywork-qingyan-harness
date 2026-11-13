@@ -7,13 +7,12 @@
  */
 
 import type { ContextBreakdown, ContextGroup } from '@qywork/core'
+import { alignGroupItems } from '@qywork/core'
 import type { Store } from '../db.ts'
 import { readJson } from '../db.ts'
 import type { RequestEnvelopeRow } from '../schema.ts'
 
 export type EnvelopeGroup = Extract<ContextGroup, 'systemPrompt' | 'systemTools' | 'mcpTools'>
-
-const ENVELOPE_GROUPS: readonly EnvelopeGroup[] = ['systemPrompt', 'systemTools', 'mcpTools']
 
 export interface EnvelopeItem {
   group: EnvelopeGroup
@@ -54,11 +53,8 @@ export function pruneRequestEnvelopes(store: Store): number {
 }
 
 /**
- * 按指纹读取信封明细，各分组的逐项值按比例对齐到 `groups` 中对应的分组值；没有明细时返回 null。
- *
- * 必须对齐：分组值由 `breakdownOf` 对整张工具表一次估算，逐项值对每个工具分别估算，
- * 两者之差来自序列化中的分隔符与取整。不对齐时，展开某一分组后各项之和与该分组的数值不一致。
- * `groups` 可以传入请求行的原值，也可以传入对账后的值，结果与传入值的口径相同。
+ * 按指纹读取信封明细，各分组的逐项值按比例对齐到 `groups` 中对应的分组值（core 的 `alignGroupItems`）；
+ * 没有明细时返回 null。`groups` 可以传入请求行的原值，也可以传入对账后的值，结果与传入值的口径相同。
  */
 export function requestEnvelopeItems(
   store: Store,
@@ -71,38 +67,7 @@ export function requestEnvelopeItems(
     )
     .get(fingerprint)
   if (!row) return null
-  return alignItems(readJson<EnvelopeItem[]>(row.items, []), groups)
-}
-
-/**
- * 按占比重新分配每个分组内各项的值，使其总和精确等于该分组的值。
- *
- * 余数归入其中最大的一项；分组内各项全为零时全部分配给第一项。分组没有任何一项时不处理。
- */
-function alignItems(
-  items: readonly EnvelopeItem[],
-  groups: Pick<ContextBreakdown, EnvelopeGroup>,
-): EnvelopeItem[] {
-  const out = items.map((item) => ({ ...item }))
-  for (const group of ENVELOPE_GROUPS) {
-    const members = out.filter((item) => item.group === group)
-    const first = members[0]
-    if (!first) continue
-    const want = groups[group]
-    const base = members.reduce((n, item) => n + item.tokens, 0)
-    if (base <= 0) {
-      for (const item of members) item.tokens = 0
-      first.tokens = want
-      continue
-    }
-    let assigned = 0
-    let biggest = first
-    for (const item of members) {
-      item.tokens = Math.trunc((item.tokens / base) * want)
-      assigned += item.tokens
-      if (item.tokens > biggest.tokens) biggest = item
-    }
-    biggest.tokens += want - assigned
-  }
-  return out
+  const items = readJson<EnvelopeItem[]>(row.items, [])
+  alignGroupItems(items, groups)
+  return items
 }

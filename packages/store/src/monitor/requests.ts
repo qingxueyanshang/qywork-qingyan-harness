@@ -97,6 +97,43 @@ function mainRequests(
 }
 
 /**
+ * 按 id 读取一次请求、它所属的会话，以及同一会话中它之前最近的一次主请求。请求不存在时返回 null。
+ * 摘要请求照常返回，`previous` 为 null，由调用方拒绝。
+ */
+export function requestWithPrevious(
+  store: Store,
+  id: ProviderRequestId,
+): {
+  conversationId: ConversationId
+  request: ProviderRequest
+  previous: ProviderRequest | null
+} | null {
+  const row = store.db
+    .query<ProviderRequestRow & { conversation_id: ConversationId }, [string]>(
+      `SELECT pr.*, r.conversation_id AS conversation_id
+       FROM provider_requests pr JOIN runs r ON r.id = pr.run_id
+       WHERE pr.id = ?`,
+    )
+    .get(id)
+  if (!row) return null
+  const previous =
+    row.purpose === 'turn'
+      ? store.db
+          .query<ProviderRequestRow, [string, string]>(
+            `SELECT pr.* FROM provider_requests pr JOIN runs r ON r.id = pr.run_id
+             WHERE r.conversation_id = ? AND pr.purpose = 'turn' AND pr.id < ?
+             ORDER BY pr.id DESC LIMIT 1`,
+          )
+          .get(row.conversation_id, id)
+      : null
+  return {
+    conversationId: row.conversation_id,
+    request: rowToProviderRequest(row),
+    previous: previous ? rowToProviderRequest(previous) : null,
+  }
+}
+
+/**
  * 本会话的主请求序列。`after` 为 null 时返回整段；否则返回该请求之后的部分，
  * `after` 不是本会话的主请求时返回 null。
  *
