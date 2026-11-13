@@ -1,4 +1,10 @@
-import { createResource, For, Show } from 'solid-js'
+import {
+  COMPACT_PERCENT_DEFAULT,
+  COMPACT_PERCENT_STEP,
+  COMPACT_TIERS,
+  type CompactTier,
+} from '@qywork/core'
+import { createResource, createSignal, For, type JSX, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
 import {
   client,
@@ -9,10 +15,11 @@ import {
   state,
 } from '../../lib/store/index.ts'
 import { IconChevron } from '../Icons.tsx'
-import { config, ensureConfig, patchConfig } from './configStore.ts'
+import { config, ensureConfig, patchConfig, replaceConfig } from './configStore.ts'
 import { environment, environmentError, reloadEnvironment } from './environmentStore.ts'
 import { LoadState, PendingText } from './LoadState.tsx'
 import { OnOff } from './OnOff.tsx'
+import { Row } from './Row.tsx'
 
 /**
  * 设置页「模块」：列出 agent 的组成部分，即各类工具与不由工具承担的机制。
@@ -47,6 +54,8 @@ interface Module {
   environment?: () => { text: string | null; missing: boolean }
   /** 不由工具承担的部分。文案取自实时状态，因此是函数。 */
   notes?: { label: string; text: () => string | null; warn?: () => boolean }[]
+  /** 本组的设置行，排在说明行之后。 */
+  settings?: () => JSX.Element
 }
 
 const sandbox = () => state.capabilities?.sandbox ?? null
@@ -101,6 +110,57 @@ function shellNote(): string | null {
   if (row.path) return '已检测到 bash，命令使用 POSIX 语法。'
   if (row.required) return '未检测到可用的 shell，run_command 未注册。'
   return '未检测到 bash，命令使用 PowerShell 语法。'
+}
+
+/**
+ * 自动压缩比例的一档：松开滑块时写入一次配置，拖动过程中只更新右侧的读数。
+ * 范围与步长取自 `COMPACT_TIERS`，与服务端的校验同源。
+ */
+function CompactPercentRow(props: { tier: CompactTier }) {
+  const [dragging, setDragging] = createSignal<number | null>(null)
+  const saved = () => config()?.compactPercent?.[props.tier.key] ?? COMPACT_PERCENT_DEFAULT
+  const value = () => dragging() ?? saved()
+  return (
+    <Row label={props.tier.label}>
+      <div class="personal-slider">
+        <input
+          type="range"
+          aria-label={props.tier.label}
+          min={props.tier.min}
+          max={props.tier.max}
+          step={COMPACT_PERCENT_STEP}
+          value={value()}
+          onInput={(e) => setDragging(Number(e.currentTarget.value))}
+          onChange={(e) => {
+            const next = Number(e.currentTarget.value)
+            // 先写入乐观值再清除拖动值：顺序颠倒时滑块与读数在两次更新之间回到旧值。
+            if (next !== saved()) {
+              void replaceConfig((cur) => ({
+                ...cur,
+                compactPercent: { ...cur.compactPercent, [props.tier.key]: next },
+              }))
+            }
+            setDragging(null)
+          }}
+        />
+        <span class="personal-slider-value">{value()}%</span>
+      </div>
+    </Row>
+  )
+}
+
+/** 「上下文」组的自动压缩比例：标签行之后每档一行滑块。配置加载完成后才渲染滑块，理由同分组开关。 */
+function CompactPercentRows() {
+  return (
+    <>
+      <div class="setting-row stack">
+        <code class="module-name">compactPercent</code>
+      </div>
+      <Show when={config()}>
+        <For each={COMPACT_TIERS}>{(tier) => <CompactPercentRow tier={tier} />}</For>
+      </Show>
+    </>
+  )
 }
 
 const MODULES: Module[] = [
@@ -282,12 +342,7 @@ const MODULES: Module[] = [
   {
     id: 'session',
     label: '上下文',
-    notes: [
-      {
-        label: 'TRIGGER_RATIO',
-        text: () => '每次请求前检查；上下文用量超过窗口的 80% 时先压缩再发送。',
-      },
-    ],
+    settings: CompactPercentRows,
   },
   {
     id: 'schedule',
@@ -393,7 +448,7 @@ export function ModulesSettings() {
       g.rows.push(row)
     }
     for (const m of MODULES) {
-      if (!m.notes) continue
+      if (!m.notes && !m.settings) continue
       if (!out.some((g) => g.mod.id === m.id)) out.push({ mod: m, rows: [] })
     }
     /*
@@ -484,6 +539,7 @@ export function ModulesSettings() {
                   </div>
                 )}
               </For>
+              {g.mod.settings?.()}
             </div>
           </section>
         )}
