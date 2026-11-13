@@ -282,8 +282,8 @@ describe('生成端口', () => {
 
   /**
    * 原始失败形状：取得任务号之后的失败与上游报告的任务失败没有请求诊断，诊断中也就没有失败码。
-   * 两者现在带诊断与失败码；本轮是否允许再次提交图片（按诊断的结果判定）与改动前相同：都不允许，
-   * 报错文字与改动前相同。经云端出图（`qywork_images`）的两种失败各一次。
+   * 两者带诊断与失败码，本轮是否允许再次提交图片按诊断的结果判定：任务仍可取回时不允许；
+   * 上游报告任务失败是终态，没有可取回的结果，允许再次提交。经云端出图（`qywork_images`）的两种失败各一次。
    */
   test.each([
     [
@@ -291,6 +291,7 @@ describe('生成端口', () => {
       () => Response.json({ error: { message: 'denied' } }, { status: 401 }),
       '任务查询失败：HTTP 401 未授权：denied（远端任务 mj_00000000000000e1 仍可取回）',
       { stage: 'query', kind: 'http', outcome: 'available', status: 401, errorCode: 'auth_failed' },
+      false,
     ],
     [
       '上游报告任务失败',
@@ -310,10 +311,11 @@ describe('生成端口', () => {
         status: 200,
         errorCode: 'insufficient_quota',
       },
+      true,
     ],
   ] as const)(
-    '%s：诊断带失败码，报错文字不变，本轮不再提交新的图片生成',
-    async (_name, answer, message, diagnostic) => {
+    '%s：诊断带失败码，本轮能否再次提交图片生成按诊断的结果判定',
+    async (_name, answer, message, diagnostic, resubmits) => {
       reply = (req) => {
         const path = new URL(req.url).pathname
         if (req.method === 'POST' && path === '/v1/media/jobs')
@@ -337,11 +339,41 @@ describe('生成端口', () => {
       expect(!out.ok && out.message).toBe(`cloud / gpt-image-2：${message}`)
       expect(!out.ok && out.diagnostic).toMatchObject(diagnostic)
       const again = await port.generate(call(), signal())
-      expect(again).toMatchObject({ ok: false, executed: false })
-      expect(!again.ok && again.message).toStartWith('本轮图片结果尚未确认')
-      expect(hits.filter((path) => path === '/v1/media/jobs')).toHaveLength(1)
+      if (resubmits) {
+        expect(!again.ok && again.message).toBe(`cloud / gpt-image-2：${message}`)
+      } else {
+        expect(again).toMatchObject({ ok: false, executed: false })
+        expect(!again.ok && again.message).toStartWith('本轮图片结果尚未确认')
+      }
+      expect(hits.filter((path) => path === '/v1/media/jobs')).toHaveLength(resubmits ? 2 : 1)
     },
   )
+
+  /**
+   * 接口答复中没有图片是终态，没有可取回的结果：本轮可以再次提交。
+   * 每次失败的生成写一行日志，带发起方的日志标识；端口拒绝提交时同样写一行。
+   */
+  test('接口答复中没有图片：本轮可以再次提交，失败写入日志', async () => {
+    const warn = spyOn(log, 'warn')
+    try {
+      reply = () => Response.json({ output: { choices: [] } })
+      const port = makeMediaPort(config())
+      const logFields = { canvas: 'a.canvas.json', node: 'n1' }
+      const out = await port.generate(call({ logFields }), signal())
+      expect(out).toMatchObject({ ok: false })
+      const again = await port.generate(call({ logFields }), signal())
+      expect(!again.ok && again.message).toBe(!out.ok && out.message)
+      expect(hits).toHaveLength(2)
+      expect(warn.mock.calls).toHaveLength(2)
+      expect(warn.mock.calls[0]).toMatchObject([
+        'media',
+        expect.stringMatching(/^生成失败：/),
+        { provider: 'qwen', model: 'qwen-image-3.0', ...logFields },
+      ])
+    } finally {
+      warn.mockRestore()
+    }
+  })
 
   test('成功时按接口返回的计量给出花费（记账与本次调用各一份，数值相同），失败时不给出', async () => {
     reply = () =>
