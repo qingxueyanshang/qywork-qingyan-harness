@@ -108,18 +108,20 @@ describe('木木', () => {
     ).toMatchObject({ maxVideos: 0, maxAudios: 0, multipart: true })
   })
 
-  test('表单上传：生成规格的素材传递方式；按 resolution 计价时尺寸对应档位', () => {
+  test('表单上传：生成规格的素材传递方式；尺寸对应档位，按 resolution 计价时随提交发送', () => {
     const saved = mumugofeVideoSpec(typetale('sd-2.0-vip'))!
-    expect(channelMediaSpec('sd-2.0-vip', saved).inputs.transport).toBe('multipart')
-    expect(channelMediaSpec('sd-2.0-vip', saved).resolutionBySize).toBeUndefined()
-    expect(
-      channelMediaSpec('sd-2.0-vip', { ...saved, resolutionField: true }).resolutionBySize,
-    ).toEqual({
+    const spec = channelMediaSpec('sd-2.0-vip', saved)
+    expect(spec.inputs.transport).toBe('multipart')
+    expect(spec.resolutionBySize).toEqual({
       '1280x720': '720p',
       '720x1280': '720p',
       '1920x1080': '1080p',
       '1080x1920': '1080p',
     })
+    expect(spec.resolutionField).toBeUndefined()
+    expect(
+      channelMediaSpec('sd-2.0-vip', { ...saved, resolutionField: true }).resolutionField,
+    ).toBe(true)
   })
 
   test('图像目录 → 保存的规格 → 生成规格', () => {

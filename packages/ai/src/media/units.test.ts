@@ -49,6 +49,31 @@ test('中转渠道规格：时长参数为字符串，按渠道规格的默认�
   })
 })
 
+test('档位由尺寸决定的渠道规格：按尺寸所属的档位计量与上架', () => {
+  const spec: ChannelVideoSpec = {
+    channel: 'mumugofe',
+    seconds: [5, 10],
+    ratios: ['16:9', '9:16'],
+    resolutions: ['720p', '1080p'],
+    sizes: { '720p': [1280, 720], '1080p': [1920, 1080] },
+    maxImages: 1,
+    maxVideos: 0,
+    maxAudios: 0,
+  }
+  const model = { id: 'relay-video', kind: 'openai_videos' as const, spec }
+  const prices = { '720p': 4_900_000, '1080p': 6_000_000 }
+  expect(unitProblem(model, 'video', 'request', prices)).toBeNull()
+  expect(unitProblem(model, 'video', 'request', { '720p': 1 })).toBe('缺少分辨率档位的单价：1080p')
+  expect(meterMedia(model, 'request', prices, request({ size: '1080x1920' }))).toEqual({
+    units: 1,
+    resolution: '1080p',
+  })
+  expect(meterMedia(model, 'request', prices, request({}))).toEqual({
+    units: 1,
+    resolution: '720p',
+  })
+})
+
 test('按万字符：字符数取提示词，按码点计', () => {
   const tts = { id: 'speech-2.8-hd', kind: 'minimax_speech' as const }
   expect(meterMedia(tts, '10k_chars', 1_000_000, request({}, '你好😀'))?.units).toBe(3 / 10_000)

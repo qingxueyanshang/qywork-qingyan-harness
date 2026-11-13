@@ -2,7 +2,8 @@
  * 按计费单位计价：云端的生成型号以「计费单位 + 单价」售卖，计量由请求参数决定，与上游的计费口径无关。
  *
  * 计量参数按协议写明（`catalog.ts` 的 `METER_PARAMS`）：协议决定请求形状，同一协议的张数、时长与分辨率参数名相同。
- * 型号的参数表中没有该参数时：张数按 1，时长与档位不明。音频的字符数按提示词的字符计。
+ * 型号的参数表中没有该参数时：张数按 1，时长不明；档位由尺寸决定的型号按尺寸所属的档位，其余档位不明。
+ * 音频的字符数按提示词的字符计。
  * 云端结算、后台上架校验与电脑端发送前的报价（云端规格的 `price`）都经 `meterFromParams`，三处口径一致。
  */
 
@@ -62,8 +63,7 @@ export function unitProblem(
   if (unit === 'second' && !p.seconds) return '该型号没有时长参数，不能按秒计费'
   if (typeof price !== 'number') {
     if (!p.resolution) return '该型号没有分辨率参数，不能按档位定价'
-    const values = p.resolution.values ?? []
-    const missing = values.filter((v) => price[String(v)] === undefined)
+    const missing = p.resolution.values.filter((v) => price[v] === undefined)
     if (missing.length) return `缺少分辨率档位的单价：${missing.join('、')}`
   }
   return null

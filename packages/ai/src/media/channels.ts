@@ -280,9 +280,10 @@ export function channelMediaSpec(id: string, spec: ChannelVideoSpec): MediaModel
       ...(spec.publicUrls ? { publicUrls: true } : {}),
     },
     params: hongcheng ? hongchengParams(spec) : mumugofeParams(spec, sizes),
-    ...(spec.resolutionField
-      ? { resolutionBySize: Object.fromEntries(sizes.map((s) => [s.value, s.resolution])) }
-      : {}),
+    ...(hongcheng
+      ? {}
+      : { resolutionBySize: Object.fromEntries(sizes.map((s) => [s.value, s.resolution])) }),
+    ...(spec.resolutionField ? { resolutionField: true as const } : {}),
     ...(hongcheng
       ? { mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' } }
       : {}),

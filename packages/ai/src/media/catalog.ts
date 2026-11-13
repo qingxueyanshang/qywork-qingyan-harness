@@ -169,10 +169,12 @@ export interface MediaModelSpec {
   /** 通用图像端点中渠道的请求结构：mumugofe 以 JSON 提交、按任务查询结果。 */
   imageFormat?: 'mumugofe'
   /**
-   * 随尺寸一并发送的分辨率档位：键为 `size` 的取值，值为请求中 `resolution` 的取值。
-   * 只在渠道按请求中的分辨率出图与计价、不按尺寸推断时声明。
+   * 各尺寸所属的分辨率档位：键为 `size` 的取值。参数表中没有分辨率参数、档位由尺寸决定的型号声明，
+   * 计量按此取得档位（`meterParamsOf`）。
    */
   resolutionBySize?: Readonly<Record<string, string>>
+  /** 提交时随尺寸发送 `resolution`，取值为 `resolutionBySize` 中该尺寸的档位：渠道按该字段出图与计价，不按尺寸推断。 */
+  resolutionField?: true
   /** 百炼新音频端点及输入结构；省略时使用原有 Qwen-TTS 多模态端点。 */
   speechFormat?: 'qwen-audio-tts' | 'qwen-audio-next'
 }
@@ -1922,7 +1924,35 @@ const METER_PARAMS: Readonly<
   qywork_speech: {},
 }
 
-/** 型号规格中作为计量参数的参数；规格中没有的参数为 undefined。`kind` 为规格所属的协议（云端型号为原协议）。 */
+/** 参数的取值：请求中未填写时取默认值。 */
+function paramValue(p: MediaParamSpec, params: Record<string, unknown>): string | undefined {
+  const v = params[p.name] ?? p.default
+  return v === undefined ? undefined : String(v)
+}
+
+/** 档位取分辨率参数；参数表中没有分辨率参数而规格声明了 `resolutionBySize` 时，取尺寸所属的档位。 */
+function meterTier(spec: MediaModelSpec, resolution: MediaParamSpec | undefined) {
+  if (resolution)
+    return {
+      values: (resolution.values ?? []).map(String),
+      of: (params: Record<string, unknown>) => paramValue(resolution, params),
+    }
+  const size = spec.params.find((p) => p.name === 'size')
+  const bySize = spec.resolutionBySize
+  if (!size || !bySize) return undefined
+  return {
+    values: [...new Set(Object.values(bySize))],
+    of: (params: Record<string, unknown>) => {
+      const v = paramValue(size, params)
+      return v === undefined ? undefined : bySize[v]
+    },
+  }
+}
+
+/**
+ * 型号规格中的计量参数与分辨率档位；规格中没有的为 undefined。`kind` 为规格所属的协议（云端型号为原协议）。
+ * 档位的 `values` 为型号可选的全部档位，`of` 按请求参数取得档位。
+ */
 export function meterParamsOf(spec: MediaModelSpec, kind: MediaKind) {
   const names = METER_PARAMS[kind]
   const param = (name: string | undefined) =>
@@ -1930,13 +1960,13 @@ export function meterParamsOf(spec: MediaModelSpec, kind: MediaKind) {
   return {
     count: param(names.count),
     seconds: param(names.seconds),
-    resolution: param(names.resolution),
+    resolution: meterTier(spec, param(names.resolution)),
   }
 }
 
 /**
  * 按参数推算计量（计费单位的数量与档位）。参数未填写时取规格的默认值。无法确定时返回 null：
- * 按秒计费而规格没有时长参数、按档位定价而没有档位参数或档位不在单价表中。`prompt` 只用于按字符计费，
+ * 按秒计费而规格没有时长参数、按档位定价而规格没有档位（`meterParamsOf`）或档位不在单价表中。`prompt` 只用于按字符计费，
  * 发送前尚无提示词时传 null，按字符计费的计量随之不明。
  */
 export function meterFromParams(
@@ -1952,9 +1982,8 @@ export function meterFromParams(
     param === undefined ? undefined : (params[param.name] ?? param.default)
   let resolution: string | undefined
   if (typeof price !== 'number') {
-    const v = value(p.resolution)
-    if (v === undefined || price[String(v)] === undefined) return null
-    resolution = String(v)
+    resolution = p.resolution?.of(params)
+    if (resolution === undefined || price[resolution] === undefined) return null
   }
   let units: number
   if (unit === 'request') units = 1
