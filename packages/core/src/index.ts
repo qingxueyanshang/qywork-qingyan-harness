@@ -300,6 +300,14 @@ export {
   type UsageTotals,
   type Workspace,
 } from './domain/model.ts'
+// 缓存未命中归因：读取请求行时计算，不落盘
+export {
+  attributeCacheMisses,
+  type CacheMissAttribution,
+  type CacheMissCause,
+  type CacheMissCompaction,
+  type CacheMissRequest,
+} from './domain/monitor/cache-miss.ts'
 export {
   RESEND_LIMIT,
   type RetryWait,
