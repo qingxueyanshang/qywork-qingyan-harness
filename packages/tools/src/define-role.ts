@@ -53,8 +53,8 @@ export const defineRoleTool: ToolSpec = {
           '指定模型：逐字填写运行上下文「已配置模型」清单中的 model 参数，并同时填写 provider。留空时使用当前会话的模型',
       },
       effort: {
-        type: ['string', 'null'],
-        enum: [...EFFORT_ORDER, null],
+        type: 'string',
+        enum: [...EFFORT_ORDER],
         description:
           '用户为该角色指定思考强度时填写，同时必须填写 model 与 provider：档位按该模型可选的档位校验。' +
           '派发该角色且使用该模型时生效；不填 = 取模型配置中该模型的档位',
