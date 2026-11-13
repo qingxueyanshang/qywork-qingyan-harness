@@ -305,6 +305,11 @@ export interface CompactionInput {
   condensedRegionTokens: number
   /** 本次进入摘要线的会话消息条数。 */
   foldedMessageCount: number
+  /**
+   * 当前待办清单的文本，写法与工作区状态中的待办快照相同；没有待办清单时为 null。
+   * 摘要器据此只把待办清单中没有的目标写入「未完成的目标」。
+   */
+  todos: string | null
   /** 摘要请求的记账钩子：一轮之内压缩时由主循环提供，手动压缩时由服务端提供。 */
   trace?: SummaryTrace
 }
@@ -444,7 +449,7 @@ export async function compact(
   let summary: string | null
   try {
     summary = await summarize(
-      buildSummaryPrompt(buildSegments(input.messages, input.actions), kept, budget),
+      buildSummaryPrompt(buildSegments(input.messages, input.actions), kept, input.todos, budget),
       budget,
       input.trace,
     )
@@ -774,6 +779,7 @@ const CHARS_PER_TOKEN_ZH = 0.6
 function buildSummaryPrompt(
   segments: string[],
   previous: readonly CompactionSummaryBlock[],
+  todos: string | null,
   budgetTokens: number,
 ): string {
   /*
@@ -784,14 +790,20 @@ function buildSummaryPrompt(
     ? `已有摘要（按时间先后排列，原样保留在上下文中；本次只为以下执行记录写新的一段）：\n${summariesText(previous)}\n\n`
     : ''
   return (
-    `${head}将以下执行记录压缩为一份交接摘要，按下列各节输出，不要开场白：\n\n` +
+    /*
+     * 摘要以 user 角色投影在历史之前，没有时态说明时其中的任务状态与当前指令无法区分。
+     * 时态、转述与待办清单的定义在投影消息中有同一份，修改时两处一并修改。
+     */
+    `${head}将以下执行记录压缩为一份交接摘要。摘要是历史记录，其中的任务状态是这段执行记录结束时的状态；` +
+    `当前要做的事项以待办清单为准。按下列各节输出，不要开场白：\n\n` +
     `## 用户要求\n逐条列出**全部**用户消息的意图，不得遗漏。原话中的约束` +
-    `（不要做什么、必须用什么、具体数值与期限）**逐字引用**，不要改写。\n\n` +
+    `（不要做什么、必须用什么、具体数值与期限）**逐字引用**，不要改写。` +
+    `逐字引用的原话附该消息的 \`[message:…]\` 地址，没有地址的内容是转述。\n\n` +
     `## 已完成与产出\n修改了哪些文件、完成了什么。注明文件路径。\n\n` +
     `## 关键发现与结论\n查明了什么、确定了什么、为何如此确定。保留判断理由；` +
     `缺少理由会导致下一轮重复讨论。\n\n` +
     `## 当前状态与未解决\n正在进行什么、在何处受阻、有哪些已知失败。\n\n` +
-    `## 下一步\n接手者应先做什么。涉及具体位置时**引用原文**，不要只写「那个文件」。\n\n` +
+    `## 未完成的目标\n待办清单中没有的、尚未完成的目标，每条附原文地址。\n\n` +
     `**不要复述工具调用过程**，只保留结论与产物；失败尝试的细节与重复的确认可以省略。\n\n` +
     /*
      * 字数要求是硬约束，不是排版偏好。
@@ -812,6 +824,7 @@ function buildSummaryPrompt(
     `提到某条具体记录时，将其前面的 \`[message:…]\` 或 \`[action:…]\` 标记` +
     `**原样写入**（例如「按 [message:ms_x] 的要求…」）。标记是原文的地址，` +
     `缺失后无法回溯原文。不要生成不存在的标记。\n\n` +
+    `当前待办清单：${todos ? `\n${todos}` : '无。'}\n\n` +
     `执行记录：\n${segments.join('\n')}`
   )
 }
@@ -848,13 +861,17 @@ export function projectManifest(
   return [
     {
       role: 'user',
-      // 末尾一句是能力边界而不是解释：缺少它时模型不知道折叠的原文仍可取回，
-      // 会将其视为已丢失，或重新执行一遍工作。
+      // 括号中的定义是能力边界而不是解释。该消息以 user 角色出现，没有时态说明时其中的任务状态与当前指令
+      // 无法区分；旧块不改写，其中的目标可能已过期，因此写明以待办清单与最后一段为准；缺少地址说明时，
+      // 模型不知道折叠的原文仍可取回，会将其视为已丢失，或重新执行一遍工作。
       // 不要写入 `revision`：只推进收纳线也会使其递增，而该消息紧跟 system，内容一变，
       // 整段历史的缓存前缀全部失效。
       content:
         `[此处是被压缩的早期对话摘要]\n\n${summariesText(manifest.summaries)}\n\n` +
-        `（摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）`,
+        `（摘要是历史记录，其中的任务状态是被压缩的那一段结束时的状态；摘要分为多段时按时间先后排列，` +
+        `同一事项以最后一段为准；当前要做的事项以待办清单为准。逐字引用的用户原话附 [message:…] 地址，` +
+        `没有地址的内容是转述；「未完成的目标」是待办清单之外尚未完成的目标。` +
+        `摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）`,
     },
     { role: 'assistant', content: factsContent(manifest.facts) },
   ]

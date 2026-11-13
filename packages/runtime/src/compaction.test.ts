@@ -351,6 +351,62 @@ describe('投影三区', () => {
     store.close()
   })
 
+  /** 摘要器据此只把待办清单中没有的目标写入「未完成的目标」；写法与工作区状态中的待办快照相同。 */
+  test('当前待办清单按工作区状态的写法传入摘要器', async () => {
+    const { store, ws, conv, ids } = fresh(2)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'todo-summary',
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
+    })
+    const todo = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'write_todos',
+      toolCallId: 'todo_1',
+      providerBatchId: 'todo_batch',
+      callIndex: 0,
+      status: 'running',
+    })
+    settleToolStep(store, todo.id, 'success', {
+      kind: 'tool_result',
+      args: {
+        todos: [
+          { content: '检查缓存', status: 'completed' },
+          { content: '验证重启', status: 'in_progress' },
+        ],
+      },
+      outcome: { status: 'success', executed: true, message: '待办已更新' },
+    })
+    addToolWaves(store, run.id, 24, 3000, 2)
+    let prompt = ''
+    const p = port(store, conv.id, async (text) => {
+      prompt = text
+      return '摘要'
+    })
+    const r = await p.run({ ...(await pressure(store, conv.id)), trigger: 'manual' })
+    expect(r.status === 'compacted' && r.summarized).toBe(true)
+    expect(prompt).toContain('当前待办清单：\n1. [已完成] 检查缓存\n2. [进行中] 验证重启')
+    store.close()
+  })
+
+  test('没有待办清单时摘要器收到「无」', async () => {
+    const { store, conv } = fresh()
+    let prompt = ''
+    const p = port(store, conv.id, async (text) => {
+      prompt = text
+      return '摘要'
+    })
+    expect((await p.run(await pressure(store, conv.id))).status).toBe('compacted')
+    expect(prompt).toContain('当前待办清单：无。')
+    store.close()
+  })
+
   test('整表之后的待验收子任务回执跨摘要仍保留，但大输出照常收纳', async () => {
     const { store, ws, conv, ids } = fresh(2)
     const run = createRun(store, {
