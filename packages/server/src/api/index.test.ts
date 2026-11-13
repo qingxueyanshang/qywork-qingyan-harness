@@ -22,11 +22,14 @@ import { join, resolve } from 'node:path'
 import type {
   ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
+  ConversationRequestDetailsResponse,
+  ConversationRequestsResponse,
   ConversationRunsResponse,
   ConversationUsageResponse,
   MessageId,
   RunId,
 } from '@qywork/core'
+import { emptyBreakdown, emptyOmitted } from '@qywork/core'
 import {
   appendMessage,
   appendStep,
@@ -2261,5 +2264,87 @@ describe('上下文面板接口', () => {
     const { error } = (await res?.json()) as { error: string }
     expect(error).toContain('自动压缩比例不合法')
     expect(error).toContain('compactPercent.large')
+  })
+})
+
+describe('会话级逐请求接口', () => {
+  /** 一轮两次主请求与一次摘要请求。 */
+  function seedRequests(d: ReturnType<typeof deps>) {
+    const conv = createConversation(d.store, {
+      workspaceId: d.wsId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const run = createRun(d.store, {
+      conversationId: conv.id,
+      workspaceId: d.wsId as never,
+      model: 'm',
+      clientRequestId: 'requests',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const open = (turnIndex: number, purpose: 'turn' | 'summary') => {
+      const id = openProviderRequest(d.store, {
+        runId: run.id,
+        turnIndex,
+        retryIndex: 0,
+        purpose,
+        model: 'm',
+        measuredInputTokens: 100,
+        occupancyTokens: 120,
+        sentCategories: { ...emptyBreakdown(), historyMessages: 100 },
+        omittedCategories: emptyOmitted(),
+        payloadHash: `h${turnIndex}`,
+      }).id
+      settleProviderRequest(d.store, id, 'received', {
+        inputTokens: 150,
+        outputTokens: 10,
+        cachedTokens: null,
+        cacheWriteTokens: null,
+      })
+      return id
+    }
+    const first = open(0, 'turn')
+    const summary = open(1, 'summary')
+    const second = open(2, 'turn')
+    return { conv, first, summary, second }
+  }
+
+  test('整段读取只含主请求；after 返回其后的行；明细与序列逐条对应', async () => {
+    const d = deps()
+    const { conv, first, second } = seedRequests(d)
+    const res = await call(`/api/conversations/${conv.id}/requests`, undefined, d)
+    expect(res?.status).toBe(200)
+    const page = (await res?.json()) as ConversationRequestsResponse
+    expect(page.requests.map((r) => r.id)).toEqual([first, second])
+    expect(page.requests[0]!.breakdown.historyMessages).toBe(150)
+
+    const tail = await call(`/api/conversations/${conv.id}/requests?after=${first}`, undefined, d)
+    expect(((await tail?.json()) as ConversationRequestsResponse).requests).toEqual(
+      page.requests.slice(1),
+    )
+
+    const details = await call(`/api/conversations/${conv.id}/request-details`, undefined, d)
+    expect(details?.status).toBe(200)
+    const { details: rows } = (await details?.json()) as ConversationRequestDetailsResponse
+    expect(rows.map((r) => [r.id, r.usage?.input])).toEqual([
+      [first, 150],
+      [second, 150],
+    ])
+  })
+
+  test('会话不存在时返回 404；after 不是本会话的主请求时返回 422', async () => {
+    const d = deps()
+    const { conv, summary } = seedRequests(d)
+    expect((await call('/api/conversations/cv_missing/requests', undefined, d))?.status).toBe(404)
+    const res = await call(`/api/conversations/${conv.id}/requests?after=${summary}`, undefined, d)
+    expect(res?.status).toBe(422)
+    const detail = await call(
+      `/api/conversations/${conv.id}/request-details?after=${summary}`,
+      undefined,
+      d,
+    )
+    expect(detail?.status).toBe(422)
   })
 })

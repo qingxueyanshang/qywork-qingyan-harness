@@ -11,9 +11,12 @@
  * 使用同一份定义。
  */
 
-import type { MessageId } from '../domain/ids.ts'
+import type { MessageId, ProviderRequestId, RunId } from '../domain/ids.ts'
 import type { MediaOutput, MediaUnit, UnitPrice } from '../domain/media.ts'
 import type {
+  ContextBreakdown,
+  ContextOmitted,
+  Currency,
   FileChange,
   Message,
   ProviderRequestContentKind,
@@ -25,6 +28,7 @@ import type {
   UsageLedgerRow,
   UsageTotals,
 } from '../domain/model.ts'
+import type { CacheMissAttribution } from '../domain/monitor/cache-miss.ts'
 
 /**
  * `GET /api/conversations/:id/history`：会话流中一页完整轮次。
@@ -299,4 +303,98 @@ export interface ConversationRunsResponse {
 export interface ConversationUsageResponse {
   totals: UsageTotals
   entries: UsageLedgerRow[]
+}
+
+/**
+ * `GET /api/conversations/:id/requests[?after=<请求编号>]`：本会话的主请求序列，即逐请求趋势所需的部分。
+ * 用量、各阶段时刻、工具耗时与金额在 `/request-details`，两者按 `id` 对应。不要合为一个响应：
+ * 合并后每行约 800 字节，一千三百次请求的会话整段读取即超过 1 MB。
+ *
+ * 只含本会话自身轮次的主请求：摘要请求不发送会话上下文，子会话各是一个会话，均不在其中。
+ * 带 `after` 时 `requests` 是该请求之后的行，`compactions` 是创建时刻晚于该请求创建时刻的记录，
+ * 内容与整段读取的对应部分相同；客户端删去本地序列中该请求之后的部分再追加。
+ * `tools` 每次都是整个会话的合计。
+ */
+export interface ConversationRequestsResponse {
+  /** 按创建顺序排列。 */
+  requests: MonitorRequest[]
+  /** 已改写 manifest 的压缩记录，按创建时刻排列。 */
+  compactions: MonitorCompaction[]
+  tools: ToolCallTotal[]
+}
+
+/** 一次主请求。 */
+export interface MonitorRequest {
+  id: ProviderRequestId
+  runId: RunId
+  turnIndex: number
+  retryIndex: number
+  status: ProviderRequestStatus
+  /** 请求行的创建时刻。压缩记录位于创建时刻不早于它的第一条请求之前，与 `cacheMiss` 的判据相同。 */
+  createdAt: number
+  /**
+   * 对账后的分组占用。总数在有用量时为「输入 + 命中 + 写入」，没有用量时为发出时的运行中读数，
+   * 此时 `estimated` 为 true。消息条目重建与界面各处使用同一结果。
+   */
+  breakdown: ContextBreakdown
+  estimated: boolean
+  /** 本次请求所在轮次的压缩触发线；早于该字段的旧行为 null。 */
+  compactAt: number | null
+  /** 缓存未命中归因；没有用量或未回报命中量时为 null。 */
+  cacheMiss: CacheMissAttribution | null
+}
+
+/**
+ * `GET /api/conversations/:id/request-details[?after=<请求编号>]`：本会话主请求的明细，
+ * 行与 `/requests` 的 `requests` 逐条对应，`after` 的含义相同。
+ */
+export interface ConversationRequestDetailsResponse {
+  details: MonitorRequestDetail[]
+}
+
+export interface MonitorRequestDetail {
+  id: ProviderRequestId
+  sentAt: number | null
+  headersAt: number | null
+  firstContentAt: number | null
+  completedAt: number | null
+  /** 上游回报的用量；未回报时为 null。其中的 null 表示上游未回报该项，不表示 0。 */
+  usage: {
+    input: number
+    output: number
+    cached: number | null
+    cacheWrite: number | null
+    /** 缓存写入中按 1 小时档写入的部分。 */
+    cacheWrite1h: number | null
+  } | null
+  omitted: ContextOmitted
+  /** 本次请求所产生批次的工具执行时长（毫秒），同一波次取最长一次；没有已记录时长的调用时为 null。 */
+  toolMs: number | null
+  /** 金额。只在带用量且状态为 `received` 的行上有值；该轮的用量账中没有对应记录时为 null。 */
+  cost: { amount: number; currency: Currency } | null
+}
+
+/** 一次改写了 manifest 的压缩。 */
+export interface MonitorCompaction {
+  createdAt: number
+  /** 早于该字段的旧记录为 null。 */
+  trigger: 'manual' | 'automatic' | 'overflow' | null
+  /** 摘要线随之前移。 */
+  summarized: boolean
+  /** 压缩前占用；旧记录为 null。 */
+  occupancy: number | null
+  /** 压缩后占用，与 `occupancy` 同一口径；旧记录为 null。 */
+  occupancyAfter: number | null
+}
+
+/** 本会话一个工具的调用次数与累计执行时长。 */
+export interface ToolCallTotal {
+  toolName: string
+  /** 调用次数，含运行中与被中断的调用。 */
+  calls: number
+  /**
+   * 已记录时长的调用的执行时长之和（毫秒），同一波次的并行调用分别计入。
+   * 运行中与被中断的调用没有时长，不计入本项。
+   */
+  durationMs: number
 }

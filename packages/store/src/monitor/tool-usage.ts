@@ -6,16 +6,8 @@
  * 范围只含本会话自身的轮次：子代理与编排成员各是一个会话，不计入。
  */
 
-import type { ConversationId, ProviderRequestId } from '@qywork/core'
+import type { ConversationId, ProviderRequestId, ToolCallTotal } from '@qywork/core'
 import type { Store } from '../db.ts'
-
-export interface ToolCallTotal {
-  toolName: string
-  /** 调用次数，含运行中与被中断的调用。 */
-  calls: number
-  /** 已记录时长的调用的执行时长之和（毫秒）。运行中与被中断的调用没有时长，不计入本项。 */
-  durationMs: number
-}
 
 /** 本会话各工具的调用次数与累计执行时长，按工具名排序。 */
 export function conversationToolTotals(
