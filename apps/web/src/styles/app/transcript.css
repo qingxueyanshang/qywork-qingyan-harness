@@ -1048,6 +1048,8 @@
   padding: var(--s-3) var(--s-4) var(--s-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
+  /* 只在连线层宽于卡片时出现滚动条：图宽以内无法容纳全部连线时，多出的连线画在图的右侧。 */
+  overflow-x: auto;
 }
 .wf-card.failed {
   border-color: var(--danger-soft);
@@ -1059,24 +1061,17 @@
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
-/* 图的滚动层，卡片中唯一横向滚动的层：卡片边框、目标行与失败原因保持原位。
-   设置 `overflow-x` 后另一轴的计算值变为 `auto`；图在纵向不溢出，不会出现第二条滚动条。 */
-.wf-scroll {
-  overflow-x: auto;
-}
 /* 图本体。各层纵向排列，层间空白用于连线：连线是绝对定位的 SVG，不占布局，
    间距过小时折线紧贴节点。
 
-   宽度取 `max-content`，下限为滚动层宽度：层中每列有最小宽度，节点较多时图宽于卡片，
-   由 `.wf-scroll` 滚动；节点较少时图仍占满卡片宽度，各层按自身 `margin-inline: auto` 居中。
+   宽度固定为卡片宽度：一层的节点无法并排时由组件分为多行，图不横向滚动。
    不要将本元素设为滚动容器：`.wf-edges` 以它为包含块，本元素滚动后，连线与测得的节点
    坐标相差一个 `scrollLeft`。 */
 .wf-graph {
   position: relative;
   display: flex;
   flex-direction: column;
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
   gap: 26px;
 }
 /* 只派发一项任务时三个节点横向排列。中间列即画布中线，两侧列对称分配剩余宽度：
@@ -1086,9 +1081,6 @@
   /* 中间列定宽 220px，略宽于图中的普通节点；名称长短不改变列宽。 */
   grid-template-columns: minmax(0, 1fr) 220px minmax(0, 1fr);
   align-items: center;
-  /* 横向排列要求两侧列分配剩余宽度，因此此处取满宽，不取 `max-content`。 */
-  width: 100%;
-  min-width: 0;
   column-gap: 40px;
 }
 /* 连线。`overflow: visible` 不可省略：折线的横段可能位于元素边界上。 */
@@ -1124,15 +1116,15 @@
     animation: none;
   }
 }
-/* 同一层固定为等宽 grid。列数、最小宽度与最大宽度由组件按该层真实节点数写入；
-   列宽缩至最小宽度后不再缩小，此后由 `.wf-scroll` 横向滚动。 */
+/* 同一层固定为等宽 grid。列数、列间距、两侧留白与最大宽度由组件写入：图宽不足时该层分为多行，
+   各行按同一组列对齐，列间空白是连线下行的通道。行距与层距相同：两行之间同样有连线转向。 */
 .wf-layer {
   display: grid;
   width: 100%;
   min-width: 0;
   margin-inline: auto;
   justify-items: center;
-  gap: var(--s-3);
+  gap: 26px var(--s-3);
 }
 .wf-graph.across .wf-layer {
   display: flex;
@@ -1207,6 +1199,10 @@
   border-color: var(--border-default);
   color: var(--text-secondary);
   cursor: default;
+}
+/* 换行的层中节点占满所在列：通道的位置按节点边缘计算，同一列的节点必须左右对齐。 */
+.wf-layer.wrapped .wf-node.session {
+  width: 100%;
 }
 .wf-graph.across .wf-node.session {
   /* 窄面板里两侧端点可以收缩，但中间 agent 始终占据容器的几何中线。 */
