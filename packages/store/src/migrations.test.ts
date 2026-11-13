@@ -1991,3 +1991,35 @@ VALUES ('pr_old', 'rn_old', 0, 0, 'turn', 'm', 'received', 10, '{}', '{}', 'h', 
     }
   })
 })
+
+describe('迁移 77：请求信封的明细', () => {
+  /** 迁移前的请求没有明细，不回填；删除会话时判定明细是否仍被引用，必须经指纹索引，不得全表扫描请求行。 */
+  test('存量请求行保留且不回填明细，引用判定经指纹索引完成', () => {
+    const db = dbBefore(77)
+    db.exec(`
+INSERT INTO provider_requests
+  (id, run_id, turn_index, retry_index, purpose, model, status, measured_input_tokens,
+   sent_categories, omitted_categories, payload_hash, cache_route_fingerprint, created_at)
+VALUES ('pr_old', 'rn_old', 0, 0, 'turn', 'm', 'received', 10, '{}', '{}', 'h', 'fp_old', 5);
+`)
+    applyOne(db, 77)
+
+    expect(db.query('SELECT id, cache_route_fingerprint FROM provider_requests').all()).toEqual([
+      { id: 'pr_old', cache_route_fingerprint: 'fp_old' },
+    ])
+    expect(db.query('SELECT * FROM request_envelopes').all()).toEqual([])
+    const plan = db
+      .query<{ detail: string }, []>(
+        `EXPLAIN QUERY PLAN DELETE FROM request_envelopes
+         WHERE NOT EXISTS (
+           SELECT 1 FROM provider_requests pr
+           WHERE pr.cache_route_fingerprint = request_envelopes.fingerprint
+         )`,
+      )
+      .all()
+      .map((r) => r.detail)
+    expect(plan.some((d) => d.includes('idx_provider_fingerprint'))).toBe(true)
+    expect(plan.some((d) => /^SCAN pr\b/.test(d))).toBe(false)
+    db.close()
+  })
+})

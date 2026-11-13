@@ -1,6 +1,6 @@
 /**
- * 覆盖 `loop/request.ts` 与 `loop/index.ts` 的请求装配：上下文分组占用、effort 透传、
- * 花费币种、上下文读数与锚点信封、工具图片经真实 serializer 的形状。
+ * 覆盖 `loop/request.ts` 与 `loop/index.ts` 的请求装配：上下文分组占用与信封明细的逐项估算、
+ * effort 透传、花费币种、上下文读数与锚点信封、工具图片经真实 serializer 的形状。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -11,6 +11,7 @@ import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type ToolContext } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
 import { baseCtx, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts'
+import { breakdownOf, envelopeItemsOf } from './request.ts'
 
 describe('上下文分组占用', () => {
   /**
@@ -281,6 +282,36 @@ describe('上下文分组占用', () => {
     // 信封与正文各占一部分，两个分组均不得为零。
     expect(b!.executionRecords).toBeGreaterThan(0)
     expect(b!.intermediateContent).toBeGreaterThan(0)
+  })
+
+  test('信封明细按与分组占用相同的判据归组，系统提示词一项与分组值相等', () => {
+    const schema = (name: string) => ({
+      name,
+      description: `${name} 的说明`,
+      parameters: { type: 'object', properties: { path: { type: 'string' } } },
+      strict: false,
+    })
+    const req: ChatRequest = {
+      model: 'm',
+      system: [{ text: '系统提示词第一段' }, { text: 'second block' }],
+      messages: [],
+      tools: [schema('read_file'), schema('mcp__demo__ping'), schema('demo_plugin__run')],
+      maxOutputTokens: null,
+      idleTimeoutMs: 1,
+    }
+    const items = envelopeItemsOf(req, DEFAULT_DENSITY)
+    const groups = breakdownOf(req, DEFAULT_DENSITY)
+    expect(items.map((i) => [i.group, i.name])).toEqual([
+      ['systemPrompt', null],
+      ['systemTools', 'read_file'],
+      ['mcpTools', 'mcp__demo__ping'],
+      ['systemTools', 'demo_plugin__run'],
+    ])
+    expect(items[0]!.tokens).toBe(groups.systemPrompt)
+    for (const group of ['systemTools', 'mcpTools'] as const) {
+      const sum = items.filter((i) => i.group === group).reduce((n, i) => n + i.tokens, 0)
+      expect(Math.abs(sum - groups[group])).toBeLessThanOrEqual(groups[group] * 0.1)
+    }
   })
 })
 

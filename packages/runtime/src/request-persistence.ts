@@ -1,4 +1,7 @@
-/** 主请求与摘要请求共用的账本边界，错误文本在此处脱敏。 */
+/**
+ * 主请求与摘要请求共用的账本边界，错误文本在此处脱敏。
+ * 主请求的信封明细与请求行在同一事务中写入，任一写入失败时两者一并回滚并上抛。
+ */
 import type { LoopPersistence } from '@qywork/agent'
 import {
   markProviderRequestContent,
@@ -9,6 +12,7 @@ import {
   openProviderRequest,
   recordProviderRequestDiagnostic,
   type Store,
+  saveRequestEnvelope,
   settleProviderRequest,
   updateRunUsage,
 } from '@qywork/store'
@@ -18,7 +22,12 @@ import { collectSecrets, type QyConfig } from './config.ts'
 export function requestPersistence(store: Store, config: QyConfig) {
   const clean = (value: string) => redactSecrets(value, collectSecrets(config))
   return {
-    openRequest: (input) => openProviderRequest(store, input).id,
+    openRequest: ({ envelopeItems, ...input }) =>
+      store.tx(() => {
+        const id = openProviderRequest(store, input).id
+        if (envelopeItems) saveRequestEnvelope(store, input.cacheRouteFingerprint, envelopeItems)
+        return id
+      }),
     saveUsage: (runId, usage) => updateRunUsage(store, runId, usage),
     markRequestSent: (id) => markProviderRequestSent(store, id as never),
     markRequestHeaders: (id, at, cloudRequestId) =>

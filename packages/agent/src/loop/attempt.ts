@@ -13,6 +13,7 @@ import { contextEvent } from './context.ts'
 import {
   breakdownOf,
   envelopeHashOf,
+  envelopeItemsOf,
   mergeUsage,
   payloadSnapshotOf,
   reasoningPrefix,
@@ -169,6 +170,7 @@ export async function* sendTurn(
       payloadHash: payload.hash,
       requestBytes: payload.bytes,
       cacheRouteFingerprint: envelopeHashOf(turn.req),
+      envelopeItems: () => envelopeItemsOf(turn.req, run.density),
     })
 
     const probe: StreamProbe = {
