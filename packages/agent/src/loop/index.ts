@@ -90,7 +90,7 @@ export class AgentLoop {
   /**
    * 轮内压缩时摘要请求的记账。摘要请求按本轮的普通请求处理：发出前写入
    * `provider_requests`（purpose = summary，占用 turnIndex 编号），回报的 usage 并入本轮。
-   * `opened` / `merged` 告知调用方是否占用了编号、usage 是否变化。
+   * `opened` 告知调用方占用了几个编号，`merged` 告知 usage 是否变化。
    */
   private summaryTrace(run: RunState, turnIndex: number): ReturnType<typeof createSummaryTrace> {
     return createSummaryTrace(

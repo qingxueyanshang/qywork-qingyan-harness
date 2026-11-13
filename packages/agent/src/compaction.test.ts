@@ -1,11 +1,11 @@
 /**
  * 覆盖范围：`compaction.ts` 全部：单元键与边界、收纳段、摘要段的预算与检查、
- * 事实包、投影。接线（发送前检查 → 压缩 → 重新装配）见 `loop/compact.test.ts`。
+ * 事实包、投影；`loop/summary-trace.ts` 中一次压缩多次摘要请求的编号。接线（发送前检查 → 压缩 → 重新装配）见 `loop/compact.test.ts`。
  */
 
 import { describe, expect, test } from 'bun:test'
 import type { WireMessage } from '@qywork/ai'
-import { DEFAULT_DENSITY, estimateText } from '@qywork/ai'
+import { buildAdapter, DEFAULT_DENSITY, estimateText } from '@qywork/ai'
 import type { CompactionManifest, MessageId } from '@qywork/core'
 import {
   type CompactionAction,
@@ -19,6 +19,7 @@ import {
   summaryCutOf,
   unitKey,
 } from './compaction.ts'
+import { createSummaryTrace } from './loop/summary-trace.ts'
 
 const msg = (i: number, role: 'user' | 'assistant', content: string) => ({
   id: `ms_${String(i).padStart(3, '0')}` as MessageId,
@@ -478,6 +479,58 @@ describe('摘要块：旧块原样保留，新块只覆盖本次折叠的区段'
       expect(r.summarized).toBe(false)
       expect(r.manifest.summaries).toEqual([block('合并后的较早摘要', 'ms_001'), blocks[2]!])
       expect(summaryCutOf(r.manifest)).toEqual(blocks[2]!.through)
+    })
+
+    /** 账本以 (run, turn, retry) 为唯一键：两次摘要请求共用一个编号时第二次登记失败，新块因此作废。 */
+    test('合并与新块的两次摘要请求各占一个请求编号', async () => {
+      const keys: string[] = []
+      const noop = () => {}
+      const persist = {
+        openRequest: (req: { turnIndex: number; retryIndex: number }) => {
+          const key = `${req.turnIndex}.${req.retryIndex}`
+          if (keys.includes(key)) throw new Error(`请求编号重复：${key}`)
+          keys.push(key)
+          return `pr_${keys.length}`
+        },
+        markRequestSent: noop,
+        markRequestHeaders: noop,
+        markRequestHedge: noop,
+        markRequestFirstEvent: noop,
+        markRequestContent: noop,
+        recordRequestDiagnostic: noop,
+        settleRequest: noop,
+        saveUsage: noop,
+      }
+      const adapter = buildAdapter({
+        kind: 'openai_responses',
+        model: 'deepseek-flash',
+        apiKey: 'sk-test',
+        baseUrl: 'http://127.0.0.1:9',
+      })
+      const trace = createSummaryTrace(persist as never, 'rn_t' as never, 5, adapter, {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: null,
+        cacheWriteTokens: null,
+        reasoningTokens: 0,
+        cost: 0,
+        currency: 'USD',
+        turns: [],
+      })
+      const r = await compact({ ...over(), trace }, async (p, _budget, t) => {
+        t!.open({
+          model: 'deepseek-flash',
+          system: [],
+          messages: [{ role: 'user', content: p }],
+          tools: [],
+          maxOutputTokens: null,
+          idleTimeoutMs: 1000,
+        })
+        return isMerge(p) ? '合并后的较早摘要' : '新摘要'
+      })
+      expect(r.status === 'compacted' && r.summarized).toBe(true)
+      expect(keys).toEqual(['5.0', '6.0'])
+      expect(trace.opened).toBe(2)
     })
   })
 })

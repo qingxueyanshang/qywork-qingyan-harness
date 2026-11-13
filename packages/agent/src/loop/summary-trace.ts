@@ -33,19 +33,24 @@ export function createSummaryTrace(
   adapter: LlmAdapter,
   usage: RunUsage,
   providerName?: string,
-): SummaryTrace & { opened: boolean; merged: boolean } {
+): SummaryTrace & { opened: number; merged: boolean } {
   let requestAdapter = adapter
   const trace = {
-    opened: false,
+    /**
+     * 已登记的摘要请求数。一次压缩可以发出多次摘要请求（合并旧块与写新块），每次占用一个 turnIndex 编号，
+     * 从 `turnIndex` 起依次递增；共用一个编号时第二次登记违反请求行的唯一约束。
+     */
+    opened: 0,
     merged: false,
     open: (req: ChatRequest, actualAdapter = adapter): string => {
       requestAdapter = actualAdapter
       const density = actualAdapter.spec.density
-      trace.opened = true
+      const index = turnIndex + trace.opened
+      trace.opened++
       const payload = payloadSnapshotOf(req)
       return persist.openRequest({
         runId,
-        turnIndex,
+        turnIndex: index,
         retryIndex: 0,
         purpose: 'summary',
         ...(providerName ? { providerName } : {}),
