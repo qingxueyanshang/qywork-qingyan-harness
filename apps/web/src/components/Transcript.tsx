@@ -60,6 +60,7 @@ import {
   browserTabLabel,
   composerStackAbove,
   foldOpen,
+  fontScale,
   hasRunStatus,
   isConversationRunning,
   isRunning,
@@ -1095,8 +1096,12 @@ const RowStream = createContext<{
   generatingToolCall: () => false,
 })
 
-/** 六行用户正文的实际高度：`--fs-prose` 13.5px × 1.55 行高 × 6，取整为 126px。修改 `.bubble` 的字号或行高时必须同步修改此值。 */
+/**
+ * 六行用户正文在默认字体大小下的高度：`--fs-prose` 13.5px × 1.55 行高 × 6，取整为 126px。
+ * 修改 `.bubble` 的字号或行高时必须同步修改此值。实际高度随字体大小设置按比例变化。
+ */
 const USER_MESSAGE_PREVIEW_HEIGHT = 126
+const userMessagePreviewHeight = () => Math.round(USER_MESSAGE_PREVIEW_HEIGHT * fontScale())
 
 /**
  * 用户消息只在实际渲染高度超过六行时折叠。正文仍是 transcript 的原投影；此处的
@@ -1112,7 +1117,7 @@ function UserBubble(props: { text: string }) {
     // 观察未裁剪正文的布局结果，避免挂载每条消息时同步读取高度并强制布局。
     const observer = new ResizeObserver(([entry]) => {
       if (!entry) return
-      const next = entry.contentRect.height > USER_MESSAGE_PREVIEW_HEIGHT + 1
+      const next = entry.contentRect.height > userMessagePreviewHeight() + 1
       setCollapsible(next)
       if (!next) setExpanded(false)
     })
@@ -1126,7 +1131,7 @@ function UserBubble(props: { text: string }) {
     <div
       class="bubble"
       classList={{ collapsible: collapsible(), expanded: expanded() }}
-      style={{ '--user-message-preview-height': `${USER_MESSAGE_PREVIEW_HEIGHT}px` }}
+      style={{ '--user-message-preview-height': `${userMessagePreviewHeight()}px` }}
     >
       <div id={copyId} class="user-bubble-viewport">
         <div class="user-bubble-copy" ref={copy}>
