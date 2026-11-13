@@ -147,7 +147,7 @@ async function workspaceWith(extra: string[]) {
       density: DEFAULT_DENSITY,
       contextWindow: 0,
       sink: null,
-      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     } as unknown as ToolContext
     const probe = async (method: string, params: Record<string, unknown> = {}) =>
       tool!.fn({ method, params }, ctx)
@@ -205,7 +205,7 @@ describe('插件端到端', () => {
       stat: () => null,
     }
     ;(ctx as { sink: SinkPort | null }).sink = sink
-    openBatchBudget(ctx.state, 2000)
+    openBatchBudget(ctx.state, 2000, 0)
     const r = await probe('fs.read', { path: 'big.txt' })
     expect(r.status).toBe('success')
     expect(r.data).toBeUndefined()
@@ -406,7 +406,7 @@ describe('MCP 接入', () => {
       density: DEFAULT_DENSITY,
       contextWindow: 0,
       sink: null,
-      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     } as never)
     expect(out.status).toBe('success')
     expect(out.message).toBe('pong')

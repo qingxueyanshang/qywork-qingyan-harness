@@ -14,6 +14,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
 import {
+  builtinCatalog,
   classifyProviderError,
   DEFAULT_DENSITY,
   estimateRequest,
@@ -21,7 +22,7 @@ import {
   STREAM_IDLE_TIMEOUT_MS,
 } from '@qywork/ai'
 import type { AgentEvent, MessageId, RunUsage } from '@qywork/core'
-import { RESEND_LIMIT } from '@qywork/core'
+import { compactTierOf, RESEND_LIMIT } from '@qywork/core'
 import {
   createConversation,
   createRun,
@@ -218,6 +219,7 @@ test('自动压缩后的发送读数与请求账采用 manifest 估算，回执�
   })
   const readings: Extract<AgentEvent, { type: 'context' }>[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: 'rn_compacted' as never,
     history: [{ role: 'user', content: '旧历史', _messageId: 'ms_old' }],
     anchor: {
@@ -288,6 +290,7 @@ async function collectWith(
 ): Promise<AgentEvent[]> {
   const out: AgentEvent[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: runId as never,
     history,
     signal: new AbortController().signal,
@@ -300,6 +303,7 @@ async function collectWith(
 async function collect(loop: AgentLoop, runId: string): Promise<AgentEvent[]> {
   const out: AgentEvent[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: runId as never,
     history: [],
     signal: new AbortController().signal,
@@ -363,6 +367,7 @@ describe('发送前检查：唯一的压缩触发', () => {
     })
     const events: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_high' as never,
       history: [],
       // 锚点直接把占用设到阈值之上，无需构造几十万字的历史。
@@ -411,6 +416,7 @@ describe('发送前检查：唯一的压缩触发', () => {
       })
       const events: AgentEvent[] = []
       for await (const ev of loop.run({
+        compactPercent: 80,
         runId: 'rn_envelope' as never,
         history: [{ role: 'user', content: bulk, _group: 'historyMessages', _messageId: 'ms_1' }],
         // 真值 700,000 低于阈值；`throughMessageId` 覆盖这条历史，锚点已计入它。
@@ -452,6 +458,7 @@ describe('发送前检查：唯一的压缩触发', () => {
     })
     const events: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_skip' as never,
       history: [],
       anchor: {
@@ -855,6 +862,7 @@ function twoTurnAdapter(): LlmAdapter {
 async function runHigh(loop: AgentLoop, runId: string): Promise<AgentEvent[]> {
   const out: AgentEvent[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: runId as never,
     history: [],
     // 1M 窗口 × 0.8 → 软阈值 800,000，锚点直接设在阈值之上。
@@ -969,6 +977,7 @@ describe('run 内 transcript 参与投影', () => {
       compaction: port,
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_fold_transcript' as never,
       history: [],
       userMessageId: 'ms_001',
@@ -1031,6 +1040,7 @@ describe('transcript 的可折单元', () => {
       compaction: port,
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_stamp' as never,
       history: [],
       userMessageId: 'ms_001',
@@ -1058,16 +1068,19 @@ describe('transcript 的可折单元', () => {
  * （36.6%）：阈值减去了模型的全部输出**规格上限**，因此同为 1M 窗口的两个
  * 模型会得到两个完全不同的阈值。
  */
-describe('软阈值只由窗口决定', () => {
+describe('软阈值只由窗口与比例决定', () => {
+  const at80 = (spec: { contextWindow: number }) =>
+    softLimit({ contextWindow: spec.contextWindow, compactPercent: 80 })
+
   test('1M / 384K 档：触发线是 800,000，不是 366,000', () => {
-    expect(softLimit(lookupModel('deepseek-flash', 'openai_chat_completions'))).toBe(800_000)
+    expect(at80(lookupModel('deepseek-flash', 'openai_chat_completions'))).toBe(800_000)
   })
 
-  test('每一档都是窗口的 80%', () => {
-    expect(softLimit(lookupModel('claude-opus-5', 'anthropic_messages'))).toBe(800_000)
-    expect(softLimit(lookupModel('claude-haiku-4-5', 'anthropic_messages'))).toBe(160_000)
-    expect(softLimit({ contextWindow: 128_000 })).toBe(102_400)
-    expect(softLimit({ contextWindow: 32_000 })).toBe(25_600)
+  test('比例为 80 时每一档都是窗口的 80%', () => {
+    expect(at80(lookupModel('claude-opus-5', 'anthropic_messages'))).toBe(800_000)
+    expect(at80(lookupModel('claude-haiku-4-5', 'anthropic_messages'))).toBe(160_000)
+    expect(at80({ contextWindow: 128_000 })).toBe(102_400)
+    expect(at80({ contextWindow: 32_000 })).toBe(25_600)
   })
 
   /** 触发线不得随模型的输出上限变化：这正是 366,000 与 622,000 并存的成因。 */
@@ -1075,7 +1088,52 @@ describe('软阈值只由窗口决定', () => {
     const a = lookupModel('deepseek-flash', 'openai_chat_completions')
     const b = lookupModel('claude-opus-5', 'anthropic_messages')
     expect(a.maxOutputTokens).not.toBe(b.maxOutputTokens)
-    expect(softLimit(a)).toBe(softLimit(b))
+    expect(at80(a)).toBe(at80(b))
+  })
+
+  /** 内置目录的每种窗口在所在档的下限与 80 处的触发线。目录新增窗口时在此补上期望值。 */
+  test('全部内置窗口在所在档的下限与 80 处的触发线', () => {
+    const expected: Record<number, [number, number]> = {
+      1050000: [315_000, 840_000],
+      1048576: [314_572, 838_860],
+      1000000: [300_000, 800_000],
+      500000: [150_000, 400_000],
+      400000: [150_000, 320_000],
+      262144: [157_286, 209_715],
+      200000: [150_000, 160_000],
+      128000: [102_400, 102_400],
+    }
+    for (const contextWindow of new Set(builtinCatalog().map((m) => m.contextWindow))) {
+      const tier = compactTierOf(contextWindow)
+      expect(
+        [
+          softLimit({ contextWindow, compactPercent: tier.min }),
+          softLimit({ contextWindow, compactPercent: 80 }),
+        ],
+        `内置窗口 ${contextWindow}`,
+      ).toEqual(expected[contextWindow]!)
+    }
+  })
+
+  /** 主流窗口在可选范围内不触及最低触发线；其他窗口在下限附近按最低触发线取值。 */
+  test('最低触发线 15 万：只约束非主流窗口', () => {
+    for (let percent = 30; percent <= 80; percent += 5) {
+      expect(softLimit({ contextWindow: 1_000_000, compactPercent: percent })).toBe(
+        percent * 10_000,
+      )
+      expect(softLimit({ contextWindow: 500_000, compactPercent: percent })).toBe(percent * 5_000)
+    }
+    for (let percent = 60; percent <= 80; percent += 5) {
+      expect(softLimit({ contextWindow: 256_000, compactPercent: percent })).toBe(percent * 2_560)
+    }
+    // 40 万窗口在 30、35 时为 37.5%；20 万窗口在 60–75 时为 75%；18.75 万及以下固定为 80%。
+    expect(softLimit({ contextWindow: 400_000, compactPercent: 30 })).toBe(150_000)
+    expect(softLimit({ contextWindow: 400_000, compactPercent: 35 })).toBe(150_000)
+    expect(softLimit({ contextWindow: 400_000, compactPercent: 40 })).toBe(160_000)
+    expect(softLimit({ contextWindow: 200_000, compactPercent: 60 })).toBe(150_000)
+    expect(softLimit({ contextWindow: 200_000, compactPercent: 75 })).toBe(150_000)
+    expect(softLimit({ contextWindow: 187_500, compactPercent: 60 })).toBe(150_000)
+    expect(softLimit({ contextWindow: 128_000, compactPercent: 60 })).toBe(102_400)
   })
 })
 
@@ -1096,6 +1154,68 @@ function capturingAdapter(spec: LlmAdapter['spec']) {
   return { adapter, seen }
 }
 
+/**
+ * 本轮的比例是触发判定、压缩端口、请求行与上下文事件共用的一个值。锚点把占用设为 55 万：
+ * 1M 窗口在比例 50 时触发线为 50 万（越线），在比例 80 时为 80 万（不越线）。
+ */
+describe('触发线取本轮的比例', () => {
+  async function runAt(compactPercent: number) {
+    const comp = fakeCompaction(okOutcome)
+    const opened: Parameters<LoopPersistence['openRequest']>[0][] = []
+    const persist: LoopPersistence = {
+      ...noopPersistence(),
+      openRequest: (input) => {
+        opened.push(input)
+        return `pr_${opened.length}`
+      },
+    }
+    const loop = new AgentLoop({
+      adapter: okAdapter(),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist,
+      makeToolContext: makeCtx,
+      compaction: comp.port,
+    })
+    const events: AgentEvent[] = []
+    for await (const ev of loop.run({
+      compactPercent,
+      runId: `rn_percent_${compactPercent}` as never,
+      history: [],
+      anchor: {
+        tokens: 550_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
+      signal: new AbortController().signal,
+    })) {
+      events.push(ev)
+    }
+    const contextLines = events.flatMap((e) => (e.type === 'context' ? [e.compactAt] : []))
+    return { comp, opened, contextLines }
+  }
+
+  test('比例为 50 时越线压缩，端口、请求行与上下文事件都是同一条触发线', async () => {
+    const { comp, opened, contextLines } = await runAt(50)
+    expect(comp.state.runs).toBeGreaterThan(0)
+    expect(comp.state.seen.map((input) => input.compactPercent)).toEqual(
+      comp.state.seen.map(() => 50),
+    )
+    expect(opened.map((r) => r.configuration?.compactAt)).toEqual(opened.map(() => 500_000))
+    expect(contextLines.length).toBeGreaterThan(0)
+    expect(contextLines).toEqual(contextLines.map(() => 500_000))
+  })
+
+  test('比例为 80 时同一占用不越线', async () => {
+    const { comp, opened, contextLines } = await runAt(80)
+    expect(comp.state.runs).toBe(0)
+    expect(opened.map((r) => r.configuration?.compactAt)).toEqual([800_000])
+    expect(contextLines).toEqual(contextLines.map(() => 800_000))
+  })
+})
+
 describe('缓存断点', () => {
   test('上下文跟随所属用户；断点落在当前已接受消息末尾', async () => {
     const { adapter, seen } = capturingAdapter(lookupModel('claude-opus-5', 'anthropic_messages'))
@@ -1107,6 +1227,7 @@ describe('缓存断点', () => {
       makeToolContext: makeCtx,
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_brk' as never,
       history: [
         {
@@ -1196,6 +1317,7 @@ describe('缓存断点', () => {
       { role: 'user', content: '找 bug', _messageId: 'ms_001' },
     ]
     for await (const _ of build().run({
+      compactPercent: 80,
       runId: 'rn_a' as never,
       history,
       signal: new AbortController().signal,
@@ -1217,6 +1339,7 @@ describe('缓存断点', () => {
     ]
     const before = seen.length
     for await (const _ of build().run({
+      compactPercent: 80,
       runId: 'rn_b' as never,
       history: carried,
       signal: new AbortController().signal,
@@ -1280,6 +1403,7 @@ describe('申报按占用钳位', () => {
     const occupancy = 950_000
     const events: AgentEvent[] = []
     for await (const ev of build(adapter).run({
+      compactPercent: 80,
       runId: 'rn_declare_high' as never,
       history: [],
       anchor: {
@@ -1318,6 +1442,7 @@ describe('压缩被中断', () => {
     })
     const events: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_abort' as never,
       history: [],
       anchor: {
@@ -1372,6 +1497,7 @@ describe('结果形态对用户可见', () => {
     const phases: string[] = []
     try {
       for await (const event of loop.run({
+        compactPercent: 80,
         runId: 'rn_progress' as never,
         history: [],
         anchor: {
@@ -1407,6 +1533,7 @@ describe('结果形态对用户可见', () => {
     })
     const events: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_summarized' as never,
       history: [],
       anchor: {
@@ -1449,6 +1576,7 @@ describe('结果形态对用户可见', () => {
       compaction: comp.port,
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_local' as never,
       history: [],
       anchor: {
@@ -1477,6 +1605,7 @@ describe('结果形态对用户可见', () => {
       compaction: comp.port,
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_skip_step' as never,
       history: [],
       anchor: {
@@ -1550,6 +1679,7 @@ describe('压缩记录带压缩后占用与边界', () => {
     const comp = fakeCompaction(rewritten)
     const recorded: RecordedCompaction[] = []
     for await (const _ of loopWith(okAdapter(), comp.port, recorded).run({
+      compactPercent: 80,
       runId: 'rn_record_send' as never,
       history: [],
       anchor: {
@@ -1607,6 +1737,7 @@ describe('压缩记录带压缩后占用与边界', () => {
       fn: async () => ({ status: 'success', message: 'ok' }),
     })
     for await (const _ of loopWith(adapter, comp.port, recorded, registry).run({
+      compactPercent: 80,
       runId: 'rn_record_tools' as never,
       history: [{ role: 'user', content: '甲'.repeat(520_000) }],
       signal: new AbortController().signal,
@@ -1778,6 +1909,7 @@ describe('摘要请求按普通请求记账', () => {
     })
     const events: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: run.id,
       history: [],
       anchor: {

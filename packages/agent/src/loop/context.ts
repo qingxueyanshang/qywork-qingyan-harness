@@ -20,7 +20,7 @@ export function contextEvent(
     limit,
     percent: limit ? Math.round((reading.tokens / limit) * 1000) / 10 : 0,
     source: reading.source,
-    compactAt: softLimit(run.adapter.spec),
+    compactAt: softLimit(run.threshold),
     breakdown: reconcileBreakdown(turn.breakdown, reading.tokens),
     omitted: host.lastOmitted(),
   }

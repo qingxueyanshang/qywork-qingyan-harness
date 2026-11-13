@@ -103,6 +103,7 @@ async function runAgainst(opts: RunOptions): Promise<AgentEvent[]> {
   })
   const events: AgentEvent[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: opts.runId as never,
     history: [],
     signal: opts.signal ?? new AbortController().signal,
@@ -258,6 +259,7 @@ test('退避等待期间停止：立即以 user_interrupt 结束，不再发送�
     const types: string[] = []
     let stopReason = ''
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_stop_backoff' as never,
       history: [],
       signal: controller.signal,

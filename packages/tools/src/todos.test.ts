@@ -128,6 +128,7 @@ describe('硬约束：拒绝而不是静默纠正', () => {
     let results = 0
     let stopReason: string | undefined
     for await (const event of loop.run({
+      compactPercent: 80,
       runId: 'rn_invalid_todos' as never,
       history: [],
       signal: new AbortController().signal,
@@ -329,6 +330,7 @@ describe('提交的清单与本轮结束', () => {
     })
     let finished: AgentEvent | null = null
     for await (const event of loop.run({
+      compactPercent: 80,
       runId: 'rn_todos_loop' as never,
       history: [],
       signal: new AbortController().signal,

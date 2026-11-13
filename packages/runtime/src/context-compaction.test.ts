@@ -87,7 +87,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
     for await (const ev of session.ask(prompt, conversationId)) {
       if (ev.type === 'context') {
         readings.push(ev)
-        const panel = contextPanel(store, conversationId!, model)
+        const panel = contextPanel(store, conversationId!, model, 80)
         expect(panel.total).toBe(ev.tokens)
         expect(panel.source).toBe(ev.source)
       }
@@ -105,7 +105,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
       }
       conversationId = listRecentConversations(store, 1)[0]!.id
     }
-    const before = contextPanel(store, conversationId!, model)
+    const before = contextPanel(store, conversationId!, model, 80)
     expect(before.total).toBe(602_487)
     const spec = lookupModel(model.id, model.providerKind)
     const compaction = new RuntimeCompaction({
@@ -116,6 +116,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
       summarize: async () => '保留用户事实的摘要。',
     })
     const outcome = await compaction.run({
+      compactPercent: 80,
       trigger: 'manual',
       model: model.id,
       latestUnitSeen: true,
@@ -127,7 +128,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
     expect(outcome.status).toBe('compacted')
     const snapshot = getConversation(store, conversationId!)!.compactionManifest!.contextAfter!
     expect(snapshot.total).toBeLessThan(400_000)
-    expect(contextPanel(store, conversationId!, model).total).toBe(snapshot.total)
+    expect(contextPanel(store, conversationId!, model, 80).total).toBe(snapshot.total)
 
     for (const nextMode of ['reject', 'no-usage', 'after'] as const) {
       // 模拟重新加载会话；状态必须从账本恢复，不能靠上次 Session 的内存。
@@ -142,7 +143,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
       )
       expect(Math.abs(readings[0]!.tokens - snapshot.total)).toBeLessThan(10_000)
       expect(readings[0]!.tokens).toBeLessThan(400_000)
-      const panel = contextPanel(store, conversationId!, model)
+      const panel = contextPanel(store, conversationId!, model, 80)
       if (nextMode === 'after') {
         expect(panel).toMatchObject({ total: 7_599, percent: 0.8, source: 'actual' })
       } else {

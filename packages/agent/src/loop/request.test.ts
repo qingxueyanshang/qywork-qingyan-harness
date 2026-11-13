@@ -59,6 +59,7 @@ describe('上下文分组占用', () => {
     for (const projected of [false, true]) {
       const events = []
       for await (const ev of makeLoop(projected).run({
+        compactPercent: 80,
         runId: 'rn_proj' as never,
         history: [{ role: 'user', content: long, _group: 'historyMessages' }],
         signal: new AbortController().signal,
@@ -129,6 +130,7 @@ describe('上下文分组占用', () => {
 
     const events = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_breakdown' as never,
       history: [
         {
@@ -199,6 +201,7 @@ describe('上下文分组占用', () => {
 
     const events = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_reconcile' as never,
       history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
       // 真值远大于该历史的本地估算，差额必须分摊到可变分组，不得丢失。
@@ -268,6 +271,7 @@ describe('上下文分组占用', () => {
     })
 
     for await (const _ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_split' as never,
       history: [],
       signal: new AbortController().signal,
@@ -356,6 +360,7 @@ describe('effort 传递到请求', () => {
         }) as ToolContext,
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       ...(effort ? { effort } : {}),
@@ -410,6 +415,7 @@ describe('花费记录币种', () => {
     })
     const events = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_test' as never,
       history: [],
       signal: new AbortController().signal,
@@ -462,6 +468,7 @@ describe('上下文读数：统一计量', () => {
 
     const events = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_anchor' as never,
       history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
       anchor: {
@@ -506,6 +513,7 @@ describe('上下文读数：统一计量', () => {
 
     const events = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_noanchor' as never,
       history: [],
       signal: new AbortController().signal,
@@ -535,6 +543,7 @@ describe('上下文读数：统一计量', () => {
     })
     const shown: number[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_occupancy' as never,
       history: [{ role: 'user', content: '开始' }],
       anchor: {
@@ -654,6 +663,7 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
         makeToolContext: (runId) => baseCtx(runId),
       })
       for await (const _ of loop.run({
+        compactPercent: 80,
         runId: 'rn_image_scope' as never,
         history: [],
         signal: new AbortController().signal,
@@ -772,6 +782,7 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
       })
 
       for await (const _ of loop.run({
+        compactPercent: 80,
         runId: 'rn_image_to_wire' as never,
         history: [],
         signal: new AbortController().signal,
@@ -839,6 +850,7 @@ describe('锚点的信封校验', () => {
         makeToolContext: (runId) => baseCtx(runId),
       })
       for await (const ev of loop.run({
+        compactPercent: 80,
         runId: 'rn_env' as never,
         history: [],
         signal: new AbortController().signal,

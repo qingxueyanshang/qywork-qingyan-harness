@@ -97,6 +97,7 @@ async function shootSteps(steps: number, data: () => string): Promise<WireMessag
     persist: noopPersistence(),
   })
   for await (const _ of loop.run({
+    compactPercent: 80,
     runId: 'rn_cache' as never,
     history: [{ role: 'user', content: '截图', _group: 'historyMessages' }],
     signal: new AbortController().signal,

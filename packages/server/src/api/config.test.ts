@@ -589,6 +589,44 @@ describe('落盘门禁', () => {
     }
   })
 
+  /** 自动压缩比例只接受各档范围内 5 的倍数的整数；不合法的值落盘后，每一轮都在启动前以配置错误终止。 */
+  test('自动压缩比例越出所在档的范围或不是 5 的倍数时返回 422，不写入磁盘', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    const body = (compactPercent: unknown) =>
+      ({
+        providers: {
+          main: { kind: 'anthropic_messages', hasApiKey: false, models: { 'claude-opus-5': {} } },
+        },
+        mode: 'auto',
+        compactPercent,
+      }) as unknown as Parameters<typeof put>[1]
+    try {
+      const d = { config: cfg() } as unknown as ApiDeps
+      for (const bad of [
+        { large: 90 },
+        { small: 50 },
+        { large: 42 },
+        { medium: 42 },
+        { small: 42 },
+      ]) {
+        const res = await put(d, body(bad))
+        expect(res!.status).toBe(422)
+        expect(((await res!.json()) as { problems: string[] }).problems).toHaveLength(1)
+        expect(d.config.compactPercent).toBeUndefined()
+        await expect(readFile(join(home, 'config.json'), 'utf8')).rejects.toThrow()
+      }
+      const ok = await put(d, body({ large: 50, small: 60 }))
+      expect(ok!.status).toBe(200)
+      const saved = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as QyConfig
+      expect(saved.compactPercent).toEqual({ large: 50, small: 60 })
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
   /**
    * 原始失败形状：删除某一类别的最后一个生成模型（默认值随之删除）后，在另一个接口下添加同一个模型，保存被 422 拒绝，
    * 原因是默认生成模型不在配置中。进程内的配置保留了已删除的默认值，GET 将其返回给设置页；设置页发现该类别已有默认值便不再修改，

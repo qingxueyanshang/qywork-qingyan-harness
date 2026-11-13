@@ -419,7 +419,7 @@ function toolCtx(input: {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: input.sink === undefined ? input.h.sink : input.sink,
     signal: new AbortController().signal,
     emit: () => {},
@@ -754,7 +754,7 @@ function makeBase(h: Harness, runId: RunId, desktop: DesktopPort): () => ToolCon
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: new RuntimeSink(h.store, h.content, runId),
     signal: new AbortController().signal,
     requestPermission: async () => ({ allowed: true }),
@@ -824,7 +824,12 @@ async function runDesktopAct(
     persist: persistence(h.store, { userSteps: 0 }),
     makeToolContext: makeBase(h, runId, desktopPort(table)),
   })
-  for await (const _ of loop.run({ runId, history: [], signal: new AbortController().signal })) {
+  for await (const _ of loop.run({
+    compactPercent: 80,
+    runId,
+    history: [],
+    signal: new AbortController().signal,
+  })) {
     // 事件由各用例自行断言，此处只将 run 执行完毕。
   }
   expect(seen).toHaveLength(2)
@@ -908,6 +913,7 @@ describe('同一份结果在各层形状一致', () => {
       makeToolContext: makeBase(h, runId, desktopPort(大表)),
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId,
       history: [],
       signal: new AbortController().signal,
@@ -975,7 +981,12 @@ describe('同一份结果在各层形状一致', () => {
       persist: persistence(h.store, { userSteps: 0 }),
       makeToolContext: makeBase(h, runId, port),
     })
-    for await (const _ of loop.run({ runId, history: [], signal: new AbortController().signal })) {
+    for await (const _ of loop.run({
+      compactPercent: 80,
+      runId,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
       // 事件在这条用例里不作断言，只将 run 执行完毕。
     }
     expect(seen).toHaveLength(4)
@@ -1054,7 +1065,12 @@ async function runObservations(
     persist: persistence(h.store, { userSteps: 0 }),
     makeToolContext: makeBase(h, runId, port),
   })
-  for await (const _ of loop.run({ runId, history, signal: new AbortController().signal })) {
+  for await (const _ of loop.run({
+    compactPercent: 80,
+    runId,
+    history,
+    signal: new AbortController().signal,
+  })) {
     // 本组用例不断言事件，只将 run 执行完毕。
   }
   expect(seen).toHaveLength(callIds.length + 1)
@@ -1192,7 +1208,7 @@ describe('实际用量跨工具可见', () => {
     const ctx = toolCtx({ h, window, desktop: desktopPort(大表) })
     writeFileSync(join(h.dir, 'note.txt'), '合成正文\n'.repeat(50), 'utf8')
 
-    openBatchBudget(ctx.state, 1000)
+    openBatchBudget(ctx.state, 1000, 4_000)
     // 本次决策之前的读取已用掉大部分额度。
     expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
     expect(batchRemaining(ctx)).toBe(200)
@@ -1252,6 +1268,7 @@ describe('越过收纳阈值之后在同一轮内继续', () => {
 
     const events: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId,
       history,
       // 锚点使占用超过软阈值：1M 窗口 × 0.8 → 800,000。

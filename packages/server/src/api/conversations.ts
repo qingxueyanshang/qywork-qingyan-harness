@@ -32,6 +32,7 @@ import type {
 import { MEDIA_KIND_OUTPUT, RESEND_LIMIT } from '@qywork/core'
 import {
   catalogKey,
+  compactPercentFor,
   contextPanel,
   exportConversationDiagnostics,
   listMediaModels,
@@ -654,16 +655,25 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     if (!conv.provider) return json({ error: '该会话未记录所属接口，请重新选择模型后继续' }, 409)
     // 上下文窗口按本会话的接口 × 模型解析。`active.provider` 是接口名不是协议名，
     // 将其用作 kind 会使中转站上的 claude 匹配到错误的目录条目。
-    const stored = resolveModel(d.config, { provider: conv.provider, model: conv.model })
-    if (!stored) return json({ error: '会话绑定的接口或模型已不在配置中' }, 409)
-    const kind = stored.kind
-    const spec = lookupModel(conv.model, kind, undefined, stored.spec?.base)
+    // 规格取 `modelSpecOf`：与轮次装配的适配器相同，含用户对型号的覆盖，面板与循环使用同一份窗口。
+    const ref = { provider: conv.provider, model: conv.model }
+    const stored = resolveModel(d.config, ref)
+    const spec = modelSpecOf(d.config, ref)
+    if (!stored || !spec) return json({ error: '会话绑定的接口或模型已不在配置中' }, 409)
+    let compactPercent: number
+    try {
+      compactPercent = compactPercentFor(d.config, spec.contextWindow)
+    } catch (err) {
+      // 与轮次启动时的配置错误为同一报错。
+      return json({ error: err instanceof Error ? err.message : String(err) }, 409)
+    }
     return json({
-      context: contextPanel(d.store, id, {
-        ...spec,
-        providerName: conv.provider,
-        providerKind: kind,
-      }),
+      context: contextPanel(
+        d.store,
+        id,
+        { ...spec, providerName: conv.provider, providerKind: stored.kind },
+        compactPercent,
+      ),
     })
   }
 

@@ -5,7 +5,7 @@
 
 import type { WireToolCall } from '@qywork/ai'
 import type { AgentEvent, RunId } from '@qywork/core'
-import { openBatchBudget } from '../delivery.ts'
+import { openBatchBudget, tailRetain } from '../delivery.ts'
 import type { EventQueue } from '../event-queue.ts'
 import { drainUntil } from '../event-queue.ts'
 import { cycleFingerprint } from '../progress.ts'
@@ -40,8 +40,13 @@ export async function* executeCalls(
   /*
    * 投递额度按决策计算一次，全部波次共用：余量 = 软阈值 − 当前占用，按检查点给出的折算比
    * 折算为本地估算值（占用是 provider 真值，工具结果按本地估算计量）。折算比只缩小不放大，理由见 `compactBeforeTools`。
+   * 单次投递的预留量取半份尾部保留量，与软阈值出自同一份触发线参数。
    */
-  openBatchBudget(ctx.state, (softLimit(run.adapter.spec) - reading.occupancy) * reading.scale)
+  openBatchBudget(
+    ctx.state,
+    (softLimit(run.threshold) - reading.occupancy) * reading.scale,
+    Math.floor(tailRetain(run.threshold) / 2),
+  )
 
   /*
    * 名称不在注册表中的调用与参数不是 JSON 对象的调用，一律不进入执行链。

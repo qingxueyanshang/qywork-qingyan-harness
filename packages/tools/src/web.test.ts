@@ -13,7 +13,7 @@ function ctx(): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},
@@ -104,7 +104,7 @@ describe('抓取的用量记账', () => {
       const c = ctx()
       // 回环地址经 allowHosts 放行：SSRF 防护默认拒绝 127.0.0.1。
       c.resources.set(NET_POLICY_KEY, { allowHosts: ['127.0.0.1'] })
-      openBatchBudget(c.state, 1000)
+      openBatchBudget(c.state, 1000, 25_000)
       expect(chargeBatchBudget(c, 800).ok).toBe(true)
       expect(batchRemaining(c)).toBe(200)
 

@@ -41,6 +41,7 @@ export { RuntimeCompaction } from './compaction.ts'
 export {
   catalogKey,
   collectSecrets,
+  compactPercentFor,
   configDir,
   configNotices,
   configPath,

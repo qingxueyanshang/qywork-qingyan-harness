@@ -13,13 +13,14 @@
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { createSummaryTrace } from '@qywork/agent'
+import { createSummaryTrace, softLimit } from '@qywork/agent'
 import { buildAdapter, estimateMessages } from '@qywork/ai'
 import type { AgentEvent, ConversationId, EventEnvelope, RunId } from '@qywork/core'
-import { envelopeHeadTokens } from '@qywork/core'
+import { COMPACT_PERCENT_DEFAULT, envelopeHeadTokens } from '@qywork/core'
 import type { ModelRef, QyConfig } from '@qywork/runtime'
 import {
   buildHistory,
+  compactPercentFor,
   contextPanel,
   loadConfig,
   makeSummarizer,
@@ -407,11 +408,12 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
 
   // ── 三、运行中与事后查看的读数一致 ────────────────────────────────
   process.stdout.write('\n【三】运行中与回头看\n')
-  const panel = contextPanel(store, conv as ConversationId, {
-    ...spec,
-    providerName: ref.provider,
-    providerKind: profile.kind,
-  })
+  const panel = contextPanel(
+    store,
+    conv as ConversationId,
+    { ...spec, providerName: ref.provider, providerKind: profile.kind },
+    compactPercentFor(config, spec.contextWindow),
+  )
   note(
     `面板 ${panel.total}（${panel.percent}%，${panel.source}）　运行中末次事件 ${events[events.length - 1]?.tokens}`,
   )
@@ -497,7 +499,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
    * 原生 1M 窗口已自然填满。
    */
   const window = Math.max(4096, Math.round(trueBefore * 0.8))
-  const softAt = Math.floor(window * 0.8)
+  const softAt = softLimit({ contextWindow: window, compactPercent: COMPACT_PERCENT_DEFAULT })
   const summaryRun = createRun(store, {
     conversationId: conv as ConversationId,
     workspaceId: getConversation(store, conv as ConversationId)!.workspaceId,
@@ -523,6 +525,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
       occupancy: trueBefore,
       estimatedOccupancy: estBefore,
       contextWindow: window,
+      compactPercent: COMPACT_PERCENT_DEFAULT,
       density: spec.density,
     })
     .catch((err: unknown) => {

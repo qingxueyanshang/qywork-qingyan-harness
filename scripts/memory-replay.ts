@@ -46,6 +46,7 @@ import {
   buildHistory,
   buildSystemPrompt,
   buildTailNotes,
+  compactPercentFor,
   dataPath,
   listMediaModels,
   loadConfig,
@@ -517,6 +518,7 @@ async function replay(
     for await (const ev of loop.run({
       runId,
       history,
+      compactPercent: compactPercentFor(config, spec.contextWindow),
       ...(effort ? { effort } : {}),
       cacheKey: p.conversationId,
       signal: abort.signal,

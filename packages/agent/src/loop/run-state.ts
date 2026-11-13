@@ -29,7 +29,7 @@ import { type SummaryTrace, stepStamp } from '../compaction.ts'
 import { EventQueue } from '../event-queue.ts'
 import { MAX_CYCLE_WIDTH, type ProgressEvidence, repeatsNoProgress } from '../progress.ts'
 import type { ToolContextBase, ToolRegistry } from '../registry.ts'
-import { envelopeHashOf, runDensity } from './request.ts'
+import { type CompactThreshold, envelopeHashOf, runDensity } from './request.ts'
 import type { CompactionPort, LoopDeps, LoopPersistence, RunInput } from './types.ts'
 
 /** 相同轮次第二次出现时交给模型的事实，文本陈述的是第三次即停止的规则。 */
@@ -71,6 +71,8 @@ export class RunState {
    * 接口拒绝视频后 `video` 置为 null（`attempt.ts` 的 `removeVideos`），之后不复位。
    */
   density: TokenDensity
+  /** 本轮的触发线参数：窗口与 `RunInput.compactPercent`。触发判定、投递额度与上下文事件都取这一份。 */
+  readonly threshold: CompactThreshold
   readonly usage: RunUsage
   readonly fileChanges: FileChange[] = []
   /** transcript = 本 run 内新产生的对话，与传入的 history 拼接后发给模型。 */
@@ -162,6 +164,10 @@ export class RunState {
     this.videosRejected = input.videosRejected === true
     const density = runDensity(deps.adapter)
     this.density = this.videosRejected ? { ...density, video: null } : density
+    this.threshold = {
+      contextWindow: deps.adapter.spec.contextWindow,
+      compactPercent: input.compactPercent,
+    }
     this.contextEstimate = input.contextEstimate
     this.imagesRejected = input.imagesRejected === true
     this.usage = {

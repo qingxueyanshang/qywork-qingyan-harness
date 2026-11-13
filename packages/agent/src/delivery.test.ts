@@ -30,11 +30,8 @@ import {
 } from './delivery.ts'
 import type { SinkPort } from './registry.ts'
 
-/** 窗口取 0：尾部保留量为 0，单次上限等于余额，便于逐项核对账目。上限本身另有用例。 */
-const ctx = (room: number) => ({
-  state: openBatchBudget(new Map<string, unknown>(), room),
-  contextWindow: 0,
-})
+/** 预留量取 0：单次上限等于余额，便于逐项核对账目。上限本身另有用例。 */
+const ctx = (room: number) => ({ state: openBatchBudget(new Map<string, unknown>(), room, 0) })
 
 function fakeSink(): SinkPort & { landed: Uint8Array[] } {
   const landed: Uint8Array[] = []
@@ -51,9 +48,7 @@ function fakeSink(): SinkPort & { landed: Uint8Array[] } {
 
 describe('一次决策一份额度', () => {
   test('未开账就调用属于装配错误，不提供默认额度', () => {
-    expect(() => chargeBatchBudget({ state: new Map(), contextWindow: 0 }, 1)).toThrow(
-      '投递额度未开账',
-    )
+    expect(() => chargeBatchBudget({ state: new Map() }, 1)).toThrow('投递额度未开账')
   })
 
   /** 额度是请求余量，不是常数：1M 窗口下 31K 的读取在余量内即放行。 */
@@ -76,7 +71,7 @@ describe('一次决策一份额度', () => {
     chargeBatchBudget(c, 4000)
     expect(recordBatchSpent(c, 4000).remaining).toBe(0)
     expect(chargeBatchBudget(c, 1).ok).toBe(false)
-    openBatchBudget(c.state, 6000)
+    openBatchBudget(c.state, 6000, 0)
     expect(chargeBatchBudget(c, 100).ok).toBe(true)
   })
 
@@ -88,23 +83,36 @@ describe('一次决策一份额度', () => {
    * 填满余额的结果在下一次压缩中是跨越保留量边界的单元，会被保留，
    * 下一次决策的额度为 0、续读无法推进。单次上限因此为下一次决策留出半份尾部保留量。
    */
-  test('单次上限给下一次决策留出半份尾部保留量', () => {
-    const c = { state: openBatchBudget(new Map<string, unknown>(), 25_000), contextWindow: 32_000 }
-    expect(tailRetain(32_000)).toBe(8_000)
+  test('单次上限给下一次决策留出开账时写入的预留量', () => {
+    const retain = tailRetain({ contextWindow: 32_000, compactPercent: 80 })
+    expect(retain).toBe(8_000)
+    const c = { state: openBatchBudget(new Map<string, unknown>(), 25_000, retain / 2) }
     expect(deliveryCap(c)).toBe(21_000)
     expect(chargeBatchBudget(c, 22_000).ok).toBe(false)
     expect(chargeBatchBudget(c, 21_000).ok).toBe(true)
   })
 
-  test('余额不足一份保留量时，单次不超过半份保留量', () => {
-    const c = { state: openBatchBudget(new Map<string, unknown>(), 6_000), contextWindow: 32_000 }
+  test('余额不足两份预留量时，单次不超过预留量', () => {
+    const c = { state: openBatchBudget(new Map<string, unknown>(), 6_000, 4_000) }
     expect(deliveryCap(c)).toBe(4_000)
-    expect(deliveryCap({ ...c, state: openBatchBudget(new Map(), 3_000) })).toBe(3_000)
+    expect(deliveryCap({ state: openBatchBudget(new Map(), 3_000, 4_000) })).toBe(3_000)
   })
 
-  test('保留量按窗口比例计算，不设固定上限', () => {
-    expect(tailRetain(1_000_000)).toBe(250_000)
-    expect(tailRetain(200_000)).toBe(50_000)
+  test('比例为 80 时保留量为窗口的 1/4，不设固定上限', () => {
+    expect(tailRetain({ contextWindow: 1_000_000, compactPercent: 80 })).toBe(250_000)
+    expect(tailRetain({ contextWindow: 200_000, compactPercent: 80 })).toBe(50_000)
+    expect(tailRetain({ contextWindow: 128_000, compactPercent: 80 })).toBe(32_000)
+  })
+
+  /** 保留量是触发线的 5/16：触发线调低后按窗口计算的保留量加上信封即超过触发线。 */
+  test('保留量随实际触发线缩放，最低触发线生效时不随设置值变化', () => {
+    expect(tailRetain({ contextWindow: 1_000_000, compactPercent: 30 })).toBe(93_750)
+    expect(tailRetain({ contextWindow: 1_000_000, compactPercent: 50 })).toBe(156_250)
+    expect(tailRetain({ contextWindow: 500_000, compactPercent: 30 })).toBe(46_875)
+    expect(tailRetain({ contextWindow: 400_000, compactPercent: 30 })).toBe(46_875)
+    expect(tailRetain({ contextWindow: 400_000, compactPercent: 35 })).toBe(46_875)
+    expect(tailRetain({ contextWindow: 262_144, compactPercent: 60 })).toBe(49_152)
+    expect(tailRetain({ contextWindow: 200_000, compactPercent: 60 })).toBe(46_875)
   })
 })
 
@@ -142,7 +150,7 @@ describe('触及单次上限的记录', () => {
     expect(batchCapped(new Map())).toBe(false)
     const c = ctx(10_000)
     chargeBatchBudget(c, 20_000)
-    openBatchBudget(c.state, 10_000)
+    openBatchBudget(c.state, 10_000, 0)
     expect(batchCapped(c.state)).toBe(false)
   })
 })

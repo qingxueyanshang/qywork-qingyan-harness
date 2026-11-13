@@ -23,6 +23,8 @@
  *
  * 校验：执行工具之前的压缩记录中的占用，与按请求账推算的检查点读数逐条比较；一致说明重放与账本使用同一口径。
  *
+ * 软阈值、尾部保留量与单次投递上限调用 `@qywork/agent` 的同名函数，比例取缺省值 80：对比的是比例可调之前的账本记录。
+ *
  *   bun run scripts/compaction-replay.ts
  */
 
@@ -30,14 +32,25 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { envelopeResult, outcomeTokens, toolResultContent } from '@qywork/agent'
+import {
+  deliveryCap,
+  envelopeResult,
+  openBatchBudget,
+  outcomeTokens,
+  softLimit,
+  tailRetain,
+  toolResultContent,
+} from '@qywork/agent'
 import { estimateMessage, lookupModel, type ProviderKind, type TokenDensity } from '@qywork/ai'
+import { COMPACT_PERCENT_DEFAULT } from '@qywork/core'
 
 const LEDGER = join(homedir(), '.qywork', 'qywork.sqlite3')
 const OUT_DIR = join(import.meta.dir, '..', '.tmp', 'compaction-replay')
 
-/** 与 `agent/loop/request.ts` 的 `TRIGGER_RATIO` 相同。 */
-const TRIGGER_RATIO = 0.8
+/** 窗口按缺省比例的触发线参数。 */
+function thresholdOf(contextWindow: number) {
+  return { contextWindow, compactPercent: COMPACT_PERCENT_DEFAULT }
+}
 const BAND = { from: 0.55, to: 0.8 }
 
 /** 按单次投递上限截短正文的读取工具（`chargeBatchBudget`、`deliverReadable`、`read_resource` 的分页、检索的裁剪）。 */
@@ -170,10 +183,10 @@ function hasMedia(outcome: Outcome): boolean {
   return Array.isArray(data?.images) || Array.isArray(data?.videos)
 }
 
-/** 与 `agent/delivery.ts` 的 `deliveryCap` 相同。 */
-function deliveryCap(remaining: number, window: number): number {
-  const reserve = Math.floor(Math.floor(window / 4) / 2)
-  return Math.max(remaining - reserve, Math.min(remaining, reserve))
+/** 余额为 `remaining` 时的单次投递上限，开账方式与 `loop/tool-wave.ts` 相同。 */
+function capOf(remaining: number, window: number): number {
+  const reserve = Math.floor(tailRetain(thresholdOf(window)) / 2)
+  return deliveryCap({ state: openBatchBudget(new Map(), remaining, reserve) })
 }
 
 /** 一次决策开始时、执行工具之前的检查点读数与估算折算比。 */
@@ -328,7 +341,7 @@ function replayConversation(conversationId: string): void {
         const p = event.payload
         if (event.beforeTools || p.phase !== 'done') continue
         if (p.trigger === 'automatic' && p.occupancy && p.contextWindow) {
-          const soft = Math.floor(p.contextWindow * TRIGGER_RATIO)
+          const soft = softLimit(thresholdOf(p.contextWindow))
           if (p.occupancy > soft) {
             metrics.current.atSoft++
             metrics.candidate.atSoft++
@@ -354,8 +367,8 @@ function replayConversation(conversationId: string): void {
           ? prior.payload
           : null
       const window = windowOf(request, recorded)
-      const soft = Math.floor(window * TRIGGER_RATIO)
-      const retain = Math.floor(window / 4)
+      const soft = softLimit(thresholdOf(window))
+      const retain = tailRetain(thresholdOf(window))
       const density = lookupModel(request.model, kindOf(request)).density
       const checkpoint = checkpointOf(request, recorded)
       if (!checkpoint.exact) metrics.approximateCheckpoints++
@@ -426,7 +439,7 @@ function replayConversation(conversationId: string): void {
           { message: outcome.message ?? '', data: dataOf(outcome) },
           density,
         )
-        const cap = deliveryCap(room, window)
+        const cap = capOf(room, window)
         if (isPartial(step, outcome)) {
           partialHere = true
           capped = true

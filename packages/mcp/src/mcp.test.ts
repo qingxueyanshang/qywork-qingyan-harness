@@ -300,7 +300,7 @@ function callCtx(
     sink,
     density: DEFAULT_DENSITY,
     contextWindow: 0,
-    state: openBatchBudget(new Map(), room),
+    state: openBatchBudget(new Map(), room, 0),
   } as never
 }
 

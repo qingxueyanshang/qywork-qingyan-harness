@@ -37,7 +37,7 @@ test('同一轮内安装 Git 后已创建的工具仍使用声明的 PowerShell�
       sink: null,
       density: DEFAULT_DENSITY,
       contextWindow: 200_000,
-      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     }) as unknown as ToolContext
   try {
     process.env[BASH_PATH_ENV] = join(root, 'missing-bash.exe')
@@ -119,7 +119,7 @@ describe('run_command 的子进程环境', () => {
       sink: null,
       density: DEFAULT_DENSITY,
       contextWindow: 200_000,
-      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     } as unknown as ToolContext)
 
     expect(outcome.status).toBe('success')
@@ -163,7 +163,7 @@ describe('run_command 的子进程环境', () => {
           sink: null,
           density: DEFAULT_DENSITY,
           contextWindow: 200_000,
-          state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+          state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
           ...(full ? { unrestrictedPaths: true } : {}),
         }) as unknown as ToolContext
       const command = 'python -c "import sys; print(sys.prefix)"'
@@ -211,7 +211,7 @@ describe('run_command 的子进程环境', () => {
           sink: null,
           density: DEFAULT_DENSITY,
           contextWindow: 200_000,
-          state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+          state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
           ...(full ? { unrestrictedPaths: true } : {}),
         } as unknown as ToolContext)
         expect(outcome.status).toBe('success')
@@ -237,7 +237,7 @@ describe('run_command 的用量记账', () => {
       conversationId: 'cv_shell',
       contextWindow: 200_000,
       density: DEFAULT_DENSITY,
-      state: openBatchBudget(new Map<string, unknown>(), 1000),
+      state: openBatchBudget(new Map<string, unknown>(), 1000, 25_000),
       sink: null,
       emit: () => {},
     } as unknown as ToolContext
@@ -271,7 +271,7 @@ describe('run_command 的管道退出码', () => {
       sink: null,
       density: DEFAULT_DENSITY,
       contextWindow: 200_000,
-      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     } as unknown as ToolContext)
   }
 
@@ -318,7 +318,7 @@ describe('run_command 的管道退出码', () => {
         sink: null,
         density: DEFAULT_DENSITY,
         contextWindow: 200_000,
-        state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+        state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
       } as unknown as ToolContext)
       expect(out.status).toBe('failure')
       expect(out.data?.exitCode).toBe(7)
@@ -369,7 +369,7 @@ describe('后台命令的工具形态', () => {
       sink: null,
       density: DEFAULT_DENSITY,
       contextWindow: 200_000,
-      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
       ...(port ? { commands: port } : {}),
     } as unknown as ToolContext
   }

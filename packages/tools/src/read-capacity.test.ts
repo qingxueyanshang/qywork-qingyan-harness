@@ -51,7 +51,7 @@ function ctx(root: string, room: number, sink: SinkPort | null = null): ToolCont
     density: flash.density,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), room),
+    state: openBatchBudget(new Map(), room, Math.floor(flash.contextWindow / 8)),
     sink,
     signal: new AbortController().signal,
     emit: () => {},
@@ -79,7 +79,10 @@ describe('整份优先', () => {
   /** 原始失败形状：三万余 token 的整份读取被 30,000 token 的单次上限拒绝。 */
   test('1M 窗口下超过 2000 行、三万余 token 的文件一次完整读取', async () => {
     const root = await workspace()
-    const c = ctx(root, softLimit(flash) - 20_000)
+    const c = ctx(
+      root,
+      softLimit({ contextWindow: flash.contextWindow, compactPercent: 80 }) - 20_000,
+    )
     const r = await registry().execute('read_file', { path: 'big.ts' }, c)
     expect(r.status).toBe('success')
     expect(outcomeTokens(r, flash.density)).toBeGreaterThan(30_000)

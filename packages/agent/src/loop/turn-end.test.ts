@@ -67,6 +67,7 @@ describe('输出被截断时不执行工具', () => {
       let stopReason = ''
       try {
         for await (const ev of loop.run({
+          compactPercent: 80,
           runId: `rn_trunc_${protocol.kind}` as never,
           history: [],
           signal: new AbortController().signal,
@@ -121,6 +122,7 @@ describe('输出截断后续写', () => {
     })
     let stopReason = ''
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_truncated_thinking' as never,
       history: [{ role: 'user', content: '做个游戏' }],
       signal: new AbortController().signal,
@@ -150,6 +152,7 @@ describe('正常响应结束不等于任务完成', () => {
   ): Promise<AgentEvent> {
     let finished: AgentEvent | null = null
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: input.runId as never,
       history: [],
       signal: new AbortController().signal,
@@ -271,6 +274,7 @@ describe('正常响应结束不等于任务完成', () => {
 
     const events: AgentEvent[] = []
     for await (const event of loop.run({
+      compactPercent: 80,
       runId: 'rn_subagent_todo' as never,
       history: [],
       signal: new AbortController().signal,
@@ -801,6 +805,7 @@ describe('provider 声明调用工具但未解析出任何调用', () => {
 
     const events: AgentEvent[] = []
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_nocalls' as never,
       history: [],
       signal: new AbortController().signal,

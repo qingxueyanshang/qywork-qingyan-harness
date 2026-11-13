@@ -2,7 +2,7 @@
  * 投递额度：一次 provider 决策内全部工具结果共用的额度，以及超出额度时的续读落盘。
  *
  * 额度 = 决策开始时软阈值以下的剩余空间，由 `loop/tool-wave.ts` 在执行第一批工具之前开账。
- * 软阈值以上的两成留给本轮输出、下一批结果与估算误差（`loop/request.ts` 的 `TRIGGER_RATIO`），
+ * 软阈值以上的部分留给本轮输出、下一批结果与估算误差（`loop/request.ts` 的 `softLimit`），
  * 此处不再另扣输出。
  *
  * 结果在执行时按额度定稿后落库，投影只读取已落库的 payload：额度随占用变化，但不改写历史字节。
@@ -19,21 +19,30 @@ import {
 } from '@qywork/ai'
 import type { ImageSize, IntermediateResourceRef, ResourceCoverage, ResourceId } from '@qywork/core'
 import { isStoredToolImage } from '@qywork/store'
-import { textsOf } from './loop/request.ts'
+import { type CompactThreshold, textsOf, thresholdBasis } from './loop/request.ts'
 import type { SinkPort, ToolContext, ToolOutcome } from './registry.ts'
 import { videoMetaOf } from './video-meta.ts'
 
 const SPENT_KEY = 'ctx.batchSpent'
 const ROOM_KEY = 'ctx.batchRoom'
+const RESERVE_KEY = 'ctx.batchReserve'
 const CAPPED_KEY = 'ctx.batchCapped'
 
 /**
  * 开账。每次 provider 决策调用一次，全部批次共用。返回传入的 `state`。
  *
+ * `reserve` 是单次投递为下一次决策留出的量（`deliveryCap`），取半份尾部保留量（`tailRetain`）。
+ * 必须由开账方传入：尾部保留量随触发线变化，只有开账方持有本轮的触发线。
+ *
  * 不要改为每批开账一次：一次决策分多批执行时，逐批重新开账会使总量超过决策开始时的余量。
  */
-export function openBatchBudget<T extends Map<string, unknown>>(state: T, room: number): T {
+export function openBatchBudget<T extends Map<string, unknown>>(
+  state: T,
+  room: number,
+  reserve: number,
+): T {
   state.set(ROOM_KEY, Math.max(0, Math.floor(room)))
+  state.set(RESERVE_KEY, Math.max(0, Math.floor(reserve)))
   state.set(SPENT_KEY, 0)
   state.set(CAPPED_KEY, false)
   return state
@@ -50,11 +59,15 @@ export function batchCapped(state: ReadonlyMap<string, unknown>): boolean {
   return state.get(CAPPED_KEY) === true
 }
 
-function account(state: Map<string, unknown>): { room: number; spent: number } {
+function account(state: Map<string, unknown>): { room: number; reserve: number; spent: number } {
   const room = state.get(ROOM_KEY)
   // 不设默认额度：工具只经 AgentLoop 执行，未开账说明调用方遗漏了开账，设默认值等于不限额放行。
   if (typeof room !== 'number') throw new Error('投递额度未开账')
-  return { room, spent: (state.get(SPENT_KEY) as number | undefined) ?? 0 }
+  return {
+    room,
+    reserve: state.get(RESERVE_KEY) as number,
+    spent: (state.get(SPENT_KEY) as number | undefined) ?? 0,
+  }
 }
 
 /** 本次决策的剩余额度（token）。单次投递的大小用 `deliveryCap` 确定，不要直接使用该值。 */
@@ -64,18 +77,20 @@ export function batchRemaining(ctx: Pick<ToolContext, 'state'>): number {
 }
 
 /**
- * 自动压缩保留的尾部原文量（token）：窗口的 1/4。
+ * 自动压缩保留的尾部原文量（token）：触发线的 5/16，触发线与 `softLimit` 出自同一算式（`thresholdBasis`）。
+ * 比例为 80 时等于窗口的 1/4。
  *
- * 压缩边界选择（`runtime/compaction.ts`）与单次投递上限（`deliveryCap`）共用该值，
- * 两处分别定义会导致不一致。不要设固定上限：该值决定压缩后保留的最近原文量，按窗口比例
- * 计算才能随窗口增大；上限设为 60K 时，1M 窗口压缩后只剩 6% 原文。
+ * 压缩边界选择（`runtime/compaction.ts`）与单次投递上限（`deliveryCap` 的预留量）共用该值，
+ * 两处分别定义会导致不一致。不要改为按窗口计算：触发线调低后，保留的尾部加上信封即可超过触发线，
+ * 每次请求都触发压缩且没有可折叠的内容。也不要设固定上限：上限设为 60K 时，1M 窗口压缩后只剩 6% 原文。
  */
-export function tailRetain(contextWindow: number): number {
-  return Math.floor(contextWindow / 4)
+export function tailRetain(threshold: CompactThreshold): number {
+  return Math.floor((thresholdBasis(threshold) * 5) / 1600)
 }
 
 /**
- * 单次投递可用的额度上限（token）：为下一次决策留出半份尾部保留量；余额不足时单次不超过半份。
+ * 单次投递可用的额度上限（token）：为下一次决策留出开账时写入的预留量（半份尾部保留量）；
+ * 余额不足时单次不超过预留量。
  *
  * 不要放宽到全部余额：填满余额的结果使占用达到软阈值，下一次发送前即越线，而此时该结果尚未
  * 被模型看到、不能收纳，只能调用模型写摘要。实测 1M 窗口读取约 3 倍窗口大小的文件：不留余量时
@@ -84,9 +99,9 @@ export function tailRetain(contextWindow: number): number {
  * 按该上限截短的投递记为触及上限（`batchCapped`）：下一次决策开始前，执行工具之前的检查点先收纳该段，
  * 续读的下一段因此能读满余量。
  */
-export function deliveryCap(ctx: Pick<ToolContext, 'state' | 'contextWindow'>): number {
-  const remaining = batchRemaining(ctx)
-  const reserve = Math.floor(tailRetain(ctx.contextWindow) / 2)
+export function deliveryCap(ctx: Pick<ToolContext, 'state'>): number {
+  const { room, reserve, spent } = account(ctx.state)
+  const remaining = Math.max(0, room - spent)
   return Math.max(remaining - reserve, Math.min(remaining, reserve))
 }
 
@@ -127,7 +142,7 @@ export function recordCappedSpent(
  * 写入类工具不要使用它：副作用已经发生时报告「超出额度」等于告知模型操作未成功。
  */
 export function chargeBatchBudget(
-  ctx: Pick<ToolContext, 'state' | 'contextWindow'>,
+  ctx: Pick<ToolContext, 'state'>,
   tokens: number,
 ): { ok: boolean; cap: number } {
   const cap = deliveryCap(ctx)
@@ -153,7 +168,7 @@ export function deliveredTokens(text: string, density: TokenDensity): number {
  * 超出的部分由下一次发送前的压缩回收。
  */
 export function chargeImage(
-  ctx: Pick<ToolContext, 'state' | 'contextWindow' | 'density'>,
+  ctx: Pick<ToolContext, 'state' | 'density'>,
   size: ImageSize | null,
 ): void {
   const tokens = estimateImage(size, ctx.density)
@@ -162,7 +177,7 @@ export function chargeImage(
 
 /** 按一段原生发送的视频的时长与画面尺寸扣除投递额度（`estimateVideo`）。余量不足时的处理同 `chargeImage`。 */
 export function chargeVideo(
-  ctx: Pick<ToolContext, 'state' | 'contextWindow' | 'density'>,
+  ctx: Pick<ToolContext, 'state' | 'density'>,
   meta: VideoMeta | null,
 ): void {
   const tokens = estimateVideo(meta, ctx.density)
@@ -392,7 +407,7 @@ export function continuationNote(head: HeadDelivery): string {
  * 不要按字符串截断 data：截断后的 JSON 不再合法，结构字段也会缺失。
  */
 export function boundExecutedOutcome(
-  ctx: Pick<ToolContext, 'state' | 'sink' | 'density' | 'contextWindow'>,
+  ctx: Pick<ToolContext, 'state' | 'sink' | 'density'>,
   outcome: ToolOutcome,
   source: { toolName: string; sourceType: string },
 ): ToolOutcome {

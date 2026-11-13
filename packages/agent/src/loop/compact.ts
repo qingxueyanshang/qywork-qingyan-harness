@@ -137,13 +137,14 @@ async function* compactOverSoftLimit(
 ): AsyncGenerator<AgentEvent, 'compacted' | 'unchanged' | 'interrupted', unknown> {
   const { adapter, input, persist, density } = run
   const { occupancy } = at
-  const overLine = occupancy > softLimit(adapter.spec)
+  const limit = softLimit(run.threshold)
+  const overLine = occupancy > limit
   if (!overLine && !at.capped) return 'unchanged'
 
   run.compactedAt = run.transcript.length
   log.info('agent', '触发压缩', {
     occupancy,
-    softLimit: softLimit(adapter.spec),
+    softLimit: limit,
     capped: at.capped,
   })
   const stepSeq = run.nextSeq()
@@ -163,6 +164,7 @@ async function* compactOverSoftLimit(
         occupancy,
         estimatedOccupancy: at.estimated,
         contextWindow: adapter.spec.contextWindow,
+        compactPercent: run.threshold.compactPercent,
         density,
         onProgress: (stage) => {
           if (overLine && !input.signal.aborted) {
@@ -335,6 +337,7 @@ export async function* recoverFromOverflow(
         // `sizeBefore` 即本次请求的本地估算，来自同一次装配、同一口径。
         estimatedOccupancy: sizeBefore,
         contextWindow: adapter.spec.contextWindow,
+        compactPercent: run.threshold.compactPercent,
         density,
         onProgress: (stage) => {
           if (!input.signal.aborted) run.emitQueue.push(compactionProgress(run, stepSeq, stage))

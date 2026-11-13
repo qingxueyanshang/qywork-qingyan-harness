@@ -28,6 +28,7 @@ import {
   type PetPort,
   type PluginPort,
   runDensity,
+  softLimit,
   type ToolContextBase,
   ToolRegistry,
   textsOf,
@@ -133,6 +134,7 @@ import {
 import { RuntimeCompaction } from './compaction.ts'
 import {
   collectSecrets,
+  compactPercentFor,
   listMediaModels,
   type MediaModelEntry,
   type ModelRef,
@@ -584,6 +586,11 @@ export class Session {
     // 轮次进行中保存配置会使它们取得不同的规格，接口被删除时记账一步抛出异常。
     const profile = this.resolveProfile(target)
     const adapter = buildAdapter(profile)
+    /*
+     * 自动压缩比例在此解析一次，一轮之内不变：触发判定、压缩、请求行的触发线与写给模型的百分比都取这一个值。
+     * 配置不合法时在写入轮次之前抛出配置错误，不改用缺省值。
+     */
+    const compactPercent = compactPercentFor(config, adapter.spec.contextWindow)
     if (!this.extensions) {
       await this.loadExtensionTools(adapter.spec.density, conversationId)
     }
@@ -619,16 +626,26 @@ export class Session {
         : null
     const environment = await describeEnvironment(this.opts.workspaceRoot, python, venvError, mode)
     // 本轮开始时的上下文占用：与面板、运行中读数和压缩触发同一口径，不另行估算。
-    const context = contextPanel(store, conversationId, {
-      id: adapter.spec.id,
-      contextWindow: adapter.spec.contextWindow,
-      providerName: resolvedTarget?.provider ?? '',
-      providerKind: adapter.kind,
-    })
+    const context = contextPanel(
+      store,
+      conversationId,
+      {
+        id: adapter.spec.id,
+        contextWindow: adapter.spec.contextWindow,
+        providerName: resolvedTarget?.provider ?? '',
+        providerKind: adapter.kind,
+      },
+      compactPercent,
+    )
     const contextSnapshot = buildTailNotes({
       workspaceRoot: this.opts.workspaceRoot,
       environment,
-      context: { used: context.total, window: context.limit, compactAt: context.compactAt },
+      // 触发线按本轮的比例计算，不取面板的值：面板显示的是上一轮请求行的触发线，设置修改后两者不同。
+      context: {
+        used: context.total,
+        window: context.limit,
+        compactAt: softLimit({ contextWindow: adapter.spec.contextWindow, compactPercent }),
+      },
       tempDir: displayPath(
         this.opts.workspaceRoot,
         conversationTempDir(this.opts.workspaceRoot, conversationId),
@@ -846,6 +863,7 @@ export class Session {
       for await (const ev of this.makeLoop(target, adapter, conversationId, known, compaction).run({
         runId: run.id,
         history,
+        compactPercent,
         ...(effort ? { effort } : {}),
         cacheKey: conversationId,
         ...(userMessageId ? { userMessageId } : {}),

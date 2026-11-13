@@ -149,6 +149,7 @@ async function runAgainst(
   })
   const events: AgentEvent[] = []
   for await (const ev of loop.run({
+    compactPercent: 80,
     runId: ledgerUnderTest.runId,
     history: [],
     signal: new AbortController().signal,
@@ -309,6 +310,7 @@ test('补发记录写入请求账：两份都未返回时随失败写入，补�
       sleep: async () => {},
     })
     for await (const _ of loop.run({
+      compactPercent: 80,
       runId: led.runId,
       history: [],
       signal: new AbortController().signal,
@@ -370,6 +372,7 @@ test('缓存写入的 1 小时档写入账本行并参与计价；未回报分�
         sleep: async () => {},
       })
       for await (const _ of loop.run({
+        compactPercent: 80,
         runId: led.runId,
         history: [],
         signal: new AbortController().signal,

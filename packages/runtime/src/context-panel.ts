@@ -55,7 +55,8 @@ export interface ContextPanel {
   /**
    * 超过该值时在下一次发送前执行压缩。
    *
-   * 必须调用 `softLimit`，不要在此处复制其算式：两处各写一份时，只修改一处会使
+   * 取最近一次主请求写入的触发线（`ProviderRequestConfiguration.compactAt`），没有时调用 `softLimit`
+   * 按当前设置计算。不要在此处复制其算式：两处各写一份时，只修改一处会使
    * 面板上的刻度指向不会触发压缩的位置，且不会报错。
    */
   compactAt: number
@@ -145,11 +146,22 @@ export function contextPanel(
     providerName: string
     providerKind: Exclude<ProviderRequest['providerKind'], null>
   },
+  /** 窗口所在档的触发比例，按当前设置解析（`compactPercentFor`）。只在没有可用的请求行触发线时使用。 */
+  compactPercent: number,
 ): ContextPanel {
   const limit = Math.max(1, model.contextWindow)
 
   // 分组明细取最近一次已发送的请求：它描述的是模型当前看到的上下文。
   const { sent, anchored, compacted } = contextBasis(store, conversationId, model)
+  /*
+   * 触发线优先取最近一次主请求写入的值：一轮之内触发线不变，运行中修改设置不改变本轮已显示的刻度，
+   * 新设置在下一轮的请求行写入后显示。该请求不在当前路线或窗口不同（切换了模型或修改了窗口）时，
+   * 它的触发线不描述当前模型，按当前设置计算。
+   */
+  const compactAt =
+    (sent && onRoute(sent, model) && sent.configuration?.contextWindow === model.contextWindow
+      ? sent.configuration.compactAt
+      : undefined) ?? softLimit({ contextWindow: limit, compactPercent })
   /*
    * 手动压缩后没有紧随其后的 provider 请求，逐请求账仍是压缩前的数值。
    * manifest 上的派生快照只在它仍基于当前最后一次请求且模型未更换时生效；
@@ -173,7 +185,7 @@ export function contextPanel(
       percent: Math.round((total / limit) * 1000) / 10,
       source: 'estimated',
       measured: currentCompaction?.measured ?? 0,
-      compactAt: softLimit({ contextWindow: limit }),
+      compactAt,
       breakdown: reconcileBreakdown(emptyBreakdown(), total),
       omitted: emptyOmitted(),
       freeSpace: Math.max(0, limit - total),
@@ -189,7 +201,7 @@ export function contextPanel(
       // 压缩后的请求尚未发送给 provider 校准，该数值只能标为估算。
       source: 'estimated',
       measured: currentCompaction.measured,
-      compactAt: softLimit({ contextWindow: limit }),
+      compactAt,
       breakdown: reconcileBreakdown(sent.sentCategories, total),
       omitted: sent.omittedCategories,
       freeSpace: Math.max(0, limit - total),
@@ -218,7 +230,7 @@ export function contextPanel(
     percent: Math.round((total / limit) * 1000) / 10,
     source,
     measured: sent.measuredInputTokens,
-    compactAt: softLimit({ contextWindow: limit }),
+    compactAt,
     breakdown: reconcileBreakdown(sent.sentCategories, total),
     omitted: sent.omittedCategories,
     freeSpace: Math.max(0, limit - total),

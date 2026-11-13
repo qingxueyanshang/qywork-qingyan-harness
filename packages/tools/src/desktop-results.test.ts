@@ -258,7 +258,7 @@ function context(desktop: DesktopPort, sink: SinkPort | null, contextWindow = WI
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink,
     signal: new AbortController().signal,
     emit: () => {},
@@ -874,7 +874,7 @@ describe('无法保存时如实说明', () => {
 describe('实际用量记账', () => {
   test('按实际投递量记账，只记一次', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
-    openBatchBudget(ctx.state, 1_000_000)
+    openBatchBudget(ctx.state, 1_000_000, 25_000)
     const r = await actOnTarget(ctx)
 
     const spent = deliveredTokens(
@@ -886,7 +886,7 @@ describe('实际用量记账', () => {
 
   test('超出本次决策额度时不拒绝动作，余额报告为 0，其后的读取准入不使用虚假余额', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
-    openBatchBudget(ctx.state, 1000)
+    openBatchBudget(ctx.state, 1000, 25_000)
     expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
     expect(batchRemaining(ctx)).toBe(200)
 
@@ -1402,12 +1402,12 @@ describe('差异投递', () => {
     const size = (parts: { message: string; data: unknown }) =>
       deliveredTokens(JSON.stringify({ message: parts.message, data: parts.data }), DEFAULT_DENSITY)
     // 先测量一份整份投递与一份差异的大小。
-    const probe = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY)
+    const probe = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY, 0)
     const base = size(desktopResult(input('do_1', 'top', probe)))
     const diff = size(desktopResult(input('do_2', 'observation', probe)))
     const limit = base + diff + Math.floor(diff / 2)
 
-    const state = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY)
+    const state = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY, 0)
     const run = (id: string, place: 'top' | 'observation') =>
       desktopResult({ ...input(id, place, state), limit }).data as Record<string, unknown>
     run('do_1', 'top')
@@ -1421,7 +1421,7 @@ describe('差异投递', () => {
   /** 历史只追加：整窗的整份投递之后，局部读取范围的基底仍在上下文中，仍作为基底使用。 */
   test('基底按窗口与读取范围分别记录：整窗整份投递不使同一窗口局部读取范围的基底失效', async () => {
     const table = page('', 80)
-    const state = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY)
+    const state = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY, 0)
     const run = (observationId: string, scope: string | undefined, incremental: boolean) =>
       desktopResult({
         ctx: { sink: fakeSink(), contextWindow: WINDOW, density: DEFAULT_DENSITY, state },

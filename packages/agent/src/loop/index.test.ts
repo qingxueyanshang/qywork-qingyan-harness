@@ -55,6 +55,7 @@ describe('用户中断不是错误', () => {
     const types: string[] = []
     let finished: { status: string; stopReason: string } | undefined
     for await (const ev of loop.run({
+      compactPercent: 80,
       runId: 'rn_abort' as never,
       history: [],
       signal: controller.signal,
