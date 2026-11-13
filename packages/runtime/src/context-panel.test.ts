@@ -152,9 +152,8 @@ describe('上下文面板', () => {
     }
     setCompactionManifest(store, conversationId, {
       revision: 1,
-      compactedThroughMessageId: null,
+      summaries: [],
       compactedMessageCount: 17,
-      summary: '摘要',
       facts: { filesTouched: [], openItems: [], userConstraints: [] },
       contextAfter: snapshot,
       // 同一毫秒内发生的回执也不能越过来源请求的边界。
@@ -229,9 +228,8 @@ describe('上下文面板', () => {
     )
     setCompactionManifest(store, conversationId, {
       revision: 1,
-      compactedThroughMessageId: null,
+      summaries: [],
       compactedMessageCount: 0,
-      summary: '',
       facts: { filesTouched: [], openItems: [], userConstraints: [] },
       contextAfter: {
         basedOnProviderRequestId: first,

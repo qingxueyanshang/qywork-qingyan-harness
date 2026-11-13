@@ -2023,3 +2023,67 @@ VALUES ('pr_old', 'rn_old', 0, 0, 'turn', 'm', 'received', 10, '{}', '{}', 'h', 
     db.close()
   })
 })
+
+describe('迁移 78：manifest 的摘要改为块列表', () => {
+  test('已有摘要成为唯一的一块，覆盖到原摘要线；没有摘要线时块列表为空；其余字段不变', () => {
+    const db = dbBefore(78)
+    const facts = { filesTouched: ['a.ts'], openItems: [], userConstraints: ['不要动 legacy/'] }
+    const insert = db.query(
+      `INSERT INTO conversations
+       (id, workspace_id, title, provider, model, compaction_manifest, created_at, updated_at)
+       VALUES (?, 'ws', '', '', 'm', ?, 0, 0)`,
+    )
+    insert.run(
+      'cv_summary',
+      JSON.stringify({
+        revision: 3,
+        compactedThroughMessageId: 'ms_1',
+        compactedThroughStep: 'rn:000000003',
+        condensedThrough: { messageId: 'ms_2' },
+        compactedMessageCount: 4,
+        summary: '旧摘要',
+        facts,
+        createdAt: 7,
+      }),
+    )
+    insert.run(
+      'cv_condensed',
+      JSON.stringify({
+        revision: 1,
+        compactedThroughMessageId: null,
+        condensedThrough: { messageId: 'ms_2', step: 'rn:000000001' },
+        compactedMessageCount: 0,
+        summary: '',
+        facts,
+        createdAt: 8,
+      }),
+    )
+    applyOne(db, 78)
+
+    const read = (id: string) =>
+      JSON.parse(
+        db
+          .query<{ compaction_manifest: string }, [string]>(
+            'SELECT compaction_manifest FROM conversations WHERE id = ?',
+          )
+          .get(id)!.compaction_manifest,
+      )
+    expect(read('cv_summary')).toEqual({
+      revision: 3,
+      condensedThrough: { messageId: 'ms_2' },
+      compactedMessageCount: 4,
+      facts,
+      createdAt: 7,
+      summaries: [{ text: '旧摘要', through: { messageId: 'ms_1', step: 'rn:000000003' } }],
+    })
+    expect(read('cv_condensed')).toEqual({
+      revision: 1,
+      condensedThrough: { messageId: 'ms_2', step: 'rn:000000001' },
+      compactedMessageCount: 0,
+      facts,
+      createdAt: 8,
+      summaries: [],
+    })
+    db.close()
+  })
+})

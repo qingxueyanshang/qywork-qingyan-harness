@@ -1542,9 +1542,8 @@ describe('投递额度按决策计算', () => {
             summarized: false,
             manifest: {
               revision: 1,
-              compactedThroughMessageId: null,
+              summaries: [],
               compactedMessageCount: 0,
-              summary: '摘要',
               facts: { filesTouched: [], openItems: [], userConstraints: [] },
               createdAt: 0,
             },
@@ -1675,9 +1674,8 @@ describe('投递额度按决策计算', () => {
               summarized: false,
               manifest: {
                 revision: 1,
-                compactedThroughMessageId: null,
+                summaries: [],
                 compactedMessageCount: 0,
-                summary: '摘要',
                 facts: { filesTouched: [], openItems: [], userConstraints: [] },
                 createdAt: 0,
               },

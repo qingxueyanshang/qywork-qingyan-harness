@@ -141,9 +141,8 @@ const okOutcome: CompactionOutcome = {
   summarized: false,
   manifest: {
     revision: 1,
-    compactedThroughMessageId: null,
+    summaries: [],
     compactedMessageCount: 0,
-    summary: '摘要',
     facts: { filesTouched: [], openItems: [], userConstraints: [] },
     createdAt: 0,
   },

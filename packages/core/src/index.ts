@@ -211,6 +211,7 @@ export {
   type CompactionFacts,
   type CompactionManifest,
   type CompactionStage,
+  type CompactionSummaryBlock,
   type ContextBreakdown,
   type ContextGroup,
   type ContextOmitted,

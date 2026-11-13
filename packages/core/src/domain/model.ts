@@ -1659,12 +1659,25 @@ export interface CompactionCut {
   step?: string
 }
 
+/**
+ * 一块摘要：一次摘要段为新折叠的区段写出的正文。
+ *
+ * 写成之后不改写：后续摘要只追加新块，旧块原样保留在投影中；只有各块合计超出上限时，
+ * 最早的若干块才合并为一块。
+ */
+export interface CompactionSummaryBlock {
+  text: string
+  /** 该块覆盖到的位置（含）。 */
+  through: CompactionCut
+}
+
 export interface CompactionManifest {
   revision: number
-  /** 摘要线：该 id 及之前的消息已被摘要替代。 */
-  compactedThroughMessageId: MessageId | null
-  /** 摘要线在归属消息内推进到的 step 戳。 */
-  compactedThroughStep?: string
+  /**
+   * 摘要块，按覆盖范围的先后排列。摘要线是最后一块的 `through`：该位置及之前的内容已被摘要替代；
+   * 为空时没有摘要线。
+   */
+  summaries: CompactionSummaryBlock[]
   /**
    * 收纳线：该位置及之前的工具结果只发送信封，不发送正文。
    *
@@ -1674,12 +1687,11 @@ export interface CompactionManifest {
   /**
    * 累计被摘要替代的消息条数。
    *
-   * 记录消息条数，不要记录为按 run 分组的步数：投影只按 `compactedThroughMessageId`
-   * 过滤，按 run 分组的数据没有任何投影使用，而前端把其键数当作消息数显示，
+   * 记录消息条数，不要记录为按 run 分组的步数：投影只按摘要线过滤，
+   * 按 run 分组的数据没有任何投影使用，而前端把其键数当作消息数显示，
    * 显示的数字因此错误。
    */
   compactedMessageCount: number
-  summary: string
   /** 摘要保留的精确事实包（文件路径、决定、未完成项），不是自由文本。 */
   facts: CompactionFacts
   /**
