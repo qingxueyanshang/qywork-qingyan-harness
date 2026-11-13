@@ -209,14 +209,16 @@
     "Cascadia Code", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
     monospace;
 
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-base: 13px;
+  /* 字体大小设置的比例，由 `store/appearance/font-scale.ts` 写入根元素。 */
+  --font-scale: 1;
+  --fs-xs: calc(11px * var(--font-scale));
+  --fs-sm: calc(12px * var(--font-scale));
+  --fs-base: calc(13px * var(--font-scale));
   /* 会话正文与用户气泡共用。修改此处须同步修改 `Transcript.tsx` 的 `USER_MESSAGE_PREVIEW_HEIGHT`。 */
-  --fs-prose: 13.5px;
-  --fs-md: 14px;
-  --fs-lg: 16px;
-  --fs-xl: 20px;
+  --fs-prose: calc(13.5px * var(--font-scale));
+  --fs-md: calc(14px * var(--font-scale));
+  --fs-lg: calc(16px * var(--font-scale));
+  --fs-xl: calc(20px * var(--font-scale));
 
   /* ── 阴影：极轻，只用于浮层 ── */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);

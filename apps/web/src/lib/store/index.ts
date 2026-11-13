@@ -37,6 +37,12 @@ export {
   type TeamRoleRow,
 } from './actions.ts'
 export {
+  FONT_SCALE_RANGE,
+  fontScale,
+  initFontScale,
+  setFontScale,
+} from './appearance/font-scale.ts'
+export {
   currentPersonalization,
   editPersonalization,
   observePersonalization,

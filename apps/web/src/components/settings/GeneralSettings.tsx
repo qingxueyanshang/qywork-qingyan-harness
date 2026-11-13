@@ -3,12 +3,15 @@ import { createSignal, For, Show } from 'solid-js'
 import {
   client,
   currentPersonalization,
+  FONT_SCALE_RANGE,
   type FollowUpMode,
   followUpMode,
+  fontScale,
   isDesktopShell,
   petPrefs,
   refreshPetLibrary,
   setFollowUpMode,
+  setFontScale,
   setPetPrefs,
   setTheme,
   type ThemePref,
@@ -178,6 +181,29 @@ export function GeneralSettings() {
                   </button>
                 )}
               </For>
+            </div>
+          </Row>
+          <Row label="字体大小">
+            <div class="personal-slider">
+              <input
+                type="range"
+                aria-label="字体大小"
+                min={FONT_SCALE_RANGE[0] * 100}
+                max={FONT_SCALE_RANGE[1] * 100}
+                step={1}
+                value={Math.round(fontScale() * 100)}
+                onInput={(e) => {
+                  // 拖动中即时应用。字体变化使本行上方各行的高度变化，按滑块的位移滚动设置页，
+                  // 滑块在拖动过程中保持在指针下。
+                  const input = e.currentTarget
+                  const top = input.getBoundingClientRect().top
+                  setFontScale(Number(input.value) / 100)
+                  input
+                    .closest('.settings-scroll')
+                    ?.scrollBy(0, input.getBoundingClientRect().top - top)
+                }}
+              />
+              <span class="personal-slider-value">{Math.round(fontScale() * 100)}%</span>
             </div>
           </Row>
           {/* 个性化的编辑控件较多，放在弹窗中（`PersonalizationDialog`），本页只显示是否已修改。 */}
