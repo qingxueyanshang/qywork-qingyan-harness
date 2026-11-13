@@ -59,7 +59,8 @@ const DOWNLOAD_HOOK_WAIT: Duration = Duration::from_secs(10);
 
 /// 本进程的 WebView2 environment：profile 占用、回环 CDP 端口与运行时版本。
 pub struct Engine {
-    profile: ProfileLock,
+    /// `None` 表示 profile 已被另一个 qywork 进程占用：引擎不创建任何子视图，`settled` 报告 `IN_USE`。
+    profile: Option<ProfileLock>,
     debug_port: u16,
     runtime_version: String,
 }
@@ -73,26 +74,34 @@ pub struct Page {
 
 impl Engine {
     /// 占用 profile 并分配回环 CDP 端口。子视图共用一个 environment，端口在整个进程中只分配一次。
+    /// profile 被占用不是错误：宿主照常连接服务端，首帧报告 `IN_USE`，界面据此显示原因。
     pub fn start(_app: &AppHandle) -> Result<Engine, String> {
         let dir = profile::profile_dir().ok_or("无法取得配置根目录")?;
         let profile = profile::lock(&dir)?;
         let debug_port = free_loopback_port().ok_or("无法分配回环调试端口")?;
         let runtime_version = tauri::webview_version().unwrap_or_default();
-        log::info!(
-            "浏览器宿主已就绪 profile={} debugPort={debug_port} runtime={runtime_version}",
-            profile.dir().display()
-        );
+        match &profile {
+            Some(profile) => log::info!(
+                "浏览器宿主已就绪 profile={} debugPort={debug_port} runtime={runtime_version}",
+                profile.dir().display()
+            ),
+            None => log::warn!("浏览器配置已被另一个 qywork 进程占用，浏览器控制不可用"),
+        }
         Ok(Engine { profile, debug_port, runtime_version })
     }
 
-    /// 端口在创建子视图之前已分配，因此启动后即就绪。
+    /// 端口在创建子视图之前已分配，因此占用到 profile 时启动后即就绪。
     pub fn settled(&self) -> Result<Runtime, &'static str> {
+        if self.profile.is_none() {
+            return Err(profile::IN_USE);
+        }
         Ok(Runtime { debug_port: self.debug_port, version: self.runtime_version.clone() })
     }
 
     /// 创建一个子视图。**不得在主线程调用**：`add_child` 内部是 `run_on_main_thread`
     /// 加阻塞等待，在主线程上调用会死锁。
     pub fn open(&self, app: &AppHandle, spec: OpenSpec) -> Result<Opened, String> {
+        let profile = self.profile.as_ref().ok_or("浏览器配置已被另一个 qywork 进程占用")?;
         let window = app
             .get_window("main")
             .ok_or("主窗口不存在，无法创建子视图")?;
@@ -108,7 +117,7 @@ impl Engine {
         let (loaded_tx, loaded_rx) = channel::<()>();
         let loaded_tx = Arc::new(Mutex::new(Some(loaded_tx)));
         let builder = WebviewBuilder::new(spec.tab_id, WebviewUrl::External(url))
-            .data_directory(self.profile.dir().to_path_buf())
+            .data_directory(profile.dir().to_path_buf())
             .additional_browser_args(&args)
             // AI 创建的页不切换系统焦点。默认值为 true，必须显式关闭。
             .focused(false)

@@ -120,23 +120,34 @@ impl Status {
 }
 
 impl Engine {
-    /// 查找浏览器、占用 profile、启动监督线程。未找到浏览器不是错误：宿主照常连接服务端，
-    /// 首帧如实报告 `not_found`，设置页据此显示原因。
+    /// 查找浏览器、占用 profile、启动监督线程。未找到浏览器与 profile 被占用都不是错误：
+    /// 宿主照常连接服务端，首帧报告 `not_found` 或 `in_use`，界面据此显示原因。
     pub fn start(_app: &AppHandle) -> Result<Engine, String> {
         let found = launch::discover();
         let (profile, status) = match &found {
             Some(found) => {
                 let dir = launch::profile_dir(found).ok_or("无法取得配置根目录")?;
-                let lock = profile::lock(&dir)?;
-                log::info!("浏览器宿主使用 {} profile={}", found.exe.display(), dir.display());
-                (Some(lock), Status::Starting)
+                match profile::lock(&dir)? {
+                    Some(lock) => {
+                        log::info!(
+                            "浏览器宿主使用 {} profile={}",
+                            found.exe.display(),
+                            dir.display()
+                        );
+                        (Some(lock), Status::Starting)
+                    }
+                    None => {
+                        log::warn!("浏览器配置已被另一个 qywork 进程占用，浏览器控制不可用");
+                        (None, Status::Unavailable(profile::IN_USE))
+                    }
+                }
             }
             None => {
                 log::warn!("未找到 Chrome、Edge 或 Chromium，浏览器控制不可用");
                 (None, Status::Unavailable(NOT_FOUND))
             }
         };
-        let supervising = found.is_some();
+        let supervising = profile.is_some();
         let inner = Arc::new(Inner {
             found,
             profile,
