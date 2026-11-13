@@ -29,6 +29,7 @@ import type {
   RunUsage,
   ToolOutcomeWire,
 } from '@qywork/core'
+import type { EnvelopeItem } from '@qywork/store'
 import type { CompactionOutcome, SummaryTrace } from '../compaction.ts'
 import type { ToolContextBase, ToolRegistry } from '../registry.ts'
 
@@ -303,6 +304,11 @@ export interface LoopPersistence {
     requestBytes: number
     /** 本次请求的信封指纹。跨 run 复用锚点时据此判定上下文是否相同。 */
     cacheRouteFingerprint: string
+    /**
+     * 信封的逐项估算（`envelopeItemsOf`）。实现方仅在该指纹尚无明细时调用，并与请求行在同一事务中写入。
+     * 主请求提供，摘要请求不提供。
+     */
+    envelopeItems?: () => EnvelopeItem[]
   }): string
   /** 请求已实际发出。sent_at 只在此处设置。 */
   markRequestSent(requestId: string): void

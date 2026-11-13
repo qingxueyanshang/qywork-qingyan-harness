@@ -33,7 +33,7 @@ import {
 } from '@qywork/ai'
 import type { ContextBreakdown, ProviderRequestConfiguration, RunUsage } from '@qywork/core'
 import { emptyBreakdown } from '@qywork/core'
-import { isStoredToolImage } from '@qywork/store'
+import { type EnvelopeItem, isStoredToolImage } from '@qywork/store'
 import { IMAGES_OMITTED } from '../compaction.ts'
 import type { SinkPort, ToolOutcome } from '../registry.ts'
 import { videoMetaOf } from '../video-meta.ts'
@@ -331,6 +331,40 @@ function splitToolResult(
 }
 
 /**
+ * 工具 schema 所属的分组，判据是 `mcp__` 前缀：`mcp/register.ts` 保证 MCP 工具
+ * 一律带该前缀，插件工具使用 `<插件id>__`，归入内置一侧。两组的含义不同：
+ * MCP 分组增长来自用户安装的服务器，内置分组增长来自内置工具表。
+ */
+function toolGroupOf(name: string): 'mcpTools' | 'systemTools' {
+  return name.startsWith('mcp__') ? 'mcpTools' : 'systemTools'
+}
+
+/**
+ * 请求信封的逐项估算：系统提示词一项，每个工具定义一项，分组判据与 `breakdownOf` 相同。
+ *
+ * 只在该信封指纹尚无明细时由持久化层调用，不在每次装配时执行。不要用逐项之和代替
+ * `breakdownOf` 的分组值：分组值对每组工具表整体估算一次，并参与锚点修正；两者之差在读取时
+ * 由 store 的 `requestEnvelopeItems` 按比例对齐。
+ */
+export function envelopeItemsOf(
+  req: Pick<ChatRequest, 'system' | 'tools'>,
+  density: TokenDensity,
+): EnvelopeItem[] {
+  return [
+    {
+      group: 'systemPrompt',
+      name: null,
+      tokens: req.system.reduce((n, b) => n + estimateText(b.text, density), 0),
+    },
+    ...req.tools.map((t) => ({
+      group: toolGroupOf(t.name),
+      name: t.name,
+      tokens: estimateJson(t, density),
+    })),
+  ]
+}
+
+/**
  * 按分组分解上下文占用。分组定义只有一份：`core` 的 `ContextGroup`。
  *
  * 本函数只负责估算，不负责对账：各组之和等于总数由 `core` 的 `reconcileBreakdown`
@@ -340,11 +374,8 @@ export function breakdownOf(req: ChatRequest, density: TokenDensity): ContextBre
   const out = emptyBreakdown()
   out.systemPrompt = req.system.reduce((n, b) => n + estimateText(b.text, density), 0)
 
-  // 工具 schema 分为两组，判据是 `mcp__` 前缀：`mcp/register.ts` 保证 MCP 工具
-  // 一律带该前缀，插件工具使用 `<插件id>__`，归入内置一侧。两组的含义不同：
-  // MCP 分组增长来自用户安装的服务器，内置分组增长来自内置工具表。
-  const mcp = req.tools.filter((t) => t.name.startsWith('mcp__'))
-  const builtin = req.tools.filter((t) => !t.name.startsWith('mcp__'))
+  const mcp = req.tools.filter((t) => toolGroupOf(t.name) === 'mcpTools')
+  const builtin = req.tools.filter((t) => toolGroupOf(t.name) === 'systemTools')
   if (mcp.length) out.mcpTools = estimateSchemas(mcp, density)
   if (builtin.length) out.systemTools = estimateSchemas(builtin, density)
 

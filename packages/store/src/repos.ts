@@ -58,6 +58,7 @@ import {
 import type { ContentStore } from './content.ts'
 import type { RunOwner, Store } from './db.ts'
 import { readJson, writeJson } from './db.ts'
+import { pruneRequestEnvelopes } from './monitor/envelopes.ts'
 import type {
   ConversationRow,
   MessageRow,
@@ -423,10 +424,16 @@ export function archiveConversation(store: Store, id: ConversationId): boolean {
  * 分支随后删除。该分支只删除本会话的目录，不按 `Attachment.path` 逐条删除：
  * 路径型附件指向用户自己的文件。
  *
+ * 信封明细不由外键引用，在同一事务中删除不再被任何请求行引用的部分（`pruneRequestEnvelopes`）。
+ *
  * 调用方必须先确认没有运行中的 run：运行中的轮次仍在向级联删除的行写入。
  */
 export function deleteConversation(store: Store, id: ConversationId): boolean {
-  return store.db.query('DELETE FROM conversations WHERE id = ?').run(id).changes > 0
+  return store.tx(() => {
+    const deleted = store.db.query('DELETE FROM conversations WHERE id = ?').run(id).changes > 0
+    if (deleted) pruneRequestEnvelopes(store)
+    return deleted
+  })
 }
 
 /**
