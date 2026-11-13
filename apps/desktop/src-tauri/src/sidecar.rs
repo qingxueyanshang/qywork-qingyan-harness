@@ -92,7 +92,16 @@ fn spawn_process(
     previous_exit: Option<&PreviousExit>,
     host_key: Option<&str>,
 ) -> Result<(Receiver<CommandEvent>, CommandChild)> {
+    // `qy` 是 Bun 运行时，第一个参数必须是入口脚本。脚本目录经 `tauri.conf.json` 的 `resources`
+    // 随包分发；macOS 上资源目录与可执行文件不在同一目录，因此不按可执行文件的位置拼接。
+    let script = app
+        .path()
+        .resource_dir()
+        .map_err(|e| anyhow!("无法定位资源目录：{e}"))?
+        .join("sidecar")
+        .join("index.js");
     let mut args = vec![
+        script.to_string_lossy().into_owned(),
         "serve".to_string(),
         "--port".to_string(),
         port.to_string(),

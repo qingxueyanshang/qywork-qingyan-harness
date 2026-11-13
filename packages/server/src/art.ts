@@ -5,12 +5,12 @@
  *   加载引导页，页面 HTML 由界面经 `postMessage` 交给引导页写入，地址中不带令牌。
  * - 不要改为 `srcdoc` 或 `blob:` 加载：这两种文档继承桌面端界面的 CSP（`default-src 'self'`），
  *   页面中的内联脚本被拒绝。由 sidecar 返回的文档不受该 CSP 约束。
- * - 库文件随 sidecar 二进制内嵌（`with { type: 'file' }`），离线可用。页面源是不透明源，模块脚本按跨源请求加载，
+ * - 库文件随 sidecar 的脚本一同分发（`with { type: 'file' }`），离线可用。页面源是不透明源，模块脚本按跨源请求加载，
  *   因此响应带 `Access-Control-Allow-Origin: *`。
  */
 
 import { readFile } from 'node:fs/promises'
-import { join, relative } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import {
   ART_IMAGE_REF_RE,
   artImageRefs,
@@ -43,14 +43,20 @@ export const ART_HOST_PATH = '/art/host'
 /** 库文件目录的路径，importmap 指向它。 */
 export const ART_LIB_PATH = '/art/lib/'
 
-/** 库文件：发布路径 → 内嵌文件的路径。附加模块与系统提示词中的清单 `ART_ADDONS` 一一对应（测试核对）。 */
+/**
+ * 文件导入的绝对路径。源码运行时导入值已是绝对路径；构建产物中是相对脚本目录的路径，
+ * 而 sidecar 的工作目录不是脚本目录，不要省略本步骤。
+ */
+const imported = (path: unknown): string => resolve(import.meta.dir, path as string)
+
+/** 库文件：发布路径 → 文件的绝对路径。附加模块与系统提示词中的清单 `ART_ADDONS` 一一对应（测试核对）。 */
 export const ART_LIBRARY: Readonly<Record<string, string>> = {
-  'three.module.js': threeModule as string,
-  'three.core.js': threeCore as string,
-  'addons/controls/OrbitControls.js': orbitControls as string,
-  'addons/geometries/RoundedBoxGeometry.js': roundedBox as string,
-  'addons/environments/RoomEnvironment.js': roomEnvironment as string,
-  'modern-screenshot.js': screenshot as string,
+  'three.module.js': imported(threeModule),
+  'three.core.js': imported(threeCore),
+  'addons/controls/OrbitControls.js': imported(orbitControls),
+  'addons/geometries/RoundedBoxGeometry.js': imported(roundedBox),
+  'addons/environments/RoomEnvironment.js': imported(roomEnvironment),
+  'modern-screenshot.js': imported(screenshot),
 }
 
 /**

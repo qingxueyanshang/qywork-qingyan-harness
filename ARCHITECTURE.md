@@ -8,7 +8,7 @@
 ## 1. 拓扑：qy CLI 是内核，桌面端只是它的一个前端
 
 ```
-Tauri(Rust) ──spawn──> qy serve (Bun 单文件二进制)
+Tauri(Rust) ──spawn──> qy serve (Bun 运行时 + 入口脚本)
      │                      ├── http://127.0.0.1:<随机端口>
      └── WebView ───────────┤   ws://.../stream
  手机浏览器 ── 云端隧道 ─────┘   console 打开设备 = 设备页面地址 + 配对令牌
@@ -50,12 +50,27 @@ Tauri(Rust) ──spawn──> qy serve (Bun 单文件二进制)
 
 ### 体积（实测）
 
-| 组件 | 未压缩 | 压缩后 |
-|---|---|---|
-| qy sidecar（Bun 单文件） | 94.8 MB | 37.1 MB |
-| Tauri 外壳 | ~10 MB | — |
+| 组件 | 未压缩 |
+|---|---|
+| Bun 运行时（`qy.exe`） | 82.1 MB |
+| sidecar 脚本目录（入口脚本、映射文件、网页与资源，66 个文件） | 21.3 MB |
+| Tauri 外壳 | 8.0 MB |
 
-Bun 单文件二进制内嵌整个运行时，这是 94.8 MB 的来源，换 Node SEA 也是同量级。
+Windows 安装包（NSIS）37.3 MB（本机 2026-11-13）。体积的主要来源是 Bun 运行时，换 Node 也是同量级。
+
+### sidecar 的形式：运行时原件 + 脚本目录，不合并为单个可执行文件
+
+sidecar 以 `qy.exe sidecar\index.js serve …` 启动。`qy.exe` 是原样复制的 Bun 可执行文件，
+业务代码全部在 `sidecar\` 目录中。
+
+曾经使用 Bun 的 `compile` 把运行时与脚本合并为一个可执行文件。合并在运行时尾部追加数据，
+运行时自带的代码签名随之失效（本机 2026-11-13：合并产物 `Get-AuthenticodeSignature` 为 `NotSigned`，
+运行时原件为 `Valid`）。无签名且尾部附带数据的可执行文件是杀毒软件启发式规则的判定对象：
+用户机器上 360 将安装目录中的合并产物判为 `HEUR/QVM202.0.511E.Malware.Gen` 并清除，应用随之无法启动。
+
+因此构建不修改运行时的任何字节，包括图标与版本信息；任务管理器与文件属性中该进程显示为 Bun。
+外壳 `qywork.exe` 与 `qy-computer-host.exe` 是本仓库编译的程序，它们的系统信任只能由代码签名证书建立，
+与 sidecar 的形式无关。
 
 ### 结论：Tauri 仍然是对的，但理由变了
 

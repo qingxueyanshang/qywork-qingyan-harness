@@ -71,10 +71,9 @@ export function directoryAssets(dir: string): WebAssets {
 }
 
 /**
- * 编译时嵌入单文件程序的构建产物，键为相对路径，值为嵌入文件的路径。
+ * 随 sidecar 脚本分发的构建产物，键为相对路径，值为文件的绝对路径。
  *
- * 类型必须显式给出：以嵌入文件的路径打开的 `Bun.file` 没有类型，响应不带 Content-Type。
- * `Bun.file(rel).type` 只依据扩展名，文件不必存在。
+ * 类型按键的扩展名显式给出：`Bun.file(rel).type` 只依据扩展名，文件不必存在。
  */
 export function embeddedAssets(files: Readonly<Record<string, string>>): WebAssets {
   return async (rel) => {

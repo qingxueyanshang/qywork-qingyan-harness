@@ -263,7 +263,24 @@ describe('桌面发布清单', () => {
       '../../../packages/runtime/office/*.py': 'office/',
       '../../../packages/runtime/office/requirements.txt': 'office/requirements.txt',
       '../../../packages/runtime/office/guides/*.md': 'office/guides/',
+      // sidecar 的入口脚本与它按文件导入的资源；运行时本体是 `externalBin` 的 `qy`。
+      'bin/sidecar/': 'sidecar/',
     })
+  })
+
+  /**
+   * `sidecar/` 中的资源文件名带内容哈希，每个版本不同；NSIS 只覆盖同名文件，
+   * 不清空时历次更新的文件在安装目录中累积。
+   */
+  test('Windows 安装包在写入前清空 sidecar 目录', () => {
+    const tauri = join(ROOT, 'apps', 'desktop', 'src-tauri')
+    const config = JSON.parse(readFileSync(join(tauri, 'tauri.conf.json'), 'utf8')) as {
+      bundle: { windows: { nsis: { installerHooks?: string } } }
+    }
+    const hooks = config.bundle.windows.nsis.installerHooks
+    expect(hooks).toBe('nsis/hooks.nsh')
+    const text = readFileSync(join(tauri, hooks as string), 'utf8')
+    expect(text).toMatch(/!macro NSIS_HOOK_PREINSTALL\s+RMDir \/r "\$INSTDIR\\sidecar"\s+!macroend/)
   })
 
   /**

@@ -36,7 +36,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { rmSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { externalBinPath } from './external-bin.ts'
 import {
   createReloadSupervisor,
@@ -139,17 +139,19 @@ const privilegedEnv = { ...env, QYWORK_HOST_KEY: HOST_KEY, QYWORK_UPDATE_KEY: UP
 const BUN = process.execPath
 
 /**
- * 补齐 `externalBin` 声明的 `qy`。
+ * 补齐 `externalBin` 声明的 `qy` 与 `resources` 声明的脚本目录 `bin/sidecar/`。
  *
- * 外壳的构建脚本在编译期检查该文件是否存在，缺失时以 101 退出，`tauri dev` 同样经过这一步。
- * 开发态不执行它（sidecar 由本脚本从源码运行），因此只在缺失时编译一次。
+ * 外壳的构建脚本在编译期检查两者是否存在，缺失时以 101 退出，`tauri dev` 同样经过这一步。
+ * 开发态不执行它们（sidecar 由本脚本从源码运行），因此只在缺失时构建一次。
  *
  * 另一个 `externalBin`（`qy-computer-host`）不在这里编译：它由外壳自身的构建脚本
  * （`apps/desktop/src-tauri/build.rs`）在同一次编译中产出，任何入口取得的都与外壳同源。
  */
 async function ensureSidecarBin(): Promise<void> {
-  if (await Bun.file(await externalBinPath('qy')).exists()) return
-  process.stderr.write('[dev] 编译外部二进制 qy\n')
+  const runtime = await externalBinPath('qy')
+  const script = join(dirname(runtime), 'sidecar', 'index.js')
+  if ((await Bun.file(runtime).exists()) && (await Bun.file(script).exists())) return
+  process.stderr.write('[dev] 构建 sidecar\n')
   const build = Bun.spawn([BUN, 'run', join(ROOT, 'scripts/build-sidecar.ts')], {
     cwd: ROOT,
     stdout: 'inherit',
@@ -157,7 +159,7 @@ async function ensureSidecarBin(): Promise<void> {
     stdin: 'ignore',
   })
   if ((await build.exited) !== 0) {
-    process.stderr.write('[dev] qy 编译失败，详见上方输出\n')
+    process.stderr.write('[dev] sidecar 构建失败，详见上方输出\n')
     process.exit(1)
   }
 }
