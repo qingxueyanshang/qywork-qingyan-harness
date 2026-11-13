@@ -185,7 +185,7 @@ export interface LibraryModel {
   output: number | null
   /** 缓存命中价。 */
   cacheRead: number | null
-  /** 缓存写入价（5 分钟档）。`computeCost` 只按该档计算。 */
+  /** 缓存写入价（5 分钟档）。 */
   cacheWrite: number | null
   currency: Currency
   effortLevels: EffortLevel[]

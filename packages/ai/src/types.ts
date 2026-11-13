@@ -416,7 +416,10 @@ export interface ProviderUsage {
   outputTokens: number
   /** null = provider 未回报，与实际命中 0 不同，不得混同。 */
   cachedTokens: number | null
+  /** 缓存写入合计，含 1 小时档。 */
   cacheWriteTokens: number | null
+  /** 其中按 1 小时档写入的部分。缺失表示上游未回报分档，与 0 含义不同。 */
+  cacheWrite1hTokens?: number
   reasoningTokens: number
   /** 用量来自 provider 回报还是本地估算。 */
   source: 'provider' | 'estimated'

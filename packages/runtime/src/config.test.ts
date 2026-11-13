@@ -303,6 +303,30 @@ describe('模型解析', () => {
     expect(diagnoseConfig(priced)[0]).toContain('price.offPeak 必须包含')
   })
 
+  test('接口价格的 1 小时档写入价进入计价，缺省时取 5 分钟档的写入价，取值不合法时诊断报告', () => {
+    const priced = structuredClone(two)
+    const model = priced.providers.mirror!.models
+    const price: UnitModelPrice = {
+      input: 1.04,
+      output: 4.16,
+      cacheRead: 0.02,
+      cacheWrite: 1.3,
+      currency: 'CNY',
+    }
+    const pricingOf = () => {
+      const target = resolveModel(priced, { provider: 'mirror', model: 'deepseek-v4-flash' })!
+      return buildAdapter({ ...target, apiKey: target.apiKey! }).spec.pricing
+    }
+    model['deepseek-v4-flash'] = { price }
+    expect(diagnoseConfig(priced)).toEqual([])
+    expect(pricingOf().cacheWrite1h).toBe(1.3)
+    model['deepseek-v4-flash'] = { price: { ...price, cacheWrite1h: 2.08 } }
+    expect(diagnoseConfig(priced)).toEqual([])
+    expect(pricingOf().cacheWrite1h).toBe(2.08)
+    model['deepseek-v4-flash'] = { price: { ...price, cacheWrite1h: -1 } }
+    expect(diagnoseConfig(priced)[0]).toContain('price.cacheWrite1h 必须是非负数')
+  })
+
   test('对应型号必须在模型库中', () => {
     const mapped = cfg({
       catalog: { 'deepseek-v4.1-flash|openai_chat_completions': { base: 'deepseek-flash' } },

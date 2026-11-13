@@ -138,6 +138,8 @@ export function mergeUsage(
     outputTokens: number
     cachedTokens: number | null
     cacheWriteTokens: number | null
+    /** 缺失表示上游未回报分档，计价按全部为 5 分钟档处理。 */
+    cacheWrite1hTokens?: number
     reasoningTokens: number
     source: 'provider' | 'estimated'
   },

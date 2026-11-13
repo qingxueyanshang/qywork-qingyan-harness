@@ -2440,6 +2440,15 @@ CREATE INDEX idx_msg_conv ON messages(conversation_id, id);
      */
     sql: `ALTER TABLE provider_requests ADD COLUMN cloud_request_id TEXT;`,
   },
+  {
+    id: 76,
+    name: 'provider_request_cache_write_1h_tokens',
+    /**
+     * 缓存写入中按 1 小时档写入的部分，`provider_cache_write_tokens` 含该部分。上游未回报分档时为 NULL；
+     * 迁移前的行没有分档记录，不回填。
+     */
+    sql: `ALTER TABLE provider_requests ADD COLUMN provider_cache_write_1h_tokens INTEGER;`,
+  },
 ]
 
 /**
@@ -2588,6 +2597,8 @@ export interface ProviderRequestRow {
   provider_output_tokens: number | null
   provider_cached_tokens: number | null
   provider_cache_write_tokens: number | null
+  /** 其中按 1 小时档写入的部分；上游未回报分档为 NULL。 */
+  provider_cache_write_1h_tokens: number | null
   sent_categories: string
   omitted_categories: string
   finish_reason: string
@@ -2751,6 +2762,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'provider_input_tokens',
     'provider_output_tokens',
     'provider_cache_write_tokens',
+    'provider_cache_write_1h_tokens',
     'provider_cached_tokens',
     'sent_categories',
     'omitted_categories',
