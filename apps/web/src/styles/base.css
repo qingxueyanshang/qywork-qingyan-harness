@@ -21,6 +21,9 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* 关闭 iOS 的文字自动放大：内容宽度超过视口的不换行文本块会被单独放大，同级文字的字号因此不一致。 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   /* 禁用移动端下拉刷新：它会使整个 WebView 随手势位移。 */
   overscroll-behavior: none;
   /* 禁用双击缩放：在高密度界面上双击缩放均为误触。 */
