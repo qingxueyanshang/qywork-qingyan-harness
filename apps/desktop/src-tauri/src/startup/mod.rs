@@ -24,6 +24,43 @@ impl Error for LaunchError {
     }
 }
 
+/// Intel 版本是否由 Rosetta 转译运行，即本机是 Apple 芯片的 Mac。
+///
+/// Rosetta 在 macOS 15 之前不支持 AVX，Bun 运行时在其中以非法指令退出。
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+fn translated() -> bool {
+    extern "C" {
+        fn sysctlbyname(
+            name: *const std::ffi::c_char,
+            oldp: *mut std::ffi::c_void,
+            oldlenp: *mut usize,
+            newp: *mut std::ffi::c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+    let mut value: i32 = 0;
+    let mut size = std::mem::size_of::<i32>();
+    // SAFETY: 名称以 NUL 结尾，输出缓冲区与 size 一致，不写入新值。
+    let status = unsafe {
+        sysctlbyname(
+            b"sysctl.proc_translated\0".as_ptr().cast(),
+            (&mut value as *mut i32).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    status == 0 && value == 1
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+fn translated() -> bool {
+    false
+}
+
+/// 对话框正文中错误原文的长度上限：对话框不支持滚动，文本超出屏幕高度时无法点击按钮。
+const BRIEF_CHARS: usize = 700;
+
 #[derive(Debug, serde::Serialize)]
 struct Report {
     time: String,
@@ -33,6 +70,8 @@ struct Report {
     shell: Option<PathBuf>,
     executable: Option<PathBuf>,
     os_error: Option<i32>,
+    /// 见 `translated`。
+    translated: bool,
     error_chain: Vec<String>,
     #[cfg(windows)]
     system_checks: windows::Probe,
@@ -48,6 +87,7 @@ impl Report {
             shell: std::env::current_exe().ok(),
             executable: None,
             os_error: None,
+            translated: translated(),
             error_chain: Vec::new(),
             #[cfg(windows)]
             system_checks: windows::Probe::default(),
@@ -82,9 +122,16 @@ impl Report {
             "Windows 应用程序控制阻止了后台服务启动。"
         } else if self.policy_blocked() {
             "Windows 应用程序控制阻止了程序运行。"
+        } else if self.translated {
+            "这台 Mac 使用 Apple 芯片，当前安装的是 Intel 版本。请下载 Apple 芯片版本（文件名含 aarch64）后重新安装。"
         } else {
             "qywork 启动失败。"
         }
+    }
+
+    /// 对话框正文中的错误原文：最外层的一条，截取到 `BRIEF_CHARS`。完整诊断在日志中。
+    fn brief(&self) -> String {
+        self.error_chain.first().into_iter().flat_map(|s| s.chars()).take(BRIEF_CHARS).collect()
     }
 }
 
@@ -115,16 +162,20 @@ pub(crate) fn report_and_show(error: &(dyn Error + 'static)) {
     #[cfg(windows)]
     windows::show(&report, &details, &location);
     #[cfg(not(windows))]
-    show(&details);
+    {
+        // 完整诊断写入标准错误：没有图形会话时对话框无法显示。
+        eprintln!("{details}");
+        show(&format!("{}\n\n{}\n\n{location}", report.summary(), report.brief()));
+    }
 }
 
-/// 非 Windows 平台的启动失败对话框。诊断同时写入标准错误：没有图形会话时对话框无法显示。
+/// 非 Windows 平台的启动失败对话框。正文只含结论、错误原文与日志位置，不含完整诊断：
+/// 对话框不支持滚动与复制，完整诊断由调用方写入日志与标准错误。
 ///
 /// macOS 上 rfd 在主线程直接弹出，在其他线程时转交主线程；本函数只在主线程或应用事件循环
 /// 运行期间调用，两种情况都能显示。
 #[cfg(not(windows))]
 fn show(details: &str) {
-    eprintln!("{details}");
     // Linux 上 GTK 无法初始化（没有图形会话）时，rfd 的同步对话框永久阻塞，进程无法退出。
     // GTK 已初始化时 `gtk_init_check` 立即返回成功，不会重复初始化。
     #[cfg(target_os = "linux")]
@@ -168,5 +219,24 @@ mod tests {
         assert!(!Report::from_error(&error).policy_blocked());
         let error = std::io::Error::from_raw_os_error(4551);
         assert_eq!(Report::from_error(&error).policy_blocked(), cfg!(windows));
+    }
+
+    /// 原始失败形状：Apple 芯片的 Mac 安装 Intel 版本后，对话框只显示运行时的崩溃输出。
+    #[test]
+    fn translated_intel_build_names_the_matching_package() {
+        let error = std::io::Error::other("qy serve 在输出令牌前退出，code=None");
+        let mut report = Report::from_error(&error);
+        assert_eq!(report.summary(), "qywork 启动失败。");
+        report.translated = true;
+        assert!(report.summary().contains("aarch64"));
+    }
+
+    #[test]
+    fn brief_is_the_outermost_error_and_bounded() {
+        let error: Box<dyn Error> =
+            anyhow::Error::new(std::io::Error::other("内层")).context("外".repeat(2000)).into();
+        let brief = Report::from_error(error.as_ref()).brief();
+        assert_eq!(brief.chars().count(), BRIEF_CHARS);
+        assert!(brief.starts_with('外'));
     }
 }
