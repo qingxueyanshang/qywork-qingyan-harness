@@ -63,7 +63,7 @@ async function payloadOf(
       }
       // 画布省略处于默认值的参数；该渠道仍显式发送目录中声明的时长和尺寸。
       const params = mediaParamValues(spec.params, req.params)
-      const resolution = spec.resolutionBySize?.[String(params.size)]
+      const resolution = spec.resolutionField && spec.resolutionBySize?.[String(params.size)]
       const fields = resolution ? { ...params, resolution } : params
       // 表单提交：参数为文本字段，参考图逐张放入同名文件字段 `input_reference`。没有参考素材时按 JSON 提交。
       if (spec.inputs.transport === 'multipart' && req.inputs.length) {

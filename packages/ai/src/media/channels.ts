@@ -280,9 +280,10 @@ export function channelMediaSpec(id: string, spec: ChannelVideoSpec): MediaModel
       ...(spec.publicUrls ? { publicUrls: true } : {}),
     },
     params: providera ? provideraParams(spec) : providerbParams(spec, sizes),
-    ...(spec.resolutionField
-      ? { resolutionBySize: Object.fromEntries(sizes.map((s) => [s.value, s.resolution])) }
-      : {}),
+    ...(providera
+      ? {}
+      : { resolutionBySize: Object.fromEntries(sizes.map((s) => [s.value, s.resolution])) }),
+    ...(spec.resolutionField ? { resolutionField: true as const } : {}),
     ...(providera
       ? { mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' } }
       : {}),
