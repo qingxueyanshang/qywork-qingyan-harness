@@ -2130,6 +2130,10 @@ function DelegateCard(props: { item: TranscriptItem }) {
       <Show when={props.item.toolName === 'workflow'}>
         <div class="wf-goal truncate">{cardTitle(props.item)}</div>
       </Show>
+      {/* 向执行中的子 agent 追加的指令不开始新的执行，节点没有状态；标题说明这张卡片是一次补充。 */}
+      <Show when={(props.item.outcome?.data as { injected?: unknown } | undefined)?.injected}>
+        <div class="wf-goal truncate">补充说明</div>
+      </Show>
       <div
         class="wf-graph"
         classList={{ across: graph().horizontal }}
