@@ -35,3 +35,4 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [估算系数的实测方法](token-density-calibration.md) — 新增或补测型号用 .tmp/ctx-probe 脚本；Claude 中转直连读首个事件，Qwen 关闭思考；三档未测仍用默认档
 - [模型绕路时修复缺陷而不是加限制](fix-capability-gap-not-prompt-ban.md) — 查出模型只能绕路的原因（缺能力、看不到结果）并修复；不在提示词或工具说明中写禁令，用户否决过「电脑控制只用于 qywork 以外」
 - [Rust 源码不按 rustfmt 排版](rust-sources-not-rustfmt-formatted.md) — 不运行 cargo fmt：文件参数不限定范围，整个包被改写并混入其他会话未提交的改动；含还原方法
+- [会话流触摸滑动须实测](touch-scroll-probe.md) — 修改底部跟随后用 .tmp/probe/touch-follow.mjs 与 touch-static.mjs 以真实触摸序列实测；synthesizeScrollGesture 在无头模式下不派发 touchmove
