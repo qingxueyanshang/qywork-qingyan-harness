@@ -228,6 +228,8 @@ export const subagentTool: ToolSpec = {
         subagentId: res.subagentId,
         ...(res.kind ? { kind: res.kind } : {}),
         ...(res.name ? { name: res.name } : {}),
+        // 界面据此把本次调用的卡片标为补充说明：它不开始新的执行，卡片上没有节点状态。
+        ...(res.injected ? { injected: true } : {}),
       },
     }
   },
