@@ -621,9 +621,15 @@ function buildSegments(
 ): string[] {
   const out: string[] = []
   for (const m of messages) {
-    const who = m.role === 'user' ? '用户' : '助手'
-    const body =
-      (m.content ?? '').trim() + (m.role === 'user' && m.hasAttachments ? '（含附件）' : '')
+    const text = (m.content ?? '').trim()
+    // 标注事实包只保存摘录的用户消息：摘要只为这些消息补写要求，其余消息在事实包中逐字保存。
+    const who =
+      m.role === 'assistant'
+        ? '助手'
+        : excerptedInFacts(text)
+          ? '用户（事实清单只保存摘录）'
+          : '用户'
+    const body = text + (m.role === 'user' && m.hasAttachments ? ATTACHED : '')
     out.push(`[message:${m.id}] ${who}：${body}`)
   }
   for (const a of actions) {
@@ -677,19 +683,20 @@ function extractFacts(
   }
 
   /*
-   * 用户消息全部进入事实包，约束类排在前面。
+   * 用户消息全部进入事实包，约束类排在前面。投影中用户消息只有这一份，摘要不逐条复述。
    *
    * 用正则筛选去留会遗漏：在真实会话上三条正则均未命中。逐字收录不会使投影超过原文：
    * 事实包是原文的子集，上限由「必须更小」检查与 `fitFacts` 的预算保证。
    *
    * 长消息按全文判定约束，摘录带约束的句子并附原文地址：先截取头部再判定时，
    * 位于后部的「不要…」既不被判定为约束，也不进入事实包。
+   * 带附件的消息标注附件：摘要不复述用户消息，事实包不标注时这一信息在投影中不再出现。
    */
   const fresh: string[] = []
   for (const m of messages) {
     const text = (m.content ?? '').trim()
     if (!text || m.role !== 'user') continue
-    fresh.push(userFact(m.id, text))
+    fresh.push(userFact(m.id, text) + (m.hasAttachments ? ATTACHED : ''))
   }
   const userConstraints = [
     ...new Set([
@@ -748,6 +755,17 @@ function actionLabel(a: CompactionAction): string {
   return `${a.tool}${a.target ? ` ${a.target}` : ''}`
 }
 
+/** 用户消息带附件时的标注。执行记录片段与事实包共用同一写法。 */
+const ATTACHED = '（含附件）'
+
+/**
+ * 用户消息在事实包中是否只保存摘录。`userFact` 与执行记录片段的标注共用该判定：
+ * 两处分别判定时，摘要器补写的消息与事实包中被截断的消息不一致。
+ */
+function excerptedInFacts(text: string): boolean {
+  return text.length > EXCERPT
+}
+
 /**
  * 一条用户消息在事实包中的写法。
  *
@@ -755,7 +773,7 @@ function actionLabel(a: CompactionAction): string {
  * 模型需要全文时据此用 `read_history` 取回。
  */
 function userFact(id: string, text: string): string {
-  if (text.length <= EXCERPT) return excerpt(text, EXCERPT)
+  if (!excerptedInFacts(text)) return excerpt(text, EXCERPT)
   const hits = text.split(/(?<=[。！？!?；;\n])/).filter(looksLikeConstraint)
   return `${excerpt(hits.length ? hits.join(' ') : text, EXCERPT)}（原文 [message:${id}]）`
 }
@@ -818,16 +836,6 @@ function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity)
 }
 
 /**
- * 摘要提示词：分节输出，而不是一段并列的自由要求。
- *
- * 并列要求会被模型视为风格建议，「约束用原话」在长会话中几乎必然被概括，
- * 而约束一经概括就可能反转含义。分节的关键在前两节：逐条列出全部用户消息、注明文件路径。
- * 这使保真度成为可检查的结构：少列一条用户消息可以发现，而概括不准确无法发现。
- *
- * 被折叠区域的主要内容是执行记录而不是对话，因此各节标题按执行记录组织，并明确要求
- * 不复述调用过程：收纳段的信封已逐条保留调用过程，摘要再复述即形成两份。
- */
-/**
  * 一个 token 约合多少个汉字。
  *
  * 用于把 token 预算换算为提示词中的字数要求：模型能遵循字数，无法遵循 token 数。
@@ -836,6 +844,31 @@ function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity)
  */
 const CHARS_PER_TOKEN_ZH = 0.6
 
+/**
+ * 摘要的各节，摘要提示词与合并提示词共用：合并产物与新块使用同一组节。
+ *
+ * 分节输出而不是一段并列的自由要求：并列要求会被模型视为风格建议，分节使遗漏可以检查。
+ * 被折叠区域的主要内容是执行记录而不是对话，因此各节标题按执行记录组织。
+ *
+ * 用户消息在投影中只有事实清单一份。第一节只写事实清单不能体现的内容：更改与选定（事实清单中约束类排在前面，
+ * 不按时间排列，无法看出哪条在后）、长消息中未进入摘录的要求。不要改为逐条列出全部用户消息：
+ * 同一批消息在投影中保存两份，且每个新块都重新列出前面各块已列出的消息。
+ */
+const SUMMARY_SECTIONS =
+  `## 用户要求的更改与补充\n用户消息另行保存在事实清单中，标注「事实清单只保存摘录」的长消息只保存其中一部分。` +
+  `本节写事实清单不能体现的内容，每条附该消息的 \`[message:…]\` 地址：` +
+  `用户对此前的要求、目标或做法所作的更改与选定，写明更改后的内容；长消息中用户提出的要求与约束，含其中的具体数值。` +
+  `没有时写「无」。\n\n` +
+  `## 已完成与产出\n修改了哪些文件、完成了什么。注明文件路径。\n\n` +
+  `## 关键发现与结论\n查明了什么、确定了什么、为何如此确定。保留判断理由；` +
+  `缺少理由会导致下一轮重复讨论。\n\n` +
+  `## 当前状态与未解决\n正在进行什么、在何处受阻、有哪些已知失败。\n\n` +
+  `## 未完成的目标\n待办清单中没有的、尚未完成的目标，每条附原文地址。\n\n`
+
+/**
+ * 摘要提示词。各节见 `SUMMARY_SECTIONS`；要求不复述调用过程：收纳段的信封已逐条保留调用过程，
+ * 摘要再复述即形成两份。
+ */
 function buildSummaryPrompt(
   segments: string[],
   previous: readonly CompactionSummaryBlock[],
@@ -852,18 +885,11 @@ function buildSummaryPrompt(
   return (
     /*
      * 摘要以 user 角色投影在历史之前，没有时态说明时其中的任务状态与当前指令无法区分。
-     * 时态、转述与待办清单的定义在投影消息中有同一份，修改时两处一并修改。
+     * 时态、用户消息所在位置与待办清单的定义在投影消息中有同一份，修改时两处一并修改。
      */
     `${head}将以下执行记录压缩为一份交接摘要。摘要是历史记录，其中的任务状态是这段执行记录结束时的状态；` +
     `当前要做的事项以待办清单为准。按下列各节输出，不要开场白：\n\n` +
-    `## 用户要求\n逐条列出**全部**用户消息的意图，不得遗漏。原话中的约束` +
-    `（不要做什么、必须用什么、具体数值与期限）**逐字引用**，不要改写。` +
-    `逐字引用的原话附该消息的 \`[message:…]\` 地址，没有地址的内容是转述。\n\n` +
-    `## 已完成与产出\n修改了哪些文件、完成了什么。注明文件路径。\n\n` +
-    `## 关键发现与结论\n查明了什么、确定了什么、为何如此确定。保留判断理由；` +
-    `缺少理由会导致下一轮重复讨论。\n\n` +
-    `## 当前状态与未解决\n正在进行什么、在何处受阻、有哪些已知失败。\n\n` +
-    `## 未完成的目标\n待办清单中没有的、尚未完成的目标，每条附原文地址。\n\n` +
+    SUMMARY_SECTIONS +
     `**不要复述工具调用过程**，只保留结论与产物；失败尝试的细节与重复的确认可以省略。\n\n` +
     /*
      * 字数要求是硬约束，不是排版偏好。
@@ -893,7 +919,7 @@ function buildSummaryPrompt(
 const ADDRESS = /\[(?:message|action):[^\]\s]+\]/g
 
 /**
- * 合并最早若干块的提示词。输出各节与摘要提示词相同，同一事项以较晚一段为准。
+ * 合并最早若干块的提示词。各节取 `SUMMARY_SECTIONS`，与摘要提示词相同，同一事项以较晚一段为准。
  *
  * 字数上限按被合并各块自身的字数计算：原文地址（去重）全部计入，其余叙述减半。
  * 不要改为把 token 预算按 `CHARS_PER_TOKEN_ZH` 换算成字数：摘要块中地址与编号占比高，
@@ -907,8 +933,9 @@ function buildMergePrompt(blocks: readonly CompactionSummaryBlock[]): string {
     blocks.reduce((sum, block) => sum + block.text.length, 0) - occurrences.join('').length
   const limit = addressChars + Math.floor(narrativeChars / 2)
   return (
-    `以下是按时间先后排列的 ${blocks.length} 段交接摘要。把它们合并为一段，按原有各节输出，不要开场白；` +
+    `以下是按时间先后排列的 ${blocks.length} 段交接摘要。把它们合并为一段，按下列各节输出，不要开场白；` +
     `同一事项以较晚一段的状态为准。各段中的结论、编号、数值与文件路径原样保留。\n\n` +
+    SUMMARY_SECTIONS +
     /*
      * 地址的定义写在合并提示词中：合并产物替换原块之后，模型只能凭这些地址取回原文。
      * 只写「标记原样保留」时，模型在压缩篇幅时把地址当作可删的格式标记。
@@ -935,15 +962,17 @@ const SUMMARY_HEAD = '[此处是被压缩的早期对话摘要]\n\n'
  * 摘要消息中摘要块正文之后的说明。以空白开头，与摘要块正文不合并为同一个词或标点段。
  *
  * 括号中的定义是能力边界而不是解释。该消息以 user 角色出现，没有时态说明时其中的任务状态与当前指令
- * 无法区分；旧块不改写，其中的目标可能已过期，因此写明以待办清单与最后一段为准；缺少地址说明时，
- * 模型不知道折叠的原文仍可取回，会将其视为已丢失，或重新执行一遍工作。
+ * 无法区分；旧块不改写，其中的目标可能已过期，因此写明以待办清单与最后一段为准；摘要不复述用户消息，
+ * 因此写明用户消息在事实清单中、更改以摘要的第一节为准：事实清单中约束类排在前面，较早的要求可能排在
+ * 更改之后；缺少地址说明时，模型不知道折叠的原文仍可取回，会将其视为已丢失，或重新执行一遍工作。
  * 不要写入 `revision`：只推进收纳线也会使其递增，而该消息紧跟 system，内容一变，
  * 整段历史的缓存前缀全部失效。
  */
 const SUMMARY_NOTE =
   `\n\n（摘要是历史记录，其中的任务状态是被压缩的那一段结束时的状态；摘要分为多段时按时间先后排列，` +
-  `同一事项以最后一段为准；当前要做的事项以待办清单为准。逐字引用的用户原话附 [message:…] 地址，` +
-  `没有地址的内容是转述；「未完成的目标」是待办清单之外尚未完成的目标。` +
+  `同一事项以最后一段为准；当前要做的事项以待办清单为准。用户消息保存在其后的事实清单中，长消息为摘录；` +
+  `「用户要求的更改与补充」记录用户的更改与长消息中的要求，与事实清单中的要求不一致时以该节为准；` +
+  `「未完成的目标」是待办清单之外尚未完成的目标。` +
   `摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）`
 
 /**
