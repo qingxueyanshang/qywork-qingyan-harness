@@ -48,6 +48,8 @@ export interface ConversationTurnRef {
   id: string
   /** 正文的开头；正文为空时为附件名。 */
   text: string
+  /** 该输入之后、下一条用户输入之前第一段回复正文的开头；没有回复时为空串。 */
+  reply: string
 }
 
 export interface ConversationHistoryPage {
