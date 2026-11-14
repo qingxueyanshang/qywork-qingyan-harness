@@ -38,6 +38,47 @@ select {
   color: inherit;
 }
 
+/*
+ * 文本光标（`lib/input/caret.ts`）。输入框与多行文本框的光标由 `.text-caret` 绘制：2px 宽、强调色；
+ * 接管期间元素带 `custom-caret`，浏览器的光标隐藏。未被接管的输入框保留浏览器的光标，颜色同为强调色。
+ */
+input,
+textarea {
+  caret-color: var(--accent);
+}
+.custom-caret {
+  caret-color: transparent;
+}
+/* 光标元素放在顶层（popover），此处重置 popover 的默认外观；位置由脚本以 transform 设置。 */
+.text-caret {
+  position: fixed;
+  inset: 0 auto auto 0;
+  width: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 1px;
+  background: var(--accent);
+  overflow: hidden;
+  pointer-events: none;
+}
+.text-caret.blink {
+  animation: text-caret-blink 1.1s steps(1) infinite;
+}
+@keyframes text-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+/* 测量光标位置的不可见元素；排版样式由脚本从输入框复制。 */
+.text-caret-mirror {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 button {
   background: none;
   border: none;
