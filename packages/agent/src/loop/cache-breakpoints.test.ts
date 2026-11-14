@@ -5,8 +5,9 @@
  * assistant 消息与末尾消息上的三个断点，以及它们与 `loop/request.ts` 的 `evictedMedia` 换出的配合。
  * 断言针对适配器收到的请求，按 Anthropic 的缓存规则计算每一步命中到哪一条消息。
  *
- * 检查两项：图片保留在请求中时，每一步命中上一步的全部内容；媒体超过保留上限时，只有换出的那一步
- * 改写一次前缀，之后恢复整段命中：缩略图每次物化的字节相同。
+ * 检查三项：图片保留在请求中时，每一步命中上一步的全部内容；媒体超过保留上限时，只有换出的那一步
+ * 改写一次前缀，之后恢复整段命中：缩略图每次物化的字节相同；逐步追加截图时，改写前缀的步之间至少相隔
+ * 余量所能容纳的张数。
  */
 
 import { expect, test } from 'bun:test'
@@ -14,7 +15,7 @@ import type { ContentBlock, LlmAdapter, WireMessage } from '@qywork/ai'
 import { ToolRegistry } from '../registry.ts'
 import { baseCtx, call, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts'
 import { AgentLoop } from './index.ts'
-import { IMAGES_REDUCED } from './request.ts'
+import { IMAGES_REDUCED, MEDIA_RETAIN_HIGH_BYTES, THUMBNAIL_RETAIN_BYTES } from './request.ts'
 
 /** 1×1 的 PNG。 */
 const PNG =
@@ -54,8 +55,11 @@ function hasImage(m: WireMessage | undefined): boolean {
   return Array.isArray(m?.content) && m.content.some((b) => b.type === 'image')
 }
 
-/** 每一步截取一张图、共执行 `steps` 步，返回每次请求的消息。 */
-async function shootSteps(steps: number, data: () => string): Promise<WireMessage[][]> {
+/** 每一步截取一张图、共执行 `steps` 步，返回每次请求的消息。`image` 给出第 n 张图在工具结果中的条目。 */
+async function shootSteps(
+  steps: number,
+  image: (n: number) => Record<string, unknown>,
+): Promise<WireMessage[][]> {
   const registry = new ToolRegistry()
   let shots = 0
   registry.register({
@@ -73,7 +77,7 @@ async function shootSteps(steps: number, data: () => string): Promise<WireMessag
       return {
         status: 'success',
         message: `第 ${shots} 张截图`,
-        data: { images: [{ data: data(), mime: 'image/png' }] },
+        data: { images: [image(shots)] },
       }
     },
   })
@@ -108,7 +112,7 @@ async function shootSteps(steps: number, data: () => string): Promise<WireMessag
 }
 
 test('工具每一步返回一张图：图片保留在请求中，每一步命中上一步的全部内容', async () => {
-  const seen = await shootSteps(5, () => PNG)
+  const seen = await shootSteps(5, () => ({ data: PNG, mime: 'image/png' }))
   expect(seen).toHaveLength(5)
   const tools = (seen[4] ?? []).filter((m) => m.role === 'tool')
   expect(tools.map(hasImage)).toEqual([true, true, true, true])
@@ -134,7 +138,7 @@ const LARGE_PNG = await (async () => {
   }
   return Buffer.from(new photon.PhotonImage(pixels, width, height).get_bytes()).toString('base64')
 })()
-const LARGE = () => LARGE_PNG
+const LARGE = () => ({ data: LARGE_PNG, mime: 'image/png' })
 
 test('媒体超过保留上限：只有换出的那一步改写前缀，之后恢复整段命中', async () => {
   const seen = await shootSteps(5, LARGE)
@@ -153,4 +157,31 @@ test('媒体超过保留上限：只有换出的那一步改写前缀，之后�
   const rewrites = changes.filter((at, k) => at < seen[k]!.length)
   expect(rewrites).toHaveLength(1)
   expect(cachedPrefixes(seen).slice(1)).toEqual(changes)
+})
+
+/**
+ * 工具结果中的图片是正文库引用，字节数按记录计入换出预算；测试不提供正文库，发出的请求中图片替换为说明，
+ * 换出只体现在信封的 `images_reduced` 与 `images_omitted` 上。
+ */
+test('逐步追加约 300 KB 的截图：改写前缀的步之间至少相隔余量所能容纳的张数，其余各步只追加', async () => {
+  const SHOT = 300 * 1024
+  const seen = await shootSteps(60, (n) => ({
+    mime: 'image/jpeg',
+    resourceId: `rs_${n}`,
+    bytes: SHOT,
+    size: { width: 1280, height: 720 },
+  }))
+  expect(seen).toHaveLength(60)
+  const changes = seen.slice(1).map((cur, k) => firstChange(seen[k]!, cur))
+  const rewrites = changes.flatMap((at, k) => (at < seen[k]!.length ? [k + 1] : []))
+  const room = Math.floor((MEDIA_RETAIN_HIGH_BYTES - THUMBNAIL_RETAIN_BYTES) / SHOT)
+  const gaps = rewrites.slice(1).map((k, i) => k - rewrites[i]!)
+  // 第 40 步前后缩略图合计超过下限，此后每次换出都把保护区之前的原图全部缩小。
+  expect(rewrites.length).toBeGreaterThan(3)
+  expect(Math.min(...gaps)).toBeGreaterThanOrEqual(room)
+  // 不改写的步是上一步的严格前缀，整段命中上一步。
+  const hits = cachedPrefixes(seen).slice(1)
+  for (let k = 0; k < changes.length; k++) {
+    if (!rewrites.includes(k + 1)) expect(hits[k]).toBe(seen[k]!.length)
+  }
 })

@@ -734,6 +734,51 @@ describe('媒体按字节预算换出', () => {
       previous = evicted
     }
   })
+
+  /**
+   * 每步一次调用、一张约 300 KB 的截图。换出之后要再累计到超过上限才再次换出，相邻两次换出之间至少相隔
+   * 上限与缩略图上限之差所能容纳的张数；其余各步装配出的消息逐条是下一步的前缀。
+   * 保护区按整个序列的末尾划定时，上一步受保护的那张在下一步被缩小，每次换出之后紧跟一次换出。
+   */
+  test('逐步追加截图：相邻两次换出的间隔不小于余量所能容纳的张数', () => {
+    const SHOT = 300 * 1024
+    const n = 80
+    const all = steps(Array(n).fill(SHOT))
+    /** 图片正文按长度比较：各步之间正文不变，逐字序列化会使用例变慢。 */
+    const wire = (m: WireMessage) =>
+      JSON.stringify(m, (k, v) => (k === 'data' && typeof v === 'string' ? v.length : v))
+    const assemble = (messages: WireMessage[]): string[] => {
+      const levels = evictedMedia(messages, CAPS)
+      return messages.map((m, i) => {
+        const level = levels.get(i)
+        return wire(level ? omitImages(m, level) : m)
+      })
+    }
+    const evictions: number[] = []
+    let previous = assemble(all.slice(0, 2))
+    for (let k = 2; k <= n; k++) {
+      const current = assemble(all.slice(0, 2 * k))
+      if (previous.some((m, i) => m !== current[i])) evictions.push(k)
+      previous = current
+    }
+    const room = Math.floor((MEDIA_RETAIN_HIGH_BYTES - THUMBNAIL_RETAIN_BYTES) / SHOT)
+    const gaps = evictions.slice(1).map((k, i) => k - evictions[i]!)
+    // 缩略图合计在第 40 步前后超过下限，之后的换出都发生在余量只剩约 2 MB 的阶段。
+    expect(evictions.length).toBeGreaterThan(5)
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(room)
+    expect(evictions.length).toBeLessThanOrEqual(Math.ceil(n / room))
+  })
+
+  /** 受保护的一批本身使总量超过上限时，下一次请求（其后出现 assistant 消息）即缩小，媒体不持续超过上限。 */
+  test('受保护时超过上限的一批在下一次请求中缩小', () => {
+    const batch: WireMessage[] = [call('big'), result('big', 6 * MB)]
+    const sent = [...steps([2 * MB]), ...batch]
+    expect(evictedMedia(sent, CAPS).has(3)).toBe(false)
+    const next = [...sent, call('c1')]
+    const evicted = evictedMedia(next, CAPS)
+    expect(evicted.get(3)).toBe('thumbnail')
+    expect(retained(next, evicted)).toBeLessThanOrEqual(MEDIA_RETAIN_LOW_BYTES)
+  })
 })
 
 describe('换出的图片缩小为缩略图', () => {

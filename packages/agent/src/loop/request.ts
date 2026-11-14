@@ -669,7 +669,8 @@ export type MediaLevel = 'thumbnail' | 'omitted'
 /**
  * 计算本次请求中哪些消息的媒体缩小为缩略图、哪些替换为说明，返回下标到形态的映射，交给 `omitImages`。
  *
- * 按消息顺序累计媒体字节，缩略图按 `thumbnailBytes` 计入。累计超过上限时：
+ * 按消息顺序累计媒体字节，缩略图按 `thumbnailBytes` 计入。判定点是每条带媒体的消息与每条 assistant 消息，
+ * 判定点处累计超过上限时：
  * 1. 从最早仍为原图的消息起整条缩小为缩略图，直到总量降至下限以下；`thumbnailBytes` 为 0 的消息替换为说明。
  * 2. 缩略图合计超过 `THUMBNAIL_RETAIN_BYTES` 时，从最早的缩略图起替换为说明，直到不超过该值。
  *
@@ -677,39 +678,30 @@ export type MediaLevel = 'thumbnail' | 'omitted'
  * 一次 1 MB 的局部放大图即可使较早的缩略图被移出，模型完全看不到这些画面，只能逐张取回原图，
  * 取回的原图又使其余画面被缩小或移出。
  *
- * 最后一条 assistant 消息之后的媒体不换出：它们尚未随任何一次得到响应的请求发出。
+ * 每个判定点只换出它之前最后一条 assistant 消息之前的媒体：其后的媒体尚未随任何一次得到响应的请求发出。
  * 工具成功后的请求被拒绝、在新的 run 中继续执行时，这批图片仍在该区段内，因此无需另行记录送达凭证。
+ * 不要改为按整个序列的最后一条 assistant 划定保护区：上一次请求中受保护的一批在本次不再受保护，同一判定点会把它也缩小，
+ * 每次换出之后紧跟一次改写前缀的换出（重放本机账本，相邻两次换出的间隔中位为 1 次请求）。
+ * assistant 消息作为判定点，使受保护时已超过上限的一批在下一次请求中缩小，请求中的媒体不持续超过上限。
  *
- * 结果只依赖消息序列与本轮的媒体发送方式：同一历史、同一模型每次得到相同结果，追加消息只会使媒体继续缩小或移出，
- * 不会恢复原图。换模型会改变发送方式，换出结果随之重新计算，前缀在该次请求中改变。
+ * 每个判定点的结果只依赖它之前的消息：追加消息只在新的判定点使媒体继续缩小或移出，不改变已有判定点的结果，
+ * 没有新的超限时相邻两次请求的媒体形态相同。同一历史、同一模型每次得到相同结果；
+ * 换模型会改变发送方式，换出结果随之重新计算，前缀在该次请求中改变。
  */
 export function evictedMedia(
   messages: readonly WireMessage[],
   caps: InputMediaCapabilities,
 ): Map<number, MediaLevel> {
-  let protectFrom = 0
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]!.role === 'assistant') {
-      protectFrom = i + 1
-      break
-    }
-  }
   const levels = new Map<number, MediaLevel>()
   const originals: { index: number; bytes: number }[] = []
   const thumbnails: { index: number; bytes: number }[] = []
   let total = 0
   let reduced = 0
-  messages.forEach((m, index) => {
-    const bytes = mediaBytes(m, caps)
-    if (!bytes) return
-    originals.push({ index, bytes })
-    total += bytes
+  /** 当前判定点之前最后一条 assistant 消息的下标；下标更小的媒体已随得到响应的请求发出。 */
+  let answered = 0
+  const settle = (): void => {
     if (total <= MEDIA_RETAIN_HIGH_BYTES) return
-    while (
-      total > MEDIA_RETAIN_LOW_BYTES &&
-      originals.length &&
-      originals[0]!.index < protectFrom
-    ) {
+    while (total > MEDIA_RETAIN_LOW_BYTES && originals.length && originals[0]!.index < answered) {
       const out = originals.shift()!
       const thumb = thumbnailBytes(messages[out.index]!, caps)
       total -= out.bytes - thumb
@@ -727,6 +719,16 @@ export function evictedMedia(
       reduced -= out.bytes
       total -= out.bytes
     }
+  }
+  messages.forEach((m, index) => {
+    const bytes = mediaBytes(m, caps)
+    if (bytes) {
+      originals.push({ index, bytes })
+      total += bytes
+    }
+    if (m.role === 'assistant') answered = index
+    else if (!bytes) return
+    settle()
   })
   return levels
 }
