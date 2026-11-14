@@ -15,6 +15,12 @@ metadata:
   也不滚动，不能据它判断事件顺序。
 - 对照旧版本时不切换工作区：把旧版本文件写到 `components/` 下的临时文件名，用 `page.route` 把 `Transcript.tsx` 的请求
   替换为该文件，实测后删除。
+- 用户用 iPhone 访问远程界面，Chromium 的结果不能代表它。WebKit 用 `.tmp/probe/webkit-shift.mjs`
+  （`<base> <token> webkit|chromium`，滚轮从底部回看到顶部，报告 scrollTop 不变而视口条目位移的帧）。
+  内核用 `node_modules/.bin/playwright install webkit` 安装；WebKit 的手机模拟不支持滚轮，脚本不开启 `isMobile`。
+  Chromium 输出中 `dTop` 与 `dHeight` 相等的行是滚动锚定的补偿，不是位移。
+- 2026-11-14 实测：WebKit 的滚动锚定不补偿 `content-visibility: auto` 引起的高度变化，回看一遍出现 7 次位移，
+  关闭后为 0 次。`transcript.css` 因此只在非 WebKit 内核中启用该规则。
 
 **Why:** 2026-11-14 第一次修改只有组件测试，未实测即报告已修复，用户反馈问题加重；实测后确认失败形状是
 「内容增加期间滑回底部后跟随不恢复」，与最初的推断不同。
