@@ -164,6 +164,16 @@ export function createConversationScroll(conversationId: () => string | null) {
   let scrollIntent = false
   let scrollbarDrag = false
   /**
+   * 一次触摸手势是否已发生滑动：`touchmove` 置位，下一次 `touchstart` 复位。
+   *
+   * 不要与 `scrollIntent` 合并为「每个 scroll 事件消耗一次」：触摸滚动开始后 `touchmove` 的派发
+   * 被节流，手指离开后的惯性滚动没有 `touchmove`，这些 scroll 事件都没有新的意图标记。
+   * 跟随底部的写入派发的 scroll 先消耗标记时，手势自身的 scroll 不再修改 `pinned`，
+   * 下一次高度变化把视口写回底部。在 `touchstart` 复位，使点击展开 `<details>` 引起的
+   * 滚动不被视为用户滚动。
+   */
+  let touchScroll = false
+  /**
    * 本组件最近一次写入的 scrollTop，取写入后重新读取的值；`-1` 表示尚未写入。
    *
    * 必须在写入后重新读取：浏览器把写入值限制在 `scrollHeight - clientHeight` 以内，
@@ -199,8 +209,9 @@ export function createConversationScroll(conversationId: () => string | null) {
    * 自行调整 scrollTop；ResizeObserver 回调中的底部跟随写入也会派发 scroll。把这些事件
    * 视为用户向上滚动时，展开思考即关闭跟随，此后的新内容全部位于视口下方。
    *
-   * 因此 wheel、touch、滚动键与拖动滚动条先记录一次滚动意图，其后的 scroll 事件才能修改
-   * `pinned`。没有手势来源的 scroll 保持原状态，内容增长时继续跟随底部。
+   * 因此 wheel、滚动键与拖动滚动条先记录一次滚动意图，其后的 scroll 事件才能修改
+   * `pinned`；触摸滑动的标记在整个手势及其惯性滚动期间有效（见 `touchScroll`）。
+   * 没有手势来源的 scroll 保持原状态，内容增长时继续跟随底部。
    *
    * 实测（真实服务端与前端，测试 provider 驱动一轮四步）：跟随在第 5 秒被关闭，
    * 此后 379 个无变化的帧稳定停在距底部 253px 处，新内容全部位于视口下方，读数条移出屏幕。
@@ -213,7 +224,7 @@ export function createConversationScroll(conversationId: () => string | null) {
   const onScroll = () => {
     const mine = Math.abs(scroller.scrollTop - followTop) < 1
     const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-    if (scrollIntent || scrollbarDrag) setPinned(gap <= 2)
+    if (scrollIntent || scrollbarDrag || touchScroll) setPinned(gap <= 2)
     else if (!mine && gap <= 2) setPinned(true)
     scrollIntent = false
     const id = conversationId()
@@ -254,8 +265,11 @@ export function createConversationScroll(conversationId: () => string | null) {
   const onWheel = () => {
     scrollIntent = true
   }
+  const onTouchStart = () => {
+    touchScroll = false
+  }
   const onTouchMove = () => {
-    scrollIntent = true
+    touchScroll = true
   }
   const onPointerDown = (event: PointerEvent) => {
     // 点击正文（包括 details 的 summary）不是滚动意图；只有拖动滚动条时事件目标是滚动容器本身。
@@ -309,6 +323,7 @@ export function createConversationScroll(conversationId: () => string | null) {
       scrollbarDrag = false
     }
     scroller.addEventListener('wheel', onWheel, { passive: true })
+    scroller.addEventListener('touchstart', onTouchStart, { passive: true })
     scroller.addEventListener('touchmove', onTouchMove, { passive: true })
     scroller.addEventListener('pointerdown', onPointerDown)
     scroller.addEventListener('keydown', onKeyDown)
@@ -317,6 +332,7 @@ export function createConversationScroll(conversationId: () => string | null) {
     onCleanup(() => {
       ro.disconnect()
       scroller.removeEventListener('wheel', onWheel)
+      scroller.removeEventListener('touchstart', onTouchStart)
       scroller.removeEventListener('touchmove', onTouchMove)
       scroller.removeEventListener('pointerdown', onPointerDown)
       scroller.removeEventListener('keydown', onKeyDown)

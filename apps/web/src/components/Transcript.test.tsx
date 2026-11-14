@@ -1790,6 +1790,35 @@ describe('子会话与主会话共用流式外壳', () => {
       height = 620
       resize(inner)
       expect(scroller.scrollTop).toBe(40)
+
+      // 原始失败形状：触摸滑动开始后，跟随底部的写入先派发 scroll，手势自身与惯性滚动的 scroll
+      // 之前没有新的 touchmove；此后内容增长不得把视口写回底部。
+      scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }))
+      scroller.scrollTop = 520
+      scroller.dispatchEvent(new Event('scroll'))
+      scroller.dispatchEvent(new Event('touchstart'))
+      scroller.dispatchEvent(new Event('touchmove'))
+      height = 700
+      resize(inner)
+      expect(scroller.scrollTop).toBe(700)
+      scroller.dispatchEvent(new Event('scroll'))
+      scroller.scrollTop = 400
+      scroller.dispatchEvent(new Event('scroll'))
+      scroller.scrollTop = 200
+      scroller.dispatchEvent(new Event('scroll'))
+      height = 800
+      resize(inner)
+      expect(scroller.scrollTop).toBe(200)
+
+      // 惯性滚动回到底部后恢复跟随；随后的点击（touchstart 之后没有 touchmove）引起的滚动不关闭跟随。
+      scroller.scrollTop = 700
+      scroller.dispatchEvent(new Event('scroll'))
+      scroller.dispatchEvent(new Event('touchstart'))
+      scroller.scrollTop = 300
+      scroller.dispatchEvent(new Event('scroll'))
+      height = 900
+      resize(inner)
+      expect(scroller.scrollTop).toBe(900)
     } finally {
       dispose()
       host.remove()
