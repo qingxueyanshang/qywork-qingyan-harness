@@ -133,12 +133,35 @@
   white-space: nowrap;
   cursor: pointer;
 }
-.account-name.unset {
+.account-name.unset,
+.account-name-sizer.unset,
+.account-name-input::placeholder {
   color: var(--text-tertiary);
   font-weight: 400;
 }
+/* 编辑状态的宽度由不可见的 `.account-name-sizer` 决定：它与输入框叠在同一格，内容是输入框的当前内容，
+   为空时是占位文字。进入编辑时宽度与按钮相同，其后的图标按钮不移动。不要给输入框固定宽度。 */
+.account-name-edit {
+  display: inline-grid;
+  max-width: 100%;
+}
+.account-name-edit > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.account-name-sizer {
+  visibility: hidden;
+  overflow: hidden;
+  white-space: pre;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: 22px;
+}
+/* `width: 0` 使输入框的固有宽度不参与该格的宽度计算，再由 `min-width` 撑满这一格。
+   写成 `width: 100%` 时格的宽度取输入框的固有宽度（约 20 个字符）。 */
 .account-name-input {
-  width: 200px;
+  width: 0;
+  min-width: 100%;
   outline: none;
 }
 .account-email {
