@@ -1349,8 +1349,8 @@ mod tests {
     use ::windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
     use ::windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
-        GetMessageW, PostThreadMessageW, RegisterClassExW, ShowWindow, MSG, SW_SHOWNOACTIVATE,
-        WINDOW_EX_STYLE, WM_QUIT, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        GetMessageW, PostThreadMessageW, RegisterClassExW, SetWindowPos, ShowWindow, HWND_TOP, MSG,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_QUIT, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
         WS_POPUP, WS_VISIBLE,
     };
 
@@ -1486,6 +1486,17 @@ mod tests {
                     )
                     .expect("创建子窗口");
                     let _ = ShowWindow(top, SW_SHOWNOACTIVATE);
+                    // 显式置于 z 序顶部：不激活地显示时系统不保证新窗口位于已有窗口上方，
+                    // 依赖窗口覆盖关系的用例会因此间歇失败。
+                    let _ = SetWindowPos(
+                        top,
+                        Some(HWND_TOP),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
                     let _ = tx.send((top.0 as isize, child.0 as isize, GetCurrentThreadId()));
                     let mut msg = MSG::default();
                     while GetMessageW(&mut msg, None, 0, 0).as_bool() {
