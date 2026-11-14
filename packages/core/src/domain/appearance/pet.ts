@@ -42,6 +42,12 @@ export const PET_LIMITS = {
   name: 40,
 } as const
 
+/**
+ * 内置宠物「团子」的 id。默认的内置宠物没有 id，界面偏好中以 null 表示。
+ * 用户宠物的 id 由宠物库生成，均以 `pet-` 开头，不会与它相同。
+ */
+export const DANGO_PET_ID = 'dango'
+
 export function isPetId(id: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)
 }

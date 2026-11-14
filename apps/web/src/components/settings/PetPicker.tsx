@@ -1,6 +1,8 @@
+import { DANGO_PET_ID } from '@qywork/core'
 import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 import { petLibrary, petPack, petPrefs, removePet, setPetPrefs } from '../../lib/store/index.ts'
 import { AnchoredMenu } from '../AnchoredMenu.tsx'
+import { DANGO_PET } from '../appearance/pet-dango.ts'
 import { DEFAULT_PET } from '../appearance/pet-default.ts'
 import { ConfirmDialog } from '../ConfirmDialog.tsx'
 import { IconCheck, IconChevron, IconTrash } from '../Icons.tsx'
@@ -27,6 +29,7 @@ export function PetPicker(props: { onError: (message: string | null) => void }) 
   const currentName = () => {
     const id = petPrefs().pack
     if (!id) return DEFAULT_PET.name
+    if (id === DANGO_PET_ID) return DANGO_PET.name
     return (
       petLibrary()?.find((e) => e.id === id)?.pack.name ??
       (petPack()?.id === id ? petPack()?.pack.name : undefined) ??
@@ -127,7 +130,7 @@ export function PetPicker(props: { onError: (message: string | null) => void }) 
             <IconCheck size={12} />
           </Show>
         </button>
-        <Show when={id}>
+        <Show when={id !== DANGO_PET_ID && id}>
           {(packId) => (
             <button
               class="pet-option-remove"
@@ -172,6 +175,7 @@ export function PetPicker(props: { onError: (message: string | null) => void }) 
         <AnchoredMenu class="pet-pick-menu" anchor={trigger}>
           <div ref={menu} class="pet-pick-options">
             {row(null, DEFAULT_PET.name)}
+            {row(DANGO_PET_ID, DANGO_PET.name)}
             <For each={petLibrary() ?? []}>{(entry) => row(entry.id, entry.pack.name)}</For>
           </div>
         </AnchoredMenu>
@@ -181,7 +185,7 @@ export function PetPicker(props: { onError: (message: string | null) => void }) 
         title={`删除宠物「${doomed()?.name ?? ''}」`}
         message={
           doomed()?.id === petPrefs().pack
-            ? '它是当前使用的宠物，删除后换回内置宠物。删除后无法恢复。'
+            ? '它是当前使用的宠物，删除后换回默认宠物。删除后无法恢复。'
             : '删除后无法恢复。'
         }
         confirmLabel="删除"

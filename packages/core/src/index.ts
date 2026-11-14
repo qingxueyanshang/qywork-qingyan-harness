@@ -33,6 +33,7 @@ export {
 } from './domain/appearance/personalization.ts'
 // 宠物包：格式与校验。宠物库接口、pet 工具与界面共用
 export {
+  DANGO_PET_ID,
   isPetId,
   isPetImageName,
   PET_IMAGE_EXTENSIONS,

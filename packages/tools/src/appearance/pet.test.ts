@@ -101,7 +101,7 @@ describe('pet', () => {
     expect(port.saved).toEqual([])
   })
 
-  test('apply 返回要切换的 id；default 切回内置宠物', async () => {
+  test('apply 返回要切换的 id；default 切回默认宠物，dango 切换到内置的团子', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-pet-'))
     const port = memoryPort()
     port.entries.set('pet-1', { id: 'pet-1', pack, updatedAt: 1 })
@@ -110,6 +110,9 @@ describe('pet', () => {
     })
     expect(await petTool.fn({ action: 'apply', id: 'default' }, ctx(root, port))).toMatchObject({
       data: { applied: null },
+    })
+    expect(await petTool.fn({ action: 'apply', id: 'dango' }, ctx(root, port))).toMatchObject({
+      data: { applied: 'dango' },
     })
     expect(await petTool.fn({ action: 'apply', id: 'x' }, ctx(root, port))).toMatchObject({
       status: 'failure',
