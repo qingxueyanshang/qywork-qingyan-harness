@@ -17,9 +17,9 @@ const items: TranscriptItem[] = [
 ]
 
 const earlier = [
-  { id: 'e1', text: '更早的  第一问' },
-  { id: 'e2', text: '更早的第二问' },
-] as never
+  { id: 'e1', text: '更早的  第一问', reply: '**更早**的回复' },
+  { id: 'e2', text: '更早的第二问', reply: '' },
+]
 
 test('索引项为未加载的条目加已加载的用户消息，回执不计入', () => {
   expect(turnIds(earlier, items)).toEqual(['e1', 'e2', 'u1', 'u2', 'u3'])
@@ -40,8 +40,8 @@ test('只有附件的消息以附件名为标题', () => {
   expect(turnPreview(earlier, items, 'u3')).toEqual({ title: 'a.png', reply: '第三段回复' })
 })
 
-test('未加载的条目只有标题，回复为空串', () => {
-  expect(turnPreview(earlier, items, 'e1')).toEqual({ title: '更早的 第一问', reply: '' })
+test('未加载的条目取历史页带来的标题与回复', () => {
+  expect(turnPreview(earlier, items, 'e1')).toEqual({ title: '更早的 第一问', reply: '更早的回复' })
 })
 
 test('id 不是用户消息时没有摘要', () => {

@@ -21,7 +21,7 @@ export function turnIds(
 export interface TurnPreview {
   /** 用户输入的开头；只有附件时为附件名。 */
   title: string
-  /** 该输入之后第一段回复正文的开头；尚无回复或该条尚未加载时为空串。 */
+  /** 该输入之后第一段回复正文的开头；尚无回复时为空串。 */
   reply: string
 }
 
@@ -40,10 +40,12 @@ export function turnPreview(
   items: readonly TranscriptItem[],
   id: string,
 ): TurnPreview | null {
+  // 摘要按纯文本显示，去掉 Markdown 的强调、代码与标题标记。
+  const plain = (text: string) => excerpt(text.replace(/[*`]+|^[#>]+\s*/gm, ''), 120)
   const at = items.findIndex((item) => item.kind === 'user' && item.id === id)
   if (at < 0) {
     const turn = earlier.find((entry) => entry.id === id)
-    return turn ? { title: excerpt(turn.text, 80), reply: '' } : null
+    return turn ? { title: excerpt(turn.text, 80), reply: plain(turn.reply) } : null
   }
   const user = items[at]!
   let reply = ''
@@ -51,8 +53,7 @@ export function turnPreview(
     const item = items[i]!
     if (item.kind === 'user') break
     if (item.kind === 'text' && item.text.trim()) {
-      // 摘要按纯文本显示，去掉 Markdown 的强调、代码与标题标记。
-      reply = excerpt(item.text.replace(/[*`]+|^[#>]+\s*/gm, ''), 120)
+      reply = plain(item.text)
       break
     }
   }

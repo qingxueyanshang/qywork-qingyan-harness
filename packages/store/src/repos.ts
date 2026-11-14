@@ -657,38 +657,44 @@ function listTurnsBefore(
        ORDER BY id ASC`,
     )
     .all(conversationId, before)
-  const injected = store.db
-    .query<{ id: string; text: string; message: string }, [string, string]>(
-      `SELECT s.id, substr(s.content, 1, 240) AS text, r.user_message_id AS message
+  // 回复取该输入之后、下一条用户输入之前的第一段正文，与界面对已加载条目的取法相同。
+  const steps = store.db
+    .query<{ id: string; kind: 'user' | 'text'; text: string; message: string }, [string, string]>(
+      `SELECT s.id, s.kind, substr(s.content, 1, 360) AS text, r.user_message_id AS message
        FROM steps s JOIN runs r ON r.id = s.run_id
        WHERE r.conversation_id = ? AND r.user_message_id < ?
-         AND s.kind = 'user' AND s.content <> ''
-         AND json_extract(s.payload, '$.origin') IS NULL
-         AND COALESCE(json_extract(s.payload, '$.notice'), 0) = 0
+         AND s.content <> ''
+         AND (s.kind = 'text' OR (s.kind = 'user'
+           AND json_extract(s.payload, '$.origin') IS NULL
+           AND COALESCE(json_extract(s.payload, '$.notice'), 0) = 0))
        ORDER BY r.created_at ASC, r.id ASC, s.seq ASC`,
     )
     .all(conversationId, before)
-  const byMessage = new Map<string, { id: string; text: string }[]>()
-  for (const step of injected) {
+  const byMessage = new Map<string, typeof steps>()
+  for (const step of steps) {
     const list = byMessage.get(step.message) ?? []
-    list.push({ id: step.id, text: step.text })
+    list.push(step)
     byMessage.set(step.message, list)
   }
-  return messages.flatMap((row) => [
-    ...(row.origin === null
-      ? [
-          {
-            id: row.id as string,
-            text:
-              row.text.trim() ||
-              readJson<{ name: string }[]>(row.attachments, [])
-                .map((a) => a.name)
-                .join('、'),
-          },
-        ]
-      : []),
-    ...(byMessage.get(row.id) ?? []),
-  ])
+  const turns: ConversationHistoryPage['earlierTurns'] = []
+  for (const row of messages) {
+    if (row.origin === null) {
+      const text =
+        row.text.trim() ||
+        readJson<{ name: string }[]>(row.attachments, [])
+          .map((a) => a.name)
+          .join('、')
+      turns.push({ id: row.id, text, reply: '' })
+    }
+    for (const step of byMessage.get(row.id) ?? []) {
+      if (step.kind === 'user') turns.push({ id: step.id, text: step.text, reply: '' })
+      else {
+        const turn = turns.at(-1)
+        if (turn && !turn.reply && step.text.trim()) turn.reply = step.text
+      }
+    }
+  }
+  return turns
 }
 
 /**

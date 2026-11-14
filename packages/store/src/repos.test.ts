@@ -87,7 +87,7 @@ test('压缩进度在空会话中也可恢复，中断收尾保留压缩类型',
   }
 })
 
-test('历史页带上早于本页的全部用户输入：含运行中途追加的输入，不含回执与执行事实', () => {
+test('历史页带上早于本页的全部用户输入：含运行中途追加的输入与各自的第一段回复，不含回执与执行事实', () => {
   const { store, ws } = fresh()
   try {
     const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -116,6 +116,7 @@ test('历史页带上早于本页的全部用户输入：含运行中途追加�
       messageIdUpperBound: null,
       contextSnapshot: [],
     })
+    appendStep(store, { runId: run.id, seq: 0, kind: 'text', content: '第一段回复' })
     const injected = appendStep(store, {
       runId: run.id,
       seq: 1,
@@ -137,18 +138,20 @@ test('历史页带上早于本页的全部用户输入：含运行中途追加�
       content: '执行事实',
       payload: { kind: 'user', notice: true },
     })
+    appendStep(store, { runId: run.id, seq: 4, kind: 'text', content: '追加后的回复' })
+    appendStep(store, { runId: run.id, seq: 5, kind: 'text', content: '后续回复' })
 
     const latest = listConversationHistoryPage(store, cv.id, { limit: 1 })
     expect(latest.earlierTurns).toEqual([
-      { id: first.id, text: '第一问' },
-      { id: injected.id, text: '中途追加' },
-      { id: second.id, text: 'a.png' },
-      { id: third.id, text: '第三问' },
+      { id: first.id, text: '第一问', reply: '第一段回复' },
+      { id: injected.id, text: '中途追加', reply: '追加后的回复' },
+      { id: second.id, text: 'a.png', reply: '' },
+      { id: third.id, text: '第三问', reply: '' },
     ])
     const older = listConversationHistoryPage(store, cv.id, { limit: 2, before: third.id })
     expect(older.earlierTurns).toEqual([
-      { id: first.id, text: '第一问' },
-      { id: injected.id, text: '中途追加' },
+      { id: first.id, text: '第一问', reply: '第一段回复' },
+      { id: injected.id, text: '中途追加', reply: '追加后的回复' },
     ])
     expect(listConversationHistoryPage(store, cv.id, { limit: 10 }).earlierTurns).toEqual([])
   } finally {
