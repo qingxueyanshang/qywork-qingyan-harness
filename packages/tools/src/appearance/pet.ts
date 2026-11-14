@@ -8,10 +8,10 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { type PetEntry, parsePetPack, petFrameFiles } from '@qywork/core'
+import { DANGO_PET_ID, type PetEntry, parsePetPack, petFrameFiles } from '@qywork/core'
 import { resolveInWorkspace, rootsOf } from '../paths.ts'
 
-/** `apply` 切回内置宠物时使用的 id。 */
+/** `apply` 切回默认的内置宠物时使用的 id。 */
 const DEFAULT = 'default'
 
 type Outcome = Awaited<ReturnType<ToolSpec['fn']>>
@@ -35,7 +35,7 @@ export const petTool: ToolSpec = {
     'action=list 列出宠物；read 读取一只宠物的完整参数；' +
     'save 新建（省略 id）或替换（给出 id）宠物：dir 是工作区中存放帧图片的目录，pack_json 中的文件名指该目录下的文件；' +
     '帧图片优先使用透明背景的正方形 PNG，各状态的角色外形保持一致；save 只保存，不切换。' +
-    'apply 把用户当前界面的宠物切换为 id 指定的宠物，id 为 default 时切回内置宠物。',
+    'apply 把用户当前界面的宠物切换为 id 指定的宠物，id 为 default 时切回默认的内置宠物，为 dango 时切换到内置宠物「团子」。',
   parameters: {
     type: 'object',
     properties: {
@@ -43,7 +43,7 @@ export const petTool: ToolSpec = {
       id: {
         type: 'string',
         description:
-          '宠物 id。read、apply 必填；save 时省略表示新建；apply 时 default 表示内置宠物',
+          '宠物 id。read、apply 必填；save 时省略表示新建；apply 时 default 表示默认的内置宠物，dango 表示内置宠物「团子」',
       },
       pack_json: {
         type: 'string',
@@ -75,10 +75,14 @@ export const petTool: ToolSpec = {
 
     if (action === 'list') {
       const pets = await port.list()
-      const lines = [`- ${DEFAULT}：团子（内置）`, ...pets.map((e) => `- ${e.id}：${e.pack.name}`)]
+      const lines = [
+        `- ${DEFAULT}：默认宠物（内置）`,
+        `- ${DANGO_PET_ID}：团子（内置）`,
+        ...pets.map((e) => `- ${e.id}：${e.pack.name}`),
+      ]
       return {
         status: 'success',
-        message: `共 ${pets.length + 1} 只宠物：\n${lines.join('\n')}`,
+        message: `共 ${pets.length + 2} 只宠物：\n${lines.join('\n')}`,
         data: { pets: pets.map((e) => ({ id: e.id, name: e.pack.name })) },
       }
     }
@@ -95,9 +99,16 @@ export const petTool: ToolSpec = {
     }
 
     if (action === 'apply') {
-      if (!id) return failure('apply 需要 id；切回内置宠物时传 default')
+      if (!id) return failure('apply 需要 id；切回默认宠物时传 default')
       if (id === DEFAULT) {
-        return { status: 'success', message: '已请求界面切回内置宠物', data: { applied: null } }
+        return { status: 'success', message: '已请求界面切回默认宠物', data: { applied: null } }
+      }
+      if (id === DANGO_PET_ID) {
+        return {
+          status: 'success',
+          message: '已请求界面切换到内置宠物「团子」',
+          data: { applied: DANGO_PET_ID },
+        }
       }
       const entry = await port.read(id)
       if (!entry) return failure(`宠物不存在：${id}`)

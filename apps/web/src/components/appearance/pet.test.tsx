@@ -1,6 +1,6 @@
 /**
  * 覆盖 `lib/store/appearance/pet.ts`（心情推导、未查看结果、气泡、显示的消息与偏好）、`PetSprite.tsx`、
- * `PetWindow.tsx`、`PetBox.tsx`、`pet-view.ts` 与 `pet-default.ts`（默认宠物包须通过 core 的校验）。
+ * `PetWindow.tsx`、`PetBox.tsx`、`pet-view.ts`、`pet-default.ts` 与 `pet-dango.ts`（两只内置宠物须通过 core 的校验）。
  *
  * 测试 DOM 在本文件内注册，结束后注销，理由同 `settings/LoadState.test.tsx`。
  * 账本以桩代替：会话行与轮次列表由 `fetch` 返回，键为会话 id。
@@ -278,11 +278,31 @@ describe('宠物状态推导', () => {
 })
 
 describe('宠物组件', () => {
-  test('默认宠物包通过校验；单帧状态加动作，多帧状态换帧', async () => {
+  test('两只内置宠物通过校验，默认宠物的帧地址指向随应用发布的图片；单帧状态加动作，多帧状态换帧', async () => {
     const { parsePetPack } = await import('@qywork/core')
     const { DEFAULT_PET, defaultPetFrame } = await import('./pet-default.ts')
     expect(parsePetPack(DEFAULT_PET).ok).toBe(true)
-    expect(defaultPetFrame('done.svg')).toStartWith('data:image/svg+xml')
+    const { DANGO_PET, dangoPetFrame } = await import('./pet-dango.ts')
+    expect(parsePetPack(DANGO_PET).ok).toBe(true)
+    expect(dangoPetFrame('done.svg')).toStartWith('data:image/svg+xml')
+    expect(defaultPetFrame('done-01.png')).toBe('/pets/default/done-01.png')
+    // 引用的每一帧都在随应用发布的目录中，目录中没有未引用的图片。
+    const { readdirSync } = await import('node:fs')
+    const { petFrameFiles } = await import('@qywork/core')
+    const shipped = readdirSync(new URL('../../../public/pets/default/', import.meta.url))
+    expect(shipped.toSorted()).toEqual(petFrameFiles(DEFAULT_PET).toSorted())
+    const one = (file: string) => ({ frames: [file], fps: 1 })
+    const pack = {
+      name: '测试',
+      size: 64,
+      states: {
+        desktop: one('desktop.svg'),
+        failed: one('failed.svg'),
+        working: { frames: ['working-1.svg', 'working-2.svg', 'working-3.svg'], fps: 3 },
+        done: one('done.svg'),
+        idle: one('idle.svg'),
+      },
+    }
 
     const { render } = await import('solid-js/web')
     const { createSignal } = await import('solid-js')
@@ -291,7 +311,7 @@ describe('宠物组件', () => {
     const host = document.createElement('div')
     document.body.append(host)
     const dispose = render(
-      () => <PetSprite pack={DEFAULT_PET} state={mood()} frameUrl={(n) => `/f/${n}`} />,
+      () => <PetSprite pack={pack} state={mood()} frameUrl={(n) => `/f/${n}`} />,
       host,
     )
     try {
@@ -380,7 +400,7 @@ describe('宠物组件', () => {
       shell.emit('pet://state', await petState(running))
       await flush()
       const resizes = () => shell.calls.filter((c) => c.cmd === 'pet_window_resize')
-      expect(resizes().map((c) => c.args)).toEqual([{ width: 92, height: 92 }])
+      expect(resizes().map((c) => c.args)).toEqual([{ width: 172, height: 172 }])
       expect(host.querySelector('.petw-badge')?.textContent).toBe('2')
       expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
 
@@ -416,7 +436,7 @@ describe('宠物组件', () => {
       expect(resizes()).toHaveLength(1)
 
       shell.emit('pet://window-moved', { x: 640, y: 500 })
-      expect(shell.emitted('pet://moved').at(-1)?.payload).toEqual({ left: 640, bottom: 592 })
+      expect(shell.emitted('pet://moved').at(-1)?.payload).toEqual({ left: 640, bottom: 672 })
     } finally {
       shell.restore()
       dispose()
