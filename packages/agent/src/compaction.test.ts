@@ -448,6 +448,52 @@ describe('摘要块：旧块原样保留，新块只覆盖本次折叠的区段'
       ])
     })
 
+    /**
+     * 失败形状：地址占被合并各块的三成至五成，按 token 预算的一半换算的字数上限只有原文的 15%–30%，
+     * 小于地址本身的总长，模型只能删去地址。上限须容纳全部地址，其余叙述减半；输出上限取被合并各块之和。
+     */
+    test('合并提示词写明地址的用途，字数上限容纳全部地址并把叙述减半', async () => {
+      const address = (i: number) =>
+        `[message:rn_0mwfr5j2b${String(i).padStart(4, '0')}kl:st_0mwfr5j2b0001c6p${i}]`
+      const dense = (from: number) =>
+        Array.from(
+          { length: 30 },
+          (_, k) => `- 「模块${from + k}」：发布，无阻断条目。${address(from + k)}`,
+        ).join('\n')
+      // 第二段重复引用第一段的一个地址：上限按去重后的地址计。
+      const addressed = [
+        block(dense(0), 'ms_000'),
+        block(`${dense(30)}\n- 复核：${address(0)}`, 'ms_001'),
+        block(dense(60), 'ms_002'),
+      ]
+      const calls: { prompt: string; budget: number }[] = []
+      await compact(
+        input({
+          previous: withBlocks(addressed),
+          projectionBudget: 5 * estimateText(addressed[0]!.text, DEFAULT_DENSITY),
+          condensedRegionTokens: 50_000,
+        }),
+        async (p, budget) => {
+          calls.push({ prompt: p, budget })
+          return isMerge(p) ? '合并后的较早摘要' : '新摘要'
+        },
+      )
+      const merge = calls.find((c) => isMerge(c.prompt))!
+      const merged = [addressed[0]!.text, addressed[1]!.text]
+      const occurrences = merged.join('\n').match(/\[message:[^\]]+\]/g)!
+      const unique = [...new Set(occurrences)].join('').length
+      const narrative = merged.join('').length - occurrences.join('').length
+      expect(merge.prompt).toContain(
+        `整段控制在 ${unique + Math.floor(narrative / 2)} 字以内**，其中原文地址约 ${unique} 字`,
+      )
+      expect(unique).toBeGreaterThan(Math.floor(merged.join('').length * 0.3))
+      expect(merge.prompt).toContain('原文只能凭这些地址用 read_history 取回')
+      expect(merge.prompt).toContain('几个条目合并为一条时，附上这几条的全部地址')
+      expect(merge.budget).toBe(
+        estimateText(merged[0]!, DEFAULT_DENSITY) + estimateText(merged[1]!, DEFAULT_DENSITY),
+      )
+    })
+
     test('合并产物不小于被合并各块之和时保留原块，新块照常追加', async () => {
       const r = await compact(over(), async (p) =>
         isMerge(p) ? '合'.repeat(blocks[0]!.text.length * 3) : '新摘要',
