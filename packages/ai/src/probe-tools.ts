@@ -1,5 +1,5 @@
 /** 工具契约检测：只验证生成的参数及工具结果回传，不执行任何外部动作。 */
-import type { ToolCallCheck, ToolSchemaMode } from '@qywork/core'
+import type { ToolCallCheck } from '@qywork/core'
 import { ProviderError } from './errors.ts'
 import { buildAdapter } from './factory.ts'
 import type { ProbeStep } from './probe.ts'
@@ -39,7 +39,7 @@ const tools: ChatRequest['tools'] = [
   },
 ]
 
-function validArguments(call: WireToolCall, label: string, schema: ToolSchemaMode): boolean {
+function validArguments(call: WireToolCall, label: string): boolean {
   const a = call.arguments
   if (!a || typeof a !== 'object' || Array.isArray(a)) return false
   const payload = a.payload as { tags?: unknown } | undefined
@@ -48,7 +48,7 @@ function validArguments(call: WireToolCall, label: string, schema: ToolSchemaMod
     a.url === URL &&
     a.count === 7 &&
     a.enabled === false &&
-    (schema === 'openai_strict' ? a.tabId === null : a.tabId === undefined) &&
+    a.tabId === undefined &&
     Object.keys(a).every((k) =>
       ['label', 'url', 'tabId', 'count', 'enabled', 'payload'].includes(k),
     ) &&
@@ -138,7 +138,7 @@ export async function probeToolCalls(
         calls.length !== 1 ||
         call.name !== TOOL ||
         call.argumentsError !== undefined ||
-        !validArguments(call, label, check.schema) ||
+        !validArguments(call, label) ||
         text.includes('<tool_call>')
       ) {
         check.status = 'failed'

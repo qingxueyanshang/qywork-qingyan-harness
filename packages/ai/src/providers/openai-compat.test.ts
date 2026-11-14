@@ -1,6 +1,6 @@
 /**
  * 覆盖 `openai-compat.ts` 的 `buildReasoning`（实际发送的思考控制字段）
- * 与 `createThinkingSplitter`（将正文中带思考标签的内容移到思考通道）、strict 参数约束、
+ * 与 `createThinkingSplitter`（将正文中带思考标签的内容移到思考通道）、strict 参数约束与参数还原（`restoreStrictCalls`）、
  * `buildMessages` 对工具结果媒体的编码（观察消息），
  * 判定百炼官方端点所用的 `@qywork/core` 的 `channelVendorOf`，以及百炼临时上传（`uploadDashScopeMedia`、
  * 上传失败后同一适配器再次发送时重新上传、OSS 以 403 拒绝时重新取凭证、上传失败按百炼的错误码归类）。
@@ -27,6 +27,7 @@ import {
   normalizeBaseUrl,
   OpenAICompatAdapter,
   prepareDashScopeMedia,
+  restoreStrictCalls,
   strictify,
   TOOL_MEDIA_NOTE,
   uploadDashScopeMedia,
@@ -1649,6 +1650,52 @@ describe('strict 工具定义', () => {
     expect(JSON.stringify(strictify(readFile.parameters))).toBe(
       JSON.stringify(strictify(readFile.parameters)),
     )
+  })
+
+  /**
+   * 参数还原只删除 `strictify` 改为可空的属性：必填属性、类型已含 null 的属性与 schema 未声明的键保留 null；
+   * 不以 strict 形状发送的工具（第三方 schema、native 规则）参数原样交付。
+   */
+  test('参数还原只删除 strictify 改为可空的属性，嵌套对象与数组元素同样处理', () => {
+    const tool: ToolSchema = {
+      name: 'demo',
+      description: '示例',
+      strict: true,
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          note: { type: 'string' },
+          keep: { type: ['string', 'null'] },
+          steps: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { at: { type: 'integer' }, label: { type: 'string' } },
+              required: ['at'],
+            },
+          },
+        },
+        required: ['id'],
+      },
+    }
+    const args = {
+      id: null,
+      note: null,
+      keep: null,
+      extra: null,
+      steps: [{ at: null, label: null }],
+    }
+    const call = { id: 'c', name: 'demo', arguments: args }
+    expect(restoreStrictCalls([call], [tool], 'openai_strict')[0]!.arguments).toEqual({
+      id: null,
+      keep: null,
+      extra: null,
+      steps: [{ at: null }],
+    })
+    const thirdParty = { ...tool, strict: false }
+    expect(restoreStrictCalls([call], [thirdParty], 'openai_strict')[0]!.arguments).toBe(args)
+    expect(restoreStrictCalls([call], [tool], 'native')[0]!.arguments).toBe(args)
   })
 
   test('请求体中带 strict，且发送重排后的 schema', async () => {

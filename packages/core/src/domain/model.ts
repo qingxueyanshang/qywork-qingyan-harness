@@ -712,7 +712,7 @@ export const TODO_FAILURE_LABEL: Record<TodoFailure, string> = {
  * 待办条目。`blocked` 必须带类别与所需条件，`failed` 必须带失败类别、失败原因与做过的尝试，其余状态都不带，
  * 由 `write_todos` 校验。
  *
- * 账本中的 `write_todos` 参数在 strict 模式下对未填写的字段写入 null，
+ * 账本中的 `write_todos` 参数可能对未填写的字段记有 null，
  * 读取方按 `status` 判断，不要按这些字段是否存在判断。
  */
 export type TodoItem =

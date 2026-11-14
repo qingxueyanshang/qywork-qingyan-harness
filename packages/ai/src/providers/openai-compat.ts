@@ -37,6 +37,7 @@ import type {
   ProviderUsage,
   ToolSchema,
   WireMessage,
+  WireToolCall,
 } from '../types.ts'
 import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP, videoData } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
@@ -253,7 +254,11 @@ export class OpenAICompatAdapter implements LlmAdapter {
       const tail = splitter.flush()
       if (tail) yield { type: 'text_delta', delta: tail, at: Date.now() }
 
-      const calls = collectToolCalls(partial, 'openai_chat_completions', req.model)
+      const calls = restoreStrictCalls(
+        collectToolCalls(partial, 'openai_chat_completions', req.model),
+        req.tools,
+        this.spec.chatToolSchema,
+      )
       if (calls.length) {
         // `max_tokens` 不得被覆盖。输出恰好在拼接工具参数的中途达到上限时，
         // 此处同时有 calls 与 'length'；无条件改为 tool_use 会丢失截断信号，
@@ -731,7 +736,7 @@ function buildTools(tools: ToolSchema[], spec: ModelSpec) {
   return [...tools]
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .map((t) => {
-      const strict = t.strict && spec.chatToolSchema === 'openai_strict'
+      const strict = sendsStrict(t, spec.chatToolSchema)
       return {
         type: 'function' as const,
         function: {
@@ -756,6 +761,7 @@ function buildTools(tools: ToolSchema[], spec: ModelSpec) {
  * 两条均满足后三次采样均为整数。因此此处不能只发送标志位。
  *
  * 只用于 `ToolSchema.strict` 为真的工具（本仓库自行编写的工具）。第三方 schema 不转换，理由见该字段的注释。
+ * 模型按该形状返回的参数由 `restoreStrictCalls` 还原为原 schema 的形状。
  */
 export function strictify(schema: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...schema }
@@ -779,7 +785,7 @@ export function strictify(schema: Record<string, unknown>): Record<string, unkno
 /** 可选参数改为必填；类型与枚举均须允许 null，否则无关参数仍被迫取实际值。 */
 function nullable(node: Record<string, unknown>): Record<string, unknown> {
   const type = node.type
-  if (typeof type !== 'string' || type === 'null') return node
+  if (!addsNull(node)) return node
   return {
     ...node,
     type: [type, 'null'],
@@ -787,6 +793,58 @@ function nullable(node: Record<string, unknown>): Record<string, unknown> {
       ? { enum: [...node.enum, null] }
       : {}),
   }
+}
+
+/** `strictify` 只为单一的非 null 类型加入 null。参数还原（`omitStrictNulls`）使用同一判据。 */
+function addsNull(node: Record<string, unknown>): boolean {
+  return typeof node.type === 'string' && node.type !== 'null'
+}
+
+/** 该工具是否以 strict 形状发送。两条 OpenAI 协议的发送与参数还原（`restoreStrictCalls`）共用此判据。 */
+export function sendsStrict(tool: ToolSchema, mode: ModelSpec['chatToolSchema']): boolean {
+  return tool.strict === true && mode === 'openai_strict'
+}
+
+/**
+ * 将以 strict 形状发送的工具的调用参数还原为原 schema 的形状。`tools` 与 `mode` 须与发送该请求时相同。
+ *
+ * strict 形状下模型以 `null` 表示不提供的可选参数，没有省略该键的写法。不要改为由各工具自行识别 `null`：
+ * 工具按原 schema 读取参数，以 `!== undefined` 判断是否提供的检查会把 `null` 当作已提供。
+ * 其余工具（第三方 schema、`native` 规则）的参数原样交付。
+ */
+export function restoreStrictCalls(
+  calls: WireToolCall[],
+  tools: ToolSchema[],
+  mode: ModelSpec['chatToolSchema'],
+): WireToolCall[] {
+  const schemas = new Map(
+    tools.filter((t) => sendsStrict(t, mode)).map((t) => [t.name, t.parameters]),
+  )
+  return calls.map((c) => {
+    const schema = schemas.get(c.name)
+    if (!schema) return c
+    return { ...c, arguments: omitStrictNulls(c.arguments, schema) as Record<string, unknown> }
+  })
+}
+
+/**
+ * `strictify` 对参数的逆变换：删除值为 `null` 且由 `strictify` 改为可空的属性（不在原 `required` 中、类型为单一的非 null 类型）。
+ * 原 schema 已允许 null 的属性与必填属性保留 `null`，schema 未声明的键原样保留。
+ * 递归范围与 `strictify` 相同：嵌套对象的 `properties` 与数组的 `items`。
+ */
+function omitStrictNulls(value: unknown, schema: Record<string, unknown>): unknown {
+  const items = schema.items as Record<string, unknown> | undefined
+  if (Array.isArray(value)) return items ? value.map((v) => omitStrictNulls(v, items)) : value
+  const props = schema.properties as Record<string, Record<string, unknown>> | undefined
+  if (!props || value === null || typeof value !== 'object') return value
+  const required = new Set((schema.required as string[] | undefined) ?? [])
+  const out: Record<string, unknown> = {}
+  for (const [key, v] of Object.entries(value)) {
+    const child = props[key]
+    if (child && v === null && !required.has(key) && addsNull(child)) continue
+    out[key] = child ? omitStrictNulls(v, child) : v
+  }
+  return out
 }
 
 /*
