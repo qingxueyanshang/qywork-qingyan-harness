@@ -14,12 +14,13 @@
  */
 
 import { compactionRecordOf, createSummaryTrace, runDensity } from '@qywork/agent'
-import { buildAdapter, ProviderError, type ProviderProfile } from '@qywork/ai'
+import { buildAdapter, type LlmAdapter, ProviderError, type ProviderProfile } from '@qywork/ai'
 import type {
   AgentEvent,
   Attachment,
   CompactionStage,
   ConversationId,
+  ErrorCode,
   FollowUp,
   Goal,
   RunId,
@@ -380,27 +381,11 @@ export async function startRun(
         deps.bus.publish(ev, conversationId)
       }
     } catch (err) {
-      // 在 loop 之外抛出的错误（装配 adapter、解析档案）进入此处。
-      //
-      // 不要硬编码 `internal_error`：否则「未配置 key」在 CLI 中报 no_api_key，
-      // 在桌面端却报 internal_error，前端的「去配置」引导永远不会触发。
-      // 错误码供前端决定引导操作，统一为 internal_error 等于没有分类。
-      const pe = err instanceof ProviderError ? err : null
-      const base = pe?.message ?? (err instanceof Error ? err.message : String(err))
-      // 桌面端用户不一定有终端，无法执行「运行 qy init」。
-      // 因此附上配置文件路径，用户可以直接打开该文件。
-      const message =
-        pe?.code === 'no_api_key' || pe?.code === 'auth_failed'
-          ? `${base}\n配置文件：${configPath()}`
-          : base
+      // 在 loop 之外抛出的错误（装配 adapter、解析档案、配置不合法）进入此处。
+      const { code, message } = runErrorOf(err)
       failure = message
       deps.bus.publish(
-        {
-          type: 'run.error',
-          runId: (currentRunId ?? '') as RunId,
-          code: pe?.code ?? 'internal_error',
-          message,
-        },
+        { type: 'run.error', runId: (currentRunId ?? '') as RunId, code, message },
         conversationId,
       )
     } finally {
@@ -799,6 +784,26 @@ function goalRoundPrompt(goal: Goal): string {
 }
 
 /**
+ * 在对话循环之外抛出的错误在 `run.error` 中的错误码与正文，`startRun` 与 `compactConversation` 共用。
+ *
+ * 错误码取抛出处的 `ProviderError.code`（配置错误为 `no_api_key`、`invalid_request` 等），其余为 `internal_error`。
+ * 不要硬编码 `internal_error`：错误码供前端决定引导操作，「未配置 key」在 CLI 中报 no_api_key、在桌面端报
+ * internal_error 时，前端的「去配置」引导不会触发。桌面端用户不一定有终端，无法执行「运行 qy init」，
+ * 因此未配置 key 与鉴权失败时附上配置文件路径，用户可以直接打开该文件。
+ */
+function runErrorOf(err: unknown): { code: ErrorCode; message: string } {
+  const pe = err instanceof ProviderError ? err : null
+  const base = pe?.message ?? (err instanceof Error ? err.message : String(err))
+  return {
+    code: pe?.code ?? 'internal_error',
+    message:
+      pe?.code === 'no_api_key' || pe?.code === 'auth_failed'
+        ? `${base}\n配置文件：${configPath()}`
+        : base,
+  }
+}
+
+/**
  * 手动压缩会话。
  *
  * 与自动路径共用同一个 `RuntimeCompaction` 与同一份摘要装配（`makeSummarizer`），
@@ -817,6 +822,25 @@ export async function compactConversation(
   // 附件的相对路径按会话所属项目解析；未查到时停止，理由同 `startRun`。
   const ws = workspaceOf(deps.store, conversationId)
   if (!ws) throw new Error('本会话未找到对应的项目目录，无法压缩')
+  /*
+   * 接口、模型与压缩比例在写入 run 之前解析，与轮次启动（`Session.ask`）的顺序相同：配置不合法时没有发生压缩，
+   * 不写入 run 行，经 `run.error` 报告，错误码与 `startRun` 同一判定（`runErrorOf`）。不要移到 `createRun` 之后：
+   * 下方的 catch 只能以停止原因 `provider_error` 结束该 run，配置错误会显示为模型服务出错。
+   * 窗口与密度取自同一份 spec：两个数需要相互比较，取自两份 spec 会形成两份账。
+   */
+  let adapter: LlmAdapter
+  let providerName: string
+  let compactPercent: number
+  try {
+    adapter = buildAdapter(summaryProfile(deps, conversationId))
+    if (!conversation.provider) throw new Error('该会话未记录所属接口，请重新选择模型后继续')
+    providerName = conversation.provider
+    // 按当前设置解析：手动压缩在两轮之间执行，与下一轮使用同一比例。
+    compactPercent = compactPercentFor(deps.config, adapter.spec)
+  } catch (err) {
+    emit({ type: 'run.error', runId: '' as RunId, ...runErrorOf(err) })
+    return
+  }
   // 用户发起的维护操作也有真实的 run，摘要与压缩结果因此写入同一份会话账本。
   const run = createRun(deps.store, {
     conversationId,
@@ -861,15 +885,9 @@ export async function compactConversation(
     })
     // 占用与窗口从会话实时计算：维护操作没有主请求回执，没有实时计量。
     // 面板与触发判定使用同一计量口径（`contextPanel` 的锚点口径），不另建一份账。
-    // 窗口与密度取自同一份 spec：两个数需要相互比较，取自两份 spec 会形成两份账。
-    const adapter = buildAdapter(summaryProfile(deps, conversationId))
     const spec = adapter.spec
     usageProvider = adapter.kind
     run.usage.currency = spec.pricing.currency ?? 'USD'
-    const providerName = getConversation(deps.store, conversationId)?.provider
-    if (!providerName) throw new Error('该会话未记录所属接口，请重新选择模型后继续')
-    // 按当前设置解析：手动压缩在两轮之间执行，与下一轮使用同一比例。配置不合法时以配置错误结束本次压缩。
-    const compactPercent = compactPercentFor(deps.config, spec.contextWindow)
     const route = { ...spec, providerName, providerKind: adapter.kind }
     const panel = contextPanel(deps.store, conversationId, route, compactPercent)
     const outcome = await compaction.run({

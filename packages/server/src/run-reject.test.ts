@@ -2,9 +2,9 @@
  * 启动轮次前被拒绝时发出的事件序列。
  *
  * **覆盖范围**：`run-control.ts` 中 `startRun` 使用云端型号时的价格同步与本轮开始时刻的取值
- * （`runtime/session.ts` 写入 run 行与 `run.started`），以及六个拒绝出口（占位失败、未找到项目
- * 目录、三处均无法取得模型、会话装配抛错、装配 adapter 抛错、会话被另一个进程占用），
- * 以及 `runs.ts` 在释放占位时的忙闲广播。这六个出口都不产生 run 行，因此**不会有 `run.finished`**，
+ * （`runtime/session.ts` 写入 run 行与 `run.started`），以及七个拒绝出口（占位失败、未找到项目
+ * 目录、三处均无法取得模型、会话装配抛错、装配 adapter 抛错、压缩比例不合法、会话被另一个进程占用），
+ * 以及 `runs.ts` 在释放占位时的忙闲广播。这七个出口都不产生 run 行，因此**不会有 `run.finished`**，
  * 终态是 `conversation.busy: false`（约定写在 `core` 的 `RunErrorEvent` 上）。
  * 目标自动继续与跟进消息两条路径由 `goal-loop.test.ts` / `followup.test.ts` 覆盖。
  *
@@ -139,6 +139,21 @@ test('未配置 key：装配 adapter 时抛出，忙闲状态恢复为空闲', a
   await idle
 
   expect(trace()).toEqual(['busy=true', 'run.error no_api_key runId=""', 'busy=false'])
+  expect(runs.hasRun(cv)).toBe(false)
+})
+
+/** 与手动压缩遇到同一配置时的错误码相同（`session-diagnostics.test.ts`）：都在写入 run 之前以 `invalid_request` 结束。 */
+test('压缩比例不合法：在写入 run 之前以 invalid_request 结束，忙闲状态恢复为空闲', async () => {
+  const cv = conversation()
+  const cfg = { ...config('sk-fake'), compactPercent: { large: 52.5 } } as QyConfig
+  const idle = waitForIdle(cv)
+  await startRun(cv, '你好', undefined, deps(cfg))
+  await idle
+
+  expect(trace()).toEqual(['busy=true', 'run.error invalid_request runId=""', 'busy=false'])
+  const error = events.map((f) => f.event).find((e) => e.type === 'run.error')
+  expect(error?.type === 'run.error' ? error.message : '').toContain('compactPercent.large')
+  expect(listRuns(store, cv)).toEqual([])
   expect(runs.hasRun(cv)).toBe(false)
 })
 

@@ -1,7 +1,7 @@
 /** 覆盖手动压缩入口、HTTP 摘要、SQLite 历史恢复与会话导出。 */
 import { expect, test } from 'bun:test'
 import { resolve } from 'node:path'
-import type { AgentEvent } from '@qywork/core'
+import type { AgentEvent, RunId } from '@qywork/core'
 import { catalogKey, exportConversationDiagnostics, type QyConfig } from '@qywork/runtime'
 import {
   appendMessage,
@@ -156,6 +156,66 @@ test('手动压缩的记录带压缩后占用、两条边界与修订号，取�
       summaryCut,
       condenseCut: manifest.condensedThrough ?? summaryCut,
     })
+  } finally {
+    store.close()
+    provider.stop(true)
+  }
+})
+
+/**
+ * 原始失败形状：配置文件中的压缩比例写为 52.5，手动压缩以 `internal_error` 结束，run 的停止原因为
+ * `provider_error`，运行面板显示为模型服务出错。配置在写入 run 之前解析，配置错误以 `run.error` 报告。
+ */
+test('压缩比例不合法时手动压缩以配置错误结束：错误码为 invalid_request，不写入 run，不发送摘要请求', async () => {
+  let requests = 0
+  const provider = Bun.serve({
+    port: 0,
+    fetch() {
+      requests++
+      return new Response('unexpected', { status: 500 })
+    },
+  })
+  const store = new Store({ path: ':memory:' })
+  try {
+    const ws = upsertWorkspace(store, resolve('.tmp/compaction-invalid-percent'), 'invalid-percent')
+    const cv = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'p',
+      model: 'diagnostic-model',
+    })
+    for (let i = 0; i < 5; i++)
+      appendMessage(store, {
+        conversationId: cv.id,
+        role: 'user',
+        content: `第${i}条${'核对材料。'.repeat(500)}`,
+      })
+    const events: AgentEvent[] = []
+    await compactConversation(cv.id, {
+      store,
+      config: {
+        providers: {
+          p: {
+            kind: 'openai_chat_completions',
+            apiKey: 'test',
+            baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+            models: { 'diagnostic-model': {} },
+          },
+        },
+        compactPercent: { large: 52.5 },
+      },
+      bus: { publish: (ev: AgentEvent) => events.push(ev) },
+    } as unknown as CommandDeps)
+    expect(events).toEqual([
+      {
+        type: 'run.error',
+        runId: '' as RunId,
+        code: 'invalid_request',
+        message: expect.stringContaining('compactPercent.large'),
+      },
+    ])
+    expect(listConversationHistoryPage(store, cv.id, { limit: 10 }).runs).toEqual([])
+    expect(getConversation(store, cv.id)!.compactionManifest).toBeNull()
+    expect(requests).toBe(0)
   } finally {
     store.close()
     provider.stop(true)

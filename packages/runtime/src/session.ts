@@ -590,7 +590,7 @@ export class Session {
      * 自动压缩比例在此解析一次，一轮之内不变：触发判定、压缩、请求行的触发线与写给模型的百分比都取这一个值。
      * 配置不合法时在写入轮次之前抛出配置错误，不改用缺省值。
      */
-    const compactPercent = compactPercentFor(config, adapter.spec.contextWindow)
+    const compactPercent = compactPercentFor(config, adapter.spec)
     if (!this.extensions) {
       await this.loadExtensionTools(adapter.spec.density, conversationId)
     }

@@ -17,6 +17,7 @@ import {
   lookupModel,
   type ModelSpec,
   type OffPeakDiscount,
+  ProviderError,
   type TransportCapabilities,
 } from '@qywork/ai'
 import {
@@ -674,17 +675,26 @@ export function modelSpecOf(cfg: QyConfig, ref: ModelRef): ModelSpec | undefined
 }
 
 /**
- * 窗口所在档的自动压缩比例，轮次启动、上下文面板与手动压缩各在使用前调用一次。
+ * 模型窗口所在档的自动压缩比例，轮次启动、上下文面板与手动压缩各在使用前调用一次。
  *
- * 配置不合法（手工写入配置文件）时抛出配置错误，不改用缺省值：轮次在启动前终止，面板接口返回同一报错。
+ * 配置不合法（手工写入配置文件）时抛出错误码为 `invalid_request` 的 `ProviderError`，不改用缺省值：
+ * 轮次与手动压缩在写入 run 之前终止，面板接口返回同一报错。不要改为抛出普通 `Error`：调用方按
+ * `ProviderError.code` 取错误码，未分类的错误只能记为 `internal_error`。`provider` 取模型规格的协议，只用于诊断。
  * 写接口已拒绝不合法的值（`diagnoseConfig`），只有绕过写接口的修改会到达此处。
  */
-export function compactPercentFor(cfg: QyConfig, contextWindow: number): number {
+export function compactPercentFor(
+  cfg: QyConfig,
+  spec: Pick<ModelSpec, 'contextWindow' | 'provider'>,
+): number {
   const problems = compactPercentProblems(cfg.compactPercent)
   if (problems.length) {
-    throw new Error(`配置文件 ${configPath()} 中的自动压缩比例不合法：${problems.join('；')}`)
+    throw new ProviderError({
+      code: 'invalid_request',
+      message: `配置文件 ${configPath()} 中的自动压缩比例不合法：${problems.join('；')}`,
+      provider: spec.provider,
+    })
   }
-  return compactPercentOf(contextWindow, cfg.compactPercent)
+  return compactPercentOf(spec.contextWindow, cfg.compactPercent)
 }
 
 /** 一次生成请求所需的全部信息。派生值，不落盘。 */

@@ -412,7 +412,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     store,
     conv as ConversationId,
     { ...spec, providerName: ref.provider, providerKind: profile.kind },
-    compactPercentFor(config, spec.contextWindow),
+    compactPercentFor(config, spec),
   )
   note(
     `面板 ${panel.total}（${panel.percent}%，${panel.source}）　运行中末次事件 ${events[events.length - 1]?.tokens}`,
