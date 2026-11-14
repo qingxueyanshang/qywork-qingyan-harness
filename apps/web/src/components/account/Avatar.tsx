@@ -1,10 +1,10 @@
 import { Show } from 'solid-js'
 
-/** 账号头像：已设置时显示图片，否则显示邮箱首字母。账号弹窗与侧栏入口共用。 */
-export function AccountAvatar(props: { email: string; avatar: string | null; small?: boolean }) {
+/** 账号头像：已设置时显示图片，否则显示 `label`（用户名，未设置时为邮箱）的首字符。账号弹窗与侧栏入口共用。 */
+export function AccountAvatar(props: { label: string; avatar: string | null; small?: boolean }) {
   return (
     <span class="account-avatar" classList={{ sm: props.small === true }} aria-hidden="true">
-      <Show when={props.avatar} fallback={(props.email[0] ?? '?').toUpperCase()}>
+      <Show when={props.avatar} fallback={([...props.label][0] ?? '?').toUpperCase()}>
         {(src) => <img src={src()} alt="" />}
       </Show>
     </span>

@@ -55,6 +55,8 @@ const cloud = {
   /** 后上架的型号（模型库已收录）是否带规格。 */
   opusSpec: false,
   avatar: null as string | null,
+  /** 账号的用户名；未设置时为空字符串。 */
+  name: '',
   announcementSeen: null as string | null,
   /** 云端收到的版本公告查询次数。 */
   notesQueries: 0,
@@ -137,6 +139,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
     if (path === '/v1/me') {
       return Response.json({
         email: 'me@example.com',
+        name: cloud.name,
         credits: 12.5,
         avatar: cloud.avatar,
         recharge: true,
@@ -163,6 +166,17 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
     }
     if (path === '/v1/me/announcement-seen' && req.method === 'PUT' && authed) {
       cloud.announcementSeen = ((await req.json()) as { id: string }).id
+      return new Response(null, { status: 204 })
+    }
+    if (path === '/v1/me/name' && req.method === 'PUT' && authed) {
+      const { name } = (await req.json()) as { name: string }
+      if ([...name.trim()].length > 30) {
+        return Response.json(
+          { error: { code: 'invalid_request', message: '用户名不超过 30 个字符' } },
+          { status: 400 },
+        )
+      }
+      cloud.name = name.trim()
       return new Response(null, { status: 204 })
     }
     if (path === '/v1/me/avatar' && req.method === 'PUT' && authed) {
@@ -274,6 +288,7 @@ beforeEach(async () => {
     nextBase: 'claude-sonnet-5-5',
     opusSpec: false,
     avatar: null,
+    name: '',
     announcementSeen: null,
     notesQueries: 0,
     sonnetRatio: 0.5,
@@ -292,6 +307,7 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
   expect(state).toEqual({
     state: 'signed_in',
     email: 'me@example.com',
+    name: '',
     credits: 12.5,
     avatar: null,
     provider: CLOUD_PROVIDER,
@@ -688,6 +704,35 @@ test('更换头像：以设备密钥写入云端，状态中带头像；格式�
   await expect(account.setAvatar('data:text/html;base64,PGI+')).rejects.toThrow(
     '头像须为 PNG、JPEG 或 WebP 图片',
   )
+})
+
+test('用户名：经本机接口写入云端，状态中带用户名；云端读取失败时沿用上一次取得的值，退出后清除；超过上限时给出云端的原因，缺少时不请求云端', async () => {
+  await account.login('me@example.com', PASSWORD)
+  const deps = { cloud: account } as unknown as ApiRequestDeps
+  const put = (body: unknown) =>
+    handleCloudApi(
+      new URL('http://x/api/cloud/name'),
+      new Request('http://x/api/cloud/name', { method: 'PUT', body: JSON.stringify(body) }),
+      deps,
+    )
+  const saved = await put({ name: ' 青学 ' })
+  expect(await saved?.json()).toMatchObject({ state: 'signed_in', name: '青学' })
+  expect(cloud.name).toBe('青学')
+
+  cloud.me = 'down'
+  expect(await account.state()).toMatchObject({ credits: null, name: '青学' })
+  cloud.me = 'ok'
+
+  const long = await put({ name: '字'.repeat(31) })
+  expect(long?.status).toBe(400)
+  expect(((await long?.json()) as { message: string }).message).toContain('用户名不超过 30 个字符')
+  expect((await put({}))?.status).toBe(400)
+  expect(cloud.name).toBe('青学')
+
+  await account.logout()
+  cloud.key = 'qyd_other_key'
+  cloud.me = 'down'
+  expect(await account.login('other@example.com', PASSWORD)).toMatchObject({ name: '' })
 })
 
 test('充值：经本机接口下单与读取状态；缺少金额时不请求云端，云端拒绝的金额以 400 返回原因', async () => {

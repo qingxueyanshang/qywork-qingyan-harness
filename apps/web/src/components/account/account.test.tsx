@@ -1,5 +1,5 @@
 /**
- * 账号界面：`AccountEntry.tsx`（侧栏入口）、`AccountDialog.tsx`（账号弹窗，其中的手机接入见 `PairPanel.test.tsx`）、`LoginForm.tsx`（登录表单）、
+ * 账号界面：`AccountEntry.tsx`（侧栏入口）、`AccountDialog.tsx`（账号弹窗，其中的手机接入见 `PairPanel.test.tsx`）、`LoginForm.tsx`（登录表单）、`NameEdit.tsx`（用户名的修改）、
  * `RechargeDialog.tsx`（充值窗口）、
  * `ActivityGrid.tsx`（Token 活动方格）、`../LoginGate.tsx`（首次启动的登录页），以及 `lib/store/cloud.ts`。
  * 服务端接口以替身代替，状态以替身返回值为准。
@@ -44,6 +44,7 @@ const STORED = {
 const SIGNED_IN: CloudState = {
   state: 'signed_in',
   email: 'me@example.com',
+  name: '',
   credits: 12.5,
   avatar: null,
   provider: 'qywork',
@@ -116,6 +117,18 @@ beforeAll(async () => {
     if (path === '/api/cloud/avatar') {
       const { image } = JSON.parse(String(init?.body)) as { image: string }
       cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), avatar: image }
+      return structuredClone(cloud) as T
+    }
+    if (path === '/api/cloud/name') {
+      const { name } = JSON.parse(String(init?.body)) as { name: string }
+      if (name.length > 30) {
+        throw new ApiError(
+          400,
+          path,
+          JSON.stringify({ error: 'cloud', message: '用户名不超过 30 个字符' }),
+        )
+      }
+      cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), name }
       return structuredClone(cloud) as T
     }
     if (path === '/api/config') {
@@ -660,6 +673,67 @@ test('更换头像后，侧栏入口与账号弹窗显示头像图片，不再�
   )
   expect(side.host.querySelector('.account-avatar img')?.getAttribute('src')).toBe(image)
   expect(calls).toContain('PUT /api/cloud/avatar')
+  side.close()
+  view.close()
+})
+
+test('用户名：未设置时入口显示邮箱、弹窗显示「设置用户名」；保存后入口、弹窗与头像首字符都改为用户名，邮箱仍显示；Escape 放弃且弹窗保留；清除后恢复', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  store.setAccountOpen(true)
+  const side = await entry()
+  const view = await dialog()
+  const nameButton = () => view.host.querySelector<HTMLButtonElement>('.account-name')
+  const input = () => view.host.querySelector<HTMLInputElement>('.account-name-input')
+  const saves = () => calls.filter((c) => c === 'PUT /api/cloud/name').length
+  await until(() => nameButton() !== null)
+  expect(nameButton()?.textContent).toBe('设置用户名')
+  expect(side.host.querySelector('.account-entry-name')?.textContent).toBe('me@example.com')
+  expect(side.host.querySelector('.account-avatar')?.textContent).toBe('M')
+
+  // Escape 放弃：不写入，账号弹窗保留。
+  nameButton()?.click()
+  await until(() => input() !== null)
+  ;(input() as HTMLInputElement).value = '放弃'
+  input()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await until(() => input() === null)
+  expect(saves()).toBe(0)
+  expect(store.accountOpen()).toBe(true)
+
+  // Enter 保存，首尾空白不保存。
+  nameButton()?.click()
+  await until(() => input() !== null)
+  ;(input() as HTMLInputElement).value = '  青学  '
+  input()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await until(() => nameButton()?.textContent === '青学')
+  expect(saves()).toBe(1)
+  expect(side.host.querySelector('.account-entry-name')?.textContent).toBe('青学')
+  expect(side.host.querySelector('.account-avatar')?.textContent).toBe('青')
+  expect(view.host.querySelector('.account-email')?.textContent).toBe('me@example.com')
+
+  // 内容未改变时失去焦点不写入。
+  nameButton()?.click()
+  await until(() => input() !== null)
+  input()?.dispatchEvent(new Event('blur'))
+  await until(() => input() === null)
+  expect(saves()).toBe(1)
+
+  // 云端拒绝时显示原因，用户名不变。
+  nameButton()?.click()
+  await until(() => input() !== null)
+  ;(input() as HTMLInputElement).value = '字'.repeat(31)
+  input()?.dispatchEvent(new Event('blur'))
+  await until(() => view.text().includes('用户名不超过 30 个字符'))
+  expect(nameButton()?.textContent).toBe('青学')
+
+  // 保存空内容即清除。
+  nameButton()?.click()
+  await until(() => input() !== null)
+  ;(input() as HTMLInputElement).value = ''
+  input()?.dispatchEvent(new Event('blur'))
+  await until(() => nameButton()?.textContent === '设置用户名')
+  expect(side.host.querySelector('.account-entry-name')?.textContent).toBe('me@example.com')
+  store.setAccountOpen(false)
   side.close()
   view.close()
 })

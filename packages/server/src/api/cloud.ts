@@ -1,5 +1,5 @@
 /**
- * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`、`avatar`，账号界面的 `models`、`usage`、`requests`，
+ * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`、`avatar`、`name`，账号界面的 `models`、`usage`、`requests`，
  * 充值的 `recharge`（下单）与 `recharge/:orderNo`（状态），
  * 不需要登录的本版说明 `release-notes` 与公告列表 `announcements`，以及公告已读位置的写入 `announcements/seen`。
  *
@@ -67,6 +67,13 @@ export const handleCloudApi: ApiHandler = async (url, req, d) => {
         return json({ error: 'invalid_request', message: '缺少头像图片' }, 400)
       }
       return json(await account.setAvatar(body.image))
+    }
+    if (p === '/api/cloud/name' && req.method === 'PUT') {
+      const body = (await req.json().catch(() => ({}))) as { name?: unknown }
+      if (typeof body.name !== 'string') {
+        return json({ error: 'invalid_request', message: '缺少用户名' }, 400)
+      }
+      return json(await account.setName(body.name))
     }
     if (p === '/api/cloud/usage' && req.method === 'GET') return json(await account.usage())
     if (p === '/api/cloud/models' && req.method === 'GET') return json(await account.models())

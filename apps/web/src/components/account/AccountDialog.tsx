@@ -32,6 +32,7 @@ import {
   fetchCloudUsage,
   refreshCloudState,
   setCloudAvatar,
+  setCloudName,
 } from '../../lib/store/cloud.ts'
 import {
   ensureModelCatalog,
@@ -51,6 +52,7 @@ import { ActivityGrid } from './ActivityGrid.tsx'
 import { AccountAvatar, squareAvatar } from './Avatar.tsx'
 import { durationRange, formatCredits, formatRatio, formatUnitPrice } from './format.ts'
 import { LoginForm } from './LoginForm.tsx'
+import { NameEdit } from './NameEdit.tsx'
 import RechargeDialog from './RechargeDialog.tsx'
 
 /** 使用记录每页条数，与服务端 `/api/cloud/requests` 相同：返回不足一页即没有更早的记录。 */
@@ -64,7 +66,7 @@ type SignedIn = Extract<CloudState, { state: 'signed_in' }>
 const close = () => setAccountOpen(false)
 
 /**
- * 账号弹窗：已登录时显示账号、充值入口、统计、Token 活动与使用记录，数据全部取自云端；未登录时显示登录表单。
+ * 账号弹窗：已登录时显示账号（头像、可修改的用户名、邮箱）、充值入口、统计、Token 活动与使用记录，数据全部取自云端；未登录时显示登录表单。
  * 两种状态各为固定尺寸（B9），内容在弹窗内滚动。未登录时是窄的登录框（`.signin`）：尺寸只在登录成功、
  * 内容整体换成账号页时改变一次，此时登录表单的按钮已不存在，不会移动用户正在瞄准的目标。
  */
@@ -157,6 +159,18 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
     }
   }
 
+  const rename = async (name: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await setCloudName(name)
+    } catch (e) {
+      setError(explainApiError(e, '无法修改用户名'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const pickAvatar = async (input: HTMLInputElement) => {
     const file = input.files?.[0]
     input.value = ''
@@ -176,7 +190,10 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
     <>
       <header class="account-head">
         <label class="account-avatar-edit" data-tip="更换头像">
-          <AccountAvatar email={props.signed.email} avatar={props.signed.avatar} />
+          <AccountAvatar
+            label={props.signed.name || props.signed.email}
+            avatar={props.signed.avatar}
+          />
           <input
             type="file"
             accept="image/png,image/jpeg,image/webp,image/gif"
@@ -186,7 +203,10 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
             onChange={(e) => void pickAvatar(e.currentTarget)}
           />
         </label>
-        <span class="account-email">{props.signed.email}</span>
+        <div class="account-id">
+          <NameEdit name={props.signed.name} onSave={(name) => void rename(name)} />
+          <span class="account-email">{props.signed.email}</span>
+        </div>
         <div class="account-actions">
           {/* 公告窗口打开在本窗口之上；最新一条未读时带圆点，侧栏的账号入口同时带圆点。 */}
           <Show when={announcements().length > 0}>
