@@ -6,8 +6,6 @@ import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { PetEntry } from '@qywork/core'
 
-const DEFAULT_NAME = '大肥鱼娘 · 蓝色鲸鱼女仆'
-
 let store: typeof import('../../lib/store/index.ts')
 let originalApi: typeof store.client.api
 let pets: PetEntry[] = []
@@ -69,40 +67,38 @@ async function mount() {
 }
 
 test('宠物库晚于偏好到达：重新打开设置时显示的是当前选中的宠物', async () => {
-  pets = [entry('bubble', '飞鱼娘·泡泡'), entry('maid', '鲸鱼女仆')]
+  pets = [entry('bubble', '飞鱼娘·泡泡'), entry('maid', '大肥鱼娘 · 蓝色鲸鱼女仆')]
   store.setPetPrefs({ pack: 'maid' })
   const wait = Promise.withResolvers<void>()
   gate = wait.promise
   const loading = store.refreshPetLibrary()
   const ui = await mount()
   try {
-    expect(ui.trigger.textContent).not.toBe(DEFAULT_NAME)
+    expect(ui.trigger.textContent).not.toBe('团子')
     wait.resolve()
     await loading
-    expect(ui.trigger.textContent).toBe('鲸鱼女仆')
+    expect(ui.trigger.textContent).toBe('大肥鱼娘 · 蓝色鲸鱼女仆')
   } finally {
     gate = undefined
     ui.close()
   }
 })
 
-test('删除按钮位于每只用户宠物的行内，两只内置宠物没有；删除前须确认；点选写入偏好并收起', async () => {
+test('删除按钮位于每只用户宠物的行内，内置宠物没有；删除前须确认；点选写入偏好并收起', async () => {
   store.setPetPrefs({ pack: null })
   await store.refreshPetLibrary()
   const ui = await mount()
   try {
-    expect(ui.trigger.textContent).toBe(DEFAULT_NAME)
+    expect(ui.trigger.textContent).toBe('团子')
     ui.trigger.click()
     const menu = ui.menu()!
     const rows = [...menu.querySelectorAll('.pet-option')]
     expect(rows.map((r) => r.querySelector('[data-pet-option]')?.textContent)).toEqual([
-      DEFAULT_NAME,
       '团子',
       '飞鱼娘·泡泡',
-      '鲸鱼女仆',
+      '大肥鱼娘 · 蓝色鲸鱼女仆',
     ])
     expect(rows.map((r) => r.querySelector('.pet-option-remove') !== null)).toEqual([
-      false,
       false,
       true,
       true,
@@ -117,7 +113,7 @@ test('删除按钮位于每只用户宠物的行内，两只内置宠物没有�
       )!
 
     // 点删除只弹出确认，菜单收起；取消后不删除。
-    rows[2]!.querySelector<HTMLButtonElement>('.pet-option-remove')!.click()
+    rows[1]!.querySelector<HTMLButtonElement>('.pet-option-remove')!.click()
     expect(ui.menu()).toBeNull()
     expect(confirm()?.textContent).toContain('飞鱼娘·泡泡')
     confirmButton('取消').click()
@@ -146,30 +142,11 @@ test('删除按钮位于每只用户宠物的行内，两只内置宠物没有�
     expect(confirm()).toBeNull()
 
     ui.trigger.click()
-    ui.menu()!.querySelectorAll<HTMLButtonElement>('[data-pet-option]')[3]!.click()
+    ui.menu()!.querySelectorAll<HTMLButtonElement>('[data-pet-option]')[2]!.click()
     expect(store.petPrefs().pack).toBe('maid')
     expect(ui.menu()).toBeNull()
-    expect(ui.trigger.textContent).toBe('鲸鱼女仆')
+    expect(ui.trigger.textContent).toBe('大肥鱼娘 · 蓝色鲸鱼女仆')
   } finally {
-    ui.close()
-  }
-})
-
-test('选用内置的团子：偏好记为它的 id，显示团子，不向宠物库读取', async () => {
-  store.setPetPrefs({ pack: null })
-  const ui = await mount()
-  try {
-    ui.trigger.click()
-    ui.menu()!.querySelectorAll<HTMLButtonElement>('[data-pet-option]')[1]!.click()
-    expect(store.petPrefs().pack).toBe('dango')
-    expect(ui.trigger.textContent).toBe('团子')
-    const { activePet } = await import('../appearance/active-pet.ts')
-    expect(activePet().pack.name).toBe('团子')
-    expect(activePet().frameUrl('idle.svg')).toStartWith('data:image/svg+xml')
-    store.setPetPrefs({ pack: null })
-    expect(activePet().pack.name).toBe(DEFAULT_NAME)
-  } finally {
-    store.setPetPrefs({ pack: null })
     ui.close()
   }
 })

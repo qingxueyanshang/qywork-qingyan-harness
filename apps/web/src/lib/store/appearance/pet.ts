@@ -16,7 +16,6 @@ import {
   type Conversation,
   type ConversationHistoryPageResponse,
   type ConversationRunsResponse,
-  DANGO_PET_ID,
   deriveConversationTitle,
   type PetEntry as PetPackEntry,
   type PetState,
@@ -67,7 +66,7 @@ const CLOCK_SLACK_MS = 10_000
 
 interface PetPrefs {
   place: PetPlace
-  /** 宠物包 id。null 表示默认的内置宠物，`DANGO_PET_ID` 表示内置宠物「团子」。 */
+  /** 宠物包 id。null 表示内置的默认宠物。 */
   pack: string | null
 }
 
@@ -117,8 +116,7 @@ export async function removePet(id: string): Promise<void> {
  */
 async function loadPack(): Promise<void> {
   const id = prefs().pack
-  // 内置宠物随应用发布，不在宠物库中。
-  if (!id || id === DANGO_PET_ID) {
+  if (!id) {
     setPack(null)
     return
   }
