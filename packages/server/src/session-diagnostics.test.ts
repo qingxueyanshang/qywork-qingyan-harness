@@ -222,6 +222,34 @@ test('压缩比例不合法时手动压缩以配置错误结束：错误码为 i
   }
 })
 
+test('会话所属项目的记录缺失时手动压缩经 run.error 报告，不写入 run', async () => {
+  const store = new Store({ path: ':memory:' })
+  try {
+    const ws = upsertWorkspace(store, resolve('.tmp/compaction-no-workspace'), 'no-workspace')
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    // 外键约束下无法删除仍被会话引用的项目；关闭约束后删除，得到所属项目缺失的会话。
+    store.db.exec('PRAGMA foreign_keys = OFF')
+    store.db.query('DELETE FROM workspaces WHERE id = ?').run(ws.id)
+    const events: AgentEvent[] = []
+    await compactConversation(cv.id, {
+      store,
+      config: { providers: {} },
+      bus: { publish: (ev: AgentEvent) => events.push(ev) },
+    } as unknown as CommandDeps)
+    expect(events).toEqual([
+      {
+        type: 'run.error',
+        runId: '' as RunId,
+        code: 'internal_error',
+        message: '本会话未找到对应的项目目录，无法压缩',
+      },
+    ])
+    expect(listConversationHistoryPage(store, cv.id, { limit: 10 }).runs).toEqual([])
+  } finally {
+    store.close()
+  }
+})
+
 test('摘要被拒后仍保留原生错误、请求参数、降级原因，导出时改配置不改历史', async () => {
   const requests: Record<string, unknown>[] = []
   const secret = 'test-provider-secret-123456'
