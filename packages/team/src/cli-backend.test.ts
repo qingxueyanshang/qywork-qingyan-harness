@@ -110,7 +110,8 @@ describe('CLI 执行结果', () => {
       expect(got.exitCode).toBe(0)
       expect(got.error).toBeTruthy()
     }
-  })
+    // 依次启动六个子进程，负载较高的构建机上超过默认的 5 秒上限。
+  }, 60_000)
 
   test('Codex 只有 stdout 错误时返回原因、退出码与会话号', async () => {
     const got = await run(

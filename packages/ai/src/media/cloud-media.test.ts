@@ -185,9 +185,13 @@ test('云端回报的重试等待与上游状态原样交给调用方，云端�
         settled = true
       })
     // 查询间隔由假计时器推进；请求与响应经本机接口完成，每次推进后让出事件循环。
+    // 每次推进后让出多次：只让出一次时，负载较高的机器上假时钟先于本机接口的响应走完 60 秒的无数据上限，
+    // 请求按超时处理，重试的回报与预期不同。
     for (let i = 0; i < 5000 && !settled; i++) {
       jest.advanceTimersByTime(100)
-      await new Promise<void>((resolve) => setImmediate(resolve))
+      for (let k = 0; k < 20 && !settled; k++) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
     }
     const err = await work
     expect(retries).toEqual([{ attempt: 1, max: 5, reason: 'HTTP 429 请求过多：busy' }, null])
