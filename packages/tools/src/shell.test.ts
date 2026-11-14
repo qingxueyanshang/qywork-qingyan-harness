@@ -374,6 +374,25 @@ describe('后台命令的工具形态', () => {
     } as unknown as ToolContext
   }
 
+  test('说明把 background 定义为不自行退出的命令所用，并给出启动图形应用的写法', () => {
+    const spec = makeShellTool(shell, { background: true })
+    const background = (spec.parameters as { properties: { background: { description: string } } })
+      .properties.background.description
+    expect(background).toContain('不自行退出的命令')
+    expect(background).toContain('会自行结束的命令优先不指定')
+    expect(background).not.toContain('长时间命令')
+    expect(spec.description).toContain('启动图形应用')
+    expect(spec.description).toContain(
+      process.platform === 'win32'
+        ? 'Start-Process'
+        : process.platform === 'darwin'
+          ? 'open -a'
+          : 'nohup',
+    )
+    // 没有后台命令通道时写法仍在：启动图形应用不依赖 background。
+    expect(makeShellTool(shell).description).toContain('启动图形应用')
+  })
+
   test('没有后台命令通道时规格不含 background，也不注册 background_command', () => {
     const plain = makeShellTool(shell)
     expect(Object.keys((plain.parameters as { properties: object }).properties)).not.toContain(
