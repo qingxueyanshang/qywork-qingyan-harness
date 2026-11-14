@@ -17,6 +17,7 @@ import {
   projectManifest,
   stepStamp,
   summaryCutOf,
+  summaryHeadroom,
   unitKey,
 } from './compaction.ts'
 import { createSummaryTrace } from './loop/summary-trace.ts'
@@ -649,6 +650,17 @@ describe('摘要写满所给预算', () => {
       expect(estimateMessages(projectManifest(r.manifest), DEFAULT_DENSITY)).toBeLessThanOrEqual(
         BUDGET,
       )
+    })
+
+    // 选界据 `summaryHeadroom` 判断尾部是否给摘要留出了空间，它必须等于摘要器实际得到的预算。
+    test(`${label}时 summaryHeadroom 等于摘要器得到的预算`, async () => {
+      const given = input({ previous, projectionBudget: BUDGET, condensedRegionTokens: 50_000 })
+      let granted = 0
+      await compact(given, async (_p, budget) => {
+        granted = budget
+        return '摘要'
+      })
+      expect(summaryHeadroom(given)).toBe(granted)
     })
   }
 })
