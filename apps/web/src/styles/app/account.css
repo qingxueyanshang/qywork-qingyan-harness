@@ -142,6 +142,7 @@
 /* 编辑状态的宽度由不可见的 `.account-name-sizer` 决定：它与输入框叠在同一格，内容是输入框的当前内容，
    为空时是占位文字。进入编辑时宽度与按钮相同，其后的图标按钮不移动。不要给输入框固定宽度。 */
 .account-name-edit {
+  position: relative;
   display: inline-grid;
   max-width: 100%;
 }
@@ -163,6 +164,34 @@
   width: 0;
   min-width: 100%;
   outline: none;
+  /* 光标由 `.account-name-caret` 绘制。 */
+  caret-color: transparent;
+}
+/* 测量光标之前文字宽度的不可见元素，字体须与输入框相同。 */
+.account-name-measure {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+/* 光标：2px 宽、与文字等高、强调色，按 1.1 秒的周期闪烁。 */
+.account-name-caret {
+  position: absolute;
+  top: calc((22px - var(--fs-lg)) / 2);
+  width: 2px;
+  height: var(--fs-lg);
+  /* 以光标位置为中线，不压住其后的第一个字。 */
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+  animation: account-name-caret 1.1s steps(1) infinite;
+}
+@keyframes account-name-caret {
+  50% {
+    opacity: 0;
+  }
 }
 .account-email {
   max-width: 100%;
