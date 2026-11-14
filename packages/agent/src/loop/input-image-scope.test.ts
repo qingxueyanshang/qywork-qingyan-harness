@@ -211,14 +211,14 @@ test('超过上限时最早的批次缩小为缩略图，最后一批保留原�
     persistence(),
     [
       USER,
-      ...bigWave('pr_1', 'one', 1.8),
-      ...bigWave('pr_2', 'two', 1.8),
-      ...bigWave('pr_3', 'three', 1.8),
-      ...bigWave('pr_4', 'four', 1.8),
+      ...bigWave('pr_1', 'one', 2.8),
+      ...bigWave('pr_2', 'two', 2.8),
+      ...bigWave('pr_3', 'three', 2.8),
+      ...bigWave('pr_4', 'four', 2.8),
     ],
     'rn_evict',
   )
-  // 第 3 张使总量达到约 5.4 MB，前两张缩小后降至约 1.9 MB；第 4 张之后约 3.7 MB，未再超过上限。
+  // 第 3 张使总量达到约 8.4 MB，前两张缩小后降至约 2.9 MB；第 4 张之后约 5.7 MB，未再超过上限。
   // 夹具字节不是可解码的图片，缩小的两张替换为说明，原图只剩后两张。
   expect(imagesIn(adapter.seen[0]).map(tagOf)).toEqual(['three', 'four'])
   const tools = (adapter.seen[0]?.messages ?? []).filter((m) => m.role === 'tool')
@@ -312,13 +312,13 @@ function storedShot(
 }
 
 /**
- * 原始失败形状：历史中的工具图片在装配时全部解码为 base64（实测一条会话 526 MB），而请求只携带约 5 MB。
+ * 原始失败形状：历史中的工具图片在装配时全部解码为 base64（实测一条会话 526 MB），而请求只携带约 8 MB。
  * 引用形态下只在发送前读取请求中的图片：原图，以及缩小为缩略图的那些的原图。
  */
 test('正文库中的工具图片：发送前只读取请求中保留的那些', async () => {
   const MB = 1024 * 1024
   const tags = ['one', 'two', 'three', 'four']
-  const bodies = new Map(tags.map((t, i) => [`rs_${t}`, Buffer.alloc(Math.round(1.8 * MB), i + 1)]))
+  const bodies = new Map(tags.map((t, i) => [`rs_${t}`, Buffer.alloc(Math.round(2.8 * MB), i + 1)]))
   const sink = blobSink(bodies)
   const adapter = capturingAdapter()
   await askOnce(

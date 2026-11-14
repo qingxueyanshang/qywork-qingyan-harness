@@ -125,7 +125,7 @@ test('工具每一步返回一张图：图片保留在请求中，每一步命�
   }
 })
 
-/** 约 1.5 MB 的噪声 PNG（无法压缩）：第 4 张使总量超过 5 MB，前三张缩小为缩略图。 */
+/** 约 1.5 MB 的噪声 PNG（无法压缩）：第 6 张使总量超过 8 MB，前五张缩小为缩略图。 */
 const LARGE_PNG = await (async () => {
   const photon = await import('@silvia-odwyer/photon-node')
   const width = 700
@@ -141,11 +141,11 @@ const LARGE_PNG = await (async () => {
 const LARGE = () => ({ data: LARGE_PNG, mime: 'image/png' })
 
 test('媒体超过保留上限：只有换出的那一步改写前缀，之后恢复整段命中', async () => {
-  const seen = await shootSteps(5, LARGE)
-  expect(seen).toHaveLength(5)
-  const tools = (seen[4] ?? []).filter((m) => m.role === 'tool')
-  expect(tools.map(hasImage)).toEqual([true, true, true, true])
-  for (const m of tools.slice(0, 3)) {
+  const seen = await shootSteps(7, LARGE)
+  expect(seen).toHaveLength(7)
+  const tools = (seen[6] ?? []).filter((m) => m.role === 'tool')
+  expect(tools.map(hasImage)).toEqual([true, true, true, true, true, true])
+  for (const m of tools.slice(0, 5)) {
     const [text, image] = m.content as ContentBlock[]
     const env = JSON.parse(text?.type === 'text' ? text.text : '') as { images_reduced?: string }
     expect(env.images_reduced).toBe(IMAGES_REDUCED)
@@ -165,18 +165,18 @@ test('媒体超过保留上限：只有换出的那一步改写前缀，之后�
  */
 test('逐步追加约 300 KB 的截图：改写前缀的步之间至少相隔余量所能容纳的张数，其余各步只追加', async () => {
   const SHOT = 300 * 1024
-  const seen = await shootSteps(60, (n) => ({
+  const seen = await shootSteps(80, (n) => ({
     mime: 'image/jpeg',
     resourceId: `rs_${n}`,
     bytes: SHOT,
     size: { width: 1280, height: 720 },
   }))
-  expect(seen).toHaveLength(60)
+  expect(seen).toHaveLength(80)
   const changes = seen.slice(1).map((cur, k) => firstChange(seen[k]!, cur))
   const rewrites = changes.flatMap((at, k) => (at < seen[k]!.length ? [k + 1] : []))
   const room = Math.floor((MEDIA_RETAIN_HIGH_BYTES - THUMBNAIL_RETAIN_BYTES) / SHOT)
   const gaps = rewrites.slice(1).map((k, i) => k - rewrites[i]!)
-  // 第 40 步前后缩略图合计超过下限，此后每次换出都把保护区之前的原图全部缩小。
+  // 第 49 步缩略图合计超过下限，此后每次换出都把保护区之前的原图全部缩小。
   expect(rewrites.length).toBeGreaterThan(3)
   expect(Math.min(...gaps)).toBeGreaterThanOrEqual(room)
   // 不改写的步是上一步的严格前缀，整段命中上一步。

@@ -38,6 +38,7 @@ import {
   omitImages,
   payloadSnapshotOf,
   THUMBNAIL_RETAIN_BYTES,
+  THUMBNAIL_RETAIN_LOW_BYTES,
   thumbnailBytes,
   toolResultContent,
   videoDelivery,
@@ -341,7 +342,7 @@ describe('materialize', () => {
   test('接受原生视频、超过常驻上限且不能上传时替换为说明；能上传时传递路径', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-video-big-'))
     const path = join(dir, 'big.mp4').replaceAll('\\', '/')
-    await writeFile(path, mp4Bytes(10, 640, 360, 6 * 1024 * 1024))
+    await writeFile(path, mp4Bytes(10, 640, 360, 9 * 1024 * 1024))
     const send = (caps: Parameters<typeof materialize>[1]) =>
       materialize(
         req([
@@ -357,7 +358,7 @@ describe('materialize', () => {
       ).then((out) => (out.messages[0]?.content as ContentBlock[])[0])
     const inline = (await send({ image: true, video: NATIVE })) as { type: string; text: string }
     expect(inline.type).toBe('text')
-    expect(inline.text).toContain('6.0 MB')
+    expect(inline.text).toContain('9.0 MB')
     expect(inline.text).toContain('read_file')
     expect(
       await send({
@@ -591,7 +592,7 @@ describe('媒体按字节预算换出', () => {
   test('路径视频按发送方式计字节：上传、抽帧、不接受均记 0', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
     const big = join(dir, 'big.mp4')
-    await writeFile(big, mp4Bytes(10, 640, 360, 6 * MB))
+    await writeFile(big, mp4Bytes(10, 640, 360, 9 * MB))
     const video: WireMessage = {
       role: 'user',
       content: [
@@ -608,8 +609,8 @@ describe('媒体按字节预算换出', () => {
       size: { width: 640, height: 360 },
       audio: false,
     })
-    expect(videoDelivery(meta(6 * MB), UPLOADING, 2 * MB)).toBe('upload')
-    expect(videoDelivery(meta(6 * MB), NATIVE, undefined)).toBe('frames')
+    expect(videoDelivery(meta(9 * MB), UPLOADING, 2 * MB)).toBe('upload')
+    expect(videoDelivery(meta(9 * MB), NATIVE, undefined)).toBe('frames')
     expect(videoDelivery(meta(MB), NATIVE, undefined)).toBe('inline')
     expect(videoDelivery(meta(MB), null, undefined)).toBe('frames')
     // 上传为地址的视频不计字节，因此始终保留在请求中，模型在此后每一步都能看到。
@@ -635,16 +636,16 @@ describe('媒体按字节预算换出', () => {
 
   /** 超过上限时从最早的消息起整条缩小，直到不超过下限：一次换出较多内容可减少前缀变化的次数。 */
   test('超过上限时从最早的整批缩小为缩略图，降到下限以内', () => {
-    const messages = steps([MB, MB, MB, MB, MB, MB])
+    const messages = steps(Array(9).fill(MB))
     const evicted = evictedMedia(messages, CAPS)
-    // 第 6 张使总量达到 6 MB（> 5 MB），最早的五张缩小为各 64 KB 的缩略图，第 6 张在保护区内。
-    expect([...evicted]).toEqual([1, 3, 5, 7, 9].map((i) => [i, 'thumbnail']))
+    // 第 9 张使总量达到 9 MB（> 8 MB），最早的八张缩小为各 64 KB 的缩略图，第 9 张在保护区内。
+    expect([...evicted]).toEqual([1, 3, 5, 7, 9, 11, 13, 15].map((i) => [i, 'thumbnail']))
     expect(retained(messages, evicted)).toBeLessThanOrEqual(MEDIA_RETAIN_LOW_BYTES)
   })
 
   /** 最后一条 assistant 之后的媒体尚未随任何已得到响应的请求发出，单张超过上限也不换出。 */
   test('最后一条 assistant 之后的媒体不换出', () => {
-    const messages = [...steps([MB, MB]), call('big'), result('big', 6 * MB)]
+    const messages = [...steps([MB, MB]), call('big'), result('big', 9 * MB)]
     const evicted = evictedMedia(messages, CAPS)
     expect(evicted.has(messages.length - 1)).toBe(false)
     expect([...evicted]).toEqual([
@@ -655,7 +656,7 @@ describe('媒体按字节预算换出', () => {
 
   /** 用户消息携带的附件同样计入，第一次请求（没有 assistant）时全部保留。 */
   test('附件计入同一预算；尚无 assistant 时不换出任何图片', () => {
-    const user: WireMessage = { role: 'user', content: [shot(5 * MB), { type: 'text', text: 'x' }] }
+    const user: WireMessage = { role: 'user', content: [shot(8 * MB), { type: 'text', text: 'x' }] }
     expect(evictedMedia([user], CAPS).size).toBe(0)
     expect([...evictedMedia([user, call('c0'), result('c0', MB)], CAPS)]).toEqual([
       [0, 'thumbnail'],
@@ -675,14 +676,14 @@ describe('媒体按字节预算换出', () => {
       ],
     }
     expect(thumbnailBytes(video, CAPS)).toBe(0)
-    expect([...evictedMedia([video, call('c0'), result('c0', 2 * MB)], CAPS)]).toEqual([
+    expect([...evictedMedia([video, call('c0'), result('c0', 4 * MB)], CAPS)]).toEqual([
       [0, 'omitted'],
     ])
   })
 
   /** 缩略图只在其合计超过上限时从最早的一批起替换为说明；剩余缩略图合计不超过上限。 */
   test('缩略图合计超过上限时从最早的起移出', () => {
-    const messages = steps(Array.from({ length: 60 }, () => MB))
+    const messages = steps(Array(100).fill(300 * 1024))
     const evicted = evictedMedia(messages, CAPS)
     const omitted = [...evicted].filter(([, level]) => level === 'omitted').map(([i]) => i)
     const reduced = [...evicted].filter(([, level]) => level === 'thumbnail').map(([i]) => i)
@@ -742,7 +743,7 @@ describe('媒体按字节预算换出', () => {
    */
   test('逐步追加截图：相邻两次换出的间隔不小于余量所能容纳的张数', () => {
     const SHOT = 300 * 1024
-    const n = 80
+    const n = 120
     const all = steps(Array(n).fill(SHOT))
     /** 图片正文按长度比较：各步之间正文不变，逐字序列化会使用例变慢。 */
     const wire = (m: WireMessage) =>
@@ -763,15 +764,49 @@ describe('媒体按字节预算换出', () => {
     }
     const room = Math.floor((MEDIA_RETAIN_HIGH_BYTES - THUMBNAIL_RETAIN_BYTES) / SHOT)
     const gaps = evictions.slice(1).map((k, i) => k - evictions[i]!)
-    // 缩略图合计在第 40 步前后超过下限，之后的换出都发生在余量只剩约 2 MB 的阶段。
+    // 缩略图合计在第 49 步超过下限，之后的换出都发生在余量为 3–5 MB 的阶段。
     expect(evictions.length).toBeGreaterThan(5)
     expect(Math.min(...gaps)).toBeGreaterThanOrEqual(room)
     expect(evictions.length).toBeLessThanOrEqual(Math.ceil(n / room))
   })
 
+  /**
+   * 每步一张约 300 KB 的截图，缩略图按 `THUMBNAIL_BYTES`（64 KB）计。缩略图合计超过上限时一次移出到目标值，
+   * 下一次移出之前须再缩小超过「上限 − 目标值」的图片，相邻两次移出至少相隔 ⌊(5 MB − 4 MB) / 64 KB⌋ + 1 = 17 张。
+   * 只移出到不超过上限时，缩略图填满之后每次缩小原图都同时移出，相邻两次移出只相隔
+   * (8 MB − 5 MB) / 300 KB 约 10 张。
+   */
+  test('逐步追加截图：缩略图一次移出到目标值，相邻两次移出至少相隔 17 张，结果稳定且不恢复', () => {
+    const SHOT = 300 * 1024
+    const n = 160
+    const all = steps(Array(n).fill(SHOT))
+    const rank = { thumbnail: 1, omitted: 2 } as const
+    const omittedCount = (levels: Map<number, MediaLevel>): number =>
+      [...levels.values()].filter((level) => level === 'omitted').length
+    const removals: number[] = []
+    let previous = new Map<number, MediaLevel>()
+    for (let k = 1; k <= n; k++) {
+      const messages = all.slice(0, 2 * k)
+      const levels = evictedMedia(messages, CAPS)
+      expect([...evictedMedia(messages, CAPS)]).toEqual([...levels])
+      for (const [i, level] of previous) {
+        expect(rank[levels.get(i)!]).toBeGreaterThanOrEqual(rank[level])
+      }
+      expect(retained(messages, levels)).toBeLessThanOrEqual(MEDIA_RETAIN_HIGH_BYTES)
+      if (omittedCount(levels) > omittedCount(previous)) removals.push(k)
+      previous = levels
+    }
+    const least =
+      Math.floor((THUMBNAIL_RETAIN_BYTES - THUMBNAIL_RETAIN_LOW_BYTES) / THUMBNAIL_BYTES) + 1
+    const gaps = removals.slice(1).map((k, i) => k - removals[i]!)
+    expect(least).toBe(17)
+    expect(removals.length).toBeGreaterThan(2)
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(least)
+  })
+
   /** 受保护的一批本身使总量超过上限时，下一次请求（其后出现 assistant 消息）即缩小，媒体不持续超过上限。 */
   test('受保护时超过上限的一批在下一次请求中缩小', () => {
-    const batch: WireMessage[] = [call('big'), result('big', 6 * MB)]
+    const batch: WireMessage[] = [call('big'), result('big', 9 * MB)]
     const sent = [...steps([2 * MB]), ...batch]
     expect(evictedMedia(sent, CAPS).has(3)).toBe(false)
     const next = [...sent, call('c1')]
