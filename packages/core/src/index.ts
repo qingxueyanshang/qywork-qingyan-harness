@@ -421,6 +421,7 @@ export type {
   ConversationRequestDetailsResponse,
   ConversationRequestsResponse,
   ConversationRunsResponse,
+  ConversationTurnRef,
   ConversationUsageResponse,
   LiveRequestSnapshot,
   MonitorCompaction,

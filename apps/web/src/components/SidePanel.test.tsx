@@ -685,7 +685,7 @@ describe('文件页刷新', () => {
       activeConversation: 'cv_file_scroll',
       views: {
         cv_file_scroll: {
-          history: { loading: null, nextCursor: null, error: null },
+          history: { loading: null, nextCursor: null, earlierTurns: [], error: null },
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
@@ -1071,7 +1071,7 @@ describe('变更页按轮次分组', () => {
   })
   const viewWith = (changes: unknown) => ({
     transcript: [],
-    history: { loading: null, nextCursor: null, error: null },
+    history: { loading: null, nextCursor: null, earlierTurns: [], error: null },
     changes: changes as never,
     runUserMessageId: null,
     runStartedAt: null,

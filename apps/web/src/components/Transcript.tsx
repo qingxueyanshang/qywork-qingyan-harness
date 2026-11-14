@@ -79,6 +79,7 @@ import {
 import { openCliTab, openConversationTab } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
+import { ConversationIndex } from './ConversationIndex.tsx'
 import { IconChevron, IconSpinner } from './Icons.tsx'
 import { TodoList } from './TodoList.tsx'
 
@@ -145,6 +146,9 @@ export function ConversationHistoryBoundary(props: {
  * 此时仍滚动到底部（见 `App.tsx` 中卸载正文的注释）。
  */
 const scrollRestored = new Set<string>()
+
+/** 从会话索引定位到一条消息的滚动动画时长。 */
+const REVEAL_MS = 260
 
 /** 会话未跟随底部时距底部的距离（像素）的记录键；跟随底部时没有记录。 */
 const scrollKey = (id: string) => `qywork.scroll:${id}`
@@ -274,11 +278,65 @@ export function createConversationScroll(conversationId: () => string | null) {
     if (gap) void restoreGap(id, gap)
   })
 
+  /**
+   * 把指定 id 的用户输入定位到视口顶部（留 16px），并停止跟随底部。
+   *
+   * 该条尚未加载时逐页加载更早的记录，直到它出现在会话流中；加载失败或已到最早一页仍未出现时不滚动。
+   *
+   * 位移用 `REVEAL_MS` 的减速动画完成，逐帧经 `writeTop` 写入：不要改用 `scrollTo({ behavior: 'smooth' })`，
+   * 浏览器的平滑滚动派发的 scroll 事件不是本组件写入的值，`onScroll` 无法把它与用户滚动区分。
+   *
+   * 目标位置每帧重新读取：屏幕外的条目按占位高度参与布局，进入视口后高度改为实际值，
+   * 起始时算出的目标会过期。动画结束后的下一帧再定位一次，原因相同。
+   * 用户在动画期间滚动（滚轮、滚动键、拖动滚动条、触摸）时动画终止，位置交还用户。
+   */
+  let revealRun = 0
+  const userRow = (id: string) =>
+    [...scroller.querySelectorAll<HTMLElement>('.row.user[data-turn]')].find(
+      (el) => el.dataset.turn === id,
+    )
+  const reveal = async (id: string) => {
+    setPinned(false)
+    scrollIntent = false
+    const run = ++revealRun
+    const conversation = conversationId()
+    let found = userRow(id)
+    while (!found && conversation) {
+      if (!(await loadOlderConversation(conversation))) return
+      if (run !== revealRun || conversationId() !== conversation) return
+      found = userRow(id)
+    }
+    if (!found) return
+    const row = found
+    const target = () =>
+      scroller.scrollTop +
+      row.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top -
+      16
+    const from = scroller.scrollTop
+    const startedAt = performance.now()
+    const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const step = () => {
+      if (run !== revealRun || scrollIntent || scrollbarDrag || !row.isConnected) return
+      const t = still ? 1 : Math.min(1, (performance.now() - startedAt) / REVEAL_MS)
+      writeTop(from + (target() - from) * (1 - (1 - t) ** 3))
+      if (t < 1) requestAnimationFrame(step)
+      else
+        requestAnimationFrame(() => {
+          if (run === revealRun && !scrollIntent && !scrollbarDrag && row.isConnected) {
+            writeTop(target())
+          }
+        })
+    }
+    step()
+  }
+
   const onWheel = () => {
     scrollIntent = true
   }
   const onTouchStart = () => {
     touchScroll = false
+    revealRun++
   }
   const onTouchMove = () => {
     touchScroll = true
@@ -369,8 +427,10 @@ export function createConversationScroll(conversationId: () => string | null) {
     innerRef: (el: HTMLDivElement) => {
       inner = el
     },
+    scroller: () => scroller,
     onScroll,
     loadOlderAnchored,
+    reveal,
   }
 }
 
@@ -396,48 +456,59 @@ export function ConversationStream(props: {
   )
 
   return (
-    <div
-      class="conversation-scroll"
-      classList={{ transcript: main(), 'child-cv': !main() }}
-      ref={follow.scrollerRef}
-      onScroll={follow.onScroll}
-    >
+    <>
       <div
-        class="conversation-stream-inner"
-        classList={{
-          'transcript-inner': main(),
-          'child-cv-inner': !main(),
-          'with-stack': !!props.stacked,
-          'with-run-status': !!props.hasRunStatus,
-        }}
-        ref={follow.innerRef}
+        class="conversation-scroll"
+        classList={{ transcript: main(), 'child-cv': !main() }}
+        ref={follow.scrollerRef}
+        onScroll={follow.onScroll}
       >
-        {props.leading}
-        <Show when={props.conversationId}>
-          {(id) => (
-            <ConversationHistoryBoundary
-              conversationId={id()}
-              onLoadOlder={follow.loadOlderAnchored}
-            />
-          )}
-        </Show>
-        <TranscriptRows
-          items={props.items}
-          live={props.live}
-          generatingToolCall={() =>
-            props.conversationId ? viewOf(props.conversationId).generatingToolCall : false
-          }
-        />
-        {props.trailing}
-        {/* 本轮用量显示在收尾条中，后台任务只显示节点进度。 */}
-        <Show when={background()}>
-          {(status) => <output class="delegation-status">{status()}</output>}
-        </Show>
-        <Show when={props.live() && !props.closed() && props.conversationId}>
-          <LiveRunBar conversationId={props.conversationId!} />
-        </Show>
+        <div
+          class="conversation-stream-inner"
+          classList={{
+            'transcript-inner': main(),
+            'child-cv-inner': !main(),
+            'with-stack': !!props.stacked,
+            'with-run-status': !!props.hasRunStatus,
+          }}
+          ref={follow.innerRef}
+        >
+          {props.leading}
+          <Show when={props.conversationId}>
+            {(id) => (
+              <ConversationHistoryBoundary
+                conversationId={id()}
+                onLoadOlder={follow.loadOlderAnchored}
+              />
+            )}
+          </Show>
+          <TranscriptRows
+            items={props.items}
+            live={props.live}
+            generatingToolCall={() =>
+              props.conversationId ? viewOf(props.conversationId).generatingToolCall : false
+            }
+          />
+          {props.trailing}
+          {/* 本轮用量显示在收尾条中，后台任务只显示节点进度。 */}
+          <Show when={background()}>
+            {(status) => <output class="delegation-status">{status()}</output>}
+          </Show>
+          <Show when={props.live() && !props.closed() && props.conversationId}>
+            <LiveRunBar conversationId={props.conversationId!} />
+          </Show>
+        </div>
       </div>
-    </div>
+      {/* 索引按 `.main` 定位，与滚动容器并列，不随正文滚动。 */}
+      <Show when={main()}>
+        <ConversationIndex
+          earlier={props.conversationId ? viewOf(props.conversationId).history.earlierTurns : []}
+          items={props.items}
+          scroller={follow.scroller}
+          onJump={(id) => void follow.reveal(id)}
+        />
+      </Show>
+    </>
   )
 }
 
@@ -1241,7 +1312,8 @@ export function TranscriptRows(props: {
         {({ node }) => (
           <Switch>
             <Match when={node().kind === 'user'}>
-              <div class="row user">
+              {/* `data-turn` 供会话索引按 id 找到该行。 */}
+              <div class="row user" data-turn={node().id}>
                 <div class="user-col">
                   {/* 附件位于气泡上方：附件是该消息的上下文，阅读顺序应为先看附件再看文字。 */}
                   <Show when={(node() as { item: TranscriptItem }).item.attachments?.length}>

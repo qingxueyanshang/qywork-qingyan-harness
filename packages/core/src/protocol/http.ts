@@ -42,6 +42,14 @@ import type { CacheMissAttribution } from '../domain/monitor/cache-miss.ts'
  * 它必须随首屏一并返回：最新一次 `write_todos` 可能早于当前页，前端不能为查找它
  * 而加载全部历史。
  */
+/** 一条用户输入在会话索引中的条目。 */
+export interface ConversationTurnRef {
+  /** 发起轮次的输入为消息 id，运行中途追加的输入为 step id；与界面会话流中该条目的 id 相同。 */
+  id: string
+  /** 正文的开头；正文为空时为附件名。 */
+  text: string
+}
+
 export interface ConversationHistoryPage {
   messages: Message[]
   runs: Run[]
@@ -52,6 +60,11 @@ export interface ConversationHistoryPage {
    * 图的结构只存在于首次派发的参数中，缺少它时无法渲染该卡片；该 step 自身的行由折叠隐藏。
    */
   workflowStarts: Step[]
+  /**
+   * 早于本页的全部用户输入，按时间升序，不含回执；本页已是最早一页时为空。
+   * 与 `todos` 相同，是同一账本的投影：会话索引列出整条会话的用户输入，前端不能为此加载全部历史。
+   */
+  earlierTurns: ConversationTurnRef[]
   nextCursor: MessageId | null
 }
 

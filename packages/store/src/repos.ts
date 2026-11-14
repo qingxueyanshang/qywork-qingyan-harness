@@ -635,6 +635,63 @@ export function listMessages(
 }
 
 /**
+ * 早于 `before` 的全部用户输入，按会话流中的先后排列。
+ *
+ * 用户输入有两个存放位置，与界面折叠会话流时的两个来源一一对应：发起轮次的输入是 `messages` 行，
+ * 运行中途追加的输入是该轮 run 下 `kind='user'` 的 step。回执（origin 非空）与交给模型的
+ * 执行事实（`notice`）不是用户输入；正文为空的追加输入界面不渲染，此处同样不计入。
+ * 只取正文开头：索引条目只显示一行标题。
+ */
+function listTurnsBefore(
+  store: Store,
+  conversationId: ConversationId,
+  before: string,
+): ConversationHistoryPage['earlierTurns'] {
+  const messages = store.db
+    .query<
+      { id: MessageId; text: string; attachments: string | null; origin: string | null },
+      [string, string]
+    >(
+      `SELECT id, substr(content, 1, 240) AS text, attachments, origin FROM messages
+       WHERE conversation_id = ? AND id < ?
+       ORDER BY id ASC`,
+    )
+    .all(conversationId, before)
+  const injected = store.db
+    .query<{ id: string; text: string; message: string }, [string, string]>(
+      `SELECT s.id, substr(s.content, 1, 240) AS text, r.user_message_id AS message
+       FROM steps s JOIN runs r ON r.id = s.run_id
+       WHERE r.conversation_id = ? AND r.user_message_id < ?
+         AND s.kind = 'user' AND s.content <> ''
+         AND json_extract(s.payload, '$.origin') IS NULL
+         AND COALESCE(json_extract(s.payload, '$.notice'), 0) = 0
+       ORDER BY r.created_at ASC, r.id ASC, s.seq ASC`,
+    )
+    .all(conversationId, before)
+  const byMessage = new Map<string, { id: string; text: string }[]>()
+  for (const step of injected) {
+    const list = byMessage.get(step.message) ?? []
+    list.push({ id: step.id, text: step.text })
+    byMessage.set(step.message, list)
+  }
+  return messages.flatMap((row) => [
+    ...(row.origin === null
+      ? [
+          {
+            id: row.id as string,
+            text:
+              row.text.trim() ||
+              readJson<{ name: string }[]>(row.attachments, [])
+                .map((a) => a.name)
+                .join('、'),
+          },
+        ]
+      : []),
+    ...(byMessage.get(row.id) ?? []),
+  ])
+}
+
+/**
  * 为界面读取一页完整的用户轮次。
  *
  * 不要改为分别读取 messages、runs 并为每个 run 读取一次 steps：请求数随轮数线性增长，
@@ -748,10 +805,13 @@ export function listConversationHistoryPage(
     return row ? [rowToStep(row)] : []
   })
 
+  const earlierTurns = hasMore && oldest ? listTurnsBefore(store, conversationId, oldest) : []
+
   return {
     messages,
     runs,
     steps,
+    earlierTurns,
     // 与 tools/runtime 读取待办使用同一账本投影；不属于分页结果。
     todos: latestTodos(store, conversationId) ?? [],
     workflowStarts,
