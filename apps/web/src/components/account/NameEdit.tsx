@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, Show } from 'solid-js'
+import { createSignal, Show } from 'solid-js'
 
 /** 用户名的长度上限，与云端相同；超出时云端拒绝写入。 */
 const NAME_MAX = 30
@@ -9,14 +9,11 @@ const UNSET = '设置用户名'
 /**
  * 账号弹窗头部的用户名：点击后原地改为输入框，Enter 或失去焦点时保存，Escape 放弃；保存空内容即清除。
  * 按钮与输入框的高度相同，进入编辑时宽度也相同，头部其余内容不移动。内容未改变时不调用 `onSave`。
- * 光标由 `.account-name-caret` 绘制：浏览器的光标只能设置颜色，不能设置宽度。
  */
 export function NameEdit(props: { name: string; onSave: (name: string) => void }) {
   const [editing, setEditing] = createSignal(false)
   /** 输入框的当前内容：编辑状态的宽度随它变化（样式见 `.account-name-sizer`）。 */
   const [draft, setDraft] = createSignal('')
-  /** 光标距输入框左缘的像素数；选中了一段文字时为 null，不绘制光标。 */
-  const [caretX, setCaretX] = createSignal<number | null>(null)
 
   // 输入框移除时浏览器可能再触发一次 blur，`editing` 已为 false，不重复保存。
   const commit = (value: string) => {
@@ -47,37 +44,18 @@ export function NameEdit(props: { name: string; onSave: (name: string) => void }
         <span class="account-name-sizer" classList={{ unset: !draft() }} aria-hidden="true">
           {draft() || UNSET}
         </span>
-        <Show when={caretX() !== null}>
-          <span class="account-name-caret" style={{ left: `${caretX()}px` }} aria-hidden="true" />
-        </Show>
         <input
           class="account-name-input"
           aria-label="用户名"
           placeholder={UNSET}
           maxLength={NAME_MAX}
           value={draft()}
-          ref={(el) => {
-            // 光标位置取光标之前的文字的宽度，以与输入框字体相同的不可见元素测量。
-            // `selectionchange` 覆盖键盘移动、鼠标点击与输入引起的全部光标变化。
-            const measure = document.createElement('span')
-            measure.className = 'account-name-measure'
-            const place = () => {
-              if (document.activeElement !== el || el.selectionStart !== el.selectionEnd) {
-                setCaretX(null)
-                return
-              }
-              measure.textContent = el.value.slice(0, el.selectionStart ?? 0)
-              setCaretX(measure.getBoundingClientRect().width - el.scrollLeft)
-            }
-            document.addEventListener('selectionchange', place)
-            onCleanup(() => document.removeEventListener('selectionchange', place))
+          ref={(el) =>
             queueMicrotask(() => {
-              el.after(measure)
               el.focus()
               el.select()
-              place()
             })
-          }}
+          }
           onInput={(e) => setDraft(e.currentTarget.value)}
           onBlur={(e) => commit(e.currentTarget.value)}
           // 用原生监听并阻止冒泡：账号弹窗在 window 上监听 Escape 关闭自身，放弃编辑时弹窗须保留。
