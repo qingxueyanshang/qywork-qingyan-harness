@@ -66,6 +66,7 @@ beforeEach(async () => {
   account = {
     state: 'signed_in',
     email: 'me@example.com',
+    name: '',
     credits: 1,
     avatar: null,
     provider: 'qywork',

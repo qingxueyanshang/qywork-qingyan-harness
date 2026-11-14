@@ -172,6 +172,11 @@ export type CloudState =
   | {
       state: 'signed_in'
       email: string
+      /**
+       * 用户名：只用于显示，可以重名，不用于登录；未设置时为空字符串，界面此时显示邮箱。
+       * 云端暂时无法访问时为本设备上一次取得的值。
+       */
+      name: string
       credits: number | null
       /** 头像的 data URL；未设置或云端暂时无法访问时为 null。 */
       avatar: string | null

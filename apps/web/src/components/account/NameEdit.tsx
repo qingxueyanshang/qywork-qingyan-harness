@@ -1,0 +1,59 @@
+import { createSignal, Show } from 'solid-js'
+
+/** 用户名的长度上限，与云端相同；超出时云端拒绝写入。 */
+const NAME_MAX = 30
+
+/**
+ * 账号弹窗头部的用户名：点击后原地改为输入框，Enter 或失去焦点时保存，Escape 放弃；保存空内容即清除。
+ * 按钮与输入框高度相同，切换时头部不变形。内容未改变时不调用 `onSave`。
+ */
+export function NameEdit(props: { name: string; onSave: (name: string) => void }) {
+  const [editing, setEditing] = createSignal(false)
+
+  // 输入框移除时浏览器可能再触发一次 blur，`editing` 已为 false，不重复保存。
+  const commit = (value: string) => {
+    if (!editing()) return
+    setEditing(false)
+    const next = value.trim()
+    if (next !== props.name) props.onSave(next)
+  }
+
+  return (
+    <Show
+      when={editing()}
+      fallback={
+        <button
+          type="button"
+          class="account-name"
+          classList={{ unset: !props.name }}
+          onClick={() => setEditing(true)}
+        >
+          {props.name || '设置用户名'}
+        </button>
+      }
+    >
+      <input
+        class="account-name-input"
+        aria-label="用户名"
+        maxLength={NAME_MAX}
+        value={props.name}
+        ref={(el) =>
+          queueMicrotask(() => {
+            el.focus()
+            el.select()
+          })
+        }
+        onBlur={(e) => commit(e.currentTarget.value)}
+        // 用原生监听并阻止冒泡：账号弹窗在 window 上监听 Escape 关闭自身，放弃编辑时弹窗须保留。
+        on:keydown={(e) => {
+          if (e.isComposing) return
+          if (e.key === 'Enter') commit(e.currentTarget.value)
+          else if (e.key === 'Escape') {
+            e.stopPropagation()
+            setEditing(false)
+          }
+        }}
+      />
+    </Show>
+  )
+}

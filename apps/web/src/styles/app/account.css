@@ -11,7 +11,7 @@
   white-space: nowrap;
 }
 
-/* 头像：邮箱首字母。只用中性色，强调色只用于主操作与选中状态（tokens.css 开头的规则）。 */
+/* 头像：用户名的首字符，未设置用户名时为邮箱首字母。只用中性色，强调色只用于主操作与选中状态（tokens.css 开头的规则）。 */
 .account-avatar {
   flex: none;
   display: grid;
@@ -101,21 +101,62 @@
   gap: var(--s-3);
   padding: var(--s-5) calc(var(--s-6) + 12px) var(--s-3) var(--s-6);
 }
-.account-email {
-  /* 不占满整行：官网与退出按钮紧跟在邮箱之后。 */
+/* 用户名在上、邮箱在下。 */
+.account-id {
+  /* 不占满整行：官网与退出按钮紧跟在其后。 */
   flex: 0 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+/* 用户名的按钮与输入框高度相同（B9）：进入与退出编辑时头部不变形。 */
+.account-name,
+.account-name-input {
+  box-sizing: border-box;
+  max-width: 100%;
+  height: 22px;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--text-primary);
+}
+.account-name {
+  border: 0;
+  background: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fs-lg);
-  font-weight: 600;
-  /* 邮箱多为数字与带下伸部分的 q、g、@，字形的视觉中心比行框中心低约 1px；
-     上移 1px 后与头像、图标按钮的中心在同一水平线上。 */
-  position: relative;
-  top: -1px;
+  cursor: pointer;
 }
-/* 公告、官网与退出按钮成组，间距与顶栏的图标按钮相同；与邮箱之间仍是头部的 gap。 */
+.account-name.unset {
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+.account-name:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.account-name-input {
+  width: 220px;
+  border: 0;
+  border-bottom: 1px solid var(--border-strong);
+  border-radius: 0;
+  background: transparent;
+  outline: none;
+}
+.account-email {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 16px;
+}
+/* 公告、官网与退出按钮成组，间距与顶栏的图标按钮相同；与账号之间仍是头部的 gap。 */
 .account-actions {
   display: flex;
   flex: none;

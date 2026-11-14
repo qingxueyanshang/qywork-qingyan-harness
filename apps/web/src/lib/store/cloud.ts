@@ -73,6 +73,16 @@ export async function setCloudAvatar(image: string): Promise<void> {
   )
 }
 
+/** 修改用户名，空字符串表示清除。失败时抛出可直接显示的原因，状态不变。 */
+export async function setCloudName(name: string): Promise<void> {
+  setCloudState(
+    await client.api<CloudState>('/api/cloud/name', {
+      method: 'PUT',
+      body: JSON.stringify({ name }),
+    }),
+  )
+}
+
 /** 读取用量或记录失败时，设备可能已被移除：服务端已删除本地接口，状态随之重新读取。 */
 async function readCloud<T>(path: string): Promise<T> {
   try {

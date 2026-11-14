@@ -257,6 +257,8 @@ function unreachable(err: unknown): CloudAccountError {
 export class CloudAccount {
   private wasRevoked = false
   private email: string | null = null
+  /** 上一次从云端取得的用户名，云端暂时无法访问时沿用；退出或设备被移除时清除。 */
+  private name = ''
   /**
    * 上一次从云端取得的公告已读位置及取得它所用的设备密钥，云端暂时无法访问时沿用。按密钥对应：退出、设备被移除或
    * 换账号登录后密钥不同，不沿用上一个账号的值。
@@ -311,6 +313,7 @@ export class CloudAccount {
     }
     if (me) {
       this.email = me.email
+      this.name = me.name
       this.seen = { key: provider.apiKey, id: me.announcementSeen }
       if (!this.refreshed) {
         this.refreshed = true
@@ -319,6 +322,7 @@ export class CloudAccount {
       return {
         state: 'signed_in',
         email: me.email,
+        name: me.name,
         credits: me.credits,
         avatar: me.avatar,
         provider: CLOUD_PROVIDER,
@@ -327,10 +331,12 @@ export class CloudAccount {
         announcementSeen: me.announcementSeen,
       }
     }
-    // 云端暂时无法访问：仍视为已登录，余额与头像未知；公告已读位置沿用本设备上一次取得的值，未取得过时缺省。
+    // 云端暂时无法访问：仍视为已登录，余额与头像未知；用户名与公告已读位置沿用本设备上一次取得的值，
+    // 公告已读位置未取得过时缺省。
     return {
       state: 'signed_in',
       email: this.email ?? '',
+      name: this.name,
       credits: null,
       avatar: null,
       provider: CLOUD_PROVIDER,
@@ -434,6 +440,16 @@ export class CloudAccount {
     return this.state()
   }
 
+  /** 修改用户名，空字符串表示清除。长度与字符由云端校验，首尾空白由云端删除。 */
+  async setName(name: string): Promise<CloudState> {
+    await this.call('/v1/me/name', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    return this.state()
+  }
+
   /** 用量汇总，按本机时区分日。 */
   usage(): Promise<CloudUsage> {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -471,6 +487,7 @@ export class CloudAccount {
   /** 云端答复本设备已被移除（网关或隧道）：删除本地接口，账号界面显示原因。 */
   async revoked(): Promise<void> {
     this.email = null
+    this.name = ''
     await this.remove()
     this.wasRevoked = true
   }
@@ -479,6 +496,7 @@ export class CloudAccount {
   async logout(): Promise<void> {
     this.wasRevoked = false
     this.email = null
+    this.name = ''
     const provider = cloudProviderOf(this.live, this.origin)
     if (provider?.apiKey) {
       await fetch(`${this.origin}/v1/device/revoke`, {
@@ -683,6 +701,7 @@ export class CloudAccount {
   private async me(key: string): Promise<
     | {
         email: string
+        name: string
         credits: number
         avatar: string | null
         recharge: boolean
@@ -696,6 +715,7 @@ export class CloudAccount {
       if (res.ok) {
         const me = (await res.json()) as {
           email: string
+          name?: string
           credits: number
           avatar?: string | null
           recharge?: boolean
@@ -703,6 +723,7 @@ export class CloudAccount {
         }
         return {
           email: me.email,
+          name: me.name ?? '',
           credits: me.credits,
           avatar: me.avatar ?? null,
           recharge: me.recharge === true,
