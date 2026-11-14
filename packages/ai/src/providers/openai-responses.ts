@@ -73,7 +73,7 @@ import type {
 } from '../types.ts'
 import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
-import { normalizeBaseUrl, strictify } from './openai-compat.ts'
+import { normalizeBaseUrl, restoreStrictCalls, sendsStrict, strictify } from './openai-compat.ts'
 import { collectToolCalls } from './tool-calls.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
@@ -375,7 +375,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       )
     }
 
-    const calls = collectToolCalls(partial, 'openai_responses', req.model)
+    const calls = restoreStrictCalls(
+      collectToolCalls(partial, 'openai_responses', req.model),
+      req.tools,
+      this.spec.chatToolSchema,
+    )
     if (encryptedReasoning.size) {
       yield {
         type: 'response_reasoning',
@@ -572,8 +576,8 @@ export function buildTools(
       type: 'function',
       name: t.name,
       description: t.description,
-      parameters: t.strict && schema === 'openai_strict' ? strictify(t.parameters) : t.parameters,
-      ...(t.strict && schema === 'openai_strict' ? { strict: true } : {}),
+      parameters: sendsStrict(t, schema) ? strictify(t.parameters) : t.parameters,
+      ...(sendsStrict(t, schema) ? { strict: true } : {}),
     }))
 }
 

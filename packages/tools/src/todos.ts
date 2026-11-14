@@ -162,7 +162,7 @@ function progressLine(todos: TodoItem[]): string {
 
 type ParseResult = { ok: true; todos: TodoItem[] } | { ok: false; message: string }
 
-/** 可选参数是否填写。strict 模式下未填写的可选参数以 null 传入，空字符串同样视为未填写。 */
+/** 可选参数是否填写。null 与空字符串同样视为未填写。 */
 function filled(value: unknown): boolean {
   return value !== undefined && value !== null && !(typeof value === 'string' && !value.trim())
 }
