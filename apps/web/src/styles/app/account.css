@@ -361,9 +361,14 @@
 .recharge-qr.done img {
   opacity: 0.12;
 }
-/* 到账后只显示勾号，不保留白底与边框：深色模式下白底方块与窗口底色反差过大。 */
+/* 到账后只显示勾号，不保留白底与边框：深色模式下白底方块与窗口底色反差过大。
+   高度收为勾号本身，上方用 auto 外边距与按钮上方的 auto 外边距平分余量：勾号、金额与到账说明
+   作为一组在按钮以上的区域内垂直居中。保留付款码的 184px 高度时，勾号与金额之间多出 60px。 */
 .recharge-qr.paid {
-  border-color: transparent;
+  height: auto;
+  margin-top: auto;
+  padding: 0;
+  border: 0;
   background: transparent;
 }
 .recharge-qr-mask {
