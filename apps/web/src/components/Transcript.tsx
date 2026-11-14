@@ -5,6 +5,7 @@ import {
   retryCauseText,
   runCosts,
   SUBAGENT_KIND_LABEL,
+  SUBAGENT_NODE_ID,
 } from '@qywork/core'
 import type { Accessor, JSX, Setter } from 'solid-js'
 import {
@@ -2202,8 +2203,17 @@ function DelegateCard(props: { item: TranscriptItem }) {
       <Show when={props.item.toolName === 'workflow'}>
         <div class="wf-goal truncate">{cardTitle(props.item)}</div>
       </Show>
-      {/* 向执行中的子 agent 追加的指令不开始新的执行，节点没有状态；标题说明这张卡片是一次补充。 */}
-      <Show when={(props.item.outcome?.data as { injected?: unknown } | undefined)?.injected}>
+      {/*
+        向执行中的子 agent 追加的指令不开始新的执行，服务端不为它写入节点状态；派出新任务时状态先于调用返回写入。
+        因此调用成功而节点没有状态即为一次补充，标题说明这一点。判据取自已落盘的字段，历史中的卡片同样适用。
+      */}
+      <Show
+        when={
+          props.item.toolName === 'subagent' &&
+          props.item.status === 'success' &&
+          !props.item.nodes?.[SUBAGENT_NODE_ID]
+        }
+      >
         <div class="wf-goal truncate">补充说明</div>
       </Show>
       <div
