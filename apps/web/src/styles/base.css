@@ -39,7 +39,7 @@ select {
 }
 
 /*
- * 文本光标（`lib/input/caret.ts`）。输入框与多行文本框的光标由 `.text-caret` 绘制：2px 宽、强调色；
+ * 文本光标（`lib/input/caret.ts`）。输入框与多行文本框的光标由 `.text-caret` 绘制：尺寸固定、强调色；
  * 接管期间元素带 `custom-caret`，浏览器的光标隐藏。未被接管的输入框保留浏览器的光标，颜色同为强调色。
  */
 input,
@@ -53,7 +53,9 @@ textarea {
 .text-caret {
   position: fixed;
   inset: 0 auto auto 0;
+  /* 各输入框的光标尺寸相同，不随输入框的字号变化，只随界面字号设置缩放。 */
   width: 2px;
+  height: calc(18px * var(--font-scale));
   margin: 0;
   padding: 0;
   border: 0;
