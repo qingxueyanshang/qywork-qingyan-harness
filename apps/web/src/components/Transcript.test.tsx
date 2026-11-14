@@ -1377,7 +1377,8 @@ describe('编排画布', () => {
       expect(faults(drawn)).toEqual([])
     }
     expect(overflowing).toBe(3)
-  })
+    // 找到三张目标图须绘制约 900 张图，全部是计算，没有按真实时间的等待；较慢的构建机上超过默认的 5 秒上限。
+  }, 60_000)
 
   test('共享入口的共线区间只生成一份路径', async () => {
     const { mergeWorkflowEdgeSegments } = await import('./Transcript.tsx')
