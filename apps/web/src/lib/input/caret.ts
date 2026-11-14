@@ -1,6 +1,6 @@
 /**
- * 文本光标：输入框与多行文本框获得焦点时隐藏浏览器的光标，在同一位置绘制一个 2px 宽的强调色光标
- * （样式见 `base.css` 的 `.text-caret`）。浏览器的光标只能设置颜色，不能设置宽度与高度。
+ * 文本光标：输入框与多行文本框获得焦点时隐藏浏览器的光标，在同一位置绘制一个强调色光标。
+ * 光标的宽度与高度写在 `base.css` 的 `.text-caret` 中，各输入框相同，不随输入框的字号变化。浏览器的光标只能设置颜色，不能设置宽度与高度。
  *
  * 约束：
  * - 只接管能读取选区的输入框类型（`TRACKED_TYPES`）与 textarea。其余类型（email、number 等）的
@@ -13,8 +13,8 @@
 
 const TRACKED_TYPES = new Set(['text', 'search', 'password', 'tel', 'url'])
 
-/** 光标高度与字号的比值。 */
-const HEIGHT_RATIO = 1.3
+/** 样式中的光标高度无法读取时使用的高度，像素。 */
+const FALLBACK_HEIGHT = 18
 
 /** 光标停止移动后开始闪烁之前的等待，毫秒；移动与输入期间光标常亮。 */
 const BLINK_DELAY_MS = 500
@@ -65,8 +65,9 @@ export function tracksCaret(el: Element | null): el is Field {
  * 光标在元素中的位置：把光标之前的文字放入与元素排版相同的不可见元素，取其后一个标记的位置。
  * 多行文本框的换行位置取决于内容宽度，测量元素的宽度取元素去掉滚动条之后的宽度。
  * 单行输入框的文字在内容盒中垂直居中，测量元素不居中，纵向位置按内容盒计算。
+ * `height` 是光标的高度：各输入框相同，不随输入框的字号变化，光标在所在的行内垂直居中。
  */
-function measure(el: Field, mirror: HTMLDivElement): Offset {
+function measure(el: Field, mirror: HTMLDivElement, height: number): Offset {
   const cs = getComputedStyle(el)
   const px = (v: string) => Number.parseFloat(v) || 0
   const multiline = el instanceof HTMLTextAreaElement
@@ -85,7 +86,6 @@ function measure(el: Field, mirror: HTMLDivElement): Offset {
   marker.textContent = el.value.slice(at) || '.'
   mirror.replaceChildren(document.createTextNode(el.value.slice(0, at)), marker)
 
-  const height = px(cs.fontSize) * HEIGHT_RATIO
   const x = px(cs.borderLeftWidth) + marker.offsetLeft - el.scrollLeft
   if (multiline) {
     const line = px(cs.lineHeight) || marker.offsetHeight || height
@@ -149,7 +149,9 @@ export function installCaret(): () => void {
     if (!el) return
     frame = requestAnimationFrame(paint)
     if (dirty || !offset) {
-      offset = measure(el, mirror)
+      // 高度取自样式（`.text-caret` 的 `height`，随界面字号设置缩放）。
+      const height = Number.parseFloat(getComputedStyle(caret).height) || FALLBACK_HEIGHT
+      offset = measure(el, mirror, height)
       dirty = false
     }
     const box = el.getBoundingClientRect()
@@ -166,7 +168,6 @@ export function installCaret(): () => void {
     if (next === last) return
     last = next
     caret.style.transform = next
-    caret.style.height = `${offset.height}px`
     caret.classList.remove('blink')
     clearTimeout(blinkTimer)
     blinkTimer = setTimeout(() => caret.classList.add('blink'), BLINK_DELAY_MS)
