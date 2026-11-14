@@ -363,11 +363,80 @@ describe('摘要提示词：时态与待办清单', () => {
     expect(await promptOf({ todos: null })).toContain('当前待办清单：无。')
   })
 
-  test('写明摘要的时态、转述与以待办清单为准', async () => {
+  test('写明摘要的时态与以待办清单为准', async () => {
     const prompt = await promptOf({})
     expect(prompt).toContain('摘要是历史记录，其中的任务状态是这段执行记录结束时的状态')
     expect(prompt).toContain('当前要做的事项以待办清单为准')
-    expect(prompt).toContain('没有地址的内容是转述')
+  })
+})
+
+/**
+ * 原始失败形状：摘要提示词要求逐条列出全部用户消息，同一批消息在投影中既由事实清单逐字保存、又由摘要转述，
+ * 每个新块还重新列出前面各块已列出的消息。用户消息只保存在事实清单中，摘要只写事实清单不能体现的内容。
+ */
+describe('用户消息只保存在事实清单中', () => {
+  const long = `${'这是一段很长的背景说明，交代需求的来龙去脉。'.repeat(20)}版本号一律写成 v2.0.0-rc.3。`
+  const messages = [
+    msg(1, 'user', '日期写成月/日/年'),
+    msg(2, 'user', long),
+    msg(3, 'assistant', '收到'),
+    msg(4, 'user', '日期改用 ISO 格式'),
+  ]
+
+  test('摘要提示词不要求逐条列出用户消息，第一节只写更改与长消息中的要求', async () => {
+    let prompt = ''
+    await compact(input({ messages }), async (p) => {
+      prompt = p
+      return '摘要'
+    })
+    expect(prompt).not.toContain('逐条列出')
+    expect(prompt).not.toContain('## 用户要求\n')
+    expect(prompt).toContain('## 用户要求的更改与补充\n用户消息另行保存在事实清单中')
+    expect(prompt).toContain('更改与选定，写明更改后的内容')
+  })
+
+  test('只有在事实清单中被截断的用户消息标注为摘录', async () => {
+    let prompt = ''
+    const r = await compact(input({ messages }), async (p) => {
+      prompt = p
+      return '摘要'
+    })
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(prompt).toContain('[message:ms_001] 用户：日期写成月/日/年')
+    expect(prompt).toContain('[message:ms_002] 用户（事实清单只保存摘录）：这是一段很长的背景说明')
+    expect(prompt).toContain('[message:ms_004] 用户：日期改用 ISO 格式')
+    expect(prompt).toContain('[message:ms_003] 助手：收到')
+    // 事实清单中被截断的正是标注的那一条，短消息逐字保存。
+    const facts = r.manifest.facts.userConstraints
+    expect(facts).toContain('日期写成月/日/年')
+    expect(facts).toContain('日期改用 ISO 格式')
+    expect(facts.find((f) => f.includes('[message:ms_002]'))).toBeDefined()
+    expect(facts.some((f) => f.includes('v2.0.0-rc.3'))).toBe(false)
+  })
+
+  test('带附件的用户消息在事实清单中标注附件', async () => {
+    const r = await compact(
+      input({
+        messages: [{ ...msg(1, 'user', '按这张图调整布局'), hasAttachments: true }],
+        actions: [],
+      }),
+      ok,
+    )
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.userConstraints).toEqual(['按这张图调整布局（含附件）'])
+  })
+
+  test('投影说明写明用户消息所在位置与更改的优先次序', () => {
+    const note = projectManifest({
+      revision: 1,
+      summaries: [{ text: '摘要', through: { messageId: 'ms_004' as MessageId } }],
+      compactedMessageCount: 4,
+      facts: { filesTouched: [], openItems: [], userConstraints: [] },
+      createdAt: 0,
+    })[0]!.content
+    expect(note).toContain('用户消息保存在其后的事实清单中')
+    expect(note).toContain('与事实清单中的要求不一致时以该节为准')
+    expect(note).not.toContain('逐字引用的用户原话')
   })
 })
 
@@ -441,6 +510,10 @@ describe('摘要块：旧块原样保留，新块只覆盖本次折叠的区段'
       expect(prompts[0]).toContain('第一段')
       expect(prompts[0]).toContain('第二段')
       expect(prompts[0]).not.toContain('第三段')
+      // 合并产物与新块使用同一组节，不沿用被合并各块自身的节。
+      expect(prompts[0]).toContain('按下列各节输出')
+      expect(prompts[0]).toContain('## 用户要求的更改与补充\n')
+      expect(prompts[1]).toContain('## 用户要求的更改与补充\n')
       expect(r.manifest.summaries).toEqual([
         block('合并后的较早摘要', 'ms_001'),
         blocks[2]!,
@@ -906,7 +979,7 @@ describe('事实包必须逐字保留，不经过模型', () => {
       input({
         messages: [msg(1, 'user', '不要 force-push'), ...chatter],
         actions: [],
-        projectionBudget: 300,
+        projectionBudget: 350,
       }),
       ok,
     )
@@ -989,13 +1062,14 @@ describe('投影', () => {
     createdAt: 0,
   }
 
-  /** 迁移把旧摘要改写为只有一块的列表；投影正文必须与迁移前逐字相同，否则已有摘要的会话失去缓存前缀。 */
+  /** 只有一块时标题、块正文与说明直接相连，不插入块间分隔线。 */
   test('只有一块时投影正文与该块正文直接相连', () => {
     expect(projectManifest(manifest)[0]!.content).toBe(
       '[此处是被压缩的早期对话摘要]\n\n重构认证模块，已改完 token.ts\n\n' +
         '（摘要是历史记录，其中的任务状态是被压缩的那一段结束时的状态；摘要分为多段时按时间先后排列，' +
-        '同一事项以最后一段为准；当前要做的事项以待办清单为准。逐字引用的用户原话附 [message:…] 地址，' +
-        '没有地址的内容是转述；「未完成的目标」是待办清单之外尚未完成的目标。' +
+        '同一事项以最后一段为准；当前要做的事项以待办清单为准。用户消息保存在其后的事实清单中，长消息为摘录；' +
+        '「用户要求的更改与补充」记录用户的更改与长消息中的要求，与事实清单中的要求不一致时以该节为准；' +
+        '「未完成的目标」是待办清单之外尚未完成的目标。' +
         '摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）',
     )
   })
