@@ -1819,6 +1819,27 @@ describe('子会话与主会话共用流式外壳', () => {
       height = 900
       resize(inner)
       expect(scroller.scrollTop).toBe(900)
+
+      // 触摸滑动结束后仍在底部：跟随写入的 scroll 派发时内容已再次增高（距底部大于 2px），不关闭跟随。
+      scroller.dispatchEvent(new Event('touchstart'))
+      scroller.dispatchEvent(new Event('touchmove'))
+      height = 960
+      scroller.dispatchEvent(new Event('scroll'))
+      resize(inner)
+      expect(scroller.scrollTop).toBe(960)
+
+      // 原始失败形状：回看后滑回底部，scroll 派发时内容已再次增高（距底部大于 2px），跟随仍须恢复。
+      scroller.dispatchEvent(new Event('touchstart'))
+      scroller.dispatchEvent(new Event('touchmove'))
+      scroller.scrollTop = 500
+      scroller.dispatchEvent(new Event('scroll'))
+      resize(inner)
+      expect(scroller.scrollTop).toBe(500)
+      scroller.scrollTop = 860
+      height = 1040
+      scroller.dispatchEvent(new Event('scroll'))
+      resize(inner)
+      expect(scroller.scrollTop).toBe(1040)
     } finally {
       dispose()
       host.remove()
@@ -2690,6 +2711,7 @@ describe('定稿的正文不随会话流的增长重建', () => {
       expect(calls).toEqual([])
 
       scroller.scrollTop = 1000
+      scroller.dispatchEvent(new Event('scroll'))
       scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
       scroller.scrollTop = 500
       scroller.dispatchEvent(new Event('scroll'))
