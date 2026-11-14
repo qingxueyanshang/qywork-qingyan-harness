@@ -95,7 +95,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'background_command',
-    line: '- 后台命令：开发服务器、监听进程等不自行退出的命令，以及之后再查看结果的长时间命令，用 run_command 的 background 启动，命令在后台继续运行；结束时结果作为回执消息送达。用 background_command 按任务编号读取至今的输出或停止命令；本轮后续工作需要该命令的结果时，用它的 wait_seconds 在本轮内等待命令结束。',
+    line: '- 后台命令：开发服务器、监听进程等不自行退出的命令，用 run_command 的 background 启动，命令在后台继续运行；构建、测试、安装等会自行结束的命令优先直接执行并等待，图形应用按 run_command 说明中的写法启动。后台命令结束时结果作为回执消息送达。用 background_command 按任务编号读取至今的输出或停止命令；本轮后续工作需要该命令的结果时，用它的 wait_seconds 在本轮内等待命令结束。',
   },
   {
     tool: 'create_canvas',

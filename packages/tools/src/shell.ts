@@ -329,6 +329,18 @@ export function resolveCommandTimeout(timeoutMs: unknown): number {
  * `background` 为真时规格带 `background` 参数与后台命令的说明，装配方据此与 `CommandPort`
  * 同时提供：没有端口时该参数无法兑现。
  */
+/**
+ * 启动图形应用的写法，按平台给出。图形应用不自行退出，直接执行时命令一直等待；以 `background` 启动时应用被登记为
+ * 后台命令，界面显示一条可停止的后台命令，停止它即关闭应用。以下写法启动后立即返回，应用与命令无关联。
+ * Windows 上不要改为 `cmd /c start` 或末尾加 `&`：实测应用继承命令的输出管道，命令不返回。
+ */
+const LAUNCH_APP =
+  process.platform === 'win32'
+    ? '`powershell -NoProfile -Command "Start-Process \'应用路径\'"`'
+    : process.platform === 'darwin'
+      ? '`open -a 应用名`'
+      : '`nohup 应用 >/dev/null 2>&1 &`'
+
 export function makeShellTool(shell: CommandShell, opts: { background?: boolean } = {}): ToolSpec {
   return {
     name: 'run_command',
@@ -344,6 +356,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
         ? '未指定 background 时等待命令结束；等待期间用户发来消息时，命令转入后台继续运行，本次结果给出任务编号与已产生的输出。' +
           '后台命令结束时结果作为回执消息送达；用 background_command 按任务编号读取至今的输出、等待命令结束或停止命令。'
         : '') +
+      `启动图形应用（带窗口、不自行退出的程序）用 ${LAUNCH_APP}：启动后立即返回，应用继续运行，不使用 background。` +
       '读取文件用 read_file，查找文件用 glob/grep：二者更快且更节省上下文，不要用 cat/find/grep 代替。' +
       // 输出限长已由本工具完成，这一句用于消除模型自行追加 `| tail` 的理由：
       // 这类命令要等输入 EOF，而后台进程持有管道时 EOF 永不到达，
@@ -383,7 +396,8 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
                 type: 'boolean',
                 description:
                   '为 true 时命令启动后立即返回任务编号，命令在后台继续运行。' +
-                  '用于开发服务器、监听进程等不自行退出的命令，以及之后再查看结果的长时间命令。' +
+                  '用于开发服务器、监听进程等不自行退出的命令。' +
+                  '构建、测试、安装、远程命令等会自行结束的命令优先不指定：等待没有总时长上限，等待期间用户发来消息时命令自动转入后台。' +
                   '后台命令不按 timeout_ms 判定停滞。不能与 probe_url 同时使用',
               },
             }
