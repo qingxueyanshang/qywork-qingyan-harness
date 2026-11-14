@@ -435,15 +435,7 @@ export async function compact(
     }
   }
 
-  // 投影的固定部分不随内容变化，先行扣除；其余空间由事实清单与摘要块划分。
-  const contentBudget = input.projectionBudget - projectionFrame(input.density)
-  const facts = fitFacts(
-    extractFacts(input.messages, input.actions, previous?.facts),
-    Math.floor(contentBudget * FACTS_BUDGET_SHARE),
-    input.density,
-  )
-  // 事实清单逐字保留，优先占用预算；摘要块使用剩余部分。全程按 token 计，不做单位换算。
-  const room = contentBudget - estimateText(factsContent(facts), input.density)
+  const { facts, room } = summarySpace(input)
 
   // 旧块原样保留并占用摘要空间，不计为被释放的空间；超过上限时先合并最早的若干块。
   let kept = previous?.summaries ?? []
@@ -468,9 +460,7 @@ export async function compact(
         }
       : { status: 'failed', reasonCode, message }
 
-  // 新块之前的正文：保留的旧块与新块之前的分隔线。有旧块时每追加一块多一条分隔线。
-  const headroom =
-    room - estimateText(summariesText([...kept, { text: '', through: fold }]), input.density)
+  const headroom = headroomAfter(room, kept, fold, input.density)
   const budget =
     input.typicalSummaryTokens === null ? headroom : Math.min(headroom, input.typicalSummaryTokens)
   if (budget <= 0) return summaryFailed('no_headroom', '折叠后仍没有容纳摘要的空间')
@@ -525,6 +515,46 @@ export async function compact(
   }
 
   return { status: 'compacted', summarized: true, manifest: candidate }
+}
+
+type SpaceInput = Pick<
+  CompactionInput,
+  'messages' | 'actions' | 'previous' | 'fold' | 'density' | 'projectionBudget'
+>
+
+/**
+ * 事实清单与摘要块的空间划分：投影预算先扣除不随内容变化的固定部分，事实清单逐字保留、优先占用
+ * （上限为其余部分的一半），摘要块使用剩余部分（`room`）。全程按 token 计，不做单位换算。
+ */
+function summarySpace(input: SpaceInput): { facts: CompactionFacts; room: number } {
+  const contentBudget = input.projectionBudget - projectionFrame(input.density)
+  const facts = fitFacts(
+    extractFacts(input.messages, input.actions, input.previous?.facts),
+    Math.floor(contentBudget * FACTS_BUDGET_SHARE),
+    input.density,
+  )
+  return { facts, room: contentBudget - estimateText(factsContent(facts), input.density) }
+}
+
+/** 新块可用的空间：摘要块空间扣除保留的旧块与新块之前的分隔线。有旧块时每追加一块多一条分隔线。 */
+function headroomAfter(
+  room: number,
+  kept: readonly CompactionSummaryBlock[],
+  fold: CompactionCut,
+  density: TokenDensity,
+): number {
+  return room - estimateText(summariesText([...kept, { text: '', through: fold }]), density)
+}
+
+/**
+ * 按给定的折叠线，新块可用的空间（token），不计合并旧块可能释放的空间。
+ *
+ * 与 `compact()` 同一算式。选界（`runtime/compaction.ts`）据此判断保留的尾部是否给摘要留出了空间；
+ * 两处分别计算时，选界判定的空间与摘要器实际得到的预算不一致。
+ */
+export function summaryHeadroom(input: SpaceInput): number {
+  const { room } = summarySpace(input)
+  return headroomAfter(room, input.previous?.summaries ?? [], input.fold, input.density)
 }
 
 /** 只前移收纳线：摘要线、事实包、消息计数原样沿用；摘要块取调用方给出的列表。 */

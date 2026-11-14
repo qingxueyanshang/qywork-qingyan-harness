@@ -26,6 +26,7 @@ import {
   projectManifest,
   softLimit,
   summaryCutOf,
+  summaryHeadroom,
   tailRetain,
   unitKey,
   videoMetaOf,
@@ -75,6 +76,15 @@ import {
  * 超出预算的那一次由「截断作废」检查捕获，并作为更大的样本进入下一次的分布。
  */
 const SUMMARY_PERCENTILE = 0.95
+
+/**
+ * 新块空间的下限（token）：本次要写摘要而新块空间低于该值时，选界把跨过保留预算的单元一并折叠。
+ *
+ * 取值依据最差情形夹具上的真实摘要请求（按 `estimateText` 计）：所给预算在 800 至 2,000 之间时，
+ * claude-opus-5-5 写出的摘要在 600 至 1,250 之间、不随预算缩短，预算低于 900 时 5 次中 3 次超出预算而作废；
+ * gpt-6.1-sol 与 deepseek-flash 写出 270 至 600。取 2,000，高于观测到的最长摘要约六成。
+ */
+const MIN_SUMMARY_TOKENS = 2_000
 
 export interface CompactionDeps {
   store: Store
@@ -282,9 +292,8 @@ export class RuntimeCompaction implements CompactionPort {
             Math.max(1, Math.floor(units.reduce((total, unit) => total + unit.tokens, 0) / 4)),
           )
         : automaticRetain
-    const foldIndex = foldIndexOf(units, retain, input.latestUnitSeen)
+    let foldIndex = foldIndexOf(units, retain, input.latestUnitSeen)
     if (foldIndex < 0) return { status: 'skipped', reasonCode: 'nothing_to_fold' }
-    const fold = units[foldIndex]!
     const todoFacts = currentTodoFacts(units)
     const todoTable = todoFacts[0]
 
@@ -295,10 +304,9 @@ export class RuntimeCompaction implements CompactionPort {
     let originalNew = 0
     let condensedNew = 0
     let condensedRegion = 0
-    for (let i = 0; i <= foldIndex; i++) {
-      const u = units[i]!
+    const absorb = (u: Unit) => {
       // 摘要线以内的内容已不在投影中，无需再收纳或摘要。
-      if (u.key <= summaryKey) continue
+      if (u.key <= summaryKey) return
       if (u.row) {
         messages.push(u.row)
         foldedMessageCount++
@@ -326,10 +334,11 @@ export class RuntimeCompaction implements CompactionPort {
         input.density,
       )
       condensedRegion += condensed
-      if (u.key <= condenseKey) continue
+      if (u.key <= condenseKey) return
       originalNew += u.tokens
       condensedNew += condensed
     }
+    for (let i = 0; i <= foldIndex; i++) absorb(units[i]!)
 
     const limit = softLimit(threshold)
     /*
@@ -349,9 +358,74 @@ export class RuntimeCompaction implements CompactionPort {
      * `2702.675848654075`）。
      */
     const scale = input.estimatedOccupancy > 0 ? input.occupancy / input.estimatedOccupancy : 1
-    const afterCondense = input.occupancy - Math.round((originalNew - condensedNew) * scale)
-    // 手动触发是明确的摘要请求；即使收纳已足够，也必须继续尝试摘要段。
-    const condenseOnly = input.trigger === 'automatic' && afterCondense <= limit
+
+    /*
+     * 投影总预算：摘要线推进到折叠线之后，新投影（`projectManifest` 的两条消息）还能容纳的 token 数。
+     *
+     * 被替换的是「收纳后的折叠区」与「上一份投影」：上一份投影整条重写，因此计为释放的空间；
+     * 其中的旧摘要块原样进入新投影，在 `compact()` 中从新块的空间里扣除。
+     * 投影的固定部分（两条消息的协议开销、摘要消息的标题与说明）在 `compact()` 中先行扣除，
+     * 其次是逐字保留的事实清单与旧块，新块使用剩余部分。全程以 token 计。
+     */
+    const oldProjection = summary ? estimateMessages(projectManifest(previous!), input.density) : 0
+    const latestContextUnit = [...units]
+      .reverse()
+      .find((unit) => unit.messages.some((message) => message.role === 'context'))
+    const planFor = (fold: Unit) => {
+      const afterCondense = input.occupancy - Math.round((originalNew - condensedNew) * scale)
+      const pinnedContextTokens =
+        latestContextUnit && latestContextUnit.key > summaryKey && latestContextUnit.key <= fold.key
+          ? estimateMessages(
+              latestContextUnit.messages.filter((message) => message.role === 'context'),
+              input.density,
+            )
+          : 0
+      const pinnedTodoTokens = todoFacts
+        .filter((fact) => fact.key > summaryKey && fact.key <= fold.key)
+        .reduce(
+          (tokens, fact) => tokens + estimateMessages(todoFactMessages(fact), input.density),
+          0,
+        )
+      return {
+        // 手动触发是明确的摘要请求；即使收纳已足够，也必须继续尝试摘要段。
+        condenseOnly: input.trigger === 'automatic' && afterCondense <= limit,
+        projectionBudget:
+          limit -
+          afterCondense +
+          condensedRegion +
+          oldProjection -
+          pinnedContextTokens -
+          pinnedTodoTokens,
+      }
+    }
+    let plan = planFor(units[foldIndex]!)
+    /*
+     * 本次要写摘要、而新块空间低于下限时，跨过保留预算的单元一并折叠，最后一个单元仍保留。
+     *
+     * 选界整段保留跨过保留预算的单元，保留的尾部可接近 2 倍保留量；信封较大、触发线较低时，
+     * 新块的空间只剩数百 token。摘要器在这样的预算下写出的摘要超出预算而作废，本次只落地收纳，
+     * 压缩之后仍越过触发线，下一次压缩同样要折叠这个单元。空间按 `compact()` 的同一算式计算，
+     * 不计合并旧块可能释放的空间。折叠线未越过摘要线时本次不压缩，不在此处改变。
+     */
+    if (
+      !plan.condenseOnly &&
+      units[foldIndex]!.key > summaryKey &&
+      foldIndex < units.length - 2 &&
+      summaryHeadroom({
+        messages,
+        actions,
+        previous,
+        fold: units[foldIndex]!.cut,
+        density: input.density,
+        projectionBudget: plan.projectionBudget,
+      }) < MIN_SUMMARY_TOKENS
+    ) {
+      foldIndex++
+      absorb(units[foldIndex]!)
+      plan = planFor(units[foldIndex]!)
+    }
+    const fold = units[foldIndex]!
+    const { condenseOnly, projectionBudget } = plan
 
     /*
      * 占用未越过软阈值时只执行回收量足够大的收纳，不摘要。
@@ -374,35 +448,6 @@ export class RuntimeCompaction implements CompactionPort {
       return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     }
 
-    /*
-     * 投影总预算：摘要线推进到折叠线之后，新投影（`projectManifest` 的两条消息）还能容纳的 token 数。
-     *
-     * 被替换的是「收纳后的折叠区」与「上一份投影」：上一份投影整条重写，因此计为释放的空间；
-     * 其中的旧摘要块原样进入新投影，在 `compact()` 中从新块的空间里扣除。
-     * 投影的固定部分（两条消息的协议开销、摘要消息的标题与说明）在 `compact()` 中先行扣除，
-     * 其次是逐字保留的事实清单与旧块，新块使用剩余部分。全程以 token 计。
-     */
-    const oldProjection = summary ? estimateMessages(projectManifest(previous!), input.density) : 0
-    const latestContextUnit = [...units]
-      .reverse()
-      .find((unit) => unit.messages.some((message) => message.role === 'context'))
-    const pinnedContextTokens =
-      latestContextUnit && latestContextUnit.key > summaryKey && latestContextUnit.key <= fold.key
-        ? estimateMessages(
-            latestContextUnit.messages.filter((message) => message.role === 'context'),
-            input.density,
-          )
-        : 0
-    const pinnedTodoTokens = todoFacts
-      .filter((fact) => fact.key > summaryKey && fact.key <= fold.key)
-      .reduce((tokens, fact) => tokens + estimateMessages(todoFactMessages(fact), input.density), 0)
-    const projectionBudget =
-      limit -
-      afterCondense +
-      condensedRegion +
-      oldProjection -
-      pinnedContextTokens -
-      pinnedTodoTokens
     const workspaceId = getConversation(store, conversationId)?.workspaceId ?? ''
 
     const outcome = await compact(

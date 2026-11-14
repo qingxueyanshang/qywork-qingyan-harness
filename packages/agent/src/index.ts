@@ -22,6 +22,7 @@ export {
   type SummaryTrace,
   stepStamp,
   summaryCutOf,
+  summaryHeadroom,
   unitKey,
 } from './compaction.ts'
 // 投递额度：一次 provider 决策共用一份额度，超出时保存正文并续读

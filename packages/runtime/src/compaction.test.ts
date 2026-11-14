@@ -1492,14 +1492,14 @@ describe('两种计量口径不得直接相减', () => {
 
 /**
  * 最低触发线的最差情形：触发线 15 万（50 万窗口、比例 30）、信封（系统提示词与工具定义）5.5 万、
- * 跨过保留预算的单元恰为尾部保留量 T，最后一个单元略小于 T，保留的尾部接近 2T。
- * 此时 L − 信封 − 2T 约 1250，摘要与事实清单仍有空间，压缩之后不再越线，投递额度大于 0。
+ * 跨过保留预算的单元恰为尾部保留量 T，最后一个单元略小于 T，整段保留时尾部接近 2T。
+ * 此时 L − 信封 − 2T 约 1250，扣除事实清单与投影的固定部分后新块只剩 884 token，低于新块空间的下限，
+ * 跨过保留预算的单元一并折叠；信封为 5.3 万时新块空间不低于下限，该单元照常保留。
  *
- * 摘要器分别写入 500 token 与恰好写满所给预算。后者检查预算是否扣除了投影的固定部分
- * （摘要消息的标题与说明、两条消息的协议开销）：未扣除时压缩之后的占用越过触发线，越线量与触发线的取值无关。
+ * 摘要器分别写入 500 token、真实模型在小预算下的常见长度与恰好写满所给预算。最后一项检查预算是否扣除了
+ * 投影的固定部分（摘要消息的标题与说明、两条消息的协议开销）：未扣除时压缩之后的占用越过触发线。
  */
 describe('最低触发线的最差情形', () => {
-  const ENVELOPE = 55_000
   const threshold = { contextWindow: 500_000, compactPercent: 30 }
   const limit = softLimit(threshold)
   const retain = tailRetain(threshold)
@@ -1521,7 +1521,7 @@ describe('最低触发线的最差情形', () => {
   }
 
   /** 折叠区是助手正文，收纳不回收空间，必须生成摘要。`write` 按所给预算返回摘要正文。 */
-  async function compactWorstCase(write: (granted: number) => string) {
+  async function compactWorstCase(envelope: number, write: (granted: number) => string) {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -1530,7 +1530,7 @@ describe('最低触发线的最差情形', () => {
     turn(store, ws.id, conv.id, textOf(retain - 1), null)
 
     const all = await history(store, conv.id)
-    const occupancy = ENVELOPE + estimateMessages(all, DEFAULT_DENSITY)
+    const occupancy = envelope + estimateMessages(all, DEFAULT_DENSITY)
     let granted = 0
     const p = port(store, conv.id, async (_prompt, budget) => {
       granted = budget
@@ -1550,15 +1550,18 @@ describe('最低触发线的最差情形', () => {
     return { all, p, outcome, granted, manifest }
   }
 
-  test('保留的尾部接近 2T 时摘要照常生成，压缩之后不越线，投递额度大于 0', async () => {
+  test('新块空间低于下限时跨过保留预算的单元一并折叠，压缩之后不越线，投递额度大于 0', async () => {
     expect([limit, retain]).toEqual([150_000, 46_875])
-    const { all, p, outcome, granted, manifest } = await compactWorstCase(() => textOf(500))
+    // 1,000 token 是真实模型在数百 token 的预算下写出的常见长度，整段保留尾部时超出预算而作废。
+    const { all, p, outcome, granted, manifest } = await compactWorstCase(55_000, () =>
+      textOf(1_000, (text) => estimateText(text, DEFAULT_DENSITY)),
+    )
 
     expect(outcome.status === 'compacted' && outcome.summarized).toBe(true)
-    expect(granted).toBeGreaterThan(500)
-    // 保留的尾部是最后两个单元：恰为 T 的单元与略小于 T 的单元。
+    expect(granted).toBeGreaterThan(2_000)
+    // 保留的尾部只剩最后一个单元。
     const kept = p.project(all).filter((m) => m._group !== 'summary')
-    expect(estimateMessages(kept, DEFAULT_DENSITY)).toBe(2 * retain - 1)
+    expect(estimateMessages(kept, DEFAULT_DENSITY)).toBe(retain - 1)
 
     const after = manifest!.contextAfter!.total
     expect(after).toBeLessThanOrEqual(limit)
@@ -1567,8 +1570,19 @@ describe('最低触发线的最差情形', () => {
     expect(cap).toBeGreaterThan(0)
   })
 
+  test('新块空间不低于下限时跨过保留预算的单元照常保留', async () => {
+    const { all, p, outcome, granted, manifest } = await compactWorstCase(53_000, () => textOf(500))
+
+    expect(outcome.status === 'compacted' && outcome.summarized).toBe(true)
+    expect(granted).toBeGreaterThanOrEqual(2_000)
+    // 保留的尾部是最后两个单元：恰为 T 的单元与略小于 T 的单元。
+    const kept = p.project(all).filter((m) => m._group !== 'summary')
+    expect(estimateMessages(kept, DEFAULT_DENSITY)).toBe(2 * retain - 1)
+    expect(manifest!.contextAfter!.total).toBeLessThanOrEqual(limit)
+  })
+
   test('摘要恰好写满所给预算时压缩之后不越线', async () => {
-    const { outcome, granted, manifest } = await compactWorstCase((budget) =>
+    const { outcome, granted, manifest } = await compactWorstCase(53_000, (budget) =>
       textOf(budget, (text) => estimateText(text, DEFAULT_DENSITY)),
     )
 
