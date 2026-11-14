@@ -819,9 +819,17 @@ export async function compactConversation(
   const emit = (ev: AgentEvent) => deps.bus.publish(ev, conversationId)
   const conversation = getConversation(deps.store, conversationId)
   if (!conversation) throw new Error('会话不存在')
-  // 附件的相对路径按会话所属项目解析；未查到时停止，理由同 `startRun`。
+  // 附件的相对路径按会话所属项目解析；未查到时停止并经 `run.error` 报告，与 `startRun` 相同。
   const ws = workspaceOf(deps.store, conversationId)
-  if (!ws) throw new Error('本会话未找到对应的项目目录，无法压缩')
+  if (!ws) {
+    emit({
+      type: 'run.error',
+      runId: '' as RunId,
+      code: 'internal_error',
+      message: '本会话未找到对应的项目目录，无法压缩',
+    })
+    return
+  }
   /*
    * 接口、模型与压缩比例在写入 run 之前解析，与轮次启动（`Session.ask`）的顺序相同：配置不合法时没有发生压缩，
    * 不写入 run 行，经 `run.error` 报告，错误码与 `startRun` 同一判定（`runErrorOf`）。不要移到 `createRun` 之后：
