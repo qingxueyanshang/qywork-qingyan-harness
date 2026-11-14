@@ -597,10 +597,10 @@ async function mergeEarliest(
     count++
   }
   const earliest = blocks.slice(0, count)
-  const budget = Math.floor(merged / 2)
   let text: string | null
   try {
-    text = await summarize(buildMergePrompt(earliest, budget), budget, trace)
+    // 输出上限取被合并各块之和：不小于它的产物在下方同样弃用，以输出上限截断与弃用的结果相同。
+    text = await summarize(buildMergePrompt(earliest), merged, trace)
   } catch (err) {
     if (isAbortError(err)) return null
     return blocks
@@ -889,13 +889,33 @@ function buildSummaryPrompt(
   )
 }
 
-/** 合并最早若干块的提示词。输出各节与摘要提示词相同，同一事项以较晚一段为准。 */
-function buildMergePrompt(blocks: readonly CompactionSummaryBlock[], budgetTokens: number): string {
+/** 摘要中的原文地址：`[message:…]` 与 `[action:…]`，写法见 `buildSegments`。 */
+const ADDRESS = /\[(?:message|action):[^\]\s]+\]/g
+
+/**
+ * 合并最早若干块的提示词。输出各节与摘要提示词相同，同一事项以较晚一段为准。
+ *
+ * 字数上限按被合并各块自身的字数计算：原文地址（去重）全部计入，其余叙述减半。
+ * 不要改为把 token 预算按 `CHARS_PER_TOKEN_ZH` 换算成字数：摘要块中地址与编号占比高，
+ * 按纯中文的比例换算得到的上限只有原文的 15%–30%，常小于地址本身的总长，模型只能删去地址。
+ */
+function buildMergePrompt(blocks: readonly CompactionSummaryBlock[]): string {
+  const source = blocks.map((block) => block.text).join('\n')
+  const occurrences = source.match(ADDRESS) ?? []
+  const addressChars = [...new Set(occurrences)].join('').length
+  const narrativeChars =
+    blocks.reduce((sum, block) => sum + block.text.length, 0) - occurrences.join('').length
+  const limit = addressChars + Math.floor(narrativeChars / 2)
   return (
     `以下是按时间先后排列的 ${blocks.length} 段交接摘要。把它们合并为一段，按原有各节输出，不要开场白；` +
-    `同一事项以较晚一段的状态为准。各段中的结论、编号、数值、文件路径与 \`[message:…]\`、\`[action:…]\` 标记原样保留。\n\n` +
-    `**整段控制在 ${Math.max(200, Math.floor(budgetTokens * CHARS_PER_TOKEN_ZH))} 字以内**，` +
-    `超出长度会被截断并整段作废。\n\n` +
+    `同一事项以较晚一段的状态为准。各段中的结论、编号、数值与文件路径原样保留。\n\n` +
+    /*
+     * 地址的定义写在合并提示词中：合并产物替换原块之后，模型只能凭这些地址取回原文。
+     * 只写「标记原样保留」时，模型在压缩篇幅时把地址当作可删的格式标记。
+     */
+    `\`[message:…]\` 与 \`[action:…]\` 是原文地址：合并之后，原文只能凭这些地址用 read_history 取回。` +
+    `合并结果中的每个条目附上它在原段中所附的全部地址；几个条目合并为一条时，附上这几条的全部地址。\n\n` +
+    `**整段控制在 ${limit} 字以内**，其中原文地址约 ${addressChars} 字。缩短篇幅时优先精简叙述，地址与编号逐个保留。\n\n` +
     blocks.map((block, i) => `### 第 ${i + 1} 段\n${block.text}`).join('\n\n')
   )
 }
