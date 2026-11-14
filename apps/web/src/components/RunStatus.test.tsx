@@ -77,7 +77,7 @@ async function afterPreviousRun() {
     views: {
       [CV]: {
         transcript: [],
-        history: { loading: null, nextCursor: null, error: null },
+        history: { loading: null, nextCursor: null, earlierTurns: [], error: null },
         changes: null,
         runUserMessageId: null,
         runStartedAt: null,

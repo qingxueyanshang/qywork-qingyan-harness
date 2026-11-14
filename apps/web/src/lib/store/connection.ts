@@ -1096,6 +1096,7 @@ interface HistoryPage extends Folded {
   todos: ConversationHistoryPageResponse['todos']
   /** 本页引用但不在本页中的 workflow 首次派发，见 `ConversationHistoryPageResponse`。 */
   workflowStarts: Step[]
+  earlierTurns: ConversationHistoryPageResponse['earlierTurns']
   nextCursor: string | null
   /** 运行状态与当前请求的只读快照；没有 run 运行时 `runId` 为 null。 */
   live: ConversationLiveSnapshot
@@ -1264,6 +1265,7 @@ async function fetchConversationPage(
     stepsByRun,
     todos: page.todos,
     workflowStarts: page.workflowStarts,
+    earlierTurns: page.earlierTurns,
     nextCursor: page.nextCursor,
     live: page.live,
   }
@@ -1353,6 +1355,7 @@ export async function loadConversationView(id: string): Promise<void> {
   setState('views', id, 'history', {
     loading: 'initial',
     nextCursor: null,
+    earlierTurns: [],
     error: null,
   })
   const lease = beginHistoryLoad(id)
@@ -1366,7 +1369,12 @@ export async function loadConversationView(id: string): Promise<void> {
         if (!v) return
         // 按 id 合并加载期间到达的事件；正文以账本为准，压缩保留较新的阶段。
         v.transcript = mergeHistoryItems(items, v.transcript)
-        v.history = { loading: null, nextCursor: page.nextCursor, error: null }
+        v.history = {
+          loading: null,
+          nextCursor: page.nextCursor,
+          earlierTurns: page.earlierTurns,
+          error: null,
+        }
         restoreLive(v, page.live, page.runs)
       }),
     )
@@ -1406,7 +1414,12 @@ export async function loadOlderConversation(id: string): Promise<boolean> {
         const v = s.views[id]
         if (!v) return
         v.transcript = mergeHistoryItems(items, v.transcript)
-        v.history = { loading: null, nextCursor: page.nextCursor, error: null }
+        v.history = {
+          loading: null,
+          nextCursor: page.nextCursor,
+          earlierTurns: page.earlierTurns,
+          error: null,
+        }
       }),
     )
     return true
@@ -1700,6 +1713,7 @@ export async function reloadActiveConversation(): Promise<void> {
   setState('views', id, 'history', {
     loading: 'initial',
     nextCursor: null,
+    earlierTurns: [],
     error: null,
   })
 
@@ -1718,7 +1732,12 @@ export async function reloadActiveConversation(): Promise<void> {
             if (!v) return
             if (restoreLive(v, folded.live, folded.runs)) s.lastRunId = folded.live.runId
             v.transcript = mergeHistoryItems(items, v.transcript)
-            v.history = { loading: null, nextCursor: folded.nextCursor, error: null }
+            v.history = {
+              loading: null,
+              nextCursor: folded.nextCursor,
+              earlierTurns: folded.earlierTurns,
+              error: null,
+            }
             v.error = null
             // 待办仍由 steps 的同一账本投影恢复。
             s.todos = folded.todos

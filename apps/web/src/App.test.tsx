@@ -291,6 +291,7 @@ test('快速切换会话时保持已确认的布局，重复选择不重新获�
     steps: [],
     todos: [],
     workflowStarts: [],
+    earlierTurns: [],
     nextCursor: null,
     live: { runId: null, seq: 0, request: null },
   })

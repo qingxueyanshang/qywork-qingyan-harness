@@ -87,6 +87,75 @@ test('压缩进度在空会话中也可恢复，中断收尾保留压缩类型',
   }
 })
 
+test('历史页带上早于本页的全部用户输入：含运行中途追加的输入，不含回执与执行事实', () => {
+  const { store, ws } = fresh()
+  try {
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const first = appendMessage(store, { conversationId: cv.id, role: 'user', content: '第一问' })
+    appendMessage(store, {
+      conversationId: cv.id,
+      role: 'user',
+      content: '子任务回执',
+      origin: 'subagent',
+    })
+    const second = appendMessage(store, {
+      conversationId: cv.id,
+      role: 'user',
+      content: '',
+      attachments: [{ path: '/tmp/ws/a.png', name: 'a.png' }] as never,
+    })
+    const third = appendMessage(store, { conversationId: cv.id, role: 'user', content: '第三问' })
+    appendMessage(store, { conversationId: cv.id, role: 'user', content: '第四问' })
+    // 第一问的 run 中途追加一条用户输入，另有一条回执与一条执行事实。
+    const run = createRun(store, {
+      conversationId: cv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'turns',
+      userMessageId: first.id,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const injected = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'user',
+      content: '中途追加',
+      payload: { kind: 'user' },
+    })
+    appendStep(store, {
+      runId: run.id,
+      seq: 2,
+      kind: 'user',
+      content: '回执',
+      payload: { kind: 'user', origin: 'subagent' },
+    })
+    appendStep(store, {
+      runId: run.id,
+      seq: 3,
+      kind: 'user',
+      content: '执行事实',
+      payload: { kind: 'user', notice: true },
+    })
+
+    const latest = listConversationHistoryPage(store, cv.id, { limit: 1 })
+    expect(latest.earlierTurns).toEqual([
+      { id: first.id, text: '第一问' },
+      { id: injected.id, text: '中途追加' },
+      { id: second.id, text: 'a.png' },
+      { id: third.id, text: '第三问' },
+    ])
+    const older = listConversationHistoryPage(store, cv.id, { limit: 2, before: third.id })
+    expect(older.earlierTurns).toEqual([
+      { id: first.id, text: '第一问' },
+      { id: injected.id, text: '中途追加' },
+    ])
+    expect(listConversationHistoryPage(store, cv.id, { limit: 10 }).earlierTurns).toEqual([])
+  } finally {
+    store.close()
+  }
+})
+
 test('手动压缩随历史分页恢复，每条记录只属于一页', () => {
   const { store, ws } = fresh()
   try {

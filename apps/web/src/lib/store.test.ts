@@ -169,6 +169,7 @@ test('刷新恢复压缩后继续更新同一进度条，旧快照不覆盖新�
         ],
         todos: [],
         workflowStarts: [],
+        earlierTurns: [],
         nextCursor: null,
         live: NO_LIVE,
       }
@@ -266,6 +267,7 @@ describe('激活项目复用服务端返回的会话列表', () => {
           steps: [],
           todos: [],
           workflowStarts: [],
+          earlierTurns: [],
           nextCursor: null,
           live: NO_LIVE,
         }
@@ -844,7 +846,15 @@ describe('整页刷新后回到刷新前的会话', () => {
       }
       if (p.includes('/queue')) return { queue: [] }
       if (p.includes('/commands')) return { commands: [] }
-      return { messages: [], runs: [], steps: [], todos: [], workflowStarts: [], nextCursor: null }
+      return {
+        messages: [],
+        runs: [],
+        steps: [],
+        todos: [],
+        workflowStarts: [],
+        earlierTurns: [],
+        nextCursor: null,
+      }
     }
     try {
       setWorkspace(WS_A)
@@ -1023,6 +1033,7 @@ describe('事件按会话归属过滤', () => {
           steps: [],
           todos: [],
           workflowStarts: [],
+          earlierTurns: [],
           nextCursor: null,
           live: NO_LIVE,
         }
@@ -1174,6 +1185,7 @@ describe('事件按会话归属过滤', () => {
         steps: [],
         todos: [{ id: 'todo_1', content: '已经做完', status: 'completed' }],
         workflowStarts: [],
+        earlierTurns: [],
         nextCursor: null,
         live: NO_LIVE,
       }
@@ -2012,6 +2024,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
           })),
           todos: [],
           workflowStarts,
+          earlierTurns: [],
           nextCursor: null,
           live,
         }
@@ -2458,6 +2471,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
           ],
           todos: [{ id: 'todo-old', content: '跨页待办', status: 'pending' }],
           workflowStarts: [],
+          earlierTurns: [],
           nextCursor: older ? null : 'ms_3',
           live: NO_LIVE,
         }
@@ -2525,6 +2539,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
           steps: [],
           todos: [],
           workflowStarts: [],
+          earlierTurns: [],
           nextCursor: null,
           live: NO_LIVE,
         }
@@ -2575,6 +2590,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
             steps: [],
             todos: [],
             workflowStarts: [],
+            earlierTurns: [],
             nextCursor: path.includes('before=') ? null : 'ms_older',
             live: NO_LIVE,
           }
@@ -2659,6 +2675,7 @@ describe('当前目标：由事件推送，刷新后仍须存在', () => {
           steps: [],
           todos: [],
           workflowStarts: [],
+          earlierTurns: [],
           nextCursor: null,
           live: NO_LIVE,
         }
@@ -2872,6 +2889,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
           steps: [],
           todos: [],
           workflowStarts: [],
+          earlierTurns: [],
           nextCursor: null,
           live,
         }
@@ -3129,6 +3147,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
         steps: [],
         todos: [],
         workflowStarts: [],
+        earlierTurns: [],
         nextCursor: null,
         live: { runId: null, seq: 100, request: null },
       }
@@ -3167,6 +3186,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
         steps: [],
         todos: [],
         workflowStarts: [],
+        earlierTurns: [],
         nextCursor: null,
         live: { runId: 'rn_mid', seq: 150, request: null },
       }
@@ -3202,6 +3222,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
         steps: [],
         todos: [],
         workflowStarts: [],
+        earlierTurns: [],
         nextCursor: null,
         live: snapshot(
           {
@@ -3798,6 +3819,7 @@ describe('带 origin 的用户消息折叠为回执条目', () => {
           steps,
           todos: [],
           workflowStarts: [],
+          earlierTurns: [],
           nextCursor: null,
           live: NO_LIVE,
         }
@@ -4008,6 +4030,7 @@ describe('实时到达的回执同样建为回执条目', () => {
           ],
           todos: [],
           workflowStarts: [],
+          earlierTurns: [],
           nextCursor: null,
           live: NO_LIVE,
         }
@@ -4584,6 +4607,7 @@ describe('会话的辅助读取失败时显示原因', () => {
           steps: [],
           todos: [],
           workflowStarts: [],
+          earlierTurns: [],
           nextCursor: null,
           live: NO_LIVE,
         }

@@ -19,6 +19,7 @@ import type {
   ContextOmitted,
   Conversation,
   ConversationChangeStep,
+  ConversationTurnRef,
   DesktopTargetEvent,
   FileChange,
   FollowUp,
@@ -195,6 +196,8 @@ export interface ConversationView {
     /** unloaded 表示尚未读取；null 且无错误才表示读取完成。 */
     loading: 'unloaded' | 'initial' | 'older' | null
     nextCursor: string | null
+    /** 早于已加载内容的用户输入，供会话索引列出未加载的条目；随每一页的响应整体替换。 */
+    earlierTurns: ConversationTurnRef[]
     error: { phase: 'initial' | 'older'; message: string } | null
   }
   /** 变更面板的数据。`null` 表示尚未获取，打开面板时获取。 */
@@ -264,7 +267,12 @@ export interface ConversationView {
 /** 尚未建表的会话读取到的视图。已冻结，写入一律经由 `openView`。 */
 const EMPTY_VIEW: ConversationView = Object.freeze({
   transcript: Object.freeze([]) as unknown as TranscriptItem[],
-  history: Object.freeze({ loading: 'unloaded', nextCursor: null, error: null }),
+  history: Object.freeze({
+    loading: 'unloaded',
+    nextCursor: null,
+    earlierTurns: Object.freeze([]) as unknown as ConversationTurnRef[],
+    error: null,
+  }),
   changes: null,
   runUserMessageId: null,
   runStartedAt: null,
@@ -439,7 +447,7 @@ export function openView(id: string): void {
   if (state.views[id]) return
   setState('views', id, {
     transcript: [],
-    history: { loading: 'unloaded', nextCursor: null, error: null },
+    history: { loading: 'unloaded', nextCursor: null, earlierTurns: [], error: null },
     changes: null,
     runUserMessageId: null,
     runStartedAt: null,
