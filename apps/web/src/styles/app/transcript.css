@@ -39,10 +39,15 @@
 }
 
 /* 保留完整 DOM 与浏览器查找能力，只跳过屏幕外条目的布局和绘制。
-   auto 记住实际高度，回看与折叠后沿用浏览器测得的尺寸，不另建高度缓存。 */
-.conversation-stream-inner > :is(.row, .fold, .wf-card, .run-strip) {
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 80px;
+   auto 记住实际高度，回看与折叠后沿用浏览器测得的尺寸，不另建高度缓存。
+   WebKit（iOS 上的全部浏览器、macOS 的外壳）中不启用：条目首次进入视口附近时由 80px 占位变为实际高度，
+   WebKit 的滚动锚定不补偿这一变化，回看时视口内容随之位移。`-webkit-hyphens` 只有 WebKit 支持，
+   此处用它区分内核；更换判据时须在 WebKit 中实测回看无位移。 */
+@supports not (-webkit-hyphens: none) {
+  .conversation-stream-inner > :is(.row, .fold, .wf-card, .run-strip) {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 80px;
+  }
 }
 
 .transcript-inner {
