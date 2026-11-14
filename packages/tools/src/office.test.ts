@@ -440,7 +440,7 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
    */
   test('接受原生视频但文件过大：可上传时交出路径，不可上传时改为抽帧', async () => {
     const root = await workspace()
-    await writeFile(join(root, 'big.mp4'), indexedMp4(6 * 1024 * 1024))
+    await writeFile(join(root, 'big.mp4'), indexedMp4(9 * 1024 * 1024))
     const upload = await readFileTool.fn(
       { path: 'big.mp4' },
       {
@@ -457,7 +457,7 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
       { ...ctx(root), density: videoDensity(true) },
     )
     expect(inline.status).toBe('success')
-    expect(inline.message.startsWith('该视频 6.0 MB')).toBe(true)
+    expect(inline.message.startsWith('该视频 9.0 MB')).toBe(true)
     expect(inline.message).toContain('改为按时间抽帧')
     expect((inline.data as { images: unknown[] }).images).toHaveLength(2)
   })

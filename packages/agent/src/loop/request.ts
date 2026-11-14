@@ -540,18 +540,28 @@ export function videosOf(
  * （实测小于 1 MB 约 3–5 秒，3–6 MB 约 11–15 秒）。
  * 超限时整批换出至下限，不要改为每次只换出最早的一张：换出会改变前缀，逐张换出会使前缀每一步都变化。
  * 上限在 2–8 MB 之间实测识别质量无差别：越小换出越频繁，每次换出都使缓存重新计算一次；越大则长任务后段请求越慢。
+ * 取 8 MB（缩略图上限 5 MB、目标值 4 MB）时，重放本机账本，换出改写的前缀 token 比取 5 MB（缩略图上限 3 MB）时少约一半；
+ * 超过 8 MB 的识别质量未经实测，不要再调高。
  */
-export const MEDIA_RETAIN_HIGH_BYTES = 5 * 1024 * 1024
+export const MEDIA_RETAIN_HIGH_BYTES = 8 * 1024 * 1024
 export const MEDIA_RETAIN_LOW_BYTES = 2 * 1024 * 1024
 
 /**
- * 缩略图合计的上限，按 `thumbnailBytes` 的估算值计（`evictedMedia` 第 2 步）。
+ * 缩略图合计的上限，按 `thumbnailBytes` 的估算值计（`evictedMedia` 第 2 步）；超过时移出到 `THUMBNAIL_RETAIN_LOW_BYTES`。
  *
- * 约 48 张。实测一次逐页审阅 20 页幻灯片的任务共有 40 张不同的图片，按估算值合计约 2.5 MB；
- * 取 2 MB 时最早的样图与第一组页面被移出。换出之后请求中的媒体不超过本值加保护区，距上限仍有约 2 MB，
- * 不要再调高：余量越小换出越频繁。
+ * 请求中最多约 80 张缩略图。实测一次逐页审阅 20 页幻灯片的任务共有 40 张不同的图片，按估算值合计约 2.5 MB；
+ * 上限取 2 MB 时最早的样图与第一组页面被移出。缩略图合计不超过本值，换出之后请求中的媒体不超过本值加保护区；
+ * 媒体上限减去本值是缩略图填满之后两次换出之间至少可容纳的原图字节，不要单独调高本值：余量越小换出越频繁。
  */
-export const THUMBNAIL_RETAIN_BYTES = 3 * 1024 * 1024
+export const THUMBNAIL_RETAIN_BYTES = 5 * 1024 * 1024
+
+/**
+ * 缩略图合计超过 `THUMBNAIL_RETAIN_BYTES` 后移出的目标值，约 64 张。
+ *
+ * 不要改为只移出到不超过上限：缩略图合计会停在上限附近，此后每次缩小原图都同时移出最早的缩略图，
+ * 每次换出都从最早的缩略图起改写前缀。目标值越低，移出越少发生，请求中可见的缩略图也越少。
+ */
+export const THUMBNAIL_RETAIN_LOW_BYTES = 4 * 1024 * 1024
 
 /** 路径视频在本轮的发送方式：内联字节、上传后发送地址，或不直接发送、替换为指向 `read_file` 抽帧的说明。 */
 export type VideoDelivery = 'inline' | 'upload' | 'frames'
@@ -672,7 +682,7 @@ export type MediaLevel = 'thumbnail' | 'omitted'
  * 按消息顺序累计媒体字节，缩略图按 `thumbnailBytes` 计入。判定点是每条带媒体的消息与每条 assistant 消息，
  * 判定点处累计超过上限时：
  * 1. 从最早仍为原图的消息起整条缩小为缩略图，直到总量降至下限以下；`thumbnailBytes` 为 0 的消息替换为说明。
- * 2. 缩略图合计超过 `THUMBNAIL_RETAIN_BYTES` 时，从最早的缩略图起替换为说明，直到不超过该值。
+ * 2. 缩略图合计超过 `THUMBNAIL_RETAIN_BYTES` 时，从最早的缩略图起替换为说明，直到不超过 `THUMBNAIL_RETAIN_LOW_BYTES`。
  *
  * 第 2 步只按缩略图合计判断，不要改为按总量判断：刚取回的原图位于保护区内无法换出，按总量判断时
  * 一次 1 MB 的局部放大图即可使较早的缩略图被移出，模型完全看不到这些画面，只能逐张取回原图，
@@ -713,7 +723,8 @@ export function evictedMedia(
       thumbnails.push({ index: out.index, bytes: thumb })
       reduced += thumb
     }
-    while (reduced > THUMBNAIL_RETAIN_BYTES) {
+    if (reduced <= THUMBNAIL_RETAIN_BYTES) return
+    while (reduced > THUMBNAIL_RETAIN_LOW_BYTES) {
       const out = thumbnails.shift()!
       levels.set(out.index, 'omitted')
       reduced -= out.bytes

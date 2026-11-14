@@ -16,7 +16,7 @@ export const THUMBNAIL_BYTES = 64 * 1024
 
 const THUMBNAIL_QUALITY = 75
 
-/** 进程内缓存的缩略图数。单个会话的请求中最多约 48 张缩略图（`THUMBNAIL_RETAIN_BYTES`）。 */
+/** 进程内缓存的缩略图数。单个会话的请求中最多约 80 张缩略图（`THUMBNAIL_RETAIN_BYTES`）。 */
 const CACHE_LIMIT = 128
 
 const cache = new Map<string, { data: string; mime: string }>()
