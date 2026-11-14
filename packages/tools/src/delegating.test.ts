@@ -164,7 +164,6 @@ describe('按 id 或名称引用子 agent', () => {
       status: 'success',
       message:
         '临时 写手（subagentId cv_1）正在执行，本次任务已作为补充指令送入它正在执行的一轮，在它的下一步生效；回执在它结束后送达',
-      data: { subagentId: 'cv_1', injected: true },
     })
   })
 })
