@@ -274,7 +274,7 @@ export function exportConversationDiagnostics(
             providerName: provider.name,
             providerKind: provider.kind,
           },
-          compactPercentFor(config, provider.effectiveModel.contextWindow),
+          compactPercentFor(config, provider.effectiveModel),
         )
     } catch (error) {
       item.collectionErrors.push({

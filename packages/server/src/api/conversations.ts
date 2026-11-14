@@ -686,7 +686,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     if (!stored || !spec) return json({ error: '会话绑定的接口或模型已不在配置中' }, 409)
     let compactPercent: number
     try {
-      compactPercent = compactPercentFor(d.config, spec.contextWindow)
+      compactPercent = compactPercentFor(d.config, spec)
     } catch (err) {
       // 与轮次启动时的配置错误为同一报错。
       return json({ error: err instanceof Error ? err.message : String(err) }, 409)

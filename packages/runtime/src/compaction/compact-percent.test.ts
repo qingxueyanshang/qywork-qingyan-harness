@@ -10,6 +10,7 @@ import { expect, test } from 'bun:test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { ProviderError } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import { ContentStore, listProviderRequests, listRuns, Store } from '@qywork/store'
 import { diagnoseConfig, type QyConfig } from '../config.ts'
@@ -155,18 +156,21 @@ test('父会话与子会话使用不同档的型号时各按自己的档位', as
   }
 })
 
-test('配置文件中的比例为字符串或小数时，轮次在启动前以配置错误终止', async () => {
+test('配置文件中的比例为字符串或小数时，轮次在启动前以配置错误终止，错误码为 invalid_request', async () => {
   for (const bad of [{ large: '50' }, { large: 52.5 }, { small: 50 }, { large: 90 }]) {
     const h = await harness(bad)
     try {
       expect(diagnoseConfig(h.cfg).some((p) => p.startsWith('compactPercent.'))).toBe(true)
-      let failure = ''
+      let failure: unknown = null
       try {
         await h.ask('第一轮')
       } catch (err) {
-        failure = err instanceof Error ? err.message : String(err)
+        failure = err
       }
-      expect(failure).toContain('自动压缩比例不合法')
+      // 错误码由抛出处给出：`startRun` 与手动压缩按 `ProviderError.code` 报告，未分类的错误记为 internal_error。
+      expect(failure).toBeInstanceOf(ProviderError)
+      expect((failure as ProviderError).code).toBe('invalid_request')
+      expect((failure as ProviderError).message).toContain('自动压缩比例不合法')
       // 启动前终止：没有轮次，也没有发出请求。
       const runs = h.store.db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM runs').get()
       expect(runs?.n).toBe(0)

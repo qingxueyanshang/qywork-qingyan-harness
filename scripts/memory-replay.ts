@@ -518,7 +518,7 @@ async function replay(
     for await (const ev of loop.run({
       runId,
       history,
-      compactPercent: compactPercentFor(config, spec.contextWindow),
+      compactPercent: compactPercentFor(config, spec),
       ...(effort ? { effort } : {}),
       cacheKey: p.conversationId,
       signal: abort.signal,

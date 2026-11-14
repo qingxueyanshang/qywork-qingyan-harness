@@ -229,7 +229,8 @@ export async function setEffort(
  * 自动压缩在发送前按占用检查（见 `agent/loop/compact.ts`）；provider 的容量拒绝不触发压缩，
  * 只如实报错。
  *
- * 结果通过 compaction 事件返回（done 与 failed 都会返回），因此此处不做乐观更新。
+ * 结果通过 compaction 事件返回（done 与 failed 都会返回）；接口、模型或压缩比例的配置不合法时没有发生压缩，
+ * 经 run.error 返回。因此此处不做乐观更新。
  */
 export function compactContext(): void {
   const id = state.activeConversation
