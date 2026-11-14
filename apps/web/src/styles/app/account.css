@@ -508,8 +508,11 @@
   font-size: var(--fs-xs);
   line-height: 18px;
 }
-.account-more {
-  margin-top: var(--s-3);
+/* 使用记录的续页按钮：样式取会话流的「加载更早记录」（`.history-button`），在表格下方居中。 */
+.history-button.account-more {
+  display: flex;
+  width: fit-content;
+  margin: var(--s-3) auto 0;
 }
 
 /* ── Token 活动 ──

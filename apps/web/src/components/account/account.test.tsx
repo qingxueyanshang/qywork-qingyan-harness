@@ -357,7 +357,7 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
   ).toEqual(['—', '每秒', '720p 0.2 · 1080p 0.4'])
   expect(calls).toContain('GET /api/models')
   // 不足一页：没有更早的记录。
-  expect(view.button('加载更早的记录')).toBeUndefined()
+  expect(view.button('加载更早记录')).toBeUndefined()
   view.close()
 })
 
@@ -366,15 +366,15 @@ test('使用记录满一页时可继续加载，续页位置为上一页最后�
   await cloudStore.refreshCloudState()
   pages = [Array.from({ length: 50 }, (_, i) => record(String(99 - i))), [record('1')]]
   const view = await dialog()
-  await until(() => view.button('加载更早的记录') !== undefined)
-  view.button('加载更早的记录')?.click()
+  await until(() => view.button('加载更早记录') !== undefined)
+  view.button('加载更早记录')?.click()
   // 使用记录是弹窗中的最后一张表，上方还有「可用模型」表。
   const records = () =>
     [...view.host.querySelectorAll('.lib-table')].at(-1)?.querySelectorAll('tbody tr').length
   await until(() => records() === 51)
   const last = calls.filter((c) => c.startsWith('GET /api/cloud/requests')).at(-1)
   expect(last).toContain(`before=${encodeURIComponent(record('50').startedAt)}`)
-  expect(view.button('加载更早的记录')).toBeUndefined()
+  expect(view.button('加载更早记录')).toBeUndefined()
   view.close()
 })
 

@@ -640,8 +640,13 @@ function RequestTable(props: { provider: string; pages: ReturnType<typeof create
         {(e) => <LoadState error={e()} onRetry={() => void more()} busy={loading()} />}
       </Show>
       <Show when={!done() && !error() && rows().length > 0}>
-        <button type="button" class="btn-ghost sm account-more" disabled={loading()} onClick={more}>
-          加载更早的记录
+        <button
+          type="button"
+          class="history-button account-more"
+          disabled={loading()}
+          onClick={more}
+        >
+          加载更早记录
         </button>
       </Show>
     </>
