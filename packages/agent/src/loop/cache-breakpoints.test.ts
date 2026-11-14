@@ -157,7 +157,8 @@ test('媒体超过保留上限：只有换出的那一步改写前缀，之后�
   const rewrites = changes.filter((at, k) => at < seen[k]!.length)
   expect(rewrites).toHaveLength(1)
   expect(cachedPrefixes(seen).slice(1)).toEqual(changes)
-})
+  // 每一步都构造超过保留上限的媒体内容，全部是计算，没有按真实时间的等待；较慢的构建机上超过默认的 5 秒上限。
+}, 60_000)
 
 /**
  * 工具结果中的图片是正文库引用，字节数按记录计入换出预算；测试不提供正文库，发出的请求中图片替换为说明，
