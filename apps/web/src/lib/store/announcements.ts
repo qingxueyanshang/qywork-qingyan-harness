@@ -10,8 +10,8 @@
 
 import type { Announcement } from '@qywork/core'
 import { createSignal } from 'solid-js'
+import { client } from './client.ts'
 import { cloudState, markAnnouncementSeen } from './cloud.ts'
-import { client } from './connection.ts'
 
 const [list, setList] = createSignal<Announcement[]>([])
 const [open, setOpen] = createSignal(false)

@@ -24,9 +24,22 @@ import {
 import { createEffect, createRoot, createSignal, on, onCleanup } from 'solid-js'
 import { ApiError } from '../../client.ts'
 import { activateWorkspace, selectConversation } from '../actions.ts'
-import { client, petApply, petsChange } from '../connection.ts'
+import { client } from '../client.ts'
 import { state, transcript } from '../state.ts'
 import { workspace } from '../ui.ts'
+
+/** 最近一次宠物库变更（`pets.changed`），`observePet` 监听它重新读取。 */
+export const [petsChange, setPetsChange] = createSignal<{
+  id: string
+  removed: boolean
+  seq: number
+} | null>(null)
+
+/**
+ * 当前会话中 `pet` 工具最近一次成功的 `apply`：`id` 为 null 表示切回内置宠物。
+ * `observePet` 监听它执行切换；`seq` 逐次加一，使连续两次切换到同一只宠物都生效。
+ */
+export const [petApply, setPetApply] = createSignal<{ id: string | null; seq: number } | null>(null)
 
 /** 显示位置：桌面（外壳的透明窗口）或隐藏。缺省为桌面。 */
 export type PetPlace = 'desktop' | 'hidden'

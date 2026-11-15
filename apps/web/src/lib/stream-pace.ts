@@ -188,7 +188,7 @@ export function takeAll(state: PaceState): string {
 /**
  * 定时器编排。
  *
- * 单独抽出是为了可测试：写在 `connection.ts` 中时，运行需要 solid 的 store
+ * 单独抽出是为了可测试：写在 `store/events/pace.ts` 中时，运行需要 solid 的 store
  * 与真实定时器，因此只有纯函数部分有测试、编排部分没有，而实际容易出错的是
  * 编排（应 flush 时未 flush、切换会话时把上一段文字写入新会话）。
  *

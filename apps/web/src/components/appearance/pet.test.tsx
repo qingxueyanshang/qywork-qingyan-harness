@@ -264,7 +264,7 @@ describe('宠物状态推导', () => {
 
   test('对话中的 apply 切换宠物包并读取；宠物被删除时切回内置宠物', async () => {
     const store = await import('../../lib/store/index.ts')
-    const { setPetApply, setPetsChange } = await import('../../lib/store/connection.ts')
+    const { setPetApply, setPetsChange } = await import('../../lib/store/appearance/pet.ts')
     const one = { frames: ['a.png'], fps: 1 }
     const entry = {
       id: 'pet-cat',

@@ -90,6 +90,7 @@ export {
   editCanvas,
   exportAbort,
   exportFinish,
+  exportRequests,
   exportStart,
   exportWrite,
   importToCanvas,
@@ -98,26 +99,13 @@ export {
   restoreCanvas,
   retrieveCard,
   runCard,
+  setExportRequests,
   uploadToCanvas,
   WORKSPACE_PATH_TYPE,
 } from './canvas.ts'
-export {
-  applyEvent,
-  applyRejected,
-  client,
-  discardPace,
-  exportRequests,
-  extensionsRevision,
-  invalidateExtensions,
-  loadConversationChanges,
-  loadConversationView,
-  loadOlderConversation,
-  loadOlderConversationChanges,
-  reloadActiveConversation,
-  retryConversationHistory,
-  setExportRequests,
-  syncViews,
-} from './connection.ts'
+export { client } from './client.ts'
+export { applyEvent, applyRejected } from './connection.ts'
+export { discardPace } from './events/pace.ts'
 export {
   CANVAS_SUFFIX,
   canvasAvailable,
@@ -137,9 +125,11 @@ export {
   deleteSkill,
   ensureModelCatalog,
   explainApiError,
+  extensionsRevision,
   importMcp,
   importSkill,
   installPlugin,
+  invalidateExtensions,
   type KnownWorkspace,
   type LibraryVendor,
   listSkillSources,
@@ -295,6 +285,17 @@ export {
   toggleSidebar,
   workspace,
 } from './ui.ts'
+export {
+  loadConversationChanges,
+  loadOlderConversationChanges,
+} from './views/changes.ts'
+export {
+  loadConversationView,
+  loadOlderConversation,
+  reloadActiveConversation,
+  retryConversationHistory,
+} from './views/history.ts'
+export { syncViews } from './views/subscription.ts'
 export {
   callWorkbenchTool,
   refreshWorkbenches,

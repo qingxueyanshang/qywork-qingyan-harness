@@ -8,7 +8,7 @@
 
 import type { ReleaseNotes } from '@qywork/core'
 import { createSignal } from 'solid-js'
-import { client } from './connection.ts'
+import { client } from './client.ts'
 
 const SEEN_KEY = 'qywork.releaseNotes.seen'
 

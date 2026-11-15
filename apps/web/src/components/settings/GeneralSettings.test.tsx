@@ -245,7 +245,7 @@ test('个性化一行打开弹窗：雾面可选颜色与「无」，修改后�
  */
 test('从看不到背景改为图片：只发一次请求，变更广播触发的读取到达后界面与服务端一致', async () => {
   const { revealBackdrop } = await import('@qywork/core')
-  const { setPersonalizationChange } = await import('../../lib/store/connection.ts')
+  const { setPersonalizationChange } = await import('../../lib/store/appearance/personalization.ts')
   const { render } = await import('solid-js/web')
   const { PersonalizationDialog } = await import('./PersonalizationDialog.tsx')
   let server = DEFAULT_PERSONALIZATION

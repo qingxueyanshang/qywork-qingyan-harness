@@ -1,9 +1,8 @@
 /**
  * 桌面外壳的调用桥：`__TAURI_INTERNALS__` 的唯一封装。
  *
- * 本模块不得 import 本包内的任何模块，必须是叶子模块：`ui.ts` 依赖它，
- * 而 `connection.ts` 又 import 了 `ui.ts`；桥位于 `settings.ts` 一侧时，
- * 该依赖边形成环，报错为 `Cannot access 'QyClient' before initialization`。
+ * 本模块不得 import 本包内的任何模块，必须是叶子模块：`ui.ts`、`settings.ts` 与 `actions.ts`
+ * 都依赖它，它再依赖本包内的模块会形成引用环，环上的模块会取得尚未初始化的导出。
  */
 
 /**

@@ -5,7 +5,7 @@
  * 出现在响应中）不在此测试：它们或已由端到端实测覆盖，或应由服务端测试锁定，
  * 移入单测只会变成对测试桩的测试。
  *
- * 先补全浏览器全局对象的原因：`store.ts` 顶层执行 `new QyClient(...)`，而 `QyClient` 有字段初始化器
+ * 先补全浏览器全局对象的原因：`store/client.ts` 顶层执行 `new QyClient(...)`，而 `QyClient` 有字段初始化器
  * `private readonly endpoint = resolveEndpoint()`：构造函数体为空，但字段在实例化时即执行，
  * 需要读取 `location` / `sessionStorage` / `matchMedia`。因此此处先补全这些对象再动态 import，
  * 而不是在产品代码中添加 `typeof location === 'undefined'` 判断：该判断只为测试存在，生产路径上
@@ -15,8 +15,8 @@
  *
  * 覆盖范围（B6：一个 test 覆盖多个源文件时须在此列明）：`store/ui.ts` 的面板宽度、
  * 页签与刷新后的恢复、`store/browser.ts` 的内置浏览器归属、`store/connection.ts` 的 `applyEvent`
- * 归属过滤与能力投影替换、`store/actions.ts` 切换会话时的队列重置、
- * `store/settings.ts` 的 API 错误解释与模型目录的重新读取。
+ * 归属过滤、`store/events/` 的事件处理器（含能力投影替换）、`store/views/` 的会话投影与变更分页、
+ * `store/actions.ts` 切换会话时的队列重置、`store/settings.ts` 的 API 错误解释与模型目录的重新读取。
  *
  * 不要在此断言模块加载时读取的宽度：`bun test` 一次执行多个文件时共用一份
  * 模块表，`client.test.ts` 先行 import 了 `client.ts`，`store/ui.ts` 在此处
@@ -1991,7 +1991,7 @@ describe('画布运行事件', () => {
 })
 
 /**
- * 刷新或重连后的会话投影（`store/connection.ts` 的 `reloadActiveConversation`）。
+ * 刷新或重连后的会话投影（`store/views/history.ts` 的 `reloadActiveConversation`）。
  *
  * 本组锁定「账本中有、界面上缺失」的一类问题。它们只出现在重新拉取路径上，
  * 实时路径正常，因此刷新之前无法察觉。
@@ -2624,7 +2624,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
 })
 
 /**
- * 当前目标（`store/connection.ts` 中的 `goal` 事件与重新拉取时的读取）。
+ * 当前目标（`store/events/session.ts` 中的 `goal` 事件与重新拉取时的读取）。
  *
  * 两条路径都须锁定，因为二者互补：事件路径只在目标变更时
  * 发送一次，读取路径只在打开会话时执行一次。缺少读取路径时，进程重启后账本中的目标
@@ -2701,7 +2701,7 @@ describe('当前目标：由事件推送，刷新后仍须存在', () => {
 })
 
 /**
- * 报错正文的显示位置。覆盖 `store/connection.ts` 的 `run.error` / `run.finished` 两个分支。
+ * 报错正文的显示位置。覆盖 `store/events/run.ts` 的 `run.error` / `run.finished` 两个条目。
  *
  * 原始失败形状：一轮因无法连接接口而停止，读数条上只有「模型服务出错」
  * 五个字，说明处理方法的那句（「网络不可达：检查接口地址与代理」）
@@ -3419,7 +3419,7 @@ describe('读取配置后模型目录随之重新计算', () => {
 })
 
 /**
- * 工具卡的实时输出（`store/connection.ts` 的 `tool.delta`）。
+ * 工具卡的实时输出（`store/events/tools.ts` 的 `tool.delta`）。
  *
  * 断言采用原始失败形状：`tool.delta` 的 stepId 为空串时（服务端装配执行上下文
  * 时尚无 step），此处 `find` 无法匹配任何条目，`if (!item) return` 将整条通道
@@ -3539,7 +3539,7 @@ describe('工具卡按 stepId 认领实时输出', () => {
    * 其他会话的、失败的、以及不带 `applied` 的 save 结果都不触发切换。
    */
   test('当前会话的 pet apply 成功时请求切换宠物', async () => {
-    const { petApply } = await import('./store/connection.ts')
+    const { petApply } = await import('./store/appearance/pet.ts')
     const call = (
       cid: string,
       stepId: string,
@@ -4050,7 +4050,7 @@ describe('实时到达的回执同样建为回执条目', () => {
 })
 
 /**
- * 思考流经由合帧器（`store/connection.ts` 的 `thinking.delta`）：每帧合并写入一次，不逐 token 写入。
+ * 思考流经由合帧器（`store/events/run.ts` 的 `thinking.delta`）：每帧合并写入一次，不逐 token 写入。
  * 正文到达时先写入积压的思考，否则同一次回复中思考会排在正文之后。
  */
 describe('思考流合帧', () => {
@@ -4568,7 +4568,7 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
 })
 
 /**
- * 内置浏览器能力投影（`store/connection.ts` 对 `browser.state` 的处理）。
+ * 内置浏览器能力投影（`store/events/global.ts` 对 `browser.state` 的处理）。
  *
  * 原生宿主在应用启动之后才连接，握手时的能力中尚不包含它；`browser.state`
  * 是进程级事件，整份替换 `capabilities.browser`，界面据此决定是否显示浏览器入口。

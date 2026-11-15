@@ -26,7 +26,7 @@ import type {
 } from '@qywork/core'
 import { createEffect, createRoot, createSignal, on } from 'solid-js'
 import { ApiError } from '../client.ts'
-import { client, configChange, invalidateExtensions } from './connection.ts'
+import { client } from './client.ts'
 import { tauriInvoke } from './shell.ts'
 import { state } from './state.ts'
 import type { WorkspaceInfo } from './ui.ts'
@@ -404,6 +404,12 @@ export async function reloadModelCatalog(): Promise<void> {
 }
 
 /**
+ * 最近一次配置落盘（`config.changed`）的帧序号，`observeModelCatalog` 监听它重新读取。
+ * 取帧序号，使连续两次落盘都触发监听。
+ */
+export const [configChange, setConfigChange] = createSignal<number | null>(null)
+
+/**
  * 配置落盘（`config.changed`）与重新连接时重新读取模型目录；目录尚未被任何组件使用时不读取。
  *
  * 由入口在挂载后调用，不在模块顶层执行：顶层的 effect 会随 import 在单测中运行并发起请求。
@@ -615,6 +621,15 @@ export function addWorkspace(
 }
 
 // ───────────────────────── 插件安装 ─────────────────────────
+
+/**
+ * 技能、MCP 服务、记忆与插件的变更序号，列出这些内容的页面据此重新读取。
+ * 技能与 MCP 的写请求（`scheduleWrite`）完成后、会话中修改这些内容的工具执行完毕后递增。
+ */
+export const [extensionsRevision, setExtensionsRevision] = createSignal(0)
+export function invalidateExtensions(): void {
+  setExtensionsRevision((value) => value + 1)
+}
 
 /**
  * 安装插件即把一个本机已存在的目录复制到全局的 `plugins/` 目录。

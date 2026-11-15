@@ -1,7 +1,7 @@
 /**
  * 用户驱动的动作：切换会话、发送消息、中断、重试、切换模型、压缩、继续执行目标、运行 team。
  *
- * 与 `connection.ts` 的分工：`connection.ts` 处理服务端推送的事件，本文件处理
+ * 与 `events/` 的分工：`events/` 处理服务端推送的事件，本文件处理
  * 用户操作。两者都只经由 `setState` 修改同一份 store，不存在第二本账。
  */
 
@@ -10,7 +10,8 @@ import { batch } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { ApiError } from '../client.ts'
 import { readSession, writeSession } from '../session.ts'
-import { client, discardPace, reloadActiveConversation, syncViews } from './connection.ts'
+import { client } from './client.ts'
+import { discardPace } from './events/pace.ts'
 import {
   addWorkspace,
   loadServerConfig,
@@ -23,6 +24,8 @@ import {
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 import { hasRun, isRunning, LOCAL_ID_PREFIX, prepayBusy, setState, state } from './state.ts'
 import { setOpenFile, setWorkspace, viewingFile, workspace } from './ui.ts'
+import { reloadActiveConversation } from './views/history.ts'
+import { syncViews } from './views/subscription.ts'
 
 /**
  * 获取当前项目的会话列表，并保证始终有一条活动会话。

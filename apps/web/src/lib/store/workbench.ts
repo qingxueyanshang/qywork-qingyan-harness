@@ -3,7 +3,7 @@
  */
 
 import { createSignal } from 'solid-js'
-import { client } from './connection.ts'
+import { client } from './client.ts'
 
 export interface Workbench {
   plugin: string

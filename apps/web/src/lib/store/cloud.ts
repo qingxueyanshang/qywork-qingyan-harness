@@ -12,7 +12,7 @@ import type {
   CloudUsage,
 } from '@qywork/core'
 import { createSignal } from 'solid-js'
-import { client } from './connection.ts'
+import { client } from './client.ts'
 import { reloadModelCatalog } from './settings.ts'
 
 /** `null` 表示尚未读取，或读取失败：两者都不显示账号入口。 */

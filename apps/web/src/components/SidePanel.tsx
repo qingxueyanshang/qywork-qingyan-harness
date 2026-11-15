@@ -1531,7 +1531,7 @@ function foldTurn(turn: ChangeTurn): ChangedFile[] {
  *
  * 真源是 step 账本：写类工具的回执带有 `fileChanges`（修改的路径，以及可取得时的增删行数）。
  * 服务端按「写入过文件的轮次」投影并分页（`/changes`），运行期间的回执直接追加到同一份数据
- * （`store/connection.ts`）。**不从会话流折叠**：会话流只加载最后几轮，在长会话中由它折叠出的
+ * （`store/views/changes.ts` 的 `appendChange`）。**不从会话流折叠**：会话流只加载最后几轮，在长会话中由它折叠出的
  * 记录不完整，表头数值也会随之出错。
  *
  * 不使用 git 不是因为无法取得，而是因为 git 回答的是另一个问题：工作区相对 HEAD

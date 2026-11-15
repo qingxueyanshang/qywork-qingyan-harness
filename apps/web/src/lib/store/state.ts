@@ -6,8 +6,8 @@
  * 只有绑定该字段的文本节点更新。长会话（数百条 step）下滚动仍不掉帧，
  * 无需对列表做 memo 化。
  *
- * 本文件只定义状态结构与 store 实例，不包含业务动作。修改状态的代码见 `connection.ts`
- * （事件驱动）与 `actions.ts`（用户驱动）。
+ * 本文件只定义状态结构与 store 实例，不包含业务动作。修改状态的代码见 `events/`
+ * （服务端事件）、`views/`（会话视图的读取）与 `actions.ts`（用户操作）。
  */
 
 import type {
@@ -95,7 +95,7 @@ export interface TranscriptItem {
   toolName?: string
   action?: ActionDescriptor
   /**
-   * 调用参数。`tool.started` 携带它，`applyEvent` 必须保留：丢弃后工具卡展开时
+   * 调用参数。`tool.started` 携带它，其处理器（`events/tools.ts`）必须保留：丢弃后工具卡展开时
    * 只有一句 `outcome.message`，而它复述标题行，展开区等于没有内容。
    * 修改的 diff、执行的命令与读取的范围都在其中。
    */
@@ -295,7 +295,7 @@ export interface AppState {
 
   /**
    * 正在接收事件的会话，按 id 存放。键为当前会话与右侧已打开的子会话页，
-   * 与 `client.subscribe` 上报的集合同源（见 `connection.ts` 的订阅集）。
+   * 与 `client.subscribe` 上报的集合同源（见 `views/subscription.ts`）。
    */
   views: Record<string, ConversationView>
   /**

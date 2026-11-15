@@ -244,7 +244,9 @@ describe('个性化读取', () => {
 
   test('连接就绪时读取并应用，图片直链带令牌与修改时间；变更时重新读取', async () => {
     const store = await import('../../lib/store/index.ts')
-    const { setPersonalizationChange } = await import('../../lib/store/connection.ts')
+    const { setPersonalizationChange } = await import(
+      '../../lib/store/appearance/personalization.ts'
+    )
     const urls: string[] = []
     globalThis.fetch = (async (url: string) => {
       urls.push(String(url))
@@ -269,7 +271,9 @@ describe('个性化读取', () => {
 
   test('编辑立即预览、停顿后保存一次；保存期间的变更不触发重新读取', async () => {
     const store = await import('../../lib/store/index.ts')
-    const { setPersonalizationChange } = await import('../../lib/store/connection.ts')
+    const { setPersonalizationChange } = await import(
+      '../../lib/store/appearance/personalization.ts'
+    )
     const calls: { url: string; method: string }[] = []
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
       calls.push({ url: String(url), method: init?.method ?? 'GET' })

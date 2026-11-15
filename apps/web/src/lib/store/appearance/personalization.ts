@@ -9,13 +9,19 @@ import {
   type PersonalizationEntry,
 } from '@qywork/core'
 import { createEffect, createRoot, createSignal, on } from 'solid-js'
-import { client, personalizationChange } from '../connection.ts'
+import { client } from '../client.ts'
 import { explainApiError } from '../settings.ts'
 import { state } from '../state.ts'
 import { paintedPersonalization, paintPersonalization } from '../theme.ts'
 
 /** 最近一次保存或读取失败的说明（`explainApiError`）。成功后清空。 */
 export const [personalizationError, setPersonalizationError] = createSignal<string | null>(null)
+
+/**
+ * 最近一次个性化变更（`personalization.changed`）的帧序号，`observePersonalization` 监听它重新读取。
+ * 取帧序号，使连续两次变更都触发监听。
+ */
+export const [personalizationChange, setPersonalizationChange] = createSignal<number | null>(null)
 
 /** 编辑停顿多久后保存。拖动滑块时每一帧都预览，只在停顿后写入一次。 */
 const DRAFT_SAVE_MS = 250

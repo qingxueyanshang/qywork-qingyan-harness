@@ -1,7 +1,7 @@
 /**
  * 输入框顶部的后台命令栏。
  *
- * 覆盖范围（B6）：`BackgroundCommands.tsx`、`store/connection.ts` 对 `commands.changed` 的折叠、
+ * 覆盖范围（B6）：`BackgroundCommands.tsx`、`store/events/session.ts` 对 `commands.changed` 的折叠、
  * `store/actions.ts` 的 `stopBackgroundCommand`、`store/state.ts` 的 `composerStackAbove`。
  */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
