@@ -9,7 +9,7 @@
  *
  *   bun run scripts/sync-version.ts          # 按 VERSION 同步
  *   bun run scripts/sync-version.ts 0.2.0    # 先修改 VERSION 再同步
- *   bun run scripts/sync-version.ts --check  # 只检查，不修改（CI 使用）
+ *   bun run scripts/sync-version.ts --check  # 只检查，不修改（`bun run gate` 的第一步）
  */
 
 import { readFile, writeFile } from 'node:fs/promises'

@@ -605,7 +605,7 @@ export async function saveConfig(cfg: QyConfig): Promise<void> {
  * 该情形只在仅传模型名的入口（CLI `--model`、单轮指定、手动压缩）遇到多接口同名时出现；
  * 传 `ModelRef` 的路径已指定接口，不经过此处。
  *
- * 传 `ModelRef` 时接口已明确指定，不再推测：`classifier` 等配置写明的是
+ * 传 `ModelRef` 时接口已明确指定，不再推测：会话记录的接口与模型、生成调用指定的接口与模型写明的是
  * 「哪个接口的哪个模型」，再次推测只会改变用户指定的接口。
  *
  * 独立为函数是因为有多个消费方：`Session.resolveProfile` 决定本轮请求实际发往的接口，

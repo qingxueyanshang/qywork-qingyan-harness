@@ -367,44 +367,9 @@
   }
 }
 
-/* 全部属性写在本规则中，**不与 `.project-menu` 共用选择器**（B8）。
-   共用选择器时，删除其中一个浮层会连带删除另一个的定位、边框、底色与投影，
-   菜单退化为无样式文本，而 CSS 不会为此报错。
-
-   **必须使用 fixed**：菜单位于 `.sidebar-scroll` 内，该容器的 `overflow-y: auto`
-   同时裁切横向溢出，绝对定位的菜单在列表末尾的会话上只能显示第一项。
-   top / left 由 `AnchoredMenu` 测量后写入 style，此处不设置。 */
+/* 卡片与菜单项的样式由 `.anchored-menu`（controls.css）提供，此处只设置宽度。 */
 .conv-menu {
-  position: fixed;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
   min-width: 132px;
-  padding: 4px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  background: var(--bg-raised);
-  box-shadow: var(--shadow-md);
-}
-.conv-menu-item {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  width: 100%;
-  padding: 6px var(--s-2);
-  border-radius: var(--r-xs);
-  color: var(--text-primary);
-  font-size: var(--fs-sm);
-  font-weight: 400;
-  text-align: left;
-  white-space: nowrap;
-  transition: background var(--t-fast) var(--ease);
-}
-.conv-menu-item:hover {
-  background: var(--bg-hover);
-}
-.conv-menu-item.danger {
-  color: var(--danger);
 }
 
 /*
@@ -594,44 +559,9 @@
   height: 22px;
 }
 
-/* 全部属性写在本规则中，**不与其他浮层共用选择器**。
-   共用选择器时，删除其中一个浮层会连带删除另一个的定位、边框、底色与投影，
-   菜单退化为无样式文本，而 CSS 不会为此报错。
-
-   **必须使用 fixed**：菜单位于 `.sidebar-scroll` 内，该容器的 `overflow-y: auto`
-   同时裁切横向溢出，绝对定位的菜单在列表末尾的项目上只能显示第一项。
-   top / left 由 `AnchoredMenu` 测量后写入 style，此处不设置。 */
+/* 卡片与菜单项的样式由 `.anchored-menu`（controls.css）提供，此处只设置宽度。 */
 .project-menu {
-  position: fixed;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
   min-width: 168px;
-  padding: 4px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  background: var(--bg-raised);
-  box-shadow: var(--shadow-md);
-}
-.menu-item {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  width: 100%;
-  padding: 6px var(--s-2);
-  border-radius: var(--r-xs);
-  color: var(--text-primary);
-  font-size: var(--fs-sm);
-  font-weight: 400;
-  text-align: left;
-  white-space: nowrap;
-  transition: background var(--t-fast) var(--ease);
-}
-.menu-item:hover {
-  background: var(--bg-hover);
-}
-.menu-item.danger {
-  color: var(--danger);
 }
 
 .project-new {

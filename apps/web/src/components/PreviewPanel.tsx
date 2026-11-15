@@ -16,7 +16,10 @@ import { IconRefresh } from './Icons.tsx'
  * **`sandbox` 不可省略。** 不设置时，被预览的页面只需执行 `top.location = ...` 就能使整个应用窗口
  * 跳转，此时只能重启应用。sandbox 默认禁止顶层导航；`allow-scripts` + `allow-same-origin` 只是
  * 让被预览的页面**保持其自身的源**（可使用 localStorage、可调用自身的接口），无法取得宿主一侧的任
- * 何数据。**不要添加 `allow-popups`**：新窗口会在同一个 WebView 中打开，恰好绕过上述限制。
+ * 何数据。
+ *
+ * 未设置 `allow-popups`，被预览页面中打开新窗口的链接不生效。设置它不会越过上述限制：弹出的窗口
+ * 沿用同一组沙箱标志，仍是被预览页面自身的源。桌面端设置后同样不打开新窗口：外壳未设置新窗口处理函数。
  *
  * 桌面端还需要 CSP 放行（`tauri.conf.json` 的 `frame-src`），缺少时 iframe 直接显示空白，
  * 且只在打包后的构建中显示空白：`tauri dev` 的页面由 vite 提供，不受该 CSP 约束。

@@ -464,7 +464,7 @@ fn fatal_exit(error: &(dyn std::error::Error + 'static)) -> ! {
 ///
 /// 使用 Rust 侧的 `OpenerExt`，**不**向 WebView 授予 `opener:*` 权限。
 /// ACL 只拦截 IPC 层，Rust 直接调用不经过该层，因此 `capabilities/default.json`
-/// 的两条权限保持不变（与 `pick_workspace` 使用 dialog 的做法相同）。
+/// 不添加 `opener:*` 权限（与 `pick_workspace` 使用 dialog 的做法相同）。
 ///
 /// 只接受本机已存在的目录（CLAUDE.md E）：路径来自本机账本中的项目记录，
 /// 但仍按外部输入校验一次：不存在时明确报错，不静默忽略。
@@ -556,7 +556,7 @@ pub fn run() {
     /*
      * 这三个插件供 **Rust 侧**使用，不供 WebView 中的 JS 使用。
      *
-     * 因此 `capabilities/default.json` 中只保留 `core:default` 与拖动标题栏一条。
+     * 因此 `capabilities/default.json` 中除本应用的命令外，只保留 `core:default` 与拖动标题栏两条。
      * **不要向 capability 中添加 `shell:allow-spawn`、`dialog:allow-open/save`、
      * `opener:allow-open-url`、devtools 切换等条目**：它们都没有前端调用方
      * （`apps/web` 中没有 `@tauri-apps` 依赖，只经由 `__TAURI_INTERNALS__`

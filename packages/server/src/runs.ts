@@ -9,7 +9,8 @@
  * 本进程的第二次启动、将消息排入队列、广播忙态。同一会话是否被另一个进程（终端的 qy）
  * 占用，由账本的 `createRun` 在创建轮次的写事务中判定，被占用时抛出 `ConversationBusyError`。
  *
- * **此处不向用户询问。** 工具授权由 `Session.decide()` 就地裁决（规则 + 分类器），
+ * **此处不向用户询问。** 工具授权由 `Session.decide()` 就地裁决（`full` 全部放行，`auto` 下声明了
+ * 命令行的调用经 `decideCommand` 的静态规则判定），
  * 被拒的调用以 `tool.finished{status:'failure', errorKind:'permission_denied'}` 呈现。
  * 本产品只有 `auto` / `full` 两种模式，没有逐次询问模式。
  */

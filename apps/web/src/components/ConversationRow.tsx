@@ -30,8 +30,8 @@ function fmtWhen(t: number): string {
  * 整行是 button，`⋯` 也是 button，**两个 button 不能嵌套**（浏览器会把内层移出，
  * 点击区域随之错位），因此外层只能是 div。
  *
- * 菜单与 `ProjectRow` 的菜单分别实现：菜单项完全不同，抽取通用组件需要先出现第三个调用点（B2）；
- * `.conv-menu` 的样式同样自带完整规则，不与 `.project-menu` 共用选择器（B8）。
+ * 菜单与 `ProjectRow` 的菜单分别实现：菜单项完全不同，抽取通用组件需要先出现第三个调用点（B2）。
+ * 卡片使用 `AnchoredMenu` 的标准样式 `anchored-menu`，`conv-menu` 只设置宽度。
  */
 export function ConversationRow(props: {
   conversation: Conversation
@@ -146,9 +146,8 @@ export function ConversationRow(props: {
               </button>
 
               <Show when={menuOpen()}>
-                <AnchoredMenu class="conv-menu" anchor={moreEl}>
+                <AnchoredMenu class="anchored-menu conv-menu" anchor={moreEl}>
                   <button
-                    class="conv-menu-item"
                     type="button"
                     role="menuitem"
                     onClick={() => {
@@ -159,17 +158,12 @@ export function ConversationRow(props: {
                     <IconPencil size={14} />
                     重命名
                   </button>
-                  <button
-                    class="conv-menu-item"
-                    type="button"
-                    role="menuitem"
-                    onClick={() => setArmed('archive')}
-                  >
+                  <button type="button" role="menuitem" onClick={() => setArmed('archive')}>
                     <IconArchive size={14} />
                     归档
                   </button>
                   <button
-                    class="conv-menu-item danger"
+                    class="danger"
                     type="button"
                     role="menuitem"
                     onClick={() => setArmed('delete')}

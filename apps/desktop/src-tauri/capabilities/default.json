@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "qywork 桌面外壳所需的最小权限集。这里只授给主界面 WebView 里的 JS——Rust 侧调用不经这层 ACL，所以能删的都删了，见 README 段注释。作用域按 webview 而不是 window：主窗口底下还挂着浏览器宿主的外部网页子视图，按 window 授权会把它们一并放进来。",
+  "description": "主窗口 WebView（main）中页面脚本可调用的权限，只包含主界面实际调用的命令。插件权限只保留 core:default 与拖动标题栏：dialog、shell、opener 插件由 Rust 侧直接调用，不经过这层授权，授予 WebView 只会使被注入的脚本获得这些能力。按 webview 而不是按 window 授权：主窗口下附加着浏览器宿主的外部网页子视图，按 window 授权时它们同样获得这些权限。",
   "webviews": ["main"],
   "permissions": [
     "allow-app-update",

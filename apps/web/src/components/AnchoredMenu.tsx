@@ -43,9 +43,9 @@ export function placeMenu(
 /**
  * 固定在某个按钮上的菜单卡片。只负责定位，展开与收起由调用方管理。
  *
- * **卡片必须是 `position: fixed`**（样式由调用方的完整规则提供，见 B8）：侧栏中的
- * 菜单位于 `overflow-y: auto` 的列表内，绝对定位会被容器边缘裁剪，靠近列表末尾的
- * 行只能显示第一项。fixed 脱离所有滚动容器，代价是坐标需要自行计算。
+ * **卡片必须是 `position: fixed`**（标准卡片 `anchored-menu` 已设置，外框不同的实例由调用方的
+ * 完整规则设置）：侧栏中的菜单位于 `overflow-y: auto` 的列表内，绝对定位会被容器边缘裁剪，
+ * 靠近列表末尾的行只能显示第一项。fixed 脱离所有滚动容器，代价是坐标需要自行计算。
  *
  * 先测量再定位，不使用估算高度：项数随客户端与状态变化（桌面端多一项），写死的常量会与实际不一致。
  * `onMount` 在插入 DOM 之后、当前帧绘制之前执行，定位时不会闪烁。
@@ -54,7 +54,10 @@ export function placeMenu(
  * 向上弹出的卡片高度在挂载后也不得变化，否则下边缘会离开锚点。
  */
 export function AnchoredMenu(props: {
-  /** 卡片自身完整样式规则的类名。 */
+  /**
+   * 卡片的类名：标准卡片为 `anchored-menu` 加只设置宽度的类（样式见 `controls.css`），
+   * 外框不同的实例为调用方自己的完整样式规则。
+   */
   class: string
   anchor: HTMLElement
   /** 默认为 `below-end`。 */

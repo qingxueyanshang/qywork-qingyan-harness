@@ -178,9 +178,8 @@ export function ProjectRow(props: {
         </button>
 
         <Show when={menuOpen()}>
-          <AnchoredMenu class="project-menu" anchor={moreEl}>
+          <AnchoredMenu class="anchored-menu project-menu" anchor={moreEl}>
             <button
-              class="menu-item"
               type="button"
               role="menuitem"
               onClick={() => void run(() => pinKnownWorkspace(props.workspace.id, !pinned()))}
@@ -192,7 +191,6 @@ export function ProjectRow(props: {
             {/* 只有桌面外壳能调用系统文件管理器。 */}
             <Show when={isDesktopShell()}>
               <button
-                class="menu-item"
                 type="button"
                 role="menuitem"
                 onClick={() => void run(() => revealWorkspace(props.workspace.rootPath))}
@@ -202,24 +200,14 @@ export function ProjectRow(props: {
               </button>
             </Show>
 
-            <button
-              class="menu-item"
-              type="button"
-              role="menuitem"
-              onClick={() => setArmed('archive')}
-            >
+            <button type="button" role="menuitem" onClick={() => setArmed('archive')}>
               <IconArchive size={14} />
               归档聊天
             </button>
 
             {/* 当前项目也能移除，服务端会指定接下来切换到哪个项目。只有最后一个项目才返回 409，
                   该情况下此处仍显示按钮：拒绝理由由服务端给出，比隐藏按钮更清楚。 */}
-            <button
-              class="menu-item danger"
-              type="button"
-              role="menuitem"
-              onClick={() => setArmed('remove')}
-            >
+            <button class="danger" type="button" role="menuitem" onClick={() => setArmed('remove')}>
               <IconX size={14} />
               移除
             </button>

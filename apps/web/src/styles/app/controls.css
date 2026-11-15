@@ -393,6 +393,47 @@ input[type="range"]::-moz-range-thumb {
   pointer-events: none;
 }
 
+/* ── 菜单卡片（`AnchoredMenu`） ──
+ *
+ * `anchored-menu` 是 `AnchoredMenu` 的标准卡片：外框与直接子级按钮（菜单项）的样式写在本规则中，
+ * 各实例的类只设置宽度。侧栏会话行与项目行的 `⋯` 菜单使用它；外框不同的实例（画布、设置页的菜单）
+ * 不加入本类，由各自的类提供完整规则。
+ *
+ * 必须使用 fixed：菜单位于 `.sidebar-scroll` 内，该容器的 `overflow-y: auto` 同时裁切横向溢出，
+ * 绝对定位的菜单在列表末尾的行上只能显示第一项。top / left 由 `AnchoredMenu` 测量后写入 style。
+ */
+.anchored-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+.anchored-menu > button {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 6px var(--s-2);
+  border-radius: var(--r-xs);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+  transition: background var(--t-fast) var(--ease);
+}
+.anchored-menu > button:hover {
+  background: var(--bg-hover);
+}
+.anchored-menu > button.danger {
+  color: var(--danger);
+}
+
 /* 读取中的占位（`settings/LoadState.tsx`）：灰色条按内容形状排列，读取超过 200 毫秒才出现，不配文字。 */
 .skeleton {
   display: flex;

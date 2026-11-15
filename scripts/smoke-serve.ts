@@ -315,9 +315,9 @@ async function main(): Promise<number> {
     check('本轮没有 provider 错误', errored === undefined, errored?.event)
 
     /*
-     * 工具授权由 `Session.decide()` 在本地裁决（硬边界 → 静态规则 → 分类器），
-     * 被拒的调用以 `tool.finished`（`status: 'failure'`、`errorKind: 'permission_denied'`、
-     * message 中带理由）出现在事件流中。
+     * 工具授权由 `Session.decide()` 在本地裁决（`auto` 下声明了命令行的调用经 `decideCommand`
+     * 的静态规则判定），被拒的调用以 `tool.finished`（`status: 'failure'`、
+     * `errorKind: 'permission_denied'`、message 中带理由）出现在事件流中。
      *
      * 不断言「必须出现过拒绝」：本轮运行的是正常任务，没有任何拒绝属于正常情况。
      * 断言的是出现拒绝时形状必须正确：缺少理由时模型只能原样重试，

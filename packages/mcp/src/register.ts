@@ -8,12 +8,11 @@
  *
  * 因此此处的规则是单向的：
  *
- * - hint 可以使权限更严格（`destructiveHint` → 按 delete 进行权限检查）；
- * - hint 永远不能使权限更宽松。默认全部按 `execute` 处理，交给裁决层。
+ * - hint 只能使声明的权限效果更严格（`destructiveHint` → `delete`）；
+ * - hint 永远不能使其更宽松（`readOnlyHint` 不采纳）。其余一律为 `execute`。
  *
- * 放宽只能来自用户的决定（`mode: "full"`，或今后分类器规则中的
- * allow 条目），不能来自 server 的自我声明。这一区别即 MCP
- * 权限模型的全部内容。
+ * 是否放行由裁决层（runtime 的 `Session.decide`）决定，依据是用户的决定，不是 server 的自我声明：
+ * `full` 全部放行；`auto` 下 MCP 工具的调用放行：server 由用户配置，属于知情同意。
  *
  * 命名：注册名是 `mcp__<server>__<tool>`，与插件的 `<id>__<tool>` 采用同一种隔离方式：
  * 两个 server 各带一个 `search` 不会互相覆盖，模型也能从名称看出调用的是哪个 server。
@@ -77,8 +76,8 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     // `search` 与该 server 的 `search` 会产生同一个 scope 字符串。
     targetExtractor: () => permissionLabel(server, def.name),
 
-    // 权限效果直接声明：采纳 destructive 的 hint（更严格，按 delete 检查），
-    // 不采纳 readOnlyHint（会更宽松）。默认 execute，交给裁决层。
+    // 权限效果直接声明：采纳 destructive 的 hint（更严格，记为 delete），
+    // 不采纳 readOnlyHint（会更宽松）。默认 execute。
     permissionEffect: destructive ? 'delete' : 'execute',
 
     // 不并行。MCP server 是外部进程，其并发处理方式无法预知，
