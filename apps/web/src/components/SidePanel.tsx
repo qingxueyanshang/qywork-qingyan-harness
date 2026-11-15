@@ -1461,7 +1461,7 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
  * 对单个文件的**一次**改动。
  *
  * `body` 是该次改动的正文，完全取自该步骤落库的入参，与会话流中展开该步骤时显示的
- * 是同一份数据（`Transcript.tsx` 的 `StepBody`）：编辑提供 old/new 两段，
+ * 是同一份数据（`transcript/tools/StepBody.tsx` 的 `StepBody`）：编辑提供 old/new 两段，
  * 完整写入提供写入的全部内容。
  */
 interface ChangeEdit {

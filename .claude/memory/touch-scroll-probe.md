@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-修改 `apps/web/src/components/Transcript.tsx` 的 `createConversationScroll` 后，先用隔离实例实测，再报告结果。
+修改 `apps/web/src/components/transcript/conversation-scroll.ts` 的 `createConversationScroll` 后，先用隔离实例实测，再报告结果。
 组件测试中手工派发的 scroll 事件不含浏览器的时序：scroll 事件晚于写入一帧派发，其间内容增高会改变读到的距离。
 
 - 实测脚本：`.tmp/probe/touch-follow.mjs`（每 40ms 追加一行，向上滑动后再滑回底部，统计被写回底部与跟随未恢复的次数）、
@@ -13,7 +13,7 @@ metadata:
   视口 390×800 并开启 `hasTouch` 与 `isMobile`。隔离实例首屏是账号登录页，点击「使用自己的 API key」后再关闭设置页。
 - 触摸用 CDP 的 `Input.dispatchTouchEvent` 逐点发送。`Input.synthesizeScrollGesture` 在无头模式下不派发 `touchmove`，
   也不滚动，不能据它判断事件顺序。
-- 对照旧版本时不切换工作区：把旧版本文件写到 `components/` 下的临时文件名，用 `page.route` 把 `Transcript.tsx` 的请求
+- 对照旧版本时不切换工作区：把旧版本文件写到 `components/` 下的临时文件名，用 `page.route` 把 `transcript/conversation-scroll.ts` 的请求
   替换为该文件，实测后删除。
 - 用户用 iPhone 访问远程界面，Chromium 的结果不能代表它。WebKit 用 `.tmp/probe/webkit-shift.mjs`
   （`<base> <token> webkit|chromium`，滚轮从底部回看到顶部，报告 scrollTop 不变而视口条目位移的帧）。

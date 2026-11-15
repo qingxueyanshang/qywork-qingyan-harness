@@ -1,5 +1,6 @@
 /**
- * 覆盖 `Transcript.tsx` 中正文块的重渲染判据。
+ * 覆盖 `Transcript.tsx`、`transcript/` 下的全部文件（行组件、卡片、读数条、`conversation-scroll.ts`）
+ * 与 `lib/workflow-layout.ts`。首要锁定正文块的重渲染判据。
  *
  * 锁定的原始失败形状：会话流每追加一条（工具启动、用户消息、收尾读数），
  * 已定稿的每段正文都重新执行一次 markdown 并整段替换 innerHTML。成因是
@@ -24,7 +25,7 @@ import { until } from '@qywork/core/until.test-helper'
 test('压缩提示只有原文和后置进度条，阶段变化不增加说明文字', async () => {
   const { createSignal } = await import('solid-js')
   const { render } = await import('solid-js/web')
-  const { TranscriptRows } = await import('./Transcript.tsx')
+  const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
   const item = (phase: string, stage?: string) => ({
     id: 'cmp_rn_progress_1',
     kind: 'compaction',
@@ -376,7 +377,7 @@ test('按下发送即开始计时，开始事件到达时计时连续且不重�
 test('其他设备发起的轮次：服务端的开始时刻按握手时差换算为本机时刻后计时', async () => {
   const store = await import('../lib/store/index.ts')
   const { render } = await import('solid-js/web')
-  const { LiveRunBar } = await import('./Transcript.tsx')
+  const { LiveRunBar } = await import('./transcript/status/LiveRunBar.tsx')
   const workspaceBefore = store.workspace()
   const connectionBefore = store.state.connection
   const nowBefore = Date.now
@@ -434,7 +435,7 @@ test('间隔按最后内容时刻计算，刷新前后取值相同', async () =>
   const connectionBefore = store.state.connection
   const nowBefore = Date.now
   const { render } = await import('solid-js/web')
-  const { LiveRunBar } = await import('./Transcript.tsx')
+  const { LiveRunBar } = await import('./transcript/status/LiveRunBar.tsx')
   const id = 'cv_silence'
   const t0 = 1_700_000_000_000
   let now = t0
@@ -530,7 +531,8 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
   const workspaceBefore = store.workspace()
   const connectionBefore = store.state.connection
   const { render } = await import('solid-js/web')
-  const { LiveRunBar, TranscriptRows } = await import('./Transcript.tsx')
+  const { LiveRunBar } = await import('./transcript/status/LiveRunBar.tsx')
+  const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
   const ids = ['cv_progress_main', 'cv_progress_child']
   store.setState({
     activeConversation: ids[0]!,
@@ -932,7 +934,7 @@ describe('工具图片回放', () => {
 describe('编排画布', () => {
   test('并行节点按等宽列排成一行，图直接位于卡片内，没有横向滚动层', async () => {
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const host = document.createElement('div')
     const dispose = render(
       () => (
@@ -984,7 +986,7 @@ describe('编排画布', () => {
    * 节点高 44、行距与层距 26，与样式表一致。
    */
   async function drawWorkflow(layers: WireNode[][], width: number) {
-    const mod = await import('./Transcript.tsx')
+    const mod = await import('../lib/workflow-layout.ts')
     const plan = mod.layoutWorkflowGraph(layers, width)
     const inner = width - mod.workflowRailWidth(plan.rails)
     const px = (value: string) => Number.parseFloat(value)
@@ -1187,7 +1189,7 @@ describe('编排画布', () => {
 
   /** 原始失败形状：一次派发多个子 agent，全部排在一行，图宽超出卡片。 */
   test('图宽不足时一层分为节点数相近的多行，未测量时不换行', async () => {
-    const { layoutWorkflowGraph } = await import('./Transcript.tsx')
+    const { layoutWorkflowGraph } = await import('../lib/workflow-layout.ts')
     const cols = (count: number, width: number) =>
       layoutWorkflowGraph(
         [
@@ -1384,7 +1386,7 @@ describe('编排画布', () => {
   }, 60_000)
 
   test('共享入口的共线区间只生成一份路径', async () => {
-    const { mergeWorkflowEdgeSegments } = await import('./Transcript.tsx')
+    const { mergeWorkflowEdgeSegments } = await import('../lib/workflow-layout.ts')
     const paths = mergeWorkflowEdgeSegments([
       { axis: 'vertical', fixed: 100.5, from: 20.5, to: 40.5, live: false },
       { axis: 'vertical', fixed: 100.5, from: 20.5, to: 40.5, live: false },
@@ -1400,7 +1402,7 @@ describe('编排画布', () => {
   })
 
   test('活动依赖与静态依赖共线时拆分为不重叠的区间', async () => {
-    const { mergeWorkflowEdgeSegments } = await import('./Transcript.tsx')
+    const { mergeWorkflowEdgeSegments } = await import('../lib/workflow-layout.ts')
     const paths = mergeWorkflowEdgeSegments([
       { axis: 'horizontal', fixed: 40.5, from: 20.5, to: 100.5, live: false },
       { axis: 'horizontal', fixed: 40.5, from: 60.5, to: 100.5, live: true },
@@ -1415,7 +1417,7 @@ describe('编排画布', () => {
   /** 失败只显示红色边框与底部一行原因：卡片顶部不显示动作、状态与耗时，同一信息不重复显示。 */
   test('失败的卡片没有标题行，原因只显示在底部一行', async () => {
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const host = document.createElement('div')
     const dispose = render(
       () => (
@@ -1471,7 +1473,7 @@ describe('编排画布', () => {
 
   test('排队的节点只通过样式调暗，次行仍显示其指令', async () => {
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const host = document.createElement('div')
     const dispose = render(
       () => (
@@ -1512,7 +1514,7 @@ describe('编排画布', () => {
    */
   test('每个节点按状态中的种类显示标签', async () => {
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const host = document.createElement('div')
     const dispose = render(
       () => (
@@ -1564,7 +1566,7 @@ describe('编排画布', () => {
    */
   test('继续派发的外部 CLI 节点打开 CLI 页', async () => {
     const { delegateEvents, render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const { closePanelTab, panelTabs } = await import('../lib/store/index.ts')
     // 点击经由 solid 的事件委托：处理器注册在 document 上，因此宿主元素必须位于文档中，
     // 而委托只在模块首次加载时注册一次，所用的 document 由其他测试文件注册。
@@ -2064,7 +2066,7 @@ describe('定稿的正文不随会话流的增长重建', () => {
     })
 
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const host = document.createElement('div')
     document.body.append(host)
     const dispose = render(() => <TranscriptRows items={store.transcript()} />, host)
@@ -2175,7 +2177,7 @@ describe('定稿的正文不随会话流的增长重建', () => {
     })
 
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const host = document.createElement('div')
     const dispose = render(
       () => (
@@ -2769,7 +2771,7 @@ describe('检查点节点', () => {
     states: Record<string, { phase: string; label: string; error?: string; durationMs?: number }>,
   ) => {
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const host = document.createElement('div')
     const dispose = render(
       () => <TranscriptRows items={[item(states)] as never} />,
@@ -2821,7 +2823,7 @@ describe('行的 DOM 不随投影重建', () => {
   test('组卡片展开时，下一个工具启动后仍是同一个 details 且保持展开', async () => {
     const { createSignal } = await import('solid-js')
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const tool = (id: string, status: string) => ({
       id,
       kind: 'tool',
@@ -2858,7 +2860,7 @@ describe('行的 DOM 不随投影重建', () => {
   test('收到进度事件后，workflow 卡与连线的 path 仍是原有节点', async () => {
     const { createSignal } = await import('solid-js')
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     // 形状来自 args，一次派发任务中是同一个对象；进度事件整体替换 nodes。
     const args = {
       goal: '并行',
@@ -2946,7 +2948,7 @@ describe('展开态归属于 step id', () => {
   const mount = async (first: ReturnType<typeof tool>) => {
     const { createSignal } = await import('solid-js')
     const { render } = await import('solid-js/web')
-    const { TranscriptRows } = await import('./Transcript.tsx')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
     const [items, setItems] = createSignal([first])
     const host = document.createElement('div')
     const dispose = render(
@@ -2997,7 +2999,7 @@ describe('展开态归属于 step id', () => {
 /** 收尾读数条与「运行」面板使用同一计算方式（`runCosts`）：模型调用费用加生成费用，不同币种并列显示。 */
 test('收尾读数条的金额包含本轮的生成费用', async () => {
   const { render } = await import('solid-js/web')
-  const { TranscriptRows } = await import('./Transcript.tsx')
+  const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
   const items = [
     {
       id: 'run_rn_media',

@@ -947,7 +947,7 @@
  *
  * 不要为它添加 `position: sticky`、`margin-top: auto` 或单独的下内边距。三者导致同一问题：
  * 读数条固定在屏幕底边，而滚动位置仍停在距底部两百多像素处，新到达的正文位于视口下方
- * 不可见（实测数据见 `Transcript.tsx` 中 `onScroll` 的注释）。
+ * 不可见（实测数据见 `transcript/conversation-scroll.ts` 中 `onScroll` 的注释）。
  *
  * 内容增长时读数条保持在视口内，由该处的贴底跟随负责；它与输入框之间的固定距离由
  * `.transcript-inner` 的下内边距设置。位置由 JS 负责，留白由 CSS 负责，两者不要互换。

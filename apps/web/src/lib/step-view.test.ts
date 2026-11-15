@@ -1,9 +1,7 @@
 /**
  * 工具步骤呈现逻辑的测试。覆盖 `lib/step-view.ts`。
  *
- * 这些函数不能放在 `Transcript.tsx` 中：`bun test` 加载 `.tsx` 时会查找
- * JSX runtime 并失败。每个函数都有实际的边界条件，
- * 仅凭目视检查渲染结果无法验证，因此拆出后单独测试。
+ * 每个函数都有实际的边界条件，仅凭目视检查渲染结果无法验证，因此不放在组件文件中，单独测试。
  */
 
 import { describe, expect, test } from 'bun:test'

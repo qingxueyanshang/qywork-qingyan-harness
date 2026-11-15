@@ -214,7 +214,7 @@
   --fs-xs: calc(11px * var(--font-scale));
   --fs-sm: calc(12px * var(--font-scale));
   --fs-base: calc(13px * var(--font-scale));
-  /* 会话正文与用户气泡共用。修改此处须同步修改 `Transcript.tsx` 的 `USER_MESSAGE_PREVIEW_HEIGHT`。 */
+  /* 会话正文与用户气泡共用。修改此处须同步修改 `transcript/UserRow.tsx` 的 `USER_MESSAGE_PREVIEW_HEIGHT`。 */
   --fs-prose: calc(13.5px * var(--font-scale));
   --fs-md: calc(14px * var(--font-scale));
   --fs-lg: calc(16px * var(--font-scale));
