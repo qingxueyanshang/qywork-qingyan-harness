@@ -5,13 +5,10 @@
 import { describe, expect, test } from 'bun:test'
 import type { ConversationId } from '@qywork/core'
 import { Store } from './db.ts'
-import {
-  appendStep,
-  createConversation,
-  createRun,
-  settleToolStep,
-  upsertWorkspace,
-} from './repos.ts'
+import { createConversation } from './repos/conversations.ts'
+import { createRun } from './repos/runs.ts'
+import { appendStep, settleToolStep } from './repos/steps.ts'
+import { upsertWorkspace } from './repos/workspaces.ts'
 import { latestSubagentPhases, listWorkflowRecords, workflowIdsOf } from './workflow.ts'
 
 function fresh() {

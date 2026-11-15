@@ -1,20 +1,17 @@
 /**
  * 覆盖 `monitor/envelopes.ts`：`saveRequestEnvelope`、`requestEnvelopeItems`、`pruneRequestEnvelopes`；
  * 读取时的按比例对齐由 core 的 `alignGroupItems` 完成，对齐的字面值在此锁定；
- * 以及 `repos.ts` 的 `deleteConversation` 删除会话后清除孤立明细。
+ * 以及 `repos/conversations.ts` 的 `deleteConversation` 删除会话后清除孤立明细。
  */
 
 import { describe, expect, test } from 'bun:test'
 import type { ConversationId, RunId } from '@qywork/core'
 import { emptyBreakdown } from '@qywork/core'
 import { Store } from '../db.ts'
-import {
-  createConversation,
-  createRun,
-  deleteConversation,
-  openProviderRequest,
-  upsertWorkspace,
-} from '../repos.ts'
+import { createConversation, deleteConversation } from '../repos/conversations.ts'
+import { openProviderRequest } from '../repos/provider-requests.ts'
+import { createRun } from '../repos/runs.ts'
+import { upsertWorkspace } from '../repos/workspaces.ts'
 import { type EnvelopeItem, requestEnvelopeItems, saveRequestEnvelope } from './envelopes.ts'
 
 function fingerprints(store: Store): string[] {

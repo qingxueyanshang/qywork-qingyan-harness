@@ -1,6 +1,6 @@
 /**
- * 迁移行为的回归测试。覆盖范围：`schema.ts` 的 `MIGRATIONS` 与 `ROW_COLUMNS`、
- * `db.ts` 的迁移执行，以及 `repos.ts` 的启动恢复查询。
+ * 迁移行为的回归测试。覆盖范围：`migrations/` 中的迁移、`rows.ts` 的 `ROW_COLUMNS`、
+ * `db.ts` 的迁移执行，以及 `repos/runs.ts` 的启动恢复查询。
  *
  * 只测试转换数据的迁移，不测试纯建表的迁移：建表出错时任何一条查询都会失败，
  * 而数据转换出错不会报错，只会使界面显示 `undefined` 或旧文案。
@@ -12,8 +12,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { executeMigration, Store } from './db.ts'
-import { listProviderRequests, markProviderRequestHeaders, recoverStaleRuns } from './repos.ts'
-import { MIGRATIONS, ROW_COLUMNS } from './schema.ts'
+import { MIGRATIONS } from './migrations/index.ts'
+import { listProviderRequests, markProviderRequestHeaders } from './repos/provider-requests.ts'
+import { recoverStaleRuns } from './repos/runs.ts'
+import { ROW_COLUMNS } from './rows.ts'
 
 /** 执行到指定迁移之前的库。外键默认关闭，因此可以只插入 steps 而不创建父行。 */
 function dbBefore(id: number): Database {
@@ -1119,7 +1121,7 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
 /**
  * 行类型是 DDL 的镜像，本测试是使两者保持一致的约束。
  *
- * `schema.ts` 中 `WorkspaceRow` 等接口没有任何检查强制它们与表结构一致：迁移新增一列
+ * `rows.ts` 中 `WorkspaceRow` 等接口没有任何检查强制它们与表结构一致：迁移新增一列
  * 而接口未同步时不会报错，映射函数读取不存在的列，
  * 取得 `undefined` 并放入领域对象。因此列名单独列出一份（`ROW_COLUMNS`，与接口同处同步修改），
  * 在此处与真实数据库比对。

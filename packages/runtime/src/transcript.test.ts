@@ -2,7 +2,7 @@
  * steps → 历史消息的投影。
  *
  * 覆盖范围：`transcript.ts` 全部（`stepsToUnits` + `stepsToWireMessages` +
- * `buildHistory`），以及 `store/repos.ts` 的 `settleRunningSteps`。
+ * `buildHistory`），以及 `store/repos/steps.ts` 的 `settleRunningSteps`。
  *
  * 本组测试用于证伪以下问题。原始失败形状来自实测：运行库中
  * `SELECT role, COUNT(*) FROM messages GROUP BY role` 只返回一行 `user`，

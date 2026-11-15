@@ -1,7 +1,7 @@
 /**
  * 上下文面板的投影。
  *
- * 覆盖范围：`context-panel.ts` 全部，以及 `store/repos.ts` 中 provider_requests
+ * 覆盖范围：`context-panel.ts` 全部，以及 `store/repos/provider-requests.ts` 中 provider_requests
  * 相关的函数（`openProviderRequest` / `markProviderRequestSent` /
  * `settleProviderRequest` / `latestSentProviderRequest` /
  * `latestAnchoredProviderRequest`）。

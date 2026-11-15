@@ -677,7 +677,7 @@ export class Session {
      *
      * 账本是共享的，一台机器上同时存在多个写入者（两个工作区的 sidecar、
      * 开发态热重载、终端中的 `qy exec`）。后启动的进程在启动时回收残留 run，
-     * 判据即该心跳与 `owner_pid`（见 `store/repos.ts` 的 `isOrphan`）：
+     * 判据即该心跳与 `owner_pid`（见 `store/repos/runs.ts` 的 `isOrphan`）：
      * 不推送心跳时，其他进程启动后即会将正在运行的 run 判定为中断。
      *
      * `unref()`：该定时器不应阻止进程退出。
@@ -1395,7 +1395,7 @@ function announce(result: GoalWriteResult, emit: (e: AgentEvent) => void): GoalW
   return result
 }
 
-/** 心跳间隔。回收方按 60 秒判定过期（`store/repos.ts`），留有六倍余量。 */
+/** 心跳间隔。回收方按 60 秒判定过期（`store/repos/runs.ts`），留有六倍余量。 */
 const HEARTBEAT_MS = 10_000
 
 type InterruptionSource = RunInterruption['source']

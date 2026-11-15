@@ -24,8 +24,9 @@ import type {
 } from '@qywork/core'
 import { isDue, nextRunAt } from '@qywork/core'
 import type { Store } from './db.ts'
-import { createConversation, normalizeWorkspaceRoot } from './repos.ts'
-import type { ScheduleRow } from './schema.ts'
+import { createConversation } from './repos/conversations.ts'
+import { normalizeWorkspaceRoot } from './repos/workspaces.ts'
+import type { ScheduleRow } from './rows.ts'
 
 /** 一次认领成功的触发。调用方在事务提交之后把 prompt 发送到 `conversationId`。 */
 export interface ScheduleClaim {

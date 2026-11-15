@@ -10,14 +10,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { resolve, sep } from 'node:path'
 import type { ConversationId, RunId, WorkspaceId } from '@qywork/core'
 import { Store } from './db.ts'
-import {
-  createConversation,
-  createRun,
-  deleteConversation,
-  finishRun,
-  removeWorkspace,
-  upsertWorkspace,
-} from './repos.ts'
+import { createConversation, deleteConversation } from './repos/conversations.ts'
+import { createRun, finishRun } from './repos/runs.ts'
+import { removeWorkspace, upsertWorkspace } from './repos/workspaces.ts'
 import {
   claimDueSchedules,
   claimScheduleNow,

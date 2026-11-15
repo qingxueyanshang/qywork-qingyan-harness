@@ -7,7 +7,7 @@
 
 import { Database } from 'bun:sqlite'
 import type { ContentStore } from './content.ts'
-import { MIGRATIONS, SCHEMA_VERSION } from './schema.ts'
+import { MIGRATIONS, SCHEMA_VERSION } from './migrations/index.ts'
 
 /**
  * 打开账本的进程类别：`serve`（`qy serve`，桌面端与手机端连接的服务）或 `cli`（终端中的

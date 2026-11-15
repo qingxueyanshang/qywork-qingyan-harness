@@ -1,12 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import { Store } from './db.ts'
-import {
-  createConversation,
-  createRun,
-  openProviderRequest,
-  settleProviderRequest,
-  upsertWorkspace,
-} from './repos.ts'
+import { createConversation } from './repos/conversations.ts'
+import { openProviderRequest, settleProviderRequest } from './repos/provider-requests.ts'
+import { createRun } from './repos/runs.ts'
+import { upsertWorkspace } from './repos/workspaces.ts'
 import {
   pruneUsage,
   recordUsage,

@@ -9,7 +9,8 @@
 import { describe, expect, test } from 'bun:test'
 import { Store } from './db.ts'
 import { createGoal, currentGoal, updateGoal } from './goals.ts'
-import { createConversation, upsertWorkspace } from './repos.ts'
+import { createConversation } from './repos/conversations.ts'
+import { upsertWorkspace } from './repos/workspaces.ts'
 
 function fresh() {
   const store = new Store({ path: ':memory:' })

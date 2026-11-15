@@ -1,7 +1,7 @@
 /**
  * 跨进程并发打开与写入同一个库。覆盖范围：`db.ts` 的 `enableWal` 与 `Store.migrate`、
- * `repos.ts` 的 `upsertWorkspace` 与 `createRun`（跨进程占用判定）、`goals.ts` 的 `createGoal` / `updateGoal`。
- * 子进程入口是 `concurrency-child.ts`。
+ * `repos/workspaces.ts` 的 `upsertWorkspace`、`repos/runs.ts` 的 `createRun`（跨进程占用判定）、
+ * `goals.ts` 的 `createGoal` / `updateGoal`。子进程入口是 `concurrency-child.ts`。
  *
  * 每条用例都复现原始失败形状：多个进程在同一时刻执行同一操作。对应的失败依次是
  * 全新库上有进程报 `database is locked` 或 `table … already exists`、同一目录触发 `root_path` 的 UNIQUE 冲突、
@@ -15,8 +15,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from './db.ts'
 import { createGoal } from './goals.ts'
-import { ConversationBusyError, createConversation, createRun, upsertWorkspace } from './repos.ts'
-import { MIGRATIONS } from './schema.ts'
+import { MIGRATIONS } from './migrations/index.ts'
+import { createConversation } from './repos/conversations.ts'
+import { ConversationBusyError, createRun } from './repos/runs.ts'
+import { upsertWorkspace } from './repos/workspaces.ts'
 
 const CHILD = join(import.meta.dir, 'concurrency-child.ts')
 const PROCESSES = 4

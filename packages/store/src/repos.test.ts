@@ -1,50 +1,65 @@
+/**
+ * 账本读写的回归测试。覆盖范围：`repos/` 下的 `workspaces.ts`、`conversations.ts`、`messages.ts`、
+ * `runs.ts`、`steps.ts` 与 `provider-requests.ts`。`file-reads.ts` 与启动时回收由 `recovery.test.ts` 覆盖。
+ */
+
 import { describe, expect, test } from 'bun:test'
 import { resolve, sep } from 'node:path'
 import type { FileChange, MessageId } from '@qywork/core'
 import { Store } from './db.ts'
 import {
-  appendMessage,
-  appendStep,
-  appendStepFileChanges,
   archiveConversation,
-  conversationRejectsImages,
   createConversation,
-  createRun,
   deleteConversation,
-  failThinkingSteps,
-  findRunByClientRequest,
-  finishRun,
   getConversation,
-  getRun,
-  getWorkspaceByPath,
-  interruptRunningNodes,
-  latestAnchoredProviderRequest,
-  latestSentProviderRequest,
   listChildConversations,
+  listConversations,
+  setConversationTitle,
+} from './repos/conversations.ts'
+import {
+  appendMessage,
   listConversationChangesPage,
   listConversationHistoryPage,
-  listConversations,
   listMessages,
+} from './repos/messages.ts'
+import {
+  latestAnchoredProviderRequest,
+  latestSentProviderRequest,
   listProviderRequests,
-  listRunContextSnapshots,
-  listSteps,
-  listWorkspaces,
-  markImagesUndelivered,
   markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
   markProviderRequestSent,
   openProviderRequest,
   providerFinishRates,
-  recordCompactionStep,
-  setConversationTitle,
-  setStepNodeState,
   settleProviderRequest,
+} from './repos/provider-requests.ts'
+import {
+  createRun,
+  findRunByClientRequest,
+  finishRun,
+  getRun,
+  listRunContextSnapshots,
+} from './repos/runs.ts'
+import {
+  appendStep,
+  appendStepFileChanges,
+  conversationRejectsImages,
+  failThinkingSteps,
+  interruptRunningNodes,
+  listSteps,
+  markImagesUndelivered,
+  recordCompactionStep,
+  setStepNodeState,
   settleRunningSteps,
   settleToolStep,
+} from './repos/steps.ts'
+import {
+  getWorkspaceByPath,
+  listWorkspaces,
   upsertWorkspace,
   workspaceOf,
-} from './repos.ts'
+} from './repos/workspaces.ts'
 import { recordUsage, usageTotals } from './usage.ts'
 
 function fresh() {

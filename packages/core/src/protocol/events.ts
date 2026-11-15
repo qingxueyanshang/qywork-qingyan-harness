@@ -478,7 +478,7 @@ export interface ActionDescriptor {
  *
  * 这些值会写入磁盘（`steps.payload.action.kind`），因此修改该联合类型不只是修改类型别名：
  * 删除、改名，或把某类工具改归到其他取值时，必须在同一次改动中附带数据迁移
- * （示例为 `store/schema.ts` 的迁移 16）。缺少迁移时不会报错，而是回放历史会话时
+ * （示例为迁移 16，`store/migrations/016-action-kind-six.ts`）。缺少迁移时不会报错，而是回放历史会话时
  * 卡片标题无法取得动词，界面直接显示 `undefined`。
  */
 export type ActionKind = 'query' | 'read' | 'write' | 'edit' | 'delete' | 'run' | 'call'

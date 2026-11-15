@@ -21,8 +21,8 @@ import type {
 import { attributeCacheMisses, reconcileBreakdown } from '@qywork/core'
 import type { Store } from '../db.ts'
 import { readJson } from '../db.ts'
-import { rowToProviderRequest } from '../repos.ts'
-import type { ProviderRequestRow, RunRow } from '../schema.ts'
+import { rowToProviderRequest } from '../repos/provider-requests.ts'
+import type { ProviderRequestRow, RunRow } from '../rows.ts'
 import { conversationToolTotals, requestToolDurations } from './tool-usage.ts'
 
 /** 一条压缩记录：压缩步骤的 payload 与该步骤的创建时刻。 */

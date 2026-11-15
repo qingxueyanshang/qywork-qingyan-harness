@@ -8,16 +8,11 @@ import { join } from 'node:path'
 import type { RunId, StepId } from '@qywork/core'
 import { ContentStore, contentPathFor } from './content.ts'
 import { Store } from './db.ts'
-import {
-  appendStep,
-  createConversation,
-  createRun,
-  deleteConversation,
-  listConversationHistoryPage,
-  listSteps,
-  settleToolStep,
-  upsertWorkspace,
-} from './repos.ts'
+import { createConversation, deleteConversation } from './repos/conversations.ts'
+import { listConversationHistoryPage } from './repos/messages.ts'
+import { createRun } from './repos/runs.ts'
+import { appendStep, listSteps, settleToolStep } from './repos/steps.ts'
+import { upsertWorkspace } from './repos/workspaces.ts'
 import { referencedContentHashes } from './resources.ts'
 import { loadToolImages } from './tool-images.ts'
 

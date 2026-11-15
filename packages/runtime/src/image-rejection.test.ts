@@ -3,7 +3,7 @@
  *
  * 覆盖范围：`agent/loop/attempt.ts` 的被拒分支、`agent/loop/index.ts` 的图片发送状态、
  * `session.ts` 从会话记录推导该状态、`tools/files.ts` 读取图片时的直接返回、
- * `store/repos.ts` 的记录写入与查询。经真实 `Session`、真实 `read_file`、真实 `Store` 与本地 HTTP 端点执行。
+ * `store/repos/steps.ts` 的记录写入与查询。经真实 `Session`、真实 `read_file`、真实 `Store` 与本地 HTTP 端点执行。
  *
  * 原始失败形状：`read_file` 读取图片成功，携带图片的下一次请求被 400 拒绝，本轮失败；
  * 图片留在之后的每次请求中，继续执行时再次被拒。断言针对端点实际收到的请求体。

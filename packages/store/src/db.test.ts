@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from './db.ts'
-import { MIGRATIONS, SCHEMA_VERSION } from './schema.ts'
+import { MIGRATIONS, SCHEMA_VERSION } from './migrations/index.ts'
 
 test('写事务在回调前取得写锁，不从读事务升级后直接返回 SQLITE_BUSY', () => {
   const dir = mkdtempSync(join(tmpdir(), 'qywork-store-tx-'))

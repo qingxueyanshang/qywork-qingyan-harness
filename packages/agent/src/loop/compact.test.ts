@@ -7,7 +7,7 @@
  *
  * 覆盖范围：`loop/compact.ts` 的压缩触发、容量恢复与压缩记录（含 `compaction.ts` 的 `compactionRecordOf`），
  * `loop/turn-end.ts` 的锚点准入。其中「压缩后重发在账本中另记一行」用例接入真实
- * `Store`，同时覆盖 `store/repos.ts` 的 `openProviderRequest` 在同一轮多次发送时
+ * `Store`，同时覆盖 `store/repos/provider-requests.ts` 的 `openProviderRequest` 在同一轮多次发送时
  * 与 `uq_provider_run_turn` 的关系；其他用例都把该端口打桩为常量。
  */
 

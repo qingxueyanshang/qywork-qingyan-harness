@@ -12,7 +12,8 @@
 import type { ConversationId, WorkspaceId } from '@qywork/core'
 import { type RunOwner, Store } from './db.ts'
 import { createGoal, updateGoal } from './goals.ts'
-import { ConversationBusyError, createRun, upsertWorkspace } from './repos.ts'
+import { ConversationBusyError, createRun } from './repos/runs.ts'
+import { upsertWorkspace } from './repos/workspaces.ts'
 
 const mode = process.env.QY_CC_MODE ?? ''
 const dbPath = process.env.QY_CC_DB ?? ''

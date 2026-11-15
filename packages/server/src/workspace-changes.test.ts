@@ -2,7 +2,7 @@
  * shell 的写入完整传递到变更页。
  *
  * 覆盖范围：`tools/shell.ts` 的 `run_command` 输出（实际启动 shell，不使用桩）、
- * `store/repos.ts` 的 `listConversationChangesPage` 归轮与分页、
+ * `store/repos/messages.ts` 的 `listConversationChangesPage` 归轮与分页、
  * `api/conversations.ts` 的 `GET /api/conversations/:id/changes`。
  * 观察器自身的忽略判定由 `tools/workspace-watch.test.ts` 覆盖；
  * 外部 CLI 与内置子 agent 两种来源由 `delegate.test.ts` 覆盖。

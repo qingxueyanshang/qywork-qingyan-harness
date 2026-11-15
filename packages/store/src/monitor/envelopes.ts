@@ -10,7 +10,7 @@ import type { ContextBreakdown, ContextGroup } from '@qywork/core'
 import { alignGroupItems } from '@qywork/core'
 import type { Store } from '../db.ts'
 import { readJson } from '../db.ts'
-import type { RequestEnvelopeRow } from '../schema.ts'
+import type { RequestEnvelopeRow } from '../rows.ts'
 
 export type EnvelopeGroup = Extract<ContextGroup, 'systemPrompt' | 'systemTools' | 'mcpTools'>
 

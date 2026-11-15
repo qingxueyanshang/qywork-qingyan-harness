@@ -3,7 +3,7 @@
  *
  * 覆盖范围：`command-tasks/table.ts`（任务表、按会话绑定的端口、回执投递、文件改动的追加）、`tools/src/shell.ts` 的
  * `run_command` 转入后台与后台输出的保留上限、`tools/src/workspace-watch.ts` 的后台观察、
- * `store/src/repos.ts` 的 `appendStepFileChanges` 与 `listConversationChangesPage`、
+ * `store/src/repos/steps.ts` 的 `appendStepFileChanges`、`store/src/repos/messages.ts` 的 `listConversationChangesPage`、
  * `run-control.ts` 的端口装配与回执入口、`commands.ts` 的 `command.stop`、
  * `runtime/session.ts` 的通道注入与权限裁决、`agent/loop` 在工具结束后注入「调整方向」消息。
  * `background_command` 的取舍由 `tools/src/shell.test.ts` 覆盖，此处只覆盖它经由任务表在本轮内等待命令结束。

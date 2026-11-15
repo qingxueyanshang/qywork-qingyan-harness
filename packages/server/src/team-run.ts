@@ -36,7 +36,7 @@ import { type CommandDeps, officePortOf } from './deps.ts'
 /**
  * 成员会话使用的「接口 × 模型」。优先级：角色指定 > 父会话当前的接口与模型 > 配置默认值。
  *
- * 父会话的接口与模型必须传入：模型是会话级属性（`repos.ts` 的 `setConversationModel`），
+ * 父会话的接口与模型必须传入：模型是会话级属性（`store/repos/conversations.ts` 的 `setConversationModel`），
  * 用户在界面上切换到低价模型后派发任务，不继承时仍按 `config.active` 发送请求，
  * 而工具描述向模型承诺的是「当前模型」。
  *

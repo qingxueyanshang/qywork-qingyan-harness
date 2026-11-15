@@ -1,6 +1,6 @@
 /**
  * 覆盖 `monitor/requests.ts`：`conversationRequests`、`conversationRequestDetails`、`requestBreakdown`、
- * `compactionRecords`，以及 `repos.ts` 中供其使用的 `rowToProviderRequest`。
+ * `compactionRecords`，以及 `repos/provider-requests.ts` 中供其使用的 `rowToProviderRequest`。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -14,19 +14,15 @@ import type {
 } from '@qywork/core'
 import { attributeCacheMisses, emptyBreakdown, reconcileBreakdown } from '@qywork/core'
 import { Store } from '../db.ts'
+import { createConversation } from '../repos/conversations.ts'
 import {
-  appendStep,
-  createConversation,
-  createRun,
   listProviderRequests,
-  listRuns,
   openProviderRequest,
-  recordCompactionStep,
   settleProviderRequest,
-  settleToolStep,
-  updateRunUsage,
-  upsertWorkspace,
-} from '../repos.ts'
+} from '../repos/provider-requests.ts'
+import { createRun, listRuns, updateRunUsage } from '../repos/runs.ts'
+import { appendStep, recordCompactionStep, settleToolStep } from '../repos/steps.ts'
+import { upsertWorkspace } from '../repos/workspaces.ts'
 import { compactionRecords, conversationRequestDetails, conversationRequests } from './requests.ts'
 import { requestToolDurations } from './tool-usage.ts'
 

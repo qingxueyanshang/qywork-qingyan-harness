@@ -353,7 +353,7 @@ export function serve(opts: ServeOptions) {
   // 回收上次进程留下的 running run，必须在开始服务之前执行：
   // 不回收时 hasRun 始终为真，用户在该会话中无法发送任何消息，会话被永久锁定。
   //
-  // 只回收无进程运行的 run（判据见 `store/repos.ts` 的 `isOrphan`）。不加区分地回收
+  // 只回收无进程运行的 run（判据见 `store/repos/runs.ts` 的 `isOrphan`）。不加区分地回收
   // 会使本进程启动时把其他进程正在运行的轮次判为中断：账本是共享的，
   // 一台机器上可以同时存在多个写入者。
   const previousExit = opts.previousProcessExit

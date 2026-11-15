@@ -890,7 +890,7 @@ describe('图片附件', () => {
    * 回归测试：**附件必须实际到达模型请求体**。
    *
    * 该链路很容易成为未接通的链路：`Attachment` 类型存在、`messages.attachments` 列存在、
-   * `repos.ts` 会写入、三个 provider 都会编码 image 块，而中间任一环节丢弃附件
+   * `store/repos/messages.ts` 会写入、三个 provider 都会编码 image 块，而中间任一环节丢弃附件
    * （服务端不转发 / `session.ts` 落库时不带 / 装配历史时只取 `content`），
    * 结果是类型、列、编码器俱全，却没有数据。
    *

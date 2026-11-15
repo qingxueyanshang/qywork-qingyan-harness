@@ -8,7 +8,7 @@
 import { newResourceId, type ResourceId } from '@qywork/core'
 import type { Store } from './db.ts'
 import { readJson, writeJson } from './db.ts'
-import type { IntermediateResourceRow } from './schema.ts'
+import type { IntermediateResourceRow } from './rows.ts'
 
 export type ResourceStatus = 'complete' | 'partial' | 'failed'
 

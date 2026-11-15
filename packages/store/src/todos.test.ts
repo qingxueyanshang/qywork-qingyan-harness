@@ -8,13 +8,11 @@
 import { describe, expect, test } from 'bun:test'
 import type { ConversationId } from '@qywork/core'
 import { Store } from './db.ts'
-import {
-  appendMessage,
-  appendStep,
-  createConversation,
-  createRun,
-  upsertWorkspace,
-} from './repos.ts'
+import { createConversation } from './repos/conversations.ts'
+import { appendMessage } from './repos/messages.ts'
+import { createRun } from './repos/runs.ts'
+import { appendStep } from './repos/steps.ts'
+import { upsertWorkspace } from './repos/workspaces.ts'
 import { latestTodos } from './todos.ts'
 
 function fresh() {

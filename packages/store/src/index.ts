@@ -1,6 +1,9 @@
 /**
  * `@qywork/store` 的对外接口。此处列出的即对外承诺，未列出的均为内部实现。
  * 使用具名导出，不用 `export *`（B6）；新增导出前先确认它确有包外调用方（B3）。
+ *
+ * 账本读写的每个函数完成一次完整的事实变更，不向上层暴露 SQL：账本的一致性规则
+ * （step 原地更新、usage 累加口径、run 终态唯一）必须集中在本包中，分散到调用方后无法保证。
  */
 
 // 正文库：超出预算的工具输出写入此处，模型用 read_resource 读取
@@ -11,6 +14,8 @@ export { type RunOwner, Store } from './db.ts'
 export { createGoal, currentGoal, updateGoal } from './goals.ts'
 // 按需加载的外部工具：runtime 在装配工具表时读取、在 load_tool 成功后写入
 export { listLoadedTools, recordLoadedTools } from './loaded-tools.ts'
+// 落盘 schema 版本。真源位于 migrations/index.ts，不设中心登记表（CLAUDE.md D2）
+export { SCHEMA_VERSION } from './migrations/index.ts'
 // 请求信封的明细：runtime 的请求持久化层随主请求写入，按指纹读取
 export {
   type EnvelopeItem,
@@ -27,79 +32,94 @@ export {
   requestBreakdown,
   requestWithPrevious,
 } from './monitor/requests.ts'
-// 读写：会话、消息、run、step、工作区
+// 读写：会话
 export {
-  appendMessage,
-  appendRunMedia,
-  appendStep,
-  appendStepFileChanges,
-  appendTextToStep,
   archiveConversation,
   archiveWorkspaceConversations,
-  ConversationBusyError,
-  conversationRejectsImages,
-  conversationRejectsVideos,
   countConversations,
   createConversation,
-  createRun,
   deleteConversation,
-  failThinkingSteps,
-  fileReadHash,
-  finishRun,
   getConversation,
-  getRun,
-  getWorkspace,
-  getWorkspaceByPath,
-  interruptRunningNodes,
-  latestAnchoredProviderRequest,
-  latestSentProviderRequest,
   listChildConversations,
-  listConversationChangesPage,
-  listConversationHistoryPage,
   listConversations,
-  listMessages,
-  listProviderRequests,
   listRecentConversations,
-  listRunContextSnapshots,
-  listRuns,
-  listSteps,
-  listWorkspaces,
-  type ModelFinishRate,
-  markImagesUndelivered,
-  markProviderRequestContent,
-  markProviderRequestFirstEvent,
-  markProviderRequestHeaders,
-  markProviderRequestHedge,
-  markProviderRequestSent,
-  markRunRunning,
-  markStepExecuting,
-  mostRecentWorkspace,
-  normalizeWorkspaceRoot,
-  openProviderRequest,
-  type ProcessExitObservation,
   permissionModeOf,
-  providerFinishRates,
-  recordCompactionStep,
-  recordFileRead,
-  recordProviderRequestDiagnostic,
-  recoverStaleRuns,
-  removeWorkspace,
   setCompactionManifest,
   setConversationExternalSession,
   setConversationMode,
   setConversationModel,
   setConversationTitle,
-  setStepNodeState,
+} from './repos/conversations.ts'
+// 会话读取文件时的内容哈希：写入前的新鲜度校验
+export { fileReadHash, recordFileRead } from './repos/file-reads.ts'
+// 读写：消息；以用户消息分页的历史页与变更页
+export {
+  appendMessage,
+  listConversationChangesPage,
+  listConversationHistoryPage,
+  listMessages,
+} from './repos/messages.ts'
+// 逐请求账
+export {
+  latestAnchoredProviderRequest,
+  latestSentProviderRequest,
+  listProviderRequests,
+  type ModelFinishRate,
+  markProviderRequestContent,
+  markProviderRequestFirstEvent,
+  markProviderRequestHeaders,
+  markProviderRequestHedge,
+  markProviderRequestSent,
+  openProviderRequest,
+  providerFinishRates,
+  recordProviderRequestDiagnostic,
   settleProviderRequest,
-  settleRunningSteps,
-  settleToolStep,
-  setWorkspacePinned,
-  stepInExecution,
+} from './repos/provider-requests.ts'
+// 读写：run
+export {
+  appendRunMedia,
+  ConversationBusyError,
+  createRun,
+  finishRun,
+  getRun,
+  listRunContextSnapshots,
+  listRuns,
+  markRunRunning,
+  type ProcessExitObservation,
+  recoverStaleRuns,
   touchRun,
   updateRunUsage,
+} from './repos/runs.ts'
+// 读写：step
+export {
+  appendStep,
+  appendStepFileChanges,
+  appendTextToStep,
+  conversationRejectsImages,
+  conversationRejectsVideos,
+  failThinkingSteps,
+  interruptRunningNodes,
+  listSteps,
+  markImagesUndelivered,
+  markStepExecuting,
+  recordCompactionStep,
+  setStepNodeState,
+  settleRunningSteps,
+  settleToolStep,
+  stepInExecution,
+} from './repos/steps.ts'
+// 读写：工作区
+export {
+  getWorkspace,
+  getWorkspaceByPath,
+  listWorkspaces,
+  mostRecentWorkspace,
+  normalizeWorkspaceRoot,
+  removeWorkspace,
+  setWorkspacePinned,
   upsertWorkspace,
   workspaceOf,
-} from './repos.ts'
+} from './repos/workspaces.ts'
 // 中间资源：runtime 的 sink 写入与读取
 export {
   getResource,
@@ -118,8 +138,6 @@ export {
   type ScheduleClaim,
   updateSchedule,
 } from './schedules.ts'
-// 落盘 schema 版本。真源位于 schema.ts，不设中心登记表（CLAUDE.md D2）
-export { SCHEMA_VERSION } from './schema.ts'
 // 待办：只读取，不另行写入；真源是父会话验收后提交的 write_todos tool step
 export { latestTodos } from './todos.ts'
 // 工具结果的图像：写入由 settleToolStep 完成，读取账本的各方经此还原字节

@@ -5,16 +5,11 @@
 import { describe, expect, test } from 'bun:test'
 import type { ConversationId, ProviderRequestId, RunId, WorkspaceId } from '@qywork/core'
 import { Store } from '../db.ts'
-import {
-  appendStep,
-  createConversation,
-  createRun,
-  listRuns,
-  listSteps,
-  openProviderRequest,
-  settleToolStep,
-  upsertWorkspace,
-} from '../repos.ts'
+import { createConversation } from '../repos/conversations.ts'
+import { openProviderRequest } from '../repos/provider-requests.ts'
+import { createRun, listRuns } from '../repos/runs.ts'
+import { appendStep, listSteps, settleToolStep } from '../repos/steps.ts'
+import { upsertWorkspace } from '../repos/workspaces.ts'
 import { batchToolDuration, conversationToolTotals, requestToolDurations } from './tool-usage.ts'
 
 function newRun(

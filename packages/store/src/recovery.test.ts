@@ -1,28 +1,35 @@
+/**
+ * 启动时回收与会话级记录的回归测试。覆盖范围：`repos/runs.ts` 的 `recoverStaleRuns`、`touchRun` 与归属判定，
+ * `repos/steps.ts` 中回收时写入的 step 与派发节点终态，`repos/file-reads.ts`，
+ * 以及 `repos/conversations.ts` 的 `setConversationModel`。
+ */
+
 import { describe, expect, test } from 'bun:test'
 import type { StepPayload } from '@qywork/core'
 import { Store } from './db.ts'
+import { createConversation, getConversation, setConversationModel } from './repos/conversations.ts'
+import { fileReadHash, recordFileRead } from './repos/file-reads.ts'
+import {
+  listProviderRequests,
+  markProviderRequestSent,
+  openProviderRequest,
+} from './repos/provider-requests.ts'
+import {
+  createRun,
+  finishRun,
+  getRun,
+  markRunRunning,
+  recoverStaleRuns,
+  touchRun,
+} from './repos/runs.ts'
 import {
   appendStep,
-  createConversation,
-  createRun,
-  fileReadHash,
-  finishRun,
-  getConversation,
-  getRun,
-  listProviderRequests,
   listSteps,
-  markProviderRequestSent,
-  markRunRunning,
   markStepExecuting,
-  openProviderRequest,
-  recordFileRead,
-  recoverStaleRuns,
-  setConversationModel,
   setStepNodeState,
   settleToolStep,
-  touchRun,
-  upsertWorkspace,
-} from './repos.ts'
+} from './repos/steps.ts'
+import { upsertWorkspace } from './repos/workspaces.ts'
 
 function fresh() {
   const store = new Store({ path: ':memory:' })

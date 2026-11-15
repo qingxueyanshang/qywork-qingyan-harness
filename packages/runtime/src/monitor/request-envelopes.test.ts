@@ -3,7 +3,7 @@
  *
  * 覆盖范围：`request-persistence.ts` 的 `openRequest`（明细与请求行同一事务）、`agent/loop/attempt.ts`
  * 随主请求提供估算、`agent/loop/request.ts` 的 `envelopeItemsOf`、`agent/loop/summary-trace.ts`
- * 的摘要请求不提供估算、`store/monitor/envelopes.ts` 的写入与读取、`store/repos.ts` 的
+ * 的摘要请求不提供估算、`store/monitor/envelopes.ts` 的写入与读取、`store/repos/conversations.ts` 的
  * `deleteConversation` 清除孤立明细。主请求经真实 `Session`、完整的内置工具表、真实 `Store`
  * 与本地 HTTP 端点执行。
  */
