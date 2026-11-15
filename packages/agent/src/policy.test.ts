@@ -10,7 +10,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { decideCommand, HARD_DENY, type PolicyContext } from './policy.ts'
 
 const ctx: PolicyContext = { workspaceRoot: '/ws' }
@@ -196,6 +196,114 @@ describe('工作区外的写入与删除', () => {
   test('工作区内的删除不拦截', () => {
     expect(kind('rm -rf dist')).toBe('allow')
     expect(kind('rm -rf node_modules src/generated')).toBe('allow')
+  })
+})
+
+/**
+ * 相对路径以当前目录为基准解析，`..`、`cd` 与工作目录参数一并计入。
+ *
+ * 原始失败形状：相对路径一律判为工作区内，工作区位于家目录中时，`rm -rf ../..` 与 `cd .. && rm -rf *`
+ * 删除的是家目录中的内容，却被放行；`~/.qywork/` 中的权限模式与 MCP 启动确认记录可经 `..` 改写。
+ */
+describe('上一级目录与工作目录', () => {
+  const H = homedir()
+  // 工作区位于家目录下两级：两级 `..` 即为家目录。
+  const ws = join(H, 'a', 'ws')
+  const nested: PolicyContext = { workspaceRoot: ws }
+  const at = (command: string, c: PolicyContext = nested) => decideCommand(command, c).kind
+
+  test('经 .. 写入或删除家目录中的内容时拒绝', () => {
+    for (const cmd of [
+      'rm -rf ../..',
+      'cd .. && rm -rf *',
+      'Set-Location ..; Remove-Item -Recurse -Force *',
+      'cp x.sqlite3 ../../.qywork/qywork.sqlite3',
+      'cd ../.. && rm -rf .qywork',
+      `rm -rf ${ws.replace(/\\/g, '/')}/../../.qywork`,
+      `Remove-Item -Recurse -Force ${ws.replace(/\//g, '\\')}\\..\\..\\.qywork`,
+    ]) {
+      expect(at(cmd)).toBe('deny')
+    }
+  })
+
+  test('工作区内的相对路径与家目录、系统目录之外的位置放行', () => {
+    expect(at('cd sub && rm -rf build')).toBe('allow')
+    expect(at('echo x > D:/other-project/a.txt')).toBe('allow')
+    // 工作区不在家目录中时，其上一级同样不在家目录中。
+    expect(at('rm -rf ../sibling', { workspaceRoot: '/ws' })).toBe('allow')
+  })
+
+  /** 工作区位于家目录中时，同级目录同样位于家目录中，结论与写入 `~/sibling` 相同；列入额外目录后放行。 */
+  test('工作区位于家目录中时，删除同级目录拒绝', () => {
+    expect(at('rm -rf ../sibling')).toBe('deny')
+    const extra: PolicyContext = {
+      workspaceRoot: ws,
+      additionalDirectories: [join(H, 'a', 'sibling')],
+    }
+    expect(at('rm -rf ../sibling', extra)).toBe('allow')
+  })
+
+  test('工作目录参数是相对路径的起点', () => {
+    expect(at('rm -rf build', { workspaceRoot: ws, cwd: '..' })).toBe('deny')
+    expect(at('rm -rf build', { workspaceRoot: ws, cwd: 'sub' })).toBe('allow')
+  })
+
+  /** 写入目标无法从命令文本确定时，目标若为相对路径即位于当前目录中。 */
+  test('当前目录位于家目录中且写入目标无法确定时拒绝', () => {
+    expect(at('cd .. && ls | xargs rm')).toBe('deny')
+    expect(at('cd sub && ls | xargs rm')).toBe('allow')
+  })
+
+  test('拒绝理由给出相对路径解析后的位置', () => {
+    expect(decideCommand('rm -rf ../..', nested).reason).toBe(
+      `写入目标 ${H} 位于工作区之外，且未列入「设置 → 权限 → 工作区之外额外可读写的目录」`,
+    )
+  })
+
+  /**
+   * 删除家目录的上级即删除家目录本身。原始失败形状：只判定目标是否位于家目录中，
+   * 家目录的上级与上级目录中的通配符都被判为其他位置并放行。
+   */
+  test('目标是家目录的上级，或是家目录上级中的通配符时拒绝', () => {
+    const parent = dirname(H)
+    for (const cmd of [
+      `rm -rf ${parent}`,
+      `rm -rf ${parent.replace(/\\/g, '/')}`,
+      'cd ../../.. && rm -rf *',
+      `Remove-Item -Recurse -Force ${parent}\\*`,
+    ]) {
+      expect(at(cmd)).toBe('deny')
+    }
+  })
+
+  /**
+   * 系统目录只判定「位于其中」：复制到不含家目录的盘符根目录照常放行。
+   * 本例要求家目录不在 D 盘，`/` 写法的根目录在 Windows 上不包含 Windows 写法的家目录。
+   */
+  test('家目录与系统目录之外的写入仍放行；/ 与盘符根目录的递归删除仍由硬拒绝规则处理', () => {
+    for (const cmd of [
+      'echo x > C:/ProgramData/x.txt',
+      'echo x > D:/other-project/a.txt',
+      'rm -rf /tmp/build',
+      'Copy-Item x D:\\',
+      'cp x.txt D:/',
+    ]) {
+      expect(at(cmd)).toBe('allow')
+    }
+    expect(decideCommand('rm -rf /', nested).reason).toBe('命令会递归删除根目录或家目录')
+    expect(decideCommand('Remove-Item -Recurse C:/', nested).reason).toBe(
+      '命令会递归删除盘符根目录或家目录',
+    )
+    expect(decideCommand('Remove-Item -Recurse D:/', nested).reason).toBe(
+      '命令会递归删除盘符根目录或家目录',
+    )
+  })
+
+  /** 工作区不在家目录中时，其上级只包含工作区与同级目录，二者都可写，上级按同一结论放行。 */
+  test('工作区不在家目录中时，删除工作区的上级放行', () => {
+    const project: PolicyContext = { workspaceRoot: '/ws/project' }
+    expect(at('cd .. && rm -rf *', project)).toBe('allow')
+    expect(at('rm -rf ..', project)).toBe('allow')
   })
 })
 

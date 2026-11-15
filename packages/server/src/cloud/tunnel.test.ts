@@ -285,6 +285,36 @@ describe('隧道客户端', () => {
     await Bun.sleep(50)
   })
 
+  /**
+   * 原始失败形状：路径拼在 `http://127.0.0.1:<端口>` 之后，`@127.0.0.1:<另一端口>/x` 使前半部分成为用户信息，
+   * 请求发往本机的另一个端口。
+   */
+  test('path 不以 / 开头的 http.open 与 ws.open 被丢弃，本机其他端口未收到请求', async () => {
+    const hits: string[] = []
+    const other = Bun.serve<undefined>({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req, srv) {
+        hits.push(new URL(req.url).pathname)
+        return srv.upgrade(req, { data: undefined }) ? undefined : new Response('other')
+      },
+      websocket: { message: () => {} },
+    })
+    try {
+      const c = start()
+      await until(() => c.status.state === 'online')
+      const path = `@127.0.0.1:${other.port}/x`
+      cloud.send({ type: 'http.open', sid: cloud.newSid(), method: 'GET', path, headers: [] })
+      cloud.send({ type: 'ws.open', sid: cloud.newSid(), path, headers: [] })
+      // 控制帧按顺序处理：其后的请求完成时，前两帧已处理完毕。
+      expect((await cloud.request('GET', '/after')).status).toBe(201)
+      await Bun.sleep(100)
+      expect(hits).toEqual([])
+    } finally {
+      other.stop(true)
+    }
+  })
+
   test('应答 pair.request：返回当前进程的令牌与设备名', async () => {
     const c = start({ token: 'process-token', deviceName: '我的电脑' })
     await until(() => c.status.state === 'online')

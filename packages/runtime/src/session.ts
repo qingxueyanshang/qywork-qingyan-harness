@@ -1227,6 +1227,8 @@ export class Session {
     const d = decideCommand(command, {
       workspaceRoot: this.opts.workspaceRoot,
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
+      // 命令中的相对路径以命令的工作目录为基准；取值与 `run_command` 解析 `cwd` 参数的方式相同。
+      cwd: String(call.args.cwd ?? '.'),
       workspacePython: workspacePythonReady(this.opts.workspaceRoot),
     })
     if (d.kind === 'allow') return { allowed: true }

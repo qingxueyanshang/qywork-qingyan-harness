@@ -13,13 +13,14 @@
 import { mock } from 'bun:test'
 import * as fs from 'node:fs'
 import * as fsp from 'node:fs/promises'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// 直接导入文件而不经包入口：预载阶段载入整个包会使其中模块先于 `mock.module` 取得原始的 `node:fs`。
+import { isOutsideRelative } from '../packages/agent/src/paths/place.ts'
 
 /** `outer` 等于 `inner` 或是其上级目录。Windows 上 `relative` 不区分大小写。 */
 function contains(outer: string, inner: string): boolean {
-  const rel = relative(outer, inner)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return !isOutsideRelative(relative(outer, inner))
 }
 
 /** 删除目标不允许时的原因，允许时为 null。`protectedRoots` 之外，当前目录始终受保护。 */

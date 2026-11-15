@@ -584,10 +584,13 @@ export async function resumeMedia(req: {
   return settle(req.roots, result, record.output, recordPath, record.params, req.attach)
 }
 
-/** 记录中的产物是否都仍在原位置。任一已被移走或删除时按任务号重新取回。 */
+/**
+ * 记录中的产物是否都仍在原位置。任一已被移走或删除时按任务号重新取回。
+ * 按写入范围解析：产物经 `resolveWritablePath` 落盘，可能位于根目录之外，按读取范围解析会误判为已移走。
+ */
 async function allPresent(roots: RootsInput, files: GeneratedFile[]): Promise<boolean> {
   for (const file of files) {
-    const abs = await resolveInWorkspace(roots, file.path).catch(() => null)
+    const abs = await resolveWritablePath(roots, file.path).catch(() => null)
     if (!abs || !(await occupied(abs))) return false
   }
   return true

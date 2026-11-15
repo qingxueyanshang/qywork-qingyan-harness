@@ -51,6 +51,7 @@
  */
 
 import { homedir } from 'node:os'
+import { isAbsolutePath, type PlacedPath, placePath } from './paths/place.ts'
 
 /** 只有两种结论。不属于拒绝清单即放行。 */
 export type PolicyDecision = { kind: 'allow'; reason: string } | { kind: 'deny'; reason: string }
@@ -65,6 +66,11 @@ export interface PolicyContext {
    * 得到的却是「越界一律拒绝」的错误，而该说法此时已不成立。
    */
   additionalDirectories?: readonly string[]
+  /**
+   * 命令的工作目录参数（`run_command` 的 `cwd`），相对路径以工作区根为基准；缺省为工作区根。
+   * 命令中的相对路径从这里开始解析。
+   */
+  cwd?: string
   /**
    * 工作区 Python 环境（`.tmp/python`，带 pip）是否存在。存在时命令中的 python 与 pip 指向它；
    * 不存在时 pip 即全局，`globalPythonInstall` 拒绝全部 pip 安装。
@@ -329,42 +335,57 @@ function globalPythonInstall(command: string, ctx: PolicyContext): string | null
     )
   )
     return deny('py 启动器调用全局解释器')
+  const cwd = startDir(ctx).path
+  // 无法从命令文本确定的路径（以变量开头）不判定。
+  const outside = (p: string) => {
+    const at = placeWord(p, ctx, cwd)
+    return at !== null && at.place !== 'root'
+  }
   for (const m of command.matchAll(INTERPRETER_INSTALL)) {
     const p = m[1] ?? m[2] ?? m[3] ?? ''
     if (!/(?:^|[\\/])(?:python|pip)[\d.]*(?:\.exe)?$/i.test(p)) continue
-    if (/^(?:[A-Za-z]:[\\/]|\/)/.test(p) && !withinAllowed(p, ctx))
-      return deny(`${p} 是工作区外的解释器`)
+    if (outside(p)) return deny(`${p} 是工作区外的解释器`)
   }
   for (const m of command.matchAll(INSTALL_LOCATION)) {
     const p = m[1] ?? m[2] ?? m[3] ?? ''
-    if (/^(?:[A-Za-z]:[\\/]|\/|~)/.test(p) && !withinAllowed(p, ctx))
-      return deny(`安装位置 ${p} 在工作区外`)
+    if (outside(p)) return deny(`安装位置 ${p} 在工作区外`)
   }
   return null
 }
 
-/** 路径是否位于工作区或额外目录内。 */
-function withinAllowed(path: string, ctx: PolicyContext): boolean {
-  const p = normalizeSeparators(path.startsWith('~') ? homedir() + path.slice(1) : path)
+function rootList(ctx: PolicyContext): string[] {
   return [ctx.workspaceRoot, ...(ctx.additionalDirectories ?? [])]
-    .map(normalizeSeparators)
-    .filter(Boolean)
-    .some((root) => inside(p, root))
+}
+
+/** 命令开始执行时的当前目录：工作目录参数按工作区根解析。 */
+function startDir(ctx: PolicyContext): PlacedPath {
+  return placePath(ctx.workspaceRoot, ctx.cwd ?? '.', rootList(ctx))
 }
 
 /**
- * Windows 与 macOS 的文件系统不区分大小写，`c:/users/x/.ssh/id_rsa` 与 `C:/Users/x/.ssh/id_rsa` 是同一个文件；
- * 不统一时，把盘符写成小写即可绕过路径规则。
+ * 命令中一个路径词的位置。先展开开头的家目录或系统目录符号，再在变量处截断，最后以当前目录 `cwd` 为基准解析。
+ * 返回 `null`：以变量开头，或为相对路径而当前目录未知，无法从命令文本确定。
+ *
+ * 路径中段出现变量时按变量之前的字面前缀判定：`$HOME/$X/out` 的前缀是家目录本身，
+ * 位于额外目录 `~/data` 之外。符号在本机没有值时按家目录或系统目录处理（fail-closed），`path` 为原词。
+ *
+ * 含通配符（`*` `?` `[`）的一段可以匹配所在目录中的任一名称，按所在目录判定：`C:/Users/*` 匹配家目录本身，
+ * 按字面路径判定时它既不位于家目录中，也不包含家目录。
  */
-function fold(s: string): string {
-  return process.platform === 'win32' || process.platform === 'darwin' ? s.toLowerCase() : s
-}
-
-/** `p` 是否为 `root` 本身或位于其下。两者均已统一分隔符。 */
-function inside(p: string, root: string): boolean {
-  const a = fold(p)
-  const b = fold(root)
-  return a === b || a.startsWith(`${b}/`)
+function placeWord(word: string, ctx: PolicyContext, cwd: string | null): PlacedPath | null {
+  const expanded = expandSymbol(word)
+  if (expanded === '') return { path: word, place: 'home-or-system' }
+  let text = expanded ?? word
+  const cut = text.search(/\$|%\w+%/)
+  if (cut === 0) return null
+  if (cut > 0) text = text.slice(0, cut)
+  const glob = text.search(/[*?[]/)
+  if (glob >= 0) {
+    const dirEnd = Math.max(text.lastIndexOf('/', glob), text.lastIndexOf('\\', glob))
+    text = dirEnd < 0 ? '.' : text.slice(0, dirEnd + 1)
+  }
+  if (cwd === null && !isAbsolutePath(text)) return null
+  return placePath(cwd ?? ctx.workspaceRoot, text, rootList(ctx))
 }
 
 // ───────────────────────── 工作区外的写入与删除 ─────────────────────────
@@ -455,14 +476,6 @@ interface PendingHeredoc {
   strip: boolean
 }
 
-type Place = 'allowed' | 'outside' | 'unknown'
-
-interface Located {
-  place: Place
-  /** 拒绝理由中显示的路径：相对路径前加上工作区外的当前目录。 */
-  shown: string
-}
-
 /**
  * 工作区外的写入或删除。命中时返回拒绝理由，否则返回 `null`。
  *
@@ -470,15 +483,22 @@ interface Located {
  * 不要改为「命令含写入动作且引用工作区外路径即拒绝」：`python -c` 代码中的 `.mkdir()`、
  * `2>/dev/null`、复制来源都会使只读取工作区外文件的命令被拒绝，而同一操作换一种写法即可执行。
  *
+ * 相对路径以当前目录为基准解析，`..` 与 `cd` 一并计入：`cd .. && rm -rf *` 删除的是工作区的上一级。
+ * 当前目录未知（`cd $X` 之后）时，相对路径的写入目标按无法确定处理。
+ *
  * 写入目标无法从命令文本确定（变量、管道输入、子表达式、`xargs` 等之后的写入命令）时，
- * 命令中出现任一工作区外引用即拒绝（fail-closed）。
+ * 当前目录位于家目录或系统目录中即拒绝，命令中出现任一工作区外引用同样拒绝（fail-closed）。
  *
  * 必须是确定性规则：交给模型判定时，`Get-ChildItem $HOME -Recurse -Filter *.pem` 实测连续运行两次
  * 给出了相反结论。只判定家目录、`/etc`、`C:\Windows`，不判定所有绝对路径：其他绝对路径可能是
  * 用户的另一个项目目录，误拒代价过高。
  */
-function outsideWrite(command: string, ctx: PolicyContext): string | null {
-  let cwd: Located = { place: 'allowed', shown: '' }
+function outsideWrite(
+  command: string,
+  ctx: PolicyContext,
+  start: PlacedPath | null = startDir(ctx),
+): string | null {
+  let cwd = start
   let indeterminate = false
   for (const seg of segments(command)) {
     // 跳过命令名之前的环境变量赋值（`FOO=1 rm …`）与关键字。
@@ -493,7 +513,11 @@ function outsideWrite(command: string, ctx: PolicyContext): string | null {
 
     if (CHANGE_DIR.has(name)) {
       const target = args.length === 0 ? '~' : args.find((a) => !a.startsWith('-'))
-      if (target !== undefined) cwd = locate(target, ctx, cwd)
+      if (target !== undefined) {
+        const at = placeWord(target, ctx, cwd?.path ?? null)
+        // 符号在本机没有值时没有绝对路径，之后的相对路径按无法确定处理。
+        cwd = at !== null && isAbsolutePath(at.path) ? at : null
+      }
       continue
     }
 
@@ -501,34 +525,43 @@ function outsideWrite(command: string, ctx: PolicyContext): string | null {
     const inPlace = name !== 'sed' || args.some((a) => /^-(?:[a-zA-Z]*i|-in-place)/.test(a))
     const targets = mode !== undefined && inPlace ? pick(mode, args) : null
     // PowerShell 命令没有路径参数时，写入目标来自管道输入。
-    if (targets !== null && (seg.opensExpr || (targets.length === 0 && name.includes('-')))) {
-      indeterminate = true
-    }
+    let blind = targets !== null && (seg.opensExpr || (targets.length === 0 && name.includes('-')))
     const runner = seg.words.findIndex((w, j) => j >= k && RUNNERS.has(commandName(w)))
     if (
       runner !== -1 &&
       seg.words.slice(runner + 1).some((w) => WRITE_COMMANDS.has(commandName(w)))
     ) {
-      indeterminate = true
+      blind = true
     }
 
     for (const t of [...seg.redirects, ...(targets ?? [])]) {
-      const at = locate(t, ctx, cwd)
-      if (at.place === 'outside') {
-        return `写入目标 ${at.shown} 位于工作区之外，且未列入${EXTRA_DIRS_SETTING}`
+      if (/^\$null$/i.test(t)) continue
+      const at = placeWord(t, ctx, cwd?.path ?? null)
+      if (at === null) {
+        blind = true
+      } else if (at.place === 'home-or-system') {
+        // 相对路径显示解析后的位置；绝对路径与符号写法按原文显示。
+        const shown = isAbsolutePath(t) || expandSymbol(t) !== null ? t : at.path
+        return `写入目标 ${shown} 位于工作区之外，且未列入${EXTRA_DIRS_SETTING}`
       }
-      if (at.place === 'unknown') indeterminate = true
+    }
+    if (blind) {
+      // 无法确定的写入目标是相对路径时，位于当前目录中。
+      if (cwd?.place === 'home-or-system') {
+        return `当前目录 ${cwd.path} 位于工作区之外，且写入目标无法从命令文本确定`
+      }
+      indeterminate = true
     }
 
     const scripts = SHELLS.has(name) ? [...seg.heredocs, ...inlineScript(name, args)] : []
     for (const inner of [...seg.substitutions, ...scripts]) {
-      const reason = outsideWrite(inner, ctx)
+      const reason = outsideWrite(inner, ctx, cwd)
       if (reason !== null) return reason
     }
   }
   if (!indeterminate) return null
   for (const m of command.matchAll(OUTSIDE_REF)) {
-    if (classify(m[0], ctx) === 'outside') {
+    if (placeWord(m[0], ctx, null)?.place === 'home-or-system') {
       return `命令引用了工作区之外的 ${m[0]}，且写入目标无法从命令文本确定`
     }
   }
@@ -748,45 +781,6 @@ function inlineScript(name: string, args: readonly string[]): string[] {
   return at === -1 ? [] : [args.slice(at + 1).join(' ')]
 }
 
-/** 写入目标的位置。相对路径按当前目录判定：`cd` 到工作区外之后，`rm -rf build` 删除的是工作区外的内容。 */
-function locate(word: string, ctx: PolicyContext, cwd: Located): Located {
-  const place = classify(word, ctx)
-  if (
-    place === 'allowed' &&
-    cwd.place !== 'allowed' &&
-    !/^(?:[\\/]|[A-Za-z]:[\\/]|~|\$|%)/.test(word)
-  ) {
-    return { place: cwd.place, shown: `${cwd.shown}/${word}` }
-  }
-  return { place, shown: word }
-}
-
-/**
- * 判定一个路径的位置。
- * - `allowed`：工作区、额外目录、相对路径，以及家目录与系统目录之外的绝对路径；
- * - `outside`：家目录或系统目录中、且不在工作区与额外目录内；
- * - `unknown`：以变量开头，无法从命令文本确定。
- *
- * 路径中段出现变量时按变量之前的字面前缀判定：`$HOME/$X/out` 的前缀是家目录本身，
- * 位于额外目录 `~/data` 之外，按工作区外处理。
- */
-function classify(word: string, ctx: PolicyContext): Place {
-  if (/^\$null$/i.test(word)) return 'allowed'
-  const expanded = expandSymbol(word)
-  if (expanded === '') return 'outside'
-  let path = normalizeSeparators(expanded ?? word)
-  const cut = path.search(/\$|%\w+%/)
-  if (cut === 0) return 'unknown'
-  if (cut > 0) path = path.slice(0, cut)
-  if (!/^(?:\/|[A-Za-z]:\/)/.test(path)) return 'allowed'
-  // 先判定允许范围：Windows 上工作区通常位于家目录中。
-  if (withinAllowed(path, ctx)) return 'allowed'
-  const home = normalizeSeparators(homedir())
-  const isHome = home !== '' && inside(path, home)
-  const isSystem = /^\/etc(?:\/|$)/i.test(path) || /^[A-Za-z]:\/Windows(?:\/|$)/i.test(path)
-  return isHome || isSystem ? 'outside' : 'allowed'
-}
-
 /** 把开头的家目录或系统目录符号展开为本机路径。没有符号时返回 `null`，符号在本机没有值时返回空串。 */
 function expandSymbol(word: string): string | null {
   if (/^~(?:[\\/]|$)/.test(word)) {
@@ -811,7 +805,3 @@ const OUTSIDE_REF = new RegExp(
     '[^\\s"\'`;&|),]*',
   'gi',
 )
-
-function normalizeSeparators(p: string): string {
-  return p.replace(/\\/g, '/').replace(/\/+$/, '')
-}

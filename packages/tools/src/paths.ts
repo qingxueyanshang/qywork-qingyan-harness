@@ -2,14 +2,16 @@
  * 工作区路径约束。这是安全边界，不是便利函数。
  *
  * 模型给出的 path 是不可信输入。每次文件操作前都必须把它解析为规范形式，并确认
- * 仍在工作区内；越界即拒绝。需要拦截的有：`..` 回溯、绝对路径、符号链接逃逸、
+ * 仍在允许范围内；越界即拒绝。需要拦截的有：`..` 回溯、绝对路径、符号链接逃逸、
  * URL 编码的 `%2e%2e%2f`，以及 Windows 上的盘符切换与 UNC 路径。
  *
  * 不得把原始 path 直接交给 open/readFile/unlink：这是此类工具最常见的漏洞。
  */
 
 import { readlink, realpath, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { isOutsideRelative, placePath } from '@qywork/agent'
 
 /**
  * 路径位于允许范围内，但该位置不存在文件。
@@ -115,19 +117,24 @@ export interface WorkspaceRoots {
   additional?: readonly string[]
   /**
    * 只读根目录（已安装技能的目录）。读取按与上面相同的真实路径判定放行；
-   * `resolveWritablePath` 不使用这一组，写入无法进入这些目录。
+   * `resolveWritablePath` 不使用这一组，写入范围不因这些目录扩大。
    */
   readOnly?: readonly string[]
+  /**
+   * 写入范围与命令裁决（`decideCommand`）相同：根目录之外、且不在家目录或系统目录中的位置同样可写。
+   * 只影响 `resolveWritablePath`；读取仍限于根目录。
+   *
+   * 由 `rootsOf` 为模型的工具设置。服务端直接传入工作区路径的调用（画布文件、界面中的文件操作）
+   * 不设置，写入限于根目录：这些调用之后按工作区内的相对路径记录结果。
+   */
+  commandWriteScope?: boolean
 }
 
 /** 调用方可以只传工作区路径字符串：多数调用点没有额外根目录。 */
 export type RootsInput = string | WorkspaceRoots
 
 /**
- * 从 `ToolContext` 取得根目录清单。
- *
- * 参数写成结构类型而不是 `import type { ToolContext }`：本模块只做路径判定，
- * 不应为读取几个字段引入整个 agent 包。
+ * 从 `ToolContext` 取得根目录清单。参数写成结构类型：调用方只需提供这几个字段。
  *
  * 每个工具各自构造 `{ workspaceRoot: ctx.workspaceRoot, additional: ... }` 时，
  * 遗漏 `additional` 的工具会退回只认工作区，形成配置只部分生效的问题。
@@ -144,6 +151,7 @@ export function rootsOf(ctx: {
     ...(ctx.additionalDirectories?.length ? { additional: ctx.additionalDirectories } : {}),
     ...(ctx.readOnlyRoots?.length ? { readOnly: ctx.readOnlyRoots } : {}),
     ...(ctx.unrestrictedPaths ? { unrestricted: true } : {}),
+    commandWriteScope: true,
   }
 }
 
@@ -189,7 +197,7 @@ function normalizeRoots(input: RootsInput): WorkspaceRoots {
 }
 
 /**
- * 去除只读根目录后的清单。写入目标与命令的工作目录只按此清单判定：
+ * 去除只读根目录后的清单。写入目标与命令的工作目录不按只读根目录判定：
  * 命令工作目录位于技能目录内时，命令中以相对路径写入的内容会进入只读根目录。
  */
 export function writableRoots(roots: RootsInput): WorkspaceRoots {
@@ -207,19 +215,35 @@ export function writableRoots(roots: RootsInput): WorkspaceRoots {
  *
  * 额外根目录使用**完全相同的判定**（先 realpath 再比对），不另设宽松路径：
  * 只按字面比较时，借助软链即可访问清单外的整棵目录树。
+ *
+ * 本函数用于读取：只放行根目录内的路径。写入经 `resolveWritablePath`。
  */
 export async function resolveInWorkspace(
   roots: RootsInput,
   candidate: string,
-  opts: {
-    mustExist?: boolean
-    literal?: boolean
-    followFinalSymlink?: boolean
-    /** 写入报错开头的参数名；路径不是该工具的主参数时传入。 */
-    param?: string
-  } = {},
+  opts: ResolveOptions = {},
 ): Promise<string> {
-  const { workspaceRoot, additional, readOnly, unrestricted } = normalizeRoots(roots)
+  return (await resolveScoped(normalizeRoots(roots), candidate, opts, false)).path
+}
+
+interface ResolveOptions {
+  mustExist?: boolean
+  literal?: boolean
+  followFinalSymlink?: boolean
+  /** 写入报错开头的参数名；路径不是该工具的主参数时传入。 */
+  param?: string
+}
+
+/**
+ * 解析并判定归属。`widenWrites` 为 true 时，家目录与系统目录之外的位置同样放行（`commandWriteScope`）。
+ * `workspaceReal` 是工作区根的真实路径，供受保护目录的判定使用；`full` 下不判定归属，为 null。
+ */
+async function resolveScoped(
+  { workspaceRoot, additional, readOnly, unrestricted }: WorkspaceRoots,
+  candidate: string,
+  opts: ResolveOptions,
+  widenWrites: boolean,
+): Promise<{ path: string; workspaceReal: string | null }> {
   // 从 file URL 解出的路径已是文件系统字面值，不再解码文件名中的百分号。
   const raw = opts.literal ? candidate : decodeSafely(candidate)
 
@@ -251,45 +275,53 @@ export async function resolveInWorkspace(
    */
   if (unrestricted) {
     if (opts.mustExist) await assertExists(targetReal, candidate, opts.param)
-    return targetReal
+    return { path: targetReal, workspaceReal: null }
   }
 
   // 工作区根无法解析属于装配错误，原样抛出：ENOENT 指向真正的问题，
   // 改报「路径越界」会把排查方向引向用户输入。
   // 额外根目录不同：用户配错一条不应使整次解析失败，跳过即可。
-  const rootReals = [await realpath(workspaceRoot)]
+  const workspaceReal = await realpathOf(workspaceRoot)
+  const rootReals = [workspaceReal]
   for (const extra of additional ?? []) {
-    const real = await realpath(extra).catch(() => null)
+    const real = await realpathOf(extra).catch(() => null)
     if (real !== null) rootReals.push(real)
   }
 
-  for (const rootReal of rootReals) {
-    if (isInside(rootReal, targetReal)) {
-      /*
-       * **先判定边界，再判定存在性。该顺序是安全属性，不是风格。**
-       *
-       * 顺序相反时，「文件不存在」这一回复本身就泄露了工作区外某个路径是否存在，
-       * 而拦截边界外的访问正是这一层的职责。
-       */
-      if (opts.mustExist) await assertExists(targetReal, candidate, opts.param)
-      // 判定与返回使用同一个路径。两者不同时，判定的是 A、写入的是 B，
-      // 边界检查形同虚设；调用方按返回值记录读取状态时也会与读取路径不一致
-      // （`files.ts` 的本轮已读判定在软链根目录下会始终判为 stale）。
-      return targetReal
-    }
-  }
-
-  // 只读根目录在可写根之后判定：同一路径同时位于两类根中时按可写根返回。
-  // 判定使用真实路径，因此技能目录中指向目录外的链接不放行。
-  for (const extra of readOnly ?? []) {
-    const real = await realpath(extra).catch(() => null)
-    if (real !== null && isInside(real, targetReal)) {
-      if (opts.mustExist) await assertExists(targetReal, candidate, opts.param)
-      return targetReal
-    }
+  // 家目录同样取真实路径：目标已展开符号链接，以字面家目录比较时，经链接指向别处的家目录不被识别。
+  // 家目录不存在时按字面路径判定。
+  const home = await realpathOf(homedir()).catch(() => homedir())
+  const { place } = placePath(workspaceReal, targetReal, rootReals, home)
+  /*
+   * **先判定边界，再判定存在性。该顺序是安全属性，不是风格。**
+   *
+   * 顺序相反时，「文件不存在」这一回复本身就泄露了工作区外某个路径是否存在，
+   * 而拦截边界外的访问正是这一层的职责。
+   *
+   * 只读根目录在可写根之后判定，判定使用真实路径，因此技能目录中指向目录外的链接不放行。
+   */
+  if (
+    place === 'root' ||
+    (widenWrites && place === 'other') ||
+    (await withinAny(readOnly ?? [], targetReal))
+  ) {
+    if (opts.mustExist) await assertExists(targetReal, candidate, opts.param)
+    // 判定与返回使用同一个路径。两者不同时，判定的是 A、写入的是 B，
+    // 边界检查形同虚设；调用方按返回值记录读取状态时也会与读取路径不一致
+    // （`files.ts` 的本轮已读判定在软链根目录下会始终判为 stale）。
+    return { path: targetReal, workspaceReal }
   }
 
   throw new PathEscapeError(candidate, opts.param)
+}
+
+/** `target` 是否位于任一目录（取真实路径）之内。无法解析的目录跳过。 */
+async function withinAny(dirs: readonly string[], target: string): Promise<boolean> {
+  for (const dir of dirs) {
+    const real = await realpathOf(dir).catch(() => null)
+    if (real !== null && !isOutsideRelative(relative(real, target))) return true
+  }
+  return false
 }
 
 /**
@@ -303,7 +335,7 @@ export async function resolveInWorkspace(
  *    中间目录的软链因此也已解析。
  */
 async function resolveForWrite(target: string): Promise<string> {
-  const real = await realpath(target).catch(() => null)
+  const real = await realpathOf(target).catch(() => null)
   if (real !== null) return real
 
   const link = await readlink(target).catch(() => null)
@@ -330,17 +362,19 @@ async function nearestExisting(target: string): Promise<{ real: string; rest: st
     const parent = resolve(cur, '..')
     if (parent === cur) return { real: cur, rest } // 已到达根目录
     rest.unshift(basename(cur))
-    const real = await realpath(parent).catch(() => null)
+    const real = await realpathOf(parent).catch(() => null)
     if (real !== null) return { real, rest }
     cur = parent
   }
 }
 
-function isInside(root: string, target: string): boolean {
-  if (target === root) return true
-  const rel = relative(root, target)
-  // relative() 在越界时以 '..' 开头，跨盘符时返回绝对路径，两种情况都必须拦截。
-  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+/**
+ * 本模块中 realpath 的唯一入口。结果为盘符根目录时补上分隔符：Bun 在 Windows 上对 `C:\` 返回 `C:`，
+ * 而 `C:` 表示该盘的当前目录，以它为基准拼接得到的是进程当前目录下的路径，判定与写入的都不再是参数指定的位置。
+ */
+async function realpathOf(p: string): Promise<string> {
+  const real = await realpath(p)
+  return /^[A-Za-z]:$/.test(real) ? `${real}${sep}` : real
 }
 
 /**
@@ -394,9 +428,8 @@ function decodeSafely(input: string): string {
  * **插件不在其中**：插件只从 `~/.qywork/plugins/` 加载，工作区中没有插件目录，
  * 拦截 `.agents/plugins` 等于保护一条没有加载方的路径。
  *
- * **记忆无需例外条款**：它位于 `.agents/memory/` 下，而
- * `write_memory` 经由 `resolveInWorkspace` 而不是本清单。记忆应由模型写入，
- * 但必须经由这条唯一的写入路径，而不是用 `write_file` 直接修改。
+ * **记忆无需例外条款**：它位于 `.agents/memory/` 下，不在本清单中，`write_memory` 与其他写入工具
+ * 同样经由 `resolveWritablePath`。
  */
 export const PROTECTED_DIRS: readonly string[] = ['.qy']
 
@@ -446,10 +479,13 @@ export class ProtectedPathError extends Error {
  *
  * 入参必须是 `resolveInWorkspace` 的输出：在原始参数上判定等于重新处理一遍
  * `..` 与符号链接，而这正是已经完成且容易出错的步骤。
+ *
+ * `workspaceRoot` 必须是工作区根的真实路径：`resolved` 已展开符号链接，以字面根比较时，
+ * 工作区根为目录联接或符号链接的情况下 `.qy/` 不被识别，写入随之放行。
  */
 export function isProtectedPath(workspaceRoot: string, resolved: string): boolean {
   const rel = relative(workspaceRoot, resolved)
-  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false
+  if (rel === '' || isOutsideRelative(rel)) return false
   // 逐段比较，不用字符串前缀：`.qyX` 不在 `.qy` 目录下，
   // 而 `startsWith` 会把它一并拦截。
   const parts = rel.split(sep)
@@ -468,6 +504,8 @@ export function isProtectedPath(workspaceRoot: string, resolved: string): boolea
  * 「完全访问」下不设这一层：它拦截的是「为自身添加工具」，而同一模式下模型
  * 的 `run_command` 全部放行，`echo > .agents/x` 一行即可写入。
  * 保留它只会形成又一处「文件工具拦截、shell 不拦截」的两套账。
+ *
+ * 写入范围见 `WorkspaceRoots.commandWriteScope`。
  */
 export async function resolveWritablePath(
   roots: RootsInput,
@@ -475,12 +513,17 @@ export async function resolveWritablePath(
   opts: { mustExist?: boolean; literal?: boolean; followFinalSymlink?: boolean } = {},
 ): Promise<string> {
   const writable = writableRoots(roots)
-  const { workspaceRoot, unrestricted } = writable
-  const resolved = await resolveInWorkspace(writable, candidate, opts)
-  if (!unrestricted && isProtectedPath(workspaceRoot, resolved)) {
+  const { path, workspaceReal } = await resolveScoped(
+    writable,
+    candidate,
+    opts,
+    writable.commandWriteScope === true,
+  )
+  // `workspaceReal` 为 null 即「完全访问」，该模式不拦截受保护目录。
+  if (workspaceReal !== null && isProtectedPath(workspaceReal, path)) {
     throw new ProtectedPathError(candidate)
   }
-  return resolved
+  return path
 }
 
 /**
@@ -517,6 +560,6 @@ export function workspacePythonBin(workspaceRoot: string): string {
 export function displayPath(workspaceRoot: string, absolute: string): string {
   const rel = relative(workspaceRoot, absolute)
   if (rel === '') return '.'
-  if (rel.startsWith('..') || isAbsolute(rel)) return absolute
+  if (isOutsideRelative(rel)) return absolute
   return rel.split(sep).join('/')
 }

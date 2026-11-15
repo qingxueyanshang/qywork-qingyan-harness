@@ -25,7 +25,7 @@
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { resolveInWorkspace } from './paths.ts'
+import { resolveWritablePath } from './paths.ts'
 import {
   type Scope,
   type ScopedItem,
@@ -96,7 +96,7 @@ async function memoryFile(
   key: string,
 ): Promise<string> {
   if (scope === 'project') {
-    return resolveInWorkspace(workspaceRoot, join(MEMORY_DIR, `${key}.md`), { mustExist: false })
+    return resolveWritablePath(workspaceRoot, join(MEMORY_DIR, `${key}.md`))
   }
   const dir = scopeDir(scopeRoots(workspaceRoot), scope, MEMORY_SUBDIR)
   if (dir === null) throw new Error('该层不可写')

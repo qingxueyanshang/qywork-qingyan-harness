@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   type OfficePort,
@@ -276,7 +276,8 @@ describe('office view 与 guide', () => {
     expect(again.message).toContain('页面原图已保存：refs/封面-2.png')
   })
 
-  test('save_to 形式不对、越出工作区或位于受保护目录：不启动 worker，不写文件', async () => {
+  /** 越界的目标取家目录中、工作区之外的位置：家目录与系统目录之外的位置在自动审批下可写。 */
+  test('save_to 形式不对、越出写入范围或位于受保护目录：不启动 worker，不写文件', async () => {
     const root = await workspace()
     await writeFile(join(root, 'deck.pptx'), 'deck')
     const c = ctx(root)
@@ -288,7 +289,8 @@ describe('office view 与 guide', () => {
     expect(two.message).toContain('写目录')
     const jpg = await viewOfficeTool.fn({ path: 'deck.pptx', save_to: 'a.jpg' }, c)
     expect(jpg.errorKind).toBe('invalid_args')
-    await expect(viewOfficeTool.fn({ path: 'deck.pptx', save_to: '../a.png' }, c)).rejects.toThrow()
+    const inHome = join(homedir(), `qywork-absent-${process.pid}`, 'a.png')
+    await expect(viewOfficeTool.fn({ path: 'deck.pptx', save_to: inHome }, c)).rejects.toThrow()
     await expect(viewOfficeTool.fn({ path: 'deck.pptx', save_to: '.qy/a.png' }, c)).rejects.toThrow(
       /扩展配置/,
     )

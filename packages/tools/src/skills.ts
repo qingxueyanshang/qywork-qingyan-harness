@@ -21,7 +21,7 @@
 import { cp, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { resolveInWorkspace, rootsOf } from './paths.ts'
+import { resolveInWorkspace, resolveWritablePath, rootsOf } from './paths.ts'
 import {
   type Scope,
   type ScopedItem,
@@ -293,7 +293,7 @@ export const writeSkillTool: ToolSpec = {
           else await mkdir(stage)
           await writeFile(join(stage, 'SKILL.md'), markdown, 'utf8')
           for (const file of files) {
-            const dest = await resolveInWorkspace(stage, file.path, { mustExist: false })
+            const dest = await resolveWritablePath(stage, file.path)
             await mkdir(join(dest, '..'), { recursive: true })
             await writeFile(dest, file.content, 'utf8')
           }

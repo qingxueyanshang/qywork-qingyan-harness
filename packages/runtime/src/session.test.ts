@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
 import type { BrowserPort, DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
@@ -649,6 +649,28 @@ describe('被拒绝时返回的说明', () => {
   })
 })
 
+/** 命令中的相对路径以 `cwd` 参数为基准：工作目录为家目录时，`rm -rf build` 删除的是家目录中的内容。 */
+describe('命令判定的工作目录', () => {
+  test('命令的工作目录参数交给命令判定', async () => {
+    const { s, store } = await session()
+    const command = 'rm -rf build'
+    const allowed = async (args: Record<string, unknown>) =>
+      (
+        await (
+          s as unknown as {
+            decide(
+              conversationId: string,
+              m: { toolName: string; args: Record<string, unknown>; command?: string },
+            ): Promise<{ allowed: boolean }>
+          }
+        ).decide('cv_auto', { toolName: 'run_command', args: { command, ...args }, command })
+      ).allowed
+    expect(await allowed({})).toBe(true)
+    expect(await allowed({ cwd: homedir() })).toBe(false)
+    store.close()
+  })
+})
+
 /**
  * 裁决按会话的模式执行，与配置中的 `mode` 无关：配置只决定新会话的初始值。
  * 子会话没有开关，按顶层会话的模式运行，父会话切换后随即生效。
@@ -736,7 +758,8 @@ describe('权限模式按会话裁决', () => {
     const run = (name: string, args: Record<string, unknown>, ctx: ToolContext) =>
       registry.execute(name, args, ctx)
 
-    // full 下构造，本轮中途切到 auto：之后向工作区外写入被拒。
+    // full 下构造，本轮中途切到 auto：之后读取工作区外的文件被拒。
+    // auto 下工作区外的写入是否放行取决于目标是否位于家目录中，读取在任何位置都限于根目录。
     setConversationMode(store, conv, 'full')
     const fromFull = { ...toolContext(s, 'rn_a', 'm', conv), emit: () => {} } as ToolContext
     const a = join(outside, 'a.txt')
@@ -744,11 +767,11 @@ describe('权限模式按会话裁决', () => {
       (await run('write_file', { path: a, mode: 'create', content: 'a' }, fromFull)).status,
     ).toBe('success')
     setConversationMode(store, conv, 'auto')
-    const b = join(outside, 'b.txt')
-    expect(
-      await run('write_file', { path: b, mode: 'create', content: 'b' }, fromFull),
-    ).toMatchObject({ status: 'failure', executed: false })
-    expect(existsSync(b)).toBe(false)
+    expect(await run('read_file', { path: a }, fromFull)).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'path_out_of_workspace',
+    })
 
     // auto 下构造，本轮中途切到 full：之后向工作区外写入成功。
     const fromAuto = { ...toolContext(s, 'rn_b', 'm', conv), emit: () => {} } as ToolContext

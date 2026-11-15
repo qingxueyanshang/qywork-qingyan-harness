@@ -83,6 +83,22 @@ describe('控制帧', () => {
     expect(parseControl('{"type":"http.head","sid":1,"status":200,"headers":[["a"]]}')).toBeNull()
     expect(parseControl('{"type":"close","sid":1,"code":"x"}')).toBeNull()
   })
+
+  test('http.open 与 ws.open 的 path 不以 / 开头时返回 null', () => {
+    for (const path of ['@127.0.0.1:9/x', 'x', '', '\\x']) {
+      const open = { type: 'http.open', sid: 1, method: 'GET', path, headers: [] }
+      expect(parseControl(JSON.stringify(open))).toBeNull()
+      expect(
+        parseControl(JSON.stringify({ type: 'ws.open', sid: 1, path, headers: [] })),
+      ).toBeNull()
+    }
+    expect(parseControl('{"type":"ws.open","sid":1,"path":"/stream?x=1","headers":[]}')).toEqual({
+      type: 'ws.open',
+      sid: 1,
+      path: '/stream?x=1',
+      headers: [],
+    })
+  })
 })
 
 test('转发的请求头去掉逐跳头、host、content-length 与 WebSocket 握手头', () => {

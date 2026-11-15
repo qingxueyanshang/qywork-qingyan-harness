@@ -23,10 +23,11 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import {
   type CanvasPort,
   type CanvasRender,
+  isOutsideRelative,
   type MediaPort,
   mediaDurationOfFile,
 } from '@qywork/agent'
@@ -2362,7 +2363,7 @@ export class CanvasService {
 
   private async relativeTo(workspaceRoot: string, abs: string): Promise<string> {
     const rel = relative(await realpath(workspaceRoot), abs)
-    if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    if (!rel || isOutsideRelative(rel)) {
       throw new CanvasFailure(`${abs} 不在工作区中，画布只引用工作区中的文件`, 422)
     }
     return toPosixPath(rel)

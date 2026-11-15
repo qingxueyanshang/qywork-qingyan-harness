@@ -66,7 +66,11 @@ export type TunnelControl =
   | { type: 'pair.reply'; rid: string; token: string; deviceName: string }
   | { type: 'notify'; event: TunnelNotifyEvent; conversationId: string; title: string }
 
-type FieldKind = 'string' | 'number' | 'headers' | 'string?' | 'number?'
+/**
+ * `path`：以 `/` 开头的字符串。电脑端把它直接拼在 `http://127.0.0.1:<端口>` 之后，
+ * 不以 `/` 开头时 `@127.0.0.1:<另一端口>/x` 会使前半部分成为用户信息，请求发往本机的另一个端口。
+ */
+type FieldKind = 'string' | 'number' | 'headers' | 'path' | 'string?' | 'number?'
 
 /** 每种控制帧的字段与类型。`parseControl` 只按此表校验，新增帧类型时在此登记。 */
 const FIELDS: { [T in TunnelControl['type']]: Record<string, FieldKind> } = {
@@ -74,9 +78,9 @@ const FIELDS: { [T in TunnelControl['type']]: Record<string, FieldKind> } = {
   welcome: {},
   ping: {},
   pong: {},
-  'http.open': { sid: 'number', method: 'string', path: 'string', headers: 'headers' },
+  'http.open': { sid: 'number', method: 'string', path: 'path', headers: 'headers' },
   'http.head': { sid: 'number', status: 'number', headers: 'headers' },
-  'ws.open': { sid: 'number', path: 'string', headers: 'headers' },
+  'ws.open': { sid: 'number', path: 'path', headers: 'headers' },
   'ws.accept': { sid: 'number' },
   end: { sid: 'number' },
   close: { sid: 'number', code: 'number?', reason: 'string?' },
@@ -91,6 +95,7 @@ function fieldOk(value: unknown, kind: FieldKind): boolean {
   if (kind === 'number?') return value === undefined || Number.isInteger(value)
   if (kind === 'number') return Number.isInteger(value)
   if (kind === 'string') return typeof value === 'string'
+  if (kind === 'path') return typeof value === 'string' && value.startsWith('/')
   return (
     Array.isArray(value) &&
     value.every(

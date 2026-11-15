@@ -9,8 +9,8 @@
 import { describe, expect, test } from 'bun:test'
 import { realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type {
   BrowserActResult,
@@ -1170,7 +1170,11 @@ describe('路径裁决', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('下载先裁决路径再触发，端口收到绝对路径', async () => {
+  /**
+   * 下载目标与其他写入工具经同一个入口（`resolveWritablePath`）：写入范围相同，`.qy/` 同样受保护。
+   * 被拒绝的目标取家目录中、工作区之外的位置：家目录与系统目录之外的位置在自动审批下可写。
+   */
+  test('下载先裁决路径再触发，端口收到绝对路径；写入范围与受保护目录与其他写入工具相同', async () => {
     const root = await workspace()
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith(root, port)
@@ -1183,10 +1187,21 @@ describe('路径裁决', () => {
       timeoutMs: 120_000,
     })
 
-    const out = await browserDownloadTool.fn({ ...args, path: '../../out.bin' }, ctx)
+    // 文件系统根目录下不存在的目录：不位于家目录或系统目录中。端口是模拟的，不创建文件。
+    const elsewhere = join(resolve('/'), `qywork-absent-${process.pid}`, 'out.bin')
+    const far = await browserDownloadTool.fn({ ...args, path: elsewhere }, ctx)
+    expect(far.status).toBe('success')
+    expect(calls.at(-1)?.input).toMatchObject({ absolutePath: elsewhere })
+
+    const inHome = join(homedir(), `qywork-absent-${process.pid}`, 'out.bin')
+    const out = await browserDownloadTool.fn({ ...args, path: inHome }, ctx)
     expect(out.executed).toBe(false)
     expect(out.errorKind).toBe('path_out_of_workspace')
-    expect(calls.filter((c) => c.method === 'download')).toHaveLength(1)
+
+    const guarded = await browserDownloadTool.fn({ ...args, path: '.qy/out.bin' }, ctx)
+    expect(guarded.executed).toBe(false)
+    expect(guarded.message).toContain('扩展配置')
+    expect(calls.filter((c) => c.method === 'download')).toHaveLength(2)
   })
 
   test('被宿主拦截的下载视为失败，原因原样返回', async () => {

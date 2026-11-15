@@ -9,8 +9,8 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
 import { openBatchBudget, runDensity, sanitizeToolName, ToolRegistry } from '@qywork/agent'
 import { lookupModel } from '@qywork/ai'
@@ -25,6 +25,7 @@ import {
   resolveInWorkspace,
   resolveWritablePath,
   rootsOf,
+  type WorkspaceRoots,
 } from './paths.ts'
 import { startCommandRunner } from './runner.ts'
 import { BASH_PATH_ENV, commandShell, setCommandRunner } from './sandbox.ts'
@@ -372,15 +373,22 @@ describe('只读根目录', () => {
     return { root, skills }
   }
 
-  test('读取放行，写入与命令工作目录拒绝', async () => {
+  /**
+   * 写入是否放行取决于该目录是否位于家目录中（见「写入范围」），与它是否为只读根目录无关：
+   * 只读根目录不扩大写入范围。
+   */
+  test('读取放行；写入的结论与没有只读根目录时相同；命令工作目录拒绝', async () => {
     const { root, skills } = await withSkills()
     const c = { ...ctx(root), readOnlyRoots: [skills] }
     await expect(
       resolveInWorkspace(rootsOf(c), join(skills, 'SKILL.md'), { mustExist: true }),
     ).resolves.toContain('SKILL.md')
-    await expect(resolveWritablePath(rootsOf(c), join(skills, 'out.md'))).rejects.toBeInstanceOf(
-      PathEscapeError,
-    )
+    const outcome = (roots: WorkspaceRoots) =>
+      resolveWritablePath(roots, join(skills, 'out.md')).then(
+        () => 'resolved',
+        (e: Error) => e.name,
+      )
+    expect(await outcome(rootsOf(c))).toBe(await outcome(rootsOf(ctx(root))))
     const out = await registry().execute('run_command', { command: 'echo x', cwd: skills }, c)
     expect(out.status).toBe('failure')
     expect(out.executed).toBe(false)
@@ -405,6 +413,172 @@ describe('只读根目录', () => {
       ),
     ).rejects.toBeInstanceOf(PathEscapeError)
   })
+})
+
+/**
+ * 子进程中经工具注册表依次执行 `QYWORK_SCOPE_CASE.calls`，输出每次调用的状态与错误类别。
+ * 家目录由父进程经环境变量设定：Linux 上的 Bun 在启动时读取 HOME，运行中修改环境变量不生效。
+ */
+const SCOPE_CHILD = `
+import { openBatchBudget, runDensity, ToolRegistry } from '@qywork/agent'
+import { lookupModel } from '@qywork/ai'
+import { registerBuiltinTools } from '@qywork/tools'
+const { root, calls } = JSON.parse(process.env.QYWORK_SCOPE_CASE)
+const registry = new ToolRegistry()
+registerBuiltinTools(registry, { media: ['image'] })
+const ctx = {
+  workspaceRoot: root,
+  conversationId: 'cv_test',
+  runId: 'rn_test',
+  model: 'test',
+  contextWindow: 200000,
+  density: runDensity({
+    spec: { ...lookupModel('test', 'openai_chat_completions'), video: false },
+    transmits: { effort: false, video: false },
+  }),
+  vision: null,
+  resources: new Map(),
+  state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
+  sink: null,
+  signal: new AbortController().signal,
+  emit: () => {},
+  requestPermission: async () => ({ allowed: true }),
+  media: { generate: async () => ({ ok: false, message: '不应重新取回' }) },
+}
+const out = []
+for (const [name, args] of calls) {
+  const r = await registry.execute(name, args, ctx)
+  out.push({ status: r.status, errorKind: r.errorKind ?? null })
+}
+console.log(JSON.stringify(out))
+`
+
+/**
+ * 自动审批下的写入范围与命令裁决相同：根目录之外、且不在家目录或系统目录中的位置可写；读取仍限于根目录。
+ *
+ * 原始失败形状：文件工具拒绝一切根目录之外的写入，而 `run_command` 放行家目录与系统目录之外的写入，
+ * 同一位置两侧结论不同；名称以两个点开头的子项（`..cache`）被判为越界。
+ */
+describe('写入范围', () => {
+  // 文件系统根目录下不存在的目录：在任何机器上都不位于家目录或系统目录中。解析只做判定，不创建文件。
+  const elsewhere = join(resolve('/'), `qywork-absent-${process.pid}`, 'a.txt')
+
+  test('家目录与系统目录之外的位置可写；读取与服务端直接传入工作区路径的写入仍限于根目录', async () => {
+    const root = await workspace()
+    await expect(resolveWritablePath(rootsOf(ctx(root)), elsewhere)).resolves.toBe(elsewhere)
+    await expect(resolveInWorkspace(rootsOf(ctx(root)), elsewhere)).rejects.toBeInstanceOf(
+      PathEscapeError,
+    )
+    await expect(resolveWritablePath(root, elsewhere)).rejects.toBeInstanceOf(PathEscapeError)
+  })
+
+  test('家目录中、根目录之外的位置拒绝写入，包括 ~/.qywork', async () => {
+    const root = await workspace()
+    for (const target of [
+      join(homedir(), `qywork-absent-${process.pid}`, 'a.txt'),
+      join(homedir(), '.qywork', 'config.json'),
+      join(homedir(), '.qywork', 'mcp-approvals.json'),
+    ]) {
+      await expect(resolveWritablePath(rootsOf(ctx(root)), target)).rejects.toBeInstanceOf(
+        PathEscapeError,
+      )
+    }
+  })
+
+  /**
+   * 包含家目录的位置按家目录处理，位于家目录的上级之中、但不包含家目录的位置
+   * （如 `C:/Users/Public/a.txt`）不因此被拒绝。解析只做判定，不创建文件。
+   */
+  test('家目录的上级本身拒绝写入；其中不包含家目录的位置可写', async () => {
+    const root = await workspace()
+    const parent = dirname(homedir())
+    await expect(resolveWritablePath(rootsOf(ctx(root)), parent)).rejects.toBeInstanceOf(
+      PathEscapeError,
+    )
+    const besideHome = join(parent, `qywork-absent-${process.pid}`, 'a.txt')
+    await expect(resolveWritablePath(rootsOf(ctx(root)), besideHome)).resolves.toBe(besideHome)
+  })
+
+  test('名称以两个点开头的子项位于工作区内', async () => {
+    const root = await realpath(await workspace())
+    const expected = join(root, '..cache', 'a.txt')
+    await expect(resolveInWorkspace(root, '..cache/a.txt')).resolves.toBe(expected)
+    await expect(resolveWritablePath(root, '..cache/a.txt')).resolves.toBe(expected)
+    expect(displayPath(root, expected)).toBe('..cache/a.txt')
+  })
+
+  /**
+   * `retrieve_media` 一项：产物经写入范围落盘在家目录之外，取回时按同一范围判定其仍在原位置，直接交付。
+   * 按读取范围判定时，该产物被判为已移走，记录随之删除。
+   */
+  test('write_file 写入家目录之外的位置成功；写入家目录中的位置、经目录链接进入家目录均拒绝；read_file 读取工作区外拒绝；落在家目录之外的生成产物可以取回', async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'qywork-scope-')))
+    const home = join(base, 'home')
+    const root = join(home, 'a', 'ws')
+    const outside = join(base, 'elsewhere')
+    await mkdir(root, { recursive: true })
+    await mkdir(join(home, 'other'), { recursive: true })
+    await symlink(
+      join(home, 'other'),
+      join(root, 'linked'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+    const media = join(base, 'media')
+    await mkdir(media, { recursive: true })
+    await writeFile(join(media, 'x.png'), 'png')
+    const record = join(media, 'x.task.json')
+    await writeFile(
+      record,
+      JSON.stringify({
+        type: 'image',
+        provider: 'p',
+        model: 'm',
+        output: join(media, 'x'),
+        submittedAt: '2026-11-15T00:00:00.000Z',
+        landed: { files: [{ path: join(media, 'x.png'), mime: 'image/png', bytes: 3 }] },
+      }),
+    )
+    const calls = [
+      ['write_file', { path: join(outside, 'a.txt'), mode: 'create', content: 'elsewhere' }],
+      ['write_file', { path: join(home, 'other', 'a.txt'), mode: 'create', content: 'home' }],
+      ['write_file', { path: join(home, '.qywork', 'config.json'), mode: 'create', content: '{}' }],
+      [
+        'write_file',
+        { path: 'linked/page.html', mode: 'create', on_conflict: 'rename', content: 'page' },
+      ],
+      ['read_file', { path: join(outside, 'a.txt') }],
+      ['retrieve_media', { path: record }],
+    ]
+    const child = Bun.spawnSync([process.execPath, '-e', SCOPE_CHILD], {
+      cwd: join(import.meta.dir, '..', '..', '..'),
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        QYWORK_SCOPE_CASE: JSON.stringify({ root, calls }),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    if (child.exitCode !== 0) throw new Error(child.stderr.toString())
+    const denied = { status: 'failure', errorKind: 'path_out_of_workspace' }
+    expect(JSON.parse(child.stdout.toString())).toEqual([
+      { status: 'success', errorKind: null },
+      denied,
+      denied,
+      denied,
+      denied,
+      { status: 'success', errorKind: null },
+    ])
+    expect(await readFile(join(outside, 'a.txt'), 'utf8')).toBe('elsewhere')
+    // 交付后删除记录，产物保留在原位置。
+    expect(await stat(record).catch(() => null)).toBeNull()
+    expect(await readFile(join(media, 'x.png'), 'utf8')).toBe('png')
+    for (const absent of [join(home, 'other', 'a.txt'), join(home, 'other', 'page.html')]) {
+      expect(await stat(absent).catch(() => null)).toBeNull()
+    }
+    expect(await stat(join(home, '.qywork')).catch(() => null)).toBeNull()
+  }, 30_000)
 })
 
 describe('文件工具', () => {
@@ -706,24 +880,6 @@ describe('文件工具', () => {
       expect((await lstat(join(root, 'page.html'))).isSymbolicLink()).toBe(true)
     },
   )
-
-  test('新建仍拒绝通过父目录软链越界', async () => {
-    const root = await workspace()
-    const outside = await mkdtemp(join(tmpdir(), 'qywork-create-outside-'))
-    await symlink(outside, join(root, 'linked'), 'junction')
-    const out = await registry().execute(
-      'write_file',
-      {
-        path: 'linked/page.html',
-        mode: 'create',
-        on_conflict: 'rename',
-        content: 'new page',
-      },
-      ctx(root),
-    )
-    expect(out.errorKind).toBe('path_out_of_workspace')
-    expect(await stat(join(outside, 'page.html')).catch(() => null)).toBeNull()
-  })
 
   test('覆盖模式不新建文件；读取后内容发生变化时仍拒绝覆盖', async () => {
     const root = await workspace()
@@ -1726,6 +1882,27 @@ describe('受保护目录', () => {
     await expect(resolveWritablePath(dir, '.qyx/a.ts')).resolves.toContain('a.ts')
     await expect(resolveWritablePath(dir, 'docs/.qy.md')).resolves.toContain('.qy.md')
     await expect(resolveWritablePath(dir, '.agentsx/a.ts')).resolves.toContain('a.ts')
+  })
+
+  /**
+   * 原始失败形状：受保护目录按字面的工作区根判定，目标却已展开符号链接，两者的相对路径以 `..` 开头，
+   * 工作区根为目录联接时 `.qy/team.json` 的写入被放行。
+   */
+  test('工作区根为目录联接或符号链接时，.qy 下的写入同样被拒绝', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'qy-protected-link-'))
+    const real = join(base, 'real')
+    const link = join(base, 'link')
+    await mkdir(join(real, '.qy'), { recursive: true })
+    await symlink(real, link, process.platform === 'win32' ? 'junction' : 'dir')
+    await expect(resolveWritablePath(link, '.qy/team.json')).rejects.toBeInstanceOf(
+      ProtectedPathError,
+    )
+    await expect(resolveWritablePath(rootsOf(ctx(link)), '.qy/team.json')).rejects.toBeInstanceOf(
+      ProtectedPathError,
+    )
+    await expect(resolveWritablePath(link, 'src/a.ts')).resolves.toBe(
+      join(await realpath(real), 'src', 'a.ts'),
+    )
   })
 
   /** 读取不受限制：模型需要理解现有配置才能给出合理建议，读取不等于修改。 */

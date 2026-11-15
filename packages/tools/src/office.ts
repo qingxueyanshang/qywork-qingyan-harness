@@ -284,7 +284,7 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
 /**
  * `save_to` 指定的保存位置：以 .png 结尾为一个文件（只能保存一页），否则为目录。返回字符串 = 参数错误的说明。
  *
- * 与其他写入工具使用同一可写判定（`resolveWritablePath`：可写根与受保护目录）。写入经 `landFiles`：
+ * 与其他写入工具使用同一可写判定（`resolveWritablePath`：写入范围与受保护目录）。写入经 `landFiles`：
  * 已存在的文件不覆盖，改名追加 -2、-3，回执写明实际位置。
  */
 async function saveTarget(
