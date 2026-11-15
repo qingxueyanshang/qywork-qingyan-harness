@@ -1,3 +1,7 @@
+/**
+ * 覆盖 `secrets.ts`，以及经 `shell.ts` 的 `scrubbedEnv` 剥离后的环境实际运行 git 的一例。
+ */
+
 import { describe, expect, test } from 'bun:test'
 import {
   CREDENTIAL_NAME_PATTERN,
@@ -8,6 +12,7 @@ import {
   type SecretSet,
   scrubEnv,
 } from './secrets.ts'
+import { scrubbedEnv } from './shell.ts'
 
 const ANTHROPIC = 'sk-ant-api03-0123456789abcdef'
 const DEEPSEEK = 'sk-deepseek-fedcba9876543210'
@@ -50,6 +55,38 @@ describe('scrubEnv 的两条判据', () => {
     expect(scrubEnv(env, { values: [] })).toEqual(env)
     expect(CREDENTIAL_NAME_PATTERN.test('MONKEY_ISLAND')).toBe(false)
     expect(CREDENTIAL_NAME_PATTERN.test('ANTHROPIC_API_KEY')).toBe(true)
+  })
+
+  /**
+   * 原始失败形状：`GIT_CONFIG_KEY_0` 的名称含 `_KEY`，按凭证剥离，而 `GIT_CONFIG_COUNT` 保留；
+   * 以 `GIT_CONFIG_COUNT` 注入配置时，经剥离后的环境运行的每条 git 命令都以
+   * `fatal: missing config key GIT_CONFIG_KEY_0` 失败。
+   */
+  test('GIT_CONFIG_KEY_<n> 是配置项名称，不按凭证剥离；同形的其他名称仍剥离', () => {
+    const injected = {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'qywork.probe',
+      GIT_CONFIG_VALUE_0: 'injected',
+    }
+    const saved = Object.keys(injected).map((name) => [name, process.env[name]] as const)
+    Object.assign(process.env, injected)
+    try {
+      const got = Bun.spawnSync(['git', 'config', '--get', 'qywork.probe'], {
+        env: scrubbedEnv({}),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      expect(got.stderr.toString()).toBe('')
+      expect(got.stdout.toString().trim()).toBe('injected')
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+    for (const name of ['GIT_CONFIG_KEY_X', 'MY_GIT_CONFIG_KEY_0', 'GIT_CONFIG_KEY']) {
+      expect(CREDENTIAL_NAME_PATTERN.test(name)).toBe(true)
+    }
   })
 
   test('CREDENTIAL_NAME_PATTERN 连续 test 多个名字结果稳定', () => {

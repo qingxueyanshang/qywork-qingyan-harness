@@ -74,8 +74,8 @@ async function metafile(blip: ArtRecord, start: number): Promise<Uint8Array | nu
   const compression = data[start + 32]
   if (compression === UNCOMPRESSED) return body
   if (compression !== COMPRESSED) return null
-  const out = await inflate(body, 'deflate')
-  return out !== null && out.length === size ? out : null
+  const out = await inflate(body, 'deflate', size)
+  return out.ok ? out.value : null
 }
 
 /** 一条图片记录的内容；种类不支持或数据不完整时为 `null`。 */

@@ -4,7 +4,8 @@
  * 三协议故障端点执行真实 HTTP 请求。
  *
  * 退避经注入的 `sleep` 执行，断言其收到的毫秒序列：实际等待时，
- * 耗尽一次预算约需一分钟。停止相关的用例例外，它们需要真实计时。
+ * 耗尽一次预算约需一分钟。停止相关的用例例外，它们需要真实计时；其中进程退出时机的一例
+ * 在子进程 `backoff-exit-child.ts` 中运行。
  *
  * 退避档位（2 / 4 / 8 / 16 / 30 秒）在本文件中独立列出，不从 `loop/attempt.ts` 导入：
  * 导入后的断言等于用实现校验实现自身。
@@ -15,6 +16,7 @@
  */
 
 import { expect, spyOn, test } from 'bun:test'
+import { join } from 'node:path'
 import { buildAdapter, DEFAULT_DENSITY } from '@qywork/ai'
 import {
   closedPortBaseUrl,
@@ -279,6 +281,38 @@ test('退避等待期间停止：立即以 user_interrupt 结束，不再发送�
     fault.stop()
   }
 }, 20_000)
+
+/**
+ * 原始失败形状：退避期间停止后本轮已经结束，退避的计时器仍在运行，一次性执行的进程要等计时器到期才退出。
+ * 在子进程中运行（`backoff-exit-child.ts`），测量本轮结束到进程退出的间隔。
+ */
+test('退避等待期间停止：本轮结束后进程随即退出，不等退避计时到期', async () => {
+  const fault: FaultServer = startFaultServer('retry_after_then_ok')
+  // 退避 10 秒：计时器残留时间隔约为 10 秒，与随即退出可明确区分。
+  fault.retryAfterSeconds = 10
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, 'backoff-exit-child.ts')], {
+    env: { ...process.env, QY_FAULT_URL: fault.openaiBaseUrl },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  try {
+    const reader = child.stdout.getReader()
+    const decoder = new TextDecoder()
+    let line = ''
+    while (!line.includes('\n')) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      line += decoder.decode(chunk.value, { stream: true })
+    }
+    const finishedAt = Date.now()
+    expect(line.trim()).toBe('finished user_interrupt')
+    await child.exited
+    expect(Date.now() - finishedAt).toBeLessThan(2_000)
+  } finally {
+    child.kill()
+    fault.stop()
+  }
+}, 30_000)
 
 const DASHSCOPE = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 const GEMINI = 'https://generativelanguage.googleapis.com/v1beta/openai'

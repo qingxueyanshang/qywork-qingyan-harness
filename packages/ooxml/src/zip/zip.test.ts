@@ -398,6 +398,44 @@ describe('失败分类', () => {
     })
   })
 
+  /**
+   * 原始失败形状：解压流被整个读完之后才比较长度，中央目录声明 1 KiB 的成员实际解压出 64 MiB，
+   * 全部进入内存后才判为已损坏。经 `DecompressionStream` 的输出计数，断言读取在超过声明长度之后即停止。
+   */
+  test('解压结果超过中央目录声明的长度时立即停止读取', async () => {
+    const built = buildZip([{ name: 'a.xml', data: new Uint8Array(64 * 1024 * 1024), method: 8 }])
+    built.view.setUint32(built.offsets[0]!.central + 24, 1024, true)
+    const Native = globalThis.DecompressionStream
+    let produced = 0
+    globalThis.DecompressionStream = class {
+      readonly writable: DecompressionStream['writable']
+      readonly readable: DecompressionStream['readable']
+      constructor(format: ConstructorParameters<typeof DecompressionStream>[0]) {
+        const inner = new Native(format)
+        this.writable = inner.writable
+        type Chunk = DecompressionStream['readable'] extends ReadableStream<infer T> ? T : never
+        this.readable = inner.readable.pipeThrough(
+          new TransformStream<Chunk, Chunk>({
+            transform(chunk, controller) {
+              produced += chunk.length
+              controller.enqueue(chunk)
+            },
+          }),
+        )
+      }
+    } as unknown as typeof DecompressionStream
+    try {
+      expect(failureOf(await archiveOf(built.bytes).bytes('a.xml'))).toEqual({
+        kind: 'corrupt',
+        reason: 'size',
+      })
+    } finally {
+      globalThis.DecompressionStream = Native
+    }
+    expect(produced).toBeGreaterThan(1024)
+    expect(produced).toBeLessThan(4 * 1024 * 1024)
+  })
+
   test('deflate 数据无法解压', async () => {
     const built = buildZip([{ name: 'a.xml', data: SHEET, method: 8 }])
     const { data } = built.offsets[0]!

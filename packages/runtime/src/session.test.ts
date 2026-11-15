@@ -193,6 +193,200 @@ test('生成器内抛出异常时 run 记为失败并保留原文，不记为用
   }
 })
 
+/**
+ * 准备阶段（此处为派发目标查询）期间收到停止：与轮次中途的停止同一终态。用户消息与 run 行照常写入，
+ * 本轮以 user_interrupt 结束，不发出模型请求。原始失败形状：准备阶段的停止使用户消息不落库，
+ * 界面上已显示的消息刷新后消失。
+ */
+test('准备阶段信号中止：用户消息落库，本轮以用户中断结束，不发出模型请求', async () => {
+  const controller = new AbortController()
+  let entered = () => {}
+  const reached = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const { s, store } = await session({
+    signal: controller.signal,
+    delegate: {
+      ...delegate,
+      targets: async () => {
+        entered()
+        await held
+        return delegate.targets()
+      },
+    },
+  })
+  try {
+    const events: AgentEvent[] = []
+    const asking = (async () => {
+      for await (const ev of s.ask('准备阶段停止')) events.push(ev)
+    })()
+    await reached
+    const reason = { source: 'user', observedAt: Date.now() }
+    controller.abort(reason)
+    release()
+
+    await asking
+    expect(events.map((e) => e.type)).toEqual([
+      'conversation.updated',
+      'run.started',
+      'run.finished',
+    ])
+    expect(events.at(-1)).toMatchObject({ status: 'interrupted', stopReason: 'user_interrupt' })
+    expect(store.db.query('SELECT content FROM messages').all()).toEqual([
+      { content: '准备阶段停止' },
+    ])
+    const rows = store.db
+      .query<{ status: string; stop_reason: string; interruption_detail: string }, []>(
+        'SELECT status, stop_reason, interruption_detail FROM runs',
+      )
+      .all()
+    expect(rows.map((r) => [r.status, r.stop_reason])).toEqual([['interrupted', 'user_interrupt']])
+    expect(JSON.parse(rows[0]!.interruption_detail)).toMatchObject({ source: 'user' })
+    expect(store.db.query('SELECT COUNT(*) AS n FROM provider_requests').get()).toEqual({ n: 0 })
+  } finally {
+    release()
+    s.dispose()
+    store.close()
+  }
+})
+
+/** 原始失败形状：run 行写入之后、心跳与收尾开始之前的读取抛出，run 行停留在 running。 */
+test('写入 run 行之后的第一次读取失败：run 行以失败结束，不停留在 running', async () => {
+  const { s, store } = await session()
+  let armed = false
+  let depth = 0
+  const tx = store.tx.bind(store)
+  const txSpy = spyOn(store, 'tx').mockImplementation(<T>(fn: () => T): T => {
+    depth++
+    try {
+      const out = tx(fn)
+      // 最外层事务返回 run 行即创建轮次的事务已提交：其后的第一次读取是注入失败的位置。
+      // `createRun` 自身也开启事务，嵌套在其中的一层不计。
+      if (depth === 1 && out !== null && typeof out === 'object' && 'messageIdUpperBound' in out) {
+        armed = true
+      }
+      return out
+    } finally {
+      depth--
+    }
+  })
+  const query = store.db.query.bind(store.db)
+  const querySpy = spyOn(store.db, 'query').mockImplementation(((sql: string) => {
+    if (armed) {
+      armed = false
+      throw new Error('注入的读取失败')
+    }
+    return query(sql)
+  }) as typeof store.db.query)
+  try {
+    const seen: string[] = []
+    const drain = async () => {
+      for await (const ev of s.ask('读取失败')) seen.push(ev.type)
+    }
+    await expect(drain()).rejects.toThrow('注入的读取失败')
+    expect(seen).toEqual([])
+    txSpy.mockRestore()
+    querySpy.mockRestore()
+    expect(store.db.query('SELECT status, stop_reason, error_message FROM runs').all()).toEqual([
+      { status: 'failed', stop_reason: 'provider_error', error_message: '注入的读取失败' },
+    ])
+  } finally {
+    txSpy.mockRestore()
+    querySpy.mockRestore()
+    s.dispose()
+    store.close()
+  }
+})
+
+/** 原始失败形状：生成器被提前关闭时，收尾逐条读取 step 并解析 payload，payload 损坏时抛出，run 行停留在 running。 */
+test('提前关闭生成器而本轮 step 的 payload 损坏：run 行仍以中断结束', async () => {
+  const { s, store } = await session()
+  const mock = spyOn(
+    s as unknown as { makeLoop(): { run(input: { runId: string }): AsyncGenerator<AgentEvent> } },
+    'makeLoop',
+  ).mockReturnValue({
+    async *run(input) {
+      const step = appendStep(store, {
+        runId: input.runId as never,
+        seq: 1,
+        kind: 'text',
+        content: '已写出的正文',
+        status: 'done',
+      })
+      store.db.run(`UPDATE steps SET payload = '{' WHERE id = ?`, [step.id])
+      yield {
+        type: 'text.delta',
+        runId: input.runId as never,
+        stepId: step.id,
+        delta: '正文',
+        at: 1,
+      }
+    },
+  })
+  try {
+    for await (const ev of s.ask('读到损坏的 step')) if (ev.type === 'text.delta') break
+    expect(store.db.query('SELECT status, stop_reason FROM runs').all()).toEqual([
+      { status: 'interrupted', stop_reason: 'user_interrupt' },
+    ])
+  } finally {
+    mock.mockRestore()
+    s.dispose()
+    store.close()
+  }
+})
+
+/** 原始失败形状：一轮结束时处理临时目录抛出，`run.finished` 不再发出，界面停留在运行中直到收到忙闲事件。 */
+test('处理临时目录时读取账本失败：run.finished 照常发出', async () => {
+  const { s, store } = await session()
+  // 准备阶段同样读取待办清单：本轮结束之前才开始注入。
+  let armed = false
+  const loop = spyOn(
+    s as unknown as { makeLoop(): { run(input: { runId: string }): AsyncGenerator<AgentEvent> } },
+    'makeLoop',
+  ).mockReturnValue({
+    async *run(input) {
+      armed = true
+      yield {
+        type: 'run.finished',
+        runId: input.runId as never,
+        status: 'done',
+        stopReason: 'completed',
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: 0,
+          cost: 0,
+          currency: 'USD',
+          turns: [],
+        },
+        fileChanges: [],
+      } as unknown as AgentEvent
+    },
+  })
+  // 临时目录的处理先读取本轮的待办清单：在此注入读取失败。
+  const query = store.db.query.bind(store.db)
+  const reads = spyOn(store.db, 'query').mockImplementation(((sql: string) => {
+    if (armed && sql.includes("s.tool_name = 'write_todos'")) throw new Error('注入的读取失败')
+    return query(sql)
+  }) as typeof store.db.query)
+  try {
+    const seen: string[] = []
+    for await (const ev of s.ask('收尾')) seen.push(ev.type)
+    expect(seen).toContain('run.finished')
+  } finally {
+    reads.mockRestore()
+    loop.mockRestore()
+    s.dispose()
+    store.close()
+  }
+})
+
 describe('派发工具只提供给有派发通道的会话', () => {
   test('顶层会话有 define_role、subagent、workflow；成员会话均没有', async () => {
     const top = await session({ delegate })

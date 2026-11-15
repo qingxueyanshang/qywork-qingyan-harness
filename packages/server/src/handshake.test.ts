@@ -1,7 +1,8 @@
 /**
  * 握手时客户端的同步位置。
  *
- * 覆盖范围：`handshake.ts` 的补发分支与 `hello.ok` 携带的服务端时钟（令牌校验由 `e2e.test.ts` 经由真实连接覆盖），
+ * 覆盖范围：`handshake.ts` 的补发分支、`hello.ok` 携带的服务端时钟与发送缓冲超过上限时的关闭
+ * （后者经由真实的 WebSocket 连接；令牌校验由 `e2e.test.ts` 经由真实连接覆盖），
  * 以及 `api/host.ts` 的运行环境依赖表（`probeEnvironment`）：该表同时供环境接口与安装路由使用，
  * 分别计算必然产生偏差。
  *
@@ -11,6 +12,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { connect, type Socket } from 'node:net'
 import type { AgentEvent, ConversationId, HelloFrame } from '@qywork/core'
 import type { CommandShell } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
@@ -50,6 +52,32 @@ function fakeSocket() {
   }
 }
 
+function helloDeps(
+  bus: EventBus,
+  runs = new RunManager(null as never, bus, new SubagentRegistry()),
+  unsubscribers = new Map<string, () => void>(),
+): Parameters<typeof handleHello>[2] {
+  return {
+    bus,
+    verify: (candidate) => candidate === 'tk',
+    unsubscribers,
+    config: { active: { provider: 'p', model: 'm' }, providers: {} },
+    runs,
+    browser: () => ({
+      connected: false,
+      runtimeSupported: false,
+    }),
+    desktop: () => ({
+      connected: false,
+      workerReady: false,
+      authorized: false,
+      missing: [],
+    }),
+    announceGit: () => {},
+    announceDesktopTarget: () => {},
+  }
+}
+
 function shake(
   bus: EventBus,
   frame: Omit<HelloFrame, 'type' | 'token' | 'origin'>,
@@ -59,25 +87,7 @@ function shake(
   handleHello(
     sock.ws,
     { type: 'hello', token: 'tk', origin: 'desktop', ...frame },
-    {
-      bus,
-      verify: (candidate) => candidate === 'tk',
-      unsubscribers: new Map(),
-      config: { active: { provider: 'p', model: 'm' }, providers: {} },
-      runs,
-      browser: () => ({
-        connected: false,
-        runtimeSupported: false,
-      }),
-      desktop: () => ({
-        connected: false,
-        workerReady: false,
-        authorized: false,
-        missing: [],
-      }),
-      announceGit: () => {},
-      announceDesktopTarget: () => {},
-    },
+    helloDeps(bus, runs),
   )
   return sock
 }
@@ -93,7 +103,7 @@ describe('握手报告当前运行中的会话', () => {
   test('报告的是 RunManager 持有的状态，不是账本', () => {
     const bus = new EventBus()
     const runs = new RunManager(null as never, bus, new SubagentRegistry())
-    runs.reserve(c1)
+    runs.reserve(c1, new AbortController())
     expect(shake(bus, {}, runs).ok().busyConversations).toEqual([c1])
   })
 
@@ -149,6 +159,175 @@ describe('断线重连的位置', () => {
     expect(serverTime).toBeGreaterThanOrEqual(before)
     expect(serverTime).toBeLessThanOrEqual(Date.now())
   })
+})
+
+/** 让出事件循环一次，使本进程中的客户端有机会读取已到达的数据。 */
+const yieldLoop = () => new Promise<void>((resolve) => setImmediate(resolve))
+
+async function until(ok: () => boolean): Promise<void> {
+  while (!ok()) await yieldLoop()
+}
+
+/** 与 `server.ts` 相同的连接装配：消息交给 `handleHello`，关闭时退订。`closes` 记录服务端看到的关闭码。 */
+function wsServer(bus: EventBus) {
+  const unsubscribers = new Map<string, () => void>()
+  const closes: number[] = []
+  const server = Bun.serve<SocketData>({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch(req, srv) {
+      const data: SocketData = {
+        id: crypto.randomUUID(),
+        authed: false,
+        origin: 'desktop',
+        native: null,
+        openedAt: Date.now(),
+      }
+      return srv.upgrade(req, { data })
+        ? undefined
+        : new Response('upgrade failed', { status: 400 })
+    },
+    websocket: {
+      message(ws, raw) {
+        handleHello(
+          ws,
+          JSON.parse(String(raw)) as HelloFrame,
+          helloDeps(bus, undefined, unsubscribers),
+        )
+      },
+      close(ws, code) {
+        closes.push(code)
+        unsubscribers.get(ws.data.id)?.()
+        unsubscribers.delete(ws.data.id)
+      },
+    },
+  })
+  return { server, closes }
+}
+
+/** 客户端发往服务端的帧必须加掩码。 */
+function maskedText(text: string): Buffer {
+  const payload = Buffer.from(text, 'utf8')
+  const mask = Buffer.from([0x11, 0x22, 0x33, 0x44])
+  const head =
+    payload.length < 126
+      ? Buffer.from([0x81, 0x80 | payload.length])
+      : Buffer.from([0x81, 0x80 | 126, payload.length >> 8, payload.length & 0xff])
+  return Buffer.concat([head, mask, payload.map((b, i) => b ^ mask[i % 4]!)])
+}
+
+/**
+ * 原始 TCP 实现的 WebSocket 客户端：可以停止读取，从而在服务端积压发送缓冲。
+ * 只实现本测试需要的部分：升级、发送 hello、解析服务端的未掩码文本帧并记录事件的 seq。
+ */
+async function rawClient(port: number, subscribe: ConversationId[]) {
+  const socket: Socket = connect(port, '127.0.0.1')
+  const seqs: number[] = []
+  const ready = Promise.withResolvers<void>()
+  const ended = Promise.withResolvers<void>()
+  let pending = Buffer.alloc(0)
+  let upgraded = false
+  socket.on('data', (chunk: Buffer) => {
+    pending = Buffer.concat([pending, chunk])
+    if (!upgraded) {
+      const end = pending.indexOf('\r\n\r\n')
+      if (end < 0) return
+      upgraded = true
+      pending = pending.subarray(end + 4)
+      socket.write(
+        maskedText(JSON.stringify({ type: 'hello', token: 'tk', origin: 'desktop', subscribe })),
+      )
+    }
+    for (;;) {
+      if (pending.length < 2) return
+      let length = pending[1]! & 0x7f
+      let offset = 2
+      if (length === 126) {
+        if (pending.length < 4) return
+        length = pending.readUInt16BE(2)
+        offset = 4
+      } else if (length === 127) {
+        if (pending.length < 10) return
+        length = Number(pending.readBigUInt64BE(2))
+        offset = 10
+      }
+      if (pending.length < offset + length) return
+      const opcode = pending[0]! & 0x0f
+      const payload = pending.subarray(offset, offset + length)
+      pending = pending.subarray(offset + length)
+      if (opcode !== 1) continue
+      const msg = JSON.parse(payload.toString('utf8')) as { type?: string; seq?: number }
+      if (msg.type === 'hello.ok') ready.resolve()
+      else if (typeof msg.seq === 'number') seqs.push(msg.seq)
+    }
+  })
+  socket.on('close', () => ended.resolve())
+  socket.on('error', () => ended.resolve())
+  socket.once('connect', () => {
+    const key = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('base64')
+    socket.write(
+      `GET /stream HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+        `Sec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+    )
+  })
+  await ready.promise
+  return { socket, seqs, ended: ended.promise }
+}
+
+const range = (n: number) => Array.from({ length: n }, (_, i) => i + 1)
+
+/**
+ * 发送缓冲超过上限时 `ws.send` 返回 0，该帧被丢弃。
+ *
+ * 原始失败形状：客户端暂停读取期间，缓冲超过上限之后的帧被逐条丢弃，连接保持打开；被丢弃的帧可能是
+ * `run.finished`，客户端不检测 seq 的缺口，界面一直显示运行中。
+ */
+describe('发送缓冲超过上限', () => {
+  const big = 'x'.repeat(256 * 1024)
+
+  test('客户端停止读取时服务端关闭连接，已送达的帧是连续的前缀', async () => {
+    const bus = new EventBus()
+    const { server, closes } = wsServer(bus)
+    try {
+      const client = await rawClient(server.port!, [c1])
+      client.socket.pause()
+      // 上限为 64 MiB，是发送缓冲上限（16 MiB）的四倍：连接始终不关闭时循环到此为止。
+      let published = 0
+      while (closes.length === 0 && published < 256) {
+        bus.publish(delta(big), c1)
+        published++
+        await yieldLoop()
+      }
+      expect(closes).toEqual([1013])
+      expect(bus.subscriberCount()).toBe(0)
+
+      client.socket.resume()
+      await client.ended
+      expect(client.seqs.length).toBeLessThan(published)
+      expect(client.seqs).toEqual(range(client.seqs.length))
+    } finally {
+      server.stop(true)
+    }
+  }, 30_000)
+
+  test('正常读取的客户端累计收到超过上限的数据也不被关闭，帧连续送达', async () => {
+    const bus = new EventBus()
+    const { server, closes } = wsServer(bus)
+    try {
+      const client = await rawClient(server.port!, [c1])
+      // 96 × 256 KiB = 24 MiB，超过发送缓冲上限；每帧送达后再发下一帧，缓冲不积压。
+      for (let i = 1; i <= 96; i++) {
+        bus.publish(delta(big), c1)
+        await until(() => client.seqs.length === i)
+      }
+      expect(closes).toEqual([])
+      expect(bus.subscriberCount()).toBe(1)
+      expect(client.seqs).toEqual(range(96))
+      client.socket.destroy()
+    } finally {
+      server.stop(true)
+    }
+  }, 30_000)
 })
 
 describe('运行环境', () => {

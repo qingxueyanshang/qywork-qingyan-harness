@@ -5,7 +5,13 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { WireMessage } from '@qywork/ai'
-import { buildAdapter, DEFAULT_DENSITY, estimateMessages, estimateText } from '@qywork/ai'
+import {
+  buildAdapter,
+  DEFAULT_DENSITY,
+  estimateMessages,
+  estimateText,
+  ProviderError,
+} from '@qywork/ai'
 import type { CompactionManifest, MessageId } from '@qywork/core'
 import {
   type CompactionAction,
@@ -789,6 +795,24 @@ describe('中断即丢弃', () => {
     const r = await compact(input(), async () => {
       throw new DOMException('已中断', 'AbortError')
     })
+    expect(r.status).toBe('aborted')
+  })
+
+  /** 原始失败形状：适配器把中断包装为 `ProviderError` 抛出，本次压缩被记为摘要失败而不是中断。 */
+  test('信号中止后摘要调用以其他错误形状失败：同样丢弃', async () => {
+    const ac = new AbortController()
+    const r = await compact(
+      input(),
+      async () => {
+        ac.abort()
+        throw new ProviderError({
+          code: 'internal_error',
+          message: '已取消',
+          provider: 'openai_responses',
+        })
+      },
+      ac.signal,
+    )
     expect(r.status).toBe('aborted')
   })
 

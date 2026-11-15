@@ -108,6 +108,24 @@ describe('工作区外的写入与删除', () => {
   })
 
   /**
+   * 原始失败形状：`rm` 的规则只匹配 `/` 与 `~`，`rm -rf D:/` 放行，
+   * 而同一目标的 `Remove-Item -Recurse D:/` 与 `rd /s D:\` 已被拦截。
+   */
+  test('rm 递归删除盘符根目录同样拦截，理由与 rm 的同类规则相同', () => {
+    const reason = d('rm -rf /').reason
+    for (const cmd of [
+      'rm -rf D:/',
+      'rm -rf D:\\',
+      'rm -rf C:/',
+      'rm -fr d:/*',
+      'ls && rm --recursive --force D:\\',
+    ]) {
+      expect(d(cmd)).toMatchObject({ kind: 'deny', reason })
+    }
+    expect(kind('rm -rf D:/other-project/build')).toBe('allow')
+  })
+
+  /**
    * 组合命令中的每一段都必须被扫描。
    *
    * 由规则本身保证：要么锚定在命令位（识别 `;` `&&` `|` 与换行之后的位置），要么扫描整个原始字符串，

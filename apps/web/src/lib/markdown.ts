@@ -71,18 +71,49 @@ const PLAIN_LANGS = new Set(['text', 'plaintext', 'txt', 'plain', ''])
 
 const WHITELIST = {
   ...getDefaultWhiteList(),
-  // 高亮与角标依赖 class；不放行 class 将使高亮完全失效。
+  // 高亮与角标依赖 class；不放行 class 将使高亮完全失效。类名另经 `renderedClasses` 逐个过滤。
   span: ['class'],
   code: ['class'],
   pre: ['class'],
   div: ['class'],
   // 代码块右上角的复制按钮。不放行 button 时复制按钮无法显示。
   button: ['class', 'type', 'aria-label', 'data-tip'],
-  table: ['class'],
+  // 不要删除该键：删除后取净化库的默认值，表格会重新接受 width、border、align、valign。
+  table: [],
   a: ['href', 'title', 'target', 'rel'],
   // 被其他块隔开的续号列表，marked 输出 `<ol start="2">`；移除该属性后，
   // 第二段会从 1 重新编号（xss 默认白名单中 ol 没有任何属性）。
   ol: ['start'],
+}
+
+/** 渲染器自身写出的类名：代码块（`renderer.code`）与表格外层容器（`finish`）。 */
+const OWN_CLASSES = new Set([
+  'code-lang',
+  'code-block',
+  'code-body',
+  'hljs',
+  'code-tools',
+  'code-copy',
+  'table-wrap',
+])
+
+/**
+ * highlight.js 输出的类名，取自其类名生成函数的全部三种形式：`hljs-` 前缀的作用域、
+ * 多级作用域第二级起的下划线后缀（`title.class` → `hljs-title class_`）、子语言（`language-css`）。
+ */
+const HIGHLIGHT_CLASS = /^(?:hljs-[\w-]+|[A-Za-z][\w-]*?_+|language-[\w-]+)$/
+
+/**
+ * 只保留渲染器与高亮库产生的类名，其余丢弃。
+ *
+ * 正文来自模型输出或工作区文件，放行任意类名等于允许它使用界面自身的样式，
+ * 例如 `.backdrop-close` 是覆盖整个窗口的固定定位遮罩。
+ */
+function renderedClasses(value: string): string {
+  return friendlyAttrValue(value)
+    .split(/\s+/)
+    .filter((name) => OWN_CLASSES.has(name) || HIGHLIGHT_CLASS.test(name))
+    .join(' ')
 }
 
 marked.setOptions({ gfm: true, breaks: false })
@@ -205,6 +236,12 @@ function finish(raw: string): string {
     .replace(/<\/table>/g, '</table></div>')
   return filterXSS(wrapped, {
     whiteList: WHITELIST,
+    // 返回空串表示去掉该属性：过滤后没有类名时不输出空的 class。返回 undefined 时按白名单处理。
+    onTagAttr(_tag, name, value, isWhiteAttr) {
+      if (name !== 'class' || !isWhiteAttr) return undefined
+      const kept = renderedClasses(value)
+      return kept ? `class="${kept}"` : ''
+    },
     safeAttrValue(tag, name, value, cssFilter) {
       // 仅保留可点击的本机文件地址（本地 HTML 由内置浏览器打开，其余由右侧文件预览打开）；不放行资源 src 与脚本协议。
       const decoded = friendlyAttrValue(value)

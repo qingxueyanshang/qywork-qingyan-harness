@@ -728,15 +728,28 @@ function normalizeStopReason(raw: string): ProviderStopReason {
  *
  * 缓存写入的合计以回报的合计为准，合计未回报而分档已回报时取两档之和；1 小时档大于合计时取合计。
  * 分档未回报时 `cacheWrite1hTokens` 不写入，计价按全部为 5 分钟档处理。
+ *
+ * 至少一个字段是数值时才记为 provider 回报：usage 为空对象时标记来源，账本会把全部为 0 的用量当作真实值。
  */
 function applyUsage(acc: ProviderUsage, u: AnthropicUsage) {
+  const hour = u.cache_creation?.ephemeral_1h_input_tokens
+  const fiveMinutes = u.cache_creation?.ephemeral_5m_input_tokens
+  const thinking = u.output_tokens_details?.thinking_tokens
+  const reported = [
+    u.input_tokens,
+    u.output_tokens,
+    u.cache_read_input_tokens,
+    u.cache_creation_input_tokens,
+    hour,
+    fiveMinutes,
+    thinking,
+  ].some((value) => typeof value === 'number')
+  if (!reported) return
   if (typeof u.input_tokens === 'number') acc.inputTokens = u.input_tokens
   if (typeof u.output_tokens === 'number') acc.outputTokens = u.output_tokens
   if (typeof u.cache_read_input_tokens === 'number') {
     acc.cachedTokens = u.cache_read_input_tokens
   }
-  const hour = u.cache_creation?.ephemeral_1h_input_tokens
-  const fiveMinutes = u.cache_creation?.ephemeral_5m_input_tokens
   if (typeof u.cache_creation_input_tokens === 'number') {
     acc.cacheWriteTokens = u.cache_creation_input_tokens
   } else if (
@@ -749,8 +762,6 @@ function applyUsage(acc: ProviderUsage, u: AnthropicUsage) {
   if (acc.cacheWrite1hTokens !== undefined && acc.cacheWriteTokens !== null) {
     acc.cacheWrite1hTokens = Math.min(acc.cacheWrite1hTokens, acc.cacheWriteTokens)
   }
-  if (typeof u.output_tokens_details?.thinking_tokens === 'number') {
-    acc.reasoningTokens = u.output_tokens_details.thinking_tokens
-  }
+  if (typeof thinking === 'number') acc.reasoningTokens = thinking
   acc.source = 'provider'
 }

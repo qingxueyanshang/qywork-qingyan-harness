@@ -441,7 +441,9 @@ test('子任务领取独立执行者，allowedTools 过滤生效，父级停止�
     systemPrompt: '',
     allowedTools: ['desktop_windows'],
   }
+  // 派发方先占用子会话并登记中止句柄，成员轮次在其上补入 runId，结束后由派发方释放（与 `delegate.ts` 相同）。
   const controller = new AbortController()
+  expect(handle.runs.reserve(sub, controller)).toBe(true)
   const member = runBuiltinMember(
     { role, prompt: '看看有哪些窗口', signal: controller.signal, conversationId: sub },
     { deps: deps(), workspaceRoot: dir },
@@ -473,6 +475,7 @@ test('子任务领取独立执行者，allowedTools 过滤生效，父级停止�
 
   const out = await member
   expect(out.ok).toBe(false)
+  handle.runs.release(sub)
 })
 
 test('用户关闭电脑控制后，下一轮不注册桌面工具', async () => {

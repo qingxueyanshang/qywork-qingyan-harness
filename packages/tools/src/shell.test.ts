@@ -221,6 +221,60 @@ describe('run_command 的子进程环境', () => {
   )
 })
 
+/**
+ * 原始失败形状：中止监听在启动进程的若干次 await 之后才注册，注册时信号已经中止，监听不再触发，
+ * 命令运行到自行退出为止。`sleep` 在 bash 与 PowerShell 中都可用。
+ */
+describe('run_command 的中止', () => {
+  const base = (root: string, signal: AbortSignal) => ({
+    workspaceRoot: root,
+    signal,
+    conversationId: 'cv_shell',
+    emit: () => {},
+    sink: null,
+    density: DEFAULT_DENSITY,
+    contextWindow: 200_000,
+  })
+
+  test('调用时信号已中止：不启动命令，立即以中止原因结束', async () => {
+    const found = commandShell()
+    if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+    const root = await mkdtemp(join(tmpdir(), 'qywork-shell-abort-'))
+    const controller = new AbortController()
+    controller.abort()
+    const started = Date.now()
+    const outcome = makeShellTool(found).fn({ command: 'sleep 5' }, {
+      ...base(root, controller.signal),
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
+    } as unknown as ToolContext)
+    expect(
+      await outcome.then(
+        () => null,
+        (err: unknown) => err,
+      ),
+    ).toBe(controller.signal.reason)
+    expect(Date.now() - started).toBeLessThan(1000)
+  }, 20_000)
+
+  test('启动命令期间收到中止：进程随即终止', async () => {
+    const found = commandShell()
+    if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+    const root = await mkdtemp(join(tmpdir(), 'qywork-shell-abort-'))
+    const controller = new AbortController()
+    const state = openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0)
+    const started = Date.now()
+    await makeShellTool(found).fn({ command: 'sleep 5' }, {
+      ...base(root, controller.signal),
+      // 本轮状态在打开观察窗口时首次读取，位于启动之前的检查与启动进程之间：在此中止即落在两者之间。
+      get state() {
+        controller.abort()
+        return state
+      },
+    } as unknown as ToolContext)
+    expect(Date.now() - started).toBeLessThan(1000)
+  }, 20_000)
+})
+
 describe('run_command 的用量记账', () => {
   /** 命令已执行、摘录已投递；不记录这笔用量，同一决策中后续的读取工具会按不存在的余额准入。 */
   test('额度不足时仍记录用量，同一决策中后续的读取工具读到余额为 0', async () => {

@@ -157,10 +157,11 @@ const EXTRA_DIRS_SETTING = '「设置 → 权限 → 工作区之外额外可读
  */
 export const HARD_DENY: readonly { pattern: RegExp; reason: string }[] = [
   {
-    // rm -rf / | rm -fr /* | rm -Rf ~ | rm --recursive --force ~/
-    // 目标必须是根目录或家目录本身：`rm -rf /home/x/build` 不在此列，照常放行。
+    // rm -rf / | rm -fr /* | rm -Rf ~ | rm --recursive --force ~/ | rm -rf D:/ | rm -rf D:\
+    // 目标必须是根目录、盘符根目录或家目录本身：`rm -rf /home/x/build` 与 `rm -rf D:/x` 不在此列，照常放行。
+    // 盘符根目录与 `Remove-Item` 规则的判定范围相同：Git Bash 中 `rm` 同样接受盘符路径。
     pattern: atCommandStart(
-      String.raw`rm\b[^\n]*?\s-{1,2}(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r|recursive|force)[^\n]*?\s(?:\/|~)[*/]*(?=\s|$)`,
+      String.raw`rm\b[^\n]*?\s-{1,2}(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r|recursive|force)[^\n]*?\s(?:(?:\/|~)[*/]*|[A-Za-z]:[\\/][*\\/]*)(?=\s|$)`,
     ),
     reason: '命令会递归删除根目录或家目录',
   },

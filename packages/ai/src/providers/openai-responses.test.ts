@@ -406,6 +406,15 @@ describe('用量口径', () => {
     applyUsage(u, undefined)
     expect(u.source).toBe('estimated')
   })
+
+  /** 原始失败形状：usage 为空对象时记为 provider 回报，账本把全部为 0 的用量当作真实值。 */
+  test('usage 为空对象或字段不是数值时保持未回报', () => {
+    for (const raw of [{}, { input_tokens: '10', output_tokens: null }]) {
+      const u = fresh()
+      applyUsage(u, raw)
+      expect(u).toEqual(fresh())
+    }
+  })
 })
 
 describe('装配', () => {

@@ -705,13 +705,14 @@ describe('WebSocket 协议与一轮完整 run', () => {
       | undefined
     expect(finished?.status).toBe('done')
 
-    // 收尾动作（`runs.unregister`）在 run.finished 之后执行，等待其完成后再检查。
+    // 收尾动作（`runs.release`）在 run.finished 之后执行，等待其完成后再检查。
     await Bun.sleep(300)
     const peerBusy = peerFrames
       .filter((f) => f.event.type === 'conversation.busy')
       .map((f) => f.event as Extract<AgentEvent, { type: 'conversation.busy' }>)
     // 开始与结束都必须广播：只广播开始时，左栏的会话行会始终显示运行中。
-    expect(peerBusy.map((e) => e.busy)).toEqual([true, true, false])
+    // 取得 runId 时忙态不变，不再广播。
+    expect(peerBusy.map((e) => e.busy)).toEqual([true, false])
     expect(peerBusy.every((e) => e.conversationId === conversationId)).toBe(true)
     // 正文仍按订阅过滤：退订后仍收到正文，属于另一方向的会话串扰。
     expect(peerFrames.some((f) => f.event.type === 'text.delta')).toBe(false)

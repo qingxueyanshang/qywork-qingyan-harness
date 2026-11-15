@@ -741,7 +741,8 @@ export function serve(opts: ServeOptions) {
       },
       /*
        * 关闭码与原因是判断哪一端先断开的唯一依据：1000/1001 是对端正常关闭，1006 是未收到
-       * 关闭帧（对端进程已退出或连接被中断），1008 是本端握手拒绝。时长用于区分
+       * 关闭帧（对端进程已退出或连接被中断），1008 是本端握手拒绝，1013 是本端因发送缓冲超过上限
+       * 而关闭（`handshake.ts` 的 `sendOrClose`）。时长用于区分
        * 「连接后立即断开」与「连接数小时后断开」。
        */
       close(ws: ServerWebSocket<SocketData>, code: number, reason: string) {

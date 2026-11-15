@@ -82,9 +82,10 @@ async function pngRows(bytes: Uint8Array): Promise<number[] | null> {
     packed.set(d, at)
     at += d.length
   }
-  const raw = await inflate(packed, 'deflate')
   const stride = Math.ceil((8 * depth) / 8)
-  if (raw === null || raw.length < 8 * (stride + 1)) return null
+  const inflated = await inflate(packed, 'deflate', 8 * (stride + 1))
+  if (!inflated.ok) return null
+  const raw = inflated.value
   const out: number[] = []
   let previous = new Uint8Array(stride)
   for (let y = 0; y < 8; y++) {

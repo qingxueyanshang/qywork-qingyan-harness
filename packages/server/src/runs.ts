@@ -25,11 +25,14 @@ export interface SubagentInflight {
   conversations(): ConversationId[]
 }
 
-export interface ActiveRun {
-  runId: RunId
-  conversationId: ConversationId
+/**
+ * 一个被占用的会话。中止句柄自占位时起持有，`runId` 在本轮写入 run 行之后补入，此前为 null。
+ *
+ * 中断、忙态与更新认领都只读这一项：句柄在占位时即已登记，准备阶段（写入 run 行之前）的停止同样生效。
+ */
+interface Occupancy {
   controller: AbortController
-  startedAt: number
+  runId: RunId | null
 }
 
 /**
@@ -52,11 +55,8 @@ export interface GoalArm {
 }
 
 export class RunManager {
-  private readonly active = new Map<string, ActiveRun>()
-  /** 同一会话同时只允许一个 run：两个 run 并发修改同一批文件必然相互冲突。 */
-  private readonly byConversation = new Map<string, RunId>()
-  /** 已占位但尚未取得 runId 的会话。见 `reserve()`。 */
-  private readonly reserved = new Set<string>()
+  /** 同一会话同时只允许一项占用：两个 run 并发修改同一批文件必然相互冲突。见 `reserve()`。 */
+  private readonly occupied = new Map<string, Occupancy>()
   private updateClaimed = false
 
   /** 基于现有忙态集合原子地占用退出时机；不设单独的任务计数。 */
@@ -101,14 +101,14 @@ export class RunManager {
   ) {}
 
   /**
-   * 该会话是否有一轮正在运行（含已占位但尚未取得 runId 的）。
+   * 该会话是否被占用：有一轮正在运行（含已占位但尚未取得 runId 的），或正在手动压缩。
    *
    * **启动轮次的检查只依据它。** 子 agent 运行时仍可发送消息、启动下一轮，这正是
    * 回执的路径：空闲时立即启动一轮。若以 `isBusy` 作为检查条件，回执与用户的消息
    * 都会排入一个无人消费的队列。
    */
   hasRun(conversationId: ConversationId): boolean {
-    return this.byConversation.has(conversationId) || this.reserved.has(conversationId)
+    return this.occupied.has(conversationId)
   }
 
   /**
@@ -118,7 +118,7 @@ export class RunManager {
    * 之后可能仍为 `running`，据此取值会将早已结束的 run 当作运行中。
    */
   currentRunId(conversationId: ConversationId): RunId | null {
-    return this.byConversation.get(conversationId) ?? null
+    return this.occupied.get(conversationId)?.runId ?? null
   }
 
   /**
@@ -134,17 +134,13 @@ export class RunManager {
   /** 当前忙碌的全部会话。握手快照读取它，见 `HelloOkFrame.busyConversations`。 */
   busyConversations(): ConversationId[] {
     return [
-      ...new Set([
-        ...this.byConversation.keys(),
-        ...this.reserved,
-        ...this.subagents.conversations(),
-      ]),
+      ...new Set([...this.occupied.keys(), ...this.subagents.conversations()]),
     ] as ConversationId[]
   }
 
   /**
    * 广播该会话的忙闲状态。**忙态的每个变更点各调用一次，其他位置不得发布该事件。**
-   * 变更点为本类中的四处（占位、释放、登记、注销）以及任务派发通道的两处
+   * 变更点为本类中的两处（占位、释放）以及任务派发通道的两处
    * （子 agent 派发、子 agent 结束）。
    *
    * 两个约束：
@@ -152,9 +148,8 @@ export class RunManager {
    * - **发布时不带 `conversationId`**（第二个参数留空）：它是工作区级事件，
    *   所有客户端都必须收到。带上即按订阅过滤，只有打开该会话的客户端
    *   能收到，而需要该事件的正是未打开该会话的客户端。
-   * - **实时计算 `isBusy()`，不接受调用方传入的值**：占位与登记是两个集合，
-   *   `release()` 在 run 已经 register 之后也会被调用，传入字面量必然报告
-   *   一个当前不成立的 false。
+   * - **实时计算 `isBusy()`，不接受调用方传入的值**：释放占位之后该会话仍可能因
+   *   子 agent 而忙碌，释放处传入字面量 false 会报告一个当前不成立的状态。
    */
   announce(conversationId: ConversationId): void {
     this.bus.publish({
@@ -209,41 +204,39 @@ export class RunManager {
   }
 
   /**
-   * 占用一个会话，**同步**完成检查与登记。
+   * 占用一个会话，**同步**完成检查与登记，`controller` 是这次占用的中止句柄。
    *
    * **检查与登记必须位于同一个同步块中**。拆分为 `isBusy()` 检查与之后某处的
-   * `register()` 时，二者之间隔着创建 Session、读取历史附件、等待首个带 runId 的事件等多个
+   * 登记时，二者之间隔着创建 Session、读取历史附件、等待首个带 runId 的事件等多个
    * await：桌面端与手机端几乎同时发送消息时，两次检查都读到 false，
    * 两个 AgentLoop 因此同时写入同一个工作区。
    * JS 是单线程的，同步块内的操作是原子的。
    *
+   * 句柄必须在此处一并登记：只登记占位、待取得 runId 后才登记句柄时，准备阶段的停止指令没有
+   * 可中止的对象，该轮在准备结束后照常开始。
+   *
    * 返回 false 表示已有任务在运行，调用方必须直接拒绝。
    */
-  reserve(conversationId: ConversationId): boolean {
+  reserve(conversationId: ConversationId, controller: AbortController): boolean {
     if (this.updateClaimed || this.hasRun(conversationId)) return false
-    this.reserved.add(conversationId)
+    this.occupied.set(conversationId, { controller, runId: null })
     this.announce(conversationId)
     return true
   }
 
-  /** 释放占位。已 register 的 run 交由 unregister 处理，此处只处理未启动的占位。 */
+  /** 释放占用。占用方在结束时调用且只调用一次：不释放时之后的每条消息都以「已有任务在执行」被拒绝。 */
   release(conversationId: ConversationId): void {
-    this.reserved.delete(conversationId)
+    this.occupied.delete(conversationId)
     this.announce(conversationId)
   }
 
-  register(run: ActiveRun): void {
-    this.active.set(run.runId, run)
-    this.byConversation.set(run.conversationId, run.runId)
-    this.reserved.delete(run.conversationId)
-    this.announce(run.conversationId)
-  }
-
-  unregister(runId: RunId): void {
-    const run = this.active.get(runId)
-    if (run) this.byConversation.delete(run.conversationId)
-    this.active.delete(runId)
-    if (run) this.announce(run.conversationId)
+  /**
+   * 补入本轮的 runId；本轮结束而占用方仍持有占位时（派发方等待重新派发）置回 null，
+   * 否则 `currentRunId` 在等待期间报告一个已结束的轮次。调用前须已由 `reserve` 占用该会话；
+   * 忙态不变，因此不广播。
+   */
+  register(conversationId: ConversationId, runId: RunId | null): void {
+    this.occupied.get(conversationId)!.runId = runId
   }
 
   /** 记录（或刷新）自动继续标记。目标每次变更版本都要重新记录，见 `GoalArm`。 */
@@ -382,27 +375,21 @@ export class RunManager {
     this.announceQueue(conversationId)
   }
 
-  interrupt(runId: RunId): boolean {
-    const run = this.active.get(runId)
-    if (!run) return false
-    run.controller.abort({ source: 'user', observedAt: Date.now() })
-    return true
-  }
-
   /**
-   * 中断该会话当前运行的轮次。返回 false 表示当前没有运行中的 run。
-   *
-   * 经由 `interrupt(runId)`，不直接 abort：中断语义（`source:'user'`）只在一处定义。
+   * 中断占用该会话的执行：运行中的轮次、准备阶段尚未写入 run 行的轮次，或手动压缩。
+   * 返回 false 表示该会话没有被占用。
    */
   interruptConversation(conversationId: ConversationId): boolean {
-    const runId = this.byConversation.get(conversationId)
-    return runId ? this.interrupt(runId) : false
+    const entry = this.occupied.get(conversationId)
+    if (!entry) return false
+    entry.controller.abort({ source: 'user', observedAt: Date.now() })
+    return true
   }
 
   interruptAll(): void {
     const observedAt = Date.now()
-    for (const run of this.active.values()) {
-      run.controller.abort({ source: 'server_shutdown', observedAt })
+    for (const entry of this.occupied.values()) {
+      entry.controller.abort({ source: 'server_shutdown', observedAt })
     }
   }
 

@@ -62,6 +62,9 @@ export async function removeConversationTemp(
  * 一轮结束时的删除。任务完成的判据：顶层会话、本轮正常结束、本轮所接续的待办存在且全部完成、
  * 没有运行中的子 agent 与后台命令。待办按 `latestTodos` 的接续规则读取：用户新发起的一轮只看本轮提交的清单，
  * 回执发起的一轮沿用会话清单。后台命令的 TMP / TEMP / TMPDIR 指向会话临时目录，运行期间不能移走该目录。
+ *
+ * **不抛出**：调用方在发出 `run.finished` 之前等待本函数，抛出时该事件不再发出。读取账本或建立回收目录失败时
+ * 记录日志，目录保持原样，由下一次删除时机处理。
  */
 export async function releaseRunTemp(input: {
   store: Store
@@ -74,21 +77,29 @@ export async function releaseRunTemp(input: {
   backgroundRunning: boolean
 }): Promise<void> {
   const { store, workspaceRoot, conversationId, runId } = input
-  const dirs = [officeRunDir(workspaceRoot, conversationId, runId)]
-  const todos = latestTodos(store, conversationId, runId)
-  const taskCompleted =
-    input.topLevel &&
-    !input.backgroundRunning &&
-    input.stopReason === 'completed' &&
-    !!todos?.length &&
-    todos.every((todo) => todo.status === 'completed')
-  if (taskCompleted) {
-    dirs.push(
-      conversationTempDir(workspaceRoot, conversationId),
-      ...listChildConversations(store, conversationId).map((c) =>
-        conversationTempDir(workspaceRoot, c.id),
-      ),
+  try {
+    const dirs = [officeRunDir(workspaceRoot, conversationId, runId)]
+    const todos = latestTodos(store, conversationId, runId)
+    const taskCompleted =
+      input.topLevel &&
+      !input.backgroundRunning &&
+      input.stopReason === 'completed' &&
+      !!todos?.length &&
+      todos.every((todo) => todo.status === 'completed')
+    if (taskCompleted) {
+      dirs.push(
+        conversationTempDir(workspaceRoot, conversationId),
+        ...listChildConversations(store, conversationId).map((c) =>
+          conversationTempDir(workspaceRoot, c.id),
+        ),
+      )
+    }
+    await discard(workspaceRoot, dirs)
+  } catch (err) {
+    log.warn(
+      'temp',
+      `本轮结束时未能处理临时目录：${err instanceof Error ? err.message : String(err)}`,
+      { runId },
     )
   }
-  await discard(workspaceRoot, dirs)
 }

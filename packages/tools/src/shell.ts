@@ -493,6 +493,8 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       }
 
       const env = await commandEnv(ctx)
+      // 已收到停止时不启动命令，也不打开观察窗口。
+      ctx.signal.throwIfAborted()
       const pipe = await pipeStatusFiles(
         shell,
         env,
@@ -534,6 +536,8 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       const halt = new AbortController()
       const haltWithRun = () => halt.abort()
       ctx.signal.addEventListener('abort', haltWithRun, { once: true })
+      // 启动进程的 await 期间收到的停止不再派发 abort 事件，注册之后须补查一次。
+      if (ctx.signal.aborted) haltWithRun()
       // 转入后台之后：输出不再回传到本次调用的工具卡，也不再按停滞终止。
       let detached = false
       // 至今的输出（已脱敏），每条流只保留最近的一段；转入后台时随结果交出，之后按任务编号读取。

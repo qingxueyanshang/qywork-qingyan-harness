@@ -34,6 +34,7 @@ import {
   waitOrAbort,
 } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
+import * as ledger from '@qywork/store'
 import {
   appendMessage,
   appendStep,
@@ -63,6 +64,20 @@ import { SubagentRegistry } from './subagents.ts'
  * 耗尽一轮的重发预算约需一分钟。
  */
 mock.module('@qywork/core', () => ({ ...core, resendDelay: () => 0 }))
+
+/**
+ * 为真时读取工作流记录抛出，模拟账本读取失败（记录损坏、数据库错误）。只在「账本读取失败」一组用例中开启。
+ * 原函数在替换之前取出：替换后模块导出即为包装函数，经由导出调用会递归。
+ */
+let failWorkflowReads = false
+const readWorkflowRecords = ledger.listWorkflowRecords
+mock.module('@qywork/store', () => ({
+  ...ledger,
+  listWorkflowRecords: (...args: Parameters<typeof readWorkflowRecords>) => {
+    if (failWorkflowReads) throw new Error('注入的账本读取失败')
+    return readWorkflowRecords(...args)
+  },
+}))
 
 const SSE_HEADERS = { 'content-type': 'text/event-stream' }
 
@@ -937,6 +952,8 @@ describe('暂时故障时重新派发', () => {
     await until(() => waits.length === 1, '进入等待', 10_000)
     const child = res.subagentId as ConversationId
     expect(runs.hasRun(child)).toBe(true)
+    // 等待期间占位不中断，但已结束的那一轮不再是当前轮次。
+    expect(runs.currentRunId(child)).toBeNull()
 
     expect(subagents.interruptConversation(cid)).toBe(true)
     await until(() => phasesOf('child').includes('interrupted'), '节点记为中断')
@@ -2194,4 +2211,107 @@ console.log(JSON.stringify({ type: 'turn.completed' }));`,
     const got = await window.close()
     expect(got.changes).toContainEqual({ path: 'doomed.txt', changeType: 'deleted' })
   }, 20_000)
+})
+
+/**
+ * 账本读取失败时派发与收尾不成为未处理的拒绝。`qy serve` 遇到未处理的拒绝即退出进程，
+ * 原始失败形状是读取图记录抛出时 sidecar 退出：一条在图节点无法派发时经由 `refuse`，
+ * 一条在节点执行完毕的完成回调中，两条都经过推进图时的记录读取。
+ */
+describe('账本读取失败', () => {
+  const rejections: unknown[] = []
+  const onRejection = (reason: unknown) => rejections.push(reason)
+
+  function oneNode(node: Record<string, unknown>) {
+    return {
+      goal: '一个节点',
+      nodes: [node, { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['x'] }],
+    }
+  }
+
+  async function guarded(check: () => Promise<void>): Promise<void> {
+    rejections.length = 0
+    process.on('unhandledRejection', onRejection)
+    try {
+      await check()
+      // 拒绝在下一轮事件循环才报告：让出数次之后再断言。
+      for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(rejections).toEqual([])
+    } finally {
+      failWorkflowReads = false
+      process.off('unhandledRejection', onRejection)
+    }
+  }
+
+  test('图节点无法派发且读取图记录失败：节点为失败，派发方收到回执', async () => {
+    await guarded(async () => {
+      const parent = conversation()
+      const graph = oneNode({ id: 'x', name: 'x', task: '做 X', model: '不存在的模型' })
+      const runId = run(parent, 'wf-read-refuse')
+      await invoke(parent, runId, 1, graph, parsedStart(graph))
+      // 推进返回之后、节点解析目标之前开始读取失败：解析需要等待读取角色库与探测 CLI。
+      failWorkflowReads = true
+      await until(() => receipts.length > 0, '回执')
+      expect(phasesOf('x').at(-1)).toBe('failed')
+      expect(receipts[0]?.origin).toBe('workflow')
+      expect(receipts[0]?.content).toContain('的账本无法读取：注入的账本读取失败')
+    })
+  })
+
+  test('节点执行完毕后读取图记录失败：节点为完成，派发方收到回执', async () => {
+    await guarded(async () => {
+      const parent = conversation()
+      router = (body) => {
+        // 成员的请求到达时开始读取失败：完成回调推进图时读取记录。
+        if (body.includes('做 X')) failWorkflowReads = true
+        return new Response(textTurn('X 的产出'), { headers: SSE_HEADERS })
+      }
+      const graph = oneNode({ id: 'x', name: 'x', task: '做 X' })
+      const runId = run(parent, 'wf-read-complete')
+      await invoke(parent, runId, 1, graph, parsedStart(graph))
+      await until(() => receipts.length > 0, '回执', 10_000)
+      expect(phasesOf('x').at(-1)).toBe('done')
+      expect(receipts[0]?.content).toContain('的账本无法读取：注入的账本读取失败')
+    })
+  })
+})
+
+/**
+ * 原始失败形状：成员装配 Session 时抛出，派发时的占位不释放，此后该子会话一直被占用，
+ * 再次派发的任务排入一个无人消费的队列。装配失败经由 `deps.desktop.available()` 注入：它只在装配成员时读取。
+ */
+test('成员装配抛出时子会话的占位随之释放，再次派发照常执行', async () => {
+  const cid = conversation()
+  let failures = 1
+  const desktop = {
+    available: () => {
+      if (failures-- > 0) throw new Error('注入的装配失败')
+      return false
+    },
+  }
+  const d = makeDelegate({
+    deps: { store, content, config, bus, runs, subagents, desktop: desktop as never },
+    workspaceRoot: dir,
+    conversationId: cid,
+    deliver: (followUp) => receipts.push(followUp),
+  })
+  script = [say('第二次完成')]
+  const where = spot(cid)
+  const first = await d.dispatch({
+    target: { kind: 'temp', name: '临时' },
+    task: '第一次',
+    ...where,
+  })
+  expect(first.ok).toBe(true)
+  await until(() => receipts.length === 1, '第一次的回执')
+  expect(receipts[0]?.content).toContain('注入的装配失败')
+  const child = first.subagentId as ConversationId
+  expect(runs.hasRun(child)).toBe(false)
+
+  const second = await d.dispatch({ target: { subagent: child }, task: '第二次', ...where })
+  expect(second).toMatchObject({ ok: true, created: false })
+  expect(second).not.toHaveProperty('injected')
+  await until(() => receipts.length === 2, '第二次的回执', 10_000)
+  expect(receipts[1]?.content).toContain('第二次完成')
+  expect(runs.hasRun(child)).toBe(false)
 })

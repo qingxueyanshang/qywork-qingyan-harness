@@ -83,6 +83,12 @@ process.stdin.on('data', (c) => {
       continue
     }
 
+    // 只输出、不换行：超过单行上限（64 Mi 字符）一个字符。
+    if (m.method === 'tools/call' && m.params?.name === 'flood') {
+      process.stdout.write('x'.repeat(64 * 1024 * 1024 + 1))
+      continue
+    }
+
     if (m.method === 'tools/call') {
       ${
         opts.toolError
@@ -208,6 +214,27 @@ describe('tools/call', () => {
     expect(err).toContain('-32602')
     await c.stop()
   })
+
+  /**
+   * 原始失败形状：server 持续输出而不换行时，stdout 缓冲无限增长，进行中的请求等待至超时。
+   * 缓冲不超过上限由 `core` 的 `lines.test.ts` 锁定；此处锁定连接以溢出原因关闭。
+   */
+  test('单行输出超过上限时以溢出原因断开，进行中与之后的请求都得到该原因', async () => {
+    const { dir, entry } = await fixture()
+    const c = client(entry, dir)
+    await c.start()
+    const flood = await c.callTool('flood', {}).then(
+      () => '',
+      (error: Error) => error.message,
+    )
+    expect(flood).toContain('单行输出超过 67108864 个字符')
+    const after = await c.callTool('echo', { text: 'x' }).then(
+      () => '',
+      (error: Error) => error.message,
+    )
+    expect(after).toContain('单行输出超过 67108864 个字符')
+    await c.stop()
+  }, 30_000)
 
   test('进程退出时在途请求被逐个拒绝，不阻塞至超时', async () => {
     const { dir, entry } = await fixture()

@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import hljs from 'highlight.js/lib/common'
 import { createStreamRenderer, highlightReady, renderMarkdown } from './markdown.ts'
 
 /** 去除高亮生成的 `<span>`。转义测试针对实体本身，不针对正文被拆分成几段。 */
@@ -42,6 +43,39 @@ describe('净化', () => {
   test('iframe 不放行', () => {
     const html = renderMarkdown('<iframe src="https://example.com"></iframe>')
     expect(html).not.toContain('<iframe')
+  })
+
+  /**
+   * 原始失败形状：正文中的 `<div class="backdrop-close">` 原样保留，该类是 `position: fixed; inset: 0`
+   * 的整窗遮罩，模型输出或工作区中的 Markdown 可以借界面自身的类名盖住窗口或仿冒确认框。
+   */
+  test('只保留渲染器自身写出的类名与高亮类名，界面类名被去除', () => {
+    const cases: [string, string][] = [
+      ['<div class="backdrop-close">x</div>', '<div>x</div>'],
+      ['<div class="sheet-backdrop confirm-dialog">x</div>', '<div>x</div>'],
+      ['<span class="hljs-keyword backdrop-close">x</span>', '<span class="hljs-keyword">x</span>'],
+      [
+        '<span class="hljs-title class_ language-ts code-copy">x</span>',
+        '<span class="hljs-title class_ language-ts code-copy">x</span>',
+      ],
+      [
+        '<table class="backdrop-close"><tr><td>1</td></tr></table>',
+        '<table><tr><td>1</td></tr></table>',
+      ],
+    ]
+    for (const [source, kept] of cases) {
+      const html = renderMarkdown(source)
+      expect(html).toContain(kept)
+      expect(html).not.toContain('backdrop')
+      expect(html).not.toContain('confirm-dialog')
+    }
+  })
+
+  test('流式增量渲染同样去除界面类名', () => {
+    const source = '<div class="backdrop-close">x</div>\n\n第二段\n\n第三段\n\n第四段'
+    const { settled, live } = createStreamRenderer().push(source)
+    expect(settled + live).toContain('<div>x</div>')
+    expect(settled + live).not.toContain('backdrop-close')
   })
 })
 
@@ -192,6 +226,22 @@ describe('表格', () => {
     expect(html).toContain('<div class="table-wrap">')
     expect(html).toContain('</table></div>')
   })
+
+  // 列对齐由 th、td 的 align 表示；table 自身不接受任何属性。
+  test('含对齐列的表格逐字节输出', () => {
+    const html = renderMarkdown(
+      '| 左 | 中 | 右 | 默认 |\n|:--|:-:|--:|---|\n| 1 | 2 | 3 | 4 |\n| a | b | c | d |',
+    )
+    expect(html).toBe(
+      '<div class="table-wrap"><table>\n<thead>\n<tr>\n<th align="left">左</th>\n<th align="center">中</th>\n' +
+        '<th align="right">右</th>\n<th>默认</th>\n</tr>\n</thead>\n<tbody><tr>\n<td align="left">1</td>\n' +
+        '<td align="center">2</td>\n<td align="right">3</td>\n<td>4</td>\n</tr>\n<tr>\n<td align="left">a</td>\n' +
+        '<td align="center">b</td>\n<td align="right">c</td>\n<td>d</td>\n</tr>\n</tbody></table></div>\n',
+    )
+    expect(renderMarkdown('<table width="100%" border="1"><tr><td>1</td></tr></table>')).toContain(
+      '<table><tr>',
+    )
+  })
 })
 
 describe('边界输入', () => {
@@ -220,6 +270,46 @@ describe('边界输入', () => {
     expect(renderMarkdown(fence('javascript'))).toContain('hljs-keyword')
     expect(renderMarkdown(fence(''))).not.toContain('<span')
     expect(renderMarkdown(fence('text'))).not.toContain('<span')
+  })
+
+  /**
+   * 类名过滤不得改变高亮输出。样本覆盖 highlight.js 的三种类名形式：`hljs-*`、
+   * 多级作用域的下划线后缀（`class_`、`function_`、`language_`）与子语言（`language-css`、`language-javascript`）。
+   */
+  test('高亮输出的类名逐字保留', async () => {
+    const samples: [string, string][] = [
+      [
+        'html',
+        '<style>\n  .a { color: red; }\n</style>\n<script>\n  const x = () => 1\n</script>\n<div class="b">hi</div>',
+      ],
+      [
+        'ts',
+        'class Box<T> extends Base {\n  get value(): T { return this.v }\n}\n' +
+          'function make(n: number): Box<number> {\n  return new Box(n)\n}\nmake(1).value.toFixed(2)',
+      ],
+    ]
+    renderMarkdown('```js\nx\n```')
+    for (let i = 0; i < 100 && !highlightReady(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    expect(highlightReady()).toBe(true)
+    const outputs = samples.map(([language, code]) => {
+      const expected = hljs.highlight(code, { language, ignoreIllegals: true }).value
+      expect(renderMarkdown(`\`\`\`${language}\n${code}\n\`\`\``)).toContain(
+        `<code class="hljs">${expected}</code>`,
+      )
+      return expected
+    })
+    const classes = new Set(outputs.join('').match(/class="[^"]*"/g))
+    for (const name of [
+      'class="language-css"',
+      'class="language-javascript"',
+      'class="hljs-title class_"',
+      'class="hljs-title function_"',
+      'class="hljs-variable language_"',
+    ]) {
+      expect(classes.has(name)).toBe(true)
+    }
   })
 })
 

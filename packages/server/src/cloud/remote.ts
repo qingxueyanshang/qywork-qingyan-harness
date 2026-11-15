@@ -10,6 +10,7 @@
  * - 隧道被同一设备的另一条连接替换后不自动重连（见 `tunnel.ts`），由用户经 `reconnect` 重新连接。
  */
 
+import { log } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { writeConfig } from '../api/config.ts'
 import { cloudProviderOf } from './account.ts'
@@ -83,7 +84,17 @@ export class RemoteAccess {
       onStatus: (status) => {
         if (this.tunnel !== tunnel) return
         this.status = status
-        if (status.state === 'revoked') void this.deps.onRevoked().then(() => this.sync())
+        // 删除本地云端接口要写入配置文件，写入失败时记录日志：不处理时成为未处理的拒绝，服务进程随之退出。
+        if (status.state === 'revoked') {
+          void this.deps.onRevoked().then(
+            () => this.sync(),
+            (err: unknown) =>
+              log.error(
+                'cloud',
+                `设备已被移除，删除本地云端接口失败：${err instanceof Error ? err.message : String(err)}`,
+              ),
+          )
+        }
       },
       ...(this.deps.backoffMs ? { backoffMs: this.deps.backoffMs } : {}),
     })

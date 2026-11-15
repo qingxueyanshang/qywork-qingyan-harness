@@ -1257,6 +1257,54 @@ describe('缓存写入用量', () => {
       kimi.stop(true)
     }
   })
+
+  /** 原始失败形状：usage 为空对象时记为 provider 回报，账本把全部为 0 的用量当作真实值。 */
+  test('usage 为空对象或字段不是数值时保持未回报', async () => {
+    let usageJson = ''
+    const relay = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          [
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+            `data: {"choices":[],"usage":${usageJson}}`,
+            'data: [DONE]',
+            '',
+          ].join('\n\n'),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+    })
+    const sourceOf = async (raw: string) => {
+      usageJson = raw
+      const adapter = new OpenAICompatAdapter(
+        {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-x',
+          model: 'deepseek-chat',
+          baseUrl: `http://127.0.0.1:${relay.port}/v1`,
+        },
+        lookupModel('deepseek-chat', 'openai_chat_completions'),
+      )
+      for await (const event of adapter.stream({
+        model: 'deepseek-chat',
+        system: [],
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+        maxOutputTokens: 64,
+        idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+      })) {
+        if (event.type === 'usage') return event.usage.source
+      }
+      return null
+    }
+    try {
+      expect(await sourceOf('{}')).toBe('estimated')
+      expect(await sourceOf('{"prompt_tokens":"10","completion_tokens":null}')).toBe('estimated')
+      expect(await sourceOf('{"completion_tokens":3}')).toBe('provider')
+    } finally {
+      relay.stop(true)
+    }
+  })
 })
 
 describe('无名工具调用', () => {

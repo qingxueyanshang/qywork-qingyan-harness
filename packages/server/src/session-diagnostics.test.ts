@@ -11,8 +11,14 @@ import {
   Store,
   upsertWorkspace,
 } from '@qywork/store'
+import { EventBus } from './bus.ts'
 import type { CommandDeps } from './deps.ts'
 import { compactConversation } from './run-control.ts'
+import { RunManager } from './runs.ts'
+import { SubagentRegistry } from './subagents.ts'
+
+/** 手动压缩占用会话所用的运行表。忙闲事件发往另一条总线，不进入各用例断言的事件序列。 */
+const occupancy = () => new RunManager(null as never, new EventBus(), new SubagentRegistry())
 
 test('摘要尚未返回时历史页包含压缩进度，结束后更新同一条记录', async () => {
   let release!: () => void
@@ -42,7 +48,7 @@ test('摘要尚未返回时历史页包含压缩进度，结束后更新同一�
     },
   })
   const store = new Store({ path: ':memory:' })
-  let work: Promise<void> | undefined
+  let work: Promise<unknown> | undefined
   try {
     const ws = upsertWorkspace(store, resolve('.tmp/compaction-progress'), 'progress')
     const cv = createConversation(store, {
@@ -58,6 +64,7 @@ test('摘要尚未返回时历史页包含压缩进度，结束后更新同一�
       })
     work = compactConversation(cv.id, {
       store,
+      runs: occupancy(),
       config: {
         providers: {
           p: {
@@ -126,6 +133,7 @@ test('手动压缩的记录带压缩后占用、两条边界与修订号，取�
       })
     await compactConversation(cv.id, {
       store,
+      runs: occupancy(),
       config: {
         providers: {
           p: {
@@ -192,6 +200,7 @@ test('压缩比例不合法时手动压缩以配置错误结束：错误码为 i
     const events: AgentEvent[] = []
     await compactConversation(cv.id, {
       store,
+      runs: occupancy(),
       config: {
         providers: {
           p: {
@@ -233,6 +242,7 @@ test('会话所属项目的记录缺失时手动压缩经 run.error 报告，不
     const events: AgentEvent[] = []
     await compactConversation(cv.id, {
       store,
+      runs: occupancy(),
       config: { providers: {} },
       bus: { publish: (ev: AgentEvent) => events.push(ev) },
     } as unknown as CommandDeps)
@@ -300,6 +310,7 @@ test('摘要被拒后仍保留原生错误、请求参数、降级原因，导�
     const events: AgentEvent[] = []
     await compactConversation(cv.id, {
       store,
+      runs: occupancy(),
       config,
       bus: { publish: (ev: AgentEvent) => events.push(ev) },
     } as unknown as CommandDeps)
@@ -405,6 +416,7 @@ test('手动摘要锁定会话接口，成功用量只记一笔并保留实际�
       })
     await compactConversation(cv.id, {
       store,
+      runs: occupancy(),
       config,
       bus: { publish() {} },
     } as unknown as CommandDeps)

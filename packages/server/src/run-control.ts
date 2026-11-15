@@ -4,7 +4,7 @@
  * 五条入口共用同一个 `Session` 装配：手动发送消息、定时任务触发、重试、目标自动继续、
  * 跟进消息发起。为任何一条单独建立一套装配，都会得到五套可能相互偏离的行为。
  *
- * **自动继续在 `startRun` 的 `finally` 中判定。** 该处已执行 `runs.unregister` / `release` /
+ * **自动继续在 `startRun` 的 `finally` 中判定。** 该处已执行 `runs.release` /
  * `session.dispose()`，是「本轮已完成」的**唯一汇合处**：正常结束、抛错、被中断三条路径都经过
  * 该处。
  *
@@ -143,8 +143,11 @@ export async function startRun(
    *
    * 会话已有一轮在运行时不发布 `run.error`：该报错不属于任何轮次，没有等待它的请求方，
    * 发布后客户端会把它写进正在运行那一轮的收尾条。应用更新期间没有运行中的轮次，报错照常发布。
+   *
+   * 中止句柄随占位一并登记：准备阶段收到的停止指令由此生效。
    */
-  if (!deps.runs.reserve(conversationId)) {
+  const controller = new AbortController()
+  if (!deps.runs.reserve(conversationId, controller)) {
     if (!deps.runs.updating) {
       log.warn('run', '会话已有一轮在运行，本次启动取消', { conversationId })
       return
@@ -186,7 +189,6 @@ export async function startRun(
      */
     let ws: Workspace | null = null
     let session: Session | null = null
-    const controller = new AbortController()
     let currentRunId: RunId | null = null
     /*
      * 本轮的结束方式，只用于自动继续判定。
@@ -352,12 +354,7 @@ export async function startRun(
         // 读取前先收窄类型，不能假设字段存在。
         if ('runId' in ev && ev.runId && currentRunId === null) {
           currentRunId = ev.runId as RunId
-          deps.runs.register({
-            runId: currentRunId,
-            conversationId,
-            controller,
-            startedAt: Date.now(),
-          })
+          deps.runs.register(conversationId, currentRunId)
         }
         if (ev.type === 'run.finished') {
           stopReason = ev.stopReason
@@ -389,10 +386,8 @@ export async function startRun(
         conversationId,
       )
     } finally {
-      // 已 register 的执行 unregister，未启动的由 release 回收；两者都不执行时
-      // 该会话被永久占用，之后的每条消息都以「已有任务在执行」被拒绝。
-      if (currentRunId) deps.runs.unregister(currentRunId)
-      else deps.runs.release(conversationId)
+      // 不释放时该会话被永久占用，之后的每条消息都以「已有任务在执行」被拒绝。
+      deps.runs.release(conversationId)
       // 每条消息对应一个 Session，每个 Session 都持有扩展的一份引用。
       // 不释放时引用只增不减，插件与 MCP 子进程直到进程退出都无法关闭。
       // null 表示准备阶段在装配前已停止（未查到项目、没有模型、装配抛错）。
@@ -441,21 +436,23 @@ export async function startRun(
  * **同步取出、异步发起。** 取出与「是否跳过目标自动继续」是同一个决定，拆开后会出现
  * 「自动继续已被跳过，而该消息在 setTimeout 到期前被用户删除」的情形，两者都不会执行。
  *
- * 到期时若会话再次忙碌（另一端刚发送了消息），把它放回队首，不丢弃。
+ * 到期时若会话再次忙碌（另一端刚发送了消息），把它放回队首，不丢弃。到期之前收到停止时同样放回队首，
+ * 不发起：与被停止的一轮收尾时相同，条目留在队列。
  * 异步发起的原因与 `queueGoalRound` 相同：不嵌套在本轮的 `finally` 中执行。
  */
 function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDeps, 'ws'>): boolean {
   const item = deps.runs.takeNext(conversationId)
   if (!item) return false
   // 队首移交给定时回调期间仍属于待执行任务，复用会话占位阻止更新退出。
-  if (!deps.runs.reserve(conversationId)) {
+  const pending = new AbortController()
+  if (!deps.runs.reserve(conversationId, pending)) {
     deps.runs.enqueueFront(conversationId, item)
     return true
   }
   setTimeout(() => {
     // release 与 startRun 的 reserve 之间没有 await，退出占位不能插入其中。
     deps.runs.release(conversationId)
-    if (deps.runs.hasRun(conversationId)) {
+    if (pending.signal.aborted || deps.runs.hasRun(conversationId)) {
       deps.runs.enqueueFront(conversationId, item)
       return
     }
@@ -809,13 +806,43 @@ function runErrorOf(err: unknown): { code: ErrorCode; message: string } {
  * 与自动路径共用同一个 `RuntimeCompaction` 与同一份摘要装配（`makeSummarizer`），
  * 两条入口只有发起原因不同：两套实现终将出现差异，且差异难以发现。
  *
- * 事件经由总线广播，而不是只返回给发起方：压缩改变了会话此后的行为，
- * 在另一端打开同一会话的用户必须能看到。
+ * 压缩期间占用该会话，与一轮运行使用同一项占用（`runs.reserve`）：期间发送的消息与回执排入队列，
+ * 第二次压缩、设立目标与应用更新被拒绝，停止指令中止摘要请求。释放之后按 `startRun` 收尾的同一规则
+ * 处理队列：正常结束时发起队首，被停止或失败时条目留在队列。
+ * 返回 `ok: false` 表示该会话已被占用，未执行压缩。
  */
 export async function compactConversation(
   conversationId: ConversationId,
   deps: CommandDeps,
-): Promise<void> {
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const controller = new AbortController()
+  if (!deps.runs.reserve(conversationId, controller)) {
+    return { ok: false, message: '该会话正在执行，请先中断再压缩' }
+  }
+  let stopReason: StopReason | null = null
+  try {
+    stopReason = await compactReserved(conversationId, deps, controller.signal)
+  } finally {
+    deps.runs.release(conversationId)
+    deps.runs.resetSteer(conversationId)
+    if (!controller.signal.aborted && stopReason && CONTINUABLE.includes(stopReason)) {
+      fireFollowUpRound(conversationId, deps)
+    }
+  }
+  return { ok: true }
+}
+
+/**
+ * 在已占用的会话上执行一次手动压缩，返回写入压缩 run 行的停止原因；未写入 run 行时返回 null。
+ *
+ * 事件经由总线广播，而不是只返回给发起方：压缩改变了会话此后的行为，
+ * 在另一端打开同一会话的用户必须能看到。
+ */
+async function compactReserved(
+  conversationId: ConversationId,
+  deps: CommandDeps,
+  signal: AbortSignal,
+): Promise<StopReason | null> {
   const emit = (ev: AgentEvent) => deps.bus.publish(ev, conversationId)
   const conversation = getConversation(deps.store, conversationId)
   if (!conversation) throw new Error('会话不存在')
@@ -828,7 +855,7 @@ export async function compactConversation(
       code: 'internal_error',
       message: '本会话未找到对应的项目目录，无法压缩',
     })
-    return
+    return null
   }
   /*
    * 接口、模型与压缩比例在写入 run 之前解析，与轮次启动（`Session.ask`）的顺序相同：配置不合法时没有发生压缩，
@@ -847,7 +874,7 @@ export async function compactConversation(
     compactPercent = compactPercentFor(deps.config, adapter.spec)
   } catch (err) {
     emit({ type: 'run.error', runId: '' as RunId, ...runErrorOf(err) })
-    return
+    return null
   }
   // 用户发起的维护操作也有真实的 run，摘要与压缩结果因此写入同一份会话账本。
   const run = createRun(deps.store, {
@@ -889,6 +916,7 @@ export async function compactConversation(
         effort: () =>
           resolveModel(deps.config, { provider: conversation.provider, model: conversation.model })
             ?.effort,
+        signal,
       }),
     })
     // 占用与窗口从会话实时计算：维护操作没有主请求回执，没有实时计量。
@@ -919,6 +947,7 @@ export async function compactConversation(
       compactPercent,
       // 与对话循环的压缩相同使用本轮密度：附件中不原生发送的视频不计入。
       density: runDensity(adapter),
+      signal,
     })
     const phase =
       outcome.status === 'compacted' ? 'done' : outcome.status === 'skipped' ? 'skipped' : 'failed'
@@ -929,18 +958,29 @@ export async function compactConversation(
         ? { ...compactionRecordOf(outcome.manifest), summarized: outcome.summarized }
         : { manifestRevision: 0, compactedMessages: 0 }),
       ...('reasonCode' in outcome ? { reasonCode: outcome.reasonCode } : {}),
+      // 与下方广播的事件取同一原因码：刷新后从记录重建的条目与实时条目一致。
+      ...(outcome.status === 'aborted' ? { reasonCode: 'aborted' } : {}),
       ...('message' in outcome && outcome.message ? { message: clean(outcome.message) } : {}),
       trigger: 'manual',
       occupancy: panel.total,
       estimatedOccupancy: panel.measured,
       contextWindow: spec.contextWindow,
     })
-    finishRun(deps.store, runId, {
-      status: outcome.status === 'failed' || outcome.status === 'aborted' ? 'failed' : 'done',
-      stopReason:
-        outcome.status === 'failed' || outcome.status === 'aborted'
+    // 被停止的压缩按用户中断结束，不记为模型服务出错。
+    const stopReason: StopReason =
+      outcome.status === 'aborted'
+        ? 'user_interrupt'
+        : outcome.status === 'failed'
           ? 'provider_error'
-          : 'completed',
+          : 'completed'
+    finishRun(deps.store, runId, {
+      status:
+        outcome.status === 'aborted'
+          ? 'interrupted'
+          : outcome.status === 'failed'
+            ? 'failed'
+            : 'done',
+      stopReason,
       ...('reasonCode' in outcome ? { errorCode: outcome.reasonCode } : {}),
       ...('message' in outcome && outcome.message ? { errorMessage: clean(outcome.message) } : {}),
     })
@@ -969,8 +1009,6 @@ export async function compactConversation(
         omitted: updated.omitted,
       })
     } else if (outcome.status === 'aborted') {
-      // 手动压缩不向 `run()` 传入信号，这条终态不可达。保留它是因为静默丢弃一个终态
-      // 对用户而言等同于「点击按钮没有反应」。
       emit({ type: 'compaction', runId, stepSeq, phase: 'failed', reasonCode: 'aborted' })
     } else if (outcome.status === 'skipped') {
       // 「没有可压缩的内容」不是失败：用户点击了按钮，必须有反馈，但不能报错。
@@ -978,6 +1016,7 @@ export async function compactConversation(
     } else {
       emit({ type: 'compaction', runId, stepSeq, phase: 'failed', reasonCode: outcome.reasonCode })
     }
+    return stopReason
   } catch (err) {
     // `reasonCode` 是**错误码**，不是消息。写入 `err.message.slice(0, 80)` 时，
     // 前端会把该字段直接显示在括号中，异常原文（英文、被截断、带内部标识）
@@ -1007,6 +1046,7 @@ export async function compactConversation(
       phase: 'failed',
       reasonCode,
     })
+    return 'provider_error'
   } finally {
     clearInterval(heartbeat)
     // 与普通轮次一样只在结束时记录一次用量；请求明细与长期费用账各自保持原有职责。

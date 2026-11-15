@@ -301,30 +301,51 @@ function findEndRecord(view: DataView): number {
 }
 
 /**
- * 解压 deflate 数据：`deflate-raw` 为不带头的数据（ZIP 成员），`deflate` 为带 zlib 头的数据（OfficeArt 图元文件）。
- * 解压失败返回 `null`。
+ * 解压 deflate 数据：`deflate-raw` 为不带头的数据（ZIP 成员），`deflate` 为带 zlib 头的数据（OfficeArt 图元文件、图案的 PNG）。
+ * `size` 是声明的解压长度：输出累计超过它时立即取消解压，读完后短于它同样失败，两者都返回 `corrupt('size')`；
+ * 数据无法解压返回 `corrupt('inflate')`。
  *
+ * - 逐块读取并在读取中比较长度，不要改为读完再比较：声明 1 KiB 的成员可以解压出数百 MiB，
+ *   读完之前已全部进入内存。解压按读取进度进行，取消后不再产生输出。
+ * - 不按 `size` 预先分配：`size` 取自文件内容，可以声明为数 GiB。
  * - `DecompressionStream` 在 `try` 之外构造：环境缺少该接口时不得归入已损坏。
  * - 直接写入流，不要改为 `new Blob([raw]).stream()`：Chromium 中每次构造 Blob 约多耗 0.25 ms，
  *   成员上千的文件累计数百毫秒。
- * - 写入、关闭与读取放在同一个 `Promise.all` 中：三者必须同时进行，且任一方的拒绝都须有处理方。
+ * - 写入、关闭与读取同时进行，且任一方的拒绝都须有处理方；取消读取后关闭必然拒绝，
+ *   因此用 `allSettled` 等待三者，结论只取读取一方。
  */
 export async function inflate(
   raw: Uint8Array<ArrayBuffer>,
   format: 'deflate' | 'deflate-raw',
-): Promise<Uint8Array | null> {
+  size: number,
+): Promise<ZipResult<Uint8Array>> {
   const stream = new DecompressionStream(format)
   const writer = stream.writable.getWriter()
-  try {
-    const [, , out] = await Promise.all([
-      writer.write(raw),
-      writer.close(),
-      new Response(stream.readable).arrayBuffer(),
-    ])
-    return new Uint8Array(out)
-  } catch {
-    return null
+  const reader = stream.readable.getReader()
+  const read = async (): Promise<ZipResult<Uint8Array>> => {
+    const chunks: Uint8Array[] = []
+    let length = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      length += value.length
+      if (length > size) {
+        await reader.cancel()
+        return corrupt('size')
+      }
+      chunks.push(value)
+    }
+    if (length !== size) return corrupt('size')
+    const out = new Uint8Array(size)
+    let at = 0
+    for (const chunk of chunks) {
+      out.set(chunk, at)
+      at += chunk.length
+    }
+    return ok(out)
   }
+  const [, , result] = await Promise.allSettled([writer.write(raw), writer.close(), read()])
+  return result.status === 'fulfilled' ? result.value : corrupt('inflate')
 }
 
 class Archive implements ZipArchive {
@@ -348,18 +369,9 @@ class Archive implements ZipArchive {
     if (start + entry.compressedSize > this.data.length) return corrupt('local-header')
     const raw = this.data.subarray(start, start + entry.compressedSize)
 
-    let out: Uint8Array
-    if (entry.method === 0) {
-      out = raw.slice()
-    } else if (entry.method === 8) {
-      const inflated = await inflate(raw, 'deflate-raw')
-      if (inflated === null) return corrupt('inflate')
-      out = inflated
-    } else {
-      return corrupt('method')
-    }
-    if (out.length !== entry.size) return corrupt('size')
-    return ok(out)
+    if (entry.method === 8) return inflate(raw, 'deflate-raw', entry.size)
+    if (entry.method !== 0) return corrupt('method')
+    return raw.length === entry.size ? ok(raw.slice()) : corrupt('size')
   }
 
   async text(path: string): Promise<ZipResult<string | null>> {

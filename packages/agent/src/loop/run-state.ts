@@ -430,8 +430,3 @@ export function untilAborted<T>(signal: AbortSignal, work: Promise<T>): Promise<
     work.then(resolve, reject).finally(() => signal.removeEventListener('abort', fail))
   })
 }
-
-/** 单纯的等待，不响应中止信号；需要可停止时用 `untilAborted` 包装。 */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}

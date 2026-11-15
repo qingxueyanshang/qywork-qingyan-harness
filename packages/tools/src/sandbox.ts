@@ -1021,7 +1021,7 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
  *
  * 管道没有 EOF 比服务未终止更严重。若以管道 EOF 作为命令结束的判据，该次
  * `registry.execute` 永不返回，而 `agent/loop/tool-wave.ts` 中调用它的位置外层没有任何超时。结果
- * 逐层传导：`run-control.ts` 的 finally 不执行、`runs.unregister` 不执行，
+ * 逐层传导：`run-control.ts` 的 finally 不执行、`runs.release` 不执行，
  * 该会话此后一直以「已有任务在执行」拒绝新任务，直到重启 `qy serve`。触发条件不限于
  * 启动服务器这类少见情况：任何经 shell 派生子进程的命令（`npm test` → node、
  * `python x.py`）遇到超时或用户中断都会触发。
@@ -1362,7 +1362,7 @@ export interface CollectOptions {
  * 实测 `bash -c 'echo hello; sleep 20 &'`：26ms 收到退出码，6 秒后 EOF 仍未到达。
  *
  * 以 EOF 为判据的代价不限于本次调用：调用方不返回 → `run-control` 的 finally
- * 不执行 → `runs.unregister` 不执行 → 该会话此后拒绝所有新任务，且用户点击
+ * 不执行 → `runs.release` 不执行 → 该会话此后拒绝所有新任务，且用户点击
  * 停止也无法停止（停止只是 abort，无法结束一个不返回的 await），直到重启服务。
  *
  * 退出后仍需短暂等待：退出后立即停止读取会静默丢失字节，内核缓冲中可能还有最后一段输出。
@@ -1450,6 +1450,8 @@ export async function collectProcess(
         }, opts.timeoutMs)
   const onAbort = () => killTree(proc)
   opts.signal?.addEventListener('abort', onAbort, { once: true })
+  // 注册之前已中止的信号不再派发 abort 事件，只注册时进程运行到自行退出为止。
+  if (opts.signal?.aborted) onAbort()
 
   try {
     const exitCode = await proc.exited

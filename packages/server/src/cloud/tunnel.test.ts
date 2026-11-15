@@ -23,6 +23,7 @@ import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import { serve } from '../server.ts'
 import { CLOUD_PROVIDER } from './account.ts'
+import { RemoteAccess } from './remote.ts'
 import { TunnelClient, type TunnelStatus } from './tunnel.ts'
 
 type Received =
@@ -362,6 +363,47 @@ describe('隧道客户端', () => {
     await Bun.sleep(100)
     expect(cloud.hellos.length).toBe(hellos)
   })
+
+  /** 原始失败形状：删除本地云端接口时写入配置失败，拒绝无人处理，`qy serve` 随之退出。 */
+  test('设备已被移除而删除本地云端接口失败：记录日志，不成为未处理的拒绝', async () => {
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown) => rejections.push(reason)
+    process.on('unhandledRejection', onRejection)
+    let attempts = 0
+    const access = new RemoteAccess({
+      config: {
+        providers: {
+          [CLOUD_PROVIDER]: {
+            kind: 'anthropic_messages',
+            apiKey: 'qyd_key',
+            baseUrl: cloud.origin,
+            models: {},
+          },
+        },
+        remote: true,
+      } as QyConfig,
+      origin: cloud.origin,
+      tunnel: true,
+      listener: { start: () => local.port ?? 0, stop: () => {} },
+      pairing: () => ({ token: 'tok', deviceName: '电脑' }),
+      onRevoked: async () => {
+        attempts++
+        throw new Error('注入的配置写入失败')
+      },
+      backoffMs: () => 20,
+    })
+    try {
+      cloud.reject = TUNNEL_CLOSE.deviceRevoked
+      access.sync()
+      await until(() => attempts === 1)
+      for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(rejections).toEqual([])
+      expect(access.snapshot().tunnel).toEqual({ state: 'revoked' })
+    } finally {
+      access.stop()
+      process.off('unhandledRejection', onRejection)
+    }
+  })
 })
 
 describe('远程访问经 serve() 装配', () => {
@@ -373,7 +415,8 @@ describe('远程访问经 serve() 装配', () => {
   const previousCloud = process.env.QYWORK_CLOUD
 
   afterAll(async () => {
-    handle?.stop()
+    // 必须等待：`stop()` 是异步的，未结束时工作区目录仍被占用，随后的删除在 Windows 上以 EBUSY 失败。
+    await handle?.stop()
     store?.close()
     content?.close()
     cloud.stop()

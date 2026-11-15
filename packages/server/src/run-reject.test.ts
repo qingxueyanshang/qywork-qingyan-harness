@@ -6,6 +6,7 @@
  * 目录、三处均无法取得模型、会话装配抛错、装配 adapter 抛错、压缩比例不合法、会话被另一个进程占用），
  * 以及 `runs.ts` 在释放占位时的忙闲广播。这七个出口都不产生 run 行，因此**不会有 `run.finished`**，
  * 终态是 `conversation.busy: false`（约定写在 `core` 的 `RunErrorEvent` 上）。
+ * 准备阶段收到停止不属于拒绝出口：它写入 run 行，以用户中断结束，序列与轮次中途的停止相同。
  * 目标自动继续与跟进消息两条路径由 `goal-loop.test.ts` / `followup.test.ts` 覆盖。
  *
  * 断言的是**整条序列**而不是是否发出过 run.error：遗漏忙闲事件时界面停留在
@@ -31,6 +32,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { EventBus } from './bus.ts'
+import { handleCommand } from './commands.ts'
 import { startRun } from './run-control.ts'
 import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
@@ -170,7 +172,7 @@ test('未配置任何模型：返回结构化的 no_model，忙闲状态恢复�
 
 test('会话已有任务运行中：不发出任何事件，不改变忙闲状态', async () => {
   const cv = conversation()
-  expect(runs.reserve(cv)).toBe(true)
+  expect(runs.reserve(cv, new AbortController())).toBe(true)
   events = []
 
   await startRun(cv, '你好', undefined, deps(config('sk-fake')))
@@ -362,6 +364,94 @@ test('本轮的开始时刻取占位成功的时刻：准备阶段计入耗时�
     expect(started.startedAt).toBeLessThanOrEqual(syncAt)
     expect(listRuns(store, cv).map((r) => r.createdAt)).toEqual([started.startedAt])
   } finally {
+    provider.stop(true)
+  }
+})
+
+/**
+ * 原始失败形状：停止指令在占位之后、写入 run 行之前到达时，注册表中只有占位而没有中止句柄，
+ * 指令被回复为「本轮已结束」，该轮在准备阶段结束后照常开始。价格同步在此挂起，使停止落在准备阶段。
+ * 终态与轮次中途的停止相同：用户消息落库，本轮以用户中断结束，事件序列含开始与结束。
+ */
+test('准备阶段收到停止：不回复「本轮已结束」，本轮以用户中断结束，不发出模型请求，会话恢复空闲', async () => {
+  // 返回 401：停止未生效时本轮立即以 auth_failed 结束，用例以断言失败结束而不是等待超时。
+  let requests = 0
+  const provider = Bun.serve({
+    port: 0,
+    fetch: () => {
+      requests++
+      return new Response('未授权', { status: 401 })
+    },
+  })
+  let release = () => {}
+  try {
+    const cloudConfig = {
+      ...config('sk-fake'),
+      providers: {
+        qywork: {
+          kind: 'openai_responses',
+          apiKey: 'sk-fake',
+          baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+          models: { 'deepseek-v4-flash': {} },
+        },
+      },
+    } as QyConfig
+    const ws = upsertWorkspace(store, dir, 'interrupt-ws').id as never
+    events = []
+    const cv = createConversation(store, {
+      workspaceId: ws,
+      provider: 'qywork',
+      model: 'deepseek-v4-flash',
+    }).id
+    let entered = () => {}
+    const syncing = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const sent: { type: string; message?: string }[] = []
+    const socket = {
+      data: { authed: true, id: 'c1', origin: 'cli' },
+      send: (raw: string) => sent.push(JSON.parse(raw)),
+    }
+    const idle = waitForIdle(cv)
+    await startRun(cv, '你好', undefined, {
+      ...deps(cloudConfig),
+      syncCloudPrices: async () => {
+        entered()
+        await held
+      },
+    })
+    await syncing
+
+    await handleCommand({ type: 'conversation.interrupt', conversationId: cv }, {
+      ...deps(cloudConfig),
+      ws: socket,
+    } as never)
+    release()
+    await idle
+
+    expect(sent).toEqual([])
+    // 分支广播属于工作区，与本轮无关。
+    expect(trace().filter((t) => t !== 'git.state')).toEqual([
+      'busy=true',
+      'conversation.updated',
+      'run.started',
+      'run.finished',
+      'busy=false',
+    ])
+    const finished = events.map((f) => f.event).find((e) => e.type === 'run.finished')
+    expect(finished).toMatchObject({ status: 'interrupted', stopReason: 'user_interrupt' })
+    expect(listMessages(store, cv).map((m) => m.content)).toEqual(['你好'])
+    expect(listRuns(store, cv).map((r) => [r.status, r.stopReason])).toEqual([
+      ['interrupted', 'user_interrupt'],
+    ])
+    expect(listRuns(store, cv)[0]?.interruption).toMatchObject({ source: 'user' })
+    expect(requests).toBe(0)
+    expect(runs.isBusy(cv)).toBe(false)
+  } finally {
+    release()
     provider.stop(true)
   }
 })

@@ -458,7 +458,7 @@ describe('四条防失控规则', () => {
       expect(started).not.toBeNull()
       expect(runs.armedOf(cv)).not.toBeNull()
 
-      runs.interrupt((started as { runId: string }).runId as never)
+      runs.interruptConversation(cv)
       const paused = await waitFor((e) => e.type === 'goal' && e.goal.status === 'paused')
       expect(paused).not.toBeNull()
       expect(runs.armedOf(cv)).toBeNull()
@@ -654,11 +654,8 @@ describe('conversation.interrupt 指令', () => {
     const sock = socket()
     const d = deps()
     const controller = new AbortController()
-    d.runs.register({
-      runId: 'rn_live' as never,
-      conversationId: 'cv_live' as never,
-      controller,
-    } as never)
+    d.runs.reserve('cv_live' as never, controller)
+    d.runs.register('cv_live' as never, 'rn_live' as never)
 
     await handleCommand({ type: 'conversation.interrupt', conversationId: 'cv_live' } as never, {
       ...d,
@@ -666,6 +663,7 @@ describe('conversation.interrupt 指令', () => {
     })
     expect(controller.signal.aborted).toBe(true)
     expect(sock.sent).toHaveLength(0)
+    d.runs.release('cv_live' as never)
   })
 })
 
@@ -712,7 +710,7 @@ describe('用户点击继续', () => {
 
   test('会话正忙时拒绝，不排入第二轮', () => {
     const cv = conversation()
-    runs.reserve(cv)
+    runs.reserve(cv, new AbortController())
     const r = resumeGoal(cv, deps())
     expect(r.ok).toBe(false)
     runs.release(cv)

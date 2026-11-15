@@ -89,7 +89,7 @@ export function handleHello(
     id: ws.data.id,
     origin: frame.origin,
     conversations: frame.subscribe ? new Set(frame.subscribe) : null,
-    send: (f) => ws.send(JSON.stringify(f)),
+    send: (f) => sendOrClose(ws, f),
   }
   const off = deps.bus.subscribe(subscriber)
   deps.unsubscribers.set(ws.data.id, off)
@@ -140,8 +140,21 @@ export function handleHello(
   ws.send(JSON.stringify(ok))
   deps.announceGit()
 
-  for (const f of backlog) ws.send(JSON.stringify(f))
+  for (const f of backlog) if (!sendOrClose(ws, f)) break
   deps.announceDesktopTarget()
+}
+
+/**
+ * 发送一个事件帧。发送缓冲超过上限时 `ws.send` 返回 0，该帧已被丢弃，此时关闭连接并返回 false。
+ *
+ * 不要在丢弃后保持连接：客户端不检测 seq 的缺口，被丢弃的可能是 `run.finished`，界面会一直显示运行中。
+ * 关闭后客户端按最后收到的 seq 重连，由 `bus.replayFrom` 决定补发或整段重新拉取。
+ * 客户端只在收到 `hello.err` 时停止重连，与关闭码无关；关闭码取 1013，与握手被拒的 1008 在日志中区分。
+ */
+function sendOrClose(ws: ServerWebSocket<SocketData>, frame: EventEnvelope): boolean {
+  if (ws.send(JSON.stringify(frame)) !== 0) return true
+  ws.close(1013, 'backpressure')
+  return false
 }
 
 /**

@@ -681,7 +681,7 @@ function listTurnsBefore(
     if (row.origin === null) {
       const text =
         row.text.trim() ||
-        readJson<{ name: string }[]>(row.attachments, [])
+        readJson<{ name: string }[]>(row.attachments, [], 'messages.attachments')
           .map((a) => a.name)
           .join('、')
       turns.push({ id: row.id, text, reply: '' })
@@ -1013,7 +1013,7 @@ export function listConversationChangesPage(
     byTurn.set(turnId, list)
   }
   for (const row of writeRows) {
-    const payload = readJson<Step['payload']>(row.payload, null)
+    const payload = readJson<Step['payload']>(row.payload, null, 'steps.payload')
     if (payload?.kind !== 'tool_result' || !payload.outcome.fileChanges?.length) continue
     push(row.turn_id, row.at, row.seq, {
       id: row.id,
@@ -1028,7 +1028,7 @@ export function listConversationChangesPage(
     push(row.turn_id, row.at + row.duration, Number.MAX_SAFE_INTEGER, {
       id: `${row.step_id}:${row.node_id}`,
       toolName: 'cli',
-      fileChanges: readJson<FileChange[]>(row.changes, []),
+      fileChanges: readJson<FileChange[]>(row.changes, [], 'steps.payload'),
       via: { name: row.label ?? '' },
     })
   }
@@ -1249,7 +1249,7 @@ export function appendRunMedia(store: Store, id: RunId, spend: MediaSpend): void
 
 /** 没有生成时不含 `media` 键，与 `RunUsage.media` 的约定一致。 */
 function mediaOf(raw: string): { media?: MediaSpend[] } {
-  const media = readJson<MediaSpend[]>(raw, [])
+  const media = readJson<MediaSpend[]>(raw, [], 'runs.media_usage')
   return media.length ? { media } : {}
 }
 
@@ -1581,6 +1581,25 @@ function pidAlive(pid: number): boolean {
  * 解析，前端无法推测）；整份 payload 替换为只含 outcome 的对象后，该 step 在会话流中
  * 只显示一个红色的「失败」，没有动词、对象与目标，用户无法判断中断发生在哪一步。
  */
+/**
+ * 该轮是否有已进入执行器而未结束的工具调用。与启动时回收（`recoverStaleRuns`）同一判据。
+ *
+ * 只读状态列，不解析 payload：它在一轮的收尾路径上决定终态，payload 损坏时也必须能给出结果，
+ * 否则 run 行停留在 running。
+ */
+export function stepInExecution(store: Store, runId: RunId): boolean {
+  return (
+    store.db
+      .query<{ hit: number }, [string]>(
+        `SELECT EXISTS (
+           SELECT 1 FROM steps
+           WHERE run_id = ? AND status = 'running' AND execution_started_at IS NOT NULL
+         ) AS hit`,
+      )
+      .get(runId)?.hit === 1
+  )
+}
+
 export function settleRunningSteps(store: Store, runId: RunId): void {
   store.db
     .query(
@@ -1683,7 +1702,7 @@ export function listRunContextSnapshots(
     .map((row) => ({
       runId: row.id,
       userMessageId: row.user_message_id,
-      segments: readJson(row.context_snapshot, []),
+      segments: readJson(row.context_snapshot, [], 'runs.context_snapshot'),
     }))
 }
 
@@ -1991,12 +2010,18 @@ export function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     providerCachedTokens: r.provider_cached_tokens,
     providerCacheWriteTokens: r.provider_cache_write_tokens,
     providerCacheWrite1hTokens: r.provider_cache_write_1h_tokens,
-    sentCategories: { ...emptyBreakdown(), ...readJson(r.sent_categories, {}) },
-    omittedCategories: { ...emptyOmitted(), ...readJson(r.omitted_categories, {}) },
+    sentCategories: {
+      ...emptyBreakdown(),
+      ...readJson(r.sent_categories, {}, 'provider_requests.sent_categories'),
+    },
+    omittedCategories: {
+      ...emptyOmitted(),
+      ...readJson(r.omitted_categories, {}, 'provider_requests.omitted_categories'),
+    },
     errorCode: r.error_code,
     errorMessage: r.error_message,
-    diagnostic: readJson(r.diagnostic, null),
-    configuration: readJson(r.configuration, null),
+    diagnostic: readJson(r.diagnostic, null, 'provider_requests.diagnostic'),
+    configuration: readJson(r.configuration, null, 'provider_requests.configuration'),
     payloadHash: r.payload_hash,
     requestBytes: r.request_bytes,
     finishReason: r.finish_reason ?? '',
@@ -2174,7 +2199,7 @@ export function settleToolStep(
         'SELECT payload, run_id, tool_name FROM steps WHERE id = ?',
       )
       .get(id)
-    const before = readJson<Step['payload']>(current?.payload ?? null, null)
+    const before = readJson<Step['payload']>(current?.payload ?? null, null, 'steps.payload')
     const nodes =
       before?.kind === 'tool_call' || before?.kind === 'tool_result' ? before.nodes : undefined
     let settled = nodes ? { ...payload, nodes } : payload
@@ -2225,7 +2250,7 @@ export function appendStepFileChanges(
       )
       .get(id)
     if (!row) return null
-    const payload = readJson<Step['payload']>(row.payload, null)
+    const payload = readJson<Step['payload']>(row.payload, null, 'steps.payload')
     if (payload?.kind !== 'tool_result')
       throw new Error(`执行记录 ${id} 尚未写入结果，无法追加文件改动`)
     const reported = new Set(
@@ -2289,7 +2314,7 @@ export function markImagesUndelivered(store: Store, runId: RunId, toolCallIds: s
       .all(runId, ...toolCallIds)
     const marked: StepId[] = []
     for (const row of rows) {
-      const payload = readJson<Step['payload']>(row.payload, null)
+      const payload = readJson<Step['payload']>(row.payload, null, 'steps.payload')
       if (payload?.kind !== 'tool_result') continue
       store.db
         .query('UPDATE steps SET payload = ? WHERE id = ?')
@@ -2436,7 +2461,7 @@ function rowToConversation(r: ConversationRow): Conversation {
     title: r.title,
     provider: r.provider,
     model: r.model,
-    compactionManifest: readJson(r.compaction_manifest, null),
+    compactionManifest: readJson(r.compaction_manifest, null, 'conversations.compaction_manifest'),
     cacheGeneration: r.cache_generation,
     source: r.source,
     sourceRef: r.source_ref,
@@ -2454,7 +2479,7 @@ function rowToMessage(r: MessageRow): Message {
     conversationId: r.conversation_id,
     role: r.role,
     content: r.content,
-    attachments: readJson(r.attachments, []),
+    attachments: readJson(r.attachments, [], 'messages.attachments'),
     origin: r.origin,
     createdAt: r.created_at,
   }
@@ -2480,13 +2505,13 @@ function rowToRun(r: RunRow): Run {
       reasoningTokens: r.reasoning_tokens,
       cost: r.cost,
       currency: r.currency,
-      turns: readJson(r.usage_turns, []),
+      turns: readJson(r.usage_turns, [], 'runs.usage_turns'),
       ...mediaOf(r.media_usage),
     },
     stepCount: r.step_count,
     errorMessage: r.error_message,
     errorCode: r.error_code,
-    interruption: readJson(r.interruption_detail, null),
+    interruption: readJson(r.interruption_detail, null, 'runs.interruption_detail'),
     dispatchStepId: r.dispatch_step_id,
     dispatchNodeId: r.dispatch_node_id,
     createdAt: r.created_at,
@@ -2508,7 +2533,7 @@ function rowToStep(r: StepRow): Step {
     executionStartedAt: r.execution_started_at,
     durationMs: r.duration_ms,
     content: r.content,
-    payload: readJson(r.payload, null),
+    payload: readJson(r.payload, null, 'steps.payload'),
     status: r.status,
     createdAt: r.created_at,
   }

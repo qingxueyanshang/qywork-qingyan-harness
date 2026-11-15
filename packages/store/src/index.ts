@@ -94,6 +94,7 @@ export {
   settleRunningSteps,
   settleToolStep,
   setWorkspacePinned,
+  stepInExecution,
   touchRun,
   updateRunUsage,
   upsertWorkspace,

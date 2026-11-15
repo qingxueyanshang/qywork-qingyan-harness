@@ -45,12 +45,12 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
 
     case 'conversation.interrupt': {
       /*
-       * 停止该会话正在执行的任务：当前轮次，以及已派发但未返回的子 agent。两者均无法停止时
-       * 必须回复。
+       * 停止该会话正在执行的任务：占用该会话的执行（运行中或尚在准备阶段的轮次、手动压缩），
+       * 以及已派发但未返回的子 agent。两者均无法停止时必须回复。
        *
        * 不回复时客户端得不到任何反馈，无法区分「服务端正在处理」与「指令无人处理」。
-       * 已实测的情形：注册表中已没有该会话的 run（收尾已执行完毕，或仍停在 reserve 尚未
-       * register），而账本中该行仍为 running，界面持续显示运行中，只能重启应用恢复。
+       * 已实测的情形：注册表中已没有该会话的占用（收尾已执行完毕），而账本中该行仍为 running，
+       * 界面持续显示运行中，只能重启应用恢复。
        */
       const stoppedRun = deps.runs.interruptConversation(cmd.conversationId)
       const stopping = new Set(
@@ -230,18 +230,14 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
 
     case 'conversation.compact': {
       // 手动压缩与自动触发使用同一个 `compaction.run()`，区别只在于判据为用户的
-      // 显式意图：不要在此另建压缩路径。
-      // 忙碌检查使用 `isBusy`：子 agent 的回执随时可能发起一轮，而压缩修改的正是该轮要读取的历史。
-      if (deps.runs.isBusy(cmd.conversationId)) {
-        reject(deps.ws, cmd.type, 'conflict', '该会话正在执行，请先中断再压缩')
-        return
-      }
+      // 显式意图：不要在此另建压缩路径。会话被占用时由 `compactConversation` 的占位拒绝。
       const conv = getConversation(deps.store, cmd.conversationId)
       if (!conv) {
         reject(deps.ws, cmd.type, 'invalid_payload', '会话不存在')
         return
       }
-      await compactConversation(cmd.conversationId, deps)
+      const result = await compactConversation(cmd.conversationId, deps)
+      if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
       return
     }
 

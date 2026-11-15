@@ -70,7 +70,7 @@ export function compactionRecords(
     )
     .all(conversationId)
     .flatMap((row) => {
-      const payload = readJson<StepPayload | null>(row.payload, null)
+      const payload = readJson<StepPayload | null>(row.payload, null, 'steps.payload')
       return payload?.kind === 'compaction' ? [{ ...payload, createdAt: row.createdAt }] : []
     })
 }
@@ -215,7 +215,10 @@ export function conversationRequestDetails(
       .all(conversationId)
       .map((row) => [
         row.id,
-        { currency: row.currency, turns: readJson<RunUsage['turns']>(row.usage_turns, []) },
+        {
+          currency: row.currency,
+          turns: readJson<RunUsage['turns']>(row.usage_turns, [], 'runs.usage_turns'),
+        },
       ]),
   )
 

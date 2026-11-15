@@ -66,9 +66,12 @@ export interface SecretSet {
  *
  * 不带 `g` 标志：带 `g` 的正则调用 `.test()` 会保留 `lastIndex`，连续检测多个变量名时
  * 会随机漏判，此类缺陷在安全模块中难以排查。
+ *
+ * 排除 `GIT_CONFIG_KEY_<n>`：其值是 git 配置项的名称，与 `GIT_CONFIG_COUNT`、`GIT_CONFIG_VALUE_<n>` 成组生效。
+ * 只剥离它时 git 的每条命令都以 `missing config key` 失败。只排除这一种写法，同形的其他名称照常剥离。
  */
 export const CREDENTIAL_NAME_PATTERN =
-  /(?:^|[_-])(?:KEY|KEYS|APIKEY|SECRET|SECRETS|TOKEN|PASSWORD|PASSWD|PWD|PASSPHRASE|CREDENTIAL|CREDENTIALS|AUTH|AUTHORIZATION|SESSION|COOKIE|SIGNATURE|PRIVATEKEY|CERT)(?:[_-]|$)/i
+  /^(?!GIT_CONFIG_KEY_\d+$).*?(?:^|[_-])(?:KEY|KEYS|APIKEY|SECRET|SECRETS|TOKEN|PASSWORD|PASSWD|PWD|PASSPHRASE|CREDENTIAL|CREDENTIALS|AUTH|AUTHORIZATION|SESSION|COOKIE|SIGNATURE|PRIVATEKEY|CERT)(?:[_-]|$)/i
 
 /**
  * 必须保留给子进程的变量。

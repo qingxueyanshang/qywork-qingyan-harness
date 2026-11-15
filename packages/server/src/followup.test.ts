@@ -5,6 +5,7 @@
  * `commands.ts` 的 `message.send` 忙闲裁决、对子会话的拒绝、两条 `followup.*` 分支与
  * `conversation.interrupt` 同时停止三类任务、`run-control.ts` 的 `submitMessage`
  * （用户消息与子 agent 回执经由同一条路径）、收尾时发起下一轮及其与目标自动继续的优先级、
+ * 手动压缩（`compactConversation`）对会话的占用与压缩结束后的队列处理、
  * `agent/loop/index.ts` 在 step 边界的注入，以及 `runtime/transcript.ts` 把
  * `kind='user'` 的 step 投影回历史。
  *
@@ -21,12 +22,14 @@ import { join } from 'node:path'
 import type { AgentEvent, ConversationId, EventEnvelope } from '@qywork/core'
 import { buildHistory, type QyConfig } from '@qywork/runtime'
 import {
+  appendMessage,
   appendStep,
   ContentStore,
   contentPathFor,
   createConversation,
   createGoal,
   currentGoal,
+  getConversation,
   listMessages,
   listRuns,
   listSteps,
@@ -407,7 +410,7 @@ describe('收尾之后发起下一轮', () => {
     script = [held.turn]
     const sock = socket()
     void startRun(cv, '第一句', undefined, deps())
-    const started = await waitFor((e) => e.type === 'run.started')
+    await waitFor((e) => e.type === 'run.started')
     await handleCommand(
       {
         type: 'message.send',
@@ -420,7 +423,7 @@ describe('收尾之后发起下一轮', () => {
     )
     expect(runs.queueOf(cv)[0]?.steer).toBe(true)
 
-    runs.interrupt((started as { runId: string }).runId as never)
+    runs.interruptConversation(cv)
     held.release()
     await idle(cv)
     await settle()
@@ -691,7 +694,7 @@ describe('队列卡片上的两个操作', () => {
     const sock = socket()
 
     void startRun(cv, '第一句', undefined, deps())
-    const started = await waitFor((e) => e.type === 'run.started')
+    await waitFor((e) => e.type === 'run.started')
     await handleCommand(
       {
         type: 'message.send',
@@ -709,7 +712,7 @@ describe('队列卡片上的两个操作', () => {
     expect(runs.queueOf(cv)[0]?.steer).toBe(true)
 
     // 中断当前一轮，使会话空闲且不发起下一轮。
-    runs.interrupt((started as { runId: string }).runId as never)
+    runs.interruptConversation(cv)
     held.release()
     await idle(cv)
     expect(runs.queueOf(cv)).toHaveLength(1)
@@ -930,4 +933,132 @@ describe('按会话停止', () => {
     })
     expect(sock.sent[0]).toMatchObject({ type: 'command.rejected', reason: 'conflict' })
   })
+})
+
+/**
+ * 手动压缩与一轮运行占用同一张表。
+ *
+ * 原始失败形状：压缩只在开始时检查一次忙态，不占用会话。压缩期间发送的消息立即发起一轮，
+ * 与压缩并发读写同一份历史；第二条压缩指令使上游收到两次摘要请求；停止指令无法中止压缩。
+ */
+describe('手动压缩占用会话', () => {
+  /** 有可折叠历史的会话：手动压缩必然发出一次摘要请求。 */
+  function longConversation(): ConversationId {
+    const cv = conversation()
+    for (let i = 0; i < 5; i++) {
+      appendMessage(store, {
+        conversationId: cv,
+        role: 'user',
+        content: `第${i}条${'核对材料。'.repeat(500)}`,
+      })
+    }
+    return cv
+  }
+
+  async function until(what: () => boolean, label: string): Promise<void> {
+    const deadline = Date.now() + 10_000
+    while (!what()) {
+      if (Date.now() > deadline) throw new Error(`等待超时：${label}`)
+      await Bun.sleep(10)
+    }
+  }
+
+  const compact = (cv: ConversationId, sock: ReturnType<typeof socket>) =>
+    handleCommand({ type: 'conversation.compact', conversationId: cv } as never, {
+      ...deps(),
+      ws: sock.ws,
+    })
+
+  const send = (cv: ConversationId, id: string, sock: ReturnType<typeof socket>) =>
+    handleCommand(
+      {
+        type: 'message.send',
+        clientRequestId: id,
+        conversationId: cv,
+        content: '压缩期间发的一句',
+      } as never,
+      { ...deps(), ws: sock.ws },
+    )
+
+  test('摘要请求挂起期间：消息进入队列，第二条压缩被拒绝，停止使压缩以 aborted 结束且历史不变', async () => {
+    const cv = longConversation()
+    const held = gate(textTurn('已整理材料，继续核对。'))
+    script = [held.turn]
+    const sock = socket()
+    let compacting: Promise<void> = Promise.resolve()
+    try {
+      compacting = compact(cv, sock)
+      await until(() => bodies.length === 1, '摘要请求到达')
+      expect(runs.isBusy(cv)).toBe(true)
+      expect(runs.claimUpdate()).toBe(false)
+
+      await send(cv, 'during-compact', sock)
+      expect(runs.queueOf(cv).map((f) => f.id)).toEqual(['during-compact'])
+      await compact(cv, sock)
+      expect(sock.sent).toEqual([
+        expect.objectContaining({
+          type: 'command.rejected',
+          command: 'conversation.compact',
+          reason: 'conflict',
+        }),
+      ])
+      await settle()
+      expect(bodies).toHaveLength(1)
+
+      await handleCommand({ type: 'conversation.interrupt', conversationId: cv } as never, {
+        ...deps(),
+        ws: sock.ws,
+      })
+      await compacting
+      expect(sock.sent).toHaveLength(1)
+      const phases = events.flatMap((f) => (f.event.type === 'compaction' ? [f.event] : []))
+      expect(phases.at(-1)).toMatchObject({ phase: 'failed', reasonCode: 'aborted' })
+      expect(getConversation(store, cv)?.compactionManifest).toBeNull()
+      expect(listRuns(store, cv).map((r) => [r.status, r.stopReason])).toEqual([
+        ['interrupted', 'user_interrupt'],
+      ])
+
+      // 被停止的压缩与被停止的一轮相同：不发起下一轮，条目留在队列。
+      await settle()
+      expect(runs.isBusy(cv)).toBe(false)
+      expect(runs.queueOf(cv).map((f) => f.id)).toEqual(['during-compact'])
+      expect(bodies).toHaveLength(1)
+    } finally {
+      runs.cancelUpdate()
+      held.release()
+      await compacting
+      await idle(cv)
+    }
+  }, 30_000)
+
+  test('压缩正常结束后，期间排队的消息发起下一轮', async () => {
+    const cv = longConversation()
+    const held = gate(textTurn('已整理材料，继续核对。'))
+    script = [held.turn, ok(textTurn('压缩之后的回答。'))]
+    const sock = socket()
+    let compacting: Promise<void> = Promise.resolve()
+    try {
+      compacting = compact(cv, sock)
+      await until(() => bodies.length === 1, '摘要请求到达')
+      await send(cv, 'after-compact', sock)
+      expect(runs.queueOf(cv).map((f) => f.id)).toEqual(['after-compact'])
+      expect(bodies).toHaveLength(1)
+
+      held.release()
+      await compacting
+      const started = await waitFor((e) => e.type === 'run.started')
+      expect(started?.type === 'run.started' && started.userMessage?.content).toBe(
+        '压缩期间发的一句',
+      )
+      await idle(cv)
+      expect(bodies).toHaveLength(2)
+      expect(getConversation(store, cv)?.compactionManifest).not.toBeNull()
+      expect(runs.queueOf(cv)).toEqual([])
+      expect(sock.sent).toEqual([])
+    } finally {
+      held.release()
+      await compacting
+      await idle(cv)
+    }
+  }, 30_000)
 })

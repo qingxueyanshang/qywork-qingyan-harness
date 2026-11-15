@@ -45,6 +45,7 @@
 
 import type { ChildProcess } from 'node:child_process'
 import { spawn } from 'node:child_process'
+import { createLineFramer } from '@qywork/core'
 import type { PluginManifest, PluginPermission } from './manifest.ts'
 import { type PluginRuntime, resolvePluginRuntime } from './runtime.ts'
 
@@ -52,6 +53,12 @@ import { type PluginRuntime, resolvePluginRuntime } from './runtime.ts'
 export const CALL_TIMEOUT_MS = 60_000
 /** 启动握手超时。 */
 const READY_TIMEOUT_MS = 10_000
+/**
+ * stdout 的单行上限（字符）。宿主能力中单行最长的合法请求是 `fs.write`：正文上限 8 MiB
+ * （`runtime` 包 `capabilities.ts` 的 `MAX_WRITE_BYTES`），全部为控制字符时 JSON 转义为 `\uXXXX`，
+ * 最长约 5000 万字符。取 64 Mi 字符。超过时终止插件进程，进行中的调用全部失败。
+ */
+const MAX_LINE_CHARS = 64 * 1024 * 1024
 
 /**
  * 一次工具调用的可信身份，由宿主按 `ToolContext` 组装。
@@ -124,7 +131,7 @@ export class PluginHost {
       unlisten: () => void
     }
   >()
-  private buffer = ''
+  private readonly lines = createLineFramer(MAX_LINE_CHARS)
   private ready = false
   private exited: { code: number | null; signal: string | null } | null = null
 
@@ -216,12 +223,9 @@ export class PluginHost {
   }
 
   private onStdout(chunk: string): void {
-    this.buffer += chunk
-    for (;;) {
-      const idx = this.buffer.indexOf('\n')
-      if (idx < 0) break
-      const line = this.buffer.slice(0, idx).trim()
-      this.buffer = this.buffer.slice(idx + 1)
+    const framed = this.lines.push(chunk)
+    for (const raw of framed.lines) {
+      const line = raw.trim()
       if (!line) continue
 
       let msg: Record<string, unknown>
@@ -235,6 +239,12 @@ export class PluginHost {
       }
       void this.dispatch(msg)
     }
+    if (!framed.overflow) return
+    const reason = `插件单行输出超过 ${MAX_LINE_CHARS} 个字符，已终止：${this.opts.manifest.id}`
+    this.opts.onLog?.(`[${this.opts.manifest.id}] ${reason}`)
+    // 先终止再拒绝：`stop` 置空 `proc` 之后，`settle` 不再向正在退出的进程发送作废通知。
+    this.stop()
+    for (const [id] of [...this.pending]) this.settle(id)?.reject(new Error(reason))
   }
 
   private async dispatch(msg: Record<string, unknown>): Promise<void> {

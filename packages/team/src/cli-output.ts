@@ -2,9 +2,17 @@
  * 外部 CLI 的 stdout 只解析一次：实时正文、最终结果、会话号与终态都取自同一输出流。
  * 协议由厂商表声明；纯文本 CLI 只能结合退出码与非空正文判断，不能推测自然语言是否表示失败。
  */
+import { createLineFramer } from '@qywork/core'
 import type { CliAgent } from './types.ts'
 
 type OutputSpec = Pick<CliAgent, 'output' | 'protocol' | 'resultField' | 'sessionField' | 'narrate'>
+
+/**
+ * JSONL 的单行上限（字符）。一行是一个事件，工具结果中的图片以 base64 内嵌其中；厂商未给出单个事件的上限，
+ * 取 64 Mi 字符，高于本仓库读取图片的上限 10 MiB（`tools` 包 `files.ts` 的 `MAX_IMAGE_BYTES`）base64 后的约 1400 万字符。
+ * 超过时该行及之后的输出不再解析，结果报告为失败。
+ */
+const MAX_LINE_CHARS = 64 * 1024 * 1024
 
 /** 按点分路径取字符串，段尾 [] 遍历数组。 */
 function pick(root: unknown, path: string): string[] {
@@ -25,7 +33,10 @@ function pick(root: unknown, path: string): string[] {
 }
 
 export function createCliOutput(agent: OutputSpec) {
+  /** `text` 与 `json` 格式的全部输出：前者即结果，后者是一份完整的 JSON。 */
   let buffer = ''
+  const lines = createLineFramer(MAX_LINE_CHARS)
+  let overflow = ''
   let result = ''
   let session = ''
   let error = ''
@@ -106,29 +117,31 @@ export function createCliOutput(agent: OutputSpec) {
 
   return {
     feed(chunk: string): string {
+      if (agent.output === 'jsonl') {
+        const framed = lines.push(chunk)
+        if (framed.overflow) {
+          overflow = `CLI 输出中有一行超过 ${MAX_LINE_CHARS} 个字符，该行及之后的输出未解析`
+        }
+        return framed.lines.map(take).join('')
+      }
       buffer += chunk
-      if (agent.output === 'text') return chunk
-      if (agent.output === 'json') return ''
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-      return lines.map(take).join('')
+      return agent.output === 'text' ? chunk : ''
     },
     flush(): string {
-      if (agent.output === 'text') {
-        result = buffer.trim()
-        buffer = ''
-        return ''
-      }
+      if (agent.output === 'jsonl') return take(lines.end())
       const rest = buffer
       buffer = ''
-      return take(rest)
+      if (agent.output === 'json') return take(rest)
+      result = rest.trim()
+      return ''
     },
     result() {
       const output = result || (agent.output === 'jsonl' ? parts.join('\n').trim() : '')
       return {
         output,
         session,
-        error,
+        // 溢出优先：其后的终态事件未经解析，此前的完成判定不再可信。
+        error: overflow || error,
         // 结构化协议必须有真实的最终正文；中间输出只用于保留失败现场。
         hasResult: !!(agent.protocol ? result.trim() : output.trim()),
         incomplete:

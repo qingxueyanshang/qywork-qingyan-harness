@@ -381,6 +381,8 @@ export {
   workflowResults,
   workflowTransitionOf,
 } from './domain/workflow.ts'
+// 带单行上限的按行分帧：MCP、插件进程与外部 CLI 的输出共用
+export { createLineFramer, type LineFramer, type LineFrames } from './lines.ts'
 // 运行日志：各包只调用 `log.*`，输出位置由 `setLogSink` 注入的 sink 决定
 export {
   formatLogLine,

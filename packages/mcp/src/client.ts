@@ -190,7 +190,8 @@ export class McpClient {
     await transport.start({
       onMessage: (msg) => this.dispatch(msg),
       onClose: (reason) => {
-        this.closedReason = reason
+        // 保留首个原因：单行溢出或启动失败之后进程退出，会再报告一次退出码，首个才是根因。
+        this.closedReason ??= reason
         // 传输断开后，必须逐个拒绝在途请求。保留它们会使调用方
         // 一直等待至超时，而超时在用户侧表现为无响应。
         this.failAll(new Error(reason))

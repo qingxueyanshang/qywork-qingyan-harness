@@ -225,75 +225,14 @@ export async function runBuiltinMember(
   /*
    * 子会话必须进入与主会话相同的 RunManager 生命周期。
    *
-   * 只把 `run.started`、正文与 `run.finished` 转发到事件总线而不 register 子 run 时，
+   * 只把 `run.started`、正文与 `run.finished` 转发到事件总线而不登记子 run 时，
    * 握手与 `conversation.busy` 都不知道子会话正在运行：用户在其开始运行后才打开时，
    * 前端能从账本读取正文，却没有权威忙态，因而不显示实时状态条，主会话与子会话的表现随之不一致。
    *
-   * 调用方只提供 AbortSignal，因此此处创建一个可登记的 controller，并把父信号单向
-   * 传入。父会话停止时仍会中断成员；RunManager 统一的停止与关闭服务路径也能直接
-   * 中断该子 run，无需另建一份子会话忙闲状态。
+   * 派发方已占用该子会话（`runs.reserve`），登记的中止句柄即 `input.signal` 所属的 controller：
+   * RunManager 统一的停止与关闭服务路径经由它中断该子 run。此处在 `run.started` 时补入 runId，
+   * 结束时清除 runId；占位由派发方释放（派发方可能随后重新派发，期间占位不中断）。
    */
-  /*
-   * 派发该成员的顶层会话。子会话的归属只在创建时写入，事后无法从其他来源推导，
-   * 因此直接读取账本中的字段；没有父会话时（顶层会话自身运行）即为其自身。
-   */
-  const ownerConversation =
-    getConversation(deps.store, input.conversationId)?.parentConversationId ?? input.conversationId
-  const workspaceId = ownerWorkspace(deps.store, ownerConversation)
-
-  const controller = new AbortController()
-  const abortFromParent = () => controller.abort(input.signal.reason)
-  if (input.signal.aborted) abortFromParent()
-  else input.signal.addEventListener('abort', abortFromParent, { once: true })
-
-  const session = new Session({
-    store: deps.store,
-    config: deps.config,
-    content: deps.content,
-    workspaceRoot: ctx.workspaceRoot,
-    signal: controller.signal,
-    member: true,
-    ...(extraSystem ? { extraSystem } : {}),
-    ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
-    /*
-     * 成员会话与顶层会话使用同一判定，并各自取得一份控制身份：控制槽按执行者分配，
-     * 成员之间各自占用不同页面，访问同一页面时才返回 busy。不在此处接入时，
-     * 这条入口默认不含浏览器，且无法给出原因。
-     *
-     * 控制归属记录的是派发该成员的顶层会话：界面上的「停止」发送
-     * `conversation.interrupt`，该指令只接受顶层会话（并连带停止其名下的子 agent）。
-     * 记录成员会话 id 时，该按钮无法停止任何一轮。
-     */
-    ...(deps.browser?.available() && workspaceId
-      ? { browser: deps.browser.portFor(ownerConversation, workspaceId) }
-      : {}),
-    /*
-     * 成员会话与顶层会话使用同一判定，并各自取得一份执行者身份：撤销按执行者记录，
-     * 父会话停止时成员的 Session 被 abort，撤销的只是成员名下的排队请求。
-     *
-     * 控制归属记录的是派发该成员的顶层会话，理由与浏览器相同：界面上的「停止」发送
-     * `conversation.interrupt`，该指令只接受顶层会话。
-     */
-    ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(ownerConversation) } : {}),
-    // 成员会话与顶层会话使用同一判定：处理文档的成员同样需要 `office`。
-    ...officePortOf(deps),
-    // 父会话向正在执行的成员派发的任务排入成员自己的队列（`delegate.ts`），在成员的 step 边界注入。
-    followUps: (id) => deps.runs.takeSteered(id),
-    // 画布与顶层会话使用同一个服务：成员修改的节点同样即时推送给界面。
-    // 设计稿渲染使用内置浏览器的隐藏页，归属同上记为顶层会话；宿主不可用时画布端口不提供渲染。
-    ...(deps.canvas && workspaceId
-      ? {
-          canvas: canvasPort(
-            deps.canvas,
-            { id: workspaceId, root: ctx.workspaceRoot },
-            deps.browser?.available()
-              ? artRenderOf(deps.browser, ownerConversation, workspaceId, ctx.workspaceRoot)
-              : undefined,
-          ),
-        }
-      : {}),
-  })
-
   let text = ''
   let error: string | null = null
   const conversationId = input.conversationId
@@ -301,8 +240,67 @@ export async function runBuiltinMember(
   let stop: StopReason | null = null
   let detail: string | null = null
   let code: ErrorCode | null = null
+  let session: Session | null = null
 
+  // 装配 Session 同样在 try 中：账本读取或装配抛出时以失败结束，由下方收尾。
   try {
+    /*
+     * 派发该成员的顶层会话。子会话的归属只在创建时写入，事后无法从其他来源推导，
+     * 因此直接读取账本中的字段；没有父会话时（顶层会话自身运行）即为其自身。
+     */
+    const ownerConversation =
+      getConversation(deps.store, input.conversationId)?.parentConversationId ??
+      input.conversationId
+    const workspaceId = ownerWorkspace(deps.store, ownerConversation)
+
+    session = new Session({
+      store: deps.store,
+      config: deps.config,
+      content: deps.content,
+      workspaceRoot: ctx.workspaceRoot,
+      signal: input.signal,
+      member: true,
+      ...(extraSystem ? { extraSystem } : {}),
+      ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
+      /*
+       * 成员会话与顶层会话使用同一判定，并各自取得一份控制身份：控制槽按执行者分配，
+       * 成员之间各自占用不同页面，访问同一页面时才返回 busy。不在此处接入时，
+       * 这条入口默认不含浏览器，且无法给出原因。
+       *
+       * 控制归属记录的是派发该成员的顶层会话：界面上的「停止」发送
+       * `conversation.interrupt`，该指令只接受顶层会话（并连带停止其名下的子 agent）。
+       * 记录成员会话 id 时，该按钮无法停止任何一轮。
+       */
+      ...(deps.browser?.available() && workspaceId
+        ? { browser: deps.browser.portFor(ownerConversation, workspaceId) }
+        : {}),
+      /*
+       * 成员会话与顶层会话使用同一判定，并各自取得一份执行者身份：撤销按执行者记录，
+       * 父会话停止时成员的 Session 被 abort，撤销的只是成员名下的排队请求。
+       *
+       * 控制归属记录的是派发该成员的顶层会话，理由与浏览器相同：界面上的「停止」发送
+       * `conversation.interrupt`，该指令只接受顶层会话。
+       */
+      ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(ownerConversation) } : {}),
+      // 成员会话与顶层会话使用同一判定：处理文档的成员同样需要 `office`。
+      ...officePortOf(deps),
+      // 父会话向正在执行的成员派发的任务排入成员自己的队列（`delegate.ts`），在成员的 step 边界注入。
+      followUps: (id) => deps.runs.takeSteered(id),
+      // 画布与顶层会话使用同一个服务：成员修改的节点同样即时推送给界面。
+      // 设计稿渲染使用内置浏览器的隐藏页，归属同上记为顶层会话；宿主不可用时画布端口不提供渲染。
+      ...(deps.canvas && workspaceId
+        ? {
+            canvas: canvasPort(
+              deps.canvas,
+              { id: workspaceId, root: ctx.workspaceRoot },
+              deps.browser?.available()
+                ? artRenderOf(deps.browser, ownerConversation, workspaceId, ctx.workspaceRoot)
+                : undefined,
+            ),
+          }
+        : {}),
+    })
+
     // 会话已存在，接口与模型记录在该会话行上；此处不再传递模型名。
     for await (const ev of session.ask(input.prompt, conversationId, {
       ...(input.dispatch ? { dispatch: input.dispatch } : {}),
@@ -310,14 +308,9 @@ export async function runBuiltinMember(
     })) {
       if (ev.type === 'run.started') {
         runId = ev.runId
-        // 先登记忙态，再暴露子会话入口。用户取得入口后立即打开时，加载侧已能从
-        // 同一张权威表确认「正在运行」，不依赖是否恰好收到 run.started。
-        deps.runs.register({
-          runId,
-          conversationId,
-          controller,
-          startedAt: Date.now(),
-        })
+        // 先补入 runId，再暴露子会话入口。用户取得入口后立即打开时，加载侧已能从
+        // 同一张权威表取得当前轮次，不依赖是否恰好收到 run.started。
+        deps.runs.register(conversationId, runId)
       } else if (ev.type === 'text.delta') text += ev.delta
       else if (ev.type === 'run.error') {
         error = `[${ev.code}] ${ev.message}`
@@ -331,11 +324,8 @@ export async function runBuiltinMember(
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)
   } finally {
-    // 与顶层轮次的收尾相同：已登记的轮次注销，未取得 runId 即结束的释放派发时的占位。
-    if (runId) deps.runs.unregister(runId)
-    else deps.runs.release(conversationId)
-    input.signal.removeEventListener('abort', abortFromParent)
-    await session.dispose().catch((reason) => {
+    if (runId) deps.runs.register(conversationId, null)
+    await session?.dispose().catch((reason) => {
       error = `扩展关闭失败：${String(reason)}`
     })
   }

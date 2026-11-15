@@ -783,4 +783,13 @@ describe('缓存写入的档位', () => {
     expect(overTotal.cacheWriteTokens).toBe(600)
     expect(overTotal.cacheWrite1hTokens).toBe(600)
   })
+
+  /** 原始失败形状：usage 为空对象时记为 provider 回报，账本把全部为 0 的用量当作真实值。 */
+  test('usage 为空对象或字段不是数值时保持未回报', async () => {
+    for (const empty of [{}, { input_tokens: '10', output_tokens: null }]) {
+      const usage = await usageOf(textTurn(empty, empty))
+      expect(usage.source).toBe('estimated')
+    }
+    expect((await usageOf(textTurn({}, { output_tokens: 5 }))).source).toBe('provider')
+  })
 })

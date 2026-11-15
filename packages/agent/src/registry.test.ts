@@ -126,6 +126,35 @@ describe('执行入口 fail-closed', () => {
     ])
   })
 
+  /**
+   * 原始失败形状：裁决读取会话的权限模式时账本损坏而抛出，异常越过执行器，整轮以失败结束，
+   * 已登记「即将执行」的该调用被记为执行状态不明。
+   */
+  test('权限裁决抛出时返回未执行的结构化失败，不执行工具', async () => {
+    const r = new ToolRegistry()
+    let ran = false
+    r.register({
+      ...spec('writer'),
+      permissionEffect: 'write',
+      fn: async () => {
+        ran = true
+        return { status: 'success', message: 'ok' }
+      },
+    })
+    const ctx = {
+      requestPermission: async () => {
+        throw new Error('steps.payload 无法解析')
+      },
+    } as unknown as ToolContext
+    expect(await r.execute('writer', {}, ctx)).toEqual({
+      status: 'failure',
+      executed: false,
+      message: '工具 writer 的权限裁决出错，未执行：steps.payload 无法解析',
+      errorKind: 'permission_check_failed',
+    })
+    expect(ran).toBe(false)
+  })
+
   test('注册表未命中返回未执行的结构化失败', async () => {
     const out = await new ToolRegistry().execute('missing_tool', {}, {} as unknown as ToolContext)
     expect(out).toEqual({

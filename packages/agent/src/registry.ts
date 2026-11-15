@@ -1765,12 +1765,26 @@ export class ToolRegistry {
     const effect = resolvePermissionEffect(spec, args)
     let callCtx = ctx
     if (effect !== 'internal_control') {
-      const command = (await spec.commandLine?.(args, ctx)) ?? null
-      const verdict = await ctx.requestPermission({
-        toolName: name,
-        args,
-        ...(command !== null ? { command } : {}),
-      })
+      let verdict: Awaited<ReturnType<typeof ctx.requestPermission>>
+      /*
+       * 裁决本身抛出（读取会话的权限模式时账本损坏）时工具尚未执行：以 `executed: false` 的失败返回。
+       * 不要让异常越过本函数：调用方会以整轮失败结束，已登记「即将执行」的该调用随后被记为执行状态不明。
+       */
+      try {
+        const command = (await spec.commandLine?.(args, ctx)) ?? null
+        verdict = await ctx.requestPermission({
+          toolName: name,
+          args,
+          ...(command !== null ? { command } : {}),
+        })
+      } catch (err) {
+        return {
+          status: 'failure',
+          executed: false,
+          message: `工具 ${name} 的权限裁决出错，未执行：${err instanceof Error ? err.message : String(err)}`,
+          errorKind: 'permission_check_failed',
+        }
+      }
       if (!verdict.allowed) {
         // executed=false 是必需的：被拒的调用没有产生任何副作用，
         // 后续的崩溃恢复与重试逻辑依赖这一事实。

@@ -520,6 +520,9 @@ export function makeDelegate(ctx: {
     let resolved: Awaited<ReturnType<typeof resolveTarget>>
     try {
       resolved = await resolveTarget(target, controller.signal, at)
+    } catch (err) {
+      // 解析期间账本读写抛出：与其他无法派发的原因同一出口（`refuse`），该节点以失败结束。
+      resolved = { error: err instanceof Error ? err.message : String(err) }
     } finally {
       deps.subagents.remove(conversationId, dispatchKey, controller)
     }
@@ -553,9 +556,10 @@ export function makeDelegate(ctx: {
     /*
      * 子会话与顶层会话使用同一个占位：同一会话同时只运行一轮。检查与占位在同一个同步块中完成，
      * 与解析目标之后的登记之间没有 await。不占位时，向运行中的子 agent 再次派发会在同一会话中
-     * 启动第二个循环，两轮同时写入同一批文件。占位由成员轮次的 `register` 承接，未能启动时释放。
+     * 启动第二个循环，两轮同时写入同一批文件。占位登记本次派发的 controller，按子会话停止时经由它中止；
+     * 占位由 `perform` 在其 finally 中释放。
      */
-    if (!deps.runs.reserve(id)) {
+    if (!deps.runs.reserve(id, controller)) {
       /*
        * 正在执行的内置子 agent：任务排入它自己的跟进队列，在它下一个 step 边界注入，与用户向顶层会话插入消息是同一条路径。
        * 不写入节点状态：子 agent 的状态按最后一次出现在卡片上的节点判定（`listSubagents`），本次调用不开始也不结束任何执行。
@@ -572,15 +576,10 @@ export function makeDelegate(ctx: {
           : `子 agent ${label} 正在执行，回执返回后再派发`,
       )
     }
-    deps.subagents.add(conversationId, id, {
-      name: label,
-      kind: resolved.conversation.source ?? 'temp',
-      controller,
-    })
-    note(at, nodeId)({ phase: 'working', label, ...kindOf, subagentId: id })
 
     const started = Date.now()
-    void perform(resolved, task, at, controller.signal)
+    // 占位之后紧接着调用 `perform`：登记运行表与写入「进行中」都在它的 try 中，任何一步抛出都释放占位。
+    void perform(resolved, task, at, controller)
       .then((outcome) => complete(resolved, at, outcome, controller, started))
       .catch((err) => {
         // `perform` 内部捕获异常、不抛出，到达此处的是完成回调中的意外异常：
@@ -593,6 +592,7 @@ export function makeDelegate(ctx: {
           started,
         )
       })
+      .catch((err) => unrecorded(at, label, err, resolved))
 
     return {
       ok: true,
@@ -604,17 +604,39 @@ export function makeDelegate(ctx: {
     }
   }
 
-  /** 实际启动执行。**不抛出异常**：失败以返回值表示，终态由 `complete` 统一写入。 */
+  /**
+   * 实际启动执行。**不抛出异常**：失败以返回值表示，终态由 `complete` 统一写入。
+   *
+   * 调用前 `start` 已占用子会话，占位在本函数的 finally 中释放：占位之后的每一步（登记运行表、写入
+   * 「进行中」、成员轮次、外部 CLI、重新派发前的等待）都在同一个 try 中，任何一步抛出都不会留下占位。
+   * 成员轮次与外部 CLI 不释放占位；重新派发期间占位不中断，此时向该子 agent 派发的任务排入它的队列。
+   * 同步部分（直到第一个 await）在 `start` 返回之前执行，返回时节点已是「进行中」。
+   */
   const perform = async (
     resolved: Resolved,
     task: string,
     at: DispatchAt,
-    signal: AbortSignal,
+    controller: AbortController,
   ): Promise<Outcome> => {
+    const { signal } = controller
     const { conversation, role, cli } = resolved
     const notes: string[] = resolved.note ? [resolved.note] : []
     const nodeId = at.nodeId ?? SUBAGENT_NODE_ID
     try {
+      deps.subagents.add(conversationId, conversation.id, {
+        name: conversation.title,
+        kind: conversation.source ?? 'temp',
+        controller,
+      })
+      note(
+        at,
+        nodeId,
+      )({
+        phase: 'working',
+        label: conversation.title,
+        ...(conversation.source ? { kind: conversation.source } : {}),
+        subagentId: conversation.id,
+      })
       if (cli) {
         // 外部 CLI 是本机的另一个进程，执行完毕之前写入的内容只能经由观察器推送获知。
         const stepId = at.stepId
@@ -641,13 +663,10 @@ export function makeDelegate(ctx: {
                   ),
               }
             : {}),
+        }).catch(async (e: unknown) => {
+          await changeWindow.close()
+          throw e
         })
-          .catch(async (e: unknown) => {
-            await changeWindow.close()
-            throw e
-          })
-          // 外部 CLI 不创建轮次，没有 `register` 承接派发时的占位，进程结束时在此释放。
-          .finally(() => deps.runs.release(conversation.id))
         const watched = await changeWindow.close()
         for (const c of watched.changes) {
           if (c.changeType === 'deleted') reported.delete(c.path)
@@ -691,8 +710,8 @@ export function makeDelegate(ctx: {
       /*
        * 一轮以暂时故障（`transientErrorCode`，与轮内重发同一分类）结束时，按 30 秒、2 分钟、5 分钟重新派发，
        * 重试用尽之前不发送失败回执：父会话收到失败回执即会把该项记为失败，而模型服务通常在数分钟内恢复。
-       * 等待期间占住子会话，此时向它派发的任务排入它的队列，在重新派发的一轮中注入；占位失败说明子会话已开始
-       * 其他执行，不再重新派发。用户停止或父会话停止该子 agent 时等待随之取消，不发送回执。
+       * 等待期间占位不中断，此时向它派发的任务排入它的队列，在重新派发的一轮中注入。
+       * 用户停止或父会话停止该子 agent 时等待随之取消，不发送回执。
        */
       let res = await member(task)
       const faults: string[] = []
@@ -703,10 +722,6 @@ export function makeDelegate(ctx: {
         faults.length < TRANSIENT_RETRY_DELAYS_MS.length &&
         !signal.aborted
       ) {
-        if (!deps.runs.reserve(conversation.id)) {
-          notes.push('子 agent 已开始执行其他任务，未自动重新派发')
-          break
-        }
         const error = res.error ?? res.code
         const ms = transientRetryDelay(faults.length)
         faults.push(error)
@@ -718,7 +733,6 @@ export function makeDelegate(ctx: {
         try {
           await wait(ms, signal)
         } catch {
-          deps.runs.release(conversation.id)
           break
         }
         res = await member(redispatchPrompt(error))
@@ -742,6 +756,8 @@ export function makeDelegate(ctx: {
     } catch (err) {
       // 成员会话内部捕获异常、不抛出（`team-run.ts`），到达此处的是装配阶段的意外异常。
       return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      deps.runs.release(conversation.id)
     }
   }
 
@@ -815,6 +831,30 @@ export function makeDelegate(ctx: {
     return `[子 agent 回执] ${who}（subagentId ${resolved.conversation.id}）${tail}`
   }
 
+  /**
+   * 节点终态未能写入账本（写入本身抛出）时的出口：记录日志并直接发送失败回执，不再写入账本。
+   * 再次写入同样会失败；不处理时成为未处理的拒绝，服务进程随之退出。
+   * 图节点按图回执的格式发送；单次派发按子 agent 回执的格式发送，需要 `resolved`。
+   */
+  const unrecorded = (
+    at: DispatchAt,
+    label: string,
+    err: unknown,
+    resolved: Resolved | null,
+  ): void => {
+    const nodeId = at.nodeId ?? SUBAGENT_NODE_ID
+    const error = err instanceof Error ? err.message : String(err)
+    log.error('team', `节点 ${nodeId} 的终态未能写入账本：${error}`, { conversationId })
+    if (at.workflow) {
+      send(
+        `[workflow 回执] ${nodeId}（${label}）失败：${error}\nworkflowId=${at.workflow.workflowId}`,
+        'workflow',
+      )
+    } else if (resolved) {
+      send(head(resolved, false, error), 'subagent')
+    }
+  }
+
   // ─────────────────────────── 图 ───────────────────────────
 
   /** 图节点产出摘录所占的份额（单份视图尺寸的 1/share）：同一条检查点回执中的各节点平分。 */
@@ -854,15 +894,16 @@ export function makeDelegate(ctx: {
      * 而此时该节点在账本中尚无状态，推进器会再次派发它，同一节点因此有两个子 agent。
      */
     const prior = projection.states[plan.nodeId]
+    const label = prior?.label ?? targetLabel(plan.target)
     note(
       at,
       plan.nodeId,
     )({
       phase: 'working',
-      label: prior?.label ?? targetLabel(plan.target),
+      label,
       ...(prior?.kind ? { kind: prior.kind } : {}),
     })
-    void start(plan.target, plan.prompt, {
+    const dispatchAt = {
       runId: at.runId,
       ...(at.stepId ? { stepId: at.stepId } : {}),
       nodeId: plan.nodeId,
@@ -873,7 +914,11 @@ export function makeDelegate(ctx: {
       ...(plan.provider ? { provider: plan.provider } : {}),
       ...(plan.model ? { model: plan.model } : {}),
       ...(plan.effort ? { effort: plan.effort } : {}),
-    })
+    }
+    // 无法派发的原因（含账本读取失败）由 `start` 写为该节点的失败终态；到达此处的拒绝只来自终态写入本身。
+    void start(plan.target, plan.prompt, dispatchAt).catch((err) =>
+      unrecorded(dispatchAt, label, err, null),
+    )
   }
 
   /**
@@ -887,7 +932,13 @@ export function makeDelegate(ctx: {
     at: { runId: string; stepId?: string },
     just: { nodeId: string; failed: boolean; stoppedByParent?: boolean },
   ): void => {
-    const folded = foldWorkflow(listWorkflowRecords(deps.store, conversationId), workflowId)
+    let folded: ReturnType<typeof foldWorkflow>
+    try {
+      folded = foldWorkflow(listWorkflowRecords(deps.store, conversationId), workflowId)
+    } catch (err) {
+      // 读取图记录抛出（记录损坏、数据库错误）与折叠失败同一出口：发送回执，不再推进。
+      folded = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
     if (!folded.ok) {
       send(`[workflow 回执] ${workflowId} 的账本无法读取：${folded.error}`, 'workflow')
       return

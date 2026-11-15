@@ -40,6 +40,8 @@ interface ServerState {
   issueSession: boolean
   /** SSE 流写到一半即断开。 */
   truncateSse: boolean
+  /** tools/call 的 SSE 流只输出一行而不换行，长度超过单行上限（64 Mi 字符）。 */
+  floodSse: boolean
   notifications: string[]
 }
 
@@ -51,6 +53,7 @@ const state: ServerState = {
   deleted: false,
   issueSession: true,
   truncateSse: false,
+  floodSse: false,
   notifications: [],
 }
 
@@ -63,6 +66,7 @@ function reset(over: Partial<ServerState> = {}): void {
     deleted: false,
     issueSession: true,
     truncateSse: false,
+    floodSse: false,
     notifications: [],
     ...over,
   })
@@ -124,6 +128,13 @@ const server = Bun.serve({
       return new Response(JSON.stringify(payload), {
         status: 200,
         headers: { ...headers, 'content-type': 'application/json' },
+      })
+    }
+
+    if (state.floodSse && msg.method === 'tools/call') {
+      return new Response(`event: message\ndata: ${'x'.repeat(64 * 1024 * 1024 + 1)}`, {
+        status: 200,
+        headers: { ...headers, 'content-type': 'text/event-stream' },
       })
     }
 
@@ -296,6 +307,20 @@ describe('失败须区分「配置错误」与「服务端不可用」', () => {
     expect(Date.now() - t0).toBeLessThan(5000)
     await c.stop()
   })
+
+  /** 原始失败形状：SSE 中一行持续输出而不换行时，行缓冲无限增长，该请求等待至超时。 */
+  test('SSE 单行超过上限时取消该响应流，请求以溢出原因失败', async () => {
+    reset({ mode: 'sse' })
+    const c = client()
+    await c.start()
+    state.floodSse = true
+    const message = await c.callTool('echo', { text: 'x' }).then(
+      () => '',
+      (error: Error) => error.message,
+    )
+    expect(message).toContain('响应流中断：单行超过 67108864 个字符')
+    await c.stop()
+  }, 30_000)
 })
 
 describe('批量加载中的 http server', () => {

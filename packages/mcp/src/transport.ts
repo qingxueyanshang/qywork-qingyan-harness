@@ -12,6 +12,14 @@
  */
 
 import { type ChildProcess, spawn } from 'node:child_process'
+import { createLineFramer } from '@qywork/core'
+
+/**
+ * stdio 与 SSE 的单行上限（字符）。一条 JSON-RPC 消息占一行，图片以 base64 内嵌其中：
+ * 单张图片的上限是 10 MiB（`register.ts` 的 `MAX_IMAGE_BYTES`），base64 后约 1400 万字符。
+ * 取 64 Mi 字符，容纳四张达到上限的图片与正文。超过时以溢出原因断开，进行中的请求得到失败。
+ */
+const MAX_LINE_CHARS = 64 * 1024 * 1024
 
 export interface StdioServerSpec {
   transport?: 'stdio'
@@ -59,7 +67,7 @@ export class StdioTransport implements McpTransport {
   private proc: ChildProcess | null = null
   private stopping: Promise<void> | null = null
   private closed: Promise<void> = Promise.resolve()
-  private buffer = ''
+  private readonly lines = createLineFramer(MAX_LINE_CHARS)
   private dead: string | null = null
   private handlers: TransportHandlers | null = null
   /**
@@ -211,23 +219,28 @@ export class StdioTransport implements McpTransport {
     return this.stopping
   }
 
+  /** 开始停止之后即视为断开：进程退出之前写入的请求只会等到退出时被拒绝。 */
   deadReason(): string | null {
-    return this.proc ? null : (this.dead ?? '进程未启动')
+    return this.proc && !this.stopping ? null : (this.dead ?? '进程未启动')
   }
 
   private onStdout(chunk: string): void {
-    this.buffer += chunk
-    for (;;) {
-      const idx = this.buffer.indexOf('\n')
-      if (idx < 0) break
-      const line = this.buffer.slice(0, idx).trim()
-      this.buffer = this.buffer.slice(idx + 1)
+    const framed = this.lines.push(chunk)
+    for (const raw of framed.lines) {
+      const line = raw.trim()
       if (!line) continue
       const msg = tryParse(line)
       if (msg) this.handlers?.onMessage(msg)
       // 部分 server 启动时向 stdout 输出 banner。按协议错误处理会使整个连接失败。
       else this.handlers?.onLog?.(`[mcp:${this.name}] ${line}`)
     }
+    if (!framed.overflow) return
+    this.handlers?.onClose(`MCP server 单行输出超过 ${MAX_LINE_CHARS} 个字符，已断开`)
+    this.stop().catch((err: unknown) => {
+      this.handlers?.onLog?.(
+        `[mcp:${this.name}] ${err instanceof Error ? err.message : String(err)}`,
+      )
+    })
   }
 }
 
@@ -426,18 +439,15 @@ export class HttpTransport implements McpTransport {
       return
     }
     const decoder = new TextDecoder()
-    let buffer = ''
+    const lines = createLineFramer(MAX_LINE_CHARS)
     let answered = false
     let failure: string | null = null
 
     try {
       for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
-        buffer += decoder.decode(chunk, { stream: true })
-        for (;;) {
-          const idx = buffer.indexOf('\n')
-          if (idx < 0) break
-          const line = buffer.slice(0, idx).trim()
-          buffer = buffer.slice(idx + 1)
+        const framed = lines.push(decoder.decode(chunk, { stream: true }))
+        for (const raw of framed.lines) {
+          const line = raw.trim()
           if (!line.startsWith('data:')) continue
           const msg = tryParse(line.slice(5).trim())
           if (!msg) continue
@@ -445,6 +455,11 @@ export class HttpTransport implements McpTransport {
             answered = true
           }
           this.handlers?.onMessage(msg)
+        }
+        // 跳出循环即取消响应体；该请求按下方的未答复路径得到失败。
+        if (framed.overflow) {
+          failure = `单行超过 ${MAX_LINE_CHARS} 个字符`
+          break
         }
       }
     } catch (err) {

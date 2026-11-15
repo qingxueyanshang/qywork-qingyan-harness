@@ -729,8 +729,8 @@ function foldContent(cid: string, ev: AgentEvent): void {
           /*
            * 不要在此处清除「运行中」。终态由服务端的 `conversation.busy`
            * 给出：loop 之外抛出的错误（未配置 API key、档案解析失败）没有
-           * `run.finished`，但 `run-control.ts` 的 finally 必定执行 unregister /
-           * release，这两处是忙闲的唯一裁决点。在此处补充客户端判断，
+           * `run.finished`，但 `run-control.ts` 的 finally 必定释放占用，
+           * 占位与释放是忙闲的唯一裁决点。在此处补充客户端判断，
            * 会使「哪条会话在运行」形成第二份记录。
            */
         }),

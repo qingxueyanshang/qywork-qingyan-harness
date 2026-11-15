@@ -168,6 +168,26 @@ describe('CLI 厂商终态', () => {
     }
   })
 
+  /**
+   * 原始失败形状：JSONL 中一行持续输出而不换行时，行缓冲无限增长。
+   * 缓冲不超过上限由 `core` 的 `lines.test.ts` 锁定；此处锁定结果报告为失败，其后的事件不当作结果。
+   */
+  test('JSONL 中单行超过上限时报告失败，其后的输出不解析', () => {
+    const parser = createCliOutput(codex)
+    parser.feed(`${JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' })}\n`)
+    parser.feed('x'.repeat(64 * 1024 * 1024 + 1))
+    parser.feed(
+      `\n${JSON.stringify(message('之后的正文'))}\n${JSON.stringify({ type: 'turn.completed' })}\n`,
+    )
+    parser.flush()
+    expect(parser.result()).toMatchObject({
+      output: '',
+      session: 'thread-1',
+      error: 'CLI 输出中有一行超过 67108864 个字符，该行及之后的输出未解析',
+      hasResult: false,
+    })
+  })
+
   test('纯文本 CLI 保留原文，不按错误关键词推测任务成败', () => {
     const parser = createCliOutput({ output: 'text' } satisfies Pick<CliAgent, 'output'>)
     parser.feed('说明：已修复 error 处理\n')

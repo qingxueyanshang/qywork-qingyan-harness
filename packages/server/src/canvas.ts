@@ -1016,13 +1016,21 @@ export class CanvasService {
       pending: false,
     }
     if (signal.aborted) return Promise.resolve(stopped)
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const stop = () => resolve(stopped)
       signal.addEventListener('abort', stop, { once: true })
-      void done.then((r) => {
-        signal.removeEventListener('abort', stop)
-        resolve(r)
-      })
+      // 收尾抛出（删除任务记录、移除占位版本时的文件错误）时同样交给等待方：不处理时既成为未处理的拒绝，
+      // 等待方也不会结束。
+      void done.then(
+        (r) => {
+          signal.removeEventListener('abort', stop)
+          resolve(r)
+        },
+        (err: unknown) => {
+          signal.removeEventListener('abort', stop)
+          reject(err)
+        },
+      )
     })
   }
 

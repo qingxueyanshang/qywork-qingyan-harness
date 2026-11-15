@@ -510,8 +510,8 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
      * 硬删除：消息、run、步骤等随外键级联删除，而不是打标记使会话从列表消失
      * （后者是上文的归档）。
      *
-     * 运行中的会话返回 409，判据与 `conversation.compact` 相同：级联删除的
-     * run / step 仍在被该轮写入。
+     * 运行中的会话返回 409（`isBusy`，含手动压缩与运行中的子 agent）：级联删除的
+     * run / step 仍在被写入。
      */
     if (req.method === 'DELETE') {
       const conversation = getConversation(d.store, id)

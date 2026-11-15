@@ -109,6 +109,7 @@ import {
   setConversationTitle,
   settleRunningSteps,
   settleToolStep,
+  stepInExecution,
   touchRun,
   updateGoal,
   upsertWorkspace,
@@ -717,124 +718,6 @@ export class Session {
     const userMessageId = run.userMessageId
 
     /*
-     * 历史 = 消息 + 由 steps 投影出的 assistant/tool 回合。
-     *
-     * 只映射 `listMessages` 不够：该表只有 user 行（全项目唯一的
-     * `appendMessage` 位于上方几行，写入的是 `role:'user'`），因此从第二轮起模型取得的
-     * 输入中只有用户消息、没有任何助手回复，跨轮次的上下文在结构上丢失。
-     */
-    const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
-    const history = await buildHistory(
-      store,
-      conversationId,
-      run.messageIdUpperBound,
-      (content, list) => withAttachments(this.opts.workspaceRoot, content, list as Attachment[]),
-      { preserveAssistantReasoning },
-    )
-
-    /*
-     * 与面板共用账本基准：当前投影的真值回执，或压缩后的派生估算。
-     *
-     * 覆盖边界取该回执所属 run 的消息高水位：其后的历史消息未计入锚点。
-     * 压缩会使此前的真值失效；首个有效新回执到达前按 manifest 的估算推进。
-     * 没有可用基准时，loop 回退到本地估算并标记 `estimated`。
-     *
-     * 真值锚点属于「接口 × 协议 × 模型」这一路线，不只属于模型名。
-     * 同一 model id 配置在两个第三方接口上时，usage 统计口径与实际 tokenizer 都可能不同；
-     * 只有完整路线匹配的数据才可复用。迁移前缺少接口或协议的旧行仍保留用于诊断，
-     * 但不能参与当前上下文的裁决。
-     */
-    const { anchored, compacted } = contextBasis(store, conversationId, {
-      id: adapter.spec.id,
-      providerName: resolvedTarget?.provider ?? '',
-      providerKind: adapter.kind,
-    })
-    const anchorRun = anchored ? getRun(store, anchored.runId) : null
-    // 接口拒绝图片与视频的记录按「接口名 × 模型」匹配：换用其他接口或模型后照常发送。
-    const imagesRejected = conversationRejectsImages(
-      store,
-      conversationId,
-      resolvedTarget?.provider ?? '',
-      adapter.spec.id,
-    )
-    const videosRejected = conversationRejectsVideos(
-      store,
-      conversationId,
-      resolvedTarget?.provider ?? '',
-      adapter.spec.id,
-    )
-    const anchor = anchored
-      ? {
-          tokens:
-            (anchored.providerInputTokens ?? 0) +
-            (anchored.providerCachedTokens ?? 0) +
-            (anchored.providerCacheWriteTokens ?? 0) +
-            (anchored.providerOutputTokens ?? 0),
-          throughMessageId: anchorRun?.messageIdUpperBound ?? null,
-          model: anchored.model,
-          headTokens: envelopeHeadTokens(anchored.sentCategories),
-          // 指纹不匹配时由 loop 替换头部（切换模型时才失效）：只有装配完成后才能确定本轮的信封。
-          envelopeFingerprint: anchored.cacheRouteFingerprint,
-        }
-      : null
-
-    /*
-     * 标题与 `updated_at` 刚被写入，需要广播：不广播时侧栏须等到下次重新获取才更新。
-     *
-     * 从账本读取后再发送，不发送局部变量：`model` 是本轮使用的模型，可被单轮
-     * 覆盖，而该事件描述的是会话属性，用它发送会显示一个会话并未切换到的模型。
-     */
-    const announced = getConversation(store, conversationId)
-    if (announced) {
-      yield {
-        type: 'conversation.updated',
-        conversationId,
-        provider: announced.provider,
-        model: announced.model,
-        title: announced.title,
-        mode: announced.mode,
-        updatedAt: announced.updatedAt,
-      }
-    }
-
-    // run.started 必须由此处发送：没有发送方时客户端无法取得真实 runId，中断和重试
-    // 只能将步骤 id 当作 run id 使用，服务端查询不到时静默不执行任何操作。
-    // 协议中有类型不等于有实现。
-    yield {
-      type: 'run.started',
-      runId: run.id,
-      conversationId,
-      model,
-      userMessageId: userMessageId ?? null,
-      startedAt: run.createdAt,
-      // 正文一并发送：服务端自行发起的轮次（目标自动继续、定时触发、跟进消息发起）
-      // 没有客户端的乐观插入，界面上显示的用户消息只能来自此处。
-      userMessage: {
-        content: prompt,
-        ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
-        // 与上面写入 `messages.origin` 的字段取值相同：两侧口径不一致时，
-        // 回执发起的轮次实时渲染为用户气泡，刷新之后才变为回执行。
-        ...(options?.origin ? { origin: options.origin } : {}),
-      },
-    }
-
-    // 压缩端口绑定到本会话与本 run 的高水位：压缩范围不得超过 run 创建时固定的水位，
-    // 否则会将排队期间新到达的消息一并压缩，而本轮尚未读取这些消息。
-    const compaction = new RuntimeCompaction({
-      store,
-      conversationId,
-      workspaceRoot: this.opts.workspaceRoot,
-      messageIdUpperBound: run.messageIdUpperBound,
-      summarize: makeSummarizer({
-        // 与本轮请求使用同一份规格与同一档位。
-        profile: () => profile,
-        effort: () => effort,
-        signal: this.opts.signal,
-      }),
-      preserveAssistantReasoning,
-    })
-
-    /*
      * 心跳：告知其他进程本轮仍在运行。
      *
      * 账本是共享的，一台机器上同时存在多个写入者（两个工作区的 sidecar、
@@ -859,7 +742,129 @@ export class Session {
      * 因此在此处处理即可，无需另开一条持久化路径。
      */
     let failure: { message: string; code: string } | null = null
+    // 写入 run 行之后的每一步都在该 try 中：任何一步抛出或生成器被提前关闭，由下方的 catch 与 finally
+    // 写入终态。不要把步骤移到 try 之前，否则该步抛出时 run 行停留在 running。
     try {
+      /*
+       * 历史 = 消息 + 由 steps 投影出的 assistant/tool 回合。
+       *
+       * 只映射 `listMessages` 不够：该表只有 user 行（全项目唯一的
+       * `appendMessage` 位于上方几行，写入的是 `role:'user'`），因此从第二轮起模型取得的
+       * 输入中只有用户消息、没有任何助手回复，跨轮次的上下文在结构上丢失。
+       */
+      const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
+      const history = await buildHistory(
+        store,
+        conversationId,
+        run.messageIdUpperBound,
+        (content, list) => withAttachments(this.opts.workspaceRoot, content, list as Attachment[]),
+        { preserveAssistantReasoning },
+      )
+
+      /*
+       * 与面板共用账本基准：当前投影的真值回执，或压缩后的派生估算。
+       *
+       * 覆盖边界取该回执所属 run 的消息高水位：其后的历史消息未计入锚点。
+       * 压缩会使此前的真值失效；首个有效新回执到达前按 manifest 的估算推进。
+       * 没有可用基准时，loop 回退到本地估算并标记 `estimated`。
+       *
+       * 真值锚点属于「接口 × 协议 × 模型」这一路线，不只属于模型名。
+       * 同一 model id 配置在两个第三方接口上时，usage 统计口径与实际 tokenizer 都可能不同；
+       * 只有完整路线匹配的数据才可复用。迁移前缺少接口或协议的旧行仍保留用于诊断，
+       * 但不能参与当前上下文的裁决。
+       */
+      const { anchored, compacted } = contextBasis(store, conversationId, {
+        id: adapter.spec.id,
+        providerName: resolvedTarget?.provider ?? '',
+        providerKind: adapter.kind,
+      })
+      const anchorRun = anchored ? getRun(store, anchored.runId) : null
+      // 接口拒绝图片与视频的记录按「接口名 × 模型」匹配：换用其他接口或模型后照常发送。
+      const imagesRejected = conversationRejectsImages(
+        store,
+        conversationId,
+        resolvedTarget?.provider ?? '',
+        adapter.spec.id,
+      )
+      const videosRejected = conversationRejectsVideos(
+        store,
+        conversationId,
+        resolvedTarget?.provider ?? '',
+        adapter.spec.id,
+      )
+      const anchor = anchored
+        ? {
+            tokens:
+              (anchored.providerInputTokens ?? 0) +
+              (anchored.providerCachedTokens ?? 0) +
+              (anchored.providerCacheWriteTokens ?? 0) +
+              (anchored.providerOutputTokens ?? 0),
+            throughMessageId: anchorRun?.messageIdUpperBound ?? null,
+            model: anchored.model,
+            headTokens: envelopeHeadTokens(anchored.sentCategories),
+            // 指纹不匹配时由 loop 替换头部（切换模型时才失效）：只有装配完成后才能确定本轮的信封。
+            envelopeFingerprint: anchored.cacheRouteFingerprint,
+          }
+        : null
+
+      /*
+       * 标题与 `updated_at` 刚被写入，需要广播：不广播时侧栏须等到下次重新获取才更新。
+       *
+       * 从账本读取后再发送，不发送局部变量：`model` 是本轮使用的模型，可被单轮
+       * 覆盖，而该事件描述的是会话属性，用它发送会显示一个会话并未切换到的模型。
+       */
+      const announced = getConversation(store, conversationId)
+      if (announced) {
+        yield {
+          type: 'conversation.updated',
+          conversationId,
+          provider: announced.provider,
+          model: announced.model,
+          title: announced.title,
+          mode: announced.mode,
+          updatedAt: announced.updatedAt,
+        }
+      }
+
+      // run.started 必须由此处发送：没有发送方时客户端无法取得真实 runId，中断和重试
+      // 只能将步骤 id 当作 run id 使用，服务端查询不到时静默不执行任何操作。
+      // 协议中有类型不等于有实现。
+      yield {
+        type: 'run.started',
+        runId: run.id,
+        conversationId,
+        model,
+        userMessageId: userMessageId ?? null,
+        startedAt: run.createdAt,
+        // 正文一并发送：服务端自行发起的轮次（目标自动继续、定时触发、跟进消息发起）
+        // 没有客户端的乐观插入，界面上显示的用户消息只能来自此处。
+        userMessage: {
+          content: prompt,
+          ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
+          // 与上面写入 `messages.origin` 的字段取值相同：两侧口径不一致时，
+          // 回执发起的轮次实时渲染为用户气泡，刷新之后才变为回执行。
+          ...(options?.origin ? { origin: options.origin } : {}),
+        },
+      }
+
+      // 压缩端口绑定到本会话与本 run 的高水位：压缩范围不得超过 run 创建时固定的水位，
+      // 否则会将排队期间新到达的消息一并压缩，而本轮尚未读取这些消息。
+      const compaction = new RuntimeCompaction({
+        store,
+        conversationId,
+        workspaceRoot: this.opts.workspaceRoot,
+        messageIdUpperBound: run.messageIdUpperBound,
+        summarize: makeSummarizer({
+          // 与本轮请求使用同一份规格与同一档位。
+          profile: () => profile,
+          effort: () => effort,
+          signal: this.opts.signal,
+        }),
+        preserveAssistantReasoning,
+      })
+
+      // 准备阶段收到的停止由对话循环在第一次请求之前判定，与轮次中途的停止同样以 user_interrupt 结束。
+      // 不要在写入 run 行之前提前返回或抛出：用户消息不落库，界面上已显示的消息刷新后消失。
       for await (const ev of this.makeLoop(target, adapter, conversationId, known, compaction).run({
         runId: run.id,
         history,
@@ -960,12 +965,9 @@ export class Session {
       this.modelUsage.delete(run.id)
       // 生成器被提前关闭（用户 Ctrl-C、客户端断开连接）时也须为 run 写入终态，
       // 否则账本中会永久保留一条 running 的孤儿记录。
-      // 边界：此处只覆盖 `run.started` 之后。在此之前关闭生成器或抛出异常时，run 行停留在
-      // running，由下次启动的 `recoverStaleRuns` 按 `owner_pid` 回收。
       if (!finished) {
-        const ambiguous = listSteps(store, run.id).some(
-          (step) => step.status === 'running' && step.executionStartedAt !== null,
-        )
+        // 只读状态列：逐条读取 step 会解析 payload，payload 损坏时在此抛出，run 行停留在 running。
+        const ambiguous = stepInExecution(store, run.id)
         const interruption = interruptionFrom(
           this.opts.signal,
           this.opts.signal.aborted ? 'user' : 'consumer_closed',

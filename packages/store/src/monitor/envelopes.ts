@@ -67,7 +67,7 @@ export function requestEnvelopeItems(
     )
     .get(fingerprint)
   if (!row) return null
-  const items = readJson<EnvelopeItem[]>(row.items, [])
+  const items = readJson<EnvelopeItem[]>(row.items, [], 'request_envelopes.items')
   alignGroupItems(items, groups)
   return items
 }

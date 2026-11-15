@@ -17,7 +17,7 @@
 import type { ChatRequest, ProviderEvent, WireMessage } from '@qywork/ai'
 import { estimateMessage, estimateRequest, ProviderError, reasoningReplay } from '@qywork/ai'
 import type { AgentEvent, ContextOmitted } from '@qywork/core'
-import { emptyOmitted, log } from '@qywork/core'
+import { emptyOmitted, log, waitOrAbort } from '@qywork/core'
 import { stepStamp } from '../compaction.ts'
 import { describeDrift, PrefixAudit } from '../prefix-audit.ts'
 import { sendTurn } from './attempt.ts'
@@ -34,7 +34,7 @@ import {
   omitImages,
   replayReasoning,
 } from './request.ts'
-import { type LoopHost, RunState, sleep, TurnState, untilAborted } from './run-state.ts'
+import { type LoopHost, RunState, TurnState } from './run-state.ts'
 import { createSummaryTrace } from './summary-trace.ts'
 import { executeCalls } from './tool-wave.ts'
 import { concludeWithoutTools, settleResponse } from './turn-end.ts'
@@ -74,8 +74,10 @@ export class AgentLoop {
      * 退避等待。缺省为可中断的真实计时。
      *
      * 等待必须随信号结束：用户在退避的数十秒内点击停止时，不中断等待会使停止按钮无响应。
+     * 中止时须同时清除计时器（`waitOrAbort`）：计时器残留时一次性执行的进程要等到期才退出。
+     * 中止后的拒绝值是信号的中止原因，调用方只依据 `signal.aborted` 判定停止，不依据拒绝值。
      */
-    const backoff = deps.sleep ?? ((ms, signal) => untilAborted(signal, sleep(ms)))
+    const backoff = deps.sleep ?? waitOrAbort
     this.host = {
       deps,
       compaction: this.compaction,

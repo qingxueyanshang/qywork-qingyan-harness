@@ -53,6 +53,25 @@ function fresh() {
   return { store, ws }
 }
 
+/**
+ * 原始失败形状：JSON 列损坏时 `readJson` 静默返回默认值，附件显示为空，且没有任何记录指向损坏的位置。
+ */
+test('JSON 列损坏时读取抛出带列名的错误，NULL 仍取默认值', () => {
+  const { store, ws } = fresh()
+  try {
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    appendMessage(store, { conversationId: cv.id, role: 'user', content: '问' })
+    store.db.query('UPDATE messages SET attachments = NULL WHERE conversation_id = ?').run(cv.id)
+    expect(listMessages(store, cv.id)[0]?.attachments).toEqual([])
+    store.db
+      .query('UPDATE messages SET attachments = ? WHERE conversation_id = ?')
+      .run('[{"name":', cv.id)
+    expect(() => listMessages(store, cv.id)).toThrow('JSON 列 messages.attachments 无法解析')
+  } finally {
+    store.close()
+  }
+})
+
 test('压缩进度在空会话中也可恢复，中断收尾保留压缩类型', () => {
   const { store, ws } = fresh()
   try {

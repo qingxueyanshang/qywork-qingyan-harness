@@ -435,7 +435,7 @@ test('目标会话正忙时触发排入跟进队列，不产生 run.error', asyn
   })
 
   try {
-    expect(handle.runs.reserve(home)).toBe(true)
+    expect(handle.runs.reserve(home, new AbortController())).toBe(true)
     const probe = collectFrames(handle)
     const res = await fetch(
       `http://127.0.0.1:${handle.port}/api/schedules/${scheduleId}/run?ws=${ws.id}`,

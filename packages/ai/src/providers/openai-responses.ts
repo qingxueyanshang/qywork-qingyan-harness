@@ -583,13 +583,22 @@ export function buildTools(
 
 // ───────────────────────── 响应解析 ─────────────────────────
 
+/** 至少一个字段是数值时才记为 provider 回报：usage 为空对象时标记来源，账本会把全部为 0 的用量当作真实值。 */
 export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | undefined): void {
   if (!raw) return
-  const input = Number(raw.input_tokens ?? 0)
   const details = raw.input_tokens_details as Record<string, unknown> | undefined
   const cached = details?.cached_tokens
   const written = details?.cache_write_tokens
   const outDetails = raw.output_tokens_details as Record<string, unknown> | undefined
+  const reported = [
+    raw.input_tokens,
+    raw.output_tokens,
+    cached,
+    written,
+    outDetails?.reasoning_tokens,
+  ].some((value) => typeof value === 'number')
+  if (!reported) return
+  const input = Number(raw.input_tokens ?? 0)
 
   /*
    * Responses 的 `input_tokens` 是合计值：缓存命中、缓存写入与其余输入之和，

@@ -48,7 +48,7 @@ test('配对令牌不能取得更新占位；宿主占位后新指令被明确�
     expect((await request('{"action":"claim"}', 'pairing-token')).status).toBe(401)
     expect((await request('null')).status).toBe(400)
     expect((await request('{')).status).toBe(400)
-    handle.runs.reserve('busy' as never)
+    handle.runs.reserve('busy' as never, new AbortController())
     expect(await (await request('{"action":"claim"}')).json()).toEqual({ claimed: false, busy: 2 })
     completeScan()
     let claim = await claimUpdate()
@@ -80,9 +80,9 @@ test('配对令牌不能取得更新占位；宿主占位后新指令被明确�
       reason: 'conflict',
       clientRequestId: 'update-request',
     })
-    expect(handle.runs.reserve('new' as never)).toBe(false)
+    expect(handle.runs.reserve('new' as never, new AbortController())).toBe(false)
     await request('{"action":"cancel"}')
-    expect(handle.runs.reserve('new' as never)).toBe(true)
+    expect(handle.runs.reserve('new' as never, new AbortController())).toBe(true)
     handle.runs.release('new' as never)
   } finally {
     completeScan()

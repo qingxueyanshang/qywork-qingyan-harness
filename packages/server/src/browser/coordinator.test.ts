@@ -1076,7 +1076,8 @@ test('停止指令收回每个成员的控制槽，页面保留在宿主上供�
   }).id
   // 顶层轮次同样登记到 RunManager：停止指令的两条分支都须实际执行。
   const parentRun = new AbortController()
-  runs.register({ runId, conversationId: parent, controller: parentRun, startedAt: Date.now() })
+  runs.reserve(parent, parentRun)
+  runs.register(parent, runId)
 
   const deps = {
     store,

@@ -136,7 +136,7 @@ function rowToResource(r: IntermediateResourceRow): IntermediateResource {
     contentHash: r.content_hash,
     sizeBytes: r.size_bytes,
     mimeType: r.mime_type,
-    coverage: readJson<ResourceCoverage>(r.coverage, {}),
+    coverage: readJson<ResourceCoverage>(r.coverage, {}, 'intermediate_resources.coverage'),
     createdAt: r.created_at,
   }
 }

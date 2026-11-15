@@ -1154,13 +1154,28 @@ export function createThinkingSplitter(): {
  * token 按全价重复计算，缓存命中率越高，账单偏差越大。
  *
  * 此处统一采用 Anthropic 的「排他」口径：inputTokens 只包含未命中部分。
+ *
+ * 至少一个字段是数值时才记为 provider 回报：usage 为空对象时标记来源，账本会把全部为 0 的用量当作真实值。
  */
 function applyUsage(acc: ProviderUsage, u: CompatUsage) {
+  const details = u.prompt_tokens_details
+  const outDetails = u.completion_tokens_details
+  const reported = [
+    u.prompt_tokens,
+    u.completion_tokens,
+    u.prompt_cache_hit_tokens,
+    u.prompt_cache_miss_tokens,
+    u.cached_tokens,
+    details?.cached_tokens,
+    details?.cache_write_tokens,
+    outDetails?.reasoning_tokens,
+  ].some((value) => typeof value === 'number')
+  if (!reported) return
+
   if (typeof u.completion_tokens === 'number') acc.outputTokens = u.completion_tokens
 
   // 各厂商字段名不统一：DeepSeek 是 prompt_cache_hit_tokens，OpenAI 是
   // prompt_tokens_details.cached_tokens，Step 是根级 cached_tokens；未回报保持 null。
-  const details = u.prompt_tokens_details
   let cached: number | null = null
   if (typeof u.prompt_cache_hit_tokens === 'number') {
     cached = u.prompt_cache_hit_tokens
@@ -1182,7 +1197,6 @@ function applyUsage(acc: ProviderUsage, u: CompatUsage) {
     // 只有总量时自行相减。未回报缓存量时按全部未命中处理。写入量不减去时同时计入输入与写入，重复计费。
     acc.inputTokens = Math.max(0, u.prompt_tokens - (cached ?? 0) - (written ?? 0))
   }
-  const outDetails = u.completion_tokens_details
   if (outDetails && typeof outDetails.reasoning_tokens === 'number') {
     acc.reasoningTokens = outDetails.reasoning_tokens
   }

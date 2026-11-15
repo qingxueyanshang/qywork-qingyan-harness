@@ -723,6 +723,30 @@ describe('命令正文逐字节到达', () => {
 })
 
 /**
+ * 原始失败形状：信号在调用之前已经中止时，只注册监听不会触发终止，进程运行到自行退出为止。
+ */
+describe('中止信号', () => {
+  test('调用之前已中止：1 秒内终止进程并返回', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const proc = Bun.spawn([process.execPath, '-e', 'await Bun.sleep(5000)'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'ignore',
+    })
+    try {
+      const started = Date.now()
+      const got = await collectProcess(proc, { signal: controller.signal })
+      expect(Date.now() - started).toBeLessThan(1000)
+      expect(got.exitCode).not.toBe(0)
+      expect(proc.exitCode).not.toBeNull()
+    } finally {
+      killTree(proc)
+    }
+  }, 20_000)
+})
+
+/**
  * 静默判据。**衡量的是两次输出之间的间隔，不是总时长。**
  *
  * 复现的失败形状：被调度的进程在自行执行构建与测试期间没有输出，按总时长判定时到期即

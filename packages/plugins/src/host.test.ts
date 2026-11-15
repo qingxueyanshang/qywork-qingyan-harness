@@ -146,6 +146,24 @@ describe('进程生命周期', () => {
     h.stop()
   })
 
+  /**
+   * 原始失败形状：插件持续输出而不换行时，stdout 缓冲无限增长，进行中的调用等待至超时。
+   * 缓冲不超过上限由 `core` 的 `lines.test.ts` 锁定；此处锁定进程被终止、调用以溢出原因失败。
+   */
+  test('单行输出超过上限时终止进程，进行中的调用以溢出原因失败', async () => {
+    const { dir, entry } = await pluginWith(`
+      function handle(msg) {
+        if (msg.type === 'call') process.stdout.write('x'.repeat(64 * 1024 * 1024 + 1))
+      }
+    `)
+    const h = host(entry, dir)
+    await h.start()
+    expect(await failure(h.call('flood', {}, ctx()))).toBe(
+      '插件单行输出超过 67108864 个字符，已终止：test-plugin',
+    )
+    expect(await failure(h.call('m', {}, ctx()))).toBe('插件未启动：test-plugin')
+  }, 30_000)
+
   test('启动即退出的插件报错，而不是无限等待', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-plugin-'))
     const entry = join(dir, 'index.mjs')

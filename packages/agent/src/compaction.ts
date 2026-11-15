@@ -475,7 +475,8 @@ export async function compact(
     )
   } catch (err) {
     // 中断与 provider 失败必须区分：中断时整次丢弃，其余失败只表示摘要段未完成。
-    if (isAbortError(err)) return { status: 'aborted' }
+    // 信号已中止时同样按中断处理：适配器把中断包装为 `ProviderError` 抛出，只按错误名判定会记为摘要失败。
+    if (isAbortError(err) || signal?.aborted) return { status: 'aborted' }
     return summaryFailed('summary_error', err instanceof Error ? err.message : String(err))
   }
 

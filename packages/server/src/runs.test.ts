@@ -1,7 +1,7 @@
 /**
  * `runs.ts` 的并发边界。
  *
- * 覆盖范围：`RunManager` 的会话占位（reserve / release）、忙态的两项查询
+ * 覆盖范围：`RunManager` 的会话占用（reserve / register / release）、忙态的两项查询
  * （hasRun / isBusy）、忙闲广播（conversation.busy）与按会话中断
  * （interruptConversation），以及队列快照经 `EventBus` 实时推送和补发时的会话隔离。
  * 指令入口层的拒绝由 `goal-loop.test.ts` 覆盖，
@@ -19,16 +19,11 @@ describe('更新与新任务互斥', () => {
     const subagents = new SubagentRegistry()
     const runs = new RunManager(null as never, new EventBus(), subagents)
     const cv = 'cv_update' as ConversationId
-    runs.reserve(cv)
+    runs.reserve(cv, new AbortController())
     expect(runs.claimUpdate()).toBe(false)
-    runs.register({
-      conversationId: cv,
-      runId: 'rn_update' as never,
-      controller: new AbortController(),
-      startedAt: 0,
-    })
+    runs.register(cv, 'rn_update' as never)
     expect(runs.claimUpdate()).toBe(false)
-    runs.unregister('rn_update' as never)
+    runs.release(cv)
     const child = new AbortController()
     subagents.add(cv, 'child', { name: 'child', kind: 'temp', controller: child })
     expect(runs.claimUpdate()).toBe(false)
@@ -40,10 +35,10 @@ describe('更新与新任务互斥', () => {
     expect(runs.claimUpdate()).toBe(false)
     runs.disarm(cv)
     expect(runs.claimUpdate()).toBe(true)
-    expect(runs.reserve(cv)).toBe(false)
-    expect(runs.reserve('another' as ConversationId)).toBe(false)
+    expect(runs.reserve(cv, new AbortController())).toBe(false)
+    expect(runs.reserve('another' as ConversationId, new AbortController())).toBe(false)
     runs.cancelUpdate()
-    expect(runs.reserve(cv)).toBe(true)
+    expect(runs.reserve(cv, new AbortController())).toBe(true)
   })
 })
 
@@ -108,24 +103,24 @@ describe('同会话只允许一个 run', () => {
   test('并发 reserve 只有第一个能够取得', () => {
     const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     const cv = 'cv_1' as never
-    expect(runs.reserve(cv)).toBe(true)
-    expect(runs.reserve(cv)).toBe(false)
+    expect(runs.reserve(cv, new AbortController())).toBe(true)
+    expect(runs.reserve(cv, new AbortController())).toBe(false)
     expect(runs.isBusy(cv)).toBe(true)
   })
 
   test('未能启动运行时 release 必须释放会话，否则会话被永久锁定', () => {
     const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     const cv = 'cv_2' as never
-    expect(runs.reserve(cv)).toBe(true)
+    expect(runs.reserve(cv, new AbortController())).toBe(true)
     runs.release(cv)
     expect(runs.isBusy(cv)).toBe(false)
-    expect(runs.reserve(cv)).toBe(true)
+    expect(runs.reserve(cv, new AbortController())).toBe(true)
   })
 
   test('不同会话互不影响', () => {
     const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
-    expect(runs.reserve('cv_a' as never)).toBe(true)
-    expect(runs.reserve('cv_b' as never)).toBe(true)
+    expect(runs.reserve('cv_a' as never, new AbortController())).toBe(true)
+    expect(runs.reserve('cv_b' as never, new AbortController())).toBe(true)
   })
 })
 
@@ -149,23 +144,18 @@ describe('忙闲状态广播给所有客户端', () => {
     return got
   }
 
-  test('从占位到注销，首尾各广播一次，已退订该会话的客户端同样能收到', () => {
+  test('从占位到释放，首尾各广播一次，补入 runId 不广播，已退订该会话的客户端同样能收到', () => {
     const bus = new EventBus()
     const got = frames(bus)
     const runs = new RunManager(null as never, bus, new SubagentRegistry())
     const cv = 'cv_1' as ConversationId
 
-    runs.reserve(cv)
-    runs.register({
-      runId: 'rn_1' as never,
-      conversationId: cv,
-      controller: null as never,
-      startedAt: 0,
-    })
-    runs.unregister('rn_1' as never)
+    runs.reserve(cv, new AbortController())
+    runs.register(cv, 'rn_1' as never)
+    runs.release(cv)
 
     const busy = got.filter((f) => f.event.type === 'conversation.busy')
-    expect(busy.map((f) => (f.event as { busy: boolean }).busy)).toEqual([true, true, false])
+    expect(busy.map((f) => (f.event as { busy: boolean }).busy)).toEqual([true, false])
     // 归属位于事件体中，信封上不能带归属：信封带归属时会被订阅过滤拦截。
     expect(busy.every((f) => f.conversationId === undefined)).toBe(true)
     expect(busy.every((f) => (f.event as { conversationId: string }).conversationId === cv)).toBe(
@@ -173,19 +163,15 @@ describe('忙闲状态广播给所有客户端', () => {
     )
   })
 
-  test('register 之后再 release 报告的仍是「运行中」：实时计算，不采用调用方传入的值', () => {
+  test('子 agent 仍在运行时释放占用，报告的仍是「运行中」：实时计算，不采用调用方传入的值', () => {
     const bus = new EventBus()
     const got = frames(bus)
-    const runs = new RunManager(null as never, bus, new SubagentRegistry())
+    const subagents = new SubagentRegistry()
+    const runs = new RunManager(null as never, bus, subagents)
     const cv = 'cv_2' as ConversationId
 
-    runs.reserve(cv)
-    runs.register({
-      runId: 'rn_2' as never,
-      conversationId: cv,
-      controller: null as never,
-      startedAt: 0,
-    })
+    runs.reserve(cv, new AbortController())
+    subagents.add(cv, 'cv_child', { name: '子', kind: 'temp', controller: new AbortController() })
     runs.release(cv)
 
     const busy = got.filter((f) => f.event.type === 'conversation.busy')
@@ -200,8 +186,8 @@ describe('忙闲状态广播给所有客户端', () => {
 describe('按会话中断', () => {
   function running(runs: RunManager, cv: ConversationId, runId: string): AbortController {
     const controller = new AbortController()
-    runs.reserve(cv)
-    runs.register({ runId: runId as never, conversationId: cv, controller, startedAt: 0 })
+    runs.reserve(cv, controller)
+    runs.register(cv, runId as never)
     return controller
   }
 
@@ -222,16 +208,22 @@ describe('按会话中断', () => {
 
     const cv = 'cv_3' as ConversationId
     running(runs, cv, 'rn_3')
-    runs.unregister('rn_3' as never)
+    runs.release(cv)
     expect(runs.interruptConversation(cv)).toBe(false)
   })
 
-  test('只有占位、尚未启动 run 的会话无法中断：占位没有可中断的执行', () => {
+  /**
+   * 原始失败形状：占位只是一个会话 id 集合，不持有中止句柄，准备阶段（尚未取得 runId）的中断
+   * 返回 false，指令入口据此回复「本轮已结束」，该轮在准备结束后照常开始。
+   */
+  test('只有占位、尚未取得 runId 的会话同样能中断：句柄随占位登记', () => {
     const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     const cv = 'cv_4' as ConversationId
-    runs.reserve(cv)
-    expect(runs.isBusy(cv)).toBe(true)
-    expect(runs.interruptConversation(cv)).toBe(false)
+    const controller = new AbortController()
+    runs.reserve(cv, controller)
+    expect(runs.currentRunId(cv)).toBeNull()
+    expect(runs.interruptConversation(cv)).toBe(true)
+    expect((controller.signal.reason as { source: string }).source).toBe('user')
   })
 })
 
@@ -265,7 +257,7 @@ describe('忙态包含子 agent，启动轮次的检查不包含', () => {
     const { runs } = withSubagent()
     expect(runs.isBusy(cv)).toBe(true)
     expect(runs.hasRun(cv)).toBe(false)
-    expect(runs.reserve(cv)).toBe(true)
+    expect(runs.reserve(cv, new AbortController())).toBe(true)
   })
 
   test('握手快照同样报告只有子 agent 运行中的会话', () => {
