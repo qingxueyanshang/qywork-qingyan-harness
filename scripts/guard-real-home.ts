@@ -50,8 +50,8 @@ if (import.meta.main) {
   const command = typeof input.tool_input?.command === 'string' ? input.tool_input.command : ''
   if (runsQyAgainstRealHome(command, process.env)) {
     process.stderr.write(
-      '已拦下：这条命令会用用户真实的 ~/.qywork（配置、账本、会话）执行 qy。' +
-        '在同一条命令里把 QYWORK_HOME 指到仓库 .tmp/ 下的隔离目录再执行，' +
+      '已拦截：该命令会以用户真实的 ~/.qywork（配置、账本、会话）执行 qy。' +
+        '请在同一条命令中把 QYWORK_HOME 设为仓库 .tmp/ 下的隔离目录后再执行，' +
         '例如 QYWORK_HOME="$PWD/.tmp/qy-home" bun packages/cli/src/index.ts …\n',
     )
     process.exit(2)

@@ -5,14 +5,9 @@
 
 import { describe, expect, test } from 'bun:test'
 import { AgentLoop, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { baseCtx, call, fakeAdapter, noopPersistence } from '@qywork/agent/fixtures.test-helper'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { AgentEvent, TodoItem } from '@qywork/core'
-import {
-  baseCtx,
-  call,
-  fakeAdapter,
-  noopPersistence,
-} from '../../agent/src/loop/fixtures.test-helper.ts'
 import { writeTodosTool } from './todos.ts'
 
 function ctx(): ToolContext & { emitted: TodoItem[][] } {

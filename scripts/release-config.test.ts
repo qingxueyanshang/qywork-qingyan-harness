@@ -403,7 +403,6 @@ describe('桌面发布清单', () => {
     expect(workflow).not.toContain('contents: write')
     expect(workflow).toContain('branches:\n      - "**"')
     expect(workflow).toContain('run: bun run gate')
-    expect(workflow).toContain('run: bun run build:web')
     expect(workflow).not.toContain('continue-on-error')
     expect(workflow).toContain('cancel-in-progress: true')
     // 与发布工作流的 group 重名时，一次 push 会取消正在生成安装包的发布。
@@ -461,6 +460,22 @@ describe('桌面发布清单', () => {
     }
     for (const name of ['typecheck:rust', 'test:rust']) {
       expect(pkg.scripts[name]).toContain('--target-dir .tmp/cargo-gate')
+    }
+  })
+
+  /**
+   * 版本清单只在门禁中检查：CI 与三条发布工作流都运行门禁，本机门禁同样覆盖，工作流中另设一步即构成第二个入口。
+   * 放在第一步：它只读文件、一秒内完成；清单已改而 Cargo.lock 未改时，其后带 `--locked` 的 cargo 步骤以 101 失败，
+   * 报错不指明版本号不一致。
+   */
+  test('门禁第一步检查版本清单，工作流中不另设该步骤', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
+    expect(pkg.scripts.gate).toStartWith('bun run scripts/sync-version.ts --check && ')
+    expect(actionText('setup-build')).not.toContain('sync-version')
+    for (const name of ['ci.yml', ...RELEASE_WORKFLOWS]) {
+      expect(workflowText(name)).not.toContain('sync-version')
     }
   })
 

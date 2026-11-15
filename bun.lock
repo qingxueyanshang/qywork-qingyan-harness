@@ -107,6 +107,9 @@
         "@qywork/agent": "workspace:*",
         "@qywork/core": "workspace:*",
       },
+      "devDependencies": {
+        "@qywork/ai": "workspace:*",
+      },
     },
     "packages/ooxml": {
       "name": "@qywork/ooxml",

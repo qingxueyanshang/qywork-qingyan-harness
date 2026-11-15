@@ -4,7 +4,7 @@
  * 上下标、n 元运算符、括号、根号、重音、上下极限、字段字体、行高、显示公式的断行与对齐、行内分段）与 `paint.ts`（不平滑填充、分数线、斜线、
  * 文字取整）。
  *
- * 排版与 `MATH` 表的用例读取本机 Windows 字体目录中的 Cambria Math（cambria.ttc 第 2 个字体）：其他平台跳过（`skipIf`）。
+ * 排版与 `MATH` 表的用例读取本机 Windows 字体目录中的 Cambria Math（cambria.ttc 第 2 个字体），运行条件由 `test-fonts.ts` 判定。
  * 期望值取自 WPS 12.1 只读打开构造文档后的页面 EMF 与逐字横坐标（Information(5)，0.05 磅精度），不由本模块计算。
  */
 
@@ -19,6 +19,7 @@ import {
   readVerticalMetrics,
 } from '../font/index.ts'
 import { PartScanner } from '../opc/index.ts'
+import { fontsAvailable } from '../test-fonts.ts'
 import { DEFAULT_SLOT_CONTEXT, fontSlot, type TextFace } from '../text/index.ts'
 import {
   atomClass,
@@ -232,7 +233,7 @@ describe('数学字母与原子类别', () => {
 })
 
 const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
-const windows = process.platform === 'win32'
+const HAS_FONTS = fontsAvailable(['cambria.ttc', 'simsun.ttc', 'times.ttf'])
 let cached: MathFont<string> | null = null
 function cambria(): MathFont<string> {
   if (cached === null) {
@@ -316,7 +317,7 @@ function layout(inner: string, size: number, display = false): MathLayout<string
 type Glyph = Extract<MathItem<string>, { kind: 'glyph' }>
 const glyphs = (l: MathLayout<string>) => l.items.filter((i): i is Glyph => i.kind === 'glyph')
 
-describe.skipIf(!windows)('MATH 表与字形轮廓（Cambria Math）', () => {
+describe.skipIf(!HAS_FONTS)('MATH 表与字形轮廓（Cambria Math）', () => {
   test('常量、斜体校正与变体', () => {
     const t = cambria().table
     expect(t.constants.scriptPercentScaleDown).toBe(73)
@@ -347,7 +348,7 @@ describe.skipIf(!windows)('MATH 表与字形轮廓（Cambria Math）', () => {
   })
 })
 
-describe.skipIf(!windows)('排版（与 WPS 实测比较）', () => {
+describe.skipIf(!HAS_FONTS)('排版（与 WPS 实测比较）', () => {
   test('上下标字号按半磅向下取整：12 → 8.5，10.5 → 7.5，48 → 35；二级 12 → 7', () => {
     const size = (s: number) =>
       glyphs(layout(`<m:sSup><m:e>${r('x')}</m:e><m:sup>${r('2')}</m:sup></m:sSup>`, s))[1]!.size
@@ -848,7 +849,7 @@ describe.skipIf(!windows)('排版（与 WPS 实测比较）', () => {
   })
 })
 
-describe.skipIf(!windows)('数学字体读取', () => {
+describe.skipIf(!HAS_FONTS)('数学字体读取', () => {
   test('没有 MATH 表的字体不读取轮廓：loca 不完整时同样返回 null', () => {
     const bytes = new Uint8Array(readFileSync(join(FONTS, 'times.ttf')))
     const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)

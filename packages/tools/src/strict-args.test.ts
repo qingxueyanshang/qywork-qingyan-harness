@@ -1,14 +1,13 @@
 /**
  * 覆盖 strict 形状的工具参数还原（`ai/src/providers/openai-compat.ts` 的 `restoreStrictCalls`，两条 OpenAI 协议的适配器解析工具调用时调用）：
- * `background_command` 经真实适配器、执行循环与注册表的完整路径，以及全部内置工具的参数 schema。
+ * `background_command` 经真实适配器、执行循环与注册表的完整路径，以及全部内置工具的参数 schema 经 Chat Completions 适配器的还原。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { AgentLoop, type CommandPort, type ToolOutcome, ToolRegistry } from '@qywork/agent'
+import { baseCtx, noopPersistence } from '@qywork/agent/fixtures.test-helper'
 import { buildAdapter, type ToolSchema } from '@qywork/ai'
 import type { MediaOutput } from '@qywork/core'
-import { baseCtx, noopPersistence } from '../../agent/src/loop/fixtures.test-helper.ts'
-import { restoreStrictCalls } from '../../ai/src/providers/openai-compat.ts'
 import { MEDIA_TOOLS } from './generate.ts'
 import { registerBuiltinTools } from './index.ts'
 import { backgroundCommandTool } from './shell.ts'
@@ -221,34 +220,83 @@ function argsAt(at: string[], leaf: unknown): unknown {
   return { [head]: argsAt(rest, leaf) }
 }
 
+/** 经 Chat Completions 适配器解析一组工具调用，返回还原后的参数：模拟端点在一次答复中返回全部调用。 */
+async function restoredArguments(
+  tools: ToolSchema[],
+  calls: { name: string; args: unknown }[],
+): Promise<Record<string, unknown>[]> {
+  const toolCalls = calls.map((c, index) => ({
+    index,
+    id: `call_${index}`,
+    type: 'function',
+    function: { name: c.name, arguments: JSON.stringify(c.args) },
+  }))
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () =>
+      sse(
+        [{ choices: [{ delta: { tool_calls: toolCalls }, finish_reason: 'tool_calls' }] }],
+        false,
+      ),
+  })
+  try {
+    const adapter = buildAdapter({
+      model: 'gpt-6.1-sol',
+      kind: 'openai_chat_completions',
+      apiKey: 'test',
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    })
+    for await (const event of adapter.stream({
+      model: 'gpt-6.1-sol',
+      system: [],
+      messages: [{ role: 'user', content: '调用工具' }],
+      tools,
+      maxOutputTokens: null,
+      idleTimeoutMs: 10_000,
+    })) {
+      if (event.type === 'tool_calls') return event.calls.map((c) => c.arguments)
+    }
+    throw new Error('适配器没有产出工具调用')
+  } finally {
+    server.stop(true)
+  }
+}
+
 describe('全部内置工具的可选参数', () => {
   /**
    * 新增工具的可选属性若写成 strict 形状无法表示「不提供」的类型（没有 `type`、或 `type` 为数组），
    * 模型在 strict 形状下只能为它填写实际值，本用例列出该属性。类型已含 null 的属性按其声明保留 null，不在检查范围内。
    */
-  test('strict 形状下填写 null 与省略该键，还原后的参数相同', () => {
+  test('strict 形状下填写 null 与省略该键，经适配器还原后的参数相同', async () => {
     const schemas = builtinSchemas()
     expect(schemas.length).toBeGreaterThan(50)
-    const differing: string[] = []
-    let checked = 0
+    const cases: { label: string; name: string; withNull: unknown; omitted: unknown }[] = []
     for (const tool of schemas) {
       expect(tool.strict).toBe(true)
       for (const { at, schema } of optionalProperties(tool.parameters)) {
         const type = schema.type
         if (Array.isArray(type) && type.includes('null')) continue
-        checked++
-        const restore = (args: unknown) =>
-          restoreStrictCalls(
-            [{ id: 'c', name: tool.name, arguments: args as Record<string, unknown> }],
-            schemas,
-            'openai_strict',
-          )[0]!.arguments
-        if (!Bun.deepEquals(restore(argsAt(at, null)), restore(argsAt(at, undefined)))) {
-          differing.push(`${tool.name}.${at.join('.')}`)
-        }
+        cases.push({
+          label: `${tool.name}.${at.join('.')}`,
+          name: tool.name,
+          withNull: argsAt(at, null),
+          omitted: argsAt(at, undefined),
+        })
       }
     }
-    expect(checked).toBeGreaterThan(100)
+    expect(cases.length).toBeGreaterThan(100)
+    const restored = await restoredArguments(
+      schemas,
+      cases.flatMap((c) => [
+        { name: c.name, args: c.withNull },
+        { name: c.name, args: c.omitted },
+      ]),
+    )
+    expect(restored).toHaveLength(cases.length * 2)
+    const differing = cases
+      .filter((_, i) => !Bun.deepEquals(restored[2 * i], restored[2 * i + 1]))
+      .map((c) => c.label)
     expect(differing).toEqual([])
   })
 })

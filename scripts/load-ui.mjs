@@ -124,7 +124,7 @@ async function measureRound(page, size, errors, tag, url) {
     const title = `历史会话 ${String(index).padStart(4, '0')}`
     const row = page.locator('.conv-open', { hasText: title }).first()
     if ((await row.count()) === 0) {
-      errors.push(`[${tag}] 侧栏里找不到 ${title}`)
+      errors.push(`[${tag}] 侧栏中未找到 ${title}`)
       continue
     }
     const start = Date.now()
@@ -149,7 +149,7 @@ async function measureRound(page, size, errors, tag, url) {
   // 变更页：切换到有 30 轮写入的会话，先测量首页，再滚动到列表末尾逐页翻页。
   {
     const row = page.locator('.conv-open', { hasText: '变更分页' }).first()
-    if ((await row.count()) === 0) errors.push(`[${tag}] 侧栏里找不到「变更分页」`)
+    if ((await row.count()) === 0) errors.push(`[${tag}] 侧栏中未找到「变更分页」`)
     else await row.click()
   }
   await openPanelTab(page, '变更')
@@ -185,7 +185,7 @@ async function measureRound(page, size, errors, tag, url) {
   // 输入延迟：向输入框输入 200 个字符，测量总耗时与最慢的一次按键。
   {
     const box = page.locator('textarea[placeholder="随心输入，可粘贴图片"]').first()
-    if ((await box.count()) === 0) errors.push(`[${tag}] 找不到输入框`)
+    if ((await box.count()) === 0) errors.push(`[${tag}] 未找到输入框`)
     else {
       await box.click()
       const keys = []
@@ -212,7 +212,7 @@ async function measureRound(page, size, errors, tag, url) {
   for (const fanout of [1, 4, 12]) {
     const row = page.locator('.conv-open', { hasText: `并行子任务 ${fanout}` }).first()
     if ((await row.count()) === 0) {
-      errors.push(`[${tag}] 侧栏里找不到「并行子任务 ${fanout}」`)
+      errors.push(`[${tag}] 侧栏中未找到「并行子任务 ${fanout}」`)
       continue
     }
     await row.click()

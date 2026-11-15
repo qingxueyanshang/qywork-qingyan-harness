@@ -7,7 +7,7 @@ import { openBatchBudget, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { parseMcpConfig } from '@qywork/mcp'
 import { ContentStore, Store } from '@qywork/store'
-import { writeMcpServerTool } from '../../tools/src/mcp-config.ts'
+import { registerBuiltinTools } from '@qywork/tools'
 import { acquireExtensions, type Extensions } from './extensions.ts'
 import { approveMcpServers } from './mcp-approvals.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
@@ -190,7 +190,7 @@ test('后台持有空缓存，正式写入后新工具可调用；重复 acquire
   const background = await acquire(root, true)
   expect(background.toolSpecs).toEqual([])
   const registry = new ToolRegistry()
-  registry.register(writeMcpServerTool)
+  registerBuiltinTools(registry, { mcpConfig: true })
   const outcome = await registry.execute(
     'write_mcp_server',
     { name: 'probe', config_json: JSON.stringify({ url: `${service.url}/first` }) },

@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./fixtures.test-helper": "./src/loop/fixtures.test-helper.ts"
   },
   "dependencies": {
     "@qywork/ai": "workspace:*",

@@ -7,7 +7,7 @@
  * `language.ts`（Windows 语言标识到语言标记），
  * 以及 `../font/vertical.ts`（`hhea` 与 `OS/2` 纵向度量、上下标字号）与 `../font/features/kern.ts`（`kern` 表的字偶）。
  *
- * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
+ * 读取本机 Windows 字体目录中的真实文件，运行条件由 `test-fonts.ts` 判定。
  * 期望的断行位置、坐标与行高取自 WPS 只读打开同样内容的文档后逐字取得的结果（版心 415.3 磅，宋体 10.5 磅），
  * 不由本模块计算。
  */

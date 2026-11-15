@@ -1,7 +1,7 @@
 name: Linux Release
 
-# 只出 x86_64。Linux 包没有等同 Apple 公证的系统签名环节，产物上唯一的签名是更新包签名，
-# 它由 release-prepare 强制要求，缺了不出包。
+# 只生成 x86_64。Linux 安装包没有相当于 Apple 公证的系统签名环节，产物上唯一的签名是更新包签名，
+# 由 release-prepare 强制要求，缺少时不生成安装包。
 
 on:
   workflow_dispatch:
@@ -42,9 +42,9 @@ jobs:
       - name: Run release gate
         run: bun run gate
 
-      # PATCHELF 不要删：linuxdeploy 给 AppDir/usr/bin 下每个 ELF 加 RUNPATH，用它自带的 patchelf 0.8
-      # 改过的 bun 单文件程序 qy 启动即段错误（exit 139），gtk 插件对它调用 ldd 失败，打包中止。
-      # setup-build 用 apt 装的 patchelf 改过的 qy 运行正常。
+      # 不要删除 PATCHELF：linuxdeploy 为 AppDir/usr/bin 下的每个 ELF 添加 RUNPATH，经其自带的 patchelf 0.8
+      # 修改后的 bun 单文件程序 qy 启动即段错误（exit 139），gtk 插件对它执行 ldd 失败，打包中止。
+      # 经 setup-build 以 apt 安装的 patchelf 修改后的 qy 运行正常。
       - name: Build packages and create draft release
         id: tauri
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
@@ -74,7 +74,7 @@ jobs:
           sum_one() {
             local dir="$1" pattern="$2"
             local packages=("$dir"/$pattern)
-            # 没命中时 glob 原样留在数组里，先按文件存在与否清掉，报出来的个数才是真的。
+            # glob 未匹配时原样保留在数组中，先按文件是否存在清除，报告的个数才准确。
             [ -f "${packages[0]}" ] || packages=()
             if [ "${#packages[@]}" -ne 1 ]; then
               echo "Expected one $pattern in $dir, found ${#packages[@]}." >&2

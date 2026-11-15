@@ -2132,36 +2132,64 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
+  /** 渠道视频型号的时长参数，与服务端为渠道型号下发的形状相同：min 至 max 秒，第一项为默认值。 */
+  const channelSeconds = (min: number, max: number) => {
+    const values = Array.from({ length: max - min + 1 }, (_, i) => String(min + i))
+    return {
+      name: 'seconds',
+      label: '时长',
+      type: 'enum',
+      values,
+      valueLabels: Object.fromEntries(values.map((v) => [v, `${v}秒`])),
+      default: values[0],
+      description:
+        min === max ? `固定 ${min} 秒，使用字符串 "${min}"` : `${min}–${max} 秒整数，使用字符串`,
+    }
+  }
+
   test.each([
     { id: 'TTseadanco2.5-720', min: '5', defaultSeconds: '5' },
     { id: 'TTsedanco2.5-480', min: '5', defaultSeconds: '5' },
     { id: 'GGseadanco2.5/720', min: '5', defaultSeconds: '5' },
     { id: 'seedance-2.5-yy-720p', min: '4', defaultSeconds: '4' },
   ])('providera 隐藏固定参数，时长按型号规格提交：$id', async ({ id, min, defaultSeconds }) => {
-    const { channelMediaSpec } = await import('../../../../../packages/ai/src/media/channels.ts')
-    const spec = channelMediaSpec(id, {
-      channel: 'providera',
-      seconds: Array.from({ length: 31 - Number(min) }, (_, i) => Number(min) + i),
-      ratios: ['16:9', '9:16', '1:1'],
-      resolutions: ['720p'],
-      maxImages: 30,
-      maxVideos: 10,
-      maxAudios: 10,
-    })
+    const resolution = {
+      name: 'resolution',
+      label: '分辨率',
+      type: 'enum',
+      values: ['720p'],
+      default: '720p',
+      description: '固定 720p',
+    }
     const catalog = {
       ...MODELS,
       media: [
         {
           provider: 'providera',
-          id: spec.id,
-          kind: spec.kind,
+          id,
+          kind: 'openai_videos',
           output: 'video',
-          label: spec.displayName,
-          operations: spec.operations,
+          label: id,
+          operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
           isDefault: true,
-          known: spec.catalogued,
-          maxAudios: spec.inputs.maxAudios,
-          params: spec.params.filter((p) => p.label),
+          known: true,
+          maxAudios: 10,
+          params: [
+            channelSeconds(Number(min), 30),
+            {
+              name: 'aspect_ratio',
+              label: '画幅',
+              type: 'string',
+              shapes: [
+                { ratio: '16:9', value: '16:9' },
+                { ratio: '9:16', value: '9:16' },
+                { ratio: '1:1', value: '1:1' },
+              ],
+              default: '16:9',
+              description: '支持 16:9、9:16、1:1',
+            },
+            resolution,
+          ],
         },
       ],
     }
@@ -2184,9 +2212,7 @@ describe('画布：生成卡与生成面板', () => {
     expect([...panel.querySelectorAll('.canvas-params-title')].map((el) => el.textContent)).toEqual(
       ['时长', '宽高比'],
     )
-    expect(panel.textContent).not.toContain(
-      spec.params.find((p) => p.name === 'resolution')!.default as string,
-    )
+    expect(panel.textContent).not.toContain(resolution.default)
     expect(panel.querySelector('.canvas-param-description')).toBeNull()
     const duration = panel.querySelector<HTMLInputElement>('input[aria-label="时长"]')
     expect([duration!.min, duration!.max, duration!.step, duration!.value]).toEqual([
@@ -2233,20 +2259,28 @@ describe('画布：生成卡与生成面板', () => {
     { min: '4', max: '30', portrait: '720x1280' },
     { min: '30', max: '30', portrait: '720x1280' },
   ])('providerb 隐藏固定清晰度，按型号保存时长与横竖屏：%j', async ({ min, max, portrait }) => {
-    const { channelMediaSpec } = await import('../../../../../packages/ai/src/media/channels.ts')
-    const spec = channelMediaSpec(`sd2.5-${min}`, {
-      channel: 'providerb',
-      seconds: Array.from({ length: Number(max) - Number(min) + 1 }, (_, i) => Number(min) + i),
-      ratios: ['16:9', '9:16'],
-      resolutions: ['720p'],
-      sizes: { '720p': [1280, 720] },
-      maxImages: 30,
-      maxVideos: 0,
-      maxAudios: 0,
-    })
+    const id = `sd2.5-${min}`
+    const size = {
+      name: 'size',
+      label: '尺寸',
+      type: 'string',
+      shapes: [
+        { ratio: '16:9', tier: '720P', value: '1280x720' },
+        { ratio: '9:16', tier: '720P', value: '720x1280' },
+      ],
+      default: '1280x720',
+      description: '宽x高，可选 1280x720、720x1280',
+    }
     const catalog = {
       ...MODELS,
-      media: [{ ...MODELS.media[0], id: spec.id, label: spec.id, params: spec.params }],
+      media: [
+        {
+          ...MODELS.media[0],
+          id,
+          label: id,
+          params: [channelSeconds(Number(min), Number(max)), size],
+        },
+      ],
     }
     const { host, server, refs } = await mount(
       [
@@ -2269,7 +2303,7 @@ describe('画布：生成卡与生成面板', () => {
       [...document.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
     ).toEqual(min === max ? ['宽高比'] : ['时长', '宽高比'])
     expect(document.querySelector('.canvas-params-panel')?.textContent).not.toMatch(/720P|480P/)
-    expect(host.querySelector('.canvas-bar .mode-chip.model')?.textContent).toContain(spec.id)
+    expect(host.querySelector('.canvas-bar .mode-chip.model')?.textContent).toContain(id)
     const ratio = [
       ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
     ].find((b) => b.textContent === '9:16')!
@@ -2387,16 +2421,39 @@ describe('画布：生成卡与生成面板', () => {
   })
 
   test('语速按 0.1 调整，音色展示名称且保存原始编号', async () => {
-    const { QWEN_AUDIO_MODELS } = await import(
-      '../../../../../packages/ai/src/media/catalog-qwen-audio.ts'
-    )
-    const spec = QWEN_AUDIO_MODELS.find((m) => m.id === 'qwen-audio-3.1-tts-flash')!
+    const voices = {
+      'longanhuan_v3.1': ['龙安欢', '女声 · 多语种 / 方言'],
+      'Emily_v3.1': ['Emily', '女声 · 英文 · 英式女声'],
+      'Eric_v3.1': ['Eric', '男声 · 英文 · 英式男声'],
+      'Luca_v3.1': ['Luca', '男声 · 英文 · 英式男声'],
+    }
+    const params = [
+      {
+        name: 'voice',
+        label: '音色',
+        type: 'string',
+        presets: Object.keys(voices),
+        valueLabels: Object.fromEntries(Object.entries(voices).map(([k, [label]]) => [k, label])),
+        valueDescriptions: Object.fromEntries(Object.entries(voices).map(([k, [, d]]) => [k, d])),
+        default: 'longanhuan_v3.1',
+        description: '3.1 系统音色，区分大小写',
+      },
+      {
+        name: 'rate',
+        label: '语速',
+        type: 'number',
+        min: 0.5,
+        max: 2,
+        default: 1,
+        description: '语速倍数',
+      },
+    ]
     const { host, server, refs } = await mount(
       [{ op: 'add_generate', ref: '$g', output: 'audio' }],
       {},
       {
         ...MODELS,
-        media: [{ ...MODELS.media[0], id: spec.id, output: 'audio', params: spec.params }],
+        media: [{ ...MODELS.media[0], id: 'qwen-audio-3.1-tts-flash', output: 'audio', params }],
       },
     )
     await select(host, refs.$g!)

@@ -1,8 +1,8 @@
 name: macOS Release
 
-# 两种架构各用匹配架构的 runner，不用一个 job 代表两种：`bin/qy` 与 `bin/qy-computer-host`
-# 都按 `rustc -vV` 的宿主三元组命名，sidecar 编完还会就地运行一次自检，arm64 runner 上
-# 产不出也跑不了 x86_64 的资产。
+# 两种架构各使用架构匹配的 runner，不由一个 job 生成两种架构：`bin/qy` 与 `bin/qy-computer-host`
+# 都按 `rustc -vV` 的宿主三元组命名，sidecar 编译完成后还会在本机执行一次自检，arm64 runner
+# 既无法生成也无法运行 x86_64 的产物。
 
 on:
   workflow_dispatch:
@@ -20,8 +20,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
-      # 两个 job 往同一个 tag 的草稿 Release 上传，并发时会各自去建那个 Release。
-      # 串行跑，第二个 job 拿到的就是第一个建好的那一份。
+      # 两个 job 向同一个 tag 的草稿 Release 上传，并发时各自创建该 Release。
+      # 串行运行时，第二个 job 使用第一个 job 创建的 Release。
       max-parallel: 1
       fail-fast: false
       matrix:
@@ -48,8 +48,8 @@ jobs:
           updater-public-key: ${{ vars.QYWORK_UPDATER_PUBLIC_KEY }}
           updater-private-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
-      # 更新包签名与 Apple 签名是两件事：前者由 release-prepare 强制要求，缺了直接停；
-      # 后者缺了仍要出包，但产物必须自报未签名，否则拿到的人会以为它能过 Gatekeeper。
+      # 更新包签名与 Apple 签名相互独立：前者由 release-prepare 强制要求，缺少时直接终止；
+      # 后者缺少时仍生成安装包，但产物必须标明未签名，否则下载者无从得知它无法通过 Gatekeeper。
       - name: Detect Apple signing secrets
         id: apple
         shell: bash
@@ -71,7 +71,7 @@ jobs:
             echo "本次 macOS 包由 Apple 证书签名并公证。"
           else
             echo "suffix=-unsigned" >> "$GITHUB_OUTPUT"
-            echo "::warning title=macOS 包未签名未公证::Apple 签名或公证配置不完整，本次产物未签名未公证，Gatekeeper 会拦；校验和文件名带 -unsigned。"
+            echo "::warning title=macOS 包未签名未公证::Apple 签名或公证配置不完整，本次产物未签名且未公证，Gatekeeper 会拦截；校验和文件名带 -unsigned 后缀。"
           fi
 
       - name: Set up build
@@ -107,7 +107,7 @@ jobs:
         run: |
           bundle=".tmp/cargo-target/${{ matrix.target }}/release/bundle/dmg"
           installers=("$bundle"/*.dmg)
-          # 没命中时 glob 原样留在数组里，先按文件存在与否清掉，报出来的个数才是真的。
+          # glob 未匹配时原样保留在数组中，先按文件是否存在清除，报告的个数才准确。
           [ -f "${installers[0]}" ] || installers=()
           if [ "${#installers[@]}" -ne 1 ]; then
             echo "Expected one dmg in $bundle, found ${#installers[@]}." >&2

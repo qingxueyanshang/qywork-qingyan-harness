@@ -1347,3 +1347,17 @@ bwrap 按参数出现顺序叠加，后到的覆盖先到的。两条已经撞�
   远端任务失败显示错误码与原文，不显示 `failed` 等状态值；没有错误内容时显示该状态的说明
   （方舟 `expired`：超过过期时间未完成；百炼 `UNKNOWN`：任务不存在或已超过 24 小时保留期）。
   计费规则不写入报错：报错只陈述本次请求的结果。
+
+## 39. 排版用例只由开发机的门禁覆盖
+
+排版用例的断言取自开发机上的字体文件（版本、字形编号、度量）与 WPS 的实测结果，依赖本机字体。
+GitHub Actions 的 Windows 映像缺少等线、黑体、楷体等中文补充字体，Arial 的版本也不同，因此 CI 与发布工作流跳过这些用例，
+排版回归只由安装了这些字体的开发机运行 `bun run gate` 时覆盖。只读取宋体、Times New Roman 与 Cambria Math 的
+公式用例不在此列：这三种字体在 GitHub Actions 的 Windows 映像上存在，这些用例在 CI 上运行。
+
+判据只有一个函数（`packages/ooxml/src/test-fonts.ts` 的 `fontsAvailable`）：给定的字体文件都在本机时运行，
+否则跳过并在输出中写明缺少的文件。排版用例的条件 `LOCAL_FONTS` 是它在全部所需字体上的结果，另加「不在 GitHub Actions 上」。
+问题记录：判据分散在三处时，未安装所需字体的 Windows 机器上 `font.test.ts` 以 ENOENT 失败，而 `formula.test.ts` 跳过。
+
+实测（2026-11-15，`bun run scripts/run-tests.ts packages/ooxml`）：在安装了全部所需字体的 Windows 开发机上 1058 个用例全部运行、
+0 个跳过；设 `GITHUB_ACTIONS=true` 时 255 个跳过，公式用例照常运行；把 `WINDIR` 指向没有字体的目录时 305 个跳过、0 个失败。

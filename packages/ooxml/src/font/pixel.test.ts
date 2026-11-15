@@ -4,7 +4,7 @@
  * 线性缩放字体的四舍五入与等宽字体的全角宽度、`gasp` 不要求网格对齐的字号、单色提示后的幻影点），以及 `vertical.ts` 的
  * `codePageRange1`。
  *
- * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
+ * 读取本机 Windows 字体目录中的真实文件，运行条件由 `test-fonts.ts` 判定。
  * 期望值不由本模块计算：点阵取自独立实现对同一文件的读取；纵向度量、前进宽度、点阵模式与粗体结果取自 GDI
  * （`GetTextMetrics`、`GetCharWidth32`、ClearType 下 `ExtTextOut` 绘制到内存位图）在本机的实测。
  */

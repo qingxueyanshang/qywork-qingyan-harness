@@ -8,7 +8,7 @@
  *
  * 期望值取自 WPS 12.1 只读打开同样内容的文档后取得的结果（`Paragraph.Format`、`Range.Font`、`ListFormat.ListString`
  * 与逐字的 `Information`），不由本模块计算；少数按 ISO/IEC 29500 规定的项在用例名中注明。
- * 排版用例读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
+ * 排版用例读取本机 Windows 字体目录中的真实文件，运行条件由 `test-fonts.ts` 判定。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -2247,7 +2247,7 @@ describe.skipIf(!LOCAL_FONTS)('WPS 按自带度量排版的字体', () => {
 })
 
 describe.skipIf(!LOCAL_FONTS)('嵌入字体', () => {
-  const FONTS = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
+  const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const file = (name: string, index = 0) => {
     const bytes = new Uint8Array(readFileSync(join(FONTS, name)))
     return name.endsWith('.ttc') ? extractFace(bytes, index) : bytes

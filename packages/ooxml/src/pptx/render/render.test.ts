@@ -42,6 +42,7 @@ import type { FontMetrics } from '../../font/metrics.ts'
 import type { VerticalMetrics } from '../../font/vertical.ts'
 import type { ClearTypeDisplay, ClearTypeGlyphs, PixelData } from '../../glyph/cleartype/index.ts'
 import { readMetafile } from '../../metafile/index.ts'
+import { fontsAvailable } from '../../test-fonts.ts'
 import {
   type FontSource,
   type HostFamilies,
@@ -1244,7 +1245,7 @@ describe('文字输入换算', () => {
 })
 
 const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
-const windows = process.platform === 'win32'
+const HAS_CAMBRIA = fontsAvailable(['cambria.ttc'])
 
 /** 本机的 Cambria Math（cambria.ttc 第 2 个字体）。 */
 function cambriaMath(): SlideFace {
@@ -1302,7 +1303,7 @@ describe('公式', () => {
    * 分数的行高为公式的上下沿之和；行内分数使所在行增高；有项目符号的段落中的显示公式按行内样式排版（分数缩小）；强制换行
    * 之后独占一行的行内公式按显示样式排版。
    */
-  test.skipIf(!windows)(
+  test.skipIf(!HAS_CAMBRIA)(
     '显示公式按 m:jc 对齐、行高为公式的上下沿之和；行内分数增高所在行；有项目符号时按行内排版',
     async () => {
       const source = fonts({ 'Cambria Math': cambriaMath() })

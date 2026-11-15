@@ -84,11 +84,11 @@ process.stdin.on('data', (c) => {
       continue
     }
     if (m.method === 'notifications/initialized') { ready = true; continue }
-    if (!ready) { send({ jsonrpc: '2.0', id: m.id, error: { code: -32002, message: '还没 initialized' } }); continue }
+    if (!ready) { send({ jsonrpc: '2.0', id: m.id, error: { code: -32002, message: '尚未初始化' } }); continue }
     if (m.method === 'tools/list') {
       send({ jsonrpc: '2.0', id: m.id, result: { tools: [{
         name: 'echo',
-        description: '原样返回传进来的文本',
+        description: '原样返回传入的文本',
         inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
       }] } })
       continue
@@ -189,19 +189,19 @@ async function turn(live: Live, conversationId: string, content: string): Promis
   let interruptTimer: ReturnType<typeof setTimeout> | null = null
   const timer = setTimeout(() => {
     timedOut = true
-    if (!runId) return done.reject(new Error('这一轮超时'))
+    if (!runId) return done.reject(new Error('本轮超时'))
     ws.send(JSON.stringify({ type: 'conversation.interrupt', conversationId }))
-    interruptTimer = setTimeout(() => done.reject(new Error('这一轮超时，中断后仍未收尾')), 10_000)
+    interruptTimer = setTimeout(() => done.reject(new Error('本轮超时，中断后仍未结束')), 10_000)
   }, RUN_TIMEOUT_MS)
   try {
     await done.promise
-    if (timedOut) throw new Error('这一轮超时，已中断')
+    if (timedOut) throw new Error('本轮超时，已中断')
   } finally {
     clearTimeout(timer)
     if (interruptTimer) clearTimeout(interruptTimer)
     ws.close()
   }
-  if (!runId) throw new Error('这一轮没有起 run')
+  if (!runId) throw new Error('本轮没有创建 run')
   return { contexts: seen, runId }
 }
 
@@ -290,7 +290,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   }
   const profile = resolveModel(config, ref)
   if (!profile) {
-    process.stdout.write(`\n跳过 ${ref.provider}/${ref.model}：配置里解析不出这条接口\n`)
+    process.stdout.write(`\n跳过 ${ref.provider}/${ref.model}：无法从配置中解析该接口\n`)
     return
   }
   const adapter = buildAdapter({
@@ -303,13 +303,13 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
 
   // ── 一、真实模型在新计量口径下的估算/真值比 ──────────────────────────────
   process.stdout.write(
-    `\n【一】新尺下的实测比值（模型 ${spec.id}，窗口 ${spec.contextWindow.toLocaleString()}）\n`,
+    `\n【一】新计量口径下的实测比值（模型 ${spec.id}，窗口 ${spec.contextWindow.toLocaleString()}）\n`,
   )
   let live = start(store, config)
   const conv = await newConversation(live, `口径真机验证 ${ref.model}`)
   await setModel(live, conv, ref)
   check(
-    `会话切到 ${ref.model}`,
+    `会话已切换到 ${ref.model}`,
     getConversation(store, conv as ConversationId)?.model === ref.model,
     { 实际: getConversation(store, conv as ConversationId)?.model },
   )
@@ -324,7 +324,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   )
 
   const rows = settled(store, conv)
-  check('至少两次请求拿到了 usage 回执', rows.length >= 2, { 条数: rows.length })
+  check('至少两次请求取得 usage 回执', rows.length >= 2, { 条数: rows.length })
   for (const r of rows) {
     const t = trueTokens(r)
     note(
@@ -337,13 +337,13 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     const dm = b.measuredInputTokens - a.measuredInputTokens
     const dt = trueTokens(b) - trueTokens(a)
     note(
-      `斜率法（首尾相减）：Δ估算 ${dm} / Δ真值 ${dt} = ${dt !== 0 ? (dm / dt).toFixed(3) : '真值没变，量不出'}`,
+      `斜率法（首尾相减）：Δ估算 ${dm} / Δ真值 ${dt} = ${dt !== 0 ? (dm / dt).toFixed(3) : '真值未变化，无法计算'}`,
     )
     note('斜率只作诊断证据，不写入模型库，也不作为后续消息的持久化倍率。')
   }
 
   // ── 二、安装 MCP：信封改变，读数不得跳变 ────────────────────────────
-  process.stdout.write('\n【二】装一个 MCP 之后的第一次发送\n')
+  process.stdout.write('\n【二】安装一个 MCP 之后的第一次发送\n')
   const anchorRow = rows[rows.length - 1]
   live.close()
   await Bun.sleep(300)
@@ -366,19 +366,19 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   const first = events[0]
 
   check(
-    '这一轮确实换了一份信封（指纹与锚点那条不同）',
+    '本轮更换了信封（指纹与锚点请求不同）',
     !!firstNew && !!anchorRow && firstNew.cacheRouteFingerprint !== anchorRow.cacheRouteFingerprint,
     { 锚点: anchorRow?.cacheRouteFingerprint, 本轮: firstNew?.cacheRouteFingerprint },
   )
   check(
-    '工具表真的多了一条（信封里 tools 变了）',
+    '工具表增加了一项（信封中的 tools 已变化）',
     !!firstNew &&
       !!anchorRow &&
       firstNew.sentCategories.mcpTools > anchorRow.sentCategories.mcpTools,
     { 锚点: anchorRow?.sentCategories.mcpTools, 本轮: firstNew?.sentCategories.mcpTools },
   )
 
-  check('首个读数由上一份真值投影（修前这里是 estimated）', first?.source === 'projected', {
+  check('首个读数由上一份真值投影（source 为 projected）', first?.source === 'projected', {
     source: first?.source,
   })
   if (first && firstNew && anchorRow) {
@@ -390,24 +390,24 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     note(
       `锚点真值 ${trueTokens(anchorRow)}　旧头部 ${envelopeHeadTokens(anchorRow.sentCategories)}　新头部 ${envelopeHeadTokens(firstNew.sentCategories)}`,
     )
-    note(`读数 ${first.tokens}　修正式算出 ${expected}　裸估算（修前会显示这个）${bare}`)
+    note(`读数 ${first.tokens}　修正式算出 ${expected}　裸估算（不投影时显示的值）${bare}`)
     // 差额是本轮的新用户消息：锚点覆盖到上一轮为止，其后的历史另行估算。
     const uncovered = first.tokens - expected
-    note(`差额 ${uncovered} = 本轮新用户消息（锚点覆盖到上一轮为止，它之后的另估）`)
+    note(`差额 ${uncovered} = 本轮新用户消息（锚点覆盖到上一轮为止，其后的内容另行估算）`)
     check('读数等于「真值 − 旧头部 + 新头部 + 本轮新消息」', uncovered >= 0 && uncovered <= 300, {
       读数: first.tokens,
       修正式: expected,
       差额: uncovered,
     })
-    check('读数没有掉到裸估算上', first.tokens !== bare, { 读数: first.tokens, 裸估算: bare })
+    check('读数不等于裸估算', first.tokens !== bare, { 读数: first.tokens, 裸估算: bare })
     const jump = Math.abs(bare - trueTokens(anchorRow)) / Math.max(1, spec.contextWindow)
     note(
-      `修前这一跳的幅度：${(jump * 100).toFixed(1)} 个百分点（窗口 ${spec.contextWindow.toLocaleString()}）`,
+      `按裸估算显示时的跳变幅度：${(jump * 100).toFixed(1)} 个百分点（窗口 ${spec.contextWindow.toLocaleString()}）`,
     )
   }
 
   // ── 三、运行中与事后查看的读数一致 ────────────────────────────────
-  process.stdout.write('\n【三】运行中与回头看\n')
+  process.stdout.write('\n【三】运行中与事后查看的读数\n')
   const panel = contextPanel(
     store,
     conv as ConversationId,
@@ -418,14 +418,14 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     `面板 ${panel.total}（${panel.percent}%，${panel.source}）　运行中末次事件 ${events[events.length - 1]?.tokens}`,
   )
   check(
-    '面板与运行中最后一个读数同尺（差在一轮尾巴之内）',
+    '面板与运行中最后一个读数口径相同（差值不超过上限的 2%）',
     panel.source === 'actual' &&
       Math.abs(panel.total - (events[events.length - 1]?.tokens ?? 0)) <= panel.limit * 0.02,
     { 面板: panel.total, 事件: events[events.length - 1]?.tokens },
   )
 
   // ── 四、真实模型生成一次摘要：压缩之后真值必须低于软阈值 ──────────────
-  process.stdout.write(`${NL}【四】真机压一次${NL}`)
+  process.stdout.write(`${NL}【四】真实模型执行一次压缩${NL}`)
   /*
    * 先让模型实际调用几次工具。
    *
@@ -453,7 +453,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   const foldable = listRuns(store, conv as ConversationId)
     .flatMap((r) => listSteps(store, r.id))
     .filter((s) => s.kind === 'tool_action').length
-  check('模型真的产生了可折的执行记录', foldable > 0, { 工具步数: foldable })
+  check('模型产生了可折叠的执行记录', foldable > 0, { 工具步数: foldable })
 
   const summarizer = makeSummarizer({
     profile: () => ({
@@ -485,7 +485,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
    */
   const lastRow = settled(store, conv).at(-1)
   if (!lastRow) {
-    note('这条会话一次回执都没有，第四段没法验。')
+    note('该会话没有任何回执，无法验证第四段。')
     live.close()
     return
   }
@@ -541,19 +541,19 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     `真值占用 ${trueBefore}　估算占用 ${estBefore}　比值 ${(estBefore / trueBefore).toFixed(3)}　窗口 ${window}　软阈值 ${softAt}`,
   )
   note(
-    `压缩结果 ${outcome.status}${outcome.status === 'compacted' ? `　摘要跑没跑 ${outcome.summarized}　摘要预算 ${budgetSeen}` : ''}`,
+    `压缩结果 ${outcome.status}${outcome.status === 'compacted' ? `　摘要已执行 ${outcome.summarized}　摘要预算 ${budgetSeen}` : ''}`,
   )
   if (outcome.status === 'compacted') {
     const estAfter = estimateMessages(compaction.project(beforeMsgs), spec.density)
     // 按同一实测比值换算回真值口径：该步骤与 `afterCondense` 使用同一个比值。
     const trueAfter = Math.round(estAfter / (estBefore / trueBefore))
-    note(`压完估算 ${estAfter}　折回真值 ${trueAfter}`)
-    check('压完之后真值落到软阈值之下', trueAfter <= softAt, {
-      压完真值: trueAfter,
+    note(`压缩后估算 ${estAfter}　换算为真值 ${trueAfter}`)
+    check('压缩后真值低于软阈值', trueAfter <= softAt, {
+      压缩后真值: trueAfter,
       软阈值: softAt,
     })
-    check('这次压缩真实调用了模型生成摘要', outcome.summarized, outcome)
-    check('摘要预算是正数（不是被算成负的）', budgetSeen > 0, { 预算: budgetSeen })
+    check('本次压缩调用了模型生成摘要', outcome.summarized, outcome)
+    check('摘要预算为正数', budgetSeen > 0, { 预算: budgetSeen })
 
     // ── 五、停止并重启服务：压缩投影、Todo 与缓存都必须能继续使用 ──────────
     process.stdout.write(`${NL}【五】压缩后重启并再次召回${NL}`)
@@ -601,7 +601,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
       .map((step) => step.content ?? '')
       .join(NL)
 
-    check('重启后模型准确召回被压缩工具结果里的口令', answer.includes(RECALL_MARKER), answer)
+    check('重启后模型准确召回被压缩工具结果中的口令', answer.includes(RECALL_MARKER), answer)
     check(
       '重启后模型准确回答 Todo 全部完成',
       /(?:三项|3\s*项|全部).{0,30}(?:completed|已完成|完成)/is.test(answer),
@@ -624,7 +624,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
       重复项: repeatedOpeners(allText),
     })
   } else {
-    note('这条会话太短，选不出可折单元——`projectionBudget` 这一项本轮没验到。')
+    note('该会话过短，无法选出可折叠单元，本轮未验证 `projectionBudget`。')
   }
 
   live.close()
@@ -649,7 +649,7 @@ async function main(): Promise<number> {
       ? [config.active]
       : []
   if (refs.length === 0) {
-    process.stdout.write('未配置默认模型；给一个 provider/model 参数，或先在配置里选一个。\n')
+    process.stdout.write('未配置默认模型；请传入 provider/model 参数，或先在配置中选择一个模型。\n')
     process.exit(2)
   }
 
@@ -658,7 +658,7 @@ async function main(): Promise<number> {
       await runFor(store, config, ref)
     } catch (err) {
       failures++
-      process.stdout.write(`  ✗ ${ref.provider}/${ref.model} 这一轮抛了：${err instanceof Error ? err.message : String(err)}
+      process.stdout.write(`  ✗ ${ref.provider}/${ref.model} 本轮抛出异常：${err instanceof Error ? err.message : String(err)}
 `)
     }
   }

@@ -1,15 +1,15 @@
 name: Set up qywork build
-description: 装 Bun 与 Rust、备齐 Linux 系统库、装依赖、核对版本清单、编译 sidecar。三端的 CI 与发布共用同一份。
+description: 安装 Bun、Rust、Linux 系统库与项目依赖，编译 sidecar。三个平台的 CI 与发布工作流共用此 action。
 
-# 第三方 action 的 pin 与 sidecar 的编译时机只写在这里。几个工作流各抄一遍的话，
-# 改了 pin 只改一处的表现是「一条工作流用新版本、另一条用旧版本」，而两边都是绿的。
+# 第三方 action 固定的提交与 sidecar 的编译时机只在此处定义。各工作流分别复制一份时，
+# 更新固定的提交只改动其中一处，结果是一条工作流使用新版本、另一条使用旧版本，而两者都显示通过。
 #
-# 全部 run 步骤用 bash：Windows runner 上是 Git Bash，三端都有。写 pwsh 会让 Linux 与
-# macOS 的 job 依赖镜像里预装的 PowerShell，那不是 runner 的契约。
+# 全部 run 步骤使用 bash：Windows runner 上为 Git Bash，三个平台均提供。使用 pwsh 会使 Linux 与
+# macOS 的 job 依赖映像中预装的 PowerShell，而这不属于 runner 的约定。
 
 inputs:
   targets:
-    description: 要额外装的 Rust 目标三元组，逗号分隔。留空即只装 runner 自己的宿主目标。
+    description: 需额外安装的 Rust 目标三元组，以逗号分隔。留空时只安装 runner 的宿主目标。
     required: false
     default: ''
 
@@ -26,9 +26,9 @@ runs:
       with:
         targets: ${{ inputs.targets }}
 
-    # Tauri 在 Linux 上链接 WebKitGTK、libxdo 与托盘库，runner 镜像里不预装。缺任何一个，
-    # gate 的 cargo check 就在对应 `*-sys` 的 build script 上以 101 退出，报的是
-    # pkg-config 找不到该库。patchelf 不属于编译依赖，是 AppImage 打包要用的。
+    # Tauri 在 Linux 上链接 WebKitGTK、libxdo 与托盘库，runner 映像不预装这些库。缺少任何一个时，
+    # gate 的 cargo check 在对应 `*-sys` 的构建脚本处以 101 退出，报错为 pkg-config 未找到该库。
+    # patchelf 不属于编译依赖，供 AppImage 打包使用。
     - name: Install Linux system libraries
       if: runner.os == 'Linux'
       shell: bash
@@ -50,9 +50,9 @@ runs:
       shell: bash
       run: bun install --frozen-lockfile
 
-    # office 的 worker 是 Python，门禁跑它的纯逻辑单测（`bun run test:office`）。
-    # 用 runner 自带的解释器建虚拟环境，按产品附带的固定版本清单装依赖；
-    # 系统解释器在 Ubuntu 上禁止直接 pip 安装，所以不装进系统目录。
+    # Office 的 worker 使用 Python，门禁运行其纯逻辑单测（`bun run test:office`）。
+    # 以 runner 自带的解释器创建虚拟环境，按产品附带的固定版本清单安装依赖；
+    # Ubuntu 的系统解释器禁止直接用 pip 安装，因此不安装到系统目录。
     - name: Prepare Office worker Python
       shell: bash
       run: |
@@ -63,19 +63,15 @@ runs:
         PY="$("$PY" -c 'import sys; print(sys.executable)')"
         echo "QYWORK_TEST_PYTHON=$PY" >> "$GITHUB_ENV"
 
-    - name: Check version manifests
-      shell: bash
-      run: bun run scripts/sync-version.ts --check
-
-    # 这一步必须在 `bun run gate` 之前。gate 里的 cargo check 会跑 tauri 的构建脚本，
-    # 而 tauri.conf.json 把 bin/qy 声明成 externalBin：干净 runner 上这个文件不存在，
+    # 本步骤必须在 `bun run gate` 之前。gate 中的 cargo check 执行 tauri 的构建脚本，
+    # 而 tauri.conf.json 把 bin/qy 声明为 externalBin：全新的 runner 上该文件不存在，
     # 构建脚本报 `resource path bin\qy-... doesn't exist` 并以 101 退出。
     #
-    # 另一个 externalBin（bin/qy-computer-host）不在这里准备：外壳的构建脚本在同一次
-    # 编译里出它，CI 与本地因此拿到的都是与外壳同源的 worker。
+    # 另一个 externalBin（bin/qy-computer-host）不在此处准备：外壳的构建脚本在同一次编译中生成它，
+    # 因此 CI 与本地取得的都是与外壳同源的 worker。
     #
-    # 产物按 `rustc -vV` 的宿主三元组命名，因此 runner 架构必须与要出的包一致：
-    # arm64 runner 上准备不出 x86_64 的资产，sidecar 编完还会就地自检运行一次。
+    # 产物按 `rustc -vV` 的宿主三元组命名，因此 runner 的架构必须与目标安装包一致：
+    # arm64 runner 无法生成 x86_64 的产物，sidecar 编译完成后还会在本机执行一次自检。
     - name: Build sidecar
       shell: bash
       run: bun run build:agent

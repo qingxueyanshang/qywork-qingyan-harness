@@ -1,6 +1,6 @@
 /**
  * `loop/` 下各测试共用的夹具：按脚本回放的假 adapter、不落库的持久化、最小 ToolContext，
- * 以及重发退避的断言。
+ * 以及重发退避的断言。其他包的测试经 `@qywork/agent/fixtures.test-helper` 导入。
  */
 
 import { expect } from 'bun:test'

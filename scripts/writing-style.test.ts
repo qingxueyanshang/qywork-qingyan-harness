@@ -6,7 +6,14 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { docLines, extractComments, extractStrings, scanAll, testTitles } from './writing-style.ts'
+import {
+  docLines,
+  extractComments,
+  extractStrings,
+  scanAll,
+  sourceFiles,
+  testTitles,
+} from './writing-style.ts'
 
 describe('注释提取', () => {
   test('提取行注释与块注释，并保留对应行号', () => {
@@ -123,6 +130,17 @@ describe('规则与记忆文档', () => {
       { line: 5, text: '引文与  都去掉。' },
       { line: 7, text: '> ✓ 正例。' },
     ])
+  })
+})
+
+describe('扫描范围', () => {
+  test('包括 .github 下的工作流与 action；YAML 只取 # 行注释，不取字符串', () => {
+    const files = sourceFiles().map((f) => f.replaceAll('\\', '/'))
+    expect(files.some((f) => f.endsWith('/.github/workflows/ci.yml'))).toBe(true)
+    expect(files.some((f) => f.endsWith('/.github/actions/setup-build/action.yml'))).toBe(true)
+    const yaml = ['name: CI', '# 注释', 'run: echo "文字"'].join('\n')
+    expect(extractComments(yaml, true, true)).toEqual([{ line: 2, text: ' 注释' }])
+    expect(extractStrings(yaml, '.yml')).toEqual([])
   })
 })
 

@@ -972,9 +972,9 @@ async function main(): Promise<number> {
       content.close()
       store.close()
     } catch (err) {
-      failures.push(`正文读回失败：${err instanceof Error ? err.message : String(err)}`)
+      failures.push(`正文读取失败：${err instanceof Error ? err.message : String(err)}`)
     }
-    if (readback.missing > 0) failures.push(`仍被引用但读不回来的正文 ${readback.missing} 条`)
+    if (readback.missing > 0) failures.push(`仍被引用但无法读取的正文 ${readback.missing} 条`)
     if (readback.sizeMismatch > 0) {
       failures.push(`账本长度与正文长度不一致 ${readback.sizeMismatch} 条`)
     }

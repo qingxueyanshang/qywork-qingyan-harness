@@ -45,7 +45,7 @@ export async function collect(targetDir: string, outDir: string): Promise<number
   }
 
   if (!found.some((file) => file.name.endsWith('.exe'))) {
-    process.stderr.write('没有找到安装包，先跑 bun run tauri:build\n')
+    process.stderr.write('未找到安装包，请先运行 bun run tauri:build\n')
     return 1
   }
 

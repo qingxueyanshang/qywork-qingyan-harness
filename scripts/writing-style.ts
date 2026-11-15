@@ -19,18 +19,41 @@ const ROOT = join(import.meta.dir, '..')
  * 扫描根，相对仓库根。目录不存在时跳过，不报错。
  *
  * 取的是包根而不是 `src`：配置文件（`vite.config.ts`、`build.rs`）里的注释同样算注释，
- * 按 `src` 划范围会把它们漏在外面。
+ * 按 `src` 划范围会把它们漏在外面。`.github` 是工作流与 action 的 YAML，其中的注释同样是注释。
  */
-const ROOTS = ['packages', 'apps/web', 'apps/desktop/src-tauri', 'apps/desktop/native', 'scripts']
+const ROOTS = [
+  'packages',
+  'apps/web',
+  'apps/desktop/src-tauri',
+  'apps/desktop/native',
+  'scripts',
+  '.github',
+]
 
 /** 按正文扫描的规则与记忆文件，相对仓库根。 */
 const DOC_FILES = ['CLAUDE.md']
 const DOC_DIRS = ['.claude/memory']
 
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'target', 'gen', '.git', '__pycache__'])
-/** `.ps1` / `.toml` / `.py` 走 `#` 行注释（`.py` 另加文档字符串），其余走 C 系。 */
-const EXTS = new Set(['.ts', '.tsx', '.mjs', '.js', '.rs', '.css', '.ps1', '.toml', '.py'])
-const HASH_EXTS = new Set(['.ps1', '.toml', '.py'])
+/**
+ * 依赖与构建产物目录，按目录名跳过。`bin` 是外壳的 sidecar 构建产物（`apps/desktop/src-tauri/bin`）；
+ * 扫描根下的源码目录不能以 `bin` 为目录名，否则同样被跳过。
+ */
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'target', 'gen', 'bin', '.git', '__pycache__'])
+/** `.ps1`、`.toml`、`.py`、`.yml`、`.yaml` 按 `#` 行注释提取（`.py` 另取文档字符串），其余按 C 系注释提取。 */
+const EXTS = new Set([
+  '.ts',
+  '.tsx',
+  '.mjs',
+  '.js',
+  '.rs',
+  '.css',
+  '.ps1',
+  '.toml',
+  '.py',
+  '.yml',
+  '.yaml',
+])
+const HASH_EXTS = new Set(['.ps1', '.toml', '.py', '.yml', '.yaml'])
 /** 不扫字符串的文件：`scripts/`（开发脚本，含模拟的用户消息）、测试与测试辅助、类型声明。注释照扫。 */
 const NO_STRING_SCAN =
   /^scripts[\\/]|\.test\.(ts|tsx|mjs|js)$|test-helper\.ts$|[\\/]tests?[\\/]|(^|[\\/])test_\w+\.py$|\.d\.ts$/
@@ -324,7 +347,7 @@ export function extractStrings(src: string, ext: string): Comment[] {
     if (text.length > 50 && !CJK_PUNCT.test(text)) return
     out.push({ line, text })
   }
-  if (ext === '.css' || ext === '.toml' || ext === '.ps1') return out
+  if (['.css', '.toml', '.ps1', '.yml', '.yaml'].includes(ext)) return out
   if (ext === '.py') {
     const body = src.replace(/("""|''')[\s\S]*?\1/g, (m) => m.replace(/[^\n]/g, ' '))
     for (const [i, row] of body.split('\n').entries()) {

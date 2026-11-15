@@ -276,10 +276,10 @@ async function main(): Promise<number> {
 
   process.stdout.write(
     `压缩完成：修订 ${outcome.manifest.revision}，` +
-      `摘要段${outcome.summarized ? '跑了' : `没跑（${outcome.reasonCode ?? '未给原因'}）`}，` +
+      `摘要段${outcome.summarized ? '已执行' : `未执行（${outcome.reasonCode ?? '未给出原因'}）`}，` +
       `摘要 ${summaryText.length} 字符，` +
       `事实包 ${outcome.manifest.facts.userConstraints.length} 条约束\n` +
-      `投影总长 ${projectedText.length} 字符（原会话约 ${originalChars} 字符，压到 ${Math.round((projectedText.length / originalChars) * 100)}%）\n\n`,
+      `投影总长 ${projectedText.length} 字符（原会话约 ${originalChars} 字符，压缩至 ${Math.round((projectedText.length / originalChars) * 100)}%）\n\n`,
   )
 
   // ── 逐条询问 ──

@@ -4,7 +4,8 @@
  * 覆盖范围：`prompt.ts` 的 `buildTailNotes`，`buildSystemPrompt` 中能力段各行的措辞、
  * 完成的定义、停下等待用户的判定（受阻四类与不是受阻的情形）、执行失败的七类处理方式、追问的意图、
  * 内置工具说明中不出现第二种收尾写法（覆盖 `@qywork/tools` 全部内置工具的 description）
- * 与末尾的 `outputLimitNote`（前缀稳定性由 `agent/prefix-audit.test.ts` 审查）。
+ * 与末尾的 `outputLimitNote`；以及用 `@qywork/agent` 的 `auditFrozenText` 审计真实的系统提示词：
+ * 冻结前缀中没有本身会变化的字段，两次构造逐字节相同，会变化的字段只出现在上下文末尾注记中。
  *
  * 锁定的约束是技能、记忆、外部工具都只放入标题：正文（外部工具为完整参数说明）
  * 一旦放回上下文末尾，每轮都要全量重发，且不会产生任何报错，
@@ -12,7 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { ToolRegistry } from '@qywork/agent'
+import { auditFrozenText, ToolRegistry } from '@qywork/agent'
 import { TODO_BLOCKERS, TODO_FAILURES } from '@qywork/core'
 import { registerBuiltinTools } from '@qywork/tools'
 import { buildSystemPrompt, buildTailNotes, outputLimitNote } from './prompt.ts'
@@ -683,5 +684,95 @@ describe('输出上限说明', () => {
     const bare = buildSystemPrompt(names)
     expect(bare).not.toContain('Everything Claude produces')
     expect(buildSystemPrompt(names, 128_000)).toBe(`${bare}\n\n${outputLimitNote(128_000)}`)
+  })
+})
+
+/** 审计器本身的用例在 `agent/src/prefix-audit.test.ts`；本组审计的是真实的系统提示词，产生费用的是它。 */
+describe('审计真实的系统提示词', () => {
+  /** 门槛工具全部存在，能力段全部发出：审计的是最长的前缀。 */
+  const GATES = [
+    'run_command',
+    'write_memory',
+    'move_memory',
+    'read_skill',
+    'write_skill',
+    'move_skill',
+    'write_mcp_server',
+    'move_mcp_server',
+    'load_tool',
+    'subagent',
+    'workflow',
+    'create_schedule',
+    'read_goal',
+    'read_history',
+    'web_search',
+  ]
+  const ALL = new Set(GATES)
+
+  test('三层冻结前缀中没有本身会变化的字段', () => {
+    expect(auditFrozenText(buildSystemPrompt(ALL))).toEqual([])
+    expect(auditFrozenText(buildSystemPrompt(ALL, 128_000))).toEqual([])
+  })
+
+  test('两次构造逐字节相同', () => {
+    expect(buildSystemPrompt(ALL)).toBe(buildSystemPrompt(ALL))
+  })
+
+  /** 缺少任何一条，模型都无法得知自己具备该能力，因此每个类目都必须发出。 */
+  test('能力段向模型说明每个类目', () => {
+    const p = buildSystemPrompt(ALL)
+    for (const tool of GATES) expect(p).toContain(tool)
+    // 两个派发工具的选择判据必须写入提示词：单项任务用一个子 agent；两个及以上、需要验收或有先后依赖时用 workflow。
+    expect(p).toContain('单项任务用 subagent 委派给一个子 agent')
+    expect(p).toContain('两个及以上子 agent')
+    expect(p).toContain('revise 让指定的节点在其原有子会话中继续')
+    expect(p).toContain('批准之后仍可 revise')
+    // 完成是事件：两种派发方式都要说明回执会自动送达，否则模型会为等待回执反复调用。
+    expect(p).toContain('回执以消息形式送达本会话，不要为等待回执反复调用')
+    expect(p).toContain('各节点的回执与检查点回执都以消息形式送达本会话')
+    // CLI 的派发判据：只在用户点名或明确要求时派发，不是默认目标。
+    expect(p).toContain('仅在用户用 `@cli:id` 点名或明确要求时派发')
+  })
+
+  /**
+   * 复现原始失败形状：`run_command` / `subagent` / `workflow` / `load_tool`
+   * 按通道注册，固定写入提示词会使没有对应通道的会话读到不存在的工具。
+   */
+  test('缺少通道时不发送对应行，其余照常', () => {
+    const p = buildSystemPrompt(new Set(['write_memory', 'read_skill']))
+    expect(p).not.toContain('run_command')
+    expect(p).not.toContain('subagent')
+    expect(p).not.toContain('load_tool')
+    expect(p).toContain('write_memory')
+    expect(p).toContain('read_skill')
+
+    // 没有任何门槛工具时整段不出现，不保留空标题。
+    expect(buildSystemPrompt(new Set())).not.toContain('## 能力')
+  })
+
+  test('输入区显式引用绑定技能、外部工具与子 agent', () => {
+    const p = buildSystemPrompt(
+      new Set(['read_skill', 'load_tool', 'define_role', 'subagent', 'mcp__github__search']),
+    )
+    expect(p).toContain('#技能名')
+    expect(p).toContain('@工具注册名')
+    expect(p).toContain('@角色id')
+    expect(p).toContain('/role')
+    expect(p).toContain('可长期复用')
+    expect(p).not.toContain('`@subagent`')
+    expect(p).toContain('直接调用该工具')
+  })
+
+  /**
+   * 上下文末尾注记应包含日期。本用例反向验证：会变化的字段确实位于
+   * 断点之外。本用例通过才能说明分层确实生效，而不是两侧都不含可变字段而看似正确。
+   */
+  test('上下文末尾注记包含会变化的内容（验证分层生效）', () => {
+    const notes = buildTailNotes({ workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' })
+      .map((n) => n.content)
+      .join('\n')
+    const kinds = auditFrozenText(notes).map((h) => h.kind)
+    expect(kinds).toContain('date')
+    expect(kinds).toContain('abs-path')
   })
 })

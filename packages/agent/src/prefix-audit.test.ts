@@ -1,9 +1,9 @@
 /**
- * 冻结前缀审计。
+ * 冻结前缀审计器本身的用例。
  *
- * 最关键的是最后一个 describe：它用真实的系统提示词进行审计。
- * 前面的用例验证审计器本身，最后一组验证被审计的前缀；
- * 前者通过不代表后者没有问题，而产生费用的是后者。
+ * 用真实的系统提示词进行的审计在 `runtime/src/prompt.test.ts`：系统提示词由 runtime 构造，
+ * agent 位于 runtime 之下，不得导入它。本文件通过只说明审计器正确，不说明真实前缀中没有可变字段，
+ * 而产生费用的是真实前缀。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -166,100 +166,5 @@ describe('运行时审计', () => {
     const text = describeDrift(a.observe('cv1', [block('b', true)])!)
     expect(text).toContain('缓存')
     expect(text).toContain('计费')
-  })
-})
-
-describe('审计真实的系统提示词', () => {
-  /** 门槛工具全部存在，能力段全部发出：审计的是最长的前缀。 */
-  const GATES = [
-    'run_command',
-    'write_memory',
-    'move_memory',
-    'read_skill',
-    'write_skill',
-    'move_skill',
-    'write_mcp_server',
-    'move_mcp_server',
-    'load_tool',
-    'subagent',
-    'workflow',
-    'create_schedule',
-    'read_goal',
-    'read_history',
-    'web_search',
-  ]
-  const ALL = new Set(GATES)
-
-  test('三层冻结前缀中没有本身会变化的字段', async () => {
-    const { buildSystemPrompt } = await import('@qywork/runtime')
-    expect(auditFrozenText(buildSystemPrompt(ALL))).toEqual([])
-    expect(auditFrozenText(buildSystemPrompt(ALL, 128_000))).toEqual([])
-  })
-
-  test('两次构造逐字节相同', async () => {
-    const { buildSystemPrompt } = await import('@qywork/runtime')
-    expect(buildSystemPrompt(ALL)).toBe(buildSystemPrompt(ALL))
-  })
-
-  /** 缺少任何一条，模型都无法得知自己具备该能力，因此每个类目都必须发出。 */
-  test('能力段向模型说明每个类目', async () => {
-    const { buildSystemPrompt } = await import('@qywork/runtime')
-    const p = buildSystemPrompt(ALL)
-    for (const tool of GATES) expect(p).toContain(tool)
-    // 两个派发工具的选择判据必须写入提示词：单项任务用一个子 agent；两个及以上、需要验收或有先后依赖时用 workflow。
-    expect(p).toContain('单项任务用 subagent 委派给一个子 agent')
-    expect(p).toContain('两个及以上子 agent')
-    expect(p).toContain('revise 让指定的节点在其原有子会话中继续')
-    expect(p).toContain('批准之后仍可 revise')
-    // 完成是事件：两种派发方式都要说明回执会自动送达，否则模型会为等待回执反复调用。
-    expect(p).toContain('回执以消息形式送达本会话，不要为等待回执反复调用')
-    expect(p).toContain('各节点的回执与检查点回执都以消息形式送达本会话')
-    // CLI 的派发判据：只在用户点名或明确要求时派发，不是默认目标。
-    expect(p).toContain('仅在用户用 `@cli:id` 点名或明确要求时派发')
-  })
-
-  /**
-   * 复现原始失败形状：`run_command` / `subagent` / `workflow` / `load_tool`
-   * 按通道注册，固定写入提示词会使没有对应通道的会话读到不存在的工具。
-   */
-  test('缺少通道时不发送对应行，其余照常', async () => {
-    const { buildSystemPrompt } = await import('@qywork/runtime')
-    const p = buildSystemPrompt(new Set(['write_memory', 'read_skill']))
-    expect(p).not.toContain('run_command')
-    expect(p).not.toContain('subagent')
-    expect(p).not.toContain('load_tool')
-    expect(p).toContain('write_memory')
-    expect(p).toContain('read_skill')
-
-    // 没有任何门槛工具时整段不出现，不保留空标题。
-    expect(buildSystemPrompt(new Set())).not.toContain('## 能力')
-  })
-
-  test('输入区显式引用绑定技能、外部工具与子 agent', async () => {
-    const { buildSystemPrompt } = await import('@qywork/runtime')
-    const p = buildSystemPrompt(
-      new Set(['read_skill', 'load_tool', 'define_role', 'subagent', 'mcp__github__search']),
-    )
-    expect(p).toContain('#技能名')
-    expect(p).toContain('@工具注册名')
-    expect(p).toContain('@角色id')
-    expect(p).toContain('/role')
-    expect(p).toContain('可长期复用')
-    expect(p).not.toContain('`@subagent`')
-    expect(p).toContain('直接调用该工具')
-  })
-
-  /**
-   * 上下文末尾注记应包含日期。本用例反向验证：会变化的字段确实位于
-   * 断点之外。本用例通过才能说明分层确实生效，而不是两侧都不含可变字段而看似正确。
-   */
-  test('上下文末尾注记包含会变化的内容（验证分层生效）', async () => {
-    const { buildTailNotes } = await import('@qywork/runtime')
-    const notes = buildTailNotes({ workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' })
-      .map((n) => n.content)
-      .join('\n')
-    const kinds = auditFrozenText(notes).map((h) => h.kind)
-    expect(kinds).toContain('date')
-    expect(kinds).toContain('abs-path')
   })
 })

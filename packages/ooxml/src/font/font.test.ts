@@ -2,7 +2,7 @@
  * 字体表读取。覆盖 `sfnt.ts`（表目录、TTC 合集头、TTC 拆分）、`name.ts`（家族名）、
  * `cmap.ts`（格式 4 与 12）、`metrics.ts`（head、hhea、maxp、hmtx 与按字号换算）。
  *
- * 读取本机 Windows 字体目录中的真实文件：其他平台跳过（`skipIf`），Windows 上文件不存在时读取抛出，用例失败。
+ * 读取本机 Windows 字体目录中的真实文件，运行条件由 `test-fonts.ts` 判定。
  * 期望的字形编号与前进宽度取自独立实现对同一文件的读取（`cmap` 按同一子表选用顺序），不由本模块计算。
  */
 

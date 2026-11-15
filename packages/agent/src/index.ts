@@ -109,6 +109,8 @@ export { mediaDurationOfFile } from './media-duration.ts'
 export { isOutsideRelative, placePath } from './paths/place.ts'
 // run_command 的拒绝清单：runtime 的 Session 在放行之前调用它裁决
 export { decideCommand } from './policy.ts'
+// 冻结前缀的静态审计：系统提示词由 runtime 构造，审计在 runtime 的测试中执行
+export { auditFrozenText } from './prefix-audit.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
 export {
   type BrowserActInput,

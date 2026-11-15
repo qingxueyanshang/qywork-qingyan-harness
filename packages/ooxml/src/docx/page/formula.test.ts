@@ -7,13 +7,14 @@
  *
  * 期望值取自 WPS 12.1 只读打开构造文档 w7-ls、w7-lsgrid、w7-x、w7-xleft、w7-mark、w16 fm 与 c 后逐段取得的位置
  * （`Range.Information(5)`、`Information(6)`，0.05 磅精度）。排版用例读取本机 Windows 字体目录中的宋体、
- * Times New Roman 与 Cambria Math（cambria.ttc 第 2 个字体）：其他平台跳过。
+ * Times New Roman 与 Cambria Math（cambria.ttc 第 2 个字体），运行条件由 `test-fonts.ts` 判定。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-helper.ts'
+import { fontsAvailable } from '../../test-fonts.ts'
 import { NO_HOST_FAMILIES } from '../../text/index.ts'
 import { type DocxDocument, layoutDocument, type Paragraph, parseDocx } from '../index.ts'
 import type { ParagraphLayout } from '../layout.ts'
@@ -24,9 +25,7 @@ import { layoutPages, requiredFonts } from './build.ts'
 import type { PageParagraph } from './model.ts'
 
 const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
-const HAS_FONTS = ['simsun.ttc', 'times.ttf', 'cambria.ttc'].every((f) =>
-  existsSync(join(FONTS, f)),
-)
+const HAS_FONTS = fontsAvailable(['simsun.ttc', 'times.ttf', 'cambria.ttc'])
 
 const STYLES =
   '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体" ' +

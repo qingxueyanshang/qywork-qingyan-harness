@@ -903,7 +903,7 @@ describe.skipIf(!LOCAL_FONTS)('build：对象的位置（本机字体）', () =>
 })
 
 describe.skipIf(!LOCAL_FONTS)('图文框（本机字体）', () => {
-  const FONTS = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
+  const FONTS = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   let fonts: DocxFonts | null = null
   const load = (): DocxFonts => {
     fonts ??= new DocxFonts(

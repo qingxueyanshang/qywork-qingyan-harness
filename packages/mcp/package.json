@@ -9,5 +9,8 @@
   "dependencies": {
     "@qywork/agent": "workspace:*",
     "@qywork/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@qywork/ai": "workspace:*"
   }
 }

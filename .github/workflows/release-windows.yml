@@ -93,7 +93,7 @@ jobs:
         run: |
           bundle=".tmp/cargo-target/x86_64-pc-windows-msvc/release/bundle/nsis"
           installers=("$bundle"/*.exe)
-          # 没命中时 glob 原样留在数组里，先按文件存在与否清掉，报出来的个数才是真的。
+          # glob 未匹配时原样保留在数组中，先按文件是否存在清除，报告的个数才准确。
           [ -f "${installers[0]}" ] || installers=()
           if [ "${#installers[@]}" -ne 1 ]; then
             echo "Expected one NSIS installer in $bundle, found ${#installers[@]}." >&2

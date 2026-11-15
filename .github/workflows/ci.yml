@@ -1,11 +1,11 @@
 name: CI
 
-# 日常门禁：每次分支 push 与每个 pull request 都跑一遍完整的 `bun run gate` 加 Web 构建。
-# 发布工作流只在手动触发时跑，它的绿灯不能替日常提交作证。
+# 日常门禁：每次分支 push 与每个 pull request 都运行一次完整的 `bun run gate`，
+# 其中的 sidecar 编译同时构建网页。发布工作流只在手动触发时运行，其通过结果不能代表日常提交。
 #
-# 三端同跑：安装包要出 Windows、macOS 与 Linux 三种，而 gate 里的 cargo check 按运行平台
-# 选分支、两个 externalBin 按运行平台的三元组编译。只跑一端时，另外两端的编译错误要到
-# 发布当天才暴露。前置步骤与发布工作流共用 .github/actions/setup-build，不在这里另抄一份。
+# 三个平台同时运行：安装包分 Windows、macOS 与 Linux 三种，而 gate 中的 cargo check 按运行平台
+# 选择条件编译分支，两个 externalBin 按运行平台的三元组编译。只在一个平台运行时，另外两个平台的
+# 编译错误到发布当天才暴露。前置步骤与发布工作流共用 .github/actions/setup-build，此处不另行复制。
 
 on:
   push:
@@ -16,8 +16,8 @@ on:
 permissions:
   contents: read
 
-# 同一分支/PR 上新的一次推送取消旧的这条。group 名与发布工作流的 windows-release
-# 不重合——重合会让一次 push 取消正在出安装包的那次发布。
+# 同一分支或 PR 上的新推送取消尚未结束的旧运行。group 名不得与发布工作流的 windows-release
+# 相同：相同时，一次 push 会取消正在生成安装包的发布。
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -26,10 +26,10 @@ jobs:
   gate:
     name: Gate on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # 三端都是冷编译，没有 Rust 缓存；Windows 一端原本按 45 分钟走，另两端更慢。
+    # 三个平台均为冷编译，没有 Rust 缓存；Windows 在 45 分钟的时限内完成，另两个平台耗时更长。
     timeout-minutes: 60
     strategy:
-      # 一端红了仍要看到另外两端是不是同一处原因，所以不提前取消同批的其余 job。
+      # 一个平台失败时仍需查看另外两个平台是否出于同一原因，因此不提前取消同批的其余 job。
       fail-fast: false
       matrix:
         os:
@@ -50,6 +50,3 @@ jobs:
 
       - name: Run gate
         run: bun run gate
-
-      - name: Build web
-        run: bun run build:web

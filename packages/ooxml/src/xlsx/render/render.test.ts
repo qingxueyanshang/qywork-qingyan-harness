@@ -604,7 +604,7 @@ describe('单行行高、标准行高与边框增量', () => {
 })
 
 describe.skipIf(!LOCAL_FONTS)('本机字体的单行行高（WPS 实测）', () => {
-  const dir = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
+  const dir = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
   const face = (file: string, family: string, index = 0) =>
     loadFace(extractFace(new Uint8Array(readFileSync(join(dir, file))), index), family)
   // [字体, 文件, 磅, WPS 行高（像素）]：取自 WPS 对无 ht 行按内容推算的行高。
@@ -1320,7 +1320,7 @@ describe('绘制', () => {
       'ffffffffffffb66600003a90dbffffffffffffffffffffffffffffdb903a00003a6690b6b6903a00000066b6ffffffffffffdb903a0000003a90b6b6b6b690663a00003a90dbffffffffffdb903a00003a6690b6b6903a00000066b6ffffffffffffdb903a0000003a90b6b6b6b690663a00003a90dbffffffdb903a00003a6690b6b6b690663a00000066b6ffffffffffffdbb666000066b6dbffffffffffffffffffffffffffffffffffdb903a00003a6690b6b6903a00000066b6ffffffffffffffdb903a00003a6690b6b6903a00000066b6ffffffff',
       'ffffffffffdbb6906690b6dbffffffffffffffffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffffffffffffffdbb690663a3a3a3a3a3a3a66b6dbffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffffffffffffffdbb690663a3a3a3a3a3a3a66b6dbffffffffffffffffffdbb6663a3a3a3a3a3a3a66b6dbdbffffffffffffffffffb6663a3a66b6ffffffffffffffffffffffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffffffffffffffffdbb690663a3a3a3a6690b6dbffffffffffff',
     ]
-    const dir = join(process.env.WINDIR ?? 'C:Windows', 'Fonts')
+    const dir = join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts')
     const kai = loadFace(new Uint8Array(readFileSync(join(dir, 'simkai.ttf'))), '楷体')
     const set = new FontSet([kai], [])
     const sheet = sheetOf({ A1: str('706065.00', 1) }, { maxRow: 1, maxCol: 1 })
