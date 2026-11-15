@@ -15,6 +15,7 @@
 
 import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { isatty } from 'node:tty'
 import type { AgentEvent } from '@qywork/core'
 import { formatMoney, log, setLogSink } from '@qywork/core'
 import {
@@ -78,6 +79,7 @@ const USAGE = `qy —— qywork 编码 agent
     --static <目录>       前端构建产物目录（默认使用编译时嵌入的网页）
     --print-token         将令牌输出到 stdout（供 Tauri 读取）
     --parent-pid <pid>    父进程退出时一并退出，避免留下孤儿服务
+    --credentials-stdin   从标准输入读取一行 JSON 凭据（供桌面外壳传入）
 
   qy doctor               一屏体检：配置、shell 沙箱、账本、MCP、插件
     --cwd <路径>          指定工作区
@@ -296,6 +298,16 @@ async function runServe(args: string[]): Promise<number> {
     stageAt = now
   }
   const flags = parseFlags(args)
+  // 在启动任何子进程之前读完：继承标准输入的子进程同样能读取这一行。
+  let credentials: Credentials = {}
+  if (flags.credentialsStdin) {
+    try {
+      credentials = await readCredentials()
+    } catch (err) {
+      process.stderr.write(`凭据读取失败：${err instanceof Error ? err.message : String(err)}\n`)
+      return 2
+    }
+  }
   /*
    * **是否给出 `--cwd` 对应两种语义，不能合并为一个默认值。**
    *
@@ -386,17 +398,17 @@ async function runServe(args: string[]): Promise<number> {
     port: flags.port ?? 7717,
     host: flags.host ?? '127.0.0.1',
     ...(web ? { web } : {}),
-    // Tauri spawn 时通过环境变量传入令牌，桌面端因此无需扫码配对。
-    ...(process.env.QYWORK_TOKEN ? { token: process.env.QYWORK_TOKEN } : {}),
+    // 桌面外壳经 `--credentials-stdin` 交付令牌，桌面端因此无需扫码配对；恢复重启时交付的是原令牌。
+    ...(credentials.token ? { token: credentials.token } : {}),
     /*
-     * 原生宿主连接的凭据，同样只从环境变量读取。**同一份凭据用于两条宿主路径**
+     * 原生宿主连接的凭据，同样只经 `--credentials-stdin` 交付。**同一份凭据用于两条宿主路径**
      * （`/native/browser` 与 `/native/desktop`），具体类型由服务端按 URL 路径判定。
      *
      * 没有该凭据时两条路径都不存在：从命令行直接启动的 serve 没有桌面外壳，也就没有原生资源。
      * **不要写入配置文件**：否则一个可以注册宿主的凭据会被写入磁盘。
      */
-    ...(process.env.QYWORK_HOST_KEY ? { hostKey: process.env.QYWORK_HOST_KEY } : {}),
-    ...(process.env.QYWORK_UPDATE_KEY ? { updateHostKey: process.env.QYWORK_UPDATE_KEY } : {}),
+    ...(credentials.hostKey ? { hostKey: credentials.hostKey } : {}),
+    ...(credentials.updateKey ? { updateHostKey: credentials.updateKey } : {}),
     ...(previousProcessExit ? { previousProcessExit } : {}),
     ...(power ? { power } : {}),
     remote: true,
@@ -514,6 +526,7 @@ interface Flags {
   static?: string
   printToken?: boolean
   parentPid?: number
+  credentialsStdin?: boolean
 }
 
 function parseFlags(args: string[]): Flags {
@@ -546,8 +559,60 @@ function parseFlags(args: string[]): Flags {
       i = ni
     } else if (a === '--json') out.json = true
     else if (a === '--print-token') out.printToken = true
+    else if (a === '--credentials-stdin') out.credentialsStdin = true
     else if (/^--?[A-Za-z][\w-]*$/.test(a)) out.unknown.push(a)
     else out.positional.push(a)
+  }
+  return out
+}
+
+/** 桌面外壳经 `--credentials-stdin` 交付的凭据。缺省的一项按未传入处理。 */
+interface Credentials {
+  token?: string
+  hostKey?: string
+  updateKey?: string
+}
+
+const CREDENTIAL_FIELDS = ['token', 'hostKey', 'updateKey'] as const
+
+/**
+ * 从标准输入读取一行 JSON 凭据。
+ *
+ * 凭据不经环境变量交付：环境块由本进程启动的全部子进程继承，Bun 中删除 `process.env` 的键之后，
+ * 不传 `env` 启动的子进程仍取得原值。标准输入的这一行只由本进程读取一次。
+ *
+ * 读到换行即停止读取：外壳在 sidecar 运行期间保持管道打开，不会再写入。
+ * 标准输入是终端、在换行之前结束、内容不是约定的 JSON 对象时抛出，调用方以非零退出码结束进程。
+ */
+async function readCredentials(): Promise<Credentials> {
+  if (isatty(0)) throw new Error('--credentials-stdin 需要以管道提供标准输入')
+  const reader = Bun.stdin.stream().getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  try {
+    while (!text.includes('\n')) {
+      const { value, done } = await reader.read()
+      if (done) throw new Error('标准输入在凭据行结束之前关闭')
+      text += decoder.decode(value, { stream: true })
+    }
+  } finally {
+    await reader.cancel()
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text.slice(0, text.indexOf('\n')))
+  } catch {
+    throw new Error('凭据行不是合法的 JSON')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('凭据行不是 JSON 对象')
+  }
+  const out: Credentials = {}
+  for (const [name, value] of Object.entries(parsed)) {
+    const field = CREDENTIAL_FIELDS.find((f) => f === name)
+    if (!field) throw new Error(`未知的凭据字段：${name}`)
+    if (typeof value !== 'string' || !value) throw new Error(`凭据字段 ${name} 必须是非空字符串`)
+    out[field] = value
   }
   return out
 }

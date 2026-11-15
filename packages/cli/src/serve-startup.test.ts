@@ -1,9 +1,15 @@
+/**
+ * 覆盖 `index.ts` 的 `qy serve` 启动：就绪回执不被 Git 创建进程阻塞；`--credentials-stdin` 交付的凭据被采用，
+ * 且不出现在 serve 启动的子进程的环境中；凭据行缺失或不合法时以非零退出码结束。
+ */
+
 import { expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { chmodSync, existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { NATIVE_DESKTOP_PATH, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
 
 /** 在真实进程创建位置同步阻塞 Git，直到父测试主动放行；只延迟命令执行无法复现此问题。 */
 const preloadSource = `
@@ -107,3 +113,164 @@ test('Git 创建进程被阻塞时，serve 仍交付就绪回执并响应 HTTP',
     await Promise.all([stdout, stderr])
   }
 }, 30_000)
+
+/** runner 以默认选项启动、继承 serve 的环境块；在其中记录该环境。 */
+const runnerEnvPreload = `
+import { writeFileSync } from 'node:fs'
+if (process.argv.includes('runner')) writeFileSync(process.env.QY_TEST_RUNNER_ENV, JSON.stringify(process.env))
+const actual = Bun.spawn.bind(Bun)
+Bun.spawn = function(argv, options) {
+  if (argv.includes('runner')) argv = [argv[0], '--preload', import.meta.path, ...argv.slice(1)]
+  return actual(argv, options)
+}
+`
+
+function killTree(proc: { pid: number; kill(): void }): void {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
+      windowsHide: true,
+      stdio: 'ignore',
+    })
+  } else {
+    proc.kill()
+  }
+}
+
+/**
+ * 以外壳相同的方式启动：`--credentials-stdin`，写入一行凭据后保持管道打开。
+ * 原始失败形状是凭据经环境变量交付时，serve 启动的全部后代进程都能读到它们。
+ */
+test('经标准输入交付的凭据被采用，且不出现在子进程与 git 钩子的环境中', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qy-serve-credentials-'))
+  const home = join(dir, 'home')
+  const workspace = join(dir, 'workspace')
+  await mkdir(home)
+  await mkdir(workspace)
+  await writeFile(join(home, 'config.json'), '{}')
+  const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: workspace })
+  git('init', '-q', '-b', 'main', '.')
+  git('config', 'user.email', 't@t')
+  git('config', 'user.name', 't')
+  await writeFile(join(workspace, 'a.txt'), 'x')
+  git('add', '.')
+  git('commit', '-qm', 'x')
+  git('branch', 'dev')
+  const hookEnv = join(dir, 'hook-env.txt')
+  const hook = join(workspace, '.git', 'hooks', 'post-checkout')
+  await writeFile(hook, `#!/bin/sh\nenv > "${hookEnv.replaceAll('\\', '/')}"\n`)
+  chmodSync(hook, 0o755)
+  const preload = join(dir, 'preload.ts')
+  const runnerEnv = join(dir, 'runner-env.json')
+  await writeFile(preload, runnerEnvPreload)
+
+  const credentials = {
+    token: `token-${crypto.randomUUID()}`,
+    hostKey: `host-${crypto.randomUUID()}`,
+    updateKey: `update-${crypto.randomUUID()}`,
+  }
+  const proc = Bun.spawn(
+    [
+      process.execPath,
+      '--preload',
+      preload,
+      join(import.meta.dir, 'index.ts'),
+      'serve',
+      '--port',
+      '0',
+      '--host',
+      '127.0.0.1',
+      '--print-token',
+      '--parent-pid',
+      String(process.pid),
+      '--credentials-stdin',
+      '--cwd',
+      workspace,
+    ],
+    {
+      env: { ...process.env, QYWORK_HOME: home, QY_TEST_RUNNER_ENV: runnerEnv },
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  )
+  proc.stdin.write(`${JSON.stringify(credentials)}\n`)
+  proc.stdin.flush()
+  let output = ''
+  const stdout = (async () => {
+    for await (const chunk of proc.stdout) output += new TextDecoder().decode(chunk)
+  })()
+  const stderr = new Response(proc.stderr).text()
+  try {
+    await until(() => /QYWORK_PORT=\d+/.test(output), '未输出就绪回执')
+    // 恢复重启依赖这一点：外壳交付原令牌，serve 必须采用它而不是另行生成。
+    expect(output).toContain(`QYWORK_TOKEN=${credentials.token}\n`)
+    const base = `http://127.0.0.1:${/QYWORK_PORT=(\d+)/.exec(output)?.[1]}`
+    const auth = { authorization: `Bearer ${credentials.token}` }
+    const switched = await fetch(`${base}/api/git/switch`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ branch: 'dev' }),
+    })
+    expect(switched.status).toBe(200)
+    // 宿主凭据与更新凭据同样被采用：凭据正确时两条路径越过鉴权。
+    const host = await fetch(`${base}${NATIVE_DESKTOP_PATH}`, {
+      headers: { [NATIVE_HOST_KEY_HEADER]: credentials.hostKey },
+    })
+    expect(host.status).toBe(400)
+    const update = await fetch(`${base}/internal/app-update`, {
+      method: 'POST',
+      headers: { 'x-qywork-update-key': credentials.updateKey },
+      body: JSON.stringify({ action: 'cancel' }),
+    })
+    expect(update.status).toBe(200)
+
+    await until(() => existsSync(runnerEnv), 'runner 未记录环境')
+    const seen = [await readFile(runnerEnv, 'utf8'), await readFile(hookEnv, 'utf8')]
+    for (const text of seen) {
+      for (const value of Object.values(credentials)) expect(text).not.toContain(value)
+    }
+  } finally {
+    killTree(proc)
+    await proc.exited
+    await Promise.all([stdout, stderr])
+  }
+}, 30_000)
+
+/** 凭据行缺失或不合法时不启动服务，以非零退出码结束并说明原因。 */
+test('凭据行缺失或不合法时以退出码 2 结束，不输出就绪回执', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'qy-serve-credentials-bad-'))
+  /** `line` 为 null 时不提供标准输入（立即结束）；否则写入该行后关闭。 */
+  const run = async (line: string | null) => {
+    const proc = Bun.spawn(
+      [
+        process.execPath,
+        join(import.meta.dir, 'index.ts'),
+        'serve',
+        '--port',
+        '0',
+        '--print-token',
+        '--credentials-stdin',
+      ],
+      {
+        env: { ...process.env, QYWORK_HOME: home },
+        stdin: line === null ? 'ignore' : new TextEncoder().encode(`${line}\n`),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    const exitCode = await Promise.race([proc.exited, Bun.sleep(15_000).then(() => null)])
+    if (exitCode === null) killTree(proc)
+    return {
+      exitCode,
+      stdout: await new Response(proc.stdout).text(),
+      stderr: await new Response(proc.stderr).text(),
+    }
+  }
+
+  for (const line of [null, 'not json', '[]', '{"token":""}', '{"tokn":"x"}']) {
+    const got = await run(line)
+    expect(got.exitCode).toBe(2)
+    expect(got.stdout).not.toContain('QYWORK_PORT=')
+    expect(got.stderr).toContain('凭据读取失败')
+  }
+}, 60_000)

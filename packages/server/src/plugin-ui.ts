@@ -10,6 +10,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
+import { PLUGIN_UI_SANDBOX } from '@qywork/core'
 import { parseManifest } from '@qywork/plugins'
 import { globalPluginsDir } from '@qywork/runtime'
 
@@ -63,8 +64,12 @@ export async function listWorkbenches(key: string): Promise<Workbench[]> {
 /**
  * 提供工作台页面文件：`/plugin-ui/<随机段>/<插件 id>/<路径>`。不属于该前缀时返回 null。
  *
- * 响应带 `access-control-allow-origin: *`：页面在不带 `allow-same-origin` 的沙箱 iframe 中运行，
- * 源是不透明源，模块脚本按跨源方式请求，缺少该头时页面的脚本全部加载失败。
+ * 每个响应都带 `Content-Security-Policy: sandbox`（`PLUGIN_UI_SANDBOX`）：在界面所在的标签页中直接打开
+ * 该地址时，iframe 属性不生效，只有响应头使页面取得不透明源，无法读取界面的 `sessionStorage` 中的令牌。
+ * 不限于 HTML：SVG 等文档同样能执行脚本。
+ *
+ * 响应带 `access-control-allow-origin: *`：页面的源是不透明源，模块脚本按跨源方式请求，
+ * 缺少该头时页面的脚本全部加载失败。
  */
 export async function servePluginUi(pathname: string, key: string): Promise<Response | null> {
   if (!pathname.startsWith(PLUGIN_UI_PREFIX)) return null
@@ -83,6 +88,10 @@ export async function servePluginUi(pathname: string, key: string): Promise<Resp
   if (!file.startsWith(dir + sep)) return notFound()
   if (!(await stat(file).catch(() => null))?.isFile()) return notFound()
   return new Response(Bun.file(file), {
-    headers: { 'access-control-allow-origin': '*', 'cache-control': 'no-cache' },
+    headers: {
+      'content-security-policy': `sandbox ${PLUGIN_UI_SANDBOX}`,
+      'access-control-allow-origin': '*',
+      'cache-control': 'no-cache',
+    },
   })
 }

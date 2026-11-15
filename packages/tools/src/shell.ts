@@ -178,6 +178,19 @@ function trackReported(reported: Set<string>, changes: FileChange[]): void {
 }
 
 /**
+ * 剥离凭证后的本进程环境。会执行模型可写内容的子进程共用此判据：`run_command` 与 `office`（经 `commandEnv`），
+ * 以及 git（仓库中的钩子与 `core.fsmonitor` 等配置项可由模型写入，git 执行它们时传入的就是这份环境）。
+ * 缺少 `secrets` 时按没有已知凭证处理，缺少 `envAllowList` 时放行 `DEFAULT_ENV_ALLOW`。
+ */
+export function scrubbedEnv(
+  opts: Pick<ToolContext, 'secrets' | 'envAllowList'>,
+): Record<string, string> {
+  return scrubEnv(process.env, opts.secrets ?? { values: [] }, {
+    allow: opts.envAllowList ?? DEFAULT_ENV_ALLOW,
+  })
+}
+
+/**
  * 执行模型代码的子进程所用的环境变量：剥离凭证、加入非交互设置、临时目录指向工作区 `.tmp`。
  *
  * `run_command` 与 `office` 共用此函数：两处各自拼装时，一处遗漏凭证剥离不会产生任何报错。
@@ -190,9 +203,7 @@ export async function commandEnv(
   >,
 ): Promise<Record<string, string>> {
   const env = {
-    ...scrubEnv(process.env, ctx.secrets ?? { values: [] }, {
-      allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW,
-    }),
+    ...scrubbedEnv(ctx),
     ...NON_INTERACTIVE_ENV,
     ...(await tmpEnv(conversationTempDir(ctx.workspaceRoot, ctx.conversationId))),
   }
@@ -491,7 +502,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       // 命令修改了哪些文件由工作区观察器提供：shell 没有精确明细，路径与变更类型是能取得的全部信息。
       // 必须先打开观察窗口再启动进程：窗口起点之前写入的文件无法判定为本命令新建。
       const reported = turnReported(ctx.state)
-      const changeWindow = openChangeWindow(ctx.workspaceRoot, { reported })
+      const changeWindow = openChangeWindow(ctx.workspaceRoot, { reported, env })
       const closeWindow = async () => {
         const observed = await changeWindow.close()
         trackReported(reported, observed.changes)

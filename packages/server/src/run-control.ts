@@ -430,7 +430,7 @@ export async function startRun(
         skipResume: fired,
       })
       // 未查到项目目录时没有可广播的工作区，本轮也未访问任何文件。
-      if (ws) void publishGitState(ws.rootPath, ws.id, deps.bus)
+      if (ws) void publishGitState(ws.rootPath, ws.id, deps.bus, deps.config)
     }
   })()
 }

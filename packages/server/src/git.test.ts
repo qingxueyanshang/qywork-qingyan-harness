@@ -1,17 +1,21 @@
 /**
  * 分支名数据源的边界。
  *
- * 覆盖 `git.ts` 的两项行为：**detached HEAD 返回 null 而不是名为 HEAD 的分支**，
- * 以及**本机未安装 git 时的形状**。
+ * 覆盖 `git.ts` 的三项行为：**detached HEAD 返回 null 而不是名为 HEAD 的分支**，
+ * **本机未安装 git 时的形状**，以及**git 子进程使用与 `run_command` 相同的凭证剥离**。
  * 其余行为由 git 自身保证，无需在此重复验证。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp } from 'node:fs/promises'
+import { chmodSync } from 'node:fs'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { QyConfig } from '@qywork/runtime'
 import { setCommandRunner, startCommandRunner } from '@qywork/tools'
 import { branches, currentBranch, gitDir, switchTo } from './git.ts'
+
+const CONFIG: QyConfig = { providers: {} }
 
 async function repoWithCommit(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qy-git-'))
@@ -27,7 +31,7 @@ async function repoWithCommit(): Promise<string> {
 
 describe('当前分支名', () => {
   test('位于分支上时返回分支名', async () => {
-    expect(await currentBranch(await repoWithCommit())).toBe('main')
+    expect(await currentBranch(await repoWithCommit(), CONFIG)).toBe('main')
   })
 
   /**
@@ -39,11 +43,11 @@ describe('当前分支名', () => {
     const dir = await repoWithCommit()
     const sha = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: dir }).stdout.toString().trim()
     Bun.spawnSync(['git', 'checkout', '-q', sha], { cwd: dir })
-    expect(await currentBranch(dir)).toBeNull()
+    expect(await currentBranch(dir, CONFIG)).toBeNull()
   })
 
   test('不是仓库时返回 null', async () => {
-    expect(await currentBranch(await mkdtemp(join(tmpdir(), 'qy-nogit-')))).toBeNull()
+    expect(await currentBranch(await mkdtemp(join(tmpdir(), 'qy-nogit-')), CONFIG)).toBeNull()
   })
 })
 
@@ -68,11 +72,42 @@ describe('本机未安装 git', () => {
     const prev = process.env.PATH
     process.env.PATH = empty
     try {
-      expect(await currentBranch(dir)).toBeNull()
+      expect(await currentBranch(dir, CONFIG)).toBeNull()
     } finally {
       process.env.PATH = prev
     }
   })
+})
+
+/**
+ * `git switch` 执行 `.git/hooks/post-checkout`，`.git/` 可由模型写入。钩子取得的环境与 `run_command` 相同：
+ * 名称形似凭证的变量与值等于已配置 key 的变量都不出现，其余变量照常传入。
+ */
+test('切换分支时钩子取得剥离凭证后的环境', async () => {
+  const dir = await repoWithCommit()
+  Bun.spawnSync(['git', 'branch', 'dev'], { cwd: dir })
+  const dump = join(dir, '.git', 'hook-env.txt')
+  const hook = join(dir, '.git', 'hooks', 'post-checkout')
+  await writeFile(hook, `#!/bin/sh\nenv > "${dump.replaceAll('\\', '/')}"\n`)
+  chmodSync(hook, 0o755)
+  const key = 'sk-configured-key-0123456789'
+  const config: QyConfig = {
+    providers: { p: { kind: 'openai_chat_completions', apiKey: key, models: {} } },
+  }
+  process.env.QY_GIT_TEST_TOKEN = 'named-secret-value'
+  process.env.QY_GIT_TEST_COPY = key
+  process.env.QY_GIT_TEST_PLAIN = 'plain-value'
+  try {
+    expect((await switchTo(dir, 'dev', config)).ok).toBe(true)
+    const seen = await readFile(dump, 'utf8')
+    expect(seen).toContain('plain-value')
+    expect(seen).not.toContain('named-secret-value')
+    expect(seen).not.toContain(key)
+  } finally {
+    delete process.env.QY_GIT_TEST_TOKEN
+    delete process.env.QY_GIT_TEST_COPY
+    delete process.env.QY_GIT_TEST_PLAIN
+  }
 })
 
 test('经命令 runner 读取和切换分支，缺失 Git 时仍返回空状态', async () => {
@@ -87,13 +122,13 @@ test('经命令 runner 读取和切换分支，缺失 Git 时仍返回空状态'
   const prev = process.env.PATH
   setCommandRunner(runner)
   try {
-    expect(await currentBranch(dir)).toBe('main')
-    expect(await gitDir(dir)).toBeTruthy()
-    expect((await branches(dir)).map((b) => b.name)).toEqual(['dev', 'main'])
-    expect((await switchTo(dir, 'dev')).ok).toBe(true)
-    expect(await currentBranch(dir)).toBe('dev')
+    expect(await currentBranch(dir, CONFIG)).toBe('main')
+    expect(await gitDir(dir, CONFIG)).toBeTruthy()
+    expect((await branches(dir, CONFIG)).map((b) => b.name)).toEqual(['dev', 'main'])
+    expect((await switchTo(dir, 'dev', CONFIG)).ok).toBe(true)
+    expect(await currentBranch(dir, CONFIG)).toBe('dev')
     process.env.PATH = empty
-    expect(await currentBranch(dir)).toBeNull()
+    expect(await currentBranch(dir, CONFIG)).toBeNull()
   } finally {
     process.env.PATH = prev
     setCommandRunner(null)
@@ -121,7 +156,7 @@ describe('无法切换时给出可读的提示', () => {
     run('switch', '-q', 'main')
     // 该文件既未提交，又恰好是两条分支之间存在差异的文件，git 必然拒绝切换。
     await Bun.write(join(dir, 'a.txt'), '我自己改的')
-    const r = await switchTo(dir, 'dev')
+    const r = await switchTo(dir, 'dev', CONFIG)
     expect(r.ok).toBe(false)
     return r.message
   }
@@ -138,7 +173,7 @@ describe('无法切换时给出可读的提示', () => {
   test('不存在该分支时不运行 git', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-git-none-'))
     Bun.spawnSync(['git', 'init', '-q', '-b', 'main', '.'], { cwd: dir })
-    const r = await switchTo(dir, '--output=pwned')
+    const r = await switchTo(dir, '--output=pwned', CONFIG)
     expect(r.ok).toBe(false)
     expect(r.message).toContain('本地分支不存在')
   })

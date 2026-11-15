@@ -76,6 +76,7 @@ import {
 } from '@qywork/team'
 import { deliverAgentOutput, openChangeWindow } from '@qywork/tools'
 import type { CommandDeps } from './deps.ts'
+import { gitEnv } from './git.ts'
 import {
   effortLevelsOf,
   memberEffort,
@@ -619,7 +620,10 @@ export function makeDelegate(ctx: {
         const stepId = at.stepId
         // 必须先打开观察窗口再启动进程：窗口起点之前写入的文件无法判定为该 CLI 新建。
         // 无法启动时关闭窗口：不关闭则该窗口始终排在最前，此后的窗口收不到任何事件。
-        const changeWindow = openChangeWindow(workspaceRoot, { reported })
+        const changeWindow = openChangeWindow(workspaceRoot, {
+          reported,
+          env: gitEnv(deps.config),
+        })
         const r = await runCli(cli, {
           prompt: task,
           workspaceRoot,

@@ -1,8 +1,13 @@
 /**
  * 工作台页：在沙箱 iframe 中加载插件提供的页面，并为页面提供桥接。
  *
- * iframe 不带 `allow-same-origin`：页面是插件编写的代码，取得不透明源后无法读取界面的存储与令牌，
- * 也无法直接请求 `/api/`。页面需要的能力只经下面的桥接提供，桥接只有三项：
+ * 页面是插件编写的代码，无法取得令牌，因此无法直接请求 `/api/`。由三处共同保证：
+ * - iframe 的 `sandbox` 属性（`PLUGIN_UI_SANDBOX`）不含 `allow-same-origin`，页面取得不透明源，
+ *   无法读取界面的存储；框架内导航到其他文档之后该属性仍然生效。
+ * - 服务端对页面附带同一组标志的 `Content-Security-Policy: sandbox`，该地址被直接打开时同样取得不透明源。
+ * - 桌面外壳的初始化脚本在 Windows 上同样注入子框架，脚本只在顶层且源为应用源的页面中写入令牌。
+ *
+ * 页面需要的能力只经下面的桥接提供，桥接只有三项：
  *
  * - `tool.call`：调用本插件声明的工具，与模型调用使用同一个插件进程与同一套宿主权限检查；
  * - `panel.open`：在右侧面板打开工作区中的文件，与点击回复中的文件链接相同；
@@ -13,6 +18,7 @@
  * 只接受来自本页 iframe 的消息（按 `event.source` 判定）。
  */
 
+import { PLUGIN_UI_SANDBOX } from '@qywork/core'
 import { createMemo, onCleanup, onMount, Show } from 'solid-js'
 import {
   askInChat,
@@ -93,7 +99,7 @@ export default function WorkbenchPanel(props: { workbench: string }) {
             class="workbench-frame"
             title={w.title}
             src={workbenchUrl(w)}
-            sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+            sandbox={PLUGIN_UI_SANDBOX}
           />
         )}
       </Show>

@@ -32,6 +32,16 @@ import type {
 import type { CacheMissAttribution } from '../domain/monitor/cache-miss.ts'
 
 /**
+ * 插件工作台页面（`/plugin-ui/*`）的沙箱标志。服务端写入响应头 `Content-Security-Policy: sandbox`，
+ * 界面写入 iframe 的 `sandbox` 属性。不含 `allow-same-origin`：页面取得不透明源。
+ *
+ * 两处都需要：响应头在该地址被直接打开时生效；iframe 属性在框架内导航到不带该响应头的文档之后仍然生效，
+ * 只有响应头时，导航后的文档按其自身的源运行。
+ */
+export const PLUGIN_UI_SANDBOX =
+  'allow-scripts allow-forms allow-popups allow-modals allow-downloads'
+
+/**
  * `GET /api/conversations/:id/history`：会话流中一页完整轮次。
  *
  * 一页以用户消息为边界：`messages` 是选中的用户消息，`runs` 与 `steps` 是它们名下的

@@ -123,8 +123,13 @@ export {
 } from './secrets.ts'
 // 环境变量的默认豁免名单：server/api 下发给设置页，作为留空时的实际值。
 // `MAX_TIMEOUT_MS` 是本机单次工具执行的时限：team 用作外部 CLI 的静默上限，
-// 执行器据此组装终止说明。
-export { DEFAULT_ENV_ALLOW, MAX_TIMEOUT_MS, resolveCommandTimeout } from './shell.ts'
+// 执行器据此组装终止说明。`scrubbedEnv`：server 启动 git 时使用与 `run_command` 相同的凭证剥离。
+export {
+  DEFAULT_ENV_ALLOW,
+  MAX_TIMEOUT_MS,
+  resolveCommandTimeout,
+  scrubbedEnv,
+} from './shell.ts'
 // 子 agent 产出的投递限制：server 的派发通道组装回执时经过同一投递限制，不另设标准。
 export { deliverAgentOutput, observationBudget } from './sink.ts'
 // 技能：runtime/session.ts 扫描索引，server/api 为设置页列出技能

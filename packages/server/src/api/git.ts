@@ -15,7 +15,7 @@ import { type ApiHandler, json } from './types.ts'
 
 export const handleGitApi: ApiHandler = async (url, req, d) => {
   if (url.pathname === '/api/git/branches') {
-    return json({ branches: await git.branches(d.workspaceRoot) })
+    return json({ branches: await git.branches(d.workspaceRoot, d.config) })
   }
 
   if (url.pathname === '/api/git/switch' && req.method === 'POST') {
@@ -30,10 +30,10 @@ export const handleGitApi: ApiHandler = async (url, req, d) => {
      * 在此处再拦截一次会为同一件事增加第二个裁决者，且拦截的是用户明确要求的操作。
      * 用户在编辑器中修改同一个文件是相同的情形，该情形同样不拦截。
      */
-    const r = await git.switchTo(d.workspaceRoot, name)
+    const r = await git.switchTo(d.workspaceRoot, name, d.config)
     if (!r.ok) return json({ error: r.message }, 409)
     // 立即广播新分支。等待 `.git/HEAD` 的监听触发时，分支标签会短暂显示旧名称。
-    await publishGitState(d.workspaceRoot, d.workspaceId, d.bus)
+    await publishGitState(d.workspaceRoot, d.workspaceId, d.bus, d.config)
     return json({ branch: name })
   }
 

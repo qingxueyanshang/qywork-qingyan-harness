@@ -13,7 +13,7 @@
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -80,6 +80,50 @@ struct SidecarState {
 #[derive(Default)]
 pub struct SidecarHandle(Arc<Mutex<SidecarState>>);
 
+/// `qy serve` 的参数。凭据不在其中：命令行对本机其他进程可见。
+fn serve_args(script: &Path, port: u16, workspace: &str) -> Vec<String> {
+    let mut args = vec![
+        script.to_string_lossy().into_owned(),
+        "serve".to_string(),
+        "--port".to_string(),
+        port.to_string(),
+        // 只绑定本机地址：局域网访问由用户在应用内显式开启（扫码配对），
+        // 不能在启动时就把工作区暴露给整个 Wi-Fi 网络。
+        "--host".to_string(),
+        "127.0.0.1".to_string(),
+        "--print-token".to_string(),
+        // 宿主异常退出时 sidecar 自行退出，不遗留 SQLite 锁与监听端口。
+        "--parent-pid".to_string(),
+        std::process::id().to_string(),
+        "--credentials-stdin".to_string(),
+    ];
+    if !workspace.is_empty() {
+        args.push("--cwd".to_string());
+        args.push(workspace.to_string());
+    }
+    args
+}
+
+/// 写入 sidecar 标准输入的一行 JSON，字段名与 cli 的 `readCredentials` 一致；值为空的一项不写入，
+/// sidecar 按未传入处理。
+///
+/// 不要改为环境变量：环境块由 sidecar 启动的全部子进程继承，包括外部 CLI、git 钩子与插件。
+/// 恢复时 `token` 必须是原令牌：已加载的 WebView 以原令牌连接同一端口，换用新令牌会使其被永久判定为
+/// unauthorized。宿主凭据同一份用于浏览器与电脑控制两条路径，恢复时同样复用，否则宿主无法重新连接。
+fn credentials_line(token: Option<&str>, host_key: Option<&str>, update_key: &str) -> String {
+    let mut fields = serde_json::Map::new();
+    for (name, value) in [
+        ("token", token),
+        ("hostKey", host_key),
+        ("updateKey", Some(update_key)),
+    ] {
+        if let Some(value) = value.filter(|v| !v.is_empty()) {
+            fields.insert(name.to_owned(), serde_json::Value::from(value));
+        }
+    }
+    format!("{}\n", serde_json::Value::Object(fields))
+}
+
 /**
  * 启动一个 qy serve。首次启动时端口与令牌不预先指定；异常恢复时固定复用原值，
  * 使已加载的 WebView 与手机端都无需另一套端点更新协议。
@@ -100,49 +144,16 @@ fn spawn_process(
         .map_err(|e| anyhow!("无法定位资源目录：{e}"))?
         .join("sidecar")
         .join("index.js");
-    let mut args = vec![
-        script.to_string_lossy().into_owned(),
-        "serve".to_string(),
-        "--port".to_string(),
-        port.to_string(),
-        // 只绑定本机地址：局域网访问由用户在应用内显式开启（扫码配对），
-        // 不能在启动时就把工作区暴露给整个 Wi-Fi 网络。
-        "--host".to_string(),
-        "127.0.0.1".to_string(),
-        "--print-token".to_string(),
-        // 宿主异常退出时 sidecar 自行退出，不遗留 SQLite 锁与监听端口。
-        "--parent-pid".to_string(),
-        std::process::id().to_string(),
-    ];
-    if !workspace.is_empty() {
-        args.push("--cwd".to_string());
-        args.push(workspace.to_string());
-    }
 
     let mut command = app
         .shell()
         .sidecar("qy")
         .map_err(|e| anyhow!("未找到 qy sidecar：{e}"))?
-        .args(args);
+        .args(serve_args(&script, port, workspace));
     // Office 执行程序位于安装资源目录的 office/ 下，显式交给 sidecar。macOS 上资源目录是
     // Contents/Resources，与可执行文件不在同一目录，sidecar 按自身位置无法找到。
     if let Ok(dir) = app.path().resource_dir() {
         command = command.env("QYWORK_OFFICE_DIR", dir.join("office"));
-    }
-    command = command.env(
-        "QYWORK_UPDATE_KEY",
-        &app.state::<crate::updater::UpdateOwner>().key,
-    );
-    if let Some(value) = token {
-        // CLI 的 serve 以该变量作为显式令牌。恢复时必须复用，否则旧 WebView
-        // 会以原令牌连接同一端口，并被永久判定为 unauthorized。
-        command = command.env("QYWORK_TOKEN", value);
-    }
-    if let Some(value) = host_key {
-        // 原生宿主连接的凭据，同一份用于浏览器与电脑控制两条路径。只交给该子进程：
-        // 凭据不注入页面、不进入命令行参数、不落盘，也不传给插件。恢复时复用同一份，
-        // 否则宿主无法重新连接新启动的 sidecar。
-        command = command.env("QYWORK_HOST_KEY", value);
     }
     if let Some(exit) = previous_exit {
         command = command
@@ -161,14 +172,24 @@ fn spawn_process(
             )
             .env("QYWORK_PREVIOUS_STDERR_TAIL", &exit.stderr_tail);
     }
-    command.spawn().map_err(|source| {
+    let (rx, mut child) = command.spawn().map_err(|source| -> anyhow::Error {
         // 使用 shell 插件解析实际路径，诊断不另行推导安装目录。
         let executable = app.shell().sidecar("qy").ok().map(|command| {
             let command: std::process::Command = command.into();
             PathBuf::from(command.get_program())
         });
         crate::startup::LaunchError { executable, source }.into()
-    })
+    })?;
+    let line = credentials_line(
+        token,
+        host_key,
+        &app.state::<crate::updater::UpdateOwner>().key,
+    );
+    if let Err(error) = child.write(line.as_bytes()) {
+        let _ = child.kill();
+        return Err(anyhow!("向 qy serve 交付凭据失败：{error}"));
+    }
+    Ok((rx, child))
 }
 
 /** 把当前子进程交给生命周期 state；退出已开始时立即终止新进程。 */
@@ -488,15 +509,41 @@ pub fn from_env() -> Option<SidecarInfo> {
     })
 }
 
-/// 供前端读取的注入脚本。
+/// 主窗口页面的源，与 Tauri 为 `WebviewUrl::App` 解析出的地址一致：开发构建为 devUrl 的源，
+/// 发布构建为资源协议的源。
+pub fn app_origin(app: &AppHandle) -> String {
+    let dev_url = if tauri::is_dev() {
+        app.config().build.dev_url.as_ref()
+    } else {
+        None
+    };
+    origin_of(dev_url)
+}
+
+/// 资源协议的源按平台而定：Windows 上是 `http://tauri.localhost`，macOS 与 Linux 上是 `tauri://localhost`。
+/// 不要对后者调用 `Url::origin`：非特殊 scheme 的源按规范序列化为 `null`，与页面的 `location.origin` 不一致。
+fn origin_of(dev_url: Option<&tauri::Url>) -> String {
+    match dev_url {
+        Some(url) => url.origin().ascii_serialization(),
+        None if cfg!(windows) => "http://tauri.localhost".to_owned(),
+        None => "tauri://localhost".to_owned(),
+    }
+}
+
+/// 供主窗口页面读取的注入脚本。
 ///
 /// 使用初始化脚本而不是 Tauri 命令：WebView 中的连接层在首帧即需要令牌，
 /// 异步命令返回较晚，会先渲染出「未配对」。
-pub fn init_script(info: &SidecarInfo) -> String {
+///
+/// 只在顶层且源为 `app_origin` 的文档中定义：Windows 上初始化脚本同样注入子框架，主窗口导航到其他源时
+/// 也会再次执行，不加判断时插件工作台、预览中的页面与外部页面都能读取令牌。
+pub fn init_script(info: &SidecarInfo, app_origin: &str) -> String {
+    let literal = |value: &str| serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into());
     format!(
-        "globalThis.__QYWORK__ = {{ token: {}, base: {} }};",
-        serde_json::to_string(&info.token).unwrap_or_else(|_| "\"\"".into()),
-        serde_json::to_string(&info.base).unwrap_or_else(|_| "\"\"".into()),
+        "if (window.top === window && location.origin === {}) {{ globalThis.__QYWORK__ = {{ token: {}, base: {} }}; }}",
+        literal(app_origin),
+        literal(&info.token),
+        literal(&info.base),
     )
 }
 
@@ -541,8 +588,8 @@ pub fn write_last_workspace(path: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_stderr_tail, await_handshake, from_env, shutdown_handle, SidecarHandle,
-        STDERR_TAIL_BYTES,
+        append_stderr_tail, await_handshake, credentials_line, from_env, init_script, origin_of,
+        serve_args, shutdown_handle, SidecarHandle, SidecarInfo, STDERR_TAIL_BYTES,
     };
     use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
     use tokio::sync::mpsc;
@@ -640,6 +687,58 @@ mod tests {
         assert_eq!(info.port, port);
         assert_eq!(info.token, "t");
         assert_eq!(info.base, format!("http://127.0.0.1:{port}"));
+    }
+
+    /// 凭据只经标准输入交付：参数中带读取标志，写入的是 cli 按行读取的一个 JSON 对象。
+    #[test]
+    fn credentials_go_through_stdin_as_one_json_line() {
+        let args = serve_args(std::path::Path::new("index.js"), 0, "");
+        assert!(args.iter().any(|a| a == "--credentials-stdin"));
+
+        let line = credentials_line(Some("tok"), Some("host"), "update");
+        assert!(line.ends_with('\n'));
+        assert_eq!(line.matches('\n').count(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({ "token": "tok", "hostKey": "host", "updateKey": "update" })
+        );
+    }
+
+    /// 首次启动不指定令牌，非 Windows 平台的更新凭据为空串：缺省项不写入，sidecar 按未传入处理。
+    #[test]
+    fn absent_or_empty_credentials_are_omitted() {
+        assert_eq!(credentials_line(None, None, ""), "{}\n");
+        assert_eq!(
+            credentials_line(Some(""), Some("host"), ""),
+            "{\"hostKey\":\"host\"}\n"
+        );
+    }
+
+    #[test]
+    fn init_script_defines_token_only_in_top_level_app_page() {
+        let info = SidecarInfo {
+            token: "tok".into(),
+            port: 7717,
+            base: "http://127.0.0.1:7717".into(),
+        };
+        assert_eq!(
+            init_script(&info, "http://tauri.localhost"),
+            "if (window.top === window && location.origin === \"http://tauri.localhost\") \
+             { globalThis.__QYWORK__ = { token: \"tok\", base: \"http://127.0.0.1:7717\" }; }"
+        );
+    }
+
+    #[test]
+    fn app_origin_matches_the_page_origin() {
+        let dev: tauri::Url = "http://localhost:5180/".parse().unwrap();
+        assert_eq!(origin_of(Some(&dev)), "http://localhost:5180");
+        let packaged = origin_of(None);
+        if cfg!(windows) {
+            assert_eq!(packaged, "http://tauri.localhost");
+        } else {
+            assert_eq!(packaged, "tauri://localhost");
+        }
     }
 
     #[test]

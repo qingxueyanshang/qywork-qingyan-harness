@@ -54,8 +54,13 @@ const ROOT = join(import.meta.dir, '..')
 const PORT = Number(process.env.QYWORK_PORT ?? 7717)
 /** Vite 开发服务器的地址，端口与 `apps/web/vite.config.ts` 的 `server.port` 相同。 */
 const WEB_ORIGIN = 'http://127.0.0.1:5180'
-/** 每次开发会话重新生成。不写入仓库：写入仓库即成为一个入库的凭证。 */
-const TOKEN = process.env.QYWORK_TOKEN ?? randomBytes(24).toString('hex')
+/**
+ * 每次开发会话重新生成。不写入仓库：写入仓库即成为一个入库的凭证。
+ * 源码更新后重启本脚本时由 `update/handoff.ts` 经环境变量传回原值。该变量从 `env` 中剔除：
+ * sidecar 经标准输入取得令牌，只有外壳经环境变量取得。
+ */
+const { QYWORK_TOKEN: handedToken, ...inheritedEnv } = process.env
+const TOKEN = handedToken ?? randomBytes(24).toString('hex')
 const MODE = process.argv.includes('--web') ? 'web' : 'desktop'
 const UPDATE_KEY = randomBytes(24).toString('hex')
 /**
@@ -117,8 +122,7 @@ if (!(await bindable(PORT))) {
 }
 
 const env = {
-  ...process.env,
-  QYWORK_TOKEN: TOKEN,
+  ...inheritedEnv,
   QYWORK_PORT: String(PORT),
   // QYWORK_* 供 vite.config.ts 关闭 HMR；VITE_* 供页面在收到 sidecar 换代信号后整页刷新。
   QYWORK_COORDINATED_RELOAD: '1',
@@ -127,8 +131,14 @@ const env = {
   QYWORK_OFFICE_DIR: join(ROOT, 'packages', 'runtime', 'office'),
 }
 
-/** 只有这两个进程能取得宿主凭据。 */
-const privilegedEnv = { ...env, QYWORK_HOST_KEY: HOST_KEY, QYWORK_UPDATE_KEY: UPDATE_KEY }
+/**
+ * sidecar 的凭据经标准输入交付，与安装版外壳的做法相同（`sidecar.rs` 的 `credentials_line`）：
+ * 环境块由 sidecar 启动的全部子进程继承。
+ */
+const CREDENTIALS = `${JSON.stringify({ token: TOKEN, hostKey: HOST_KEY, updateKey: UPDATE_KEY })}\n`
+
+/** 开发构建的外壳经环境变量读取 sidecar 端点与宿主凭据（`sidecar.rs` 的 `from_env`、`lib.rs` 的 `host_key`）。 */
+const shellEnv = { ...env, QYWORK_TOKEN: TOKEN, QYWORK_HOST_KEY: HOST_KEY }
 
 /**
  * 使用**当前运行的 bun**，不使用裸名 `bun`。
@@ -200,7 +210,7 @@ let servedWeb = ''
 
 function spawnAgent(): ReturnType<typeof Bun.spawn> {
   servedWeb = remoteWeb.current()
-  return Bun.spawn(
+  const proc = Bun.spawn(
     [
       BUN,
       join(ROOT, 'packages/cli/src/index.ts'),
@@ -216,12 +226,16 @@ function spawnAgent(): ReturnType<typeof Bun.spawn> {
       // shutdown 没有机会执行时，sidecar 必须自行结束。
       '--parent-pid',
       String(process.pid),
+      '--credentials-stdin',
       // **不传入 --cwd**：传入即把本仓库登记为项目，而开发态不需要该默认值
       // （否则用户的第一个项目会是 qywork 的源码树）。不传时由服务端决定：
       // 账本中有项目则使用最近打开的项目，没有任何项目时才创建默认工作区。
     ],
-    { cwd: ROOT, env: privilegedEnv, stdout: 'inherit', stderr: 'inherit', stdin: 'ignore' },
+    { cwd: ROOT, env, stdout: 'inherit', stderr: 'inherit', stdin: 'pipe' },
   )
+  proc.stdin.write(CREDENTIALS)
+  proc.stdin.end()
+  return proc
 }
 
 /** 等待 sidecar 能够应答后再继续：否则 WebView 首屏会先短暂显示「未配对」。 */
@@ -373,7 +387,7 @@ shell =
   MODE === 'desktop'
     ? Bun.spawn([BUN, join(ROOT, 'apps/desktop/node_modules/@tauri-apps/cli/tauri.js'), 'dev'], {
         cwd: join(ROOT, 'apps/desktop'),
-        env: privilegedEnv,
+        env: shellEnv,
         stdout: 'inherit',
         stderr: 'inherit',
         stdin: 'inherit',

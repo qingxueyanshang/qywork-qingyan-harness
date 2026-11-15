@@ -43,7 +43,7 @@ function fixture(root: string) {
       if (ev.type === 'git.state') branches.push(ev.branch)
     },
   } as unknown as EventBus
-  return { branches, watch: createGitWatch(store, bus) }
+  return { branches, watch: createGitWatch(store, bus, { providers: {} }) }
 }
 
 /**
@@ -158,7 +158,7 @@ describe('分支名跟随 HEAD', () => {
     const { watch } = fixture(dir)
     try {
       watch.retarget()
-      const window = openChangeWindow(dir)
+      const window = openChangeWindow(dir, { env: process.env })
       await rm(join(dir, 'sub', 'gone.txt'))
       await writeFile(join(dir, 'sub', 'new.txt'), 'y')
       const started = performance.now()

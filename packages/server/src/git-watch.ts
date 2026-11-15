@@ -17,6 +17,7 @@
 
 import { existsSync, type FSWatcher, watch } from 'node:fs'
 import { join } from 'node:path'
+import type { QyConfig } from '@qywork/runtime'
 import { mostRecentWorkspace, type Store } from '@qywork/store'
 import type { EventBus } from './bus.ts'
 import { gitDir } from './git.ts'
@@ -47,7 +48,7 @@ export interface GitWatch {
   stop(): void
 }
 
-export function createGitWatch(store: Store, bus: EventBus): GitWatch {
+export function createGitWatch(store: Store, bus: EventBus, config: QyConfig): GitWatch {
   let root = ''
   let workspaceId = ''
   /** 该工作树的 git 目录（见 `gitDir`）：分支名的变化在此处触发。不是 git 仓库时为 null。 */
@@ -65,7 +66,7 @@ export function createGitWatch(store: Store, bus: EventBus): GitWatch {
     if (settle) clearTimeout(settle)
     settle = setTimeout(() => {
       settle = null
-      if (root) void publishGitState(root, workspaceId, bus)
+      if (root) void publishGitState(root, workspaceId, bus, config)
     }, SETTLE_MS)
   }
 
@@ -94,7 +95,7 @@ export function createGitWatch(store: Store, bus: EventBus): GitWatch {
   const attachInner = async () => {
     if (inner) return
     const target = root
-    const dir = await gitDir(target)
+    const dir = await gitDir(target, config)
     if (!dir || inner || root !== target) return
     // 不处理 `HEAD.lock`：它是写入过程中的中间状态，此时查询 git 取得的仍是旧名称。
     inner = hold(dir, (name) => {

@@ -12,11 +12,25 @@
  * index.lock，否则用户在终端中执行 `git commit` 会随机失败。
  */
 
-import { collectProcess, type ProcessLike, spawnGuarded } from '@qywork/tools'
+import { collectSecrets, type QyConfig } from '@qywork/runtime'
+import { collectProcess, type ProcessLike, scrubbedEnv, spawnGuarded } from '@qywork/tools'
+
+/**
+ * 本进程启动 git 所用的环境：与 `run_command` 相同的凭证剥离。`git switch` 执行仓库中的钩子，
+ * `.git/` 可由模型写入；不剥离时钩子能读取 `run_command` 无法读取的凭证。
+ * 工作区观察器的 git（`openChangeWindow` 的 `env`）同样使用这份环境。
+ */
+export function gitEnv(config: QyConfig): Record<string, string> {
+  return scrubbedEnv({
+    secrets: collectSecrets(config),
+    ...(config.envAllowList ? { envAllowList: config.envAllowList } : {}),
+  })
+}
 
 async function git(
   cwd: string,
   args: string[],
+  config: QyConfig,
   timeoutMs = 15_000,
 ): Promise<{ ok: boolean; out: string; err: string }> {
   // Windows 创建进程本身可能阻塞数秒。复用 serve 在监听端口前创建的 runner，
@@ -28,7 +42,7 @@ async function git(
         argv: ['git', '--no-optional-locks', ...args],
         cwd,
         policy: null,
-        env: { ...process.env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
+        env: { ...gitEnv(config), GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
       })
     ).proc
   } catch (e) {
@@ -48,8 +62,7 @@ async function git(
     return { ok: false, out: '', err: e instanceof Error ? e.message : String(e) }
   }
   // 等待与收尾经由同一处统一处理：完成判据是进程退出而不是管道 EOF，超时时**终止整个进程树**。
-  // 该命令不触发 hook、不访问网络、也不会启动 pager，因此孤儿进程占用管道的路径当前不可达；
-  // 一旦开启 `core.fsmonitor` 即可达，此时 git 会留下一个常驻守护进程。
+  // `switch` 执行的钩子与开启 `core.fsmonitor` 后留下的常驻守护进程都可能继承管道。
   const got = await collectProcess(proc, { timeoutMs })
   return { ok: got.exitCode === 0, out: got.stdout, err: got.stderr }
 }
@@ -62,8 +75,8 @@ async function git(
  * **detached 返回 null 是有意设计**：该状态下没有分支名可显示，而在输入框上方显示
  * 「(detached)」并不能让用户执行任何操作。
  */
-export async function currentBranch(cwd: string): Promise<string | null> {
-  const r = await git(cwd, ['branch', '--show-current'])
+export async function currentBranch(cwd: string, config: QyConfig): Promise<string | null> {
+  const r = await git(cwd, ['branch', '--show-current'], config)
   if (!r.ok) return null
   const name = r.out.trim()
   return name || null
@@ -75,8 +88,8 @@ export async function currentBranch(cwd: string): Promise<string | null> {
  * 不要拼接 `<root>/.git`：链接工作树与子模块中的 `.git` 是一个内容为 `gitdir: …` 的文件，
  * 项目位于仓库子目录时 `<root>/.git` 不存在。
  */
-export async function gitDir(cwd: string): Promise<string | null> {
-  const r = await git(cwd, ['rev-parse', '--absolute-git-dir'])
+export async function gitDir(cwd: string, config: QyConfig): Promise<string | null> {
+  const r = await git(cwd, ['rev-parse', '--absolute-git-dir'], config)
   if (!r.ok) return null
   return r.out.trim() || null
 }
@@ -88,8 +101,12 @@ export interface Branch {
 }
 
 /** 本地分支清单，不含远程分支：切换到远程分支需要先创建本地跟踪分支，不属于本函数的范围。 */
-export async function branches(cwd: string): Promise<Branch[]> {
-  const r = await git(cwd, ['for-each-ref', '--format=%(HEAD)%09%(refname:short)', 'refs/heads'])
+export async function branches(cwd: string, config: QyConfig): Promise<Branch[]> {
+  const r = await git(
+    cwd,
+    ['for-each-ref', '--format=%(HEAD)%09%(refname:short)', 'refs/heads'],
+    config,
+  )
   if (!r.ok) return []
   const out: Branch[] = []
   for (const line of r.out.split('\n')) {
@@ -117,11 +134,12 @@ export async function branches(cwd: string): Promise<Branch[]> {
 export async function switchTo(
   cwd: string,
   name: string,
+  config: QyConfig,
 ): Promise<{ ok: boolean; message: string }> {
-  if (!(await branches(cwd)).some((b) => b.name === name)) {
+  if (!(await branches(cwd, config)).some((b) => b.name === name)) {
     return { ok: false, message: `本地分支不存在：${name}` }
   }
-  const r = await git(cwd, ['switch', name])
+  const r = await git(cwd, ['switch', name], config)
   return r.ok ? { ok: true, message: '' } : { ok: false, message: refusal(r.err) }
 }
 

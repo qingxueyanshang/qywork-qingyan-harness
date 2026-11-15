@@ -2187,7 +2187,7 @@ console.log(JSON.stringify({ type: 'turn.completed' }));`,
 
     // 删除只能通过事件观察到，收尾扫描无法补充：前一个窗口未关闭时该删除无法报告。
     await writeFile(join(dir, 'doomed.txt'), 'x\n')
-    const window = openChangeWindow(dir)
+    const window = openChangeWindow(dir, { env: process.env })
     await Bun.sleep(250)
     await rm(join(dir, 'doomed.txt'))
     await Bun.sleep(250)

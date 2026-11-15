@@ -1,5 +1,5 @@
 /**
- * 覆盖 `plugin-ui.ts`：已安装工作台的列出（只列能打开的页面）与页面文件服务（随机段、越界路径），
+ * 覆盖 `plugin-ui.ts`：已安装工作台的列出（只列能打开的页面）与页面文件服务（随机段、越界路径、沙箱响应头），
  * 以及 `api/plugins.ts` 中工作台调用接口在插件未加载、未声明工具、参数不合法时的结果。
  */
 
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PLUGIN_UI_SANDBOX } from '@qywork/core'
 import { acquireExtensions, releaseExtensions } from '@qywork/runtime'
 import { handlePluginsApi } from './api/plugins.ts'
 import type { ApiRequestDeps } from './api/types.ts'
@@ -84,6 +85,23 @@ describe('工作台', () => {
     )
     expect((await servePluginUi('/plugin-ui/k1/dev.demo/ui/none.js', 'k1'))?.status).toBe(404)
     expect(await servePluginUi('/other', 'k1')).toBeNull()
+  })
+
+  /**
+   * 在界面所在的标签页中直接打开页面地址时 iframe 属性不生效。页面必须由响应头取得不透明源，
+   * 否则与界面同源，可以读取 `sessionStorage` 中的令牌。
+   */
+  test('页面文件的响应带 CSP sandbox，标志与 iframe 属性相同且不含 allow-same-origin', async () => {
+    await install('dev.demo', [{ id: 'board', title: '看板', entry: 'ui/index.html' }], {
+      'ui/index.html': '<script>sessionStorage.getItem("qywork.token")</script>',
+      'ui/icon.svg': '<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>',
+    })
+    expect(PLUGIN_UI_SANDBOX).not.toContain('allow-same-origin')
+    for (const file of ['ui/index.html', 'ui/icon.svg']) {
+      const res = await servePluginUi(`/plugin-ui/k1/dev.demo/${file}`, 'k1')
+      expect(res?.status).toBe(200)
+      expect(res?.headers.get('content-security-policy')).toBe(`sandbox ${PLUGIN_UI_SANDBOX}`)
+    }
   })
 
   test('调用接口：参数不合法 422，插件不存在或未声明该工具 404，安装晚于扩展加载时 409', async () => {

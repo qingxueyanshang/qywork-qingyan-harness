@@ -1,13 +1,25 @@
 /**
- * 覆盖 `workspace-watch.ts`：执行窗口内的路径归集、忽略判定、收尾时的变更类型判定与后台观察。
+ * 覆盖 `workspace-watch.ts`：执行窗口内的路径归集、忽略判定、收尾时的变更类型判定、后台观察，
+ * 以及收尾时启动 git 所用的环境。
  */
 import { describe, expect, test } from 'bun:test'
-import { rmSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { mkdir, mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FileChange } from '@qywork/core'
-import { gitProcessCount, openChangeWindow, settleEvents } from './workspace-watch.ts'
+import { scrubbedEnv } from './shell.ts'
+import {
+  type ChangeWindowOptions,
+  gitProcessCount,
+  openChangeWindow,
+  settleEvents,
+} from './workspace-watch.ts'
+
+/** 归集与判定的用例以测试进程的环境启动 git；凭证剥离由「收尾时的 git 环境」一组覆盖。 */
+function open(root: string, opts: Omit<ChangeWindowOptions, 'env'> = {}) {
+  return openChangeWindow(root, { ...opts, env: process.env })
+}
 
 async function settle(): Promise<void> {
   await Bun.sleep(250)
@@ -44,7 +56,7 @@ describe('执行窗口内的工作区变更', () => {
       await writeFile(before, 'before\n')
       await writeFile(changed, 'before\n')
       const prior = await stat(changed)
-      const window = openChangeWindow(root)
+      const window = open(root)
       // macOS 的事件流异步启动；事件屏障只能确认已启动观察器的投递进度。
       await settle()
       await observed(root)
@@ -61,7 +73,7 @@ describe('执行窗口内的工作区变更', () => {
     const root = await gitRepo()
     const paths = Array.from({ length: 12 }, (_, i) => `delete-${i}.txt`)
     await Promise.all(paths.map((path) => writeFile(join(root, path), 'x\n')))
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     for (const path of paths) rmSync(join(root, path))
     const got = await window.close()
@@ -79,7 +91,7 @@ describe('执行窗口内的工作区变更', () => {
     // 使「创建时间早于窗口」成立：文件系统的时间戳精度以毫秒计。
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, 'src', 'new.ts'), 'b\n')
     await writeFile(join(root, 'src', 'old.ts'), 'a\nb\n')
@@ -121,7 +133,7 @@ describe('执行窗口内的工作区变更', () => {
    */
   test('窗口打开后立即新建的文件判为 created', async () => {
     const root = await gitRepo()
-    const window = openChangeWindow(root)
+    const window = open(root)
     await writeFile(join(root, 'a.txt'), 'a\n')
     await settle()
     const got = await window.close()
@@ -144,7 +156,7 @@ describe('执行窗口内的工作区变更', () => {
     const root = await gitRepo()
     await writeFile(join(root, 'kept.txt'), 'k\n')
     await writeFile(join(root, 'edited.txt'), 'e\n')
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, 'edited.txt'), 'e\ne\n')
     const got = await window.close()
@@ -166,7 +178,7 @@ describe('执行窗口内的工作区变更', () => {
     await mkdir(join(root, '.tmp', 'scratch'), { recursive: true })
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, 'src', 'x.ts'), 'export const x = 1\n')
     await writeFile(join(root, '.github', 'workflows', 'ci.yml'), 'name: ci\n')
@@ -203,7 +215,7 @@ describe('执行窗口内的工作区变更', () => {
     await Bun.sleep(20)
     const before = { ...gitProcessCount }
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, 'node_modules', 'dep', 'keep.js'), 'module.exports = 2\n')
     await writeFile(join(root, 'node_modules', 'dep', 'cached.js'), 'cache\n')
@@ -232,7 +244,7 @@ describe('执行窗口内的工作区变更', () => {
     await rm(join(root, 'dist', 'bundle.js'))
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, 'kept.ts'), 'export const a = 1\n')
     await settle()
@@ -250,7 +262,7 @@ describe('执行窗口内的工作区变更', () => {
     await Bun.sleep(20)
     const before = { ...gitProcessCount }
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, 'kept.ts'), 'export const a = 1\n')
     await writeFile(join(root, 'node_modules', 'dep', 'index.js'), 'module.exports = 1\n')
@@ -278,7 +290,7 @@ describe('执行窗口内的工作区变更', () => {
     await Bun.sleep(20)
     const before = { ...gitProcessCount }
 
-    const window = openChangeWindow(root, { walkLimit: 20 })
+    const window = open(root, { walkLimit: 20 })
     await settle()
     await writeFile(join(root, 'kept.ts'), 'export const a = 1\n')
     await writeFile(join(root, 'renders', 'keep.txt'), 'v2\n')
@@ -299,7 +311,7 @@ describe('执行窗口内的工作区变更', () => {
     await mkdir(join(root, 'data'))
     for (let i = 0; i < 30; i++) await writeFile(join(root, 'data', `d${i}.csv`), 'x')
     await Bun.sleep(20)
-    const next = openChangeWindow(root, { walkLimit: 20 })
+    const next = open(root, { walkLimit: 20 })
     await settle()
     expect((await next.close()).incomplete).toBe(true)
   })
@@ -309,7 +321,7 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'gone.txt'), 'x\n')
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await rm(join(root, 'gone.txt'))
     await mkdir(join(root, 'a', 'b', 'c'), { recursive: true })
@@ -338,7 +350,7 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, '.gitignore'), '缓存 目录/\n')
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, '文档 一.md'), '# 一\n')
     await writeFile(join(root, '缓存 目录', '临时 文件.bin'), 'x')
@@ -354,7 +366,7 @@ describe('执行窗口内的工作区变更', () => {
     const root = await gitRepo()
     const before = { ...gitProcessCount }
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     for (let i = 0; i < 12; i++) await writeFile(join(root, `f${i}.txt`), String(i))
     await settle()
@@ -375,7 +387,7 @@ describe('执行窗口内的工作区变更', () => {
     await mkdir(join(root, '.chk'))
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, 'a.txt'), '1')
     await writeFile(join(root, '.chk', 'state'), '1')
@@ -396,7 +408,7 @@ describe('执行窗口内的工作区变更', () => {
     await Bun.sleep(20)
     const before = { ...gitProcessCount }
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, '.editorconfig'), 'root = true\n')
     await writeFile(join(root, '.config', 'app.json'), '{}')
@@ -428,7 +440,7 @@ describe('执行窗口内的工作区变更', () => {
     }
     await Bun.sleep(20)
 
-    const first = openChangeWindow(root, { reported })
+    const first = open(root, { reported })
     await settle()
     await mkdir(join(root, 'd', 'sub'), { recursive: true })
     await writeFile(join(root, 'd', 'a.txt'), 'a\n')
@@ -437,14 +449,14 @@ describe('执行窗口内的工作区变更', () => {
     await settle()
     track((await first.close()).changes)
 
-    const second = openChangeWindow(root, { reported })
+    const second = open(root, { reported })
     await settle()
     await writeFile(join(root, 'd', 'sub', 'b.txt'), 'b2\n')
     await settle()
     track((await second.close()).changes)
     expect([...reported].sort()).toEqual(['d/a.txt', 'd/sub/b.txt', 'd/sub/c.txt'])
 
-    const third = openChangeWindow(root, { reported })
+    const third = open(root, { reported })
     await settle()
     await rm(join(root, 'd'), { recursive: true, force: true })
     await settle()
@@ -471,7 +483,7 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'd', 'sub', 'b.txt'), 'b\n')
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await rm(join(root, 'd'), { recursive: true, force: true })
     await settle()
@@ -490,7 +502,7 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'gone.txt'), 'x\n')
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await rm(join(root, 'gone.txt'))
     const got = await window.close()
@@ -509,8 +521,8 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'a.txt'), 'a\n')
     await Bun.sleep(20)
 
-    const first = openChangeWindow(root)
-    const second = openChangeWindow(root)
+    const first = open(root)
+    const second = open(root)
     await settle()
     await rm(join(root, 'a.txt'))
     const firstChanges = await first.close()
@@ -527,7 +539,7 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, '.tmp'), 'not a directory')
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await writeFile(join(root, 'a.txt'), '1')
     const got = await window.close()
@@ -547,7 +559,7 @@ describe('执行窗口内的工作区变更', () => {
     await symlink(real, root, 'junction')
     await Bun.sleep(20)
 
-    const window = openChangeWindow(root)
+    const window = open(root)
     await settle()
     await rm(join(root, 'gone.txt'))
     await writeFile(join(root, 'kept.txt'), 'k\n')
@@ -574,8 +586,8 @@ describe('执行窗口内的工作区变更', () => {
     await symlink(real, link, 'junction')
     await Bun.sleep(20)
 
-    const first = openChangeWindow(real)
-    const second = openChangeWindow(link)
+    const first = open(real)
+    const second = open(link)
     await settle()
     await rm(join(real, 'a.txt'))
     const firstChanges = await first.close()
@@ -588,8 +600,8 @@ describe('执行窗口内的工作区变更', () => {
 
   test('两个窗口同时打开时，事件归属最早打开的窗口', async () => {
     const root = await gitRepo()
-    const first = openChangeWindow(root)
-    const second = openChangeWindow(root)
+    const first = open(root)
+    const second = open(root)
     await settle()
     await writeFile(join(root, 'a.txt'), '1')
     await settle()
@@ -612,13 +624,13 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'gone.txt'), 'x\n')
     await Bun.sleep(20)
 
-    const first = openChangeWindow(root)
+    const first = open(root)
     await settle()
     await writeFile(join(root, 'a.txt'), 'a\n')
     await settle()
     const { observed, background } = await first.detach()
 
-    const second = openChangeWindow(root)
+    const second = open(root)
     await writeFile(join(root, 'c.txt'), 'c\n')
     await settle()
     await rm(join(root, 'gone.txt'))
@@ -644,5 +656,42 @@ describe('执行窗口内的工作区变更', () => {
       ]),
     )
     expect(late.incomplete).toBe(false)
+  })
+})
+
+/**
+ * `.git/config` 可由模型写入，`core.fsmonitor` 指向的命令在 `check-ignore` 与 `ls-files` 读取索引时执行，
+ * 取得的是启动 git 时传入的环境。
+ */
+describe('收尾时的 git 环境', () => {
+  test('core.fsmonitor 命令取得调用方给出的环境，无法读取形似凭证的变量', async () => {
+    const root = await gitRepo()
+    const dump = join(root, '.tmp', 'fsmonitor-env.txt')
+    const hook = join(root, 'fsmonitor.sh')
+    await writeFile(hook, `#!/bin/sh\nenv > "${dump.replaceAll('\\', '/')}"\nexit 1\n`)
+    chmodSync(hook, 0o755)
+    Bun.spawnSync(['git', 'config', 'core.fsmonitor', hook.replaceAll('\\', '/')], { cwd: root })
+    const seenBy = async (env: ChangeWindowOptions['env'], file: string): Promise<string> => {
+      rmSync(dump, { force: true })
+      const window = openChangeWindow(root, { env })
+      await settle()
+      await writeFile(join(root, file), 'x\n')
+      await settle()
+      expect((await window.close()).changes.map((c) => c.path)).toEqual([file])
+      expect(existsSync(dump)).toBe(true)
+      return readFileSync(dump, 'utf8')
+    }
+    process.env.QY_WATCH_TEST_TOKEN = 'watch-secret-value'
+    process.env.QY_WATCH_TEST_PLAIN = 'watch-plain-value'
+    try {
+      // 对照：以本进程的完整环境启动时，该命令读到凭证。
+      expect(await seenBy(process.env, 'a.txt')).toContain('watch-secret-value')
+      const scrubbed = await seenBy(scrubbedEnv({}), 'b.txt')
+      expect(scrubbed).toContain('watch-plain-value')
+      expect(scrubbed).not.toContain('watch-secret-value')
+    } finally {
+      delete process.env.QY_WATCH_TEST_TOKEN
+      delete process.env.QY_WATCH_TEST_PLAIN
+    }
   })
 })

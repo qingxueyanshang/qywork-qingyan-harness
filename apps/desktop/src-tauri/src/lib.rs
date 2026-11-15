@@ -333,7 +333,7 @@ fn finish_startup(
 ) -> anyhow::Result<()> {
     // 业务页面首帧即需要令牌，因此在创建主窗口时注入，不能先加载再异步补充。
     // tauri.conf.json 的 app.windows 保持为空，窗口只由外壳创建一次。
-    let script = sidecar::init_script(&info);
+    let script = sidecar::init_script(&info, &sidecar::app_origin(app));
     build_main_window(app, &script)?;
     #[cfg(desktop)]
     build_tray(app)?;
@@ -533,8 +533,8 @@ fn remember_workspace(path: String) -> Result<(), String> {
 
 /// 宿主连接的凭据，同一份用于浏览器与电脑控制两条路径。
 ///
-/// 发布版由本进程生成，并经环境变量交给本进程启动的 sidecar；开发版的 sidecar 由
-/// `scripts/dev.ts` 启动，凭据由该脚本生成，此处只接收。两种模式使用同一条宿主路径。
+/// 发布版由本进程生成，并经标准输入交给本进程启动的 sidecar；开发版的 sidecar 由
+/// `scripts/dev.ts` 启动，凭据由该脚本生成并经环境变量交给本进程，此处只接收。两种模式使用同一条宿主路径。
 ///
 /// 三个平台都需要：桌面宿主与浏览器宿主均不限平台。
 fn host_key() -> Option<String> {

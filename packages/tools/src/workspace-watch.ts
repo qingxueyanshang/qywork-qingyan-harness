@@ -111,6 +111,11 @@ export interface ChangeWindowOptions {
   reported?: ReadonlySet<string>
   /** 收尾扫描的条目上限，默认 `MAX_WALK_ENTRIES`。供测试用较小的值构造达到上限的工作区，生产代码不传入。 */
   walkLimit?: number
+  /**
+   * 收尾时启动 git 所用的环境。调用方传入与所观察的命令相同的凭证剥离结果（`scrubbedEnv`）：
+   * `core.fsmonitor` 等配置项可由模型写入，`check-ignore` 与 `ls-files` 执行它们时传入的就是这份环境。
+   */
+  env: Record<string, string | undefined>
 }
 
 /**
@@ -214,6 +219,7 @@ async function runGit(
   repoRoot: string,
   args: string[],
   stdin: Uint8Array,
+  env: ChangeWindowOptions['env'],
 ): Promise<{ exitCode: number; stdout: string } | null> {
   try {
     const proc = Bun.spawn(['git', '--no-optional-locks', ...args], {
@@ -221,7 +227,7 @@ async function runGit(
       stdin,
       stdout: 'pipe',
       stderr: 'pipe',
-      env: { ...process.env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
+      env: { ...env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
     })
     const got = await collectProcess(proc, { timeoutMs: GIT_TIMEOUT_MS })
     return { exitCode: got.exitCode, stdout: got.stdout }
@@ -250,6 +256,7 @@ async function gitIgnored(
   repoRoot: string,
   prefix: string,
   rels: string[],
+  env: ChangeWindowOptions['env'],
 ): Promise<Set<string> | null> {
   gitProcessCount.checkIgnore++
   const payload = rels.map((rel) => (prefix ? `${prefix}/${rel}` : rel)).join('\0')
@@ -259,6 +266,7 @@ async function gitIgnored(
     repoRoot,
     ['check-ignore', '--stdin', '-z'],
     new TextEncoder().encode(`${payload}\0`),
+    env,
   )
   // 0 = 有候选命中忽略规则，1 = 没有候选命中。其余退出码表示命令自身执行失败。
   if (got === null || (got.exitCode !== 0 && got.exitCode !== 1)) return null
@@ -278,10 +286,11 @@ async function trackedInPruned(
   dirs: string[],
   since: number,
   until: number,
+  env: ChangeWindowOptions['env'],
 ): Promise<string[] | null> {
   gitProcessCount.lsFiles++
   const paths = dirs.map((dir) => (prefix ? `${prefix}/${dir}` : dir))
-  const got = await runGit(repoRoot, ['ls-files', '-z', '--', ...paths], NO_STDIN)
+  const got = await runGit(repoRoot, ['ls-files', '-z', '--', ...paths], NO_STDIN, env)
   if (got === null || got.exitCode !== 0) return null
   const touched: string[] = []
   await Promise.all(
@@ -300,7 +309,11 @@ async function trackedInPruned(
  * （实测一个含 2.8 万个未跟踪文件的工作区约 430 ms），每条命令都查询的代价过大。
  * 输出中不以 `/` 结尾的是单个被忽略的文件，不参与剪枝。
  */
-async function gitIgnoredDirs(repoRoot: string, prefix: string): Promise<Set<string> | null> {
+async function gitIgnoredDirs(
+  repoRoot: string,
+  prefix: string,
+  env: ChangeWindowOptions['env'],
+): Promise<Set<string> | null> {
   gitProcessCount.ignoredDirs++
   const got = await runGit(
     repoRoot,
@@ -314,6 +327,7 @@ async function gitIgnoredDirs(repoRoot: string, prefix: string): Promise<Set<str
       ...(prefix ? ['--', prefix] : []),
     ],
     NO_STDIN,
+    env,
   )
   if (got === null || got.exitCode !== 0) return null
   return new Set(
@@ -551,7 +565,7 @@ async function collect(
    * 重扫后仍达到上限的是未被忽略的文件过多，照常标记不完整。
    */
   if (walked.truncated && owner.repoRoot !== null) {
-    const ignored = await gitIgnoredDirs(owner.repoRoot, owner.prefix)
+    const ignored = await gitIgnoredDirs(owner.repoRoot, owner.prefix, opts.env)
     if (ignored?.size) walked = await touchedSince(root, window.startedAt, until, limit, ignored)
   }
   const walkOnly = walked.paths.filter((rel) => !window.paths.has(rel))
@@ -567,6 +581,7 @@ async function collect(
       prunedDirs,
       window.startedAt,
       until,
+      opts.env,
     )
     if (got === null) incomplete = true
     else tracked = got
@@ -576,7 +591,7 @@ async function collect(
   const ignored =
     owner.repoRoot === null || candidates.length === 0
       ? new Set<string>()
-      : await gitIgnored(owner.repoRoot, owner.prefix, candidates)
+      : await gitIgnored(owner.repoRoot, owner.prefix, candidates, opts.env)
   if (ignored === null) incomplete = true
   const skip = ignored ?? new Set<string>()
 
@@ -614,10 +629,7 @@ async function collect(
   }
 }
 
-export function openChangeWindow(
-  workspaceRoot: string,
-  opts: ChangeWindowOptions = {},
-): ChangeWindow {
+export function openChangeWindow(workspaceRoot: string, opts: ChangeWindowOptions): ChangeWindow {
   const root = realpathSync.native(workspaceRoot)
   const window: Window = { startedAt: Date.now(), paths: new Map(), prunedDirs: new Set() }
   let entry = shared.get(root)

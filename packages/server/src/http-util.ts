@@ -7,6 +7,7 @@
  */
 
 import { join } from 'node:path'
+import type { QyConfig } from '@qywork/runtime'
 import type { EventBus } from './bus.ts'
 import * as git from './git.ts'
 
@@ -14,8 +15,9 @@ export async function publishGitState(
   root: string,
   workspaceId: string,
   bus: EventBus,
+  config: QyConfig,
 ): Promise<void> {
-  const branch = await git.currentBranch(root)
+  const branch = await git.currentBranch(root, config)
   if (branch) bus.publish({ type: 'git.state', workspaceId, branch })
 }
 

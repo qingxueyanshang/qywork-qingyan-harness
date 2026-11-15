@@ -5,7 +5,7 @@
  * 没有令牌时，任何知道设备页面地址的人都能对本机的工作区执行命令。
  *
  * 设计取舍：
- * - 令牌随进程生成，不落盘。桌面端从 spawn 时的环境变量取得，手机端经 console 打开设备时由隧道取得（`pair.request`）。
+ * - 令牌随进程生成，不落盘。桌面外壳启动 sidecar 时经标准输入交付，手机端经 console 打开设备时由隧道取得（`pair.request`）。
  * - **令牌的有效期即进程的生命周期，没有单独的 TTL。** 不要添加写入二维码
  *   却无人校验的 `expiresAt`；而实际加入校验会使桌面端也无法连接（其 sidecar
  *   连续运行一整天很常见）。实现有效期需要配套的重新配对流程，不在本模块范围内。
@@ -18,7 +18,7 @@ export class Pairing {
   readonly token: string
   readonly deviceName: string
 
-  /** `token` 由外部提供（桌面端 spawn 时的环境变量），未提供时随进程生成。 */
+  /** `token` 由外部提供（桌面外壳经标准输入交付），未提供时随进程生成。 */
   constructor(opts: { token?: string; deviceName?: string } = {}) {
     this.token = opts.token || generateToken()
     this.deviceName = opts.deviceName ?? 'qywork'

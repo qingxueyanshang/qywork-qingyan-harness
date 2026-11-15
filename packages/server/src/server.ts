@@ -105,10 +105,10 @@ export interface ServeOptions {
   host: string
   /** 网页的来源；未提供时只提供 API，其余路径返回纯文本。 */
   web?: WebSource
-  /** 由外部注入的令牌（Tauri 启动子进程时经环境变量传入），未传入时自行生成。 */
+  /** 由外部注入的令牌（桌面外壳启动 sidecar 时经标准输入交付），未传入时自行生成。 */
   token?: string
   /**
-   * 原生宿主连接的凭据（桌面外壳启动子进程时经环境变量传入）。
+   * 原生宿主连接的凭据（桌面外壳启动 sidecar 时经标准输入交付）。
    *
    * 一份凭据用于两条宿主路径：`/native/browser` 与 `/native/desktop` 由同一个桌面外壳进程发起，
    * 同一次启动只有一个随机值；宿主类型由服务端按 URL 路径判定，不采用客户端自报的字段。
@@ -284,7 +284,7 @@ export function serve(opts: ServeOptions) {
    */
   const office = createOfficeHost(() => opts.config)
   void office.refresh()
-  const gitWatch = createGitWatch(opts.store, bus)
+  const gitWatch = createGitWatch(opts.store, bus, opts.config)
   // 令牌只有这一个持有者。外部注入的令牌也交给它，使鉴权只有一条路径。
   const pairing = new Pairing({
     deviceName: hostLabel(),

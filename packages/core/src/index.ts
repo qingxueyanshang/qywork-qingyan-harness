@@ -433,6 +433,8 @@ export type {
   ToolCallTotal,
   UsageResponse,
 } from './protocol/http.ts'
+// 插件工作台页面的沙箱标志：server 的响应头与 web 的 iframe 属性使用同一份
+export { PLUGIN_UI_SANDBOX } from './protocol/http.ts'
 // 原生浏览器宿主连接的帧与操作枚举：Rust 宿主与 server 两侧按同一份定义编解码
 export {
   BROWSER_EVENT_KINDS,
