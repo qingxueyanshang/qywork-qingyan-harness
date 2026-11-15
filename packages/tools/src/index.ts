@@ -8,7 +8,7 @@
 
 import { Ports, type ToolRegistry } from '@qywork/agent'
 import { browserTools } from './browser.ts'
-import { desktopTools } from './desktop.ts'
+import { desktopTools } from './desktop/tools.ts'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.ts'
 import { readGoalTool, updateGoalTool } from './goals.ts'
 import { enableMcpServerTool, moveMcpServerTool, writeMcpServerTool } from './mcp-config.ts'

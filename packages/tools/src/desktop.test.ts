@@ -1,5 +1,6 @@
 /**
- * 五个内置桌面工具。覆盖范围：`desktop.ts` 的参数校验、局部查询参数、层级消歧回执、
+ * 五个内置桌面工具。覆盖范围：`desktop/` 下的 `windows.ts`、`observe.ts`、`act.ts`、`sequence.ts`、
+ * `wait.ts`、`actions.ts`、`tools.ts` 与 `shared/` 的参数校验、局部查询参数、层级消歧回执、
  * 动作前置条件、三态回执与动作后观察的透传、选择容器的选中项渲染、等待条件与终态、
  * 注册元数据，以及采集模式、
  * 两种采集区域参数、图片经由 `images` 通道传递、几何与图像尺寸的核对、不接受图片的模型，
@@ -16,6 +17,8 @@ import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
 import { openBatchBudget, Ports, provide, ToolRegistry } from '@qywork/agent'
 import { buildAdapter, DEFAULT_DENSITY, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
 import type { DesktopAction } from '@qywork/core'
+import { desktopActTool } from './desktop/act.ts'
+import { desktopObserveTool } from './desktop/observe.ts'
 import {
   type DesktopActResult,
   type DesktopElement,
@@ -24,14 +27,10 @@ import {
   type DesktopRefusal,
   type DesktopSnapshot,
 } from './desktop/port.ts'
-import {
-  desktopActSequenceTool,
-  desktopActTool,
-  desktopObserveTool,
-  desktopTools,
-  desktopWaitTool,
-  desktopWindowsTool,
-} from './desktop.ts'
+import { desktopActSequenceTool } from './desktop/sequence.ts'
+import { desktopTools } from './desktop/tools.ts'
+import { desktopWaitTool } from './desktop/wait.ts'
+import { desktopWindowsTool } from './desktop/windows.ts'
 import { MAX_EDGE } from './image.ts'
 
 /** 窗口根。同名按钮分属两个分组，只有祖先路径能区分它们。 */

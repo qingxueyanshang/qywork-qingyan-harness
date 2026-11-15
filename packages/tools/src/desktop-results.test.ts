@@ -3,8 +3,8 @@
  *
  * 覆盖范围：`desktop-results.ts` 的上限、大小判定、紧凑表示的无损往返、视图选取、
  * 长值处理、JSONL 存盘、资源引用与实际用量记账、无名结构容器的省略与 `depth` 重算、
- * `rect` 开关、动作字典的分组写法、差异投递的三个条件与差异形状，以及 `desktop.ts` 四个
- * 出口（observe 含附图分支、act、wait、act_sequence）接入它之后的结果形状。
+ * `rect` 开关、动作字典的分组写法、差异投递的三个条件与差异形状，以及 `desktop/` 下四个工具
+ * （`observe.ts` 含附图分支、`act.ts`、`wait.ts`、`sequence.ts`）接入它之后的结果形状。
  *
  * 夹具为合成数据：控件名称、值与窗口标题均不取自真实应用或网页。
  */
@@ -23,13 +23,11 @@ import {
   type ToolOutcome,
 } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { desktopActTool } from './desktop/act.ts'
+import { desktopObserveTool } from './desktop/observe.ts'
 import { type DesktopElement, DesktopPort, type DesktopSnapshot } from './desktop/port.ts'
-import {
-  desktopActSequenceTool,
-  desktopActTool,
-  desktopObserveTool,
-  desktopWaitTool,
-} from './desktop.ts'
+import { desktopActSequenceTool } from './desktop/sequence.ts'
+import { desktopWaitTool } from './desktop/wait.ts'
 import { desktopResult } from './desktop-results.ts'
 import { observationBudget } from './sink.ts'
 
