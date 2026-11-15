@@ -323,11 +323,17 @@ export function serve(opts: ServeOptions) {
    * 此处仍然 acquire：各个 Session 各自 acquire / release，引用计数保证
    * 子进程只启动一套；服务持有一份引用，使启动项目的插件不会在两轮之间反复启动与终止。
    * 异步执行、不阻塞服务启动：单个慢插件不应导致整个服务无法启动。
+   *
+   * `stop()` 先中止仍在进行的加载（插件启动、MCP 握手），尚未完成的进程随之终止；之后仍等待加载结束
+   * 再释放：句柄在加载结束后才取得，连接表也在加载结束时写入，提前释放无法关闭其后写入的进程。
    */
+  const extensionsLoading = new AbortController()
   const extensionsReady = acquireExtensions(
     workspaceRoot,
     (line) => log.info('extensions', line),
     true,
+    [],
+    extensionsLoading.signal,
   )
     .then((ext) => {
       for (const f of ext.mcp.failures) {
@@ -531,6 +537,17 @@ export function serve(opts: ServeOptions) {
         if (body.action === 'cancel') {
           runs.cancelUpdate()
           return json({ claimed: false })
+        }
+        /*
+         * 外壳的自动检查与自动下载读取这里，不自行解析配置文件。缺省时两项均开启；
+         * 手工写入的不合法取值原样返回，外壳不采用，本轮不做自动操作。
+         */
+        if (body.action === 'preferences') {
+          return json(
+            opts.config.updates === undefined
+              ? { autoCheck: true, autoDownload: true }
+              : opts.config.updates,
+          )
         }
         if (body.action !== 'claim') return json({ error: 'invalid action' }, 400)
         return json({
@@ -826,6 +843,7 @@ export function serve(opts: ServeOptions) {
     remote,
     async stop() {
       log.info('server', '停止服务', { port: boundPort })
+      extensionsLoading.abort()
       scheduler.stop()
       power?.stop()
       gitWatch.stop()

@@ -178,6 +178,43 @@ describe('进程生命周期', () => {
     await writeFile(entry, 'setInterval(() => {}, 1000)\n', 'utf8')
     expect(host(entry, dir, { readyTimeoutMs: 200 }).start()).rejects.toThrow('超时（200ms）')
   })
+
+  /** 原始失败形状：服务停止时插件仍在启动，停止流程等到启动超时（10 秒）才结束，期间插件进程继续运行。 */
+  test('等待 ready 期间收到中止信号时立即终止插件进程', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-plugin-'))
+    const entry = join(dir, 'index.mjs')
+    // 输出自身 pid 后保持运行，不发送 ready。非 JSON 的输出经 onLog 转出。
+    await writeFile(
+      entry,
+      "console.log('pid=' + process.pid)\nsetInterval(() => {}, 1000)\n",
+      'utf8',
+    )
+    let pid = 0
+    const h = host(entry, dir, {
+      onLog: (line) => {
+        pid ||= Number(/pid=(\d+)/.exec(line)?.[1] ?? 0)
+      },
+    })
+    const controller = new AbortController()
+    const starting = failure(h.start(controller.signal))
+    for (let i = 0; i < 250 && pid === 0; i++) await Bun.sleep(20)
+    expect(pid).toBeGreaterThan(0)
+
+    const aborted = performance.now()
+    controller.abort()
+    expect(await starting).toBe('插件启动已中止：test-plugin')
+    expect(performance.now() - aborted).toBeLessThan(1_000)
+    const alive = () => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(20)
+    expect(alive()).toBe(false)
+  })
 })
 
 describe('隔离：插件无法取得宿主的模块', () => {

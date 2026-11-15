@@ -700,7 +700,19 @@ pub fn run() {
                 // 先结算桌面端进行中的请求，再停止 sidecar：收尾回执须经由宿主 WS 发出，
                 // sidecar 退出后服务端只能等待超时。
                 desktop::shutdown();
-                sidecar::shutdown(app);
+            }
+            match event {
+                // sidecar 在后台停止，结束后再次请求退出。窗口先隐藏：停止期间后端已断开，界面不再可用。
+                RunEvent::ExitRequested { api, code, .. } => {
+                    if sidecar::stop_then_exit(app, code.unwrap_or(0)) {
+                        api.prevent_exit();
+                        for window in app.windows().values() {
+                            let _ = window.hide();
+                        }
+                    }
+                }
+                RunEvent::Exit => sidecar::shutdown(app),
+                _ => {}
             }
         });
 }

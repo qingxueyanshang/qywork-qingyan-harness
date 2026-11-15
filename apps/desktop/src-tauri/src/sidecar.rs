@@ -10,20 +10,32 @@
 //!    会先短暂显示「未配对」再自行恢复，与启动失败无法区分。
 //! 2. **退出时必须确实终止子进程。** Windows 上父进程结束不会终止子进程；
 //!    残留的 `qy serve` 会占用端口和 SQLite 的 WAL 锁，导致下次无法启动。
+//!    正常退出与安装更新先请求 sidecar 自行停止，限时后再终止，见 `STOP_GRACE`。
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::watch;
 
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
 /// 启动失败对话框中附带的 stderr 长度。远小于 `STDERR_TAIL_BYTES`：MessageBox 不支持滚动，
 /// 文本超出屏幕高度时无法点击确定按钮。取尾部：退出前最后输出的内容即错误本身。
 const FATAL_STDERR_TAIL_BYTES: usize = 1024;
+
+/// 请求 sidecar 停止的指令，经标准输入写入一行，与 cli 的 `watchStopRequest` 一致。
+const STOP_LINE: &[u8] = b"stop\n";
+
+/// 请求停止之后等待 sidecar 自行退出的上限，超过即终止进程。
+///
+/// 取值依据（Windows 实测）：空闲时停止约 20 ms，带两个 MCP 服务约 0.35 s，MCP 服务仍在初始化握手时约 0.22 s，
+/// 每个运行中的命令另需约 0.25 s 终止其进程树。开发脚本的 `STOP_GRACE_MS`（`scripts/stop-sidecar.ts`）取同一值。
+const STOP_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 struct PreviousExit {
@@ -69,9 +81,16 @@ pub struct SidecarInfo {
     pub base: String,
 }
 
+/// 一个 sidecar 进程：句柄与退出信号。
+struct Child {
+    process: CommandChild,
+    /// 观察到进程退出后为 true，见 `watch_exit`。
+    exited: watch::Receiver<bool>,
+}
+
 #[derive(Default)]
 struct SidecarState {
-    child: Option<CommandChild>,
+    child: Option<Child>,
     /** 正常退出与异常终止的唯一判据。置位后监督循环不再启动进程。 */
     stopping: bool,
 }
@@ -135,7 +154,7 @@ fn spawn_process(
     workspace: &str,
     previous_exit: Option<&PreviousExit>,
     host_key: Option<&str>,
-) -> Result<(Receiver<CommandEvent>, CommandChild)> {
+) -> Result<(Receiver<CommandEvent>, Child)> {
     // `qy` 是 Bun 运行时，第一个参数必须是入口脚本。脚本目录经 `tauri.conf.json` 的 `resources`
     // 随包分发；macOS 上资源目录与可执行文件不在同一目录，因此不按可执行文件的位置拼接。
     let script = app
@@ -172,7 +191,7 @@ fn spawn_process(
             )
             .env("QYWORK_PREVIOUS_STDERR_TAIL", &exit.stderr_tail);
     }
-    let (rx, mut child) = command.spawn().map_err(|source| -> anyhow::Error {
+    let (rx, mut process) = command.spawn().map_err(|source| -> anyhow::Error {
         // 使用 shell 插件解析实际路径，诊断不另行推导安装目录。
         let executable = app.shell().sidecar("qy").ok().map(|command| {
             let command: std::process::Command = command.into();
@@ -185,19 +204,40 @@ fn spawn_process(
         host_key,
         &app.state::<crate::updater::UpdateOwner>().key,
     );
-    if let Err(error) = child.write(line.as_bytes()) {
-        let _ = child.kill();
+    if let Err(error) = process.write(line.as_bytes()) {
+        let _ = process.kill();
         return Err(anyhow!("向 qy serve 交付凭据失败：{error}"));
     }
-    Ok((rx, child))
+    let (rx, exited) = watch_exit(rx);
+    Ok((rx, Child { process, exited }))
+}
+
+/// 转发进程事件，观察到 `Terminated` 或事件通道结束时置位退出信号。
+///
+/// 握手期间事件由 `await_handshake` 读取，之后由 `supervise` 读取，停止流程在两个阶段都要等待进程退出，
+/// 因此退出信号不放在任何一个消费者中。先置位再转发：消费者收到 `Terminated` 时信号已经置位。
+fn watch_exit(mut events: Receiver<CommandEvent>) -> (Receiver<CommandEvent>, watch::Receiver<bool>) {
+    let (forward, rx) = tokio::sync::mpsc::channel(1);
+    let (exited, signal) = watch::channel(false);
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = events.recv().await {
+            if matches!(event, CommandEvent::Terminated(_)) {
+                let _ = exited.send(true);
+            }
+            // 消费者已释放接收端时继续读取，插件的读线程不因通道写满而阻塞。
+            let _ = forward.send(event).await;
+        }
+        let _ = exited.send(true);
+    });
+    (rx, signal)
 }
 
 /** 把当前子进程交给生命周期 state；退出已开始时立即终止新进程。 */
-fn hold_child(handle: &SidecarHandle, child: CommandChild) -> bool {
+fn hold_child(handle: &SidecarHandle, child: Child) -> bool {
     let mut state = handle.0.lock();
     if state.stopping {
         drop(state);
-        let _ = child.kill();
+        let _ = child.process.kill();
         return false;
     }
     state.child = Some(child);
@@ -208,8 +248,51 @@ fn hold_child(handle: &SidecarHandle, child: CommandChild) -> bool {
 fn kill_current(handle: &SidecarHandle) {
     let child = handle.0.lock().child.take();
     if let Some(child) = child {
-        let _ = child.kill();
+        let _ = child.process.kill();
     }
+}
+
+/// 停止一个进程：经 `request` 请求其自行退出，`grace` 内观察到退出即返回 false；
+/// 请求失败或超时则经 `kill` 终止并返回 true。
+async fn stop_or_kill<P>(
+    mut process: P,
+    exited: &mut watch::Receiver<bool>,
+    grace: Duration,
+    request: impl FnOnce(&mut P) -> Result<(), String>,
+    kill: impl FnOnce(P),
+) -> bool {
+    match request(&mut process) {
+        Ok(()) => {
+            if let Ok(Ok(_)) = tokio::time::timeout(grace, exited.wait_for(|done| *done)).await {
+                return false;
+            }
+            log::warn!("qy serve 未在 {grace:?} 内退出，终止进程");
+        }
+        Err(error) => log::warn!("向 qy serve 发送停止指令失败：{error}"),
+    }
+    kill(process);
+    true
+}
+
+/// 请求 sidecar 停止，限时等待其退出，超时后终止。
+///
+/// sidecar 收到指令后执行 `handle.stop()`：结束运行中的命令进程树、MCP、插件与外部 CLI。直接终止进程时
+/// 这些都不执行。已退出的命令留下的后代进程不在其列，正常停止时同样保留。
+async fn stop_child(child: Child) {
+    let Child { process, mut exited } = child;
+    stop_or_kill(
+        process,
+        &mut exited,
+        STOP_GRACE,
+        |process| process.write(STOP_LINE).map_err(|e| e.to_string()),
+        |process| {
+            // 终止失败只记录日志：此时进程可能已自行退出，不应因此阻断应用退出。
+            if let Err(e) = process.kill() {
+                log::error!("停止 qy serve 失败：{e}");
+            }
+        },
+    )
+    .await;
 }
 
 /// 从 sidecar 固定格式的两行输出中取得实际开始监听后的端点。
@@ -332,7 +415,7 @@ fn supervise(
                 // Terminated 后句柄仅代表已结束进程的所有权；通道异常关闭时同样先
                 // kill，避免失去联系的进程与新进程争用同一端口。
                 if let Some(child) = state.child.take() {
-                    let _ = child.kill();
+                    let _ = child.process.kill();
                 }
             }
             // 原样附带尾部输出：这是外壳侧唯一保留的 sidecar 退出原因记录。第二行起缩进四格，
@@ -427,7 +510,7 @@ pub async fn spawn(
     let started_at = std::time::Instant::now();
     log::info!("开始启动 qy serve，等待就绪回执");
     let (mut rx, child) = spawn_process(app, 0, None, workspace, None, host_key)?;
-    let pid = child.pid();
+    let pid = child.process.pid();
 
     let handle = app.state::<SidecarHandle>();
     if !hold_child(&handle, child) {
@@ -463,9 +546,26 @@ pub async fn spawn(
     }
 }
 
-/// 终止子进程。退出路径上必须调用，且必须支持重复调用而不出错。
+/// 立即终止子进程并置为停止终态。用于取消启动、启动失败与进程退出前的最后一步：取消启动与启动失败时
+/// sidecar 尚未开始服务，没有需要结束的命令。必须支持重复调用而不出错。
 pub fn shutdown(app: &AppHandle) {
     shutdown_handle(&app.state::<SidecarHandle>());
+}
+
+/// 正常退出：置为停止终态，请求 sidecar 自行停止。返回 true 表示停止在后台进行，结束后以 `code` 再次请求退出，
+/// 调用方须阻止本次退出；没有运行中的进程时返回 false。
+///
+/// 本函数由事件循环在主线程调用，等待放在后台任务中：在主线程等待时界面在此期间停止响应。
+pub fn stop_then_exit(app: &AppHandle, code: i32) -> bool {
+    let Some(child) = take_for_shutdown(&app.state::<SidecarHandle>()) else {
+        return false;
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        stop_child(child).await;
+        app.exit(code);
+    });
+    true
 }
 
 /// 启动取消与进程监督共用同一终态，取消后不再创建主窗口或显示失败对话框。
@@ -473,22 +573,27 @@ pub fn stopping(app: &AppHandle) -> bool {
     app.state::<SidecarHandle>().0.lock().stopping
 }
 
-/// 安装期间由更新所有者禁止恢复；安装启动失败后仍复用原监督器。
-pub fn stop_for_update(app: &AppHandle) {
-    kill_current(&app.state::<SidecarHandle>());
+/// 安装更新之前请求 sidecar 停止并等待其退出。安装期间由更新所有者禁止恢复；安装启动失败后仍复用原监督器。
+pub async fn stop_for_update(app: &AppHandle) {
+    let child = app.state::<SidecarHandle>().0.lock().child.take();
+    if let Some(child) = child {
+        stop_child(child).await;
+    }
 }
 
-/// 同上，但直接接收句柄，退出与取消启动共用该清理路径。
+/// 置为停止终态并取出当前进程，退出与取消启动共用。
+fn take_for_shutdown(handle: &SidecarHandle) -> Option<Child> {
+    let mut state = handle.0.lock();
+    state.stopping = true;
+    state.child.take()
+}
+
+/// 同 `shutdown`，但直接接收句柄。
 fn shutdown_handle(handle: &SidecarHandle) {
-    let child = {
-        let mut state = handle.0.lock();
-        state.stopping = true;
-        state.child.take()
-    };
-    if let Some(c) = child {
+    if let Some(child) = take_for_shutdown(handle) {
         // kill 失败只记录日志：此时进程可能已自行退出，
         // 不应因此阻断应用退出。
-        if let Err(e) = c.kill() {
+        if let Err(e) = child.process.kill() {
             log::error!("停止 qy serve 失败：{e}");
         }
     }
@@ -589,10 +694,106 @@ pub fn write_last_workspace(path: &str) {
 mod tests {
     use super::{
         append_stderr_tail, await_handshake, credentials_line, from_env, init_script, origin_of,
-        serve_args, shutdown_handle, SidecarHandle, SidecarInfo, STDERR_TAIL_BYTES,
+        serve_args, shutdown_handle, stop_or_kill, watch_exit, SidecarHandle, SidecarInfo,
+        STDERR_TAIL_BYTES, STOP_GRACE, STOP_LINE,
     };
+    use std::time::Duration;
     use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, watch};
+
+    /// 测试用进程：记录收到的停止指令与终止。
+    #[derive(Default)]
+    struct Probe {
+        requests: Vec<Vec<u8>>,
+        killed: bool,
+    }
+
+    /// 以 `STOP_GRACE` 停止一个 `Probe`，返回它的最终记录与是否执行了终止。
+    fn stop_probe(
+        exited: watch::Receiver<bool>,
+        request_fails: bool,
+    ) -> tokio::task::JoinHandle<(Probe, bool)> {
+        tokio::spawn(async move {
+            let mut exited = exited;
+            let record = std::sync::Arc::new(parking_lot::Mutex::new(Probe::default()));
+            let kept = record.clone();
+            let killed = stop_or_kill(
+                (),
+                &mut exited,
+                STOP_GRACE,
+                |_| {
+                    if request_fails {
+                        return Err("管道已关闭".into());
+                    }
+                    record.lock().requests.push(STOP_LINE.to_vec());
+                    Ok(())
+                },
+                |_| record.lock().killed = true,
+            )
+            .await;
+            let probe = std::mem::take(&mut *kept.lock());
+            (probe, killed)
+        })
+    }
+
+    /// 原始失败形状：退出时直接终止 sidecar，`handle.stop()` 没有机会执行。请求停止后在时限内退出，不终止。
+    #[tokio::test(start_paused = true)]
+    async fn exit_within_the_grace_period_is_not_killed() {
+        let (exit, exited) = watch::channel(false);
+        let stopping = stop_probe(exited, false);
+        tokio::task::yield_now().await;
+        tokio::time::advance(STOP_GRACE - Duration::from_millis(1)).await;
+        assert!(!stopping.is_finished());
+        exit.send(true).unwrap();
+        let (probe, killed) = stopping.await.unwrap();
+        assert_eq!(probe.requests, vec![STOP_LINE.to_vec()]);
+        assert!(!killed);
+        assert!(!probe.killed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_exit_within_the_grace_period_is_killed() {
+        let (_exit, exited) = watch::channel(false);
+        let stopping = stop_probe(exited, false);
+        tokio::task::yield_now().await;
+        tokio::time::advance(STOP_GRACE).await;
+        let (probe, killed) = stopping.await.unwrap();
+        assert_eq!(probe.requests.len(), 1);
+        assert!(killed);
+        assert!(probe.killed);
+    }
+
+    /// 停止指令写入失败时不等待：进程通常已退出，或标准输入已不可用。
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_request_kills_without_waiting() {
+        let (_exit, exited) = watch::channel(false);
+        let (probe, killed) = stop_probe(exited, true).await.unwrap();
+        assert!(probe.requests.is_empty());
+        assert!(killed && probe.killed);
+    }
+
+    /// 退出信号在转发 `Terminated` 之前置位，事件按原顺序转发。
+    #[tokio::test]
+    async fn exit_signal_is_set_before_terminated_is_forwarded() {
+        let (tx, rx) = mpsc::channel(1);
+        let (mut forwarded, exited) = watch_exit(rx);
+        tx.send(CommandEvent::Stdout(b"QYWORK_PORT=1".to_vec()))
+            .await
+            .unwrap();
+        assert!(matches!(forwarded.recv().await, Some(CommandEvent::Stdout(_))));
+        assert!(!*exited.borrow());
+        tx.send(CommandEvent::Terminated(TerminatedPayload {
+            code: Some(0),
+            signal: None,
+        }))
+        .await
+        .unwrap();
+        assert!(matches!(
+            forwarded.recv().await,
+            Some(CommandEvent::Terminated(_))
+        ));
+        assert!(*exited.borrow());
+    }
 
     #[tokio::test(start_paused = true)]
     async fn slow_start_waits_for_both_ready_fields_instead_of_killing_after_twenty_seconds() {

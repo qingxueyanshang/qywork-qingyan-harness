@@ -118,6 +118,12 @@ export function startCommandRunner(argv: string[]): CommandRunner {
     stdin: 'ignore',
     stdout: 'inherit',
     stderr: 'inherit',
+    /*
+     * Windows 上非 detached 的子进程加入父进程的作业对象，父进程结束即被一并终止：sidecar 崩溃时 runner
+     * 随之结束，`leave` 不执行，运行中命令的 shell 被终止而它启动的程序继续运行。detached 的 runner
+     * 没有控制台，它启动的进程须带 `windowsHide`，见 `runCommandRunner`。
+     */
+    detached: process.platform === 'win32',
     ipc(raw) {
       const msg = raw as Reply
       const p = pending.get(msg.id)
@@ -261,8 +267,8 @@ export function runCommandRunner(): void {
    * 父进程退出后随之退出，退出前终止尚未退出的命令的进程树。
    *
    * 父进程正常停止时自行终止这些命令（前台命令随本轮停止，后台命令由任务表的 `stopAll` 终止）。
-   * 父进程被直接终止时（桌面外壳退出时发送 SIGKILL）该路径不执行，而命令在非 Windows 平台上以 detached
-   * 启动、自成会话，不随父进程结束，此处是唯一仍在运行的一方。
+   * 父进程被直接终止时（崩溃，或桌面外壳请求停止后超时）该路径不执行，而命令在非 Windows 平台上以 detached
+   * 启动、自成会话，runner 在 Windows 上以 detached 启动，都不随父进程结束，此处是唯一仍在运行的一方。
    * 已退出的命令留下的后代进程不终止：它们是命令有意启动的服务，父进程正常停止时同样保留，
    * 且不持有监听句柄，不占用端口。
    *
@@ -307,10 +313,15 @@ export function runCommandRunner(): void {
       return
     }
     try {
+      /*
+       * `windowsHide`：Windows 上 runner 没有控制台，不带该选项时 shell 每次启动都另开一个可见的控制台窗口。
+       * 它只影响 shell 自身，命令再启动的程序收到的启动参数不变，图形应用照常显示。
+       */
       const proc = Bun.spawn(req.argv, {
         stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
+        windowsHide: true,
         ...(req.cwd ? { cwd: req.cwd } : {}),
         ...(req.env ? { env: req.env } : {}),
         ...(req.detached ? { detached: true } : {}),
@@ -369,9 +380,11 @@ async function relay(
 /** runner 自身的树杀实现，与 `sandbox.ts` 的 `killTree` 结构相同。不从该文件导入：`sandbox.ts` 已依赖本文件，反向导入会形成循环依赖。 */
 function killTreeHere(proc: { pid: number; kill(): void }): void {
   if (process.platform === 'win32') {
+    // runner 没有控制台，不带 `windowsHide` 时 taskkill 另开一个可见的控制台窗口。
     Bun.spawnSync(['taskkill', '/F', '/T', '/PID', String(proc.pid)], {
       stdout: 'ignore',
       stderr: 'ignore',
+      windowsHide: true,
     })
     return
   }

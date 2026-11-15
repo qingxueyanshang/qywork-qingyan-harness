@@ -57,15 +57,36 @@ fn now() -> u64 {
         .as_millis() as u64
 }
 
-fn preferences(raw: &str) -> Option<(bool, bool)> {
-    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let config = value.as_object()?;
-    match config.get("updates") {
-        None => Some((true, true)),
-        Some(prefs) => Some((
-            prefs.get("autoCheck")?.as_bool()?,
-            prefs.get("autoDownload")?.as_bool()?,
-        )),
+/// 更新设置，由 sidecar 按已加载的配置给出（`/internal/app-update` 的 `preferences` 动作），缺省值也由它决定。
+/// 字段类型不符时反序列化失败，按未取得设置处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Preferences {
+    auto_check: bool,
+    auto_download: bool,
+}
+
+/// 一轮自动操作的决定，见 `plan`。
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Plan {
+    check: bool,
+    download: bool,
+    /// 自动下载关闭时清除「用户已取消下载」的标记，重新开启后恢复自动下载。
+    unpause: bool,
+}
+
+/// `prefs` 为 `None` 表示本轮未取得设置：sidecar 启动中、重启中，或返回的设置不合法。
+/// 此时不做任何自动操作，下一轮重新查询，取得后恢复。
+fn plan(prefs: Option<Preferences>, snapshot: &Snapshot, download_paused: bool, now: u64) -> Plan {
+    let Some(prefs) = prefs else {
+        return Plan::default();
+    };
+    Plan {
+        check: prefs.auto_check
+            && !matches!(snapshot.stage, "available" | "ready")
+            && now.saturating_sub(snapshot.checked_at.unwrap_or(0)) >= CHECK_INTERVAL,
+        download: prefs.auto_download && !download_paused && snapshot.stage == "available",
+        unpause: !prefs.auto_download,
     }
 }
 
@@ -102,9 +123,10 @@ pub fn owner() -> UpdateOwner {
     })
 }
 
-async fn claim(owner: &Owner, action: &str) -> Result<bool, String> {
+/// 向 sidecar 的内部更新接口发送一个动作，返回响应的 JSON。
+async fn internal(owner: &Owner, action: &str) -> Result<serde_json::Value, String> {
     let info = owner.sidecar.lock().clone().ok_or("服务尚未就绪")?;
-    let value = reqwest::Client::new()
+    reqwest::Client::new()
         .post(format!("{}/internal/app-update", info.base))
         .header("x-qywork-update-key", &owner.key)
         .json(&serde_json::json!({"action":action}))
@@ -116,8 +138,16 @@ async fn claim(owner: &Owner, action: &str) -> Result<bool, String> {
         .map_err(|e| e.to_string())?
         .json::<serde_json::Value>()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+async fn claim(owner: &Owner, action: &str) -> Result<bool, String> {
+    let value = internal(owner, action).await?;
     Ok(value.get("claimed").and_then(|v| v.as_bool()) == Some(true))
+}
+
+async fn preferences(owner: &Owner) -> Result<Preferences, String> {
+    serde_json::from_value(internal(owner, "preferences").await?).map_err(|e| e.to_string())
 }
 
 fn begin(app: &AppHandle, owner: &UpdateOwner, action: &'static str) {
@@ -191,7 +221,6 @@ async fn execute(app: &AppHandle, owner: &UpdateOwner, action: &str) -> Result<(
                 // 由用户重启应用恢复。
                 crate::desktop::shutdown();
                 // WebView 随外壳退出释放；此时安装程序仍可能启动失败，不能永久关闭浏览器宿主。
-                crate::sidecar::stop_for_update(&exit_app);
             })
             .build()
             .map_err(|e| e.to_string())?
@@ -270,6 +299,9 @@ async fn execute(app: &AppHandle, owner: &UpdateOwner, action: &str) -> Result<(
             claim(owner, "cancel").await?;
             return Err("更新已取消".into());
         }
+        // 安装程序替换 qy 的可执行文件。sidecar 在此之前自行停止，运行中的命令进程树、MCP 与插件随之结束；
+        // 安装态期间监督器不恢复它。
+        crate::sidecar::stop_for_update(app).await;
         if let Err(error) = update.install(bytes) {
             // 安装程序可能在清理子进程后启动失败；解除安装态，原监督器恢复服务。
             owner.inner.lock().snapshot.stage = "error";
@@ -312,35 +344,28 @@ pub fn start(app: &AppHandle, info: &crate::sidecar::SidecarInfo) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            if let Some(path) = crate::logfile::data_dir().map(|p| p.join("config.json")) {
-                let raw = std::fs::read_to_string(path).or_else(|error| {
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        Ok("{}".to_string())
-                    } else {
-                        Err(error)
-                    }
-                });
-                if let Ok(raw) = raw {
-                    if let Some((auto_check, auto_download)) = preferences(&raw) {
-                        let snapshot = owner.inner.lock().snapshot.clone();
-                        if auto_check
-                            && !matches!(snapshot.stage, "available" | "ready")
-                            && now().saturating_sub(snapshot.checked_at.unwrap_or(0))
-                                >= CHECK_INTERVAL
-                        {
-                            begin(&app, &owner, "check");
-                        }
-                        if !auto_download {
-                            owner.download_paused.store(false, Ordering::SeqCst);
-                        }
-                        if auto_download
-                            && !owner.download_paused.load(Ordering::SeqCst)
-                            && snapshot.stage == "available"
-                        {
-                            begin(&app, &owner, "download");
-                        }
-                    }
+            let prefs = match preferences(&owner).await {
+                Ok(prefs) => Some(prefs),
+                Err(error) => {
+                    log::warn!("未取得更新设置，本轮不自动检查：{error}");
+                    None
                 }
+            };
+            let snapshot = owner.inner.lock().snapshot.clone();
+            let plan = plan(
+                prefs,
+                &snapshot,
+                owner.download_paused.load(Ordering::SeqCst),
+                now(),
+            );
+            if plan.check {
+                begin(&app, &owner, "check");
+            }
+            if plan.unpause {
+                owner.download_paused.store(false, Ordering::SeqCst);
+            }
+            if plan.download {
+                begin(&app, &owner, "download");
             }
             tokio::time::sleep(Duration::from_secs(15)).await;
         }
@@ -349,31 +374,143 @@ pub fn start(app: &AppHandle, info: &crate::sidecar::SidecarInfo) {
 
 #[cfg(test)]
 mod tests {
-    use super::preferences;
+    use super::*;
+    use std::io::{Read, Write};
 
-    #[test]
-    fn preferences_default_on_and_respect_disabled_values() {
-        assert_eq!(preferences("{}"), Some((true, true)));
+    fn snapshot(stage: &'static str, checked_at: Option<u64>) -> Snapshot {
+        let mut snapshot = owner().inner.lock().snapshot.clone();
+        snapshot.stage = stage;
+        snapshot.checked_at = checked_at;
+        snapshot
+    }
+
+    fn owner_at(base: &str) -> UpdateOwner {
+        let owner = owner();
+        *owner.sidecar.lock() = Some(crate::sidecar::SidecarInfo {
+            token: "t".into(),
+            port: 0,
+            base: base.into(),
+        });
+        owner
+    }
+
+    /// 只应答一次的 HTTP 服务：读完请求后返回 `body`，请求原文经通道交给测试。
+    fn serve_once(body: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&request).into_owned();
+                let Some(head) = text.find("\r\n\r\n") else {
+                    continue;
+                };
+                let length = text[..head]
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if request.len() >= head + 4 + length {
+                    break;
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&request).into_owned());
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        (base, rx)
+    }
+
+    /// 配置中 `updates` 缺省时，sidecar 返回两项均开启：到期即检查，有可用版本即下载。
+    #[tokio::test]
+    async fn default_preferences_from_the_sidecar_enable_both_operations() {
+        let (base, request) = serve_once(r#"{"autoCheck":true,"autoDownload":true}"#);
+        let owner = owner_at(&base);
+        let prefs = preferences(&owner).await.unwrap();
+        let request = request.recv().unwrap();
+        assert!(request.starts_with("POST /internal/app-update "));
+        assert!(request.contains(&format!("x-qywork-update-key: {}", owner.key)));
+        assert!(request.ends_with(r#"{"action":"preferences"}"#));
+
+        let due = CHECK_INTERVAL;
         assert_eq!(
-            preferences(r#"{"updates":{"autoCheck":false,"autoDownload":true}}"#),
-            Some((false, true))
+            plan(Some(prefs), &snapshot("idle", None), false, due),
+            Plan {
+                check: true,
+                download: false,
+                unpause: false
+            }
         );
         assert_eq!(
-            preferences(r#"{"updates":{"autoCheck":true,"autoDownload":false}}"#),
-            Some((true, false))
+            plan(Some(prefs), &snapshot("available", Some(0)), false, due),
+            Plan {
+                check: false,
+                download: true,
+                unpause: false
+            }
+        );
+        // 用户取消过下载：自动下载开启时不重新开始。
+        assert_eq!(
+            plan(Some(prefs), &snapshot("available", Some(0)), true, due),
+            Plan::default()
         );
     }
 
     #[test]
-    fn invalid_config_does_not_trigger_automatic_operations() {
-        for value in [
-            "",
+    fn disabled_preferences_trigger_nothing_and_clear_the_download_pause() {
+        let prefs = Preferences {
+            auto_check: false,
+            auto_download: false,
+        };
+        for stage in ["idle", "available"] {
+            assert_eq!(
+                plan(Some(prefs), &snapshot(stage, None), true, CHECK_INTERVAL),
+                Plan {
+                    check: false,
+                    download: false,
+                    unpause: true
+                }
+            );
+        }
+    }
+
+    /// sidecar 重启期间端口上没有进程监听：本轮不做任何自动操作，下一轮重新查询。
+    #[tokio::test]
+    async fn unreachable_sidecar_triggers_no_automatic_operation() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        assert!(preferences(&owner_at(&base)).await.is_err());
+        assert!(preferences(&owner()).await.is_err());
+        assert_eq!(
+            plan(None, &snapshot("available", None), false, CHECK_INTERVAL),
+            Plan::default()
+        );
+    }
+
+    /// 手工写入配置的不合法取值由 sidecar 原样返回，外壳不采用。
+    #[tokio::test]
+    async fn invalid_preferences_are_not_used() {
+        for body in [
             "null",
             "[]",
-            r#"{"updates":null}"#,
-            r#"{"updates":{"autoCheck":"false"}}"#,
+            r#"{"autoCheck":"false","autoDownload":true}"#,
+            r#"{"autoCheck":true}"#,
         ] {
-            assert_eq!(preferences(value), None);
+            let (base, _request) = serve_once(body);
+            assert!(preferences(&owner_at(&base)).await.is_err(), "{body}");
         }
     }
 }

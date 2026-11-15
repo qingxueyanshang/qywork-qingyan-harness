@@ -148,7 +148,8 @@ export class PluginHost {
   /** 解析得到的运行时。启动后才有值，供上层如实报告隔离状态。 */
   runtime: PluginRuntime | null = null
 
-  async start(): Promise<void> {
+  /** `signal` 在等待 ready 期间中止时终止插件进程并抛出，不等到启动超时。 */
+  async start(signal?: AbortSignal): Promise<void> {
     if (this.proc) return
 
     const rt = resolvePluginRuntime({
@@ -206,14 +207,18 @@ export class PluginHost {
       }
     })
 
-    await this.waitReady()
+    await this.waitReady(signal)
   }
 
-  private async waitReady(): Promise<void> {
+  private async waitReady(signal?: AbortSignal): Promise<void> {
     const timeoutMs = this.opts.readyTimeoutMs ?? READY_TIMEOUT_MS
     const deadline = Date.now() + timeoutMs
     while (!this.ready) {
       if (this.exited) throw new Error(`插件启动即退出：${this.opts.manifest.id}`)
+      if (signal?.aborted) {
+        this.stop()
+        throw new Error(`插件启动已中止：${this.opts.manifest.id}`)
+      }
       if (Date.now() > deadline) {
         this.stop()
         throw new Error(`插件启动超时（${timeoutMs}ms）：${this.opts.manifest.id}`)

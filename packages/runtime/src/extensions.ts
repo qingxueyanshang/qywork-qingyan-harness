@@ -125,6 +125,7 @@ async function refreshEntry(
   entry: Entry,
   onLog?: (line: string) => void,
   retryNames: readonly string[] = [],
+  signal?: AbortSignal,
 ): Promise<void> {
   await withFileLocks(
     [`${entry.root}/.agents/.extensions-${entry.key.replace(/[^a-z0-9]/gi, '_')}`],
@@ -150,6 +151,7 @@ async function refreshEntry(
               entry.root,
               {
                 ...(onLog ? { onLog } : {}),
+                ...(signal ? { signal } : {}),
                 resolveCwd: (path) => resolveInWorkspace(entry.root, path, { mustExist: true }),
               },
             )
@@ -200,12 +202,18 @@ async function refreshEntry(
   )
 }
 
-/** 每次取得独立句柄。live 仅用于后台常驻持有，不固定旧 MCP 快照。 */
+/**
+ * 每次取得独立句柄。live 仅用于后台常驻持有，不固定旧 MCP 快照。
+ *
+ * `signal` 中止本次调用发起的加载（插件启动、MCP 握手）：尚未完成的进程被终止并计入 failures，
+ * 句柄照常返回，由调用方照常释放。
+ */
 export async function acquireExtensions(
   workspaceRoot: string,
   onLog?: (line: string) => void,
   live = false,
   retryNames: readonly string[] = [],
+  signal?: AbortSignal,
 ): Promise<Extensions> {
   const key = cacheKey(workspaceRoot)
   let entry = shared.get(key)
@@ -214,7 +222,7 @@ export async function acquireExtensions(
       root: workspaceRoot,
       key,
       users: 0,
-      plugins: loadInstalledPlugins(workspaceRoot, onLog),
+      plugins: loadInstalledPlugins(workspaceRoot, onLog, signal),
       connections: new Map(),
       snapshot: null,
       configKey: '',
@@ -243,7 +251,7 @@ export async function acquireExtensions(
     return released
   }
   try {
-    await refreshEntry(owner, onLog, retryNames)
+    await refreshEntry(owner, onLog, retryNames, signal)
     const snapshot = owner.snapshot!
     if (!live) {
       held = [...owner.connections.values()]
@@ -303,10 +311,12 @@ export async function refreshExtensions(
 async function loadInstalledPlugins(
   workspaceRoot: string,
   onLog?: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<PluginRegistry> {
   const dir = globalPluginsDir()
   const reg = await loadPlugins(dir, {
     ...(onLog ? { onLog } : {}),
+    ...(signal ? { signal } : {}),
     workspaceRoot,
     onCapability: makeCapabilityHandler({ workspaceRoot }),
   }).catch(

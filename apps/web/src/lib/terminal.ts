@@ -9,6 +9,9 @@
  *
  * 会话的身份是 id 加创建序号：「重开」用同一个 id 关闭后立即重新打开，旧进程的残余输出与退出事件
  * 仍以该 id 到达，只能按序号与新会话区分。
+ *
+ * 输出事件带起始字节偏移，`terminal_open` 返回回放的结束偏移（见 `terminal.rs` 的 `Backlog`）。
+ * 起始偏移小于结束偏移的输出已包含在回放中，不再写入。
  */
 
 import { tauriInvoke, tauriListen } from './store/index.ts'
@@ -25,7 +28,31 @@ export interface TerminalSession {
 type OutputHandler = (data: string) => void
 type ExitHandler = (code: number | null) => void
 
-const outputs = new Map<string, OutputHandler>()
+interface OutputEvent {
+  id: string
+  createdSeq: number
+  /** 本块在会话累计输出中的起始字节偏移。 */
+  offset: number
+  data: string
+}
+
+/** `terminal_open` 的结果。与 Rust `Opened` 结构相同。 */
+interface Opened {
+  createdSeq: number
+  backlog: string
+  /** 回放末尾在会话累计输出中的字节偏移。 */
+  end: number
+}
+
+interface Attached {
+  output: OutputHandler
+  /** `terminal_open` 返回之前到达的输出，返回后按回放的结束偏移筛选并写入；之后为 null。 */
+  early: OutputEvent[] | null
+  /** 回放的结束偏移。 */
+  end: number
+}
+
+const attached = new Map<string, Attached>()
 const exits = new Map<string, ExitHandler>()
 /**
  * 每个 id 接受的最小创建序号。打开后为该会话的序号；关闭后为其序号加一，
@@ -39,8 +66,12 @@ const current = (id: string, createdSeq: number) => createdSeq >= (floors.get(id
 
 function wire(): Promise<void> {
   wired ??= Promise.all([
-    tauriListen<{ id: string; createdSeq: number; data: string }>('terminal:output', (e) => {
-      if (current(e.id, e.createdSeq)) outputs.get(e.id)?.(e.data)
+    tauriListen<OutputEvent>('terminal:output', (e) => {
+      if (!current(e.id, e.createdSeq)) return
+      const a = attached.get(e.id)
+      if (!a) return
+      if (a.early) a.early.push(e)
+      else if (e.offset >= a.end) a.output(e.data)
     }),
     tauriListen<{ id: string; createdSeq: number; code: number | null }>('terminal:exit', (e) => {
       if (current(e.id, e.createdSeq)) exits.get(e.id)?.(e.code ?? null)
@@ -50,10 +81,10 @@ function wire(): Promise<void> {
 }
 
 /**
- * 打开一个终端，返回需要回放的输出。
+ * 打开一个终端。
  *
- * 重新连接已在运行的会话时返回其回放缓冲（由外壳侧维护，见 `terminal.rs`），
- * 新建的会话返回空串。调用方须将其原样写入 xterm：这是重建屏幕内容，不是历史记录。
+ * 重新连接已在运行的会话时，先经 `on.output` 写入其回放缓冲（由外壳侧维护，见 `terminal.rs`），
+ * 再写入回放之后的输出；新建的会话没有回放。回放用于重建屏幕内容，不是历史记录。
  *
  * `workspaceId` 是该会话的归属，重新连接时外壳按它核对：与记录不一致的工作区会被拒绝。
  */
@@ -64,21 +95,29 @@ export async function openTerminal(
   cols: number,
   rows: number,
   on: { output: OutputHandler; exit: ExitHandler },
-): Promise<string> {
-  outputs.set(id, on.output)
+): Promise<void> {
+  const entry: Attached = { output: on.output, early: [], end: 0 }
+  attached.set(id, entry)
   exits.set(id, on.exit)
   // 先注册监听再启动进程：顺序相反时 shell 的第一行提示符可能在监听注册之前就已输出，
   // 终端打开后为空白，按一次回车才显示提示符。
   await wire()
-  const opened = await tauriInvoke<{ createdSeq: number; backlog: string }>('terminal_open', {
-    id,
-    workspaceId,
-    cwd,
-    cols,
-    rows,
-  })
+  let opened: Opened
+  try {
+    opened = await tauriInvoke<Opened>('terminal_open', { id, workspaceId, cwd, cols, rows })
+  } catch (e) {
+    // 打开失败时同一 id 可能仍有其他工作区的会话在输出，不移除时暂存的输出无上限增长。
+    if (attached.get(id) === entry) attached.delete(id)
+    throw e
+  }
   floors.set(id, opened.createdSeq)
-  return opened.backlog
+  if (opened.backlog) on.output(opened.backlog)
+  const early = entry.early ?? []
+  entry.end = opened.end
+  entry.early = null
+  for (const e of early) {
+    if (current(e.id, e.createdSeq) && e.offset >= entry.end) on.output(e.data)
+  }
 }
 
 export function writeTerminal(id: string, data: string): Promise<void> {
@@ -95,7 +134,7 @@ export function resizeTerminal(id: string, cols: number, rows: number): Promise<
  * 结束之前读线程可能仍有残余输出；下限使它们不会写入同一 id 重新打开的终端。
  */
 export function closeTerminal(id: string): Promise<void> {
-  outputs.delete(id)
+  attached.delete(id)
   exits.delete(id)
   const seq = floors.get(id)
   if (seq !== undefined) floors.set(id, seq + 1)

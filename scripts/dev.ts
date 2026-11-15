@@ -46,6 +46,7 @@ import {
 } from './reload-supervisor.ts'
 import { createRemoteWebBuilder, pruneBuilds } from './remote-web.ts'
 import { watchSource } from './source-watch.ts'
+import { stopSidecar } from './stop-sidecar.ts'
 import { requestUpdateClaim } from './update/claim.ts'
 import { handoffSourceUpdate } from './update/handoff.ts'
 import { startSourceUpdater } from './update/source.ts'
@@ -133,7 +134,7 @@ const env = {
 
 /**
  * sidecar 的凭据经标准输入交付，与安装版外壳的做法相同（`sidecar.rs` 的 `credentials_line`）：
- * 环境块由 sidecar 启动的全部子进程继承。
+ * 环境块由 sidecar 启动的全部子进程继承。交付后保持标准输入打开，停止时经它写入指令（`stopSidecar`）。
  */
 const CREDENTIALS = `${JSON.stringify({ token: TOKEN, hostKey: HOST_KEY, updateKey: UPDATE_KEY })}\n`
 
@@ -208,7 +209,7 @@ const remoteWeb = createRemoteWebBuilder({
 /** 当前 sidecar 提供的远程网页目录。 */
 let servedWeb = ''
 
-function spawnAgent(): ReturnType<typeof Bun.spawn> {
+function spawnAgent() {
   servedWeb = remoteWeb.current()
   const proc = Bun.spawn(
     [
@@ -234,7 +235,7 @@ function spawnAgent(): ReturnType<typeof Bun.spawn> {
     { cwd: ROOT, env, stdout: 'inherit', stderr: 'inherit', stdin: 'pipe' },
   )
   proc.stdin.write(CREDENTIALS)
-  proc.stdin.end()
+  proc.stdin.flush()
   return proc
 }
 
@@ -252,24 +253,32 @@ async function waitReady(): Promise<boolean> {
 let stopping = false
 /** 初次启动由下方的就绪检查处理，成功后才把退出交给自动重载处理。 */
 let supervising = false
-let agent!: ReturnType<typeof Bun.spawn>
+let agent!: ReturnType<typeof spawnAgent>
 let supervisor!: ReturnType<typeof createReloadSupervisor>
 let web: ReturnType<typeof Bun.spawn> | undefined
 let shell: ReturnType<typeof Bun.spawn> | undefined
 let updater: Awaited<ReturnType<typeof startSourceUpdater>> | undefined
 
-/** 先关闭自动恢复入口，再结束子进程；sidecar 只结束自身，保留任务启动的后台服务。 */
-function shutdown(code: number): never {
-  stopping = true
-  updater?.close()
-  agent?.kill()
-  if (webBuild) killTree(webBuild)
-  if (web) killTree(web)
-  if (shell) killTree(shell)
-  process.exit(code)
+let shuttingDown: Promise<never> | null = null
+
+/**
+ * 先关闭自动恢复入口，再结束子进程。sidecar 经 `stopSidecar` 请求停止，运行中的命令随之结束，
+ * 任务启动的后台服务保留。重复调用共用第一次的结果。
+ */
+function shutdown(code: number): Promise<never> {
+  shuttingDown ??= (async () => {
+    stopping = true
+    updater?.close()
+    if (agent) await stopSidecar(agent)
+    if (webBuild) killTree(webBuild)
+    if (web) killTree(web)
+    if (shell) killTree(shell)
+    process.exit(code)
+  })()
+  return shuttingDown
 }
-process.on('SIGINT', () => shutdown(0))
-process.on('SIGTERM', () => shutdown(0))
+process.on('SIGINT', () => void shutdown(0))
+process.on('SIGTERM', () => void shutdown(0))
 
 /**
  * 启动一个 sidecar 并监视其退出。
@@ -283,7 +292,7 @@ function startAgent(): void {
   agent = spawnAgent()
   void agent.exited.then((code) => {
     // 同一控制台的子进程退出通知可能先于父进程的 SIGINT 到达。
-    if (!stopping && isConsoleInterrupt(code)) shutdown(0)
+    if (!stopping && isConsoleInterrupt(code)) void shutdown(0)
     if (!stopping && supervising) supervisor.onExit(code)
   })
 }
@@ -297,7 +306,7 @@ if (!(await waitReady())) {
       ? '[dev] sidecar 启动失败，详见上方输出\n'
       : '[dev] sidecar 启动超时（30 秒内未就绪）\n',
   )
-  shutdown(1)
+  await shutdown(1)
 }
 process.stderr.write(
   `[dev] sidecar 就绪，正在启动${MODE === 'desktop' ? '桌面外壳' : 'Web 界面'}\n`,
@@ -312,8 +321,7 @@ supervisor = createReloadSupervisor({
     agent.signalCode === null &&
     !(await requestUpdateClaim(PORT, UPDATE_KEY, 'claim')).claimed,
   restart: async () => {
-    agent.kill()
-    await agent.exited
+    await stopSidecar(agent)
     startAgent()
     if (!(await waitReady())) throw new Error('启动超时（30 秒内未就绪），详见上方输出')
     pruneBuilds(REMOTE_WEB_ROOT, basename(servedWeb))
@@ -371,7 +379,7 @@ updater = await startSourceUpdater({
       { root: ROOT, target, head, mode: MODE, parentPid: process.pid },
       { QYWORK_TOKEN: TOKEN, QYWORK_PORT: String(PORT) },
     )
-    setTimeout(() => shutdown(0), 300)
+    setTimeout(() => void shutdown(0), 300)
   },
 })
 
@@ -416,4 +424,4 @@ if (MODE === 'web') {
 }
 
 const code = await (shell ?? web).exited
-shutdown(isConsoleInterrupt(code) ? 0 : code)
+await shutdown(isConsoleInterrupt(code) ? 0 : code)

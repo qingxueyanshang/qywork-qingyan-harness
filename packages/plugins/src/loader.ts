@@ -91,6 +91,8 @@ export interface LoadOptions {
   onLog?: (line: string) => void
   /** 工作区根目录。沙箱据此决定插件进程可读写的范围。 */
   workspaceRoot?: string
+  /** 中止尚未完成的启动：正在等待 ready 的插件进程被终止，其余插件不再启动，都计入 failures。 */
+  signal?: AbortSignal
 }
 
 export async function loadPlugins(
@@ -115,6 +117,10 @@ export async function loadPlugins(
 
   for (const name of dirs) {
     const dir = join(pluginsDir, name)
+    if (options.signal?.aborted) {
+      registry.failures.push({ dir, reason: '服务正在停止，插件未启动' })
+      continue
+    }
     try {
       const plugin = await loadOne(dir, options)
       register(plugin, registry)
@@ -172,7 +178,7 @@ async function loadOne(dir: string, options: LoadOptions): Promise<LoadedPlugin>
     ...(options.onLog ? { onLog: options.onLog } : {}),
   })
 
-  await host.start().catch((err) => {
+  await host.start(options.signal).catch((err) => {
     throw new ManifestError(entry, `插件进程启动失败：${String(err)}`)
   })
 

@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -38,7 +39,8 @@ struct Session {
     /// 外壳进程中的创建序号，与浏览器页共用一个计数器。界面按它排列页签栏。
     created_seq: u64,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// 写线程的输入队列，见 `spawn_writer`。表项移除即释放发送端，写线程随之结束。
+    input: Sender<String>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// 最近输出的原样副本，供前端重新接入时回放。
     ///
@@ -46,7 +48,29 @@ struct Session {
     /// 仍在运行；不回放时，用户重新接入后只能看到空白屏幕。
     /// 保存原始字节序列（含转义序列）而不是渲染后的文本：回放即把这段字节重新写入
     /// xterm 解析，模式、颜色、光标位置随之恢复。
-    backlog: Arc<Mutex<String>>,
+    backlog: Arc<Mutex<Backlog>>,
+}
+
+/// 回放缓冲与会话的累计输出偏移，由读线程写入、`terminal_open` 读取。
+#[derive(Default)]
+struct Backlog {
+    text: String,
+    /// 会话至今输出的累计字节数，即下一块输出的起始偏移。截断 `text` 不改变它。
+    end: u64,
+}
+
+impl Backlog {
+    /// 追加一块输出，返回它的起始偏移。
+    ///
+    /// 偏移的分配与追加在同一次加锁内完成，`terminal_open` 在同一把锁下取快照与 `end`：
+    /// 起始偏移小于 `end` 的块都已在快照中，不小于 `end` 的块都不在。前端按此去重，
+    /// 不要把偏移的分配移到锁外，否则一块输出可能既在快照中又被判为快照之后的输出。
+    fn push(&mut self, text: &str) -> u64 {
+        let offset = self.end;
+        self.end += text.len() as u64;
+        push_backlog(&mut self.text, text);
+        offset
+    }
 }
 
 #[derive(Default)]
@@ -68,6 +92,8 @@ pub struct TerminalSession {
 struct Output {
     id: String,
     created_seq: u64,
+    /// 本块在会话累计输出中的起始字节偏移，见 `Backlog::push`。
+    offset: u64,
     data: String,
 }
 
@@ -81,19 +107,21 @@ struct Exit {
     code: Option<u32>,
 }
 
-/// `terminal_open` 的结果：会话的创建序号与需要回放的输出。
+/// `terminal_open` 的结果：会话的创建序号、需要回放的输出与回放的结束偏移。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Opened {
     created_seq: u64,
     backlog: String,
+    /// 回放末尾在会话累计输出中的字节偏移。起始偏移小于它的输出事件已包含在回放中。
+    end: u64,
 }
 
-/// 打开一个会话，**返回创建序号与需要回放的输出**。
+/// 打开一个会话，**返回创建序号、需要回放的输出与回放的结束偏移**。
 ///
 /// 已存在的 id 不报错，直接返回其序号与回放缓冲：前端在面板重新挂载时会无条件
 /// 调用一次，报错会使已打开的终端显示「已存在」错误。新建的会话
-/// 没有可回放的内容，回放为空串。
+/// 没有可回放的内容，回放为空串，结束偏移为 0。
 ///
 /// **重新接入必须提供同一个工作区**，否则拒绝：接受时该 PTY 会同时出现在两个工作区的
 /// 页签上，而它只有一份 cwd 与一个子进程。
@@ -111,9 +139,11 @@ pub fn terminal_open(
         if session.workspace_id != workspace_id {
             return Err("该终端属于另一个项目".to_owned());
         }
+        let backlog = session.backlog.lock();
         return Ok(Opened {
             created_seq: session.created_seq,
-            backlog: session.backlog.lock().clone(),
+            backlog: backlog.text.clone(),
+            end: backlog.end,
         });
     }
 
@@ -156,7 +186,7 @@ pub fn terminal_open(
         .try_clone_reader()
         .map_err(|e| format!("无法取得读端：{e}"))?;
 
-    let backlog = Arc::new(Mutex::new(String::new()));
+    let backlog = Arc::new(Mutex::new(Backlog::default()));
     // 重新接入已存在的 id 时在函数开头已返回，序号只在此处分配一次。
     let created_seq = crate::next_created_seq();
     state.0.lock().insert(
@@ -165,7 +195,7 @@ pub fn terminal_open(
             workspace_id,
             created_seq,
             master: pair.master,
-            writer,
+            input: spawn_writer(id.clone(), writer),
             killer,
             backlog: backlog.clone(),
         },
@@ -202,6 +232,7 @@ pub fn terminal_open(
     Ok(Opened {
         created_seq,
         backlog: String::new(),
+        end: 0,
     })
 }
 
@@ -242,15 +273,16 @@ pub fn terminal_list(state: State<TerminalHandle>) -> Vec<TerminalSession> {
 
 /// 键盘输入。原样写入 PTY，不做任何解析：回车、Ctrl-C、方向键都是字节，
 /// 由 shell 自行识别。
+///
+/// 只入队，不在此处写入：本命令在主线程执行，见 `spawn_writer`。
 #[tauri::command]
 pub fn terminal_write(state: State<TerminalHandle>, id: String, data: String) -> Result<(), String> {
-    let mut map = state.0.lock();
-    let session = map.get_mut(&id).ok_or("终端会话已不存在")?;
+    let map = state.0.lock();
+    let session = map.get(&id).ok_or("终端会话已不存在")?;
     session
-        .writer
-        .write_all(data.as_bytes())
-        .map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())
+        .input
+        .send(data)
+        .map_err(|_| "终端写入已停止".to_owned())
 }
 
 /// 调整尺寸。**必须通知 PTY**：只修改 xterm 一侧时，`less`、`vim` 等
@@ -307,7 +339,7 @@ fn spawn_reader(
     id: String,
     created_seq: u64,
     mut reader: Box<dyn Read + Send>,
-    backlog: Arc<Mutex<String>>,
+    backlog: Arc<Mutex<Backlog>>,
 ) {
     std::thread::spawn(move || {
         let mut buf = vec![0u8; READ_CHUNK];
@@ -320,18 +352,40 @@ fn spawn_reader(
             carry.extend_from_slice(&buf[..n]);
             let text = take_valid(&mut carry);
             if !text.is_empty() {
-                push_backlog(&mut backlog.lock(), &text);
+                let offset = backlog.lock().push(&text);
                 let _ = app.emit(
                     "terminal:output",
                     Output {
                         id: id.clone(),
                         created_seq,
+                        offset,
                         data: text,
                     },
                 );
             }
         }
     });
+}
+
+/// 写线程：输入队列 → PTY，每个会话一个。
+///
+/// PTY 的写入速率受子进程读取速度限制，大段粘贴需要数秒才能写完；`terminal_write` 在主线程执行，
+/// 在其中写入会使界面在此期间停止响应。表项移除时发送端随之释放，`recv` 结束，线程退出；
+/// 写入失败时线程同样退出，之后的入队返回错误。
+fn spawn_writer(id: String, mut writer: Box<dyn Write + Send>) -> Sender<String> {
+    let (input, queue) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for data in queue {
+            if let Err(e) = writer
+                .write_all(data.as_bytes())
+                .and_then(|()| writer.flush())
+            {
+                log::error!("终端 {id} 写入失败：{e}");
+                return;
+            }
+        }
+    });
+    input
 }
 
 /// 向回放缓冲追加，超出上限时从头部截断。
@@ -351,32 +405,39 @@ fn push_backlog(buf: &mut String, text: &str) {
     buf.drain(..cut);
 }
 
-/// 取出 `carry` 开头完整的 UTF-8 部分，不完整的字符保留在原处。
+/// 取出 `carry` 中全部完整的 UTF-8 字符，只把末尾不完整的字符保留在原处。
 ///
-/// 确实非法的字节（不是尚未读完，而是本身不是 UTF-8）须丢弃并换成替换字符，
-/// 否则它会永远停滞在缓冲区头部，后续所有输出都无法发出。
+/// 确实非法的字节（不是尚未读完，而是本身不是 UTF-8）换成替换字符后继续处理其后的字节：
+/// 留在缓冲区头部的非法字节会使后续所有输出都无法发出；在非法字节处停止处理时，
+/// 其后的合法字节要等到下一次输出才发出。
 fn take_valid(carry: &mut Vec<u8>) -> String {
-    match std::str::from_utf8(carry) {
-        Ok(s) => {
-            let out = s.to_owned();
-            carry.clear();
-            out
-        }
-        Err(e) => {
-            let good = e.valid_up_to();
-            let mut out = String::from_utf8_lossy(&carry[..good]).into_owned();
-            match e.error_len() {
-                Some(bad) => {
-                    out.push('\u{FFFD}');
-                    carry.drain(..good + bad);
-                }
-                None => {
-                    carry.drain(..good);
-                }
+    let mut out = String::new();
+    let mut start = 0;
+    while start < carry.len() {
+        let error = match std::str::from_utf8(&carry[start..]) {
+            Ok(s) => {
+                out.push_str(s);
+                start = carry.len();
+                break;
             }
-            out
+            Err(e) => e,
+        };
+        let good = start + error.valid_up_to();
+        // 前 `valid_up_to` 个字节已经校验，不会取到缺省值。
+        out.push_str(std::str::from_utf8(&carry[start..good]).unwrap_or_default());
+        match error.error_len() {
+            Some(bad) => {
+                out.push('\u{FFFD}');
+                start = good + bad;
+            }
+            None => {
+                start = good;
+                break;
+            }
         }
     }
+    carry.drain(..start);
+    out
 }
 
 /// 选择使用的 shell。
@@ -418,5 +479,162 @@ mod tests {
         map.insert("t1".to_owned(), 7);
         assert_eq!(take_current(&mut map, "t1", 7, |s| *s), Some(7));
         assert!(take_current(&mut map, "t1", 7, |s| *s).is_none());
+    }
+
+    /// 原始失败形状：非法字节之后的合法字节留在缓冲中，直到下一次输出才发出。
+    #[test]
+    fn valid_bytes_after_an_invalid_byte_are_taken_in_the_same_call() {
+        let mut carry = vec![b'a', 0xFF, b'b'];
+        assert_eq!(take_valid(&mut carry), "a\u{FFFD}b");
+        assert!(carry.is_empty());
+
+        let mut carry = vec![0xFF, 0xFE, b'c'];
+        assert_eq!(take_valid(&mut carry), "\u{FFFD}\u{FFFD}c");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn a_character_split_across_chunks_is_emitted_once_complete() {
+        let bytes = "中文".as_bytes();
+        let mut carry = bytes[..4].to_vec();
+        assert_eq!(take_valid(&mut carry), "中");
+        assert_eq!(carry, bytes[3..4]);
+        carry.extend_from_slice(&bytes[4..]);
+        assert_eq!(take_valid(&mut carry), "文");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn an_incomplete_tail_stays_in_the_buffer() {
+        let tail = &"文".as_bytes()[..2];
+        let mut carry = tail.to_vec();
+        assert_eq!(take_valid(&mut carry), "");
+        assert_eq!(carry, tail);
+
+        let mut carry = vec![b'x', 0xFF];
+        carry.extend_from_slice(tail);
+        assert_eq!(take_valid(&mut carry), "x\u{FFFD}");
+        assert_eq!(carry, tail);
+    }
+
+    #[test]
+    fn backlog_truncation_keeps_the_cap_and_character_boundaries() {
+        let mut buf = String::new();
+        push_backlog(&mut buf, &"a".repeat(BACKLOG_CAP - 1));
+        assert_eq!(buf.len(), BACKLOG_CAP - 1);
+        // 追加一个三字节字符与一个 ASCII 字符：超出上限 3 字节，头部的截断点落在 ASCII 上。
+        push_backlog(&mut buf, "中b");
+        assert_eq!(buf.len(), BACKLOG_CAP);
+        assert!(buf.ends_with("中b"));
+
+        // 头部是多字节字符时，截断点后移到下一个字符边界，缓冲不超过上限。
+        let mut buf = "中".repeat(BACKLOG_CAP / 3);
+        push_backlog(&mut buf, "xy");
+        assert!(buf.len() <= BACKLOG_CAP);
+        assert!(buf.starts_with('中'));
+        assert!(buf.ends_with("xy"));
+    }
+
+    #[test]
+    fn each_chunk_gets_its_start_offset_and_the_end_covers_the_snapshot() {
+        let mut backlog = Backlog::default();
+        assert_eq!(backlog.push("ab"), 0);
+        assert_eq!(backlog.push("中"), 2);
+        assert_eq!(backlog.push("c"), 5);
+        assert_eq!(backlog.end, 6);
+        assert_eq!(backlog.text, "ab中c");
+    }
+
+    /// 截断只缩短回放，累计偏移继续递增：重新接入时回放末尾与之后的输出事件仍能按偏移衔接。
+    #[test]
+    fn truncation_does_not_change_the_cumulative_offset() {
+        let mut backlog = Backlog::default();
+        let first = "x".repeat(BACKLOG_CAP);
+        assert_eq!(backlog.push(&first), 0);
+        assert_eq!(backlog.push("中文"), BACKLOG_CAP as u64);
+        assert_eq!(backlog.text.len(), BACKLOG_CAP);
+        assert!(backlog.text.ends_with("中文"));
+        assert_eq!(backlog.end, BACKLOG_CAP as u64 + 6);
+        assert_eq!(backlog.push("y"), BACKLOG_CAP as u64 + 6);
+    }
+
+    /// 测试用写端：首次写入阻塞到 `release` 收到信号，写入内容记录到 `written`，释放时通知 `dropped`。
+    struct Probe {
+        release: Option<std::sync::mpsc::Receiver<()>>,
+        written: Arc<Mutex<Vec<u8>>>,
+        fail: bool,
+        dropped: std::sync::mpsc::Sender<()>,
+    }
+
+    impl Write for Probe {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if let Some(release) = self.release.take() {
+                let _ = release.recv();
+            }
+            if self.fail {
+                return Err(std::io::Error::other("管道已关闭"));
+            }
+            self.written.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(());
+        }
+    }
+
+    const THREAD_EXIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// 原始失败形状：写入在命令中执行，PTY 不读取时命令阻塞。入队在写端阻塞期间立即返回，放行后按顺序写完。
+    #[test]
+    fn input_is_queued_while_the_pty_blocks_and_written_in_order() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let (dropped, gone) = std::sync::mpsc::channel();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let input = spawn_writer(
+            "t1".into(),
+            Box::new(Probe {
+                release: Some(wait),
+                written: written.clone(),
+                fail: false,
+                dropped,
+            }),
+        );
+        input.send("a".into()).unwrap();
+        input.send("b".repeat(1024 * 1024)).unwrap();
+        input.send("c".into()).unwrap();
+        assert!(written.lock().is_empty());
+
+        release.send(()).unwrap();
+        // 释放发送端即关闭会话：写线程写完队列后退出并释放写端。
+        drop(input);
+        gone.recv_timeout(THREAD_EXIT).expect("写线程未退出");
+        let written = written.lock();
+        assert_eq!(written.len(), 1024 * 1024 + 2);
+        assert_eq!(written.first(), Some(&b'a'));
+        assert_eq!(written.last(), Some(&b'c'));
+    }
+
+    #[test]
+    fn a_failed_write_ends_the_thread_and_later_input_is_rejected() {
+        let (dropped, gone) = std::sync::mpsc::channel();
+        let input = spawn_writer(
+            "t1".into(),
+            Box::new(Probe {
+                release: None,
+                written: Arc::default(),
+                fail: true,
+                dropped,
+            }),
+        );
+        input.send("a".into()).unwrap();
+        gone.recv_timeout(THREAD_EXIT).expect("写线程未退出");
+        assert!(input.send("b".into()).is_err());
     }
 }

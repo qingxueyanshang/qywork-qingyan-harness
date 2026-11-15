@@ -11,8 +11,8 @@
  * 先于回执投递：回执发起的一轮读取变更清单时改动已在账本中。
  *
  * 句柄只在进程内，不写入磁盘：服务退出时 `stopAll` 结束全部命令，此时改动的追加不保证完成。服务进程被
- * 直接终止时（桌面外壳退出即如此）`stopAll` 不会执行，由 runner 在父进程退出后终止尚未退出的命令
- * （`runner.ts` 的 `leave`）。Linux（WSL2）实测；Windows 上命令另随 runner 一并结束；macOS 未实测。
+ * 直接终止时（崩溃，或桌面外壳请求停止后超时）`stopAll` 不会执行，由 runner 在父进程退出后终止尚未退出的命令
+ * （`runner.ts` 的 `leave`）。Linux（WSL2）与 Windows 实测；macOS 未实测。
  */
 
 import type { CommandPort } from '@qywork/agent'

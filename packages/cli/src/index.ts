@@ -173,7 +173,7 @@ async function main(argv: string[]): Promise<number> {
    */
   if (cmd === 'runner') {
     runCommandRunner()
-    // 依靠 IPC 通道维持事件循环；父进程退出后本进程的 stdin 关闭，随之退出。
+    // 依靠 IPC 通道维持事件循环；父进程退出后经 `runner.ts` 的 `leave` 退出。
     return new Promise<number>(() => {})
   }
   if (cmd === 'serve') return runServe(rest)
@@ -300,9 +300,12 @@ async function runServe(args: string[]): Promise<number> {
   const flags = parseFlags(args)
   // 在启动任何子进程之前读完：继承标准输入的子进程同样能读取这一行。
   let credentials: Credentials = {}
+  let shellLines: StdinLines | null = null
   if (flags.credentialsStdin) {
     try {
-      credentials = await readCredentials()
+      if (isatty(0)) throw new Error('--credentials-stdin 需要以管道提供标准输入')
+      shellLines = stdinLines()
+      credentials = parseCredentials(await shellLines())
     } catch (err) {
       process.stderr.write(`凭据读取失败：${err instanceof Error ? err.message : String(err)}\n`)
       return 2
@@ -417,7 +420,7 @@ async function runServe(args: string[]): Promise<number> {
 
   // 父进程监视。
   //
-  // 桌面外壳只在正常退出路径上终止 sidecar；外壳崩溃或被强制终止时（实测 Stop-Process 即如此）
+  // 桌面外壳只在正常退出路径上停止 sidecar；外壳崩溃或被强制终止时（实测 Stop-Process 即如此）
   // 不会执行该路径，残留的 qy 会占用端口和 SQLite 的 WAL 锁，
   // 导致下次启动直接失败。因此由 sidecar 自行监视父进程，任何一方退出都不会遗留孤儿进程。
   if (flags.parentPid) {
@@ -451,15 +454,19 @@ async function runServe(args: string[]): Promise<number> {
   process.stderr.write(`${DIM}按 Ctrl-C 停止服务${RESET}\n`)
 
   await new Promise<void>((done) => {
-    const stop = async () => {
+    let stopping = false
+    const stop = async (source: string) => {
+      if (stopping) return
+      stopping = true
       process.stderr.write('\n正在停止…\n')
-      log.info('serve', '收到停止信号，停止服务')
+      log.info('serve', '收到停止请求，停止服务', { source })
       await handle.stop()
       store.close()
       done()
     }
-    process.on('SIGINT', stop)
-    process.on('SIGTERM', stop)
+    process.on('SIGINT', () => stop('SIGINT'))
+    process.on('SIGTERM', () => stop('SIGTERM'))
+    if (shellLines) void watchStopRequest(shellLines, () => stop('stdin'))
   })
   return 0
 }
@@ -575,32 +582,49 @@ interface Credentials {
 
 const CREDENTIAL_FIELDS = ['token', 'hostKey', 'updateKey'] as const
 
+/** 逐行读取标准输入，每次调用返回下一行（不含换行）；输入结束时返回 null，结束前未换行的内容丢弃。 */
+type StdinLines = () => Promise<string | null>
+
 /**
- * 从标准输入读取一行 JSON 凭据。
+ * 标准输入的行读取器，整个进程只创建一个：`--credentials-stdin` 时第一行是凭据，之后每行是外壳的一条指令
+ * （`watchStopRequest`）。外壳在 sidecar 运行期间保持管道打开。
+ *
+ * 不要在读完凭据后取消读取器再另建一个：同一次读取取得的数据块可能已包含其后的指令行，取消即丢弃。
+ */
+function stdinLines(): StdinLines {
+  const reader = Bun.stdin.stream().getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  let ended = false
+  return async () => {
+    for (;;) {
+      const at = text.indexOf('\n')
+      if (at >= 0) {
+        const line = text.slice(0, at)
+        text = text.slice(at + 1)
+        return line
+      }
+      if (ended) return null
+      const { value, done } = await reader.read()
+      if (done) ended = true
+      else text += decoder.decode(value, { stream: true })
+    }
+  }
+}
+
+/**
+ * 解析标准输入的第一行 JSON 凭据。
  *
  * 凭据不经环境变量交付：环境块由本进程启动的全部子进程继承，Bun 中删除 `process.env` 的键之后，
  * 不传 `env` 启动的子进程仍取得原值。标准输入的这一行只由本进程读取一次。
  *
- * 读到换行即停止读取：外壳在 sidecar 运行期间保持管道打开，不会再写入。
- * 标准输入是终端、在换行之前结束、内容不是约定的 JSON 对象时抛出，调用方以非零退出码结束进程。
+ * 标准输入在换行之前结束、内容不是约定的 JSON 对象时抛出，调用方以非零退出码结束进程。
  */
-async function readCredentials(): Promise<Credentials> {
-  if (isatty(0)) throw new Error('--credentials-stdin 需要以管道提供标准输入')
-  const reader = Bun.stdin.stream().getReader()
-  const decoder = new TextDecoder()
-  let text = ''
-  try {
-    while (!text.includes('\n')) {
-      const { value, done } = await reader.read()
-      if (done) throw new Error('标准输入在凭据行结束之前关闭')
-      text += decoder.decode(value, { stream: true })
-    }
-  } finally {
-    await reader.cancel()
-  }
+function parseCredentials(line: string | null): Credentials {
+  if (line === null) throw new Error('标准输入在凭据行结束之前关闭')
   let parsed: unknown
   try {
-    parsed = JSON.parse(text.slice(0, text.indexOf('\n')))
+    parsed = JSON.parse(line)
   } catch {
     throw new Error('凭据行不是合法的 JSON')
   }
@@ -615,6 +639,23 @@ async function readCredentials(): Promise<Credentials> {
     out[field] = value
   }
   return out
+}
+
+/**
+ * 读取外壳经标准输入发出的指令，读到 `stop` 即调用 `onStop`。
+ *
+ * 外壳退出与安装更新之前写入该指令，限时等待本进程退出，超时才终止进程：直接终止时 `handle.stop()`
+ * 不执行，运行中的命令进程树、MCP、插件与外部 CLI 都不会结束。
+ * 标准输入结束不视为停止：开发脚本交付凭据后即关闭标准输入，外壳崩溃由 `watchParent` 处理。
+ */
+async function watchStopRequest(next: StdinLines, onStop: () => void): Promise<void> {
+  for (let line = await next(); line !== null; line = await next()) {
+    if (line.trim() === 'stop') {
+      onStop()
+      return
+    }
+    log.warn('serve', '忽略无法识别的标准输入指令', { line: line.slice(0, 80) })
+  }
 }
 
 /**

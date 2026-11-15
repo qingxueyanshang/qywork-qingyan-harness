@@ -122,7 +122,15 @@ export interface LoadMcpOptions {
   /** 解析工作区相对路径。由调用方注入，以免本包依赖 tools。 */
   resolveCwd?: (relative: string) => Promise<string>
   onLog?: (line: string) => void
+  /**
+   * 中止尚未完成的连接与握手：已启动的进程树被终止，该 server 以 `LOAD_ABORTED` 计入 failures。
+   * 已完成握手的 server 不受影响，由 `stopAll` 关闭。
+   */
+  signal?: AbortSignal
 }
+
+/** 加载被 `signal` 中止时记入 failures 的原因。 */
+const LOAD_ABORTED = '服务正在停止，连接已中止'
 
 export async function loadMcpServers(
   config: McpConfig,
@@ -152,12 +160,19 @@ export async function loadMcpServers(
       // HTTP server 没有工作目录。为其解析工作目录只会在配置中
       // 写了 cwd 时报错。
       let client: McpClient | undefined
+      // 关闭客户端即终止进程树，进行中的请求随之失败，由下方的 catch 计入 failures。
+      const abort = () => {
+        void client?.stop().catch((error) => options.onLog?.(`[mcp:${name}] 关闭失败：${error}`))
+      }
+      options.signal?.addEventListener('abort', abort, { once: true })
       try {
         const cwd = isHttpSpec(spec)
           ? workspaceRoot
           : spec.cwd
             ? await (options.resolveCwd?.(spec.cwd) ?? Promise.resolve(workspaceRoot))
             : workspaceRoot
+        // 必须在创建客户端之前检查：此前到达的中止信号没有可关闭的客户端。
+        if (options.signal?.aborted) throw new Error(LOAD_ABORTED)
         client = new McpClient({
           name,
           spec,
@@ -197,8 +212,14 @@ export async function loadMcpServers(
         return {
           name,
           ok: false as const,
-          reason: err instanceof Error ? err.message : String(err),
+          reason: options.signal?.aborted
+            ? LOAD_ABORTED
+            : err instanceof Error
+              ? err.message
+              : String(err),
         }
+      } finally {
+        options.signal?.removeEventListener('abort', abort)
       }
     }),
   )

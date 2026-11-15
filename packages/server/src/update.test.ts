@@ -1,8 +1,9 @@
-/** 覆盖 server.ts 的本机更新鉴权，以及 runs/commands 的更新与任务互斥。 */
+/** 覆盖 server.ts 的本机更新鉴权与更新设置的读取，以及 runs/commands 的更新与任务互斥。 */
 import { expect, spyOn, test } from 'bun:test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { QyConfig } from '@qywork/runtime'
 import { Store } from '@qywork/store'
 import { CanvasService } from './canvas.ts'
 import { handleCommand } from './commands.ts'
@@ -92,5 +93,52 @@ test('配对令牌不能取得更新占位；宿主占位后新指令被明确�
     if (previousHome === undefined) delete process.env.QYWORK_HOME
     else process.env.QYWORK_HOME = previousHome
     // 临时目录由 run-tests 在测试进程退出后清理，避免与未退出的 Git 查询争用目录。
+  }
+})
+
+/**
+ * 外壳的自动更新只经此动作取得设置。原始失败形状：外壳自行解析 `config.json`，字段改名并写了迁移时
+ * 那一侧无法取得设置，自动更新静默停用。
+ */
+test('更新设置取自已加载的配置：缺省时均开启，显式关闭与运行中的修改原样返回', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'update-prefs-'))
+  const previousHome = process.env.QYWORK_HOME
+  process.env.QYWORK_HOME = root
+  const store = new Store({ path: join(root, 'data.sqlite3') })
+  const config: QyConfig = { providers: {}, mode: 'auto' }
+  const handle = serve({
+    store,
+    config,
+    workspaceRoot: root,
+    port: 0,
+    host: '127.0.0.1',
+    token: 'pairing-token',
+    updateHostKey: 'owner-key',
+  })
+  const preferences = async (key = 'owner-key') => {
+    const res = await fetch(`http://127.0.0.1:${handle.port}/internal/app-update`, {
+      method: 'POST',
+      headers: { 'x-qywork-update-key': key },
+      body: '{"action":"preferences"}',
+    })
+    return { status: res.status, body: res.status === 200 ? await res.json() : null }
+  }
+  try {
+    expect(await preferences('pairing-token')).toEqual({ status: 401, body: null })
+    expect(await preferences()).toEqual({
+      status: 200,
+      body: { autoCheck: true, autoDownload: true },
+    })
+    // 设置页保存时原地改写同一个配置对象，外壳的下一轮查询即取得新值。
+    config.updates = { autoCheck: false, autoDownload: false }
+    expect(await preferences()).toEqual({
+      status: 200,
+      body: { autoCheck: false, autoDownload: false },
+    })
+  } finally {
+    await handle.stop()
+    store.close()
+    if (previousHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = previousHome
   }
 })

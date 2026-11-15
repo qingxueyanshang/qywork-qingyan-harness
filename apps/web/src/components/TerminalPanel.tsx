@@ -289,16 +289,15 @@ async function ensureStarted(id: string, pane: Pane): Promise<void> {
   pane.started = true
   pane.setEnd(null)
   try {
-    const backlog = await openTerminal(id, ws.id, ws.root, pane.term.cols, pane.term.rows, {
+    // 连接到已在运行的会话时，回放外壳保存的输出也经由 `output` 写入，否则重新连接后
+    // 显示为空屏：shell 仍在运行，但需按键后才有输出。
+    await openTerminal(id, ws.id, ws.root, pane.term.cols, pane.term.rows, {
       output: (d) => pane.term.write(d),
       exit: (code) => {
         pane.started = false
         pane.setEnd({ kind: 'exited', code })
       },
     })
-    // 连接到已在运行的会话时，先重放外壳保存的输出，否则重新连接后
-    // 显示为空屏：shell 仍在运行，但需按键后才有输出。
-    if (backlog) pane.term.write(backlog)
     // 会话建立后再同步一次尺寸：从调用到会话建立期间，面板可能已被拖宽或放大。
     syncSize(id, pane)
   } catch (e) {
