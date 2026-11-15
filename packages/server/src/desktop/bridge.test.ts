@@ -36,9 +36,9 @@ function config(desktopEnabled = true): QyConfig {
   }
 }
 
-const cleanups: (() => void)[] = []
-afterEach(() => {
-  for (const fn of cleanups.splice(0).reverse()) fn()
+const cleanups: (() => void | Promise<void>)[] = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
 })
 
 function fresh(cfg = config()): ReturnType<typeof serve> {
@@ -56,8 +56,8 @@ function fresh(cfg = config()): ReturnType<typeof serve> {
     host: '127.0.0.1',
     hostKey: HOST_KEY,
   })
-  cleanups.push(() => {
-    handle.stop()
+  cleanups.push(async () => {
+    await handle.stop()
     content.close()
     store.close()
     // Windows 上 SQLite 的文件句柄释放有延迟，临时目录删除失败与被测行为无关。
@@ -71,15 +71,32 @@ function fresh(cfg = config()): ReturnType<typeof serve> {
 /** 连接一个假宿主，清理操作登记到本文件的清理队列。 */
 const connect = (port: number, key = HOST_KEY) => FakeDesktopHost.connect(port, key, cleanups)
 
-/** 等待事件循环派发完已到达的帧。 */
-const settle = () => new Promise((r) => setTimeout(r, 30))
-
 /** 网络帧何时到达由事件循环决定，不能用固定延迟代替收到帧。 */
 async function waitFor(check: () => boolean): Promise<void> {
   const deadline = Date.now() + 2_000
   while (!check() && Date.now() < deadline) await Bun.sleep(10)
   expect(check()).toBe(true)
 }
+
+/** 宿主帧被处理后，服务端经事件总线广播的 `desktop.state` 能力投影，按到达顺序。 */
+function states(handle: ReturnType<typeof serve>): unknown[] {
+  const seen: unknown[] = []
+  cleanups.push(
+    handle.bus.subscribe({
+      id: `probe_${crypto.randomUUID()}`,
+      origin: 'desktop',
+      conversations: null,
+      send: (frame) => {
+        if (frame.event.type === 'desktop.state') seen.push(frame.event.desktop)
+      },
+    }),
+  )
+  return seen
+}
+
+/** 宿主完成注册、能力已发布。 */
+const registered = (handle: ReturnType<typeof serve>) =>
+  waitFor(() => handle.desktop?.available() === true)
 
 /**
  * 取得一次调用失败的原因。
@@ -120,32 +137,41 @@ test('普通配对连接发送桌面宿主帧时无法注册宿主', async () =>
     ws.onerror = () => reject(new Error('配对连接应当能建立'))
   })
   cleanups.push(() => ws.close())
+  const replies: string[] = []
+  ws.onmessage = (ev) => replies.push(String(ev.data))
   ws.send(JSON.stringify(READY))
-  await settle()
+  // 同一条连接上的帧按序分派：其后一帧的应答到达时，宿主帧已被分派过。
+  ws.send('不是 JSON')
+  await waitFor(() => replies.some((r) => r.includes('bad json')))
   expect(handle.desktop?.available()).toBe(false)
 })
 
 test('三项能力位分别报告，worker 未就绪或未授权时不发布能力', async () => {
   const handle = fresh()
+  // 能力未发布时 `available()` 与宿主帧尚未处理时同为 false，以广播确认帧已被处理。
+  const seen = states(handle)
   const host = await connect(handle.port)
   host.ready({ workerReady: false })
-  await settle()
+  await waitFor(() => seen.length === 1)
+  expect(seen.at(-1)).toMatchObject({ connected: true, workerReady: false })
   expect(handle.desktop?.available()).toBe(false)
 
   host.ready({ authorized: false })
-  await settle()
+  await waitFor(() => seen.length === 2)
+  expect(seen.at(-1)).toMatchObject({ connected: true, authorized: false })
   expect(handle.desktop?.available()).toBe(false)
 
   host.ready()
-  await settle()
-  expect(handle.desktop?.available()).toBe(true)
+  await registered(handle)
 })
 
 test('用户未启用时宿主连接后也不发布能力', async () => {
   const handle = fresh(config(false))
+  const seen = states(handle)
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await waitFor(() => seen.length > 0)
+  expect(seen.at(-1)).toMatchObject({ connected: true, workerReady: true, authorized: true })
   expect(handle.desktop?.available()).toBe(false)
 })
 
@@ -197,11 +223,13 @@ test('握手报告三项能力位，宿主连接之后由事件推送同一份�
   // 有意不返回读取控件树的回执：目标在发送请求之前登记，界面无需等待响应即可显示操作对象。
   const observing = port?.observe({ windowId: 'dw_1' }).catch(() => null)
   await host.next()
-  await settle()
-  const targets = frames
-    .map((f) => f.event as DesktopTargetEvent | undefined)
-    .filter((e) => e?.type === 'desktop.target')
-  expect(targets.at(-1)?.targets).toEqual([
+  const lastTargets = () =>
+    frames
+      .map((f) => f.event as DesktopTargetEvent | undefined)
+      .filter((e) => e?.type === 'desktop.target')
+      .at(-1)?.targets
+  await waitFor(() => lastTargets()?.length === 1)
+  expect(lastTargets()).toEqual([
     {
       conversationId: 'cv_a',
       app: '记事本',
@@ -212,18 +240,14 @@ test('握手报告三项能力位，宿主连接之后由事件推送同一份�
   await observing
   host.reply(await host.next())
   await releasing
-  await settle()
-  const cleared = frames
-    .map((f) => f.event as DesktopTargetEvent | undefined)
-    .filter((e) => e?.type === 'desktop.target')
-  expect(cleared.at(-1)?.targets).toEqual([])
+  await waitFor(() => lastTargets()?.length === 0)
 })
 
 test('请求帧携带全部身份字段：连接代际、执行实例、执行者与截止时刻', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_a')
   const pending = port?.windows()
   const frame = await host.next()
@@ -243,7 +267,7 @@ test('首次连接、补发与更换事件流后重连均恢复当前桌面目�
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_wechat')
   const listing = port?.windows()
   host.reply(await host.next())
@@ -316,13 +340,12 @@ test('代际不一致的迟到回执不得完成本次调用', async () => {
     const handle = fresh()
     const host = await connect(handle.port)
     host.ready()
-    await settle()
+    await registered(handle)
     const port = handle.desktop?.portFor('cv_a')
     const pending = port?.windows()
     const frame = await host.next()
     host.reply(frame, broken)
-    await settle()
-    // 调用仍处于待决状态：断开连接后它因断开而失败，证明未被该帧结算。
+    // 调用仍处于待决状态：断开连接后它因断开而失败，证明未被该帧结算。关闭帧排在该回执之后，服务端按序处理。
     host.socket.close()
     const err = await failure(pending)
     expect(err.message).toMatch(/断开/)
@@ -333,7 +356,7 @@ test('断线时在途调用按已派发结束，不记为未执行', async () =>
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_a')
   const pending = port?.windows()
   await host.next()
@@ -341,15 +364,14 @@ test('断线时在途调用按已派发结束，不记为未执行', async () =>
   const err = await failure(pending)
   // 帧已写出，宿主是否收到无法确定，因此必须记为 unknown。
   expect(err.dispatch).toBe('unknown')
-  await settle()
-  expect(handle.desktop?.available()).toBe(false)
+  await waitFor(() => handle.desktop?.available() === false)
 })
 
 test('同一条 WS 上更换执行实例：旧的待决调用结束，能力按新代际重建', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_a')
   const pending = port?.windows()
   const stale = await host.next()
@@ -357,9 +379,8 @@ test('同一条 WS 上更换执行实例：旧的待决调用结束，能力按�
   host.ready({ hostEpoch: 3 })
   const err = await failure(pending)
   expect(err.dispatch).toBe('unknown')
-  // 旧执行实例的迟到回执不得完成任何调用。
+  // 旧执行实例的迟到回执不得完成任何调用。它先于下面新请求的回执到达，服务端按序处理。
   host.reply(stale)
-  await settle()
   expect(handle.desktop?.available()).toBe(true)
   const again = port?.windows()
   const frame = await host.next()
@@ -372,7 +393,7 @@ test('worker 离线的状态事件撤销能力，并结束在途调用', async (
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_a')
   const pending = port?.windows()
   await host.next()
@@ -387,8 +408,7 @@ test('worker 离线的状态事件撤销能力，并结束在途调用', async (
     missing: [],
   })
   expect((await failure(pending)).dispatch).toBe('unknown')
-  await settle()
-  expect(handle.desktop?.available()).toBe(false)
+  await waitFor(() => handle.desktop?.available() === false)
 })
 
 /**
@@ -408,11 +428,12 @@ test('授权变化经状态事件更新能力与缺项，不更换执行实例',
   })
   cleanups.push(() => client.close())
   client.send(JSON.stringify({ type: 'hello', token: handle.token, origin: 'desktop' }))
-  await settle()
+  await waitFor(() => frames.some((f) => f.type === 'hello.ok'))
 
+  const stateCount = () => frames.filter((f) => f.event?.type === 'desktop.state').length
   const host = await connect(handle.port)
   host.ready({ authorized: false, missing: ['accessibility', 'screen_recording'] })
-  await settle()
+  await waitFor(() => stateCount() === 1)
   expect(handle.desktop?.available()).toBe(false)
 
   const event = (authorized: boolean, missing: ('accessibility' | 'screen_recording')[]) =>
@@ -427,10 +448,9 @@ test('授权变化经状态事件更新能力与缺项，不更换执行实例',
       missing,
     })
   event(true, ['screen_recording'])
-  await settle()
-  expect(handle.desktop?.available()).toBe(true)
+  await waitFor(() => handle.desktop?.available() === true)
   event(true, [])
-  await settle()
+  await waitFor(() => stateCount() === 3)
   const states = frames
     .map((f) => f.event)
     .filter((e) => e?.type === 'desktop.state')
@@ -449,20 +469,29 @@ test('授权变化经状态事件更新能力与缺项，不更换执行实例',
 
 test('代际不一致的状态事件不得改变能力', async () => {
   const handle = fresh()
+  const seen = states(handle)
   const host = await connect(handle.port)
   host.ready()
-  await settle()
-  host.send({
-    type: 'desktop.event',
-    connectionEpoch: 3,
-    hostId: 'h1',
-    hostEpoch: 1,
-    kind: 'worker.state',
-    workerReady: false,
-    authorized: false,
-    missing: [],
-  })
-  await settle()
+  await registered(handle)
+  const before = seen.length
+  const state = (hostEpoch: number, workerReady: boolean, missing: 'screen_recording'[]) =>
+    host.send({
+      type: 'desktop.event',
+      connectionEpoch: 3,
+      hostId: 'h1',
+      hostEpoch,
+      kind: 'worker.state',
+      workerReady,
+      authorized: workerReady,
+      missing,
+    })
+  state(1, false, [])
+  // 其后一条当前代际的事件被广播时，前一条已被处理：它若被采纳，其投影排在这一条之前。
+  state(2, true, ['screen_recording'])
+  await waitFor(() => seen.length > before)
+  expect(seen.slice(before)).toEqual([
+    { connected: true, workerReady: true, authorized: true, missing: ['screen_recording'] },
+  ])
   expect(handle.desktop?.available()).toBe(true)
 })
 
@@ -470,7 +499,7 @@ test('窗口消失后旧的不透明 id 在本地被拒绝，不发送任何帧'
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_a')
   const first = port?.windows()
   host.reply(await host.next())
@@ -492,7 +521,7 @@ test('释放之后端口失效，并向宿主发送按执行者撤销的请求',
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_a')
   // 失败处理必须在释放之前注册：`release` 同步结束在途调用，晚于释放注册会产生一次未处理的拒绝。
   const pending = failure(port?.windows())
@@ -508,7 +537,12 @@ test('释放之后端口失效，并向宿主发送按执行者撤销的请求',
   // 释放是幂等的，重复调用不再发送第二条撤销。
   const count = host.received.filter((f) => f.op === 'cancel').length
   await port?.release()
-  await settle()
+  // 再经宿主连接往返一次：发往宿主的帧按序到达，探针请求到达时，此前发出的帧都已到达。
+  const probe = handle.desktop?.portFor('cv_probe').windows()
+  await waitFor(() => host.received.some((f) => f.executorId !== frame.executorId))
+  const probeFrame = host.received.find((f) => f.executorId !== frame.executorId)
+  if (probeFrame) host.reply(probeFrame)
+  await probe
   expect(host.received.filter((f) => f.op === 'cancel').length).toBe(count)
   expect((await failure(port?.windows())).message).toMatch(/已经结束/)
 })
@@ -525,7 +559,7 @@ test('前台开关在每条请求时实时读取，运行中关闭后下一次�
   const handle = fresh(cfg)
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_a')
 
   const first = port?.windows()
@@ -549,7 +583,7 @@ test('未配置前台开关时默认启用', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_a')
   const pending = port?.windows()
   const frame = await host.next()
@@ -583,11 +617,11 @@ test('前台接管之后运行态读数如实反映，释放时清除', async ()
   })
   cleanups.push(() => client.close())
   client.send(JSON.stringify({ type: 'hello', token: handle.token, origin: 'desktop' }))
-  await settle()
+  await waitFor(() => frames.some((f) => f.type === 'hello.ok'))
 
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await registered(handle)
   const port = handle.desktop?.portFor('cv_a')
   const listing = port?.windows()
   host.reply(await host.next())
@@ -598,7 +632,7 @@ test('前台接管之后运行态读数如实反映，释放时清除', async ()
   // 后台观察：目标已登记，但尚未前台接管。
   const observing = port?.observe({ windowId: 'dw_1' }).catch(() => null)
   await host.next()
-  await settle()
+  await waitFor(() => targets().at(-1)?.targets.length === 1)
   expect(targets().at(-1)?.targets).toEqual([
     {
       conversationId: 'cv_a',
@@ -611,6 +645,5 @@ test('前台接管之后运行态读数如实反映，释放时清除', async ()
   await observing
   host.reply(await host.next())
   await releasing
-  await settle()
-  expect(targets().at(-1)?.targets).toEqual([])
+  await waitFor(() => targets().at(-1)?.targets.length === 0)
 })

@@ -127,7 +127,7 @@ test('不注入间隔：生产环境的缺省 tick 使到期任务的 Run 进入
     expect(counts).toEqual({ conversations: 1, runs: 1 })
   } finally {
     timers.mockRestore()
-    handle?.stop()
+    await handle?.stop()
     store.close()
   }
 })

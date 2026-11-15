@@ -166,6 +166,9 @@ function sentRows(rows: ProviderRequest[]): ProviderRequest[] {
 test('503 退避重发：接收次数与已发送行数相等，退避期间没有新接收', async () => {
   const fault: FaultServer = startFaultServer('retry_after_then_ok')
   const led = ledger()
+  // 退避开始时的已发送行数与接收次数，以及退避返回的时刻。
+  const backoffs: { sent: number; received: number }[] = []
+  let resumedAt = 0
   try {
     await runAgainst(
       led,
@@ -174,8 +177,10 @@ test('503 退避重发：接收次数与已发送行数相等，退避期间没�
         baseUrl: fault.openaiBaseUrl,
         model: 'deepseek-flash',
       },
-      // 本用例验证退避期间没有新接收，因此按真实计时等待；时长不超过 1 秒，退避间隔本身不短于 2 秒。
-      (ms) => Bun.sleep(Math.min(ms, 1_000)),
+      async () => {
+        backoffs.push({ sent: sentRows(led.rows()).length, received: fault.receipts.length })
+        resumedAt = Date.now()
+      },
     )
     const rows = led.rows()
     expect(fault.receipts.length).toBe(2)
@@ -191,8 +196,10 @@ test('503 退避重发：接收次数与已发送行数相等，退避期间没�
     expect(received?.providerInputTokens).toBe(11)
     expect(received?.providerOutputTokens).toBe(3)
 
-    // 只断言两次接收之间存在等待，不断言等待时长：退避时长不在本文件的范围内。
-    expect(fault.receipts[1]! - fault.receipts[0]!).toBeGreaterThanOrEqual(500)
+    // 退避期间没有新接收：退避开始前只发出并接收了一次，第二次接收晚于退避返回。
+    // 不断言等待时长：退避时长不在本文件的范围内。
+    expect(backoffs).toEqual([{ sent: 1, received: 1 }])
+    expect(fault.receipts[1]!).toBeGreaterThanOrEqual(resumedAt)
 
     // 响应头时刻位于发出时刻与首个事件时刻之间，度量的是首包等待。
     expect(received?.headersAt).not.toBeNull()
@@ -210,7 +217,7 @@ test('503 退避重发：接收次数与已发送行数相等，退避期间没�
     expect(rejected?.firstEventAt).toBeNull()
   } finally {
     led.close()
-    fault.stop()
+    await fault.stop()
   }
 }, 30_000)
 
@@ -256,7 +263,7 @@ test('用量已回报后流中断：终态非 received，已收到的用量保�
     }
   } finally {
     led.close()
-    fault.stop()
+    await fault.stop()
   }
 }, 30_000)
 
@@ -442,8 +449,8 @@ test.each(['openai_chat_completions', 'openai_responses', 'anthropic_messages'] 
       const [direct] = await run(base)
       expect([direct?.status, direct?.cloudRequestId]).toEqual(['received', null])
     } finally {
-      gateway.stop(true)
-      fault.stop()
+      await gateway.stop(true)
+      await fault.stop()
     }
   },
 )

@@ -4,7 +4,7 @@
  */
 
 import { afterAll, beforeEach, expect, test } from 'bun:test'
-import { stat } from 'node:fs/promises'
+import { stat, utimes } from 'node:fs/promises'
 import { lookupMediaModel, quoteMedia } from '@qywork/ai'
 import type { Announcement } from '@qywork/core'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
@@ -588,8 +588,10 @@ test('同步型号清单：后台调价后配置中的倍率随之更新；清�
   expect(
     (await loadConfig()).providers[CLOUD_PROVIDER]?.models['claude-sonnet-5-5']?.price,
   ).toEqual({ scale: 0.35, currency: 'CREDIT' })
+  // 把修改时间设为过去的固定时刻：文件若被重写，修改时间变为当前时刻，不依赖时间戳精度与等待时长。
+  const past = new Date(Date.now() - 60_000)
+  await utimes(configPath(), past, past)
   const before = (await stat(configPath())).mtimeMs
-  await Bun.sleep(20)
   await account.syncModels()
   expect((await stat(configPath())).mtimeMs).toBe(before)
 })

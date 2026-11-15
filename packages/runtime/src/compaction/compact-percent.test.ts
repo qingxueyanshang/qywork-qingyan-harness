@@ -82,8 +82,8 @@ async function harness(compactPercent: unknown) {
     }
     return { conversationId: conversationId!, events }
   }
-  const close = () => {
-    for (const session of sessions) session.dispose()
+  const close = async () => {
+    await Promise.all(sessions.map((session) => session.dispose()))
     store.close()
     provider.stop(true)
   }
@@ -132,7 +132,7 @@ test('1M 档设为 50：状态行、请求行、上下文事件与面板都是 5
     expect(contextPanel(h.store, opus.conversationId, route, 80).compactAt).toBe(800_000)
     expect(stateLine(h.store, opus.conversationId)).toContain('约 80% 时自动压缩')
   } finally {
-    h.close()
+    await h.close()
   }
 })
 
@@ -152,7 +152,7 @@ test('父会话与子会话使用不同档的型号时各按自己的档位', as
       mainRequests(h.store, child.conversationId).map((r) => r.configuration?.compactAt),
     ).toEqual([150_000])
   } finally {
-    h.close()
+    await h.close()
   }
 })
 
@@ -175,7 +175,7 @@ test('配置文件中的比例为字符串或小数时，轮次在启动前以�
       const runs = h.store.db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM runs').get()
       expect(runs?.n).toBe(0)
     } finally {
-      h.close()
+      await h.close()
     }
   }
 })

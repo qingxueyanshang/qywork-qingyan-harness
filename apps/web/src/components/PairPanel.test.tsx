@@ -100,7 +100,8 @@ const signedIn = (tunnel: RemoteInfo['tunnel'] = null): RemoteInfo => ({
 
 test('未登录云端账号时整节不出现', async () => {
   const { host } = await mount({ available: false, enabled: true, tunnel: null })
-  await new Promise((r) => setTimeout(r, 30))
+  // 读取在挂载时发起，桩立即返回，其后的渲染只经过微任务：让出一轮事件循环后即可判定。
+  await new Promise((r) => setTimeout(r, 0))
   expect(host.querySelector('.pair-section')).toBeNull()
 })
 

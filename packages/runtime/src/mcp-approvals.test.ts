@@ -156,7 +156,7 @@ test('auto 下启用或迁出项目层服务时，命中拒绝清单的命令被
     expect(move).toMatchObject({ executed: false, errorKind: 'permission_denied' })
     expect((await loadScopedMcpConfig(root)).pending.map((p) => p.name)).toEqual(['evil'])
   } finally {
-    s.dispose()
+    await s.dispose()
     store.close()
   }
 })

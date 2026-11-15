@@ -1640,19 +1640,27 @@ describe('搜索与命令', () => {
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const root = await workspace()
+    // 首次输出之后才中断：Windows 上的输出由孤儿进程 ping 写出，POSIX 上 echo 在后台进程启动之后执行。
     const command = shell.argv.includes('-Command')
       ? "Start-Process -NoNewWindow -FilePath cmd.exe -ArgumentList '/c','ping -n 31 127.0.0.1'; Start-Sleep -Seconds 30"
-      : 'sleep 30 & sleep 30'
+      : 'sleep 30 & echo started; sleep 30'
 
     const controller = new AbortController()
-    const started = Date.now()
-    setTimeout(() => controller.abort(), 300)
+    let abortedAt = 0
     const out = await registry().execute(
       'run_command',
       { command },
-      { ...ctx(root), signal: controller.signal },
+      {
+        ...ctx(root),
+        signal: controller.signal,
+        emit: () => {
+          if (controller.signal.aborted) return
+          abortedAt = Date.now()
+          controller.abort()
+        },
+      },
     )
-    const elapsed = Date.now() - started
+    const elapsed = Date.now() - abortedAt
 
     // 不断言状态：被终止进程的退出码由平台决定。要锁定的是调用已返回。
     expect(out).toBeTruthy()

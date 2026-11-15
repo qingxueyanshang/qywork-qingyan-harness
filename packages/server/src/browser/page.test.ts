@@ -18,6 +18,7 @@
 
 import { afterEach, expect, test } from 'bun:test'
 import type { BrowserActInput, BrowserObservation } from '@qywork/agent'
+import { until } from '@qywork/core/until.test-helper'
 import type { ServerWebSocket } from 'bun'
 import { CdpClient } from './cdp.ts'
 import {
@@ -2854,13 +2855,18 @@ test('press 阶段之间文档更换时停止：其余阶段不发送，已按�
 test('press 按住期间取消时立即结束，不等待满时长，收尾松开已按下的键', async () => {
   const { fake, handle } = await newPage()
   const { record } = await observe(handle)
-  setTimeout(() => void handle.client.cancel('测试取消'), 50)
 
   const started = Date.now()
-  const r = await act(handle, record, {
+  const pressing = act(handle, record, {
     action: 'press',
     phases: [{ keys: ['KeyW'], durationMs: 3000 }],
   })
+  // 在按下得到确认、进入按住之后取消，不按固定时长：负载高时固定时长可能早于按下发出。
+  // 再往返一次：其回包排在按下的回包之后，返回时按下已被确认。
+  await until(() => fake.keyEvents().length === 1, '按下已发出')
+  await handle.client.send('Browser.getVersion', {})
+  void handle.client.cancel('测试取消')
+  const r = await pressing
   expect(Date.now() - started).toBeLessThan(1000)
   expect(fake.keyEvents().map((e) => e.type)).toEqual(['keyDown', 'keyUp'])
   expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 0, reason: '执行已停止' })

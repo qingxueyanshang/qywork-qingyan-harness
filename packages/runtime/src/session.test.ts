@@ -157,7 +157,7 @@ test('实时重试原因与账本一样脱敏，不把配置密钥显示到等�
     expect(observed).not.toContain(secret)
   } finally {
     mock.mockRestore()
-    s.dispose()
+    await s.dispose()
     store.close()
   }
 })
@@ -188,7 +188,7 @@ test('生成器内抛出异常时 run 记为失败并保留原文，不记为用
     })
   } finally {
     mock.mockRestore()
-    s.dispose()
+    await s.dispose()
     store.close()
   }
 })
@@ -249,7 +249,7 @@ test('准备阶段信号中止：用户消息落库，本轮以用户中断结�
     expect(store.db.query('SELECT COUNT(*) AS n FROM provider_requests').get()).toEqual({ n: 0 })
   } finally {
     release()
-    s.dispose()
+    await s.dispose()
     store.close()
   }
 })
@@ -297,7 +297,7 @@ test('写入 run 行之后的第一次读取失败：run 行以失败结束，�
   } finally {
     txSpy.mockRestore()
     querySpy.mockRestore()
-    s.dispose()
+    await s.dispose()
     store.close()
   }
 })
@@ -334,7 +334,7 @@ test('提前关闭生成器而本轮 step 的 payload 损坏：run 行仍以中�
     ])
   } finally {
     mock.mockRestore()
-    s.dispose()
+    await s.dispose()
     store.close()
   }
 })
@@ -382,7 +382,7 @@ test('处理临时目录时读取账本失败：run.finished 照常发出', asyn
   } finally {
     reads.mockRestore()
     loop.mockRestore()
-    s.dispose()
+    await s.dispose()
     store.close()
   }
 })
@@ -393,13 +393,13 @@ describe('派发工具只提供给有派发通道的会话', () => {
     expect(top.names()).toContain('define_role')
     expect(top.names()).toContain('subagent')
     expect(top.names()).toContain('workflow')
-    top.s.dispose()
+    await top.s.dispose()
     top.store.close()
     const member = await session()
     expect(member.names()).not.toContain('define_role')
     expect(member.names()).not.toContain('subagent')
     expect(member.names()).not.toContain('workflow')
-    member.s.dispose()
+    await member.s.dispose()
     member.store.close()
   })
 })
@@ -409,11 +409,11 @@ describe('成员会话只读取记忆', () => {
     const memoryTools = ['read_memory', 'write_memory', 'delete_memory', 'move_memory']
     const top = await session()
     expect(top.names()).toEqual(expect.arrayContaining(memoryTools))
-    top.s.dispose()
+    await top.s.dispose()
     top.store.close()
     const member = await session({ member: true })
     expect(member.names().filter((n) => memoryTools.includes(n))).toEqual(['read_memory'])
-    member.s.dispose()
+    await member.s.dispose()
     member.store.close()
   })
 })
@@ -938,7 +938,7 @@ describe('权限模式按会话裁决', () => {
         }
       ).decide(conv, { toolName: 'write_mcp_server', args: {}, command })
     expect((await decide('npx -y @modelcontextprotocol/server-github')).allowed).toBe(true)
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 
@@ -975,7 +975,7 @@ describe('权限模式按会话裁决', () => {
       (await run('write_file', { path: c, mode: 'create', content: 'c' }, fromAuto)).status,
     ).toBe('success')
     expect(existsSync(c)).toBe(true)
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 })
@@ -1061,7 +1061,7 @@ describe('allowedTools 与扩展工具', () => {
     expect(names).toEqual(['mcp__demo__ping', 'read_file'])
     // 同一 server 的另一个工具未被指定，不应出现。
     expect(names).not.toContain('mcp__demo__pong')
-    s.dispose()
+    await s.dispose()
     store.close()
   }, 20_000)
 })
@@ -1126,7 +1126,7 @@ describe('外部工具按总量转为按需加载', () => {
     expect(names.filter((n) => n.startsWith('mcp__fat__'))).toEqual([])
     // 但下一次 run 冻结快照时仍能看到待加载清单。
     expect(nextSnapshot()).toContain('mcp__fat__t0')
-    s.dispose()
+    await s.dispose()
     store.close()
   }, 20_000)
 
@@ -1141,7 +1141,7 @@ describe('外部工具按总量转为按需加载', () => {
     expect(out.status).toBe('success')
     expect(registry.schemas().map((t) => t.name)).toContain('mcp__fat__t0')
     expect(nextSnapshot()).not.toContain('mcp__fat__t0：')
-    s.dispose()
+    await s.dispose()
     store.close()
   }, 20_000)
 
@@ -1175,8 +1175,8 @@ describe('外部工具按总量转为按需加载', () => {
     expect(names).toContain('mcp__fat__t0')
     // 只恢复已加载的工具，其余仍待加载。
     expect(names).not.toContain('mcp__fat__t1')
-    next.dispose()
-    s.dispose()
+    await next.dispose()
+    await s.dispose()
     store.close()
   }, 20_000)
 })
@@ -1225,7 +1225,7 @@ describe('新建会话的来源', () => {
     } catch {
       // 连接失败符合预期。
     }
-    s.dispose()
+    await s.dispose()
     return { store, root }
   }
 
@@ -1270,7 +1270,7 @@ describe('新建会话的来源', () => {
     } catch (e) {
       threw = e
     }
-    s.dispose()
+    await s.dispose()
     expect((threw as Error | null)?.message).toBe(NO_MODEL_MESSAGE)
     const ws = upsertWorkspace(store, root, 'x')
     expect(listConversations(store, ws.id)).toEqual([])
@@ -1425,7 +1425,7 @@ describe('会话标题', () => {
     target = store
     await firstEvent(s, '第一句')
     expect(listRecentConversations(store, 1)[0]?.title).toBe('中途改的名字')
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 })
@@ -1705,14 +1705,14 @@ describe('浏览器控制与本轮执行绑定', () => {
     ac.abort()
     await new Promise((r) => setTimeout(r, 0))
     expect(browser.released()).toBe(1)
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 
   test('收尾时同样释放一次，重复调用由端口自行处理', async () => {
     const browser = fakeBrowser()
     const { s, store } = await session({ browser: browser.port })
-    s.dispose()
+    await s.dispose()
     await new Promise((r) => setTimeout(r, 0))
     expect(browser.released()).toBe(1)
     store.close()
@@ -1733,7 +1733,7 @@ describe('浏览器控制与本轮执行绑定', () => {
     const { s, store, names } = await session()
     const listed = names()
     for (const name of SEVEN) expect(listed).not.toContain(name)
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 
@@ -1742,7 +1742,7 @@ describe('浏览器控制与本轮执行绑定', () => {
     const { s, store, names } = await session({ browser: browser.port })
     const listed = names()
     for (const name of SEVEN) expect(listed).toContain(name)
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 
@@ -1755,7 +1755,7 @@ describe('浏览器控制与本轮执行绑定', () => {
     const listed = names()
     expect(listed).toContain('browser_observe')
     expect(listed).not.toContain('browser_act')
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 
@@ -1766,7 +1766,7 @@ describe('浏览器控制与本轮执行绑定', () => {
     const listed = names()
     expect(listed).toContain('read_file')
     expect(listed).not.toContain('browser_observe')
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 
@@ -1774,7 +1774,7 @@ describe('浏览器控制与本轮执行绑定', () => {
     const { s, store } = await session()
     const ctx = toolContext(s, 'run_1', 'deepseek-v4-flash', 'cv_1')
     expect(ctx.browser).toBeUndefined()
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 
@@ -1783,7 +1783,7 @@ describe('浏览器控制与本轮执行绑定', () => {
     const { s, store } = await session({ browser: browser.port })
     const ctx = toolContext(s, 'run_1', 'deepseek-v4-flash', 'cv_1')
     expect(ctx.browser).toBe(browser.port)
-    s.dispose()
+    await s.dispose()
     store.close()
   })
 })
@@ -1849,7 +1849,7 @@ describe('会话被另一个进程占用', () => {
     } finally {
       holder.kill()
       await holder.exited
-      s.dispose()
+      await s.dispose()
       store.close()
     }
   }, 30_000)
@@ -1876,6 +1876,6 @@ test('本会话的附件路径进入只读根，read_file 可读', async () => {
   expect(ctx.readOnlyRoots).toContain(shot)
   // 同目录下的其他文件不因此可读：授权的是附件本身。
   expect(ctx.readOnlyRoots).not.toContain(outside)
-  s.dispose()
+  await s.dispose()
   store.close()
 })

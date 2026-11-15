@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./protocol": "./src/protocol/index.ts",
-    "./domain": "./src/domain/index.ts"
+    "./domain": "./src/domain/index.ts",
+    "./until.test-helper": "./src/until.test-helper.ts"
   }
 }

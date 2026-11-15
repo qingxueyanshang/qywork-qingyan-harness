@@ -18,6 +18,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, ConversationId, EventEnvelope } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import type { QyConfig } from '@qywork/runtime'
 import {
   ContentStore,
@@ -191,7 +192,24 @@ async function waitFor(what: (e: AgentEvent) => boolean, ms = 10_000): Promise<A
   return null
 }
 
-/** 排队使用 setTimeout(0)，多等待几个周期以确认**没有**启动下一轮。 */
+/**
+ * 等待该会话的这一轮结束，且没有待发起的自动继续。
+ *
+ * 自动继续只在标记存在时排队，标记解除之后不会再发起新一轮；用例结束之前必须等到这一步，
+ * 否则本轮余下的请求会进入下一条用例的 `bodies`。
+ */
+async function idle(cv: ConversationId): Promise<void> {
+  await until(
+    () => !runs.hasRun(cv) && runs.armedOf(cv) === null,
+    '本轮结束且没有待发起的自动继续',
+    10_000,
+  )
+}
+
+/**
+ * 只用于确认**没有**启动下一轮。是否自动继续在本轮占位释放、`session.dispose()` 之后判定，
+ * 经 setTimeout(0) 发起；判定为不继续时没有任何事件，只能留出几个周期。
+ */
 async function settle(): Promise<void> {
   await Bun.sleep(120)
 }
@@ -262,6 +280,7 @@ describe('连续执行多轮', () => {
     const done = await waitFor((e) => e.type === 'goal' && e.goal.status === 'completed')
     expect(done).not.toBeNull()
 
+    await idle(cv)
     await settle()
     const goal = currentGoal(store, cv)
     expect(goal?.status).toBe('completed')
@@ -297,7 +316,7 @@ describe('连续执行多轮', () => {
 
     const first = startLoop(cv)
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'blocked')
-    await settle()
+    await idle(cv)
 
     // 单独检查改写之后那一轮的脚本与请求：验证「新指令确实被执行」。
     script = [ok(textTurn('换个方向做。'))]
@@ -306,7 +325,7 @@ describe('连续执行多轮', () => {
     expect(setGoal(cv, '改成做乙', deps()).ok).toBe(true)
     // 该轮执行完毕后脚本即用尽，下一轮以 401 结束，循环不会留在后台运行。
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'blocked')
-    await settle()
+    await idle(cv)
 
     const second = currentGoal(store, cv)
     // 同一个目标改写了正文，而不是另立第二个：账本中一条会话只有一个目标。
@@ -357,7 +376,7 @@ describe('连续执行多轮', () => {
     startLoop(cv)
     // 结束依靠脚本耗尽（401 → blocked），而不是等待循环自行终止。
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'blocked')
-    await settle()
+    await idle(cv)
 
     // 五轮全都在目标 active 的状态下执行完毕，不存在默认 12 轮的上限。
     expect(seen).toEqual(Array(ROUNDS).fill('active'))
@@ -382,6 +401,7 @@ describe('四条防失控规则', () => {
     expect(runs.armedOf(cv)).toBeNull()
 
     await waitFor((e) => e.type === 'run.finished')
+    await idle(cv)
     await settle()
     // 用户发起的那一轮之后没有再自动发起新一轮。
     expect(bodies).toHaveLength(1)
@@ -407,10 +427,11 @@ describe('四条防失控规则', () => {
     })
     expect(edited.ok).toBe(true)
 
-    await settle()
+    // 排队的那一次到期时比对版本，不一致即解除标记并返回，此后不会再发起。
+    await until(() => runs.armedOf(cv) === null, '排队的自动继续被判定为陈旧')
     // 未发出任何请求：按数秒前的版本继续执行，执行的就不再是当前的目标。
     expect(bodies).toHaveLength(0)
-    expect(runs.armedOf(cv)).toBeNull()
+    expect(runs.hasRun(cv)).toBe(false)
   }, 20_000)
 
   /**
@@ -426,7 +447,7 @@ describe('四条防失控规则', () => {
     const blocked = await waitFor((e) => e.type === 'goal' && e.goal.status === 'blocked')
     expect(blocked).not.toBeNull()
 
-    await settle()
+    await idle(cv)
     const goal = currentGoal(store, cv)
     expect(goal?.status).toBe('blocked')
     expect(goal?.blockedCode).toBe('provider_error')
@@ -463,7 +484,7 @@ describe('四条防失控规则', () => {
       expect(paused).not.toBeNull()
       expect(runs.armedOf(cv)).toBeNull()
 
-      await settle()
+      await idle(cv)
       expect(currentGoal(store, cv)?.status).toBe('paused')
       expect(listRuns(store, cv).at(-1)?.interruption).toMatchObject({
         source: 'user',
@@ -521,7 +542,7 @@ describe('goal.set 指令', () => {
     )
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'completed')
 
-    await settle()
+    await idle(cv)
     expect(currentGoal(store, cv)?.objective).toBe('把测试跑绿')
     // 指令被接受时不应有回执：回执只在拒绝时发送。
     expect(sock.sent).toHaveLength(0)
@@ -573,6 +594,7 @@ describe('goal.set 指令', () => {
       ...deps(),
       ws: sock.ws,
     })
+    // 拒绝是同步的；被接受的继续会经 setTimeout(0) 发起，留出几个周期确认没有发起。
     await settle()
 
     expect(sock.sent.map((f) => [f.type, f.command, f.reason])).toEqual([
@@ -614,7 +636,7 @@ describe('goal.set 指令', () => {
       ws: sock.ws,
     })
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'completed')
-    await settle()
+    await idle(cv)
     expect(sock.sent).toHaveLength(0)
     expect(bodies[0]).toContain('慢慢做这件事')
   }, 20_000)
@@ -702,7 +724,7 @@ describe('用户点击继续', () => {
     expect(resumeGoal(cv, deps())).toEqual({ ok: true })
 
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'completed')
-    await settle()
+    await idle(cv)
     expect(bodies[0]).toContain('[自动继续]')
     expect(bodies[0]).toContain('慢慢做这件事')
     expect(runs.armedOf(cv)).toBeNull()

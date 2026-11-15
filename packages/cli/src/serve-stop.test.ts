@@ -126,6 +126,7 @@ test('标准输入写入 stop 时执行停止流程并以 0 退出，无法识�
     expect(log).toContain('[server] 停止服务')
   } finally {
     killTree(serve.proc.pid)
+    await serve.proc.exited
   }
 }, 30_000)
 
@@ -136,6 +137,7 @@ test('标准输入结束不停止服务', async () => {
   const serve = await startServe(home, workspace)
   try {
     await serve.proc.stdin.end()
+    // 读到标准输入结束时服务不产生任何可观察的事件，只能观察一段时长内未退出。
     expect(await exitWithin(serve.proc, 1_000)).toBeNull()
     const health = await fetch(`${serve.base}/api/health`, { signal: AbortSignal.timeout(2000) })
     expect(health.status).toBe(200)
@@ -304,9 +306,9 @@ async function serveWithCommands(name: string) {
   leftovers.push(service, hold)
   expect(alive(service)).toBe(true)
   expect(alive(hold)).toBe(true)
-  const close = () => {
+  const close = async () => {
     ws.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
   return { serve, service, hold, close }
 }
@@ -320,8 +322,9 @@ test('停止之后运行中的命令进程树已结束，已退出的命令留�
     await until(() => !alive(run.hold), '运行中的命令在服务停止后仍在运行', 5_000)
     expect(alive(run.service)).toBe(true)
   } finally {
-    run.close()
+    await run.close()
     killTree(run.serve.proc.pid)
+    await run.serve.proc.exited
   }
 }, 90_000)
 
@@ -339,6 +342,6 @@ test('sidecar 被直接终止后，运行中的命令进程树在时限内结束
     await until(() => !alive(run.hold), '运行中的命令在 sidecar 被终止后仍在运行', 10_000)
     expect(alive(run.service)).toBe(true)
   } finally {
-    run.close()
+    await run.close()
   }
 }, 90_000)

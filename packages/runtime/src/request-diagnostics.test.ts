@@ -157,7 +157,7 @@ for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
       expect(JSON.parse(exported).runs[0].providerRequests[0].status).toBe(row.status)
     } finally {
       h.store.close()
-      provider.stop(true)
+      await provider.stop(true)
     }
   })
 }

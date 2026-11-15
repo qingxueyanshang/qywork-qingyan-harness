@@ -957,11 +957,10 @@ describe('暂时故障时重新派发', () => {
 
     expect(subagents.interruptConversation(cid)).toBe(true)
     await until(() => phasesOf('child').includes('interrupted'), '节点记为中断')
-    await Bun.sleep(100)
+    // 子会话的占位与父会话的忙态在派发流程退出之后才释放：此后不会再有请求或回执。
+    await until(() => !runs.hasRun(child) && !runs.isBusy(cid), '派发流程退出')
     expect(requests()).toBe(PER_RUN)
     expect(receipts).toEqual([])
-    expect(runs.hasRun(child)).toBe(false)
-    expect(runs.isBusy(cid)).toBe(false)
   })
 })
 
@@ -1240,6 +1239,7 @@ describe('运行表按会话管理', () => {
         settled = true
         return r
       })
+      // 等待中没有可观察的标志：留出一段时间确认它没有提前返回。
       await new Promise((resolve) => setTimeout(resolve, 30))
       expect(settled).toBe(false)
       slow.open('读完了')
@@ -1300,6 +1300,7 @@ describe('运行表按会话管理', () => {
         })
       slowA.open('甲完成')
       expect(await waitA).toBe('received')
+      // 等待中没有可观察的标志：留出一段时间确认乙的等待没有因甲的回执返回。
       await new Promise((resolve) => setTimeout(resolve, 30))
       expect(bDone).toBe(false)
       slowB.open('乙完成')
@@ -2204,10 +2205,9 @@ console.log(JSON.stringify({ type: 'turn.completed' }));`,
 
     // 删除只能通过事件观察到，收尾扫描无法补充：前一个窗口未关闭时该删除无法报告。
     await writeFile(join(dir, 'doomed.txt'), 'x\n')
+    // 窗口打开后即接收事件；收尾经屏障等到在途事件交付完毕，无需另行等待。
     const window = openChangeWindow(dir, { env: process.env })
-    await Bun.sleep(250)
     await rm(join(dir, 'doomed.txt'))
-    await Bun.sleep(250)
     const got = await window.close()
     expect(got.changes).toContainEqual({ path: 'doomed.txt', changeType: 'deleted' })
   }, 20_000)

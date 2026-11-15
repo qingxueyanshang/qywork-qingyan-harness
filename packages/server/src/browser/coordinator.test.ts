@@ -72,11 +72,12 @@ const config: QyConfig = {
   mode: 'auto',
 }
 
-const cleanups: (() => void)[] = []
-afterEach(() => {
-  for (const fn of cleanups.splice(0).reverse()) fn()
+const cleanups: (() => void | Promise<void>)[] = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
 })
 
+/** 只用于确认某件事没有发生：被测代码在这些位置没有可观察的完成信号，各调用处写明原因。 */
 const settle = () => new Promise((r) => setTimeout(r, 40))
 
 /** observe 按输入返回元素表或选项页；用例只使用元素表中的第一个编号。 */
@@ -95,12 +96,38 @@ async function failure(pending: Promise<unknown> | undefined): Promise<Error> {
 }
 
 /** 等待条件成立。成员会话派出后立即返回，断言前须等待它执行到该步骤。 */
-async function until(check: () => boolean, label: string): Promise<void> {
+async function until(check: () => boolean | Promise<boolean>, label: string): Promise<void> {
   for (let i = 0; i < 600; i += 1) {
-    if (check()) return
+    if (await check()) return
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   throw new Error(`等不到：${label}`)
+}
+
+/**
+ * 等待宿主的页面事件进入服务端的存活快照。`conversationId` 只决定以哪条会话的视角列出：
+ * 用户页对同一工作区的任何会话都可见，会话的页只对该会话可见。建端口不发送任何帧。
+ */
+async function listed(
+  handle: ReturnType<typeof serve>,
+  tabId: string,
+  present = true,
+  workspaceId: string = WS,
+  conversationId = 'cv_probe',
+): Promise<void> {
+  const probe = handle.browser?.portFor(conversationId, workspaceId)
+  await until(
+    async () => ((await probe?.tabs()) ?? []).some((t) => t.tabId === tabId) === present,
+    `${tabId} ${present ? '进入' : '移出'}存活快照`,
+  )
+}
+
+/**
+ * 经宿主连接往返一次。服务端发往宿主的帧在同一条连接上按发送顺序到达，往返结束时，此前发出的帧
+ * 都已被宿主收到，用于确认某个帧没有发出。往返在宿主上留下一条无对象的 `close.conversation`。
+ */
+async function hostRoundtrip(handle: ReturnType<typeof serve>): Promise<void> {
+  await handle.browser?.closeConversation('cv_roundtrip')
 }
 
 /** 手动兑现的 Promise。屏障用例用它把第二个执行者的调用插入第一个执行者的在途阶段。 */
@@ -611,8 +638,8 @@ function fresh(networkLimitMs?: number): Fixture {
     hostKey: HOST_KEY,
     ...(networkLimitMs === undefined ? {} : { browserNetworkLimitMs: networkLimitMs }),
   })
-  cleanups.push(() => {
-    handle.stop()
+  cleanups.push(async () => {
+    await handle.stop()
     content.close()
     store.close()
     // Windows 上 SQLite 的文件句柄释放有延迟，临时目录删除失败与被测行为无关。
@@ -745,9 +772,8 @@ test('页面被占用后，另一个执行者的每种页面操作均被拒绝�
   const obOther = await other?.observe({ tabId: mine?.tabId ?? '' })
   expect(obOther?.observationId).toBeTruthy()
 
-  // 持有者释放之后可以接手。
+  // 持有者释放之后可以接手。`release` 在收尾结束、控制槽移出表之后才返回。
   await holder?.release()
-  await settle()
   const taken = await other?.observe({ tabId })
   expect(taken?.observationId).toBeTruthy()
 })
@@ -786,7 +812,8 @@ test('不可见的 tabId 一律按未执行拒绝，宿主不收到任何帧', a
   const { handle, host } = await ready()
   host.userOpen('bt_u', WS)
   host.userOpen('bt_ub', 'ws_b')
-  await settle()
+  await listed(handle, 'bt_u')
+  await listed(handle, 'bt_ub', true, 'ws_b')
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
   const other = handle.browser?.portFor('cv_2', WS)
@@ -809,7 +836,7 @@ test('不可见的 tabId 一律按未执行拒绝，宿主不收到任何帧', a
 test('同一会话的两个执行者同时接管一个用户页时只有一个成功，另一个未发送 bind 帧', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_u')
-  await settle()
+  await listed(handle, 'bt_u')
   const a = handle.browser?.portFor('cv_1', WS)
   const b = handle.browser?.portFor('cv_1', WS)
 
@@ -829,14 +856,14 @@ test('同一会话的两个执行者同时接管一个用户页时只有一个�
 test('bind 回包仍在途时，同一页对另一个执行者已处于占用状态', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_u')
-  await settle()
+  await listed(handle, 'bt_u')
   const a = handle.browser?.portFor('cv_1', WS)
   const b = handle.browser?.portFor('cv_1', WS)
 
   const g = gate()
   host.hold = { op: 'bind', gate: g.promise }
   const binding = a?.bind('bt_u')
-  await settle()
+  await until(() => host.ops().includes('bind'), 'bind 帧已发出')
 
   expect((await failure(b?.observe({ tabId: 'bt_u' }))).message).toMatch(/正被另一个任务操作/)
   g.open()
@@ -865,8 +892,13 @@ test('持有者正在收尾时，接手者等待其结束后再占用页面，�
     taken = true
     return ob
   })
+  await until(
+    () => devtools.calls.some((c) => c.method === 'Target.detachFromTarget'),
+    '持有者的收尾停在 detach',
+  )
+  // 收尾结束之前不释放，也不使接手者失败。接手者在等待收尾时没有可观察的标志，
+  // 只能留出一段时间确认它没有提前取得该页。
   await settle()
-  // 收尾结束之前不释放，也不使接手者失败。
   expect(taken).toBe(false)
 
   g.open()
@@ -887,7 +919,7 @@ test('建页不占用页面：其他执行者先操作该页时，创建者随�
   const g = gate()
   host.hold = { op: 'create', gate: g.promise }
   const opening = creator?.open('http://127.0.0.1:1/page')
-  await settle()
+  await listed(handle, 'bt_1', true, WS, 'cv_1')
   // 回包尚未到达，`opened` 已到达：另一个执行者据此占用该页。
   const ob = await rival?.observe({ tabId: 'bt_1' })
   expect(ob?.observationId).toBeTruthy()
@@ -904,12 +936,14 @@ test('建页回包晚于释放时如实返回该页，不附加也不回收', as
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const opening = port?.open('http://127.0.0.1:1/page')
+  let releasing: Promise<void> | undefined
   host.onCreate = () => {
     host.onCreate = null
-    void port?.release()
+    releasing = port?.release()
   }
   expect((await opening)?.tabId).toBe('bt_1')
-  await settle()
+  await releasing
+  await hostRoundtrip(handle)
   expect(host.ops()).not.toContain('close')
   // 页面保留在宿主上，归属不变，下一条消息继续使用。
   expect((await handle.browser?.portFor('cv_1', WS).tabs())?.map((t) => t.tabId)).toEqual(['bt_1'])
@@ -924,12 +958,15 @@ test('附页过程中页面被关闭时不恢复该页，占用随之释放', as
   const g = gate()
   devtools.hold = { method: 'Target.attachToTarget', gate: g.promise }
   const pending = port?.observe({ tabId })
-  await settle()
+  await until(
+    () => devtools.calls.some((c) => c.method === 'Target.attachToTarget'),
+    '附页请求已发出',
+  )
   host.emit({ kind: 'closed', tabId })
-  await settle()
+  await listed(handle, tabId, false, WS, 'cv_1')
   g.open()
+  // 迟到的附加回包在 observe 失败之前处理完毕：重新登记若发生，此时已经发生。
   expect((await failure(pending)).message).toMatch(/已经关闭/)
-  await settle()
   // 该页已不在存活表中：迟到的附加不能将其重新登记。
   expect((await failure(port?.observe({ tabId }))).message).toMatch(/无法识别的标签页/)
 })
@@ -945,8 +982,8 @@ test('删除会话时收尾该会话的全部控制槽，只发送一次按会�
   const tabC = await other?.open('http://127.0.0.1:1/c')
   await other?.observe({ tabId: tabC?.tabId ?? '' })
 
+  // 宿主先发出 closed 再返回结果，同一条连接按序处理：返回时存活快照已更新。
   await handle.browser?.closeConversation('cv_1')
-  await settle()
   expect(host.received.filter((f) => f.op === 'close.conversation')).toHaveLength(1)
   // 三个控制槽均已收尾，名下的页全部关闭；其他会话的页不受影响。
   expect(await handle.browser?.portFor('cv_1', WS).tabs()).toEqual([])
@@ -963,7 +1000,7 @@ test('同一会话的三个执行者逐个释放后控制槽全部清空，页�
     tabs.push(tab?.tabId ?? '')
   }
   for (const port of ports) await Promise.all([port?.release(), port?.release()])
-  await settle()
+  await hostRoundtrip(handle)
 
   // 释放只收回控制权，不关闭页面。
   expect(host.ops()).not.toContain('close')
@@ -1116,20 +1153,20 @@ test('停止指令收回每个成员的控制槽，页面保留在宿主上供�
   await handleCommand({ type: 'conversation.interrupt', conversationId: parent }, { ...deps, ws })
   expect(parentRun.signal.aborted).toBe(true)
   await until(() => !subagents.has(parent), '两个成员都收了尾')
-  await settle()
-
   const frames = host.received.length
-  await settle()
-  // 停止之后不再向宿主发送帧，也不关闭页面：停止只收回控制权。
-  expect(host.received).toHaveLength(frames)
-  expect(host.ops()).not.toContain('close')
-  expect(host.ops()).not.toContain('close.conversation')
 
-  // 收尾之后两页均不再被占用，下一个执行者可直接接手。
+  // 收尾之后两页均不再被占用，下一个执行者可直接接手。成员移出子 agent 表之前已开始释放，
+  // 接手者的观察等待各自的收尾结束后才返回。
   const next = handle.browser?.portFor(parent, workspaceId)
   expect((await next?.tabs())?.map((t) => t.tabId).sort()).toEqual(['bt_1', 'bt_2'])
   expect((await next?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
   expect((await next?.observe({ tabId: 'bt_2' }))?.observationId).toBeTruthy()
+
+  // 停止之后不再向宿主发送帧，也不关闭页面：停止只收回控制权。观察只经调试端点，不向宿主发帧；
+  // 收尾已在上面两次观察返回之前结束，收尾发出的帧此时都已到达。
+  expect(host.received).toHaveLength(frames)
+  expect(host.ops()).not.toContain('close')
+  expect(host.ops()).not.toContain('close.conversation')
   parked.open()
 })
 
@@ -1257,7 +1294,7 @@ test('一条会话释放不影响另一条：B 的页、观察与连接均保留
 test('两条会话同时接管同一个用户页，只有一条成功', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_u')
-  await settle()
+  await listed(handle, 'bt_u')
   const a = handle.browser?.portFor('cv_a', WS)
   const b = handle.browser?.portFor('cv_b', WS)
 
@@ -1282,8 +1319,7 @@ test('停止之后同一会话立即重新启动，新执行不受上一次收�
   await releasing
   expect(ob?.observationId).toBeTruthy()
 
-  // 收尾属于旧控制槽，不能清除新控制槽的观察表。
-  await settle()
+  // 收尾属于旧控制槽，不能清除新控制槽的观察表。旧控制槽的收尾已随 `releasing` 结束。
   const acted = await second?.act({
     tabId: 'bt_1',
     observationId: ob?.observationId ?? '',
@@ -1300,19 +1336,18 @@ test('宿主断开使全部控制作废，重连之后的新执行照常创建�
   await before?.open('http://127.0.0.1:1/page')
 
   host.socket.close()
-  await settle()
-  expect(handle.browser?.available()).toBe(false)
+  await until(() => handle.browser?.available() === false, '宿主断开')
   expect((await failure(before?.observe({ tabId: 'bt_1' }))).message).toMatch(/不可用|已经结束/)
 
   const again = await AutoHost.connect(handle.port)
   again.epoch = 2
   again.ready(fakeDevtools(again.marker).port)
-  await settle()
+  await until(() => handle.browser?.available() === true, '宿主重连')
   const after = handle.browser?.portFor('cv_1', WS)
   const tab = await after?.open('http://127.0.0.1:1/page')
   expect(tab?.tabId).toBe('bt_1')
-  // 旧控制槽的收尾按槽对象删除表项，不会删除重连之后新建的控制槽。
-  await settle()
+  // 旧控制槽的收尾按槽对象删除表项，不会删除重连之后新建的控制槽。旧槽没有调试连接，
+  // 收尾只含微任务，在断开被处理时即已结束。
   const ob = await after?.observe({ tabId: tab?.tabId ?? '' })
   expect(ob?.observationId).toBeTruthy()
 })
@@ -1327,6 +1362,8 @@ test('CDP 单独断连后，同一执行可观察原页和新页，旧观察失�
   const unaffected = await other?.observe({ tabId: 'bt_2' })
 
   devtools.disconnect(0)
+  // 调试连接由端点一侧关闭，客户端收到关闭帧后才收尾该控制槽，这一步没有宿主帧或调试命令
+  // 可供观察（Bun 服务端的 close 回调在调用 close 时同步执行，早于客户端收到关闭帧）。
   await settle()
   expect(handle.browser?.available()).toBe(true)
   expect(host.owners.get('bt_1')).toBe('cv_1')
@@ -1455,7 +1492,7 @@ test('不属于本会话的标签页在发送请求之前被拦截，属于本�
     absolutePath: target,
     timeoutMs: 5_000,
   })
-  await settle()
+  await until(() => host.arms.has('bt_1'), '宿主登记下载授权')
   const arm = host.received.findLast((f) => f.op === 'download.arm')
   expect(arm?.tabId).toBe('bt_1')
   expect(arm?.path).toBe(target)
@@ -1501,7 +1538,7 @@ test('其他会话无法查看或操作本会话的页', async () => {
 test('用户打开的页默认不可操作，点名 bind 后才归属本会话', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_u')
-  await settle()
+  await listed(handle, 'bt_u')
 
   const port = handle.browser?.portFor('cv_1', WS)
   // 用户页会列出，但标记为不可控：AI 不自动操作。
@@ -1511,8 +1548,8 @@ test('用户打开的页默认不可操作，点名 bind 后才归属本会话',
   expect((await failure(port?.observe({ tabId: 'bt_u' }))).message).toMatch(/不归本会话/)
 
   // 用户在聊天中点名，模型按 tabId 接管。接管只修改归属，不修改该页的标题。
+  // 宿主先发出 control 再返回结果，bind 返回时快照已带有新归属。
   await port?.bind('bt_u')
-  await settle()
   expect(await port?.tabs()).toEqual([
     { tabId: 'bt_u', url: 'http://127.0.0.1:1/page', title: '用户开的页', controlled: true },
   ])
@@ -1529,7 +1566,7 @@ test('本控制槽持有的页可以关闭，未接管的用户页与其他会�
   const tabId = tab?.tabId ?? ''
   await port?.observe({ tabId })
   host.userOpen('bt_u')
-  await settle()
+  await listed(handle, 'bt_u')
 
   expect((await failure(port?.close('bt_u'))).message).toMatch(/不归本会话/)
   const other = handle.browser?.portFor('cv_2', WS)
@@ -1576,7 +1613,8 @@ test('只列出本工作区中属于本会话或用户的页', async () => {
   const other = 'ws_b'
   host.userOpen('bt_ua', WS)
   host.userOpen('bt_ub', other)
-  await settle()
+  await listed(handle, 'bt_ua')
+  await listed(handle, 'bt_ub', true, other)
 
   const inA = handle.browser?.portFor('cv_a', WS)
   const inB = handle.browser?.portFor('cv_b', other)
@@ -1597,7 +1635,7 @@ test('只列出本工作区中属于本会话或用户的页', async () => {
 test('强制传入另一个工作区的 tabId 时，bind 与 observe 均被拒绝', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_ub', 'ws_b')
-  await settle()
+  await listed(handle, 'bt_ub', true, 'ws_b')
 
   const inA = handle.browser?.portFor('cv_a', WS)
   expect((await failure(inA?.bind('bt_ub'))).message).toMatch(/不在本工作区/)
@@ -1614,8 +1652,8 @@ test('删除会话时关闭其名下的全部页，不留下孤立页面', async
   await port?.open('http://127.0.0.1:1/other')
   await port?.release()
 
+  // 宿主先发出 closed 再返回结果，同一条连接按序处理：返回时存活快照已更新。
   await handle.browser?.closeConversation('cv_1')
-  await settle()
   const closer = host.received.at(-1)
   expect(closer?.op).toBe('close.conversation')
   expect(closer?.conversationId).toBe('cv_1')
@@ -1641,9 +1679,19 @@ test('释放只断开本次 CDP 连接，不向宿主发送帧，重复释放为
 
 test('运行时版本低于下限时不授予控制权，也不向宿主发送请求', async () => {
   const { handle } = fresh()
+  // 版本不达标时 `available()` 与宿主未注册时同为 false，须先确认宿主帧已被处理。
+  let registered = false
+  handle.bus.subscribe({
+    id: 'probe',
+    origin: 'cli',
+    conversations: null,
+    send: ({ event }) => {
+      if (event.type === 'browser.state' && event.browser.connected) registered = true
+    },
+  })
   const host = await AutoHost.connect(handle.port)
   host.ready(fakeDevtools(host.marker).port, '110.0.1587.0')
-  await settle()
+  await until(() => registered, '宿主完成注册')
   expect(handle.browser?.available()).toBe(false)
   const port = handle.browser?.portFor('cv_1', WS)
   expect((await failure(port?.open('http://127.0.0.1:1/page'))).message).toMatch(/不可用/)
@@ -1658,8 +1706,7 @@ test('运行时下限按 Chromium 主版本判定，主版本达标的任一构�
   const { handle } = fresh()
   const host = await AutoHost.connect(handle.port)
   host.ready(fakeDevtools(host.marker).port, '152.0.4100.12')
-  await settle()
-  expect(handle.browser?.available()).toBe(true)
+  await until(() => handle.browser?.available() === true, '宿主完成注册')
 
   expect(meetsRuntimeFloor('154.0.8037.57')).toBe(true)
   expect(meetsRuntimeFloor('152.0.1.0')).toBe(true)
@@ -1724,7 +1771,7 @@ test('下载：先授权再点击，等待宿主返回终态，最后核对磁�
     absolutePath: target,
     timeoutMs: 5_000,
   })
-  await settle()
+  await until(() => devtools.clicks() === 1, '下载点击已发出')
   // 授权必须先于点击到达宿主：顺序颠倒时钩子无法取得授权，本次下载会被取消。
   const armIndex = host.received.findIndex((f) => f.op === 'download.arm')
   expect(armIndex).toBeGreaterThanOrEqual(0)
@@ -1751,7 +1798,7 @@ test('被拦截的下载如实写入结果，不误报成功', async () => {
     absolutePath: join(tmpdir(), 'never-written.bin'),
     timeoutMs: 5_000,
   })
-  await settle()
+  await until(() => host.arms.has('bt_1'), '宿主登记下载授权')
   host.finishDownload('bt_1', {
     kind: 'download.blocked',
     reason: 'exists',
@@ -1903,10 +1950,15 @@ test('探针读数缺少字段时不报告静默，按阶段上限如实标注',
   expect(r.settle).toBe('deadline')
 })
 
-/** 打开一页、观察一次，返回点击第一个元素的调用。 */
-async function clickOnce(
-  networkLimitMs?: number,
-): Promise<{ devtools: Devtools; click: () => ReturnType<BrowserPort['act']> }> {
+/**
+ * 打开一页、观察一次，返回点击第一个元素的调用。`observe` 再观察一次该页：调试端点在同一条连接上
+ * 按序发送，它返回时，此前发出的协议事件都已被客户端处理。
+ */
+async function clickOnce(networkLimitMs?: number): Promise<{
+  devtools: Devtools
+  click: () => ReturnType<BrowserPort['act']>
+  observe: () => Promise<unknown>
+}> {
   const { handle, devtools } = await ready(networkLimitMs)
   const port = handle.browser?.portFor('cv_1', WS)
   if (!port) throw new Error('浏览器端口本应可用')
@@ -1919,7 +1971,7 @@ async function clickOnce(
       action: 'click',
       ref: firstRef(ob),
     })
-  return { devtools, click }
+  return { devtools, click, observe: () => port.observe({ tabId: tab.tabId }) }
 }
 
 test('点击发出的 XHR 结束之后才采集观察，回执是请求返回后的页面', async () => {
@@ -1968,11 +2020,11 @@ test('以 fetch 读取的事件流在响应头到达后不再等待', async () =
 })
 
 test('动作之前发出的请求不计入，其结束事件不抵消动作之后发出的请求', async () => {
-  const { devtools, click } = await clickOnce()
+  const { devtools, click, observe } = await clickOnce()
   devtools.emit('Network.requestWillBeSent', { requestId: 'early-1', type: 'XHR' })
   devtools.emit('Network.requestWillBeSent', { requestId: 'early-2', type: 'XHR' })
-  // 等待两条事件先于动作到达客户端。
-  await settle()
+  // 两条事件须先于动作到达客户端：再观察一次，它的回包排在两条事件之后。同一文档上的观察不作废先前的编号。
+  await observe()
   // 动作之前发出的两个请求：一个在点击时结束，另一个始终不结束。
   devtools.onCommand = (method) => {
     if (method === 'Input.dispatchMouseEvent') {
@@ -2080,7 +2132,7 @@ test('同一页上一次调用的迟到终态不结算本次调用，无授权�
     absolutePath: target,
     timeoutMs: 3_000,
   })
-  await settle()
+  await until(() => host.arms.has(tab?.tabId ?? ''), '宿主登记下载授权')
   const mine = host.received.findLast((f) => f.op === 'download.arm')?.downloadId
   expect(mine).toBeTruthy()
 
@@ -2095,9 +2147,8 @@ test('同一页上一次调用的迟到终态不结算本次调用，无授权�
   })
   // 没有身份的终态同样不结算。
   host.emit({ kind: 'download.finished', tabId: tab?.tabId ?? '', path: target, success: true })
-  await settle()
 
-  // 只有携带本次身份的终态能结算。
+  // 只有携带本次身份的终态能结算。三条事件经同一条宿主连接按序处理。
   host.finishDownload(tab?.tabId ?? '', { kind: 'download.finished', path: target, success: true })
   expect(await pending).toEqual({ path: target, bytes: 6 })
 })
@@ -2127,7 +2178,7 @@ test('两条会话下载到同一路径时后一份授权被拒绝，路径不�
     timeoutMs: 5_000,
   })
   const heldOutcome = failure(held)
-  await settle()
+  await until(() => host.arms.has(tabA?.tabId ?? ''), '宿主登记 A 的下载授权')
 
   expect(
     (
@@ -2151,7 +2202,7 @@ test('两条会话下载到同一路径时后一份授权被拒绝，路径不�
     absolutePath: join(dir, 'other.bin'),
     timeoutMs: 5_000,
   })
-  await settle()
+  await until(() => host.arms.has(tabB?.tabId ?? ''), '宿主登记 B 的下载授权')
   expect(host.received.findLast((f) => f.op === 'download.arm')?.path).toBe(join(dir, 'other.bin'))
 
   host.finishDownload(tabB?.tabId ?? '', { kind: 'download.blocked', reason: 'exists' })
@@ -2175,7 +2226,7 @@ test('释放撤销未消费的授权，正在等待终态的下载按未确认�
   })
   // 先注册失败处理再释放：释放会立即终结本次等待，注册晚于释放时会成为未处理的拒绝。
   const outcome = failure(pending)
-  await settle()
+  await until(() => host.arms.has(tab?.tabId ?? ''), '宿主登记下载授权')
   const armed = host.received.findLast((f) => f.op === 'download.arm')?.downloadId
 
   await port?.release()

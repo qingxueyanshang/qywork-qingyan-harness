@@ -18,6 +18,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ConversationId, DesktopNode, DesktopOp, DesktopRequestFrame } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import type { QyConfig } from '@qywork/runtime'
 import {
   ContentStore,
@@ -145,12 +146,12 @@ beforeAll(async () => {
   })
   host = await FakeDesktopHost.connect(handle.port, HOST_KEY, closers)
   host.send(READY)
-  await Bun.sleep(30)
+  await until(() => handle.desktop?.available() === true, '桌面宿主完成注册')
 })
 
 afterAll(async () => {
   for (const close of closers.splice(0).reverse()) close()
-  handle?.stop()
+  await handle?.stop()
   provider.stop(true)
   content?.close()
   store?.close()
@@ -183,18 +184,22 @@ function conversation(parentConversationId?: ConversationId): ConversationId {
  *
  * **不回复会使后续用例无法取得桌面**：协调器需要宿主确认该执行者名下已无执行中的
  * 请求，无法确认时桌面一直处于占用状态，直到宿主更换代际。
+ *
+ * 回复之后不等待：服务端交还窗口没有可观察的标志，而下一条用例取得窗口之前至少经过一次
+ * 假 provider 的往返，这条回复先于该往返到达服务端，按序处理。
  */
 async function settleCancel(from: number): Promise<void> {
-  for (let i = 0; i < 100; i += 1) {
-    const cancel = host.received.slice(from).find((f) => f.op === 'cancel')
-    if (cancel) {
-      host.settle(cancel, 'not_dispatched')
-      await Bun.sleep(30)
-      return
-    }
-    await Bun.sleep(20)
-  }
-  throw new Error('没有收到撤销帧')
+  let cancel: DesktopRequestFrame | undefined
+  await until(() => {
+    cancel = host.received.slice(from).find((f) => f.op === 'cancel')
+    return cancel !== undefined
+  }, '本轮结束时的撤销帧')
+  if (cancel) host.settle(cancel, 'not_dispatched')
+}
+
+/** 等待该会话的一轮结束：占位在本轮全部模型请求与工具调用之后释放。 */
+function finished(conversationId: ConversationId): Promise<void> {
+  return until(() => !handle.runs.hasRun(conversationId), '本轮结束')
 }
 
 /** 按 op 等待一条请求帧，并回复对应的观察。 */
@@ -252,7 +257,7 @@ test('主任务从 startRun 取得桌面工具，身份字段齐全，三态回�
   const tree = await serveOnce('read_tree')
   const act = await serveOnce('act')
   // 脚本执行完最后一轮文本后该轮才结束。
-  await Bun.sleep(400)
+  await finished(conv)
   await settleCancel(seen)
 
   // 工具确实进入了下发给模型的工具表。
@@ -408,7 +413,8 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
   expect(second.ref).toBe('w.1#8')
   host.reply(second, { dispatch: 'unknown', reason: 'provider 无响应' })
 
-  await Bun.sleep(400)
+  // 本轮结束之后不会再有动作帧：序列只在本轮的工具调用中执行。
+  await finished(conv)
 
   // 第三步未发出任何帧：出现 `unknown` 后，其后的动作不再执行。
   const acts = host.received.slice(seen).filter((f) => f.op === 'act')
@@ -484,7 +490,7 @@ test('用户关闭电脑控制后，下一轮不注册桌面工具', async () =>
   bodies = []
   const conv = conversation()
   await startRun(conv, '随便说一句', undefined, deps())
-  await Bun.sleep(400)
+  await finished(conv)
   config.desktopEnabled = true
 
   const names = toolNames(bodies[0] ?? '{}')
@@ -502,7 +508,7 @@ test('配置中没有该字段时桌面工具照常注册', async () => {
   bodies = []
   const conv = conversation()
   await startRun(conv, '随便说一句', undefined, deps())
-  await Bun.sleep(400)
+  await finished(conv)
   config.desktopEnabled = true
 
   const names = toolNames(bodies[0] ?? '{}')

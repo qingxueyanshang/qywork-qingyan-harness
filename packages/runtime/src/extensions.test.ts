@@ -160,14 +160,14 @@ describe('插件端到端', () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
     expect(ext.plugins.failures).toEqual([])
     expect(ext.toolSpecs.map((t) => t.name)).toContain('test_probe__run')
-    stop()
+    await stop()
   })
 
   /** 动作由宿主判定：清单中没有也不应有该字段，插件工具一律记为「调用」。 */
   test('插件工具的动作恒为 call', async () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
     expect(ext.toolSpecs.find((t) => t.name === 'test_probe__run')?.actionKind).toBe('call')
-    stop()
+    await stop()
   })
 
   /**
@@ -180,7 +180,7 @@ describe('插件端到端', () => {
     const spec = ext.toolSpecs.find((t) => t.name === 'test_probe__run')
     expect(spec?.objectLabel).toBe('插件')
     expect(spec?.targetExtractor?.({})).toBe('plugin:test.probe/run')
-    stop()
+    await stop()
   })
 
   test('声明 workspace:read 后可以读取工作区文件', async () => {
@@ -188,7 +188,7 @@ describe('插件端到端', () => {
     const r = await probe('fs.read', { path: 'hello.txt' })
     expect(r.status).toBe('success')
     expect((r.data as { r: { content: string } }).r.content).toBe('你好')
-    stop()
+    await stop()
   })
 
   /** 插件结果没有上限：超出本轮剩余额度时 data 整份存入正文库，回执合法且有界。 */
@@ -212,7 +212,7 @@ describe('插件端到端', () => {
     expect(String(r.resources?.[0]?.resourceId)).toBe('rs_1')
     expect(new TextDecoder().decode(landed[0]!)).toContain('尾部标记')
     expect(r.message).toContain('rs_1')
-    stop()
+    await stop()
   })
 
   test('未声明 workspace:write 时无法写入：权限在宿主侧强制执行', async () => {
@@ -221,20 +221,20 @@ describe('插件端到端', () => {
     expect(r.status).toBe('failure')
     expect(r.message).toContain('workspace:write')
     expect(await Bun.file(join(root, 'x.txt')).exists()).toBe(false)
-    stop()
+    await stop()
   })
 
   test('声明 workspace:write 后可以写入', async () => {
     const { root, probe, stop } = await workspaceWith(['workspace:read', 'workspace:write'])
     expect((await probe('fs.write', { path: 'x.txt', content: '写了' })).status).toBe('success')
     expect(await readFile(join(root, 'x.txt'), 'utf8')).toBe('写了')
-    stop()
+    await stop()
   })
 
   test('声明 workspace:read 后仍受工作区边界限制', async () => {
     const { probe, stop } = await workspaceWith(['workspace:read'])
     expect((await probe('fs.read', { path: '../../../etc/passwd' })).status).toBe('failure')
-    stop()
+    await stop()
   })
 
   test('私有存储可用且按插件隔离', async () => {
@@ -244,7 +244,7 @@ describe('插件端到端', () => {
     expect((got.data as { r: { value: number } }).r.value).toBe(42)
     // 保存为用户可见的普通文件，插件行为异常时可直接查看。
     expect(await Bun.file(join(root, '.qy/plugin-data/test.probe.json')).exists()).toBe(true)
-    stop()
+    await stop()
   })
 
   test('未声明 network 时无法访问网络', async () => {
@@ -252,13 +252,13 @@ describe('插件端到端', () => {
     const r = await probe('net.fetch', { url: 'https://example.com' })
     expect(r.status).toBe('failure')
     expect(r.message).toContain('network')
-    stop()
+    await stop()
   })
 
   test('未声明 process:exec 时无法执行命令', async () => {
     const { probe, stop } = await workspaceWith(['workspace:read'])
     expect((await probe('exec.run', { command: 'echo x' })).message).toContain('process:exec')
-    stop()
+    await stop()
   })
 
   test('声明 process:exec 后可以执行，且无法取得宿主的密钥', async () => {
@@ -268,7 +268,7 @@ describe('插件端到端', () => {
       const r = await probe('exec.run', { command: 'echo "[$QYWORK_EXT_SECRET]"' })
       expect(r.status).toBe('success')
       expect((r.data as { r: { stdout: string } }).r.stdout).not.toContain('leaked-secret')
-      stop()
+      await stop()
     } finally {
       delete process.env.QYWORK_EXT_SECRET
     }
@@ -277,7 +277,7 @@ describe('插件端到端', () => {
   test('未登记的方法被拒（fail-closed）', async () => {
     const { probe, stop } = await workspaceWith(['workspace:read', 'workspace:write'])
     expect((await probe('fs.chmod', { path: 'hello.txt' })).message).toContain('未登记')
-    stop()
+    await stop()
   })
 
   test('损坏的插件不影响整体加载：记入 failures 而不是抛出异常', async () => {

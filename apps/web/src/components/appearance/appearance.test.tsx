@@ -6,10 +6,11 @@
  * 测试 DOM 在本文件内注册，结束后注销，理由同 `settings/LoadState.test.tsx`。
  * 令牌以一段样式表注入：骨架半透明底色由当前明暗的 `--bg-*` 计算，缺少令牌时无法验证取值。
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, jest, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { Personalization } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 
 beforeAll(() => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
@@ -277,6 +278,8 @@ describe('个性化读取', () => {
     // 连接未就绪：观察开始时不读取，记录到的请求只有编辑的保存。
     store.setState('connection', 'connecting')
     const stop = store.observePersonalization()
+    // 保存的停顿由假计时器推进：请求在计时器回调中同步发出，推进返回时已全部记录。
+    jest.useFakeTimers()
     try {
       const a = { ...sample, opacity: 0.6 }
       const b = { ...sample, opacity: 0.7 }
@@ -284,11 +287,12 @@ describe('个性化读取', () => {
       store.editPersonalization(b)
       expect(store.currentPersonalization()).toEqual(b)
       setPersonalizationChange(8)
-      await new Promise((r) => setTimeout(r, 300))
+      jest.advanceTimersByTime(300)
       expect(calls).toHaveLength(1)
       expect(calls[0]?.method).toBe('PUT')
       expect(calls[0]?.url).toContain('/api/personalization')
     } finally {
+      jest.useRealTimers()
       stop()
     }
   })
@@ -301,7 +305,7 @@ describe('个性化保存失败', () => {
       throw new TypeError('Failed to fetch')
     }) as unknown as typeof fetch
     store.editPersonalization({ ...sample, opacity: 0.65 })
-    await new Promise((r) => setTimeout(r, 300))
+    await until(() => store.personalizationError() !== null, '保存失败的说明')
     expect(store.personalizationError()).toBe('保存失败')
   })
 
@@ -312,7 +316,7 @@ describe('个性化保存失败', () => {
         status: 422,
       })) as unknown as typeof fetch
     store.editPersonalization({ ...sample, opacity: 0.6 })
-    await new Promise((r) => setTimeout(r, 300))
+    await until(() => store.personalizationError() === '强调色格式不正确', '服务端说明的原因')
     expect(store.personalizationError()).toBe('强调色格式不正确')
   })
 })

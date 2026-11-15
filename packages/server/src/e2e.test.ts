@@ -27,6 +27,7 @@ import type {
   EventEnvelope,
 } from '@qywork/core'
 import { toPosixPath } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import { MEMORY_DIR } from '@qywork/tools'
@@ -169,7 +170,7 @@ afterAll(async () => {
   // 同一进程中还运行着其他测试文件，不恢复 QYWORK_HOME 会影响它们。
   if (prevHome === undefined) delete process.env.QYWORK_HOME
   else process.env.QYWORK_HOME = prevHome
-  handle?.stop()
+  await handle?.stop()
   provider.stop(true)
   store?.close()
   content?.close()
@@ -555,8 +556,10 @@ describe('WebSocket 协议与一轮完整 run', () => {
     idle.send(JSON.stringify({ type: 'subscribe', conversations: null }))
     // 产生一条会话事件：已握手的连接会收到 conversation 相关广播。
     await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
-    await Bun.sleep(200)
-    expect(frames).toEqual([])
+    // 再发一帧无法解析的内容：它的应答在此前的广播之后经同一条连接到达。
+    idle.send('不是 JSON')
+    await until(() => frames.length > 0, '无法解析的帧得到应答')
+    expect(frames).toEqual([expect.objectContaining({ type: 'error', message: 'bad json' })])
     idle.close()
   })
 
@@ -645,8 +648,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     // 静默丢弃时，客户端永远收不到反馈，「服务端正在处理」与
     // 「服务端未收到」在界面上完全无法区分。
     ws.send(JSON.stringify({ type: 'no.such.command' }))
-    await Bun.sleep(150)
-    expect(rejections.some((r) => r.reason === 'unknown_command')).toBe(true)
+    await until(() => rejections.some((r) => r.reason === 'unknown_command'), '未知指令的回执')
 
     /*
      * **另开一个客户端，明确不订阅任何会话事件。**
@@ -705,11 +707,13 @@ describe('WebSocket 协议与一轮完整 run', () => {
       | undefined
     expect(finished?.status).toBe('done')
 
-    // 收尾动作（`runs.release`）在 run.finished 之后执行，等待其完成后再检查。
-    await Bun.sleep(300)
-    const peerBusy = peerFrames
-      .filter((f) => f.event.type === 'conversation.busy')
-      .map((f) => f.event as Extract<AgentEvent, { type: 'conversation.busy' }>)
+    // 收尾动作（`runs.release`）在 run.finished 之后执行，等待其广播到达后再检查。
+    const busyFrames = () =>
+      peerFrames
+        .filter((f) => f.event.type === 'conversation.busy')
+        .map((f) => f.event as Extract<AgentEvent, { type: 'conversation.busy' }>)
+    await until(() => busyFrames().some((e) => !e.busy), '收尾的忙闲广播')
+    const peerBusy = busyFrames()
     // 开始与结束都必须广播：只广播开始时，左栏的会话行会始终显示运行中。
     // 取得 runId 时忙态不变，不再广播。
     expect(peerBusy.map((e) => e.busy)).toEqual([true, false])
@@ -778,7 +782,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     store.db.run('PRAGMA query_only = true')
     try {
       ws.send(setModel)
-      await Bun.sleep(300)
+      await until(() => rejections.length > 0, '写入失败的回执')
     } finally {
       store.db.run('PRAGMA query_only = false')
     }
@@ -791,8 +795,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
 
     // 写入恢复后同一条指令正常处理：广播到达即表明该连接仍在分发指令。
     ws.send(setModel)
-    await Bun.sleep(300)
-    expect(seen.some((e) => e.type === 'conversation.updated')).toBe(true)
+    await until(() => seen.some((e) => e.type === 'conversation.updated'), '修改模型的广播')
     expect(rejections).toHaveLength(1)
     ws.close()
   })
@@ -852,19 +855,21 @@ describe('WebSocket 协议与一轮完整 run', () => {
 
     ws.send(JSON.stringify({ type: 'conversation.setMode', conversationId: b.id, mode: 'full' }))
     ws.send(JSON.stringify({ type: 'conversation.setMode', conversationId: b.id, mode: 'root' }))
-    await Bun.sleep(300)
+    await until(() => updates.length > 0 && rejections.length > 0, '两条指令均已处理')
     expect(updates).toEqual([expect.objectContaining({ conversationId: b.id, mode: 'full' })])
     expect(rejections).toEqual([
       expect.objectContaining({ command: 'conversation.setMode', reason: 'invalid_payload' }),
     ])
 
     ws.send(JSON.stringify({ type: 'conversation.setMode', conversationId: a.id, mode: 'auto' }))
-    await Bun.sleep(300)
-    const list = (await (
-      await fetch(`${base()}/api/conversations`, { headers: auth() })
-    ).json()) as {
-      conversations: { id: string; mode: string }[]
-    }
+    // 未订阅 a，它的广播不到达本连接：按接口读取到新值为准。
+    let list: { conversations: { id: string; mode: string }[] } = { conversations: [] }
+    await until(async () => {
+      list = (await (
+        await fetch(`${base()}/api/conversations`, { headers: auth() })
+      ).json()) as typeof list
+      return list.conversations.find((c) => c.id === a.id)?.mode === 'auto'
+    }, 'a 的模式已写入')
     const modeOf = (id: string) => list.conversations.find((c) => c.id === id)?.mode
     expect([modeOf(a.id), modeOf(b.id)]).toEqual(['auto', 'full'])
     expect(modeOf(c.id)).toBe('full')

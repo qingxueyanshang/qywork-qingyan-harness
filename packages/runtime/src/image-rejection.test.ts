@@ -130,8 +130,8 @@ async function harness(respond: (body: string) => Response) {
     return events
   }
   const runs = () => listRuns(store, conversationId!)
-  const close = () => {
-    for (const session of sessions) session.dispose()
+  const close = async () => {
+    await Promise.all(sessions.map((session) => session.dispose()))
     store.close()
     provider.stop(true)
   }
@@ -201,7 +201,7 @@ test('接口拒绝图片后本轮移除图片重发，同一会话之后不再�
       true,
     )
   } finally {
-    h.close()
+    await h.close()
   }
 }, 20_000)
 
@@ -239,7 +239,7 @@ test('移除图片后重发仍被拒时本轮结束并显示接口原文', async
     const readStep = listSteps(h.store, h.runs()[0]!.id).find((s) => s.toolCallId === 'call_1')!
     expect(readStep.payload).not.toHaveProperty('imagesUndelivered')
   } finally {
-    h.close()
+    await h.close()
   }
 }, 20_000)
 
@@ -265,6 +265,6 @@ test('带图片的请求被 413 拒绝时不按接口拒绝图片处理', async 
       conversationRejectsImages(h.store, h.runs()[0]!.conversationId, 'relay', 'claude-opus-5-5'),
     ).toBe(false)
   } finally {
-    h.close()
+    await h.close()
   }
 }, 20_000)

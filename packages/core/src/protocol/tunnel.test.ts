@@ -36,6 +36,17 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<number> {
   return total
 }
 
+/** 窗口用完后的第一次占用：发送方在这一次调用中暂停，`blocked` 随之完成。 */
+class WatchedCredit extends TunnelCredit {
+  readonly blocked = Promise.withResolvers<void>()
+  private calls = 0
+
+  override take(bytes: number): Promise<boolean> {
+    if (++this.calls === TUNNEL_WINDOW / TUNNEL_CHUNK + 1) this.blocked.resolve()
+    return super.take(bytes)
+  }
+}
+
 describe('数据帧', () => {
   test('编码后解码得到相同的类型、sid 与负载', () => {
     const frame = encodeData(TUNNEL_DATA.text, 0xfffffffe, new TextEncoder().encode('你好'))
@@ -141,7 +152,7 @@ describe('窗口', () => {
   })
 
   test('窗口用完时暂停读取数据源，归还后继续', async () => {
-    const credit = new TunnelCredit()
+    const credit = new WatchedCredit()
     const sent: number[] = []
     let pulls = 0
     const total = TUNNEL_WINDOW + TUNNEL_CHUNK * 2
@@ -159,7 +170,7 @@ describe('窗口', () => {
       data: (f) => sent.push(decodeData(f)?.payload.length ?? 0),
       control: () => {},
     })
-    await Bun.sleep(20)
+    await credit.blocked.promise
     const sentBefore = sent.reduce((a, b) => a + b, 0)
     expect(sentBefore).toBe(TUNNEL_WINDOW)
     // 暂停期间只多读了正在等待窗口的那一块。
@@ -171,7 +182,7 @@ describe('窗口', () => {
   })
 
   test('等待窗口期间流被关闭时返回 false、取消数据源且不发送 end', async () => {
-    const credit = new TunnelCredit()
+    const credit = new WatchedCredit()
     const controls: TunnelControl[] = []
     let cancelled = false
     const source = new ReadableStream<Uint8Array>({
@@ -183,7 +194,7 @@ describe('窗口', () => {
       },
     })
     const done = pumpBody(source, 1, credit, { data: () => {}, control: (c) => controls.push(c) })
-    await Bun.sleep(10)
+    await credit.blocked.promise
     credit.close()
     expect(await done).toBe(false)
     expect(cancelled).toBe(true)

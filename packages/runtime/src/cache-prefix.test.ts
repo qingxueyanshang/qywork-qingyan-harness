@@ -154,7 +154,7 @@ test.each([
       expect(second!.marks).toContain(written)
       expect(second!.blocks.length).toBeGreaterThan(first!.blocks.length)
     } finally {
-      session.dispose()
+      await session.dispose()
       store.close()
       provider.stop(true)
     }

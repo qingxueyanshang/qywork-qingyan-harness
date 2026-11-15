@@ -53,6 +53,11 @@ function fresh() {
   return { store, ws }
 }
 
+/** 等待 `Date.now()` 越过 `at`：存储层以 `Date.now()` 取时刻，同一毫秒内的两次写入无法区分先后。 */
+async function clockPast(at: number): Promise<void> {
+  while (Date.now() <= at) await Bun.sleep(1)
+}
+
 /**
  * 原始失败形状：JSON 列损坏时 `readJson` 静默返回默认值，附件显示为空，且没有任何记录指向损坏的位置。
  */
@@ -849,8 +854,7 @@ describe('会话的最近修改时间', () => {
   test('发送一条消息即更新 updated_at', async () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
-    // Date.now() 的分辨率是毫秒，同一毫秒内写入两次时无法区分先后。
-    await Bun.sleep(2)
+    await clockPast(conv.updatedAt)
     appendMessage(store, { conversationId: conv.id, role: 'user', content: '在吗' })
     const after = getConversation(store, conv.id)
     expect(after?.updatedAt).toBeGreaterThan(conv.updatedAt)
@@ -862,7 +866,7 @@ describe('会话的最近修改时间', () => {
   test('重命名不更新 updated_at', async () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
-    await Bun.sleep(2)
+    await clockPast(conv.updatedAt)
     const renamed = setConversationTitle(store, conv.id, '改过的名字')
     expect(renamed?.title).toBe('改过的名字')
     expect(renamed?.updatedAt).toBe(conv.updatedAt)
@@ -1582,7 +1586,7 @@ describe('变更页合并子 agent 与外部 CLI 的写入', () => {
         fileChanges: [{ path: 'cli.txt', changeType: 'modified' }],
       },
     })
-    await Bun.sleep(5)
+    await clockPast(Date.now())
     childRound('写 c', 'c.ts', { stepId: step.id, nodeId: 'n1' })
 
     const page = listConversationChangesPage(store, conv.id, { limit: 10 })

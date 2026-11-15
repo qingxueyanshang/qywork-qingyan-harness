@@ -106,6 +106,7 @@ for (const mode of ['web', 'desktop'] as const) {
     const { dir, root, head, target } = await fixture()
     await fetchRelease(root, '1.1.0')
     const parent = join(dir, 'parent.ts')
+    // 父进程存活期间更新程序不产生可观察的事件，父进程只能在一段时长内核对源码未被改动。
     await writeFile(
       parent,
       `
@@ -229,7 +230,7 @@ test.skipIf(process.platform !== 'win32')(
       expect(claimed).toBe(true)
     } finally {
       updater.close()
-      sidecar.stop(true)
+      await sidecar.stop(true)
       globalThis.fetch = realFetch
       if (previousHome === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = previousHome

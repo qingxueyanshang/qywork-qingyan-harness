@@ -506,9 +506,24 @@ describe('后台命令的工具形态', () => {
     const running = { command: 'bash wait.sh', stdout: 'tick\n', stderr: '' }
     const done = Promise.withResolvers<boolean>()
     const { port } = fakePort({ cmd_1: running }, { ended: { cmd_1: done.promise } })
-    const waiting = backgroundCommandTool.fn({ task_id: 'cmd_1', wait_seconds: 600 }, ctxWith(port))
-    const early = await Promise.race([waiting, Bun.sleep(30).then(() => 'pending')])
-    expect(early).toBe('pending')
+    // 调用 `steered` 时等待已建立：此后能使它结束的只有 `done`、600 秒计时与中止信号，三者都未发生。
+    const entered = Promise.withResolvers<void>()
+    const watched: CommandPort = {
+      ...port,
+      steered: (signal) => {
+        entered.resolve()
+        return port.steered(signal)
+      },
+    }
+    let settled = false
+    const waiting = backgroundCommandTool
+      .fn({ task_id: 'cmd_1', wait_seconds: 600 }, ctxWith(watched))
+      .finally(() => {
+        settled = true
+      })
+    await entered.promise
+    await Bun.sleep(0)
+    expect(settled).toBe(false)
     done.resolve(true)
     const out = await waiting
     expect(out.status).toBe('success')

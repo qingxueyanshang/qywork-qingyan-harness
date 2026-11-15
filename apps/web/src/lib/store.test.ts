@@ -24,6 +24,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { until } from '@qywork/core/until.test-helper'
 
 const g = globalThis as Record<string, unknown>
 g.location = {
@@ -4385,7 +4386,10 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
       } as never)
       for (let i = 0; i < 50 && requested.length < 2; i += 1) await Bun.sleep(5)
       expect(requested[1]).toContain('limit=1')
-      await Bun.sleep(10)
+      await until(
+        () => viewOf('cv_1').changes?.totals.additions === 5,
+        '最新一轮的重新读取结果写入变更面板',
+      )
       const changes = viewOf('cv_1').changes
       expect(changes?.turns.map((t) => t.steps.map((s) => [s.id, s.via?.name ?? null]))).toEqual([
         [
@@ -4437,7 +4441,10 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
 
       applyEvent(runFinished('rn_1'))
       for (let i = 0; i < 50 && requested.length < 2; i += 1) await Bun.sleep(5)
-      await Bun.sleep(10)
+      await until(
+        () => !viewOf('cv_1').changes?.totals.paths.includes('cache/a.bin'),
+        '本轮的重新读取结果写入变更面板',
+      )
       const changes = viewOf('cv_1').changes
       expect(requested[1]).toContain('limit=1')
       expect(changes?.turns.flatMap((t) => t.steps.map((s) => s.id))).toEqual(['st_keep'])

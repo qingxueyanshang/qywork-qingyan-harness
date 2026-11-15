@@ -19,6 +19,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
+import { until } from '@qywork/core/until.test-helper'
 
 test('压缩提示只有原文和后置进度条，阶段变化不增加说明文字', async () => {
   const { createSignal } = await import('solid-js')
@@ -330,12 +331,11 @@ test('按下发送即开始计时，开始事件到达时计时连续且不重�
     expect(strip?.querySelector('.run-live')?.textContent).toBe('正在请求…')
 
     // 服务端在按下发送 400ms 后接受消息，准备阶段持续 3 秒后才发出开始事件；本机按下的时刻保留不变。
-    const tick = () => new Promise((resolve) => setTimeout(resolve, 120))
     now += 1_500
-    await tick()
+    await until(() => elapsed?.textContent === '1.5s', '耗时栏显示 1.5s')
     expect(elapsed?.textContent).toBe('1.5s')
     now += 1_500
-    await tick()
+    await until(() => elapsed?.textContent === '3.0s', '耗时栏显示 3.0s')
     expect(elapsed?.textContent).toBe('3.0s')
     store.applyEvent({
       seq: 1,
@@ -356,7 +356,7 @@ test('按下发送即开始计时，开始事件到达时计时连续且不重�
     expect(elapsed?.textContent).toBe('3.0s')
 
     now += 200
-    await tick()
+    await until(() => elapsed?.textContent === '3.2s', '耗时栏显示 3.2s')
     expect(elapsed?.textContent).toBe('3.2s')
   } finally {
     dispose()
@@ -486,15 +486,18 @@ test('间隔按最后内容时刻计算，刷新前后取值相同', async () =>
       },
     } as never)
 
+    // 耗时与状态文字由同一个计时器的同一次更新计算：耗时显示新时刻时，状态文字已按该时刻求值。
+    const elapsed = () => host.querySelector('.run-elapsed')?.textContent
+
     // t=65 s：距末段 5 秒，未达到切换提示的阈值，状态文字仍为「正在回复…」。
     now = t0 + 65_000
-    await new Promise((resolve) => setTimeout(resolve, 120))
+    await until(() => elapsed() === '65.0s', '耗时栏显示 65.0s')
     expect(now - store.viewOf(id).request!.lastContentAt!).toBe(5_000)
     expect(note()).toBe('正在回复…')
 
     // 再过 30 秒超过阈值：显示距末段的 35 秒。按首段计算会显示 95 秒。
     now = t0 + 95_000
-    await new Promise((resolve) => setTimeout(resolve, 120))
+    await until(() => elapsed() === '95.0s', '耗时栏显示 95.0s')
     expect(note()).toBe('已 35 秒无新增内容')
 
     /*

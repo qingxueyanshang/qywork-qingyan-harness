@@ -21,6 +21,7 @@ import type {
   NativeBrowserUpFrame,
 } from '@qywork/core'
 import { NATIVE_BROWSER_PATH, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, upsertWorkspace } from '@qywork/store'
 import { serve } from '../server.ts'
@@ -43,9 +44,9 @@ const config: QyConfig = {
   mode: 'auto',
 }
 
-const cleanups: (() => void)[] = []
-afterEach(() => {
-  for (const fn of cleanups.splice(0).reverse()) fn()
+const cleanups: (() => void | Promise<void>)[] = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
 })
 
 function fresh(): ReturnType<typeof serve> {
@@ -63,8 +64,8 @@ function fresh(): ReturnType<typeof serve> {
     host: '127.0.0.1',
     hostKey: HOST_KEY,
   })
-  cleanups.push(() => {
-    handle.stop()
+  cleanups.push(async () => {
+    await handle.stop()
     content.close()
     store.close()
     // Windows 上 SQLite 的文件句柄释放有延迟，临时目录删除失败与被测行为无关。
@@ -154,8 +155,29 @@ class FakeHost {
   }
 }
 
-/** 让事件循环派发完已到达的帧。 */
+/** 只用于确认某件事没有发生：被测代码在调用处没有可观察的完成信号，调用处写明原因。 */
 const settle = () => new Promise((r) => setTimeout(r, 30))
+
+/** 订阅能力变化：宿主帧被处理后，服务端经事件总线广播 `browser.state`。 */
+function capabilities(handle: ReturnType<typeof serve>): unknown[] {
+  const seen: unknown[] = []
+  cleanups.push(
+    handle.bus.subscribe({
+      id: `probe_${crypto.randomUUID()}`,
+      origin: 'desktop',
+      conversations: null,
+      send: (frame) => {
+        if (frame.event.type === 'browser.state') seen.push(frame.event.browser)
+      },
+    }),
+  )
+  return seen
+}
+
+/** 以 `conversationId` 的视角列出的页编号。 */
+async function tabIds(handle: ReturnType<typeof serve>, conversationId = 'cv_bridge') {
+  return ((await handle.browser?.portFor(conversationId, WS).tabs()) ?? []).map((t) => t.tabId)
+}
 
 /**
  * 取得一次调用失败的原因。
@@ -194,8 +216,12 @@ test('普通配对连接自报 desktop 时同样无法注册宿主', async () =>
     ws.onerror = () => reject(new Error('配对连接应当能建立'))
   })
   cleanups.push(() => ws.close())
+  const replies: string[] = []
+  ws.onmessage = (ev) => replies.push(String(ev.data))
   ws.send(JSON.stringify(samples().hostReady))
-  await settle()
+  // 同一条连接上的帧按序分派：其后一帧的应答到达时，宿主帧已被分派过。
+  ws.send('不是 JSON')
+  await until(() => replies.some((r) => r.includes('bad json')), '后一帧的应答')
   expect(handle.browser?.available()).toBe(false)
 })
 
@@ -203,13 +229,15 @@ test('宿主 host.ready 之后能力可用，运行时版本低于下限则不�
   const handle = fresh()
   const host = await FakeHost.connect(handle.port)
   host.ready()
-  await settle()
-  expect(handle.browser?.available()).toBe(true)
+  await until(() => handle.browser?.available() === true, '宿主完成注册')
 
   const low = fresh()
+  const lowStates = capabilities(low)
   const lowHost = await FakeHost.connect(low.port)
   lowHost.ready({ runtimeVersion: '110.0.1587.0' })
-  await settle()
+  // 版本不达标时 `available()` 与宿主未注册时同为 false，须先确认宿主帧已被处理。
+  await until(() => lowStates.length > 0, '宿主帧被处理')
+  expect(lowStates.at(-1)).toMatchObject({ connected: true, runtimeSupported: false })
   expect(low.browser?.available()).toBe(false)
 })
 
@@ -219,20 +247,10 @@ test('宿主 host.ready 之后能力可用，运行时版本低于下限则不�
  */
 test('host.unavailable 撤销能力并报告原因，同一连接上的 host.ready 恢复能力', async () => {
   const handle = fresh()
-  const seen: unknown[] = []
-  cleanups.push(
-    handle.bus.subscribe({
-      id: 'probe',
-      origin: 'desktop',
-      conversations: null,
-      send: (frame) => {
-        if (frame.event.type === 'browser.state') seen.push(frame.event.browser)
-      },
-    }),
-  )
+  const seen = capabilities(handle)
   const host = await FakeHost.connect(handle.port)
   host.send(samples().hostUnavailable as unknown as NativeBrowserUpFrame)
-  await settle()
+  await until(() => seen.length > 0, '宿主帧被处理')
   expect(handle.browser?.available()).toBe(false)
   expect(seen.at(-1)).toEqual({
     connected: false,
@@ -241,8 +259,7 @@ test('host.unavailable 撤销能力并报告原因，同一连接上的 host.rea
   })
 
   host.ready()
-  await settle()
-  expect(handle.browser?.available()).toBe(true)
+  await until(() => handle.browser?.available() === true, '宿主完成注册')
   expect(seen.at(-1)).toEqual({
     connected: true,
     runtimeSupported: true,
@@ -252,15 +269,17 @@ test('host.unavailable 撤销能力并报告原因，同一连接上的 host.rea
   // 浏览器进程退出：进行中的调用失败，快照清空，原因变为 exited。
   const pending = handle.browser?.portFor('cv_bridge', WS).open('http://127.0.0.1:1/page')
   await host.next()
+  const beforeExit = seen.length
   host.send({ type: 'host.unavailable', reason: 'exited' })
   expect((await failure(pending)).message).toMatch(/没有可用的浏览器/)
-  await settle()
+  await until(() => seen.length > beforeExit, '宿主帧被处理')
   expect(await handle.browser?.portFor('cv_a1', WS).tabs()).toEqual([])
   expect(seen.at(-1)).toEqual({ connected: false, runtimeSupported: false, unavailable: 'exited' })
 
   // 连接断开后原因不再成立：此时是没有宿主，而不是宿主没有浏览器。
+  const beforeClose = seen.length
   host.socket.close()
-  await settle()
+  await until(() => seen.length > beforeClose, '断开被处理')
   expect(seen.at(-1)).toEqual({ connected: false, runtimeSupported: false })
 })
 
@@ -270,24 +289,15 @@ test('host.unavailable 撤销能力并报告原因，同一连接上的 host.rea
  */
 test('页面的显示位置随 host.ready 进入能力，宿主断开后缺席', async () => {
   const handle = fresh()
-  const seen: unknown[] = []
-  cleanups.push(
-    handle.bus.subscribe({
-      id: 'probe',
-      origin: 'desktop',
-      conversations: null,
-      send: (frame) => {
-        if (frame.event.type === 'browser.state') seen.push(frame.event.browser)
-      },
-    }),
-  )
+  const seen = capabilities(handle)
   const host = await FakeHost.connect(handle.port)
   host.ready({ platform: 'linux', presentation: 'window', runtimeVersion: '154.0.8037.57' })
-  await settle()
+  await until(() => seen.length > 0, '宿主帧被处理')
   expect(seen.at(-1)).toEqual({ connected: true, runtimeSupported: true, presentation: 'window' })
 
+  const beforeClose = seen.length
   host.socket.close()
-  await settle()
+  await until(() => seen.length > beforeClose, '断开被处理')
   expect(seen.at(-1)).toEqual({ connected: false, runtimeSupported: false })
 })
 
@@ -295,14 +305,13 @@ test('断线使所有待决调用失败，能力随之下线', async () => {
   const handle = fresh()
   const host = await FakeHost.connect(handle.port)
   host.ready()
-  await settle()
+  await until(() => handle.browser?.available() === true, '宿主完成注册')
   const port = handle.browser?.portFor('cv_bridge', WS)
   const pending = port?.open('http://127.0.0.1:1/page')
   await host.next()
   host.socket.close()
   expect((await failure(pending)).message).toMatch(/断开|重连/)
-  await settle()
-  expect(handle.browser?.available()).toBe(false)
+  await until(() => handle.browser?.available() === false, '能力下线')
 })
 
 /**
@@ -315,7 +324,7 @@ test('宿主的 opened 事件是新页进入存活快照的唯一途径，contro
   const handle = fresh()
   const host = await FakeHost.connect(handle.port)
   host.send({ ...(samples().hostReady as unknown as HostReadyFrame), tabs: [] })
-  await settle()
+  await until(() => handle.browser?.available() === true, '宿主完成注册')
   expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([])
 
   host.send({
@@ -330,7 +339,7 @@ test('宿主的 opened 事件是新页进入存活快照的唯一途径，contro
     workspaceId: WS,
     conversationId: null,
   })
-  await settle()
+  await until(async () => (await tabIds(handle)).includes('bt_7'), 'opened 进入快照')
   // 用户页对任何会话都不可控。
   expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([
     { tabId: 'bt_7', url: 'http://127.0.0.1:1/page', title: '人工开的页', controlled: false },
@@ -344,14 +353,17 @@ test('宿主的 opened 事件是新页进入存活快照的唯一途径，contro
     tabId: 'bt_7',
     conversationId: 'cv_bridge',
   })
-  await settle()
+  await until(
+    async () => (await handle.browser?.portFor('cv_bridge', WS).tabs())?.[0]?.controlled === true,
+    'control 修改归属',
+  )
   // 归属改为 cv_bridge 后，该页对它可控。
   expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([
     { tabId: 'bt_7', url: 'http://127.0.0.1:1/page', title: '人工开的页', controlled: true },
   ])
 
   host.send({ type: 'browser.event', connectionEpoch: 3, seq: 3, kind: 'closed', tabId: 'bt_7' })
-  await settle()
+  await until(async () => !(await tabIds(handle)).includes('bt_7'), 'closed 移出快照')
   expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([])
 })
 
@@ -359,11 +371,11 @@ test('重连后取得完整的存活页快照，旧快照不残留', async () =>
   const handle = fresh()
   const first = await FakeHost.connect(handle.port)
   first.ready()
-  await settle()
+  await until(() => handle.browser?.available() === true, '宿主完成注册')
   // 样例中 bt_1 归属 cv_a1，bt_2 是用户页；cv_a1 可见两页。
   expect(await handle.browser?.portFor('cv_a1', WS).tabs()).toHaveLength(2)
   first.socket.close()
-  await settle()
+  await until(() => handle.browser?.available() === false, '断开被处理')
 
   const second = await FakeHost.connect(handle.port)
   const sample = samples().hostReady as unknown as HostReadyFrame
@@ -381,7 +393,7 @@ test('重连后取得完整的存活页快照，旧快照不残留', async () =>
       },
     ],
   })
-  await settle()
+  await until(() => handle.browser?.available() === true, '重连的宿主完成注册')
   const tabs = await handle.browser?.portFor('cv_a1', WS).tabs()
   expect(tabs?.map((t) => t.tabId)).toEqual(['bt_9'])
 })
@@ -390,15 +402,14 @@ test('旧纪元的结果不能完成新纪元的调用', async () => {
   const handle = fresh()
   const host = await FakeHost.connect(handle.port)
   host.ready()
-  await settle()
+  await until(() => handle.browser?.available() === true, '宿主完成注册')
   const port = handle.browser?.portFor('cv_bridge', WS)
   const pending = port?.open('http://127.0.0.1:1/page')
   const request = await host.next()
   expect(request.connectionEpoch).toBe(3)
   // requestId 相同而纪元不一致：该帧属于上一条连接，不得完成本次调用。
   host.reply(request, { connectionEpoch: 2 })
-  await settle()
-  // 调用仍处于待决状态：以断开连接证明它未被该帧结算。
+  // 调用仍处于待决状态：以断开连接证明它未被该帧结算。关闭帧排在该结果之后，服务端按序处理。
   host.socket.close()
   expect((await failure(pending)).message).toMatch(/断开|重连/)
 })
@@ -407,7 +418,7 @@ test('请求帧的线上格式与 Rust 侧共用同一份样例', async () => {
   const handle = fresh()
   const host = await FakeHost.connect(handle.port)
   host.ready()
-  await settle()
+  await until(() => handle.browser?.available() === true, '宿主完成注册')
   const port = handle.browser?.portFor('cv_bridge', WS)
   const opening = port?.open('http://127.0.0.1:1/page')
   const create = await host.next()
@@ -471,12 +482,13 @@ test('host.ready 中有页缺少工作区时拒绝该连接，缺少工作区的
     ...sample,
     tabs: [{ tabId: 'bt_1', url: 'http://127.0.0.1:1/x', title: 'X', marker: 'm1' }],
   } as unknown as HostReadyFrame)
+  // 被拒收的 host.ready 不产生任何广播；随后的合法帧可证明它已被处理，但会使能力变为可用，
+  // 因此这里只能留出一段时间确认能力没有发布。
   await settle()
   expect(handle.browser?.available()).toBe(false)
 
   host.send({ ...sample, tabs: [] })
-  await settle()
-  expect(handle.browser?.available()).toBe(true)
+  await until(() => handle.browser?.available() === true, '合法的 host.ready 被采纳')
 
   host.send({
     type: 'browser.event',
@@ -489,8 +501,21 @@ test('host.ready 中有页缺少工作区时拒绝该连接，缺少工作区的
     marker: 'm8',
     conversationId: null,
   })
-  await settle()
-  expect(await handle.browser?.portFor('cv_bridge', WS).tabs()).toEqual([])
+  // 其后一条带工作区的 opened 进入快照时，前一条已被处理。
+  host.send({
+    type: 'browser.event',
+    connectionEpoch: 3,
+    seq: 2,
+    kind: 'opened',
+    tabId: 'bt_9',
+    url: 'http://127.0.0.1:1/z',
+    title: 'Z',
+    marker: 'm9',
+    workspaceId: WS,
+    conversationId: null,
+  })
+  await until(async () => (await tabIds(handle)).includes('bt_9'), '后一条 opened 进入快照')
+  expect(await tabIds(handle)).toEqual(['bt_9'])
 })
 
 /**
@@ -507,12 +532,12 @@ test('下载终态样例携带身份字段，两侧按同一格式编解码', as
   const handle = fresh()
   const host = await FakeHost.connect(handle.port)
   host.ready()
-  await settle()
+  await until(() => handle.browser?.available() === true, '宿主完成注册')
   let seen: BrowserEventFrame | null = null
   handle.browser?.onEvent((frame) => {
     seen = frame
   })
   host.send(sample)
-  await settle()
+  await until(() => seen !== null, '下载终态被派发')
   expect((seen as BrowserEventFrame | null)?.downloadId).toBe('dl_4')
 })

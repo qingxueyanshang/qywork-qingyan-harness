@@ -138,7 +138,7 @@ test('每次请求新建连接，不复用连接池中的空闲连接', async ()
     expect(ports).toHaveLength(2)
     expect(ports[0]).not.toBe(ports[1])
   } finally {
-    peer.stop(true)
+    await peer.stop(true)
   }
 })
 
@@ -756,13 +756,17 @@ test('下载遇到暂时错误只重试 GET，保留服务商已经返回产物�
 
 test('用户停止立即结束，不误报本地超时也不触发重试', async () => {
   const controller = new AbortController()
+  const arrived = Promise.withResolvers<void>()
   reply = async () => {
+    arrived.resolve()
     await delay(200)
     return Response.json({})
   }
   const reason = new Error('用户停止')
   const work = postJson(url(), {}, {}, controller.signal)
-  setTimeout(() => controller.abort(reason), 30)
+  // 请求到达对端之后、响应返回之前停止。
+  await arrived.promise
+  controller.abort(reason)
   await expect(work).rejects.toBe(reason)
   expect(hits).toEqual(['POST'])
 })

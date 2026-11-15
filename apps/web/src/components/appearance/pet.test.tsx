@@ -55,7 +55,13 @@ function serveLedger(): void {
   }) as unknown as typeof fetch
 }
 
-const flush = () => new Promise((r) => setTimeout(r, 10))
+async function until(check: () => boolean, ms = 2000): Promise<void> {
+  const end = Date.now() + ms
+  while (!check()) {
+    if (Date.now() > end) throw new Error('等待超时')
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
 
 describe('宠物状态推导', () => {
   test('变闲后按最新一轮记录结果：完成、出错、被中断不记、启动前被拒记为出错', async () => {
@@ -84,12 +90,14 @@ describe('宠物状态推导', () => {
     try {
       expect(store.petMood()).toBe('idle')
       store.setState('busyConversations', ['cv_done', 'cv_fail', 'cv_stop', 'cv_reject'])
-      await flush()
+      // 标题全部读取完成后，四个会话的结算经过相同的异步步骤，按开始的顺序完成。
+      await until(() => store.petEntries().every((e) => e.title !== '新对话'))
       expect(store.petMood()).toBe('working')
       expect(store.petBadge()).toBe('4')
 
       store.setState('busyConversations', [])
-      await flush()
+      // cv_reject 最后开始结算：它的结果出现时，cv_stop 的结算已经结束。
+      await until(() => store.petResults().some((r) => r.conversationId === 'cv_reject'))
       const outcomes = Object.fromEntries(
         store.petResults().map((r) => [r.conversationId, r.outcome]),
       )
@@ -110,13 +118,15 @@ describe('宠物状态推导', () => {
     store.setState({ activeConversation: 'cv_elsewhere', busyConversations: ['cv_long'] })
     const stop = store.observePet()
     try {
-      await flush()
+      await until(() =>
+        store.petEntries().some((e) => e.conversationId === 'cv_long' && e.title === '长任务'),
+      )
       ledger.set('cv_long', {
         title: '长任务',
         runs: [{ status: 'done', createdAt: started, finishedAt: Date.now() }],
       })
       store.setState('busyConversations', [])
-      await flush()
+      await until(() => store.petResults().some((r) => r.conversationId === 'cv_long'))
       expect(store.petResults().find((r) => r.conversationId === 'cv_long')?.outcome).toBe('done')
     } finally {
       stop()
@@ -143,15 +153,19 @@ describe('宠物状态推导', () => {
     const stop = store.observePet()
     try {
       store.setState('busyConversations', ['cv_follow', 'cv_receipt', 'cv_plain'])
-      await flush()
-      const running = Object.fromEntries(store.petEntries().map((e) => [e.conversationId, e.title]))
+      const titles = () =>
+        Object.fromEntries(store.petEntries().map((e) => [e.conversationId, e.title]))
+      // cv_plain 的标题在 cv_receipt 的最近消息之后开始读取，两者经过相同的异步步骤：
+      // 该标题出现时，回执已被读取并忽略。
+      await until(() => titles().cv_follow === '第二次的提问' && titles().cv_plain === '只有标题')
+      const running = titles()
       expect(running).toMatchObject({
         cv_follow: '第二次的提问',
         cv_receipt: '派发任务',
         cv_plain: '只有标题',
       })
       store.setState('busyConversations', [])
-      await flush()
+      await until(() => store.petResults().some((r) => r.conversationId === 'cv_follow'))
       expect(store.petResults().find((r) => r.conversationId === 'cv_follow')?.title).toBe(
         '第二次的提问',
       )
@@ -173,13 +187,13 @@ describe('宠物状态推导', () => {
     const stop = store.observePet()
     try {
       store.setState('busyConversations', ['cv_queue'])
-      await flush()
+      await until(() => store.petEntries()[0]?.title === '那你直接帮我配置好')
       expect(store.petEntries()[0]?.title).toBe('那你直接帮我配置好')
       store.setState('views', 'cv_queue', 'transcript', (items) => [
         ...items,
         { id: 'm_next', kind: 'user' as const, text: '切换权限了' },
       ])
-      await flush()
+      await until(() => store.petEntries()[0]?.title === '切换权限了')
       expect(store.state.busyConversations).toEqual(['cv_queue'])
       expect(store.petEntries()[0]?.title).toBe('切换权限了')
     } finally {
@@ -196,13 +210,18 @@ describe('宠物状态推导', () => {
       parent: true,
       runs: [{ status: 'done', createdAt: now, finishedAt: now }],
     })
-    store.setState({ busyConversations: ['cv_child'] })
+    // 同时结束的顶层会话：在子会话之后开始结算，它的结果出现时子会话的结算已经结束。
+    ledger.set('cv_top', {
+      title: '顶层任务',
+      runs: [{ status: 'done', createdAt: now, finishedAt: now }],
+    })
+    store.setState({ busyConversations: ['cv_child', 'cv_top'] })
     const stop = store.observePet()
     try {
-      await flush()
+      await until(() => !store.petEntries().some((e) => e.conversationId === 'cv_child'))
       expect(store.petEntries().some((e) => e.conversationId === 'cv_child')).toBe(false)
       store.setState('busyConversations', [])
-      await flush()
+      await until(() => store.petResults().some((r) => r.conversationId === 'cv_top'))
       expect(store.petResults().some((r) => r.conversationId === 'cv_child')).toBe(false)
     } finally {
       stop()
@@ -261,14 +280,14 @@ describe('宠物状态推导', () => {
     const stop = store.observePet()
     try {
       setPetApply({ id: 'pet-cat', seq: 1 })
-      await flush()
+      await until(() => store.petPack()?.pack.name === '猫')
       expect(store.petPrefs().pack).toBe('pet-cat')
       expect(store.petPack()?.pack.name).toBe('猫')
       expect(store.petFrameUrl(entry, 'a.png')).toContain(
         '/api/pets/pet-cat/files/a.png?v=5&token=',
       )
       setPetsChange({ id: 'pet-cat', removed: true, seq: 1 })
-      await flush()
+      await until(() => store.petPack() === null)
       expect(store.petPrefs().pack).toBeNull()
       expect(store.petPack()).toBeNull()
     } finally {
@@ -301,7 +320,7 @@ describe('宠物组件', () => {
       setMood('working')
       expect(img().getAttribute('src')).toBe('/f/working-1.svg')
       expect(img().classList.contains('pet-motion-working')).toBe(false)
-      await new Promise((r) => setTimeout(r, 400))
+      await until(() => img().getAttribute('src') === '/f/working-2.svg')
       expect(img().getAttribute('src')).toBe('/f/working-2.svg')
     } finally {
       dispose()
@@ -357,14 +376,6 @@ describe('宠物组件', () => {
     }
   }
 
-  async function until(check: () => boolean, ms = 2000): Promise<void> {
-    const end = Date.now() + ms
-    while (!check()) {
-      if (Date.now() > end) throw new Error('等待超时')
-      await new Promise((r) => setTimeout(r, 10))
-    }
-  }
-
   const running = [{ conversationId: 'cv_run', title: '运行中的任务', status: 'running' }]
 
   test('宠物窗口：按推送的状态显示（含个性化强调色），只按宠物包请求一次尺寸，单击交给任务框窗口，移动后上报宠物左下角', async () => {
@@ -375,10 +386,10 @@ describe('宠物组件', () => {
     document.body.append(host)
     const dispose = render(() => <PetWindow />, host)
     try {
-      await flush()
+      await until(() => shell.emitted('pet://ready').length > 0)
       expect(shell.emitted('pet://ready')).toHaveLength(1)
       shell.emit('pet://state', await petState(running))
-      await flush()
+      await until(() => host.querySelector('.petw-badge')?.textContent === '2')
       const resizes = () => shell.calls.filter((c) => c.cmd === 'pet_window_resize')
       expect(resizes().map((c) => c.args)).toEqual([{ width: 92, height: 92 }])
       expect(host.querySelector('.petw-badge')?.textContent).toBe('2')
@@ -389,12 +400,12 @@ describe('宠物组件', () => {
         'pet://state',
         await petState(running, { accent: { color: 'rgba(168, 85, 247, 1)', fg: '#ffffff' } }),
       )
-      await flush()
       const rootStyle = document.documentElement.style
+      await until(() => rootStyle.getPropertyValue('--accent') !== '')
       expect(rootStyle.getPropertyValue('--accent')).toBe('rgba(168, 85, 247, 1)')
       expect(rootStyle.getPropertyValue('--accent-fg')).toBe('#ffffff')
       shell.emit('pet://state', await petState(running))
-      await flush()
+      await until(() => rootStyle.getPropertyValue('--accent') === '')
       expect(rootStyle.getPropertyValue('--accent')).toBe('')
 
       // 单击只通知任务框窗口，宠物窗口不改变尺寸。
@@ -405,7 +416,7 @@ describe('宠物组件', () => {
       pet.dispatchEvent(
         new PointerEvent('pointerup', { bubbles: true, button: 0, screenX: 5, screenY: 5 }),
       )
-      await flush()
+      await until(() => shell.emitted('pet://box-toggle').length > 0)
       expect(shell.emitted('pet://box-toggle')).toEqual([
         {
           target: { kind: 'WebviewWindow', label: 'pet-box' },
@@ -433,7 +444,7 @@ describe('宠物组件', () => {
     const dispose = render(() => <PetBox />, host)
     const placeCalls = () => shell.calls.filter((c) => c.cmd === 'pet_box_place').map((c) => c.args)
     try {
-      await flush()
+      await until(() => shell.emitted('pet://ready').length > 0)
       expect(shell.emitted('pet://ready')).toHaveLength(1)
       const bubble = { conversationId: 'cv_done', title: '写好的报告', outcome: 'done' }
       shell.emit('pet://state', await petState([...running], { bubble }))
@@ -443,7 +454,7 @@ describe('宠物组件', () => {
 
       // 单击宠物：气泡改为列表。先清空并缩小，空白画面之后再按一行的高度展开。
       shell.emit('pet://box-toggle', null)
-      await flush()
+      await until(() => !host.querySelector('.petw-bubble'))
       expect(host.querySelector('.petw-bubble')).toBeNull()
       expect(placeCalls().at(-1)).toEqual({ width: 0, height: 0 })
       await until(() => !!host.querySelector('.petw-menu'))
@@ -454,9 +465,10 @@ describe('宠物组件', () => {
 
       // 内容相同的推送不重建行：重建会使按下与抬起落在不同的节点上，点击丢失。
       // 主窗口每次推送的都是新对象（经 IPC 序列化），因此传副本。
+      // 推送在监听回调中同步写入，行是否重建在推送返回时即可判定；推送若引起重新放置，
+      // 会经同一队列排在下一次推送之前，由下文对放置调用序列的断言判定。
       const row = host.querySelector('.petw-row-main')
       shell.emit('pet://state', await petState(structuredClone(running), { bubble }))
-      await flush()
       expect(host.querySelector('.petw-row-main')).toBe(row)
 
       // 打开期间新增条目时高度随之增加，不在框内滚动。
@@ -474,7 +486,7 @@ describe('宠物组件', () => {
 
       ;(host.querySelector('.petw-stop') as HTMLButtonElement).click()
       ;(host.querySelector('.petw-row-main') as HTMLButtonElement).click()
-      await flush()
+      await until(() => shell.calls.some((c) => c.cmd === 'pet_open_main'))
       expect(shell.calls).toContainEqual({
         cmd: 'plugin:event|emit_to',
         args: {
@@ -500,10 +512,16 @@ describe('宠物组件', () => {
       expect(placeCalls().at(-1)).toEqual({ width: 0, height: 0 })
       const count = placeCalls().length
       shell.emit('pet://box-toggle', null)
-      await new Promise((r) => setTimeout(r, 150))
-      expect(placeCalls()).toHaveLength(count)
-      expect(host.querySelector('.petw-menu')).toBeNull()
       expect(shell.calls.at(-1)).toEqual({ cmd: 'pet_open_main', args: {} })
+      // 随后推送一个气泡作为后续事件：单击若引起放置，经同一队列排在气泡的放置之前。
+      const clicked = shell.calls.length
+      shell.emit('pet://state', await petState([], { bubble }))
+      await until(() => !!host.querySelector('.petw-bubble'))
+      expect(placeCalls()).toHaveLength(count + 1)
+      expect(shell.calls.slice(clicked)).toEqual([
+        { cmd: 'pet_box_place', args: { width: 244, height: 34 } },
+      ])
+      expect(host.querySelector('.petw-menu')).toBeNull()
     } finally {
       shell.restore()
       dispose()

@@ -15,6 +15,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, ConversationId, EventEnvelope } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import type { QyConfig } from '@qywork/runtime'
 import {
   ContentStore,
@@ -160,14 +161,16 @@ function deps() {
   return { store, content, config, bus, runs, subagents }
 }
 
-async function finished(count: number): Promise<void> {
-  const deadline = Date.now() + 15_000
+/**
+ * 等待第 `count` 个 run 结束且会话的占位已释放。`run.finished` 发布于占位释放之前：只等事件时，
+ * 紧接着发起的下一轮会因会话仍被占用而被取消，用例随即等待一个不会到来的结束事件。
+ */
+async function finished(cv: ConversationId, count: number): Promise<void> {
   const done = (e: AgentEvent) => e.type === 'run.finished'
-  while (Date.now() < deadline) {
-    if (events.filter((f) => done(f.event)).length >= count) return
-    await Bun.sleep(10)
-  }
-  throw new Error('run 没有按时结束')
+  await until(
+    () => events.filter((f) => done(f.event)).length >= count && !runs.hasRun(cv),
+    `第 ${count} 个 run 结束`,
+  )
 }
 
 type Block = Record<string, unknown>
@@ -191,9 +194,9 @@ test('签名思考块在同一 run 的下一轮与下一个 run 里都按原位�
   script = [TOOL_TURN, textTurn('sig-text', '目录已读'), textTurn('sig-next', '好的')]
 
   await startRun(cv, '看看目录', undefined, deps())
-  await finished(1)
+  await finished(cv, 1)
   await startRun(cv, '再说一句', undefined, deps())
-  await finished(2)
+  await finished(cv, 2)
 
   expect(bodies).toHaveLength(3)
   // 同一 run 的第二次请求：工具轮带有其签名块，位于 tool_use 之前。
@@ -260,9 +263,9 @@ test('待办自动继续的提示保留在历史中，其前后的签名块都�
   ]
 
   await startRun(cv, '整理目录', undefined, deps())
-  await finished(before + 1)
+  await finished(cv, before + 1)
   await startRun(cv, '还有吗', undefined, deps())
-  await finished(before + 2)
+  await finished(cv, before + 2)
 
   expect(bodies).toHaveLength(5)
   const notice = (b: Record<string, unknown>) =>
@@ -304,7 +307,7 @@ test('受阻结束、下轮解释与明确接续都以同一份待办账本裁�
     textTurn('finished', '任务已完成'),
   ]
   await startRun(cv, '整理目录', undefined, deps())
-  await finished(before + 1)
+  await finished(cv, before + 1)
   expect(bodies).toHaveLength(3)
   expect(latestTodos(store, cv)?.[0]?.status).toBe('blocked')
   const stops = () => events.filter((f) => f.event.type === 'run.finished').slice(before)
@@ -317,13 +320,13 @@ test('受阻结束、下轮解释与明确接续都以同一份待办账本裁�
   // 受阻项在等待用户补充信息，「为什么暂停」是询问受阻条件，只回答、不认领。
   // 追问未完成且未受阻的项即要求完成，判定写在系统提示中，执行循环不替模型判断消息的意图。
   await startRun(cv, '为什么暂停', undefined, deps())
-  await finished(before + 2)
+  await finished(cv, before + 2)
   expect(bodies).toHaveLength(4)
   expect(latestTodos(store, cv)?.[0]?.status).toBe('blocked')
   expect(stops()[1]?.event).toMatchObject({ stopReason: 'completed' })
 
   await startRun(cv, '信息已补齐，继续完成', undefined, deps())
-  await finished(before + 3)
+  await finished(cv, before + 3)
   expect(bodies).toHaveLength(8)
   expect(userTexts(bodies[6]!).some((t) => t.includes('本轮待办尚有未完成的项'))).toBe(true)
   expect(latestTodos(store, cv)?.[0]?.status).toBe('completed')

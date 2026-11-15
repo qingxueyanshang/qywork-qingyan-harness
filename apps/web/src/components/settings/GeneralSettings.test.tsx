@@ -3,7 +3,7 @@
  * 主题三项始终可选；「个性化」一行打开个性化弹窗（颜色选择可选空值，修改后保存，恢复默认需确认）；
  * 个性化弹窗中选择图片后界面与服务端一致（`PersonalizationDialog.tsx`）。
  */
-import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, expect, jest, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import { DEFAULT_PERSONALIZATION } from '@qywork/core'
 import type { ConfigPayload, RedactedConfig } from '../../lib/store/index.ts'
@@ -275,17 +275,26 @@ test('从看不到背景改为图片：只发一次请求，变更广播触发�
   const host = document.createElement('div')
   document.body.append(host)
   const dispose = render(() => <PersonalizationDialog onClose={() => {}} />, host)
+  /*
+   * 桩的响应延迟与编辑停顿后的保存都由假计时器推进，共推进 400ms，超过保存的停顿：
+   * 期间到期的保存都已发出。每推进一段让出一轮事件循环，使到期的响应处理完毕。
+   */
+  jest.useFakeTimers()
   try {
     const input = host.querySelector<HTMLInputElement>('input.personal-file')!
     const file = new File([new Uint8Array([1, 2, 3])], 'bg.png', { type: 'image/png' })
     Object.defineProperty(input, 'files', { value: [file], configurable: true })
     input.dispatchEvent(new Event('change'))
     await until(() => requests.includes('GET /api/personalization'))
-    await new Promise((r) => setTimeout(r, 400))
+    for (let elapsed = 0; elapsed < 400; elapsed += 10) {
+      jest.advanceTimersByTime(10)
+      await new Promise((r) => setImmediate(r))
+    }
     expect(requests).toEqual(['PUT /api/personalization/image', 'GET /api/personalization'])
     expect(server.opacity).toBe(0.85)
     expect(store.currentPersonalization()).toEqual(server)
   } finally {
+    jest.useRealTimers()
     dispose()
     host.remove()
     stop()

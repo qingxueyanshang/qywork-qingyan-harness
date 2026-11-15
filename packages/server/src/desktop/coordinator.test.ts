@@ -25,6 +25,7 @@ import type {
   DesktopResultFrame,
   DesktopTargetEvent,
 } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, upsertWorkspace } from '@qywork/store'
 import { serve } from '../server.ts'
@@ -135,9 +136,9 @@ function config(): QyConfig {
   }
 }
 
-const cleanups: (() => void)[] = []
-afterEach(() => {
-  for (const fn of cleanups.splice(0).reverse()) fn()
+const cleanups: (() => void | Promise<void>)[] = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
 })
 
 function fresh(): ReturnType<typeof serve> {
@@ -155,8 +156,8 @@ function fresh(): ReturnType<typeof serve> {
     host: '127.0.0.1',
     hostKey: HOST_KEY,
   })
-  cleanups.push(() => {
-    handle.stop()
+  cleanups.push(async () => {
+    await handle.stop()
     content.close()
     store.close()
     // Windows 上 SQLite 的文件句柄释放有延迟，临时目录删除失败与被测行为无关。
@@ -167,19 +168,72 @@ function fresh(): ReturnType<typeof serve> {
   return handle
 }
 
-/** 让已排队的微任务与计时器执行完毕，用于断言这段时间内未发送任何帧。 */
-const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms))
-
 async function connected(handle: ReturnType<typeof serve>): Promise<{
   host: FakeDesktopHost
   desktop: DesktopCoordinator
 }> {
   const host = await FakeDesktopHost.connect(handle.port, HOST_KEY, cleanups)
   host.ready()
-  await tick()
   const desktop = handle.desktop
   if (!desktop) throw new Error('这个 serve 应当装配了电脑控制协调器')
+  await until(() => desktop.available(), '桌面宿主完成注册')
   return { host, desktop }
+}
+
+/**
+ * 重新发送 `host.ready` 并等到服务端处理完毕：每次注册都广播一次 `desktop.state`。
+ */
+async function reregister(
+  handle: ReturnType<typeof serve>,
+  host: FakeDesktopHost,
+  over: Parameters<FakeDesktopHost['ready']>[0],
+): Promise<void> {
+  let seen = 0
+  const off = handle.bus.subscribe({
+    id: `probe_${crypto.randomUUID()}`,
+    origin: 'desktop',
+    conversations: null,
+    send: (frame) => {
+      if (frame.event.type === 'desktop.state') seen += 1
+    },
+  })
+  try {
+    host.ready(over)
+    await until(() => seen > 0, '宿主重新注册')
+  } finally {
+    off()
+  }
+}
+
+/**
+ * 确认收到 `before` 条帧之后没有再发出任何帧：另一个执行者经宿主连接往返一次窗口发现。
+ * 发往宿主的帧按序到达，探针请求到达时，此前发出的帧都已到达。应答保留两个窗口，本地窗口表不变。
+ */
+async function noFramesAfter(
+  host: FakeDesktopHost,
+  desktop: DesktopCoordinator,
+  before: number,
+): Promise<void> {
+  let done = false
+  const probe = desktop
+    .portFor('cv_probe')
+    .windows()
+    .then(() => {
+      done = true
+    })
+  const replied = new Set<string>()
+  await until(() => {
+    for (const frame of host.received.slice(before)) {
+      if (frame.op !== 'list_windows' || replied.has(frame.requestId)) continue
+      replied.add(frame.requestId)
+      host.reply(frame, {
+        observation: { kind: 'windows', capturedAt: 1, windows: [WINDOW, OTHER] },
+      })
+    }
+    return done
+  }, '探针往返')
+  await probe
+  expect(host.received.slice(before).map((f) => f.op)).toEqual(['list_windows'])
 }
 
 /** 执行一次窗口发现，使两个不透明 id 写入本地窗口表。 */
@@ -288,8 +342,7 @@ test('释放时执行状态未知则其窗口不交还，其他窗口照常可�
   await observed(host, b.observe({ windowId: 'dw_2' }))
 
   // 执行实例更换后，旧实例名下的请求均已作废，窗口随之可用。
-  host.ready({ hostEpoch: 9 })
-  await tick()
+  await reregister(handle, host, { hostEpoch: 9 })
   const d = desktop.portFor('cv_d')
   const [first] = await discover(host, () => d.windows())
   if (!first) throw new Error('窗口发现应当交回两个窗口')
@@ -376,8 +429,7 @@ test('「正在操作」读数按执行者各记一项，释放时移除，宿�
   await released
   expect(desktop.targets()).toEqual([targetB])
   host.socket.close()
-  await tick()
-  expect(desktop.targets()).toEqual([])
+  await until(() => desktop.targets().length === 0, '断开后清除目标')
   expect(seen.at(-1)).toEqual([])
 })
 
@@ -425,8 +477,7 @@ test('本执行者未观察到的子树根在本地被拒绝，不发送任何�
   await firstLook(host, a)
   const before = host.received.length
   await expect(a.observe({ windowId: 'dw_1', root: 'e9' })).rejects.toThrow('没有控件')
-  await tick()
-  expect(host.received.length).toBe(before)
+  await noFramesAfter(host, desktop, before)
 })
 
 /** 读取一次整窗，以给定节点应答，返回快照。 */
@@ -509,8 +560,7 @@ test('新控件获得新编号，消失控件的编号不分配给其他控件�
       action: { kind: 'invoke' },
     }),
   ).rejects.toThrow('中没有控件 e5')
-  await tick()
-  expect(host.received.length).toBe(before)
+  await noFramesAfter(host, desktop, before)
 
   // 乙按钮重新出现：其身份仍在编号表中，沿用原编号。
   const third = await lookWith(host, a, NODES)
@@ -1263,8 +1313,7 @@ test('无法识别的 imageRef 在本地被拒绝，不发送任何帧', async (
     .catch((err: unknown) => err as Error & { executed?: boolean })
   expect(String(failed)).toContain('无法识别的图像')
   expect((failed as { executed?: boolean }).executed).toBe(false)
-  await tick()
-  expect(host.received.length).toBe(before)
+  await noFramesAfter(host, desktop, before)
 })
 
 /** 代际变化后，采集时的几何数据已不成立，据此换算出的矩形指向其他界面区域。 */
@@ -1275,8 +1324,7 @@ test('宿主代际变化后旧 imageRef 失效', async () => {
   await discover(host, () => a.windows())
   const first = await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
 
-  host.ready({ hostEpoch: 9 })
-  await tick()
+  await reregister(handle, host, { hostEpoch: 9 })
   // 代际变化后窗口表同样作废，重新执行窗口发现后才有可用的不透明 id。
   const again = (await discover(host, () => a.windows()))[0]?.windowId ?? ''
 
@@ -1290,8 +1338,7 @@ test('宿主代际变化后旧 imageRef 失效', async () => {
     })
     .catch((err: unknown) => String(err))
   expect(String(failed)).toContain('代际已变化')
-  await tick()
-  expect(host.received.length).toBe(before)
+  await noFramesAfter(host, desktop, before)
 })
 
 /** 窗口关闭后重新打开时句柄可能被复用，旧图像对应的是之前的窗口。 */
@@ -1551,8 +1598,7 @@ test('控件与图像点只能提供其中一个，同时提供或均未提供�
       action: { kind: 'activate' },
     }),
   ).rejects.toThrow('只能按控件执行')
-  await tick()
-  expect(host.received.length).toBe(before)
+  await noFramesAfter(host, desktop, before)
 })
 
 /**
@@ -1593,8 +1639,7 @@ test('未指定控件的键盘输入要求本执行者观察或截取过该窗�
   await expect(press()).rejects.toThrow('本次执行没有观察或截取过该窗口')
   await captured(host, a.captureImage({ windowId: 'dw_2', maxEdge: 1568 }))
   await expect(press()).rejects.toThrow('本次执行没有观察或截取过该窗口')
-  await tick()
-  expect(host.received.length).toBe(before + 1)
+  await noFramesAfter(host, desktop, before + 1)
 
   await captured(host, a.captureImage({ windowId: 'dw_1', maxEdge: 1568 }))
   const acting = press()
@@ -1646,8 +1691,7 @@ test('图片范围外的坐标在本地被拒绝，不发送任何帧', async ()
       action: { kind: 'click', button: 'left', count: 1 },
     }),
   ).rejects.toThrow('覆盖范围')
-  await tick()
-  expect(host.received.length).toBe(before)
+  await noFramesAfter(host, desktop, before)
 })
 
 test('无法识别的图片在本地被拒绝，不发送任何帧', async () => {
@@ -1663,8 +1707,7 @@ test('无法识别的图片在本地被拒绝，不发送任何帧', async () =>
       action: { kind: 'click', button: 'left', count: 1 },
     }),
   ).rejects.toThrow('无法识别的图像')
-  await tick()
-  expect(host.received.length).toBe(before)
+  await noFramesAfter(host, desktop, before)
 })
 
 /** 拖拽终点写在动作中：像素偏移原样下发，控件终点必须来自本执行者已取得的观察。 */
@@ -1692,8 +1735,7 @@ test('拖拽的像素偏移原样下发，控件终点必须在观察中', async
       action: { kind: 'drag', to: { kind: 'ref', ref: 'e9' } },
     }),
   ).rejects.toThrow('没有控件')
-  await tick()
-  expect(host.received.length).toBe(before)
+  await noFramesAfter(host, desktop, before)
 })
 
 /**

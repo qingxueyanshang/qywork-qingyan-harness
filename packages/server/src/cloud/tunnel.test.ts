@@ -210,10 +210,15 @@ describe('隧道客户端', () => {
       open: (ws) => {
         ws.send('已连接')
       },
+      close: () => {
+        localClosed++
+      },
     },
   })
   const statuses: TunnelStatus[] = []
   let client: TunnelClient | null = null
+  /** 本机 WebSocket 服务上已关闭的连接数。 */
+  let localClosed = 0
 
   const start = (pairing = { token: 'tok', deviceName: '电脑' }) => {
     statuses.length = 0
@@ -272,6 +277,7 @@ describe('隧道客户端', () => {
   test('WebSocket 转发：本机接受后双向传递消息，云端关闭时关闭本机连接', async () => {
     const c = start()
     await until(() => c.status.state === 'online')
+    const closedBefore = localClosed
     const sid = cloud.newSid()
     cloud.send({ type: 'ws.open', sid, path: '/ws', headers: [] })
     await cloud.control('ws.accept', sid)
@@ -283,7 +289,7 @@ describe('隧道客户端', () => {
     expect(new TextDecoder().decode(echo.payload)).toBe('回声：你好')
     cloud.send({ type: 'close', sid, code: 4000, reason: '手机已关闭' })
     // 本机连接关闭后不再回传 close：云端已删除该流。
-    await Bun.sleep(50)
+    await until(() => localClosed > closedBefore)
   })
 
   /**
@@ -307,7 +313,8 @@ describe('隧道客户端', () => {
       const path = `@127.0.0.1:${other.port}/x`
       cloud.send({ type: 'http.open', sid: cloud.newSid(), method: 'GET', path, headers: [] })
       cloud.send({ type: 'ws.open', sid: cloud.newSid(), path, headers: [] })
-      // 控制帧按顺序处理：其后的请求完成时，前两帧已处理完毕。
+      // 控制帧按顺序处理：其后的请求完成时，前两帧已处理完毕。被错误转发的请求经另一条连接
+      // 到达另一个端口，与上面的请求之间没有先后保证，只能留出一段时间确认它没有到达。
       expect((await cloud.request('GET', '/after')).status).toBe(201)
       await Bun.sleep(100)
       expect(hits).toEqual([])
@@ -333,6 +340,7 @@ describe('隧道客户端', () => {
     const revoked = start()
     await until(() => revoked.status.state === 'revoked')
     const hellos = cloud.hellos.length
+    // 确认没有重连：退避为 20 ms，重连的 hello 会在这段时间内到达；不重连时没有可等待的事件。
     await Bun.sleep(100)
     expect(cloud.hellos.length).toBe(hellos)
     revoked.stop()
@@ -360,6 +368,7 @@ describe('隧道客户端', () => {
     const hellos = cloud.hellos.length
     cloud.ws?.close(TUNNEL_CLOSE.replaced)
     await until(() => c.status.state === 'replaced')
+    // 确认没有重连：退避为 20 ms，重连的 hello 会在这段时间内到达；不重连时没有可等待的事件。
     await Bun.sleep(100)
     expect(cloud.hellos.length).toBe(hellos)
   })
@@ -455,10 +464,12 @@ describe('远程访问经 serve() 装配', () => {
       port: 0,
       host: '127.0.0.1',
     })
+    // 隧道客户端在 serve() 返回前即已创建，快照为空说明没有创建；hello 由连接异步发出，
+    // 不连接时没有可等待的事件，留出一段时间确认没有到达。
+    expect(quiet.remote.snapshot().tunnel).toBeNull()
     await Bun.sleep(200)
     expect(cloud.hellos.length).toBe(0)
-    expect(quiet.remote.snapshot().tunnel).toBeNull()
-    quiet.stop()
+    await quiet.stop()
 
     handle = serve({
       store,

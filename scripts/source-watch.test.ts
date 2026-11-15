@@ -21,14 +21,45 @@ async function until(check: () => boolean): Promise<void> {
   expect(check()).toBe(true)
 }
 
+/** 标记文件名：测试文件不属于需要重载的源码，标记本身不触发通知。 */
+const MARKER = 'marker.test.txt'
+
+/** 记录观察器何时处理到标记文件；其余路径按 `isWebSourceChange` 判定。 */
+function markerProbe(root: string) {
+  let seen = false
+  return {
+    include: (file: unknown): boolean => {
+      if (file === MARKER) seen = true
+      return isWebSourceChange(file)
+    },
+    /**
+     * 写入标记直到观察器处理到它。同一个 watcher 按发生顺序交付通知，标记被处理时，此前的文件操作都已处理；
+     * 重复写入是因为 macOS 的事件流在 `watch()` 返回之后才开始投递，此前的写入没有通知。
+     */
+    async reached(): Promise<void> {
+      seen = false
+      let n = 0
+      await until(() => {
+        writeFileSync(join(root, MARKER), String(n++))
+        return seen
+      })
+    },
+  }
+}
+
 test('频繁读取源码文件与修改访问时间不触发重启，内容修改仍等到运行结束后重启', async () => {
   const root = mkdtempSync(join(tmpdir(), 'source-watch-'))
   const file = join(root, 'Settings.tsx')
   writeFileSync(file, 'export const value = 1\n')
   let running = false
   let restarts = 0
+  let busyChecks = 0
+  let notified = 0
   const supervisor = createReloadSupervisor({
-    busy: () => running,
+    busy: () => {
+      busyChecks++
+      return running
+    },
     restart: async () => {
       restarts++
     },
@@ -38,7 +69,11 @@ test('频繁读取源码文件与修改访问时间不触发重启，内容修�
     clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
     log: () => {},
   })
-  const watcher = watchSource(root, isWebSourceChange, () => supervisor.onChange())
+  const probe = markerProbe(root)
+  const watcher = watchSource(root, probe.include, () => {
+    notified++
+    supervisor.onChange()
+  })
   try {
     const mtime = statSync(file).mtime
     for (let i = 0; i < 20; i++) {
@@ -48,12 +83,16 @@ test('频繁读取源码文件与修改访问时间不触发重启，内容修�
     }
     // 以相同内容重写不改变正在运行的源码。
     writeFileSync(file, 'export const value = 1\n')
-    await Bun.sleep(100)
+    await probe.reached()
+    expect(notified).toBe(0)
     expect(restarts).toBe(0)
 
     running = true
     writeFileSync(file, 'export const value = 2\n')
-    await Bun.sleep(100)
+    await until(() => notified === 1)
+    // 通知之后至少再查询一次是否空闲：不依据查询结果时，重启紧随这次查询发生。
+    const checks = busyChecks
+    await until(() => busyChecks > checks)
     expect(restarts).toBe(0)
     running = false
     await until(() => restarts === 1)
@@ -72,11 +111,12 @@ test('新增、删除、目录重命名会重载，测试文件不会重载', as
   mkdirSync(dependency, { recursive: true })
   writeFileSync(join(dependency, 'index.ts'), 'export const value = 1\n')
   let changes = 0
-  const watcher = watchSource(root, isWebSourceChange, () => changes++)
+  const probe = markerProbe(root)
+  const watcher = watchSource(root, probe.include, () => changes++)
   try {
     writeFileSync(join(root, 'Settings.test.tsx'), 'test')
     writeFileSync(join(dependency, 'index.ts'), 'export const value = 2\n')
-    await Bun.sleep(100)
+    await probe.reached()
     expect(changes).toBe(0)
 
     const added = join(dir, 'extra.css')

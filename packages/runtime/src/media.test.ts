@@ -643,7 +643,7 @@ describe('生成花费', () => {
         { kind: 'run', run_id: finished.runId, model: 'qwen-test', cost: 0, currency: 'USD' },
       ])
     } finally {
-      s.dispose()
+      await s.dispose()
       store.close()
     }
   })
@@ -718,7 +718,7 @@ describe('生成花费', () => {
         { run_id: finished.runId, cost: 0.18 },
       ])
     } finally {
-      s.dispose()
+      await s.dispose()
       store.close()
     }
   })

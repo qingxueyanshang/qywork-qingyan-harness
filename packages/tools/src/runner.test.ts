@@ -11,6 +11,9 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { startCommandRunner } from './runner.ts'
 
 /** runner 一侧的入口。正式路径是 `qy runner`，测试中直接调用该函数。 */
@@ -107,6 +110,12 @@ describe('命令由 runner 代为执行', () => {
    */
   test('进程退出后仍有后代进程持有管道时，流不随之关闭', async () => {
     const runner = startCommandRunner(RUNNER_ARGV)
+    const trigger = join(await mkdtemp(join(tmpdir(), 'qywork-runner-')), 'go')
+    // 孙进程在触发文件出现后写入 `late`；3 秒内未出现时停止轮询并退出。
+    const grandchild =
+      `const f=${JSON.stringify(trigger)};const fs=require('node:fs');` +
+      `const t=setInterval(()=>{if(fs.existsSync(f)){clearInterval(t);process.stdout.write('late')}},10);` +
+      'setTimeout(()=>clearInterval(t),3000).unref()'
     try {
       const proc = await runner.spawn({
         /*
@@ -118,7 +127,7 @@ describe('命令由 runner 代为执行', () => {
         argv: [
           process.execPath,
           '-e',
-          `Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 3000)'], { stdout: 'inherit', detached: true }).unref(); process.stdout.write('hi')`,
+          `Bun.spawn([process.execPath, '-e', ${JSON.stringify(grandchild)}], { stdout: 'inherit', detached: true }).unref(); process.stdout.write('hi')`,
         ],
         detached: false,
       })
@@ -126,11 +135,9 @@ describe('命令由 runner 代为执行', () => {
 
       const reader = proc.stdout.getReader()
       expect(new TextDecoder().decode((await reader.read()).value)).toBe('hi')
-      const state = await Promise.race([
-        reader.read().then(() => 'eof'),
-        Bun.sleep(500).then(() => 'open'),
-      ])
-      expect(state).toBe('open')
+      // 中间进程退出之后才使孙进程写入：流随退出关闭时，此处读到 EOF 而不是 `late`。
+      await writeFile(trigger, '')
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe('late')
       // 读端取消后这条流才结束：结束读取由读端决定，不是退出码的副作用。
       await reader.cancel()
     } finally {
@@ -214,10 +221,23 @@ describe('命令由 runner 代为执行', () => {
   /** runner 退出后须明确报告，不伪装为仍可执行；重启一次意味着重建「哪些命令仍在运行」的记录。 */
   test('runner 退出之后再发送命令会抛出错误', async () => {
     const runner = startCommandRunner(RUNNER_ARGV)
-    runner.stop()
-    await Bun.sleep(300)
-    expect(runner.spawn({ argv: [process.execPath, '-e', ''], detached: false })).rejects.toThrow(
-      /runner/,
-    )
+    // runner 退出时尚未退出的调用以错误结束，以此确认 runner 已退出。
+    const held = await runner.spawn({
+      argv: [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+      detached: false,
+    })
+    try {
+      runner.stop()
+      await expect(held.exited).rejects.toThrow(/runner/)
+      await expect(
+        runner.spawn({ argv: [process.execPath, '-e', ''], detached: false }),
+      ).rejects.toThrow(/runner/)
+    } finally {
+      try {
+        process.kill(held.pid)
+      } catch {
+        // 已随 runner 结束。
+      }
+    }
   })
 })

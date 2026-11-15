@@ -202,19 +202,20 @@ async function until(check: () => boolean, label: string): Promise<void> {
   throw new Error(`等不到：${label}`)
 }
 
-/** 等待该会话完全空闲（收尾与发起下一轮的 setTimeout(0) 均已执行）。 */
-async function idle(cv: ConversationId, ms = 20_000): Promise<void> {
-  const deadline = Date.now() + ms
-  while (Date.now() < deadline) {
-    if (!runs.isBusy(cv)) {
-      await Bun.sleep(80)
-      if (!runs.isBusy(cv)) return
-    }
-    await Bun.sleep(10)
-  }
+/**
+ * 等待该会话空闲，且不会再自行发起下一轮。
+ *
+ * 收尾时先释放占位，再关闭扩展、取出跟进消息并重新占位；本文件的工作区没有插件与 MCP 服务，
+ * 两步之间只经过微任务，轮询看不到其间的空闲。本文件不设目标，没有经 setTimeout 发起的自动继续。
+ */
+async function idle(cv: ConversationId): Promise<void> {
+  await until(() => !runs.isBusy(cv) && runs.armedOf(cv) === null, '会话空闲')
 }
 
-/** 排队与发起均经由 setTimeout(0)，多等待几个周期以确认未启动下一轮。 */
+/**
+ * 只用于确认**没有**发起下一轮或新的请求。是否发起在占位释放之后判定，判定为不发起时没有任何事件，
+ * 只能留出几个周期。
+ */
 async function settle(): Promise<void> {
   await Bun.sleep(200)
 }

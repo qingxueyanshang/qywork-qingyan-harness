@@ -132,7 +132,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
 
     for (const nextMode of ['reject', 'no-usage', 'after'] as const) {
       // 模拟重新加载会话；状态必须从账本恢复，不能靠上次 Session 的内存。
-      session.dispose()
+      await session.dispose()
       session = makeSession()
       mode = nextMode
       const readings = await ask('继续处理')
@@ -160,7 +160,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
     const afterBody = JSON.parse(bodies[3]!) as { messages: unknown[] }
     expect(afterBody.messages.length).toBeLessThan(beforeBody.messages.length)
   } finally {
-    session.dispose()
+    await session.dispose()
     store.close()
     provider.stop(true)
   }

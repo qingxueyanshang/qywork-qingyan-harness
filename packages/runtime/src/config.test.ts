@@ -386,7 +386,7 @@ describe('模型解析', () => {
     )
   })
 
-  /** 传入 ref 表示用户已指定接口，不再推测：classifier 即按此方式配置。 */
+  /** 传入 ref 表示已指定接口，不再推测：会话记录的接口与模型、生成调用指定的接口与模型按此方式解析。 */
   test('传入 ModelRef 时接口已明确指定，不参与推测', () => {
     const r = resolveModel(two, { provider: 'mirror', model: 'deepseek-v4-pro' })
     expect(r?.provider).toBe('mirror')

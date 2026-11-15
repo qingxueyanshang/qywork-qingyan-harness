@@ -259,7 +259,10 @@ test('凭据行缺失或不合法时以退出码 2 结束，不输出就绪回�
       },
     )
     const exitCode = await Promise.race([proc.exited, Bun.sleep(15_000).then(() => null)])
-    if (exitCode === null) killTree(proc)
+    if (exitCode === null) {
+      killTree(proc)
+      await proc.exited
+    }
     return {
       exitCode,
       stdout: await new Response(proc.stdout).text(),

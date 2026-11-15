@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { until } from '@qywork/core/until.test-helper'
 import { checkPermission, type HostCallContext, PluginHost, requiredPermissions } from './host.ts'
 import type { PluginManifest } from './manifest.ts'
 
@@ -129,7 +130,7 @@ describe('进程生命周期', () => {
     `)
     const h = host(entry, dir)
     await h.start()
-    expect(h.call('m', {}, ctx())).rejects.toThrow('插件内部错误')
+    expect(await failure(h.call('m', {}, ctx()))).toContain('插件内部错误')
     h.stop()
   })
 
@@ -142,7 +143,7 @@ describe('进程生命周期', () => {
     const h = host(entry, dir)
     await h.start()
     // 等待至超时在用户看来是「无响应」，而这里已确知不会再有答复。
-    expect(h.call('m', {}, ctx())).rejects.toThrow('插件进程退出')
+    expect(await failure(h.call('m', {}, ctx()))).toContain('插件进程退出')
     h.stop()
   })
 
@@ -168,7 +169,7 @@ describe('进程生命周期', () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-plugin-'))
     const entry = join(dir, 'index.mjs')
     await writeFile(entry, 'process.exit(1)\n', 'utf8')
-    expect(host(entry, dir).start()).rejects.toThrow()
+    expect(await failure(host(entry, dir).start())).not.toBe('')
   })
 
   test('从不发送 ready 的插件在超时后报错', async () => {
@@ -176,7 +177,9 @@ describe('进程生命周期', () => {
     const entry = join(dir, 'index.mjs')
     // 保持运行但不发送 ready。
     await writeFile(entry, 'setInterval(() => {}, 1000)\n', 'utf8')
-    expect(host(entry, dir, { readyTimeoutMs: 200 }).start()).rejects.toThrow('超时（200ms）')
+    expect(await failure(host(entry, dir, { readyTimeoutMs: 200 }).start())).toContain(
+      '超时（200ms）',
+    )
   })
 
   /** 原始失败形状：服务停止时插件仍在启动，停止流程等到启动超时（10 秒）才结束，期间插件进程继续运行。 */
@@ -393,20 +396,26 @@ describe('可信调用上下文', () => {
     h.stop()
   })
 
-  /** 不回复本次调用，只在指定延迟后反向请求宿主。 */
-  const LATE = (delayMs: number) => `
+  /**
+   * 不回复本次调用；收到作废通知后以该调用的 id 反向请求宿主。作废通知与反向请求经同一条管道按序传递，
+   * 反向请求必然在宿主结束该调用之后到达。
+   */
+  const LATE = `
       function handle(msg) {
-        if (msg.type === 'call') {
-          setTimeout(() => send({ type: 'host', id: 'late', method: 'fs.read', params: {}, parentCallId: msg.id }), ${delayMs})
+        if (msg.type === 'call.cancelled') {
+          send({ type: 'host', id: 'late', method: 'fs.read', params: {}, parentCallId: msg.id })
         }
         if (msg.type === 'host.result') {
           process.stderr.write('LATE ' + JSON.stringify(msg.error) + '\\n')
         }
       }
 `
+  /** 插件记录了宿主对迟到反向请求的答复：宿主已处理完该请求。 */
+  const lateRejected = (lines: string[]) =>
+    lines.some((l) => l.includes('LATE') && l.includes('call_context_gone'))
 
   test('取消后 parentCallId 立即失效，迟到的反向 RPC 被拒绝', async () => {
-    const { dir, entry } = await pluginWith(LATE(200))
+    const { dir, entry } = await pluginWith(LATE)
     const lines: string[] = []
     let called = 0
     const ac = new AbortController()
@@ -420,16 +429,15 @@ describe('可信调用上下文', () => {
     })
     await h.start()
     const call = h.call('go', {}, ctx({ signal: ac.signal }))
-    setTimeout(() => ac.abort(), 20)
+    ac.abort()
     expect(await failure(call)).toContain('调用已取消')
-    await new Promise((r) => setTimeout(r, 500))
+    await until(() => lateRejected(lines), '宿主答复迟到的反向请求')
     expect(called).toBe(0)
-    expect(lines.some((l) => l.includes('LATE') && l.includes('call_context_gone'))).toBe(true)
     h.stop()
   })
 
   test('超时后同样失效，而不是只删除待决项、任由插件继续运行', async () => {
-    const { dir, entry } = await pluginWith(LATE(300))
+    const { dir, entry } = await pluginWith(LATE)
     const lines: string[] = []
     let called = 0
     const h = host(entry, dir, {
@@ -442,18 +450,18 @@ describe('可信调用上下文', () => {
     })
     await h.start()
     expect(await failure(h.call('go', {}, ctx({ deadline: Date.now() + 60 })))).toContain('超时')
-    await new Promise((r) => setTimeout(r, 600))
+    await until(() => lateRejected(lines), '宿主答复迟到的反向请求')
     expect(called).toBe(0)
-    expect(lines.some((l) => l.includes('LATE') && l.includes('call_context_gone'))).toBe(true)
     h.stop()
   })
 
   test('调用正常结束后，迟到的反向 RPC 同样被拒绝', async () => {
+    // 回复之后紧接着反向请求：两帧经同一条管道按序到达，宿主处理反向请求时该调用已经结束。
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
         if (msg.type === 'call') {
           send({ id: msg.id, ok: true, result: 'done' })
-          setTimeout(() => send({ type: 'host', id: 'late', method: 'fs.read', params: {}, parentCallId: msg.id }), 150)
+          send({ type: 'host', id: 'late', method: 'fs.read', params: {}, parentCallId: msg.id })
         }
         if (msg.type === 'host.result') {
           process.stderr.write('LATE ' + JSON.stringify(msg.error) + '\\n')
@@ -472,9 +480,8 @@ describe('可信调用上下文', () => {
     })
     await h.start()
     expect(await h.call('go', {}, ctx())).toBe('done')
-    await new Promise((r) => setTimeout(r, 500))
+    await until(() => lateRejected(lines), '宿主答复迟到的反向请求')
     expect(called).toBe(0)
-    expect(lines.some((l) => l.includes('LATE') && l.includes('call_context_gone'))).toBe(true)
     h.stop()
   })
 })

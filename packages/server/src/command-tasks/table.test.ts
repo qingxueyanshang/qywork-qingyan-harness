@@ -244,11 +244,14 @@ async function until(check: () => boolean, label: string): Promise<void> {
   throw new Error(`等不到：${label}`)
 }
 
-/** 等待该会话空闲，且收尾阶段经 setTimeout(0) 安排的下一轮已有机会启动。 */
+/**
+ * 等待该会话空闲，且收尾阶段不会再发起下一轮。
+ *
+ * 收尾时先释放占位，再关闭扩展、取出跟进消息并重新占位；本文件的工作区没有插件与 MCP 服务，
+ * 两步之间只经过微任务，轮询看不到其间的空闲。后台命令结束时的回执另行发起一轮，用例按请求数等待。
+ */
 async function idle(cv: ConversationId): Promise<void> {
-  await until(() => !runs.isBusy(cv), '会话空闲')
-  await Bun.sleep(80)
-  await until(() => !runs.isBusy(cv), '会话空闲')
+  await until(() => !runs.isBusy(cv) && runs.armedOf(cv) === null, '会话空闲')
 }
 
 function alive(pid: number): boolean {
@@ -455,6 +458,7 @@ describe('在本轮内等待后台命令', () => {
     )
     await writeFile(join(dir, 'W2.go'), '')
     await until(() => bodies.length === 2, '等待调用发出')
+    // 确认等待没有提前返回：工具在等待命令期间没有可观察的标志，提前返回时下一次请求会在这段时间内到达。
     await Bun.sleep(150)
     expect(bodies.length).toBe(2)
     expect(runs.isBusy(cv)).toBe(true)

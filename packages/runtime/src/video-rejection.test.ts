@@ -158,8 +158,8 @@ async function harness(respond: (body: string) => Response, seconds: number) {
     return events
   }
   const runs = () => listRuns(store, conversationId!)
-  const close = () => {
-    for (const session of sessions) session.dispose()
+  const close = async () => {
+    await Promise.all(sessions.map((session) => session.dispose()))
     store.close()
     provider.stop(true)
   }
@@ -209,7 +209,7 @@ test('接口拒绝视频后本轮改为抽帧说明重发，同一会话之后�
     expect(h.bodies.length).toBeGreaterThan(3)
     expect(h.bodies.slice(3).some(hasVideo)).toBe(false)
   } finally {
-    h.close()
+    await h.close()
   }
 }, 20_000)
 
@@ -228,6 +228,6 @@ test('时长短于模型规格的视频附件发送前即改为说明，不发�
     const rows = listProviderRequests(h.store, h.runs()[0]!.id)
     expect(rows.map((r) => r.status)).toEqual(['received'])
   } finally {
-    h.close()
+    await h.close()
   }
 }, 20_000)

@@ -20,12 +20,16 @@ import { requestUpdateClaim } from './update/claim.ts'
 const PATH = 'board.canvas.json'
 const MP4 = new Uint8Array([0, 0, 0, 24])
 
-async function until(check: () => Promise<boolean>) {
-  for (let i = 0; i < 200; i++) {
-    if (await check()) return
+/**
+ * 轮询条件，期限按真实时间计算并小于单条用例的 5 秒上限：按次数计算时，负载高时每次查询变慢，
+ * 用例先被整体超时终止，失败信息不指明等待的是哪一步。
+ */
+async function until(check: () => Promise<boolean>, label: string) {
+  const deadline = Date.now() + 4_000
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error(`任务未在时限内达到预期状态：${label}`)
     await Bun.sleep(10)
   }
-  throw new Error('任务未在时限内达到预期状态')
 }
 
 test('画布生成阻止重载，后端重启后自动接续且只保存一个版本；空闲后才允许更换代码', async () => {
@@ -120,7 +124,7 @@ test('画布生成阻止重载，后端重启后自动接续且只保存一个�
   })
   try {
     expect((await request('/api/canvas/run', { path: PATH, nodeId })).status).toBe(200)
-    await until(async () => queried === 1)
+    await until(async () => queried === 1, '远端任务被查询一次')
     const before = await read()
     expect(before.states[nodeId]?.state).toBe('running')
     const original = before.doc.nodes.find((n) => n.id === nodeId)
@@ -133,7 +137,7 @@ test('画布生成阻止重载，后端重启后自动接续且只保存一个�
 
     supervisor.onChange()
     tick?.()
-    await until(async () => checks === 1)
+    await until(async () => checks === 1, '重载前检查一次空闲')
     expect(restarts).toBe(0)
     // 重复读取模拟刷新；它不会再提交或丢失服务端的运行状态。
     expect((await read()).states[nodeId]?.state).toBe('running')
@@ -145,7 +149,7 @@ test('画布生成阻止重载，后端重启后自动接续且只保存一个�
     )
     complete = true
     handle = serve(options)
-    await until(async () => (await read()).states[nodeId]?.state === 'normal')
+    await until(async () => (await read()).states[nodeId]?.state === 'normal', '重启后接续完成')
     const recovered = (await read()).doc.nodes.find((n) => n.id === nodeId)
     if (recovered?.type !== 'generate') throw new Error('生成卡未找到')
     expect(recovered.versions).toHaveLength(1)
@@ -160,7 +164,7 @@ test('画布生成阻止重载，后端重启后自动接续且只保存一个�
     ).toEqual({ n: 1 })
 
     tick?.()
-    await until(async () => restarts === 1)
+    await until(async () => restarts === 1, '空闲后执行重载')
     expect((await request('/api/canvas/run', { path: PATH, nodeId })).status).toBe(409)
     expect(submitted).toBe(1)
     await requestUpdateClaim(handle.port, 'update-owner', 'cancel')

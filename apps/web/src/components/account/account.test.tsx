@@ -496,7 +496,7 @@ test('使用记录读取超过 200 毫秒时显示占位，读取到后显示记
   })
   pages = [[record('1')]]
   const view = await dialog()
-  await new Promise((resolve) => setTimeout(resolve, 260))
+  await until(() => view.host.querySelectorAll('.skeleton').length === 1)
   // 统计与可用模型已返回，只有使用记录仍在读取。
   expect(view.host.querySelectorAll('.skeleton')).toHaveLength(1)
   release()
@@ -512,9 +512,10 @@ test('用量、可用模型与使用记录都读取失败时只显示一处原�
   pages = [[record('1')]]
   const view = await dialog()
   await until(() => view.button('重试') !== undefined)
-  // 三项读取都已失败之后再断言。
+  // 三项读取都已失败之后再断言。桩在发出请求时同步抛出，失败的处理只经过微任务：
+  // 使用记录的请求发出后，让出一轮事件循环即可判定。
   await until(() => calls.filter((c) => c.startsWith('GET /api/cloud/requests')).length === 1)
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  await new Promise((resolve) => setTimeout(resolve, 0))
   expect(view.text().split('无法连接账号服务')).toHaveLength(2)
   expect(view.host.querySelectorAll('.settings-error')).toHaveLength(1)
   expect(view.text()).not.toContain('使用记录')
@@ -547,9 +548,10 @@ test('读取失败后不经操作自动重新读取：云端恢复后各节出�
   await until(() => view.text().includes('完成') && view.text().includes('claude-opus-5-5'))
   expect(view.text()).toContain('累计 Token')
   expect(view.host.querySelector('.settings-error')).toBeNull()
-  // 成功后不再读取。
+  // 成功后不再读取。重新读取的计时器间隔为 20ms，最晚在读取成功时设置：
+  // 此后设置的同间隔计时器触发时，之前设置的计时器都已触发。
   const settled = usageReads()
-  await new Promise((resolve) => setTimeout(resolve, 80))
+  await new Promise((resolve) => setTimeout(resolve, 20))
   expect(usageReads()).toBe(settled)
   view.close()
 })
@@ -566,7 +568,8 @@ test('首次启动且没有任何接口时显示登录页；已有接口时不�
   providers = [{ name: 'mine', kind: 'openai_chat_completions', models: [] }]
   await (await import('../../lib/store/settings.ts')).reloadModelCatalog()
   const later = await mount(() => <LoginGate />)
-  await new Promise((r) => setTimeout(r, 20))
+  // 显示条件取自已读取的状态，挂载时发起的读取由桩立即返回：让出一轮事件循环后即可判定。
+  await new Promise((r) => setTimeout(r, 0))
   expect(later.host.querySelector('.login-gate')).toBeNull()
   later.close()
 })
@@ -812,7 +815,9 @@ test('充值窗口：生成付款码后读取状态，读取失败时显示原�
   await until(() => (cloudStore.cloudState() as { credits?: number }).credits === 62.5)
   const polls = calls.filter((c) => c.startsWith('GET /api/cloud/recharge/')).length
   expect(polls).toBe(4)
-  await new Promise((resolve) => setTimeout(resolve, 30))
+  // 读取订单状态的计时器间隔为 5ms，最晚在处理到账结果时设置：
+  // 此后设置的同间隔计时器触发时，之前设置的计时器都已触发。
+  await new Promise((resolve) => setTimeout(resolve, 5))
   expect(calls.filter((c) => c.startsWith('GET /api/cloud/recharge/')).length).toBe(polls)
   view.button('继续充值')?.click()
   await until(() => view.host.querySelector('.recharge-presets') !== null)

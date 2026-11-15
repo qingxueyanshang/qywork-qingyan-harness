@@ -719,8 +719,9 @@ describe('文件页刷新', () => {
     scroller.scrollTop = 160
 
     // run.started 清空的是本轮改动摘要，磁盘内容没有变化，不应视为文件刷新。
+    // 重新获取在资源判据变化时同步发起，其后的渲染只经过微任务：让出一轮事件循环后即可判定。
     store.setState('fileChanges', [])
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(previewCalls).toBe(1)
     expect(host.querySelector('.cm-scroller')).toBe(scroller)
     expect(scroller.scrollTop).toBe(160)
@@ -1011,15 +1012,30 @@ describe('页签栏横向滚轮', () => {
   test('触控板接管时停止尚未完成的鼠标滚轮动画', async () => {
     const tabs = await renderTabs()
     setScrollBox(tabs, { width: 200, content: 500, left: 40 })
+    // 动画帧由测试登记并执行，帧时刻取一秒之后：旧动画未取消时，执行一帧即向 100 移动。
+    const frames = new Map<number, FrameRequestCallback>()
+    let nextFrame = 1
+    const { requestAnimationFrame: raf, cancelAnimationFrame: caf } = globalThis
+    globalThis.requestAnimationFrame = (callback) => {
+      frames.set(nextFrame, callback)
+      return nextFrame++
+    }
+    globalThis.cancelAnimationFrame = (id) => {
+      frames.delete(id)
+    }
+    try {
+      tabs.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 60 }))
+      tabs.dispatchEvent(
+        new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 20, deltaY: 5 }),
+      )
 
-    tabs.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 60 }))
-    tabs.dispatchEvent(
-      new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 20, deltaY: 5 }),
-    )
-
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    // happy-dom 不执行原生横向滚动；若旧动画未取消，此时 scrollLeft 已向 100 移动。
-    expect(tabs.scrollLeft).toBe(40)
+      for (const callback of [...frames.values()]) callback(performance.now() + 1_000)
+      // happy-dom 不执行原生横向滚动；若旧动画未取消，此时 scrollLeft 已向 100 移动。
+      expect(tabs.scrollLeft).toBe(40)
+    } finally {
+      globalThis.requestAnimationFrame = raf
+      globalThis.cancelAnimationFrame = caf
+    }
   })
 })
 
@@ -1515,8 +1531,9 @@ describe('文件预览的切换与 PDF', () => {
     )
     expect(rawCalls).toEqual([`/api/files/raw?path=${encodeURIComponent('r.pdf')}`])
 
+    // 预览的重新获取与其后的渲染只经过微任务，读取字节在渲染中同步发起：让出一轮事件循环后即可判定。
     store.setState('fileVersion', 1)
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(rawCalls).toHaveLength(1)
 
     mtime = 2

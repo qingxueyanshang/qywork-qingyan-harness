@@ -236,8 +236,8 @@ describe('会话 id', () => {
     reset({ mode: 'json' })
     const c = client()
     await c.start()
+    // `stop` 等到 DELETE 的响应才完成，夹具在响应之前已记录。
     await c.stop()
-    await Bun.sleep(60)
     expect(state.deleted).toBe(true)
   })
 })

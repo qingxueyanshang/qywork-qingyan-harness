@@ -8,7 +8,7 @@
  * 每次提交的操作都被记录，断言针对发送了哪几批操作。
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, jest, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { CanvasDoc, CanvasOp, CanvasView, MediaQuote } from '@qywork/core'
 
@@ -72,6 +72,12 @@ async function waitFor(done: () => boolean, detail: () => string) {
   }
   throw new Error(`界面没有在时限内更新：${detail()}`)
 }
+
+/**
+ * 让出一轮事件循环。服务端桩同步返回，响应、按键与指针事件的后续处理只经过微任务：让出一轮之后
+ * 这些处理都已完成，断言某个结果没有出现时不需要按时长等待。经计时器延后的处理不在此列。
+ */
+const nextTurn = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 const MODELS = {
   providers: [],
@@ -443,7 +449,8 @@ describe('画布：节点操作', () => {
   test('首次适配等待画布区测得尺寸，测得后全部节点位于画布区内', async () => {
     const { host, server } = await mount(FILES)
     const stage = host.querySelector<HTMLElement>('.canvas-stage')!
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    // 适配在读取结果或尺寸变化时同步执行。
+    await nextTurn()
     expect(zoom(host)).toBe(1)
     resize(stage, 380, 800)
     await waitFor(
@@ -700,15 +707,23 @@ describe('画布：节点操作', () => {
     )
     const before = fetched.length
     const stage = host.querySelector('.canvas-stage')!
-    pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
-    pointer(stage, 'pointermove', 110, 60)
-    pointer(stage, 'pointerup', 110, 60)
-    await waitFor(
-      () => server.ops.length === 1,
-      () => JSON.stringify(server.ops),
-    )
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    expect(fetched.slice(before)).toEqual([])
+    // 图片的解码经计时器延后，由假计时器推进：响应处理完毕后推进 1 秒，期间排定的解码都已发出请求。
+    // 松开指针时同步发出编辑，下面的等待在首次判断时即成立。
+    jest.useFakeTimers()
+    try {
+      pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
+      pointer(stage, 'pointermove', 110, 60)
+      pointer(stage, 'pointerup', 110, 60)
+      await waitFor(
+        () => server.ops.length === 1,
+        () => JSON.stringify(server.ops),
+      )
+      await new Promise((resolve) => setImmediate(resolve))
+      jest.advanceTimersByTime(1_000)
+      expect(fetched.slice(before)).toEqual([])
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test('修改一个节点后其余节点的元素保持不变，不重建', async () => {
@@ -722,7 +737,7 @@ describe('画布：节点操作', () => {
       () => server.ops.length === 1,
       () => JSON.stringify(server.ops),
     )
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await nextTurn()
     expect(node(host, refs.$b!)).toBe(other)
   })
 
@@ -815,7 +830,7 @@ describe('画布：节点操作', () => {
       () => node(host, refs.$b!).innerHTML,
     )
     release()
-    await new Promise((r) => setTimeout(r, 30))
+    await nextTurn()
     expect(node(host, refs.$b!).textContent).toContain('缺失')
   })
 
@@ -831,7 +846,7 @@ describe('画布：节点操作', () => {
       () => server.reads > reads,
       () => `reads=${server.reads}`,
     )
-    await new Promise((r) => setTimeout(r, 20))
+    await nextTurn()
     expect(Number.parseFloat(node(host, refs.$a!).style.left)).toBeCloseTo(200 / zoom(host), 3)
     pointer(stage, 'pointerup', 210, 110)
     await waitFor(
@@ -974,11 +989,14 @@ describe('画布：节点操作', () => {
   /** 原始失败形状：生成时每次写文件文件版本加一，文本卡重新读取期间外层 Suspense 显示占位，整块画布闪烁。 */
   test('文件修改时间变化时文本卡重新读取，画布不被占位替换；文件未变时不重新读取', async () => {
     let reads = 0
+    /** 已返回的响应数。 */
+    let served = 0
     const original = globalThis.fetch
     globalThis.fetch = (async (url: string) => {
       if (!String(url).includes(encodeURIComponent('脚本.md'))) return original(url)
       reads += 1
       await new Promise((r) => setTimeout(r, 30))
+      served += 1
       return new Response('## 1-1\n推门。\n')
     }) as unknown as typeof fetch
     try {
@@ -1009,7 +1027,12 @@ describe('画布：节点操作', () => {
         () => reads === 2,
         () => `reads=${reads}`,
       )
-      await new Promise((r) => setTimeout(r, 60))
+      // 重新读取的响应返回并处理完毕后再判定：占位只会在读取期间出现。
+      await waitFor(
+        () => served === 2,
+        () => `served=${served}`,
+      )
+      await nextTurn()
       watch.disconnect()
       expect(suspended).toBe(false)
       expect(text()).toBe('推门。')
@@ -1020,7 +1043,8 @@ describe('画布：节点操作', () => {
         () => server.reads > canvasReads,
         () => `reads=${server.reads}`,
       )
-      await new Promise((r) => setTimeout(r, 60))
+      // 文本卡的读取在画布读取结果写入时同步发起。
+      await nextTurn()
       expect(reads).toBe(2)
     } finally {
       globalThis.fetch = original
@@ -1049,18 +1073,27 @@ describe('画布：节点操作', () => {
     const touch = (paths: string[] | null) =>
       store.setState({ fileVersion: store.state.fileVersion + 1, fileTouched: paths })
     const before = server.reads
-    touch(['notes/无关.md'])
-    await new Promise((r) => setTimeout(r, 300))
-    expect(server.reads).toBe(before)
-    touch(['A.png'])
-    touch(['b.png'])
-    touch(null)
-    await waitFor(
-      () => server.reads === before + 1,
-      () => `reads=${server.reads}`,
-    )
-    await new Promise((r) => setTimeout(r, 300))
-    expect(server.reads).toBe(before + 1)
+    // 合并变动的等待由假计时器推进：读取在计时器回调中同步发出，推进返回时即可判定，
+    // 其后的等待在首次判断时即成立。
+    jest.useFakeTimers()
+    try {
+      touch(['notes/无关.md'])
+      jest.advanceTimersByTime(1_000)
+      expect(server.reads).toBe(before)
+      touch(['A.png'])
+      touch(['b.png'])
+      touch(null)
+      jest.advanceTimersByTime(1_000)
+      await waitFor(
+        () => server.reads === before + 1,
+        () => `reads=${server.reads}`,
+      )
+      await new Promise((resolve) => setImmediate(resolve))
+      jest.advanceTimersByTime(1_000)
+      expect(server.reads).toBe(before + 1)
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test('变动的是引用文件所在的文件夹或工作区外的绝对路径时同样重新读取', async () => {
@@ -1077,32 +1110,46 @@ describe('画布：节点操作', () => {
       () => `reads=${server.reads}`,
     )
     before = server.reads
-    touch(['素材库/x.png'])
-    await new Promise((r) => setTimeout(r, 300))
-    expect(server.reads).toBe(before)
-    touch(['C:/其他/x.png'])
-    await waitFor(
-      () => server.reads === before + 1,
-      () => `reads=${server.reads}`,
-    )
+    // 合并变动的等待由假计时器推进：读取在计时器回调中同步发出，推进返回时即可判定。
+    jest.useFakeTimers()
+    try {
+      touch(['素材库/x.png'])
+      jest.advanceTimersByTime(1_000)
+      expect(server.reads).toBe(before)
+      touch(['C:/其他/x.png'])
+      jest.advanceTimersByTime(1_000)
+      await waitFor(
+        () => server.reads === before + 1,
+        () => `reads=${server.reads}`,
+      )
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test('页签不在显示时只记下变动，切回时读取一次', async () => {
     const { server, setActive } = await mount(FILES)
     const store = await import('../../lib/store/index.ts')
     const before = server.reads
-    setActive(false)
-    store.setState({ fileVersion: store.state.fileVersion + 1, fileTouched: null })
-    store.setState('canvasVersion', (v) => v + 1)
-    await new Promise((r) => setTimeout(r, 300))
-    expect(server.reads).toBe(before)
-    setActive(true)
-    await waitFor(
-      () => server.reads === before + 1,
-      () => `reads=${server.reads}`,
-    )
-    await new Promise((r) => setTimeout(r, 300))
-    expect(server.reads).toBe(before + 1)
+    // 合并变动的等待由假计时器推进；切回时同步读取，其后的等待在首次判断时即成立。
+    jest.useFakeTimers()
+    try {
+      setActive(false)
+      store.setState({ fileVersion: store.state.fileVersion + 1, fileTouched: null })
+      store.setState('canvasVersion', (v) => v + 1)
+      jest.advanceTimersByTime(1_000)
+      expect(server.reads).toBe(before)
+      setActive(true)
+      await waitFor(
+        () => server.reads === before + 1,
+        () => `reads=${server.reads}`,
+      )
+      await new Promise((resolve) => setImmediate(resolve))
+      jest.advanceTimersByTime(1_000)
+      expect(server.reads).toBe(before + 1)
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test('重新读取后内容未变的卡片不重建，变化的卡片正常更新', async () => {
@@ -1115,7 +1162,7 @@ describe('画布：节点操作', () => {
       () => server.reads === before + 1,
       () => `reads=${server.reads}`,
     )
-    await new Promise((r) => setTimeout(r, 50))
+    await nextTurn()
     expect(host.querySelector('[data-node="n1"]')).toBe(first)
     expect(host.querySelector('[data-node="n1"] .canvas-node-title span')?.textContent).toBe('小满')
   })
@@ -1132,7 +1179,7 @@ describe('画布：节点操作', () => {
       () => host.textContent ?? '',
     )
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
-    await new Promise((r) => setTimeout(r, 30))
+    await nextTurn()
     expect(server.ops).toHaveLength(0)
   })
 })
@@ -1342,7 +1389,11 @@ describe('画布：生成卡与生成面板', () => {
         })
       }
       const before = draws()
-      await new Promise((resolve) => setTimeout(resolve, 300))
+      // 观察窗口按推进次数界定：窗口内至少重绘四次，随推进修改连线层时必然留下记录。
+      await waitFor(
+        () => draws() - before > 3 && new Set(flows).size > 3,
+        () => `draws=${draws() - before} flows=${new Set(flows).size}`,
+      )
       observer.disconnect()
       expect(changes).toEqual([])
       expect(live.style.getPropertyValue('stroke-dashoffset')).toBe('')
@@ -1356,9 +1407,14 @@ describe('画布：生成卡与生成面板', () => {
         () => !host.querySelector('.canvas-edges path.live'),
         () => host.querySelector('.canvas-edges')!.innerHTML,
       )
-      await new Promise((resolve) => setTimeout(resolve, 100))
+      // 重绘经动画帧执行：此后登记的一帧执行时，之前排定的重绘都已完成。
+      const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      await frame()
       const settled = flows.length
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      // 推进的间隔为 1000/24 ms：此后设置的同间隔计时器触发时，仍在推进的计时器至少已触发一次，
+      // 它排定的重绘在下一帧执行。
+      await new Promise((resolve) => setTimeout(resolve, 1000 / 24))
+      await frame()
       expect(flows.length).toBe(settled)
     } finally {
       restore()
@@ -1382,7 +1438,10 @@ describe('画布：生成卡与生成面板', () => {
           host.querySelector<SVGPathElement>('.canvas-edges path.live')?.style.stroke === 'none',
         () => host.querySelector('.canvas-edges')!.innerHTML,
       )
-      await new Promise((resolve) => setTimeout(resolve, 300))
+      await waitFor(
+        () => new Set(flows).size > 3,
+        () => `flows=${new Set(flows).size}`,
+      )
       expect(new Set(flows).size).toBeGreaterThan(3)
     } finally {
       restore()
@@ -1530,10 +1589,18 @@ describe('画布：生成卡与生成面板', () => {
     try {
       const { host, server, refs } = await mount(CARD)
       const store = await import('../../lib/store/index.ts')
+      /*
+       * 重新读取的合并等待、一秒的计时与状态刷新的间隔都由假计时器推进。每次推进后让出一轮事件循环，
+       * 使读取的响应处理完毕；其后的等待在首次判断时即成立。
+       */
+      jest.useFakeTimers()
+      const turn = () => new Promise((resolve) => setImmediate(resolve))
       time += 60_000
       const startedAt = time - 23_000
       server.setView({ states: { n2: { state: 'running', startedAt } } })
       store.setState('canvasVersion', 1)
+      jest.advanceTimersByTime(1_000)
+      await turn()
       const elapsed = () => node(host, refs.$v!).querySelector('.canvas-live .time')?.textContent
       await waitFor(
         () => elapsed() === '00:23',
@@ -1541,12 +1608,14 @@ describe('画布：生成卡与生成面板', () => {
       )
       time += 4_000
       for (let i = 0; i < 7; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 200))
+        jest.advanceTimersByTime(200)
+        await turn()
         server.setView({ states: { n2: { state: 'running', startedAt } } })
         store.setState('canvasVersion', (v) => v + 1)
       }
       expect(elapsed()).toBe('00:27')
     } finally {
+      jest.useRealTimers()
       date.mockRestore()
     }
   })
@@ -1728,7 +1797,7 @@ describe('画布：生成卡与生成面板', () => {
     } finally {
       release()
     }
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await nextTurn()
     expect(stop.disabled).toBe(false)
     expect(host.querySelector('.canvas-stop-notice')).toBeNull()
   })
@@ -3051,12 +3120,18 @@ describe('画布：生成卡与生成面板', () => {
       expect(document.querySelector('.canvas-pick-upload')).toBeNull()
       expect(document.querySelector('.canvas-pick input[type="file"]')).toBeNull()
       const input = document.querySelector<HTMLInputElement>('.canvas-pick input[type="search"]')!
-      input.value = '小'
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      // 等待文件搜索的防抖时间，确认搜索不会引入工作区文件。
-      await new Promise((resolve) => setTimeout(resolve, 200))
-      expect(document.querySelectorAll('.canvas-pick-list > button').length).toBe(0)
-      expect(server.ops).toEqual([])
+      // 文件搜索的防抖由假计时器推进，推进后让出一轮事件循环使搜索结果处理完毕，确认搜索不会引入工作区文件。
+      jest.useFakeTimers()
+      try {
+        input.value = '小'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        jest.advanceTimersByTime(1_000)
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(document.querySelectorAll('.canvas-pick-list > button').length).toBe(0)
+        expect(server.ops).toEqual([])
+      } finally {
+        jest.useRealTimers()
+      }
     },
   )
 
@@ -3399,7 +3474,7 @@ describe('画布：生成卡与生成面板', () => {
       () => server.doc().edges.find((e) => e.from === refs.$b)?.role === 'first_frame',
       () => JSON.stringify(server.doc().edges),
     )
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await nextTurn()
     expect(host.querySelector('.canvas-input') === first).toBe(true)
     first.querySelector<HTMLButtonElement>('button[aria-label="断开"]')!.click()
     await waitFor(
@@ -4205,7 +4280,7 @@ describe('画布：刷新后恢复', () => {
       () => second.server.reads > reads,
       () => '',
     )
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await nextTurn()
     expect(second.host.querySelector('.canvas-prompt')!.textContent).toBe('雨夜')
     await reload()
 
@@ -4265,7 +4340,7 @@ describe('画布：撤销与重做', () => {
       () => host.querySelector('.canvas-fault')?.textContent ?? '',
     )
     key('z')
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    await nextTurn()
     expect(server.restores).toHaveLength(1)
   })
 })
@@ -4377,7 +4452,7 @@ describe('画布：连线', () => {
     const port = node(host, refs.$a!).querySelector<HTMLElement>('.canvas-port.out')!
     await dragLink(host, port, node(host, refs.$b!))
     await dragLink(host, port, node(host, refs.$v!))
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    await nextTurn()
     expect(server.ops).toEqual([])
   })
 
@@ -5313,7 +5388,7 @@ describe('画布：时间线', () => {
     )
     expect(tl.querySelector('.canvas-tl-screen')).toBeNull()
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }))
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    await nextTurn()
     expect(server.ops).toHaveLength(0)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await waitFor(

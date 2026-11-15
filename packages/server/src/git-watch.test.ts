@@ -121,6 +121,7 @@ describe('分支名跟随 HEAD', () => {
     const { branches, watch } = fixture(dir)
     try {
       expect(() => watch.retarget()).not.toThrow()
+      // 查询分支失败时不广播，没有可等待的事件：留出合并窗口与一次 git 子进程的时间。
       await Bun.sleep(300)
       expect(branches).toEqual([])
     } finally {
@@ -184,6 +185,7 @@ describe('分支名跟随 HEAD', () => {
     branches.length = 0
 
     repo(dir)('checkout', '-q', '-b', 'later')
+    // 停止之后没有可等待的事件：留出合并窗口与一次 git 子进程的时间，确认没有广播。
     await Bun.sleep(500)
     expect(branches).toEqual([])
   })

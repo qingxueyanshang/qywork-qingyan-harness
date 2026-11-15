@@ -223,12 +223,14 @@ test('前缀回放不重复计数或刷新接收时刻', async () => {
   const trace = newTrace()
   const res = await post(trace)
   const receivedAt = trace.lastByteAt
-  await Bun.sleep(30)
+  expect(receivedAt).toBeNumber()
+  // 回放在接收时刻之后的毫秒发生：回放刷新接收时刻时，下方的相等断言不成立。
+  await waitFor(() => Date.now() > receivedAt!)
   expect(await res.text()).toBe(`${KEEPALIVE}${STARTED}`)
   expect(trace.bytes).toBe(enc.encode(`${KEEPALIVE}${STARTED}`).byteLength)
   expect(trace.keepAliveLines).toBe(1)
   expect(trace.lastByteAt).toBe(receivedAt)
-  expect(readTransport(trace).sinceLastByteMs).toBeGreaterThanOrEqual(25)
+  expect(readTransport(trace, receivedAt! + 30).sinceLastByteMs).toBe(30)
 })
 
 test('择优前后分片相接：跨前缀边界的保活行只计一次', async () => {
@@ -259,8 +261,11 @@ test('两份都在排队后报错：以原请求的结果为准，错误事件�
 test('响应头在补发时间之前到达时不补发', async () => {
   handle = () => new Response('fast')
   const trace = newTrace()
-  expect(await (await post(trace)).text()).toBe('fast')
-  await Bun.sleep(HEDGE_MS + 50)
+  const response = post(trace)
+  // 补发计时在发出请求时同步登记；同长、在其后登记的计时到期时，补发计时若未被清除必然已经触发。
+  const hedgeDue = new Promise<void>((resolve) => setTimeout(resolve, HEDGE_MS))
+  expect(await (await response).text()).toBe('fast')
+  await hedgeDue
   expect(hits).toBe(1)
   expect(trace.hedge).toBeNull()
   expect('hedge' in readTransport(trace)).toBe(false)
@@ -360,7 +365,9 @@ test('调用方中止时两份同时中断，期限仍由调用方的信号执�
   const controller = new AbortController()
   const trace = newTrace()
   const work = post(trace, controller.signal)
-  setTimeout(() => controller.abort(), HEDGE_MS + 100)
+  // 两份都到达对端之后才中止。
+  await waitFor(() => hits === 2)
+  controller.abort()
   await expect(work).rejects.toBeDefined()
   await waitFor(() => aborted.length === 2)
   expect(aborted.sort()).toEqual([0, 1])

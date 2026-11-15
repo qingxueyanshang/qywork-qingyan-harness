@@ -12,7 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type ToolContext, type ToolOutcome, ToolRegistry } from '@qywork/agent'
@@ -22,6 +22,7 @@ import type {
   FileChange,
   WorkspaceId,
 } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import {
   appendMessage,
   appendStep,
@@ -188,8 +189,18 @@ beforeAll(async () => {
   await writeFile(join(dir, 'tracked.ts'), 'export const t = 1\n')
   await writeFile(join(dir, 'doomed.ts'), 'export const d = 1\n')
   git('add', '.gitignore', 'tracked.ts', 'doomed.ts')
-  // 使「创建时间早于观察窗口」成立：文件系统时间戳的精度为毫秒。
-  await Bun.sleep(20)
+  // 使「创建时间早于观察窗口」成立：等到文件时间戳越过这三个文件的时间戳。探针放在工作区之外，不进入改动。
+  const stamps = await Promise.all(
+    ['.gitignore', 'tracked.ts', 'doomed.ts'].map(async (name) => {
+      const info = await stat(join(dir, name))
+      return Math.max(info.birthtimeMs, info.mtimeMs)
+    }),
+  )
+  const probe = join(binDir, 'clock-probe')
+  await until(async () => {
+    await writeFile(probe, '0')
+    return (await stat(probe)).mtimeMs > Math.max(...stamps)
+  }, '文件时间戳越过已有文件')
 
   store = new Store({ path: ':memory:' })
   workspaceId = upsertWorkspace(store, dir, 'changes-ws').id

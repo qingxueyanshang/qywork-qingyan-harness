@@ -114,14 +114,21 @@ async function mountSidebar(onDelete: () => unknown) {
   return host
 }
 
+/** 菜单中名为「删除」的菜单项。 */
+function deleteItem(host: HTMLElement): HTMLButtonElement | undefined {
+  return [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+    (item) => item.textContent?.trim() === '删除',
+  )
+}
+
 /** 依次执行「⋯ → 删除 → 确认」。 */
 async function confirmDelete(host: HTMLElement) {
   host.querySelector<HTMLButtonElement>('.conv-more')?.click()
   await waitFor(
-    () => host.querySelector('.conv-menu-item.danger') !== null,
+    () => deleteItem(host) !== undefined,
     () => '菜单没展开',
   )
-  host.querySelector<HTMLButtonElement>('.conv-menu-item.danger')?.click()
+  deleteItem(host)?.click()
   await waitFor(
     () => host.querySelector('.confirm-actions .btn-primary') !== null,
     () => '确认框没出来',

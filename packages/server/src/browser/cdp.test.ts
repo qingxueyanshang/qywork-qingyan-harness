@@ -11,6 +11,7 @@
  */
 
 import { afterEach, expect, test } from 'bun:test'
+import { until } from '@qywork/core/until.test-helper'
 import type { ServerWebSocket } from 'bun'
 import {
   allowedMethod,
@@ -28,12 +29,16 @@ interface Command {
   params?: Record<string, unknown>
 }
 
-/** 假调试端点。`replies` 按方法给出结果，缺省返回空对象；`delays` 使指定方法晚于超时返回。 */
+/**
+ * 假调试端点。`replies` 按方法给出结果，缺省返回空对象；`delays` 使指定方法晚于超时返回；
+ * `holds` 使指定方法的回包推迟到给定的 Promise 兑现之后。
+ */
 class FakeEndpoint {
   server: Bun.Server<undefined>
   received: Command[] = []
   replies = new Map<string, (cmd: Command) => Record<string, unknown> | { error: string }>()
   delays = new Map<string, number>()
+  holds = new Map<string, Promise<unknown>>()
   /** 已建立的连接，用于主动发送协议事件。 */
   socket: ServerWebSocket<undefined> | null = null
 
@@ -67,8 +72,10 @@ class FakeEndpoint {
                 : { id: cmd.id, result: out }
             ws.send(JSON.stringify(body))
           }
+          const held = self.holds.get(cmd.method)
           const delay = self.delays.get(cmd.method)
-          if (delay) setTimeout(send, delay)
+          if (held) void held.then(send)
+          else if (delay) setTimeout(send, delay)
           else send()
         },
       },
@@ -102,7 +109,9 @@ class FakeEndpoint {
   }
 }
 
-const settle = () => new Promise((r) => setTimeout(r, 30))
+/** 子会话是否已就绪，即 `childSessionsOf` 是否列出它。 */
+const childReady = (client: CdpClient, sessionId: string, child: string) =>
+  client.childSessionsOf(sessionId).some((c) => c.sessionId === child)
 
 /** 登记等待器使用的条件。 */
 const GO = { selector: '#go', state: 'visible' }
@@ -220,7 +229,8 @@ test('子会话不启用网络事件', async () => {
     sessionId: 'child-1',
     targetInfo: { targetId: 'frame-a', type: 'iframe' },
   })
-  await new Promise((r) => setTimeout(r, 100))
+  // 子会话就绪时其启用域的命令均已发出。
+  await until(() => childReady(client, sessionId, 'child-1'), '子会话就绪')
   expect(client.childSessionsOf(sessionId)).toEqual([{ sessionId: 'child-1', targetId: 'frame-a' }])
   const network = endpoint.received.filter((c) => c.method === 'Network.enable')
   expect(network.map((c) => c.sessionId)).toEqual([sessionId])
@@ -382,8 +392,7 @@ test('取消与断开都使 halted 置位，按住计时据此提前结束', asy
 
   const dropped = await connect(endpoint)
   endpoint.socket?.close()
-  await settle()
-  expect(dropped.halted.aborted).toBe(true)
+  await until(() => dropped.halted.aborted, '断开被处理')
 })
 
 test('等待器按 id 登记、等待结果、单独清理，计数可读取', async () => {
@@ -424,17 +433,15 @@ test('根帧停止加载时清除附加会话时记录的导航中帧，之后�
   expect([...client.settlingFrames(sessionId)]).toEqual(['kid-1'])
 
   // 根帧停止加载说明子树中进行中的导航均已结束，这些记录不能一直保留。
+  const settling = () => [...client.settlingFrames(sessionId)].join(',')
   endpoint.emit(sessionId, 'Page.frameStoppedLoading', { frameId: 'root-1' })
-  await settle()
-  expect([...client.settlingFrames(sessionId)]).toEqual([])
+  await until(() => settling() === '', '根帧停止加载清除记录')
 
   endpoint.emit(sessionId, 'Page.frameStartedLoading', { frameId: 'kid-2' })
-  await settle()
-  expect([...client.settlingFrames(sessionId)]).toEqual(['kid-2'])
+  await until(() => settling() === 'kid-2', '开始加载的帧被记录')
   // 跨站帧提交时切换渲染进程，以 detach 的形式离开父会话。
   endpoint.emit(sessionId, 'Page.frameDetached', { frameId: 'kid-2' })
-  await settle()
-  expect([...client.settlingFrames(sessionId)]).toEqual([])
+  await until(() => settling() === '', '离开的帧被移除')
 })
 
 test('等待器运行时不在当前文档中时先补注入再登记，不返回页内异常原文', async () => {
@@ -498,14 +505,20 @@ test('会话事件按 sessionId 分发，取消订阅后不再收到任何事件
   endpoint.emit(sessionId, 'Page.frameStartedLoading', { frameId: 'f1' })
   // 另一个会话上的同名事件不进入本订阅：否则两页同时受控时会计入另一页的事件。
   endpoint.emit('sess-other', 'Page.frameNavigated', { frame: { id: 'f9' } })
-  await settle()
-  expect(seen).toEqual(['Page.frameStartedLoading'])
+  // 其后一条本会话事件到达时，另一个会话的事件已被分派。
+  endpoint.emit(sessionId, 'Page.domContentEventFired')
+  await until(() => seen.length === 2, '本会话的两条事件')
+  expect(seen).toEqual(['Page.frameStartedLoading', 'Page.domContentEventFired'])
 
   off()
   expect(client.watchers()).toBe(0)
+  // 另一个订阅收到同一条事件时，已取消的订阅若仍在，也已收到。
+  const later: string[] = []
+  const offLater = client.onSessionEvent(sessionId, (event) => later.push(event.method))
   endpoint.emit(sessionId, 'Page.loadEventFired')
-  await settle()
-  expect(seen).toEqual(['Page.frameStartedLoading'])
+  await until(() => later.length === 1, '另一个订阅收到事件')
+  offLater()
+  expect(seen).toEqual(['Page.frameStartedLoading', 'Page.domContentEventFired'])
 })
 
 test('静默探针经由等待器注册表：读数原样返回，取消时随统一清理移除', async () => {
@@ -546,18 +559,31 @@ test('静默探针经由等待器注册表：读数原样返回，取消时随�
 
 test('子会话启用域之后才就绪：登记之后、启用域的回包到达之前不进入 childSessionsOf', async () => {
   const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
-  // 子会话的启用域命令延迟返回：此期间它无法返回 AX 树，交给采集只会得到空帧。
-  endpoint.delays.set('Accessibility.enable', 200)
+  // 子会话的启用域命令推迟返回：此期间它无法返回 AX 树，交给采集只会得到空帧。
   const client = await connect(endpoint)
   const { sessionId } = await client.attachByMarker('marker-a')
+  let release = () => {}
+  endpoint.holds.set(
+    'Accessibility.enable',
+    new Promise<void>((resolve) => {
+      release = resolve
+    }),
+  )
 
   endpoint.emit(sessionId, 'Target.attachedToTarget', {
     sessionId: 'child-1',
     targetInfo: { targetId: 'frame-a', type: 'iframe' },
   })
-  await settle()
+  await until(
+    () =>
+      endpoint.received.some(
+        (c) => c.method === 'Accessibility.enable' && c.sessionId === 'child-1',
+      ),
+    '子会话的启用域命令已发出',
+  )
   expect(client.childSessionsOf(sessionId)).toEqual([])
-  await new Promise((r) => setTimeout(r, 300))
+  release()
+  await until(() => childReady(client, sessionId, 'child-1'), '启用域完成后子会话就绪')
   expect(client.childSessionsOf(sessionId)).toEqual([{ sessionId: 'child-1', targetId: 'frame-a' }])
 })
 
@@ -573,7 +599,12 @@ test('子会话启用域失败时不进入 childSessionsOf，也不被视为不�
     sessionId: 'child-1',
     targetInfo: { targetId: 'frame-a', type: 'iframe' },
   })
-  await settle()
+  await until(
+    () => endpoint.received.some((c) => c.method === 'DOM.enable' && c.sessionId === 'child-1'),
+    '子会话的 DOM.enable 已发出',
+  )
+  // 再往返一次：其回包排在 DOM.enable 的错误回包之后，返回时该错误已被处理。
+  await client.send('Browser.getVersion', {}, { timeoutMs: 2_000 })
   expect(client.childSessionsOf(sessionId)).toEqual([])
   // 登记仍保留，取消时该会话仍须 detach，不能按该帧不存在处理。
   const { detached } = await client.cancel()

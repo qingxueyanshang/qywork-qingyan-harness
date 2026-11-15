@@ -254,7 +254,7 @@ test('E04：以 A 启动的服务同样触发 B 的到期任务，401 终态在 
     ).json()) as Payload
     expect(forA.schedules).toEqual([])
   } finally {
-    handle.stop()
+    await handle.stop()
     store.close()
   }
 
@@ -333,7 +333,7 @@ test('PUT 是部分更新：只发送 enabled 而不带时刻时，启停不被�
     expect(kept.conversationId).toBe(home)
     expect(kept.newConversation).toBe(false)
   } finally {
-    handle.stop()
+    await handle.stop()
     store.close()
   }
 }, 30_000)
@@ -442,8 +442,11 @@ test('目标会话正忙时触发排入跟进队列，不产生 run.error', asyn
       { method: 'POST', headers: { authorization: `Bearer ${handle.token}` } },
     )
     expect(res.status).toBe(200)
-    // 投递不等待结果（fire-and-forget），此处等待微任务队列清空。
-    await Bun.sleep(50)
+    // 投递不等待结果（fire-and-forget）。排入队列即投递完成，run.error 若产生，也在此之前。
+    await waitFor(
+      () => probe.frames.find((f) => f.event.type === 'queue.changed') ?? null,
+      '触发排入跟进队列',
+    )
     probe.stop()
 
     expect(probe.frames.filter((f) => f.event.type === 'run.error')).toEqual([])
@@ -452,7 +455,7 @@ test('目标会话正忙时触发排入跟进队列，不产生 run.error', asyn
       '执行 忙的时候到点',
     ])
   } finally {
-    handle.stop()
+    await handle.stop()
     store.close()
   }
 }, 30_000)
@@ -484,7 +487,10 @@ test('认领新建会话时广播 conversation.created，信封不带会话归�
       { method: 'POST', headers: { authorization: `Bearer ${handle.token}` } },
     )
     expect(res.status).toBe(200)
-    await Bun.sleep(50)
+    await waitFor(
+      () => probe.frames.find((f) => f.event.type === 'conversation.created') ?? null,
+      '广播新建的会话',
+    )
     probe.stop()
 
     const hit = probe.frames.find((f) => f.event.type === 'conversation.created')
@@ -546,15 +552,15 @@ test('E05：同一到期时机两个 serve() 实例只产生一条会话、一�
           .get(),
       '两个实例中有一个把 Run 跑到终态',
     )
-    // 进入终态后再等待几个 tick：若存在第二次触发，会在这段时间内出现。
+    // 进入终态后再等待几个 tick：若存在第二次触发，会在这段时间内出现。第二次触发的会话、
+    // Run 与模型请求都在认领之后异步产生，没有可等待的完成标志。
     await Bun.sleep(300)
 
     expect(countOf(one, 'SELECT COUNT(*) AS n FROM conversations')).toBe(1)
     expect(countOf(one, 'SELECT COUNT(*) AS n FROM runs')).toBe(1)
     expect(providerCalls - before).toBe(1)
   } finally {
-    a.stop()
-    b.stop()
+    await Promise.all([a.stop(), b.stop()])
     one.close()
     two.close()
   }

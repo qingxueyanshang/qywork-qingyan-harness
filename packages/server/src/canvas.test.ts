@@ -18,6 +18,7 @@ import {
   parseCanvas,
   serializeCanvas,
 } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import { CanvasFailure, type CanvasIo, CanvasService } from './canvas.ts'
 
 const PATH = 'board.canvas.json'
@@ -641,8 +642,7 @@ describe('画布服务：时间线导出', () => {
     const { root, svc, timeline } = await withTimeline(30)
     const id = await svc.exportStart(root, PATH, timeline)
     await svc.exportWrite(root, id, 0, MP4)
-    await new Promise((resolve) => setTimeout(resolve, 120))
-    expect(await parts(root)).toEqual([])
+    await until(async () => (await parts(root)).length === 0, '空闲会话被作废')
     expect((await failure(svc.exportFinish(root, id))).status).toBe(404)
   })
 
@@ -677,8 +677,9 @@ describe('画布服务：时间线导出', () => {
     ])
     const asked = svc.requestExport(ws, PATH, refs.$t!)
     const again = svc.requestExport(ws, PATH, refs.$t!)
-    await new Promise((r) => setTimeout(r, 20))
-    expect(events.filter((e) => e.type === 'canvas.export')).toEqual([
+    const requests = () => events.filter((e) => e.type === 'canvas.export')
+    await until(() => requests().length > 0, '向界面发出导出请求')
+    expect(requests()).toEqual([
       { type: 'canvas.export', workspaceId: 'w1', path: PATH, nodeId: refs.$t! },
     ])
     const id = await svc.exportStart(root, PATH, refs.$t!)
@@ -687,6 +688,8 @@ describe('画布服务：时间线导出', () => {
     const landed = await svc.exportFinish(root, id)
     expect(await asked).toEqual(landed)
     expect(await again).toEqual(landed)
+    // 两次请求均已结束：重复请求若另发一次，此时也已发出。
+    expect(requests()).toHaveLength(1)
     expect(landed.path).toBe('generated/粗剪.mp4')
     // 请求已结束：界面之后自行导出不受影响。
     await svc.exportAbort(root, await svc.exportStart(root, PATH, refs.$t!))
@@ -712,19 +715,28 @@ describe('画布服务：时间线导出', () => {
       '没有界面开始导出',
     )
 
-    const dropped = failure(svc.requestExport(ws, PATH, refs.$t!))
-    await new Promise((r) => setTimeout(r, 5))
-    await svc.exportAbort(root, await svc.exportStart(root, PATH, refs.$t!))
+    // 以下两段由界面认领请求：认领期限放宽，避免负载高时认领之前即已超时；
+    // 请求在向界面发出事件之后才可认领，按事件等待。
+    const events: AgentEvent[] = []
+    const claiming = new CanvasService({ publish: (e) => events.push(e) })
+    const asked = async (count: number) =>
+      until(
+        () => events.filter((e) => e.type === 'canvas.export').length === count,
+        '向界面发出导出请求',
+      )
+    const dropped = failure(claiming.requestExport(ws, PATH, refs.$t!))
+    await asked(1)
+    await claiming.exportAbort(root, await claiming.exportStart(root, PATH, refs.$t!))
     expect((await dropped).message).toContain('导出失败或被取消')
 
     const stop = new AbortController()
-    const left = failure(svc.requestExport(ws, PATH, refs.$t!, stop.signal))
-    await new Promise((r) => setTimeout(r, 5))
-    const id = await svc.exportStart(root, PATH, refs.$t!)
+    const left = failure(claiming.requestExport(ws, PATH, refs.$t!, stop.signal))
+    await asked(2)
+    const id = await claiming.exportStart(root, PATH, refs.$t!)
     stop.abort()
     expect((await left).message).toContain('界面中的导出照常进行')
-    await svc.exportWrite(root, id, 0, MP4)
-    expect((await svc.exportFinish(root, id)).path).toBe('generated/粗剪.mp4')
+    await claiming.exportWrite(root, id, 0, MP4)
+    expect((await claiming.exportFinish(root, id)).path).toBe('generated/粗剪.mp4')
   })
 
   test('启动时删除上一个进程被结束时遗留的导出临时文件；进行中会话的与生成落盘的 .part 保留', async () => {

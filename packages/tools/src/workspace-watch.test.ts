@@ -8,6 +8,7 @@ import { mkdir, mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FileChange } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import { scrubbedEnv } from './shell.ts'
 import {
   type ChangeWindowOptions,
@@ -21,8 +22,42 @@ function open(root: string, opts: Omit<ChangeWindowOptions, 'env'> = {}) {
   return openChangeWindow(root, { ...opts, env: process.env })
 }
 
-async function settle(): Promise<void> {
-  await Bun.sleep(250)
+/** 文件时钟探针放在工作区之外：工作区内的写入进入窗口的结果。 */
+const CLOCK_PROBE = join(tmpdir(), `qywork-watch-clock-${process.pid}`)
+
+/**
+ * 等待文件时间戳越过此刻的 `Date.now()`。窗口起点不晚于此刻；起点回退到 `Date.now()` 时，
+ * 文件时间戳比它落后至多一个刻度，打开后立即写入的文件早于起点，不进入结果。
+ */
+async function clockPast(): Promise<void> {
+  const now = Date.now()
+  await until(async () => {
+    await writeFile(CLOCK_PROBE, '0')
+    return (await stat(CLOCK_PROBE)).mtimeMs > now
+  }, '文件时间戳越过当前时刻')
+}
+
+/**
+ * 窗口打开后等待两个前提：文件时间戳越过窗口起点（`clockPast`），观察器开始投递事件。
+ * macOS 的事件流在 `watch()` 返回之后异步启动，启动前写入的屏障标记不产生事件，
+ * 因此每个轮询间隔写入一个新标记，直到其中一个被交付；未交付的标记由屏障自身的上限回收。
+ * 收尾的屏障标记同样须在事件流开始之后写入，否则结果标记为不完整。
+ */
+async function started(root: string): Promise<void> {
+  await clockPast()
+  await until(
+    () => Promise.race([settleEvents(root), Bun.sleep(100).then(() => false)]),
+    '观察器开始投递事件',
+  )
+}
+
+/**
+ * 等待 `Date.now()` 越过文件的 mtime。排队的窗口与后台观察以前一个窗口收尾时的 `Date.now()` 为起点，
+ * 收尾前同一毫秒内写入的文件 mtime 不早于该起点，同时进入后一个窗口的结果。
+ */
+async function wallPast(file: string): Promise<void> {
+  const { mtimeMs } = await stat(file)
+  await until(() => Date.now() > mtimeMs, `当前时刻越过 ${file} 的 mtime`)
 }
 
 /** 观察器已交付此前的全部事件。临时文件不进入结果的前提是观察器在它消失之前 stat 过它。 */
@@ -57,9 +92,7 @@ describe('执行窗口内的工作区变更', () => {
       await writeFile(changed, 'before\n')
       const prior = await stat(changed)
       const window = open(root)
-      // macOS 的事件流异步启动；事件屏障只能确认已启动观察器的投递进度。
-      await settle()
-      await observed(root)
+      await started(root)
       await writeFile(changed, 'after\n')
       await utimes(changed, prior.atime, prior.mtime)
       await observed(root)
@@ -74,7 +107,7 @@ describe('执行窗口内的工作区变更', () => {
     const paths = Array.from({ length: 12 }, (_, i) => `delete-${i}.txt`)
     await Promise.all(paths.map((path) => writeFile(join(root, path), 'x\n')))
     const window = open(root)
-    await settle()
+    await started(root)
     for (const path of paths) rmSync(join(root, path))
     const got = await window.close()
 
@@ -88,11 +121,9 @@ describe('执行窗口内的工作区变更', () => {
     await mkdir(join(root, 'src'))
     await writeFile(join(root, 'src', 'old.ts'), 'a\n')
     await writeFile(join(root, 'gone.txt'), 'x\n')
-    // 使「创建时间早于窗口」成立：文件系统的时间戳精度以毫秒计。
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, 'src', 'new.ts'), 'b\n')
     await writeFile(join(root, 'src', 'old.ts'), 'a\nb\n')
     await rm(join(root, 'gone.txt'))
@@ -101,7 +132,6 @@ describe('执行窗口内的工作区变更', () => {
     await rm(join(root, 'tmp.swp'))
     // 新建的二进制文件不计算行数
     await writeFile(join(root, 'shot.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 1]))
-    await settle()
     const got = await window.close()
 
     const byPath = typeOf(got.changes)
@@ -129,13 +159,13 @@ describe('执行窗口内的工作区变更', () => {
    * 创建时间早于起点，被判定为 modified。
    *
    * 断言不依赖事件：macOS 的事件流在 `watch()` 返回之后才开始投递，紧接打开操作的写入可能没有事件，
-   * a.txt 由收尾扫描按 mtime 取得。收尾前短暂等待，是为了使屏障标记在事件流开始之后写入。
+   * a.txt 由收尾扫描按 mtime 取得。收尾前等待事件流开始投递，使屏障标记在事件流开始之后写入。
    */
   test('窗口打开后立即新建的文件判为 created', async () => {
     const root = await gitRepo()
     const window = open(root)
     await writeFile(join(root, 'a.txt'), 'a\n')
-    await settle()
+    await started(root)
     const got = await window.close()
 
     expect(got.changes).toEqual([
@@ -149,7 +179,7 @@ describe('执行窗口内的工作区变更', () => {
    * 连续两条命令之间只间隔几毫秒，把起点前移以抵消刻度会使上一条命令的文件在此处重复报告或判定为 created。
    *
    * 两条断言都不依赖事件：打开前的写入早于 watcher，三个平台都不投递；kept.txt 由收尾扫描的
-   * 时间下界排除，edited.txt 由收尾扫描按 mtime 取得。打开后先短暂等待再修改，是为了使修改与屏障标记
+   * 时间下界排除，edited.txt 由收尾扫描按 mtime 取得。打开后先等待事件流开始投递再修改，使修改与屏障标记
    * 都发生在 macOS 的事件流开始之后。
    */
   test('窗口打开前刚写入的文件不进入结果，打开后修改它则判为 modified', async () => {
@@ -157,7 +187,7 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'kept.txt'), 'k\n')
     await writeFile(join(root, 'edited.txt'), 'e\n')
     const window = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, 'edited.txt'), 'e\ne\n')
     const got = await window.close()
 
@@ -176,10 +206,9 @@ describe('执行窗口内的工作区变更', () => {
     await mkdir(join(root, '.custom'))
     await mkdir(join(root, '.chk', 'prof'), { recursive: true })
     await mkdir(join(root, '.tmp', 'scratch'), { recursive: true })
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, 'src', 'x.ts'), 'export const x = 1\n')
     await writeFile(join(root, '.github', 'workflows', 'ci.yml'), 'name: ci\n')
     await writeFile(join(root, '.gitignore'), '.chk/\n')
@@ -188,7 +217,6 @@ describe('执行窗口内的工作区变更', () => {
     // 浏览器 profile 由项目自身的忽略规则排除，不依赖点前缀；.tmp 是本项目的临时产物目录。
     await writeFile(join(root, '.chk', 'prof', 'Local State'), '{}')
     await writeFile(join(root, '.tmp', 'scratch', 'junk.txt'), 'junk')
-    await settle()
     const got = await window.close()
 
     const seen = new Set(got.changes.map((c) => c.path))
@@ -212,14 +240,12 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'node_modules', 'dep', 'keep.js'), 'module.exports = 1\n')
     Bun.spawnSync(['git', 'add', 'node_modules/dep/keep.js'], { cwd: root })
     await writeFile(join(root, '.gitignore'), 'node_modules/\n')
-    await Bun.sleep(20)
     const before = { ...gitProcessCount }
 
     const window = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, 'node_modules', 'dep', 'keep.js'), 'module.exports = 2\n')
     await writeFile(join(root, 'node_modules', 'dep', 'cached.js'), 'cache\n')
-    await settle()
     const got = await window.close()
 
     expect(got.changes.map((c) => [c.path, c.changeType])).toEqual([
@@ -242,12 +268,10 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'dist', 'bundle.js'), 'bundled\n')
     Bun.spawnSync(['git', 'add', 'dist/bundle.js'], { cwd: root })
     await rm(join(root, 'dist', 'bundle.js'))
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, 'kept.ts'), 'export const a = 1\n')
-    await settle()
     const got = await window.close()
 
     expect(got.changes.map((c) => c.path)).toEqual(['kept.ts'])
@@ -259,15 +283,13 @@ describe('执行窗口内的工作区变更', () => {
     const root = await gitRepo()
     await mkdir(join(root, 'node_modules', 'dep'), { recursive: true })
     await mkdir(join(root, 'dist'))
-    await Bun.sleep(20)
     const before = { ...gitProcessCount }
 
     const window = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, 'kept.ts'), 'export const a = 1\n')
     await writeFile(join(root, 'node_modules', 'dep', 'index.js'), 'module.exports = 1\n')
     await writeFile(join(root, 'dist', 'bundle.js'), 'bundled\n')
-    await settle()
     const got = await window.close()
 
     expect(got.changes.map((c) => c.path)).toEqual(['kept.ts'])
@@ -287,15 +309,13 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'renders', 'keep.txt'), 'v1\n')
     Bun.spawnSync(['git', 'add', '-f', 'renders/keep.txt'], { cwd: root })
     for (let i = 0; i < 30; i++) await writeFile(join(root, 'renders', 'run1', `f${i}.png`), 'x')
-    await Bun.sleep(20)
     const before = { ...gitProcessCount }
 
     const window = open(root, { walkLimit: 20 })
-    await settle()
+    await started(root)
     await writeFile(join(root, 'kept.ts'), 'export const a = 1\n')
     await writeFile(join(root, 'renders', 'keep.txt'), 'v2\n')
     await writeFile(join(root, 'renders', 'run1', 'new.png'), 'y')
-    await settle()
     const got = await window.close()
 
     expect(got.incomplete).toBe(false)
@@ -310,19 +330,17 @@ describe('执行窗口内的工作区变更', () => {
     // 未被忽略的目录同样多：剪枝后仍达到上限，如实标记不完整。
     await mkdir(join(root, 'data'))
     for (let i = 0; i < 30; i++) await writeFile(join(root, 'data', `d${i}.csv`), 'x')
-    await Bun.sleep(20)
     const next = open(root, { walkLimit: 20 })
-    await settle()
+    await started(root)
     expect((await next.close()).incomplete).toBe(true)
   })
 
   test('删除、原子保存与嵌套目录', async () => {
     const root = await gitRepo()
     await writeFile(join(root, 'gone.txt'), 'x\n')
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    await started(root)
     await rm(join(root, 'gone.txt'))
     await mkdir(join(root, 'a', 'b', 'c'), { recursive: true })
     await writeFile(join(root, 'a', 'b', 'c', 'deep.ts'), 'deep\n')
@@ -330,7 +348,6 @@ describe('执行窗口内的工作区变更', () => {
     // 改名之前观察器必须已 stat 过临时文件，否则它会被判定为 deleted。
     await observed(root)
     await rename(join(root, 'atomic.txt.part'), join(root, 'atomic.txt'))
-    await settle()
     const got = await window.close()
 
     const byPath = typeOf(got.changes)
@@ -348,13 +365,11 @@ describe('执行窗口内的工作区变更', () => {
     const root = await gitRepo()
     await mkdir(join(root, '缓存 目录'))
     await writeFile(join(root, '.gitignore'), '缓存 目录/\n')
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, '文档 一.md'), '# 一\n')
     await writeFile(join(root, '缓存 目录', '临时 文件.bin'), 'x')
-    await settle()
     const got = await window.close()
 
     expect(got.changes.map((c) => c.path)).toEqual(['文档 一.md'])
@@ -367,9 +382,8 @@ describe('执行窗口内的工作区变更', () => {
     const before = { ...gitProcessCount }
 
     const window = open(root)
-    await settle()
+    await started(root)
     for (let i = 0; i < 12; i++) await writeFile(join(root, `f${i}.txt`), String(i))
-    await settle()
     const got = await window.close()
 
     expect(gitProcessCount.checkIgnore - before.checkIgnore).toBe(1)
@@ -385,13 +399,11 @@ describe('执行窗口内的工作区变更', () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-watch-'))
     await writeFile(join(root, '.git'), 'gitdir: /qywork-no-such-repo\n')
     await mkdir(join(root, '.chk'))
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, 'a.txt'), '1')
     await writeFile(join(root, '.chk', 'state'), '1')
-    await settle()
     const got = await window.close()
 
     expect(got.incomplete).toBe(true)
@@ -405,17 +417,15 @@ describe('执行窗口内的工作区变更', () => {
     await mkdir(join(root, '.cache'))
     await mkdir(join(root, '.config'))
     await mkdir(join(root, '.tmp'))
-    await Bun.sleep(20)
     const before = { ...gitProcessCount }
 
     const window = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, '.editorconfig'), 'root = true\n')
     await writeFile(join(root, '.config', 'app.json'), '{}')
     await writeFile(join(root, 'node_modules', 'dep', 'index.js'), '1')
     await writeFile(join(root, '.cache', 'blob'), '1')
     await writeFile(join(root, '.tmp', 'junk'), '1')
-    await settle()
     const got = await window.close()
 
     expect(new Set(got.changes.map((c) => c.path))).toEqual(
@@ -438,28 +448,24 @@ describe('执行窗口内的工作区变更', () => {
         else reported.add(c.path)
       }
     }
-    await Bun.sleep(20)
 
     const first = open(root, { reported })
-    await settle()
+    await started(root)
     await mkdir(join(root, 'd', 'sub'), { recursive: true })
     await writeFile(join(root, 'd', 'a.txt'), 'a\n')
     await writeFile(join(root, 'd', 'sub', 'b.txt'), 'b\n')
     await writeFile(join(root, 'd', 'sub', 'c.txt'), 'c\n')
-    await settle()
     track((await first.close()).changes)
 
     const second = open(root, { reported })
-    await settle()
+    await started(root)
     await writeFile(join(root, 'd', 'sub', 'b.txt'), 'b2\n')
-    await settle()
     track((await second.close()).changes)
     expect([...reported].sort()).toEqual(['d/a.txt', 'd/sub/b.txt', 'd/sub/c.txt'])
 
     const third = open(root, { reported })
-    await settle()
+    await started(root)
     await rm(join(root, 'd'), { recursive: true, force: true })
-    await settle()
     const got = await third.close()
 
     // 三个文件都报告删除，三个目录本身都不报告。
@@ -481,12 +487,10 @@ describe('执行窗口内的工作区变更', () => {
     await mkdir(join(root, 'd', 'sub'), { recursive: true })
     await writeFile(join(root, 'd', 'a.txt'), 'a\n')
     await writeFile(join(root, 'd', 'sub', 'b.txt'), 'b\n')
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    await started(root)
     await rm(join(root, 'd'), { recursive: true, force: true })
-    await settle()
     const got = await window.close()
 
     expect(got.changes.every((c) => c.changeType === 'deleted')).toBe(true)
@@ -500,10 +504,9 @@ describe('执行窗口内的工作区变更', () => {
   test('删除后立即收尾，删除照常报告', async () => {
     const root = await gitRepo()
     await writeFile(join(root, 'gone.txt'), 'x\n')
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    await started(root)
     await rm(join(root, 'gone.txt'))
     const got = await window.close()
 
@@ -519,11 +522,10 @@ describe('执行窗口内的工作区变更', () => {
   test('两个窗口同时打开时，前一个窗口收尾时在途的事件仍归属该窗口', async () => {
     const root = await gitRepo()
     await writeFile(join(root, 'a.txt'), 'a\n')
-    await Bun.sleep(20)
 
     const first = open(root)
     const second = open(root)
-    await settle()
+    await started(root)
     await rm(join(root, 'a.txt'))
     const firstChanges = await first.close()
     await writeFile(join(root, 'b.txt'), 'b\n')
@@ -537,10 +539,10 @@ describe('执行窗口内的工作区变更', () => {
   test('屏障标记无法写入时标记观察范围不完整', async () => {
     const root = await gitRepo()
     await writeFile(join(root, '.tmp'), 'not a directory')
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    // 标记无法写入，投递进度无从确认；a.txt 由收尾扫描按 mtime 取得，起点回退为 `Date.now()`。
+    await clockPast()
     await writeFile(join(root, 'a.txt'), '1')
     const got = await window.close()
 
@@ -557,10 +559,9 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(real, 'gone.txt'), 'x\n')
     const root = `${real}-link`
     await symlink(real, root, 'junction')
-    await Bun.sleep(20)
 
     const window = open(root)
-    await settle()
+    await started(root)
     await rm(join(root, 'gone.txt'))
     await writeFile(join(root, 'kept.txt'), 'k\n')
     const got = await window.close()
@@ -584,11 +585,10 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(real, 'a.txt'), 'a\n')
     const link = `${real}-link`
     await symlink(real, link, 'junction')
-    await Bun.sleep(20)
 
     const first = open(real)
     const second = open(link)
-    await settle()
+    await started(real)
     await rm(join(real, 'a.txt'))
     const firstChanges = await first.close()
     await writeFile(join(link, 'b.txt'), 'b\n')
@@ -602,12 +602,11 @@ describe('执行窗口内的工作区变更', () => {
     const root = await gitRepo()
     const first = open(root)
     const second = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, 'a.txt'), '1')
-    await settle()
+    await wallPast(join(root, 'a.txt'))
     const firstChanges = await first.close()
     await writeFile(join(root, 'b.txt'), '2')
-    await settle()
     const secondChanges = await second.close()
 
     expect(firstChanges.changes.map((c) => c.path)).toEqual(['a.txt'])
@@ -622,17 +621,15 @@ describe('执行窗口内的工作区变更', () => {
   test('转为后台观察后，其后打开的窗口照常拥有事件，事件同时进入后台观察', async () => {
     const root = await gitRepo()
     await writeFile(join(root, 'gone.txt'), 'x\n')
-    await Bun.sleep(20)
 
     const first = open(root)
-    await settle()
+    await started(root)
     await writeFile(join(root, 'a.txt'), 'a\n')
-    await settle()
+    await wallPast(join(root, 'a.txt'))
     const { observed, background } = await first.detach()
 
     const second = open(root)
     await writeFile(join(root, 'c.txt'), 'c\n')
-    await settle()
     await rm(join(root, 'gone.txt'))
     const secondChanges = await second.close()
     await writeFile(join(root, 'b.txt'), 'b\n')
@@ -674,9 +671,8 @@ describe('收尾时的 git 环境', () => {
     const seenBy = async (env: ChangeWindowOptions['env'], file: string): Promise<string> => {
       rmSync(dump, { force: true })
       const window = openChangeWindow(root, { env })
-      await settle()
+      await started(root)
       await writeFile(join(root, file), 'x\n')
-      await settle()
       expect((await window.close()).changes.map((c) => c.path)).toEqual([file])
       expect(existsSync(dump)).toBe(true)
       return readFileSync(dump, 'utf8')

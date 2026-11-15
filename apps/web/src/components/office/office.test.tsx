@@ -855,8 +855,9 @@ describe('表格预览', () => {
       () => host.innerHTML.slice(0, 300),
     )
 
+    // 预览的重新获取与其后的渲染只经过微任务，读取字节在渲染中同步发起：让出一轮事件循环后即可判定。
     setRefresh(1)
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(server.raw).toHaveLength(1)
 
     mtime = 2
@@ -1272,8 +1273,9 @@ describe('演示文稿预览', () => {
     scroller.scrollTop = 1500
     scroller.dispatchEvent(new Event('scroll'))
 
+    // 预览的重新获取与其后的渲染只经过微任务，读取字节在渲染中同步发起：让出一轮事件循环后即可判定。
     setRefresh(1)
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(server.raw).toHaveLength(1)
 
     mtime = 2
@@ -1357,7 +1359,8 @@ describe('演示文稿预览', () => {
       () => `painted=${painted.length} ${host.innerHTML.slice(0, 300)}`,
     )
     expect(await slideIndex(painted[3]!)).toBe(1)
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    // 重绘经动画帧排定：此后登记的一帧执行时，之前排定的帧都已执行。
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     expect(painted).toHaveLength(4)
     expect(workers.requests).toEqual(['parse', 'images', 'font', 'font'])
   })
@@ -1396,8 +1399,9 @@ describe('演示文稿预览', () => {
       () => `terminated=${workers.terminated()} ${workers.requests.join(',')}`,
     )
     expect(embedded()).toEqual([])
+    // 字体的回复与加载只经过微任务：让出一轮事件循环后即可判定。
     pending.release()
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(embedded()).toEqual([])
 
     // 第二份：「甲」的还原已回复、注册尚未完成时被替换；收到「甲」时已请求「乙」。
@@ -1414,9 +1418,10 @@ describe('演示文稿预览', () => {
       () => workers.terminated() === 2 && workers.held.length === 1,
       () => `terminated=${workers.terminated()} ${workers.requests.join(',')}`,
     )
+    // 「甲」的加载与「乙」的回复同样只经过微任务。
     loads[0]!.release()
     unanswered.release()
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(embedded()).toEqual([])
 
     // 第三份照常还原。
@@ -1704,8 +1709,9 @@ describe('文档预览', () => {
     scroller.scrollTop = 1500
     scroller.dispatchEvent(new Event('scroll'))
 
+    // 预览的重新获取与其后的渲染只经过微任务，读取字节在渲染中同步发起：让出一轮事件循环后即可判定。
     setRefresh(1)
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(server.raw).toHaveLength(1)
 
     mtime = 2

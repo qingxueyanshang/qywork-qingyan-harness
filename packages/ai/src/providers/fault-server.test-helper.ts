@@ -80,7 +80,8 @@ export interface FaultServer {
    * 这是服务端记录的独立事实：客户端声称已取消 body 不能证明连接已实际释放。
    */
   closedByClient: number
-  stop(): void
+  /** 强制断开全部连接并停止监听；返回的 promise 在服务器停止后完成。 */
+  stop(): Promise<void>
 }
 
 type Protocol = 'responses' | 'chat' | 'anthropic'
@@ -542,7 +543,7 @@ export function startFaultServer(mode: FaultMode): FaultServer {
     inlineError: DEFAULT_INLINE_ERROR,
     toolArguments: DEFAULT_TOOL_ARGUMENTS,
     closedByClient: 0,
-    stop: () => {},
+    stop: async () => {},
   }
   const server = Bun.serve({
     port: 0,
@@ -556,9 +557,7 @@ export function startFaultServer(mode: FaultMode): FaultServer {
   })
   fault.anthropicBaseUrl = `http://127.0.0.1:${server.port}`
   fault.openaiBaseUrl = `${fault.anthropicBaseUrl}/v1`
-  fault.stop = () => {
-    server.stop(true)
-  }
+  fault.stop = () => server.stop(true)
   return fault
 }
 
@@ -635,6 +634,6 @@ export async function withFault<T>(
   try {
     return await fn(fault)
   } finally {
-    fault.stop()
+    await fault.stop()
   }
 }

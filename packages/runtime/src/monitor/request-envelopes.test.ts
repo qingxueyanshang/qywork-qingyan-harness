@@ -138,7 +138,7 @@ test('同一信封的两轮只写入一份明细，逐项与实际发送的工�
     expect(deleteConversation(store, conversationId!)).toBe(true)
     expect(envelopeRows(store)).toEqual([])
   } finally {
-    for (const session of sessions) session.dispose()
+    await Promise.all(sessions.map((session) => session.dispose()))
     store.close()
     provider.stop(true)
   }

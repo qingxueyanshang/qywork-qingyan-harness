@@ -9,9 +9,10 @@
  * 草稿、待发送附件与异步上传按会话隔离，切回与刷新后均恢复所属会话的内容。
  * 视频附件只在模型既不接受视频也不接受图片时拦截。
  */
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, jest, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
+import { until } from '@qywork/core/until.test-helper'
 
 beforeAll(() => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
@@ -382,7 +383,7 @@ describe('放大面板中的输入区', () => {
       expect(reveal.getAttribute('aria-expanded')).toBe('true')
 
       pointer(wrap, 'pointerleave')
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await until(() => !wrap.classList.contains('panel-dock-open'), '鼠标离开后输入区收起')
       expect(wrap.classList.contains('panel-dock-open')).toBe(false)
     } finally {
       dispose()
@@ -403,13 +404,18 @@ describe('放大面板中的输入区', () => {
       expect(wrap.classList.contains('panel-dock-open')).toBe(true)
 
       input(textarea, '还没发送的草稿')
+      // 收起的延迟由假计时器推进。失焦在微任务中处理：先让出一轮事件循环使其完成，
+      // 再推进超过延迟，收起的判定随之执行。
+      jest.useFakeTimers()
       textarea.blur()
       pointer(wrap, 'pointerleave')
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await new Promise((resolve) => setImmediate(resolve))
+      jest.advanceTimersByTime(200)
       expect(wrap.classList.contains('panel-dock-open')).toBe(true)
       expect(reveal.getAttribute('aria-expanded')).toBe('true')
     } finally {
       dispose()
+      jest.useRealTimers()
     }
   })
 
@@ -462,7 +468,7 @@ describe('放大面板中的输入区', () => {
       expect(wrap.classList.contains('panel-dock-open')).toBe(false)
       expect(wrap.classList.contains('panel-dock-ready')).toBe(false)
 
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      await until(() => wrap.classList.contains('panel-dock-ready'), '放大后启用过渡')
       expect(wrap.classList.contains('panel-dock-ready')).toBe(true)
     } finally {
       dispose()

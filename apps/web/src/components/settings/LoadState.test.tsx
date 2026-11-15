@@ -8,7 +8,7 @@
  * `new QyClient(...)` 会读取 `location` / `sessionStorage`。静态 import 在 `beforeAll` 之前就已求值，
  * 无法读取。
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, jest, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { JSX } from 'solid-js'
 
@@ -17,6 +17,14 @@ beforeAll(() => {
 })
 afterAll(async () => {
   await GlobalRegistrator.unregister()
+})
+
+// 占位阈值由假计时器推进：断言只取决于推进的时长，与机器负载无关。
+beforeEach(() => {
+  jest.useFakeTimers()
+})
+afterEach(() => {
+  jest.useRealTimers()
 })
 
 async function mountWith(view: (m: typeof import('./LoadState.tsx')) => () => JSX.Element) {
@@ -33,15 +41,15 @@ describe('读取中的占位不先于数据显示', () => {
   test('数据在阈值内返回时，占位不渲染', async () => {
     const { host, dispose } = await mount({ error: undefined })
     expect(host.innerHTML).toBe('')
-    // 本机取数实测在一帧（约 30ms）内返回。此处等待时间远超一帧，但仍在阈值内。
-    await Bun.sleep(80)
+    // 本机取数实测在一帧（约 30ms）内返回。此处推进的时长远超一帧，但仍在阈值内。
+    jest.advanceTimersByTime(80)
     expect(host.innerHTML).toBe('')
     dispose()
   })
 
   test('超过阈值仍未返回时显示占位条，行数按 lines，不写文字', async () => {
     const { host, dispose } = await mount({ error: undefined })
-    await Bun.sleep(260)
+    jest.advanceTimersByTime(260)
     expect(host.querySelectorAll('.skeleton-line')).toHaveLength(4)
     expect(host.textContent).toBe('')
     dispose()
@@ -61,7 +69,7 @@ describe('行内的值', () => {
     const [value, setValue] = createSignal<string | null>(null)
     const { host, dispose } = await mountWith((m) => () => <m.PendingText value={value()} />)
     expect(host.innerHTML).toBe('')
-    await Bun.sleep(260)
+    jest.advanceTimersByTime(260)
     expect(host.querySelector('.skeleton-inline')).not.toBeNull()
     setValue('已就绪')
     expect(host.textContent).toBe('已就绪')

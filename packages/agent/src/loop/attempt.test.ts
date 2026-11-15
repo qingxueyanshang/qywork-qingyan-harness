@@ -329,7 +329,7 @@ describe('流停滞时必须有终态，不能无限期挂起', () => {
       }
       return { types, receipts: fault.receipts.length, code, message }
     } finally {
-      fault.stop()
+      await fault.stop()
     }
   }
 
@@ -374,10 +374,20 @@ describe('监督期间点击停止，不报告断流，也不再发送请求', (
     mode: FaultMode,
     runId: string,
     protocol: (typeof FAULT_PROTOCOLS)[number],
-    abortAfterMs = 300,
   ): Promise<{ types: string[]; stopReason: string; receipts: number }> {
     const fault = startFaultServer(mode)
     const controller = new AbortController()
+    const persist = noopPersistence()
+    /*
+     * 停止时刻取被测阶段开始的可观察时刻，不取固定时长：负载高时固定时长可能早于请求发出，
+     * 也可能晚于保活结束。2xx 的响应头经 `markRequestHeaders` 报告；503 的响应头只在错误正文
+     * 读完后才报告，而该正文永不结束，因此以服务端收到请求为准。
+     */
+    let headers = false
+    persist.markRequestHeaders = () => {
+      headers = true
+    }
+    const reached = mode === 'hung_error_body' ? () => fault.receipts.length > 0 : () => headers
     const loop = new AgentLoop({
       adapter: buildAdapter({
         kind: protocol.kind,
@@ -388,13 +398,16 @@ describe('监督期间点击停止，不报告断流，也不再发送请求', (
       registry: new ToolRegistry(),
       systemPrompt: 's',
       makeToolContext: baseCtx,
-      persist: noopPersistence(),
+      persist,
       // 空闲上限设为远大于停止时刻：停止必须由用户触发，而不是由监督触发。
       streamIdleTimeoutMs: 5_000,
     })
     const types: string[] = []
     let stopReason = ''
-    const timer = setTimeout(() => controller.abort(), abortAfterMs)
+    const stopping = (async () => {
+      while (!reached() && !controller.signal.aborted) await Bun.sleep(5)
+      controller.abort()
+    })()
     try {
       for await (const ev of loop.run({
         compactPercent: 80,
@@ -407,8 +420,9 @@ describe('监督期间点击停止，不报告断流，也不再发送请求', (
       }
       return { types, stopReason, receipts: fault.receipts.length }
     } finally {
-      clearTimeout(timer)
-      fault.stop()
+      controller.abort()
+      await stopping
+      await fault.stop()
     }
   }
 
@@ -430,7 +444,6 @@ describe('监督期间点击停止，不报告断流，也不再发送请求', (
         'keepalive_then_ok',
         `rn_stop_${protocol.kind}_keepalive`,
         protocol,
-        150,
       )
       expect(result.stopReason).toBe('user_interrupt')
       expect(result.types).not.toContain('run.error')

@@ -136,7 +136,7 @@ test('503 带 Retry-After 60：按上游给出的 60 秒等待，随后一次成
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   } finally {
-    fault.stop()
+    await fault.stop()
   }
 }, 20_000)
 
@@ -169,7 +169,7 @@ test.each([
       const finished = events.find((e) => e.type === 'run.finished')
       expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
     } finally {
-      fault.stop()
+      await fault.stop()
     }
   },
   20_000,
@@ -234,7 +234,7 @@ test('可恢复错误交替出现：预算共用一份，尝试序号只增不�
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   } finally {
-    fault.stop()
+    await fault.stop()
   }
 }, 20_000)
 
@@ -278,7 +278,7 @@ test('退避等待期间停止：立即以 user_interrupt 结束，不再发送�
     expect(fault.receipts.length).toBe(1)
   } finally {
     controller.abort()
-    fault.stop()
+    await fault.stop()
   }
 }, 20_000)
 
@@ -310,7 +310,8 @@ test('退避等待期间停止：本轮结束后进程随即退出，不等退�
     expect(Date.now() - finishedAt).toBeLessThan(2_000)
   } finally {
     child.kill()
-    fault.stop()
+    await child.exited
+    await fault.stop()
   }
 }, 30_000)
 

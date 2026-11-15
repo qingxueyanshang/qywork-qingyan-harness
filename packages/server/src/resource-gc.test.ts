@@ -45,9 +45,9 @@ const config: QyConfig = {
   mode: 'auto',
 }
 
-const cleanups: (() => void)[] = []
-afterEach(() => {
-  for (const fn of cleanups.splice(0).reverse()) fn()
+const cleanups: (() => void | Promise<void>)[] = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
 })
 
 function fresh() {
@@ -59,7 +59,7 @@ function fresh() {
   cleanups.push(() => {
     content.close()
     store.close()
-    // 删除失败不算失败：`serve()` 预热扩展是异步的，用例结束时它可能仍占用这个目录。
+    // 删除失败不算失败：Windows 上 SQLite 的文件句柄释放有延迟。
     // 整个 .tmp/tests/run-* 由 scripts/run-tests.ts 统一收尾。
     try {
       rmSync(dir, { recursive: true, force: true })
@@ -244,7 +244,7 @@ test('反复启动关闭之后，停掉的服务不再认领到期任务', async
       schedulerTickMs: 10,
     })
     await Bun.sleep(60)
-    handle.stop()
+    await handle.stop()
   }
 
   // 全停之后才放一条到期任务。仍有计时器在运行的话，每 10 ms 触发一次，下面这段等待里必被认领。
@@ -261,7 +261,19 @@ test('反复启动关闭之后，停掉的服务不再认领到期任务', async
     home.id,
   )
   store.db.query('UPDATE schedules SET created_at = ? WHERE id = ?').run(Date.now() - 120_000, s.id)
-  await Bun.sleep(400)
+  /*
+   * 不按固定时长等待：同周期的间隔计时器按到期时刻先后触发，此前登记、未被清除的 10 ms 计时器
+   * 在本计时器触发三次的期间至少触发两次；认领在计时器回调的同步段中写入账本。
+   */
+  await new Promise<void>((resolve) => {
+    let fired = 0
+    const probe = setInterval(() => {
+      fired += 1
+      if (fired < 3) return
+      clearInterval(probe)
+      resolve()
+    }, 10)
+  })
 
   // 认领会起一轮并推进游标，两者都没发生。
   expect(countOf(store.db, 'SELECT COUNT(*) AS n FROM runs')).toBe(0)

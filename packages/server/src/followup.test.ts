@@ -20,6 +20,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, ConversationId, EventEnvelope } from '@qywork/core'
+import { until } from '@qywork/core/until.test-helper'
 import { buildHistory, type QyConfig } from '@qywork/runtime'
 import {
   appendMessage,
@@ -140,6 +141,7 @@ describe('模拟接口放行', () => {
       completed = true
       return response
     })
+    // 放行之前没有可等待的事件，留出一段时间确认没有提前返回。
     await Bun.sleep(10)
     expect(completed).toBe(false)
     held.release()
@@ -233,19 +235,25 @@ async function waitFor(what: (e: AgentEvent) => boolean, ms = 10_000): Promise<A
   return null
 }
 
-/** 等待该会话完全空闲（收尾与发起下一轮的 setTimeout(0) 均已执行）。 */
-async function idle(cv: ConversationId, ms = 10_000): Promise<void> {
-  const deadline = Date.now() + ms
-  while (Date.now() < deadline) {
-    if (!runs.isBusy(cv)) {
-      await Bun.sleep(60)
-      if (!runs.isBusy(cv)) return
-    }
-    await Bun.sleep(10)
-  }
+/**
+ * 等待该会话空闲，且不会再自行发起下一轮。
+ *
+ * 收尾时先释放占位，再关闭扩展、取出跟进消息并重新占位；本文件的工作区没有插件与 MCP 服务，
+ * 两步之间只经过微任务，轮询看不到其间的空闲。目标自动继续经 setTimeout(0) 发起，但只在标记存在时
+ * 排队。因此「不忙且没有标记」成立之后，不会再有新一轮。
+ */
+async function idle(cv: ConversationId): Promise<void> {
+  await until(
+    () => !runs.isBusy(cv) && runs.armedOf(cv) === null,
+    '会话空闲且没有待发起的自动继续',
+    10_000,
+  )
 }
 
-/** 排队与发起均经由 setTimeout(0)，多等待几个周期以确认未启动下一轮。 */
+/**
+ * 只用于确认**没有**启动下一轮。是否发起在本轮占位释放、`session.dispose()` 之后判定，
+ * 判定为不发起时没有任何事件，只能留出几个周期。
+ */
 async function settle(): Promise<void> {
   await Bun.sleep(160)
 }
@@ -955,14 +963,6 @@ describe('手动压缩占用会话', () => {
     return cv
   }
 
-  async function until(what: () => boolean, label: string): Promise<void> {
-    const deadline = Date.now() + 10_000
-    while (!what()) {
-      if (Date.now() > deadline) throw new Error(`等待超时：${label}`)
-      await Bun.sleep(10)
-    }
-  }
-
   const compact = (cv: ConversationId, sock: ReturnType<typeof socket>) =>
     handleCommand({ type: 'conversation.compact', conversationId: cv } as never, {
       ...deps(),
@@ -988,7 +988,7 @@ describe('手动压缩占用会话', () => {
     let compacting: Promise<void> = Promise.resolve()
     try {
       compacting = compact(cv, sock)
-      await until(() => bodies.length === 1, '摘要请求到达')
+      await until(() => bodies.length === 1, '摘要请求到达', 10_000)
       expect(runs.isBusy(cv)).toBe(true)
       expect(runs.claimUpdate()).toBe(false)
 
@@ -1039,7 +1039,7 @@ describe('手动压缩占用会话', () => {
     let compacting: Promise<void> = Promise.resolve()
     try {
       compacting = compact(cv, sock)
-      await until(() => bodies.length === 1, '摘要请求到达')
+      await until(() => bodies.length === 1, '摘要请求到达', 10_000)
       await send(cv, 'after-compact', sock)
       expect(runs.queueOf(cv).map((f) => f.id)).toEqual(['after-compact'])
       expect(bodies).toHaveLength(1)

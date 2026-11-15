@@ -8,10 +8,11 @@
  * 立即发出。
  */
 
-import { afterAll, beforeAll, expect, test } from 'bun:test'
+import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test'
 import { resolve } from 'node:path'
 import { createSummaryTrace, sendLane, sendLimiter } from '@qywork/agent'
 import { buildAdapter } from '@qywork/ai'
+import { log } from '@qywork/core'
 import { createConversation, createRun, Store, upsertWorkspace } from '@qywork/store'
 import type { QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
@@ -76,9 +77,21 @@ async function occupy(model: string): Promise<() => void> {
   return () => hold('completed')
 }
 
-/** 等待若干轮事件循环，使未排队的请求有机会到达对端。 */
-async function settle(): Promise<void> {
-  for (let i = 0; i < 20; i++) await Bun.sleep(5)
+/**
+ * 请求在该模型的名额上进入排队时完成，以 `sendLimiter` 排队时写出的日志为依据。
+ * 进入排队之后、名额释放之前，该请求不会发出。
+ */
+function queuedOn(model: string): { queued: Promise<void>; restore: () => void } {
+  const queued = Promise.withResolvers<void>()
+  const info = spyOn(log, 'info').mockImplementation((_scope, message, fields) => {
+    if (
+      message === '同时在途的请求已达上限，排队等待' &&
+      String(fields?.lane).endsWith(` ${model}`)
+    ) {
+      queued.resolve()
+    }
+  })
+  return { queued: queued.promise, restore: () => info.mockRestore() }
 }
 
 test('上限为 1 且名额被占用时，摘要请求排队，释放后才发出', async () => {
@@ -112,14 +125,16 @@ test('上限为 1 且名额被占用时，摘要请求排队，释放后才发�
   )
   const release = await occupy(model)
   const before = received
+  const waiting = queuedOn(model)
   try {
     const pending = makeSummarizer({ profile: () => profile })('生成摘要', 128, trace)
-    await settle()
+    await waiting.queued
     expect(received).toBe(before)
     release()
     expect(await pending).not.toBeNull()
     expect(received).toBe(before + 1)
   } finally {
+    waiting.restore()
     store.close()
   }
 })
@@ -128,13 +143,18 @@ test('上限为 1 且名额被占用时，art 请求排队，释放后才发出'
   const model = 'slot-art'
   const release = await occupy(model)
   const before = received
-  const pending = makeMediaPort(config(model)).generate(
-    { type: 'art', prompt: '页面', inputs: [], params: {} },
-    new AbortController().signal,
-  )
-  await settle()
-  expect(received).toBe(before)
-  release()
-  expect((await pending).ok).toBe(true)
-  expect(received).toBe(before + 1)
+  const waiting = queuedOn(model)
+  try {
+    const pending = makeMediaPort(config(model)).generate(
+      { type: 'art', prompt: '页面', inputs: [], params: {} },
+      new AbortController().signal,
+    )
+    await waiting.queued
+    expect(received).toBe(before)
+    release()
+    expect((await pending).ok).toBe(true)
+    expect(received).toBe(before + 1)
+  } finally {
+    waiting.restore()
+  }
 })
