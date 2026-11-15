@@ -1,4 +1,7 @@
 /**
+ * 覆盖 `SidePanel.tsx` 与 `side-panel/` 下的全部文件（`FileBrowser.tsx`、`FileTree.tsx`、`TreeMenu.tsx`、
+ * `ChangeRecord.tsx`），以及 `FileView.tsx`。
+ *
  * 文件页根目录行的刷新按钮。
  *
  * 该按钮位于文件树与已打开文件共用的文件页中，点击后刷新整页，不只重新读取左侧文件树。

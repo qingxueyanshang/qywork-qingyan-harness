@@ -6,7 +6,7 @@
  * `office/pptx/slide-viewport.ts` 与 `office/docx/page-viewport.ts`（只为可见的幻灯片与页面创建画布并绘制、首次显示的缩放比例、
  * 页面居中、幻灯片与页面按像素取整、工作表与幻灯片为不透明画布并在绘制前以白色铺满、改写后保留滚动位置与缩放比例）、
  * `office/OfficePicker.tsx` 与 `lib/file-search.ts` 的 `office` 筛选、
- * `SidePanel.tsx` 看板的 Word 行、PPT 行、Excel 行与文件预览页、`lib/store/ui.ts` 的 `openFileTab`。
+ * `SidePanel.tsx` 看板的 Word 行、PPT 行、Excel 行、`side-panel/FileBrowser.tsx` 的文件预览页、`lib/store/ui.ts` 的 `openFileTab`。
  *
  * happy-dom 没有 Canvas（`getContext` 返回 `null`）与 `FontFace`：绘制由对比基准与浏览器实测验证，这里只断言界面状态、
  * 画布的创建与释放、绘制的调用对象，以及替身上下文记录的填充（`recordContexts`）；`FontFace` 与 `document.fonts`

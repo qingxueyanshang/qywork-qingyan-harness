@@ -15,8 +15,7 @@ import { isDesktopShell, tauriInvoke } from './shell.ts'
 /**
  * 右侧面板的固定页。不可关闭，始终位于页签条最前面。
  *
- * 每个值都必须在 `SidePanel` 的 `<Switch>` 中有对应的 `Match`，
- * 否则设为该值时面板展开而内容为空。
+ * 每个值对应 `SidePanel` 的 `VIEWS` 中的一项（页签名与正文），缺少一项时类型检查失败。
  *
  * 打开的文件不是其中一个值：它显示在文件页中（`openFile` + `FileView`），
  * 与文件树并排。
