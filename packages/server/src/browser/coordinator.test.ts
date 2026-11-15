@@ -7,7 +7,7 @@
  * 选项页读取不分配新编号、多事件动作未完成时仍返回观察，
  * 下载的身份登记与终态认领，以及它经 `bridge.ts` 发出的
  * `create` / `bind` / `close.conversation` / `download.arm` / `download.disarm` 帧格式，
- * 以及设计稿渲染（`renderArt`、`render.ts`，经由 `canvas.ts` 的画布端口）。
+ * 以及设计稿渲染（`renderArt`、`render.ts`，经由 `canvas/port.ts` 的画布端口）。
  *
  * 对端是自动应答的假宿主，以及只覆盖基本流程的假调试端点。本文件测试页面归属、
  * 两条会话能否同时操作各自的页、删除会话能否关闭页面，
@@ -44,7 +44,8 @@ import {
 } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import { EventBus } from '../bus.ts'
-import { artRenderOf, CanvasService, canvasPort } from '../canvas.ts'
+import { artRenderOf, canvasPort } from '../canvas/port.ts'
+import { CanvasService } from '../canvas/service.ts'
 import { handleCommand } from '../commands.ts'
 import { makeDelegate } from '../delegate.ts'
 import type { SocketData } from '../deps.ts'
@@ -1191,8 +1192,8 @@ test('设计稿渲染：隐藏页按页面尺寸设定视口，经引导页写�
       during.tabs = browser.portFor('cv_a', WS).tabs()
   }
   const service = new CanvasService({ publish: () => {} })
-  await service.create(dir, { path: 'board.canvas.json' })
-  await service.apply(dir, 'board.canvas.json', [
+  await service.docs.create(dir, { path: 'board.canvas.json' })
+  await service.docs.apply(dir, 'board.canvas.json', [
     { op: 'add_file', path: '设计/首页.html', name: '首页' },
   ])
   const port = canvasPort(service, { id: WS, root: dir }, artRenderOf(browser, 'cv_a', WS, dir))

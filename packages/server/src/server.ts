@@ -59,7 +59,7 @@ import { BrowserBridge } from './browser/bridge.ts'
 import { browserCapability } from './browser/capability.ts'
 import { BrowserCoordinator } from './browser/coordinator.ts'
 import { EventBus } from './bus.ts'
-import { CanvasService } from './canvas.ts'
+import { CanvasService } from './canvas/service.ts'
 import { CloudAccount } from './cloud/account.ts'
 import { watchRunEnds } from './cloud/notify.ts'
 import { cloudOrigin } from './cloud/origin.ts'
@@ -443,7 +443,7 @@ export function serve(opts: ServeOptions) {
   )
 
   /* 运行中的会话与画布生成都计入忙碌：更新占位与阻止睡眠使用同一判据。 */
-  const busyCount = () => runs.busyConversations().length + canvas.busyCount
+  const busyCount = () => runs.busyConversations().length + canvas.runs.busyCount
   const power = opts.power
     ? startPowerGuard(
         {
@@ -551,7 +551,7 @@ export function serve(opts: ServeOptions) {
         }
         if (body.action !== 'claim') return json({ error: 'invalid action' }, 400)
         return json({
-          claimed: canvas.busyCount === 0 && runs.claimUpdate(),
+          claimed: canvas.runs.busyCount === 0 && runs.claimUpdate(),
           busy: busyCount(),
         })
       }
@@ -798,7 +798,7 @@ export function serve(opts: ServeOptions) {
   // 分支名跟随 `.git/HEAD`，理由与边界见 `git-watch.ts`。
   gitWatch.retarget()
 
-  void canvas
+  void canvas.runs
     .recover(
       listWorkspaces(opts.store).map((ws) => ({ id: ws.id, root: ws.rootPath })),
       (ws, version) => {

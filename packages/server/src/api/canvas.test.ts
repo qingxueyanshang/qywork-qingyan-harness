@@ -20,7 +20,7 @@ import {
 } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { Store, upsertWorkspace } from '@qywork/store'
-import { CanvasService } from '../canvas.ts'
+import { CanvasService } from '../canvas/service.ts'
 import type { CanvasQuoteResponse } from './canvas.ts'
 import type { ModelsResponse } from './conversations.ts'
 import { type ApiDeps, handleApi } from './index.ts'

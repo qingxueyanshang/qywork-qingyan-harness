@@ -1,5 +1,5 @@
 /**
- * 覆盖 `canvas.ts` 的运行、取回与取消（`run` / `retrieve` / `cancel`），以及 `canvas.run` 与 `file.changed` 的时序。
+ * 覆盖 `canvas/runs.ts` 的运行、取回与取消（`run` / `retrieve` / `cancel`），以及 `canvas.run` 与 `file.changed` 的时序。
  *
  * 生成端口为模拟实现：每次调用返回一个可从外部推进的句柄（任务号回调、完成、失败），
  * 测试据此控制「生成进行到一半」的时刻。中止信号到达时调用以中止原因拒绝，与真实端口一致。
@@ -24,7 +24,8 @@ import {
   serializeCanvas,
 } from '@qywork/core'
 import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/tools'
-import { CanvasFailure, CanvasService, type CanvasWorkspace } from './canvas.ts'
+import { CanvasFailure, type CanvasWorkspace } from './canvas/docs.ts'
+import { CanvasService } from './canvas/service.ts'
 
 const PATH = 'board.canvas.json'
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
@@ -157,7 +158,9 @@ describe('画布批量运行', () => {
   test('独立节点并行；批内依赖等上游落盘后运行，重复 id 不重复生成', async () => {
     const { ws, svc, ids } = await setup(ops)
     const fake = fakePort()
-    const batch = svc.runBatch(ws, PATH, [ids.$b!, ids.$a!, ids.$c!, ids.$a!], { media: fake.port })
+    const batch = svc.runs.runBatch(ws, PATH, [ids.$b!, ids.$a!, ids.$c!, ids.$a!], {
+      media: fake.port,
+    })
     const started = await Promise.all([fake.next(), fake.next()])
     expect(started.map((p) => p.call.prompt).sort()).toEqual(['independent', 'parent'])
     expect(fake.calls).toHaveLength(2)
@@ -185,7 +188,7 @@ describe('画布批量运行', () => {
       })),
     )
     const fake = fakePort()
-    const batch = svc.runBatch(ws, PATH, Object.values(ids), { media: fake.port })
+    const batch = svc.runs.runBatch(ws, PATH, Object.values(ids), { media: fake.port })
     // 六个调用都到达生成端口时没有任何一个已结束。
     const all = await Promise.all(Array.from({ length: 6 }, () => fake.next()))
     expect(fake.calls).toHaveLength(6)
@@ -197,10 +200,12 @@ describe('画布批量运行', () => {
 
   test('上游本次失败时下游不使用旧版本继续运行；独立节点不受影响', async () => {
     const { ws, svc, ids } = await setup(ops)
-    const first = await svc.run(ws, PATH, ids.$a!, { media: { generate: async () => success } })
+    const first = await svc.runs.run(ws, PATH, ids.$a!, {
+      media: { generate: async () => success },
+    })
     await first.done
     const fake = fakePort()
-    const batch = svc.runBatch(ws, PATH, [ids.$b!, ids.$a!, ids.$c!], { media: fake.port })
+    const batch = svc.runs.runBatch(ws, PATH, [ids.$b!, ids.$a!, ids.$c!], { media: fake.port })
     const started = await Promise.all([fake.next(), fake.next()])
     started.find((p) => p.call.prompt === 'parent')!.finish({ ok: false, message: '上游拒绝' })
     started.find((p) => p.call.prompt === 'independent')!.finish(success)
@@ -216,11 +221,11 @@ describe('画布批量运行', () => {
   test('未指定的上游不自动生成；有已有结果时允许复用', async () => {
     const { ws, svc, ids } = await setup(ops)
     const fake = fakePort()
-    const absent = await svc.runBatch(ws, PATH, [ids.$b!], { media: fake.port })
+    const absent = await svc.runs.runBatch(ws, PATH, [ids.$b!], { media: fake.port })
     expect(absent[0]).toMatchObject({ skipped: true, result: { ok: false } })
     expect(fake.calls).toHaveLength(0)
-    await (await svc.run(ws, PATH, ids.$a!, { media: { generate: async () => success } })).done
-    const batch = svc.runBatch(ws, PATH, [ids.$b!], { media: fake.port })
+    await (await svc.runs.run(ws, PATH, ids.$a!, { media: { generate: async () => success } })).done
+    const batch = svc.runs.runBatch(ws, PATH, [ids.$b!], { media: fake.port })
     ;(await fake.next()).finish(success)
     expect((await batch)[0]!.result.ok).toBe(true)
     expect((await node(ws.root, ids.$a!)).versions).toHaveLength(1)
@@ -239,7 +244,7 @@ describe('画布批量运行', () => {
       [ids.$c!, ids.$f!],
       [ids.$c!, ids.$a!, ids.$b!],
     ]) {
-      await expect(svc.runBatch(ws, PATH, selected, { media: fake.port })).rejects.toThrow()
+      await expect(svc.runs.runBatch(ws, PATH, selected, { media: fake.port })).rejects.toThrow()
     }
     expect(fake.calls).toHaveLength(0)
   })
@@ -259,14 +264,17 @@ describe('画布批量运行', () => {
     const fake = fakePort()
     const stop = new AbortController()
     const selected = Object.values(ids)
-    const batch = svc.runBatch(ws, PATH, selected, { media: fake.port, signal: stop.signal })
+    const batch = svc.runs.runBatch(ws, PATH, selected, { media: fake.port, signal: stop.signal })
     await Promise.all(Array.from({ length: 4 }, () => fake.next()))
     stop.abort(new Error('用户停止'))
     const results = await batch
     expect(fake.calls).toHaveLength(4)
     expect(results.filter((r) => r.skipped)).toHaveLength(2)
     expect(results.every((r) => !r.result.ok)).toBe(true)
-    const again = await svc.runBatch(ws, PATH, selected, { media: fake.port, signal: stop.signal })
+    const again = await svc.runs.runBatch(ws, PATH, selected, {
+      media: fake.port,
+      signal: stop.signal,
+    })
     expect(again.every((r) => r.skipped)).toBe(true)
     expect(fake.calls).toHaveLength(4)
   })
@@ -274,12 +282,12 @@ describe('画布批量运行', () => {
   test('已有待取回版本时批量不再次提交生成', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const first = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const call = await fake.next()
     await call.submit('existing-task')
     call.finish({ ok: false, message: '等待超时', pendingTaskId: 'existing-task' })
     await first.done
-    const results = await svc.runBatch(ws, PATH, [ids.$v!], { media: fake.port })
+    const results = await svc.runs.runBatch(ws, PATH, [ids.$v!], { media: fake.port })
     expect(results[0]).toMatchObject({ skipped: true, result: { ok: false, pending: true } })
     expect(fake.calls).toHaveLength(1)
     expect((await node(ws.root, ids.$v!)).versions).toHaveLength(1)
@@ -291,10 +299,10 @@ describe('画布批量运行', () => {
   test('提交被拒绝后的重试等待显示为第几次重试并带上次失败的原因，等待结束后恢复原状态', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const call = await fake.next()
     const state = async () => {
-      const s = (await svc.read(ws.root, PATH)).states[ids.$v!]
+      const s = (await svc.docs.read(ws.root, PATH)).states[ids.$v!]
       if (s?.state !== 'running') throw new Error('卡片不在运行中')
       return s
     }
@@ -317,15 +325,15 @@ describe('画布批量运行', () => {
   test('取回时远端一侧的重试等待显示为第几次重试，等待结束后恢复原状态', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const first = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const made = await fake.next()
     await made.submit('cloud-task')
     made.finish({ ok: false, message: '等待超时', pendingTaskId: 'cloud-task' })
     await first.done
-    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const again = await svc.runs.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
     const resumed = await fake.next()
     const state = async () => {
-      const s = (await svc.read(ws.root, PATH)).states[ids.$v!]
+      const s = (await svc.docs.read(ws.root, PATH)).states[ids.$v!]
       if (s?.state !== 'running') throw new Error('卡片不在运行中')
       return s
     }
@@ -346,14 +354,14 @@ describe('画布批量运行', () => {
   test('生成与取回的调用带画布、节点与任务记录的日志标识；运行记录的诊断保留失败码', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const first = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const made = await fake.next()
     const record = (await node(ws.root, ids.$v!)).versions[0]!.path
     expect(made.call.logFields).toEqual({ canvas: PATH, node: ids.$v!, record })
     await made.submit('task-fields')
     made.finish({ ok: false, message: '等待超时', pendingTaskId: 'task-fields' })
     await first.done
-    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const again = await svc.runs.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
     const resumed = await fake.next()
     expect(resumed.call.logFields).toEqual({ canvas: PATH, node: ids.$v!, record })
     const diagnostic = {
@@ -386,11 +394,11 @@ describe('画布批量运行', () => {
   ] as const)('走云端的%s：停止时按任务号向云端撤销，云端答复 %s', async (output, remote) => {
     const { ws, svc, ids } = await setup([{ op: 'add_generate', ref: '$g', output, prompt: '猫' }])
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     const call = await fake.next()
     await call.submit('mj_0123456789abcdef')
     const asked: unknown[] = []
-    const outcome = await svc.cancel(ws.root, PATH, ids.$g!, async (task) => {
+    const outcome = await svc.runs.cancel(ws.root, PATH, ids.$g!, async (task) => {
       asked.push(task)
       return remote
     })
@@ -412,7 +420,7 @@ describe('画布批量运行', () => {
       type: output,
       taskId: 'mj_0123456789abcdef',
     })
-    const again = await svc.retrieve(ws, PATH, ids.$g!, undefined, { media: fake.port })
+    const again = await svc.runs.retrieve(ws, PATH, ids.$g!, undefined, { media: fake.port })
     const resumed = await fake.next()
     expect(resumed.call).toMatchObject({ type: output, resumeTaskId: 'mj_0123456789abcdef' })
     resumed.finish({
@@ -431,10 +439,10 @@ describe('画布批量运行', () => {
   test('在重试等待中停止视频卡：记为已取消、未提交，不报告远端结果未知', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const call = await fake.next()
     call.call.onRetry?.({ attempt: 1, max: 5, reason: 'HTTP 429 请求过多' })
-    await svc.cancel(ws.root, PATH, ids.$v!, async () => 'unsupported')
+    await svc.runs.cancel(ws.root, PATH, ids.$v!, async () => 'unsupported')
     expect(await run.done).toEqual({
       ok: false,
       message: '已取消，未提交生成，不产生生成费用',
@@ -449,18 +457,18 @@ describe('画布批量运行', () => {
   test('指定的卡正在生成时不重复提交，等待该次生成并返回其结果；中止只结束等待，不停止生成', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const first = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const call = await fake.next()
     await call.submit('t-1')
-    const batch = svc.runBatch(ws, PATH, [ids.$v!], { media: fake.port })
-    const single = (await svc.run(ws, PATH, ids.$v!, { media: fake.port, join: true })).done
+    const batch = svc.runs.runBatch(ws, PATH, [ids.$v!], { media: fake.port })
+    const single = (await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port, join: true })).done
     const stop = new AbortController()
     const left = (
-      await svc.run(ws, PATH, ids.$v!, { media: fake.port, join: true, signal: stop.signal })
+      await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port, join: true, signal: stop.signal })
     ).done
     stop.abort()
     expect(await left).toMatchObject({ ok: false, pending: false })
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
     call.finish({
       ok: true,
       provider: 'ark',
@@ -495,7 +503,7 @@ describe('画布运行：图像', () => {
     ])
     const svc = new CanvasService({ publish: () => {}, paramSpecsOf: () => model.params })
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     const first = await fake.next()
     expect(first.call.params).toEqual({ seed: 42 })
     first.finish({
@@ -509,8 +517,8 @@ describe('画布运行：图像', () => {
     const saved = await node(ws.root, ids.$g!)
     expect(saved.params).toEqual(prefs)
     expect(saved.versions[0]!.made.params).toEqual({ seed: 42 })
-    await svc.apply(ws.root, PATH, [{ op: 'remove', id: ids.$e! }])
-    const again = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    await svc.docs.apply(ws.root, PATH, [{ op: 'remove', id: ids.$e! }])
+    const again = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     const second = await fake.next()
     expect(second.call.params).toEqual(prefs)
     second.finish({
@@ -524,7 +532,7 @@ describe('画布运行：图像', () => {
   test('成功后追加版本；made 记录编译后的提示词，之后修改提示词不影响它', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     const p = await fake.next()
     expect(p.call.prompt).toBe('小满 戴一顶帽子')
     expect(p.call.inputs.map((i) => i.role)).toEqual(['reference'])
@@ -535,7 +543,7 @@ describe('画布运行：图像', () => {
       files: [{ bytes: PNG, mime: 'image/png' }],
     })
     expect(await done).toMatchObject({ ok: true })
-    await svc.apply(ws.root, PATH, [{ op: 'update', id: ids.$g!, prompt: '换一个' }])
+    await svc.docs.apply(ws.root, PATH, [{ op: 'update', id: ids.$g!, prompt: '换一个' }])
     const g = await node(ws.root, ids.$g!)
     expect(g.versions).toHaveLength(1)
     expect(g.current).toBe(g.versions[0]!.id)
@@ -551,7 +559,7 @@ describe('画布运行：图像', () => {
   test('落盘的图片带像素宽高，卡片的框改为图片的比例、短边不变', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({
       ok: true,
       provider: 'q',
@@ -567,7 +575,7 @@ describe('画布运行：图像', () => {
   test('事件依次是 running → file.changed（占位版本、产物、生成记录各一次）→ done', async () => {
     const { ws, svc, ids, events } = await setup(IMAGE_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({
       ok: true,
       provider: 'q',
@@ -596,7 +604,7 @@ describe('画布运行：图像', () => {
       await readFile(join(ws.root, PATH), 'utf8'),
     )
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     const p = await fake.next()
     const placeholder = (await node(ws.root, ids.$g!)).versions
     expect(placeholder.map((v) => v.path)).toEqual([expect.stringMatching(/\.task\.json$/)])
@@ -622,13 +630,13 @@ describe('画布运行：图像', () => {
   test('同步生成的占位版本在停止等待、提交前被拒绝、应用退出后都不残留', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
-    const stopped = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const stopped = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     await fake.next()
-    expect(await svc.cancel(ws.root, PATH, ids.$g!, async () => 'unsupported')).toBe('stopped')
+    expect(await svc.runs.cancel(ws.root, PATH, ids.$g!, async () => 'unsupported')).toBe('stopped')
     await stopped.done
     expect((await node(ws.root, ids.$g!)).versions).toEqual([])
 
-    const refused = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const refused = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({ ok: false, executed: false, message: '参数不合法' })
     expect(await refused.done).toMatchObject({ ok: false, pending: false })
     expect((await node(ws.root, ids.$g!)).versions).toEqual([])
@@ -636,9 +644,9 @@ describe('画布运行：图像', () => {
 
     // 应用在同步生成返回之前退出：占位版本与提交前写入的任务记录留在磁盘上，下次启动恢复时删除。
     const exiting = new CanvasService({ publish: () => {} })
-    void exiting.run(ws, PATH, ids.$g!, { media: fakePort().port })
+    void exiting.runs.run(ws, PATH, ids.$g!, { media: fakePort().port })
     await until(async () => (await node(ws.root, ids.$g!)).versions.length === 1)
-    await new CanvasService({ publish: () => {} }).recover([ws], () => fake.port)
+    await new CanvasService({ publish: () => {} }).runs.recover([ws], () => fake.port)
     expect((await node(ws.root, ids.$g!)).versions).toEqual([])
     expect(await readdir(join(ws.root, 'generated'))).toEqual([])
     expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({
@@ -651,7 +659,7 @@ describe('画布运行：图像', () => {
   test('生成图片失败：failed 带原文，状态显示原文；画布只增加一条生成记录', async () => {
     const { ws, svc, ids, events } = await setup(IMAGE_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({ ok: false, message: '内容审核未通过' })
     expect(await done).toEqual({ ok: false, message: '内容审核未通过', pending: false })
     // 占位版本写入、删除各一次，生成记录一次；占位版本与任务记录都不残留。
@@ -665,7 +673,7 @@ describe('画布运行：图像', () => {
     expect(events[4]).toMatchObject({ state: 'failed', message: '内容审核未通过' })
     expect((await node(ws.root, ids.$g!)).versions).toEqual([])
     expect(await readdir(join(ws.root, 'generated'))).toEqual([])
-    expect((await svc.read(ws.root, PATH)).states[ids.$g!]).toEqual({
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$g!]).toEqual({
       state: 'failed',
       message: '内容审核未通过',
     })
@@ -678,12 +686,12 @@ describe('画布运行：图像', () => {
       { op: 'add_generate', ref: '$h', output: 'image', prompt: '以 @[$g] 为参考' },
     ])
     const fake = fakePort()
-    expect((await failure(svc.run(ws, PATH, ids.$e!, { media: fake.port }))).message).toContain(
-      '提示词为空',
-    )
-    expect((await failure(svc.run(ws, PATH, ids.$h!, { media: fake.port }))).message).toContain(
-      '尚无结果',
-    )
+    expect(
+      (await failure(svc.runs.run(ws, PATH, ids.$e!, { media: fake.port }))).message,
+    ).toContain('提示词为空')
+    expect(
+      (await failure(svc.runs.run(ws, PATH, ids.$h!, { media: fake.port }))).message,
+    ).toContain('尚无结果')
     expect(fake.calls).toHaveLength(0)
   })
 
@@ -693,7 +701,7 @@ describe('画布运行：图像', () => {
       { op: 'add_generate', ref: '$h', output: 'image', prompt: '以 @[$g] 为参考' },
     ])
     const fake = fakePort()
-    const first = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const first = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({
       ok: true,
       provider: 'q',
@@ -702,7 +710,7 @@ describe('画布运行：图像', () => {
     })
     await first.done
     const made = (await node(ws.root, ids.$g!)).versions[0]!.path
-    const second = await svc.run(ws, PATH, ids.$h!, { media: fake.port })
+    const second = await svc.runs.run(ws, PATH, ids.$h!, { media: fake.port })
     const p = await fake.next()
     expect(p.call.inputs.map((i) => i.path)).toEqual([join(ws.root, made)])
     expect(p.call.prompt).toBe('以 图片1 为参考')
@@ -732,7 +740,7 @@ describe('画布运行：音频', () => {
     wav.writeUInt16LE(16, 34)
     wav.write('data', 36, 'latin1')
     wav.writeUInt32LE(pcm, 40)
-    const run = await svc.run(ws, PATH, ids.$s!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$s!, { media: fake.port })
     const p = await fake.next()
     p.finish({
       ok: true,
@@ -767,7 +775,7 @@ describe('画布运行：Art', () => {
       mentionStyleOf: (o) => (o === 'art' ? ART_MENTION : undefined),
     })
     const fake = fakePort()
-    const first = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const first = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     const p1 = await fake.next()
     expect(p1.call.type).toBe('art')
     expect(p1.call.prompt).toBe('按 图1 搭白模')
@@ -788,7 +796,7 @@ describe('画布运行：Art', () => {
     expect(v1.size).toEqual({ w: 720, h: 1280 })
     expect({ w: g1.w, h: g1.h }).toEqual({ w: 169, h: 300 })
 
-    const second = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const second = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     const p2 = await fake.next()
     expect(p2.call.inputs.map((i) => [rel(i.path), i.mime])).toEqual([
       [v1.path, 'text/html'],
@@ -817,7 +825,7 @@ describe('画布运行：Art', () => {
     ])
     const svc = new CanvasService({ publish: () => {} })
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     const p = await fake.next()
     expect(relative(p.call.outputDir!, join(ws.root, 'a.png')).replaceAll('\\', '/')).toBe(
       '../a.png',
@@ -869,7 +877,7 @@ describe('画布运行：文本卡引用', () => {
     ])
     await writeFile(join(ws.root, '制作脚本.md'), SCRIPT)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     expect(p.call.prompt).toBe('阿七说：“手给我。”\n阿七')
     expect(p.call.inputs.map((i) => relative(ws.root, i.path))).toEqual(['a.png'])
@@ -885,7 +893,7 @@ describe('画布运行：文本卡引用', () => {
 
     // 修改文件即改变下次发送的内容，不需要修改卡片。
     await writeFile(join(ws.root, '制作脚本.md'), SCRIPT.replace('手给我', '握三秒'))
-    const again = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const again = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p2 = await fake.next()
     expect(p2.call.prompt).toContain('握三秒')
     await p2.submit()
@@ -911,24 +919,24 @@ describe('画布运行：文本卡引用', () => {
       },
     ])
     const fake = fakePort()
-    const missing = await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))
+    const missing = await failure(svc.runs.run(ws, PATH, ids.$v!, { media: fake.port }))
     expect(missing.message).toBe('「1-2 入梦」的提示词引用不成立：@[1-2 段]：文件不存在')
     await writeFile(join(ws.root, '制作脚本.md'), '## 1-1 修车铺\n阿七推门。\n')
-    const refused = await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))
+    const refused = await failure(svc.runs.run(ws, PATH, ids.$v!, { media: fake.port }))
     expect(refused.message).toBe(
       '「1-2 入梦」的提示词引用不成立：@[1-2 段]：文中没有 after 「## 1-2 入梦」',
     )
     expect(fake.calls).toHaveLength(0)
-    const view = await svc.read(ws.root, PATH)
+    const view = await svc.docs.read(ws.root, PATH)
     expect(view.references).toEqual({
       [ids.$md!]: ['文中没有 after 「## 1-2 入梦」'],
       [ids.$v!]: ['@[1-2 段]：文中没有 after 「## 1-2 入梦」'],
     })
-    expect(await svc.textReferences(ws.root, '制作脚本.md')).toEqual([
+    expect(await svc.docs.textReferences(ws.root, '制作脚本.md')).toEqual([
       `画布 ${PATH} 中 1 张卡引用此文件（1-2 入梦），下次运行时发送修改后的内容。`,
       `引用失效：画布 ${PATH} 的「1-2 段」文中没有 after 「## 1-2 入梦」；用 edit_canvas 的 update 给出新的 excerpt。`,
     ])
-    expect(await svc.textReferences(ws.root, '其他.md')).toEqual([])
+    expect(await svc.docs.textReferences(ws.root, '其他.md')).toEqual([])
   })
 
   test('提示词中的图片编号与连线数量不一致时不提交生成', async () => {
@@ -945,7 +953,7 @@ describe('画布运行：文本卡引用', () => {
     ])
     await writeFile(join(ws.root, 'a.png'), PNG)
     const fake = fakePort()
-    const refused = await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))
+    const refused = await failure(svc.runs.run(ws, PATH, ids.$v!, { media: fake.port }))
     expect(refused.message).toBe(
       '「1-1」提示词引用至图片2，该卡连接了1张图片；图片编号须与连线数量一致',
     )
@@ -984,18 +992,18 @@ describe('画布运行：文本卡引用', () => {
     })
     const ws = { id: 'ws1', root }
     const v = r.refs.$v!
-    const before = await svc.read(root, PATH)
+    const before = await svc.docs.read(root, PATH)
     expect(before.relabels).toBeUndefined()
     expect(before.mentions).toEqual({ [v]: { image: '@图片{n}' } })
-    await svc.apply(root, PATH, [
+    await svc.docs.apply(root, PATH, [
       { op: 'update', id: v, provider: 'providera', model: 'TTseadanco2.5-720' },
     ])
-    const after = await svc.read(root, PATH)
+    const after = await svc.docs.read(root, PATH)
     expect(after.references).toBeUndefined()
     expect(after.relabels).toEqual({ [v]: ['@图片1→@Image1', '图片1→Image1'] })
     expect(after.mentions).toEqual({ [v]: { image: '@Image{n}' } })
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, v, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, v, { media: fake.port })
     const p = await fake.next()
     expect(p.call.prompt).toBe('@Image1用于阿七的脸。参照Image1的阿七推门。')
     p.finish({ ok: false, message: 'x' })
@@ -1009,25 +1017,25 @@ describe('画布运行：视频', () => {
   test('取得任务号即追加一版指向任务记录，状态为生成中；成功后改为指向产物并删除记录', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-1')
     const during = await node(ws.root, ids.$v!)
     expect(during.versions).toHaveLength(1)
     expect(during.versions[0]!.path).toMatch(/\.task\.json$/)
     expect(during.versions[0]!.made).toMatchObject({ provider: 'ark', model: 'seedance' })
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
     // 运行中再次运行、删除节点、删除该版本均被拒绝；取回同一任务记录并入本次等待，不再发出请求。
-    expect((await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))).status).toBe(409)
-    const joined = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    expect((await failure(svc.runs.run(ws, PATH, ids.$v!, { media: fake.port }))).status).toBe(409)
+    const joined = await svc.runs.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
     expect(fake.calls).toHaveLength(1)
-    expect((await failure(svc.apply(ws.root, PATH, [{ op: 'remove', id: ids.$v! }]))).status).toBe(
-      409,
-    )
+    expect(
+      (await failure(svc.docs.apply(ws.root, PATH, [{ op: 'remove', id: ids.$v! }]))).status,
+    ).toBe(409)
     expect(
       (
         await failure(
-          svc.apply(ws.root, PATH, [
+          svc.docs.apply(ws.root, PATH, [
             { op: 'remove', id: ids.$v!, version: during.versions[0]!.id },
           ]),
         )
@@ -1047,7 +1055,7 @@ describe('画布运行：视频', () => {
     expect((await readdir(join(ws.root, 'generated'))).some((f) => f.endsWith('.task.json'))).toBe(
       false,
     )
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'normal' })
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'normal' })
   })
 
   test('视频成功时结果带产物从文件头读取的时长与实际发送的参数；未设置参数时为空对象', async () => {
@@ -1067,7 +1075,7 @@ describe('画布运行：视频', () => {
     ])
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit()
     p.finish({
@@ -1087,7 +1095,7 @@ describe('画布运行：视频', () => {
   test('模型返回尾帧：视频写入版本，尾帧图增加一个节点，名称为 <卡片名>_尾帧，位于卡片右侧', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit()
     p.finish({
@@ -1111,7 +1119,7 @@ describe('画布运行：视频', () => {
   test('查询任务被拒绝：该版本保留，状态为待取回；取回后改为指向产物', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-1')
     p.finish({ ok: false, message: '查询任务被拒绝：HTTP 404', pendingTaskId: 't-1' })
@@ -1121,12 +1129,12 @@ describe('画布运行：视频', () => {
       pending: true,
     })
     const v = (await node(ws.root, ids.$v!)).versions[0]!
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual({
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toEqual({
       state: 'pending',
       version: v.id,
     })
 
-    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const again = await svc.runs.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
     const r = await fake.next()
     expect(r.call).toMatchObject({ resumeTaskId: 't-1', provider: 'ark', model: 'seedance' })
     r.finish({
@@ -1151,14 +1159,14 @@ describe('画布运行：视频', () => {
         files: [{ bytes: MP4, mime: 'video/mp4' }],
       }
       if (hasVideo) {
-        const previous = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+        const previous = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
         const p = await fake.next()
         await p.submit('completed-task')
         p.finish(finished)
         await previous.done
       }
       const previous = await node(ws.root, ids.$v!)
-      const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+      const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
       const p = await fake.next()
       await p.submit('rejected-task')
       const message =
@@ -1172,31 +1180,35 @@ describe('画布运行：视频', () => {
         (await readdir(join(ws.root, 'generated'))).filter((f) => f.endsWith('.task.json')),
       ).toEqual([])
       const expected = { state: 'failed', message } as const
-      expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual(expected)
+      expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toEqual(expected)
       const fresh = new CanvasService({ publish: () => {} })
-      const restored = await fresh.read(ws.root, PATH)
+      const restored = await fresh.docs.read(ws.root, PATH)
       expect(restored.states[ids.$v!]).toEqual(expected)
       expect(restored.doc.runs?.at(-1)).toMatchObject({
         result: 'failed',
         task: 'rejected-task',
         message,
       })
-      const retry = await fresh.run(ws, PATH, ids.$v!, { media: fake.port })
+      const retry = await fresh.runs.run(ws, PATH, ids.$v!, { media: fake.port })
       const next = await fake.next()
-      expect((await fresh.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
+      expect((await fresh.docs.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({
+        state: 'running',
+      })
       await next.submit('retry-task')
       next.finish(finished)
       await retry.done
-      expect((await fresh.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'normal' })
+      expect((await fresh.docs.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'normal' })
       const restarted = new CanvasService({ publish: () => {} })
-      expect((await restarted.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'normal' })
+      expect((await restarted.docs.read(ws.root, PATH)).states[ids.$v!]).toEqual({
+        state: 'normal',
+      })
     },
   )
 
   test('生成期间删除同一卡片的另一个旧版本，成功后回写的仍是正确的版本', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const first = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const a = await fake.next()
     await a.submit()
     a.finish({
@@ -1208,10 +1220,10 @@ describe('画布运行：视频', () => {
     await first.done
     const old = (await node(ws.root, ids.$v!)).versions[0]!
 
-    const second = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const second = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const b = await fake.next()
     await b.submit()
-    await svc.apply(ws.root, PATH, [{ op: 'remove', id: ids.$v!, version: old.id }])
+    await svc.docs.apply(ws.root, PATH, [{ op: 'remove', id: ids.$v!, version: old.id }])
     b.finish({
       ok: true,
       provider: 'ark',
@@ -1228,7 +1240,7 @@ describe('画布运行：视频', () => {
   test('生成期间画布被外部改写、节点已删除：产物照常落盘，结果写明产物路径，不留下任务记录', async () => {
     const { ws, svc, ids, events } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit()
     await writeFile(join(ws.root, PATH), serializeCanvas(emptyCanvas()))
@@ -1269,7 +1281,7 @@ describe('画布运行：视频', () => {
   test('提交后画布被改名并移动、远端完成：结果自动写回改名后的画布，不需要取回，不留下任务记录', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-1')
     await mkdir(join(ws.root, '留给屋檐的信'))
@@ -1285,19 +1297,21 @@ describe('画布运行：视频', () => {
       `generated/${generated.find((f) => f.endsWith('.mp4'))}`,
     ])
     expect(doc.runs?.at(-1)).toMatchObject({ node: ids.$v, result: 'done', task: 't-1' })
-    expect((await svc.read(ws.root, MOVED)).states[ids.$v!]).toEqual({ state: 'normal' })
+    expect((await svc.docs.read(ws.root, MOVED)).states[ids.$v!]).toEqual({ state: 'normal' })
   })
 
   test('改名后在新路径取回并入原等待：显示生成中，只查询、下载一次，两处都得到结果', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-1')
     await mkdir(join(ws.root, '留给屋檐的信'))
     await rename(join(ws.root, PATH), join(ws.root, MOVED))
-    expect((await svc.read(ws.root, MOVED)).states[ids.$v!]).toMatchObject({ state: 'running' })
-    const again = await svc.retrieve(ws, MOVED, ids.$v!, undefined, { media: fake.port })
+    expect((await svc.docs.read(ws.root, MOVED)).states[ids.$v!]).toMatchObject({
+      state: 'running',
+    })
+    const again = await svc.runs.retrieve(ws, MOVED, ids.$v!, undefined, { media: fake.port })
     expect(fake.calls).toHaveLength(1)
     p.finish(finished)
     expect(await run.done).toMatchObject({ ok: true, canvas: MOVED })
@@ -1311,7 +1325,7 @@ describe('画布运行：视频', () => {
   test('画布在完成时无法读取：任务记录保留并写明产物；画布恢复后取回直接接上，不再查询与下载', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-1')
     const intact = await readFile(join(ws.root, PATH), 'utf8')
@@ -1325,7 +1339,7 @@ describe('画布运行：视频', () => {
     expect(generated.filter((f) => f.endsWith('.task.json'))).toHaveLength(1)
 
     await writeFile(join(ws.root, PATH), intact)
-    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const again = await svc.runs.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
     expect(await again.done).toMatchObject({ ok: true })
     expect(fake.calls).toHaveLength(1)
     expect((await node(ws.root, ids.$v!)).versions.map((v) => v.path)).toEqual([
@@ -1337,7 +1351,7 @@ describe('画布运行：视频', () => {
   test('画布被复制后两张都引用同一任务：完成时两张都写回', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-1')
     const copy = '副本.canvas.json'
@@ -1356,14 +1370,14 @@ describe('画布运行：视频', () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     for (const task of ['t-1', 't-2']) {
-      const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+      const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
       const p = await fake.next()
       await p.submit(task)
       p.finish({ ok: false, message: '超时', pendingTaskId: task })
       await run.done
     }
     const [v1, v2] = (await node(ws.root, ids.$v!)).versions
-    const got = await svc.retrieve(ws, PATH, ids.$v!, v1!.id, { media: fake.port })
+    const got = await svc.runs.retrieve(ws, PATH, ids.$v!, v1!.id, { media: fake.port })
     const r = await fake.next()
     expect(r.call.resumeTaskId).toBe('t-1')
     r.finish({
@@ -1374,7 +1388,7 @@ describe('画布运行：视频', () => {
     })
     await got.done
     // 当前版本指向 t-2；取回第一版后仍为待取回，指向 t-2。
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual({
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toEqual({
       state: 'pending',
       version: v2!.id,
     })
@@ -1387,8 +1401,8 @@ describe('画布运行：视频', () => {
     const svc = one.svc
     const id = one.ids.$v!
     const fake = fakePort()
-    const a = await svc.run(one.ws, PATH, id, { media: fake.port })
-    const b = await svc.run({ id: 'ws2', root: two.ws.root }, PATH, id, { media: fake.port })
+    const a = await svc.runs.run(one.ws, PATH, id, { media: fake.port })
+    const b = await svc.runs.run({ id: 'ws2', root: two.ws.root }, PATH, id, { media: fake.port })
     // 两次调用各自异步到达端口，并发负载下第二个工作区的调用可能先到：按输出目录所在的工作区认领，不按到达顺序。
     const first = [await fake.next(), await fake.next()]
     const inRoot = (root: string) =>
@@ -1397,14 +1411,14 @@ describe('画布运行：视频', () => {
     expect(pa).not.toBe(pb)
     pa.finish({ ok: false, message: 'a' })
     await a.done
-    expect((await svc.read(two.ws.root, PATH)).states[id]).toMatchObject({ state: 'running' })
+    expect((await svc.docs.read(two.ws.root, PATH)).states[id]).toMatchObject({ state: 'running' })
     pb.finish({ ok: false, message: 'b' })
     expect(await b.done).toMatchObject({ message: 'b' })
-    expect((await svc.read(one.ws.root, PATH)).states[id]).toEqual({
+    expect((await svc.docs.read(one.ws.root, PATH)).states[id]).toEqual({
       state: 'failed',
       message: 'a',
     })
-    expect((await svc.read(two.ws.root, PATH)).states[id]).toEqual({
+    expect((await svc.docs.read(two.ws.root, PATH)).states[id]).toEqual({
       state: 'failed',
       message: 'b',
     })
@@ -1422,11 +1436,11 @@ describe('画布运行：取消', () => {
   test('远端撤销成功：停止本地等待，删除该版本与任务记录，不记录失败，卡片恢复到生成之前', async () => {
     const { ws, svc, events, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-1')
     const asked: unknown[] = []
-    const outcome = await svc.cancel(ws.root, PATH, ids.$v!, async (task) => {
+    const outcome = await svc.runs.cancel(ws.root, PATH, ids.$v!, async (task) => {
       asked.push(task)
       return 'cancelled'
     })
@@ -1444,7 +1458,7 @@ describe('画布运行：取消', () => {
     expect(await done).toEqual({ ok: false, message: '已取消生成', pending: false })
     expect((await node(ws.root, ids.$v!)).versions).toEqual([])
     expect(await readdir(join(ws.root, 'generated'))).toEqual([])
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'empty' })
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'empty' })
     expect(events.at(-1)).toMatchObject({ type: 'canvas.run', state: 'done' })
   })
 
@@ -1453,23 +1467,23 @@ describe('画布运行：取消', () => {
     async (outcome) => {
       const { ws, svc, ids } = await setup(VIDEO_CARD)
       const fake = fakePort()
-      const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+      const { done } = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
       const p = await fake.next()
       await p.submit('t-1')
-      expect(await svc.cancel(ws.root, PATH, ids.$v!, async () => outcome)).toBe('stopped')
+      expect(await svc.runs.cancel(ws.root, PATH, ids.$v!, async () => outcome)).toBe('stopped')
       expect(await done).toMatchObject({
         ok: false,
         pending: true,
         message: expect.stringContaining('可能继续生成并计费'),
       })
-      const view = await svc.read(ws.root, PATH)
+      const view = await svc.docs.read(ws.root, PATH)
       expect(view.states[ids.$v!]).toMatchObject({ state: 'pending' })
       const v = (await node(ws.root, ids.$v!)).versions[0]!
       expect(view.tasks?.[v.id]).toMatchObject({
         taskId: 't-1',
         output: expect.stringMatching(/^generated[\\/]/),
       })
-      const retrieved = await svc.retrieve(ws, PATH, ids.$v!, v.id, { media: fake.port })
+      const retrieved = await svc.runs.retrieve(ws, PATH, ids.$v!, v.id, { media: fake.port })
       const resume = await fake.next()
       expect(resume.call.resumeTaskId).toBe('t-1')
       resume.finish(finished)
@@ -1481,10 +1495,10 @@ describe('画布运行：取消', () => {
   test('撤销接口失败仍暂停，保留失败原因与任务号供后续查询', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     await (await fake.next()).submit('cancel-error')
     expect(
-      await svc.cancel(ws.root, PATH, ids.$v!, async () => {
+      await svc.runs.cancel(ws.root, PATH, ids.$v!, async () => {
         throw new Error('HTTP 503')
       }),
     ).toBe('stopped')
@@ -1492,7 +1506,7 @@ describe('画布运行：取消', () => {
       pending: true,
       message: expect.stringContaining('HTTP 503'),
     })
-    expect(svc.busyCount).toBe(0)
+    expect(svc.runs.busyCount).toBe(0)
     expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({
       task: 'cancel-error',
       result: 'pending',
@@ -1505,35 +1519,35 @@ describe('画布运行：取消', () => {
       const { ws, svc, ids } = await setup(VIDEO_CARD)
       const fake = fakePort()
       const id = ids.$v!
-      const old = await svc.run(ws, PATH, id, { media: fake.port })
+      const old = await svc.runs.run(ws, PATH, id, { media: fake.port })
       await (await fake.next()).submit('old-task')
-      await svc.cancel(ws.root, PATH, id, async () => 'unsupported')
+      await svc.runs.cancel(ws.root, PATH, id, async () => 'unsupported')
       await old.done
       const oldVersion = (await node(ws.root, id)).current!
-      const newer = await svc.run(ws, PATH, id, { media: fake.port })
+      const newer = await svc.runs.run(ws, PATH, id, { media: fake.port })
       const next = await fake.next()
       await next.submit('new-task')
       next.finish(finished)
       await newer.done
-      const afterNew = await svc.read(ws.root, PATH)
+      const afterNew = await svc.docs.read(ws.root, PATH)
       expect(afterNew.states[id]).toEqual({ state: 'normal' })
       expect(afterNew.tasks?.[oldVersion]?.taskId).toBe('old-task')
       const current = (await node(ws.root, id)).current!
       const newPath = (await node(ws.root, id)).versions.find((v) => v.id === current)!.path
-      const retrieve = await svc.retrieve(ws, PATH, id, oldVersion, { media: fake.port })
+      const retrieve = await svc.runs.retrieve(ws, PATH, id, oldVersion, { media: fake.port })
       const resuming = await fake.next()
       expect(resuming.call.resumeTaskId).toBe('old-task')
-      expect((await svc.read(ws.root, PATH)).states[id]).toMatchObject({
+      expect((await svc.docs.read(ws.root, PATH)).states[id]).toMatchObject({
         action: 'retrieve',
         version: oldVersion,
         taskId: 'old-task',
       })
       resuming.finish(success ? finished : { ok: false, message: '远端任务失败：余额不足' })
       await retrieve.done
-      const final = await svc.read(ws.root, PATH)
+      const final = await svc.docs.read(ws.root, PATH)
       expect(final.states[id]).toEqual({ state: 'normal' })
       const fresh = new CanvasService({ publish: () => {} })
-      expect((await fresh.read(ws.root, PATH)).states[id]).toEqual({ state: 'normal' })
+      expect((await fresh.docs.read(ws.root, PATH)).states[id]).toEqual({ state: 'normal' })
       const finalNode = await node(ws.root, id)
       expect(finalNode.current).toBe(current)
       expect(finalNode.versions.find((v) => v.id === current)?.path).toBe(newPath)
@@ -1556,24 +1570,24 @@ describe('画布运行：取消', () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const id = ids.$v!
-    const first = await svc.run(ws, PATH, id, { media: fake.port })
+    const first = await svc.runs.run(ws, PATH, id, { media: fake.port })
     const made = await fake.next()
     await made.submit('first-task')
     made.finish(finished)
     await first.done
     const kept = (await node(ws.root, id)).current!
-    const again = await svc.run(ws, PATH, id, { media: fake.port })
+    const again = await svc.runs.run(ws, PATH, id, { media: fake.port })
     await (await fake.next()).submit('second-task')
-    await svc.cancel(ws.root, PATH, id, async () => 'unsupported')
+    await svc.runs.cancel(ws.root, PATH, id, async () => 'unsupported')
     await again.done
     const paused = (await node(ws.root, id)).current!
-    const retrieve = await svc.retrieve(ws, PATH, id, paused, { media: fake.port })
+    const retrieve = await svc.runs.retrieve(ws, PATH, id, paused, { media: fake.port })
     ;(await fake.next()).finish({ ok: false, message: '任务未建立，未扣费' })
     await retrieve.done
     const failed = { state: 'failed', message: expect.stringContaining('任务未建立，未扣费') }
-    expect((await svc.read(ws.root, PATH)).states[id]).toMatchObject(failed)
+    expect((await svc.docs.read(ws.root, PATH)).states[id]).toMatchObject(failed)
     const fresh = new CanvasService({ publish: () => {} })
-    expect((await fresh.read(ws.root, PATH)).states[id]).toMatchObject(failed)
+    expect((await fresh.docs.read(ws.root, PATH)).states[id]).toMatchObject(failed)
     const after = await node(ws.root, id)
     expect([after.current, after.versions.map((v) => v.id)]).toEqual([kept, [kept]])
   })
@@ -1581,21 +1595,21 @@ describe('画布运行：取消', () => {
   test('视频尚未取得任务号时停止本地等待，不等任务号、不调用远端撤销；未在生成时返回 409', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     await fake.next()
     let asked = 0
-    const outcome = await svc.cancel(ws.root, PATH, ids.$v!, async () => {
+    const outcome = await svc.runs.cancel(ws.root, PATH, ids.$v!, async () => {
       asked++
       return 'cancelled'
     })
     expect(outcome).toBe('stopped')
     expect(asked).toBe(0)
     expect(await done).toEqual({ ok: false, message: '已停止等待；远端结果未知', pending: false })
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'unknown' })
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'unknown' })
     expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({ result: 'unknown' })
     expect(fake.calls).toHaveLength(1)
     expect(
-      (await failure(svc.cancel(ws.root, PATH, ids.$v!, async () => 'cancelled'))).status,
+      (await failure(svc.runs.cancel(ws.root, PATH, ids.$v!, async () => 'cancelled'))).status,
     ).toBe(409)
   })
 
@@ -1616,10 +1630,10 @@ describe('画布运行：取消', () => {
         throw signal.reason
       },
     }
-    const run = await svc.run(ws, PATH, ids.$v!, { media })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media })
     await ready
     expect(
-      await svc.cancel(ws.root, PATH, ids.$v!, async () => {
+      await svc.runs.cancel(ws.root, PATH, ids.$v!, async () => {
         throw new Error('不应撤销')
       }),
     ).toBe('stopped')
@@ -1630,13 +1644,13 @@ describe('画布运行：取消', () => {
     })
     const version = (await node(ws.root, ids.$v!)).versions[0]!
     expect(JSON.parse(await readFile(join(ws.root, version.path), 'utf8')).taskId).toBe('late-task')
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'pending' })
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'pending' })
     expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({
       result: 'pending',
       task: 'late-task',
     })
     const fake = fakePort()
-    const resumed = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const resumed = await svc.runs.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
     const p = await fake.next()
     expect(p.call.resumeTaskId).toBe('late-task')
     p.finish(finished)
@@ -1646,10 +1660,10 @@ describe('画布运行：取消', () => {
   test('图像等单次请求远端始终不返回时，停止即结束本地等待：记为结果未知，卡片可以再次运行', async () => {
     const { ws, svc, events, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     await fake.next()
     let asked = 0
-    const outcome = await svc.cancel(ws.root, PATH, ids.$g!, async () => {
+    const outcome = await svc.runs.cancel(ws.root, PATH, ids.$g!, async () => {
       asked++
       return 'cancelled'
     })
@@ -1657,11 +1671,14 @@ describe('画布运行：取消', () => {
     expect(asked).toBe(0)
     const message = '已停止等待；远端结果未知'
     expect(await run.done).toEqual({ ok: false, message, pending: false })
-    expect((await svc.read(ws.root, PATH)).states[ids.$g!]).toEqual({ state: 'unknown', message })
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$g!]).toEqual({
+      state: 'unknown',
+      message,
+    })
     expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({ result: 'unknown', message })
     expect(events.at(-1)).toMatchObject({ type: 'canvas.run', state: 'failed', message })
 
-    const again = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const again = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({
       ok: true,
       provider: 'ark',
@@ -1676,15 +1693,15 @@ describe('画布运行：取消', () => {
     async (remote) => {
       const { ws, svc, ids } = await setup(VIDEO_CARD)
       const fake = fakePort()
-      const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+      const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
       const p = await fake.next()
       await p.submit('t-9')
       p.finish({ ok: false, message: '等待超时', pendingTaskId: 't-9' })
       await run.done
-      const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+      const again = await svc.runs.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
       await fake.next()
       const asked: { taskId: string }[] = []
-      const outcome = await svc.cancel(ws.root, PATH, ids.$v!, async (task) => {
+      const outcome = await svc.runs.cancel(ws.root, PATH, ids.$v!, async (task) => {
         asked.push(task)
         return remote
       })
@@ -1700,25 +1717,25 @@ describe('画布运行：排队中与生成中', () => {
   test('平台报告的状态写入卡片状态，变化时才发送 canvas.run；无法识别的状态词不修改状态', async () => {
     const { ws, svc, events, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).not.toHaveProperty('taskId')
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).not.toHaveProperty('taskId')
     await p.submit('t-1')
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ taskId: 't-1' })
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).not.toHaveProperty('phase')
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ taskId: 't-1' })
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).not.toHaveProperty('phase')
     const runningEvents = () =>
       events.filter((e) => e.type === 'canvas.run' && e.state === 'running').length
     const before = runningEvents()
     p.call.onStatus?.('PENDING')
     p.call.onStatus?.('PENDING')
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({
       state: 'running',
       phase: 'queued',
     })
     expect(runningEvents()).toBe(before + 1)
     p.call.onStatus?.('RUNNING')
     p.call.onStatus?.('WHATEVER')
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ phase: 'running' })
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ phase: 'running' })
     expect(runningEvents()).toBe(before + 2)
     p.finish({
       ok: true,
@@ -1745,7 +1762,7 @@ describe('画布运行：生成记录', () => {
   test('成功：一条 done，记录发出的提示词、参数、输入、接口、模型与花费', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     const p = await fake.next()
     p.call.onSpend?.({ ...spend(0.2), kind: 'dashscope_images', output: 'image', quantity: 1 })
     p.finish({
@@ -1780,11 +1797,11 @@ describe('画布运行：生成记录', () => {
   test('失败：一条 failed，带失败原文、没有花费；重启后状态仍显示原文', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({ ok: false, message: 'qwen / img：内容审核未通过' })
     await done
     const fresh = new CanvasService({ publish: () => {} })
-    const view = await fresh.read(ws.root, PATH)
+    const view = await fresh.docs.read(ws.root, PATH)
     expect(view.states[ids.$g!]).toEqual({ state: 'failed', message: 'qwen / img：内容审核未通过' })
     const runs = view.doc.runs ?? []
     expect(runs).toHaveLength(1)
@@ -1795,12 +1812,12 @@ describe('画布运行：生成记录', () => {
   test('视频超时留待取回、之后取回成功：两条记录，任务号相同，花费记在取回的记录上', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-9')
     p.finish({ ok: false, message: '查询任务被拒绝：HTTP 404', pendingTaskId: 't-9' })
     await run.done
-    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const again = await svc.runs.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
     const r = await fake.next()
     r.call.onSpend?.(spend(1.5))
     r.finish({
@@ -1822,9 +1839,9 @@ describe('画布运行：生成记录', () => {
   test('排队中撤销：一条 cancelled，不记录失败原文', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
     await (await fake.next()).submit('t-1')
-    await svc.cancel(ws.root, PATH, ids.$v!, async () => 'cancelled')
+    await svc.runs.cancel(ws.root, PATH, ids.$v!, async () => 'cancelled')
     await done
     const runs = (await onDisk(ws.root)).runs ?? []
     expect(runs).toHaveLength(1)
@@ -1835,10 +1852,10 @@ describe('画布运行：生成记录', () => {
   test('删除生成卡之后记录仍保留', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const { done } = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({ ok: false, message: '失败' })
     await done
-    await svc.apply(ws.root, PATH, [{ op: 'remove', id: ids.$g! }])
+    await svc.docs.apply(ws.root, PATH, [{ op: 'remove', id: ids.$g! }])
     const doc = await onDisk(ws.root)
     expect(doc.nodes.some((n) => n.id === ids.$g)).toBe(false)
     expect(doc.runs?.map((x) => x.node)).toEqual([ids.$g!])

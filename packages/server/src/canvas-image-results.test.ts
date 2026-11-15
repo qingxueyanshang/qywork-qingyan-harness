@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { findMediaModel } from '@qywork/ai'
 import { type CanvasGenerateNode, emptyCanvas, serializeCanvas } from '@qywork/core'
 import { makeMediaPort } from '@qywork/runtime'
-import { CanvasService } from './canvas.ts'
+import { CanvasService } from './canvas/service.ts'
 
 const PATH = 'images.canvas.json'
 const MODEL = 'gpt-image-2.5-sunburst'
@@ -38,7 +38,7 @@ async function setup(n = 4) {
     publish: () => {},
     paramSpecsOf: () => findMediaModel(MODEL)!.params,
   })
-  const { refs } = await svc.apply(root, PATH, [
+  const { refs } = await svc.docs.apply(root, PATH, [
     { op: 'add_generate', ref: '$g', output: 'image', prompt: '一张海报', params: { n } },
   ])
   const id = refs.$g!
@@ -54,9 +54,9 @@ async function setup(n = 4) {
     },
     mediaDefaults: { image: { provider: 'test', model: MODEL } },
   })
-  const run = async () => (await svc.run({ id: 'ws', root }, PATH, id, { media })).done
+  const run = async () => (await svc.runs.run({ id: 'ws', root }, PATH, id, { media })).done
   const card = async (service = svc) => {
-    const view = await service.read(root, PATH)
+    const view = await service.docs.read(root, PATH)
     return view.doc.nodes.find((x) => x.id === id) as CanvasGenerateNode
   }
   return { root, svc, id, run, card }
@@ -77,7 +77,7 @@ describe('图片生成的完整结果与部分结果', () => {
       .shapes!.find((s) => s.ratio === '16:9' && s.tier === '4K')!.value!
     expect(size).toBe('3840x2160')
     const params = { n: 4, size, quality: 'max' }
-    await svc.apply(root, PATH, [{ op: 'update', id, params }])
+    await svc.docs.apply(root, PATH, [{ op: 'update', id, params }])
     const result = await run()
     expect(requests).toEqual([{ model: MODEL, prompt: '一张海报', ...params }])
     expect(result.ok).toBe(true)
@@ -123,7 +123,7 @@ describe('图片生成的完整结果与部分结果', () => {
       expect(version.made.params.n).toBe(4)
       expect(version.warning).toBeUndefined()
     }
-    await svc.apply(root, PATH, [{ op: 'update', id, current: first.versions[3]!.id }])
+    await svc.docs.apply(root, PATH, [{ op: 'update', id, current: first.versions[3]!.id }])
     expect((await card()).current).toBe(first.versions[3]!.id)
     await run()
     expect((await card()).versions).toHaveLength(8)
@@ -166,11 +166,11 @@ describe('图片生成的完整结果与部分结果', () => {
     expect((await run()).ok).toBe(false)
     expect((await card()).versions).toEqual(original.versions)
     expect((await card()).current).toBe(original.current)
-    expect((await svc.read(root, PATH)).states[id]).toMatchObject({ state: 'failed' })
+    expect((await svc.docs.read(root, PATH)).states[id]).toMatchObject({ state: 'failed' })
     reply = () => Response.json({ data: [{ b64_json: images[1]!.toString('base64') }] })
     await run()
     expect((await card()).versions).toHaveLength(2)
-    expect((await svc.read(root, PATH)).states[id]).toEqual({ state: 'normal' })
+    expect((await svc.docs.read(root, PATH)).states[id]).toEqual({ state: 'normal' })
     expect(requests).toHaveLength(3)
   })
 })

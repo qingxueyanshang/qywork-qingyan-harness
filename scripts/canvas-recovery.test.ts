@@ -12,7 +12,7 @@ import {
 } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { Store, upsertWorkspace } from '@qywork/store'
-import { CanvasService } from '../packages/server/src/canvas.ts'
+import { CanvasService } from '../packages/server/src/canvas/service.ts'
 import { serve } from '../packages/server/src/server.ts'
 import { createReloadSupervisor } from './reload-supervisor.ts'
 import { requestUpdateClaim } from './update/claim.ts'
@@ -210,12 +210,12 @@ test('恢复扫描不受搜索的 300 条上限截断，配置不可用时保留
   )
   const service = new CanvasService({ publish() {} })
   let seen = 0
-  await service.recover([{ id: 'ws', root }], () => {
+  await service.runs.recover([{ id: 'ws', root }], () => {
     seen++
     return undefined
   })
   expect(seen).toBe(1)
-  expect(service.busyCount).toBe(0)
+  expect(service.runs.busyCount).toBe(0)
   expect(JSON.parse(await readFile(join(root, 'pending.task.json'), 'utf8')).taskId).toBe(
     'original',
   )
@@ -233,7 +233,7 @@ test('文件校验期间取得更新占位，生成在实际调用接口之前�
   let updating = false
   let called = false
   const service = new CanvasService({ publish() {}, updating: () => updating })
-  const run = service.run({ id: 'ws', root }, PATH, seeded.refs.$v!, {
+  const run = service.runs.run({ id: 'ws', root }, PATH, seeded.refs.$v!, {
     media: {
       generate: async () => {
         called = true
@@ -244,5 +244,5 @@ test('文件校验期间取得更新占位，生成在实际调用接口之前�
   updating = true
   await expect(run).rejects.toMatchObject({ status: 409 })
   expect(called).toBe(false)
-  expect(service.busyCount).toBe(0)
+  expect(service.runs.busyCount).toBe(0)
 })

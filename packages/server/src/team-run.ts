@@ -30,7 +30,7 @@ import {
 import { getConversation } from '@qywork/store'
 import type { Role } from '@qywork/team'
 import { BrowserPort, CanvasPort, DesktopPort } from '@qywork/tools'
-import { artRenderOf, canvasPort } from './canvas.ts'
+import { artRenderOf, canvasPort } from './canvas/port.ts'
 import { type CommandDeps, officePortOf } from './deps.ts'
 
 /**

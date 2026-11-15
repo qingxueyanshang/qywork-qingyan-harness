@@ -1,7 +1,7 @@
 /**
  * 画布接口：读取、修改、新建、运行、取回、截取帧、发送前的花费。
  *
- * 写入与生成全部交给 `canvas.ts` 的画布服务，此处只负责入参校验与返回结构。入参不合法时返回 422 且不写入磁盘，
+ * 写入与生成全部交给 `canvas/service.ts` 的画布服务，此处只负责入参校验与返回结构。入参不合法时返回 422 且不写入磁盘，
  * 运行中的冲突返回 409；运行与取回在校验通过、卡片已标为运行中之后立即返回，不占用请求：
  * 关闭标签页不会中断已付费的调用，结果经 `canvas.run` 与 `file.changed` 事件送达。
  */
@@ -17,7 +17,7 @@ import {
 } from '@qywork/core'
 import { makeMediaPort, resolveMediaModel } from '@qywork/runtime'
 import { recordUsage } from '@qywork/store'
-import { CanvasFailure, type CanvasStep } from '../canvas.ts'
+import { CanvasFailure, type CanvasStep } from '../canvas/docs.ts'
 import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
 
 /** `POST /api/canvas/ops` 的响应体：应用后的画布与本批操作的名称对照表。 */
@@ -90,7 +90,7 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
     if (p === '/api/canvas' && req.method === 'GET') {
       const path = url.searchParams.get('path')
       if (!path) return invalid('缺少画布路径')
-      return json(await d.canvas.read(d.workspaceRoot, path))
+      return json(await d.canvas.docs.read(d.workspaceRoot, path))
     }
 
     if (req.method !== 'POST') return null
@@ -104,7 +104,7 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       if (!path || !nodeId) return invalid('缺少画布路径或节点 id')
       if (!FRAME_LABEL.test(label)) return invalid(`帧名称不合法：${label}`)
       const bytes = new Uint8Array(await req.arrayBuffer())
-      return json(await d.canvas.captureFrame(d.workspaceRoot, path, nodeId, label, bytes))
+      return json(await d.canvas.assets.captureFrame(d.workspaceRoot, path, nodeId, label, bytes))
     }
 
     // 时间线导出：开始时取得会话号，按位置写入字节块，完成时写入磁盘，或放弃。写入请求的请求体是字节，位置位于查询字符串中。
@@ -113,7 +113,7 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       const path = text(b?.path)
       const nodeId = text(b?.nodeId)
       if (!path || !nodeId) return invalid('缺少画布路径或节点 id')
-      return json({ upload: await d.canvas.exportStart(d.workspaceRoot, path, nodeId) })
+      return json({ upload: await d.canvas.exports.exportStart(d.workspaceRoot, path, nodeId) })
     }
     if (p === '/api/canvas/export/write') {
       const q = url.searchParams
@@ -121,7 +121,7 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       const at = Number(q.get('at'))
       if (!upload || !EXPORT_ID.test(upload)) return invalid('缺少导出会话号')
       if (!Number.isSafeInteger(at) || at < 0) return invalid('写入位置不合法')
-      await d.canvas.exportWrite(
+      await d.canvas.exports.exportWrite(
         d.workspaceRoot,
         upload,
         at,
@@ -133,10 +133,10 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       const upload = text((await body(req))?.upload)
       if (!upload || !EXPORT_ID.test(upload)) return invalid('缺少导出会话号')
       if (p.endsWith('/abort')) {
-        await d.canvas.exportAbort(d.workspaceRoot, upload)
+        await d.canvas.exports.exportAbort(d.workspaceRoot, upload)
         return json({ ok: true })
       }
-      return json(await d.canvas.exportFinish(d.workspaceRoot, upload))
+      return json(await d.canvas.exports.exportFinish(d.workspaceRoot, upload))
     }
 
     if (p === '/api/canvas/upload') {
@@ -151,7 +151,7 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       if (!beside && !(Number.isFinite(x) && Number.isFinite(y))) return invalid('缺少位置')
       const bytes = new Uint8Array(await req.arrayBuffer())
       return json(
-        await d.canvas.upload(
+        await d.canvas.assets.upload(
           d.workspaceRoot,
           path,
           name,
@@ -169,9 +169,9 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       const from = text(b.from)
       const to = text(b.to)
       if (!path || !from || !to) return invalid('缺少画布路径或指纹')
-      const step = await d.canvas.restore(d.workspaceRoot, path, from, to)
+      const step = await d.canvas.docs.restore(d.workspaceRoot, path, from, to)
       const res: CanvasOpsResponse = {
-        ...(await d.canvas.read(d.workspaceRoot, path)),
+        ...(await d.canvas.docs.read(d.workspaceRoot, path)),
         refs: {},
         step,
       }
@@ -187,12 +187,15 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       if (!path || !files.length) return invalid('缺少画布路径或文件')
       if (typeof near?.x !== 'number' || typeof near.y !== 'number') return invalid('缺少位置')
       return json({
-        ids: await d.canvas.importPaths(d.workspaceRoot, path, files, { x: near.x, y: near.y }),
+        ids: await d.canvas.assets.importPaths(d.workspaceRoot, path, files, {
+          x: near.x,
+          y: near.y,
+        }),
       })
     }
 
     if (p === '/api/canvas/new') {
-      return json({ path: await d.canvas.create(d.workspaceRoot) })
+      return json({ path: await d.canvas.docs.create(d.workspaceRoot) })
     }
 
     if (p === '/api/canvas/quote') {
@@ -233,9 +236,9 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
 
     if (p === '/api/canvas/ops') {
       if (ops.length === 0) return invalid('缺少操作')
-      const { refs, step } = await d.canvas.apply(d.workspaceRoot, path, ops)
+      const { refs, step } = await d.canvas.docs.apply(d.workspaceRoot, path, ops)
       const res: CanvasOpsResponse = {
-        ...(await d.canvas.read(d.workspaceRoot, path)),
+        ...(await d.canvas.docs.read(d.workspaceRoot, path)),
         refs,
         step,
       }
@@ -248,7 +251,12 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
     // 优先撤销可取消的任务；无法撤销时暂停本地等待，保留原任务供取回。
     if (p === '/api/canvas/cancel') {
       try {
-        const outcome = await d.canvas.cancel(d.workspaceRoot, path, nodeId, d.canvas.cancelTask)
+        const outcome = await d.canvas.runs.cancel(
+          d.workspaceRoot,
+          path,
+          nodeId,
+          d.canvas.runs.cancelTask,
+        )
         return json({ outcome })
       } catch (err) {
         if (!(err instanceof MediaError)) throw err
@@ -258,14 +266,14 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
 
     // 发送即在同一次请求中先提交面板中的改动再运行：运行使用的正是刚提交的版本。
     if (p === '/api/canvas/run') {
-      if (ops.length > 0) await d.canvas.apply(d.workspaceRoot, path, ops)
-      await d.canvas.run(ws, path, nodeId, { media: uiMediaPort(d) })
-      return json(await d.canvas.read(d.workspaceRoot, path))
+      if (ops.length > 0) await d.canvas.docs.apply(d.workspaceRoot, path, ops)
+      await d.canvas.runs.run(ws, path, nodeId, { media: uiMediaPort(d) })
+      return json(await d.canvas.docs.read(d.workspaceRoot, path))
     }
 
     if (p === '/api/canvas/retrieve') {
-      await d.canvas.retrieve(ws, path, nodeId, text(b.version), { media: uiMediaPort(d) })
-      return json(await d.canvas.read(d.workspaceRoot, path))
+      await d.canvas.runs.retrieve(ws, path, nodeId, text(b.version), { media: uiMediaPort(d) })
+      return json(await d.canvas.docs.read(d.workspaceRoot, path))
     }
   } catch (err) {
     return failed(err)

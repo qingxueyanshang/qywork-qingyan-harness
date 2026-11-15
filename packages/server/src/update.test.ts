@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { QyConfig } from '@qywork/runtime'
 import { Store } from '@qywork/store'
-import { CanvasService } from './canvas.ts'
+import { CanvasDocs } from './canvas/docs.ts'
 import { handleCommand } from './commands.ts'
 import type { CommandDeps } from './deps.ts'
 import { serve } from './server.ts'
@@ -19,9 +19,9 @@ test('配对令牌不能取得更新占位；宿主占位后新指令被明确�
   const scanning = new Promise<void>((resolve) => {
     completeScan = resolve
   })
-  const list = CanvasService.prototype.list
-  const scan = spyOn(CanvasService.prototype, 'list').mockImplementation(async function (
-    this: CanvasService,
+  const list = CanvasDocs.prototype.list
+  const scan = spyOn(CanvasDocs.prototype, 'list').mockImplementation(async function (
+    this: CanvasDocs,
     root,
   ) {
     await scanning

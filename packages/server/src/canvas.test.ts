@@ -1,6 +1,6 @@
 /**
- * 覆盖 `canvas.ts` 的画布服务：串行写入、改名前重新读取、写入失败不遗留不完整文件、路径边界、节点状态、
- * 取帧、时间线导出的上传会话、时间线片段核对与上传。
+ * 覆盖画布服务的 `canvas/docs.ts`（串行写入、改名前重新读取、写入失败不遗留不完整文件、路径边界、撤销与重做、
+ * 时间线片段核对）、`canvas/states.ts`（节点状态）、`canvas/assets.ts`（取帧与上传）与 `canvas/exports.ts`（时间线导出的上传会话）。
  * 生成、取回与通知时序由 `canvas-run.test.ts` 覆盖。
  */
 
@@ -19,7 +19,8 @@ import {
   serializeCanvas,
 } from '@qywork/core'
 import { until } from '@qywork/core/until.test-helper'
-import { CanvasFailure, type CanvasIo, CanvasService } from './canvas.ts'
+import { CanvasFailure, type CanvasIo } from './canvas/docs.ts'
+import { CanvasService } from './canvas/service.ts'
 
 const PATH = 'board.canvas.json'
 
@@ -72,10 +73,10 @@ describe('画布服务：写入', () => {
     const moved = seed.nodes.map((n) => n.id)
     await Promise.all([
       ...Array.from({ length: 50 }, (_, i) =>
-        svc.apply(root, PATH, [{ op: 'update', id: moved[i % 10]!, x: 1000 + i }]),
+        svc.docs.apply(root, PATH, [{ op: 'update', id: moved[i % 10]!, x: 1000 + i }]),
       ),
       ...Array.from({ length: 50 }, (_, i) =>
-        svc.apply(root, PATH, [{ op: 'add_file', path: `角色/${10 + i}.png`, name: `n${i}` }]),
+        svc.docs.apply(root, PATH, [{ op: 'add_file', path: `角色/${10 + i}.png`, name: `n${i}` }]),
       ),
     ])
     const doc = await onDisk(root)
@@ -90,13 +91,13 @@ describe('画布服务：写入', () => {
   test('两次操作之间外部改写文件，第二次基于新内容', async () => {
     const root = await workspace()
     const { svc } = service()
-    await svc.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png', name: '界面' }])
+    await svc.docs.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png', name: '界面' }])
     const outside = applyCanvasOps(await onDisk(root), [
       { op: 'add_file', path: '角色/1.png', name: '外部' },
     ])
     if (!outside.ok) throw new Error(outside.error)
     await writeFile(join(root, PATH), serializeCanvas(outside.doc))
-    await svc.apply(root, PATH, [{ op: 'add_file', path: '角色/2.png', name: '再一次' }])
+    await svc.docs.apply(root, PATH, [{ op: 'add_file', path: '角色/2.png', name: '再一次' }])
     expect((await onDisk(root)).nodes.map((n) => n.name)).toEqual(['界面', '外部', '再一次'])
   })
 
@@ -115,7 +116,7 @@ describe('画布服务：写入', () => {
         await writeFile(join(root, PATH), serializeCanvas(outside.doc))
       },
     })
-    await svc.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png', name: '本次' }])
+    await svc.docs.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png', name: '本次' }])
     expect(injected).toBe(true)
     expect((await onDisk(root)).nodes.map((n) => n.name).sort()).toEqual(['外部', '本次'])
   })
@@ -129,9 +130,9 @@ describe('画布服务：写入', () => {
         throw new Error('磁盘满')
       },
     })
-    await expect(svc.apply(root, PATH, [{ op: 'add_file', path: '角色/1.png' }])).rejects.toThrow(
-      '磁盘满',
-    )
+    await expect(
+      svc.docs.apply(root, PATH, [{ op: 'add_file', path: '角色/1.png' }]),
+    ).rejects.toThrow('磁盘满')
     expect(await readFile(join(root, PATH), 'utf8')).toBe(before)
     expect((await readdir(root)).some((f) => f.endsWith('.part'))).toBe(false)
     expect(events).toHaveLength(0)
@@ -141,7 +142,7 @@ describe('画布服务：写入', () => {
     const root = await workspace()
     await writeFile(join(root, PATH), '{"version":1,')
     const { svc } = service()
-    const err = await failure(svc.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png' }]))
+    const err = await failure(svc.docs.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png' }]))
     expect(err.status).toBe(422)
     expect(err.message).toContain('格式错误')
     expect(await readFile(join(root, PATH), 'utf8')).toBe('{"version":1,')
@@ -153,23 +154,27 @@ describe('画布服务：写入', () => {
     await writeFile(join(outside, 'x.png'), 'png')
     const { svc } = service()
     expect(
-      (await failure(svc.apply(root, PATH, [{ op: 'add_file', path: join(outside, 'x.png') }])))
+      (
+        await failure(
+          svc.docs.apply(root, PATH, [{ op: 'add_file', path: join(outside, 'x.png') }]),
+        )
+      ).status,
+    ).toBe(422)
+    expect(
+      (await failure(svc.docs.apply(root, PATH, [{ op: 'add_file', path: '../x.png' }]))).status,
+    ).toBe(422)
+    expect(
+      (await failure(svc.docs.apply(root, PATH, [{ op: 'add_file', path: '角色/没有.png' }])))
         .status,
     ).toBe(422)
-    expect(
-      (await failure(svc.apply(root, PATH, [{ op: 'add_file', path: '../x.png' }]))).status,
-    ).toBe(422)
-    expect(
-      (await failure(svc.apply(root, PATH, [{ op: 'add_file', path: '角色/没有.png' }]))).status,
-    ).toBe(422)
-    expect((await failure(svc.read(root, '../other.canvas.json'))).status).toBe(404)
-    expect((await failure(svc.read(root, '角色/0.png'))).status).toBe(422)
+    expect((await failure(svc.docs.read(root, '../other.canvas.json'))).status).toBe(404)
+    expect((await failure(svc.docs.read(root, '角色/0.png'))).status).toBe(422)
   })
 
   test('反斜杠路径规范化为正斜杠相对路径', async () => {
     const root = await workspace()
     const { svc } = service()
-    const { doc } = await svc.apply(root, PATH, [{ op: 'add_file', path: '角色\\3.png' }])
+    const { doc } = await svc.docs.apply(root, PATH, [{ op: 'add_file', path: '角色\\3.png' }])
     expect(doc.nodes[0]).toMatchObject({ type: 'file', path: '角色/3.png' })
   })
 
@@ -177,9 +182,9 @@ describe('画布服务：写入', () => {
     const root = await workspace(withNodes(1))
     const { svc, events } = service()
     const id = (await onDisk(root)).nodes[0]!.id
-    await svc.apply(root, PATH, [{ op: 'update', id, x: 5 }])
+    await svc.docs.apply(root, PATH, [{ op: 'update', id, x: 5 }])
     expect(events).toEqual([{ type: 'file.changed', runId: null, changes: [] }])
-    await svc.apply(root, PATH, [{ op: 'update', id, x: 5 }])
+    await svc.docs.apply(root, PATH, [{ op: 'update', id, x: 5 }])
     expect(events).toHaveLength(1)
   })
 
@@ -187,9 +192,9 @@ describe('画布服务：写入', () => {
     const root = await workspace()
     const { svc } = service()
     const now = new Date(2026, 8, 29, 10, 0, 0)
-    expect(await svc.create(root, { now })).toBe('canvas-20260929-100000.canvas.json')
-    expect(await svc.create(root, { now })).toBe('canvas-20260929-100000-2.canvas.json')
-    const view = await svc.read(root, 'canvas-20260929-100000-2.canvas.json')
+    expect(await svc.docs.create(root, { now })).toBe('canvas-20260929-100000.canvas.json')
+    expect(await svc.docs.create(root, { now })).toBe('canvas-20260929-100000-2.canvas.json')
+    const view = await svc.docs.read(root, 'canvas-20260929-100000-2.canvas.json')
     expect(view.doc.nodes).toEqual([])
   })
 
@@ -198,16 +203,16 @@ describe('画布服务：写入', () => {
     const { svc, events } = service()
     const path = '分镜/完成%20/第1集.canvas.json'
     const results = await Promise.allSettled([
-      svc.create(root, { path }),
-      svc.create(root, { path }),
+      svc.docs.create(root, { path }),
+      svc.docs.create(root, { path }),
     ])
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1)
     expect(events.filter((e) => e.type === 'file.changed')).toHaveLength(1)
-    expect((await svc.read(root, path)).doc.nodes).toEqual([])
-    await svc.apply(root, path, [{ op: 'add_generate', output: 'image', prompt: '保留我' }])
+    expect((await svc.docs.read(root, path)).doc.nodes).toEqual([])
+    await svc.docs.apply(root, path, [{ op: 'add_generate', output: 'image', prompt: '保留我' }])
     const saved = await readFile(join(root, path), 'utf8')
-    await expect(svc.create(root, { path })).rejects.toThrow('已存在')
+    await expect(svc.docs.create(root, { path })).rejects.toThrow('已存在')
     expect(await readFile(join(root, path), 'utf8')).toBe(saved)
   })
 
@@ -215,12 +220,12 @@ describe('画布服务：写入', () => {
     const root = await workspace()
     const outside = await mkdtemp(join(tmpdir(), 'qywork-canvas-outside-'))
     const { svc } = service()
-    await expect(svc.create(root, { path: 'a.json' })).rejects.toThrow('.canvas.json')
-    await expect(svc.create(root, { path: join(outside, 'a.canvas.json') })).rejects.toThrow()
-    await expect(svc.create(root, { path: '../outside.canvas.json' })).rejects.toThrow()
-    await expect(svc.create(root, { path: '.qy/a.canvas.json' })).rejects.toThrow()
+    await expect(svc.docs.create(root, { path: 'a.json' })).rejects.toThrow('.canvas.json')
+    await expect(svc.docs.create(root, { path: join(outside, 'a.canvas.json') })).rejects.toThrow()
+    await expect(svc.docs.create(root, { path: '../outside.canvas.json' })).rejects.toThrow()
+    await expect(svc.docs.create(root, { path: '.qy/a.canvas.json' })).rejects.toThrow()
     await symlink(outside, join(root, 'outside'), process.platform === 'win32' ? 'junction' : 'dir')
-    await expect(svc.create(root, { path: 'outside/a.canvas.json' })).rejects.toThrow()
+    await expect(svc.docs.create(root, { path: 'outside/a.canvas.json' })).rejects.toThrow()
     expect(await readdir(outside)).toEqual([])
   })
 })
@@ -236,40 +241,40 @@ describe('画布服务：节点状态', () => {
     const { svc } = service()
     const file = doc.nodes[0]!.id
 
-    let view = await svc.read(root, PATH)
+    let view = await svc.docs.read(root, PATH)
     expect(view.states[file]).toEqual({ state: 'normal' })
     expect(view.states[video]).toEqual({ state: 'empty' })
 
     await rm(join(root, '角色', '0.png'))
-    view = await svc.read(root, PATH)
+    view = await svc.docs.read(root, PATH)
     expect(view.states[file]).toEqual({ state: 'missing' })
 
     // 替换路径后恢复正常。
-    await svc.apply(root, PATH, [{ op: 'update', id: file, path: '角色/1.png' }])
-    expect((await svc.read(root, PATH)).states[file]).toEqual({ state: 'normal' })
+    await svc.docs.apply(root, PATH, [{ op: 'update', id: file, path: '角色/1.png' }])
+    expect((await svc.docs.read(root, PATH)).states[file]).toEqual({ state: 'normal' })
 
     // 一版正常的旧产物 + 一版仍在远端的任务记录。
     await writeFile(join(root, 'old.mp4'), 'mp4')
     const made = { prompt: '', provider: 'q', model: 'm', params: {}, inputs: [], at: 't' }
-    await svc.mutate(root, PATH, (d) =>
+    await svc.docs.mutate(root, PATH, (d) =>
       addVersions(d, video, [{ id: 'old', path: 'old.mp4', made }]),
     )
-    await svc.mutate(root, PATH, (d) =>
+    await svc.docs.mutate(root, PATH, (d) =>
       addVersions(d, video, [{ id: 'task', path: 'x.task.json', made }]),
     )
-    expect((await svc.read(root, PATH)).states[video]).toEqual({
+    expect((await svc.docs.read(root, PATH)).states[video]).toEqual({
       state: 'pending',
       version: 'task',
     })
 
     // 当前版本切换到已有成片时正常展示，其他待取回版本不能盖住成片。
-    await svc.apply(root, PATH, [{ op: 'update', id: video, current: 'old' }])
-    expect((await svc.read(root, PATH)).states[video]).toEqual({
+    await svc.docs.apply(root, PATH, [{ op: 'update', id: video, current: 'old' }])
+    expect((await svc.docs.read(root, PATH)).states[video]).toEqual({
       state: 'normal',
     })
 
-    await svc.apply(root, PATH, [{ op: 'remove', id: video, version: 'task' }])
-    expect((await svc.read(root, PATH)).states[video]).toEqual({ state: 'normal' })
+    await svc.docs.apply(root, PATH, [{ op: 'remove', id: video, version: 'task' }])
+    expect((await svc.docs.read(root, PATH)).states[video]).toEqual({ state: 'normal' })
   })
 
   test('卡片显示内容所依据的文件附带版本：同一路径改写后随之变化，文件不存在时为空', async () => {
@@ -295,7 +300,7 @@ describe('画布服务：节点状态', () => {
     await rm(join(root, '角色', '1.png'))
     const { svc } = service()
 
-    expect((await svc.read(root, PATH)).revisions).toEqual({
+    expect((await svc.docs.read(root, PATH)).revisions).toEqual({
       '角色/0.png': '2000000',
       '角色/1.png': '',
       'voice.mp3': '1000000',
@@ -305,7 +310,7 @@ describe('画布服务：节点状态', () => {
     // 原地改写同一路径的文件：路径不变，版本变化。
     await writeFile(join(root, 'voice.mp3'), 'shorter')
     await utimes(join(root, 'voice.mp3'), 3000, 3000)
-    expect((await svc.read(root, PATH)).revisions?.['voice.mp3']).toBe('3000000')
+    expect((await svc.docs.read(root, PATH)).revisions?.['voice.mp3']).toBe('3000000')
   })
 
   test('Art 页面的版本包含其引用的图片：图片被改写或补上时页面版本变化，图片同样列出', async () => {
@@ -321,7 +326,7 @@ describe('画布服务：节点状态', () => {
     await utimes(join(root, '角色', '0.png'), 2000, 2000)
     const { svc } = service()
 
-    expect((await svc.read(root, PATH)).revisions).toEqual({
+    expect((await svc.docs.read(root, PATH)).revisions).toEqual({
       '页面/首页.html': '1000000|2000000|',
       '角色/0.png': '2000000',
       '页面/缺少.png': '',
@@ -331,7 +336,7 @@ describe('画布服务：节点状态', () => {
     await utimes(join(root, '角色', '0.png'), 3000, 3000)
     await writeFile(join(root, '页面', '缺少.png'), 'png')
     await utimes(join(root, '页面', '缺少.png'), 4000, 4000)
-    expect((await svc.read(root, PATH)).revisions?.['页面/首页.html']).toBe(
+    expect((await svc.docs.read(root, PATH)).revisions?.['页面/首页.html']).toBe(
       '1000000|3000000|4000000',
     )
   })
@@ -361,29 +366,31 @@ describe('画布服务：撤销与重做', () => {
     const root = await workspace(withVersion.doc)
     const { svc } = service()
     const card = seeded.refs.$g!
-    const removed = await svc.apply(root, PATH, [{ op: 'remove', id: card }])
+    const removed = await svc.docs.apply(root, PATH, [{ op: 'remove', id: card }])
     expect((await onDisk(root)).nodes).toHaveLength(0)
 
-    const undone = await svc.restore(root, PATH, removed.step.after, removed.step.before)
+    const undone = await svc.docs.restore(root, PATH, removed.step.after, removed.step.before)
     const back = (await onDisk(root)).nodes[0]
     expect(back).toMatchObject({ id: card, current: 'v1' })
     expect(undone.after).toBe(removed.step.before)
 
-    await svc.restore(root, PATH, removed.step.before, removed.step.after)
+    await svc.docs.restore(root, PATH, removed.step.before, removed.step.after)
     expect((await onDisk(root)).nodes).toHaveLength(0)
   })
 
   test('期间被其他来源修改时拒绝撤销（409），不覆盖；记录中没有的指纹返回 404', async () => {
     const root = await workspace()
     const { svc } = service()
-    const first = await svc.apply(root, PATH, [{ op: 'add_generate', output: 'image', x: 0, y: 0 }])
-    await svc.apply(root, PATH, [{ op: 'add_generate', output: 'video', x: 300, y: 0 }])
+    const first = await svc.docs.apply(root, PATH, [
+      { op: 'add_generate', output: 'image', x: 0, y: 0 },
+    ])
+    await svc.docs.apply(root, PATH, [{ op: 'add_generate', output: 'video', x: 300, y: 0 }])
     await expect(
-      svc.restore(root, PATH, first.step.after, first.step.before),
+      svc.docs.restore(root, PATH, first.step.after, first.step.before),
     ).rejects.toMatchObject({ status: 409 })
     expect((await onDisk(root)).nodes).toHaveLength(2)
     await expect(
-      svc.restore(root, PATH, first.step.after, '0000000000000000'),
+      svc.docs.restore(root, PATH, first.step.after, '0000000000000000'),
     ).rejects.toMatchObject({
       status: 404,
     })
@@ -396,11 +403,13 @@ describe('画布服务：上传', () => {
   test('按原名写入 uploads/，重名加 -2；第一个以给定点为中心，第二个排在第一个右侧', async () => {
     const root = await workspace()
     const { svc } = service()
-    const first = await svc.upload(root, PATH, '小满 正面.png', BYTES, {
+    const first = await svc.assets.upload(root, PATH, '小满 正面.png', BYTES, {
       near: { x: 232.5, y: 164.5 },
     })
     expect(first.path).toBe('uploads/小满 正面.png')
-    const second = await svc.upload(root, PATH, '小满 正面.png', BYTES, { beside: first.nodeId })
+    const second = await svc.assets.upload(root, PATH, '小满 正面.png', BYTES, {
+      beside: first.nodeId,
+    })
     expect(second.path).toBe('uploads/小满 正面-2.png')
     const doc = await onDisk(root)
     const a = doc.nodes.find((n) => n.id === first.nodeId)!
@@ -419,7 +428,7 @@ describe('画布服务：上传', () => {
     head.write('IHDR', 12, 'latin1')
     head.writeUInt32BE(1536, 16)
     head.writeUInt32BE(1024, 20)
-    const wide = await svc.upload(root, PATH, '横图.png', new Uint8Array(head), {
+    const wide = await svc.assets.upload(root, PATH, '横图.png', new Uint8Array(head), {
       near: { x: 0, y: 0 },
     })
     // 从文件树拖入经由同一条核验路径。
@@ -432,7 +441,9 @@ describe('画布服务：上传', () => {
         return b
       })(),
     )
-    const { refs } = await svc.apply(root, PATH, [{ op: 'add_file', ref: '$t', path: '竖图.png' }])
+    const { refs } = await svc.docs.apply(root, PATH, [
+      { op: 'add_file', ref: '$t', path: '竖图.png' },
+    ])
     const doc = await onDisk(root)
     const box = (id: string) => {
       const n = doc.nodes.find((x) => x.id === id)!
@@ -449,7 +460,7 @@ describe('画布服务：上传', () => {
     const outside = await mkdtemp(join(tmpdir(), 'qywork-outside-'))
     await writeFile(join(outside, '街景.png'), 'street')
     const { svc } = service()
-    const ids = await svc.importPaths(
+    const ids = await svc.assets.importPaths(
       root,
       PATH,
       [join(root, '角色', '小满.png'), join(outside, '街景.png')],
@@ -460,9 +471,11 @@ describe('画布服务：上传', () => {
     expect(paths).toEqual(['角色/小满.png', 'uploads/街景.png'])
     expect(await readFile(join(root, 'uploads', '街景.png'), 'utf8')).toBe('street')
     await expect(
-      svc.importPaths(root, PATH, [join(outside, '没有.png')], { x: 0, y: 0 }),
+      svc.assets.importPaths(root, PATH, [join(outside, '没有.png')], { x: 0, y: 0 }),
     ).rejects.toMatchObject({ status: 404 })
-    await expect(svc.importPaths(root, PATH, [outside], { x: 0, y: 0 })).rejects.toMatchObject({
+    await expect(
+      svc.assets.importPaths(root, PATH, [outside], { x: 0, y: 0 }),
+    ).rejects.toMatchObject({
       status: 422,
     })
     await rm(outside, { recursive: true, force: true })
@@ -471,7 +484,7 @@ describe('画布服务：上传', () => {
   test('未登记的类型保持原扩展名', async () => {
     const root = await workspace()
     const { svc } = service()
-    const r = await svc.upload(root, PATH, '剧本.md', BYTES, { near: { x: 0, y: 0 } })
+    const r = await svc.assets.upload(root, PATH, '剧本.md', BYTES, { near: { x: 0, y: 0 } })
     expect(r.path).toBe('uploads/剧本.md')
   })
 
@@ -480,7 +493,7 @@ describe('画布服务：上传', () => {
     const { svc } = service()
     for (const name of ['../x.png', 'a/b.png', 'a\\b.png', '..']) {
       await expect(
-        svc.upload(root, PATH, name, BYTES, { near: { x: 0, y: 0 } }),
+        svc.assets.upload(root, PATH, name, BYTES, { near: { x: 0, y: 0 } }),
       ).rejects.toMatchObject({
         status: 422,
       })
@@ -506,9 +519,9 @@ describe('画布服务：取帧', () => {
   test('保存为 generated/<视频名>_尾帧.png，重名加 -2；节点位于视频右侧，第二帧在同一行排在第一帧右侧', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
-    const first = await svc.captureFrame(root, PATH, video, '尾帧', PNG)
+    const first = await svc.assets.captureFrame(root, PATH, video, '尾帧', PNG)
     expect(first.path).toBe('generated/视频1_尾帧.png')
-    const second = await svc.captureFrame(root, PATH, video, '尾帧', PNG)
+    const second = await svc.assets.captureFrame(root, PATH, video, '尾帧', PNG)
     expect(second.path).toBe('generated/视频1_尾帧-2.png')
     const doc = await onDisk(root)
     const node = doc.nodes.find((n) => n.id === first.nodeId)!
@@ -521,7 +534,7 @@ describe('画布服务：取帧', () => {
   test('按时刻截取的帧名称带小数点，仍保存为 .png', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
-    expect((await svc.captureFrame(root, PATH, video, '1.6s', PNG)).path).toBe(
+    expect((await svc.assets.captureFrame(root, PATH, video, '1.6s', PNG)).path).toBe(
       'generated/视频1_1.6s.png',
     )
   })
@@ -531,10 +544,10 @@ describe('画布服务：取帧', () => {
     await mkdir(join(root, 'generated'), { recursive: true })
     await writeFile(join(root, 'generated', '白模.html'), '<html></html>')
     const { svc } = service()
-    const { refs } = await svc.apply(root, PATH, [
+    const { refs } = await svc.docs.apply(root, PATH, [
       { op: 'add_file', ref: '$p', path: 'generated/白模.html', x: 0, y: 0 },
     ])
-    const shot = await svc.captureFrame(root, PATH, refs.$p!, '截图', PNG)
+    const shot = await svc.assets.captureFrame(root, PATH, refs.$p!, '截图', PNG)
     expect(shot.path).toBe('generated/白模_截图.png')
     const node = (await onDisk(root)).nodes.find((n) => n.id === shot.nodeId)!
     expect(node.x).toBeGreaterThan(0)
@@ -544,11 +557,14 @@ describe('画布服务：取帧', () => {
     const { root, video } = await withVideo()
     const { svc } = service()
     expect(
-      (await failure(svc.captureFrame(root, PATH, video, '首帧', new Uint8Array([1, 2])))).status,
+      (await failure(svc.assets.captureFrame(root, PATH, video, '首帧', new Uint8Array([1, 2]))))
+        .status,
     ).toBe(422)
-    const other = await svc.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png' }])
+    const other = await svc.docs.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png' }])
     const image = other.doc.nodes.at(-1)!.id
-    expect((await failure(svc.captureFrame(root, PATH, image, '首帧', PNG))).status).toBe(422)
+    expect((await failure(svc.assets.captureFrame(root, PATH, image, '首帧', PNG))).status).toBe(
+      422,
+    )
     expect((await readdir(root)).includes('generated')).toBe(false)
   })
 })
@@ -565,7 +581,7 @@ describe('画布服务：时间线导出', () => {
       publish: () => {},
       ...(idleMs !== undefined ? { exportIdleMs: idleMs } : {}),
     })
-    const { refs } = await svc.apply(root, PATH, [
+    const { refs } = await svc.docs.apply(root, PATH, [
       { op: 'add_timeline', ref: '$t', name: '粗剪', x: 0, y: 400 },
       { op: 'add_file', ref: '$f', path: '角色/0.png', x: 0, y: 0 },
     ])
@@ -579,30 +595,30 @@ describe('画布服务：时间线导出', () => {
 
   test('按位置写入（先写后半、最后回写开头）拼合整个文件，完成后保存为 generated/<时间线名>.mp4，并在时间线右侧添加节点', async () => {
     const { root, svc, timeline } = await withTimeline()
-    const id = await svc.exportStart(root, PATH, timeline)
+    const id = await svc.exports.exportStart(root, PATH, timeline)
     expect(await parts(root)).toEqual([`.${id}.part`])
-    await svc.exportWrite(root, id, 16, MP4.subarray(16))
-    await svc.exportWrite(root, id, 0, MP4.subarray(0, 16))
-    const landed = await svc.exportFinish(root, id)
+    await svc.exports.exportWrite(root, id, 16, MP4.subarray(16))
+    await svc.exports.exportWrite(root, id, 0, MP4.subarray(0, 16))
+    const landed = await svc.exports.exportFinish(root, id)
     expect(landed.path).toBe('generated/粗剪.mp4')
     expect(new Uint8Array(await readFile(join(root, landed.path)))).toEqual(MP4)
     expect(await parts(root)).toEqual([])
     const node = (await onDisk(root)).nodes.find((n) => n.id === landed.nodeId)!
     expect(node).toMatchObject({ type: 'file', path: 'generated/粗剪.mp4', x: 528, y: 400 })
     // 会话完成即结束，不能再写入。
-    expect((await failure(svc.exportWrite(root, id, 0, MP4))).status).toBe(404)
+    expect((await failure(svc.exports.exportWrite(root, id, 0, MP4))).status).toBe(404)
   })
 
   test('两次导出同时完成：各自保存为一个文件名（重名加 -2），互不覆盖', async () => {
     const { root, svc, timeline } = await withTimeline()
-    const first = await svc.exportStart(root, PATH, timeline)
-    const second = await svc.exportStart(root, PATH, timeline)
+    const first = await svc.exports.exportStart(root, PATH, timeline)
+    const second = await svc.exports.exportStart(root, PATH, timeline)
     const other = new Uint8Array([...MP4, 9, 9])
-    await svc.exportWrite(root, first, 0, MP4)
-    await svc.exportWrite(root, second, 0, other)
+    await svc.exports.exportWrite(root, first, 0, MP4)
+    await svc.exports.exportWrite(root, second, 0, other)
     const [a, b] = await Promise.all([
-      svc.exportFinish(root, first),
-      svc.exportFinish(root, second),
+      svc.exports.exportFinish(root, first),
+      svc.exports.exportFinish(root, second),
     ])
     expect([a.path, b.path].sort()).toEqual(['generated/粗剪-2.mp4', 'generated/粗剪.mp4'])
     expect(new Uint8Array(await readFile(join(root, a.path)))).toEqual(MP4)
@@ -612,27 +628,27 @@ describe('画布服务：时间线导出', () => {
 
   test('不是时间线时返回 422；收到的不是 mp4 时返回 422 并删除 .part；放弃时删除 .part；其他项目无法取得该会话', async () => {
     const { root, svc, timeline, file } = await withTimeline()
-    expect((await failure(svc.exportStart(root, PATH, file))).status).toBe(422)
-    const bad = await svc.exportStart(root, PATH, timeline)
-    await svc.exportWrite(root, bad, 0, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]))
-    expect((await failure(svc.exportFinish(root, bad))).status).toBe(422)
+    expect((await failure(svc.exports.exportStart(root, PATH, file))).status).toBe(422)
+    const bad = await svc.exports.exportStart(root, PATH, timeline)
+    await svc.exports.exportWrite(root, bad, 0, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]))
+    expect((await failure(svc.exports.exportFinish(root, bad))).status).toBe(422)
     expect(await parts(root)).toEqual([])
     const other = await workspace()
-    const aborted = await svc.exportStart(root, PATH, timeline)
-    expect((await failure(svc.exportWrite(other, aborted, 0, MP4))).status).toBe(404)
-    await svc.exportAbort(root, aborted)
+    const aborted = await svc.exports.exportStart(root, PATH, timeline)
+    expect((await failure(svc.exports.exportWrite(other, aborted, 0, MP4))).status).toBe(404)
+    await svc.exports.exportAbort(root, aborted)
     expect(await parts(root)).toEqual([])
     expect((await readdir(join(root, 'generated'))).filter((n) => n.endsWith('.mp4'))).toEqual([])
   })
 
   test('Art 节点录制的视频保存为 generated/<节点名>.mp4，放在该节点右侧', async () => {
     const { root, svc } = await withTimeline()
-    const { refs } = await svc.apply(root, PATH, [
+    const { refs } = await svc.docs.apply(root, PATH, [
       { op: 'add_generate', ref: '$a', output: 'art', name: '街口', x: 0, y: 800 },
     ])
-    const id = await svc.exportStart(root, PATH, refs.$a!)
-    await svc.exportWrite(root, id, 0, MP4)
-    const landed = await svc.exportFinish(root, id)
+    const id = await svc.exports.exportStart(root, PATH, refs.$a!)
+    await svc.exports.exportWrite(root, id, 0, MP4)
+    const landed = await svc.exports.exportFinish(root, id)
     expect(landed.path).toBe('generated/街口.mp4')
     const node = (await onDisk(root)).nodes.find((n) => n.id === landed.nodeId)!
     expect(node).toMatchObject({ type: 'file', y: 800 })
@@ -640,19 +656,19 @@ describe('画布服务：时间线导出', () => {
 
   test('会话超过空闲上限未写入：作废并删除 .part', async () => {
     const { root, svc, timeline } = await withTimeline(30)
-    const id = await svc.exportStart(root, PATH, timeline)
-    await svc.exportWrite(root, id, 0, MP4)
+    const id = await svc.exports.exportStart(root, PATH, timeline)
+    await svc.exports.exportWrite(root, id, 0, MP4)
     await until(async () => (await parts(root)).length === 0, '空闲会话被作废')
-    expect((await failure(svc.exportFinish(root, id))).status).toBe(404)
+    expect((await failure(svc.exports.exportFinish(root, id))).status).toBe(404)
   })
 
   test('停止服务时结束进行中的导出并删除临时文件', async () => {
     const { root, svc, timeline } = await withTimeline()
-    const id = await svc.exportStart(root, PATH, timeline)
-    await svc.exportWrite(root, id, 0, MP4)
+    const id = await svc.exports.exportStart(root, PATH, timeline)
+    await svc.exports.exportWrite(root, id, 0, MP4)
     await svc.stop()
     expect(await parts(root)).toEqual([])
-    expect((await failure(svc.exportFinish(root, id))).status).toBe(404)
+    expect((await failure(svc.exports.exportFinish(root, id))).status).toBe(404)
   })
 
   /**
@@ -665,34 +681,36 @@ describe('画布服务：时间线导出', () => {
     const svc = new CanvasService({ publish: (e) => events.push(e) })
     await mkdir(join(root, 'generated'), { recursive: true })
     await writeFile(join(root, 'generated', 'a.mp4'), MP4)
-    const { refs } = await svc.apply(root, PATH, [
+    const { refs } = await svc.docs.apply(root, PATH, [
       { op: 'add_timeline', ref: '$t', name: '粗剪', x: 0, y: 400, clips: [] },
       { op: 'add_file', ref: '$v', path: 'generated/a.mp4', x: 0, y: 0 },
     ])
     const ws = { id: 'w1', root }
-    expect((await failure(svc.requestExport(ws, PATH, refs.$t!))).message).toBe('时间线中没有片段')
-    expect((await failure(svc.requestExport(ws, PATH, refs.$v!))).status).toBe(422)
-    await svc.apply(root, PATH, [
+    expect((await failure(svc.exports.requestExport(ws, PATH, refs.$t!))).message).toBe(
+      '时间线中没有片段',
+    )
+    expect((await failure(svc.exports.requestExport(ws, PATH, refs.$v!))).status).toBe(422)
+    await svc.docs.apply(root, PATH, [
       { op: 'update', id: refs.$t!, clips: [{ path: 'generated/a.mp4', in: 0, out: 2 }] },
     ])
-    const asked = svc.requestExport(ws, PATH, refs.$t!)
-    const again = svc.requestExport(ws, PATH, refs.$t!)
+    const asked = svc.exports.requestExport(ws, PATH, refs.$t!)
+    const again = svc.exports.requestExport(ws, PATH, refs.$t!)
     const requests = () => events.filter((e) => e.type === 'canvas.export')
     await until(() => requests().length > 0, '向界面发出导出请求')
     expect(requests()).toEqual([
       { type: 'canvas.export', workspaceId: 'w1', path: PATH, nodeId: refs.$t! },
     ])
-    const id = await svc.exportStart(root, PATH, refs.$t!)
-    expect((await failure(svc.exportStart(root, PATH, refs.$t!))).status).toBe(409)
-    await svc.exportWrite(root, id, 0, MP4)
-    const landed = await svc.exportFinish(root, id)
+    const id = await svc.exports.exportStart(root, PATH, refs.$t!)
+    expect((await failure(svc.exports.exportStart(root, PATH, refs.$t!))).status).toBe(409)
+    await svc.exports.exportWrite(root, id, 0, MP4)
+    const landed = await svc.exports.exportFinish(root, id)
     expect(await asked).toEqual(landed)
     expect(await again).toEqual(landed)
     // 两次请求均已结束：重复请求若另发一次，此时也已发出。
     expect(requests()).toHaveLength(1)
     expect(landed.path).toBe('generated/粗剪.mp4')
     // 请求已结束：界面之后自行导出不受影响。
-    await svc.exportAbort(root, await svc.exportStart(root, PATH, refs.$t!))
+    await svc.exports.exportAbort(root, await svc.exports.exportStart(root, PATH, refs.$t!))
   })
 
   test('大模型请求导出：没有界面开始导出时超时失败；界面放弃导出时失败；中止只结束等待，导出照常完成', async () => {
@@ -700,7 +718,7 @@ describe('画布服务：时间线导出', () => {
     const svc = new CanvasService({ publish: () => {}, exportClaimMs: 30 })
     await mkdir(join(root, 'generated'), { recursive: true })
     await writeFile(join(root, 'generated', 'a.mp4'), MP4)
-    const { refs } = await svc.apply(root, PATH, [
+    const { refs } = await svc.docs.apply(root, PATH, [
       {
         op: 'add_timeline',
         ref: '$t',
@@ -711,7 +729,7 @@ describe('画布服务：时间线导出', () => {
       },
     ])
     const ws = { id: 'w1', root }
-    expect((await failure(svc.requestExport(ws, PATH, refs.$t!))).message).toContain(
+    expect((await failure(svc.exports.requestExport(ws, PATH, refs.$t!))).message).toContain(
       '没有界面开始导出',
     )
 
@@ -724,30 +742,33 @@ describe('画布服务：时间线导出', () => {
         () => events.filter((e) => e.type === 'canvas.export').length === count,
         '向界面发出导出请求',
       )
-    const dropped = failure(claiming.requestExport(ws, PATH, refs.$t!))
+    const dropped = failure(claiming.exports.requestExport(ws, PATH, refs.$t!))
     await asked(1)
-    await claiming.exportAbort(root, await claiming.exportStart(root, PATH, refs.$t!))
+    await claiming.exports.exportAbort(
+      root,
+      await claiming.exports.exportStart(root, PATH, refs.$t!),
+    )
     expect((await dropped).message).toContain('导出失败或被取消')
 
     const stop = new AbortController()
-    const left = failure(claiming.requestExport(ws, PATH, refs.$t!, stop.signal))
+    const left = failure(claiming.exports.requestExport(ws, PATH, refs.$t!, stop.signal))
     await asked(2)
-    const id = await claiming.exportStart(root, PATH, refs.$t!)
+    const id = await claiming.exports.exportStart(root, PATH, refs.$t!)
     stop.abort()
     expect((await left).message).toContain('界面中的导出照常进行')
-    await claiming.exportWrite(root, id, 0, MP4)
-    expect((await claiming.exportFinish(root, id)).path).toBe('generated/粗剪.mp4')
+    await claiming.exports.exportWrite(root, id, 0, MP4)
+    expect((await claiming.exports.exportFinish(root, id)).path).toBe('generated/粗剪.mp4')
   })
 
   test('启动时删除上一个进程被结束时遗留的导出临时文件；进行中会话的与生成落盘的 .part 保留', async () => {
     const { root, svc, timeline } = await withTimeline()
-    const live = await svc.exportStart(root, PATH, timeline)
+    const live = await svc.exports.exportStart(root, PATH, timeline)
     const dir = join(root, 'generated')
     await writeFile(join(dir, `.${randomUUID()}.part`), MP4)
     await writeFile(join(dir, '视频.mp4.part'), MP4)
-    await svc.recover([{ id: 'w', root }], () => undefined)
+    await svc.runs.recover([{ id: 'w', root }], () => undefined)
     expect((await parts(root)).sort()).toEqual([`.${live}.part`, '视频.mp4.part'])
-    await svc.exportAbort(root, live)
+    await svc.exports.exportAbort(root, live)
   })
 })
 
@@ -776,13 +797,13 @@ describe('画布服务：时间线片段', () => {
     const { svc } = service()
     const before = await readFile(join(root, PATH), 'utf8')
     const missing = await failure(
-      svc.apply(root, PATH, [
+      svc.docs.apply(root, PATH, [
         { op: 'add_timeline', clips: [{ path: '素材/没有.mp4', in: 0, out: 1 }] },
       ]),
     )
     expect(missing.status).toBe(422)
     const over = await failure(
-      svc.apply(root, PATH, [
+      svc.docs.apply(root, PATH, [
         { op: 'add_timeline', clips: [{ path: '素材/a.mp4', in: 0, out: 6 }] },
       ]),
     )
@@ -791,7 +812,7 @@ describe('画布服务：时间线片段', () => {
       '片段超出视频时长：素材/a.mp4 时长为 5 秒，出点为 6 秒',
     ])
     expect(await readFile(join(root, PATH), 'utf8')).toBe(before)
-    const { doc } = await svc.apply(root, PATH, [
+    const { doc } = await svc.docs.apply(root, PATH, [
       { op: 'add_timeline', clips: [{ path: '素材\\a.mp4', in: 1, out: 5 }] },
     ])
     expect(doc.nodes[0]).toMatchObject({
@@ -804,10 +825,12 @@ describe('画布服务：时间线片段', () => {
     const root = await workspace()
     await writeFile(join(root, 'a.mp4'), mp4Of(3000))
     const { svc } = service()
-    await svc.apply(root, PATH, [{ op: 'add_timeline', clips: [{ path: 'a.mp4', in: 0, out: 2 }] }])
+    await svc.docs.apply(root, PATH, [
+      { op: 'add_timeline', clips: [{ path: 'a.mp4', in: 0, out: 2 }] },
+    ])
     const id = (await onDisk(root)).nodes[0]!.id
-    expect((await svc.read(root, PATH)).states[id]).toEqual({ state: 'normal' })
+    expect((await svc.docs.read(root, PATH)).states[id]).toEqual({ state: 'normal' })
     await rm(join(root, 'a.mp4'))
-    expect((await svc.read(root, PATH)).states[id]).toEqual({ state: 'missing' })
+    expect((await svc.docs.read(root, PATH)).states[id]).toEqual({ state: 'missing' })
   })
 })

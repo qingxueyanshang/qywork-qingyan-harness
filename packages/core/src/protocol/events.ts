@@ -625,7 +625,7 @@ export interface CanvasRunEvent {
  * 大模型请求界面导出一条时间线。工作区级事件，信封上不带 `conversationId`。
  *
  * 编码只在界面进行（`renderTimeline`）：界面收到后打开该画布，执行与「导出」按钮相同的导出；
- * 服务端以该时间线的导出会话完成作为结果（`CanvasService.requestExport`）。
+ * 服务端以该时间线的导出会话完成作为结果（`CanvasExports.requestExport`）。
  */
 export interface CanvasExportEvent {
   type: 'canvas.export'

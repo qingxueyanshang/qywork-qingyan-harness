@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { applyCanvasOps, emptyCanvas, serializeCanvas } from '@qywork/core'
 import { cancelMediaTask, makeMediaPort, type QyConfig } from '@qywork/runtime'
-import { CanvasService } from './canvas.ts'
+import { CanvasService } from './canvas/service.ts'
 
 const models = {
   openai_videos: 'relay-video',
@@ -70,11 +70,11 @@ for (const kind of Object.keys(models) as (keyof typeof models)[]) {
         },
         mediaDefaults: { video: { provider: 'channel', model } },
       }
-      const run = await svc.run({ id: 'ws', root }, path, seeded.refs.$v!, {
+      const run = await svc.runs.run({ id: 'ws', root }, path, seeded.refs.$v!, {
         media: makeMediaPort(config),
       })
       await ready
-      const before = (await svc.read(root, path)).states[seeded.refs.$v!]
+      const before = (await svc.docs.read(root, path)).states[seeded.refs.$v!]
       expect(before).toMatchObject({
         state: 'running',
         stage: 'submitting',
@@ -82,7 +82,7 @@ for (const kind of Object.keys(models) as (keyof typeof models)[]) {
       expect(before).not.toHaveProperty('taskId')
       expect(before).not.toHaveProperty('phase')
       expect(
-        await svc.cancel(root, path, seeded.refs.$v!, (task) =>
+        await svc.runs.cancel(root, path, seeded.refs.$v!, (task) =>
           cancelMediaTask(config, task, new AbortController().signal),
         ),
       ).toBe('stopped')
@@ -91,7 +91,7 @@ for (const kind of Object.keys(models) as (keyof typeof models)[]) {
         message: '已停止等待；远端结果未知',
         pending: false,
       })
-      expect((await svc.read(root, path)).states[seeded.refs.$v!]).toMatchObject({
+      expect((await svc.docs.read(root, path)).states[seeded.refs.$v!]).toMatchObject({
         state: 'unknown',
       })
       const saved = JSON.parse(await readFile(join(root, path), 'utf8'))
@@ -100,7 +100,7 @@ for (const kind of Object.keys(models) as (keyof typeof models)[]) {
       })
       expect(saved.runs.at(-1).task).toBeUndefined()
       expect(calls).toHaveLength(1)
-      expect(svc.busyCount).toBe(0)
+      expect(svc.runs.busyCount).toBe(0)
     } finally {
       release()
       await svc.stop()

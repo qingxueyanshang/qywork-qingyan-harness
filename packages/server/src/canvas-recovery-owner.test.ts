@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { applyCanvasOps, type CanvasGenerateNode, emptyCanvas, serializeCanvas } from '@qywork/core'
 import { makeMediaPort, type QyConfig } from '@qywork/runtime'
-import { CanvasService } from './canvas.ts'
+import { CanvasService } from './canvas/service.ts'
 
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PATH = 'board.canvas.json'
@@ -51,7 +51,7 @@ test('另一个服务进程仍在等待的视频任务不在启动恢复中取�
   const port = () => makeMediaPort(config, (s) => spends.push(s.cost))
   try {
     const first = new CanvasService({ publish: () => {} })
-    const run = await first.run(ws, PATH, id, { media: port() })
+    const run = await first.runs.run(ws, PATH, id, { media: port() })
     while (!calls.some((c) => c.startsWith('GET'))) await Bun.sleep(10)
     await first.stop()
     await run.done
@@ -65,13 +65,13 @@ test('另一个服务进程仍在等待的视频任务不在启动恢复中取�
 
     done = true
     const before = calls.length
-    await new CanvasService({ publish: () => {} }).recover([ws], () => port())
+    await new CanvasService({ publish: () => {} }).runs.recover([ws], () => port())
     expect(calls.length).toBe(before)
     expect(node().versions[0]!.path).toEndWith('.task.json')
 
     other.kill()
     await other.exited
-    await new CanvasService({ publish: () => {} }).recover([ws], () => port())
+    await new CanvasService({ publish: () => {} }).runs.recover([ws], () => port())
     expect(node().versions.map((v) => v.path.endsWith('.mp4'))).toEqual([true])
     expect(calls.filter((c) => c === 'GET /v1/videos/task-1/content')).toHaveLength(1)
     expect(spends).toHaveLength(1)

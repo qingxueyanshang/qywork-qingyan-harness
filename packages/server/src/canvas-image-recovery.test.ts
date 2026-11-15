@@ -11,7 +11,7 @@ import {
 } from '@qywork/core'
 import { makeMediaPort, type QyConfig } from '@qywork/runtime'
 import { generateMedia, resumeMedia } from '@qywork/tools'
-import { CanvasService } from './canvas.ts'
+import { CanvasService } from './canvas/service.ts'
 
 const MODEL = 'gpt-image-2.5-sunburst'
 const PATH = 'recovery.canvas.json'
@@ -122,7 +122,7 @@ async function canvas() {
   const root = await mkdtemp(join(tmpdir(), 'qy-canvas-recovery-'))
   await writeFile(join(root, PATH), serializeCanvas(emptyCanvas()))
   const service = new CanvasService({ publish: () => {} })
-  const { refs } = await service.apply(root, PATH, [
+  const { refs } = await service.docs.apply(root, PATH, [
     { op: 'add_generate', ref: '$g', output: 'image', prompt: '海报', params: { n: 2 } },
   ])
   return { root, service, id: refs.$g!, ws: { id: 'ws', root } }
@@ -130,10 +130,11 @@ async function canvas() {
 
 test('画布重启后取回图片：替换待取回版本，多张图片留在原卡片，保留费用与诊断', async () => {
   const { root, service, id, ws } = await canvas()
-  const failed = await (await service.run(ws, PATH, id, { media: makeMediaPort(config()) })).done
+  const failed = await (await service.runs.run(ws, PATH, id, { media: makeMediaPort(config()) }))
+    .done
   expect(failed).toMatchObject({ ok: false, pending: true })
   const reopened = new CanvasService({ publish: () => {} })
-  const pending = await reopened.read(root, PATH)
+  const pending = await reopened.docs.read(root, PATH)
   expect(pending.states[id]?.state).toBe('pending')
   expect(pending.doc.runs?.[0]).toMatchObject({
     result: 'pending',
@@ -142,10 +143,10 @@ test('画布重启后取回图片：替换待取回版本，多张图片留在�
   expect(pending.doc.runs?.[0]?.cost).toBeGreaterThan(0)
   downloadStatus = 200
   const recovered = await (
-    await reopened.retrieve(ws, PATH, id, undefined, { media: makeMediaPort(config()) })
+    await reopened.runs.retrieve(ws, PATH, id, undefined, { media: makeMediaPort(config()) })
   ).done
   expect(recovered.ok).toBe(true)
-  const view = await reopened.read(root, PATH)
+  const view = await reopened.docs.read(root, PATH)
   expect(view.states[id]).toEqual({ state: 'normal' })
   expect(view.doc.nodes).toHaveLength(1)
   const node = view.doc.nodes[0] as CanvasGenerateNode
@@ -168,13 +169,13 @@ test('响应中途连接中断且没有结果引用：重启仍显示结果未�
       }),
     )
   const media = makeMediaPort(config())
-  const failed = await (await service.run(ws, PATH, id, { media })).done
+  const failed = await (await service.runs.run(ws, PATH, id, { media })).done
   expect(failed).toMatchObject({
     ok: false,
     pending: false,
     diagnostic: { kind: 'connection', outcome: 'unknown' },
   })
-  const view = await new CanvasService({ publish: () => {} }).read(root, PATH)
+  const view = await new CanvasService({ publish: () => {} }).docs.read(root, PATH)
   expect(view.doc.runs?.[0]?.result).toBe('unknown')
   expect(view.doc.runs?.[0]?.diagnostic).toMatchObject({
     stage: 'generate',

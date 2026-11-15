@@ -72,7 +72,7 @@ import {
   redactSecrets,
 } from '@qywork/tools'
 import { personalizationPort, petPort } from './appearance.ts'
-import { artRenderOf, canvasPort } from './canvas.ts'
+import { artRenderOf, canvasPort } from './canvas/port.ts'
 import { CLOUD_PROVIDER } from './cloud/account.ts'
 import { commandPortOf } from './command-tasks/table.ts'
 import { makeDelegate } from './delegate.ts'
