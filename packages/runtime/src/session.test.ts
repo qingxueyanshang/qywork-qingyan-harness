@@ -12,7 +12,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
-import type { BrowserPort, DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
+import { DelegatePort, Ports, provide, type ToolContext, type ToolRegistry } from '@qywork/agent'
 import {
   buildAdapter,
   DEFAULT_DENSITY,
@@ -44,6 +44,7 @@ import {
   settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
+import { BrowserPort, FileReadPort, HistoryPort } from '@qywork/tools'
 import { NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
 import { approveMcpServers } from './mcp-approvals.ts'
 import { buildTailNotes, outputLimitNote } from './prompt.ts'
@@ -210,14 +211,16 @@ test('准备阶段信号中止：用户消息落库，本轮以用户中断结�
   })
   const { s, store } = await session({
     signal: controller.signal,
-    delegate: {
-      ...delegate,
-      targets: async () => {
-        entered()
-        await held
-        return delegate.targets()
-      },
-    },
+    ports: new Ports([
+      provide(DelegatePort, {
+        ...delegate,
+        targets: async () => {
+          entered()
+          await held
+          return delegate.targets()
+        },
+      }),
+    ]),
   })
   try {
     const events: AgentEvent[] = []
@@ -389,7 +392,7 @@ test('处理临时目录时读取账本失败：run.finished 照常发出', asyn
 
 describe('派发工具只提供给有派发通道的会话', () => {
   test('顶层会话有 define_role、subagent、workflow；成员会话均没有', async () => {
-    const top = await session({ delegate })
+    const top = await session({ ports: new Ports([provide(DelegatePort, delegate)]) })
     expect(top.names()).toContain('define_role')
     expect(top.names()).toContain('subagent')
     expect(top.names()).toContain('workflow')
@@ -635,7 +638,10 @@ describe('顶层会话的可分配模型快照', () => {
         },
       },
     }
-    const { s, store } = await session({ config: liveConfig, delegate })
+    const { s, store } = await session({
+      config: liveConfig,
+      ports: new Ports([provide(DelegatePort, delegate)]),
+    })
 
     await firstEvent(s, '第一轮')
 
@@ -684,7 +690,10 @@ describe('顶层会话的可分配模型快照', () => {
         },
       },
     }
-    const { s, store } = await session({ config: liveConfig, delegate })
+    const { s, store } = await session({
+      config: liveConfig,
+      ports: new Ports([provide(DelegatePort, delegate)]),
+    })
     await firstEvent(s)
 
     liveConfig.providers.新增接口 = {
@@ -769,7 +778,7 @@ describe('未完成 workflow 的运行快照', () => {
   }
 
   test('第二轮快照包含待审查的 workflowId、检查点与各节点续接情况', async () => {
-    const { s, store } = await session({ delegate })
+    const { s, store } = await session({ ports: new Ports([provide(DelegatePort, delegate)]) })
     for await (const _ of s.ask('第一轮')) break
     const conversation = listRecentConversations(store, 1)[0]!
     const workflowId = seedWaitingGraph(store, conversation.id)
@@ -1295,9 +1304,9 @@ describe('工具上下文的读取记录', () => {
 
     const first = make('rn_1', () => {}, 'm', conv.id)
     const second = make('rn_2', () => {}, 'm', conv.id)
-    first.reads?.mark('C:/ws/a.ts', 'h1')
+    first.port(FileReadPort)?.mark('C:/ws/a.ts', 'h1')
 
-    expect(second.reads?.seen('C:/ws/a.ts')).toBe('h1')
+    expect(second.port(FileReadPort)?.seen('C:/ws/a.ts')).toBe('h1')
     expect(fileReadHash(store, conv.id, 'C:/ws/a.ts')).toBe('h1')
     store.close()
   })
@@ -1421,7 +1430,7 @@ describe('会话标题', () => {
         return delegate.targets()
       },
     }
-    const { s, store } = await session({ delegate: renaming })
+    const { s, store } = await session({ ports: new Ports([provide(DelegatePort, renaming)]) })
     target = store
     await firstEvent(s, '第一句')
     expect(listRecentConversations(store, 1)[0]?.title).toBe('中途改的名字')
@@ -1464,12 +1473,15 @@ describe('注入消息的读取', () => {
     const ctx = make(run.id, () => {}, 'm', conv.id)
     const address = `${run.id}:${step.id}`
 
-    expect(ctx.history?.message(address)).toEqual({ role: 'user', content: '改成只列文件名' })
+    expect(ctx.port(HistoryPort)?.message(address)).toEqual({
+      role: 'user',
+      content: '改成只列文件名',
+    })
     // 执行记录入口必须返回 null：其返回形状是 {tool,status,args,outcome}，
     // 套用到该记录只会得到 tool:'unknown' 与两个空 JSON，看起来已被处理。
-    expect(ctx.history?.step(address)).toBeNull()
+    expect(ctx.port(HistoryPort)?.step(address)).toBeNull()
     // 搜索按消息类型报告，因此模型取得的标记是 [message:…]，与取回入口一致。
-    expect(ctx.history?.search('只列文件名', 10)).toEqual([
+    expect(ctx.port(HistoryPort)?.search('只列文件名', 10)).toEqual([
       { id: address, kind: 'message', line: '改成只列文件名' },
     ])
     store.close()
@@ -1519,16 +1531,18 @@ describe('注入消息的读取', () => {
     const ctx = make(run.id, () => {}, 'm', conv.id)
     const address = `${run.id}:${first.id}`
 
-    expect(ctx.history?.message(address)).toEqual({
+    expect(ctx.port(HistoryPort)?.message(address)).toEqual({
       role: 'assistant',
       content: '先定签名算法：用 RS256。',
     })
-    expect(ctx.history?.step(address)).toBeNull()
+    expect(ctx.port(HistoryPort)?.step(address)).toBeNull()
     // 命中的是切分后的其中一条；按其地址读取的仍是整段。
-    expect(ctx.history?.search('RS256', 10)).toEqual([
+    expect(ctx.port(HistoryPort)?.search('RS256', 10)).toEqual([
       { id: `${run.id}:${rest.id}`, kind: 'message', line: '用 RS256。' },
     ])
-    expect(ctx.history?.message(`${run.id}:${rest.id}`)?.content).toBe('先定签名算法：用 RS256。')
+    expect(ctx.port(HistoryPort)?.message(`${run.id}:${rest.id}`)?.content).toBe(
+      '先定签名算法：用 RS256。',
+    )
     store.close()
   })
 })
@@ -1600,14 +1614,14 @@ describe('带图执行记录的读取', () => {
       toolContext(s, runId, target, conv)
     const ctx = make(run.id, () => {}, 'm', conv.id)
 
-    const byCall = ctx.history?.byCallId('call_shot')
+    const byCall = ctx.port(HistoryPort)?.byCallId('call_shot')
     expect(byCall?.images).toEqual([{ data: 'QUJD', mime: 'image/png' }])
     expect(byCall?.outcome).not.toContain('QUJD')
     expect(JSON.parse(byCall?.outcome ?? '{}')).toMatchObject({ message: '读取 shot.png（图片）' })
-    expect(ctx.history?.step(`${run.id}:${shot.id}`)).toEqual(byCall)
+    expect(ctx.port(HistoryPort)?.step(`${run.id}:${shot.id}`)).toEqual(byCall)
 
     // 没有图的记录不带 `images` 键，`data` 原样保留。
-    const text = ctx.history?.byCallId('call_plain')
+    const text = ctx.port(HistoryPort)?.byCallId('call_plain')
     expect(text).not.toHaveProperty('images')
     expect(JSON.parse(text?.outcome ?? '{}')).toMatchObject({ data: { lines: 3 } })
     store.close()
@@ -1651,7 +1665,7 @@ describe('带图执行记录的读取', () => {
     } as never)
 
     const ctx = toolContext(s, run.id, 'm', conv.id)
-    const record = ctx.history?.byCallId('call_declared')
+    const record = ctx.port(HistoryPort)?.byCallId('call_declared')
     expect(record?.texts).toEqual([{ type: 'text', text: marker, features }])
     expect(record?.outcome).not.toContain(marker)
     expect(JSON.parse(record?.outcome ?? '{}')).toMatchObject({ data: { path: 'SKILL.md' } })
@@ -1700,7 +1714,10 @@ describe('浏览器控制与本轮执行绑定', () => {
   test('用户停止时立即撤销控制，不等待本轮收尾', async () => {
     const browser = fakeBrowser()
     const ac = new AbortController()
-    const { s, store } = await session({ browser: browser.port, signal: ac.signal })
+    const { s, store } = await session({
+      ports: new Ports([provide(BrowserPort, browser.port)]),
+      signal: ac.signal,
+    })
     expect(browser.released()).toBe(0)
     ac.abort()
     await new Promise((r) => setTimeout(r, 0))
@@ -1711,7 +1728,7 @@ describe('浏览器控制与本轮执行绑定', () => {
 
   test('收尾时同样释放一次，重复调用由端口自行处理', async () => {
     const browser = fakeBrowser()
-    const { s, store } = await session({ browser: browser.port })
+    const { s, store } = await session({ ports: new Ports([provide(BrowserPort, browser.port)]) })
     await s.dispose()
     await new Promise((r) => setTimeout(r, 0))
     expect(browser.released()).toBe(1)
@@ -1739,7 +1756,9 @@ describe('浏览器控制与本轮执行绑定', () => {
 
   test('接入端口之后七个工具均进入工具表', async () => {
     const browser = fakeBrowser()
-    const { s, store, names } = await session({ browser: browser.port })
+    const { s, store, names } = await session({
+      ports: new Ports([provide(BrowserPort, browser.port)]),
+    })
     const listed = names()
     for (const name of SEVEN) expect(listed).toContain(name)
     await s.dispose()
@@ -1749,7 +1768,7 @@ describe('浏览器控制与本轮执行绑定', () => {
   test('角色的 allowedTools 同样筛选浏览器工具', async () => {
     const browser = fakeBrowser()
     const { s, store, names } = await session({
-      browser: browser.port,
+      ports: new Ports([provide(BrowserPort, browser.port)]),
       allowedTools: ['browser_observe', 'read_file'],
     })
     const listed = names()
@@ -1773,16 +1792,16 @@ describe('浏览器控制与本轮执行绑定', () => {
   test('没有端口时工具上下文中没有浏览器通道', async () => {
     const { s, store } = await session()
     const ctx = toolContext(s, 'run_1', 'deepseek-v4-flash', 'cv_1')
-    expect(ctx.browser).toBeUndefined()
+    expect(ctx.port(BrowserPort)).toBeNull()
     await s.dispose()
     store.close()
   })
 
   test('有端口时原样透传给工具上下文', async () => {
     const browser = fakeBrowser()
-    const { s, store } = await session({ browser: browser.port })
+    const { s, store } = await session({ ports: new Ports([provide(BrowserPort, browser.port)]) })
     const ctx = toolContext(s, 'run_1', 'deepseek-v4-flash', 'cv_1')
-    expect(ctx.browser).toBe(browser.port)
+    expect(ctx.port(BrowserPort)).toBe(browser.port)
     await s.dispose()
     store.close()
   })

@@ -10,9 +10,6 @@
  */
 
 import {
-  type CloudSkillErrorCode,
-  type CloudSkillPort,
-  type CloudSkillSegment,
   chargeBatchBudget,
   outcomeTokens,
   recordCappedSpent,
@@ -23,6 +20,7 @@ import {
 import { badIntMessage, intArg } from '../args.ts'
 import { IGNORED_DIRS } from '../paths.ts'
 import { MIN_DELIVERY_BYTES } from '../sink.ts'
+import { type CloudSkillErrorCode, CloudSkillPort, type CloudSkillSegment } from './port.ts'
 
 /** 云端技能目录的路径前缀。 */
 export const CLOUD_SKILL_SCHEME = 'cloud-skill://'
@@ -49,10 +47,10 @@ function failure(message: string, errorKind: string): ToolOutcome {
  * 本会话没有云端技能通道或 `raw` 不是云端技能路径时返回 null，调用方按本地路径处理。
  */
 export function cloudTarget(
-  ctx: Pick<ToolContext, 'cloudSkills'>,
+  ctx: Pick<ToolContext, 'port'>,
   raw: unknown,
 ): CloudTarget | ToolOutcome | null {
-  const port = ctx.cloudSkills
+  const port = ctx.port(CloudSkillPort)
   if (!port || typeof raw !== 'string') return null
   const text = raw.trim()
   if (!text.startsWith(CLOUD_SKILL_SCHEME)) return null

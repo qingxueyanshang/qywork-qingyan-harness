@@ -33,8 +33,10 @@ import {
 import type { FileChange } from '@qywork/core'
 import { imageSizeOf, isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
+import { CanvasPort } from './canvas/port.ts'
 import { cloudReadOnly, cloudTarget, listCloudDir, readCloudFile } from './cloud-skills/source.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
+import { FileReadPort } from './files/port.ts'
 import {
   downscaleNote,
   type ImageRegion,
@@ -42,6 +44,7 @@ import {
   type ZoomedImage,
   zoomImage,
 } from './image.ts'
+import { OfficePort } from './office/port.ts'
 import { readVideoFrames } from './office-worker.ts'
 import {
   displayPath,
@@ -59,7 +62,7 @@ const READ_STATE_KEY = 'files.readHashes'
 /**
  * 读取记录的访问入口。
  *
- * 生命周期由装配方决定，不由此处决定。接入 `ctx.reads`（runtime 按会话写入账本）时
+ * 生命周期由装配方决定，不由此处决定。提供了 `FileReadPort`（runtime 按会话写入账本）时
  * 为会话级；未接入时退回 run 内的临时存储：这是更严格的一侧（每轮首次写入前必须先读取），
  * 因此遗漏接入不会放宽边界。此处只负责读取时记录、写入前比对。
  */
@@ -70,10 +73,8 @@ export interface ReadHashes {
 
 /** `office` 使用同一个记录入口：已读取的 Office 文件按文件字节的 SHA-256 记录，写入前比对。 */
 export function readHashes(ctx: ToolContext): ReadHashes {
-  if (ctx.reads) {
-    const port = ctx.reads
-    return { get: (p) => port.seen(p), set: (p, h) => port.mark(p, h) }
-  }
+  const port = ctx.port(FileReadPort)
+  if (port) return { get: (p) => port.seen(p), set: (p, h) => port.mark(p, h) }
   let m = ctx.state.get(READ_STATE_KEY) as Map<string, string> | undefined
   if (!m) {
     m = new Map()
@@ -295,7 +296,8 @@ async function readVideo(
           `不要再读取该文件：更换支持图片或视频的模型，或请用户描述视频内容。`,
       }
     }
-    if (!ctx.office) {
+    const office = ctx.port(OfficePort)
+    if (!office) {
       return {
         status: 'failure',
         message:
@@ -305,7 +307,7 @@ async function readVideo(
     }
     const range = timeRange(args)
     if (typeof range === 'string') return { status: 'failure', message: range }
-    const read = await readVideoFrames(ctx, ctx.office, abs, shown, range)
+    const read = await readVideoFrames(ctx, office, abs, shown, range)
     return cause && read.status === 'success'
       ? { ...read, message: `${cause}，改为按时间抽帧。\n${read.message}` }
       : read
@@ -529,7 +531,7 @@ export const readFileTool: ToolSpec = {
         return {
           status: 'failure',
           message:
-            ctx.office?.enabled() === true && ctx.vision !== false
+            ctx.port(OfficePort)?.enabled() === true && ctx.vision !== false
               ? `${args.path} 没有文字层（扫描件或纯图片页），read_file 无法读取内容。用 view_office 按页查看。`
               : `${args.path} 没有文字层（扫描件或纯图片页），read_file 无法读取内容，当前也没有查看 PDF 页面的工具。`,
         }
@@ -559,7 +561,7 @@ export const readFileTool: ToolSpec = {
       limit,
       keepBytes,
     )
-    if (scan === 'binary') return notText(String(args.path), ctx.office !== undefined)
+    if (scan === 'binary') return notText(String(args.path), ctx.port(OfficePort) !== null)
     const slice = scan.lines
     const totalLines = scan.total
     const shown = displayPath(ctx.workspaceRoot, abs)
@@ -834,8 +836,9 @@ export const writeFileTool: ToolSpec = {
  * 改动会进入这些卡下次发送的提示词；标题改名或删除使引用失效时在此当场指出，不等到运行时才发现。
  */
 async function canvasNote(ctx: ToolContext, path: string): Promise<string> {
-  if (!ctx.canvas || !/\.(md|txt)$/i.test(path)) return ''
-  const lines = await ctx.canvas.textReferences(path).catch(() => [])
+  const canvas = ctx.port(CanvasPort)
+  if (!canvas || !/\.(md|txt)$/i.test(path)) return ''
+  const lines = await canvas.textReferences(path).catch(() => [])
   return lines.length ? `\n${lines.join('\n')}` : ''
 }
 

@@ -10,7 +10,8 @@
  * 3. **不补发。** 某一段延迟时按实际时间推后发送，不将后续各段的按下与抬起集中补发。
  */
 
-import { type BrowserExecution, keyEvent, modifierBits } from '@qywork/agent'
+import { keyEvent, modifierBits } from '@qywork/agent'
+import type { BrowserExecution } from '@qywork/tools'
 import {
   CdpCancelledError,
   type CdpClient,

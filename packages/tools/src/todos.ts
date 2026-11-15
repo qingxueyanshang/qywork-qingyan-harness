@@ -22,7 +22,7 @@
  * 缺少原因的受阻与失败无法审计，也无法在最终回复中逐项说明。
  */
 
-import type { ToolSpec } from '@qywork/agent'
+import { TodoPort, type ToolSpec } from '@qywork/agent'
 import {
   TODO_BLOCKERS,
   TODO_FAILURES,
@@ -30,6 +30,7 @@ import {
   type TodoItem,
   todoProgress,
 } from '@qywork/core'
+import { TodoBroadcast } from './todos/port.ts'
 
 /** 待办条目上限。超过此数说明应拆分任务，而不是把清单当作笔记使用。 */
 const MAX_ITEMS = 40
@@ -91,7 +92,7 @@ export const writeTodosTool: ToolSpec = {
   /*
    * 首次提交是创建，修改已有清单才是编辑。
    *
-   * 判据必须使用 `ctx.todos`（会话级，读取账本中上一条 `write_todos` step）。
+   * 判据必须使用 `TodoPort`（会话级，读取账本中上一条 `write_todos` step）。
    * 不要改用 `ctx.state`：它是 run 级的（每条消息一个 run，Map 重新创建），
    * 跨轮无法查到上一份清单，结果是下一轮的第一次提交一律显示为「创建」。
    * 也不要硬编码为常量，那是方向相反的同类缺陷，会始终返回「修改」。
@@ -104,7 +105,7 @@ export const writeTodosTool: ToolSpec = {
    * 不为它新增 `plan` 动作：与对象「待办」组合后读作「规划待办」，动宾语义重复。
    */
   actionKind: (_args, ctx) => {
-    const prev = ctx?.todos?.read()
+    const prev = ctx?.port(TodoPort)?.read()
     if (!prev?.length) return 'write'
     return prev.every((t) => t.status === 'completed') ? 'write' : 'edit'
   },
@@ -132,7 +133,7 @@ export const writeTodosTool: ToolSpec = {
     const todos = parsed.todos
 
     // 事件由工具发出，而不是由 loop 推测：只有此处知道清单的确切内容。
-    ctx.emitTodos?.(todos)
+    ctx.port(TodoBroadcast)?.(todos)
 
     return { status: 'success', message: progressLine(todos), data: { todos } }
   },

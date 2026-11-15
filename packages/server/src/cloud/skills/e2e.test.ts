@@ -15,11 +15,13 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Ports, provide } from '@qywork/agent'
 import { parseSkillMarker, SKILL_MARKER_PREFIX } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import { formatLogLine, setLogSink } from '@qywork/core'
 import { type QyConfig, Session } from '@qywork/runtime'
 import { ContentStore, listProviderRequests, listRuns, Store } from '@qywork/store'
+import { CloudSkillPort } from '@qywork/tools'
 import { CLOUD_PROVIDER } from '../account.ts'
 import {
   type FakeCloud,
@@ -101,11 +103,16 @@ async function ask(prompt: string): Promise<AgentEvent[]> {
     workspaceRoot,
     signal: new AbortController().signal,
     allowedTools: ['read_file', 'list_dir', 'glob', 'grep'],
-    cloudSkills: cloudSkillPort({
-      config: live,
-      origin: cloud.origin,
-      packages: [{ package: PKG }],
-    }),
+    ports: new Ports([
+      provide(
+        CloudSkillPort,
+        cloudSkillPort({
+          config: live,
+          origin: cloud.origin,
+          packages: [{ package: PKG }],
+        }),
+      ),
+    ]),
   })
   const events: AgentEvent[] = []
   try {

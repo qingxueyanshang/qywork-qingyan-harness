@@ -9,26 +9,18 @@ import { readFile, stat } from 'node:fs/promises'
 import { basename, isAbsolute, resolve } from 'node:path'
 import {
   AgentLoop,
-  type BrowserPort,
-  type CanvasPort,
-  type CloudSkillPort,
-  type CommandPort,
   type CompactionPort,
-  type DelegatePort,
-  type DesktopPort,
+  DelegatePort,
   decideCommand,
   envelopeResult,
-  type HistoryPort,
-  type HistoryStep,
   imagesOf,
   type LoopPersistence,
-  type OfficePort,
   type PermissionVerdict,
-  type PersonalizationPort,
-  type PetPort,
-  type PluginPort,
+  Ports,
+  provide,
   runDensity,
   softLimit,
+  TodoPort,
   type ToolContextBase,
   ToolRegistry,
   textsOf,
@@ -116,21 +108,34 @@ import {
   workflowIdsOf,
 } from '@qywork/store'
 import {
+  BrowserPort,
+  CanvasPort,
+  CommandPort,
   conversationTempDir,
+  DesktopPort,
   displayPath,
   downscaleNote,
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
+  FileReadPort,
+  GoalPort,
+  HistoryPort,
+  type HistoryStep,
   listScopedEntries,
+  McpConfigPort,
   MEDIA_TOOLS,
+  MediaPort,
   makeLoadToolTool,
   normalizeAdditionalDirectories,
   PendingToolPool,
   redactSecrets,
   registerBuiltinTools,
+  SchedulePort,
+  SkillSourcePaths,
   scanSkills,
   scopeRoots,
   shrinkImage,
+  TodoBroadcast,
 } from '@qywork/tools'
 import { RuntimeCompaction } from './compaction.ts'
 import {
@@ -178,63 +183,14 @@ export interface SessionOptions {
   /** Agent Team 成员与子 agent 的会话：不注册写入、删除与迁移记忆的工具，理由见 `registerBuiltinTools`。 */
   member?: true
   /**
-   * 派发通道。见 `DelegatePort`。
+   * 装配方提供的端口。本会话在其上加入自己提供的端口，合为同一份集合：MCP 配置在构造时加入，内置工具按
+   * `ToolSpec.requires` 是否满足注册；读取记录、待办、目标、定时任务、历史、生成、技能来源与待办广播绑定会话与本轮，
+   * 在每轮的工具上下文中加入。
    *
-   * 只传给顶层会话：成员会话不传，因此成员会话不注册 `subagent` 工具，
-   * 递归派发任务在结构上不可能发生。
+   * 派发、后台命令、插件安装、个性化与宠物只提供给顶层会话：成员会话没有派发端口，因此不注册 `subagent`，
+   * 递归派发在结构上不可能发生。浏览器与电脑控制由装配方按宿主状态实时判定；`dispose` 释放二者的控制权。
    */
-  delegate?: DelegatePort
-  /**
-   * 后台命令通道。见 `CommandPort`。
-   *
-   * 只传给顶层会话：回执发起的一轮只能属于顶层会话（子会话只由父会话的图续发）。
-   * 未传入时 `run_command` 没有 `background` 参数，前台等待不会提前结束。
-   */
-  commands?: CommandPort
-  /**
-   * 插件安装通道。见 `PluginPort`。
-   *
-   * 只传给顶层会话：成员会话不传，因此成员会话不注册 `install_plugin`。
-   */
-  plugins?: PluginPort
-  /**
-   * 内置浏览器通道。见 `BrowserPort`。
-   *
-   * 由装配方依据当前是否存在可用的原生宿主实时判定后传入；未传入时本轮没有浏览器能力。
-   * 会话结束时 `dispose` 会释放其占用的控制权与未消费的下载授权。
-   */
-  browser?: BrowserPort
-  /**
-   * 画布通道。见 `CanvasPort`。由服务端注入其画布服务；未传入时（CLI 会话）没有 `canvas` 工具。
-   */
-  canvas?: CanvasPort
-  /**
-   * 个性化通道。见 `PersonalizationPort`。由服务端为顶层会话注入；未传入时（CLI 会话、成员会话）
-   * 没有 `personalize` 工具。
-   */
-  personalization?: PersonalizationPort
-  /** 宠物库通道。见 `PetPort`。注入范围同 `personalization`。 */
-  pets?: PetPort
-  /**
-   * 电脑控制通道。见 `DesktopPort`。
-   *
-   * 由装配方依据用户的启用开关与当前宿主状态实时判定后传入；未传入时本轮没有
-   * 桌面能力。会话结束时 `dispose` 会撤销其名下尚未派发的请求。
-   */
-  desktop?: DesktopPort
-  /**
-   * Office 执行程序。见 `OfficePort`。
-   *
-   * 由装配方从进程级的 Office 宿主取得（`createOfficeHost`）；开关关闭或本机缺少 Python 与文档库时
-   * 不传入，本轮没有 Office 工具。
-   */
-  office?: OfficePort
-  /**
-   * 云端技能通道。见 `CloudSkillPort`。
-   *
-   * 由装配方为使用云端技能的会话传入；未传入时读取类工具不识别云端技能的路径。
-   */
-  cloudSkills?: CloudSkillPort
+  ports?: Ports
   /**
    * 取出当前标记为「调整方向」的跟进消息。每个 step 边界调用一次。
    *
@@ -347,8 +303,14 @@ export class Session {
   /** 各轮次最近一次的模型用量。生成花费到达时补发 usage 事件，以该用量为基础。 */
   private readonly modelUsage = new Map<RunId, RunUsage>()
 
+  /** 装配方的端口加上本会话在构造时即可提供的端口；每轮的会话级端口在 `makeToolContext` 中加入。 */
+  private readonly ports: Ports
+
   constructor(private readonly opts: SessionOptions) {
     this.extraDirs = normalizeAdditionalDirectories(opts.config.additionalDirectories).dirs
+    this.ports = (opts.ports ?? new Ports()).with([
+      provide(McpConfigPort, makeMcpConfigPort(opts.workspaceRoot)),
+    ])
 
     /*
      * 用户按下停止时立即撤销浏览器控制，不等待本轮收尾。
@@ -360,53 +322,45 @@ export class Session {
     opts.signal.addEventListener(
       'abort',
       () => {
-        void this.opts.browser?.release().catch((err) => {
-          log.warn(
-            'browser',
-            `停止时释放浏览器控制失败：${err instanceof Error ? err.message : String(err)}`,
-          )
-        })
+        void this.ports
+          .get(BrowserPort)
+          ?.release()
+          .catch((err) => {
+            log.warn(
+              'browser',
+              `停止时释放浏览器控制失败：${err instanceof Error ? err.message : String(err)}`,
+            )
+          })
         // 桌面动作同理，且更为紧迫：排队中的 invoke 一旦派发即作用于用户正在查看的应用。
-        void this.opts.desktop?.release().catch((err) => {
-          log.warn(
-            'desktop',
-            `停止时撤销电脑控制失败：${err instanceof Error ? err.message : String(err)}`,
-          )
-        })
+        void this.ports
+          .get(DesktopPort)
+          ?.release()
+          .catch((err) => {
+            log.warn(
+              'desktop',
+              `停止时撤销电脑控制失败：${err instanceof Error ? err.message : String(err)}`,
+            )
+          })
       },
       { once: true },
     )
 
-    // 派发任务与安装插件都随各自的通道提供：成员会话两种通道都无法取得，因此其工具集中既没有
-    // `subagent`（子 agent 不得再派发任务，递归没有终止条件），也没有 `install_plugin`
-    // （子 agent 不应为整台机器安装插件）。
     // 画布与生成共用一个开关（`mediaEnabled`），缺省时按启用处理，与设置页显示值使用同一判据。
     const mediaOn = opts.config.mediaEnabled !== false
-    const withDelegate = {
-      delegate: opts.delegate !== undefined,
-      commands: opts.commands !== undefined,
-      plugins: opts.plugins !== undefined,
-      mcpConfig: true,
-      browser: opts.browser !== undefined,
-      desktop: opts.desktop !== undefined,
-      canvas: mediaOn && opts.canvas !== undefined,
-      // 画布端口只由服务端注入，与生成开关无关；成员会话的工具卡不显示在当前会话中。
-      panel: opts.canvas !== undefined && opts.member !== true,
-      personalization: opts.personalization !== undefined && opts.member !== true,
-      pets: opts.pets !== undefined && opts.member !== true,
-      office: opts.office !== undefined,
-      videoDecoder: opts.office?.videoDecoder === true,
+    const builtin = {
+      // 画布端口只由服务端提供，与生成开关无关；成员会话的工具卡不显示在当前会话中。
+      panel: this.ports.has(CanvasPort) && opts.member !== true,
       // 生成工具按已配置模型的类别注册；与其他内置工具规则相同，角色的 allowedTools 指定工具时按指定的工具过滤。
-      media: mediaOn ? [...new Set(listMediaModels(opts.config).map((m) => m.output))] : [],
+      media: mediaOn ? [...new Set(listMediaModels(opts.config).map((m) => m.output))] : null,
       member: opts.member === true,
     }
     if (opts.allowedTools === undefined) {
-      registerBuiltinTools(this.registry, withDelegate)
+      registerBuiltinTools(this.registry, this.ports, builtin)
     } else {
       // 先注册到临时表再筛选：内置工具集合由 registerBuiltinTools 私有维护，
       // 在此处另行复制一份工具名列表必然与之不一致。
       const all = new ToolRegistry()
-      registerBuiltinTools(all, withDelegate)
+      registerBuiltinTools(all, this.ports, builtin)
       const allow = new Set(opts.allowedTools)
       for (const spec of all.list()) {
         if (allow.has(spec.name)) this.registry.register(spec)
@@ -610,11 +564,12 @@ export class Session {
       ...(options?.viewing ? { viewing: options.viewing } : {}),
     }
     // 角色、外部 CLI、本会话已有的子 agent：模型据此按 id 引用，不推测名称。
+    const delegate = this.ports.get(DelegatePort)
     const delegateFacts =
-      canAssignModels && this.opts.delegate
+      canAssignModels && delegate
         ? {
-            team: await this.opts.delegate.targets(),
-            subagents: await this.opts.delegate.subagents(),
+            team: await delegate.targets(),
+            subagents: await delegate.subagents(),
           }
         : {}
     // 运行环境随快照冻结。auto 模式下工作区 Python 环境在此确保存在，命令中的 python 与 pip 指向它
@@ -937,8 +892,8 @@ export class Session {
             stopReason: ev.stopReason,
             topLevel: !conversation?.parentConversationId,
             backgroundRunning:
-              (this.opts.delegate?.inflight().length ?? 0) > 0 ||
-              (this.opts.commands?.list().length ?? 0) > 0,
+              (this.ports.get(DelegatePort)?.inflight().length ?? 0) > 0 ||
+              (this.ports.get(CommandPort)?.list().length ?? 0) > 0,
           })
         }
         yield out
@@ -1080,14 +1035,23 @@ export class Session {
      *
      * 失败只记录一行日志：宿主可能已经断开，而断开路径本身也会撤销这两项。
      */
-    this.opts.browser?.release().catch((err) => {
-      log.warn('browser', `释放浏览器控制失败：${err instanceof Error ? err.message : String(err)}`)
-    })
+    this.ports
+      .get(BrowserPort)
+      ?.release()
+      .catch((err) => {
+        log.warn(
+          'browser',
+          `释放浏览器控制失败：${err instanceof Error ? err.message : String(err)}`,
+        )
+      })
     // 电脑控制与会话绑定：本轮收尾时撤销本执行者名下尚未派发的请求。
     // 已经交给操作系统的动作不回滚：那是执行事实，不是可撤销的占用。
-    this.opts.desktop?.release().catch((err) => {
-      log.warn('desktop', `撤销电脑控制失败：${err instanceof Error ? err.message : String(err)}`)
-    })
+    this.ports
+      .get(DesktopPort)
+      ?.release()
+      .catch((err) => {
+        log.warn('desktop', `撤销电脑控制失败：${err instanceof Error ? err.message : String(err)}`)
+      })
     if (!this.extensions) return
     const ext = this.extensions
     this.extensions = null
@@ -1322,91 +1286,91 @@ export class Session {
       // sink 绑定到本 run：登记行须能追溯到产生该正文的轮次，
       // run 被删除时引用随之消失，GC 才能回收正文。
       sink: new RuntimeSink(this.opts.store, this.opts.content, runId),
-      /*
-       * 读取记录绑定到会话，而不是 run。
-       *
-       * 服务端为每条消息新建一个 Session（`run-control.ts`），进程内没有
-       * 会话级的生命周期可供依附，因此真源放在账本中，随会话一并删除。
-       * 绑定到 run 时，每轮第一次修改文件必然先因「未读取」失败一次，
-       * 而该守卫判定的是「待写入的版本是否就是读取过的版本」，与 run 边界无关。
-       */
-      reads: {
-        seen: (path) => fileReadHash(store, conversationId, path),
-        mark: (path, hash) => recordFileRead(store, conversationId, path, hash),
-      },
-      /*
-       * 待办同样绑定到会话，且只读：父会话的整表提交与子任务的待验收回执
-       * 本身就是需要写入的 tool step；只有 `write_todos` 改变当前快照。
-       * 此处读取的结果供动作词、委派归属与 loop 收尾共用；run 级的 `ctx.state`
-       * 无法跨轮查询这些会话级事实。
-       */
-      todos: { read: (runId) => latestTodos(store, conversationId, runId) },
-      /*
-       * 目标同样绑定到会话：其生命周期与会话相同，只有跨轮保留才有意义。
-       *
-       * 事件在此处发出，不在工具中发出（对比 `emitTodos`）：目标的真源是账本，
-       * 写入与广播是同一操作的两部分，交给工具时可能只完成其中一部分。
-       * 事件不带 runId：目标是会话级的，服务端在 run 之外也会修改它。
-       *
-       * 没有 create：设立目标是用户的操作，经由 `goal.set` 指令，不经过工具。
-       */
-      goals: {
-        read: () => currentGoal(store, conversationId),
-        update: (input) => announce(updateGoal(store, { conversationId, ...input }), emit),
-      },
-      /*
-       * 定时任务绑定到当前工作区：整台机器只有一张任务表，端口在此处固定归属，
-       * 工具一侧没有跨项目的入口。写入与调度 tick 使用同一份仓储，不另设落盘路径。
-       *
-       * 创建的任务同时绑定到顶层会话：触发时消息发往该会话，而子会话不接受直接发送的消息
-       * （`server/commands.ts` 的 `message.send` 直接拒绝），绑定到子会话的任务无法触发。
-       */
-      schedules: {
-        list: () => listSchedules(store, this.opts.workspaceRoot, Date.now()),
-        create: (draft) =>
-          createSchedule(
-            store,
-            this.opts.workspaceRoot,
-            draft,
-            getConversation(store, conversationId)?.parentConversationId ?? conversationId,
-          ),
-        remove: (id) => deleteSchedule(store, id, this.opts.workspaceRoot),
-      },
-      // 派发通道原样传递：是否可以派发、派发给谁由装配方（server）决定，
-      // 此处不在缺失时构造空通道，否则 `subagent` 已注册却无法派发。
-      ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
-      ...(this.opts.commands ? { commands: this.opts.commands } : {}),
-      ...(this.opts.plugins ? { plugins: this.opts.plugins } : {}),
-      ...(this.opts.browser ? { browser: this.opts.browser } : {}),
-      ...(this.opts.desktop ? { desktop: this.opts.desktop } : {}),
-      ...(this.opts.canvas ? { canvas: this.opts.canvas } : {}),
-      ...(this.opts.personalization ? { personalization: this.opts.personalization } : {}),
-      ...(this.opts.pets ? { pets: this.opts.pets } : {}),
-      ...(this.opts.cloudSkills ? { cloudSkills: this.opts.cloudSkills } : {}),
-      mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
-      skillSourcePaths: () =>
-        listMessages(store, conversationId, null).flatMap((m) => m.attachments.map((a) => a.path)),
-      // 有画布时始终提供：画布上的 art 卡使用对话模型，没有配置生成模型也能运行。
-      ...(listMediaModels(this.opts.config).length || this.opts.canvas
-        ? {
-            media: makeMediaPort(this.opts.config, (spend) =>
-              this.recordMediaSpend(runId, conversationId, spend, emit),
+      // 装配方的端口加上本会话按会话与本轮绑定的端口，合为本轮的同一份集合。
+      port: this.ports.with([
+        /*
+         * 读取记录绑定到会话，而不是 run。
+         *
+         * 服务端为每条消息新建一个 Session（`run-control.ts`），进程内没有
+         * 会话级的生命周期可供依附，因此真源放在账本中，随会话一并删除。
+         * 绑定到 run 时，每轮第一次修改文件必然先因「未读取」失败一次，
+         * 而该守卫判定的是「待写入的版本是否就是读取过的版本」，与 run 边界无关。
+         */
+        provide(FileReadPort, {
+          seen: (path) => fileReadHash(store, conversationId, path),
+          mark: (path, hash) => recordFileRead(store, conversationId, path, hash),
+        }),
+        /*
+         * 待办同样绑定到会话，且只读：父会话的整表提交与子任务的待验收回执
+         * 本身就是需要写入的 tool step；只有 `write_todos` 改变当前快照。
+         * 此处读取的结果供动作词、委派归属与 loop 收尾共用；run 级的 `ctx.state`
+         * 无法跨轮查询这些会话级事实。
+         */
+        provide(TodoPort, { read: (runId) => latestTodos(store, conversationId, runId) }),
+        /*
+         * 目标同样绑定到会话：其生命周期与会话相同，只有跨轮保留才有意义。
+         *
+         * 事件在此处发出，不在工具中发出（对比 `TodoBroadcast`）：目标的真源是账本，
+         * 写入与广播是同一操作的两部分，交给工具时可能只完成其中一部分。
+         * 事件不带 runId：目标是会话级的，服务端在 run 之外也会修改它。
+         *
+         * 没有 create：设立目标是用户的操作，经由 `goal.set` 指令，不经过工具。
+         */
+        provide(GoalPort, {
+          read: () => currentGoal(store, conversationId),
+          update: (input) => announce(updateGoal(store, { conversationId, ...input }), emit),
+        }),
+        /*
+         * 定时任务绑定到当前工作区：整台机器只有一张任务表，端口在此处固定归属，
+         * 工具一侧没有跨项目的入口。写入与调度 tick 使用同一份仓储，不另设落盘路径。
+         *
+         * 创建的任务同时绑定到顶层会话：触发时消息发往该会话，而子会话不接受直接发送的消息
+         * （`server/commands.ts` 的 `message.send` 直接拒绝），绑定到子会话的任务无法触发。
+         */
+        provide(SchedulePort, {
+          list: () => listSchedules(store, this.opts.workspaceRoot, Date.now()),
+          create: (draft) =>
+            createSchedule(
+              store,
+              this.opts.workspaceRoot,
+              draft,
+              getConversation(store, conversationId)?.parentConversationId ?? conversationId,
             ),
-          }
-        : {}),
-      /*
-       * 已折叠历史的读取通道。压缩是投影而不是删除，原文始终保留在账本中，
-       * 该通道负责将原文提供给模型；缺少该通道时，摘要中的 `[message:…]` 标记指向
-       * 模型无法访问的位置，压缩即等同于丢失信息。
-       *
-       * 使用 list + find 而不是为 store 增加按 id 读取的函数：这是模型主动发起的
-       * 低频调用，且会话消息与单个 run 的 step 都是小集合。
-       */
-      history: historyPortFor(store, this.opts.content, conversationId as ConversationId),
+          remove: (id) => deleteSchedule(store, id, this.opts.workspaceRoot),
+        }),
+        provide(SkillSourcePaths, () =>
+          listMessages(store, conversationId, null).flatMap((m) =>
+            m.attachments.map((a) => a.path),
+          ),
+        ),
+        // 有画布时始终提供：画布上的 art 卡使用对话模型，没有配置生成模型也能运行。
+        ...(listMediaModels(this.opts.config).length || this.ports.has(CanvasPort)
+          ? [
+              provide(
+                MediaPort,
+                makeMediaPort(this.opts.config, (spend) =>
+                  this.recordMediaSpend(runId, conversationId, spend, emit),
+                ),
+              ),
+            ]
+          : []),
+        /*
+         * 已折叠历史的读取通道。压缩是投影而不是删除，原文始终保留在账本中，
+         * 该通道负责将原文提供给模型；缺少该通道时，摘要中的 `[message:…]` 标记指向
+         * 模型无法访问的位置，压缩即等同于丢失信息。
+         *
+         * 使用 list + find 而不是为 store 增加按 id 读取的函数：这是模型主动发起的
+         * 低频调用，且会话消息与单个 run 的 step 都是小集合。
+         */
+        provide(
+          HistoryPort,
+          historyPortFor(store, this.opts.content, conversationId as ConversationId),
+        ),
+        provide(TodoBroadcast, (todos) => {
+          emit({ type: 'todos', runId, todos })
+        }),
+      ]).get,
       signal: this.opts.signal,
-      emitTodos: (todos) => {
-        emit({ type: 'todos', runId, todos })
-      },
       secrets,
       ...(this.opts.config.envAllowList ? { envAllowList: this.opts.config.envAllowList } : {}),
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
@@ -1414,7 +1378,6 @@ export class Session {
       // 本会话的附件同样只读：附件是用户的显式授权（见 `withAttachments`），缩小发送的截图要用
       // `read_file` 的 region 截取局部放大，附件不在工作区内时，缺少这一条即无法读取。
       ...(readOnly.length ? { readOnlyRoots: readOnly } : {}),
-      ...(this.opts.office ? { office: this.opts.office } : {}),
       // 路径范围不在此处固定：`decide` 每次调用时读取模式，放行时一并给出。
       requestPermission: (call) => this.decide(conversationId, call),
     }

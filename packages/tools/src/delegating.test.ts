@@ -8,20 +8,36 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { type SubagentSummary, type ToolContext, ToolRegistry } from '@qywork/agent'
+import {
+  DelegatePort,
+  Ports,
+  provide,
+  type SubagentSummary,
+  TodoPort,
+  type ToolContext,
+  ToolRegistry,
+} from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { PersonalizationPort, PetPort } from './appearance/port.ts'
+import { BrowserPort } from './browser/port.ts'
+import { CanvasPort } from './canvas/port.ts'
+import { DesktopPort } from './desktop/port.ts'
 import { registerBuiltinTools } from './index.ts'
+import { McpConfigPort } from './mcp-config/port.ts'
+import { OfficePort } from './office/port.ts'
+import { PluginPort } from './plugin-install/port.ts'
+import { CommandPort } from './shell/port.ts'
 import { stopSubagentTool } from './stop-subagent.ts'
 import { subagentTool } from './subagent.ts'
 import { waitSubagentsTool } from './wait-subagents.ts'
 import { workflowTool } from './workflow.ts'
 
-type Port = NonNullable<ToolContext['delegate']>
+type Port = DelegatePort
 type DispatchInput = Parameters<Port['dispatch']>[0]
 type DispatchResult = Awaited<ReturnType<Port['dispatch']>>
 type GraphResult = Awaited<ReturnType<Port['runGraph']>>
 
-function ctx(delegate?: Port): ToolContext {
+function ctx(delegate?: Port, todos?: TodoPort): ToolContext {
   return {
     workspaceRoot: '/tmp',
     conversationId: 'cv_test',
@@ -33,16 +49,15 @@ function ctx(delegate?: Port): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports([
+      ...(delegate ? [provide(DelegatePort, delegate)] : []),
+      ...(todos ? [provide(TodoPort, todos)] : []),
+    ]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
     stepId: 'st_test',
-    ...(delegate ? { delegate } : {}),
   }
-}
-
-function withTodos(c: ToolContext, todos: NonNullable<ToolContext['todos']>): ToolContext {
-  return { ...c, todos }
 }
 
 const GRAPH_DONE: GraphResult = {
@@ -245,7 +260,7 @@ describe('派发任务工具的注册条件', () => {
 
   test('有派发通道时注册', () => {
     const r = new ToolRegistry()
-    registerBuiltinTools(r, { delegate: true })
+    registerBuiltinTools(r, new Ports([provide(DelegatePort, stub(sent()).port)]))
     const names = r.list().map((s) => s.name)
     expect(names).toContain('subagent')
     expect(names).toContain('stop_subagent')
@@ -255,21 +270,22 @@ describe('派发任务工具的注册条件', () => {
 
   test('内置工具的 schema 只声明单一类型，可空由 strict 转换加入', () => {
     const r = new ToolRegistry()
-    registerBuiltinTools(r, {
-      delegate: true,
-      commands: true,
-      plugins: true,
-      mcpConfig: true,
-      browser: true,
-      desktop: true,
-      canvas: true,
-      panel: true,
-      personalization: true,
-      pets: true,
-      office: true,
-      videoDecoder: true,
-      media: ['image', 'video'],
-    })
+    registerBuiltinTools(
+      r,
+      new Ports([
+        provide(DelegatePort, stub(sent()).port),
+        provide(CommandPort, {} as CommandPort),
+        provide(PluginPort, {} as PluginPort),
+        provide(McpConfigPort, {} as McpConfigPort),
+        provide(BrowserPort, {} as BrowserPort),
+        provide(DesktopPort, {} as DesktopPort),
+        provide(CanvasPort, {} as CanvasPort),
+        provide(PersonalizationPort, {} as PersonalizationPort),
+        provide(PetPort, {} as PetPort),
+        provide(OfficePort, { videoDecoder: true } as OfficePort),
+      ]),
+      { panel: true, media: ['image', 'video'] },
+    )
     // 经 Anthropic 协议转接 Gemini 的端点以 HTTP 400 拒绝含类型数组的工具，整份请求随之失败。
     const offenders: string[] = []
     const walk = (node: unknown, path: string): void => {
@@ -286,7 +302,7 @@ describe('派发任务工具的注册条件', () => {
 
   test('workflow schema 使用扁平的判别字段，不依赖 oneOf/anyOf', () => {
     const r = new ToolRegistry()
-    registerBuiltinTools(r, { delegate: true })
+    registerBuiltinTools(r, new Ports([provide(DelegatePort, stub(sent()).port)]))
     const schema = r.schemas().find((entry) => entry.name === 'workflow')
     expect(schema?.strict).toBe(true)
     const encoded = JSON.stringify(schema?.parameters)
@@ -450,14 +466,14 @@ describe('派发单个子 agent', () => {
     }
     const temp = { name: '审计', task: '审计服务端' }
     const missing = stub(sent())
-    const missingResult = await subagentTool.fn(temp, withTodos(ctx(missing.port), todos))
+    const missingResult = await subagentTool.fn(temp, ctx(missing.port, todos))
     expect(missingResult.status).toBe('failure')
     expect(missing.calls).toHaveLength(0)
 
     const wrong = stub(sent())
     const wrongResult = await subagentTool.fn(
       { ...temp, parentTodo: '服务端' },
-      withTodos(ctx(wrong.port), todos),
+      ctx(wrong.port, todos),
     )
     expect(wrongResult.status).toBe('failure')
     // 失败时列出当前未完成的待办，模型据此逐字复制。
@@ -469,7 +485,7 @@ describe('派发单个子 agent', () => {
     const exact = stub(sent({ name: '审计', subagentId: 'cv_3' }))
     const exactResult = await subagentTool.fn(
       { ...temp, parentTodo: '服务端审计' },
-      withTodos(ctx(exact.port), todos),
+      ctx(exact.port, todos),
     )
     expect(exactResult.status).toBe('success')
     // 结果只报告事实：父待办仍未完成。完成方式写在工具描述中，不在每条结果中重复。
@@ -482,7 +498,7 @@ describe('派发单个子 agent', () => {
     const s = stub(sent())
     const result = await subagentTool.fn(
       { name: 'x', task: '执行', parentTodo: '重复项' },
-      withTodos(ctx(s.port), {
+      ctx(s.port, {
         read: () => [
           { id: 'todo_1', content: '重复项', status: 'in_progress' },
           { id: 'todo_2', content: '重复项', status: 'pending' },

@@ -3,11 +3,11 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openBatchBudget, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { openBatchBudget, Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { parseMcpConfig } from '@qywork/mcp'
 import { ContentStore, Store } from '@qywork/store'
-import { registerBuiltinTools } from '@qywork/tools'
+import { McpConfigPort, registerBuiltinTools } from '@qywork/tools'
 import { acquireExtensions, type Extensions } from './extensions.ts'
 import { approveMcpServers } from './mcp-approvals.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
@@ -49,10 +49,10 @@ function context(): ToolContext {
     resources: new Map(),
     state: openBatchBudget(new Map(), Infinity, 0),
     sink: null,
+    port: new Ports([provide(McpConfigPort, makeMcpConfigPort(root))]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    mcpConfig: makeMcpConfigPort(root),
   }
 }
 function mcp() {
@@ -190,7 +190,7 @@ test('后台持有空缓存，正式写入后新工具可调用；重复 acquire
   const background = await acquire(root, true)
   expect(background.toolSpecs).toEqual([])
   const registry = new ToolRegistry()
-  registerBuiltinTools(registry, { mcpConfig: true })
+  registerBuiltinTools(registry, new Ports([provide(McpConfigPort, makeMcpConfigPort(root))]))
   const outcome = await registry.execute(
     'write_mcp_server',
     { name: 'probe', config_json: JSON.stringify({ url: `${service.url}/first` }) },

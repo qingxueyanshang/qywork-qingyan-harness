@@ -6,7 +6,7 @@
  * 工具结果中再写一份时模型会收到两次。等待期间不调用模型。
  */
 
-import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { DelegatePort, type ToolContext, type ToolSpec } from '@qywork/agent'
 
 /** 未指定时的等待上限（秒）。 */
 const DEFAULT_TIMEOUT = 600
@@ -39,8 +39,9 @@ export const waitSubagentsTool: ToolSpec = {
   permissionEffect: 'internal_control',
   parallelSafe: false,
 
+  requires: [DelegatePort],
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
-    const delegate = ctx.delegate
+    const delegate = ctx.port(DelegatePort)
     if (!delegate) {
       // 正常情况下不会执行到此处：没有派发通道时本工具不注册。
       return { status: 'failure' as const, message: '本次执行没有派发通道' }

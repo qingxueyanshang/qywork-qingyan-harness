@@ -104,6 +104,7 @@ export function baseCtx(runId: string): ToolContextBase {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: () => null,
     signal: new AbortController().signal,
     requestPermission: async () => ({ allowed: true }),
   }

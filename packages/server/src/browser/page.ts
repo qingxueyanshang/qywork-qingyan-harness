@@ -14,25 +14,21 @@
  * 4. **动作只发送 CDP 的 Input 事件。** 不调用系统鼠标键盘，不将窗口置于前台。
  */
 
-import {
-  type BrowserActInput,
-  type BrowserActReceipt,
-  type BrowserElement,
-  type BrowserKeyPhase,
-  type BrowserObservation,
-  type BrowserOptionsPage,
-  type BrowserPathStep,
-  type BrowserPoint,
-  type BrowserSelectOption,
-  type BrowserWaitReceipt,
-  type BrowserWaitState,
-  charKeys,
-  checkDuration,
-  checkHeldKeys,
-  checkKeyPhases,
-  checkPath,
-} from '@qywork/agent'
+import { charKeys, checkDuration, checkHeldKeys, checkKeyPhases, checkPath } from '@qywork/agent'
 import { log } from '@qywork/core'
+import type {
+  BrowserActInput,
+  BrowserActReceipt,
+  BrowserElement,
+  BrowserKeyPhase,
+  BrowserObservation,
+  BrowserOptionsPage,
+  BrowserPathStep,
+  BrowserPoint,
+  BrowserSelectOption,
+  BrowserWaitReceipt,
+  BrowserWaitState,
+} from '@qywork/tools'
 import { type CdpClient, CdpError } from './cdp.ts'
 import {
   aimAt,

@@ -33,6 +33,7 @@ import {
 } from './scopes.ts'
 import { deliverReadable } from './sink.ts'
 import { commitSkillDirectory, importSkills } from './skills/install.ts'
+import { SkillSourcePaths } from './skills/port.ts'
 
 /** 各层根目录下存放技能的子目录。`.agents/skills` 是跨客户端约定的路径。 */
 export const SKILLS_SUBDIR = 'skills'
@@ -411,7 +412,7 @@ export const importSkillTool: ToolSpec = {
     try {
       const requested = resolve(ctx.workspaceRoot, path)
       const bound = ctx
-        .skillSourcePaths?.()
+        .port(SkillSourcePaths)?.()
         .some((p) => resolve(ctx.workspaceRoot, p) === requested)
       const source = bound
         ? await realpath(requested)

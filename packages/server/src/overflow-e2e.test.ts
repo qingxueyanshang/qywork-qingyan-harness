@@ -219,6 +219,7 @@ test('容量拒绝 → 识别凭证 → 压缩一次 → 无法缩小时以 cont
       resources: new Map(),
       state: new Map(),
       sink: null,
+      port: () => null,
       signal: new AbortController().signal,
       emit: () => {},
       requestPermission: async () => ({ allowed: true }),

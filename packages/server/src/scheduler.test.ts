@@ -23,7 +23,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
-import { ToolRegistry } from '@qywork/agent'
+import { Ports, provide, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { ConversationId, EventEnvelope, WorkspaceId } from '@qywork/core'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
@@ -35,7 +35,7 @@ import {
   Store,
   upsertWorkspace,
 } from '@qywork/store'
-import { registerBuiltinTools } from '@qywork/tools'
+import { registerBuiltinTools, SchedulePort } from '@qywork/tools'
 import { tickSchedules } from './scheduler.ts'
 import { serve } from './server.ts'
 
@@ -144,16 +144,18 @@ async function listViaTool(store: Store, workspaceRoot: string): Promise<string>
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports([
+      provide(SchedulePort, {
+        list: () => listSchedules(store, workspaceRoot, Date.now()),
+        create: () => {
+          throw new Error('本次只读')
+        },
+        remove: () => null,
+      }),
+    ]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    schedules: {
-      list: () => listSchedules(store, workspaceRoot, Date.now()),
-      create: () => {
-        throw new Error('本次只读')
-      },
-      remove: () => null,
-    },
   }
   return (await spec.fn({}, ctx)).message ?? ''
 }

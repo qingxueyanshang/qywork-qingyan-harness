@@ -13,7 +13,7 @@
  * 写入 assistant 行即形成第二本账，且该表无法容纳：`messages.role` 的 CHECK 只有 `user`/`assistant
  * `，工具调用与结果没有位置；中断与崩溃恢复路径还须一并伪造这些行。
  *
- * 前端采用相同做法（`connection.ts` 的 `reloadActiveConversation` 折叠 steps）：工具调用
+ * 前端采用相同做法（web 的 `store/views/history.ts` 中 `reloadActiveConversation` 折叠 steps）：工具调用
  * 只存在于 steps 中，只读取 messages 时刷新一次页面
  * 就会丢失全部工具卡。该结论同样适用于模型侧。
  */

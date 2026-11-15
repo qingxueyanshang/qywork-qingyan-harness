@@ -9,15 +9,17 @@
 import { describe, expect, test } from 'bun:test'
 import {
   batchRemaining,
-  type HistoryPort,
-  type HistoryStep,
+  DelegatePort,
   openBatchBudget,
   outcomeTokens,
+  Ports,
+  provide,
   type SinkPort,
   type ToolContext,
   toolResultContent,
 } from '@qywork/agent'
 import { DEFAULT_DENSITY, estimateText, textFeatures } from '@qywork/ai'
+import { HistoryPort, type HistoryStep } from './history/port.ts'
 import { readHistoryTool } from './history.ts'
 import { MIN_DELIVERY_BYTES } from './sink.ts'
 
@@ -84,7 +86,7 @@ function memHistory(): HistoryPort {
   }
 }
 
-function ctx(history: HistoryPort | undefined): ToolContext {
+function ctx(history: HistoryPort | undefined, delegate?: DelegatePort): ToolContext {
   return {
     workspaceRoot: '/tmp',
     conversationId: 'cv',
@@ -96,7 +98,10 @@ function ctx(history: HistoryPort | undefined): ToolContext {
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
-    ...(history ? { history } : {}),
+    port: new Ports([
+      ...(history ? [provide(HistoryPort, history)] : []),
+      ...(delegate ? [provide(DelegatePort, delegate)] : []),
+    ]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
@@ -133,8 +138,8 @@ describe('读取子 agent 的历史', () => {
           resumable: true,
         },
       ],
-    } as unknown as NonNullable<ToolContext['delegate']>
-    const withDelegate = { ...ctx(memHistory()), delegate }
+    } as unknown as DelegatePort
+    const withDelegate = ctx(memHistory(), delegate)
     const named = await readHistoryTool.fn({ subagent: '审读', message_id: 'ms_c' }, withDelegate)
     expect((named.data as { content: string }).content).toBe('子 agent 的产出')
     const typo = await readHistoryTool.fn({ subagent: 'cv_chlid', query: '产出' }, withDelegate)

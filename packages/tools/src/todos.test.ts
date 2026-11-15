@@ -4,10 +4,11 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { AgentLoop, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { AgentLoop, Ports, provide, TodoPort, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { baseCtx, call, fakeAdapter, noopPersistence } from '@qywork/agent/fixtures.test-helper'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { AgentEvent, TodoItem } from '@qywork/core'
+import { TodoBroadcast } from './todos/port.ts'
 import { writeTodosTool } from './todos.ts'
 
 function ctx(): ToolContext & { emitted: TodoItem[][] } {
@@ -24,9 +25,9 @@ function ctx(): ToolContext & { emitted: TodoItem[][] } {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports([provide(TodoBroadcast, (t) => emitted.push(t))]).get,
     signal: new AbortController().signal,
     emit: () => {},
-    emitTodos: (t) => emitted.push(t),
     requestPermission: async () => ({ allowed: true }),
   } as ToolContext & { emitted: TodoItem[][] }
 }
@@ -46,9 +47,8 @@ describe('todos 事件的生产者', () => {
     expect(c.emitted[0]![1]!.status).toBe('in_progress')
   })
 
-  test('未装配 emitTodos 时不抛错，工具仍记账', async () => {
-    const bare = ctx()
-    delete (bare as { emitTodos?: unknown }).emitTodos
+  test('未装配 TodoBroadcast 时不抛错，工具仍记账', async () => {
+    const bare = { ...ctx(), port: () => null }
     const r = await writeTodosTool.fn({ todos: [{ content: 'x', status: 'pending' }] }, bare)
     expect(r.status).toBe('success')
   })
@@ -117,7 +117,7 @@ describe('硬约束：拒绝而不是静默纠正', () => {
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
-        emitTodos: (todos) => emitted.push(todos),
+        port: new Ports([provide(TodoBroadcast, (todos) => emitted.push(todos))]).get,
       }),
     })
     let results = 0
@@ -317,10 +317,12 @@ describe('提交的清单与本轮结束', () => {
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
-        todos: { read: () => ledger },
-        emitTodos: (todos) => {
-          ledger = todos
-        },
+        port: new Ports([
+          provide(TodoPort, { read: () => ledger }),
+          provide(TodoBroadcast, (todos) => {
+            ledger = todos
+          }),
+        ]).get,
       }),
     })
     let finished: AgentEvent | null = null
@@ -504,14 +506,14 @@ describe('权限', () => {
  * 动作语义。不要为它新增 `plan` 动作：与对象「待办」组合后，界面上读作
  * 「规划待办」，动宾语义重复。
  *
- * 判据使用 `ctx.todos`（会话级端口，读取账本中上一条 `write_todos` step），
+ * 判据使用 `TodoPort`（会话级端口，读取账本中上一条 `write_todos` step），
  * 而不是 `ctx.state`：该 Map 是 run 级的，跨轮无法查到上一份清单，
  * 结果是每轮的第一次提交都显示「创建」。硬编码为常量是方向相反的同类缺陷。
  */
 describe('动作语义：首次提交是创建，修改已有清单才是编辑', () => {
   const kindWith = (prev: TodoItem[] | null) =>
     (writeTodosTool.actionKind as (a: Record<string, unknown>, c?: ToolContext) => string)({}, {
-      todos: { read: () => prev },
+      port: new Ports([provide(TodoPort, { read: () => prev })]).get,
     } as ToolContext)
 
   test('没有上一份清单：创建', () => {
@@ -542,7 +544,7 @@ describe('动作语义：首次提交是创建，修改已有清单才是编辑'
       c?: ToolContext,
     ) => string
     expect(spec({}, undefined)).toBe('write')
-    expect(spec({}, {} as ToolContext)).toBe('write')
+    expect(spec({}, { port: new Ports().get } as ToolContext)).toBe('write')
   })
 
   /** 对象是「待办」而不是「计划」：计划（方案）是另一类产物，本工具不产出它。 */

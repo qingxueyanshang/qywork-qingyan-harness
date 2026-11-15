@@ -7,7 +7,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type ToolContext, ToolRegistry } from '@qywork/agent'
+import { Ports, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
 import { openInPanelTool } from './panel.ts'
@@ -24,6 +24,7 @@ function ctx(root: string): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: () => null,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
@@ -51,7 +52,7 @@ describe('open_in_panel', () => {
   test('只在有界面的会话中注册', () => {
     const names = (opts: { panel?: boolean }) => {
       const registry = new ToolRegistry()
-      registerBuiltinTools(registry, opts)
+      registerBuiltinTools(registry, new Ports(), opts)
       return registry.list().map((s) => s.name)
     }
     expect(names({ panel: true })).toContain('open_in_panel')

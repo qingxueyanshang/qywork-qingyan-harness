@@ -16,6 +16,7 @@
 import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { isatty } from 'node:tty'
+import { Ports, provide } from '@qywork/agent'
 import type { AgentEvent } from '@qywork/core'
 import { formatMoney, log, setLogSink } from '@qywork/core'
 import {
@@ -43,6 +44,7 @@ import {
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
 import {
   detectSandbox,
+  OfficePort,
   runCommandRunner,
   setCommandRunner,
   startCommandRunner,
@@ -252,7 +254,7 @@ async function runExec(args: string[]): Promise<number> {
     content,
     workspaceRoot,
     signal: controller.signal,
-    ...(officePort ? { office: officePort } : {}),
+    ports: new Ports(officePort ? [provide(OfficePort, officePort)] : []),
   })
 
   let exitCode = 0

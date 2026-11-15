@@ -12,20 +12,18 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type {
-  DesktopActResult,
-  DesktopElement,
-  DesktopImage,
-  DesktopPort,
-  DesktopRefusal,
-  DesktopSnapshot,
-  ToolContext,
-  ToolOutcome,
-  ToolSpec,
-} from '@qywork/agent'
-import { openBatchBudget, ToolRegistry } from '@qywork/agent'
+import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
+import { openBatchBudget, Ports, provide, ToolRegistry } from '@qywork/agent'
 import { buildAdapter, DEFAULT_DENSITY, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
 import type { DesktopAction } from '@qywork/core'
+import {
+  type DesktopActResult,
+  type DesktopElement,
+  type DesktopImage,
+  DesktopPort,
+  type DesktopRefusal,
+  type DesktopSnapshot,
+} from './desktop/port.ts'
 import {
   desktopActSequenceTool,
   desktopActTool,
@@ -471,10 +469,10 @@ function ctxWith(desktop?: DesktopPort, signal = new AbortController().signal): 
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
+    port: new Ports(desktop ? [provide(DesktopPort, desktop)] : []).get,
     signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(desktop ? { desktop } : {}),
   }
 }
 

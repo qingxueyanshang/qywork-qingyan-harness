@@ -9,9 +9,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { OfficePort } from '@qywork/agent'
+import { Ports, provide } from '@qywork/agent'
 import type { AgentEvent } from '@qywork/core'
 import { ContentStore, Store } from '@qywork/store'
+import { OfficePort } from '@qywork/tools'
 import type { QyConfig } from './config.ts'
 import { createOfficeHost } from './office.ts'
 import { Session } from './session.ts'
@@ -126,7 +127,7 @@ async function session(office?: OfficePort) {
     config: config(),
     workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-office-sess-')),
     signal: new AbortController().signal,
-    ...(office ? { office } : {}),
+    ...(office ? { ports: new Ports([provide(OfficePort, office)]) } : {}),
   })
   const names = () =>
     (s as unknown as { registry: { schemas(): { name: string }[] } }).registry

@@ -1,17 +1,18 @@
 /**
  * 覆盖 `appearance/pet.ts` 的 `pet` 工具：从工作区目录读取帧并保存、切换与切回内置宠物，
- * 以及 `index.ts` 中按 `pets` 注册。宠物库落盘由 runtime 的 `pets.test.ts` 覆盖。
+ * 以及 `index.ts` 中按 `PetPort` 注册。宠物库落盘由 runtime 的 `pets.test.ts` 覆盖。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type PetPort, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { PetEntry } from '@qywork/core'
 import { registerBuiltinTools } from '../index.ts'
 import { petTool } from './pet.ts'
+import { PetPort } from './port.ts'
 
 function memoryPort(): PetPort & { saved: string[][]; entries: Map<string, PetEntry> } {
   const entries = new Map<string, PetEntry>()
@@ -42,10 +43,10 @@ function ctx(root: string, pets?: PetPort): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports(pets ? [provide(PetPort, pets)] : []).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(pets ? { pets } : {}),
   }
 }
 
@@ -118,10 +119,10 @@ describe('pet', () => {
 
   test('没有宠物库通道时不注册', () => {
     const r = new ToolRegistry()
-    registerBuiltinTools(r, { pets: true })
+    registerBuiltinTools(r, new Ports([provide(PetPort, memoryPort())]))
     expect(r.list().some((t) => t.name === 'pet')).toBe(true)
     const none = new ToolRegistry()
-    registerBuiltinTools(none, {})
+    registerBuiltinTools(none)
     expect(none.list().some((t) => t.name === 'pet')).toBe(false)
   })
 })

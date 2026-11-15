@@ -9,6 +9,7 @@
  * 两条路径都汇入此处，不存在第三条路径。
  */
 
+import { Ports, provide } from '@qywork/agent'
 import { transmittableEffortLevels } from '@qywork/ai'
 import type {
   AgentEvent,
@@ -28,6 +29,7 @@ import {
 } from '@qywork/runtime'
 import { getConversation } from '@qywork/store'
 import type { Role } from '@qywork/team'
+import { BrowserPort, CanvasPort, DesktopPort } from '@qywork/tools'
 import { artRenderOf, canvasPort } from './canvas.ts'
 import { type CommandDeps, officePortOf } from './deps.ts'
 
@@ -262,43 +264,50 @@ export async function runBuiltinMember(
       member: true,
       ...(extraSystem ? { extraSystem } : {}),
       ...(role.allowedTools ? { allowedTools: role.allowedTools } : {}),
-      /*
-       * 成员会话与顶层会话使用同一判定，并各自取得一份控制身份：控制槽按执行者分配，
-       * 成员之间各自占用不同页面，访问同一页面时才返回 busy。不在此处接入时，
-       * 这条入口默认不含浏览器，且无法给出原因。
-       *
-       * 控制归属记录的是派发该成员的顶层会话：界面上的「停止」发送
-       * `conversation.interrupt`，该指令只接受顶层会话（并连带停止其名下的子 agent）。
-       * 记录成员会话 id 时，该按钮无法停止任何一轮。
-       */
-      ...(deps.browser?.available() && workspaceId
-        ? { browser: deps.browser.portFor(ownerConversation, workspaceId) }
-        : {}),
-      /*
-       * 成员会话与顶层会话使用同一判定，并各自取得一份执行者身份：撤销按执行者记录，
-       * 父会话停止时成员的 Session 被 abort，撤销的只是成员名下的排队请求。
-       *
-       * 控制归属记录的是派发该成员的顶层会话，理由与浏览器相同：界面上的「停止」发送
-       * `conversation.interrupt`，该指令只接受顶层会话。
-       */
-      ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(ownerConversation) } : {}),
-      // 成员会话与顶层会话使用同一判定：处理文档的成员同样需要 `office`。
-      ...officePortOf(deps),
+      ports: new Ports([
+        /*
+         * 成员会话与顶层会话使用同一判定，并各自取得一份控制身份：控制槽按执行者分配，
+         * 成员之间各自占用不同页面，访问同一页面时才返回 busy。不在此处提供时，
+         * 这条入口默认不含浏览器，且无法给出原因。
+         *
+         * 控制归属记录的是派发该成员的顶层会话：界面上的「停止」发送
+         * `conversation.interrupt`，该指令只接受顶层会话（并连带停止其名下的子 agent）。
+         * 记录成员会话 id 时，该按钮无法停止任何一轮。
+         */
+        ...(deps.browser?.available() && workspaceId
+          ? [provide(BrowserPort, deps.browser.portFor(ownerConversation, workspaceId))]
+          : []),
+        /*
+         * 成员会话与顶层会话使用同一判定，并各自取得一份执行者身份：撤销按执行者记录，
+         * 父会话停止时成员的 Session 被 abort，撤销的只是成员名下的排队请求。
+         *
+         * 控制归属记录的是派发该成员的顶层会话，理由与浏览器相同：界面上的「停止」发送
+         * `conversation.interrupt`，该指令只接受顶层会话。
+         */
+        ...(deps.desktop?.available()
+          ? [provide(DesktopPort, deps.desktop.portFor(ownerConversation))]
+          : []),
+        // 成员会话与顶层会话使用同一判定：处理文档的成员同样需要 `office`。
+        ...officePortOf(deps),
+        // 画布与顶层会话使用同一个服务：成员修改的节点同样即时推送给界面。
+        // 设计稿渲染使用内置浏览器的隐藏页，归属同上记为顶层会话；宿主不可用时画布端口不提供渲染。
+        ...(deps.canvas && workspaceId
+          ? [
+              provide(
+                CanvasPort,
+                canvasPort(
+                  deps.canvas,
+                  { id: workspaceId, root: ctx.workspaceRoot },
+                  deps.browser?.available()
+                    ? artRenderOf(deps.browser, ownerConversation, workspaceId, ctx.workspaceRoot)
+                    : undefined,
+                ),
+              ),
+            ]
+          : []),
+      ]),
       // 父会话向正在执行的成员派发的任务排入成员自己的队列（`delegate.ts`），在成员的 step 边界注入。
       followUps: (id) => deps.runs.takeSteered(id),
-      // 画布与顶层会话使用同一个服务：成员修改的节点同样即时推送给界面。
-      // 设计稿渲染使用内置浏览器的隐藏页，归属同上记为顶层会话；宿主不可用时画布端口不提供渲染。
-      ...(deps.canvas && workspaceId
-        ? {
-            canvas: canvasPort(
-              deps.canvas,
-              { id: workspaceId, root: ctx.workspaceRoot },
-              deps.browser?.available()
-                ? artRenderOf(deps.browser, ownerConversation, workspaceId, ctx.workspaceRoot)
-                : undefined,
-            ),
-          }
-        : {}),
     })
 
     // 会话已存在，接口与模型记录在该会话行上；此处不再传递模型名。

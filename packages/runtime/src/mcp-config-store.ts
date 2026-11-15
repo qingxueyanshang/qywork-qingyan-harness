@@ -7,9 +7,15 @@
 
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { McpActivation, McpConfigPort } from '@qywork/agent'
 import { type McpConfig, parseMcpConfig, toolNamePrefix } from '@qywork/mcp'
-import { formatCommandLine, scopeDir, scopeRoots, withFileLocks } from '@qywork/tools'
+import {
+  formatCommandLine,
+  type McpActivation,
+  type McpConfigPort,
+  scopeDir,
+  scopeRoots,
+  withFileLocks,
+} from '@qywork/tools'
 import { acquireExtensions, MCP_FILE, refreshExtensions } from './extensions.ts'
 import { approveMcpServers } from './mcp-approvals.ts'
 

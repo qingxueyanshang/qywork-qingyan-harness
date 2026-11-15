@@ -15,7 +15,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, jest, spyOn, test } 
 import { mkdtemp, readdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { CanvasPort, MediaPort, OfficePort } from '@qywork/agent'
+import { Ports, provide } from '@qywork/agent'
 import { lookupMediaModel, validateMediaCall } from '@qywork/ai'
 import {
   type AgentEvent,
@@ -26,7 +26,7 @@ import {
   runCosts,
 } from '@qywork/core'
 import { ContentStore, getRun, Store } from '@qywork/store'
-import { generateMedia, resumeMedia } from '@qywork/tools'
+import { CanvasPort, generateMedia, type MediaPort, OfficePort, resumeMedia } from '@qywork/tools'
 import type { QyConfig } from './config.ts'
 import { listMediaModels } from './config.ts'
 import { makeMediaPort, operationOf } from './media.ts'
@@ -697,7 +697,7 @@ describe('生成花费', () => {
       },
       workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-media-late-')),
       signal: new AbortController().signal,
-      canvas,
+      ports: new Ports([provide(CanvasPort, canvas)]),
     })
     try {
       const events: AgentEvent[] = []
@@ -734,8 +734,10 @@ describe('画布与生成开关', () => {
       config: config(over),
       workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-media-switch-')),
       signal: signal(),
-      canvas: {} as CanvasPort,
-      ...(office ? { office } : {}),
+      ports: new Ports([
+        provide(CanvasPort, {} as CanvasPort),
+        ...(office ? [provide(OfficePort, office)] : []),
+      ]),
     })
     const list = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
       .schemas()

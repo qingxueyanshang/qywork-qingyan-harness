@@ -49,6 +49,7 @@ function ctx(sink: SinkPort | null): ToolContext {
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink,
+    port: () => null,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),

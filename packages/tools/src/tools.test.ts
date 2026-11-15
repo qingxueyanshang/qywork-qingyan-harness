@@ -12,8 +12,16 @@ import {
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
-import { openBatchBudget, runDensity, sanitizeToolName, ToolRegistry } from '@qywork/agent'
+import {
+  openBatchBudget,
+  Ports,
+  provide,
+  runDensity,
+  sanitizeToolName,
+  ToolRegistry,
+} from '@qywork/agent'
 import { lookupModel } from '@qywork/ai'
+import { FileReadPort } from './files/port.ts'
 import { registerBuiltinTools } from './index.ts'
 import {
   displayPath,
@@ -87,6 +95,7 @@ function ctx(root: string, approve = true): ToolContext {
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
+    port: () => null,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () =>
@@ -420,12 +429,12 @@ describe('只读根目录', () => {
  * 家目录由父进程经环境变量设定：Linux 上的 Bun 在启动时读取 HOME，运行中修改环境变量不生效。
  */
 const SCOPE_CHILD = `
-import { openBatchBudget, runDensity, ToolRegistry } from '@qywork/agent'
+import { openBatchBudget, Ports, provide, runDensity, ToolRegistry } from '@qywork/agent'
 import { lookupModel } from '@qywork/ai'
-import { registerBuiltinTools } from '@qywork/tools'
+import { MediaPort, registerBuiltinTools } from '@qywork/tools'
 const { root, calls } = JSON.parse(process.env.QYWORK_SCOPE_CASE)
 const registry = new ToolRegistry()
-registerBuiltinTools(registry, { media: ['image'] })
+registerBuiltinTools(registry, new Ports(), { media: ['image'] })
 const ctx = {
   workspaceRoot: root,
   conversationId: 'cv_test',
@@ -440,10 +449,12 @@ const ctx = {
   resources: new Map(),
   state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
   sink: null,
+  port: new Ports([
+    provide(MediaPort, { generate: async () => ({ ok: false, message: '不应重新取回' }) }),
+  ]).get,
   signal: new AbortController().signal,
   emit: () => {},
   requestPermission: async () => ({ allowed: true }),
-  media: { generate: async () => ({ ok: false, message: '不应重新取回' }) },
 }
 const out = []
 for (const [name, args] of calls) {
@@ -1025,11 +1036,15 @@ describe('文件工具', () => {
       const r = registry()
       const reads = sessionReads()
       // 第一轮读取。第二轮使用另一个 ToolContext（run 之间必须重建）。
-      await r.execute('read_file', { path: 'a.txt' }, { ...ctx(root), reads })
+      await r.execute(
+        'read_file',
+        { path: 'a.txt' },
+        { ...ctx(root), port: new Ports([provide(FileReadPort, reads)]).get },
+      )
       const out = await r.execute(
         'edit_file',
         { path: 'a.txt', edits: [{ old_string: 'world', new_string: 'there' }] },
-        { ...ctx(root), reads },
+        { ...ctx(root), port: new Ports([provide(FileReadPort, reads)]).get },
       )
       expect(out.status).toBe('success')
       expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nthere\n')
@@ -1052,13 +1067,17 @@ describe('文件工具', () => {
       const root = await workspace()
       const r = registry()
       const reads = sessionReads()
-      await r.execute('read_file', { path: 'a.txt' }, { ...ctx(root), reads })
+      await r.execute(
+        'read_file',
+        { path: 'a.txt' },
+        { ...ctx(root), port: new Ports([provide(FileReadPort, reads)]).get },
+      )
       // 其他方（用户、另一个进程）修改了磁盘上的内容。
       await writeFile(join(root, 'a.txt'), 'hello\nworld\nplus\n', 'utf8')
       const out = await r.execute(
         'edit_file',
         { path: 'a.txt', edits: [{ old_string: 'world', new_string: 'there' }] },
-        { ...ctx(root), reads },
+        { ...ctx(root), port: new Ports([provide(FileReadPort, reads)]).get },
       )
       expect(out.status).toBe('failure')
       expect(out.errorKind).toBe('stale_write')

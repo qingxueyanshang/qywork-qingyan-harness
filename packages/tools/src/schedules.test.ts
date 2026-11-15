@@ -7,10 +7,11 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { SchedulePort, ToolContext } from '@qywork/agent'
+import { Ports, provide, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { Schedule, ScheduleDraft, ScheduleView } from '@qywork/core'
 import { isDue, nextRunAt } from '@qywork/core'
+import { SchedulePort } from './schedules/port.ts'
 import { createScheduleTool, deleteScheduleTool, listSchedulesTool } from './schedules.ts'
 
 /** 内存端口，语义与仓储一致：按工作区过滤，id 与 createdAt 由端口生成。 */
@@ -57,10 +58,10 @@ function ctxWith(workspaceRoot: string, schedules?: SchedulePort): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports(schedules ? [provide(SchedulePort, schedules)] : []).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(schedules ? { schedules } : {}),
   }
 }
 

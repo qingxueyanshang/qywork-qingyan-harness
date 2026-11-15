@@ -17,6 +17,7 @@
  */
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { PluginPort } from './plugin-install/port.ts'
 
 export const installPluginTool: ToolSpec = {
   name: 'install_plugin',
@@ -54,8 +55,9 @@ export const installPluginTool: ToolSpec = {
   permissionEffect: 'execute',
   parallelSafe: false,
 
+  requires: [PluginPort],
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
-    const port = ctx.plugins
+    const port = ctx.port(PluginPort)
     if (!port) {
       // 正常情况下不会执行到此处：没有插件通道时不注册本工具。
       return { status: 'failure' as const, message: '本次执行无法安装插件' }

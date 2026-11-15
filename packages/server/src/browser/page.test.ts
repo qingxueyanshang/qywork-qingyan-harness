@@ -17,8 +17,8 @@
  */
 
 import { afterEach, expect, test } from 'bun:test'
-import type { BrowserActInput, BrowserObservation } from '@qywork/agent'
 import { until } from '@qywork/core/until.test-helper'
+import type { BrowserActInput, BrowserObservation } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import { CdpClient } from './cdp.ts'
 import {

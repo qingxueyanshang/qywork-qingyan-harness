@@ -19,6 +19,7 @@
 import type { ToolSpec } from '@qywork/agent'
 import type { ScheduleDraft, ScheduleKind, ScheduleView } from '@qywork/core'
 import { diagnoseSchedule } from '@qywork/core'
+import { SchedulePort } from './schedules/port.ts'
 
 /** 模型可能以数字或数字字符串传参，两种都接受。无法取得有效数字时视为未提供。 */
 function num(v: unknown): number | undefined {
@@ -140,7 +141,7 @@ export const createScheduleTool: ToolSpec = {
   parallelSafe: false,
 
   async fn(args, ctx) {
-    const port = ctx.schedules
+    const port = ctx.port(SchedulePort)
     if (!port) return NO_PORT
 
     // 无法识别的 kind 立即拒绝，不回退为 interval：`kind="weekly"` 加上
@@ -217,7 +218,7 @@ export const listSchedulesTool: ToolSpec = {
   parallelSafe: true,
 
   async fn(_args, ctx) {
-    const port = ctx.schedules
+    const port = ctx.port(SchedulePort)
     if (!port) return NO_PORT
 
     const mine = port.list()
@@ -274,7 +275,7 @@ export const deleteScheduleTool: ToolSpec = {
   parallelSafe: false,
 
   async fn(args, ctx) {
-    const port = ctx.schedules
+    const port = ctx.port(SchedulePort)
     if (!port) return NO_PORT
 
     const id = String(args.id ?? '').trim()

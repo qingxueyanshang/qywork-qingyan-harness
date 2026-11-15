@@ -5,7 +5,6 @@
  * 两条修改路径各自广播时，一处遗漏即使其他屏幕无法更新。
  */
 
-import type { PersonalizationPort, PetPort } from '@qywork/agent'
 import {
   listPets,
   readPersonalization,
@@ -14,6 +13,7 @@ import {
   savePersonalization,
   savePet,
 } from '@qywork/runtime'
+import type { PersonalizationPort, PetPort } from '@qywork/tools'
 import type { EventBus } from './bus.ts'
 
 /** 广播个性化变更。工作区级事件，不带 `conversationId`：所有客户端都需要收到。 */

@@ -122,6 +122,7 @@ async function turn(conversationId: ConversationId, text: string, tags: string[]
       signal: new AbortController().signal,
       emit: () => {},
       sink: null,
+      port: () => null,
       state,
     } as unknown as ToolContext)
     expect(outcome.status).toBe('success')

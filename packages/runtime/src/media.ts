@@ -6,7 +6,6 @@
  * 用户停止时 signal 中止，异常原样抛出，由工具波次按中断处理收尾。
  */
 
-import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/agent'
 import {
   buildMediaAdapter,
   lookupMediaModel,
@@ -28,6 +27,7 @@ import {
   type MediaSpend,
   mediaOperationFor,
 } from '@qywork/core'
+import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/tools'
 import { generateArt } from './art.ts'
 import { listMediaModels, type QyConfig, resolveMediaModel } from './config.ts'
 

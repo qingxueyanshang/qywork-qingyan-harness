@@ -5,9 +5,10 @@
  * 而后两者都需要该类型。放在任一方都会使两个模块互相 import。
  */
 
-import type { OfficePort } from '@qywork/agent'
+import { type PortEntry, provide } from '@qywork/agent'
 import type { OfficeHost, QyConfig } from '@qywork/runtime'
 import type { ContentStore, Store } from '@qywork/store'
+import { OfficePort } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import type { BrowserCoordinator } from './browser/coordinator.ts'
 import type { EventBus } from './bus.ts'
@@ -58,9 +59,9 @@ export interface CommandDeps {
 }
 
 /** 会话装配时的 Office 端口：宿主当前提供端口时附带，否则不附带（工具不注册）。 */
-export function officePortOf(deps: Pick<CommandDeps, 'office'>): { office?: OfficePort } {
+export function officePortOf(deps: Pick<CommandDeps, 'office'>): PortEntry[] {
   const port = deps.office?.port()
-  return port ? { office: port } : {}
+  return port ? [provide(OfficePort, port)] : []
 }
 
 /** 每条 WebSocket 连接各自的状态。握手前 `authed` 为 false。 */

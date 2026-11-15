@@ -14,7 +14,10 @@ import {
 } from '@qywork/ai/fault-server.test-helper'
 import type { AgentEvent, TodoItem } from '@qywork/core'
 import { AgentLoop } from '../index.ts'
-import { type DelegatePort, ToolRegistry } from '../registry.ts'
+import { DelegatePort } from '../ports/delegate.ts'
+import { Ports, provide } from '../ports/key.ts'
+import { TodoPort } from '../ports/todos.ts'
+import { ToolRegistry } from '../registry.ts'
 import { baseCtx, call, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts'
 
 describe('输出被截断时不执行工具', () => {
@@ -202,7 +205,7 @@ describe('正常响应结束不等于任务完成', () => {
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
-        todos: { read: () => structuredClone(todos) },
+        port: new Ports([provide(TodoPort, { read: () => structuredClone(todos) })]).get,
       }),
     })
 
@@ -252,7 +255,7 @@ describe('正常响应结束不等于任务完成', () => {
       persist,
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
-        todos: { read: () => structuredClone(todos) },
+        port: new Ports([provide(TodoPort, { read: () => structuredClone(todos) })]).get,
       }),
     })
     registry.register({
@@ -304,7 +307,7 @@ describe('正常响应结束不等于任务完成', () => {
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
-        todos: { read: () => structuredClone(unfinished) },
+        port: new Ports([provide(TodoPort, { read: () => structuredClone(unfinished) })]).get,
       }),
     })
     const finished = await runToEnd(loop, { runId: 'rn_todos_notice' })
@@ -339,7 +342,7 @@ describe('正常响应结束不等于任务完成', () => {
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
-        todos: { read: () => structuredClone(unfinished) },
+        port: new Ports([provide(TodoPort, { read: () => structuredClone(unfinished) })]).get,
       }),
     })
 
@@ -387,7 +390,10 @@ describe('正常响应结束不等于任务完成', () => {
       registry,
       systemPrompt: 'sys',
       persist: noopPersistence(),
-      makeToolContext: (runId) => ({ ...baseCtx(runId), todos: { read: () => todos } }),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        port: new Ports([provide(TodoPort, { read: () => todos })]).get,
+      }),
     })
 
     const finished = await runToEnd(loop, { runId: 'rn_unclaimed' })
@@ -416,7 +422,10 @@ describe('正常响应结束不等于任务完成', () => {
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
       persist: noopPersistence(),
-      makeToolContext: (runId) => ({ ...baseCtx(runId), todos: { read: () => todos } }),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        port: new Ports([provide(TodoPort, { read: () => todos })]).get,
+      }),
     })
 
     const finished = await runToEnd(loop, { runId: 'rn_pending_stuck' })
@@ -456,7 +465,10 @@ describe('正常响应结束不等于任务完成', () => {
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
       persist: noopPersistence(),
-      makeToolContext: (runId) => ({ ...baseCtx(runId), todos: { read: () => todos } }),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        port: new Ports([provide(TodoPort, { read: () => todos })]).get,
+      }),
     })
 
     const finished = await runToEnd(loop, { runId: 'rn_all_blocked' })
@@ -483,7 +495,10 @@ describe('正常响应结束不等于任务完成', () => {
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
       persist: noopPersistence(),
-      makeToolContext: (id) => ({ ...baseCtx(id), todos: { read: () => todos } }),
+      makeToolContext: (id) => ({
+        ...baseCtx(id),
+        port: new Ports([provide(TodoPort, { read: () => todos })]).get,
+      }),
     })
     const finished = await runToEnd(loop, { runId })
     return {
@@ -565,12 +580,14 @@ describe('正常响应结束不等于任务完成', () => {
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
-        todos: {
-          read: (owner) => {
-            reads.push(owner)
-            return owner === undefined ? unfinished : null
-          },
-        },
+        port: new Ports([
+          provide(TodoPort, {
+            read: (owner) => {
+              reads.push(owner)
+              return owner === undefined ? unfinished : null
+            },
+          }),
+        ]).get,
       }),
     })
     const finished = await runToEnd(loop, { runId: 'rn_question' })
@@ -599,7 +616,10 @@ describe('正常响应结束不等于任务完成', () => {
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
       persist: noopPersistence(),
-      makeToolContext: (runId) => ({ ...baseCtx(runId), delegate }),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        port: new Ports([provide(DelegatePort, delegate)]).get,
+      }),
     })
     const finished = await runToEnd(loop, { runId: 'rn_subagent_end_turn' })
     expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
@@ -636,8 +656,10 @@ describe('正常响应结束不等于任务完成', () => {
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
-        delegate,
-        todos: { read: () => structuredClone(unfinished) },
+        port: new Ports([
+          provide(DelegatePort, delegate),
+          provide(TodoPort, { read: () => structuredClone(unfinished) }),
+        ]).get,
       }),
     })
     const finished = await runToEnd(loop, { runId: 'rn_todos_delegated' })
@@ -673,7 +695,7 @@ describe('正常响应结束不等于任务完成', () => {
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         ...baseCtx(runId),
-        todos: { read: () => structuredClone(unfinished) },
+        port: new Ports([provide(TodoPort, { read: () => structuredClone(unfinished) })]).get,
       }),
     })
     await runToEnd(loop, { runId: 'rn_todos_reasoning' })
@@ -711,7 +733,9 @@ describe('正常响应结束不等于任务完成', () => {
         persist: noopPersistence(),
         makeToolContext: (runId) => ({
           ...baseCtx(runId),
-          ...(item.todos ? { todos: { read: () => structuredClone(item.todos!) } } : {}),
+          port: new Ports(
+            item.todos ? [provide(TodoPort, { read: () => structuredClone(item.todos!) })] : [],
+          ).get,
         }),
       })
 

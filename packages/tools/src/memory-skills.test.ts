@@ -37,6 +37,7 @@ function ctx(root: string, approve = true): ToolContext {
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
+    port: () => null,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () =>

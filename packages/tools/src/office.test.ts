@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`office.ts` 的 `officeTools`：请求组装、先读后写的冲突检查、结果映射（写入记录、文件变更、图片）、
- * worker 未写出结果时以 cleanup 再启动一次；`index.ts` 按通道注册 Office 工具；
+ * worker 未写出结果时以 cleanup 再启动一次；`index.ts` 按 `OfficePort` 注册 Office 工具；
  * `files.ts` 遇到 Office 文件与无文字层 PDF 时给出的工具指引。
  *
  * worker 由 `office-worker.test-helper.ts`（由 Bun 执行）代替 Python：此处验证工具一侧，
@@ -12,8 +12,9 @@ import { mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promise
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  type OfficePort,
   openBatchBudget,
+  Ports,
+  provide,
   runDensity,
   type ToolContext,
   ToolRegistry,
@@ -21,6 +22,7 @@ import {
 import { lookupModel } from '@qywork/ai'
 import { readFileTool } from './files.ts'
 import { registerBuiltinTools } from './index.ts'
+import { OfficePort } from './office/port.ts'
 import {
   officeTools,
   readOfficeGuideTool,
@@ -90,10 +92,10 @@ function ctx(root: string, office: OfficePort | null = PORT): ToolContext {
     resources: new Map(),
     state: openBatchBudget(new Map(), 100_000, 25_000),
     sink: null,
+    port: new Ports(office ? [provide(OfficePort, office)] : []).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(office ? { office } : {}),
   }
 }
 
@@ -342,7 +344,7 @@ describe('注册与工具指引', () => {
   test('每个工具的必填参数缺失时不启动 worker；脚本执行被拒绝时不写文件', async () => {
     const root = await workspace()
     const registry = new ToolRegistry()
-    registerBuiltinTools(registry, { office: true })
+    registerBuiltinTools(registry, new Ports([provide(OfficePort, PORT)]))
     const c = ctx(root)
     const requested: string[] = []
     c.requestPermission = async ({ toolName }) => {
@@ -377,10 +379,10 @@ describe('注册与工具指引', () => {
 
   test('存在 Office 通道时才注册 office', () => {
     const without = new ToolRegistry()
-    registerBuiltinTools(without, {})
+    registerBuiltinTools(without)
     for (const tool of officeTools) expect(without.has(tool.name)).toBe(false)
     const withOffice = new ToolRegistry()
-    registerBuiltinTools(withOffice, { office: true })
+    registerBuiltinTools(withOffice, new Ports([provide(OfficePort, PORT)]))
     for (const tool of officeTools) expect(withOffice.has(tool.name)).toBe(true)
     expect(withOffice.has('office')).toBe(false)
   })

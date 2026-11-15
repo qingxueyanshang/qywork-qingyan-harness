@@ -10,8 +10,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join } from 'node:path'
-import type { OfficePort } from '@qywork/agent'
-import { collectProcess, scrubEnv } from '@qywork/tools'
+import { collectProcess, type OfficePort, scrubEnv } from '@qywork/tools'
 import { collectSecrets, configDir, type QyConfig } from './config.ts'
 
 const PROBE_TIMEOUT_MS = 60_000

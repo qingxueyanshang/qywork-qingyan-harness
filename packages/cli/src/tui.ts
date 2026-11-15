@@ -14,6 +14,7 @@
  * 进程退出会连带终止执行到一半的任务，后果比中断本身严重得多。
  */
 
+import { Ports, provide } from '@qywork/agent'
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import { formatCosts, formatMoney } from '@qywork/core'
 import {
@@ -29,6 +30,7 @@ import {
   Session,
 } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, usageTotals } from '@qywork/store'
+import { OfficePort } from '@qywork/tools'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -140,7 +142,7 @@ export async function runTui(workspaceRoot: string): Promise<number> {
         content,
         workspaceRoot,
         signal: running.signal,
-        ...(officePort ? { office: officePort } : {}),
+        ports: new Ports(officePort ? [provide(OfficePort, officePort)] : []),
       })
 
       try {

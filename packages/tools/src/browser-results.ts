@@ -16,8 +16,6 @@
  */
 
 import {
-  type BrowserObservation,
-  type BrowserOptionsPage,
   deliveredTokens,
   recordBatchSpent,
   type ToolContext,
@@ -25,6 +23,7 @@ import {
 } from '@qywork/agent'
 import type { TokenDensity } from '@qywork/ai'
 import type { IntermediateResourceRef, ResourceId } from '@qywork/core'
+import type { BrowserObservation, BrowserOptionsPage } from './browser/port.ts'
 import { deliver, type LandedResult, observationResultBudget, viewLimit } from './sink.ts'
 
 /** 存盘正文：每行一个 JSON 值。 */

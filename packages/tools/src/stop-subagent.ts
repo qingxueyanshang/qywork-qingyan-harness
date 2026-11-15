@@ -7,7 +7,7 @@
  * 只能停止本会话派出的子 agent：派发端口按本会话查找，其他会话的子 agent 不可见。
  */
 
-import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { DelegatePort, type ToolContext, type ToolSpec } from '@qywork/agent'
 import { idArg } from './args.ts'
 import { resolveSubagentRef } from './subagent.ts'
 
@@ -39,8 +39,9 @@ export const stopSubagentTool: ToolSpec = {
   permissionEffect: 'internal_control',
   parallelSafe: false,
 
+  requires: [DelegatePort],
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
-    const delegate = ctx.delegate
+    const delegate = ctx.port(DelegatePort)
     if (!delegate) {
       // 正常情况下不会执行到此处：没有派发通道时本工具不注册。
       return { status: 'failure' as const, message: '本次执行没有派发通道' }

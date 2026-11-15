@@ -14,20 +14,24 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  type BrowserElement,
-  type BrowserObservation,
-  type BrowserOptionsPage,
-  type BrowserPort,
-  type BrowserSelectOption,
   batchRemaining,
   chargeBatchBudget,
   deliveredTokens,
   openBatchBudget,
+  Ports,
+  provide,
   type SinkPort,
   type ToolContext,
   type ToolOutcome,
 } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import {
+  type BrowserElement,
+  type BrowserObservation,
+  type BrowserOptionsPage,
+  BrowserPort,
+  type BrowserSelectOption,
+} from './browser/port.ts'
 import {
   browserActTool,
   browserDownloadTool,
@@ -190,10 +194,10 @@ function context(
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink,
+    port: new Ports([provide(BrowserPort, browser)]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    browser,
   }
 }
 

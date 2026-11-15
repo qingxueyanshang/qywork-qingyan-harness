@@ -14,16 +14,17 @@ import { join } from 'node:path'
 import {
   batchCapped,
   batchRemaining,
-  type CloudSkillErrorCode,
-  type CloudSkillPort,
   deliveryCap,
   openBatchBudget,
   outcomeTokens,
+  Ports,
+  provide,
   type ToolContext,
 } from '@qywork/agent'
 import { DEFAULT_DENSITY, issueSkillMarker, parseSkillMarker } from '@qywork/ai'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from '../files.ts'
 import { globTool, grepTool } from '../search.ts'
+import { type CloudSkillErrorCode, CloudSkillPort } from './port.ts'
 
 const PKG = 'demo-pkg'
 const KEY = new Uint8Array(32).fill(7)
@@ -119,10 +120,10 @@ function ctx(
     resources: new Map(),
     state: openBatchBudget(new Map(), room, Math.floor(contextWindow / 8)),
     sink: null,
+    port: new Ports(cloudSkills ? [provide(CloudSkillPort, cloudSkills)] : []).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(cloudSkills ? { cloudSkills } : {}),
   }
 }
 

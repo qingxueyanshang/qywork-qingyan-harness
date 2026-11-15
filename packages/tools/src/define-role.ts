@@ -15,7 +15,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { DelegatePort, type ToolContext, type ToolSpec } from '@qywork/agent'
 import { EFFORT_ORDER, isEffortLevel } from '@qywork/core'
 
 /** 角色配置文件的路径。与 `runtime` 的 `TEAM_CONFIG` 取值相同：`runtime` 负责加载，本文件负责写入。 */
@@ -79,6 +79,7 @@ export const defineRoleTool: ToolSpec = {
   parallelSafe: false,
   resourceKeys: (a) => [`role:${String(a.id ?? '*')}`],
 
+  requires: [DelegatePort],
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
     const id = String(args.id ?? '').trim()
     if (!ID_OK.test(id)) {
@@ -111,10 +112,11 @@ export const defineRoleTool: ToolSpec = {
     }
     let resolvedModel: { provider: string; model: string } | undefined
     if (model) {
-      if (!ctx.delegate) {
+      const delegate = ctx.port(DelegatePort)
+      if (!delegate) {
         return { status: 'failure' as const, message: '本次执行无法获取模型配置，无法校验角色模型' }
       }
-      const resolved = ctx.delegate.resolveModel(model, provider || undefined)
+      const resolved = delegate.resolveModel(model, provider || undefined)
       if ('error' in resolved) {
         return { status: 'failure' as const, message: resolved.error }
       }

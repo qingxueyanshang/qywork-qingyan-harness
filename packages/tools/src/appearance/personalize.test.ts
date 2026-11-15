@@ -1,17 +1,18 @@
 /**
  * 覆盖 `appearance/personalize.ts` 的 `personalize` 工具：读取、按字段合并修改、设图片背景、恢复默认，
- * 以及 `index.ts` 中按 `personalization` 注册。落盘由 runtime 的 `personalization.test.ts` 覆盖。
+ * 以及 `index.ts` 中按 `PersonalizationPort` 注册。落盘由 runtime 的 `personalization.test.ts` 覆盖。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type PersonalizationPort, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { DEFAULT_PERSONALIZATION, type Personalization } from '@qywork/core'
 import { registerBuiltinTools } from '../index.ts'
 import { personalizeTool } from './personalize.ts'
+import { PersonalizationPort } from './port.ts'
 
 /** 内存中的个性化：记录每次保存收到的图片。 */
 function memoryPort(): PersonalizationPort & { images: string[]; value: () => Personalization } {
@@ -45,10 +46,10 @@ function ctx(root: string, personalization?: PersonalizationPort): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports(personalization ? [provide(PersonalizationPort, personalization)] : []).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(personalization ? { personalization } : {}),
   }
 }
 
@@ -130,10 +131,10 @@ describe('personalize', () => {
 
   test('没有个性化通道时不注册', () => {
     const without = new ToolRegistry()
-    registerBuiltinTools(without, {})
+    registerBuiltinTools(without)
     expect(without.list().some((t) => t.name === 'personalize')).toBe(false)
     const withPort = new ToolRegistry()
-    registerBuiltinTools(withPort, { personalization: true })
+    registerBuiltinTools(withPort, new Ports([provide(PersonalizationPort, memoryPort())]))
     expect(withPort.list().some((t) => t.name === 'personalize')).toBe(true)
   })
 })

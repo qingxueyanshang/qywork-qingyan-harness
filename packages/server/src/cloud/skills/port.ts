@@ -10,9 +10,9 @@
  *   归为 `unavailable`，说明取云端的错误说明或本地的一句话。
  */
 
-import type { CloudSkillErrorCode, CloudSkillPort, CloudSkillResult } from '@qywork/agent'
 import { httpStatusName, parseSkillMarker } from '@qywork/ai'
 import type { QyConfig } from '@qywork/runtime'
+import type { CloudSkillErrorCode, CloudSkillPort, CloudSkillResult } from '@qywork/tools'
 import { cloudProviderOf } from '../account.ts'
 
 const SKILL_ERRORS: ReadonlySet<string> = new Set<CloudSkillErrorCode>([

@@ -15,7 +15,14 @@
  * 完整内容存入正文库，由 `read_resource` 续读：历史条目没有范围参数，不存储则无法完整读取。
  */
 
-import { chargeBatchBudget, outcomeTokens, recordBatchSpent, type ToolSpec } from '@qywork/agent'
+import {
+  chargeBatchBudget,
+  DelegatePort,
+  outcomeTokens,
+  recordBatchSpent,
+  type ToolSpec,
+} from '@qywork/agent'
+import { HistoryPort } from './history/port.ts'
 import { deliverReadable } from './sink.ts'
 import { resolveSubagentRef } from './subagent.ts'
 
@@ -85,14 +92,16 @@ export const readHistoryTool: ToolSpec = {
   async fn(args, ctx) {
     let subagent = typeof args.subagent === 'string' ? args.subagent.trim() : ''
     // 有派发通道时按 id 或名称解析，未找到时列出本会话的子 agent；成员会话没有派发通道，只按 id 读取。
-    if (subagent && ctx.delegate) {
-      const found = await resolveSubagentRef(ctx.delegate, subagent)
+    const delegate = ctx.port(DelegatePort)
+    if (subagent && delegate) {
+      const found = await resolveSubagentRef(delegate, subagent)
       if ('error' in found)
         return { status: 'failure', message: found.error, errorKind: 'not_found' }
       subagent = found.id
     }
-    const history = subagent ? ctx.history?.forSubagent(subagent) : ctx.history
-    if (subagent && ctx.history && !history) {
+    const port = ctx.port(HistoryPort)
+    const history = subagent ? port?.forSubagent(subagent) : port
+    if (subagent && port && !history) {
       return {
         status: 'failure',
         message: `本会话中没有子 agent ${subagent}`,

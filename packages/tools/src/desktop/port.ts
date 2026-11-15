@@ -1,11 +1,12 @@
 /**
  * 电脑控制端口：本机桌面控件的窄接口。
  *
- * 采用端口的原因与 `SinkPort` 相同：原生宿主由桌面外壳持有，服务端经宿主连接操作它，
+ * 采用端口的原因：原生宿主由桌面外壳持有，服务端经宿主连接操作它，
  * 两者在依赖图上都高于 tools。因此接口定义在此处，实现由装配方注入。
  *
  * 未注入即没有该能力。用户未启用、宿主未连接、worker 未就绪、系统未授权，
- * 任一情形下装配方都不注入，对应的工具也不注册：没有宿主时桌面工具没有降级形态。
+ * 任一情形下装配方都不注入；桌面工具在 `requires` 中声明本端口，因此也不注册：
+ * 没有宿主时桌面工具没有降级形态。
  *
  * 句柄不离开本层。端口返回的 `windowId` 是不透明 id，与 OS 句柄的映射保留在实现方；
  * 模型取得的参数中不存在句柄。
@@ -14,6 +15,7 @@
  * 撤销该执行者名下尚未派发的请求；已交给 OS 的动作不回滚。
  */
 
+import { definePort } from '@qywork/agent'
 import type {
   DesktopAction,
   DesktopDispatch,
@@ -376,3 +378,5 @@ export interface DesktopPort {
    */
   release(): Promise<void>
 }
+
+export const DesktopPort = definePort<DesktopPort>('desktop')

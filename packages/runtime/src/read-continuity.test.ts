@@ -218,6 +218,7 @@ async function readThrough() {
     resources: new Map(),
     state: new Map(),
     sink: new RuntimeSink(store, content, runId as RunId),
+    port: () => null,
     signal: new AbortController().signal,
     requestPermission: async () => ({ allowed: true }),
   })
@@ -451,6 +452,7 @@ async function readScript(window: number, files: { name: string; tokens: number 
       resources: new Map(),
       state: new Map(),
       sink: new RuntimeSink(store, content, runId as RunId),
+      port: () => null,
       signal: new AbortController().signal,
       requestPermission: async () => ({ allowed: true }),
     }),

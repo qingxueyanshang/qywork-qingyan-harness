@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import type { ToolContext } from '@qywork/agent'
-import { ToolRegistry } from '@qywork/agent'
+import { Ports, provide, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
+import { McpConfigPort } from './mcp-config/port.ts'
 import { moveMcpServerTool, writeMcpServerTool } from './mcp-config.ts'
 
-function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
+function ctx(mcpConfig: McpConfigPort): ToolContext {
   return {
     workspaceRoot: 'C:/workspace',
     conversationId: 'cv',
@@ -17,10 +18,10 @@ function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports([provide(McpConfigPort, mcpConfig)]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...overrides,
   }
 }
 
@@ -31,7 +32,7 @@ describe('模型侧 MCP 配置工具', () => {
     expect(bare.get('write_mcp_server')).toBeUndefined()
 
     const ready = new ToolRegistry()
-    registerBuiltinTools(ready, { mcpConfig: true })
+    registerBuiltinTools(ready, new Ports([provide(McpConfigPort, {} as McpConfigPort)]))
     expect(ready.get('write_mcp_server')).toBeDefined()
     expect(ready.get('move_mcp_server')).toBeDefined()
   })
@@ -41,26 +42,24 @@ describe('模型侧 MCP 配置工具', () => {
     const result = await writeMcpServerTool.fn(
       { name: 'docs', config_json: '{"url":"https://example.com/mcp"}', scope: 'global' },
       ctx({
-        mcpConfig: {
-          writeServer: async (input) => {
-            received = input
-            return {
-              ok: true,
-              saved: true,
-              activation: {
-                connected: true,
-                toolNames: ['mcp__docs__ping'],
-                failures: [],
-                inactive: [],
-              },
-              path: 'C:/home/.qywork/mcp.json',
-              replaced: false,
-            }
-          },
-          moveServer: async () => ({ ok: false }),
-          commandLineOf: async () => null,
-          enableServer: async () => ({ ok: false }),
+        writeServer: async (input) => {
+          received = input
+          return {
+            ok: true,
+            saved: true,
+            activation: {
+              connected: true,
+              toolNames: ['mcp__docs__ping'],
+              failures: [],
+              inactive: [],
+            },
+            path: 'C:/home/.qywork/mcp.json',
+            replaced: false,
+          }
         },
+        moveServer: async () => ({ ok: false }),
+        commandLineOf: async () => null,
+        enableServer: async () => ({ ok: false }),
       }),
     )
     expect(result.status).toBe('success')
@@ -69,17 +68,15 @@ describe('模型侧 MCP 配置工具', () => {
 
   test('config_json 直接传对象时按 JSON 文本交给端口；形状不符时不调用端口', async () => {
     const received: unknown[] = []
-    const port = {
-      mcpConfig: {
-        writeServer: async (input: unknown) => {
-          received.push(input)
-          return { ok: true, saved: true, path: 'p', replaced: false }
-        },
-        moveServer: async () => ({ ok: false }),
-        commandLineOf: async () => null,
-        enableServer: async () => ({ ok: false }),
+    const port: McpConfigPort = {
+      writeServer: async (input: unknown) => {
+        received.push(input)
+        return { ok: true, saved: true, path: 'p', replaced: false }
       },
-    } as Partial<ToolContext>
+      moveServer: async () => ({ ok: false }),
+      commandLineOf: async () => null,
+      enableServer: async () => ({ ok: false }),
+    }
     await writeMcpServerTool.fn(
       { name: 'docs', config_json: { url: 'https://example.com/mcp' }, scope: 'project' },
       ctx(port),
@@ -100,26 +97,24 @@ describe('模型侧 MCP 配置工具', () => {
     const result = await moveMcpServerTool.fn(
       { name: 'docs', from_scope: 'project', to_scope: 'global' },
       ctx({
-        mcpConfig: {
-          writeServer: async () => ({ ok: false }),
-          commandLineOf: async () => null,
-          enableServer: async () => ({ ok: false }),
-          moveServer: async (input) => {
-            calls += 1
-            expect(input).toEqual({ name: 'docs', fromScope: 'project', toScope: 'global' })
-            return {
-              ok: true,
-              saved: true,
-              activation: {
-                connected: true,
-                toolNames: ['mcp__docs__ping'],
-                failures: [],
-                inactive: [],
-              },
-              fromPath: 'project',
-              toPath: 'global',
-            }
-          },
+        writeServer: async () => ({ ok: false }),
+        commandLineOf: async () => null,
+        enableServer: async () => ({ ok: false }),
+        moveServer: async (input) => {
+          calls += 1
+          expect(input).toEqual({ name: 'docs', fromScope: 'project', toScope: 'global' })
+          return {
+            ok: true,
+            saved: true,
+            activation: {
+              connected: true,
+              toolNames: ['mcp__docs__ping'],
+              failures: [],
+              inactive: [],
+            },
+            fromPath: 'project',
+            toPath: 'global',
+          }
         },
       }),
     )

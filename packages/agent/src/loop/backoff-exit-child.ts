@@ -54,6 +54,7 @@ const loop = new AgentLoop({
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: () => null,
     signal: controller.signal,
     requestPermission: async () => ({ allowed: true }),
   }),

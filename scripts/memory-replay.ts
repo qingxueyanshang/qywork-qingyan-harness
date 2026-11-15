@@ -29,7 +29,11 @@ import { join } from 'node:path'
 import {
   AgentLoop,
   type CompactionPort,
+  DelegatePort,
   type LoopPersistence,
+  type PortKey,
+  Ports,
+  provide,
   runDensity,
   type ToolContextBase,
   ToolRegistry,
@@ -65,7 +69,15 @@ import {
   getWorkspace,
   Store,
 } from '@qywork/store'
-import { registerBuiltinTools } from '@qywork/tools'
+import {
+  BrowserPort,
+  CanvasPort,
+  DesktopPort,
+  McpConfigPort,
+  OfficePort,
+  PluginPort,
+  registerBuiltinTools,
+} from '@qywork/tools'
 import { withAttachments } from '../packages/runtime/src/session.ts'
 
 const ROOT = join(import.meta.dir, '..', '.tmp', 'memory-replay')
@@ -335,19 +347,28 @@ function currentMemoryNote(workspaceRoot: string, stored: string): string {
 
 function stubRegistry(config: QyConfig): ToolRegistry {
   const all = new ToolRegistry()
-  registerBuiltinTools(all, {
-    delegate: true,
-    plugins: true,
-    mcpConfig: true,
-    browser: true,
-    desktop: true,
-    canvas: config.mediaEnabled !== false,
-    office: true,
-    media:
-      config.mediaEnabled !== false
-        ? [...new Set(listMediaModels(config).map((m) => m.output))]
-        : [],
-  })
+  // 只判定是否注册，不调用端口。
+  const listed = (key: PortKey<unknown>) => provide(key, {})
+  registerBuiltinTools(
+    all,
+    new Ports(
+      [
+        DelegatePort,
+        PluginPort,
+        McpConfigPort,
+        BrowserPort,
+        DesktopPort,
+        CanvasPort,
+        OfficePort,
+      ].map(listed),
+    ),
+    {
+      media:
+        config.mediaEnabled !== false
+          ? [...new Set(listMediaModels(config).map((m) => m.output))]
+          : null,
+    },
+  )
   const stub = new ToolRegistry()
   for (const spec of all.list()) {
     stub.register({
@@ -504,6 +525,7 @@ async function replay(
     state: new Map(),
     signal: abort.signal,
     sink: new RuntimeSink(store, content, id),
+    port: () => null,
     requestPermission: async () => ({ allowed: false, reason: '重放不执行工具' }),
   })
   const loop = new AgentLoop({

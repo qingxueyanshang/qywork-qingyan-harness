@@ -22,6 +22,7 @@
 
 import type { ToolOutcome, ToolSpec } from '@qywork/agent'
 import type { Goal, GoalAction } from '@qywork/core'
+import { GoalPort } from './goals/port.ts'
 
 /**
  * 两个工具描述共用的一句：循环不会自动停止。
@@ -75,7 +76,7 @@ export const readGoalTool: ToolSpec = {
   parallelSafe: true,
 
   async fn(_args, ctx) {
-    const port = ctx.goals
+    const port = ctx.port(GoalPort)
     if (!port) return noPort()
     const goal = port.read()
     return goal
@@ -134,7 +135,7 @@ export const updateGoalTool: ToolSpec = {
   parallelSafe: false,
 
   async fn(args, ctx) {
-    const port = ctx.goals
+    const port = ctx.port(GoalPort)
     if (!port) return noPort()
 
     const action = args.action as GoalAction

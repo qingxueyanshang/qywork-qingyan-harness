@@ -13,7 +13,14 @@
  * 首要防止的情形。两处相差一个完整的生命周期。
  */
 
-import { compactionRecordOf, createSummaryTrace, runDensity } from '@qywork/agent'
+import {
+  compactionRecordOf,
+  createSummaryTrace,
+  DelegatePort,
+  Ports,
+  provide,
+  runDensity,
+} from '@qywork/agent'
 import { buildAdapter, type LlmAdapter, ProviderError, type ProviderProfile } from '@qywork/ai'
 import type {
   AgentEvent,
@@ -54,7 +61,16 @@ import {
   updateGoal,
   workspaceOf,
 } from '@qywork/store'
-import { redactSecrets } from '@qywork/tools'
+import {
+  BrowserPort,
+  CanvasPort,
+  CommandPort,
+  DesktopPort,
+  PersonalizationPort,
+  PetPort,
+  PluginPort,
+  redactSecrets,
+} from '@qywork/tools'
 import { personalizationPort, petPort } from './appearance.ts'
 import { artRenderOf, canvasPort } from './canvas.ts'
 import { CLOUD_PROVIDER } from './cloud/account.ts'
@@ -290,54 +306,69 @@ export async function startRun(
         content: deps.content,
         workspaceRoot: ws.rootPath,
         signal: controller.signal,
-        // 任务派发通道只提供给顶层会话。成员会话（`team-run.ts`）不传入，因此成员会话中
-        // 不注册 `subagent` 工具：子 agent 再派发任务没有终止条件。
-        delegate: makeDelegate({
-          deps,
-          workspaceRoot: ws.rootPath,
-          conversationId,
-          deliver: deliverReceipt,
-        }),
-        // 后台命令同样只提供给顶层会话：回执发起的一轮只能属于顶层会话。
-        ...(deps.commands
-          ? { commands: commandPortOf(deps.commands, deps.runs, conversationId, deliverReceipt) }
-          : {}),
-        // 插件安装端口同样只提供给顶层会话：成员会话不应为整台机器安装插件。
-        plugins: makePluginPort({ workspaceRoot: ws.rootPath }),
-        /*
-         * 浏览器控制**按当前宿主状态实时判定**，不缓存。
-         *
-         * 宿主未连接或运行时版本不满足要求时不注入端口，本轮不注册浏览器工具；
-         * 若先提供端口、调用时再报错，模型会得到一个必然失败的能力。
-         */
-        ...(deps.browser?.available()
-          ? { browser: deps.browser.portFor(conversationId, ws.id) }
-          : {}),
-        /*
-         * 电脑控制同样**实时判定**：用户的启用开关、宿主连接、worker 就绪与系统授权四项
-         * 由协调器一次判定，缺少任一项时不注入端口，本轮不注册桌面工具。
-         *
-         * 端口按执行者分配，顶层会话与其派发的成员各持有一个：停止只撤销本会话的
-         * 排队请求，不会撤销其他会话正在执行的动作。
-         */
-        ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(conversationId) } : {}),
-        // Office 同样实时判定：开关关闭或本机缺少 Python 与文档库时不提供端口，本轮没有 `office`。
-        ...officePortOf(deps),
-        // 设计稿渲染使用内置浏览器的隐藏页，与浏览器端口同样实时判定；宿主不可用时画布端口不提供渲染。
-        ...(deps.canvas
-          ? {
-              canvas: canvasPort(
-                deps.canvas,
-                { id: ws.id, root: ws.rootPath },
-                deps.browser?.available()
-                  ? artRenderOf(deps.browser, conversationId, ws.id, ws.rootPath)
-                  : undefined,
-              ),
-            }
-          : {}),
-        // 皮肤库与宠物库只交给顶层会话：切换由界面在当前会话执行，成员会话（`team-run.ts`）不注入。
-        personalization: personalizationPort(deps.bus),
-        pets: petPort(deps.bus),
+        ports: new Ports([
+          // 任务派发通道只提供给顶层会话。成员会话（`team-run.ts`）不提供，因此成员会话中
+          // 不注册 `subagent` 工具：子 agent 再派发任务没有终止条件。
+          provide(
+            DelegatePort,
+            makeDelegate({
+              deps,
+              workspaceRoot: ws.rootPath,
+              conversationId,
+              deliver: deliverReceipt,
+            }),
+          ),
+          // 后台命令同样只提供给顶层会话：回执发起的一轮只能属于顶层会话。
+          ...(deps.commands
+            ? [
+                provide(
+                  CommandPort,
+                  commandPortOf(deps.commands, deps.runs, conversationId, deliverReceipt),
+                ),
+              ]
+            : []),
+          // 插件安装端口同样只提供给顶层会话：成员会话不应为整台机器安装插件。
+          provide(PluginPort, makePluginPort({ workspaceRoot: ws.rootPath })),
+          /*
+           * 浏览器控制**按当前宿主状态实时判定**，不缓存。
+           *
+           * 宿主未连接或运行时版本不满足要求时不提供端口，本轮不注册浏览器工具；
+           * 若先提供端口、调用时再报错，模型会得到一个必然失败的能力。
+           */
+          ...(deps.browser?.available()
+            ? [provide(BrowserPort, deps.browser.portFor(conversationId, ws.id))]
+            : []),
+          /*
+           * 电脑控制同样**实时判定**：用户的启用开关、宿主连接、worker 就绪与系统授权四项
+           * 由协调器一次判定，缺少任一项时不提供端口，本轮不注册桌面工具。
+           *
+           * 端口按执行者分配，顶层会话与其派发的成员各持有一个：停止只撤销本会话的
+           * 排队请求，不会撤销其他会话正在执行的动作。
+           */
+          ...(deps.desktop?.available()
+            ? [provide(DesktopPort, deps.desktop.portFor(conversationId))]
+            : []),
+          // Office 同样实时判定：开关关闭或本机缺少 Python 与文档库时不提供端口，本轮没有 `office`。
+          ...officePortOf(deps),
+          // 设计稿渲染使用内置浏览器的隐藏页，与浏览器端口同样实时判定；宿主不可用时画布端口不提供渲染。
+          ...(deps.canvas
+            ? [
+                provide(
+                  CanvasPort,
+                  canvasPort(
+                    deps.canvas,
+                    { id: ws.id, root: ws.rootPath },
+                    deps.browser?.available()
+                      ? artRenderOf(deps.browser, conversationId, ws.id, ws.rootPath)
+                      : undefined,
+                  ),
+                ),
+              ]
+            : []),
+          // 皮肤库与宠物库只交给顶层会话：切换由界面在当前会话执行，成员会话（`team-run.ts`）不提供。
+          provide(PersonalizationPort, personalizationPort(deps.bus)),
+          provide(PetPort, petPort(deps.bus)),
+        ]),
         // 用户插入的消息在本会话的 step 边界注入；成员会话的队列由 `team-run.ts` 接入，只接收父会话派发的补充指令。
         followUps: (id) => deps.runs.takeSteered(id),
       })

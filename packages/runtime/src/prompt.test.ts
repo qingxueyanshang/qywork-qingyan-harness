@@ -13,9 +13,27 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { auditFrozenText, ToolRegistry } from '@qywork/agent'
+import {
+  auditFrozenText,
+  DelegatePort,
+  type PortKey,
+  Ports,
+  provide,
+  ToolRegistry,
+} from '@qywork/agent'
 import { TODO_BLOCKERS, TODO_FAILURES } from '@qywork/core'
-import { registerBuiltinTools } from '@qywork/tools'
+import {
+  BrowserPort,
+  CanvasPort,
+  CommandPort,
+  DesktopPort,
+  McpConfigPort,
+  OfficePort,
+  PersonalizationPort,
+  PetPort,
+  PluginPort,
+  registerBuiltinTools,
+} from '@qywork/tools'
 import { buildSystemPrompt, buildTailNotes, outputLimitNote } from './prompt.ts'
 
 const base = { workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' as const }
@@ -482,20 +500,26 @@ describe('完成、停下等待用户与执行失败的判定', () => {
  */
 describe('工具说明不另写收尾方式', () => {
   const registry = new ToolRegistry()
-  registerBuiltinTools(registry, {
-    delegate: true,
-    commands: true,
-    plugins: true,
-    mcpConfig: true,
-    browser: true,
-    desktop: true,
-    canvas: true,
-    panel: true,
-    personalization: true,
-    pets: true,
-    office: true,
-    media: ['image', 'video', 'audio'],
-  })
+  // 只判定是否注册，不调用端口。
+  const listed = (key: PortKey<unknown>) => provide(key, {})
+  registerBuiltinTools(
+    registry,
+    new Ports(
+      [
+        DelegatePort,
+        CommandPort,
+        PluginPort,
+        McpConfigPort,
+        BrowserPort,
+        DesktopPort,
+        CanvasPort,
+        PersonalizationPort,
+        PetPort,
+        OfficePort,
+      ].map(listed),
+    ),
+    { panel: true, media: ['image', 'video', 'audio'] },
+  )
   const specs = registry.list()
   const prompt = buildSystemPrompt(new Set(specs.map((s) => s.name)))
   const texts = [

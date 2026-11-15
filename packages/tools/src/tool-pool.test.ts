@@ -45,6 +45,7 @@ function ctx(): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: () => null,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),

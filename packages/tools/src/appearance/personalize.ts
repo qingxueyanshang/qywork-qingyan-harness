@@ -1,7 +1,7 @@
 /**
  * `personalize`：读取与修改 qywork 界面的个性化（只有一套）。
  *
- * 读写经 `ctx.personalization` 端口完成，个性化位于 `~/.qywork/personalization/`，文件工具在 `auto` 下
+ * 读写经 `PersonalizationPort` 端口完成，个性化位于 `~/.qywork/personalization/`，文件工具在 `auto` 下
  * 无法写入该目录。保存即由服务端广播，所有屏幕重新读取，没有单独的切换动作。
  */
 
@@ -15,6 +15,7 @@ import {
   type Personalization,
 } from '@qywork/core'
 import { resolveInWorkspace, rootsOf } from '../paths.ts'
+import { PersonalizationPort } from './port.ts'
 
 type Outcome = Awaited<ReturnType<ToolSpec['fn']>>
 
@@ -120,8 +121,9 @@ export const personalizeTool: ToolSpec = {
   permissionEffect: (args) => (args.action === 'read' ? 'read' : 'write'),
   parallelSafe: false,
 
+  requires: [PersonalizationPort],
   async fn(args, ctx) {
-    const port = ctx.personalization
+    const port = ctx.port(PersonalizationPort)
     if (!port) return failure('本次执行没有个性化通道')
     const action = args.action
 

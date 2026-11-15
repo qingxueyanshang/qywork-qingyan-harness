@@ -7,9 +7,9 @@
  *
  * 六条边界：
  *
- * 1. **端口只从 `ctx.desktop` 取得。** 参数中自报的会话、Run、窗口句柄一概不读取；
- *    模型只持有端口发放的不透明 `windowId`。没有端口时这五个工具不注册
- *    （`index.ts` 按通道注册），工具函数中仍检查一次并如实报错。
+ * 1. **端口只经 `ctx.port(DesktopPort)` 取得。** 参数中自报的会话、Run、窗口句柄一概不读取；
+ *    模型只持有端口发放的不透明 `windowId`。五个工具在 `requires` 中声明该端口，
+ *    没有端口时不注册；工具函数中仍检查一次并如实报错。
  * 2. **动作前的唯一匹配与前置条件在此处判定完毕后再调用端口。** 目标不唯一、控件缺失、
  *    动作不可用、控件被禁用，四种情况都在派发之前作为工具结果返回给模型，
  *    `executed` 为假。
@@ -24,20 +24,7 @@
  *    前缀不会被重放。
  */
 
-import type {
-  DesktopActResult,
-  DesktopBlockingWindowInfo,
-  DesktopElement,
-  DesktopFollowUp,
-  DesktopImage,
-  DesktopImagePoint,
-  DesktopPort,
-  DesktopSnapshot,
-  DesktopWaitCondition,
-  ToolContext,
-  ToolOutcome,
-  ToolSpec,
-} from '@qywork/agent'
+import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
 import type {
   DesktopAction,
   DesktopActionKind,
@@ -52,6 +39,17 @@ import type {
   DesktopWindowState,
 } from '@qywork/core'
 import { imageSizeOf, screenPointToImage } from '@qywork/core'
+import {
+  type DesktopActResult,
+  type DesktopBlockingWindowInfo,
+  type DesktopElement,
+  type DesktopFollowUp,
+  type DesktopImage,
+  type DesktopImagePoint,
+  DesktopPort,
+  type DesktopSnapshot,
+  type DesktopWaitCondition,
+} from './desktop/port.ts'
 import {
   type DesktopResultInput,
   type DesktopResultParts,
@@ -327,7 +325,7 @@ async function onDesktop(
   ctx: ToolContext,
   body: (desktop: DesktopPort, send: PortCall) => Promise<ToolOutcome>,
 ): Promise<ToolOutcome> {
-  const desktop = ctx.desktop
+  const desktop = ctx.port(DesktopPort)
   if (!desktop) return NO_PORT
   if (ctx.signal.aborted) return STOPPED
 
@@ -886,7 +884,7 @@ function followResult(
     ctx,
     place: 'observation',
     incremental: !bare,
-    lead: `${input.lead}${bareWindowNote(input.snapshot, ctx.desktop?.foregroundEnabled() !== false)}`,
+    lead: `${input.lead}${bareWindowNote(input.snapshot, ctx.port(DesktopPort)?.foregroundEnabled() !== false)}`,
   })
 }
 
@@ -1247,6 +1245,7 @@ const BASE = {
   facet: '桌面控件',
   objectLabel: '电脑控制',
   permissionEffect: 'desktop',
+  requires: [DesktopPort],
 } as const
 
 export const desktopWindowsTool: ToolSpec = {
@@ -2529,7 +2528,7 @@ export const desktopWaitTool: ToolSpec = {
     }),
 }
 
-/** 注册顺序在此处确定，`index.ts` 按通道整组注册或整组不注册。 */
+/** 注册顺序在此处确定。五个工具声明同一个端口，整组注册或整组不注册。 */
 export const desktopTools: ToolSpec[] = [
   desktopWindowsTool,
   desktopObserveTool,

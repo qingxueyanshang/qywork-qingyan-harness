@@ -1,9 +1,9 @@
 /**
- * 覆盖 `canvas.ts` 的读取、编辑、运行、取回、取消与取帧工具，`index.ts` 中按通道注册的逻辑，
+ * 覆盖 `canvas.ts` 的读取、编辑、运行、取回、取消与取帧工具，`index.ts` 中按端口注册的逻辑，
  * 以及 `files.ts` 写入文本文件后附上的画布引用说明。取帧的 worker 由 `office-worker.test-helper.ts` 代替 Python，
  * `office-worker.ts` 的 `grabVideoFrame` 经此覆盖。
  *
- * 端口使用假实现：此处验证工具一侧的行为，包括按通道是否存在决定注册、按动作声明权限、参数解析、
+ * 端口使用假实现：此处验证工具一侧的行为，包括按端口是否提供决定注册、按动作声明权限、参数解析、
  * 运行时使用本轮的生成端口与中止信号、结果写为回执。端口背后的画布服务由 server 包的测试覆盖。
  */
 
@@ -11,14 +11,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  type CanvasPort,
-  type MediaPort,
-  type OfficePort,
-  openBatchBudget,
-  type ToolContext,
-  ToolRegistry,
-} from '@qywork/agent'
+import { openBatchBudget, Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   addVersions,
@@ -27,6 +20,7 @@ import {
   type CanvasView,
   emptyCanvas,
 } from '@qywork/core'
+import { CanvasPort } from './canvas/port.ts'
 import {
   cancelCanvasTool,
   captureCanvasFrameTool,
@@ -38,7 +32,9 @@ import {
   runCanvasTool,
 } from './canvas.ts'
 import { editFileTool, readFileTool, writeFileTool } from './files.ts'
+import { MediaPort } from './generate/port.ts'
 import { registerBuiltinTools } from './index.ts'
+import { OfficePort } from './office/port.ts'
 
 function view(): CanvasView {
   const r = applyCanvasOps(
@@ -87,11 +83,13 @@ function ctx(port: CanvasPort | undefined, media?: MediaPort): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports([
+      ...(port ? [provide(CanvasPort, port)] : []),
+      ...(media ? [provide(MediaPort, media)] : []),
+    ]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(port ? { canvas: port } : {}),
-    ...(media ? { media } : {}),
   }
 }
 
@@ -171,7 +169,7 @@ describe('canvas 工具', () => {
     expect(none.has('canvas')).toBe(false)
     expect(none.has('read_canvas')).toBe(false)
     const withPort = new ToolRegistry()
-    registerBuiltinTools(withPort, { canvas: true })
+    registerBuiltinTools(withPort, new Ports([provide(CanvasPort, fakePort(DONE).port)]))
     expect(withPort.has('canvas')).toBe(false)
     for (const name of [
       'create_canvas',
@@ -226,7 +224,7 @@ describe('canvas 工具', () => {
   test('创建返回文件改动；缺参、非画布路径或权限拒绝不创建', async () => {
     const { port, seen } = fakePort(DONE)
     const registry = new ToolRegistry()
-    registerBuiltinTools(registry, { canvas: true })
+    registerBuiltinTools(registry, new Ports([provide(CanvasPort, port)]))
     const c = ctx(port)
     expect(await registry.execute('create_canvas', {}, c)).toMatchObject({
       errorKind: 'invalid_tool_arguments',
@@ -802,7 +800,7 @@ describe('canvas 工具', () => {
     })
     const c = ctx(port, media)
     const registry = new ToolRegistry()
-    registerBuiltinTools(registry, { canvas: true })
+    registerBuiltinTools(registry, new Ports([provide(CanvasPort, port)]))
     const out = await registry.execute(
       'retrieve_canvas',
       {
@@ -834,7 +832,7 @@ describe('canvas 工具', () => {
       return { allowed: true }
     }
     const registry = new ToolRegistry()
-    registerBuiltinTools(registry, { canvas: true })
+    registerBuiltinTools(registry, new Ports([provide(CanvasPort, port)]))
     for (const name of ['edit_canvas', 'run_canvas', 'retrieve_canvas', 'cancel_canvas']) {
       for (const args of [{}, { path: 'board.canvas.json' }]) {
         expect(await registry.execute(name, args, c)).toMatchObject({
@@ -1025,7 +1023,8 @@ describe('capture_canvas_frame', () => {
       ...ctx(port),
       workspaceRoot: root,
       state: openBatchBudget(new Map(), 100_000, 25_000),
-      ...(office ? { office } : {}),
+      port: new Ports([provide(CanvasPort, port), ...(office ? [provide(OfficePort, office)] : [])])
+        .get,
     }
   }
 
@@ -1049,15 +1048,18 @@ describe('capture_canvas_frame', () => {
   }
 
   test('有画布通道、Office 执行程序与视频解码库时才注册，需要写权限', () => {
-    const has = (opts: Parameters<typeof registerBuiltinTools>[1]) => {
+    const has = (ports: Ports) => {
       const registry = new ToolRegistry()
-      registerBuiltinTools(registry, opts)
+      registerBuiltinTools(registry, ports)
       return registry.has('capture_canvas_frame')
     }
-    expect(has({ canvas: true, office: true, videoDecoder: true })).toBe(true)
-    expect(has({ canvas: true, office: true })).toBe(false)
-    expect(has({ canvas: true, videoDecoder: true })).toBe(false)
-    expect(has({ office: true, videoDecoder: true })).toBe(false)
+    const canvas = provide(CanvasPort, fakePort(DONE).port)
+    const office = provide(OfficePort, OFFICE)
+    const noDecoder = provide(OfficePort, { ...OFFICE, videoDecoder: false })
+    expect(has(new Ports([canvas, office]))).toBe(true)
+    expect(has(new Ports([canvas, noDecoder]))).toBe(false)
+    expect(has(new Ports([canvas]))).toBe(false)
+    expect(has(new Ports([office]))).toBe(false)
     expect(captureCanvasFrameTool.actionKind).toBe('write')
     expect(captureCanvasFrameTool.permissionEffect).toBe('write')
   })

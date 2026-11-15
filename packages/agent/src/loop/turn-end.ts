@@ -5,6 +5,8 @@
 
 import type { AgentEvent } from '@qywork/core'
 import { envelopeHeadTokens, log, TODO_BLOCKERS, TODO_FAILURES, todoReason } from '@qywork/core'
+import { DelegatePort } from '../ports/delegate.ts'
+import { TodoPort } from '../ports/todos.ts'
 import { cycleFingerprint } from '../progress.ts'
 import { envelopeHashOf } from './request.ts'
 import type { RunState, TurnState } from './run-state.ts'
@@ -258,10 +260,10 @@ export async function* concludeWithoutTools(
   }
 
   // 按本轮接续关系读清单：用户新指令需重新提交，父任务回执沿用已有清单。
-  const todos = ctx.todos?.read(input.runId) ?? []
+  const todos = ctx.port(TodoPort)?.read(input.runId) ?? []
   // 已派发的子 agent 仍在运行时，清单未完成是因为它们在执行：本轮结束是正确的，
   // 回执到达后会开始新的一轮。强制模型继续只会得到一段无实际内容的回答。
-  const delegated = (ctx.delegate?.inflight().length ?? 0) > 0
+  const delegated = (ctx.port(DelegatePort)?.inflight().length ?? 0) > 0
   if (delegated) {
     run.stopReason = 'completed'
     return 'stop'

@@ -130,6 +130,7 @@ function baseCtx(store: Store, runId: string): ToolContextBase {
     resources: new Map(),
     state: new Map(),
     sink: new RuntimeSink(store, blobs, runId as RunId),
+    port: () => null,
     signal: new AbortController().signal,
     requestPermission: async () => ({ allowed: true }),
   }

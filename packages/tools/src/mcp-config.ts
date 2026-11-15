@@ -1,12 +1,13 @@
 /**
  * 模型侧 MCP 配置动作。
  *
- * 工具只负责参数与动作语义，实际的解析与落盘经由 `ToolContext.mcpConfig`。解析器与作用域路径分别属于两个
+ * 工具只负责参数与动作语义，实际的解析与落盘经由 `McpConfigPort`。解析器与作用域路径分别属于两个
  * 同层包，不能在此处复制规则或新增横向依赖。
  */
 
 import type { ToolSpec } from '@qywork/agent'
 import { jsonArg } from './args.ts'
+import { type McpActivation, McpConfigPort } from './mcp-config/port.ts'
 
 function scopeProperty(): Record<string, unknown> {
   return {
@@ -52,6 +53,7 @@ export const writeMcpServerTool: ToolSpec = {
   parallelSafe: false,
   resourceKeys: (a) => [`mcp-config:${String(a.scope ?? 'project')}`],
 
+  requires: [McpConfigPort],
   async fn(args, ctx) {
     const name = String(args.name ?? '').trim()
     const config = jsonArg(args.config_json, 'object', 'config_json')
@@ -61,9 +63,10 @@ export const writeMcpServerTool: ToolSpec = {
     if (config.value === undefined) return { status: 'failure', message: '缺少 config_json' }
     const configJson = JSON.stringify(config.value)
     if (!scope) return { status: 'failure', message: 'scope 只能是 project 或 global' }
-    if (!ctx.mcpConfig) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
+    const port = ctx.port(McpConfigPort)
+    if (!port) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
 
-    const result = await ctx.mcpConfig.writeServer({ name, configJson, scope })
+    const result = await port.writeServer({ name, configJson, scope })
     if (!result.ok)
       return {
         status: 'failure',
@@ -101,13 +104,14 @@ export const moveMcpServerTool: ToolSpec = {
   permissionEffect: 'delete',
   // 迁入另一层即在该层启动它：迁入全局层的服务不再需要项目层的启动确认，因此同样经命令判定。
   commandLine: async (a, ctx) =>
-    (await ctx.mcpConfig?.commandLineOf({
+    (await ctx.port(McpConfigPort)?.commandLineOf({
       name: String(a.name ?? '').trim(),
       scope: writableScope(a.from_scope) ?? 'project',
     })) ?? null,
   parallelSafe: false,
   resourceKeys: () => ['mcp-config:project', 'mcp-config:global'],
 
+  requires: [McpConfigPort],
   async fn(args, ctx) {
     const name = String(args.name ?? '').trim()
     const from = writableScope(args.from_scope)
@@ -115,9 +119,10 @@ export const moveMcpServerTool: ToolSpec = {
     if (!name) return { status: 'failure', message: '缺少 name' }
     if (!from || !to) return { status: 'failure', message: '作用域只能是 project 或 global' }
     if (from === to) return { status: 'failure', message: '迁移的来源层和目标层不能相同' }
-    if (!ctx.mcpConfig) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
+    const port = ctx.port(McpConfigPort)
+    if (!port) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
 
-    const result = await ctx.mcpConfig.moveServer({ name, fromScope: from, toScope: to })
+    const result = await port.moveServer({ name, fromScope: from, toScope: to })
     if (!result.ok)
       return {
         status: 'failure',
@@ -151,16 +156,19 @@ export const enableMcpServerTool: ToolSpec = {
   permissionEffect: 'write',
   // 启用即启动该服务的命令：与 `run_command` 经同一个命令判定。
   commandLine: async (a, ctx) =>
-    (await ctx.mcpConfig?.commandLineOf({ name: String(a.name ?? '').trim(), scope: 'project' })) ??
-    null,
+    (await ctx
+      .port(McpConfigPort)
+      ?.commandLineOf({ name: String(a.name ?? '').trim(), scope: 'project' })) ?? null,
   parallelSafe: false,
   resourceKeys: () => ['mcp-config:project'],
 
+  requires: [McpConfigPort],
   async fn(args, ctx) {
     const name = String(args.name ?? '').trim()
     if (!name) return { status: 'failure', message: '缺少 name' }
-    if (!ctx.mcpConfig) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
-    const result = await ctx.mcpConfig.enableServer({ name })
+    const port = ctx.port(McpConfigPort)
+    if (!port) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
+    const result = await port.enableServer({ name })
     if (!result.ok)
       return {
         status: 'failure',
@@ -194,7 +202,7 @@ export function stdioCommandLine(raw: unknown): string | null {
   return formatCommandLine(command, Array.isArray(args) ? args.map(String) : [])
 }
 
-function activationMessage(activation: import('@qywork/agent').McpActivation | undefined): string {
+function activationMessage(activation: McpActivation | undefined): string {
   if (!activation) return '配置已保存，尚未取得连接结果'
   if (activation.failures.length)
     return `配置已保存，连接或能力装配失败：${activation.failures.map((f) => `${f.server}：${f.reason}`).join('；')}`

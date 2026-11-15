@@ -18,13 +18,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  type BrowserObservation,
-  type BrowserOptionsPage,
-  type BrowserPort,
-  type ToolContext,
-  ToolRegistry,
-} from '@qywork/agent'
+import { Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type {
   BrowserEventFrame,
@@ -42,7 +36,12 @@ import {
   Store,
   upsertWorkspace,
 } from '@qywork/store'
-import { registerBuiltinTools } from '@qywork/tools'
+import {
+  type BrowserObservation,
+  type BrowserOptionsPage,
+  BrowserPort,
+  registerBuiltinTools,
+} from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import { EventBus } from '../bus.ts'
 import { artRenderOf, CanvasService, canvasPort } from '../canvas.ts'
@@ -674,10 +673,10 @@ function browserContext(dir: string, browser: BrowserPort | undefined): ToolCont
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports(browser ? [provide(BrowserPort, browser)] : []).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(browser ? { browser } : {}),
   }
 }
 
@@ -1402,7 +1401,7 @@ test('控制连接建立失败明确声明页面操作未执行，端点恢复�
   const { handle, devtools, dir } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const registry = new ToolRegistry()
-  registerBuiltinTools(registry, { browser: true })
+  registerBuiltinTools(registry, new Ports([provide(BrowserPort, {} as BrowserPort)]))
   await port?.open('http://127.0.0.1:1/page')
   devtools.rejectConnections = true
   const result = await registry
@@ -1424,7 +1423,7 @@ test('点击发出后 CDP 断连时保留结果不明，不重放点击，下一
   const { handle, devtools, dir } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const registry = new ToolRegistry()
-  registerBuiltinTools(registry, { browser: true })
+  registerBuiltinTools(registry, new Ports([provide(BrowserPort, {} as BrowserPort)]))
   await port?.open('http://127.0.0.1:1/page')
   const ob = await port?.observe({ tabId: 'bt_1' })
   const held = gate()

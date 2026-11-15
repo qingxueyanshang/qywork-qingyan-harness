@@ -15,7 +15,6 @@
  * （`runner.ts` 的 `leave`）。Linux（WSL2）与 Windows 实测；macOS 未实测。
  */
 
-import type { CommandPort } from '@qywork/agent'
 import {
   type AgentEvent,
   type BackgroundCommand,
@@ -26,6 +25,7 @@ import {
   type StepId,
 } from '@qywork/core'
 import { appendStepFileChanges, type Store } from '@qywork/store'
+import type { CommandPort } from '@qywork/tools'
 import type { RunManager } from '../runs.ts'
 
 /** 任务表中的一条：端口交来的句柄，以及收尾（移除、投递回执）完成时兑现的 `ended`，值为是否投递了回执。 */

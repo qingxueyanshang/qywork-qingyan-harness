@@ -86,6 +86,7 @@ function baseCtx(runId: string, sink: SinkPort | null = null): ToolContextBase {
     resources: new Map(),
     state: new Map(),
     sink,
+    port: () => null,
     signal: new AbortController().signal,
     requestPermission: async () => ({ allowed: true }),
   }

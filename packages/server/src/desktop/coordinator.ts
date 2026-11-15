@@ -28,21 +28,6 @@
  */
 
 import type {
-  DesktopActResult,
-  DesktopBlockingWindowInfo,
-  DesktopElement,
-  DesktopFollowUp,
-  DesktopImage,
-  DesktopImagePoint,
-  DesktopPort,
-  DesktopRefusal,
-  DesktopSnapshot,
-  DesktopText,
-  DesktopWaitCondition,
-  DesktopWaitResult,
-  DesktopWindowInfo,
-} from '@qywork/agent'
-import type {
   DesktopAction,
   DesktopBlockingWindow,
   DesktopDispatch,
@@ -56,6 +41,21 @@ import type {
   DesktopWindow,
 } from '@qywork/core'
 import { imagePointToScreen, imageRectToScreen, log } from '@qywork/core'
+import type {
+  DesktopActResult,
+  DesktopBlockingWindowInfo,
+  DesktopElement,
+  DesktopFollowUp,
+  DesktopImage,
+  DesktopImagePoint,
+  DesktopPort,
+  DesktopRefusal,
+  DesktopSnapshot,
+  DesktopText,
+  DesktopWaitCondition,
+  DesktopWaitResult,
+  DesktopWindowInfo,
+} from '@qywork/tools'
 import {
   type DesktopBridge,
   DesktopBridgeError,

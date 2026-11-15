@@ -11,9 +11,10 @@ import * as fs from 'node:fs/promises'
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type MediaCall, type MediaCallResult, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { canvasRunLabel } from '@qywork/core'
+import { type MediaCall, type MediaCallResult, MediaPort } from './generate/port.ts'
 import {
   generateAudioTool,
   generateImageTool,
@@ -46,16 +47,18 @@ function ctx(root: string): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports([
+      provide(MediaPort, {
+        async generate(call) {
+          calls.push(call)
+          await during(call)
+          return answer
+        },
+      }),
+    ]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    media: {
-      async generate(call) {
-        calls.push(call)
-        await during(call)
-        return answer
-      },
-    },
   }
 }
 
@@ -214,7 +217,7 @@ describe('按类别注册', () => {
     registerBuiltinTools(none)
     expect(none.has('generate_image')).toBe(false)
     const image = new ToolRegistry()
-    registerBuiltinTools(image, { media: ['image'] })
+    registerBuiltinTools(image, new Ports(), { media: ['image'] })
     expect(image.has('generate_image')).toBe(true)
   })
 })
@@ -348,7 +351,7 @@ describe('generate_video', () => {
   test('取回必须提供任务路径，生成必须提供提示词；记录无效时不提交生成', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
     const registry = new ToolRegistry()
-    registerBuiltinTools(registry, { media: ['video'] })
+    registerBuiltinTools(registry, new Ports(), { media: ['video'] })
     expect(generateVideoTool.parameters.properties).not.toHaveProperty('resume')
     for (const name of ['generate_video', 'retrieve_media']) {
       expect(await registry.execute(name, {}, ctx(root))).toMatchObject({
@@ -375,12 +378,12 @@ describe('generate_video', () => {
 
 test('只配置视频模型时只注册视频生成工具', () => {
   const registry = new ToolRegistry()
-  registerBuiltinTools(registry, { media: ['video'] })
+  registerBuiltinTools(registry, new Ports(), { media: ['video'] })
   expect(registry.has('generate_video')).toBe(true)
   expect(registry.has('retrieve_media')).toBe(true)
   expect(registry.has('generate_image')).toBe(false)
   const imagesOnly = new ToolRegistry()
-  registerBuiltinTools(imagesOnly, { media: ['image'] })
+  registerBuiltinTools(imagesOnly, new Ports(), { media: ['image'] })
   expect(imagesOnly.has('retrieve_media')).toBe(true)
 })
 

@@ -260,6 +260,7 @@ async function conversation() {
         resources: new Map(),
         state: new Map(),
         sink: new RuntimeSink(store, content, runId as RunId),
+        port: () => null,
         signal: new AbortController().signal,
         requestPermission: async () => ({ allowed: true }),
       }),

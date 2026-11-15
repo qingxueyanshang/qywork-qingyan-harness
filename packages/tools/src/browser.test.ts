@@ -12,18 +12,16 @@ import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type {
-  BrowserActResult,
-  BrowserObservation,
-  BrowserOptionsPage,
-  BrowserPort,
-  BrowserRefusal,
-  ToolContext,
-  ToolOutcome,
-  ToolSpec,
-} from '@qywork/agent'
-import { openBatchBudget } from '@qywork/agent'
+import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
+import { openBatchBudget, Ports, provide } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import {
+  type BrowserActResult,
+  type BrowserObservation,
+  type BrowserOptionsPage,
+  BrowserPort,
+  type BrowserRefusal,
+} from './browser/port.ts'
 import {
   browserActTool,
   browserDownloadTool,
@@ -130,10 +128,10 @@ function ctxWith(
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
+    port: new Ports(browser ? [provide(BrowserPort, browser)] : []).get,
     signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(browser ? { browser } : {}),
   }
 }
 

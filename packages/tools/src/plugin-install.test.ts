@@ -6,11 +6,12 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { ToolContext } from '@qywork/agent'
+import { Ports, provide, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { PluginPort } from './plugin-install/port.ts'
 import { installPluginTool } from './plugin-install.ts'
 
-type Found = Awaited<ReturnType<NonNullable<ToolContext['plugins']>['inspect']>>
+type Found = Awaited<ReturnType<PluginPort['inspect']>>
 
 function port(found: Found, result: { ok: boolean; error?: string } = { ok: true }) {
   const installs: { dir: string; replace: boolean }[] = []
@@ -35,7 +36,7 @@ const good: Found = {
   permissions: ['workspace:read'],
 }
 
-function ctx(plugins: ToolContext['plugins'], approve = true): ToolContext & { asked: string[] } {
+function ctx(plugins: PluginPort | undefined, approve = true): ToolContext & { asked: string[] } {
   const asked: string[] = []
   return {
     workspaceRoot: '/tmp',
@@ -48,6 +49,7 @@ function ctx(plugins: ToolContext['plugins'], approve = true): ToolContext & { a
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: new Ports(plugins ? [provide(PluginPort, plugins)] : []).get,
     signal: new AbortController().signal,
     emit: () => {},
     stepId: 'st_test',
@@ -55,7 +57,6 @@ function ctx(plugins: ToolContext['plugins'], approve = true): ToolContext & { a
       asked.push(call.toolName)
       return approve ? { allowed: true } : { allowed: false, reason: '夹具拒绝' }
     },
-    ...(plugins ? { plugins } : {}),
     asked,
   } as ToolContext & { asked: string[] }
 }

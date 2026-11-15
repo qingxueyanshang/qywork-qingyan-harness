@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ToolContext } from '@qywork/agent'
+import { DelegatePort, Ports, provide, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { EffortLevel } from '@qywork/core'
 import { defineRoleTool } from './define-role.ts'
@@ -26,6 +26,7 @@ function ctx(root: string): ToolContext {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: () => null,
     signal: new AbortController().signal,
     emit: () => {},
     stepId: 'st_test',
@@ -37,27 +38,28 @@ function withModels(
   root: string,
   models: { provider: string; model: string; effortLevels?: EffortLevel[] }[],
 ): ToolContext {
+  const delegate: DelegatePort = {
+    resolveModel: (name, provider) => {
+      const hits = models.filter(
+        (item) => item.model === name && (!provider || item.provider === provider),
+      )
+      return hits.length === 1
+        ? { ...hits[0]!, effortLevels: hits[0]!.effortLevels ?? [] }
+        : {
+            error: `配置中没有模型 ${name}。当前可用的是：${models.map((item) => item.model).join('、')}`,
+          }
+    },
+    targets: async () => ({ roles: [], clis: [] }),
+    subagents: async () => [],
+    dispatch: async () => ({ ok: true, subagentId: 'cv_stub' }),
+    runGraph: async () => ({ ok: true }),
+    inflight: () => [],
+    awaitReceipt: async () => 'idle' as const,
+    stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
+  }
   return {
     ...ctx(root),
-    delegate: {
-      resolveModel: (name, provider) => {
-        const hits = models.filter(
-          (item) => item.model === name && (!provider || item.provider === provider),
-        )
-        return hits.length === 1
-          ? { ...hits[0]!, effortLevels: hits[0]!.effortLevels ?? [] }
-          : {
-              error: `配置中没有模型 ${name}。当前可用的是：${models.map((item) => item.model).join('、')}`,
-            }
-      },
-      targets: async () => ({ roles: [], clis: [] }),
-      subagents: async () => [],
-      dispatch: async () => ({ ok: true, subagentId: 'cv_stub' }),
-      runGraph: async () => ({ ok: true }),
-      inflight: () => [],
-      awaitReceipt: async () => 'idle' as const,
-      stop: () => ({ ok: false, error: '没有正在执行的子 agent' }),
-    },
+    port: new Ports([provide(DelegatePort, delegate)]).get,
   }
 }
 

@@ -13,17 +13,17 @@ import { describe, expect, test } from 'bun:test'
 import {
   batchRemaining,
   chargeBatchBudget,
-  type DesktopElement,
-  type DesktopPort,
-  type DesktopSnapshot,
   deliveredTokens,
   markCompacted,
   openBatchBudget,
+  Ports,
+  provide,
   type SinkPort,
   type ToolContext,
   type ToolOutcome,
 } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { type DesktopElement, DesktopPort, type DesktopSnapshot } from './desktop/port.ts'
 import {
   desktopActSequenceTool,
   desktopActTool,
@@ -260,10 +260,10 @@ function context(desktop: DesktopPort, sink: SinkPort | null, contextWindow = WI
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink,
+    port: new Ports([provide(DesktopPort, desktop)]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    desktop,
   }
 }
 
@@ -1392,7 +1392,13 @@ describe('差异投递', () => {
       place: 'top' | 'observation',
       state: Map<string, unknown>,
     ) => ({
-      ctx: { sink: fakeSink(), contextWindow: WINDOW, density: DEFAULT_DENSITY, state },
+      ctx: {
+        sink: fakeSink(),
+        contextWindow: WINDOW,
+        density: DEFAULT_DENSITY,
+        state,
+        port: () => null,
+      },
       toolName: 'desktop_act',
       snapshot: snapshot(table, { observationId }),
       place,
@@ -1424,7 +1430,13 @@ describe('差异投递', () => {
     const state = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY, 0)
     const run = (observationId: string, scope: string | undefined, incremental: boolean) =>
       desktopResult({
-        ctx: { sink: fakeSink(), contextWindow: WINDOW, density: DEFAULT_DENSITY, state },
+        ctx: {
+          sink: fakeSink(),
+          contextWindow: WINDOW,
+          density: DEFAULT_DENSITY,
+          state,
+          port: () => null,
+        },
         toolName: incremental ? 'desktop_act' : 'desktop_observe',
         snapshot: snapshot(table, { observationId, ...(scope !== undefined ? { scope } : {}) }),
         place: incremental ? 'observation' : 'top',

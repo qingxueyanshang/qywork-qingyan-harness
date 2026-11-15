@@ -12,15 +12,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  type CanvasEditResult,
-  type CanvasPort,
-  type MediaCall,
-  type MediaCallResult,
-  type MediaPort,
-  type ToolContext,
-  ToolRegistry,
-} from '@qywork/agent'
+import { Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   type AgentEvent,
@@ -35,7 +27,14 @@ import {
 } from '@qywork/core'
 import { cancelMediaTask, makeMediaPort, type QyConfig } from '@qywork/runtime'
 import { Store, upsertWorkspace } from '@qywork/store'
-import { registerBuiltinTools } from '@qywork/tools'
+import {
+  type CanvasEditResult,
+  CanvasPort,
+  type MediaCall,
+  type MediaCallResult,
+  type MediaPort,
+  registerBuiltinTools,
+} from '@qywork/tools'
 import { type ApiDeps, handleApi } from './api/index.ts'
 import { type CanvasCancelTask, CanvasService, canvasPort } from './canvas.ts'
 
@@ -783,7 +782,8 @@ async function until(check: () => Promise<boolean>, timeoutMs = 3000): Promise<v
 /** 经工具注册表执行 `cancel_canvas`，与会话中调用该工具相同。 */
 async function cancelCanvas(port: CanvasPort, args: Record<string, unknown>) {
   const registry = new ToolRegistry()
-  registerBuiltinTools(registry, { canvas: true })
+  const ports = new Ports([provide(CanvasPort, port)])
+  registerBuiltinTools(registry, ports)
   const ctx: ToolContext = {
     workspaceRoot: '/w',
     conversationId: 'cv_test',
@@ -795,10 +795,10 @@ async function cancelCanvas(port: CanvasPort, args: Record<string, unknown>) {
     resources: new Map(),
     state: new Map(),
     sink: null,
+    port: ports.get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    canvas: port,
   }
   return registry.execute('cancel_canvas', args, ctx)
 }

@@ -53,6 +53,7 @@ function ctx(root: string, room: number, sink: SinkPort | null = null): ToolCont
     resources: new Map(),
     state: openBatchBudget(new Map(), room, Math.floor(flash.contextWindow / 8)),
     sink,
+    port: () => null,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),

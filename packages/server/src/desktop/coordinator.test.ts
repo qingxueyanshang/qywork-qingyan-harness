@@ -16,7 +16,6 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DesktopActResult, DesktopSnapshot, DesktopWindowInfo } from '@qywork/agent'
 import type {
   DesktopAction,
   DesktopNode,
@@ -28,6 +27,7 @@ import type {
 import { until } from '@qywork/core/until.test-helper'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, upsertWorkspace } from '@qywork/store'
+import type { DesktopActResult, DesktopSnapshot, DesktopWindowInfo } from '@qywork/tools'
 import { serve } from '../server.ts'
 import { type DesktopCoordinator, MAX_WINDOW_REFS } from './coordinator.ts'
 import { FakeDesktopHost, HOST_KEY, WINDOW } from './fixtures.ts'

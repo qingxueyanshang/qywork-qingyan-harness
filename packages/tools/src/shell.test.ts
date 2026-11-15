@@ -5,15 +5,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   batchRemaining,
-  type CommandPort,
   chargeBatchBudget,
   openBatchBudget,
+  Ports,
+  provide,
   type ToolContext,
   ToolRegistry,
 } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
 import { BASH_PATH_ENV, commandShell } from './sandbox.ts'
+import { CommandPort } from './shell/port.ts'
 import { backgroundCommandTool, commandEnv, makeShellTool, RecentOutput } from './shell.ts'
 
 const shell = { path: 'unused', argv: [], hint: '测试 shell。' }
@@ -35,6 +37,7 @@ test('同一轮内安装 Git 后已创建的工具仍使用声明的 PowerShell�
       conversationId: 'cv_shell',
       emit: () => {},
       sink: null,
+      port: () => null,
       density: DEFAULT_DENSITY,
       contextWindow: 200_000,
       state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
@@ -117,6 +120,7 @@ describe('run_command 的子进程环境', () => {
       conversationId: 'cv_shell',
       emit: () => {},
       sink: null,
+      port: () => null,
       density: DEFAULT_DENSITY,
       contextWindow: 200_000,
       state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
@@ -161,6 +165,7 @@ describe('run_command 的子进程环境', () => {
           conversationId: 'cv_shell',
           emit: () => {},
           sink: null,
+          port: () => null,
           density: DEFAULT_DENSITY,
           contextWindow: 200_000,
           state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
@@ -209,6 +214,7 @@ describe('run_command 的子进程环境', () => {
           conversationId: 'cv_shell',
           emit: () => {},
           sink: null,
+          port: () => null,
           density: DEFAULT_DENSITY,
           contextWindow: 200_000,
           state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
@@ -232,6 +238,7 @@ describe('run_command 的中止', () => {
     conversationId: 'cv_shell',
     emit: () => {},
     sink: null,
+    port: () => null,
     density: DEFAULT_DENSITY,
     contextWindow: 200_000,
   })
@@ -293,6 +300,7 @@ describe('run_command 的用量记账', () => {
       density: DEFAULT_DENSITY,
       state: openBatchBudget(new Map<string, unknown>(), 1000, 25_000),
       sink: null,
+      port: () => null,
       emit: () => {},
     } as unknown as ToolContext
     expect(chargeBatchBudget(ctx, 980).ok).toBe(true)
@@ -323,6 +331,7 @@ describe('run_command 的管道退出码', () => {
       conversationId: 'cv_shell',
       emit: () => {},
       sink: null,
+      port: () => null,
       density: DEFAULT_DENSITY,
       contextWindow: 200_000,
       state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
@@ -370,6 +379,7 @@ describe('run_command 的管道退出码', () => {
         conversationId: 'cv_shell',
         emit: () => {},
         sink: null,
+        port: () => null,
         density: DEFAULT_DENSITY,
         contextWindow: 200_000,
         state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
@@ -424,7 +434,7 @@ describe('后台命令的工具形态', () => {
       density: DEFAULT_DENSITY,
       contextWindow: 200_000,
       state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
-      ...(port ? { commands: port } : {}),
+      port: new Ports(port ? [provide(CommandPort, port)] : []).get,
     } as unknown as ToolContext
   }
 
@@ -463,7 +473,7 @@ describe('后台命令的工具形态', () => {
     registerBuiltinTools(without)
     expect(without.has('background_command')).toBe(false)
     const withCommands = new ToolRegistry()
-    registerBuiltinTools(withCommands, { commands: true })
+    registerBuiltinTools(withCommands, new Ports([provide(CommandPort, fakePort({}).port)]))
     expect(withCommands.has('background_command')).toBe(true)
   })
 

@@ -25,16 +25,10 @@
  *    全部消息计算，其他工具的大结果可能使基底移出保留范围）。任一条不成立即整份投递并成为新基底。
  */
 
-import {
-  compactionEpoch,
-  type DesktopElement,
-  type DesktopSnapshot,
-  deliveredTokens,
-  recordBatchSpent,
-  type ToolContext,
-} from '@qywork/agent'
+import { compactionEpoch, deliveredTokens, recordBatchSpent, type ToolContext } from '@qywork/agent'
 import type { TokenDensity } from '@qywork/ai'
 import type { IntermediateResourceRef, ResourceId } from '@qywork/core'
+import { type DesktopElement, DesktopPort, type DesktopSnapshot } from './desktop/port.ts'
 import { deliver, type LandedResult, observationBudget, viewLimit } from './sink.ts'
 
 /** 存盘正文：一行一个 JSON 值。 */
@@ -75,7 +69,7 @@ const MIN_UNCHANGED_SHARE = 0.5
 
 type DesktopResultContext = Pick<
   ToolContext,
-  'sink' | 'contextWindow' | 'density' | 'state' | 'desktop'
+  'sink' | 'contextWindow' | 'density' | 'state' | 'port'
 >
 
 type Actions = DesktopElement['actions']
@@ -162,9 +156,10 @@ export interface DesktopResultParts {
 export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const { ctx } = input
   const { shown: snapshot, hits } = viewOf(input.snapshot, input.filter)
+  const desktop = ctx.port(DesktopPort)
   const receipt = {
     ...input.receipt,
-    ...(ctx.desktop ? { foregroundEnabled: ctx.desktop.foregroundEnabled() } : {}),
+    ...(desktop ? { foregroundEnabled: desktop.foregroundEnabled() } : {}),
   }
   const limit = input.limit ?? viewLimit(ctx, observationBudget(ctx.contextWindow))
   const lead = input.filter ? `${input.lead} · ${filterNote(snapshot)}` : input.lead

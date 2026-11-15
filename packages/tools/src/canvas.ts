@@ -1,23 +1,16 @@
 /**
- * 画布工具：大模型经画布端口（`ctx.canvas`）创建、读取、修改、运行工作区中的 `*.canvas.json`。
+ * 画布工具：大模型经画布端口（`CanvasPort`）创建、读取、修改、运行工作区中的 `*.canvas.json`。
  *
  * 读取、编辑、运行、取回、取消与取帧分别声明工具及参数；取回只查询已有任务，不重新提交生成；
  * 取消与界面卡片上的取消相同；取帧经 Office 执行程序解码视频，落盘与界面取帧相同。
  *
  * 读写与运行全部由服务端画布服务执行，与界面共用同一个实例：写入次序、运行中状态与失败原文只有一份，
  * 大模型写入的节点在写入时即推送给界面，不等待本次工具调用结束。
- * 运行使用本轮的生成端口（`ctx.media`），费用计入本轮；本轮的中止信号只结束等待，生成归画布所有。
+ * 运行使用本轮的生成端口（`MediaPort`），费用计入本轮；本轮的中止信号只结束等待，生成归画布所有。
  */
 
 import { readFile } from 'node:fs/promises'
-import {
-  type CanvasEditResult,
-  type CanvasPort,
-  type CanvasRender,
-  chargeImage,
-  type ToolOutcome,
-  type ToolSpec,
-} from '@qywork/agent'
+import { chargeImage, type ToolOutcome, type ToolSpec } from '@qywork/agent'
 import {
   ART_SIZE_PARAM,
   CARD_GAP,
@@ -39,7 +32,10 @@ import {
   parseCanvasOps,
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
+import { type CanvasEditResult, CanvasPort, type CanvasRender } from './canvas/port.ts'
+import { MediaPort } from './generate/port.ts'
 import { shrinkImage } from './image.ts'
+import { OfficePort } from './office/port.ts'
 import { grabVideoFrame } from './office-worker.ts'
 import { resolveInWorkspace, rootsOf } from './paths.ts'
 
@@ -272,12 +268,14 @@ export const createCanvasTool: ToolSpec = {
   summary: '在指定路径创建画布',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
+  requires: [CanvasPort],
   async fn(args, ctx) {
-    if (!ctx.canvas) return failure('本次执行没有画布通道')
+    const canvas = ctx.port(CanvasPort)
+    if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path?.endsWith('.canvas.json'))
       return failure('path 必须是以 .canvas.json 结尾的画布路径', 'invalid_tool_arguments')
-    const created = await ctx.canvas.create(path)
+    const created = await canvas.create(path)
     return {
       status: 'success',
       message: `已创建空画布：${created}。使用 edit_canvas 添加节点与连线。`,
@@ -324,8 +322,9 @@ export const readCanvasTool: ToolSpec = {
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'read',
   parallelSafe: true,
+  requires: [CanvasPort],
   async fn(args, ctx) {
-    const canvas = ctx.canvas
+    const canvas = ctx.port(CanvasPort)
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     try {
@@ -602,8 +601,9 @@ export const editCanvasTool: ToolSpec = {
   targetExtractor: (a) => text(a.path) ?? null,
   requireOneOf: [['ops_json', 'ops_path']],
   permissionEffect: 'write',
+  requires: [CanvasPort],
   async fn(args, ctx) {
-    const canvas = ctx.canvas
+    const canvas = ctx.port(CanvasPort)
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
@@ -790,8 +790,9 @@ export const runCanvasTool: ToolSpec = {
   summary: '运行画布中的一个或多个生成节点',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
+  requires: [CanvasPort],
   async fn(args, ctx) {
-    const canvas = ctx.canvas
+    const canvas = ctx.port(CanvasPort)
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
@@ -801,7 +802,8 @@ export const runCanvasTool: ToolSpec = {
         'node 必须是生成卡名称的数组（不是 JSON 字符串），单张卡写成一个元素的数组',
         'invalid_tool_arguments',
       )
-    if (!ctx.media) return failure('本次执行没有生成通道')
+    const media = ctx.port(MediaPort)
+    if (!media) return failure('本次执行没有生成通道')
     try {
       const ids = await idsOf(
         canvas,
@@ -811,8 +813,8 @@ export const runCanvasTool: ToolSpec = {
       if (typeof ids === 'string') return failure(ids, 'invalid_tool_arguments')
       const nodes = [...new Set(ids)]
       return nodes.length > 1
-        ? batchReceipt(await canvas.runBatch(path, nodes, ctx.media, ctx.signal))
-        : generationReceipt(await canvas.run(path, nodes[0]!, ctx.media, ctx.signal))
+        ? batchReceipt(await canvas.runBatch(path, nodes, media, ctx.signal))
+        : generationReceipt(await canvas.run(path, nodes[0]!, media, ctx.signal))
     } catch (err) {
       return { status: 'failure', executed: true, message: (err as Error).message }
     }
@@ -841,19 +843,21 @@ export const retrieveCanvasTool: ToolSpec = {
   summary: '取回画布视频并更新节点',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
+  requires: [CanvasPort],
   async fn(args, ctx) {
-    const canvas = ctx.canvas
+    const canvas = ctx.port(CanvasPort)
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
     const ref = text(args.node)
     if (!ref) return failure('缺少 node', 'invalid_tool_arguments')
-    if (!ctx.media) return failure('本次执行没有生成通道')
+    const media = ctx.port(MediaPort)
+    if (!media) return failure('本次执行没有生成通道')
     try {
       const ids = await idsOf(canvas, path, [ref])
       if (typeof ids === 'string') return failure(ids, 'invalid_tool_arguments')
       return generationReceipt(
-        await canvas.retrieve(path, ids[0]!, text(args.version), ctx.media, ctx.signal),
+        await canvas.retrieve(path, ids[0]!, text(args.version), media, ctx.signal),
       )
     } catch (err) {
       return { status: 'failure', executed: true, message: (err as Error).message }
@@ -906,8 +910,9 @@ export const cancelCanvasTool: ToolSpec = {
   summary: '取消画布卡片正在进行的生成',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
+  requires: [CanvasPort],
   async fn(args, ctx) {
-    const canvas = ctx.canvas
+    const canvas = ctx.port(CanvasPort)
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
@@ -976,10 +981,11 @@ export const captureCanvasFrameTool: ToolSpec = {
   summary: '从画布视频卡截取一帧',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
+  requires: [CanvasPort, OfficePort],
   async fn(args, ctx) {
-    const canvas = ctx.canvas
+    const canvas = ctx.port(CanvasPort)
     if (!canvas) return failure('本次执行没有画布通道')
-    const office = ctx.office
+    const office = ctx.port(OfficePort)
     if (!office) return failure('本次执行没有 Office 执行程序，无法解码视频')
     if (!office.enabled()) return failure('Office 文档已关闭')
     const path = text(args.path)
@@ -1046,8 +1052,9 @@ export const exportTimelineTool: ToolSpec = {
   summary: '导出画布时间线的成片',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
+  requires: [CanvasPort],
   async fn(args, ctx) {
-    const canvas = ctx.canvas
+    const canvas = ctx.port(CanvasPort)
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')

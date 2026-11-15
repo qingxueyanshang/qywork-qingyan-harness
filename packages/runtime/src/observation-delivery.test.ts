@@ -24,21 +24,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   AgentLoop,
-  type BrowserElement,
-  type BrowserObservation,
-  type BrowserOptionsPage,
-  type BrowserPort,
-  type BrowserSelectOption,
   batchRemaining,
   type CompactionOutcome,
   type CompactionPort,
   chargeBatchBudget,
   condenseMessage,
-  type DesktopElement,
-  type DesktopPort,
-  type DesktopSnapshot,
   type LoopPersistence,
   openBatchBudget,
+  Ports,
+  provide,
   type SinkPort,
   type ToolContext,
   type ToolContextBase,
@@ -61,7 +55,17 @@ import {
   settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
-import { registerBuiltinTools } from '@qywork/tools'
+import {
+  type BrowserElement,
+  type BrowserObservation,
+  type BrowserOptionsPage,
+  BrowserPort,
+  type BrowserSelectOption,
+  type DesktopElement,
+  DesktopPort,
+  type DesktopSnapshot,
+  registerBuiltinTools,
+} from '@qywork/tools'
 import { collectResourceGarbage, RuntimeSink } from './sink.ts'
 import { stepsToUnits } from './transcript.ts'
 
@@ -387,7 +391,10 @@ function harness(): Harness {
     contextSnapshot: [],
   })
   const registry = new ToolRegistry()
-  registerBuiltinTools(registry, { desktop: true, browser: true })
+  registerBuiltinTools(
+    registry,
+    new Ports([provide(DesktopPort, {} as DesktopPort), provide(BrowserPort, {} as BrowserPort)]),
+  )
   const h: Harness = {
     dir,
     dbPath,
@@ -421,11 +428,13 @@ function toolCtx(input: {
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: input.sink === undefined ? input.h.sink : input.sink,
+    port: new Ports([
+      ...(input.desktop ? [provide(DesktopPort, input.desktop)] : []),
+      ...(input.browser ? [provide(BrowserPort, input.browser)] : []),
+    ]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    ...(input.desktop ? { desktop: input.desktop } : {}),
-    ...(input.browser ? { browser: input.browser } : {}),
   }
 }
 
@@ -756,9 +765,9 @@ function makeBase(h: Harness, runId: RunId, desktop: DesktopPort): () => ToolCon
     resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: new RuntimeSink(h.store, h.content, runId),
+    port: new Ports([provide(DesktopPort, desktop)]).get,
     signal: new AbortController().signal,
     requestPermission: async () => ({ allowed: true }),
-    desktop,
   })
 }
 

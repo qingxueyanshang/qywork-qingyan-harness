@@ -9,7 +9,6 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
-import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/agent'
 import { findMediaModel } from '@qywork/ai'
 import {
   type AgentEvent,
@@ -24,6 +23,7 @@ import {
   parseCanvas,
   serializeCanvas,
 } from '@qywork/core'
+import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/tools'
 import { CanvasFailure, CanvasService, type CanvasWorkspace } from './canvas.ts'
 
 const PATH = 'board.canvas.json'

@@ -4,12 +4,27 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { AgentLoop, type CommandPort, type ToolOutcome, ToolRegistry } from '@qywork/agent'
+import {
+  AgentLoop,
+  DelegatePort,
+  Ports,
+  provide,
+  type ToolOutcome,
+  ToolRegistry,
+} from '@qywork/agent'
 import { baseCtx, noopPersistence } from '@qywork/agent/fixtures.test-helper'
 import { buildAdapter, type ToolSchema } from '@qywork/ai'
 import type { MediaOutput } from '@qywork/core'
+import { PersonalizationPort, PetPort } from './appearance/port.ts'
+import { BrowserPort } from './browser/port.ts'
+import { CanvasPort } from './canvas/port.ts'
+import { DesktopPort } from './desktop/port.ts'
 import { MEDIA_TOOLS } from './generate.ts'
 import { registerBuiltinTools } from './index.ts'
+import { McpConfigPort } from './mcp-config/port.ts'
+import { OfficePort } from './office/port.ts'
+import { PluginPort } from './plugin-install/port.ts'
+import { CommandPort } from './shell/port.ts'
 import { backgroundCommandTool } from './shell.ts'
 import { makeLoadToolTool, PendingToolPool } from './tool-pool.ts'
 
@@ -134,7 +149,10 @@ describe.each(['openai_responses', 'openai_chat_completions'] as const)(
               return persist.openToolStep(...input)
             },
           },
-          makeToolContext: (runId) => ({ ...baseCtx(runId), commands: commandPort(stopped) }),
+          makeToolContext: (runId) => ({
+            ...baseCtx(runId),
+            port: new Ports([provide(CommandPort, commandPort(stopped))]).get,
+          }),
         })
         const outcomes: ToolOutcome[] = []
         let stopReason: string | undefined
@@ -172,24 +190,25 @@ describe.each(['openai_responses', 'openai_chat_completions'] as const)(
   },
 )
 
-/** 注册全部内置工具，包括只在通道接入时注册的工具与按需加载入口。 */
+/** 注册全部内置工具，包括只在提供端口时注册的工具与按需加载入口。 */
 function builtinSchemas(): ToolSchema[] {
   const registry = new ToolRegistry()
-  registerBuiltinTools(registry, {
-    delegate: true,
-    commands: true,
-    plugins: true,
-    mcpConfig: true,
-    browser: true,
-    desktop: true,
-    canvas: true,
-    panel: true,
-    personalization: true,
-    pets: true,
-    office: true,
-    videoDecoder: true,
-    media: Object.keys(MEDIA_TOOLS) as MediaOutput[],
-  })
+  registerBuiltinTools(
+    registry,
+    new Ports([
+      provide(DelegatePort, {} as DelegatePort),
+      provide(CommandPort, {} as CommandPort),
+      provide(PluginPort, {} as PluginPort),
+      provide(McpConfigPort, {} as McpConfigPort),
+      provide(BrowserPort, {} as BrowserPort),
+      provide(DesktopPort, {} as DesktopPort),
+      provide(CanvasPort, {} as CanvasPort),
+      provide(PersonalizationPort, {} as PersonalizationPort),
+      provide(PetPort, {} as PetPort),
+      provide(OfficePort, { videoDecoder: true } as OfficePort),
+    ]),
+    { panel: true, media: Object.keys(MEDIA_TOOLS) as MediaOutput[] },
+  )
   registry.register(makeLoadToolTool(new PendingToolPool({ registry, onLoaded: () => {} })))
   return registry.schemas()
 }

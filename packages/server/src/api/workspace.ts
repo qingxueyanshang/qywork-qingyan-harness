@@ -2,7 +2,7 @@
 
 import { mkdir, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
-import type { ToolSpec } from '@qywork/agent'
+import type { PortKey, ToolSpec } from '@qywork/agent'
 import { MEDIA_OUTPUTS } from '@qywork/core'
 import { configDir } from '@qywork/runtime'
 import {
@@ -16,6 +16,7 @@ import {
   setWorkspacePinned,
   upsertWorkspace,
 } from '@qywork/store'
+import type { OfficePort } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
 /**
@@ -283,26 +284,35 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    * 插件与 MCP 子进程且无人关闭。异常路径同样需要 release，因此使用 try/finally。
    */
   if (p === '/api/tools') {
-    const { ToolRegistry, TOOL_CATEGORIES } = await import('@qywork/agent')
-    const { registerBuiltinTools, LOAD_TOOL_SPEC } = await import('@qywork/tools')
+    const { DelegatePort, Ports, provide, ToolRegistry, TOOL_CATEGORIES } = await import(
+      '@qywork/agent'
+    )
+    const tools = await import('@qywork/tools')
+    const { registerBuiltinTools, LOAD_TOOL_SPEC } = tools
     const { acquireExtensions, releaseExtensions, pluginToolPrefix, toolNamePrefix } = await import(
       '@qywork/runtime'
     )
 
     const registry = new ToolRegistry()
     // 设置页列出各通道的完整工具目录；会话实际可用的工具仍由端口与配置决定。
-    registerBuiltinTools(registry, {
-      mcpConfig: true,
-      plugins: true,
-      browser: true,
-      desktop: true,
-      canvas: true,
-      office: true,
-      videoDecoder: true,
-      delegate: true,
-      commands: true,
-      media: MEDIA_OUTPUTS,
-    })
+    // 此处只判定是否注册，不调用端口：端口取空对象，Office 端口只提供已安装视频解码库这一项。
+    const listed = (key: PortKey<unknown>) => provide(key, {})
+    registerBuiltinTools(
+      registry,
+      new Ports([
+        ...[
+          tools.McpConfigPort,
+          tools.PluginPort,
+          tools.BrowserPort,
+          tools.DesktopPort,
+          tools.CanvasPort,
+          DelegatePort,
+          tools.CommandPort,
+        ].map(listed),
+        provide(tools.OfficePort, { videoDecoder: true } as OfficePort),
+      ]),
+      { media: MEDIA_OUTPUTS },
+    )
     /*
      * `load_tool` 需要手动补入一行：它只在会话建立待加载池时注册，不在 `registerBuiltinTools`
      * 中，此处新建的注册表无法列出它。不要在此处重新计算分档（统计 schema 总量、超过阈值才列出）：

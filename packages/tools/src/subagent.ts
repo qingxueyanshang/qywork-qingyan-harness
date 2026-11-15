@@ -12,7 +12,13 @@
  * 不抛异常：注册表会把异常归并为一句「工具执行出错」，模型无法据此调整做法。
  */
 
-import type { DelegatePort, SubagentSummary, ToolContext, ToolSpec } from '@qywork/agent'
+import {
+  DelegatePort,
+  type SubagentSummary,
+  TodoPort,
+  type ToolContext,
+  type ToolSpec,
+} from '@qywork/agent'
 import { EFFORT_ORDER, isEffortLevel, parseSubagentTarget, SUBAGENT_KIND_LABEL } from '@qywork/core'
 import { idArg } from './args.ts'
 
@@ -135,8 +141,9 @@ export const subagentTool: ToolSpec = {
   // 一次只派发一个：同一轮内的多次调用串行执行。并行只能使用 workflow。
   parallelSafe: false,
 
+  requires: [DelegatePort],
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
-    const delegate = ctx.delegate
+    const delegate = ctx.port(DelegatePort)
     if (!delegate) {
       // 正常情况下不会执行到此处：没有派发通道时本工具不注册。
       return { status: 'failure' as const, message: '本次执行没有派发通道' }
@@ -167,7 +174,11 @@ export const subagentTool: ToolSpec = {
      * 只在存在未完成清单时要求归属：没有清单的短任务照常可以派发。内容必须唯一且逐字匹配，
      * 不接受模糊匹配，也不静默替模型选择一条。
      */
-    const unfinished = ctx.todos?.read()?.filter((todo) => todo.status !== 'completed') ?? []
+    const unfinished =
+      ctx
+        .port(TodoPort)
+        ?.read()
+        ?.filter((todo) => todo.status !== 'completed') ?? []
     // 校验失败时列出当前未完成的待办：模型据此逐字复制，不必另行读取清单。
     const listing = `当前未完成：${unfinished.map((todo) => `「${todo.content}」`).join('、')}`
     if (unfinished.length > 0 && !parentTodo) {

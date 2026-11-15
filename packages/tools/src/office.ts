@@ -3,25 +3,20 @@
  *
  * 模型编写 Python 制作脚本，由 `write` 执行；办公软件只以只读方式打开文件，用于重算、目录页码回填、导出与渲染，
  * 交付文件从不经由办公软件另存（WPS 另存会写入最近文档与账号打开记录，并重写整个文件包）。
- * 执行程序的位置与本机能力由宿主注入（`ctx.office`），没有可用的 Python 与文档库时本工具不注册。
+ * 执行程序的位置与本机能力由宿主注入（`OfficePort`），工具在 `requires` 中声明该端口：没有可用的 Python 与文档库时不注册。
  *
  * worker 的调用约定见 `office-worker.ts`。
  */
 
 import { readFile, stat } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
-import {
-  chargeImage,
-  type OfficePort,
-  type ToolContext,
-  type ToolOutcome,
-  type ToolSpec,
-} from '@qywork/agent'
+import { chargeImage, type ToolContext, type ToolOutcome, type ToolSpec } from '@qywork/agent'
 import type { FileChange } from '@qywork/core'
 import { imageSizeOf } from '@qywork/core'
 import { readHashes } from './files.ts'
 import { landFiles } from './generate.ts'
 import { downscaleNote, shrinkImage, zoomImage } from './image.ts'
+import { OfficePort } from './office/port.ts'
 import {
   noResponse,
   READ_TIMEOUT_MS,
@@ -339,7 +334,7 @@ function withOffice(
   run: (ctx: ToolContext, port: OfficePort, args: Record<string, unknown>) => Promise<ToolOutcome>,
 ): ToolSpec['fn'] {
   return async (args, ctx) => {
-    const port = ctx.office
+    const port = ctx.port(OfficePort)
     if (!port) {
       return { status: 'failure', executed: false, message: '本次执行没有 Office 执行程序' }
     }
@@ -369,6 +364,7 @@ export const readOfficeGuideTool: ToolSpec = {
   targetExtractor: (a) => (typeof a.format === 'string' ? a.format : null),
   permissionEffect: 'read',
   parallelSafe: true,
+  requires: [OfficePort],
   fn: withOffice(guide),
 }
 
@@ -398,6 +394,7 @@ export const readOfficeTool: ToolSpec = {
   permissionEffect: 'read',
   parallelSafe: true,
   resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
+  requires: [OfficePort],
   fn: withOffice(read),
 }
 
@@ -437,6 +434,7 @@ export const writeOfficeTool: ToolSpec = {
   permissionEffect: 'execute',
   parallelSafe: false,
   resourceKeys: (a) => stringList(a.outputs).map((p) => `file:${p}`),
+  requires: [OfficePort],
   fn: withOffice(write),
 }
 
@@ -493,6 +491,7 @@ export const viewOfficeTool: ToolSpec = {
   permissionEffect: 'write',
   parallelSafe: false,
   resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
+  requires: [OfficePort],
   fn: withOffice(view),
 }
 

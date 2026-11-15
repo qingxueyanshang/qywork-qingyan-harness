@@ -4,11 +4,12 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { openBatchBudget, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { openBatchBudget, Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { strToU8, zipSync } from 'fflate'
 import { importSkillTool, readSkillTool, scanSkills } from '../skills.ts'
 import { commitSkillDirectory, importSkills } from './install.ts'
+import { SkillSourcePaths } from './port.ts'
 
 let root: string
 let home: string
@@ -43,10 +44,10 @@ function context(paths: string[] = []): ToolContext {
     resources: new Map(),
     state: openBatchBudget(new Map(), Infinity, 0),
     sink: null,
+    port: new Ports([provide(SkillSourcePaths, () => paths)]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
-    skillSourcePaths: () => paths,
   }
 }
 

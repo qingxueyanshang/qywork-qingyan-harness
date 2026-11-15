@@ -35,13 +35,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import { delimiter, join } from 'node:path'
-import {
-  type CommandPort,
-  deliveredTokens,
-  recordBatchSpent,
-  type ToolContext,
-  type ToolSpec,
-} from '@qywork/agent'
+import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
 import type { FileChange, IntermediateResourceRef } from '@qywork/core'
 import { idArg } from './args.ts'
 import { classifyAddress } from './net-safety.ts'
@@ -64,6 +58,7 @@ import {
   treeBusy,
 } from './sandbox.ts'
 import { createStreamRedactor, scrubEnv } from './secrets.ts'
+import { CommandPort } from './shell/port.ts'
 import { deliver, excerptBytes } from './sink.ts'
 import { openChangeWindow } from './workspace-watch.ts'
 
@@ -337,8 +332,8 @@ export function resolveCommandTimeout(timeoutMs: unknown): number {
  * 不写成「仅非 bash 时前置」：那是一条按语法分叉的排版规则，分叉的风险是某一档
  * 遗漏前置，且只在对应的机器上才能发现。三档共用同一份排版。
  *
- * `background` 为真时规格带 `background` 参数与后台命令的说明，装配方据此与 `CommandPort`
- * 同时提供：没有端口时该参数无法兑现。
+ * `background` 为真时规格带 `background` 参数与后台命令的说明：注册方在提供了 `CommandPort` 时传入，
+ * 没有端口时该参数无法兑现。
  */
 /**
  * 启动图形应用的写法，按平台给出。图形应用不自行退出，直接执行时命令一直等待；以 `background` 启动时应用被登记为
@@ -461,8 +456,8 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
 
       // 没有端口时规格中不含 `background`，参数即使出现也按前台执行。转入后台之后的文件改动归属本次调用的 step，
       // 没有 step id（直接构造 ToolContext 的测试夹具）时同样只能前台执行。
-      const owner =
-        ctx.commands && ctx.stepId !== undefined ? { port: ctx.commands, stepId: ctx.stepId } : null
+      const port = ctx.port(CommandPort)
+      const owner = port && ctx.stepId !== undefined ? { port, stepId: ctx.stepId } : null
       const background = owner !== null && args.background === true
       if (background && probeUrl !== null) {
         return {
@@ -835,9 +830,10 @@ export const backgroundCommandTool: ToolSpec = {
   // 只读取或停止本会话自己转入后台的命令；命令启动时已经过权限判定。
   permissionEffect: 'internal_control',
   parallelSafe: false,
+  requires: [CommandPort],
 
   async fn(args, ctx) {
-    const port = ctx.commands
+    const port = ctx.port(CommandPort)
     if (!port) {
       // 正常情况下不会执行到此处：没有后台命令通道时本工具不注册。
       return { status: 'failure', message: '本次执行没有后台命令通道' }

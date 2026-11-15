@@ -11,9 +11,6 @@
 import { lstat, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, parse, resolve } from 'node:path'
 import {
-  type MediaCall,
-  type MediaCallResult,
-  type MediaPort,
   mediaDurationOfFile,
   type ToolContext,
   type ToolOutcome,
@@ -44,6 +41,7 @@ import {
   taskPhaseLabel,
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
+import { type MediaCall, type MediaCallResult, MediaPort } from './generate/port.ts'
 import {
   displayPath,
   type RootsInput,
@@ -891,12 +889,13 @@ export const generateImageTool: ToolSpec = {
   targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
-    if (!ctx.media) return failure('本次执行没有生成通道')
+    const media = ctx.port(MediaPort)
+    if (!media) return failure('本次执行没有生成通道')
     const common = commonArgs(args)
     if ('status' in common) return common
     const outcome = await generateMedia({
       roots: rootsOf(ctx),
-      media: ctx.media,
+      media,
       signal: ctx.signal,
       type: 'image',
       prompt: common.prompt,
@@ -960,7 +959,8 @@ export const generateVideoTool: ToolSpec = {
   targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
-    if (!ctx.media) return failure('本次执行没有生成通道')
+    const media = ctx.port(MediaPort)
+    if (!media) return failure('本次执行没有生成通道')
     const common = commonArgs(args)
     if ('status' in common) return common
     const inputs = (
@@ -974,7 +974,7 @@ export const generateVideoTool: ToolSpec = {
     ).flatMap(([key, role]) => pathList(args[key]).map((path) => ({ role, path })))
     const outcome = await generateMedia({
       roots: rootsOf(ctx),
-      media: ctx.media,
+      media,
       signal: ctx.signal,
       type: 'video',
       prompt: common.prompt,
@@ -1013,12 +1013,13 @@ export const retrieveMediaTool: ToolSpec = {
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
   async fn(args, ctx) {
-    if (!ctx.media) return failure('本次执行没有生成通道')
+    const media = ctx.port(MediaPort)
+    if (!media) return failure('本次执行没有生成通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
     const outcome = await resumeMedia({
       roots: rootsOf(ctx),
-      media: ctx.media,
+      media,
       signal: ctx.signal,
       record: path,
       ...progressOf(ctx),
@@ -1070,12 +1071,13 @@ export const generateAudioTool: ToolSpec = {
   targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
-    if (!ctx.media) return failure('本次执行没有生成通道')
+    const media = ctx.port(MediaPort)
+    if (!media) return failure('本次执行没有生成通道')
     const common = commonArgs({ ...args, prompt: args.text })
     if ('status' in common) return common
     const outcome = await generateMedia({
       roots: rootsOf(ctx),
-      media: ctx.media,
+      media,
       signal: ctx.signal,
       type: 'audio',
       prompt: common.prompt,

@@ -6,8 +6,8 @@
  *
  * 四条边界：
  *
- * 1. **端口只从 `ctx.browser` 获取。** 不读取参数中自行声明的会话、Run 与工作区根目录。
- *    没有端口时不注册这七个工具（`index.ts` 按通道注册），工具内部仍判断一次并如实报错。
+ * 1. **端口只经 `ctx.port(BrowserPort)` 取得。** 不读取参数中自行声明的会话、Run 与工作区根目录。
+ *    七个工具在 `requires` 中声明该端口，没有端口时不注册；工具内部仍判断一次并如实报错。
  * 2. **注册表不按 schema 校验实参。** 必需参数、取值范围、数值有限性、动作参数的
  *    适用范围都在此处判定，判定完成之前不调用端口。
  * 3. **`null`、空串与字符串 `"null"` 视为缺失。** OpenAI 兼容协议的 strict 改写会将可选字段
@@ -25,6 +25,16 @@
 import { stat } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
+  checkDuration,
+  checkHeldKeys,
+  checkKeyPhases,
+  checkPath,
+  INPUT_LIMITS,
+  type ToolContext,
+  type ToolOutcome,
+  type ToolSpec,
+} from '@qywork/agent'
+import {
   type BrowserActionKind,
   type BrowserExecution,
   type BrowserKeyPhase,
@@ -32,18 +42,10 @@ import {
   type BrowserOptionsPage,
   type BrowserPathStep,
   type BrowserPoint,
-  type BrowserPort,
+  BrowserPort,
   type BrowserWaitState,
-  checkDuration,
-  checkHeldKeys,
-  checkKeyPhases,
-  checkPath,
   type FollowUpObservation,
-  INPUT_LIMITS,
-  type ToolContext,
-  type ToolOutcome,
-  type ToolSpec,
-} from '@qywork/agent'
+} from './browser/port.ts'
 import { browserResult, isOptionsPage, MAX_META_CHARS } from './browser-results.ts'
 import { resolveInWorkspace, resolveWritablePath, rootsOf } from './paths.ts'
 
@@ -434,7 +436,7 @@ async function onBrowser(
   ctx: ToolContext,
   body: (browser: BrowserPort, send: PortCall) => Promise<ToolOutcome>,
 ): Promise<ToolOutcome> {
-  const browser = ctx.browser
+  const browser = ctx.port(BrowserPort)
   if (!browser) return NO_PORT
   if (ctx.signal.aborted) return STOPPED
 
@@ -610,6 +612,7 @@ const BASE = {
   facet: '页面',
   objectLabel: '浏览器控制',
   permissionEffect: 'browser',
+  requires: [BrowserPort],
 } as const
 
 export const browserTabsTool: ToolSpec = {
@@ -1136,7 +1139,7 @@ export const browserDownloadTool: ToolSpec = {
     }),
 }
 
-/** 注册顺序在此处确定，`index.ts` 按通道整组注册或整组不注册。 */
+/** 注册顺序在此处确定。七个工具声明同一个端口，整组注册或整组不注册。 */
 export const browserTools: ToolSpec[] = [
   browserTabsTool,
   browserNavigateTool,

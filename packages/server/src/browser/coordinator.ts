@@ -20,6 +20,8 @@
  */
 
 import { stat } from 'node:fs/promises'
+import type { BrowserEventFrame } from '@qywork/core'
+import { ART_POSTER_MS, log } from '@qywork/core'
 import type {
   BrowserActInput,
   BrowserActResult,
@@ -32,9 +34,7 @@ import type {
   BrowserWaitResult,
   BrowserWaitState,
   FollowUpObservation,
-} from '@qywork/agent'
-import type { BrowserEventFrame } from '@qywork/core'
-import { ART_POSTER_MS, log } from '@qywork/core'
+} from '@qywork/tools'
 import { ART_HOST_PATH, ART_LIB_PATH, prepareArtForRender } from '../art.ts'
 import { type BrowserBridge, BrowserBridgeError, type NativeBrowserHost } from './bridge.ts'
 import { CdpClient, CdpDisconnectedError, CdpInitError } from './cdp.ts'

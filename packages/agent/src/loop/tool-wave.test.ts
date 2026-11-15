@@ -85,7 +85,7 @@ describe('工具中途输出', () => {
   /**
    * 回归：中途输出必须能识别所属的工具卡片。
    *
-   * 前端按 stepId 在 transcript 中查找工具卡片（`connection.ts` 的
+   * 前端按 stepId 在 transcript 中查找工具卡片（web 的 `store/events/tools.ts` 中的
    * `find(t => t.id === ev.stepId)`），空串无法匹配任何卡片，整条输出因此被静默丢弃：
    * 事件正常发出而界面保持空白，与命令没有输出无法区分。
    */
@@ -225,6 +225,7 @@ describe('ToolContext 生命周期', () => {
           resources: new Map(),
           state: new Map(),
           sink: null,
+          port: () => null,
           signal: new AbortController().signal,
           requestPermission: async () => ({ allowed: true }),
         }
@@ -289,6 +290,7 @@ describe('ToolContext 生命周期', () => {
           resources: new Map(),
           state: new Map(),
           sink: null,
+          port: () => null,
           signal: new AbortController().signal,
           requestPermission: async () => ({ allowed: true }),
         }
@@ -396,6 +398,7 @@ describe('权限拒绝', () => {
         resources: new Map(),
         state: new Map(),
         sink: null,
+        port: () => null,
         signal: new AbortController().signal,
         requestPermission: async () => ({ allowed: false as const, reason: '权限规则拦下：夹具' }),
       }),
@@ -560,6 +563,7 @@ describe('重复无进展', () => {
         resources: new Map(),
         state: new Map(),
         sink: null,
+        port: () => null,
         signal: new AbortController().signal,
         emit: () => {},
         requestPermission: async () => ({ allowed: true }),
@@ -989,6 +993,7 @@ describe('重复无进展', () => {
         resources: new Map(),
         state: new Map(),
         sink: null,
+        port: () => null,
         signal: new AbortController().signal,
         emit: () => {},
         requestPermission: async () => ({ allowed: true }),
@@ -1292,6 +1297,7 @@ describe('停止能中止停滞的工具', () => {
         resources: new Map(),
         state: new Map(),
         sink: null,
+        port: () => null,
         signal: controller.signal,
         requestPermission: async () => ({ allowed: true }),
       }),

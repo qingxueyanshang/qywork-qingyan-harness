@@ -6,7 +6,7 @@
  * 包内互相引用与测试使用相对路径，不受本清单约束。
  */
 
-import type { ToolRegistry } from '@qywork/agent'
+import { Ports, type ToolRegistry } from '@qywork/agent'
 import { browserTools } from './browser.ts'
 import { desktopTools } from './desktop.ts'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.ts'
@@ -17,11 +17,58 @@ import { readResourceTool } from './resources.ts'
 import { commandShell } from './sandbox.ts'
 import { createScheduleTool, deleteScheduleTool, listSchedulesTool } from './schedules.ts'
 import { globTool, grepTool } from './search.ts'
+import { CommandPort } from './shell/port.ts'
 import { backgroundCommandTool, makeShellTool } from './shell.ts'
 import { importSkillTool, moveSkillTool, readSkillTool, writeSkillTool } from './skills.ts'
 import { writeTodosTool } from './todos.ts'
 import { webFetchTool, webSearchTool } from './web.ts'
 
+// 端口：接口与键定义在使用它的工具所在的目录，装配方（runtime、server、cli）据此提供实现
+export { PersonalizationPort, PetPort } from './appearance/port.ts'
+export {
+  type BrowserActInput,
+  type BrowserActReceipt,
+  type BrowserActResult,
+  type BrowserDownloadResult,
+  type BrowserElement,
+  type BrowserExecution,
+  type BrowserKeyPhase,
+  type BrowserObservation,
+  type BrowserOptionsPage,
+  type BrowserPathStep,
+  type BrowserPoint,
+  BrowserPort,
+  type BrowserRefusal,
+  type BrowserSelectOption,
+  type BrowserTabInfo,
+  type BrowserWaitReceipt,
+  type BrowserWaitResult,
+  type BrowserWaitState,
+  type FollowUpObservation,
+} from './browser/port.ts'
+export { type CanvasEditResult, CanvasPort, type CanvasRender } from './canvas/port.ts'
+export {
+  type CloudSkillErrorCode,
+  CloudSkillPort,
+  type CloudSkillResult,
+} from './cloud-skills/port.ts'
+export {
+  type DesktopActResult,
+  type DesktopBlockingWindowInfo,
+  type DesktopElement,
+  type DesktopFollowUp,
+  type DesktopImage,
+  type DesktopImagePoint,
+  DesktopPort,
+  type DesktopRefusal,
+  type DesktopSnapshot,
+  type DesktopText,
+  type DesktopWaitCondition,
+  type DesktopWaitResult,
+  type DesktopWindowInfo,
+} from './desktop/port.ts'
+export { FileReadPort } from './files/port.ts'
+export { type MediaCall, type MediaCallResult, MediaPort } from './generate/port.ts'
 // 生成工具按类别查询：runtime 据此判断本轮快照是否列出该类别的模型。
 // 生成的执行路径与任务记录后缀：server 的画布服务与生成工具使用同一个 `generateMedia`
 export {
@@ -36,6 +83,8 @@ export {
   TASK_SUFFIX,
   taskHeldElsewhere,
 } from './generate.ts'
+export { GoalPort } from './goals/port.ts'
+export { HistoryPort, type HistoryStep } from './history/port.ts'
 // 画布按图片文件头的宽高确定节点尺寸。
 export {
   downscaleNote,
@@ -46,6 +95,7 @@ export {
   type ZoomedImage,
   zoomImage,
 } from './image.ts'
+export { type McpActivation, McpConfigPort } from './mcp-config/port.ts'
 // MCP 服务的命令行写法：工具的命令判定与 runtime 列出未启用的项目服务使用同一种写法。
 export { formatCommandLine } from './mcp-config.ts'
 // 记忆：runtime/session.ts 装配提示词时读取索引，server/api/memory.ts 读写单条记忆
@@ -60,6 +110,7 @@ export {
 } from './memory.ts'
 // 网络访问：供 runtime/capabilities.ts 实现插件的 host.net.fetch
 export { type SafetyOptions, safeFetch } from './net-safety.ts'
+export { OfficePort } from './office/port.ts'
 // 路径：工作区边界的唯一判据，runtime 与 server 均使用
 export { officeRunDir } from './office-worker.ts'
 export {
@@ -74,6 +125,7 @@ export {
   workspacePythonBin,
   workspacePythonDir,
 } from './paths.ts'
+export { PluginPort } from './plugin-install/port.ts'
 export { renameWithRetry } from './rename.ts'
 // 命令运行在先于监听端口启动的子进程中。`qy serve` 在绑定端口前启动该子进程，
 // 隐藏的 `runner` 子命令是该子进程的入口。
@@ -101,6 +153,7 @@ export {
   setCommandRunner,
   spawnGuarded,
 } from './sandbox.ts'
+export { SchedulePort } from './schedules/port.ts'
 // 作用域：runtime 与 server 按同一规则计算三层的根目录
 export {
   AGENTS_DIR,
@@ -121,6 +174,7 @@ export {
   redactSecrets,
   scrubEnv,
 } from './secrets.ts'
+export { CommandPort } from './shell/port.ts'
 // 环境变量的默认豁免名单：server/api 下发给设置页，作为留空时的实际值。
 // `MAX_TIMEOUT_MS` 是本机单次工具执行的时限：team 用作外部 CLI 的静默上限，
 // 执行器据此组装终止说明。`scrubbedEnv`：server 启动 git 时使用与 `run_command` 相同的凭证剥离。
@@ -132,8 +186,10 @@ export {
 } from './shell.ts'
 // 子 agent 产出的投递限制：server 的派发通道组装回执时经过同一投递限制，不另设标准。
 export { deliverAgentOutput, observationBudget } from './sink.ts'
+export { SkillSourcePaths } from './skills/port.ts'
 // 技能：runtime/session.ts 扫描索引，server/api 为设置页列出技能
 export { SKILLS_SUBDIR, type SkillMeta, scanAllSkills, scanSkills } from './skills.ts'
+export { TodoBroadcast } from './todos/port.ts'
 // 外部工具按需加载：runtime/session.ts 计量一次，决定全部常驻还是放入工具池；
 // server/api 只取静态规格，不建立工具池
 export {
@@ -161,6 +217,7 @@ import {
 import { defineRoleTool } from './define-role.ts'
 import { MEDIA_TOOLS, retrieveMediaTool } from './generate.ts'
 import { readHistoryTool } from './history.ts'
+import { OfficePort } from './office/port.ts'
 import { officeTools } from './office.ts'
 import { openInPanelTool } from './panel.ts'
 import { installPluginTool } from './plugin-install.ts'
@@ -172,6 +229,10 @@ import { workflowTool } from './workflow.ts'
 /**
  * 内置工具集的唯一注册入口。插件工具在此之后追加，不得覆盖同名。
  *
+ * 工具在 `ToolSpec.requires` 中声明必需的端口，`ports` 缺少其中任一时不注册：没有该端口时工具调用必然失败（B5），
+ * 例如宿主未连接时浏览器工具无法取得 `BrowserPort`。缺失时仍能降级工作的端口不写入 `requires`。
+ * 端口之外的注册条件只有 `opts` 中的会话事实与本机能力。
+ *
  * `run_command` 按能力注册：本机没有 bash / pwsh / powershell 中的任何一个时，
  * 不向模型提供该工具，而不是提供一个必然失败的工具（B5）。探测每次重新执行，
  * 而本函数每条消息调用一次（`runtime/session.ts`），因此安装 git 后
@@ -179,36 +240,25 @@ import { workflowTool } from './workflow.ts'
  */
 export function registerBuiltinTools(
   registry: ToolRegistry,
+  ports: Ports = new Ports(),
   opts: {
-    delegate?: boolean
-    /** 有后台命令通道（服务端为顶层会话注入了 `CommandPort`）。 */
-    commands?: boolean
-    plugins?: boolean
-    mcpConfig?: boolean
-    browser?: boolean
-    desktop?: boolean
-    /** 有画布通道（服务端注入了 `CanvasPort`）。 */
-    canvas?: boolean
     /** 有界面可以打开右侧面板：服务端的顶层会话。CLI 与成员会话没有。 */
     panel?: boolean
-    /** 有个性化通道（服务端为顶层会话注入了 `PersonalizationPort`）。 */
-    personalization?: boolean
-    /** 有宠物库通道（服务端为顶层会话注入了 `PetPort`）。 */
-    pets?: boolean
-    /** 有 Office 执行程序（宿主注入了 `OfficePort`）。 */
-    office?: boolean
-    /** Office 执行程序中已安装视频解码库（`OfficePort.videoDecoder`）。 */
-    videoDecoder?: boolean
-    /** 已配置模型的生成类别。各类别的生成工具只在该类别有模型时注册。 */
-    media?: readonly MediaOutput[]
+    /**
+     * 已配置模型的生成类别。各类别的生成工具只在该类别有模型时注册。
+     * null 表示生成与画布已关闭（配置 `mediaEnabled: false`），画布工具同样不注册。
+     */
+    media?: readonly MediaOutput[] | null
     /**
      * Agent Team 成员与子 agent 的会话。只注册 `read_memory`：记忆的写入时机来自用户本人的纠正与说明，
-     * 成员会话收到的消息是主会话的派发正文。
+     * 成员会话收到的消息是主会话的派发正文。个性化与宠物同样不注册：成员会话不代替用户修改界面。
      */
     member?: boolean
   } = {},
 ): void {
   const shell = commandShell()
+  const media = opts.media === undefined ? [] : opts.media
+  const user = opts.member !== true
   for (const spec of [
     readFileTool,
     writeFileTool,
@@ -216,9 +266,10 @@ export function registerBuiltinTools(
     listDirTool,
     globTool,
     grepTool,
-    // 后台命令按通道注册：没有任务表时 `background` 无法兑现，读取与停止也没有对象。
-    ...(shell ? [makeShellTool(shell, { background: opts.commands === true })] : []),
-    ...(shell && opts.commands ? [backgroundCommandTool] : []),
+    // 没有后台命令端口时 `background` 无法兑现，`background_command` 也没有读取与停止的对象。
+    ...(shell
+      ? [makeShellTool(shell, { background: ports.has(CommandPort) }), backgroundCommandTool]
+      : []),
     readResourceTool,
     readHistoryTool,
     writeTodosTool,
@@ -226,28 +277,22 @@ export function registerBuiltinTools(
     updateGoalTool,
     webFetchTool,
     webSearchTool,
-    // 浏览器同样按通道注册：宿主未连接、版本不满足要求、成员会话三种情况均无法取得端口，
-    // 此时注册的将是七个必然报错的工具。
-    ...(opts.browser ? browserTools : []),
-    // 电脑控制同样按通道注册：未启用、宿主未连接、worker 未就绪、系统未授权，
-    // 四种情况均无法取得端口，此时注册的将是四个必然报错的工具。
-    ...(opts.desktop ? desktopTools : []),
-    // Office 同样按通道注册：没有 Python 与文档库时调用必然失败。
-    ...(opts.office ? officeTools : []),
+    ...browserTools,
+    ...desktopTools,
+    ...officeTools,
     readMemoryTool,
-    ...(opts.member ? [] : [writeMemoryTool, deleteMemoryTool, moveMemoryTool]),
+    ...(user ? [writeMemoryTool, deleteMemoryTool, moveMemoryTool] : []),
     importSkillTool,
     readSkillTool,
     writeSkillTool,
     moveSkillTool,
-    ...(opts.mcpConfig ? [writeMcpServerTool, moveMcpServerTool, enableMcpServerTool] : []),
+    writeMcpServerTool,
+    moveMcpServerTool,
+    enableMcpServerTool,
     // 生成工具按类别注册：没有图像模型时，图像生成工具的调用必然失败（B5）。
-    ...(opts.media ?? []).map((output) => MEDIA_TOOLS[output]),
-    ...(opts.media?.some((type) => type === 'video' || type === 'image')
-      ? [retrieveMediaTool]
-      : []),
-    // 画布按通道注册：没有服务端（CLI 会话）时没有画布服务，工具调用必然失败。
-    ...(opts.canvas
+    ...(media ?? []).map((output) => MEDIA_TOOLS[output]),
+    ...(media?.some((type) => type === 'video' || type === 'image') ? [retrieveMediaTool] : []),
+    ...(media
       ? [
           createCanvasTool,
           readCanvasTool,
@@ -259,24 +304,21 @@ export function registerBuiltinTools(
         ]
       : []),
     // 取帧还需要视频解码库：缺少时调用必然失败（B5）。
-    ...(opts.canvas && opts.office && opts.videoDecoder ? [captureCanvasFrameTool] : []),
+    ...(media && ports.get(OfficePort)?.videoDecoder === true ? [captureCanvasFrameTool] : []),
     // 面板由界面打开：没有界面呈现本会话时调用没有效果（B5）。
     ...(opts.panel ? [openInPanelTool] : []),
-    // 切换皮肤同样由界面执行：没有界面呈现本会话时切换不会发生（B5）。
-    ...(opts.personalization ? [personalizeTool] : []),
-    ...(opts.pets ? [petTool] : []),
+    ...(user ? [personalizeTool, petTool] : []),
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,
-    // 派发任务与编排按通道注册：没有派发通道时不注册这些工具，
-    // 而不是注册必然返回「无法派发」的工具（B5，与 run_command 相同）。
-    ...(opts.delegate
-      ? [defineRoleTool, subagentTool, stopSubagentTool, waitSubagentsTool, workflowTool]
-      : []),
-    // 安装插件的工具同样按通道注册：无法安装插件时该工具没有降级形态。
-    ...(opts.plugins ? [installPluginTool] : []),
+    defineRoleTool,
+    subagentTool,
+    stopSubagentTool,
+    waitSubagentsTool,
+    workflowTool,
+    installPluginTool,
   ]) {
-    registry.register(spec)
+    if (spec.requires?.every((key) => ports.has(key)) ?? true) registry.register(spec)
   }
 }
 

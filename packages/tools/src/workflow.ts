@@ -4,7 +4,7 @@
  * 每次调用只派发此刻就绪的节点，随即返回。节点执行完毕的回执、到达检查点的回执都由派发通道
  * 作为消息送入当前会话；当前会话据此决定 approve 或 revise，续发仍使用同一个 workflowId。
  */
-import type { ToolContext, ToolSpec } from '@qywork/agent'
+import { DelegatePort, type ToolContext, type ToolSpec } from '@qywork/agent'
 import {
   DEFAULT_MAX_CONCURRENT,
   EFFORT_ORDER,
@@ -131,14 +131,16 @@ export const workflowTool: ToolSpec = {
     const workflowId = typeof args.workflowId === 'string' ? args.workflowId : ''
     return (goal || workflowId).slice(0, 200)
   },
+  requires: [DelegatePort],
   fn: async (args: Record<string, unknown>, ctx?: ToolContext) => {
-    if (!ctx?.delegate) return { status: 'failure', message: '本次执行没有派发通道' }
+    const delegate = ctx?.port(DelegatePort)
+    if (!ctx || !delegate) return { status: 'failure', message: '本次执行没有派发通道' }
     if (!ctx.stepId)
       return { status: 'failure', message: '本次调用无法获取卡片 id，无法渲染任务图' }
     const parsed = parseWorkflowCall(args)
     if (!parsed.ok) return { status: 'failure', message: parsed.error }
 
-    const res = await ctx.delegate.runGraph({
+    const res = await delegate.runGraph({
       call: parsed.call,
       runId: ctx.runId,
       stepId: ctx.stepId,

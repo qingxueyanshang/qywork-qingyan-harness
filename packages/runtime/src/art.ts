@@ -12,8 +12,6 @@
 import { relative } from 'node:path'
 import {
   concurrencyRejected,
-  type MediaCall,
-  type MediaCallResult,
   type SendOutcome,
   sendLane,
   sendLimiter,
@@ -38,6 +36,7 @@ import {
   waitOrAbort,
   withArtViewport,
 } from '@qywork/core'
+import type { MediaCall, MediaCallResult } from '@qywork/tools'
 import { type QyConfig, resolveModel } from './config.ts'
 
 /** 页面可用的 three.js 附加模块。与 sidecar 的 `/art/lib/addons/` 一一对应，修改时两处同时修改。 */

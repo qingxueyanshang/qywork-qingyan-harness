@@ -8,6 +8,7 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../core" },
+    { "path": "../agent" },
     { "path": "../store" },
     { "path": "../runtime" },
     { "path": "../server" }

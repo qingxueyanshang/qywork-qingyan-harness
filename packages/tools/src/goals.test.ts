@@ -8,9 +8,10 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { GoalPort, ToolContext } from '@qywork/agent'
+import { Ports, provide, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { Goal, GoalWriteResult } from '@qywork/core'
+import { GoalPort } from './goals/port.ts'
 import { readGoalTool, updateGoalTool } from './goals.ts'
 
 const SAMPLE: Goal = {
@@ -49,7 +50,7 @@ function ctx(opts?: { goal?: Goal | null; result?: GoalWriteResult }): ToolConte
     resources: new Map(),
     state: new Map(),
     sink: null,
-    goals: port,
+    port: new Ports([provide(GoalPort, port)]).get,
     signal: new AbortController().signal,
     emit: () => {},
     requestPermission: async () => ({ allowed: true }),
@@ -58,9 +59,7 @@ function ctx(opts?: { goal?: Goal | null; result?: GoalWriteResult }): ToolConte
 
 /** 未接入端口的上下文（如 `qy exec`）。 */
 function bare(): ToolContext {
-  const c = ctx()
-  delete (c as { goals?: unknown }).goals
-  return c
+  return { ...ctx(), port: () => null }
 }
 
 describe('降级：没有目标账本时两个工具都说明原因', () => {

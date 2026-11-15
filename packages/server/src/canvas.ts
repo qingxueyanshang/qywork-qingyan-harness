@@ -24,13 +24,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve } from 'node:path'
-import {
-  type CanvasPort,
-  type CanvasRender,
-  isOutsideRelative,
-  type MediaPort,
-  mediaDurationOfFile,
-} from '@qywork/agent'
+import { isOutsideRelative, mediaDurationOfFile } from '@qywork/agent'
 import { type TaskPhase, taskPhase } from '@qywork/ai'
 import type { RetryWait } from '@qywork/core'
 import {
@@ -83,11 +77,14 @@ import {
   toPosixPath,
 } from '@qywork/core'
 import {
+  type CanvasPort,
+  type CanvasRender,
   freeLandingPath,
   type GeneratedFile,
   type GenerateSuccess,
   generateMedia,
   landFiles,
+  type MediaPort,
   renameWithRetry,
   resolveInWorkspace,
   resolveWritablePath,
@@ -344,7 +341,7 @@ export type ArtRender = (page: {
 
 /**
  * 运行或取回的计费归属由调用方提供：界面发起时使用服务端创建的端口（花费记为不属于任何轮次），
- * Agent 发起时使用其本轮的 `ctx.media`（花费计入本轮）。
+ * Agent 发起时使用其本轮的生成端口（花费计入本轮）。
  */
 export interface CanvasRunOptions {
   media: MediaPort

@@ -1,7 +1,7 @@
 /**
  * `pet`：读取、创建与切换 qywork 的宠物。
  *
- * 读写经 `ctx.pets` 端口完成，宠物库位于 `~/.qywork/pets/`。`apply` 只核对宠物存在并返回 id，
+ * 读写经 `PetPort` 端口完成，宠物库位于 `~/.qywork/pets/`。`apply` 只核对宠物存在并返回 id，
  * 切换由界面在当前会话收到成功结果后执行：当前屏幕选用哪只宠物只由界面记录，服务端与本工具都不知道。
  */
 
@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
 import { type PetEntry, parsePetPack, petFrameFiles } from '@qywork/core'
 import { resolveInWorkspace, rootsOf } from '../paths.ts'
+import { PetPort } from './port.ts'
 
 /** `apply` 切回内置宠物时使用的 id。 */
 const DEFAULT = 'default'
@@ -67,8 +68,9 @@ export const petTool: ToolSpec = {
   permissionEffect: (args) => (args.action === 'save' ? 'write' : 'read'),
   parallelSafe: false,
 
+  requires: [PetPort],
   async fn(args, ctx) {
-    const port = ctx.pets
+    const port = ctx.port(PetPort)
     if (!port) return failure('本次执行没有宠物库通道')
     const action = args.action
     const id = text(args.id)

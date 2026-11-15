@@ -48,24 +48,6 @@ export {
   tokensToBytes,
   tokensToMaxBytes,
 } from './delivery.ts'
-// 电脑控制端口：tools 据此实现桌面工具，server 的协调器实现该端口，由 runtime 注入
-export type {
-  DesktopActReceipt,
-  DesktopActResult,
-  DesktopBlockingWindowInfo,
-  DesktopElement,
-  DesktopFollowUp,
-  DesktopImage,
-  DesktopImagePoint,
-  DesktopPort,
-  DesktopRefusal,
-  DesktopSnapshot,
-  DesktopText,
-  DesktopWaitCondition,
-  DesktopWaitReceipt,
-  DesktopWaitResult,
-  DesktopWindowInfo,
-} from './desktop.ts'
 // 物理键表与输入规模上限：tools 的预检与 server 的输入执行器按同一份表裁决
 export {
   charKeys,
@@ -109,58 +91,18 @@ export { mediaDurationOfFile } from './media-duration.ts'
 export { isOutsideRelative, placePath } from './paths/place.ts'
 // run_command 的拒绝清单：runtime 的 Session 在放行之前调用它裁决
 export { decideCommand } from './policy.ts'
+// 端口：键与集合供 tools 定义端口、装配方（runtime、server、cli）提供实现
+export { DelegatePort, type SubagentSummary } from './ports/delegate.ts'
+export { definePort, type PortEntry, type PortKey, Ports, provide } from './ports/key.ts'
+export { TodoPort } from './ports/todos.ts'
 // 冻结前缀的静态审计：系统提示词由 runtime 构造，审计在 runtime 的测试中执行
 export { auditFrozenText } from './prefix-audit.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加
 export {
-  type BrowserActInput,
-  type BrowserActionKind,
-  type BrowserActReceipt,
-  type BrowserActResult,
-  type BrowserDownloadResult,
-  type BrowserElement,
-  type BrowserExecution,
-  type BrowserKeyPhase,
-  type BrowserObservation,
-  type BrowserOptionsPage,
-  type BrowserPathStep,
-  type BrowserPoint,
-  type BrowserPort,
-  type BrowserRefusal,
-  type BrowserSelectOption,
-  type BrowserTabInfo,
-  type BrowserWaitReceipt,
-  type BrowserWaitResult,
-  type BrowserWaitState,
-  type CanvasEditResult,
-  type CanvasPort,
-  type CanvasRender,
-  type CloudSkillErrorCode,
-  type CloudSkillPort,
-  type CloudSkillResult,
-  type CloudSkillSegment,
-  type CommandPort,
   compactionEpoch,
-  type DelegatePort,
-  type FileReadPort,
-  type FollowUpObservation,
-  type GoalPort,
-  type HistoryPort,
-  type HistoryStep,
-  type McpActivation,
-  type McpConfigPort,
-  type MediaCall,
-  type MediaCallResult,
-  type MediaPort,
   markCompacted,
-  type OfficePort,
   type PermissionVerdict,
-  type PersonalizationPort,
-  type PetPort,
-  type PluginPort,
-  type SchedulePort,
   type SinkPort,
-  type SubagentSummary,
   sanitizeToolName,
   TOOL_CATEGORIES,
   type ToolCategory,
