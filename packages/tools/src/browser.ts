@@ -49,6 +49,7 @@ import {
   type LocalFileCheck,
 } from './browser/port.ts'
 import { browserResult, isOptionsPage, MAX_META_CHARS } from './browser-results.ts'
+import { blank } from './desktop/shared/args.ts'
 import { resolveInWorkspace, resolveWritablePath, rootsOf } from './paths.ts'
 
 /** 单次等待的上限。超过该值的请求按上限截断，不接受任意时长。 */
@@ -933,8 +934,9 @@ export const browserActTool: ToolSpec = {
     onBrowser(ctx, async (browser, send) => {
       const action: BrowserActionKind = oneOf(args.action, ACT_KINDS, 'action')
       // 不适用的参数属于参数错误，不是可忽略的多余项；在调用端口之前判定。
+      // 取 0、false 或各项为 0 的对象除外（`blank`）：strict schema 下模型为无关参数填写这类取值。
       for (const field of ACT_OPTIONAL) {
-        if (!ACT_FIELDS[action].includes(field) && given(args[field])) {
+        if (!ACT_FIELDS[action].includes(field) && given(args[field]) && !blank(args[field])) {
           throw new ArgError(`${action} 不接受 ${field}`)
         }
       }
@@ -944,8 +946,10 @@ export const browserActTool: ToolSpec = {
       if (ref === undefined && action !== 'scroll' && action !== 'press') {
         throw new ArgError(`${action} 必须提供 ref`)
       }
-      if (given(args.point) && ref === undefined) throw new ArgError('point 必须与 ref 一起提供')
-      const point = given(args.point) ? pointArg(args.point, 'point') : undefined
+      // 没有 ref 时 `{ x: 0, y: 0 }` 是填充值，按未提供处理；有 ref 时它是元素的左上角，照常使用。
+      const pointGiven = given(args.point) && !(ref === undefined && blank(args.point))
+      if (pointGiven && ref === undefined) throw new ArgError('point 必须与 ref 一起提供')
+      const point = pointGiven ? pointArg(args.point, 'point') : undefined
       const path = action === 'drag' ? pathArg(args.path) : undefined
       const only = path?.length === 1 ? path[0] : undefined
       if (only && only.ref === ref && samePoint(only.point, point)) {

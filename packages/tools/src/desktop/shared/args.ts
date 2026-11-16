@@ -33,9 +33,16 @@ export function given(raw: unknown): boolean {
   return text !== '' && text.toLowerCase() !== 'null'
 }
 
-/** 不属于本动作的参数取 0 与 false 时同样视为空值：它们不表达任何意图。 */
+/**
+ * 不属于本动作的参数取 0 与 false 时同样视为空值：它们不表达任何意图。
+ * 对象与数组的各项均为空值或这类取值时相同（`{ x: 0, y: 0 }`）。浏览器工具使用同一判据。
+ */
 export function blank(raw: unknown): boolean {
-  return raw === false || String(raw).trim() === '0'
+  if (raw === false) return true
+  if (typeof raw === 'object' && raw !== null) {
+    return Object.values(raw).every((one) => !given(one) || blank(one))
+  }
+  return String(raw).trim() === '0'
 }
 
 export function str(raw: unknown, field: string): string {

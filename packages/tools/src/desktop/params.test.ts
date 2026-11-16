@@ -70,6 +70,32 @@ function ctx(): ToolContext {
 }
 
 /**
+ * strict schema 把每个参数列为必填，模型为不属于本动作的参数填写默认值或取值列表中的一项。
+ * 原始失败形状：click 附带 `amount: 1` 被拒绝为「click 不接受 amount」；scroll_into_view 附带
+ * `button` / `count` / `direction` / `state` / `step` / `windowState` 被拒绝。自由文本仍然拒绝。
+ */
+test('不属于本动作的参数取默认值或取值有限时不构成多余参数', async () => {
+  const run = (args: Record<string, unknown>) =>
+    desktopActSequenceTool.fn({ windowId: 'dw_1', steps: [{ ref: 'e1', ...args }] }, ctx())
+  const filler = {
+    button: 'left',
+    count: 1,
+    direction: 'down',
+    state: 'off',
+    step: 'line',
+    windowState: 'normal',
+    amount: 1,
+    dx: 0,
+    modifiers: [],
+    text: '',
+  }
+  expect((await run({ ...filler, action: 'click' })).message).not.toContain('不接受')
+  expect((await run({ ...filler, action: 'scroll_into_view' })).message).not.toContain('不接受')
+  expect((await run({ action: 'click', amount: 3 })).message).toContain('click 不接受 amount')
+  expect((await run({ action: 'invoke', value: 'x' })).message).toContain('invoke 不接受 value')
+})
+
+/**
  * 后置条件中不属于该种条件的参数，取 0 与 false 时视为空值，与动作参数使用同一判据：strict schema 下模型为
  * 无关参数逐个填写空值。原始失败形状：`until=toggle` 附带 `timeoutMs: 0` 被拒绝，整组未派发。
  */

@@ -580,6 +580,27 @@ describe('动作的适用范围', () => {
     expect(calls).toHaveLength(0)
   })
 
+  /**
+   * strict schema 把每个参数列为必填，模型为不属于本动作的参数填写 0 与空集合。
+   * 原始失败形状：click 附带 `deltaX: 0` 被拒绝为「click 不接受 deltaX」，press 附带 `point: {x:0,y:0}` 同样被拒绝。
+   */
+  test('不适用的参数取 0、空集合或各项为 0 的对象时照常执行', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const filler = { deltaX: 0, deltaY: 0, holdMs: 0, keys: [], path: [], phases: [], text: '' }
+    const cases: Record<string, unknown>[] = [
+      { ...filler, action: 'click', ref: 'e1' },
+      { ...filler, action: 'press', phases: [{ keys: ['Tab'] }], point: { x: 0, y: 0 } },
+      { ...filler, action: 'type', ref: 'e1', text: 'x', point: { x: 0, y: 0 } },
+      { ...filler, action: 'scroll', deltaY: 300, point: { x: 0, y: 0 } },
+    ]
+    for (const args of cases) {
+      const r = await browserActTool.fn({ ...base, ...args }, ctx)
+      expect(r.message).not.toContain('不接受')
+    }
+    expect(calls).toHaveLength(cases.length)
+  })
+
   test('type 的长度与控制字符在调用端口前校验', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)

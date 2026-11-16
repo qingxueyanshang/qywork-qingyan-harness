@@ -431,6 +431,21 @@ export function unknownAction(
   )
 }
 
+/**
+ * 不属于本动作的参数是否表达了意图。strict schema 把每个参数列为必填，模型为无关参数填写空值、0、
+ * 默认值或取值列表中的一项，这些取值不构成多余参数：
+ * - 空值、0 与 false（`given`、`blank`）；
+ * - 取值有限的参数（`PARAM_VALUES`）的任何取值；
+ * - `amount` 的默认值 1。
+ *
+ * 自由文本、控件引用与其余数值不要并入：`invoke` 附带 `value` 说明应改用 `set_value`，该调用必须拒绝。
+ */
+function meant(key: string, value: unknown): boolean {
+  if (!given(value) || blank(value)) return false
+  if (key in PARAM_VALUES) return false
+  return !(key === 'amount' && Number(value) === 1)
+}
+
 export function checkActionParams(
   kind: DesktopActionKind,
   args: Record<string, unknown>,
@@ -441,9 +456,7 @@ export function checkActionParams(
     ...(ACTION_DEFS[kind].target === 'pointer' ? POINT_PARAMS : []),
     ...ACTION_DEFS[kind].params,
   ])
-  const extra = Object.keys(args).filter(
-    (key) => !allowed.has(key) && given(args[key]) && !blank(args[key]),
-  )
+  const extra = Object.keys(args).filter((key) => !allowed.has(key) && meant(key, args[key]))
   if (extra.length) {
     throw new ArgError(`${kind} 不接受 ${extra.join(' / ')} · ${actionUsage(kind)}`)
   }
