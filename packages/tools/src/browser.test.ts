@@ -1163,6 +1163,28 @@ describe('选项读取', () => {
     expect(r.message).toContain('optionsFor.offset=2')
   })
 
+  /**
+   * 原始失败形状：模型为无关参数填写 `offset: 0`、`query: ""`、`screenshot: false`，读取选项被拒绝，
+   * 报错列出全部四个参数，模型无法判断应删去哪一项，同一调用连续重复两次。
+   */
+  test('optionsFor 附带取 0 与空值的无关参数时照常读取；拒绝时只列出实际提供的参数', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const optionsFor = { observationId: 'ob_1', ref: 'e3', offset: 0 }
+    const ok = await browserObserveTool.fn(
+      { tabId: 'bt_1', optionsFor, offset: 0, query: '', screenshot: false, frame: '' },
+      ctx,
+    )
+    expect(ok.status).toBe('success')
+    expect(calls).toHaveLength(1)
+    const stale = await browserObserveTool.fn(
+      { tabId: 'bt_1', optionsFor, frame: 'F1', offset: 0, query: '', screenshot: false },
+      ctx,
+    )
+    expect(stale.executed).toBe(false)
+    expect(stale.message).toContain('optionsFor 不能与 frame 同时提供')
+  })
+
   test('optionsFor 与 frame、screenshot、offset 同时提供时在调用端口前拒绝', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)

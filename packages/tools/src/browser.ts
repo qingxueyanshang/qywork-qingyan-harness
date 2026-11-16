@@ -156,8 +156,13 @@ function optionsForArg(
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new ArgError(`optionsFor 必须是对象，收到 ${JSON.stringify(raw)}`)
   }
-  if (given(args.frame) || args.screenshot === true || given(args.offset) || given(args.query)) {
-    throw new ArgError('optionsFor 不能与 frame、screenshot、offset、query 同时提供')
+  // 取 0、false 与空值的参数不算提供（`blank`）：strict schema 下模型为无关参数填写这类取值。
+  // 报错只列出实际提供的参数，模型据此删去这几项即可。
+  const extra = ['frame', 'screenshot', 'offset', 'query'].filter(
+    (name) => given(args[name]) && !blank(args[name]),
+  )
+  if (extra.length) {
+    throw new ArgError(`optionsFor 不能与 ${extra.join('、')} 同时提供`)
   }
   const one = raw as Record<string, unknown>
   return {

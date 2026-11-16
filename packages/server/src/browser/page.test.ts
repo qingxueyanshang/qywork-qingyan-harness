@@ -1077,7 +1077,7 @@ test('contenteditable 的可编辑区域按输入框列出，区域内的文字�
     {
       backendNodeId: 80,
       tag: 'div',
-      attrs: { contenteditable: 'true' },
+      attrs: { contenteditable: 'true', 'data-placeholder': '以 https:// 开头' },
       box: { x: 0, y: 300, width: 300, height: 24 },
     },
     { backendNodeId: 81, tag: '#text', attrs: {}, text: 'https://api.example.com;' },
@@ -1103,7 +1103,12 @@ test('contenteditable 的可编辑区域按输入框列出，区域内的文字�
 
   const { observation } = await observe(handle)
   const field = observation.elements.find((e) => e.tag === 'div')
-  expect(field).toMatchObject({ role: 'textbox', value: 'https://api.example.com;' })
+  // 可访问名为空时以属性中的提示文字作为名称。
+  expect(field).toMatchObject({
+    role: 'textbox',
+    name: '以 https:// 开头',
+    value: 'https://api.example.com;',
+  })
   const text = observation.elements.filter((e) => e.name === 'https://api.example.com;')
   expect(text.map((e) => e.role)).toEqual(['StaticText'])
 })

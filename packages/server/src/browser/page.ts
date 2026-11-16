@@ -883,7 +883,8 @@ function axCandidates(
       actionable,
       element: {
         role: editable && !ACTIONABLE_ROLES.has(role) ? 'textbox' : role || tag,
-        name,
+        // 可编辑区域的可访问名通常为空，同一弹窗中的多个输入框无法区分；以页面写在属性中的提示文字代替。
+        name: name || (editable ? editableHint(attrs) : ''),
         tag,
         ...(attrs.type ? { inputType: attrs.type } : {}),
         ...(value !== undefined ? { value: String(value) } : {}),
@@ -935,6 +936,17 @@ function boolProp(
   if (raw === true || raw === 'true') return { [name]: true }
   if (raw === false || raw === 'false') return { [name]: false }
   return {}
+}
+
+/** 可编辑区域在属性中的提示文字（ARIA 名称、占位文字），没有时为空串。 */
+function editableHint(attrs: Record<string, string>): string {
+  return (
+    attrs['aria-label'] ??
+    attrs['aria-placeholder'] ??
+    attrs.placeholder ??
+    attrs['data-placeholder'] ??
+    ''
+  ).trim()
 }
 
 /** DOM 属性声明的可编辑区域（`contenteditable` 不为 false）。AX 树尚未建立时的回退与 `editableRoot` 对应。 */
