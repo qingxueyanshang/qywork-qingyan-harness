@@ -366,7 +366,7 @@ MCP 那条的表现最值得记：一个只提供 `resources`、不提供 `tools
 - 「生产假值」接上消费者之后**看起来完全正常**——面板会画出一个结构完整、
   数字全零的饼图，而没有任何人能从界面上看出那是假的。
 
-而分组信息一直是真实存在的（`session.ts` 标 `historyMessages`、
+而分组信息一直是真实存在的（`transcript.ts` 标 `historyMessages`、
 `agent/loop/` 标 `executionRecords`、`compaction.ts` 标 `summary`），
 **只是从来没有人按组去量**：这条链路铺了三段，停在最后一步。
 

@@ -12,7 +12,7 @@ metadata:
   平移 106–143 帧、拖动节点 90–144 帧、超时帧 26–85%。
 - **瓶颈是 GPU 进程**：180Hz 下每帧预算 5.6ms，修复前拖动与平移时 GPU 每帧 7–11ms，主线程只有 4–7ms。
   判断依据看 GPU 进程的 `ThreadControllerImpl::RunTask` 与每帧 `RasterTask` 数，不看主线程。
-- 已修复的三处（`CanvasPanel.tsx` / `canvas.css`）：连线由 `For` 改为 `Index`，避免每次移动重建全部连线；
+- 已修复的三处（`components/canvas/` 下的 `layers/EdgeLayer.tsx`、`board/controller.ts` 与 `canvas.css`）：连线由 `For` 改为 `Index`，避免每次移动重建全部连线；
   网格点改为单独的合成层，平移变量不再写在画布区上；拖动时连到被拖节点的连线放入单独一层，其余连线层不修改。
   修复后同条件下全部场景 170–180 帧。
 - 被推翻的推测：连线 SVG 为 1×1、依赖溢出绘制导致整层重绘。放大 SVG 尺寸但不移动位置时没有改善。

@@ -1,5 +1,6 @@
 /**
- * 覆盖 `canvas/CanvasPanel.tsx`、`canvas/GeneratePanel.tsx`、`canvas/SourcePicker.tsx`、`lib/file-search.ts`、
+ * 覆盖 `canvas/CanvasPanel.tsx` 与 `canvas/board/`、`canvas/nodes/`、`canvas/layers/`、`canvas/input/` 下的全部文件，
+ * `canvas/GeneratePanel.tsx`、`canvas/SourcePicker.tsx`、`lib/file-search.ts`、
  * `canvas/Rail.tsx`、`canvas/Bitmap.tsx`、`canvas/Player.tsx`、`canvas/Timeline.tsx`、`canvas/ArtView.tsx`、
  * `canvas/prompt.ts`、`canvas/frame.ts` 与 `canvas/art.ts` 的纯函数，以及 `lib/store/ui.ts` 的 `openCanvasTab`。
  * `art.ts` 中运行时在页面里的行为（时钟、截图、录制）由真实浏览器验证，happy-dom 不执行 iframe 中的页面。

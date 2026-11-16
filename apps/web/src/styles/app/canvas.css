@@ -36,7 +36,7 @@
   cursor: grabbing;
 }
 /*
- * 网格点单独成层，平移只改变该层的位移（`CanvasPanel` 的 `gridShift`）。
+ * 网格点单独成层，平移只改变该层的位移（`canvas/board/controller.ts` 的 `gridShift`）。
  * 不要写成画布区的 `background-position`：每次平移都要重绘整块画布区，
  * 写在画布区上的平移变量还会使全部子元素重新计算样式。
  */
