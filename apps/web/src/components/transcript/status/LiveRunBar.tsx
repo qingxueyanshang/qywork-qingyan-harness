@@ -1,5 +1,5 @@
 import { retryAttemptText, retryCauseText } from '@qywork/core'
-import { createEffect, createSignal, on, onCleanup } from 'solid-js'
+import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
 import { isConversationRunning, state, viewOf } from '../../../lib/store/index.ts'
 import { RunStatusBar } from './RunStatusBar.tsx'
 
@@ -13,6 +13,13 @@ import { RunStatusBar } from './RunStatusBar.tsx'
  * 因此即使提示出现较晚，也必须替换该文字。
  */
 const SILENT_MS = 30_000
+
+/** 会话流的最后一项是进行中的压缩。 */
+function compacting(conversationId: string): boolean {
+  const items = viewOf(conversationId).transcript
+  const last = items[items.length - 1]
+  return last?.kind === 'compaction' && last.compaction?.phase === 'started'
+}
 
 /**
  * 本轮当前所处的阶段。
@@ -47,6 +54,8 @@ function liveStatus(now: number, conversationId: string): string {
    * 日后会出现不一致。
    */
   if (state.connection !== 'ready') return ''
+  // 压缩进行中由压缩卡片显示阶段与进度。此时没有对话请求，按请求投影会显示「正在请求…」。
+  if (compacting(conversationId)) return ''
   if (last?.kind === 'tool' && last.status === 'running') return '正在执行…'
 
   const req = current.request
@@ -128,13 +137,19 @@ export function LiveRunBar(props: { conversationId: string }) {
     const from = viewOf(props.conversationId).runStartedAt
     return from === null ? null : (now() - from) / 1000
   }
+  /*
+   * 手动压缩占用会话但不是一轮对话：没有开始事件、没有用量，读数条只剩空的耗时与「命中 N/A」。
+   * 此时只显示压缩卡片。轮次中的自动压缩照常显示读数条：耗时与用量属于本轮。
+   */
   return (
-    <RunStatusBar
-      usage={viewOf(props.conversationId).usage}
-      stopReason={null}
-      elapsed={elapsed()}
-      running={true}
-      liveNote={liveStatus(now(), props.conversationId)}
-    />
+    <Show when={!(compacting(props.conversationId) && elapsed() === null)}>
+      <RunStatusBar
+        usage={viewOf(props.conversationId).usage}
+        stopReason={null}
+        elapsed={elapsed()}
+        running={true}
+        liveNote={liveStatus(now(), props.conversationId)}
+      />
+    </Show>
   )
 }

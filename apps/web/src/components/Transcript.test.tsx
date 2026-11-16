@@ -424,6 +424,63 @@ test('其他设备发起的轮次：服务端的开始时刻按握手时差换�
 })
 
 /**
+ * 原始失败形状：手动压缩期间压缩卡片下方出现一条读数条，只有空的耗时、「命中 N/A」与「正在请求…」。
+ * 手动压缩不显示读数条；轮次中的压缩照常显示读数条，但不显示「正在请求…」。
+ */
+test('压缩进行中：手动压缩不显示读数条，轮次中的压缩不显示「正在请求…」', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { render } = await import('solid-js/web')
+  const { LiveRunBar } = await import('./transcript/status/LiveRunBar.tsx')
+  const workspaceBefore = store.workspace()
+  const connectionBefore = store.state.connection
+  const id = 'cv_compacting'
+  store.setState({
+    activeConversation: id,
+    busyConversations: [id],
+    connection: 'ready',
+    views: {},
+  })
+  store.openView(id)
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <LiveRunBar conversationId={id} />, host as unknown as HTMLElement)
+  const compaction = (seq: number, runId: string) =>
+    store.applyEvent({
+      seq,
+      at: Date.now(),
+      conversationId: id,
+      event: { type: 'compaction', runId, stepSeq: 1, phase: 'started', stage: 'summarizing' },
+    } as never)
+  try {
+    compaction(1, 'rn_manual')
+    expect(host.querySelector('.run-strip')).toBeNull()
+
+    store.applyEvent({
+      seq: 2,
+      at: Date.now(),
+      conversationId: id,
+      event: {
+        type: 'run.started',
+        conversationId: id,
+        runId: 'rn_turn',
+        model: 'm',
+        userMessageId: null,
+        startedAt: Date.now(),
+      },
+    } as never)
+    compaction(3, 'rn_turn')
+    expect(host.querySelector('.run-strip')).not.toBeNull()
+    expect(host.textContent).not.toContain('正在请求')
+  } finally {
+    dispose()
+    host.remove()
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+    store.setState('connection', connectionBefore)
+  }
+})
+
+/**
  * 持续输出后的静默间隔按最后一段内容的时刻计算，刷新前后取值相同。
  *
  * 原始失败形状：按首段内容、步骤创建或页面加载时刻计算。t=0 收到首段、t=60 s 收到末段时，
