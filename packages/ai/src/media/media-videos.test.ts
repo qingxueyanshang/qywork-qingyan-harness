@@ -269,9 +269,20 @@ describe('dashscope_videos', () => {
         }),
     ]
     downloadStatus = 500
-    const pending = await rejection(
-      adapter().run({ operation: 'text_to_video', prompt: 'x', inputs: [], params: {} }, opts()),
-    )
+    // 下载重试的两次间隔（0.5 秒与 1 秒）缩短为 1 毫秒；其余计时器保持原值。
+    const original = globalThis.setTimeout
+    const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: () => void,
+      ms?: number,
+    ) => original(fn, ms === 500 || ms === 1_000 ? 1 : ms)) as typeof setTimeout)
+    let pending: MediaError
+    try {
+      pending = await rejection(
+        adapter().run({ operation: 'text_to_video', prompt: 'x', inputs: [], params: {} }, opts()),
+      )
+    } finally {
+      timers.mockRestore()
+    }
     expect(pending).toBeInstanceOf(MediaError)
     expect(pending.pendingTaskId).toBe('task-2')
   })

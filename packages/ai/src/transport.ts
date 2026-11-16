@@ -120,7 +120,7 @@ export const STREAM_IDLE_TIMEOUT_MS = 180_000
  * 只按状态码分类会将「上下文超限」与「参数错误」混为同一种 400。
  * 不要将这两个值调到模型时限的量级：一条永不结束的错误正文会使整轮请求阻塞于此。
  */
-const ERROR_BODY_TIMEOUT_MS = 2_000
+export const ERROR_BODY_TIMEOUT_MS = 2_000
 const ERROR_BODY_MAX_BYTES = 32 * 1024
 
 /**

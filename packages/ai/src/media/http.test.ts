@@ -744,7 +744,16 @@ test('查询失败带「任务查询失败」前缀，下载失败带「结果�
 
 test('下载遇到暂时错误只重试 GET，保留服务商已经返回产物的事实', async () => {
   reply = () => new Response('temporary', { status: 503 })
-  const error = await failure(download(url(), signal()))
+  // 下载重试的两次间隔（0.5 秒与 1 秒）缩短为 1 毫秒；其余计时器保持原值。
+  const original = globalThis.setTimeout
+  const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms: number) =>
+    original(fn, ms === 500 || ms === 1_000 ? 1 : ms)) as typeof setTimeout)
+  let error: MediaError
+  try {
+    error = await failure(download(url(), signal()))
+  } finally {
+    timers.mockRestore()
+  }
   expect(hits).toEqual(['GET', 'GET', 'GET'])
   expect(error.diagnostic).toMatchObject({
     stage: 'download',

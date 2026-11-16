@@ -6,16 +6,9 @@
  * 且不会静默失败：结果中标明使用的是哪种引擎。
  */
 
-import { readdir, readFile, realpath, stat } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
-import {
-  chargeBatchBudget,
-  deliveredTokens,
-  recordBatchSpent,
-  type ToolContext,
-  type ToolOutcome,
-  type ToolSpec,
-} from '@qywork/agent'
+import { readFile, realpath, stat } from 'node:fs/promises'
+import { basename, dirname, resolve } from 'node:path'
+import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
 import {
   type CloudTarget,
   cloudFailure,
@@ -24,16 +17,25 @@ import {
   hiddenPath,
 } from './cloud-skills/source.ts'
 import { toLf } from './eol.ts'
+import {
+  fitBudget,
+  SCAN_LIMITS,
+  type Scan,
+  startScan,
+  truncationNote,
+  walkFiles,
+} from './files/scan.ts'
 import { displayPath, hiddenInScan, IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './process/collect.ts'
 import { redactSecrets } from './secrets.ts'
 
-const MAX_RESULTS = 200
+/** 结果不完整时 glob 与 grep 回执中缩小范围的方法。 */
+const NARROW = '用 path 指定更小的目录，或使用更具体的模式'
 
 /**
  * 单个文件最多返回的命中条数。
  *
- * 用途：单个巨型文件不能占满 `MAX_RESULTS` 的名额，否则搜索整个目录树的结果
+ * 用途：单个巨型文件不能占满 `SCAN_LIMITS.results` 的名额，否则搜索整个目录树的结果
  * 退化为只搜索了一个文件。
  *
  * 两种引擎共用此数值，且截断后必须报告 `truncated`。只为 ripgrep 设上限
@@ -66,34 +68,17 @@ const MAX_PER_FILE = 50
 const MAX_MATCH_CHARS = 400
 
 /**
- * 按本次决策的剩余额度裁剪命中列表，并记录实际用量。
- *
- * grep 必须计入该额度。200 条 × 400 字符最多约 32,000 token，且它是 `parallelSafe`；
- * 一次决策中多个 grep 不记录用量时，同一决策中的后续读取会按虚高的余额准入。
- *
- * 裁剪而不是拒绝。该工具已有截断约定（`MAX_RESULTS` + `truncated`），
- * 按额度少返回几条属于同一机制；改为失败则新增一种失败模式，
- * 而 grep 没有 offset，模型只能推测并换用更窄的模式重试。
+ * rg 已输出的行数达到该值即终止 rg，不等它遍历完。每个文件至多输出 `MAX_PER_FILE + 1` 行，其中至多一行
+ * 不计入结果，因此读到这么多行时保留的命中不少于 `SCAN_LIMITS.results + 1` 条，足以判定结果超过上限。
  */
-function fitBudget(ctx: ToolContext, matches: string[]): { matches: string[]; trimmed: boolean } {
-  const total = deliveredTokens(matches.join('\n'), ctx.density)
-  const charged = chargeBatchBudget(ctx, total)
-  if (charged.ok) return { matches, trimmed: false }
+const RG_ENOUGH_LINES = Math.ceil(((SCAN_LIMITS.results + 1) * (MAX_PER_FILE + 1)) / MAX_PER_FILE)
 
-  const room = charged.cap
-  const kept: string[] = []
-  let used = 0
-  for (const m of matches) {
-    // +1 是行分隔符：不计入时，条数较多时的累计误差会导致超出预算。
-    const n = deliveredTokens(m, ctx.density) + 1
-    // 第一条超出余量时也返回：不返回任何命中等于告知模型没有匹配。
-    if (kept.length > 0 && used + n > room) break
-    kept.push(m)
-    used += n
-  }
-  if (!chargeBatchBudget(ctx, used).ok) recordBatchSpent(ctx, used)
-  return { matches: kept, trimmed: kept.length < matches.length }
-}
+/**
+ * rg 每行输出的最大字节数，超出部分只保留开头（`--max-columns-preview`）。压缩文件的一行可达数百 MB，
+ * 不设上限时读取一行即可耗尽内存。取值须大于 `clipMatch` 保留的正文：400 个字符至多 1600 字节，
+ * 其余留给行首缩进，保留的开头因此与内置遍历截取的结果相同。
+ */
+const RG_MAX_COLUMNS = 4096
 
 /**
  * 把 `路径:行号:正文` 中的正文截断到上限，路径与行号原样保留。
@@ -133,31 +118,106 @@ export const globTool: ToolSpec = {
   async fn(args, ctx) {
     const cloud = cloudTarget(ctx, args.path)
     if (cloud) return 'status' in cloud ? cloud : globCloud(cloud, String(args.pattern))
-    const root = await resolveInWorkspace(rootsOf(ctx), String(args.path ?? '.'), {
-      mustExist: true,
-    })
-    const glob = new Bun.Glob(String(args.pattern))
+    const roots = rootsOf(ctx)
+    const root = await resolveInWorkspace(roots, String(args.path ?? '.'), { mustExist: true })
+    if (!(await stat(root)).isDirectory()) {
+      return {
+        status: 'failure',
+        message: `${String(args.path)} 不是目录，path 应为搜索起点目录`,
+        errorKind: 'invalid_args',
+      }
+    }
+    const plan = globPlan(String(args.pattern))
+    const scan = startScan(ctx.signal)
     const hits: { path: string; mtime: number }[] = []
 
-    for await (const rel of glob.scan({ cwd: root, onlyFiles: true, dot: false })) {
-      if (rel.split(/[\\/]/).some((seg) => IGNORED_DIRS.has(seg))) continue
-      const abs = join(root, rel)
-      const info = await stat(abs).catch(() => null)
-      if (!info) continue
-      hits.push({ path: displayPath(ctx.workspaceRoot, abs), mtime: info.mtimeMs })
-      if (hits.length >= MAX_RESULTS * 4) break
+    // 模式开头的字面目录段中有噪音目录时没有结果，与遍历中跳过噪音目录的结论相同。
+    if (!plan.base.split('/').some((seg) => IGNORED_DIRS.has(seg))) {
+      // 字面目录段来自模型给出的模式，与 path 参数经同一个路径判定。按字面解析：模式中的百分号不是转义。
+      const start = plan.base
+        ? await resolveInWorkspace(roots, resolve(root, plan.base), { literal: true })
+        : root
+      for await (const file of walkFiles(start, scan, plan.descend)) {
+        if (file.link || !plan.accept(file.rel, file.name)) continue
+        const info = await stat(file.abs).catch(() => null)
+        if (!info) continue
+        hits.push({ path: displayPath(ctx.workspaceRoot, file.abs), mtime: info.mtimeMs })
+        // 多取若干倍再按修改时间排序，取最新的部分。
+        if (hits.length >= SCAN_LIMITS.results * 4) break
+      }
     }
+    if (hits.length > SCAN_LIMITS.results) scan.stop('limit')
 
     hits.sort((a, b) => b.mtime - a.mtime)
-    const truncated = hits.length > MAX_RESULTS
-    const files = hits.slice(0, MAX_RESULTS).map((h) => h.path)
-
+    const fit = fitBudget(
+      ctx,
+      hits.slice(0, SCAN_LIMITS.results).map((h) => h.path),
+    )
     return {
       status: 'success',
-      message: `匹配 ${files.length} 个文件${truncated ? '（已截断）' : ''}`,
-      data: { files, truncated },
+      message:
+        `匹配 ${fit.items.length} 个文件` +
+        truncationNote(scan.stopped, fit.trimmed, SCAN_LIMITS.results, NARROW),
+      data: { files: fit.items, truncated: scan.stopped !== null || fit.trimmed },
     }
   },
+}
+
+/** glob 模式中的通配语法。含这些字符的段不是字面的目录名。 */
+const GLOB_SYNTAX = /[*?[\]{}!\\]/
+
+interface GlobPlan {
+  /** 模式开头的字面目录段，以 / 连接。遍历从该目录开始；为空串时从搜索起点开始。 */
+  base: string
+  /** 是否进入子目录。`depth` 是该目录相对遍历起点的层数。 */
+  descend(name: string, depth: number): boolean
+  /** 文件是否匹配。`rel` 相对遍历起点，以 / 分隔。 */
+  accept(rel: string, name: string): boolean
+}
+
+/**
+ * 把 glob 模式拆为遍历方案，结果与 `Bun.Glob.scan({ onlyFiles: true, dot: false })` 相同：
+ * - 开头的字面目录段作为遍历起点，`..` 与绝对路径的写法由此解析；
+ * - 不含 `**` 时遍历深度不超过模式的段数，各层目录名须匹配对应的段，因此 `*.md` 只读取起点目录；
+ * - 名称以 . 开头的目录与文件只由同样以 . 开头的段匹配，`**` 不进入点目录；
+ * - Windows 上反斜杠是路径分隔符。
+ * 含 `{}` 或以 `!` 开头的模式无法逐段对应，只按点段规则与整体匹配判定，不限深度。
+ *
+ * 不要省略深度与逐层的判定：只做整体匹配时，`*.md` 也会遍历起点之下的整棵目录树。
+ */
+function globPlan(pattern: string): GlobPlan {
+  const segments = (process.platform === 'win32' ? pattern.replaceAll('\\', '/') : pattern).split(
+    '/',
+  )
+  let fixed = 0
+  while (fixed < segments.length - 1 && !GLOB_SYNTAX.test(segments[fixed] ?? '')) fixed++
+  const rest = segments.slice(fixed)
+  const matcher = new Bun.Glob(rest.join('/'))
+  const free = /[{}]/.test(pattern) || pattern.startsWith('!')
+  const deep = rest.findIndex((s) => s.includes('**'))
+  // 按位置对应的层数：这些层的目录名须匹配同一位置的段。
+  const positional = free ? 0 : deep === -1 ? rest.length : deep
+  const maxDepth = free || deep !== -1 ? Number.POSITIVE_INFINITY : rest.length
+  const layers = rest.slice(0, positional).map((s) => new Bun.Glob(s))
+  // 最后一段匹配文件名，其余以 . 开头的段决定可以进入哪些点目录。
+  const dotDirs = rest
+    .slice(0, -1)
+    .filter((s) => s.startsWith('.'))
+    .map((s) => new Bun.Glob(s))
+  const dotFiles = (rest.at(-1) ?? '').startsWith('.')
+  return {
+    base: segments.slice(0, fixed).join('/'),
+    descend(name, depth) {
+      if (IGNORED_DIRS.has(name) || depth >= maxDepth) return false
+      const dot = name.startsWith('.')
+      if (depth <= positional) {
+        const segment = rest[depth - 1] ?? ''
+        return (layers[depth - 1]?.match(name) ?? false) && (!dot || segment.startsWith('.'))
+      }
+      return !dot || dotDirs.some((g) => g.match(name))
+    },
+    accept: (rel, name) => (!name.startsWith('.') || dotFiles) && matcher.match(rel),
+  }
 }
 
 export const grepTool: ToolSpec = {
@@ -210,12 +270,15 @@ export const grepTool: ToolSpec = {
     const cwd = isDir ? target : dirname(target)
     const needle = isDir ? '.' : basename(target)
 
-    // 停止时结束 rg 并结束本次调用：rg 被终止后返回 null，不能因此转入降级遍历。
-    const viaRg = await runRipgrep(cwd, needle, pattern, {
-      ci,
-      signal: ctx.signal,
-      ...(fileGlob ? { glob: fileGlob } : {}),
-    })
+    // rg 与降级遍历共用同一个时限与停止信号。停止时 rg 被终止，本次调用随即结束，不转入降级遍历。
+    const scan = startScan(ctx.signal)
+    const viaRg = await runRipgrep(
+      cwd,
+      needle,
+      pattern,
+      { ci, ...(fileGlob ? { glob: fileGlob } : {}) },
+      scan,
+    )
     ctx.signal.throwIfAborted()
     if (viaRg) {
       // rg 不跟随符号链接，输出的路径即真实路径。
@@ -229,10 +292,10 @@ export const grepTool: ToolSpec = {
       return {
         status: 'success',
         message:
-          `命中 ${fit.matches.length} 行（ripgrep）` +
-          (fit.trimmed ? '，已按上下文剩余空间截断，收窄模式或范围可查看更多' : ''),
+          `命中 ${fit.items.length} 行（ripgrep）` +
+          truncationNote(scan.stopped, fit.trimmed, SCAN_LIMITS.results, NARROW),
         data: {
-          matches: fit.matches,
+          matches: fit.items,
           truncated: viaRg.truncated || fit.trimmed,
           engine: 'ripgrep',
         },
@@ -243,7 +306,7 @@ export const grepTool: ToolSpec = {
     const re = new RegExp(pattern, ci ? 'i' : '')
     const globMatcher = fileGlob ? new Bun.Glob(fileGlob) : null
     const lines: string[] = []
-    let truncated = false
+    let perFileCapped = false
 
     const scanFile = async (abs: string): Promise<void> => {
       if (globMatcher && !globMatcher.match(basename(abs))) return
@@ -251,7 +314,8 @@ export const grepTool: ToolSpec = {
       const real = await realpath(abs).catch(() => null)
       if (real === null || (await hiddenInScan(roots, real))) return
       const stats = await stat(abs).catch(() => null)
-      if (!stats || stats.size > 2 * 1024 * 1024) return
+      // 只读取普通文件：读取命名管道会一直等待写入方，停止信号无法中断这次读取。
+      if (!stats?.isFile() || stats.size > 2 * 1024 * 1024) return
       const text = await readFile(abs, 'utf8').catch(() => null)
       if (text === null) return
       const rel = displayPath(ctx.workspaceRoot, abs)
@@ -259,11 +323,12 @@ export const grepTool: ToolSpec = {
       const rows = toLf(text).split('\n')
       let inFile = 0
       rows.forEach((line, i) => {
-        if (lines.length >= MAX_RESULTS) return
+        // 多取一条，用于判定结果超过上限，与 rg 一侧的判据相同。
+        if (lines.length > SCAN_LIMITS.results) return
         if (!re.test(line)) return
         // 单文件上限与 ripgrep 使用同一数值，截断后同样必须报告 truncated。
         if (inFile >= MAX_PER_FILE) {
-          truncated = true
+          perFileCapped = true
           return
         }
         inFile++
@@ -271,36 +336,31 @@ export const grepTool: ToolSpec = {
       })
     }
 
-    const walk = async (dir: string): Promise<void> => {
-      ctx.signal.throwIfAborted()
-      if (lines.length >= MAX_RESULTS) {
-        truncated = true
-        return
+    if (isDir) {
+      const descend = (name: string) => !IGNORED_DIRS.has(name) && !name.startsWith('.')
+      for await (const file of walkFiles(target, scan, descend)) {
+        await scanFile(file.abs)
+        if (lines.length > SCAN_LIMITS.results) break
       }
-      const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
-      for (const e of entries) {
-        if (lines.length >= MAX_RESULTS) {
-          truncated = true
-          return
-        }
-        if (e.isDirectory()) {
-          if (IGNORED_DIRS.has(e.name) || e.name.startsWith('.')) continue
-          await walk(join(dir, e.name))
-          continue
-        }
-        await scanFile(join(dir, e.name))
-      }
+    } else {
+      await scanFile(target)
     }
-    if (isDir) await walk(target)
-    else await scanFile(target)
+    if (lines.length > SCAN_LIMITS.results) {
+      scan.stop('limit')
+      lines.length = SCAN_LIMITS.results
+    }
 
     const fit = fitBudget(ctx, lines)
     return {
       status: 'success',
       message:
-        `命中 ${fit.matches.length} 行（内置遍历，未找到 ripgrep）` +
-        (fit.trimmed ? '，已按上下文剩余空间截断，收窄模式或范围可查看更多' : ''),
-      data: { matches: fit.matches, truncated: truncated || fit.trimmed, engine: 'builtin' },
+        `命中 ${fit.items.length} 行（内置遍历，未找到 ripgrep）` +
+        truncationNote(scan.stopped, fit.trimmed, SCAN_LIMITS.results, NARROW),
+      data: {
+        matches: fit.items,
+        truncated: perFileCapped || scan.stopped !== null || fit.trimmed,
+        engine: 'builtin',
+      },
     }
   },
 }
@@ -316,8 +376,8 @@ async function globCloud(target: CloudTarget, pattern: string): Promise<ToolOutc
     .filter((p) => p.startsWith(prefix))
     .filter((p) => !hiddenPath(p.slice(prefix.length)) && glob.match(p.slice(prefix.length)))
     .map((p) => `${cloudSkillDir(target.pkg)}/${p}`)
-  const truncated = hits.length > MAX_RESULTS
-  const files = hits.slice(0, MAX_RESULTS)
+  const truncated = hits.length > SCAN_LIMITS.results
+  const files = hits.slice(0, SCAN_LIMITS.results)
   return {
     status: 'success',
     message: `匹配 ${files.length} 个文件${truncated ? '（已截断）' : ''}`,
@@ -378,7 +438,7 @@ async function grepCloud(
     if (nameGlob && !nameGlob.match(basename(m.path))) continue
     if (m.lines.length > MAX_PER_FILE) truncated = true
     for (const line of m.lines.slice(0, MAX_PER_FILE)) {
-      if (lines.length >= MAX_RESULTS) {
+      if (lines.length >= SCAN_LIMITS.results) {
         truncated = true
         break
       }
@@ -389,17 +449,22 @@ async function grepCloud(
   return {
     status: 'success',
     message:
-      `命中 ${fit.matches.length} 行（云端技能，只返回位置，内容用 read_file 按行号读取）` +
-      (fit.trimmed ? '，已按上下文剩余空间截断，收窄模式或范围可查看更多' : ''),
-    data: { matches: fit.matches, truncated: truncated || fit.trimmed, engine: 'cloud' },
+      `命中 ${fit.items.length} 行（云端技能，只返回位置，内容用 read_file 按行号读取）` +
+      truncationNote(null, fit.trimmed, SCAN_LIMITS.results, NARROW),
+    data: { matches: fit.items, truncated: truncated || fit.trimmed, engine: 'cloud' },
   }
 }
 
+/**
+ * 用 rg 搜索。rg 无法执行该模式（未安装、正则语法不受支持）时返回 null，由调用方转入内置遍历。
+ * 总时长不超过 `scan` 的剩余时限，输出足够判定结果超过上限时即终止 rg，到期与提前终止都记入 `scan.stopped`。
+ */
 async function runRipgrep(
   cwd: string,
   needle: string,
   pattern: string,
-  opts: { ci: boolean; glob?: string; signal: AbortSignal },
+  opts: { ci: boolean; glob?: string },
+  scan: Scan,
 ): Promise<{ lines: string[]; truncated: boolean } | null> {
   // 不能省略 `--with-filename`：以单个文件作为搜索起点时 rg 默认不输出文件名，
   // 输出退化为 `行号:内容`，无法重新计算路径，模型收到的命中不含位置。
@@ -410,6 +475,12 @@ async function runRipgrep(
     '--no-heading',
     '--color',
     'never',
+    // 无法读取的文件不输出说明，只使退出码为 2，其余文件的结果照常输出。
+    // 因此 stderr 只在 rg 无法执行该模式时非空，下方据此区分两种退出码 2。
+    '--no-messages',
+    '--max-columns',
+    String(RG_MAX_COLUMNS),
+    '--max-columns-preview',
     // 多请求一条，用于判断该文件是否还有更多命中，见 `MAX_PER_FILE`。
     '--max-count',
     String(MAX_PER_FILE + 1),
@@ -420,13 +491,28 @@ async function runRipgrep(
 
   try {
     const proc = Bun.spawn(argv, { cwd, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' })
-    // 使用统一的等待入口：完成判据是进程退出，不是管道 EOF。
-    //
-    // 此路径上不会因 EOF 而永久阻塞：rg 不派生子进程，退出后没有进程持有写端。
-    // 使用统一入口是为了使等待子进程只有一种实现，各处分别实现必然不一致。
-    const { exitCode, stdout } = await collectProcess(proc, { signal: opts.signal })
-    // rg 的退出码 1 表示没有命中，不是错误；大于 1 才是失败。
-    if (exitCode > 1) return null
+    // 输出足够时经停止信号的同一入口终止 rg：只停止读取时，没有后续输出的 rg 会一直遍历到时限。
+    const enough = new AbortController()
+    let read = 0
+    // 使用统一的等待入口：完成判据是进程退出，不是管道 EOF。到期、停止与输出足够都终止进程树。
+    const run = await collectProcess(proc, {
+      signal: AbortSignal.any([scan.signal, enough.signal]),
+      timeoutMs: scan.remainingMs(),
+      onText: (channel, text) => {
+        if (channel === 'stdout') {
+          read += text.split('\n').length - 1
+          if (read >= RG_ENOUGH_LINES) enough.abort()
+        }
+        return text
+      },
+    })
+    if (run.timedOut) scan.stop('time')
+    // 被本地终止时退出码不反映搜索结果。自行结束时退出码 1 表示没有命中；
+    // 2 且 stderr 为空表示部分文件无法读取，其余结果照常使用。不要把后者转入内置遍历：
+    // 以家目录为起点时几乎必然有无法读取的文件，内置遍历逐个读取文件，远慢于 rg。
+    else if (!enough.signal.aborted && run.exitCode > 1 && run.stderr.trim()) return null
+    // 被终止的 rg 最后一行可能只输出了一部分，截在路径中间时无法定位，丢弃最后一个换行之后的内容。
+    const stdout = run.stdout.slice(0, run.stdout.lastIndexOf('\n') + 1)
     const kept: string[] = []
     const seen = new Map<string, number>()
     let capped = false
@@ -443,7 +529,11 @@ async function runRipgrep(
       }
       kept.push(line)
     }
-    return { lines: kept.slice(0, MAX_RESULTS), truncated: capped || kept.length > MAX_RESULTS }
+    if (kept.length > SCAN_LIMITS.results) scan.stop('limit')
+    return {
+      lines: kept.slice(0, SCAN_LIMITS.results),
+      truncated: capped || scan.stopped !== null,
+    }
   } catch {
     return null
   }

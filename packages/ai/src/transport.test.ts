@@ -6,9 +6,9 @@
  * 对端是本机 server，正文分片发送：一条保活行被分割在两个分片中时只计一次。
  */
 
-import { afterAll, beforeAll, expect, test } from 'bun:test'
+import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test'
 import { ProviderError } from './errors.ts'
-import { newTrace, readTransport, traceFetch } from './transport.ts'
+import { ERROR_BODY_TIMEOUT_MS, newTrace, readTransport, traceFetch } from './transport.ts'
 
 const enc = new TextEncoder()
 
@@ -167,18 +167,27 @@ test('保活注释行重置空闲计时，间隔短于上限时不中止', async
 })
 
 test('非 2xx 正文永不结束时按时限截断，状态码与响应头原样返回', async () => {
-  const trace = newTrace()
-  const started = Date.now()
-  const res = await traceFetch(trace, 'openai_responses', 60_000)(`${base}/hung-error`)
-  const text = await res.text()
-  const elapsed = Date.now() - started
-  expect(res.status).toBe(503)
-  expect(res.headers.get('retry-after')).toBe('60')
-  expect(text).toBe('{"error":{"message":"No available accounts')
-  expect(elapsed).toBeGreaterThanOrEqual(1_800)
-  expect(elapsed).toBeLessThan(6_000)
-  expect(trace.status).toBe(503)
-  expect(trace.bytes).toBe(text.length)
+  // 诊断读取时限缩短为 100 毫秒，其余计时器保持原值。
+  const SHORT = 100
+  const original = globalThis.setTimeout
+  const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms: number) =>
+    original(fn, ms === ERROR_BODY_TIMEOUT_MS ? SHORT : ms)) as typeof setTimeout)
+  try {
+    const trace = newTrace()
+    const started = Date.now()
+    const res = await traceFetch(trace, 'openai_responses', 60_000)(`${base}/hung-error`)
+    const text = await res.text()
+    const elapsed = Date.now() - started
+    expect(res.status).toBe(503)
+    expect(res.headers.get('retry-after')).toBe('60')
+    expect(text).toBe('{"error":{"message":"No available accounts')
+    expect(elapsed).toBeGreaterThanOrEqual(SHORT * 0.9)
+    expect(elapsed).toBeLessThan(ERROR_BODY_TIMEOUT_MS)
+    expect(trace.status).toBe(503)
+    expect(trace.bytes).toBe(text.length)
+  } finally {
+    timers.mockRestore()
+  }
 })
 
 test('非 2xx 正文超过字节上限时提前结束读取，不等待时限届满', async () => {

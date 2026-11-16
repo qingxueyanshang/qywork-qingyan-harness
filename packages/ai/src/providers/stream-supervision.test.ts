@@ -10,16 +10,28 @@
  * 协议终态与流内错误由 `stream-terminal.test.ts` 覆盖，两者判据不同。
  */
 
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { ProviderError } from '../errors.ts'
+import { ERROR_BODY_TIMEOUT_MS } from '../transport.ts'
 import { drainAdapter, FAULT_PROTOCOLS, withFault } from './fault-server.test-helper.ts'
 
 for (const { kind, model } of FAULT_PROTOCOLS) {
   test(`${kind} 503 错误正文永不结束：在诊断上限内报告状态码与 Retry-After`, async () => {
-    const result = await withFault('hung_error_body', async (fault) => {
-      fault.retryAfterSeconds = 60
-      return await drainAdapter({ fault, kind, model, idleTimeoutMs: 60_000 })
-    })
+    // 诊断读取时限缩短为 100 毫秒，其余计时器保持原值。
+    const original = globalThis.setTimeout
+    const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: () => void,
+      ms: number,
+    ) => original(fn, ms === ERROR_BODY_TIMEOUT_MS ? 100 : ms)) as typeof setTimeout)
+    let result: Awaited<ReturnType<typeof drainAdapter>>
+    try {
+      result = await withFault('hung_error_body', async (fault) => {
+        fault.retryAfterSeconds = 60
+        return await drainAdapter({ fault, kind, model, idleTimeoutMs: 60_000 })
+      })
+    } finally {
+      timers.mockRestore()
+    }
     expect(result.err).toBeInstanceOf(ProviderError)
     const pe = result.err as ProviderError
     expect(pe.code).toBe('provider_unavailable')
@@ -28,12 +40,12 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
     expect(pe.transport?.status).toBe(503)
     // 非 2xx 时，响应头到达时刻只能经传输读数传出适配器，请求账的对应列取自该值。
     expect(pe.transport?.headersAt).not.toBeNull()
-    expect(result.elapsedMs).toBeLessThan(10_000)
+    expect(result.elapsedMs).toBeLessThan(ERROR_BODY_TIMEOUT_MS)
   }, 20_000)
 
   test(`${kind} 响应头之后不再发送字节：按空闲上限报告断流`, async () => {
     const result = await withFault('headers_then_silence', (fault) =>
-      drainAdapter({ fault, kind, model, idleTimeoutMs: 500 }),
+      drainAdapter({ fault, kind, model, idleTimeoutMs: 100 }),
     )
     expect(result.err).toBeInstanceOf(ProviderError)
     const pe = result.err as ProviderError

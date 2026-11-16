@@ -37,6 +37,7 @@ import { CanvasPort } from './canvas/port.ts'
 import { cloudReadOnly, cloudTarget, listCloudDir, readCloudFile } from './cloud-skills/source.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import { FileReadPort } from './files/port.ts'
+import { fitBudget, SCAN_LIMITS, truncationNote } from './files/scan.ts'
 import {
   downscaleNote,
   type ImageRegion,
@@ -1012,7 +1013,9 @@ export const listDirTool: ToolSpec = {
     const abs = await resolveInWorkspace(rootsOf(ctx), String(args.path ?? '.'), {
       mustExist: true,
     })
+    // 一次 readdir 读取整个目录，无法中途停止；条数上限限制的是返回量，读取之后检查停止信号。
     const entries = await readdir(abs, { withFileTypes: true })
+    ctx.signal.throwIfAborted()
     const rows = entries
       .filter((e) => !(e.isDirectory() && IGNORED_DIRS.has(e.name)))
       .filter((e) => !e.name.startsWith('.') || e.name === '.env.example')
@@ -1024,11 +1027,21 @@ export const listDirTool: ToolSpec = {
             : 1,
       )
       .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
+    const over = rows.length > SCAN_LIMITS.entries
+    const fit = fitBudget(ctx, rows.slice(0, SCAN_LIMITS.entries))
+    const truncated = over || fit.trimmed
 
     return {
       status: 'success',
-      message: `${displayPath(ctx.workspaceRoot, abs)}：${rows.length} 项`,
-      data: { entries: rows },
+      message:
+        `${displayPath(ctx.workspaceRoot, abs)}：${rows.length} 项` +
+        truncationNote(
+          over ? 'limit' : null,
+          fit.trimmed,
+          SCAN_LIMITS.entries,
+          '用 glob 按名称模式查找其余条目',
+        ),
+      data: { entries: fit.items, ...(truncated ? { truncated } : {}) },
     }
   },
 }
