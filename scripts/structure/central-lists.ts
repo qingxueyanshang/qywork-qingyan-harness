@@ -9,7 +9,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import ts from 'typescript'
-import { ROOT } from './file-size.ts'
+
+const ROOT = join(import.meta.dir, '..', '..')
 
 /** 接口的成员数：属性（含可选属性）、方法签名、调用签名与索引签名各计一个；同名的多个声明合并计数。 */
 export function interfaceMembers(sf: ts.SourceFile, name: string): number | null {

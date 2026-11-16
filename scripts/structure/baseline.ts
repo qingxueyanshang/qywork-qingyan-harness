@@ -1,7 +1,7 @@
 /**
  * 结构守卫的基线：记录现状上限，只减不增。
  *
- * `baseline.json` 有四部分：文件行数、中心清单计数、组件内的状态数、组件内的内嵌组件数。
+ * `baseline.json` 有三部分：中心清单计数、组件内的状态数、组件内的内嵌组件数。
  * 未列入基线的条目不得超过上限；列入的条目不得超过基线值。条目已变小、已不超过上限或已不存在时同样判为失败，
  * 提示下调或移除，基线因此不留余量。中心清单没有上限：每个计数项都必须在基线中。
  * 基线不是豁免名单：它不免除任何新增内容的检查，列入的条目只能变小。
@@ -17,12 +17,11 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { keyOf, measureCentralLists, TARGETS } from './central-lists.ts'
 import { INNER_CAP, measureComponents, STATE_CAP } from './components.ts'
-import { LINE_CAP, measureFileLines } from './file-size.ts'
 
 export const BASELINE_FILE = join(import.meta.dir, 'baseline.json')
 const UPDATE = 'bun run scripts/structure/baseline.ts --update'
 
-export const SECTIONS = ['fileLines', 'centralLists', 'componentStates', 'innerComponents'] as const
+export const SECTIONS = ['centralLists', 'componentStates', 'innerComponents'] as const
 export type Section = (typeof SECTIONS)[number]
 export type Entries = Record<string, number>
 export type Baseline = Record<Section, Entries>
@@ -32,30 +31,26 @@ export interface Rule {
   cap: number | null
   /** 计量的对象，写在现状值之前，如「状态 12 个」中的「状态」；键已说明对象时为空串。 */
   what: string
-  unit: string
   /** 超过上限或基线时的处理方向。 */
   hint(key: string): string
 }
 
 export const RULES: Record<Section, Rule> = {
-  fileLines: { cap: LINE_CAP, what: '', unit: '行', hint: () => '按职责拆分' },
   centralLists: {
     cap: null,
     what: '',
-    unit: '个',
     hint: (key) => TARGETS.find((t) => keyOf(t) === key)?.hint ?? '',
   },
   componentStates: {
     cap: STATE_CAP,
     what: '状态',
-    unit: '个',
-    hint: () => '状态移入组件之外的控制器，或拆分出子组件',
+    hint: () =>
+      '状态收拢为组件之外的控制器对象（canvas/board/controller.ts 的做法），不按长度拆分文件',
   },
   innerComponents: {
     cap: INNER_CAP,
     what: '内嵌组件',
-    unit: '个',
-    hint: () => '内嵌组件移到独立文件，经 props 或 context 取得状态',
+    hint: () => '内嵌组件移到独立文件，以控制器为参数或经 context 取得状态',
   },
 }
 
@@ -99,8 +94,8 @@ export function findings(
 
 /** 失败信息：条目、现状、允许的值与处理方向。 */
 export function messageOf(rule: Rule, f: Finding): string {
-  const now = `${rule.what ? `${rule.what} ` : ''}${f.current} ${rule.unit}`
-  const allowed = `${f.allowed} ${rule.unit}`
+  const now = `${rule.what ? `${rule.what} ` : ''}${f.current} 个`
+  const allowed = `${f.allowed} 个`
   switch (f.kind) {
     case 'over-cap':
       return `${f.key}：${now}，上限 ${allowed} → ${rule.hint(f.key)}`
@@ -145,7 +140,7 @@ export function update(
   for (const f of findings(rule, measured, baseline)) {
     if (f.kind === 'shrunk' && f.current !== null) {
       next[f.key] = f.current
-      changes.push(`${f.key}：${f.allowed} ${rule.unit} → ${f.current} ${rule.unit}`)
+      changes.push(`${f.key}：${f.allowed} 个 → ${f.current} 个`)
     } else if (f.kind === 'below-cap' || f.kind === 'stale') {
       delete next[f.key]
       changes.push(`${f.key}：移除`)
@@ -178,13 +173,12 @@ export function readBaseline(): Baseline {
   return JSON.parse(readFileSync(BASELINE_FILE, 'utf8')) as Baseline
 }
 
-/** 四部分的现状。 */
+/** 三部分的现状。 */
 function measureAll(): { measured: Record<Section, Map<string, number>>; missing: string[] } {
   const central = measureCentralLists()
   const components = measureComponents()
   return {
     measured: {
-      fileLines: measureFileLines(),
       centralLists: central.counts,
       componentStates: components.states,
       innerComponents: components.inner,

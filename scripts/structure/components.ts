@@ -8,12 +8,18 @@
  *
  * 归属：组件体内任意深度（含回调与立即执行的函数）的状态创建调用计入该组件；内嵌组件中的调用计入内嵌组件，
  * 不计入外层。内嵌组件本身也是组件，按同一上限检查，名称记为 `外层.内层`。
+ *
+ * 两个数度量的是移出一段代码时须逐个传递的闭包变量，不是文件规模。超过时的处理方向是把状态收拢为一个控制器对象、
+ * 把内嵌组件移到独立文件并以控制器为参数或经 context 取得状态（`apps/web/src/components/canvas/board/controller.ts`
+ * 的做法），不是把组件按长度拆成两个文件。
  */
 
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import ts from 'typescript'
-import { countedFiles, ROOT } from './file-size.ts'
+import { sourceFiles } from '../writing-style.ts'
+
+const ROOT = join(import.meta.dir, '..', '..')
 
 /** 未列入基线的组件允许的最大状态数。 */
 export const STATE_CAP = 8
@@ -106,15 +112,26 @@ export function countComponents(src: string): ComponentCount[] {
   return out
 }
 
+/** 前端（`apps/web/src`）非测试的 `.tsx`，相对仓库根、以 `/` 分隔。扫描范围取 `writing-style.ts` 的 `sourceFiles()`。 */
+function componentFiles(): string[] {
+  return sourceFiles()
+    .map((f) => relative(ROOT, f).replaceAll('\\', '/'))
+    .filter(
+      (rel) =>
+        rel.startsWith('apps/web/src/') &&
+        rel.endsWith('.tsx') &&
+        !/\.test\.tsx$|\/tests?\//.test(rel),
+    )
+}
+
 /**
- * 前端（`apps/web/src`）全部计入统计的 `.tsx` 中各组件的状态数与内嵌组件数，键为 `相对路径#组件名`。
+ * 前端全部非测试 `.tsx` 中各组件的状态数与内嵌组件数，键为 `相对路径#组件名`。
  * 同一文件中重名的组件依次加后缀 ` (2)`、` (3)`，不互相覆盖。
  */
 export function measureComponents(): { states: Map<string, number>; inner: Map<string, number> } {
   const states = new Map<string, number>()
   const inner = new Map<string, number>()
-  for (const rel of countedFiles()) {
-    if (!rel.startsWith('apps/web/src/') || !rel.endsWith('.tsx')) continue
+  for (const rel of componentFiles()) {
     for (const c of countComponents(readFileSync(join(ROOT, rel), 'utf8'))) {
       let key = `${rel}#${c.name}`
       for (let k = 2; states.has(key); k++) key = `${rel}#${c.name} (${k})`

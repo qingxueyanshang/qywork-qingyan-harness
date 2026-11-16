@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`baseline.ts` 的比较规则（`findings`、`check`）、下调（`update`）、首次建立（`init`）与输出格式（`serialize`），
- * 以及 `baseline.json` 的格式。全仓检查分别在三项守卫各自的测试中。
+ * 以及 `baseline.json` 的格式。全仓检查分别在 `central-lists.test.ts` 与 `components.test.ts` 中。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -17,8 +17,8 @@ import {
   update,
 } from './baseline.ts'
 
-const CAPPED: Rule = { cap: 10, what: '', unit: '行', hint: () => '按职责拆分' }
-const UNCAPPED: Rule = { cap: null, what: '', unit: '个', hint: (key) => `${key} 的处理方向` }
+const CAPPED: Rule = { cap: 10, what: '状态', hint: () => '收拢为控制器' }
+const UNCAPPED: Rule = { cap: null, what: '', hint: (key) => `${key} 的处理方向` }
 
 const kinds = (rule: Rule, measured: [string, number][], baseline: Record<string, number>) =>
   findings(rule, new Map(measured), baseline).map((f) => [f.key, f.kind])
@@ -84,21 +84,20 @@ describe('比较规则', () => {
     const lines = check(
       CAPPED,
       new Map([
-        ['new.ts', 12],
-        ['big.ts', 31],
-        ['short.ts', 15],
+        ['new.tsx#New', 12],
+        ['big.tsx#Big', 31],
+        ['short.tsx#Short', 15],
       ]),
-      { 'big.ts': 30, 'short.ts': 20, 'gone.ts': 25 },
+      { 'big.tsx#Big': 30, 'short.tsx#Short': 20, 'gone.tsx#Gone': 25 },
     )
     expect(lines).toEqual([
-      'big.ts：31 行，基线 30 行 → 按职责拆分；基线只能下调',
-      'gone.ts：已不存在，基线 25 行 → 运行 bun run scripts/structure/baseline.ts --update 移除该条目',
-      'new.ts：12 行，上限 10 行 → 按职责拆分',
-      'short.ts：15 行，基线 20 行 → 运行 bun run scripts/structure/baseline.ts --update 下调基线',
+      'big.tsx#Big：状态 31 个，基线 30 个 → 收拢为控制器；基线只能下调',
+      'gone.tsx#Gone：已不存在，基线 25 个 → 运行 bun run scripts/structure/baseline.ts --update 移除该条目',
+      'new.tsx#New：状态 12 个，上限 10 个 → 收拢为控制器',
+      'short.tsx#Short：状态 15 个，基线 20 个 → 运行 bun run scripts/structure/baseline.ts --update 下调基线',
     ])
-    const states: Rule = { cap: 8, what: '状态', unit: '个', hint: () => '拆分' }
-    expect(check(states, new Map([['a.tsx#A', 9]]), {})).toEqual([
-      'a.tsx#A：状态 9 个，上限 8 个 → 拆分',
+    expect(check(UNCAPPED, new Map([['a.ts#清单', 4]]), { 'a.ts#清单': 3 })).toEqual([
+      'a.ts#清单：4 个，基线 3 个 → a.ts#清单 的处理方向；基线只能下调',
     ])
   })
 })
@@ -117,7 +116,7 @@ describe('下调与首次建立', () => {
     )
     expect(r.refused).toEqual([])
     expect(r.next).toEqual({ a: 15, d: 20 })
-    expect(r.changes).toEqual(['a：20 行 → 15 行', 'b：移除', 'c：移除'])
+    expect(r.changes).toEqual(['a：20 个 → 15 个', 'b：移除', 'c：移除'])
     expect(baseline).toEqual({ a: 20, b: 20, c: 20, d: 20 })
   })
 
@@ -138,24 +137,22 @@ describe('下调与首次建立', () => {
 })
 
 describe('基线文件', () => {
-  test('按固定的部分顺序与路径顺序输出，一行一个条目', () => {
+  test('按固定的部分顺序与键的顺序输出，一行一个条目', () => {
     const text = serialize({
-      fileLines: { 'b.ts': 900, 'a.ts': 1000 },
-      centralLists: { x: 1 },
-      componentStates: {},
       innerComponents: {},
+      centralLists: { x: 1 },
+      componentStates: { 'b.tsx#B': 9, 'a.tsx#A': 10 },
     })
     expect(text).toBe(
       [
         '{',
-        '  "fileLines": {',
-        '    "a.ts": 1000,',
-        '    "b.ts": 900',
-        '  },',
         '  "centralLists": {',
         '    "x": 1',
         '  },',
-        '  "componentStates": {},',
+        '  "componentStates": {',
+        '    "a.tsx#A": 10,',
+        '    "b.tsx#B": 9',
+        '  },',
         '  "innerComponents": {}',
         '}',
         '',
@@ -163,7 +160,7 @@ describe('基线文件', () => {
     )
   })
 
-  test('baseline.json 含全部四部分，且与按规则输出的结果逐字节相同', () => {
+  test('baseline.json 含全部三部分，且与按规则输出的结果逐字节相同', () => {
     const baseline = readBaseline()
     expect(Object.keys(baseline)).toEqual([...SECTIONS])
     expect(readFileSync(BASELINE_FILE, 'utf8')).toBe(serialize(baseline))
