@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tauri::webview::{PlatformWebview, WebviewBuilder};
@@ -27,7 +27,12 @@ use webview2_com::{
 };
 use windows::core::{Interface, BOOL, HSTRING, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, PostMessageW, WM_CANCELMODE};
+use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumChildWindows, GetAncestor, GetWindow, PostMessageW, CHILDID_SELF, EVENT_OBJECT_SHOW,
+    GA_ROOT, GW_OWNER, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    WM_CANCELMODE,
+};
 
 use super::address::{navigation_url, BLANK};
 use super::profile::{self, ProfileLock};
@@ -41,12 +46,7 @@ pub const PRESENTATION: &str = "embedded";
 
 /// 子视图的浏览器参数。`additional_browser_args` 会整体替换 wry 的默认值，因此包含其中的
 /// `msWebOOUI`、`msPdfOOUI`、`msSmartScreenProtection` 三项。
-///
-/// 另外禁用 `KeyboardAccessibleTooltip`：焦点经键盘移到带 `title` 的元素上时，该特性显示的提示是
-/// 不随子视图移动的顶层窗口，焦点移开之前不消失。AI 发送的 Tab 键同样触发它，页面移出可视区后，
-/// 提示停留在原位置，或按屏幕边界移到左上角，显示在其他会话之上。
-const BROWSER_ARGS: &str =
-    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,KeyboardAccessibleTooltip";
+const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
 
 /// 面板挂载之前，子视图位于可视区之外。
 /// 只能通过位置移出：`hide()` 会使页面停止渲染新帧，截图与依赖新帧的等待都会挂起。
@@ -72,7 +72,7 @@ pub struct Engine {
     profile: Option<ProfileLock>,
     debug_port: u16,
     runtime_version: String,
-    /// 当前放在面板中的页，只由 `layout` 写入；`None` 表示全部移出可视区。右键菜单按它裁决。
+    /// 当前放在面板中的页，只由 `layout` 写入；`None` 表示全部移出可视区。右键菜单与弹出窗口事件按它裁决。
     shown: Mutex<Option<String>>,
 }
 
@@ -325,11 +325,87 @@ unsafe extern "system" fn post_cancel_mode(child: HWND, _: LPARAM) -> BOOL {
     true.into()
 }
 
-/// 在该页的 WebView2 上注册下载与右键菜单钩子。
+/// 主窗口的句柄，由 `watch_popups` 写入一次。弹出窗口事件的回调按它判定窗口归属。
+static MAIN_WINDOW: OnceLock<isize> = OnceLock::new();
+
+/// 监听主窗口所属弹出窗口的显示。在主线程上执行，进程内只注册一次。
+///
+/// 移出面板的页仍会显示提示：AI 用 Tab 键把焦点移到带 `title` 的元素上时，Chromium 按元素的屏幕位置
+/// 显示提示，页面位于可视区之外时提示按屏幕边界移到左上角。提示窗口属于主窗口而不属于某一页，
+/// 无法按窗口判定来源，因此向所有不在面板中的页投递 `WM_CANCELMODE`：只有显示该提示的页关闭它，
+/// 面板中的页不受影响。
+///
+/// 不要改为在浏览器参数中禁用 `KeyboardAccessibleTooltip`：该参数作用于所有页，面板中的页同样不再显示
+/// 键盘提示。不要改为向移出的页投递 `WM_ENTERMENULOOP` 以停用提示：Chromium 在一个进程中只允许一个窗口
+/// 处于菜单循环，第二个移出的页即触发浏览器进程的检查失败。
+fn watch_popups(platform: &PlatformWebview) {
+    unsafe {
+        let mut container = HWND::default();
+        if platform.controller().ParentWindow(&mut container).is_err() {
+            return;
+        }
+        let main = GetAncestor(container, GA_ROOT);
+        if MAIN_WINDOW.set(main.0 as isize).is_err() {
+            return;
+        }
+        let hook = SetWinEventHook(
+            EVENT_OBJECT_SHOW,
+            EVENT_OBJECT_SHOW,
+            None,
+            Some(popup_shown),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        );
+        if hook.is_invalid() {
+            log::warn!("注册弹出窗口事件失败，移出面板的页显示的提示不会关闭");
+        }
+    }
+}
+
+/// 其他进程的窗口显示时由系统调用，在主线程的消息循环中执行。主窗口所属的窗口显示时，
+/// 关闭不在面板中的页的提示与菜单。
+///
+/// 此处等待宿主状态锁：主线程上持有该锁的代码不得在锁内处理窗口消息，否则主线程死锁。
+unsafe extern "system" fn popup_shown(
+    _: HWINEVENTHOOK,
+    _: u32,
+    hwnd: HWND,
+    object: i32,
+    child: i32,
+    _: u32,
+    _: u32,
+) {
+    if object != OBJID_WINDOW.0 || child != CHILDID_SELF as i32 {
+        return;
+    }
+    let owned = GetWindow(hwnd, GW_OWNER)
+        .is_ok_and(|owner| MAIN_WINDOW.get() == Some(&(owner.0 as isize)));
+    if !owned {
+        return;
+    }
+    let Some(host) = super::host() else { return };
+    let shown = host.engine.shown.lock().expect("显示页状态锁被污染").clone();
+    let parked: Vec<Page> = {
+        let state = host.state.lock().expect("宿主状态锁被污染");
+        state
+            .tabs
+            .iter()
+            .filter(|(id, _)| shown.as_deref() != Some(id.as_str()))
+            .map(|(_, tab)| tab.page.clone())
+            .collect()
+    };
+    for page in parked {
+        cancel_popups(&page.webview);
+    }
+}
+
+/// 在该页的 WebView2 上注册下载与右键菜单钩子；首次调用时注册弹出窗口事件。
 fn bind_hooks(view: &Webview<Wv>, tab_id: &str) -> Result<(), String> {
     let tab = tab_id.to_owned();
     let (tx, rx) = channel::<Result<(), String>>();
     view.with_webview(move |platform| {
+        watch_popups(&platform);
         let registered = register_downloads(&platform, tab.clone())
             .and_then(|()| register_context_menu(&platform, tab));
         let _ = tx.send(registered);
