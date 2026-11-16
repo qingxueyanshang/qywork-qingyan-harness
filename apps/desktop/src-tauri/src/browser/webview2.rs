@@ -17,12 +17,17 @@ use tauri::{
     Webview, WebviewUrl, Wry,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2DownloadOperation, ICoreWebView2DownloadStartingEventArgs, ICoreWebView2_4,
-    COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
+    ICoreWebView2DownloadOperation, ICoreWebView2DownloadStartingEventArgs, ICoreWebView2_11,
+    ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
     COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
 };
-use webview2_com::{take_pwstr, DownloadStartingEventHandler, StateChangedEventHandler};
-use windows::core::{Interface, HSTRING, PWSTR};
+use webview2_com::{
+    take_pwstr, ContextMenuRequestedEventHandler, DownloadStartingEventHandler,
+    StateChangedEventHandler,
+};
+use windows::core::{Interface, BOOL, HSTRING, PWSTR};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, PostMessageW, WM_CANCELMODE};
 
 use super::address::{navigation_url, BLANK};
 use super::profile::{self, ProfileLock};
@@ -34,10 +39,14 @@ type Wv = Wry;
 /// `host.ready` 上报的显示位置：页面是主窗口中的子视图，由界面放入面板。
 pub const PRESENTATION: &str = "embedded";
 
-/// wry 在未指定 `additional_browser_args` 时使用的默认值。
-/// 调用该方法会整体替换默认值，因此必须自行包含这些参数。
-const WRY_DEFAULT_BROWSER_ARGS: &str =
-    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+/// 子视图的浏览器参数。`additional_browser_args` 会整体替换 wry 的默认值，因此包含其中的
+/// `msWebOOUI`、`msPdfOOUI`、`msSmartScreenProtection` 三项。
+///
+/// 另外禁用 `KeyboardAccessibleTooltip`：焦点经键盘移到带 `title` 的元素上时，该特性显示的提示是
+/// 不随子视图移动的顶层窗口，焦点移开之前不消失。AI 发送的 Tab 键同样触发它，页面移出可视区后，
+/// 提示停留在原位置，或按屏幕边界移到左上角，显示在其他会话之上。
+const BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,KeyboardAccessibleTooltip";
 
 /// 面板挂载之前，子视图位于可视区之外。
 /// 只能通过位置移出：`hide()` 会使页面停止渲染新帧，截图与依赖新帧的等待都会挂起。
@@ -51,11 +60,11 @@ const DEFAULT_SIZE: (f64, f64) = (1280.0, 800.0);
 /// 实测该间隔约为 700 ms。不等待就返回时，调用方无法立即按标记识别页面。
 const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
 
-/// 将下载钩子绑定到原生对象的等待上限。
+/// 将下载与右键菜单钩子绑定到原生对象的等待上限。
 ///
 /// `with_webview` 把闭包排入主线程执行，因此此处必须等待回执：不等待就返回时，
 /// 绑定失败要到很久之后才以「该页的下载全部按未授权取消」的形式暴露。
-const DOWNLOAD_HOOK_WAIT: Duration = Duration::from_secs(10);
+const HOOK_WAIT: Duration = Duration::from_secs(10);
 
 /// 本进程的 WebView2 environment：profile 占用、回环 CDP 端口与运行时版本。
 pub struct Engine {
@@ -63,6 +72,8 @@ pub struct Engine {
     profile: Option<ProfileLock>,
     debug_port: u16,
     runtime_version: String,
+    /// 当前放在面板中的页，只由 `layout` 写入；`None` 表示全部移出可视区。右键菜单按它裁决。
+    shown: Mutex<Option<String>>,
 }
 
 /// 页面的原生句柄与最后一次放置时的物理尺寸。移出可视区时保持该尺寸，不缩小页面视口。
@@ -87,7 +98,7 @@ impl Engine {
             ),
             None => log::warn!("浏览器配置已被另一个 qywork 进程占用，浏览器控制不可用"),
         }
-        Ok(Engine { profile, debug_port, runtime_version })
+        Ok(Engine { profile, debug_port, runtime_version, shown: Mutex::new(None) })
     }
 
     /// 端口在创建子视图之前已分配，因此占用到 profile 时启动后即就绪。
@@ -107,8 +118,7 @@ impl Engine {
             .ok_or("主窗口不存在，无法创建子视图")?;
         let url = navigation_url(spec.url)?;
         let requested = url.to_string();
-        let args =
-            format!("{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port={}", self.debug_port);
+        let args = format!("{BROWSER_ARGS} --remote-debugging-port={}", self.debug_port);
 
         // WebView2 不为 `about:blank` 触发 `on_page_load`（实测会等待满 20 秒），因此空白页不等待。
         let blank_target = spec.url == BLANK;
@@ -153,10 +163,10 @@ impl Engine {
             )
             .map_err(|e| format!("创建子视图失败：{e}"))?;
 
-        // 在等待首个文档之前绑定：文档加载后即可能发起下载，此时钩子必须已经存在。
+        // 在等待首个文档之前绑定：文档加载后即可能发起下载或请求右键菜单，此时钩子必须已经存在。
         // 绑定失败时回收该子视图：`add_child` 已将其附加到窗口，直接返回错误会留下一个
         // 不在存活表中、界面也无法关闭的视图。
-        if let Err(e) = bind_downloads(&webview, spec.tab_id) {
+        if let Err(e) = bind_hooks(&webview, spec.tab_id) {
             close_view(webview);
             return Err(e);
         }
@@ -232,6 +242,8 @@ pub fn layout(active: Option<&str>, x: i32, y: i32, width: u32, height: u32) -> 
             park(&page.webview, page.size.0, page.size.1);
         }
     }
+    let current = placed.first().map(|(id, _)| id.clone());
+    *host.engine.shown.lock().expect("显示页状态锁被污染") = current;
     if !placed.is_empty() {
         let mut state = host.state.lock().expect("宿主状态锁被污染");
         for (id, size) in placed {
@@ -255,6 +267,10 @@ fn close_view(view: Webview<Wv>) {
 /// **只能传入物理像素。** `set_bounds` 收到 `Logical` 时会按子视图 HWND 的 DPI 再乘一次
 /// 缩放；前端测得的 DOM 矩形已经是 CSS 像素乘以 `devicePixelRatio` 的结果，再乘一次
 /// 会在非 100% 的缩放下放错位置。坐标原点是父窗口客户区左上角。
+///
+/// 移动后调用 `NotifyParentWindowPositionChanged`：已打开的下拉列表（`<select>`）是顶层窗口，
+/// 不随子视图移动，WebView2 收到该通知后关闭它。wry 的 `set_bounds` 对子视图不发出该通知，
+/// 缺少它时页面移出可视区后下拉列表仍停留在移出前的位置上。
 fn place(view: &Webview<Wv>, x: i32, y: i32, width: u32, height: u32) {
     let bounds = Rect {
         position: PhysicalPosition::new(x, y).into(),
@@ -263,38 +279,72 @@ fn place(view: &Webview<Wv>, x: i32, y: i32, width: u32, height: u32) {
     if let Err(e) = view.set_bounds(bounds) {
         log::warn!("摆放子视图失败：{e}");
     }
+    let notified = view.with_webview(|platform| unsafe {
+        if let Err(e) = platform.controller().NotifyParentWindowPositionChanged() {
+            log::warn!("通知子视图位置变化失败：{e}");
+        }
+    });
+    if let Err(e) = notified {
+        log::warn!("通知子视图位置变化失败：{e}");
+    }
 }
 
 /// 把子视图移出可视区，尺寸保持不变：缩小到 1×1 会使页面视口同样变为 1×1，
 /// 页面按该宽度重排，截图与坐标随之失真。
 ///
 /// **不要改成 `hide()`**：它执行 `ShowWindow(SW_HIDE)` 与 `SetIsVisible(false)`，
-/// 页面停止渲染新帧，`Page.captureScreenshot` 与依赖新帧的等待都会挂起。
+/// 页面停止渲染新帧，`Page.captureScreenshot` 与依赖新帧的等待都会挂起，每条 `mouseMoved`
+/// 约 5 秒后才得到回执。只对容器窗口执行 `SW_HIDE` 的结果相同：WebView2 随父窗口转为隐藏。
 fn park(view: &Webview<Wv>, width: u32, height: u32) {
     let scale = view.window().scale_factor().unwrap_or(1.0);
     let x = (OFFSCREEN.0 * scale) as i32;
     let y = (OFFSCREEN.1 * scale) as i32;
     place(view, x, y, width, height);
+    cancel_popups(view);
 }
 
-/// 在该页的 WebView2 上接管下载。
+/// 关闭该页已打开的右键菜单与提示。二者是不随子视图移动的顶层窗口，页面移出可视区后仍停留在
+/// 移出前的位置上；WebView2 没有关闭它们的接口，页面的窗口收到 `WM_CANCELMODE` 时 Chromium 关闭它们。
+/// 下拉列表不响应该消息，由 `place` 中的位置通知关闭。
+fn cancel_popups(view: &Webview<Wv>) {
+    let posted = view.with_webview(|platform| unsafe {
+        let mut container = HWND::default();
+        if platform.controller().ParentWindow(&mut container).is_ok() {
+            let _ = EnumChildWindows(Some(container), Some(post_cancel_mode), LPARAM(0));
+        }
+    });
+    if let Err(e) = posted {
+        log::warn!("关闭子视图的弹出窗口失败：{e}");
+    }
+}
+
+/// `EnumChildWindows` 的回调：向容器下的每一级窗口投递 `WM_CANCELMODE`。投递而不发送：
+/// 这些窗口属于 WebView2 的其他进程，同步发送会使主线程等待那些进程。
+unsafe extern "system" fn post_cancel_mode(child: HWND, _: LPARAM) -> BOOL {
+    let _ = PostMessageW(Some(child), WM_CANCELMODE, WPARAM(0), LPARAM(0));
+    true.into()
+}
+
+/// 在该页的 WebView2 上注册下载与右键菜单钩子。
+fn bind_hooks(view: &Webview<Wv>, tab_id: &str) -> Result<(), String> {
+    let tab = tab_id.to_owned();
+    let (tx, rx) = channel::<Result<(), String>>();
+    view.with_webview(move |platform| {
+        let registered = register_downloads(&platform, tab.clone())
+            .and_then(|()| register_context_menu(&platform, tab));
+        let _ = tx.send(registered);
+    })
+    .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
+    rx.recv_timeout(HOOK_WAIT)
+        .map_err(|_| "下载与右键菜单钩子未在期限内注册成功".to_owned())?
+}
+
+/// 注册 `DownloadStarting`，在该页的 WebView2 上接管下载。在主线程上执行，句柄由 `PlatformWebview` 给出。
 ///
 /// 绑定的是 `DownloadStarting` 提供的 `ICoreWebView2DownloadOperation`：终态由该对象的
 /// `StateChanged` 上报，因此一次下载的结果只能归属于发起它的调用。
 /// **不要改用 `WebviewBuilder::on_download`**：其完成通知只携带 tab 与路径，
 /// 无法区分同一页上两次下载的终态，先发起的下载会认领后发起的下载的结果。
-fn bind_downloads(view: &Webview<Wv>, tab_id: &str) -> Result<(), String> {
-    let tab = tab_id.to_owned();
-    let (tx, rx) = channel::<Result<(), String>>();
-    view.with_webview(move |platform| {
-        let _ = tx.send(register_downloads(&platform, tab));
-    })
-    .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
-    rx.recv_timeout(DOWNLOAD_HOOK_WAIT)
-        .map_err(|_| "下载钩子未在期限内注册成功".to_owned())?
-}
-
-/// 注册 `DownloadStarting`。在主线程上执行，句柄由 `PlatformWebview` 给出。
 fn register_downloads(platform: &PlatformWebview, tab_id: String) -> Result<(), String> {
     let mut token = 0i64;
     unsafe {
@@ -316,6 +366,44 @@ fn register_downloads(platform: &PlatformWebview, tab_id: String) -> Result<(), 
             .map_err(|e| format!("注册下载事件失败：{e}"))?;
     }
     Ok(())
+}
+
+/// 注册 `ContextMenuRequested`：不在面板中的页不显示右键菜单。在主线程上执行。
+///
+/// 菜单是顶层窗口，按点击处的屏幕坐标定位，页面移出可视区时按屏幕边界移到左上角，显示在其他会话之上。
+/// 不在面板中的页只会收到 AI 发送的右键，原生菜单不出现在页面截图中，AI 也无法操作它；
+/// 页面自身的 `contextmenu` 事件照常派发。不要改用 `AreDefaultContextMenusEnabled`：
+/// 运行中修改该设置对之后的右键菜单不生效（运行时 157 实测）。
+fn register_context_menu(platform: &PlatformWebview, tab_id: String) -> Result<(), String> {
+    let mut token = 0i64;
+    unsafe {
+        let core11: ICoreWebView2_11 = platform
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| format!("无法取得 CoreWebView2：{e}"))?
+            .cast()
+            .map_err(|e| format!("该 WebView2 运行时不支持右键菜单事件：{e}"))?;
+        core11
+            .add_ContextMenuRequested(
+                &ContextMenuRequestedEventHandler::create(Box::new(move |_, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    if !shown(&tab_id) {
+                        args.SetHandled(true)?;
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )
+            .map_err(|e| format!("注册右键菜单事件失败：{e}"))?;
+    }
+    Ok(())
+}
+
+/// 该页此刻是否放在面板中。宿主不存在时按不在面板中处理。
+fn shown(tab_id: &str) -> bool {
+    super::host().is_some_and(|host| {
+        host.engine.shown.lock().expect("显示页状态锁被污染").as_deref() == Some(tab_id)
+    })
 }
 
 /// 下载开始。裁决在宿主的授权表中完成，放行时把身份绑定到下载对象上。
