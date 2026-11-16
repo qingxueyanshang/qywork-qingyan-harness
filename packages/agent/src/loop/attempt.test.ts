@@ -288,7 +288,7 @@ describe('流式通道的顺序', () => {
 })
 
 describe('流停滞时必须有终态，不能无限期挂起', () => {
-  function loopAgainst(fault: FaultServer): AgentLoop {
+  function loopAgainst(fault: FaultServer, idleMs: number): AgentLoop {
     return new AgentLoop({
       adapter: buildAdapter({
         kind: 'openai_responses',
@@ -300,7 +300,7 @@ describe('流停滞时必须有终态，不能无限期挂起', () => {
       systemPrompt: 's',
       makeToolContext: baseCtx,
       persist: noopPersistence(),
-      streamIdleTimeoutMs: 150,
+      streamIdleTimeoutMs: idleMs,
       // 本组检查超时判据与接收次数，退避时长由 `resend-policy.test.ts` 锁定。
       sleep: async () => {},
     })
@@ -309,13 +309,14 @@ describe('流停滞时必须有终态，不能无限期挂起', () => {
   async function runAgainst(
     mode: FaultMode,
     runId: string,
+    idleMs = 150,
   ): Promise<{ types: string[]; receipts: number; code: string; message: string }> {
     const fault = startFaultServer(mode)
     const types: string[] = []
     let code = ''
     let message = ''
     try {
-      for await (const ev of loopAgainst(fault).run({
+      for await (const ev of loopAgainst(fault, idleMs).run({
         compactPercent: 80,
         runId: runId as never,
         history: [],
@@ -355,7 +356,9 @@ describe('流停滞时必须有终态，不能无限期挂起', () => {
   }, 20_000)
 
   test('保活行维持的流不受影响：超时按字节间隔计算，不按总时长', async () => {
-    const result = await runAgainst('keepalive_then_ok', 'rn_4')
+    // 夹具发送 5 行保活、每行间隔 80 ms，总时长不短于 400 ms。空闲上限取 350 ms：短于总时长，
+    // 本用例因此证明超时不按总时长计算；为行间隔的 4 倍以上，负载高时单次间隔延长也不会触发超时。
+    const result = await runAgainst('keepalive_then_ok', 'rn_4', 350)
     expect(result.types).not.toContain('run.error')
     expect(result.types).toContain('run.finished')
     expect(result.receipts).toBe(1)
