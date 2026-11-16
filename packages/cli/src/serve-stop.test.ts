@@ -16,27 +16,31 @@ import { join } from 'node:path'
 
 const CLI = join(import.meta.dir, 'index.ts')
 
-/** 测试结束时仍需清理的进程：已退出的命令有意留下的后代进程。 */
+/** 测试结束时仍需清理的进程（已退出的命令有意留下的后代进程）监听的端口。 */
 const leftovers: number[] = []
-afterAll(() => {
-  for (const pid of leftovers) {
-    try {
-      process.kill(pid)
-    } catch {}
-  }
+afterAll(async () => {
+  await Promise.all(leftovers.map((port) => fetch(`http://127.0.0.1:${port}/exit`).catch(() => {})))
 })
 
-async function until(predicate: () => boolean, message: string, ms = 20_000): Promise<void> {
+async function until(
+  predicate: () => boolean | Promise<boolean>,
+  message: string,
+  ms = 20_000,
+): Promise<void> {
   const deadline = performance.now() + ms
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (performance.now() > deadline) throw new Error(message)
     await Bun.sleep(20)
   }
 }
 
-function alive(pid: number): boolean {
+/**
+ * 命令启动的进程是否仍在运行，按它监听的回环端口判定。不按 pid 判定：Linux 的内核沙箱在独立的
+ * pid 命名空间中执行命令，进程在其中取得的 pid 在宿主上指向另一个进程。
+ */
+async function alive(port: number): Promise<boolean> {
   try {
-    process.kill(pid, 0)
+    await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(2_000) })
     return true
   } catch {
     return false
@@ -151,21 +155,28 @@ test('标准输入结束不停止服务', async () => {
 
 /**
  * 命令执行的程序。`launch` 以 detached 启动一个常驻进程后立即退出（已退出的命令留下的后代进程）；
- * `hold` 一直运行到被终止（运行中的命令）。两者把 pid 写入给定的文件。
+ * `hold` 一直运行到被终止（运行中的命令）。常驻进程与 `hold` 各监听一个回环端口并把端口写入给定的文件，
+ * 请求 `/exit` 时退出。文件位于工作区中：有内核沙箱的平台上，测试目录中工作区之外的位置对命令只读。
  */
 const FIXTURE = `
 const [mode, file] = process.argv.slice(2)
 if (mode === 'launch') {
-  const service = Bun.spawn([process.execPath, import.meta.path, 'service'], {
+  const service = Bun.spawn([process.execPath, import.meta.path, 'service', file], {
     stdio: ['ignore', 'ignore', 'ignore'],
     detached: true,
   })
   service.unref()
-  await Bun.write(file, String(service.pid))
   process.exit(0)
 }
-if (mode === 'hold') await Bun.write(file, String(process.pid))
-setInterval(() => {}, 1000)
+const server = Bun.serve({
+  hostname: '127.0.0.1',
+  port: 0,
+  fetch(req) {
+    if (new URL(req.url).pathname === '/exit') setTimeout(() => process.exit(0), 10)
+    return new Response('ok')
+  },
+})
+await Bun.write(file, String(server.port))
 `
 
 function sse(events: { type: string; [k: string]: unknown }[]): string {
@@ -214,14 +225,14 @@ function textTurn(text: string): string {
 
 /**
  * 启动服务并经一轮对话执行两条命令：先执行 `launch`（退出后留下常驻进程），再执行 `hold`（保持运行）。
- * 两条命令都由 `run_command` 经 runner 启动。返回服务与两个进程的 pid。
+ * 两条命令都由 `run_command` 经 runner 启动。返回服务与两个进程监听的端口。
  */
 async function serveWithCommands(name: string) {
   const { dir, home, workspace } = await fixtureDirs(name)
   const fixture = join(dir, 'fixture.ts')
   await writeFile(fixture, FIXTURE)
-  const servicePid = join(dir, 'service.pid')
-  const holdPid = join(dir, 'hold.pid')
+  const servicePort = join(workspace, 'service.port')
+  const holdPort = join(workspace, 'hold.port')
   // 命令行同时适用于 bash 与 PowerShell：正斜杠路径，不含空白时无需引号。
   const slash = (p: string) => p.replaceAll('\\', '/')
   for (const p of [process.execPath, fixture, dir]) {
@@ -237,8 +248,8 @@ async function serveWithCommands(name: string) {
       const turn = body.includes('call_hold')
         ? textTurn('完成')
         : body.includes('call_launch')
-          ? commandTurn('call_hold', command('hold', holdPid))
-          : commandTurn('call_launch', command('launch', servicePid))
+          ? commandTurn('call_hold', command('hold', holdPort))
+          : commandTurn('call_launch', command('launch', servicePort))
       return new Response(turn, { headers: { 'content-type': 'text/event-stream' } })
     },
   })
@@ -293,19 +304,19 @@ async function serveWithCommands(name: string) {
     }),
   )
 
-  const readPid = async (file: string) => Number(await readFile(file, 'utf8').catch(() => 'NaN'))
+  const readPort = async (file: string) => Number(await readFile(file, 'utf8').catch(() => 'NaN'))
   let service = Number.NaN
   let hold = Number.NaN
   const deadline = performance.now() + 30_000
   while (!(service > 0 && hold > 0)) {
     if (performance.now() > deadline) throw new Error('命令未启动')
-    service = await readPid(servicePid)
-    hold = await readPid(holdPid)
+    service = await readPort(servicePort)
+    hold = await readPort(holdPort)
     await Bun.sleep(50)
   }
   leftovers.push(service, hold)
-  expect(alive(service)).toBe(true)
-  expect(alive(hold)).toBe(true)
+  expect(await alive(service)).toBe(true)
+  expect(await alive(hold)).toBe(true)
   const close = async () => {
     ws.close()
     await provider.stop(true)
@@ -319,8 +330,8 @@ test('停止之后运行中的命令进程树已结束，已退出的命令留�
     run.serve.send('stop')
     expect(await exitWithin(run.serve.proc, 15_000)).toBe(0)
     // 进程树在停止流程开始时同步终止，服务退出时运行中的命令已不存在。
-    await until(() => !alive(run.hold), '运行中的命令在服务停止后仍在运行', 5_000)
-    expect(alive(run.service)).toBe(true)
+    await until(async () => !(await alive(run.hold)), '运行中的命令在服务停止后仍在运行', 5_000)
+    expect(await alive(run.service)).toBe(true)
   } finally {
     await run.close()
     killTree(run.serve.proc.pid)
@@ -339,8 +350,12 @@ test('sidecar 被直接终止后，运行中的命令进程树在时限内结束
     run.serve.proc.kill('SIGKILL')
     await run.serve.proc.exited
     // runner 经 IPC 断开或每 3 秒一次的父进程轮询发现 sidecar 已退出。
-    await until(() => !alive(run.hold), '运行中的命令在 sidecar 被终止后仍在运行', 10_000)
-    expect(alive(run.service)).toBe(true)
+    await until(
+      async () => !(await alive(run.hold)),
+      '运行中的命令在 sidecar 被终止后仍在运行',
+      10_000,
+    )
+    expect(await alive(run.service)).toBe(true)
   } finally {
     await run.close()
   }
