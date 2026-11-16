@@ -666,7 +666,7 @@ describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
       }
     } finally {
       controller.abort()
-      endpoint.stop(true)
+      await endpoint.stop(true)
     }
     return { requests, executions, earlyExecution, firstContent, contentBeforeCompletion, events }
   }

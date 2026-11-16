@@ -105,29 +105,26 @@ const VIEW_ORDER = Object.keys(VIEWS) as PanelView[]
 
 /**
  * 每种可多开的页的正文。键是 `PanelTab['kind']` 的全集，缺少一种时类型检查失败。
- * 画布页、工作台页与文件预览页缺少对应字段（`path`、`workbench`）时显示网页预览页。
  */
-const TAB_VIEWS: { readonly [K in PanelTab['kind']]: Component<{ tab: PanelTab }> } = {
+const TAB_VIEWS: {
+  readonly [K in PanelTab['kind']]: Component<{ tab: PanelTab & { kind: K } }>
+} = {
   terminal: (p) => <TerminalPanel id={p.tab.id} />,
   browser: (p) => <BrowserPanel id={p.tab.id} />,
   preview: (p) => <PreviewPanel id={p.tab.id} />,
   conversation: (p) => <ConversationPanel id={p.tab.id} />,
   cli: (p) => <CliPanel id={p.tab.id} />,
-  canvas: (p) => (
-    <Show when={p.tab.path} fallback={<PreviewPanel id={p.tab.id} />}>
-      {(path) => <CanvasPanel path={path()} active={activePanelTab() === p.tab.id} />}
-    </Show>
-  ),
-  plugin: (p) => (
-    <Show when={p.tab.workbench} fallback={<PreviewPanel id={p.tab.id} />}>
-      {(key) => <WorkbenchPanel workbench={key()} />}
-    </Show>
-  ),
-  file: (p) => (
-    <Show when={p.tab.path} fallback={<PreviewPanel id={p.tab.id} />}>
-      {(path) => <FileTab path={path()} />}
-    </Show>
-  ),
+  canvas: (p) => <CanvasPanel path={p.tab.path} active={activePanelTab() === p.tab.id} />,
+  plugin: (p) => <WorkbenchPanel workbench={p.tab.workbench} />,
+  file: (p) => <FileTab path={p.tab.path} />,
+}
+
+/**
+ * 按页的类型取出正文组件。表以 `kind` 为键，每一项只接受该类型的页；TypeScript 无法把按 `tab.kind`
+ * 取出的组件与 `tab` 本身关联，因此在这一处把组件类型放宽为接受全部页。
+ */
+function tabView(tab: PanelTab): Component<{ tab: PanelTab }> {
+  return TAB_VIEWS[tab.kind] as Component<{ tab: PanelTab }>
 }
 
 /** 看板上的「无限画布」：在工作区根新建一张空画布并打开它。 */
@@ -217,8 +214,9 @@ const boardRows = () => PREVIEW_SOURCES.filter((s) => s.show?.() ?? true)
  * 右侧面板容器。固定页签（`VIEWS`）与可多开的页（`panelTabs`）共用同一区域，
  * 互斥显示。
  *
- * 默认导出供 `lazy()` 使用：本模块静态引入了 CodeMirror 核心（约 300 kB），
- * 放入首屏会使只使用对话的用户承担文件预览的加载成本。
+ * 默认导出供 `App.tsx` 的 `lazy()` 使用：面板及其静态引入的文件树、待办与变更记录不进入首屏，
+ * 只使用对话的用户不承担它们的加载成本。CodeMirror 不在本模块的静态依赖中，由文件页懒加载
+ * （`FileBrowser` 中的 `FileView`）。
  */
 export default function SidePanel() {
   /**
@@ -501,7 +499,7 @@ export default function SidePanel() {
                 {(t) => (
                   <div class="tab-pane" classList={{ active: activePanelTab() === t.id }}>
                     <Suspense fallback={<div class="pane-loading" />}>
-                      <Dynamic component={TAB_VIEWS[t.kind]} tab={t} />
+                      <Dynamic component={tabView(t)} tab={t} />
                     </Suspense>
                   </div>
                 )}

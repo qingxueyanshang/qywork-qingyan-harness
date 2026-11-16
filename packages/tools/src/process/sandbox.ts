@@ -327,11 +327,13 @@ export function defaultMaskPaths(home = homedir()): string[] {
  *   命名空间中的进程与外层进程同组，不依赖该选项。
  * - 命名空间的 init 持有 stdout / stderr，直到其中最后一个进程退出。因此后台进程即使重定向了输出，
  *   `collectProcess` 仍报告 `backgroundHeld`。
+ * - `opts.cwd` 以 `--chdir` 传入：不传时 bwrap 在工作目录于沙箱中不存在（`/tmp` 下的目录被 tmpfs 覆盖）时
+ *   改用 `$HOME` 且不报错，命令在另一个目录中执行。传入后该情形以 bwrap 的报错结束。
  */
 export function buildBwrapArgv(
   policy: SandboxPolicy,
   inner: readonly string[],
-  opts: { exists?: (p: string) => boolean } = {},
+  opts: { exists?: (p: string) => boolean; cwd?: string } = {},
 ): string[] {
   // 注入 exists 使该函数可在任何平台上测试。默认访问实际磁盘。
   const exists = opts.exists ?? existsSync
@@ -386,6 +388,7 @@ export function buildBwrapArgv(
   // `--unshare-net` 创建空的网络命名空间，其中只有 lo。
   // 不配置代理桥接即完全断网，这正是该开关的语义。
   if (policy.denyNetwork) args.push('--unshare-net')
+  if (opts.cwd !== undefined) args.push('--chdir', opts.cwd)
   args.push('--', ...inner)
   return args
 }

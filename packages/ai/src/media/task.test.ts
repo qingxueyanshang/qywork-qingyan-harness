@@ -352,6 +352,6 @@ test('上游报告的任务失败带上该次查询的诊断，结果为远端�
       status: 200,
     })
   } finally {
-    server.stop(true)
+    await server.stop(true)
   }
 })

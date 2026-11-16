@@ -388,8 +388,16 @@ export function stepInExecution(store: Store, runId: RunId): boolean {
  * `$.action` 与 `$.args` 保持不变。`action` 是前端唯一的标题来源（它由 ToolSpec 按参数
  * 解析，前端无法推测）；整份 payload 替换为只含 outcome 的对象后，该 step 在会话流中
  * 只显示一个红色的「失败」，没有动词、对象与目标，用户无法判断中断发生在哪一步。
+ *
+ * payload 不是合法 JSON 的行先只写状态、payload 原样保留：`json_set` 对它抛出，整条语句随之失败。
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {
+  store.db
+    .query(
+      `UPDATE steps SET status = 'failure'
+       WHERE run_id = ? AND status = 'running' AND NOT json_valid(coalesce(payload, '{}'))`,
+    )
+    .run(runId)
   store.db
     .query(
       `UPDATE steps SET status = 'failure',
@@ -421,6 +429,15 @@ export function settleRunningSteps(store: Store, runId: RunId): void {
 }
 
 /**
+ * 交给 SQLite JSON 函数的 payload 表达式：`column` 为合法 JSON 时取其值，否则为 NULL。
+ * JSON 函数对不合法的 JSON 抛出，一行损坏的 payload 会使整条语句失败；经本表达式后该行按没有该字段处理。
+ * 用 `CASE` 而不是在 WHERE 中并列 `json_valid(...) AND`：SQLite 不保证 WHERE 各项的求值顺序。
+ */
+export function validPayload(column: string): string {
+  return `CASE WHEN json_valid(${column}) THEN ${column} END`
+}
+
+/**
  * 将该轮派发任务卡上未进入终态的节点标记为中断，返回改动过的节点。
  *
  * 不在 run 收尾时调用。子 agent 的生命周期与会话一致，不随派发它的轮次结束：
@@ -440,7 +457,7 @@ export function interruptRunningNodes(
   const cards = store.db
     .query<{ id: string; payload: string }, [string]>(
       `SELECT id, payload FROM steps
-       WHERE run_id = ? AND json_type(payload, '$.nodes') = 'object'`,
+       WHERE run_id = ? AND json_type(${validPayload('payload')}, '$.nodes') = 'object'`,
     )
     .all(runId)
   const changed: { stepId: string; nodeId: string; state: NodeState }[] = []

@@ -37,11 +37,11 @@ import {
   directoryAssets,
   embeddedAssets,
   fileSource,
-  processExitObservationFromEnv,
+  processExitObservationOf,
   serve,
   systemPowerPort,
 } from '@qywork/server'
-import { ContentStore, contentPathFor, Store } from '@qywork/store'
+import { ContentStore, contentPathFor, type ProcessExitObservation, Store } from '@qywork/store'
 import {
   detectSandbox,
   OfficePort,
@@ -81,7 +81,7 @@ const USAGE = `qy —— qywork 编码 agent
     --static <目录>       前端构建产物目录（默认使用编译时嵌入的网页）
     --print-token         将令牌输出到 stdout（供 Tauri 读取）
     --parent-pid <pid>    父进程退出时一并退出，避免留下孤儿服务
-    --credentials-stdin   从标准输入读取一行 JSON 凭据（供桌面外壳传入）
+    --credentials-stdin   从标准输入读取一行 JSON 凭据与上次退出信息（供桌面外壳传入）
 
   qy doctor               一屏体检：配置、shell 沙箱、账本、MCP、插件
     --cwd <路径>          指定工作区
@@ -361,17 +361,6 @@ async function runServe(args: string[]): Promise<number> {
 
   const store = new Store({ path: dataPath(), owner: 'serve' })
   startupStage('创建命令进程')
-  const previousProcessExit = processExitObservationFromEnv(process.env)
-  // 上次退出的现场信息只使用一次。runner 与之后的命令都不需要继承这段 stderr。
-  for (const name of [
-    'QYWORK_PREVIOUS_EXIT_KIND',
-    'QYWORK_PREVIOUS_EXIT_AT_MS',
-    'QYWORK_PREVIOUS_EXIT_CODE',
-    'QYWORK_PREVIOUS_EXIT_SIGNAL',
-    'QYWORK_PREVIOUS_STDERR_TAIL',
-  ]) {
-    delete process.env[name]
-  }
 
   /*
    * **必须在 `serve()` 之前执行**。
@@ -414,7 +403,7 @@ async function runServe(args: string[]): Promise<number> {
      */
     ...(credentials.hostKey ? { hostKey: credentials.hostKey } : {}),
     ...(credentials.updateKey ? { updateHostKey: credentials.updateKey } : {}),
-    ...(previousProcessExit ? { previousProcessExit } : {}),
+    ...(credentials.previousExit ? { previousProcessExit: credentials.previousExit } : {}),
     ...(power ? { power } : {}),
     remote: true,
   })
@@ -580,6 +569,8 @@ interface Credentials {
   token?: string
   hostKey?: string
   updateKey?: string
+  /** 外壳观察到的上一个 serve 进程的退出信息，恢复重启时才有（`processExitObservationOf`）。 */
+  previousExit?: ProcessExitObservation
 }
 
 const CREDENTIAL_FIELDS = ['token', 'hostKey', 'updateKey'] as const
@@ -618,7 +609,8 @@ function stdinLines(): StdinLines {
  * 解析标准输入的第一行 JSON 凭据。
  *
  * 凭据不经环境变量交付：环境块由本进程启动的全部子进程继承，Bun 中删除 `process.env` 的键之后，
- * 不传 `env` 启动的子进程仍取得原值。标准输入的这一行只由本进程读取一次。
+ * 不传 `env` 启动的子进程仍取得原值。标准输入的这一行只由本进程读取一次。上次退出的信息（`previousExit`）
+ * 同样经这一行交付：其中的 stderr 尾部可能含有任意输出。它无法解析时按未传入处理，不阻止启动。
  *
  * 标准输入在换行之前结束、内容不是约定的 JSON 对象时抛出，调用方以非零退出码结束进程。
  */
@@ -635,6 +627,11 @@ function parseCredentials(line: string | null): Credentials {
   }
   const out: Credentials = {}
   for (const [name, value] of Object.entries(parsed)) {
+    if (name === 'previousExit') {
+      const exit = processExitObservationOf(value)
+      if (exit) out.previousExit = exit
+      continue
+    }
     const field = CREDENTIAL_FIELDS.find((f) => f === name)
     if (!field) throw new Error(`未知的凭据字段：${name}`)
     if (typeof value !== 'string' || !value) throw new Error(`凭据字段 ${name} 必须是非空字符串`)

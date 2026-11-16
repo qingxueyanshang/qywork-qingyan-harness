@@ -730,10 +730,12 @@ function normalizeStopReason(raw: string): ProviderStopReason {
  * 分档未回报时 `cacheWrite1hTokens` 不写入，计价按全部为 5 分钟档处理。
  *
  * 至少一个字段是数值时才记为 provider 回报：usage 为空对象时标记来源，账本会把全部为 0 的用量当作真实值。
+ * 分档只接受数值：一档为字符串时两档相加得到字符串拼接结果。
  */
 function applyUsage(acc: ProviderUsage, u: AnthropicUsage) {
-  const hour = u.cache_creation?.ephemeral_1h_input_tokens
-  const fiveMinutes = u.cache_creation?.ephemeral_5m_input_tokens
+  const numeric = (value: unknown) => (typeof value === 'number' ? value : undefined)
+  const hour = numeric(u.cache_creation?.ephemeral_1h_input_tokens)
+  const fiveMinutes = numeric(u.cache_creation?.ephemeral_5m_input_tokens)
   const thinking = u.output_tokens_details?.thinking_tokens
   const reported = [
     u.input_tokens,

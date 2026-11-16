@@ -465,7 +465,6 @@ function ctxWith(desktop?: DesktopPort, signal = new AbortController().signal): 
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
     port: new Ports(desktop ? [provide(DesktopPort, desktop)] : []).get,
@@ -4042,7 +4041,7 @@ describe('可选参数填写空值', () => {
         ])
       }
     } finally {
-      server.stop(true)
+      await server.stop(true)
     }
   })
 

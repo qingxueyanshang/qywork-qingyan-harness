@@ -46,7 +46,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  provider.stop(true)
+  await provider.stop(true)
   await rm(root, { recursive: true, force: true }).catch(() => {})
 })
 

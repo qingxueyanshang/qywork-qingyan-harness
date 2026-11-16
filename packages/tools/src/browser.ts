@@ -1048,8 +1048,8 @@ export const browserUploadTool: ToolSpec = {
   ...BASE,
   name: 'browser_upload',
   description:
-    '把工作区内的文件交给页面上的文件输入框，ref 必须指向 input[type=file]。' +
-    `路径按工作区规则裁决，越界拒绝。一次最多 ${MAX_UPLOAD_FILES} 个文件。` +
+    '把本机文件交给页面上的文件输入框，ref 必须指向 input[type=file]。' +
+    `路径按 read_file 的读取范围裁决，范围外拒绝。一次最多 ${MAX_UPLOAD_FILES} 个文件。` +
     '结果不附带观察，需要读取页面状态时再调用 browser_observe。',
   parameters: {
     type: 'object',

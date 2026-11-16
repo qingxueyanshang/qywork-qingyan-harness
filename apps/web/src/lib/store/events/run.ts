@@ -287,7 +287,12 @@ export const runEvents = handlers({
 
   usage: {
     conversation(ev, cid) {
-      setState('views', cid, 'usage', ev.usage)
+      setState(
+        produce((s) => {
+          const v = s.views[cid]
+          if (v) v.usage = ev.usage
+        }),
+      )
     },
   },
 

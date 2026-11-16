@@ -15,7 +15,6 @@ function ctx(mcpConfig: McpConfigPort): ToolContext {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: new Ports([provide(McpConfigPort, mcpConfig)]).get,

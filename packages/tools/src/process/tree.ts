@@ -29,13 +29,17 @@ import { readdir, readFile } from 'node:fs/promises'
  *   调用抛出 ESRCH，转为终止单个进程；该调用不会命中 `qy serve` 自身所在的组。
  *   不要改成先用 `process.getpgid` 验证组长：Bun 1.3.14 没有该方法，验证始终不通过，
  *   进程树终止将退化为只终止 shell。
+ *
+ * runner（`runner.ts`）与 serve 进程共用本函数。
  */
 export function killTree(proc: { pid: number; kill(): void }): void {
   if (process.platform === 'win32') {
     // 同步等待终止完成：异步时调用方随即读取流，可能读到尚未关闭的管道。
+    // `windowsHide`：没有控制台的进程（runner、桌面外壳启动的 serve）启动 taskkill 时另开一个可见的控制台窗口。
     Bun.spawnSync(['taskkill', '/F', '/T', '/PID', String(proc.pid)], {
       stdout: 'ignore',
       stderr: 'ignore',
+      windowsHide: true,
     })
     return
   }

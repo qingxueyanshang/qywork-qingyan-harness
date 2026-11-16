@@ -47,7 +47,6 @@ function ctx(opts?: { goal?: Goal | null; result?: GoalWriteResult }): ToolConte
     model: 'test',
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: new Ports([provide(GoalPort, port)]).get,

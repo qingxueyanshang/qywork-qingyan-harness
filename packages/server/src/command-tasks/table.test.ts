@@ -215,7 +215,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   commands.stopAll()
-  provider.stop(true)
+  await provider.stop(true)
   store?.close()
   content?.close()
   await rm(dir, { recursive: true, force: true }).catch(() => {})

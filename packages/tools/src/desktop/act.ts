@@ -23,7 +23,7 @@ import type { DesktopActResult, DesktopElement } from './port.ts'
 import { given, str } from './shared/args.ts'
 import { delivered, followResult, isBareWindow, withShot } from './shared/delivery.ts'
 import { elementLine, fieldLine, fieldValue, snapshotLine } from './shared/lines.ts'
-import { BASE, onDesktop, windowTarget } from './shared/run.ts'
+import { actScope, BASE, onDesktop, windowTarget } from './shared/run.ts'
 import { type Aim, inputField, landingLine, planAct } from './shared/target.ts'
 
 /** 定位目标使用的参数。它们适用于每种动作，不参与动作参数的核对。 */
@@ -241,7 +241,7 @@ export const desktopActTool: ToolSpec = {
       const table = given(args.imageRef) ? null : before
       const { aim, action } = planAct(table, kind, args, TARGET_PARAMS, desktop.foregroundEnabled())
       const field = writes(action) ? inputField(table, aim.element) : undefined
-      const r = await send(() => desktop.act({ windowId, ...aim.input, action }))
+      const r = await send(() => desktop.act({ windowId, ...aim.input, action, ...actScope(ctx) }))
       const outcome = actOutcome(ctx, action, aim, r, before, field)
       const bare = r.observation ? isBareWindow(r.observation) : false
       if (aim.input.at === undefined && !ACTION_DEFS[kind].shot && !bare) return outcome

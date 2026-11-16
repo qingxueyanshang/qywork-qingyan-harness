@@ -57,11 +57,13 @@ const PORT = Number(process.env.QYWORK_PORT ?? 7717)
 const WEB_ORIGIN = 'http://127.0.0.1:5180'
 /**
  * 每次开发会话重新生成。不写入仓库：写入仓库即成为一个入库的凭证。
- * 源码更新后重启本脚本时由 `update/handoff.ts` 经环境变量传回原值。该变量从 `env` 中剔除：
- * sidecar 经标准输入取得令牌，只有外壳经环境变量取得。
+ * 源码更新后重启本脚本时，更新程序经标准输入传回原值（`--token-stdin`，见 `update/apply.ts`）：
+ * 经环境变量传回时，本进程启动的 git 等不传 `env` 的子进程都会继承它。sidecar 同样经标准输入取得令牌，
+ * 只有外壳经环境变量取得。
  */
-const { QYWORK_TOKEN: handedToken, ...inheritedEnv } = process.env
-const TOKEN = handedToken ?? randomBytes(24).toString('hex')
+const TOKEN = process.argv.includes('--token-stdin')
+  ? (await Bun.stdin.text()).trim()
+  : randomBytes(24).toString('hex')
 const MODE = process.argv.includes('--web') ? 'web' : 'desktop'
 const UPDATE_KEY = randomBytes(24).toString('hex')
 /**
@@ -123,7 +125,7 @@ if (!(await bindable(PORT))) {
 }
 
 const env = {
-  ...inheritedEnv,
+  ...process.env,
   QYWORK_PORT: String(PORT),
   // QYWORK_* 供 vite.config.ts 关闭 HMR；VITE_* 供页面在收到 sidecar 换代信号后整页刷新。
   QYWORK_COORDINATED_RELOAD: '1',
@@ -138,7 +140,10 @@ const env = {
  */
 const CREDENTIALS = `${JSON.stringify({ token: TOKEN, hostKey: HOST_KEY, updateKey: UPDATE_KEY })}\n`
 
-/** 开发构建的外壳经环境变量读取 sidecar 端点与宿主凭据（`sidecar.rs` 的 `from_env`、`lib.rs` 的 `host_key`）。 */
+/**
+ * 开发构建的外壳经环境变量读取 sidecar 端点与宿主凭据（`sidecar.rs` 的 `take_dev_launch`），读取后即从
+ * 外壳的环境中移除两项凭据，外壳启动的终端与 computer-host 不继承它们。
+ */
 const shellEnv = { ...env, QYWORK_TOKEN: TOKEN, QYWORK_HOST_KEY: HOST_KEY }
 
 /**
@@ -377,7 +382,7 @@ updater = await startSourceUpdater({
   async apply(target, head) {
     await handoffSourceUpdate(
       { root: ROOT, target, head, mode: MODE, parentPid: process.pid },
-      { QYWORK_TOKEN: TOKEN, QYWORK_PORT: String(PORT) },
+      { token: TOKEN, port: PORT },
     )
     setTimeout(() => void shutdown(0), 300)
   },

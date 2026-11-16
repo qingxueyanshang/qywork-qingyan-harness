@@ -521,7 +521,6 @@ async function replay(
       ? { videoUploadAbove: adapter.transmits.mediaUploadAbove }
       : {}),
     ...(imagesRejected ? { imagesRejected: true as const } : {}),
-    resources: new Map(),
     state: new Map(),
     signal: abort.signal,
     sink: new RuntimeSink(store, content, id),

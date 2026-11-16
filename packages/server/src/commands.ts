@@ -1,29 +1,18 @@
 /**
- * 客户端指令的分发与拒绝回执。
+ * 客户端指令的入口：鉴权、更新期间的拒绝与按指令类型分派。各类指令的处理器在 `commands/` 下，
+ * 由 `commands/table.ts` 的 `COMMAND_HANDLERS` 按类型静态合并。
  *
  * 未实现的分支必须明确拒绝，不得静默 return：客户端发送后得不到任何反馈，
  * 在界面上与「服务端正在处理」无法区分。
  */
 
-import type {
-  ClientCommand,
-  CommandRejectedFrame,
-  CommandRejectReason,
-  ConversationId,
-} from '@qywork/core'
-import {
-  getConversation,
-  interruptRunningNodes,
-  listRuns,
-  setConversationMode,
-  setConversationModel,
-} from '@qywork/store'
-import type { ServerWebSocket } from 'bun'
-import type { CommandDeps, SocketData } from './deps.ts'
-import { compactConversation, resumeGoal, setGoal, submitMessage } from './run-control.ts'
+import type { ClientCommand } from '@qywork/core'
+import type { CommandHandler } from './commands/handler.ts'
+import { reject } from './commands/reject.ts'
+import { COMMAND_HANDLERS } from './commands/table.ts'
+import type { CommandDeps } from './deps.ts'
 
-/** `message.send` 中 `viewing` 的长度上限：一条工作区相对路径。 */
-const VIEWING_MAX = 500
+export { reject } from './commands/reject.ts'
 
 export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Promise<void> {
   if (!deps.ws.data.authed) return
@@ -38,255 +27,17 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
     return
   }
 
-  switch (cmd.type) {
-    case 'subscribe':
-      deps.bus.setSubscription(deps.ws.data.id, cmd.conversationIds)
-      return
-
-    case 'conversation.interrupt': {
-      /*
-       * 停止该会话正在执行的任务：占用该会话的执行（运行中或尚在准备阶段的轮次、手动压缩），
-       * 以及已派发但未返回的子 agent。两者均无法停止时必须回复。
-       *
-       * 不回复时客户端得不到任何反馈，无法区分「服务端正在处理」与「指令无人处理」。
-       * 已实测的情形：注册表中已没有该会话的占用（收尾已执行完毕），而账本中该行仍为 running，
-       * 界面持续显示运行中，只能重启应用恢复。
-       */
-      const stoppedRun = deps.runs.interruptConversation(cmd.conversationId)
-      const stopping = new Set(
-        deps.subagents.listOf(cmd.conversationId).map((entry) => entry.subagentId),
-      )
-      const stoppedSubagents = deps.subagents.interruptConversation(cmd.conversationId)
-      if (!stoppedRun && !stoppedSubagents) {
-        reject(deps.ws, cmd.type, 'conflict', '本轮已结束')
-        return
-      }
-      /*
-       * 图中尚未派发的节点一并写入终态。否则这些节点会一直等待：approve 无法通过
-       * （上游回执不全），revise 也无法通过（指定的节点没有终态），该图无法结束。
-       * 刚停止的子 agent 所在节点除外，其终态由完成回调写入。
-       */
-      for (const run of listRuns(deps.store, cmd.conversationId)) {
-        for (const changed of interruptRunningNodes(deps.store, run.id, stopping)) {
-          deps.bus.publish(
-            {
-              type: 'team.member',
-              runId: run.id,
-              stepId: changed.stepId,
-              nodeId: changed.nodeId,
-              state: changed.state,
-            },
-            cmd.conversationId,
-          )
-        }
-      }
-      return
-    }
-
-    case 'message.send': {
-      /*
-       * 会话运行中时不拒绝，该消息进入队列，去向由 `steer` 决定：
-       * 注入当前轮次，或在当前轮次收尾后作为下一轮发起。
-       *
-       * 忙碌判定与发起轮次在 `submitMessage` 中完成，子 agent 的回执使用同一个函数：
-       * 该段必须是同一个同步块（理由见该函数的注释与 `runs.ts` 的 `reserve`）。
-       */
-      if (rejectChildConversation(deps, cmd.type, cmd.conversationId, cmd.clientRequestId)) return
-      // 附件随消息一同转发。协议、存储与模型侧均已支持，遗漏 `cmd.attachments`
-      // 会使整条链路只有类型而没有数据。
-      await submitMessage(
-        cmd.conversationId,
-        {
-          id: cmd.clientRequestId,
-          content: cmd.content,
-          ...(cmd.attachments?.length ? { attachments: cmd.attachments } : {}),
-          steer: cmd.steer === true,
-          // 写入提示词，只接受较短的文本；其他值视为未提供。
-          ...(typeof cmd.viewing === 'string' && cmd.viewing && cmd.viewing.length <= VIEWING_MAX
-            ? { viewing: cmd.viewing }
-            : {}),
-        },
-        deps,
-        cmd.model,
-      )
-      return
-    }
-
-    case 'followup.steer': {
-      /*
-       * 忙碌 → 修改该消息的去向；空闲 → 队列中已没有可注入的轮次，取出该消息并立即发起一轮。
-       * 两种状态在同一个同步块中判定，理由同 `message.send`：客户端持有的忙闲状态是上一次
-       * 事件留下的值，点击时可能已经不成立。
-       */
-      if (deps.runs.hasRun(cmd.conversationId)) {
-        if (!deps.runs.setSteer(cmd.conversationId, cmd.id, cmd.steer)) {
-          reject(deps.ws, cmd.type, 'conflict', '该跟进消息已不在队列中')
-        }
-        return
-      }
-      if (rejectChildConversation(deps, cmd.type, cmd.conversationId)) return
-      const item = deps.runs.queueOf(cmd.conversationId).find((f) => f.id === cmd.id)
-      if (!item || !deps.runs.removeFollowUp(cmd.conversationId, cmd.id)) {
-        reject(deps.ws, cmd.type, 'conflict', '该跟进消息已不在队列中')
-        return
-      }
-      // 使用同一个函数：该消息若是子 agent 的回执，发起轮次时来源须一并写入消息行。
-      await submitMessage(cmd.conversationId, item, deps)
-      return
-    }
-
-    case 'followup.drop': {
-      // 删除失败只有一种可能：该消息已被注入或已发出。必须如实拒绝，不得静默返回成功：
-      // 否则「删除后卡片仍在」与「服务端未收到」在界面上无法区分。
-      if (!deps.runs.removeFollowUp(cmd.conversationId, cmd.id)) {
-        reject(deps.ws, cmd.type, 'conflict', '该跟进消息已不在队列中')
-      }
-      return
-    }
-
-    case 'command.stop': {
-      // 只停止这一条后台命令，会话中的其他执行不受影响。不在表中只有一种可能：该命令已结束。
-      if (!deps.commands?.stop(cmd.conversationId, cmd.id)) {
-        reject(deps.ws, cmd.type, 'conflict', '该命令已结束')
-      }
-      return
-    }
-
-    case 'conversation.setModel': {
-      // 接口必须在配置中实际存在。放行不存在的接口名会使会话指向
-      // 无法发送请求的接口，且报错要到下一轮才出现。
-      if (!deps.config.providers[cmd.provider]) {
-        reject(deps.ws, cmd.type, 'invalid_payload', `配置中没有名为 "${cmd.provider}" 的接口`)
-        return
-      }
-      const updated = setConversationModel(deps.store, cmd.conversationId, {
-        provider: cmd.provider,
-        model: cmd.model,
-      })
-      if (!updated) {
-        reject(deps.ws, cmd.type, 'invalid_payload', '会话不存在')
-        return
-      }
-      // 广播而不是只回复发起方：手机端与桌面端可能同时打开该会话。
-      deps.bus.publish(
-        {
-          type: 'conversation.updated',
-          conversationId: updated.id,
-          provider: updated.provider,
-          model: updated.model,
-          title: updated.title,
-          mode: updated.mode,
-          updatedAt: updated.updatedAt,
-        },
-        cmd.conversationId,
-      )
-      return
-    }
-
-    case 'conversation.setMode': {
-      // 取值在写入前校验：账本列的 CHECK 约束会使非法值在 UPDATE 时抛出，指令得不到回执。
-      if (cmd.mode !== 'auto' && cmd.mode !== 'full') {
-        reject(deps.ws, cmd.type, 'invalid_payload', `未知的权限模式 "${String(cmd.mode)}"`)
-        return
-      }
-      const updated = setConversationMode(deps.store, cmd.conversationId, cmd.mode)
-      if (!updated) {
-        reject(deps.ws, cmd.type, 'invalid_payload', '会话不存在')
-        return
-      }
-      deps.bus.publish(
-        {
-          type: 'conversation.updated',
-          conversationId: updated.id,
-          provider: updated.provider,
-          model: updated.model,
-          title: updated.title,
-          mode: updated.mode,
-          updatedAt: updated.updatedAt,
-        },
-        cmd.conversationId,
-      )
-      return
-    }
-
-    case 'goal.set': {
-      // 设立目标的唯一入口：模型没有 create_goal 工具。空正文等校验在账本中执行，
-      // 此处只将拒绝理由原样返回。
-      if (rejectChildConversation(deps, cmd.type, cmd.conversationId)) return
-      const result = setGoal(cmd.conversationId, cmd.objective, deps)
-      if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
-      return
-    }
-
-    case 'goal.resume': {
-      // 重新运行已停止的目标，并立即发起一轮：不能等待其他 run 收尾。
-      // 没有对应的 pause 指令：运行之后停止目标的方式是中断该会话（`conversation.interrupt`），
-      // run 收尾时会将目标置回 paused。
-      if (rejectChildConversation(deps, cmd.type, cmd.conversationId)) return
-      const result = resumeGoal(cmd.conversationId, deps)
-      if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
-      return
-    }
-
-    case 'conversation.compact': {
-      // 手动压缩与自动触发使用同一个 `compaction.run()`，区别只在于判据为用户的
-      // 显式意图：不要在此另建压缩路径。会话被占用时由 `compactConversation` 的占位拒绝。
-      const conv = getConversation(deps.store, cmd.conversationId)
-      if (!conv) {
-        reject(deps.ws, cmd.type, 'invalid_payload', '会话不存在')
-        return
-      }
-      const result = await compactConversation(cmd.conversationId, deps)
-      if (!result.ok) reject(deps.ws, cmd.type, 'conflict', result.message)
-      return
-    }
-
-    default: {
-      // 协议中不存在的 type。来源是版本高于服务端的客户端或伪造流量，两种情况都必须回执；
-      // 静默丢弃会使前者的功能时而生效时而无效，后者则完全得不到反馈。
-      const unknown = cmd as { type?: unknown }
-      reject(
-        deps.ws,
-        String(unknown.type ?? '(missing)'),
-        'unknown_command',
-        '服务端无法识别该指令',
-      )
-      return
-    }
+  // 只按自有属性取条目：类型来自网络，`constructor` 等原型上的键不得取到对象自带的成员。
+  const type: unknown = (cmd as { type?: unknown }).type
+  const handler =
+    typeof type === 'string' && Object.hasOwn(COMMAND_HANDLERS, type)
+      ? (COMMAND_HANDLERS as Readonly<Record<string, CommandHandler<ClientCommand>>>)[type]
+      : undefined
+  if (!handler) {
+    // 协议中不存在的 type。来源是版本高于服务端的客户端或伪造流量，两种情况都必须回执；
+    // 静默丢弃会使前者的功能时而生效时而无效，后者则完全得不到反馈。
+    reject(deps.ws, String(type ?? '(missing)'), 'unknown_command', '服务端无法识别该指令')
+    return
   }
-}
-
-/**
- * 子会话只由创建它的图管理：经指令发起轮次会绕过 workflow 的回执与续接，图的投影无法得知该轮次；
- * 该轮次按顶层会话装配（`startRun`），子会话因此取得派发能力。界面没有这些入口，配对端使用同一组指令，
- * 因此边界在指令处检查。发起轮次的指令（`message.send`、`goal.set`、`goal.resume`、空闲时的
- * `followup.steer`）都经过本函数。返回 true 时已发送拒绝回执。
- */
-function rejectChildConversation(
-  deps: CommandDeps,
-  command: string,
-  conversationId: ConversationId,
-  clientRequestId?: string,
-): boolean {
-  if (!getConversation(deps.store, conversationId)?.source) return false
-  reject(deps.ws, command, 'conflict', '子会话只能由父会话的 workflow 续发', clientRequestId)
-  return true
-}
-
-/** 指令回执只发送给发起方：其他客户端未发送该指令，无需收到回执。 */
-export function reject(
-  ws: ServerWebSocket<SocketData>,
-  command: string,
-  reason: CommandRejectReason,
-  message: string,
-  clientRequestId?: string,
-): void {
-  const frame: CommandRejectedFrame = {
-    type: 'command.rejected',
-    command,
-    reason,
-    message,
-    ...(clientRequestId ? { clientRequestId } : {}),
-  }
-  ws.send(JSON.stringify(frame))
+  await handler.handle(cmd, deps)
 }

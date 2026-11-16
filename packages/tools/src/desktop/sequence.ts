@@ -36,10 +36,11 @@ import type {
   DesktopSnapshot,
   DesktopWaitCondition,
 } from './port.ts'
-import { ArgError, bounded, given, oneOf, str } from './shared/args.ts'
+import { ArgError, blank, bounded, given, oneOf, str } from './shared/args.ts'
 import { delivered, followResult, isBareWindow, withShot } from './shared/delivery.ts'
 import { fieldLine, snapshotLine } from './shared/lines.ts'
 import {
+  actScope,
   BASE,
   declaredExecuted,
   declaredKind,
@@ -209,7 +210,8 @@ function expectOf(raw: unknown, index: number): ExpectPlan | null {
   const at = `第 ${index} 步的 expect`
   const until = oneOf(o.until, EXPECTATIONS, `${at}.until`)
   const allowed = new Set<string>(['until', ...EXPECT_PARAMS[until]])
-  const extra = Object.keys(o).filter((key) => !allowed.has(key) && given(o[key]))
+  // 空值判据与动作参数相同（`checkActionParams`）：取 0 与 false 的参数不表达任何意图。
+  const extra = Object.keys(o).filter((key) => !allowed.has(key) && given(o[key]) && !blank(o[key]))
   if (extra.length) throw new ArgError(`${at}.until=${until} 不接受 ${extra.join(' / ')}`)
   if (until === 'value' && (o.value === undefined || o.value === null)) {
     throw new ArgError(`${at}.until=value 必须提供 value`)
@@ -415,6 +417,7 @@ async function runStep(
   windowId: string,
   cursor: Cursor,
   plan: StepPlan,
+  scope: ReturnType<typeof actScope>,
 ): Promise<{ receipt: StepReceipt; halt: Halt | null }> {
   let aim: Aim
   let action: DesktopAction
@@ -451,7 +454,7 @@ async function runStep(
   const started = Date.now()
   let result: DesktopActResult
   try {
-    result = await send(() => desktop.act({ windowId, ...aim.input, action }))
+    result = await send(() => desktop.act({ windowId, ...aim.input, action, ...scope }))
   } catch (err) {
     // 只有端口自行声明执行前拒绝时才视为未发出；其余情况一律按可能已生效收尾。
     const refused = declaredExecuted(err) === false
@@ -710,7 +713,7 @@ export const desktopActSequenceTool: ToolSpec = {
           halt = unreadHalt(plan.index, cursor)
           break
         }
-        const outcome = await runStep(desktop, send, windowId, cursor, plan)
+        const outcome = await runStep(desktop, send, windowId, cursor, plan, actScope(ctx))
         done.push(outcome.receipt)
         ctx.emit('progress', `${stepLine(outcome.receipt)}\n`)
         if (outcome.halt) {

@@ -127,7 +127,6 @@ function baseCtx(store: Store, runId: string): ToolContextBase {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: new RuntimeSink(store, blobs, runId as RunId),
     port: () => null,

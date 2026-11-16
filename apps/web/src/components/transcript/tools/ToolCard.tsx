@@ -9,6 +9,9 @@ import { GenericToolCard } from './GenericToolCard.tsx'
  * 派发任务的两个工具渲染为图，不使用折叠条目：它们各自是一条子会话的入口，
  * 产出的正文已在该子会话（或该 CLI 进程的输出流）中。
  *
+ * 本表只决定卡片的种类。是否独立成行、不并入工具组由 `lib/render-items.ts` 的 `STANDALONE` 决定：
+ * 工具组的成员同样经本组件渲染，新增专用卡片不要求该工具独立成行。
+ *
  * 用 `Map` 而不是对象字面量：工具名来自插件与 MCP，对象字面量按名取值会取到
  * `Object.prototype` 上的同名成员（如 `constructor`）。
  */

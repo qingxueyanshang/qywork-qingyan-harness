@@ -15,7 +15,6 @@ import { log } from '@qywork/core'
 import { upsertWorkspace } from '@qywork/store'
 import {
   BrowserPort,
-  CanvasPort,
   DesktopPort,
   McpConfigPort,
   normalizeAdditionalDirectories,
@@ -78,8 +77,6 @@ export class Session {
     // 画布与生成共用一个开关（`mediaEnabled`），缺省时按启用处理，与设置页显示值使用同一判据。
     const mediaOn = opts.config.mediaEnabled !== false
     const builtin = {
-      // 画布端口只由服务端提供，与生成开关无关；成员会话的工具卡不显示在当前会话中。
-      panel: ports.has(CanvasPort) && opts.member !== true,
       // 生成工具按已配置模型的类别注册；与其他内置工具规则相同，角色的 allowedTools 指定工具时按指定的工具过滤。
       media: mediaOn ? [...new Set(listMediaModels(opts.config).map((m) => m.output))] : null,
       member: opts.member === true,

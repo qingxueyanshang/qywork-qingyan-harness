@@ -83,7 +83,6 @@ function baseCtx(runId: string, sink: SinkPort | null = null): ToolContextBase {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink,
     port: () => null,

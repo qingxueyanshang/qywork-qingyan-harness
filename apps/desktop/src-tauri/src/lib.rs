@@ -19,6 +19,7 @@ mod browser;
 /// 对外可见：端到端夹具（`examples/desktop-host.rs`）必须链接本宿主实现。
 /// 测试一份副本等于测试另一段代码。
 pub mod desktop;
+mod exit;
 mod hostkey;
 mod logfile;
 mod pet;
@@ -356,7 +357,7 @@ fn finish_startup(
 ///
 /// 左键单击与菜单「打开」都只显示已存在的主窗口，不重建窗口。
 /// 「退出」调用 `app.exit(0)`，它触发 `RunEvent::ExitRequested`，sidecar 与终端的清理
-/// 在该事件中执行。不要改为 `std::process::exit`：它会绕过清理，使 qy 成为孤儿进程。
+/// 由该事件开始（`exit.rs`）。不要改为 `std::process::exit`：它会绕过清理，使 qy 成为孤儿进程。
 #[cfg(desktop)]
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
@@ -534,14 +535,14 @@ fn remember_workspace(path: String) -> Result<(), String> {
 /// 宿主连接的凭据，同一份用于浏览器与电脑控制两条路径。
 ///
 /// 发布版由本进程生成，并经标准输入交给本进程启动的 sidecar；开发版的 sidecar 由
-/// `scripts/dev.ts` 启动，凭据由该脚本生成并经环境变量交给本进程，此处只接收。两种模式使用同一条宿主路径。
+/// `scripts/dev.ts` 启动，凭据由该脚本生成并经环境变量交给本进程，由 `sidecar::take_dev_launch` 取得。
+/// 两种模式使用同一条宿主路径。
 ///
 /// 三个平台都需要：桌面宿主与浏览器宿主均不限平台。
-fn host_key() -> Option<String> {
-    if tauri::is_dev() {
-        std::env::var("QYWORK_HOST_KEY").ok().filter(|v| !v.is_empty())
-    } else {
-        Some(hostkey::new_host_key()).filter(|v| !v.is_empty())
+fn host_key(dev: Option<&sidecar::DevLaunch>) -> Option<String> {
+    match dev {
+        Some(dev) => dev.host_key.clone(),
+        None => Some(hostkey::new_host_key()).filter(|v| !v.is_empty()),
     }
 }
 
@@ -552,6 +553,8 @@ pub fn run() {
         log::set_max_level(log::LevelFilter::Info);
     }
     log::info!("qywork 启动 version={} pid={}", env!("CARGO_PKG_VERSION"), std::process::id());
+    // 在启动任何线程之前读取，读取时从环境中移除凭据，见 `take_dev_launch`。
+    let dev = tauri::is_dev().then(sidecar::take_dev_launch);
 
     /*
      * 这三个插件供 **Rust 侧**使用，不供 WebView 中的 JS 使用。
@@ -606,10 +609,11 @@ pub fn run() {
             pet::pet_box_place,
             pet::pet_open_main,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             let workspace = resolve_workspace();
-            let host_key = host_key();
+            let host_key = host_key(dev.as_ref());
+            let dev_sidecar = dev.and_then(|dev| dev.sidecar);
             if let Err(error) = build_startup_window(&handle) {
                 fatal_exit(&error);
             }
@@ -621,7 +625,7 @@ pub fn run() {
                 // build:agent 的产物，在此处 spawn 它会使源码页面连接上一次构建的后端。
                 // release 下页面与 `bin/qy` 由 tauri:build 一次生成，只 spawn，不读取环境变量。
                 let info = if tauri::is_dev() {
-                    sidecar::from_env().ok_or_else(|| {
+                    dev_sidecar.ok_or_else(|| {
                         anyhow::anyhow!(
                             "开发模式缺少 QYWORK_TOKEN / QYWORK_PORT，请通过 bun run dev 启动"
                         )
@@ -688,32 +692,28 @@ pub fn run() {
         // 理由与 setup 钩子相同，见 `fatal_exit`。
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| fatal_exit(&e))
-        .run(|app, event| {
-            // Windows 上父进程退出不会结束子进程：残留的 qy serve 会占用端口与
-            // SQLite 的 WAL 锁，导致下次无法启动。因此退出路径必须显式清理。
-            if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
-                // 终端中的 shell 也是子进程，出于同一理由必须显式终止：残留的 shell 会持有
-                // 工作区中的文件句柄，导致用户删除目录被拒绝。
-                terminal::shutdown(&app.state::<terminal::TerminalHandle>());
+        .run(|app, event| match event {
+            // Windows 上父进程退出不会结束子进程：残留的 qy serve 会占用端口与 SQLite 的 WAL 锁，
+            // 导致下次无法启动；终端中残留的 shell 会持有工作区中的文件句柄，导致用户删除目录被拒绝。
+            // 因此退出路径必须显式收尾。收尾在后台任务中进行（`exit.rs`），结束后再次请求退出；
+            // 窗口先隐藏：收尾期间后端已断开，界面不再可用。
+            RunEvent::ExitRequested { api, code, .. } => {
                 #[cfg(desktop)]
                 browser::shutdown();
-                // 先结算桌面端进行中的请求，再停止 sidecar：收尾回执须经由宿主 WS 发出，
-                // sidecar 退出后服务端只能等待超时。
-                desktop::shutdown();
-            }
-            match event {
-                // sidecar 在后台停止，结束后再次请求退出。窗口先隐藏：停止期间后端已断开，界面不再可用。
-                RunEvent::ExitRequested { api, code, .. } => {
-                    if sidecar::stop_then_exit(app, code.unwrap_or(0)) {
+                match exit::GATE.request() {
+                    exit::Step::Proceed => {}
+                    exit::Step::Wait => api.prevent_exit(),
+                    exit::Step::Begin => {
                         api.prevent_exit();
                         for window in app.windows().values() {
                             let _ = window.hide();
                         }
+                        exit::begin(app.clone(), code.unwrap_or(0));
                     }
                 }
-                RunEvent::Exit => sidecar::shutdown(app),
-                _ => {}
             }
+            RunEvent::Exit => sidecar::shutdown(app),
+            _ => {}
         });
 }
 

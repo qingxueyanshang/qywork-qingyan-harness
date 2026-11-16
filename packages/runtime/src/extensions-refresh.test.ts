@@ -30,7 +30,7 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   for (const lease of leases.splice(0)) await lease.stop()
-  for (const server of servers.splice(0)) server.stop(true)
+  for (const server of servers.splice(0)) await server.stop(true)
   if (prior === undefined) delete process.env.QYWORK_HOME
   else process.env.QYWORK_HOME = prior
 })
@@ -48,7 +48,6 @@ function context(): ToolContext {
     contextWindow: 100000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Infinity, 0),
     sink: null,
     port: new Ports([provide(McpConfigPort, makeMcpConfigPort(root))]).get,

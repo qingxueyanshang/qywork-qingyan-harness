@@ -113,7 +113,7 @@ test('生成请求在远端返回之前一直等待；连接被关闭时立即�
     expect(error.diagnostic?.timeoutMs).toBeUndefined()
     expect(error.message).toBe('连接被断开；远端结果未知')
   } finally {
-    closing.stop(true)
+    await closing.stop(true)
   }
 })
 
@@ -276,7 +276,7 @@ test('上传的连接失败和无效响应均不误报生成结果未知，连�
     expect(error.message).toEndWith(BACKOFF_EXHAUSTED)
   } finally {
     clock.restore()
-    closed.stop(true)
+    await closed.stop(true)
   }
   reply = () => new Response('<html>bad gateway</html>')
   const invalid = await failure(sendJson(url(), { method: 'POST' }, signal(), { stage: 'upload' }))
@@ -730,7 +730,7 @@ test('连接被拒绝或 TLS 握手失败时请求未发出，判为被拒绝并
     expect(tls.message).toBe(`与 ${host} 的 TLS 握手失败${BACKOFF_EXHAUSTED}`)
   } finally {
     clock.restore()
-    plain.stop(true)
+    await plain.stop(true)
   }
 })
 

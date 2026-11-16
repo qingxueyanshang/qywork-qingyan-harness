@@ -46,7 +46,6 @@ function ctx(plugins: PluginPort | undefined, approve = true): ToolContext & { a
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: new Ports(plugins ? [provide(PluginPort, plugins)] : []).get,

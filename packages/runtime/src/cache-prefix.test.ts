@@ -156,7 +156,7 @@ test.each([
     } finally {
       await session.dispose()
       store.close()
-      provider.stop(true)
+      await provider.stop(true)
     }
   },
   20_000,

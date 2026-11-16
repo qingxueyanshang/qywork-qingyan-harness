@@ -450,7 +450,8 @@
             "pid": 900,
             "processStartedAt": 1700000000000,
             "app": "记事本",
-            "title": "未命名"
+            "title": "未命名",
+            "selfWindow": false
           }
         ]
       }
@@ -611,6 +612,7 @@
           "processStartedAt": 1700000000000,
           "app": "记事本",
           "title": "另存为",
+          "selfWindow": false,
           "appeared": true
         }
       ]

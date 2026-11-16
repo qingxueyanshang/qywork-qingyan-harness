@@ -6,7 +6,7 @@
  * 实际的防线是：
  *
  * 1. 每次调用都经过权限检查（`auto` 模式下由硬边界与静态规则裁决，不弹出确认框）。
- * 2. cwd 强制限定在允许的根目录内（工作区 + 显式配置的额外目录）。
+ * 2. cwd 的范围与写入相同：根目录（工作区 + 显式配置的额外目录）之外位于家目录或系统目录中的位置拒绝。
  * 3. 凭证不进入子进程，输出中出现的凭证明文也要屏蔽，见下。
  * 4. 前台命令按停滞判定终止，输出经投递限制后交给模型，防止耗尽上下文；转入后台的命令由
  *    服务进程级的任务表持有（`CommandPort`），由模型、用户或应用退出结束，每条输出流只保留最近的一段。
@@ -42,11 +42,10 @@ import { classifyAddress } from './net-safety.ts'
 import {
   conversationTempDir,
   PROTECTED_DIRS,
-  resolveInWorkspace,
+  resolveCommandDir,
   rootsOf,
   workspacePythonBin,
   workspacePythonDir,
-  writableRoots,
 } from './paths.ts'
 import { type CollectedProcess, collectProcess } from './process/collect.ts'
 import type { CommandShell } from './process/command-shell.ts'
@@ -335,10 +334,12 @@ export function resolveCommandTimeout(timeoutMs: unknown): number {
  * 启动图形应用的写法，按平台给出。图形应用不自行退出，直接执行时命令一直等待；以 `background` 启动时应用被登记为
  * 后台命令，界面显示一条可停止的后台命令，停止它即关闭应用。以下写法启动后立即返回，应用与命令无关联。
  * Windows 上不要改为 `cmd /c start` 或末尾加 `&`：实测应用继承命令的输出管道，命令不返回。
+ * Windows 上程序名带扩展名：bash 外层的 PATH 以 Git 的 `usr/bin` 开头，其中的 `notepad` 是无扩展名的 shell 脚本，
+ * `Start-Process notepad` 解析到它后以 InvalidOperationException 失败；`notepad.exe` 与完整路径在两种外层下都可用。
  */
 const LAUNCH_APP =
   process.platform === 'win32'
-    ? '`powershell -NoProfile -Command "Start-Process \'应用路径\'"`'
+    ? '`powershell -NoProfile -Command "Start-Process \'notepad.exe\'"`（替换为应用的完整路径或带 .exe 的程序名）'
     : process.platform === 'darwin'
       ? '`open -a 应用名`'
       : '`nohup 应用 >/dev/null 2>&1 &`'
@@ -377,7 +378,10 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       type: 'object',
       properties: {
         command: { type: 'string', description: '要执行的完整命令' },
-        cwd: { type: 'string', description: '工作目录（工作区相对路径），默认工作区根' },
+        cwd: {
+          type: 'string',
+          description: '工作目录：相对工作区的路径或绝对路径，默认工作区根',
+        },
         timeout_ms: {
           type: 'integer',
           description:
@@ -422,10 +426,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       const command = String(args.command ?? '').trim()
       if (!command) return { status: 'failure', executed: false, message: '命令为空' }
 
-      const cwd = await resolveInWorkspace(writableRoots(rootsOf(ctx)), String(args.cwd ?? '.'), {
-        mustExist: true,
-        param: 'cwd',
-      })
+      const cwd = await resolveCommandDir(rootsOf(ctx), String(args.cwd ?? '.'))
       const timeout = resolveCommandTimeout(args.timeout_ms)
 
       /*

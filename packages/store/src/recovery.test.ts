@@ -308,7 +308,12 @@ describe('崩溃恢复', () => {
 
   test('无残留时启动是零开销的 no-op', () => {
     const { store } = fresh()
-    expect(recoverStaleRuns(store)).toEqual({ recovered: 0, ambiguous: 0, heldByOthers: 0 })
+    expect(recoverStaleRuns(store)).toEqual({
+      recovered: 0,
+      ambiguous: 0,
+      heldByOthers: 0,
+      corruptSteps: [],
+    })
     store.close()
   })
 })
@@ -397,6 +402,63 @@ describe('run 归属', () => {
       )
       .get(run.id)?.heartbeat_at
     expect(beat).toBe(0)
+    store.close()
+  })
+})
+
+/**
+ * payload 不是合法 JSON 的 step（磁盘损坏或外部修改）。启动回收不在 try 中执行，
+ * SQLite 的 JSON 函数对这一行抛出时整个回收失败，服务因此无法启动。
+ */
+describe('payload 损坏的 step', () => {
+  test('终态 run 与待回收 run 下的损坏行不使回收失败；仍为 running 的损坏行写为 failure，payload 原样保留，id 随结果返回', () => {
+    const { store, ws, conv } = fresh()
+    const corrupt = (id: string) =>
+      store.db.query('UPDATE steps SET payload = ? WHERE id = ?').run('{broken', id)
+    // 终态 run 下已结束的一行：孤儿扫描对它求 json_type。
+    const done = newRun(store, ws, conv)
+    markRunRunning(store, done.id)
+    const settled = appendStep(store, {
+      runId: done.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'read_file',
+      status: 'success',
+    })
+    finishRun(store, done.id, { status: 'done', stopReason: 'completed' })
+    corrupt(settled.id)
+    // 待回收 run 下仍为 running 的一行：回收时对它求 json_set 与 json_type。
+    const stale = newRun(store, ws, conv)
+    markRunRunning(store, stale.id)
+    const hanging = appendStep(store, {
+      runId: stale.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'run_command',
+      status: 'running',
+    })
+    const intact = appendStep(store, {
+      runId: stale.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolName: 'read_file',
+      status: 'running',
+    })
+    corrupt(hanging.id)
+
+    const result = recoverStaleRuns(store)
+    expect(result.recovered).toBe(1)
+    expect([...result.corruptSteps].sort()).toEqual([hanging.id, settled.id].sort())
+    expect(getRun(store, stale.id)?.status).toBe('interrupted')
+    const row = (id: string) =>
+      store.db
+        .query<{ status: string; payload: string }, [string]>(
+          'SELECT status, payload FROM steps WHERE id = ?',
+        )
+        .get(id)
+    expect(row(hanging.id)).toEqual({ status: 'failure', payload: '{broken' })
+    expect(row(settled.id)).toEqual({ status: 'success', payload: '{broken' })
+    expect(row(intact.id)?.status).toBe('failure')
     store.close()
   })
 })

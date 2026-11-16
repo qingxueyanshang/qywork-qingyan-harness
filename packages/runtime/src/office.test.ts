@@ -45,6 +45,52 @@ describe('Office 宿主', () => {
     expect(host.port()).toBeUndefined()
   })
 
+  /**
+   * 探测进程的环境与执行模型代码的 worker 使用同一份剥离判定（`scrubbedEnv`）：配置中显式放行的变量照常传入。
+   * 原始失败形状：探测按不带放行名单的规则剥离，放行的变量在探测中缺失、在执行中存在，两者的结论可能不同。
+   */
+  test('探测进程的环境按配置的放行名单剥离凭证，与执行时相同', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-office-probe-'))
+    const dir = join(root, 'office')
+    await mkdir(dir)
+    // Bun 按 JS 执行任意扩展名的脚本：以 Bun 充当解释器，记录环境并写出探测结果。
+    await writeFile(
+      join(dir, 'worker.py'),
+      `const { readFileSync, writeFileSync } = require('node:fs')
+const { join } = require('node:path')
+const req = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+writeFileSync(join(req.call_dir, 'env.json'), JSON.stringify(process.env))
+writeFileSync(join(req.call_dir, 'response.json'), JSON.stringify({ probe: { python: '3.12', missing: [], packages: {}, apps: {} } }))
+`,
+    )
+    const previousDir = process.env.QYWORK_OFFICE_DIR
+    process.env.QYWORK_HOME = join(root, 'home')
+    process.env.QYWORK_OFFICE_DIR = dir
+    process.env.QYWORK_PROBE_TOKEN = 'allowed-by-config'
+    process.env.QYWORK_PROBE_SECRET = 'stripped'
+    try {
+      const host = createOfficeHost(
+        () =>
+          ({
+            providers: {},
+            officePython: process.execPath,
+            envAllowList: ['QYWORK_PROBE_TOKEN'],
+          }) as QyConfig,
+      )
+      await host.refresh()
+      const env = JSON.parse(
+        await Bun.file(join(root, 'home', 'office', 'probe', 'env.json')).text(),
+      ) as Record<string, string>
+      expect(env.QYWORK_PROBE_TOKEN).toBe('allowed-by-config')
+      expect(env.QYWORK_PROBE_SECRET).toBeUndefined()
+    } finally {
+      if (previousDir === undefined) delete process.env.QYWORK_OFFICE_DIR
+      else process.env.QYWORK_OFFICE_DIR = previousDir
+      delete process.env.QYWORK_PROBE_TOKEN
+      delete process.env.QYWORK_PROBE_SECRET
+    }
+  })
+
   test('开关按读取状态时的配置实时判定', () => {
     let config = { providers: {} } as QyConfig
     const host = createOfficeHost(() => config)

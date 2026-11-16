@@ -222,7 +222,6 @@ describe('ToolContext 生命周期', () => {
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
           vision: null,
-          resources: new Map(),
           state: new Map(),
           sink: null,
           port: () => null,
@@ -287,7 +286,6 @@ describe('ToolContext 生命周期', () => {
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
           vision: null,
-          resources: new Map(),
           state: new Map(),
           sink: null,
           port: () => null,
@@ -395,7 +393,6 @@ describe('权限拒绝', () => {
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
         vision: null,
-        resources: new Map(),
         state: new Map(),
         sink: null,
         port: () => null,
@@ -560,7 +557,6 @@ describe('重复无进展', () => {
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
         vision: null,
-        resources: new Map(),
         state: new Map(),
         sink: null,
         port: () => null,
@@ -990,7 +986,6 @@ describe('重复无进展', () => {
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
         vision: null,
-        resources: new Map(),
         state: new Map(),
         sink: null,
         port: () => null,
@@ -1151,7 +1146,7 @@ describe('注册表是工具的唯一权威', () => {
           expect(fault.bodies).toHaveLength(2)
           expect(fault.bodies[1]).toContain('参数不是 JSON 对象，未执行')
         } finally {
-          fault.stop()
+          await fault.stop()
         }
       }
     }
@@ -1294,7 +1289,6 @@ describe('停止能中止停滞的工具', () => {
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
         vision: null,
-        resources: new Map(),
         state: new Map(),
         sink: null,
         port: () => null,

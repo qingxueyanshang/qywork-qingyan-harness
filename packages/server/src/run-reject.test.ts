@@ -364,7 +364,7 @@ test('本轮的开始时刻取占位成功的时刻：准备阶段计入耗时�
     expect(started.startedAt).toBeLessThanOrEqual(syncAt)
     expect(listRuns(store, cv).map((r) => r.createdAt)).toEqual([started.startedAt])
   } finally {
-    provider.stop(true)
+    await provider.stop(true)
   }
 })
 
@@ -452,6 +452,6 @@ test('准备阶段收到停止：不回复「本轮已结束」，本轮以用�
     expect(runs.isBusy(cv)).toBe(false)
   } finally {
     release()
-    provider.stop(true)
+    await provider.stop(true)
   }
 })

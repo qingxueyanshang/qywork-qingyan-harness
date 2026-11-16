@@ -457,6 +457,24 @@ describe('后台命令的工具形态', () => {
     expect(makeShellTool(shell).description).toContain('启动图形应用')
   })
 
+  /**
+   * 说明中的示例程序名在 bash 外层下解析为可执行文件。解析即可判定，不启动窗口。
+   * 原始失败形状：bash 外层的 PATH 以 Git 的 `usr/bin` 开头，`Start-Process notepad` 解析到其中无扩展名的
+   * `notepad` 脚本，以 InvalidOperationException 失败。
+   */
+  test.skipIf(process.platform !== 'win32' || !commandShell()?.prelude)(
+    'Windows 上启动图形应用的示例在 bash 外层下解析为 .exe',
+    () => {
+      const bash = commandShell()!
+      const name = /Start-Process '([^']+)'/.exec(makeShellTool(bash).description)?.[1] ?? ''
+      const resolved = Bun.spawnSync(
+        [...bash.argv, `powershell -NoProfile -Command "(Get-Command '${name}').Source"`],
+        { stdout: 'pipe', stderr: 'pipe' },
+      )
+      expect(resolved.stdout.toString().trim()).toMatch(/\.exe$/i)
+    },
+  )
+
   test('没有后台命令通道时规格不含 background，也不注册 background_command', () => {
     const plain = makeShellTool(shell)
     expect(Object.keys((plain.parameters as { properties: object }).properties)).not.toContain(

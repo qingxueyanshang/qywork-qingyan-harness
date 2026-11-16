@@ -98,7 +98,7 @@ test('摘要尚未返回时历史页包含压缩进度，结束后更新同一�
     release()
     await work
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
 })
 
@@ -166,7 +166,7 @@ test('手动压缩的记录带压缩后占用、两条边界与修订号，取�
     })
   } finally {
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
 })
 
@@ -227,7 +227,7 @@ test('压缩比例不合法时手动压缩以配置错误结束：错误码为 i
     expect(requests).toBe(0)
   } finally {
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
 })
 
@@ -360,7 +360,7 @@ test('摘要被拒后仍保留原生错误、请求参数、降级原因，导�
     ).toBe(true)
   } finally {
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
 })
 
@@ -442,6 +442,6 @@ test('手动摘要锁定会话接口，成功用量只记一笔并保留实际�
     ])
   } finally {
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
 })

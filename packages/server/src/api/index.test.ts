@@ -1494,6 +1494,15 @@ describe('工具清单', () => {
     expect(builtinIn('plugins')).toEqual(['install_plugin'])
   })
 
+  /**
+   * 目录与会话装配经同一个注册函数、同一组条件得出。原始失败形状：目录另列一份端口清单，
+   * 缺少个性化与宠物的端口，也不设面板条件，三个工具不在目录中。
+   */
+  test('顶层会话注册的面板、个性化与宠物工具均列出', async () => {
+    const names = (await tools()).map((t) => t.name)
+    for (const name of ['open_in_panel', 'personalize', 'pet']) expect(names).toContain(name)
+  })
+
   test('只返回 tools 一个键：mcpServers 没有任何消费者', async () => {
     const res = await call('/api/tools')
     expect(Object.keys((await res?.json()) as object)).toEqual(['tools'])
@@ -1538,16 +1547,22 @@ describe('工具清单', () => {
    * `browser_tabs` 的 list 读取清单，create / bind / close 改变本会话持有的页，
    * `background_command` 不带 stop 时读取输出、带 stop 时停止命令，
    * 这些动作随参数变化，工具清单如实显示「不固定」。
-   * 权限效果不得为函数：该列是安全边界，不固定等于未声明。
+   * 权限效果只有 `personalize` 与 `pet` 按参数区分（读取为 read，修改为 write，见 `resolvePermissionEffect`），
+   * 其余固定：该列是安全边界，不固定的工具须逐个列出。
    */
-  test('待办、文件写入、浏览器标签与后台命令按参数区分动作，权限效果固定', async () => {
+  test('待办、文件写入、浏览器标签、后台命令与外观按参数区分动作，其余权限效果固定', async () => {
+    const appearance = ['personalize', 'pet']
     for (const row of await tools()) {
-      expect(row.permissionEffect).not.toBe('不固定')
+      if (row.permissionEffect === '不固定') expect(appearance).toContain(row.name)
       expect(row.objectLabel).not.toBe('不固定')
       if (row.actionKind === '不固定')
-        expect(['write_todos', 'write_file', 'browser_tabs', 'background_command']).toContain(
-          row.name,
-        )
+        expect([
+          'write_todos',
+          'write_file',
+          'browser_tabs',
+          'background_command',
+          ...appearance,
+        ]).toContain(row.name)
     }
   })
 })

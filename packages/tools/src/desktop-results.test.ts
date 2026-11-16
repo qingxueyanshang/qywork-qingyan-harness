@@ -255,7 +255,6 @@ function context(desktop: DesktopPort, sink: SinkPort | null, contextWindow = WI
     contextWindow,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink,
     port: new Ports([provide(DesktopPort, desktop)]).get,

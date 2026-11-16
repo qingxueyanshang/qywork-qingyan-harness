@@ -28,7 +28,6 @@ import {
   displayPath,
   PROTECTED_DIRS,
   resolveInWorkspace,
-  type SafetyOptions,
   safeFetch,
   spawnGuarded,
 } from '@qywork/tools'
@@ -52,8 +51,6 @@ export interface CapabilityOptions {
   workspaceRoot: string
   /** 插件私有存储根。默认 `<workspaceRoot>/.qy/plugin-data`。 */
   storageRoot?: string
-  /** 网络访问策略，与 web_fetch 共用同一套 SSRF 防护。 */
-  netPolicy?: SafetyOptions
 }
 
 export type CapabilityHandler = (
@@ -172,7 +169,6 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
         // 与 web_fetch 使用同一套 SSRF 防护：每次重定向重新校验，按解析后的 IP 分类。
         // 插件路径更需要这层防护：URL 完全由第三方代码构造。
         const res = await safeFetch(url, {
-          ...(opts.netPolicy ?? {}),
           ...(typeof params.method === 'string' ? { method: params.method } : {}),
           ...(params.headers && typeof params.headers === 'object'
             ? { headers: params.headers as Record<string, string> }

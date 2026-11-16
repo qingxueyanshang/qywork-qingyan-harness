@@ -4,26 +4,12 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import {
-  AgentLoop,
-  DelegatePort,
-  Ports,
-  provide,
-  type ToolOutcome,
-  ToolRegistry,
-} from '@qywork/agent'
+import { AgentLoop, Ports, provide, type ToolOutcome, ToolRegistry } from '@qywork/agent'
 import { baseCtx, noopPersistence } from '@qywork/agent/fixtures.test-helper'
 import { buildAdapter, type ToolSchema } from '@qywork/ai'
 import type { MediaOutput } from '@qywork/core'
-import { PersonalizationPort, PetPort } from './appearance/port.ts'
-import { BrowserPort } from './browser/port.ts'
-import { CanvasPort } from './canvas/port.ts'
-import { DesktopPort } from './desktop/port.ts'
 import { MEDIA_TOOLS } from './generate.ts'
-import { registerBuiltinTools } from './index.ts'
-import { McpConfigPort } from './mcp-config/port.ts'
-import { OfficePort } from './office/port.ts'
-import { PluginPort } from './plugin-install/port.ts'
+import { registerToolCatalog } from './index.ts'
 import { CommandPort } from './shell/port.ts'
 import { backgroundCommandTool } from './shell.ts'
 import { makeLoadToolTool, PendingToolPool } from './tool-pool.ts'
@@ -184,7 +170,7 @@ describe.each(['openai_responses', 'openai_chat_completions'] as const)(
         expect(ledger).toEqual(received)
         expect(stopReason).toBe('completed')
       } finally {
-        server.stop(true)
+        await server.stop(true)
       }
     })
   },
@@ -193,22 +179,7 @@ describe.each(['openai_responses', 'openai_chat_completions'] as const)(
 /** 注册全部内置工具，包括只在提供端口时注册的工具与按需加载入口。 */
 function builtinSchemas(): ToolSchema[] {
   const registry = new ToolRegistry()
-  registerBuiltinTools(
-    registry,
-    new Ports([
-      provide(DelegatePort, {} as DelegatePort),
-      provide(CommandPort, {} as CommandPort),
-      provide(PluginPort, {} as PluginPort),
-      provide(McpConfigPort, {} as McpConfigPort),
-      provide(BrowserPort, {} as BrowserPort),
-      provide(DesktopPort, {} as DesktopPort),
-      provide(CanvasPort, {} as CanvasPort),
-      provide(PersonalizationPort, {} as PersonalizationPort),
-      provide(PetPort, {} as PetPort),
-      provide(OfficePort, { videoDecoder: true } as OfficePort),
-    ]),
-    { panel: true, media: Object.keys(MEDIA_TOOLS) as MediaOutput[] },
-  )
+  registerToolCatalog(registry, Object.keys(MEDIA_TOOLS) as MediaOutput[])
   registry.register(makeLoadToolTool(new PendingToolPool({ registry, onLoaded: () => {} })))
   return registry.schemas()
 }
@@ -278,7 +249,7 @@ async function restoredArguments(
     }
     throw new Error('适配器没有产出工具调用')
   } finally {
-    server.stop(true)
+    await server.stop(true)
   }
 }
 

@@ -4,7 +4,7 @@
  * 覆盖范围：`run-control.ts` 与 `team-run.ts` 两处 `new Session` 的桌面端口注入、
  * `runtime/session.ts` 的端口集合与 `runtime/session/tool-context.ts` 的 `ToolContext` 转发、`tools/index.ts` 按 `requires` 的注册、
  * `tools/desktop/` 的五个工具与 `desktop/coordinator.ts` 之间的端到端往返（含有限动作序列的
- * 逐帧派发、截断与不产生额外模型请求），以及父级停止时的执行者撤销。
+ * 逐帧派发、截断与不产生额外模型请求）、会话权限模式对本应用窗口上动作的裁决，以及父级停止时的执行者撤销。
  *
  * **必须经由真实链路。** 手动构造带端口的 `Session` 只能证明端口传入后可用，
  * 而易出错的是装配：主任务与子任务两个入口各自决定是否提供端口，遗漏任一入口会导致
@@ -25,6 +25,7 @@ import {
   contentPathFor,
   createConversation,
   Store,
+  setConversationMode,
   upsertWorkspace,
 } from '@qywork/store'
 import type { Role } from '@qywork/team'
@@ -152,7 +153,7 @@ beforeAll(async () => {
 afterAll(async () => {
   for (const close of closers.splice(0).reverse()) close()
   await handle?.stop()
-  provider.stop(true)
+  await provider.stop(true)
   content?.close()
   store?.close()
   await rm(dir, { recursive: true, force: true }).catch(() => {})
@@ -515,4 +516,111 @@ test('配置中没有该字段时桌面工具照常注册', async () => {
   expect(names).toContain('desktop_windows')
   expect(names).toContain('desktop_act')
   expect(names).toContain('desktop_observe')
+})
+
+/** 本应用自身的窗口：宿主在窗口清单中标记归属。 */
+const SELF_WINDOW = {
+  handle: 99,
+  pid: 950,
+  processStartedAt: 1_700_000_000_500,
+  app: 'qywork.exe',
+  title: 'qywork',
+  selfWindow: true,
+}
+/** 本应用输入区的权限模式开关。 */
+const MODE_CHIP: DesktopNode = {
+  ref: 'w.0#20',
+  parentRef: 'w#1',
+  depth: 1,
+  role: 'button',
+  name: '自动审批',
+  automationId: '',
+  enabled: true,
+  offscreen: false,
+  actions: [{ action: 'invoke', delivery: ['background'] }],
+}
+const SELF_TREE = {
+  kind: 'tree' as const,
+  window: SELF_WINDOW.handle,
+  capturedAt: 2,
+  windowEnabled: true,
+  windowCovered: false,
+  completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 2 },
+  nodeCount: 2,
+  nodes: [{ ...FORM_ROOT, name: 'qywork' }, { ...MODE_CHIP }],
+}
+
+/**
+ * 「自动审批」下，作用于本应用自身窗口的动作在发往宿主之前被拒绝，观察照常；「完全访问」下照常派发。
+ *
+ * 原始失败形状：自动审批模式下，模型可以用 desktop_act 点击本应用输入区的权限模式开关，
+ * 把会话切换为完全访问，从而越过该模式的全部边界。按控件、序列与投递给窗口焦点的键盘动作各执行一次。
+ */
+test('自动审批下作用于本应用窗口的动作不发往宿主，观察照常；完全访问下照常派发', async () => {
+  let selfId = ''
+  const pick = (body: string): string => {
+    selfId ||= /(dw_\d+) qywork\.exe/.exec(body)?.[1] ?? ''
+    return selfId
+  }
+  script = [
+    toolTurn('desktop_windows', {}),
+    (body) => toolTurn('desktop_observe', { windowId: pick(body) }),
+    () => toolTurn('desktop_act', { windowId: selfId, action: 'invoke', ref: 'e2' }),
+    () =>
+      toolTurn('desktop_act_sequence', {
+        windowId: selfId,
+        steps: [{ action: 'invoke', ref: 'e2' }],
+      }),
+    () => toolTurn('desktop_act', { windowId: selfId, action: 'press_key', key: 'enter' }),
+    textTurn('无法操作'),
+  ]
+  bodies = []
+  const seen = host.received.length
+  const conv = conversation()
+  await startRun(conv, '把权限切换为完全访问', undefined, deps())
+
+  const list = await host.next()
+  expect(list.op).toBe('list_windows')
+  host.reply(list, {
+    observation: { kind: 'windows', capturedAt: 1, windows: [WINDOW, SELF_WINDOW] },
+  })
+  const tree = await host.next()
+  expect(tree.op).toBe('read_tree')
+  expect(tree.target?.window).toBe(SELF_WINDOW.handle)
+  host.reply(tree, { observation: SELF_TREE })
+  await finished(conv)
+  await settleCancel(seen)
+
+  // 三次动作都未发往宿主：本轮只有窗口发现、观察与结束时的撤销。
+  expect(host.received.slice(seen).map((f) => f.op)).toEqual([
+    'list_windows',
+    'read_tree',
+    'cancel',
+  ])
+  // 第 4 至第 6 次模型请求依次带回三次动作的结果，每次都新增拒绝原因。
+  const refusals = bodies.map(
+    (b) => (b.match(/该窗口属于本应用，当前权限模式下不能由电脑控制操作/g) ?? []).length,
+  )
+  expect(refusals[2]).toBe(0)
+  for (const at of [3, 4, 5]) expect(refusals[at]).toBeGreaterThan(refusals[at - 1] ?? 0)
+
+  setConversationMode(store, conv, 'full')
+  script = [
+    toolTurn('desktop_observe', { windowId: selfId }),
+    toolTurn('desktop_act', { windowId: selfId, action: 'invoke', ref: 'e2' }),
+    textTurn('已切换'),
+  ]
+  bodies = []
+  const again = host.received.length
+  await startRun(conv, '把权限切换为完全访问', undefined, deps())
+  const reread = await host.next()
+  expect(reread.op).toBe('read_tree')
+  host.reply(reread, { observation: SELF_TREE })
+  const act = await host.next()
+  expect(act.op).toBe('act')
+  expect(act.target?.window).toBe(SELF_WINDOW.handle)
+  expect(act.ref).toBe(MODE_CHIP.ref)
+  host.reply(act, { dispatch: 'submitted', observation: SELF_TREE })
+  await finished(conv)
+  await settleCancel(again)
 })

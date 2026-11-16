@@ -118,8 +118,8 @@ beforeAll(async () => {
   content = new ContentStore(contentPathFor(dbPath))
 })
 
-afterAll(() => {
-  provider.stop(true)
+afterAll(async () => {
+  await provider.stop(true)
   store?.close()
   content?.close()
 })
@@ -216,7 +216,6 @@ test('容量拒绝 → 识别凭证 → 压缩一次 → 无法缩小时以 cont
       contextWindow: adapter.spec.contextWindow,
       density: adapter.spec.density,
       vision: adapter.spec.vision,
-      resources: new Map(),
       state: new Map(),
       sink: null,
       port: () => null,

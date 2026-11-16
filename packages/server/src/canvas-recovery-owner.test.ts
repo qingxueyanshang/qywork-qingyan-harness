@@ -78,6 +78,6 @@ test('另一个服务进程仍在等待的视频任务不在启动恢复中取�
   } finally {
     other.kill()
     await other.exited
-    server.stop(true)
+    await server.stop(true)
   }
 })

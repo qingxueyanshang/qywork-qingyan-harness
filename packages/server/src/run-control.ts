@@ -154,7 +154,8 @@ export async function startRun(
    * 之间有多个 await，两条几乎同时到达的消息会同时通过检查。
    *
    * **只有一处竞态会触发该拒绝**：目标自动继续的 `setTimeout` 到期时会话已再次忙碌
-   * （`fireGoalRound`）。用户消息与定时触发不会执行到此处：两者都经由 `submitMessage`，
+   * （`fireGoalRound`）。被拒绝的一轮不丢失：占用方（一轮或手动压缩）释放时经 `settleGoalAfterRun`
+   * 收尾，自动继续标记仍在时由此重新发起。用户消息与定时触发不会执行到此处：两者都经由 `submitMessage`，
    * 忙碌时排入队列。
    *
    * 会话已有一轮在运行时不发布 `run.error`：该报错不属于任何轮次，没有等待它的请求方，
@@ -467,7 +468,8 @@ export async function startRun(
  * **同步取出、异步发起。** 取出与「是否跳过目标自动继续」是同一个决定，拆开后会出现
  * 「自动继续已被跳过，而该消息在 setTimeout 到期前被用户删除」的情形，两者都不会执行。
  *
- * 到期时若会话再次忙碌（另一端刚发送了消息），把它放回队首，不丢弃。到期之前收到停止时同样放回队首，
+ * 取出时会话已再次忙碌（收尾的 await 期间另一端发起了一轮），把它放回队首，不丢弃；该轮收尾时再取出。
+ * 定时回调期间会话由本函数占用，不会被他方占用。到期之前收到停止时同样放回队首，
  * 不发起：与被停止的一轮收尾时相同，条目留在队列。
  * 异步发起的原因与 `queueGoalRound` 相同：不嵌套在本轮的 `finally` 中执行。
  */
@@ -483,7 +485,7 @@ function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDep
   setTimeout(() => {
     // release 与 startRun 的 reserve 之间没有 await，退出占位不能插入其中。
     deps.runs.release(conversationId)
-    if (pending.signal.aborted || deps.runs.hasRun(conversationId)) {
+    if (pending.signal.aborted) {
       deps.runs.enqueueFront(conversationId, item)
       return
     }
@@ -839,7 +841,8 @@ function runErrorOf(err: unknown): { code: ErrorCode; message: string } {
  *
  * 压缩期间占用该会话，与一轮运行使用同一项占用（`runs.reserve`）：期间发送的消息与回执排入队列，
  * 第二次压缩、设立目标与应用更新被拒绝，停止指令中止摘要请求。释放之后按 `startRun` 收尾的同一规则
- * 处理队列：正常结束时发起队首，被停止或失败时条目留在队列。
+ * 处理队列与目标：正常结束时发起队首，被停止或失败时条目留在队列；目标经 `settleGoalAfterRun` 收尾，
+ * 占用期间到期而被拒绝的目标自动继续（`fireGoalRound`）由此重新发起。
  * 返回 `ok: false` 表示该会话已被占用，未执行压缩。
  */
 export async function compactConversation(
@@ -856,9 +859,20 @@ export async function compactConversation(
   } finally {
     deps.runs.release(conversationId)
     deps.runs.resetSteer(conversationId)
-    if (!controller.signal.aborted && stopReason && CONTINUABLE.includes(stopReason)) {
+    const interrupted = controller.signal.aborted
+    const fired =
+      !interrupted &&
+      !!stopReason &&
+      CONTINUABLE.includes(stopReason) &&
       fireFollowUpRound(conversationId, deps)
-    }
+    settleGoalAfterRun({
+      conversationId,
+      deps,
+      interrupted,
+      stopReason,
+      detail: null,
+      skipResume: fired,
+    })
   }
   return { ok: true }
 }

@@ -139,7 +139,7 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
     policy === null || status.backend === 'none'
       ? inner
       : status.backend === 'bwrap'
-        ? buildBwrapArgv(policy, inner)
+        ? buildBwrapArgv(policy, inner, { cwd: input.cwd })
         : buildSeatbeltArgv(policy, inner)
 
   const effective: SandboxStatus =

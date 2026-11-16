@@ -247,7 +247,7 @@ describe('Gemini Interactions', () => {
       expect(receivedKey).toBeNull()
       expect(result.bytes).toEqual(MP4)
     } finally {
-      storage.stop(true)
+      await storage.stop(true)
     }
   })
 
@@ -616,7 +616,7 @@ describe('xAI 生成', () => {
         { auth: null, key: null },
       ])
     } finally {
-      storage.stop(true)
+      await storage.stop(true)
     }
   })
 

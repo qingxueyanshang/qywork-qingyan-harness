@@ -995,11 +995,11 @@ describe('权限模式按会话裁决', () => {
     const run = (name: string, args: Record<string, unknown>, ctx: ToolContext) =>
       registry.execute(name, args, ctx)
 
-    // full 下构造，本轮中途切到 auto：之后读取工作区外的文件被拒。
-    // auto 下工作区外的写入是否放行取决于目标是否位于家目录中，读取在任何位置都限于根目录。
+    // full 下构造，本轮中途切到 auto：之后读取凭证文件被拒。
+    // auto 下根目录之外的位置可读，凭证文件除外；full 下不拒绝。
     setConversationMode(store, conv, 'full')
     const fromFull = { ...toolContext(s, 'rn_a', 'm', conv), emit: () => {} } as ToolContext
-    const a = join(outside, 'a.txt')
+    const a = join(outside, '.npmrc')
     expect(
       (await run('write_file', { path: a, mode: 'create', content: 'a' }, fromFull)).status,
     ).toBe('success')
@@ -1007,7 +1007,7 @@ describe('权限模式按会话裁决', () => {
     expect(await run('read_file', { path: a }, fromFull)).toMatchObject({
       status: 'failure',
       executed: false,
-      errorKind: 'path_out_of_workspace',
+      errorKind: 'credential_path',
     })
 
     // auto 下构造，本轮中途切到 full：之后向工作区外写入成功。

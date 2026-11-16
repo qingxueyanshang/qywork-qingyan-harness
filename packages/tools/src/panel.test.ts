@@ -1,5 +1,5 @@
 /**
- * 覆盖 `panel.ts` 的 `open_in_panel`：路径核对与返回的相对路径，以及 `index.ts` 中按 `panel` 注册。
+ * 覆盖 `panel.ts` 的 `open_in_panel`：路径核对与返回的相对路径，以及 `index.ts` 中按画布端口与会话类型注册。
  * 界面收到成功结果后打开面板由 `apps/web/src/lib/store.test.ts` 覆盖。
  */
 
@@ -7,8 +7,9 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Ports, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { CanvasPort } from './canvas/port.ts'
 import { registerBuiltinTools } from './index.ts'
 import { openInPanelTool } from './panel.ts'
 
@@ -21,7 +22,6 @@ function ctx(root: string): ToolContext {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: () => null,
@@ -49,14 +49,16 @@ describe('open_in_panel', () => {
     })
   })
 
-  test('只在有界面的会话中注册', () => {
-    const names = (opts: { panel?: boolean }) => {
+  test('只在有界面的会话中注册：有画布端口且不是成员会话', () => {
+    const names = (ports: Ports, member: boolean) => {
       const registry = new ToolRegistry()
-      registerBuiltinTools(registry, new Ports(), opts)
+      registerBuiltinTools(registry, ports, { member })
       return registry.list().map((s) => s.name)
     }
-    expect(names({ panel: true })).toContain('open_in_panel')
-    expect(names({})).not.toContain('open_in_panel')
+    const withCanvas = new Ports([provide(CanvasPort, {} as CanvasPort)])
+    expect(names(withCanvas, false)).toContain('open_in_panel')
+    expect(names(withCanvas, true)).not.toContain('open_in_panel')
+    expect(names(new Ports(), false)).not.toContain('open_in_panel')
   })
 
   test('workbench：已安装的工作台返回标识与名称交给界面打开；未安装、与 path 同时给出时失败', async () => {

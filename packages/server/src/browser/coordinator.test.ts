@@ -671,7 +671,6 @@ function browserContext(dir: string, browser: BrowserPort | undefined): ToolCont
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: new Ports(browser ? [provide(BrowserPort, browser)] : []).get,

@@ -162,6 +162,6 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
   } finally {
     await session.dispose()
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
 }, 20_000)

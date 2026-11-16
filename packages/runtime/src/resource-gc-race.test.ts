@@ -120,7 +120,7 @@ test('活跃写入期间另一个进程执行回收：等待后取得写锁，�
     QY_RACE_MS: '1200',
   })
   const [a, b] = await Promise.all([collect(lander), collect(collector)])
-  gate.stop()
+  await gate.stop()
 
   expect({ land: a.exitCode, landErr: a.err, gc: b.exitCode, gcErr: b.err }).toEqual({
     land: 0,
@@ -186,7 +186,7 @@ test('正文写入持锁期间，另一进程等待后在 busy_timeout 内完成
     QY_RACE_CONV: conv.id,
   })
   const [a, b] = await Promise.all([collect(lander), collect(writer)])
-  gate.stop()
+  await gate.stop()
 
   expect({ land: a.exitCode, landErr: a.err, write: b.exitCode, writeErr: b.err }).toEqual({
     land: 0,

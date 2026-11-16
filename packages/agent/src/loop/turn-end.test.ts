@@ -79,7 +79,7 @@ describe('输出被截断时不执行工具', () => {
           if (ev.type === 'run.finished') stopReason = ev.stopReason
         }
       } finally {
-        fault.stop()
+        await fault.stop()
       }
 
       // 注册表中有 `echo`，参数校验也能通过（没有必填项）。阻止执行的只有终止原因本身。

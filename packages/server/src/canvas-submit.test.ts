@@ -104,7 +104,7 @@ for (const kind of Object.keys(models) as (keyof typeof models)[]) {
     } finally {
       release()
       await svc.stop()
-      server.stop(true)
+      await server.stop(true)
     }
   })
 }

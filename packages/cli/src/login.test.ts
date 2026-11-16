@@ -47,8 +47,8 @@ beforeAll(() => {
   process.env.QYWORK_CLOUD = origin
 })
 
-afterAll(() => {
-  server.stop(true)
+afterAll(async () => {
+  await server.stop(true)
   if (previous === undefined) delete process.env.QYWORK_CLOUD
   else process.env.QYWORK_CLOUD = previous
 })

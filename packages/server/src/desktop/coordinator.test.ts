@@ -5,7 +5,7 @@
  * 控件短编号的发放规则（按身份跨观察稳定、不复用、弱身份、上限淘汰、按窗口隔离）、
  * 与宿主之间双向的 ref 转换、
  * 动作与等待之后按读取范围整份替换观察、窗口标题随整窗读取刷新、等待的四种终态，以及图像采集的取景参数、imageRef 的
- * 换算与四条失效判据、控件包围盒与选择容器选中项名单的透传。同目录的 `bridge.test.ts`
+ * 换算与四条失效判据、控件包围盒与选择容器选中项名单的透传、作用于本应用窗口的动作的拒绝。同目录的 `bridge.test.ts`
  * 覆盖宿主连接与代际配对，`assembly.test.ts` 覆盖端口注入。
  *
  * 使用真实的 `serve()` 与基于真实 WebSocket 的模拟宿主：占用判定与在途调用的收尾必须按固定顺序配合，
@@ -928,7 +928,7 @@ test('动作调用未返回：窗口清单按同一路径登记，新窗口可�
     observationError: 'target_blocked',
     blocking: [
       { ...WINDOW, appeared: false },
-      { ...dialog, app: WINDOW.app, title: '另存为', appeared: true },
+      { ...dialog, app: WINDOW.app, title: '另存为', selfWindow: false, appeared: true },
     ],
   })
   const result = await acting
@@ -956,6 +956,93 @@ test('动作调用未返回：窗口清单按同一路径登记，新窗口可�
   expect((await observing).elements.length).toBeGreaterThan(0)
 })
 
+/** 本应用自身的窗口：宿主在清单中标记归属。 */
+const SELF = {
+  handle: 99,
+  pid: 950,
+  processStartedAt: 1_700_000_000_500,
+  app: 'qywork.exe',
+  title: 'qywork',
+  selfWindow: true,
+}
+
+/**
+ * 作用于本应用窗口的动作在发送任何帧之前拒绝，观察照常；带有「完全访问」的裁决时照常派发。
+ *
+ * 目标在两步之间变为本应用的窗口：第一步对其他窗口的动作使本应用弹出窗口，第二步以它为目标。
+ */
+test('作用于本应用窗口的动作不发帧即拒绝，观察照常；完全访问下照常派发', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+
+  const acting = a.act({ windowId: 'dw_1', ref: 'e5', action: { kind: 'invoke' } })
+  const frame = await host.next()
+  host.reply(frame, {
+    dispatch: 'submitted',
+    observationError: 'target_blocked',
+    blocking: [{ ...SELF, appeared: true }],
+  })
+  const selfId = (await acting).blocking?.[0]?.windowId
+  if (!selfId) throw new Error('回执里没有本应用的窗口')
+
+  const observing = a.observe({ windowId: selfId })
+  const read = await host.next()
+  expect(read.op).toBe('read_tree')
+  host.reply(read, { observation: { ...TREE, window: SELF.handle } })
+  await observing
+
+  const before = host.received.length
+  const actions: { ref?: string; action: DesktopAction }[] = [
+    { ref: 'e5', action: { kind: 'invoke' } },
+    { action: { kind: 'press_key', key: 'enter', modifiers: [] } },
+    { action: { kind: 'type_text', text: 'x' } },
+  ]
+  for (const action of actions) {
+    const refused = a.act({ windowId: selfId, ...action })
+    await expect(refused).rejects.toThrow('该窗口属于本应用，当前权限模式下不能由电脑控制操作')
+    await expect(refused).rejects.toMatchObject({ errorKind: 'permission_denied', executed: false })
+  }
+  expect(host.received.length).toBe(before)
+
+  const allowed = a.act({
+    windowId: selfId,
+    ref: 'e5',
+    action: { kind: 'invoke' },
+    allowSelfWindow: true,
+  })
+  const dispatched = await host.next()
+  expect(dispatched.op).toBe('act')
+  expect(dispatched.target?.window).toBe(SELF.handle)
+  host.reply(dispatched, { dispatch: 'submitted', observation: { ...TREE, window: SELF.handle } })
+  expect((await allowed).dispatch).toBe('submitted')
+})
+
+/** 宿主未给出归属的窗口按本应用的窗口处理：无法判定时不派发动作。 */
+test('窗口清单缺少归属时动作按本应用窗口拒绝', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const { selfWindow: _, ...unmarked } = WINDOW
+  const listing = a.windows()
+  const listFrame = await host.next()
+  host.reply(listFrame, {
+    observation: { kind: 'windows', capturedAt: 1, windows: [unmarked as typeof WINDOW] },
+  })
+  const [listed] = await listing
+  if (!listed) throw new Error('清单为空')
+  const observing = a.observe({ windowId: listed.windowId })
+  const read = await host.next()
+  host.reply(read, treeOf(read))
+  await observing
+  const before = host.received.length
+  await expect(
+    a.act({ windowId: listed.windowId, ref: 'e5', action: { kind: 'invoke' } }),
+  ).rejects.toMatchObject({ errorKind: 'permission_denied' })
+  expect(host.received.length).toBe(before)
+})
+
 /** 动作回执中的清单只覆盖目标进程，据此裁剪会把其他进程的窗口一并作废。 */
 test('动作回执的窗口清单不裁剪其他窗口', async () => {
   const handle = fresh()
@@ -967,6 +1054,7 @@ test('动作回执的窗口清单不裁剪其他窗口', async () => {
     processStartedAt: 1_700_000_000_001,
     app: '别的',
     title: '别的窗口',
+    selfWindow: false,
   }
   const listing = a.windows()
   const listFrame = await host.next()

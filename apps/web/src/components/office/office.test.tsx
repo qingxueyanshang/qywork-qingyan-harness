@@ -1784,7 +1784,7 @@ describe('看板的 Office 行', () => {
       () => host.querySelector('.office-picker') === null && tabNames(host).length > 0,
       () => host.innerHTML.slice(0, 400),
     )
-    expect(store.panelTabs().map((t) => [t.kind, t.title, t.path])).toEqual([
+    expect(store.panelTabs().map((t) => [t.kind, t.title, t.kind === 'file' && t.path])).toEqual([
       ['file', 'b.xlsm', 'books/b.xlsm'],
     ])
     expect(host.querySelector('.tab-pane.active .preview-head')?.textContent).toBe(
@@ -1828,7 +1828,7 @@ describe('看板的 Office 行', () => {
       () => host.querySelector('.office-picker') === null && boundary(host) !== null,
       () => host.innerHTML.slice(0, 400),
     )
-    expect(store.panelTabs().map((t) => [t.kind, t.title, t.path])).toEqual([
+    expect(store.panelTabs().map((t) => [t.kind, t.title, t.kind === 'file' && t.path])).toEqual([
       ['file', 'a.pptx', 'slides/a.pptx'],
     ])
     expect(host.querySelector('.tab-pane.active .slide-view')).not.toBeNull()
@@ -1864,7 +1864,7 @@ describe('看板的 Office 行', () => {
       () => host.querySelector('.office-picker') === null && boundary(host) !== null,
       () => host.innerHTML.slice(0, 400),
     )
-    expect(store.panelTabs().map((t) => [t.kind, t.title, t.path])).toEqual([
+    expect(store.panelTabs().map((t) => [t.kind, t.title, t.kind === 'file' && t.path])).toEqual([
       ['file', 'a.docx', 'docs/a.docx'],
     ])
     expect(host.querySelector('.tab-pane.active .doc-view')).not.toBeNull()

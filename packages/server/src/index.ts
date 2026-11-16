@@ -12,7 +12,7 @@ export { cloudOrigin } from './cloud/origin.ts'
 export { directoryAssets, embeddedAssets, fileSource } from './http-util.ts'
 // 当前平台的系统电源接口；CLI 的 `qy serve` 创建后传给 serve
 export { systemPowerPort } from './power.ts'
-// 桌面外壳异常重启后的单次退出信息；CLI 解析后交给 serve 的恢复路径。
-export { processExitObservationFromEnv } from './process-exit.ts'
+// 桌面外壳异常重启后的单次退出信息；CLI 从标准输入的那一行解析后交给 serve 的恢复路径。
+export { processExitObservationOf } from './process-exit.ts'
 // 服务入口
 export { serve } from './server.ts'

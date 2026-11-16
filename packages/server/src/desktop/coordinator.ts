@@ -25,6 +25,9 @@
  *    宿主重新定位控件；端口交出的是按控件身份分配的短编号 `e<n>`。发往宿主的每一处按
  *    本次观察的对应表转换回完整 ref，宿主回包中的 ref 在 `#absorb` 中替换为短编号。
  *    工具层不做转换，也不另存对应关系。
+ * 7. **本应用自身的窗口只能观察，除非本次调用带有「完全访问」的裁决（`allowSelfWindow`）。**
+ *    归属由宿主在窗口清单中给出（`selfWindow`），动作在发送任何帧之前判定。本应用的权限模式开关
+ *    就在这些窗口上：模型能操作它时，「自动审批」的全部边界都可以由模型自行解除。
  */
 
 import type {
@@ -135,6 +138,16 @@ export class DesktopTargetError extends Error implements DesktopRefusal {
   readonly executed = false as const
 }
 
+/** 动作的目标是本应用自身的窗口，而本次调用未取得「完全访问」的裁决。同样未发送任何帧。 */
+export class DesktopSelfWindowError extends Error implements DesktopRefusal {
+  readonly errorKind = 'permission_denied' as const
+  readonly executed = false as const
+}
+
+const SELF_WINDOW_REFUSAL =
+  '该窗口属于本应用，当前权限模式下不能由电脑控制操作 · ' +
+  '界面状态可用 desktop_observe 读取；需要操作界面本身时用 write_todos 把该项标为 blocked（user_only），由用户改为「完全访问」'
+
 /**
  * 宿主 ref 中的控件身份，作为编号表的键。
  *
@@ -186,6 +199,8 @@ interface KnownWindow {
   processStartedAt: number
   app: string
   title: string
+  /** 宿主判定该窗口属于本应用。 */
+  selfWindow: boolean
   /** 该窗口的控件编号表。窗口身份变化即分配新的 `windowId`，编号表随之重建。 */
   refs: WindowRefs
 }
@@ -752,10 +767,16 @@ export class DesktopCoordinator {
       ref?: string
       at?: DesktopImagePoint
       action: DesktopAction
+      allowSelfWindow?: true
     },
   ): Promise<DesktopActResult> {
     this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
+    // 判定依据是窗口登记时宿主给出的归属。它在派发前仍然成立：宿主派发前核对句柄、pid 与进程启动时刻，
+    // 三项一致即同一个进程，归属不变。归属缺失时按本应用的窗口处理。
+    if (known.selfWindow !== false && input.allowSelfWindow !== true) {
+      throw new DesktopSelfWindowError(SELF_WINDOW_REFUSAL)
+    }
     this.#claim(lease, input.windowId)
     const aimed = this.#aim(lease, known, input)
     const action = this.#hostAction(lease, input.windowId, input.action)

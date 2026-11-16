@@ -224,7 +224,7 @@ describe('Gemini 4 Argon', () => {
       })
       if (usage?.type === 'usage') expect(computeCost(spec, usage.usage)).toBe(0.00184)
     } finally {
-      server.stop(true)
+      await server.stop(true)
     }
   })
 })

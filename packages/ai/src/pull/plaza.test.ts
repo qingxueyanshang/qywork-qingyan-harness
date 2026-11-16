@@ -76,8 +76,8 @@ test('分组倍率不一致、分组开启高峰加价、不按 token 计费时�
 })
 
 const servers: ReturnType<typeof Bun.serve>[] = []
-afterAll(() => {
-  for (const s of servers) s.stop(true)
+afterAll(async () => {
+  for (const s of servers) await s.stop(true)
 })
 
 test('没有计费清单时型号列表中的对话型号带广场价格；广场中没有的型号不带', async () => {

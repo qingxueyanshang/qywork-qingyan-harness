@@ -1,7 +1,29 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 import { batchRemaining, chargeBatchBudget, openBatchBudget, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
-import { htmlToText, NET_POLICY_KEY, parseDuckDuckGo, webFetchTool } from './web.ts'
+import * as netSafety from './net-safety.ts'
+import { htmlToText, parseDuckDuckGo, webFetchTool } from './web.ts'
+
+/**
+ * 访问本文件启动的回环服务时放行 127.0.0.1：SSRF 防护默认拒绝回环地址，web 工具使用默认策略。
+ * 只在 `loopback` 包裹的调用期间放行，其余用例照常经过默认策略。
+ */
+let allowLoopback = false
+const realSafeFetch = netSafety.safeFetch
+mock.module('./net-safety.ts', () => ({
+  ...netSafety,
+  safeFetch: (raw: string, opts: Parameters<typeof realSafeFetch>[1] = {}) =>
+    realSafeFetch(raw, allowLoopback ? { ...opts, allowHosts: ['127.0.0.1'] } : opts),
+}))
+
+async function loopback<T>(fn: () => Promise<T>): Promise<T> {
+  allowLoopback = true
+  try {
+    return await fn()
+  } finally {
+    allowLoopback = false
+  }
+}
 
 function ctx(): ToolContext {
   return {
@@ -12,7 +34,6 @@ function ctx(): ToolContext {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
     port: () => null,
@@ -103,13 +124,13 @@ describe('抓取的用量记账', () => {
     })
     try {
       const c = ctx()
-      // 回环地址经 allowHosts 放行：SSRF 防护默认拒绝 127.0.0.1。
-      c.resources.set(NET_POLICY_KEY, { allowHosts: ['127.0.0.1'] })
       openBatchBudget(c.state, 1000, 25_000)
       expect(chargeBatchBudget(c, 800).ok).toBe(true)
       expect(batchRemaining(c)).toBe(200)
 
-      const r = await webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, c)
+      const r = await loopback(() =>
+        webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, c),
+      )
 
       expect(r.status).toBe('success')
       // 8 KB 默认摘录约 2700 个中文字；余额只有 200 token，摘录必须按余额收窄。
@@ -129,9 +150,9 @@ test('HTTP 失败写明状态码名称，与模型请求和生成的报错写法
     fetch: () => new Response('slow down', { status: 429 }),
   })
   try {
-    const c = ctx()
-    c.resources.set(NET_POLICY_KEY, { allowHosts: ['127.0.0.1'] })
-    const r = await webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, c)
+    const r = await loopback(() =>
+      webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, ctx()),
+    )
     expect(r.status).toBe('failure')
     expect(r.message).toBe('HTTP 429 请求过多')
   } finally {
@@ -179,9 +200,9 @@ describe('抓取内容的完整性', () => {
         }),
     })
     try {
-      const c = ctx()
-      c.resources.set(NET_POLICY_KEY, { allowHosts: ['127.0.0.1'] })
-      const r = await webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, c)
+      const r = await loopback(() =>
+        webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, ctx()),
+      )
       expect(r.status).toBe('success')
       expect(r.message).toContain('只取得开头')
       expect((r.data as { acquisition?: string }).acquisition).toBe('partial')

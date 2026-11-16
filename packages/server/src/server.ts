@@ -326,6 +326,8 @@ export function serve(opts: ServeOptions) {
    *
    * `stop()` 先中止仍在进行的加载（插件启动、MCP 握手），尚未完成的进程随之终止；之后仍等待加载结束
    * 再释放：句柄在加载结束后才取得，连接表也在加载结束时写入，提前释放无法关闭其后写入的进程。
+   * 该信号经 live 持有成为本进程全部扩展加载的期限（`runtime/extensions.ts` 的 `lifetime`）：
+   * 各项目的会话、设置页与修改 MCP 配置后的刷新发起的加载同样随之中止。
    */
   const extensionsLoading = new AbortController()
   const extensionsReady = acquireExtensions(
@@ -373,6 +375,12 @@ export function serve(opts: ServeOptions) {
   if (stale.heldByOthers > 0) {
     log.info('runs', '另有执行记录由其他运行中的进程持有，未回收', {
       heldByOthers: stale.heldByOthers,
+    })
+  }
+  // 这些 step 的内容无法解析，所在会话的历史读取会报告同一列无法解析。
+  if (stale.corruptSteps.length > 0) {
+    log.error('runs', '执行步骤的 payload 不是合法 JSON，回收已跳过其内容', {
+      steps: stale.corruptSteps,
     })
   }
 

@@ -86,7 +86,7 @@ async function withEndpoint<T>(
       bodies,
     )
   } finally {
-    server.stop(true)
+    await server.stop(true)
   }
 }
 

@@ -117,7 +117,6 @@ function ctx(
     contextWindow,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), room, Math.floor(contextWindow / 8)),
     sink: null,
     port: new Ports(cloudSkills ? [provide(CloudSkillPort, cloudSkills)] : []).get,

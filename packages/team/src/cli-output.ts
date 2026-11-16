@@ -8,11 +8,12 @@ import type { CliAgent } from './types.ts'
 type OutputSpec = Pick<CliAgent, 'output' | 'protocol' | 'resultField' | 'sessionField' | 'narrate'>
 
 /**
- * JSONL 的单行上限（字符）。一行是一个事件，工具结果中的图片以 base64 内嵌其中；厂商未给出单个事件的上限，
+ * 解析器保留的输出上限（字符）：jsonl 为单行，text 与 json 为整段输出。jsonl 的一行是一个事件，json 的整段输出
+ * 是一个事件，两者取同一个值。工具结果中的图片以 base64 内嵌在事件中；厂商未给出单个事件的上限，
  * 取 64 Mi 字符，高于本仓库读取图片的上限 10 MiB（`tools` 包 `files.ts` 的 `MAX_IMAGE_BYTES`）base64 后的约 1400 万字符。
- * 超过时该行及之后的输出不再解析，结果报告为失败。
+ * 超过时超出的部分及之后的输出不再解析，结果报告为失败；调用方据 `overflowed` 终止进程。
  */
-const MAX_LINE_CHARS = 64 * 1024 * 1024
+const MAX_HELD_CHARS = 64 * 1024 * 1024
 
 /** 按点分路径取字符串，段尾 [] 遍历数组。 */
 function pick(root: unknown, path: string): string[] {
@@ -33,9 +34,9 @@ function pick(root: unknown, path: string): string[] {
 }
 
 export function createCliOutput(agent: OutputSpec) {
-  /** `text` 与 `json` 格式的全部输出：前者即结果，后者是一份完整的 JSON。 */
+  /** `text` 与 `json` 格式的全部输出，不超过 `MAX_HELD_CHARS`：前者即结果，后者是一份完整的 JSON。 */
   let buffer = ''
-  const lines = createLineFramer(MAX_LINE_CHARS)
+  const lines = createLineFramer(MAX_HELD_CHARS)
   let overflow = ''
   let result = ''
   let session = ''
@@ -120,12 +121,21 @@ export function createCliOutput(agent: OutputSpec) {
       if (agent.output === 'jsonl') {
         const framed = lines.push(chunk)
         if (framed.overflow) {
-          overflow = `CLI 输出中有一行超过 ${MAX_LINE_CHARS} 个字符，该行及之后的输出未解析`
+          overflow = `CLI 输出中有一行超过 ${MAX_HELD_CHARS} 个字符，该行及之后的输出未解析`
         }
         return framed.lines.map(take).join('')
       }
+      if (overflow) return ''
+      if (buffer.length + chunk.length > MAX_HELD_CHARS) {
+        overflow = `CLI 输出超过 ${MAX_HELD_CHARS} 个字符，超出的部分未解析`
+        return ''
+      }
       buffer += chunk
       return agent.output === 'text' ? chunk : ''
+    },
+    /** 输出已超过上限：之后的输出不再解析，调用方应终止进程。 */
+    overflowed(): boolean {
+      return overflow !== ''
     },
     flush(): string {
       if (agent.output === 'jsonl') return take(lines.end())

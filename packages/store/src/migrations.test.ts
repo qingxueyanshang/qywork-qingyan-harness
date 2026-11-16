@@ -1164,7 +1164,12 @@ describe('迁移 35：诊断列结构收敛', () => {
 
       const store = new Store({ path })
       try {
-        expect(recoverStaleRuns(store)).toEqual({ recovered: 0, ambiguous: 0, heldByOthers: 0 })
+        expect(recoverStaleRuns(store)).toEqual({
+          recovered: 0,
+          ambiguous: 0,
+          heldByOthers: 0,
+          corruptSteps: [],
+        })
         expect(
           store.db
             .query<{ name: string }, [number]>('SELECT name FROM _migrations WHERE id = ?')

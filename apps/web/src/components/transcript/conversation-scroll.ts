@@ -22,7 +22,7 @@ export function createConversationScroll(conversationId: () => string | null) {
   let scroller!: HTMLDivElement
   let inner!: HTMLDivElement
   const [pinned, setPinned] = createSignal(true)
-  // 跟随底部时只由本组件定位；回看时让浏览器补偿屏幕外条目完成布局后的高度变化。
+  // 跟随底部时只经 `writeTop` 定位；回看时让浏览器补偿屏幕外条目完成布局后的高度变化。
   createEffect(() => {
     if (scroller) scroller.style.overflowAnchor = pinned() ? 'none' : 'auto'
   })
@@ -36,13 +36,13 @@ export function createConversationScroll(conversationId: () => string | null) {
    * 在 `touchstart` 复位，使点击展开 `<details>` 引起的滚动不被视为用户滚动。
    */
   let touchScroll = false
-  /** 最近一次已知的 scrollTop：上一个 scroll 事件中的值，或本组件写入后的值。用于判定滚动方向。 */
+  /** 最近一次已知的 scrollTop：上一个 scroll 事件中的值，或经 `writeTop` 写入后的值。用于判定滚动方向。 */
   let lastTop = -1
   /**
-   * 本组件最近一次写入的 scrollTop，取写入后重新读取的值；`-1` 表示尚未写入。
+   * `writeTop` 最近一次写入的 scrollTop，取写入后重新读取的值；`-1` 表示尚未写入。
    *
    * 必须在写入后重新读取：浏览器把写入值限制在 `scrollHeight - clientHeight` 以内，
-   * 记录未经限制的值时，`onScroll` 中「本次滚动由本组件写入」的判定永远不成立。
+   * 记录未经限制的值时，`onScroll` 中「本次滚动由 `writeTop` 写入」的判定永远不成立。
    */
   let followTop = -1
 
@@ -86,13 +86,13 @@ export function createConversationScroll(conversationId: () => string | null) {
    * 不要用 `position: sticky` 固定读数条：被固定的只有读数条，滚动位置仍距底部
    * 两百多像素，正文仍不可见，跳动变为每次内容变矮时回弹一次。
    *
-   * 关闭跟随须同时满足：有手势来源、scrollTop 不是本组件写入的值、且比上一次已知的值小。
+   * 关闭跟随须同时满足：有手势来源、scrollTop 不是 `writeTop` 写入的值、且比上一次已知的值小。
    * 不要只按 `gap > 2` 关闭：scroll 事件晚于写入一帧派发，其间新内容使 scrollHeight 增加，
-   * 本组件写入的那次 scroll 读到的 `gap` 已大于 2，而 scrollTop 没有变化。
-   * 本组件写入派发的 scroll 不消耗 `scrollIntent`，否则手势自身的 scroll 到达时已没有意图标记，
+   * `writeTop` 写入后派发的那次 scroll 读到的 `gap` 已大于 2，而 scrollTop 没有变化。
+   * `writeTop` 写入派发的 scroll 不消耗 `scrollIntent`，否则手势自身的 scroll 到达时已没有意图标记，
    * 下一次高度变化把视口写回底部。
    *
-   * `followTop` 用于识别本组件自身的写入；用户恰好滚动回该位置时以手势为准，不能
+   * `followTop` 用于识别 `writeTop` 的写入；用户恰好滚动回该位置时以手势为准，不能
    * 因数值相等而漏掉重新跟随底部。2px 容差仅用于吸收小数像素。
    */
   const onScroll = () => {
@@ -145,7 +145,7 @@ export function createConversationScroll(conversationId: () => string | null) {
    * 该条尚未加载时逐页加载更早的记录，直到它出现在会话流中；加载失败或已到最早一页仍未出现时不滚动。
    *
    * 位移用 `REVEAL_MS` 的减速动画完成，逐帧经 `writeTop` 写入：不要改用 `scrollTo({ behavior: 'smooth' })`，
-   * 浏览器的平滑滚动派发的 scroll 事件不是本组件写入的值，`onScroll` 无法把它与用户滚动区分。
+   * 浏览器的平滑滚动派发的 scroll 事件不是 `writeTop` 写入的值，`onScroll` 无法把它与用户滚动区分。
    *
    * 目标位置每帧重新读取：屏幕外的条目按占位高度参与布局，进入视口后高度改为实际值，
    * 起始时算出的目标会过期。动画结束后的下一帧再定位一次，原因相同。

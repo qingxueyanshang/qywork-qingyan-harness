@@ -395,24 +395,25 @@ export class CanvasDocs {
           ? n.versions.filter((v) => v.id === n.current).map((v) => v.path)
           : n.clips.map((c) => c.path),
     )
-    const images = new Map<string, string[]>()
-    await Promise.all(
-      shown
-        .filter((p) => canvasFileKind(p) === 'art')
-        .map(async (page) => {
-          const html = await readFile(join(workspaceRoot, page), 'utf8').catch(() => '')
-          images.set(
-            page,
-            artImageRefs(html).flatMap((ref) => resolveArtRef(page, ref) ?? []),
-          )
-        }),
+    // 并行读取的结果按卡片顺序收集，不在完成时写入：完成先后不定，同一份画布两次读取的键序会不同。
+    const images = new Map(
+      await Promise.all(
+        shown
+          .filter((p) => canvasFileKind(p) === 'art')
+          .map(async (page) => {
+            const html = await readFile(join(workspaceRoot, page), 'utf8').catch(() => '')
+            const refs = artImageRefs(html).flatMap((ref) => resolveArtRef(page, ref) ?? [])
+            return [page, refs] as const
+          }),
+      ),
     )
-    const revisions: Record<string, string> = {}
-    await Promise.all(
-      [...new Set([...shown, ...[...images.values()].flat()])].map(async (p) => {
-        const s = await stat(join(workspaceRoot, p)).catch(() => null)
-        revisions[p] = s?.isFile() ? String(s.mtimeMs) : ''
-      }),
+    const revisions: Record<string, string> = Object.fromEntries(
+      await Promise.all(
+        [...new Set([...shown, ...[...images.values()].flat()])].map(async (p) => {
+          const s = await stat(join(workspaceRoot, p)).catch(() => null)
+          return [p, s?.isFile() ? String(s.mtimeMs) : ''] as const
+        }),
+      ),
     )
     for (const [page, refs] of images)
       revisions[page] = [revisions[page], ...refs.map((p) => revisions[p])].join('|')

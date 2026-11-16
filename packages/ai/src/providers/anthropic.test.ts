@@ -784,6 +784,22 @@ describe('缓存写入的档位', () => {
     expect(overTotal.cacheWrite1hTokens).toBe(600)
   })
 
+  /** 原始失败形状：一档为数值、另一档为字符串时相加得到字符串拼接结果（`700 + "300"` 为 `"700300"`）。 */
+  test('分档值只接受数值，字符串分档不参与合计', async () => {
+    const usage = await usageOf(
+      textTurn(
+        {
+          input_tokens: 10,
+          output_tokens: 0,
+          cache_creation: { ephemeral_5m_input_tokens: '300', ephemeral_1h_input_tokens: 700 },
+        },
+        { output_tokens: 5 },
+      ),
+    )
+    expect(usage.cacheWriteTokens).toBe(700)
+    expect(usage.cacheWrite1hTokens).toBe(700)
+  })
+
   /** 原始失败形状：usage 为空对象时记为 provider 回报，账本把全部为 0 的用量当作真实值。 */
   test('usage 为空对象或字段不是数值时保持未回报', async () => {
     for (const empty of [{}, { input_tokens: '10', output_tokens: null }]) {

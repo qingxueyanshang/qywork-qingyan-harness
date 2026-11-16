@@ -1,4 +1,7 @@
-/** 覆盖 git/source/apply/handoff：真实 Git 下载与快进、目录保护、管理接口和退出前后交接。 */
+/**
+ * 覆盖 git/source/apply/handoff：真实 Git 下载与快进、目录保护、管理接口和退出前后交接
+ * （令牌经标准输入交给更新程序与重新启动的开发脚本，更新程序启动的 git 不继承）。
+ */
 import { expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -33,7 +36,8 @@ async function fixture() {
     join(remote, 'scripts', 'dev.ts'),
     // 原子发布回执，文件存在才表示内容完整，不能读取写入中的 JSON。
     "import { rename } from 'node:fs/promises'\n" +
-      "await Bun.write('.tmp/restarted.json.part', JSON.stringify(process.argv.slice(2)))\n" +
+      'const token = (await Bun.stdin.text()).trim()\n' +
+      "await Bun.write('.tmp/restarted.json.part', JSON.stringify({ argv: process.argv.slice(2), token, port: process.env.QYWORK_PORT ?? null }))\n" +
       "await rename('.tmp/restarted.json.part', '.tmp/restarted.json')\n",
   )
   const install = Bun.spawn([process.execPath, 'install'], {
@@ -113,11 +117,16 @@ for (const mode of ['web', 'desktop'] as const) {
       import { handoffSourceUpdate } from ${JSON.stringify(join(import.meta.dir, 'handoff.ts'))}
       import { git } from ${JSON.stringify(join(import.meta.dir, 'git.ts'))}
       const request = ${JSON.stringify({ root, head, target, mode })}
-      await handoffSourceUpdate({ ...request, parentPid: process.pid }, {})
+      await handoffSourceUpdate({ ...request, parentPid: process.pid }, { token: 'handoff-secret', port: 7799 })
       await Bun.sleep(300)
       if (await git(request.root, ['rev-parse', 'HEAD']) !== request.head) throw new Error('退出前源码已改变')
       process.exit(0)
     `,
+    )
+    // 更新程序合并源码时执行的钩子记录它取得的令牌：令牌只交给重新启动的开发脚本，git 不得继承。
+    await writeFile(
+      join(root, '.git', 'hooks', 'post-merge'),
+      '#!/bin/sh\nprintf "%s" "$QYWORK_TOKEN" > .tmp/hook-token.txt\n',
     )
     const proc = Bun.spawn([process.execPath, parent], { stdout: 'pipe', stderr: 'pipe' })
     const error = await new Response(proc.stderr).text()
@@ -125,7 +134,12 @@ for (const mode of ['web', 'desktop'] as const) {
     const restarted = join(root, '.tmp', 'restarted.json')
     const deadline = Date.now() + 10_000
     while (!(await Bun.file(restarted).exists()) && Date.now() < deadline) await Bun.sleep(50)
-    expect(await Bun.file(restarted).json()).toEqual(mode === 'web' ? ['--web', '--no-open'] : [])
+    expect(await Bun.file(restarted).json()).toEqual({
+      argv: mode === 'web' ? ['--token-stdin', '--web', '--no-open'] : ['--token-stdin'],
+      token: 'handoff-secret',
+      port: '7799',
+    })
+    expect(await readFile(join(root, '.tmp', 'hook-token.txt'), 'utf8')).toBe('')
     expect(await git(root, ['rev-parse', 'HEAD'])).toBe(target)
     expect((await Bun.file(join(root, '.tmp/update/result.json')).json()).failure).toBe(null)
   }, 20_000)

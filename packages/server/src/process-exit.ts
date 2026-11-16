@@ -1,31 +1,34 @@
-/** 桌面外壳把上一个 qy serve 进程的终态交给恢复进程时使用的环境变量协议，只含必要字段。 */
+/**
+ * 桌面外壳把上一个 qy serve 进程的终态交给恢复进程时使用的字段，只含必要字段。
+ * 它随凭据经标准输入的那一行 JSON 交付（`previousExit`），不经环境变量：其中的 stderr 尾部
+ * 可能含有任意输出，环境块由 serve 启动的全部子进程继承。
+ */
 
 import type { ProcessExitObservation } from '@qywork/store'
 import { redactSecrets } from '@qywork/tools'
 
-const KINDS = new Set<ProcessExitObservation['exitKind']>(['terminated', 'output_channel_closed'])
+const KINDS = new Set<unknown>(['terminated', 'output_channel_closed'])
 
-function finiteNumber(value: string | undefined): number | null {
-  if (value === undefined || value.trim() === '') return null
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-export function processExitObservationFromEnv(
-  env: Record<string, string | undefined>,
-): ProcessExitObservation | undefined {
-  const kind = env.QYWORK_PREVIOUS_EXIT_KIND
-  const observedAt = finiteNumber(env.QYWORK_PREVIOUS_EXIT_AT_MS)
-  if (!KINDS.has(kind as ProcessExitObservation['exitKind']) || observedAt === null) {
-    return undefined
-  }
+/**
+ * 解析 `previousExit`：`{ kind, observedAtMs, code, signal, stderrTail }`。
+ * 缺少可信的种类或时间时返回 undefined：不能把普通启动记为崩溃恢复。
+ */
+export function processExitObservationOf(value: unknown): ProcessExitObservation | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const fields = value as Record<string, unknown>
+  const observedAt = finiteNumber(fields.observedAtMs)
+  if (!KINDS.has(fields.kind) || observedAt === null) return undefined
   return {
     source: 'desktop_sidecar',
     observedAt,
-    exitKind: kind as ProcessExitObservation['exitKind'],
-    exitCode: finiteNumber(env.QYWORK_PREVIOUS_EXIT_CODE),
-    signal: finiteNumber(env.QYWORK_PREVIOUS_EXIT_SIGNAL),
-    stderrTail: env.QYWORK_PREVIOUS_STDERR_TAIL?.trim() || null,
+    exitKind: fields.kind as ProcessExitObservation['exitKind'],
+    exitCode: finiteNumber(fields.code),
+    signal: finiteNumber(fields.signal),
+    stderrTail: typeof fields.stderrTail === 'string' ? fields.stderrTail.trim() || null : null,
   }
 }
 

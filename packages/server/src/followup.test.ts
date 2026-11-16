@@ -40,7 +40,7 @@ import {
 } from '@qywork/store'
 import { EventBus } from './bus.ts'
 import { handleCommand } from './commands.ts'
-import { startRun, submitMessage } from './run-control.ts'
+import { compactConversation, resumeGoal, startRun, submitMessage } from './run-control.ts'
 import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
 
@@ -192,7 +192,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  provider.stop(true)
+  await provider.stop(true)
   store?.close()
   content?.close()
   await rm(dir, { recursive: true, force: true }).catch(() => {})
@@ -1058,6 +1058,40 @@ describe('手动压缩占用会话', () => {
     } finally {
       held.release()
       await compacting
+      await idle(cv)
+    }
+  }, 30_000)
+
+  /**
+   * 原始失败形状：目标自动继续到期时会话正被手动压缩占用，`startRun` 占位失败、该轮被丢弃；
+   * 压缩收尾不处理目标，目标保持 active 与自动继续标记，此后不再发起任何一轮。
+   */
+  test('压缩占用期间到期的目标自动继续，在压缩正常结束后发起', async () => {
+    const cv = longConversation()
+    const seeded = createGoal(store, { conversationId: cv, objective: '把活干完' })
+    if (!seeded.ok) throw new Error(seeded.message)
+    const held = gate(textTurn('已整理材料，继续核对。'))
+    script = [held.turn, ok(textTurn('目标这一轮完了。'))]
+    const sock = socket()
+    let compacting: Promise<unknown> = Promise.resolve()
+    try {
+      // 自动继续经 setTimeout(0) 排队，压缩在同一个同步块中占用会话：到期时会话忙碌。
+      expect(resumeGoal(cv, deps())).toEqual({ ok: true })
+      compacting = compactConversation(cv, { ...deps(), ws: sock.ws })
+      await until(() => bodies.length === 1, '摘要请求到达', 10_000)
+      await settle()
+      expect(bodies).toHaveLength(1)
+
+      held.release()
+      await compacting
+      const started = await waitFor((e) => e.type === 'run.started')
+      expect(started?.type === 'run.started' && started.userMessage?.content).toStartWith(
+        '[自动继续]',
+      )
+    } finally {
+      held.release()
+      await compacting
+      runs.disarm(cv)
       await idle(cv)
     }
   }, 30_000)

@@ -13,27 +13,9 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import {
-  auditFrozenText,
-  DelegatePort,
-  type PortKey,
-  Ports,
-  provide,
-  ToolRegistry,
-} from '@qywork/agent'
+import { auditFrozenText, ToolRegistry } from '@qywork/agent'
 import { TODO_BLOCKERS, TODO_FAILURES } from '@qywork/core'
-import {
-  BrowserPort,
-  CanvasPort,
-  CommandPort,
-  DesktopPort,
-  McpConfigPort,
-  OfficePort,
-  PersonalizationPort,
-  PetPort,
-  PluginPort,
-  registerBuiltinTools,
-} from '@qywork/tools'
+import { registerToolCatalog } from '@qywork/tools'
 import { buildSystemPrompt, buildTailNotes, outputLimitNote } from './prompt.ts'
 
 const base = { workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' as const }
@@ -500,26 +482,7 @@ describe('完成、停下等待用户与执行失败的判定', () => {
  */
 describe('工具说明不另写收尾方式', () => {
   const registry = new ToolRegistry()
-  // 只判定是否注册，不调用端口。
-  const listed = (key: PortKey<unknown>) => provide(key, {})
-  registerBuiltinTools(
-    registry,
-    new Ports(
-      [
-        DelegatePort,
-        CommandPort,
-        PluginPort,
-        McpConfigPort,
-        BrowserPort,
-        DesktopPort,
-        CanvasPort,
-        PersonalizationPort,
-        PetPort,
-        OfficePort,
-      ].map(listed),
-    ),
-    { panel: true, media: ['image', 'video', 'audio'] },
-  )
+  registerToolCatalog(registry, ['image', 'video', 'audio'])
   const specs = registry.list()
   const prompt = buildSystemPrompt(new Set(specs.map((s) => s.name)))
   const texts = [
@@ -604,6 +567,18 @@ describe('能力段', () => {
     expect(prompt).toContain('不得仅因结果未确认而重复执行可能产生副作用的动作')
     expect(prompt).not.toContain('不必再观察一次')
     expect(prompt).not.toContain('先新建标签页')
+  })
+
+  /**
+   * 原始失败形状：「自动审批」下模型可以用电脑控制点击 qywork 输入区的权限模式开关，把会话切换为完全访问。
+   * 该行只写定义：自身窗口在两种模式下各自可做什么，不写禁令。
+   */
+  test('桌面一行定义 qywork 自身窗口在两种权限模式下的可操作范围', () => {
+    const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows']))
+    expect(prompt).toContain(
+      'qywork 自身的窗口在「自动审批」模式下可观察、不可操作，在「完全访问」模式下可观察、可操作。',
+    )
+    expect(prompt).not.toContain('观察与操作 qywork 窗口')
   })
 
   /**

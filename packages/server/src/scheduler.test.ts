@@ -80,7 +80,7 @@ afterAll(async () => {
   // 同一进程中还运行其他测试文件，不恢复 QYWORK_HOME 会影响它们。
   if (prevHome === undefined) delete process.env.QYWORK_HOME
   else process.env.QYWORK_HOME = prevHome
-  provider.stop(true)
+  await provider.stop(true)
   await rm(root, { recursive: true, force: true }).catch(() => {})
   await rm(home, { recursive: true, force: true }).catch(() => {})
 })
@@ -141,7 +141,6 @@ async function listViaTool(store: Store, workspaceRoot: string): Promise<string>
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: new Ports([

@@ -154,6 +154,7 @@ const WINDOW: Record<keyof DesktopWindow, true> = {
   processStartedAt: true,
   app: true,
   title: true,
+  selfWindow: true,
 }
 const BLOCKING: Record<keyof DesktopBlockingWindow, true> = { ...WINDOW, appeared: true }
 const TREE: Record<keyof DesktopTreeBody, true> = {

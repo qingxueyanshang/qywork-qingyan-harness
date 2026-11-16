@@ -263,7 +263,7 @@ export type DesktopWaitCondition = DesktopWaitUntil
  * 将它们标为未执行会使调用方重发一次可能已经生效的操作。
  */
 export interface DesktopRefusal {
-  errorKind: 'desktop_unavailable' | 'invalid_argument'
+  errorKind: 'desktop_unavailable' | 'invalid_argument' | 'permission_denied'
   executed: false
 }
 
@@ -341,6 +341,11 @@ export interface DesktopPort {
     /** 图像点目标。只有指针动作接受。 */
     at?: DesktopImagePoint
     action: DesktopAction
+    /**
+     * 本次调用带有「完全访问」的裁决。缺省时作用于本应用自身窗口的动作以 `permission_denied` 拒绝，
+     * 不发送任何帧；观察类方法不受此限。
+     */
+    allowSelfWindow?: true
   }): Promise<DesktopActResult>
   /**
    * 读取一个控件的文档文本与选区。只读，不改变状态，也不设置焦点。

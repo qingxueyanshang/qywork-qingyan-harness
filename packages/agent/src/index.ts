@@ -87,6 +87,8 @@ export { createSummaryTrace } from './loop/summary-trace.ts'
 export type { CompactionPort, CompactionRunInput, LoopPersistence } from './loop/types.ts'
 // 视频的时长与画面尺寸：tools 的读取、runtime 的附件与压缩估算、server 的画布尺寸共用同一读取函数；媒体播放时长见 `mediaDurationOfFile`
 export { mediaDurationOfFile } from './media-duration.ts'
+// 凭证文件的判定：命令裁决按命令全文、tools 的路径解析按真实路径调用同一个函数
+export { CREDENTIAL_FILES, mentionsCredentialFile } from './paths/credentials.ts'
 // 路径位置的判定：命令裁决与 tools 的路径解析共用；server 的画布按同一判据判定文件是否位于工作区内
 export { isOutsideRelative, placePath } from './paths/place.ts'
 // run_command 的拒绝清单：runtime 的 Session 在放行之前调用它裁决

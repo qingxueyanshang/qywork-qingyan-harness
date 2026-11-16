@@ -384,7 +384,7 @@ test.each([false, true])(
         usage: { reasoningTokens: 0 },
       })
     } finally {
-      endpoint.stop(true)
+      await endpoint.stop(true)
     }
   },
 )

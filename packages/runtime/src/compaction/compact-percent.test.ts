@@ -85,7 +85,7 @@ async function harness(compactPercent: unknown) {
   const close = async () => {
     await Promise.all(sessions.map((session) => session.dispose()))
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
   return { store, cfg, ask, close }
 }

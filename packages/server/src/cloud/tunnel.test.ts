@@ -167,8 +167,8 @@ class FakeCloud {
     return this.sid++
   }
 
-  stop(): void {
-    this.server.stop(true)
+  stop(): Promise<void> {
+    return this.server.stop(true)
   }
 }
 
@@ -240,9 +240,9 @@ describe('隧道客户端', () => {
     received = []
   })
 
-  afterAll(() => {
-    cloud.stop()
-    local.stop(true)
+  afterAll(async () => {
+    await cloud.stop()
+    await local.stop(true)
   })
 
   test('握手携带设备密钥与协议版本，welcome 后状态为在线', async () => {
@@ -319,7 +319,7 @@ describe('隧道客户端', () => {
       await Bun.sleep(100)
       expect(hits).toEqual([])
     } finally {
-      other.stop(true)
+      await other.stop(true)
     }
   })
 
@@ -428,7 +428,7 @@ describe('远程访问经 serve() 装配', () => {
     await handle?.stop()
     store?.close()
     content?.close()
-    cloud.stop()
+    await cloud.stop()
     if (previousCloud === undefined) delete process.env.QYWORK_CLOUD
     else process.env.QYWORK_CLOUD = previousCloud
     if (dir) await rm(dir, { recursive: true, force: true })

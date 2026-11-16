@@ -140,7 +140,7 @@ test('同一信封的两轮只写入一份明细，逐项与实际发送的工�
   } finally {
     await Promise.all(sessions.map((session) => session.dispose()))
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
 })
 

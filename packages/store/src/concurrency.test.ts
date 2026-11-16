@@ -94,7 +94,7 @@ async function race(mode: string, dbPath: string, arg = '', env: Record<string, 
       }),
     )
   } finally {
-    gate.stop()
+    await gate.stop()
   }
 }
 

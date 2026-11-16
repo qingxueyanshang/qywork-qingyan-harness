@@ -73,6 +73,8 @@ windows = { version = "0.61", features = [
   "Win32_System_JobObjects",
   # 强制终止 worker 之后，为其按下未释放的键盘键与鼠标键补发释放事件，见 desktop/input.rs。
   "Win32_UI_Input_KeyboardAndMouse",
+  # 判定 WebView2 进程是否由本进程启动（进程快照中的父进程），见 desktop/identity.rs。
+  "Win32_System_Diagnostics_ToolHelp",
 ] }
 # 逐下载钩子绑定的是 `DownloadStarting` 提供的 `ICoreWebView2DownloadOperation` 本身，
 # 见 browser/webview2.rs。版本与 tauri 传递依赖中的版本一致（0.38），否则 `PlatformWebview::controller()`

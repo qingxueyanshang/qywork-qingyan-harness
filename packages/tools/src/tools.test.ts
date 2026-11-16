@@ -13,6 +13,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
 import {
+  decideCommand,
   openBatchBudget,
   Ports,
   provide,
@@ -23,13 +24,16 @@ import {
 import { lookupModel } from '@qywork/ai'
 import { FileReadPort } from './files/port.ts'
 import { registerBuiltinTools } from './index.ts'
+import { openInPanelTool } from './panel.ts'
 import {
+  CredentialPathError,
   displayPath,
   isProtectedPath,
   normalizeAdditionalDirectories,
   PathEscapeError,
   PathNotFoundError,
   ProtectedPathError,
+  resolveCommandDir,
   resolveInWorkspace,
   resolveWritablePath,
   rootsOf,
@@ -93,7 +97,6 @@ function ctx(root: string, approve = true): ToolContext {
     contextWindow: 200_000,
     density: videoDensity(false),
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
     port: () => null,
@@ -139,16 +142,21 @@ async function withoutBash<T>(fn: () => T | Promise<T>): Promise<T> {
 /**
  * 越界被拒绝后，模型收到的结果决定它下一步的行为。
  *
- * 复现的原始失败：读取桌面上某个项目被拒绝，结果只有一句「工具 read_file
+ * 复现的原始失败：一次越界的路径参数被拒绝，结果只有一句「工具 read_file
  * 执行出错: 路径越界」，模型将其当作偶发故障，转而用 `run_command` 绕过
  * （shell 只限定 cwd，命令正文中的 `cd` 可以离开工作区），全程未告知用户。
  */
 describe('越界拒绝是判定，不是崩溃', () => {
+  // 家目录中、工作区之外的写入目标在自动审批下越界。解析只做判定，不创建文件。
   const denial = async () => {
     const root = await workspace()
     return registry().execute(
-      'read_file',
-      { path: join(tmpdir(), 'somewhere-else', 'README.md') },
+      'write_file',
+      {
+        path: join(homedir(), `qywork-absent-${process.pid}`, 'README.md'),
+        mode: 'create',
+        content: 'x',
+      },
       ctx(root),
     )
   }
@@ -375,6 +383,26 @@ describe('额外根目录', () => {
   })
 })
 
+/**
+ * 原始失败形状：工作区根为目录联接或符号链接时，工具回执中工作区内的文件显示为绝对路径，
+ * `open_in_panel` 随之判定该文件不在工作区中。
+ */
+describe('工作区根为目录联接', () => {
+  test('回执中的路径相对工作区根，open_in_panel 可以打开工作区中的文件', async () => {
+    const real = await realpath(await workspace())
+    const base = await mkdtemp(join(tmpdir(), 'qywork-linked-root-'))
+    const root = join(base, 'ws')
+    await symlink(real, root, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(displayPath(root, join(real, 'src', 'main.ts'))).toBe('src/main.ts')
+    expect(displayPath(root, join(root, 'src', 'main.ts'))).toBe('src/main.ts')
+    expect(displayPath(root, real)).toBe('.')
+    const listed = await registry().execute('list_dir', { path: 'src' }, ctx(root))
+    expect(listed.message).toStartWith('src：')
+    const opened = await openInPanelTool.fn({ path: 'a.txt' }, ctx(root))
+    expect(opened).toMatchObject({ status: 'success', data: { path: 'a.txt' } })
+  })
+})
+
 describe('只读根目录', () => {
   async function withSkills(): Promise<{ root: string; skills: string }> {
     const root = await workspace()
@@ -384,10 +412,10 @@ describe('只读根目录', () => {
   }
 
   /**
-   * 写入是否放行取决于该目录是否位于家目录中（见「写入范围」），与它是否为只读根目录无关：
+   * 写入与命令工作目录是否放行取决于该目录是否位于家目录中（见「写入范围」），与它是否为只读根目录无关：
    * 只读根目录不扩大写入范围。
    */
-  test('读取放行；写入的结论与没有只读根目录时相同；命令工作目录拒绝', async () => {
+  test('读取放行；写入与命令工作目录的结论与没有只读根目录时相同', async () => {
     const { root, skills } = await withSkills()
     const c = { ...ctx(root), readOnlyRoots: [skills] }
     await expect(
@@ -398,10 +426,13 @@ describe('只读根目录', () => {
         () => 'resolved',
         (e: Error) => e.name,
       )
-    expect(await outcome(rootsOf(c))).toBe(await outcome(rootsOf(ctx(root))))
-    const out = await registry().execute('run_command', { command: 'echo x', cwd: skills }, c)
-    expect(out.status).toBe('failure')
-    expect(out.executed).toBe(false)
+    const writes = await outcome(rootsOf(ctx(root)))
+    expect(await outcome(rootsOf(c))).toBe(writes)
+    const dir = await resolveCommandDir(rootsOf(c), skills).then(
+      () => 'resolved',
+      (e: Error) => e.name,
+    )
+    expect(dir).toBe(writes)
   })
 
   test('只读根中指向界外的软链不放行', async () => {
@@ -426,13 +457,14 @@ describe('只读根目录', () => {
 })
 
 /**
- * 子进程中经工具注册表依次执行 `QYWORK_SCOPE_CASE.calls`，输出每次调用的状态与错误类别。
+ * 子进程中经工具注册表依次执行 `QYWORK_SCOPE_CASE.calls`，输出每次调用的状态、错误类别、回执与 grep 的命中条数，
+ * 以及本机内核沙箱是否生效。
  * 家目录由父进程经环境变量设定：Linux 上的 Bun 在启动时读取 HOME，运行中修改环境变量不生效。
  */
 const SCOPE_CHILD = `
 import { openBatchBudget, Ports, provide, runDensity, ToolRegistry } from '@qywork/agent'
 import { lookupModel } from '@qywork/ai'
-import { MediaPort, registerBuiltinTools } from '@qywork/tools'
+import { detectSandbox, MediaPort, registerBuiltinTools } from '@qywork/tools'
 const { root, calls } = JSON.parse(process.env.QYWORK_SCOPE_CASE)
 const registry = new ToolRegistry()
 registerBuiltinTools(registry, new Ports(), { media: ['image'] })
@@ -447,7 +479,6 @@ const ctx = {
     transmits: { effort: false, video: false },
   }),
   vision: null,
-  resources: new Map(),
   state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
   sink: null,
   port: new Ports([
@@ -460,13 +491,44 @@ const ctx = {
 const out = []
 for (const [name, args] of calls) {
   const r = await registry.execute(name, args, ctx)
-  out.push({ status: r.status, errorKind: r.errorKind ?? null })
+  const matches = Array.isArray(r.data?.matches) ? r.data.matches : null
+  out.push({ status: r.status, errorKind: r.errorKind ?? null, message: r.message, matches })
 }
-console.log(JSON.stringify(out))
+console.log(JSON.stringify({ sandbox: detectSandbox().active, out }))
 `
 
+interface ScopeResult {
+  status: string
+  errorKind: string | null
+  message: string
+  matches: string[] | null
+}
+
+/** 以 `home` 为家目录启动子进程执行 `calls`，不读取或修改用户真实的家目录。 */
+function runScope(
+  home: string,
+  root: string,
+  calls: unknown[],
+): { sandbox: boolean; out: ScopeResult[] } {
+  const child = Bun.spawnSync([process.execPath, '-e', SCOPE_CHILD], {
+    cwd: join(import.meta.dir, '..', '..', '..'),
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      QYWORK_SCOPE_CASE: JSON.stringify({ root, calls }),
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  if (child.exitCode !== 0) throw new Error(child.stderr.toString())
+  return JSON.parse(child.stdout.toString())
+}
+
+const outcome = ({ status, errorKind }: ScopeResult) => ({ status, errorKind })
+
 /**
- * 自动审批下的写入范围与命令裁决相同：根目录之外、且不在家目录或系统目录中的位置可写；读取仍限于根目录。
+ * 自动审批下的写入范围与命令裁决相同：根目录之外、且不在家目录或系统目录中的位置可写。
  *
  * 原始失败形状：文件工具拒绝一切根目录之外的写入，而 `run_command` 放行家目录与系统目录之外的写入，
  * 同一位置两侧结论不同；名称以两个点开头的子项（`..cache`）被判为越界。
@@ -475,26 +537,26 @@ describe('写入范围', () => {
   // 文件系统根目录下不存在的目录：在任何机器上都不位于家目录或系统目录中。解析只做判定，不创建文件。
   const elsewhere = join(resolve('/'), `qywork-absent-${process.pid}`, 'a.txt')
 
-  test('家目录与系统目录之外的位置可写；读取与服务端直接传入工作区路径的写入仍限于根目录', async () => {
+  test('家目录与系统目录之外的位置可写；服务端直接传入工作区路径的读写仍限于根目录', async () => {
     const root = await workspace()
     await expect(resolveWritablePath(rootsOf(ctx(root)), elsewhere)).resolves.toBe(elsewhere)
-    await expect(resolveInWorkspace(rootsOf(ctx(root)), elsewhere)).rejects.toBeInstanceOf(
-      PathEscapeError,
-    )
     await expect(resolveWritablePath(root, elsewhere)).rejects.toBeInstanceOf(PathEscapeError)
+    await expect(resolveInWorkspace(root, elsewhere)).rejects.toBeInstanceOf(PathEscapeError)
   })
 
   test('家目录中、根目录之外的位置拒绝写入，包括 ~/.qywork', async () => {
     const root = await workspace()
     for (const target of [
       join(homedir(), `qywork-absent-${process.pid}`, 'a.txt'),
-      join(homedir(), '.qywork', 'config.json'),
       join(homedir(), '.qywork', 'mcp-approvals.json'),
     ]) {
       await expect(resolveWritablePath(rootsOf(ctx(root)), target)).rejects.toBeInstanceOf(
         PathEscapeError,
       )
     }
+    await expect(
+      resolveWritablePath(rootsOf(ctx(root)), join(homedir(), '.qywork', 'config.json')),
+    ).rejects.toBeInstanceOf(CredentialPathError)
   })
 
   /**
@@ -511,6 +573,25 @@ describe('写入范围', () => {
     await expect(resolveWritablePath(rootsOf(ctx(root)), besideHome)).resolves.toBe(besideHome)
   })
 
+  /**
+   * `run_command` 的工作目录与写入范围相同，与命令文本中 `cd` 之后相对路径写入的判定一致。
+   * 原始失败形状：`cwd` 参数限于根目录，而命令文本中的 `cd D:/x` 放行。
+   */
+  test('run_command 的工作目录：家目录拒绝，家目录与系统目录之外的位置允许', async () => {
+    const root = await workspace()
+    const other =
+      process.platform === 'win32' ? (process.env.ProgramData ?? 'C:\\ProgramData') : '/usr'
+    const r = registry()
+    const far = await r.execute('run_command', { command: 'echo x', cwd: other }, ctx(root))
+    expect(far.status).toBe('success')
+    const home = await r.execute('run_command', { command: 'echo x', cwd: homedir() }, ctx(root))
+    expect(home).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'path_out_of_workspace',
+    })
+  }, 30_000)
+
   test('名称以两个点开头的子项位于工作区内', async () => {
     const root = await realpath(await workspace())
     const expected = join(root, '..cache', 'a.txt')
@@ -523,7 +604,7 @@ describe('写入范围', () => {
    * `retrieve_media` 一项：产物经写入范围落盘在家目录之外，取回时按同一范围判定其仍在原位置，直接交付。
    * 按读取范围判定时，该产物被判为已移走，记录随之删除。
    */
-  test('write_file 写入家目录之外的位置成功；写入家目录中的位置、经目录链接进入家目录均拒绝；read_file 读取工作区外拒绝；落在家目录之外的生成产物可以取回', async () => {
+  test('write_file 写入家目录之外的位置成功；写入家目录中的位置、经目录链接进入家目录均拒绝；read_file 读取工作区外成功；落在家目录之外的生成产物可以取回', async () => {
     const base = await realpath(await mkdtemp(join(tmpdir(), 'qywork-scope-')))
     const home = join(base, 'home')
     const root = join(home, 'a', 'ws')
@@ -561,26 +642,16 @@ describe('写入范围', () => {
       ['read_file', { path: join(outside, 'a.txt') }],
       ['retrieve_media', { path: record }],
     ]
-    const child = Bun.spawnSync([process.execPath, '-e', SCOPE_CHILD], {
-      cwd: join(import.meta.dir, '..', '..', '..'),
-      env: {
-        ...process.env,
-        HOME: home,
-        USERPROFILE: home,
-        QYWORK_SCOPE_CASE: JSON.stringify({ root, calls }),
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    })
-    if (child.exitCode !== 0) throw new Error(child.stderr.toString())
     const denied = { status: 'failure', errorKind: 'path_out_of_workspace' }
-    expect(JSON.parse(child.stdout.toString())).toEqual([
-      { status: 'success', errorKind: null },
+    const credential = { status: 'failure', errorKind: 'credential_path' }
+    const ok = { status: 'success', errorKind: null }
+    expect(runScope(home, root, calls).out.map(outcome)).toEqual([
+      ok,
       denied,
+      credential,
       denied,
-      denied,
-      denied,
-      { status: 'success', errorKind: null },
+      ok,
+      ok,
     ])
     expect(await readFile(join(outside, 'a.txt'), 'utf8')).toBe('elsewhere')
     // 交付后删除记录，产物保留在原位置。
@@ -591,6 +662,118 @@ describe('写入范围', () => {
     }
     expect(await stat(join(home, '.qywork')).catch(() => null)).toBeNull()
   }, 30_000)
+})
+
+/**
+ * 自动审批下模型工具的读取范围与命令裁决相同：根目录之外的位置可读，凭证文件除外；
+ * 内核沙箱生效的平台上，沙箱屏蔽的凭证目录同样不可读。服务端直接传入工作区路径的读取仍限于根目录。
+ *
+ * 原始失败形状：`read_file` 读取根目录之外的文件被拒，而 `run_command` 的 `cat` 读得到同一文件，
+ * 模型随即改用 shell 读取，同一模式下两套账。
+ */
+describe('读取范围', () => {
+  async function scopeTree() {
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'qywork-read-scope-')))
+    const home = join(base, 'home')
+    const root = join(home, 'a', 'ws')
+    const outside = join(base, 'elsewhere')
+    const qywork = join(home, '.qywork')
+    await mkdir(root, { recursive: true })
+    await mkdir(outside, { recursive: true })
+    await mkdir(qywork, { recursive: true })
+    await mkdir(join(home, '.gnupg'), { recursive: true })
+    await writeFile(join(outside, 'a.txt'), 'elsewhere\n')
+    await writeFile(join(home, 'notes.txt'), 'notes\n')
+    await writeFile(join(qywork, 'config.json'), '{"apiKey":"sk-scope-test"}\n')
+    await writeFile(join(qywork, 'mcp.json'), '{"servers":{"apiKey":"x"}}\n')
+    await writeFile(join(home, '.gnupg', 'pubring.kbx'), 'keyring\n')
+    await symlink(qywork, join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    return { base, home, root, outside, qywork }
+  }
+
+  test('read_file 读取工作区外的普通文件成功；凭证文件经直接路径、.. 写法与目录联接均拒绝，回执不说明文件是否存在；grep 不交出凭证文件的内容', async () => {
+    const { home, root, outside, qywork } = await scopeTree()
+    const calls = [
+      ['read_file', { path: join(outside, 'a.txt') }],
+      ['read_file', { path: join(home, 'notes.txt') }],
+      ['read_file', { path: join(qywork, 'config.json') }],
+      ['read_file', { path: '../../.qywork/config.json' }],
+      ['read_file', { path: 'linked/config.json' }],
+      ['read_file', { path: join(qywork, 'mcp.json') }],
+      ['read_file', { path: join(home, '.ssh', 'id_rsa') }],
+      ['grep', { pattern: 'apiKey', path: qywork }],
+      // 前瞻断言使 rg 以退出码 2 失败，转入内置遍历。
+      ['grep', { pattern: '(?=api)apiKey', path: 'linked' }],
+      ['read_file', { path: join(home, '.gnupg', 'pubring.kbx') }],
+    ]
+    const { sandbox, out } = runScope(home, root, calls)
+    const ok = { status: 'success', errorKind: null }
+    const credential = { status: 'failure', errorKind: 'credential_path' }
+    // 内核沙箱生效时 `~/.qywork` 与 `~/.gnupg` 整个目录被屏蔽，以它们为起点的读取同样拒绝。
+    const masked = sandbox ? credential : ok
+    expect(out.map(outcome)).toEqual([
+      ok,
+      ok,
+      credential,
+      credential,
+      credential,
+      credential,
+      credential,
+      masked,
+      masked,
+      masked,
+    ])
+    // 存在的 config.json 与不存在的 id_rsa 回执只有路径不同。
+    const shape = (r: ScopeResult, attempted: string) => r.message.replace(attempted, '<path>')
+    expect(shape(out[2]!, join(qywork, 'config.json'))).toBe(
+      shape(out[6]!, join(home, '.ssh', 'id_rsa')),
+    )
+    if (!sandbox) {
+      expect(out[7]?.matches).toEqual([])
+      expect(out[8]?.matches).toEqual([])
+    }
+  }, 30_000)
+
+  /**
+   * 两侧对同一组路径的结论逐项一致。命令一侧按命令全文判定，文件工具按解析出的真实路径判定，
+   * 两侧调用同一个凭证判定。路径都写成绝对路径或相对工作区的写法，判定不访问用户真实的家目录。
+   *
+   * 经目录联接指向凭证文件的路径不在表中：命令文本中不出现凭证文件的名称，命令一侧无法据文本判定，
+   * 文件工具按真实路径拒绝（见上一个用例）。
+   */
+  test('文件工具与命令裁决对同一组路径的读取结论一致', async () => {
+    const { home, root, outside, qywork } = await scopeTree()
+    const system =
+      process.platform === 'win32'
+        ? join(resolve('/'), 'Windows', 'win.ini')
+        : join(resolve('/'), 'etc', 'hosts')
+    const rows: [string, 'allow' | 'deny'][] = [
+      [join(outside, 'a.txt'), 'allow'],
+      [join(home, 'notes.txt'), 'allow'],
+      [system, 'allow'],
+      [join(qywork, 'config.json'), 'deny'],
+      [join(qywork, 'mcp.json'), 'deny'],
+      ['../../.qywork/config.json', 'deny'],
+      [join(home, '.ssh', 'id_rsa'), 'deny'],
+      [join(home, '.aws', 'credentials'), 'deny'],
+      ['.npmrc', 'deny'],
+    ]
+    for (const [path, expected] of rows) {
+      const file = await resolveInWorkspace(rootsOf(ctx(root)), path).then(
+        () => 'allow',
+        (e: Error) => (e instanceof CredentialPathError ? 'deny' : e.name),
+      )
+      const command = decideCommand(`cat '${path}'`, { workspaceRoot: root }).kind
+      expect({ path, file, command }).toEqual({ path, file: expected, command: expected })
+    }
+  })
+
+  test('服务端直接传入工作区路径的读取仍限于根目录', async () => {
+    const { root, outside } = await scopeTree()
+    await expect(resolveInWorkspace(root, join(outside, 'a.txt'))).rejects.toBeInstanceOf(
+      PathEscapeError,
+    )
+  })
 })
 
 describe('文件工具', () => {
@@ -1355,6 +1538,24 @@ describe('搜索与命令', () => {
     )
     expect(out.data?.engine).toBe('builtin')
     expect(out.data?.matches).toEqual(['src/main.ts:1:export const answer = 42'])
+  })
+
+  /**
+   * 停止后 grep 结束，不转入降级遍历：rg 被终止后按执行失败返回，降级遍历会再完整遍历一次目录。
+   * 起点在根目录之外时目录可以很大（家目录、整个盘），不响应停止的搜索会使本轮一直等待。
+   */
+  test('grep 在已停止的执行中结束，两种引擎都不继续遍历', async () => {
+    const root = await workspace()
+    const stop = new AbortController()
+    stop.abort()
+    for (const pattern of ['answer', '(?=answer)answer']) {
+      const out = await registry().execute(
+        'grep',
+        { pattern },
+        { ...ctx(root), signal: stop.signal },
+      )
+      expect(out.status).toBe('failure')
+    }
   })
 
   test('glob 能按模式查找文件', async () => {

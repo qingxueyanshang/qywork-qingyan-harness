@@ -24,8 +24,8 @@
  * - 因此 `undecided` 没有消费者。不属于上述四类的命令即放行。
  *
  * 组合命令无需单独处理。硬拒绝的模式或锚定在命令位（`CMD_POS` 匹配 `;` `&&` `|` `{` 换行之
- * 后的每一段），或扫描整个原始字符串（凭证规则）；工作区外写入规则先按组合符号切分，再逐段
- * 判定写入目标。因此 `ls && rm -rf ~` 中的第二段同样被命中。
+ * 后的每一段），或扫描整个原始字符串；凭证规则（`paths/credentials.ts`）同样扫描整个原始字符串；
+ * 工作区外写入规则先按组合符号切分，再逐段判定写入目标。因此 `ls && rm -rf ~` 中的第二段同样被命中。
  *
  * 同时识别两种语法，且不依据 process.platform。外层 shell 是 bash 还是 PowerShell，由本机安装的程序
  * 决定（`tools/process/command-shell.ts` 的 `resolveCommandShell`）。本层同时识别两种语法，以下三条理由各自独立成立：
@@ -51,6 +51,7 @@
  */
 
 import { homedir } from 'node:os'
+import { CREDENTIAL_FILES, mentionsCredentialFile } from './paths/credentials.ts'
 import { isAbsolutePath, type PlacedPath, placePath } from './paths/place.ts'
 
 /** 只有两种结论。不属于拒绝清单即放行。 */
@@ -201,36 +202,6 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string }[] = [
     reason: '命令会写入 SSH 密钥或 authorized_keys',
   },
   {
-    /**
-     * 访问凭证文件本身，读取同样拦截。
-     *
-     * 本规则与上一条不同：上一条处理向凭证写入，本规则处理读取凭证。
-     * 读取的后果不比写入轻：内容进入上下文，随下一次请求发送给 provider，
-     * 发送后无法撤回。模型也没有任何正当理由读取用户的私钥或云凭据。
-     *
-     * 不能只依赖脱敏：输出脱敏（`secrets.ts` 的形状规则）是第二道防线，它按 PEM 包头、`sk-`/
-     * `ghp_` 等固定形状匹配，而形状无法穷举：自建服务的 token、数据库连接串中的密码、没有包头
-     * 的 base64 私钥都无法识别。因此第一道防线是路径：使这些文件的内容不进入管道，比事后推测其形状
-     * 可靠得多。
-     *
-     * 两道防线都需要：路径拦截已知位置，形状规则处理位于其他位置的凭证（例如项目中的 `.env`：
-     * 它是项目文件，不应拦截读取，但其中的值不应原样进入上下文）。
-     *
-     * `~/.qywork/config.json` 与 `~/.qywork/mcp.json` 也列入本规则：前者是本程序的全局配置，
-     * 明文 apiKey、权限模式、额外根目录都在其中；后者是全局 MCP 配置，server 的凭证写在其
-     * `env` 与 `headers` 中。两者位于家目录，写入已由工作区外写入规则拦截；本规则补充拦截读取：
-     * key 被读取的代价与私钥相同。
-     *
-     * 它与工作区中的 `.qy/` / `.agents/` 不同：后者是项目自身的
-     * agent 配置（mcp.json、skills、team.json），修改它不构成提权（模型已有
-     * `run_command`，是否添加工具不改变其能力范围），不在本规则中。
-     */
-    pattern:
-      /(?:\.ssh[\\/]|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|\.aws[\\/]credentials|\.config[\\/]gcloud[\\/]|\.kube[\\/]config|\.npmrc\b|\.netrc\b|\.pgpass\b|\.docker[\\/]config\.json|\.qywork[\\/](?:config|mcp)\.json)/i,
-    reason:
-      '命令会访问凭证文件（SSH 私钥、云服务凭据、包管理器令牌或 qywork 配置）；需要凭证时由环境变量传入命令',
-  },
-  {
     pattern: atCommandStart(
       String.raw`(?:shutdown|reboot|halt|poweroff|Stop-Computer|Restart-Computer)\b`,
     ),
@@ -283,12 +254,17 @@ export function decideCommand(command: string, ctx: PolicyContext): PolicyDecisi
 
   /*
    * 每条规则或锚定在命令位（`CMD_POS` 匹配 `;` `&&` `|` 换行之后的每一段），
-   * 或扫描整个原始字符串（凭证规则）。因此 `ls && rm -rf ~` 中的第二段
+   * 或扫描整个原始字符串。因此 `ls && rm -rf ~` 中的第二段
    * 同样被命中，无需先判定是否为单条命令：组合符号扫描的
    * 唯一用途是保护允许清单，而此处没有允许清单。
    */
   for (const rule of HARD_DENY) {
     if (rule.pattern.test(command)) return { kind: 'deny', reason: rule.reason }
+  }
+
+  // 访问凭证文件，读取同样拦截。扫描整条命令；文件工具按解析出的路径调用同一个判定。
+  if (mentionsCredentialFile(command)) {
+    return { kind: 'deny', reason: `命令会访问${CREDENTIAL_FILES}；需要凭证时由环境变量传入命令` }
   }
 
   const outside = outsideWrite(command, ctx)

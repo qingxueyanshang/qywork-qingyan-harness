@@ -18,15 +18,7 @@ import {
   ToolRegistry,
 } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
-import { PersonalizationPort, PetPort } from './appearance/port.ts'
-import { BrowserPort } from './browser/port.ts'
-import { CanvasPort } from './canvas/port.ts'
-import { DesktopPort } from './desktop/port.ts'
-import { registerBuiltinTools } from './index.ts'
-import { McpConfigPort } from './mcp-config/port.ts'
-import { OfficePort } from './office/port.ts'
-import { PluginPort } from './plugin-install/port.ts'
-import { CommandPort } from './shell/port.ts'
+import { registerBuiltinTools, registerToolCatalog } from './index.ts'
 import { stopSubagentTool } from './stop-subagent.ts'
 import { subagentTool } from './subagent.ts'
 import { waitSubagentsTool } from './wait-subagents.ts'
@@ -46,7 +38,6 @@ function ctx(delegate?: Port, todos?: TodoPort): ToolContext {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: new Ports([
@@ -270,22 +261,7 @@ describe('派发任务工具的注册条件', () => {
 
   test('内置工具的 schema 只声明单一类型，可空由 strict 转换加入', () => {
     const r = new ToolRegistry()
-    registerBuiltinTools(
-      r,
-      new Ports([
-        provide(DelegatePort, stub(sent()).port),
-        provide(CommandPort, {} as CommandPort),
-        provide(PluginPort, {} as PluginPort),
-        provide(McpConfigPort, {} as McpConfigPort),
-        provide(BrowserPort, {} as BrowserPort),
-        provide(DesktopPort, {} as DesktopPort),
-        provide(CanvasPort, {} as CanvasPort),
-        provide(PersonalizationPort, {} as PersonalizationPort),
-        provide(PetPort, {} as PetPort),
-        provide(OfficePort, { videoDecoder: true } as OfficePort),
-      ]),
-      { panel: true, media: ['image', 'video'] },
-    )
+    registerToolCatalog(r, ['image', 'video'])
     // 经 Anthropic 协议转接 Gemini 的端点以 HTTP 400 拒绝含类型数组的工具，整份请求随之失败。
     const offenders: string[] = []
     const walk = (node: unknown, path: string): void => {

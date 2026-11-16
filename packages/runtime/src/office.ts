@@ -10,7 +10,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join } from 'node:path'
-import { collectProcess, type OfficePort, scrubEnv } from '@qywork/tools'
+import { collectProcess, type OfficePort, scrubbedEnv } from '@qywork/tools'
 import { collectSecrets, configDir, type QyConfig } from './config.ts'
 
 const PROBE_TIMEOUT_MS = 60_000
@@ -108,9 +108,13 @@ async function probe(python: string, dir: string, cfg: QyConfig): Promise<ProbeR
     stdout: 'pipe',
     stderr: 'pipe',
     stdin: 'ignore',
-    // 探测只导入依赖、读取注册表，不执行模型代码；环境同样剥离凭证，与执行模型代码时的规则相同。
+    // 探测只导入依赖、读取注册表，不执行模型代码；环境与执行模型代码的 worker 经同一个剥离判定
+    // （`scrubbedEnv`，含配置的放行名单），探测与执行看到的变量相同。
     env: {
-      ...scrubEnv(process.env, collectSecrets(cfg)),
+      ...scrubbedEnv({
+        secrets: collectSecrets(cfg),
+        ...(cfg.envAllowList ? { envAllowList: cfg.envAllowList } : {}),
+      }),
       PYTHONIOENCODING: 'utf-8',
       PYTHONDONTWRITEBYTECODE: '1',
     },

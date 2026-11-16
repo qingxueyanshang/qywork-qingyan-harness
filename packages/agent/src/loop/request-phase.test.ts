@@ -105,7 +105,6 @@ function baseCtx(runId: string): ToolContextBase {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: () => null,
@@ -198,7 +197,7 @@ test('退避重发的阶段事件：退避 → 发出 → 响应头 → 内容�
     expect(rows[0]!.lastContentAt).toBeNull()
   } finally {
     led.close()
-    fault.stop()
+    await fault.stop()
   }
 }, 30_000)
 
@@ -214,7 +213,7 @@ test('未完成的工具参数只推进内容时刻，不计为可见正文', as
     expect(row.lastVisibleAt).toBeNull()
   } finally {
     led.close()
-    fault.stop()
+    await fault.stop()
   }
 }, 30_000)
 
@@ -235,6 +234,6 @@ test('保活行不推进内容时刻，首值记入 first_content_at、末值记
     expect(row.firstContentAt! - row.headersAt!).toBeGreaterThanOrEqual(300)
   } finally {
     led.close()
-    fault.stop()
+    await fault.stop()
   }
 }, 30_000)

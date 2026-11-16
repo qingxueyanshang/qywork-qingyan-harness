@@ -123,13 +123,19 @@ fn serve_args(script: &Path, port: u16, workspace: &str) -> Vec<String> {
     args
 }
 
-/// 写入 sidecar 标准输入的一行 JSON，字段名与 cli 的 `readCredentials` 一致；值为空的一项不写入，
-/// sidecar 按未传入处理。
+/// 写入 sidecar 标准输入的一行 JSON：三项凭据与上次退出的信息，字段名与 cli 的 `parseCredentials` 一致。
+/// 值为空的凭据不写入，sidecar 按未传入处理；没有上次退出的信息（首次启动）时不写 `previousExit`。
 ///
-/// 不要改为环境变量：环境块由 sidecar 启动的全部子进程继承，包括外部 CLI、git 钩子与插件。
+/// 不要改为环境变量：环境块由 sidecar 启动的全部子进程继承，包括外部 CLI、git 钩子与插件，而 stderr 尾部
+/// 可能含有任意输出。整行由 serde_json 序列化，尾部中的换行与控制字符写为转义序列，因此始终是一行。
 /// 恢复时 `token` 必须是原令牌：已加载的 WebView 以原令牌连接同一端口，换用新令牌会使其被永久判定为
 /// unauthorized。宿主凭据同一份用于浏览器与电脑控制两条路径，恢复时同样复用，否则宿主无法重新连接。
-fn credentials_line(token: Option<&str>, host_key: Option<&str>, update_key: &str) -> String {
+fn credentials_line(
+    token: Option<&str>,
+    host_key: Option<&str>,
+    update_key: &str,
+    previous_exit: Option<&PreviousExit>,
+) -> String {
     let mut fields = serde_json::Map::new();
     for (name, value) in [
         ("token", token),
@@ -139,6 +145,19 @@ fn credentials_line(token: Option<&str>, host_key: Option<&str>, update_key: &st
         if let Some(value) = value.filter(|v| !v.is_empty()) {
             fields.insert(name.to_owned(), serde_json::Value::from(value));
         }
+    }
+    // 字段与取值类型同 `server/process-exit.ts` 的 `processExitObservationOf`：缺少值的退出码与信号写 null。
+    if let Some(exit) = previous_exit {
+        fields.insert(
+            "previousExit".to_owned(),
+            serde_json::json!({
+                "kind": exit.kind,
+                "observedAtMs": exit.observed_at_ms,
+                "code": exit.code,
+                "signal": exit.signal,
+                "stderrTail": exit.stderr_tail,
+            }),
+        );
     }
     format!("{}\n", serde_json::Value::Object(fields))
 }
@@ -174,23 +193,6 @@ fn spawn_process(
     if let Ok(dir) = app.path().resource_dir() {
         command = command.env("QYWORK_OFFICE_DIR", dir.join("office"));
     }
-    if let Some(exit) = previous_exit {
-        command = command
-            .env("QYWORK_PREVIOUS_EXIT_KIND", exit.kind)
-            .env(
-                "QYWORK_PREVIOUS_EXIT_AT_MS",
-                exit.observed_at_ms.to_string(),
-            )
-            .env(
-                "QYWORK_PREVIOUS_EXIT_CODE",
-                exit.code.map(|v| v.to_string()).unwrap_or_default(),
-            )
-            .env(
-                "QYWORK_PREVIOUS_EXIT_SIGNAL",
-                exit.signal.map(|v| v.to_string()).unwrap_or_default(),
-            )
-            .env("QYWORK_PREVIOUS_STDERR_TAIL", &exit.stderr_tail);
-    }
     let (rx, mut process) = command.spawn().map_err(|source| -> anyhow::Error {
         // 使用 shell 插件解析实际路径，诊断不另行推导安装目录。
         let executable = app.shell().sidecar("qy").ok().map(|command| {
@@ -203,6 +205,7 @@ fn spawn_process(
         token,
         host_key,
         &app.state::<crate::updater::UpdateOwner>().key,
+        previous_exit,
     );
     if let Err(error) = process.write(line.as_bytes()) {
         let _ = process.kill();
@@ -552,20 +555,13 @@ pub fn shutdown(app: &AppHandle) {
     shutdown_handle(&app.state::<SidecarHandle>());
 }
 
-/// 正常退出：置为停止终态，请求 sidecar 自行停止。返回 true 表示停止在后台进行，结束后以 `code` 再次请求退出，
-/// 调用方须阻止本次退出；没有运行中的进程时返回 false。
-///
-/// 本函数由事件循环在主线程调用，等待放在后台任务中：在主线程等待时界面在此期间停止响应。
-pub fn stop_then_exit(app: &AppHandle, code: i32) -> bool {
-    let Some(child) = take_for_shutdown(&app.state::<SidecarHandle>()) else {
-        return false;
-    };
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
+/// 正常退出：置为停止终态，请求 sidecar 自行停止并等待其退出，超过 `STOP_GRACE` 即终止。
+/// 没有运行中的进程时立即返回。由退出的后台任务调用（`exit.rs`）。
+pub async fn stop(app: &AppHandle) {
+    let child = take_for_shutdown(&app.state::<SidecarHandle>());
+    if let Some(child) = child {
         stop_child(child).await;
-        app.exit(code);
-    });
-    true
+    }
 }
 
 /// 启动取消与进程监督共用同一终态，取消后不再创建主窗口或显示失败对话框。
@@ -599,19 +595,32 @@ fn shutdown_handle(handle: &SidecarHandle) {
     }
 }
 
-/// 读取 dev.ts 交给外壳的 sidecar 端点。只在 devUrl 模式下调用：页面来自 Vite 源码，
-/// 后端必须是从同一源码树启动的进程。
+/// dev.ts 经环境变量交给开发构建外壳的启动参数。
+pub struct DevLaunch {
+    /// sidecar 端点。页面来自 Vite 源码，后端必须是从同一源码树启动的进程。
+    pub sidecar: Option<SidecarInfo>,
+    /// 宿主连接的凭据，见 `lib.rs` 的 `host_key`。
+    pub host_key: Option<String>,
+}
+
+/// 读取 dev.ts 交给外壳的启动参数，并把两项凭据（`QYWORK_TOKEN`、`QYWORK_HOST_KEY`）从本进程的环境中移除：
+/// 环境块由之后启动的全部子进程继承，包括终端中的 shell 与 computer-host。只在 devUrl 模式下调用，
+/// 且必须在启动任何线程之前调用：多线程下修改环境与其他线程读取环境不安全。
 ///
-/// 不做存活探测。端口上暂时没有进程监听（dev.ts 正在重启 sidecar）时，由 WebView 的连接层
+/// 端点不做存活探测。端口上暂时没有进程监听（dev.ts 正在重启 sidecar）时，由 WebView 的连接层
 /// 重连处理；探测失败即改用其他后端，会把源码页面绑定到预编译的 `bin/qy`。
-pub fn from_env() -> Option<SidecarInfo> {
-    let token = std::env::var("QYWORK_TOKEN").ok()?;
-    let port: u16 = std::env::var("QYWORK_PORT").ok()?.parse().ok()?;
-    Some(SidecarInfo {
+pub fn take_dev_launch() -> DevLaunch {
+    let token = std::env::var("QYWORK_TOKEN").ok();
+    let host_key = std::env::var("QYWORK_HOST_KEY").ok().filter(|v| !v.is_empty());
+    std::env::remove_var("QYWORK_TOKEN");
+    std::env::remove_var("QYWORK_HOST_KEY");
+    let port: Option<u16> = std::env::var("QYWORK_PORT").ok().and_then(|p| p.parse().ok());
+    let sidecar = token.zip(port).map(|(token, port)| SidecarInfo {
         token,
         port,
         base: format!("http://127.0.0.1:{port}"),
-    })
+    });
+    DevLaunch { sidecar, host_key }
 }
 
 /// 主窗口页面的源，与 Tauri 为 `WebviewUrl::App` 解析出的地址一致：开发构建为 devUrl 的源，
@@ -693,9 +702,9 @@ pub fn write_last_workspace(path: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_stderr_tail, await_handshake, credentials_line, from_env, init_script, origin_of,
-        serve_args, shutdown_handle, stop_or_kill, watch_exit, SidecarHandle, SidecarInfo,
-        STDERR_TAIL_BYTES, STOP_GRACE, STOP_LINE,
+        append_stderr_tail, await_handshake, credentials_line, init_script, origin_of, take_dev_launch,
+        serve_args, shutdown_handle, stop_or_kill, watch_exit, PreviousExit, SidecarHandle,
+        SidecarInfo, STDERR_TAIL_BYTES, STOP_GRACE, STOP_LINE,
     };
     use std::time::Duration;
     use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
@@ -872,19 +881,25 @@ mod tests {
     }
 
     /// 端口上没有进程监听时也不能改用其他后端：外壳可能在 dev.ts 重启 sidecar 的间隙中启动。
+    /// 读取之后两项凭据从环境中移除，之后启动的子进程不再继承它们。
     #[test]
-    fn from_env_keeps_the_given_port_even_when_nothing_listens() {
+    fn the_dev_launch_keeps_the_given_port_and_removes_the_credentials() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
         std::env::set_var("QYWORK_TOKEN", "t");
+        std::env::set_var("QYWORK_HOST_KEY", "k");
         std::env::set_var("QYWORK_PORT", port.to_string());
-        let info = from_env();
-        std::env::remove_var("QYWORK_TOKEN");
+        let launch = take_dev_launch();
+        let token_left = std::env::var_os("QYWORK_TOKEN");
+        let key_left = std::env::var_os("QYWORK_HOST_KEY");
         std::env::remove_var("QYWORK_PORT");
 
-        let info = info.expect("两个变量均已设置时必须返回端点");
+        assert_eq!(token_left, None);
+        assert_eq!(key_left, None);
+        assert_eq!(launch.host_key.as_deref(), Some("k"));
+        let info = launch.sidecar.expect("两个变量均已设置时必须返回端点");
         assert_eq!(info.port, port);
         assert_eq!(info.token, "t");
         assert_eq!(info.base, format!("http://127.0.0.1:{port}"));
@@ -896,7 +911,7 @@ mod tests {
         let args = serve_args(std::path::Path::new("index.js"), 0, "");
         assert!(args.iter().any(|a| a == "--credentials-stdin"));
 
-        let line = credentials_line(Some("tok"), Some("host"), "update");
+        let line = credentials_line(Some("tok"), Some("host"), "update", None);
         assert!(line.ends_with('\n'));
         assert_eq!(line.matches('\n').count(), 1);
         let parsed: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
@@ -907,13 +922,87 @@ mod tests {
     }
 
     /// 首次启动不指定令牌，非 Windows 平台的更新凭据为空串：缺省项不写入，sidecar 按未传入处理。
+    /// 首次启动没有上次退出的信息，不写 `previousExit`。
     #[test]
     fn absent_or_empty_credentials_are_omitted() {
-        assert_eq!(credentials_line(None, None, ""), "{}\n");
+        assert_eq!(credentials_line(None, None, "", None), "{}\n");
         assert_eq!(
-            credentials_line(Some(""), Some("host"), ""),
+            credentials_line(Some(""), Some("host"), "", None),
             "{\"hostKey\":\"host\"}\n"
         );
+    }
+
+    /// 恢复重启时上次退出的信息随同一行交付，字段与 `packages/cli/src/serve-startup.test.ts` 交给真实
+    /// `qy serve` 的样例逐项一致：`{ kind, observedAtMs, code, signal, stderrTail }`，缺少的信号为 null。
+    #[test]
+    fn the_previous_exit_travels_in_the_same_line() {
+        let exit = PreviousExit {
+            kind: "terminated",
+            code: Some(3),
+            signal: None,
+            observed_at_ms: 1234,
+            stderr_tail: "panic-1".to_owned(),
+        };
+        let line = credentials_line(Some("tok"), Some("host"), "update", Some(&exit));
+        let parsed: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "token": "tok",
+                "hostKey": "host",
+                "updateKey": "update",
+                "previousExit": {
+                    "kind": "terminated",
+                    "observedAtMs": 1234,
+                    "code": 3,
+                    "signal": null,
+                    "stderrTail": "panic-1",
+                },
+            })
+        );
+
+        let closed = PreviousExit {
+            kind: "output_channel_closed",
+            code: None,
+            signal: None,
+            observed_at_ms: 5,
+            stderr_tail: String::new(),
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_str(credentials_line(None, None, "", Some(&closed)).trim_end()).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "previousExit": {
+                    "kind": "output_channel_closed",
+                    "observedAtMs": 5,
+                    "code": null,
+                    "signal": null,
+                    "stderrTail": "",
+                },
+            })
+        );
+    }
+
+    /// stderr 尾部含换行、引号、反斜杠、控制字符与非 ASCII 字符时，整行仍是一行合法的 JSON，取回的尾部与原文相同。
+    #[test]
+    fn a_stderr_tail_with_newlines_and_quotes_stays_on_one_line() {
+        let tail = "error: \"bad\" path C:\\x\n第二行 ✓\r\n\u{1b}[31m红色\u{1b}[0m\t\u{2028}末尾\n";
+        let exit = PreviousExit {
+            kind: "terminated",
+            code: None,
+            signal: Some(9),
+            observed_at_ms: 1,
+            stderr_tail: tail.to_owned(),
+        };
+        let line = credentials_line(Some("tok"), None, "", Some(&exit));
+        assert!(line.ends_with('\n'));
+        assert_eq!(line.matches('\n').count(), 1);
+        assert!(!line.contains('\r'));
+        let parsed: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(parsed["previousExit"]["stderrTail"], tail);
+        assert_eq!(parsed["previousExit"]["signal"], 9);
+        assert_eq!(parsed["previousExit"]["code"], serde_json::Value::Null);
     }
 
     #[test]

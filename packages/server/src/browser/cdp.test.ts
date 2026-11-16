@@ -104,8 +104,8 @@ class FakeEndpoint {
     this.socket?.send(JSON.stringify({ method, sessionId, params }))
   }
 
-  stop(): void {
-    this.server.stop(true)
+  stop(): Promise<void> {
+    return this.server.stop(true)
   }
 }
 
@@ -116,9 +116,9 @@ const childReady = (client: CdpClient, sessionId: string, child: string) =>
 /** 登记等待器使用的条件。 */
 const GO = { selector: '#go', state: 'visible' }
 
-const cleanups: (() => void)[] = []
-afterEach(() => {
-  for (const fn of cleanups.splice(0).reverse()) fn()
+const cleanups: (() => void | Promise<void>)[] = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
 })
 
 /**

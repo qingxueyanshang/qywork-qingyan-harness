@@ -593,16 +593,19 @@ pub fn to_result(
     }
 }
 
+/// 宿主为窗口补充的三项：进程启动时刻、可执行文件名、该进程是否属于本应用（`identity::is_self_process`）。
+pub type WindowIdentity = (i64, String, bool);
+
 /// 把一条 worker 回执连同它的观察翻译成服务端结果帧。
 ///
-/// 窗口清单与阻塞窗口需要补充进程启动时刻与应用名，由 `identify` 提供（它执行 OS 查询，本模块
+/// 窗口清单与阻塞窗口需要补充进程启动时刻、应用名与归属，由 `identify` 提供（它执行 OS 查询，本模块
 /// 不执行）；无法补全身份的窗口整条丢弃，不为其编造启动时刻：目标身份缺少一项时，
 /// 无法识别句柄复用。控件表、等待、图像与文本观察原样透传。
 pub fn relay(
     request_id: String,
     binding: &Binding,
     mut response: WorkerResponse,
-    mut identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+    mut identify: impl FnMut(i64, u32) -> Option<WindowIdentity>,
 ) -> ResultFrame {
     let observation = response.observation.take();
     let blocking = response.blocking.take();
@@ -619,7 +622,7 @@ pub fn relay(
 /// 把 worker 的观察转换为服务端协议中的结构。无法识别的观察种类如实报错，不透传。
 fn project(
     observation: &Value,
-    identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+    identify: impl FnMut(i64, u32) -> Option<WindowIdentity>,
 ) -> Result<Value, String> {
     match observation.get("kind").and_then(Value::as_str) {
         Some("windows") => {
@@ -632,11 +635,11 @@ fn project(
 
 /// 把 worker 的窗口清单补全为服务端协议要求的结构。
 ///
-/// `identify` 提供进程启动时刻与可执行文件名；无法取得的窗口整条丢弃，不为其编造
+/// `identify` 提供进程启动时刻、可执行文件名与归属；无法取得的窗口整条丢弃，不为其编造
 /// 启动时刻：目标身份缺少一项时无法识别句柄复用，动作会作用于另一个窗口。
 pub fn enrich_windows(
     observation: &Value,
-    identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+    identify: impl FnMut(i64, u32) -> Option<WindowIdentity>,
 ) -> Option<Value> {
     if observation.get("kind")?.as_str()? != "windows" {
         return None;
@@ -652,15 +655,15 @@ pub fn enrich_windows(
 /// 服务端按同一套规则登记不透明 id；`appeared` 原样保留。
 pub fn enrich_blocking(
     blocking: &Value,
-    identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+    identify: impl FnMut(i64, u32) -> Option<WindowIdentity>,
 ) -> Option<Value> {
     Some(Value::Array(enrich_list(blocking.as_array()?, identify)))
 }
 
-/// 逐条补充进程启动时刻与可执行文件名。无法补全的条目整条丢弃。
+/// 逐条补充进程启动时刻、可执行文件名与归属。无法补全的条目整条丢弃。
 fn enrich_list(
     windows: &[Value],
-    mut identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+    mut identify: impl FnMut(i64, u32) -> Option<WindowIdentity>,
 ) -> Vec<Value> {
     let mut out = Vec::new();
     for w in windows {
@@ -671,7 +674,7 @@ fn enrich_list(
             continue;
         };
         let Ok(pid) = u32::try_from(pid) else { continue };
-        let Some((started_at, app)) = identify(handle, pid) else {
+        let Some((started_at, app, self_window)) = identify(handle, pid) else {
             continue;
         };
         let mut entry = json!({
@@ -680,6 +683,7 @@ fn enrich_list(
             "processStartedAt": started_at,
             "app": app,
             "title": w.get("title").and_then(Value::as_str).unwrap_or_default(),
+            "selfWindow": self_window,
         });
         if let Some(appeared) = w.get("appeared").and_then(Value::as_bool) {
             merge(&mut entry, json!({ "appeared": appeared }));
@@ -1223,7 +1227,7 @@ mod tests {
             ]
         });
         let enriched = enrich_windows(&observation, |_, pid| {
-            (pid == 900).then(|| (1_699_000_000_000, "fixture.exe".to_owned()))
+            (pid == 900).then(|| (1_699_000_000_000, "fixture.exe".to_owned(), false))
         })
         .expect("windows 观察应当能补全");
         assert_eq!(
@@ -1234,7 +1238,7 @@ mod tests {
                 "windows": [{
                     "handle": 66, "pid": 900,
                     "processStartedAt": 1_699_000_000_000i64,
-                    "app": "fixture.exe", "title": "夹具"
+                    "app": "fixture.exe", "title": "夹具", "selfWindow": false
                 }]
             })
         );
@@ -1247,10 +1251,13 @@ mod tests {
         let blocking = json!([
             {"window": 66, "pid": 900, "title": "夹具", "className": "WindowsForms10.Window", "appeared": false},
             {"window": 67, "pid": 900, "title": "modal", "className": "#32770", "appeared": true},
-            {"window": 68, "pid": 901, "title": "无法读取身份", "className": "X", "appeared": true}
+            {"window": 68, "pid": 901, "title": "无法读取身份", "className": "X", "appeared": true},
+            {"window": 69, "pid": 950, "title": "qywork", "className": "Y", "appeared": true}
         ]);
-        let enriched = enrich_blocking(&blocking, |_, pid| {
-            (pid == 900).then(|| (1_699_000_000_000, "fixture.exe".to_owned()))
+        let enriched = enrich_blocking(&blocking, |_, pid| match pid {
+            900 => Some((1_699_000_000_000, "fixture.exe".to_owned(), false)),
+            950 => Some((1_699_000_000_500, "qywork.exe".to_owned(), true)),
+            _ => None,
         })
         .expect("窗口清单应当能补全");
         assert_eq!(
@@ -1258,11 +1265,15 @@ mod tests {
             json!([
                 {
                     "handle": 66, "pid": 900, "processStartedAt": 1_699_000_000_000i64,
-                    "app": "fixture.exe", "title": "夹具", "appeared": false
+                    "app": "fixture.exe", "title": "夹具", "selfWindow": false, "appeared": false
                 },
                 {
                     "handle": 67, "pid": 900, "processStartedAt": 1_699_000_000_000i64,
-                    "app": "fixture.exe", "title": "modal", "appeared": true
+                    "app": "fixture.exe", "title": "modal", "selfWindow": false, "appeared": true
+                },
+                {
+                    "handle": 69, "pid": 950, "processStartedAt": 1_699_000_000_500i64,
+                    "app": "qywork.exe", "title": "qywork", "selfWindow": true, "appeared": true
                 }
             ])
         );
@@ -1276,7 +1287,7 @@ mod tests {
             "windows": [{"window": 66, "pid": 900, "title": "夹具", "className": "X"}]
         });
         let enriched = enrich_windows(&observation, |_, _| {
-            Some((1_699_000_000_000, "fixture.exe".to_owned()))
+            Some((1_699_000_000_000, "fixture.exe".to_owned(), false))
         })
         .expect("窗口清单应当能补全");
         assert!(enriched["windows"][0].get("appeared").is_none());
@@ -1308,9 +1319,9 @@ mod tests {
     }
 
     /// 进程启动时刻与应用名的测试替身：只识别样例中 pid 900 的两个窗口。
-    fn identify(handle: i64, pid: u32) -> Option<(i64, String)> {
+    fn identify(handle: i64, pid: u32) -> Option<WindowIdentity> {
         (pid == 900 && (handle == 66 || handle == 88))
-            .then(|| (1_700_000_000_000, "记事本".to_owned()))
+            .then(|| (1_700_000_000_000, "记事本".to_owned(), false))
     }
 
     /// 服务端请求中宿主未声明的字段会被 serde 静默丢弃。样例中的每个字段都必须原样进入

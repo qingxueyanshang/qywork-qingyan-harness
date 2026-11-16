@@ -113,6 +113,27 @@ describe('CLI 执行结果', () => {
     // 依次启动六个子进程，负载较高的构建机上超过默认的 5 秒上限。
   }, 60_000)
 
+  /**
+   * 原始失败形状：text 与 json 格式累积全部输出，jsonl 的一行超过上限后进程也不被终止；
+   * 输出持续增长而不退出的 CLI 使内存无上限地增长，只能等到静默超时（600 秒）才结束。
+   */
+  test('输出超过上限时终止进程并以失败结束', async () => {
+    const flood =
+      "const s='x'.repeat(1<<20);let n=0;const w=()=>{while(n<65){n++;if(!process.stdout.write(s)){process.stdout.once('drain',w);return}}};w();setInterval(()=>{},1000)"
+    for (const output of ['text', 'json', 'jsonl'] as const) {
+      const agent: CliAgent = {
+        ...echo,
+        args: ['-e', flood],
+        output,
+        ...(output === 'jsonl' ? { protocol: 'codex' as const } : {}),
+      }
+      const got = await run(agent, await mkdtemp(join(tmpdir(), 'qy-cli-')))
+      expect(got.ok).toBe(false)
+      expect(got.error).toContain('67108864 个字符')
+      expect(got.error).toContain('已终止 CLI 进程')
+    }
+  }, 60_000)
+
   test('Codex 只有 stdout 错误时返回原因、退出码与会话号', async () => {
     const got = await run(
       {

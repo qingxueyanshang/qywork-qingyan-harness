@@ -161,7 +161,7 @@ async function harness(respond: (body: string) => Response, seconds: number) {
   const close = async () => {
     await Promise.all(sessions.map((session) => session.dispose()))
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
   return { bodies, store, ask, runs, close }
 }

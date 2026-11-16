@@ -16,8 +16,8 @@ const fixture = (name: string) =>
   >
 
 const servers: ReturnType<typeof Bun.serve>[] = []
-afterAll(() => {
-  for (const s of servers) s.stop(true)
+afterAll(async () => {
+  for (const s of servers) await s.stop(true)
 })
 
 const restores: (() => void)[] = []

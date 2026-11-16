@@ -48,7 +48,6 @@ describe('上下文分组占用', () => {
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
           vision: null,
-          resources: new Map(),
           state: new Map(),
           sink: null,
           port: () => null,
@@ -121,7 +120,6 @@ describe('上下文分组占用', () => {
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
         vision: null,
-        resources: new Map(),
         state: new Map(),
         sink: null,
         port: () => null,
@@ -193,7 +191,6 @@ describe('上下文分组占用', () => {
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
         vision: null,
-        resources: new Map(),
         state: new Map(),
         sink: null,
         port: () => null,
@@ -354,7 +351,6 @@ describe('effort 传递到请求', () => {
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
           vision: null,
-          resources: new Map(),
           state: new Map(),
           sink: null,
           port: () => null,
@@ -409,7 +405,6 @@ describe('花费记录币种', () => {
           contextWindow: 200_000,
           density: DEFAULT_DENSITY,
           vision: null,
-          resources: new Map(),
           state: new Map(),
           sink: null,
           port: () => null,
@@ -463,7 +458,6 @@ describe('上下文读数：统一计量', () => {
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
         vision: null,
-        resources: new Map(),
         state: new Map(),
         sink: null,
         port: () => null,
@@ -509,7 +503,6 @@ describe('上下文读数：统一计量', () => {
         contextWindow: 200_000,
         density: DEFAULT_DENSITY,
         vision: null,
-        resources: new Map(),
         state: new Map(),
         sink: null,
         port: () => null,
@@ -701,7 +694,7 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
         ],
       ])
     } finally {
-      endpoint.stop(true)
+      await endpoint.stop(true)
     }
   })
 
@@ -824,7 +817,7 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
         summary: '读取 probe.png（图片）',
       })
     } finally {
-      endpoint.stop(true)
+      await endpoint.stop(true)
     }
   })
 })

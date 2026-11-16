@@ -337,14 +337,14 @@ test('补发之后原请求的连接被关闭时改用补发的一份', async ()
     expect(await res.text()).toBe('hedged')
     expect(trace.hedge).toMatchObject({ won: true })
   } finally {
-    raw.stop(true)
+    await raw.stop(true)
   }
 })
 
 test('补发之前原请求已失败的，立即报告失败，不补发', async () => {
   const probe = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } })
   const port = probe.port
-  probe.stop(true)
+  await probe.stop(true)
   const trace = newTrace()
   const started = Date.now()
   await expect(

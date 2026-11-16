@@ -1,4 +1,9 @@
-/** 覆盖真实 Markdown 点击到画布/文件预览、树定位与重复打开。 */
+/**
+ * 覆盖范围：`App.tsx` 的 `openLink` 处理正文中的 Markdown 链接（`lib/markdown.ts` 生成），
+ * `lib/store/files.ts` 的 `openFileInPanel` 与定位请求按文件类型进入画布页或文件页，`lib/store/ui.ts` 的画布页签复用，
+ * `SidePanel.tsx`、`side-panel/FileBrowser.tsx` 与 `side-panel/FileTree.tsx` 的展开、选中、滚动与搜索清空，
+ * `FileView.tsx` 的预览标题，以及无鼠标端画布文件的文本入口。
+ */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 

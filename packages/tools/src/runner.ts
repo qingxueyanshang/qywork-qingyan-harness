@@ -21,6 +21,8 @@
  *   而那是第二套生命周期。无法执行命令时直接报错，不静默改用其他方式。
  */
 
+import { killTree } from './process/tree.ts'
+
 /** `collectProcess` / `killTree` 实际使用的成员。Bun 的 Subprocess 直接满足该接口。 */
 export interface ProcessLike {
   readonly pid: number
@@ -280,7 +282,7 @@ export function runCommandRunner(): void {
    * （`startCommandRunner` 的 `onExit`），父进程随后执行的停止路径不再终止它们。
    */
   const leave = (): void => {
-    for (const c of live.values()) if (!c.exited) killTreeHere(c.proc)
+    for (const c of live.values()) if (!c.exited) killTree(c.proc)
     process.exit(0)
   }
   process.on('disconnect', leave)
@@ -304,7 +306,7 @@ export function runCommandRunner(): void {
     const req = raw as Request
     if (req.t === 'kill') {
       const c = live.get(req.id)
-      if (c) killTreeHere(c.proc)
+      if (c) killTree(c.proc)
       return
     }
     if (req.t === 'detach') {
@@ -374,23 +376,5 @@ async function relay(
     }
   } finally {
     end()
-  }
-}
-
-/** runner 自身的树杀实现，与 `process/tree.ts` 的 `killTree` 结构相同。 */
-function killTreeHere(proc: { pid: number; kill(): void }): void {
-  if (process.platform === 'win32') {
-    // runner 没有控制台，不带 `windowsHide` 时 taskkill 另开一个可见的控制台窗口。
-    Bun.spawnSync(['taskkill', '/F', '/T', '/PID', String(proc.pid)], {
-      stdout: 'ignore',
-      stderr: 'ignore',
-      windowsHide: true,
-    })
-    return
-  }
-  try {
-    process.kill(-proc.pid, 'SIGKILL')
-  } catch {
-    proc.kill()
   }
 }

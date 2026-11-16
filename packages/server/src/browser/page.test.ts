@@ -803,14 +803,14 @@ class FakePage {
     return this.nodeOf(backendNodeId)?.node.value ?? ''
   }
 
-  stop(): void {
-    this.server.stop(true)
+  stop(): Promise<void> {
+    return this.server.stop(true)
   }
 }
 
-const cleanups: (() => void)[] = []
-afterEach(() => {
-  for (const fn of cleanups.splice(0).reverse()) fn()
+const cleanups: (() => void | Promise<void>)[] = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
 })
 
 /** 含按钮、输入框、下拉框、正文与隐藏上传框的页面。按钮中心位于 (40,20)。 */

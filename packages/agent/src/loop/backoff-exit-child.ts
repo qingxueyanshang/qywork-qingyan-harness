@@ -51,7 +51,6 @@ const loop = new AgentLoop({
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: () => null,

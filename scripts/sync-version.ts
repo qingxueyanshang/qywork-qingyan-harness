@@ -2,8 +2,8 @@
 /**
  * 把 `VERSION` 中的版本号同步到所有声明了版本的文件。
  *
- * 版本号分布在多处：每个 package.json、Cargo.toml、Cargo.lock 中本仓库自身的包块、
- * tauri.conf.json，以及 sidecar 编译期内联读取的 VERSION 本身。发布时手动修改必然遗漏一处，
+ * 版本号分布在多处：每个 package.json、bun.lock 中各 workspace 的条目、Cargo.toml、Cargo.lock 中
+ * 本仓库自身的包块、tauri.conf.json，以及 sidecar 编译期内联读取的 VERSION 本身。发布时手动修改必然遗漏一处，
  * 而遗漏的通常是 tauri.conf.json：安装包版本与 `qy --version` 不一致，
  * 用户报告 bug 时给出的版本号是错误的。
  *
@@ -99,6 +99,26 @@ async function main(argv: string[]): Promise<number> {
       },
     })
   }
+
+  /*
+   * bun.lock 中各 workspace 的 version。清单已修改而这些行未修改时，下一次 `bun install` 会改写它们，
+   * 与版本无关的提交因此带上锁文件的变动；`--frozen-lockfile` 不因该不一致失败，不能依赖它发现。
+   * 只修改 `workspaces` 段中各条目直属的 version 行（六个空格缩进），`packages` 段不在其中。
+   */
+  targets.push({
+    path: join(ROOT, 'bun.lock'),
+    apply: (t) => {
+      const start = t.indexOf('\n  "workspaces": {\n')
+      const end = start < 0 ? -1 : t.indexOf('\n  },\n', start)
+      // 无法匹配时报错，理由同 Cargo.lock。
+      if (end < 0) throw new Error('bun.lock 中没有 workspaces 段')
+      const block = t.slice(start, end)
+      const own = /^( {6}"version": )"[^"]*"/gm
+      if (!own.test(block)) throw new Error('bun.lock 的 workspaces 段中没有 version 行')
+      const synced = block.replace(own, (_, prefix: string) => `${prefix}"${target}"`)
+      return t.slice(0, start) + synced + t.slice(end)
+    },
+  })
 
   let stale = 0
   for (const t of targets) {

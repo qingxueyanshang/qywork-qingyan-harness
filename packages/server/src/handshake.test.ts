@@ -306,7 +306,7 @@ describe('发送缓冲超过上限', () => {
       expect(client.seqs.length).toBeLessThan(published)
       expect(client.seqs).toEqual(range(client.seqs.length))
     } finally {
-      server.stop(true)
+      await server.stop(true)
     }
   }, 30_000)
 
@@ -325,7 +325,7 @@ describe('发送缓冲超过上限', () => {
       expect(client.seqs).toEqual(range(96))
       client.socket.destroy()
     } finally {
-      server.stop(true)
+      await server.stop(true)
     }
   }, 30_000)
 })

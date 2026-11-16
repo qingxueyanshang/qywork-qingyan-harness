@@ -111,6 +111,13 @@ interface Entry {
 }
 const shared = new Map<string, Entry>()
 
+/**
+ * 常驻持有方（`live`）传入的中止信号：服务停止时中止所有工作区在途与此后的加载，包括会话、设置页与
+ * 修改 MCP 配置后的刷新发起的加载。只按各调用方自己的信号中止时，这些加载在服务停止后继续握手，
+ * 直到初始化超时。进程级：一个进程中只有服务常驻持有扩展；该持有释放时清除。
+ */
+let lifetime: AbortSignal | undefined
+
 function cacheKey(root: string): string {
   const key = `${resolve(root)}|${resolve(globalScopeRoot())}`
   return process.platform === 'win32' ? key.toLowerCase() : key
@@ -206,7 +213,7 @@ async function refreshEntry(
  * 每次取得独立句柄。live 仅用于后台常驻持有，不固定旧 MCP 快照。
  *
  * `signal` 中止本次调用发起的加载（插件启动、MCP 握手）：尚未完成的进程被终止并计入 failures，
- * 句柄照常返回，由调用方照常释放。
+ * 句柄照常返回，由调用方照常释放。live 调用的 `signal` 另外成为进程级的 `lifetime`。
  */
 export async function acquireExtensions(
   workspaceRoot: string,
@@ -215,6 +222,9 @@ export async function acquireExtensions(
   retryNames: readonly string[] = [],
   signal?: AbortSignal,
 ): Promise<Extensions> {
+  if (live && signal) lifetime = signal
+  const signals = [lifetime, signal].filter((s): s is AbortSignal => s !== undefined)
+  const loading = signals.length ? AbortSignal.any(signals) : undefined
   const key = cacheKey(workspaceRoot)
   let entry = shared.get(key)
   if (!entry) {
@@ -222,7 +232,7 @@ export async function acquireExtensions(
       root: workspaceRoot,
       key,
       users: 0,
-      plugins: loadInstalledPlugins(workspaceRoot, onLog, signal),
+      plugins: loadInstalledPlugins(workspaceRoot, onLog, loading),
       connections: new Map(),
       snapshot: null,
       configKey: '',
@@ -235,6 +245,7 @@ export async function acquireExtensions(
   let released: Promise<void> | null = null
   const release = (): Promise<void> => {
     if (released) return released
+    if (live && lifetime === signal) lifetime = undefined
     released = (async () => {
       const results = await Promise.allSettled(held.map(releaseConnection))
       owner.users--
@@ -251,7 +262,7 @@ export async function acquireExtensions(
     return released
   }
   try {
-    await refreshEntry(owner, onLog, retryNames, signal)
+    await refreshEntry(owner, onLog, retryNames, loading)
     const snapshot = owner.snapshot!
     if (!live) {
       held = [...owner.connections.values()]

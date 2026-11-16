@@ -170,7 +170,7 @@ test('画布生成阻止重载，后端重启后自动接续且只保存一个�
     await requestUpdateClaim(handle.port, 'update-owner', 'cancel')
   } finally {
     await handle.stop()
-    remote.stop(true)
+    await remote.stop(true)
     store.close()
   }
 })

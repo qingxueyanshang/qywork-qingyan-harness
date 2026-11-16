@@ -257,7 +257,6 @@ async function conversation() {
         contextWindow: spec.contextWindow,
         density: spec.density,
         vision: spec.vision,
-        resources: new Map(),
         state: new Map(),
         sink: new RuntimeSink(store, content, runId as RunId),
         port: () => null,

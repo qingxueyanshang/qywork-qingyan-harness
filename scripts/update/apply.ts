@@ -20,6 +20,8 @@ if (import.meta.main) {
   }
   if (!Number.isInteger(request.parentPid) || request.parentPid <= 0)
     throw new Error('启动进程无效')
+  // 令牌经标准输入取得（`handoff.ts`），只交给重新启动的开发脚本，不进入本进程的环境。
+  const token = (await Bun.stdin.text()).trim()
   process.send?.('ready')
   process.disconnect?.()
   const deadline = Date.now() + 30_000
@@ -44,15 +46,17 @@ if (import.meta.main) {
         process.execPath,
         [
           join(request.root, 'scripts', 'dev.ts'),
+          '--token-stdin',
           ...(request.mode === 'web' ? ['--web', '--no-open'] : []),
         ],
         {
           cwd: request.root,
           detached: true,
           windowsHide: true,
-          stdio: ['ignore', log, log],
+          stdio: ['pipe', log, log],
         },
       )
+      child.stdin?.end(`${token}\n`)
       child.once(
         'error',
         (error) =>

@@ -104,7 +104,7 @@ describe('读取接口', () => {
     })
 
     const closed = setup()
-    closed.cloud.stop()
+    await closed.cloud.stop()
     const r = await closed.port.files('flow-demo')
     expect(r.ok ? null : [r.code, r.message.startsWith('无法连接云端：')]).toEqual([
       'unavailable',

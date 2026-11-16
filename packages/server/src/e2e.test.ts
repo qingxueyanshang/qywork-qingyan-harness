@@ -171,7 +171,7 @@ afterAll(async () => {
   if (prevHome === undefined) delete process.env.QYWORK_HOME
   else process.env.QYWORK_HOME = prevHome
   await handle?.stop()
-  provider.stop(true)
+  await provider.stop(true)
   store?.close()
   content?.close()
   // 临时目录删除失败不应使整个测试文件失败。Windows 上 SQLite 的文件句柄

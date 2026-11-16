@@ -6,8 +6,9 @@
  * 包内互相引用与测试使用相对路径，不受本清单约束。
  */
 
-import { Ports, type ToolRegistry } from '@qywork/agent'
+import { Ports, provide, type ToolRegistry, type ToolSpec } from '@qywork/agent'
 import { browserTools } from './browser.ts'
+import { CanvasPort } from './canvas/port.ts'
 import { desktopTools } from './desktop/tools.ts'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.ts'
 import { readGoalTool, updateGoalTool } from './goals.ts'
@@ -109,7 +110,7 @@ export {
   type MemoryEntry,
 } from './memory.ts'
 // 网络访问：供 runtime/capabilities.ts 实现插件的 host.net.fetch
-export { type SafetyOptions, safeFetch } from './net-safety.ts'
+export { safeFetch } from './net-safety.ts'
 export { OfficePort } from './office/port.ts'
 // 路径：工作区边界的唯一判据，runtime 与 server 均使用
 export { officeRunDir } from './office-worker.ts'
@@ -239,8 +240,6 @@ export function registerBuiltinTools(
   registry: ToolRegistry,
   ports: Ports = new Ports(),
   opts: {
-    /** 有界面可以打开右侧面板：服务端的顶层会话。CLI 与成员会话没有。 */
-    panel?: boolean
     /**
      * 已配置模型的生成类别。各类别的生成工具只在该类别有模型时注册。
      * null 表示生成与画布已关闭（配置 `mediaEnabled: false`），画布工具同样不注册。
@@ -248,15 +247,43 @@ export function registerBuiltinTools(
     media?: readonly MediaOutput[] | null
     /**
      * Agent Team 成员与子 agent 的会话。只注册 `read_memory`：记忆的写入时机来自用户本人的纠正与说明，
-     * 成员会话收到的消息是主会话的派发正文。个性化与宠物同样不注册：成员会话不代替用户修改界面。
+     * 成员会话收到的消息是主会话的派发正文。个性化、宠物与面板同样不注册：成员会话不代替用户修改界面，
+     * 其工具卡也不显示在当前会话中。
      */
     member?: boolean
   } = {},
 ): void {
+  for (const spec of builtinCandidates(ports, opts)) {
+    if (spec.requires?.every((key) => ports.has(key)) ?? true) registry.register(spec)
+  }
+}
+
+type BuiltinOptions = NonNullable<Parameters<typeof registerBuiltinTools>[2]>
+
+/**
+ * 工具目录：各通道的端口都提供时，一个顶层会话注册的内置工具。设置页的 `/api/tools` 使用它。
+ *
+ * 与 `registerBuiltinTools` 使用同一份候选与同一组条件，端口取候选声明的全部 `requires`，只判定是否注册、
+ * 不调用端口；Office 端口按已安装视频解码库提供。不要在调用方另列端口清单：另列的清单遗漏新端口时，
+ * 目录缺少该端口的工具而不会报错。
+ */
+export function registerToolCatalog(
+  registry: ToolRegistry,
+  media: readonly MediaOutput[] | null,
+): void {
+  const keys = new Set(builtinCandidates(new Ports(), { media }).flatMap((s) => s.requires ?? []))
+  const ports = new Ports(
+    [...keys].map((key) => provide(key, key === OfficePort ? { videoDecoder: true } : {})),
+  )
+  registerBuiltinTools(registry, ports, { media })
+}
+
+/** 内置工具的候选：已按会话事实与本机能力筛选，尚未按 `requires` 筛选。 */
+function builtinCandidates(ports: Ports, opts: BuiltinOptions): ToolSpec[] {
   const shell = commandShell()
   const media = opts.media === undefined ? [] : opts.media
   const user = opts.member !== true
-  for (const spec of [
+  return [
     readFileTool,
     writeFileTool,
     editFileTool,
@@ -302,8 +329,8 @@ export function registerBuiltinTools(
       : []),
     // 取帧还需要视频解码库：缺少时调用必然失败（B5）。
     ...(media && ports.get(OfficePort)?.videoDecoder === true ? [captureCanvasFrameTool] : []),
-    // 面板由界面打开：没有界面呈现本会话时调用没有效果（B5）。
-    ...(opts.panel ? [openInPanelTool] : []),
+    // 面板由界面打开：没有界面呈现本会话时调用没有效果（B5）。画布端口只由服务端提供给有界面的会话。
+    ...(user && ports.has(CanvasPort) ? [openInPanelTool] : []),
     ...(user ? [personalizeTool, petTool] : []),
     createScheduleTool,
     listSchedulesTool,
@@ -314,9 +341,7 @@ export function registerBuiltinTools(
     waitSubagentsTool,
     workflowTool,
     installPluginTool,
-  ]) {
-    if (spec.requires?.every((key) => ports.has(key)) ?? true) registry.register(spec)
-  }
+  ]
 }
 
 export { withFileLocks } from './file-lock.ts'

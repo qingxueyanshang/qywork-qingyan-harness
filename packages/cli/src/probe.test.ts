@@ -115,7 +115,7 @@ test.each([true, false])(
       expect(bodies.at(-1)?.reasoning_effort).toBe('high')
       expect(bodies.at(-1)?.thinking).toEqual(manual ? undefined : { type: 'enabled' })
     } finally {
-      server.stop(true)
+      await server.stop(true)
       await rm(home, { recursive: true, force: true })
     }
   },
@@ -193,7 +193,7 @@ test('qy probe --save 只写回校准字段，保留探测期间其他位置保�
     expect(saved.providers.other?.apiKey).toBe('sk-saved-during-probe')
     expect(saved.providers.test?.models.custom?.transport?.effort).toBe(true)
   } finally {
-    server.stop(true)
+    await server.stop(true)
     await rm(home, { recursive: true, force: true })
   }
 }, 10_000)

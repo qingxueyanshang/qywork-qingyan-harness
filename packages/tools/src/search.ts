@@ -6,8 +6,8 @@
  * 且不会静默失败：结果中标明使用的是哪种引擎。
  */
 
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { readdir, readFile, realpath, stat } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 import {
   chargeBatchBudget,
   deliveredTokens,
@@ -24,8 +24,9 @@ import {
   hiddenPath,
 } from './cloud-skills/source.ts'
 import { toLf } from './eol.ts'
-import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
+import { displayPath, hiddenInScan, IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './process/collect.ts'
+import { redactSecrets } from './secrets.ts'
 
 const MAX_RESULTS = 200
 
@@ -143,7 +144,7 @@ export const globTool: ToolSpec = {
       const abs = join(root, rel)
       const info = await stat(abs).catch(() => null)
       if (!info) continue
-      hits.push({ path: toPosix(relative(ctx.workspaceRoot, abs)), mtime: info.mtimeMs })
+      hits.push({ path: displayPath(ctx.workspaceRoot, abs), mtime: info.mtimeMs })
       if (hits.length >= MAX_RESULTS * 4) break
     }
 
@@ -187,9 +188,10 @@ export const grepTool: ToolSpec = {
   async fn(args, ctx) {
     const cloud = cloudTarget(ctx, args.path)
     if (cloud) return 'status' in cloud ? cloud : grepCloud(ctx, cloud, args)
-    const target = await resolveInWorkspace(rootsOf(ctx), String(args.path ?? '.'), {
-      mustExist: true,
-    })
+    const roots = rootsOf(ctx)
+    const target = await resolveInWorkspace(roots, String(args.path ?? '.'), { mustExist: true })
+    // 命中行是文件正文，与 read_file 的正文一样先脱敏再交给模型。
+    const secrets = ctx.secrets ?? { values: [] }
     const pattern = String(args.pattern)
     const ci = args.case_insensitive === true
     const fileGlob = typeof args.glob === 'string' ? args.glob : undefined
@@ -208,12 +210,21 @@ export const grepTool: ToolSpec = {
     const cwd = isDir ? target : dirname(target)
     const needle = isDir ? '.' : basename(target)
 
+    // 停止时结束 rg 并结束本次调用：rg 被终止后返回 null，不能因此转入降级遍历。
     const viaRg = await runRipgrep(cwd, needle, pattern, {
       ci,
+      signal: ctx.signal,
       ...(fileGlob ? { glob: fileGlob } : {}),
     })
+    ctx.signal.throwIfAborted()
     if (viaRg) {
-      const clipped = viaRg.lines.map((l) => clipMatch(rebaseLine(l, cwd, ctx.workspaceRoot)))
+      // rg 不跟随符号链接，输出的路径即真实路径。
+      const clipped: string[] = []
+      for (const line of viaRg.lines) {
+        const file = /^(.*?):\d+:/s.exec(line)?.[1]
+        if (file !== undefined && (await hiddenInScan(roots, resolve(cwd, file)))) continue
+        clipped.push(clipMatch(redactSecrets(rebaseLine(line, cwd, ctx.workspaceRoot), secrets)))
+      }
       const fit = fitBudget(ctx, clipped)
       return {
         status: 'success',
@@ -236,11 +247,14 @@ export const grepTool: ToolSpec = {
 
     const scanFile = async (abs: string): Promise<void> => {
       if (globMatcher && !globMatcher.match(basename(abs))) return
+      // 遍历时读取会跟随符号链接，按链接指向的真实路径判定。
+      const real = await realpath(abs).catch(() => null)
+      if (real === null || (await hiddenInScan(roots, real))) return
       const stats = await stat(abs).catch(() => null)
       if (!stats || stats.size > 2 * 1024 * 1024) return
       const text = await readFile(abs, 'utf8').catch(() => null)
       if (text === null) return
-      const rel = toPosix(relative(ctx.workspaceRoot, abs))
+      const rel = displayPath(ctx.workspaceRoot, abs)
       // 先去除 CR：CRLF 文件中每行末尾都有 `\r`，`foo$` 这类锚定模式将全部无法匹配。
       const rows = toLf(text).split('\n')
       let inFile = 0
@@ -253,11 +267,12 @@ export const grepTool: ToolSpec = {
           return
         }
         inFile++
-        lines.push(clipMatch(`${rel}:${i + 1}:${line}`))
+        lines.push(clipMatch(redactSecrets(`${rel}:${i + 1}:${line}`, secrets)))
       })
     }
 
     const walk = async (dir: string): Promise<void> => {
+      ctx.signal.throwIfAborted()
       if (lines.length >= MAX_RESULTS) {
         truncated = true
         return
@@ -384,7 +399,7 @@ async function runRipgrep(
   cwd: string,
   needle: string,
   pattern: string,
-  opts: { ci: boolean; glob?: string },
+  opts: { ci: boolean; glob?: string; signal: AbortSignal },
 ): Promise<{ lines: string[]; truncated: boolean } | null> {
   // 不能省略 `--with-filename`：以单个文件作为搜索起点时 rg 默认不输出文件名，
   // 输出退化为 `行号:内容`，无法重新计算路径，模型收到的命中不含位置。
@@ -409,7 +424,7 @@ async function runRipgrep(
     //
     // 此路径上不会因 EOF 而永久阻塞：rg 不派生子进程，退出后没有进程持有写端。
     // 使用统一入口是为了使等待子进程只有一种实现，各处分别实现必然不一致。
-    const { exitCode, stdout } = await collectProcess(proc)
+    const { exitCode, stdout } = await collectProcess(proc, { signal: opts.signal })
     // rg 的退出码 1 表示没有命中，不是错误；大于 1 才是失败。
     if (exitCode > 1) return null
     const kept: string[] = []
@@ -434,18 +449,17 @@ async function runRipgrep(
   }
 }
 
-const toPosix = (p: string) => p.split(sep).join('/')
-
 /**
- * 将 `路径:行号:内容` 中的路径改为相对于工作区根目录，只修改路径段，不涉及内容中的冒号。
+ * 将 `路径:行号:内容` 中的路径改为展示路径（`displayPath`：工作区内为相对路径，工作区外为绝对路径），
+ * 只修改路径段，不涉及内容中的冒号。
  *
  * rg 输出的路径相对于搜索起点，而不是相对于工作区。只去掉 `./` 前缀时，
  * `path="js"` 搜索得到的 `game.js:486` 会原样交给模型，模型据此调用 `read_file`
- * 只会得到「文件不存在」，实际路径是 `js/game.js`。降级遍历始终按
- * 工作区计算路径，两种引擎必须给出同一形式的路径，否则同一工具的行为会随是否安装 rg 而变化。
+ * 只会得到「文件不存在」，实际路径是 `js/game.js`。降级遍历使用同一展示路径，
+ * 两种引擎必须给出同一形式的路径，否则同一工具的行为会随是否安装 rg 而变化。
  */
 function rebaseLine(line: string, cwd: string, workspaceRoot: string): string {
   const m = /^(.*?):(\d+):(.*)$/s.exec(line)
   if (!m) return line
-  return `${toPosix(relative(workspaceRoot, resolve(cwd, m[1]!)))}:${m[2]}:${m[3]}`
+  return `${displayPath(workspaceRoot, resolve(cwd, m[1]!))}:${m[2]}:${m[3]}`
 }

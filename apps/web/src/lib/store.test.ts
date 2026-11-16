@@ -435,9 +435,8 @@ describe('可多开的页：+ 新建，× 关闭', () => {
   test('正文中的链接打开网页预览页，再次点击同一地址时切换到已有页', () => {
     reset()
     openPreviewTab('http://localhost:8000')
+    expect(panelTabs()).toMatchObject([{ kind: 'preview', url: 'http://localhost:8000' }])
     const [tab] = panelTabs()
-    expect(tab!.kind).toBe('preview')
-    expect(tab!.url).toBe('http://localhost:8000')
 
     setSidePanel('files')
     openPreviewTab('http://localhost:8000')
@@ -761,7 +760,7 @@ describe('整页刷新后恢复页面状态', () => {
     togglePanelMax()
     const ui = await refresh()
     expect(ui.workspace()?.id).toBe(WS_A.id)
-    expect(ui.panelTabs().map((t) => t.path)).toEqual(['分镜.canvas.json'])
+    expect(ui.panelTabs()).toMatchObject([{ kind: 'canvas', path: '分镜.canvas.json' }])
     expect(ui.activePanelTab()).toBe('canvas-分镜.canvas.json')
     expect(ui.panelMaximized()).toBe(true)
     closePanel()
@@ -1266,6 +1265,53 @@ describe('事件按会话归属过滤', () => {
         .map((t) => t.text)
         .join(''),
     ).toContain('正在写的一段话')
+  })
+
+  /**
+   * 外部 CLI 节点的输出经合帧器写入所属图卡的节点上，不改动 transcript 末项。正文输出期间到达时，
+   * 清空缓冲会把积压的正文一次性输出，并使 CLI 输出的合帧失效。
+   */
+  test('CLI 节点输出不清空正文缓冲', () => {
+    reset('cv_now')
+    applyEvent(deltaFrame('cv_now', '正在写的一段话'))
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'team.output', runId: 'run_1', stepId: 'st_team', nodeId: 'n1', delta: 'x' },
+    } as never)
+    expect(transcript()).toHaveLength(0)
+  })
+
+  /**
+   * 处理器收到的会话没有视图时整条不写入。按路径写入（`setState('views', cid, 键, 值)`）在中间键不存在时
+   * 抛出 TypeError，该事件的处理随之中断；目录约定是先读取视图，读取不到时整条不写入。
+   */
+  test('会话没有视图时，用量与工具开始事件的处理器不写入也不抛出', async () => {
+    const { EVENT_HANDLERS } = await import('./store/events/table.ts')
+    const usage = EVENT_HANDLERS.usage
+    const started = EVENT_HANDLERS['tool.started']
+    if (!('conversation' in usage) || !('conversation' in started))
+      throw new Error('处理器形状不符')
+    expect(state.views.cv_viewless).toBeUndefined()
+    expect(() =>
+      usage.conversation?.({ type: 'usage', runId: 'run_1', usage: {} } as never, 'cv_viewless', 5),
+    ).not.toThrow()
+    expect(() =>
+      started.conversation?.(
+        {
+          type: 'tool.started',
+          runId: 'run_1',
+          stepId: 'st_tool',
+          toolName: 'read_file',
+          action: 'read',
+          args: {},
+        } as never,
+        'cv_viewless',
+        6,
+      ),
+    ).not.toThrow()
+    expect(state.views.cv_viewless).toBeUndefined()
   })
 
   test('没有归属的事件属于工作区级事件，正常处理', () => {

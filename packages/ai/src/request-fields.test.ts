@@ -64,7 +64,7 @@ test('各适配器发出的顶层字段都在云端网关的名单内', async ()
       }
     }
   } finally {
-    server.stop(true)
+    await server.stop(true)
   }
   expect(outside).toEqual([])
 }, 60_000)

@@ -50,7 +50,6 @@ function ctx(root: string, room: number, sink: SinkPort | null = null): ToolCont
     contextWindow: flash.contextWindow,
     density: flash.density,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), room, Math.floor(flash.contextWindow / 8)),
     sink,
     port: () => null,

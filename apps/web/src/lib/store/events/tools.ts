@@ -20,7 +20,9 @@ export const toolEvents = handlers({
     conversation(ev, cid) {
       setState(
         produce((s) => {
-          s.views[cid]?.transcript.push({
+          const v = s.views[cid]
+          if (!v) return
+          v.transcript.push({
             id: ev.stepId,
             kind: 'tool',
             text: '',
@@ -31,9 +33,9 @@ export const toolEvents = handlers({
             batchId: ev.batchId,
             waveIndex: ev.waveIndex,
           })
+          v.generatingToolCall = false
         }),
       )
-      setState('views', cid, 'generatingToolCall', false)
     },
   },
 
@@ -151,7 +153,9 @@ export const toolEvents = handlers({
       if (NODE_SETTLED.has(ev.state.phase)) void refreshLatestChangeTurn(cid)
     },
   },
+  // 不 flush 正文，理由同 `tool.delta`：经合帧器写入所属图卡的节点，不改动 transcript 末项。
   'team.output': {
+    flush: false,
     conversation(ev, cid) {
       pushNodeOutput(cid, ev.stepId, ev.nodeId, ev.delta)
     },

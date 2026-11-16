@@ -71,7 +71,7 @@ async function exchange(
       events.push(ev)
     return { body, headers, events }
   } finally {
-    server.stop(true)
+    await server.stop(true)
   }
 }
 

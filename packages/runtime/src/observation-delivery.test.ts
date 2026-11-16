@@ -425,7 +425,6 @@ function toolCtx(input: {
     contextWindow: input.window ?? WINDOW,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: input.sink === undefined ? input.h.sink : input.sink,
     port: new Ports([
@@ -762,7 +761,6 @@ function makeBase(h: Harness, runId: RunId, desktop: DesktopPort): () => ToolCon
     contextWindow: WINDOW,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: new RuntimeSink(h.store, h.content, runId),
     port: new Ports([provide(DesktopPort, desktop)]).get,

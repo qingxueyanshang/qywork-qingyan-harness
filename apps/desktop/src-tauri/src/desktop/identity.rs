@@ -1,4 +1,4 @@
-//! 窗口与进程的身份查询：句柄当前所属的进程、该进程的启动时刻与可执行文件名。
+//! 窗口与进程的身份查询：句柄当前所属的进程、该进程的启动时刻与可执行文件名，以及该进程是否属于本应用。
 //!
 //! 边界：窗口句柄与 pid 都会被 OS 复用，**单独作为长期身份不成立**。派发动作之前必须用
 //! pid 实时查询一次启动时刻，与观察时记录的一致才视为同一个进程。任一项无法取得时返回
@@ -154,6 +154,109 @@ pub fn process_identity(_pid: u32) -> Option<ProcessIdentity> {
     None
 }
 
+/// WebView2 进程的可执行文件名。本应用的页面以及页面弹出的下拉框、右键菜单由这些进程绘制。
+#[cfg(any(windows, test))]
+const WEBVIEW_EXE: &str = "msedgewebview2.exe";
+
+/// 沿父进程链向上查找的层数上限。WebView2 的进程树为两层（浏览器进程与其子进程）。
+#[cfg(any(windows, test))]
+const MAX_WEBVIEW_DEPTH: usize = 8;
+
+/// 进程是否属于本应用：本进程，或本进程启动的 WebView 进程。无法判定时返回 `None`，调用方按属于处理。
+///
+/// `app` 是该进程的可执行文件名（`process_identity` 的结果），不是 WebView 进程时不查询进程树。
+/// 本应用终端中启动的程序不属于本应用，即使其父进程链经过本进程：它们是用户的程序，不是本应用的界面。
+/// 只有 Windows 的 WebView 运行在独立的进程中并拥有顶层窗口；其他平台上本应用的窗口都属于本进程。
+pub fn is_self_process(pid: u32, app: &str) -> Option<bool> {
+    let me = std::process::id();
+    if pid == me {
+        return Some(true);
+    }
+    #[cfg(windows)]
+    if app.eq_ignore_ascii_case(WEBVIEW_EXE) {
+        let table = process_table()?;
+        return spawned_webview(pid, me, |p| {
+            let (parent, exe) = table.get(&p)?;
+            Some(ProcessEntry {
+                parent: *parent,
+                exe: exe.clone(),
+                started_at_ms: process_identity(p)?.started_at_ms,
+            })
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    Some(false)
+}
+
+/// 进程树中的一项：父进程、可执行文件名与启动时刻。
+#[cfg(any(windows, test))]
+struct ProcessEntry {
+    parent: u32,
+    exe: String,
+    started_at_ms: i64,
+}
+
+/// `pid` 是否为 `me` 启动的 WebView 进程：沿父进程链向上，到达 `me` 之前经过的都是 WebView 进程。
+///
+/// 父进程号会被复用，因此每一级都核对父进程的启动时刻不晚于子进程；不成立表示原父进程已经退出、
+/// 该号码已属于另一个进程，判为不属于。`lookup` 无法给出某一级时返回 `None`。
+#[cfg(any(windows, test))]
+fn spawned_webview(
+    pid: u32,
+    me: u32,
+    lookup: impl Fn(u32) -> Option<ProcessEntry>,
+) -> Option<bool> {
+    let mut child = lookup(pid)?;
+    for _ in 0..MAX_WEBVIEW_DEPTH {
+        if !child.exe.eq_ignore_ascii_case(WEBVIEW_EXE) {
+            return Some(false);
+        }
+        let parent_pid = child.parent;
+        let parent = lookup(parent_pid)?;
+        if parent.started_at_ms > child.started_at_ms {
+            return Some(false);
+        }
+        if parent_pid == me {
+            return Some(true);
+        }
+        child = parent;
+    }
+    Some(false)
+}
+
+/// 全部进程的父进程与可执行文件名，按 pid 索引。快照无法取得时返回 `None`。
+#[cfg(windows)]
+pub(crate) fn process_table() -> Option<std::collections::HashMap<u32, (u32, String)>> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: 快照句柄由本函数独占，遍历只读，在出口处只关闭一次；`dwSize` 如实给出结构体大小。
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut table = std::collections::HashMap::new();
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok();
+    while more {
+        let name = &entry.szExeFile;
+        let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+        table.insert(
+            entry.th32ProcessID,
+            (entry.th32ParentProcessID, String::from_utf16_lossy(&name[..len])),
+        );
+        more = unsafe { Process32NextW(snapshot, &mut entry) }.is_ok();
+    }
+    unsafe {
+        let _ = CloseHandle(snapshot);
+    }
+    (!table.is_empty()).then_some(table)
+}
+
 /// 路径的最后一段。分隔符由调用方按平台传入，不使用 `Path`：此处处理的是目标进程的路径字符串，
 /// 与本进程运行的平台无关。
 fn file_name(path: &str, separator: char) -> String {
@@ -234,5 +337,116 @@ mod tests {
     #[test]
     fn an_invalid_window_handle_has_no_owner() {
         assert_eq!(window_pid(1), None);
+    }
+
+    /// 本进程创建的顶层窗口属于本应用；销毁之后句柄不再有所属进程，派发前的身份核对随之拒绝。
+    /// 窗口不显示，也不接收任何输入。
+    #[cfg(windows)]
+    #[test]
+    fn a_window_of_this_process_belongs_to_the_app_until_it_is_destroyed() {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPED,
+        };
+
+        // SAFETY: 系统预定义的 STATIC 窗口类；窗口由本测试创建并销毁。
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("qywork-identity-test"),
+                WS_OVERLAPPED,
+                0,
+                0,
+                10,
+                10,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("必须能创建测试窗口");
+        let handle = hwnd.0 as i64;
+        let pid = window_pid(handle).expect("本进程的窗口必须有所属进程");
+        assert_eq!(pid, std::process::id());
+        let app = process_identity(pid).expect("必须能读取本进程的身份").app;
+        assert_eq!(is_self_process(pid, &app), Some(true));
+
+        unsafe { DestroyWindow(hwnd) }.expect("必须能销毁测试窗口");
+        assert_eq!(window_pid(handle), None);
+    }
+
+    /// 其他进程的窗口不属于本应用：桌面窗口属于系统进程。
+    #[cfg(windows)]
+    #[test]
+    fn a_window_of_another_process_does_not_belong_to_the_app() {
+        use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
+
+        let handle = unsafe { GetDesktopWindow() }.0 as i64;
+        let pid = window_pid(handle).expect("桌面窗口必须有所属进程");
+        assert_ne!(pid, std::process::id());
+        let app = process_identity(pid).map_or_else(String::new, |p| p.app);
+        assert_eq!(is_self_process(pid, &app), Some(false));
+    }
+
+    fn entry(parent: u32, exe: &str, started_at_ms: i64) -> ProcessEntry {
+        ProcessEntry {
+            parent,
+            exe: exe.to_owned(),
+            started_at_ms,
+        }
+    }
+
+    /// 本进程 1 启动 WebView 浏览器进程 2，2 启动渲染进程 3；本进程还启动了终端程序 4，
+    /// 4 启动了另一个应用 5，5 又启动了它自己的 WebView 进程 6；7 是另一个应用 8 的 WebView 进程。
+    fn tree(pid: u32) -> Option<ProcessEntry> {
+        Some(match pid {
+            1 => entry(0, "qywork.exe", 100),
+            2 => entry(1, "msedgewebview2.exe", 110),
+            3 => entry(2, "msedgewebview2.exe", 120),
+            4 => entry(1, "powershell.exe", 130),
+            5 => entry(4, "app.exe", 140),
+            6 => entry(5, "msedgewebview2.exe", 150),
+            7 => entry(8, "msedgewebview2.exe", 160),
+            8 => entry(0, "teams.exe", 90),
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn webview_processes_started_by_this_process_belong_to_the_app() {
+        assert_eq!(spawned_webview(2, 1, tree), Some(true));
+        assert_eq!(spawned_webview(3, 1, tree), Some(true));
+    }
+
+    /// 本应用终端中启动的程序及其 WebView 进程属于用户；其他应用的 WebView 进程同样不属于本应用。
+    #[test]
+    fn webview_processes_of_other_programs_do_not_belong_to_the_app() {
+        assert_eq!(spawned_webview(6, 1, tree), Some(false));
+        assert_eq!(spawned_webview(7, 1, tree), Some(false));
+        assert_eq!(spawned_webview(5, 1, tree), Some(false));
+    }
+
+    /// 记录的父进程号已被本进程复用（本进程晚于该 WebView 进程启动）时不属于本应用。
+    #[test]
+    fn a_reused_parent_pid_does_not_make_a_webview_process_ours() {
+        let reused = |pid: u32| match pid {
+            1 => Some(entry(0, "qywork.exe", 500)),
+            2 => Some(entry(1, "msedgewebview2.exe", 110)),
+            _ => None,
+        };
+        assert_eq!(spawned_webview(2, 1, reused), Some(false));
+    }
+
+    /// 进程树中缺少某一级时无法判定，调用方按属于本应用处理。
+    #[test]
+    fn an_unreadable_chain_is_undetermined() {
+        let broken = |pid: u32| match pid {
+            2 => Some(entry(1, "msedgewebview2.exe", 110)),
+            _ => None,
+        };
+        assert_eq!(spawned_webview(2, 1, broken), None);
+        assert_eq!(spawned_webview(9, 1, tree), None);
     }
 }

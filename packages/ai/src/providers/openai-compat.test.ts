@@ -1254,7 +1254,7 @@ describe('缓存写入用量', () => {
         outputTokens: 50,
       })
     } finally {
-      kimi.stop(true)
+      await kimi.stop(true)
     }
   })
 
@@ -1302,7 +1302,7 @@ describe('缓存写入用量', () => {
       expect(await sourceOf('{"prompt_tokens":"10","completion_tokens":null}')).toBe('estimated')
       expect(await sourceOf('{"completion_tokens":3}')).toBe('provider')
     } finally {
-      relay.stop(true)
+      await relay.stop(true)
     }
   })
 })
@@ -1354,7 +1354,7 @@ describe('无名工具调用', () => {
       }
       expect(run()).rejects.toThrow(/工具调用缺少名称/)
     } finally {
-      drop.stop(true)
+      await drop.stop(true)
     }
   })
 })
@@ -1604,7 +1604,7 @@ describe('正文中的思考标签', () => {
       expect(thinking).toBe('想法')
       expect(text).toBe('答案')
     } finally {
-      server.stop(true)
+      await server.stop(true)
     }
   })
 })

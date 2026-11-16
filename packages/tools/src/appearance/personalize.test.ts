@@ -43,7 +43,6 @@ function ctx(root: string, personalization?: PersonalizationPort): ToolContext {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: new Ports(personalization ? [provide(PersonalizationPort, personalization)] : []).get,

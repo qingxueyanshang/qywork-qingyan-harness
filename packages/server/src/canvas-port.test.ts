@@ -794,7 +794,6 @@ async function cancelCanvas(port: CanvasPort, args: Record<string, unknown>) {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: new Map(),
     sink: null,
     port: ports.get,
@@ -991,7 +990,7 @@ describe('画布端口：本轮中止与取消', () => {
       expect((await service.docs.read(root, PATH)).states[id]).toEqual({ state: 'empty' })
     } finally {
       await service.stop()
-      server.stop(true)
+      await server.stop(true)
     }
   })
 

@@ -268,8 +268,8 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
 })
 const origin: string = `http://127.0.0.1:${server.port}`
 
-afterAll(() => {
-  server.stop(true)
+afterAll(async () => {
+  await server.stop(true)
 })
 
 let live: QyConfig
@@ -402,7 +402,7 @@ test('账号服务接受连接但不响应时，读取在超时后失败并给�
     await expect(slow.usage()).rejects.toThrow('无法连接账号服务：请求超时')
     expect(await slow.state()).toMatchObject({ state: 'signed_in', credits: null })
   } finally {
-    stalled.stop(true)
+    await stalled.stop(true)
   }
 })
 
@@ -437,7 +437,7 @@ test('读取请求的连接被断开时重发：前两次连接失败，第三�
     await expect(reader.announcements()).rejects.toThrow(/^无法连接账号服务：连接被断开$/)
     expect(connections).toBe(3)
   } finally {
-    flaky.stop(true)
+    await flaky.stop(true)
   }
 })
 

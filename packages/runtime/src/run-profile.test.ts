@@ -72,6 +72,6 @@ test('轮次开始后接口被删除：本轮按开始时的规格完成，并�
   } finally {
     await session.dispose()
     store.close()
-    provider.stop(true)
+    await provider.stop(true)
   }
 })

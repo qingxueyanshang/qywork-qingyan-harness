@@ -9,20 +9,12 @@
  *    不是同一份字节。截断丢弃的部分无法再取回，因此必须先落盘。
  */
 
-import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
+import { deliveredTokens, recordBatchSpent, type ToolSpec } from '@qywork/agent'
 import { httpStatusName } from '@qywork/ai'
 import type { IntermediateResourceRef } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
-import { type SafetyOptions, safeFetch } from './net-safety.ts'
+import { safeFetch } from './net-safety.ts'
 import { deliver, excerptBytes } from './sink.ts'
-
-/** 用户配置注入 ctx.resources 时使用的键。未配置时使用默认（最严格）策略。 */
-export const NET_POLICY_KEY = 'qywork.netPolicy'
-
-function policyOf(ctx: ToolContext): SafetyOptions {
-  const raw = ctx.resources.get(NET_POLICY_KEY)
-  return (raw as SafetyOptions | undefined) ?? {}
-}
 
 export const webFetchTool: ToolSpec = {
   name: 'web_fetch',
@@ -56,7 +48,7 @@ export const webFetchTool: ToolSpec = {
 
     let res: Awaited<ReturnType<typeof safeFetch>>
     try {
-      res = await safeFetch(url, { ...policyOf(ctx), signal: ctx.signal })
+      res = await safeFetch(url, { signal: ctx.signal })
     } catch (err) {
       return {
         status: 'failure',
@@ -233,7 +225,6 @@ export const webSearchTool: ToolSpec = {
     let res: Awaited<ReturnType<typeof safeFetch>>
     try {
       res = await safeFetch(endpoint, {
-        ...policyOf(ctx),
         signal: ctx.signal,
         maxBytes: 2 * 1024 * 1024,
       })

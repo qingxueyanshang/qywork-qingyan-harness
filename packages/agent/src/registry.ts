@@ -114,8 +114,6 @@ export interface ToolContext {
    * `read_file` 与 `videoDelivery` 据此判断一段原生发送的视频内联还是上传，与发送时使用同一判据。
    */
   videoUploadAbove?: number
-  /** 环境注入的只读资源；插件按名称读取所需资源，核心不为业务字段扩展此类型。 */
-  resources: Map<string, unknown>
   /** 插件的 run 内可变状态。 */
   state: Map<string, unknown>
   signal: AbortSignal
@@ -192,10 +190,10 @@ export interface ToolContext {
    */
   additionalDirectories?: string[]
   /**
-   * 只读根目录：已安装技能各自的目录（绝对路径），由装配方按本轮扫描结果提供。
+   * 只读根目录：已安装技能各自的目录与本会话附件（绝对路径），由装配方按本轮扫描结果提供。
    *
-   * 技能附带的参考文档、模板与示例代码位于这些目录中，读取类工具与 Office 工具的输入可以读取，
-   * 写入范围不因这些目录扩大。shell 一侧的只读命令同样能读取这些目录，两侧范围一致。
+   * `auto` 下模型工具的读取本已包含根目录之外（凭证文件除外）。本字段的作用是在内核沙箱生效的平台上，
+   * 使这些目录不受沙箱屏蔽的凭证目录限制：全局技能与粘贴的附件位于 `~/.qywork` 中。写入范围不因这些目录扩大。
    */
   readOnlyRoots?: string[]
   /**
@@ -211,6 +209,9 @@ export interface ToolContext {
    *
    * 只由 `execute` 按本次调用的裁决填入（`PermissionVerdict`），装配方不得提供：
    * 每轮固定一次时，运行中切换模式后路径层仍按旧模式判定，而命令裁决已按新模式。
+   *
+   * 电脑控制的工具同样读取它，据此决定动作能否作用于本应用自身的窗口（`tools/desktop/shared/run.ts` 的
+   * `actScope`）：为真时动作请求带上 `allowSelfWindow`，否则作用于本应用窗口的动作在派发之前被拒绝。
    *
    * **它不影响内核沙箱层。** `shell.ts` 组装 `SandboxPolicy` 时不读取此字段，
    * 因此在具备 bubblewrap / seatbelt 的平台上，`full` 下 shell 子进程仍受写入边界约束。

@@ -69,6 +69,9 @@ const REPORT_CONTRACT = `
 - 未完成项：无则写「无」
 `
 
+/** stderr 只保留尾部的字符数：CLI 的进度条可输出数万行，全部保留会超出上下文预算，读取期间也只保留这一段。 */
+const STDERR_TAIL_CHARS = 4000
+
 export interface CliRunResult {
   ok: boolean
   output: string
@@ -173,6 +176,17 @@ export async function runCli(
   const publish = (text: string) => {
     if (text) input.onChunk?.(redactSecrets(text, secrets))
   }
+  // 输出超过解析器的上限时终止进程树：之后的输出不再解析，继续等待只会使内存与等待时间无上限地增长。
+  const overflowed = new AbortController()
+  const feed = (text: string) => {
+    publish(parser.feed(text))
+    if (parser.overflowed()) overflowed.abort()
+  }
+  // stderr 只保留尾部，见返回值的 `stderr`。
+  let stderrTail = ''
+  const keepTail = (text: string) => {
+    stderrTail = (stderrTail + text).slice(-STDERR_TAIL_CHARS)
+  }
 
   // 等待与收尾使用同一个出口：完成判据是进程退出而不是管道 EOF，超时与中断都执行**进程树终止**。
   // 被调度的 CLI 自身也在运行 agent，必然派生子进程；只终止 CLI 本身时子进程仍在运行，
@@ -182,44 +196,49 @@ export async function runCli(
   // 执行构建与测试时流中没有输出，一次审查运行几分钟是常见情况。
   // 时限取本机单次工具执行的上限（`MAX_TIMEOUT_MS`），与 CLI 内部单次工具执行的时限相同。
   // 只要仍有输出就持续等待，上限由用户点击停止或父会话本轮结束决定。
+  //
+  // 输出由解析器与 stderr 尾部持有，`onText` 返回空串：`collectProcess` 不再另外累积一份全部输出。
   const got = await collectProcess(proc, {
     idleMs: MAX_TIMEOUT_MS,
-    signal: input.signal,
+    signal: AbortSignal.any([input.signal, overflowed.signal]),
     // 跨分片脱敏后才解析，实时页与回执使用同一条解析流。
     onText: (channel: 'stdout' | 'stderr', text: string) => {
       const safe = redactors[channel].push(text)
-      if (channel === 'stdout') publish(parser.feed(safe))
-      return safe
+      if (channel === 'stdout') feed(safe)
+      else keepTail(safe)
+      return ''
     },
     onEnd: (channel) => {
       const safe = redactors[channel].flush()
-      if (channel === 'stdout') publish(parser.feed(safe))
-      return safe
+      if (channel === 'stdout') feed(safe)
+      else keepTail(safe)
+      return ''
     },
   })
   // 末行没有换行符时会留在缓冲区中，不清空缓冲区即丢失。
   publish(parser.flush())
   const parsed = parser.result()
   const output = redactSecrets(parsed.output, secrets)
-  const stderr = redactSecrets(got.stderr, secrets).slice(-4000)
+  const stderr = redactSecrets(stderrTail, secrets)
   // 厂商给出的结构化错误优先；原始 stderr 单独保留，避免大量告警淹没原因。
   const detail = parsed.error || stderr.trim()
   const incomplete = parsed.incomplete || (!parsed.hasResult ? 'CLI 没有返回有效结果' : '')
   const error = input.signal.aborted
     ? '已停止'
-    : got.timedOut
-      ? `${MAX_TIMEOUT_MS / 1000} 秒无输出，已终止${detail ? `：${detail}` : ''}`
-      : got.exitCode !== 0
-        ? `退出码 ${got.exitCode}：${detail || (agent.output === 'text' ? output : '') || parsed.incomplete || 'CLI 未提供错误详情'}`
-        : parsed.error ||
-          (incomplete ? `${incomplete}${stderr.trim() ? `：${stderr.trim()}` : ''}` : '')
+    : overflowed.signal.aborted
+      ? `${parsed.error}，已终止 CLI 进程`
+      : got.timedOut
+        ? `${MAX_TIMEOUT_MS / 1000} 秒无输出，已终止${detail ? `：${detail}` : ''}`
+        : got.exitCode !== 0
+          ? `退出码 ${got.exitCode}：${detail || (agent.output === 'text' ? output : '') || parsed.incomplete || 'CLI 未提供错误详情'}`
+          : parsed.error ||
+            (incomplete ? `${incomplete}${stderr.trim() ? `：${stderr.trim()}` : ''}` : '')
 
   return {
     ok: !error,
     output,
     exitCode: got.exitCode,
     timedOut: got.timedOut,
-    // stderr 只留尾部：CLI 的进度条可输出数万行，全部保留会超出上下文预算。
     stderr,
     ...(error ? { error: redactSecrets(error, secrets).slice(0, 4000) } : {}),
     ...(parsed.session ? { session: parsed.session } : {}),

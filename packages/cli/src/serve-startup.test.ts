@@ -1,6 +1,7 @@
 /**
- * 覆盖 `index.ts` 的 `qy serve` 启动：就绪回执不被 Git 创建进程阻塞；`--credentials-stdin` 交付的凭据被采用，
- * 且不出现在 serve 启动的子进程的环境中；凭据行缺失或不合法时以非零退出码结束。
+ * 覆盖 `index.ts` 的 `qy serve` 启动：就绪回执不被 Git 创建进程阻塞；`--credentials-stdin` 交付的凭据与上次退出信息
+ * 被采用（后者经 `server/process-exit.ts` 解析、写入启动回收的轮次），且不出现在 serve 启动的子进程的环境中；
+ * 凭据行缺失或不合法时以非零退出码结束。
  */
 
 import { expect, test } from 'bun:test'
@@ -10,6 +11,14 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { NATIVE_DESKTOP_PATH, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
+import {
+  createConversation,
+  createRun,
+  getRun,
+  markRunRunning,
+  Store,
+  upsertWorkspace,
+} from '@qywork/store'
 
 /** 在真实进程创建位置同步阻塞 Git，直到父测试主动放行；只延迟命令执行无法复现此问题。 */
 const preloadSource = `
@@ -137,10 +146,11 @@ function killTree(proc: { pid: number; kill(): void }): void {
 }
 
 /**
- * 以外壳相同的方式启动：`--credentials-stdin`，写入一行凭据后保持管道打开。
- * 原始失败形状是凭据经环境变量交付时，serve 启动的全部后代进程都能读到它们。
+ * 以外壳相同的方式启动：`--credentials-stdin`，写入一行凭据与上次退出信息后保持管道打开。
+ * 原始失败形状是凭据与上次退出的 stderr 尾部经环境变量交付时，serve 启动的全部后代进程都能读到它们
+ * （Bun 中删除 `process.env` 的键对不传 `env` 启动的 runner 无效）。
  */
-test('经标准输入交付的凭据被采用，且不出现在子进程与 git 钩子的环境中', async () => {
+test('经标准输入交付的凭据与上次退出信息被采用，且不出现在子进程与 git 钩子的环境中', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'qy-serve-credentials-'))
   const home = join(dir, 'home')
   const workspace = join(dir, 'workspace')
@@ -168,6 +178,24 @@ test('经标准输入交付的凭据被采用，且不出现在子进程与 git 
     hostKey: `host-${crypto.randomUUID()}`,
     updateKey: `update-${crypto.randomUUID()}`,
   }
+  // 账本中一轮无归属的 running：启动回收把它写为中断，并记入上次退出的信息。
+  const ledger = new Store({ path: join(home, 'qywork.sqlite3') })
+  const ws = upsertWorkspace(ledger, workspace, 'ws')
+  const conv = createConversation(ledger, { workspaceId: ws.id, provider: 'p', model: 'm' })
+  const stale = createRun(ledger, {
+    conversationId: conv.id,
+    workspaceId: ws.id,
+    model: 'm',
+    clientRequestId: crypto.randomUUID(),
+    userMessageId: null,
+    messageIdUpperBound: null,
+    contextSnapshot: [],
+  })
+  markRunRunning(ledger, stale.id)
+  ledger.db.query('UPDATE runs SET owner_pid = NULL WHERE id = ?').run(stale.id)
+  ledger.close()
+  const stderrTail = `panic-${crypto.randomUUID()}`
+  const previousExit = { kind: 'terminated', observedAtMs: 1234, code: 3, signal: null, stderrTail }
   const proc = Bun.spawn(
     [
       process.execPath,
@@ -193,13 +221,14 @@ test('经标准输入交付的凭据被采用，且不出现在子进程与 git 
       stderr: 'pipe',
     },
   )
-  proc.stdin.write(`${JSON.stringify(credentials)}\n`)
+  proc.stdin.write(`${JSON.stringify({ ...credentials, previousExit })}\n`)
   proc.stdin.flush()
   let output = ''
   const stdout = (async () => {
     for await (const chunk of proc.stdout) output += new TextDecoder().decode(chunk)
   })()
   const stderr = new Response(proc.stderr).text()
+  let stopped = false
   try {
     await until(() => /QYWORK_PORT=\d+/.test(output), '未输出就绪回执')
     // 恢复重启依赖这一点：外壳交付原令牌，serve 必须采用它而不是另行生成。
@@ -227,10 +256,27 @@ test('经标准输入交付的凭据被采用，且不出现在子进程与 git 
     await until(() => existsSync(runnerEnv), 'runner 未记录环境')
     const seen = [await readFile(runnerEnv, 'utf8'), await readFile(hookEnv, 'utf8')]
     for (const text of seen) {
-      for (const value of Object.values(credentials)) expect(text).not.toContain(value)
+      for (const value of [...Object.values(credentials), stderrTail]) {
+        expect(text).not.toContain(value)
+      }
+    }
+
+    killTree(proc)
+    await proc.exited
+    stopped = true
+    const after = new Store({ path: join(home, 'qywork.sqlite3') })
+    try {
+      expect(getRun(after, stale.id)?.interruption).toMatchObject({
+        source: 'desktop_sidecar',
+        exitKind: 'terminated',
+        exitCode: 3,
+        stderrTail,
+      })
+    } finally {
+      after.close()
     }
   } finally {
-    killTree(proc)
+    if (!stopped) killTree(proc)
     await proc.exited
     await Promise.all([stdout, stderr])
   }

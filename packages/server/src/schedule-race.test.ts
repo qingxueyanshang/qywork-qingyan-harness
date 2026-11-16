@@ -52,7 +52,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  provider.stop(true)
+  await provider.stop(true)
   await rm(root, { recursive: true, force: true }).catch(() => {})
   await rm(home, { recursive: true, force: true }).catch(() => {})
 })
@@ -102,7 +102,7 @@ test('两个操作系统进程对同一条到期任务只认领一次', async ()
   const before = providerCalls
   const exits = await Promise.all(procs.map((p) => p.exited))
   const errs = await Promise.all(procs.map((p) => new Response(p.stderr).text()))
-  barrier.stop(true)
+  await barrier.stop(true)
 
   expect({ exits, errs }).toEqual({ exits: [0, 0], errs: ['', ''] })
   expect(arrived).toBe(2)

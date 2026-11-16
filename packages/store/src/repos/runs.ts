@@ -19,7 +19,7 @@ import {
 } from '@qywork/core'
 import { type RunOwner, readJson, type Store, writeJson } from '../db.ts'
 import type { RunRow } from '../rows.ts'
-import { interruptRunningNodes, settleRunningSteps } from './steps.ts'
+import { interruptRunningNodes, settleRunningSteps, validPayload } from './steps.ts'
 
 const EMPTY_USAGE: RunUsage = {
   inputTokens: 0,
@@ -332,6 +332,8 @@ export function recoverStaleRuns(
   ambiguous: number
   /** 有归属且归属进程仍在运行、本次跳过的 run 数。启动日志必须输出该数，否则「回收了 0 个」有歧义。 */
   heldByOthers: number
+  /** 终态 run 下 payload 不是合法 JSON 的 step id。回收跳过这些行的 JSON 字段，调用方须写入日志。 */
+  corruptSteps: string[]
 } {
   // 该查询取的是投影而不是表行：列名经过重命名，`ambiguous` 是计算列，
   // 因此行类型就地声明，不复用表的行类型。
@@ -359,6 +361,7 @@ export function recoverStaleRuns(
   // 该扫描与本次是否有遗留 run 无关，最常见的情形正是
   // run 均已进入终态而其下仍有 running step。提前返回会使该扫描不执行。
   let ambiguous = 0
+  const corruptSteps: string[] = []
   const now = Date.now()
   const finishStmt = store.db.query(
     `UPDATE runs SET status = 'interrupted', stop_reason = ?, error_code = ?, error_message = ?,
@@ -453,24 +456,34 @@ export function recoverStaleRuns(
     //
     // 节点只回收归属进程已不在运行的 run：卡上节点的终态由该 run 的归属进程在子 agent 完成时写入。
     // 不检查归属时，共用账本的任一进程启动都会把其他进程中仍在执行的节点写为中断。
-    const orphanRuns = store.db
-      .query<{ run_id: string; ownerPid: number | null }, []>(
-        `SELECT DISTINCT s.run_id AS run_id, r.owner_pid AS ownerPid FROM steps s
+    //
+    // payload 不是合法 JSON 的行（磁盘损坏或外部修改）同样选出：其 id 随结果返回，由调用方写入日志；
+    // 仍为 running 的由 `settleRunningSteps` 写为 failure。JSON 函数只经 `validPayload` 取值，
+    // 否则一行损坏的 payload 使本语句失败，而本函数在服务启动时执行，失败即无法启动。
+    const payload = validPayload('s.payload')
+    const orphanSteps = store.db
+      .query<{ id: string; run_id: string; ownerPid: number | null; corrupt: number }, []>(
+        `SELECT s.id AS id, s.run_id AS run_id, r.owner_pid AS ownerPid,
+                coalesce(json_valid(s.payload) = 0, 0) AS corrupt
+         FROM steps s
          JOIN runs r ON r.id = s.run_id
          WHERE r.status NOT IN ('running','queued')
            AND (s.status = 'running'
-                OR (json_type(s.payload, '$.nodes') = 'object'
+                OR json_valid(s.payload) = 0
+                OR (json_type(${payload}, '$.nodes') = 'object'
                     AND EXISTS (
-                      SELECT 1 FROM json_each(s.payload, '$.nodes') n
+                      SELECT 1 FROM json_each(${payload}, '$.nodes') n
                       WHERE json_extract(n.value, '$.phase')
                             NOT IN ('done','failed','skipped','interrupted')
                     )))`,
       )
       .all()
-    for (const o of orphanRuns) {
-      settleRunningSteps(store, o.run_id as RunId)
-      if (!ownerAlive(o.ownerPid)) interruptRunningNodes(store, o.run_id as RunId)
+    const orphanOwners = new Map(orphanSteps.map((o) => [o.run_id as RunId, o.ownerPid]))
+    for (const [runId, ownerPid] of orphanOwners) {
+      settleRunningSteps(store, runId)
+      if (!ownerAlive(ownerPid)) interruptRunningNodes(store, runId)
     }
+    corruptSteps.push(...orphanSteps.filter((o) => Number(o.corrupt) === 1).map((o) => o.id))
 
     // 与上方的孤儿 step 同理：账本中可能存在 run 已收尾而已发送请求未写入终态的记录。
     // 终态 run 不可能合法地持有 in_flight 请求，只能按送达未知写为 uncertain。
@@ -493,7 +506,7 @@ export function recoverStaleRuns(
       .run(now, writeJson(orphanRequestDiagnostic))
   })
 
-  return { recovered: rows.length, ambiguous, heldByOthers }
+  return { recovered: rows.length, ambiguous, heldByOthers, corruptSteps }
 }
 
 /** 心跳超过该时长未更新时，视为对应进程已不再运行该 run。心跳间隔为十秒，此值留六倍余量。 */

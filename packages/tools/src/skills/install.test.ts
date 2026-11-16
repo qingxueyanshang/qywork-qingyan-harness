@@ -41,7 +41,6 @@ function context(paths: string[] = []): ToolContext {
     contextWindow: 100000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Infinity, 0),
     sink: null,
     port: new Ports([provide(SkillSourcePaths, () => paths)]).get,

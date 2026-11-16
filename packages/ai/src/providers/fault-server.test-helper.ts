@@ -569,7 +569,8 @@ export function startFaultServer(mode: FaultMode): FaultServer {
 export function closedPortBaseUrl(): string {
   const probe = Bun.serve({ port: 0, fetch: () => new Response('') })
   const url = `http://127.0.0.1:${probe.port}`
-  probe.stop(true)
+  // 监听在调用时即关闭；返回的 Promise 只等待已有连接结束，此处没有连接。
+  void probe.stop(true)
   return url
 }
 

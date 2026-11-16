@@ -53,9 +53,8 @@ export type PanelTabKind =
   | 'file'
   | 'plugin'
 
-export interface PanelTab {
+interface PanelTabBase {
   id: string
-  kind: PanelTabKind
   /**
    * 页签标题。创建后不再修改。
    *
@@ -63,23 +62,6 @@ export interface PanelTab {
    * 使用户正要点击的 × 移位。
    */
   title: string
-  /**
-   * 网页预览页的当前地址，且是该地址的唯一记录：收起面板会卸载 `PreviewPanel`，
-   * 若地址保存在组件内，再次展开时地址栏为空。其他类型的页没有此字段。
-   *
-   * 只记录地址，不保留页面状态：iframe 从 DOM 移除后再插入即重新加载，
-   * 这是浏览器的行为，前端无法规避。
-   *
-   * 内置浏览器页没有此字段：其地址由原生宿主维护，前端只做投影。
-   */
-  url?: string
-  /** 画布页与文件预览页对应的文件（工作区相对路径）。其他类型的页没有此字段。 */
-  path?: string
-  /**
-   * 工作台页对应的工作台，`<插件 id>/<工作台 id>`。只记录标识不记录地址：
-   * 地址中的随机段每次服务端启动都不同，刷新后按 `workbenches()` 重新取得。
-   */
-  workbench?: string
   /**
    * 创建序号，页签条按它排序。
    *
@@ -89,6 +71,39 @@ export interface PanelTab {
    */
   createdSeq: number
 }
+
+/**
+ * 一个可多开的页。各类型自带的字段按 `kind` 区分：画布页与文件预览页必有 `path`，
+ * 工作台页必有 `workbench`，创建时即写入，此后不修改。
+ */
+export type PanelTab = PanelTabBase &
+  (
+    | { kind: 'terminal' | 'browser' | 'conversation' | 'cli' }
+    | {
+        kind: 'preview'
+        /**
+         * 网页预览页的当前地址，且是该地址的唯一记录：收起面板会卸载 `PreviewPanel`，
+         * 若地址保存在组件内，再次展开时地址栏为空。新建时未给出地址则没有该字段。
+         *
+         * 只记录地址，不保留页面状态：iframe 从 DOM 移除后再插入即重新加载，
+         * 这是浏览器的行为，前端无法规避。内置浏览器页的地址由原生宿主维护，不在此记录。
+         */
+        url?: string
+      }
+    | {
+        kind: 'canvas' | 'file'
+        /** 对应的文件（工作区相对路径）。 */
+        path: string
+      }
+    | {
+        kind: 'plugin'
+        /**
+         * 对应的工作台，`<插件 id>/<工作台 id>`。只记录标识不记录地址：
+         * 地址中的随机段每次服务端启动都不同，刷新后按 `workbenches()` 重新取得。
+         */
+        workbench: string
+      }
+  )
 
 /**
  * 面板当前显示的页。`null` 表示收起。
@@ -263,9 +278,9 @@ export function openPanelTab(kind: NumberedKind, url?: string): void {
   tabSeq[kind] += 1
   const n = tabSeq[kind]
   const id = `${kind}-${n}`
-  const tab: PanelTab = { id, kind, title: `${TAB_LABEL[kind]} ${n}`, createdSeq: nextLocalSeq() }
+  const base = { id, title: `${TAB_LABEL[kind]} ${n}`, createdSeq: nextLocalSeq() }
   // 已开启 `exactOptionalPropertyTypes`：没有地址时该键必须不存在，不能写入 undefined。
-  if (url) tab.url = url
+  const tab: PanelTab = kind === 'preview' && url ? { ...base, kind, url } : { ...base, kind }
   updatePanel(wsId, (cur) => ({ tabs: [...cur.tabs, tab], page: { tab: id } }))
 }
 
@@ -286,7 +301,8 @@ export function openPreviewTab(url: string): void {
 
 /** 指定页的当前地址。没有地址或不是网页预览页时为空串。 */
 export function panelTabUrl(id: string): string {
-  return panelTabs().find((t) => t.id === id)?.url ?? ''
+  const tab = panelTabs().find((t) => t.id === id)
+  return tab?.kind === 'preview' ? (tab.url ?? '') : ''
 }
 
 /** 网页预览页导航到另一个地址。 */
@@ -295,7 +311,7 @@ export function setPanelTabUrl(id: string, url: string): void {
   if (!wsId) return
   updatePanel(wsId, (cur) => ({
     ...cur,
-    tabs: cur.tabs.map((t) => (t.id === id ? { ...t, url } : t)),
+    tabs: cur.tabs.map((t) => (t.id === id && t.kind === 'preview' ? { ...t, url } : t)),
   }))
 }
 

@@ -46,7 +46,6 @@ function ctx(sink: SinkPort | null): ToolContext {
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink,
     port: () => null,

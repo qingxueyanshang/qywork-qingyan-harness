@@ -70,6 +70,16 @@ export async function onDesktop(
   }
 }
 
+/**
+ * 动作请求中的权限范围：本次调用的裁决为「完全访问」时，动作可以作用于本应用自身的窗口。
+ *
+ * 取自本次调用的裁决（`ctx.unrestrictedPaths`，`full` 下由 `decide` 给出），不缓存：
+ * 运行中切换模式后，下一次调用即按新模式判定。
+ */
+export function actScope(ctx: Pick<ToolContext, 'unrestrictedPaths'>): { allowSelfWindow?: true } {
+  return ctx.unrestrictedPaths ? { allowSelfWindow: true } : {}
+}
+
 /** 其余四个工具的目标均为指定窗口。`desktop_windows` 没有目标窗口，见其自身的 spec。 */
 export function windowTarget(args: Record<string, unknown>): string | null {
   return given(args.windowId) ? String(args.windowId).trim() : null

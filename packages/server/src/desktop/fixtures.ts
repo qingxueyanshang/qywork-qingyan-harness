@@ -33,6 +33,7 @@ export const WINDOW: DesktopWindow = {
   processStartedAt: 1_700_000_000_000,
   app: '记事本',
   title: '未命名',
+  selfWindow: false,
 }
 
 /** 模拟宿主：使用真实的 WebSocket 连接，按需回复帧。 */

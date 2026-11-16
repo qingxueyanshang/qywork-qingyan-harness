@@ -10,10 +10,15 @@ export interface SourceHandoff {
   parentPid: number
 }
 
-/** 子进程确认加载了更新程序后，启动所有者才可以退出。 */
+/**
+ * 子进程确认加载了更新程序后，启动所有者才可以退出。
+ *
+ * 本机接口令牌经标准输入交给更新程序，不放入其环境：更新程序启动的 git 与 `bun install`
+ * （以及其中的钩子与安装脚本）继承它的环境。更新程序只把令牌交给重新启动的开发脚本。
+ */
 export async function handoffSourceUpdate(
   request: SourceHandoff,
-  environment: Record<string, string>,
+  credentials: { token: string; port: number },
 ): Promise<void> {
   const dir = join(request.root, '.tmp', 'update')
   mkdirSync(dir, { recursive: true })
@@ -26,10 +31,11 @@ export async function handoffSourceUpdate(
         cwd: request.root,
         detached: true,
         windowsHide: true,
-        env: { ...process.env, ...environment },
-        stdio: ['ignore', log, log, 'ipc'],
+        env: { ...process.env, QYWORK_PORT: String(credentials.port) },
+        stdio: ['pipe', log, log, 'ipc'],
       },
     )
+    child.stdin?.end(`${credentials.token}\n`)
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         child.kill()

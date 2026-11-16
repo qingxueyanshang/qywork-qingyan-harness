@@ -58,7 +58,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (prevHome === undefined) delete process.env.QYWORK_HOME
   else process.env.QYWORK_HOME = prevHome
-  provider.stop(true)
+  await provider.stop(true)
   await rm(root, { recursive: true, force: true }).catch(() => {})
   await rm(home, { recursive: true, force: true }).catch(() => {})
 })

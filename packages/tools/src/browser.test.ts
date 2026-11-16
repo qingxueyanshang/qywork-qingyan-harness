@@ -125,7 +125,6 @@ function ctxWith(
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    resources: new Map(),
     state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
     port: new Ports(browser ? [provide(BrowserPort, browser)] : []).get,
@@ -303,14 +302,16 @@ describe('发送动作之前的终态', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('本地预览与文件工具共用工作区、额外目录和完全访问的路径裁决', async () => {
+  test('本地预览与文件工具共用读取范围：工作区外的文件可预览，凭证文件拒绝', async () => {
     const root = await workspace()
     const outside = await workspace()
     const outsideFile = join(outside, 'a.txt')
+    const credential = join(outside, '.npmrc')
+    await writeFile(credential, 'token\n')
     const link = join(root, 'linked')
     await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
     const { port, calls } = fakeBrowser()
-    for (const url of [outsideFile, pathToFileURL(outsideFile).href, join(link, 'a.txt')]) {
+    for (const url of [credential, pathToFileURL(credential).href, join(link, '.npmrc')]) {
       for (const spec of [browserTabsTool, browserNavigateTool]) {
         const r = await spec.fn(
           { action: spec === browserTabsTool ? 'create' : 'goto', tabId: 'bt_1', url },
@@ -319,16 +320,13 @@ describe('发送动作之前的终态', () => {
         expect(r).toMatchObject({
           status: 'failure',
           executed: false,
-          errorKind: 'path_out_of_workspace',
+          errorKind: 'credential_path',
         })
       }
     }
     expect(calls).toHaveLength(0)
-    for (const permission of [{ additionalDirectories: [outside] }, { unrestrictedPaths: true }]) {
-      const r = await browserTabsTool.fn(
-        { action: 'create', url: outsideFile },
-        { ...ctxWith(root, port), ...permission },
-      )
+    for (const url of [outsideFile, pathToFileURL(outsideFile).href, join(link, 'a.txt')]) {
+      const r = await browserTabsTool.fn({ action: 'create', url }, ctxWith(root, port))
       expect(r.status).toBe('success')
       expect(calls.at(-1)).toEqual({ method: 'open', input: pathToFileURL(outsideFile).href })
     }
@@ -1133,7 +1131,7 @@ describe('选项读取', () => {
 })
 
 describe('路径裁决', () => {
-  test('上传路径先经过工作区裁决，越界时没有任何文件传到端口', async () => {
+  test('上传路径先经过读取范围裁决，任一文件被拒时没有任何文件传到端口', async () => {
     const root = await workspace()
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith(root, port)
@@ -1143,11 +1141,11 @@ describe('路径裁决', () => {
     expect(ok.status).toBe('success')
     expect(data(ok).files).toEqual([join(root, 'a.txt')])
 
-    const out = await browserUploadTool.fn({ ...args, paths: ['a.txt', '../../hosts'] }, ctx)
+    const out = await browserUploadTool.fn({ ...args, paths: ['a.txt', '.npmrc'] }, ctx)
     expect(out.status).toBe('failure')
     expect(out.executed).toBe(false)
     // 路径拒绝原样返回，不合并为一句通用错误。
-    expect(out.errorKind).toBe('path_out_of_workspace')
+    expect(out.errorKind).toBe('credential_path')
     expect(calls.filter((c) => c.method === 'upload')).toHaveLength(1)
   })
 

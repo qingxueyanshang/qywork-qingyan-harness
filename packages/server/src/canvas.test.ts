@@ -340,6 +340,30 @@ describe('画布服务：节点状态', () => {
       '1000000|3000000|4000000',
     )
   })
+
+  /**
+   * 键序按卡片顺序、其后按各页面引用的图片顺序，与读取与 stat 的完成先后无关。
+   * 原始失败形状：并行读取完成即写入，体积小的页面先读完，其引用的图片排在前面，同一份画布两次读取的 JSON 键序可能不同。
+   */
+  test('版本表的键序按卡片与引用顺序确定', async () => {
+    const r = applyCanvasOps(emptyCanvas(), [
+      { op: 'add_file', path: '页面/大.html' },
+      { op: 'add_file', path: '页面/小.html' },
+    ])
+    if (!r.ok) throw new Error(r.error)
+    const root = await workspace(r.doc)
+    await mkdir(join(root, '页面'), { recursive: true })
+    // 前一个页面体积大，读取晚于后一个页面完成。
+    await writeFile(join(root, '页面', '大.html'), `<img src="甲.png">${' '.repeat(32 << 20)}`)
+    await writeFile(join(root, '页面', '小.html'), '<img src="乙.png">')
+    const { svc } = service()
+    expect(Object.keys((await svc.docs.read(root, PATH)).revisions ?? {})).toEqual([
+      '页面/大.html',
+      '页面/小.html',
+      '页面/甲.png',
+      '页面/乙.png',
+    ])
+  })
 })
 
 describe('画布服务：撤销与重做', () => {

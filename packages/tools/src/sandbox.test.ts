@@ -331,6 +331,14 @@ describe('bwrap 参数生成', () => {
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, cmd, { exists: never })
     expect(argv.slice(argv.indexOf('--') + 1)).toEqual(cmd)
   })
+
+  /** 不传 `--chdir` 时，工作目录在沙箱中不存在（如 `/tmp` 下的目录）的命令改在 `$HOME` 中执行且不报错。 */
+  test('工作目录以 --chdir 传入，位于 -- 之前', () => {
+    const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never, cwd: '/tmp/p' })
+    const at = argv.indexOf('--chdir')
+    expect(argv[at + 1]).toBe('/tmp/p')
+    expect(at).toBeLessThan(argv.indexOf('--'))
+  })
 })
 
 describe('平台判定', () => {

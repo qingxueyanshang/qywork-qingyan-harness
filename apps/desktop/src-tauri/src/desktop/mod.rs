@@ -18,7 +18,7 @@ mod bridge;
 #[cfg(windows)]
 mod foreground;
 mod frames;
-mod identity;
+pub(crate) mod identity;
 mod input;
 mod lock;
 mod worker;
@@ -188,6 +188,8 @@ pub fn start_with_worker(worker_path: PathBuf, port: u16, key: String) -> Arc<De
 ///
 /// 结束 worker 的方式是关闭其 stdin，而不是终止进程：worker 读到 stdin 结束即退出进程，
 /// 不等待执行线程正在进行的 OS 调用；它按住的键由 `worker_gone` 按最后一次通报补发抬起。
+///
+/// 最多等待 `EXIT_WAIT`，不要在主线程调用：应用退出时由 `exit.rs` 的后台任务调用。
 pub fn shutdown() {
     let Some(host) = HOST.get() else { return };
     host.stop_dispatch_and_settle("qywork 正在退出");
@@ -615,18 +617,19 @@ impl DesktopHost {
         }
     }
 
-    /// 一个窗口的进程启动时刻与可执行文件名。Windows 上句柄与 pid 不一致即无法识别。
+    /// 一个窗口的进程启动时刻、可执行文件名与归属。Windows 上句柄与 pid 不一致即无法识别。
     ///
     /// 其他平台上窗口的所属进程只有 worker 的窗口清单这一个来源（X11 的 `_NET_WM_PID` 或 X-Resource、AX 的
-    /// `AXUIElementGetPid`），宿主不另行查询。
+    /// `AXUIElementGetPid`），宿主不另行查询。归属无法判定时记为属于本应用：服务端据此拒绝动作，观察不受影响。
     #[cfg_attr(not(windows), allow(unused_variables))]
-    fn identify(&self, handle: i64, pid: u32) -> Option<(i64, String)> {
+    fn identify(&self, handle: i64, pid: u32) -> Option<frames::WindowIdentity> {
         #[cfg(windows)]
         if identity::window_pid(handle)? != pid {
             return None;
         }
         let found = identity::process_identity(pid)?;
-        Some((found.started_at_ms, found.app))
+        let self_window = identity::is_self_process(pid, &found.app).unwrap_or(true);
+        Some((found.started_at_ms, found.app, self_window))
     }
 
     /// worker 退出时：停止派发、结清在途请求、发布不可用状态。
