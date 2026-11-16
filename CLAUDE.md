@@ -136,15 +136,22 @@ F 列出明确不采纳的做法，写明它们是为了防止再次被引入。
 `server.ts` 只做装配，HTTP 路由按域拆分到 `api/*`，由 `api/index.ts` 的处理器表分派；
 `packages/agent/src/loop/` 的 `AgentLoop.run` 只做轮次编排，压缩、发送与重发、收尾、
 工具波次各在一个文件中，共用 `run-state.ts` 的同一份状态。
-反例：`apps/web/src/components/canvas/CanvasPanel.tsx` 的 `CanvasPanel` 一个组件同时承担
-与服务端的同步、键盘与剪贴板、指针拖动与缩放、右键菜单、时间线剪辑与导出、上传与节点渲染。
+前端的正例：`apps/web/src/components/canvas/` 中 `board/controller.ts` 持有画布的状态与核心操作，
+节点、图层与各类输入各在一个文件中，以控制器为参数或经 context 取得它，`CanvasPanel.tsx` 只做装配。
+状态收拢为一个显式对象之后，移出一段代码不需要逐个传递闭包变量；这与 `loop/` 的 `run-state.ts` 是同一做法。
+反例：`apps/web/src/components/canvas/GeneratePanel.tsx` 的一个组件内定义了多个内嵌组件，
+它们直接读取外层组件的闭包变量。
 判据不是行数而是理由数：无法说出「这个文件只做 X」时就应拆分。
+行数、组件内的状态数与内嵌组件数由结构守卫兜底（C2）；守卫通过不表示职责单一。
 
 **O 对扩展开放、对修改关闭——新增功能不应修改既有代码。**
 正例：`ToolRegistry.register()`（`packages/agent/src/registry.ts`）+
 `registerBuiltinTools()` 遍历数组注册；新增内置工具无需改动 agent 循环，
 插件工具在其后追加，不得覆盖同名工具。
 新增能力时如果必须修改中心调度的 `switch`，先明确为什么不能通过注册实现。
+同类正例：前端事件由 `apps/web/src/lib/store/events/table.ts` 的 `EVENT_HANDLERS` 按事件类型分派，
+电脑控制的动作由 `packages/tools/src/desktop/actions.ts` 的 `ACTION_DEFS` 定义；两张表都以联合类型为键，
+缺少一项时是编译错误，新增一项不需要修改分派代码。
 
 **L 里氏替换——取得接口后只使用接口，不要再判断具体类型。**
 `buildAdapter()`（`packages/ai/src/factory.ts`）按 `profile.kind` 分派**一次**，
@@ -155,7 +162,11 @@ F 列出明确不采纳的做法，写明它们是为了防止再次被引入。
 **I 接口隔离——只提供对方需要的方法。**
 正例：`SinkPort`（`registry.ts`）只有 `land` / `read` / `stat` 三个方法，
 而不是把整个内容库交给工具；且 `null` 是合法值，**工具必须能在没有 sink 时降级工作**。
-反例迹象：同文件的 `ToolContext` 已有十几个字段，继续添加之前先判断是否应独立为 port。
+`ToolContext` 只保留与具体工具域无关的字段。新增能力定义为端口：接口与键放在使用它的工具旁
+（`packages/tools/src/<域>/port.ts`；循环也读取的端口放在 `packages/agent/src/ports/`），
+工具在 `requires` 中声明并经 `ctx.port(key)` 取用，实现由装配方用 `provide` 放入端口集合。
+**不要把端口加为 `ToolContext` 或 `SessionOptions` 的字段**：那样每新增一个端口都要同时修改
+接口、会话选项、上下文装配与注册开关四处。两者的成员数由结构守卫锁定（C2）。
 
 **D 依赖倒置——依赖指向抽象，方向向上、不反向。**
 包依赖图是无环 DAG：`core` 不依赖任何包，方向逐层向上直到 `cli`。
@@ -463,9 +474,14 @@ sidecar 这一步拦截的是只在打包时才暴露的失败（例如 Bun 升�
 外壳两步使用独立的产物目录 `.tmp/cargo-gate`：外壳的构建脚本会删除并重新复制
 `debug/qy-computer-host.exe`，开发实例运行期间这个文件被占用，共用目录时门禁必然失败。
 
-`bun run test` 这一步中有两道结构守卫，失败时不是「测试挂了」而是「规则被破了」：
-`scripts/dependency-graph.test.ts`（B6 的包依赖方向）与
-`scripts/writing-style.test.ts`（B10 与 B11 的书面语词表）。
+`bun run test` 这一步中有三组结构守卫，失败时不是「测试挂了」而是「规则被破了」：
+`scripts/dependency-graph.test.ts`（B6 的包依赖方向）、
+`scripts/writing-style.test.ts`（B10 与 B11 的书面语词表）与
+`scripts/structure/` 下的守卫（B1）。后者检查三项：文件行数，中心清单计数
+（`ToolContext` 与 `SessionOptions` 的成员、`registerBuiltinTools` 的选项、连接层按事件类型的分支），
+组件内的状态数与内嵌组件数。上限写在守卫源码中；超过上限的存量条目记在
+`scripts/structure/baseline.json`，只能经 `bun run scripts/structure/baseline.ts --update` 下调或移除，
+该命令拒绝上调与新增。守卫失败时按职责拆分，不上调基线。
 
 **门禁只读，不改文件。** `gate` 中使用的是 `biome check`，不是 `--write`；
 需要自动修复时单独运行 `bun run check`。原因：门禁可能在他人同时修改该工作区时运行，
