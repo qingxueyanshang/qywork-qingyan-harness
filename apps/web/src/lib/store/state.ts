@@ -87,6 +87,8 @@ export interface TranscriptItem {
     compactedMessages?: number
     revision?: number
   }
+  /** kind='thinking' 专有：所属的请求失败后被重发取代。内容照常显示，标签注明已中断。 */
+  interrupted?: true
   /** kind='user' 专有：该消息携带的附件，只保存定位信息，不保存字节。 */
   attachments?: Attachment[]
   /** kind='receipt' 专有：回执的投递方。标题行据此决定移除哪一个来源前缀。 */

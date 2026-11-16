@@ -2224,6 +2224,32 @@ describe('定稿的正文不随会话流的增长重建', () => {
     dispose()
   })
 
+  /** 原始失败形状：重发等待期间，失败尝试的思考仍是最后一条，不得显示为正在思考或从会话流中消失。 */
+  test('已中断的思考在重发等待期间照常显示，标签为思考已中断', async () => {
+    const { render } = await import('solid-js/web')
+    const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
+    const host = document.createElement('div')
+    const dispose = render(
+      () => (
+        <TranscriptRows
+          items={[
+            { id: 'thinking-cut', kind: 'thinking', text: '先规划动画的分层', interrupted: true },
+          ]}
+          live={() => true}
+        />
+      ),
+      host as unknown as HTMLElement,
+    )
+    try {
+      const label = host.querySelector('summary')?.textContent ?? ''
+      expect(label).toContain('思考已中断')
+      expect(label).toContain('先规划动画的分层')
+      expect(label).not.toContain('思考中')
+    } finally {
+      dispose()
+    }
+  })
+
   test('运行中的思考首次展开时滚动到内层最新内容', async () => {
     const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
     Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {

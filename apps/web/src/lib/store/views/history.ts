@@ -570,11 +570,16 @@ function stepToItems(s: Step): TranscriptItem[] {
     return s.content ? [{ id: s.id, kind: 'text', text: s.content }] : []
   }
   if (s.kind === 'thinking') {
-    // 失败尝试中不完整的思考保留在账本中供诊断，但已被随后的重发取代。普通会话流只显示
-    // 最终采用的生成；否则刷新后两段不完整的句子会重新出现，实时状态与回放状态也不一致。
-    return s.status !== 'failure' && s.content
-      ? [{ id: s.id, kind: 'thinking', text: s.content }]
-      : []
+    if (!s.content) return []
+    // 失败尝试中的思考在重发之前已显示给用户，回放时同样显示并标注已中断，与实时状态一致。
+    return [
+      {
+        id: s.id,
+        kind: 'thinking',
+        text: s.content,
+        ...(s.status === 'failure' ? { interrupted: true as const } : {}),
+      },
+    ]
   }
   // run 内注入的用户消息。刷新后须在原位置重建，`id` 使用 stepId：
   // 与 `message.injected` 事件中的 id 相同，因此不会短暂出现两条。

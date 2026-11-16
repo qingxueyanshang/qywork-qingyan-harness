@@ -6,12 +6,20 @@ import { RowStream } from './row-stream.ts'
 export function ThinkingFold(props: { item: TranscriptItem }) {
   const row = useContext(RowStream)
   // 使用 memo 而不是取值函数，理由同 `Prose`：读取的两个值每追加一条就通知一次。
+  // 已中断的思考在重发等待期间仍是最后一条，不得按末尾条目判为正在输出。
   const streaming = createMemo(
-    () => row.live() && !row.generatingToolCall() && row.items().at(-1)?.id === props.item.id,
+    () =>
+      !props.item.interrupted &&
+      row.live() &&
+      !row.generatingToolCall() &&
+      row.items().at(-1)?.id === props.item.id,
   )
   // 流仍在增长时显示「思考中」，停止后显示「已思考」，
   // 避免标签显示「已思考」而旁边的加载动画仍表示正在思考。
-  const verb = () => (streaming() ? '思考中' : '已思考')
+  const verb = () => {
+    if (props.item.interrupted) return '思考已中断'
+    return streaming() ? '思考中' : '已思考'
+  }
   // 只取开头一段再合并空白：整段思考可达数万字，每帧扫描全文会使耗时随长度增长。
   const preview = () => props.item.text.slice(0, 240).replace(/\s+/g, ' ').trim().slice(0, 80)
 

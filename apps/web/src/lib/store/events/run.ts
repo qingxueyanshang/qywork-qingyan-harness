@@ -231,11 +231,11 @@ export const runEvents = handlers({
           produce((s) => {
             const v = s.views[cid]
             if (!v) return
-            // 重发事件携带 AgentLoop 本次尝试实际创建的 step id。不能按「末尾的思考」删除：
-            // 同一 run 的前几个工具轮也有已完成的思考，按位置删除会把有效内容一并删除。
-            v.transcript = v.transcript.filter(
-              (item) => item.kind !== 'thinking' || !failed.has(item.id),
-            )
+            // 重发事件携带 AgentLoop 本次尝试实际创建的 step id。不能按「末尾的思考」标注：
+            // 同一 run 的前几个工具轮也有已完成的思考，按位置标注会误标有效内容。
+            for (const item of v.transcript) {
+              if (item.kind === 'thinking' && failed.has(item.id)) item.interrupted = true
+            }
           }),
         )
       }

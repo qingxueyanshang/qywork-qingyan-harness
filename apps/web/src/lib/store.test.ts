@@ -1613,7 +1613,7 @@ describe('事件按会话归属过滤', () => {
     })
   })
 
-  test('重发时按 AgentLoop 给出的 step id 撤销失败的部分输出，已完成的思考不受影响', () => {
+  test('重发时按 AgentLoop 给出的 step id 把失败尝试的思考标注为已中断，已完成的思考不受影响', () => {
     reset('cv_now')
     applyEvent({
       seq: 1,
@@ -1658,8 +1658,11 @@ describe('事件按会话归属过滤', () => {
     expect(
       viewOf('cv_now')
         .transcript.filter((item) => item.kind === 'thinking')
-        .map((item) => item.id),
-    ).toEqual(['st_done'])
+        .map((item) => [item.id, item.text, item.interrupted ?? false]),
+    ).toEqual([
+      ['st_done', '前一轮思考', false],
+      ['st_failed', '失败的半截', true],
+    ])
   })
 
   /** 请求发出只结束等待：清除截止点、保留次数，界面因此从「等待重试」变为「正在重连 N / M」。 */
@@ -2139,7 +2142,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
     expect(transcript()[1]?.text).toBe('先看看这台机器的显卡')
   })
 
-  test('失败重发留下的部分思考只保留在诊断账本中，不折叠回普通会话流', async () => {
+  test('失败重发留下的部分思考刷新后照常显示，并标注已中断', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
     stub(
@@ -2170,8 +2173,11 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
     expect(
       transcript()
         .filter((item) => item.kind === 'thinking')
-        .map((item) => item.text),
-    ).toEqual(['重发后完整的思考'])
+        .map((item) => [item.text, item.interrupted ?? false]),
+    ).toEqual([
+      ['Note: index.html references vendor but the response stopped h', true],
+      ['重发后完整的思考', false],
+    ])
   })
 
   test('没有思考的工具 step 不生成空的折叠条目', async () => {
