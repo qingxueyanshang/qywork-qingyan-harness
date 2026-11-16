@@ -4,7 +4,7 @@
  * 覆盖范围：`cdp.ts` 全部（连接、按标记附加、方法白名单、迟到回包、本地拒绝、
  * teardown 白名单、已按下未释放的键表与鼠标按下状态、
  * 页会话初始化、跨站子会话的登记与就绪判定、按会话过滤的事件订阅、
- * 静默探针的登记与清理）。
+ * 静默探针的登记与清理、file 请求的拦截与应答）。
  *
  * 对端是按脚本回帧的假调试端点：被测的是客户端的判定时机，即命令是否已发出、
  * 待决调用由谁结算；使用真实浏览器无法测出取消之后的命令是否已发出。
@@ -12,6 +12,7 @@
 
 import { afterEach, expect, test } from 'bun:test'
 import { until } from '@qywork/core/until.test-helper'
+import type { LocalFileCheck } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import {
   allowedMethod,
@@ -174,8 +175,12 @@ async function failure(pending: Promise<unknown>): Promise<Error> {
   return out as Error
 }
 
-async function connect(endpoint: FakeEndpoint): Promise<CdpClient> {
-  const client = await CdpClient.connect(endpoint.server.port ?? 0)
+/** `localFiles` 缺省全部放行：只有 file 请求的用例关心裁决。 */
+async function connect(
+  endpoint: FakeEndpoint,
+  localFiles: LocalFileCheck = async () => null,
+): Promise<CdpClient> {
+  const client = await CdpClient.connect(endpoint.server.port ?? 0, localFiles)
   cleanups.push(() => client.close())
   return client
 }
@@ -184,15 +189,81 @@ test('白名单之外的方法在发出之前即被拒绝，对端收不到任�
   const endpoint = endpointWithTwoPages({ t1: 'm1' })
   const client = await connect(endpoint)
   expect((await failure(client.send('Browser.setDownloadBehavior', {}))).message).toMatch(/白名单/)
-  expect((await failure(client.send('Fetch.enable', {}))).message).toMatch(/白名单/)
+  expect((await failure(client.send('Fetch.fulfillRequest', {}))).message).toMatch(/白名单/)
   expect((await failure(client.send('Network.getResponseBody', {}))).message).toMatch(/白名单/)
   expect(endpoint.methods()).toEqual([])
-  // 读取版本是 Browser 域中唯一放行的命令，启用事件是 Network 域中唯一放行的命令。
+  // 读取版本是 Browser 域中唯一放行的命令，启用事件是 Network 域中唯一放行的命令；
+  // Fetch 域只放行拦截、继续与失败，改写响应的方法不放行。
   expect(allowedMethod('Browser.getVersion')).toBe(true)
   expect(allowedMethod('Network.enable')).toBe(true)
   expect(allowedMethod('Network.getResponseBody')).toBe(false)
+  for (const method of ['Fetch.enable', 'Fetch.continueRequest', 'Fetch.failRequest']) {
+    expect(allowedMethod(method)).toBe(true)
+  }
+  expect(allowedMethod('Fetch.getResponseBody')).toBe(false)
   await client.send('Browser.getVersion')
   expect(endpoint.methods()).toEqual(['Browser.getVersion'])
+})
+
+/**
+ * 页面自行发起的 file 请求（子资源、框架与页内跳转）经同一个裁决函数，与文件工具的读取结论相同。
+ *
+ * 原始失败形状：页会话不拦截任何请求，`<iframe src="file:///…/.ssh/id_rsa">` 与脚本跳转直接加载凭证文件，
+ * 随后的观察把文件内容交给模型。
+ */
+test('页会话最先启用 file 请求拦截；暂停的请求按裁决继续或以拒绝访问失败，裁决出错按拒绝', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint, async (url) => {
+    if (url.includes('broken')) throw new Error('裁决出错')
+    return url.includes('.ssh') ? '凭证文件' : null
+  })
+  const { sessionId } = await client.attachByMarker('marker-a')
+  const onPage = endpoint.received.filter((c) => c.sessionId === sessionId).map((c) => c.method)
+  expect(onPage.indexOf('Fetch.enable')).toBeGreaterThanOrEqual(0)
+  expect(onPage.indexOf('Fetch.enable')).toBeLessThan(onPage.indexOf('Page.enable'))
+  const enable = endpoint.received.find((c) => c.method === 'Fetch.enable')
+  expect(enable?.params).toEqual({ patterns: [{ urlPattern: 'file://*' }] })
+
+  const paused = (requestId: string, url: string) =>
+    endpoint.emit(sessionId, 'Fetch.requestPaused', { requestId, request: { url } })
+  paused('r1', 'file:///C:/Users/x/.ssh/id_rsa')
+  paused('r2', 'file:///C:/ws/site/style.css')
+  paused('r3', 'file:///C:/ws/site/broken.html')
+  const answers = () =>
+    endpoint.received.filter((c) => c.method.startsWith('Fetch.') && c.method !== 'Fetch.enable')
+  await until(() => answers().length === 3, '三个请求均已应答')
+  const byId = new Map(answers().map((c) => [String(c.params?.requestId), c]))
+  expect(byId.get('r1')).toMatchObject({
+    method: 'Fetch.failRequest',
+    sessionId,
+    params: { errorReason: 'AccessDenied' },
+  })
+  expect(byId.get('r2')).toMatchObject({ method: 'Fetch.continueRequest', sessionId })
+  expect(byId.get('r3')).toMatchObject({ method: 'Fetch.failRequest' })
+})
+
+/** 不应答的请求在 detach 之后按原样继续加载，未经裁决。 */
+test('取消之后暂停的 file 请求仍得到应答', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint, async (url) => (url.includes('.ssh') ? '凭证文件' : null))
+  const { sessionId } = await client.attachByMarker('marker-a')
+  await client.cancel('测试取消')
+  endpoint.emit(sessionId, 'Fetch.requestPaused', {
+    requestId: 'r9',
+    request: { url: 'file:///C:/Users/x/.ssh/id_rsa' },
+  })
+  await until(
+    () => endpoint.received.some((c) => c.method === 'Fetch.failRequest'),
+    '取消之后的请求已应答',
+  )
+})
+
+test('file 请求拦截被拒绝时报告初始化失败，不再启用其他域', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  endpoint.replies.set('Fetch.enable', () => ({ error: 'not supported' }))
+  const client = await connect(endpoint)
+  expect(await failure(client.attachByMarker('marker-a'))).toBeInstanceOf(CdpInitError)
+  expect(endpoint.methods()).not.toContain('Page.enable')
 })
 
 test('按标记识别页面：同 URL 的另一页被附加后立即 detach', async () => {

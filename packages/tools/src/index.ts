@@ -46,6 +46,7 @@ export {
   type BrowserWaitResult,
   type BrowserWaitState,
   type FollowUpObservation,
+  type LocalFileCheck,
 } from './browser/port.ts'
 export { type CanvasEditResult, CanvasPort, type CanvasRender } from './canvas/port.ts'
 export {
@@ -155,7 +156,6 @@ export { SchedulePort } from './schedules/port.ts'
 // 作用域：runtime 与 server 按同一规则计算三层的根目录
 export {
   AGENTS_DIR,
-  globalScopeRoot,
   type Scope,
   type ScopedItem,
   type ScopeRoots,

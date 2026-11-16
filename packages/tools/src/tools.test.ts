@@ -504,16 +504,18 @@ interface ScopeResult {
   matches: string[] | null
 }
 
-/** 以 `home` 为家目录启动子进程执行 `calls`，不读取或修改用户真实的家目录。 */
+/** 以 `home` 为家目录启动子进程执行 `calls`，不读取或修改用户真实的家目录。`env` 覆盖子进程的其余环境变量。 */
 function runScope(
   home: string,
   root: string,
   calls: unknown[],
+  env: Record<string, string> = {},
 ): { sandbox: boolean; out: ScopeResult[] } {
   const child = Bun.spawnSync([process.execPath, '-e', SCOPE_CHILD], {
     cwd: join(import.meta.dir, '..', '..', '..'),
     env: {
       ...process.env,
+      ...env,
       HOME: home,
       USERPROFILE: home,
       QYWORK_SCOPE_CASE: JSON.stringify({ root, calls }),
@@ -661,6 +663,48 @@ describe('写入范围', () => {
       expect(await stat(absent).catch(() => null)).toBeNull()
     }
     expect(await stat(join(home, '.qywork')).catch(() => null)).toBeNull()
+  }, 30_000)
+
+  /**
+   * 全局数据目录由 `QYWORK_HOME` 指向家目录之外，并经目录联接指向别处。文件工具的结论与命令裁决相同：
+   * 其中的 `config.json` 与 `mcp.json` 不可读，其余位置不可写，其余文件可读；经联接与经真实路径结论相同。
+   *
+   * 原始失败形状：凭证判定只认 `.qywork/` 下的写法，位置判定只比较家目录。`read_file` 读到其中的明文 key，
+   * `write_file` 写入其中的插件目录与 MCP 启动确认。
+   */
+  test('QYWORK_HOME 指向家目录之外的全局数据目录：配置文件拒绝读取，其中的位置拒绝写入', async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'qywork-data-home-')))
+    const home = join(base, 'home')
+    const root = join(home, 'a', 'ws')
+    const real = join(base, 'data-real')
+    const link = join(base, 'data')
+    await mkdir(root, { recursive: true })
+    await mkdir(real, { recursive: true })
+    await writeFile(join(real, 'config.json'), '{"apiKey":"sk-data-home-test"}\n')
+    await writeFile(join(real, 'mcp.json'), '{"servers":{}}\n')
+    await writeFile(join(real, 'notes.md'), 'notes\n')
+    await symlink(real, link, process.platform === 'win32' ? 'junction' : 'dir')
+    const calls = [
+      ['read_file', { path: join(link, 'config.json') }],
+      ['read_file', { path: join(real, 'config.json') }],
+      ['read_file', { path: join(real, 'mcp.json') }],
+      ['read_file', { path: join(real, 'notes.md') }],
+      [
+        'write_file',
+        { path: join(real, 'plugins', 'p', 'index.js'), mode: 'create', content: 'x' },
+      ],
+      ['write_file', { path: join(link, 'mcp-approvals.json'), mode: 'create', content: '{}' }],
+      ['write_file', { path: join(base, 'elsewhere', 'a.txt'), mode: 'create', content: 'x' }],
+    ]
+    const denied = { status: 'failure', errorKind: 'path_out_of_workspace' }
+    const credential = { status: 'failure', errorKind: 'credential_path' }
+    const ok = { status: 'success', errorKind: null }
+    const { out } = runScope(home, root, calls, { QYWORK_HOME: link })
+    expect(out.map(outcome)).toEqual([credential, credential, credential, ok, denied, denied, ok])
+    expect(out.map((r) => r.message).join('\n')).not.toContain('sk-data-home-test')
+    for (const absent of [join(real, 'plugins'), join(real, 'mcp-approvals.json')]) {
+      expect(await stat(absent).catch(() => null)).toBeNull()
+    }
   }, 30_000)
 })
 

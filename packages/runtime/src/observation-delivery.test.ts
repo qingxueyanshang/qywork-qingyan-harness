@@ -316,6 +316,7 @@ const 大选项页: BrowserOptionsPage = {
 
 function browserPort(page: BrowserObservation): BrowserPort {
   return {
+    localFiles: () => {},
     tabs: async () => [
       { tabId: 'bt_1', url: 'https://合成站点.invalid/', title: '合成小页', controlled: true },
     ],

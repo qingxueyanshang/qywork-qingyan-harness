@@ -258,12 +258,24 @@ export interface BrowserDownloadResult {
  * 页面操作执行前拒绝：页级准入失败，或控制连接准备失败，尚未发出页面业务动作。
  * 已发出的动作遇到断连或超时不得声明 `executed:false`，应保留结果不明的回执。
  * `browser_disconnected` 需先对原页重新观察；`browser_busy` 需等待持有者释放；
- * `invalid_argument` 需修正参数；`browser_unavailable` 表示用户已关闭浏览器控制，重试无效。
+ * `invalid_argument` 需修正参数；`browser_unavailable` 表示用户已关闭浏览器控制，重试无效；
+ * `credential_path` 表示页面中已加载读取范围之外的本机文件（`localFiles`），重新加载或离开该页之后才能读取。
  */
 export interface BrowserRefusal {
-  errorKind: 'browser_busy' | 'invalid_argument' | 'browser_disconnected' | 'browser_unavailable'
+  errorKind:
+    | 'browser_busy'
+    | 'invalid_argument'
+    | 'browser_disconnected'
+    | 'browser_unavailable'
+    | 'credential_path'
   executed: false
 }
+
+/**
+ * 页面经 file 协议读取一个本机文件之前的裁决。参数是 file URL；放行返回 `null`，拒绝返回理由。
+ * 结论与文件工具读取同一路径相同：由浏览器工具按本次调用的读取范围构造（`browser.ts` 的 `localFileCheck`）。
+ */
+export type LocalFileCheck = (url: string) => Promise<string | null>
 
 /**
  * 内置浏览器端口：本机原生浏览器资源的窄接口。
@@ -280,6 +292,17 @@ export interface BrowserRefusal {
  * 页面保留给用户接手。
  */
 export interface BrowserPort {
+  /**
+   * 设置本次执行中页面读取本机文件（file 协议）的裁决。浏览器工具在每次调用其他方法之前，按本次调用的
+   * 读取范围设置一次；未设置时一律拒绝。
+   *
+   * 裁决作用于两处，结论相同：
+   * - 已控制的页发出的每个 file 请求（顶层导航、框架导航与子资源），拒绝的请求以「拒绝访问」失败；
+   * - 每次读取页面内容（观察、等待）之前页面中已加载的文档与资源。页面在受控之前（建页时的首次加载、
+   *   两次执行之间、用户接管之前）加载的内容未经裁决，其中有拒绝的文件时本次读取被拒绝
+   *   （`credential_path`），重新加载该页即按裁决加载。
+   */
+  localFiles(check: LocalFileCheck): void
   /** 宿主当前在本工作区中的存活页，包括用户手动打开的页。其他工作区的页不在其中。 */
   tabs(): Promise<BrowserTabInfo[]>
   /**

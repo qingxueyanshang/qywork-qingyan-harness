@@ -5,7 +5,7 @@
  * 命令是否会造成不可逆且超出工作区的后果。不会则放行。
  *
  * 拦截范围：
- * 1. 删除或覆写工作区之外的路径（家目录、系统目录、盘符根目录）
+ * 1. 删除或覆写工作区之外的路径（家目录、全局数据目录、系统目录、盘符根目录）
  * 2. 修改系统状态：提权、关机、格式化、写入块设备
  * 3. 访问凭证文件：私钥、云厂商凭据、包管理器 token，以及本程序的 config.json
  * 4. 把 Python 包装入全局环境（`globalPythonInstall`）：auto 模式下包只装入工作区环境
@@ -104,7 +104,7 @@ const atCommandStart = (body: string): RegExp => new RegExp(CMD_POS + body, 'i')
  *
  * PowerShell 的几项是同一批位置的另一种写法：`$env:APPDATA` / `$env:LOCALAPPDATA` 位于家目录中
  * （`C:\Users\x\AppData\…`），`$env:windir` / `$env:SystemRoot` 即 `C:\Windows`。在没有 bash 的机
- * 器上模型只使用这些写法，不会出现 `~/` 与 `$HOME`。
+ * 器上模型只使用这些写法，不会出现 `~/` 与 `$HOME`。`QYWORK_HOME` 是全局数据目录。
  *
  * 无法取得值时返回空串，该位置按工作区外处理（fail-closed）。
  */
@@ -124,6 +124,10 @@ const OUTSIDE_SYMBOLS: readonly { re: string; value: () => string }[] = [
   { re: '%windir%', value: () => process.env.windir ?? '' },
   // PowerShell 的启动脚本。字面上无法看出它位于家目录中，而写入它等于此后每次启动 shell 都会执行一次。
   { re: String.raw`\$PROFILE\b`, value: () => '' },
+  // 全局数据目录。子进程环境中保留了该变量；未设置时它在命令中展开为空串，按工作区外处理。
+  { re: String.raw`\$\{?QYWORK_HOME\}?`, value: () => process.env.QYWORK_HOME ?? '' },
+  { re: String.raw`\$env:QYWORK_HOME`, value: () => process.env.QYWORK_HOME ?? '' },
+  { re: '%QYWORK_HOME%', value: () => process.env.QYWORK_HOME ?? '' },
 ]
 
 const OUTSIDE_SYMBOL_RE = OUTSIDE_SYMBOLS.map((s) => s.re).join('|')
@@ -138,9 +142,9 @@ const OUTSIDE_SYMBOL_RE = OUTSIDE_SYMBOLS.map((s) => s.re).join('|')
  * 2. `.agents/` 本应可写：`write_memory` 向 `.agents/memory/` 写入内容。
  *    shell 拦截而工具不拦截，会对同一件事形成两套规则。
  *
- * 需要保护的是本程序的全局目录 `~/.qywork/`（明文 apiKey、权限模式、
- * 全部会话历史）。它位于家目录，写入由工作区外规则拦截，读取由凭证规则拦截，
- * 无需单独设置规则。这两个目录名称相似，但位置与含义完全不同。
+ * 需要保护的是本程序的全局数据目录（`~/.qywork/`，或 `QYWORK_HOME`：明文 apiKey、权限模式、
+ * 全部会话历史）。位置判定把它与家目录同样处理（`paths/place.ts` 的 `guardedDirs`），写入由工作区外规则
+ * 拦截；其中的配置文件由凭证规则拦截读取。这两个目录名称相似，但位置与含义完全不同。
  *
  * PowerShell 同样不添加：上述两条理由与外层运行的 shell 无关，
  * `Set-Content .qy\mcp.json` 与 `echo x > .qy/mcp.json` 是同一操作。
@@ -464,11 +468,11 @@ interface PendingHeredoc {
  * 当前目录未知（`cd $X` 之后）时，相对路径的写入目标按无法确定处理。
  *
  * 写入目标无法从命令文本确定（变量、管道输入、子表达式、`xargs` 等之后的写入命令）时，
- * 当前目录位于家目录或系统目录中即拒绝，命令中出现任一工作区外引用同样拒绝（fail-closed）。
+ * 当前目录位于家目录、全局数据目录或系统目录中即拒绝，命令中出现任一工作区外引用同样拒绝（fail-closed）。
  *
  * 必须是确定性规则：交给模型判定时，`Get-ChildItem $HOME -Recurse -Filter *.pem` 实测连续运行两次
- * 给出了相反结论。只判定家目录、`/etc`、`C:\Windows`，不判定所有绝对路径：其他绝对路径可能是
- * 用户的另一个项目目录，误拒代价过高。
+ * 给出了相反结论。只判定家目录、全局数据目录、`/etc`、`C:\Windows`，不判定所有绝对路径：其他绝对路径
+ * 可能是用户的另一个项目目录，误拒代价过高。
  */
 function outsideWrite(
   command: string,

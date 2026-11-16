@@ -10,7 +10,6 @@
 
 import { realpathSync } from 'node:fs'
 import { readlink, realpath, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   CREDENTIAL_FILES,
@@ -152,7 +151,7 @@ export interface WorkspaceRoots {
   /**
    * 读写范围与命令裁决（`decideCommand`）相同：
    * - 读取：根目录之外的位置同样可读；内核沙箱生效的平台上，沙箱屏蔽的凭证目录（`defaultMaskPaths`）除外。
-   * - 写入：根目录之外、且不在家目录或系统目录中的位置同样可写。
+   * - 写入：根目录之外、且不在家目录、全局数据目录或系统目录中的位置同样可写。
    * - 凭证文件（`mentionsCredentialFile`）在任何位置都拒绝，包括根目录内。
    *
    * 由 `rootsOf` 为模型的工具设置。服务端直接传入工作区路径的调用（画布文件、界面中的文件操作、插件）
@@ -237,8 +236,8 @@ export function writableRoots(roots: RootsInput): WorkspaceRoots {
 }
 
 /**
- * `run_command` 的工作目录参数，必须已存在。范围与写入相同：命令以它为基准写入相对路径，根目录之外位于家目录或
- * 系统目录中的位置拒绝，其余位置允许，与命令裁决对 `cd` 之后相对路径写入的判定相同（`placePath` 的三类）。
+ * `run_command` 的工作目录参数，必须已存在。范围与写入相同：命令以它为基准写入相对路径，根目录之外位于家目录、
+ * 全局数据目录或系统目录中的位置拒绝，其余位置允许，与命令裁决对 `cd` 之后相对路径写入的判定相同（`placePath` 的三类）。
  * 不拦截受保护目录：命令裁决同样不拦截（`policy.ts`）。
  */
 export async function resolveCommandDir(roots: RootsInput, candidate: string): Promise<string> {
@@ -329,10 +328,8 @@ async function resolveScoped(
     if (real !== null) rootReals.push(real)
   }
 
-  // 家目录同样取真实路径：目标已展开符号链接，以字面家目录比较时，经链接指向别处的家目录不被识别。
-  // 家目录不存在时按字面路径判定。
-  const home = await realpathOf(homedir()).catch(() => homedir())
-  const { place } = placePath(workspaceReal, targetReal, rootReals, home)
+  // 家目录与全局数据目录按 `placePath` 缺省的清单判定，其中已含真实路径，与命令裁决使用同一份。
+  const { place } = placePath(workspaceReal, targetReal, rootReals)
   /*
    * **先判定边界，再判定存在性。该顺序是安全属性，不是风格。**
    *

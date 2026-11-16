@@ -30,8 +30,8 @@
  * 共用本模块，界面不得另行扫描，否则菜单描述的是一个技能，执行的是另一个。
  */
 
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { globalScopeRoot } from '@qywork/agent'
 
 export type Scope = 'builtin' | 'project' | 'global'
 
@@ -46,18 +46,8 @@ export interface ScopeRoots {
   builtin: string | null
   /** `<workspaceRoot>/.agents`。 */
   project: string
-  /** `~/.qywork`（`configDir()`）。 */
+  /** 全局数据目录：`~/.qywork`，可由 `QYWORK_HOME` 修改（agent 的 `globalScopeRoot`）。 */
   global: string
-}
-
-/**
- * 全局层的根目录：`~/.qywork`（可由 `QYWORK_HOME` 修改）。
- *
- * 此处是唯一的定义，`runtime` 的 `configDir()` 调用的就是本函数。配置文件与全局
- * 记忆 / 技能位于同一目录树下，两处分别计算路径时，修改环境变量后必然不一致。
- */
-export function globalScopeRoot(): string {
-  return process.env.QYWORK_HOME ?? join(homedir(), '.qywork')
 }
 
 /**

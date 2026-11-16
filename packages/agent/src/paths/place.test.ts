@@ -1,9 +1,13 @@
 /**
- * 覆盖范围：`paths/place.ts`（路径位置的判定，命令裁决与文件工具共用）。
- * 家目录均显式传入，Windows 写法与 POSIX 写法的用例在任何平台上结论相同。
+ * 覆盖范围：`paths/place.ts`（路径位置的判定，命令裁决与文件工具共用）与 `paths/global-root.ts`。
+ * 受保护目录（家目录与全局数据目录）在判定用例中显式传入，Windows 写法与 POSIX 写法的用例在任何平台上结论相同；
+ * 缺省清单的用例读取本机的家目录与 `QYWORK_HOME`。
  */
-import { describe, expect, test } from 'bun:test'
-import { isAbsolutePath, isOutsideRelative, placePath } from './place.ts'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join, parse, resolve } from 'node:path'
+import { guardedDirs, isAbsolutePath, isOutsideRelative, placePath } from './place.ts'
 
 const WIN_HOME = 'C:\\Users\\x'
 const WIN_WS = 'C:\\Users\\x\\a\\ws'
@@ -11,14 +15,14 @@ const POSIX_HOME = '/home/u'
 const POSIX_WS = '/home/u/a/ws'
 
 const placeOf = (cwd: string, path: string, home: string, roots: readonly string[] = [cwd]) =>
-  placePath(cwd, path, roots, home).place
+  placePath(cwd, path, roots, [home]).place
 
 describe('相对路径先消去 .. 再判定', () => {
   test('两级 .. 回到家目录：Windows 写法与 POSIX 写法', () => {
     expect(placeOf(WIN_WS, '../..', WIN_HOME)).toBe('home-or-system')
     expect(placeOf(WIN_WS, '..\\..\\.qywork\\config.json', WIN_HOME)).toBe('home-or-system')
     expect(placeOf(POSIX_WS, '../../.qywork/config.json', POSIX_HOME)).toBe('home-or-system')
-    expect(placePath(POSIX_WS, '../..', [POSIX_WS], POSIX_HOME).path).toBe(POSIX_HOME)
+    expect(placePath(POSIX_WS, '../..', [POSIX_WS], [POSIX_HOME]).path).toBe(POSIX_HOME)
   })
 
   test('含 .. 的绝对路径按消去后的位置判定', () => {
@@ -116,4 +120,53 @@ test('relative 结果中只有完整的 .. 段与绝对路径表示越出', () =
   for (const rel of ['', 'a', '..cache', '..cache/a', '...', 'a/..b']) {
     expect(isOutsideRelative(rel)).toBe(false)
   }
+})
+
+/**
+ * 全局数据目录（`QYWORK_HOME`）可以位于家目录之外，其中的插件、MCP 启动确认与会话账本同样不能写入。
+ *
+ * 原始失败形状：位置判定只比较家目录，`QYWORK_HOME` 指向家目录之外时，该目录中的路径判为 `other`，
+ * 文件工具与命令裁决都放行写入。
+ */
+describe('全局数据目录与家目录同样处理', () => {
+  const before = process.env.QYWORK_HOME
+  afterEach(() => {
+    if (before === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = before
+  })
+
+  test('位于全局数据目录中或包含它的位置；名称相近的同级目录与其他位置不受影响', () => {
+    const at = (path: string) => placePath(WIN_WS, path, [WIN_WS], [WIN_HOME, 'D:\\qyhome']).place
+    expect(at('D:/qyhome/plugins/p/index.js')).toBe('home-or-system')
+    expect(at('d:\\QYHOME\\qywork.sqlite3')).toBe('home-or-system')
+    expect(at('D:\\')).toBe('home-or-system')
+    expect(at('D:/qyhome2/a.txt')).toBe('other')
+    expect(at('D:/other/a.txt')).toBe('other')
+  })
+
+  test('缺省清单读取 QYWORK_HOME：家目录之外的全局数据目录中的位置不是其他位置', () => {
+    const data = join(parse(homedir()).root, `qywork-absent-${process.pid}`, 'data')
+    const ws = join(parse(homedir()).root, `qywork-absent-${process.pid}`, 'ws')
+    process.env.QYWORK_HOME = data
+    expect(placePath(ws, join(data, 'plugins', 'p', 'index.js'), [ws]).place).toBe('home-or-system')
+    expect(placePath(ws, '../data/mcp-approvals.json', [ws]).place).toBe('home-or-system')
+    expect(placePath(ws, '../elsewhere/a.txt', [ws]).place).toBe('other')
+  })
+
+  /**
+   * 命令中是字面路径，文件工具判定的是真实路径。缺省清单只列字面路径时，经真实路径写入
+   * 联接目标中的位置判为 `other`，两侧结论不同。
+   */
+  test('全局数据目录经目录联接指向别处时，缺省清单同时列出字面路径与真实路径', () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'qywork-place-')))
+    const real = join(base, 'real')
+    const link = join(base, 'link')
+    mkdirSync(real)
+    symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir')
+    process.env.QYWORK_HOME = link
+    const dirs = guardedDirs()
+    expect(dirs).toContain(resolve(link))
+    expect(dirs).toContain(real)
+    expect(dirs).toContain(resolve(homedir()))
+  })
 })

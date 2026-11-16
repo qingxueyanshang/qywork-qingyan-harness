@@ -14,9 +14,10 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { globalScopeRoot } from '@qywork/agent'
 import type { McpConfig } from '@qywork/mcp'
 import { normalizeWorkspaceRoot } from '@qywork/store'
-import { globalScopeRoot, withFileLocks } from '@qywork/tools'
+import { withFileLocks } from '@qywork/tools'
 
 type Approvals = Record<string, Record<string, string>>
 type McpServerSpec = McpConfig['servers'][string]

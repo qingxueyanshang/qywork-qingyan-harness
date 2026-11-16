@@ -7,6 +7,7 @@
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
+import { globalScopeRoot } from '@qywork/agent'
 import {
   applyTransportCapabilities,
   builtinCatalog,
@@ -49,11 +50,7 @@ import {
   type ThinkingMode,
   TOOL_SCHEMA_MODES,
 } from '@qywork/core'
-import {
-  CREDENTIAL_NAME_PATTERN,
-  globalScopeRoot,
-  normalizeAdditionalDirectories,
-} from '@qywork/tools'
+import { CREDENTIAL_NAME_PATTERN, normalizeAdditionalDirectories } from '@qywork/tools'
 
 /**
  * 权限模式。只有两种，不提供逐次审批。
@@ -486,9 +483,9 @@ export interface ResolvedModel {
 /**
  * 全局层的根目录。配置文件、全局记忆、全局技能都位于该目录下。
  *
- * 定义在 `@qywork/tools`：该包的作用域解析使用同一个根目录，而 tools 位于更底层，
- * 无法引用本包。两处各自计算时，修改 `QYWORK_HOME` 会使配置与全局记忆
- * 位于两个不同的目录。
+ * 定义在 `@qywork/agent`：tools 的作用域解析与 agent 的凭证、位置判定使用同一个根目录，而这两个包
+ * 位于更底层，无法引用本包。各自计算时，修改 `QYWORK_HOME` 会使配置与全局记忆位于两个不同的目录，
+ * 凭证判定保护的也不再是实际的配置文件。
  */
 export function configDir(): string {
   return globalScopeRoot()

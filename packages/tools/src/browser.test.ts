@@ -21,6 +21,7 @@ import {
   type BrowserOptionsPage,
   BrowserPort,
   type BrowserRefusal,
+  type LocalFileCheck,
 } from './browser/port.ts'
 import {
   browserActTool,
@@ -47,12 +48,24 @@ interface Recorded {
   input: unknown
 }
 
-function fakeBrowser(over: Partial<BrowserPort> = {}): { port: BrowserPort; calls: Recorded[] } {
+/**
+ * 记录调用的假端口。`localFiles` 不计入 `calls`：它在每次调用端口之前设置，不是页面操作；
+ * 最近一次设置的裁决由 `files()` 取得。
+ */
+function fakeBrowser(over: Partial<BrowserPort> = {}): {
+  port: BrowserPort
+  calls: Recorded[]
+  files: () => LocalFileCheck | null
+} {
   const calls: Recorded[] = []
   const note = (method: string, input: unknown) => {
     calls.push({ method, input })
   }
+  let files: LocalFileCheck | null = null
   const base: BrowserPort = {
+    localFiles: (check) => {
+      files = check
+    },
     tabs: async () => {
       note('tabs', null)
       return [
@@ -109,7 +122,7 @@ function fakeBrowser(over: Partial<BrowserPort> = {}): { port: BrowserPort; call
     },
     release: async () => {},
   }
-  return { port: { ...base, ...over }, calls }
+  return { port: { ...base, ...over }, calls, files: () => files }
 }
 
 function ctxWith(
@@ -330,6 +343,38 @@ describe('发送动作之前的终态', () => {
       expect(r.status).toBe('success')
       expect(calls.at(-1)).toEqual({ method: 'open', input: pathToFileURL(outsideFile).href })
     }
+  })
+
+  /**
+   * 页面加载之后自行读取的本机文件（子资源、框架、页内跳转）由端口按这一裁决拦截。
+   *
+   * 原始失败形状：端口不知道本次调用的读取范围，只有作为导航目标的地址经过裁决，
+   * 页面中指向凭证文件的 iframe 与脚本跳转直接加载，随后的观察交出文件内容。
+   */
+  test('每次调用端口之前交出本次调用的本机文件裁决：凭证文件拒绝，其余按读取范围放行，完全访问下不裁决', async () => {
+    const root = await workspace()
+    const outside = await workspace()
+    const credential = join(outside, '.npmrc')
+    await writeFile(credential, 'token\n')
+    const link = join(root, 'linked')
+    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+    const { port, files } = fakeBrowser()
+    for (const spec of browserTools) {
+      const before = files()
+      await spec.fn({ action: 'list', tabId: 'bt_1', selector: '#go' }, ctxWith(root, port))
+      expect(files()).not.toBe(before)
+    }
+    const check = files()
+    for (const path of [credential, join(link, '.npmrc')]) {
+      expect(await check?.(pathToFileURL(path).href)).toContain('凭证')
+    }
+    for (const path of [join(outside, 'a.txt'), join(root, 'missing.html')]) {
+      expect(await check?.(pathToFileURL(path).href)).toBeNull()
+    }
+
+    const full = { ...ctxWith(root, port), unrestrictedPaths: true }
+    await browserObserveTool.fn({ tabId: 'bt_1' }, full)
+    expect(await files()?.(pathToFileURL(credential).href)).toBeNull()
   })
 
   test('无法识别的动作名直接拒绝，不推测近似的动作', async () => {

@@ -9,12 +9,15 @@
  * 2. 取消之后发送通道只放行 teardown。清理命令（detach、等待器 dispose、收尾 keyUp 与
  *    mouseReleased）必须能够发出，否则页面保持按下状态，人工接管后输入行为异常。
  * 3. 方法集为白名单。不对上层暴露任意方法调用，`Browser` 域只放行 `getVersion`，
- *    `Network` 域只放行 `enable`。
+ *    `Network` 域只放行 `enable`，`Fetch` 域只放行拦截 file 请求所需的三个方法。
  * 4. 等待只观察，不执行动作。页内等待器使用 `MutationObserver` 加定时复核，
  *    不使用 `requestAnimationFrame`：子视图移出可视区时不再产生帧，依赖帧驱动的轮询会停滞。
+ * 5. 页会话发出的每个 file 请求都先经 `connect` 传入的裁决函数，再继续或以「拒绝访问」失败。
+ *    暂停中的请求在取消之后仍须应答：不应答时 detach 之后它按原样继续加载，未经裁决。
  */
 
 import { log } from '@qywork/core'
+import type { LocalFileCheck } from '@qywork/tools'
 
 /** 允许发出的域。增加一个域即扩大模型可访问的协议范围，须单独评估。 */
 const ALLOWED_DOMAINS = new Set([
@@ -31,19 +34,30 @@ const ALLOWED_DOMAINS = new Set([
  * 所在域未整体放行、按方法单独放行的命令。
  *
  * `Browser` 域只用于读取版本，下载行为一律经由宿主的原生钩子。`Network` 域只启用事件，
- * 供动作之后的静默判定统计未结束的请求；读取响应正文等其他方法一律拒绝。
+ * 供动作之后的静默判定统计未结束的请求；读取响应正文等其他方法一律拒绝。`Fetch` 域只用于
+ * 裁决 file 请求：启用拦截、继续、以拒绝访问失败；改写请求与响应的方法一律拒绝。
  */
-const ALLOWED_METHODS = new Set(['Browser.getVersion', 'Network.enable'])
+const ALLOWED_METHODS = new Set([
+  'Browser.getVersion',
+  'Network.enable',
+  'Fetch.enable',
+  'Fetch.continueRequest',
+  'Fetch.failRequest',
+])
+
+/** 拦截的请求：只拦截 file 协议，http 与 https 请求不经过裁决，也不增加往返。 */
+const FILE_PATTERNS = [{ urlPattern: 'file://*' }]
 
 /**
  * 取消之后仍允许发出的命令。
  *
  * 该规则必须实现为白名单，不能只写在文档中：取消关闭发送通道后，
  * 按业务路径补发的 keyUp 会被取消状态拦截，页面因此保持按下状态。鼠标同理。
+ * 暂停中的 file 请求的应答（`fetch`）同理，见文件头第 5 条。
  */
-const TEARDOWN_TAGS = new Set(['detach', 'dispose', 'keyup', 'mouseup'])
+const TEARDOWN_TAGS = new Set(['detach', 'dispose', 'keyup', 'mouseup', 'fetch'])
 
-export type TeardownTag = 'detach' | 'dispose' | 'keyup' | 'mouseup'
+export type TeardownTag = 'detach' | 'dispose' | 'keyup' | 'mouseup' | 'fetch'
 
 export class CdpError extends Error {}
 export class CdpCancelledError extends CdpError {}
@@ -277,9 +291,12 @@ export class CdpClient {
   #watchers = new Set<{ sessionId: string; listener: (event: CdpEvent) => void }>()
   #businessClosed = false
   #cancelled = false
+  /** 页会话中 file 请求的裁决。一个客户端只属于一次执行，其页会话共用该执行的读取范围。 */
+  #localFiles: LocalFileCheck
 
-  private constructor(socket: WebSocket) {
+  private constructor(socket: WebSocket, localFiles: LocalFileCheck) {
     this.#socket = socket
+    this.#localFiles = localFiles
     socket.onmessage = (ev) => this.#onMessage(String(ev.data))
     socket.onclose = () => {
       this.#halt.abort()
@@ -288,8 +305,16 @@ export class CdpClient {
     socket.onerror = () => {}
   }
 
-  /** 连接宿主分配的回环端点。端点在第一个子视图创建之后才开始监听。 */
-  static async connect(debugPort: number, timeoutMs = 10_000): Promise<CdpClient> {
+  /**
+   * 连接宿主分配的回环端点。端点在第一个子视图创建之后才开始监听。
+   *
+   * `localFiles` 裁决本客户端页会话中的每个 file 请求（文件头第 5 条）；它抛出异常时按拒绝处理。
+   */
+  static async connect(
+    debugPort: number,
+    localFiles: LocalFileCheck,
+    timeoutMs = 10_000,
+  ): Promise<CdpClient> {
     try {
       const res = await fetch(`http://127.0.0.1:${debugPort}/json/version`, {
         signal: AbortSignal.timeout(timeoutMs),
@@ -313,7 +338,7 @@ export class CdpClient {
         socket.onerror = () => fail('CDP 连接失败')
         socket.onclose = () => fail('CDP 握手期间连接已断开')
       })
-      return new CdpClient(socket)
+      return new CdpClient(socket, localFiles)
     } catch (err) {
       throw new CdpDisconnectedError(
         `控制连接建立失败：${err instanceof Error ? err.message : String(err)}`,
@@ -437,14 +462,23 @@ export class CdpClient {
   /**
    * 页会话初始化。
    *
-   * 网络事件或焦点仿真被拒绝时撤销控制，不换用其他命令重试：缺少网络事件时，动作之后的
-   * 静默判定不包含未结束的请求；缺少焦点仿真时，网页中的输入框焦点判定不成立。
-   * 焦点仿真是否生效只依据命令回包：CDP 合成点击会使 `document.hasFocus()` 变为 true 并保持，
+   * file 请求拦截、网络事件或焦点仿真被拒绝时撤销控制，不换用其他命令重试：缺少拦截时，页面读取的本机文件
+   * 不经裁决；缺少网络事件时，动作之后的静默判定不包含未结束的请求；缺少焦点仿真时，网页中的输入框焦点
+   * 判定不成立。焦点仿真是否生效只依据命令回包：CDP 合成点击会使 `document.hasFocus()` 变为 true 并保持，
    * 依据它判定会得到假阳性。
    *
-   * `Network.enable` 只在页会话上发送，子会话不启用：跨站 iframe 发出的请求不计入静默判定。
+   * file 请求拦截最先启用：此后发出的请求才经过裁决。`Network.enable` 与拦截只在页会话上发送，子会话不启用：
+   * 跨站 iframe 发出的请求不计入静默判定，跨站 iframe 也无法读取 file 地址。
    */
   async #initPageSession(sessionId: string): Promise<void> {
+    try {
+      await this.send('Fetch.enable', { patterns: FILE_PATTERNS }, { sessionId })
+    } catch (err) {
+      if (err instanceof CdpDisconnectedError) throw err
+      throw new CdpInitError(
+        `file 请求拦截被拒绝：${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
     await this.#watchFrames(sessionId)
     await this.send('Runtime.enable', {}, { sessionId })
     await this.send('DOM.enable', {}, { sessionId })
@@ -1002,6 +1036,10 @@ export class CdpClient {
       this.#childSessions.delete(sessionId)
       this.#frameLoads.delete(sessionId)
     }
+    if (msg.method === 'Fetch.requestPaused') {
+      void this.#answerFileRequest(msg.sessionId ?? '', msg.params ?? {})
+      return
+    }
     this.#trackFrameLoad(msg)
     if (!msg.method) return
     const event: CdpEvent = { method: msg.method, params: msg.params ?? {} }
@@ -1013,6 +1051,31 @@ export class CdpClient {
         log.warn('browser', `事件订阅出错：${err instanceof Error ? err.message : String(err)}`)
       }
     }
+  }
+
+  /**
+   * 应答一个暂停中的 file 请求：裁决放行即继续，拒绝或裁决出错即以「拒绝访问」失败，浏览器显示
+   * 「拒绝访问文件」的错误页。按 teardown 身份发送：取消之后仍须应答，见文件头第 5 条。
+   * 会话已经 detach 时应答失败，只记录日志：该请求已按原样继续，其结果由读取页面内容之前的核对处理
+   * （`coordinator.ts` 的 `#assertLocalFiles`）。
+   */
+  async #answerFileRequest(sessionId: string, params: Record<string, unknown>): Promise<void> {
+    const requestId = String(params.requestId ?? '')
+    const url = String((params.request as { url?: unknown } | undefined)?.url ?? '')
+    const reason = await this.#localFiles(url).catch((err: unknown) =>
+      err instanceof Error ? err.message : String(err),
+    )
+    const answer =
+      reason === null
+        ? this.send('Fetch.continueRequest', { requestId }, { sessionId, teardown: 'fetch' })
+        : this.send(
+            'Fetch.failRequest',
+            { requestId, errorReason: 'AccessDenied' },
+            { sessionId, teardown: 'fetch' },
+          )
+    await answer.catch((err: unknown) => {
+      log.info('browser', `file 请求未能应答：${err instanceof Error ? err.message : String(err)}`)
+    })
   }
 
   /**

@@ -1717,6 +1717,7 @@ describe('浏览器控制与本轮执行绑定', () => {
       truncated: false,
     }
     const port = {
+      localFiles: () => {},
       tabs: async () => [tab],
       open: async () => tab,
       bind: async () => tab,

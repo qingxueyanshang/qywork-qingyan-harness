@@ -18,7 +18,8 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { pathToFileURL } from 'node:url'
+import { openBatchBudget, Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type {
   BrowserEventFrame,
@@ -170,6 +171,8 @@ interface Devtools {
   request: { type: string; finishMs: number | null; mimeType?: string } | null
   /** 向页会话发送一条协议事件。 */
   emit: (method: string, params: Record<string, unknown>) => void
+  /** `Page.getResourceTree` 返回的帧树：各帧的文档地址与已加载的资源。缺省为一个 http 文档。 */
+  resourceTree: Record<string, unknown>
 }
 
 /** 假调试端点对 `Page.captureScreenshot` 返回的截图。 */
@@ -217,6 +220,7 @@ function fakeDevtools(marker: string): Devtools {
     calls: [],
     request: null,
     emit: send,
+    resourceTree: { frame: { id: 'frame-1', url: 'http://127.0.0.1:1/page' }, resources: [] },
   }
   const server = Bun.serve({
     port: 0,
@@ -404,6 +408,7 @@ function fakeDevtools(marker: string): Devtools {
           } else result = { result: { value: { waiters: 0, observers: 0, timers: 0 } } }
         }
         if (cmd.method === 'Page.captureScreenshot') result = { data: SHOT }
+        if (cmd.method === 'Page.getResourceTree') result = { frameTree: state.resourceTree }
         const reply = JSON.stringify(
           error === null
             ? { id: cmd.id, result }
@@ -661,7 +666,7 @@ async function ready(
   return { ...fixture, host, devtools }
 }
 
-/** 使用真实工具出口核对模型收到的错误回执。 */
+/** 使用真实工具出口核对模型收到的回执。投递额度不设上限：成功的观察须经投递才能写入结果。 */
 function browserContext(dir: string, browser: BrowserPort | undefined): ToolContext {
   return {
     workspaceRoot: dir,
@@ -671,7 +676,7 @@ function browserContext(dir: string, browser: BrowserPort | undefined): ToolCont
     contextWindow: 200_000,
     density: DEFAULT_DENSITY,
     vision: null,
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
     sink: null,
     port: new Ports(browser ? [provide(BrowserPort, browser)] : []).get,
     signal: new AbortController().signal,
@@ -1417,6 +1422,122 @@ test('控制连接建立失败明确声明页面操作未执行，端点恢复�
   expect(devtools.commands()).toBe(0)
   devtools.rejectConnections = false
   expect((await port?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
+})
+
+/**
+ * 页面中指向凭证文件的帧在受控之前已加载（建页时的首次加载即如此）：观察与等待都不采集页面内容，回执说明
+ * 重新加载；在拦截下重新加载之后该帧显示错误页，观察照常进行。工作区中的本地页面与其子资源不受影响。
+ *
+ * 原始失败形状：观察按 DOM 与 AX 树采集全部同进程帧，`<iframe src="file:///…/.ssh/id_rsa">` 中的私钥
+ * 随元素表交给模型。
+ */
+test('受控之前加载了凭证文件的页：读取页面内容之前拒绝，重新加载之后照常观察', async () => {
+  const { handle, devtools, dir } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const registry = new ToolRegistry()
+  registerBuiltinTools(registry, new Ports([provide(BrowserPort, {} as BrowserPort)]))
+  const page = pathToFileURL(join(dir, 'site', 'index.html')).href
+  const style = pathToFileURL(join(dir, 'site', 'style.css')).href
+  const key = pathToFileURL(join(dir, 'home', '.ssh', 'id_rsa')).href
+  await port?.open(page)
+  devtools.resourceTree = {
+    frame: { id: 'frame-1', url: page },
+    resources: [{ url: style, type: 'Stylesheet' }],
+    childFrames: [{ frame: { id: 'frame-2', url: key }, resources: [] }],
+  }
+  const ctx = browserContext(dir, port)
+  const observed = await registry.get('browser_observe')?.fn({ tabId: 'bt_1' }, ctx)
+  expect(observed).toMatchObject({
+    status: 'failure',
+    executed: false,
+    errorKind: 'credential_path',
+  })
+  expect(observed?.message).toContain(key)
+  expect(observed?.message).toContain('reload')
+  const waited = await registry.get('browser_wait')?.fn({ tabId: 'bt_1', selector: 'pre' }, ctx)
+  expect(waited).toMatchObject({ status: 'failure', executed: false, errorKind: 'credential_path' })
+  // 页面内容一项都没有读取：DOM 快照、AX 树、截图与页内等待器均未发出。
+  const reads = devtools.calls.filter(
+    (c) =>
+      ['DOM.getDocument', 'Accessibility.getFullAXTree', 'Page.captureScreenshot'].includes(
+        c.method,
+      ) || String(c.params.expression ?? '').startsWith('window.__qyworkWait('),
+  )
+  expect(reads).toEqual([])
+
+  // 拦截下重新加载：凭证帧以拒绝访问失败并显示错误页，作为图片引用的同一文件加载失败。
+  devtools.resourceTree = {
+    frame: { id: 'frame-1', url: page },
+    resources: [
+      { url: style, type: 'Stylesheet' },
+      { url: key, type: 'Image', failed: true },
+    ],
+    childFrames: [
+      { frame: { id: 'frame-2', url: 'chrome-error://chromewebdata/', unreachableUrl: key } },
+    ],
+  }
+  const reloaded = await registry
+    .get('browser_navigate')
+    ?.fn({ tabId: 'bt_1', action: 'reload' }, ctx)
+  expect(reloaded?.status).toBe('success')
+})
+
+/**
+ * 受控期间页面发出的 file 请求按最近一次调用的读取范围逐个裁决：凭证文件以拒绝访问失败，工作区中的文件继续加载；
+ * 切换为完全访问之后的调用交出不裁决的范围。
+ *
+ * 原始失败形状：页会话不拦截任何请求，受控期间页面的脚本跳转与新插入的 iframe 直接加载凭证文件。
+ */
+test('受控期间页面发出的 file 请求按本次调用的读取范围裁决', async () => {
+  const { handle, devtools, dir } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const registry = new ToolRegistry()
+  registerBuiltinTools(registry, new Ports([provide(BrowserPort, {} as BrowserPort)]))
+  const key = pathToFileURL(join(dir, 'home', '.ssh', 'id_rsa')).href
+  const local = pathToFileURL(join(dir, 'site', 'next.html')).href
+  await port?.open('http://127.0.0.1:1/page')
+  const ctx = browserContext(dir, port)
+  expect(await registry.get('browser_observe')?.fn({ tabId: 'bt_1' }, ctx)).toMatchObject({
+    status: 'success',
+  })
+  const answer = (requestId: string) =>
+    devtools.calls.find(
+      (c) =>
+        c.method !== 'Fetch.enable' &&
+        c.method.startsWith('Fetch.') &&
+        c.params.requestId === requestId,
+    )
+  const paused = (requestId: string, url: string) =>
+    devtools.emit('Fetch.requestPaused', { requestId, request: { url } })
+  paused('r1', key)
+  paused('r2', local)
+  await until(() => answer('r1') !== undefined && answer('r2') !== undefined, '两个请求均已应答')
+  expect(answer('r1')).toMatchObject({
+    method: 'Fetch.failRequest',
+    params: { errorReason: 'AccessDenied' },
+  })
+  expect(answer('r2')?.method).toBe('Fetch.continueRequest')
+
+  await registry.get('browser_observe')?.fn({ tabId: 'bt_1' }, { ...ctx, unrestrictedPaths: true })
+  paused('r3', key)
+  await until(() => answer('r3') !== undefined, '完全访问下的请求已应答')
+  expect(answer('r3')?.method).toBe('Fetch.continueRequest')
+})
+
+test('浏览器工具从未设置本机文件裁决的执行中，file 请求一律拒绝', async () => {
+  const { handle, devtools, dir } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  await port?.open('http://127.0.0.1:1/page')
+  await port?.observe({ tabId: 'bt_1' })
+  devtools.emit('Fetch.requestPaused', {
+    requestId: 'r1',
+    request: { url: pathToFileURL(join(dir, 'site', 'index.html')).href },
+  })
+  await until(
+    () => devtools.calls.some((c) => c.method === 'Fetch.failRequest'),
+    '未设置裁决时的请求已应答',
+  )
+  expect(devtools.calls.some((c) => c.method === 'Fetch.continueRequest')).toBe(false)
 })
 
 test('点击发出后 CDP 断连时保留结果不明，不重放点击，下一次观察时恢复', async () => {

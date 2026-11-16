@@ -16,7 +16,8 @@
  *    `fill` 与 `select` 的 `text`：
  *    空串分别表示清空输入框与选中值为空的选项，只有 `null` 才视为未提供。
  * 4. **本地预览、上传与下载的路径先裁决再交给端口。** 使用本轮会话的根目录清单（`rootsOf`），
- *    与内置文件工具采用同一套判定；端口只按裁决后的绝对路径操作。
+ *    与内置文件工具采用同一套判定；端口只按裁决后的绝对路径操作。页面加载之后自行经 file 协议读取的文件
+ *    （子资源、框架、页内跳转）同样按这一判定，裁决函数在每次调用端口之前经 `localFiles` 交给端口。
  *
  * `executed` 优先采用端口声明的执行前拒绝；其余异常按是否已进入端口保守判定，
  * 避免将已发出的页面动作标记为未执行。
@@ -45,6 +46,7 @@ import {
   BrowserPort,
   type BrowserWaitState,
   type FollowUpObservation,
+  type LocalFileCheck,
 } from './browser/port.ts'
 import { browserResult, isOptionsPage, MAX_META_CHARS } from './browser-results.ts'
 import { resolveInWorkspace, resolveWritablePath, rootsOf } from './paths.ts'
@@ -375,6 +377,24 @@ async function browserUrl(raw: unknown, ctx: ToolContext): Promise<string> {
   return url.toString()
 }
 
+/**
+ * 页面经 file 协议读取本机文件的裁决：与 `browserUrl` 及文件工具使用同一个路径解析与本次调用的读取范围，
+ * 凭证文件拒绝，「完全访问」下不裁决。文件不存在时放行，由浏览器显示其自身的错误页。
+ *
+ * 任何异常都按拒绝返回：无法裁决的读取不放行。
+ */
+function localFileCheck(ctx: ToolContext): LocalFileCheck {
+  const roots = rootsOf(ctx)
+  return async (url) => {
+    try {
+      await resolveInWorkspace(roots, fileURLToPath(url), { literal: true })
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }
+}
+
 const NO_PORT = {
   status: 'failure',
   executed: false,
@@ -439,6 +459,7 @@ async function onBrowser(
   const browser = ctx.port(BrowserPort)
   if (!browser) return NO_PORT
   if (ctx.signal.aborted) return STOPPED
+  browser.localFiles(localFileCheck(ctx))
 
   let entered = false
   const send: PortCall = (call) => {

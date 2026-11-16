@@ -994,7 +994,7 @@ function manyOptions(count: number): OptionModel[] {
 }
 
 async function connect(page: FakePage): Promise<PageHandle> {
-  const client = await CdpClient.connect(page.server.port ?? 0)
+  const client = await CdpClient.connect(page.server.port ?? 0, async () => null)
   cleanups.push(() => client.close())
   const { sessionId } = await client.attachByMarker('marker-1')
   return { client, sessionId, tabId: 'bt_1' }

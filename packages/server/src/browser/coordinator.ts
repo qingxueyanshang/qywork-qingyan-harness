@@ -7,7 +7,7 @@
  * 此后该会话的每一条消息都能直接 observe/act：协调器在第一次操作时按会话归属自动附加
  * CDP 会话，无需交接。归属记录在原生宿主上（`Tab.conversation_id`），删除会话即关闭其名下的页。
  *
- * 三条边界：
+ * 四条边界：
  *
  * 1. **控制槽按执行者分配，互斥粒度为单页。** 每次执行各有独立的 CDP 连接、页会话表
  *    与观察表，同一会话的父子与并行成员各自操作自己的页；两个执行者访问同一页时，后到的
@@ -17,6 +17,8 @@
  *    用户页同样只在本工作区中可见。在此基础上再判定会话归属：用户页须由用户在聊天中点名、模型
  *    `bind` 之后才归本会话。
  * 3. **宿主断开或重连时全部控制失效**：丢弃 CDP 连接与页会话；归属保留在宿主上，重连后继续使用。
+ * 4. **页面读取的本机文件按浏览器工具交来的读取范围裁决**（端口的 `localFiles`）：受控期间逐个 file 请求
+ *    裁决（`cdp.ts`），读取页面内容之前核对页面中已加载的文档与资源（`#assertLocalFiles`）。
  */
 
 import { stat } from 'node:fs/promises'
@@ -34,6 +36,7 @@ import type {
   BrowserWaitResult,
   BrowserWaitState,
   FollowUpObservation,
+  LocalFileCheck,
 } from '@qywork/tools'
 import { ART_HOST_PATH, ART_LIB_PATH, prepareArtForRender } from '../art.ts'
 import { type BrowserBridge, BrowserBridgeError, type NativeBrowserHost } from './bridge.ts'
@@ -88,6 +91,25 @@ export class BrowserNotOwnedError extends Error implements BrowserRefusal {
   readonly executed = false as const
 }
 
+/**
+ * 页面中已加载读取范围之外的本机文件，本次不读取页面内容。判定先于采集，因此声明 `executed:false`。
+ *
+ * 受控期间页面发出的 file 请求已由客户端按请求发出时的读取范围逐个裁决（`cdp.ts` 文件头第 5 条），这类文件
+ * 来自拦截之外的加载：建页时的首次加载、两次执行之间、用户接管之前，或完全访问下加载之后切换为自动审批。
+ * 重新加载即在拦截下加载，被拒绝的文件不再进入页面。
+ */
+export class BrowserLocalFileError extends Error implements BrowserRefusal {
+  readonly errorKind = 'credential_path' as const
+  readonly executed = false as const
+
+  constructor(url: string, reason: string) {
+    super(
+      `页面中已加载读取范围之外的本机文件 ${url}，本次不读取页面内容。${reason}\n` +
+        '用 browser_navigate 重新加载本页（reload）或打开其他地址后再读取：受控期间该文件的加载会被拒绝。',
+    )
+  }
+}
+
 /** 连接准备阶段失败，尚未进入页面业务动作。 */
 class BrowserConnectionError extends Error implements BrowserRefusal {
   readonly errorKind = 'browser_disconnected' as const
@@ -105,6 +127,16 @@ class BrowserConnectionError extends Error implements BrowserRefusal {
 
 /** 协调器保留的观察份数上限。只保留最近几份：旧编号本身即要求重新观察。 */
 const MAX_OBSERVATIONS = 8
+
+/** 浏览器工具从未设置本机文件裁决时的拒绝理由（`Lease.files`）。 */
+const NO_FILE_SCOPE = '本次执行没有本机文件的读取范围'
+
+/** `Page.getResourceTree` 的一层：帧的当前文档地址与它已加载的资源。 */
+interface ResourceTreeNode {
+  frame: { url: string }
+  resources?: { url: string; failed?: boolean }[]
+  childFrames?: ResourceTreeNode[]
+}
 
 /**
  * 动作与导航的后处理绝对预算：静默等待、导航确认与观察采集共用同一个截止时间。
@@ -216,6 +248,8 @@ interface Control {
   waits: Set<(reason: string) => void>
   /** 本次释放的收尾过程。非 `null` 表示控制槽正在清理：其他执行者须等待清理结束，才能接手它占用的页。 */
   releasing: Promise<void> | null
+  /** 本次执行的本机文件裁决，每次取用时读取端口最近一次设置的值（`Lease.files`）。 */
+  localFiles: LocalFileCheck
 }
 
 /**
@@ -229,6 +263,11 @@ interface Lease {
   /** 本次执行所在的工作区。列页、建页与接管均限定在该工作区内，跨工作区的 tabId 一律拒绝。 */
   workspaceId: string
   released: boolean
+  /**
+   * 浏览器工具最近一次经 `localFiles` 设置的本机文件裁决，即最近一次调用的读取范围。`null` 表示从未设置，
+   * 此时页面的 file 读取一律拒绝（内部渲染页即如此，它只加载 sidecar 的 http 地址）。
+   */
+  files: LocalFileCheck | null
 }
 
 /**
@@ -323,8 +362,17 @@ export class BrowserCoordinator {
    */
   portFor(conversationId: string, workspaceId: string): BrowserPort {
     this.#nextOwner += 1
-    const lease: Lease = { owner: this.#nextOwner, conversationId, workspaceId, released: false }
+    const lease: Lease = {
+      owner: this.#nextOwner,
+      conversationId,
+      workspaceId,
+      released: false,
+      files: null,
+    }
     return {
+      localFiles: (check) => {
+        lease.files = check
+      },
       tabs: async () => this.#tabs(lease),
       open: (url) => this.#open(lease, url),
       bind: (tabId) => this.#bind(lease, tabId),
@@ -352,7 +400,13 @@ export class BrowserCoordinator {
     input: { html: string; pagePath: string; workspaceRoot: string; width: number; height: number },
   ): Promise<ArtRenderResult> {
     this.#nextOwner += 1
-    const lease: Lease = { owner: this.#nextOwner, conversationId, workspaceId, released: false }
+    const lease: Lease = {
+      owner: this.#nextOwner,
+      conversationId,
+      workspaceId,
+      released: false,
+      files: null,
+    }
     let tabId: string | undefined
     try {
       await this.#acquire(lease)
@@ -535,9 +589,44 @@ export class BrowserCoordinator {
       arms: new Map(),
       waits: new Set(),
       releasing: null,
+      localFiles: (url) => (lease.files ? lease.files(url) : Promise.resolve(NO_FILE_SCOPE)),
     }
     this.#controls.set(lease.owner, control)
     return control
+  }
+
+  /**
+   * 读取页面内容之前，核对页面中已加载的文档与资源（含各层同进程帧）都在读取范围之内。
+   *
+   * 受控期间的 file 请求已逐个裁决，此处处理的是拦截之外加载的内容，见 `BrowserLocalFileError`。
+   * 加载失败的资源不计入：其中没有文件内容。跨站帧不在资源树中，它们不能加载 file 地址。
+   */
+  async #assertLocalFiles(control: Control, page: PageHandle, deadline?: number): Promise<void> {
+    const { frameTree } = await page.client.send<{ frameTree?: ResourceTreeNode }>(
+      'Page.getResourceTree',
+      {},
+      {
+        sessionId: page.sessionId,
+        ...(deadline === undefined ? {} : { timeoutMs: probeTimeout(deadline) }),
+      },
+    )
+    if (!frameTree) throw new BrowserBridgeError('页面的资源清单读取失败，本次不读取页面内容')
+    const urls = new Set<string>()
+    const walk = (node: ResourceTreeNode): void => {
+      urls.add(node.frame.url)
+      for (const resource of node.resources ?? []) {
+        if (resource.failed !== true) urls.add(resource.url)
+      }
+      for (const child of node.childFrames ?? []) walk(child)
+    }
+    walk(frameTree)
+    for (const url of urls) {
+      if (!/^file:/i.test(url)) continue
+      const reason = await control
+        .localFiles(url)
+        .catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+      if (reason !== null) throw new BrowserLocalFileError(url, reason)
+    }
   }
 
   /** 从持有该页的控制槽中移除它的会话与观察。宿主的关闭页事件与本地 close 均调用此方法。 */
@@ -698,6 +787,7 @@ export class BrowserCoordinator {
   ): Promise<BrowserObservation | BrowserOptionsPage> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
     if (input.optionsFor) {
+      await this.#assertLocalFiles(control, page)
       return readSelectOptions(
         page,
         this.#recordOf(control, input.tabId, input.optionsFor.observationId),
@@ -730,6 +820,7 @@ export class BrowserCoordinator {
       deadline?: number
     },
   ): Promise<BrowserObservation> {
+    await this.#assertLocalFiles(control, page, opts.deadline)
     const { observation, record } = await observePage(page, opts)
     if (!this.#alive(control)) {
       throw new BrowserReleasedError('本次执行的浏览器控制已经结束，本次观察不登记')
@@ -954,6 +1045,7 @@ export class BrowserCoordinator {
     },
   ): Promise<BrowserWaitResult> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
+    await this.#assertLocalFiles(control, page)
     const receipt = await waitOnPage(
       page,
       {
@@ -1060,7 +1152,7 @@ export class BrowserCoordinator {
     if (!control.connecting) {
       const host = this.#host()
       if (!host) throw new BrowserBridgeError('浏览器宿主未连接')
-      control.connecting = CdpClient.connect(host.debugPort)
+      control.connecting = CdpClient.connect(host.debugPort, control.localFiles)
         .then((client) => {
           if (!this.#alive(control)) {
             client.close()

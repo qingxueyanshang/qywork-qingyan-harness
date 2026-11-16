@@ -136,6 +136,7 @@ interface Acted {
 
 function fakeBrowser(over: Partial<BrowserPort> = {}, acted: Acted = { acts: 0 }): BrowserPort {
   return {
+    localFiles: () => {},
     tabs: async () => [{ tabId: 'bt_1', url: 'https://a/', title: 'A', controlled: true }],
     open: async (url) => ({ tabId: 'bt_9', url, title: '', controlled: true }),
     bind: async (tabId) => ({ tabId, url: 'https://a/', title: 'A', controlled: true }),

@@ -8,9 +8,8 @@
 
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { ToolSpec } from '@qywork/agent'
+import { globalScopeRoot, type ToolSpec } from '@qywork/agent'
 import { displayPath, resolveInWorkspace, rootsOf } from './paths.ts'
-import { globalScopeRoot } from './scopes.ts'
 
 type Outcome = Awaited<ReturnType<ToolSpec['fn']>>
 

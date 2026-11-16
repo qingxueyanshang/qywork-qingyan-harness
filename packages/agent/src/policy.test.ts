@@ -10,7 +10,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, parse } from 'node:path'
 import { decideCommand, HARD_DENY, type PolicyContext } from './policy.ts'
 
 const ctx: PolicyContext = { workspaceRoot: '/ws' }
@@ -412,6 +412,72 @@ describe('凭证文件', () => {
     expect(kind('cat docs/ssh-setup.md')).toBe('allow')
     expect(kind('cat src/config.json')).toBe('allow')
     expect(kind('cat kubeconfig.md')).toBe('allow')
+  })
+})
+
+/**
+ * 全局数据目录由 `QYWORK_HOME` 指向别处时，其中的配置文件与其余内容同样受保护。
+ *
+ * 原始失败形状：凭证规则只按 `.qywork/config.json` 的写法匹配，位置判定只比较家目录。
+ * `QYWORK_HOME` 指向家目录之外时，`cat <该目录>/config.json` 读取明文 key、`cp` 写入其中的插件目录都被放行。
+ */
+describe('QYWORK_HOME 指向别处的全局数据目录', () => {
+  const root = parse(homedir()).root
+  const data = join(root, `qywork-absent-${process.pid}`, 'data')
+  const elsewhere = join(root, `qywork-absent-${process.pid}`, 'elsewhere')
+  const withHome = (run: () => void) => {
+    const before = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = data
+    try {
+      run()
+    } finally {
+      if (before === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = before
+    }
+  }
+
+  test('读取其中的 config.json 与 mcp.json：字面路径与环境变量写法', () => {
+    withHome(() => {
+      for (const cmd of [
+        `cat '${join(data, 'config.json')}'`,
+        `type ${join(data, 'mcp.json').replaceAll('\\', '/')}`,
+        'cat "$QYWORK_HOME/config.json"',
+        `cat \${QYWORK_HOME}/mcp.json`,
+        'Get-Content $env:QYWORK_HOME\\config.json',
+        'type %QYWORK_HOME%\\mcp.json',
+      ]) {
+        expect(d(cmd)).toMatchObject({ kind: 'deny', reason: expect.stringContaining('凭证') })
+      }
+      expect(kind(`cat '${join(data, 'notes.md')}'`)).toBe('allow')
+    })
+  })
+
+  test('写入其中的插件、MCP 启动确认与会话账本；家目录与系统目录之外的其他位置照常可写', () => {
+    withHome(() => {
+      for (const cmd of [
+        `cp evil.js '${join(data, 'plugins', 'p', 'index.js')}'`,
+        `echo {} > '${join(data, 'mcp-approvals.json')}'`,
+        'cp evil.js $QYWORK_HOME/plugins/p/index.js',
+        `Set-Content -Path $env:QYWORK_HOME\\qywork.sqlite3 -Value x`,
+      ]) {
+        expect(d(cmd)).toMatchObject({
+          kind: 'deny',
+          reason: expect.stringContaining('工作区之外'),
+        })
+      }
+      expect(kind(`cp a.txt '${join(elsewhere, 'a.txt')}'`)).toBe('allow')
+    })
+  })
+
+  /** 未设置时子进程中的 `$QYWORK_HOME` 展开为空串，写入目标按工作区外处理。 */
+  test('未设置 QYWORK_HOME 时以该变量开头的写入目标同样拒绝', () => {
+    const before = process.env.QYWORK_HOME
+    delete process.env.QYWORK_HOME
+    try {
+      expect(kind('cp evil.js $QYWORK_HOME/plugins/p/index.js')).toBe('deny')
+    } finally {
+      if (before !== undefined) process.env.QYWORK_HOME = before
+    }
   })
 })
 

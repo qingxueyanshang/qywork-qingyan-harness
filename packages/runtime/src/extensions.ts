@@ -8,7 +8,7 @@
 
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import type { ToolSpec } from '@qywork/agent'
+import { globalScopeRoot, type ToolSpec } from '@qywork/agent'
 import { EFFORT_ORDER, isEffortLevel } from '@qywork/core'
 import {
   loadMcpServers,
@@ -22,7 +22,6 @@ import type { Role, TeamRules } from '@qywork/team'
 import {
   AGENTS_DIR,
   formatCommandLine,
-  globalScopeRoot,
   resolveInWorkspace,
   type Scope,
   scopePaths,

@@ -6,16 +6,17 @@
  * `/` 或 `\` 开头的路径按 POSIX 写法解析，相对路径沿用当前目录的写法。命令可能在一台机器上裁决、
  * 在另一台机器上执行（见 `policy.ts` 文件头）。
  *
- * 只依赖 node 内置模块：测试预载 `scripts/rm-guard.ts` 直接导入本文件，不经过包入口。
+ * 只依赖 node 内置模块与本目录的文件：测试预载 `scripts/rm-guard.ts` 直接导入本文件，不经过包入口。
  */
 
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
+import { globalScopeRoot, pathForms } from './global-root.ts'
 
 /**
  * - `root`：工作区或额外目录内；
- * - `home-or-system`：不在根目录内，且位于家目录或系统目录（`/etc`、`<盘符>:\Windows`）中，
- *   或包含家目录（家目录的上级）；
+ * - `home-or-system`：不在根目录内，且位于受保护目录（`guardedDirs`：家目录与全局数据目录）或系统目录
+ *   （`/etc`、`<盘符>:\Windows`）中，或包含受保护目录（其上级）；
  * - `other`：其余位置。
  */
 export type PathPlace = 'root' | 'home-or-system' | 'other'
@@ -83,30 +84,43 @@ function systemDirOf(abs: string): string {
 }
 
 /**
- * 判定 `path` 的位置。相对路径以 `cwd` 为基准，`cwd` 必须是绝对路径。先消去 `.` 与 `..`，再与 `roots`
- * （工作区根与额外目录，绝对路径）比较。根目录先于家目录判定：工作区通常位于家目录中。
+ * 按家目录处理的目录：家目录与全局数据目录（`globalScopeRoot`），各取绝对路径与真实路径（`pathForms`）。
  *
- * 家目录按两个方向判定：位于其中，或包含它。只判定前一个方向时，`rm -rf C:/Users`
+ * 全局数据目录可由 `QYWORK_HOME` 移到家目录之外，其中的插件（下次加载时执行）、MCP 启动确认与会话账本
+ * （含权限模式）在 `auto` 下同样不能由模型写入；只列家目录时，该目录移出家目录后即判为 `other`。
+ */
+export function guardedDirs(): string[] {
+  return [...new Set([...pathForms(homedir()), ...pathForms(globalScopeRoot())])]
+}
+
+/**
+ * 判定 `path` 的位置。相对路径以 `cwd` 为基准，`cwd` 必须是绝对路径。先消去 `.` 与 `..`，再与 `roots`
+ * （工作区根与额外目录，绝对路径）比较。根目录先于受保护目录判定：工作区通常位于家目录中，
+ * 默认工作区位于全局数据目录中。
+ *
+ * 受保护目录按两个方向判定：位于其中，或包含它。只判定前一个方向时，`rm -rf C:/Users`
  * 与家目录上级中的 `rm -rf *` 被判为 `other`，而删除上级目录即删除家目录本身。
  * 系统目录只判定「位于其中」：系统目录按任一盘符判定，包含方向会使任一盘符根目录被拒绝，
  * `cp x.txt D:/` 随之误拒；`/` 与盘符根目录的递归删除由 `policy.ts` 的硬拒绝规则处理。
- * 只包含根目录、不包含家目录与系统目录的位置仍是 `other`：根目录本身与其同级目录都可写。
+ * 只包含根目录、不包含受保护目录与系统目录的位置仍是 `other`：根目录本身与其同级目录都可写。
  *
- * `home` 缺省为 `os.homedir()`。`path` 已展开符号链接时传入家目录的真实路径，否则家目录经链接
- * 指向别处时，其中的路径被判为 `other`。
+ * `guarded` 缺省为 `guardedDirs()`，其中已含真实路径：`path` 是否已展开符号链接，结论相同。
  */
 export function placePath(
   cwd: string,
   path: string,
   roots: readonly string[],
-  home: string = homedir(),
+  guarded: readonly string[] = guardedDirs(),
 ): PlacedPath {
   const abs = absolute(cwd, path)
   if (roots.some((r) => r !== '' && within(absolute(cwd, r), abs))) {
     return { path: abs, place: 'root' }
   }
-  const homeAbs = home === '' ? null : absolute(cwd, home)
-  const touchesHome = homeAbs !== null && (within(homeAbs, abs) || within(abs, homeAbs))
+  const touchesGuarded = guarded.some((dir) => {
+    if (dir === '') return false
+    const dirAbs = absolute(cwd, dir)
+    return within(dirAbs, abs) || within(abs, dirAbs)
+  })
   const inSystem = within(systemDirOf(abs), abs)
-  return { path: abs, place: touchesHome || inSystem ? 'home-or-system' : 'other' }
+  return { path: abs, place: touchesGuarded || inSystem ? 'home-or-system' : 'other' }
 }

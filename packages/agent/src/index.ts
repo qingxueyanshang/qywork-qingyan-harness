@@ -89,6 +89,8 @@ export type { CompactionPort, CompactionRunInput, LoopPersistence } from './loop
 export { mediaDurationOfFile } from './media-duration.ts'
 // 凭证文件的判定：命令裁决按命令全文、tools 的路径解析按真实路径调用同一个函数
 export { CREDENTIAL_FILES, mentionsCredentialFile } from './paths/credentials.ts'
+// 全局数据目录：tools 的三层作用域、runtime 的配置目录与本包的凭证、位置判定共用这一个定义
+export { globalScopeRoot } from './paths/global-root.ts'
 // 路径位置的判定：命令裁决与 tools 的路径解析共用；server 的画布按同一判据判定文件是否位于工作区内
 export { isOutsideRelative, placePath } from './paths/place.ts'
 // run_command 的拒绝清单：runtime 的 Session 在放行之前调用它裁决
