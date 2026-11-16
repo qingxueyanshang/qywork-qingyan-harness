@@ -124,9 +124,11 @@ for (const mode of ['web', 'desktop'] as const) {
     `,
     )
     // 更新程序合并源码时执行的钩子记录它取得的令牌：令牌只交给重新启动的开发脚本，git 不得继承。
+    // 钩子须有执行权限：POSIX 上的 git 不执行没有执行权限的钩子，该文件不会生成。
     await writeFile(
       join(root, '.git', 'hooks', 'post-merge'),
       '#!/bin/sh\nprintf "%s" "$QYWORK_TOKEN" > .tmp/hook-token.txt\n',
+      { mode: 0o755 },
     )
     const proc = Bun.spawn([process.execPath, parent], { stdout: 'pipe', stderr: 'pipe' })
     const error = await new Response(proc.stderr).text()
