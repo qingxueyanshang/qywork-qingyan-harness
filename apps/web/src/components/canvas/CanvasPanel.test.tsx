@@ -2916,6 +2916,83 @@ describe('画布：生成卡与生成面板', () => {
     })
   })
 
+  /**
+   * 原始失败形状：一个渠道的视频模型用 `size` 取像素尺寸（1280x720），另一个用 `aspect_ratio` 取「16:9」；
+   * 从前者换到后者时卡片上没有 `aspect_ratio`，新模型按缺省的 9:16 出图。
+   */
+  test('视频卡切换模型：表示宽高比的参数不同时按对照表换算为同一宽高比', async () => {
+    const video = (id: string, label: string, param: Record<string, unknown>) => ({
+      provider: 'relay',
+      id,
+      kind: 'openai_videos',
+      output: 'video',
+      label,
+      operations: ['text_to_video', 'reference_to_video'],
+      isDefault: false,
+      known: true,
+      params: [param],
+    })
+    const bySize = video('sd-size', 'SD Size', {
+      name: 'size',
+      label: '尺寸',
+      type: 'string',
+      default: '720x1280',
+      shapes: [
+        { ratio: '16:9', tier: '720P', value: '1280x720' },
+        { ratio: '9:16', tier: '720P', value: '720x1280' },
+      ],
+    })
+    const byRatio = video('hc-ratio', 'HC Ratio', {
+      name: 'aspect_ratio',
+      label: '画幅',
+      type: 'string',
+      default: '9:16',
+      shapes: [
+        { ratio: '9:16', value: '9:16' },
+        { ratio: '16:9', value: '16:9' },
+      ],
+    })
+    const { host, server, refs } = await mount(
+      [
+        {
+          op: 'add_generate',
+          ref: '$v',
+          output: 'video',
+          provider: 'relay',
+          model: 'sd-size',
+          params: { size: '1280x720' },
+        },
+      ],
+      {},
+      { ...MODELS, media: [...MODELS.media, bySize, byRatio] },
+    )
+    await select(host, refs.$v!)
+    const params = () => (server.doc().nodes[0] as { params: Record<string, unknown> }).params
+    const switchTo = async (label: string) => {
+      host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.model')!.click()
+      await waitFor(
+        () => !!document.querySelector('.canvas-bar-menu'),
+        () => '',
+      )
+      ;[...document.querySelectorAll<HTMLButtonElement>('.canvas-bar-menu button')]
+        .find((b) => b.textContent === label)!
+        .click()
+      await waitFor(
+        () => host.querySelector('.canvas-bar .mode-chip.model')?.textContent === label,
+        () => host.textContent ?? '',
+      )
+    }
+    await switchTo('HC Ratio')
+    await waitFor(
+      () => params().aspect_ratio === '16:9',
+      () => JSON.stringify(params()),
+    )
+    expect(params()).toEqual({ size: '1280x720', aspect_ratio: '16:9' })
+    // 换回时同样按宽高比换算；已是同一宽高比的取值不改动。
+    await switchTo('SD Size')
+    expect(params()).toEqual({ size: '1280x720', aspect_ratio: '16:9' })
+  })
+
   /** 原始失败形状：在其他画布用过一次的已下架型号，出现在从未用过它的画布的菜单中。 */
   test('已下架的型号：当前画布有它的生成记录时列出并标出已下架，没有时不列出；默认型号下架时新卡发送界面上显示的型号', async () => {
     const video = MODELS.media[0]!

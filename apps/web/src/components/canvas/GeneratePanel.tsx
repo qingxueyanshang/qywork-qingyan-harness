@@ -859,6 +859,31 @@ export function GeneratePanel(props: {
       table.find((s) => s.ratio === ratio)
     if (hit) setParam(p, hit.value)
   }
+  /**
+   * 换模型时沿用当前的宽高比，返回写入后的全部参数；不需要改动时为 undefined。
+   * 各模型表示宽高比的参数不同（例如一个渠道用 `aspect_ratio` 取「16:9」，另一个用 `size` 取「1280x720」），
+   * 参数名不同时卡片上保留的旧取值对新模型不起作用，新模型按自己的缺省宽高比出图。
+   * 按对照表换算为新模型中同一宽高比的取值，档位相同的优先；新模型没有该宽高比时不改。
+   */
+  const ratioCarriedTo = (next: CardModel): Record<string, unknown> | undefined => {
+    const from = modelParams()
+      .map((p) => shapeAt(p, paramValue(p)))
+      .find((s) => s?.ratio !== undefined)
+    if (!from) return undefined
+    const params = { ...props.node.params }
+    let changed = false
+    for (const p of next.params) {
+      const table = p.shapes ?? []
+      const hit =
+        table.find((s) => s.ratio === from.ratio && s.tier === from.tier) ??
+        table.find((s) => s.ratio === from.ratio)
+      if (!hit || (params[p.name] ?? p.default) === hit.value) continue
+      params[p.name] = hit.value
+      changed = true
+    }
+    return changed ? params : undefined
+  }
+
   /** 切换档位：保留当前宽高比；当前为「自动」且接口不接受档位简写时取 1:1。 */
   const pickTier = (p: MediaParamOption, tier: string) => {
     const table = p.shapes ?? []
@@ -1403,6 +1428,7 @@ export function GeneratePanel(props: {
                         aria-checked={o === model()}
                         onClick={() => {
                           setMenu(null)
+                          const carried = ratioCarriedTo(o)
                           void props.apply([
                             ...(!props.node.model && model()
                               ? [
@@ -1420,6 +1446,7 @@ export function GeneratePanel(props: {
                               id: props.node.id,
                               provider: o.provider,
                               model: o.id,
+                              ...(carried ? { params: carried } : {}),
                             },
                           ])
                         }}
