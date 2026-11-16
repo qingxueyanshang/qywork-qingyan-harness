@@ -115,6 +115,7 @@ for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
       const summarize = makeSummarizer({
         profile: () => h.profile,
         signal: controller.signal,
+        sleep: async () => {},
       })
       const pending = summarize('生成摘要', 128, h.trace)
       if (mode === 'abort') {
@@ -141,8 +142,9 @@ for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
       } else {
         // 流内错误事件是对端的明确答复，记为被拒绝；断流与中止无法确定送达，记为结果不明。
         expect(row.status).toBe(mode === 'stream_error' ? 'rejected' : 'uncertain')
+        // 断流属于暂时故障，与主请求相同按上限重发；参数错误不重发。
         expect(row.diagnostic?.retry.decision).toBe(
-          mode === 'abort' ? 'interrupted' : 'not_retryable',
+          mode === 'abort' ? 'interrupted' : mode === 'eof' ? 'resend' : 'not_retryable',
         )
         expect(row.diagnostic?.transport?.status).toBe(200)
         if (mode === 'abort') {
@@ -161,6 +163,54 @@ for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
     }
   })
 }
+
+/**
+ * 原始失败形状：手动压缩的摘要请求遇到一次「上游服务暂时不可用」即放弃，压缩只完成收纳、摘要未完成；
+ * 同一时刻的主请求按重发规则自行恢复。摘要请求按同一规则重发，重发记为同一编号的下一次尝试。
+ */
+test('摘要请求遇到暂时故障时按主请求的规则重发，重发记为同一编号的下一次尝试', async () => {
+  let calls = 0
+  const provider = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      await req.text()
+      calls++
+      if (calls === 1) {
+        return Response.json(
+          { error: { message: '上游服务暂时不可用，请稍后重试', type: 'service_unavailable' } },
+          { status: 503 },
+        )
+      }
+      const rows = [
+        { choices: [{ delta: { content: '摘要正文' }, finish_reason: null }] },
+        { choices: [], usage: { prompt_tokens: 25, completion_tokens: 5 } },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]
+      return new Response(sse(rows), { headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const h = fixture(`http://127.0.0.1:${provider.port}/v1`)
+  try {
+    const waits: number[] = []
+    const summarize = makeSummarizer({
+      profile: () => h.profile,
+      sleep: async (ms) => {
+        waits.push(ms)
+      },
+    })
+    expect(await summarize('生成摘要', 128, h.trace)).toBe('摘要正文')
+    const rows = listProviderRequests(h.store, h.run.id)
+    expect(rows.map((r) => [r.turnIndex, r.retryIndex, r.status])).toEqual([
+      [0, 0, 'rejected'],
+      [0, 1, 'received'],
+    ])
+    expect(rows[0]?.diagnostic?.retry).toMatchObject({ decision: 'resend', attempt: 1 })
+    expect(waits).toHaveLength(1)
+  } finally {
+    h.store.close()
+    await provider.stop(true)
+  }
+})
 
 test('结束轮次时立即将未完成的请求置为终态，保留未发送与已发送的区别', () => {
   const h = fixture('http://127.0.0.1:1/v1')

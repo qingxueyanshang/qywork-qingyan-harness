@@ -368,8 +368,11 @@ export type CompactionOutcome =
  * `provider_requests`，返回的 usage 计入所属轮次；手动压缩使用同一套记账钩子。
  */
 export interface SummaryTrace {
-  /** 发送前登记，返回请求 id。 */
-  open(req: ChatRequest, adapter?: import('@qywork/ai').LlmAdapter): string
+  /**
+   * 发送前登记，返回请求 id。`retryIndex` 大于 0 表示同一份摘要请求因暂时故障重发：沿用上一次登记的编号，
+   * 只递增重发序号，与主请求的重发记账相同。
+   */
+  open(req: ChatRequest, adapter?: import('@qywork/ai').LlmAdapter, retryIndex?: number): string
   sent(requestId: string): void
   /**
    * `at` 是 `response_started` 带来的传输层观察时刻，不是调用时刻；`cloudRequestId` 是云端模型网关的请求号，

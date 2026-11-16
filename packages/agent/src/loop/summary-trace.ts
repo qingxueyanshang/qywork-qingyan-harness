@@ -42,16 +42,17 @@ export function createSummaryTrace(
      */
     opened: 0,
     merged: false,
-    open: (req: ChatRequest, actualAdapter = adapter): string => {
+    open: (req: ChatRequest, actualAdapter = adapter, retryIndex = 0): string => {
       requestAdapter = actualAdapter
       const density = actualAdapter.spec.density
-      const index = turnIndex + trace.opened
-      trace.opened++
+      // 重发沿用上一次登记的编号：同一份摘要请求的各次尝试是同一个 turnIndex 下的不同 retryIndex。
+      if (retryIndex === 0) trace.opened++
+      const index = turnIndex + trace.opened - 1
       const payload = payloadSnapshotOf(req)
       return persist.openRequest({
         runId,
         turnIndex: index,
-        retryIndex: 0,
+        retryIndex,
         purpose: 'summary',
         ...(providerName ? { providerName } : {}),
         providerKind: actualAdapter.kind,

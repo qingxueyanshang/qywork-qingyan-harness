@@ -11,6 +11,7 @@ import {
   type Summarizer,
   sendLane,
   sendLimiter,
+  transientErrorCode,
 } from '@qywork/agent'
 import {
   buildAdapter,
@@ -22,7 +23,7 @@ import {
   providerContentKind,
   STREAM_IDLE_TIMEOUT_MS,
 } from '@qywork/ai'
-import type { EffortLevel } from '@qywork/core'
+import { type EffortLevel, RESEND_LIMIT, resendDelay, waitOrAbort } from '@qywork/core'
 
 export interface SummarizerOptions {
   /** 每次发起摘要时调用。轮次内的自动压缩返回本轮开始时的规格；手动压缩在发起时解析。 */
@@ -31,6 +32,8 @@ export interface SummarizerOptions {
   effort?: () => EffortLevel | undefined
   /** 调用方的中断信号。未传入时只受流空闲判定约束。 */
   signal?: AbortSignal
+  /** 重发前的等待。缺省为 `waitOrAbort`；测试注入以免按真实时间等待，与主循环的 `sleep` 相同。 */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>
 }
 
 /**
@@ -91,79 +94,104 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
       ...(opts.signal ? { signal: opts.signal } : {}),
     }
     if (!trace) throw new Error('摘要请求缺少会话记账上下文')
-    const requestId = trace.open(req, adapter)
-    let sawEvent = false
-    let providerEvents = 0
-    let lastEventAt = Date.now()
-    // 在账本行写入之后、发出之前取得名额，排队时间不计入发出时刻。规则与主请求相同（`attempt.ts`）。
-    let release: ((outcome: SendOutcome) => void) | null = null
-    try {
-      const granted = await sendLimiter.acquire(
-        sendLane(adapter),
-        opts.signal ?? new AbortController().signal,
-      )
-      release = granted
-      trace.sent(requestId)
-      for await (const ev of adapter.stream(req)) {
-        if (ev.type !== 'request_prepared' && ev.type !== 'response_started') {
-          providerEvents++
-          lastEventAt = Date.now()
+    /*
+     * 暂时故障（连接失败、空闲超时、上游暂时不可用、限流）按主请求的同一规则重发：同一失败码集合
+     * （`transientErrorCode`）、同一次数上限与退避（`RESEND_LIMIT`、`resendDelay`）。不重发时，一次 503
+     * 即使手动压缩只完成收纳、摘要未完成，而同一时刻的主请求会自行恢复。
+     */
+    for (let resends = 0; ; resends++) {
+      text = ''
+      truncated = false
+      finish = undefined
+      usage = null
+      const requestId = trace.open(req, adapter, resends)
+      let sawEvent = false
+      let providerEvents = 0
+      let lastEventAt = Date.now()
+      // 在账本行写入之后、发出之前取得名额，排队时间不计入发出时刻。规则与主请求相同（`attempt.ts`）。
+      let release: ((outcome: SendOutcome) => void) | null = null
+      try {
+        const granted = await sendLimiter.acquire(
+          sendLane(adapter),
+          opts.signal ?? new AbortController().signal,
+        )
+        release = granted
+        trace.sent(requestId)
+        for await (const ev of adapter.stream(req)) {
+          if (ev.type !== 'request_prepared' && ev.type !== 'response_started') {
+            providerEvents++
+            lastEventAt = Date.now()
+          }
+          if (!sawEvent && ev.type !== 'request_prepared' && ev.type !== 'response_started') {
+            sawEvent = true
+            trace.firstEvent(requestId)
+          }
+          if (ev.type === 'response_started') {
+            trace.headers(requestId, ev.headersAt, ev.cloudRequestId ?? null)
+            if (ev.hedge) trace.hedge(requestId, ev.hedge)
+          }
+          const kind = providerContentKind(ev)
+          if (kind !== null && 'at' in ev) trace.content(requestId, ev.at, kind)
+          if (ev.type === 'text_delta') text += ev.delta
+          else if (ev.type === 'done') {
+            truncated = ev.stopReason === 'max_tokens'
+            finish = ev.rawStopReason
+          } else if (ev.type === 'usage') {
+            usage = ev.usage
+          }
         }
-        if (!sawEvent && ev.type !== 'request_prepared' && ev.type !== 'response_started') {
-          sawEvent = true
-          trace.firstEvent(requestId)
+        granted('completed')
+      } catch (err) {
+        release?.(concurrencyRejected(err) ? 'concurrency_rejected' : 'failed')
+        const pe = err instanceof ProviderError ? err : null
+        const aborted = opts.signal?.aborted === true
+        // 非 2xx 响应的响应头不经过 `response_started`，其时刻只记录在传输读数中。规则与主请求相同。
+        if (pe?.transport?.headersAt != null) {
+          trace.headers(requestId, pe.transport.headersAt, pe.transport.cloudRequestId ?? null)
         }
-        if (ev.type === 'response_started') {
-          trace.headers(requestId, ev.headersAt, ev.cloudRequestId ?? null)
-          if (ev.hedge) trace.hedge(requestId, ev.hedge)
-        }
-        const kind = providerContentKind(ev)
-        if (kind !== null && 'at' in ev) trace.content(requestId, ev.at, kind)
-        if (ev.type === 'text_delta') text += ev.delta
-        else if (ev.type === 'done') {
-          truncated = ev.stopReason === 'max_tokens'
-          finish = ev.rawStopReason
-        } else if (ev.type === 'usage') {
-          usage = ev.usage
-        }
+        if (pe?.transport?.hedge) trace.hedge(requestId, pe.transport.hedge)
+        // 与主请求使用同一套终态：被拒绝为 rejected，其余情况（流被截断、中断、连接断开）均为 uncertain。
+        trace.settle(
+          requestId,
+          pe?.rejected ? 'rejected' : 'uncertain',
+          pe?.usage ?? usage,
+          aborted ? null : (pe?.code ?? 'internal_error'),
+          finish,
+          aborted ? null : err instanceof Error ? err.message : String(err),
+        )
+        const transient = !aborted && pe !== null && transientErrorCode(pe.code)
+        const resend = transient && resends < RESEND_LIMIT
+        const backoffMs = resend ? resendDelay(resends, pe.retryAfterMs) : null
+        const at = resend ? Date.now() : null
+        trace.diagnostic(requestId, {
+          ...failureDiagnostics(err),
+          providerEvents,
+          silentMs: Math.max(0, Date.now() - lastEventAt),
+          assistantChars: text.length,
+          toolCallCount: 0,
+          retry: {
+            decision: aborted
+              ? 'interrupted'
+              : resend
+                ? 'resend'
+                : transient
+                  ? 'limit_exhausted'
+                  : 'not_retryable',
+            attempt: resend ? resends + 1 : null,
+            max: RESEND_LIMIT,
+            backoffMs,
+            at,
+          },
+        })
+        if (!resend || backoffMs === null) throw err
+        await (opts.sleep ?? waitOrAbort)(backoffMs, opts.signal ?? new AbortController().signal)
+        if (opts.signal?.aborted) throw err
+        continue
       }
-      granted('completed')
-    } catch (err) {
-      release?.(concurrencyRejected(err) ? 'concurrency_rejected' : 'failed')
-      const pe = err instanceof ProviderError ? err : null
-      // 非 2xx 响应的响应头不经过 `response_started`，其时刻只记录在传输读数中。规则与主请求相同。
-      if (pe?.transport?.headersAt != null) {
-        trace.headers(requestId, pe.transport.headersAt, pe.transport.cloudRequestId ?? null)
-      }
-      if (pe?.transport?.hedge) trace.hedge(requestId, pe.transport.hedge)
-      // 与主请求使用同一套终态：被拒绝为 rejected，其余情况（流被截断、中断、连接断开）均为 uncertain。
-      trace.settle(
-        requestId,
-        pe?.rejected ? 'rejected' : 'uncertain',
-        pe?.usage ?? usage,
-        opts.signal?.aborted ? null : (pe?.code ?? 'internal_error'),
-        finish,
-        opts.signal?.aborted ? null : err instanceof Error ? err.message : String(err),
-      )
-      trace.diagnostic(requestId, {
-        ...failureDiagnostics(err),
-        providerEvents,
-        silentMs: Math.max(0, Date.now() - lastEventAt),
-        assistantChars: text.length,
-        toolCallCount: 0,
-        retry: {
-          decision: opts.signal?.aborted ? 'interrupted' : 'not_retryable',
-          attempt: null,
-          max: 0,
-          backoffMs: null,
-          at: null,
-        },
-      })
-      throw err
-    }
 
-    trace.settle(requestId, 'received', usage, null, finish)
-    // 截断作废与空摘要使用同一终态：调用方据此判定摘要段未生成，收纳段照常写入数据库。
-    return truncated ? null : text.trim() || null
+      trace.settle(requestId, 'received', usage, null, finish)
+      // 截断作废与空摘要使用同一终态：调用方据此判定摘要段未生成，收纳段照常写入数据库。
+      return truncated ? null : text.trim() || null
+    }
   }
 }
