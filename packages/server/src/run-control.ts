@@ -42,6 +42,7 @@ import {
   contextPanel,
   makeSummarizer,
   NO_MODEL_MESSAGE,
+  nextRequestMeasure,
   RuntimeCompaction,
   requestPersistence,
   resolveModel,
@@ -971,6 +972,13 @@ async function compactReserved(
     run.usage.currency = spec.pricing.currency ?? 'USD'
     const route = { ...spec, providerName, providerKind: adapter.kind }
     const panel = contextPanel(deps.store, conversationId, route, compactPercent)
+    const measure = await nextRequestMeasure(
+      deps.store,
+      ws.rootPath,
+      conversationId,
+      adapter,
+      providerName,
+    )
     const outcome = await compaction.run({
       onProgress,
       trace: createSummaryTrace(
@@ -988,6 +996,7 @@ async function compactReserved(
       occupancy: panel.total,
       // 同一面板的两种计量，压缩按二者的比值折算回收量。
       estimatedOccupancy: panel.measured,
+      measure,
       contextWindow: spec.contextWindow,
       compactPercent,
       // 与对话循环的压缩相同使用本轮密度：附件中不原生发送的视频不计入。

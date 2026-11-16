@@ -163,6 +163,7 @@ async function* compactOverSoftLimit(
         latestUnitSeen: at.latestUnitSeen,
         occupancy,
         estimatedOccupancy: at.estimated,
+        measure: (project) => host.measure(run, project),
         contextWindow: adapter.spec.contextWindow,
         compactPercent: run.threshold.compactPercent,
         density,
@@ -336,6 +337,7 @@ export async function* recoverFromOverflow(
         occupancy: cap.reportedInputTokens ?? run.occupancyOf(turn.req),
         // `sizeBefore` 即本次请求的本地估算，来自同一次装配、同一口径。
         estimatedOccupancy: sizeBefore,
+        measure: (project) => host.measure(run, project),
         contextWindow: adapter.spec.contextWindow,
         compactPercent: run.threshold.compactPercent,
         density,

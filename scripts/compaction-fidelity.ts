@@ -24,6 +24,7 @@ import {
   buildHistory,
   loadConfig,
   makeSummarizer,
+  nextRequestMeasure,
   RuntimeCompaction,
   requestPersistence,
   resolveModel,
@@ -241,6 +242,7 @@ async function main(): Promise<number> {
       occupancy,
       // 此处的占用本身是本地估算值，两种计量一致，比值为 1。
       estimatedOccupancy: occupancy,
+      measure: await nextRequestMeasure(store, process.cwd(), conv.id, adapter, profile.provider),
       contextWindow,
       compactPercent: COMPACT_PERCENT_DEFAULT,
       density: adapter.spec.density,

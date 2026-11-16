@@ -567,17 +567,22 @@ export const THUMBNAIL_RETAIN_LOW_BYTES = 4 * 1024 * 1024
 export type VideoDelivery = 'inline' | 'upload' | 'frames'
 
 /**
- * 本轮的估算密度：模型的计数规则按本轮的视频发送能力收窄（`video.accepts`）。模型不接受视频或适配器没有实现视频
- * 传输时 `video` 为 null；时长范围取模型规格（`ModelSpec.videoSeconds`）；不能上传时字节上限为请求中常驻媒体的上限：
- * 内联视频按字节计入常驻预算，超过上限的在下一步即被整批换出，模型只能看到一次。
+ * 本轮的估算密度：模型的计数规则按本轮的视频发送能力收窄（`video.accepts`）。模型不接受视频、适配器没有实现视频
+ * 传输或接口拒绝过包含视频的请求（`videosRejected`）时 `video` 为 null；时长范围取模型规格（`ModelSpec.videoSeconds`）；
+ * 不能上传时字节上限为请求中常驻媒体的上限：内联视频按字节计入常驻预算，超过上限的在下一步即被整批换出，模型只能看到一次。
  *
  * 本函数是原生视频范围的唯一来源：发送（`videoDelivery`）、`read_file`（`ToolContext.density`）与估算都读取它的结果。
  * 不要直接使用 `spec.density` 估算请求：不接受视频的模型使用默认档时，会把发送时已替换为说明的视频按默认档计入。
  */
-export function runDensity(adapter: Pick<LlmAdapter, 'spec' | 'transmits'>): TokenDensity {
+export function runDensity(
+  adapter: Pick<LlmAdapter, 'spec' | 'transmits'>,
+  videosRejected = false,
+): TokenDensity {
   const { density, video, videoSeconds } = adapter.spec
   if (!density.video) return density
-  if (!video || adapter.transmits.video !== true) return { ...density, video: null }
+  if (videosRejected || !video || adapter.transmits.video !== true) {
+    return { ...density, video: null }
+  }
   return {
     ...density,
     video: {
@@ -807,6 +812,43 @@ export function omitImages(m: WireMessage, level: MediaLevel): WireMessage {
   return { ...m, content: texts.length ? [{ type: 'text', text: omitted }, ...texts] : omitted }
 }
 
+/** 装配请求消息的条件：本轮的媒体发送能力、推理回放规则（`reasoningReplay`）与信封指纹（`envelopeHashOf`）。 */
+export interface AssemblyRules {
+  caps: InputMediaCapabilities
+  replay: ReasoningReplay
+  envelope: string
+}
+
+/**
+ * 待发序列装配为请求中的消息：媒体换出（`evictedMedia` / `omitImages`）→ 压缩投影 `project` → 推理裁剪
+ * （`replayReasoning`）。返回投影结果（省略量按它计算）与最终消息。
+ *
+ * 发送的请求（`AgentLoop.buildRequest`）与压缩后的读数（`CompactionRunInput.measure`）都经由本函数。
+ * 不要在压缩一侧另行估算投影：已缩小为缩略图的图片与不发送的推理会按原样计入，回收量偏高，
+ * 压缩后的读数低于下一次请求的估算。
+ */
+export function assembleMessages(
+  raw: WireMessage[],
+  project: (messages: WireMessage[]) => WireMessage[],
+  rules: AssemblyRules,
+): { projected: WireMessage[]; messages: WireMessage[] } {
+  /*
+   * 媒体去留：工具结果与附件中的图像、视频保留在之后的请求中，保留的总字节超过上限时，
+   * 从最早的一批起整批缩小为缩略图，缩略图合计超过其上限时再替换为说明（`evictedMedia`）。
+   * 不要改为「每一步只保留最后一批」：每换出一次图片，请求前缀就会变化，`replayReasoning` 随之剥离其后全部
+   * 原生推理，模型失去查看图片时得出的判断，只能反复取回，实测因连续无进展被循环保护判定失败。
+   */
+  const evicted = evictedMedia(raw, rules.caps)
+  const scoped = evicted.size
+    ? raw.map((m, i) => {
+        const level = evicted.get(i)
+        return level ? omitImages(m, level) : m
+      })
+    : raw
+  const projected = project(scoped)
+  return { projected, messages: replayReasoning(projected, rules.replay, rules.envelope) }
+}
+
 /**
  * `outcome.data.images` 中的图片：工具返回的 base64，或写入账本之后的正文库引用（`@qywork/store` 的 `tool-images.ts`）。
  *
@@ -875,6 +917,28 @@ export interface InputMediaCapabilities {
   mediaPaths?: boolean
   /** 本地路径媒体超过该字节数时由适配器上传，请求中只带地址；缺失表示一律内联。 */
   mediaUploadAbove?: number
+}
+
+/**
+ * 本轮的媒体发送方式。换出预算与发送前物化必须使用同一份，否则两处对同一段视频算出不同的字节数。
+ *
+ * 接口拒绝过包含图片的请求时（`imagesRejected`）不发送任何图片，包括此前已送达的：
+ * 合约变化之前送达的图片仍在保留区内，同样会使请求被拒。视频同理（`videosRejected`），
+ * 原生发送的范围取本轮密度（`runDensity`）。
+ */
+export function mediaCapabilitiesOf(
+  adapter: Pick<LlmAdapter, 'spec' | 'transmits'>,
+  run: { density: TokenDensity; imagesRejected: boolean; videosRejected: boolean },
+): InputMediaCapabilities {
+  const upload = adapter.transmits.mediaUploadAbove
+  return {
+    image: run.imagesRejected ? false : adapter.spec.vision,
+    ...(run.imagesRejected ? { imageRejected: true as const } : {}),
+    video: run.density.video,
+    ...(run.videosRejected ? { videoRejected: true as const } : {}),
+    mediaPaths: adapter.transmits.mediaPaths === true,
+    ...(upload !== undefined ? { mediaUploadAbove: upload } : {}),
+  }
 }
 
 /**

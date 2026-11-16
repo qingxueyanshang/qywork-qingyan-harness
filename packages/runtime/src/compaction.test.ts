@@ -113,6 +113,11 @@ function port(store: Store, conversationId: string, summarize: Summarizer = summ
   })
 }
 
+/** 端口计量回收量的装配（`CompactionRunInput.measure`）。夹具没有媒体换出与推理裁剪，结果即投影的估算。 */
+function measureOf(history: WireMessage[]): CompactionRunInput['measure'] {
+  return (project) => estimateMessages(project(history), DEFAULT_DENSITY)
+}
+
 /**
  * 构造刚越过阈值的占用：占用取会话装配后的真实估算，窗口取同一数值。
  *
@@ -128,6 +133,7 @@ async function pressure(store: Store, conversationId: string): Promise<Compactio
     latestUnitSeen: false,
     occupancy: total,
     estimatedOccupancy: total,
+    measure: measureOf(history),
     contextWindow: total,
     compactPercent: 80,
     density: DEFAULT_DENSITY,
@@ -669,7 +675,7 @@ describe('投影三区', () => {
   /**
    * 落库的读数与投影必须基于同一份内容计量。
    *
-   * `contextAfter.measured` 由 `estimateProjection` 计算，模型看到的内容由 `project` 组装；
+   * `contextAfter.measured` 由端口按压缩后的 manifest 投影计量，模型看到的内容由 `project` 组装；
    * 两处对逐字保留条目的判定不一致时，面板报告的回收量无法达到，且两处都不报错。
    */
   test('落库读数与投影口径一致', async () => {
@@ -929,6 +935,7 @@ describe('切分边界不会分开 tool_call 与 tool_result', () => {
         latestUnitSeen: false,
         occupancy: total,
         estimatedOccupancy: total,
+        measure: measureOf(before),
         contextWindow: window,
         density: DEFAULT_DENSITY,
       })
@@ -1478,6 +1485,7 @@ describe('两种计量口径不得直接相减', () => {
         latestUnitSeen: false,
         occupancy,
         estimatedOccupancy: estimated,
+        measure: measureOf(before),
         contextWindow,
         density: DEFAULT_DENSITY,
       })
@@ -1542,6 +1550,7 @@ describe('最低触发线的最差情形', () => {
       latestUnitSeen: false,
       occupancy,
       estimatedOccupancy: occupancy,
+      measure: measureOf(all),
       ...threshold,
       density: DEFAULT_DENSITY,
     })

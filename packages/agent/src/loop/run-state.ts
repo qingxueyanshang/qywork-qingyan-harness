@@ -44,6 +44,8 @@ export interface LoopHost {
   summaryTrace(run: RunState, turnIndex: number): SummaryTrace & { opened: number; merged: boolean }
   openStream(run: RunState, req: ChatRequest): Promise<AsyncIterable<ProviderEvent>>
   buildRequest(run: RunState): ChatRequest
+  /** 按 `buildRequest` 的同一装配估算消息部分，投影取 `project`（`CompactionRunInput.measure`）。 */
+  measure(run: RunState, project: (messages: WireMessage[]) => WireMessage[]): number
   /** 最近一次 `buildRequest` 算出的省略量。 */
   lastOmitted(): ContextOmitted
 }
@@ -133,7 +135,7 @@ export class RunState {
   carriedResends = 0
   /**
    * 本 run 是否已停止发送图片。初值来自 `RunInput.imagesRejected`；本 run 内请求因图片被接口拒绝时置为 true，
-   * 之后不复位。请求物化（`AgentLoop.mediaCapabilities`）与工具上下文（`tool-wave.ts` 的 `withStep`）都读取它。
+   * 之后不复位。请求物化（`mediaCapabilitiesOf`）与工具上下文（`tool-wave.ts` 的 `withStep`）都读取它。
    */
   imagesRejected: boolean
   /**
@@ -162,8 +164,7 @@ export class RunState {
     this.registry = deps.registry
     this.persist = deps.persist
     this.videosRejected = input.videosRejected === true
-    const density = runDensity(deps.adapter)
-    this.density = this.videosRejected ? { ...density, video: null } : density
+    this.density = runDensity(deps.adapter, this.videosRejected)
     this.threshold = {
       contextWindow: deps.adapter.spec.contextWindow,
       compactPercent: input.compactPercent,

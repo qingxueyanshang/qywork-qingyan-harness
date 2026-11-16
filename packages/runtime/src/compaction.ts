@@ -207,7 +207,11 @@ export class RuntimeCompaction implements CompactionPort {
    * assistant/tool 也按执行批次成组。按下标切分会破坏这些结构。
    */
   project(history: WireMessage[]): WireMessage[] {
-    const m = this.manifest
+    return this.projectWith(this.manifest, history)
+  }
+
+  /** 按指定 manifest 投影。压缩估算回收量时以压缩前后两份 manifest 各投影一次（`CompactionRunInput.measure`）。 */
+  private projectWith(m: CompactionManifest | null, history: WireMessage[]): WireMessage[] {
     if (!m) return history
 
     const summary = summaryCutOf(m)
@@ -485,9 +489,11 @@ export class RuntimeCompaction implements CompactionPort {
        * 下次启动时该投影丢失，模型重新看到全部历史。
        */
       if (input.signal?.aborted) return { status: 'aborted' }
-      const before = this.estimateProjection(units, previous, input.density)
-      const after = this.estimateProjection(units, outcome.manifest, input.density)
-      const recovered = before - after
+      // 回收量按发送请求的同一装配计量；系统提示词与工具表不随压缩变化，不在此计量。
+      const next = outcome.manifest
+      const recovered =
+        input.measure((history) => this.projectWith(previous, history)) -
+        input.measure((history) => this.projectWith(next, history))
       const latestSent = latestSentProviderRequest(store, conversationId)
       const manifest: CompactionManifest = {
         ...outcome.manifest,
@@ -503,61 +509,6 @@ export class RuntimeCompaction implements CompactionPort {
       return { ...outcome, manifest }
     }
     return outcome
-  }
-
-  /**
-   * 用主模型的同一计量口径测量 manifest 前后的历史投影。
-   *
-   * 面板只用两者差额修正完整请求，因此系统提示词、工具表等头部不在此处重复
-   * 计量。附件中的媒体在 `collectUnits` 里计入 `unit.tokens`（`attachmentMediaTokens`）；收纳工具
-   * 正文时仍补回附件差额，口径与实际请求一致。
-   */
-  private estimateProjection(
-    units: readonly Unit[],
-    manifest: CompactionManifest | null,
-    density: TokenDensity,
-  ): number {
-    if (!manifest) return units.reduce((total, unit) => total + unit.tokens, 0)
-
-    const summary = summaryCutOf(manifest)
-    const condense = condenseCutOf(manifest)
-    const summaryKey = summary ? cutKey(summary) : null
-    const condenseKey = condense ? cutKey(condense) : null
-    const todoFacts = currentTodoFacts(units)
-    const todoTable = todoFacts[0]
-
-    let folded = 0
-    let total = 0
-    const visible: WireMessage[] = []
-    for (const unit of units) {
-      if (summaryKey !== null && unit.key <= summaryKey) {
-        folded++
-        continue
-      }
-      visible.push(...unit.messages)
-      if (condenseKey !== null && unit.key <= condenseKey) {
-        const messageTokens = estimateMessages(unit.messages, density)
-        const attachmentTokens = Math.max(0, unit.tokens - messageTokens)
-        const pinned = pinsAt(unit.key, todoTable)
-        total +=
-          estimateMessages(
-            unit.messages.map((message) => condenseExcept(message, pinned)),
-            density,
-          ) + attachmentTokens
-      } else {
-        total += unit.tokens
-      }
-    }
-
-    // manifest 的切分线与当前历史不相交时，投影函数不会插入摘要。
-    if (folded === 0) return total
-    total += estimateMessages(this.missingContext(visible), density)
-    if (summaryKey !== null) {
-      total += todoFacts
-        .filter((fact) => fact.key <= summaryKey)
-        .reduce((tokens, fact) => tokens + estimateMessages(todoFactMessages(fact), density), 0)
-    }
-    return total + estimateMessages(projectManifest(manifest), density)
   }
 
   /**

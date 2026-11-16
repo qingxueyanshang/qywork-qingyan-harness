@@ -104,6 +104,8 @@ export {
 export { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 // 主请求与摘要请求共用的持久化边界。
 export { requestPersistence } from './request-persistence.ts'
+// server 的手动压缩按下一轮请求的同一装配估算压缩后的读数。
+export { nextRequestMeasure } from './session/turn/history.ts'
 // 全机任务文件导入账本：server 在开始服务之前调用一次
 // 会话：装配的最终产物，CLI 与 server 的唯一入口。
 // `makeSummarizer` 一并转出：server 的手动压缩与会话内的自动压缩共用同一份摘要装配。

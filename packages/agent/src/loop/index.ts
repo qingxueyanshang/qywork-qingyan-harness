@@ -15,7 +15,13 @@
  */
 
 import type { ChatRequest, ProviderEvent, WireMessage } from '@qywork/ai'
-import { estimateMessage, estimateRequest, ProviderError, reasoningReplay } from '@qywork/ai'
+import {
+  estimateMessage,
+  estimateMessages,
+  estimateRequest,
+  ProviderError,
+  reasoningReplay,
+} from '@qywork/ai'
 import type { AgentEvent, ContextOmitted } from '@qywork/core'
 import { emptyOmitted, log, waitOrAbort } from '@qywork/core'
 import { stepStamp } from '../compaction.ts'
@@ -24,15 +30,13 @@ import { sendTurn } from './attempt.ts'
 import { compactBeforeSend } from './compact.ts'
 import { contextEvent } from './context.ts'
 import {
+  assembleMessages,
   breakdownOf,
   declaredMaxOutput,
   envelopeHashOf,
-  evictedMedia,
-  type InputMediaCapabilities,
   idleTimeoutFor,
   materialize,
-  omitImages,
-  replayReasoning,
+  mediaCapabilitiesOf,
 } from './request.ts'
 import { type LoopHost, RunState, TurnState } from './run-state.ts'
 import { createSummaryTrace } from './summary-trace.ts'
@@ -85,6 +89,8 @@ export class AgentLoop {
       summaryTrace: (run, turnIndex) => this.summaryTrace(run, turnIndex),
       openStream: (run, req) => this.openStream(run, req),
       buildRequest: (run) => this.buildRequest(run),
+      measure: (run, project) =>
+        estimateMessages(this.assemble(run, project).messages, run.density),
       lastOmitted: () => this.lastOmitted,
     }
   }
@@ -105,29 +111,13 @@ export class AgentLoop {
     )
   }
 
-  /**
-   * 本轮的媒体发送方式。换出预算与发送前物化必须使用同一份，否则两处对同一段视频算出不同的字节数。
-   *
-   * 接口拒绝过包含图片的请求时（`RunState.imagesRejected`）不发送任何图片，包括此前已送达的：
-   * 合约变化之前送达的图片仍在保留区内，同样会使请求被拒。视频同理（`RunState.videosRejected`），
-   * 原生发送的范围取本轮密度（`RunState.density`）。
-   */
-  private mediaCapabilities(run: RunState): InputMediaCapabilities {
-    const { adapter } = this.deps
-    const upload = adapter.transmits.mediaUploadAbove
-    return {
-      image: run.imagesRejected ? false : adapter.spec.vision,
-      ...(run.imagesRejected ? { imageRejected: true as const } : {}),
-      video: run.density.video,
-      ...(run.videosRejected ? { videoRejected: true as const } : {}),
-      mediaPaths: adapter.transmits.mediaPaths === true,
-      ...(upload !== undefined ? { mediaUploadAbove: upload } : {}),
-    }
-  }
-
   /** 装配完成的请求按模型能力物化媒体后交给适配器。工具图片经本轮工具上下文的 `sink` 从正文库读取。 */
   private async openStream(run: RunState, req: ChatRequest): Promise<AsyncIterable<ProviderEvent>> {
-    const materialized = await materialize(req, this.mediaCapabilities(run), run.ctx.sink)
+    const materialized = await materialize(
+      req,
+      mediaCapabilitiesOf(this.deps.adapter, run),
+      run.ctx.sink,
+    )
     return this.deps.adapter.stream(materialized)
   }
 
@@ -231,6 +221,78 @@ export class AgentLoop {
    * 该数值随即失去依据，届时应删除它，而不是改为估算。
    */
   private buildRequest(run: RunState): ChatRequest {
+    const { adapter } = this.deps
+    const { input } = run
+    const { system, tools, raw, projected, messages } = this.assemble(run, (m) =>
+      this.compaction.project(m),
+    )
+
+    /*
+     * 被投影省略的原文，按分组分别记录：历史消息一项、工具结果一项。
+     *
+     * 用同一估算方法分别计量投影前后再相减：原文始终保留在 Message/Step 中（压缩是投影，不销毁数据），
+     * 因此可以计量。整条被折叠与只被替换为信封在此处同样处理：差额都计为省略。
+     * 面板中「省略上下文」的两行即来自此处；只说明占用的构成而不说明省略量时，
+     * 用户看到占用下降却无法得知下降的来源。
+     */
+    const omitted = emptyOmitted()
+    const account = (list: readonly WireMessage[], sign: 1 | -1): void => {
+      for (const m of list) {
+        // 没有戳记的投影摘要不参与计算：它不是被折叠的原文。
+        if (!m._messageId) continue
+        const n = sign * estimateMessage(m, run.density)
+        if (m.role === 'tool' || m._group === 'intermediateContent')
+          omitted.intermediateOriginal += n
+        else omitted.historyOriginal += n
+      }
+    }
+    account(raw, 1)
+    account(projected, -1)
+    omitted.historyOriginal = Math.max(0, omitted.historyOriginal)
+    omitted.intermediateOriginal = Math.max(0, omitted.intermediateOriginal)
+    this.lastOmitted = omitted
+
+    /*
+     * 缓存断点之四：本次已接受消息的末尾。下一步未改动这一批结果时，从此处整段复用；
+     * 兼容协议忽略此标记，Anthropic 将其写为显式断点。
+     */
+    const latest = messages.length - 1
+    if (latest >= 0 && !messages[latest]!.cacheBreakpoint) {
+      messages[latest] = { ...messages[latest]!, cacheBreakpoint: true }
+    }
+
+    const assembled: ChatRequest = {
+      model: adapter.spec.id,
+      system,
+      messages,
+      tools,
+      maxOutputTokens: adapter.spec.maxOutputTokens,
+      idleTimeoutMs: this.deps.streamIdleTimeoutMs ?? idleTimeoutFor(input.effort),
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
+      signal: input.signal,
+    }
+    // 申报值需要计量装配结果后才能算出，因此先装配，再钳位并覆盖同一字段。
+    return {
+      ...assembled,
+      maxOutputTokens: declaredMaxOutput(adapter.spec, run.occupancyOf(assembled)),
+    }
+  }
+
+  /**
+   * 装配系统提示词、工具表与消息。`project` 是压缩投影：发送时取端口的当前投影，压缩估算回收量时取
+   * 压缩前后两份 manifest 的投影（`LoopHost.measure`）。两处共用本方法，压缩后的读数因此与下一次请求一致。
+   */
+  private assemble(
+    run: RunState,
+    project: (messages: WireMessage[]) => WireMessage[],
+  ): {
+    system: ChatRequest['system']
+    tools: ChatRequest['tools']
+    raw: WireMessage[]
+    projected: WireMessage[]
+    messages: WireMessage[]
+  } {
     const { adapter, registry, systemPrompt } = this.deps
     const { input, transcript } = run
 
@@ -272,77 +334,13 @@ export class AgentLoop {
      */
     if (lastCall >= 0)
       assembledRaw[lastCall] = { ...assembledRaw[lastCall]!, cacheBreakpoint: true }
-    /*
-     * 媒体去留：工具结果与附件中的图像、视频保留在之后的请求中，保留的总字节超过上限时，
-     * 从最早的一批起整批缩小为缩略图，缩略图合计超过其上限时再替换为说明（`evictedMedia`）。
-     * 不要改为「每一步只保留最后一批」：每换出一次图片，请求前缀就会变化，`replayReasoning` 随之剥离其后全部
-     * 原生推理，模型失去查看图片时得出的判断，只能反复取回，实测因连续无进展被循环保护判定失败。
-     */
-    const evicted = evictedMedia(assembledRaw, this.mediaCapabilities(run))
-    const scoped = evicted.size
-      ? assembledRaw.map((m, i) => {
-          const level = evicted.get(i)
-          return level ? omitImages(m, level) : m
-        })
-      : assembledRaw
-    const projected = this.compaction.project(scoped)
     const tools = registry.schemas()
-    const messages: WireMessage[] = replayReasoning(
-      projected,
-      reasoningReplay(adapter.spec),
-      envelopeHashOf({ model: adapter.spec.id, system, tools }),
-    )
-
-    /*
-     * 被投影省略的原文，按分组分别记录：历史消息一项、工具结果一项。
-     *
-     * 用同一估算方法分别计量投影前后再相减：原文始终保留在 Message/Step 中（压缩是投影，不销毁数据），
-     * 因此可以计量。整条被折叠与只被替换为信封在此处同样处理：差额都计为省略。
-     * 面板中「省略上下文」的两行即来自此处；只说明占用的构成而不说明省略量时，
-     * 用户看到占用下降却无法得知下降的来源。
-     */
-    const omitted = emptyOmitted()
-    const account = (list: readonly WireMessage[], sign: 1 | -1): void => {
-      for (const m of list) {
-        // 没有戳记的投影摘要不参与计算：它不是被折叠的原文。
-        if (!m._messageId) continue
-        const n = sign * estimateMessage(m, run.density)
-        if (m.role === 'tool' || m._group === 'intermediateContent')
-          omitted.intermediateOriginal += n
-        else omitted.historyOriginal += n
-      }
-    }
-    account(assembledRaw, 1)
-    account(projected, -1)
-    omitted.historyOriginal = Math.max(0, omitted.historyOriginal)
-    omitted.intermediateOriginal = Math.max(0, omitted.intermediateOriginal)
-    this.lastOmitted = omitted
-
-    /*
-     * 缓存断点之四：本次已接受消息的末尾。下一步未改动这一批结果时，从此处整段复用；
-     * 兼容协议忽略此标记，Anthropic 将其写为显式断点。
-     */
-    const latest = messages.length - 1
-    if (latest >= 0 && !messages[latest]!.cacheBreakpoint) {
-      messages[latest] = { ...messages[latest]!, cacheBreakpoint: true }
-    }
-
-    const assembled: ChatRequest = {
-      model: adapter.spec.id,
-      system,
-      messages,
-      tools,
-      maxOutputTokens: adapter.spec.maxOutputTokens,
-      idleTimeoutMs: this.deps.streamIdleTimeoutMs ?? idleTimeoutFor(input.effort),
-      ...(input.effort ? { effort: input.effort } : {}),
-      ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
-      signal: input.signal,
-    }
-    // 申报值需要计量装配结果后才能算出，因此先装配，再钳位并覆盖同一字段。
-    return {
-      ...assembled,
-      maxOutputTokens: declaredMaxOutput(adapter.spec, run.occupancyOf(assembled)),
-    }
+    const { projected, messages } = assembleMessages(assembledRaw, project, {
+      caps: mediaCapabilitiesOf(adapter, run),
+      replay: reasoningReplay(adapter.spec),
+      envelope: envelopeHashOf({ model: adapter.spec.id, system, tools }),
+    })
+    return { system, tools, raw: assembledRaw, projected, messages }
   }
 }
 

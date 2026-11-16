@@ -6,7 +6,7 @@
  * 合在一起时，失败无法区分是算法错误还是接线错误。
  *
  * 覆盖范围：`loop/compact.ts` 的压缩触发、容量恢复与压缩记录（含 `compaction.ts` 的 `compactionRecordOf`），
- * `loop/turn-end.ts` 的锚点准入。其中「压缩后重发在账本中另记一行」用例接入真实
+ * `loop/turn-end.ts` 的锚点准入，`loop/request.ts` 的 `assembleMessages`（压缩计量与发送的请求共用的装配）。其中「压缩后重发在账本中另记一行」用例接入真实
  * `Store`，同时覆盖 `store/repos/provider-requests.ts` 的 `openProviderRequest` 在同一轮多次发送时
  * 与 `uq_provider_run_turn` 的关系；其他用例都把该端口打桩为常量。
  */
@@ -17,6 +17,7 @@ import {
   builtinCatalog,
   classifyProviderError,
   DEFAULT_DENSITY,
+  estimateMessages,
   estimateRequest,
   lookupModel,
   STREAM_IDLE_TIMEOUT_MS,
@@ -237,6 +238,111 @@ test('自动压缩后的发送读数与请求账采用 manifest 估算，回执�
     { tokens: 184_162, source: 'estimated' },
     { tokens: 181_413, source: 'actual' },
   ])
+})
+
+/**
+ * 压缩计量回收量（`CompactionRunInput.measure`）与发送的请求是同一装配：较早的截图按换出后的缩略图计，
+ * 不发送的思考正文不计。按账本原样估算时两者都按原样计入，回收量偏高，压缩后的读数低于下一次请求的估算。
+ */
+test('压缩计量的装配与发送的请求相同：缩略图与推理裁剪一并计入', async () => {
+  const spec = lookupModel('claude-opus-5', 'anthropic_messages')
+  const system = '系统提示。'
+  const history: WireMessage[] = [{ role: 'user', content: '逐页截图', _messageId: 'ms_shots' }]
+  for (let i = 0; i < 16; i++) {
+    const id = `call_shot_${i}`
+    const _step = stepStamp('rn_shots', i + 1)
+    history.push(
+      {
+        role: 'assistant',
+        content: '',
+        reasoningContent: '检查页面布局与文字。'.repeat(50),
+        toolCalls: [{ id, name: 'browser', arguments: { action: 'screenshot' } }],
+        _messageId: 'ms_shots',
+        _step,
+      },
+      {
+        role: 'tool',
+        toolCallId: id,
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              call_id: id,
+              tool: 'browser',
+              status: 'success',
+              executed: true,
+              summary: `第 ${i} 页`,
+            }),
+          },
+          {
+            type: 'image',
+            mimeType: 'image/png',
+            source: {
+              kind: 'resource',
+              resourceId: `rs_shot_${i}`,
+              bytes: 900_000,
+              size: { width: 1920, height: 1080 },
+            },
+          },
+        ],
+        _messageId: 'ms_shots',
+        _step,
+      },
+    )
+  }
+  history.push({
+    role: 'assistant',
+    content: '全部页面已检查。',
+    _messageId: 'ms_shots',
+    _step: stepStamp('rn_shots', 17),
+  })
+  let seen: { measured: number; estimated: number } | undefined
+  const loop = new AgentLoop({
+    adapter: fakeAdapter([null]),
+    registry: new ToolRegistry(),
+    systemPrompt: system,
+    persist: noopPersistence(),
+    makeToolContext: () => makeCtx(),
+    compaction: {
+      project: (messages) => messages,
+      async run(input) {
+        seen = {
+          measured: input.measure((messages) => messages),
+          estimated: input.estimatedOccupancy,
+        }
+        return { status: 'skipped', reasonCode: 'nothing_to_fold' }
+      },
+    },
+  })
+  for await (const _ of loop.run({
+    compactPercent: 80,
+    runId: 'rn_now' as never,
+    history,
+    // 锚点越过软阈值，发送前压缩必定执行。
+    anchor: {
+      tokens: 900_000,
+      throughMessageId: 'ms_shots',
+      model: spec.id,
+      headTokens: 0,
+      envelopeFingerprint: null,
+    },
+    signal: new AbortController().signal,
+  })) {
+  }
+  const header = estimateRequest(
+    {
+      model: spec.id,
+      system: [{ text: system }],
+      messages: [],
+      tools: [],
+      maxOutputTokens: spec.maxOutputTokens,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+    },
+    spec.density,
+  )
+  expect(seen!.measured + header).toBe(seen!.estimated)
+  // 前提：换出与推理裁剪确实发生，账本原样的估算明显高于请求。
+  expect(estimateMessages(history, spec.density)).toBeGreaterThan(seen!.measured + 10_000)
 })
 
 /**

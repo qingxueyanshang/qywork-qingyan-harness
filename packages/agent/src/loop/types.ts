@@ -137,6 +137,15 @@ export interface CompactionRunInput {
    * 没有锚点时它与 `occupancy` 相等，比值为 1，算式等同于直接相减。
    */
   estimatedOccupancy: number
+  /**
+   * 按发送请求的同一装配（`assembleMessages`：媒体换出 → `project` → 推理裁剪）估算消息部分，密度与
+   * `estimatedOccupancy` 相同。端口以压缩前后两份 manifest 的投影各调用一次，两者之差即回收量，
+   * 压缩后的读数（`contextAfter`）由此得出。
+   *
+   * 不要改为在端口内按单元估算投影：单元是账本中的原样，已缩小为缩略图的图片与不发送的推理按原样计入，
+   * 回收量偏高，压缩后的读数低于下一次请求的估算。
+   */
+  measure(project: (messages: WireMessage[]) => WireMessage[]): number
   /** 模型窗口。软阈值与保留预算都从它与 `compactPercent` 推导，不另传现成的数字。 */
   contextWindow: number
   /** 窗口所在档已解析的触发比例，与触发判定使用同一个值（轮内取 `RunInput.compactPercent`）。 */
