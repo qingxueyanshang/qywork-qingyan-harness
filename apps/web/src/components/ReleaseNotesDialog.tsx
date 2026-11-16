@@ -12,12 +12,18 @@ export default function ReleaseNotesDialog(props: { notes: ReleaseNotes }) {
   holdOverlay(() => true)
   let dialog!: HTMLDialogElement
 
-  onMount(() => dialog.showModal())
+  // 打开后焦点放在窗口本身：`showModal` 把焦点交给第一个可聚焦的子元素，Chromium 中可滚动的正文区可聚焦，
+  // 正文区随即显示浏览器默认的焦点框。
+  onMount(() => {
+    dialog.showModal()
+    dialog.focus()
+  })
   onCleanup(() => dialog.close())
 
   return (
     <dialog
       ref={dialog}
+      tabIndex={-1}
       class="release-notes-dialog"
       aria-label="本版说明"
       onCancel={(e) => {

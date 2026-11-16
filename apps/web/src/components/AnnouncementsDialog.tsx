@@ -22,12 +22,18 @@ export default function AnnouncementsDialog() {
   holdOverlay(() => true)
   let dialog!: HTMLDialogElement
 
-  onMount(() => dialog.showModal())
+  // 打开后焦点放在窗口本身：`showModal` 把焦点交给第一个可聚焦的子元素，Chromium 中可滚动的列表可聚焦，
+  // 列表随即显示浏览器默认的焦点框。
+  onMount(() => {
+    dialog.showModal()
+    dialog.focus()
+  })
   onCleanup(() => dialog.close())
 
   return (
     <dialog
       ref={dialog}
+      tabIndex={-1}
       class="announcements-dialog"
       aria-label="公告"
       onCancel={(e) => {

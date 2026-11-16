@@ -50,7 +50,11 @@ export default defineConfig(({ command }) => ({
     // 不要手动把 @codemirror/@lezer 归入同一个 chunk。
     // 语言包通过动态 import 加载，手动归组会把它们全部合并到同一个 chunk
     // （实测 593 kB），按需加载失效。由 Vite 按动态导入边界自动切分。
-    chunkSizeWarningLimit: 700,
+    //
+    // 上限取 800 kB：最大的 chunk 是 mediabunny（2026-11-16 约 708 kB），只在导出时间线与 Art 录制时经动态导入加载，
+    // 不在启动路径上；它需要读取任意格式的视频（`ALL_FORMATS`），各格式的解封装器无法按需剔除。
+    // 出现超限警告时先查明是哪个 chunk、是否在启动时加载，不要直接上调。
+    chunkSizeWarningLimit: 800,
     // 两个页面：主界面与桌面宠物窗口（外壳以 `WebviewUrl::App("pet.html")` 加载）。
     rollupOptions: {
       input: {

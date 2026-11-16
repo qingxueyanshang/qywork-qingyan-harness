@@ -113,6 +113,17 @@ test('弹窗显示标题，正文按 Markdown 渲染', async () => {
   view.close()
 })
 
+/**
+ * 原始失败形状：打开后焦点落在可滚动的正文区，正文区显示焦点框。焦点须在窗口本身，窗口本身不画焦点框。
+ * 焦点框是否绘制由浏览器决定，此处只断言焦点位置；绘制结果已在无头 Edge 中核对。
+ */
+test('打开后焦点在窗口本身，不在正文区', async () => {
+  const view = await mount(NOTES)
+  expect(document.activeElement).toBe(view.host.querySelector('dialog'))
+  expect(document.activeElement).not.toBe(view.host.querySelector('.release-notes-body'))
+  view.close()
+})
+
 test('关闭按钮关闭弹窗并记录版本', async () => {
   await notesStore.showReleaseNotesOnce('0.3.12')
   const view = await mount(NOTES)

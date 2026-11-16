@@ -197,6 +197,11 @@
   background: var(--scrim);
 }
 
+/* 打开时焦点在窗口本身（`ReleaseNotesDialog.tsx`），整个窗口不画焦点框。 */
+.release-notes-dialog:focus-visible {
+  outline: none;
+}
+
 .release-notes-body {
   flex: 1;
   min-height: 0;
@@ -241,6 +246,11 @@
 
 .announcements-dialog::backdrop {
   background: var(--scrim);
+}
+
+/* 打开时焦点在窗口本身（`AnnouncementsDialog.tsx`），整个窗口不画焦点框。 */
+.announcements-dialog:focus-visible {
+  outline: none;
 }
 
 .announcements-list {
