@@ -1107,13 +1107,24 @@ export class BrowserCoordinator {
         settle?.({ frame })
       }
     })
-    const abort = (reason: string) => settle?.({ cancelled: reason })
+    const release: { reason: string | null } = { reason: null }
+    const abort = (reason: string) => {
+      release.reason = reason
+      settle?.({ cancelled: reason })
+    }
     control.waits.add(abort)
     const timer = setTimeout(() => settle?.({ expired: true }), input.timeoutMs)
 
     try {
       await this.#arm(control, input.tabId, input.absolutePath, input.timeoutMs, downloadId)
-      await clickForDownload(page, record, input.ref)
+      try {
+        await clickForDownload(page, record, input.ref)
+      } catch (err) {
+        // 释放先关闭发送入口、再同步终结等待，点击中途被拒绝的发送是释放的结果：按释放报告。
+        // 点击是否已到达页面、下载的终态都无法确认，与等待终态期间释放的结论相同。
+        if (release.reason !== null) throw new BrowserReleasedError(release.reason)
+        throw err
+      }
       const out = await outcome
       if ('cancelled' in out) throw new BrowserReleasedError(out.cancelled)
       if ('expired' in out) throw new BrowserBridgeError('下载未在期限内返回结果，授权已撤销')

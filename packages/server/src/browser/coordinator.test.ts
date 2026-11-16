@@ -2357,6 +2357,43 @@ test('释放撤销未消费的授权，正在等待终态的下载按未确认�
   expect(host.arms.size).toBe(0)
 })
 
+/**
+ * 原始失败形状：负载高时释放落在点击的发送途中，发送通道关闭使点击以「发送通道已关闭」失败，
+ * 下载返回该原文而不是释放的结论（macOS x64 发布构建实测）。此处让点击的回包停住，确定地复现该时序。
+ */
+test('点击发送途中释放，下载同样按未确认终态返回，授权随之撤销', async () => {
+  const { handle, host, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
+
+  const g = gate()
+  devtools.hold = { method: 'Input.dispatchMouseEvent', gate: g.promise }
+  const outcome = failure(
+    port?.download({
+      tabId: tab?.tabId ?? '',
+      observationId: ob?.observationId ?? '',
+      ref: firstRef(ob),
+      absolutePath: join(tmpdir(), 'qywork-never-click.bin'),
+      timeoutMs: 30_000,
+    }),
+  )
+  await until(
+    () => devtools.calls.some((c) => c.method === 'Input.dispatchMouseEvent'),
+    '点击停在发送途中',
+  )
+  const armed = host.received.findLast((f) => f.op === 'download.arm')?.downloadId
+
+  await port?.release()
+  try {
+    expect((await outcome).message).toMatch(/未确认终态/)
+    expect(host.received.findLast((f) => f.op === 'download.disarm')?.downloadId).toBe(armed)
+    expect(host.arms.size).toBe(0)
+  } finally {
+    g.open()
+  }
+})
+
 test('optionsFor 按原观察读取一页选项，不产生新的观察编号', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
