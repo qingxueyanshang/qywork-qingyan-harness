@@ -809,7 +809,8 @@ describe('中止信号', () => {
       const got = await collectProcess(proc, { signal: controller.signal })
       expect(Date.now() - started).toBeLessThan(1000)
       expect(got.exitCode).not.toBe(0)
-      expect(proc.exitCode).not.toBeNull()
+      // POSIX 上由信号终止的进程 `exitCode` 为 null，终止原因记在 `signalCode`；Windows 上记在 `exitCode`。
+      expect(proc.exitCode ?? proc.signalCode).not.toBeNull()
     } finally {
       killTree(proc)
     }
