@@ -296,17 +296,26 @@ describe('上一级目录与工作目录', () => {
 
   /**
    * 系统目录只判定「位于其中」：复制到不含家目录的盘符根目录照常放行。
-   * 本例要求家目录不在 D 盘，`/` 写法的根目录在 Windows 上不包含 Windows 写法的家目录。
+   * 本例要求家目录与全局数据目录都不在 D 盘，`/` 写法的根目录在 Windows 上不包含 Windows 写法的家目录。
+   * 全局数据目录取缺省位置（家目录中）：测试预载把它设在检出目录中，检出目录位于 D 盘时
+   * `D:\` 包含全局数据目录，写入它按家目录处理。
    */
   test('家目录与系统目录之外的写入仍放行；/ 与盘符根目录的递归删除仍由硬拒绝规则处理', () => {
-    for (const cmd of [
-      'echo x > C:/ProgramData/x.txt',
-      'echo x > D:/other-project/a.txt',
-      'rm -rf /tmp/build',
-      'Copy-Item x D:\\',
-      'cp x.txt D:/',
-    ]) {
-      expect(at(cmd)).toBe('allow')
+    const before = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = join(H, '.qywork')
+    try {
+      for (const cmd of [
+        'echo x > C:/ProgramData/x.txt',
+        'echo x > D:/other-project/a.txt',
+        'rm -rf /tmp/build',
+        'Copy-Item x D:\\',
+        'cp x.txt D:/',
+      ]) {
+        expect(at(cmd)).toBe('allow')
+      }
+    } finally {
+      if (before === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = before
     }
     expect(decideCommand('rm -rf /', nested).reason).toBe('命令会递归删除根目录或家目录')
     expect(decideCommand('Remove-Item -Recurse C:/', nested).reason).toBe(
