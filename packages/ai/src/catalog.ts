@@ -1814,6 +1814,11 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      *
      * Omni Flash 的新加坡地域另有 ¥1.094 / ¥3.427 / 缓存 ¥0.117；此目录记北京价。
      *
+     * qwen4-max（模型页与价目页 2026-11-16 核对，华北 2（北京））：上下文长度 1,000,000；最大输出长度（非思考模式）131,072；
+     * 思考与最终回答的最大 Token 总数 262,144；输入 10 元、输出 30 元、显式/隐式缓存命中 0.5 元，只有 0<Token≤1M 一档；
+     * 输入模态为文本、图像、视频。`reasoning_effort` 取 `low / high / xhigh`，默认 high；`preserve_thinking` 默认 true。
+     * 显式缓存的创建价（5 分钟 12.5 元、1 小时 20 元）不填：本协议不发送缓存标记，只命中隐式缓存。
+     *
      * **最大输出一列容易记错**：plus 与 flash 均为 131,072。
      *
      * `qwen3.7-max` 是本组中唯一只接受文本的模型：其日期快照版接受图片，基础版不接受，
@@ -1831,6 +1836,21 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * 版本（自部署，原生 256K，没有官方 API 定价），后者是托管服务的模型 id，
      * 1M 窗口与上表中对应行的价格均出自其模型页。目录收录的是可通过 API 调用的 id。
      */
+    {
+      ...base,
+      ...effort(['low', 'high', 'xhigh']),
+      id: 'qwen4-max',
+      displayName: 'Qwen4-Max',
+      vendor: 'alibaba',
+      vision: true,
+      video: true,
+      contextWindow: 1_000_000,
+      // max_tokens 同时限制思考与最终回答，思考模式的上限为 262,144。档位中没有关闭思考的取值，请求始终处于思考模式。
+      maxOutputTokens: 262_144,
+      pricing: cny(10, 30, 0.5),
+      chatReasoningProtocol: 'qwen_preserved',
+      cacheRouting: 'none',
+    },
     {
       ...base,
       ...effort(['low', 'medium', 'xhigh']),

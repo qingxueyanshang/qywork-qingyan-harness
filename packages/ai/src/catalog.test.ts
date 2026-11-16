@@ -585,6 +585,7 @@ describe('视频输入', () => {
         'openai_chat_completions:qwen3.8-flash',
         'openai_chat_completions:qwen3.8-max',
         'openai_chat_completions:qwen3.8-omni-flash',
+        'openai_chat_completions:qwen4-max',
         'openai_chat_completions:step-5-preview',
       ].sort(),
     )
@@ -1176,6 +1177,19 @@ describe('目录中的价格与档位', () => {
     expect(spec('qwen3.8-max').effortLevels).toEqual(['low', 'medium', 'xhigh'])
     expect(spec('qwen3.8-max').chatReasoningProtocol).toBe('qwen_preserved')
     expect(spec('qwen3.8-max').chatToolSchema).toBe('openai_strict')
+    expect(spec('qwen4-max')).toMatchObject({
+      displayName: 'Qwen4-Max',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 262_144,
+      vision: true,
+      video: true,
+      thinksByDefault: true,
+      effortLevels: ['low', 'high', 'xhigh'],
+      chatReasoningProtocol: 'qwen_preserved',
+      chatToolSchema: 'openai_strict',
+      cacheRouting: 'none',
+      pricing: { input: 10, output: 30, cacheRead: 0.5, currency: 'CNY' },
+    })
     expect(spec('qwen3.8-omni-flash')).toMatchObject({
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
