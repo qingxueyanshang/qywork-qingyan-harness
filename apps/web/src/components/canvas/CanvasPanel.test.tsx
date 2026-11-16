@@ -3196,7 +3196,15 @@ describe('画布：生成卡与生成面板', () => {
         () => choices().length === 2,
         () => document.body.innerHTML.slice(-300),
       )
-      expect(choices().map((b) => b.textContent)).toEqual(['制作脚本', '1-2 段'])
+      expect(choices().map((b) => b.querySelector('.truncate')?.textContent)).toEqual([
+        '制作脚本',
+        '1-2 段',
+      ])
+      // 文本卡没有画面：显示文件类型图标，不显示空的缩略图框。
+      expect(choices().every((b) => b.querySelector('.canvas-pick-file .file-type-icon'))).toBe(
+        true,
+      )
+      expect(choices().some((b) => b.querySelector('.canvas-menu-thumb'))).toBe(false)
       choices()[1]!.click()
       await waitFor(
         () => server.ops.length === 1,
@@ -4663,7 +4671,9 @@ describe('画布：连线', () => {
       () => '',
     )
     expect(
-      [...document.querySelectorAll('.canvas-pick-list > button')].map((b) => b.textContent),
+      [...document.querySelectorAll('.canvas-pick-list > button')].map(
+        (b) => b.querySelector('.truncate')?.textContent,
+      ),
     ).toEqual(['voice'])
     expect(document.querySelector('.canvas-pick-upload')).toBeNull()
   })

@@ -5,11 +5,18 @@
  * 并提供上传入口；文件由调用方添加到画布后建立连接。尺寸固定，结果在框内滚动。
  */
 
-import { type CanvasFileKind, type CanvasNode, displayNameOf } from '@qywork/core'
+import { type CanvasFileKind, type CanvasNode, canvasFileKind, displayNameOf } from '@qywork/core'
 import { createSignal, For, type JSX, Show } from 'solid-js'
 import { createFileSearch } from '../../lib/file-search.ts'
 import FileTypeIcon from '../FileTypeIcon.tsx'
 import { IconUpload } from '../Icons.tsx'
+
+/** 没有画面的文件卡（文本、音频）的路径，其余为 null：图片与视频卡显示缩略图。 */
+function iconPathOf(n: CanvasNode): string | null {
+  if (n.type !== 'file') return null
+  const kind = canvasFileKind(n.path)
+  return kind === 'image' || kind === 'video' ? null : n.path
+}
 
 export function SourcePicker(props: {
   /** 可选的画布节点，已按用途过滤。 */
@@ -56,7 +63,17 @@ export function SourcePicker(props: {
         <For each={nodes()}>
           {(n) => (
             <button type="button" onClick={() => props.onNode(n.id)}>
-              <span class="canvas-menu-thumb">{props.thumb(n.id)}</span>
+              {/* 文本、音频等没有画面的文件卡显示文件类型图标，与下方的工作区文件相同；缩略图框中没有画面时只是一块深色方块。 */}
+              <Show
+                when={iconPathOf(n)}
+                fallback={<span class="canvas-menu-thumb">{props.thumb(n.id)}</span>}
+              >
+                {(path) => (
+                  <span class="canvas-pick-file">
+                    <FileTypeIcon name={path()} />
+                  </span>
+                )}
+              </Show>
               <span class="truncate">{displayNameOf(n)}</span>
             </button>
           )}
