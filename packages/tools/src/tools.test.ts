@@ -667,7 +667,8 @@ describe('写入范围', () => {
 
   /**
    * 全局数据目录由 `QYWORK_HOME` 指向家目录之外，并经目录联接指向别处。文件工具的结论与命令裁决相同：
-   * 其中的 `config.json` 与 `mcp.json` 不可读，其余位置不可写，其余文件可读；经联接与经真实路径结论相同。
+   * 其中的 `config.json` 与 `mcp.json` 不可读，其余位置不可写，其余文件在没有内核沙箱的平台上可读；
+   * 经联接与经真实路径结论相同。
    *
    * 原始失败形状：凭证判定只认 `.qywork/` 下的写法，位置判定只比较家目录。`read_file` 读到其中的明文 key，
    * `write_file` 写入其中的插件目录与 MCP 启动确认。
@@ -699,8 +700,18 @@ describe('写入范围', () => {
     const denied = { status: 'failure', errorKind: 'path_out_of_workspace' }
     const credential = { status: 'failure', errorKind: 'credential_path' }
     const ok = { status: 'success', errorKind: null }
-    const { out } = runScope(home, root, calls, { QYWORK_HOME: link })
-    expect(out.map(outcome)).toEqual([credential, credential, credential, ok, denied, denied, ok])
+    const { sandbox, out } = runScope(home, root, calls, { QYWORK_HOME: link })
+    // 内核沙箱生效时全局数据目录按实际位置整个被屏蔽，其中的其余文件同样拒绝读取。
+    const masked = sandbox ? credential : ok
+    expect(out.map(outcome)).toEqual([
+      credential,
+      credential,
+      credential,
+      masked,
+      denied,
+      denied,
+      ok,
+    ])
     expect(out.map((r) => r.message).join('\n')).not.toContain('sk-data-home-test')
     for (const absent of [join(real, 'plugins'), join(real, 'mcp-approvals.json')]) {
       expect(await stat(absent).catch(() => null)).toBeNull()
