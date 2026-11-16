@@ -871,17 +871,18 @@ function axCandidates(
     const role = node.role?.value ?? ''
     const tag = domInfo?.tag ?? ''
     const name = (node.name?.value ?? '').trim()
-    const actionable = ACTIONABLE_ROLES.has(role) || ACTIONABLE_TAGS.has(tag)
+    const props = new Map((node.properties ?? []).map((p) => [p.name, p.value?.value] as const))
+    const editable = editableRoot(props)
+    const actionable = ACTIONABLE_ROLES.has(role) || ACTIONABLE_TAGS.has(tag) || editable
     const textual = TEXT_ROLES.has(role) && name !== ''
     if (!actionable && !textual) continue
 
-    const props = new Map((node.properties ?? []).map((p) => [p.name, p.value?.value] as const))
     const attrs = domInfo?.attrs ?? {}
     const value = node.value?.value ?? attrs.value
     candidates.push({
       actionable,
       element: {
-        role: role || tag,
+        role: editable && !ACTIONABLE_ROLES.has(role) ? 'textbox' : role || tag,
         name,
         tag,
         ...(attrs.type ? { inputType: attrs.type } : {}),
@@ -911,6 +912,16 @@ function axCandidates(
 }
 
 /**
+ * 可编辑区域的根节点：`contenteditable` 的元素在 AX 树中的角色是 `generic`，只以 `editable` 属性表明可编辑，
+ * 不在可操作角色与标签中。只按角色与标签筛选时它不会列出，以 `contenteditable` 实现的输入框对模型不可见。
+ * 区域内的文字节点同样带 `editable`，但不可聚焦；只取可聚焦的一个，即区域本身。
+ */
+function editableRoot(props: Map<string, unknown>): boolean {
+  const editable = props.get('editable')
+  return (editable === 'plaintext' || editable === 'richtext') && props.get('focusable') === true
+}
+
+/**
  * 按 AX 的实际布尔值取一项状态。
  *
  * 缺省或值不是布尔值时不写该项：`expanded` 只在可展开的角色上存在，
@@ -926,11 +937,17 @@ function boolProp(
   return {}
 }
 
+/** DOM 属性声明的可编辑区域（`contenteditable` 不为 false）。AX 树尚未建立时的回退与 `editableRoot` 对应。 */
+function editableAttr(attrs: Record<string, string>): boolean {
+  const v = attrs.contenteditable
+  return v !== undefined && v !== 'false'
+}
+
 /** DOM 快照中是否存在可交互元素。AX 树尚未建立时据此判断是否重新获取。 */
 function domHasActionable(byBackend: Map<number, DomInfo>): boolean {
   for (const { tag, attrs } of byBackend.values()) {
     if (tag === 'input' && attrs.type === 'hidden') continue
-    if (ACTIONABLE_TAGS.has(tag)) return true
+    if (ACTIONABLE_TAGS.has(tag) || editableAttr(attrs)) return true
     if (attrs.role && ACTIONABLE_ROLES.has(attrs.role)) return true
   }
   return false
@@ -946,7 +963,7 @@ function domCandidates(byBackend: Map<number, DomInfo>, frame: FrameScope): Cand
   const out: Candidate[] = []
   for (const [backendNodeId, { tag, attrs }] of byBackend) {
     if (tag === 'input' && attrs.type === 'hidden') continue
-    const role = attrs.role ?? ''
+    const role = attrs.role ?? (editableAttr(attrs) ? 'textbox' : '')
     if (!ACTIONABLE_TAGS.has(tag) && !(role !== '' && ACTIONABLE_ROLES.has(role))) continue
     const name = (
       attrs['aria-label'] ??

@@ -1065,6 +1065,49 @@ test('观察将 AX 语义与节点属性合成一张元素表，无角色的容�
   expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
 })
 
+/**
+ * 原始失败形状：以 `contenteditable` 实现的输入框在 AX 树中角色为 `generic`，元素表中只有它的文字，
+ * 没有可操作的条目；模型找不到输入框，转而点击被弹窗遮挡的背景元素。
+ * AX 节点的形状取自无头 Edge：根节点 `editable` 且可聚焦，其中的文字节点 `editable` 而不可聚焦。
+ */
+test('contenteditable 的可编辑区域按输入框列出，区域内的文字仍按文字列出', async () => {
+  const { fake, handle } = await newPage()
+  const doc = fake.model.docs[0] as DocModel
+  doc.nodes.push(
+    {
+      backendNodeId: 80,
+      tag: 'div',
+      attrs: { contenteditable: 'true' },
+      box: { x: 0, y: 300, width: 300, height: 24 },
+    },
+    { backendNodeId: 81, tag: '#text', attrs: {}, text: 'https://api.example.com;' },
+  )
+  doc.ax.push(
+    {
+      backendDOMNodeId: 80,
+      role: 'generic',
+      name: '',
+      value: 'https://api.example.com;',
+      props: [
+        { name: 'focusable', value: true },
+        { name: 'editable', value: 'richtext' },
+      ],
+    },
+    {
+      backendDOMNodeId: 81,
+      role: 'StaticText',
+      name: 'https://api.example.com;',
+      props: [{ name: 'editable', value: 'richtext' }],
+    },
+  )
+
+  const { observation } = await observe(handle)
+  const field = observation.elements.find((e) => e.tag === 'div')
+  expect(field).toMatchObject({ role: 'textbox', value: 'https://api.example.com;' })
+  const text = observation.elements.filter((e) => e.name === 'https://api.example.com;')
+  expect(text.map((e) => e.role)).toEqual(['StaticText'])
+})
+
 test('文字保留自身的引用与位置，可执行指针动作，控件操作仍被拒绝', async () => {
   const { fake, handle } = await newPage()
   const text = fake.nodeOf(13)!.node
