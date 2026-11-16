@@ -3165,7 +3165,10 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('@ 列出整篇卡与摘录卡，选中即写入引用并连接文本线；点击标签显示摘录的文字', async () => {
+  /**
+   * `@` 只列出已连接到当前卡片的节点：未连接的文本卡不出现在列表中（原始失败形状：画布上的全部文本卡都列出，未连接的显示为空方块）。
+   */
+  test('@ 只列出已连接的整篇卡与摘录卡，未连接的文本卡不列出；选中即写入引用；点击标签显示摘录的文字', async () => {
     const original = globalThis.fetch
     globalThis.fetch = ((url: string) =>
       String(url).includes(encodeURIComponent('制作脚本.md'))
@@ -3183,7 +3186,10 @@ describe('画布：生成卡与生成面板', () => {
           x: 0,
           y: 200,
         },
+        { op: 'add_file', ref: '$u', path: '其他.md', name: '其他文本', x: 0, y: 400 },
         { op: 'add_generate', ref: '$v', output: 'video', x: 300, y: 0 },
+        { op: 'connect', from: '$t', to: '$v', role: 'text' },
+        { op: 'connect', from: '$e', to: '$v', role: 'text' },
       ])
       await select(host, refs.$v!)
       ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-bar button')]
@@ -3210,11 +3216,17 @@ describe('画布：生成卡与生成面板', () => {
         () => server.ops.length === 1,
         () => '',
       )
-      expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$v!, prompt: `@[${refs.$e!}] ` }])
+      // 连线时已在提示词末尾写入两张卡的引用；选中后在光标处再写入一次摘录卡的引用，连线不变。
+      const update = server.ops[0]?.[0] as { op: string; id: string; prompt: string }
+      expect(update.op).toBe('update')
+      expect(update.id).toBe(refs.$v!)
+      expect(update.prompt.trimEnd().endsWith(`@[${refs.$e!}]`)).toBe(true)
       expect(server.doc().edges.map((e) => [e.from, e.to, e.role])).toEqual([
+        [refs.$t!, refs.$v!, 'text'],
         [refs.$e!, refs.$v!, 'text'],
       ])
-      const tag = () => host.querySelector<HTMLElement>('.canvas-prompt .canvas-chip.text')
+      const tag = () =>
+        host.querySelector<HTMLElement>(`.canvas-prompt .canvas-chip.text[data-node="${refs.$e!}"]`)
       await waitFor(
         () => tag()?.textContent === '1-2 段',
         () => host.querySelector('.canvas-prompt')?.innerHTML ?? '',

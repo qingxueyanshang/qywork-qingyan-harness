@@ -614,14 +614,19 @@ export function GeneratePanel(props: {
   const roleOf = (m: Menu | null) => (m?.kind === 'pick' ? m.role : undefined)
 
   /**
-   * `@` 列出当前卡片已连接的素材与画布上的全部文本卡（引用文本卡即连线）；添加素材时列出可连接的媒体节点。
+   * `@` 只列出已连接到当前卡片的节点，文本卡同样如此：未连接的节点不出现在列表中。
+   * 添加素材时列出可连接、尚未连接的媒体节点。
    */
   const pickable = () => {
     const role = roleOf(menu())
     const connected = new Set(edges().map((e) => e.from))
+    // `edges()` 只含媒体输入；文本卡的连线（`text`）另从全部连线中取。
+    const textLinked = new Set(
+      props.view.doc.edges.filter((e) => e.to === props.node.id).map((e) => e.from),
+    )
     return props.view.doc.nodes.filter((n) => {
       if (n.id === props.node.id) return false
-      if (isTextCard(n)) return role === undefined
+      if (isTextCard(n)) return role === undefined && textLinked.has(n.id)
       const kind = mediaOf(props.view, n.id).kind
       if (!kind) return false
       if (role === 'first_frame' || role === 'last_frame')
