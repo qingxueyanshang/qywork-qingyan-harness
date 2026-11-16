@@ -697,7 +697,7 @@ async function* consumeStream(
         turn.providerStop = ev.stopReason
         turn.rawStop = ev.rawStopReason
         if (ev.stopReason === 'refusal') {
-          turn.refusalNote = ev.refusal?.explanation ?? '模型出于安全策略拒绝了该请求'
+          turn.unusableNote = ev.refusal?.explanation ?? '模型出于安全策略拒绝了该请求'
         }
         break
       }

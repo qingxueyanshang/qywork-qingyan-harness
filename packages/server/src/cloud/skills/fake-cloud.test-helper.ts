@@ -222,7 +222,11 @@ function sse(events: unknown[]): Response {
   )
 }
 
-const USAGE = { choices: [], usage: { prompt_tokens: 100, completion_tokens: 10 } }
+/**
+ * 回报的输入量不能远低于发送量：低于下限时 agent 判定上游未处理全部输入并停止本轮（`turn-end.ts` 的 `inputFloor`）。
+ * 窗口 32,000 的请求的下限不超过 3,000。
+ */
+const USAGE = { choices: [], usage: { prompt_tokens: 3_000, completion_tokens: 10 } }
 
 export function toolCallReply(id: string, name: string, args: Record<string, unknown>): Response {
   return sse([

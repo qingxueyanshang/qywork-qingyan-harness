@@ -162,7 +162,7 @@ export class AgentLoop {
         yield contextEvent(host, run, turn, estimateRequest(turn.req, run.density))
 
         const next =
-          turn.refusalNote || !turn.calls.length
+          turn.unusableNote || !turn.calls.length
             ? yield* concludeWithoutTools(run, turn)
             : yield* executeCalls(host, run, turn)
         if (next === 'stop') break

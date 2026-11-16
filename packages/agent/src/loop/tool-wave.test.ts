@@ -1409,21 +1409,20 @@ describe('投递额度按决策计算', () => {
   }
 
   /**
-   * 假 adapter，第一轮报告的输入量由 `input(本地估算)` 给出：第一轮发起调用，第二轮结束。
+   * 假 adapter，每一轮报告的输入量由 `input(本地估算)` 给出：第一轮发起调用，第二轮结束。
    * 报告值与估算值之比即 provider 真值与本地估算之比，额度按该比值折算。
+   * 第二轮同样按该比值报告：报告值远低于发送量时，本轮按上游未处理全部输入停止（`turn-end.ts` 的 `inputFloor`）。
    */
   function adapterWithUsage(
     calls: WireToolCall[],
     input: (estimated: number) => number,
   ): LlmAdapter {
     const base = fakeAdapter([calls, null])
-    let turn = 0
     return {
       ...base,
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
-        const first = turn++ === 0
         for await (const ev of base.stream(req)) {
-          if (first && ev.type === 'usage') {
+          if (ev.type === 'usage') {
             const estimated = estimateRequest(req, base.spec.density)
             yield { ...ev, usage: { ...ev.usage, inputTokens: input(estimated), outputTokens: 0 } }
           } else yield ev
@@ -1586,7 +1585,7 @@ describe('投递额度按决策计算', () => {
 
   /**
    * 两次决策：第一次调用 `grab` 申请 `first` 的额度，第二次响应报告的输入量为 `reported`、调用 `grab` 申请 1。
-   * `first` 超出单次投递上限时，第一次决策的投递触及上限。
+   * `first` 超出单次投递上限时，第一次决策的投递触及上限。其余响应报告的输入量等于本地估算。
    */
   function twoDecisions(
     first: number,
@@ -1608,10 +1607,10 @@ describe('投递额度按决策计算', () => {
       adapter: {
         ...base,
         async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
-          const second = turn++ === 1
+          const input = turn++ === 1 ? reported : estimateRequest(req, base.spec.density)
           for await (const ev of base.stream(req)) {
-            if (second && ev.type === 'usage') {
-              yield { ...ev, usage: { ...ev.usage, inputTokens: reported, outputTokens: 0 } }
+            if (ev.type === 'usage') {
+              yield { ...ev, usage: { ...ev.usage, inputTokens: input, outputTokens: 0 } }
             } else yield ev
           }
         },

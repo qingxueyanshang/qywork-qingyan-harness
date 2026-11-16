@@ -1,12 +1,12 @@
 /**
  * 覆盖 `loop/turn-end.ts`：输出截断时丢弃工具调用并续写、`end_turn` 与待办清单（还有 pending 或
  * in_progress 时继续提示、受阻时等待用户、只有失败项时完成并列出失败、无进展时停止）、
- * `tool_use` 却没有可解析调用。
+ * `tool_use` 却没有可解析调用、上游回报的输入量低于下限。
  */
 
 import { describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
-import { buildAdapter, lookupModel } from '@qywork/ai'
+import { buildAdapter, estimateRequest, lookupModel } from '@qywork/ai'
 import {
   FAULT_PROTOCOLS,
   faultBaseUrl,
@@ -845,5 +845,84 @@ describe('provider 声明调用工具但未解析出任何调用', () => {
     expect(events.some((e) => e.type === 'run.error')).toBe(true)
     // provider 的原始终止原因写入账本：缺少它时无法区分回答完毕与要求调用工具。
     expect(settled.at(-1)?.finishReason).toBe('tool_calls')
+  })
+})
+
+describe('上游回报的输入量远低于发送量', () => {
+  /**
+   * 原始失败形状（会话 `cv_0mwhvym0h00006fnh80`）：发送约 54 万 token 的历史，第三方只处理系统提示词、工具定义与最后一条
+   * 用户消息，回报约 3 万。该回执被当作占用读数（输入框显示 3.1%），模型在缺少历史的情况下继续修改文件。
+   */
+  function run(reported: (estimated: number) => number) {
+    const executed: string[] = []
+    const anchored: (boolean | undefined)[] = []
+    const persist = noopPersistence()
+    persist.settleRequest = (_id, _status, _usage, _code, _finish, _message, isAnchor) => {
+      anchored.push(isAnchor)
+    }
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'edit',
+      description: '修改文件。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'write',
+      objectLabel: '测试',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn() {
+        executed.push('edit')
+        return { status: 'success', message: 'ok' }
+      },
+    })
+    const base = fakeAdapter([[call('edit')], null])
+    const adapter: LlmAdapter = {
+      ...base,
+      async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+        const estimated = estimateRequest(req, base.spec.density)
+        for await (const ev of base.stream(req)) {
+          yield ev.type === 'usage'
+            ? { ...ev, usage: { ...ev.usage, inputTokens: reported(estimated) } }
+            : ev
+        }
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry,
+      systemPrompt: 'sys',
+      persist,
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    return (async () => {
+      const events: AgentEvent[] = []
+      for await (const ev of loop.run({
+        compactPercent: 80,
+        runId: 'rn_dropped' as never,
+        history: [{ role: 'user', content: '甲'.repeat(500_000) }],
+        signal: new AbortController().signal,
+      })) {
+        events.push(ev)
+      }
+      return { events, executed, anchored }
+    })()
+  }
+
+  test('回报约为发送量的 6%：工具调用不执行，本轮以 provider_error 停止，回执不作为读数', async () => {
+    const { events, executed, anchored } = await run((estimated) => Math.round(estimated * 0.06))
+    expect(executed).toEqual([])
+    expect(anchored[0]).toBe(false)
+    const error = events.find((e) => e.type === 'run.error')
+    expect(error && 'message' in error && error.message).toContain('会话历史未送达模型')
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished && 'stopReason' in finished && finished.stopReason).toBe('provider_error')
+  })
+
+  test('回报为发送量的 0.35（正常回执的最小比值）：照常执行并作为读数', async () => {
+    const { events, executed, anchored } = await run((estimated) => Math.round(estimated * 0.35))
+    expect(executed).toEqual(['edit'])
+    expect(anchored[0]).toBe(true)
+    expect(events.some((e) => e.type === 'run.error')).toBe(false)
   })
 })

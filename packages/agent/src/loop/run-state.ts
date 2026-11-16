@@ -370,7 +370,11 @@ export class TurnState {
   providerStop: string = 'end_turn'
   /** provider 返回的原始终止原因，只写入账本，不参与判断。 */
   rawStop = ''
-  refusalNote: string | null = null
+  /**
+   * 本轮响应不可用的原因：模型拒答（`attempt.ts`），或上游回报的输入量低于下限（`turn-end.ts` 的 `settleResponse`）。
+   * 非 null 时本轮的工具调用不执行，本轮以 provider_error 停止（`concludeWithoutTools`）。
+   */
+  unusableNote: string | null = null
   /** 本次请求 provider 回报的 usage。null 表示未回报，不要用累计值代替。 */
   turnUsage: ProviderUsage | null = null
   /** 本次尝试写入请求账的本地估算（`measuredInputTokens`）。收尾时据此判定 usage 能否作为占用锚点。 */

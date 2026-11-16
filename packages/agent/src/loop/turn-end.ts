@@ -3,6 +3,7 @@
  * 可执行时的停机判定。
  */
 
+import { estimateContent } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { envelopeHeadTokens, log, TODO_BLOCKERS, TODO_FAILURES, todoReason } from '@qywork/core'
 import { DelegatePort } from '../ports/delegate.ts'
@@ -22,6 +23,34 @@ import type { RunState, TurnState } from './run-state.ts'
  */
 function inputLimit(turn: TurnState): number {
   return turn.measured * 1.5 + 20_000
+}
+
+/**
+ * 回报的输入量的下限：低于时上游没有处理本次发送的全部内容，会话历史未送达模型。
+ *
+ * 该回执不作为锚点，本轮响应不可用（`unusableNote`）：模型在缺少历史的情况下给出的工具调用不执行，本轮以
+ * provider_error 停止。作为锚点时读数只剩发送量的零头，自动压缩不再触发，而模型在每一轮都缺少历史。
+ *
+ * 取系统提示词、工具定义与图片视频之外的部分减 2 万后的四分之一：账本中各型号正常回执与估算之比的最小值为 0.35
+ * （2026-11-16 统计约 5 万次请求），第三方丢弃历史时为 0.03 至 0.28（只计入系统提示词、工具定义与最后一条用户消息之后的内容）。
+ * 不计系统提示词与工具定义：部分兼容接口回报的输入不含工具定义，而历史很短时差额只是这一部分。
+ * 不计图片与视频：它们按像素上限估算，只能偏高，截图多而文字少的请求按总量判定时会误判。
+ */
+function inputFloor(run: RunState, turn: TurnState): number {
+  let media = 0
+  for (const m of turn.req.messages) {
+    if (typeof m.content !== 'string' && m.content) {
+      media += estimateContent(
+        m.content.filter((b) => b.type !== 'text'),
+        run.density,
+      )
+    }
+  }
+  return (turn.measured - envelopeHeadTokens(turn.breakdown) - media - 20_000) / 4
+}
+
+function droppedInputNote(prompt: number, measured: number): string {
+  return `上游只处理了本次请求的一部分输入：发送约 ${measured} token，上游回报 ${prompt} token，会话历史未送达模型`
 }
 
 const TRUNCATED_NOTICE =
@@ -54,7 +83,9 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
     ? turnUsage.inputTokens + (turnUsage.cachedTokens ?? 0) + (turnUsage.cacheWriteTokens ?? 0)
     : 0
   const total = prompt + (turnUsage?.outputTokens ?? 0)
-  const plausible = prompt <= inputLimit(turn)
+  // 0 不是可用的用量回执（部分第三方对所有请求回报 0），不据此判定。
+  const dropped = prompt > 0 && prompt < inputFloor(run, turn)
+  const plausible = prompt <= inputLimit(turn) && !dropped
 
   // 流结束后为该行写入终态。中途被用户中断时记为 `uncertain`：
   // 无法判断 provider 是否完整接收，这正是 `uncertain` 的语义。
@@ -120,6 +151,15 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
    * 工具结果才是锚点未覆盖的增量。
    */
   if (!turnUsage) return true
+  if (dropped) {
+    log.warn('agent', 'provider 回报的输入量低于下限，会话历史未送达模型', {
+      input: prompt,
+      floor: Math.round(inputFloor(run, turn)),
+      measured: turn.measured,
+    })
+    turn.unusableNote = droppedInputNote(prompt, turn.measured)
+    return true
+  }
   if (!plausible) {
     log.warn('agent', 'provider 回报的输入量超过上限，不作为占用读数', {
       input: prompt,
@@ -171,7 +211,7 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
 }
 
 /**
- * 模型拒答，或本轮没有可执行的工具调用时：决定停机还是开始新的一轮。
+ * 本轮响应不可用（模型拒答、上游没有处理全部输入），或本轮没有可执行的工具调用时：决定停机还是开始新的一轮。
  *
  * 返回 `stop` 时 `run.stopReason`（及 `stopDetail`）已经设置。
  */
@@ -181,13 +221,13 @@ export async function* concludeWithoutTools(
 ): AsyncGenerator<AgentEvent, 'stop' | 'continue', unknown> {
   const { input, ctx } = run
 
-  if (turn.refusalNote) {
+  if (turn.unusableNote) {
     run.stopReason = 'provider_error'
     yield {
       type: 'run.error',
       runId: input.runId,
       code: 'provider_unavailable',
-      message: turn.refusalNote,
+      message: turn.unusableNote,
     }
     return 'stop'
   }
