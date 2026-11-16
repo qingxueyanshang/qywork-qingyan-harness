@@ -1,13 +1,14 @@
 /**
- * 覆盖 `providers/tool-calls.ts` 的 `collectToolCalls`：三种协议共用的工具调用汇总。
+ * 覆盖 `providers/tool-calls.ts`：三种协议共用的工具调用汇总 `collectToolCalls`，
+ * 以及判定参数原文是否已闭合的 `ArgumentsScanner`。
  *
- * 锁定三项行为：按序号排序；参数只接受 JSON 对象，其余一律记录到 `argumentsError` 且
- * `arguments` 为 `{}`；名称缺失时按协议报错。
+ * 锁定的行为：按序号排序；参数只接受 JSON 对象，其余一律记录到 `argumentsError` 且
+ * `arguments` 为 `{}`；名称缺失时按协议报错；字符串中的括号与转义引号不影响闭合判定。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { ProviderError } from '../errors.ts'
-import { collectToolCalls, type ToolCallSlot } from './tool-calls.ts'
+import { ArgumentsScanner, collectToolCalls, type ToolCallSlot } from './tool-calls.ts'
 
 function slots(...entries: [number, ToolCallSlot][]): Map<number, ToolCallSlot> {
   return new Map(entries)
@@ -53,5 +54,29 @@ describe('工具调用汇总', () => {
     expect(() =>
       collectToolCalls(slots([0, { id: 'a', name: '', json: '{}' }]), 'openai_responses', 'm'),
     ).toThrow(ProviderError)
+  })
+})
+
+describe('参数原文的闭合判定', () => {
+  const scan = (...parts: string[]): boolean[] => {
+    const scanner = new ArgumentsScanner()
+    return parts.map((part) => {
+      scanner.push(part)
+      return scanner.closed
+    })
+  }
+
+  test('对象在最后一个右括号到达时闭合，此前任何一段都不闭合', () => {
+    expect(scan('{"path":', '"a.md"', ',"n":{"x":1}', '}')).toEqual([false, false, false, true])
+  })
+
+  test('字符串中的括号、转义引号与反斜杠不改变层级', () => {
+    expect(
+      scan('{"content":"function f() {', ' return \\"}\\" }\\\\', '"', ',"k":[1,{"a":"]"}]', '}'),
+    ).toEqual([false, false, false, false, true])
+  })
+
+  test('空白与空串不使其闭合', () => {
+    expect(scan('', '  ', '{', '}')).toEqual([false, false, false, true])
   })
 })

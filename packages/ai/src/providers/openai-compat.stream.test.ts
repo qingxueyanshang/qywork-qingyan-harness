@@ -144,3 +144,48 @@ describe('流未按协议结束', () => {
     })
   })
 })
+
+/**
+ * 同一工具的并行调用共用一个序号。
+ *
+ * 以下字节逐字取自 2026-11-16 对云端网关上游 `provideri_gemini`（模型 `gemini-4-carbon`）的实测：
+ * 要求一次读取三个文件时，三次调用都标为序号 0，只有第一段带 id 与名称，之后每次调用各发一个完整对象。
+ * 按序号直接拼接得到 `{…}{…}{…}`，三次调用都被判为参数不是 JSON 对象而拒绝执行，模型照原样重发，
+ * 连续三轮后该次运行按无进展停止。
+ */
+const RELAY_ID = 'msg_01qsZn50JD3V72JdUt1PMJ0a'
+const relayChunk = (choice: string) =>
+  `data: {"id":"${RELAY_ID}","object":"chat.completion.chunk","created":1794839279,"model":"gemini-4-carbon","choices":[${choice}]}\n\n`
+const SAME_TOOL_PARALLEL =
+  relayChunk('{"index":0,"delta":{"role":"assistant"},"finish_reason":null}') +
+  relayChunk(
+    '{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_1021b8fa302b0bb0","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}',
+  ) +
+  relayChunk(
+    '{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"README.md\\"}"}}]},"finish_reason":null}',
+  ) +
+  relayChunk(
+    '{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"docs/a.md\\"}"}}]},"finish_reason":null}',
+  ) +
+  relayChunk(
+    '{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"docs/b.md\\"}"}}]},"finish_reason":null}',
+  ) +
+  relayChunk('{"index":0,"delta":{"content":""},"finish_reason":"tool_calls"}') +
+  `data: {"id":"${RELAY_ID}","object":"chat.completion.chunk","created":1794839279,"model":"gemini-4-carbon","choices":[],"usage":{"prompt_tokens":388,"completion_tokens":68,"total_tokens":456}}\n\n` +
+  'data: [DONE]\n\n'
+
+describe('同一序号承载多次调用', () => {
+  test('三次并行读取拆为三次调用，参数各自完整，id 互不相同', async () => {
+    const { events, err } = await run(SAME_TOOL_PARALLEL)
+    expect(err).toBeNull()
+    const batch = events.find((e) => e.type === 'tool_calls')
+    const calls = batch?.type === 'tool_calls' ? batch.calls : []
+    expect(calls.map((c) => [c.name, c.arguments, c.argumentsError ?? null])).toEqual([
+      ['read_file', { path: 'README.md' }, null],
+      ['read_file', { path: 'docs/a.md' }, null],
+      ['read_file', { path: 'docs/b.md' }, null],
+    ])
+    expect(calls[0]?.id).toBe('toolu_1021b8fa302b0bb0')
+    expect(new Set(calls.map((c) => c.id)).size).toBe(3)
+  })
+})

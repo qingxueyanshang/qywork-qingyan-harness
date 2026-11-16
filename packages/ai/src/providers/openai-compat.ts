@@ -41,7 +41,10 @@ import type {
 } from '../types.ts'
 import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP, videoData } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
-import { collectToolCalls } from './tool-calls.ts'
+import { ArgumentsScanner, collectToolCalls } from './tool-calls.ts'
+
+/** 同一序号内可容纳的调用次数，用于组成调用的排序键。 */
+const CALLS_PER_INDEX = 1000
 
 export class OpenAICompatAdapter implements LlmAdapter {
   readonly kind = 'openai_chat_completions' as const
@@ -141,10 +144,14 @@ export class OpenAICompatAdapter implements LlmAdapter {
     let stopReason: ProviderStopReason = 'end_turn'
     // provider 返回的原值，只记入账本，不参与判断。结束时仍为空串表示流被截断，见下方的检查。
     let rawFinish = ''
+    // 同一序号可能承载多次调用（见 `ArgumentsScanner`），键为「序号 × CALLS_PER_INDEX + 该序号内的次序」：
+    // 按键排序即先按序号、再按同一序号内的到达顺序。调用顺序表达模型的意图（先读后写），不要改为只按到达顺序。
     const partial = new Map<
       number,
-      { id: string; name: string; json: string; signature?: string }
+      { id: string; name: string; json: string; signature?: string; scanner: ArgumentsScanner }
     >()
+    // provider 序号 → 该序号当前所属调用的键。
+    const slotOfIndex = new Map<number, number>()
     let messageSignature: string | undefined
     const splitter = createThinkingSplitter()
     const trace = newTrace()
@@ -226,19 +233,32 @@ export class OpenAICompatAdapter implements LlmAdapter {
 
         for (const tc of delta.tool_calls ?? []) {
           const idx: number = tc.index ?? 0
-          let slot = partial.get(idx)
-          if (!slot) {
-            slot = { id: tc.id ?? `call_${idx}`, name: tc.function?.name ?? '', json: '' }
-            partial.set(idx, slot)
+          const argsDelta: string = tc.function?.arguments ?? ''
+          const prev = slotOfIndex.get(idx)
+          let slot = prev === undefined ? undefined : partial.get(prev)
+          // 该序号的参数已闭合时，再到达的参数或新的 id 属于下一次调用。第三方接口省略名称时沿用同一名称：
+          // 它按工具名分配序号，不同工具的调用分属不同序号。
+          const next =
+            slot?.scanner.closed === true &&
+            (argsDelta.trim() !== '' || (tc.id !== undefined && tc.id !== slot.id))
+          if (!slot || next) {
+            const key = prev === undefined ? idx * CALLS_PER_INDEX : prev + 1
+            const name = tc.function?.name ?? slot?.name ?? ''
+            // 省略 id 时按该序号第一次调用的 id 编号，保证本次响应内各调用的 id 互不相同。
+            const first = partial.get(idx * CALLS_PER_INDEX)
+            const id = tc.id ?? (first ? `${first.id}_${key % CALLS_PER_INDEX}` : `call_${idx}`)
+            slot = { id, name, json: '', scanner: new ArgumentsScanner() }
+            partial.set(key, slot)
+            slotOfIndex.set(idx, key)
           }
           // 名字有时分片到达，须补齐；id 同理。
           if (tc.id) slot.id = tc.id
           if (tc.function?.name) slot.name = tc.function.name
           const signature = tc.extra_content?.google?.thought_signature
           if (typeof signature === 'string' && signature) slot.signature = signature
-          const argsDelta: string = tc.function?.arguments ?? ''
           if (argsDelta) {
             slot.json += argsDelta
+            slot.scanner.push(argsDelta)
             yield { type: 'tool_call_progress', at }
           }
         }

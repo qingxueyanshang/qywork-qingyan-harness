@@ -41,6 +41,42 @@ export function collectToolCalls(
     })
 }
 
+/**
+ * 追踪参数原文的顶层 JSON 值是否已闭合。逐段输入，总耗时与原文长度成正比，不在每段到达时重新解析全文。
+ *
+ * 用途：部分第三方接口把同一工具的并行调用都标为同一序号，只在第一段给出 id 与名称，之后每次调用
+ * 各发一个完整的参数对象。顶层值闭合之后，同一序号再到达的参数不可能是该调用的延续，只能是同名工具的
+ * 下一次调用；按序号直接拼接得到 `{…}{…}`，整批调用都被判为参数不是 JSON 对象而拒绝执行。
+ */
+export class ArgumentsScanner {
+  private depth = 0
+  private inString = false
+  private escaped = false
+  private opened = false
+  /** 顶层对象或数组已闭合。 */
+  closed = false
+
+  push(text: string): void {
+    for (const ch of text) {
+      if (this.closed) return
+      if (this.inString) {
+        if (this.escaped) this.escaped = false
+        else if (ch === '\\') this.escaped = true
+        else if (ch === '"') this.inString = false
+        continue
+      }
+      if (ch === '"') this.inString = true
+      else if (ch === '{' || ch === '[') {
+        this.depth++
+        this.opened = true
+      } else if ((ch === '}' || ch === ']') && this.opened) {
+        this.depth--
+        if (this.depth === 0) this.closed = true
+      }
+    }
+  }
+}
+
 /** 空串 = 无参数；返回 `null` 表示原文不是一个 JSON 对象。 */
 function parseArguments(json: string): Record<string, unknown> | null {
   if (!json.trim()) return {}
