@@ -596,6 +596,36 @@ test('同步型号清单：后台调价后配置中的倍率随之更新；清�
   expect((await stat(configPath())).mtimeMs).toBe(before)
 })
 
+/**
+ * 原始失败形状：同步时按配置中已有的顺序写入，新上架的型号排在最后，已下架的型号仍在原位，
+ * 输入框的模型列表与账号窗口中按清单排列的型号表顺序不同。
+ */
+test('同步型号清单：配置中的型号按清单的顺序排列，已下架的排在最后；用户的档位保留', async () => {
+  await account.login('me@example.com', PASSWORD)
+  await writeConfig(live, (c) => {
+    const p = c.providers[CLOUD_PROVIDER]!
+    return {
+      ...c,
+      providers: {
+        ...c.providers,
+        [CLOUD_PROVIDER]: {
+          ...p,
+          models: {
+            'claude-old': {},
+            'claude-next': p.models['claude-next']!,
+            'gpt-5': { ...p.models['gpt-5']!, effort: 'high' },
+          },
+        },
+      },
+    }
+  })
+  await account.syncModels()
+  const stored = live.providers[CLOUD_PROVIDER]?.models ?? {}
+  expect(Object.keys(stored)).toEqual(['claude-sonnet-5-5', 'gpt-5', 'claude-next', 'claude-old'])
+  expect(stored['claude-old']?.delisted).toBe(true)
+  expect(stored['gpt-5']?.effort).toBe('high')
+})
+
 /** 以配置接口写入一条模型库覆盖，与用户在模型库中修改的写入路径相同。 */
 async function setCatalog(key: string, entry: Record<string, unknown>): Promise<void> {
   await writeConfig(live, (c) => ({ ...c, catalog: { ...c.catalog, [key]: entry } }))

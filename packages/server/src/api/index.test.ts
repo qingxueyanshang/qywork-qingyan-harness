@@ -511,6 +511,19 @@ describe('模型目录', () => {
     expect(after.currency).toBe('CNY')
   })
 
+  /** 原始失败形状：云端已下架的 Claude Haiku 5.5 仍出现在输入框的模型列表中，选中后网关拒绝请求。 */
+  test('渠道已不再提供的型号不列出；接口下全部下架时整个接口不列出', async () => {
+    const d = withConfig('anthropic_messages', 'claude-opus-5-5')
+    d.config.providers.p!.models['claude-haiku-5-5'] = { delisted: true }
+    d.config.providers.gone = {
+      kind: 'anthropic_messages',
+      models: { 'claude-sonnet-5-5': { delisted: true } },
+    }
+    const response = await body(d)
+    expect(response.providers.map((p) => p.name)).toEqual(['p'])
+    expect(response.providers[0]?.models.map((m) => m.id)).toEqual(['claude-opus-5-5'])
+  })
+
   test('Seedream 模型库与画布均显示水印默认关闭', async () => {
     const d = withConfig('openai_chat_completions', 'm')
     const ids = ['doubao-seedream-5-0-pro-260628', 'doubao-seedream-5-0-flash-260915']

@@ -359,11 +359,14 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
      * 选择器中没有接口这一层时，配置了多个接口也无法切换。
      */
     const overrides = d.config.catalog ?? {}
+    // 渠道已不再提供的型号（`delisted`）不列出：选中后的请求必然被拒绝。
+    const usable = (models: QyConfig['providers'][string]['models']) =>
+      Object.keys(models).filter((id) => !models[id]?.delisted)
     const providers: ProviderRow[] = Object.entries(d.config.providers)
-      .filter(([, provider]) => Object.keys(provider.models).length > 0)
+      .filter(([, provider]) => usable(provider.models).length > 0)
       .map(([name, provider]) => ({
         name,
-        models: Object.keys(provider.models).map((id) => {
+        models: usable(provider.models).map((id) => {
           const declared = provider.models[id]
           // 与运行时、派发子 agent 时的档位校验使用同一份规格。接口与模型均取自配置本身，解析必然成功。
           const spec = modelSpecOf(d.config, { provider: name, model: id })!

@@ -665,18 +665,23 @@ export class CloudAccount {
     await writeConfig(this.live, (current) => {
       const provider = cloudProviderOf(current, this.origin)
       if (!provider) return current
+      // 按清单的顺序写入，清单中已没有的型号排在其后：输入框的模型选择按配置中的顺序列出，
+      // 按已有的顺序写入时新上架的型号排在最后，与账号窗口中按清单排列的型号表不一致。
       const models: Record<string, StoredModel> = {}
-      for (const [id, m] of Object.entries(provider.models)) {
-        const { kind: _kind, price: _price, delisted: _delisted, ...rest } = m
-        const hit = listed[id]
-        models[id] = hit ? { ...rest, ...hit } : { ...m, delisted: true }
+      for (const [id, hit] of Object.entries(listed)) {
+        const kept = provider.models[id]
+        if (!kept) {
+          models[id] = hit
+          continue
+        }
+        const { kind: _kind, price: _price, delisted: _delisted, ...rest } = kept
+        models[id] = { ...rest, ...hit }
       }
-      for (const [id, m] of Object.entries(listed)) models[id] ??= m
-      // 生成型号的协议与规格全部由清单决定；清单中已没有的型号标记已下架。
-      const media: Record<string, StoredMediaModel> = {}
+      for (const [id, m] of Object.entries(provider.models)) models[id] ??= { ...m, delisted: true }
+      // 生成型号的协议与规格全部由清单决定；清单中已没有的型号标记已下架。顺序与对话型号相同。
+      const media: Record<string, StoredMediaModel> = { ...listedMedia }
       for (const [id, m] of Object.entries(provider.media ?? {}))
-        media[id] = listedMedia[id] ?? { ...m, delisted: true }
-      for (const [id, m] of Object.entries(listedMedia)) media[id] ??= m
+        media[id] ??= { ...m, delisted: true }
       const catalog = withSpecs(current.catalog, list.models)
       if (
         JSON.stringify(models) === JSON.stringify(provider.models) &&
