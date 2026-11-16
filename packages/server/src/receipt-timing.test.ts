@@ -8,7 +8,7 @@
  * `delegate.test.ts` 覆盖。
  *
  * 必须使用真实链路：该规则的内容是父轮的结束方式决定回执能否自行
- * 发起一轮。父轮终态由 loop 产生、经 `runtime/session.ts` 写入 `runs` 行，裁决时
+ * 发起一轮。父轮终态由 loop 产生、经 `runtime/session/turn/settle.ts` 写入 `runs` 行，裁决时
  * 服务端读取该行：把其中任何一段替换为桩，只能验证桩被调用。
  */
 

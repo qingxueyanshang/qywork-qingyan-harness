@@ -5,7 +5,7 @@
  * `run_command` 转入后台与后台输出的保留上限、`tools/src/workspace-watch.ts` 的后台观察、
  * `store/src/repos/steps.ts` 的 `appendStepFileChanges`、`store/src/repos/messages.ts` 的 `listConversationChangesPage`、
  * `run-control.ts` 的端口装配与回执入口、`commands.ts` 的 `command.stop`、
- * `runtime/session.ts` 的通道注入与权限裁决、`agent/loop` 在工具结束后注入「调整方向」消息。
+ * `runtime/session/tool-context.ts` 的通道注入与 `runtime/session/permission.ts` 的权限裁决、`agent/loop` 在工具结束后注入「调整方向」消息。
  * `background_command` 的取舍由 `tools/src/shell.test.ts` 覆盖，此处只覆盖它经由任务表在本轮内等待命令结束。
  *
  * 必须使用真实链路与真实进程：被测的行为是「工具等待结束而进程仍存活」「停止本轮不结束后台命令」，

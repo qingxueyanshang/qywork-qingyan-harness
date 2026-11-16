@@ -3,7 +3,7 @@
  *
  * **覆盖范围**：`run-control.ts` 的自动继续判定（`startRun` 的 finally、排队、
  * 陈旧拒绝、停止的三个出口）、用户设立目标的路径（`setGoal`）、`commands.ts` 的
- * `goal.set` 与 `goal.resume` 分支（含对子会话的拒绝）、`runs.ts` 的自动继续标记，以及 `runtime/session.ts` 把
+ * `goal.set` 与 `goal.resume` 分支（含对子会话的拒绝）、`runs.ts` 的自动继续标记，以及 `runtime/session/turn/` 把
  * `run.error` 的正文写入 run 行的步骤（此处已有真实链路与会失败的假 provider）。
  * 目标本身的生命周期规则由 `store/goals.test.ts` 覆盖，工具层由 `tools/goals.test.ts` 覆盖。
  *
@@ -746,7 +746,7 @@ describe('用户点击继续', () => {
 })
 
 /**
- * 报错正文写入账本。覆盖 `runtime/session.ts` 接收 `run.error` 的步骤。
+ * 报错正文写入账本。覆盖 `runtime/session/turn/drive.ts` 接收 `run.error` 的步骤。
  *
  * **原始失败形状**：一条 `stop_reason = 'provider_error'` 的 run，账本中的
  * `error_message` 为 `null`：两列自建表起即存在、`RunRecord` 也一直输出它们，

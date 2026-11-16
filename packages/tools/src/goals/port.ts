@@ -8,7 +8,7 @@ import type { Goal, GoalAction, GoalWriteResult } from '@qywork/core'
  * 上**低于** store，工具直接引用它即构成反向边。因此实现由 runtime 注入：
  * runtime 同时持有账本与事件通道。
  *
- * **不要改用 `ctx.resources`。** 该 Map 只在 `runtime/session.ts` 中以
+ * **不要改用 `ctx.resources`。** 该 Map 只在 `runtime/session/tool-context.ts` 中以
  * `new Map()` 创建，全仓没有任何键被注入；使用它会使这条链路没有生产者。
  *
  * **写入结果是返回值，不是异常。** 三种拒绝（revision 过期、状态不允许、缺少理由）都须**原样交给模型**：

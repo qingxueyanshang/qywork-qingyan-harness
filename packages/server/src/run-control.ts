@@ -396,7 +396,7 @@ export async function startRun(
          * **自动继续标记只由目标事件驱动**，不根据「谁调用过目标工具」推断。
          *
          * 目标的真源在账本，该事件如实广播账本的最新状态
-         * （`runtime/session.ts` 的 `announce`）。模型在同一轮中设立目标后又
+         * （`runtime/session/tool-context.ts` 的 `announce`）。模型在同一轮中设立目标后又
          * 自行 complete 时，后一条事件解除标记，循环不会多启动一轮。
          */
         if (ev.type === 'goal') {

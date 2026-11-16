@@ -11,6 +11,8 @@ import { McpConfigPort, registerBuiltinTools } from '@qywork/tools'
 import { acquireExtensions, type Extensions } from './extensions.ts'
 import { approveMcpServers } from './mcp-approvals.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
+import { loadExtensionTools } from './session/extension-tools.ts'
+import type { SessionState } from './session/types.ts'
 import { Session } from './session.ts'
 
 const blobs = new ContentStore(':memory:')
@@ -141,9 +143,10 @@ test('同一 Session 的大 schema 进入池，升级后已加载的旧工具与
     signal: new AbortController().signal,
     config: { mode: 'full', providers: {} },
   })
-  const runtime = session as unknown as {
-    registry: ToolRegistry
-    loadExtensionTools(density: typeof DEFAULT_DENSITY): Promise<boolean>
+  const state = (session as unknown as { state: SessionState }).state
+  const runtime = {
+    registry: state.registry,
+    loadExtensionTools: (density: typeof DEFAULT_DENSITY) => loadExtensionTools(state, density),
   }
   const port = makeMcpConfigPort(root)
   try {

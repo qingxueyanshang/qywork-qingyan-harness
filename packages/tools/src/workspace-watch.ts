@@ -77,7 +77,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join, relative, resolve } from 'node:path'
 import type { FileChange } from '@qywork/core'
 import { IGNORED_DIRS } from './paths.ts'
-import { collectProcess } from './sandbox.ts'
+import { collectProcess } from './process/collect.ts'
 
 /** 一个执行窗口观察到的工作区变更。 */
 export interface ObservedChanges {

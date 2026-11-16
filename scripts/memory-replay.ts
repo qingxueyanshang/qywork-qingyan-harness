@@ -78,7 +78,7 @@ import {
   PluginPort,
   registerBuiltinTools,
 } from '@qywork/tools'
-import { withAttachments } from '../packages/runtime/src/session.ts'
+import { withAttachments } from '../packages/runtime/src/session/attachments.ts'
 
 const ROOT = join(import.meta.dir, '..', '.tmp', 'memory-replay')
 const LEDGER = join(ROOT, 'ledger.sqlite3')

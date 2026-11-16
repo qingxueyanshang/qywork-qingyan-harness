@@ -2,7 +2,7 @@
  * 接口拒绝图片输入后，本轮移除图片重发，同一会话之后不再向该接口发送图片。
  *
  * 覆盖范围：`agent/loop/attempt.ts` 的被拒分支、`agent/loop/index.ts` 的图片发送状态、
- * `session.ts` 从会话记录推导该状态、`tools/files.ts` 读取图片时的直接返回、
+ * `session/turn/history.ts` 从会话记录推导该状态、`tools/files.ts` 读取图片时的直接返回、
  * `store/repos/steps.ts` 的记录写入与查询。经真实 `Session`、真实 `read_file`、真实 `Store` 与本地 HTTP 端点执行。
  *
  * 原始失败形状：`read_file` 读取图片成功，携带图片的下一次请求被 400 拒绝，本轮失败；

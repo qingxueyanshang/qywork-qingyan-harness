@@ -35,8 +35,9 @@ import {
   rootsOf,
   type WorkspaceRoots,
 } from './paths.ts'
+import { BASH_PATH_ENV, commandShell } from './process/command-shell.ts'
+import { setCommandRunner } from './process/spawn.ts'
 import { startCommandRunner } from './runner.ts'
-import { BASH_PATH_ENV, commandShell, setCommandRunner } from './sandbox.ts'
 
 async function workspace(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qywork-test-'))

@@ -2,7 +2,7 @@
  * 桌面端口在**真实创建路径**上正确装配。
  *
  * 覆盖范围：`run-control.ts` 与 `team-run.ts` 两处 `new Session` 的桌面端口注入、
- * `runtime/session.ts` 的端口集合与 `ToolContext` 转发、`tools/index.ts` 按 `requires` 的注册、
+ * `runtime/session.ts` 的端口集合与 `runtime/session/tool-context.ts` 的 `ToolContext` 转发、`tools/index.ts` 按 `requires` 的注册、
  * `tools/desktop/` 的五个工具与 `desktop/coordinator.ts` 之间的端到端往返（含有限动作序列的
  * 逐帧派发、截断与不产生额外模型请求），以及父级停止时的执行者撤销。
  *

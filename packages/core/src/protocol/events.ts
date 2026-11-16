@@ -556,7 +556,7 @@ export interface TodosEvent {
 
 /**
  * 目标变更。有两个生产者，都必须发出：模型调用三个目标工具时由端口发出
- * （`runtime/session.ts`），服务端自动继续时由 `run-control.ts` 发出。
+ * （`runtime/session/tool-context.ts`），服务端自动继续时由 `run-control.ts` 发出。
  *
  * 不带 runId。目标是会话级的，修改它的动作有一半发生在任何 run 之外
  * （自动继续前将轮次加 1、用户在界面上点击继续），写入空 runId 只会使

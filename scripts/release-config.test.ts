@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { findPython } from '@qywork/runtime'
-import { probeBash } from '../packages/tools/src/sandbox.ts'
+import { probeBash } from '../packages/tools/src/process/command-shell.ts'
 import { collect } from './collect-installer.ts'
 
 const ROOT = join(import.meta.dir, '..')

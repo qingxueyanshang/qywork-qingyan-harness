@@ -1,5 +1,5 @@
 /**
- * `office.ts` 的 Office 宿主（开关关闭与缺少 Python 时不提供端口），以及 `session.ts` 中与 `office`
+ * `office.ts` 的 Office 宿主（开关关闭与缺少 Python 时不提供端口），以及 `session.ts` 与 `session/tool-context.ts` 中与 `office`
  * 相关的装配：有端口时才注册 Office 工具；本轮技能索引中的目录成为工具的只读根。
  *
  * 真实探测（启动 Python、导入文档库、识别办公软件）由 `bun run test:office` 与真机验收覆盖。
@@ -130,7 +130,7 @@ async function session(office?: OfficePort) {
     ...(office ? { ports: new Ports([provide(OfficePort, office)]) } : {}),
   })
   const names = () =>
-    (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
+    (s as unknown as { state: { registry: { schemas(): { name: string }[] } } }).state.registry
       .schemas()
       .map((t) => t.name)
   return { s, store, names }

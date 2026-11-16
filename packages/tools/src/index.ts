@@ -13,8 +13,8 @@ import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.
 import { readGoalTool, updateGoalTool } from './goals.ts'
 import { enableMcpServerTool, moveMcpServerTool, writeMcpServerTool } from './mcp-config.ts'
 import { deleteMemoryTool, moveMemoryTool, readMemoryTool, writeMemoryTool } from './memory.ts'
+import { commandShell } from './process/command-shell.ts'
 import { readResourceTool } from './resources.ts'
-import { commandShell } from './sandbox.ts'
 import { createScheduleTool, deleteScheduleTool, listSchedulesTool } from './schedules.ts'
 import { globTool, grepTool } from './search.ts'
 import { CommandPort } from './shell/port.ts'
@@ -98,7 +98,7 @@ export {
 export { type McpActivation, McpConfigPort } from './mcp-config/port.ts'
 // MCP 服务的命令行写法：工具的命令判定与 runtime 列出未启用的项目服务使用同一种写法。
 export { formatCommandLine } from './mcp-config.ts'
-// 记忆：runtime/session.ts 装配提示词时读取索引，server/api/memory.ts 读写单条记忆
+// 记忆：runtime/session/turn/prepare.ts 装配提示词时读取索引，server/api/memory.ts 读写单条记忆
 export {
   listAllScopedEntries,
   listScopedEntries,
@@ -126,6 +126,21 @@ export {
   workspacePythonDir,
 } from './paths.ts'
 export { PluginPort } from './plugin-install/port.ts'
+// `collectProcess` 与 `spawnGuarded` 配对使用：启动子进程与等待子进程各有唯一入口。
+// 各处自行编写等待逻辑即各自实现一遍完成判据，写错的一处不会报错，只会无限期阻塞。
+export { type CollectedProcess, type CollectOptions, collectProcess } from './process/collect.ts'
+// `commandShell` / `probeBash` 一并导出：命令在哪个 shell 中运行由它决定，调用方另行判断 platform 即形成第二本账；
+// 握手需报告本机是否有 bash，没有时向用户说明原因
+export {
+  BASH_PATH_ENV,
+  type BashResolution,
+  type CommandShell,
+  commandShell,
+  probeBash,
+} from './process/command-shell.ts'
+// 沙箱：cli 的 doctor/config 与 server 的握手均报告沙箱状态
+export { detectSandbox } from './process/sandbox.ts'
+export { setCommandRunner, spawnGuarded } from './process/spawn.ts'
 export { renameWithRetry } from './rename.ts'
 // 命令运行在先于监听端口启动的子进程中。`qy serve` 在绑定端口前启动该子进程，
 // 隐藏的 `runner` 子命令是该子进程的入口。
@@ -135,24 +150,6 @@ export {
   runCommandRunner,
   startCommandRunner,
 } from './runner.ts'
-// 沙箱：cli 的 doctor/config 与 server 的握手均报告沙箱状态
-// `commandShell` / `probeBash` 一并导出：命令在哪个 shell 中运行由它决定，调用方另行判断 platform 即形成第二本账；
-// 握手需报告本机是否有 bash，没有时向用户说明原因
-// `collectProcess` 与 `spawnGuarded` 配对使用：启动子进程与等待子进程各有唯一入口。
-// 各处自行编写等待逻辑即各自实现一遍完成判据，写错的一处不会报错，只会无限期阻塞。
-export {
-  BASH_PATH_ENV,
-  type BashResolution,
-  type CollectedProcess,
-  type CollectOptions,
-  type CommandShell,
-  collectProcess,
-  commandShell,
-  detectSandbox,
-  probeBash,
-  setCommandRunner,
-  spawnGuarded,
-} from './sandbox.ts'
 export { SchedulePort } from './schedules/port.ts'
 // 作用域：runtime 与 server 按同一规则计算三层的根目录
 export {
@@ -187,10 +184,10 @@ export {
 // 子 agent 产出的投递限制：server 的派发通道组装回执时经过同一投递限制，不另设标准。
 export { deliverAgentOutput, observationBudget } from './sink.ts'
 export { SkillSourcePaths } from './skills/port.ts'
-// 技能：runtime/session.ts 扫描索引，server/api 为设置页列出技能
+// 技能：runtime/session/turn/prepare.ts 扫描索引，server/api 为设置页列出技能
 export { SKILLS_SUBDIR, type SkillMeta, scanAllSkills, scanSkills } from './skills.ts'
 export { TodoBroadcast } from './todos/port.ts'
-// 外部工具按需加载：runtime/session.ts 计量一次，决定全部常驻还是放入工具池；
+// 外部工具按需加载：runtime/session/extension-tools.ts 计量一次，决定全部常驻还是放入工具池；
 // server/api 只取静态规格，不建立工具池
 export {
   EXTERNAL_SCHEMA_BUDGET_TOKENS,

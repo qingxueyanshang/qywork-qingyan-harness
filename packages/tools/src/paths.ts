@@ -100,7 +100,7 @@ export interface WorkspaceRoots {
    * 「完全访问」模式：**不设边界**，任何路径都放行。
    *
    * 这不是路径层的后门，而是与其他层使用同一个定义。`full` 的语义是「不裁决」：
-   * 同一模式下 `run_command` 已全部放行（`session.ts` 的 `decide` 在入口处直接返回 allowed，
+   * 同一模式下 `run_command` 已全部放行（`runtime/session/permission.ts` 的 `decide` 在入口处直接返回 allowed，
    * 不执行静态规则），shell 中一个 `cd` 即可离开工作区。路径层单独拦截不会更安全，
    * 只会形成**两套边界**：模型的 `read_file` 被拒后改用 `run_command` 读到同一文件，账本中有一次实际记录。
    *

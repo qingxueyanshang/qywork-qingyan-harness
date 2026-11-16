@@ -1,6 +1,9 @@
 /**
  * Session 的装配结果：工具集与角色约束。
  *
+ * 覆盖范围：`session.ts`（构造时的工具注册）、`session/` 下的权限裁决、工具上下文、扩展装载与附件，
+ * 以及 `session/turn/` 的准备、建行与收尾。
+ *
  * 不测试完整执行一轮：完整执行需要真实 provider，由 scripts/smoke-serve.ts 覆盖。
  * 此处测试装配结果，因为 Agent Team 的角色隔离完全建立在装配结果之上：
  * 「只读」角色的 allowedTools 未生效时，该角色仍能修改文件，而配置看起来正确。
@@ -12,14 +15,13 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
-import { DelegatePort, Ports, provide, type ToolContext, type ToolRegistry } from '@qywork/agent'
+import { DelegatePort, Ports, provide, type ToolContext } from '@qywork/agent'
 import {
   buildAdapter,
   DEFAULT_DENSITY,
   type LlmAdapter,
   lookupModel,
   type ProviderProfile,
-  type TokenDensity,
   textFeatures,
 } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
@@ -48,9 +50,21 @@ import { BrowserPort, FileReadPort, HistoryPort } from '@qywork/tools'
 import { NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
 import { approveMcpServers } from './mcp-approvals.ts'
 import { buildTailNotes, outputLimitNote } from './prompt.ts'
-import { Session, withAttachments } from './session.ts'
+import { withAttachments } from './session/attachments.ts'
+import { loadExtensionTools } from './session/extension-tools.ts'
+import * as permission from './session/permission.ts'
+import { makeToolContext } from './session/tool-context.ts'
+import * as drive from './session/turn/drive.ts'
+import { resolveProfile } from './session/turn/prepare.ts'
+import type { SessionState } from './session/types.ts'
+import { Session } from './session.ts'
 
 const blobs = new ContentStore(':memory:')
+
+/** `Session` 的私有状态：以下用例经它读取工具表，或直接调用 `session/` 下的实现。 */
+function stateOf(s: Session): SessionState {
+  return (s as unknown as { state: SessionState }).state
+}
 
 const config: QyConfig = {
   active: { provider: 'p', model: 'deepseek-v4-flash' },
@@ -76,20 +90,28 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
   })
   // 工具表是私有的，经由公开的 `schemas()` 读取：测试的是模型实际看到的内容。
   const names = () =>
-    (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
-      .schemas()
+    stateOf(s)
+      .registry.schemas()
       .map((t) => t.name)
   return { s, store, names }
 }
 
 /** 按 `ask` 的方式解析本轮规格，再构造工具上下文。 */
 function toolContext(s: Session, runId: string, target: string, conv: string): ToolContext {
-  const inner = s as unknown as {
-    resolveProfile(t: string): ProviderProfile
-    makeToolContext(r: string, e: () => void, t: string, a: LlmAdapter, c: string): ToolContext
+  const state = stateOf(s)
+  const inner = { resolveProfile, makeToolContext } as unknown as {
+    resolveProfile(st: SessionState, t: string): ProviderProfile
+    makeToolContext(
+      st: SessionState,
+      r: string,
+      e: () => void,
+      t: string,
+      a: LlmAdapter,
+      c: string,
+    ): ToolContext
   }
-  const adapter = buildAdapter(inner.resolveProfile(target))
-  return inner.makeToolContext(runId, () => {}, target, adapter, conv)
+  const adapter = buildAdapter(inner.resolveProfile(state, target))
+  return inner.makeToolContext(state, runId, () => {}, target, adapter, conv)
 }
 
 const delegate: DelegatePort = {
@@ -132,7 +154,7 @@ test('实时重试原因与账本一样脱敏，不把配置密钥显示到等�
   })
   const reason = `连接失败 ${secret}`
   const mock = spyOn(
-    s as unknown as { makeLoop(): { run(): AsyncGenerator<AgentEvent> } },
+    drive as unknown as { makeLoop(): { run(): AsyncGenerator<AgentEvent> } },
     'makeLoop',
   ).mockReturnValue({
     async *run() {
@@ -166,7 +188,7 @@ test('实时重试原因与账本一样脱敏，不把配置密钥显示到等�
 test('生成器内抛出异常时 run 记为失败并保留原文，不记为用户中断', async () => {
   const { s, store } = await session()
   const mock = spyOn(
-    s as unknown as { makeLoop(): { run(): AsyncGenerator<AgentEvent> } },
+    drive as unknown as { makeLoop(): { run(): AsyncGenerator<AgentEvent> } },
     'makeLoop',
   ).mockReturnValue({
     async *run() {
@@ -309,7 +331,9 @@ test('写入 run 行之后的第一次读取失败：run 行以失败结束，�
 test('提前关闭生成器而本轮 step 的 payload 损坏：run 行仍以中断结束', async () => {
   const { s, store } = await session()
   const mock = spyOn(
-    s as unknown as { makeLoop(): { run(input: { runId: string }): AsyncGenerator<AgentEvent> } },
+    drive as unknown as {
+      makeLoop(): { run(input: { runId: string }): AsyncGenerator<AgentEvent> }
+    },
     'makeLoop',
   ).mockReturnValue({
     async *run(input) {
@@ -348,7 +372,9 @@ test('处理临时目录时读取账本失败：run.finished 照常发出', asyn
   // 准备阶段同样读取待办清单：本轮结束之前才开始注入。
   let armed = false
   const loop = spyOn(
-    s as unknown as { makeLoop(): { run(input: { runId: string }): AsyncGenerator<AgentEvent> } },
+    drive as unknown as {
+      makeLoop(): { run(input: { runId: string }): AsyncGenerator<AgentEvent> }
+    },
     'makeLoop',
   ).mockReturnValue({
     async *run(input) {
@@ -578,10 +604,10 @@ function systemPromptFor(
   kind: 'anthropic_messages' | 'openai_chat_completions',
 ) {
   const loop = (
-    s as unknown as {
-      makeLoop(m: string, adapter: unknown): { deps: { systemPrompt: string } }
+    drive as unknown as {
+      makeLoop(st: SessionState, m: string, adapter: unknown): { deps: { systemPrompt: string } }
     }
-  ).makeLoop(model, { spec: lookupModel(model, kind) })
+  ).makeLoop(stateOf(s), model, { spec: lookupModel(model, kind) })
   return loop.deps.systemPrompt
 }
 
@@ -826,13 +852,14 @@ describe('被拒绝时返回的说明', () => {
   const denyFor = async (command: string) => {
     const { s, store } = await session()
     const v = await (
-      s as unknown as {
+      permission as unknown as {
         decide(
+          st: SessionState,
           conversationId: string,
           m: { toolName: string; args: Record<string, unknown>; command?: string },
         ): Promise<Deny>
       }
-    ).decide('cv_auto', { toolName: 'run_command', args: { command }, command })
+    ).decide(stateOf(s), 'cv_auto', { toolName: 'run_command', args: { command }, command })
     store.close()
     return v
   }
@@ -860,13 +887,18 @@ describe('命令判定的工作目录', () => {
     const allowed = async (args: Record<string, unknown>) =>
       (
         await (
-          s as unknown as {
+          permission as unknown as {
             decide(
+              st: SessionState,
               conversationId: string,
               m: { toolName: string; args: Record<string, unknown>; command?: string },
             ): Promise<{ allowed: boolean }>
           }
-        ).decide('cv_auto', { toolName: 'run_command', args: { command, ...args }, command })
+        ).decide(stateOf(s), 'cv_auto', {
+          toolName: 'run_command',
+          args: { command, ...args },
+          command,
+        })
       ).allowed
     expect(await allowed({})).toBe(true)
     expect(await allowed({ cwd: homedir() })).toBe(false)
@@ -890,13 +922,14 @@ describe('权限模式按会话裁决', () => {
     const allowed = async (id: ConversationId) =>
       (
         await (
-          s as unknown as {
+          permission as unknown as {
             decide(
+              st: SessionState,
               conversationId: ConversationId,
               m: { toolName: string; args: Record<string, unknown>; command?: string },
             ): Promise<{ allowed: boolean }>
           }
-        ).decide(id, {
+        ).decide(stateOf(s), id, {
           toolName: 'run_command',
           args: { command: 'rm -rf ~/' },
           command: 'rm -rf ~/',
@@ -919,7 +952,7 @@ describe('权限模式按会话裁决', () => {
     const ws = listWorkspaces(store)[0]!
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' }).id
     setConversationMode(store, conv, 'auto')
-    const registry = (s as unknown as { registry: ToolRegistry }).registry
+    const registry = stateOf(s).registry
     const ctx = { ...toolContext(s, 'rn_mcp', 'm', conv), emit: () => {} } as ToolContext
     const out = await registry.execute(
       'write_mcp_server',
@@ -934,18 +967,19 @@ describe('权限模式按会话裁决', () => {
       executed: false,
       errorKind: 'permission_denied',
     })
-    const root = (s as unknown as { opts: { workspaceRoot: string } }).opts.workspaceRoot
+    const root = stateOf(s).opts.workspaceRoot
     expect(existsSync(join(root, '.agents', 'mcp.json'))).toBe(false)
 
     const decide = (command: string) =>
       (
-        s as unknown as {
+        permission as unknown as {
           decide(
+            st: SessionState,
             c: ConversationId,
             m: { toolName: string; args: Record<string, unknown>; command?: string },
           ): Promise<{ allowed: boolean }>
         }
-      ).decide(conv, { toolName: 'write_mcp_server', args: {}, command })
+      ).decide(stateOf(s), conv, { toolName: 'write_mcp_server', args: {}, command })
     expect((await decide('npx -y @modelcontextprotocol/server-github')).allowed).toBe(true)
     await s.dispose()
     store.close()
@@ -956,7 +990,7 @@ describe('权限模式按会话裁决', () => {
     const { s, store } = await session()
     const ws = listWorkspaces(store)[0]!
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' }).id
-    const registry = (s as unknown as { registry: ToolRegistry }).registry
+    const registry = stateOf(s).registry
     const outside = await mkdtemp(join(tmpdir(), 'qywork-outside-'))
     const run = (name: string, args: Record<string, unknown>, ctx: ToolContext) =>
       registry.execute(name, args, ctx)
@@ -1060,11 +1094,9 @@ describe('allowedTools 与扩展工具', () => {
       signal: new AbortController().signal,
       allowedTools: ['read_file', 'mcp__demo__ping'],
     })
-    await (
-      s as unknown as { loadExtensionTools(d: TokenDensity): Promise<void> }
-    ).loadExtensionTools(DEFAULT_DENSITY)
-    const names = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
-      .schemas()
+    await loadExtensionTools(stateOf(s), DEFAULT_DENSITY)
+    const names = stateOf(s)
+      .registry.schemas()
       .map((t) => t.name)
       .sort()
     expect(names).toEqual(['mcp__demo__ping', 'read_file'])
@@ -1103,18 +1135,11 @@ describe('外部工具按总量转为按需加载', () => {
       workspaceRoot: root,
       signal: new AbortController().signal,
     })
-    await (
-      s as unknown as { loadExtensionTools(n: TokenDensity, c: string): Promise<void> }
-    ).loadExtensionTools(DEFAULT_DENSITY, conv.id)
+    await loadExtensionTools(stateOf(s), DEFAULT_DENSITY, conv.id)
 
-    const registry = (s as unknown as { registry: ToolRegistry }).registry
+    const registry = stateOf(s).registry
     const nextSnapshot = () => {
-      const pending = (
-        s as unknown as {
-          pendingTools: { index(): { name: string; summary: string }[] } | null
-          opts: { workspaceRoot: string }
-        }
-      ).pendingTools
+      const pending = stateOf(s).pendingTools
       return (
         buildTailNotes({
           workspaceRoot: root,
@@ -1165,7 +1190,7 @@ describe('外部工具按总量转为按需加载', () => {
       { names: ['mcp__fat__t0'] },
       toolContext(s, 'rn_x', 'm', 'cv_x') as never,
     )
-    const root = s as unknown as { opts: { workspaceRoot: string } }
+    const root = stateOf(s)
 
     const next = new Session({
       content: blobs,
@@ -1174,12 +1199,10 @@ describe('外部工具按总量转为按需加载', () => {
       workspaceRoot: root.opts.workspaceRoot,
       signal: new AbortController().signal,
     })
-    await (
-      next as unknown as { loadExtensionTools(n: TokenDensity, c: string): Promise<void> }
-    ).loadExtensionTools(DEFAULT_DENSITY, conv.id)
+    await loadExtensionTools(stateOf(next), DEFAULT_DENSITY, conv.id)
 
-    const names = (next as unknown as { registry: ToolRegistry }).registry
-      .schemas()
+    const names = stateOf(next)
+      .registry.schemas()
       .map((t) => t.name)
     expect(names).toContain('mcp__fat__t0')
     // 只恢复已加载的工具，其余仍待加载。

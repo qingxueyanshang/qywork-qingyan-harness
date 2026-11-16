@@ -2,7 +2,7 @@
  * 项目层 MCP 服务的启动确认。
  *
  * 覆盖范围：`mcp-approvals.ts`，`extensions.ts` 的 `loadScopedMcpConfig`（全部启动时机的唯一合并点），
- * `mcp-config-store.ts` 的写入、启用与命令行查询，`prompt.ts` 的未启用清单，以及 `session.ts` 对
+ * `mcp-config-store.ts` 的写入、启用与命令行查询，`prompt.ts` 的未启用清单，以及 `session/permission.ts` 对
  * `enable_mcp_server`、`move_mcp_server` 的命令判定。
  *
  * 原始失败形状：添加一个带 `.agents/mcp.json` 的仓库，其中声明的命令在服务启动、打开设置页、
@@ -27,6 +27,9 @@ import {
 import { acquireExtensions, loadScopedMcpConfig } from './extensions.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { buildTailNotes } from './prompt.ts'
+import { makeToolContext } from './session/tool-context.ts'
+import { resolveProfile } from './session/turn/prepare.ts'
+import type { SessionState } from './session/types.ts'
 import { Session } from './session.ts'
 
 async function project(servers: Record<string, unknown>): Promise<string> {
@@ -139,13 +142,24 @@ test('auto 下启用或迁出项目层服务时，命中拒绝清单的命令被
     const ws = listWorkspaces(store)[0]!
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' }).id
     setConversationMode(store, conv as ConversationId, 'auto')
-    const inner = s as unknown as {
+    const state = (s as unknown as { state: SessionState }).state
+    const inner = { registry: state.registry, resolveProfile, makeToolContext } as unknown as {
       registry: ToolRegistry
-      resolveProfile(t: string): ProviderProfile
-      makeToolContext(r: string, e: () => void, t: string, a: LlmAdapter, c: string): ToolContext
+      resolveProfile(st: SessionState, t: string): ProviderProfile
+      makeToolContext(
+        st: SessionState,
+        r: string,
+        e: () => void,
+        t: string,
+        a: LlmAdapter,
+        c: string,
+      ): ToolContext
     }
-    const adapter = buildAdapter(inner.resolveProfile('m'))
-    const ctx = { ...inner.makeToolContext('rn_x', () => {}, 'm', adapter, conv), emit: () => {} }
+    const adapter = buildAdapter(inner.resolveProfile(state, 'm'))
+    const ctx = {
+      ...inner.makeToolContext(state, 'rn_x', () => {}, 'm', adapter, conv),
+      emit: () => {},
+    }
     const enable = await inner.registry.execute('enable_mcp_server', { name: 'evil' }, ctx)
     expect(enable).toMatchObject({ executed: false, errorKind: 'permission_denied' })
     const move = await inner.registry.execute(

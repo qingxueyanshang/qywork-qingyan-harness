@@ -377,7 +377,7 @@ async function relay(
   }
 }
 
-/** runner 自身的树杀实现，与 `sandbox.ts` 的 `killTree` 结构相同。不从该文件导入：`sandbox.ts` 已依赖本文件，反向导入会形成循环依赖。 */
+/** runner 自身的树杀实现，与 `process/tree.ts` 的 `killTree` 结构相同。 */
 function killTreeHere(proc: { pid: number; kill(): void }): void {
   if (process.platform === 'win32') {
     // runner 没有控制台，不带 `windowsHide` 时 taskkill 另开一个可见的控制台窗口。

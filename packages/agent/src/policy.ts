@@ -28,7 +28,7 @@
  * 判定写入目标。因此 `ls && rm -rf ~` 中的第二段同样被命中。
  *
  * 同时识别两种语法，且不依据 process.platform。外层 shell 是 bash 还是 PowerShell，由本机安装的程序
- * 决定（`tools/sandbox.ts` 的 `resolveCommandShell`）。本层同时识别两种语法，以下三条理由各自独立成立：
+ * 决定（`tools/process/command-shell.ts` 的 `resolveCommandShell`）。本层同时识别两种语法，以下三条理由各自独立成立：
  *
  * 1. 未安装 Git Bash 的机器上外层为 PowerShell，不会出现 POSIX 写法；
  * 2. 有 bash 的机器上，命令字符串中可以直接写 `powershell.exe -Command "Remove-Item …"`；

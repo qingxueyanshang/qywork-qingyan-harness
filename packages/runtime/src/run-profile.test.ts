@@ -1,7 +1,7 @@
 /**
  * 一轮只解析一次模型规格：轮次进行中修改配置，本轮仍按开始时的规格执行并完成记账。
  *
- * 覆盖范围：`session.ts` 的 `ask`（解析点）、`makeToolContext`（使用本轮 adapter）与收尾记账。
+ * 覆盖范围：`session/turn/prepare.ts`（解析点）、`session/tool-context.ts` 的 `makeToolContext`（使用本轮 adapter）与 `session/turn/settle.ts` 的收尾记账。
  * 经真实 `Session`、真实 `Store` 与本地 HTTP 端点执行。
  *
  * 原始失败形状：设置页保存时删除了本轮所用的接口，构造工具上下文时重新解析规格并抛出异常，

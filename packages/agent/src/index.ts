@@ -62,7 +62,7 @@ export {
   keyEvent,
   modifierBits,
 } from './keys.ts'
-// 主循环：runtime/session.ts 是唯一装配方
+// 主循环：runtime/session/turn/drive.ts 是唯一装配方
 // `softLimit` 另有一个包外消费者：面板显示的触发线必须与实际触发压缩的阈值同源
 // `transientErrorCode` 同理：子 agent 的重新派发与本轮内的重发使用同一份暂时故障分类
 export { transientErrorCode } from './loop/attempt.ts'

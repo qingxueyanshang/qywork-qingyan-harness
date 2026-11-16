@@ -3,7 +3,7 @@
  * 同一会话之后不再向该接口直接发送视频。
  *
  * 覆盖范围：`agent/loop/request.ts` 的 `runDensity` / `materialize` 对视频的处理、`agent/loop/attempt.ts`
- * 的被拒分支、`session.ts` 从会话记录推导该状态与附件的视频块、`store/repos/steps.ts` 的记录写入与查询。
+ * 的被拒分支、`session/turn/history.ts` 从会话记录推导该状态、`session/attachments.ts` 附件的视频块、`store/repos/steps.ts` 的记录写入与查询。
  * 经真实 `Session`、真实 `read_file`、真实 `Store` 与本地 HTTP 端点执行，断言针对端点实际收到的请求体。
  *
  * 原始失败形状：Qwen3.8 Flash 收到 0.5 秒的视频返回 400「The video file is too short」，整轮失败，

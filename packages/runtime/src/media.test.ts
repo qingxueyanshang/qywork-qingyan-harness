@@ -5,7 +5,7 @@
  * 成功时返回花费）与 `operationOf`，走云端的提交在应答到达之前停止时的任务记录（`ai/media/adapters/qywork.ts` 交出任务号，
  * `tools/generate.ts` 的 `generateMedia` 与 `resumeMedia` 保留或删除记录），
  * `prompt.ts` 中「可用的生成模型」一节，`session.ts` 按 `mediaEnabled` 注册画布与生成工具，
- * 以及 `session.ts` 将生成花费写入本轮 usage、`runs` 行与账本。
+ * 以及 `session/media-spend.ts` 与 `session/turn/drive.ts` 将生成花费写入本轮 usage、`runs` 行与账本。
  *
  * 端口的对端是本机模拟的百炼端点：参数不合法时该端点不得收到任何请求。
  * 记账一组另行启动模拟的对话接口，按脚本先调用图片生成工具、再结束本轮，执行完整的一轮。
@@ -739,7 +739,9 @@ describe('画布与生成开关', () => {
         ...(office ? [provide(OfficePort, office)] : []),
       ]),
     })
-    const list = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
+    const list = (
+      s as unknown as { state: { registry: { schemas(): { name: string }[] } } }
+    ).state.registry
       .schemas()
       .map((t) => t.name)
     store.close()

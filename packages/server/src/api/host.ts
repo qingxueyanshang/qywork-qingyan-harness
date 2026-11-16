@@ -5,7 +5,7 @@
  *
  * | | 调用点 | 缺失的影响 |
  * |---|---|---|
- * | bash | `tools/sandbox.ts` 的 `commandShell()` | 只改变命令语法，回退到 PowerShell；三档均缺失时 `run_command` 不注册 |
+ * | bash | `tools/process/command-shell.ts` 的 `commandShell()` | 只改变命令语法，回退到 PowerShell；三档均缺失时 `run_command` 不注册 |
  * | git | `server/git.ts` 的 `git()` | 版本面板无法读取状态与差异 |
  * | rg | `tools/search.ts` 的 `runRipgrep()` | 只影响速度，由内置遍历替代 |
  * | node | `plugins/runtime.ts` 的 `probeNode()` | 插件无法运行 |
@@ -143,7 +143,7 @@ export function resolveWinget(
  *   `run_command` 的工具描述告知模型（`tools/shell.ts` 拼入的 `shell.hint`），不在设置页重复。
  *
  * 依赖以参数注入，以便测试另外两档：本机只可能命中其中一档，而需要覆盖的失败形状
- * （没有 bash、有 PowerShell）不出现在开发机上。判据同 `sandbox.ts` 的 `resolveCommandShell`。
+ * （没有 bash、有 PowerShell）不出现在开发机上。判据同 `tools/process/command-shell.ts` 的 `resolveCommandShell`。
  */
 export function resolveBashRow(deps: {
   bash: () => { path: string | null; reason: string }
@@ -171,7 +171,7 @@ const DEPS: DepSpec[] = [
     id: 'bash',
     label: 'bash',
     winget: 'Git.Git',
-    // bash 不查 PATH，理由见 `tools/sandbox.ts` 的 `findGitBash`：
+    // bash 不查 PATH，理由见 `tools/process/command-shell.ts` 的 `findGitBash`：
     // 本机 PATH 的第一项是 WSL 启动器，命令会在另一个文件系统中执行。
     probe: () => resolveBashRow({ bash: probeBash, shell: commandShell }),
   },

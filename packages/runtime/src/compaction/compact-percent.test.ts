@@ -1,7 +1,7 @@
 /**
  * 自动压缩比例从配置到一轮的各处读数。
  *
- * 覆盖范围：`config.ts` 的 `compactPercentFor` 与 `diagnoseConfig`、`session.ts` 在轮次开始时解析比例
+ * 覆盖范围：`config.ts` 的 `compactPercentFor` 与 `diagnoseConfig`、`session/turn/prepare.ts` 在轮次开始时解析比例
  * （写给模型的状态行、循环的触发线）、`agent/loop/attempt.ts` 随主请求写入的 `compactAt`、
  * `context-panel.ts` 优先取请求行的触发线。主请求经真实 `Session`、真实 `Store` 与本地 HTTP 端点执行。
  */

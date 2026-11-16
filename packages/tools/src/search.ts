@@ -25,7 +25,7 @@ import {
 } from './cloud-skills/source.ts'
 import { toLf } from './eol.ts'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
-import { collectProcess } from './sandbox.ts'
+import { collectProcess } from './process/collect.ts'
 
 const MAX_RESULTS = 200
 

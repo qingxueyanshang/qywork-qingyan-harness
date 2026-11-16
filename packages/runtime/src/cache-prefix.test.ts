@@ -1,7 +1,7 @@
 /**
  * 新会话首轮的前两次 Anthropic 请求：第 2 次请求能否命中第 1 次在断点处写入的缓存条目。
  *
- * 覆盖范围：`session.ts` 装配的系统提示词、工具与首条用户消息，`agent/loop/index.ts` 的断点位置，
+ * 覆盖范围：`session.ts` 与 `session/turn/` 装配的系统提示词、工具与首条用户消息，`agent/loop/index.ts` 的断点位置，
  * `ai/providers/anthropic.ts` 的请求体与 `cache_control`。经真实 `Session`、真实 `read_file`、真实 `Store`
  * 与本地 HTTP 端点执行，断言针对端点实际收到的请求体。
  *

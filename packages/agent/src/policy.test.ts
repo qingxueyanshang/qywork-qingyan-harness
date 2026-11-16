@@ -418,7 +418,7 @@ describe('凭证文件', () => {
 /**
  * PowerShell 语法。
  *
- * 未安装 Git Bash 的机器上外层 shell 是 PowerShell（`tools/sandbox.ts` 的
+ * 未安装 Git Bash 的机器上外层 shell 是 PowerShell（`tools/process/command-shell.ts` 的
  * `resolveCommandShell`），模型在该机器上只会使用 PowerShell 写法，不会出现 POSIX 写法。
  * 因此这部分规则不是补充写法，而是该机器上的全部防线。
  */

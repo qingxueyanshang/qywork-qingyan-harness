@@ -205,7 +205,7 @@ export interface ToolContext {
    * 目录，前者表示该模式不设边界。两者同时存在时以前者为准，因为
    * `full` 的定义就是不裁决。
    *
-   * 它与权限检查是同一模式的两个方面：`session.ts` 的 `decide` 在 `full` 下直接
+   * 它与权限检查是同一模式的两个方面：`runtime/session/permission.ts` 的 `decide` 在 `full` 下直接
    * 返回 allowed，`run_command` 已全部放行。路径层若不随之放开，结果不是更安全，
    * 而是 `read_file` 被拒、`run_command` 却能读取同一文件。
    *

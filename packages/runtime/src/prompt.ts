@@ -386,7 +386,7 @@ function mentionNote(style: MentionStyle): string {
 
 /**
  * 生成模型及其参数表。参数名是接口原生字段，原样写入 `params_json`。
- * 轮次开始时写入快照；轮次进行中配置变化时，以另一标题随注入的用户消息附上（`runtime/session.ts`）。
+ * 轮次开始时写入快照；轮次进行中配置变化时，以另一标题随注入的用户消息附上（`runtime/session/turn/known-context.ts`）。
  */
 export function mediaModelsNote(
   models: MediaModelEntry[],

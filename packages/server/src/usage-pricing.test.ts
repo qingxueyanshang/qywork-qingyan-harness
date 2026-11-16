@@ -2,7 +2,7 @@
  * 模型库中修改过的单价确实写入账本。使用模拟 provider，不产生费用，不访问网络。
  *
  * 覆盖范围：`runtime/config.ts` 的 `resolveModel` 带出 `spec` →
- * `runtime/session.ts` 的 `resolveProfile` 写入 `ProviderProfile.spec` →
+ * `runtime/session/turn/prepare.ts` 的 `resolveProfile` 写入 `ProviderProfile.spec` →
  * `ai/factory.ts` 的 `applySpecOverride` 合并到 adapter 的 spec →
  * `agent/loop/request.ts` 据此计算费用 → `store/usage.ts` 的 `recordUsage` 记账。
  * 合并顺序本身的单测位于 `ai/src/catalog.test.ts`「模型库覆盖」。

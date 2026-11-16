@@ -1,19 +1,26 @@
+/**
+ * 覆盖范围：`process/` 下的 `command-shell.ts`（shell 选择）、`sandbox.ts`（沙箱参数与探测）、
+ * `spawn.ts`（启动）、`collect.ts`（等待与读取）、`tree.ts`（进程树终止）与 `decode.ts`（输出解码）。
+ */
+
 import { describe, expect, test } from 'bun:test'
+import { collectProcess } from './process/collect.ts'
 import {
   BASH_PATH_ENV,
+  commandShell,
+  resolveBashPath,
+  resolveCommandShell,
+} from './process/command-shell.ts'
+import { makeOutputDecoder } from './process/decode.ts'
+import {
   buildBwrapArgv,
   buildSeatbeltArgv,
   buildSeatbeltProfile,
-  collectProcess,
-  commandShell,
   defaultMaskPaths,
   detectSandbox,
-  killTree,
-  makeOutputDecoder,
-  resolveBashPath,
-  resolveCommandShell,
-  spawnGuarded,
-} from './sandbox.ts'
+} from './process/sandbox.ts'
+import { spawnGuarded } from './process/spawn.ts'
+import { killTree } from './process/tree.ts'
 
 /** 从 argv 中提取 `flag src dst` 三元组，便于按语义而不是按下标断言。 */
 function binds(argv: readonly string[], flag: string): { src: string; dst: string }[] {

@@ -2,7 +2,7 @@
  * 启动轮次前被拒绝时发出的事件序列。
  *
  * **覆盖范围**：`run-control.ts` 中 `startRun` 使用云端型号时的价格同步与本轮开始时刻的取值
- * （`runtime/session.ts` 写入 run 行与 `run.started`），以及七个拒绝出口（占位失败、未找到项目
+ * （`runtime/session/turn/open-run.ts` 写入 run 行、`drive.ts` 发出 `run.started`），以及七个拒绝出口（占位失败、未找到项目
  * 目录、三处均无法取得模型、会话装配抛错、装配 adapter 抛错、压缩比例不合法、会话被另一个进程占用），
  * 以及 `runs.ts` 在释放占位时的忙闲广播。这七个出口都不产生 run 行，因此**不会有 `run.finished`**，
  * 终态是 `conversation.busy: false`（约定写在 `core` 的 `RunErrorEvent` 上）。

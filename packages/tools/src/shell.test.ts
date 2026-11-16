@@ -14,7 +14,7 @@ import {
 } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
-import { BASH_PATH_ENV, commandShell } from './sandbox.ts'
+import { BASH_PATH_ENV, commandShell } from './process/command-shell.ts'
 import { CommandPort } from './shell/port.ts'
 import { backgroundCommandTool, commandEnv, makeShellTool, RecentOutput } from './shell.ts'
 

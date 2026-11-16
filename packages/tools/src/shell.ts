@@ -11,7 +11,7 @@
  * 4. 前台命令按停滞判定终止，输出经投递限制后交给模型，防止耗尽上下文；转入后台的命令由
  *    服务进程级的任务表持有（`CommandPort`），由模型、用户或应用退出结束，每条输出流只保留最近的一段。
  * 5. 不对 shell 解释符做「安全化」处理，原样执行裁决过的命令。
- * 6. 在有内核沙箱的平台上再加一层（`sandbox.ts`）：这一层不检查命令文本，
+ * 6. 在有内核沙箱的平台上再加一层（`process/sandbox.ts`）：这一层不检查命令文本，
  *    它弥补的正是前五条无法覆盖的部分，即未预料到的写法。
  *
  * 第 3 条是一道独立的防线：子进程环境不得是 `env: { ...process.env }`，否则模型生成的命令会继承
@@ -19,7 +19,7 @@
  * 依赖的 README、`AGENTS.md` 中一句提示注入即可造成泄露。
  *
  * 仅靠操作系统级沙箱不够：沙箱是否存在取决于平台，原生 Windows 上目前没有
- * （`sandbox.ts` 会如实报告）。剥离环境变量在所有平台上都成立，
+ * （`process/sandbox.ts` 会如实报告）。剥离环境变量在所有平台上都成立，
  * 因此它不是沙箱的替代，而是沙箱之下的保底：无法取得明文，泄露就不会离开本机。
  *
  * 剥离输入的同时输出侧也要屏蔽：只处理输入侧时，一句 `cat .env` 仍会把 key
@@ -48,15 +48,11 @@ import {
   workspacePythonDir,
   writableRoots,
 } from './paths.ts'
-import {
-  type CollectedProcess,
-  type CommandShell,
-  collectProcess,
-  killTree,
-  type SandboxPolicy,
-  spawnGuarded,
-  treeBusy,
-} from './sandbox.ts'
+import { type CollectedProcess, collectProcess } from './process/collect.ts'
+import type { CommandShell } from './process/command-shell.ts'
+import type { SandboxPolicy } from './process/sandbox.ts'
+import { spawnGuarded } from './process/spawn.ts'
+import { killTree, treeBusy } from './process/tree.ts'
 import { createStreamRedactor, scrubEnv } from './secrets.ts'
 import { CommandPort } from './shell/port.ts'
 import { deliver, excerptBytes } from './sink.ts'

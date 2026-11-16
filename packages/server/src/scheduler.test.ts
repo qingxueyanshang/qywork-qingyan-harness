@@ -127,7 +127,7 @@ function countOf(store: Store, sql: string): number {
   return store.db.query<{ n: number }, []>(sql).get()?.n ?? 0
 }
 
-/** 模型工具的读取方式：端口按会话工作区限定范围，与 `runtime/session.ts` 的注入方式相同。 */
+/** 模型工具的读取方式：端口按会话工作区限定范围，与 `runtime/session/tool-context.ts` 的注入方式相同。 */
 async function listViaTool(store: Store, workspaceRoot: string): Promise<string> {
   const registry = new ToolRegistry()
   registerBuiltinTools(registry)

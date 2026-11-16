@@ -2,7 +2,7 @@
  * 云端技能的完整链路：`read_file` 读取 `SKILL.md` → 按行段读取 → 请求中出现标记块 → 网关替换 → 压缩收纳后标记被移除；
  * 会话中途权益被取消时的终态；含标记的请求被容量拒绝后的恢复。
  *
- * 覆盖范围：`cloud/skills/port.ts`、`runtime/session.ts` 的云端技能通道、`tools/cloud-skills/source.ts`，
+ * 覆盖范围：`cloud/skills/port.ts`、`runtime/session/tool-context.ts` 的云端技能通道、`tools/cloud-skills/source.ts`，
  * 以及经真实 `Session`、真实 Chat Completions 适配器、真实 `Store` 与 `RuntimeCompaction` 的请求装配、
  * 错误分类（`ai/errors.ts` 的 `skill_rejected`）与容量恢复（`agent/loop/compact.ts` 的 `recoverFromOverflow`）。
  * 云端由 `fake-cloud.test-helper.ts` 在本进程内提供，模型的回复由测试按请求给出。

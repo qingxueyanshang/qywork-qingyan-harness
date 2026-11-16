@@ -1,7 +1,7 @@
 /**
  * 将 steps 投影为发给模型的历史消息。
  *
- * 本文件解决的问题：`session.ts` 装配历史时若只读取 `messages` 表，该表只有
+ * 本文件解决的问题：`session/turn/history.ts` 装配历史时若只读取 `messages` 表，该表只有
  * user 行：全项目唯一的 `appendMessage` 调用点写入的是 `role:'user'`，assistant 回合从不写入
  * 该表。实测运行库 `SELECT role, COUNT(*) FROM messages GROUP BY role` 只返回一行 `user`，同一会话的
  * `steps` 表却有 20 条 text 与 42 条 tool_action。
@@ -108,7 +108,7 @@ export interface ProjectOptions {
 /**
  * 已写入数据库的 payload 有三种形状，投影必须都能处理。
  *
- * 1. **正常终态**：`{kind:'tool_result', args, outcome, action}`（`session.ts` 写）。
+ * 1. **正常终态**：`{kind:'tool_result', args, outcome, action}`（`session/persistence.ts` 写）。
  * 2. **恢复/中断收尾**：`{kind:'tool_result', outcome}`；`settleRunningSteps`
  *    整体替换 payload，`args` 与 `action` 被清除。
  * 3. **存量行**：缺 `action`。
