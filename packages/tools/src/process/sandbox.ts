@@ -37,6 +37,7 @@ import { homedir } from 'node:os'
  * 只有在 Windows 上调试这些函数时才会发现。因此固定使用 posix 版本。
  */
 import { isAbsolute, join, normalize } from 'node:path/posix'
+import { globalScopeRoot } from '@qywork/agent'
 import { whichSync } from './command-shell.ts'
 
 export type SandboxBackend = 'bwrap' | 'seatbelt' | 'none'
@@ -286,7 +287,7 @@ function probe(): SandboxStatus {
  * 该清单是列举，因此与静态规则一样，未列入的目录不受保护。
  * 区别在于代价：此处遗漏一项是少屏蔽一个目录，静态规则遗漏一项是放行一条命令。
  */
-export function defaultMaskPaths(home = homedir()): string[] {
+export function defaultMaskPaths(home = homedir(), globalRoot = globalScopeRoot()): string[] {
   // 非 POSIX 绝对路径（Windows 的 `C:\\Users\\x`）拼接后为
   // `C:\\Users\\x/.ssh` 这类混用两种分隔符的字符串。两个后端都只在类 Unix 系统上运行，
   // 因此此处应返回空列表，而不是返回形似路径的字符串。
@@ -299,9 +300,37 @@ export function defaultMaskPaths(home = homedir()): string[] {
     join(home, '.kube'),
     join(home, '.config', 'gh'),
     join(home, '.config', 'gcloud'),
-    // qywork 的配置目录：其中保存 provider 的明文 API Key。
+    // qywork 的全局数据目录：其中保存 provider 的明文 API Key。按实际位置列出，
+    // `QYWORK_HOME` 指向别处时家目录中的 `.qywork` 仍可能保存着密钥，两处都屏蔽。
     join(home, '.qywork'),
+    ...(globalRoot.startsWith('/') ? [globalRoot] : []),
   ]
+}
+
+/** `p` 是否位于 `dir` 之中或就是它。两者都是规范化后的 POSIX 绝对路径。 */
+function inside(dir: string, p: string): boolean {
+  return p === dir || p.startsWith(dir === '/' ? '/' : `${dir}/`)
+}
+
+/**
+ * 把屏蔽目录按与可写根的关系分为两组：`outer` 中有可写根位于其内，`rest` 是其余的。
+ *
+ * 两个后端都按出现顺序叠加，后出现的生效。`outer` 必须排在可写根之前：默认工作区位于全局数据目录的
+ * `workspaces/` 中，屏蔽排在后面时工作区随全局数据目录一并不可见，其中的每条命令都无法启动。
+ * `rest` 必须排在可写根之后：工作区是家目录时，排在前面的屏蔽会被随后的可写根恢复为可见。
+ * 屏蔽目录本身是可写根时归入 `rest`：用户把凭证目录打开为工作区，屏蔽仍然生效。
+ */
+function splitMasks(
+  masks: readonly string[],
+  writable: readonly string[],
+): { outer: string[]; rest: string[] } {
+  const outer: string[] = []
+  const rest: string[] = []
+  for (const mask of dedupe(masks)) {
+    const holdsRoot = writable.some((root) => root !== mask && inside(mask, root))
+    ;(holdsRoot ? outer : rest).push(mask)
+  }
+  return { outer, rest }
 }
 
 /**
@@ -316,7 +345,7 @@ export function defaultMaskPaths(home = homedir()): string[] {
  *   工作区外的文件仍可读取，凭证目录单独屏蔽。
  * - 可写根目录逐个 `--bind`。
  * - `.qy/` 在可写根之后再以 `--ro-bind` 恢复为只读：顺序不能颠倒，bwrap 中后出现的挂载生效。
- * - 凭证目录以 `--tmpfs` 覆盖为空目录。
+ * - 凭证目录以 `--tmpfs` 覆盖为空目录；其中有可写根的，排在可写根之前（`splitMasks`）。
  * - `--unshare-pid` + `--proc /proc`：无法查看宿主进程表（`/proc/<pid>/environ`
  *   中有其他进程的环境变量，而传给子进程的环境变量已剥离凭证）。
  * - 默认不使用 `--unshare-net`：网络照常可用。断网后 agent 无法安装依赖、拉取代码，
@@ -361,6 +390,22 @@ export function buildBwrapArgv(
   args.push('--tmpfs', '/tmp')
 
   const writable = dedupe([policy.workspaceRoot, ...(policy.writableRoots ?? [])])
+  const masks = splitMasks(policy.maskPaths ?? defaultMaskPaths(), writable)
+  // 以空目录覆盖凭证目录。必须先确认目录存在：`--tmpfs` 没有 `-try` 变体，
+  // 它会创建挂载点，父目录只读时直接失败：
+  //
+  //     bwrap: Can't mkdir /root/.nope: Read-only file system
+  //
+  // 在没有 `~/.aws` 的机器上无条件屏蔽该目录，会使每一条命令
+  // 都无法启动。屏蔽清单按常见凭证目录列出，任何一台机器通常只有其中几个。
+  const mask = (paths: readonly string[]): void => {
+    for (const p of paths) {
+      if (exists(p)) args.push('--tmpfs', p)
+    }
+  }
+
+  // 其中有可写根的屏蔽目录先覆盖，可写根随后挂载到空目录之上，见 `splitMasks`。
+  mask(masks.outer)
   for (const dir of writable) {
     args.push('--bind', dir, dir)
   }
@@ -373,16 +418,7 @@ export function buildBwrapArgv(
     }
   }
 
-  // 以空目录覆盖凭证目录。必须先确认目录存在：`--tmpfs` 没有 `-try` 变体，
-  // 它会创建挂载点，父目录只读时直接失败：
-  //
-  //     bwrap: Can't mkdir /root/.nope: Read-only file system
-  //
-  // 在没有 `~/.aws` 的机器上无条件屏蔽该目录，会使每一条命令
-  // 都无法启动。屏蔽清单按常见凭证目录列出，任何一台机器通常只有其中几个。
-  for (const p of policy.maskPaths ?? defaultMaskPaths()) {
-    if (exists(p)) args.push('--tmpfs', p)
-  }
+  mask(masks.rest)
 
   args.push('--unshare-pid', '--unshare-uts', '--unshare-ipc', '--proc', '/proc')
   // `--unshare-net` 创建空的网络命名空间，其中只有 lo。
@@ -458,11 +494,20 @@ export function buildSeatbeltProfile(
     lines.push('(allow network-bind (local ip))')
   }
 
-  const masked = (policy.maskPaths ?? defaultMaskPaths()).filter(exists)
+  const masks = splitMasks(policy.maskPaths ?? defaultMaskPaths(), writable)
+  const masked = [...masks.outer, ...masks.rest].filter(exists)
   if (masked.length) {
     lines.push('', ';; 凭证目录：禁止读取')
     for (const p of masked) {
       lines.push(`(deny file-read* (subpath ${sbplString(p)}))`)
+    }
+  }
+  // 位于屏蔽目录中的可写根恢复为可读：最后匹配的规则生效，必须排在上方的拒绝之后，见 `splitMasks`。
+  const reopened = writable.filter((root) => masks.outer.some((m) => exists(m) && inside(m, root)))
+  if (reopened.length) {
+    lines.push('', ';; 位于凭证目录中的可写根：恢复读取')
+    for (const root of reopened) {
+      lines.push(`(allow file-read* (subpath ${sbplString(root)}))`)
     }
   }
 

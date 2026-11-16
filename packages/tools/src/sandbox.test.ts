@@ -298,6 +298,61 @@ describe('bwrap 参数生成', () => {
     expect(tmpfsTargets(argv)).toContain('/home/u/.aws')
   })
 
+  test('工作区位于屏蔽目录中时，屏蔽排在工作区的挂载之前', () => {
+    // 默认工作区位于全局数据目录的 workspaces/ 中。实测（bubblewrap 0.11.1）：屏蔽排在后面时
+    // 工作区随之不可见，bwrap 以 Can't chdir 退出，其中的每条命令都无法启动。
+    const ws = '/home/u/.qywork/workspaces/default'
+    const argv = buildBwrapArgv({ workspaceRoot: ws, maskPaths: ['/home/u/.qywork'] }, inner, {
+      exists: always,
+    })
+    const mask = argv.findIndex((a, i) => a === '--tmpfs' && argv[i + 1] === '/home/u/.qywork')
+    const bind = argv.findIndex((a, i) => a === '--bind' && argv[i + 1] === ws)
+    expect(mask).toBeGreaterThan(-1)
+    expect(mask).toBeLessThan(bind)
+  })
+
+  test('屏蔽目录位于工作区中时，屏蔽排在工作区的挂载之后', () => {
+    // 工作区是家目录时，排在前面的屏蔽会被随后的挂载恢复为可见。
+    const argv = buildBwrapArgv({ workspaceRoot: '/home/u', maskPaths: ['/home/u/.ssh'] }, inner, {
+      exists: always,
+    })
+    const mask = argv.findIndex((a, i) => a === '--tmpfs' && argv[i + 1] === '/home/u/.ssh')
+    const bind = argv.findIndex((a, i) => a === '--bind' && argv[i + 1] === '/home/u')
+    expect(mask).toBeGreaterThan(bind)
+  })
+
+  test('屏蔽目录本身是工作区时仍然屏蔽', () => {
+    const argv = buildBwrapArgv(
+      { workspaceRoot: '/home/u/.ssh', maskPaths: ['/home/u/.ssh'] },
+      inner,
+      {
+        exists: always,
+      },
+    )
+    const mask = argv.findIndex((a, i) => a === '--tmpfs' && argv[i + 1] === '/home/u/.ssh')
+    const bind = argv.findIndex((a, i) => a === '--bind' && argv[i + 1] === '/home/u/.ssh')
+    expect(mask).toBeGreaterThan(bind)
+  })
+
+  test('全局数据目录按实际位置列入屏蔽清单', () => {
+    expect(defaultMaskPaths('/home/u', '/data/qy')).toEqual(
+      expect.arrayContaining(['/home/u/.qywork', '/data/qy']),
+    )
+  })
+
+  test('seatbelt：位于屏蔽目录中的工作区在拒绝之后恢复读取', () => {
+    const ws = '/Users/u/.qywork/workspaces/default'
+    const profile = buildSeatbeltProfile(
+      { workspaceRoot: ws, maskPaths: ['/Users/u/.qywork', '/Users/u/.ssh'] },
+      { exists: always },
+    )
+    const deny = profile.indexOf('(deny file-read* (subpath "/Users/u/.qywork"))')
+    const allow = profile.indexOf(`(allow file-read* (subpath "${ws}"))`)
+    expect(deny).toBeGreaterThan(-1)
+    expect(allow).toBeGreaterThan(deny)
+    expect(profile).toContain('(deny file-read* (subpath "/Users/u/.ssh"))')
+  })
+
   test('/tmp 始终替换为 tmpfs', () => {
     // 宿主 /tmp 中可能留有其他进程写入的临时凭证文件。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
