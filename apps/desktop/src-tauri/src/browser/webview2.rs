@@ -17,13 +17,14 @@ use tauri::{
     Webview, WebviewUrl, Wry,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2DownloadOperation, ICoreWebView2DownloadStartingEventArgs, ICoreWebView2_11,
-    ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
+    ICoreWebView2DownloadOperation, ICoreWebView2DownloadStartingEventArgs,
+    ICoreWebView2Environment, ICoreWebView2Environment5, ICoreWebView2_11, ICoreWebView2_4,
+    COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
     COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
 };
 use webview2_com::{
-    take_pwstr, ContextMenuRequestedEventHandler, DownloadStartingEventHandler,
-    StateChangedEventHandler,
+    take_pwstr, BrowserProcessExitedEventHandler, ContextMenuRequestedEventHandler,
+    DownloadStartingEventHandler, StateChangedEventHandler,
 };
 use windows::core::{Interface, BOOL, HSTRING, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -60,11 +61,20 @@ const DEFAULT_SIZE: (f64, f64) = (1280.0, 800.0);
 /// 实测该间隔约为 700 ms。不等待就返回时，调用方无法立即按标记识别页面。
 const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
 
-/// 将下载与右键菜单钩子绑定到原生对象的等待上限。
+/// 子视图创建完成并绑定下载与右键菜单钩子的等待上限。
 ///
 /// `with_webview` 把闭包排入主线程执行，因此此处必须等待回执：不等待就返回时，绑定失败不会立即报告，
-/// 只在之后以「该页的下载全部按未授权取消」的形式出现。
+/// 只在之后以「该页的下载全部按未授权取消」的形式出现。`add_child` 不报告创建失败（Tauri 只写入日志，
+/// 子视图不存在时闭包不会执行），到期未收到回执即表示子视图未创建完成。
 const HOOK_WAIT: Duration = Duration::from_secs(10);
+
+/// 跨线程传递的 environment。只在主线程上调用其方法；工作线程只把它交给 `WebviewBuilder`，
+/// 与 Tauri 在构建参数中跨线程传递 environment 的方式相同。
+#[derive(Clone)]
+struct SharedEnvironment(ICoreWebView2Environment);
+
+unsafe impl Send for SharedEnvironment {}
+unsafe impl Sync for SharedEnvironment {}
 
 /// 本进程的 WebView2 environment：profile 占用、回环 CDP 端口与运行时版本。
 pub struct Engine {
@@ -74,6 +84,13 @@ pub struct Engine {
     runtime_version: String,
     /// 当前放在面板中的页，只由 `layout` 写入；`None` 表示全部移出可视区。右键菜单与弹出窗口事件按它裁决。
     shown: Mutex<Option<String>>,
+    /// 本 profile 当前浏览器进程的 environment，新建的页都在其上创建；由 `remember_environment` 写入，
+    /// 浏览器进程退出（全部页面关闭或进程崩溃）时清除，之后新建的页另行创建 environment。
+    ///
+    /// 不要改为每页各自创建 environment：WebView2 运行时在应用运行期间更新后，新创建的 environment
+    /// 取新版本，而同一 profile 的浏览器进程仍是旧版本，此后新建页面全部以 `RPC_E_DISCONNECTED` 失败，
+    /// 直到全部页面关闭（2026-11-17 实测：运行时由 157.0.4341.57 更新为 157.0.4341.60 之后）。
+    environment: Mutex<Option<SharedEnvironment>>,
 }
 
 /// 页面的原生句柄与最后一次放置时的物理尺寸。移出可视区时保持该尺寸，不缩小页面视口。
@@ -98,7 +115,13 @@ impl Engine {
             ),
             None => log::warn!("浏览器配置已被另一个 qywork 进程占用，浏览器控制不可用"),
         }
-        Ok(Engine { profile, debug_port, runtime_version, shown: Mutex::new(None) })
+        Ok(Engine {
+            profile,
+            debug_port,
+            runtime_version,
+            shown: Mutex::new(None),
+            environment: Mutex::new(None),
+        })
     }
 
     /// 端口在创建子视图之前已分配，因此成功占用 profile 时启动后即就绪。
@@ -154,6 +177,11 @@ impl Engine {
                     }
                 }
             });
+        let shared = self.environment.lock().expect("environment 状态锁被污染").clone();
+        let builder = match shared {
+            Some(env) => builder.with_environment(env.0),
+            None => builder,
+        };
 
         let webview = window
             .add_child(
@@ -400,19 +428,57 @@ unsafe extern "system" fn popup_shown(
     }
 }
 
-/// 在该页的 WebView2 上注册下载与右键菜单钩子；首次调用时注册弹出窗口事件。
+/// 在该页的 WebView2 上注册下载与右键菜单钩子，并记录其 environment；首次调用时注册弹出窗口事件。
 fn bind_hooks(view: &Webview<Wv>, tab_id: &str) -> Result<(), String> {
     let tab = tab_id.to_owned();
     let (tx, rx) = channel::<Result<(), String>>();
     view.with_webview(move |platform| {
         watch_popups(&platform);
+        remember_environment(&platform);
         let registered = register_downloads(&platform, tab.clone())
             .and_then(|()| register_context_menu(&platform, tab));
         let _ = tx.send(registered);
     })
     .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
     rx.recv_timeout(HOOK_WAIT)
-        .map_err(|_| "下载与右键菜单钩子未在期限内注册成功".to_owned())?
+        .map_err(|_| "内置浏览器的页面未在期限内创建完成".to_owned())?
+}
+
+/// 尚未记录 environment 时记录该页的 environment，并在其浏览器进程退出时清除。在主线程上执行。
+///
+/// 无法注册退出事件时不记录：记录后无法得知进程何时退出，之后新建的页会一直在已退出的进程上创建。
+fn remember_environment(platform: &PlatformWebview) {
+    let Some(host) = super::host() else { return };
+    let mut slot = host.engine.environment.lock().expect("environment 状态锁被污染");
+    if slot.is_some() {
+        return;
+    }
+    let env = platform.environment();
+    let mut token = 0i64;
+    let registered = unsafe {
+        env.cast::<ICoreWebView2Environment5>().and_then(|env5| {
+            env5.add_BrowserProcessExited(
+                &BrowserProcessExitedEventHandler::create(Box::new(|sender, _| {
+                    forget_environment(sender);
+                    Ok(())
+                })),
+                &mut token,
+            )
+        })
+    };
+    match registered {
+        Ok(()) => *slot = Some(SharedEnvironment(env)),
+        Err(e) => log::warn!("注册浏览器进程退出事件失败，新建的页不共用 environment：{e}"),
+    }
+}
+
+/// 浏览器进程已退出：清除记录的 environment。只清除与事件来源相同的一个，退出事件晚于新记录到达时不影响新记录。
+fn forget_environment(exited: Option<ICoreWebView2Environment>) {
+    let Some(host) = super::host() else { return };
+    let mut slot = host.engine.environment.lock().expect("environment 状态锁被污染");
+    if slot.as_ref().map(|s| &s.0) == exited.as_ref() {
+        *slot = None;
+    }
 }
 
 /// 注册 `DownloadStarting`，在该页的 WebView2 上接管下载。在主线程上执行，句柄由 `PlatformWebview` 给出。
