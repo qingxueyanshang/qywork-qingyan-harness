@@ -15,7 +15,8 @@ use ::windows::Win32::System::Threading::GetCurrentThreadId;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     PostThreadMessageW, RegisterClassExW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
-    LWA_ALPHA, MSG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE,
+    HWND_TOP, LWA_ALPHA, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SW_SHOWNOACTIVATE, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_QUIT, WNDCLASSEXW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW, WS_POPUP,
 };
@@ -113,6 +114,17 @@ impl TestWindow {
                 SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA)
                     .expect("设置分层窗口的不透明度");
                 let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                // 显式置于 z 序顶部：不激活地显示时系统不保证新窗口位于已有窗口上方，
+                // 后创建的窗口可能位于先创建的窗口之下，依赖覆盖关系的用例因此间歇失败。
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOP),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
                 let _ = tx.send((hwnd.0 as isize, GetCurrentThreadId()));
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
