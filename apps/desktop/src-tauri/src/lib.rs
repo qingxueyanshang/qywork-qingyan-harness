@@ -546,6 +546,57 @@ fn host_key(dev: Option<&sidecar::DevLaunch>) -> Option<String> {
     }
 }
 
+/// 不向 WebView 注入初始化脚本的插件，其余行为转发给被包装的插件。
+///
+/// Tauri 把插件的初始化脚本注入每个 WebView，包括内置浏览器的页。shell 与 opener 的脚本取消
+/// `target="_blank"` 链接的点击（opener 另含按住 Ctrl 或 Shift 的点击），改为调用未授权给任何 WebView 的命令，
+/// 网页中的这类链接因此没有任何效果。dialog 的脚本把 `window.alert` 与 `window.confirm` 改为调用同样未授权的命令，
+/// 网页中的 `confirm()` 不显示对话框而返回 Promise，按真值判断时等同于确定。
+/// `Plugin` 新增方法时须在此处转发，否则被包装插件的该项行为不生效。
+struct WithoutScript<P>(P);
+
+impl<R: tauri::Runtime, P: tauri::plugin::Plugin<R>> tauri::plugin::Plugin<R> for WithoutScript<P> {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+
+    fn initialize(
+        &mut self,
+        app: &AppHandle<R>,
+        config: serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.0.initialize(app, config)
+    }
+
+    fn window_created(&mut self, window: tauri::Window<R>) {
+        self.0.window_created(window)
+    }
+
+    fn webview_created(&mut self, webview: tauri::Webview<R>) {
+        self.0.webview_created(webview)
+    }
+
+    fn on_navigation(&mut self, webview: &tauri::Webview<R>, url: &tauri::Url) -> bool {
+        self.0.on_navigation(webview, url)
+    }
+
+    fn on_page_load(
+        &mut self,
+        webview: &tauri::Webview<R>,
+        payload: &tauri::webview::PageLoadPayload<'_>,
+    ) {
+        self.0.on_page_load(webview, payload)
+    }
+
+    fn on_event(&mut self, app: &AppHandle<R>, event: &RunEvent) {
+        self.0.on_event(app, event)
+    }
+
+    fn extend_api(&mut self, invoke: tauri::ipc::Invoke<R>) -> bool {
+        self.0.extend_api(invoke)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 只能安装一次；安装失败（已有其他 logger）时沿用已有的 logger。
@@ -573,9 +624,9 @@ pub fn run() {
     tauri::Builder::default()
         .manage(updater::owner())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(WithoutScript(tauri_plugin_shell::init()))
+        .plugin(WithoutScript(tauri_plugin_dialog::init()))
+        .plugin(WithoutScript(tauri_plugin_opener::init()))
         .manage(sidecar::SidecarHandle::default())
         .manage(terminal::TerminalHandle::default())
         .invoke_handler(tauri::generate_handler![

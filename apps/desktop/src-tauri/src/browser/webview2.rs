@@ -13,18 +13,20 @@ use std::time::Duration;
 
 use tauri::webview::{PlatformWebview, WebviewBuilder};
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Rect,
+    AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Rect, Url,
     Webview, WebviewUrl, Wry,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2DownloadOperation, ICoreWebView2DownloadStartingEventArgs,
-    ICoreWebView2Environment, ICoreWebView2Environment5, ICoreWebView2_11, ICoreWebView2_4,
+    ICoreWebView2, ICoreWebView2Deferral, ICoreWebView2DownloadOperation,
+    ICoreWebView2DownloadStartingEventArgs, ICoreWebView2Environment, ICoreWebView2Environment5,
+    ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2_11, ICoreWebView2_4,
     COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
     COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
 };
 use webview2_com::{
     take_pwstr, BrowserProcessExitedEventHandler, ContextMenuRequestedEventHandler,
-    DownloadStartingEventHandler, StateChangedEventHandler,
+    DownloadStartingEventHandler, NewWindowRequestedEventHandler, StateChangedEventHandler,
+    WindowCloseRequestedEventHandler,
 };
 use windows::core::{Interface, BOOL, HSTRING, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -75,6 +77,64 @@ struct SharedEnvironment(ICoreWebView2Environment);
 
 unsafe impl Send for SharedEnvironment {}
 unsafe impl Sync for SharedEnvironment {}
+
+/// 一次新窗口请求的事件参数与延迟。只在主线程上调用其方法；工作线程只负责传递。
+struct PendingWindow {
+    args: ICoreWebView2NewWindowRequestedEventArgs,
+    deferral: ICoreWebView2Deferral,
+}
+
+unsafe impl Send for PendingWindow {}
+
+impl PendingWindow {
+    /// 交付新页并完成延迟。`view` 为 `None` 或交付失败时同样完成：事件已置为已处理，不打开窗口。
+    /// 在主线程上调用。
+    fn finish(self, view: Option<&ICoreWebView2>) -> windows::core::Result<()> {
+        unsafe {
+            let delivered = match view {
+                Some(view) => self.args.SetNewWindow(view),
+                None => Ok(()),
+            };
+            let completed = self.deferral.Complete();
+            delivered.and(completed)
+        }
+    }
+}
+
+/// 页面请求的新窗口，交给 `Engine::open_window` 创建新页。
+///
+/// 释放时尚未交付即在主线程上完成延迟并拒绝该请求：打开它的页已关闭、子视图创建失败等
+/// 任何途径都使请求到达终态，不会停留在延迟中。
+pub struct WindowRequest {
+    app: AppHandle,
+    /// 打开它的页的 environment。新页必须在其上创建，WebView2 不接受另一个 environment 的视图。
+    environment: SharedEnvironment,
+    pending: Option<PendingWindow>,
+}
+
+impl WindowRequest {
+    /// 把新建的页交给请求。在主线程上调用，此后释放不再拒绝。
+    fn deliver(mut self, platform: &PlatformWebview) -> Result<(), String> {
+        let Some(pending) = self.pending.take() else { return Ok(()) };
+        let view = unsafe { platform.controller().CoreWebView2() };
+        let delivered = pending.finish(view.as_ref().ok());
+        view.and(delivered).map_err(|e| format!("新窗口交付失败：{e}"))
+    }
+}
+
+impl Drop for WindowRequest {
+    fn drop(&mut self) {
+        let Some(pending) = self.pending.take() else { return };
+        let posted = self.app.run_on_main_thread(move || {
+            if let Err(e) = pending.finish(None) {
+                log::warn!("拒绝新窗口请求失败：{e}");
+            }
+        });
+        if let Err(e) = posted {
+            log::warn!("拒绝新窗口请求失败：{e}");
+        }
+    }
+}
 
 /// 本进程的 WebView2 environment：profile 占用、回环 CDP 端口与运行时版本。
 pub struct Engine {
@@ -135,12 +195,40 @@ impl Engine {
     /// 创建一个子视图。**不得在主线程调用**：`add_child` 内部是 `run_on_main_thread`
     /// 加阻塞等待，在主线程上调用会死锁。
     pub fn open(&self, app: &AppHandle, spec: OpenSpec) -> Result<Opened, String> {
-        let profile = self.profile.as_ref().ok_or("浏览器配置已被另一个 qywork 进程占用")?;
-        let window = app
-            .get_window("main")
-            .ok_or("主窗口不存在，无法创建子视图")?;
         let url = navigation_url(spec.url)?;
         let requested = url.to_string();
+        self.build(app, spec, url, requested, None)
+    }
+
+    /// 创建一个子视图并交给页面的新窗口请求。不得在主线程调用，原因同 `open`。
+    ///
+    /// 子视图在 `about:blank` 上创建且不导航：WebView2 只接受未导航过的视图，新窗口的导航由
+    /// 打开它的页发起，因此 `spec.url` 不经地址规则裁决。
+    pub fn open_window(
+        &self,
+        app: &AppHandle,
+        spec: OpenSpec,
+        window: WindowRequest,
+    ) -> Result<Opened, String> {
+        let blank = Url::parse(BLANK).map_err(|e| format!("地址无法解析：{e}"))?;
+        let requested = spec.url.to_owned();
+        self.build(app, spec, blank, requested, Some(window))
+    }
+
+    /// 在主窗口下创建子视图并绑定钩子；`window` 存在时在绑定钩子之后交给该请求。
+    /// `requested` 是不等待首个文档时返回的地址。
+    fn build(
+        &self,
+        app: &AppHandle,
+        spec: OpenSpec,
+        url: Url,
+        requested: String,
+        window: Option<WindowRequest>,
+    ) -> Result<Opened, String> {
+        let profile = self.profile.as_ref().ok_or("浏览器配置已被另一个 qywork 进程占用")?;
+        let main = app
+            .get_window("main")
+            .ok_or("主窗口不存在，无法创建子视图")?;
         let args = format!("{BROWSER_ARGS} --remote-debugging-port={}", self.debug_port);
 
         // WebView2 不为 `about:blank` 触发 `on_page_load`（实测会等待完整的 20 秒），因此空白页不等待。
@@ -177,13 +265,16 @@ impl Engine {
                     }
                 }
             });
-        let shared = self.environment.lock().expect("environment 状态锁被污染").clone();
+        let shared = match &window {
+            Some(window) => Some(window.environment.clone()),
+            None => self.environment.lock().expect("environment 状态锁被污染").clone(),
+        };
         let builder = match shared {
             Some(env) => builder.with_environment(env.0),
             None => builder,
         };
 
-        let webview = window
+        let webview = main
             .add_child(
                 builder,
                 LogicalPosition::new(OFFSCREEN.0, OFFSCREEN.1),
@@ -192,9 +283,9 @@ impl Engine {
             .map_err(|e| format!("创建子视图失败：{e}"))?;
 
         // 在等待首个文档之前绑定：文档加载后即可能发起下载或请求右键菜单，此时钩子必须已经存在。
-        // 绑定失败时回收该子视图：`add_child` 已将其附加到窗口，直接返回错误会留下一个
+        // 绑定或交付失败时回收该子视图：`add_child` 已将其附加到窗口，直接返回错误会留下一个
         // 不在存活表中、界面也无法关闭的视图。
-        if let Err(e) = bind_hooks(&webview, spec.tab_id) {
+        if let Err(e) = bind_hooks(&webview, spec.tab_id, window) {
             close_view(webview);
             return Err(e);
         }
@@ -428,15 +519,24 @@ unsafe extern "system" fn popup_shown(
     }
 }
 
-/// 在该页的 WebView2 上注册下载与右键菜单钩子，并记录其 environment；首次调用时注册弹出窗口事件。
-fn bind_hooks(view: &Webview<Wv>, tab_id: &str) -> Result<(), String> {
+/// 在该页的 WebView2 上注册下载、右键菜单、新窗口与关闭钩子，并记录其 environment；
+/// 首次调用时注册弹出窗口事件。`window` 存在时在钩子注册之后交给该请求：此后新页开始加载，
+/// 加载前钩子必须已经存在。
+fn bind_hooks(
+    view: &Webview<Wv>,
+    tab_id: &str,
+    window: Option<WindowRequest>,
+) -> Result<(), String> {
     let tab = tab_id.to_owned();
     let (tx, rx) = channel::<Result<(), String>>();
     view.with_webview(move |platform| {
         watch_popups(&platform);
         remember_environment(&platform);
         let registered = register_downloads(&platform, tab.clone())
-            .and_then(|()| register_context_menu(&platform, tab));
+            .and_then(|()| register_context_menu(&platform, tab.clone()))
+            .and_then(|()| register_new_window(&platform, tab.clone()))
+            .and_then(|()| register_close(&platform, tab))
+            .and_then(|()| window.map_or(Ok(()), |window| window.deliver(&platform)));
         let _ = tx.send(registered);
     })
     .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
@@ -537,6 +637,91 @@ fn register_context_menu(platform: &PlatformWebview, tab_id: String) -> Result<(
                 &mut token,
             )
             .map_err(|e| format!("注册右键菜单事件失败：{e}"))?;
+    }
+    Ok(())
+}
+
+/// 注册 `NewWindowRequested`：页面请求的新窗口（`target=_blank` 链接、`window.open`）由宿主创建为新页。
+/// 在主线程上执行。
+///
+/// 不要改用 `WebviewBuilder::on_new_window`：它只能把新窗口交给另一个顶层窗口中的首个 WebView，
+/// 无法交给主窗口下的子视图。不注册时 wry 把请求置为已处理，页面打开新窗口没有任何效果。
+fn register_new_window(platform: &PlatformWebview, tab_id: String) -> Result<(), String> {
+    let environment = SharedEnvironment(platform.environment());
+    let mut token = 0i64;
+    unsafe {
+        platform
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| format!("无法取得 CoreWebView2：{e}"))?
+            .add_NewWindowRequested(
+                &NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    window_requested(&tab_id, &environment, args)
+                })),
+                &mut token,
+            )
+            .map_err(|e| format!("注册新窗口事件失败：{e}"))?;
+    }
+    Ok(())
+}
+
+/// 页面请求新窗口。在主线程上执行。
+///
+/// 先置为已处理：只有交付新页时才打开窗口，任何失败都不会打开 WebView2 默认的独立弹出窗口。
+/// 创建子视图须在主线程之外等待主线程，因此取得延迟后交给工作线程，新页由 `bind_hooks` 在主线程上交付。
+fn window_requested(
+    tab_id: &str,
+    environment: &SharedEnvironment,
+    args: ICoreWebView2NewWindowRequestedEventArgs,
+) -> windows::core::Result<()> {
+    unsafe {
+        args.SetHandled(true)?;
+        let Some(host) = super::host() else { return Ok(()) };
+        let mut raw = PWSTR::null();
+        args.Uri(&mut raw)?;
+        let url = take_pwstr(raw);
+        let deferral = args.GetDeferral()?;
+        let window = WindowRequest {
+            app: host.app.clone(),
+            environment: environment.clone(),
+            pending: Some(PendingWindow { args, deferral }),
+        };
+        let opener = tab_id.to_owned();
+        std::thread::spawn(move || {
+            if let Err(e) = host.open_window(&opener, &url, window) {
+                log::warn!("页面请求的新窗口未创建：{e}");
+            }
+        });
+    }
+    Ok(())
+}
+
+/// 注册 `WindowCloseRequested`：页面调用 `window.close()` 时经由宿主的 `close` 关闭该页并上报 `closed`。
+/// 在主线程上执行。
+///
+/// wry 对该事件只销毁子视图的容器窗口；不经由宿主时该页留在存活集合中，界面与服务端仍列出一个
+/// 已无内容的页。`close` 在工作线程上执行：它等待宿主状态锁并调用引擎。
+fn register_close(platform: &PlatformWebview, tab_id: String) -> Result<(), String> {
+    let mut token = 0i64;
+    unsafe {
+        platform
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| format!("无法取得 CoreWebView2：{e}"))?
+            .add_WindowCloseRequested(
+                &WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+                    let Some(host) = super::host() else { return Ok(()) };
+                    let tab = tab_id.clone();
+                    // 宿主已先行关闭该页时表中已无该页，不重复上报 `closed`。
+                    std::thread::spawn(move || {
+                        let _ = host.close(&tab);
+                    });
+                    Ok(())
+                })),
+                &mut token,
+            )
+            .map_err(|e| format!("注册关闭事件失败：{e}"))?;
     }
     Ok(())
 }

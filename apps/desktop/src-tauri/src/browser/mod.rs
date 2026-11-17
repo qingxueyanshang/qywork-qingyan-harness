@@ -90,6 +90,8 @@ pub struct Runtime {
 pub struct OpenSpec<'a> {
     pub tab_id: &'a str,
     pub marker: &'a str,
+    /// 目标地址。页面请求的新窗口中是页面请求的地址：导航由打开它的页发起，
+    /// 引擎只按它等待首个文档并作为返回的地址。
     pub url: &'a str,
     /// 该页不应置于前台。AI 创建的页为真，用户新建的页为假。
     /// 嵌入式引擎的页一律不获取焦点，放入面板后才可见，因此忽略该字段。
@@ -411,6 +413,22 @@ impl BrowserHost {
         conversation_id: Option<String>,
         hidden: bool,
     ) -> Result<(ResultData, u64), String> {
+        self.open_tab(url, workspace_id, conversation_id, hidden, |spec| {
+            self.engine.open(app, spec)
+        })
+    }
+
+    /// 分配 tabId、创建序号与标记，由 `build` 在引擎中创建页面，再进入存活集合。
+    /// 宿主请求、用户新建与嵌入式引擎中页面打开的新窗口都经由此处，三者的标记注入、
+    /// 首个文档等待与 `opened` 上报相同。
+    fn open_tab(
+        &self,
+        url: &str,
+        workspace_id: String,
+        conversation_id: Option<String>,
+        hidden: bool,
+        build: impl FnOnce(OpenSpec) -> Result<Opened, String>,
+    ) -> Result<(ResultData, u64), String> {
         // 序号与 tabId 在同一次加锁中分配：分开分配时，并发创建页面会使 `bt_N` 的编号
         // 与创建顺序不一致，页签上的「浏览器 2」会排在「浏览器 1」之前。
         let (tab_id, created_seq, marker) = {
@@ -419,18 +437,15 @@ impl BrowserHost {
             (format!("bt_{}", state.next_tab), crate::next_created_seq(), new_host_key())
         };
         // 在锁外创建页面：引擎需要等待主线程或 CDP 响应，而它们的回调需要获取同一把锁。
-        // 带会话的页由 AI 创建，不带会话的页由用户新建（`user_open`）。
+        // 带会话的页由 AI 创建或由 AI 的页打开，不带会话的页由用户新建或由用户的页打开。
         let by_ai = conversation_id.is_some();
-        let opened = self.engine.open(
-            app,
-            OpenSpec {
-                tab_id: &tab_id,
-                marker: &marker,
-                url,
-                background: by_ai,
-                await_document: by_ai,
-            },
-        )?;
+        let opened = build(OpenSpec {
+            tab_id: &tab_id,
+            marker: &marker,
+            url,
+            background: by_ai,
+            await_document: by_ai,
+        })?;
         let tab = Tab {
             page: opened.page,
             url: opened.url,
@@ -666,8 +681,33 @@ impl BrowserHost {
     }
 }
 
-/// 只有独立窗口引擎会发起的宿主操作：页面自行打开的新页、用户在浏览器中关闭的页、
-/// 浏览器进程重启。嵌入式引擎的页只经由宿主命令创建与关闭。
+/// 只有嵌入式引擎会发起的宿主操作：页面请求的新窗口。
+#[cfg(windows)]
+impl BrowserHost {
+    /// 存活页请求的新窗口（`target=_blank` 链接、`window.open`）。新页继承打开它的页的工作区、
+    /// 归属与 `hidden`，规则与 `note_popup` 相同，经 `open_tab` 创建并上报 `opened`。
+    /// 打开它的页已不存在时不接收：`window` 随之释放，页面的窗口请求被拒绝。
+    fn open_window(
+        &self,
+        opener_tab: &str,
+        url: &str,
+        window: engine::WindowRequest,
+    ) -> Result<(), String> {
+        let (workspace_id, conversation_id, hidden) = {
+            let state = self.state.lock().expect("宿主状态锁被污染");
+            let opener = state.tabs.get(opener_tab).ok_or("打开新窗口的页已关闭")?;
+            (opener.workspace_id.clone(), opener.conversation_id.clone(), opener.hidden)
+        };
+        self.open_tab(url, workspace_id, conversation_id, hidden, |spec| {
+            self.engine.open_window(&self.app, spec, window)
+        })
+        .map(|_| ())
+    }
+}
+
+/// 只有独立窗口引擎会发起的宿主操作：浏览器自行创建的新页、用户在浏览器中关闭的页、
+/// 浏览器进程重启。嵌入式引擎的页只由宿主创建与关闭，页面请求的新窗口与页面自行关闭
+/// 也经由宿主（`open_window`、`close`）。
 #[cfg(all(desktop, not(windows)))]
 impl BrowserHost {
     /// 授权表中是否还有授权。引擎据此决定下载行为。
