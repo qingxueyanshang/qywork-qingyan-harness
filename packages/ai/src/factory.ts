@@ -14,11 +14,11 @@ import type { LlmAdapter, ProviderProfile } from './types.ts'
 
 /**
  * 本机模型服务（ollama / llama.cpp / LM Studio / vLLM）不需要 API Key，
- * 空 key 在那里是**合法配置**而不是漏配。
+ * 空 key 对这类服务是**合法配置**而不是遗漏配置。
  *
  * 判据是主机名而不是端口或路径：只有指向本机回环地址的端点才豁免。局域网中其他机器上的
  * ollama 同样不豁免：它可能位于需要鉴权的反向代理之后，此时静默发送空 key
- * 只会得到 401，「未配置 key」又会被报告为「key 无效」。
+ * 只会返回 401，「未配置 key」会被报告为「key 无效」。
  */
 function isLocalEndpoint(baseUrl: string | undefined): boolean {
   if (!baseUrl) return false
@@ -41,9 +41,9 @@ function isLocalEndpoint(baseUrl: string | undefined): boolean {
  * 未配置 key 时**在本地判定**，不发送请求等待 401。
  *
  * 不要发送请求后再由 `classifyProviderError` 判定是未配置还是配置错误：
- * 该判定依赖 provider 的错误文案，各厂商写法不同，误判的方向恰好最糟：
- * 报告 `auth_failed` 会引导新用户检查 key 是否填写有误，
- * 而正确的操作是配置 key。本地已知 key 为空串，无需询问 provider。
+ * 该判定依赖 provider 的错误文案，各厂商写法不同，误判时报告的 `auth_failed`
+ * 会引导新用户检查 key 是否填写有误，而正确的操作是配置 key。
+ * 本地已知 key 为空串，无需向 provider 发送请求。
  */
 export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAdapter {
   if (!profile.apiKey.trim() && !isLocalEndpoint(profile.baseUrl)) {

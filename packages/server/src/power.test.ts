@@ -186,5 +186,5 @@ test('定时任务触发的一轮运行期间阻止睡眠，结束后释放；�
     store.close()
   }
   expect(port).toMatchObject({ held: false, wake: null })
-  // 用例的期限须长于 `waitFor` 的期限：较短时超时不报告停在哪一步。
+  // 用例的期限须长于 `waitFor` 的期限：较短时超时信息不报告阻塞于哪一步。
 }, 20_000)

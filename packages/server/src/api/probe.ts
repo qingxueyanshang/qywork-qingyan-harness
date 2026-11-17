@@ -15,7 +15,7 @@
  *    其中可能回显请求 URL 甚至凭证。返回前按 `collectSecrets` 的值表扫描一遍：
  *    E 节「明文 key 不出服务端」不能被一条错误信息绕过。
  * 3. **只探测已保存的配置，不接收草稿。** 允许探测草稿就必须让该端点接收临时明文 key，
- *    等于多开一条 key 上行路径。界面上将按钮置灰并提示先保存，代价低于多一条路径。
+ *    等于新增一条 key 上行路径。界面上将按钮置灰并提示先保存，代价低于新增一条路径。
  *
  * 探测结果不落盘：前端确认后把端点传输结论写入当前接口的模型条目，
  * 经由既有的 `PUT /api/config`，不在此处另开写入点。
@@ -26,7 +26,7 @@ import { collectSecrets, resolveModel } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
 
 /**
- * 从探测明细中抹去已知凭证。
+ * 从探测明细中移除已知凭证。
  *
  * 按值扫描而不是按字段名：错误消息是自由文本，key 可能出现在
  * URL 的 query、`Authorization` 回显或 provider 自行拼接的语句中。

@@ -240,7 +240,7 @@ export class Store {
  * JSON 列的读写辅助函数：null 与 'null' 必须能够区分。
  *
  * `fallback` 只用于列为 NULL 或空串。内容无法解析时抛出，错误信息带 `column`（`表.列`）：
- * 不要改回返回 `fallback`，损坏的列会显示为空，且没有任何记录指向损坏位置。
+ * 不要改为返回 `fallback`，否则损坏的列会显示为空，且没有任何记录指向损坏位置。
  */
 export function readJson<T>(raw: string | null, fallback: T, column: string): T {
   if (raw === null || raw === '') return fallback

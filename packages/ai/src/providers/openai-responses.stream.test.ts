@@ -178,7 +178,7 @@ const TOOL_RUN = sse([
   },
 ])
 
-/** 分片全部丢失，只有结束事件。对应第三方接口漏发增量事件的情形。 */
+/** 分片全部丢失，只有结束事件。对应第三方接口未发送增量事件的情形。 */
 const DONE_ONLY = sse([
   { type: 'response.created', response: { id: 'r3', status: 'in_progress' } },
   {

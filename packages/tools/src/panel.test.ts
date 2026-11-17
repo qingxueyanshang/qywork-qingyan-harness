@@ -86,7 +86,7 @@ describe('open_in_panel', () => {
       })
       expect(
         await openInPanelTool.fn({ workbench: 'dev.demo/board', path: 'a.png' }, ctx(root)),
-      ).toMatchObject({ status: 'failure', message: 'path 与 workbench 只给一个' })
+      ).toMatchObject({ status: 'failure', message: 'path 与 workbench 只能提供一个' })
     } finally {
       if (homeBefore === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = homeBefore

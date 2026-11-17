@@ -232,7 +232,7 @@ export const onDblClick = (canvas: CanvasController) => {
   const media = canvas.view() ? mediaOf(canvas.view()!, id) : null
   if (!media?.path) return
   const path = media.path
-  // 先读取摘录与文件全文再打开：打开文件会把面板切到文件页，画布在面板中时随之卸载，之后无法读取节点。
+  // 先读取摘录与文件全文再打开：打开文件会把面板切换到文件页，画布在面板中时随之卸载，之后无法读取节点。
   const excerpt = canvas.excerptOfNode(id)
   const text = excerpt ? canvas.fileText(path) : null
   openFileInPanel(path)

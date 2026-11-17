@@ -109,7 +109,7 @@ function ratesAt(run: Billing, at: number): Rates | undefined {
 }
 
 const HOUR = 3_600_000
-/** 采样间隔为 15 分钟：时区偏移可为半小时或 45 分钟，整点采样会漏掉这些时区的换档时刻。 */
+/** 采样间隔为 15 分钟：时区偏移可为半小时或 45 分钟，整点采样会遗漏这些时区的换档时刻。 */
 const SLOTS_PER_HOUR = 4
 const SLOTS_PER_DAY = 24 * SLOTS_PER_HOUR
 /**

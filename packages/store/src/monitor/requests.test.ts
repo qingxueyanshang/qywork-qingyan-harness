@@ -169,7 +169,7 @@ function turn(
 
 /**
  * 会话 A 两轮：第一轮一次主请求、一次摘要请求、一次压缩、一次失败后重发成功的主请求与一条未改写
- * manifest 的压缩记录；第二轮一次用量账中没有对应记录的主请求、一条旧压缩记录与一次在途的主请求。
+ * manifest 的压缩记录；第二轮一次用量账本中没有对应记录的主请求、一条旧压缩记录与一次在途的主请求。
  * 会话 B 另有一次主请求，不得计入 A。
  */
 function seed() {
@@ -327,7 +327,7 @@ describe('conversationRequests', () => {
         { input: 300, output: 20, cached: 1_900, cacheWrite: 0, cacheWrite1h: null },
         null,
       ])
-      // 金额只在带用量的 received 行上：失败的尝试与在途行为 null；第二轮的用量账中没有记录，也为 null。
+      // 金额只在带用量的 received 行上：失败的尝试与在途行为 null；第二轮的用量账本中没有记录，也为 null。
       expect(rows.map((r) => r.cost)).toEqual([
         { amount: 0.012, currency: 'CNY' },
         null,

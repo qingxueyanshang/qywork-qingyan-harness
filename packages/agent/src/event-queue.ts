@@ -63,7 +63,7 @@ export class EventQueue {
 }
 
 /**
- * 等待 `work` 期间逐条交出队列中的事件；`work` 的结果作为返回值。
+ * 等待 `work` 期间逐条产出队列中的事件；`work` 的结果作为返回值。
  *
  * 调用方写 `const r = yield* drainUntil(queue, work)`：`yield*` 的求值结果
  * 即本函数的 `return` 值，因此无需额外的输出参数。

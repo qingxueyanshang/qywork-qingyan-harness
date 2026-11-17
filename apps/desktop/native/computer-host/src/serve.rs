@@ -137,7 +137,7 @@ pub fn run<B: Backend>() -> ! {
         }
     }
     // 直接结束进程，队列中尚未执行的请求一并丢弃，按住的键由宿主按最后一次通报补发抬起。
-    // 不要改成先 join 执行线程：阻塞于 OS 调用的执行线程不会返回，宿主已不再管理的 worker
+    // 不要改为先 join 执行线程：阻塞于 OS 调用的执行线程不会返回，宿主已不再管理的 worker
     // 会一直留在系统中。
     std::process::exit(0)
 }
@@ -234,7 +234,7 @@ fn execute_all<B: Backend>(rx: Receiver<Request>, state: &Arc<State>) {
         reply(&response);
         recheck_if_refused::<B>(&response, state);
         // 先发出回执，再承担本次 provider 重连的开销：在回执之前重连时，一次打开模态框的
-        // 动作必须等满连接超时才能回执。
+        // 动作必须等待连接超时到期才能回执。
         if let Some(window) = drain {
             backend.drain_provider(window);
         }

@@ -17,7 +17,7 @@ const PORT_FILE_POLL: Duration = Duration::from_millis(100);
 /// 找到的浏览器。
 pub struct Found {
     pub exe: PathBuf,
-    /// snap 包的浏览器：其 `home` 接口不允许访问家目录下的隐藏目录，profile 必须换到其他位置。
+    /// snap 包的浏览器：其 `home` 接口不允许访问家目录下的隐藏目录，profile 必须放在其他位置。
     pub snap: bool,
 }
 

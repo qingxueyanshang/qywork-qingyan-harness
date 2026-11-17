@@ -25,7 +25,7 @@
 from pptx.oxml.ns import qn
 
 def set_fonts(run, latin, east_asia):
-    """先设西文字体生成 a:latin，再在它后面放 a:ea（两者在 rPr 里的先后顺序是固定的）。"""
+    """先设置西文字体生成 a:latin，再在其后放入 a:ea（两者在 rPr 中的先后顺序固定）。"""
     run.font.name = latin
     latin_el = run._r.get_or_add_rPr().find(qn("a:latin"))
     ea = latin_el.getnext()
@@ -69,7 +69,7 @@ def set_fonts(run, latin, east_asia):
 ## 修改已有文件
 
 - 先 `read`：之后 `write` 同一路径时，工具以读取时的版本为准，文件在此期间被其他程序修改时返回冲突，不覆盖。工作副本中已是原文件的内容，只修改需要修改的形状。
-- 交付的文件就是脚本写出的文件，工具不会让办公软件另存该文件。
+- 交付的文件即脚本写出的文件，工具不会让办公软件另存该文件。
 - 文档属性由脚本设为真实作者：python-pptx 默认写入最后修改者 `Steve Canny` 与备注 `generated using python-pptx`（检查项 `library_metadata`）。用户未提供作者时清空这些字段（`prs.core_properties.last_modified_by`、`comments`），不要写入工具名；主题名同样不要使用工具名。
 
 ## 边界

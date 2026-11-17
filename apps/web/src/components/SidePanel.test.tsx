@@ -170,7 +170,7 @@ async function waitFor(done: () => boolean, detail: () => string) {
     if (done()) return
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
-  throw new Error(`界面没有在时限内更新：${detail()}`)
+  throw new Error(`界面未在时限内更新：${detail()}`)
 }
 
 describe('文件树取消选中', () => {
@@ -546,7 +546,7 @@ describe('文件树操作失败的终态', () => {
 })
 
 describe('文件页刷新', () => {
-  test('点击一次同时重取文件树与当前预览', async () => {
+  test('点击一次同时重新获取文件树与当前预览', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     let treeCalls = 0
@@ -574,7 +574,7 @@ describe('文件页刷新', () => {
           truncated: false,
         }
       }
-      throw new Error(`没有桩这条：${path}`)
+      throw new Error(`未预期请求：${path}`)
     }
     restoreApi = () => {
       ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
@@ -659,7 +659,7 @@ describe('文件页刷新', () => {
     expect(selected()).toEqual(at('推门。'))
   })
 
-  test('开始新一轮时不重取未变化的文件，文件实际更新时保留阅读位置', async () => {
+  test('开始新一轮时不重新获取未变化的文件，文件实际更新时保留阅读位置', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     let previewCalls = 0
@@ -669,7 +669,7 @@ describe('文件页刷新', () => {
         api: (path: string, init?: RequestInit) => Promise<unknown>
       }
     ).api = async (path: string) => {
-      if (!path.startsWith('/api/files/preview')) throw new Error(`没有桩这条：${path}`)
+      if (!path.startsWith('/api/files/preview')) throw new Error(`未预期请求：${path}`)
       previewCalls += 1
       return {
         path: 'long.txt',
@@ -729,7 +729,7 @@ describe('文件页刷新', () => {
     expect(host.querySelector('.cm-scroller')).toBe(scroller)
     expect(scroller.scrollTop).toBe(160)
 
-    // 下一轮再次修改同一个文件时，即使 +x/-y 与上一轮相同也必须重取；正文原位更新，
+    // 下一轮再次修改同一个文件时，即使 +x/-y 与上一轮相同也必须重新获取；正文原位更新，
     // 阅读位置与编辑器 DOM 均保留。
     store.applyEvent({
       seq: 1,
@@ -752,7 +752,7 @@ describe('文件页刷新', () => {
     expect(scroller.scrollTop).toBe(160)
   })
 
-  test('连接恢复后自动重取文件树，不保留失败时的空快照', async () => {
+  test('连接恢复后自动重新获取文件树，不保留失败时的空快照', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     let treeCalls = 0
@@ -762,7 +762,7 @@ describe('文件页刷新', () => {
         api: (path: string, init?: RequestInit) => Promise<unknown>
       }
     ).api = async (path: string) => {
-      if (!path.startsWith('/api/files/tree')) throw new Error(`没有桩这条：${path}`)
+      if (!path.startsWith('/api/files/tree')) throw new Error(`未预期请求：${path}`)
       treeCalls += 1
       return {
         nodes: [
@@ -844,7 +844,7 @@ describe('文件树层级', () => {
           ],
         }
       }
-      throw new Error(`没有桩这条：${path}`)
+      throw new Error(`未预期请求：${path}`)
     }
     restoreApi = () => {
       ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
@@ -930,7 +930,7 @@ describe('页签栏横向滚轮', () => {
     dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
 
     const tabs = host.querySelector<HTMLDivElement>('.side-tabs')
-    if (!tabs) throw new Error('没有渲染页签栏')
+    if (!tabs) throw new Error('未渲染页签栏')
     return tabs
   }
 
@@ -1118,7 +1118,7 @@ describe('变更页按轮次分组', () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (p) => {
-      throw new Error(`不该有请求：${p}`)
+      throw new Error(`未预期请求：${p}`)
     }
     restoreApi = () => {
       ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
@@ -1215,7 +1215,7 @@ describe('变更页按轮次分组', () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (p) => {
-      throw new Error(`不该有请求：${p}`)
+      throw new Error(`未预期请求：${p}`)
     }
     restoreApi = () => {
       ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
@@ -1427,7 +1427,7 @@ describe('文件预览的切换与 PDF', () => {
       path: string,
     ) => {
       if (path.startsWith('/api/files/tree')) return { nodes: [] }
-      if (!path.startsWith('/api/files/preview')) throw new Error(`没有桩这条：${path}`)
+      if (!path.startsWith('/api/files/preview')) throw new Error(`未预期请求：${path}`)
       const file = decodeURIComponent(path.split('path=')[1] ?? '')
       if (file === 'b.md') {
         await new Promise<void>((resolve) => {
@@ -1466,7 +1466,7 @@ describe('文件预览的切换与 PDF', () => {
     store.setOpenFile('b.md')
     await waitFor(
       () => releaseB !== undefined,
-      () => 'b.md 的预览没有发出',
+      () => '未发出 b.md 的预览请求',
     )
     expect(host.querySelector('.preview-head')?.textContent).toContain('b.md')
     expect(host.querySelector('.preview .preview-loading')).not.toBeNull()
@@ -1480,8 +1480,8 @@ describe('文件预览的切换与 PDF', () => {
   })
 
   /**
-   * PDF 的字节单独获取后交给 iframe。会话中写入其他文件会使预览重取一次，
-   * 源文件未变化（修改时间相同）时不重取字节，阅读器不重新加载。
+   * PDF 的字节单独获取后交给 iframe。会话中写入其他文件会使预览重新获取一次，
+   * 源文件未变化（修改时间相同）时不重新获取字节，阅读器不重新加载。
    */
   test('PDF 按修改时间获取字节，写入其他文件时不重新加载', async () => {
     const store = await import('../lib/store/index.ts')
@@ -1492,7 +1492,7 @@ describe('文件预览的切换与 PDF', () => {
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
       path: string,
     ) => {
-      if (!path.startsWith('/api/files/preview')) throw new Error(`没有桩这条：${path}`)
+      if (!path.startsWith('/api/files/preview')) throw new Error(`未预期请求：${path}`)
       return {
         path: 'r.pdf',
         kind: 'pdf',

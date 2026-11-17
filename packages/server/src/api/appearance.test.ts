@@ -84,7 +84,7 @@ describe('个性化接口', () => {
     expect((await call('/api/personalization/files/missing.png')).status).toBe(404)
   })
 
-  test('原先看不到背景时，设置图片在同一次保存中把不透明度改为 85%；已看得到背景时保持原值', async () => {
+  test('背景不可见时，设置图片在同一次保存中把不透明度改为 85%；背景已可见时保持原值', async () => {
     const bytes = new Uint8Array([1, 2, 3])
     const first = await call('/api/personalization/image?name=a.png', {
       method: 'PUT',

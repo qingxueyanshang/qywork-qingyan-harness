@@ -3,7 +3,7 @@
  *
  * - `Color` 的 r、g、b 为 sRGB 编码值，a 为不透明度，均为 0–1 的浮点数；只在输出（`colorToHex`、`colorToCss`）时取整。
  * - 读取与求值分开：`readColor` 只记录基色与变换，`resolveColor` 在主题与 `phClr` 占位色确定后求值。
- * - 变换按文档顺序逐个作用，每一步的输入是上一步的输出，结果夹到有效范围（分量与不透明度 0–1，色相取模 360°）。
+ * - 变换按文档顺序逐个作用，每一步的输入是上一步的输出，结果限制在有效范围内（分量与不透明度 0–1，色相取模 360°）。
  * - 各变换作用的色彩空间：
  *   - `hue`、`sat`、`lum` 及其 `Mod`、`Off` 与 `comp` 在 HSL 中计算，HSL 由 sRGB 编码值换算（规范：HSL 采用感知伽马 2.2）。
  *     `comp` 为色相旋转 180°，结果与输入混合为灰色。
@@ -59,7 +59,7 @@ export type SchemeSlot = (typeof SCHEME_SLOTS)[number]
 /** 槽位缺失或无法求值时为 `null`。 */
 export type ColorScheme = Readonly<Record<SchemeSlot, Color | null>>
 
-/** 颜色映射（`clrMap`）的键：`schemeClr` 中经映射再落到槽位的名称。 */
+/** 颜色映射（`clrMap`）的键：`schemeClr` 中经映射再对应到槽位的名称。 */
 export type ColorMapKey =
   | 'bg1'
   | 'tx1'
@@ -280,7 +280,7 @@ export function isColorElement(local: string): boolean {
  * 读取一个颜色元素及其变换子元素。调用时 `x` 位于颜色元素的开始标签，返回时位于其结束标签。
  *
  * 元素按本地名匹配。不是颜色元素、基色无法解析（十六进制格式错误、`sysClr` 缺少 `lastClr`、未知的预设名或槽位名）
- * 时返回 `null`，同样读到结束标签为止。无法解析的变换跳过，其余变换保留。
+ * 时返回 `null`，同样读取到结束标签为止。无法解析的变换跳过，其余变换保留。
  */
 export function readColor(
   x: Pick<XmlScanner, 'next' | 'local' | 'depth' | 'attr'>,

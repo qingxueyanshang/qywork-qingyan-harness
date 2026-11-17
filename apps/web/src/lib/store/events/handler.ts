@@ -21,15 +21,15 @@ export interface ConversationEntry<E> {
    * 为 false 时折叠之前不 flush 缓冲。用于两类事件：增量事件（正文、思考、工具输出）经缓冲层输出，
    * 它们触发 flush 等于关闭对应的缓冲层；不写入 transcript 的事件触发 flush 会打断匀速呈现。
    *
-   * 标注的条目宁少勿多。遗漏一项只会多 flush 一次（短暂停顿）；多标一项会使需要写入
-   * transcript 的事件读到只输出了一部分的正文，造成顺序错乱，比停顿严重得多。
+   * 只标注确定无需 flush 的条目。遗漏标注一项时多 flush 一次（短暂停顿）；误标一项会使需要写入
+   * transcript 的事件读取只输出了一部分的正文，造成顺序错乱。
    */
   readonly flush?: false
   /**
    * 折叠进归属会话（`cid`）的视图：会话内容与该会话的运行读数。当前会话与右侧的子会话页各自接收，
    * 父子页因此共用同一个运行条组件。
    *
-   * 每个写入点都先读取 `s.views[cid]`，读取不到时整条不写入：视图由 `openView` 建立，
+   * 每个写入点都先读取 `s.views[cid]`，视图不存在时整条不写入：视图由 `openView` 建立，
    * 而切换会话、关闭子会话页都会立即撤销视图（`dropView`），撤销之后到达的帧已没有归属。
    */
   conversation?(ev: E, cid: string, seq: number): void

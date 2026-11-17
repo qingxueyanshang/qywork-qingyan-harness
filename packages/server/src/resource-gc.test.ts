@@ -1,10 +1,10 @@
 /**
  * 正文回收在生产生命周期上的两个调用点。**覆盖范围**：`api/conversations.ts` 的 DELETE 分支、
- * `server.ts` 里开库之后的那次回收与 `stop()` 的计时器释放，经 `runtime/sink.ts` 的协调器
- * 落到 `store/content.ts`。
+ * `server.ts` 中打开数据库之后的回收与 `stop()` 的计时器释放，经 `runtime/sink.ts` 的协调器
+ * 到达 `store/content.ts`。
  *
- * 并发一致性不在这里——那由 `runtime/resource-gc-race.test.ts` 的双进程用例覆盖。
- * 这里只回答「谁在什么时候调了它、调失败之后用户看到什么」。
+ * 并发一致性不在此处验证，由 `runtime/resource-gc-race.test.ts` 的双进程用例覆盖。
+ * 此处只验证调用方、调用时机，以及调用失败后接口返回的内容。
  */
 
 import { afterEach, expect, test } from 'bun:test'
@@ -59,8 +59,8 @@ function fresh() {
   cleanups.push(() => {
     content.close()
     store.close()
-    // 删除失败不算失败：Windows 上 SQLite 的文件句柄释放有延迟。
-    // 整个 .tmp/tests/run-* 由 scripts/run-tests.ts 统一收尾。
+    // 删除失败不视为用例失败：Windows 上 SQLite 的文件句柄释放有延迟。
+    // 整个 .tmp/tests/run-* 由 scripts/run-tests.ts 统一清理。
     try {
       rmSync(dir, { recursive: true, force: true })
     } catch {}
@@ -107,13 +107,13 @@ async function deleteConversation(handle: ReturnType<typeof serve>, id: string) 
 const countOf = (db: { query: Store['db']['query'] }, sql: string) =>
   db.query<{ n: number }, []>(sql).get()?.n ?? 0
 
-test('删掉一条会话，另一条引用的正文还在；删掉最后一条引用才回收，费用账不受影响', async () => {
+test('删除一条会话后另一条会话引用的正文仍保留；删除最后一条引用后才回收，用量记录不受影响', async () => {
   const { dir, store, content, ws } = fresh()
   const handle = startServer(store, content, dir)
   const a = conversationWithRun(store, ws.id)
   const b = conversationWithRun(store, ws.id)
 
-  // 同一份字节 → 内容寻址去重成一个 blob，两条会话各有一行引用。
+  // 同一份字节经内容寻址去重为一个 blob，两条会话各有一行引用。
   const body = enc.encode('共享的命令输出'.repeat(500))
   const landedA = new RuntimeSink(store, content, a.run.id).land({
     toolName: 'run_command',
@@ -143,7 +143,7 @@ test('删掉一条会话，另一条引用的正文还在；删掉最后一条�
   const usageBefore = usageTotals(store)
 
   expect(await deleteConversation(handle, a.conv.id)).toEqual({ status: 200, body: { ok: true } })
-  // `read_resource` 走的就是这条 `SinkPort.read`：另一条会话的引用还在，正文必须读得回。
+  // `read_resource` 经由同一个 `SinkPort.read`：另一条会话的引用仍存在，正文必须可以读取。
   const readBack = new RuntimeSink(store, content, b.run.id).read(
     landedB.resourceId,
     0,
@@ -156,11 +156,11 @@ test('删掉一条会话，另一条引用的正文还在；删掉最后一条�
   expect(countOf(content.db, 'SELECT COUNT(*) AS n FROM content_chunks')).toBe(0)
   expect(countOf(content.db, 'SELECT COUNT(*) AS n FROM content_blobs')).toBe(0)
 
-  // 账本不设外键，删会话不动它；回收正文更不该动它。
+  // 用量账本不设外键：删除会话与回收正文都不改变它。
   expect(usageTotals(store)).toEqual(usageBefore)
 })
 
-test('回收之后：行删了，页数与文件字节数分别降下来', async () => {
+test('回收之后：行已删除，页数与文件字节数分别减少', async () => {
   const { dir, dbPath, store, content, ws } = fresh()
   const handle = startServer(store, content, dir)
   const c = conversationWithRun(store, ws.id)
@@ -185,12 +185,12 @@ test('回收之后：行删了，页数与文件字节数分别降下来', async
     freelist: pragma('freelist_count'),
     fileBytes: statSync(contentPathFor(dbPath)).size,
   }
-  // 行确实删了。
+  // 行已删除。
   expect(countOf(content.db, 'SELECT COUNT(*) AS n FROM content_chunks')).toBe(0)
   /*
-   * 三个数分开看：SQL 删掉几行、自由页还剩几页、文件本身有没有缩。
-   * `auto_vacuum` 是 INCREMENTAL 时 `collectGarbage` 末尾那句 `incremental_vacuum`
-   * 才真的把页还回去，页数与字节数才跟着降——否则删除行数不代表磁盘已经缩小。
+   * 三个数分别断言：SQL 删除的行数、剩余的自由页数、文件大小是否减小。
+   * `auto_vacuum` 为 INCREMENTAL 时，`collectGarbage` 末尾的 `incremental_vacuum`
+   * 才把空闲页归还给文件系统，页数与字节数随之减少；仅凭删除行数无法确定磁盘占用已经减小。
    */
   expect(pragma('auto_vacuum')).toBe(2)
   expect(after.freelist).toBe(0)
@@ -198,12 +198,12 @@ test('回收之后：行删了，页数与文件字节数分别降下来', async
   expect(after.fileBytes).toBeLessThan(before.fileBytes)
 })
 
-test('回收失败与删除成功分开回：会话确实删了，另给一句空间没收回来', async () => {
+test('回收失败与删除成功分别返回：会话已删除，另附空间未回收的说明', async () => {
   const { dir, store, content, ws } = fresh()
   const handle = startServer(store, content, dir)
   const c = conversationWithRun(store, ws.id)
 
-  // 正文库不可用 = 回收必然抛。删除本身走的是主库，不受它影响。
+  // 正文库不可用时回收必然抛出异常。删除操作使用主库，不受其影响。
   content.close()
   const res = await deleteConversation(handle, c.conv.id)
 
@@ -213,7 +213,7 @@ test('回收失败与删除成功分开回：会话确实删了，另给一句�
   expect(getConversation(store, c.conv.id)).toBeNull()
 })
 
-test('上次进程留下的孤儿正文在启动时回收，仍被引用的留着', () => {
+test('上次进程遗留的无引用正文在启动时回收，仍被引用的正文保留', () => {
   const { dir, store, content, ws } = fresh()
   const c = conversationWithRun(store, ws.id)
   const kept = new RuntimeSink(store, content, c.run.id).land({
@@ -221,7 +221,7 @@ test('上次进程留下的孤儿正文在启动时回收，仍被引用的留�
     sourceType: 'shell',
     body: enc.encode('还有人引用'),
   })
-  // 正文提交了、引用没登记——进程在主库提交前退出留下的就是这个形状。
+  // 正文已提交而引用未登记：进程在主库提交前退出时遗留的正是这一状态。
   const orphan = content.put(enc.encode('上次没登记完'))
   expect(countOf(content.db, 'SELECT COUNT(*) AS n FROM content_blobs')).toBe(2)
 
@@ -231,7 +231,7 @@ test('上次进程留下的孤儿正文在启动时回收，仍被引用的留�
   expect(content.info(kept.contentHash)).not.toBeNull()
 })
 
-test('反复启动关闭之后，停掉的服务不再认领到期任务', async () => {
+test('多次启动与关闭之后，已停止的服务不再认领到期任务', async () => {
   const { dir, store, content, ws } = fresh()
   for (let i = 0; i < 3; i++) {
     const handle = serve({
@@ -247,7 +247,7 @@ test('反复启动关闭之后，停掉的服务不再认领到期任务', async
     await handle.stop()
   }
 
-  // 全停之后才放一条到期任务。仍有计时器在运行的话，每 10 ms 触发一次，下面这段等待里必被认领。
+  // 全部停止之后才写入一条到期任务。仍有计时器在运行时，它每 10 ms 触发一次，在下面的等待期间必然认领该任务。
   const home = createConversation(store, {
     workspaceId: ws.id,
     provider: 'fake',
@@ -275,7 +275,7 @@ test('反复启动关闭之后，停掉的服务不再认领到期任务', async
     }, 10)
   })
 
-  // 认领会起一轮并推进游标，两者都没发生。
+  // 认领会启动一轮并推进游标，两者都未发生。
   expect(countOf(store.db, 'SELECT COUNT(*) AS n FROM runs')).toBe(0)
   expect(listSchedules(store, dir, Date.now())[0]!.lastRunAt).toBe(undefined)
   expect(ws.rootPath).toBe(dir)

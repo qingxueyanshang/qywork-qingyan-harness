@@ -213,7 +213,7 @@ export interface DetectedCli extends CliAgent {
 /**
  * 识别结果在进程内的缓存时长。识别需要在 PATH 的每个目录中逐个检查文件，在 Windows 上
  * 一次需要上千次 stat；每一轮开始都需要该清单，不缓存时每轮都要承担该开销。
- * 安装或卸载 CLI 是机器级操作，半分钟内识别不到新安装的 CLI 是可接受的边界。
+ * 安装或卸载 CLI 是机器级操作，半分钟内无法识别新安装的 CLI 是可接受的边界。
  */
 const DETECT_CACHE_MS = 30_000
 /** 缓存按 PATH 的内容判定，不按 env 对象判定：`process.env` 始终是同一个对象，PATH 修改后也必须重新扫描。 */

@@ -22,7 +22,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::geometry::ScreenRect;
 
-/// 用到真实窗口的用例串行执行：弹出窗口的查找遍历整个 z 序，并行创建的窗口会互相计入。
+/// 使用真实窗口的用例串行执行：弹出窗口的查找遍历整个 z 序，并行创建的窗口会互相计入。
 pub static SERIAL: Mutex<()> = Mutex::new(());
 
 /// 收到的鼠标左键消息：窗口句柄与消息号。

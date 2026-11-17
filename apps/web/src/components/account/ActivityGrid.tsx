@@ -9,7 +9,7 @@ const DAY_MS = 86_400_000
 
 type Day = CloudUsage['days'][number]
 
-/** 本地日期 `YYYY-MM-DD`；云端按电脑所在时区分日，两边须使用同一种写法才能对上。 */
+/** 本地日期 `YYYY-MM-DD`；云端按电脑所在时区分日，两端须使用同一种写法，日期才能一致。 */
 function localDay(d: Date): string {
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
@@ -22,7 +22,7 @@ function weekdayIndex(d: Date): number {
 
 interface Cell {
   day: string
-  /** 0 为没有请求；1–4 按 token 在有请求的日子中的名次分档。 */
+  /** 0 为没有请求；1–4 按 token 在有请求的各天中的名次分档。 */
   level: number
   usage: Day | null
   /** 本周中今天之后的日期：不绘制。 */

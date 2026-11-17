@@ -36,11 +36,11 @@ export function wireClient(options: ClientOptions): void {
  *
  * vite 会重新执行整个模块并创建第二个 `QyClient`，而上一个实例的 WebSocket 仍处于连接状态。
  * 服务端按连接注册订阅者（`handshake.ts` 以 `ws.data.id` 为 key），两条连接即两份
- * 相同的事件流，回调的却是同一个 store：正文每个 token 显示两遍，末尾出现两条读数条。
- * 每修改一次代码就多一条连接，连接数持续累积。
+ * 相同的事件流，回调的却是同一个 store：正文每个 token 显示两次，末尾出现两条读数条。
+ * 每修改一次代码即增加一条连接，连接数持续累积。
  *
- * 一键脚本启动的就是 dev（`scripts/start.ps1` 两种模式都使用 vite dev server），
+ * 一键脚本启动的即为 dev 模式（`scripts/start.ps1` 两种模式都使用 vite dev server），
  * 因此该问题不只影响修改代码的人。此段无法由单元测试覆盖：`import.meta.hot`
- * 只在 vite 下存在，须通过实际热更新一次来验证。
+ * 只在 vite 下存在，须实际执行一次热更新来验证。
  */
 if (import.meta.hot) import.meta.hot.dispose(() => client.close())

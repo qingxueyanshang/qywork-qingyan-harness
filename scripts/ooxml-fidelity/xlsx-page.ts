@@ -4,7 +4,7 @@
  * 页面向 `window` 暴露 `renderPage(id, sheet, range, width, height, clearType)`（`width`、`height` 为真值位图的尺寸，
  * `clearType` 为采集时显示器的 ClearType 设置），返回画布尺寸与本方区域尺寸；截图由 Node 驱动的 Playwright 完成。
  * 图表工作表的页 `range` 为 `null`：区域为第一个图表的图表区，见 `pageRegion`。
- * 本文件只声明用到的浏览器接口，不引入 DOM 类型库（`scripts` 的类型检查环境不含 DOM）。
+ * 本文件只声明使用的浏览器接口，不引入 DOM 类型库（`scripts` 的类型检查环境不含 DOM）。
  */
 
 import {

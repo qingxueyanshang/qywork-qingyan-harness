@@ -147,7 +147,7 @@ function killTree(proc: { pid: number; kill(): void }): void {
 
 /**
  * 以外壳相同的方式启动：`--credentials-stdin`，写入一行凭据与上次退出信息后保持管道打开。
- * 原始失败形状是凭据与上次退出的 stderr 尾部经环境变量交付时，serve 启动的全部后代进程都能读到它们
+ * 原始失败形状是凭据与上次退出的 stderr 尾部经环境变量交付时，serve 启动的全部后代进程都能读取到它们
  * （Bun 中删除 `process.env` 的键对不传 `env` 启动的 runner 无效）。
  */
 test('经标准输入交付的凭据与上次退出信息被采用，且不出现在子进程与 git 钩子的环境中', async () => {

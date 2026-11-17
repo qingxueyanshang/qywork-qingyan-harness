@@ -66,7 +66,7 @@ describe('可重放性分类', () => {
 })
 
 /**
- * 结构化正文按字节截取头尾得不到可用的结果，这类调用方自行选定投递的部分，
+ * 结构化正文按字节截取头尾无法得到可用的结果，这类调用方自行选定投递的部分，
  * `deliver` 只负责落盘、地址、覆盖事实与失败降级。
  */
 describe('调用方自带摘录', () => {
@@ -93,7 +93,7 @@ describe('调用方自带摘录', () => {
   test('落盘失败时给出原因，摘录仍原样返回', () => {
     const failing: SinkPort = {
       land() {
-        throw new Error('磁盘满了')
+        throw new Error('磁盘空间不足')
       },
       read: () => null,
       stat: () => null,
@@ -107,7 +107,7 @@ describe('调用方自带摘录', () => {
 
     expect(r.resourceId).toBeNull()
     expect(r.status).toBe('partial')
-    expect(r.landError).toBe('磁盘满了')
+    expect(r.landError).toBe('磁盘空间不足')
     expect(r.text).toBe(excerpt.text)
     expect(r.coverage.landFailed).toBe(true)
   })
@@ -208,7 +208,7 @@ describe('投递分支', () => {
     expect(r.text).toContain('read_resource')
   })
 
-  test('覆盖事实必须完整：模型需要知道自己看到的是全文的多少', () => {
+  test('覆盖事实必须完整：模型需要判断取得的内容占全文的多少', () => {
     const sink = fakeSink()
     const body = enc.encode('w'.repeat(100_000))
     const r = deliver(sink, {
@@ -226,7 +226,7 @@ describe('投递分支', () => {
   test('落盘失败时明确告知，避免模型读取不存在的 id', () => {
     const failing: SinkPort = {
       land() {
-        throw new Error('磁盘满了')
+        throw new Error('磁盘空间不足')
       },
       read: () => null,
       stat: () => null,
@@ -263,7 +263,7 @@ describe('子 agent 产出的投递', () => {
     density: DEFAULT_DENSITY,
   })
 
-  test('超长产出落盘，交出的是有界摘要与定位符', () => {
+  test('超长产出落盘，返回的是有界摘要与定位符', () => {
     const ctx = context()
     const landed = deliverAgentOutput(ctx, {
       toolName: 'subagent',
@@ -277,7 +277,7 @@ describe('子 agent 产出的投递', () => {
     expect(landed.resource?.resourceId).toBeTruthy()
   })
 
-  test('未超预算的产出原样交出，不落盘', () => {
+  test('未超预算的产出原样返回，不落盘', () => {
     const ctx = context()
     const landed = deliverAgentOutput(ctx, {
       toolName: 'subagent',
@@ -358,7 +358,7 @@ describe('续读交付', () => {
     expect(new TextDecoder().decode(ctx.sink.landed[0])).toBe(body)
     expect(r.message).toContain(`offset=${new TextEncoder().encode(head).byteLength}`)
     expect(r.resources?.[0]?.resourceId).toBeTruthy()
-    // 头部按余额确定：只超出续读说明的几十 token。
+    // 头部按余额确定：只超出续读说明的数十 token。
     expect(2000 - batchRemaining(ctx)).toBeGreaterThan(1500)
   })
 

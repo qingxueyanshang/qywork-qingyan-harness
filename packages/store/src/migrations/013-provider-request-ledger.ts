@@ -4,7 +4,7 @@ export const migration013: Migration = {
   id: 13,
   name: 'provider_request_ledger',
   /**
-   * 接通逐请求账，同时删除 `runs` 上的三列。
+   * 接通逐请求账本，同时删除 `runs` 上的三列。
    *
    * `provider_requests` 建于迁移 1，但一直没有读写，面板只能读取 `runs.context_tokens`；
    * 而这三列每个 step 覆盖一次，一个 run 只保留最后一次请求的读数，

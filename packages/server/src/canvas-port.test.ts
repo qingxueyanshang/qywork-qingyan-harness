@@ -135,8 +135,8 @@ describe('画布端口', () => {
       h: 169,
     })
   })
-  /** 原始失败形状：只改长提示词中的几句时 `update` 须重写整段提示词，模型改为用脚本直接改写画布文件。 */
-  test('经端口用 edit_prompt 按卡片名称只改提示词中的一段，写入画布文件', async () => {
+  /** 原始失败形状：只修改长提示词中的几句时 `update` 须重写整段提示词，模型改为用脚本直接改写画布文件。 */
+  test('经端口用 edit_prompt 按卡片名称只修改提示词中的一段，写入画布文件', async () => {
     const root = await workspace()
     const port = canvasPort(new CanvasService({ publish: () => {}, newId: sequence() }), {
       id: 'ws',
@@ -196,9 +196,9 @@ describe('画布端口', () => {
   /**
    * 原始失败形状：一批操作中有一条不成立时整批被拒，模型须把整批（会话中一次约 1.3 万字）重发。
    * 改为逐条生效：不成立的条目跳过，依赖它的批内名称的条目同样跳过，其余写入；
-   * 新卡仍在本批全部连线之后按组排位，与整批应用的位置相同。
+   * 新卡片仍在本批全部连线之后按组排位，与整批应用的位置相同。
    */
-  test('经端口一批中有不成立的条目时只跳过这些条目，其余写入，新卡按组排位', async () => {
+  test('经端口一批中有不成立的条目时只跳过这些条目，其余写入，新卡片按组排位', async () => {
     const root = await workspace()
     const service = new CanvasService({ publish: () => {}, newId: sequence() })
     const port = canvasPort(service, { id: 'ws', root })
@@ -249,7 +249,7 @@ describe('画布端口', () => {
     expect(nothing.changed).toEqual([])
   })
 
-  test('经端口的 replace_text 回报每张卡替换的处数', async () => {
+  test('经端口的 replace_text 返回每张卡片替换的处数', async () => {
     const root = await workspace()
     const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
     await port.edit(PATH, [
@@ -264,7 +264,7 @@ describe('画布端口', () => {
     expect(result.skipped).toEqual([{ at: 1, error: '「MP3」的提示词中没有「暖黄灯光」' }])
   })
 
-  /** 原始失败形状：模型在后一批中以另一个名称再次放置同一份制作稿，画布上同一文件出现两张卡。 */
+  /** 原始失败形状：模型在后一批中以另一个名称再次放置同一份制作稿，画布上同一文件出现两张卡片。 */
   test('经端口再次放置已在画布上的文件时该条跳过，并给出已有卡片的名称', async () => {
     const root = await workspace()
     const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
@@ -287,7 +287,7 @@ describe('画布端口', () => {
     expect(view.doc.nodes.filter((n) => n.type === 'file')).toHaveLength(1)
   })
 
-  test('同一文件可放整篇卡与多张摘录卡；同一段只放一张；摘录卡须有名称；失效原因随回执返回', async () => {
+  test('同一文件可放置整篇卡与多张摘录卡；同一段只放置一张；摘录卡须有名称；失效原因随回执返回', async () => {
     const root = await workspace()
     await writeFile(join(root, '脚本.md'), '## 1-1\n阿七推门。\n## 1-2\n阿七握手。\n')
     const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
@@ -342,7 +342,7 @@ describe('画布端口', () => {
     expect(view.doc.nodes[0]).toMatchObject({ w: 169, h: 254 })
   })
   /** 原始失败形状：模型写入当前模式下不可用的参数，工具返回成功，而画布不发送该参数，参数面板也不显示。 */
-  test('参数按卡片批后的输入与其他参数核对是否可用，不可用时该条跳过', async () => {
+  test('参数按卡片在本批操作后的输入与其他参数核对是否可用，不可用时该条跳过', async () => {
     const root = await workspace()
     const specs: MediaParamDefinition[] = [
       { name: 'output_format', type: 'enum', values: ['png', 'jpeg'], default: 'png' },
@@ -465,7 +465,7 @@ describe('画布端口', () => {
    * 原始失败形状：add_generate 只写 model: gpt-image-2.5-sunburst，参数按默认模型的参数表核对，
    * 报错列出的是另一个模型的参数，也没有写明按哪个模型核对。
    */
-  test('只给出 model 时按提供该模型的接口补上 provider，参数按该模型核对；没有或有多个接口提供时写明原因', async () => {
+  test('只给出 model 时按提供该模型的接口补全 provider，参数按该模型核对；没有或有多个接口提供时写明原因', async () => {
     const root = await workspace()
     const grok: MediaParamDefinition[] = [
       { name: 'aspect_ratio', type: 'enum', values: ['1:1', '16:9'] },
@@ -519,7 +519,7 @@ describe('画布端口', () => {
     ).toContain(
       '「戊」的参数 quality 不存在。relay / gpt-image-2.5-sunburst 的可用参数：output_format',
     )
-    // 使用默认模型的卡改换模型时同样补上 provider。
+    // 使用默认模型的卡片改换模型时同样补全 provider。
     await port.edit(PATH, [{ op: 'add_generate', output: 'image', name: '己' }])
     const changed = await port.edit(PATH, [
       { op: 'update', id: '己', model: 'gpt-image-2.5-sunburst' },
@@ -530,7 +530,7 @@ describe('画布端口', () => {
   })
 
   /** 原始失败形状：同一批中先删除「P01 封面」再把另一张卡改名为「P01 封面」，被拒为名称已被另一张卡使用。 */
-  test('同一批中先删除或改动的卡让出名称、文件与摘录；同一批中重复的名称、文件与摘录仍被拒绝', async () => {
+  test('同一批中先删除或修改的卡片让出名称、文件与摘录；同一批中重复的名称、文件与摘录仍被拒绝', async () => {
     const root = await workspace()
     await writeFile(join(root, '脚本.md'), '## 1-1\n阿七推门。\n## 1-2\n阿七握手。\n')
     const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
@@ -569,7 +569,7 @@ describe('画布端口', () => {
     ])
   })
 
-  test('经端口排列卡片：只改变了位置的卡列入 moved，回执不列出其全文', async () => {
+  test('经端口排列卡片：只改变了位置的卡片列入 moved，回执不列出其全文', async () => {
     const root = await workspace()
     const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
     await port.edit(
@@ -772,7 +772,7 @@ function heldPort(): { port: MediaPort; calls: Held[]; next(): Promise<Held> } {
   return { port, calls, next }
 }
 
-/** 等到条件成立：端口的等待结束之后，生成在服务中继续进行，只能按画布状态判断进度。 */
+/** 等待条件成立：端口的等待结束之后，生成在服务中继续进行，只能按画布状态判断进度。 */
 async function until(check: () => Promise<boolean>, timeoutMs = 3000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!(await check())) {

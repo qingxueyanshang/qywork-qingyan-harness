@@ -38,7 +38,7 @@ const group = (rate: number, models: unknown[], extra: Record<string, unknown> =
 
 const astra = model('gpt-6-astra', 10, 50, 1, 12.5)
 astra.pricing.intervals = [tier(0, 10, 50, 1, 12.5), tier(272_000, 20, 75, 2, 25)]
-// 站点仍按降价前的 $5 / $30 收费，与模型库的促销价不一致，分档也是站点自己的。
+// 站点仍按降价前的 $5 / $30 收费，与模型库的促销价不一致，分档也由站点自定。
 const sol = model('gpt-5.6-sol', 5, 30, 0.5, 6.25)
 sol.pricing.intervals = [tier(0, 5, 30, 0.5, 6.25), tier(272_000, 10, 45, 1, 12.5)]
 
@@ -55,7 +55,7 @@ const PLAZA = {
   },
 }
 
-test('基础价与分档都与模型库官方价一致时写倍率；站点自己的价格写单价并带站点的分档', () => {
+test('基础价与分档都与模型库官方价一致时写倍率；站点自定的价格写单价并带站点的分档', () => {
   const prices = plazaPrices(PLAZA, 'openai_responses')
   expect(prices?.get('gpt-6-astra')).toEqual({ scale: 0.33, currency: 'USD' })
   const relay = prices?.get('gpt-5.6-sol') as SpecOverride

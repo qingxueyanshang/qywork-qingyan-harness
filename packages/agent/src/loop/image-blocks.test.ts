@@ -159,7 +159,7 @@ describe('materialize', () => {
    * 原地修改时，第二次尝试会对同一份内容算出不同的哈希，而该字段的用途是
    * 识别同一份内容被发送了两次。
    */
-  test('不改原对象，原消息仍是 path 形态', async () => {
+  test('不修改原对象，原消息仍是 path 形态', async () => {
     const { path } = await fixture()
     const original: WireMessage[] = [
       {
@@ -484,7 +484,7 @@ describe('换出的媒体替换为说明', () => {
 
   /**
    * 标记只写 `true` 或只写「已提供」时，模型读取信封后会判断自己从未收到过这张图片，
-   * 向用户否认此前的检查并反复重新读取。写成「你已看过」则超出传输记录能证明的事实：
+   * 向用户否认此前的检查并反复重新读取。写为「你已看过」则超出传输记录能证明的事实：
    * 端点收到请求不等于模型读取了图片。标记写明此前已发送、现已移出以及取回方式。
    */
   test('省略标记只陈述传输事实并给出取回方式', () => {
@@ -587,7 +587,7 @@ describe('媒体按字节预算换出', () => {
 
   /**
    * 路径视频按本轮的发送方式计算：上传为地址的、超过常驻上限且不能上传的（改用抽帧）、模型不接受的均不进入请求体，记为 0。
-   * 若一律按文件大小计算，上传为地址的 18 MB 视频在下一步即被换出，模型只能看到一次（Qwen3.8 Flash 实测）。
+   * 若一律按文件大小计算，上传为地址的 18 MB 视频在下一步即被换出，模型只能读取一次（Qwen3.8 Flash 实测）。
    */
   test('路径视频按发送方式计字节：上传、抽帧、不接受均记 0', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
@@ -613,7 +613,7 @@ describe('媒体按字节预算换出', () => {
     expect(videoDelivery(meta(9 * MB), NATIVE, undefined)).toBe('frames')
     expect(videoDelivery(meta(MB), NATIVE, undefined)).toBe('inline')
     expect(videoDelivery(meta(MB), null, undefined)).toBe('frames')
-    // 上传为地址的视频不计字节，因此始终保留在请求中，模型在此后每一步都能看到。
+    // 上传为地址的视频不计字节，因此始终保留在请求中，模型在此后每一步都能读取。
     const messages = [video, call('c0'), result('c0', MB), call('c1'), result('c1', MB)]
     expect(evictedMedia(messages, upload).has(0)).toBe(false)
   })
@@ -694,7 +694,7 @@ describe('媒体按字节预算换出', () => {
 
   /**
    * 复现的失败形状：3 张样图与 20 页渲染图（约 4.6 MB）同时在请求中，随后取回一张约 1 MB 的局部放大图。
-   * 换出曾把这 23 张整张移出，模型只能逐张取回原图，取回的原图又使其余画面被移出。
+   * 按整张移出换出时这 23 张全部移出，模型只能逐张取回原图，取回的原图又使其余画面被移出。
    * 缩小为缩略图之后，任何一步都没有画面被移出。
    */
   test('样图与 20 页之后取回局部放大图，较早的画面全部保留为缩略图', () => {
@@ -722,7 +722,7 @@ describe('媒体按字节预算换出', () => {
   test('同一历史结果相同，追加消息不会恢复已换出的媒体', () => {
     const rank = { thumbnail: 1, omitted: 2 } as const
     const sizes = [MB, 2 * MB, MB, 3 * MB, MB, MB, 2 * MB, MB, ...Array(40).fill(MB)]
-    // 消息只构造一次，各步取前缀（每步两条）：逐步重新构造时共分配约 1.8 GB 的字符串，慢的机器上超过用例期限。
+    // 消息只构造一次，各步取前缀（每步两条）：逐步重新构造时共分配约 1.8 GB 的字符串，较慢的机器上超过用例期限。
     const all = steps(sizes)
     let previous = new Map<number, MediaLevel>()
     for (let n = 1; n <= sizes.length; n++) {
@@ -938,7 +938,7 @@ describe('换出的图片缩小为缩略图', () => {
 
 /**
  * 正文库引用与它物化后的 base64 计入同样的字节：换出预算与请求账的 `requestBytes` 都不随形态变化。
- * 引用按自身长度计时，带图请求的 `requestBytes` 只有几十字节，与响应头时间、413 拒绝的对照失效。
+ * 引用按自身长度计时，带图请求的 `requestBytes` 只有数十字节，与响应头时间、413 拒绝的对照失效。
  */
 test('正文库引用与等价的 base64 计入相同的媒体字节与请求体字节', () => {
   const bytes = 30_000

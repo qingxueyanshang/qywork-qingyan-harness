@@ -1283,7 +1283,7 @@ describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
       expect(height('字\t')).toBeCloseTo(songSingle, 6)
     })
 
-    test('断行：嵌入式对象两侧可断、相邻的禁则字符照常；公式与其后的西文之间不断开', () => {
+    test('断行：嵌入式对象两侧可断、相邻的禁则字符照常生效；公式与其后的西文之间不断开', () => {
       const ends = (runs: (TextRun | ObjectRun)[]) =>
         layoutParagraph(runs, wide()).lines.map((l) => l.end)
       // 「abcd」与其后的 40 磅图片之间断开；图片与其后的「abcdefghij」之间断开。
@@ -1304,7 +1304,7 @@ describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
       expect(
         ends([run(`${H.repeat(41)}（`), object({ advance: 15, width: 15 }), run(H.repeat(5))]),
       ).toEqual([41, 47])
-      // 公式之后的「abcdefghij」排不下时公式随之移到下一行。
+      // 公式之后的「abcdefghij」容纳不下时公式随之移到下一行。
       expect(
         ends([
           run(H.repeat(40)),
@@ -1335,7 +1335,7 @@ describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
 describe.skipIf(!LOCAL_FONTS)('WPS 自带度量的字体', () => {
   /**
    * 原始失败形状：字形编号一律取自 `other`，公式中的普通文字按此编号取绘制字体（西文部分为 `asciiDraw`）的字形与轮廓，
-   * 画出另一个字。
+   * 绘制出另一个字符。
    */
   test('U+0020–U+007E 的字形编号取自绘制该部分的字体，其余取自 other', () => {
     // Arial Narrow 的西文以 Calibri 绘制，两个字体中「A」的字形编号不同。

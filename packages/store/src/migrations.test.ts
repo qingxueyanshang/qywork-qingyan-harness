@@ -345,7 +345,7 @@ describe('迁移 20：外部工具的对象名收敛为类别名', () => {
 /**
  * `memory` 门面拆分为三个名称，旧行按行内的 `args.action` 分流。
  *
- * 不转换时，回放历史时模型会看到当前工具表中不存在的名称：账本中的
+ * 不转换时，回放历史时模型会取得当前工具表中不存在的名称：账本中的
  * `tool_name` 与 `args` 会被原样重放为一次工具调用。
  */
 describe('迁移 21：memory 拆分为 read/write/delete_memory', () => {
@@ -839,8 +839,8 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
-describe('迁移 42：以任务正文为名称的临时子 agent 改回原名', () => {
-  test('名称为任务开头的改回「临时子 agent」，模型命名的短名称不变', () => {
+describe('迁移 42：以任务正文为名称的临时子 agent 恢复原名', () => {
+  test('名称为任务开头的恢复为「临时子 agent」，模型命名的短名称不变', () => {
     const db = dbBefore(42)
     db.exec(`
 INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
@@ -1771,7 +1771,7 @@ VALUES ('sch_bound', 'C:\\ws', '日报', 'p', 'interval', 30, 1, 1, 222, 'cv_bou
 })
 
 describe('迁移 59：请求记录本次输入携带的图片批次', () => {
-  /** 旧行没有该事实，只能为 NULL：按时间推算回填，等于声明模型看过一张未发送的图片。 */
+  /** 旧行没有该事实，只能为 NULL：按时间推算回填，等于声明模型读取过一张未发送的图片。 */
   test('存量请求行加列后为 NULL，不按时间回填', () => {
     const db = dbBefore(59)
     db.exec(`

@@ -35,7 +35,7 @@ import { type FileNode, SearchHits, Tree, type TreeCtx } from './FileTree.tsx'
 import { TreeMenu } from './TreeMenu.tsx'
 
 /**
- * 懒加载：它包含 CodeMirror 核心（约 300 kB），只查看待办与变更的用户不会用到它。
+ * 懒加载：它包含 CodeMirror 核心（约 300 kB），只查看待办与变更的用户不需要加载它。
  * 文件页与文件预览页必须共用这一个包装：另行声明的包装首次渲染时，即使模块已加载也会挂起一次。
  */
 const FileView = lazy(() => import('../FileView.tsx'))
@@ -64,7 +64,7 @@ export function FileBrowser() {
     return scope ? `${scope}:${revision}` : (false as const)
   }
   const [tree, { refetch }] = createResource(
-    // 连接未就绪时不发送必然失败的请求；恢复为 ready 后同一资源自动重取。
+    // 连接未就绪时不发送必然失败的请求；恢复为 ready 后同一资源自动重新获取。
     // fileVersion 同时覆盖精确文件工具与只能粗粒度失效的命令/子流程。
     treeSource,
     () => client.api<{ nodes: FileNode[] }>('/api/files/tree?depth=2'),
@@ -146,7 +146,7 @@ export function FileBrowser() {
   )
 
   /*
-   * 根树重取时，展开目录的懒加载缓存必须同时失效。只重取根节点时，已展开的目录
+   * 根树重新获取时，展开目录的懒加载缓存必须同时失效。只重新获取根节点时，已展开的目录
    * 仍优先显示 `kids` 中的旧内容，根目录已更新而子层不变。
    */
   createEffect<string | false>((previous) => {
@@ -173,9 +173,9 @@ export function FileBrowser() {
   }
 
   /**
-   * 新建 / 重命名 / 删除之后，所在层必须**立即重取并覆盖缓存**。
+   * 新建 / 重命名 / 删除之后，所在层必须**立即重新获取并覆盖缓存**。
    *
-   * 不能只从缓存中删除再等待自动重取：`TreeNode` 未找到缓存时会回退到根请求
+   * 不能只从缓存中删除再等待自动重新获取：`TreeNode` 未找到缓存时会回退到根请求
    * `depth=2` 返回的 `node.children`，那份数据已过期；删除缓存后文件树不变，
    * 新建看起来没有生效。根层没有上一级可获取，使用 `refetch()`。
    */
@@ -194,7 +194,7 @@ export function FileBrowser() {
     /*
      * 高亮的行**只由 `selected` 决定**。
      *
-     * 不要把主区打开的文件（`openFile`）也纳入判定：两个权威争夺同一处高亮时，
+     * 不要把主区打开的文件（`openFile`）也纳入判定：两个权威同时决定同一处高亮时，
      * 点击文件夹不会高亮（高亮停留在已打开的文件上），点击文件后选中状态看起来没有保留。
      * 最后点击的行即选中行；点击空白或树外区域时取消选中，已打开的预览保持不变。
      */
@@ -293,7 +293,7 @@ export function FileBrowser() {
      *
      * 文件树不占满面板：它是索引，宽度固定；正文是阅读区域，占据其余全部宽度。
      * 面板宽度由用户拖动左边沿调整（`.panel-grip`）：两栏并排时必须支持调整，
-     * 否则内容栏只有一百多像素。
+     * 否则内容栏只有一百余像素。
      */
     <div class="file-browser" ref={browser}>
       <div class="file-tree-col">
@@ -357,7 +357,7 @@ export function FileBrowser() {
             >
               {/*
                * 每次点击固定旋转一圈，不与 `tree.loading` 的时长绑定：本机请求常在
-               * 浏览器首次绘制前就已结束，只按 loading 显示动画时用户看不到任何一帧。
+               * 浏览器首次绘制前就已结束，只按 loading 显示动画时用户无法看到任何一帧。
                * transform 的终点持续递增，连续点击时从上一圈继续旋转，无需计时器。
                */}
               <IconRefresh
@@ -423,7 +423,7 @@ export function FileBrowser() {
 
       {/*
        * **按路径重新挂载**（`keyed`）：点击另一个文件时，正文立即切换为该文件的加载态。
-       * 不要去掉 `keyed`：资源重取期间 `loaded()` 返回上一个文件的结果，上一个文件的错误
+       * 不要去掉 `keyed`：资源重新获取期间 `loaded()` 返回上一个文件的结果，上一个文件的错误
        * 也保留到新结果返回，正文会停留在旧文件上。刷新同一个文件时不重新挂载，阅读位置保留。
        */}
       <Show when={openFile()} keyed>

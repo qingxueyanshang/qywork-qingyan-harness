@@ -28,7 +28,7 @@ export function registeredMediaModels(
 /**
  * 跟进消息注入时，与模型已知内容不同的上下文：生成模型清单（配置在本轮进行中被修改）与右侧面板打开的文件。
  * 有变化时返回要告知模型的文字并更新 `known`；没有变化时返回 null。
- * 模型只在轮次开始时得到快照；不告知时，它无法得知中途新增的型号，只能去界面中查找。
+ * 模型只在轮次开始时取得快照；不告知变化时，模型无法得知轮次进行中新增的型号，只能经界面查找。
  */
 export function changedContext(
   session: Pick<SessionState, 'opts' | 'registry'>,

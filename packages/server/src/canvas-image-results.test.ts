@@ -94,7 +94,7 @@ describe('图片生成的完整结果与部分结果', () => {
     expect(version.warning).toBe(result.warning)
   })
 
-  /** 原始失败形状：n=1 的卡得到两个文件，结果只列出两个路径，调用方无从得知卡片显示哪一张。 */
+  /** 原始失败形状：n=1 的卡片得到两个文件，结果只列出两个路径，调用方无从得知卡片显示哪一张。 */
   test('请求一张而接口返回两张：两张都保存为版本，结果写明卡片的当前版本为第一张', async () => {
     reply = () =>
       Response.json({ data: images.slice(0, 2).map((b) => ({ b64_json: b.toString('base64') })) })

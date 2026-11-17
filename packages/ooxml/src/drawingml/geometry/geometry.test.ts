@@ -43,7 +43,7 @@ describe('公式', () => {
     expect(f('sqrt 16')).toBe(4)
   })
 
-  test('除数为 0 与未知运算得 0', () => {
+  test('除数为 0 与未知运算的结果为 0', () => {
     expect(f('*/ a b 0')).toBe(0)
     expect(f('+/ a b 0')).toBe(0)
     expect(f('foo a')).toBe(0)

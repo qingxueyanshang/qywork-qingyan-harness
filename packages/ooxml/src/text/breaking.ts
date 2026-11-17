@@ -11,7 +11,7 @@
  *    （WPS 实测：表格单元格中「激活α1/β」可在 α 之后断开；文字中东亚提示使希腊字母落在东亚字体时，「α1/β」可在 α 之后、
  *    β 之前断开）；文字中落在西文字体的希腊字母不断开（「α1/β」与「a1/b」相同），由调用方按 `western` 传入。
  *
- * `wordWrap` 为 `false` 时空格是普通字符：可以在其前断行，排不下时移到下一行行首（WPS 实测）。
+ * `wordWrap` 为 `false` 时空格是普通字符：可以在其前断行，本行容纳不下时移到下一行行首（WPS 实测）。
  * 行内对象按其断行类别（`BreakUnit`）判定：不属于任何禁则表，不是空格、制表符或连字符。
  */
 
@@ -27,7 +27,7 @@ export function codePointSet(chars: string): ReadonlySet<number> {
 /**
  * 简体中文默认的行首禁则字符（ISO/IEC 29500-1 `kinsoku` 的缺省表）。
  * 不要换成 WPS 自动化接口 `Document.NoLineBreakBefore` 返回的表：后者缺少 `%`、`°`、`℃` 等，
- * 多出 `々`，而 WPS 实际排版不让 `%`、`℃` 位于行首，允许 `々` 位于行首。
+ * 多出 `々`，而 WPS 实际排版不允许 `%`、`℃` 位于行首，允许 `々` 位于行首。
  */
 export const DEFAULT_NO_LINE_BREAK_BEFORE = codePointSet(
   '!%),.:;>?]}¢¨°·ˇˉ―‖’”…‰′″›℃∶、。〃〉》」』】〕〗〞︶︺︾﹀﹄﹚﹜﹞！＂％＇），．：；？］｀｜｝～￠',
@@ -76,7 +76,7 @@ function eastAsian(u: BreakUnit): boolean {
  * 最小内容宽度（`layout.ts` 的 `contentWidths`）所用的断点：与 `canBreakBetween` 有两处不同（WPS 实测，构造文档 w10d）。
  * - 东亚字符与其后的连字符、破折号之间总可断，与压缩标点设置无关（「汉-汉汉」的最小宽度为一个汉字宽）。
  * - 压缩标点时，连字符、破折号与其后的西文字符之间不断（「-15.0%」的最小宽度为整个字符串宽，不压缩标点时为「15.0%」宽）。
- * 排版的断行仍按 `canBreakBetween`：同一文档中「-15.0%」排不下时在连字符之后断开。
+ * 排版的断行仍按 `canBreakBetween`：同一文档中「-15.0%」容纳不下时在连字符之后断开。
  */
 export function canBreakForWidth(before: BreakUnit, after: BreakUnit, rules: BreakRules): boolean {
   const b = typeof before === 'number' ? before : -1

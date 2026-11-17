@@ -234,7 +234,7 @@ export interface SheetFormat {
 export interface SheetView {
   readonly showGridLines: boolean
   /**
-   * `colorId` 指定的网格线颜色（索引色），`null` 为未指定。WPS 实测：指定时网格线为该颜色隔一像素一点的点线，
+   * `colorId` 指定的网格线颜色（索引色），`null` 为未指定。WPS 实测：指定时网格线为该颜色、间隔一像素的点线，
    * 与 `defaultGridColor` 无关；未指定时为浅灰实线。
    */
   readonly gridColor: string | null

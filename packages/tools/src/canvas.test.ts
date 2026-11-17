@@ -148,16 +148,16 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
         return 'cancelled'
       },
       captureFrame: async () => {
-        throw new Error('不该调用取帧')
+        throw new Error('不应调用取帧')
       },
       exportTimeline: async () => {
-        throw new Error('不该调用导出')
+        throw new Error('不应调用导出')
       },
     },
   }
 }
 
-const media: MediaPort = { generate: async () => ({ ok: false, message: '不该直接调' }) }
+const media: MediaPort = { generate: async () => ({ ok: false, message: '不应直接调用' }) }
 
 const DONE: Awaited<ReturnType<CanvasPort['run']>> = { ok: true, outputs: [], params: {} }
 
@@ -184,12 +184,12 @@ describe('canvas 工具', () => {
   })
 
   /**
-   * 原始失败形状：重试一次仍不符合时，模型按「由用户决定」停下，其余卡片未生成；
-   * 用户要求换模型重新生成时，模型按「先询问用户」停下询问已有结果的卡。
+   * 原始失败形状：重试一次仍不符合时，模型按「由用户决定」停止，其余卡片未生成；
+   * 用户要求更换模型重新生成时，模型按「先询问用户」停止并询问已有结果的卡。
    * 重新运行的上限与系统提示中的 retry_limit 相同：图片 3 次，视频 2 次。
    * 用尽后记为失败而不是完成：「说明差异后按完成处理」使不符合要求的结果以完成结束本轮。
    */
-  test('运行说明不把重试上限与换模型作为停下询问用户的理由，用尽上限记为失败', () => {
+  test('运行说明不把重试上限与更换模型作为停止并询问用户的理由，用尽上限记为失败', () => {
     expect(runCanvasTool.description).toContain(
       '同一张卡片的图片最多重新运行 3 次，视频最多 2 次；用尽后把最接近要求的版本设为当前版本，继续其余节点，该节点按系统提示中的 retry_limit 记为失败。',
     )
@@ -458,8 +458,8 @@ describe('canvas 工具', () => {
   })
 
   /**
-   * 原始失败形状：一批 8 张卡中的一条夹带未知字段 `_x`，整批被拒，模型重发约 1.3 万字；
-   * 同一处修改要套到 10 张卡时只能逐张写，模型改用脚本改写画布文件。
+   * 原始失败形状：一批 8 张卡中的一条夹带未知字段 `_x`，整批被拒绝，模型重发约 1.3 万字；
+   * 同一处修改需要应用于 10 张卡时只能逐张编写，模型改用脚本改写画布文件。
    */
   test('edit 逐条生效：不成立的条目跳过并写明原因，其余照常交给端口；ids 与 group 展开为逐卡操作', async () => {
     const { port, seen } = fakePort(DONE)
@@ -492,8 +492,8 @@ describe('canvas 工具', () => {
     )
   })
 
-  /** 原始失败形状：模型用 update 把卡移到另一组时被拒，只能用脚本改写画布文件。 */
-  test('update 给出 id 或 ids 时 group 是要改成的组；arrange 原样交给端口', async () => {
+  /** 原始失败形状：模型用 update 把卡移到另一组时被拒绝，只能用脚本改写画布文件。 */
+  test('update 给出 id 或 ids 时 group 是卡片的新组；arrange 原样交给端口', async () => {
     const { port, seen } = fakePort(DONE)
     const out = await editCanvasTool.fn(
       {

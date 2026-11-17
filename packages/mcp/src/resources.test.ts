@@ -2,7 +2,7 @@
  * 覆盖 MCP `resources/*`，以及「握手成功但未注册任何工具」这类静默失败。
  *
  * 与 `mcp.test.ts` 相同，启动真实的 server 子进程：验证的是握手声明与后续请求
- * 之间的配合，把传输替换为内存对象会替换掉被验证的那一层。
+ * 之间的配合，把传输替换为内存对象即替换了被验证的那一层。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -130,7 +130,7 @@ describe('capabilities 不被丢弃', () => {
 
   test('已声明但未接入的能力必须报告', async () => {
     // 不报告时，只提供 prompts 的 server 会连接成功、握手成功、
-    // 注册 0 个工具且没有任何错误，用户只看到配置后没有任何效果。
+    // 注册 0 个工具且没有任何错误，界面只显示已配置，却没有任何效果。
     const { reg, logs } = await load({ capabilities: { prompts: {} } })
     expect(reg.servers[0]?.unsupported).toEqual(['prompts'])
     expect(logs.join('\n')).toContain('prompts')
@@ -260,7 +260,7 @@ describe('resource 工具', () => {
 describe('unsupportedCapabilities', () => {
   test('按支持清单计算，不另写 if 判断', () => {
     // 另写判断时，接入 prompts 后若未同步修改此处，
-    // 用户会持续看到「尚未接入 prompts」的错误警告。
+    // 界面会持续显示「尚未接入 prompts」的错误警告。
     expect(unsupportedCapabilities({ tools: {}, resources: {}, prompts: {}, logging: {} })).toEqual(
       ['logging', 'prompts'],
     )

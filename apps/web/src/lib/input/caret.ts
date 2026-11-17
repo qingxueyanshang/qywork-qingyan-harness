@@ -163,7 +163,7 @@ export function installCaret(): () => void {
       offset.y < box.height
     show(visible)
     if (!visible) return
-    // 横向以光标位置为中线（光标宽 2px），不压住其后的第一个字。
+    // 横向以光标位置为中线（光标宽 2px），不遮挡其后的第一个字。
     const next = `translate(${Math.round(box.left + offset.x) - 1}px, ${Math.round(box.top + offset.y)}px)`
     if (next === last) return
     last = next

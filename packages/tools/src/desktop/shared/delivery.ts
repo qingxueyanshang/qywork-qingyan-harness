@@ -117,7 +117,7 @@ export function delivered(
  * 字节经由 `data.images` 传递，不进入 `message`：模型无法理解 base64 字符串，留在正文中只会按长度计费。
  *
  * 经过 `shrinkImage` 之后按几何核对尺寸：采集端已按 `MAX_EDGE` 缩放，此处预期不修改任何
- * 字节。若实际发生缩放或尺寸不一致，说明几何记录的不是模型看到的图像，按图计算的屏幕
+ * 字节。若实际发生缩放或尺寸不一致，说明几何记录的不是模型收到的图像，按图计算的屏幕
  * 坐标是错误的，此时不提供图像。
  */
 export async function imagePayload(

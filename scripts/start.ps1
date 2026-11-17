@@ -62,7 +62,7 @@ function Clear-DevPort([int]$Port) {
 # 它不占用 5180，也不占用固定端口（sidecar 使用 --port 0），因此端口清理无法发现它。
 # 但它持有 `.tmp\cargo-target\debug\qy.exe` 的文件句柄：tauri-build 需要把新的 sidecar
 # 复制到该位置，复制失败后整个 dev 构建以 exit 101 退出，报错只有一句
-# 「拒绝访问」，无法看出与上一个仍在运行的窗口有关。已实测复现。
+# 「拒绝访问」，无法判断与上一个仍在运行的窗口有关。已实测复现。
 #
 # 只清理本仓库 target 目录下的两个可执行文件，路径不匹配的同名进程一律不处理：
 # 安装版的 sidecar 同样名为 qy.exe。

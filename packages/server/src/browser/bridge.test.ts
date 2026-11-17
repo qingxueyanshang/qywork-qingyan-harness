@@ -191,7 +191,7 @@ async function failure(pending: Promise<unknown> | undefined): Promise<Error> {
     () => settled,
     (err: unknown) => err,
   )
-  if (out === settled) throw new Error('这条调用本应失败')
+  if (out === settled) throw new Error('该调用本应失败')
   return out as Error
 }
 
@@ -317,7 +317,7 @@ test('断线使所有待决调用失败，能力随之下线', async () => {
 /**
  * 用户新开的页同样进入服务端的存活快照，`control` 事件修改其归属。
  *
- * 缺少 opened 事件时，模型在 `browser_tabs` 中只能看到 AI 创建的页；
+ * 缺少 opened 事件时，模型在 `browser_tabs` 中只能列出 AI 创建的页；
  * 用户在聊天中点名接管后，宿主发送 `control` 将归属改为该会话，快照随之更新。
  */
 test('宿主的 opened 事件是新页进入存活快照的唯一途径，control 修改归属', async () => {

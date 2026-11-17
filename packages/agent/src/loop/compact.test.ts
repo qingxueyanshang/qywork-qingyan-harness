@@ -1,9 +1,9 @@
 /**
- * 压缩与主循环的接线测试。
+ * 压缩与主循环的集成测试。
  *
  * `compaction.test.ts` 验证压缩算法本身；本文件验证**发送前检查 → 压缩 →
  * 重新装配**这条控制流确实能够执行。两者分开是因为前者是纯函数，后者需要构造占用压力，
- * 合在一起时，失败无法区分是算法错误还是接线错误。
+ * 合在一起时，失败无法区分是算法错误还是调用链错误。
  *
  * 覆盖范围：`loop/compact.ts` 的压缩触发、容量恢复与压缩记录（含 `compaction.ts` 的 `compactionRecordOf`），
  * `loop/turn-end.ts` 的锚点准入，`loop/request.ts` 的 `assembleMessages`（压缩计量与发送的请求共用的装配）。其中「压缩后重发在账本中另记一行」用例接入真实
@@ -430,7 +430,7 @@ function build(
     systemPrompt: 'sys',
     persist: noopPersistence(),
     makeToolContext: makeCtx,
-    // 若实际等待退避，「非容量错误照常上报」用例需要等满五次指数退避。
+    // 若实际等待退避，「非容量错误照常上报」用例需要等待五次完整的指数退避。
     sleep: async () => {},
     ...(compaction ? { compaction } : {}),
   })
@@ -476,7 +476,7 @@ describe('发送前检查：唯一的压缩触发', () => {
       compactPercent: 80,
       runId: 'rn_high' as never,
       history: [],
-      // 锚点直接把占用设到阈值之上，无需构造几十万字的历史。
+      // 锚点直接把占用设到阈值之上，无需构造数十万字的历史。
       // 1M 窗口 × 0.8 → 软阈值 800,000。
       anchor: {
         tokens: 900_000,
@@ -500,15 +500,15 @@ describe('发送前检查：唯一的压缩触发', () => {
   /**
    * 信封变化时不做无效压缩。
    *
-   * 用户报告的失败形状：每次升级构建后信封指纹必然变化，锚点整体作废，占用改由裸估算报告，
+   * 用户报告的失败形状：每次升级构建后信封指纹必然变化，锚点整体作废，占用改由本地估算报告，
    * 而未收录模型的估算实测偏高 1.4 倍：真实占用远低于阈值的会话被判定为越线，
    * 压缩一次并丢失一段上下文，全程没有提示。
    *
    * 对照组只更换模型：这种情况下锚点确实无法修正，压缩照常触发。两组使用同一份历史，
-   * 因此这段历史的裸估算确实越线，测试的不是空请求。
+   * 因此这段历史的本地估算确实越线，测试的不是空请求。
    */
   test('信封变化时不做无效压缩，更换模型时仍按估算判定', async () => {
-    // 1M 窗口 × 0.8 → 软阈值 800,000。裸估算按默认档计（中文 1.1 token/字），这段正文约 96 万。
+    // 1M 窗口 × 0.8 → 软阈值 800,000。本地估算按默认档计（中文 1.1 token/字），这段正文约 96 万。
     const bulk = '这是一段历史正文。'.repeat(97_000)
     const runOnce = async (model: string) => {
       const comp = fakeCompaction(okOutcome)
@@ -549,7 +549,7 @@ describe('发送前检查：唯一的压缩触发', () => {
   /**
    * 无法压缩不是致命错误：照常发送，由 provider 判定。
    *
-   * 「没有可压缩的内容」报告为 `skipped` 而不是 `failed`：显示为失败会使用户排查一个
+   * 「没有可压缩的内容」报告为 `skipped` 而不是 `failed`：显示为失败会报告一个
    * 并不存在的故障。
    */
   test('无法压缩时照常发送，不终止 run', async () => {
@@ -609,7 +609,7 @@ describe('发送前检查：唯一的压缩触发', () => {
    *
    * 本用例接入真实 `Store`：其他用例把 `openRequest` 打桩为常量，唯一索引不参与，
    * 两次发送共用一组键也不会报错。实测形状是超出窗口的那次与压缩后重发的那次同为
-   * `(run_id, 0, 0)`，第二次插入违反 `uq_provider_run_turn`，异常上抛，整轮因
+   * `(run_id, 0, 0)`，第二次插入违反 `uq_provider_run_turn`，异常抛出，整轮因
    * 一条 SQLite 约束报错而失败：压缩无效，模型一次都未作答。
    */
   test('压缩后重发在账本中另记一行，不违反唯一索引', async () => {
@@ -659,7 +659,7 @@ describe('发送前检查：唯一的压缩触发', () => {
   /**
    * **压缩未使请求变小时不重发。**
    *
-   * 同一份字节再发一次只会得到同一个拒绝，而那一次需要支付全额的长 prompt 费用。
+   * 同一份字节再次发送只会得到同一个拒绝，且需要支付全额的长 prompt 费用。
    * 判据是「请求是否变小」，不是「压缩返回成功」：收纳段可能已经落库，却未减少任何
    * token。
    */
@@ -681,7 +681,7 @@ describe('发送前检查：唯一的压缩触发', () => {
    * 用状态机而不是重试计数：不存在「几次足够」的问题。压缩后仍超出窗口，说明压缩已
    * 无法继续缩减，再压缩一次的输入与上一次逐字相同。
    */
-  test('连续超出窗口只恢复一次，不进入死循环', async () => {
+  test('连续超出窗口只恢复一次，不进入无限循环', async () => {
     const comp = shrinkingCompaction()
     // 两次都拒绝：第一次触发恢复，重发仍被拒绝 → 直接上报，不再压缩并发送第三次。
     const { adapter, state } = rejectingAdapter(2)
@@ -749,7 +749,7 @@ describe('发送前检查：唯一的压缩触发', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noop',
-      description: '什么都不做',
+      description: '不执行任何操作',
       parameters: { type: 'object', properties: {} },
       actionKind: 'read',
       objectLabel: '空',
@@ -871,7 +871,7 @@ describe('发送前检查：唯一的压缩触发', () => {
     const comp = fakeCompaction(okOutcome)
     // 拒绝次数比重发额度多一次：参数错误与「上游暂时不可用」同归入
     // `provider_unavailable`，会被自动重发（代价说明见 `loop/attempt.ts` 的 `RESENDABLE_CODES`）。
-    // 拒绝次数不足时某一次会成功，断言的就是重发路径而不是上报路径。
+    // 拒绝次数不足时某一次会成功，断言的是重发路径而不是上报路径。
     const { adapter } = rejectingAdapter(RESEND_LIMIT + 1, paramError)
     const events = await collect(build(adapter, comp.port), 'rn_param')
     expect(comp.state.runs).toBe(0)
@@ -884,7 +884,7 @@ describe('投影时机', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noop',
-      description: '什么都不做',
+      description: '不执行任何操作',
       parameters: { type: 'object', properties: {} },
       actionKind: 'read',
       objectLabel: '空',
@@ -928,7 +928,7 @@ function noopRegistry(): ToolRegistry {
   const registry = new ToolRegistry()
   registry.register({
     name: 'noop',
-    description: '什么都不做',
+    description: '不执行任何操作',
     parameters: { type: 'object', properties: {} },
     actionKind: 'read',
     objectLabel: '空',
@@ -1043,7 +1043,7 @@ describe('有新的可折叠单元时才再次压缩', () => {
  * run 内的执行记录必须能够被折叠。
  *
  * `project()` 必须覆盖 transcript：只作用于 `input.history` 时，transcript 在投影**之后**才拼接，
- * run 内增长的几十批工具结果一条也无法被压缩，而占用增长的正是这部分。
+ * run 内增长的数十批工具结果均无法被压缩，而占用增长的正是这部分。
  */
 describe('run 内 transcript 参与投影', () => {
   test('投影丢弃带戳的消息时，请求中确实不包含它们', async () => {
@@ -1069,7 +1069,7 @@ describe('run 内 transcript 参与投影', () => {
         }
       },
     }
-    // 将「折叠本 run 的执行记录」执行到底：带戳的消息一律不发送。
+    // 完整执行「折叠本 run 的执行记录」：带戳的消息一律不发送。
     const port: CompactionPort = {
       project: (messages) => messages.filter((m) => !m._step),
       run: async () => okOutcome,
@@ -1369,7 +1369,7 @@ describe('缓存断点', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'grep',
-      description: '假 grep，回一大坨结果。',
+      description: '模拟 grep，返回大段结果。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'query',
       objectLabel: '内容',
@@ -1456,7 +1456,7 @@ describe('缓存断点', () => {
     /*
      * 比较的是**实际发送的字节**，因此必须剥离内部标记：`cacheBreakpoint` 在兼容协议上
      * 不发送任何字节（`openai-compat.ts` 从不读取它），`_group` / `_messageId` /
-     * `_step` 同理。不剥离时断言测试的是内部结构，而不是缓存看到的字节；
+     * `_step` 同理。不剥离时断言测试的是内部结构，而不是缓存比较的字节；
      * 而 history 末尾的断点本应随历史增长后移。
      */
     const wire = (req: ChatRequest) =>
@@ -1501,7 +1501,7 @@ describe('申报按占用钳位', () => {
    *
    * **还需预留一份余量。** 占用是估算值，估算低估多少，申报就超出多少；
    * 该 400 若被容量分类判定为超出窗口，会多执行一次无效的有损压缩来补救一个申报错误。
-   * 断言写成区间而不是等式：余量比例调整时本用例不应整体失败，
+   * 断言写为区间而不是等式：余量比例调整时本用例不应整体失败，
    * 它锁定的是「申报之后仍能容纳，且未占满剩余空间」。
    */
   test('高占用时申报随剩余空间收缩，并留出估算误差的余量', async () => {
@@ -1571,7 +1571,7 @@ describe('压缩被中断', () => {
   })
 })
 
-describe('结果形态对用户可见', () => {
+describe('结果形态在界面上显示', () => {
   test('摘要等待期间就发送进度，进度与终态共用同一条记录', async () => {
     let release!: () => void
     const waiting = new Promise<void>((resolve) => {
@@ -1669,7 +1669,7 @@ describe('结果形态对用户可见', () => {
     ])
   })
 
-  /** 只收纳而未摘要时也必须标明：否则用户看到的与一次完整压缩完全相同。 */
+  /** 只收纳而未摘要时也必须标明：否则界面显示的与一次完整压缩完全相同。 */
   test('只收纳时 summarized 为 false', async () => {
     const comp = fakeCompaction({ ...okOutcome, summarized: false })
     const recorded: RecordedCompaction[] = []
@@ -1699,7 +1699,7 @@ describe('结果形态对用户可见', () => {
     expect(recorded.at(-1)?.summarized).toBe(false)
   })
 
-  test('skipped 落库时带 skipped，不伪装成失败', async () => {
+  test('skipped 落库时带 skipped，不记为失败', async () => {
     const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
     const recorded: RecordedCompaction[] = []
     const loop = new AgentLoop({
@@ -1732,7 +1732,7 @@ describe('结果形态对用户可见', () => {
 
 /**
  * 压缩写入 manifest 的记录带压缩后占用、两条边界与实际修订号，全部取自端口返回的同一份 manifest。
- * 记录写入整体覆盖 payload，因此断言比较完整的 payload：任一写入点漏带字段即失败。
+ * 记录写入整体覆盖 payload，因此断言比较完整的 payload：任一写入点缺少字段即失败。
  */
 describe('压缩记录带压缩后占用与边界', () => {
   const summaryCut = { messageId: 'ms_summary' as MessageId, step: stepStamp('rn_old', 3) }

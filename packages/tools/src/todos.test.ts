@@ -1,6 +1,6 @@
 /**
  * 覆盖 `todos.ts` 的 `write_todos`：整表替换、状态与受阻、失败原因的校验、回执，
- * 以及提交的清单经执行循环（`agent/loop/turn-end.ts`）决定继续还是停下等待用户。
+ * 以及提交的清单经执行循环（`agent/loop/turn-end.ts`）决定继续还是停止并等待用户。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -208,7 +208,7 @@ describe('硬约束：拒绝而不是静默纠正', () => {
   })
 })
 
-describe('受阻：唯一的停下等待用户的方式', () => {
+describe('受阻：停止并等待用户的唯一方式', () => {
   test('blocked 带类别与所需条件时接受，回执写明其余步骤受阻', async () => {
     const { r, c } = await run([
       { content: '生成样张', status: 'completed' },
@@ -264,7 +264,7 @@ describe('受阻：唯一的停下等待用户的方式', () => {
         { content: '甲', status: 'blocked', blocker, need: '用户在两种方案中选择' },
       ])
       expect(r.status).toBe('failure')
-      expect(r.message).toContain('不是受阻')
+      expect(r.message).toContain('不属于受阻')
       expect(r.message).toContain('标为 failed')
     }
   })
@@ -294,7 +294,7 @@ describe('受阻：唯一的停下等待用户的方式', () => {
 /**
  * 清单经由本工具提交后，执行循环按其中的状态决定本轮是否结束。
  * 两个形状都取自账本：模型标记完成后未认领下一条即结束回复（应继续执行），
- * 以及未完成项全部标为受阻（应停下等待用户，停止依据写明受阻条件）。
+ * 以及未完成项全部标为受阻（应停止并等待用户，停止依据写明受阻条件）。
  */
 describe('提交的清单与本轮结束', () => {
   async function runLoop(turns: Parameters<typeof fakeAdapter>[0]) {
@@ -384,7 +384,7 @@ describe('提交的清单与本轮结束', () => {
     )
   })
 
-  test('未完成项全部标为受阻：停下等待用户，停止依据写明受阻条件', async () => {
+  test('未完成项全部标为受阻：停止并等待用户，停止依据写明受阻条件', async () => {
     const { finished, tails } = await runLoop([
       [
         call('write_todos', {

@@ -23,7 +23,7 @@ import type { SubagentRegistry } from './subagents.ts'
  *
  * 运行目录是会话的属性，不是连接的属性，由
  * `workspaceRootOf(store, conversationId)` 实时查询（`@qywork/store`）。
- * 不要在此处设置进程级常量：那样一个进程只能服务一个项目，切换项目必须重启；
+ * 不要在此处设置进程级常量：设置后一个进程只能服务一个项目，切换项目必须重启；
  * 而同一条会话可以同时在桌面端和手机上打开，当前工作区不应由连接决定。
  */
 export interface CommandDeps {

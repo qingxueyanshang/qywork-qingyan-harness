@@ -675,7 +675,7 @@ describe('投影三区', () => {
   /**
    * 落库的读数与投影必须基于同一份内容计量。
    *
-   * `contextAfter.measured` 由端口按压缩后的 manifest 投影计量，模型看到的内容由 `project` 组装；
+   * `contextAfter.measured` 由端口按压缩后的 manifest 投影计量，模型取得的内容由 `project` 组装；
    * 两处对逐字保留条目的判定不一致时，面板报告的回收量无法达到，且两处都不报错。
    */
   test('落库读数与投影口径一致', async () => {
@@ -1042,7 +1042,7 @@ describe('事实提取', () => {
       outcome: { status: 'success', executed: true, message: '改了 3 处' },
       action: { kind: 'edit', objectLabel: '文件', target: 'src/auth/token.ts' },
     })
-    // 正文较小，仅靠收纳段不够，摘要段必定执行，事实包因此有产出。
+    // 正文较小，仅依靠收纳段不足以回收，摘要段必定执行，事实包因此有产出。
     addToolWaves(store, run.id, 4, 100, 2)
 
     const r = await port(store, conv.id).run(await pressure(store, conv.id))
@@ -1129,7 +1129,7 @@ describe('模型已查看的超大单元在压缩时一并收纳', () => {
 })
 
 /**
- * 附带文本块（`outcome.data.texts`）的正文在请求经过网关时才替换进来，账本中只有几十个字符的标记。
+ * 附带文本块（`outcome.data.texts`）的正文在请求经过网关时才替换进来，账本中只有数十个字符的标记。
  * 单元体积、选界与回收量必须按声明的特征计数计，与请求侧的估算一致：只按标记计时，
  * 一段十万 token 的资料被当作一行处理，既不会被选入收纳区，收纳后也不计回收。
  */
@@ -1296,7 +1296,7 @@ describe('增量压缩', () => {
 })
 
 describe('摘要段失败不回退收纳段', () => {
-  test('摘要器抛错：收纳正常落库，结果对用户可见', async () => {
+  test('摘要器抛出异常：收纳正常落库，结果对用户可见', async () => {
     const { store, conv } = fresh()
     const r = await port(store, conv.id, async () => {
       throw new Error('上下文超限')

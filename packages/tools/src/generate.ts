@@ -157,7 +157,7 @@ export async function landFiles(
       const abs = await freeLandingPath(roots, target, file.mime, suffix)
       await mkdir(dirname(abs), { recursive: true })
       const part = `${abs}.part`
-      // 查到空名不代表占用成功。只有独占打开成功后才能写入或清理这个临时文件。
+      // 名称未被占用不表示占用成功。只有独占打开成功后才能写入或清理这个临时文件。
       const handle = await retryWhileBusy(() => open(part, 'wx')).catch(
         (err: NodeJS.ErrnoException) => {
           if (err.code === 'EEXIST') return null
@@ -168,7 +168,7 @@ export async function landFiles(
       let renamed = false
       try {
         try {
-          // 另一任务可能在查名与占用之间完成保存，此时继续选名，不能覆盖它的结果。
+          // 另一任务可能在查询名称与占用之间完成保存，此时继续选择名称，不能覆盖它的结果。
           if (await occupied(abs)) continue
           await handle.writeFile(file.bytes)
         } finally {
@@ -214,8 +214,8 @@ async function reserveDefault(roots: RootsInput): Promise<{ target: string; rele
 
 /**
  * 一次生成的任务记录，在提交之前写入，生成结束后删除。画布卡片的占位版本引用它，归属以此为准。
- * 适配器交出任务号或图片来源（异步图片）后写入对应字段，此后可以取回，不重新提交生成，不按类别区分：
- * 走云端的图片与音频同样有任务号。两者都没有时（直连的同步生成、视频尚未取得任务号）没有可取回的结果。
+ * 适配器返回任务号或图片来源（异步图片）后写入对应字段，此后可以取回，不重新提交生成，不按类别区分：
+ * 经由云端的图片与音频同样有任务号。两者都没有时（直连的同步生成、视频尚未取得任务号）没有可取回的结果。
  */
 interface TaskRecord {
   /**
@@ -411,7 +411,7 @@ async function readInputs(
 
 /**
  * 执行一次生成并落盘。提交之前写入任务记录（`onRecord` 在此登记），取得任务号或图片来源时写入记录；
- * 生成结束后按 `settle` 删除或保留记录。等待被中止且记录不能取回时删除记录：没有可取回的结果，留下即无人处理。
+ * 生成结束后按 `settle` 删除或保留记录。等待被中止且记录不能取回时删除记录：没有可取回的结果，保留则无人处理。
  */
 export async function generateMedia(req: GenerateRequest): Promise<GenerateOutcome> {
   const inputs = await readInputs(req.roots, req.type, req.inputs)
@@ -498,7 +498,7 @@ export async function resumeMedia(req: {
   /** 任务记录的路径。 */
   record: string
   onStatus?: (status: string) => void
-  /** 远端一侧的重试等待（走云端的任务在云端被上游拒绝后重试），见 `MediaCall.onRetry`。 */
+  /** 远端一侧的重试等待（经由云端的任务在云端被上游拒绝后重试），见 `MediaCall.onRetry`。 */
   onRetry?: MediaCall['onRetry']
   onSpend?: (spend: MediaSpend) => void
   /** 发起方的日志标识，见 `GenerateRequest.logFields`。 */
@@ -809,7 +809,7 @@ function receipt(
 /**
  * 生成工具在对话的工具卡片上显示的进度（`progress`）：远端任务的阶段与重试等待，写法与画布卡片相同
  * （`taskPhaseLabel`、`retryAttemptText`、`retryCauseText`）。无法识别的状态不输出；重试等待结束不输出。
- * 与上一行相同时不再输出：两个上游原词可能是同一阶段，走云端的任务每次查询都回报正在进行的重试等待。
+ * 与上一行相同时不再输出：两个上游原词可能是同一阶段，经由云端的任务每次查询都回报正在进行的重试等待。
  */
 function progressOf(ctx: ToolContext): {
   onStatus: (status: string) => void

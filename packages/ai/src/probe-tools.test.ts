@@ -164,10 +164,10 @@ describe('工具契约检测使用实际的协议适配器', () => {
   )
 
   for (const [name, value] of [
-    ['数字被转成字符串', { ...args(), count: '7' }],
-    ['原生可选字段被填 null', { ...args(), tabId: null }],
-    ['嵌套数组类型错', { ...args(), payload: { tags: '甲乙' } }],
-    ['多出未定义字段', { ...args(), injected: true }],
+    ['数字被转换为字符串', { ...args(), count: '7' }],
+    ['原生可选字段被填为 null', { ...args(), tabId: null }],
+    ['嵌套数组类型错误', { ...args(), payload: { tags: '甲乙' } }],
+    ['包含未定义的字段', { ...args(), injected: true }],
   ] as const) {
     test(name, async () => {
       await withEndpoint(

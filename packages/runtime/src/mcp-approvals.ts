@@ -5,7 +5,7 @@
  * 等于以用户权限运行他人写入的命令。因此项目层的服务只有在用户确认过其当前内容之后才启动。
  *
  * 确认记录保存在用户一侧（`~/.qywork/mcp-approvals.json`），按「项目根 → 服务名 → 内容摘要」存放。
- * 不要放进仓库：仓库内的记录可以由仓库自己写入，等于由它替自己确认。内容改变后摘要不符，回到待确认。
+ * 不要存放在仓库中：仓库内的记录可由仓库内容写入，相当于由待确认的一方自行确认。内容改变后摘要不一致，回到待确认。
  *
  * 经 qywork 写入的项目层服务（设置页新增与导入、`write_mcp_server`、`move_mcp_server`）在写入时一并确认：
  * 写入由用户或用户委托的模型发起，auto 下其命令已经过 `decideCommand`。
@@ -74,7 +74,7 @@ export function isApproved(
   return approvals[normalizeWorkspaceRoot(workspaceRoot)]?.[name] === specDigest(spec)
 }
 
-/** 记录本项目这些服务的当前内容已经确认。写入为「临时文件 + 改名」，中途失败不留下半个文件。 */
+/** 记录本项目这些服务的当前内容已经确认。写入为「临时文件 + 改名」，中途失败时不留下不完整的文件。 */
 export async function approveMcpServers(
   workspaceRoot: string,
   servers: Record<string, McpServerSpec>,

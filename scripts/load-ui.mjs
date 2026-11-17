@@ -137,7 +137,7 @@ async function measureRound(page, size, errors, tag, url) {
         .waitFor({ state: 'visible', timeout: 30_000 })
       switches.push(Date.now() - start)
     } catch (e) {
-      errors.push(`[${tag}] 切到 ${title} 超时：${e.message}`)
+      errors.push(`[${tag}] 切换到 ${title} 超时：${e.message}`)
     }
   }
   out.switchMs = switches
@@ -159,7 +159,7 @@ async function measureRound(page, size, errors, tag, url) {
     out.changesFirstMs = Date.now() - cStart
   } catch (e) {
     out.changesFirstMs = null
-    errors.push(`[${tag}] 变更页没渲染出来：${e.message}`)
+    errors.push(`[${tag}] 变更页未渲染：${e.message}`)
   }
   out.changesPages = []
   let turns = await page.locator('.change-turn').count()
@@ -202,7 +202,7 @@ async function measureRound(page, size, errors, tag, url) {
       out.typeMaxMs = Math.max(...keys)
       out.typeP50Ms = keys.slice().sort((a, b) => a - b)[keys.length >> 1]
       out.typeValueOk = (await box.inputValue()) === text
-      if (!out.typeValueOk) errors.push(`[${tag}] 输入框内容与敲进去的不一致`)
+      if (!out.typeValueOk) errors.push(`[${tag}] 输入框内容与输入的文本不一致`)
       await box.fill('')
     }
   }
@@ -223,7 +223,7 @@ async function measureRound(page, size, errors, tag, url) {
       out.runPanelMs[fanout] = Date.now() - rStart
     } catch (e) {
       out.runPanelMs[fanout] = null
-      errors.push(`[${tag}] 运行面板（${fanout} 个子任务）没渲染出来：${e.message}`)
+      errors.push(`[${tag}] 运行面板（${fanout} 个子任务）未渲染：${e.message}`)
     }
     if (fanout === 12) {
       await page.screenshot({ path: join(SHOTS, `${tag}-runs-12.png`) })
@@ -242,7 +242,7 @@ async function measureNarrow(page, errors, tag) {
   if (await close.count()) await close.click()
   await page.waitForTimeout(500)
   if (await page.locator('.side-panel').count()) {
-    errors.push(`[${tag}] 390px 下关不掉侧面板，量到的是面板不是会话视图`)
+    errors.push(`[${tag}] 390px 下无法关闭侧面板，测量到的是面板而不是会话视图`)
   }
   const overflow = await page.evaluate(() => {
     const doc = document.documentElement
@@ -312,7 +312,7 @@ async function main() {
 
     const { proc, token, port } = await startServer(home, wsDir)
     const base = `http://127.0.0.1:${port}`
-    process.stdout.write(`${size} 条：服务已起 ${base}\n`)
+    process.stdout.write(`${size} 条：服务已启动 ${base}\n`)
 
     const browser = await chromium.launch()
     try {
@@ -335,7 +335,7 @@ async function main() {
         const coldFirstRowMs = Date.now() - navStart
         await page.waitForLoadState('networkidle')
         if (await page.locator('.conn-bar').count()) {
-          errors.push(`[${tag}] 未连上：${await page.locator('.conn-bar').first().textContent()}`)
+          errors.push(`[${tag}] 未连接：${await page.locator('.conn-bar').first().textContent()}`)
         }
 
         const m = await measureRound(page, size, errors, tag, `${base}/#t=${token}`)

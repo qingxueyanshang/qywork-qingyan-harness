@@ -92,7 +92,7 @@ async function failure(pending: Promise<unknown> | undefined): Promise<Error> {
     () => settled,
     (err: unknown) => err,
   )
-  if (out === settled) throw new Error('这条调用本应失败')
+  if (out === settled) throw new Error('该调用本应失败')
   return out as Error
 }
 
@@ -102,7 +102,7 @@ async function until(check: () => boolean | Promise<boolean>, label: string): Pr
     if (await check()) return
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
-  throw new Error(`等不到：${label}`)
+  throw new Error(`等待超时：${label}`)
 }
 
 /**
@@ -855,7 +855,7 @@ test('同一会话的两个执行者同时接管一个用户页时只有一个�
 /**
  * 占用从登记时起成立，不等待宿主回包。
  *
- * 等待回包后再登记时，`bind` 在途期间第二个执行者查询不到持有者，双方都会附加到该页。
+ * 等待回包后再登记时，`bind` 在途期间第二个执行者无法查询到持有者，双方都会附加到该页。
  */
 test('bind 回包仍在途时，同一页对另一个执行者已处于占用状态', async () => {
   const { handle, host } = await ready()
@@ -898,7 +898,7 @@ test('持有者正在收尾时，接手者等待其结束后再占用页面，�
   })
   await until(
     () => devtools.calls.some((c) => c.method === 'Target.detachFromTarget'),
-    '持有者的收尾停在 detach',
+    '持有者的收尾阻塞于 detach',
   )
   // 收尾结束之前不释放，也不使接手者失败。接手者在等待收尾时没有可观察的标志，
   // 只能留出一段时间确认它没有提前取得该页。
@@ -1156,7 +1156,7 @@ test('停止指令收回每个成员的控制槽，页面保留在宿主上供�
   } as unknown as ServerWebSocket<SocketData>
   await handleCommand({ type: 'conversation.interrupt', conversationId: parent }, { ...deps, ws })
   expect(parentRun.signal.aborted).toBe(true)
-  await until(() => !subagents.has(parent), '两个成员都收了尾')
+  await until(() => !subagents.has(parent), '两个成员均已收尾')
   const frames = host.received.length
 
   // 收尾之后两页均不再被占用，下一个执行者可直接接手。成员移出子 agent 表之前已开始释放，
@@ -1484,7 +1484,7 @@ test('受控之前加载了凭证文件的页：读取页面内容之前拒绝�
 
 /**
  * 受控期间页面发出的 file 请求按最近一次调用的读取范围逐个裁决：凭证文件以拒绝访问失败，工作区中的文件继续加载；
- * 切换为完全访问之后的调用交出不裁决的范围。
+ * 切换为完全访问之后的调用提供不裁决的范围。
  *
  * 原始失败形状：页会话不拦截任何请求，受控期间页面的脚本跳转与新插入的 iframe 直接加载凭证文件。
  */
@@ -1993,7 +1993,7 @@ test('动作之后直接返回新观察，据此再次执行动作时无需另�
     action: 'click',
     ref: firstRef(ob),
   })
-  if (!first || first.observation === null) throw new Error('这次动作本应带回观察')
+  if (!first || first.observation === null) throw new Error('本次动作本应返回观察')
   expect(first.element).toBe('dl')
   expect(first.settle).toBe('quiet')
   expect(first.observation.observationId).not.toBe(ob?.observationId)
@@ -2005,7 +2005,7 @@ test('动作之后直接返回新观察，据此再次执行动作时无需另�
     action: 'click',
     ref: first.observation.elements[0]?.ref ?? '',
   })
-  if (!second || second.observation === null) throw new Error('这次动作本应带回观察')
+  if (!second || second.observation === null) throw new Error('本次动作本应返回观察')
   expect(second.element).toBe('dl')
 })
 
@@ -2045,7 +2045,7 @@ test('动作发出后无法取得观察时保留回执，并说明未能观察�
     action: 'click',
     ref: firstRef(ob),
   })
-  if (!r || r.observation !== null) throw new Error('这次观察本应取不到')
+  if (!r || r.observation !== null) throw new Error('本次观察本应为空')
   // 动作已发出：回执保留，模型据此得知不应重复点击。
   expect(r.element).toBe('dl')
   expect(r.point).toEqual({ x: 10, y: 10 })
@@ -2066,7 +2066,7 @@ test('探针读数缺少字段时不报告静默，按阶段上限如实标注',
     action: 'click',
     ref: firstRef(ob),
   })
-  if (!r || r.observation === null) throw new Error('这次动作本应带回观察')
+  if (!r || r.observation === null) throw new Error('本次动作本应返回观察')
   expect(r.settle).toBe('deadline')
 })
 
@@ -2098,7 +2098,7 @@ test('点击发出的 XHR 结束之后才采集观察，回执是请求返回后
   const { devtools, click } = await clickOnce()
   devtools.request = { type: 'XHR', finishMs: 800 }
   const r = await click()
-  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  if (r.observation === null) throw new Error('本次动作本应返回观察')
   expect(r.settle).toBe('quiet')
   expect(r.observation.elements[0]?.name).toBe('已加载')
 })
@@ -2107,7 +2107,7 @@ test('请求持续超过静默阶段上限时继续等待，请求结束后报�
   const { devtools, click } = await clickOnce()
   devtools.request = { type: 'Fetch', finishMs: 1_800 }
   const r = await click()
-  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  if (r.observation === null) throw new Error('本次动作本应返回观察')
   expect(r.settle).toBe('quiet')
   expect(r.observation.elements[0]?.name).toBe('已加载')
 })
@@ -2116,7 +2116,7 @@ test('请求不结束时到达上限报告 deadline，观察照常返回', async
   const { devtools, click } = await clickOnce(300)
   devtools.request = { type: 'Fetch', finishMs: null }
   const r = await click()
-  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  if (r.observation === null) throw new Error('本次动作本应返回观察')
   expect(r.settle).toBe('deadline')
   expect(r.observation.elements[0]?.name).toBe('下载')
 })
@@ -2126,7 +2126,7 @@ test('图片与 EventSource 请求不影响静默判定', async () => {
   for (const type of ['Image', 'EventSource']) {
     devtools.request = { type, finishMs: null }
     const r = await click()
-    if (r.observation === null) throw new Error('这次动作本应带回观察')
+    if (r.observation === null) throw new Error('本次动作本应返回观察')
     expect(r.settle).toBe('quiet')
   }
 })
@@ -2135,7 +2135,7 @@ test('以 fetch 读取的事件流在响应头到达后不再等待', async () =
   const { devtools, click } = await clickOnce(300)
   devtools.request = { type: 'Fetch', finishMs: null, mimeType: 'text/event-stream' }
   const r = await click()
-  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  if (r.observation === null) throw new Error('本次动作本应返回观察')
   expect(r.settle).toBe('quiet')
 })
 
@@ -2153,7 +2153,7 @@ test('动作之前发出的请求不计入，其结束事件不抵消动作之�
   }
   devtools.request = { type: 'XHR', finishMs: 800 }
   const r = await click()
-  if (r.observation === null) throw new Error('这次动作本应带回观察')
+  if (r.observation === null) throw new Error('本次动作本应返回观察')
   expect(r.settle).toBe('quiet')
   expect(r.observation.elements[0]?.name).toBe('已加载')
 })
@@ -2176,7 +2176,7 @@ test('取消之后不再开始新观察，仍能返回动作回执', async () =>
     action: 'click',
     ref: firstRef(ob),
   })
-  if (!r || r.observation !== null) throw new Error('这次观察本应取不到')
+  if (!r || r.observation !== null) throw new Error('本次观察本应为空')
   expect(r.element).toBe('dl')
   expect(r.observationError).toMatch(/取消/)
   expect(devtools.clicks()).toBe(1)
@@ -2192,7 +2192,7 @@ test('导航返回导航之后的观察，不再另外返回标签信息', async
     action: 'goto',
     url: 'http://127.0.0.1:1/next',
   })
-  if (!r || r.observation === null) throw new Error('这次导航本应带回观察')
+  if (!r || r.observation === null) throw new Error('本次导航本应返回观察')
   // 地址取自观察，是页面当前的实际地址，而非请求的地址。
   expect(r.observation.url).toBe('http://127.0.0.1:1/page')
   expect(r.observation.elements.length).toBeGreaterThan(0)
@@ -2227,7 +2227,7 @@ test('等待结束后直接采集一次观察，不做静默等待也不附带�
     timeoutMs: 1_000,
   })
   expect(r?.met).toBe(true)
-  if (!r || r.observation === null) throw new Error('这次等待本应带回观察')
+  if (!r || r.observation === null) throw new Error('本次等待本应返回观察')
   expect('settle' in r).toBe(false)
   expect(r.observation.elements.length).toBeGreaterThan(0)
 })
@@ -2359,7 +2359,7 @@ test('释放撤销未消费的授权，正在等待终态的下载按未确认�
 
 /**
  * 原始失败形状：负载高时释放落在点击的发送途中，发送通道关闭使点击以「发送通道已关闭」失败，
- * 下载返回该原文而不是释放的结论（macOS x64 发布构建实测）。此处让点击的回包停住，确定地复现该时序。
+ * 下载返回该原文而不是释放的结论（macOS x64 发布构建实测）。此处使点击的回包保持未返回，以确定地复现该时序。
  */
 test('点击发送途中释放，下载同样按未确认终态返回，授权随之撤销', async () => {
   const { handle, host, devtools } = await ready()
@@ -2380,7 +2380,7 @@ test('点击发送途中释放，下载同样按未确认终态返回，授权�
   )
   await until(
     () => devtools.calls.some((c) => c.method === 'Input.dispatchMouseEvent'),
-    '点击停在发送途中',
+    '点击阻塞于发送途中',
   )
   const armed = host.received.findLast((f) => f.op === 'download.arm')?.downloadId
 
@@ -2399,14 +2399,14 @@ test('optionsFor 按原观察读取一页选项，不产生新的观察编号', 
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
   const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
-  if (!ob || !('elements' in ob)) throw new Error('这次观察本应给出元素表')
+  if (!ob || !('elements' in ob)) throw new Error('本次观察本应返回元素表')
   const pick = ob.elements.find((e) => e.tag === 'select')
 
   const options = await port?.observe({
     tabId: tab?.tabId ?? '',
     optionsFor: { observationId: ob.observationId, ref: pick?.ref ?? '' },
   })
-  if (!options || 'elements' in options) throw new Error('这次读取本应给出选项页')
+  if (!options || 'elements' in options) throw new Error('本次读取本应返回选项页')
   expect(options.observationId).toBe(ob.observationId)
   expect(options.total).toBe(3)
   expect(options.items).toHaveLength(3)
@@ -2455,7 +2455,7 @@ test('多事件动作中途失败时仍返回后续观察，回执如实标注�
     ref: firstRef(ob),
     text: 'ab',
   })
-  if (!r || r.observation === null) throw new Error('这次动作本应带回观察')
+  if (!r || r.observation === null) throw new Error('本次动作本应返回观察')
   expect(r.execution).toMatchObject({ state: 'partial', confirmedUnits: 1 })
   expect(r.execution?.reason).toContain('Input.dispatchKeyEvent')
   expect(r.observation.observationId).not.toBe(ob?.observationId)
@@ -2464,7 +2464,7 @@ test('多事件动作中途失败时仍返回后续观察，回执如实标注�
 test('动作缺省 screenshot 时观察不带截图，也不发出截图命令', async () => {
   const { devtools, click } = await clickOnce()
   const plain = await click()
-  if (plain.observation === null) throw new Error('这次动作本应带回观察')
+  if (plain.observation === null) throw new Error('本次动作本应返回观察')
   expect(plain.observation.image).toBeUndefined()
   expect(devtools.calls.filter((c) => c.method === 'Page.captureScreenshot')).toHaveLength(0)
 })
@@ -2482,12 +2482,12 @@ test('screenshot=true 的动作回执观察带截图；动作未完成时同样�
   }
 
   const clicked = await port?.act({ ...base, action: 'click' })
-  if (!clicked || clicked.observation === null) throw new Error('这次动作本应带回观察')
+  if (!clicked || clicked.observation === null) throw new Error('本次动作本应返回观察')
   expect(clicked.observation.image?.data).toBe(SHOT)
 
   devtools.failKeyAt = 3
   const typed = await port?.act({ ...base, action: 'type', text: 'ab' })
-  if (!typed || typed.observation === null) throw new Error('这次动作本应带回观察')
+  if (!typed || typed.observation === null) throw new Error('本次动作本应返回观察')
   expect(typed.execution).toMatchObject({ state: 'partial' })
   expect(typed.observation.image?.data).toBe(SHOT)
 })

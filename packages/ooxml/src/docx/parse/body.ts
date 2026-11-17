@@ -774,7 +774,7 @@ export class BodyReader {
     this.target = this.pending
   }
 
-  /** 读取当前元素的子块到新的去处（单元格或文本框），返回读到的块。 */
+  /** 读取当前元素的子块到新的去处（单元格或文本框），返回读取的块。 */
   private readNested(layer: TableLayer | null): Pending[] {
     const out: Pending[] = []
     const target = this.target
@@ -1083,7 +1083,7 @@ export class BodyReader {
     runs.push({ text: '', props, field: name })
   }
 
-  /** 记下段落中第一个有内容的字段，供首行缩进的字符单位（见 `resolveParagraph`）。 */
+  /** 记录段落中第一个有内容的字段，供首行缩进的字符单位（见 `resolveParagraph`）。 */
   private noteContent(props: RunProps, object: boolean): void {
     this.first ??= { props, object }
   }

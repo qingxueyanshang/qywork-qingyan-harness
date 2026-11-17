@@ -58,6 +58,8 @@ export interface GoalArm {
 export class RunManager {
   /** 同一会话同时只允许一项占用：两个 run 并发修改同一批文件必然相互冲突。见 `reserve()`。 */
   private readonly occupied = new Map<string, Occupancy>()
+  /** `idle()` 的等待方，占用清空时一并兑现。 */
+  private readonly idleWaiters: (() => void)[] = []
   private updateClaimed = false
 
   /** 基于现有忙态集合原子地占用退出时机；不设单独的任务计数。 */
@@ -165,7 +167,7 @@ export class RunManager {
   private readonly watchers = new Map<string, Set<() => void>>()
 
   /**
-   * 等到该会话的忙态或跟进消息队列下一次变化（`announce` / `announceQueue`），返回 true；`timeoutMs` 到期返回 false；
+   * 等待该会话的忙态或跟进消息队列下一次变化（`announce` / `announceQueue`），返回 true；`timeoutMs` 到期返回 false；
    * `signal` 中止时以中止原因拒绝。只报告发生了变化，变化后的状态由调用方重新读取。
    */
   changed(
@@ -208,8 +210,8 @@ export class RunManager {
    * 占用一个会话，**同步**完成检查与登记，`controller` 是这次占用的中止句柄。
    *
    * **检查与登记必须位于同一个同步块中**。拆分为 `isBusy()` 检查与之后某处的
-   * 登记时，二者之间隔着创建 Session、读取历史附件、等待首个带 runId 的事件等多个
-   * await：桌面端与手机端几乎同时发送消息时，两次检查都读到 false，
+   * 登记时，二者之间相隔创建 Session、读取历史附件、等待首个带 runId 的事件等多个
+   * await：桌面端与手机端几乎同时发送消息时，两次检查的结果都是 false，
    * 两个 AgentLoop 因此同时写入同一个工作区。
    * JS 是单线程的，同步块内的操作是原子的。
    *
@@ -228,12 +230,22 @@ export class RunManager {
   /** 释放占用。占用方在结束时调用且只调用一次：不释放时之后的每条消息都以「已有任务在执行」被拒绝。 */
   release(conversationId: ConversationId): void {
     this.occupied.delete(conversationId)
+    if (this.occupied.size === 0) for (const resolve of this.idleWaiters.splice(0)) resolve()
     this.announce(conversationId)
   }
 
   /**
-   * 补入本轮的 runId；本轮结束而占用方仍持有占位时（派发方等待重新派发）置回 null，
-   * 否则 `currentRunId` 在等待期间报告一个已结束的轮次。调用前须已由 `reserve` 占用该会话；
+   * 全部占用释放时兑现。占用方在写入本轮终态之后才释放占用，服务退出在 `interruptAll` 之后等待它；
+   * 不等待时调用方随即关闭账本、进程退出，被中止的轮次停留在 running，下次启动按进程退出回收。
+   */
+  idle(): Promise<void> {
+    if (this.occupied.size === 0) return Promise.resolve()
+    return new Promise((resolve) => this.idleWaiters.push(resolve))
+  }
+
+  /**
+   * 补入本轮的 runId；本轮结束而占用方仍持有占位时（子 agent 的一轮结束之后、派发方释放占位之前）置回 null，
+   * 否则 `currentRunId` 在此期间报告一个已结束的轮次。调用前须已由 `reserve` 占用该会话；
    * 忙态不变，因此不广播。
    */
   register(conversationId: ConversationId, runId: RunId | null): void {
@@ -352,12 +364,12 @@ export class RunManager {
   /**
    * 将剩余**用户**条目的去向重置为「加入队列」。
    *
-   * **「调整方向」只对发出时的轮次有效。** 该轮已结束，未赶上 step 边界的
+   * **「调整方向」只对发出时的轮次有效。** 该轮已结束，未在 step 边界取出的
    * 条目已无处注入；保留 `steer=true` 时，下一轮开始执行时会将它们
    * 注入到用户并未指定的轮次中。
    *
-   * **带 `origin` 的回执不重置**：其语义是在下一次机会交给模型，
-   * 不指向特定轮次。重置后，父轮非正常结束时它要等下一轮执行完毕才单独启动一轮，
+   * **带 `origin` 的回执不重置**：其语义是在下一次机会交付给模型，
+   * 不指向特定轮次。重置后，父轮非正常结束时它须等待下一轮执行完毕才单独启动一轮，
    * 比用户的后续消息晚一整轮到达模型。
    */
   resetSteer(conversationId: ConversationId): void {

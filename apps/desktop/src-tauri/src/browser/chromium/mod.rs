@@ -314,7 +314,7 @@ fn supervise(inner: &Arc<Inner>) {
         }
         attempt = restart::next_attempt(attempt, started.elapsed());
         let Some(delay) = restart::restart_delay(attempt) else {
-            log::error!("浏览器连续 {attempt} 次启动后很快退出，不再重启");
+            log::error!("浏览器连续 {attempt} 次启动后短时间内退出，不再重启");
             break;
         };
         if inner.backoff(delay) {

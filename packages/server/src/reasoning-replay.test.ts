@@ -162,7 +162,7 @@ function deps() {
 }
 
 /**
- * 等待第 `count` 个 run 结束且会话的占位已释放。`run.finished` 发布于占位释放之前：只等事件时，
+ * 等待第 `count` 个 run 结束且会话的占位已释放。`run.finished` 发布于占位释放之前：只等待事件时，
  * 紧接着发起的下一轮会因会话仍被占用而被取消，用例随即等待一个不会到来的结束事件。
  */
 async function finished(cv: ConversationId, count: number): Promise<void> {
@@ -185,7 +185,7 @@ const assistantContents = (body: Record<string, unknown>) =>
           ),
     )
 
-test('签名思考块在同一 run 的下一轮与下一个 run 里都按原位回放', async () => {
+test('签名思考块在同一 run 的下一轮与下一个 run 中都按原位回放', async () => {
   const cv: ConversationId = createConversation(store, {
     workspaceId: workspaceId as never,
     provider: 'fake',

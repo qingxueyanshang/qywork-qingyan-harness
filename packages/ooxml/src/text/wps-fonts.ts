@@ -15,14 +15,14 @@
  *   字形与主机字体都不相同。`asciiDraw` 为与之最接近的主机字体：PDF 中常规字形的 U+0021–U+007E 与 Windows 10 自带的常用字体
  *   （38 个字体族的常规字形）的同一字符逐字比对，原点对齐，按 1/100 em 栅格化并模糊后取重叠部分之比，取各字符平均值最高者
  *   （构造文档 f2-ksof；得分 0.44–0.73，最高与次高之差多在 0.01 以内）。粗体与斜体取该字体族的对应字形。真值回放时页面 EMF
- *   中的 `emf` 字体名改为 `asciiDraw`（`scripts/ooxml-fidelity/emf.py`，表由 `wpsEmfFaces` 导出），与本方绘制相同。
+ *   中的 `emf` 字体名改为 `asciiDraw`（`scripts/ooxml-fidelity/emf.py`，表由 `wpsEmfFaces` 导出），与本实现的绘制相同。
  *   华文楷体、华文中宋、华文宋体、方正楷体简体的西文与汉字在页面 EMF 中都是宋体；Source Han Sans CN Regular 的西文为 Segoe Print。
  * - 主机或文档中有该字体名的字体时（构造文档 f2-emb、f2-emb3、f2-emb4：Comic Sans MS 与等线改名后嵌入），字形与宽度取自该字体；
  *   `fixed` 的字体上下沿仍取数据表（`eastAsia`，为 `null` 时取 `latin`），其余取自该字体。实测方正小标宋简体、方正仿宋简体
  *   （西文与汉字段落都为 `eastAsia` 的值）、楷体_GB2312、华文中宋、思源黑体、Source Han Sans CN Regular 为前者，Helvetica、
  *   Arial Narrow、Helvetica Neue 为后者；其余 `eastAsia` 不为 `null` 的字体名未实测，按前者。Arial Unicode MS 嵌入 Comic Sans MS
  *   时行高为 1.540 em，与两者都不同，按后者。
- * - 不列入：DFKai-SB（汉字由 Microsoft JhengHei Light 绘制，msjhl.ttc 拆出的字体 Edge 的 `FontFace` 无法加载，列入后
+ * - 不列入：DFKai-SB（汉字由 Microsoft JhengHei Light 绘制，从 msjhl.ttc 拆分出的字体无法由 Edge 的 `FontFace` 加载，列入后
  *   整份文档无法打开）。
  *
  * WPS 演示实测（构造文件 p9-a、p9-b、p10-c、p10-d：导出图中红色竖线之间的距离、字形的上下边与逐字比对）：
@@ -99,7 +99,7 @@ const UNITS = 1000
  * 按数据表排版的字体：U+0020–U+007E 的宽度取自 `host.ascii`（为字体名时为 `ascii` 的宽度），其余字符的宽度取自 `other`；
  * 上沿与下沿为 `vertical`（千分之一 em）。字形编号与绘制所用的字体一致：U+0020–U+007E 取自 `draw`（绘制该字段的字体），
  * 其余取自 `other`。不要一律取自 `other`：公式中的普通文字按字形编号取绘制字体的字形与轮廓（`../math/`），编号取自另一个
- * 字体时画出的是另一个字。
+ * 字体时绘制出的是另一个字符。
  */
 function metricFace(
   host: WpsMetricHost,

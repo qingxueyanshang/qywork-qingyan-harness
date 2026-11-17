@@ -294,7 +294,7 @@ export async function loadAsCurrent(config: unknown, scratch: string): Promise<Q
   }
 }
 
-/** 样本中记录的含义在当前结果中不成立的路径。当前结果多出的键不算差异：新版本新增的字段不影响旧配置。 */
+/** 样本中记录的含义在当前结果中不成立的路径。当前结果多出的键不视为差异：新版本新增的字段不影响旧配置。 */
 export function meaningChanges(recorded: unknown, current: unknown, path = ''): string[] {
   if (recorded !== null && typeof recorded === 'object') {
     if (

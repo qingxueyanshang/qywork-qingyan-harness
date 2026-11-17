@@ -84,16 +84,16 @@ export function createConversationScroll(conversationId: () => string | null) {
    * 实测（真实服务端与前端，测试 provider 驱动一轮四步）：跟随在第 5 秒被关闭，
    * 此后 379 个无变化的帧稳定停在距底部 253px 处，新内容全部位于视口下方，读数条移出屏幕。
    * 不要用 `position: sticky` 固定读数条：被固定的只有读数条，滚动位置仍距底部
-   * 两百多像素，正文仍不可见，跳动变为每次内容变矮时回弹一次。
+   * 两百余像素，正文仍不可见，跳动变为每次内容变矮时回弹一次。
    *
    * 关闭跟随须同时满足：有手势来源、scrollTop 不是 `writeTop` 写入的值、且比上一次已知的值小。
    * 不要只按 `gap > 2` 关闭：scroll 事件晚于写入一帧派发，其间新内容使 scrollHeight 增加，
-   * `writeTop` 写入后派发的那次 scroll 读到的 `gap` 已大于 2，而 scrollTop 没有变化。
+   * `writeTop` 写入后派发的那次 scroll 读取的 `gap` 已大于 2，而 scrollTop 没有变化。
    * `writeTop` 写入派发的 scroll 不消耗 `scrollIntent`，否则手势自身的 scroll 到达时已没有意图标记，
    * 下一次高度变化把视口写回底部。
    *
    * `followTop` 用于识别 `writeTop` 的写入；用户恰好滚动回该位置时以手势为准，不能
-   * 因数值相等而漏掉重新跟随底部。2px 容差仅用于吸收小数像素。
+   * 因数值相等而遗漏重新跟随底部。2px 容差仅用于吸收小数像素。
    */
   const onScroll = () => {
     const top = scroller.scrollTop
@@ -245,7 +245,7 @@ export function createConversationScroll(conversationId: () => string | null) {
    * 需手动滚动才能恢复。
    *
    * 本次高度变化之前视口已在底部时同样跟随，并恢复 `pinned`。只按 scroll 事件恢复时，
-   * 用户滑回底部的那次 scroll 晚于内容增高派发，读到的距离已大于 2px，跟随不恢复，
+   * 用户滑回底部的那次 scroll 晚于内容增高派发，读取的距离已大于 2px，跟随不恢复，
    * 此后的新内容全部位于视口下方。`knownMax` 是上一次回调时 scrollTop 的上限。
    */
   onMount(() => {

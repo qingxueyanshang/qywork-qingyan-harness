@@ -292,7 +292,7 @@ describe('形状文字的屏幕显示', () => {
     expect(offset(10.5)).toBeCloseTo(offset(10) * 1.05, 6)
   })
 
-  /** 原始失败形状：WPS 表格图表 10.5 磅的多行标题每行比本方少 1 像素。 */
+  /** 原始失败形状：WPS 表格图表 10.5 磅的多行标题每行比本实现少 1 像素。 */
   test('图表文字的单倍行高同样按整数字号计算，演示文稿的图表按实际字号', () => {
     const pitch = (faces: FaceCache) => {
       const ps = layoutBody(body(10.5, single), 200, { faces, slideNumber: null }).paragraphs
@@ -337,7 +337,7 @@ describe('形状文字的屏幕显示', () => {
     expect(plainWide.baseline - plainOne.baseline).toBeCloseTo((plainOne.height * 0.5) / 1.2, 6)
   })
 
-  test('有点阵的字形以点阵画在取整后的设备坐标上，基线取整到设备像素', () => {
+  test('有点阵的字形以点阵绘制于取整后的设备坐标上，基线取整到设备像素', () => {
     const glyph = {
       width: 2,
       height: 2,

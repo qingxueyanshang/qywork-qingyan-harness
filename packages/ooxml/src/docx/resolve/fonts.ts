@@ -166,7 +166,7 @@ const NAME_KEYWORDS: readonly (readonly [string, string])[] = [
  * WPS 按自带度量排版的字体（`../../text/wps-fonts.ts` 的 `WPS_METRIC_FONTS`）先于以上各步，不经本函数（`DocxFontSource.metric`）；
  * 文档的嵌入字体与主机字体同样经 `FontSource.face` 取得，先于自带度量（见 `../render/fonts.ts` 的 `embeddedFaces`）。
  * 未实现：按 `w:panose1` 或 `w:sig` 匹配主机字体；没有西文字形的字体（Segoe MDL2 Assets、HoloLens MDL2 Assets）WPS 以 Arial
- * 排版与绘制西文，本方按缺字形改用 `FontSource.fallback`。
+ * 排版与绘制西文，本模块按缺字形改用 `FontSource.fallback`。
  */
 export function substitutes(
   name: string,

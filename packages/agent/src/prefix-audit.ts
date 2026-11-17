@@ -42,7 +42,7 @@ export function hashFrozen(system: SystemBlock[]): string {
     /*
      * 分隔符不能省略：`['ab','']` 与 `['a','b']` 拼接结果相同，但它们是不同的前缀。
      *
-     * 必须写成转义 `\0`，不能写入原始 NUL 字节：0x00 在源码中不可见，
+     * 必须写为转义 `\0`，不能写入原始 NUL 字节：0x00 在源码中不可见，
      * 且会使 grep 把整个文件视为二进制（`Binary file matches`），
      * 导致在本文件中 grep 任何内容都无法得到匹配行。
      */
@@ -120,7 +120,7 @@ export interface DriftReport {
   currentHash: string
   /** 第一处不同的段序号。-1 表示段数变化。 */
   blockIndex: number
-  /** 变化前后的片段，各截取 120 字：足以看出改动内容，又不会使日志过长。 */
+  /** 变化前后的片段，各截取 120 字：足以判断改动内容，且不会使日志过长。 */
   before: string
   after: string
   /** 漂移的累计次数。反复漂移与单次漂移是两种不同的缺陷。 */

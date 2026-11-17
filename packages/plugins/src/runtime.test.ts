@@ -282,7 +282,7 @@ describe('网络访问限制实测：每条逃逸路径', () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-ng-'))
     const entry = join(dir, 'index.mjs')
     const NL = String.fromCharCode(10)
-    // 每条探针的结果为：取得 = OK，抛错 = BLOCKED。
+    // 每条探针的结果为：取得 = OK，抛出异常 = BLOCKED。
     // 断言 BLOCKED 而不断言错误文案：文案可能修改，能否取得不会改变。
     const probes: [string, string][] = [
       ['esmNet', "const m = await import('node:net'); return typeof m.createConnection"],

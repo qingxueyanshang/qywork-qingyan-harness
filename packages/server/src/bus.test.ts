@@ -156,7 +156,7 @@ describe('断线补发按订阅过滤', () => {
     expect(bus.replayFrom({ streamId: bus.streamId, lastSeq: bus.currentSeq }, sub)).toEqual([])
   })
 
-  /** 缺口超出保留窗口时须明确返回 null，使客户端改为全量重新拉取，而不是静默缺少若干条。 */
+  /** 缺口超出保留窗口时须明确返回 null，使客户端改为全量重新获取，而不是静默缺少若干条。 */
   test('缺口超出保留窗口时返回 null', () => {
     const bus = new EventBus()
     for (let i = 0; i < 5100; i++) bus.publish(delta(String(i)), c1)
@@ -195,7 +195,7 @@ describe('流更换后不能按位置比较大小', () => {
   /**
    * 大幅落后时仍返回 null，不能只补发新流中的一段。
    *
-   * 重连有退避（最长 15 秒），期间新服务可能已经推送几百条：此时
+   * 重连有退避（最长 15 秒），期间新服务可能已经推送数百条：此时
    * `lastSeq` 不再大于 `seq`，环中也仍保留第一帧，只按位置计算会补发
    * 「新流的 (lastSeq, now]」并声明补发完整，而被跳过的是新流开头的一段。
    */
@@ -218,7 +218,7 @@ describe('流更换后不能按位置比较大小', () => {
  *
  * 原始失败形状：`qy serve` 在持续负载下 RSS 从约 105 MB 单调增长到约 430 MB，重启即回落。
  * 内存由该环持有：`tool.delta` 每帧带一整段命令输出（实测约 109 KB），
- * 帧数上限 5000 折合几百 MB。
+ * 帧数上限 5000 折合数百 MB。
  */
 describe('保留窗口按字节设上限', () => {
   const sub = (): Subscriber => ({

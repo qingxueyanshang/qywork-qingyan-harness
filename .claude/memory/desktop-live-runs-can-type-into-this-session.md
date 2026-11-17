@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-在真机上运行电脑控制任务（`.tmp/scratch/batch5/run-task.ts --foreground`）时，被测模型可能使用它能看到的任何窗口：2026-09-24 GPT-6 Sol 向运行 Claude Code 的 Windows Terminal 输入命令和 `exit`，主会话退出；安装态的 Edge 样本将用户自己 Edge 的当前页导航到别的页面；设置样本借用用户的 Edge 与资源管理器按 Win+I，并将资源管理器从最大化改为还原。
+在真机上运行电脑控制任务（`.tmp/scratch/batch5/run-task.ts --foreground`）时，被测模型可能使用它能看到的任何窗口：2026-09-24 GPT-6 Sol 向运行 Claude Code 的 Windows Terminal 输入命令和 `exit`，主会话退出；安装态的 Edge 样本将用户自己 Edge 的当前页导航到其他页面；设置样本借用用户的 Edge 与资源管理器按 Win+I，并将资源管理器从最大化改为还原。
 
 **Why:** 模型知道窗口属于用户也不能阻止这一行为（重放中向终端输入的比例仍约为 10%）；模型需要一个能接收输入的位置时，会借用任意已打开的窗口。
 

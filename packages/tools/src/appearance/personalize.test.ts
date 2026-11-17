@@ -53,7 +53,7 @@ function ctx(root: string, personalization?: PersonalizationPort): ToolContext {
 }
 
 describe('personalize', () => {
-  test('save 只写要改的字段，其余沿用当前值；雾面逐字段合并', async () => {
+  test('save 只写入需要修改的字段，其余沿用当前值；雾面逐字段合并', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-personal-'))
     const port = memoryPort()
     const fog = { color: '#ffffff', density: 0.6, speed: 0.4 }

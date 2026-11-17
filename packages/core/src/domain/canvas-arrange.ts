@@ -1,22 +1,22 @@
 /**
- * 未给出位置的新节点与改换了组的节点按组排列。只有大模型的操作走到这里：界面的新增操作都带坐标、`beside` 或 `near`。
+ * 未给出位置的新节点与更换了组的节点按组排列。只有模型发起的操作进入此处：界面的新增操作都带坐标、`beside` 或 `near`。
  *
  * - 组名决定列：「类别/对象」中斜杠前是列，如「角色/沈砚」「角色/顾衡」同在「角色」列；没有斜杠时整个组名是列，
  *   如「文本」。
- * - 同列纵向：按创建顺序自上而下。同一对象的卡片在列中相连：后补的卡接在该对象最下方一行之后，
+ * - 同列纵向：按创建顺序自上而下。同一对象的卡片在列中相连：后加入的卡接在该对象最下方一行之后，
  *   列中位于其下方的卡整体下移；新对象接在列的末尾。
  * - 提示词卡与生成卡成行：同组、以文本连线连到生成卡的文件卡（`labelOf`）排在该生成卡左侧的同一行，
  *   列分为左侧的提示词与右侧的生成卡两栏，行高取该行较高的卡。同一列的卡上下移动时整行一起移动。
  * - 不同列横向：新的列放在全部已有内容的右侧，与顶端对齐，按创建顺序从左到右；每条时间线单独成一列。
  * - 视频列（有视频生成卡的列）按对象名的数字顺序排行，满一定行数后在右侧另起一栏（`arrangeShots`）。
  *
- * 各列只向下生长，新列只出现在最右侧，因此后加的卡不会被其他列挡住。
+ * 各列只向下生长，新列只出现在最右侧，因此后加入的卡不会被其他列遮挡。
  * 不要按「组内有没有输入」把列分到左右两区：同一人物的服装变体常以基础定妆图为参考，
  * 按输入分区时该人物会被当作分镜，其他列被移到它的左侧。素材先于引用它的分镜创建，按创建顺序已位于分镜左侧。
  *
- * 算出的位置被占用时沿竖直方向顺延到第一个空位。已有节点只在以下情况下移动：同列中为插入让位；
- * 新卡比所在栏宽或新开一栏时右侧各列让开；卡片改变尺寸后随之移开或移回（`keepSpacing`）；带组的卡被删除或换组后，
- * 同列下方的卡上移补上空位（`closeGaps`）；排成网格或按栏重排后，右侧与下方的节点让开或移回（`arrangeGrid`、
+ * 计算出的位置被占用时沿竖直方向顺延到第一个空位。已有节点只在以下情况下移动：同列中为插入的卡留出位置；
+ * 新卡比所在栏宽或新开一栏时右侧各列移开；卡片改变尺寸后随之移开或移回（`keepSpacing`）；带组的卡被删除或换组后，
+ * 同列下方的卡上移填补空位（`closeGaps`）；排成网格或按栏重排后，右侧与下方的节点移开或移回（`arrangeGrid`、
  * `arrangeColumn`）。这些情况使用同一套规则（`follow`），界面删除的卡同样适用。
  */
 
@@ -44,7 +44,7 @@ export interface Vacated extends Box {
 /**
  * 依次为 `pending` 中的节点确定位置。调用前这些节点的坐标为 `NaN`，生成卡与文件节点已带 `group`，
  * 文本连线已同步（`labelOf` 按连线配对）。
- * 按卡片当前的框排位，不为结果的形状预留空间：出图改变形状后由 `keepSpacing` 保持间距。
+ * 按卡片当前的框排位，不为结果的形状预留空间：生成结果改变形状后由 `keepSpacing` 保持间距。
  */
 export function arrangeNew(doc: CanvasDoc, pending: readonly string[]): void {
   for (const id of pending) {
@@ -54,12 +54,12 @@ export function arrangeNew(doc: CanvasDoc, pending: readonly string[]): void {
     const at = spotOf(doc, node)
     node.x = at.x
     node.y = at.y
-    // 新卡比所在栏宽时，右侧各列与出图变大时一样整列让开；不让开时新卡会绕到右侧一列的卡下面。
-    // 新开生成卡一栏时同样让开：右侧的列此前紧挨着提示词一栏。
-    // 必须先于下方的移动：右侧一列尚未让开时与新卡横向重叠，会被当作下方的节点一起下移。
+    // 新卡比所在栏宽时，右侧各列整列移开，与生成结果使卡片变大时相同；不移开时新卡会被排到右侧一列的卡下方。
+    // 新开生成卡一栏时同样移开：右侧的列原先紧邻提示词一栏。
+    // 必须先于下方的移动：右侧一列尚未移开时与新卡横向重叠，会被视为下方的节点一起下移。
     const lane = laneRight(doc, node, at.x)
     if (at.media) {
-      // 提示词卡占据生成卡此前所在的位置：生成卡一栏连同右侧各列让开，与新开生成卡一栏时相同。
+      // 提示词卡占据生成卡此前所在的位置：生成卡一栏连同右侧各列移开，与新开生成卡一栏时相同。
       // 放入已有的提示词一栏时不移动。
       if (at.x === at.media.x) {
         follow(doc, node, { x: at.x - CARD_GAP, y: at.y, w: 0, h: size.h }, 'right')
@@ -156,7 +156,7 @@ function mediaX(doc: CanvasDoc, members: readonly CanvasNode[]): number {
 
 /**
  * 新卡的位置。提示词卡已排好、还没有配对的生成卡时排在它右侧的同一行（`label`）；生成卡已排好、提示词卡后补时排在它左侧的
- * 同一行（`media`）：左侧已有提示词一栏时放入该栏，否则占据生成卡的位置，由 `arrangeNew` 使生成卡一栏及右侧各列让开。
+ * 同一行（`media`）：左侧已有提示词一栏时放入该栏，否则占据生成卡的位置，由 `arrangeNew` 使生成卡一栏及右侧各列移开。
  * 本对象已有卡时插在其最下方一行之后（`insert`，下方的节点由 `arrangeNew` 下移）；本列已有卡时接在列的末尾；
  * 否则在全部已有内容右侧另起一列，空画布从原点开始。列中有提示词卡时，提示词排在左栏，其他卡排在生成卡一栏。
  */
@@ -251,10 +251,10 @@ export function resizedCards(before: CanvasDoc, after: CanvasDoc): Resized[] {
 
 /**
  * 节点改变尺寸后，右侧与下方的节点随之移动，间距保持为原间距与 `CARD_GAP` 中的较小者。
- * 卡片按当前框排位、不为结果的形状预留空间，出图改变形状后由此保持间距。
+ * 卡片按当前框排位、不为结果的形状预留空间，生成结果改变形状后由此保持间距。
  *
  * - 变大时推开：间距不足的节点移开，被移开的节点继续推开它右侧或下方的节点。
- * - 变小时收回：原间距不超过 `CARD_GAP`、紧挨着已移动节点的节点随之移回，但与其他相对的节点仍不小于各自的原间距
+ * - 变小时收回：原间距不超过 `CARD_GAP`、紧邻已移动节点的节点随之移回，但与其他相对的节点仍不小于各自的原间距
  *   与 `CARD_GAP` 中的较小者；间距大于 `CARD_GAP` 的节点不动。
  * - 向右时带组的节点与同列、同横坐标的卡整栏移动，保持栏内对齐；向下时同列的卡都相对，提示词与生成卡整行移动。
  * - 界面放置的卡与画布排列的卡规则相同：变大时同样推开相邻的节点，也同样被推开。
@@ -269,7 +269,7 @@ export function keepSpacing(doc: CanvasDoc, resized: readonly Resized[]): void {
 }
 
 /**
- * 带组的卡被删除或移到其他组之后，同列中紧挨在空位下方的卡上移，不留空位；一栏因此不再有卡时，右侧各栏左移，
+ * 带组的卡被删除或移到其他组之后，同列中紧邻空位下方的卡上移，不留空位；一栏因此不再有卡时，右侧各栏左移，
  * 不留空栏。`vacated` 为空出的框，未排位的跳过。
  *
  * 每个空位以其上方一个间距处、高为 0、带原组的框代替原卡，下方的节点按 `follow` 的收回规则移动，与卡片变小时相同；
@@ -321,7 +321,7 @@ export function closeGaps(doc: CanvasDoc, vacated: readonly Vacated[]): void {
  * 列宽取其中最宽的卡，行高取该行最高的卡，间距为 `CARD_GAP`；卡片保持各自的尺寸。
  * 文本卡与 16:9 的生成卡缺省框相同，一组这样的卡排成的各行等高。
  *
- * 网格所占的区域按一张由原区域改变尺寸的卡处理（`settle`）：右侧与下方的节点让开，网格变小时紧挨着的节点移回。
+ * 网格所占的区域按一张由原区域改变尺寸的卡处理（`settle`）：右侧与下方的节点移开，网格变小时紧邻的节点移回。
  * 不在 `cards` 中、却位于原区域内部的节点（选出的卡分属不相邻的几列时）不移动。
  */
 export function arrangeGrid(doc: CanvasDoc, cards: readonly CanvasNode[], perRow: number): void {
@@ -354,8 +354,8 @@ interface Row {
 
 /**
  * 把列 `column` 的卡按行重排：行按对象名的数字顺序排列（镜头 1-2 在 1-10 之前），没有对象时按名称，
- * 相同时按创建顺序；每栏 `perColumn` 行，满了在右侧一个间距处另起一栏。左上角是该列重排之前的左上角，
- * 栏宽取各栏中最宽的提示词卡与生成卡，行高取该行较高的卡。重排后右侧与下方的节点让开或移回（`settle`）。
+ * 相同时按创建顺序；每栏 `perColumn` 行，行数已满时在右侧一个间距处另起一栏。左上角是该列重排之前的左上角，
+ * 栏宽取各栏中最宽的提示词卡与生成卡，行高取该行较高的卡。重排后右侧与下方的节点移开或移回（`settle`）。
  */
 export function arrangeColumn(doc: CanvasDoc, column: string, perColumn: number): void {
   const members = doc.nodes.filter((n) => placed(n) && columnOf(n) === column)
@@ -414,7 +414,7 @@ export function arrangeShots(before: CanvasDoc, doc: CanvasDoc, columns: Iterabl
   }
 }
 
-/** 重排之后 `cards` 所占的区域按一张由 `was` 改变尺寸的卡处理（`keepSpacing`），右侧与下方的节点让开或移回。 */
+/** 重排之后 `cards` 所占的区域按一张由 `was` 改变尺寸的卡处理（`keepSpacing`），右侧与下方的节点移开或移回。 */
 function settle(doc: CanvasDoc, cards: readonly CanvasNode[], was: Box): void {
   const all = doc.nodes
   const block: CanvasNode = { ...ghost(), ...boundsOf(cards) }
@@ -429,7 +429,7 @@ function settle(doc: CanvasDoc, cards: readonly CanvasNode[], was: Box): void {
  * `settle` 只收回原间距不超过 `CARD_GAP` 的节点，已经存在的大间距在重排之后保持不变；整理布局时由此消除。
  * 每条时间线单独成一栏（时间线单独占一列）；不带组的其他节点是界面放置的卡，不移动。
  * 左侧的卡带组时一律作为界限（各列向下生长），不带组时只在纵向重叠时作为界限。栏只左移不右移，
- * 左侧没有卡的栏不动。只在显式 arrange 之后执行：自动的视频列重排执行它时，每补一个镜头都会移动用户拖开的列。
+ * 左侧没有卡的栏不动。只在显式 arrange 之后执行：自动的视频列重排若执行它，每补充一个镜头都会改变用户手动调整过的列位置。
  */
 export function packLanes(doc: CanvasDoc, from: number): void {
   const lanes = new Map<string, CanvasNode[]>()
@@ -477,7 +477,7 @@ function boundsOf(boxes: readonly Box[]): Box {
 /**
  * `changed` 的框由 `was` 改为当前框之后，起点在 `was` 远端以外的节点按起点由近到远依次确定位移：
  * 取所有相对且移动前位于它之前的节点给出的下限（该节点现在的远端加上原间距与 `CARD_GAP` 中的较小者）中的最大值。
- * 下限大于当前位置时前移；小于当前位置且它紧挨着一个已移动的节点时后移；否则不动。
+ * 下限大于当前位置时前移；小于当前位置且它紧邻一个已移动的节点时后移；否则不动。
  */
 function follow(doc: CanvasDoc, changed: CanvasNode, was: Box, along: 'right' | 'down'): void {
   const right = along === 'right'
@@ -485,8 +485,8 @@ function follow(doc: CanvasDoc, changed: CanvasNode, was: Box, along: 'right' | 
   const trail = (b: Box) => (right ? b.x + b.w : b.y + b.h)
   /**
    * 是否相对：与移动方向垂直的一侧重叠，向右时比较纵向，向下时比较横向。
-   * 向右时两者都带组即相对：各列向下生长，只按纵向判定时，变宽的卡会占住右侧一列下方的位置，
-   * 之后补进该列的卡绕到它下面，列内间距不再是 `CARD_GAP`。
+   * 向右时两者都带组即相对：各列向下生长，只按纵向判定时，变宽的卡会占据右侧一列下方的位置，
+   * 之后加入该列的卡被排到它下方，列内间距不再是 `CARD_GAP`。
    * 向下时同列即相对：提示词与生成卡分在两栏、横向不重叠，一张变高时另一栏下方的卡也要下移，各行才保持对齐。
    */
   const facing = (a: CanvasNode, b: CanvasNode) =>
@@ -530,7 +530,7 @@ function follow(doc: CanvasDoc, changed: CanvasNode, was: Box, along: 'right' | 
  * 移动之前与 `n` 同列且横坐标相同的节点（含 `n`）；没有组的节点单独移动。
  *
  * 必须按移动之前的坐标（`origin`）判定：同列先处理的一栏右移后可能恰好落在另一栏的横坐标上，
- * 按当前坐标判定时它会被当作后一栏的成员再移一次，两栏重叠且右侧各列被多推一段。
+ * 按当前坐标判定时它会被视为后一栏的成员再移动一次，两栏重叠且右侧各列多移动一段距离。
  */
 function columnMates(
   doc: CanvasDoc,

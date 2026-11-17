@@ -19,7 +19,7 @@ import type { RunState, TurnState } from './run-state.ts'
  * 「无可压缩内容」跳过，工具结果的投递额度降为 0（实测一个第三方每次多报约 61 万缓存命中）。
  *
  * 取本地估算的 1.5 倍加 2 万：已标定型号单段内容 90% 的偏差在 14% 以内、图片在 5% 以内；第三方在请求前注入的
- * 隐藏系统提示实测约 8,600 token。原生发送的视频都读得出时长与尺寸，同样计入本地估算。
+ * 隐藏系统提示实测约 8,600 token。原生发送的视频都能读取时长与尺寸，同样计入本地估算。
  */
 function inputLimit(turn: TurnState): number {
   return turn.measured * 1.5 + 20_000
@@ -29,7 +29,7 @@ function inputLimit(turn: TurnState): number {
  * 回报的输入量的下限：低于时上游没有处理本次发送的全部内容，会话历史未送达模型。
  *
  * 该回执不作为锚点，本轮响应不可用（`unusableNote`）：模型在缺少历史的情况下给出的工具调用不执行，本轮以
- * provider_error 停止。作为锚点时读数只剩发送量的零头，自动压缩不再触发，而模型在每一轮都缺少历史。
+ * provider_error 停止。作为锚点时读数远低于发送量，自动压缩不再触发，而模型在每一轮都缺少历史。
  *
  * 取系统提示词、工具定义与图片视频之外的部分减 2 万后的四分之一：账本中各型号正常回执与估算之比的最小值为 0.35
  * （2026-11-16 统计约 5 万次请求），第三方丢弃历史时为 0.03 至 0.28（只计入系统提示词、工具定义与最后一条用户消息之后的内容）。
@@ -54,7 +54,7 @@ function droppedInputNote(prompt: number, measured: number): string {
 }
 
 const TRUNCATED_NOTICE =
-  '上一次响应的输出达到单次上限，在中途被截断，本轮未结束。从中断处继续，不重述已完成的部分，剩余工作拆成较小的步骤。'
+  '上一次响应的输出达到单次上限，在中途被截断，本轮未结束。从中断处继续，不重述已完成的部分，将剩余工作拆分为较小的步骤。'
 
 /**
  * 清单中仍有 pending 或 in_progress 而本轮只有回复时的继续提示，`items` 是这些项。
@@ -63,7 +63,7 @@ const TRUNCATED_NOTICE =
  * 用户对样张的确认，未等用户查看就生成了其余 27 页（宁德视觉升级 2026-10-21）。
  * 完成、受阻与失败的判定标准只写在系统提示中，此处只引用并列出类别取值：此处另写一种表述时，
  * 模型会按两处中较宽松的一种收尾。不要加入「把等待中的项改回 pending
- * 后结束本轮」一类的出口：pending 不带原因，任何困难都能借此停下询问用户。
+ * 后结束本轮」一类的结束条件：pending 不带原因，模型遇到任何困难都能借此停止并询问用户。
  */
 function continueNotice(items: string[]): string {
   return `本轮待办尚有未完成的项：${items.join('；')}。这是系统的自动提示，不是用户的回复，不表示用户确认或授权了任何事项。继续执行这些项，直至每一项按系统提示「工作方式」一节的定义完成、受阻（${TODO_BLOCKERS.join('、')}）或失败（${TODO_FAILURES.join('、')}）。清单中没有 pending 与 in_progress 后本轮结束。`
@@ -108,14 +108,14 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
   /*
    * `max_tokens` 终止时，本批工具调用一律无效。
    *
-   * 输出被截断意味着最后一条调用的参数可能只有半个 JSON，而截断处恰好是
+   * 输出被截断意味着最后一条调用的参数可能是不完整的 JSON，而截断处恰好是
    * 合法 JSON 时不会产生 `argumentsError`。按其执行即使用不完整的参数操作，
    * 且模型没有机会补全。整批在此丢弃，正文与思考照常记录，
    * 随后由 `concludeWithoutTools` 续写。
    */
   if (turn.providerStop === 'max_tokens') turn.calls.length = 0
 
-  // 将本轮 assistant 输出写回 transcript：模型下一轮必须看到自己刚输出的内容与
+  // 将本轮 assistant 输出写回 transcript：模型下一轮必须取得自己刚输出的内容与
   // 调用过的工具，否则会重复调用。
   turn.unitStart = transcript.length
   const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
@@ -233,7 +233,7 @@ export async function* concludeWithoutTools(
   }
 
   // `pause_turn` 不表示回答完毕，而表示服务端中断了本轮，需要原样重发以继续。
-  // 视为结束时，用户得到不完整的回答，而 run 显示成功完成，
+  // 视为结束时，回答不完整而 run 显示成功完成，
   // 既不报错也不续写。本轮 assistant 输出已在收尾时写入 transcript，
   // 直接进入下一轮即满足官方要求的原样重发。执行循环没有总轮数上限，
   // 因此反复返回同一段暂停内容必须经由现有的无进展判据停止，不能依赖固定步数。
@@ -333,7 +333,7 @@ export async function* concludeWithoutTools(
   }
 
   /*
-   * 其余每一项都已完成、受阻或失败。有受阻项时停下等待用户；只有失败项时本轮已执行完毕，
+   * 其余每一项都已完成、受阻或失败。有受阻项时停止并等待用户；只有失败项时本轮已执行完毕，
    * 记为 completed，失败不等待任何一方。停止依据逐项列出受阻条件与失败原因。
    */
   const reasons = [

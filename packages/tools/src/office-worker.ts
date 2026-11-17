@@ -4,10 +4,10 @@
  * 该进程树中，因此随后以 `cleanup` 动作再启动一次 worker，按调用目录中登记的实例处理残留进程。
  * `office` 工具、`read_file` 的视频抽帧与 `capture_canvas_frame` 的取帧共用此约定。
  *
- * 目录的生命周期：worker 给出结果且调用方读完其中的文件后，调用方以 `releaseCall` 删除调用目录；
+ * 目录的生命周期：worker 给出结果且调用方读取完其中的文件后，调用方以 `releaseCall` 删除调用目录；
  * 写入未提交、超时、取消时保留，供本轮查看候选文件与处理残留进程。渲染缓存位于同一 run 目录下，
- * 本轮结束时 `Session` 删除整个 `office/<runId>`。不要把缓存移回按会话或按工作区共用：
- * 每个中间版本都会留下一整套页面图片，且没有任何回收路径。
+ * 本轮结束时 `Session` 删除整个 `office/<runId>`。不要把缓存改为按会话或按工作区共用：
+ * 每个中间版本都会留下一整套页面图片，且没有回收路径。
  */
 
 import { randomUUID } from 'node:crypto'
@@ -60,7 +60,7 @@ export interface WorkerResponse {
   text?: string
   /** `key` 是 view 渲染的页码（xlsx 为「工作表名:页码」），保存页面图时据此命名；frames 不提供。 */
   images?: { path: string; key?: string; label: string; width: number; height: number }[]
-  /** frame 动作：截取的实际时间与视频时长（秒）；时长读不出时为 null。 */
+  /** frame 动作：截取的实际时间与视频时长（秒）；时长无法读取时为 null。 */
   frame?: { time: number; duration: number | null }
   script_output?: string
   residue?: { pid: number; name: string; cmdline: string }[]
@@ -145,7 +145,7 @@ export function officeRunDir(workspaceRoot: string, conversationId: string, runI
 }
 
 /**
- * 删除一次调用的目录。只在 worker 给出结果、调用方已读完其中的文件之后调用。
+ * 删除一次调用的目录。只在 worker 给出结果、调用方已读取完其中的文件之后调用。
  *
  * 删除失败（办公软件仍占用其中的文件）不影响本次结果：本轮结束时整个 run 目录会再删除一次。
  */
@@ -222,7 +222,7 @@ export async function readVideoFrames(
   return { status: 'success', message: res.text ?? '', data: { images } }
 }
 
-/** 截取的一帧：PNG 字节、实际时间与视频时长（秒，读不出时为 null）、像素宽高。 */
+/** 截取的一帧：PNG 字节、实际时间与视频时长（秒，无法读取时为 null）、像素宽高。 */
 export interface VideoFrame {
   png: Uint8Array
   time: number

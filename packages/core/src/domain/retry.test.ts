@@ -26,9 +26,9 @@ describe('重试间隔', () => {
 
   /** 抖动只向后延：同一批同时被拒的请求错开数秒，不早于间隔表。 */
   test('在间隔之上随机延后至多十分之一', () => {
-    const at = (retry: number, r: number, retryAfterMs: number | null = null) => {
+    const at = (retry: number, r: number) => {
       const random = spyOn(Math, 'random').mockReturnValue(r)
-      const wait = transientRetryDelay(retry, retryAfterMs)
+      const wait = transientRetryDelay(retry)
       random.mockRestore()
       return wait
     }

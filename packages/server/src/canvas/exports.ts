@@ -158,7 +158,7 @@ export class CanvasExports {
   }
 
   /**
-   * 时间线导出成片、Art 节点录制视频：浏览器一边编码一边将字节按位置写入 `generated/.<会话号>.part`（`exportWrite`），
+   * 时间线导出成片、Art 节点录制视频：浏览器在编码的同时将字节按位置写入 `generated/.<会话号>.part`（`exportWrite`），
    * 完成时（`exportFinish`）核对 mp4 文件头、保存为 `generated/<节点名>.mp4`（重名时加 `-2`），并在来源节点右侧添加节点。
    * 返回会话号。该节点有大模型发起、尚未认领的导出时由本会话认领，已被另一会话认领时拒绝（多个界面同时收到请求）。
    *

@@ -46,7 +46,7 @@ export interface CollectOptions {
   idleMs?: number
   /**
    * `idleMs` 到期时先调用：返回 true 表示进程树仍在工作（占用 CPU、读写磁盘），重新计时而不终止。
-   * 没有输出不等于没有进展：输出接到 `| tail` 时攒到结束才送出，长时间计算本身也可能不输出。
+   * 没有输出不等于没有进展：输出接到 `| tail` 时在命令结束后才一次送出，长时间计算本身也可能不输出。
    */
   busy?: () => Promise<boolean>
   /** 中断信号。abort 时终止进程树，使用户点击停止后子进程确实停止。 */
@@ -57,7 +57,7 @@ export interface CollectOptions {
   onEnd?: (channel: 'stdout' | 'stderr') => string
   /**
    * 每条流的字符上限。它限制的是读取本身，而不只是返回值：
-   * 读完再截断时，一条 `yes` 命令会在截断生效之前耗尽内存。
+   * 读取完毕再截断时，一条 `yes` 命令会在截断生效之前耗尽内存。
    * 是否达到上限由调用方判断（长度达到上限即是），此处只负责停止读取。
    */
   maxChars?: number

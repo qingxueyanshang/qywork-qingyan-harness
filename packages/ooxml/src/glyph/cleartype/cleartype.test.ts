@@ -280,7 +280,7 @@ describe('混合', () => {
           color: '#000000',
           clip: { left: 0, top: 0, right: 2, bottom: 2 },
         },
-        // 第二段文字在第一段混合之后再混合：覆盖 3 的灰色叠在已混合的像素上。
+        // 第二段文字在第一段混合之后再混合：覆盖 3 的灰色叠加在已混合的像素上。
         { glyphs: [{ glyph: strip([3]), x: 0, baseline: 1 }], color: '#000000', clip: ALL },
       ],
       { contrast: 1200 },

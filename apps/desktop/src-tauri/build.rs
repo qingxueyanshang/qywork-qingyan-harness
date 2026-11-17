@@ -6,7 +6,7 @@ use std::process::Command;
 /// 登记到 ACL 后，这些命令必须由 capability 显式授权才能调用；不登记时它们绕过
 /// 整个 ACL，任何 WebView 都能调用，包括附加在主窗口下的外部网页子视图。
 ///
-/// 新增命令时必须同时修改此处与 `capabilities/default.json`；漏改时
+/// 新增命令时必须同时修改此处与 `capabilities/default.json`；遗漏修改时
 /// 前端调用被拒绝，不会静默放行。
 const APP_COMMANDS: &[&str] = &[
     "app_update",

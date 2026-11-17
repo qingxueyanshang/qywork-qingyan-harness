@@ -1,5 +1,5 @@
 /**
- * 换出时图片替换成的缩略图（`request.ts` 的 `evictedMedia` 与 `materialize`）。
+ * 换出时替换原图的缩略图（`request.ts` 的 `evictedMedia` 与 `materialize`）。
  *
  * 实测（2026-10，photon 0.3.4）：1568×882 的幻灯片页缩小到长边 768、JPEG(75) 为 45–85 KB，
  * 40 张平均约 55 KB，标题与正文仍可辨认。同一输入两次生成的字节相同。

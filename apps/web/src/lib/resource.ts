@@ -40,8 +40,8 @@ export function createRefreshKey<K, R>(
  * 读取 resource 的值：尚未取得时返回 `undefined`，出错时也返回 `undefined`，从不抛出。
  *
  * 不直接调用 `data()`：Solid 的 `resource()` 与 `resource.latest` 在出错时都会 `throw err`，
- * 依赖调用方外层的 `ErrorBoundary` 捕获。本应用没有设置 `ErrorBoundary`，抛出后无人捕获，
- * 当前帧的更新中途中断，页面停在不完整状态。已写好的错误界面也会因此成为死代码：
+ * 依赖调用方外层的 `ErrorBoundary` 捕获。本应用没有设置 `ErrorBoundary`，异常不被捕获，
+ * 当前帧的更新中途中断，页面停留在不完整的状态。错误界面也因此无法显示：
  * `<Show when={data()} fallback={<LoadState error={data.error} …/>}>` 中 `when` 先抛出，
  * `fallback` 不会生效，「接口失败时显示原因与重试」的路径无法执行。
  *

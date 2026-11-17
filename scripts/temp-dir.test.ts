@@ -6,7 +6,7 @@
  *
  * 临时工作区与截图产物一律放在 `.tmp/<用途>`。在仓库根另建点目录不会产生任何报错，
  * 也不进入 git 状态（`*.sqlite3` 与目录本身不入库），只在文件管理器中不断累积，
- * 且每新增一个都要在 `.gitignore` 与 `biome.json` 中各补一行。
+ * 且每新增一个都要在 `.gitignore` 与 `biome.json` 中各添加一行。
  */
 
 import { describe, expect, test } from 'bun:test'

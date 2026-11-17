@@ -64,7 +64,7 @@ async function until(check: () => boolean, ms = 2000): Promise<void> {
 }
 
 describe('宠物状态推导', () => {
-  test('变闲后按最新一轮记录结果：完成、出错、被中断不记、启动前被拒记为出错', async () => {
+  test('转为空闲后按最新一轮记录结果：记录完成与出错，被中断时不记录，启动前被拒绝时记为出错', async () => {
     const store = await import('../../lib/store/index.ts')
     serveLedger()
     const now = Date.now()

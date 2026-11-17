@@ -58,7 +58,7 @@ export interface ApiDeps {
    */
   collectGarbage(): { removed: number }
   /**
-   * 把工具结果中的图像引用还原为字节（`loadToolImages`）。理由同 `collectGarbage`：只交出读取这一种能力。
+   * 把工具结果中的图像引用还原为字节（`loadToolImages`）。理由同 `collectGarbage`：只提供读取这一种能力。
    */
   loadToolImages(steps: Step[]): Step[]
   /**

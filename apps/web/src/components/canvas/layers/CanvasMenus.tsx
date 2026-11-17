@@ -155,7 +155,7 @@ export function CanvasMenus() {
                             {i() + 1} · {madeAt(v.made.at)}
                             {v.path.endsWith('.task.json')
                               ? (() => {
-                                  // 每次生成在提交之前登记引用任务记录的版本：正在生成或取回的那一版不是待取回。
+                                  // 每次生成在提交之前登记引用任务记录的版本：正在生成或取回的版本不标为待取回。
                                   const s =
                                     canvas.view()?.states[(m() as { nodeId: string }).nodeId]
                                   if (s?.state !== 'running' || s.version !== v.id)

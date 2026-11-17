@@ -64,7 +64,7 @@ interface Page {
   content: string
 }
 
-/** 沿 nextOffset 逐页读取到末尾。页位置不前进时直接失败，避免测试陷入死循环。 */
+/** 沿 nextOffset 逐页读取到末尾。页位置不前进时直接失败，避免测试陷入无限循环。 */
 async function pageThrough(sink: SinkPort, length: number): Promise<Page[]> {
   const pages: Page[] = []
   let offset: number | null = 0
@@ -163,7 +163,7 @@ describe('分段读取', () => {
     expect(r.message).toContain('offset=3')
   })
 
-  test('中文与 emoji 按每页 4 字节读完，拼接后逐字相等', async () => {
+  test('中文与 emoji 按每页 4 字节读取完毕，拼接后逐字相等', async () => {
     const body = '甲乙丙🙂丁'
     const pages = await pageThrough(memSink(body), 4)
     expect(pages.map((p) => p.content).join('')).toBe(body)
@@ -206,7 +206,7 @@ describe('分段读取', () => {
     expect(body.startsWith(`${first.data!.content}${second.data!.content}`)).toBe(true)
   })
 
-  test('二进制正文不陷入死循环，也不抛出错误', async () => {
+  test('二进制正文不陷入无限循环，也不抛出错误', async () => {
     const bytes = new Uint8Array(300)
     for (let i = 0; i < bytes.length; i++) bytes[i] = 0x80 + (i % 0x80)
     const pages = await pageThrough(memSink(bytes), 3)
@@ -364,7 +364,7 @@ describe('query 跨页续查', () => {
   const expectedLines = Array.from({ length: 120 }, (_, i) => (i + 1) * 2)
   const lineStart = (lineNo: number) => byteLen(lines.slice(0, lineNo - 1).join('\n')) + 1
 
-  test('120 条命中跨页读完，不漏不重，最后一页 nextOffset 为 null', async () => {
+  test('120 条命中跨页读取完毕，不漏不重，最后一页 nextOffset 为 null', async () => {
     const pages = await searchThrough(memSink(doc), 'hit-')
     expect(pages.length).toBeGreaterThan(1)
     expect(pages[pages.length - 1]!.nextOffset).toBeNull()
@@ -450,7 +450,7 @@ describe('按本次决策的投递额度分页', () => {
   })
 
   /** 执行工具之前的检查点据此在下一次决策开始前收纳该页（`@qywork/agent` 的 `batchCapped`）。 */
-  test('按余额截短的一页记为触及单次上限；读到末尾或按 length 截取的不记', async () => {
+  test('按余额截短的一页记为触及单次上限；读取到末尾或按 length 截取的不记', async () => {
     const cut = withRoom(memSink(body), 5_000)
     await readResourceTool.fn({ resource_id: 'rs_1' }, cut)
     expect(batchCapped(cut.state)).toBe(true)

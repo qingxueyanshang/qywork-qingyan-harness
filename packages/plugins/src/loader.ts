@@ -157,7 +157,7 @@ async function loadOne(dir: string, options: LoadOptions): Promise<LoadedPlugin>
    * 计入会为不存在的调用链各启动一个常驻进程。
    *
    * 三类贡献按用户决定保留（清单类型、注册与冲突检测不变）。
-   * 接入消费端时在此处加回对应条件，且与消费者在同一次改动中添加。
+   * 接入消费端时在此处添加对应条件，并与消费者在同一次改动中提交。
    */
   const needsCode = (manifest.contributes.tools?.length ?? 0) > 0
 
@@ -226,7 +226,7 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
       facet: plugin.manifest.id,
       summary: t.description,
       // 跨进程调用。ctx 不离开宿主进程：它包含 sink 句柄、AbortSignal 等
-      // 宿主内部对象，序列化传递等于交出这些对象。此处只从 ctx
+      // 宿主内部对象，序列化传递等于把这些对象提供给插件。此处只从 ctx
       // 取出本次调用的身份并保留在宿主内存中，插件一侧取得的仍只有 callId；
       // 插件使用宿主能力须经由 host.* RPC，该路径上有权限检查，身份按 callId 取回。
       fn: async (args, ctx) => {

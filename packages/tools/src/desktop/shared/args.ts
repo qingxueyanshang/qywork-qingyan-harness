@@ -22,7 +22,7 @@ export class ArgError extends Error {
  * strict 工具 schema 把每个可选参数都列入 `required` 并在类型中加入 `null`
  * （`packages/ai` 的 `strictify`），模型据此为无关参数逐个填写空值：约束解码的端点填写
  * `null` 与空串，DeepSeek 无论 schema 是否 strict 都会填写字符串 `"null"`。按 `!== undefined`
- * 判断会把一次 `set_value` 附带的约二十个空值全部报告为多余参数，动作始终无法派发。
+ * 判断会把一次 `set_value` 附带的约 20 个空值全部报告为多余参数，动作始终无法派发。
  *
  * 空串与 `"null"` 在该检查中不构成例外：`value`、`text` 的原文由动作自身的参数表读取，
  * 不经过该判据，输入字面量 null 不受影响。

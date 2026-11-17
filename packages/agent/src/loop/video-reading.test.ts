@@ -3,7 +3,7 @@
  *
  * 覆盖范围：`loop/request.ts` 的 `toolResultContent` / `videosOf` / `envelopeResult` / `omitImages`
  * 对视频块的处理与 `runDensity` / `videoDelivery` 的同一判定，`ai` 的 `estimateContent` 按时长与画面尺寸计视频，
- * 读不出时长或画面尺寸的视频发送前替换为说明（`materialize`），读数（`loop/context.ts` 的 `contextEvent`）与
+ * 无法读取时长或画面尺寸的视频发送前替换为说明（`materialize`），读数（`loop/context.ts` 的 `contextEvent`）与
  * 回执准入（`loop/turn-end.ts`）因此只依据本地估算。
  */
 
@@ -118,10 +118,10 @@ describe('视频估算', () => {
   })
 
   /**
-   * 要防止的形状：浏览器录制的 WebM 不写时长，百炼与智谱都以 400 拒绝；读不出画面尺寸的 mp4 同样被拒。
+   * 要防止的形状：浏览器录制的 WebM 不写时长，百炼与智谱都以 400 拒绝；无法读取画面尺寸的 mp4 同样被拒。
    * 这类视频发送前改为抽帧，说明写明原因，估算记 0。
    */
-  test('不原生发送、超出范围、读不出时长或尺寸、文件已不存在时记 0，读不出元数据的改为抽帧', () => {
+  test('不原生发送、超出范围、无法读取时长或尺寸、文件已不存在时记 0，无法读取元数据的改为抽帧', () => {
     const narrowed = {
       ...glm,
       video: { ...glm.video!, accepts: { ...ANY_VIDEO, maxBytes: 500_000 } },
@@ -136,7 +136,7 @@ describe('视频估算', () => {
       expect(estimateVideo(unknown, glm)).toBe(0)
       expect(videoDelivery(unknown, glm.video, undefined)).toBe('frames')
       expect(videoRangeCause(unknown, glm.video!.accepts)).toBe(
-        '该视频的容器中读不出时长或画面尺寸（录制时未写入时长，或文件不完整），接口无法解析',
+        '该视频的容器中无法读取时长或画面尺寸（录制时未写入时长，或文件不完整），接口无法解析',
       )
     }
     const image = estimateContent(
@@ -246,13 +246,13 @@ async function readVideoRun(path: string, input: number) {
   const registry = new ToolRegistry()
   registry.register({
     name: 'look',
-    description: '读一段视频',
+    description: '读取一段视频',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     actionKind: 'read',
     objectLabel: '视频',
     category: 'files',
     facet: '读写',
-    summary: '读视频',
+    summary: '读取视频',
     permissionEffect: 'read',
     fn: async () => ({
       status: 'success',
@@ -285,7 +285,7 @@ const hasVideo = (req: ChatRequest) =>
     (m) => typeof m.content !== 'string' && m.content.some((b) => b.type === 'video'),
   )
 
-test('读得出时长与尺寸的视频原生发送并计入发送前的读数；回执之后读数采用真值', async () => {
+test('可读取时长与尺寸的视频原生发送并计入发送前的读数；回执之后读数采用真值', async () => {
   const path = await videoFile(mp4Bytes(10, 1280, 720, 100_000))
   const video = estimateVideo(videoMetaOf(path), DEFAULT_DENSITY)
   expect(video).toBeGreaterThan(10_000)
@@ -298,13 +298,13 @@ test('读得出时长与尺寸的视频原生发送并计入发送前的读数�
   expect(last?.source).toBe('actual')
 })
 
-test('读不出时长与尺寸的视频发送前替换为说明，不发出必然被拒的请求', async () => {
+test('无法读取时长与尺寸的视频发送前替换为说明，不发出必然被拒的请求', async () => {
   // 10 万字节、没有 moov：接口无法解析这类文件。
   const bytes = new Uint8Array(100_000)
   bytes.set([0, 0, 0, 24])
   const { second, contexts } = await readVideoRun(await videoFile(bytes), 2_000)
   expect(hasVideo(second)).toBe(false)
-  expect(JSON.stringify(second.messages)).toContain('读不出时长或画面尺寸')
+  expect(JSON.stringify(second.messages)).toContain('无法读取时长或画面尺寸')
   expect(JSON.stringify(second.messages)).toContain('read_file')
   expect(contexts.at(-1)?.source).toBe('actual')
 })

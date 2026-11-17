@@ -179,7 +179,7 @@ input[type="search"]::-webkit-search-cancel-button:hover {
  * 被容器裁切，只剩上下两条线。负 offset 使整圈位于行内，不被裁切。
  *
  * 不要在此处设置 `border-radius`。outline 会随元素自身的圆角绘制；在此设置圆角会在
- * 元素获得焦点时改变元素形状：圆形的 `.send-btn` 获得键盘焦点后会变成圆角方块。
+ * 元素获得焦点时改变元素形状：圆形的 `.send-btn` 获得键盘焦点后会变为圆角方块。
  */
 :focus-visible {
   outline: 1px solid var(--text-secondary);

@@ -230,7 +230,7 @@ const PASSWORD = 'VelvetSweatshop'
 
 /**
  * 在 `stream` 的首个 BOF 之后插入 FILEPASS 并以 RC4 加密（BOUNDSHEET 的子流位置随之后移）。
- * `password` 不是缺省密码时得到的文件不能以缺省密码解开。
+ * `password` 不是缺省密码时得到的文件不能以缺省密码解密。
  */
 export function encrypt(stream: Uint8Array, password = PASSWORD): Uint8Array {
   const salt = Uint8Array.from({ length: 16 }, (_, i) => i * 13 + 1)

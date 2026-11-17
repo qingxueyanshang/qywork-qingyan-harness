@@ -86,7 +86,7 @@ export interface WorkflowAppliedReview {
   note: string
   /**
    * approve 时该检查点 needs 中状态不是 done 的节点。主会话接受了这些失败，
-   * 工具回执必须列出它们，否则模型只看到「已完成」而不知道自己批准了哪些内容。
+   * 工具回执必须列出它们，否则模型只取得「已完成」，无法得知自己批准了哪些内容。
    */
   acceptedFailures?: { nodeId: string; reason: string }[]
 }
@@ -175,7 +175,7 @@ export type SubagentTargetParse =
 /**
  * 派发目标：`subagent` 工具的参数与图节点共用同一套字段。种类由填写了哪个字段决定，不另设种类字段：
  * subagent 为本会话已有的子 agent，role 按角色新建，cli 派给外部 CLI，三者都没有而有 name 时新建临时子 agent。
- * 不要恢复单独的种类字段：它与这几个字段表达同一件事，两处不一致（填了 name 未填种类、种类与字段不符）只能报错。
+ * 不要恢复单独的种类字段：它与这几个字段表达同一信息，两处不一致（填了 name 未填种类、种类与字段不符）只能报错。
  * 同时填写两种目标时无法确定种类，报错，不推测。
  */
 export function parseSubagentTarget(raw: Record<string, unknown>): SubagentTargetParse {
@@ -538,7 +538,7 @@ export function workflowResults(
 /**
  * 把 revise 应用到节点状态：作废的节点回到 `waiting`，保留子 agent 的 id：
  * 续发是向原子 agent 继续发送，而不是新建一个看似相同的任务。
- * 被点名的节点同时记下续发指令，审查说明并入其中：子 agent 只收到续发指令，看不到审查调用本身。
+ * 被点名的节点同时记录续发指令，审查说明并入其中：子 agent 只收到续发指令，不会取得审查调用本身。
  *
  * `foldWorkflow` 与推进器必须调用本函数，否则回放得到的投影与内存中的图不一致。
  */
@@ -645,7 +645,7 @@ export function foldWorkflow(
      * 仍在运行的调用按其参数计入。
      *
      * 派发后立即返回，之后任一节点执行完毕的回调随时会重建该投影，而此时发起它的
-     * workflow 调用可能尚未落终态。不计入该调用时，刚批准的检查点在几毫秒内会被再次判定为
+     * workflow 调用可能尚未落终态。不计入该调用时，刚批准的检查点在数毫秒内会被再次判定为
      * 「上游已齐、尚未批准」，同一检查点的回执因此发送两次。
      */
     const applied = transition?.review ?? (record.status === 'running' ? review : null)

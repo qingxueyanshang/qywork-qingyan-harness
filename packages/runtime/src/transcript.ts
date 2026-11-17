@@ -38,7 +38,7 @@ import {
   type Store,
 } from '@qywork/store'
 
-/** 段相同的判据：分组与正文逐字相等。回放去重与压缩补回共用此判据，两处判据不一致会导致漏段或重复。 */
+/** 段相同的判据：分组与正文逐字相等。回放去重与压缩补回共用此判据，两处判据不一致会导致遗漏段落或重复。 */
 export function sameContextSegment(a: RunContextSegment, b: RunContextSegment): boolean {
   return a.group === b.group && a.content === b.content
 }
@@ -114,7 +114,7 @@ export interface ProjectOptions {
  * 3. **存量行**：缺 `action`。
  *
  * 形状 2 无法重建真实参数，只能给出 `{}`。这不构成编造：该行的 status 必然是
- * failure，模型看到的是「调用失败、参数无法还原」，而不是一条
+ * failure，模型取得的是「调用失败、参数无法还原」，而不是一条
  * 「参数为空却报告成功」的调用记录。
  */
 interface ToolPayload {
@@ -329,7 +329,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
       i += 1
       continue
     }
-    // 压缩 step 是给用户看的时间线标记，不属于模型可见的对话。
+    // 压缩 step 是界面上的时间线标记，不属于模型可见的对话。
     if (step.kind !== 'tool_action') {
       i += 1
       continue

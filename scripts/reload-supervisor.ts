@@ -6,13 +6,13 @@
  * 难以复现。本文件只保留策略，启动进程、结束进程、等待就绪由调用方注入。
  *
  * 判据有两条，缺一不可：文件已变化，且该 sidecar 没有未执行完毕的 run。
- * 只看第一条即为 `bun --watch` 的行为，代价是中断执行到一半的那一轮。
+ * 只检查第一条即为 `bun --watch` 的行为，代价是中断尚未执行完毕的一轮。
  */
 
 export interface ReloadDeps {
-  /** 该 sidecar 是否还有未执行完毕的 run。sidecar 已退出时返回 false，不得抛错：抛错按「无法确认」重排，退出后的 sidecar 不会再被重启。 */
+  /** 该 sidecar 是否还有未执行完毕的 run。sidecar 已退出时返回 false，不得抛出异常：抛出异常时按「无法确认」重排，退出后的 sidecar 不会再被重启。 */
   busy(): boolean | Promise<boolean>
-  /** 执行代码替换：结束旧进程、启动新进程、等待就绪。抛错不致命，下一次改动会再次触发。 */
+  /** 执行代码替换：结束旧进程、启动新进程、等待就绪。抛出异常不致命，下一次改动会再次触发。 */
   restart(): Promise<void>
   /** 一次保存通常连续产生多个事件（编辑器先写临时文件再改名），合并后再处理。 */
   debounceMs: number
@@ -82,7 +82,7 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
     } catch (err) {
       deps.log(`重启 sidecar 失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      // 必须在 finally 中复位：restart 抛错而该标志未复位时，
+      // 必须在 finally 中复位：restart 抛出异常而该标志未复位时，
       // 此后每次改动都只会排到队尾，不再替换代码，且没有任何提示。
       reloading = false
     }

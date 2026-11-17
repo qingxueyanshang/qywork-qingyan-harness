@@ -241,14 +241,14 @@ async function until(check: () => boolean, label: string): Promise<void> {
     if (check()) return
     await Bun.sleep(5)
   }
-  throw new Error(`等不到：${label}`)
+  throw new Error(`等待超时：${label}`)
 }
 
 /**
  * 等待该会话空闲，且收尾阶段不会再发起下一轮。
  *
  * 收尾时先释放占位，再关闭扩展、取出跟进消息并重新占位；本文件的工作区没有插件与 MCP 服务，
- * 两步之间只经过微任务，轮询看不到其间的空闲。后台命令结束时的回执另行发起一轮，用例按请求数等待。
+ * 两步之间只经过微任务，轮询无法观察到其间的空闲。后台命令结束时的回执另行发起一轮，用例按请求数等待。
  */
 async function idle(cv: ConversationId): Promise<void> {
   await until(() => !runs.isBusy(cv) && runs.armedOf(cv) === null, '会话空闲')
@@ -267,7 +267,7 @@ function alive(pid: number): boolean {
  * 等到命令在 `at` 目录（工作区相对）中写出 pid 文件，返回该命令在宿主上的 pid，供 `alive` 查询。
  *
  * Linux 上命令运行在 bwrap 的 pid 命名空间中（`--unshare-pid`），脚本写出的 `process.pid` 是命名空间内的
- * 编号（2、3…），按它查询宿主进程表查不到该命令，或查到无关的进程。因此在宿主的 /proc 中按命令行
+ * 编号（2、3…），按它查询宿主进程表无法查到该命令，或查到无关的进程。因此在宿主的 /proc 中按命令行
  * （`<bun> <脚本>.ts <名称> …`）与工作目录找到同一个进程。其他平台没有 pid 命名空间，脚本写出的即宿主 pid。
  * 须在命令仍在运行时调用：已退出的进程不在进程表中。
  */
@@ -288,7 +288,7 @@ async function pidOf(name: string, at = ''): Promise<number> {
       // 遍历期间退出的进程：读取失败，跳过。
     }
   }
-  throw new Error(`宿主进程表中找不到命令 ${name}`)
+  throw new Error(`宿主进程表中未找到命令 ${name}`)
 }
 
 const run = (id: string, args: Record<string, unknown>) => ({ id, name: 'run_command', args })

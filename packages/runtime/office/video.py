@@ -46,7 +46,7 @@ def _duration(container, stream):
 def _scanned_duration(container, stream):
     """容器不写时长时（浏览器录制的 WebM）逐个读取数据包，取最后的结束时间戳；只读包头，不解码画面。
 
-    读完后回到开头。读取过程中解封装器记下了关键帧位置，之后按时间定位才可用：这类文件没有索引（Cues）。
+    读取完毕后回到开头。读取过程中解封装器记录了关键帧位置，之后按时间定位才可用：这类文件没有索引（Cues）。
     """
     end = None
     for packet in container.demux(stream):
@@ -181,7 +181,7 @@ def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
 def grab(path, target, t):
     """时间点 t（秒）处的一帧，按原尺寸写出 PNG。t 限定在 [0, 时长 - END_MARGIN]，越界时取首帧或尾帧。
 
-    返回实际时间、时长（读不出时为 None）与宽高。帧用作生成素材，不缩小。
+    返回实际时间、时长（无法读取时为 None）与宽高。帧用作生成素材，不缩小。
     """
     path = Path(path)
     container, stream = _open(path)
@@ -219,8 +219,8 @@ def describe(name, result):
         if b - a > gap:
             gap, at = b - a, (a, b)
     lines.append(
-        f"只看到这些时间点的画面；相邻两帧最长相隔 {gap:.1f} 秒（{clock(at[0])}–{clock(at[1])}），"
-        "中间的画面没有看到。需要某一段的细节时，用 read_file 的 start 与 end（秒）指定该区间后重新读取。"
+        f"仅查看了这些时间点的画面；相邻两帧最长相隔 {gap:.1f} 秒（{clock(at[0])}–{clock(at[1])}），"
+        "其间的画面未查看。需要某一段的细节时，用 read_file 的 start 与 end（秒）指定该区间后重新读取。"
     )
     if result["has_audio"]:
         lines.append("声音未处理：不能依据这些画面回答与声音或对白相关的问题。")

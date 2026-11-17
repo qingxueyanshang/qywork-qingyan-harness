@@ -32,10 +32,10 @@ import { syncViews } from './views/subscription.ts'
  *
  * 最后一个分支是必需的：模型选择器（`disabled={!state.activeConversation}`）、
  * 思考强度、`sendMessage` 都以存在活动会话为前提。没有活动会话时，
- * 输入框可以输入，但无法发送，也无法选择模型；而新项目与新安装的应用
- * 恰好处于该状态，即每位用户看到的第一屏。
+ * 输入框可以输入，但无法发送，也无法选择模型；新项目与新安装的应用
+ * 首次打开时即处于该状态。
  *
- * 新建空会话没有代价：这是用户接下来必然执行的第一个操作，
+ * 新建空会话不产生额外开销：这是用户接下来必然执行的第一个操作，
  * 且空会话不占用额度、不发送请求。
  */
 export async function loadConversations(): Promise<void> {
@@ -94,21 +94,21 @@ export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
 }
 
 /**
- * 切到另一条会话。
+ * 切换到另一条会话。
  *
  * 两处必须有终态，否则都会静默失败：
  *
  * 1. `discardPace()` 与切换视图表必须在同一处。若只在 `reloadActiveConversation`
- *    中丢弃积压内容，那发生在 await 之后，其间到达的 delta 会写入新会话的正文
- *    末尾，使新会话开头出现上一条会话的半句话。
+ *    中丢弃积压内容，丢弃发生在 await 之后，其间到达的 delta 会写入新会话的正文
+ *    末尾，使新会话开头出现上一条会话的部分正文。
  * 2. 获取失败时写入该会话的 `error`。调用点写的是 `void selectConversation(id)`，
  *    其中任何一次 `client.api` 抛错都会成为 unhandled rejection：视图表刚建立且为空、
- *    正文未加载，界面停在空会话上且没有任何说明，表现为点击会话后没有反应。
+ *    正文未加载，界面停留在空会话上且没有任何提示。
  */
 export async function selectConversation(id: string): Promise<void> {
   const current = state.views[id]
   if (state.activeConversation === id && current && current.history.loading !== 'unloaded') return
-  // 队列与后台命令只属于当前会话；切换时立即撤下，不能等历史请求返回后再替换。
+  // 队列与后台命令只属于当前会话；切换时立即移除，不能等历史请求返回后再替换。
   setState({ activeConversation: id, followUps: [], backgroundCommands: [], fileChanges: [] })
   writeSession(conversationKey(), id)
   discardPace()
@@ -140,7 +140,7 @@ export function interrupt(): void {
  * 设定目标（`/goal`），或改写当前目标。这是设定目标的唯一入口。
  *
  * 空正文在此处直接拦截：空的 `/goal` 发送到服务端只会得到一条拒绝，
- * 而用户看到的是刚输入的内容消失、界面上多出一条错误提示。
+ * 已输入的内容被清除，界面上增加一条错误提示。
  *
  * 不在此处判定「已有目标」：这是账本的规则（改写运行中的目标是合法的），
  * 前端复制一份判定会形成两处可能不一致的规则。
@@ -370,7 +370,7 @@ export async function exportActiveConversation(): Promise<'saved' | 'cancelled'>
  * 删除：服务端执行硬删除，消息、run、步骤一并删除。
  *
  * 返回值是回收失败的提示，不是删除失败：此时会话已不在账本中。
- * 两者合并为一个异常时，用户看到「删除失败」会再次点击，随后收到 404。
+ * 两者合并为一个异常时界面显示「删除失败」，再次删除返回 404。
  */
 export async function deleteConversation(id: string): Promise<string | null> {
   const res = await client.api<{ reclaimError?: string }>(
@@ -385,7 +385,7 @@ export async function deleteConversation(id: string): Promise<string | null> {
  * 从列表中移除一条会话，并保证仍有一条活动会话。
  *
  * 移除的正是当前会话时，必须先把 `activeConversation` 置空再重新获取：
- * `loadConversations` 发现存在活动会话时直接返回，不置空会使界面停在
+ * `loadConversations` 发现存在活动会话时直接返回，不置空会使界面停留在
  * 已不存在的会话上，之后每个请求都返回 404。
  */
 async function dropConversation(id: string): Promise<void> {
@@ -423,8 +423,8 @@ function newRequestId(): string {
  */
 export function sendMessage(content: string, attachments?: Attachment[], steer = false): void {
   const id = state.activeConversation
-  // 只有附件没有文字也是有效消息：用户的意图可能就是让模型查看图片，
-  // 不应要求用户额外输入文字。
+  // 只有附件没有文字也是有效消息：用户可能只要求模型查看图片，
+  // 不应要求额外输入文字。
   if (!id || (!content.trim() && !attachments?.length)) return
   const requestId = newRequestId()
   const queued = hasRun()
@@ -434,7 +434,7 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
       /*
        * 乐观呈现，不等待服务端回执。忙碌与空闲两种状态写入不同位置：
        * 空闲时该消息是下一轮的开头，进入会话流；忙碌时它在队列中，进入卡片区。
-       * 若都插入会话流，用户会看到一段尚未发生的对话。
+       * 若都插入会话流，会话流中会出现一段尚未发生的对话。
        *
        * 卡片的 id 使用 `clientRequestId`，与服务端队列条目同源，
        * 随后的快照整体覆盖时同一条目不会重复出现。
@@ -456,8 +456,8 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
         /*
          * 本轮从按下发送开始计时，取本机时钟；`run.started` 到达后保留该值。不要等到 `run.started`
          * 才写入：服务端发出它之前还有数秒准备步骤，耗时栏与整轮状态条都以开始时刻为显示条件，
-         * 会在这段时间之后才出现，推动下方布局。
-         * 文件读数随之清空，与 `run.started` 相同：状态条此时即显示，不清空时带着上一轮的读数出现。
+         * 会在这段时间之后才出现，使下方布局移位。
+         * 文件读数随之清空，与 `run.started` 相同：状态条此时即显示，不清空时显示的是上一轮的读数。
          */
         if (v) v.runStartedAt = Date.now()
         s.fileChanges = []

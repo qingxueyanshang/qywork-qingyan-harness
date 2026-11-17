@@ -186,7 +186,7 @@ WHERE kind = 'tool_action' AND trim(COALESCE(provider_batch_id, '')) = '';
     if (changed) updatePayload.run(JSON.stringify(payload), row.id)
   }
 
-  // 仅当逐请求账能唯一证明接口时，才为旧会话补写接口。没有证据或存在多个接口时保持空串，
+  // 仅当逐请求账本能唯一证明接口时，才为旧会话补写接口。没有证据或存在多个接口时保持空串，
   // 运行时要求用户重新选择；不以当前默认接口伪造历史归属。
   const conversations = db
     .query<{ id: string; model: string }, []>(

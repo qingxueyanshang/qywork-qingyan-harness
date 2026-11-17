@@ -36,7 +36,7 @@ const WINDOWS_RESERVED = '<>:"|?*'
  * 项目名 → 文件夹名。不合法时返回 `null`，由调用方返回 422。
  *
  * 拒绝而不是清洗（CLAUDE.md E）：把 `../../etc` 清洗为 `etc` 时，界面上显示的名称
- * 与实际创建的目录不一致；创建到一半失败比当场拒绝更难排查。
+ * 与实际创建的目录不一致；部分创建后失败比直接拒绝更难排查。
  *
  * 逐字符判定控制字符，不写含控制字符的正则：这种正则要么在源码中放入裸控制字节，
  * 要么需要添加一条 biome-ignore，两者都没有必要。
@@ -64,7 +64,7 @@ async function freshDir(root: string, folder: string): Promise<string> {
  * 参数清单：只返回名称与是否必填，不下发整份 JSON Schema。
  *
  * MCP 工具的 schema 由第三方 server 决定，大小不受控：整份放入设置页的请求中，
- * 界面用不到，流量却随已安装的 server 波动。
+ * 界面不使用这些内容，流量却随已安装的 server 波动。
  */
 function paramsOf(schema: Record<string, unknown>): { name: string; required: boolean }[] {
   const props = schema.properties
@@ -108,7 +108,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
      * 添加项目。
      *
      * 同一路径既用于新增也用于切换：`upsertWorkspace` 在项目已存在时更新
-     * `last_opened_at`，不存在时插入一行。为切换单开一个端点等于两条路径写同一个
+     * `last_opened_at`，不存在时插入一行。为切换另设一个端点等于两条路径写同一个
      * 字段，而该字段正是分支监听与缺省 `?ws=` 的判据。
      *
      * 两种入参：
@@ -197,7 +197,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    * 把项目从列表中移除。不删除任何数据，见 `removeWorkspace`：
    * 它只设置 `removed_at` 标记，会话、消息、run 均不改动，重新添加同一路径即可恢复。
    *
-   * 路径中的 id 直接作为 SQL 参数，不拼接路径也不拼接 SQL；查不到时返回 404 而不是静默成功。
+   * 路径中的 id 直接作为 SQL 参数，不拼接路径也不拼接 SQL；未查到时返回 404 而不是静默成功。
    */
   const one = /^\/api\/workspaces\/([^/]+)$/.exec(p)
   if (one && req.method === 'DELETE') {
@@ -205,9 +205,8 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
     /*
      * 当前项目同样可以移除，只要还有其他项目可切换。
      *
-     * 不要一律返回 409：那会拦截真实需求。开发本仓库时它本身就是当前项目，
-     * 该行的 `⋯` 菜单中将永远没有「移除」，而先切换到其他项目再回来移除，
-     * 是不应要求用户执行的操作顺序。
+     * 不要一律返回 409：当前项目无法移除时，必须先切换到其他项目再回来移除，
+     * 不应要求用户执行这一操作顺序。
      *
      * 只有它是最后一个项目时才拒绝：移除后界面没有任何项目可服务，
      * 该状态没有终态。这一条仍是硬性规则。

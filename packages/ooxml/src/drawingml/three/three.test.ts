@@ -230,7 +230,7 @@ class PixelCanvas implements PaintCanvas {
 }
 
 describe('绘制', () => {
-  test('平面内容按逆映射取样并着色，结果图层按设备坐标画到画布', () => {
+  test('平面内容按逆映射取样并着色，结果图层按设备坐标绘制到画布', () => {
     const layers: PixelCanvas[] = []
     const main = new RecordingContext()
     const scene: ShapeScene = {
@@ -272,7 +272,7 @@ describe('绘制', () => {
       },
     )
     const out = layers[1]!
-    // lon 60° 的正交投影把宽度 40 压为 20：结果图层宽 20，中心像素为 1.039 × 128 + 6.5。
+    // lon 60° 的正交投影把宽度 40 压缩为 20：结果图层宽 20，中心像素为 1.039 × 128 + 6.5。
     expect(out.width).toBe(20)
     const o = (10 * out.width + 10) * 4
     expect(out.context.pixels[o]).toBe(Math.round(1.039 * 128 + 6.5))

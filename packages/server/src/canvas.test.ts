@@ -267,7 +267,7 @@ describe('画布服务：节点状态', () => {
       version: 'task',
     })
 
-    // 当前版本切换到已有成片时正常展示，其他待取回版本不能盖住成片。
+    // 当前版本切换到已有成片时正常展示，其他待取回版本不能覆盖成片的状态。
     await svc.docs.apply(root, PATH, [{ op: 'update', id: video, current: 'old' }])
     expect((await svc.docs.read(root, PATH)).states[video]).toEqual({
       state: 'normal',
@@ -313,7 +313,7 @@ describe('画布服务：节点状态', () => {
     expect((await svc.docs.read(root, PATH)).revisions?.['voice.mp3']).toBe('3000000')
   })
 
-  test('Art 页面的版本包含其引用的图片：图片被改写或补上时页面版本变化，图片同样列出', async () => {
+  test('Art 页面的版本包含其引用的图片：图片被改写或补齐时页面版本变化，图片同样列出', async () => {
     const r = applyCanvasOps(emptyCanvas(), [{ op: 'add_file', path: '页面/首页.html' }])
     if (!r.ok) throw new Error(r.error)
     const root = await workspace(r.doc)
@@ -343,7 +343,7 @@ describe('画布服务：节点状态', () => {
 
   /**
    * 键序按卡片顺序、其后按各页面引用的图片顺序，与读取与 stat 的完成先后无关。
-   * 原始失败形状：并行读取完成即写入，体积小的页面先读完，其引用的图片排在前面，同一份画布两次读取的 JSON 键序可能不同。
+   * 原始失败形状：并行读取完成即写入，体积小的页面先读取完成，其引用的图片排在前面，同一份画布两次读取的 JSON 键序可能不同。
    */
   test('版本表的键序按卡片与引用顺序确定', async () => {
     const r = applyCanvasOps(emptyCanvas(), [
@@ -367,7 +367,7 @@ describe('画布服务：节点状态', () => {
 })
 
 describe('画布服务：撤销与重做', () => {
-  test('撤销恢复编辑前的文档、重做恢复编辑后的文档；已删除的生成卡连同版本一起恢复', async () => {
+  test('撤销恢复编辑前的文档、重做恢复编辑后的文档；已删除的生成卡片连同版本一起恢复', async () => {
     const seeded = applyCanvasOps(emptyCanvas(), [
       { op: 'add_generate', ref: '$g', output: 'image', name: '图片1', x: 0, y: 0 },
     ])
@@ -443,7 +443,7 @@ describe('画布服务：上传', () => {
     expect(new Uint8Array(await readFile(join(root, first.path)))).toEqual(BYTES)
   })
 
-  test('节点的框按文件头读出的比例确定：上传与从文件树拖入使用同一条路径', async () => {
+  test('节点的框按文件头读取的比例确定：上传与从文件树拖入使用同一条路径', async () => {
     const root = await workspace()
     const { svc } = service()
     const head = Buffer.alloc(33)
@@ -697,7 +697,7 @@ describe('画布服务：时间线导出', () => {
 
   /**
    * 原始失败形状：用户要求「合并时间线并导出」，画布工具写明「本工具无法完成」，模型操控 qywork 自身的界面点击导出，
-   * 期间误点「取消导出」。大模型发起的导出由界面以现有的导出会话完成。
+   * 期间误点击「取消导出」。大模型发起的导出由界面以现有的导出会话完成。
    */
   test('大模型请求导出：向界面发出 canvas.export，界面的导出会话完成即返回成片；重复请求等待同一次，另一界面不能再认领', async () => {
     const root = await workspace()

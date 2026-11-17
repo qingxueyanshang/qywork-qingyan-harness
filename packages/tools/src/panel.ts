@@ -69,7 +69,7 @@ export const openInPanelTool: ToolSpec = {
   async fn(args, ctx) {
     const path = typeof args.path === 'string' ? args.path.trim() : ''
     const workbench = typeof args.workbench === 'string' ? args.workbench.trim() : ''
-    if (path && workbench) return invalid('path 与 workbench 只给一个')
+    if (path && workbench) return invalid('path 与 workbench 只能提供一个')
     if (workbench) {
       const title = await workbenchTitle(workbench)
       if (!title) return invalid(`没有已安装的工作台：${workbench}`)

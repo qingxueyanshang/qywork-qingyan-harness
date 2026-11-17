@@ -175,7 +175,7 @@ async function connected(handle: ReturnType<typeof serve>): Promise<{
   const host = await FakeDesktopHost.connect(handle.port, HOST_KEY, cleanups)
   host.ready()
   const desktop = handle.desktop
-  if (!desktop) throw new Error('这个 serve 应当装配了电脑控制协调器')
+  if (!desktop) throw new Error('该 serve 应当装配电脑控制协调器')
   await until(() => desktop.available(), '桌面宿主完成注册')
   return { host, desktop }
 }
@@ -345,7 +345,7 @@ test('释放时执行状态未知则其窗口不交还，其他窗口照常可�
   await reregister(handle, host, { hostEpoch: 9 })
   const d = desktop.portFor('cv_d')
   const [first] = await discover(host, () => d.windows())
-  if (!first) throw new Error('窗口发现应当交回两个窗口')
+  if (!first) throw new Error('窗口发现应当返回两个窗口')
   const readD = await observed(host, d.observe({ windowId: first.windowId }))
   expect(readD.op).toBe('read_tree')
   expect(readD.hostEpoch).toBe(9)
@@ -369,7 +369,7 @@ test('等待撤销回执期间宿主代际变化，桌面不再被阻塞：旧�
   // 代际变化后，「无法确认是否结束」这一原因所指的执行实例已不存在，不应再阻塞桌面。
   const b = desktop.portFor('cv_b')
   const [first] = await discover(host, () => b.windows())
-  if (!first) throw new Error('窗口发现应当交回两个窗口')
+  if (!first) throw new Error('窗口发现应当返回两个窗口')
   const readB = await observed(host, b.observe({ windowId: first.windowId }))
   expect(readB.hostEpoch).toBe(9)
 })
@@ -690,7 +690,7 @@ test('窗口关闭后重新打开会得到新的 windowId，编号表随之重�
   const list = await host.next()
   host.reply(list, { observation: { kind: 'windows', capturedAt: 2, windows: [reborn] } })
   const [again] = await listing
-  if (!again) throw new Error('窗口发现应当交回重开的窗口')
+  if (!again) throw new Error('窗口发现应当返回重新打开的窗口')
   expect(again.windowId).not.toBe('dw_1')
 
   const fresher = await lookWith(host, a, [窗口根, 乙组, 乙按钮], again.windowId)
@@ -738,7 +738,7 @@ test('整窗观察之后的动作按整窗重读：请求帧不带范围，重�
  * 原始失败形状：上一份观察被截断，动作之后只重读了一棵子树，合并控件表时把上一份的旧节点
  * 连同新编号、新时刻与本次读取的完整性一并返回，旧观察被截断的事实因此被覆盖。
  */
-test('子树范围的观察之后，动作按同一范围重读，新观察只含这次读到的节点', async () => {
+test('子树范围的观察之后，动作按同一范围重读，新观察只含本次读取到的节点', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)
   const a = desktop.portFor('cv_a')
@@ -780,7 +780,7 @@ test('子树范围的观察之后，动作按同一范围重读，新观察只�
   expect(result.observation.visited).toBe(2)
 })
 
-test('动作之后窗口被模态窗口遮挡：整份观察作废，只保留重读到的部分', async () => {
+test('动作之后窗口被模态窗口遮挡：整份观察作废，只保留重新读取到的部分', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)
   const a = desktop.portFor('cv_a')
@@ -947,7 +947,7 @@ test('动作调用未返回：窗口清单按同一路径登记，新窗口可�
   expect(appeared?.windowId).not.toBe('dw_1')
 
   // 新窗口可立即观察：无需再次列出窗口。
-  if (!appeared) throw new Error('回执里没有新窗口')
+  if (!appeared) throw new Error('回执中没有新窗口')
   const observing = a.observe({ windowId: appeared.windowId })
   const next = await host.next()
   expect(next.op).toBe('read_tree')
@@ -985,7 +985,7 @@ test('作用于本应用窗口的动作不发帧即拒绝，观察照常；完�
     blocking: [{ ...SELF, appeared: true }],
   })
   const selfId = (await acting).blocking?.[0]?.windowId
-  if (!selfId) throw new Error('回执里没有本应用的窗口')
+  if (!selfId) throw new Error('回执中没有本应用的窗口')
 
   const observing = a.observe({ windowId: selfId })
   const read = await host.next()
@@ -1064,7 +1064,7 @@ test('动作回执的窗口清单不裁剪其他窗口', async () => {
   const listed = await listing
   expect(listed).toHaveLength(2)
   const otherId = listed[1]?.windowId
-  if (!otherId) throw new Error('第二个窗口没有拿到 id')
+  if (!otherId) throw new Error('第二个窗口未取得 id')
 
   // 此处不能再执行窗口发现：窗口发现会按整机清单裁剪刚登记的第二个窗口。
   const looking = a.observe({ windowId: 'dw_1' })
@@ -1616,8 +1616,8 @@ test('按图像定位的指针动作换算为屏幕坐标并携带几何代际',
 })
 
 /**
- * 原始失败形状：微信的搜索结果下拉框是同一应用的另一个顶层窗口。它合成进图像后，按图像坐标点在
- * 它上面的动作带回该图像中的弹出窗口，由 worker 核对它仍在原处并把点击投递给它；伸出目标窗口的
+ * 原始失败形状：微信的搜索结果下拉框是同一应用的另一个顶层窗口。它合成进图像后，按图像坐标落在
+ * 它上面的动作带回该图像中的弹出窗口，由 worker 核对它仍在原处并把点击投递给它；超出目标窗口的
  * 部分同样在图像之内，按图像范围准入。
  */
 test('按图像定位的动作带回该图像中合成的弹出窗口', async () => {
@@ -1714,8 +1714,8 @@ test('未指定控件的键盘输入按窗口派发，请求帧中没有 ref 与
   expect((await acting).dispatch).toBe('submitted')
 })
 
-/** 原始失败形状：截取菜单窗口之后按 Escape，回执要求先观察。截图与观察都算看过该窗口。 */
-test('未指定控件的键盘输入要求本执行者观察或截取过该窗口，只截过图即可派发', async () => {
+/** 原始失败形状：截取菜单窗口之后按 Escape，回执要求先观察。截图与观察都视为已取得该窗口的状态。 */
+test('未指定控件的键盘输入要求本执行者观察或截取过该窗口，只截取过图像即可派发', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)
   const a = desktop.portFor('cv_a')
@@ -1875,7 +1875,7 @@ test('前台读数取宿主回执，窗口消息投递的动作显示为后台',
   current = (await looking).observationId
   expect(reading()).toBe(true)
 
-  // 随后的后台动作把读数改回后台。
+  // 随后的后台动作把读数改为后台。
   await act({ kind: 'invoke' }, { dispatch: 'submitted', observation: subtree() })
   expect(reading()).toBe(false)
 

@@ -8,9 +8,9 @@
  * 总数只使用一种计量口径，即运行中读数的口径。最近一次已发送请求带 usage 时，`total` 即
  * provider 真值（输入 + 输出）；尚未取得 usage 时读取该请求发出时记录的运行中读数
  * （`occupancyTokens`，即 `RunState.meter`：锚点真值加其后的本地增量，信封变化时只修正头部）。
- * 不要在此处另行推算：两处算式不同时，同一会话在运行中与事后查看会得到两个数值。
+ * 不要在此处另行推算：两处算式不同时，同一会话在运行中与事后查看会显示两个不同的数值。
  * 也不要使用 `max(全量估算, provider真值)`：两个数出自不同的计量口径，锚点失效时
- * 显示值会跳回字符数上界。
+ * 显示值会回到字符数上界。
  *
  * 没有当前路线与模型下带 usage 的请求时标为 `estimated`，此时运行中读数即本地估算。
  * 锚点后还有增量时标为 `projected`，只有最近请求本身有回执时才标为 `actual`。
@@ -151,7 +151,7 @@ export function contextPanel(
 ): ContextPanel {
   const limit = Math.max(1, model.contextWindow)
 
-  // 分组明细取最近一次已发送的请求：它描述的是模型当前看到的上下文。
+  // 分组明细取最近一次已发送的请求：它描述的是模型当前取得的上下文。
   const { sent, anchored, compacted } = contextBasis(store, conversationId, model)
   /*
    * 触发线优先取最近一次主请求写入的值：一轮之内触发线不变，运行中修改设置不改变本轮已显示的刻度，
@@ -175,7 +175,7 @@ export function contextPanel(
       : null
   // 尚未发送请求的会话返回 0 / 窗口，而不是没有面板。
   // 不要返回 `available: false`：前端据此完全不渲染，新会话的上下文字段
-  // 为空，看起来是功能缺失而不是尚未占用。
+  // 为空，界面显示为功能缺失而不是尚未占用。
   // 窗口是模型的属性，不是请求的属性：未发送任何请求时也能确定窗口大小。
   if (!sent) {
     const total = currentCompaction?.total ?? 0

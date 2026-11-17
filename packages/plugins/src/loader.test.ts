@@ -2,7 +2,7 @@
  * 插件返回值的归一化。
  *
  * 插件是第三方代码，返回值可能是任意形状，因此必须在信任边界上归一化。
- * 归一化后的消息是用户与插件作者唯一能看到的信息，
+ * 归一化后的消息是用户与插件作者唯一能取得的信息，
  * 其表述是否清楚直接决定排查出错插件所需的时间。
  */
 
@@ -20,7 +20,7 @@ describe('拒绝时说明原因', () => {
     const out = normalizeOutcome({ content: '一些内容', other: 1 }, 'probe_net')
     expect(out.status).toBe('failure')
     expect(out.message).toContain('status')
-    // 列出实际收到的字段：作者可直接看出返回的是 content 而不是 message。
+    // 列出实际收到的字段：作者可直接判断返回的是 content 而不是 message。
     expect(out.message).toContain('content')
     // 同时说明期望的形状，否则作者知道有误也无法确定应如何修改。
     expect(out.message).toContain('success')

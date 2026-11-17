@@ -9,12 +9,12 @@
 //!    工具窗口与 `WS_EX_NOACTIVATE` 窗口（创建采集项返回参数错误），多数弹出窗口经由回退路径采集。
 //! 3. **不置前台、不设置焦点、不移动指针。** 采集全程只读取窗口属性与合成器的帧。
 //! 4. **WGC 帧的原点是 DWM 的可见边框，不是 `GetWindowRect`。** 后者含不可见的调整边框，
-//!    以它为原点会使图像坐标与屏幕坐标整体偏移几个像素。
+//!    以它为原点会使图像坐标与屏幕坐标整体偏移数个像素。
 //! 5. **进程必须是 per-monitor v2 DPI 感知。** 否则窗口矩形经过系统虚拟化，图像几何
 //!    与控件包围盒不在同一套坐标中，采集请求一律拒绝。
 //! 6. **目标窗口的弹出窗口逐个采集，按 z 序合成在目标窗口之上**（`popup::layers_above`、`compose`）。
-//!    下拉框、菜单是同一应用的另一个顶层窗口，只采集目标窗口时图像中没有它们，模型看到的不是用户
-//!    看到的界面。其他应用的窗口不合成。
+//!    下拉框、菜单是同一应用的另一个顶层窗口，只采集目标窗口时图像中没有它们，模型取得的图像与屏幕上
+//!    显示的界面不一致。其他应用的窗口不合成。
 
 use std::ffi::c_void;
 #[cfg(debug_assertions)]
@@ -72,7 +72,7 @@ use crate::protocol::{base64, now_ms, Image};
 pub const SOURCE_WGC: &str = "wgc";
 pub const SOURCE_PRINT_WINDOW: &str = "print_window";
 
-/// 获取帧的轮询间隔。WGC 的帧由合成器推送，第一帧通常在一到两个合成周期内到达。
+/// 获取帧的轮询间隔。WGC 的帧由合成器推送，第一帧通常在一至两个合成周期内到达。
 const FRAME_POLL: Duration = Duration::from_millis(8);
 
 /// 采集计数。只在 debug 构建中存在，与读树的跨进程调用计数采用相同做法：
@@ -209,7 +209,7 @@ impl Capturer {
     /// 目标窗口与其弹出窗口合成后的像素、采集方式，以及合成进去的弹出窗口（按 z 序自下而上）。
     ///
     /// 任一窗口经由回退路径采集，整张图即记为回退路径：未绘制的黑色区域可能出现在任一窗口中。
-    /// 弹出窗口无法采集时整次采集失败，不交出缺少该窗口的图像：模型会把缺失理解为该窗口不存在。
+    /// 弹出窗口无法采集时整次采集失败，不提供缺少该窗口的图像：模型会把缺失理解为该窗口不存在。
     fn view_pixels(
         &self,
         hwnd: HWND,
@@ -334,7 +334,7 @@ impl Capturer {
         let _ = session.SetIsCursorCaptureEnabled(false);
         // 关闭采集边框的开关在 `IGraphicsCaptureSession3` 上，只有 Windows 11 提供；
         // 更早的系统上该调用返回接口不存在。图上是否有边框只能人工核对，
-        // debug 构建输出接口的返回码，供人工看图时对照。
+        // debug 构建输出接口的返回码，供人工查看图像时对照。
         let border = session.SetIsBorderRequired(false);
         #[cfg(debug_assertions)]
         eprintln!(
@@ -354,7 +354,7 @@ impl Capturer {
                 Ok(captured) => break self.read_frame(&captured, frame),
                 Err(e) => {
                     if Instant::now() >= until {
-                        break Err(format!("未等到采集帧：{e}"));
+                        break Err(format!("等待采集帧超时：{e}"));
                     }
                     std::thread::sleep(FRAME_POLL);
                 }
@@ -468,7 +468,7 @@ impl Capturer {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: u32::try_from(std::mem::size_of::<BITMAPINFOHEADER>()).unwrap_or(40),
                     biWidth: width,
-                    // 负高度表示自上而下的行序。正数会让整张图上下翻转。
+                    // 负高度表示自上而下的行序。正数会使整张图上下翻转。
                     biHeight: -height,
                     biPlanes: 1,
                     biBitCount: 32,

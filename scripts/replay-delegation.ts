@@ -21,7 +21,7 @@
  * 令牌经环境变量传递，两者都不进日志。
  *
  * 工作区与账本位于 `.tmp/replay-ws/<时间戳>/`，执行完毕后不删除；每一行进度同时追加到该目录的
- * `replay.log`：一条路径需要运行几分钟到几十分钟，分段查看只能依靠该文件。
+ * `replay.log`：一条路径需要运行数分钟到数十分钟，分段查看只能依靠该文件。
  */
 
 import { appendFileSync } from 'node:fs'
@@ -104,7 +104,7 @@ const LOG = join(ROOT, 'replay.log')
 /** 服务令牌。只写入环境变量与本机 URL，不写入日志。 */
 const TOKEN = crypto.randomUUID()
 
-/** 一轮的最长等待时间。外部 CLI 一次审查通常运行几分钟。 */
+/** 一轮的最长等待时间。外部 CLI 一次审查通常运行数分钟。 */
 const ROUND_TIMEOUT_MS = Number(arg('--round-min') ?? 45) * 60_000
 /** 派发即返回的时间上限：该调用只创建记录、启动进程。 */
 const DISPATCH_MS = 15_000
@@ -115,7 +115,7 @@ const QUIET_MS = 60_000
 
 // ─────────────────────────── 记录 ───────────────────────────
 
-/** 同时输出到终端与 `replay.log`。一条路径需要运行几十分钟，中途只能通过该文件查看进度。 */
+/** 同时输出到终端与 `replay.log`。一条路径需要运行数十分钟，中途只能通过该文件查看进度。 */
 function out(line: string): void {
   process.stdout.write(`${line}\n`)
   appendFileSync(LOG, `${line}\n`)
@@ -145,7 +145,7 @@ const oneLine = (text: string, limit = 200): string =>
 // ─────────────────────────── 工作区 ───────────────────────────
 
 /**
- * 一个小型 JS 项目，每个文件都足够短、可一次读完，且各含可明确指出的缺陷，
+ * 一个小型 JS 项目，每个文件都足够短、可一次读取完毕，且各含可明确指出的缺陷，
  * 审查任务因此有确定的产出。运行前实时生成，不纳入仓库。
  */
 const FIXTURE: Record<string, string> = {
@@ -599,7 +599,7 @@ async function awaitRound(feed: Feed, label: string, from: number, ms: number): 
   return { start, end, runId, ended: feed.events[end]! }
 }
 
-/** 同 `awaitRound`，超时返回 null 而不是抛错。回执驱动的轮次不保证存在下一轮。 */
+/** 同 `awaitRound`，超时返回 null 而不是抛出异常。回执驱动的轮次不保证存在下一轮。 */
 async function tryRound(
   feed: Feed,
   label: string,
@@ -1285,7 +1285,7 @@ async function main(): Promise<number> {
   const config = await loadConfig()
   const stored = resolveModel(config, PARENT)
   if (!stored) throw new Error(`配置中没有 ${PARENT.provider} / ${PARENT.model}`)
-  // 摘录预算与执行时的计算同源（`delegate.ts` 的 deliveryContext）：写死数值时，更换模型后两者不一致。
+  // 摘录预算与执行时的计算同源（`delegate.ts` 的 deliveryContext）：固定数值时，更换模型后两者不一致。
   const spec = applySpecOverride(lookupModel(stored.model, stored.kind), stored.spec)
   const viewTokens = observationBudget(spec.contextWindow)
   const bulkBytes = await writeFixture(viewTokens)

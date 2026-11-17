@@ -61,7 +61,7 @@ export function handleHello(
      * 广播一次当前分支名。
      *
      * **新连接的客户端只能从该广播取得分支名**，没有其他途径；而 `.git/HEAD`
-     * 的监听只在其变化时广播，刚连接的客户端无法等到。
+     * 的监听只在其变化时广播，刚连接的客户端无法据此取得当前值。
      */
     announceGit(): void
     /** 补发完成后广播当前桌面目标，首次连接与缺口无法补发时也能恢复会话归属。 */
@@ -94,7 +94,7 @@ export function handleHello(
   const off = deps.bus.subscribe(subscriber)
   deps.unsubscribers.set(ws.data.id, off)
 
-  // 断线补发：缺口在保留窗口内时逐条补发，无法补发时让客户端重新拉取全量。
+  // 断线补发：缺口在保留窗口内时逐条补发，无法补发时让客户端重新获取全量。
   // 「能否补发」完全由 `replayFrom` 裁决（含「该位置是否属于本流」），
   // 这里只负责把结论转换为帧上的两个字段。
   let resync = false
@@ -148,7 +148,7 @@ export function handleHello(
  * 发送一个事件帧。发送缓冲超过上限时 `ws.send` 返回 0，该帧已被丢弃，此时关闭连接并返回 false。
  *
  * 不要在丢弃后保持连接：客户端不检测 seq 的缺口，被丢弃的可能是 `run.finished`，界面会一直显示运行中。
- * 关闭后客户端按最后收到的 seq 重连，由 `bus.replayFrom` 决定补发或整段重新拉取。
+ * 关闭后客户端按最后收到的 seq 重连，由 `bus.replayFrom` 决定补发或整段重新获取。
  * 客户端只在收到 `hello.err` 时停止重连，与关闭码无关；关闭码取 1013，与握手被拒的 1008 在日志中区分。
  */
 function sendOrClose(ws: ServerWebSocket<SocketData>, frame: EventEnvelope): boolean {

@@ -111,7 +111,7 @@ async function drain(kind: ProviderProfile['kind'], model: string): Promise<stri
       signal: new AbortController().signal,
     }
     for await (const _ of adapter.stream(req)) {
-      // 只需读完
+      // 只需读取完毕
     }
     return 'ok'
   } catch (err) {

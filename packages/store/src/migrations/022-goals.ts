@@ -12,7 +12,7 @@ export const migration022: Migration = {
    *
    * **主键即 `(goal_id, revision)`，不另设事件 id。** 复合主键将
    * 「同一 revision 不得写入两次」变为数据库层的约束，两个写入方冲突时
-   * 后写入者直接抛错，而不是追加第二条同版本的记录且不报错。
+   * 后写入者直接抛出异常，而不是追加第二条同版本的记录且不报错。
    *
    * **会话的最新目标通过 `ORDER BY goal_id DESC` 获取**：`gl_` 前缀之后
    * 是定宽单调 id（`core/domain/ids.ts`），字典序严格等于创建顺序。

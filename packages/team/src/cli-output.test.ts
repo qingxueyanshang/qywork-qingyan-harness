@@ -63,13 +63,13 @@ describe('CLI 厂商终态', () => {
     expect(got.live).not.toContain('内部思考')
   })
 
-  test('Codex 有中间正文但没有完成事件时仍不算完成', () => {
+  test('Codex 有中间正文但没有完成事件时仍不视为完成', () => {
     const got = parse(codex, [message('开始处理')])
     expect(got.output).toBe('开始处理')
     expect(got.incomplete).toBeTruthy()
   })
 
-  test('Codex 只有思考文本和完成事件时不能算有交付物', () => {
+  test('Codex 只有思考文本和完成事件时不视为有交付物', () => {
     const got = parse(codex, [
       { type: 'item.completed', item: { type: 'reasoning', text: '先检查目录' } },
       { type: 'turn.completed' },
@@ -78,7 +78,7 @@ describe('CLI 厂商终态', () => {
     expect(got.output).toBe('')
   })
 
-  test('Claude 的错误终态提取 errors 数组，而不是丢弃或当正文成功', () => {
+  test('Claude 的错误终态提取 errors 数组，而不是丢弃或作为正文按成功处理', () => {
     const got = parse(claude, [
       { type: 'system', subtype: 'init', session_id: 'claude-1' },
       {
@@ -109,7 +109,7 @@ describe('CLI 厂商终态', () => {
     expect(got).toMatchObject({ output: '已完成', hasResult: true, error: '', incomplete: '' })
   })
 
-  test('Claude 的取消或延后审批不能以 success 标签报完成', () => {
+  test('Claude 的取消或延后审批不能以 success 标签报告完成', () => {
     for (const terminal_reason of ['aborted_streaming', 'aborted_tools']) {
       const got = parse(claude, [
         {
@@ -135,7 +135,7 @@ describe('CLI 厂商终态', () => {
     expect(deferred.incomplete).toBeTruthy()
   })
 
-  test('Claude 只有工具名称或缺少最终正文时不算有效产出', () => {
+  test('Claude 只有工具名称或缺少最终正文时不视为有效产出', () => {
     const got = parse(claude, [
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read' }] } },
       { type: 'result', subtype: 'success', is_error: false },

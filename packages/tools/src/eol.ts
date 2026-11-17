@@ -7,7 +7,7 @@
  * 通常使用 CRLF；本仓库自身也有若干 CRLF 文件（`.gitattributes` 设置了 `eol=lf` 也未能覆盖全部），
  * 其中还有一个是混合行尾。
  *
- * 全部文件工具遵循同一条规则：交给模型的一律是 LF，落盘一律按文件自身的行尾。
+ * 全部文件工具遵循同一条规则：提供给模型的文本一律为 LF，落盘一律按文件自身的行尾。
  */
 
 function count(haystack: string, needle: string): number {
@@ -17,7 +17,7 @@ function count(haystack: string, needle: string): number {
   return n
 }
 
-/** 去除 CRLF 中的 CR。交给模型的文本与行内比较都使用此函数。 */
+/** 去除 CRLF 中的 CR。提供给模型的文本与行内比较都使用此函数。 */
 export function toLf(text: string): string {
   return text.replace(/\r\n/g, '\n')
 }
@@ -33,7 +33,7 @@ export function dominantEol(raw: string): '\r\n' | '\n' {
   return crlf * 2 > count(raw, '\n') ? '\r\n' : '\n'
 }
 
-/** 把 LF 文本按目标行尾编码。输入若已含 CRLF，先归一再编码，不会产生 `\r\r\n`。 */
+/** 把 LF 文本按目标行尾编码。输入若已含 CRLF，先归一化再编码，不会产生 `\r\r\n`。 */
 export function fromLf(text: string, eol: '\r\n' | '\n'): string {
   const lf = toLf(text)
   return eol === '\n' ? lf : lf.replace(/\n/g, '\r\n')
@@ -42,9 +42,9 @@ export function fromLf(text: string, eol: '\r\n' | '\n'): string {
 /**
  * 把一段字面量编码为不区分行尾的正则源：行内原样匹配，换行处用 `\r?\n` 同时匹配两种行尾。
  *
- * 不要改为先把整个文件归一为 LF 再匹配：那样替换结果必须整份写回，
- * 混合行尾文件中未修改的行会被一并重写，一次单行编辑产生整份 diff，
- * 且 diff 中无法看出实际修改的行。应使用它在原文上定位，只修改命中的片段。
+ * 不要改为先把整个文件归一化为 LF 再匹配：此时替换结果须整份写回，
+ * 混合行尾文件中未修改的行被一并重写，一次单行编辑产生整份 diff，
+ * diff 中无法判断实际修改的行。应使用本函数在原文上定位，只修改命中的片段。
  */
 export function eolInsensitivePattern(literal: string): string {
   return toLf(literal)

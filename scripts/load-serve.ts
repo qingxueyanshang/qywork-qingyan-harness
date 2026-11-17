@@ -540,7 +540,7 @@ async function main(): Promise<number> {
       return 2
     }
     seed(dbPath, workspaceRoot, Number(count))
-    process.stdout.write(`已种 ${count} 条会话到 ${dbPath}\n`)
+    process.stdout.write(`已写入 ${count} 条会话到 ${dbPath}\n`)
     return 0
   }
 
@@ -558,7 +558,7 @@ async function main(): Promise<number> {
   for (const d of [wsA, wsB]) await writeFile(join(d, 'payload.txt'), payload, 'utf8')
 
   const shell = commandShell()
-  if (!shell) throw new Error('这台机器上没有可用的 shell，run_command 不会注册')
+  if (!shell) throw new Error('本机没有可用的 shell，run_command 不会注册')
   const posix = shell.argv.includes('-c')
   const bigOutput = (nonce: string): string =>
     posix ? `printf '%s\\n' '${nonce}'; cat payload.txt` : `'${nonce}'; Get-Content payload.txt`
@@ -711,7 +711,7 @@ async function main(): Promise<number> {
     if (d && d.danglingRefs > 0) failures.push(`悬空引用 ${d.danglingRefs} 条（${phase}）`)
     if (d && d.brokenBlobs > 0) failures.push(`正文分片缺失 ${d.brokenBlobs} 条（${phase}）`)
     if (d && d.scheduleConvClusters > 1) {
-      failures.push(`同一到期时机建了 ${d.scheduleConvClusters} 条会话（${phase}）`)
+      failures.push(`同一到期时机创建了 ${d.scheduleConvClusters} 条会话（${phase}）`)
     }
     return d
   }
@@ -734,7 +734,7 @@ async function main(): Promise<number> {
     for (let i = 0; i < 3; i++) {
       const quiet = await sample(`静止-${label}`)
       if (quiet && quiet.liveRuns > 0) {
-        failures.push(`静止-${label} 期间仍有 ${quiet.liveRuns} 条未落终态的 Run`)
+        failures.push(`静止-${label} 期间仍有 ${quiet.liveRuns} 条未进入终态的 Run`)
       }
       await Bun.sleep(20_000)
     }
@@ -924,7 +924,7 @@ async function main(): Promise<number> {
         })
         if ((downSample?.orphanBlobs ?? 0) > 0 && (after?.orphanBlobs ?? 0) > 0) {
           failures.push(
-            `启动回收没有清掉孤儿正文：停机时 ${downSample?.orphanBlobs}，启动后 ${after?.orphanBlobs}`,
+            `启动回收未清除孤儿正文：停止时 ${downSample?.orphanBlobs}，启动后 ${after?.orphanBlobs}`,
           )
         }
         await sample('重启后')

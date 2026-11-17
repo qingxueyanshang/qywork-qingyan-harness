@@ -1,5 +1,5 @@
 /**
- * 设置页里的生成模型：接口页添加、默认、删除，以及模型库的类别页签。
+ * 设置页中的生成模型：接口页添加、默认、删除，以及模型库的类别页签。
  *
  * 覆盖范围：`ModelSettings.tsx` 的 `addModel` 分流、生成模型行、`removeMediaModel` 与 `withMediaDefaults`；
  * `ModelLibrary.tsx` 的类别页签、未知单价显示与 `MediaTable`；`PullDialog.tsx` 的拉取、刷新、对应型号与添加。
@@ -16,11 +16,11 @@ afterAll(async () => {
 })
 
 /**
- * 直接调用 Solid 挂在元素上的委托处理函数。回车的处理函数读 `currentTarget`，按 Solid 委托
+ * 直接调用 Solid 注册在元素上的委托处理函数。回车的处理函数读取 `currentTarget`，按 Solid 委托
  * 派发的做法把它指向该元素。
  *
- * 不要改成 `dispatchEvent`：Solid 的委托监听在组件模块首次求值时挂到全局 `document` 上，
- * 模块在整套测试的进程里只求值一次，而每个测试文件注册各自的 happy-dom 窗口。先于本文件
+ * 不要改为 `dispatchEvent`：Solid 的委托监听在组件模块首次求值时注册到全局 `document` 上，
+ * 模块在整套测试的进程中只求值一次，而每个测试文件注册各自的 happy-dom 窗口。先于本文件
  * 导入 `ModelSettings.tsx` 的测试文件存在时，本文件的 `document` 上没有这个监听。
  */
 function fire(el: HTMLElement, type: 'click' | 'keydown', init: KeyboardEventInit = {}) {
@@ -275,7 +275,7 @@ test('生成模型默认取目录协议，接入方式可独立保存，删除�
     expect(qwen()?.models).toEqual({})
     input().value = 'qwen-image-3.0'
     fire(input(), 'keydown', { key: 'Enter' })
-    // 百炼官方地址上的出图走百炼原生协议；这一类还没有默认，它成为默认。
+    // 百炼官方地址上的图像生成使用百炼原生协议；该类别尚无默认模型，它成为默认模型。
     expect(qwen()?.media?.['qwen-image-3.0']).toEqual({ kind: 'dashscope_images' })
     expect(qwen()?.models).toEqual({})
     expect(config()?.mediaDefaults).toEqual({
@@ -307,7 +307,7 @@ test('生成模型默认取目录协议，接入方式可独立保存，删除�
     expect(await until(() => !configBusy())).toBe(true)
     expect(access().value).toBe('dashscope_images')
 
-    // 目录外的 id 照旧当对话模型。
+    // 目录外的 id 仍添加为对话模型。
     input().value = 'some-chat-model'
     fire(input(), 'keydown', { key: 'Enter' })
     expect(qwen()?.models['some-chat-model']).toEqual({})
@@ -603,7 +603,7 @@ test('模型库按类别分页签；生成类一张表，厂商是一列，参�
     expect(table?.textContent).toContain('qwen-image-3.0')
     expect(table?.textContent).toContain('阿里云')
     expect(table?.textContent).toContain('百炼')
-    // 参考图上限跟在它约束的「修改」后面。
+    // 参考图上限位于其约束的「修改」之后。
     expect(table?.textContent).toContain('生成 / 修改 ≤3')
     const toggle = table?.querySelector<HTMLButtonElement>('.lib-params-toggle')
     expect(toggle?.textContent).toBe('3 项')

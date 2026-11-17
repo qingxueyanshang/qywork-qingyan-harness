@@ -5,7 +5,7 @@
  * （`cli-detect.ts` 的厂商表），没有可交互的输入端。要停止失控的 CLI，
  * 使用本轮的停止按钮，它按进程树终止。
  *
- * **也不使用 xterm**：该依赖包三百多 KB，而此处的输出不含 ANSI 控制序列：`cli-backend.ts`
+ * **也不使用 xterm**：该依赖包超过 300 KB，而此处的输出不含 ANSI 控制序列：`cli-backend.ts`
  * 启动进程时设置了 `NO_COLOR=1` / `TERM=dumb`。
  */
 

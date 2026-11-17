@@ -447,7 +447,7 @@ describe('图片与墨迹', () => {
     expect(ctx.calls.slice(0, red).findLast((c) => c.name === 'moveTo')!.args).toEqual([30, 30])
   })
 
-  test('墨迹逐段画圆头线段，线宽取两端笔宽的平均值；单点笔画画为圆点', async () => {
+  test('墨迹逐段绘制圆头线段，线宽取两端笔宽的平均值；单点笔画绘制为圆点', async () => {
     const ink =
       '<inkml:ink xmlns:inkml="http://www.w3.org/2003/InkML"><inkml:definitions><inkml:context xml:id="c">' +
       '<inkml:inkSource xml:id="s"><inkml:traceFormat><inkml:channel name="X"/><inkml:channel name="Y"/>' +
@@ -806,8 +806,8 @@ describe('文字输入换算', () => {
   })
 
   /**
-   * 原始失败形状：合成斜体与正体共用一个排版字体对象，`of` 取到最后登记的绘制字形，页面上只要有一处斜体，同一字体的正文
-   * 全部画成斜体（WPS 的导出图中正文为正体）。
+   * 原始失败形状：合成斜体与正体共用一个排版字体对象，`of` 返回最后登记的绘制字形，页面上有一处斜体时，同一字体的正文
+   * 全部绘制为斜体（WPS 的导出图中正文为正体）。
    */
   test('同一字体的正体与合成斜体各有绘制字形：段落中正体、斜体、正体交替时各按其字形绘制', async () => {
     const regular = slideFace({ face: FACE, family: '甲', bold: false, italic: false })
@@ -839,7 +839,7 @@ describe('文字输入换算', () => {
     expect(frags.map((f) => faces.of(f.face).family)).toEqual(['甲', '甲', '甲'])
   })
 
-  /** 原始失败形状：直立的字按 win 上下沿的中点转回直立，微软雅黑的列比 WPS 偏 4–9 像素。 */
+  /** 原始失败形状：直立的字以 win 上下沿的中点为中心旋转为直立，微软雅黑的列与 WPS 相差 4–9 像素。 */
   test('eaVert：直立的字以 typo 上下沿的中点为旋转中心', async () => {
     const typo = slideFace({
       face: { ...FACE, vertical: { ...FACE.vertical, typoAscender: 700, typoDescender: -300 } },
@@ -869,7 +869,7 @@ describe('文字输入换算', () => {
     expect(han?.args[2]).toBeCloseTo(0.2 * 20, 6)
   })
 
-  test('eaVert：文本区域按 vert 旋转，汉字与顿号转回直立，西文随文字方向旋转', async () => {
+  test('eaVert：文本区域按 vert 旋转，汉字与顿号旋转为直立，西文随文字方向旋转', async () => {
     const p = await parse({
       slides: [
         {
@@ -895,7 +895,7 @@ describe('文字输入换算', () => {
     ])
   })
 
-  test('eaVert：形状旋转 270° 与竖排相抵时按横排绘制，汉字不再转回', async () => {
+  test('eaVert：形状旋转 270° 与竖排相抵时按横排绘制，汉字不再旋转为直立', async () => {
     const p = await parse({
       slides: [
         {
@@ -1264,7 +1264,7 @@ describe('公式', () => {
     `<a14:m><m:oMathPara xmlns:m="${M}"><m:oMathParaPr><m:jc m:val="${jc}"/></m:oMathParaPr><m:oMath>${fraction}</m:oMath></m:oMathPara></a14:m>`
   const inline = `<a14:m><m:oMath xmlns:m="${M}">${fraction}</m:oMath></a14:m>`
   const words = (t: string) => run(t, '<a:rPr lang="zh-CN" sz="2400"/>')
-  /** 公式所在的形状放在要求 `a14` 的分支中，替代分支是写着 FALLBACK 的形状（与 PowerPoint 写出的结构相同）。 */
+  /** 公式所在的形状放在要求 `a14` 的分支中，替代分支是文字为 FALLBACK 的形状（与 PowerPoint 写出的结构相同）。 */
   const alternate = (body: string) =>
     '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" ' +
     'xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"><mc:Choice Requires="a14">' +
@@ -1284,7 +1284,7 @@ describe('公式', () => {
     return { p, text: s.text }
   }
 
-  /** 原始失败形状：取了替代分支，显示 PowerPoint 的替代图片（其中只有空格的段落带着占位符的项目符号）。 */
+  /** 原始失败形状：选取替代分支，显示 PowerPoint 的替代图片（其中只有空格的段落带有占位符的项目符号）。 */
   test('取要求 a14 的分支，公式为字段；含矩阵的公式计入未实现的公式', async () => {
     const { p, text: t } = await formulaText(
       text(
@@ -1389,7 +1389,7 @@ describe('表格', () => {
     expect(p.slides[0]!.unsupported.tableStyle).toBe(1)
   })
 
-  test('相邻单元格相同的边只画一次；不足 1 磅的边框按磅数乘不透明度', async () => {
+  test('相邻单元格相同的边只绘制一次；不足 1 磅的边框按磅数乘不透明度', async () => {
     const ln = (tag: string) =>
       `<a:${tag} w="6350"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:${tag}>`
     const boxed = (t: string) =>
@@ -1538,7 +1538,7 @@ describe('求值阶段为绘制补充的内容', () => {
 })
 
 describe('幻灯片字体集', () => {
-  test('按字体名选取最接近的字形，缺少字体时的字体取第一个有字体的字体名；登记的字体此后即可取到，按族名查找时同一字形只列一次', () => {
+  test('按字体名选取最接近的字形，缺少字体时的字体取第一个有字体的字体名；登记的字体此后即可取得，按族名查找时同一字形只列一次', () => {
     const face = (family: string, bold: boolean, italic: boolean) =>
       slideFace({ face: FACE, family, bold, italic })
     const regular = face('甲', false, false)
@@ -1652,7 +1652,7 @@ describe('锚定与文字映像', () => {
     const { ctx } = paint(p, {}, source)
     const flips = ctx.named('drawImage').filter((c) => c.matrix.d < 0)
     expect(flips.length).toBe(2)
-    // 映像变换下基线 y 的像（绘制的基线取整到设备像素）：dist 为 0 时不动；dist 为 6 磅（48 磅）时 WPS 演示导出图中
+    // 映像变换下基线 y 的像（绘制的基线取整到设备像素）：dist 为 0 时不变；dist 为 6 磅（48 磅）时 WPS 演示导出图中
     // 映像起点距基线 22 像素。
     const image = (m: { d: number; f: number }, v: number) => m.d * v + m.f
     expect(Math.abs(image(flips[0]!.matrix, y.get('1')!) - y.get('1')!)).toBeLessThanOrEqual(1)
@@ -1692,7 +1692,7 @@ describe('嵌入字体', () => {
     expect(out.failed).toEqual(['/ppt/fonts/font2.fntdata'])
   })
 
-  /** 原始失败形状：按元素名查普通对象，`constructor` 等元素取到原型属性，列出粗体与斜体为 `undefined` 的嵌入字体。 */
+  /** 原始失败形状：按元素名查找普通对象，`constructor` 等元素取得原型属性，列出粗体与斜体为 `undefined` 的嵌入字体。 */
   test('embeddedFont 中名为原型属性的元素不列出', async () => {
     const spec: DeckSpec = {
       slides: [{ xml: slideXml('') }],
@@ -1710,7 +1710,7 @@ describe('嵌入字体', () => {
 
 describe('点阵字形', () => {
   /** 原始失败形状：WPS 演示中宋体 9–13 磅的形状文字按内嵌点阵绘制，此前一律按轮廓以平滑字形绘制。 */
-  test('形状文字在有点阵的字号按点阵画在整数坐标上，其他字号按轮廓绘制；粗体由常规字形的点阵加粗，斜体取倾斜的单色字形', async () => {
+  test('形状文字在有点阵的字号按点阵绘制于整数坐标上，其他字号按轮廓绘制；粗体由常规字形的点阵加粗，斜体取倾斜的单色字形', async () => {
     const glyph = {
       width: 2,
       height: 2,
@@ -1885,7 +1885,7 @@ describe('ClearType 字形', () => {
   })
 
   /** 原始失败形状：每个文本框各读写一次画布像素，每次读写都要先完成此前的绘制，含图片的幻灯片重绘耗时约翻倍。 */
-  test('只画文字的相邻形状一并混合，在其后有填充的形状之前写回；幻灯片末尾写回其余的文字', async () => {
+  test('只绘制文字的相邻形状一并混合，在其后有填充的形状之前写回；幻灯片末尾写回其余的文字', async () => {
     const box = (id: number, y: number, fill = '<a:noFill/>') =>
       sp(id, {
         txBox: true,
@@ -2031,7 +2031,7 @@ describe('WPS 演示的字体替代', () => {
    * WPS 演示实测（构造文件 p10-d，与参照行逐像素相同）：charset 为 0 时 ` Calibri Fake` 与 `calibri fake` 为 Calibri、
    * `Courier` 为 Courier New；charset 为 GB2312 时 `Courier` 为宋体；东亚字段同样按前缀匹配。
    */
-  test('前缀匹配：去掉首尾空白、不区分大小写，charset 为 GB2312 时不做', () => {
+  test('前缀匹配：去掉首尾空白、不区分大小写，charset 为 GB2312 时不匹配', () => {
     const faces = new FaceCache(hostFonts(), SINGLE_LINE, null, null, null, false, HOST)
     expect(faces.latin(' Calibri Fake', 0, false, false).family).toBe('Calibri')
     expect(faces.latin('calibri fake', undefined, false, false).family).toBe('Calibri')

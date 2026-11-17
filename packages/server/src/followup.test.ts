@@ -239,7 +239,7 @@ async function waitFor(what: (e: AgentEvent) => boolean, ms = 10_000): Promise<A
  * 等待该会话空闲，且不会再自行发起下一轮。
  *
  * 收尾时先释放占位，再关闭扩展、取出跟进消息并重新占位；本文件的工作区没有插件与 MCP 服务，
- * 两步之间只经过微任务，轮询看不到其间的空闲。目标自动继续经 setTimeout(0) 发起，但只在标记存在时
+ * 两步之间只经过微任务，轮询无法观察到其间的空闲。目标自动继续经 setTimeout(0) 发起，但只在标记存在时
  * 排队。因此「不忙且没有标记」成立之后，不会再有新一轮。
  */
 async function idle(cv: ConversationId): Promise<void> {
@@ -571,7 +571,7 @@ describe('注入当前一轮', () => {
     expect(secondTool).toBeGreaterThan(injected)
   }, 30_000)
 
-  test('标记了调整方向但未赶上边界时，收尾后降级为发起下一轮', async () => {
+  test('标记了调整方向但未在 step 边界取出时，收尾后降级为发起下一轮', async () => {
     const cv = conversation()
     const held = gate(textTurn('这一轮直接收尾。'))
     script = [held.turn, ok(textTurn('降级那一轮。'))]
@@ -598,7 +598,7 @@ describe('注入当前一轮', () => {
 })
 
 /**
- * 原始失败形状（会话 cv_0mvzff0980000upz5o4）：用户在一轮进行中把视频模型换成新型号，随后注入「换这个模型」，
+ * 原始失败形状（会话 cv_0mvzff0980000upz5o4）：用户在一轮进行中把视频模型更换为新型号，随后注入「换这个模型」，
  * 而本轮快照中没有该型号；用户说「这个画布」时上下文中也没有界面打开的文件。模型两次改用电脑控制读取 qywork 自身窗口。
  */
 describe('注入时告知已变化的上下文', () => {
@@ -640,7 +640,7 @@ describe('注入时告知已变化的上下文', () => {
 
       await send(cv, 'req-m0', '批量生成这个画布', {}, sock)
       await waitFor((e) => e.type === 'run.started')
-      // 用户在设置中换掉了视频模型。
+      // 用户在设置中更换了视频模型。
       config.providers[VIDEO] = {
         ...config.providers[VIDEO],
         media: { 'HC-Seedance-2.5-720p': { kind: 'openai_videos' } },
@@ -1071,7 +1071,7 @@ describe('手动压缩占用会话', () => {
     const seeded = createGoal(store, { conversationId: cv, objective: '把活干完' })
     if (!seeded.ok) throw new Error(seeded.message)
     const held = gate(textTurn('已整理材料，继续核对。'))
-    script = [held.turn, ok(textTurn('目标这一轮完了。'))]
+    script = [held.turn, ok(textTurn('本轮目标已完成。'))]
     const sock = socket()
     let compacting: Promise<unknown> = Promise.resolve()
     try {

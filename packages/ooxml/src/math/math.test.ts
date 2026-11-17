@@ -882,7 +882,7 @@ describe('绘制', () => {
     return { ctx, rects, texts }
   }
 
-  test('不平滑填充按像素左上角取样（GDI）：横线 [373.33, 374.4) 只填第 374 行，列 122–130（WPS 页面图）', () => {
+  test('不平滑填充按像素左上角取样（GDI）：横线 [373.33, 374.4) 只填充第 374 行，列 122–130（WPS 页面图）', () => {
     const { ctx, rects } = recorder()
     fillAliased(ctx, [
       [
@@ -919,7 +919,7 @@ describe('绘制', () => {
     expect(b.rects).toEqual([[436, 507, 40, 4]])
   })
 
-  test('斜线：1 像素时按 Bresenham 画线且两端点着色（WPS 页面图，12 磅 a/b 的斜线自 (122, 112) 至 (129, 101)）', () => {
+  test('斜线：1 像素时按 Bresenham 直线算法绘制且两端点着色（WPS 页面图，12 磅 a/b 的斜线自 (122, 112) 至 (129, 101)）', () => {
     const l: MathLayout<string> = {
       width: 0,
       ascent: 0,

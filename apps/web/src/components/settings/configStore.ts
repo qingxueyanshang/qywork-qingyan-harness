@@ -84,8 +84,8 @@ export function patchConfig(p: Partial<RedactedConfig>): Promise<void> {
 
 /**
  * 配置写入串行队列，同一时刻仅执行一次。并发写入若不串行，后发起的一次会在前一次
- * 落盘前读到旧配置，整体回写时覆盖前一次已保存的字段（例如先后写入 API Key 与
- * Base URL 时丢失 Key）。串行化保证每次写入读到的均为前一次落盘后的结果；队列内
+ * 落盘前读取旧配置，整体回写时覆盖前一次已保存的字段（例如先后写入 API Key 与
+ * Base URL 时丢失 Key）。串行化保证每次写入读取的均为前一次落盘后的结果；队列内
  * 单次失败不阻断后续写入。
  */
 type ConfigEdit = (cur: RedactedConfig) => RedactedConfig | null
@@ -109,7 +109,7 @@ function publishConfig(fresh: ConfigPayload): void {
  *
  * 保存使用整份 PUT，写入文件的就是此处提交的完整配置。若传入计算好的结果，
  * 其计算基础固定为页面打开时读取的配置，期间 `qy probe`、
- * 手动编辑 JSON、其他实例写入文件的修改都会被这次保存整体覆盖。
+ * 手动编辑 JSON、其他实例写入文件的修改都会被本次保存整体覆盖。
  *
  * 传入编辑函数时，可以在写入前重新读取服务端真值，并在其上重新计算。
  * 返回 `null` 表示放弃本次写入（前提在新数据上不再成立）。

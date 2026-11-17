@@ -175,7 +175,7 @@ describe('正常响应结束不等于任务完成', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'finish_todos',
-      description: '把测试清单标成完成。',
+      description: '把测试清单标记为完成。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'write',
       objectLabel: '待办',
@@ -239,7 +239,7 @@ describe('正常响应结束不等于任务完成', () => {
       summary: '测试夹具',
       permissionEffect: 'internal_control',
       async fn() {
-        return { status: 'success', message: '做完了' }
+        return { status: 'success', message: '子任务已完成' }
       },
     })
     const persist = noopPersistence()
@@ -317,11 +317,11 @@ describe('正常响应结束不等于任务完成', () => {
     expect(tails[1]?.role).toBe('user')
     const notice = String(tails[1]?.content)
     expect(notice).toContain('本轮待办尚有未完成的项：完成第 7 步；完成第 8 步')
-    // 提示不是用户的回复：模型曾把「继续执行」当作用户对样张的确认（宁德视觉升级 2026-10-21）。
+    // 提示不是用户的回复：只写「继续执行」时，模型把它当作用户对样张的确认（宁德视觉升级 2026-10-21）。
     expect(notice).toContain('不是用户的回复，不表示用户确认或授权了任何事项')
     expect(notice).toContain('spend、user_only、review、irreversible')
     expect(notice).not.toContain('service')
-    // 不再提供「改回 pending 后结束本轮」这条不带原因的出口。
+    // 提示中没有「改回 pending 后结束本轮」这一不带原因的结束条件。
     expect(notice).not.toContain('改回 pending')
   })
 
@@ -364,7 +364,7 @@ describe('正常响应结束不等于任务完成', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'finish_todos',
-      description: '把测试清单标成完成。',
+      description: '把测试清单标记为完成。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'write',
       objectLabel: '待办',
@@ -554,7 +554,7 @@ describe('正常响应结束不等于任务完成', () => {
     expect(end.tails).toHaveLength(1)
   })
 
-  test('受阻与失败并存、没有 pending 与 in_progress：停下等待用户，先列受阻条件再列失败原因', async () => {
+  test('受阻与失败并存、没有 pending 与 in_progress：停止并等待用户，先列受阻条件再列失败原因', async () => {
     const end = await endWith([failedItem, doneItem, blockedItem], 'rn_blocked_and_failed')
     expect(end).toMatchObject({ status: 'done', stopReason: 'awaiting_user' })
     expect(end.stopDetail).toBe(
@@ -563,7 +563,7 @@ describe('正常响应结束不等于任务完成', () => {
     expect(end.tails).toHaveLength(1)
   })
 
-  test('新一轮只解释问题，旧清单不强迫恢复执行', async () => {
+  test('新一轮只解释问题时，旧清单不强制恢复执行', async () => {
     const inner = fakeAdapter([null])
     let requests = 0
     const reads: unknown[] = []
@@ -841,7 +841,7 @@ describe('provider 声明调用工具但未解析出任何调用', () => {
     // 原有的错误结果是 completed，必须无法再现。
     expect(finished && 'stopReason' in finished && finished.stopReason).not.toBe('completed')
     expect(finished && 'stopReason' in finished && finished.stopReason).toBe('provider_error')
-    // 故障对用户可见，不只记录在账本中。
+    // 故障在界面上显示，不只记录在账本中。
     expect(events.some((e) => e.type === 'run.error')).toBe(true)
     // provider 的原始终止原因写入账本：缺少它时无法区分回答完毕与要求调用工具。
     expect(settled.at(-1)?.finishReason).toBe('tool_calls')

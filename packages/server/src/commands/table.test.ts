@@ -17,7 +17,7 @@ function socket() {
   }
 }
 
-/** 类型来自网络：按普通对象取值时，原型上的键会取到对象自带的成员，指令得不到回执。 */
+/** 类型来自网络：按普通对象取值时，原型上的键会取到对象自带的成员，指令没有回执。 */
 test('协议外的指令类型以 unknown_command 回执，原型上的键与缺少类型同样如此', async () => {
   for (const [cmd, command] of [
     [{ type: 'no.such' }, 'no.such'],

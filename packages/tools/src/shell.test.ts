@@ -89,7 +89,7 @@ describe('run_command 参数校验', () => {
     expect(outcome).toMatchObject({ status: 'failure', executed: false, message: '命令为空' })
   })
 
-  /** 原始失败形状：模型把 cwd 写成字符串 "null"，回执只有「路径不存在：null」，看不出是哪个参数。 */
+  /** 原始失败形状：模型把 cwd 写成字符串 "null"，回执只有「路径不存在：null」，无法判断是哪个参数。 */
   test('工作目录不存在时报错写明参数 cwd', async () => {
     const tool = makeShellTool(shell)
     await expect(
@@ -105,7 +105,7 @@ describe('run_command 的子进程环境', () => {
   /** 三个变量分别由 bash、cmd 与 POSIX 工具链读取，使用哪一个由子进程决定，因此三个都必须指向同一目录。 */
   test('临时目录指向本会话的临时目录，且目录已预先创建', async () => {
     const found = commandShell()
-    if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+    if (!found) throw new Error('本机未找到 bash、pwsh 或 powershell，无法执行本测试')
     const root = await mkdtemp(join(tmpdir(), 'qywork-shell-'))
     const binDir = await mkdtemp(join(tmpdir(), 'qywork-shell-bin-'))
     const script = join(binDir, 'env.ts').replaceAll('\\', '/')
@@ -157,7 +157,7 @@ describe('run_command 的子进程环境', () => {
     'auto 模式下工作区 Python 环境存在时，命令中的 python 为该环境；不存在时与完全访问模式下不改变 PATH',
     async () => {
       const found = commandShell()
-      if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+      if (!found) throw new Error('本机未找到 bash、pwsh 或 powershell，无法执行本测试')
       const ctx = (root: string, full = false) =>
         ({
           workspaceRoot: root,
@@ -192,7 +192,7 @@ describe('run_command 的子进程环境', () => {
       expect(outcome.status).toBe('success')
       expect(String(outcome.data?.stdout).trim()).toBe(join(root, '.tmp', 'python'))
 
-      // 完全访问模式：装入全局还是工作区由模型选择，命令中的 python 仍为全局解释器。
+      // 完全访问模式：安装到全局还是工作区由模型选择，命令中的 python 仍为全局解释器。
       const full = await makeShellTool(found).fn({ command }, ctx(root, true))
       expect(full.status).toBe('success')
       expect(String(full.data?.stdout).trim()).toBe(String(without.data?.stdout).trim())
@@ -203,7 +203,7 @@ describe('run_command 的子进程环境', () => {
     '命令中的 python 不指定 encoding 打开 UTF-8 文件，两种权限模式都按 UTF-8 读取',
     async () => {
       const found = commandShell()
-      if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+      if (!found) throw new Error('本机未找到 bash、pwsh 或 powershell，无法执行本测试')
       const root = await mkdtemp(join(tmpdir(), 'qywork-shell-utf8-'))
       await writeFile(join(root, 'a.json'), JSON.stringify({ k: '精创视觉升级' }), 'utf8')
       const command = `python -c "import json; print(json.load(open('a.json'))['k'])"`
@@ -245,7 +245,7 @@ describe('run_command 的中止', () => {
 
   test('调用时信号已中止：不启动命令，立即以中止原因结束', async () => {
     const found = commandShell()
-    if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+    if (!found) throw new Error('本机未找到 bash、pwsh 或 powershell，无法执行本测试')
     const root = await mkdtemp(join(tmpdir(), 'qywork-shell-abort-'))
     const controller = new AbortController()
     controller.abort()
@@ -265,7 +265,7 @@ describe('run_command 的中止', () => {
 
   test('启动命令期间收到中止：进程随即终止', async () => {
     const found = commandShell()
-    if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+    if (!found) throw new Error('本机未找到 bash、pwsh 或 powershell，无法执行本测试')
     const root = await mkdtemp(join(tmpdir(), 'qywork-shell-abort-'))
     const controller = new AbortController()
     const state = openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0)
@@ -284,9 +284,9 @@ describe('run_command 的中止', () => {
 
 describe('run_command 的用量记账', () => {
   /** 命令已执行、摘录已投递；不记录这笔用量，同一决策中后续的读取工具会按不存在的余额准入。 */
-  test('额度不足时仍记录用量，同一决策中后续的读取工具读到余额为 0', async () => {
+  test('额度不足时仍记录用量，同一决策中后续的读取工具读取到余额为 0', async () => {
     const found = commandShell()
-    if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+    if (!found) throw new Error('本机未找到 bash、pwsh 或 powershell，无法执行本测试')
     const root = await mkdtemp(join(tmpdir(), 'qywork-shell-budget-'))
     const binDir = await mkdtemp(join(tmpdir(), 'qywork-shell-budget-bin-'))
     const script = join(binDir, 'flood.ts').replaceAll('\\', '/')
@@ -530,7 +530,7 @@ describe('后台命令的工具形态', () => {
     expect(stopped).toEqual(['cmd_1'])
   })
 
-  test('wait_seconds 等到命令结束后返回，不带输出；被停止的命令写明没有回执', async () => {
+  test('wait_seconds 等待命令结束后返回，不带输出；被停止的命令写明没有回执', async () => {
     const running = { command: 'bash wait.sh', stdout: 'tick\n', stderr: '' }
     const done = Promise.withResolvers<boolean>()
     const { port } = fakePort({ cmd_1: running }, { ended: { cmd_1: done.promise } })
@@ -620,7 +620,7 @@ describe('后台命令的工具形态', () => {
 })
 
 /**
- * 原始失败形状：管道一次交来超过上限的文字（Linux 上转入后台时常见）时，整段作为一块保留，没有丢弃，保留量不受上限约束。
+ * 原始失败形状：管道一次传入超过上限的文字（Linux 上转入后台时常见）时，整段作为一块保留，没有丢弃，保留量不受上限约束。
  */
 describe('后台命令的输出缓冲', () => {
   test('一次写入超过上限的文字时同样丢弃最早的部分，保留的是结尾', () => {

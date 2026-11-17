@@ -17,7 +17,7 @@ const PAGE = '<!doctype html><html><head><title>旧</title></head><body>旧页�
 let server: ReturnType<typeof Bun.serve>
 let bodies: Record<string, unknown>[] = []
 let answer = ''
-/** 按顺序替代默认答复的响应；用完后返回 `answer`。 */
+/** 按顺序替代默认答复的响应；全部取出后返回 `answer`。 */
 let replies: (() => Response)[] = []
 
 const sse = (text: string) => {

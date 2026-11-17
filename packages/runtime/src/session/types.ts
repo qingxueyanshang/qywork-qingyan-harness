@@ -105,6 +105,8 @@ export interface AskOptions {
    * 调用方须已按该模型可发送的档位校验；不传入时取模型配置。
    */
   effort?: EffortLevel
+  /** 为 true 时本轮的请求按暂时故障的间隔表重发（`RunInput.transientResend`）。只有派发子 agent 时传入。 */
+  transientResend?: true
   /**
    * 本轮的开始时刻：服务端接受这条消息的时刻。调用 `ask` 之前另有等待步骤的调用方必须传入
    * （`run-control` 的 `startRun` 在调用前同步云端价格）；未传入时取调用 `ask` 的时刻。

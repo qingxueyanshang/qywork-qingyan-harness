@@ -695,7 +695,7 @@ test('公告已读位置：以设备密钥写入云端账号，状态中带该�
 
 /**
  * 原始失败形状：`/v1/me` 读取失败时账号状态的已读位置为 null，与「未读过任何公告」相同，界面把最新一条判为未读，
- * 窗口每次获得焦点时的读取失败一次，圆点就重新出现。
+ * 窗口每次获得焦点时读取失败一次，圆点即重新出现。
  */
 test('公告已读位置：云端读取失败时沿用上一次取得的值；写入后读取失败仍为写入的值；从未取得或密钥已换时缺省', async () => {
   cloud.announcementSeen = '7'
@@ -729,7 +729,7 @@ test('公告已读位置：云端读取失败时沿用上一次取得的值；�
   expect(other).not.toHaveProperty('announcementSeen')
 })
 
-test('更换头像：以设备密钥写入云端，状态中带头像；格式不对时给出云端的原因', async () => {
+test('更换头像：以设备密钥写入云端，状态中带头像；格式不正确时给出云端的原因', async () => {
   await account.login('me@example.com', PASSWORD)
   const image = 'data:image/webp;base64,UklGRg=='
   expect(await account.setAvatar(image)).toMatchObject({ state: 'signed_in', avatar: image })

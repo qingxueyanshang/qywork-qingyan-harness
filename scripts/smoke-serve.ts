@@ -82,7 +82,7 @@ async function main(): Promise<number> {
     // ── HTTP ──
     process.stdout.write('HTTP API\n')
 
-    // `Response.json()` 返回 unknown：只断言用到的几个键，
+    // `Response.json()` 返回 unknown：只断言使用的几个键，
     // 不引入完整的响应类型，冒烟脚本只关心返回是否正确。
     const health = (await json(await fetch(`${base}/api/health`))) as { ok?: boolean }
     check('健康检查免鉴权', health.ok === true)
@@ -199,7 +199,7 @@ async function main(): Promise<number> {
 
     // ── 指令 fail-closed ──
     // 本组验证「拒绝必须有回执」。未实现的指令若被 default 分支静默丢弃，
-    // 客户端将始终收不到任何反馈，与「服务端正在处理」完全无法区分。
+    // 客户端将始终无法收到任何反馈，与「服务端正在处理」完全无法区分。
     process.stdout.write('\n指令回执（fail-closed）\n')
 
     ws.send(JSON.stringify({ type: 'no.such.command', foo: 1 }))
@@ -308,7 +308,7 @@ async function main(): Promise<number> {
     // 先单独提取 provider 错误并断言。
     //
     // 否则一次流停滞或容量拒绝会表现为「收到 tool.started ✗」
-    // 等多条下游失败，真正的原因混在几十条事件中难以定位。
+    // 等多条下游失败，真正的原因混在数十条事件中难以定位。
     // 流空闲看门狗使流停滞变为一条 run.error，而不是等待到脚本超时；
     // 该断言把该错误放在最显眼的位置。
     const errored = frames.find((f) => f.event.type === 'run.error')

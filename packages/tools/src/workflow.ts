@@ -16,15 +16,15 @@ export const workflowTool: ToolSpec = {
   name: 'workflow',
   description:
     '把两个及以上子 agent 的任务按 DAG 一次提交。子 agent 节点按 needs 并行或串行执行，' +
-    'checkpoint 节点把上一批回执交回当前会话。' +
-    '调用只派发此刻就绪的节点，派发后立即返回：每个节点执行完毕的回执、节点失败的回执、到达 checkpoint 的回执都会作为消息送到本会话，不要为了等回执反复调用。' +
+    'checkpoint 节点把上一批回执返回当前会话。' +
+    '调用只派发此刻就绪的节点，派发后立即返回：每个节点执行完毕的回执、节点失败的回执、到达 checkpoint 的回执都会作为消息送到本会话，不要为了等待回执反复调用。' +
     '收到 checkpoint 回执后用同一 workflowId 对该 checkpoint approve（进入下一批）或 revise' +
     '（让指定的节点在其原有子会话中继续，只发送修订指令与最新上游产出），批准之后仍可 revise。' +
     '两种调用各自的参数：首次派发只带 goal、nodes、maxConcurrent；审查只带 workflowId、checkpointId、decision、note、revisions。' +
     'checkpoint 的连接方式：并行的子 agent 节点共用一个 checkpoint（needs 列出全部这些节点），而不是每个节点各连接一个；' +
     'checkpoint 之间串成一条链；每个子 agent 节点都要位于某个 checkpoint 的上游。不符合该规则的图在加载期被拒绝。' +
     '子 agent 节点的目标由填写的字段决定：填 role 按角色新建，填 cli 派给外部 CLI，只填 name 新建临时子 agent，填 subagent 指向本会话已有的子 agent，' +
-    '这几项只填一种；checkpoint 节点填 kind 为 checkpoint。',
+    '这几项只填写其中一项；checkpoint 节点的 kind 填 checkpoint。',
   parameters: {
     type: 'object',
     properties: {
@@ -32,7 +32,7 @@ export const workflowTool: ToolSpec = {
       nodes: {
         type: 'array',
         description:
-          '首次调用的 DAG 节点，直接传数组（不是 JSON 字符串）。子 agent 节点执行任务，checkpoint 节点把回执交回当前会话审查',
+          '首次调用的 DAG 节点，直接传数组（不是 JSON 字符串）。子 agent 节点执行任务，checkpoint 节点把回执返回当前会话审查',
         items: {
           type: 'object',
           properties: {
@@ -44,7 +44,7 @@ export const workflowTool: ToolSpec = {
             },
             role: {
               type: 'string',
-              description: '角色 id，运行上下文「角色」清单里的一项。填写即按该角色新建子 agent',
+              description: '角色 id，运行上下文「角色」清单中的一项。填写即按该角色新建子 agent',
             },
             name: {
               type: 'string',
@@ -54,7 +54,7 @@ export const workflowTool: ToolSpec = {
             },
             cli: {
               type: 'string',
-              description: '外部 CLI 的 id，运行上下文清单里的一项。填写即派给该 CLI',
+              description: '外部 CLI 的 id，运行上下文清单中的一项。填写即派给该 CLI',
             },
             subagent: {
               type: 'string',
@@ -75,14 +75,14 @@ export const workflowTool: ToolSpec = {
               type: 'string',
               description:
                 '仅在用户指定模型时填写：逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写 provider。' +
-                '写在 task 正文里不生效，子 agent 不会自行切换模型。' +
+                '写在 task 正文中不生效，子 agent 不会自行切换模型。' +
                 '不填 = 使用当前会话的模型（角色指定了模型时使用角色的模型）；指向已有子 agent 或外部 CLI 的节点不接受',
             },
             effort: {
               type: 'string',
               enum: [...EFFORT_ORDER],
               description:
-                '用户指定思考强度时填写，写在 task 正文里不生效。该节点每次派发（含 revise）都使用此档位。' +
+                '用户指定思考强度时填写，写在 task 正文中不生效。该节点每次派发（含 revise）都使用此档位。' +
                 '不填 = 子 agent 使用角色的模型时取角色设定的档位，否则取模型配置中该模型的档位。' +
                 '所用模型不支持该档位时该节点派发失败并列出可选档位；外部 CLI 按其命令行参数传入，没有该参数的 CLI 拒绝。',
             },

@@ -199,14 +199,14 @@ async function until(check: () => boolean, label: string): Promise<void> {
     if (check()) return
     await Bun.sleep(5)
   }
-  throw new Error(`等不到：${label}`)
+  throw new Error(`等待超时：${label}`)
 }
 
 /**
  * 等待该会话空闲，且不会再自行发起下一轮。
  *
  * 收尾时先释放占位，再关闭扩展、取出跟进消息并重新占位；本文件的工作区没有插件与 MCP 服务，
- * 两步之间只经过微任务，轮询看不到其间的空闲。本文件不设目标，没有经 setTimeout 发起的自动继续。
+ * 两步之间只经过微任务，轮询无法观察到其间的空闲。本文件不设目标，没有经 setTimeout 发起的自动继续。
  */
 async function idle(cv: ConversationId): Promise<void> {
   await until(() => !runs.isBusy(cv) && runs.armedOf(cv) === null, '会话空闲')
@@ -246,7 +246,7 @@ function receiptItem(id: string): FollowUp {
   return { id, content: RECEIPT, steer: true, origin: 'subagent' }
 }
 
-/** 回执被交给模型的总次数：发起新一轮计一次，注入计一次。 */
+/** 回执交付给模型的总次数：发起新一轮计一次，注入计一次。 */
 function deliveriesOf(cv: ConversationId, text: string): number {
   const asRound = listMessages(store, cv).filter((m) => m.content === text).length
   const asInjection = listRuns(store, cv)
@@ -348,7 +348,7 @@ async function cell(terminal: Terminal, timing: Timing): Promise<Reading> {
 
 describe('父轮正常完成后的回执照常自动发起新一轮', () => {
   for (const timing of ['early', 'late', 'adjacent'] as const) {
-    test(`${TIMINGS[timing]}：自动交给模型，且只交付一次`, async () => {
+    test(`${TIMINGS[timing]}：自动交付给模型，且只交付一次`, async () => {
       const r = await cell('completed', timing)
       expect(r.stopReason).toBe('completed')
       expect(r.parentRequests).toBe(1)
@@ -422,7 +422,7 @@ describe('并行回执与用户条目', () => {
 
   /**
    * 用户标记的「调整方向」仍只对标记时的那一轮有效：父轮收尾时复位，
-   * 下一轮由队首条目发起而不是注入。两种去向同在一份队列中，处理一种时不得连带另一种。
+   * 下一轮由队首条目发起而不是注入。两种去向同在一份队列中，处理一种时不得影响另一种。
    */
   test('同一队列中用户条目复位、回执保留', async () => {
     const cv = conversation()

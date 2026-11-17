@@ -64,8 +64,8 @@
   display: flex;
   flex-direction: column;
   /* 块间距 16：计入两侧行盒的余量后，视觉间距略大于 20，比块内「分区名→卡片」的
-     12 大一级，层级可以区分。取 24 时，作用域页签一行还要另加下划线的 7px，
-     间距过大，看似缺少一块内容。 */
+     12 大一级，层级可以区分。取 24 时，作用域页签一行还需另加下划线的 7px，
+     间距过大，易被视为缺少一块内容。 */
   gap: var(--s-4);
 }
 
@@ -290,7 +290,7 @@
 
 /* ── 「模块」页 ──
  *
- * 每行显示四项：底层名称 + 一句用途 + 权限 + 参数。名称使用等宽字体：它是模型看到的字符串，
+ * 每行显示四项：底层名称 + 一句用途 + 权限 + 参数。名称使用等宽字体：它是模型接收的字符串，
  * 与正文使用同一字体时难以快速辨认。
  *
  * 权限固定在行尾右缘：查找「哪些会改动本机」时只需沿右缘查看，无需逐行读完用途说明。 */
@@ -318,7 +318,7 @@
   font-size: var(--fs-sm);
   color: var(--text-primary);
 }
-/* 用途只占一行：外置工具的用途文本来自其清单，长度不受控制，折行会使整页变成大段文字。 */
+/* 用途只占一行：外置工具的用途文本来自其清单，长度不受控制，折行会使整页变为大段文字。 */
 .module-summary {
   flex: 1 1 auto;
   min-width: 0;
@@ -343,7 +343,7 @@
   line-height: 1.5;
   word-break: break-word;
 }
-/* 分组标题右侧的跳转按钮。**只在有对应设置页的分组上显示**：指向空页面比不提供跳转更糟。 */
+/* 分组标题右侧的跳转按钮。**只在有对应设置页的分组上显示**：指向空页面的跳转按钮点击后没有可操作的内容。 */
 .module-consoles {
   margin-left: auto;
   display: flex;
@@ -402,7 +402,7 @@
 /*
  * 窄屏：类目栏从左侧竖栏改为顶部横栏。
  *
- * 390px 宽的屏幕上保留 208px 的类目栏时，内容区只剩 180px，一条绝对路径要折成六行。
+ * 390px 宽的屏幕上保留 208px 的类目栏时，内容区只剩 180px，一条绝对路径需折为六行。
  * 因此改为横向排列：类目横排并可横向滚动，内容区占满整宽。这是**同一套类目的
  * 两种排布**，不是第二套导航：两种排布中点击的都是 `.nav-item`，状态仍是同一个信号。
  *
@@ -587,7 +587,7 @@ textarea.code-area::placeholder {
 /* ── 接口横向切换 ──
  *
  * 接口是**上下文而不是内容**：选中的接口决定下方全部字段的归属。因此使用一排标签，
- * 而不是每个接口一张卡片纵向排列：纵向排列时用户需要滚动很远才能看出已配置的接口数量。
+ * 而不是每个接口一张卡片纵向排列：纵向排列时需要滚动较长距离才能确认已配置的接口数量。
  *
  * `active`（正在查看）与 `live`（当前生效）是两种状态，分别使用各自的标记：
  * 查看 B 接口而实际生效的是另一个接口，是本页最常见的错误，其后果直到账单上才会显现。 */
@@ -675,7 +675,7 @@ textarea.code-area::placeholder {
  * 它们是三类控件。
  *
  * **选中状态用下划线表示，不用底色块。** 下划线绘制在伪元素上，不占布局空间。
- * 使用伪元素而不是 `border-bottom`：后者要求未选中项同样占用 2px，否则切换时整行上下跳动。 */
+ * 使用伪元素而不是 `border-bottom`：后者要求未选中项同样占用 2px，否则切换时整行上下位移。 */
 .scope-tab,
 .tab-chip,
 .provider-tab-measure,
@@ -792,7 +792,7 @@ textarea.code-area::placeholder {
   gap: var(--s-2);
 }
 /* 区头中的路径紧随标题排列。右侧操作按钮由 `.section-actions` 的 `margin-left: auto`
-   推至行尾，因此此处限制宽度只为避免将按钮挤出行外。 */
+   置于行尾，因此此处限制宽度只为避免按钮超出行外。 */
 .settings-block-head .path-line {
   max-width: 55%;
 }
@@ -940,7 +940,7 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
 }
-/* 窄窗口下表格在内部横向滚动，不撑宽整页。 */
+/* 窄窗口下表格在内部横向滚动，不增加整页宽度。 */
 .lib-scroll {
   overflow-x: auto;
 }
@@ -1005,7 +1005,7 @@ textarea.code-area::placeholder {
   font-size: var(--fs-sm);
   font-weight: 500;
 }
-/* 档位列不换行：换行会使整行变为两行高，一屏中十几行都会随之变高。
+/* 档位列不换行：换行会使整行变为两行高，一屏中超过 10 行都会随之变高。
    宽度不足时整张表横向滚动（`.lib-scroll`）。 */
 .lib-table .lv {
   white-space: nowrap;
@@ -1023,7 +1023,7 @@ textarea.code-area::placeholder {
 /* 生成类的表按内容确定列宽：每类一张表，不与其他表对齐列，固定列宽无法容纳视频行的操作。
    各列不换行、宽度取 auto，表宽多出的部分由浏览器按内容宽度比例分给各列。
    不要给某一列设 `width: 1%` 收缩为内容宽度：剩余宽度会全部分配给剩下的一列，表的右侧整块留空。
-   参数展开在跨全部列的下一行；不要放回最后一列，该列宽度过窄。 */
+   参数展开在跨全部列的下一行；不要放入最后一列，该列宽度过窄。 */
 .lib-table.media {
   table-layout: auto;
 }
@@ -1167,7 +1167,7 @@ textarea.code-area::placeholder {
   font-size: var(--fs-sm);
 }
 /* 段级说明位于段标题右侧。区头是 600 字重的标题行，说明需恢复常规字重，
-   并限制宽度：说明过长会把右侧操作按钮挤出行外。 */
+   并限制宽度：说明过长会使右侧操作按钮超出行外。 */
 .section-desc {
   margin: 0;
   min-width: 0;
@@ -1187,7 +1187,7 @@ textarea.code-area::placeholder {
 
 /* ── 条目卡 ──
  *
- * 浅底色、无强边框：一页中可能有十几个条目，每个条目带描边框会使整页呈现为密集的方格。
+ * 浅底色、无强边框：一页中可能有超过 10 个条目，每个条目带描边框会使整页呈现为密集的方格。
  * 底色取 `--bg-sunken`（对话框本身为 `--bg-raised`），因此卡片呈**凹陷**效果，
  * 亮色与暗色主题下均成立。 */
 .entry-list {
@@ -1237,7 +1237,7 @@ textarea.code-area::placeholder {
   color: var(--text-primary);
   word-break: break-all;
 }
-/* 说明压缩为一行：条目较多时，三行说明会使用户需要滚动三屏才能看完全部条目。
+/* 说明压缩为一行：条目较多时，三行说明会使用户需要滚动三屏才能浏览全部条目。
    需要查看完整说明时点击展开该条目。 */
 .entry-desc {
   min-width: 0;
@@ -1279,7 +1279,7 @@ textarea.code-area::placeholder {
 
 /* ── 空态框 ──
  *
- * 高度固定。空态与有内容时高度相差较大时，添加第一个条目后整页内容会向下跳动（B9）。 */
+ * 高度固定。空态与有内容时高度相差较大时，添加第一个条目后整页内容会向下位移（B9）。 */
 .empty-box {
   display: flex;
   flex-direction: column;
@@ -1379,7 +1379,7 @@ textarea.code-area::placeholder {
   flex-direction: column;
 }
 
-/* 不加遮罩：修改时需要看到窗口四周的个性化效果，后面的设置窗口已有遮罩。 */
+/* 不加遮罩：修改时需要看到窗口四周的个性化效果，下层的设置窗口已有遮罩。 */
 .personal-dialog::backdrop {
   background: transparent;
 }
@@ -1432,7 +1432,7 @@ textarea.code-area::placeholder {
   display: none;
 }
 
-/* 滑块与当前值。值的宽度固定，拖动时数字位数变化不推动滑块。 */
+/* 滑块与当前值。值的宽度固定，拖动时数字位数变化不使滑块移位。 */
 .personal-slider {
   display: flex;
   align-items: center;
@@ -1453,7 +1453,7 @@ textarea.code-area::placeholder {
 }
 
 /* 「宠物皮肤」一行：自绘下拉框（`PetPicker.tsx`）。宽度固定，与行内原生下拉框一致；
-   名称在框内单行截断，不换行撑高整行。 */
+   名称在框内单行截断，不换行，不增加行高。 */
 .pet-pick {
   display: flex;
   width: 176px;
@@ -1522,7 +1522,7 @@ textarea.code-area::placeholder {
   flex: none;
   color: var(--accent);
 }
-/* 删除按钮只在悬停或聚焦该行时显示，避免每行都有一个醒目的垃圾桶。 */
+/* 删除按钮只在悬停或聚焦该行时显示，避免每行都显示一个醒目的删除图标。 */
 .pet-option-remove {
   display: grid;
   place-items: center;
@@ -1547,7 +1547,7 @@ textarea.code-area::placeholder {
 /* ───────────────────────── 插件 ───────────────────────── */
 
 /* 「有」与「无」均如实显示，两者都不是错误状态：
-   将「无」显示为红色会使「node 版本不足因而没有网络访问限制」看似故障 */
+   将「无」显示为红色会使「node 版本不足因而没有网络访问限制」被误认为故障。 */
 .iso-flag {
   padding: 1px 7px;
   border-radius: var(--r-xs);
@@ -1662,7 +1662,7 @@ textarea.code-area::placeholder {
   display: flex;
   gap: var(--s-4);
 }
-/* 分组筛选推至右侧边缘：两组相邻时，七个按钮会被视为一排同类选项，而它们是两个互不相关
+/* 分组筛选置于右侧边缘：两组相邻时，七个按钮会被视为一排同类选项，而它们是两个互不相关
    的维度（时间范围 / 分组方式）。 */
 .usage-bar > .usage-chips + .usage-chips {
   margin-left: auto;
@@ -1686,7 +1686,7 @@ textarea.code-area::placeholder {
 
 /* 表格外框。与设置页其他成组内容（`.model-list` / `.lib-card`）使用相同样式：
    细边框 + 大圆角 + 自身裁剪，表头底色才能随圆角裁剪。
-   窄窗口下表格在内部横向滚动，不撑宽整页。 */
+   窄窗口下表格在内部横向滚动，不增加整页宽度。 */
 .usage-scroll {
   overflow-x: auto;
   border: 1px solid var(--border-subtle);

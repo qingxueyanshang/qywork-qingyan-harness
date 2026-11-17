@@ -46,7 +46,7 @@ pub enum Setting {
 
 /// 一次 `set_toggle` 的最大按下次数。三态环最长三步。
 ///
-/// 到达目标态即停止，不一次按完 `toggle_steps` 算出的步数：三态环的顺序由应用决定，按固定步数
+/// 到达目标态即停止，不一次性按下 `toggle_steps` 计算出的全部步数：三态环的顺序由应用决定，按固定步数
 /// 按下会停在其他状态上。
 pub const MAX_TOGGLE_STEPS: u32 = 3;
 
@@ -180,7 +180,7 @@ pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, 
             ))
         }
         // 以下是由其他路径处理的动作。逐条列出而不写 `_`：新增后台动作
-        // 未在此处处理时必须编译失败，而不是变成一条拒绝。
+        // 未在此处处理时必须编译失败，而不是变为一条拒绝。
         ActionSpec::SetToggle { .. } => Err("not_planned: set_toggle 使用独立的执行路径".to_owned()),
         ActionSpec::Click { .. }
         | ActionSpec::Hover

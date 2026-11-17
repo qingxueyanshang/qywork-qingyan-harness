@@ -4,7 +4,7 @@
  * 使用真实的 HTTP server 而不是模拟 fetch：该传输的出错点都在协议层面。
  * 响应可能是 `application/json`，也可能是 `text/event-stream`；
  * 会话 id 位于响应头中且只出现一次；通知返回 202 且没有 body；
- * 失败有五六种含义完全不同的状态码。模拟 fetch 等于把这些全部替换为
+ * 失败有五至六种含义完全不同的状态码。模拟 fetch 等于把这些全部替换为
  * 自行拟定的结构：夹具与实际不符时，实现与测试同时出错，测试却全部通过。
  *
  * 因此此处用 `Bun.serve` 启动一个按规范应答的 server，使客户端实际发送 HTTP 请求。
@@ -38,7 +38,7 @@ interface ServerState {
   deleted: boolean
   /** initialize 时是否下发会话 id。 */
   issueSession: boolean
-  /** SSE 流写到一半即断开。 */
+  /** SSE 流在写入中途断开。 */
   truncateSse: boolean
   /** tools/call 的 SSE 流只输出一行而不换行，长度超过单行上限（64 Mi 字符）。 */
   floodSse: boolean
@@ -138,9 +138,9 @@ const server = Bun.serve({
       })
     }
 
-    // 截断的流：输出半条事件后正常关闭。
+    // 截断的流：输出不完整的事件后正常关闭。
     // 这比 `controller.error()` 更接近实际情况：反向代理中断连接、server 崩溃时，
-    // 客户端看到的往往只是流结束，`for await` 不抛出任何异常。
+    // 客户端取得的往往只是流结束，`for await` 不抛出任何异常。
     // 这正是传输层无法区分静默结束与成功结束的情形。
     const body = state.truncateSse
       ? new ReadableStream<Uint8Array>({
@@ -296,8 +296,8 @@ describe('失败须区分「配置错误」与「服务端不可用」', () => {
 
   /**
    * SSE 流中途断开时，在途请求必须立即被拒绝。
-   * 否则调用方会一直等待至 60 秒超时，用户看到的是无响应：
-   * 这是最难排查的一种失败，因为它看起来仍在执行。
+   * 否则调用方会一直等待至 60 秒超时，界面显示为无响应，
+   * 且与仍在执行无法区分，是最难排查的一种失败。
    */
   test('SSE 流中途断开时立即拒绝在途请求，不等待超时', async () => {
     reset({ mode: 'sse', truncateSse: true })

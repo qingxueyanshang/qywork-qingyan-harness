@@ -43,7 +43,7 @@ const server = Bun.serve({
       const form = await req.formData()
       const request = JSON.parse(String(form.get('request'))) as { id: string; model: string }
       submitted.push({ request, files: [...form.keys()].filter((k) => k !== 'request') })
-      // 网关在云端处理完之后返回 502 错误页：本机得不到任务号，结果未知。
+      // 网关在云端处理完成之后返回 502 错误页：本机未取得任务号，结果未知。
       if (request.model.startsWith('gateway-')) {
         if (request.model === 'gateway-established') answerLost.set(request.id, 'established')
         if (request.model === 'gateway-broken') answerLost.set(request.id, 'broken')
@@ -185,7 +185,7 @@ test('云端回报的重试等待与上游状态原样交给调用方，云端�
         settled = true
       })
     // 查询间隔由假计时器推进；请求与响应经本机接口完成，每次推进后让出事件循环。
-    // 每次推进后让出多次：只让出一次时，负载较高的机器上假时钟先于本机接口的响应走完 60 秒的无数据上限，
+    // 每次推进后让出多次：只让出一次时，负载较高的机器上假时钟先于本机接口的响应推进到 60 秒的无数据上限，
     // 请求按超时处理，重试的回报与预期不同。
     for (let i = 0; i < 5000 && !settled; i++) {
       jest.advanceTimersByTime(100)
@@ -320,6 +320,6 @@ test('提交结果未知后按任务号确认的经过写入日志：带任务�
   }
 })
 
-test('撤销：云端回答上游已开始生成时为 started（按结果计费）', async () => {
+test('撤销：云端答复上游已开始生成时为 started（按结果计费）', async () => {
   expect(await adapter('x').cancel?.('mj_started', new AbortController().signal)).toBe('started')
 })

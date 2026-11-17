@@ -11,7 +11,7 @@
  * 数据源与 `qy plugins` 相同（loadExtensions），因此 CLI 与界面对已安装的插件
  * 及其隔离程度不会给出两种答案。
  *
- * 失败项与成功项一并返回：安装失败的插件是用户最需要看到的部分，
+ * 失败项与成功项一并返回：安装失败的插件是界面最需要显示的部分，
  * 只返回成功项时，放入目录后未出现的问题无从排查。
  */
 
@@ -111,7 +111,7 @@ export async function copyPluginDir(
   if (exists && !opts.replace) return { ok: false, error: `已安装同名插件 ${id}` }
   // 源目录即目标目录时直接返回：说明指定的是已安装的插件。
   if (resolve(src) === resolve(dest)) return { ok: true }
-  // 覆盖前先完整删除：`cp` 不会移除旧版本中多出的文件，两个版本的代码混在一起比任一版本都更糟。
+  // 覆盖前先完整删除：`cp` 不会移除旧版本中多出的文件，两个版本的文件会混合存在。
   if (exists) await rm(dest, { recursive: true, force: true })
   await mkdir(dirname(dest), { recursive: true })
   await cp(src, dest, { recursive: true })
@@ -207,12 +207,12 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
   // 有意不做 `git clone <任意 URL>`：那等于从网络获取一段代码并在下一次加载时运行。
   // 插件确实运行在沙箱中，但沙箱限制的是插件能访问什么，不判断它是否是用户想要的插件。
   // 不提供这一步的代价只是用户多输入一条 git 命令；提供这一步的代价是该入口
-  // 等同于 `curl | sh`。同样的结果仍可达成，只是多一个步骤：用户能看到安装的内容。
+  // 等同于 `curl | sh`。同样的结果仍可达成，只是多一个步骤：用户能查看安装的内容。
   //
   // 安装前必须校验清单：
   // 目录中没有合法的 `qywork.plugin.json` 时直接拒绝。不校验时，
   // 指定了错误的目录会报告安装成功，随后在下一次加载时成为一条 failure，
-  // 而此时用户已无法回忆所指定的路径。
+  // 此时已难以追溯所指定的路径。
   if (p === '/api/plugins/install' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { path?: string } | null
     const src = body?.path?.trim()
@@ -220,7 +220,7 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
 
     const found = await readPluginDir(src)
     if (!found.ok) return json({ error: 'invalid', message: found.error }, 422)
-    // 已安装同一 id 时拒绝，而不是静默覆盖：覆盖会直接抹掉用户可能修改过的文件，
+    // 已安装同一 id 时拒绝，而不是静默覆盖：覆盖会直接删除用户可能修改过的文件，
     // 且没有任何提示。更换版本时先卸载。
     if (found.replacing) {
       return json({ error: 'conflict', message: `已安装同名插件 ${found.id}，请先卸载` }, 409)

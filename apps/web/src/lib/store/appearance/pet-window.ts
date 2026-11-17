@@ -49,7 +49,7 @@ function savedPosition(): PetAnchor | null {
 }
 
 /**
- * 开始同步。由入口在挂载后调用；不在桌面外壳中时不做任何事。
+ * 开始同步。由入口在挂载后调用；不在桌面外壳中时不执行任何操作。
  * `active` 给出当前显示的宠物包与取图方式（`components/appearance/active-pet.ts`）。
  */
 export function observePetWindow(

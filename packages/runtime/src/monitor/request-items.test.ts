@@ -484,7 +484,7 @@ describe('边界未知与摘要请求', () => {
     return { store, conversationId: conv.id as ConversationId, runId: run.id, open }
   }
 
-  test('覆盖该请求的压缩记录早于边界字段时 boundaryKnown 为 false，只给分组合计，条目差为 null', () => {
+  test('覆盖该请求的压缩记录早于边界字段时 boundaryKnown 为 false，只提供分组合计，条目差为 null', () => {
     const { store, runId, open } = fixture()
     try {
       const first = open()
@@ -522,7 +522,7 @@ describe('边界未知与摘要请求', () => {
     }
   })
 
-  test('摘要请求没有上一次主请求；按 id 读取不到时为 null', () => {
+  test('摘要请求没有上一次主请求；按 id 未查到时为 null', () => {
     const { store, open } = fixture()
     try {
       open()

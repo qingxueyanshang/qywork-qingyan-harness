@@ -41,7 +41,7 @@ export default function AnnouncementsDialog() {
         closeAnnouncements()
       }}
       onKeyDown={(e) => {
-        // Escape 只关闭本窗口，不把后面的窗口一起关闭。
+        // Escape 只关闭本窗口，不关闭下层的窗口。
         if (e.key === 'Escape') e.stopPropagation()
       }}
     >

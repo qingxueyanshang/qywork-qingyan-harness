@@ -1,7 +1,7 @@
 //! 本浏览器进程中的页面、会话与帧，按顶层页面归类。
 //!
 //! 每个页面会话及其跨站子帧会话都记录到顶层页面上，各会话报告的帧也记录到顶层页面上：
-//! 下载事件只带 frameId，归属依靠本表从帧查到页面、再查到 tabId。
+//! 下载事件只带 frameId，归属依靠本表由帧查找页面、再由页面查找 tabId。
 
 use std::collections::HashMap;
 
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(t.page_of_session("S-unknown"), None);
     }
 
-    /// 主帧只认页面会话报告的帧：子帧会话中的根帧不是顶层页面的主帧。
+    /// 主帧只采用页面会话报告的帧：子帧会话中的根帧不是顶层页面的主帧。
     #[test]
     fn only_the_page_session_reports_the_main_frame() {
         let mut t = table_with_tab();

@@ -5,7 +5,7 @@ export const migration046: Migration = {
   name: 'temp_cells_by_name',
   /**
    * 临时子 agent 创建时必须给定名字，该名字即子会话标题；节点显示该名字，不显示模型名。
-   * 迁移 44 将节点名称统一为模型名，此处改回标题；单个派发参数中的 name 同步修改。
+   * 迁移 44 将节点名称统一为模型名，此处恢复为标题；单个派发参数中的 name 同步修改。
    */
   apply(db) {
     const select = db.prepare<{ id: string; tool_name: string; payload: string }, []>(

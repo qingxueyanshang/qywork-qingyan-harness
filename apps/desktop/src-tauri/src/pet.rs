@@ -5,7 +5,7 @@
 //!
 //! 宠物窗口只容纳宠物，尺寸只随宠物包改变，以宠物的左下角为基准调整。气泡与列表在任务框窗口中，
 //! 位置由本模块按宠物窗口计算：展开与收起只改变任务框窗口，宠物窗口的位置与尺寸不变。
-//! 不要把两者合回一个窗口：窗口位置改变的那一帧 WebView 仍按左上角显示上一帧画面，宠物会跳动一次。
+//! 不要把两者合并为一个窗口：窗口位置改变的那一帧中 WebView 仍以左上角为基准显示上一帧画面，宠物会跳动一次。
 
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
@@ -199,7 +199,7 @@ fn place_box(
 }
 
 /// 任务框窗口的左上角（物理像素）：位于宠物窗口上方，左边内缩 `inset`，底边与宠物窗口顶边相距 `gap`；
-/// 右侧超出工作区时改为与宠物窗口右边内缩 `inset` 对齐，仍超出左边时贴工作区左边。
+/// 右侧超出工作区时改为与宠物窗口右边内缩 `inset` 对齐，仍超出左边时与工作区左边对齐。
 /// `pet` 为宠物窗口的左、上与宽度，`area` 为工作区的左右边界。
 fn box_origin(
     pet: (i32, i32, i32),
@@ -240,7 +240,7 @@ fn follow_box(app: &AppHandle) {
 /// 任务框页面不显示报错，这些日志是「点击后没有跳转」的唯一记录。
 ///
 /// 先短暂置顶再取消：Windows 的前台锁会拒绝 `set_focus` 且不报错，主窗口留在其他窗口之下；
-/// 被遮挡的 WebView 不重绘，用户看到的是切换前的画面，表现为「点击没有反应」。
+/// 被遮挡的 WebView 不重绘，界面停留在切换前的画面。
 #[tauri::command]
 pub fn pet_open_main(app: AppHandle, conversation_id: Option<String>) -> Result<(), String> {
     log::info!("宠物唤起主窗口 会话={conversation_id:?}");
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn box_stays_inside_work_area_left_edge() {
-        // 两侧都无法容纳时贴工作区左边：100 + 92 - 8 - 244 = -60。
+        // 两侧都无法容纳时与工作区左边对齐：100 + 92 - 8 - 244 = -60。
         assert_eq!(
             box_origin((100, 500, 92), (244, 40), (0, 300), (8, 8)),
             (0, 452)

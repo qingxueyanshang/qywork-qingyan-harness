@@ -128,7 +128,7 @@ describe('读取', () => {
     content.collectGarbage([])
 
     // 账本行仍在，正文已删除。必须返回 null，而不是返回一个无法读取的长度：
-    // 后者会使模型按该长度调用 read_resource，收到空内容却判定为已读完。
+    // 后者会使模型按该长度调用 read_resource，取得空内容却判定为已读取完毕。
     expect(sink.stat(resourceId)).toBeNull()
     store.close()
     content.close()
@@ -261,11 +261,11 @@ describe('正文定稿与引用登记之间的交错', () => {
     const { dbPath, store, run } = onDisk()
     const otherStore = new Store({ path: dbPath })
     const otherContent = new ContentStore(contentPathFor(dbPath))
-    // 锁冲突要等满 `busy_timeout` 才报错，而此次锁冲突发生在同一线程中：
+    // 锁冲突在等待达到 `busy_timeout` 后才报错，而此次锁冲突发生在同一线程中：
     // 持锁方正在执行该回调，继续等待只会使测试多耗时 5 秒。
     otherStore.db.exec('PRAGMA busy_timeout = 50')
 
-    let attempt = '没跑到'
+    let attempt = '未执行'
     class GcAfterPut extends ContentStore {
       override put(raw: Uint8Array, resourceId?: string): ReturnType<ContentStore['put']> {
         const blob = super.put(raw, resourceId)

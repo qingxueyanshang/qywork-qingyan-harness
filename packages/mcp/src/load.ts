@@ -35,7 +35,7 @@ export interface LoadedServer {
    *
    * 该字段用于消除一种静默失败：只提供 `prompts` 的 server
    * 会连接成功、握手成功、`tools/list` 返回空、注册 0 个工具，且不报告任何错误。
-   * 用户只看到已配置却没有任何效果，日志中也没有任何记录。
+   * 界面只显示已配置，却没有任何效果，日志中也没有任何记录。
    */
   unsupported: string[]
 }
@@ -74,8 +74,7 @@ export function parseMcpConfig(raw: string): McpConfig {
 
     if (url) {
       // 同时提供 `command` 与 `url` 表示配置有歧义。报告该错误而不是任选其一：
-      // 静默选择时，用户修改了未被采用的字段，会面对一个没有任何变化的
-      // 现象长时间排查。
+      // 静默选择时，修改未被采用的字段不产生任何变化，且无从排查。
       if (command) {
         bad.push(`${name}（同时配置了 command 与 url，无法判断使用哪种传输）`)
         continue
@@ -262,7 +261,7 @@ export async function loadMcpServers(
     /*
      * 连接成功、握手成功，却没有注册任何工具：必须报告这一情况。
      *
-     * 否则用户只看到已配置 MCP 却没有任何效果，
+     * 否则界面只显示已配置 MCP，却没有任何效果，
      * 而 failures 为空、日志无记录，无从排查。
      *
      * 判据是产出为零，而不是未声明能力：后者只覆盖其中一种成因，
@@ -304,7 +303,7 @@ export async function loadMcpServers(
  * server 已声明而本仓库未接入的能力。
  *
  * 判据是 `SUPPORTED_CAPABILITIES` 清单，而不是在此处另写一组 if：
- * 另写时，接入 `prompts` 后若忘记修改此处，用户会持续看到
+ * 另写时，接入 `prompts` 后若忘记修改此处，界面会持续显示
  * 「尚未接入 prompts」的错误警告。
  */
 export function unsupportedCapabilities(caps: McpServerCapabilities): string[] {

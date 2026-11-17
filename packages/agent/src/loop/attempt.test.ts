@@ -1,6 +1,6 @@
 /**
  * 覆盖 `loop/attempt.ts`：一轮请求的发送与事件消费（通道顺序、思考密文、参数进度）、
- * 流停滞与停止、断流后的落账与重发形状，以及逐请求传输证据。
+ * 流停滞与停止、断流后的账本记录与重发形状，以及逐请求传输证据。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -164,7 +164,7 @@ describe('流式通道的顺序', () => {
     ])
   })
 
-  /** 同一通道连续到达时不新开 step：否则一句话会被拆成几十条。 */
+  /** 同一通道连续到达时不新开 step：否则一句话会被拆分为数十条。 */
   test('同一通道连续增量只开一条 step', async () => {
     const opened: string[] = []
     let seq = 0
@@ -206,7 +206,7 @@ describe('流式通道的顺序', () => {
   })
 
   /**
-   * 回归：账本中一轮的 39 条 step 里有 12 条正文只含一两个空格，均位于每条模型消息开头、
+   * 回归：账本中一轮的 39 条 step 里有 12 条正文只含一至两个空格，均位于每条模型消息开头、
    * 思考或工具调用之前。每条都是零高度的正文条目，在会话列中占用 8px 间隙，
    * 并把本应合并的工具组分隔开。
    */
@@ -459,8 +459,8 @@ describe('监督期间点击停止，不报告断流，也不再发送请求', (
 /**
  * 输出上限截断时的工具调用。
  *
- * `max_tokens` 表示模型输出未完成，最后一条工具调用的参数可能止于半个 JSON；
- * 截断处恰好是合法 JSON 时也不会产生 `argumentsError`。按其执行即以残缺参数执行操作。
+ * `max_tokens` 表示模型输出未完成，最后一条工具调用的参数可能是不完整的 JSON；
+ * 截断处恰好是合法 JSON 时也不会产生 `argumentsError`。按其执行即以不完整的参数执行操作。
  */
 
 describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
@@ -588,7 +588,7 @@ describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
                 return
               }
               // 空闲判定在传输层按字节进行，因此「停滞」只能模拟为不再发送任何字节：
-              // 保活行与空参数片段都是字节，发送后即不算静默。
+              // 保活行与空参数片段都是字节，发送后即不计为静默。
               if (broken && mode === 'stall') return
               if (broken && mode === 'heartbeat' && pings < HEARTBEATS) {
                 pings++
@@ -773,7 +773,7 @@ describe('逐请求传输证据不改变请求内容', () => {
   })
 })
 
-describe('传输中断：进入终态、无痕重发、报告失败形状', () => {
+describe('传输中断：进入终态、零输出时原样重发、报告失败形状', () => {
   /**
    * 注入的退避等待收到的毫秒数，按调用顺序记录。每次 `collect` 开始时清空。
    *
@@ -821,7 +821,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
    * 按脚本决定每次 `stream()` 的结束方式。
    *
    * `'break'` 与 `'break-after-text'` 的区别即重发的判据：前者 provider
-   * 未返回任何事件（重发无痕），后者已输出正文（原样重发会使用户看到两段不同的内容）。
+   * 未返回任何事件（重发不改变已显示的内容），后者已输出正文（原样重发时界面显示两段不同的内容）。
    */
   function scriptedAdapter(
     script: (
@@ -847,7 +847,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
       kind: 'anthropic_messages',
       transmits: { effort: true },
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      /** 每次请求的消息，按发送顺序记录。带上下文续发的断言需要检查第二次请求携带的内容。 */
+      /** 每次请求的消息，按发送顺序记录。带上下文继续发送的断言需要检查第二次请求携带的内容。 */
       requests: [],
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
         this.requests.push(req.messages)
@@ -962,6 +962,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     adapter: LlmAdapter,
     rec: Recorded,
     signal: AbortSignal = new AbortController().signal,
+    transientResend = false,
   ) {
     return new AgentLoop({
       adapter,
@@ -974,14 +975,23 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
         backoffs.push(ms)
         if (sleepSignal.aborted) throw new DOMException('已中断', 'AbortError')
       },
-    }).run({ compactPercent: 80, runId: 'rn_net' as never, history: [], signal })
+    }).run({
+      compactPercent: 80,
+      runId: 'rn_net' as never,
+      history: [],
+      signal,
+      ...(transientResend ? { transientResend: true as const } : {}),
+    })
   }
 
-  async function collect(adapter: LlmAdapter): Promise<{ rec: Recorded; events: AgentEvent[] }> {
+  async function collect(
+    adapter: LlmAdapter,
+    transientResend = false,
+  ): Promise<{ rec: Recorded; events: AgentEvent[] }> {
     backoffs.length = 0
     const rec: Recorded = { opened: [], settled: [], diagnostics: [], thinking: [], failed: [] }
     const events: AgentEvent[] = []
-    for await (const ev of run(adapter, rec)) events.push(ev)
+    for await (const ev of run(adapter, rec, undefined, transientResend)) events.push(ev)
     return { rec, events }
   }
 
@@ -997,7 +1007,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
       ],
       retry: { decision: 'resend', attempt: 1, max: RESEND_LIMIT },
     })
-    // 传输失败同样先等待：立即重发不能加快恢复，只会在几毫秒内耗尽五次额度。
+    // 传输失败同样先等待：立即重发不能加快恢复，只会在数毫秒内耗尽五次额度。
     expectBackoff(rec.diagnostics[0]?.retry.backoffMs, 0)
     expect(backoffs).toEqual([rec.diagnostics[0]!.retry.backoffMs!])
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
@@ -1074,8 +1084,8 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
   test('上游自报暂时不可用：等待后重发，第二次成功时视为无事发生', async () => {
     const { rec, events } = await collect(scriptedAdapter(['reject']))
 
-    // 不重发并不节省费用：用户仍需手动继续，那一次支付的是同一份长 prompt 的费用，
-    // 而且 run 已被写为 failed，新消息还需让模型重新理解上一轮的进度。
+    // 不重发并不节省费用：用户仍需手动继续，支付的是同一份长 prompt 的费用；
+    // 且 run 已记为 failed，新消息还需模型重新理解上一轮的进度。
     expect(rec.opened).toEqual([0, 1])
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
     const finished = events.find((e) => e.type === 'run.finished')
@@ -1167,7 +1177,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     expect(err?.type === 'run.error' && err.code).toBe('insufficient_quota')
   })
 
-  test('429 前已有正文：退避后携带正文续发', async () => {
+  test('429 前已有正文：退避后携带正文继续发送', async () => {
     const adapter = scriptedAdapter(['rate-limit-after-text', 'ok'])
     const { rec, events } = await collect(adapter)
 
@@ -1241,6 +1251,40 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     expect(message).not.toMatch(/秒未收到响应/)
   })
 
+  /** 子 agent 的轮次（`transientResend`）按 30 秒、2 分钟、5 分钟重发 3 次，用尽即失败；事件与诊断中的上限为 3。 */
+  test('按暂时故障的间隔重发：依次等待 30 秒、2 分钟、5 分钟，重发 3 次后失败', async () => {
+    const { rec, events } = await collect(
+      scriptedAdapter(Array(RESEND_LIMIT + 1).fill('reject')),
+      true,
+    )
+
+    expect(rec.opened).toEqual([0, 1, 2, 3])
+    expect(backoffs).toHaveLength(3)
+    const [first, second, third] = backoffs as [number, number, number]
+    expect(first).toBeGreaterThanOrEqual(30_000)
+    expect(first).toBeLessThanOrEqual(33_000)
+    expect(second).toBeGreaterThanOrEqual(120_000)
+    expect(second).toBeLessThanOrEqual(132_000)
+    expect(third).toBeGreaterThanOrEqual(300_000)
+    expect(third).toBeLessThanOrEqual(330_000)
+    expect(events.flatMap((e) => (e.type === 'run.retrying' ? [e.max] : []))).toEqual([3, 3, 3])
+    expect(rec.diagnostics.at(-1)?.retry).toMatchObject({ decision: 'limit_exhausted', max: 3 })
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' && err.message).toContain('已重发 3 次')
+  })
+
+  /** 原始失败形状：前几次被第三方接口拒绝、最后一次为限流时，报错只写限流，派发方无从得知前几次的原因。 */
+  test('重发用尽：报错在最后一次的原因之后列出此前各次不同的失败原因', async () => {
+    const { events } = await collect(
+      scriptedAdapter(['reject', 'reject', 'break', 'rate-limit', 'rate-limit', 'rate-limit']),
+    )
+
+    const err = events.find((e) => e.type === 'run.error')
+    expect(err?.type === 'run.error' ? err.message : '').toBe(
+      `HTTP 429 请求过多：Rate limit reached，已重发 ${RESEND_LIMIT} 次，此前的失败：HTTP 503 服务不可用：No available accounts；连接被断开`,
+    )
+  })
+
   test('无状态码的协议失败不显示为超时，重试说明保留在首行', async () => {
     const { events } = await collect(
       scriptedAdapter(Array(RESEND_LIMIT + 1).fill('protocol-failure')),
@@ -1274,11 +1318,32 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
 
     expect(rec.thinking).toHaveLength(1)
     expect(rec.failed).toEqual(rec.thinking)
-    const retrying = events.find((e) => e.type === 'run.retrying')
-    expect(retrying?.type).toBe('run.retrying')
+    const types = events.map((e) => e.type)
+    // 先标注，再进入重发等待：等待期间界面上的末条已是「思考已中断」。
+    expect(types.indexOf('thinking.interrupted')).toBeLessThan(types.indexOf('run.retrying'))
+    const interrupted = events.find((e) => e.type === 'thinking.interrupted')
     expect(
-      retrying?.type === 'run.retrying' ? retrying.failedThinkingStepIds.map(String) : [],
+      interrupted?.type === 'thinking.interrupted' ? interrupted.stepIds.map(String) : [],
     ).toEqual(rec.thinking)
+  })
+
+  /**
+   * 原始失败形状：每次都在思考途中被第三方接口拒绝，前几次的思考标为已中断，重发次数用尽的最后一次
+   * 仍记为已完成，界面显示「已思考」。
+   */
+  test('重发次数用尽：最后一次尝试的思考同样置为失败终态，并在 run.error 之前通知前端', async () => {
+    const { rec, events } = await collect(
+      scriptedAdapter(Array(RESEND_LIMIT + 1).fill('break-after-thinking')),
+    )
+
+    expect(rec.thinking).toHaveLength(RESEND_LIMIT + 1)
+    expect(rec.failed).toEqual(rec.thinking)
+    const notified = events.flatMap((e) =>
+      e.type === 'thinking.interrupted' ? e.stepIds.map(String) : [],
+    )
+    expect(notified).toEqual(rec.thinking)
+    const types = events.map((e) => e.type)
+    expect(types.lastIndexOf('thinking.interrupted')).toBeLessThan(types.indexOf('run.error'))
   })
 
   test('重发后的新思考另开一条 step，不拼接到失败的 step', async () => {
@@ -1298,7 +1363,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
    * 正文已显示后断开：正文是模型已输出的内容，作为上一条消息带入上下文再次请求，使模型继续执行。
    * 第二次请求中必须包含该段正文与继续执行的提示；这是新的一轮，不是同一轮的第二次尝试。
    */
-  test('正文已显示后断开：携带正文续发，第二次成功时视为无事发生', async () => {
+  test('正文已显示后断开：携带正文继续发送，第二次成功时视为无事发生', async () => {
     const adapter = scriptedAdapter(['break-after-text', 'ok'])
     const { rec, events } = await collect(adapter)
 
@@ -1313,12 +1378,12 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     expect(last?.content).toBe('上一条回复在此处中断，其后内容未送达。')
   })
 
-  test('正文已显示后连续断开：续发次数与原样重发共用额度，用尽后才进入终态', async () => {
+  test('正文已显示后连续断开：继续发送的次数与原样重发共用额度，用尽后才进入终态', async () => {
     const adapter = scriptedAdapter(Array(RESEND_LIMIT + 1).fill('break-after-text'))
     const { events } = await collect(adapter)
 
     expect(adapter.requests).toHaveLength(RESEND_LIMIT + 1)
-    // 每次续发都携带上一段正文：最后一次请求中包含之前全部 RESEND_LIMIT 段。
+    // 每次继续发送都携带上一段正文：最后一次请求中包含之前全部 RESEND_LIMIT 段。
     const final = adapter.requests[RESEND_LIMIT] ?? []
     expect(final.filter((m) => m.role === 'assistant' && m.content === '我先看看')).toHaveLength(
       RESEND_LIMIT,
@@ -1414,6 +1479,6 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
  * 停止必须能使一轮从**停滞的工具**中返回。
  *
  * abort 只设置一个信号，等待方不检查该信号就等于没有停止。本组锁定：即使工具永不返回，
- * 点击停止后这一轮也在毫秒级进入终态，且终态为 `user_interrupt` 而不是红色的
- * `internal_error`。缺少该保证时，用户点击停止后没有任何响应，只能重启应用。
+ * 点击停止后这一轮也在毫秒级进入终态，且终态为 `user_interrupt` 而不是
+ * `internal_error`。缺少该保证时，点击停止后没有任何响应，只能重启应用。
  */

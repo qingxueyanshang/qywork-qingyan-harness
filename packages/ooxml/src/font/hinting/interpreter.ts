@@ -14,7 +14,7 @@
  *   GDI 实测（构造字体逐条指令读取结果，Arial 的 `prep` 写入的 cvt 两种绘制相同）。
  * - ClearType 绘制下字形指令执行过 IUP[x] 与 IUP[y] 之后，字形区的点不再移动（移动类指令只标记触及），FLIPPT、FLIPRGON、
  *   FLIPRGOFF 不再改变点的类型（`settled`）。GDI 实测：Times New Roman 的数字 0 在 ppem 12、14 时于 IUP 之后以 SCFS、
- *   ALIGNRP 与 FLIPRGON 改为直边，GDI 的 ClearType 字形仍为椭圆。不要去掉这一条：Arial、Times New Roman（常规、粗体）
+ *   ALIGNRP 与 FLIPRGON 改为直边，GDI 的 ClearType 字形仍为椭圆。不要删除这一条：Arial、Times New Roman（常规、粗体）
  *   与 Calibri ppem 8–30 的可打印 ASCII 共 8648 个字形中与 GDI 逐像素相同的由 6156 个降为 5465 个。未查明的例外：
  *   Times New Roman 的 k、c、e、d 与 Arial 的 M、N、R、w 在个别 ppem 下 IUP 之后的 SHPIX 在 GDI 中生效，按本规则不移动。
  * - ClearType 绘制为 GDI 的自然宽度方式（`CLEARTYPE_NATURAL_QUALITY`）：WPS 以此请求绘制文字（WPS 表格的屏幕图像、
@@ -182,7 +182,7 @@ interface CallRecord {
   readonly def: Definition
 }
 
-/** 每段程序最多执行的指令数：超过时视为死循环。 */
+/** 每段程序最多执行的指令数：超过时视为无限循环。 */
 const MAX_STEPS = 1_000_000
 /** 栈容量在 `maxp.maxStackElements` 之外的余量：部分字体的该值偏小。 */
 const STACK_MARGIN = 32

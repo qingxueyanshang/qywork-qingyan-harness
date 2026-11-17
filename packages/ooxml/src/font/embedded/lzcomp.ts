@@ -196,7 +196,7 @@ export function lzcompDecode(data: Uint8Array): Uint8Array {
       history[pos] = history[pos - 6]!
       pos++
     } else {
-      // 复制命令：首个符号给出距离的 3 位组数与长度的前 2 位，长度按 2 位一组续读，最高位为结束标志。
+      // 复制命令：首个符号给出距离的 3 位组数与长度的前 2 位，长度按 2 位一组继续读取，最高位为结束标志。
       let bitsValue = symbol - 256
       const distRanges = Math.floor(bitsValue / (1 << LEN_WIDTH)) + 1
       bitsValue %= 1 << LEN_WIDTH

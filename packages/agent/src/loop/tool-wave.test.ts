@@ -36,7 +36,7 @@ describe('工具中途输出', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noisy',
-      description: '先吐一行，再等外面放行。',
+      description: '先输出一行，再等待外部放行。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'run',
       objectLabel: '命令',
@@ -93,7 +93,7 @@ describe('工具中途输出', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noisy',
-      description: '吐一行就结束。',
+      description: '输出一行后结束。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'run',
       objectLabel: '命令',
@@ -137,7 +137,7 @@ describe('工具中途输出', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noisy',
-      description: '吐一行然后永不返回。',
+      description: '输出一行后不再返回。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'run',
       objectLabel: '命令',
@@ -148,7 +148,7 @@ describe('工具中途输出', () => {
       async fn(_args, ctx) {
         ctx.emit('stdout', '第一行')
         await new Promise<void>(() => {})
-        return { status: 'success' as const, message: '到不了' }
+        return { status: 'success' as const, message: '不会执行到此处' }
       },
     })
 
@@ -191,7 +191,7 @@ describe('ToolContext 生命周期', () => {
 
     registry.register({
       name: 'remember',
-      description: '把一个值写进 ctx.state，供后续调用读取。',
+      description: '把一个值写入 ctx.state，供后续调用读取。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '状态',
@@ -259,7 +259,7 @@ describe('ToolContext 生命周期', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noop',
-      description: '什么都不做，用于计数。',
+      description: '不执行任何操作，用于计数。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空',
@@ -356,7 +356,7 @@ describe('权限拒绝', () => {
     let executed = 0
     registry.register({
       name: 'danger',
-      description: '有副作用的操作，用于验证权限闸。',
+      description: '有副作用的操作，用于验证权限检查。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'write',
       objectLabel: '文件',
@@ -397,7 +397,7 @@ describe('权限拒绝', () => {
         sink: null,
         port: () => null,
         signal: new AbortController().signal,
-        requestPermission: async () => ({ allowed: false as const, reason: '权限规则拦下：夹具' }),
+        requestPermission: async () => ({ allowed: false as const, reason: '权限规则拒绝：夹具' }),
       }),
     })
 
@@ -418,7 +418,7 @@ describe('权限拒绝', () => {
     // 拒绝是一条工具失败结果，不是 run 的终点。裁决方给出的理由必须随下一轮请求
     // 发出：`auto` 模式下这是模型唯一能取得的信号，缺少该信号时模型只能原样重试。
     expect(requests.length).toBe(2)
-    expect(JSON.stringify(requests[1]?.messages)).toContain('权限规则拦下：夹具')
+    expect(JSON.stringify(requests[1]?.messages)).toContain('权限规则拒绝：夹具')
 
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
@@ -431,14 +431,14 @@ describe('权限拒绝', () => {
  * `stream_idle_timeout` 必须有实际的生产者。没有生产者时，provider 侧短暂异常后 run
  * 持续停滞，既不出错也不结束，界面持续显示加载状态。
  *
- * 判定在传输层按字节进行，因此相关用例必须经过真实 HTTP：假适配器不经过 `traceFetch`，
- * 基于假适配器的断言无法验证该路径。
+ * 判定在传输层按字节进行，因此相关用例必须经过真实 HTTP：模拟适配器不经过 `traceFetch`，
+ * 基于模拟适配器的断言无法验证该路径。
  */
 
 describe('重复无进展', () => {
   test.each([
     {
-      label: '只改无关字段，缺参错误未变，第三轮停止',
+      label: '只修改无关字段，缺少参数的错误未变，第三轮停止',
       args: Array.from({ length: 10 }, (_, attempt) => ({ attempt })),
       results: 3,
       executed: 0,
@@ -527,7 +527,7 @@ describe('重复无进展', () => {
     let executed = 0
     registry.register({
       name: 'stuck',
-      description: '永远返回同一个结果，用于验证空转判定。',
+      description: '始终返回同一个结果，用于验证无进展判定。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空',
@@ -538,7 +538,7 @@ describe('重复无进展', () => {
       permissionEffect: 'read',
       fn: async () => {
         executed++
-        return { status: 'success' as const, message: '还是这些' }
+        return { status: 'success' as const, message: '结果不变' }
       },
     })
 
@@ -589,7 +589,7 @@ describe('重复无进展', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'stuck',
-      description: '永远返回同一个结果。',
+      description: '始终返回同一个结果。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空',
@@ -597,7 +597,7 @@ describe('重复无进展', () => {
       facet: '测试',
       summary: '测试夹具',
       permissionEffect: 'read',
-      fn: async () => ({ status: 'success' as const, message: '还是这些' }),
+      fn: async () => ({ status: 'success' as const, message: '结果不变' }),
     })
     const inner = fakeAdapter(Array.from({ length: 10 }, () => [call('stuck')]))
     const tails: { role: string; content: unknown }[] = []
@@ -685,8 +685,8 @@ describe('重复无进展', () => {
   })
 
   /**
-   * 一次响应内的三次相同调用只计为一次决策周期：模型尚未看到任何结果，
-   * 不构成「看过结果仍重复」。证据按 provider 决策计数，不按工具调用计数，
+   * 一次响应内的三次相同调用只计为一次决策周期：模型尚未取得任何结果，
+   * 不构成「取得结果后仍重复」。证据按 provider 决策计数，不按工具调用计数，
    * 否则单次响应即可满足三次阈值并提前暂停。
    */
   test('同一响应内三次相同调用不判定为无进展，下一次请求照常发送', async () => {
@@ -694,7 +694,7 @@ describe('重复无进展', () => {
     let executed = 0
     registry.register({
       name: 'stuck',
-      description: '永远返回同一个结果，用于验证空转判定。',
+      description: '始终返回同一个结果，用于验证无进展判定。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空',
@@ -704,7 +704,7 @@ describe('重复无进展', () => {
       permissionEffect: 'read',
       fn: async () => {
         executed++
-        return { status: 'success' as const, message: '还是这些' }
+        return { status: 'success' as const, message: '结果不变' }
       },
     })
 
@@ -802,7 +802,7 @@ describe('重复无进展', () => {
     let executed = 0
     registry.register({
       name: 'peek',
-      description: '永远返回同一个结果，用于验证空转判定。',
+      description: '始终返回同一个结果，用于验证无进展判定。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空',
@@ -812,7 +812,7 @@ describe('重复无进展', () => {
       permissionEffect: 'read',
       fn: async () => {
         executed++
-        return { status: 'success' as const, message: '还是这些' }
+        return { status: 'success' as const, message: '结果不变' }
       },
     })
     const run = async (turns: (WireToolCall[] | null)[]) => {
@@ -1402,14 +1402,14 @@ describe('投递额度按决策计算', () => {
         seen.push(batchRemaining(ctx))
         const ok = chargeBatchBudget(ctx, tokens).ok
         admitted.push(ok)
-        return { status: ok ? 'success' : 'failure', message: ok ? 'ok' : '装不下' }
+        return { status: ok ? 'success' : 'failure', message: ok ? 'ok' : '超出额度' }
       },
     })
     return registry
   }
 
   /**
-   * 假 adapter，每一轮报告的输入量由 `input(本地估算)` 给出：第一轮发起调用，第二轮结束。
+   * 模拟 adapter，每一轮报告的输入量由 `input(本地估算)` 给出：第一轮发起调用，第二轮结束。
    * 报告值与估算值之比即 provider 真值与本地估算之比，额度按该比值折算。
    * 第二轮同样按该比值报告：报告值远低于发送量时，本轮按上游未处理全部输入停止（`turn-end.ts` 的 `inputFloor`）。
    */
@@ -1446,7 +1446,7 @@ describe('投递额度按决策计算', () => {
   const bulky: WireMessage[] = [{ role: 'user', content: '甲'.repeat(270_000) }]
   /** 本地估算约 57 万的历史：回报 85 万时仍不超过估算的 1.5 倍加 2 万，回执作为锚点。 */
   const large: WireMessage[] = [{ role: 'user', content: '甲'.repeat(520_000) }]
-  /** 本地估算约 54 万的历史：回报为估算的 1.25 倍时，软阈值以下余 13 万左右。 */
+  /** 本地估算约 54 万的历史：回报为估算的 1.25 倍时，软阈值以下约余 13 万。 */
   const heavy: WireMessage[] = [{ role: 'user', content: '甲'.repeat(490_000) }]
 
   /**
@@ -1599,7 +1599,7 @@ describe('投递额度按决策计算', () => {
       ...grabRegistry(1, []).get('grab')!,
       async fn(_args, ctx) {
         const ok = chargeBatchBudget(ctx, amounts.shift() ?? 1).ok
-        return { status: ok ? 'success' : 'failure', message: ok ? 'ok' : '装不下' }
+        return { status: ok ? 'success' : 'failure', message: ok ? 'ok' : '超出额度' }
       },
     })
     return {

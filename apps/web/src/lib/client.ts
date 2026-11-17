@@ -6,9 +6,9 @@
  * - `origin` 字段：仅用于审计与「谁批准了权限」的跨端提示，不影响能力。
  *
  * 主要复杂度在重连。移动网络断线是常态，因此：
- * - 使用指数退避加抖动，避免服务端恢复时被全部客户端同时重连压垮。
+ * - 使用指数退避加抖动，避免服务端恢复时全部客户端同时重连造成过载。
  * - 重连时携带 `resume`（流身份与位置），由服务端补发缺口；无法补发时置 `resync`，
- *   由调用方重新获取全量数据。不得静默丢弃事件：界面停在不完整状态且没有任何提示，
+ *   由调用方重新获取全量数据。不得静默丢弃事件：界面停留在不完整的状态且没有任何提示，
  *   比明确报错更难排查。
  */
 
@@ -50,10 +50,10 @@ export interface ClientOptions {
   /**
    * 收到一帧。
    *
-   * 交出整个信封，而不是拆开的 `event` 与 `seq`。所属会话记录在信封上
+   * 传入整个信封，而不是拆分后的 `event` 与 `seq`。所属会话记录在信封上
    * （`EventEnvelope.conversationId`），消费方必须据此丢弃不属于当前会话的事件：
    * 服务端的订阅过滤无法覆盖 `subscribe` 指令的往返窗口。
-   * 拆开参数后该字段无法传递，接收方只能假定收到的事件都属于已订阅的会话。
+   * 拆分参数后该字段无法传递，接收方只能假定收到的事件都属于已订阅的会话。
    */
   onEvent(frame: EventEnvelope<AgentEvent>): void
   onState(state: ConnectionState, detail?: string): void
@@ -74,7 +74,7 @@ export interface ClientOptions {
    */
   onBusy(conversations: ConversationId[]): void
   /**
-   * 指令被服务端拒绝。必须实现：不处理即为静默丢弃，用户的操作得不到任何反馈。
+   * 指令被服务端拒绝。必须实现：不处理即为静默丢弃，用户的操作没有任何反馈。
    */
   onRejected(frame: CommandRejectedFrame): void
 }
@@ -325,10 +325,10 @@ export class QyClient {
         this.terminalReported = true
         // 握手被拒是终态，不按 reason 分支。
         //
-        // 服务端只返回 bad_token，重连多少次携带的仍是同一个令牌。
+        // 服务端只返回 bad_token，无论重连多少次，携带的都是同一个令牌。
         //
         // 若出现可稍后恢复的原因（如连接数超限），在此处按 reason
-        // 分支。现在不预留该分支：没有生产者的分支会被误认为生效的逻辑。
+        // 分支。此处不预留该分支：没有生产者的分支会被误认为生效的逻辑。
         this.closed = true
         return
       }
@@ -363,7 +363,7 @@ export class QyClient {
       this.scheduleReconnect()
     })
 
-    // error 之后必然跟随 close，重连逻辑只挂在 close 上，避免退避计数推进两次。
+    // error 之后必然跟随 close，重连逻辑只注册在 close 上，避免退避计数推进两次。
     ws.addEventListener('error', () => {})
   }
 
@@ -389,8 +389,8 @@ export class QyClient {
    * 切换模型后界面没有变化，与「服务端尚未响应」无法区分，
    * 即 C1 第 2 款所指的静默 no-op。
    *
-   * 通过已有的拒绝回执通道报告，而不是抛出异常：五个调用点都是同步 `void` 函数，
-   * 各自 try/catch 会把同一处理重复五次。
+   * 通过已有的拒绝回执通道报告，而不是抛出异常：各调用点都是同步 `void` 函数，
+   * 各自 try/catch 会在每个调用点重复同一处理。
    */
   send(cmd: ClientCommand): void {
     if (this.ws?.readyState === WebSocket.OPEN) {

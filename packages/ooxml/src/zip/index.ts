@@ -3,7 +3,7 @@
  *
  * - 结果一律以 `ZipResult` 返回，文件内容引起的失败不抛出。失败分三类：
  *   CFB 复合文档按 `openLegacy` 分类，其中旧二进制格式不是 ZIP 包，为已损坏（`cfb-format`）：各格式的解析入口在打开 ZIP 之前
- *   调用 `openLegacy` 取走自身的格式，到达此处的是扩展名与内容不是同一种应用的文件，与 OOXML 包中主文档类型不符同为已损坏；
+ *   调用 `openLegacy` 处理自身的格式，因此到达此处的是扩展名与内容不属于同一种应用的文件，与 OOXML 包中主文档类型不符同为已损坏；
  *   既不是 CFB 也不以 ZIP 本地文件头开始为不是 Office 文件；ZIP 成员设置加密标志位为已加密；ZIP 的结构、解压与校验错误为已损坏。
  * - 压缩方法只支持 0（存储）与 8（deflate）。deflate 由 `DecompressionStream('deflate-raw')` 解压，
  *   Bun、Worker 与各端 WebView 共用这一条路径。运行环境缺少该接口时抛出，不归入已损坏。
@@ -100,7 +100,7 @@ const LEGACY_STREAMS: readonly (readonly [string, LegacyFormat])[] = [
 ]
 /**
  * 判为已加密的流：`EncryptedPackage` 为加密的 OOXML；`WpsContent` 为 WPS 私密文档，真实内容经账号加密存放在该流中，
- * 其余流只是一张提示用 WPS 打开的占位内容。
+ * 其余流只包含提示用 WPS 打开的占位内容。
  */
 const ENCRYPTED_STREAMS = ['ENCRYPTEDPACKAGE', 'WPSCONTENT']
 const FLAG_ENCRYPTED = 0x0001

@@ -421,7 +421,7 @@ export function exportConversation(
  * JSON：不裁剪。
  *
  * 该格式供脚本使用，裁剪会隐藏导出内容不完整这一事实，
- * 而脚本无法像人一样察觉内容缺失。
+ * 而脚本无法察觉内容缺失。
  */
 function toJson(bundle: ArchiveBundle): string {
   return `${JSON.stringify(bundle, null, 2)}\n`
@@ -452,7 +452,7 @@ function toMarkdown(bundle: ArchiveBundle, opts: ArchiveOptions): string {
     `- ${bundle.runs.length} 轮 · 入 ${totals.input} 出 ${totals.output} · $${totals.cost.toFixed(4)}`,
   )
 
-  // 压缩过的会话必须在开头注明：读者看到的历史与模型看到的不同，
+  // 压缩过的会话必须在开头注明：导出的历史与模型取得的历史不同，
   // 不注明时，模型遗忘前文的原因将无从查明。
   if (c.compactionManifest) {
     out.push(

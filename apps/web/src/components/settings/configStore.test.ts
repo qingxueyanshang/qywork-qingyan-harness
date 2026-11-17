@@ -3,15 +3,15 @@
  *
  * 锁定两种 key 丢失场景：
  * 1. 同一页面中先填写 API Key、紧接着填写 Base URL，两次「读取完整配置 → 修改一个字段 → 整份 PUT」
- *    重叠，写入 url 的一次在 key 落盘前读到旧值，写回时把 key 覆盖为空。串行化使两次写入不重叠。
+ *    重叠，写入 url 的一次在 key 落盘前读取的是旧值，写回时把 key 覆盖为空。串行化使两次写入不重叠。
  * 2. 两个窗口或设备同时修改，后写入的一次基于旧的完整配置，覆盖前一次刚保存的字段。服务端按
  *    版本指纹返回 409，客户端重新读取最新的完整配置、在其上重放本次编辑后再提交，两处修改均得到保留。
  *
  * 服务端由 `client.api` 的替身模拟，`/api/config` 的 PUT 复现真实语义：按 `mergeConfig`，
  * `hasApiKey:false` 且不带明文表示清除 key；`baseVersion` 与当前版本不一致时返回 409。
  *
- * 不要改成用 `mock.module` 替换 store 模块：Bun 的模块替身在整个测试进程内有效，
- * `mock.restore()` 不撤销它，之后导入 store 的测试文件读写的都是这里的内存服务端。
+ * 不要改为用 `mock.module` 替换 store 模块：Bun 的模块替身在整个测试进程内有效，
+ * `mock.restore()` 不撤销它，之后导入 store 的测试文件读写的都是此处的内存服务端。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'

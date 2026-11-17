@@ -46,7 +46,7 @@ registerBuiltinTools(registry)
 /** `run_command` 按能力注册：本机没有任何 shell 时该工具不存在，本测试也无法运行。 */
 const runCommand = registry.get('run_command')
 
-/** 命令交给实际的 shell 执行，写入磁盘的步骤由一个 bun 脚本完成：bash 与 PowerShell 的语法不同。 */
+/** 命令交由实际的 shell 执行，写入磁盘的步骤由一个 bun 脚本完成：bash 与 PowerShell 的语法不同。 */
 const command = (tag: string) => `bun "${script}" ${tag}`
 
 const SCRIPT = `
@@ -112,7 +112,7 @@ async function changesPage(
  * 一轮共用一个 `ctx.state`：观察器按「本轮已报告过的路径」去重，该累计集合保存在其中。
  */
 async function turn(conversationId: ConversationId, text: string, tags: string[]) {
-  if (!runCommand) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+  if (!runCommand) throw new Error('本机未安装 bash / pwsh / powershell，无法运行本测试')
   const state = new Map<string, unknown>()
   const outcomes: ToolOutcome[] = []
   for (const tag of tags) {
@@ -190,7 +190,7 @@ beforeAll(async () => {
   await writeFile(join(dir, 'tracked.ts'), 'export const t = 1\n')
   await writeFile(join(dir, 'doomed.ts'), 'export const d = 1\n')
   git('add', '.gitignore', 'tracked.ts', 'doomed.ts')
-  // 使「创建时间早于观察窗口」成立：等到文件时间戳越过这三个文件的时间戳。探针放在工作区之外，不进入改动。
+  // 使「创建时间早于观察窗口」成立：等待新写入文件的时间戳晚于这三个文件的时间戳。探针放在工作区之外，不进入改动。
   const stamps = await Promise.all(
     ['.gitignore', 'tracked.ts', 'doomed.ts'].map(async (name) => {
       const info = await stat(join(dir, name))
@@ -201,7 +201,7 @@ beforeAll(async () => {
   await until(async () => {
     await writeFile(probe, '0')
     return (await stat(probe)).mtimeMs > Math.max(...stamps)
-  }, '文件时间戳越过已有文件')
+  }, '文件时间戳晚于已有文件')
 
   store = new Store({ path: ':memory:' })
   workspaceId = upsertWorkspace(store, dir, 'changes-ws').id

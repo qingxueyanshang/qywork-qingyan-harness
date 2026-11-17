@@ -197,7 +197,7 @@ async function spawnHolder(path: string, arg: string, owner: 'serve' | 'cli') {
     text += new TextDecoder().decode(value)
   }
   const line = JSON.parse(text.trim()) as { ok: boolean; value: string; pid: number }
-  if (!line.ok) throw new Error(`占用进程没有建成轮：${text}`)
+  if (!line.ok) throw new Error(`占用进程未能创建轮次：${text}`)
   return { proc, runId: line.value, pid: line.pid }
 }
 

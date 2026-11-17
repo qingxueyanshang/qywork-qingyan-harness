@@ -133,7 +133,7 @@ function attachmentSize(abs: string): ImageSize | null | undefined {
 
 /**
  * 附件中的媒体按发送时的形态估算，与请求侧（`estimateContent`）相同：图片读取文件头，长边超过上限时按发送前的缩放
- * （`shrunkSize`）换算，读不出尺寸时按尺寸未知计；视频按时长与画面尺寸计（`estimateVideo`）。
+ * （`shrunkSize`）换算，无法读取尺寸时按尺寸未知计；视频按时长与画面尺寸计（`estimateVideo`）。
  * 其他文件只以路径写入正文，不计入；文件已不存在时不计入。
  */
 function attachmentMediaTokens(
@@ -166,7 +166,7 @@ export class RuntimeCompaction implements CompactionPort {
   private manifest: CompactionManifest | null
   /**
    * 最新 run 的完整快照。回放去重后，某一段可能只出现在早期轮次，被摘要线折叠时从此处
-   * 补回，模型看到的仍是完整的当前快照。空快照同样覆盖旧 run，不得把旧上下文误补回。
+   * 补回，模型取得的仍是完整的当前快照。空快照同样覆盖旧 run，不得把旧上下文误补回。
    */
   private readonly latestContext: ReturnType<typeof latestContextSnapshot>
 
@@ -201,7 +201,7 @@ export class RuntimeCompaction implements CompactionPort {
    * 投影，分三区。
    *
    * 摘要线以内 → 替换为「摘要 + 事实清单」两条；摘要线到收纳线之间 → 消息保持原样、
-   * 工具正文替换为信封；收纳线之后 → 逐字保留。模型因此看到逐级变化的保真度。
+   * 工具正文替换为信封；收纳线之后 → 逐字保留。模型因此取得保真度逐级变化的历史。
    *
    * 判断边界使用单元键而不是数组下标：用户消息之前还有其所属的运行上下文，
    * assistant/tool 也按执行批次成组。按下标切分会破坏这些结构。
@@ -482,11 +482,11 @@ export class RuntimeCompaction implements CompactionPort {
        * 落库前最后一次检查信号。
        *
        * 检查点必须紧邻这条 UPDATE：中间每插入一个 await 就多出一个时间窗口，
-       * 而这条 UPDATE 不可逆：它改写模型此后看到的全部历史。用户点击停止
+       * 而这条 UPDATE 不可逆：它改写模型此后取得的全部历史。用户点击停止
        * 之后写入的 manifest 既不是用户等待的结果，也无法撤销。
        *
        * 落库与更新内存的顺序不能颠倒：颠倒后中途崩溃会留下「内存已压缩、数据库中没有」的状态，
-       * 下次启动时该投影丢失，模型重新看到全部历史。
+       * 下次启动时该投影丢失，模型重新取得全部历史。
        */
       if (input.signal?.aborted) return { status: 'aborted' }
       // 回收量按发送请求的同一装配计量；系统提示词与工具表不随压缩变化，不在此计量。

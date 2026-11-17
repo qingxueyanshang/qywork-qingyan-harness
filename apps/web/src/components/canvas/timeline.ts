@@ -25,7 +25,7 @@ export function metaOf(url: string): Promise<VideoMeta> {
   return m
 }
 
-/** 入点出点精确到毫秒：拖动换算出的秒数带十几位小数，写入画布文件没有意义。 */
+/** 入点出点精确到毫秒：拖动换算出的秒数带十余位小数，写入画布文件没有意义。 */
 function ms(seconds: number): number {
   return Math.round(seconds * 1000) / 1000
 }

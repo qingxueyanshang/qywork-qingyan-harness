@@ -19,7 +19,7 @@ describe('上下文分组占用', () => {
    *
    * `breakdownOf` 计算的是 `req.messages`，即 `compaction.project()` 的产物。
    * 改为直接读取 `input.history` 时本测试失败：压缩已生效而占用面板不变，
-   * 用户无法从界面确认压缩结果。
+   * 界面无法反映压缩结果。
    */
   test('压缩投影之后，历史分组减少、摘要分组增加', async () => {
     const registry = new ToolRegistry()
@@ -94,7 +94,7 @@ describe('上下文分组占用', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noop',
-      description: '占位工具，只为让 tools schema 非空。',
+      description: '占位工具，用于使 tools schema 非空。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'read',
       objectLabel: '空操作',
@@ -110,7 +110,7 @@ describe('上下文分组占用', () => {
     const loop = new AgentLoop({
       adapter: fakeAdapter([null]),
       registry,
-      systemPrompt: '这是一段足够长的系统提示词，用来让 systemPrompt 那一桶明确非零。',
+      systemPrompt: '这是一段足够长的系统提示词，使 systemPrompt 分组的占用明确非零。',
       persist: noopPersistence(),
       makeToolContext: (runId) => ({
         workspaceRoot: '/tmp',
@@ -175,7 +175,7 @@ describe('上下文分组占用', () => {
    * 实测界面上各分组之和为 36.9%，标题为 64.2%，相差的 271k 未归入任何分组。
    *
    * 会话面板（`runtime/context-panel.ts`）始终对账，因此 live 事件不对账时同一个面板
-   * 经两条路径显示两组数值：打开会话时显示一组，run 开始执行后换成另一组。
+   * 经两条路径显示两组数值：打开会话时显示一组，run 开始执行后换为另一组。
    */
   test('锚定计量下各分组之和等于读数', async () => {
     const loop = new AgentLoop({
@@ -241,7 +241,7 @@ describe('上下文分组占用', () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'write_file',
-      description: '回一句话，用于验证工具结果的二分。',
+      description: '返回一句话，用于验证工具结果的拆分。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       actionKind: 'write',
       objectLabel: '文件',
@@ -837,9 +837,9 @@ describe('锚点的信封校验', () => {
    * 未变，读数却整体改用本地估算：实测真实占用 54.5% 的会话显示为 80.0%。
    *
    * 判据是只替换头部、不整体作废：读数保持 provider 真值口径，数值等于真值减旧头部
-   * 加本轮头部。换模型时不同：另一个 tokenizer 计量的数值无法修正。
+   * 加本轮头部。更换模型时不同：另一个 tokenizer 计量的数值无法修正。
    */
-  test('信封变化时只替换头部，换模型时才改用本地估算', async () => {
+  test('信封变化时只替换头部，更换模型时才改用本地估算', async () => {
     const runOnce = async (fingerprint: string | null, model: string) => {
       const seen: { tokens: number; source: string }[] = []
       const loop = new AgentLoop({
@@ -875,7 +875,7 @@ describe('锚点的信封校验', () => {
       { tokens: 12_345 - 5_000 + head, source: 'actual' },
       { tokens: 15, source: 'actual' },
     ])
-    // 换模型后改用本地估算，source 标为 estimated。
+    // 更换模型后改用本地估算，source 标为 estimated。
     expect((await runOnce('not-the-current-envelope', 'other-model'))[0]?.source).toBe('estimated')
     // 未记录指纹的存量行不作为信封变化的证据，锚点按原值使用。
     expect(await runOnce(null, 'claude-opus-5')).toEqual([

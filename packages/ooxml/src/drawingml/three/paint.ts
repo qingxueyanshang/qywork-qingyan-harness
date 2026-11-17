@@ -48,7 +48,7 @@ function boxOf(points: readonly { x: number; y: number }[]): Box {
 }
 
 /**
- * 绘制三维对象。`margin` 为平面内容超出形状框的范围（局部单位，含线宽与箭头）；`draw` 把平面内容画到 `ctx`，
+ * 绘制三维对象。`margin` 为平面内容超出形状框的范围（局部单位，含线宽与箭头）；`draw` 把平面内容绘制到 `ctx`，
  * `offset` 须左乘到其使用的设备变换上（同 `drawLayer`），`size` 为 `ctx` 的像素尺寸（图层的裁剪范围）。
  * `shadows` 为对象的外部阴影，取投影后的轮廓。
  */

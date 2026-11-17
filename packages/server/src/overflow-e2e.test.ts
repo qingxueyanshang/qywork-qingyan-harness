@@ -254,7 +254,7 @@ test('容量拒绝 → 识别凭证 → 压缩一次 → 无法缩小时以 cont
   // 分类无法识别时，`compaction.run()` 一次都不会被调用。
   expect(compactionRuns).toBe(1)
   // 超出窗口仍以 `context_overflow` 收尾（本次夹具中压缩无法缩小请求，不重发是正确的）：
-  // 恢复失败时**不得丢弃错误**，用户必须能看到超出窗口这一事件。
+  // 恢复失败时**不得丢弃错误**，界面必须显示超出窗口这一事件。
   const err = events.find((e) => e.type === 'run.error')
   expect(err?.type === 'run.error' && err.code).toBe('context_overflow')
 }, 30_000)

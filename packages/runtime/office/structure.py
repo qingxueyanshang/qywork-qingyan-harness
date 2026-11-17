@@ -316,8 +316,8 @@ def _kind(shp):
 
 def _walk(shapes, tf=IDENTITY, depth=1):
     """页面上的全部形状，组合逐层展开：(形状, 到页面坐标的换算, 层级)。
-    只看最外层时组内的文本框和图片都看不到：分层重建的胶囊、标签是“图片 + 文本框”的组合，模型读后判定
-    “这些不是文本框，改不了”（精创 P3/P7/P8），组内文字的溢出、遮挡、东亚字体也都没有检查。"""
+    只展开最外层时无法取得组内的文本框和图片：分层重建的胶囊、标签是“图片 + 文本框”的组合，只列出外层时模型判定
+    其中没有可编辑的文本框（精创 P3/P7/P8），组内文字的溢出、遮挡与东亚字体也不会被检查。"""
     for shp in shapes:
         yield shp, tf, depth
         if _kind(shp) == "GROUP":
@@ -422,7 +422,7 @@ def _overflow(shp, tf=IDENTITY):
 def _text_extent(shp, tf=IDENTITY):
     """文字实际占据的区域（页面坐标）：按估算的宽高、段落对齐与垂直锚点放入文本框。旋转的形状使用外框。
 
-    遮挡按该区域判定，不要改为按外框判定：外框通常比文字大得多，排版正常的成品也会报告上百条。
+    遮挡按该区域判定，不要改为按外框判定：外框通常比文字大得多，排版正常的成品也会报告超过 100 条。
     """
     box = _slide_box(shp, tf)
     if box is None or shp.rotation:
@@ -447,9 +447,9 @@ def _same_line_neighbors(a, b):
     """两段单行文字基线相同、左右相接，且水平重叠不超过较大字号的半个字：重叠来自宽度估算，不是遮挡。
 
     数字与半角字符按 0.55 个字号估宽，实际多数更窄（「36.92」估算比实际宽约 0.4 个字号），
-    数值与单位分成两个文本框紧挨着排时，估算的文字区域会伸进单位的框里。
+    数值与单位分为两个相邻的文本框时，估算的文字区域会进入单位的文本框。
     基线按文字区域底边上移 0.2 个字号估算，两段相差不超过较小字号的四分之一即为同一基线。
-    一行压在另一行上（重叠超过半个字）、上下两行错开（基线不同）、一段包含另一段，都不在此列，照常报告。
+    一行覆盖另一行（重叠超过半个字）、上下两行错开（基线不同）、一段包含另一段，都不在此列，照常报告。
     """
     (ba, ema), (bb, emb) = a, b
     if ba[3] - ba[1] > ema * 1.05 or bb[3] - bb[1] > emb * 1.05:
@@ -478,7 +478,7 @@ def check_pptx(path):
                 need = _overflow(shp, tf)
                 if need:
                     checks.append({"level": "warning", "code": "text_overflow",
-                                   "message": f"第 {i} 页「{shp.name}」的文字估计需要 {_cm(need)} cm 高，"
+                                   "message": f"第 {i} 页「{shp.name}」的文字估算需要 {_cm(need)} cm 高，"
                                               f"文本框只有 {_cm(shp.height * tf[2])} cm，疑似溢出，需查看页面确认"})
                 if not theme_ea:
                     for p in shp.text_frame._txBody.iter(f"{{{A}}}p"):
@@ -521,7 +521,7 @@ def check_pptx(path):
 
 
 def _picture_info(shp):
-    """图片在包里的部件名与像素尺寸，替换图片时按它定位。链接的外部图片没有包内部件，返回空。"""
+    """图片在包内的部件名与像素尺寸，替换图片时按它定位。链接的外部图片没有包内部件，返回空。"""
     try:
         part = shp.part.related_part(shp._element.blip_rId)
         w, h = shp.image.size
@@ -554,7 +554,7 @@ def read_pptx(path, rng=None):
                 t = shp.table
                 extra.append(f"表格 {len(t.rows)}×{len(t.columns)}")
             if kind == "GROUP":
-                extra.append(f"组合 {len(shp.shapes)} 个，组内形状缩进列在下面")
+                extra.append(f"组合 {len(shp.shapes)} 个，组内形状缩进列于其下")
             if kind == "PICTURE" and _picture_info(shp):
                 extra.append(_picture_info(shp))
             text = _clip(shp.text_frame.text, 200) if shp.has_text_frame else ""

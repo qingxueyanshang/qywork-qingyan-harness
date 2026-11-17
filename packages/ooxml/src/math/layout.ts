@@ -1,5 +1,5 @@
 /**
- * 公式排版：把公式树排成带坐标的字形、横线与轮廓字形，单位为磅，原点为公式左端的基线，y 向下。
+ * 公式排版：把公式树排版为带坐标的字形、横线与轮廓字形，单位为磅，原点为公式左端的基线，y 向下。
  *
  * 规则以 OpenType `MATH` 表为准（常量、变体、斜体校正），以下各项按 WPS 12.1 屏幕显示（页面 EMF 与逐字坐标）实测：
  * - 上下标字号：原字号乘 `scriptPercentScaleDown`（二级乘 `scriptScriptPercentScaleDown`），按半磅向下取整。
@@ -402,7 +402,7 @@ function argsOf<P>(n: Exclude<MathNode<P>, MathRun<P> | MathUnsupported>): reado
 /**
  * 各结构的字符属性记入 `out`：`ctrlPr`，没有时取文档顺序中前一个字段的字符属性，公式开头为缺省字符属性（`null`）。
  * WPS 实测（缺省 10.5 磅、字段 11 至 24 磅）：没有 `ctrlPr` 的分数在公式开头时分数线、移位与行高按 10.5 磅，
- * 跟在 24 磅的字段之后时按 24 磅。返回最后一个字段的字符属性。
+ * 位于 24 磅的字段之后时按 24 磅。返回最后一个字段的字符属性。
  */
 function inherit<P>(nodes: MathArg<P>, prev: P | null, out: Map<MathNode<P>, P | null>): P | null {
   let last = prev
@@ -512,7 +512,7 @@ class Engine<P, F> {
 
   /**
    * 自 `start` 至 `end` 的一段：原点落在 [`start`, `next`) 中的项平移到以 `start` 为原点；上下沿取与 [`start`, `end`]
-   * 相交的原子（断在括号或 n 元运算符内部时为其内部的原子，括号两侧的字形各计入所在的行）。
+   * 相交的原子（在括号或 n 元运算符内部断行时为其内部的原子，括号两侧的字形各计入所在的行）。
    */
   slice(box: Box<F>, start: number, end: number, next: number, base: Extent): MathLayout<F> {
     const eps = 1e-6
@@ -541,7 +541,7 @@ class Engine<P, F> {
   }
 
   /**
-   * 横向排列。参数开头或末尾的二元运算符按普通字符处理（一元运算符）；跟在关系符、标点、左括号之后的二元运算符
+   * 横向排列。参数开头或末尾的二元运算符按普通字符处理（一元运算符）；位于关系符、标点、左括号之后的二元运算符
    * 仍按二元运算符计间距（WPS 实测，间距见 `SPACING`）。`em` 为间距所用的字号。
    * 上下极限的内容右移其前后两处间距之和的四分之一，宽度与其后原子的位置不变；标点之后的间距不计入。WPS 实测（24 与 48 磅，
    * 前后为二元运算符、关系符、分数、标点、普通字符与公式两端）：偏移在 1 像素以内。
@@ -587,7 +587,7 @@ class Engine<P, F> {
         : 0
       items.push(...shift(a.items, x + lift, 0))
       for (const b of a.breaks ?? []) breaks.push({ ...b, end: b.end + x, start: b.start + x })
-      // 可在内部断行的原子（括号、n 元运算符）记其内部的各原子，断行后每行只计与之相交的部分。
+      // 可在内部断行的原子（括号、n 元运算符）记录其内部的各原子，断行后每行只计与之相交的部分。
       if (a.breaks?.length && a.spans)
         for (const q of a.spans) spans.push({ ...q, x0: q.x0 + x, x1: q.x1 + x })
       else spans.push({ x0: x, x1: x + a.width, height: a.height, depth: a.depth })
@@ -958,7 +958,7 @@ class Engine<P, F> {
     }
   }
 
-  /** 纵向伸展：变体中第一个不小于 `target`（磅）的；都不够时取最大的变体，有拼装时不支持（拼装未实现）。 */
+  /** 纵向伸展：变体中第一个不小于 `target`（磅）的；都小于 `target` 时取最大的变体，有拼装时不支持（拼装未实现）。 */
   private stretch(gid: number, target: number, size: number): number {
     const c: GlyphConstruction | null = this.table.vertical(gid)
     if (c === null || c.variants.length === 0) return gid
@@ -1118,7 +1118,7 @@ class Engine<P, F> {
   /**
    * 按轴居中的括号字形；`grow` 时按内容伸展，且变体序号大于 `above`（内容中同种括号的序号，没有时为 -1）。
    * WPS 实测（12 与 24 磅）：
-   * - 同种括号套同种括号时外层取更大的变体，不同种的不受影响；
+   * - 同种括号嵌套时外层取更大的变体，不同种的不受影响；
    * - 取基本字形而内容墨迹上沿高出字形时，绘制基本字形，括号的盒子（上下沿与外层括号所见的序号）取下一个变体。
    */
   private fence(
@@ -1452,7 +1452,7 @@ export function layoutMath<P, F>(
 }
 
 /**
- * 排版显示公式段落：其中的 `m:oMath` 依次排成一行，超出可用宽度时断行并对齐。`width` 为可用宽度（版心宽度减段落缩进），
+ * 排版显示公式段落：其中的 `m:oMath` 依次排列为一行，超出可用宽度时断行并对齐。`width` 为可用宽度（版心宽度减段落缩进），
  * 行的横坐标相对其左端并已计入 `m:lMargin`。段落中只有一个 `m:oMath`、没有其他文字时，调用方以它构成 `justification`
  * 为 `null` 的段落。WPS 实测（12 与 24 磅，`m:brkBin`、`m:wrapIndent`、`m:wrapRight` 与四种对齐）：
  * - 断行处为最外层与单项括号、n 元运算符被积式中的二元运算符与关系符；标点与普通字符之间不断开，没有断行处时整行超出。

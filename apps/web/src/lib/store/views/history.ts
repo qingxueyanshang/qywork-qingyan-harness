@@ -61,7 +61,7 @@ interface HistoryPage extends Folded {
  * 有退避截止点表示等待重试，有内容时刻表示正在输出内容，有响应头表示等待内容，其余表示刚发出。
  *
  * 已失败且不在等待重试的请求不生成投影。它是本轮最后一次请求，
- * 重发预算已耗尽，显示「正在请求」与事实不符；收尾条随后会带着停止原因写入会话流。
+ * 重发预算已耗尽，显示「正在请求」与事实不符；收尾条随后连同停止原因写入会话流。
  */
 function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
   const r = live.request
@@ -446,7 +446,7 @@ export async function reloadActiveConversation(): Promise<void> {
   })
 
   try {
-    // 各份投影并行读取、分别发布。正文只依赖历史，辅助接口缓慢或失败不阻挡它。
+    // 各份投影并行读取、分别发布。正文只依赖历史，辅助接口缓慢或失败不阻塞它。
     // 共用本次加载租约：切换会话、重试与超时仍从同一个出口取消全部请求。
     await Promise.all([
       fetchConversationPage(id, null, lease.controller.signal).then((folded) => {
@@ -571,7 +571,7 @@ function stepToItems(s: Step): TranscriptItem[] {
   }
   if (s.kind === 'thinking') {
     if (!s.content) return []
-    // 失败尝试中的思考在重发之前已显示给用户，回放时同样显示并标注已中断，与实时状态一致。
+    // 失败尝试中的思考在失败之前已显示给用户，回放时同样显示并标注已中断，与实时状态一致。
     return [
       {
         id: s.id,
@@ -627,7 +627,7 @@ function stepToItems(s: Step): TranscriptItem[] {
     // action 来自后端落库的解析结果，是卡片的完整标题（动词 + 对象 + 目标）。
     // `ToolSpec` 的 `actionKind` / `objectLabel` 均为必填，因此 action 必定存在。
     // 不要为缺失情况添加回退：回退为 `execute` 会使刷新后整轮的读取文件操作
-    // 全部显示为「执行」；回退为工具名则会为同一件事另造一套显示。
+    // 全部显示为「执行」；回退为工具名则会使同一操作出现第二种显示。
     return [
       {
         id: s.id,

@@ -1010,7 +1010,7 @@ describe('事件按会话归属过滤', () => {
     }
   })
 
-  test('切换会话立即撤下旧回执，历史加载期间不把旧队列留在新输入框', async () => {
+  test('切换会话立即移除旧回执，历史加载期间新输入框不保留旧队列', async () => {
     reset('cv_queue_a')
     const receipt = {
       id: 'q_receipt',
@@ -1116,7 +1116,6 @@ describe('事件按会话归属过滤', () => {
         max: 5,
         backoffMs: 2000,
         at: 1000,
-        failedThinkingStepIds: [],
       },
     } as never)
 
@@ -1285,7 +1284,7 @@ describe('事件按会话归属过滤', () => {
 
   /**
    * 处理器收到的会话没有视图时整条不写入。按路径写入（`setState('views', cid, 键, 值)`）在中间键不存在时
-   * 抛出 TypeError，该事件的处理随之中断；目录约定是先读取视图，读取不到时整条不写入。
+   * 抛出 TypeError，该事件的处理随之中断；`events/` 下处理器的约定是先读取视图，视图不存在时整条不写入。
    */
   test('会话没有视图时，用量与工具开始事件的处理器不写入也不抛出', async () => {
     const { EVENT_HANDLERS } = await import('./store/events/table.ts')
@@ -1346,7 +1345,7 @@ describe('事件按会话归属过滤', () => {
       },
     } as never)
     expect(state.lastRunId).toBe(null)
-    // 运行时刻与账本重取标识必须保持会话归属。
+    // 运行时刻与账本重新获取标识必须保持会话归属。
     expect(view().runStartedAt).toBe(null)
   })
 
@@ -1410,7 +1409,7 @@ describe('事件按会话归属过滤', () => {
 
   /**
    * 忙闲状态相反：它是工作区级事件，其他会话的忙闲必须接收，左栏需要为列表中
-   * 每一条会话显示状态。原始失败形状是「只有打开的那条会话显示转圈，其他会话在运行也看不出来」。
+   * 每一条会话显示状态。原始失败形状：只有打开的会话显示执行中，其他会话执行时左栏没有显示。
    */
   test('其他会话的忙闲状态正常接收，左栏据此标记对应行', () => {
     reset('cv_now')
@@ -1572,7 +1571,6 @@ describe('事件按会话归属过滤', () => {
         reason: '连接被断开',
         backoffMs,
         at,
-        failedThinkingStepIds: [],
       },
     }) as never
 
@@ -1613,7 +1611,7 @@ describe('事件按会话归属过滤', () => {
     })
   })
 
-  test('重发时按 AgentLoop 给出的 step id 把失败尝试的思考标注为已中断，已完成的思考不受影响', () => {
+  test('按 AgentLoop 给出的 step id 把失败尝试的思考标注为已中断，已完成的思考不受影响', () => {
     reset('cv_now')
     applyEvent({
       seq: 1,
@@ -1635,7 +1633,7 @@ describe('事件按会话归属过滤', () => {
         type: 'thinking.delta',
         runId: 'run_1',
         stepId: 'st_failed',
-        delta: '失败的半截',
+        delta: '失败尝试的部分思考',
         at: 2,
       },
     } as never)
@@ -1643,16 +1641,7 @@ describe('事件按会话归属过滤', () => {
       seq: 3,
       at: 0,
       conversationId: 'cv_now',
-      event: {
-        type: 'run.retrying',
-        runId: 'run_1',
-        requestId: 'pr_fail_1',
-        attempt: 1,
-        max: 5,
-        backoffMs: 0,
-        at: 3,
-        failedThinkingStepIds: ['st_failed'],
-      },
+      event: { type: 'thinking.interrupted', runId: 'run_1', stepIds: ['st_failed'] },
     } as never)
 
     expect(
@@ -1661,7 +1650,7 @@ describe('事件按会话归属过滤', () => {
         .map((item) => [item.id, item.text, item.interrupted ?? false]),
     ).toEqual([
       ['st_done', '前一轮思考', false],
-      ['st_failed', '失败的半截', true],
+      ['st_failed', '失败尝试的部分思考', true],
     ])
   })
 
@@ -2042,12 +2031,12 @@ describe('画布运行事件', () => {
 /**
  * 刷新或重连后的会话投影（`store/views/history.ts` 的 `reloadActiveConversation`）。
  *
- * 本组锁定「账本中有、界面上缺失」的一类问题。它们只出现在重新拉取路径上，
+ * 本组锁定「账本中有、界面上缺失」的一类问题。它们只出现在重新获取路径上，
  * 实时路径正常，因此刷新之前无法察觉。
  *
  * 用模拟的 `client.api` 提供账本响应体，执行真实的折叠逻辑。
  */
-describe('重新拉取会话：账本中的内容必须出现在界面上', () => {
+describe('重新获取会话：账本中的内容必须出现在界面上', () => {
   const stub = (
     steps: unknown[],
     runs: unknown[],
@@ -2410,7 +2399,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
    * `running`，按其写入会使界面永久停留在执行中，而新进程的 `RunManager` 中
    * 没有该 run。清除运行状态的是握手上报的忙闲快照。
    */
-  test('账本中该轮为中断状态时，重新拉取后显示收尾条目，运行状态不由账本决定', async () => {
+  test('账本中该轮为中断状态时，重新获取后显示收尾条目，运行状态不由账本决定', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     stub([toolStep()], [interruptedRun])
@@ -2420,7 +2409,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
     expect(transcript().at(-1)?.run?.stopReason).toBe('user_interrupt')
   })
 
-  /** 另一方面：账本中该行仍为 `running` 时，重新拉取也不得将界面恢复为执行中。 */
+  /** 另一方面：账本中该行仍为 `running` 时，重新获取也不得将界面恢复为执行中。 */
   test('账本中仍记为运行中、忙闲快照显示未运行时，以快照为准', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
@@ -2438,7 +2427,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
    * 下一次模型调用回报 usage 后才重新出现。它不是易失值：`runs` 行有对应列，
    * 每收到一次 provider 的 usage 即写入一次。
    */
-  test('运行中的一轮，用量随重新拉取一并恢复，不被清空', async () => {
+  test('运行中的一轮，用量随重新获取一并恢复，不被清空', async () => {
     const liveRun = {
       ...interruptedRun,
       finishedAt: null,
@@ -2464,7 +2453,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
     stub([toolStep()], [liveRun], [], { runId: liveRun.id, seq: 1, request: null })
     await reloadActiveConversation()
 
-    // 重新拉取不得清除忙闲表：它由握手快照与 `conversation.busy` 维护。
+    // 重新获取不得清除忙闲表：它由握手快照与 `conversation.busy` 维护。
     expect(isRunning()).toBe(true)
     expect(viewOf('cv_1').usage?.inputTokens).toBe(30_000)
     expect(viewOf('cv_1').usage?.cost).toBe(0.02)
@@ -2676,7 +2665,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
 })
 
 /**
- * 当前目标（`store/events/session.ts` 中的 `goal` 事件与重新拉取时的读取）。
+ * 当前目标（`store/events/session.ts` 中的 `goal` 事件与重新获取时的读取）。
  *
  * 两条路径都须锁定，因为二者互补：事件路径只在目标变更时
  * 发送一次，读取路径只在打开会话时执行一次。缺少读取路径时，进程重启后账本中的目标
@@ -2717,7 +2706,7 @@ describe('当前目标：由事件推送，刷新后仍须存在', () => {
    * 原始失败形状：目标因受阻而停止，用户刷新一次页面后，目标内容与停止原因
    * 在界面上都不存在，只剩一条看似正常结束的会话。
    */
-  test('重新拉取会话时从账本读取目标，受阻理由一并恢复', async () => {
+  test('重新获取会话时从账本读取目标，受阻理由一并恢复', async () => {
     setState({ activeConversation: 'cv_1', goal: null })
     freshView('cv_1')
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
@@ -2812,7 +2801,7 @@ describe('报错正文并入本轮的读数条', () => {
 
   /**
    * 另一方面：`run.error` 之后没有 `run.finished`（未配置 key、档案解析失败）。
-   * 此时没有 run 行可以写入，全局错误必须保留，否则用户看不到任何报错。
+   * 此时没有 run 行可以写入，全局错误必须保留，否则界面上不显示任何报错。
    */
   test('没有结束事件时保留全局错误', () => {
     setState({
@@ -2827,10 +2816,10 @@ describe('报错正文并入本轮的读数条', () => {
 })
 
 /**
- * 「多久没动静了」。
+ * 静默时长：距最后一段实际内容到达的时间。
  *
- * 起因是一次实际断流：服务端 262 秒未收到任何字节，而界面上只有一个持续增长的
- * 总耗时与一句「正在思考…」，二者都未反映实际状态，用户直到最终报错才知道连接已断开。
+ * 起因是一次实际的流中断：服务端 262 秒未收到任何字节，而界面上只有一个持续增长的
+ * 总耗时与一句「正在思考…」，二者都未反映实际状态，直到最终报错时界面才显示连接已断开。
  *
  * 静默时长按当前请求的最后内容时刻计算，该时刻由适配器观察、随内容事件传入，
  * 与落库的 `provider_requests.last_content_at` 是同一个值。本组锁定
@@ -2948,7 +2937,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
         }
       }
       otherCalls++
-      throw new Error('这个接口不在本组范围内')
+      throw new Error('该接口不在本组范围内')
     }
   }
 
@@ -3036,10 +3025,10 @@ describe('刷新按同一份请求账恢复当前请求', () => {
   })
 
   /**
-   * 持续输出后刷新：恢复的是最后一段内容的时刻，不是重新拉取的时刻。
-   * 以重新拉取时刻代替时，每次刷新都会使静默时长归零，已停滞的流看起来刚有过活动。
+   * 持续输出后刷新：恢复的是最后一段内容的时刻，不是重新获取的时刻。
+   * 以重新获取时刻代替时，每次刷新都会使静默时长归零，已停滞的流被显示为刚有过活动。
    */
-  test('有内容：恢复最后一段内容的时刻，而不是重新拉取的时刻', async () => {
+  test('有内容：恢复最后一段内容的时刻，而不是重新获取的时刻', async () => {
     setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
     freshView('cv_live')
     applyEvent({
@@ -3191,7 +3180,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     setState({ activeConversation: 'cv_live', busyConversations: [] })
     freshView('cv_live')
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
-      if (!p.includes('/history')) throw new Error('这个接口不在本组范围内')
+      if (!p.includes('/history')) throw new Error('该接口不在本组范围内')
       started('rn_new', 150)
       requested('rn_new', 'pr_new', 151)
       return {
@@ -3221,7 +3210,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
     freshView('cv_live')
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
-      if (!p.includes('/history')) throw new Error('这个接口不在本组范围内')
+      if (!p.includes('/history')) throw new Error('该接口不在本组范围内')
       requested('rn_mid', 'pr_mid', 151)
       return {
         messages: [],
@@ -3262,7 +3251,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
     freshView('cv_live')
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
-      if (!p.includes('/history')) throw new Error('这个接口不在本组范围内')
+      if (!p.includes('/history')) throw new Error('该接口不在本组范围内')
       applyEvent({
         seq: 151,
         at: 0,
@@ -3302,8 +3291,8 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     })
   })
 
-  /** 原始失败形状：较早一轮的结束事件迟到，撤掉了当前一轮的运行栏，报错写进了当前一轮的收尾条。 */
-  test('较早一轮迟到的收尾不撤掉当前一轮的运行栏，收尾条照常写入会话流', () => {
+  /** 原始失败形状：较早一轮的结束事件迟到，移除了当前一轮的运行栏，报错写入了当前一轮的收尾条。 */
+  test('较早一轮迟到的收尾不移除当前一轮的运行栏，收尾条照常写入会话流', () => {
     setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
     freshView('cv_live')
     started('rn_b', 10)
@@ -3354,7 +3343,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
  * 模型目录是配置的派生状态，读取最新配置后同步重新计算。
  *
  * 各组件各自缓存一份时的实测后果：设置页校准思考后写回了配置，
- * 输入区的目录仍是启动时获取的，档位要整页重载才出现。
+ * 输入区的目录仍是启动时获取的，档位需整页重新加载后才出现。
  */
 describe('读取配置后模型目录随之重新计算', () => {
   test('外部配置增删模型后，设置与画布使用同一份最新模型列表', async () => {
@@ -3430,14 +3419,14 @@ describe('读取配置后模型目录随之重新计算', () => {
             problems: [],
           }
         }
-        throw new Error(`没桩这条：${p}`)
+        throw new Error(`未替换的接口：${p}`)
       }
 
     levels = ['low', 'high']
     await saveServerConfig({ active: { provider: 'p', model: 'm' }, providers: {} } as never)
 
     expect(modelCatalog()?.providers[0]?.models[0]?.effortLevels).toEqual(['low', 'high'])
-    // 目录在保存之后获取：顺序相反时取到的是落盘前的版本，看起来如同保存未生效。
+    // 目录在保存之后获取：顺序相反时取得的是落盘前的版本，界面如同保存未生效。
     expect(calls.indexOf('GET /api/models')).toBeGreaterThan(calls.indexOf('PUT /api/config'))
   })
 
@@ -3536,7 +3525,7 @@ describe('工具卡按 stepId 认领实时输出', () => {
   })
 
   /**
-   * 原始失败形状：用户要求「打开画布」，工具层没有能打开面板的工具，模型操控 qywork 自身的窗口，用了 14 次桌面调用。
+   * 原始失败形状：用户要求「打开画布」，工具层没有能打开面板的工具，模型操作 qywork 自身的窗口，共执行 14 次桌面调用。
    * 界面在当前会话的 open_in_panel 成功时打开该文件；其他会话的与失败的不打开。
    */
   test('当前会话的 open_in_panel 成功时在右侧面板打开该文件', () => {

@@ -115,10 +115,10 @@ export interface RawFrame {
   /** `text`（段落）、`margin`、`page`。 */
   vAnchor?: string
   x?: number
-  /** `left`、`center`、`right`、`inside`、`outside`；给出时不用 `x`。 */
+  /** `left`、`center`、`right`、`inside`、`outside`；给出时不使用 `x`。 */
   xAlign?: string
   y?: number
-  /** `inline`、`top`、`center`、`bottom`、`inside`、`outside`；给出时不用 `y`。 */
+  /** `inline`、`top`、`center`、`bottom`、`inside`、`outside`；给出时不使用 `y`。 */
   yAlign?: string
   w?: number
   h?: number
@@ -375,8 +375,8 @@ export function readRunProps(x: Scanner): RawRunProps {
         if (wAttr(x, 'val') !== null) out.color = hexColor(wAttr(x, 'val'))
         break
       case 'u': {
-        // 缺少 `w:val` 的 `w:u` 不生效，也不覆盖样式中的下划线（WPS 实测：直接格式或样式中的空 `w:u` 不画下划线，
-        // 字符样式与段落样式为单线时其上的空 `w:u` 仍画单线）。
+        // 缺少 `w:val` 的 `w:u` 不生效，也不覆盖样式中的下划线（WPS 实测：直接格式或样式中的空 `w:u` 不绘制下划线，
+        // 字符样式与段落样式为单线时其上的空 `w:u` 仍绘制单线）。
         const v = wAttr(x, 'val')
         if (v !== null) out.underline = { style: v, color: hexColor(wAttr(x, 'color')) }
         break
@@ -491,7 +491,7 @@ function readFrame(x: Scanner): RawFrame {
 export interface ParagraphPropertiesHandlers {
   /** `pPr/rPr`：段落标记的字段属性。 */
   mark?: (props: RawRunProps) => void
-  /** `pPr/sectPr`：回调须读到其结束标签为止。 */
+  /** `pPr/sectPr`：回调须读取至其结束标签。 */
   section?: () => void
 }
 

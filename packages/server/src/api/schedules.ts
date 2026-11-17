@@ -1,7 +1,7 @@
 /**
  * 定时任务。
  *
- * 只暴露当前请求指定的工作区：任务表全机共用一份，但一个工作区的界面不应看到，
+ * 只暴露当前请求指定的工作区：任务表全机共用一份，但一个工作区的界面不应读取，
  * 更不应修改另一个工作区的任务。
  *
  * 上一次执行的结果由仓储按关联 Run 投影（`scheduleView`），此处不另行拼接终态：
@@ -43,7 +43,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       if (!body) return json({ error: 'bad request', message: '请求体不是有效的 JSON' }, 400)
       // id / workspaceRoot / createdAt / 触发游标 / 绑定会话 / newConversation
       // 一律不接受客户端修改：允许客户端写入 lastRunAt 等于把下次触发时间交给客户端决定，
-      // 而修改 newConversation 会使同一任务的历史一半在绑定会话中、一半分散在其他会话中。
+      // 而修改 newConversation 会使同一任务的历史分散在绑定会话与其他会话中。
       //
       // 部分更新以当前值为基础：时间字段按最终的 kind 从 `current` 回退取值，只发送 `{enabled}`
       // 的启停请求不应因未携带时刻而被判定为不合法。与最终 kind 无关的字段不携带，
@@ -77,7 +77,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
 
   // 立即运行。
   //
-  // 这是该功能唯一能当场验证的入口：定时触发需要等到触发时刻，
+  // 这是该功能唯一能立即验证的入口：定时触发需要等到触发时刻，
   // 而配置完成后能否执行是用户最先关心的问题。
   //
   // 使用与自动触发相同的认领事务与投递函数，但不推进自动触发游标：推进游标时，
@@ -86,7 +86,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
   const schedRunMatch = /^\/api\/schedules\/([^/]+)\/run$/.exec(p)
   if (schedRunMatch && req.method === 'POST') {
     if (d.runs.updating) return json({ error: '应用正在更新，请稍后重试' }, 409)
-    // 未配置默认模型时无法确定会话的接口与模型；当场返回 422，而不是创建一条无法发出请求的会话。
+    // 未配置默认模型时无法确定会话的接口与模型；直接返回 422，而不是创建一条无法发出请求的会话。
     if (!d.config.active) return json({ error: NO_MODEL_MESSAGE }, 422)
     const claimed = claimScheduleNow(d.store, schedRunMatch[1]!, d.workspaceRoot, {
       now: Date.now(),

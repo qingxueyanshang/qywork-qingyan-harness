@@ -2,7 +2,7 @@
  * 覆盖 `SchedulesPanel.tsx`。
  *
  * 面板读取的 API 与仓储另有测试（`packages/server/src/scheduler.test.ts`），本文件只验证面板本身：
- * 上次触发的三种结果各显示哪一行、哪些变化触发重取、启停开关发送的请求内容。
+ * 上次触发的三种结果各显示哪一行、哪些变化触发重新获取、启停开关发送的请求内容。
  *
  * **DOM 在本文件内注册、用后注销**，理由同 `LoadState.test.tsx`：happy-dom 的全局对象带有自身的
  * `fetch`，注册为全局会使服务端各包的测试全部失败。
@@ -47,7 +47,7 @@ async function waitFor(done: () => boolean, detail: () => string) {
     if (done()) return
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
-  throw new Error(`界面没有在时限内更新：${detail()}`)
+  throw new Error(`界面未在时限内更新：${detail()}`)
 }
 
 interface Call {
@@ -185,8 +185,8 @@ describe('上次触发的结果', () => {
   })
 })
 
-describe('触发重取的变化', () => {
-  test('切换项目时重取，列出新项目的定时任务', async () => {
+describe('触发重新获取的变化', () => {
+  test('切换项目时重新获取，列出新项目的定时任务', async () => {
     const store = await import('../lib/store/index.ts')
     const calls = await stub(() => ({
       runtimeOnly: '仅在应用运行时触发',
@@ -232,7 +232,7 @@ describe('触发重取的变化', () => {
       () => host.textContent ?? '',
     )
 
-    // 一次触发创建的会话进入 busy 集合，执行完毕后移出，两次变化各触发一次重取。
+    // 一次触发创建的会话进入 busy 集合，执行完毕后移出，两次变化各触发一次重新获取。
     store.setState({ busyConversations: ['cv_sched'] })
     await waitFor(
       () => host.querySelector('.schedule-title')?.textContent === '第 2 次',
@@ -248,7 +248,7 @@ describe('触发重取的变化', () => {
 })
 
 describe('启停开关', () => {
-  test('只发送 enabled 一个字段，返回后重取一次', async () => {
+  test('只发送 enabled 一个字段，返回后重新获取一次', async () => {
     const store = await import('../lib/store/index.ts')
     let enabled = true
     const calls = await stub((_path, init) => {

@@ -24,13 +24,13 @@ metadata:
 `provider_requests` 的两个陷阱（2026-09-28 排查「Opus 反复长思考」时发现）：
 
 - `request_bytes` 与 `measured_input_tokens` 统计的是**适配器转换之前**的通用请求，
-  含 `reasoningContent`；适配器丢弃的内容仍计算在内。判断「到底发没发上去」要将
+  含 `reasoningContent`；适配器丢弃的内容仍计算在内。判断内容是否实际发送到上游时，将
   `provider_input + provider_cached + provider_cache_write` 与 `measured` 比较，差额即为未发送到上游的部分。
 - 缓存中断时先计算相邻两次 `sent_at` 的间隔：超过 5 分钟即为 TTL 过期（断点使用默认的 5 分钟档），
   不要先怀疑第三方接口轮询账号。
 
-关键的一项是 `permission_audit`：**空表** = 一次裁决都没发生过。
-两次排查都依靠它区分「权限闸拦的」与「路径层拦的」：用户看到的现象相同，
+关键的一项是 `permission_audit`：**空表** = 未发生过任何裁决。
+两次排查都依靠它区分权限检查的拦截与路径层的拦截：界面上的现象相同，
 原因和修复方法完全不同。
 
 **先查表再分析机制**（CLAUDE.md A5）。实例：

@@ -50,7 +50,7 @@ portable-pty = "0.9"
 log = "0.4"
 
 [dev-dependencies]
-# 虚拟时间覆盖超过旧 20 秒阈值的慢启动，无需让回归测试实际等待。
+# 回归测试以虚拟时间模拟超过 20 秒的慢启动，不实际等待。
 tokio = { version = "1", features = ["test-util"] }
 
 # 只有 Windows 需要：无装饰窗口的投影需自行向 DWM 申请，见 lib.rs 的
@@ -111,7 +111,7 @@ custom-protocol = ["tauri/custom-protocol"]
 # 增量缓存只对本 crate 生效（依赖一律非增量编译），而本 crate 只有 lib/sidecar/watcher 等少量
 # 文件，全量重新编译的代价远小于 4.7 G 的缓存。
 incremental = false
-# 保留行号表：panic 仍能定位到源码行。去掉变量级调试信息：本项目不在 Rust 侧设置断点调试，
+# 保留行号表：panic 仍能定位到源码行。去除变量级调试信息：本项目不在 Rust 侧设置断点调试，
 # UI 在 WebView 中。
 debug = "line-tables-only"
 

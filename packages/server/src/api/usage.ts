@@ -2,7 +2,7 @@
  * 用量账本的 HTTP 出口。
  *
  * **必要性。** 账本（`usage_ledger`）持续写入，`usageTotals` / `usageBy` 也已存在，
- * 但没有 HTTP 出口时只有 `qy usage` 这个 CLI 读取它们，界面上能看到的用量只剩当前会话的 runs 之和：
+ * 但没有 HTTP 出口时只有 `qy usage` 这个 CLI 读取它们，界面上能显示的用量只剩当前会话的 runs 之和：
  * 会话删除后即丢失，也无法回答本月花费多少。这属于 ARCHITECTURE §11 表中的第三种形状：
  * 两端均已实现，中间缺少一个环节。
  *

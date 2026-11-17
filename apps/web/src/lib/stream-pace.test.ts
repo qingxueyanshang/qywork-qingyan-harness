@@ -1,8 +1,8 @@
 /**
  * 流式增量的写入规则：正文匀速输出与工具输出合帧。覆盖 `lib/stream-pace.ts` 全部导出。
  *
- * 该机制唯一不可接受的失败是丢字：它在「收到」与「显示」之间插入了一个
- * 缓冲区，缓冲区一旦遗漏，用户看到的回答就会缺失一段，且没有任何报错。
+ * 该机制唯一不可接受的失败是丢失文字：它在「收到」与「显示」之间插入了一个
+ * 缓冲区，缓冲区一旦遗漏，显示的回答就会缺失一段，且没有任何报错。
  * 因此第一组用例测试「无论如何切分，拼接结果必须与原文逐字相等」。
  */
 
@@ -28,7 +28,7 @@ import {
 /** 这些用例只测试每个节拍输出量的三条规则，缓冲储备取最大值，与运行时的实际深度无关。 */
 const FULL = MAX_RESERVE_TICKS
 
-describe('不丢字', () => {
+describe('不丢失文字', () => {
   test('连续 takeSlice 直至为空，拼接结果与原文逐字相等', () => {
     const text = '这是一段中文正文，混着 ASCII 和 emoji 🙂，'.repeat(40)
     const st = freshPace()
@@ -37,7 +37,7 @@ describe('不丢字', () => {
     let guard = 0
     while (st.pending.length > 0) {
       out += takeSlice(st)
-      if (++guard > 10_000) throw new Error('没有收敛')
+      if (++guard > 10_000) throw new Error('未收敛')
     }
     expect(out).toBe(text)
   })
@@ -75,7 +75,7 @@ describe('不切分出半个字符', () => {
 
   /**
    * emoji 占两个 UTF-16 码元，在中间切分会使界面显示一帧 U+FFFD 方块。
-   * 每个节拍只输出一两个字时，几乎每个 emoji 都会被切分一次，本用例锁定这一点。
+   * 每个节拍只输出一至两个字时，几乎每个 emoji 都会被切分一次，本用例锁定这一点。
    */
   test('逐个节拍输出的正文中，任何一帧都不含孤立代理', () => {
     const st = freshPace()
@@ -87,7 +87,7 @@ describe('不切分出半个字符', () => {
     while (st.pending.length > 0) {
       shown += takeSlice(st)
       expect(hasLoneSurrogate(shown)).toBe(false)
-      if (++guard > 200) throw new Error('没有收敛')
+      if (++guard > 200) throw new Error('未收敛')
     }
     expect(shown).toBe(text)
   })
@@ -109,7 +109,7 @@ describe('每个节拍的输出量', () => {
     expect(sliceSize(60, 2, FULL)).toBe(2)
   })
 
-  /** 上界：积压接近耗尽时放慢，将剩余部分分摊到下一批到达之前，而不是输出完后空等。 */
+  /** 上界：积压接近耗尽时放慢，将剩余部分分摊到下一批到达之前，而不是输出完毕后等待。 */
   test('积压接近耗尽时按储备节拍数分摊，优先于流速', () => {
     expect(sliceSize(FULL, 5, FULL)).toBe(1)
     expect(sliceSize(FULL * 2, 5, FULL)).toBe(2)
@@ -120,13 +120,13 @@ describe('每个节拍的输出量', () => {
     expect(sliceSize(FULL * CATCHUP_RATIO * 3, 1, FULL)).toBe(3)
   })
 
-  test('积压再多也不超过单节拍上限', () => {
+  test('积压量任意大时也不超过单节拍上限', () => {
     expect(sliceSize(10_000, 2, FULL)).toBe(MAX_CHARS)
     expect(sliceSize(MAX_CHARS * FULL * CATCHUP_RATIO * 5, 1, FULL)).toBe(MAX_CHARS)
   })
 
   /** 尚未得出流速时使用上界：分摊输出，而不是一次输出完毕。 */
-  test('流速未知时用上界', () => {
+  test('流速未知时使用上界', () => {
     expect(sliceSize(100, 0, FULL)).toBe(100 / FULL)
   })
 
@@ -226,7 +226,7 @@ describe('流速估计', () => {
   })
 
   /**
-   * 停顿不是流速。将六秒的停顿计入时，估计值会被拉到极低，
+   * 停顿不是流速。将六秒的停顿计入时，估计值会降至极低，
    * 恢复后正文会逐字缓慢输出。
    */
   test('间隔超过 STALL_MS 的那一次不更新流速', () => {
@@ -316,7 +316,7 @@ describe('收敛', () => {
     while (st.pending.length > 0) {
       takeSlice(st)
       ticks++
-      if (ticks > 500) throw new Error('放不完')
+      if (ticks > 500) throw new Error('未能输出完毕')
     }
     expect(ticks).toBeLessThanOrEqual(250)
     expect(ticks).toBeGreaterThanOrEqual(2000 / MAX_CHARS)
@@ -369,7 +369,7 @@ describe('定时器编排', () => {
     expect(h.text('s1')).toBe('x'.repeat(200))
   })
 
-  test('输出完毕后定时器自行停止，不空转', () => {
+  test('输出完毕后定时器自行停止', () => {
     const h = harness()
     h.pacer.push('s1', 'abc')
     expect(h.running()).toBe(true)
@@ -405,7 +405,7 @@ describe('定时器编排', () => {
     expect(h.running()).toBe(false)
   })
 
-  /** 切换 step 时须先写完上一条，否则其末尾会被计入新的一条。 */
+  /** 切换 step 时须先完整写入上一条，否则其末尾会被计入新的一条。 */
   test('切换 step 时内容不混入其他 step', () => {
     const h = harness()
     h.pacer.push('s1', 'aaa')
@@ -492,7 +492,7 @@ describe('工具输出合帧', () => {
     expect(h.running()).toBe(false)
   })
 
-  test('写入完毕后定时器自行停止，不空转', () => {
+  test('写入完毕后定时器自行停止', () => {
     const h = harness()
     h.framer.push('s1', 'abc')
     expect(h.running()).toBe(true)

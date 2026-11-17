@@ -411,7 +411,7 @@ async function runServe(args: string[]): Promise<number> {
 
   // 父进程监视。
   //
-  // 桌面外壳只在正常退出路径上停止 sidecar；外壳崩溃或被强制终止时（实测 Stop-Process 即如此）
+  // 桌面外壳只在正常退出路径上停止 sidecar；外壳崩溃或被强制终止（如 `Stop-Process`）时
   // 不会执行该路径，残留的 qy 会占用端口和 SQLite 的 WAL 锁，
   // 导致下次启动直接失败。因此由 sidecar 自行监视父进程，任何一方退出都不会遗留孤儿进程。
   if (flags.parentPid) {
@@ -641,7 +641,7 @@ function parseCredentials(line: string | null): Credentials {
 }
 
 /**
- * 读取外壳经标准输入发出的指令，读到 `stop` 即调用 `onStop`。
+ * 读取外壳经标准输入发出的指令，读取到 `stop` 时调用 `onStop`。
  *
  * 外壳退出与安装更新之前写入该指令，限时等待本进程退出，超时才终止进程：直接终止时 `handle.stop()`
  * 不执行，运行中的命令进程树、MCP、插件与外部 CLI 都不会结束。

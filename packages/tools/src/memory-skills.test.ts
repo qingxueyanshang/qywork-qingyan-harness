@@ -103,13 +103,13 @@ describe('记忆', () => {
     })
   })
 
-  test('索引只给首行摘要，不给全文', async () => {
+  test('索引只包含首行摘要，不包含全文', async () => {
     const root = await workspace()
-    await writeMemoryTool.fn({ key: 'k', content: '第一行摘要\n第二行不该出现在索引里' }, ctx(root))
+    await writeMemoryTool.fn({ key: 'k', content: '第一行摘要\n第二行不应出现在索引中' }, ctx(root))
     const entries = await listEntries(join(root, MEMORY_DIR))
     expect(entries[0]!.preview).toBe('第一行摘要')
     // 索引每轮都进入上下文末尾，放入全文即每轮都为全文付费。
-    expect(entries[0]!.preview).not.toContain('第二行不该出现')
+    expect(entries[0]!.preview).not.toContain('第二行不应出现')
   })
 
   test('删除后无法读取', async () => {
@@ -147,7 +147,7 @@ describe('记忆', () => {
    * 拆分为多个工具名的原因：必填参数由 schema 拦截。合并为一个 `action` 门面时，
    * `required` 只剩分派字段，写记忆而未提供 key 时须执行完一整轮往返才报错。
    */
-  test('必填参数写在 schema 里，而不是执行到工具体内才报错', () => {
+  test('必填参数写在 schema 中，而不是执行到工具体内才报错', () => {
     const required = (s: { parameters: Record<string, unknown> }) => s.parameters.required
     expect(required(readMemoryTool)).toEqual(['key'])
     expect(required(writeMemoryTool)).toEqual(['key', 'content'])
@@ -182,7 +182,7 @@ describe('技能前置元信息', () => {
     })
   })
 
-  test('去掉可选引号', () => {
+  test('去除可选引号', () => {
     expect(parseFrontmatter('---\nname: "带引号"\n---').name).toBe('带引号')
     expect(parseFrontmatter("---\nname: '单引号'\n---").name).toBe('单引号')
   })

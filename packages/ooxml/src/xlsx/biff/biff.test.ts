@@ -1088,7 +1088,7 @@ describe('嵌入图表', () => {
     })
   })
 
-  test('整列引用（到 65536 行）截到含内容的行', async () => {
+  test('整列引用（到 65536 行）截取至含内容的行', async () => {
     const wb = await open(
       buildXls(globals, [
         {

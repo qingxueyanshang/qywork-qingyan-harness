@@ -48,7 +48,7 @@ pub fn available() -> bool {
     AnyClass::get(c"SCScreenshotManager").is_some()
 }
 
-/// 采集窗口 `number` 的图像。`placed` 是该窗口当前的几何。返回 `Err(原因)` 时未交出任何像素。
+/// 采集窗口 `number` 的图像。`placed` 是该窗口当前的几何。返回 `Err(原因)` 时未提供任何像素。
 pub fn capture(number: u32, placed: &Placed, req: &CaptureRequest<'_>) -> Result<Image, String> {
     let generation = placed.frame.generation();
     if !generation_matches(req.expect_generation, &generation) {
@@ -126,7 +126,7 @@ pub fn capture(number: u32, placed: &Placed, req: &CaptureRequest<'_>) -> Result
 
 type Reply = Arc<Mutex<Option<Sender<Result<CFRetained<CGImage>, String>>>>>;
 
-/// 交出结果。只有第一次能够交出：两个回调各自的失败路径都会执行到此处。
+/// 提供结果。只有第一次调用能够提供结果：两个回调各自的失败路径都会执行到此处。
 fn deliver(reply: &Reply, result: Result<CFRetained<CGImage>, String>) {
     if let Some(tx) = reply.lock().ok().and_then(|mut slot| slot.take()) {
         // 主路径可能已在等待到期后放弃。
@@ -147,7 +147,7 @@ fn failure(step: &str, error: *mut NSError) -> String {
 /// 按窗口取得一张 `width × height` 像素的 CGImage。
 ///
 /// 先取得可采集内容的清单并找到该窗口，再按「独立窗口」过滤器采图。两步都是异步回调，在 `budget`
-/// 内未完成即以 `capture_timeout` 拒绝；迟到的回调无法交出结果，直接丢弃。
+/// 内未完成即以 `capture_timeout` 拒绝；迟到的回调无法提供结果，其结果被丢弃。
 fn shot(
     number: u32,
     width: usize,

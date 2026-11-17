@@ -87,7 +87,7 @@ class PptxTest(unittest.TestCase):
             a.text_frame.text = "互相遮挡的文本框甲"
             b = s.shapes.add_textbox(Inches(2), Inches(1.1), Inches(4), Inches(2))
             b.text_frame.text = "互相遮挡的文本框乙"
-            # 外框大面积重叠，文字位于各自外框的不同角落：不算遮挡。
+            # 外框大面积重叠，文字位于各自外框的不同角落：不视为遮挡。
             e = s.shapes.add_textbox(Inches(1), Inches(4), Inches(5), Inches(2))
             e.text_frame.text = "左上"
             f = s.shapes.add_textbox(Inches(2), Inches(4.5), Inches(5), Inches(2))
@@ -139,7 +139,7 @@ class PptxTest(unittest.TestCase):
 
     def test_number_and_unit_side_by_side_are_not_overlap(self):
         """数值与单位各占一个文本框、同一基线左右相接（精创 P2「36.92」「亿元」，坐标取自原文件）：估算的文字区域
-        伸进单位的框里不到半个字，不报告。上下两行错开（精创 P12 眉题压标题）、同一基线一行压在另一行上，照常报告。"""
+        进入单位文本框的部分不足半个字宽，不报告。上下两行错开（精创 P12 眉题与标题重叠）、同一基线上一行覆盖另一行时，照常报告。"""
         from pptx import Presentation
         from pptx.util import Emu, Pt
 

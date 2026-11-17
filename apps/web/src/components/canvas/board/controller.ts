@@ -3,7 +3,7 @@
  *
  * 画布区的各部分（节点、连线、浮层、键盘与指针）都以同一个控制器为参数或经 `useCanvas` 取得，不另存副本。
  * 信号以访问器暴露，读取处各自订阅；不要在控制器对象上存放求值后的值，否则读取处不随数据更新。
- * 原为局部变量的实例字段（`stage`、`drag` 等）经 get/set 暴露，控制器内部仍按局部变量读写。
+ * 非响应式的字段（`stage`、`drag` 等）是本函数内的局部变量，经 get/set 暴露，控制器内部直接读写局部变量。
  */
 import type { CanvasExcerpt, CanvasNode, CanvasOp, CanvasView } from '@qywork/core'
 import { createEffect, createMemo, createSignal, on, onCleanup } from 'solid-js'
@@ -215,7 +215,7 @@ export function createCanvasController(props: { path: string; active: boolean })
   })
 
   /**
-   * 待重新读取：生成或执行命令时变动一条接一条到达，合并后读取一次；页签不在显示时只记下，切回时再读取。
+   * 待重新读取：生成或执行命令时变动连续到达，合并后读取一次；页签不在显示时只记录，切回时再读取。
    * 文本卡与媒体卡按读取结果中各文件的版本（`revisions`）更新，不另设读取序号。
    */
   let pending = false
@@ -282,7 +282,7 @@ export function createCanvasController(props: { path: string; active: boolean })
 
   /**
    * 本页发起的编辑：每一步记录修改前后两份文档的指纹。撤销恢复修改前的文档，重做恢复修改后的文档，
-   * 由服务端核对当前文件仍是记录中的那一份。上传、拖入、取帧与生成结果写回不进入栈。
+   * 由服务端核对当前文件仍是记录中的文档。上传、拖入、取帧与生成结果写回不进入栈。
    */
   const undoStack: CanvasEdit['step'][] = []
   const redoStack: CanvasEdit['step'][] = []

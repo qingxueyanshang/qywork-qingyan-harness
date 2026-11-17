@@ -871,7 +871,7 @@ describe('同一份结果在各层形状一致', () => {
 
     const envelope = JSON.parse(live) as { resources?: string[]; result?: Record<string, unknown> }
     expect(envelope.resources).toBeUndefined()
-    // 投递使用紧凑形状：按结果自带的默认值与动作字典还原后，与去掉 parentRef 的原表相等。
+    // 投递使用紧凑形状：按结果自带的默认值与动作字典还原后，与去除 parentRef 的原表相等。
     // 字典按投递方式分组，`小表` 的每张动作表都只有一种投递方式，还原顺序与原表一致。
     const observation = envelope.result?.observation as {
       defaults: Record<string, unknown>
@@ -1210,14 +1210,14 @@ describe('重启、切换会话与回收之后仍可读取', () => {
 })
 
 describe('实际用量跨工具可见', () => {
-  test('超额的观察不被拒绝、用量全额记账，随后的读取看到余额为 0，仍投递最小的一份', async () => {
+  test('超额的观察不被拒绝、用量全额记账，随后的读取取得的余额为 0，仍投递最小的一份', async () => {
     const h = harness()
     const window = 32_000
     const ctx = toolCtx({ h, window, desktop: desktopPort(大表) })
     writeFileSync(join(h.dir, 'note.txt'), '合成正文\n'.repeat(50), 'utf8')
 
     openBatchBudget(ctx.state, 1000, 4_000)
-    // 本次决策之前的读取已用掉大部分额度。
+    // 本次决策之前的读取已消耗大部分额度。
     expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
     expect(batchRemaining(ctx)).toBe(200)
 
@@ -1320,9 +1320,9 @@ describe('越过收纳阈值之后在同一轮内继续', () => {
 })
 
 describe('存盘失败：不发送地址，执行事实不变', () => {
-  test('land 抛错时 step 中没有 resources，保留 delivery.unsaved，回放形状一致', async () => {
+  test('land 抛出异常时 step 中没有 resources，保留 delivery.unsaved，回放形状一致', async () => {
     const h = harness()
-    // 正文库不可用：`ContentStore.put` 抛错，主库事务随之回滚。
+    // 正文库不可用：`ContentStore.put` 抛出异常，主库事务随之回滚。
     h.content.close()
 
     const { runId, callId, live } = await runDesktopAct(h, 大表)

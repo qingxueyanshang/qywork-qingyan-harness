@@ -243,7 +243,7 @@ impl CharSink for SystemCharSink {
 
 /// 单条消息的发送上界。
 ///
-/// 目标在处理函数中打开菜单或对话框时，该消息要等菜单或对话框关闭才返回。到达上界即视为已送达、
+/// 目标在处理函数中打开菜单或对话框时，该消息在菜单或对话框关闭之后才返回。到达上界即视为已送达、
 /// 仍在处理，不再发送后续事件。
 const MESSAGE_TIMEOUT_MS: u32 = 1_000;
 
@@ -557,7 +557,7 @@ const CHROMIUM_CLASS_PREFIX: &str = "Chrome_WidgetWin_";
 /// 滚轮消息能否使落点所在的控件滚动。`top` 是接收指针的顶层窗口。
 ///
 /// Chromium 内核收到滚轮消息后按屏幕坐标重新查找窗口：该位置在屏幕上被其他应用的窗口覆盖时丢弃消息，
-/// 被同一进程的另一个窗口覆盖时转交给那个窗口。两种情形下目标都不滚动，而消息本身已送达，回执只能
+/// 被同一进程的另一个窗口覆盖时转交给该窗口。两种情形下目标都不滚动，而消息本身已送达，回执只能
 /// 记为已提交，因此在派发前判定。其他界面库按消息自身处理滚轮，覆盖不影响（剪映实测）。
 pub fn wheel_reaches(top: i64, at: ScreenPoint) -> bool {
     let top = HWND(top as *mut c_void);
@@ -901,8 +901,8 @@ fn keyboard(vk: u16, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     }
 }
 
-/// 虚拟键码对应的扫描码。无法取得时返回 0：部分应用只读取虚拟键码，扫描码为 0 不会使这些应用
-/// 收不到按键。
+/// 虚拟键码对应的扫描码。无法取得时返回 0：部分应用只读取虚拟键码，扫描码为 0 不影响这些应用
+/// 接收按键。
 fn scan_of(vk: u16) -> u16 {
     // SAFETY: 纯查询，参数是键码常量。
     u16::try_from(unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) }).unwrap_or(0)

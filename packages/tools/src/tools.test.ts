@@ -63,7 +63,7 @@ function videoDensity(video: boolean, uploadAbove?: number) {
   })
 }
 
-/** 只有索引的最小 mp4（10 秒、640×360）：读得出时长与尺寸的视频才原生发送。`bytes` 为文件总长的下限。 */
+/** 只有索引的最小 mp4（10 秒、640×360）：能读取时长与尺寸的视频才原生发送。`bytes` 为文件总长的下限。 */
 function indexedMp4(bytes = 4096): Buffer {
   const box = (type: string, ...payload: Buffer[]) => {
     const body = Buffer.concat(payload)
@@ -670,7 +670,7 @@ describe('写入范围', () => {
    * 其中的 `config.json` 与 `mcp.json` 不可读，其余位置不可写，其余文件在没有内核沙箱的平台上可读；
    * 经联接与经真实路径结论相同。
    *
-   * 原始失败形状：凭证判定只认 `.qywork/` 下的写法，位置判定只比较家目录。`read_file` 读到其中的明文 key，
+   * 原始失败形状：凭证判定只识别 `.qywork/` 下的写法，位置判定只比较家目录。`read_file` 读取了其中的明文 key，
    * `write_file` 写入其中的插件目录与 MCP 启动确认。
    */
   test('QYWORK_HOME 指向家目录之外的全局数据目录：配置文件拒绝读取，其中的位置拒绝写入', async () => {
@@ -723,7 +723,7 @@ describe('写入范围', () => {
  * 自动审批下模型工具的读取范围与命令裁决相同：根目录之外的位置可读，凭证文件除外；
  * 内核沙箱生效的平台上，沙箱屏蔽的凭证目录同样不可读。服务端直接传入工作区路径的读取仍限于根目录。
  *
- * 原始失败形状：`read_file` 读取根目录之外的文件被拒，而 `run_command` 的 `cat` 读得到同一文件，
+ * 原始失败形状：`read_file` 读取根目录之外的文件被拒，而 `run_command` 的 `cat` 能读取同一文件，
  * 模型随即改用 shell 读取，同一模式下两套账。
  */
 describe('读取范围', () => {
@@ -746,7 +746,7 @@ describe('读取范围', () => {
     return { base, home, root, outside, qywork }
   }
 
-  test('read_file 读取工作区外的普通文件成功；凭证文件经直接路径、.. 写法与目录联接均拒绝，回执不说明文件是否存在；grep 不交出凭证文件的内容', async () => {
+  test('read_file 读取工作区外的普通文件成功；凭证文件经直接路径、.. 写法与目录联接均拒绝，回执不说明文件是否存在；grep 不返回凭证文件的内容', async () => {
     const { home, root, outside, qywork } = await scopeTree()
     const calls = [
       ['read_file', { path: join(outside, 'a.txt') }],
@@ -840,14 +840,14 @@ describe('文件工具', () => {
   })
 
   /**
-   * 无法解析为整数的 offset 是失败，而不是一次读到 0 行的成功。
+   * 无法解析为整数的 offset 是失败，而不是一次读取到 0 行的成功。
    *
    * 原始失败：模型把行区间写成一个字符串（`offset: "1,4000"`），
    * `Math.max(1, Number(...))` 得到 NaN，`slice(NaN, NaN)` 是空数组，
    * `truncated` 与 NaN 比较也为假，返回给模型的是
    * 「success / 0 行 / 未截断 / 文件有 349 行」四条互相矛盾的事实。
    */
-  test('offset 无法解析为整数时失败，而不是成功读到 0 行', async () => {
+  test('offset 无法解析为整数时失败，而不是成功读取到 0 行', async () => {
     const root = await workspace()
     const out = await registry().execute(
       'read_file',
@@ -940,7 +940,7 @@ describe('文件工具', () => {
     },
   )
 
-  test('读过之后允许覆盖，并报告行级增删', async () => {
+  test('读取之后允许覆盖，并报告行级增删', async () => {
     const root = await workspace()
     const r = registry()
     const c = ctx(root)
@@ -1289,7 +1289,7 @@ describe('文件工具', () => {
       expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nthere\n')
     })
 
-    test('未接入 port 时仍要求本 run 读取过：退回更严格的一侧', async () => {
+    test('未接入 port 时仍要求本 run 读取过：采用更严格的一侧', async () => {
       const root = await workspace()
       const r = registry()
       await r.execute('read_file', { path: 'a.txt' }, ctx(root))
@@ -1422,8 +1422,8 @@ describe('文件工具', () => {
   })
 
   /**
-   * 原始失败形状：模型复述四百余字的段落时把「胸前」写成「胸口」，回执只写未找到，
-   * 模型带着同一处出入连续重发。回执须指出从哪里开始不一致。
+   * 原始失败形状：模型复述超过 400 字的段落时把「胸前」写成「胸口」，回执只写未找到，
+   * 模型以含同一处差异的内容连续重发。回执须指出从哪里开始不一致。
    */
   test('未命中时指出 old_string 与原文开始不一致的行与片段；前缀过短时不给出位置', async () => {
     const root = await workspace()
@@ -1630,7 +1630,7 @@ describe('搜索与命令', () => {
    */
   test('run_command 的说明第一句是语法提示，且指明实际的可执行文件', () => {
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    if (shell === null) throw new Error('本机没有可用的 shell，无法执行本测试')
     const spec = registry()
       .list()
       .find((t) => t.name === 'run_command')
@@ -1688,7 +1688,7 @@ describe('搜索与命令', () => {
    */
   test('当前 shell 的组合命令能成功执行', async () => {
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    if (shell === null) throw new Error('本机没有可用的 shell，无法执行本测试')
     const root = await workspace()
     const sep = basename(shell.path).toLowerCase().startsWith('powershell') ? ';' : '&&'
     const out = await registry().execute(
@@ -1723,7 +1723,7 @@ describe('搜索与命令', () => {
    */
   test('遗留的后台进程持有管道时，命令仍按时返回并说明情况', async () => {
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    if (shell === null) throw new Error('本机没有可用的 shell，无法执行本测试')
     const root = await workspace()
     // 按 argv 区分而不是按可执行文件名：`-Command` 是两档 PowerShell 共有的参数，
     // 而按名称判断需同时识别 powershell.exe 和 pwsh.exe。
@@ -1745,12 +1745,12 @@ describe('搜索与命令', () => {
   /**
    * 原始失败：一套 25 页 PPT 的重建脚本逐页处理，运行 15–20 分钟，按总时长在 600 秒时被终止，
    * 模型连续四次重新运行后改为放到后台轮询。三条命令：持续输出、总时长超过时限的命令正常结束；
-   * 不输出但一直占用 CPU 的命令也正常结束（输出接到 `| tail` 时就是这样）；不输出也不占用 CPU
-   * 的命令到时限后终止。三件都锁定：只锁定前两件时，去掉全部时限也能通过。
+   * 不输出但一直占用 CPU 的命令也正常结束（输出接到 `| tail` 时即属此类）；不输出也不占用 CPU
+   * 的命令到时限后终止。三项都锁定：只锁定前两项时，删除全部时限也能通过。
    */
   async function idleJudged(root: string) {
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    if (shell === null) throw new Error('本机没有可用的 shell，无法执行本测试')
     const ps = shell.argv.includes('-Command')
     const talking = ps
       ? '1..6 | ForEach-Object { Write-Output $_; Start-Sleep -Milliseconds 400 }'
@@ -1788,11 +1788,11 @@ describe('搜索与命令', () => {
     expect(stuck.message).toContain('没有占用 CPU')
   }
 
-  test('timeout_ms 判定停滞：仍在输出或仍在计算的命令运行超过时限照常结束，什么都不做的命令按时终止', async () => {
+  test('timeout_ms 判定停滞：仍在输出或仍在计算的命令运行超过时限照常结束，既不输出也不计算的命令按时终止', async () => {
     await idleJudged(await workspace())
   }, 60_000)
 
-  /** 产品经 runner 执行命令：runner 若攒到退出才转发输出，无输出判定会把持续输出的命令当作停滞。 */
+  /** 产品经 runner 执行命令：runner 若在命令退出后才转发输出，无输出判定会把持续输出的命令当作停滞。 */
   test('runner 代为执行时同样按无输出判定', async () => {
     const root = await workspace()
     const runner = startCommandRunner([
@@ -1819,7 +1819,7 @@ describe('搜索与命令', () => {
    */
   test('runner 代为执行时同样能报告后台进程', async () => {
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    if (shell === null) throw new Error('本机没有可用的 shell，无法执行本测试')
     const root = await workspace()
     const command = shell.argv.includes('-Command')
       ? "Write-Output started; Start-Process -NoNewWindow -FilePath cmd.exe -ArgumentList '/c','ping -n 21 127.0.0.1'"
@@ -1851,7 +1851,7 @@ describe('搜索与命令', () => {
    */
   test('进程无法启动时关闭观察窗口，下一条命令的文件改动照常报告', async () => {
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    if (shell === null) throw new Error('本机没有可用的 shell，无法执行本测试')
     const root = await workspace()
     setCommandRunner({
       spawn: async () => {
@@ -1886,7 +1886,7 @@ describe('搜索与命令', () => {
    */
   test('命令返回之后，它留下的后台进程继续运行', async () => {
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    if (shell === null) throw new Error('本机没有可用的 shell，无法执行本测试')
     const root = await workspace()
     const command = shell.argv.includes('-Command')
       ? "Start-Process -NoNewWindow -FilePath cmd.exe -ArgumentList '/c','ping -n 2 127.0.0.1 >nul & echo alive>bg.txt'"
@@ -1914,7 +1914,7 @@ describe('搜索与命令', () => {
    */
   test('中断时立即返回，即使有孤儿进程持有管道', async () => {
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    if (shell === null) throw new Error('本机没有可用的 shell，无法执行本测试')
     const root = await workspace()
     // 首次输出之后才中断：Windows 上的输出由孤儿进程 ping 写出，POSIX 上 echo 在后台进程启动之后执行。
     const command = shell.argv.includes('-Command')
@@ -1952,7 +1952,7 @@ describe('搜索与命令', () => {
  * 而模型并非有意绕过，只是更换了工具。
  */
 describe('read_file 的凭证脱敏', () => {
-  test('工作区中的私钥无法读出明文', async () => {
+  test('工作区中的私钥无法读取到明文', async () => {
     const root = await workspace()
     const body = 'MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn'
     await writeFile(
@@ -1967,7 +1967,7 @@ ${body}
     expect(String(out.data?.content)).not.toContain(body)
   })
 
-  test('.env 中的 token 无法读出明文', async () => {
+  test('.env 中的 token 无法读取到明文', async () => {
     const root = await workspace()
     const token = 'ghp_abcdefghijklmnopqrstuvwxyz12'
     await writeFile(
@@ -1985,7 +1985,7 @@ PORT=3000
     expect(content).toContain('PORT=3000')
   })
 
-  /** 普通代码不得有任何改动，否则模型读到的内容与磁盘不一致，编辑会失败。 */
+  /** 普通代码不得有任何改动，否则模型读取到的内容与磁盘不一致，编辑会失败。 */
   test('普通文件原样返回', async () => {
     const root = await workspace()
     const out = await registry().execute('read_file', { path: 'src/main.ts' }, ctx(root))
@@ -1998,7 +1998,7 @@ PORT=3000
  *
  * 该工具的必要性在于：「启动服务并检查页面能否打开」在本仓库的执行方式下无法完成：
  * `run_command` 是同步的，启动一个不会自行退出的服务器会阻塞直至超时，
- * 与权限模式无关（实测：开启完全访问后仍只等到 output_truncated）。
+ * 与权限模式无关（实测：开启完全访问后仍只取得 output_truncated）。
  *
  * 本组先测边界再测功能：边界写错的代价是多出一条绕开 SSRF 防护的网络访问通道，
  * 比功能不可用严重得多。
@@ -2020,7 +2020,7 @@ describe('probe_url', () => {
       // 主机名不做 DNS 解析：解析结果由外部决定，等于没有边界。
       'http://dev.example.com/',
     ]) {
-      const out = await run(root, 'echo 不该跑到这里', url)
+      const out = await run(root, 'echo 不应执行到此处', url)
       expect(out.status).toBe('failure')
       expect(out.errorKind).toBe('bad_request')
       expect(out.message).toContain('回环')
@@ -2326,7 +2326,7 @@ describe('grep 的单条上界', () => {
  * `agent/loop/tool-wave.ts` 在每次下发一批工具之前调用 `resetBatchBudget`，理由写在该文件中：「压缩只留一个入口」
  * 的前提正是两次检查之间的增量有上界。grep 不记账时，单次 200 条 × 400 字符
  * 最坏约 32,000 token，已超过单次上界 25,000；它又是 `parallelSafe`，
- * 一批五个即为整批上界的三倍多。
+ * 一批五个即超过整批上界的三倍。
  *
  * 断言的是截断而不是拒绝：该工具已有截断约定，超出预算时使用同一处理方式。
  */
@@ -2377,7 +2377,7 @@ describe('read_file 识别图片', () => {
   /**
    * 在读取时固定字节，不返回路径。
    *
-   * 返回路径时，记录中保存的是「去哪里查看」而不是「看到了什么」，而模型修改页面后会重新
+   * 返回路径时，记录中保存的是图片的位置而不是图片的内容，而模型修改页面后会重新
    * 截图并覆盖同名文件（这是对比修改前后的常规操作），此后历史中的该图片将
    * 无法取回。捕获只能在观察的时刻进行。
    */
@@ -2400,7 +2400,7 @@ describe('read_file 识别图片', () => {
    * 当前模型不接受图片：在读取字节之前即拒绝，且说明中给出下一步。
    *
    * 只返回「读取失败」时，模型除了原样重读没有其他选择，而每次都会失败，
-   * 形成死循环。因此断言的不只是 `failure`，还有「不要再读」这句说明。
+   * 形成无限循环。因此断言的不只是 `failure`，还有「不要再读」这句说明。
    *
    * `null` 表示厂商规格页未写明，照常读取（判据只认 `false`）。
    */
@@ -2477,7 +2477,7 @@ describe('read_file 识别图片', () => {
   /**
    * 缩小发送时回执写明原图与发送尺寸，并指出 region。
    *
-   * 实测缩小后模型把看不清的白边判为「干净」：不说明它看到的是缩小图，它不会去截取局部。
+   * 实测缩小后模型把无法辨认的白边判为「干净」：不说明其取得的是缩小图时，模型不会截取局部。
    */
   test('长边超过上限的图片：回执写明原图与发送尺寸并指出 region', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-img-big-'))
@@ -2517,7 +2517,7 @@ describe('read_file 识别图片', () => {
     expect(dark(20, 12)).toBe(false)
   })
 
-  /** 不合法的 region 与用在非图片上都拒绝：不经说明改读整图会使模型把看不清的细节判为不存在。 */
+  /** 不合法的 region 与用在非图片上都拒绝：不经说明改读整图会使模型把无法辨认的细节判为不存在。 */
   test('region 不合法或用在非图片上：拒绝并说明', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-img-region-'))
     await writeFile(join(root, 'a.png'), PNG)
@@ -2544,7 +2544,7 @@ describe('read_file 识别图片', () => {
    * 图片分支跳过了文本流程，若不补记一次读取记录，`write_file` 会返回
    * 「尚未读取，已拒绝覆盖修改。先 read_file 再覆盖」，而模型按提示操作后仍然无法通过。
    */
-  test('读过的图片能被 write_file 覆盖', async () => {
+  test('读取过的图片能被 write_file 覆盖', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-img3-'))
     await writeFile(join(root, 'c.png'), PNG)
     const r = registry()

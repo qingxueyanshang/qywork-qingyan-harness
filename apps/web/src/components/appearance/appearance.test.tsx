@@ -282,7 +282,7 @@ describe('个性化读取', () => {
     // 连接未就绪：观察开始时不读取，记录到的请求只有编辑的保存。
     store.setState('connection', 'connecting')
     const stop = store.observePersonalization()
-    // 保存的停顿由假计时器推进：请求在计时器回调中同步发出，推进返回时已全部记录。
+    // 保存的停顿由模拟计时器推进：请求在计时器回调中同步发出，推进返回时已全部记录。
     jest.useFakeTimers()
     try {
       const a = { ...sample, opacity: 0.6 }

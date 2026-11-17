@@ -38,8 +38,8 @@ export const handleTeamApi: ApiHandler = async (url, req, d) => {
   }
 
   if (p === '/api/team') {
-    // 直接读取工作区配置而不是返回启动时的缓存：用户可能刚修改完 team.json，
-    // 要求用户重启服务才能看到新配置是不合理的。
+    // 直接读取工作区配置而不是返回启动时的缓存：team.json 修改后，
+    // 无需重启服务即可读取新配置。
     const { loadTeamConfig } = await import('@qywork/runtime')
     const team = await loadTeamConfig(d.workspaceRoot)
     return json({

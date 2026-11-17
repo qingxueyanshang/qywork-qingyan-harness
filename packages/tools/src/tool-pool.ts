@@ -18,7 +18,7 @@
  * 一个工具的体积可与一整个 server 相当，因此不能按安装的 server 数量确定档位。
  * 同一批工具的一行摘要清单（截断到 100 字）为 1187 token，约为十分之一。
  *
- * 阈值：总量小时全量常驻更合算。此时改为按需加载得不偿失：节省的 token 抵不过一次模型往返，
+ * 阈值：总量小时全量常驻的开销更低。此时改为按需加载，节省的 token 少于一次模型往返的开销，
  * 而清单本身每条还占约 30 token。因此只有超过阈值才改为按需加载，见 `EXTERNAL_SCHEMA_BUDGET_TOKENS`。
  */
 
@@ -30,9 +30,9 @@ import { estimateSchemas, type TokenDensity } from '@qywork/ai'
  *
  * 取 1600：七个普通工具的 schema 约 1600 token（工具定义实测 2.3–2.9 字符/token，Claude 为 1.6）。
  * 语义是「一个小 server 全量常驻，两个 server 或一个大工具改为按需加载」：
- * 低于此线时改为按需加载节省不足两千 token，却要多付出一次往返，得不偿失。
+ * 低于此线时改为按需加载节省不足 2000 token，却需多一次往返，开销高于节省。
  *
- * 判据是总量而不是个数：单个工具可占一千多 token（sequential-thinking 约 1600），
+ * 判据是总量而不是个数：单个工具可超过 1000 token（sequential-thinking 约 1600），
  * 按个数定档会把只有一个工具的 server 判为小配置。修改此常数前先按当前估算重新测量这四个 server，
  * 不要依据上表推算。
  */
@@ -176,8 +176,8 @@ export function makeLoadToolTool(pool: PendingToolPool): ToolSpec {
       }
       if (r.already.length) parts.push(`已在工具表中：${r.already.join('、')}。`)
       if (r.notFound.length) {
-        // 列出可加载的名称而不是只返回「未找到」：模型通常只是把名称记错了一个字，
-        // 给出候选后，它在下一轮即可自行修正（与 `read_skill` 的做法相同）。
+        // 列出可加载的名称而不是只返回「未找到」：模型给出的名称通常只与实际名称相差一个字，
+        // 给出候选后，模型在下一轮即可自行修正（与 `read_skill` 的做法相同）。
         const available = pool.index().map((t) => t.name)
         parts.push(
           `加载目标未命中：${r.notFound.join('、')}。` +

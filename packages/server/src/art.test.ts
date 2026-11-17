@@ -39,7 +39,7 @@ describe('Art 宿主', () => {
       // 路径与内容对应：文件导出与文件名同名的类。
       const cls = name.split('/').pop()!.replace('.js', '')
       expect(text).toContain(`class ${cls} `)
-      // 只看语句：注释中的用法示例同样含有 `from '...'`。
+      // 只检查语句：注释中的用法示例同样含有 `from '...'`。
       const specifiers = [...text.matchAll(/^(?:import|export|\})[^\n]*from\s+'([^']+)'/gm)].map(
         (m) => m[1],
       )

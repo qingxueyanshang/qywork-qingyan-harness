@@ -33,13 +33,13 @@ import type { SubagentKind } from './workflow.ts'
 /**
  * 思考强度档位，按从弱到强排序。
  *
- * 派生方向是「数组 → 类型」，不能反过来：类型只存在于编译期，
+ * 派生方向是「数组 → 类型」，不能反向派生：类型只存在于编译期，
  * 而 `qy probe` 需要逐档试探、适配器需要按顺序比较大小（`indexOf`），两处都需要
  * 一个可在运行期枚举的数组。反向派生必然需要另写一份数组。
  *
  * 「档位全集」与「某个模型支持的档位」是不同的概念。
  * `catalog.ts` 中各厂商 spec 的 `effortLevels` 是按实测填写的事实声明，
- * 不能改为引用本数组：那样会把新增档位声明为所有厂商都支持。
+ * 不能改为引用本数组：引用后新增档位会被声明为所有厂商都支持。
  */
 export const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type EffortLevel = (typeof EFFORT_ORDER)[number]
@@ -482,7 +482,7 @@ export interface Run {
   dispatchNodeId: string | null
 
   // 上下文读数不在此处。真源是 `ProviderRequest`：一个 run 有 N 次请求，
-  // 账本就应有 N 行；挂在 run 上的标量每个 step 覆盖一次，只保留最后一次的读数。
+  // 账本就应有 N 行；记录在 run 上的标量每个 step 覆盖一次，只保留最后一次的读数。
 
   createdAt: number
   finishedAt: number | null
@@ -607,7 +607,7 @@ export interface UsageTurn {
  * 费用的种类。
  *
  * 每一种都是独立于 run 的开销，未列入时该笔费用在界面上不存在。
- * `summary`（压缩时的摘要调用）是典型：不记入账本就完全不可见，
+ * `summary`（压缩时的摘要调用）是典型实例：不记入账本就完全不可见，
  * 压缩越频繁，账单与界面的差额越大。`media` 是轮次中的一次生成，带所属轮次的 run_id。
  */
 export type UsageKind = 'run' | 'summary' | 'media'
@@ -652,7 +652,7 @@ export interface UsageLedgerRow {
 }
 
 /**
- * 待办状态。`blocked` 是模型停下等待用户的唯一方式，见 `TodoBlocker`；`failed` 是按重试规则处理后
+ * 待办状态。`blocked` 是模型停止执行、等待用户的唯一方式，见 `TodoBlocker`；`failed` 是按重试规则处理后
  * 仍无法完成的终态，不等待任何一方。
  */
 export const TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'failed', 'completed'] as const
@@ -660,11 +660,11 @@ export type TodoStatus = (typeof TODO_STATUSES)[number]
 
 /**
  * 待办受阻的类别，闭集，每一类都是在等待用户。执行循环只在清单中没有 pending 与 in_progress
- * 且有受阻项时停下等待用户（`awaiting_user`）；各类别的判定标准只写在系统提示中（`runtime/prompt.ts`），
+ * 且有受阻项时停止执行、等待用户（`awaiting_user`）；各类别的判定标准只写在系统提示中（`runtime/prompt.ts`），
  * 工具参数只列取值。
  *
  * 不要加入「需要用户在几种做法中选择」之类的开放类别：任何困难都能归入这类类别，
- * 模型会据此在任务未完成时停下询问用户，闭集存在的目的就是消除这种停止。
+ * 模型会据此在任务未完成时停止并询问用户，闭集存在的目的就是消除这种停止。
  * 也不要加入外部服务故障一类：故障按重试规则处理，处理后仍失败的项标为 `failed`，不等待用户。
  */
 export const TODO_BLOCKERS = ['spend', 'user_only', 'review', 'irreversible'] as const
@@ -709,7 +709,7 @@ export const TODO_FAILURE_LABEL: Record<TodoFailure, string> = {
 }
 
 /**
- * 待办条目。`blocked` 必须带类别与所需条件，`failed` 必须带失败类别、失败原因与做过的尝试，其余状态都不带，
+ * 待办条目。`blocked` 必须带类别与所需条件，`failed` 必须带失败类别、失败原因与已进行的尝试，其余状态都不带，
  * 由 `write_todos` 校验。
  *
  * 账本中的 `write_todos` 参数可能对未填写的字段记有 null，
@@ -722,7 +722,7 @@ export type TodoItem =
       content: string
       status: 'blocked'
       blocker: TodoBlocker
-      /** 需要谁提供什么，一句话。 */
+      /** 由谁提供何种内容，一句话说明。 */
       need: string
     }
   | {
@@ -733,7 +733,7 @@ export type TodoItem =
       failure?: TodoFailure
       /** 失败原因。 */
       cause: string
-      /** 做过的尝试：次数与每次的改动。 */
+      /** 已进行的尝试：次数与每次的改动。 */
       attempts: string
     }
 
@@ -824,7 +824,7 @@ export interface Goal {
    * 从 1 开始单调递增，每次变更 +1。
    *
    * 写入方必须携带自己读取到的 revision，不一致时直接拒绝：模型持有的目标可能
-   * 是几轮之前读取的，静默覆盖会抹去其间发生的暂停或修改。
+   * 是几轮之前读取的，静默覆盖会丢失其间发生的暂停或修改。
    */
   revision: number
   /** `blocked` 专有：机器可读的短代码，供界面分类。其余状态为 null。 */
@@ -845,7 +845,7 @@ export type GoalAction = 'edit' | 'pause' | 'resume' | 'complete' | 'blocked'
  * 一次目标变更的结果。
  *
  * 失败以返回值表达，不抛异常：绝大多数调用方是工具，而工具需要把拒绝原因
- * 原样交给模型（revision 过期、状态不允许、缺少理由）；异常在该路径上会被
+ * 原样返回给模型（revision 过期、状态不允许、缺少理由）；异常在该路径上会被
  * 注册表统一替换为「工具执行出错」。
  */
 export type GoalWriteResult =
@@ -990,7 +990,7 @@ export type StepPayload =
        * 不能声明为必填：写入侧确实会写入不带该字段的行，声明必填会使类型声明与库中
        * 存储的内容不一致，历史投影会在孤儿行上取得 undefined 后展开。
        * 消费方（`runtime/transcript.ts`）按 `args ?? {}` 处理，
-       * 且这类行的 status 必然是 failure：模型看到的是「调用失败、参数已无法确定」，
+       * 且这类行的 status 必然是 failure：模型取得的是「调用失败、参数已无法确定」，
        * 而不是一条「参数为空却显示成功」的记录。
        */
       args?: Record<string, unknown>
@@ -1003,7 +1003,7 @@ export type StepPayload =
       nodes?: Record<string, NodeState>
       /**
        * 结果中的图片未送达模型：包含它的请求被接口拒绝，图片随后从请求中移除。
-       * 只供界面显示；模型看到的形态由同一会话的 `imagesRejected` 执行事实决定。
+       * 只供界面显示；模型取得的形态由同一会话的 `imagesRejected` 执行事实决定。
        */
       imagesUndelivered?: true
     }
@@ -1050,7 +1050,7 @@ export type StepPayload =
       /** 同 `Message.origin`：该消息的来源，缺失表示用户本人。 */
       origin?: 'subagent' | 'workflow' | 'command'
       /**
-       * 装配层交给模型的执行事实（待办未完成、重复告警、断流后续发），不是任何参与者的发言：
+       * 装配层提供给模型的执行事实（待办未完成、重复告警、断流后续发），不是任何参与者的发言：
        * 界面与导出不显示，投影到历史时归入运行上下文。
        */
       notice?: true
@@ -1066,7 +1066,7 @@ export type StepPayload =
       videosRejected?: { provider: string; model: string }
     }
 
-/** 判定 step 是否为装配层交给模型的执行事实（见 `StepPayload` 的 `notice`），而不是任何参与者的发言。 */
+/** 判定 step 是否为装配层提供给模型的执行事实（见 `StepPayload` 的 `notice`），而不是任何参与者的发言。 */
 export function isNoticeStep(step: Pick<Step, 'kind' | 'payload'>): boolean {
   return step.kind === 'user' && step.payload?.kind === 'user' && step.payload.notice === true
 }
@@ -1140,9 +1140,9 @@ export type ResourceStatus = 'complete' | 'partial' | 'failed'
 /**
  * 覆盖事实：投递给模型的片段在完整正文中的位置与占比。
  *
- * 这些数值必须随结果一起交给模型。只提供截断后的正文而不说明
+ * 这些数值必须随结果一起提供给模型。只提供截断后的正文而不说明
  * 「这是 2.3 MB 中的 8 KB」，模型会把它当作全部内容，并基于不完整的信息得出结论；
- * 这比不提供正文更糟，因为模型无从得知信息不完整。
+ * 后果比不提供正文更严重：模型无从得知信息不完整。
  */
 export interface ResourceCoverage {
   deliveredBytes?: number
@@ -1191,7 +1191,7 @@ export interface FoldedFileChange {
  *
  * 本轮中先创建后删除的路径整行丢弃：它对工作区没有净效果，与观察器在单个窗口内
  * 把「创建后删除」判定为临时文件是同一条规则，只是范围扩大到整轮。浏览器 profile、
- * 构建缓存等包含成百上千个文件的目录正属于这种情况。修改后被删除的路径保留：
+ * 构建缓存等包含数百至数千个文件的目录正属于这种情况。修改后被删除的路径保留：
  * 它表示用户原有的文件已被删除。
  *
  * 其余规则：创建后修改仍记为新建，删除后重建仍记为新建，其余按最后一次变更；
@@ -1273,7 +1273,7 @@ export const CONTEXT_GROUPS: readonly ContextGroup[] = [
   'workspaceState',
 ]
 
-/** 各分组的 token 占用。键集与 `ContextGroup` 恒等，不允许出现别的键。 */
+/** 各分组的 token 占用。键集与 `ContextGroup` 恒等，不允许出现其他键。 */
 export type ContextBreakdown = Record<ContextGroup, number>
 
 /**
@@ -1281,7 +1281,7 @@ export type ContextBreakdown = Record<ContextGroup, number>
  *
  * 压缩把一段历史替换为摘要、把工具结果替换为定位符之后，原文仍保留在账本中，
  * 只是未进入本次请求。这两个数值表示被移出请求的内容；面板只报告占用构成
- * 是不完整的，用户看到占用下降却无法得知下降来自何处。
+ * 是不完整的：界面显示占用下降，用户却无法得知下降来自何处。
  *
  * 能报告该数值的前提是压缩是投影、不销毁原文：原文仍在 Step / 正文库中，
  * 装配时用同一度量方式测量两次后相减即得到该值。若改为直接改写正文，原文将不在
@@ -1333,7 +1333,7 @@ const FIXED_GROUPS: readonly ContextGroup[] = CONTEXT_GROUPS.filter(
 /**
  * 把 `keys` 中的分组按现有占比重新分配，使其总和精确等于 `want`。
  *
- * 余数归入其中最大的分组，不留下一两个 token 的差额。
+ * 余数归入其中最大的分组，不留下一至两个 token 的差额。
  * 全部为零时没有占比可依据，全部分配给第一个键。
  */
 function allocate(out: ContextBreakdown, keys: readonly ContextGroup[], want: number): void {
@@ -1379,7 +1379,7 @@ function allocate(out: ContextBreakdown, keys: readonly ContextGroup[], want: nu
  * 后者用户无法验证；若钳制到零后不再处理，面板显示的仍是一组不一致的数值。
  *
  * 边界：按占比分摊只保证总和正确，不保证差额归入实际出错的分组；误差实际
- * 集中在某一个分组时，另外两个分组也会被抬高。因此本函数给出的是总占用量与
+ * 集中在某一个分组时，另外两个分组也会被调高。因此本函数给出的是总占用量与
  * 大致构成，不能指明哪一个分组计算有误。定位单个分组的误差需要查看逐请求记录。
  */
 export function reconcileBreakdown(breakdown: ContextBreakdown, total: number): ContextBreakdown {
@@ -1594,7 +1594,7 @@ export interface ProviderTransportReading {
    * 响应头到达的绝对时刻；未到达时为 null。
    *
    * 与 `headersAfterMs` 用途不同：诊断只使用时长，账本中的对应列需要时刻。
-   * 非 2xx 的响应头只能经此写入 `ProviderRequest.headersAt`：该路径上适配器直接抛错，
+   * 非 2xx 的响应头只能经此写入 `ProviderRequest.headersAt`：该路径上适配器直接抛出异常，
    * 不经过 `response_started`。
    */
   headersAt: number | null

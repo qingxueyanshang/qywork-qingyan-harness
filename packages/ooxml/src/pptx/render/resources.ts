@@ -99,7 +99,7 @@ export interface EmbeddedFontFile {
 }
 
 /**
- * 读取嵌入字体：`list` 取自 `presentation.embeddedFonts`，调用方可先去掉主机已有的字体以免无谓的解压
+ * 读取嵌入字体：`list` 取自 `presentation.embeddedFonts`，调用方可先去掉主机已有的字体以避免不必要的解压
  * （中文字体还原后可达数十兆字节）。`failed` 为无法还原的部件。
  */
 export async function readEmbeddedFonts(

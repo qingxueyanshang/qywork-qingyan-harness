@@ -37,7 +37,7 @@ async function waitFor(done: () => boolean, detail: () => string) {
     if (done()) return
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
-  throw new Error(`界面没有在时限内更新：${detail()}`)
+  throw new Error(`界面未在时限内更新：${detail()}`)
 }
 
 async function mount(initial: RemoteInfo, opts: { failToggle?: string } = {}) {
@@ -160,7 +160,7 @@ test('隧道断开时显示原因；协议版本过旧时提示更新应用', as
   )
 })
 
-/** 原始失败形状：被另一个进程替换后永久离线，开关仍显示为开，只能关掉再打开才恢复。 */
+/** 原始失败形状：被另一个进程替换后永久离线，开关仍显示为开，只能关闭后重新开启才恢复。 */
 test('被另一个进程接管时提供重新连接，点击后恢复已连接且不切换开关', async () => {
   const { host } = await mount(signedIn({ state: 'replaced' }))
   await waitFor(

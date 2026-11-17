@@ -33,7 +33,7 @@ const STATUS_LABEL: Record<SubagentSummary['status'], string> = {
  * `subagent`、`stop_subagent`、`read_history` 共用此解析。
  *
  * 未找到或名称重复时，错误列出本会话全部子 agent 的名称、id 与状态。不要改为只报告「没有」：
- * id 较长，抄错一位即无法匹配，模型没有清单时只能继续推测 id。不做近似匹配，不替模型选择。
+ * id 较长，错一位即无法匹配，模型没有清单时只能继续推测 id。不做近似匹配，不替模型选择。
  */
 export async function resolveSubagentRef(
   delegate: DelegatePort,
@@ -56,20 +56,20 @@ export async function resolveSubagentRef(
 export const subagentTool: ToolSpec = {
   name: 'subagent',
   description:
-    '把一项任务委派给一个子 agent。派发后立即返回，子 agent 完成后回执会作为一条消息送到本会话，不要为了等回执反复调用。' +
+    '把一项任务委派给一个子 agent。派发后立即返回，子 agent 完成后回执会作为一条消息送到本会话，不要为了等待回执反复调用。' +
     '目标由填写的字段决定：填 role 按角色新建，填 cli 派给外部 CLI，只填 name 新建临时子 agent，填 subagent 续接本会话已有的子 agent；' +
-    '这几项只填一种，新建时返回 subagentId。' +
+    '这几项只填写其中一项，新建时返回 subagentId。' +
     '之后向同一个子 agent 派发任务时将 subagent 填为该 id 或名称，子 agent 在自己的会话中继续，三种种类均可续接。' +
     '向正在执行的角色或临时子 agent 派发时，任务作为补充指令送入它正在执行的一轮，在它的下一步生效；' +
     '它结束前未读取的补充指令在回执中列出。外部 CLI 执行中再次派发返回「正在执行」，收到其回执后再派发。' +
     '一次只派发一个，两个及以上用 workflow。' +
-    '子 agent 无法看到本会话的内容，背景需写入 task。',
+    '子 agent 无法读取本会话的内容，背景需写入 task。',
   parameters: {
     type: 'object',
     properties: {
       role: {
         type: 'string',
-        description: '角色 id，运行上下文「角色」清单里的一项。填写即按该角色新建子 agent。',
+        description: '角色 id，运行上下文「角色」清单中的一项。填写即按该角色新建子 agent。',
       },
       name: {
         type: 'string',
@@ -79,22 +79,22 @@ export const subagentTool: ToolSpec = {
       },
       cli: {
         type: 'string',
-        description: '外部 CLI 的 id，运行上下文清单里的一项。填写即派给该 CLI。',
+        description: '外部 CLI 的 id，运行上下文清单中的一项。填写即派给该 CLI。',
       },
       subagent: {
         type: 'string',
         description:
-          '本会话已有子 agent 的 id 或名称（上一次派发返回的 subagentId，或运行上下文「本会话的子 agent」清单里的 id 与名称）。' +
+          '本会话已有子 agent 的 id 或名称（上一次派发返回的 subagentId，或运行上下文「本会话的子 agent」清单中的 id 与名称）。' +
           '填写后在该子 agent 的上下文中继续，不再填 role、cli；本次任务与其现有名称不符时同时填写 name。',
       },
       task: {
         type: 'string',
-        description: '交给子 agent 的任务。子 agent 无法看到本会话，因此背景需在此写完整。',
+        description: '交给子 agent 的任务。子 agent 无法读取本会话，因此背景需在此写完整。',
       },
       parentTodo: {
         type: 'string',
         description:
-          '本次子任务产出归属的父待办，逐字复制当前清单里的 content。' +
+          '本次子任务产出归属的父待办，逐字复制当前清单中的 content。' +
           '当前有未完成待办时必填；返回后该条仍保持未完成，等待当前会话验收。',
       },
       provider: {
@@ -106,14 +106,14 @@ export const subagentTool: ToolSpec = {
         type: 'string',
         description:
           '用户指定模型时填写：逐字使用运行上下文「已配置模型」清单中的 model 参数，并同时填写对应 provider。' +
-          '写在 task 正文里不生效，子 agent 不会自行切换模型。' +
+          '写在 task 正文中不生效，子 agent 不会自行切换模型。' +
           '不填 = 使用当前会话的模型（角色指定了模型时使用角色的模型）。只在新建时生效；外部 CLI 使用其自身的模型，填写会被拒绝。',
       },
       effort: {
         type: 'string',
         enum: [...EFFORT_ORDER],
         description:
-          '用户指定思考强度时填写，写在 task 正文里不生效。只作用于本次派发，新建与续接均可填写。' +
+          '用户指定思考强度时填写，写在 task 正文中不生效。只作用于本次派发，新建与续接均可填写。' +
           '不填 = 子 agent 使用角色的模型时取角色设定的档位，否则取模型配置中该模型的档位。' +
           '所用模型不支持该档位时派发被拒绝并列出可选档位；外部 CLI 按其命令行参数传入，没有该参数的 CLI 拒绝。',
       },

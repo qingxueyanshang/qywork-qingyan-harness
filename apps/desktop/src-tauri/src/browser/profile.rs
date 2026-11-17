@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(dir, PathBuf::from("qywork-home").join("browser").join("profiles").join("default"));
     }
 
-    /// 第二次占用必须被拒绝，而不是静默换一个目录。
+    /// 第二次占用必须被拒绝，而不是静默更换目录。
     ///
     /// `flock` 在同一进程内对两个独立打开的描述符同样互斥，因此单进程即可测试。
     #[test]

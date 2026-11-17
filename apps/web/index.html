@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <!-- viewport-fit=cover + 下面 CSS 里的 safe-area 变量，一起处理刘海屏与手势条 -->
+    <!-- viewport-fit=cover 与 CSS 中的 safe-area 变量配合，为刘海屏与手势条预留安全区域 -->
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1"
@@ -10,13 +10,13 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0c0c0d" media="(prefers-color-scheme: dark)" />
-    <!-- 手机端加到主屏后按独立应用运行 -->
+    <!-- 手机端添加到主屏幕后以独立应用方式运行 -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>qywork</title>
     <script>
       // 入口模块或其依赖未能取得时，入口脚本元素触发 error（不冒泡，在捕获阶段监听）：
-      // 显示加载失败并在 3 秒后重新加载。不处理时页面停在空白，且外层页面无从得知。
+      // 显示加载失败并在 3 秒后重新加载。不处理时页面保持空白，外层页面也无法得知加载失败。
       addEventListener(
         'error',
         (e) => {

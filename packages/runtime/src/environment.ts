@@ -37,8 +37,8 @@ async function venvConfig(dir: string): Promise<Record<string, string> | null> {
 }
 
 /**
- * 工作区环境中 `pip` / `pip3` 的启动脚本：以本环境的解释器运行 `-m pip`，包装入本环境。
- * Windows 上同时写 `.cmd`（PowerShell 与 cmd 按 PATHEXT 解析）与无扩展名的 sh 脚本（Git Bash 只认后者）。
+ * 工作区环境中 `pip` / `pip3` 的启动脚本：以本环境的解释器运行 `-m pip`，安装的包位于本环境中。
+ * Windows 上同时写 `.cmd`（PowerShell 与 cmd 按 PATHEXT 解析）与无扩展名的 sh 脚本（Git Bash 只识别后者）。
  */
 function pipLaunchers(bin: string): { path: string; text: string }[] {
   const win = process.platform === 'win32'
@@ -177,7 +177,7 @@ export async function describeEnvironment(
       lines.push(
         venv
           ? `- Python ${version ?? ''}：auto 模式下包只能装入工作区环境 ${shown(venvDir)}，命令中的 python 与 pip 即该环境，` +
-              `继承 ${prefix} 的全部包；装入后之后的命令与会话可直接导入，装入的命令行工具在 PATH 最前。全局环境不可写入。`
+              `继承 ${prefix} 的全部包；装入后，后续的命令与会话可直接导入，装入的命令行工具位于 PATH 最前。全局环境不可写入。`
           : `- Python：${python}。工作区环境 ${shown(venvDir)} 创建失败（${venvError ?? '未知原因'}），` +
               'auto 模式下无法安装 Python 包；命令中的 python 为该解释器。',
       )

@@ -34,7 +34,7 @@ export interface UsageEntry {
 /**
  * 记录一笔账目。
  *
- * 同一个 run 重复记账会被唯一索引拦截；此处**忽略该冲突**而不是抛错：
+ * 同一个 run 重复记账会被唯一索引拦截；此处**忽略该冲突**而不是抛出异常：
  * 账本是旁路记账，不应使一个已执行完毕的 run 在收尾时失败。
  * 但结果必须可见，因此返回是否实际写入。
  */
@@ -71,12 +71,12 @@ export function recordUsage(store: Store, entry: UsageEntry): boolean {
     // （收尾逻辑执行两次时不应使账目翻倍）。
     //
     // 写成 `catch {}` 会忽略**所有**错误：为 kind 新增值
-    // 而 schema 上的 CHECK 约束未同步修改时，插入直接抛错，此处 return false 且不报告，
+    // 而 schema 上的 CHECK 约束未同步修改时，插入直接抛出异常，此处 return false 且不报告，
     // 结果是开销照常发生、账本中没有任何记录，且任何地方都不报错。
     //
     // 因此只忽略这一种，其余一律报告。
-    // 仍然不抛错：账本是旁路记账，不应使一个已执行完毕的 run 在收尾时失败；
-    // 不抛错不等于不报告。
+    // 仍然不抛出异常：账本是旁路记账，不应使一个已执行完毕的 run 在收尾时失败；
+    // 不抛出异常不等于不报告。
     const msg = err instanceof Error ? err.message : String(err)
     if (!/UNIQUE constraint failed/i.test(msg)) {
       log.error('usage', `记账失败：${msg}`, { kind: entry.kind })
@@ -316,7 +316,7 @@ export function pruneUsage(store: Store, before: number): number {
  * `headroom` 一层，此处只需覆盖常见情况；超出预算的那次会被截断作废检查捕获，
  * 并作为一个更大的样本进入下一次的分布。
  *
- * 没有任何观测时返回 null（冷启动），调用方退回仅使用 headroom。
+ * 没有任何观测时返回 null（冷启动），调用方改为仅使用 headroom。
  */
 export function summaryOutputPercentile(
   store: Store,

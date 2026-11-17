@@ -126,7 +126,7 @@ export function requestItems(
     stepsByRun.set(runId, steps)
     return steps
   }
-  /** 同一单元、同一消息、同一状态的分组估算只算一次：上一次请求的单元绝大部分与本次相同。 */
+  /** 同一单元、同一消息、同一状态的分组估算只计算一次：上一次请求的单元绝大部分与本次相同。 */
   const estimates = new Map<string, ContextBreakdown>()
 
   const rebuild = (x: ProviderRequest): Rebuilt => {

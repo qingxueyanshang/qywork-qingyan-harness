@@ -37,7 +37,7 @@ test('MCP 服务在握手阶段不回复时，stop 立即中止握手并终止�
   const workspace = join(root, 'workspace')
   await mkdir(home)
   await mkdir(workspace)
-  // 启动后写入自身 pid，之后不读取标准输入，`initialize` 永远得不到回复。
+  // 启动后写入自身 pid，之后不读取标准输入，`initialize` 始终不会收到回复。
   const server = join(root, 'hang.ts')
   const pidFile = join(root, 'hang.pid')
   await writeFile(
@@ -115,7 +115,7 @@ test('运行期间修改 MCP 配置后的刷新在握手阶段时，stop 同样�
       port: 0,
       host: '127.0.0.1',
     })
-    // 等启动时的加载完成（同一工作区的加载经同一把锁依次进行），再写入配置并刷新：之后的握手只由这次刷新发起。
+    // 先等待启动时的加载完成（同一工作区的加载经同一把锁依次进行），再写入配置并刷新：之后的握手只由这次刷新发起。
     await (await acquireExtensions(workspace)).stop()
     await writeFile(
       join(home, 'mcp.json'),

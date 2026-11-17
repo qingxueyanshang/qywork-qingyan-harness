@@ -1,7 +1,7 @@
 /**
  * 渠道商表：接口地址的主机名 → 渠道商。按渠道商处理的兼容差异（协议默认值、请求头、素材上传方式、错误码的含义、
  * 拉取时读取的渠道目录与提交格式）一律经 `channelVendorOf` 判定，不在各处另写主机名判断：
- * 分散的判断在渠道商更换域名时只会被改到其中一处。
+ * 分散的判断在渠道商更换域名时容易只修改其中一处。
  *
  * 只按接口地址判定，不按接口返回的字段或模型名推断：第三方接口可能返回与某渠道同名的字段，
  * 经第三方调用的模型名也与官方相同，按它们推断会套用不适用的格式。
@@ -26,7 +26,7 @@ export type ChannelVendor = (typeof CHANNEL_VENDORS)[number]
 
 /** 每个渠道商的主机名：字符串为完整主机名，正则匹配整个主机名。 */
 const HOSTS: Readonly<Record<ChannelVendor, readonly (string | RegExp)[]>> = {
-  // 百炼：旧的公共域名与按业务空间分配的 `*.maas.aliyuncs.com`。对话大媒体经 `oss://` 上传；生成协议默认值。
+  // 百炼：旧的公共域名与按业务空间分配的 `*.maas.aliyuncs.com`。对话中的大体积媒体经 `oss://` 上传；生成协议默认值。
   alibaba: [
     'dashscope.aliyuncs.com',
     'dashscope-intl.aliyuncs.com',

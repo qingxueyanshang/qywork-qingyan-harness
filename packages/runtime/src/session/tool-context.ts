@@ -158,7 +158,7 @@ export function makeToolContext(
     ...(session.opts.config.envAllowList ? { envAllowList: session.opts.config.envAllowList } : {}),
     ...(session.extraDirs.length ? { additionalDirectories: session.extraDirs } : {}),
     // 本轮技能索引中各技能的目录：其中的参考文档、模板与代码可读、不可写。
-    // 本会话的附件同样只读：附件是用户的显式授权（见 `withAttachments`），缩小发送的截图要用
+    // 本会话的附件同样只读：附件是用户的显式授权（见 `withAttachments`），缩小发送的截图需经
     // `read_file` 的 region 截取局部放大。内核沙箱生效的平台上，`~/.qywork` 中的附件与技能缺少这一条即无法读取。
     ...(readOnly.length ? { readOnlyRoots: readOnly } : {}),
     // 路径范围不在此处固定：`decide` 每次调用时读取模式，放行时一并给出。

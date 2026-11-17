@@ -24,7 +24,7 @@ import { IconWinClose, IconWinMax, IconWinMin } from './Icons.tsx'
 export function WindowControls() {
   const desktop = isDesktopShell()
   const [maximized, setMaximized] = createSignal(false)
-  /** 窗口操作失败时写入通知：按钮点击后没有任何变化时，用户无法区分失败与未点中。 */
+  /** 窗口操作失败时写入通知：按钮点击后没有任何变化时，用户无法区分操作失败与未点击到按钮。 */
   const failed = (e: unknown) =>
     setState('notice', {
       reason: 'window_action_failed',

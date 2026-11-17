@@ -24,7 +24,7 @@ export const migration055: Migration = {
    * `uq_permission_scope` 不允许一个工作区下有两条相同 scope 的规则，两行都有时保留最早一行的规则。
    */
   apply: (db) => {
-    // 迁移只执行一次，语句使用 `prepare` 并在用完后 `finalize`。不要换成 `db.query`：它将语句
+    // 迁移只执行一次，语句使用 `prepare` 并在用完后 `finalize`。不要改为 `db.query`：它将语句
     // 永久缓存在连接上，占用的缓存槽位会使后续「写入失败 → 读取 → 事务」序列之后的
     // `close()` 无法完全释放，主库文件在进程退出前一直被占用。
     const keeper = new Map<string, string>()

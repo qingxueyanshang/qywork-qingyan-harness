@@ -185,8 +185,8 @@ impl Outcome {
 
 /// 主路径等待动作调用返回的时长。
 ///
-/// 正常的控件调用在该时长内即可返回。它不是调用的上界：打开模态对话框的调用要等到
-/// 对话框关闭才返回。
+/// 正常的控件调用在该时长内即可返回。它不是调用的上界：打开模态对话框的调用在
+/// 对话框关闭之后才返回。
 const CALL_CONFIRM_MS: u64 = 400;
 /// 调用未按时返回时，用于查找可核实的生效证据的时长。
 ///
@@ -197,7 +197,7 @@ const CALL_EVIDENCE_MS: u64 = 1_400;
 const EVIDENCE_POLL_MS: u64 = 40;
 /// 尚未返回的动作调用线程上界。
 ///
-/// 达到上界即拒绝新动作：这表示目标应用已有该数量的调用未返回，再发出一次只会多一条阻塞的
+/// 达到上界即拒绝新动作：这表示目标应用已有该数量的调用未返回，再发出一次只会增加一条阻塞的
 /// 线程。每条线程在调用返回时自行退出，调用上界为其设定了期限。
 const MAX_PENDING_CALLS: u32 = 8;
 
@@ -235,7 +235,7 @@ pub fn spawn_call(job: Job) -> Option<Receiver<Result<(), String>>> {
 
 /// 发出一次可能不返回的调用，并在有限时间内确定执行事实。
 ///
-/// 先等待一个短确认时段；未等到时改为检查 `watch` 指定的可核实事实。有证据即 `submitted`，
+/// 先等待一个短确认时段；调用在该时段内未返回时改为检查 `watch` 指定的可核实事实。有证据即 `submitted`，
 /// 没有证据且调用仍未返回时为 `unknown`。
 pub fn dispatch_call(watch: &dyn Watch, job: Job) -> Attempt {
     let Some(rx) = spawn_call(job) else {
@@ -293,7 +293,7 @@ pub fn settled(limit: Duration, reached: impl Fn() -> bool) -> bool {
 
 /// 调用返回成功后再读取并核对一次目标值。
 ///
-/// 调用返回成功只说明对端已受理，窗口状态在对端处理完成后才改变。读取不到目标值时
+/// 调用返回成功只说明对端已受理，窗口状态在对端处理完成后才改变。未读取到目标值时
 /// 记为 `unknown`：状态可能仍在变化，记为失败会使调用方重发一次。
 pub fn confirm(attempt: Attempt, limit: Duration, reached: impl Fn() -> bool) -> Attempt {
     let Attempt::Called(outcome) = attempt else {
@@ -339,7 +339,7 @@ impl Probe {
     }
 }
 
-/// 轮询直到条件成立、不可能再成立（`target_gone`）、到期或被撤销。返回是否等到、未等到的
+/// 轮询直到条件成立、不可能再成立（`target_gone`）、到期或被撤销。返回条件是否成立、未成立的
 /// 原因，以及最后一轮读取的事实。
 ///
 /// `probe` 读取一轮事实，失败即整次等待失败：provider 不应答时再轮询一轮只会再等待一次超时。
@@ -390,7 +390,7 @@ pub enum Aimed {
 /// 目标窗口的模态对话框同样属于它，对话框覆盖控件时，点击落在对话框上。
 ///
 /// 按图像坐标定位：落点所在的顶层窗口必须就是图像中该点显示的窗口。图像显示目标窗口而此刻
-/// 弹出窗口覆盖该点，或图像显示弹出窗口而此刻落在其他窗口上，模型看到的都不是将要点击的界面。
+/// 弹出窗口覆盖该点，或图像显示弹出窗口而此刻落在其他窗口上，模型所见的都不是将要点击的界面。
 /// 弹出窗口的矩形是否未变由后端在此之前核对。
 pub fn lands_on_target(window: i64, hit_root: i64, hit_owner: i64, aimed: Aimed) -> bool {
     match aimed {
@@ -447,7 +447,7 @@ mod tests {
     }
 
     /// 图像中该点显示目标窗口而此刻弹出窗口覆盖该点，或图像中的弹出窗口已关闭、该点落在目标窗口或
-    /// 其他应用上，模型看到的都不是将要点击的界面，一律拒绝。
+    /// 其他应用上，模型所见的都不是将要点击的界面，一律拒绝。
     #[test]
     fn an_image_point_landing_elsewhere_than_the_image_shows_is_refused() {
         assert!(!lands_on_target(TARGET, POPUP, TARGET, Aimed::Image(None)));

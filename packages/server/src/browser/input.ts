@@ -6,7 +6,7 @@
  * 1. **按下状态只有一份记录。** 本地只记录本次动作按下的键（`Keyboard`），用于计算下一条事件的字段；
  *    页面上可能仍处于按下状态的键以 `CdpClient` 的按下表为准，收尾与回执只以该表为准。
  * 2. **按住时长由服务端计时。** 本地定时器计满时长后再发送下一条事件，不在事件的 `timestamp`
- *    中填写将来的时间；定时等待在客户端取消或断开时立即结束，不等满按住时长。
+ *    中填写将来的时间；定时等待在客户端取消或断开时立即结束，不等待按住时长结束。
  * 3. **不补发。** 某一段延迟时按实际时间推后发送，不将后续各段的按下与抬起集中补发。
  */
 
@@ -148,7 +148,7 @@ export class Execution {
   }
 }
 
-/** 等满 `ms` 返回 `true`；信号置位时立即返回 `false`。 */
+/** 等待 `ms` 结束后返回 `true`；信号置位时立即返回 `false`。 */
 function pause(signal: AbortSignal, ms: number): Promise<boolean> {
   return new Promise((resolve) => {
     if (signal.aborted) {

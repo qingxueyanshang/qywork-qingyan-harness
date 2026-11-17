@@ -147,7 +147,7 @@ function upperNameSet(names: readonly string[] | undefined): Set<string> {
  * 从环境变量中剥离凭证。返回新对象，不修改入参。
  *
  * 判据优先级：值命中 > 白名单 > 变量名模式。白名单只能豁免最后一条：
- * 变量的值就是用户的 DeepSeek key 时，变量名无关紧要。
+ * 变量的值为用户的 DeepSeek key 时，变量名无关紧要。
  */
 export function scrubEnv(
   env: Record<string, string | undefined>,
@@ -211,7 +211,7 @@ export function redactSecrets(text: string, secrets: SecretSet): string {
  * 下一次请求发给 provider：这些明文本地未知，按值匹配在结构上无法检出。
  *
  * 按形状可以检出：私钥有固定的 PEM 起止行，主流服务的 token 有固定前缀。
- * 这一层不需要预先知道值，这是它存在的理由。
+ * 这一层不需要预先得知值，这是它存在的理由。
  *
  * 不做通用的高熵字符串检测：那会把 commit sha、base64 资源、UUID、
  * minified 代码全部替换为 [REDACTED]，输出不可读，模型无法解析输出便会反复重试。
@@ -229,7 +229,7 @@ export function redactByShape(text: string): string {
  * 凭证的形状。导出供测试与文档使用。
  *
  * 每条都要求前缀之后有足够长的内容：只匹配前缀时，「把 key 放进 sk- 开头的
- * 变量里」这类说明文字也会被屏蔽，读起来像输出损坏。
+ * 变量里」这类说明文字也会被屏蔽，文字因此残缺。
  */
 export const CREDENTIAL_SHAPES: readonly { name: string; pattern: RegExp }[] = [
   {
@@ -256,7 +256,7 @@ export const CREDENTIAL_SHAPES: readonly { name: string; pattern: RegExp }[] = [
  *
  * 因此每个分片都保留一段末尾暂不发出，长度取「最长 secret 减一」：任何跨界的 secret
  * 必有一部分落在这段末尾中，与下一片合并处理。保留的字节数是常数级的
- * （一个 key 几十个字符），代价可以忽略。
+ * （一个 key 数十个字符），代价可以忽略。
  *
  * 顺序必须是先脱敏、再切出末尾。先按位置切分、再对前半段脱敏时，恰好跨过切点的
  * secret 的前半部分会被当作安全内容原样发出。实测：逐字符输入一个 32 字符的 key，
@@ -265,7 +265,7 @@ export const CREDENTIAL_SHAPES: readonly { name: string; pattern: RegExp }[] = [
  * 先对整个缓冲脱敏后，缓冲中不可能再有完整的 secret，末尾最多是不完整的前缀。
  * 这段末尾与下一片合并处理，重复脱敏是幂等的。
  *
- * `flush()` 交出最后保留的末尾。不调用 flush 会静默丢弃输出末尾，
+ * `flush()` 返回最后保留的末尾。不调用 flush 会静默丢弃输出末尾，
  * 因此调用方必须在流结束后调用一次。
  */
 export function createStreamRedactor(secrets: SecretSet): {
@@ -301,7 +301,7 @@ export function createStreamRedactor(secrets: SecretSet): {
       const buf = redactSecrets(carry + chunk, secrets)
 
       /*
-       * PEM 块必然跨越分片（私钥有几十行），`hold` 的长度不足以覆盖。
+       * PEM 块必然跨越分片（私钥有数十行），`hold` 的长度不足以覆盖。
        * 检出未闭合的起始行后，从该位置起整段保留，直到 END 行到达，按形状脱敏才能匹配整块。
        *
        * 必须设上限：命令输出中出现一个始终没有 END 的 `-----BEGIN … KEY-----`
@@ -316,11 +316,11 @@ export function createStreamRedactor(secrets: SecretSet): {
 
       /*
        * 需要保留的是可能含有 secret 前半部分的那一段，而已完整的行不可能含有：
-       * 有界形状与已知明文都不跨行（`spansLines` 为真时此前提不成立，退回按字节保留）。
+       * 有界形状与已知明文都不跨行（`spansLines` 为真时此前提不成立，改为按字节保留）。
        * 因此切点取「最后一个换行之后」与「末尾 hold 字节之前」中较靠后的位置。
        *
-       * 不要退回为只按字节保留：`hold` 是 256 字节，一条每秒输出一行七个字节的命令
-       * 在执行完毕之前无法交出任何内容，中途输出完全失效，界面上的卡片一直为空直到结束
+       * 不要改为只按字节保留：`hold` 是 256 字节，一条每秒输出一行七个字节的命令
+       * 在执行完毕之前无法输出任何内容，中途输出完全失效，界面上的卡片一直为空直到结束
        * （实测：输出 12 行 87 字节的命令，全部输出合并为一条 `tool.delta` 在结束时才到达）。
        */
       const nl = spansLines ? -1 : buf.lastIndexOf('\n')

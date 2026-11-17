@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// 官网服务器同步的 GitHub 最新正式版本的更新清单，其中的下载地址指向同一服务器。
-/// 公开发布后最多 10 分钟才同步到这里，同步之前清单中仍是已同步的版本。
+/// 公开发布后最多 10 分钟才同步到该服务器，同步之前清单中仍是上一次同步的版本。
 const ENDPOINT: &str = "https://qywork.io/download/latest.json";
 const CHECK_INTERVAL: u64 = 6 * 60 * 60 * 1000;
 

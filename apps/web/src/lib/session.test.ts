@@ -38,7 +38,7 @@ describe('页面状态的刷新恢复', () => {
     expect(sessionSignal('t.a', 1)[0]()).toBe(7)
   })
 
-  test('设值在 pagehide 之前不写入 sessionStorage，之后的同键信号读到最近的值', () => {
+  test('设值在 pagehide 之前不写入 sessionStorage，之后的同键信号取得最近的值', () => {
     const [get, set] = sessionSignal('t.b', 0)
     set(3)
     set((v) => v + 1)

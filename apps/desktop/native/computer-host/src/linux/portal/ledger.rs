@@ -187,7 +187,7 @@ impl Ledger {
     /// 生效的会话 `handle` 是否首次投递指针事件。是首次时记录并返回真。
     ///
     /// 合成器在一个会话首次投递指针事件时才创建该会话的虚拟指针设备，应用在合成器通告指针能力、
-    /// 且应用绑定指针之后才能收到事件；在此之前投递的移动与按键，应用收不到。
+    /// 且应用绑定指针之后才能收到事件；在此之前投递的移动与按键，应用不会收到。
     pub fn first_pointer(&mut self, handle: &str) -> bool {
         match self.active.as_mut() {
             Some(session) if session.handle == handle && !session.pointer_used => {

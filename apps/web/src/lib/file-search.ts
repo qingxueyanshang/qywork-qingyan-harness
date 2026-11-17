@@ -8,8 +8,8 @@ import { client, explainApiError } from './store/index.ts'
 export type OfficeFormat = 'xlsx' | 'pptx' | 'docx'
 
 /**
- * 交给服务端的筛选：`kinds` 按画布文件类别判定，`office` 按预览分类判定。
- * 只返回这类文件，查询为空时返回这类的全部文件，受服务端的条数上限约束。
+ * 发送给服务端的筛选条件：`kinds` 按画布文件类别判定，`office` 按预览分类判定。
+ * 服务端只返回该类文件，查询为空时返回该类的全部文件，受服务端的条数上限约束。
  */
 export type FileFilter =
   | { readonly kinds: readonly CanvasFileKind[] }
@@ -30,7 +30,7 @@ export function createFileSearch(
   let seq = 0
   let timer: ReturnType<typeof setTimeout> | undefined
 
-  /** 只采用最后一次输入的结果；输入为空时列出这类的全部文件。 */
+  /** 只采用最后一次输入的结果；输入为空时列出该类的全部文件。 */
   const search = (text: string) => {
     clearTimeout(timer)
     const mine = ++seq

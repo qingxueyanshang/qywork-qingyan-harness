@@ -2,7 +2,7 @@
  * `resource-gc-race.test.ts` 的子进程入口：四种角色各启动一个操作系统进程，共享同一对数据库文件。
  *
  * 单进程内无法构造这一竞争。锁顺序是同步代码，同一个线程中两个连接只能排队：
- * 持锁的一侧停在回调中，遇到锁冲突的一侧只能阻塞到 `busy_timeout` 上限。
+ * 持锁的一侧停留在回调中，遇到锁冲突的一侧只能阻塞到 `busy_timeout` 上限。
  * 因此写入方、回收方、主库写入方各占一个进程，用 HTTP 屏障对齐开始时刻。
  *
  * 角色由 `QY_RACE_MODE` 选择，参数经由环境变量而不是位置参数传递：Windows 的命令行转义
@@ -56,7 +56,7 @@ const content = new ContendedContentStore(contentPathFor(dbPath))
 try {
   if (mode === 'land') {
     const sink = new RuntimeSink(store, content, runId)
-    // 正文在屏障之前构造完成：屏障放行之后的第一个操作必须是 put，否则占锁窗口会被生成耗时稀释。
+    // 正文在屏障之前构造完成：屏障放行之后的第一个操作必须是 put，否则占锁窗口中会包含生成正文的耗时。
     const bodies = Array.from({ length: count }, (_, i) => makeBody(i))
     await waitAtBarrier()
     const startedAt = Date.now()

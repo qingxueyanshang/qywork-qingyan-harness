@@ -14,7 +14,7 @@ GitHub 令牌，直接调用仓库接口。该脚本在 `.tmp/` 下、不入库�
 1. 确认前一版本已公开（见 [前一版本未发布时不升版本号](version-bump-only-after-publish.md)）。
 2. 写 `.github/release-notes/v<版本>.md`，修改 `VERSION` 后执行 `bun run version:sync`，`bun run gate` 通过后
    提交 `chore(release): 发布 <版本>` 并推送 master。不需要手动打标签。
-3. 对 `release-windows.yml`、`release-macos.yml`、`release-linux.yml` 各发一次
+3. 对 `release-windows.yml`、`release-macos.yml`、`release-linux.yml` 各发送一次
    `POST /actions/workflows/<文件>/dispatches`，请求体 `{"ref":"master"}`；工作流只接受 master。
 4. 三端成功后各自上传到同一个草稿 Release（18 个附件，含 `latest.json`）。核对附件与 `latest.json` 的版本后，
    `PATCH /releases/<id>`，请求体 `{"draft":false,"make_latest":"true"}`；公开时 GitHub 按草稿的提交创建标签。
@@ -34,7 +34,7 @@ GitHub 令牌，直接调用仓库接口。该脚本在 `.tmp/` 下、不入库�
   （仅限该平台的代码或测试，例如 `#[cfg(windows)]`）。v0.3.10 实测：Windows 门禁两次因按真实时间断言的用例失败，
   修复后单独重新触发 Windows，公开时把标签指向最终提交。
 - 公开后不要在前台运行 `verify-desktop-release.ps1`：它下载全部 18 个附件（约 400 MB），本机到 GitHub 下载约 50–70 KB/s，
-  需要两小时以上。run_command 只在无输出且进程不占用 CPU、不读写磁盘时才终止，下载一直写盘，命令不会超时；
-  输出又重定向到文件时界面没有任何进展，用户只看到一直在运行（v0.3.7 卡了 79 分钟，由用户中断）。
+  需要两小时以上。run_command 只在无输出且进程不占用 CPU、不读写磁盘时才终止，下载持续写入磁盘，命令不会超时；
+  输出又重定向到文件时界面没有任何进展，只显示运行中（v0.3.7 停滞了 79 分钟，由用户中断）。
   公开前后的核对改为不下载安装包：附件清单与前一个公开版本相同、全部 `uploaded`；只下载 `latest.json` 核对版本、链接与签名；
-  公开后对各安装包的下载地址发 HEAD 请求确认可访问。
+  公开后对各安装包的下载地址发送 HEAD 请求确认可访问。

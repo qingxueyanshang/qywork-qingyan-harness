@@ -66,7 +66,7 @@ export interface Extensions {
   team: WorkspaceTeamConfig
   mcp: Omit<McpRegistry, 'stopAll'>
   mcpConfig: ScopedMcpConfig
-  /** 插件与 MCP 一起贡献的工具规格，已按名去重。由会话注册进自己的表。 */
+  /** 插件与 MCP 一起贡献的工具规格，已按名去重。由会话注册到其工具表。 */
   toolSpecs: ToolSpec[]
   /** 关闭本份扩展持有的全部子进程。 */
   stop(): Promise<void>

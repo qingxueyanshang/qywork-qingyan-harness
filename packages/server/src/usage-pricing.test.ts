@@ -9,7 +9,7 @@
  *
  * 本测试必须经由完整链路：五处中任何一处未接通时，界面上仍可修改且显示为已修改，
  * 而账本中仍是内置价格，即一条有生产者而无消费者的链路，且不报任何错误。
- * 只测 `applySpecOverride` 等于只验证该函数被调用。
+ * 只测试 `applySpecOverride` 等于只验证该函数被调用。
  */
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'

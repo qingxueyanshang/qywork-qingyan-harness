@@ -2,8 +2,8 @@
  * 网络访问的 SSRF 防护。
  *
  * **这是 agent 网络访问工具的前置条件，不是额外加固。** agent 会用模型生成的 URL 发出请求，
- * 这些 URL 可能来自模型读到的网页内容、用户粘贴的文本，或纯属臆造。不拦截内网地址，
- * 就等于把 SSRF 能力直接交给模型：
+ * 这些 URL 可能来自模型读取到的网页内容、用户粘贴的文本，或由模型臆造。不拦截内网地址时，
+ * 模型可以访问以下目标：
  *
  * - `169.254.169.254`：云厂商的元数据端点，一次请求即可取得实例凭证。
  * - `127.0.0.1` / `localhost`：本机上运行的其他服务，包括 qy 自身的 API。
@@ -12,7 +12,7 @@
  * **三个易遗漏的环节**：
  * 1. **重定向后必须重新校验。** 只检查首个 URL 无法拦截 `http://evil.com` 302 到
  *    `http://169.254.169.254`。因此 fetch 必须手动跟随重定向，每一跳都重新检查。
- * 2. **必须按解析后的 IP 判定，不能只看主机名。** `metadata.evil.com` 的 A 记录可以
+ * 2. **必须按解析后的 IP 判定，不能只检查主机名。** `metadata.evil.com` 的 A 记录可以
  *    指向 169.254.169.254，DNS 由攻击者控制。
  * 3. **IPv6 的等价写法**：`::1`、`::ffff:127.0.0.1`（IPv4 映射地址）、
  *    `fc00::/7`（唯一本地地址）都必须拦截。只匹配 `127.0.0.1` 字符串的检查无效。
@@ -95,7 +95,7 @@ async function resolveWithTimeout(host: string, timeoutMs: number): Promise<stri
  * 校验一个 URL 是否允许请求。
  *
  * 需要 DNS 解析，因此是异步函数。**返回的 `resolved` 应当用于实际连接**：
- * 校验时与连接时各解析一次，两次之间的间隔就是 DNS 重绑定攻击的入口。
+ * 校验时与连接时各解析一次，两次之间的间隔即为 DNS 重绑定攻击的入口。
  */
 export async function checkUrl(raw: string, opts: SafetyOptions = {}): Promise<SafetyVerdict> {
   let url: URL
@@ -377,8 +377,8 @@ export async function safeFetch(
 
       // 跨源跳转必须丢弃 authorization。
       //
-      // 否则任何能让 agent 打开 URL 的人都能窃取凭证：请求
-      // api.example.com（带 token）→ 对方返回 302 到 evil.com → 凭证随之发出。
+      // 保留时凭证会发往其他源：请求 api.example.com（带 token），
+      // 对方返回 302 到 evil.com，凭证随重定向发出。
       // 浏览器默认执行此处理；这里手动跟随重定向，因此必须自行处理。
       if (originOf(next) !== origin) extraHeaders = dropAuth(extraHeaders)
 
@@ -480,7 +480,7 @@ function pinToAddress(
  *
  * 不能只删除 `authorization` / `cookie`：凭证同样常见于 `x-api-key` 等自定义头，
  * 插件的 net.fetch 即如此使用。因此采用白名单，名单之外的头一律丢弃：
- * 逐条枚举凭证头无法列全，而跨源之后值得保留的头本来就很少。
+ * 逐条枚举凭证头无法列全，而跨源之后需要保留的头数量很少。
  */
 const CROSS_ORIGIN_KEEP = new Set(['accept', 'accept-language', 'user-agent', 'content-type'])
 

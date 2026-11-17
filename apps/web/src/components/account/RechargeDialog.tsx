@@ -126,7 +126,7 @@ export default function RechargeDialog(props: { onClose: () => void; pollMs?: nu
         props.onClose()
       }}
       onKeyDown={(e) => {
-        // Escape 只关闭本窗口，不把后面的账号窗口一起关闭。
+        // Escape 只关闭本窗口，不关闭下层的账号窗口。
         if (e.key === 'Escape') e.stopPropagation()
       }}
     >

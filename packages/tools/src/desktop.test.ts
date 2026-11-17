@@ -529,7 +529,7 @@ describe('没有端口与已停止', () => {
 })
 
 describe('参数错误的回执给出正确写法', () => {
-  /** 原始失败形状：DeepSeek 每次右键都先写成 rightclick，第二次又给 click 加了 point。 */
+  /** 原始失败形状：DeepSeek 每次右键都先写成 rightclick，第二次又为 click 添加了 point。 */
   test('无法识别的动作名包含某个动作的全名时，给出该动作及其参数', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
@@ -551,7 +551,7 @@ describe('参数错误的回执给出正确写法', () => {
     expect(unrelated.message).toContain('action 只能是 invoke')
   })
 
-  test('多给了参数时列出该动作接受的参数', async () => {
+  test('提供多余参数时列出该动作接受的参数', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -1252,7 +1252,7 @@ describe('三态回执与动作后观察', () => {
   })
 
   /**
-   * 成败只看执行事实：重读失败不改变已提交的动作。
+   * 成败只按执行事实判定：重读失败不改变已提交的动作。
    *
    * 原始失败形状：对菜单窗口按 Escape，菜单关闭后重读得到 target_lost，回执却记为失败。
    */
@@ -2324,9 +2324,9 @@ describe('前台动作', () => {
 
   /**
    * 原始失败形状：截取菜单窗口之后按 Escape，回执要求先观察。投递给窗口焦点不按控件表判定：
-   * 是否看过该窗口由协调器核对，窗口能否接收输入由宿主判定。
+   * 是否观察过该窗口由协调器核对，窗口能否接收输入由宿主判定。
    */
-  test('只截过图、只读取过子树或窗口根未列出键盘动作时，不指定控件的输入照常交给端口', async () => {
+  test('只采集过图像、只读取过子树或窗口根未列出键盘动作时，不指定控件的输入照常交给端口', async () => {
     const { windowRoot: _root, ...子树根 } = 自绘窗口
     for (const table of [null, [{ ...子树根, ref: 'e4' }], FOREGROUND_TABLE]) {
       const { port, calls } = fakeDesktop({
@@ -2918,7 +2918,7 @@ describe('前台动作', () => {
         actionId: 'da_7',
         reason: 'input_partial: 12 个输入事件只发出了 4 个，已发出的部分可能已经生效',
         observation: null,
-        observationError: '目标窗口读不回来',
+        observationError: '目标窗口无法读取',
       }),
     })
     const r = await run(
@@ -3093,7 +3093,7 @@ describe('有限动作序列', () => {
               over.observationError ??
               (dispatch === 'not_dispatched'
                 ? '动作没有派发，上一份观察仍然有效'
-                : '目标窗口此刻读不动'),
+                : '目标窗口此刻无法读取'),
           }
         }
         if (over.observation) adopt(over)
@@ -3185,10 +3185,10 @@ describe('有限动作序列', () => {
         }
       },
       readText: async () => {
-        throw new Error('这一步不读文本')
+        throw new Error('本步骤不读取文本')
       },
       wait: async () => {
-        throw new Error('这一步不等待')
+        throw new Error('本步骤不等待')
       },
       release: async () => {},
     }
@@ -3639,7 +3639,7 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('宿主不可用')
   })
 
-  /** 最后一步之后没有重读：没有未执行的步骤，成败只看执行事实。 */
+  /** 最后一步之后没有重读：没有未执行的步骤，成败只按执行事实判定。 */
   test('最后一步之后无法读取控件表时仍记为成功', async () => {
     const { port, calls } = sequencePort({
       acts: [null, { observation: null, observationError: 'target_lost' }],
@@ -3843,7 +3843,7 @@ describe('有限动作序列', () => {
     expect(second.ref).toBe('e77')
   })
 
-  test('目标歧义时停在该步骤，候选按祖先路径列出', async () => {
+  test('目标歧义时停止于该步骤，候选按祖先路径列出', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3924,7 +3924,7 @@ describe('有限动作序列', () => {
     const failing: DesktopPort = {
       ...port,
       act: async () => {
-        throw new Error('连接断了')
+        throw new Error('连接已断开')
       },
     }
     const r = await run(
@@ -4159,7 +4159,7 @@ describe('可选参数填写空值', () => {
 /**
  * 原始失败形状：资源管理器隐藏了已知扩展名，重命名框中只有「盘点草稿-0037」。模型在一个序列中执行
  * F2 → 输入「盘点终稿-0037.txt」→ 回车，输入投递给窗口，回执只说明「已执行」，文件变为 `.txt.txt`。
- * 回执必须给出输入框在输入前后的值，模型才能看到框中原本没有扩展名。
+ * 回执必须给出输入框在输入前后的值，模型才能判断框中原本没有扩展名。
  */
 describe('type_text 回执中的输入框原值与现值', () => {
   const 改名窗口: DesktopElement = {

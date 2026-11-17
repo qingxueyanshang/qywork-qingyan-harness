@@ -5,7 +5,7 @@
  * 不变量：
  * - 只有一套。文件不存在即默认值，恢复默认即删除整个目录。
  * - 校验先于落盘：内容、图片文件名与引用关系全部通过后才写入，任何一项不通过都不改动磁盘。
- * - `personalization.json` 先写临时文件再重命名，读方只会读到完整的旧文件或新文件。
+ * - `personalization.json` 先写临时文件再重命名，读取方只会读取到完整的旧文件或新文件。
  * - 目录中只保留当前引用的图片：换图后旧图片随同一次保存删除，目录不随修改次数增长。
  */
 
@@ -21,7 +21,7 @@ import {
 } from '@qywork/core'
 import { configDir } from '../config.ts'
 
-/** 单张图片的上限。背景图按窗口尺寸显示，超过该值的图片不带来可见差异，只拖慢首帧。 */
+/** 单张图片的上限。背景图按窗口尺寸显示，超过该值的图片不带来可见差异，只延迟首帧显示。 */
 export const PERSONAL_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 
 const FILE = 'personalization.json'
@@ -51,7 +51,7 @@ function isImageFile(name: string): boolean {
 
 /**
  * 读取个性化。文件不存在时返回默认值；无法解析或校验失败时返回错误而不是默认值：
- * 手动修改出错的文件需要能被看到；返回默认值时界面显示默认外观，且不给出任何原因。
+ * 手动修改出错的文件须显示其错误；返回默认值时界面显示默认外观，且不给出任何原因。
  */
 export async function readPersonalization(): Promise<PersonalizationRead> {
   const file = join(personalizationDir(), FILE)

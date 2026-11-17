@@ -9,7 +9,7 @@ import { interrupt, isRunning, resumeGoal, state } from '../lib/store/index.ts'
  *
  * - `blocked` 必须原样显示理由。后端强制每一次 blocked 都附带理由
  *   （`run-control.ts` 的 `STOP_NOTE`、触发轮数上限的说明），界面不显示时，
- *   循环已经停止，而用户只看到「受阻」两个字。
+ *   循环已经停止，而界面上只有「受阻」二字，没有停止原因。
  * - `active` 但没有运行中的一轮，含义是「自动继续未开启」。**自动继续标记不落盘**
  *   （`server/runs.ts` 的 `GoalArm`：若落盘，失控后崩溃的循环会在下次
  *   启动时自动恢复运行），因此进程重启、会话恢复之后目标仍保留在账本中，但不会
@@ -44,7 +44,7 @@ function goalNote(goal: Goal, running: boolean): string {
  * 用户需要的两项信息都在这一行中：是否在运行，以及如何停止。
  *
  * **单行，且窄于输入框。** 空间不足时先截断目标正文，再截断状态，两处都有悬停提示。高度固定（B9）：
- * 状态文字长短不一，若由内容撑高，「停止」按钮的位置会移动。
+ * 状态文字长短不一，若高度由内容决定，「停止」按钮的位置会移动。
  */
 export function GoalChip() {
   const goal = () => state.goal
@@ -64,7 +64,7 @@ export function GoalChip() {
             <span class="goal-text truncate" data-tip={g().objective}>
               {g().objective}
             </span>
-            {/* 状态紧邻「停止」：用户读到运行状态后，紧接着应看到停止按钮。 */}
+            {/* 状态紧邻「停止」：用户查看运行状态后，紧接着应看到停止按钮。 */}
             <span
               class="goal-note truncate"
               classList={{ blocked: g().status === 'blocked' }}

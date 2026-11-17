@@ -213,7 +213,7 @@ export interface PageBorderBox {
   readonly y: number
   readonly width: number
   readonly height: number
-  /** 线画在矩形内侧（矩形为线的外缘，`offsetFrom` 为 `page`）或外侧（矩形为线的内缘，`offsetFrom` 为 `text`）。 */
+  /** 线绘制在矩形内侧（矩形为线的外缘，`offsetFrom` 为 `page`）或外侧（矩形为线的内缘，`offsetFrom` 为 `text`）。 */
   readonly inside: boolean
   readonly top: BorderLine | null
   readonly bottom: BorderLine | null

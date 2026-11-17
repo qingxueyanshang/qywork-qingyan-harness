@@ -81,7 +81,7 @@ describe('记账', () => {
     s.close()
   })
 
-  test('空账本返回 0 而不是抛错', () => {
+  test('空账本返回 0 而不是抛出异常', () => {
     const s = fresh()
     expect(usageTotals(s).entries).toBe(0)
     // 空账本是 `{}` 不是 `{USD: 0}`：无花费的区间不应出现币种标记。
@@ -284,7 +284,7 @@ describe('清理账目', () => {
  * 记账失败的可见性。
  *
  * 本组针对一类不报错的失败：为 `kind` 新增值而未同步 schema 上的 CHECK 约束时，
- * 插入直接抛错，而 `catch {}` 会将其与重复记账一并忽略。
+ * 插入直接抛出异常，而 `catch {}` 会将其与重复记账一并忽略。
  * 结果是功能全部正常、账本没有任何记录，且任何地方都不报错。
  */
 describe('记账失败必须报告', () => {
@@ -368,7 +368,7 @@ describe('按会话汇总账目', () => {
     expect(a.entries).toBe(2)
     expect(a.cost.USD).toBeCloseTo(0.014, 6)
 
-    // 清单必须能单独列出该笔，否则合计大于清单之和且无法看出差额来源。
+    // 清单必须能单独列出该笔，否则合计大于清单之和且无法判断差额来源。
     const rows = usageEntries(store, { conversationId: 'cv_a' })
     expect(rows.map((r) => r.kind).sort()).toEqual(['run', 'summary'])
     expect(rows.find((r) => r.kind === 'summary')?.runId).toBe(null)

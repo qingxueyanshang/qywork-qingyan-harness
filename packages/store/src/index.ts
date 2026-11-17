@@ -10,7 +10,7 @@
 export { ContentStore, contentPathFor } from './content.ts'
 // 主账本句柄
 export { type RunOwner, Store } from './db.ts'
-// 目标与自动继续：runtime 经由端口交给工具，server 在 run 结束处判定是否自动继续
+// 目标与自动继续：runtime 经由端口提供给工具，server 在 run 结束处判定是否自动继续
 export { createGoal, currentGoal, updateGoal } from './goals.ts'
 // 按需加载的外部工具：runtime 在装配工具表时读取、在 load_tool 成功后写入
 export { listLoadedTools, recordLoadedTools } from './loaded-tools.ts'
@@ -59,7 +59,7 @@ export {
   listConversationHistoryPage,
   listMessages,
 } from './repos/messages.ts'
-// 逐请求账
+// 逐请求账本
 export {
   latestAnchoredProviderRequest,
   latestSentProviderRequest,

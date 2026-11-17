@@ -135,7 +135,7 @@ export const NO_HOST_FAMILIES: HostFamilies = { local: [], names: [], language: 
 
 /**
  * 按主机字体族名的前缀为主机没有的字体名取替代字体；没有时为 `null`。名称按空格分词，只用 `local` 中的族名，返回该族名：
- * 1. 名称的前若干词（不含全部）正好是主机字体名时，取词数最少的一个（`Calibri Light Fake` 取 Calibri，`Yu Gothic UI X`
+ * 1. 名称的前若干词（不含全部）恰为主机字体名时，取词数最少的一个（`Calibri Light Fake` 取 Calibri，`Yu Gothic UI X`
  *    取 Yu Gothic，`等线 Fake` 取等线）；
  * 2. 否则取以「名称 + 空格」开头的主机字体中字母序（UTF-16 码元）第一个（`Courier` 取 Courier New，`Noto Serif CJK SC` 取
  *    Noto Serif CJK SC Medium，`Sitka` 取 Sitka Banner）。

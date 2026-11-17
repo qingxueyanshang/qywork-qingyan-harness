@@ -26,12 +26,12 @@
  *
  * **替换代码的判据是「文件已变化，且没有进行中的 run」。** 不要改为 `bun --watch`：它的判据只有文件 mtime，
  * 不感知进程是否有进行中的任务，因此保存一次源码即会中断正在运行的一轮。实测形状：
- * 账本中三条 run 因此中断，其中两条停在工具执行期间，整轮不可信（`recoverStaleRuns` 判定为
+ * 账本中三条 run 因此中断，其中两条中断于工具执行期间，整轮不可信（`recoverStaleRuns` 判定为
  * `internal_guard`）。agent 修改 qywork 自身源码时问题更严重：写完第一个文件即触发自身重启，
  * 其余文件尚未写入。
  *
  * 采用两条判据后，两个场景均正确：运行中的那一轮执行完毕后才替换代码，替换后的下一轮即为新代码。
- * 代价是从保存到生效多等一轮，这是该规则有意接受的取舍。
+ * 代价是从保存到生效需多等待一轮，这是该规则有意接受的取舍。
  */
 
 import { randomBytes } from 'node:crypto'
@@ -290,7 +290,7 @@ process.on('SIGTERM', () => void shutdown(0))
  *
  * **每次启动都必须监视**：不监视时 sidecar 崩溃无人察觉，界面无法连接后端，
  * 前端只显示「已 N 秒没有新数据」，停止按钮没有响应方，而窗口
- * 看似正常，用户不知道需要重启。换代时的退出由 supervisor 自身发起，它能够识别
+ * 外观正常，无从判断需要重启。换代时的退出由 supervisor 自身发起，它能够识别
  * （它正在 restart），不会重复启动。
  */
 function startAgent(): void {
@@ -320,7 +320,7 @@ process.stderr.write(
 supervisor = createReloadSupervisor({
   // 由服务端同时检查对话、子任务与画布生成，并阻止占位之后再启动任务。
   // sidecar 已退出时直接判定空闲：已退出的进程上没有运行中的任务，而向它请求必然失败，
-  // 按「无法确认」重排会使源码修好之后也不再重启。
+  // 按「无法确认」重排会使源码修复之后也不再重启。
   busy: async () =>
     agent.exitCode === null &&
     agent.signalCode === null &&
@@ -332,7 +332,7 @@ supervisor = createReloadSupervisor({
     pruneBuilds(REMOTE_WEB_ROOT, basename(servedWeb))
   },
   debounceMs: 300,
-  // 一轮执行通常需要几分钟，每两秒检查一次已足够频繁。
+  // 一轮执行通常需要数分钟，每两秒检查一次已足够频繁。
   idlePollMs: 2_000,
   setTimer: (fn, ms) => setTimeout(fn, ms),
   clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),

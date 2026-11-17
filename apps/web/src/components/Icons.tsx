@@ -9,7 +9,7 @@
  *    显得偏重，且在 13px 显示尺寸下过粗的线条会在拐角处粘连。
  * 2. **描边不随尺寸缩放**（`vector-effect: non-scaling-stroke`），
  *    16px 与 20px 下视觉粗细一致。
- * 3. **颜色恒为 currentColor**，由父级文字颜色决定，不在图标中写死颜色。
+ * 3. **颜色恒为 currentColor**，由父级文字颜色决定，不在图标中硬编码颜色。
  */
 
 import type { JSX } from 'solid-js'
@@ -443,7 +443,7 @@ export const IconPin = (p: IconProps) => (
   </Svg>
 )
 
-/** 归档：一个盖子与一只箱子。不使用向下箭头：向下箭头会被读作「下载」。 */
+/** 归档：一个盖子与一只箱子。不使用向下箭头：向下箭头会被理解为「下载」。 */
 export const IconArchive = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 5.6h16v3.2H4z" />
@@ -452,7 +452,7 @@ export const IconArchive = (p: IconProps) => (
   </Svg>
 )
 
-/** 删除：垃圾桶。与关闭用的 `IconX` 分开，避免把移除数据读成关闭浮层。 */
+/** 删除：垃圾桶。与关闭用的 `IconX` 分开，避免把移除数据理解为关闭浮层。 */
 export const IconTrash = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 6h16" />

@@ -146,11 +146,11 @@ describe('将指定的模型解析为接口与模型', () => {
 
   /** 选错接口会同时更换端点、key 与价目表且不报错，因此直接拒绝。 */
   test('同一模型 id 配置在两个接口下时拒绝，不按顺序选择', () => {
-    const 撞名 = {
+    const 重名 = {
       active: { provider: 'a', model: 'same' },
       providers: { a: { models: { same: {} } }, b: { models: { same: {} } } },
     } as unknown as QyConfig
-    const r = resolveModel('same', 撞名)
+    const r = resolveModel('same', 重名)
     expect('error' in r && r.error).toContain('同时指定 provider 与 model')
   })
 

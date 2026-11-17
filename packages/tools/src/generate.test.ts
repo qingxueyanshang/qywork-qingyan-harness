@@ -605,7 +605,7 @@ describe('generateMedia / landFiles', () => {
   })
 
   /**
-   * 走云端的出图与音频同样由适配器交出任务号。原始失败形状：只有视频的任务号写入任务记录，提交结果未知而查询也失败时，
+   * 经由云端的图片与音频生成同样由适配器返回任务号。原始失败形状：只有视频的任务号写入任务记录，提交结果未知而查询也失败时，
    * 报错写「仍可取回」，记录却在结束时被删除，无法取回。
    */
   test.each([
@@ -698,7 +698,7 @@ describe('generate_video 的参考音频', () => {
     await writeFile(join(root, 'a.png'), PNG)
     await writeFile(join(root, 'v.wav'), 'RIFF')
     await writeFile(join(root, 'v.txt'), 'x')
-    answer = { ok: false, message: '停在这里' }
+    answer = { ok: false, message: '在此终止' }
     await generateVideoTool.fn({ prompt: '说话', images: ['a.png'], audios: ['v.wav'] }, ctx(root))
     expect(calls[0]?.inputs.map((i) => [i.role, i.mime])).toEqual([
       ['reference', 'image/png'],
@@ -718,7 +718,7 @@ test('generate_audio 将有序 WAV 与 OGG Opus 参考音频交给统一生成�
   const root = await mkdtemp(join(tmpdir(), 'qy-audio-next-'))
   await writeFile(join(root, 'a.wav'), 'RIFF')
   await writeFile(join(root, 'b.opus'), 'OggS\0OpusHead')
-  answer = { ok: false, message: '停在这里' }
+  answer = { ok: false, message: '在此终止' }
   await generateAudioTool.fn(
     {
       text: '@voice1 和 @voice2 对话',
@@ -809,7 +809,7 @@ describe('工具卡片上的进度', () => {
   })
 
   /**
-   * 走云端的任务在云端一侧被上游拒绝后重试，取回时由云端任务的查询回报。原始失败形状：取回不接收重试回报，工具卡片不显示重试。
+   * 经由云端的任务在云端一侧被上游拒绝后重试，取回时由云端任务的查询回报。原始失败形状：取回不接收重试回报，工具卡片不显示重试。
    */
   test('retrieve_media 取回时显示远端一侧的重试', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-resume-retry-'))
@@ -832,7 +832,7 @@ describe('工具卡片上的进度', () => {
   })
 
   /**
-   * 原始失败形状：重试日志只有阶段与主机，同一执行中并行的几次生成无法区分，也对应不到工具调用。
+   * 原始失败形状：重试日志只有阶段与主机，同一执行中并行的多次生成无法区分，也无法对应到工具调用。
    * 三个生成工具与 retrieve_media 的调用带会话、执行、工具名与任务记录的路径（`MediaCall.logFields`）。
    */
   test('生成工具与 retrieve_media 的调用带会话、执行、工具名与任务记录路径的日志标识', async () => {

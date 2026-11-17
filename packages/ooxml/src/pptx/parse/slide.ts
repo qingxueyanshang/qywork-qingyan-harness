@@ -64,7 +64,7 @@ export interface RawPresentation {
   }[]
 }
 
-/** `embeddedFont` 中各字形元素的粗体与斜体。按元素名查表：不要改为普通对象，元素名为 `constructor` 等时取到原型属性。 */
+/** `embeddedFont` 中各字形元素的粗体与斜体。按元素名查表：不要改为普通对象，元素名为 `constructor` 等时取得原型属性。 */
 const EMBEDDED_STYLES: ReadonlyMap<string, readonly [bold: boolean, italic: boolean]> = new Map<
   string,
   readonly [boolean, boolean]

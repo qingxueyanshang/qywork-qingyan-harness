@@ -123,7 +123,7 @@ def read_formats(wanted) -> dict:
 
 
 def dib_image(data: bytes) -> Image.Image:
-    """CF_DIB（BITMAPINFO + 像素）补上文件头后由 Pillow 解码。"""
+    """CF_DIB（BITMAPINFO + 像素）补充文件头后由 Pillow 解码。"""
     hdr = struct.unpack_from("<I", data, 0)[0]
     bits = struct.unpack_from("<H", data, 14)[0]
     compression = struct.unpack_from("<I", data, 16)[0]

@@ -111,7 +111,7 @@ function readerAdapter(seen: ChatRequest[]): LlmAdapter {
   }
 }
 
-/** step 与压缩记录都写入真实数据库，使重放能看到压缩记录在 step 序列中的位置。 */
+/** step 与压缩记录都写入真实数据库，使重放能取得压缩记录在 step 序列中的位置。 */
 function persistence(store: Store, compactions: { count: number }): LoopPersistence {
   let seq = 0
   let requests = 0
@@ -561,10 +561,10 @@ describe('占用在 55% 至 80% 之间执行普通工具，历史不被替换', 
 })
 
 /**
- * 读取约为窗口 3 倍的文件：每段读完且模型已查看后，下一次压缩将该段整体收纳，下一段可读满余量。
+ * 读取约为窗口 3 倍的文件：每段读完且模型已查看后，下一次压缩将该段整体收纳，下一段可占满余量。
  * 已查看的超大段整体留在保留尾部时，续读段会大小交替，压缩次数翻倍。
  */
-describe('远大于窗口的文件每段都能读满', () => {
+describe('远大于窗口的文件每段都能占满余量', () => {
   test('只收纳不摘要，各段按行号首尾相接读取到末尾，除最后一段外每段至少占窗口的 40%', async () => {
     const window = 200_000
     const { stop, steps } = await readScript(window, [{ name: 'huge.txt', tokens: 3 * window }])

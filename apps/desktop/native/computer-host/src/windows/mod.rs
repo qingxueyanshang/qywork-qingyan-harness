@@ -394,7 +394,7 @@ impl Backend for Uia {
     /// **未派发时不重读**：重读结果会被调用方理解为动作已经发生。
     ///
     /// 不要改为只读取目标所在的子树：调用方取得的重读结果即为其当前观察，只读取一部分时，
-    /// 范围外的控件或者缺失，或者由调用方拼回旧节点，而旧节点的状态与可用动作
+    /// 范围外的控件或者缺失，或者由调用方以旧节点补全，而旧节点的状态与可用动作
     /// 仍是动作之前的值。
     fn act(
         &self,
@@ -461,12 +461,12 @@ impl Backend for Uia {
         let element = located.as_ref().map(|l| &l.element);
         match perform(window, element, action, aim, stop) {
             Attempt::Refused(reason) => refused(reason),
-            // 调用尚未返回：目标应用的 UI 线程阻塞于该调用，此时重读必然等满时间预算后超时。
+            // 调用尚未返回：目标应用的 UI 线程阻塞于该调用，此时重读必然在时间预算耗尽后超时。
             // 改为提供不经由 UIA 的事实，即目标进程当前的顶层窗口，调用方据此观察新出现的
             // 窗口。
             Attempt::Called(outcome) if !outcome.returned => {
                 // 定位到的元素同样不能在本线程上丢弃：释放代理也需要等待目标进程应答，
-                // 就地丢弃会等满 UIA 连接超时。
+                // 就地丢弃会等待至 UIA 连接超时。
                 if let Some(located) = located {
                     release_off_thread(located);
                 }
@@ -488,8 +488,8 @@ impl Backend for Uia {
 
     /// 对目标 provider 的连接执行一次排空调用。
     ///
-    /// 上一次动作调用仍未在目标应用中返回时，**该 provider 上的下一次 UIA 调用必定等到
-    /// 连接超时才返回，再下一次才恢复正常**（实测 2010 ms 失败、随后成功）。本函数的调用即承担
+    /// 上一次动作调用仍未在目标应用中返回时，**该 provider 上的下一次 UIA 调用必定在
+    /// 连接超时后才返回，再下一次才恢复正常**（实测 2010 ms 失败、随后成功）。本函数的调用即承担
     /// 这一代价，由 worker 在回执发出之后执行：留给调用方承担时，其下一次观察得到的
     /// 是一次本不应出现的超时失败。
     /// 前台的判据是两项事实：本次请求经 `SendInput` 注入了事件，或系统前台窗口转到了目标窗口。
@@ -547,7 +547,7 @@ impl Backend for Uia {
     }
 
     /// per-monitor v2 未设定成功时，窗口矩形经过系统虚拟化，采集的图像与控件包围盒不在同一坐标系中。
-    /// 返回坐标不一致的图像比不返回更糟，因此此处直接拒绝。
+    /// 返回坐标不一致的图像比不返回危害更大，因此此处直接拒绝。
     fn capture_image(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
         if !per_monitor_v2() {
             return Err(
@@ -954,7 +954,7 @@ impl Uia {
     /// 从缓存读取节点的属性。
     ///
     /// 选择容器的选中项（`selected_names`）与文本控件的可见文字（`visible_text`）实时读取，其余全部来自缓存。
-    /// 这两项读取失败时只缺这一项，`missing` 置真，见 `extra`。
+    /// 这两项读取失败时只缺少该项，`missing` 置真，见 `extra`。
     fn read_cached_node(
         &self,
         element: &IUIAutomationElement,
@@ -1126,7 +1126,7 @@ impl Uia {
             // 不要给窗口根添加「当前是系统前台窗口」的条件：一般窗口经窗口消息接收按键，不需要
             // 前台；系统输入窗口由定位前的 `foreground::prepare` 提升到前台再核对。添加该条件后，
             // 桌面这类没有 WindowPattern、无法先 activate 的窗口永远无法获得键盘动作，Win+I 这类
-            // 系统快捷键只能借用户正在使用的窗口发出。
+            // 系统快捷键只能借助用户正在使用的窗口发出。
             if focused || path.is_empty() {
                 actions.push(NodeAction::foreground("type_text"));
                 actions.push(NodeAction::foreground("press_key"));
@@ -1536,7 +1536,7 @@ fn cloaked(hwnd: HWND) -> bool {
 
 /// 首次读取一个窗口时两次读取之间的间隔。Edge 的无障碍树在首次请求后约 0.3 s 构建完成。
 const FIRST_READ_INTERVAL: Duration = Duration::from_millis(350);
-/// 首次读取一个窗口的最长时长。页面上有持续变化的元素时控件数不断变化，到时即返回最后一次的结果。
+/// 首次读取一个窗口的最长时长。页面上有持续变化的元素时控件数不断变化，到达该时长即返回最后一次的结果。
 const FIRST_READ_LIMIT: Duration = Duration::from_secs(2);
 
 /// 窗口所属进程号。无法读取时为 0。
@@ -2144,7 +2144,7 @@ fn process_windows(pid: u32) -> Vec<WindowInfo> {
 /// 将 UIA 接口交给另一条线程丢弃。
 ///
 /// **目标应用的 UI 线程阻塞于一次未返回的调用时，释放其代理需要等待该线程应答**：在执行线程上
-/// 丢弃会等满 UIA 连接超时，实测一个元素约两秒。本函数与动作调用共用同一份线程额度；
+/// 丢弃会等待至 UIA 连接超时，实测一个元素约两秒。本函数与动作调用共用同一份线程额度；
 /// 额度用尽时该封装就地丢弃，回退为等待目标进程应答。
 fn release_off_thread<T: 'static>(value: T) {
     let _ = backend::spawn_call(
@@ -2499,7 +2499,7 @@ fn read_document(
     count_call();
     let document = unsafe { pattern.DocumentRange() }.map_err(uia("取文档范围"))?;
     count_call();
-    // 多请求一个码元：返回的文本长于上限即说明后面还有内容。
+    // 多请求一个码元：返回的文本长于上限即说明其后还有内容。
     let raw = unsafe { document.GetText(i32::try_from(max_chars).unwrap_or(i32::MAX).saturating_add(1)) }
         .map_err(uia("读取文档文本"))?;
     let (text, truncated) = clip_utf16(&raw, max_chars);
@@ -2751,7 +2751,7 @@ mod tests {
     }
 
     /// 原始失败形状：后台点击记事本的编辑框之后 UIA 仍报告无焦点，带 ref 的输入被拒绝。
-    /// 控件自身窗口是目标线程的焦点窗口时视为持有焦点；没有自身窗口的控件只看 UIA。
+    /// 控件自身窗口是目标线程的焦点窗口时视为持有焦点；没有自身窗口的控件只检查 UIA 的报告。
     #[test]
     fn a_control_whose_window_has_the_thread_focus_holds_the_focus() {
         assert!(holds_focus(true, None, None));
@@ -2843,7 +2843,7 @@ mod tests {
             failure_code(TIMEOUT_HRESULT, true),
             Some("provider_timeout")
         );
-        // 窗口句柄已失效时超时码仍然优先：本次失败的成因是未等到应答。
+        // 窗口句柄已失效时超时码仍然优先：本次失败的成因是未收到应答。
         assert_eq!(
             failure_code(TIMEOUT_HRESULT, false),
             Some("provider_timeout")
@@ -3082,7 +3082,7 @@ mod tests {
     }
 
     /// 原始失败形状：微信中右键弹出的菜单列在主窗口的树中且排在子节点首位，其后兄弟节点的
-    /// 下标后移一位，动作后按局部范围重读报「第 1 层没有下标 0 的子节点」。有 RuntimeId 的控件
+    /// 下标后移一位，动作后按局部范围重读时报告「第 1 层没有下标 0 的子节点」。有 RuntimeId 的控件
     /// 按 RuntimeId 定位，子树读取以其当前路径生成 ref；控件已销毁时如实拒绝。
     #[test]
     fn a_control_whose_siblings_shift_is_located_by_its_runtime_id() {
@@ -3104,7 +3104,7 @@ mod tests {
             .into_iter()
             .map(|n| n.reference)
             .find(|r| decode_ref(r).is_ok_and(|p| p.identity == identity))
-            .expect("控件表中有先建的子窗口");
+            .expect("控件表中有先创建的子窗口");
         let recorded = decode_ref(&reference).expect("解码 ref");
 
         window.add();

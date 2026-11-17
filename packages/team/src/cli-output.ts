@@ -51,7 +51,7 @@ export function createCliOutput(agent: OutputSpec) {
     try {
       parsed = JSON.parse(line)
     } catch {
-      // jsonl 允许厂商横幅；缺少有效终态时仍会判失败，不把横幅当交付物。
+      // jsonl 允许厂商横幅；缺少有效终态时仍判定为失败，不把横幅视为交付物。
       return ''
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return ''
@@ -93,7 +93,7 @@ export function createCliOutput(agent: OutputSpec) {
             : deferred
               ? 'Claude 等待工具审批，任务尚未完成'
               : last('result') || `Claude 执行失败（${last('subtype') || '未知终态'}）`)
-      // success 但没有 result 的流也不算有最终产出，不能用之前的工具名补齐。
+      // success 但没有 result 的流也不视为有最终产出，不能用之前的工具名补齐。
       result = last(agent.resultField ?? 'result')
     } else if (agent.protocol === 'grok') {
       completed = event.stopReason === 'end_turn' && event.type !== 'error'

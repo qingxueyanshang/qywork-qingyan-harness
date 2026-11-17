@@ -119,7 +119,7 @@ test('1M 档设为 50：状态行、请求行、上下文事件与面板都是 5
       mainRequests(h.store, haiku.conversationId).map((r) => r.configuration?.compactAt),
     ).toEqual([160_000])
 
-    // 面板取请求行的触发线：设置改回 80 之后，本轮已显示的 50 万不变；下一轮的请求行写入后才显示新值。
+    // 面板取请求行的触发线：设置改为 80 之后，本轮已显示的 50 万不变；下一轮的请求行写入后才显示新值。
     const route = {
       id: 'claude-opus-5-5',
       contextWindow: 1_000_000,

@@ -3,7 +3,7 @@
  *
  * 插件只由 node 20 以上运行：只有 Node 的权限模型（`--permission`，20/22 上为
  * `--experimental-permission`）能限制插件进程的文件系统、子进程、worker 与原生插件。
- * PATH 中没有 node 或版本低于 20 时报错，插件不加载。不要加回 bun 或宿主自身作为备选：
+ * PATH 中没有 node 或版本低于 20 时报错，插件不加载。不要重新加入 bun 或宿主自身作为备选：
  * 两者没有权限模型，用它们运行等于插件不受隔离，而 auto 下模型可以自行安装插件。
  *
  * 不能使用 `process.execPath`：该路径是 Bun 运行时，属于上述没有权限模型的备选。
@@ -63,7 +63,7 @@ function probeNode(): { path: string; major: number; minor: number } | null {
   try {
     const out = Bun.spawnSync([path, '--version']).stdout.toString().trim()
     // 必须同时读取次版本号：`module.registerHooks` 自 22.15 / 23.5 起提供，
-    // 只看主版本会在 22.0 上安装不完整的网络访问限制，比不安装更糟。
+    // 只检查主版本会在 22.0 上安装不完整的网络访问限制，比不安装更糟。
     const m = /^v(\d+)\.(\d+)/.exec(out)
     nodeProbe = { path, major: Number(m?.[1] ?? 0), minor: Number(m?.[2] ?? 0) }
   } catch {

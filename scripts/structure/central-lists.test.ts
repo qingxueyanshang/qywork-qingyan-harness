@@ -43,7 +43,7 @@ describe('接口成员', () => {
     expect(interfaceMembers(sf, 'Other')).toBe(1)
   })
 
-  test('接口不存在时返回 null；类型别名不算接口', () => {
+  test('接口不存在时返回 null；类型别名不视为接口', () => {
     const sf = parse('export type Ctx = { a: string }')
     expect(interfaceMembers(sf, 'Ctx')).toBeNull()
   })

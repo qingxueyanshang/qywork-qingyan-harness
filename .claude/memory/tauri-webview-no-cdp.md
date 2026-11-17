@@ -1,6 +1,6 @@
 ---
 name: tauri-webview-no-cdp
-description: 桌面端 WebView2 连接 CDP 的方法：开发构建设置 QYWORK_WEBVIEW_DEBUG_PORT，另起隔离实例；环境变量与策略注册表都不生效
+description: 桌面端 WebView2 连接 CDP 的方法：开发构建设置 QYWORK_WEBVIEW_DEBUG_PORT，另行启动隔离实例；环境变量与策略注册表都不生效
 metadata: 
   node_type: memory
   type: project
@@ -17,7 +17,7 @@ metadata:
 - 用户策略注册表 `HKCU\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments`（值名 `qywork.exe`）也不生效。
 
 做法（不影响用户正在使用的实例，见 [[dev-edits-hit-the-running-app]]、[[qy-needs-isolated-home]]）：
-- 外壳另行构建到单独的 target 目录（如 `.tmp/cargo-target-verify`）：用户实例占用着 `.tmp/cargo-target` 中的 exe；
+- 外壳另行构建到单独的 target 目录（如 `.tmp/cargo-target-verify`）：用户实例正在占用 `.tmp/cargo-target` 中的 exe；
 - 自行启动服务端（`QYWORK_HOME` 指向 .tmp、`--cwd` 测试工作区、`--print-token`），外壳通过 `QYWORK_TOKEN` / `QYWORK_PORT` 连接它；
 - `WEBVIEW2_USER_DATA_FOLDER` 指向 .tmp 下的独立目录（这个环境变量生效），否则会与用户实例争用同一个数据目录；
 - 不设置 `QYWORK_HOST_KEY`，浏览器宿主与桌面宿主不启动；

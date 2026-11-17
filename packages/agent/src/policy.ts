@@ -20,7 +20,7 @@
  *   （参数守卫、前缀守卫、组合符号扫描、可疑码点检测）都服务于判定能否安全地跳过
  *   分类器。没有分类器，允许清单就没有存在理由。
  * - LLM 分类器不稳定：同一条命令连续运行两次给出相反结论，实测出现两次。
- *   上述四类拦截都能用确定性规则表达，不应交给概率判断。
+ *   上述四类拦截都能用确定性规则表达，不应由概率判断决定。
  * - 因此 `undecided` 没有消费者。不属于上述四类的命令即放行。
  *
  * 组合命令无需单独处理。硬拒绝的模式或锚定在命令位（`CMD_POS` 匹配 `;` `&&` `|` `{` 换行之
@@ -40,14 +40,14 @@
  * - 写入裸设备 `\\.\PhysicalDrive0`：`dd of=/dev/sda` 的 Windows 等价写法。
  * - PowerShell 的 fork 炸弹（`while ($true) { Start-Process pwsh }`）：
  *   表中的规则只匹配 bash 的 `:(){ :|:& };:` 形式。
- * - 拼接与转义：反引号、`-join`、`Invoke-Expression $x`。把命令拆成变量再拼接后，
+ * - 拼接与转义：反引号、`-join`、`Invoke-Expression $x`。把命令拆分为变量再拼接后，
  *   任何静态模式都无法识别。这与 bash 中的 `$(echo rm)` 属于同一类，不在本层的覆盖范围内。
  * - 不经 pip 的全局安装：`conda install`、Python 代码中调用 `subprocess` 运行 pip。
- * - 解释器代码中的文件操作：`python -c` 的参数、交给 python 等非 shell 程序的 heredoc 正文
+ * - 解释器代码中的文件操作：`python -c` 的参数、传给 python 等非 shell 程序的 heredoc 正文
  *   不按 shell 语法解析。其中的 `>` 是比较运算，`.mkdir()` 是方法调用，按 shell 语法解析会误判为写入。
  *
  * 前三条与第五条不补充，因为补充的只是又一种写法而不是这一行为本身，按写法枚举
- * 总会遗漏；第四条与第六条无法补充。实际的防线仍是沙箱，以及用户能看到每一条命令。
+ * 总会遗漏；第四条与第六条无法补充。实际的防线仍是沙箱，以及界面向用户显示每一条命令。
  */
 
 import { homedir } from 'node:os'
@@ -63,8 +63,8 @@ export interface PolicyContext {
    * 工作区之外额外允许的绝对路径（配置中的 `additionalDirectories`）。
    *
    * 本层必须读取它，否则三层的结论互相矛盾：路径层已放行、内核沙箱已 bind，
-   * 而静态规则仍按「家目录即越界」硬拒命令。用户配置了额外目录，
-   * 得到的却是「越界一律拒绝」的错误，而该说法此时已不成立。
+   * 而静态规则仍按「家目录即越界」拒绝命令。用户配置了额外目录后，
+   * 仍会收到「越界一律拒绝」的错误，而该说法此时已不成立。
    */
   additionalDirectories?: readonly string[]
   /**
@@ -122,7 +122,7 @@ const OUTSIDE_SYMBOLS: readonly { re: string; value: () => string }[] = [
   { re: '%SystemRoot%', value: () => process.env.SystemRoot ?? '' },
   { re: String.raw`\$env:windir`, value: () => process.env.windir ?? '' },
   { re: '%windir%', value: () => process.env.windir ?? '' },
-  // PowerShell 的启动脚本。字面上无法看出它位于家目录中，而写入它等于此后每次启动 shell 都会执行一次。
+  // PowerShell 的启动脚本。字面上无法判断它位于家目录中，而写入它等于此后每次启动 shell 都会执行一次。
   { re: String.raw`\$PROFILE\b`, value: () => '' },
   // 全局数据目录。子进程环境中保留了该变量；未设置时它在命令中展开为空串，按工作区外处理。
   { re: String.raw`\$\{?QYWORK_HOME\}?`, value: () => process.env.QYWORK_HOME ?? '' },
@@ -198,7 +198,7 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string }[] = [
    * rustup、bun、deno、homebrew 的官方安装方式正是 `curl … | sh`。
    *
    * 该规则既无法拦截目标行为，又误拒真实用法，不应作为防线保留。实际的缓解手段是
-   * 沙箱（限制可访问的范围）与用户能看到每一条命令，而不是模式匹配。
+   * 沙箱（限制可访问的范围）与界面向用户显示每一条命令，而不是模式匹配。
    */
   {
     pattern:
@@ -434,7 +434,7 @@ const CHANGE_DIR = new Set(['cd', 'chdir', 'pushd', 'set-location', 'sl', 'push-
 
 /**
  * 解释 shell 语法的程序。只有它们的 `-c` / `-Command` 参数与 heredoc 正文按命令解析；
- * 交给 python 等其他程序的代码是数据，见文件头「已知未拦截的写法」。
+ * 传给 python 等其他程序的代码是数据，见文件头「已知未拦截的写法」。
  */
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'pwsh', 'powershell'])
 
@@ -443,7 +443,7 @@ interface Segment {
   words: string[]
   /** `>` / `>>` 的目标。`2>&1` 这类文件描述符复制没有目标。 */
   redirects: string[]
-  /** 交给本段命令的 heredoc 正文。 */
+  /** 传给本段命令的 heredoc 正文。 */
   heredocs: string[]
   /** 双引号内 `$( )` 中的命令。 */
   substitutions: string[]
@@ -470,7 +470,7 @@ interface PendingHeredoc {
  * 写入目标无法从命令文本确定（变量、管道输入、子表达式、`xargs` 等之后的写入命令）时，
  * 当前目录位于家目录、全局数据目录或系统目录中即拒绝，命令中出现任一工作区外引用同样拒绝（fail-closed）。
  *
- * 必须是确定性规则：交给模型判定时，`Get-ChildItem $HOME -Recurse -Filter *.pem` 实测连续运行两次
+ * 必须是确定性规则：由模型判定时，`Get-ChildItem $HOME -Recurse -Filter *.pem` 实测连续运行两次
  * 给出了相反结论。只判定家目录、全局数据目录、`/etc`、`C:\Windows`，不判定所有绝对路径：其他绝对路径
  * 可能是用户的另一个项目目录，误拒代价过高。
  */
@@ -716,7 +716,7 @@ function closingParen(s: string, open: number): number {
   return s.length
 }
 
-/** 命令名：去掉目录与 `.exe` 后转为小写。PowerShell 命令不区分大小写。 */
+/** 命令名：去除目录与 `.exe` 后转为小写。PowerShell 命令不区分大小写。 */
 function commandName(word: string): string {
   return word
     .replace(/^.*[\\/]/, '')

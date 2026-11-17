@@ -171,7 +171,7 @@ async function failure(pending: Promise<unknown>): Promise<Error> {
     () => settled,
     (err: unknown) => err,
   )
-  if (out === settled) throw new Error('这条调用本应失败')
+  if (out === settled) throw new Error('该调用本应失败')
   return out as Error
 }
 
@@ -185,7 +185,7 @@ async function connect(
   return client
 }
 
-test('白名单之外的方法在发出之前即被拒绝，对端收不到任何帧', async () => {
+test('白名单之外的方法在发出之前即被拒绝，对端未收到任何帧', async () => {
   const endpoint = endpointWithTwoPages({ t1: 'm1' })
   const client = await connect(endpoint)
   expect((await failure(client.send('Browser.setDownloadBehavior', {}))).message).toMatch(/白名单/)

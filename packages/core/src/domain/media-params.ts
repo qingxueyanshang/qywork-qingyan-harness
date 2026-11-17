@@ -97,7 +97,7 @@ export function mediaParamValues(
   }
 }
 
-/** 只解析控件和约束，不改调用者的参数、不向请求补默认值。 */
+/** 只解析控件和约束，不修改调用方的参数、不向请求补充默认值。 */
 export function resolveMediaParam<T extends MediaParamDefinition>(
   spec: T,
   operation: string,
@@ -136,7 +136,7 @@ export function mediaSizeProblem(value: string, limits: MediaSizeLimits): string
   if (tier !== undefined)
     return tier <= limits.maxPixels && tier >= limits.minPixels
       ? null
-      : '当前生成模式不支持这个分辨率档位'
+      : '当前生成模式不支持该分辨率档位'
   const match = /^(\d+)[x*](\d+)$/.exec(value)
   if (!match) return '尺寸格式不合法'
   const w = Number(match[1])
@@ -155,22 +155,22 @@ export function mediaParamProblem(p: MediaParamDefinition, value: unknown): stri
   if (p.available === false) return '当前生成模式或参数组合不支持此参数'
   if (p.values && !p.values.includes(value as MediaParamValue))
     return `可选 ${p.values.join(' | ')}`
-  if (p.type === 'boolean') return typeof value === 'boolean' ? null : '要 true 或 false'
+  if (p.type === 'boolean') return typeof value === 'boolean' ? null : '须为 true 或 false'
   if (p.type === 'enum') return p.values ? null : '缺少可选值'
   if (p.type === 'integer' || p.type === 'number') {
-    if (typeof value !== 'number' || !Number.isFinite(value)) return '要一个数'
-    if (p.type === 'integer' && !Number.isInteger(value)) return '要整数'
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '须为数字'
+    if (p.type === 'integer' && !Number.isInteger(value)) return '须为整数'
     if (value === p.auto) return null
     if ((p.min !== undefined && value < p.min) || (p.max !== undefined && value > p.max))
       return `范围 ${p.min ?? ''}–${p.max ?? ''}${p.auto === undefined ? '' : `，或 ${p.auto}`}`
     return null
   }
-  if (typeof value !== 'string') return '要字符串'
+  if (typeof value !== 'string') return '须为字符串'
   if (p.maxLength !== undefined && Array.from(value).length > p.maxLength)
     return `最多 ${p.maxLength} 字`
   if (p.pattern && !new RegExp(p.pattern).test(value)) return '格式不合法'
   // 带对照表或预设的参数只接受其中的取值：画布控件只显示这些项，其他取值填入后控件无一选中。
-  // 对照表已按当前模式的 `sizeLimits` 过滤（`resolveMediaParam`），不要改回按 `sizeLimits` 接受任意宽高。
+  // 对照表已按当前模式的 `sizeLimits` 过滤（`resolveMediaParam`），不要改为按 `sizeLimits` 接受任意宽高。
   if (p.shapes) return p.shapes.some((s) => s.value === value) ? null : `可选 ${shapeChoices(p)}`
   if (p.presets) return p.presets.includes(value) ? null : `可选 ${p.presets.join(' | ')}`
   return p.sizeLimits ? mediaSizeProblem(value, p.sizeLimits) : null
@@ -196,7 +196,7 @@ const RATIO_RE = /^\d+:\d+$/
 /**
  * 取值决定的宽高比：带对照表的尺寸取表中对应项的宽高比，取值列表中含比例的参数（视频的宽高比）取取值本身；
  * 由模型决定时返回 `auto`，参数与宽高比无关（分辨率、张数）或取值不在表中时返回 `null`。
- * 界面预览空卡与模型建卡共用：两处由同一取值得到同一形状。
+ * 界面预览空卡与模型创建卡片共用：两处由同一取值得到同一形状。
  */
 export function ratioOf(p: MediaParamDefinition, v: unknown): string | null {
   if (p.shapes) {
@@ -209,7 +209,7 @@ export function ratioOf(p: MediaParamDefinition, v: unknown): string | null {
 
 /**
  * 尺寸取值换用对照表的分隔符：同一型号的原生协议写「宽*高」、兼容协议写「宽x高」（如百炼图像与 OpenAI Images），
- * 型号改用另一协议后，画布与提交中保存的取值按对照表换成当前写法，不因格式不符被丢弃或拒绝。
+ * 型号改用另一协议后，画布与提交中保存的取值按对照表替换为当前写法，不因格式不符被丢弃或拒绝。
  * 只改对照表中有对应项的取值，其余原样返回。
  */
 export function alignSizeSeparator(
@@ -235,7 +235,7 @@ export function activeMediaParams(
   imageCount = 0,
 ): Record<string, unknown> {
   let active = alignSizeSeparator(specs, params)
-  // 每轮只会删键；某个偏好被隐藏后，其余参数再按实际缺省值校验。
+  // 每轮只删除键；某个偏好被隐藏后，其余参数再按实际缺省值校验。
   for (;;) {
     const values = mediaParamValues(specs, active)
     const next = Object.fromEntries(

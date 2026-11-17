@@ -233,7 +233,7 @@ pub fn perform(
             return Attempt::Refused(format!("point_outside_window: {},{}", at.x, at.y));
         }
         if target.grant.first_pointer() {
-            // 只移动、不按键：应用可能收不到本次移动，以之后的一组事件为准。
+            // 只移动、不按键：应用可能未收到本次移动，以之后的一组事件为准。
             let _ = sink.send(&[Event::Move { to: at }]);
             std::thread::sleep(POINTER_ANNOUNCE);
         }

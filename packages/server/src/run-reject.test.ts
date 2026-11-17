@@ -180,7 +180,7 @@ test('会话已有任务运行中：不发出任何事件，不改变忙闲状�
   /*
    * **该用例不应产生任何事件。** 占位属于另一轮，该会话当前确实仍在运行：
    * 补发 `busy=false` 会使正在运行的轮次在界面上显示为空闲；发布 `run.error` 会使
-   * 客户端把这句不属于任何轮次的报错写进正在运行那一轮的收尾条。
+   * 客户端把这条不属于任何轮次的报错写入正在运行的那一轮的收尾条。
    */
   expect(trace()).toEqual([])
   expect(runs.hasRun(cv)).toBe(true)
@@ -302,7 +302,7 @@ test('使用云端型号的轮次先同步云端价格；同步失败时沿用�
     const idle = waitForIdle(cv)
     await startRun(cv, '你好', undefined, { ...deps(cloudConfig), syncCloudPrices: sync(fail) })
     await idle
-    // 同步之后才装配 adapter：本例未配置 key，装配时报 no_api_key。
+    // 同步之后才装配 adapter：本例未配置 key，装配时抛出 no_api_key。
     expect(order).toEqual(['sync'])
     expect(trace()).toEqual(['busy=true', 'run.error no_api_key runId=""', 'busy=false'])
   }

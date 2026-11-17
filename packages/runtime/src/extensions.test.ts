@@ -84,8 +84,8 @@ async function handle(msg) {
   }
 }
 
-// 证明隔离是真的：插件进程里没有这些模块可用的路径。
-// 有的话下面这行会成功，测试会看到 leaked=true。
+// 验证隔离成立：插件进程中没有可使用这些模块的路径。
+// 存在时下面这行会成功，测试取得 leaked=true。
 let leaked = false
 try { require('node:fs').readFileSync('/etc/passwd'); leaked = true } catch {}
 if (leaked) send({ type: 'leaked' })
@@ -98,7 +98,7 @@ send({ type: 'ready' })
  *
  * probe 工具的 permissionEffect 是 read，清单解析阶段会强制要求
  * workspace:read：工具声明的动作与插件声明的权限必须一致，
- * 否则用户在安装提示中看到的权限清单与插件的实际能力不一致。
+ * 否则安装提示中显示的权限清单与插件的实际能力不一致。
  */
 async function workspaceWith(extra: string[]) {
   const permissions = ['workspace:read', ...extra.filter((p) => p !== 'workspace:read')]
@@ -136,7 +136,7 @@ async function workspaceWith(extra: string[]) {
     // 注册名经过规范化：插件 id 是 `test.probe`（反向域名风格），
     // 而 provider 只接受 `^[a-zA-Z0-9_-]+$`，点被替换为下划线。
     const tool = ext.toolSpecs.find((t) => t.name === 'test_probe__run')
-    // 工具上下文中只包含插件路径用到的字段。身份由宿主按 callId 保管，
+    // 工具上下文中只包含插件路径使用的字段。身份由宿主按 callId 保管，
     // 插件侧只能取得一个 parentCallId。
     // 投递额度由 AgentLoop 按决策建立，此处直接建立不设上限的额度。
     const ctx = {

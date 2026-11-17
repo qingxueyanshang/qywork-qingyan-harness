@@ -27,7 +27,7 @@ import { reportingRetries } from './http.ts'
 import type { MediaAdapter, MediaProfile } from './types.ts'
 
 /**
- * 各协议的 `run` 在此统一包一层：运行期间请求的重试等待回报给 `opts.onRetry`，重试与查询失败的日志带上 `opts.logFields`，
+ * 各协议的 `run` 在此统一包装：运行期间请求的重试等待回报给 `opts.onRetry`，重试与查询失败的日志带上 `opts.logFields`，
  * 适配器不需要各自传递。
  */
 export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {

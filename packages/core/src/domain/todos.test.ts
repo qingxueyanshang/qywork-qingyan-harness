@@ -52,7 +52,7 @@ describe('第几步', () => {
     expect(p.current).toBeNull()
   })
 
-  test('空清单不抛错', () => {
+  test('空清单不抛出异常', () => {
     expect(todoProgress([])).toEqual({
       step: 0,
       total: 0,

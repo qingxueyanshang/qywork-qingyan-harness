@@ -10,7 +10,7 @@ import { definePort } from '@qywork/agent'
  * 存储），此处只约定形状。
  *
  * 可选：未注入时工具退化为 run 内记录，这是**更严格**的一侧（每轮要求重新读取一次），
- * 漏接不会放宽任何边界。
+ * 未注入不会放宽任何边界。
  */
 export interface FileReadPort {
   /** 读取过时返回读取时的内容哈希，否则返回 null。 */

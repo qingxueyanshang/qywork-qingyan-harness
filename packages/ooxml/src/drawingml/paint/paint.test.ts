@@ -531,7 +531,7 @@ describe('线条', () => {
     ).toEqual([6, 2])
   })
 
-  /** 原始失败形状：圆形端点的 `sysDot` 趋势线画成实线，Canvas 把半圆加在每段两端之外，间隔被填满。 */
+  /** 原始失败形状：圆形端点的 `sysDot` 趋势线绘制为实线，Canvas 把半圆加在每段两端之外，间隔被填满。 */
   test('圆形端点的虚线：线段缩短一个线宽、间隔加长一个线宽；方形端点只用于实线', () => {
     const dot = { kind: 'preset', name: 'sysDot' } as const
     expect(dashPattern(solidLine({ cap: 'rnd', dash: dot }), 2)).toEqual([0, 4])
@@ -592,7 +592,7 @@ describe('线条', () => {
     expect(ctx.named('fill').length).toBe(1)
   })
 
-  test('箭头只画在开放路径上；细线按 2 像素计算箭头尺寸', () => {
+  test('箭头只绘制于开放路径上；细线按 2 像素计算箭头尺寸', () => {
     const ctx = new RecordingContext()
     const { res } = resources()
     const closed: ShapePath[] = [
@@ -693,7 +693,7 @@ describe('外部阴影', () => {
     const m = shadowMatrix(base, scaling(2, 2), 50, 20, 2)
     expect(apply(m, 0, 0)).toEqual({ x: 0, y: 20 })
     const scaled = shadowMatrix({ ...base, scaleX: 0.5, scaleY: -0.5, distance: 0 }, I, 100, 40, 1)
-    // 对齐点为底边中点 (50, 40)：该点不动，顶边中点翻到下方。
+    // 对齐点为底边中点 (50, 40)：该点位置不变，顶边中点翻转到下方。
     expect(apply(scaled, 50, 40)).toEqual({ x: 50, y: 40 })
     expect(apply(scaled, 50, 0)).toEqual({ x: 50, y: 60 })
   })

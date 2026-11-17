@@ -86,7 +86,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
    *
    * 三条硬性口径：不合法不落盘（422）、已存在不覆盖（409）、路径越界由
    * `resolveInWorkspace` 拦截。越界转换为 422 而不是抛出为 500：这是入参问题，
-   * 用户需要看到的是路径不在项目中，而不是服务器错误。
+   * 界面应显示路径不在项目中，而不是服务器错误。
    */
   if (p === '/api/files/create' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { path?: string; kind?: string } | null
@@ -115,7 +115,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
 
   /*
    * 重命名。新名称只能是单个名称：带分隔符即为移动，而菜单项写的是「重命名」；
-   * 两种操作混在一个接口中时，用户在输入框中输入 `../x` 即可把文件移出当前目录。
+   * 两种操作合并为一个接口时，用户在输入框中输入 `../x` 即可把文件移出当前目录。
    */
   if (p === '/api/files/rename' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { path?: string; name?: string } | null

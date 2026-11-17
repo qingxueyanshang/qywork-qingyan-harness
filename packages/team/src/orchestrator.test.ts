@@ -87,7 +87,7 @@ describe('计划校验', () => {
   test('指向不属于本会话的子 agent 直接拒绝', () => {
     expect(() =>
       validatePlan([node('a', '', { target: { subagent: 'cv_other' } })], KNOWN),
-    ).toThrow(/不在本会话里/)
+    ).toThrow(/不在本会话中/)
   })
 
   test('依赖不存在的节点直接拒绝', () => {

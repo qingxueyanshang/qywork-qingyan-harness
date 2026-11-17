@@ -83,7 +83,7 @@ const DATE_LABEL_GAP = 3
 const DATE_DIAGONAL = 1.78
 /**
  * 底部不旋转的标签：标签顶距坐标轴线 `CATEGORY_LABEL_GAP` × f + 1；绘图区下沿留出的仍是 0.943f − 2.35 加文字框高度，
- * 标签因此不贴着图表区下沿（实测宋体、微软雅黑、Noto Sans SC、Calibri 8–14 磅，字号越大离下沿越远）。数值轴在下方的
+ * 标签因此不紧贴图表区下沿（实测宋体、微软雅黑、Noto Sans SC、Calibri 8–14 磅，字号越大，与下沿的距离越大）。数值轴在下方的
  * 横向条形图相同（三个宿主实测，宋体、微软雅黑 8–14 磅：按 0.943f − 2.35 放置时低 0–3 像素，按本规则时绘图区下沿不变）。
  */
 const CATEGORY_LABEL_GAP = 0.58
@@ -408,7 +408,7 @@ function valueLabels(
   if (!plan.horizontal) {
     return build(Math.floor(length / Math.max(1, 1.4 * f - 0.8)))
   }
-  // 水平轴的区间数上限取决于标签宽度，标签又取决于刻度：从 10 个区间起按最宽标签逐步收紧。
+  // 水平轴的区间数上限取决于标签宽度，标签又取决于刻度：从 10 个区间起按最宽标签逐步减小。
   let limit = MAX_INTERVALS
   let out = build(limit)
   for (let i = 0; i < 6; i++) {
@@ -994,7 +994,7 @@ function layoutAxes(
       }
     })
     plans.forEach((p, i) => {
-      // 标签在绘图区边缘（`low`、`high`）时总要留出空间；随轴线位于内部时不留。
+      // 标签在绘图区边缘（`low`、`high`）时始终留出空间；随轴线位于内部时不留。
       const nextTo = p.axis.tickLabelPosition === 'nextTo'
       if (!shown(p) || (nextTo && inside(p.axis, scaleOf(partner[i]!)))) return
       const ls = labels[i]!

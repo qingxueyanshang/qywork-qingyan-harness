@@ -31,7 +31,7 @@ export default function ReleaseNotesDialog(props: { notes: ReleaseNotes }) {
         closeReleaseNotes()
       }}
       onKeyDown={(e) => {
-        // Escape 只关闭本窗口，不把后面打开的窗口一起关闭。
+        // Escape 只关闭本窗口，不关闭下层的窗口。
         if (e.key === 'Escape') e.stopPropagation()
       }}
     >

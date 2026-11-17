@@ -157,7 +157,7 @@ function optionsForArg(
     throw new ArgError(`optionsFor 必须是对象，收到 ${JSON.stringify(raw)}`)
   }
   // 取 0、false 与空值的参数不算提供（`blank`）：strict schema 下模型为无关参数填写这类取值。
-  // 报错只列出实际提供的参数，模型据此删去这几项即可。
+  // 报错只列出实际提供的参数，模型据此删除这些参数。
   const extra = ['frame', 'screenshot', 'offset', 'query'].filter(
     (name) => given(args[name]) && !blank(args[name]),
   )
@@ -647,7 +647,7 @@ export const browserTabsTool: ToolSpec = {
   name: 'browser_tabs',
   description:
     '列出内置浏览器的标签页，或新建、接管、关闭一个标签页。' +
-    'create 打开的页由本会话控制，同时以页签显示在界面右侧面板中，用户可以直接看到；后续消息可直接对其 observe 与 act；' +
+    'create 打开的页由本会话控制，同时以页签显示在界面右侧面板中，用户可以直接查看；后续消息可直接对其 observe 与 act；' +
     '简单 HTML 可直接传入本地路径或 file URL，无需启动服务；依赖开发服务器、模块加载或接口的项目使用 http/https 地址。' +
     'tabId 由 create 的返回值给出，同一轮中无法预知；create 已按 url 加载页面，无需再 navigate。' +
     '打开页面不附带观察，先 browser_observe 或 browser_wait 再操作。' +
@@ -712,7 +712,7 @@ export const browserTabsTool: ToolSpec = {
       return {
         status: 'success',
         message:
-          `${tabs.length} 个标签页，其中 ${mine} 个归本会话（可直接操作）` +
+          `${tabs.length} 个标签页，其中 ${mine} 个属于本会话（可直接操作）` +
           (user ? `，${user} 个是用户打开的（用户指定后可 bind 接管）` : ''),
         data: { tabs },
       }
@@ -846,7 +846,7 @@ export const browserActTool: ToolSpec = {
     '例如按住 W 1.2 秒并在其间轻点空格：' +
     '[{"keys":["KeyW"],"durationMs":1200},{"keys":["KeyW","Space"]},{"keys":["KeyW"],"durationMs":300}]。' +
     '键名是物理键码，如 KeyW、Space、ArrowUp、Enter、ShiftLeft、ControlLeft；' +
-    '组合键写在同一阶段里，如 ["ControlLeft","KeyA"]；durationMs 缺省为 0，即按下后立刻进入下一阶段。' +
+    '组合键写在同一阶段里，如 ["ControlLeft","KeyA"]；durationMs 缺省为 0，即按下后立即进入下一阶段。' +
     `一次最多 ${INPUT_LIMITS.phases} 个阶段、同时按 ${INPUT_LIMITS.keys} 个键，` +
     `单段不超过 ${INPUT_LIMITS.phaseMs} 毫秒、合计不超过 ${INPUT_LIMITS.totalMs} 毫秒；` +
     '更长的操作分多次调用，每次查看结果后再继续。' +

@@ -85,7 +85,7 @@ describe('颜色模型', () => {
     expect(resolve('<a:hslClr hue="0" sat="0%" lum="50%"/>')).toBe('808080')
   })
 
-  test('schemeClr 经颜色映射落到槽位，phClr 取占位色', () => {
+  test('schemeClr 经颜色映射对应到槽位，phClr 取占位色', () => {
     expect(resolve('<a:schemeClr val="tx1"/>')).toBe('000000')
     expect(resolve('<a:schemeClr val="bg2"/>')).toBe('E7E6E6')
     expect(resolve('<a:schemeClr val="dk2"/>')).toBe('44546A')
@@ -166,7 +166,7 @@ describe('颜色变换', () => {
     expect(resolve('<a:srgbClr val="4472C4"><a:tint val="100%"/></a:srgbClr>')).toBe('4472C4')
   })
 
-  test('HSL 中的饱和度与色相变换，结果夹到有效范围', () => {
+  test('HSL 中的饱和度与色相变换，结果限制在有效范围内', () => {
     expect(resolve('<a:srgbClr val="ED7D31"><a:satMod val="150000"/></a:srgbClr>')).toBe('FF7A1F')
     expect(resolve('<a:srgbClr val="ED7D31"><a:satMod val="50000"/></a:srgbClr>')).toBe('BE8660')
     expect(resolve('<a:srgbClr val="ED7D31"><a:hueOff val="3600000"/></a:srgbClr>')).toBe('A1ED31')

@@ -105,7 +105,7 @@ function readConnection(x: Scanner): Connection {
 
 /**
  * 在 `nvSpPr`、`nvPicPr`、`nvCxnSpPr`、`nvGrpSpPr` 等非可视属性元素的开始标签处调用。
- * `other` 处理 `cNvPr`、`cNvSpPr`、`cNvCxnSpPr` 之外的子元素（如 PresentationML 的 `nvPr`），可以读到该子元素的结束标签为止。
+ * `other` 处理 `cNvPr`、`cNvSpPr`、`cNvCxnSpPr` 之外的子元素（如 PresentationML 的 `nvPr`），可以读取到该子元素的结束标签为止。
  */
 export function readNonVisual(x: Scanner, other: ((local: string) => void) | null): NonVisual {
   let id = 0

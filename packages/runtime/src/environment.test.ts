@@ -2,7 +2,7 @@
  * 覆盖 `environment.ts`：运行环境一节的内容，与工作区 Python 环境的创建。
  *
  * 原始失败形状：模型按 `import faster_whisper` 与 `ffmpeg -version` 失败断定没有能力，而 faster-whisper
- * 已由此前的会话装在 `.tmp/asr`、ffmpeg 由 imageio-ffmpeg 提供；同一个包在三个目录各装一次，
+ * 已由此前的会话安装在 `.tmp/asr`、ffmpeg 由 imageio-ffmpeg 提供；同一个包在三个目录各安装一次，
  * 同一个模型下载四次。说明中必须出现这些已有的包、ffmpeg 路径与模型位置，并按权限模式写明包可以装入的位置。
  */
 
@@ -37,7 +37,7 @@ async function distInfo(dir: string, name: string, requested: boolean) {
   if (requested) await writeFile(join(dir, `${name}.dist-info`, 'REQUESTED'), '')
 }
 
-/** 假的基础解释器与工作区：基础解释器装了 numpy（主动）、six（依赖）与 imageio-ffmpeg 自带的 ffmpeg。 */
+/** 模拟的基础解释器与工作区：基础解释器安装了 numpy（主动）、six（依赖）与 imageio-ffmpeg 自带的 ffmpeg。 */
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'qy-env-'))
   const prefix = join(root, 'py')
@@ -178,7 +178,7 @@ describe('运行环境', () => {
         'Metadata-Version: 2.1\nName: qyfake\nVersion: 0.0.1\n',
       )
       // 无扩展名的脚本以命令实际使用的 bash（Git for Windows）运行。不要改用 PATH 上的 bash：
-      // 在 PowerShell 中它常是 System32 的 WSL 启动器，会去掉路径中的反斜杠，脚本无法打开。
+      // 在 PowerShell 中它常是 System32 的 WSL 启动器，会删除路径中的反斜杠，脚本无法打开。
       const bash = WIN ? probeBash().path : null
       const runs = WIN
         ? [
@@ -197,7 +197,7 @@ describe('运行环境', () => {
       expect(await ensureWorkspacePython(root, python!)).toBeNull()
       expect(statSync(cfg).mtimeMs).toBe(mtime)
 
-      // 没有启动脚本的环境（命令中单独的 pip 会落到全局）：补写，不重建环境。
+      // 没有启动脚本的环境（命令中单独的 pip 会安装到全局环境）：补写，不重建环境。
       await rm(join(bin, 'pip'))
       expect(workspacePythonReady(root)).toBe(false)
       expect(await ensureWorkspacePython(root, python!)).toBeNull()

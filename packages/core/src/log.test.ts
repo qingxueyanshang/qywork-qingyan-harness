@@ -55,7 +55,7 @@ describe('sink', () => {
     ])
   })
 
-  test('sink 抛错时改用 stderr，不向调用方抛出异常', () => {
+  test('sink 抛出异常时改用 stderr，不向调用方抛出异常', () => {
     const write = spyOn(process.stderr, 'write').mockImplementation(() => true)
     try {
       setLogSink(() => {

@@ -125,7 +125,7 @@ export class MiniMaxSpeechAdapter implements MediaAdapter {
 
 /**
  * 参考图作为人物主体参考（`subject_reference`，类型 `character`）发送。
- * `metadata.failed_count` 是未通过内容安全检查的张数：有其余产物时作为警告交回，全部未通过时报错。
+ * `metadata.failed_count` 是未通过内容安全检查的张数：有其余产物时作为警告返回，全部未通过时报错。
  */
 export class MiniMaxImagesAdapter implements MediaAdapter {
   readonly kind = 'minimax_images' as const

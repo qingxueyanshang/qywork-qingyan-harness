@@ -19,7 +19,7 @@ M = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 P = "http://schemas.openxmlformats.org/package/2006/relationships"
 
-# SpecialCells 的 xlCellTypeFormulas。工作表中没有任何公式时该调用抛错。
+# SpecialCells 的 xlCellTypeFormulas。工作表中没有任何公式时该调用抛出异常。
 XL_CELL_TYPE_FORMULAS = -4123
 
 

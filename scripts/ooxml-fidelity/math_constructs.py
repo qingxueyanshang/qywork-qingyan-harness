@@ -254,7 +254,7 @@ def sub_ctrl(base, lo, font):
 
 
 def noctrl(xml):
-    """去掉各结构的 `ctrlPr`，字段的字号不变。"""
+    """去除各结构的 `ctrlPr`，字段的字号不变。"""
     return re.sub(r"<m:ctrlPr>.*?</m:ctrlPr>", "", xml)
 
 

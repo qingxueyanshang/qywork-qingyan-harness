@@ -408,7 +408,7 @@ describe('run 归属', () => {
 
 /**
  * payload 不是合法 JSON 的 step（磁盘损坏或外部修改）。启动回收不在 try 中执行，
- * SQLite 的 JSON 函数对这一行抛出时整个回收失败，服务因此无法启动。
+ * SQLite 的 JSON 函数对这一行抛出异常时整个回收失败，服务因此无法启动。
  */
 describe('payload 损坏的 step', () => {
   test('终态 run 与待回收 run 下的损坏行不使回收失败；仍为 running 的损坏行写为 failure，payload 原样保留，id 随结果返回', () => {
@@ -538,7 +538,7 @@ describe('终态 run 下的孤儿 step', () => {
 })
 
 /**
- * 派发任务卡上的节点不随 run 结束：子 agent 的生命周期与会话一致，回执可能几分钟后才到达。
+ * 派发任务卡上的节点不随 run 结束：子 agent 的生命周期与会话一致，回执可能数分钟后才到达。
  * 重启之后进程中已无接收方处理该回执，因此回收时须把它们标为中断；
  * 否则该图既无法 approve（上游回执不完整）也无法 revise（指定的节点没有终态）。
  */
@@ -557,7 +557,7 @@ describe('重启回收扫描派发任务卡上的节点', () => {
     })
     setStepNodeState(store, step.id, 'fast', { phase: 'done', label: '快', durationMs: 1 })
     setStepNodeState(store, step.id, 'slow', { phase: 'working', label: '慢' })
-    // 工具已经返回：派出即返回，节点的终态写在一张已处于终态的卡片上。
+    // 工具已经返回：派发后立即返回，节点的终态写在一张已处于终态的卡片上。
     settleToolStep(store, step.id, 'success', {
       kind: 'tool_result',
       args: {},

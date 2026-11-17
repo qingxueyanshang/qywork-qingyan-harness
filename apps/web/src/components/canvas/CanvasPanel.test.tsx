@@ -3,7 +3,7 @@
  * `canvas/GeneratePanel.tsx`、`canvas/SourcePicker.tsx`、`lib/file-search.ts`、
  * `canvas/Rail.tsx`、`canvas/Bitmap.tsx`、`canvas/Player.tsx`、`canvas/Timeline.tsx`、`canvas/ArtView.tsx`、
  * `canvas/prompt.ts`、`canvas/frame.ts` 与 `canvas/art.ts` 的纯函数，以及 `lib/store/ui.ts` 的 `openCanvasTab`。
- * `art.ts` 中运行时在页面里的行为（时钟、截图、录制）由真实浏览器验证，happy-dom 不执行 iframe 中的页面。
+ * `art.ts` 中运行时在页面中的行为（时钟、截图、录制）由真实浏览器验证，happy-dom 不执行 iframe 中的页面。
  *
  * 服务端由内存中的一份画布模拟：`client.api` 的桩按路径分派，操作经 core 的 `applyCanvasOps` 应用，
  * 每次提交的操作都被记录，断言针对发送了哪几批操作。
@@ -30,7 +30,7 @@ beforeAll(async () => {
   // 图片由 Bitmap 自行获取文件；测试中一律获取失败，进入解码失败分支。
   globalThis.fetch = ((url: string) => {
     fetched.push(String(url))
-    return Promise.reject(new Error('测试里不取文件'))
+    return Promise.reject(new Error('测试中不获取文件'))
   }) as unknown as typeof fetch
 })
 
@@ -362,9 +362,9 @@ async function mount(
       server.exports.push(path.split('?')[0]!.slice('/api/canvas/export/'.length))
       if (path.startsWith('/api/canvas/export/start')) return { upload: 'u1' }
       if (path.startsWith('/api/canvas/export/abort')) return { ok: true }
-      throw new Error('测试里不落盘')
+      throw new Error('测试中不写入磁盘')
     }
-    throw new Error(`没有桩这条：${path}`)
+    throw new Error(`未定义该路径的桩：${path}`)
   }
   restore = () => {
     ;(store.client as unknown as { api: typeof original }).api = original
@@ -379,7 +379,7 @@ async function mount(
   host.style.width = '1000px'
   host.style.height = '700px'
   document.body.append(host)
-  // 与侧栏相同，包在 Suspense 中：组件内读取尚在获取的 resource 时，整块画布被占位替换。
+  // 与侧栏相同，包裹在 Suspense 中：组件内读取尚在获取的 resource 时，整块画布被占位替换。
   dispose = render(
     () => (
       <Suspense fallback={<div class="suspended" />}>
@@ -410,7 +410,7 @@ function offset(host: HTMLElement): { x: number; y: number } {
 
 function node(host: HTMLElement, id: string): HTMLElement {
   const el = host.querySelector<HTMLElement>(`[data-node="${id}"]`)
-  if (!el) throw new Error(`没有节点 ${id}`)
+  if (!el) throw new Error(`未找到节点 ${id}`)
   return el
 }
 
@@ -1128,7 +1128,7 @@ describe('画布：节点操作', () => {
     }
   })
 
-  test('页签不在显示时只记下变动，切回时读取一次', async () => {
+  test('页签不在显示时只记录变动，切回时读取一次', async () => {
     const { server, setActive } = await mount(FILES)
     const store = await import('../../lib/store/index.ts')
     const before = server.reads
@@ -1213,8 +1213,8 @@ describe('画布：生成卡与生成面板', () => {
   })
 
   /**
-   * 原始失败形状：《第三趟》「钟家楼下_朝单元门_上午」卡当前选 Seedream，切换到 qwen 生成的那一版时，
-   * 标题仍写 Seedream 5.0 Pro。标题写正在显示的版本实际使用的模型，没有结果时写卡片选定的模型。
+   * 原始失败形状：《第三趟》中「钟家楼下_朝单元门_上午」卡当前选定 Seedream，切换到由 qwen 生成的版本时，
+   * 标题仍显示 Seedream 5.0 Pro。标题应为当前显示的版本实际使用的模型，没有结果时为卡片选定的模型。
    */
   test('标题栏的模型名为当前版本实际使用的模型，与卡片之后选定的模型无关；没有结果时为选定的模型', async () => {
     const made = (provider: string, model: string) => ({
@@ -1776,7 +1776,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.cancels).toHaveLength(2)
   })
 
-  test('上次任务的停止响应迟到时不覆盖新任务的按钮与提示', async () => {
+  test('上次任务的停止响应晚于新任务到达时，不覆盖新任务的按钮与提示', async () => {
     const startedAt = Date.now() - 60_000
     const { host, server, refs } = await mount(CARD, { n2: { state: 'running', startedAt } })
     let release = () => {}
@@ -1955,7 +1955,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(notice()).toBeNull()
   })
 
-  /** 每次生成在提交之前登记引用任务记录的占位版本：生成进行中的那一版在版本菜单中标为生成中，不标为待取回。 */
+  /** 每次生成在提交之前登记引用任务记录的占位版本：生成进行中的版本在版本菜单中标为生成中，不标为待取回。 */
   test('版本菜单中正在生成的占位版本标为生成中，其他任务记录版本标为待取回', async () => {
     const { host, server, refs } = await mount(CARD)
     const core = await import('@qywork/core')
@@ -2918,7 +2918,7 @@ describe('画布：生成卡与生成面板', () => {
 
   /**
    * 原始失败形状：一个渠道的视频模型用 `size` 取像素尺寸（1280x720），另一个用 `aspect_ratio` 取「16:9」；
-   * 从前者换到后者时卡片上没有 `aspect_ratio`，新模型按缺省的 9:16 出图。
+   * 从前者换到后者时卡片上没有 `aspect_ratio`，新模型按缺省的 9:16 生成。
    */
   test('视频卡切换模型：表示宽高比的参数不同时按对照表换算为同一宽高比', async () => {
     const video = (id: string, label: string, param: Record<string, unknown>) => ({
@@ -5144,7 +5144,7 @@ describe('画布：时间线', () => {
   })
 
   /** 原始失败形状：视频时长读取失败时报为「只有视频可以加入时间线」，与原因不符。 */
-  test('拖入的视频读取不到时长时写明是哪个文件，不发送操作', async () => {
+  test('拖入的视频无法读取时长时写明文件名，不发送操作', async () => {
     const restoreVideo = fakeDurations(0)
     try {
       const { host, server, refs } = await mount(TIMELINE)

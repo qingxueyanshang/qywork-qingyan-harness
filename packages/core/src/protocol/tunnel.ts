@@ -4,7 +4,7 @@
  * 不变量：
  * - 流（`sid`）只由云端打开，电脑端只应答；`sid` 在一条隧道内唯一。
  * - 控制帧是 JSON 文本帧，经 `parseControl` 校验后才处理；数据帧是二进制帧：1 字节类型 + 4 字节 `sid`（大端）+ 负载。
- * - HTTP 请求体与响应体按流计窗口：发送端在窗口用完时暂停读取数据源（`pumpBody`），接收端的消费方读取后以 `window` 帧归还
+ * - HTTP 请求体与响应体按流计窗口：发送端在窗口耗尽时暂停读取数据源（`pumpBody`），接收端的消费方读取后以 `window` 帧归还
  *   （`TunnelInbound`）。接收端排队的字节超过窗口时视为对端违反协议，调用方关闭该流，因此每条流在任一端占用的内存不超过一个窗口。
  * - WebSocket 消息不计窗口：消息是 `/stream` 的事件与指令，单条有界。
  * - 协议版本由云端裁决：`hello.protocol` 不在云端支持范围内时以 `TUNNEL_CLOSE.outdated` 关闭，电脑端不再重连。
@@ -67,7 +67,7 @@ export type TunnelControl =
   | { type: 'notify'; event: TunnelNotifyEvent; conversationId: string; title: string }
 
 /**
- * `path`：以 `/` 开头的字符串。电脑端把它直接拼在 `http://127.0.0.1:<端口>` 之后，
+ * `path`：以 `/` 开头的字符串。电脑端把它直接拼接在 `http://127.0.0.1:<端口>` 之后，
  * 不以 `/` 开头时 `@127.0.0.1:<另一端口>/x` 会使前半部分成为用户信息，请求发往本机的另一个端口。
  */
 type FieldKind = 'string' | 'number' | 'headers' | 'path' | 'string?' | 'number?'
@@ -149,8 +149,8 @@ export function decodeData(
 }
 
 /**
- * 经隧道转发时去掉的请求头与响应头：逐跳头、`host`（由接收端的地址决定）、`content-length`（转发时以分块传输，长度由数据帧决定）
- * 与 WebSocket 握手头（接收端自己完成握手）。
+ * 经隧道转发时去除的请求头与响应头：逐跳头、`host`（由接收端的地址决定）、`content-length`（转发时以分块传输，长度由数据帧决定）
+ * 与 WebSocket 握手头（接收端自行完成握手）。
  */
 const NOT_FORWARDED = new Set([
   'connection',
@@ -198,7 +198,7 @@ export class TunnelCredit {
     this.release()
   }
 
-  /** 等到窗口有余量后占用 `bytes`；流已关闭时返回 false。 */
+  /** 等待窗口有余量后占用 `bytes`；流已关闭时返回 false。 */
   async take(bytes: number): Promise<boolean> {
     while (this.available <= 0 && !this.closed) {
       await new Promise<void>((resolve) => {

@@ -93,7 +93,7 @@ class ValidateTest(unittest.TestCase):
             self.assertEqual(worker.check_targets([{"path": str(d / "a.docx"),
                                                     "expected_sha256": sha}]), [])
             self.assertIn("已存在", worker.check_targets([{"path": str(d / "a.docx")}])[0])
-            self.assertIn("被改动过", worker.check_targets([{"path": str(d / "a.docx"),
+            self.assertIn("被修改", worker.check_targets([{"path": str(d / "a.docx"),
                                                           "expected_sha256": "0" * 64}])[0])
             self.assertIn("被删除", worker.check_targets([{"path": str(d / "gone.docx"),
                                                          "expected_sha256": "0" * 64}])[0])

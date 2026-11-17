@@ -18,7 +18,7 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 
-/** 原始失败形状：外壳命令返回错误时按钮点击后没有任何变化，用户无法区分失败与未点中。 */
+/** 原始失败形状：外壳命令返回错误时按钮点击后没有任何变化，用户无法区分操作失败与未点击到按钮。 */
 test('窗口操作失败时写入通知', async () => {
   const store = await import('../lib/store/index.ts')
   const { render } = await import('solid-js/web')

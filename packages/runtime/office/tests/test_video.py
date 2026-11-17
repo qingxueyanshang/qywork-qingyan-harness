@@ -125,7 +125,7 @@ class SampleTest(unittest.TestCase):
             text = video.describe("c.mp4", res)
             self.assertIn("时长 6.0 秒", text)
             self.assertIn("没有音轨", text)
-            self.assertIn("中间的画面没有看到", text)
+            self.assertIn("其间的画面未查看", text)
             self.assertIn("read_file 的 start 与 end", text)
             res["has_audio"] = True
             self.assertIn("声音未处理", video.describe("c.mp4", res))

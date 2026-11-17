@@ -23,7 +23,7 @@
  * 不使用 ClearType 字形。
  * 公式经 `../../math/` 绘制：括号与根号按数学字体的轮廓填充，文字项与正文文字同样按点阵或 ClearType 字形绘制；
  * 公式的轮廓与文字项交错绘制，ClearType 字形逐字立即混合。
- * 表格：单元格底纹、单元格内容、边框线；没有边框的边画表格虚框（WPS 屏幕显示：1 像素 #c8c8c8，按页面像素坐标
+ * 表格：单元格底纹、单元格内容、边框线；没有边框的边绘制表格虚框（WPS 屏幕显示：1 像素 #c8c8c8，按页面像素坐标
  * 每 4 像素中的第 4 个留空）。浮动对象的形状、图片、图表与 SmartArt 经 `../../drawingml/` 绘制（图表与 SmartArt
  * 的文字见 `graphic.ts`），文本框的内容按本文件的规则绘制，裁剪到 `PageTextBox.clip`。
  */
@@ -431,7 +431,7 @@ interface PictureFonts {
  * 图元文件文字的字体：按 `GraphicFonts` 中的字体名取得登记的字形（主机没有的字体名为 `null`，由图元文件按其替代规则另取），
  * `fallback` 为文档的回退字体；请求粗体或斜体而字体没有该字形时仿粗体、仿斜体。本页没有字体表或回退字体没有绘制度量时为 `null`。
  *
- * WPS 文字把图元文件栅格化为单色或灰度的蒙版（页面 EMF 中的 ALPHABLEND 位图），文字不用 ClearType：字体对象的逻辑字高
+ * WPS 文字把图元文件栅格化为单色或灰度的蒙版（页面 EMF 中的 ALPHABLEND 位图），文字不使用 ClearType：字体对象的逻辑字高
  * 不小于 `SMOOTH_HEIGHT` 且 `gasp` 在该 ppem 要求灰度平滑时平滑（按族名交给浏览器），否则为单色字形（有该 ppem 的点阵时
  * 取点阵，否则取提示后的轮廓；仿粗体按 GDI 的方式加粗）。字体中没有该字时按族名交给浏览器。
  */
@@ -789,7 +789,7 @@ function paintBorders(ctx: PageContext, item: PageParagraph, scale: number): voi
 
 /**
  * 表格边框的一条线覆盖的像素 `[start, start + size)`（`from` 为线的起点，`size` 为线宽，单位为像素）。WPS 屏幕 EMF
- * 实测（语料 5 份 1012 处表格边框）：每条线画为宽度为线宽取整到像素（至少 1 像素）加 1 缇的矩形，覆盖左上角落在矩形内的
+ * 实测（语料 5 份 1012 处表格边框）：每条线绘制为宽度为线宽取整到像素（至少 1 像素）加 1 缇的矩形，覆盖左上角落在矩形内的
  * 像素，即起点向上取整、终点向上取整后不含。线起点为整数像素时 1.5 磅的线占 3 像素，起点在 0.8 像素处时占 2 像素。
  */
 function edgePixels(from: number, size: number, scale: number): PixelStroke {
@@ -876,7 +876,7 @@ function outerStrokes(l: BorderLine | null, scale: number, reversed: boolean): P
 }
 
 /**
- * 页面边框：`inside` 为真时线画在矩形内侧，否则外侧。同一序号的线（双线的外线与内线）四边相接围成矩形
+ * 页面边框：`inside` 为真时线绘制在矩形内侧，否则绘制在外侧。同一序号的线（双线的外线与内线）四边相接围成矩形
  * （WPS 实测：四角填满，双线的内线在内角相接）。
  */
 function paintPageBorders(ctx: PageContext, b: NonNullable<Page['borders']>, scale: number): void {

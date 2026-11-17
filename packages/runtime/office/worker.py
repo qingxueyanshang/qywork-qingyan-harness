@@ -4,7 +4,7 @@
 写入 response.json 后以 0 退出，动作失败时同样如此；只有 worker 自身崩溃时才以非 0 退出。
 动作：probe、guide、read、write、view、frames、frame、cleanup。
 
-顶层只导入标准库与 util、com：缺第三方包时 probe 仍须能够输出缺项清单。
+顶层只导入标准库与 util、com：缺少第三方包时 probe 仍须能够输出缺项清单。
 """
 
 import contextlib
@@ -200,8 +200,8 @@ class OfficeContext:
     def output(self, path):
         """已声明输出对应的工作副本路径。脚本写入该路径，worker 检查并渲染后再提交到正式路径。
 
-        只给文件名时按文件名对应：输出声明在子目录中，而指南示例只写文件名。恰有一个同名输出时返回它，
-        有多个时报错并列出这几个，由脚本改写为完整路径。
+        只提供文件名时按文件名对应：输出声明在子目录中，而指南示例只写文件名。恰有一个同名输出时返回它，
+        有多个时报错并列出这些输出，由脚本改写为完整路径。
         """
         target = path if os.path.isabs(path) else os.path.join(self.workspace, path)
         for o, _, work in self._works:
@@ -319,7 +319,7 @@ def check_targets(outputs):
         elif cur is None:
             conflicts.append(f"{o['path']} 在读取之后被删除；需重新 read 后再写入")
         else:
-            conflicts.append(f"{o['path']} 在读取之后被改动过；需重新 read 后再写入")
+            conflicts.append(f"{o['path']} 在读取之后被修改；需重新 read 后再写入")
     return conflicts
 
 

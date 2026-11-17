@@ -1,7 +1,7 @@
 /**
  * Provider 错误归类。
  *
- * 归类的唯一目的是让前端知道**应引导用户执行什么操作**。因此分类依据是「用户的下一步动作」
+ * 归类的唯一目的是确定前端**应引导用户执行什么操作**。因此分类依据是「用户的下一步动作」
  * （配置 key / 充值 / 稍后重试 / 更换模型 / 缩减上下文），而不是与 HTTP 状态码一一对应。
  *
  * **判据的优先级**：
@@ -183,7 +183,7 @@ function htmlMessage(html: string): string | null {
  * 服务商的报错原文。
  *
  * 优先取传输层读取的错误正文：OpenAI SDK 只从正文的 `error` 字段取说明，正文是顶层 `{code, message}`
- * 时报为「400 status code (no body)」，原文随之丢失。没有正文时取错误对象的消息并去掉开头的状态码：
+ * 时报为「400 status code (no body)」，原文随之丢失。没有正文时取错误对象的消息并去除开头的状态码：
  * 两个 SDK 的 `APIError.message` 都是「状态码 + 空格 + 说明」，状态码另由 `status` 表达。
  * 消息同样按正文解析：直连适配器以未解析的 HTML 错误页作为消息。
  */
@@ -289,7 +289,7 @@ const RESOURCE_EXHAUSTED: CodeRule = [
 
 /**
  * 上游错误码表，对话（`classify`、`classifyStreamError`）与生成（`media/http.ts`）共用唯一的一份。
- * 只收录官方错误码文档写明为限流、并发超限、余额或额度用尽、鉴权失败，且只靠状态码与原文（`quotaExhausted`）无法正确归类的错误码；
+ * 只收录官方错误码文档写明为限流、并发超限、余额或额度用尽、鉴权失败，且仅依据状态码与原文（`quotaExhausted`）无法正确归类的错误码；
  * 注释为文档给出的含义。文档没有写明的错误码不收录，按状态码与原文处理。键不区分大小写。
  * - `any`：取值本身写明含义、各上游没有不同用法的错误码，对全部请求生效，包括经第三方接口转发、上游按接口地址未收录（渠道商为 null）的请求。
  * - 渠道商分区（`channelVendorOf` 的渠道商）：只在该上游内有含义的错误码（数字业务码：MiniMax 的 1002 是限流，可灵的 1002 是鉴权失败），
@@ -464,7 +464,7 @@ export function upstreamFailureCode(
 /**
  * 只含一个元素的数组取出该元素，其余值原样返回。Gemini API 的 OpenAI 兼容接口以这种数组返回错误正文
  * （`[{"error":{"code":429,"status":"RESOURCE_EXHAUSTED",…}}]`），官方 SDK `google-genai` 的 `APIError` 同样先取出唯一的元素。
- * 不取出时读取不到其中的错误码与说明：限流的原文与额度用尽相同，按原文归为额度用尽而不重发。
+ * 不取出时无法读取其中的错误码与说明：限流的原文与额度用尽相同，按原文归为额度用尽而不重发。
  */
 function singleElement(value: unknown): unknown {
   return Array.isArray(value) && value.length === 1 ? value[0] : value
@@ -528,7 +528,7 @@ export function classifyProviderError(
 /**
  * 流内错误事件中的错误对象，交给 `classifyStreamError` 归类；不是错误事件时为 null。`event` 是 `event:` 行的值，
  * `data` 是该帧 `data` 解析后的对象。三个对话适配器使用本函数，云端网关（改写发给客户端的错误事件）使用同一判定的 `streamErrorAt`：
- * 两处判定不同时，适配器按错误处理而网关未识别的事件会带着上游原文到达用户。
+ * 两处判定不同时，适配器按错误处理而网关未识别的事件会携带上游原文到达用户。
  * - Anthropic：类型为 `error`（取 `type` 字段，没有时取 `event:` 行，第三方接口不一定两者都发送）；错误对象为 `error` 字段，没有时为事件本身。
  * - Chat Completions：带对象形式的 `error` 字段，即错误对象。SSE 已返回 200，错误只能出现在 chunk 中。
  * - Responses：`type` 为 `error` 或 `response.failed`；错误对象依次取 `response.error`、`error`，都没有时为事件本身
@@ -546,7 +546,7 @@ export function streamErrorOf(
 /**
  * 流内错误事件中的错误字段：`error` 是 `streamErrorOf` 返回的错误对象；错误字段为 `holder[key]`，错误对象即事件本身时
  * `key` 为 null、`holder` 为事件。错误字段不是对象时 `holder[key]` 是原值（如字符串），`error` 为新建的空对象。
- * 云端网关按 `holder` 与 `key` 改写帧中的错误字段：只改写 `error` 时，不是对象的错误字段带着上游原文到达电脑端。
+ * 云端网关按 `holder` 与 `key` 改写帧中的错误字段：只改写 `error` 时，不是对象的错误字段携带上游原文到达电脑端。
  */
 export function streamErrorAt(
   provider: ProviderKind,
@@ -787,7 +787,7 @@ export function httpFailureCode(status: number, error: unknown, message: string)
  * 带具体参数信息的 4xx 放入重发表。
  *
  * 词表只收录实际出现过的措辞，**宁可漏判**：漏判的代价是一次上游波动需要用户手动重发，
- * 误判的代价是对不会成功的请求空等五轮退避，并支付五次长 prompt 的费用。
+ * 误判的代价是对不会成功的请求无效等待五轮退避，并支付五次长 prompt 的费用。
  */
 function looksRetryableRejection(status: number, message: string): boolean {
   const normalized = message.trim()
@@ -813,7 +813,7 @@ function looksRetryableRejection(status: number, message: string): boolean {
  * `UND_ERR_`）放在最后一个分支。
  *
  * **必须区分，不能合并为「网络中断或超时」。** 三种失败的下一步动作完全不同：**无法连接**需要修改
- * 接口地址或代理，**连接被断开**重发一次大概率可恢复，**超时**需要先确认是否由本地 60 秒超时触发。合并为同一
+ * 接口地址或代理，**连接被断开**重发一次通常可恢复，**超时**需要先确认是否由本地 60 秒超时触发。合并为同一
  * 句文案等于同时陈述三件事，用户无法判断应执行的操作。
  *
  * **判据按语义划分，不按 errno 表划分。** `ECONNREFUSED` 表示未建立连接，`ECONNRESET`
@@ -896,7 +896,7 @@ function classifyTransport(
 
 /**
  * 传输层失败的形状，不是传输层失败时为 null。供模型接口以外的请求使用：
- * 它们的文案不提「接口地址」，只需要与 `TRANSPORT_SHAPES` 相同的判定。
+ * 它们的文案不包含「接口地址」，只需要与 `TRANSPORT_SHAPES` 相同的判定。
  */
 export function transportFailureKind(err: unknown): TransportFailureKind | null {
   return classifyTransport(err)?.kind ?? null

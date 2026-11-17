@@ -5,7 +5,7 @@
  * 在 WKWebView（macOS 的 Tauri）中 worker 路径与 CSP 都需要额外处理；
  * CodeMirror 6 约 200KB，按语言按需加载，不使用 worker，行为在三个平台上一致。
  *
- * 语言包全部动态导入：一次只用到一两种，全部打入首屏包没有收益。
+ * 语言包全部动态导入：一次只使用一至两种，全部打包进首屏没有收益。
  */
 
 import { EditorState, type Extension } from '@codemirror/state'
@@ -47,7 +47,7 @@ export async function languageFor(path: string): Promise<Extension[]> {
 /**
  * 主题。
  *
- * 全部颜色使用 CSS 变量，不写死数值：编辑器随应用的亮色 / 暗色切换，
+ * 全部颜色使用 CSS 变量，不使用固定数值：编辑器随应用的亮色 / 暗色切换，
  * 无需维护两份主题，也不会出现界面已切换为暗色而代码区仍为亮色的情况。
  */
 export const theme = EditorView.theme({
@@ -111,7 +111,7 @@ export function scrollToLine(view: EditorView, line: number): void {
 
 /**
  * 选中 `from` 到 `to` 一段并滚动到其开头所在的行，超出全文的部分截到末尾。位置按 LF 计，与编辑器的文档一致。
- * 下一帧再滚动一次：目标在视口外时按估算行高定位，自动换行的长行测量后更高，只滚动一次会停在目标之后。
+ * 下一帧再滚动一次：目标在视口外时按估算行高定位，自动换行的长行测量后更高，只滚动一次会定位在目标之后。
  */
 export function selectRange(view: EditorView, from: number, to: number): void {
   const end = view.state.doc.length

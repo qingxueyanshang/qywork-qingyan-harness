@@ -1,7 +1,7 @@
 /**
  * WordprocessingML 部件扫描的公共读取：逐个子元素访问、按命名空间读取属性、开关值与数值。
  *
- * - 元素按本地名匹配；属性先按元素自身的前缀取，取不到再按 WordprocessingML 命名空间匹配。
+ * - 元素按本地名匹配；属性先按元素自身的前缀取，未取得时再按 WordprocessingML 命名空间匹配。
  * - 开关值（`ST_OnOff`）：缺少 `w:val` 为真；`true`、`1`、`on` 为真，`false`、`0`、`off` 为假。
  * - 元素嵌套超过 `MAX_DEPTH`（`../../xml/index.ts`）层时 `eachChild` 抛出 `NestingError`：正文与页眉页脚中由 `body.ts`
  *   截断，其余部件按结构错误处理（`../load.ts` 返回 `corrupt('xml')`）。
@@ -22,7 +22,7 @@ export class NestingError extends Error {
   }
 }
 
-/** 访问当前元素的每个子元素；回调可读到子元素的结束标签为止，也可不前进。 */
+/** 访问当前元素的每个子元素；回调可读取至子元素的结束标签，也可不前进。 */
 export function eachChild(x: Scanner, visit: (local: string) => void): void {
   const depth = x.depth
   if (depth >= MAX_DEPTH) throw new NestingError()
@@ -32,7 +32,7 @@ export function eachChild(x: Scanner, visit: (local: string) => void): void {
   }
 }
 
-/** 读到当前元素的结束标签为止。 */
+/** 读取至当前元素的结束标签。 */
 export function skip(x: Scanner): void {
   eachChild(x, () => {})
 }

@@ -142,7 +142,7 @@ describe('服务商B', () => {
       ],
       maxImages: 10,
     })
-    // 最长边下限去掉达不到的尺寸。
+    // 按最长边下限移除未达到下限的尺寸。
     expect(providerbImageSpec({ ...catalog('gpt-image-2'), min_long_edge: 3840 })?.sizes).toEqual([
       '3840x2160',
       '2160x3840',

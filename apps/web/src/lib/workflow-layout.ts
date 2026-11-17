@@ -243,7 +243,7 @@ function arrangeWorkflowLanes<T>(items: readonly T[], crossings: (upper: T, lowe
 
 /**
  * 按 `layoutWorkflowGraph` 的分配与测得的节点位置生成连线的线段，并给出每层上方空白中的横线数。
- * 图宽以内无法容纳全部竖线时，多出的竖线画在图的右边界之外，`overflow` 是越出的宽度。
+ * 图宽以内无法容纳全部竖线时，多出的竖线绘制于图的右边界之外，`overflow` 是越出的宽度。
  *
  * 不变量：每条线段只属于一条输出线或一组连线，不同归属的线段只相交、不重合也不相接。
  * 违反时图上会多出一条不存在的依赖。因此：

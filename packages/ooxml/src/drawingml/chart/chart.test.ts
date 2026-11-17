@@ -3,7 +3,7 @@
  * 缺省样式、自动颜色、标题与数据标签的样式规则、主题东亚字体为空时的文种字体、垂直线与趋势线、不支持的内容、按引用从单元格取值）、
  * `layout.ts`（百分比取整、数值轴与散点图 x 轴标签的格式、竖直轴区间数、分类标签旋转、图例与绘图区位置、趋势线的图例项、次坐标轴、
  * 坐标轴标题、日期轴的单位数）、`date-axis.ts`（基本单位推定、自动主要单位、标签日期）、`pie3d.ts`（三维饼图的直径与投影）、
- * `paint.ts`（绘制入口不抛错且画出系列，垂直线与趋势线，三维饼图，数据标签的自定义文字与手动位置）；`../text/fonts.ts` 的 `FaceCache.glyphs` 与 `../text/body.ts`
+ * `paint.ts`（绘制入口不抛错且绘制出系列，垂直线与趋势线，三维饼图，数据标签的自定义文字与手动位置）；`../text/fonts.ts` 的 `FaceCache.glyphs` 与 `../text/body.ts`
  * 的点阵绘制；以及 `../../pptx/` 与 `../../xlsx/` 中图表的接入（图形框引用图表部件、主题覆盖、能力边界计数、
  * `../../xlsx/parse/chart-cells.ts` 的引用解析）。
  */
@@ -529,7 +529,7 @@ describe('布局', () => {
 })
 
 describe('绘制', () => {
-  test('柱形与扇区都画到画布上；缺少排版设置时不绘制', () => {
+  test('柱形与扇区都绘制到画布上；缺少排版设置时不绘制', () => {
     const chart = resolved(chartXml(barChart(ser(0, 'a', [1, 2]))))
     const ctx = new RecordingContext()
     const frame = {
@@ -550,14 +550,14 @@ describe('绘制', () => {
       settings: SETTINGS,
     }
     paintChart(scene, chart, frame, identity)
-    // 图表区、绘图区以外：两根柱子各一次填充。
+    // 图表区、绘图区以外：两个柱形各填充一次。
     expect(ctx.named('fill').length).toBeGreaterThanOrEqual(3)
     const empty = new RecordingContext()
     paintChart({ ...scene, ctx: empty, settings: null }, chart, frame, identity)
     expect(empty.calls.length).toBe(0)
   })
 
-  test('坐标轴固定范围之外的数据点不画标记', () => {
+  test('坐标轴固定范围之外的数据点不绘制标记', () => {
     const scatter = (xs: readonly number[]) =>
       resolved(
         chartXml(
@@ -1214,7 +1214,7 @@ describe('垂直线与趋势线', () => {
     expect(resolveChart(readChart(stacked, EMPTY_RELS), SCOPE)).toBeNull()
   })
 
-  test('垂直线每个分类一条，覆盖各系列的点与分类轴之间；趋势线按最小二乘拟合，画在系列之后', () => {
+  test('垂直线每个分类一条，覆盖各系列的点与分类轴之间；趋势线按最小二乘拟合，绘制于系列之后', () => {
     const chart = resolved(
       line(
         ser(0, '丙', [2, 3, 4], trend(blue + linear)) + ser(1, '甲', [-1, 2, 1]),
@@ -1283,7 +1283,7 @@ describe('图表文字的字体与字形', () => {
     expect(english.plot.axes[0]!.text.run.ea).toBe('等线')
   })
 
-  test('FaceCache 的 glyphs 只改变绘制：行高与基线同演示文稿，有点阵的字形按点阵画在整数坐标上', () => {
+  test('FaceCache 的 glyphs 只改变绘制：行高与基线同演示文稿，有点阵的字形按点阵绘制于整数坐标上', () => {
     const glyph = {
       width: 2,
       height: 2,
@@ -1390,7 +1390,7 @@ describe('数据标签的自定义文字与手动位置', () => {
     expect(resolveChart(readChart(withLabels(label(0, field)), EMPTY_RELS), SCOPE)).toBeNull()
   })
 
-  /** 原始失败形状：`c:dLbl/c:layout` 不读取，移动过的标签画在自动位置。 */
+  /** 原始失败形状：`c:dLbl/c:layout` 不读取，移动过的标签绘制于自动位置。 */
   test('手动位置按图表区宽高的比例偏移自动位置', () => {
     const layout =
       '<c:layout><c:manualLayout><c:x val="0.1"/><c:y val="-0.1"/></c:manualLayout></c:layout>'

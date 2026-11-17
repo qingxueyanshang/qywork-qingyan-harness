@@ -182,7 +182,7 @@ export function parseManifest(raw: unknown, path: string): PluginManifest {
       return fail(
         `工具 ${t.name} 不能以插件 id 末段「${idTheme}」开头` +
           `（注册名将为 ${prefix}${t.name}，末段重复出现）` +
-          (suggestion ? `，应改为「${suggestion}」` : '，应去掉该前缀'),
+          (suggestion ? `，应改为「${suggestion}」` : '，应去除该前缀'),
       )
     }
     if (!KNOWN_EFFECTS.includes(t.permissionEffect)) {

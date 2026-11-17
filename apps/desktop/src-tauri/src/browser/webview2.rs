@@ -62,8 +62,8 @@ const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
 
 /// 将下载与右键菜单钩子绑定到原生对象的等待上限。
 ///
-/// `with_webview` 把闭包排入主线程执行，因此此处必须等待回执：不等待就返回时，
-/// 绑定失败要到很久之后才以「该页的下载全部按未授权取消」的形式暴露。
+/// `with_webview` 把闭包排入主线程执行，因此此处必须等待回执：不等待就返回时，绑定失败不会立即报告，
+/// 只在之后以「该页的下载全部按未授权取消」的形式出现。
 const HOOK_WAIT: Duration = Duration::from_secs(10);
 
 /// 本进程的 WebView2 environment：profile 占用、回环 CDP 端口与运行时版本。
@@ -101,7 +101,7 @@ impl Engine {
         Ok(Engine { profile, debug_port, runtime_version, shown: Mutex::new(None) })
     }
 
-    /// 端口在创建子视图之前已分配，因此占用到 profile 时启动后即就绪。
+    /// 端口在创建子视图之前已分配，因此成功占用 profile 时启动后即就绪。
     pub fn settled(&self) -> Result<Runtime, &'static str> {
         if self.profile.is_none() {
             return Err(profile::IN_USE);
@@ -120,7 +120,7 @@ impl Engine {
         let requested = url.to_string();
         let args = format!("{BROWSER_ARGS} --remote-debugging-port={}", self.debug_port);
 
-        // WebView2 不为 `about:blank` 触发 `on_page_load`（实测会等待满 20 秒），因此空白页不等待。
+        // WebView2 不为 `about:blank` 触发 `on_page_load`（实测会等待完整的 20 秒），因此空白页不等待。
         let blank_target = spec.url == BLANK;
         let event_tab = spec.tab_id.to_owned();
         let title_tab = spec.tab_id.to_owned();
@@ -266,7 +266,7 @@ fn close_view(view: Webview<Wv>) {
 ///
 /// **只能传入物理像素。** `set_bounds` 收到 `Logical` 时会按子视图 HWND 的 DPI 再乘一次
 /// 缩放；前端测得的 DOM 矩形已经是 CSS 像素乘以 `devicePixelRatio` 的结果，再乘一次
-/// 会在非 100% 的缩放下放错位置。坐标原点是父窗口客户区左上角。
+/// 会在非 100% 的缩放下使位置错误。坐标原点是父窗口客户区左上角。
 ///
 /// 移动后调用 `NotifyParentWindowPositionChanged`：已打开的下拉列表（`<select>`）是顶层窗口，
 /// 不随子视图移动，WebView2 收到该通知后关闭它。wry 的 `set_bounds` 对子视图不发出该通知，
@@ -294,7 +294,7 @@ fn place(view: &Webview<Wv>, x: i32, y: i32, width: u32, height: u32) {
 ///
 /// **不要改成 `hide()`**：它执行 `ShowWindow(SW_HIDE)` 与 `SetIsVisible(false)`，
 /// 页面停止渲染新帧，`Page.captureScreenshot` 与依赖新帧的等待都会挂起，每条 `mouseMoved`
-/// 约 5 秒后才得到回执。只对容器窗口执行 `SW_HIDE` 的结果相同：WebView2 随父窗口转为隐藏。
+/// 约 5 秒后才得到响应。只对容器窗口执行 `SW_HIDE` 的结果相同：WebView2 随父窗口转为隐藏。
 fn park(view: &Webview<Wv>, width: u32, height: u32) {
     let scale = view.window().scale_factor().unwrap_or(1.0);
     let x = (OFFSCREEN.0 * scale) as i32;

@@ -168,7 +168,7 @@ describe('采集', () => {
     store.close()
   })
 
-  test('会话不存在时抛错，不返回空结果', () => {
+  test('会话不存在时抛出异常，不返回空结果', () => {
     const store = new Store({ path: ':memory:' })
     // 返回空结果时，导出会静默生成一份空文档，
     // 与会话本身为空的情况无法区分。
@@ -245,7 +245,7 @@ describe('json：供脚本读取', () => {
 
   /**
    * json 不裁剪。裁剪会隐藏导出内容不完整这一事实，
-   * 而脚本无法像人一样察觉内容缺失。
+   * 而脚本无法察觉内容缺失。
    */
   test('不受 maxToolChars 影响，原样导出', () => {
     const { store, conversationId } = fixture()

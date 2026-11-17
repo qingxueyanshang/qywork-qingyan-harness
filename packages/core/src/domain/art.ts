@@ -2,7 +2,7 @@
  * Art：由对话模型写出、在画布节点中运行的 HTML 页面。
  *
  * 页面的像素尺寸只记录在 HTML 中：`<meta name="viewport" content="width=W, height=H">`。
- * 服务端读它得到版本尺寸（节点框随之调整），界面读它确定页面视口，截图与录制按它输出；
+ * 服务端从中读取版本尺寸（节点框随之调整），界面据此确定页面视口，截图与录制按该尺寸输出；
  * 不要另存一份尺寸，两处记录会在 Agent 改写文件后不一致。
  */
 
@@ -95,7 +95,7 @@ export function insertAfterHead(html: string, content: string): string {
 
 /**
  * 页面中按相对路径引用图片的两种写法：`src="…"` 与 CSS 的 `url(…)`。第 1 组是写法前缀，第 2 组是路径。
- * 画布显示时按它把工作区图片载入页面（界面 `inlineArtImages`），生成后按它核对与补连线（服务端），两处共用。
+ * 画布显示时按它把工作区图片载入页面（界面 `inlineArtImages`），生成后据此核对并补充连线（服务端），两处共用。
  */
 export const ART_IMAGE_REF_RE =
   /(\bsrc\s*=\s*["']|url\(\s*["']?)([^"'()\s]+?\.(?:png|jpe?g|gif|webp|avif|svg))(?=["')\s])/gi

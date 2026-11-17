@@ -2,7 +2,7 @@
  * 工作表图表的求值（xlsx 与 .xls 两个入口共用）与系列引用（`c:f`）的单元格取值：WPS 表格按单元格显示图表数据，不用图表缓存。
  *
  * - 引用形如 `Sheet1!$A$2:$A$6`、`'数据 表'!$B$1`，多区域写为 `(区域,区域)`，按区域顺序连接；整列与整行引用（到达工作簿网格的
- *   末行或末列，见 `Workbook.gridSize`）截到含内容的范围。
+ *   末行或末列，见 `Workbook.gridSize`）截取至含内容的范围。
  *   外部工作簿（`[1]Sheet1!…`）、名称、缺少工作表名、图表工作表与二维区域无法解析，返回 `null`，调用方改用缓存值。
  * - `visibleOnly` 为真时略去隐藏行（含未列出且 `zeroHeight` 为真的行、行高为 0 的行）与隐藏列中的单元格。
  * - 没有缓存值的公式单元格按空单元格处理（WPS 会重新计算该公式，此处不计算）。
@@ -69,7 +69,7 @@ function parseArea(
   const range = parseRange(text.slice(bang + 1))
   if (sheet === undefined || range === null) return null
   if (range.bottom > range.top && range.right > range.left) return null
-  // 整列、整行引用截到含内容的范围。
+  // 整列、整行引用截取至含内容的范围。
   const bottom = range.bottom >= grid.rows - 1 ? Math.max(range.top, sheet.maxRow) : range.bottom
   const right = range.right >= grid.cols - 1 ? Math.max(range.left, sheet.maxCol) : range.right
   return { sheet, range: { ...range, bottom, right } }

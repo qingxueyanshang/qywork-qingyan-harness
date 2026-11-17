@@ -154,7 +154,7 @@ export function Composer(props: { empty: boolean }) {
     setPanelDockReady(false)
     if (!maximized) return
 
-    // 先强制提交无过渡的隐藏样式，再启用悬浮动效；短定时不受后台帧节流影响。
+    // 先强制提交无过渡的隐藏样式，再启用悬浮动效；短延迟定时器不受后台帧节流影响。
     wrap?.getBoundingClientRect()
     panelDockReadyTimer = setTimeout(() => {
       panelDockReadyTimer = undefined
@@ -278,8 +278,8 @@ export function Composer(props: { empty: boolean }) {
    * **接收后立即清空信号**：它是一次性投递，若保留，下一次投递相同内容时信号没有变化，
    * effect 不会再次执行，按钮点击后没有响应。
    *
-   * **不覆盖已输入的内容**：追加在末尾，中间空一行。用户正在输入时若被清空，
-   * 丢失的是用户自己写的草稿。
+   * **不覆盖已输入的内容**：追加在末尾，中间空一行。清空输入框会
+   * 丢失用户已输入的草稿。
    */
   createEffect(() => {
     const seed = composerSeed()
@@ -287,7 +287,7 @@ export function Composer(props: { empty: boolean }) {
     setComposerSeed(null)
     setText((cur) => (cur.trim() ? `${cur.trimEnd()}\n\n${seed}` : seed))
     ta.focus()
-    // 光标移到末尾：用户需要继续往下写，而不是从头修改。
+    // 光标移到末尾：用户需要在末尾继续输入，而不是从头修改。
     queueMicrotask(() => ta.setSelectionRange(ta.value.length, ta.value.length))
   })
 
@@ -534,8 +534,8 @@ export function Composer(props: { empty: boolean }) {
         <div class="run-context">
           <span class="run-context-label">运行于</span>
           {/* 只显示，不可点击：切换项目在左栏点击即可，在此再放一个入口
-              会形成同一操作的第二条路径。做成 button 还意味着存在可点开的浮层，
-              而该浮层已删除。 */}
+              会形成同一操作的第二条路径。使用 button 会暗示存在可展开的浮层，
+              而此处没有浮层。 */}
           <Show when={workspace()}>
             {(w) => (
               <span class="mode-chip static" data-tip={w().root}>
@@ -726,7 +726,7 @@ export function Composer(props: { empty: boolean }) {
             </Show>
 
             {/* 此处不显示金额：会话流末尾的运行读数条（Transcript 的 `.run-strip`）
-              已显示同一金额。同源同值显示两次，会被读成两笔费用。
+              已显示同一金额。同源同值显示两次，会被误认为两笔费用。
               金额保留在读数条中，是因为它与「本轮的执行情况」放在一起，
               而输入区工具栏服务于下一轮。 */}
 

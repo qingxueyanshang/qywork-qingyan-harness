@@ -5,7 +5,7 @@
 //!
 //! 两个易错点：
 //!
-//! 1. **必须等 sidecar 输出令牌后再创建主窗口。** 等待期间显示可取消的启动窗口。
+//! 1. **必须等待 sidecar 输出令牌后再创建主窗口。** 等待期间显示可取消的启动窗口。
 //!    否则业务 WebView 先加载且无法取得令牌，
 //!    会先短暂显示「未配对」再自行恢复，与启动失败无法区分。
 //! 2. **退出时必须确实终止子进程。** Windows 上父进程结束不会终止子进程；
@@ -520,7 +520,7 @@ pub async fn spawn(
         return Err(anyhow!("应用已经开始退出，取消启动 qy serve"));
     }
 
-    // 后台就绪回执是唯一成功判据；慢启动不等于失败，不能按固定时长杀掉仍在启动的进程。
+    // 后台就绪回执是唯一成功判据；慢启动不等于失败，不能按固定时长终止仍在启动的进程。
     // lib.rs 在等待之前创建可关闭的启动窗口，并保持事件循环运行；关闭时通过 shutdown
     // 终止子进程。真实失败仍由退出事件、读取错误或通道关闭立即报告。
     let mut tail = String::new();
@@ -537,7 +537,7 @@ pub async fn spawn(
         Err(error) => {
             // 首次启动失败同样有可见终态：终止子进程后由 lib.rs 弹出启动失败对话框。
             // 错误本身只能说明「在输出令牌前退出」，退出原因位于 sidecar 的 stderr，
-            // 因此一并附带 stderr 尾部：对话框是用户唯一能看到的输出。
+            // 因此一并附带 stderr 尾部：对话框是界面上唯一显示该输出的位置。
             kill_current(&handle);
             let tail = tail_of(tail.trim_end(), FATAL_STDERR_TAIL_BYTES);
             Err(if tail.is_empty() {
@@ -745,7 +745,7 @@ mod tests {
         })
     }
 
-    /// 原始失败形状：退出时直接终止 sidecar，`handle.stop()` 没有机会执行。请求停止后在时限内退出，不终止。
+    /// 原始失败形状：退出时直接终止 sidecar，`handle.stop()` 不执行。请求停止后在时限内退出，不终止。
     #[tokio::test(start_paused = true)]
     async fn exit_within_the_grace_period_is_not_killed() {
         let (exit, exited) = watch::channel(false);

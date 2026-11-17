@@ -321,7 +321,7 @@ async function restart(id: string, pane: Pane): Promise<void> {
   await closeTerminal(id).catch(() => {})
   await ensureStarted(id, pane)
   // 焦点必须回到终端：按钮随终态栏一起移除后，焦点会落到 body 上，
-  // 新启动的 shell 收不到任何按键，外观与退出前的终端相同。
+  // 新启动的 shell 无法接收任何按键，外观与退出前的终端相同。
   pane.term.focus()
 }
 

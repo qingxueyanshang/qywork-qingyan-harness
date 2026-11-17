@@ -36,7 +36,7 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<number> {
   return total
 }
 
-/** 窗口用完后的第一次占用：发送方在这一次调用中暂停，`blocked` 随之完成。 */
+/** 窗口耗尽后的第一次占用：发送方在这一次调用中暂停，`blocked` 随之完成。 */
 class WatchedCredit extends TunnelCredit {
   readonly blocked = Promise.withResolvers<void>()
   private calls = 0
@@ -112,7 +112,7 @@ describe('控制帧', () => {
   })
 })
 
-test('转发的请求头去掉逐跳头、host、content-length 与 WebSocket 握手头', () => {
+test('转发的请求头去除逐跳头、host、content-length 与 WebSocket 握手头', () => {
   const headers = new Headers({
     host: 'abc.example.com',
     connection: 'Upgrade',
@@ -151,7 +151,7 @@ describe('窗口', () => {
     expect(controls).toEqual([{ type: 'end', sid: 5 }])
   })
 
-  test('窗口用完时暂停读取数据源，归还后继续', async () => {
+  test('窗口耗尽时暂停读取数据源，归还后继续', async () => {
     const credit = new WatchedCredit()
     const sent: number[] = []
     let pulls = 0
@@ -173,7 +173,7 @@ describe('窗口', () => {
     await credit.blocked.promise
     const sentBefore = sent.reduce((a, b) => a + b, 0)
     expect(sentBefore).toBe(TUNNEL_WINDOW)
-    // 暂停期间只多读了正在等待窗口的那一块。
+    // 暂停期间只多读取了正在等待窗口的那一块。
     expect(pulls).toBe(TUNNEL_WINDOW / TUNNEL_CHUNK + 1)
 
     credit.grant(TUNNEL_CHUNK * 2)

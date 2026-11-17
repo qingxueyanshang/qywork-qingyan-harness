@@ -1,5 +1,5 @@
 /**
- * 生成模型的协议与类别：出图等生成接口的请求形状，以及添加模型时的默认协议。
+ * 生成模型的协议与类别：图片生成等生成接口的请求形状，以及添加模型时的默认协议。
  *
  * 与对话协议 `PROVIDER_KINDS` 分开定义：后者的每个值都是对话协议，对话目录、协议下拉框与对话适配器
  * 都按它分派，合并后每一处都必须排除生成协议。
@@ -10,7 +10,7 @@ import { channelVendorOf } from './channel-vendors.ts'
 import type { Currency, ProviderKind } from './model.ts'
 
 /**
- * 一个值 = 一种请求形状，不是一个厂商：火山方舟的出图与 OpenAI 同形状，同属 `openai_images`。
+ * 一个值 = 一种请求形状，不是一个厂商：火山方舟的图片生成接口与 OpenAI 同形状，同属 `openai_images`。
  * 新增值时须同时新增该协议的适配器、`MEDIA_KIND_OUTPUT` 中的一行与目录中的协议默认值。
  */
 export const MEDIA_KINDS = [
@@ -92,7 +92,7 @@ export interface ChannelVideoSpec {
   publicUrls?: true
   /** 参考图以表单文件随提交上传；省略时按 JSON 提交（providerb）。不能与 `publicUrls` 同时设置。 */
   multipart?: true
-  /** 提交时同时发送与所选尺寸对应的分辨率档位 `resolution`：渠道按该字段出图与计价，不按尺寸推断（providerb）。 */
+  /** 提交时同时发送与所选尺寸对应的分辨率档位 `resolution`：渠道按该字段生成与计价，不按尺寸推断（providerb）。 */
   resolutionField?: true
   /** 省略表示价格不明。 */
   price?: ChannelPrice
@@ -100,7 +100,7 @@ export interface ChannelVideoSpec {
 
 /**
  * 拉取模型时由渠道目录得到的图像型号规格，保存在该型号的配置中（providerb）。
- * 尺寸与分辨率档位是两个独立参数，渠道分别计价与出图；只保存目录中的事实。
+ * 尺寸与分辨率档位是两个独立参数，渠道分别据此计价与生成；只保存目录中的事实。
  */
 export interface ChannelImageSpec {
   channel: 'providerb'
@@ -233,7 +233,7 @@ export type GenerateOutput = (typeof GENERATE_OUTPUTS)[number]
 /**
  * 生成输入的用途。生成请求（`MediaInput.role`）与画布连线使用同一组取值。
  *
- * `reference` 是参考图（出图时即待修改的图），`first_frame` / `last_frame` 是视频的首尾帧，
+ * `reference` 是参考图（生成图片时即待修改的图），`first_frame` / `last_frame` 是视频的首尾帧，
  * `video` 是参考视频（编辑、延长或参考生成，具体是哪一种由模型的原生参数或提示词决定），
  * `audio` 是视频生成的参考音频（wav / mp3），须与参考图或参考视频同时提供，不能与首尾帧同时提供。
  */
@@ -283,20 +283,20 @@ export interface MediaDiagnostic {
   kind: 'timeout' | 'connection' | 'http' | 'response'
   /**
    * 生成在远端的结果：`rejected` 接口没有受理，可以重新提交；`unknown` 无法确定是否受理；
-   * `available` 远端仍保留任务或产物，可按任务号或地址取回（下载失败、任务号交出之后的失败）；
+   * `available` 远端仍保留任务或产物，可按任务号或地址取回（下载失败、任务号返回之后的失败）；
    * `failed` 远端受理后报告任务失败，为终态。
    */
   outcome: 'unknown' | 'rejected' | 'available' | 'failed'
   host: string
   elapsedMs: number
-  /** 静默上限（毫秒）：连续这么久未收到数据即中止。生成请求不设上限，此项缺省。 */
+  /** 静默上限（毫秒）：连续该时长未收到数据即中止。生成请求不设上限，此项缺省。 */
   timeoutMs?: number
   status?: number
   /** 连接层的错误码（`ECONNRESET`、`ConnectionRefused` 等）。 */
   code?: string
   requestId?: string
   /**
-   * 失败码，与对话请求同一套（`@qywork/ai` 的 `MediaError.code`）：重试与云端给用户的文字按它判断。
+   * 失败码，与对话请求同一套（`@qywork/ai` 的 `MediaError.code`）：重试与云端向用户显示的文字据此判断。
    * 接口答复了错误状态或在正文中报告了失败时存在；连接失败与响应无法解析时缺省。
    */
   errorCode?: ErrorCode
@@ -373,7 +373,7 @@ export function defaultMediaKind(
       if (vendor === 'google') return 'gemini_images'
       if (vendor === 'xai') return 'xai_images'
       if (vendor === 'minimax') return 'minimax_images'
-      // 火山方舟的出图接口与 OpenAI 形状相同，与第三方接口使用同一协议。
+      // 火山方舟的图片生成接口与 OpenAI 形状相同，与第三方接口使用同一协议。
       return vendor === 'alibaba' ? 'dashscope_images' : 'openai_images'
     case 'video':
       if (vendor === 'google') return catalogKind === 'veo_videos' ? 'veo_videos' : 'gemini_videos'

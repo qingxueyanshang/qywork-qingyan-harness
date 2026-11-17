@@ -39,7 +39,7 @@ interface SpawnRequest {
   argv: string[]
   cwd?: string
   env?: Record<string, string | undefined>
-  /** 非 Windows 上自成进程组，树杀才能终止整个进程组（理由同 `spawnGuarded`）。 */
+  /** 非 Windows 上自成进程组，按进程树终止时才能终止整个进程组（理由同 `spawnGuarded`）。 */
   detached: boolean
 }
 interface KillRequest {

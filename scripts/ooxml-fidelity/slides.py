@@ -112,7 +112,7 @@ def _target(z: zipfile.ZipFile, part: str, rel_type: str) -> str:
 
 
 def _faces(xml: str, theme: dict) -> set:
-    """xml 中出现的字体名；+mj-lt 等主题引用按 theme 换成实际字体名，空名称不计。"""
+    """xml 中出现的字体名；+mj-lt 等主题引用按 theme 替换为实际字体名，空名称不计。"""
     out = set()
     for face in re.findall(r'typeface="([^"]*)"', xml):
         face = theme.get(face, face)

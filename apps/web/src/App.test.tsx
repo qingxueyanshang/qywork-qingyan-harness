@@ -250,7 +250,7 @@ describe('连接恢复', () => {
           ],
         }
       }
-      throw new Error(`没有桩这条：${path}`)
+      throw new Error(`未设置桩的请求：${path}`)
     }
 
     store.setWorkspace(null)

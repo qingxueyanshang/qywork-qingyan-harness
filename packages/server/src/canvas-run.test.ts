@@ -114,7 +114,7 @@ async function node(root: string, id: string): Promise<CanvasGenerateNode> {
   return n
 }
 
-/** 等到条件成立；生成在另一个服务实例中进行时，测试只能按画布文件的状态判断进度。 */
+/** 等待条件成立；生成在另一个服务实例中进行时，测试只能按画布文件的状态判断进度。 */
 async function until(check: () => Promise<boolean>, timeoutMs = 3000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!(await check())) {
@@ -155,7 +155,7 @@ describe('画布批量运行', () => {
     { op: 'add_generate', ref: '$c', output: 'image', prompt: 'independent' },
   ]
 
-  test('独立节点并行；批内依赖等上游落盘后运行，重复 id 不重复生成', async () => {
+  test('独立节点并行；批内依赖等待上游落盘后运行，重复 id 不重复生成', async () => {
     const { ws, svc, ids } = await setup(ops)
     const fake = fakePort()
     const batch = svc.runs.runBatch(ws, PATH, [ids.$b!, ids.$a!, ids.$c!, ids.$a!], {
@@ -319,8 +319,8 @@ describe('画布批量运行', () => {
   })
 
   /**
-   * 走云端的任务在云端一侧被上游拒绝后重试，取回时由云端任务的查询回报，卡片与生成时相同地显示重试。
-   * 原始失败形状：取回不接收重试回报，卡片在云端重试期间显示「取回中」。
+   * 经由云端的任务在云端一侧被上游拒绝后重试，取回时由云端任务的查询返回重试信息，卡片与生成时同样显示重试。
+   * 原始失败形状：取回不接收重试信息，卡片在云端重试期间显示「取回中」。
    */
   test('取回时远端一侧的重试等待显示为第几次重试，等待结束后恢复原状态', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
@@ -348,7 +348,7 @@ describe('画布批量运行', () => {
   })
 
   /**
-   * 原始失败形状：重试日志对应不到画布卡片，运行记录中没有失败码。
+   * 原始失败形状：重试日志无法对应到画布卡片，运行记录中没有失败码。
    * 生成与取回的调用带画布路径、节点与任务记录的路径（`MediaCall.logFields`）；请求诊断中的失败码随运行记录写入画布文件。
    */
   test('生成与取回的调用带画布、节点与任务记录的日志标识；运行记录的诊断保留失败码', async () => {
@@ -383,15 +383,15 @@ describe('画布批量运行', () => {
   })
 
   /**
-   * 走云端的出图与音频交出任务号：写入任务记录，停止时与视频相同按任务号向云端撤销。
-   * 原始失败形状：只有视频按任务号撤销，停止走云端的出图或音频时只结束本地等待，云端任务照常执行并扣费。
+   * 经由云端的出图与音频返回任务号：写入任务记录，停止时与视频相同按任务号向云端撤销。
+   * 原始失败形状：只有视频按任务号撤销，停止经由云端的出图或音频时只结束本地等待，云端任务照常执行并扣费。
    * 云端撤销成功（请求尚未发往上游，积分已退回）时删除该版本与任务记录；云端答复已开始时保留记录，之后取回结果。
    */
   test.each([
     ['image', 'cancelled'],
     ['audio', 'cancelled'],
     ['image', 'started'],
-  ] as const)('走云端的%s：停止时按任务号向云端撤销，云端答复 %s', async (output, remote) => {
+  ] as const)('经由云端的%s：停止时按任务号向云端撤销，云端答复 %s', async (output, remote) => {
     const { ws, svc, ids } = await setup([{ op: 'add_generate', ref: '$g', output, prompt: '猫' }])
     const fake = fakePort()
     const run = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -451,10 +451,10 @@ describe('画布批量运行', () => {
   })
 
   /**
-   * 原始失败形状：视频卡由上一轮发起、本轮要等结果时，run_canvas 只返回「该卡片正在生成，未重复提交」，
+   * 原始失败形状：视频卡由上一轮发起、本轮需要等待结果时，run_canvas 只返回「该卡片正在生成，未重复提交」，
    * 画布工具没有等待的途径，模型改为操控界面等待。
    */
-  test('指定的卡正在生成时不重复提交，等待该次生成并返回其结果；中止只结束等待，不停止生成', async () => {
+  test('指定的卡片正在生成时不重复提交，等待该次生成并返回其结果；中止只结束等待，不停止生成', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const first = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -594,7 +594,7 @@ describe('画布运行：图像', () => {
   })
 
   /**
-   * 原始失败形状：同步出图进行中画布被改名，而工作区中早有一份含同一卡片 id 的副本；回写只能按卡片 id 查找，两张画布都含该卡，
+   * 原始失败形状：同步出图进行中画布被改名，而工作区中早有一份含同一卡片 id 的副本；回写只能按卡片 id 查找，两张画布都含该卡片，
    * 无法确定写回哪一张。同步生成也在提交之前登记引用任务记录的占位版本后，归属按记录判定：副本不引用该记录。
    */
   test('同步生成期间画布被改名、另有含同一卡片的旧副本：按任务记录写回改名后的画布，副本不受影响', async () => {
@@ -816,7 +816,7 @@ describe('画布运行：Art', () => {
 
   /**
    * 原始失败形状：设计稿页面无法读取工作区图片，模型每次生成后用脚本把图片 base64 内嵌进 HTML，
-   * 再次运行时整页发回模型（一次 $1.415）。改为告诉模型参考图相对页面的路径，页面按路径引用。
+   * 再次运行时整页发回模型（一次 $1.415）。改为向模型提供参考图相对页面的路径，页面按路径引用。
    */
   test('参考图附带相对页面的路径；页面引用的工作区图片自动连线，不存在的写入回执', async () => {
     const { ws, ids } = await setup([
@@ -906,7 +906,7 @@ describe('画布运行：文本卡引用', () => {
     await again.done
   })
 
-  test('摘录无法定位或文件不存在时不提交生成；读取画布标出失效的摘录卡与引用它的卡；修改文件时报告二者', async () => {
+  test('摘录无法定位或文件不存在时不提交生成；读取画布标出失效的摘录卡与引用它的卡片；修改文件时报告二者', async () => {
     const { ws, svc, ids } = await setup([
       EXCERPT,
       { op: 'add_file', ref: '$whole', path: '制作脚本.md', name: '制作脚本' },
@@ -961,10 +961,10 @@ describe('画布运行：文本卡引用', () => {
   })
 
   /**
-   * 原始失败形状：视频卡换到 providera（声明 @ImageN）后，提示词与文本卡中仍是 @图片N、参照图片N，
-   * 编号与连线一致，每张卡须逐处改写后才能运行。换模型后读取画布不标问题，发送时按 providera 的写法改写，卡片与文件不改写。
+   * 原始失败形状：视频卡改用 providera（声明 @ImageN）后，提示词与文本卡中仍是 @图片N、参照图片N，
+   * 编号与连线一致，每张卡片须逐处改写后才能运行。更换模型后读取画布不标记问题，发送时按 providera 的写法改写，卡片与文件不改写。
    */
-  test('换模型后手写的素材编号按新模型的写法发送：读取画布不标问题，卡片与文本卡不改写', async () => {
+  test('更换模型后手写的素材编号按新模型的写法发送：读取画布不标记问题，卡片与文本卡不改写', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-canvas-run-'))
     await writeFile(join(root, 'a.png'), PNG)
     await writeFile(
@@ -1276,7 +1276,7 @@ describe('画布运行：视频', () => {
 
   /**
    * 原始失败形状：《留给屋檐的信》8 个视频任务提交后，画布文件与所在目录先后被改名；6 个任务完成后产物已落盘，
-   * 而改名后的画布中这些卡仍指向已删除的任务记录，结果与任务号一并无法取回。
+   * 而改名后的画布中这些卡片仍指向已删除的任务记录，结果与任务号一并无法取回。
    */
   test('提交后画布被改名并移动、远端完成：结果自动写回改名后的画布，不需要取回，不留下任务记录', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
@@ -1322,7 +1322,7 @@ describe('画布运行：视频', () => {
     expect(generated.filter((f) => f.endsWith('.task.json'))).toEqual([])
   })
 
-  test('画布在完成时无法读取：任务记录保留并写明产物；画布恢复后取回直接接上，不再查询与下载', async () => {
+  test('画布在完成时无法读取：任务记录保留并写明产物；画布恢复后取回直接使用记录中的产物，不再查询与下载', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -1366,7 +1366,7 @@ describe('画布运行：视频', () => {
     }
   })
 
-  test('一张卡有两个待取回版本时按版本 id 分别取回', async () => {
+  test('一张卡片有两个待取回版本时按版本 id 分别取回', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     for (const task of ['t-1', 't-2']) {
@@ -1514,7 +1514,7 @@ describe('画布运行：取消', () => {
   })
 
   test.each([true, false])(
-    '暂停旧任务后再次生成，再取回旧任务（成功=%s）不覆盖新成片或丢掉任务记录',
+    '暂停旧任务后再次生成，再取回旧任务（成功=%s）不覆盖新成片或丢失任务记录',
     async (success) => {
       const { ws, svc, ids } = await setup(VIDEO_CARD)
       const fake = fakePort()
@@ -1592,7 +1592,7 @@ describe('画布运行：取消', () => {
     expect([after.current, after.versions.map((v) => v.id)]).toEqual([kept, [kept]])
   })
 
-  test('视频尚未取得任务号时停止本地等待，不等任务号、不调用远端撤销；未在生成时返回 409', async () => {
+  test('视频尚未取得任务号时停止本地等待，不等待任务号、不调用远端撤销；未在生成时返回 409', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const { done } = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -1613,7 +1613,7 @@ describe('画布运行：取消', () => {
     ).toBe(409)
   })
 
-  test('停止期间到达的任务号仍落盘并留待取回，不把已有任务报成未知或重新提交', async () => {
+  test('停止期间到达的任务号仍落盘并留待取回，不把已有任务报告为未知或重新提交', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     let entered = () => {}
     const ready = new Promise<void>((resolve) => {
@@ -1849,7 +1849,7 @@ describe('画布运行：生成记录', () => {
     expect(runs[0]).not.toHaveProperty('message')
   })
 
-  test('删除生成卡之后记录仍保留', async () => {
+  test('删除生成卡片之后记录仍保留', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })

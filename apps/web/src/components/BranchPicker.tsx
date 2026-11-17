@@ -24,7 +24,7 @@ function said(e: unknown, fallback: string): string {
  *
  * 分支列表在点开时才获取：并非每次打开会话都会切换分支，而 `for-each-ref` 需要启动进程。
  * 每次点开都重新获取：用户随时可能在终端中新建分支，缓存的列表
- * 会缺少刚建好的分支。
+ * 会缺少新建的分支。
  */
 export function BranchPicker() {
   const [open, setOpen] = createSignal(false)

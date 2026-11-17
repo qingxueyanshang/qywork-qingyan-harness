@@ -21,7 +21,7 @@ export function foldKey(kind: 'tool' | 'thinking' | 'group', id: string): string
 export function Fold(props: {
   id: string
   label: JSX.Element
-  /** 终态文字。成功时不显示：一屏几十行都显示「成功」不提供任何信息。 */
+  /** 终态文字。成功时不显示：一屏数十行都显示「成功」不提供任何信息。 */
   statusWord?: string
   target?: string
   /**
@@ -43,7 +43,7 @@ export function Fold(props: {
    * 持续上下跳动。`.fold-pre` 一次展开或收起改变 200px 高度，而一轮中有多段思考与
    * 多组命令，内容高度在执行过程中反复增减。实测一轮四步：会话流高度
    * 降低 5 次，幅度为 58 / 82 / 122 / 146 / 191px。
-   * 停留在底部阅读的用户因此经历数百像素的往返位移，而用户没有进行任何操作。
+   * 在底部阅读时视口因此产生数百像素的往返位移，而用户没有进行任何操作。
    *
    * 收起状态并不缺少信息：思考条目的标签中含实时更新的正文摘要，工具组的标题列出
    * 执行了哪些操作。需要查看全文时由用户展开，展开后不会被自动收起。

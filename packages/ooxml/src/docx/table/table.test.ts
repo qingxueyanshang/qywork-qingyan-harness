@@ -730,7 +730,7 @@ describe.skipIf(!LOCAL_FONTS)('排版与分页（本机字体）', () => {
       ])
     })
 
-    test('可用宽度：兼容模式 15 为版心减表格左右框线的一半（不看单元格边框），14 为版心加表格左右边距，都减左缩进；pct 的 tblW 按比例，不减左缩进', async () => {
+    test('可用宽度：兼容模式 15 为版心减表格左右框线的一半（不考虑单元格边框），14 为版心加表格左右边距，都减左缩进；pct 的 tblW 按比例，不减左缩进', async () => {
       const long = auto([
         [
           [H.repeat(30), 'auto'],
@@ -1229,7 +1229,7 @@ describe.skipIf(!LOCAL_FONTS)('排版与分页（本机字体）', () => {
     near(floating[1]![0]!.y, 73.5)
   })
 
-  test('浮动表格的横向位置：基准加 tblpX，不看对齐方式；兼容模式 15 单元格左边在该处，14 文字在该处加 tblInd', async () => {
+  test('浮动表格的横向位置：基准加 tblpX，不考虑对齐方式；兼容模式 15 单元格左边在该处，14 文字在该处加 tblInd', async () => {
     // WPS（页边距 90 磅、tblpX 1812 缇、单元格左边距 5.4 磅，构造文档 w11b）：第一个单元格文字的横坐标。
     const pos = (anchor: string) =>
       `<w:tblpPr w:leftFromText="180" w:rightFromText="180" w:vertAnchor="text" w:horzAnchor="${anchor}" w:tblpX="1812" w:tblpY="145"/>`
@@ -1320,7 +1320,7 @@ describe.skipIf(!LOCAL_FONTS)('排版与分页（本机字体）', () => {
 })
 
 describe('绘制：表格边框与虚框', () => {
-  test('有边框的边按线宽绘制，无边框的边画 1 像素 #c8c8c8 的虚框，按页面像素坐标每 4 像素留空 1 像素', () => {
+  test('有边框的边按线宽绘制，无边框的边绘制 1 像素 #c8c8c8 的虚框，按页面像素坐标每 4 像素留空 1 像素', () => {
     const table: PageTable = {
       kind: 'table',
       block: 0,

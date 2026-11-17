@@ -560,7 +560,7 @@ const BULLET_HEIGHT = 0.68
 
 /**
  * 一行的纵向中心：基线之上 `(上沿 − 下沿) / 2`，上下沿取法同 `mixedBaseline`。图片项目符号的中心在首行的纵向中心
- * （WPS 演示实测：项目符号字号变化时图片中心不动，同一字号下微软雅黑的图片比 Arial 高 2 像素）。
+ * （WPS 演示实测：项目符号字号变化时图片中心位置不变，同一字号下微软雅黑的图片比 Arial 高 2 像素）。
  */
 function lineMiddle(line: TextLine, faces: FaceCache): number {
   let ascent = 0
@@ -716,7 +716,7 @@ interface Glyph {
 const RAISE = { x: 0.5, y: 0.5 }
 
 /**
- * 在字的位置调用 `draw`：`flow` 的字在原位置；直立的字以字框中心（步进的中点、上下沿的中点）逆时针转 90°，
+ * 在字的位置调用 `draw`：`flow` 的字在原位置；直立的字以字框中心（步进的中点、上下沿的中点）逆时针旋转 90°，
  * 当前变换在调用期间临时修改。
  */
 function placeGlyph(ctx: PaintContext, g: Glyph, draw: (x: number, y: number) => void): void {
@@ -825,7 +825,7 @@ function collect(
   return { glyphs, lines, highlights, formulas }
 }
 
-/** 按屏幕显示绘制：字形来源、文本区域到设备坐标的变换与画布尺寸（ClearType 字形裁到画布之内）。 */
+/** 按屏幕显示绘制：字形来源、文本区域到设备坐标的变换与画布尺寸（ClearType 字形裁剪到画布之内）。 */
 interface ScreenTarget {
   readonly text: ScreenText
   readonly matrix: Matrix
@@ -835,10 +835,10 @@ interface ScreenTarget {
 
 /**
  * 逐字绘制。`screen` 不为 `null` 且 `matrix` 不含旋转与斜切时按屏幕显示绘制：基线取整到设备像素，
- * 有单色字形的字（`ScreenText.bitmap`：点阵、提示后的轮廓或倾斜的轮廓）画在取整后的设备坐标上；其余的字在
+ * 有单色字形的字（`ScreenText.bitmap`：点阵、提示后的轮廓或倾斜的轮廓）绘制于取整后的设备坐标上；其余的字在
  * `screen.clearType` 不为 `null` 且填充为不透明纯色时以 ClearType 字形写入画布像素，同一字体、字号、颜色与基线的
  * 相邻字合为一段（GDI 把一段文字的覆盖相加后混合），这一批字收集完后交给 `TextClearType.paint`。旋转与斜切的文字、
- * 半透明的文字与没有 ClearType 字形的字以 `fillText` 绘制，在第一个这样的字之前混合暂存的字形段（`TextClearType.flush`）。
+ * 半透明的文字与没有 ClearType 字形的字以 `fillText` 绘制，在第一个此类字之前混合暂存的字形段（`TextClearType.flush`）。
  */
 function drawGlyphs(
   ctx: PaintContext,
@@ -853,7 +853,7 @@ function drawGlyphs(
   let runKey = ''
   let font = ''
   let flushed = false
-  /** 直接画到画布上的字（`fillText`、点阵）之前，先混合暂存的 ClearType 字形段。 */
+  /** 直接绘制到画布上的字（`fillText`、点阵）之前，先混合暂存的 ClearType 字形段。 */
   const direct = () => {
     if (flushed) return
     screen?.clearType?.flush()
@@ -1037,7 +1037,7 @@ export function paintBody(
   }
   ctx.restore()
 
-  // 阴影：按阴影参数分组，每组的字形画到图层后只绘制阴影。
+  // 阴影：按阴影参数分组，每组的字形绘制到图层后只绘制阴影。
   const groups = new Map<string, { shadow: OuterShadow; glyphs: Glyph[] }>()
   for (const g of glyphs) {
     const own = g.paint.style?.effects ?? []
@@ -1067,7 +1067,7 @@ export function paintBody(
     }
   }
   if (groups.size > 0 || glows.size > 0 || reflections.size > 0) faces.clearType?.flush()
-  // 映像：逐行把带映像的字画到图层，映像框为行顶到基线（见 `reflectionExtension`），以框的底边为对称轴。
+  // 映像：逐行把带映像的字绘制到图层，映像框为行顶到基线（见 `reflectionExtension`），以框的底边为对称轴。
   for (const { reflection, line, glyphs: list } of reflections.values()) {
     const bounds = glyphBounds(list, target.matrix, canvas)
     if (bounds === null) continue
@@ -1154,7 +1154,7 @@ export function paintBody(
     group.glyphs.push(g)
     fills.set(key, group)
   }
-  // 非纯色填充、轮廓与下划线画在文字之上，见 `TextClearType`。
+  // 非纯色填充、轮廓与下划线绘制于文字之上，见 `TextClearType`。
   if (fills.size > 0 || lines.length > 0 || glyphs.some((g) => g.paint.style?.outline))
     faces.clearType?.flush()
   for (const { fill, area, glyphs: list } of fills.values()) {

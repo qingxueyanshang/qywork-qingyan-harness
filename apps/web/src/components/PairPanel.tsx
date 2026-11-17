@@ -30,7 +30,7 @@ const POLL_MS = 2000
 
 const offlineMessage = (t: TunnelStatus | null) => (t?.state === 'offline' ? t.message : null)
 
-/** 开关左侧的状态：圆点加一句话，过长时截断，完整内容见悬停提示。 */
+/** 开关左侧的状态：圆点加一行文字，过长时截断，完整内容见悬停提示。 */
 function Status(props: { tone: 'success' | 'muted' | 'danger' | 'warning'; text: string }) {
   return (
     <span class={`pair-status pair-status-${props.tone}`} data-tip={props.text}>

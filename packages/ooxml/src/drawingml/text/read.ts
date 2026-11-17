@@ -4,7 +4,7 @@
  * - 读取结果只记录文档中出现的字段（规格），继承在 `resolve.ts` 中逐级解决。
  * - 单位：字号、字距、`spcPts` 换算为磅；边距、缩进、制表位为 EMU；百分比为小数。
  * - `buClrTx`、`buSzTx`、`buFontTx`（跟随文字）分别记为 `bulletColor`、`bulletSize`、`bulletFont` 的 `null`。
- * - 列表样式只读 `lvl1pPr`–`lvl9pPr`，不读 `defPPr`：WPS 不使用任何层级的 `defPPr`（实测形状 `lstStyle` 与
+ * - 列表样式只读取 `lvl1pPr`–`lvl9pPr`，不读取 `defPPr`：WPS 不使用任何层级的 `defPPr`（实测形状 `lstStyle` 与
  *   `defaultTextStyle` 中的 `defPPr` 字号均不生效）。
  * - 段落中的公式（`a14:m`，其中为 `m:oMath` 或 `m:oMathPara`）只出现在扫描器选中要求 `a14` 的 `AlternateContent` 分支时，
  *   字符属性（`a:rPr`）按字段属性读取。

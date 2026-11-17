@@ -91,7 +91,7 @@ describe('请求结果只显示产品文案', () => {
       diagnostic: null,
     } as const
     expect(requestOutcome({ ...base, status: 'received', hedge: { won: true } })).toBe(
-      '已完成，采用补发的一份',
+      '已完成，采用补发的请求',
     )
     expect(requestOutcome({ ...base, status: 'received', hedge: { won: false } })).toBe(
       '已完成，已补发',
@@ -314,7 +314,7 @@ describe('读数格式', () => {
     expect(hitRate(u)).toBe('N/A')
   })
 
-  /** 旧数据没有逐轮记录。回落到累计值，不得显示 `—`：它会被理解为「没有缓存」。 */
+  /** 旧数据没有逐轮记录。回落到累计值，不得显示 `—`：它会被误认为「没有缓存」。 */
   test('命中率：没有逐轮记录时回落到整轮累计', () => {
     expect(hitRate(usage({ inputTokens: 250, cachedTokens: 750, turns: [] }))).toBe('75.00%')
   })

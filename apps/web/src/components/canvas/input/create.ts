@@ -32,7 +32,7 @@ export const addTimeline = async (canvas: CanvasController, near = canvas.center
 
 /**
  * Art 录制：从实时页面当前的状态起录制 `seconds` 秒。Art 节点保持选中：取消选中会关闭实时页面，
- * 用户转好的镜头随之丢失。
+ * 用户调整的视角随之丢失。
  */
 export const recordNode = (canvas: CanvasController, id: string, seconds: number) => {
   canvas.setMenu(null)

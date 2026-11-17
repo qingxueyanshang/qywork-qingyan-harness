@@ -64,7 +64,7 @@ interface Catalog {
 }
 
 /**
- * 云端生成型号在配置中的形状：协议为该类别的云端生成协议，规格中记下原协议、原协议的规格来源与单价，
+ * 云端生成型号在配置中的形状：协议为该类别的云端生成协议，规格中记录原协议、原协议的规格来源与单价，
  * 参数表按原协议取得（`lookupMediaModel`）。
  */
 function storedMedia(list: readonly CatalogMediaModel[]): Record<string, StoredMediaModel> {
@@ -186,8 +186,8 @@ export interface CloudAccountOptions {
   /** 云端接口写入或删除之后。 */
   onChange?: () => void
   /**
-   * 每个云端请求的超时，默认 20 秒。请求都必须带上：账号窗口与登录按钮等待请求返回，
-   * 连接停滞而没有超时时，界面一直停在读取中，不显示失败原因，也无法重试。
+   * 每个云端请求的超时，默认 20 秒。每个请求都必须设置：账号窗口与登录按钮等待请求返回，
+   * 连接停滞而没有超时时，界面持续显示读取中，不显示失败原因，也无法重试。
    */
   timeoutMs?: number
   /** 读取请求连接失败后各次重发之前的等待，毫秒；默认重发两次。 */
@@ -204,11 +204,11 @@ function failure(status: number, errorCode: string | null): string | null {
   if (errorCode === 'stream_interrupted') return '连接中断'
   // 本机停止本轮或连接断开，云端随即中止上游并按估算结算。
   if (errorCode === 'client_disconnected') return '已中断'
-  // 云端服务在请求进行中崩溃，预扣已全额退回（云端 `gateway/holds.ts`）。
+  // 云端服务在请求进行中崩溃，预扣已全额退回。
   if (errorCode === 'service_interrupted') return '服务中断，积分已退回'
   if (errorCode === 'upstream_unreachable') return '无法连接模型服务'
   if (errorCode.startsWith('upstream_')) return `${status} ${httpStatusName(status)}`
-  // 生成任务的三种不计费终态（云端 `media/runner.ts`）：预扣全额退回。
+  // 生成任务的三种不计费终态：预扣全额退回。
   if (errorCode === 'media_failed') return '生成失败，积分已退回'
   if (errorCode === 'media_cancelled') return '已撤销，积分已退回'
   if (errorCode.startsWith('media_unknown_')) return '结果不明，积分已退回'

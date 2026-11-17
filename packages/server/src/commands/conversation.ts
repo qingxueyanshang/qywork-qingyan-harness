@@ -45,7 +45,7 @@ export const conversationCommands = handlers({
 
   'conversation.setMode': {
     handle(cmd, deps) {
-      // 取值在写入前校验：账本列的 CHECK 约束会使非法值在 UPDATE 时抛出，指令得不到回执。
+      // 取值在写入前校验：账本列的 CHECK 约束会使非法值在 UPDATE 时抛出，指令没有回执。
       if (cmd.mode !== 'auto' && cmd.mode !== 'full') {
         reject(deps.ws, cmd.type, 'invalid_payload', `未知的权限模式 "${String(cmd.mode)}"`)
         return

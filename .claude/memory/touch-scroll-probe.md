@@ -6,7 +6,7 @@ metadata:
 ---
 
 修改 `apps/web/src/components/transcript/conversation-scroll.ts` 的 `createConversationScroll` 后，先用隔离实例实测，再报告结果。
-组件测试中手工派发的 scroll 事件不含浏览器的时序：scroll 事件晚于写入一帧派发，其间内容增高会改变读到的距离。
+组件测试中手工派发的 scroll 事件不含浏览器的时序：scroll 事件晚于写入一帧派发，其间内容增高会改变读取到的距离。
 
 - 实测脚本：`.tmp/probe/touch-follow.mjs`（每 40ms 追加一行，向上滑动后再滑回底部，统计被写回底部与跟随未恢复的次数）、
   `.tmp/probe/touch-static.mjs`（静止内容下逐帧记录与手势方向相反的位移）。启动方式见 [[probe-ui-with-isolated-instance]]，

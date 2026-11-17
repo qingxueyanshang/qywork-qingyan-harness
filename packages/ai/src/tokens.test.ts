@@ -4,7 +4,7 @@
  * 覆盖范围：`tokens.ts` 全部，以及 `catalog.ts` 中各型号 `ModelSpec.density` 与实测值的偏差。
  *
  * 断言的是失败形状与偏差区间，不是具体数字：具体数字随标定变化，
- * 而下列低估、暴涨与口径混用都是实测出现过的形状，改动使其复现时测试必须失败。
+ * 而下列低估、高估与口径混用都是实测出现过的形状，改动使其复现时测试必须失败。
  * 实测值存于 `fixtures/token-samples.json`：样本只取仓库内文本与合成文本，各模型的真实 token 数按
  * 「样本作为一条用户消息发送，减去只含 ok 的基线请求」测得。
  */
@@ -196,7 +196,7 @@ function pngBase64(width: number, height: number, padding = 0): string {
 
 describe('图片', () => {
   /**
-   * 实测的暴涨形状：1 MB 图片约为 137 万个 base64 字符，按字符估算为数十万 token，
+   * 实测的高估形状：1 MB 图片约为 137 万个 base64 字符，按字符估算为数十万 token，
    * provider 实际只计数百至数千。附加一张图片后，面板读数从 2% 升至 39%。
    */
   test('按宽高计，不按 base64 长度计', () => {
@@ -328,7 +328,7 @@ describe('视频', () => {
 
 describe('消息', () => {
   /**
-   * 实测的漏计形状：`write_file` 的整份文件正文位于 tool call 的 arguments 中，
+   * 实测的遗漏计数形状：`write_file` 的整份文件正文位于 tool call 的 arguments 中，
    * 只计算 `m.content` 时，面板上该部分为 0。
    */
   test('tool call 参数必须计入', () => {
@@ -378,7 +378,7 @@ describe('消息', () => {
     expect(native - bare).toBe(700)
   })
 
-  test('每条消息计入固定协议开销：几十条短消息不会被系统性低估', () => {
+  test('每条消息计入固定协议开销：数十条短消息不会被系统性低估', () => {
     const many = Array.from({ length: 50 }, () => ({ role: 'user' as const, content: '' }))
     expect(estimateMessages(many, only('message', 3))).toBe(150)
   })
@@ -404,7 +404,7 @@ describe('整个请求', () => {
 
 /**
  * 声明了特征计数的文本块：发出的是另一段内容，`text` 只是它的标记。估算必须按声明的计数计，
- * 否则占用读数、锚点准入与投递额度都只计入标记的几十个字符。
+ * 否则占用读数、锚点准入与投递额度都只计入标记的数十个字符。
  */
 describe('声明了特征计数的文本块', () => {
   const body = '技能主文档的正文。Skill body with mixedCase words, 42 digits; 生僻字龘。\n'.repeat(

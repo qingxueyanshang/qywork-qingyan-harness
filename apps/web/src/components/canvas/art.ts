@@ -5,7 +5,7 @@
  * - iframe 必须带 `sandbox="allow-scripts"`：页面是模型写出的代码，不能访问界面的存储与 DOM，也不能使窗口跳转。
  * - 隐藏的页面（封面）用 `visibility: hidden` 放在视口内：放在视口外或被 `clip-path` 裁掉时，
  *   读取其中的 WebGL 画面会使渲染进程崩溃。
- * - 页面时钟由运行时接管（`artRuntime`）：手动模式下按界面给出的时刻逐帧推进，录制的帧率因此与机器快慢无关。
+ * - 页面时钟由运行时接管（`artRuntime`）：手动模式下按界面给出的时刻逐帧推进，录制的帧率因此与机器性能无关。
  */
 
 import {
@@ -150,7 +150,7 @@ function artRuntime(opts: RuntimeOptions): void {
       scale: 1,
       backgroundColor: background(),
     })
-    // 不挂载的 iframe 没有 contentWindow，库按「没有缺省样式」处理，计算样式全部内联。不要省略：
+    // 未挂载的 iframe 没有 contentWindow，库按「没有缺省样式」处理，计算样式全部内联。不要省略：
     // 库的缺省做法是挂载一个 srcdoc iframe 读取缺省样式，它在沙箱中是另一个不透明源，读取即抛错。
     context.sandbox = document.createElement('iframe')
     try {
@@ -174,7 +174,7 @@ function artRuntime(opts: RuntimeOptions): void {
       post({ op: 'frame', id: m.id, error: text(err) })
     }
   })
-  // 不要改为等下一个动画帧：不可见的跨源 iframe（封面）中动画帧暂停，加载完成永远不会报告。
+  // 不要改为等待下一个动画帧：不可见的跨源 iframe（封面）中动画帧暂停，加载完成不会被报告。
   addEventListener('load', () => setTimeout(() => post({ op: 'ready' })))
 }
 

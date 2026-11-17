@@ -66,7 +66,7 @@ export function parseArgs(args: string[]): Command {
  *
  * 不读取 WSL 用户级的 git 配置：CI 的 runner 上没有该层配置，测试结果不能随之变化。
  *
- * 不要改成分离头检出：CI 的检出在分支上，以仓库自身为工作目录的测试在分离头下无法取得当前分支，
+ * 不要改为分离头检出：CI 的检出在分支上，以仓库自身为工作目录的测试在分离头下无法取得当前分支，
  * 结果与 CI 不同。
  *
  * `git clean` 不带 `-x`：`node_modules` 与 `.tmp` 下的 Cargo 产物必须跨次保留，否则每次都是冷编译。
@@ -89,7 +89,7 @@ const PREPARE = [
 /**
  * 真实窗口会话，`$1` 为会话内的前置步骤（`DESKTOP`），其余参数为要执行的命令。
  *
- * `XDG_RUNTIME_DIR` 换成新建的空目录：WSL 的缺省目录中有 WSLg 的 `wayland-0`，libwayland 在
+ * `XDG_RUNTIME_DIR` 改为新建的空目录：WSL 的缺省目录中有 WSLg 的 `wayland-0`，libwayland 在
  * `WAYLAND_DISPLAY` 未设置时按该名称连接，GTK 窗口会显示在 WSLg 上而不是 Xvfb 上。
  * AT-SPI 总线的套接字也创建在该目录下，与 WSL 自身的会话互不干扰。
  *

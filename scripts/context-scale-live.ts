@@ -8,7 +8,7 @@
  *
  *   bun run scripts/context-scale-live.ts
  *
- * 运行一次需要发送真实请求（每条会话两三轮短对话），按配置中的模型逐个执行。
+ * 运行一次需要发送真实请求（每条会话两至三轮短对话），按配置中的模型逐个执行。
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -258,7 +258,7 @@ function settled(store: Store, conversationId: string) {
     .sort((a, b) => (a.sentAt ?? 0) - (b.sentAt ?? 0))
 }
 
-/** 指定一轮的助手正文。召回断言只看重启后的那一轮，不从旧正文误命中。 */
+/** 指定一轮的助手正文。召回断言只检查重启后的那一轮，不从旧正文误命中。 */
 function runText(store: Store, runId: RunId): string {
   return listSteps(store, runId)
     .filter((step) => step.kind === 'text')
@@ -315,7 +315,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     { 实际: getConversation(store, conv as ConversationId)?.model },
   )
   await turn(live, conv, '只回两个字：收到。不要调用任何工具。')
-  // 第二轮加入一大段内容：斜率法要求两次请求的体量差足够大，相差几十 token 时无法测出斜率。
+  // 第二轮加入一大段内容：斜率法要求两次请求的体量差足够大，相差数十 token 时无法测出斜率。
   await turn(
     live,
     conv,
@@ -391,7 +391,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     note(
       `锚点真值 ${trueTokens(anchorRow)}　旧头部 ${envelopeHeadTokens(anchorRow.sentCategories)}　新头部 ${envelopeHeadTokens(firstNew.sentCategories)}`,
     )
-    note(`读数 ${first.tokens}　修正式算出 ${expected}　裸估算（不投影时显示的值）${bare}`)
+    note(`读数 ${first.tokens}　修正式计算值 ${expected}　未投影的估算值 ${bare}`)
     // 差额是本轮的新用户消息：锚点覆盖到上一轮为止，其后的历史另行估算。
     const uncovered = first.tokens - expected
     note(`差额 ${uncovered} = 本轮新用户消息（锚点覆盖到上一轮为止，其后的内容另行估算）`)
@@ -400,10 +400,13 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
       修正式: expected,
       差额: uncovered,
     })
-    check('读数不等于裸估算', first.tokens !== bare, { 读数: first.tokens, 裸估算: bare })
+    check('读数不等于未投影的估算值', first.tokens !== bare, {
+      读数: first.tokens,
+      未投影的估算值: bare,
+    })
     const jump = Math.abs(bare - trueTokens(anchorRow)) / Math.max(1, spec.contextWindow)
     note(
-      `按裸估算显示时的跳变幅度：${(jump * 100).toFixed(1)} 个百分点（窗口 ${spec.contextWindow.toLocaleString()}）`,
+      `按未投影的估算值显示时的跳变幅度：${(jump * 100).toFixed(1)} 个百分点（窗口 ${spec.contextWindow.toLocaleString()}）`,
     )
   }
 

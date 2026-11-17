@@ -65,6 +65,7 @@ export type AgentEvent =
   // ── 模型输出 ──
   | TextDeltaEvent
   | ThinkingDeltaEvent
+  | ThinkingInterruptedEvent
   | ToolGeneratingEvent
   // ── 工具 ──
   | ToolStartedEvent
@@ -121,7 +122,7 @@ export interface ConversationCreatedEvent {
  * 一端切换模型而另一端仍显示旧模型时，下一轮的实际用量与计价将与界面不一致。
  *
  * 不设「会话被删除 / 被归档」事件：该事件没有消费端，添加即成为未接通的链路（C1 第 1 款）。
- * 代价是另一端需刷新一次列表才能看到变化。
+ * 代价是另一端需刷新一次列表才能显示该变化。
  */
 export interface ConversationUpdatedEvent {
   type: 'conversation.updated'
@@ -157,7 +158,7 @@ export interface ConversationBusyEvent {
  * 会话中排队的跟进消息。内容是完整快照，不是增量。
  *
  * 使用增量（入队 / 出队 / 状态变更）时，客户端需自行维护一份与服务端一致的队列，
- * 同时客户端还有乐观添加的本地卡片；服务端对重复的 clientRequestId 去重时，两份账必然分叉。
+ * 同时客户端还有乐观添加的本地卡片；服务端对重复的 clientRequestId 去重时，两份状态必然不一致。
  * 整体替换快照不存在该问题，且队列长度很小，无需节省这部分字节。
  *
  * 按会话过滤下发（与 `conversation.busy` 不同）：卡片只出现在当前打开的会话中。
@@ -187,7 +188,7 @@ export interface MessageInjectedEvent {
   content: string
   attachments?: Attachment[]
   /**
-   * 同 `Message.origin`：消息的投递者，缺席表示用户本人。
+   * 同 `Message.origin`：消息的投递者，缺失表示用户本人。
    *
    * 界面据此决定将该帧渲染为回执条目还是用户气泡。必须与落库一侧取值相同
    * （step 的 `payload.origin`），否则实时渲染为气泡、刷新后又变为回执条目。
@@ -231,12 +232,12 @@ export interface RunStartedEvent {
    * 用户在界面上按回车时，气泡由客户端乐观插入；而目标自动继续、定时触发、
    * 跟进消息单独发起这三条路径没有客户端动作，正文只存在于服务端刚写入 `messages`
    * 表的行中。缺少该字段时，这几轮在界面上只有模型的回答而没有用户气泡，
-   * 用户需刷新页面才能看到自己的消息，而账本中该消息一直存在。
+   * 需刷新页面后界面才显示该消息，而账本中该消息一直存在。
    *
    * 客户端将正文与最后一条用户气泡比对：一致时把 id 替换为此处的真实值
    * （乐观插入使用本地 id），不一致时补充一条。
    *
-   * `origin` 同 `Message.origin`：消息的投递者，缺席表示用户本人。界面据此决定将该帧
+   * `origin` 同 `Message.origin`：消息的投递者，缺失表示用户本人。界面据此决定将该帧
    * 渲染为回执条目还是用户气泡。必须与落库一侧取值相同（`messages.origin`），
    * 否则实时渲染为气泡、刷新后又变为回执条目。
    */
@@ -270,7 +271,7 @@ export interface RunFinishedEvent {
  * 本轮出错。不保证存在对应的 `run.finished`。
  *
  * 以下四种情况在本轮开始之前即被拒绝：会话已有任务在运行、未找到会话的项目目录、
- * 三处均未取得模型、装配 adapter 时抛错（未配置 key、档案解析失败）。它们发生在
+ * 三处均未取得模型、装配 adapter 时抛出异常（未配置 key、档案解析失败）。它们发生在
  * run 建立之前：`runId` 为空串，账本中也没有本轮的 run 行，因此不会再有 `run.finished`。
  *
  * 这几种情况的终态是 `conversation.busy: false`，由服务端释放会话占位时发出。
@@ -324,7 +325,7 @@ export interface RunRequestEvent {
  * 部分思考与「正在思考…」，而模型此时没有任何输出。
  *
  * 不设配对的「重发结束」事件。下一次 `run.request` 即结束信号，
- * 再发一条事件等于在两处表达同一件事，两处必然漂移。
+ * 再发一条事件等于在两处表达同一事实，两处必然不一致。
  */
 export interface RunRetryingEvent {
   type: 'run.retrying'
@@ -341,16 +342,19 @@ export interface RunRetryingEvent {
   backoffMs: number
   /** 等待开始的时刻。倒计时截止点为 `at + backoffMs`，客户端不使用本地当前时刻计算。 */
   at: number
-  /**
-   * 被本次重发取代的思考 step。
-   *
-   * 前端保留这些思考并标注已中断：不标注时，重发生成的内容紧随其后，看起来像思考被截断后重复；
-   * 删除时，用户已经看到的内容在重发时消失。ID 由产生这些 step 的 AgentLoop 给出，
-   * 前端不按「末尾几条」推测。
-   *
-   * 携带当前上下文重发时为空：该段思考随已显示的正文一起保留在 transcript 中。
-   */
-  failedThinkingStepIds: StepId[]
+}
+
+/**
+ * 思考所属的请求失败，且失败时尚未输出正文。账本中这些 step 已写为 failure。
+ *
+ * 在重发之前与本轮以失败结束之前发出；已输出正文时不发出，该段思考随正文保留。
+ * 前端保留这些思考并标注已中断：不标注时，重发生成的内容紧接其后，与被中断的思考无法区分；
+ * 删除时，已显示的内容随之消失。ID 由产生这些 step 的 AgentLoop 给出，前端不按「末尾几条」推测。
+ */
+export interface ThinkingInterruptedEvent {
+  type: 'thinking.interrupted'
+  runId: RunId
+  stepIds: StepId[]
 }
 
 export type ErrorCode =
@@ -532,7 +536,7 @@ export interface ContextEvent {
    *
    * 必须显式标明。`actual` 是当前请求回执中的值，`projected` 是最近真实值加本地增量，
    * `estimated` 是纯字符上界。不要改用 `max(全量估算, provider 真值)`：
-   * 两个数的计量方式不同，锚点失效时显示值会无故跳回字符上界。
+   * 两个数的计量方式不同，锚点失效时显示值会无故回到字符上界。
    */
   source: 'actual' | 'projected' | 'estimated'
   /**
@@ -607,7 +611,7 @@ export interface FileChangedEvent {
  * 画布上一张生成卡的运行状态。工作区级事件，信封上不带 `conversationId`。
  *
  * 与 `file.changed` 分开发送：后者表示磁盘内容已变化，本事件表示生成卡的状态。生成图像失败时
- * 不写入任何文件，只有 `file.changed` 时界面收不到失败，卡片会一直停留在生成中。
+ * 不写入任何文件，只有 `file.changed` 时界面无法得知失败，卡片会一直停留在生成中。
  */
 export interface CanvasRunEvent {
   type: 'canvas.run'
@@ -641,7 +645,7 @@ export interface CanvasExportEvent {
  *
  * 工作区级事件：信封上不带 `conversationId`，所有客户端都能收到。个性化是本机级数据，
  * 设置页与 `personalize` 工具都会修改它；各屏幕据此重新读取，修改无需刷新即生效。
- * 不携带内容：各屏幕读取时按自己的端点生成图片直链，内容随事件下发时各端仍需再取一次图片。
+ * 不携带内容：各屏幕读取时按自己的端点生成图片直链，内容随事件下发时各端仍需再次获取图片。
  */
 export interface PersonalizationChangedEvent {
   type: 'personalization.changed'

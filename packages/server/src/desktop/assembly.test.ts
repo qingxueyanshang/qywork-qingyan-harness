@@ -226,7 +226,7 @@ async function serveOnce(op: DesktopOp): Promise<DesktopRequestFrame> {
     host.reply(frame, {
       dispatch: 'unknown',
       reason: 'provider 无响应',
-      observationError: '动作之后没有读到控件',
+      observationError: '动作之后未读取到控件',
     })
   }
   return frame

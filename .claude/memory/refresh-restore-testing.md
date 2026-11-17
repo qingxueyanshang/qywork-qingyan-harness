@@ -13,9 +13,9 @@ metadata:
 - **组件测试的隔离**：记录在挂载之间保留，同一文件中前一条用例的展开、选中、草稿会进入下一条。
   挂载这类组件的测试文件在 `afterEach` 中执行 `flushSession(); sessionStorage.clear()`。
   2026-10-06 引入时 Composer、SidePanel、CanvasPanel 三个测试文件因此共失败 17 条。
-- **验证测试有效**：临时把 `readSession` 改为一律返回 `undefined`，恢复类用例应全部失败，确认后改回。
+- **验证测试有效**：临时把 `readSession` 改为一律返回 `undefined`，恢复类用例应全部失败，确认后恢复原实现。
 - **性能对照**：把 `session.ts` 临时替换为 `sessionSignal = createSignal` 的版本，`vite build --outDir` 到 `.tmp`，
-  与正式构建各起一个隔离 sidecar（见 [[probe-ui-with-isolated-instance]]），用同一个 Playwright 脚本对比。
+  与正式构建各启动一个隔离 sidecar（见 [[probe-ui-with-isolated-instance]]），用同一个 Playwright 脚本对比。
   基线数据记录在 `ARCHITECTURE.md` 第 37 节。
 - **易错点**：代码视图按像素恢复滚动会偏差数百像素（编辑器按估算行高建立），必须按行恢复；
   恢复的未提交草稿在编辑框无焦点时，不得因数据重新读取而被重建覆盖。

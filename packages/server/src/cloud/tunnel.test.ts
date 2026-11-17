@@ -455,7 +455,7 @@ describe('远程访问经 serve() 装配', () => {
     content = new ContentStore(contentPathFor(dbPath))
 
     // 未传入 remote 的 serve()（测试与脚本）即使配置开启了远程访问也不连接云端：
-    // 否则会以同一设备密钥顶掉桌面端的隧道。
+    // 否则会以同一设备密钥替换桌面端的隧道。
     const quiet = serve({
       store,
       config: await loadConfig(),

@@ -132,7 +132,7 @@ describe('背景与颜色映射', () => {
     })
     expect(hex(p.slides[0]!.background)).toBe('FFFFFF')
     expect(hex(firstRun(paragraphs(p.slides[0]!, 9)[0]!).fill)).toBe('000000')
-    // 版式覆盖映射：幻灯片沿用版式的映射，母版背景中的 bg1 落到 dk1，文字 tx1 落到 lt1。
+    // 版式覆盖映射：幻灯片沿用版式的映射，母版背景中的 bg1 映射为 dk1，文字的 tx1 映射为 lt1。
     expect(hex(p.slides[1]!.background)).toBe('000000')
     expect(hex(firstRun(paragraphs(p.slides[1]!, 9)[0]!).fill)).toBe('FFFFFF')
     expect(hex(p.slides[2]!.background)).toBe('E7E6E6')

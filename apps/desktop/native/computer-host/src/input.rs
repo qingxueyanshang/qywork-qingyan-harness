@@ -251,7 +251,7 @@ pub fn text_batches(text: &str, max_units: usize) -> Vec<Vec<u16>> {
 
 /// 拖拽途中的落点序列，**不含起点，末尾恰好是终点**。
 ///
-/// 必须分段发送：一次跳到终点时，被拖动的控件收不到中间的移动消息，
+/// 必须分段发送：一次跳到终点时，被拖动的控件不会收到中间的移动消息，
 /// 而许多实现据此判断拖动是否开始。
 pub fn drag_path(from: ScreenPoint, to: ScreenPoint, steps: u32) -> Vec<ScreenPoint> {
     let count = steps.max(1);
@@ -271,7 +271,7 @@ mod tests {
     use super::*;
 
     /// 账目是进程级的，读写账目的用例须串行执行：测试线程默认并行，两条用例同时修改同一账目
-    /// 会读到对方的按下记录。
+    /// 会读取到对方的按下记录。
     static LEDGER_TESTS: Mutex<()> = Mutex::new(());
 
     /// 单元测试使用的派发记录器。它不向系统发送任何输入。

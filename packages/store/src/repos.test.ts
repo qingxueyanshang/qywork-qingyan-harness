@@ -435,7 +435,7 @@ describe('消息来源', () => {
 describe('消息高水位', () => {
   /**
    * run 创建后、取得执行锁前，用户可能又发送了消息。这些消息不属于本 run 的历史，
-   * 放入历史会使模型看到在本 run 之后发送的消息。
+   * 放入历史会使模型取得在本 run 之后发送的消息。
    */
   test('upperBound 之后的消息不进入历史', () => {
     const { store, ws } = fresh()
@@ -1228,7 +1228,7 @@ describe('卡片返回后节点仍可写入终态', () => {
 
   /**
    * run 结束时不修改节点：子 agent 的生命周期跟随会话，本轮结束时它仍在运行，
-   * 回执几分钟后才到达。标为中断时，回执到达后节点上显示的是「中断」。
+   * 回执数分钟后才到达。标为中断时，回执到达后节点上显示的是「中断」。
    */
   test('本轮结束不修改节点', () => {
     const { store, run, nodes } = returnedCard()
@@ -1304,7 +1304,7 @@ describe('摘要请求与主请求分开统计', () => {
   })
 })
 
-describe('变更页按写过文件的轮分页', () => {
+describe('变更页按写入过文件的轮次分页', () => {
   test('跳过未写入文件的轮；合计覆盖整个会话；游标与历史页相同', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -1482,7 +1482,7 @@ describe('后台命令结束时追加文件改动', () => {
     store.close()
   })
 
-  test('step 不存在时返回 null；尚未写入结果时抛出，不静默跳过', () => {
+  test('step 不存在时返回 null；尚未写入结果时抛出异常，不静默跳过', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const user = appendMessage(store, { conversationId: conv.id, role: 'user', content: '构建' })

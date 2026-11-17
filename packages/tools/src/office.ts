@@ -216,7 +216,7 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
   if (!viewable(abs)) return failArgs('view 只处理 .docx、.pptx、.xlsx、.pdf 文件')
   const pages = stringList(args.pages)
   const region = regionOf(args.region)
-  // 保存位置在渲染之前确定：越界、受保护或形式不对时不启动 worker。
+  // 保存位置在渲染之前确定：越界、受保护或格式错误时不启动 worker。
   const save = await saveTarget(ctx, args.save_to, pages.length || 1)
   if (typeof save === 'string') return failArgs(save)
   const bytes = new Uint8Array(await readFile(abs))
@@ -246,8 +246,8 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
       if (landed) saved.push(landed.path)
     }
     /*
-     * 局部图放大到长边 MAX_EDGE（至多 ZOOM_MAX 倍）：worker 从原始渲染图裁出局部，区域小时只有
-     * 一两百像素宽，原样发送与在整页缩小图上看没有区别。整页图缩小发送时写明尺寸，提示用 region。
+     * 局部图放大到长边 MAX_EDGE（至多 ZOOM_MAX 倍）：worker 从原始渲染图裁出局部，区域较小时宽度只有
+     * 100 至 200 像素，原样发送时可辨识的细节与整页缩小图相同。整页图缩小发送时写明尺寸，提示用 region。
      */
     const zoom = region
       ? await zoomImage(raw, { left: 0, top: 0, width: 1, height: 1 }).catch(() => null)

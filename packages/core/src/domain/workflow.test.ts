@@ -124,7 +124,7 @@ describe('workflow 调用判别', () => {
     })
   })
 
-  test('strict 兼容端给非当前分支的结构字段补空数组时按省略处理', () => {
+  test('strict 兼容端给非当前分支的结构字段补充空数组时按省略处理', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
@@ -400,7 +400,7 @@ describe('workflow 投影', () => {
     expect(folded.projection.results.b).toMatchObject({ status: 'failed', error: '连不上' })
   })
 
-  /** 仍有节点运行时不算到达检查点：该节点没有终态，因此没有回执。 */
+  /** 仍有节点运行时不视为到达检查点：该节点没有终态，因此没有回执。 */
   test('有节点仍在运行时投影为执行中', () => {
     const folded = foldWorkflow(
       [

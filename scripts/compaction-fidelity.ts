@@ -138,7 +138,7 @@ async function main(): Promise<number> {
       content: planted
         ? `明白，我记下了。`
         : `我看过 src/mod${i}.ts 了，调整了几处类型标注，没有行为变化。` +
-          // 噪声必须具有真实体积：只有几十字符的夹具中，摘要与事实清单的固定开销
+          // 噪声必须具有真实体积：只有数十字符的夹具中，摘要与事实清单的固定开销
           // 即超过被折叠的内容，压缩率断言必然失败而线上不会，两者不在同一数量级。
           `具体来说，把 ${i} 处隐式 any 补成了显式类型，${i} 个可选参数补了默认值，` +
           `顺带核对了导出边界。这一轮没有改动运行时行为，测试全绿。`.repeat(4),
@@ -170,7 +170,7 @@ async function main(): Promise<number> {
     return text
   }
 
-  process.stdout.write(`\n造了 ${TOTAL_TURNS} 轮会话，埋入 ${FACTS.length} 条可判定事实\n\n`)
+  process.stdout.write(`\n已构造 ${TOTAL_TURNS} 轮会话，嵌入 ${FACTS.length} 条可判定事实\n\n`)
 
   // ── 压缩 ──
   const realSummarizer = makeSummarizer({
@@ -287,8 +287,8 @@ async function main(): Promise<number> {
   // ── 逐条询问 ──
   process.stdout.write('压缩后的记忆保真度\n')
   const system =
-    '下面是一段被压缩过的会话记录。只根据它回答问题。' +
-    '如果记录里没有相关信息，明确回答「记录里没有提到」。\n\n' +
+    '以下是一段经过压缩的会话记录。仅根据该记录回答问题。' +
+    '记录中没有相关信息时，明确回答「记录中没有提到」。\n\n' +
     projectedText
 
   for (const fact of FACTS) {
@@ -298,7 +298,7 @@ async function main(): Promise<number> {
   }
 
   /*
-   * ── 定位符必须完整穿过摘要 ──
+   * ── 定位符必须在摘要中完整保留 ──
    *
    * 提示词要求模型原样保留 `[message:…]` / `[action:…]`，因为它们是原文的地址，
    * 模型之后依据它们经由 `read_history` 取回原文。**提示词有要求不等于模型遵从**，
@@ -317,7 +317,7 @@ async function main(): Promise<number> {
     ...summaryText.matchAll(/\[(?:(?:message|action):)?((?:ms|rn)_[a-z0-9:]+)\]/gi),
   ].map((m) => m[1] ?? '')
   check(
-    `摘要里带回了 ${marks.length} 个定位符`,
+    `摘要中保留了 ${marks.length} 个定位符`,
     marks.length > 0,
     `摘要前 300 字符：${summaryText.slice(0, 300)}`,
   )
@@ -337,9 +337,9 @@ async function main(): Promise<number> {
   process.stdout.write('\n压缩率\n')
   const foldedChars = originalChars - projectedText.length + replacementChars
   check(
-    '折叠区确实被压小了',
+    '折叠区已缩小',
     replacementChars < foldedChars,
-    `替换物 ${replacementChars} vs 被折 ${foldedChars}`,
+    `替换内容 ${replacementChars} vs 被折叠内容 ${foldedChars}`,
   )
 
   store.close()

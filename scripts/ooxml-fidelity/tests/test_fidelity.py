@@ -280,7 +280,7 @@ class EmfTest(unittest.TestCase):
 
     def test_wps_faces_are_rewritten_and_unknown_ones_are_reported(self):
         """页面 EMF 中 WPS 自带的字体（KSOF 开头）按对应改写字体名后与原字体的 EMF 回放逐像素相同，长度不变；GDI 回放时
-        不认识该字体名，另取的字体与原字体不同。不在对应中的 KSOF 字体由 unmapped_faces 列出，其余字体名不变。"""
+        无法识别该字体名，另取的字体与原字体不同。不在对应中的 KSOF 字体由 unmapped_faces 列出，其余字体名不变。"""
         import emf
 
         times = self._text_emf(6)
@@ -297,7 +297,7 @@ class EmfTest(unittest.TestCase):
 
 
 class _Sheet:
-    """工作表或图表工作表的替身：CopyPicture 记下调用的对象与参数。"""
+    """工作表或图表工作表的替身：CopyPicture 记录调用的对象与参数。"""
 
     def __init__(self, log, name, visible=-1, size=(40, 30)):
         self.log, self.Name, self.Visible, self.size = log, name, visible, size

@@ -56,7 +56,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// 退出时等待 worker 自行结束的上限。超过即不再等待：不能因其无响应而阻止应用退出。
 const EXIT_WAIT: Duration = Duration::from_secs(3);
 
-/// 替换 worker 时先关闭 stdin，等待该时长后仍未退出即强制终止。worker 读到 stdin 结束即退出进程，
+/// 替换 worker 时先关闭 stdin，等待该时长后仍未退出即强制终止。worker 读取到 stdin 结束即退出进程，
 /// 强制终止只用于进程退出未在期限内完成的情形。
 const REPLACE_GRACE: Duration = Duration::from_secs(2);
 
@@ -124,7 +124,7 @@ pub struct DesktopHost {
 /// 失败时只写日志并停用该能力：电脑控制无法启动时不应阻止整个应用启动。
 pub fn start(app: &AppHandle, port: u16, key: String) {
     // 与 `qy` sidecar 使用同一套定位方式：`externalBin` 的产物位于可执行文件旁，
-    // 开发态与安装态由插件自行判定。不要改为自行拼接路径，那会形成第二处声明。
+    // 开发态与安装态由插件自行判定。不要改为自行拼接路径：自行拼接会形成第二处声明。
     let command: std::process::Command = match app.shell().sidecar(WORKER_NAME) {
         Ok(command) => command.into(),
         Err(e) => {
@@ -186,7 +186,7 @@ pub fn start_with_worker(worker_path: PathBuf, port: u16, key: String) -> Arc<De
 /// 顺序不能颠倒。先断开连接时，在途请求的收尾回执无法发出，服务端只能等待超时，而超时
 /// 一律按已派发记录：一次可证明未发出的动作会被记录为可能已经执行。
 ///
-/// 结束 worker 的方式是关闭其 stdin，而不是终止进程：worker 读到 stdin 结束即退出进程，
+/// 结束 worker 的方式是关闭其 stdin，而不是终止进程：worker 读取到 stdin 结束即退出进程，
 /// 不等待执行线程正在进行的 OS 调用；它按住的键由 `worker_gone` 按最后一次通报补发抬起。
 ///
 /// 最多等待 `EXIT_WAIT`，不要在主线程调用：应用退出时由 `exit.rs` 的后台任务调用。
@@ -351,7 +351,7 @@ impl DesktopHost {
     /// 处理服务端发来的一帧。
     fn on_request(self: &Arc<Self>, raw: &str) {
         // 先解析为 Value 再转换为 RequestFrame：字段不合法时仍需取出身份四项用于回执，
-        // 否则服务端对应的 pending 只能等到超时。
+        // 否则服务端对应的 pending 只能等待至超时。
         let value: serde_json::Value = match serde_json::from_str(raw) {
             Ok(v) => v,
             Err(e) => {
@@ -519,7 +519,7 @@ impl DesktopHost {
 
     /// 在有限时间内替换当前 worker，并等待下一代 worker 握手就绪。
     ///
-    /// 先禁止新的派发并关闭 stdin：worker 读到 stdin 结束即退出进程，执行线程阻塞于 OS 调用时
+    /// 先禁止新的派发并关闭 stdin：worker 读取到 stdin 结束即退出进程，执行线程阻塞于 OS 调用时
     /// 同样如此；超过 `REPLACE_GRACE` 仍未退出即强制终止，且只终止本宿主启动的 pid。
     ///
     /// 收尾与代际更替都不在此处执行：进程退出后，监督循环仍经由 `worker_gone` 路径处理
@@ -811,7 +811,7 @@ fn run_worker(host: &Arc<DesktopHost>) -> Result<(), String> {
     let _job = spawned.job;
     log::info!("computer-host worker 已启动 pid={pid}");
 
-    // stderr 只写日志：后端无法启动的原因与缺少的授权前提都从这里输出。
+    // stderr 只写日志：后端无法启动的原因与缺少的授权前提都从此处输出。
     let stderr = spawned.stderr;
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -1026,7 +1026,7 @@ mod tests {
         assert_eq!(host.state.lock().unwrap().access, Access::default());
     }
 
-    /// 无法识别的句柄一律拒绝派发。放行它等于让动作作用于一个已不存在的窗口所在的位置。
+    /// 无法识别的句柄一律拒绝派发。放行它等于使动作作用于一个已不存在的窗口所在的位置。
     #[cfg(windows)]
     #[test]
     fn an_unknown_window_handle_is_refused_before_dispatch() {

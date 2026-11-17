@@ -14,7 +14,7 @@
  *    插件无需恶意代码，一个缺陷即可触发。
  *
  * 容易遗漏的一项是 exec 的环境变量。`run_command` 内置工具把 `process.env` 完整透传给子进程：
- * 那是用户自己的命令，应当看到自身的环境。插件的 exec 不能这样做：宿主专门清理了插件进程的
+ * 该工具运行的是用户自己的命令，应取得自身的环境。插件的 exec 不能这样做：宿主专门清理了插件进程的
  * env（不提供 API Key 与令牌），若插件能经由 `exec.run` 执行 `echo $ANTHROPIC_API_KEY`，
  * 这层清理即失效。
  */
@@ -233,7 +233,7 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
 
       default:
         // 执行到此处说明 requiredPermission() 接受了该前缀，但没有对应实现。
-        // 明确抛错而不是返回 null：返回 null 在插件侧表现为一次成功但结果为空的调用。
+        // 明确抛出异常而不是返回 null：返回 null 在插件侧表现为一次成功但结果为空的调用。
         throw new Error(`宿主能力尚未实现：${method}`)
     }
   }
@@ -243,7 +243,7 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
  * 运行一条命令，不透传宿主环境变量。
  *
  * 与 `run_command` 内置工具的关键差别在于此。该工具运行的是用户自己批准的命令，
- * 看到自身的环境是合理的；这里运行的是插件提供的命令，而插件进程的 env 经过专门
+ * 取得自身的环境是合理的；这里运行的是插件提供的命令，而插件进程的 env 经过专门
  * 清理。透传会使这层清理失效。
  *
  * 使用 `spawnGuarded` 而不是直接调用 `Bun.spawn`：启动子进程的位置必须只有一处。

@@ -47,7 +47,7 @@ export const CORS_HEADERS: Record<string, string> = {
    * `TypeError: Failed to fetch`，不带任何状态码，无法判断是否由浏览器拦截。
    *
    * 不要改为 `*`：它在带凭证的请求中不生效，且会使「该接口接受哪些请求头」
-   * 无法从代码中看出。
+   * 无法从代码中判断。
    */
   'access-control-allow-headers': 'authorization, content-type, x-attachment-name',
   'access-control-max-age': '86400',

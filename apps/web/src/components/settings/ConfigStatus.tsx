@@ -14,8 +14,7 @@ import { configNotices, configProblems, configWriteError } from './configStore.t
  * 3. `notices`：`configNotices` 的提醒，即不阻断运行但每次都需要告知的事实
  *    （放行了工作区之外的目录、模型不在内置目录因而计价为 0、sandboxNetwork
  *    在本机未生效）。这一类必须渲染：服务端已发送、store
- *    也已接收，界面上若无代码读取，这些已配置但未生效的情况
- *    桌面端用户一项都看不到。
+ *    也已接收，界面上若无代码读取，桌面端用户无从得知这些已配置但未生效的情况。
  *
  * 按 markdown 渲染：这几段内容是 markdown（`configNotices` 的注释中写明了两个
  * 显示位置共用一份文案），按纯文本显示会出现大量星号，且列表被合并为一行。

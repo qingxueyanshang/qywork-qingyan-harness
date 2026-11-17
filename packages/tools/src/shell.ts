@@ -1,7 +1,7 @@
 /**
  * shell 工具。
  *
- * 这是权限模型中风险最高的工具：一条命令能做的事没有上界。设计取舍是
+ * 这是权限模型中风险最高的工具：一条命令可执行的操作没有上界。设计取舍是
  * 不依赖字符串检查保证安全：命令注入的黑名单无法覆盖所有构造方式。
  * 实际的防线是：
  *
@@ -23,7 +23,7 @@
  * 因此它不是沙箱的替代，而是沙箱之下的保底：无法取得明文，泄露就不会离开本机。
  *
  * 剥离输入的同时输出侧也要屏蔽：只处理输入侧时，一句 `cat .env` 仍会把 key
- * 送进上下文再发给 provider。屏蔽发生在落盘与回传之前：
+ * 写入上下文再发给 provider。屏蔽发生在落盘与回传之前：
  * 先落盘再屏蔽，磁盘上的副本仍是明文。
  *
  * agent 使用管道而不是 PTY：交互式终端面板使用 Tauri 的 portable-pty，
@@ -70,7 +70,7 @@ export const MAX_TIMEOUT_MS = 600_000
 /**
  * 命令已退出，但其派生的后代进程仍持有输出管道。
  *
- * 必须告知模型：模型据此才能知道后台留有进程（启动服务的脚本即属此类），
+ * 必须告知模型：模型据此才能得知后台留有进程（启动服务的脚本即属此类），
  * 且该进程此后的输出不会进入本次结果，只能查看它自己的日志。
  * 不告知时，这一事实在结果中完全不可见，而它是这类命令唯一关键的事实。
  */
@@ -79,7 +79,7 @@ const BACKGROUND_HELD =
   '本次结果只含命令自身的输出，不含该进程此后的输出。'
 
 /**
- * 工作区观察器收尾时未等到在途事件全部交付、忽略判定执行失败，或收尾扫描达到上限而停止。
+ * 工作区观察器收尾时在途事件未全部交付、忽略判定执行失败，或收尾扫描达到上限而停止。
  *
  * 必须说明：否则一次未执行完的过滤与一次确实没有改动的执行，在结果中完全相同。
  */
@@ -97,8 +97,8 @@ const KEPT_OUTPUT_CHARS = 1 << 20
 const KEPT_BLOCK_CHARS = 1 << 16
 
 /**
- * 一条输出流最近的一段。末块未满时并入末块，去掉首块后仍不少于上限时整块丢弃首块。
- * 收到的文字按块长切分后写入：管道一次交来的文字可以超过上限，整段作为一块时没有可丢弃的首块，保留量不受上限约束。
+ * 一条输出流最近的一段。末块未满时并入末块，去除首块后仍不少于上限时整块丢弃首块。
+ * 收到的文字按块长切分后写入：管道一次传入的文字可以超过上限，整段作为一块时没有可丢弃的首块，保留量不受上限约束。
  */
 export class RecentOutput {
   private readonly blocks: string[] = []
@@ -134,7 +134,7 @@ export class RecentOutput {
   }
 }
 
-/** 后台命令丢弃过输出时的说明：模型据此知道读到的不是全文。没有丢弃时为空串。 */
+/** 后台命令丢弃过输出时的说明：模型据此得知读取到的不是全文。没有丢弃时为空串。 */
 function droppedNote(dropped: { stdout: number; stderr: number }): string {
   const parts = (['stdout', 'stderr'] as const)
     .filter((channel) => dropped[channel] > 0)
@@ -169,7 +169,7 @@ function trackReported(reported: Set<string>, changes: FileChange[]): void {
 
 /**
  * 剥离凭证后的本进程环境。会执行模型可写内容的子进程共用此判据：`run_command` 与 `office`（经 `commandEnv`），
- * 以及 git（仓库中的钩子与 `core.fsmonitor` 等配置项可由模型写入，git 执行它们时传入的就是这份环境）。
+ * 以及 git（仓库中的钩子与 `core.fsmonitor` 等配置项可由模型写入，git 执行它们时传入的即为这份环境）。
  * 缺少 `secrets` 时按没有已知凭证处理，缺少 `envAllowList` 时放行 `DEFAULT_ENV_ALLOW`。
  */
 export function scrubbedEnv(
@@ -202,7 +202,7 @@ export async function commandEnv(
 
 /**
  * auto 模式下激活工作区 Python 环境：可执行目录放在 PATH 最前并设置 `VIRTUAL_ENV`，命令中的 `python`、`pip`
- * 与装入的命令行工具都取自该环境，包只装入工作区。完全访问模式不调用：装入全局还是工作区由模型选择。
+ * 与安装的命令行工具都取自该环境，包只安装到工作区。完全访问模式不调用：安装到全局还是工作区由模型选择。
  * 键名沿用环境中原有的写法（Windows 上通常为 `Path`）：变量名不区分大小写，另写一个 `PATH` 会传入两份。
  */
 function withWorkspacePython(env: Record<string, string>, workspaceRoot: string) {
@@ -218,7 +218,7 @@ function withWorkspacePython(env: Record<string, string>, workspaceRoot: string)
 
 /**
  * bash 读入的设置文件与管道各段退出码的记录文件（`bashPrelude`），位于本会话临时目录：
- * 内核沙箱中工作区可写、宿主可读，观察器硬性排除 `.tmp`，两者都不进入变更清单。
+ * 内核沙箱中工作区可写、宿主可读，观察器固定排除 `.tmp`，两者都不进入变更清单。
  * `read` 取回记录并删除两个文件，命令以任何方式结束后都调用一次；未写入记录时返回 null。
  * shell 不提供 `prelude`（PowerShell）时返回 null，命令照原样执行。
  */
@@ -255,13 +255,13 @@ const BROKEN_PIPE_LINE =
  * 按命令最后一条管道各段的退出码确定命令的退出码与附加说明。
  *
  * pipefail 下前段失败即整条失败（`bashPrelude`），此处只处理一种例外：前段被后段提前结束
- * （`| head` 读够即退出）。这时前段的退出码有三种：被 SIGPIPE 终止的 MSYS 与 POSIX 工具为 141；
+ * （`| head` 读取所需行数后退出）。这时前段的退出码有三种：被 SIGPIPE 终止的 MSYS 与 POSIX 工具为 141；
  * python 退出时刷新 stdout 失败为 120；python 写入时出错为 1，stderr 末行是写入已关闭管道的报错。
  * 最后一段为 0、前段只有这几种退出码时不计为失败，说明中写明 bash 仍按失败处理该管道：
  * 其后以 `&&` 连接的命令没有执行。
  *
  * 其余情况按 pipefail 的结果报告，并列出各段退出码：`crash.py | tail -3` 中 tail 成功、crash.py 失败，
- * 模型据此知道失败的是哪一段。命令的退出码不等于这条管道的 pipefail 结果时（其后还有 `exit 7` 等），
+ * 模型据此得知失败的是哪一段。命令的退出码不等于这条管道的 pipefail 结果时（其后还有 `exit 7` 等），
  * 退出码不来自这条管道，按原退出码报告，不附加说明。
  */
 function pipelineExit(
@@ -279,7 +279,7 @@ function pipelineExit(
     return {
       exitCode: 0,
       note:
-        `。注意：管道前段在后段提前结束（如 head 读够即退出）后被中止（各段退出码依次为 ${segments}），不计为失败；` +
+        `。注意：管道前段在后段提前结束（如 head 读取所需行数后退出）后被中止（各段退出码依次为 ${segments}），不计为失败；` +
         'bash 仍按失败处理这条管道，其后以 && 连接的命令没有执行。',
     }
   }
@@ -289,7 +289,7 @@ function pipelineExit(
 /**
  * 子进程的临时目录，即本会话的临时目录（`conversationTempDir`）。
  *
- * 观察器硬性排除 `.tmp`，因此其中的缓存与中间产物不进入变更清单。
+ * 观察器固定排除 `.tmp`，因此其中的缓存与中间产物不进入变更清单。
  * 必须排在 `scrubEnv` 之后：这三个变量原本就在环境中，不覆盖时仍指向系统临时目录。
  */
 async function tmpEnv(dir: string): Promise<Record<string, string>> {
@@ -302,7 +302,7 @@ async function tmpEnv(dir: string): Promise<Record<string, string>> {
  *
  * 导出是因为裁决层需要使用同一个值。超时到达时无条件终止进程树，且完成判据是进程退出、
  * 而不是管道 EOF（见 `collectProcess`），因此「命令是否会一直挂起」在本工具中有确定的答案。
- * 裁决层得不到这个值时只能按命令文本判定，会把带 3 秒超时的
+ * 裁决层无法取得这个值时只能按命令文本判定，会把带 3 秒超时的
  * `python -m http.server` 当作不会自行退出的服务器而拒绝。
  *
  * 两处各算一次必然出现偏差，结果是裁决时声明的值与实际生效的值不一致，
@@ -322,7 +322,7 @@ export function resolveCommandTimeout(timeoutMs: unknown): number {
  *
  * 语法提示位于第一句，bash 也不例外：`run_command` 这个名称不携带语法，模型的默认输出是
  * bash，因此语法信息只能来自描述；放在第三句即失去作用（前两句先说明「执行一条 shell
- * 命令」「用于构建、测试、包管理」，模型读到第三句时已按默认语法生成命令）。
+ * 命令」「用于构建、测试、包管理」，模型读取到第三句时已按默认语法生成命令）。
  *
  * 不写成「仅非 bash 时前置」：那是一条按语法分叉的排版规则，分叉的风险是某一档
  * 遗漏前置，且只在对应的机器上才能发现。三档共用同一份排版。
@@ -365,7 +365,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       // 这类命令要等输入 EOF，而后台进程持有管道时 EOF 永不到达，
       // 顶层 shell 随之不退出，整条命令挂起直至超时，且无法取得任何输出。
       '输出会自动限长，超出部分保存到磁盘并在结果中给出 resource id（用 read_resource 取回），' +
-      '因此不要为限长在末尾追加 `| tail` / `| head`：这类命令需读到 EOF 才输出，' +
+      '因此不要为限长在末尾追加 `| tail` / `| head`：这类命令需读取到 EOF 才输出，' +
       '而命令派生的后台进程会持续持有管道，EOF 不到达则命令挂起至超时，且没有任何输出返回。' +
       // 固定时长的 `sleep` 不感知任务是否完成：`sleep 580; ls …` 在任务一分钟内完成时仍阻塞 580 秒。
       // 带退出条件的循环在任务结束时返回。
@@ -386,8 +386,8 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
           type: 'integer',
           description:
             `无输出时限（毫秒），默认 ${DEFAULT_TIMEOUT_MS}，上限 ${MAX_TIMEOUT_MS}，超过按上限执行。` +
-            '命令连续这么久没有输出时检查它的进程树：仍在占用 CPU 或读写磁盘就继续等待，' +
-            '都没有才判定为停滞并终止。不限总时长',
+            '命令在该时长内没有输出时检查它的进程树：仍在占用 CPU 或读写磁盘就继续等待，' +
+            '两者都没有时才判定为停滞并终止。不限总时长',
         },
         probe_url: {
           type: 'string',
@@ -503,7 +503,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
         return observed
       }
 
-      // spawn 抛错时关闭观察窗口：不关闭则它始终排在最前，此后的窗口收不到任何事件。
+      // spawn 抛错时关闭观察窗口：不关闭则它始终排在最前，此后的窗口无法收到任何事件。
       const { proc, sandbox } = await spawnGuarded({
         shell,
         command,
@@ -516,14 +516,14 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
         throw e
       })
 
-      // 每条流使用一个脱敏器：脱敏器各自持有跨分片缓冲，共用会把两条流的末尾混在一起。
+      // 每条流使用一个脱敏器：脱敏器各自持有跨分片缓冲，共用会使两条流的末尾相互混合。
       const redactors = {
         stdout: createStreamRedactor(secrets),
         stderr: createStreamRedactor(secrets),
       }
       /*
        * 命令的中止信号。前台等待期间随本轮的停止而中止（结束进程树）；转入后台之后与本轮解除关联，
-       * 只由任务表中止。不要把 `ctx.signal` 直接交给 `collectProcess`：那样本轮停止时后台命令也被结束。
+       * 只由任务表中止。不要把 `ctx.signal` 直接交给 `collectProcess`：否则本轮停止时后台命令也被结束。
        */
       const halt = new AbortController()
       const haltWithRun = () => halt.abort()
@@ -532,7 +532,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       if (ctx.signal.aborted) haltWithRun()
       // 转入后台之后：输出不再回传到本次调用的工具卡，也不再按停滞终止。
       let detached = false
-      // 至今的输出（已脱敏），每条流只保留最近的一段；转入后台时随结果交出，之后按任务编号读取。
+      // 至今的输出（已脱敏），每条流只保留最近的一段；转入后台时随结果返回，之后按任务编号读取。
       const recent = { stdout: new RecentOutput(), stderr: new RecentOutput() }
       const keptOutput = () => ({
         stdout: recent.stdout.text(),
@@ -555,7 +555,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       // 判据是「停滞」而不是「运行太久」：按总时长判定时，一条仍在逐页处理的长任务与一条停滞的
       // 命令在 600 秒时被同样终止，已完成的输出随之丢失（实测一套 25 页 PPT 的重建需要
       // 15–20 分钟，模型连续四次在 600 秒被终止后改为放到后台轮询，又重复启动一份）。
-      // 没有输出满 `timeout` 时检查进程树是否仍在占用 CPU 或读写磁盘，都没有才终止。不设总时长：
+      // 没有输出满 `timeout` 时检查进程树是否仍在占用 CPU 或读写磁盘，两者都没有时才终止。不设总时长：
       // 仍在工作的命令没有理由被终止，持续输出却不会结束的命令由用户停止。
       // 后台命令（服务进程、监听进程）长时间无输出是常态：转入后台之后不按停滞终止，
       // 检查进程树期间转入后台的同样不终止。
@@ -596,7 +596,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       if (owner !== null && handOff) {
         ctx.signal.removeEventListener('abort', haltWithRun)
         detached = true
-        // 观察窗口转为后台观察：至今的改动随本次结果交出，之后的改动在命令结束时追加到本次调用的 step。
+        // 观察窗口转为后台观察：至今的改动随本次结果返回，之后的改动在命令结束时追加到本次调用的 step。
         // 不要改为关闭窗口：关闭后转入后台之后的改动不进入任何清单。后台观察不占用队列，之后打开的窗口照常收到事件。
         const { observed: watched, background: lateWindow } = await changeWindow.detach()
         trackReported(reported, watched.changes)
@@ -645,7 +645,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       const watchNote = watched.incomplete ? WATCH_INCOMPLETE : ''
       const summary = settledSummary(got, statuses, sandbox.active, timeout, args.timeout_ms)
       return {
-        // 非零退出码是事实而不是异常：模型需要看到失败输出才能修复。
+        // 非零退出码是事实而不是异常：模型需要取得失败输出才能修复。
         status: summary.ok ? 'success' : 'failure',
         message: summary.message + watchNote,
         data: got.timedOut
@@ -908,7 +908,7 @@ export const backgroundCommandTool: ToolSpec = {
  * 为沙箱造成的失败附加明确说明。
  *
  * 内核拒绝写入时报错为 `Read-only file system` / `EROFS` / `Permission denied`，
- * 模型看到这些会尝试 `chmod`、`sudo`，或换用另一个同样位于工作区外的路径，
+ * 模型收到这些报错时会尝试 `chmod`、`sudo`，或换用另一个同样位于工作区外的路径，
  * 连续重试多轮，而每一次尝试都会被同一道边界拒绝。
  *
  * 这是「沙箱是否生效」这一事实唯一的消费方：不附加说明时，
@@ -971,8 +971,8 @@ const NON_INTERACTIVE_ENV: Record<string, string> = {
   /*
    * python 输出不缓冲。
    *
-   * stdout 接到管道时 python 按 8 KB 整块输出：逐页打印进度的脚本运行十分钟也可能一个字节都
-   * 没有送出，`timeout_ms` 按无输出判定，会把它当作停滞终止。界面上的流式输出也因此停在原处。
+   * stdout 接到管道时 python 按 8 KB 整块输出：逐页打印进度的脚本运行十分钟也可能没有输出任何字节，
+   * `timeout_ms` 按无输出判定，会把它当作停滞终止。界面上的流式输出也因此停滞。
    */
   PYTHONUNBUFFERED: '1',
 }
@@ -1020,7 +1020,7 @@ function deliverStreams(
     // 超额时后者不累加，同一决策中其余读取工具会按不存在的余额准入。
     recordBatchSpent(ctx, deliveredTokens(landed.text, ctx.density))
     data[channel] = landed.text
-    // 覆盖事实必须写入 data：模型读取 message 和 data，缺少 coverage 时无法知道自己看到的是全文的多少。
+    // 覆盖事实必须写入 data：模型读取 message 和 data，缺少 coverage 时无法判断取得的内容占全文的多少。
     if (landed.coverage.truncated) data[`${channel}Coverage`] = landed.coverage
     if (landed.resourceId) {
       resources.push({

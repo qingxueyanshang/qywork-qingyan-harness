@@ -24,7 +24,7 @@ import { flushText, flushThinking, pushText, pushThinking } from './pace.ts'
 
 /**
  * 该轮次的结束与报错事件能否改动这条会话的实时读数。已知另一轮正在运行时不能：
- * 较早一轮迟到的收尾不能撤掉当前一轮的运行栏。不知道有运行中的轮次时可以，
+ * 较早一轮迟到的收尾不能移除当前一轮的运行栏。不知道有运行中的轮次时可以，
  * 未取得 runId 即失败的报错（未配置模型等）由此显示为错误卡。
  */
 function ownsLive(v: ConversationView, runId: string): boolean {
@@ -89,7 +89,7 @@ function writeContent(
   )
 }
 
-/** 撤下本轮的请求读数；`finished` 时同时清除轮次身份与用量，并把序号推进到该事件。 */
+/** 移除本轮的请求读数；`finished` 时同时清除轮次身份与用量，并把序号推进到该事件。 */
 function clearLive(cid: string, runId: string, seq: number, finished: boolean): void {
   setState(
     produce((s) => {
@@ -223,22 +223,25 @@ export const runEvents = handlers({
     },
   },
 
+  'thinking.interrupted': {
+    conversation(ev, cid) {
+      const failed = new Set<string>(ev.stepIds)
+      setState(
+        produce((s) => {
+          const v = s.views[cid]
+          if (!v) return
+          // 事件携带 AgentLoop 本次尝试实际创建的 step id。不能按「末尾的思考」标注：
+          // 同一 run 的前几个工具轮也有已完成的思考，按位置标注会误标有效内容。
+          for (const item of v.transcript) {
+            if (item.kind === 'thinking' && failed.has(item.id)) item.interrupted = true
+          }
+        }),
+      )
+    },
+  },
+
   'run.retrying': {
     conversation(ev, cid, seq) {
-      if (ev.failedThinkingStepIds.length > 0) {
-        const failed = new Set<string>(ev.failedThinkingStepIds)
-        setState(
-          produce((s) => {
-            const v = s.views[cid]
-            if (!v) return
-            // 重发事件携带 AgentLoop 本次尝试实际创建的 step id。不能按「末尾的思考」标注：
-            // 同一 run 的前几个工具轮也有已完成的思考，按位置标注会误标有效内容。
-            for (const item of v.transcript) {
-              if (item.kind === 'thinking' && failed.has(item.id)) item.interrupted = true
-            }
-          }),
-        )
-      }
       writeRequest(
         cid,
         seq,
@@ -393,7 +396,7 @@ export const runEvents = handlers({
           /*
            * 错误正文已交给本轮的条目，须清除会话上的错误。
            *
-           * 不清除时同一句话同时显示在读数条与错误卡上，用户会看到两遍。
+           * 不清除时同一段错误正文同时显示在读数条与错误卡上。
            * 错误卡只用于没有 run 收尾条可附加的情况（未配置 key、
            * 档案解析失败），这些情况不会执行到此处。
            */

@@ -9,10 +9,10 @@ import { IconCheck, IconChevron, IconTrash } from '../Icons.tsx'
  * 宠物皮肤的下拉菜单：每行是一只宠物，用户宠物的行尾带删除按钮。
  *
  * **不使用原生 `<select>`。** 宠物库在设置页打开后才读取，原生下拉框的 value 先于选项写入时
- * 落到第一项（内置宠物），选项随后插入也不会再改回，重新打开设置页总显示内置宠物。
+ * 选中第一项（内置宠物），选项随后插入时选中项不再更新，重新打开设置页总显示内置宠物。
  * 此处当前项的名称由偏好与已读取的宠物包直接计算，与选项何时到达无关。
  *
- * 删除按钮放在每一行中，而不是下拉框外：放在外面只能删除当前选中的一只，且看不出删的是哪一只。
+ * 删除按钮放在每一行中，而不是下拉框外：放在外面只能删除当前选中的一只，且界面上无法判断删除的是哪一只。
  * 删除移除本机的宠物目录，不可恢复，点击后先收起菜单再弹出确认。
  */
 export function PetPicker(props: { onError: (message: string | null) => void }) {
@@ -181,7 +181,7 @@ export function PetPicker(props: { onError: (message: string | null) => void }) 
         title={`删除宠物「${doomed()?.name ?? ''}」`}
         message={
           doomed()?.id === petPrefs().pack
-            ? '它是当前使用的宠物，删除后换回内置宠物。删除后无法恢复。'
+            ? '该宠物正在使用中，删除后改用内置宠物，且无法恢复。'
             : '删除后无法恢复。'
         }
         confirmLabel="删除"

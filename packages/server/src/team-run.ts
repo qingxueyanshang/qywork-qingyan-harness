@@ -1,5 +1,5 @@
 /**
- * 编排中一个成员的运行方式：创建一条独立子会话，执行完毕后交回最终文本。
+ * 编排中一个成员的运行方式：创建一条独立子会话，执行完毕后返回最终文本。
  *
  * 成员会话的事件按其自身的会话 id 广播，不归属于父会话：这些 runId 在父会话中不存在，
  * 归属于父会话时，前端会按未知的 runId 创建一条不存在的 run。
@@ -41,7 +41,7 @@ import { type CommandDeps, officePortOf } from './deps.ts'
  * 而工具描述向模型承诺的是「当前模型」。
  *
  * 角色只指定模型而未指定接口时，先按配置反查并固定接口；未找到或重名时本地拒绝。
- * 不能把未知名称放到当前接口上尝试：那会使多个写错的模型都请求同一家 provider，
+ * 不能把未知名称放到当前接口上尝试：多个写错的模型名会因此都请求同一家 provider，
  * 子会话账本中记录的接口也与实际请求的接口不一致。
  */
 export function memberModel(
@@ -105,7 +105,7 @@ export function resolveModel(
  * 成员本次运行的思考档位。优先级：本次派发指定 > 角色设定 > 不传入（由 `Session.ask` 取模型配置）。
  *
  * 角色的档位按角色的接口与模型校验后写入，因此只在子会话使用的正是该模型时采用；派发时另行指定了模型即不采用。
- * 档位不在实际模型可发送的档位中时拒绝派发，不要改为忽略后照常执行：那样指定的档位没有生效，回执中也看不出来。
+ * 档位不在实际模型可发送的档位中时拒绝派发，不要改为忽略后照常执行：忽略时指定的档位不生效，回执中也无从得知。
  */
 export function memberEffort(
   ref: ModelRef,
@@ -146,7 +146,7 @@ function modelList(config: QyConfig): string {
 }
 
 /**
- * 子 agent 未执行到自然结束时的原因，原样交回父会话，父会话据此决定更换做法还是拆分后再派发。
+ * 子 agent 未执行到自然结束时的原因，原样返回给父会话，父会话据此决定更换做法还是拆分后再派发。
  * 压缩为一句「未完成」时，模型只能原样重新派发，而重新派发必然再次遇到同一个问题。
  */
 const CUT_SHORT: Partial<Record<StopReason, string>> = {
@@ -163,7 +163,7 @@ const CUT_SHORT: Partial<Record<StopReason, string>> = {
  * 成员的浏览器控制所属的工作区：读取派发该成员的顶层会话行。
  *
  * 未查到时返回 `null`，调用方据此不创建端口，本轮不注册浏览器工具。
- * 不要改为读取成员会话自身的行：其工作区与顶层会话不一定相同，按它创建页面会落在另一个
+ * 不要改为读取成员会话自身的行：其工作区与顶层会话不一定相同，按它创建的页面会位于另一个
  * 工作区。也不要传空字符串：宿主会以「缺少工作区」拒绝，失败出现在每一次工具调用上。
  */
 export function ownerWorkspace(
@@ -179,14 +179,14 @@ export function ownerWorkspace(
  * `qy` 本身是完整的 agent，作为后端使用时无需新增实现，只需一个独立会话；
  * 未安装 codex / claude 的用户因此同样能够执行编排。
  *
- * 每个成员使用独立会话，不共用。成员之间的上下文必须隔离：「审查者」角色看到「实现者」的
+ * 每个成员使用独立会话，不共用。成员之间的上下文必须隔离：「审查者」角色读取「实现者」的
  * 完整思考过程后便不再是独立视角，而独立视角是多角色的意义所在。节点之间需传递的内容由编排器
  * 显式拼入 prompt（`needs` 的产出），不依赖共享上下文。
  *
  * 内层事件按子会话自身的 id 发送，不归属于父会话。成员会话有自己的 runId，
  * 以父会话的 id 广播时，前端会按该未知 runId 创建一条不存在的 run。
  * 归属写在帧上之后，两件事各自成立：右侧页面订阅子会话 id 即可实时查看其执行过程，
- * 父会话的订阅者则因按会话隔离而收不到这些事件（`bus.ts` 的 `visibleTo`）。
+ * 父会话的订阅者则因按会话隔离而无法收到这些事件（`bus.ts` 的 `visibleTo`）。
  * 父会话图卡上的进度仍由 `team.member` 表达，该通道专为此设计。
  */
 export async function runBuiltinMember(
@@ -228,12 +228,12 @@ export async function runBuiltinMember(
    * 子会话必须进入与主会话相同的 RunManager 生命周期。
    *
    * 只把 `run.started`、正文与 `run.finished` 转发到事件总线而不登记子 run 时，
-   * 握手与 `conversation.busy` 都不知道子会话正在运行：用户在其开始运行后才打开时，
+   * 握手与 `conversation.busy` 都无法反映子会话正在运行：用户在其开始运行后才打开时，
    * 前端能从账本读取正文，却没有权威忙态，因而不显示实时状态条，主会话与子会话的表现随之不一致。
    *
    * 派发方已占用该子会话（`runs.reserve`），登记的中止句柄即 `input.signal` 所属的 controller：
    * RunManager 统一的停止与关闭服务路径经由它中断该子 run。此处在 `run.started` 时补入 runId，
-   * 结束时清除 runId；占位由派发方释放（派发方可能随后重新派发，期间占位不中断）。
+   * 结束时清除 runId；占位由派发方在本次派发结束时释放。
    */
   let text = ''
   let error: string | null = null
@@ -314,6 +314,7 @@ export async function runBuiltinMember(
     for await (const ev of session.ask(input.prompt, conversationId, {
       ...(input.dispatch ? { dispatch: input.dispatch } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
+      transientResend: true,
     })) {
       if (ev.type === 'run.started') {
         runId = ev.runId
@@ -346,7 +347,7 @@ export async function runBuiltinMember(
 /**
  * 判断一个成员是否算作成功。
  *
- * 权威依据是本轮的终态，而非是否产生文字。只看文字时，原地循环或被中断的
+ * 权威依据是本轮的终态，而非是否产生文字。只依据文字时，原地循环或被中断的
  * 子 agent 因先前的输出仍在，会被报告为「已完成」，父会话据此继续执行。
  * 反之，没有报错但没有任何产出同样算失败：ok 加空字符串会被下游理解为
  * 「已检查，无内容可报告」，这是另一种结果。
@@ -354,7 +355,7 @@ export async function runBuiltinMember(
 export function memberOutcome(input: {
   error: string | null
   stop: StopReason | null
-  /** 停止的具体依据（`RunFinishedEvent.stopDetail`），附加在文案后交给父会话。 */
+  /** 停止的具体依据（`RunFinishedEvent.stopDetail`），附加在文案后返回给父会话。 */
   detail?: string | null
   output: string
 }): { ok: boolean; error?: string } {

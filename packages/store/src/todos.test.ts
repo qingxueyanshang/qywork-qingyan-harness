@@ -176,7 +176,7 @@ describe('待办读取', () => {
     store.close()
   })
 
-  test('成功子任务只交回待验收回执，不替父会话完成待办', () => {
+  test('成功子任务只返回待验收回执，不代替父会话完成待办', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')
     submitItems(store, run.id, 1, [
@@ -256,8 +256,8 @@ describe('待办读取', () => {
     store.close()
   })
 
-  /** 无法解析的旧 payload 只应使动作词回退为「创建」，不应使工具调用抛错。 */
-  test('payload 无法解析时按不存在处理，不抛错', () => {
+  /** 无法解析的旧 payload 只应使动作词回退为「创建」，不应使工具调用抛出异常。 */
+  test('payload 无法解析时按不存在处理，不抛出异常', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')
     appendStep(store, {

@@ -63,7 +63,7 @@ describe('锚点的信封修正', () => {
 })
 
 describe('压缩后的估算基准', () => {
-  test('按已发送请求的本地差额递增，真实回执优先，换模型不沿用', () => {
+  test('按已发送请求的本地差额递增，真实回执优先，更换模型后不沿用', () => {
     const run = state()
     run.contextEstimate = {
       basedOnProviderRequestId: null,

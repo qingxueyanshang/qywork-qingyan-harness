@@ -59,7 +59,7 @@ const PreviewPanel = lazy(() => import('./PreviewPanel.tsx'))
 // 子会话页：只在从工具卡打开子 agent 时加载。
 const ConversationPanel = lazy(() => import('./ConversationPanel.tsx'))
 
-// 外部 CLI 页：只在从图卡打开 CLI 节点时加载。
+// 外部 CLI 页：只在从图卡片打开 CLI 节点时加载。
 const CliPanel = lazy(() => import('./CliPanel.tsx'))
 
 // 画布页：只在打开画布时下载。
@@ -143,7 +143,7 @@ const [officePick, setOfficePick] = createSignal<OfficeFormat | null>(null)
  * 「新开预览」看板的各行。**每一行都会新开一页**，因此固定页签不在此处：
  * 它们始终位于页签栏上，列出后点击也不会新开一页。
  *
- * 现状（已核对代码，不要按标签推测）：终端依赖 Rust 侧的 PTY，只在桌面端可用；内置浏览器由
+ * 各行的可用条件如下，不要按标签推测：终端依赖 Rust 侧的 PTY，只在桌面端可用；内置浏览器由
  * 桌面外壳的宿主承载（Windows 嵌入面板，macOS 与 Linux 显示在浏览器的独立窗口中），
  * 宿主连接后才可用，其他端改用 HTTP 网页预览（iframe，只读）。无限画布只在鼠标端提供入口（`canvasAvailable`）；
  * Word、PPT 与 Excel 打开工作区文件选择框（只列出 `packages/server/src/files.ts` 的 `classify` 归入 docx、pptx
@@ -180,8 +180,8 @@ const PREVIEW_SOURCES: {
   {
     /*
      * 网页预览**只在没有桌面外壳的端提供**，不按宿主是否连接判定。
-     * 按可用性判定时，外壳上的宿主启动失败会退化为 iframe：用户得到的是
-     * 外观相同、但没有登录状态且不受 AI 控制的页面，且无法区分。
+     * 按可用性判定时，外壳上的宿主启动失败后会改用 iframe：该页面
+     * 外观相同，但没有登录状态、不受 AI 控制，用户无法区分两者。
      */
     key: 'preview',
     label: '网页预览',
@@ -466,7 +466,7 @@ export default function SidePanel() {
            *
            * 面板中有多处按路径记录的状态：文件树展开的目录、子层缓存、选中的行、
            * 正在查看的 diff。它们都是局部状态，切换项目后每一项仍指向上一个项目：
-           * 文件树已更新而另一半仍是旧内容，点击不产生任何响应。
+           * 文件树的数据已更新而这些状态仍是旧值，点击不产生任何响应。
            *
            * 逐项清除不可行：那需要维护一份全部局部状态的清单，每新增一个 signal 都可能遗漏。
            * 重新挂载是唯一不会遗漏的做法。`openFile` 不在此处，由 `activateWorkspace` 清除。

@@ -72,10 +72,10 @@ describe('安装插件', () => {
   })
 
   test('端口拒绝时如实报告失败', async () => {
-    const p = port(good, { ok: false, error: '目标目录写不进去' })
+    const p = port(good, { ok: false, error: '目标目录无法写入' })
     const res = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
     expect(res.status).toBe('failure')
-    expect(res.message).toContain('写不进去')
+    expect(res.message).toContain('无法写入')
   })
 
   test('清单不合法时立即拒绝，不继续安装', async () => {

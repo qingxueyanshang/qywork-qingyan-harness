@@ -53,7 +53,7 @@ const WS_ROOT = join(import.meta.dir, '..', '.tmp', 'prompt-live')
  * 每个模型一个工作区。
  *
  * 记忆保存在工作区的 `.agents/memory/`。若共用一个目录，第一个模型写入的记忆
- * 会保留给后续所有模型：它们在上下文末尾看到该记忆已存在，用 read_memory 确认后
+ * 会保留给后续所有模型：上下文末尾已列出该记忆，后续模型用 read_memory 确认后
  * 即回复「无需重复写入」。这是正确行为，却被断言按「未写入记忆」计为失败，
  * 导致通过率随执行顺序递减，易被误判为模型能力差异。
  *
@@ -242,7 +242,7 @@ async function newConversation(live: Live, title: string): Promise<string> {
 }
 
 /**
- * 把会话切到指定模型。
+ * 把会话切换到指定模型。
  *
  * 接口与模型必须成对传入：只传模型名时请求被回执拒绝，而拒绝后该轮仍运行默认模型，
  * 与切换成功无法区分。
@@ -341,7 +341,7 @@ function cachedRatio(store: Store, conversationId: string): number | null {
 /**
  * 匹配「继续执行第 N 项」形式的开场白，并取出其中的项号。
  *
- * 报告某一项已完成不算问题，需要检出的是同一项被反复用作开场白：
+ * 报告某一项已完成不视为问题，需要检出的是同一项被反复用作开场白：
  * 「继续第 4 项验证：写脚本」「继续第 4 项验证：运行脚本」。
  * 待办清单每轮重新发送，不加禁止时模型每次调用工具前都会复述一遍。
  */
@@ -358,7 +358,7 @@ function repeatedOpeners(text: string): [string, number][] {
 }
 
 /**
- * 每个 run 独立检查重复开头。两个不同任务各出现一次「第 5 条」不算重复。
+ * 每个 run 独立检查重复开头。两个不同任务各出现一次「第 5 条」不视为重复。
  */
 export function repeatedOpenersInRuns(texts: string[]): [number, string, number][] {
   return texts.flatMap((text, index) =>
@@ -452,7 +452,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
     let firstTodosComplete = false
     for (const [key, task] of Object.entries(TASKS)) {
       const id = await turn(live, conv, task)
-      // 未取得 runId 说明该轮未启动 run。立即抛错，避免其表现为多条「模型未调用工具」失败。
+      // 未取得 runId 说明该轮未启动 run。立即抛出异常，避免其表现为多条「模型未调用工具」失败。
       if (!id) throw new Error(`${key} 轮未启动 run`)
       runOf[key] = id
       v.turns++
@@ -469,9 +469,9 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
     const outputs = toolOutputs(store, conv)
     const add = (n: string, ok: boolean, d = '') => v.checks.push({ name: n, ok, detail: d })
 
-    // 权限段：能答出模式名，且该轮答案不是通过试错得出的。
+    // 权限段：能回答模式名，且该轮答案不是通过试错得出的。
     add(
-      '能答出权限模式（上下文末尾告知生效）',
+      '能回答权限模式（上下文末尾的告知生效）',
       /auto|自动|完全访问|full/i.test(text),
       text.slice(0, 120).replace(/\s+/g, ' '),
     )
@@ -555,7 +555,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
 
 /**
  * 160×90 的 PNG：本地图片接口的成功产物。结果到达后生成卡按 16:9 改变形状，与横屏分镜的实际产物一致；
- * 不要换成 1×1：卡片形状不变，布局判定无法发现结果到达后相邻卡相交。也不要小于 10 像素：
+ * 不要改为 1×1：卡片形状不变，布局判定无法发现结果到达后相邻卡相交。也不要小于 10 像素：
  * 模型用 read_file 查看时图片随请求发出，部分接口拒绝边长小于 10 的图片，整轮失败。
  */
 const PNG_B64 =
@@ -564,9 +564,9 @@ const PNG_B64 =
 /**
  * 受阻判定：多步生成任务中一张图的接口固定返回 502，其余均可执行。
  *
- * 原始失败形状：模型在第一次 502 之后把其余待办全部改回 pending 并结束，其余可执行的项一次都未提交。
- * 生成走本地的 OpenAI 图片形状接口（`/images/generations`），提示词含「灯塔」时返回 502，
- * 其余返回 PNG；配置中去掉其他生成模型，模型只能使用该接口，不产生真实的生成费用。
+ * 原始失败形状：模型在第一次 502 之后把其余待办全部改为 pending 并结束，其余可执行的项一次都未提交。
+ * 生成请求发往本地的 OpenAI 图片形状接口（`/images/generations`），提示词含「灯塔」时返回 502，
+ * 其余返回 PNG；配置中去除其他生成模型，模型只能使用该接口，不产生真实的生成费用。
  */
 /** 出图提示词可能是中文或英文，三类图片按两种写法识别。 */
 const LIGHTHOUSE = /灯塔|lighthouse/i
@@ -618,7 +618,7 @@ function grayPng(w: number, h: number): string {
 /**
  * 本地的 OpenAI 图片形状接口（`/images/generations`）与视频形状接口（`/videos`），以及只含这两个接口的生成配置。
  *
- * 去掉其他接口的生成模型：模型只能使用本地接口，不产生真实的生成费用。`fails` 为真的出图提示词返回 502，
+ * 去除其他接口的生成模型：模型只能使用本地接口，不产生真实的生成费用。`fails` 为真的出图提示词返回 502，
  * 其余返回 `png(请求中的 size)`；视频任务提交后第一次查询即完成，内容为 `MP4_B64`。
  * `prompts` 与 `videos` 分别记录收到的出图与视频提示词。
  */
@@ -864,7 +864,7 @@ function crossings(doc: CanvasDoc, old: ReadonlySet<string>): number {
  * 布局判定：模型在已有内容的画布上分几批新建节点并运行其中两批，检查距离、相交、排列形状与分镜卡的连线。
  *
  * 原始失败形状有三种。模型自行给出坐标时，按 950 的步长排列 169 高的图片卡，新卡放在原点附近、
- * 与远离原点的已有节点相隔一千以上。由画布计算位置时，169 见方的空卡按间隔 100 排列，生成 16:9 的结果后
+ * 与远离原点的已有节点相隔超过 1000。由画布计算位置时，169 见方的空卡按间隔 100 排列，生成 16:9 的结果后
  * 宽 300，相邻卡相交。每组各占一行时，素材与分镜都排成不换行的横行，画布只沿水平方向延伸。
  */
 async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise<Verdict> {
@@ -1283,7 +1283,7 @@ const FINISH_TASK =
   '直到检查通过，最后在 summary.md 中写一句话说明改了什么。'
 const FINISH_REPORT = '工作区有 data.json 与 check.py。运行 python check.py，告诉我它报了哪些错。'
 
-/** 检查脚本：除价格外还要求每本书的 isbn 为 13 位数字。data.json 中第二本书的 isbn 带连字符，去掉连字符即可通过，修法唯一。 */
+/** 检查脚本：除价格外还要求每本书的 isbn 为 13 位数字。data.json 中第二本书的 isbn 带连字符，去除连字符即可通过，修复方式唯一。 */
 const FINISH_CHECK = [
   'import json, sys',
   "books = json.load(open('data.json', encoding='utf-8'))",
@@ -1395,7 +1395,7 @@ async function runFinish(store: Store, config: QyConfig, ref: ModelRef): Promise
       add('B 追问「为什么不解决？」后本轮调用了工具', tools.length > 0, tools.join('、') || '0 次')
       add('B 追问后先回答再执行', answeredFirst)
       add('B 追问之后 isbn 错误已修复', !(await isbnBroken()))
-      // 运行演示代码回答问题不算接续；接续的判据是提交了清单或修改了工作区的数据。
+      // 运行演示代码回答问题不视为接续；接续的判据是提交了清单或修改了工作区的数据。
       const before = await Bun.file(join(wsB, 'data.json')).text()
       const unrelated = await turn(liveB, convB, FINISH_UNRELATED)
       v.turns++

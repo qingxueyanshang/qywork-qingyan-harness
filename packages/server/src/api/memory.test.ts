@@ -70,7 +70,7 @@ describe('记忆列表按层分列', () => {
 })
 
 describe('删除技能', () => {
-  test('按目录名删除，删除后扫描不到；删除不存在的技能返回 404', async () => {
+  test('按目录名删除，删除后不再出现在扫描结果中；删除不存在的技能返回 404', async () => {
     const { root } = await workspace()
     const dir = join(root, '.agents', 'skills', 'release')
     await mkdir(dir, { recursive: true })

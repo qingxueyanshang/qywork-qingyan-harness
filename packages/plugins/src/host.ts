@@ -201,7 +201,7 @@ export class PluginHost {
       this.exited = { code, signal }
       this.proc = null
       // 进程已退出，进行中的调用都不会再有答复，必须逐个拒绝：
-      // 保留它们会使调用方一直等待到超时，而超时在用户看来是「无响应」。
+      // 保留它们会使调用方一直等待到超时，而超时在界面上显示为「无响应」。
       for (const [id] of [...this.pending]) {
         this.settle(id)?.reject(new Error(`插件进程退出（code=${code} signal=${signal}）`))
       }

@@ -59,7 +59,7 @@ interface Scene {
   readonly date1904: boolean
   /**
    * 条形四边与主要网格线上沿在设备坐标中四舍五入到整像素：WPS 表格与 WPS 文字（`host` 为 `sheet`）如此绘制，
-   * WPS 演示按亚像素抗锯齿绘制。实测（WPS 表格对照图 3 页）：本方条形边缘按四舍五入后与对照图一致 8998/9871 处，
+   * WPS 演示按亚像素抗锯齿绘制。实测（WPS 表格对照图 3 页）：本实现的条形边缘按四舍五入后与对照图一致 8998/9871 处，
    * 网格线 53/53 条（2 页中的 8 个图表）；折线与标记仍为抗锯齿。
    */
   readonly snap: boolean
@@ -528,7 +528,7 @@ interface PlotPoint {
   readonly i: number
 }
 
-/** 各分类一条垂直线：覆盖该分类各系列的点与分类轴线之间的范围，自数值方向的一端画到另一端。 */
+/** 各分类一条垂直线：覆盖该分类各系列的点与分类轴线之间的范围，自数值方向的一端延伸到另一端。 */
 function paintDropLines(
   s: Scene,
   m: Mapping,
@@ -552,7 +552,7 @@ function paintDropLines(
 }
 
 /**
- * 系列的线性趋势线：以点在分类轴上的位置为自变量按最小二乘拟合数值，自第一个分类画到最后一个分类，裁去绘图区以外的部分。
+ * 系列的线性趋势线：以点在分类轴上的位置为自变量按最小二乘拟合数值，自第一个分类延伸到最后一个分类，裁去绘图区以外的部分。
  * 少于 2 个点时不绘制。
  */
 function paintTrendlines(s: Scene, series: Series, m: Mapping): void {
@@ -605,8 +605,8 @@ function paintTrendlines(s: Scene, series: Series, m: Mapping): void {
 }
 
 /**
- * 数据点在绘图区之外（坐标轴的固定最小值、最大值之外）时不画标记与数据标签。WPS 实测：xls-689ed697 的散点图中
- * x 为 0 而横坐标轴最小值为 6,000 的点不显示；不跳过时标记画在图表区之外，落在相邻的图表上。
+ * 数据点在绘图区之外（坐标轴的固定最小值、最大值之外）时不绘制标记与数据标签。WPS 实测：xls-689ed697 的散点图中
+ * x 为 0 而横坐标轴最小值为 6,000 的点不显示；不跳过时标记绘制于图表区之外，落在相邻的图表上。
  */
 function outside(plot: Rect, p: { x: number; y: number }): boolean {
   const e = 0.5
@@ -834,7 +834,7 @@ function paintPie3D(s: Scene, g: PlotGroup, view: View3D, spots: LabelSpot[]): v
     if (sl.v <= 0) continue
     const box = pointBox(series, sl.i)
     const { ox, oz } = sl
-    // 径向侧面只在与相邻扇区的分离程度不同时露出。
+    // 径向侧面只在与相邻扇区的分离程度不同时可见。
     const n = slices.length
     for (const [a, other] of [
       [sl.a0, slices[(sl.i + n - 1) % n]!],
@@ -859,7 +859,7 @@ function paintPie3D(s: Scene, g: PlotGroup, view: View3D, spots: LabelSpot[]): v
       fillPath(s, side, sideFill(box.fill), area)
       const edges: Segment[] = []
       for (const a of [lo, hi]) {
-        // 只在扇区边界处画竖直分隔线，半圈的端点处不画。
+        // 只在扇区边界处绘制竖直分隔线，半圈的端点处不绘制。
         if (a !== sl.a0 && a !== sl.a1) continue
         const p = project(geo, a, geo.r, 0, ox, oz)
         const q = project(geo, a, geo.r, bottom, ox, oz)

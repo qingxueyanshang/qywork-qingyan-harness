@@ -21,6 +21,8 @@ export interface RunningSubagent {
 export class SubagentRegistry {
   /** 外层键是派发子 agent 的会话 id，内层键是子 agent 自身的会话 id。 */
   private readonly byConversation = new Map<ConversationId, Map<string, RunningSubagent>>()
+  /** `idle()` 的等待方，运行表清空时一并兑现。 */
+  private readonly idleWaiters: (() => void)[] = []
 
   add(conversationId: ConversationId, subagentId: string, entry: RunningSubagent): void {
     const table = this.byConversation.get(conversationId) ?? new Map<string, RunningSubagent>()
@@ -33,13 +35,23 @@ export class SubagentRegistry {
    * 因此只需一种判断方式。
    *
    * 不要改为只按 id 删除：子 agent 的轮次注销之后、本次派发的完成回调执行之前，同一子 agent
-   * 可以被再次派发并登记新条目，只按 id 删除会删掉新条目，父会话随即显示为空闲，停止按钮也无法再停止它。
+   * 可以被再次派发并登记新条目，只按 id 删除会删除新条目，父会话随即显示为空闲，停止按钮也无法再停止它。
    */
   remove(conversationId: ConversationId, subagentId: string, controller: AbortController): void {
     const table = this.byConversation.get(conversationId)
     if (table?.get(subagentId)?.controller !== controller) return
     table.delete(subagentId)
     if (table.size === 0) this.byConversation.delete(conversationId)
+    if (this.byConversation.size === 0) for (const resolve of this.idleWaiters.splice(0)) resolve()
+  }
+
+  /**
+   * 运行表清空时兑现。条目在完成回调写入节点终态之后删除，服务退出在 `interruptAll` 之后等待它；
+   * 不等待时进程先于完成回调退出，卡片上的节点停留在「进行中」。
+   */
+  idle(): Promise<void> {
+    if (this.byConversation.size === 0) return Promise.resolve()
+    return new Promise((resolve) => this.idleWaiters.push(resolve))
   }
 
   has(conversationId: ConversationId): boolean {

@@ -16,7 +16,7 @@ import type { FileChange } from '@qywork/core'
  */
 export interface CommandPort {
   /**
-   * 等到本会话的投递队列中出现用户发来的「调整方向」消息（`FollowUp.steer` 为真且没有 `origin`）后兑现；
+   * 本会话的投递队列中出现用户发来的「调整方向」消息（`FollowUp.steer` 为真且没有 `origin`）后兑现；
    * 已存在时立即兑现。`signal` 中止时以中止原因拒绝。信号来源与 `DelegatePort.awaitReceipt` 相同。
    */
   steered(signal: AbortSignal): Promise<void>

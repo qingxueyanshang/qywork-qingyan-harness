@@ -1,4 +1,4 @@
-/** 各协议的陌生状态不能变成假排队或终态失败；恢复必须沿用原任务，不产生新 POST。 */
+/** 各协议未识别的状态不得被当作排队中或终态失败；恢复必须沿用原任务，不发出新的 POST。 */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import type { ChannelVideoSpec, MediaKind } from '@qywork/core'
 import { buildMediaAdapter } from './index.ts'
@@ -94,7 +94,7 @@ for (const item of cases) {
     'unrecognized-status',
     ...(item.kind === 'dashscope_videos' ? ['UNKNOWN'] : []),
   ]) {
-    test(`${item.model ?? item.kind} ${status ?? '缺失状态'} 保留任务号且不冒充排队`, async () => {
+    test(`${item.model ?? item.kind} ${status ?? '缺失状态'} 保留任务号且不显示为排队中`, async () => {
       calls = []
       reply = item.body(status)
       const adapter = buildMediaAdapter({

@@ -237,7 +237,7 @@ impl Display {
     ///
     /// 命中由 X 服务器按实际层叠序与输入形状计算（`TranslateCoordinates` 返回根窗口下包含该点的
     /// 最上层子窗口），弹出菜单等不由窗口管理器管理的窗口也计算在内。命中窗口管理器的外框时
-    /// 换为框内的客户窗口；所有者沿 `WM_TRANSIENT_FOR` 上溯，没有时即窗口自身。
+    /// 改为框内的客户窗口；所有者沿 `WM_TRANSIENT_FOR` 上溯，没有时即窗口自身。
     ///
     /// 屏幕外的点没有命中：XTest 把指针限制在屏幕边缘，按下时落在另一个位置。
     pub fn hit(&self, point: ScreenPoint) -> Result<(i64, i64), String> {
@@ -355,7 +355,7 @@ impl Display {
         self.ping_token.set(token.wrapping_add(1).max(1));
         // 回应发往根窗口，掩码是 SubstructureRedirect 加 SubstructureNotify（GTK）或加
         // StructureNotify（Qt）。SubstructureRedirect 由窗口管理器独占，因此两种 Notify 都订阅，缺少
-        // 任一种即收不到对应类型应用的回应。只在等待期间订阅，避免本连接平时积累根窗口上的全部
+        // 任一种即不会收到对应类型应用的回应。只在等待期间订阅，避免本连接平时积累根窗口上的全部
         // 结构事件。
         let listen = |mask: EventMask| {
             self.conn

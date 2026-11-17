@@ -123,8 +123,8 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
   const requests = createRequestPages()
   ensureConfig()
   void ensureModelCatalog()
-  // 三项读取经同一个云端服务，失败原因相同：只显示一处原因与一个重试，读取失败的各节不显示。
-  // 已有记录时续页的失败不计入：它显示在使用记录表的下方。
+  // 三项读取经同一个云端服务，失败原因相同：只显示一处原因与一个重试按钮，读取失败的各节不显示。
+  // 已有记录时后续分页的读取失败不计入：它显示在使用记录表的下方。
   const requestsFailed = () => (requests.rows().length === 0 ? requests.error() : null)
   const failure = () => usage.error ?? models.error ?? requestsFailed()
   const retrying = () => usage.loading || models.loading || requests.loading()
@@ -224,7 +224,7 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
               </Show>
             </button>
           </Show>
-          {/* 官网在右侧面板打开，同时关闭本窗口，否则窗口遮住面板。 */}
+          {/* 官网在右侧面板打开，同时关闭本窗口，否则本窗口会遮挡面板。 */}
           <button
             type="button"
             class="icon-btn"

@@ -1593,7 +1593,7 @@ test('页面推迟加载的 iframe 不算未就位，观察不为它等待', asy
   const { fake, handle } = await newPage((f) => {
     addFrame(f)
     const frame = f.model.docs[1] as DocModel
-    // `loading="lazy"` 尚未触发：帧在 DOM 中，没有进行中的导航，等待多久都不会有内容。
+    // `loading="lazy"` 尚未触发：帧在 DOM 中，没有进行中的导航，无论等待多久都不会有内容。
     frame.uncommitted = true
     frame.noLoadEvent = true
     frame.attachDelayMs = 60_000
@@ -2595,7 +2595,7 @@ test('fill 在只读与禁用控件上写入前就拒绝', async () => {
   expect(fake.valueOf(25)).toBe('停用')
 })
 
-test('fill 之后页面将值改回时如实说明写入已经发出，不报告成功', async () => {
+test('fill 之后页面改写该值时如实说明写入已经发出，不报告成功', async () => {
   const { fake, handle } = await newPage()
   addField(fake, 26, 'input', { id: 'ctrl', type: 'text' }, { rewriteTo: '框架值' })
   const { record, observation } = await observe(handle)

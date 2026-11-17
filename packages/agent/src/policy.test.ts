@@ -18,7 +18,7 @@ const d = (command: string) => decideCommand(command, ctx)
 const kind = (command: string) => d(command).kind
 
 describe('空命令', () => {
-  test('没有可执行内容时明确报告，不交给 shell 返回空结果', () => {
+  test('没有可执行内容时明确报告，不由 shell 返回空结果', () => {
     expect(kind('')).toBe('deny')
     expect(kind('   ')).toBe('deny')
     expect(kind('\n\n')).toBe('deny')
@@ -50,7 +50,7 @@ describe('工作区外的写入与删除', () => {
     expect(kind('cp evil.dll C:/Windows/System32/')).toBe('deny')
   })
 
-  /** 读取不拦截。写成「引用家目录即拒绝」会把 `cat ~/.gitconfig` 一并拦截。 */
+  /** 读取不拦截。写为「引用家目录即拒绝」会把 `cat ~/.gitconfig` 一并拦截。 */
   test('读取家目录不拦截', () => {
     for (const cmd of [
       'cat ~/.gitconfig',
@@ -193,7 +193,7 @@ describe('工作区外的写入与删除', () => {
     }
   })
 
-  test('交给 shell 的内联脚本与 heredoc 按命令解析', () => {
+  test('传给 shell 的内联脚本与 heredoc 按命令解析', () => {
     for (const cmd of [
       'bash <<EOF\nrm ~/x\nEOF',
       'bash -lc "rm ~/x"',
@@ -542,7 +542,7 @@ describe('PowerShell 写法', () => {
     }
   })
 
-  /** PowerShell 的启动脚本：从字面上无法看出它位于家目录中，写入后每次启动 shell 都会执行其内容。 */
+  /** PowerShell 的启动脚本：从字面上无法判断它位于家目录中，写入后每次启动 shell 都会执行其内容。 */
   test('写入 $PROFILE', () => {
     expect(kind('Set-Content $PROFILE -Value "whoami"')).toBe('deny')
   })
@@ -582,7 +582,7 @@ describe('PowerShell 写法', () => {
  * 不应拦截的命令一律放行。
  *
  * 启动服务器、读取工作区外的文件、安装依赖包都是编码 agent 的正常工作，均不得进入
- * 拒绝清单。拦截正常工作的裁决器实际降低了安全性：用户很快会切换到 full，
+ * 拒绝清单。拦截正常工作的裁决器实际降低了安全性：用户会在短时间内切换到 full，
  * 导致所有防线失效。
  */
 describe('正常工作放行', () => {
@@ -640,8 +640,8 @@ describe('正常工作放行', () => {
 /**
  * 第四类：auto 模式下把 Python 包装入全局环境。
  *
- * 原始失败形状：运行上下文写着工作区外的写入会被拒绝，而 `pip install` 实际装入全局；模型因此改用
- * `--target` 装进工作区的多个目录，装入的包不在导入路径上，下一次又重装。工作区环境存在时命令中的 pip
+ * 原始失败形状：运行上下文写明工作区外的写入会被拒绝，而 `pip install` 实际安装到全局；模型因此改用
+ * `--target` 安装到工作区的多个目录，安装的包不在导入路径上，下一次又重新安装。工作区环境存在时命令中的 pip
  * 即该环境，放行；越过它的写法与工作区环境不存在时的安装一律拒绝。
  */
 describe('auto 模式下全局安装 Python 包', () => {
@@ -649,7 +649,7 @@ describe('auto 模式下全局安装 Python 包', () => {
   const ready: PolicyContext = { workspaceRoot: ws, workspacePython: true }
   const at = (command: string, c: PolicyContext = ready) => decideCommand(command, c).kind
 
-  test('工作区环境存在时，命令中的 python 与 pip 装入工作区，放行', () => {
+  test('工作区环境存在时，命令中的 python 与 pip 安装到工作区，放行', () => {
     for (const cmd of [
       'pip install pyjokes',
       'pip3 install -r requirements.txt',
@@ -761,7 +761,7 @@ describe('additionalDirectories', () => {
  * 大小写与写法变体。
  *
  * Windows 与 macOS 的文件系统不区分大小写，`c:/users/x/.ssh/id_rsa` 和
- * `C:/Users/X/.ssh/id_rsa` 是同一个文件：不做大小写折叠时，把盘符写成小写即可绕过。
+ * `C:/Users/X/.ssh/id_rsa` 是同一个文件：不做大小写折叠时，把盘符写为小写即可绕过。
  */
 describe('写法变体', () => {
   const H = homedir()

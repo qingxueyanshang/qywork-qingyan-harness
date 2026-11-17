@@ -147,7 +147,7 @@ describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
     const m = readMetrics(bytes, face)
     expect(m.unitsPerEm).toBe(e.unitsPerEm)
     expect(m.numGlyphs).toBe(e.numGlyphs)
-    // 实际值与期望值都带上码位，失败信息可直接指出是哪个字符。
+    // 实际值与期望值均附带码位，失败信息可直接指明对应的字符。
     const actual = e.glyphs.map(([cp]) => [cp, m.glyphId(cp), m.advanceWidth(cp)])
     expect(actual).toEqual(e.glyphs)
   })
@@ -178,7 +178,7 @@ describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
       return s
     }
 
-    test('合集中的两个字体各拆为一个独立 sfnt，家族名与度量和合集中的原字体一致', () => {
+    test('合集中的两个字体各拆分为一个独立 sfnt，家族名与度量和合集中的原字体一致', () => {
       expect(faces).toHaveLength(2)
       parts.forEach((bytes, i) => {
         const own = readFaces(bytes)

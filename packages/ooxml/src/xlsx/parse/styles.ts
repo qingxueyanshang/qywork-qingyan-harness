@@ -3,7 +3,7 @@
  *
  * - 单元格样式取 `cellXfs` 中该项自身的 `fontId`、`fillId`、`borderId`、`numFmtId` 与 `alignment`，
  *   不按 `apply*` 属性回退到 `cellStyleXfs`：Excel 写入时已把生效的值写在 `cellXfs` 中，
- *   `apply*` 只记录用户是否改过该项。没有 `alignment` 子元素时为默认对齐（常规、靠下）。
+ *   `apply*` 只记录用户是否修改过该项。没有 `alignment` 子元素时为默认对齐（常规、靠下）。
  * - 颜色在整个样式表读完后再换算：`indexedColors` 位于样式表末尾，而字体与填充在其前引用索引色。
  * - `dxf` 中的纯色填充颜色写在 `bgColor`（与 `cellXfs` 的 `fgColor` 相反），缺失 `patternType` 时按纯色处理；
  *   缺失的颜色保留为 `null`，不以另一方或黑白补齐（WPS 实测：只有 `fgColor` 的纯色差异样式不改变单元格的填充色）。

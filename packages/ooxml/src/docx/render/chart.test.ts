@@ -240,7 +240,7 @@ describe.skipIf(!LOCAL_FONTS)('图表的放置与绘制（本机字体）', () =
       { faces: pages.faces, draw: () => simsun() },
       { images: [], parts: [], createCanvas: () => new RecordingCanvas(1, 1) },
     )
-    // 宋体 10 磅（13 像素）的汉字与数字都以单色字形画在设备像素上：汉字取内嵌点阵，数字没有点阵，取提示后光栅化的轮廓
+    // 宋体 10 磅（13 像素）的汉字与数字都以单色字形绘制在设备像素上：汉字取内嵌点阵，数字没有点阵，取提示后光栅化的轮廓
     // （WPS 文字实测：图表中这一字号的数字同样不平滑）。
     expect(ctx.calls.filter((k) => k.name === 'fillText')).toEqual([])
     const bitmap = ctx.calls.filter(

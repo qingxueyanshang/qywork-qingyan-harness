@@ -15,7 +15,7 @@
  * `full` 全部放行；`auto` 下 MCP 工具的调用放行：server 由用户配置，属于知情同意。
  *
  * 命名：注册名是 `mcp__<server>__<tool>`，与插件的 `<id>__<tool>` 采用同一种隔离方式：
- * 两个 server 各带一个 `search` 不会互相覆盖，模型也能从名称看出调用的是哪个 server。
+ * 两个 server 各带一个 `search` 不会互相覆盖，模型也能从名称判断调用的是哪个 server。
  */
 
 import { boundExecutedOutcome, sanitizeToolName, type ToolSpec } from '@qywork/agent'
@@ -67,12 +67,12 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     // 对象与目标填同一字符串会使目标层失去作用（标题与目标完全相同）。
     objectLabel: 'MCP',
     // 一律归入「MCP」：该类别的作用是不与内置分类混排；
-    // 第三方 server 提供什么、属于哪个领域，本地无法判断，推测一个类别填入更糟。
+    // 第三方 server 提供什么、属于哪个领域，本地无法判断，推测填入的类别可能错误。
     category: 'mcp',
     facet: `MCP ${server}`,
     summary: def.description?.trim() || def.name,
     // target 同时承载权限 scope（scope = `<effect>:<target>`）。
-    // 不要为了卡片显示而去掉 `mcp:` 前缀：去掉后，名为 `github` 的插件的
+    // 不要为了卡片显示而去除 `mcp:` 前缀：去除后，名为 `github` 的插件的
     // `search` 与该 server 的 `search` 会产生同一个 scope 字符串。
     targetExtractor: () => permissionLabel(server, def.name),
 
@@ -105,7 +105,7 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
           ctx,
           {
             // isError 表示工具执行失败，不是协议错误。此处原样传递，
-            // 模型看到失败详情才能修改参数重试。
+            // 模型取得失败详情后才能修改参数重试。
             status: res.isError ? 'failure' : 'success',
             executed: true,
             message: text || (res.isError ? 'MCP 工具报告失败但没有给出内容' : '完成'),
@@ -198,7 +198,7 @@ export function renderContent(res: McpCallResult): string {
       parts.push(`[resource_link：${String(block.uri ?? '未知')}]`)
     } else {
       // 未知块类型不能丢弃：MCP 今后增加新类型时，丢弃会使模型收到
-      // 静默缺少一段的结果，比看到一行占位更难排查。
+      // 静默缺少一段的结果，比保留一行占位更难排查。
       parts.push(`[${block.type}]`)
     }
   }

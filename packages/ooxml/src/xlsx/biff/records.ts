@@ -125,7 +125,7 @@ export function unicodeString(b: Bytes, p: number): { text: string; end: number 
 
 /**
  * 记录与其后连续的 CONTINUE 记录：`parts[0]` 为记录本身的数据。字符串跨记录时，后一段的开头另有一个字节的
- * 字符宽度标志（见 `globals.ts` 中 SST 的读取），因此各段不能简单拼接。
+ * 字符宽度标志（见 `globals.ts` 中 SST 的读取），因此各段不能直接拼接。
  */
 export function withContinues(
   list: readonly BiffRecord[],

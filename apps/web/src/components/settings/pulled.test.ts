@@ -110,7 +110,7 @@ test('型号列表不完整，不据此标记已下架', () => {
   expect(next).toBeNull()
 })
 
-test('添加：对话型号写价格与对应型号，生成型号写规格并补默认；已添加的跳过', () => {
+test('添加：对话型号写入价格与对应型号，生成型号写入规格并补充默认模型；跳过已添加的型号', () => {
   const picks = RESULT.models.map((model) =>
     model.id === 'deepseek-v4.1-flash' ? { model, base: 'deepseek-flash' } : { model },
   )

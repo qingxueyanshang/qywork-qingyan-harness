@@ -18,7 +18,7 @@ export const waitSubagentsTool: ToolSpec = {
   description:
     '在本轮内等待本会话正在执行的子 agent 或工作流节点送回下一条回执，回执作为下一条消息送达；等待期间不调用模型。' +
     '收到回执、用户发来消息、到达 timeout_seconds 或本会话没有正在执行的子 agent 时返回。' +
-    '一次只等到一条回执；还在等其他子 agent 时，读完这条回执后再次调用。',
+    '一次只等待一条回执；仍需等待其他子 agent 时，读取这条回执后再次调用。',
   parameters: {
     type: 'object',
     properties: {

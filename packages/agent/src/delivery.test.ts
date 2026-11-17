@@ -47,7 +47,7 @@ function fakeSink(): SinkPort & { landed: Uint8Array[] } {
 }
 
 describe('一次决策一份额度', () => {
-  test('未开账就调用属于装配错误，不提供默认额度', () => {
+  test('未开账时调用属于装配错误，不提供默认额度', () => {
     expect(() => chargeBatchBudget({ state: new Map() }, 1)).toThrow('投递额度未开账')
   })
 
@@ -121,7 +121,7 @@ describe('一次决策一份额度', () => {
  * 记录只来自超出上限的准入、按上限截短的投递与已执行结果的超额定稿，开账时清零。
  */
 describe('触及单次上限的记录', () => {
-  test('准入被拒绝或按上限截短的投递记为触及上限，整份放行与已执行的记账不记', () => {
+  test('准入被拒绝或按上限截短的投递记为触及上限，整份放行的准入与已执行结果的记账不记为触及上限', () => {
     const fits = ctx(10_000)
     chargeBatchBudget(fits, 5_000)
     recordBatchSpent(fits, 50_000)
@@ -146,7 +146,7 @@ describe('触及单次上限的记录', () => {
     expect(batchCapped(c.state)).toBe(true)
   })
 
-  test('尚未开账时不算触及上限，重新开账时清零', () => {
+  test('尚未开账时不计为触及上限，重新开账时清零', () => {
     expect(batchCapped(new Map())).toBe(false)
     const c = ctx(10_000)
     chargeBatchBudget(c, 20_000)

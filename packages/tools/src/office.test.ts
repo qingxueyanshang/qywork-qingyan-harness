@@ -55,7 +55,7 @@ function videoDensity(video: boolean, uploadAbove?: number) {
   })
 }
 
-/** 只有索引的最小 mp4（10 秒、640×360）：读得出时长与尺寸的视频才原生发送。`bytes` 为文件总长的下限。 */
+/** 只有索引的最小 mp4（10 秒、640×360）：能读取时长与尺寸的视频才原生发送。`bytes` 为文件总长的下限。 */
 function indexedMp4(bytes = 4096): Buffer {
   const box = (type: string, ...payload: Buffer[]) => {
     const body = Buffer.concat(payload)
@@ -278,7 +278,7 @@ describe('office view 与 guide', () => {
   })
 
   /** 越界的目标取家目录中、工作区之外的位置：家目录与系统目录之外的位置在自动审批下可写。 */
-  test('save_to 形式不对、越出写入范围或位于受保护目录：不启动 worker，不写文件', async () => {
+  test('save_to 格式错误、越出写入范围或位于受保护目录：不启动 worker，不写文件', async () => {
     const root = await workspace()
     await writeFile(join(root, 'deck.pptx'), 'deck')
     const c = ctx(root)
@@ -438,10 +438,10 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
   })
 
   /**
-   * 接受原生视频的模型：接口支持上传时交出路径；不支持上传且超过常驻上限时同样抽帧，并说明原因，
+   * 接受原生视频的模型：接口支持上传时返回路径；不支持上传且超过常驻上限时同样抽帧，并说明原因，
    * 判据与发送时的 `videoDelivery` 相同。
    */
-  test('接受原生视频但文件过大：可上传时交出路径，不可上传时改为抽帧', async () => {
+  test('接受原生视频但文件过大：可上传时返回路径，不可上传时改为抽帧', async () => {
     const root = await workspace()
     await writeFile(join(root, 'big.mp4'), indexedMp4(9 * 1024 * 1024))
     const upload = await readFileTool.fn(
@@ -474,7 +474,7 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
     expect(res).toEqual({ status: 'failure', message: 'end 必须大于 start' })
   })
 
-  test('接受原生视频的模型仍交出路径，不抽帧', async () => {
+  test('接受原生视频的模型仍返回路径，不抽帧', async () => {
     const root = await clip()
     const res = await readFileTool.fn(
       { path: 'clip.mp4' },

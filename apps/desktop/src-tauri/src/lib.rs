@@ -170,7 +170,7 @@ async fn save_session_export(
 ///
 /// 使用 Tauri 命令而不是在前端引入 `@tauri-apps/api`：本项目的前端是
 /// 桌面与手机共用的同一份代码，引入一个仅桌面可用的包，
-/// 会使手机端构建中多出一段永不执行的代码。
+/// 会使手机端构建中包含一段永不执行的代码。
 #[tauri::command]
 fn window_minimize(window: tauri::Window) -> Result<(), String> {
     window.minimize().map_err(|e| e.to_string())
@@ -617,8 +617,8 @@ pub fn run() {
             if let Err(error) = build_startup_window(&handle) {
                 fatal_exit(&error);
             }
-            // setup 必须返回，让启动窗口可以重绘、关闭。后台创建进程或等待回执再慢，
-            // 都不占用 UI 线程；关闭窗口通过 SidecarHandle 的 stopping 终态取消启动。
+            // setup 必须返回，使启动窗口可以重绘、关闭。后台创建进程或等待回执耗时再长，
+            // 也不占用 UI 线程；关闭窗口通过 SidecarHandle 的 stopping 终态取消启动。
             tauri::async_runtime::spawn(async move {
                 // 后端与页面必须来自同一次构建。devUrl 模式下页面是 Vite 中的源码，
                 // 后端只能是 dev.ts 从同一源码树启动的进程；`bin/qy` 是上一次
@@ -677,7 +677,7 @@ pub fn run() {
                 api.prevent_close();
                 if window.label() == "startup" {
                     log::info!("用户取消启动");
-                    // 立即标记 stopping，晚到的就绪回执或创建结果不能再打开主窗口。
+                    // 立即标记 stopping，迟到的就绪回执或创建结果不能再打开主窗口。
                     sidecar::shutdown(window.app_handle());
                     window.app_handle().exit(0);
                     return;

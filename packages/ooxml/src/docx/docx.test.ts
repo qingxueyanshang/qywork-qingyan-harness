@@ -757,7 +757,7 @@ describe('段落属性', () => {
         '<w:docGrid w:type="lines" w:linePitch="312"/></w:sectPr>',
     })
     const list = paragraphs(doc)
-    // WPS：段后 0、10、15、0 磅，段前 10 磅；afterLines="-1" 时段后为 0（本方为 -0.156 磅，段间距取段后与段前中的较大者）。
+    // WPS：段后 0、10、15、0 磅，段前 10 磅；afterLines="-1" 时段后为 0（本模块计算为 -0.156 磅，段间距取段后与段前中的较大者）。
     expect(list.slice(0, 4).map((x) => x.props.after)).toEqual([0, 10, 15, 0])
     expect(list[4]!.props.before).toBe(10)
     expect(list[5]!.props.after).toBeCloseTo(-0.156, 10)
@@ -1197,8 +1197,8 @@ describe('分页与绘制所需的属性', () => {
     })
   })
 
-  test('缺少 w:val 的 w:u 不生效：不画下划线，也不覆盖字符样式与段落样式中的下划线', async () => {
-    // WPS：直接格式、只带颜色的与字符样式中的空 w:u 都不画下划线；字符样式或段落样式为单线时其上的空 w:u 仍画单线。
+  test('缺少 w:val 的 w:u 不生效：不绘制下划线，也不覆盖字符样式与段落样式中的下划线', async () => {
+    // WPS：直接格式、只带颜色的与字符样式中的空 w:u 都不绘制下划线；字符样式或段落样式为单线时其上的空 w:u 仍绘制单线。
     const doc = await parse({
       styles:
         DEFAULTS +
@@ -2171,7 +2171,7 @@ describe.skipIf(!LOCAL_FONTS)('WPS 按自带度量排版的字体', () => {
       '宋体',
     )
     const [title, body] = layoutDocument(doc, fonts.source, NO_HOST_FAMILIES).paragraphs
-    // WPS 实测（构造文档 f1-vert）：22 磅 671 缇，12 磅 348 缇；本方替代为宋体时为 571 与 312 缇。
+    // WPS 实测（构造文档 f1-vert）：22 磅 671 缇，12 磅 348 缇；本模块替代为宋体时为 571 与 312 缇。
     const twips = (h: number) => Math.round(h * 20)
     expect(Math.abs(twips(title!.text.lines[0]!.height) - 671)).toBeLessThanOrEqual(2)
     expect(Math.abs(twips(body!.text.lines[0]!.height) - 348)).toBeLessThanOrEqual(2)
@@ -2283,7 +2283,7 @@ describe.skipIf(!LOCAL_FONTS)('嵌入字体', () => {
     expect(Array.from(doc.embeddedFonts[0]!.bytes)).toEqual(Array.from(georgia))
   })
 
-  test('嵌入字体以按主机界面语言取的家族名为字体名，与 w:name 无关；主机有该字体名时不用', async () => {
+  test('嵌入字体以按主机界面语言取的家族名为字体名，与 w:name 无关；主机有该字体名时不使用', async () => {
     // WPS 实测（构造文档 f2-emb、f2-emb3，中文界面）：家族名为 QyEmbInner、w:name 为 QyEmbB 的嵌入字体，字段字体为 QyEmbInner
     // 时取它，为 QyEmbB 时按主机没有替代；w:name 与家族名都为 Arial 而主机有 Arial 时用主机字体。
     const doc = await parse({

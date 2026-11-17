@@ -96,8 +96,8 @@ type Readback = 'match' | 'mismatch' | 'unreadable'
  * - `pointer`：接受图像点作为落点。其余方式不接受图像点：键盘动作省略 ref 时投递给窗口焦点，
  *   其余按控件执行。
  * - `focus`：可以不指定控件、直接投递给窗口。键盘输入的目标是目标窗口内焦点所在的位置，
- *   不是某个被指定的控件。自绘界面不暴露业务控件，无法提供持有焦点的控件；只接受控件等于对这类应用
- *   关闭整条键盘输入路径。
+ *   不是某个被指定的控件。自绘界面不暴露业务控件，无法提供持有焦点的控件；只接受控件时，
+ *   这类应用的键盘输入路径全部关闭。
  * - `window`：作用于窗口本身，未指定控件时取窗口根。宿主执行形变动作时需要读取窗口根控件的
  *   显示状态与矩形，因此发出的请求仍带窗口根的 ref，不要改为像键盘动作那样不带 ref 投递给窗口。
  */
@@ -386,7 +386,7 @@ export const SEQUENCE_ACTIONS: readonly DesktopActionKind[] = ACTIONS.filter(
 /** 按图定位使用的参数。只有指针动作接受这些参数。 */
 const POINT_PARAMS = ['imageRef', 'imageX', 'imageY']
 
-/** 取值有限的动作参数及其取值。回执中写明取值，模型无需再查工具定义即可改对。 */
+/** 取值有限的动作参数及其取值。回执中写明取值，模型无需再查阅工具定义即可修正参数。 */
 const PARAM_VALUES: Record<string, string> = {
   button: MOUSE_BUTTONS.join(' / '),
   count: `1 或 ${MAX_CLICK_COUNT}`,

@@ -13,7 +13,7 @@ docx：ActivePane.Pages(n).EnhMetaFileBits 取每页 EMF（屏幕排版的页面
   两种 dpi 的真值不可混用。
 xlsx：Range.CopyPicture(xlScreen, xlBitmap) 取每个可见工作表 A1 起的区域（最多 MAX_ROWS 行、MAX_COLS 列），
   读取剪贴板的 CF_DIB。该取法按 100% 缩放输出，与窗口缩放比例无关；空白单元格为白底，网格线随工作表的显示设置。
-  不要改用 xlPicture：其 PNG 中空白单元格是透明像素，去掉透明通道后为黑色。
+  不要改用 xlPicture：其 PNG 中空白单元格是透明像素，去除透明通道后为黑色。
   可见的图表工作表排在全部工作表之后（工作表的页号不受影响），以 Chart.CopyPicture(xlScreen, xlBitmap) 取图表区，
   页的 range 为 null。WPS 实测文件保存的缩放比例为 100% 时位图即图表区；不是 100% 时图表按另一高度重新排版
   （同一图表 75% 时位图高 421 像素、100% 时 428 像素），成因未查明，打开后改设窗口缩放比例不改变位图。

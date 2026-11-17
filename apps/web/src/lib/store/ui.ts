@@ -599,9 +599,9 @@ export function holdOverlay(open: () => boolean): void {
  * 面板最小宽度：文件树与一列内容仍可显示的最小值。
  *
  * 此处只设下限，不设上限。上限属于布局，由 `.app.with-panel` 的
- * `minmax(var(--chat-floor), 1fr)` 决定：网格知道当前窗口宽度与左栏是否收起，
- * 此处不知道。在此重复计算会形成第二本账，且只在拖动时成立：
- * 大屏上拖出的宽度换到小窗口后会成为撑破布局的固定宽度。
+ * `minmax(var(--chat-floor), 1fr)` 决定：网格能取得当前窗口宽度与左栏是否收起，
+ * 此处无法取得。在此重复计算会形成第二本账，且只在拖动时成立：
+ * 大屏上拖出的宽度在小窗口中会成为超出布局的固定宽度。
  */
 export const PANEL_MIN = 337
 const PANEL_KEY = 'qywork.panelWidth'
@@ -634,8 +634,8 @@ function readPanelWidth(): number {
  * 用户拖出的数值，窗口变宽后恢复。不要在窗口变窄时缩小该值：那会以一次临时的
  * 窗口尺寸覆盖用户的设置。
  *
- * 面板中「内容 + 树」两栏并排，因此宽度必须可拖动：不可拖动时内容栏只剩
- * 一百多像素。
+ * 面板中「内容 + 树」两栏并排，因此宽度必须可拖动：不可拖动时内容栏
+ * 不足 200 像素。
  */
 export const [panelWidth, setPanelWidthSignal] = createSignal(readPanelWidth())
 
@@ -660,8 +660,8 @@ export function resizePanel(px: number): void {
  * 面板放大：会话正文让出位置，面板独占内容区；输入框默认收为底部触发条，悬停、
  * 聚焦或有草稿时展开（布局见 `shell.css` 与 `composer.css` 的 `.app.panel-max`）。
  *
- * 面板收起时一并复位：不复位时下次展开会直接进入放大态，而用户上次关闭面板
- * 可能正是因为不需要放大。因此该标志没有独立的关闭路径，只随面板变化。
+ * 面板收起时一并复位：放大只在本次展开期间有效，不复位时下次展开直接进入放大态。
+ * 因此该标志没有独立的关闭路径，只随面板变化。
  */
 export const [panelMaximized, setPanelMaximized] = sessionSignal('qywork.panel.max', false)
 export function togglePanelMax(): void {
@@ -734,8 +734,8 @@ export function toggleSidebar(): void {
  * 使用一个弹窗，不要拆成多个平行浮层：平行浮层各有一套开关，「设置与配对同时打开」
  * 在类型上合法。类目导航避免了这一点：一个弹窗，左栏列出类目，全部类目共用同一个状态。
  *
- * 不要做成整页（左栏换成类目导航、主区换成设置内容）：那会把一次简单修改变成
- * 场景切换，顶栏的会话导出与面板开关需要随之隐藏，返回时还要点击「返回」。
+ * 不要做成整页（左栏换成类目导航、主区换成设置内容）：一次简单修改需要切换整个界面，
+ * 顶栏的会话导出与面板开关需要随之隐藏，返回时还需点击「返回」。
  * 类目导航可以放入弹窗，不需要整页。
  *
  * 分隔线上下是两类页。分隔线以上说明 agent 的组成与用量：`modules` 是说明页，

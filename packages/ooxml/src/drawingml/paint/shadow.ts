@@ -4,7 +4,7 @@
  * - 阴影只取内容的轮廓：填充与线条重叠处不重复加深，半透明内容的阴影按其不透明度减淡。
  * - 偏移与缩放、倾斜在幻灯片坐标中施加（`rotWithShape` 为真时随形状旋转）；缩放与倾斜以 `algn`
  *   所指的形状框位置为原点。模糊半径按 Canvas `shadowBlur` 的同值设备像素绘制。
- * - 阴影单独绘制：图层画在画布之外，以同等距离的 `shadowOffsetX` 把阴影移回原位，
+ * - 阴影单独绘制：图层绘制于画布之外，以同等距离的 `shadowOffsetX` 把阴影移回原位，
  *   因此阴影可以带有与内容不同的变换。
  */
 
@@ -243,7 +243,7 @@ export function paintInnerShadows(
   }
 }
 
-/** 把图层按设备坐标原样画到画布上。 */
+/** 把图层按设备坐标原样绘制到画布上。 */
 export function drawLayerOnto(ctx: PaintContext, layer: PaintCanvas, bounds: DeviceRect): void {
   ctx.save()
   setMatrix(ctx, IDENTITY)

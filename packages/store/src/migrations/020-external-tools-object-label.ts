@@ -12,7 +12,7 @@ export const migration020: Migration = {
    * 具体字符串归 `action.target`。
    *
    * 不转换时不会报错：回放历史时旧卡片显示「调用mcp:github/search」，
-   * 新卡片显示「调用MCP · mcp:github/search」，同一件事有两种说法。
+   * 新卡片显示「调用MCP · mcp:github/search」，同一操作有两种表述。
    *
    * 判据与迁移 19 相同：**工具名中的 `__`**，只由 `mcp__<server>__<tool>` 与
    * 插件的 `<id>__<tool>` 两条命名路径产生，内置工具名均不含。

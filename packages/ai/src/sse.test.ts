@@ -114,7 +114,7 @@ test('body 出错原样抛出，不改写成协议错误', async () => {
   expect(thrown).toBe(boom)
 })
 
-/** 逐段送入分帧器，返回交出的各段；`cuts` 为切分处的字节偏移。 */
+/** 逐段送入分帧器，返回输出的各段；`cuts` 为切分处的字节偏移。 */
 function split(bytes: Uint8Array, cuts: number[]): SseBlock[] {
   const splitter = new SseSplitter()
   const out: SseBlock[] = []
@@ -129,10 +129,10 @@ function split(bytes: Uint8Array, cuts: number[]): SseBlock[] {
 const joined = (blocks: SseBlock[]) => Buffer.concat(blocks.map((b) => b.bytes))
 
 /**
- * 原样转发字节的调用方（云端网关）逐段转发分帧器交出的字节。帧跨多个分片、一个分片含多帧、CRLF 行尾、
- * 多字节字符被切开、帧中的注释行与末帧缺少空行时，各段拼接后与原字节相同，帧与 `readSse` 读到的相同。
+ * 原样转发字节的调用方（云端网关）逐段转发分帧器输出的字节。帧跨多个分片、一个分片含多帧、CRLF 行尾、
+ * 多字节字符被切开、帧中的注释行与末帧缺少空行时，各段拼接后与原字节相同，帧与 `readSse` 读取到的相同。
  */
-test('分帧器在任意位置切分时交出的字节与原文相同，帧与 readSse 相同', async () => {
+test('分帧器在任意位置切分时输出的字节与原文相同，帧与 readSse 相同', async () => {
   const text =
     ': ping\r\n\r\nevent: a\r\ndata: {"delta":"你好"}\r\n\r\ndata: 第一行\n: 帧中的注释\ndata: 第二行\n\nid: 7\n\ndata: [DONE]'
   const bytes = enc.encode(text)
@@ -156,7 +156,7 @@ test('分帧器在任意位置切分时交出的字节与原文相同，帧与 r
   expect(single.flatMap((b) => (b.frame ? [b.frame] : []))).toEqual(expected)
 })
 
-test('帧之外的注释行读到即交出，帧读到空行才交出', () => {
+test('帧之外的注释行读取到即输出，帧读取到空行才输出', () => {
   const splitter = new SseSplitter()
   const ping = splitter.push(enc.encode(': ping\n'))
   expect(ping.map((b) => [Buffer.from(b.bytes).toString(), b.frame])).toEqual([[': ping\n', null]])

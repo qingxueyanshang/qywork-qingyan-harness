@@ -60,7 +60,7 @@ use crate::protocol::{
 
 /// 一次拖拽分段移动的段数。
 ///
-/// 一次移动到终点时，被拖拽的控件收不到中间的移动消息，很多实现依据这些消息判断拖拽是否已开始。
+/// 一次移动到终点时，被拖拽的控件不会收到中间的移动消息，许多实现依据这些消息判断拖拽是否已开始。
 const DRAG_STEPS: u32 = 12;
 /// 拖拽相邻两段之间的间隔。总时长因此约为 `DRAG_STEPS * DRAG_STEP_MS`。
 const DRAG_STEP_MS: u64 = 16;
@@ -298,7 +298,7 @@ fn drag(
     let Some(destination) = destination else {
         return Attempt::Refused("missing_target: 拖拽没有终点".to_owned());
     };
-    // 终点同样必须位于接收窗口内：拖到其他窗口上等于把本次释放交给另一个应用。
+    // 终点同样必须位于接收窗口内：拖动到其他窗口上等于把本次释放交给另一个应用。
     match window_rect(at.top) {
         Err(reason) => return Attempt::Refused(reason),
         Ok(rect) if !rect.contains(destination) => {
@@ -645,7 +645,7 @@ fn press_key(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attempt {
 /// 带 `meta`（Windows 徽标键）的组合键发给系统，不经过任何应用窗口。
 ///
 /// 先将任务栏提升到前台再按键：系统快捷键由外壳截获，与前台窗口无关；不属于系统快捷键的
-/// 组合键落在任务栏上，不进入用户的窗口。不要改成先提升目标窗口：桌面（Progman）提升到前台后，
+/// 组合键落在任务栏上，不进入用户的窗口。不要改为先提升目标窗口：桌面（Progman）提升到前台后，
 /// 前台落在同线程的另一个窗口（WorkerW），前台核对始终无法通过，模型只能改用用户正在使用的
 /// 窗口按键，按键之前还会把该窗口提升到最前并更改其显示状态。
 fn system_shortcut(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attempt {
@@ -665,7 +665,7 @@ fn system_shortcut(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attemp
 /// 定位前准备目标窗口：系统输入将目标窗口提升到前台，还原最小化窗口会改变控件位置，调用方必须在此后
 /// 重新定位、读取包围盒并核对截图几何。失败也可能已经还原窗口，不能据此保留旧观察。
 ///
-/// 消息投递不改变窗口的显示状态。不要在这里还原最小化的窗口：消息点击会使目标线程把该窗口设为
+/// 消息投递不改变窗口的显示状态。不要在此处还原最小化的窗口：消息点击会使目标线程把该窗口设为
 /// 活动窗口，此后无论用 `SW_SHOWNOACTIVATE` 还是 `SetWindowPlacement` 还原，它都会成为前台窗口。
 /// 最小化的窗口照常接收按键消息；它没有可按坐标操作的界面，指针动作在此拒绝。
 pub fn prepare(window: i64, action: &ActionSpec) -> Result<(), String> {
@@ -710,7 +710,7 @@ enum Raised {
 /// 单击一次（`caption_click`）。本进程无法取得前台权限时前两级都会被拒绝：宿主的转让只在宿主
 /// 自身处于前台时成立，前台一旦转到其他进程（开始菜单、用户的应用），挂接也会失败。
 ///
-/// **不要改成模拟 Alt 按键。** 该写法会向用户当前正在使用的应用发送一次真实按键，
+/// **不要改为模拟 Alt 按键。** 该写法会向用户当前正在使用的应用发送一次真实按键，
 /// 而本函数只应更改前台归属。标题栏点击落在目标窗口自身，不进入用户正在使用的应用。
 ///
 /// 最小化的窗口先还原：最小化状态下前台切换只恢复任务栏按钮，窗口本身不会显示。
@@ -959,7 +959,7 @@ fn transform(window: i64, element: &IUIAutomationElement, placement: Placement) 
     };
     // 生效证据由读取的窗口矩形给出；此处不再判定读取的值是否正确，
     // 矩形的实际值随动作后的重读一起交给调用方：provider 会按自身的最小尺寸限制取值，
-    // 限制后的值不算失败。
+    // 限制后的值不视为失败。
     dispatch_call(&watch, call)
 }
 
@@ -1072,9 +1072,9 @@ mod tests {
         (frame.generation(), popups)
     }
 
-    /// 原始失败形状：按图像坐标点在同一应用未被拥有的下拉框上被判定为遮挡，且落点位于目标窗口矩形
-    /// 之外时被判定为不在窗口内。下拉框合成进图像之后，点在它上面（包括伸出目标窗口的部分）的点击
-    /// 投递给下拉框；点在目标窗口其余位置的点击投递给目标窗口。
+    /// 原始失败形状：按图像坐标点击同一应用未被拥有的下拉框时被判定为遮挡，且落点位于目标窗口矩形
+    /// 之外时被判定为不在窗口内。下拉框合成进图像之后，落在它上面（包括伸出目标窗口的部分）的点击
+    /// 投递给下拉框；落在目标窗口其余位置的点击投递给目标窗口。
     #[test]
     fn an_image_click_on_a_composited_popup_is_delivered_to_it() {
         let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

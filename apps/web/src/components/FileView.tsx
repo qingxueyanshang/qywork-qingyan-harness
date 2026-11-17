@@ -292,7 +292,7 @@ function CodeView(props: { content: string; path: string }) {
   createEffect(on(fileSelectRequest, applySelect))
 
   // 只有路径变化时才整体重建（语言包由路径决定）。同一文件的正文更新直接派发到
-  // 现有 CodeMirror：重建实例会替换 `.cm-scroller`，用户阅读到中间时会回到顶部。
+  // 现有 CodeMirror：重建实例会替换 `.cm-scroller`，阅读位置会回到顶部。
   //
   // 放在 `createEffect` 中，不放在 `ref` 回调中：ref 只在创建元素时执行一次，
   // 而外层的 `Show` 不是 keyed，内容变化时本组件实例保持不变。

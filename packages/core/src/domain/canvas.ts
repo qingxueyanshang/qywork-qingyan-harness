@@ -80,7 +80,7 @@ export interface CanvasExcerpt {
 export interface CanvasFileNode {
   id: string
   type: 'file'
-  /** 缺省时显示去掉扩展名的文件名。 */
+  /** 缺省时显示去除扩展名的文件名。 */
   name?: string
   /** 所属的组（如「角色」「分镜」），决定新卡排在哪里，见 `canvas-arrange.ts`。界面添加的节点没有组。 */
   group?: string
@@ -112,7 +112,7 @@ export interface CanvasGenerateNode {
   params: Record<string, unknown>
   /**
    * 各模型离开时的参数选择，键是 [provider, model] 的 JSON。切换模型时保留当前的 `params`，
-   * 再以目标模型以前的选择补上当前没有的项；新模型不接受的取值在使用时按其缺省值（`activeMediaParams`）。
+   * 再以目标模型以前的选择补充当前缺少的项；新模型不接受的取值在使用时按其缺省值（`activeMediaParams`）。
    */
   paramsByModel?: Record<string, Record<string, unknown>>
   versions: CanvasVersion[]
@@ -185,7 +185,7 @@ export interface CanvasRunRecord {
   /** 未发出请求即失败（没有可用模型）时缺省。 */
   provider?: string
   model?: string
-  /** 远端任务号。视频生成，以及走云端的出图与音频具有。 */
+  /** 远端任务号。视频生成，以及经由云端的图片与音频生成具有该字段。 */
   task?: string
   /** 该次生成或取回所属的版本；多次取回沿用同一个版本。 */
   version?: string
@@ -204,7 +204,7 @@ export interface CanvasRunRecord {
 
 /**
  * 节点在界面上的状态。由服务端根据磁盘与运行中集合推导，不落盘。
- * 优先级：运行中 > 当前版本待取回 > 结果未知 > 失败 > 空 > 缺失 > 正常。其他版本的任务由 CanvasView.tasks 保留，不能遮住当前成片。
+ * 优先级：运行中 > 当前版本待取回 > 结果未知 > 失败 > 空 > 缺失 > 正常。其他版本的任务由 CanvasView.tasks 保留，不覆盖当前版本的状态。
  */
 export type CanvasNodeState =
   | { state: 'normal' }
@@ -409,7 +409,7 @@ export type CanvasOp =
    * （不含标记本身，省略 `to` 时到提示词末尾），每个标记必须恰好出现一次。
    */
   | { op: 'edit_prompt'; id: string; old?: string; from?: string; to?: string; new: string }
-  /** 把生成节点提示词中出现的 `old` 全部替换为 `new`；一处都没有时不成立。 */
+  /** 把生成节点提示词中出现的 `old` 全部替换为 `new`；`old` 未出现时不成立。 */
   | { op: 'replace_text'; id: string; old: string; new: string }
   | { op: 'connect'; ref?: string; from: string; to: string; role: CanvasEdgeRole }
   /**
@@ -417,7 +417,7 @@ export type CanvasOp =
    * 不要改为断开后重连：断开连线的批次结束时，提示词中对它的 `@` 已替换为纯文本，之后再连接也不会恢复。
    */
   | { op: 'order_inputs'; id: string; inputs: string[] }
-  /** 删除带组的卡后，同列中紧挨在它下方的卡上移补上空位（`closeGaps`）。 */
+  /** 删除带组的卡后，同列中紧邻其下方的卡上移填补空位（`closeGaps`）。 */
   | { op: 'remove'; id: string; version?: string }
   | { op: 'set_mode'; id: string; mode: CanvasMode }
   /**
@@ -425,7 +425,7 @@ export type CanvasOp =
    * `ids` 与 `group` 二选一，`group` 含其下以「组名/」开头的组。在本批其他操作与按组排位之后执行，
    * 同一批中新增或换组的卡同样参与排列。
    * 给出 `perColumn` 时改为把 `group` 所在的列按行重排，每栏 `perColumn` 行（`arrangeColumn`）；
-   * 视频列之后补卡时沿用这一行数。
+   * 视频列之后补充卡片时沿用这一行数。
    */
   | { op: 'arrange'; ids?: string[]; group?: string; perRow?: number; perColumn?: number }
 
@@ -450,7 +450,7 @@ export function newCanvasId(): string {
 }
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/
-/** 批内名称允许中文等任意文字的字母与数字：只允许英文时，模型按画布内容起的中文名称整批被拒。 */
+/** 批内名称允许中文等任意文字的字母与数字：只允许英文时，模型按画布内容所起的中文名称会使整批被拒绝。 */
 const REF_RE = /^\$[\p{L}\p{N}_-]{1,64}$/u
 /**
  * 已保存的提示词中的引用：节点 id。
@@ -458,8 +458,8 @@ const REF_RE = /^\$[\p{L}\p{N}_-]{1,64}$/u
  */
 const MENTION_RE = /@\[([A-Za-z0-9_-]{1,64})\]/g
 /**
- * 本批写入的提示词中的引用：节点 id、卡片名称或批内名称，保存前一律换成 id。
- * 不要用于已保存的提示词：其中「@[」开头的普通文字会被当作引用，原本合法的文件读取时被拒。
+ * 本批写入的提示词中的引用：节点 id、卡片名称或批内名称，保存前一律替换为 id。
+ * 不要用于已保存的提示词：其中「@[」开头的普通文字会被视为引用，原本合法的文件读取时被拒绝。
  */
 const INPUT_MENTION_RE = /@\[([^[\]\n]{1,200})\]/g
 const AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|flac|opus)$/i
@@ -487,8 +487,8 @@ function quoted(anchor: string): string {
 }
 
 /**
- * 文本卡发送的文字：没有摘录时为全文（去掉首尾空白），否则为摘录的一段（规则见 `CanvasExcerpt`）。
- * 正文与锚点的行尾都先统一为 LF：文件以 CRLF 保存时，跨行的锚点同样能找到。`end` 落在 `start` 之内时摘录至少包含 `start`。
+ * 文本卡发送的文字：没有摘录时为全文（去除首尾空白），否则为摘录的一段（规则见 `CanvasExcerpt`）。
+ * 正文与锚点的行尾都先统一为 LF：文件以 CRLF 保存时，跨行的锚点同样能定位。`end` 落在 `start` 之内时摘录至少包含 `start`。
  * `from` / `to` 是该段在 LF 正文中的位置，界面据此在文件中定位。运行时展开、失效核对与界面显示都使用它。
  */
 export function excerptOf(
@@ -657,7 +657,7 @@ export function promptRelabels(
 
 /**
  * 把文本中手写的素材编号（`HANDWRITTEN_INPUT_RE`）按 `style` 改为该类别的写法，编号不变：带 @ 的改为写法原样，
- * 不带 @ 的改为去掉开头 @ 的写法。未登记写法的类别保持原文。`changes` 为改动过的「原文→发送」，按首次出现去重。
+ * 不带 @ 的改为去除开头 @ 的写法。未登记写法的类别保持原文。`changes` 为改动过的「原文→发送」，按首次出现去重。
  * 运行时的编译、读取画布时的改写清单与界面的文本预览共用此函数，不要另写一份规则。
  */
 export function relabelInputs(
@@ -830,7 +830,7 @@ const GENERATE_SIZE: Record<GenerateOutput, [number, number]> = {
   audio: [300, 96],
   art: [300, 169],
 }
-/** 文件卡的缺省框。文本卡与 16:9 的视频生成卡相同：两者常并排成列，框高一致时两列对齐，文本卡也能显示开头七八行。 */
+/** 文件卡的缺省框。文本卡与 16:9 的视频生成卡相同：两者常并排成列，框高一致时两列对齐，文本卡也能显示开头 7 至 8 行。 */
 const FILE_SIZE: Record<CanvasFileKind | 'other', [number, number]> = {
   image: [225, 169],
   video: [300, 169],
@@ -940,7 +940,7 @@ export function applyCanvasOps(
     resolveInputMentions(doc, next, refs)
     keepMentionsConnected(doc, next, mint)
     syncTextInputs(doc, next)
-    // 先移动、补空位，再排新卡：新卡按移动之后的位置排位，不再被移动一次。
+    // 先移动并填补空位，再排新卡：新卡按移动之后的位置排位，不再被移动一次。
     keepSpacing(next, resizedCards(doc, next))
     closeGaps(next, later.vacated)
     arrangeNew(next, later.pending)
@@ -976,7 +976,7 @@ interface Deferred {
 }
 
 /**
- * 一条 `arrange`：`ids` 在该条操作时已换成节点 id，`group` 在全部操作之后取组内的卡。
+ * 一条 `arrange`：`ids` 在该条操作时已替换为节点 id，`group` 在全部操作之后取组内的卡。
  * 带 `perColumn` 的按栏重排 `group` 所在的列。
  */
 type Grid =
@@ -1009,7 +1009,7 @@ function applyOne(
   mint: () => string,
 ): void {
   const resolve = (ref: string): string => resolveRef(doc, refs, ref)
-  /** 给出位置时立即排位；否则坐标暂为 `NaN`，补上缺省的组，留待全部操作完成后按组排位。 */
+  /** 给出位置时立即排位；否则坐标暂为 `NaN`，补充缺省的组，留待全部操作完成后按组排位。 */
   const put = (
     node: CanvasNode,
     at: { x?: number; y?: number; beside?: string; near?: { x: number; y: number } },
@@ -1136,7 +1136,7 @@ function applyOne(
         }
         return
       }
-      // 换组即移到新组所在的列，与新卡一样留待全部操作完成后排位；原位置由同列下方的卡补上。
+      // 换组即移到新组所在的列，与新卡一样留待全部操作完成后排位；原位置由同列下方的卡填补。
       // 尚未排位的卡（同一批中新增或已换组）只改组，排位时按新组。
       if (op.group !== undefined && op.group !== node.group) {
         node.group = op.group
@@ -1178,7 +1178,7 @@ function applyOne(
       ])
       if (beforeModel !== afterModel) {
         node.paramsByModel = { ...node.paramsByModel, [beforeModel]: structuredClone(node.params) }
-        // 保留当前选择（时长、宽高比等两模型都接受的取值随之继承），目标模型以前的选择只补当前没有的项。
+        // 保留当前选择（时长、宽高比等两模型都接受的取值随之继承），目标模型以前的选择只补充当前缺少的项。
         node.params = structuredClone({ ...node.paramsByModel[afterModel], ...node.params })
       }
       if (op.params !== undefined) node.params = op.params
@@ -1247,7 +1247,7 @@ function applyOne(
           `inputs 须按新顺序列出「${node.name}」的全部输入，每项一次；当前输入：${current.join('、') || '无'}`,
         )
       }
-      // 只在该节点原有连线的位置之间换位，其他节点的输入顺序不变。
+      // 只在该节点原有连线的位置之间交换，其他节点的输入顺序不变。
       const slots = doc.edges.flatMap((e, i) => (e.to === node.id ? [i] : []))
       for (const [k, from] of order.entries()) {
         doc.edges[slots[k]!] = edges.find((e) => e.from === from)!
@@ -1342,7 +1342,7 @@ function markerAt(name: string, prompt: string, marker: string, key: 'from' | 't
   return at
 }
 
-/** 把 `from` 与 `to` 之间的文字换成 `text`，标记本身保留；省略 `to` 时替换到末尾。 */
+/** 把 `from` 与 `to` 之间的文字替换为 `text`，标记本身保留；省略 `to` 时替换到末尾。 */
 function betweenMarkers(
   name: string,
   prompt: string,
@@ -1360,7 +1360,7 @@ function betweenMarkers(
 /**
  * 界面与服务端给出的位置：给出 `beside` 时放在该节点右侧的第一个空位；给出 `near` 时以该点为中心，
  * 被占用时向下查找空位。调用方给出的 `x` / `y` 优先于此结果。
- * 不要让被占用的 `beside` 改为向下查找：取帧、尾帧与导出依次排在源节点右侧，向下查找时与下方的卡混在一起。
+ * 不要让被占用的 `beside` 改为向下查找：取帧、尾帧与导出依次排在源节点右侧，向下查找时与下方的卡交错排列。
  */
 function place(
   doc: CanvasDoc,
@@ -1428,8 +1428,8 @@ function defaultGroup(node: CanvasFileNode | CanvasGenerateNode): string {
 
 /**
  * 引用的节点或连线 id。依次按 id、批内名称、卡片名称查找；卡片名称对应多张卡时整批拒绝。
- * 不要只接受 id 与批内名称：大模型按自己起的卡片名称引用，要求它抄写随机 id 或批内名称时，
- * 写错、跨批使用、编造 id 都会使整批被拒，模型随后删去连线继续执行。
+ * 不要只接受 id 与批内名称：模型按其自行命名的卡片名称引用，要求它照写随机 id 或批内名称时，
+ * 写错、跨批使用、编造 id 都会使整批被拒绝，模型随后删除连线继续执行。
  */
 function resolveRef(doc: CanvasDoc, refs: Record<string, string>, ref: string): string {
   if (doc.nodes.some((n) => n.id === ref) || doc.edges.some((e) => e.id === ref)) return ref
@@ -1459,7 +1459,7 @@ export function cardIdOf(
 }
 
 /**
- * 把本批写入的提示词中的 `@[卡片名称]`、`@[$批内名称]` 换成 `@[id]`；未改动的提示词保持原样。
+ * 把本批写入的提示词中的 `@[卡片名称]`、`@[$批内名称]` 替换为 `@[id]`；未改动的提示词保持原样。
  * 本批删除的节点的 id 不在此处解析，由 `keepMentionsConnected` 处理。
  */
 function resolveInputMentions(
@@ -1520,10 +1520,10 @@ function keepMentionsConnected(before: CanvasDoc, doc: CanvasDoc, mint: () => st
 }
 
 /**
- * 文本卡的连线与提示词中的引用是同一件事：
+ * 文本卡的连线与提示词中的引用一一对应：
  * - 本批之前已有的 `text` 连线，提示词中已不再引用该卡：删除连线（删除引用即断开）；
- * - 本批新建的 `text` 连线，提示词中尚未引用该卡：在提示词末尾补上引用（连线即插入引用）。
- * 必须在 `keepMentionsConnected` 之后执行：那里为新写的引用补齐连线。
+ * - 本批新建的 `text` 连线，提示词中尚未引用该卡：在提示词末尾补充引用（连线即插入引用）。
+ * 必须在 `keepMentionsConnected` 之后执行：该函数为新写入的引用补齐连线。
  */
 function syncTextInputs(before: CanvasDoc, doc: CanvasDoc): void {
   const existed = new Set(before.edges.map((e) => e.id))
@@ -1899,8 +1899,8 @@ function matches(v: unknown, shape: Shape): boolean {
 }
 
 /**
- * 按字段表取出生成记录中认识的部分：未知键丢弃，可选键取值不符时丢弃该键，必填键缺失或取值不符时返回 null。
- * 诊断逐项取出，不认识的字段丢弃、必填项取值不认识时整条诊断丢弃。只用于读取生成记录：画布内容与写入一律经
+ * 按字段表取出生成记录中可识别的部分：未知键丢弃，可选键取值不符时丢弃该键，必填键缺失或取值不符时返回 null。
+ * 诊断逐项取出，无法识别的字段丢弃、必填项取值无法识别时整条诊断丢弃。只用于读取生成记录：画布内容与写入一律经
  * `checkFields` 严格核对。
  */
 function pickFields(raw: unknown, fields: Record<string, Shape>): Record<string, unknown> | null {
@@ -1950,7 +1950,7 @@ function checkFields(where: string, raw: unknown, fields: Record<string, Shape>)
 
 /**
  * 类型不符时报错中写明的期望类型。不要只报「不合法」：大模型把对象再编码为 JSON 字符串时，
- * 无从得知错在类型，会删去该字段重试，参数随之丢失。其余形状的报错由取值范围决定。
+ * 无从得知错在类型，会删除该字段重试，参数随之丢失。其余形状的报错由取值范围决定。
  */
 const TYPE_NAMES: Partial<Record<Shape | 'null', string>> = {
   string: '字符串',
@@ -2165,7 +2165,7 @@ function boxRequired(): Record<string, Shape> {
 
 /**
  * 读取画布文件。画布内容（节点、连线、版本）的结构或不变式不成立时拒绝，不做修补：手动修改出错的文件由用户自行修正。
- * 生成记录是历史记录，不参与画布内容，同一份文件会被不同版本的程序读取：其中不认识的部分按 `pickFields` 丢弃，
+ * 生成记录是历史记录，不参与画布内容，同一份文件会被不同版本的程序读取：其中无法识别的部分按 `pickFields` 丢弃，
  * 不使画布无法打开；丢弃的部分在下一次写入时不再写出。
  */
 export function parseCanvas(

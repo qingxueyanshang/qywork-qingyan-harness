@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`reload-supervisor.ts` 的全部策略（防抖合并、有进行中的 run 时不替换、替换过程中
- * 出现新改动、restart 抛错后不停滞、崩溃后重启），`isConsoleInterrupt` 的识别，`isSourceChange` 与 `isWebSourceChange` 的过滤，以及 `dev.ts` 初次启动
+ * 出现新改动、restart 抛出异常后不停滞、崩溃后重启），`isConsoleInterrupt` 的识别，`isSourceChange` 与 `isWebSourceChange` 的过滤，以及 `dev.ts` 初次启动
  * 立即失败时的退出路径。
  *
  * 定时器为注入的模拟实现：真实等待 300ms / 2s 会使本测试耗时达到秒级，且时序断言会随机失败。
@@ -156,7 +156,7 @@ describe('替换代码的时机', () => {
     const { c, sup } = harness({
       busy: () => running,
       restart: async () => {
-        killed.push(running ? '打断了正在跑的那轮' : '空闲时换的')
+        killed.push(running ? '中断了运行中的一轮' : '空闲时替换')
       },
     })
     sup.onChange()
@@ -166,7 +166,7 @@ describe('替换代码的时机', () => {
     }
     running = false
     await c.fire()
-    expect(killed).toEqual(['空闲时换的'])
+    expect(killed).toEqual(['空闲时替换'])
   })
 
   test('替换过程中出现新改动：排到之后处理，不并发替换两次', async () => {
@@ -198,13 +198,13 @@ describe('替换代码的时机', () => {
     expect(started).toBe(2)
   })
 
-  test('restart 抛错不会导致自身停滞：下一次改动仍会替换', async () => {
+  test('restart 抛出异常不会导致自身停滞：下一次改动仍会替换', async () => {
     let fail = true
     let calls = 0
     const { c, sup, logs } = harness({
       restart: async () => {
         calls++
-        if (fail) throw new Error('端口还没放开')
+        if (fail) throw new Error('端口尚未释放')
       },
     })
 
@@ -234,7 +234,7 @@ describe('哪些文件属于源码变化', () => {
   })
 
   /** watch 的回调可能传入 null（无法取得文件名），此时不能视为「有改动」。 */
-  test('无法取得文件名时不算作改动', () => {
+  test('无法取得文件名时不视为改动', () => {
     expect(isSourceChange(null)).toBe(false)
     expect(isSourceChange(undefined)).toBe(false)
   })
@@ -260,7 +260,7 @@ describe('sidecar 自行退出', () => {
   })
 
   /** 替换代码时的退出由 supervisor 自身发起，不是崩溃；再次重启会启动两个进程。 */
-  test('替换代码期间的退出不算崩溃', async () => {
+  test('替换代码期间的退出不视为崩溃', async () => {
     let release = () => {}
     const gate = new Promise<void>((r) => {
       release = r
@@ -285,7 +285,7 @@ describe('sidecar 自行退出', () => {
   test('连续启动失败后停止重试，并说明原因', async () => {
     const { sup, logs } = harness({
       restart: async () => {
-        throw new Error('端口被占着')
+        throw new Error('端口被占用')
       },
     })
     for (let i = 0; i < 6; i++) {
@@ -302,7 +302,7 @@ describe('sidecar 自行退出', () => {
     const { c, sup, logs } = harness({
       restart: async () => {
         starts++
-        if (fail) throw new Error('起不来')
+        if (fail) throw new Error('启动失败')
       },
     })
     for (let i = 0; i < 4; i++) {

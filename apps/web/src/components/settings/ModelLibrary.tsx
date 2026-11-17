@@ -63,10 +63,10 @@ const OPERATION_LABEL: Record<MediaOperationName, string> = {
  * 表中查询。因此本页没有「添加到接口」「新建接口」等操作。
  *
  * 每个厂商一张卡片，卡片内是该厂商的表格。参数排成一行小标签时，两个模型的同一项不在同一横坐标上，
- * 只能逐条阅读，无法比较。因此每家的模型排成表格：每项固定在一列，浏览时即可对比一列数字。各列统一
+ * 只能逐条阅读，无法比较。因此每个厂商的模型排成表格：每项固定在一列，浏览时即可对比一列数字。各列统一
  * 左对齐，数字使用等宽字形（`tabular-nums`），标题和正文共享同一条起始线。
  *
- * 各厂商不合并为一张大表。合并后厂商名只能做成一个跨列的行，该行右侧是
+ * 各厂商不合并为一张大表。合并后厂商名只能作为一个跨列的行，该行右侧是
  * 大片空白；而顶部的表头与下方各厂商相隔数十行，向下滚动后无法对照列名。
  * 表头随各自的卡片排列，滚动到任一厂商时，其列名都在视野内。
  *
@@ -75,8 +75,8 @@ const OPERATION_LABEL: Record<MediaOperationName, string> = {
  * 后续厂商完全空白。设置面板已有一条滚动轴，此处再加一条会形成两条滚动轴。
  *
  * 只读。这些参数由源码中的目录维护，界面只负责显示，不提供编辑入口：参数填错的
- * 后果是账单不一致或请求无法发出，而用户没有判据——窗口和上限需查厂商文档，
- * 价格需核对当期价目表。目录中没有的模型同样不在本页添加：添加一条只影响该模型自身的
+ * 后果是账单不一致或请求无法发出，而用户没有判断依据：窗口和上限需要查阅厂商文档，
+ * 价格需要核对当期价目表。目录中没有的模型同样不在本页添加：添加一条只影响该模型自身的
  * 计价显示，决定能否使用的是接口下配置的模型 id。
  *
  * 需要临时纠正某一条时，修改 `config.json` 的 `catalog`；端点探测只校验当前接口
@@ -90,7 +90,7 @@ export function ModelLibrary(props: {
   vendors: LibraryVendor[]
   media: MediaLibraryModel[]
   loading: boolean
-  /** 获取失败时的原因。不显示原因时本节为空白，看起来像内置库中没有任何模型。 */
+  /** 获取失败时的原因。不显示原因时本节为空白，与内置库中没有任何模型无法区分。 */
   error: unknown
 }) {
   const [category, setCategory] = sessionSignal<Category>(
@@ -134,7 +134,7 @@ export function ModelLibrary(props: {
           fallback={<MediaTable models={props.media.filter((m) => m.output === category())} />}
         >
           {/* 每个厂商一张卡片，各自带表头。
-          不合并为一张大表：合并后厂商名只能做成一个跨列的行，该行右侧是
+          不合并为一张大表：合并后厂商名只能作为一个跨列的行，该行右侧是
           大片空白，而顶部的表头与下方各厂商相隔数十行，向下滚动后无法对照列名。 */}
           <div class="lib">
             <For each={props.vendors}>
@@ -184,7 +184,7 @@ export function ModelLibrary(props: {
                                 <td class="num">{price(m.cacheRead, m.currency)}</td>
                                 <td class="num">{price(m.cacheWrite, m.currency)}</td>
                                 {/* 该模型支持的档位。为空时显示「不支持」而不是留白：
-                                留白看起来像该单元格未加载完成。 */}
+                                留白与该单元格未加载完成无法区分。 */}
                                 <td class="lv">
                                   {m.effortLevels.length > 0
                                     ? m.effortLevels.join(' / ')

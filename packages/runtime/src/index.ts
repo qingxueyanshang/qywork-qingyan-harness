@@ -3,7 +3,7 @@
  * 使用具名导出，不用 `export *`（B6）；新增导出前先确认它确有包外调用方（B3）。
  *
  * 本包是装配层：将 agent / ai / store / tools / mcp / plugins / team 组装为
- * `Session`。下游只应看到装配结果，不应依赖装配过程。
+ * `Session`。下游只应使用装配结果，不应依赖装配过程。
  */
 
 // 个性化：server 的个性化接口与会话里的 personalize 工具共用同一份读写与校验
@@ -69,7 +69,7 @@ export { type ContextPanel, contextPanel } from './context-panel.ts'
 // 扩展装配：插件、MCP 与 team。
 // `toolNamePrefix` / `pluginToolPrefix` 由此转出：CLI 不直接依赖 mcp / plugins 两个包，
 // 而 `qy mcp` / `qy doctor` / `qy plugins` 需要按前缀统计工具；
-// 自行拼接未经清洗的前缀将无法匹配任何工具。
+// 自行拼接未经规范化的前缀将无法匹配任何工具。
 export {
   acquireExtensions,
   globalPluginsDir,

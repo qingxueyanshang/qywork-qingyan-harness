@@ -111,7 +111,7 @@ describe('进程生命周期', () => {
   test('插件的 console.log 不会破坏通道', async () => {
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
-        // 一句调试打印污染 stdout —— 协议必须容忍它。
+        // 调试打印写入 stdout，协议必须忽略这类非 JSON 行。
         console.log('这是一句调试输出，不是 JSON')
         if (msg.type === 'call') send({ id: msg.id, ok: true, result: 'ok' })
       }
@@ -142,7 +142,7 @@ describe('进程生命周期', () => {
     `)
     const h = host(entry, dir)
     await h.start()
-    // 等待至超时在用户看来是「无响应」，而这里已确知不会再有答复。
+    // 等待至超时在界面上显示为「无响应」，而此时已确知不会再有答复。
     expect(await failure(h.call('m', {}, ctx()))).toContain('插件进程退出')
     h.stop()
   })

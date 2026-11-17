@@ -1,5 +1,5 @@
 /**
- * 同一端点、同一模型同时在途的请求数上限。只由第三方报告的并发超限触发；从未被拒过的端点不设上限。
+ * 同一端点、同一模型同时在途的请求数上限。只由第三方报告的并发超限触发；从未被拒绝的端点不设上限。
  *
  * 并发超限由本进程同时发出的请求数引起，但上限不是固定值：同一第三方实测，本机在途 0–9 个时拒绝率为 0，
  * 15–24 个时 13–14%，30 个以上约一半，而在途 25 个时仍有 72% 正常完成。被拒的请求约 43 秒后才收到错误，
@@ -27,9 +27,9 @@ export function concurrencyRejected(err: unknown): boolean {
 
 interface Lane {
   inFlight: number
-  /** null 表示未被拒过、不限制。可以是小数：每次完成放宽 1/上限，取整后比较。 */
+  /** null 表示未被拒绝、不限制。可以是小数：每次完成放宽 1/上限，取整后比较。 */
   limit: number | null
-  /** 收紧的次数。请求记下发出时的值，据此判断其拒绝是否已被计入。 */
+  /** 收紧的次数。请求记录发出时的值，据此判断其拒绝是否已被计入。 */
   generation: number
   waiting: (() => void)[]
 }
@@ -123,6 +123,6 @@ export function sendLane(adapter: {
   kind: string
   spec: { id: string }
 }): string {
-  // 去掉认证段与查询串：该值写入日志。
+  // 去除认证段与查询串：该值写入日志。
   return `${diagnosticEndpoint(adapter.endpoint) ?? adapter.kind} ${adapter.spec.id}`
 }

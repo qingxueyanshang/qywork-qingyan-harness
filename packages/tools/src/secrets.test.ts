@@ -149,7 +149,7 @@ describe('allow 白名单的边界', () => {
 
 describe('必需变量', () => {
   test('PATH 等必需变量不会被误剥离', () => {
-    // 没有 PATH 连 ls 都无法定位；PWD 恰好命中 password 的缩写模式。
+    // 缺少 PATH 时 ls 也无法定位；PWD 恰好命中 password 的缩写模式。
     const env = {
       PATH: '/usr/bin:/bin',
       PWD: '/work',
@@ -165,7 +165,7 @@ describe('必需变量', () => {
     expect(scrubEnv({ Path: 'C:\\bin' }, secretsOf()).Path).toBe('C:\\bin')
   })
 
-  test('必需变量的值里混进了 secret 时，保留变量但屏蔽片段', () => {
+  test('必需变量的值中含有 secret 时，保留变量但屏蔽片段', () => {
     // 删除整个 PATH 会使命令无法执行；仅替换命中的片段，明文同样不会进入子进程。
     const out = scrubEnv({ PATH: `/usr/bin:/opt/${ANTHROPIC}/bin` }, secretsOf())
     expect(out.PATH).toBe(`/usr/bin:/opt/${REDACTED}/bin`)
@@ -185,7 +185,7 @@ describe('scrubEnv 的健壮性', () => {
 
   test('值为 undefined 的变量被丢弃，而不是转为 "undefined" 字符串', () => {
     // Record<string, string | undefined> 中的 undefined 表示未设置，
-    // 原样传递会使子进程读到字面量 "undefined"。
+    // 原样传递会使子进程读取到字面量 "undefined"。
     const out = scrubEnv({ FOO: undefined, BAR: 'ok' }, secretsOf())
     expect('FOO' in out).toBe(false)
     expect(out.BAR).toBe('ok')
@@ -218,7 +218,7 @@ describe('redactSecrets', () => {
     expect(out).not.toContain('and-more')
   })
 
-  test('secret 里的正则特殊字符按字面量处理', () => {
+  test('secret 中的正则特殊字符按字面量处理', () => {
     // 明文中出现 . * + $ ( ) 很常见。按正则处理会既遗漏明文又误改其他文本。
     const weird = 'a.b*c+d$e^f(g)'
     const out = redactSecrets(`raw ${weird} and aXb*c+d$e^f(g)`, { values: [weird] })
@@ -352,7 +352,7 @@ describe('流式脱敏', () => {
     expect(r.flush()).toBe('line 3 还没写完')
   })
 
-  /** 行末即可输出的前提是 secret 不跨行；明文本身含换行时回退为按字节保留。 */
+  /** 行末即可输出的前提是 secret 不跨行；明文本身含换行时改为按字节保留。 */
   test('已知明文跨行时不按行边界提前输出', () => {
     const multi = 'sk-line-one\nline-two-secret'
     const r = createStreamRedactor({ values: [multi] })
@@ -382,7 +382,7 @@ describe('流式脱敏', () => {
  * （配置中的 apiKey），因此 `cat ~/.ssh/id_rsa`、
  * `cat .env` 的输出完全不会被脱敏：这些明文本地未知，结构上无法检出。
  *
- * 按形状匹配无需事先知道值，这是它的用途。
+ * 按形状匹配无需预先得知值，这是它的用途。
  */
 describe('按形状脱敏', () => {
   const bare: SecretSet = { values: [] }

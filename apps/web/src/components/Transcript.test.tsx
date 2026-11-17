@@ -57,7 +57,7 @@ const resizeCallbacks = new Map<Element, ResizeObserverCallback>()
 
 beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
-  // 右侧面板的标签页按项目分别记录，从图卡打开子会话与 CLI 页需要存在当前项目。
+  // 右侧面板的标签页按项目分别记录，从图卡片打开子会话与 CLI 页需要存在当前项目。
   const store = await import('../lib/store/index.ts')
   store.setWorkspace({ id: 'ws_transcript', root: 'C:/ws', name: 'ws' })
   // happy-dom 不提供 ResizeObserver，而会话流的贴底跟随依赖它。
@@ -669,7 +669,6 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
         reason: '连接被断开',
         backoffMs: 60_000,
         at: Date.now(),
-        failedThinkingStepIds: [],
       },
     } as never)
     expect(notes()[0]).toMatch(/^第 1\/5 次重试 · 等待重试，(60|61) 秒后… · 上次失败：连接被断开$/)
@@ -1207,7 +1206,7 @@ describe('编排画布', () => {
       }
     }
     const drawnLength = drawnVertical.reduce((sum, v) => sum + v.to - v.from, 0)
-    // 画到图的左右边界之外的线段。
+    // 绘制到图的左右边界之外的线段。
     const outside = segments.filter((seg) =>
       (seg.axis === 'vertical' ? [seg.fixed] : [seg.from, seg.to]).some(
         (x) => x < 0 || x > width + routed.overflow,
@@ -1332,7 +1331,7 @@ describe('编排画布', () => {
   })
 
   test('上下两层位置对齐、依赖交错时，正上方的节点不与正下方的节点相连', async () => {
-    // s2 位于 t2 正上方而 t2 不依赖 s2：两者的竖线横坐标相同，不能画在同一条竖线上。
+    // s2 位于 t2 正上方而 t2 不依赖 s2：两者的竖线横坐标相同，不能绘制于同一条竖线上。
     const drawn = await drawWorkflow(
       [
         [{ key: 'in', needs: [] }],
@@ -1382,7 +1381,7 @@ describe('编排画布', () => {
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
       return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * n)
     }
-    /** `sparse` 越大依赖越少：各组依赖互不相干时，多连的线才会被判为错误。 */
+    /** `sparse` 越大依赖越少：各组依赖互不相干时，多余的连线才会被判为错误。 */
     const graph = (sparse: number) => {
       const layers: WireNode[][] = [[{ key: 'in', needs: [] }]]
       const depth = 1 + random(4)
@@ -1413,7 +1412,7 @@ describe('编排画布', () => {
       const layers = graph(round % 2 === 0 ? 10 : 1)
       const width = 300 + random(1100)
       const drawn = await drawWorkflow(layers, width)
-      // 图宽容纳不下一列最小宽度的节点与它两侧的通道时没有可行的排列，不在核对范围内。
+      // 图宽无法容纳一列最小宽度的节点与它两侧的通道时没有可行的排列，不在核对范围内。
       if (drawn.narrowest < 128) continue
       crossings += drawn.crossings
       nodes += layers.flat().length
@@ -1422,13 +1421,13 @@ describe('编排画布', () => {
         failures.push(`第 ${round} 轮 宽 ${width}：${found.slice(0, 3).join('；')}`)
     }
     expect(failures).toEqual([])
-    // 生成的图须有足够的规模与相交：序列退化为只含一两个节点的图时，上面的核对不再有意义。
+    // 生成的图须有足够的规模与相交：序列退化为只含一至两个节点的图时，上面的核对不再有意义。
     expect(nodes).toBeGreaterThan(3000)
     expect(crossings).toBeGreaterThan(1000)
   })
 
-  test('图宽以内无法容纳全部连线时，多出的连线画在图的右侧并上报越出的宽度，依赖连接不变', async () => {
-    // 依赖密集的图配窄图宽，取序列中前几张无法容纳的图。
+  test('图宽以内无法容纳全部连线时，多出的连线绘制于图的右侧并上报越出的宽度，依赖连接不变', async () => {
+    // 依赖密集的图使用较窄的图宽，取序列中前几张无法容纳的图。
     const { random, graph } = randomGraphs(7)
     let overflowing = 0
     for (let round = 0; round < 4000 && overflowing < 3; round += 1) {
@@ -2401,8 +2400,8 @@ describe('定稿的正文不随会话流的增长重建', () => {
   })
 
   /**
-   * 原始失败形状：读数条只取首行并裁掉超出部分，报错要求联系管理员，而故障编号与 request id
-   * 恰好在被裁掉的后半段，界面上没有其他位置显示全文。
+   * 原始失败形状：读数条只取首行并截去超出部分，报错要求联系管理员，而故障编号与 request id
+   * 恰好在被截去的后半段，界面上没有其他位置显示全文。
    */
   test('报错正文整段显示在读数条中，悬停提示为全文', async () => {
     const full =
@@ -2514,7 +2513,7 @@ describe('定稿的正文不随会话流的增长重建', () => {
 
   /**
    * 原始失败形状：失败分支只显示错误行与参数表，参数表跳过超过 400 字的值，
-   * 长命令在展开后不显示，只能靠悬停标题行查看。
+   * 长命令在展开后不显示，只能通过悬停标题行查看。
    */
   test('失败的命令展开后先显示错误正文，再显示命令原文与错误输出', async () => {
     const command = `cat > wx.py <<'EOF'\n${'print("x")\n'.repeat(60)}EOF\npython wx.py`
@@ -2864,7 +2863,7 @@ describe('检查点节点', () => {
   }
 
   /** 一个节点失败并先返回后，其余节点仍在运行，检查点在等待它们，而不是等待父会话审查。 */
-  test('上游仍有节点在运行时不算待审查', async () => {
+  test('上游仍有节点在运行时不视为待审查', async () => {
     const { host, dispose } = await mount({
       a: { phase: 'failed', label: 'A', error: '连不上' },
       b: { phase: 'working', label: 'B' },
@@ -2877,7 +2876,7 @@ describe('检查点节点', () => {
     }
   })
 
-  test('上游全部到达终态后才待审查', async () => {
+  test('上游全部到达终态后才视为待审查', async () => {
     const { host, dispose } = await mount({
       a: { phase: 'failed', label: 'A', error: '连不上' },
       b: { phase: 'done', label: 'B', durationMs: 5 },

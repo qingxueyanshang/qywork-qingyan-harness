@@ -37,7 +37,7 @@ describe('插件清单校验', () => {
 
   /**
    * 声明了写工具却未声明写权限，说明清单有误。放行会使权限模型失效：
-   * 用户在安装提示中看到「不需要任何权限」，插件却能修改文件。
+   * 安装提示显示「不需要任何权限」，插件却能修改文件。
    */
   test('工具权限必须与清单声明一致', () => {
     const withTool = {
@@ -62,9 +62,9 @@ describe('插件清单校验', () => {
 
   /**
    * 工具名不得以 id 的末段开头。注册名是 `<规范化的 id>__<工具名>`，末段已包含在前缀中，
-   * 再次出现会形成 `qywork_browser__browser_tabs` 这样的重复。命中时报错，并建议去掉前缀。
+   * 再次出现会形成 `qywork_browser__browser_tabs` 这样的重复。命中时报错，并建议去除前缀。
    */
-  test('工具名以插件 id 末段开头时被拒绝，并建议去掉前缀', () => {
+  test('工具名以插件 id 末段开头时被拒绝，并建议去除前缀', () => {
     const withThemePrefix = {
       ...base,
       id: 'qywork.browser',
@@ -78,16 +78,16 @@ describe('插件清单校验', () => {
     expect(() => parseManifest(withThemePrefix, 'p')).toThrow(/末段「browser」/)
     expect(() => parseManifest(withThemePrefix, 'p')).toThrow(/改为「tabs」/)
 
-    // 与末段同名（不带下划线后缀）同样被拒绝，并提示去掉前缀。
+    // 与末段同名（不带下划线后缀）同样被拒绝，并提示去除前缀。
     const exact = {
       ...withThemePrefix,
       contributes: {
         tools: [{ name: 'browser', description: 'x', parameters: {}, permissionEffect: 'read' }],
       },
     }
-    expect(() => parseManifest(exact, 'p')).toThrow(/去掉该前缀/)
+    expect(() => parseManifest(exact, 'p')).toThrow(/去除该前缀/)
 
-    // 去掉前缀后通过。
+    // 去除前缀后通过。
     const fixed = {
       ...withThemePrefix,
       contributes: {

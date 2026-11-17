@@ -4,7 +4,7 @@
  *
  * 原始失败形状：会话已删除、空间未回收，而界面上没有任何提示。服务端分别返回这两件事
  * （`{ ok: true, reclaimError }`），前端也必须分别处理：会话行照常消失，该提示显示在既有的提示区域中，
- * 不显示为「删除失败」：用户看到删除失败会再点击一次，第二次收到的是 404。
+ * 不显示为「删除失败」：显示为删除失败会使用户再次删除，第二次请求返回 404。
  *
  * 测试 DOM 在本文件内注册，结束后注销，理由同 `LoadState.test.tsx`。
  *
@@ -72,7 +72,7 @@ async function waitFor(done: () => boolean, detail: () => string) {
     if (done()) return
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
-  throw new Error(`界面没有在时限内更新：${detail()}`)
+  throw new Error(`界面未在时限内更新：${detail()}`)
 }
 
 /** 挂载侧栏需要一份项目清单；删除请求按调用方提供的应答返回。 */
@@ -96,7 +96,7 @@ async function mountSidebar(onDelete: () => unknown) {
       }
     }
     if (path.startsWith('/api/conversations/cv_1') && init?.method === 'DELETE') return onDelete()
-    throw new Error(`没有桩这条：${path}`)
+    throw new Error(`未预期请求：${path}`)
   }
   restoreApi = () => {
     ;(store.client as unknown as { api: typeof original }).api = original
@@ -126,12 +126,12 @@ async function confirmDelete(host: HTMLElement) {
   host.querySelector<HTMLButtonElement>('.conv-more')?.click()
   await waitFor(
     () => deleteItem(host) !== undefined,
-    () => '菜单没展开',
+    () => '菜单未展开',
   )
   deleteItem(host)?.click()
   await waitFor(
     () => host.querySelector('.confirm-actions .btn-primary') !== null,
-    () => '确认框没出来',
+    () => '确认框未显示',
   )
   host.querySelector<HTMLButtonElement>('.confirm-actions .btn-primary')?.click()
 }

@@ -234,7 +234,7 @@ export function buildGeometry(wb: Workbook, sheet: Worksheet, fonts: FontSet): S
   return { cols, rows, mdw }
 }
 
-/** 本行未写出的单元格中最高的单行行高：有行样式时取行样式，否则取各段列中仍有未写出单元格的那些段的默认样式。 */
+/** 本行未写出的单元格中最高的单行行高：有行样式时取行样式，否则取各段列中仍有未写出单元格的段的默认样式。 */
 function absentHeight(
   wb: Workbook,
   line: ReadonlyMap<number, Cell> | undefined,

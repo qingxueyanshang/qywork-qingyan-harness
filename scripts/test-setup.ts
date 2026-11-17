@@ -3,7 +3,7 @@
  * `[test] preload` 加载，对整个仓库的测试生效。
  *
  * **必须用 `babel-preset-solid`，不能用 Bun 自带的 JSX 转换。** Solid 的响应式依赖
- * 编译期把 `when={slow()}` 这类表达式包装为取值函数；换成标准的自动运行时
+ * 编译期把 `when={slow()}` 这类表达式包装为取值函数；改为标准的自动运行时
  * （`jsx(Show, { when: slow() })`），表达式在调用时即求值，之后信号变化也不会
  * 重新渲染，测试的是一个不响应的 Solid，任何断言都会通过。
  *
@@ -14,8 +14,8 @@
  * 「Client-only API called on the server side」。bunfig 中无法设置该项，只能在命令行中传入。
  *
  * **DOM 不在这里安装。** happy-dom 的全局对象带有其自身的 `fetch`，而服务端各包的
- * 测试需要 Bun 原生的 `fetch`：安装为全局后，一百多个测试立即失败。需要 DOM 的测试自行调用
- * `GlobalRegistrator.register()`，用完后卸载（样例见 `LoadState.test.tsx`）。
+ * 测试需要 Bun 原生的 `fetch`：安装为全局后，超过 100 个测试立即失败。需要 DOM 的测试自行调用
+ * `GlobalRegistrator.register()`，使用完毕后卸载（样例见 `LoadState.test.tsx`）。
  */
 import { afterAll } from 'bun:test'
 import { mkdirSync } from 'node:fs'
@@ -49,7 +49,7 @@ process.env.QYWORK_HOME = join(testTemp, `home-${process.pid}`)
 mkdirSync(process.env.QYWORK_HOME, { recursive: true })
 
 /*
- * 内存上限（`test-memory-cap.ts`）：同步死循环中持续分配内存的用例不受 `--timeout` 约束，
+ * 内存上限（`test-memory-cap.ts`）：同步无限循环中持续分配内存的用例不受 `--timeout` 约束，
  * 没有上限时会耗尽整机内存。上限取 4 GB：全量测试中单个进程的峰值约 0.9 GB（2026-11-01 实测）。
  * 每个文件启动一个并在文件结束时关闭：`--isolate` 在文件之间重置全局对象与环境变量，
  * 无法按进程只启动一个。`QYWORK_TEST_MEMORY_LIMIT_MB` 只供该机制的回归测试设置较小的值。

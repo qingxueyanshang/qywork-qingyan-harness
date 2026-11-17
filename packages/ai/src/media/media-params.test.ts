@@ -11,7 +11,7 @@ const active = (
 ) => activeMediaParams(findMediaModel(id)!.params, operation, params, images)
 
 // 第三方接口上的千问图像由百炼图像改为 OpenAI Images 后，画布卡片上保存的尺寸仍是「宽*高」。
-test('型号改用另一协议后，保存的尺寸按对照表换成当前分隔符，不被丢弃', () => {
+test('型号改用另一协议后，保存的尺寸按对照表转换为当前分隔符，不被丢弃', () => {
   const compatible = lookupMediaModel('qwen-image-3.0-pro', 'openai_images').params
   const native = lookupMediaModel('qwen-image-3.0-pro', 'dashscope_images').params
   expect(activeMediaParams(compatible, 'generate', { size: '880*1168', n: 1 })).toEqual({
@@ -20,7 +20,7 @@ test('型号改用另一协议后，保存的尺寸按对照表换成当前分�
   })
   expect(activeMediaParams(native, 'generate', { size: '1360x768' })).toEqual({ size: '1360*768' })
   expect(activeMediaParams(native, 'generate', { size: '1360*768' })).toEqual({ size: '1360*768' })
-  // 对照表中没有的尺寸不换写，仍按不合法的取值省略。
+  // 对照表中没有的尺寸不转换，仍按不合法的取值省略。
   expect(activeMediaParams(compatible, 'generate', { size: '999*999' })).toEqual({})
 })
 

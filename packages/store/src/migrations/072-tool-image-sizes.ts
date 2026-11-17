@@ -7,11 +7,11 @@ import { type Migration, parsedObject } from './shared.ts'
 /** 迁移 72 每批读取的候选行数。图像已移入正文库，每行只有引用，单批耗时主要在读取文件头。 */
 const IMAGE_SIZE_BATCH_ROWS = 64
 
-/** 依次读取的文件头长度：PNG、GIF、WebP 的尺寸在开头几十字节；JPEG 的 SOF 之前可能有带缩略图的 EXIF。 */
+/** 依次读取的文件头长度：PNG、GIF、WebP 的尺寸在开头数十字节；JPEG 的 SOF 之前可能有带缩略图的 EXIF。 */
 const IMAGE_HEADS = [4096, 256 * 1024]
 
 /**
- * 迁移 72 的一批：为入库时还未记录尺寸的工具图片补上像素宽高（`StoredToolImage.size`），估算按尺寸计算。
+ * 迁移 72 的一批：为入库时尚未记录尺寸的工具图片补充像素宽高（`StoredToolImage.size`），估算按尺寸计算。
  *
  * 只改写缺少 `size` 键的引用；正文缺失或文件头无法识别时记为 null。按 rowid 推进，理由同迁移 70。
  */
@@ -60,7 +60,7 @@ export const migration072: Migration = {
   id: 72,
   name: 'tool_image_sizes',
   /**
-   * 工具图片的引用补上像素宽高，见 `addToolImageSizesBatch`。估算按宽高与各模型的图片规则计算；
+   * 工具图片的引用补充像素宽高，见 `addToolImageSizesBatch`。估算按宽高与各模型的图片规则计算；
    * 补齐之前的引用按尺寸未知计（该模型的像素上限）。
    */
   background: addToolImageSizesBatch,

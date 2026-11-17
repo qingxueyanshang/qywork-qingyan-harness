@@ -2,10 +2,10 @@
  * 宠物：由运行状态派生的心情、未查看的结果、气泡与本机偏好。
  *
  * 不另记运行状态。「工作中」取 `busyConversations`，「操作电脑」取 `desktopTargets`；
- * 完成与出错在会话变闲时读取账本中该会话最新一轮的状态得出。不要改为监听 `run.finished`：
+ * 完成与出错在会话转为空闲时读取账本中该会话最新一轮的状态得出。不要改为监听 `run.finished`：
  * 客户端只订阅当前会话的 run 事件，其他会话的终态不会到达。
  *
- * 「未查看结果」只记录用户是否看过，与运行状态不重叠：用户正在查看该会话时不记录，
+ * 「未查看结果」只记录用户是否查看过，与运行状态不重叠：用户正在查看该会话时不记录，
  * 打开该会话或在宠物列表中点击它时移除。
  *
  * 宠物只显示在桌面外壳的宠物窗口中。推导只在主窗口进行，宠物窗口只显示主窗口推送的结果，
@@ -68,7 +68,7 @@ interface ConversationMeta {
 
 const PREFS_KEY = 'qywork.pet'
 
-/** 气泡显示多久后收起。 */
+/** 气泡的显示时长，到时收起。 */
 export const PET_BUBBLE_MS = 6000
 
 /**
@@ -277,17 +277,17 @@ export function stopPetEntry(id: string): void {
   client.send({ type: 'conversation.interrupt', conversationId: id as never })
 }
 
-/** 用户此刻是否看得到该会话：它是当前会话，且窗口可见并处于前台。 */
+/** 用户此刻是否正在查看该会话：它是当前会话，且窗口可见并处于前台。 */
 function watching(id: string): boolean {
   return id === state.activeConversation && !document.hidden && document.hasFocus()
 }
 
 /**
- * 会话变闲：读取它最新一轮的状态并记录结果。
+ * 会话转为空闲：读取它最新一轮的状态并记录结果。
  *
  * `since` 是观察到它变忙的时刻。本轮指此后创建或此后结束的最新一轮：连接时已在运行的会话，
  * 其轮次创建于观察之前，但结束于观察之后。两个条件都不满足说明本轮在启动前即被拒绝
- * （未配置 key 等），记为出错。被中断的轮次是用户自己停止的，不记录，并清除该会话之前的结果。
+ * （未配置 key 等），记为出错。被中断的轮次由用户停止，不记录，并清除该会话之前的结果。
  */
 async function settle(id: string, since: number): Promise<void> {
   const meta = await loadMeta(id)

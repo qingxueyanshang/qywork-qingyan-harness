@@ -18,9 +18,9 @@ import type { DesktopGrant } from './native-desktop.ts'
  * 握手中不设协议版本。
  *
  * 不要添加手写的 `PROTOCOL_VERSION` 在握手时比对。它的目的是拒绝不属于同一次构建的
- * 客户端与 sidecar，但无法实现：该值只在有人记得手动加 1 时才生效，没有任何检查
+ * 客户端与 sidecar，但无法实现：该值只在每次修改都手动加 1 时才生效，没有任何检查
  * 强制执行。缺少一条 HTTP 路由这类版本偏差不改变线上格式，该值保持不变、连接仍会建立，
- * 前端出现 `undefined.id`。只在有人记得时才生效的检查看似提供保护，危害大于没有检查。
+ * 前端出现 `undefined.id`。依赖人工记忆才生效的检查看似提供保护，危害大于没有检查。
  *
  * 版本偏差从源头消除，不依赖比对数字：
  * - 开发：`bun run dev` 两端都从同一棵源码树运行，且共用一个空闲时切换代际的门控；
@@ -43,8 +43,8 @@ export interface HelloFrame {
    * 客户端改为全量获取。
    *
    * 位置与流身份必须一同给出，作为一个字段而不是两个。seq 是服务端进程中的
-   * 计数器，重启后从头开始：只给一个数字时，服务端无法判断它是否是本条流上的位置。
-   * 只给 `lastSeq` 的后果是：sidecar 重启后（开发环境热重载、崩溃后重新启动、桌面端重装），
+   * 计数器，重启后从头开始：只提供一个数字时，服务端无法判断它是否是本条流上的位置。
+   * 只提供 `lastSeq` 的后果是：sidecar 重启后（开发环境热重载、崩溃后重新启动、桌面端重装），
    * 重连的客户端携带上一代的 `lastSeq=800` 遇到新服务的 `seq=0`，`800 >= 0` 被判定为
    * 已是最新，因此补发零条、resync 为假。界面停留在断线时的状态：该轮始终显示执行中，
    * 而账本中它早已在启动回收时被判定为中断。
@@ -153,7 +153,7 @@ export interface BrowserCapability {
   connected: boolean
   /** 宿主上报的浏览器运行时版本达到 AI 控制的下限。`connected` 为假时为 `false`。 */
   runtimeSupported: boolean
-  /** 宿主已连接但没有可用浏览器的原因；此时 `connected` 为假。宿主未连接或浏览器可用时缺席。 */
+  /** 宿主已连接但没有可用浏览器的原因；此时 `connected` 为假。宿主未连接或浏览器可用时缺失。 */
   unavailable?: BrowserUnavailableReason
   /** 宿主报告的页面显示位置，仅 `connected` 为真时存在。界面据此决定面板中显示嵌入的页面还是窗口入口。 */
   presentation?: BrowserPresentation
@@ -183,7 +183,7 @@ export interface DesktopCapability {
  * 加入该表的条件：代码中确有一处 `Bun.spawn` 调用它。「安装后更好」「同类工具都列出了」
  * 不构成理由：这类清单会让用户面对大量与其无关的红色标记，真正出错的条目被掩盖。
  *
- * 不经握手下发：握手只在连接时发生一次，安装完成后界面无法得到新结果。
+ * 不经握手下发：握手只在连接时发生一次，安装完成后界面无法取得新结果。
  */
 export interface EnvDependency {
   /** 稳定 id，安装路由据此查询常量表。 */
@@ -196,8 +196,8 @@ export interface EnvDependency {
    * `true` 表示缺少时有功能无法使用（bash、git）；
    * `false` 表示缺少时只是降级或只在特定场景需要（rg 有内置遍历作为后备，node 只在安装插件时使用）。
    *
-   * 区分这两档是为了避免误报：若可选项也标为「需要安装」，用户首次打开
-   * 设置页时会看到大量红色标记，而其中多数不影响使用。
+   * 区分这两档是为了避免误报：若可选项也标为「需要安装」，设置页在用户首次打开
+   * 时会显示大量红色标记，而其中多数不影响使用。
    */
   required: boolean
   /**
@@ -209,7 +209,7 @@ export interface EnvDependency {
    * 能否一键安装（Windows、已有 winget、且本仓库收录了它的包 id）。
    *
    * `false` 时界面不显示安装按钮，而不是显示一个点击后返回 409 的按钮（B5）。
-   * 判据与 `POST /api/host/install` 使用同一张表，分开计算必然漂移。
+   * 判据与 `POST /api/host/install` 使用同一张表，分开计算必然不一致。
    */
   canInstall: boolean
 }
@@ -217,7 +217,7 @@ export interface EnvDependency {
 export interface HelloErrFrame {
   type: 'hello.err'
   /**
-   * 只有一种取值，且为终态：重连多少次携带的仍是同一个令牌。
+   * 只有一种取值，且为终态：无论重连多少次，携带的仍是同一个令牌。
    *
    * 不要添加没有生产者的枚举值（如 `protocol_mismatch`，理由见 HelloFrame）：
    * 客户端会为它增加一条永远不会命中的分支。
@@ -342,13 +342,13 @@ export interface CompactCommand {
 /**
  * 用户在界面上点击「继续」，使已停止的目标重新开始执行。
  *
- * 该指令必须自行发起一轮，不能只把状态改回 `active` 后等待其他 run 收尾时
- * 才执行：此时用户可能已等待很久，而界面上没有任何变化。
+ * 该指令必须自行发起一轮，不能只把状态改为 `active` 后等待其他 run 收尾时
+ * 才执行：此时用户可能已等待较长时间，而界面上没有任何变化。
  * 因此服务端使用与自动继续完全相同的排队入口（`run-control.ts`）。
  *
  * 不设对应的「暂停」指令。循环开始运行后，停止它的操作就是中断该会话
  * （`conversation.interrupt`），run 收尾时会将目标置回 `paused` 并清除自动继续标记；
- * 再增加一条指令等于为同一件事提供第二个入口。
+ * 再增加一条指令等于为同一操作提供第二个入口。
  */
 export interface GoalResumeCommand {
   type: 'goal.resume'
@@ -360,7 +360,7 @@ export interface GoalResumeCommand {
  *
  * 模型没有 `create_goal`：设立目标需要在第二步就判断该任务是否需要跨轮执行，而模型在该步骤
  * 无法取得这一信息。由模型设立的目标可能在同一个 run 中即被标记为完成，自动继续不会触发，
- * 用户只看到一条未变化的目标条。
+ * 界面只显示一条未变化的目标条。
  *
  * 设立后立即开始一轮，与「继续」使用同一个排队入口。
  *
@@ -381,7 +381,7 @@ export interface GoalSetCommand {
  * 其他客户端没有发出该指令，收到回执只会造成混淆。
  *
  * 必须提供该回执：若 `handleCommand` 的 `default` 分支直接 `return`，未知或未实现的
- * 指令会被静默丢弃。客户端发出后收不到任何反馈，界面上点击无响应，
+ * 指令会被静默丢弃。客户端发出后未收到任何反馈，界面上点击无响应，
  * 与服务端正在处理无法区分。
  * 这违反本项目的 fail-closed 原则：不确定时明确失败，不返回成功。
  */

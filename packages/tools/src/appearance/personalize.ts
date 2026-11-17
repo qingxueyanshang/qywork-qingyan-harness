@@ -27,7 +27,7 @@ function text(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null
 }
 
-/** 解析 `json`。缺省为空对象：只换背景图片时无需其他字段。 */
+/** 解析 `json`。缺省为空对象：只更换背景图片时无需其他字段。 */
 function patchOf(raw: unknown): Record<string, unknown> | string {
   const src = text(raw)
   if (!src) return {}
@@ -86,9 +86,9 @@ export const personalizeTool: ToolSpec = {
     '读取与修改 qywork 界面的个性化。个性化由背景、流动雾面、界面不透明度、强调色与流动色组成，' +
     '作用于界面外框、会话区与右侧面板；浅色或深色由用户的主题设置决定，不属于个性化。' +
     '只有一套个性化，保存后所有屏幕立即生效。' +
-    'action=read 读取当前参数；save 只写要改的字段：background 的 kind 不变时逐字段合并，kind 改变时整组替换，' +
+    'action=read 读取当前参数；save 只写入需要修改的字段：background 的 kind 不变时逐字段合并，kind 改变时整组替换，' +
     '已有雾面时 fog 逐字段合并；image 给出工作区中的图片路径时把该图片设为背景；reset 恢复默认。' +
-    '背景与雾面位于界面之下，opacity 小于 1 时才能透过界面看到。',
+    '背景与雾面位于界面之下，opacity 小于 1 时才可透过界面显示。',
   parameters: {
     type: 'object',
     properties: {

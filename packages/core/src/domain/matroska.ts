@@ -30,7 +30,7 @@ interface Element {
   end: number | null
 }
 
-/** EBML 变长整数：首字节前导零的个数加一为字节数。`id` 保留长度标记位，大小去掉标记位；全 1 表示大小未知。 */
+/** EBML 变长整数：首字节前导零的个数加一为字节数。`id` 保留长度标记位，大小去除标记位；全 1 表示大小未知。 */
 function vint(
   bytes: Uint8Array,
   at: number,
@@ -119,7 +119,7 @@ function tracksOf(
 
 /**
  * 从文件开头的字节中读取时长（秒）、第一条视频轨的像素宽高与是否有音轨。不是 EBML 文件时返回 null；
- * 读不出的项为 null（没有 `Duration`、`Tracks` 不在已读取的范围内）。
+ * 无法读取的项为 null（没有 `Duration`、`Tracks` 不在已读取的范围内）。
  */
 export function matroskaMetadataOf(
   head: Uint8Array,

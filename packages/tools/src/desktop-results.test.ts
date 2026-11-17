@@ -271,7 +271,7 @@ interface Delivery {
   unsaved?: string
 }
 
-/** 交给模型的控件：动作表替换为下标，省略与默认值相同的字段。 */
+/** 提供给模型的控件：动作表替换为下标，省略与默认值相同的字段。 */
 type CompactElement = Omit<DesktopElement, 'actions' | 'enabled' | 'offscreen' | 'automationId'> & {
   enabled?: boolean
   offscreen?: boolean
@@ -499,7 +499,7 @@ describe('大控件表只投递一部分', () => {
 
   /**
    * 原始失败形状：qywork 的文件树中点击目录「签收」后，目录已展开，但视图「已投递 313/524」截止于目录按钮本身，
-   * 展开出的子项一个都没有投递；模型又点了两次，目录在展开与收起之间切换。
+   * 展开后的子项均未投递；模型又点击两次，目录在展开与收起之间切换。
    */
   test('动作引起的新增与改变的控件排在其余控件之前进入视图，连同祖先；受上限约束', async () => {
     const item = (ref: string, parentRef: string, depth: number, role: string, name: string) => ({
@@ -833,7 +833,7 @@ describe('无法保存时如实说明', () => {
     expect(delivery?.resourceId).toBeUndefined()
     expect(delivery?.unsaved).toBe('本次执行没有正文库')
     expect(r.message).toContain('未保存')
-    expect(r.message).toContain('无法回读')
+    expect(r.message).toContain('未返回的部分无法读取')
     expect(r.message).not.toContain('read_resource')
     // 不重新执行动作。
     expect(acted.acts).toBe(1)
@@ -869,7 +869,7 @@ describe('无法保存时如实说明', () => {
 })
 
 describe('实际用量记账', () => {
-  test('按实际投递量记账，只记一次', async () => {
+  test('按实际投递量记账，只记录一次', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
     openBatchBudget(ctx.state, 1_000_000, 25_000)
     const r = await actOnTarget(ctx)

@@ -4,11 +4,11 @@
  * 覆盖范围：`delegate.ts` 的 `makeDelegate()`：派发后立即返回、完成回调写入节点状态与回执、
  * 回执正文的形状、按会话停止、图的推进（首次派发 → 一个节点执行完毕后派发下游 → 一个节点失败时先发送失败回执 →
  * 上游全部完成后发送检查点回执 → approve / revise）、子 agent 的思考强度（`team-run.ts` 的 `memberEffort`），
- * 子 agent 因暂时故障结束时按间隔重新派发（等待由注入的实现记录，不实际等待），以及 `subagents.ts` 的运行表。
+ * 子 agent 的模型请求失败时一轮内重发、用尽即发送列出各次失败原因的回执，以及 `subagents.ts` 的运行表。
  *
  * 使用真实链路的原因：该通道的行为是「派发之后，卡片上对应的节点随之更新，回执自动返回」。
  * 把 `runBuiltinMember` 换成桩只能验证「桩被调用」；实际可能出错的是装配：
- * 事件是否携带 stepId（不携带则前端整条丢弃）、终态是否发送（不发送则该节点始终停在进行中）、
+ * 事件是否携带 stepId（不携带则前端整条丢弃）、终态是否发送（不发送则该节点始终停留在进行中）、
  * 回执是否投递（不投递则本次派发等同于丢失）。
  *
  * 外部 CLI 分支覆盖「派发、执行完毕、节点记录写入」、观察器的忽略判定，以及无法启动时
@@ -30,8 +30,8 @@ import {
   parseWorkflowCall,
   type RunId,
   type StepId,
+  TRANSIENT_RETRY_DELAYS_MS,
   type WorkflowCall,
-  waitOrAbort,
 } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import * as ledger from '@qywork/store'
@@ -60,10 +60,18 @@ import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
 
 /**
- * 子会话一轮之内重发前的等待取 0。本文件验证派发与回执，不验证退避时长；按真实退避等待时，
- * 耗尽一轮的重发预算约需一分钟。
+ * 子会话一轮之内重发前的等待取 0。本文件验证派发与回执，不验证退避时长；子会话按 30 秒、2 分钟、5 分钟重发，
+ * 按真实时间等待时耗尽一轮约需 8 分钟。`transientWaits` 记录子会话每次等待对应的重试序号。
  */
-mock.module('@qywork/core', () => ({ ...core, resendDelay: () => 0 }))
+const transientWaits: number[] = []
+mock.module('@qywork/core', () => ({
+  ...core,
+  resendDelay: () => 0,
+  transientRetryDelay: (retry: number) => {
+    transientWaits.push(retry)
+    return 0
+  },
+}))
 
 /**
  * 为真时读取工作流记录抛出，模拟账本读取失败（记录损坏、数据库错误）。只在「账本读取失败」一组用例中开启。
@@ -245,7 +253,7 @@ async function until(check: () => boolean, label: string, timeoutMs = 3000): Pro
     if (check()) return
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
-  throw new Error(`等不到：${label}`)
+  throw new Error(`等待超时：${label}`)
 }
 
 /**
@@ -303,7 +311,7 @@ async function invoke(
       outcome: {
         status: 'success',
         executed: true,
-        message: '已起跑',
+        message: '已开始运行',
         data: result.transition as unknown as Record<string, unknown>,
       },
     })
@@ -481,7 +489,7 @@ describe('派发后立即返回', () => {
     expect(phasesOf('child')).toEqual(['working'])
     expect(members()[0]?.state.subagentId).toBe(res.subagentId as ConversationId)
 
-    await until(() => phasesOf('child').includes('done'), '子 agent 落终态')
+    await until(() => phasesOf('child').includes('done'), '子 agent 进入终态')
     expect(phasesOf('child')).toEqual(['working', 'done'])
     expect(members().every((m) => m.stepId === 'st_1' && m.runId === where.runId)).toBe(true)
   })
@@ -504,7 +512,7 @@ describe('派发后立即返回', () => {
     await until(() => !runs.isBusy(cid), '子 agent 结束')
   })
 
-  /** 无法派发的节点直接记为失败：不产生「运行中」状态，也不遗留永远等待的节点。 */
+  /** 无法派发的节点直接记为失败：不产生「运行中」状态，也不遗留始终等待的节点。 */
   test('目标不存在时该节点只有一条失败状态，也没有回执', async () => {
     const cid = conversation()
     const res = await delegate(cid).dispatch({
@@ -566,7 +574,7 @@ describe('派发后立即返回', () => {
 
   /**
    * 原始失败形状：子 agent 运行时切换到另一条会话，再切换回来时从正在执行的 step 回放。
-   * `team.member` 只存在于订阅期间，入口若等到终态才落库，回放的卡片没有 id，节点被禁用。
+   * `team.member` 只存在于订阅期间，入口若在进入终态时才落库，回放的卡片没有 id，节点被禁用。
    */
   test('派发时子会话入口已写入这条 step', async () => {
     const cid = conversation()
@@ -651,7 +659,7 @@ describe('思考强度', () => {
       ...spot(cid),
     })
     expect(res.ok).toBe(true)
-    await until(() => phasesOf('child').includes('done'), '子 agent 落终态')
+    await until(() => phasesOf('child').includes('done'), '子 agent 进入终态')
     expect(effortFor('排期')).toBe('xhigh')
   })
 
@@ -693,7 +701,7 @@ describe('思考强度', () => {
       ...spot(cid),
     })
     expect(res.ok).toBe(true)
-    await until(() => phasesOf('child').includes('done'), '子 agent 落终态')
+    await until(() => phasesOf('child').includes('done'), '子 agent 进入终态')
     expect(sent.some((s) => s.body.includes('换模型'))).toBe(true)
     expect(effortFor('换模型')).toBeUndefined()
   })
@@ -812,7 +820,7 @@ describe('回执是一条消息', () => {
   })
 
   /** 产出经过投递限制：没有上限的正文若整段进入上下文，压缩层无法处理。 */
-  test('超长产出在回执里是有界摘录加定位符', async () => {
+  test('超长产出在回执中为有界摘录加定位符', async () => {
     const cid = conversation()
     const huge = '审查结论。'.repeat(40_000)
     script = [say(huge)]
@@ -830,137 +838,70 @@ describe('回执是一条消息', () => {
 })
 
 /**
- * 原始失败形状：子 agent 的模型请求被限流（HTTP 429），轮内重发 5 次后该轮失败，父会话随即收到
- * 「失败：[rate_limited]」的回执并停止整项工作。暂时故障在发送失败回执之前按 30 秒、2 分钟、5 分钟重新派发。
+ * 原始失败形状：子 agent 的请求被第三方接口反复拒绝，轮内重发 5 次后该轮失败，派发一侧再按 30 秒、2 分钟、5 分钟
+ * 重新派发，每次重新派发又含一整轮重发；约 35 分钟内父会话等待子 agent 只得到「仍在执行」，回执中只有最后一次的失败原因。
+ * 现在子会话的请求按 30 秒、2 分钟、5 分钟重发 3 次，用尽即发送回执。
  *
- * 子会话一轮内的 5 次重发不等待（见文件开头）；重新派发前的等待由注入的实现记录。
+ * 子会话的重发不实际等待（见文件开头），等待对应的重试序号记录在 `transientWaits` 中。
  */
-describe('暂时故障时重新派发', () => {
-  const limited = () =>
-    new Response('{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}', {
-      status: 429,
+describe('子 agent 的模型请求失败', () => {
+  const failure = (status: number, message: string, type: string) => () =>
+    new Response(JSON.stringify({ error: { message, type } }), {
+      status,
       headers: { 'content-type': 'application/json' },
     })
-  /** 子会话一轮内的请求次数：首次发送加 5 次重发。 */
-  const PER_RUN = 6
+  const limited = failure(429, 'Rate limit reached', 'rate_limit_error')
+  const overloaded = failure(503, 'Upstream service overloaded', 'overloaded_error')
 
-  function redispatching(
-    cid: ConversationId,
-    wait: (ms: number, signal: AbortSignal) => Promise<void>,
-  ) {
-    return makeDelegate({
-      deps: { store, content, config, bus, runs, subagents },
-      workspaceRoot: dir,
-      conversationId: cid,
-      deliver: (followUp) => receipts.push(followUp),
-      wait,
-    })
-  }
-
-  /** 前 `failing` 次请求返回 429，之后正常回答；返回已收到的请求数。 */
-  function limitedFor(failing: number): () => number {
-    let count = 0
-    router = () => {
-      count++
-      return count <= failing
-        ? limited()
-        : new Response(textTurn('恢复后完成'), { headers: SSE_HEADERS })
-    }
-    return () => count
-  }
-
-  test('一轮因限流失败后等待 30 秒重新派发，恢复后父会话收到成功回执', async () => {
+  test('按 30 秒、2 分钟、5 分钟重发 3 次后立即发送失败回执，不重新派发；回执列出各次不同的失败原因', async () => {
     const cid = conversation()
-    const requests = limitedFor(PER_RUN)
-    const waits: number[] = []
-    const res = await redispatching(cid, async (ms) => {
-      waits.push(ms)
-    }).dispatch({ target: { kind: 'temp', name: '审核员' }, task: '审核剧本', ...spot(cid) })
+    transientWaits.length = 0
+    let requests = 0
+    router = () => {
+      requests++
+      return requests <= 2 ? limited() : overloaded()
+    }
+    await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '审核员' },
+      task: '审核剧本',
+      ...spot(cid),
+    })
     await until(() => receipts.length > 0, '回执', 10_000)
 
-    expect(waits).toHaveLength(1)
-    expect(waits[0]).toBeGreaterThanOrEqual(30_000)
-    expect(waits[0]).toBeLessThanOrEqual(33_000)
-    expect(requests()).toBe(PER_RUN + 1)
-    expect(receipts).toHaveLength(1)
-    expect(receipts[0]!.content.split('\n')[0]).toContain('已返回')
-    expect(receipts[0]!.content).toContain('恢复后完成')
-    expect(members().at(-1)?.state).toMatchObject({ phase: 'done' })
-    expect(members().at(-1)?.state.note).toContain('自动重新派发 1 次后完成')
-    // 重新派发写入子会话的是继续执行的说明，不是任务正文的副本。
-    const sent = listMessages(store, res.subagentId as ConversationId)
-      .filter((m) => m.role === 'user')
-      .map((m) => m.content)
-    expect(sent).toHaveLength(2)
-    expect(sent[0]).toBe('审核剧本')
-    expect(sent[1]).toStartWith('[自动重新派发] 本消息由系统发出，不是新的任务。')
-    expect(sent[1]).toContain('[rate_limited]')
-  })
-
-  test('重新派发 3 次仍失败时才发送失败回执，写明已做的重新派发', async () => {
-    const cid = conversation()
-    const requests = limitedFor(PER_RUN * 4)
-    const waits: number[] = []
-    await redispatching(cid, async (ms) => {
-      waits.push(ms)
-    }).dispatch({ target: { kind: 'temp', name: '审核员' }, task: '审核剧本', ...spot(cid) })
-    await until(() => receipts.length > 0, '回执', 20_000)
-
-    expect(waits).toHaveLength(3)
-    expect(waits[0]).toBeGreaterThanOrEqual(30_000)
-    expect(waits[1]).toBeGreaterThanOrEqual(120_000)
-    expect(waits[2]).toBeGreaterThanOrEqual(300_000)
-    expect(requests()).toBe(PER_RUN * 4)
+    expect(requests).toBe(TRANSIENT_RETRY_DELAYS_MS.length + 1)
+    // 三次等待依次取间隔表的第 1、2、3 项（30 秒、2 分钟、5 分钟）。第 4 次失败时同样计算一次间隔以判定
+    // 是否属于暂时故障，随后因次数用尽而不等待，因此只核对前三项。
+    expect(transientWaits.slice(0, 3)).toEqual([0, 1, 2])
     expect(receipts).toHaveLength(1)
     const head = receipts[0]!.content.split('\n')[0]!
-    expect(head).toContain('失败：[rate_limited]')
-    expect(head).toEndWith('；已在 30 秒、2 分钟、5 分钟后各自动重新派发一次，仍失败')
-  }, 30_000)
+    expect(head).toContain('失败：[provider_unavailable]')
+    expect(head).toContain('Upstream service overloaded')
+    expect(head).toContain(`已重发 ${TRANSIENT_RETRY_DELAYS_MS.length} 次`)
+    expect(head).toContain('此前的失败：')
+    expect(head).toContain('Rate limit reached')
+    expect(members().at(-1)?.state).toMatchObject({ phase: 'failed' })
+    await until(() => !runs.isBusy(cid), '父会话空闲')
+    expect(requests).toBe(TRANSIENT_RETRY_DELAYS_MS.length + 1)
+  })
 
-  /** 请求本身有误时重新派发得到同样的拒绝：不等待，立即发送失败回执。 */
-  test('不属于暂时故障的失败不重新派发', async () => {
+  /** 请求本身有误时重发得到同样的拒绝：不重发，立即发送失败回执。 */
+  test('不属于暂时故障的失败不重发，立即发送失败回执', async () => {
     const cid = conversation()
     let requests = 0
     router = () => {
       requests++
-      return new Response('{"error":{"message":"bad input","type":"invalid_request_error"}}', {
-        status: 400,
-        headers: { 'content-type': 'application/json' },
-      })
+      return failure(400, 'bad input', 'invalid_request_error')()
     }
-    const waits: number[] = []
-    await redispatching(cid, async (ms) => {
-      waits.push(ms)
-    }).dispatch({ target: { kind: 'temp', name: '审核员' }, task: '审核剧本', ...spot(cid) })
+    await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '审核员' },
+      task: '审核剧本',
+      ...spot(cid),
+    })
     await until(() => receipts.length > 0, '回执', 10_000)
 
-    expect(waits).toEqual([])
     expect(requests).toBe(1)
     expect(receipts[0]!.content).toContain('失败：[invalid_request]')
-    expect(receipts[0]!.content).not.toContain('重新派发')
-  })
-
-  /** 用户停止时等待随之取消：不重新派发，不发送回执，子会话的占位随之释放。 */
-  test('等待重新派发期间停止：等待取消，不再请求，不发送回执', async () => {
-    const cid = conversation()
-    const requests = limitedFor(PER_RUN * 4)
-    const waits: number[] = []
-    const res = await redispatching(cid, (ms, signal) => {
-      waits.push(ms)
-      return waitOrAbort(ms, signal)
-    }).dispatch({ target: { kind: 'temp', name: '审核员' }, task: '审核剧本', ...spot(cid) })
-    await until(() => waits.length === 1, '进入等待', 10_000)
-    const child = res.subagentId as ConversationId
-    expect(runs.hasRun(child)).toBe(true)
-    // 等待期间占位不中断，但已结束的那一轮不再是当前轮次。
-    expect(runs.currentRunId(child)).toBeNull()
-
-    expect(subagents.interruptConversation(cid)).toBe(true)
-    await until(() => phasesOf('child').includes('interrupted'), '节点记为中断')
-    // 子会话的占位与父会话的忙态在派发流程退出之后才释放：此后不会再有请求或回执。
-    await until(() => !runs.hasRun(child) && !runs.isBusy(cid), '派发流程退出')
-    expect(requests()).toBe(PER_RUN)
-    expect(receipts).toEqual([])
+    expect(receipts[0]!.content).not.toContain('已重发')
   })
 })
 
@@ -1003,9 +944,39 @@ describe('运行表按会话管理', () => {
     })
     expect(subagents.interruptConversation(cid)).toBe(true)
 
-    await until(() => phasesOf('child').includes('interrupted'), '格落中断')
+    await until(() => phasesOf('child').includes('interrupted'), '节点写入中断')
     expect(receipts).toEqual([])
     expect(runs.isBusy(cid)).toBe(false)
+  })
+
+  /**
+   * 原始失败形状：服务关闭时父会话的一轮写为服务关闭，子 agent 的一轮在进程退出之前仍为 running，
+   * 下次启动按进程退出回收；同一次关闭在两个会话中显示为两种结论。此处按 `server.ts` 的 `stop()` 的顺序
+   * 中止并等待，等待返回之后不再让出事件循环即断言：调用方此时关闭账本并退出进程。
+   */
+  test('服务退出：等待返回时子 agent 的一轮与节点均已写入终态，中断来源为服务关闭', async () => {
+    const cid = conversation()
+    const slow = gate()
+    router = () => slow.respond()
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '临时' },
+      task: '去查一下',
+      ...spot(cid),
+    })
+    const child = res.subagentId as ConversationId
+    await until(() => slow.arrived(), '子 agent 的请求已发出')
+    expect(listRuns(store, child)[0]?.status).toBe('running')
+
+    runs.interruptAll()
+    subagents.interruptAll()
+    await Promise.all([runs.idle(), subagents.idle()])
+
+    const [row] = listRuns(store, child)
+    expect(row?.status).toBe('interrupted')
+    expect(row?.interruption?.source).toBe('server_shutdown')
+    expect(row?.errorMessage).toBe('服务已关闭，本轮中断')
+    expect(phasesOf('child').at(-1)).toBe('interrupted')
+    expect(receipts).toEqual([])
   })
 
   /**
@@ -1045,7 +1016,7 @@ describe('运行表按会话管理', () => {
     })
     const id = res.subagentId as ConversationId
     await until(() => slow.arrived(), '子 agent 的请求已发出')
-    // 尚未读取的补充指令随停止交回父会话，不在完成回调中无声丢弃。
+    // 尚未读取的补充指令随停止返回给父会话，不在完成回调中静默丢弃。
     await delegate(cid).dispatch({ target: { subagent: id }, task: '补充：改用第一人称', ...where })
 
     expect(delegate(cid).stop(id)).toEqual({
@@ -1054,7 +1025,7 @@ describe('运行表按会话管理', () => {
       dropped: ['补充：改用第一人称'],
     })
     expect(runs.queueOf(id)).toEqual([])
-    await until(() => phasesOf('child').includes('interrupted'), '节点落中断')
+    await until(() => phasesOf('child').includes('interrupted'), '节点写入中断')
     expect(members().at(-1)?.state.error).toBe('已由当前会话停止')
     await until(() => !runs.isBusy(cid), '父会话空闲')
     expect(receipts).toEqual([])
@@ -1096,10 +1067,10 @@ describe('运行表按会话管理', () => {
   /**
    * 原始失败形状：向仍在运行的子 agent 再次派发时返回「已派出」，同一子会话中同时运行两轮，
    * 两轮写入同一批文件；先结束的一轮注销后，子会话与父会话都被报告为空闲。
-   * 之后改为拒绝，模型无法补充指令，只能用 shell 循环等待回执（「留一盏灯」会话 8 次被拒）。
-   * 现在任务排入子 agent 自己的队列；它在注入之前结束时，回执列出未送达的指令，队列清空。
+   * 直接拒绝时模型无法补充指令，只能用 shell 循环等待回执（「留一盏灯」会话中被拒绝 8 次）。
+   * 因此任务排入子 agent 自己的队列；它在注入之前结束时，回执列出未送达的指令，队列清空。
    */
-  test('子 agent 执行中再次派发：任务作为补充指令排队，不另起一轮；结束前未读取时回执列出', async () => {
+  test('子 agent 执行中再次派发：任务作为补充指令排队，不另行启动一轮；结束前未读取时回执列出', async () => {
     const cid = conversation()
     const where = spot(cid)
     const first = gate()
@@ -1152,7 +1123,7 @@ describe('运行表按会话管理', () => {
     expect(runs.hasRun(child)).toBe(false)
   })
 
-  test('补充指令在子 agent 的下一个 step 边界注入，同一轮读到并完成，回执不列未送达', async () => {
+  test('补充指令在子 agent 的下一个 step 边界注入，同一轮读取并完成，回执不列出未送达的指令', async () => {
     const cid = conversation()
     const where = spot(cid)
     let releaseFirst: (response: Response) => void = () => {}
@@ -1227,7 +1198,7 @@ describe('运行表按会话管理', () => {
       expect(await queued(cid).awaitReceipt(5_000, new AbortController().signal)).toBe('idle')
     })
 
-    test('等到回执进入队列即返回 received，回执仍只在队列中', async () => {
+    test('回执进入队列即返回 received，回执仍只在队列中', async () => {
       const cid = conversation()
       const slow = gate()
       router = () => slow.respond()
@@ -1251,7 +1222,7 @@ describe('运行表按会话管理', () => {
       runs.takeNext(cid)
     })
 
-    test('等待期间用户插入消息即返回 message，排到本轮之后的消息返回 queued，两者都不经由本方法投递', async () => {
+    test('等待期间用户插入消息即返回 message，排在本轮之后的消息返回 queued，两者都不经由本方法投递', async () => {
       const cid = conversation()
       const slow = gate()
       router = () => slow.respond()
@@ -1420,7 +1391,7 @@ describe('图按事件推进', () => {
     expect(result.ok).toBe(true)
     expect(result.transition?.dispatched).toEqual(['a'])
     expect(result.completed).toBe(false)
-    // 刷新之后须能看到全貌：未派发的节点也有一条等待状态。
+    // 刷新之后界面须显示全部节点：未派发的节点也有一条等待状态。
     expect(phasesOf('b')).toEqual(['waiting'])
     await until(() => receipts.length > 0, '检查点回执')
   })
@@ -1590,7 +1561,7 @@ describe('图按事件推进', () => {
 
   /**
    * 原始失败形状：中断一律不推进图。父会话停止的若是图中最后一个在执行的节点，
-   * 之后不再有完成回调推进该图，检查点回执永远不会到达。
+   * 之后不再有完成回调推进该图，检查点回执始终不会到达。
    */
   test('父会话停止图中最后一个在执行的节点：检查点回执照常到达，不单独发送该节点的回执', async () => {
     const parent = conversation()
@@ -1652,7 +1623,7 @@ describe('图按事件推进', () => {
     const runId = run(parent, 'wf-skip')
     await invoke(parent, runId, 1, chain, parsedStart(chain))
 
-    await until(() => phasesOf('b').includes('skipped'), 'b 落跳过')
+    await until(() => phasesOf('b').includes('skipped'), 'b 记为跳过')
     await until(() => receipts.some((r) => r.content.includes('检查点 验收')), '检查点回执')
   })
 
@@ -1686,7 +1657,7 @@ describe('图按事件推进', () => {
    * 原始失败形状：agent 节点全部失败，主会话仍在检查点批准，此后需要其中一个节点
    * 在其自身的子会话中继续执行。批准即解散时模型只能使用 subagent，而 subagent 每次都新建会话。
    */
-  test('approve 之后 revise 仍向首派那条子会话续发', async () => {
+  test('approve 之后 revise 仍在首次派发的子会话中续派', async () => {
     const parent = conversation()
     const both = {
       goal: '各做一版',
@@ -1751,17 +1722,17 @@ describe('图按事件推进', () => {
     }
     const revised = await invoke(parent, runId, 3, reviseArgs, { kind: 'review', ...reviseArgs })
     expect(revised.result.transition?.dispatched).toEqual(['build-qwen'])
-    // 续发到首次派发的子会话，而不是新建会话。
+    // 续派到首次派发的子会话，而不是新建会话。
     const lastAsked = () =>
       listMessages(store, qwenChild as ConversationId)
         .filter((message) => message.role === 'user')
         .at(-1)?.content ?? ''
-    await until(() => lastAsked().includes('按 bug 列表继续改'), '续发指令进原子会话')
+    await until(() => lastAsked().includes('按 bug 列表继续改'), '修订指令进入原有子会话')
   })
 
   /**
-   * 原始失败形状：同一次 revise 点名了上下游两个节点，下游要等上游执行完毕的下一次推进才派发。
-   * 修订指令只保存在审查那一次推进中时，下游收到的是通用续发指令，审查说明也从未送达子 agent。
+   * 原始失败形状：同一次 revise 点名了上下游两个节点，下游须等待上游执行完毕后的下一次推进才派发。
+   * 修订指令只保存在审查那一次推进中时，下游收到的是通用续派指令，审查说明也从未送达子 agent。
    */
   test('同批修订的下游节点在下一次推进中仍收到自己的修订指令与审查说明', async () => {
     const parent = conversation()
@@ -1823,7 +1794,7 @@ describe('图按事件推进', () => {
     await until(() => lastAsked().includes('按意见改 b'), '下游节点收到自己的修订指令')
     expect(lastAsked()).toContain('页眉统一为左对齐')
     expect(lastAsked()).toContain('a 修订稿')
-    // 等到第二次检查点回执，图中不再有运行中的节点，不影响后续测试。
+    // 等待第二次检查点回执，图中不再有运行中的节点，不影响后续测试。
     await until(() => checkpointReceipts().length === 2, '第二次检查点回执')
   })
 
@@ -1900,7 +1871,7 @@ describe('图按事件推进', () => {
       stepId: step.id,
     })
     expect(result.ok).toBe(false)
-    expect(result.error).toContain('不在本会话里')
+    expect(result.error).toContain('不在本会话中')
     expect(listRuns(store, ordinary.id)).toHaveLength(0)
   })
 
@@ -2005,7 +1976,7 @@ describe('变更页合并子 agent 与外部 CLI 的写入', () => {
     return { runId, step }
   }
 
-  /** 派发后立即返回：真实循环在派发后立即结束该 step，耗时约一百多毫秒，子会话仍在运行。 */
+  /** 派发后立即返回：真实循环在派发后立即结束该 step，耗时略超过 100 毫秒，子会话仍在运行。 */
   function settle(stepId: string, task: string) {
     settleToolStep(
       store,
@@ -2044,7 +2015,7 @@ describe('变更页合并子 agent 与外部 CLI 的写入', () => {
             member.state.subagentId === res.subagentId &&
             member.state.phase === 'done',
         ),
-      '本次子 agent 落终态',
+      '本次子 agent 进入终态',
     )
     expect(await Bun.file(join(dir, 'sub.txt')).text()).toBe('hello\n')
     // 来源在创建 run 时写入：投影按来源归入轮次，不按时间判断。
@@ -2135,7 +2106,10 @@ console.log(JSON.stringify({ type: 'turn.completed' }));`,
       })
       expect(res).toMatchObject({ ok: true, kind: 'cli' })
       settle(step.id, '派给 codex')
-      await until(() => phasesOf('child').some((p) => p === 'done' || p === 'failed'), 'CLI 落终态')
+      await until(
+        () => phasesOf('child').some((p) => p === 'done' || p === 'failed'),
+        'CLI 进入终态',
+      )
       expect(members().at(-1)?.state).toMatchObject({ phase: 'done' })
 
       expect(await Bun.file(join(dir, 'cli-made.txt')).exists()).toBe(true)
@@ -2195,8 +2169,8 @@ console.log(JSON.stringify({ type: 'turn.completed' }));`,
       })
       expect(res).toMatchObject({ ok: true, kind: 'cli' })
       settle(step.id, '派给不存在的 codex')
-      // 观察窗口的屏障最多等待 5 秒；必须等收尾结束后再断言并关闭测试数据库。
-      await until(() => phasesOf('child').includes('failed'), 'CLI 落失败终态', 10_000)
+      // 观察窗口的屏障最多等待 5 秒；必须等待收尾结束后再断言并关闭测试数据库。
+      await until(() => phasesOf('child').includes('failed'), 'CLI 进入失败终态', 10_000)
     } finally {
       process.env.PATH = env.PATH
       if (env.OPENAI_API_KEY === undefined) delete process.env.OPENAI_API_KEY
@@ -2205,7 +2179,7 @@ console.log(JSON.stringify({ type: 'turn.completed' }));`,
 
     // 删除只能通过事件观察到，收尾扫描无法补充：前一个窗口未关闭时该删除无法报告。
     await writeFile(join(dir, 'doomed.txt'), 'x\n')
-    // 窗口打开后即接收事件；收尾经屏障等到在途事件交付完毕，无需另行等待。
+    // 窗口打开后即接收事件；收尾经屏障等待在途事件交付完毕，无需另行等待。
     const window = openChangeWindow(dir, { env: process.env })
     await rm(join(dir, 'doomed.txt'))
     const got = await window.close()

@@ -113,7 +113,7 @@ async function innerArgv(
    * 转义黑名单无法拦截构造出的命令，实际边界在内核层。
    *
    * 原样传递的前提是命令能原样到达。Windows 上 argv 需要经过一次命令行字符串的转换，
-   * 成对的反斜杠在 MSYS 一侧会去掉一半（见 `CommandShell.scriptArgv`）。因此 bash
+   * 成对的反斜杠在 MSYS 一侧会被去除一半（见 `CommandShell.scriptArgv`）。因此 bash
    * 改为经脚本文件传递：命令正文不进入 argv，逐字节到达。
    */
   const scriptRun = isWindows ? shell.scriptArgv : undefined
@@ -150,7 +150,7 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
   /**
    * 脚本文件的生命周期与进程一致：进程退出后删除。
    *
-   * 不在返回前删除：此时命令尚未开始读取。删除失败也不抛出异常：临时目录中残留一个几百字节
+   * 不在返回前删除：此时命令尚未开始读取。删除失败也不抛出异常：临时目录中残留一个数百字节
    * 的文件，好于因清理失败把一次成功的命令报告为失败。
    */
   const sweep = (proc: { exited: Promise<unknown> }): void => {

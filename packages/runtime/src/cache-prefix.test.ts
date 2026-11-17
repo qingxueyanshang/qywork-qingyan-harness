@@ -68,7 +68,7 @@ const done = () =>
 type Block = Record<string, unknown>
 
 /**
- * 按渲染顺序（tools → system → messages）展开为块序列，每块去掉 `cache_control` 后序列化；
+ * 按渲染顺序（tools → system → messages）展开为块序列，每块去除 `cache_control` 后序列化；
  * `marks` 为带 `cache_control` 的块的下标。
  */
 function flatten(body: { tools: Block[]; system: Block[]; messages: Block[] }) {

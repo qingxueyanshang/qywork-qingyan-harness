@@ -163,7 +163,7 @@ interface ImportScan {
  *
  * 相对路径按 `resolve(dirname(文件), 说明符)` 解析后判定所属的包：落在另一个包内即越过包根，
  * 同时按指向该包的边参与声明与层号检查；不属于任何包时不构成包之间的边。
- * 说明符中 `?` 之后的部分是构建工具的查询参数（如 `?raw`），解析前去掉。
+ * 说明符中 `?` 之后的部分是构建工具的查询参数（如 `?raw`），解析前去除。
  */
 function scanImports(pkgs: Pkg[]): ImportScan {
   const roots = pkgs.map((p) => ({ pkg: p, root: join(ROOT, p.dir) }))
@@ -216,7 +216,7 @@ describe('包依赖方向', () => {
       for (const d of p.deps) {
         const theirs = LAYER[d]
         if (theirs === undefined) {
-          violations.push(`${p.name} → ${d}（被依赖方没登记层号）`)
+          violations.push(`${p.name} → ${d}（被依赖方未登记层号）`)
         } else if (theirs >= mine) {
           violations.push(`${p.name}(L${mine}) → ${d}(L${theirs})`)
         }

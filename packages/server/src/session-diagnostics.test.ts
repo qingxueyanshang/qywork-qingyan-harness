@@ -260,7 +260,7 @@ test('会话所属项目的记录缺失时手动压缩经 run.error 报告，不
   }
 })
 
-test('摘要被拒后仍保留原生错误、请求参数、降级原因，导出时改配置不改历史', async () => {
+test('摘要被拒后仍保留原生错误、请求参数、降级原因，导出前修改配置不改变历史', async () => {
   const requests: Record<string, unknown>[] = []
   const secret = 'test-provider-secret-123456'
   const provider = Bun.serve({

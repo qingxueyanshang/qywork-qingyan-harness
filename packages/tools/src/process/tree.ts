@@ -34,7 +34,7 @@ import { readdir, readFile } from 'node:fs/promises'
  */
 export function killTree(proc: { pid: number; kill(): void }): void {
   if (process.platform === 'win32') {
-    // 同步等待终止完成：异步时调用方随即读取流，可能读到尚未关闭的管道。
+    // 同步等待终止完成：异步时调用方随即读取流，可能读取到尚未关闭的管道。
     // `windowsHide`：没有控制台的进程（runner、桌面外壳启动的 serve）启动 taskkill 时另开一个可见的控制台窗口。
     Bun.spawnSync(['taskkill', '/F', '/T', '/PID', String(proc.pid)], {
       stdout: 'ignore',

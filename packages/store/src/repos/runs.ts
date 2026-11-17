@@ -53,7 +53,7 @@ export class ConversationBusyError extends Error {
  * 在同一个 IMMEDIATE 事务中先查询该会话是否有其他进程占用的 running / queued 行，
  * 有则抛出 `ConversationBusyError`，不插入。占用即 `isOrphan` 判定为不可回收：
  * 该进程仍存在且心跳未过期，与崩溃回收使用同一判据。进程崩溃（pid 不存在）或停滞（心跳停止）
- * 都不算占用，因此不会永久锁死。本进程自身的行由 `isOrphan` 排除：本进程内的并发由
+ * 都不视为占用，因此不会永久锁定。本进程自身的行由 `isOrphan` 排除：本进程内的并发由
  * 服务端的 `RunManager` 在同步块中拦截，CLI 一个进程同时只运行一轮。
  *
  * 不要把查询移到事务外：两个进程会同时查询到无人占用，各自创建一轮。
@@ -271,7 +271,7 @@ export function finishRun(
         {
           name: 'RunEnded',
           code: input.stopReason,
-          message: '所属轮次已结束，未收到该请求的完整终态；sentAt 为空表示未交给发送阶段。',
+          message: '所属轮次已结束，未收到该请求的完整终态；sentAt 为空表示未进入发送阶段。',
         },
       ],
       providerEvents: null,
@@ -303,7 +303,7 @@ export interface ProcessExitObservation {
  *
  * 不能依赖进程内的 finally：`finally` 只在生成器正常关闭时执行，
  * SIGKILL、断电、Tauri 外壳崩溃时不会执行。遗留的 running run 会使
- * 会话始终显示「执行中」，且 `isBusy` 判定会拒绝用户发送新消息，会话被永久锁死。
+ * 会话始终显示「执行中」，且 `isBusy` 判定会拒绝用户发送新消息，会话被永久锁定。
  *
  * 分流依据是 step 的 `execution_started_at`（ARCHITECTURE.md 第 6 节的歧义边界），
  * 不是 run 上的字段：
@@ -423,7 +423,7 @@ export function recoverStaleRuns(
         isAmbiguous ? 'internal_guard' : 'process_exit',
         isAmbiguous ? 'internal_error' : null,
         // 无歧义的情形不能写「本轮未开始执行」：判据只说明没有工具停留在执行中，
-        // 已执行几十步、恰好在等待模型回复时中断的 run 同样满足该判据。
+        // 已执行数十步、恰好在等待模型回复时中断的 run 同样满足该判据。
         isAmbiguous
           ? previousExit?.exitCode !== null && previousExit?.exitCode !== undefined
             ? `服务进程在工具执行期间退出（exit code ${previousExit.exitCode}），结果不可信`
@@ -520,8 +520,8 @@ const HEARTBEAT_STALE_MS = 60_000
  * 1. 没有归属：迁移之前的历史行。按原有规则回收，不能因无法识别而跳过。
  * 2. 归属是本进程的 pid：本进程刚启动，不可能拥有任何 run，因此该行必然是
  *    上一个进程留下的，且 Windows 把同一个 pid 复用给了本进程。本条必须在心跳判据之前：
- *    崩溃后立即重启时心跳只过去两三秒，按超时判定会认为它仍在运行，
- *    该 run 因此无人回收，会话被永久锁死。
+ *    崩溃后立即重启时心跳只过去两至三秒，按超时判定会认为它仍在运行，
+ *    该 run 因此无人回收，会话被永久锁定。
  * 3. 该 pid 已不存在：进程已退出，回收。这是本函数的基本用途，不能弱化。
  *    `EPERM` 视为存活：宁可晚一分钟由心跳判据回收，也不误回收确实在运行的 run。
  * 4. pid 仍存在但心跳停止：pid 被复用，或该进程仍在但该轮已废弃。

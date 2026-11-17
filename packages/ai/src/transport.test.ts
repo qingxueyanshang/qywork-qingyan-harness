@@ -19,7 +19,7 @@ let base = ''
  * 永不结束的正文：调用方必须自行取消，否则读取方持续挂起。
  *
  * `prefix` 不能为空：`Bun.serve` 在正文的第一个分片写入后才发送响应头，
- * 不写入任何字节时客户端无法收到响应头，也就无法测试响应头之后的静默。
+ * 不写入任何字节时客户端无法收到响应头，因而无法测试响应头之后的静默。
  */
 function endless(prefix: string, status: number, headers: Record<string, string>): Response {
   const body = new ReadableStream<Uint8Array>({

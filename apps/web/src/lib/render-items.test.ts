@@ -1,7 +1,7 @@
 /**
  * 渲染投影的回归测试。
  *
- * 分组规则是该界面中最容易在优化时被改错的部分：改动看似只影响外观，
+ * 分组规则是该界面中最容易在优化时被错误修改的部分：改动看似只影响外观，
  * 实际会使用户无法找到内容，例如末尾的思考被折叠进工具组后不再显示。
  * 此处逐条锁定 `render-items.ts` 文件头列出的四条规则。
  */
@@ -227,7 +227,7 @@ describe('workflow 始终是一张卡片', () => {
     ])
     expect(out.map((row) => row.kind)).toEqual(['tool'])
     const card = out[0]
-    if (card?.kind !== 'tool') throw new Error('没有 workflow 卡')
+    if (card?.kind !== 'tool') throw new Error('未找到 workflow 卡片')
     expect(card.item.workflow?.phase).toBe('failed')
     expect(card.item.workflow?.results.a).toMatchObject({
       status: 'failed',
@@ -272,7 +272,7 @@ describe('workflow 始终是一张卡片', () => {
     expect(out.map((row) => row.kind)).toEqual(['text', 'tool'])
     const card = out[1]
     expect(card?.id).toBe('st_root')
-    if (card?.kind !== 'tool') throw new Error('没有 workflow 卡')
+    if (card?.kind !== 'tool') throw new Error('未找到 workflow 卡片')
     expect(card.item.workflow?.results.a?.output).toBe('修订稿')
     expect(card.item.workflow?.results.a?.subagentId).toBe('cv_a')
   })
@@ -305,7 +305,7 @@ describe('workflow 始终是一张卡片', () => {
     ])
     expect(out).toHaveLength(1)
     const card = out[0]
-    if (card?.kind !== 'tool') throw new Error('没有 workflow 卡')
+    if (card?.kind !== 'tool') throw new Error('未找到 workflow 卡片')
     expect(card.id).toBe('st_root')
     expect(card.item.workflow?.phase).toBe('running')
     expect(card.item.workflow?.results.a).toBeUndefined()
@@ -333,7 +333,7 @@ describe('workflow 始终是一张卡片', () => {
     )
     const out = buildRenderItems([old])
     expect(out).toHaveLength(1)
-    if (out[0]?.kind !== 'tool') throw new Error('没有旧卡')
+    if (out[0]?.kind !== 'tool') throw new Error('未找到旧卡片')
     expect(out[0].item.workflow?.results).toEqual({})
     expect(out[0].item.workflow?.nodes[0]).toEqual({
       id: 'a',

@@ -125,7 +125,7 @@ function windowOf(req: RequestRow, fallback: CompactionPayload | null): number {
       return parsed.contextWindow
     }
   } catch {
-    // 无法解析时退回压缩记录或目录中的窗口。
+    // 无法解析时改用压缩记录或目录中的窗口。
   }
   if (fallback?.contextWindow) return fallback.contextWindow
   return lookupModel(req.model, kindOf(req)).contextWindow

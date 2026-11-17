@@ -2,7 +2,7 @@
  * docx 中对象的放置、页面边框与计数。覆盖 `../layout.ts`（独占一行的嵌入式对象的纵向位置）、`build.ts`（影响环绕的浮动
  * 对象横向不超出页面、纵向按兼容模式调整（`keepOnPage`）、不换行且根据文字调整大小的文本框的宽度（`fitAnchor`）、竖排文字与形状旋转
  * 相抵的文本框的文字区（`textBoxes`，含 `../parse/drawing.ts` 的 `turnedText`）、上下型对象使锚定段落移页、对象所属的页、页面边框的矩形、
- * 页眉页脚中未绘制图片与公式的计数、同页分为几部分的段落中的对象只放置一次、被推到上下型对象下方的行另加本段段前间距、
+ * 页眉页脚中未绘制图片与公式的计数、同页分为几部分的段落中的对象只放置一次、下移到上下型对象下方的行另加本段段前间距、
  * 没有页眉页脚部件时的正文区）、
  * `paginate.ts`（相对段落的对象的基准、与下段同页的段落组整体移页时舍弃已记录的对象、`overlaps` 中上一段与
  * 上下型对象相接的行、`fitRatio`）、`../render/paint.ts`（页面边框的线与四角）、
@@ -363,7 +363,7 @@ describe.skipIf(!LOCAL_FONTS)('build：对象的位置（本机字体）', () =>
   })
 
   test('文本框内容超出形状时顶端对齐并裁剪：横向到形状外边缘，纵向到下内缩以内，内缩为 0 时到外边缘', async () => {
-    // WPS（构造文档 w13 x1）：七行文字放进 140 × 60 磅的框，上、中、下三种纵向对齐都自上内缩处排起，裁到下内缩（3.6 磅）以内；
+    // WPS（构造文档 w13 x1）：七行文字放入 140 × 60 磅的框，上、中、下三种纵向对齐都自上内缩处排起，裁到下内缩（3.6 磅）以内；
     // 内缩为 0 的框裁到外边缘；60 磅宽的框中 100 磅宽的图片裁到形状的右边缘。
     const box = (x: number, anchor: string, ins: number, w: number, h: number, content: string) =>
       '<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="1" ' +
@@ -456,7 +456,7 @@ describe.skipIf(!LOCAL_FONTS)('build：对象的位置（本机字体）', () =>
         createCanvas: () => new RecordingCanvas(1, 1),
       },
     )
-    // 裁剪路径在旋转后的坐标中：顺时针 270° 的变换为 (0, −1, 1, 0)，旋转中心不动。
+    // 裁剪路径在旋转后的坐标中：顺时针 270° 的变换为 (0, −1, 1, 0)，旋转中心不变。
     const clip = ctx.calls.find((c) => c.name === 'rect')!
     const m = clip.matrix
     expect([m.a, m.b, m.c, m.d].map((v) => Math.round(v * 1e9) / 1e9 + 0)).toEqual([0, -1, 1, 0])
@@ -1000,7 +1000,7 @@ describe.skipIf(!LOCAL_FONTS)('图文框（本机字体）', () => {
     ])
   })
 
-  test('图文框旁可排入文字的区段须宽于 1 英寸（WPS：构造文档 fr1、fr2，72 磅的空隙不排，73 磅的排入）', async () => {
+  test('图文框旁可排入文字的区段须宽于 1 英寸（WPS：构造文档 fr1、fr2，72 磅的空隙不排入，73 磅的空隙排入）', async () => {
     const firstX = async (gap: number) => {
       const d = await parse(
         p(

@@ -9,7 +9,7 @@ import type { Personalization, PersonalizationEntry, PetEntry, PetPack } from '@
  * 未注入时 `personalize` 不注册。
  */
 export interface PersonalizationPort {
-  /** 读取失败（文件被改坏）时 `error` 原样交给大模型。 */
+  /** 读取失败（文件内容损坏）时 `error` 原样交给大模型。 */
   read(): Promise<{ ok: true; entry: PersonalizationEntry } | { ok: false; error: string }>
   /** 整体保存。`image` 随同一次保存写入个性化目录。失败时 `error` 原样交给大模型。 */
   save(

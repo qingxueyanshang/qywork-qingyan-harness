@@ -207,7 +207,7 @@ async function main(): Promise<number> {
 
   await copyFile(process.execPath, runtime)
 
-  // 构建后立即自检：产物无法运行时，到打包完成后才发现代价太大。
+  // 构建后立即自检：产物无法运行时，到打包完成后才发现的代价过高。
   const check = Bun.spawn([runtime, entry, '--version'], { stdout: 'pipe', stderr: 'pipe' })
   const reported = (await new Response(check.stdout).text()).trim()
   if ((await check.exited) !== 0) {

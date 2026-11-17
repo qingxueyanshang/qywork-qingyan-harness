@@ -22,8 +22,7 @@ import { appUpdate, observeAppUpdate } from './lib/store/app-update.ts'
 // 只使用聊天功能的用户不应为文件预览承担首屏加载成本。
 const SidePanel = lazy(() => import('./components/SidePanel.tsx'))
 
-// 设置弹窗仅在打开设置时下载。其下包含十个类目，其中七个各自懒加载，
-// 见 SettingsDialog 中的说明。
+// 设置弹窗仅在打开设置时下载。其中多数类目另行懒加载，见 SettingsDialog 中的说明。
 const SettingsDialog = lazy(() =>
   import('./components/settings/SettingsDialog.tsx').then((m) => ({ default: m.SettingsDialog })),
 )
@@ -231,7 +230,7 @@ export function App() {
     onCleanup(stopUpdates)
     onCleanup(observePersonalization())
     onCleanup(observeModelCatalog())
-    // 宠物只显示在桌面外壳的宠物窗口中；其他端不推导，避免每次会话变闲都读取一次轮次。
+    // 宠物只显示在桌面外壳的宠物窗口中；其他端不推导，避免每次会话转为空闲时都读取一次轮次。
     if (isDesktopShell()) {
       onCleanup(observePet())
       onCleanup(observePetWindow(activePet))
@@ -242,10 +241,10 @@ export function App() {
      *
      * 它是首屏之外最可能被打开的模块，而打开它时主线程最繁忙：用户通常
      * 在模型输出期间查看文件或改动，此时主线程被 markdown 重新解析占用，
-     * 这一次动态导入会从几十毫秒延长到可察觉的程度。空闲时预先加载可消除这段延迟。
+     * 这一次动态导入会从数十毫秒延长到可察觉的程度。空闲时预先加载可消除这段延迟。
      *
-     * 使用 `requestIdleCallback`，不支持时回退到定时器：预加载的时机早晚均可，
-     * 只是不能与首屏渲染争用主线程。
+     * 使用 `requestIdleCallback`，不支持时回退到定时器：预加载的时机不限，
+     * 但不能与首屏渲染争用主线程。
      */
     const idle =
       window.requestIdleCallback?.bind(window) ?? ((cb: () => void) => setTimeout(cb, 2000))
@@ -294,7 +293,7 @@ export function App() {
       />
 
       {/* 顶栏是 .app 网格的第一行，横跨会话区与右侧面板，不属于会话区。
-          放在 .main 中时，打开右侧面板会使顶栏随之缩短，窗口按钮被挤到
+          放在 .main 中时，打开右侧面板会使顶栏随之缩短，窗口按钮移到
           窗口中部，右上角被面板的标签页占据。窗口按钮必须固定在窗口右上角。
 
           整条顶栏是拖拽区。Tauri 判定的是事件目标自身是否带有该属性，
@@ -337,10 +336,9 @@ export function App() {
               <IconCheck size={16} />
             </Show>
           </button>
-          {/* 右侧面板只保留一个开关。
-              两个按钮各切换一个视图、面板内部再放三个 tab，构成两套并列且不等价的
-              机制：顶栏无法打开「协作」，tab 无法关闭面板。
-              职责划分：顶栏负责开关，tab 负责选择视图。 */}
+          {/* 右侧面板只设一个开关：顶栏负责开关，tab 负责选择视图。
+              不要在顶栏为每个视图各设一个按钮：它与面板内的 tab 构成两套并列且不等价的
+              机制，顶栏无法打开「协作」，tab 无法关闭面板。 */}
           <button
             class="icon-btn"
             type="button"
@@ -357,8 +355,8 @@ export function App() {
 
       <main class="main" classList={{ empty: emptyLayout() }}>
         {/* 面板放大时正文整块卸载，而不是用 CSS 隐藏：`display: none` 会把
-            滚动容器的 scrollTop 重置为 0，还原时位置回到几百条之前的开头；而
-            重新挂载会执行「滚动到底部」的初始化，还原后停在最新一条。 */}
+            滚动容器的 scrollTop 重置为 0，还原时滚动位置回到会话开头；而
+            重新挂载会执行「滚动到底部」的初始化，还原后定位到最新一条。 */}
         <Show when={!panelMaximized()}>
           <Transcript />
         </Show>
@@ -369,11 +367,11 @@ export function App() {
        * 每个懒加载组件都需要自己的 `Suspense`。
        *
        * 没有边界时，挂起会逐层传递到根：打开面板时不只面板为空，整棵组件树
-       * 都被挂起，正文随之消失，chunk 到达后才恢复。平时几十毫秒难以察觉，
+       * 都被挂起，正文随之消失，chunk 到达后才恢复。平时数十毫秒的空白难以察觉，
        * 流式输出时主线程被 markdown 重新解析占满，这段空白会延长到可察觉的程度。
        *
        * fallback 是同样尺寸的空占位元素，不是加载动画也不是文案：网格已经按
-       * `with-panel` 为该列预留位置，占位元素只需占住该位置，
+       * `with-panel` 为该列预留位置，占位元素只需占据该位置，
        * 否则栏宽会先收缩再恢复。
        */}
       <Show when={sidePanel()}>

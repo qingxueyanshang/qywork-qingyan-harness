@@ -8,7 +8,7 @@ export const migration065: Migration = {
    * `runs.assistant_message_id` 恒为 NULL。
    *
    * 表重建而不是 ALTER：SQLite 无法修改 CHECK 约束。存量库若有助手行，本迁移在插入时失败并整体回滚；
-   * 不要改为先删除再插入，那样会丢失数据且不报错。没有表以外键引用 `messages`，重建不会引发级联删除。
+   * 不要改为先删除再插入：先删除时会丢失数据且不报错。没有表以外键引用 `messages`，重建不会引发级联删除。
    */
   sql: `
 CREATE TABLE messages_new (

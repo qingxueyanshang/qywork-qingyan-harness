@@ -152,7 +152,7 @@ describe('workflow 调用记录', () => {
       toolName: 'workflow',
       toolCallId: 'call_1',
       status: 'running',
-      // strict wire 会为非本分支的字段补 null；补 null 后仍是首次派发。
+      // strict wire 会为非本分支的字段补充 null；补充 null 后仍是首次派发。
       payload: {
         kind: 'tool_call',
         args: { ...START_ARGS, workflowId: null, checkpointId: null, decision: null },

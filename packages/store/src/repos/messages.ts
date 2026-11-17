@@ -69,7 +69,7 @@ export function appendMessage(
  *
  * `upperBound` 是 run 创建时固定的消息上界：执行锁在 run 创建之后才取得，
  * 排队期间用户可能又发送了消息，这些消息不属于本 run 的历史，
- * 纳入后模型会看到本轮之后才发送的消息。
+ * 纳入后模型会取得本轮之后才发送的消息。
  */
 export function listMessages(
   store: Store,
@@ -94,7 +94,7 @@ export function listMessages(
  * 早于 `before` 的全部用户输入，按会话流中的先后排列。
  *
  * 用户输入有两个存放位置，与界面折叠会话流时的两个来源一一对应：发起轮次的输入是 `messages` 行，
- * 运行中途追加的输入是该轮 run 下 `kind='user'` 的 step。回执（origin 非空）与交给模型的
+ * 运行中途追加的输入是该轮 run 下 `kind='user'` 的 step。回执（origin 非空）与提供给模型的
  * 执行事实（`notice`）不是用户输入；正文为空的追加输入界面不渲染，此处同样不计入。
  * 只取正文开头：索引条目只显示一行标题。
  */
@@ -183,7 +183,7 @@ export function listConversationHistoryPage(
         )
         .all(conversationId, limit + 1)
 
-  // 用户轮次的步骤数差异很大：仅限制十条消息仍可能一次返回上千步。
+  // 用户轮次的步骤数差异很大：仅限制十条消息仍可能一次返回超过 1000 步。
   // 按已落库的 step_count 收缩本页，始终保留至少一轮且不拆开同一轮的工具记录。
   const candidates = rows.slice(0, limit)
   const counts = candidates.length

@@ -6,7 +6,7 @@
  *
  * 不测试完整执行一轮：完整执行需要真实 provider，由 scripts/smoke-serve.ts 覆盖。
  * 此处测试装配结果，因为 Agent Team 的角色隔离完全建立在装配结果之上：
- * 「只读」角色的 allowedTools 未生效时，该角色仍能修改文件，而配置看起来正确。
+ * 「只读」角色的 allowedTools 未生效时，该角色仍能修改文件，而配置表面上正确。
  */
 
 import { afterEach, describe, expect, spyOn, test } from 'bun:test'
@@ -88,7 +88,7 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
     signal: new AbortController().signal,
     ...over,
   })
-  // 工具表是私有的，经由公开的 `schemas()` 读取：测试的是模型实际看到的内容。
+  // 工具表是私有的，经由公开的 `schemas()` 读取：测试的是模型实际取得的内容。
   const names = () =>
     stateOf(s)
       .registry.schemas()
@@ -167,7 +167,6 @@ test('实时重试原因与账本一样脱敏，不把配置密钥显示到等�
         reason,
         backoffMs: 0,
         at: 1,
-        failedThinkingStepIds: [],
       }
     },
   })
@@ -461,7 +460,7 @@ function noisyPng(width: number, height: number): Buffer {
   ihdr.writeUInt32BE(width, 0)
   ihdr.writeUInt32BE(height, 4)
   ihdr.set([8, 2, 0, 0, 0], 8)
-  // 带噪点的灰度：纯色图压缩后比缩小再编码的结果还小，`shrinkImage` 会原样发送，测不到缩小。
+  // 带噪点的灰度：纯色图压缩后比缩小再编码的结果还小，`shrinkImage` 会原样发送，无法测试缩小。
   let seed = 7
   const raw = Buffer.concat(
     Array.from({ length: height }, () => {
@@ -533,7 +532,7 @@ describe('附件请求形状', () => {
   /**
    * 缩小发送的截图在附件说明中写明原图与发送尺寸，并指出 region。
    *
-   * 实测缩小到长边 1568 后，模型把胶囊白字外的浅色描边 6 次都判为「干净」：它不知道看到的是缩小图。
+   * 实测缩小到长边 1568 后，模型把胶囊白字外的浅色描边 6 次都判为「干净」：模型不知道取得的是缩小图。
    */
   test('缩小发送的截图：附件说明写明原图与发送尺寸', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
@@ -995,7 +994,7 @@ describe('权限模式按会话裁决', () => {
     const run = (name: string, args: Record<string, unknown>, ctx: ToolContext) =>
       registry.execute(name, args, ctx)
 
-    // full 下构造，本轮中途切到 auto：之后读取凭证文件被拒。
+    // full 下构造，本轮中途切换为 auto：之后读取凭证文件被拒。
     // auto 下根目录之外的位置可读，凭证文件除外；full 下不拒绝。
     setConversationMode(store, conv, 'full')
     const fromFull = { ...toolContext(s, 'rn_a', 'm', conv), emit: () => {} } as ToolContext
@@ -1010,7 +1009,7 @@ describe('权限模式按会话裁决', () => {
       errorKind: 'credential_path',
     })
 
-    // auto 下构造，本轮中途切到 full：之后向工作区外写入成功。
+    // auto 下构造，本轮中途切换为 full：之后向工作区外写入成功。
     const fromAuto = { ...toolContext(s, 'rn_b', 'm', conv), emit: () => {} } as ToolContext
     setConversationMode(store, conv, 'full')
     const c = join(outside, 'c.txt')
@@ -1158,7 +1157,7 @@ describe('外部工具按总量转为按需加载', () => {
 
     expect(names).toContain('load_tool')
     expect(names.filter((n) => n.startsWith('mcp__fat__'))).toEqual([])
-    // 但下一次 run 冻结快照时仍能看到待加载清单。
+    // 但下一次 run 冻结快照时仍能取得待加载清单。
     expect(nextSnapshot()).toContain('mcp__fat__t0')
     await s.dispose()
     store.close()
@@ -1501,7 +1500,7 @@ describe('注入消息的读取', () => {
       content: '改成只列文件名',
     })
     // 执行记录入口必须返回 null：其返回形状是 {tool,status,args,outcome}，
-    // 套用到该记录只会得到 tool:'unknown' 与两个空 JSON，看起来已被处理。
+    // 套用到该记录只会返回 tool:'unknown' 与两个空 JSON，形式上已被处理。
     expect(ctx.port(HistoryPort)?.step(address)).toBeNull()
     // 搜索按消息类型报告，因此模型取得的标记是 [message:…]，与取回入口一致。
     expect(ctx.port(HistoryPort)?.search('只列文件名', 10)).toEqual([
@@ -1899,8 +1898,8 @@ describe('会话被另一个进程占用', () => {
 })
 
 /**
- * 本会话的附件对 `read_file` 只读可见：截图缩小发送后要按路径截取局部放大，被换出后要按路径重读。
- * 粘贴的截图存放在 `~/.qywork/attachments/<会话>/`，不在工作区内，没有这一条时只有「完全访问」下读得到。
+ * 本会话的附件对 `read_file` 只读可见：截图缩小发送后需按路径截取局部放大，被换出后需按路径重新读取。
+ * 粘贴的截图存放在 `~/.qywork/attachments/<会话>/`，不在工作区内，没有这一条时只有在「完全访问」下才可读取。
  */
 test('本会话的附件路径进入只读根，read_file 可读', async () => {
   const { s, store } = await session()

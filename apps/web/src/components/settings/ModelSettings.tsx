@@ -69,7 +69,7 @@ const CHANNEL_LABEL: Record<VideoChannel, string> = { providera: 'providera', pr
  *
  * 采用两层的原因：扁平档案（每条档案对应一个模型）要求同一厂商的每个模型各保存一份 key 与
  * baseUrl，修改端点时须逐条修改，遗漏一条即导致部分模型不可用，
- * 且各条档案在界面上外观相同，无法看出遗漏的是哪一条。
+ * 且各条档案在界面上外观相同，无法判断遗漏的是哪一条。
  *
  * 对话协议由接口配置；生成模型各自保存接入方式，选项来自目录的原生协议及兼容映射。
  * 两者共用接口地址与密钥。
@@ -315,7 +315,7 @@ export function ModelSettings() {
       )
         return
       setProbes((prev) => ({ ...prev, [key]: r }))
-      // 探测只校准当前接口是否透传控制面，不改写全局模型能力。
+      // 探测只校验当前接口是否透传控制字段，不改写全局模型能力。
       if (Object.keys(r.transport).length > 0) {
         void replaceConfig((cur) => {
           const owner = cur.providers[provider]

@@ -203,10 +203,10 @@ const BASE64_SOURCE_FRAME = JSON.stringify({ kind: 'base64', data: '' }).length
 /**
  * 引用块（正文库资源、本地路径）物化为 base64 之后，序列化长度增加的字节数。
  *
- * `requestBytes` 记录的是模型可见请求主体的大小，引用块按引用本身计时，带图请求只记下几十字节，
+ * `requestBytes` 记录的是模型可见请求主体的大小，引用块按引用本身计时，带图请求只记录数十字节，
  * 请求体大小与响应头时间、413 拒绝之间的对照因此失效。
  * 路径引用按文件编码后的大小计：内联发送时即实际字节，上传后发送地址或改为抽帧时请求体更小，此时该值是上界。
- * 带视频的请求，占用锚点的准入（`turn-end.ts` 的 `inputLimit`）以该值作为输入 token 数的上限，不要把路径引用改回按引用本身计：
+ * 带视频的请求，占用锚点的准入（`turn-end.ts` 的 `inputLimit`）以该值作为输入 token 数的上限，不要把路径引用改为按引用本身计：
  * 带长视频的请求的真实回执会超过上限而不被采用，视频的占用从此无法计入读数。
  */
 function referenceExpansion(req: ChatRequest): number {
@@ -236,7 +236,7 @@ function referenceExpansion(req: ChatRequest): number {
  * 上下文，而它仍是显示、压缩触发、`max_tokens` 钳位三处共用的计量基准。
  *
  * `req.model` 必须包含在内。系统提示词与工具表都不随模型变化，因此
- * 只哈希这两项时，换模型得到的是同一个指纹，锚点仍然有效，而该真值是由另一个
+ * 只哈希这两项时，更换模型得到的是同一个指纹，锚点仍然有效，而该真值是由另一个
  * tokenizer 计量的。各厂商的中文密度相差 1.8 倍（`ai/tokens.ts` 的 `TokenDensity`），
  * 用它判断新模型的窗口即采用了错误的计量口径，且不会有任何报错。
  *
@@ -275,7 +275,7 @@ export function reasoningPrefix(req: ChatRequest): string {
 /**
  * 装配阶段的推理裁剪：请求中只保留当前协议会发送、且满足其回放条件的推理。
  *
- * 前缀绑定的原生条目与本次请求在该消息之前的前缀不同或缺失时即剥离：换模型、换工具表、
+ * 前缀绑定的原生条目与本次请求在该消息之前的前缀不同或缺失时即剥离：更换模型或工具表、
  * 压缩与收纳、图片省略、提示增删都会改变前缀，provider 不会按原样使用这类条目。
  * 某一条消息变化后，其后每一条的指纹都随之不同，因此剥离的总是该消息之后的全部条目。
  * Google 内容片段签名按协议保留，与工具表或更早上下文的改动无关；其他格式不得混入。
@@ -318,7 +318,7 @@ export function replayReasoning(
  * 不同：正文可以写入 sink、可以在压缩时替换为定位符，信封不能修改。合并为一个分组时，
  * 面板无法区分上下文是被工具输出占用还是被模型正文占用。
  *
- * 计算方法：将同一份记录去掉正文后再估算一次，两次之差即为正文。
+ * 计算方法：将同一份记录去除正文后再估算一次，两次之差即为正文。
  * tokenization 不可加，因此不能分别估算两段再相加。
  *
  * 两次估算必须使用同一个函数（`estimateJson`，与 `ai/tokens.ts` 的 `estimateMessage` 计数方式相同）。
@@ -569,7 +569,7 @@ export type VideoDelivery = 'inline' | 'upload' | 'frames'
 /**
  * 本轮的估算密度：模型的计数规则按本轮的视频发送能力收窄（`video.accepts`）。模型不接受视频、适配器没有实现视频
  * 传输或接口拒绝过包含视频的请求（`videosRejected`）时 `video` 为 null；时长范围取模型规格（`ModelSpec.videoSeconds`）；
- * 不能上传时字节上限为请求中常驻媒体的上限：内联视频按字节计入常驻预算，超过上限的在下一步即被整批换出，模型只能看到一次。
+ * 不能上传时字节上限为请求中常驻媒体的上限：内联视频按字节计入常驻预算，超过上限的在下一步即被整批换出，模型只能读取一次。
  *
  * 本函数是原生视频范围的唯一来源：发送（`videoDelivery`）、`read_file`（`ToolContext.density`）与估算都读取它的结果。
  * 不要直接使用 `spec.density` 估算请求：不接受视频的模型使用默认档时，会把发送时已替换为说明的视频按默认档计入。
@@ -603,7 +603,7 @@ export function runDensity(
  * 路径视频的发送方式。`rule` 是本轮密度的视频规则（`runDensity`），null 表示不原生发送。
  * 换出预算（`mediaBytes`）、发送前物化（`materialize`）与 `read_file` 读取视频共用本函数，三处判定因此一致。
  *
- * 超出原生发送范围时使用抽帧：超出时长的视频必然被接口拒绝；超过常驻上限又不能上传的视频只能被模型看到一次。
+ * 超出原生发送范围时使用抽帧：超出时长的视频必然被接口拒绝；超过常驻上限又不能上传的视频只能被模型读取一次。
  */
 export function videoDelivery(
   meta: VideoMeta,
@@ -622,7 +622,7 @@ export function videoRangeCause(meta: VideoMeta, range: VideoRange): string | nu
     return `该视频 ${(meta.bytes / 1024 / 1024).toFixed(1)} MB，超出请求中常驻媒体的上限，且当前接口不支持上传`
   }
   if (why === 'unknown')
-    return '该视频的容器中读不出时长或画面尺寸（录制时未写入时长，或文件不完整），接口无法解析'
+    return '该视频的容器中无法读取时长或画面尺寸（录制时未写入时长，或文件不完整），接口无法解析'
   if (why === 'short') return `该视频时长 ${seconds}，短于当前模型接受的 ${range.minSeconds} 秒`
   if (why === 'long') return `该视频时长 ${seconds}，长于当前模型接受的 ${range.maxSeconds} 秒`
   return null
@@ -635,7 +635,7 @@ const VIDEO_FRAMES_HINT = '需要画面时用 read_file 读取此路径，将按
  * 一个媒体块实际写入请求体的字节数。base64 按解码后的长度计，正文库引用按记录的字节数计；路径视频按 `videoDelivery`：
  * 内联的按文件大小计，上传后发送地址的与不直接发送的记 0。不发送的图片（模型不接受图片）记 0，无法读取的文件记 0。
  *
- * 不要改为一律按文件大小计：上传后发送地址的大视频会被计为数十 MB，在下一步即被换出，模型只能看到一次。
+ * 不要改为一律按文件大小计：上传后发送地址的大视频会被计为数十 MB，在下一步即被换出，模型只能读取一次。
  */
 function blockBytes(b: ContentBlock, caps: InputMediaCapabilities): number {
   if (b.type !== 'image' && b.type !== 'video') return 0
@@ -682,7 +682,7 @@ export function thumbnailBytes(m: WireMessage, caps: InputMediaCapabilities): nu
 export type MediaLevel = 'thumbnail' | 'omitted'
 
 /**
- * 计算本次请求中哪些消息的媒体缩小为缩略图、哪些替换为说明，返回下标到形态的映射，交给 `omitImages`。
+ * 计算本次请求中哪些消息的媒体缩小为缩略图、哪些替换为说明，返回下标到形态的映射，提供给 `omitImages`。
  *
  * 按消息顺序累计媒体字节，缩略图按 `thumbnailBytes` 计入。判定点是每条带媒体的消息与每条 assistant 消息，
  * 判定点处累计超过上限时：
@@ -690,7 +690,7 @@ export type MediaLevel = 'thumbnail' | 'omitted'
  * 2. 缩略图合计超过 `THUMBNAIL_RETAIN_BYTES` 时，从最早的缩略图起替换为说明，直到不超过 `THUMBNAIL_RETAIN_LOW_BYTES`。
  *
  * 第 2 步只按缩略图合计判断，不要改为按总量判断：刚取回的原图位于保护区内无法换出，按总量判断时
- * 一次 1 MB 的局部放大图即可使较早的缩略图被移出，模型完全看不到这些画面，只能逐张取回原图，
+ * 一次 1 MB 的局部放大图即可使较早的缩略图被移出，模型无法取得这些画面，只能逐张取回原图，
  * 取回的原图又使其余画面被缩小或移出。
  *
  * 每个判定点只换出它之前最后一条 assistant 消息之前的媒体：其后的媒体尚未随任何一次得到响应的请求发出。
@@ -701,7 +701,7 @@ export type MediaLevel = 'thumbnail' | 'omitted'
  *
  * 每个判定点的结果只依赖它之前的消息：追加消息只在新的判定点使媒体继续缩小或移出，不改变已有判定点的结果，
  * 没有新的超限时相邻两次请求的媒体形态相同。同一历史、同一模型每次得到相同结果；
- * 换模型会改变发送方式，换出结果随之重新计算，前缀在该次请求中改变。
+ * 更换模型会改变发送方式，换出结果随之重新计算，前缀在该次请求中改变。
  */
 export function evictedMedia(
   messages: readonly WireMessage[],
@@ -749,7 +749,7 @@ export function evictedMedia(
   return levels
 }
 
-/** 用户消息的附件媒体被换出后替换成的说明。路径位于同一条消息的附件说明中。 */
+/** 用户消息的附件媒体被换出后的替换说明。路径位于同一条消息的附件说明中。 */
 export const ATTACHMENT_MEDIA_OMITTED =
   '（本条消息附带的图片或视频此前已随请求发送给你，现已从请求中移出；需要时按本条消息附件说明中的路径读取。）'
 
@@ -759,7 +759,7 @@ export const ATTACHMENT_IMAGES_REDUCED = `（本条消息附带的图片此前�
 /**
  * 工具结果的图片缩小为缩略图后信封中 `images_reduced` 的值。
  *
- * 写明这是缩略图与原图的取回方式：缺少说明时模型会把缩略图当作原图，把看不清的细线、描边、小字判为不存在。
+ * 写明这是缩略图与原图的取回方式：缺少说明时模型会把缩略图当作原图，把无法看清的细线、描边、小字判为不存在。
  */
 export const IMAGES_REDUCED = `此图像此前已按原尺寸随请求发送给你，现为长边 ${THUMBNAIL_EDGE} 像素的缩略图（请求中的图像与视频合计超过约 ${MEDIA_RETAIN_HIGH_BYTES / 1024 / 1024} MB 时，较早的图片从最早的一批起缩小）。需要原尺寸的细节时，用 read_file 的 region 截取局部，或通过 read_history 按 call_id 取回原图；取回的原图计入同一上限。`
 
@@ -836,7 +836,7 @@ export function assembleMessages(
    * 媒体去留：工具结果与附件中的图像、视频保留在之后的请求中，保留的总字节超过上限时，
    * 从最早的一批起整批缩小为缩略图，缩略图合计超过其上限时再替换为说明（`evictedMedia`）。
    * 不要改为「每一步只保留最后一批」：每换出一次图片，请求前缀就会变化，`replayReasoning` 随之剥离其后全部
-   * 原生推理，模型失去查看图片时得出的判断，只能反复取回，实测因连续无进展被循环保护判定失败。
+   * 原生推理，模型失去查看图片时得出的判断，只能反复取回，实测因连续无进展而停止。
    */
   const evicted = evictedMedia(raw, rules.caps)
   const scoped = evicted.size
@@ -942,7 +942,7 @@ export function mediaCapabilitiesOf(
 }
 
 /**
- * 将 path 与 resource 形态的图片和视频块转换为临时 base64，交给适配器。标记为缩略图的图片转换为缩略图字节；
+ * 将 path 与 resource 形态的图片和视频块转换为临时 base64，提供给适配器。标记为缩略图的图片转换为缩略图字节；
  * 已替换为说明的媒体不读取。
  *
  * 只生成副本，不得修改原对象。原地修改会同时造成两个错误：
@@ -994,7 +994,7 @@ async function loadBlock(
   /*
    * 模型不接受图片：替换为文本说明，不发送图像块。
    *
-   * 判据只认 `false`：`null` 表示厂商规格页未注明，照常发送（约定见
+   * 判据只识别 `false`：`null` 表示厂商规格页未注明，照常发送（约定见
    * `ModelSpec.vision`）。缺少该分支时，带图片的会话切换到纯文本模型后每一轮都被
    * 端点以 400 拒绝，且手动删除图片无法修复历史中已有的图片。
    */

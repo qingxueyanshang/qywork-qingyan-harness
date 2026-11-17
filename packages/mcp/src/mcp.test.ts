@@ -152,7 +152,7 @@ describe('握手', () => {
     })
     const started = Date.now()
     await expect(c.start()).rejects.toThrow()
-    // 超时为 30 秒；几秒内返回说明经由 error 事件而不是超时。
+    // 超时为 30 秒；数秒内返回说明经由 error 事件而不是超时。
     expect(Date.now() - started).toBeLessThan(10_000)
     await c.stop()
   }, 20_000)
@@ -348,7 +348,7 @@ describe('工具装配', () => {
     await c.stop()
   })
 
-  test('isError 转为 failure 并保留正文，使模型能看到失败原因', async () => {
+  test('isError 转为 failure 并保留正文，使模型能取得失败原因', async () => {
     const { dir, entry } = await fixture({ toolError: true })
     const c = client(entry, dir)
     await c.start()
@@ -461,7 +461,7 @@ describe('配置解析', () => {
 
   /**
    * 同时配置 command 与 url 属于歧义，而不是二选一。
-   * 静默选择时，用户修改了未被采用的字段，会面对一个没有任何变化的现象长时间排查。
+   * 静默选择时，修改未被采用的字段不产生任何变化，且无从排查。
    */
   test('command 与 url 同时提供时报告歧义，不代替用户选择', () => {
     const c = parseMcpConfig('{"servers":{"r":{"command":"echo","url":"https://x/mcp"}}}')

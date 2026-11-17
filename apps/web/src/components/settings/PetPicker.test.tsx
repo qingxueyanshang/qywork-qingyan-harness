@@ -1,5 +1,5 @@
 /**
- * 宠物皮肤下拉：宠物库晚于偏好到达时仍显示当前选中的宠物（原生 select 会落到第一项）；
+ * 宠物皮肤下拉：宠物库晚于偏好到达时仍显示当前选中的宠物（原生 select 会选中第一项）；
  * 删除按钮在每只用户宠物的行内，内置宠物没有，删除前须确认；点选后写入偏好并收起。
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
@@ -103,7 +103,7 @@ test('删除按钮位于每只用户宠物的行内，内置宠物没有；删�
       true,
       true,
     ])
-    // 行外不再有单独的删除按钮。
+    // 行外没有单独的删除按钮。
     expect(document.querySelector('.pet-pick > .btn-ghost')).toBeNull()
 
     const confirm = () => document.querySelector<HTMLElement>('.confirm-dialog')
@@ -112,7 +112,7 @@ test('删除按钮位于每只用户宠物的行内，内置宠物没有；删�
         (b) => b.textContent === label,
       )!
 
-    // 点删除只弹出确认，菜单收起；取消后不删除。
+    // 点击删除只弹出确认，菜单收起；取消后不删除。
     rows[1]!.querySelector<HTMLButtonElement>('.pet-option-remove')!.click()
     expect(ui.menu()).toBeNull()
     expect(confirm()?.textContent).toContain('飞鱼娘·泡泡')

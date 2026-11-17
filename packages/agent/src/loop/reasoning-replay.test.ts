@@ -97,7 +97,7 @@ describe('装配点裁剪', () => {
     expect(edited.map((m) => !!m.responseReasoning)).toEqual([false, false, false, false])
   })
 
-  test('缓存断点与内部标记不算改写', () => {
+  test('缓存断点与内部标记不视为改写', () => {
     const turn: WireMessage = {
       role: 'assistant',
       content: '好',

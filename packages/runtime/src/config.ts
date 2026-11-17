@@ -55,7 +55,7 @@ import { CREDENTIAL_NAME_PATTERN, normalizeAdditionalDirectories } from '@qywork
 /**
  * 权限模式。只有两种，不提供逐次审批。
  *
- * 逐次审批的粒度与实际授权不一致：用户看到 `npm test` 后批准，
+ * 逐次审批的粒度与实际授权不一致：用户依据界面显示的 `npm test` 批准，
  * 实际批准的是「任意本机操作 + 全部凭证」：`run_command` 是唯一能同时
  * 绕过 `resolveInWorkspace` 与 SSRF 防护的路径。审批弹窗频繁时，用户会开启
  * 「全部自动批准」开关，审批随之失效。因此只提供两种边界明确的模式。
@@ -168,7 +168,7 @@ export interface QyConfig {
    * `full` 下该层不设。不要写成「`full` 不豁免它」，这与代码不符：
    * `Session.decide` 在 `full` 下放行并带上 `unrestrictedPaths: true`，`resolveInWorkspace` 直接返
    * 回目标路径。「完全访问」的定义是不裁决，路径层同样不设；只放开权限检查而保留路径层，会形
-   * 成「`read_file` 被拒、`run_command` 读到」的两套账（见 CLAUDE.md E）。不受模式影响的是凭证
+   * 成「`read_file` 被拒、`run_command` 读取到」的两套账（见 CLAUDE.md E）。不受模式影响的是凭证
    * 剥离。
    *
    * 只接受绝对路径：相对路径以启动 qy 时所在的目录为基准，从其他目录启动时含义改变。
@@ -255,7 +255,7 @@ export interface StoredMediaModel {
  * 套用到两条 seed 上。
  *
  * 分隔符取 `|`：模型 id 可能含斜杠（openrouter 的 `anthropic/claude-3`），但不含 `|`。
- * 不要改成 `/`：改后无法无歧义地拆分，一次性迁移的幂等判据也随之失效。
+ * 不要改为 `/`：改后无法无歧义地拆分，一次性迁移的幂等判据也随之失效。
  */
 export function catalogKey(model: string, kind: ProviderKind): string {
   return `${model}|${kind}`
@@ -343,7 +343,7 @@ export interface StoredCatalogEntry {
 export interface StoredModel {
   /**
    * 该模型在本接口上使用的协议；缺省时为接口的 `kind`。同一个接口按不同协议提供不同型号时使用
-   * （例如模型网关上 Claude 走 Anthropic Messages、GPT 走 Responses），由拉取按价格清单的
+   * （例如模型网关上 Claude 使用 Anthropic Messages、GPT 使用 Responses），由拉取按价格清单的
    * `supported_endpoint_types` 写入。只在 `resolveModel` 中合成，不要在其他位置读取接口的 `kind` 代替它。
    */
   kind?: ProviderKind
@@ -552,7 +552,7 @@ export async function loadConfig(): Promise<QyConfig> {
   return { ...structuredClone(DEFAULT_CONFIG), ...parsed }
 }
 
-/** 重命名遇到读方占用时的重试上限。读取配置只占用文件几十微秒。 */
+/** 重命名遇到读方占用时的重试上限。读取配置只占用文件数十微秒。 */
 const RENAME_RETRY_MS = 1000
 
 /**
@@ -593,7 +593,7 @@ export async function saveConfig(cfg: QyConfig): Promise<void> {
  * 「同一厂商内更换模型」这一最常见的情形（例如在 DeepSeek 接口下于 v4-flash 与
  * v4-pro 之间切换）。不传模型名时取当前生效的「接口 × 模型」。
  *
- * 两个接口都声明了同一个模型时当前接口优先。不要改成
+ * 两个接口都声明了同一个模型时当前接口优先。不要改为
  * `Object.values(...).find(...)`：它取决于对象键的枚举顺序，用户选择 A 接口时
  * 请求可能发往 B，且保存顺序改变后结果随之改变。
  *
@@ -806,9 +806,9 @@ export function collectSecrets(
 }
 
 /**
- * 去掉认证方案前缀（`Bearer `、`Basic ` 等）后的值。
+ * 去除认证方案前缀（`Bearer `、`Basic ` 等）后的值。
  *
- * 不要按整段请求头值匹配：命令输出中通常只出现令牌本身，整段值永远匹配不到。
+ * 不要按整段请求头值匹配：命令输出中通常只出现令牌本身，整段值始终无法匹配。
  */
 function credentialValue(raw: string): string {
   return /^[A-Za-z][\w-]*\s+(\S+)$/.exec(raw.trim())?.[1] ?? raw.trim()
@@ -1132,7 +1132,7 @@ export function diagnoseRunnable(cfg: QyConfig): string[] {
  *
  * 与 `diagnoseConfig` 分开是因为调用方对两者的处置完全不同：
  * `qy exec` 遇到 `diagnoseConfig` 的问题会直接退出（没有 key 时无法发送请求，
- * 继续执行只会得到 401）。而模型未收录等提醒不应阻断执行，
+ * 继续执行只会返回 401）。而模型未收录等提醒不应阻断执行，
  * 因此不能与配置错误合并。
  */
 export function configNotices(cfg: QyConfig): string[] {

@@ -163,7 +163,7 @@ export function netGuardPath(): string {
  * 把引导脚本写入磁盘，返回路径。
  *
  * 每次启动都重写：脚本内容随版本变化，保留旧版本的脚本会使「已升级但网络访问限制未更新」
- * 这类问题难以发现。写入失败时返回 null 而不是抛错：网络访问限制无法安装只意味着
+ * 这类问题难以发现。写入失败时返回 null 而不是抛出异常：网络访问限制无法安装只意味着
  * 少一层防护，不应升级为插件无法启动。
  */
 export function ensureNetGuardScript(): string | null {

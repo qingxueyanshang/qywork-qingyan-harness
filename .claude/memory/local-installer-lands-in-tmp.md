@@ -12,7 +12,7 @@ metadata:
 
 **为什么**：`target/` 下是构建中间产物，且路径有两种：带 `--target` 时位于
 `target/<三元组>/release/bundle/nsis`，不带时位于 `target/release/bundle/nsis`。
-交付物分散在两处，换人打包时就无法找到。`.tmp/<用途>` 这一位置由 CLAUDE.md B6
+交付物分散在两处，由其他人打包时无法找到。`.tmp/<用途>` 这一位置由 CLAUDE.md B6
 规定，由 `scripts/temp-dir.test.ts` 在门禁中检查。
 
 **用法**：`bun run tauri:build` 打包完成后自动收集；只需收集一次已有产物时单独运行

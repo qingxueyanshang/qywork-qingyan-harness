@@ -160,7 +160,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       /*
        * 使用 SDK 构造请求、鉴权与重试策略，响应体由本地读取。
        *
-       * `asResponse()` 返回原始 `Response`，SSE 由共用读取器解析。不要改回 SDK 的流迭代：
+       * `asResponse()` 返回原始 `Response`，SSE 由共用读取器解析。不要改为 SDK 的流迭代：
        * SDK 将 `[DONE]` 仅视为一个标记并继续等待 HTTP EOF，工具调用与用量须待对端关闭连接
        * 才交付，对端不关闭则持续等待。
        *
@@ -282,8 +282,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
       if (calls.length) {
         // `max_tokens` 不得被覆盖。输出恰好在拼接工具参数的中途达到上限时，
         // 此处同时有 calls 与 'length'；无条件改为 tool_use 会丢失截断信号，
-        // 上层因此以 JSON 解析失败的残缺参数照常执行工具，事后也无法看出
-        // 发生过截断。截断优先：它决定该轮是否应继续，优先级高于「是否存在工具调用」。
+        // 上层因此以 JSON 解析失败的残缺参数照常执行工具，事后也无法判断
+        // 是否发生过截断。截断优先：它决定该轮是否应继续，优先级高于「是否存在工具调用」。
         if (stopReason !== 'max_tokens') stopReason = 'tool_use'
         yield { type: 'tool_calls', calls, at: Date.now() }
       }
@@ -295,7 +295,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 离开本函数后，`usage` 与 `done` 会无条件 yield，上层统计事件数永远不为 0。
        *
        * 实测形状：Base URL 缺少 `/v1` 时，第三方接口对错误路径返回 200 与一个 HTML 首页，
-       * 解析器读不出任何 chunk 且不抛错，该轮记为 0 token、0 步骤、`completed`，
+       * 解析器无法读取任何 chunk 且不抛错，该轮记为 0 token、0 步骤、`completed`，
        * 消息已发送而没有任何输出，账本中也无法查到原因。
        * `normalizeBaseUrl` 已消除该成因，但其他成因（反向代理丢弃流、
        * 网关返回空的 200）仍然存在，而静默失败比任何具体成因都严重。
@@ -327,8 +327,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 记为传输失败而非 provider 拒绝：没有 HTTP 状态码，无法判断是否计费，
        * 因此已累积的 usage 随错误一并上报（见 `usage` 字段），账本行记为 `uncertain`
        * 但数值真实。该轮由 `agent/loop/attempt.ts` 自动重发（上限见 `RESEND_LIMIT`）：正文未显示的
-       * 原样重发，已显示的将正文作为上一条消息写入 transcript 后带当前上下文继续发送；额度用尽后
-       * 用户得到一条说明「已收到多少、在何处断开」的错误，而不是一次虚假的成功。
+       * 原样重发，已显示的将正文作为上一条消息写入 transcript 后带当前上下文继续发送；重发次数用尽后
+       * 界面显示一条说明「已收到多少、在何处断开」的错误，而不是一次虚假的成功。
        */
       if (!rawFinish) {
         throw new ProviderError({
@@ -394,7 +394,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 缓存路由字段：此处只负责请求体中的 `prompt_cache_key`。
        *
        * 本仓库已有该字段（`ChatRequest.cacheKey`，即会话 id），`openai-responses`
-       * 一直发送；deepseek 与各第三方接口均使用本路径。
+       * 始终发送；deepseek 与各第三方接口均使用本路径。
        *
        * 不要将其视为解决缓存不命中的手段。2026-08-19 在某第三方端点上做过配对交替
        * 实测（同一时间窗内逐轮交替发送有键与无键请求，
@@ -471,8 +471,8 @@ export const DASHSCOPE_INLINE_SOURCE_BYTES = 7 * 1024 * 1024
  * 对话中的本地视频超过该值时上传为 `oss://` 地址。
  *
  * 不要改用上方的 7 MB：那是端点可接受的内联上限，不是合适的阈值。内联的视频每次请求都完整重发，
- * 并按字节计入请求中的常驻媒体（`agent` 的 `MEDIA_RETAIN_HIGH_BYTES`），几段视频即会将其余图片挤出请求；
- * 上传为地址后请求中只保留一个地址，不占用该预算，视频得以一直保留在请求中。
+ * 并按字节计入请求中的常驻媒体（`agent` 的 `MEDIA_RETAIN_HIGH_BYTES`），几段视频即会使其余图片被移出请求；
+ * 上传为地址后请求中只保留一个地址，不占用该预算，视频得以持续保留在请求中。
  */
 export const DASHSCOPE_CHAT_INLINE_BYTES = 2 * 1024 * 1024
 /** 百炼临时文件服务的官方硬上限；模型或凭证仍可返回更小的动态上限。 */
@@ -559,7 +559,7 @@ interface DashScopeUpload {
  * （重试与请求诊断），错误状态由 `send` 抛出。同一份请求参数可能被重复发出：表单中的文件是 `Bun.file`，每次发出时重新读取文件。
  *
  * OSS 以 403 拒绝上传时写一行日志，重新取一次凭证并再上传一次：凭证是带有效期的签名，过期或失效时重新取得即可能恢复，
- * 与接口密钥无效不是一回事。仍为 403 时报告素材上传被拒绝（`uploadRejected`）。取凭证一步的 401 / 403 是接口密钥的问题，
+ * 与接口密钥无效属于不同情形。仍为 403 时报告素材上传被拒绝（`uploadRejected`）。取凭证一步的 401 / 403 是接口密钥的问题，
  * 不重新取凭证。重新取凭证只在本函数中做一次，与 `send` 对限流、连接失败与 5xx 的重试各自计数：`send` 不重试 403。
  */
 export async function uploadDashScopeMedia(input: DashScopeUpload): Promise<string> {

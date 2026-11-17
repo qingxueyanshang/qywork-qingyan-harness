@@ -41,7 +41,7 @@ describe('缩放策略', () => {
     expect((await shrinkImage(bytes, 'image/png')).bytes).toBe(bytes)
   })
 
-  /** 超出上限但无法解码（此处文件头是伪造的）时不能抛错；单张图片无法压缩，不应导致整轮失败。 */
+  /** 超出上限但无法解码（此处文件头是伪造的）时不能抛出异常；单张图片无法压缩，不应导致整轮失败。 */
   test('超出上限但解码失败时原样返回，不抛出异常', async () => {
     const bytes = png(4000, 3000)
     const out = await shrinkImage(bytes, 'image/png')
@@ -103,8 +103,8 @@ describe('局部放大', () => {
     return new photon.PhotonImage(px, width, height).get_bytes()
   }
 
-  /** 越界的比例收到图内；截取至少 1 像素，放大不超过 4 倍。 */
-  test('越界的区域收到图内，放大不超过 4 倍', async () => {
+  /** 越界的比例限制在图内；截取至少 1 像素，放大不超过 4 倍。 */
+  test('越界的区域限制在图内，放大不超过 4 倍', async () => {
     const z = await zoomImage(await blank(1000, 500), {
       left: 0.9,
       top: 0.9,
@@ -132,7 +132,7 @@ describe('局部放大', () => {
 
   test('缩小说明：只在发送尺寸小于原图时给出', () => {
     expect(downscaleNote({ width: 2560, height: 1360 }, { width: 1568, height: 833 })).toBe(
-      '，原图 2560×1360，缩小为 1568×833 发送；细线、描边、小字看不清时用 read_file 的 region 截取局部放大',
+      '，原图 2560×1360，缩小为 1568×833 发送；细线、描边、小字无法看清时用 read_file 的 region 截取局部放大',
     )
     expect(downscaleNote({ width: 800, height: 600 }, { width: 800, height: 600 })).toBe('')
     expect(downscaleNote(null, { width: 1, height: 1 })).toBe('')

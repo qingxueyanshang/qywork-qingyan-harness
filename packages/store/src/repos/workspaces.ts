@@ -23,7 +23,7 @@ export function normalizeWorkspaceRoot(rootPath: string): string {
 /**
  * 不存在时插入一行，已存在时更新 `last_opened_at` 与名称。
  *
- * 用一条语句完成，不要拆成先 SELECT 再 INSERT：同一目录首次被两个进程同时打开时，
+ * 用一条语句完成，不要拆分为先 SELECT 再 INSERT：同一目录首次被两个进程同时打开时，
  * 两个进程都查询到不存在，后插入的一方触发 `root_path` 的 UNIQUE 冲突，启动随即失败。
  *
  * `removed_at` 一并清空：重新添加已移除的路径即恢复该项目，
@@ -97,7 +97,7 @@ export function setWorkspacePinned(store: Store, id: WorkspaceId, pinned: boolea
 }
 
 /**
- * 按路径查找工作区行。不过滤 `removed_at`：已移除的项目也必须能查到。
+ * 按路径查找工作区行。不过滤 `removed_at`：已移除的项目也必须能查询到。
  *
  * 用途：`upsertWorkspace` 会覆盖名称，而切换项目使用同一个
  * upsert。不先查询时，每次切换都会把用户设置的项目名重置为目录名。

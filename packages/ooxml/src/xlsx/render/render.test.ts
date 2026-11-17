@@ -1184,7 +1184,7 @@ function rgbAt(ctx: SheetRecorder, x: number, y: number): number[] {
 }
 
 describe('绘制', () => {
-  test('点阵模式下按点阵逐字填充像素，裁去上升、下降之外的行；粗体按 GDI 加粗；斜体取倾斜的单色字形；取不到单色字形的字用 fillText', () => {
+  test('点阵模式下按点阵逐字填充像素，裁去上升、下降之外的行；粗体按 GDI 加粗；斜体取倾斜的单色字形；未取得单色字形的字以 fillText 绘制', () => {
     // 汉字的点阵：2 × 3，第 1 行全着墨，其余只有左列。
     const glyph: BitmapGlyph = {
       width: 2,
@@ -1229,7 +1229,7 @@ describe('绘制', () => {
       ['#000000', 4, 18, 2, 1],
       ['#000000', 4, 19, 1, 1],
     ])
-    // 取不到单色字形的「a」在全角宽度 16 之后以 fillText 绘制。
+    // 未取得单色字形的「a」在全角宽度 16 之后以 fillText 绘制。
     expect(plain.texts).toEqual([['a', 19, 20]])
     const bold = paint(style({ font: { ...base, bold: true } })).rects.filter(
       (r) => r[0] === '#000000',
@@ -1454,7 +1454,7 @@ describe('绘制', () => {
     )
     expect(paint(real)).toEqual([['ab', 3, true]])
   })
-  test('填充覆盖四周网格线（区域左沿与上沿除外）；与填充相邻的网格线不画', () => {
+  test('填充覆盖四周网格线（区域左沿与上沿除外）；与填充相邻的网格线不绘制', () => {
     const yellow = style({
       fill: { kind: 'pattern', pattern: 'solid', fg: '#ffff00', bg: '#ffff00' },
     })
@@ -1470,7 +1470,7 @@ describe('绘制', () => {
     expect(rects).toContainEqual(['#ffff00', 1, 1, w, h])
     expect(rects).toContainEqual(['#ffff00', 2 * w, 2 * h, w + 1, h + 1])
     const grid = rects.filter((r) => r[0] === '#e6e6e6')
-    // C3 上沿与左沿的网格线不画；B1 上沿照常绘制。
+    // C3 上沿与左沿的网格线不绘制；B1 上沿照常绘制。
     expect(grid).not.toContainEqual(['#e6e6e6', 2 * w, 2 * h, w + 1, 1])
     expect(grid).not.toContainEqual(['#e6e6e6', 2 * w, 2 * h, 1, h + 1])
     expect(grid).toContainEqual(['#e6e6e6', w, 0, w + 1, 1])
@@ -1524,7 +1524,7 @@ describe('绘制', () => {
     const scene = createScene(workbook(sheet, [style(), hatch]), sheet, fonts)
     const factory = canvasFactory()
     const { ctx, rects } = recorder()
-    // 浏览器在 createPattern 时复制图层像素：创建平铺时单元必须已画完（底色 1 次加 16 个点）。
+    // 浏览器在 createPattern 时复制图层像素：创建平铺时单元必须已绘制完成（底色 1 次加 16 个点）。
     const drawnAtCreate: number[] = []
     const create = ctx.createPattern.bind(ctx)
     ctx.createPattern = (image, repetition) => {
@@ -2057,7 +2057,7 @@ describe('形状', () => {
   }
 
   /** 原始失败形状：WPS 表格的形状文字为 GDI 的 ClearType 绘制，此前一律以浏览器字体（`fillText`）绘制。 */
-  test('显示器使用 ClearType 时形状文字按 ClearType 字形写入画布像素，不调用 fillText；像素不写到绘制区域之外', () => {
+  test('显示器使用 ClearType 时形状文字按 ClearType 字形写入画布像素，不调用 fillText；像素不写入绘制区域之外', () => {
     const shape: SheetShape = {
       anchor: absolute(0, 0, 100, 40),
       order: 0,
@@ -2070,7 +2070,7 @@ describe('形状', () => {
     expect(on.texts).toEqual([])
     // 文字起点为左边距 9.6 像素取整后的 10，字形覆盖 [0, 20)。
     expect(blended(on.ctx)).toEqual(Array.from({ length: 20 }, (_, i) => i))
-    // 区域自工作表 x = 5 起画在画布 x = 50 处：字形覆盖画布 [45, 65)，区域左沿之外的 [45, 50) 不写入。
+    // 区域自工作表 x = 5 起绘制于画布 x = 50 处：字形覆盖画布 [45, 65)，区域左沿之外的 [45, 50) 不写入。
     const shifted = recorder()
     paintRegion(shifted.ctx, scene, { x: 5, y: 0, width: 100, height: 100 }, resources(1200), 50)
     expect(blended(shifted.ctx)).toEqual(Array.from({ length: 15 }, (_, i) => 50 + i))

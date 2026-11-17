@@ -72,7 +72,7 @@ export function StepBody(props: { item: TranscriptItem }) {
         {/*
          * 中途输出排在最前。运行时 `outcome` 尚不存在，进入下方任何分支
          * 都只显示空卡片；该分支只在 `status === 'running'` 时成立，
-         * 到达终态后自动让位，无需额外清理。
+         * 到达终态后该分支不再成立，无需额外清理。
          */}
         <Match when={props.item.status === 'running' && props.item.stdout}>
           <LiveOutput item={props.item} />

@@ -139,7 +139,7 @@ export function evaluateGuides(
   return values
 }
 
-/** 名称或字面量的值：字面量原样返回，名称依次查参数与内置量，都没有时为 0。 */
+/** 名称或字面量的值：字面量原样返回，名称依次查找参数与内置量，都没有时为 0。 */
 export function guideValue(
   values: GuideValues,
   value: number | string,

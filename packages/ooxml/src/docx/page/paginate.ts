@@ -88,7 +88,7 @@ export interface LinePlacement {
   readonly x: number
   /** 所用的排版结果（环绕时为按本页重排的结果）。 */
   readonly layout: ParagraphLayout
-  /** 第一行之前留出的段前间距（本页第一部分为 0 以外的值时，段落顶边在第一行行顶之上这么多）。 */
+  /** 第一行之前留出的段前间距（本页第一部分为 0 以外的值时，段落顶边比第一行行顶高出此值）。 */
   readonly space: number
 }
 
@@ -208,7 +208,7 @@ export interface PaginateOptions {
    * 环绕：段落 `block` 的第一行行顶位于 `top`、区域左边为 `x`、正文区底边为 `bottom` 时按 `exclusions` 重排；
    * 没有影响该段的矩形时返回 `null`。`once` 为真时上下型对象只使行下移一次（求段内对象的定位基准用）。
    * `before` 为第一行之上属于本段的间距（段前间距超出上一段段后间距的部分与段落上边框）：第一行下移到上下型对象下方时
-   * 行顶在对象底边之下这么多。
+   * 行顶低于对象底边此距离。
    */
   wrap(
     block: number,
@@ -618,7 +618,7 @@ export function paginate(
     const saved: { segments: number; y: number; fresh: boolean }[] = []
     for (let r = 0; r < t.rows.length; r++) {
       const row = t.rows[r]!
-      /** 各单元格已在前页显示到的位置。 */
+      /** 各单元格已在前页显示至的位置。 */
       let from = whole(r)
       for (;;) {
         // 每次放置前记录：换页后再次放置同一行时，记录的是新部分中的状态。

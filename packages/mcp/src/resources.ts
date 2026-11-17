@@ -19,7 +19,7 @@
  *    内置工具读取的是本地写入磁盘的中间产物（命令输出、大文件的截断部分），
  *    此处读取的是外部 server 提供的数据。重名会在注册时直接抛出异常；
  *    若未抛出，模型会混淆两者。
- * 2. 工具名必须带 `mcp__` 前缀，与内置工具、插件工具的命名空间隔离，模型也能从名称看出
+ * 2. 工具名必须带 `mcp__` 前缀，与内置工具、插件工具的命名空间隔离，模型也能从名称判断
  *    调用的是哪个 server。正文超出本轮剩余额度时由 `boundExecutedOutcome`（`@qywork/agent`）
  *    存入正文库、只投递头部，模型按回执中的 resource id 续读。
  * 3. 权限声明为 `read`，scope 为 `mcp:<server>/resource`，而不是 `execute`：
@@ -53,7 +53,7 @@ export interface McpResourceContents {
  * 两个 resource 工具。
  *
  * 只在 server 声明了 `capabilities.resources` 时注册。未声明即注册时，
- * 模型看到工具并调用，只会得到 `Method not found`，这是一次无效的往返，
+ * 模型会调用该工具，只得到 `Method not found`，这是一次无效的往返，
  * 且模型会重试，因为它无法从错误中判断该 server 不具备此能力。
  */
 export function resourceToolsFor(client: McpClient): ToolSpec[] {
@@ -157,7 +157,7 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
 /**
  * 二进制 resource 只保留一行占位。
  *
- * 把 base64 写入 transcript 会立即占用数万 token，而模型通常用不上；
+ * 把 base64 写入 transcript 会立即占用数万 token，而模型通常不需要这些内容；
  * 理由与 `renderContent` 对 image/audio 的处理相同。
  */
 function renderResourceContents(contents: readonly McpResourceContents[]): string {

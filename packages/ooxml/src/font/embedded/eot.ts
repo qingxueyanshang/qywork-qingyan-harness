@@ -39,7 +39,7 @@ function utf16le(bytes: Uint8Array): string {
   return s
 }
 
-/** 解开 MicroType Express 压缩的字体数据。 */
+/** 解压 MicroType Express 压缩的字体数据。 */
 export function decodeMicroTypeExpress(data: Uint8Array): Uint8Array {
   if (data.length < 10) throw new FontFormatError('MicroType Express 数据过短')
   const u24 = (at: number) => (data[at]! << 16) | (data[at + 1]! << 8) | data[at + 2]!

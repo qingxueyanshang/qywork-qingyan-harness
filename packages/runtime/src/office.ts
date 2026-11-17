@@ -109,7 +109,7 @@ async function probe(python: string, dir: string, cfg: QyConfig): Promise<ProbeR
     stderr: 'pipe',
     stdin: 'ignore',
     // 探测只导入依赖、读取注册表，不执行模型代码；环境与执行模型代码的 worker 经同一个剥离判定
-    // （`scrubbedEnv`，含配置的放行名单），探测与执行看到的变量相同。
+    // （`scrubbedEnv`，含配置的放行名单），探测与执行取得的变量相同。
     env: {
       ...scrubbedEnv({
         secrets: collectSecrets(cfg),

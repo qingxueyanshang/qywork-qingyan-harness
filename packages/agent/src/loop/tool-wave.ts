@@ -243,9 +243,9 @@ export async function* executeCalls(
   }
 
   /*
-   * 一次 provider 决策只记录一条进展证据：判定统计的是看过结果后仍作出
+   * 一次 provider 决策只记录一条进展证据：判定统计的是取得结果后仍作出
    * 相同决策的周期数，不是工具调用数。逐调用记录时，单次响应内的重复
-   * 调用会在模型看到任何结果之前满足三次阈值并导致错误停止。
+   * 调用会在模型取得任何结果之前满足三次阈值并导致错误停止。
    * 按 callIndex 排序，保证聚合顺序与 provider 原调用顺序一致。
    */
   if (batchEvidence.length) {
@@ -355,7 +355,7 @@ export function planWaves(
  * 只有明确事实参与无进展判定，不确定的情况一律视为可能有副作用。
  *
  * `fileChanges` 非空直接判定为有副作用；`executed: false` 表示没有进入执行器；
- * 其余只认注册期声明为纯 `read` 的工具。不要放宽到 `execute` / `network` /
+ * 其余只识别注册期声明为纯 `read` 的工具。不要放宽到 `execute` / `network` /
  * `internal_control`：它们即使返回失败也可能已修改外部状态（写入一半后抛出同样是失败），
  * 字段缺失不能视为明确没有变更。
  */

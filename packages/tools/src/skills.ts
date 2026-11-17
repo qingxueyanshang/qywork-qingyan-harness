@@ -8,7 +8,7 @@
  * 按需加载：索引放在上下文末尾，正文只在被读取时进入上下文。这是技能体系的核心价值。
  * 若把所有技能正文都写入 system prompt，十个技能即可占用数万 token，而一次任务通常只用到其中一个。
  *
- * 因此索引（name + description，每条一行）写入上下文末尾的注记，模型看到后
+ * 因此索引（name + description，每条一行）写入上下文末尾的注记，模型据此
  * 自行决定是否调用 `read_skill` 读取全文。
  *
  * 索引同样不进入冻结前缀：否则用户安装一个技能就会使整个 provider 缓存失效。
@@ -73,7 +73,7 @@ export async function scanSkillDir(root: string, scope: Scope): Promise<SkillMet
 
     const meta = parseFrontmatter(text)
     // description 是模型判断何时使用该技能的唯一依据。缺少它时技能安装后也不会被使用，
-    // 与其静默收录一个永远不会触发的技能，不如跳过，使它不出现在扫描结果中。
+    // 因此跳过该技能，不在扫描结果中收录一个不会被触发的技能。
     if (!meta.description || /^[|>][+-]?\d?$/.test(meta.description)) continue
 
     out.push({
@@ -194,8 +194,8 @@ export const readSkillTool: ToolSpec = {
     const skills = await scanSkills(ctx.workspaceRoot)
     const hit = skills.find((s) => s.name === wanted || s.dir.endsWith(wanted))
     if (!hit) {
-      // 列出可用名称而不是只返回「未找到」：模型通常只是把名称记错了一个字，
-      // 给出候选后，它在下一轮即可自行修正。
+      // 列出可用名称而不是只返回「未找到」：模型给出的名称通常只与实际名称相差一个字，
+      // 给出候选后，模型在下一轮即可自行修正。
       return {
         status: 'failure',
         message: `未找到技能 ${wanted}${skills.length ? `。可用：${skills.map((s) => s.name).join('、')}` : ''}`,
@@ -263,7 +263,7 @@ export const writeSkillTool: ToolSpec = {
     const content = String(args.content ?? '').trim()
     const dirName = safeDirName(name)
     const scope = writableScope(args.scope)
-    if (!dirName) return { status: 'failure', message: 'name 为空或全是非法字符' }
+    if (!dirName) return { status: 'failure', message: 'name 为空或全部为非法字符' }
     if (!description) return { status: 'failure', message: 'description 为空' }
     if (!content) return { status: 'failure', message: 'content 为空' }
     if (!scope) return { status: 'failure', message: 'scope 只能是 project 或 global' }

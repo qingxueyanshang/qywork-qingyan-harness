@@ -77,7 +77,7 @@ describe('分支名跟随 HEAD', () => {
 
   /**
    * 项目位于链接工作树中：`<root>/.git` 是一个文件，`HEAD` 在主仓库的
-   * `.git/worktrees/<名>/` 下。监听 `<root>/.git` 收不到任何事件。
+   * `.git/worktrees/<名>/` 下。监听 `<root>/.git` 无法收到任何事件。
    */
   test('在链接工作树中切换分支，广播新分支名', async () => {
     const dir = await repoWithCommit()

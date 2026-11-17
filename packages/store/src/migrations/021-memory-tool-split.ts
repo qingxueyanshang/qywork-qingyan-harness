@@ -7,7 +7,7 @@ export const migration021: Migration = {
    * `memory` 一个工具名对应四个动作，拆分为 `read_memory` / `write_memory` /
    * `delete_memory` 三个工具，**已落库的旧行按行内的 `args.action` 分别改名**。
    *
-   * 不转换时不会报错：回放历史时模型会看到当前工具表中不存在的名称
+   * 不转换时不会报错：回放历史时模型会取得当前工具表中不存在的名称
    * （`transcript.ts` 将账本中的 `tool_name` 与 `args` 原样重放为一次工具调用）。
    *
    * `list` 归入 `read_memory`：语义最接近，且该动作已不再是工具，
@@ -16,7 +16,7 @@ export const migration021: Migration = {
    *
    * **`args.action` 一并删除。** 改名后该行已不是原调用的
    * 逐字记录，保留该字段会呈现一个当前不合法的调用结构：三个新 schema 都是
-   * `additionalProperties: false`，模型按历史仿写一个 `action` 会浪费一轮请求。
+   * `additionalProperties: false`，模型仿照历史写入一个 `action` 会浪费一轮请求。
    * 一条 UPDATE 中有两个赋值：SQL 赋值右侧读取的是修改前的行，因此新名称仍由旧
    * `action` 计算。
    *

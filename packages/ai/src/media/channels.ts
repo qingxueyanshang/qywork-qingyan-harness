@@ -105,7 +105,7 @@ export function providerbVideoSpec(entry: Record<string, unknown>): ChannelVideo
 }
 
 /**
- * 服务商B目录中的一条图像型号（`image_json_v1`）。目录给出最长边下限（`min_long_edge`）时去掉达不到下限的尺寸：
+ * 服务商B目录中的一条图像型号（`image_json_v1`）。目录给出最长边下限（`min_long_edge`）时移除未达到下限的尺寸：
  * 渠道拒绝这些尺寸。
  */
 export function providerbImageSpec(entry: Record<string, unknown>): ChannelImageSpec | null {

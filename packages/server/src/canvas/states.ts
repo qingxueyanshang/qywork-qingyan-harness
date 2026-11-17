@@ -29,7 +29,7 @@ export function keyOf(workspaceRoot: string, path: string): string {
 }
 
 /**
- * 生成卡的一次远端任务（视频，以及走云端的出图与音频），以及指向该任务的版本（取得任务号时未能写入画布则为 null）。
+ * 生成卡的一次远端任务（视频，以及经由云端的出图与音频），以及指向该任务的版本（取得任务号时未能写入画布则为 null）。
  * `type` 是卡片的生成类别，撤销时按它取得模型的配置。
  */
 export interface CanvasTask {

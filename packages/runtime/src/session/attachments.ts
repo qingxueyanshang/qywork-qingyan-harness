@@ -33,7 +33,7 @@ async function encodedAttachment(
   if (!bytes) return null
   const raw = new Uint8Array(bytes)
   const fit = await shrinkImage(raw, mime)
-  // 缩小发送的截图写明原图尺寸：模型只看到缩小图，不说明时会把看不清的描边、残影判为没有。
+  // 缩小发送的截图写明原图尺寸：模型只取得缩小图，不说明时会把无法看清的描边、残影判为不存在。
   const note = downscaleNote(imageSizeOf(raw), imageSizeOf(fit.bytes))
   const out = { data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime, note }
   if (attachmentCache.size >= ATTACHMENT_CACHE_LIMIT) {
@@ -61,8 +61,8 @@ async function encodedAttachment(
  * 此处必须改为按工作区裁决。
  *
  * 三种无法读取的情况都保留一行说明，不抛出错误。文件被删除、被改名、事后超过上限都可能发生。跳过该附件并
- * 在正文中保留一行说明，而不是使整轮无法启动：模型看到「此处原有一张图片，现在无法读取」仍能继续执行，
- * 收到 500 则只能重新开始。
+ * 在正文中保留一行说明，而不是使整轮无法启动：模型取得「此处原有一张图片，现在无法读取」的说明后仍能继续执行，
+ * 整轮返回 500 时只能重新开始。
  *
  * 大小上限不在此处判定，而在 `materialize` 时判定：路径型附件指向用户自己的文件，
  * 该文件在被引用之后仍可能继续增大，而此处只记录位置。
@@ -106,7 +106,7 @@ export async function withAttachments(
     blocks.push({ type: 'image', mimeType: fit.mime, source: { kind: 'base64', data: fit.data } })
   }
 
-  // 文本块放在最后：附件是该消息的上下文，先看附件再读要求更符合阅读顺序。
+  // 文本块放在最后：附件是该消息的上下文，先读取附件、再读取要求更符合阅读顺序。
   const body = notes.length ? [text, ...notes].join(NEWLINE) : text
   if (blocks.length === 0) return body
   blocks.push({ type: 'text', text: body })

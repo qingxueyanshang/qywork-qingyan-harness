@@ -48,7 +48,7 @@ export function installRmGuard(protectedRoots: readonly string[]): void {
     rmSync: fs.rmSync,
     rmCallback: fs.rm as (...args: unknown[]) => void,
   }
-  // 异步版本以被拒绝的 Promise 报告，与原函数相同：同步抛出时，`await rm(...).catch(...)` 接不到。
+  // 异步版本以被拒绝的 Promise 报告，与原函数相同：同步抛出时，`await rm(...).catch(...)` 无法捕获。
   const rm: typeof fsp.rm = async (path, options) => {
     check(path)
     return original.rm(path, options)

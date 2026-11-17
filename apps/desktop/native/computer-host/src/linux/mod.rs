@@ -182,7 +182,7 @@ impl Backend for Atspi {
         })
     }
 
-    /// 能在会话总线上查到无障碍总线的地址即视为已授权。查不到时读取与动作一律不可用，原因原文随通报
+    /// 能在会话总线上查询到无障碍总线的地址即视为已授权。未查到时读取与动作一律不可用，原因原文随通报
     /// 写入 stderr。
     fn access() -> Access {
         match bus::locate() {
@@ -542,7 +542,7 @@ impl Atspi {
     /// 同一次查询得到的其余顶层对象。
     ///
     /// 右键菜单不在 frame 的子树中，GTK 将其列为应用的另一个顶层对象；将它接在 frame 之后，观察
-    /// 目标窗口时即可看到它，并可按 `ref` 操作它。GTK 同样将组合框下拉菜单所在的弹出窗口列为
+    /// 目标窗口时即可读取到它，并可按 `ref` 操作它。GTK 同样将组合框下拉菜单所在的弹出窗口列为
     /// 顶层，而该菜单把组合框报告为父对象，已位于组合框之下，由 `owns_children` 排除。
     ///
     /// 边界：Qt 的弹出菜单与 GTK 附着在普通按钮上的菜单不是应用的子节点，此处无法找到它们。
@@ -985,7 +985,7 @@ impl Atspi {
     ///
     /// X11 会话中只读取 X11、不经由应用：应用无响应时 X 服务器照常应答，而会话中的顶层窗口都在
     /// EWMH 清单中。Wayland 会话或 X11 一侧不可用时，原生 Wayland 窗口只存在于 AT-SPI 中，
-    /// 按与窗口清单相同的来源判定；不要在此处只读取 X11，否则无法等到任何原生 Wayland 窗口。
+    /// 按与窗口清单相同的来源判定；不要在此处只读取 X11，否则任何原生 Wayland 窗口都无法满足等待条件。
     fn window_appeared(&self, conn: &Connection, req: &WaitRequest<'_>) -> bool {
         let Some(needle) = req.name.map(str::to_lowercase) else {
             return false;

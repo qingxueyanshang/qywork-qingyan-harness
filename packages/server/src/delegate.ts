@@ -7,7 +7,7 @@
  * **派发后立即返回，完成以事件通知。** `dispatch` 只负责启动子 agent；子 agent 完成之后，
  * 此处写入节点终态、组装回执，再将回执作为一条消息投递到父会话（父会话忙碌时在下一个 step
  * 边界注入，空闲时立即启动一轮）。派发不等待，本轮结束时也不停止子 agent；需要在本轮内等待时，
- * `awaitReceipt` 只等到回执进入队列为止，回执本身仍由队列送达。
+ * `awaitReceipt` 只等待回执进入队列，回执本身仍由队列送达。
  *
  * **单一派发函数。** `subagent` 工具的单次派发与 `workflow` 图上的每个节点都经由它：
  * 解析目标 → 子 agent 记录（新建或已有）→ 按种类执行 → 完成回调。不区分内置与外部 CLI。
@@ -16,7 +16,7 @@
  * 外部 CLI 的会话记录只有元数据与外部会话句柄（`externalSession`），正文保存在 CLI 一侧。
  */
 
-import { type DelegatePort, type SubagentSummary, transientErrorCode } from '@qywork/agent'
+import type { DelegatePort, SubagentSummary } from '@qywork/agent'
 import { applySpecOverride, lookupModel, type TokenDensity } from '@qywork/ai'
 import {
   type Conversation,
@@ -28,21 +28,17 @@ import {
   log,
   type NodeState,
   type RunId,
-  retryScheduleText,
   type StepId,
   type StopReason,
   SUBAGENT_KIND_LABEL,
   SUBAGENT_NODE_ID,
   type SubagentKind,
   type SubagentTarget,
-  TRANSIENT_RETRY_DELAYS_MS,
   targetLabel,
-  transientRetryDelay,
   type WorkflowCheckpointNode,
   type WorkflowNode,
   type WorkflowProjection,
   type WorkflowTransition,
-  waitOrAbort,
   workflowResults,
 } from '@qywork/core'
 import {
@@ -119,14 +115,6 @@ interface DispatchAt {
   workflow?: { workflowId: string; share: number }
 }
 
-/**
- * 重新派发时写入子会话的消息。子会话保留上一轮的全部步骤，因此只要求从中断处继续，不重复任务正文：
- * 重复正文会使子 agent 把它当作一项新任务从头执行。
- */
-function redispatchPrompt(error: string): string {
-  return `[自动重新派发] 本消息由系统发出，不是新的任务。上一轮因模型服务暂时故障中断：${error}。继续完成本会话中的原任务：已完成的步骤不重复执行，从中断处继续。`
-}
-
 /** 子 agent 执行完毕后可知的全部事实。 */
 interface Outcome {
   ok: boolean
@@ -183,14 +171,8 @@ export function makeDelegate(ctx: {
    * 而它需要调用 `startRun`，直接 import 会使 `run-control` ↔ `delegate` 成环。
    */
   deliver: (followUp: FollowUp) => void
-  /**
-   * 重新派发之前的等待，缺省为可随停止取消的真实计时（`waitOrAbort`）。测试注入立即返回的实现，
-   * 以记录请求的等待时长。
-   */
-  wait?: (ms: number, signal: AbortSignal) => Promise<void>
 }): DelegatePort {
   const { deps, workspaceRoot, conversationId, deliver } = ctx
-  const wait = ctx.wait ?? waitOrAbort
 
   /**
    * 本轮各次外部 CLI 已报告的工作区相对路径。一个 `makeDelegate` 对应一个
@@ -336,7 +318,7 @@ export function makeDelegate(ctx: {
     }
 
     if (target.kind === 'cli') {
-      // 外部 CLI 使用自身的模型。此处直接返回错误，不要忽略模型参数照常执行：那样界面显示的模型与实际使用的模型不一致。
+      // 外部 CLI 使用自身的模型。此处直接返回错误，不要忽略模型参数照常执行：忽略时界面显示的模型与实际使用的模型不一致。
       if (model || provider) {
         return {
           error: `${target.cli} 使用自身的模型，无法指定 ${provider ? `${provider}/` : ''}${model ?? ''}`,
@@ -406,7 +388,7 @@ export function makeDelegate(ctx: {
 
   /**
    * 节点状态变化：先写入所在卡片的 step，再广播。单次派发与图上的节点使用同一路径：单次派发即
-   * 只有一个节点的图。**先写入账本再广播**：切离父会话会错过广播，切回时从 step 回放。
+   * 只有一个节点的图。**先写入账本再广播**：界面切换到其他会话期间会错过广播，切换回来时从 step 回放。
    * 没有 `stepId` 的调用（没有卡片）不记录任何内容。
    */
   const note =
@@ -493,7 +475,7 @@ export function makeDelegate(ctx: {
     const nodeId = at.nodeId ?? SUBAGENT_NODE_ID
     /*
      * 未能启动同样是该节点的终态：不写入时卡片上该节点始终停留在等待，而工具已报告无法派发。
-     * 图节点还须继续推进：该节点没有完成回调，不推进时整张图停在这里，检查点回执不再发送。
+     * 图节点还须继续推进：该节点没有完成回调，不推进时整张图停滞于此，检查点回执不再发送。
      */
     const refuse = (
       state: { label: string; kind?: SubagentKind; subagentId?: ConversationId },
@@ -608,9 +590,12 @@ export function makeDelegate(ctx: {
    * 实际启动执行。**不抛出异常**：失败以返回值表示，终态由 `complete` 统一写入。
    *
    * 调用前 `start` 已占用子会话，占位在本函数的 finally 中释放：占位之后的每一步（登记运行表、写入
-   * 「进行中」、成员轮次、外部 CLI、重新派发前的等待）都在同一个 try 中，任何一步抛出都不会留下占位。
-   * 成员轮次与外部 CLI 不释放占位；重新派发期间占位不中断，此时向该子 agent 派发的任务排入它的队列。
+   * 「进行中」、成员轮次、外部 CLI）都在同一个 try 中，任何一步抛出都不会留下占位。
    * 同步部分（直到第一个 await）在 `start` 返回之前执行，返回时节点已是「进行中」。
+   *
+   * 成员轮次以失败结束时不重新派发，失败回执立即交付给父会话：一次请求在轮内按 30 秒、2 分钟、5 分钟自动重发 3 次
+   * （`RunInput.transientResend`），用尽后的报错列出各次不同的失败原因，父会话据此决定改用其他接口或模型，还是再次派发。
+   * 不要在派发一侧另加重新派发：每次重新派发又含一整轮重发，父会话在整段时间内只能得到「仍在执行」。
    */
   const perform = async (
     resolved: Resolved,
@@ -641,7 +626,7 @@ export function makeDelegate(ctx: {
         // 外部 CLI 是本机的另一个进程，执行完毕之前写入的内容只能经由观察器推送获知。
         const stepId = at.stepId
         // 必须先打开观察窗口再启动进程：窗口起点之前写入的文件无法判定为该 CLI 新建。
-        // 无法启动时关闭窗口：不关闭则该窗口始终排在最前，此后的窗口收不到任何事件。
+        // 无法启动时关闭窗口：不关闭则该窗口始终排在最前，此后的窗口无法收到任何事件。
         const changeWindow = openChangeWindow(workspaceRoot, {
           reported,
           env: gitEnv(deps.config),
@@ -689,67 +674,27 @@ export function makeDelegate(ctx: {
       }
 
       const { rules } = await team()
-      const member = (prompt: string) =>
-        runBuiltinMember(
-          {
-            role: role ?? tempRole(conversation.title),
-            prompt,
-            signal,
-            conversationId: conversation.id,
-            ...(at.stepId ? { dispatch: { stepId: at.stepId as StepId, nodeId } } : {}),
-            ...(resolved.effort ? { effort: resolved.effort } : {}),
-          },
-          {
-            deps,
-            workspaceRoot,
-            ...(rules.shared ? { shared: rules.shared } : {}),
-            // 子会话的事件按**子会话自身的 id** 发布；图卡片的进度属于父会话，由上方的 `note` 发布。
-            onEvent: (ev, cid) => deps.bus.publish(ev, cid),
-          },
-        )
-      /*
-       * 一轮以暂时故障（`transientErrorCode`，与轮内重发同一分类）结束时，按 30 秒、2 分钟、5 分钟重新派发，
-       * 重试用尽之前不发送失败回执：父会话收到失败回执即会把该项记为失败，而模型服务通常在数分钟内恢复。
-       * 等待期间占位不中断，此时向它派发的任务排入它的队列，在重新派发的一轮中注入。
-       * 用户停止或父会话停止该子 agent 时等待随之取消，不发送回执。
-       */
-      let res = await member(task)
-      const faults: string[] = []
-      while (
-        !res.ok &&
-        res.code &&
-        transientErrorCode(res.code) &&
-        faults.length < TRANSIENT_RETRY_DELAYS_MS.length &&
-        !signal.aborted
-      ) {
-        const error = res.error ?? res.code
-        const ms = transientRetryDelay(faults.length)
-        faults.push(error)
-        log.warn(
-          'team',
-          `子 agent ${conversation.title} 因模型服务暂时故障中断：${error}；${Math.round(ms / 1000)} 秒后第 ${faults.length} 次重新派发`,
-          { conversationId: conversation.id },
-        )
-        try {
-          await wait(ms, signal)
-        } catch {
-          break
-        }
-        res = await member(redispatchPrompt(error))
-      }
-      // 重新派发的经过写入回执：成功时记在节点说明中，失败时附在失败原因之后，父会话据此不再重复派发。
-      const redispatched = faults.length > 0 && !signal.aborted
-      if (redispatched && res.ok) {
-        notes.push(`模型服务暂时故障（${faults[0]}），自动重新派发 ${faults.length} 次后完成`)
-      }
-      const error =
-        res.error && redispatched
-          ? `${res.error}；已在 ${retryScheduleText(faults.length)}后各自动重新派发一次，仍失败`
-          : res.error
+      const res = await runBuiltinMember(
+        {
+          role: role ?? tempRole(conversation.title),
+          prompt: task,
+          signal,
+          conversationId: conversation.id,
+          ...(at.stepId ? { dispatch: { stepId: at.stepId as StepId, nodeId } } : {}),
+          ...(resolved.effort ? { effort: resolved.effort } : {}),
+        },
+        {
+          deps,
+          workspaceRoot,
+          ...(rules.shared ? { shared: rules.shared } : {}),
+          // 子会话的事件按**子会话自身的 id** 发布；图卡片的进度属于父会话，由上方的 `note` 发布。
+          onEvent: (ev, cid) => deps.bus.publish(ev, cid),
+        },
+      )
       return {
         ok: res.ok,
         output: res.output,
-        ...(error ? { error } : {}),
+        ...(res.error ? { error: res.error } : {}),
         stop: res.stop,
         ...(notes.length ? { note: notes.join('；') } : {}),
       }
@@ -1067,7 +1012,7 @@ export function makeDelegate(ctx: {
       if (name === null) {
         return { ok: false, error: `本会话中没有正在执行的子 agent ${subagentId}` }
       }
-      // 停止由父会话发起、不发送回执，尚未读取的补充指令在停止的结果中交回父会话，不在完成回调中无声丢弃。
+      // 停止由父会话发起、不发送回执，尚未读取的补充指令在停止的结果中返回给父会话，不在完成回调中静默丢弃。
       const dropped: string[] = []
       const child = subagentId as ConversationId
       for (let f = deps.runs.takeNext(child); f; f = deps.runs.takeNext(child))
@@ -1110,7 +1055,7 @@ export function makeDelegate(ctx: {
         projection = folded.projection
         /*
          * 此检查只拦截 approve。revise 对任意检查点均有效，包括已批准的与被中断的：
-         * 若批准即解散子 agent，返工只能另起新的子 agent；被中断的图也依靠 revise 续接原有子 agent。
+         * 若批准即解散子 agent，返工只能另行新建子 agent；被中断的图也依靠 revise 续接原有子 agent。
          */
         if (input.call.decision === 'approve') {
           if (projection.phase === 'failed') {
@@ -1168,7 +1113,7 @@ export function makeDelegate(ctx: {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
 
-      // 图开始运行时即将尚未派发的节点标为等待：刷新后可看到全部节点，而不只是已运行的节点。
+      // 图开始运行时即将尚未派发的节点标为等待：刷新后界面显示全部节点，而不只是已运行的节点。
       if (input.call.kind === 'start') {
         const describe = describeWith(roles, clis, existing)
         for (const node of projection.nodes) {

@@ -1,7 +1,7 @@
 /**
  * 部件扫描的公共读取：逐个子元素访问、跳过元素、数值与布尔属性、关系引用属性。DrawingML 与 PresentationML 的读取共用。
  *
- * - `eachChild` 的回调可以读到子元素的结束标签为止，也可以不前进；只前进一部分时其余内容被跳过。
+ * - `eachChild` 的回调可以读取到子元素的结束标签为止，也可以不前进；只前进一部分时其余内容被跳过。
  * - 布尔属性按 XML Schema 的 `xsd:boolean`：`1`、`true` 为真，`0`、`false` 为假。
  */
 
@@ -18,7 +18,7 @@ export function eachChild(x: Scanner, visit: (local: string) => void): void {
   }
 }
 
-/** 读到当前元素的结束标签为止。 */
+/** 读取到当前元素的结束标签为止。 */
 export function skip(x: Scanner): void {
   eachChild(x, () => {})
 }

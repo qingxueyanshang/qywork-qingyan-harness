@@ -48,7 +48,7 @@ export function isAbsolutePath(p: string): boolean {
 /**
  * `relative(root, target)` 的结果是否表示 `target` 不在 `root` 之内。
  *
- * 只有完整的 `..` 段表示上一级：`..cache` 是名称以两个点开头的子项，不要改成 `rel.startsWith('..')`。
+ * 只有完整的 `..` 段表示上一级：`..cache` 是名称以两个点开头的子项，不要改为 `rel.startsWith('..')`。
  * 跨盘符时 `relative` 返回绝对路径，同样表示不在其内。两种分隔符都识别，与平台无关。
  */
 export function isOutsideRelative(rel: string): boolean {

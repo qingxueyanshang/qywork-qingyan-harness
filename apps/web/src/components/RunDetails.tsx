@@ -299,7 +299,7 @@ function ExtraRow(props: { entry: UsageLedgerRow }) {
  */
 function RequestLedger(props: { run: Run; revision: string }) {
   // 执行完毕的轮次不会再有新请求，判据中不包含账本修订号，否则每写入一步都会
-  // 重取一张不再变化的表。
+  // 重新获取一张不再变化的表。
   const [data] = createResource(
     () => `${props.run.id}:${props.run.finishedAt === null ? props.revision : ''}`,
     () => client.api<{ requests: ProviderRequest[] }>(`/api/runs/${props.run.id}/requests`),
@@ -357,7 +357,7 @@ function RequestLedger(props: { run: Run; revision: string }) {
                 )
               }}
             </For>
-            {/* 生成行：请求列显示类别，模型名放在 title 中：面板较窄，表格宽度增加十几像素即会裁掉最右一列；
+            {/* 生成行：请求列显示类别，模型名放在 title 中：面板较窄，表格宽度增加十余像素即会裁切最右一列；
                 按模型统计的费用在「用量」页。输出列显示接口返回的数量（张 / 秒 / 字符，Art 为输出 token），没有输入与缓存数据。
                 生成模型只有成功的生成才有对应行（各服务商对失败的生成均不计费）；Art 收到用量即有对应行（对话接口对不完整的回复
                 同样计费），页面是否取得由画布卡片与工具回执报告。结果列表示请求已完成并计费，显示「已完成」。 */}
@@ -462,12 +462,12 @@ function money(cost: Record<string, number>): string {
  */
 const NA = 'N/A'
 
-/** 读数卡里的计数。 */
+/** 读数卡中的计数。 */
 function maybeCount(n: number | null): string {
   return n === null ? NA : compact(n)
 }
 
-/** 表格里的计数。 */
+/** 表格中的计数。 */
 function num(n: number | null): string {
   return n === null ? NA : n.toLocaleString()
 }

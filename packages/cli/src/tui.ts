@@ -7,11 +7,11 @@
  * 代价是界面较为简单，收益是在任何终端中都能运行。
  *
  * **与 `qy exec` 的关键区别。** 它不是「exec 加一个循环」。**会话是连续的**：同一个 conversationId 跨轮
- * 复用，因此模型能看到上一轮的内容，提示缓存也能命中。exec 每次都是新会话，这正是单次执行
+ * 复用，因此模型能取得上一轮的内容，提示缓存也能命中。exec 每次都是新会话，这正是单次执行
  * 应有的语义，两者不能合并。
  *
  * **Ctrl-C。** 运行中按下 = 中断本轮，**不退出**。空闲时按下 = 退出。
- * 进程退出会连带终止执行到一半的任务，后果比中断本身严重得多。
+ * 进程退出会一并终止尚未执行完毕的任务，后果比中断本身严重得多。
  */
 
 import { Ports, provide } from '@qywork/agent'
@@ -88,7 +88,7 @@ export async function runTui(workspaceRoot: string): Promise<number> {
 
   const onSigint = () => {
     if (running) {
-      // 中断本轮，不退出。进程退出会连带终止执行到一半的任务，后果比中断本身严重得多。
+      // 中断本轮，不退出。进程退出会一并终止尚未执行完毕的任务，后果比中断本身严重得多。
       running.abort()
       process.stderr.write(`\n${DIM}已中断${RESET}\n`)
       return

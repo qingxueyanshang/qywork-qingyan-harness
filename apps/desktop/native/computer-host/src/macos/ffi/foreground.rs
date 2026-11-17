@@ -37,7 +37,7 @@ use crate::protocol::{
     classify_input, key_name, ActionSpec, Dispatch, Modifier, MouseButton, WindowState,
 };
 
-/// 一次拖拽分段移动的段数。一次移动到终点时，被拖拽的控件收不到中间的移动事件。
+/// 一次拖拽分段移动的段数。一次移动到终点时，被拖拽的控件不会收到中间的移动事件。
 const DRAG_STEPS: u32 = 12;
 /// 拖拽相邻两段之间的间隔。
 const DRAG_STEP_MS: u64 = 16;
@@ -188,7 +188,7 @@ fn drag(target: &Target<'_>, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool)
     let Some(destination) = aim.destination else {
         return Attempt::Refused("missing_target: 拖拽没有终点".to_owned());
     };
-    // 终点同样必须位于目标窗口内：拖到其他窗口上等于把本次释放交给另一个应用。
+    // 终点同样必须位于目标窗口内：拖动到其他窗口上等于把本次释放交给另一个应用。
     match walk::placed(target.number) {
         None => return Attempt::Refused("target_lost: 窗口已不存在".to_owned()),
         Some(placed) if !placed.frame.window.contains(destination) => {

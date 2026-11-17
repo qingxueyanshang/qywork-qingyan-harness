@@ -90,7 +90,7 @@ export interface BrowserObservation {
   /** 观察编号。动作必须携带该编号；重新观察即更换编号，旧编号作废。 */
   observationId: string
   elements: BrowserElement[]
-  /** 元素数超过上限而被截断。调用方须知道本页不是全部元素。 */
+  /** 元素数超过上限而被截断。调用方须得知本页不是全部元素。 */
   truncated: boolean
   /**
    * 当前尚未采集到内容的跨站 iframe 的帧编号。
@@ -220,7 +220,7 @@ export interface BrowserActReceipt {
   execution?: BrowserExecution
   /** `fill` 写入后控件中的实际值。 */
   value?: string
-  /** `fill` 写入的值与给定文本不一致：控件已按自身类型规范化，例如日期去掉了秒。 */
+  /** `fill` 写入的值与给定文本不一致：控件已按自身类型规范化，例如日期去除了秒。 */
   normalized?: boolean
 }
 
@@ -324,7 +324,7 @@ export interface BrowserPort {
    * 地址栏级导航。`goto` 必须带 url，其余三种不带。
    *
    * 返回导航之后的观察，不另外返回 tab/url/title：观察中的实际地址是唯一真源。
-   * 导航被拒（`errorText`）时抛出错误，不以旧页快照冒充跳转成功。
+   * 导航被拒（`errorText`）时抛出错误，不以旧页快照报告跳转成功。
    */
   navigate(input: {
     tabId: string

@@ -34,7 +34,7 @@ async function waitFor(done: () => boolean, detail: () => string) {
     if (done()) return
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
-  throw new Error(`界面没有在时限内更新：${detail()}`)
+  throw new Error(`界面未在时限内更新：${detail()}`)
 }
 
 function run(id: string, cost: number, currency: 'USD' | 'CNY') {
@@ -159,7 +159,7 @@ describe('运行页', () => {
 
     await waitFor(
       () => host.querySelectorAll('.run-row').length === 3,
-      () => `清单里只有 ${host.querySelectorAll('.run-row').length} 行`,
+      () => `清单中只有 ${host.querySelectorAll('.run-row').length} 行`,
     )
     const roles = [...host.querySelectorAll('.run-role')].map((el) => el.textContent)
     expect(roles.sort()).toEqual(['GLM 车组', 'Qwen 车组'])
@@ -240,7 +240,7 @@ describe('运行页', () => {
 
     await waitFor(
       () => host.querySelectorAll('.run-row').length === 3,
-      () => `清单里只有 ${host.querySelectorAll('.run-row').length} 行`,
+      () => `清单中只有 ${host.querySelectorAll('.run-row').length} 行`,
     )
     const rows = [...host.querySelectorAll('.run-row')]
     // 倒序：rn_b、未记录轮次的条目、rn_a；带 runId 的条目不显示。
@@ -326,7 +326,7 @@ describe('运行页', () => {
 
     await waitFor(
       () => host.querySelectorAll('.run-row').length === 1,
-      () => `清单里有 ${host.querySelectorAll('.run-row').length} 行`,
+      () => `清单中有 ${host.querySelectorAll('.run-row').length} 行`,
     )
     const row = host.querySelector<HTMLButtonElement>('.run-row')!
     expect(row.querySelector('.run-money')?.textContent).toBe('¥0.18 + $0.01')
@@ -393,7 +393,7 @@ describe('运行页', () => {
 
     await waitFor(
       () => host.querySelectorAll('.run-row').length === 1,
-      () => `清单里有 ${host.querySelectorAll('.run-row').length} 行`,
+      () => `清单中有 ${host.querySelectorAll('.run-row').length} 行`,
     )
     host.querySelector('.run-row')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await waitFor(
@@ -438,7 +438,7 @@ describe('运行页', () => {
 
     await waitFor(
       () => host.querySelectorAll('.run-mark').length === 2,
-      () => `清单里有 ${host.querySelectorAll('.run-mark').length} 个标记`,
+      () => `清单中有 ${host.querySelectorAll('.run-mark').length} 个标记`,
     )
     const marks = [...host.querySelectorAll('.run-mark')].map((el) => [
       el.textContent,

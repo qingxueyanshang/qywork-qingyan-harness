@@ -23,7 +23,7 @@ export const [personalizationError, setPersonalizationError] = createSignal<stri
  */
 export const [personalizationChange, setPersonalizationChange] = createSignal<number | null>(null)
 
-/** 编辑停顿多久后保存。拖动滑块时每一帧都预览，只在停顿后写入一次。 */
+/** 编辑停顿达到该时长后保存。拖动滑块时每一帧都预览，只在停顿后写入一次。 */
 const DRAFT_SAVE_MS = 250
 
 let draftTimer: ReturnType<typeof setTimeout> | undefined
@@ -33,7 +33,7 @@ let draftsInFlight = 0
  * 有尚未写入或正在写入的编辑。
  *
  * 期间不按 `personalization.changed` 重新读取：先到达的是较早一次保存的结果，
- * 重新读取会使正在拖动的滑块跳回旧值，再随下一次保存跳回。
+ * 重新读取会使正在拖动的滑块回到旧值，再随下一次保存恢复。
  */
 function drafting(): boolean {
   return draftTimer !== undefined || draftsInFlight > 0
@@ -109,7 +109,7 @@ export async function setPersonalImage(name: string, bytes: Blob): Promise<void>
 }
 
 /**
- * 连接就绪时读取；个性化变更时重新读取（有未写入的编辑时不读）。
+ * 连接就绪时读取；个性化变更时重新读取（有未写入的编辑时不读取）。
  *
  * 由入口在挂载后调用，不在模块顶层执行：顶层的 effect 会随 import 在单测中运行并发起请求。
  * 每次重新连接都重新读取：断线期间个性化可能已在别处修改，期间的 `personalization.changed` 已丢失。

@@ -2,7 +2,7 @@
  * 摘要生成器：使用会话当前的 provider 档案，独立于主循环发送一次请求。
  *
  * 自动触发与手动 `/compact` 共用此实现。两份装配会逐渐偏离，且偏离难以
- * 发现：两条路径都能产出摘要，无法看出口径已经不同。
+ * 发现：两条路径都能产出摘要，无法判断口径已经不同。
  */
 
 import {
@@ -51,7 +51,7 @@ export interface SummarizerOptions {
  * 绕过名额的请求在第三方饱和时不排队，收到的并发拒绝也不会收紧上限。
  *
  * 预算单位是 token，直接作为 `max_tokens` 申报。以 `max_tokens` 结束的调用返回
- * null：不完整的摘要比没有摘要更有害，因为它看起来是完整的。
+ * null：不完整的摘要比没有摘要更有害，因为它在形式上是完整的。
  */
 export function makeSummarizer(opts: SummarizerOptions): Summarizer {
   return async (prompt, budgetTokens, trace) => {
@@ -65,7 +65,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
     const willThink = effort !== undefined || adapter.spec.thinksByDefault
 
     let text = ''
-    /** 摘要被输出上限截断。截断的摘要一律不采用：不完整的摘要看起来是完整的。 */
+    /** 摘要被输出上限截断。截断的摘要一律不采用：不完整的摘要在形式上是完整的。 */
     let truncated = false
     let finish: string | undefined
     // 自动与手动摘要的请求和花费都由 trace 写回所属轮次。
@@ -97,7 +97,7 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
     /*
      * 暂时故障（连接失败、空闲超时、上游暂时不可用、限流）按主请求的同一规则重发：同一失败码集合
      * （`transientErrorCode`）、同一次数上限与退避（`RESEND_LIMIT`、`resendDelay`）。不重发时，一次 503
-     * 即使手动压缩只完成收纳、摘要未完成，而同一时刻的主请求会自行恢复。
+     * 即导致手动压缩只完成收纳、摘要未完成，而同一时刻的主请求会自行恢复。
      */
     for (let resends = 0; ; resends++) {
       text = ''

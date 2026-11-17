@@ -1,7 +1,7 @@
 /*
  * 画布页（`components/canvas/`）。颜色、圆角、阴影、动效全部取自 tokens.css；
  * 只有一种彩色渐变，仅表示「正在生成」（与读数条 `.run-galaxy`、会话工作流图使用同一组色标）。
- * 每个浮层自带一条完整规则，不与别的浮层共用选择器（B8）。
+ * 每个浮层自带一条完整规则，不与其他浮层共用选择器（B8）。
  */
 
 .canvas-stage {
@@ -121,7 +121,7 @@
   pointer-events: none;
 }
 /*
- * 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变 + 虚线流动，由流动虚线层（`Flow.tsx`）用 WebGL 绘制，
+ * 流向正在生成的卡片的连线：与 `.run-galaxy` 相同的渐变 + 虚线流动，由流动虚线层（`Flow.tsx`）用 WebGL 绘制，
  * 此处的路径不描边。无法使用 WebGL 时此处显示静止的渐变虚线。
  */
 .canvas-edges path.live {
@@ -217,7 +217,7 @@
   object-fit: cover;
 }
 /* Art 实时页面：按 viewport 声明的尺寸布局，再整体缩放到节点框（比例写在内联 transform 中）。
-   页面背景透明时与浏览器一样显示为白色。 */
+   页面背景透明时显示为白色，与浏览器的处理相同。 */
 .canvas-art-frame {
   position: absolute;
   left: 0;

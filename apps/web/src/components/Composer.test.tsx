@@ -404,7 +404,7 @@ describe('放大面板中的输入区', () => {
       expect(wrap.classList.contains('panel-dock-open')).toBe(true)
 
       input(textarea, '还没发送的草稿')
-      // 收起的延迟由假计时器推进。失焦在微任务中处理：先让出一轮事件循环使其完成，
+      // 收起的延迟由模拟计时器推进。失焦在微任务中处理：先让出一轮事件循环使其完成，
       // 再推进超过延迟，收起的判定随之执行。
       jest.useFakeTimers()
       textarea.blur()

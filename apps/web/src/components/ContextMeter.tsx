@@ -144,7 +144,7 @@ export function ContextMeter() {
     <Show
       when={state.context}
       fallback={
-        // 读取失败时显示 N/A，原因在悬停提示中；不显示时读数整体消失，用户看不到原因。
+        // 读取失败时显示 N/A，原因在悬停提示中；不显示时读数整体消失，用户无法得知原因。
         <Show when={state.contextError}>
           {(e) => (
             <span class="ctx-wrap">

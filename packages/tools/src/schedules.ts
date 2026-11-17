@@ -101,7 +101,7 @@ export const createScheduleTool: ToolSpec = {
     '不再需要时用 delete_schedule 停止。' +
     '仅当用户明确要求该任务每次触发时新建会话，才传 new_conversation=true，不要按任务内容自行判断。' +
     // 逐条写明条件必填参数。`diagnoseSchedule` 在运行时才拦截，
-    // 只依靠它时，模型需要浪费一轮往返才知道应提供哪个参数。
+    // 只依靠它时，模型需要多一轮往返才能确定应提供哪个参数。
     'kind="interval" 时必须提供 every_minutes（分钟）；' +
     'kind="daily" 时必须提供 at_hour(0–23) 与 at_minute(0–59)，使用本机时区。' +
     '两组参数不能混用，也没有默认值：缺失时报错，不使用默认时间。' +

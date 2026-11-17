@@ -15,7 +15,7 @@
  *
  * 已安装不等于可用，因此必须实际执行一次。`detectSandbox()` 不以 `which` 的结果为准，
  * 而是实际执行一次空命令。Ubuntu 24.04+ 默认禁用无特权用户命名空间，此时 bwrap 位于 PATH 中，
- * 但任何命令都无法运行；只查 `which` 会报告有边界，这是最严重的误报：
+ * 但任何命令都无法运行；只检查 `which` 会报告有边界，这是最严重的误报：
  * 用户会据此认为 shell 已受约束。
  *
  * macOS 后端同样依靠自检保证：本仓库没有 Mac 测试环境，profile 生成只有纯函数测试；
@@ -64,8 +64,8 @@ export interface SandboxPolicy {
    * 条目可以是文件或目录（`--ro-bind-try` 两者都支持）。
    *
    * 与文件工具的 `PROTECTED_DIRS` 是同一约束的两种实现：
-   * 前者拦截工具参数，本字段拦截 shell。两侧都必须存在：
-   * 在没有沙箱的平台上，shell 一侧只剩静态规则的文本匹配。
+   * 前者拦截工具参数，本字段拦截 shell。没有内核沙箱的平台（Windows）上 shell 一侧不拦截：
+   * 命令裁决有意不设 `.qy` 规则，理由见 `agent/policy.ts`。
    */
   readOnlySubdirs?: readonly string[]
   /**
@@ -139,7 +139,7 @@ const PROBE_POLICY: SandboxPolicy = { workspaceRoot: '/tmp', maskPaths: [] }
 /**
  * 实际执行一次，确认该后端在本机可用。
  *
- * 不能只查 `which`：二进制位于 PATH 中与能够创建命名空间是两个条件，二者不一致的
+ * 不能只检查 `which`：二进制位于 PATH 中与能够创建命名空间是两个条件，二者不一致的
  * 情况很常见：
  *
  * - Ubuntu 24.04+ 默认开启 `kernel.apparmor_restrict_unprivileged_userns`，
@@ -148,7 +148,7 @@ const PROBE_POLICY: SandboxPolicy = { workspaceRoot: '/tmp', maskPaths: [] }
  * - 无特权容器中 `--proc` 不可用。
  * - macOS 的 `sandbox-exec` 会因 profile 语法或 SIP 策略拒绝执行。
  *
- * 只查 `which` 时会报告有边界，而实际任何命令都无法运行；
+ * 只检查 `which` 时会报告有边界，而实际任何命令都无法运行；
  * 这一方向的误报最严重：用户会据此认为 shell 已受约束。
  *
  * 返回 `null` 表示可用；返回字符串表示不可用及其原因。
@@ -278,7 +278,7 @@ function probe(): SandboxStatus {
  *
  * 只屏蔽选定的目录，不使整个家目录不可见。屏蔽整个家目录时，`~/.gitconfig`、`~/.npmrc`、
  * nvm/rustup/pyenv 全部不可见，`git commit` 没有作者、`npm install` 使用其他 registry、`node` 可能
- * 无法定位。用户开启一次这样的沙箱就会关闭，关闭后不剩任何防护。
+ * 无法定位。这样的沙箱无法正常使用，用户关闭沙箱后没有任何防护。
  *
  * 要防范的是向本机之外的泄露，与 `secrets.ts` 的口径一致。按此口径，
  * 家目录中有风险的是凭证文件而非配置文件。因此家目录整体只读（写边界照常生效），
@@ -307,7 +307,7 @@ export function defaultMaskPaths(home = homedir(), globalRoot = globalScopeRoot(
   ]
 }
 
-/** `p` 是否位于 `dir` 之中或就是它。两者都是规范化后的 POSIX 绝对路径。 */
+/** `p` 是否位于 `dir` 之中或即为 `dir`。两者都是规范化后的 POSIX 绝对路径。 */
 function inside(dir: string, p: string): boolean {
   return p === dir || p.startsWith(dir === '/' ? '/' : `${dir}/`)
 }
@@ -429,7 +429,7 @@ export function buildBwrapArgv(
   return args
 }
 
-/** 去掉尾部斜杠，根目录 `/` 除外。 */
+/** 去除尾部斜杠，根目录 `/` 除外。 */
 function trimSlash(p: string): string {
   return p.length > 1 && p.endsWith('/') ? p.slice(0, -1) : p
 }
@@ -539,7 +539,7 @@ function dedupe(items: readonly string[]): string[] {
   const out: string[] = []
   for (const raw of items) {
     if (!raw || !isAbsolute(raw)) continue
-    // 只做 posix 规范化（去掉重复斜杠与尾部斜杠），不做 resolve：
+    // 只做 posix 规范化（去除重复斜杠与尾部斜杠），不做 resolve：
     // resolve 会把结果拼接到本机 cwd 上，而此处的路径供另一个内核使用。
     const p = trimSlash(normalize(raw))
     if (seen.has(p)) continue

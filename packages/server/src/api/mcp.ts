@@ -30,13 +30,13 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
   /**
    * 已连接的 server 及其提供的工具。
    *
-   * 失败项与成功项一并返回：连接失败的 server 是用户最需要看到的部分。
+   * 失败项与成功项一并返回：连接失败的 server 是界面最需要显示的部分。
    * `unsupported` 同样返回：该字段用于消除「握手成功但没有任何工具」这种静默失败。
    */
   if (p === '/api/mcp' && req.method === 'GET') {
     /*
      * 使用引用计数，与 release 配对。直接调用 `loadExtensions` 会为每次请求启动一批新的
-     * 插件与 MCP 子进程且无人关闭，每打开一次该页面即泄漏一套。异常路径同样需要 release，
+     * 插件与 MCP 子进程且无人关闭，每打开一次该页面即泄漏一组子进程。异常路径同样需要 release，
      * 因此使用 try/finally。与 `/api/tools` 相同。
      *
      * 另一作用：此处返回的必须是模型持有的同一份扩展。另行启动一份时，配置刚修改后
@@ -86,7 +86,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
    * 不另行识别键名。
    *
    * 同名不覆盖：本层已有同名 server 时整个请求返回 409 并列出名称，
-   * 不从中选择一个保留。覆盖会直接抹掉用户自己配置的条目，且没有任何提示。
+   * 不从中选择一个保留。覆盖会直接删除用户自行配置的条目，且没有任何提示。
    *
    * 写回时使用本层已在使用的键：解析器同时识别两个键但只取其中一个，
    * 且 `servers` 优先。本层原文使用 `servers` 而此处写入 `mcpServers` 时，
@@ -103,7 +103,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
     if (raw === null) return json({ error: 'invalid', message: `无法读取该文件：${src}` }, 422)
     const incoming = parseMcpConfig(raw)
     const names = Object.keys(incoming.servers)
-    // 解析不出任何条目时拒绝：指定了错误的文件时会报告导入成功而列表不变，
+    // 未解析出任何条目时拒绝：否则指定了错误的文件时会报告导入成功而列表不变，
     // 用户无从得知原因。`error` 中是被忽略条目的原因。
     if (incoming.error || names.length === 0) {
       return json(

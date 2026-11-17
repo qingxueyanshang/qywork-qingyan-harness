@@ -301,7 +301,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
             if (!slot.name && name) slot.name = name
             continue
           }
-          // 未收到 added 事件时同样接收该调用：第三方接口漏发增量事件时，
+          // 未收到 added 事件时同样接收该调用：第三方接口未发送增量事件时，
           // 丢弃该调用等于模型调用了工具而本地视为未调用，模型下一轮会重复调用。
           // 名称未到达时同样建立槽位：能否执行由 `collectToolCalls` 统一裁决，
           // 在此处 `continue` 会使该调用从账本中完全消失。
@@ -465,7 +465,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
  *
  * 不能是空串：DeepSeek 对空 `reasoning_text` 的处理与「未传」完全相同，
  * 同样返回 400。同时占位文本必须是一句说明，不得虚构看似真实的思考：
- * 那等于向模型的历史中写入其未生成过的内容。
+ * 虚构的思考等于向模型的历史中写入其未生成过的内容。
  */
 const LOST_REASONING = '(上一轮的思考内容未能保留)'
 

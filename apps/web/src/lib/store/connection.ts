@@ -31,8 +31,8 @@ wireClient({
   // 握手携带的忙闲快照直接整表替换：它是服务端当前的完整状态，不是增量。
   onBusy: (ids) => syncBusy(ids),
   onResync: () => {
-    // 无法补齐缺口：清空本地投影并重新拉取，不在不完整的 transcript 上继续。
-    // 缺口两侧或新旧两段事件流的序号不可比较，实时读数的序号归零，由重新拉取的快照重新确定；
+    // 无法补齐缺口：清空本地投影并重新获取，不在不完整的 transcript 上继续。
+    // 缺口两侧或新旧两段事件流的序号不可比较，实时读数的序号归零，由重新获取的快照重新确定；
     // 不归零时，服务端重启后序号从头开始，新事件与新快照都会被判为旧数据而丢弃。
     setState(
       produce((s) => {
@@ -46,13 +46,13 @@ wireClient({
   },
   onStreamChanged: () => {
     /*
-     * 桌面源码开发采用「前后端原子换代」：Vite 不先热替换页面，所有源码改动都先
-     * 等待当前 run 执行完毕，再由 dev.ts 重启 sidecar。streamId 变更是后端换代完成的
+     * 桌面源码开发时前后端整体同步更新：Vite 不先热替换页面，所有源码改动都先
+     * 等待当前 run 执行完毕，再由 dev.ts 重启 sidecar。streamId 变更是后端重启完成的
      * 可靠信号，此时刷新整页，才会加载与后端同一版本源码的 UI。
      * 该标志由 dev.ts 设置，同时作用于 Vite 页面与 dev.ts 为远程访问构建的产物：
-     * 开发实例的令牌在换代间不变，远程页面不会经 `unauthorized` 重新打开，只能在此刷新。
+     * 开发实例的令牌在重启前后不变，远程页面不会经 `unauthorized` 重新打开，只能在此刷新。
      *
-     * 不能把刷新挂到普通 reconnect 或 resync 上：网络闪断也会触发这两条路径，
+     * 不能在普通 reconnect 或 resync 时刷新：网络短暂中断也会触发这两条路径，
      * 手机端与打包版不应因此整页刷新。
      */
     if (import.meta.env.VITE_QYWORK_COORDINATED_RELOAD === '1') {
@@ -100,14 +100,14 @@ const UNKNOWN_EVENT: Entry<AgentEvent> = {}
  * 处理器中不要再判断归属：分散到各处理器后每一处都可能遗漏（B4）。分工只在此处判定。
  *
  * 写入 transcript 的事件都要求此刻的界面内容完整：读数条、错误卡与工具卡读取同一份
- * transcript，不能读到只输出了一部分的正文。因此折叠之前先 flush 全部缓冲，条目标注
+ * transcript，不能读取只输出了一部分的正文。因此折叠之前先 flush 全部缓冲，条目标注
  * `flush: false` 的除外。
  */
 export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   const ev = frame.event
   /*
    * 界面与服务端的版本可能不同步：远程访问时界面可能是按设备缓存的较早副本，应用更新后
-   * 服务端会发送该界面不认识的事件类型。未知事件按会话事件的规则判定归属并 flush 缓冲，
+   * 服务端会发送该界面无法识别的事件类型。未知事件按会话事件的规则判定归属并 flush 缓冲，
    * 随后忽略，不得抛出。
    */
   const entry =

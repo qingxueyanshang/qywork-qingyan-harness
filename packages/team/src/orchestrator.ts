@@ -85,8 +85,8 @@ const RESUME_INSTRUCTION =
 /**
  * 推进一次。**不修改入参**：状态如何写入由调用方负责。
  *
- * 审查不成立（检查点不存在、重复批准、指定的节点尚未到达终态）时直接抛错：这是模型写错了
- * 参数，错误必须原样返回，不能简化为「工具执行出错」。
+ * 审查不成立（检查点不存在、重复批准、指定的节点尚未到达终态）时直接抛出异常：这是模型填写的
+ * 参数有误，错误必须原样返回，不能简化为「工具执行出错」。
  */
 export function advance(input: AdvanceInput): AdvanceResult {
   const { plan, goal, maxConcurrent } = input
@@ -209,7 +209,7 @@ function applyReview(
   /*
    * 作废范围内的节点也不能处于执行中：修订把它们重置为等待，再次派发时其子 agent 仍在执行而被拒绝；
    * 原执行完毕时的终态写在较早的卡片上，折叠时被修订卡片上的状态覆盖，其产出不再送达。
-   * 只在此处检查，不放入 `applyRevision`：折叠回放的是已接受的修订，回放读到的节点状态可能写于该次修订之后。
+   * 只在此处检查，不放入 `applyRevision`：折叠回放的是已接受的修订，回放读取到的节点状态可能写于该次修订之后。
    */
   const closure = revisionClosure(
     plan,
@@ -310,7 +310,7 @@ export function validatePlan(plan: PlanNode[], known: PlanKnown): void {
       const target = node.target
       if ('subagent' in target) {
         if (!known.subagents.has(target.subagent))
-          throw new Error(`节点 ${node.id} 指向的子 agent ${target.subagent} 不在本会话里`)
+          throw new Error(`节点 ${node.id} 指向的子 agent ${target.subagent} 不在本会话中`)
       } else if (target.kind === 'role' && !known.roles.has(target.role)) {
         throw new Error(`节点 ${node.id} 引用了不存在的角色 ${target.role}`)
       } else if (target.kind === 'cli' && !known.clis.has(target.cli)) {

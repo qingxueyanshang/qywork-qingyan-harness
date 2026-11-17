@@ -75,7 +75,7 @@ type DesktopResultContext = Pick<
 type Actions = DesktopElement['actions']
 
 /**
- * 交给模型的控件：`actions` 替换为 `actionSets` 的下标，省略与 `DEFAULTS` 相同的字段。
+ * 提供给模型的控件：`actions` 替换为 `actionSets` 的下标，省略与 `DEFAULTS` 相同的字段。
  * 大表视图中超长的名称与值只保留前缀，并标明省略的字数。
  *
  * 不含 `parentRef`：控件按前序排列，父控件是前面最近的、`depth` 小一层的控件。额外附带
@@ -117,7 +117,7 @@ export interface DesktopResultInput {
   /**
    * 动作或等待之前该窗口的完整控件表（端口返回的整份）。大表视图中，相对它新增或改变的控件及其祖先
    * 排在其余控件之前：动作展开的子项、弹出的菜单项在前序中靠后时，按前序截取不会投递它们，
-   * 模型看不到动作的结果，只能重复动作或重复观察。没有时为 null。
+   * 模型无法看到动作的结果，只能重复动作或重复观察。没有时为 null。
    */
   before?: readonly DesktopElement[] | null
   /** 视图只列命中这些条件的控件及其祖先。 */
@@ -636,7 +636,7 @@ function noteOf(delivery: Delivery): string {
   if (delivery.resourceId !== undefined) {
     return `${head} · 完整控件表 ${delivery.resourceId}，用 read_resource 读取`
   }
-  return `${head} · 完整控件表未保存 · ${delivery.unsaved} · 未返回的部分无法回读`
+  return `${head} · 完整控件表未保存 · ${delivery.unsaved} · 未返回的部分无法读取`
 }
 
 function resourceRef(landed: LandedResult): IntermediateResourceRef {
@@ -789,7 +789,7 @@ function costOf(item: unknown, density: TokenDensity): number {
   return deliveredTokens(`${JSON.stringify(item)},`, density)
 }
 
-/** 整条结果中交给模型部分的大小。 */
+/** 整条结果中提供给模型的部分的大小。 */
 function tokensOf(parts: DesktopResultParts, density: TokenDensity): number {
   return deliveredTokens(JSON.stringify(parts), density)
 }

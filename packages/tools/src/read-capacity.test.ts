@@ -105,7 +105,7 @@ describe('整份优先', () => {
 
 describe('无法容纳时部分投递并给出续读位置', () => {
   /** 占用接近软阈值（790K / 800K）时余量只有 10K：投递可容纳的部分，不拒绝。 */
-  test('投递可容纳的最长行前缀，沿 nextOffset 续读可逐行拼回整份', async () => {
+  test('投递可容纳的最长行前缀，沿 nextOffset 续读可逐行拼接出整份内容', async () => {
     const root = await workspace()
     const r = registry()
     const first = await r.execute('read_file', { path: 'big.ts' }, ctx(root, 10_000))

@@ -5,7 +5,13 @@
 import type { ProviderEvent, WireMessage } from '@qywork/ai'
 import { estimateRequest, failureDiagnostics, ProviderError, providerContentKind } from '@qywork/ai'
 import type { AgentEvent, ProviderRetryDecision, StepId } from '@qywork/core'
-import { log, RESEND_LIMIT, resendDelay } from '@qywork/core'
+import {
+  log,
+  RESEND_LIMIT,
+  resendDelay,
+  TRANSIENT_RETRY_DELAYS_MS,
+  transientRetryDelay,
+} from '@qywork/core'
 import { concurrencyRejected, type SendOutcome, sendLane, sendLimiter } from '../send-limit.ts'
 import { videoMetaOf } from '../video-meta.ts'
 import { recoverFromOverflow } from './compact.ts'
@@ -27,18 +33,18 @@ import type { LoopHost, RunState, TurnState } from './run-state.ts'
 const NEWLINE = String.fromCharCode(10)
 
 /**
- * 会自动重发的失败码。次数上限为 `RESEND_LIMIT`（`core`），**对集合中的每个码一视同仁**；等待时长见 `resendBackoffMs`。
+ * 会自动重发的失败码。次数上限见 `resendLimitOf`，**对集合中的每个码一视同仁**；等待时长见 `resendBackoffMs`。
  *
  * 重发形式由尝试循环按正文是否已显示决定：未显示时原样重发；已显示时把正文作为
- * 上一条消息推进 transcript，携带当前上下文续发。两种形式共用同一上限，续发的下一轮
+ * 上一条消息推进 transcript，携带当前上下文继续发送。两种形式共用同一上限，继续发送的下一轮
  * 沿用上一轮的计数（`carriedResends`）。
  *
  * 该集合只决定「是否重发」，**不决定「以何种形式重发」**：原样重发还是携带当前上下文
- * 续发，由尝试循环按正文是否已显示决定。
+ * 继续发送，由尝试循环按正文是否已显示决定。
  *
  * 不要以「重发需要多支付一次长 prompt 的费用」为由移除 `provider_unavailable`：
- * 不重发时用户需要手动继续，那一次支付的是同样的费用，而且 run 已被写为 failed，
- * 新消息还需让模型重新理解上一轮的进度。
+ * 不重发时用户需要手动继续，支付的是同样的费用；且 run 已记为 failed，
+ * 新消息还需模型重新理解上一轮的进度。
  *
  * **`invalid_request` 不在集合中，不要加入。** 该码的定义是「同一份字节再发一次
  * 得到同一个拒绝」（`ai/errors.ts` 中 400 / 413 / 422 的分支），加入后只会把真正的原因
@@ -58,8 +64,8 @@ const RESENDABLE_CODES: ReadonlySet<string> = new Set([
 ])
 
 /**
- * 失败码是否属于暂时故障。子 agent 的一轮以这些失败码结束时，派发方按暂时故障的间隔重新派发
- * （`server/delegate.ts`），与本轮内的重发使用同一个集合，不另立一份分类。
+ * 失败码是否属于暂时故障。摘要请求（`runtime/summarizer.ts`）与 art 卡片请求（`runtime/art.ts`）的重试
+ * 与本轮内的重发使用同一个集合，不另立一份分类。
  */
 export function transientErrorCode(code: string): boolean {
   return RESENDABLE_CODES.has(code)
@@ -68,13 +74,16 @@ export function transientErrorCode(code: string): boolean {
 /**
  * 重发前的等待时长。不可重发的失败返回 undefined。
  *
- * **可重发的失败一律先等待**，时长由 `resendDelay`（`core`）按指数退避与上游给出的 `Retry-After` 计算，
- * 与生成的重试相同。不要在此另行处理 `Retry-After`：连接层失败或上游给出 0 秒后立即原样重发不能加快恢复，
- * 只会在对端仍不可用时把五次额度在几毫秒内耗尽。
+ * **可重发的失败一律先等待**。顶层会话的时长由 `resendDelay`（`core`）按指数退避与上游给出的 `Retry-After` 计算，
+ * 与生成的重试相同；子 agent 的轮次（`transientResend`）按暂时故障的间隔表 `transientRetryDelay` 等待。
+ * 不要在此另行处理 `Retry-After`：连接层失败或上游给出 0 秒后立即原样重发不能加快恢复，
+ * 只会在对端仍不可用时在数毫秒内用尽次数。
  */
-function resendBackoffMs(error: ProviderError, resends: number): number | undefined {
+function resendBackoffMs(run: RunState, error: ProviderError, resends: number): number | undefined {
   if (!RESENDABLE_CODES.has(error.code)) return undefined
-  return resendDelay(resends, error.retryAfterMs)
+  return run.input.transientResend
+    ? transientRetryDelay(resends, error.retryAfterMs)
+    : resendDelay(resends, error.retryAfterMs)
 }
 
 /**
@@ -83,7 +92,7 @@ function resendBackoffMs(error: ProviderError, resends: number): number | undefi
  * 分类短语由 `ai` 包的传输层与错误归类给出，它们无法取得静默时长，
  * 也无法得知本次是否收到过数据；而这两项用于区分请求未送达（未收到任何字节）
  * 与生成中断（收到数据后停止）。只有 `ProviderError.timedOut` 为真时才调用本函数，
- * 立即断流与协议失败不能借静默时长伪装成超时。
+ * 立即断流与协议失败不附带静默时长，不报告为超时。
  *
  * 该读数只在此处拼装，全项目没有第二个拼装处。
  */
@@ -91,6 +100,28 @@ function transportReading(receivedResponse: boolean, silentMs: number): string {
   const secs = Math.round(silentMs / 1000)
   if (!receivedResponse) return `${secs} 秒未收到响应`
   return `${secs} 秒未收到后续数据`
+}
+
+/** 一次请求的自动重发上限：子 agent 的轮次（`transientResend`）为间隔表的长度，其余为 `RESEND_LIMIT`。 */
+function resendLimitOf(run: RunState): number {
+  return run.input.transientResend ? TRANSIENT_RETRY_DELAYS_MS.length : RESEND_LIMIT
+}
+
+/** 报错的第一行：分类短语。多行的报错正文只在第一行给出分类。 */
+function headlineOf(pe: ProviderError): string {
+  return pe.message.split(NEWLINE)[0]?.trim() || '模型服务出错'
+}
+
+/**
+ * 本次尝试的思考写为失败终态并通知前端：所属请求失败，且失败时尚未输出正文。
+ *
+ * 重发之前与本轮以失败结束之前都经由本函数。只在重发之前处理时，重发次数用尽的那一次尝试的思考
+ * 在账本与界面上记为已完成，与此前被中断的几次不一致。已输出正文时不处理：该段思考随正文保留。
+ */
+function* abandonThinking(run: RunState, turn: TurnState): Generator<AgentEvent, void, unknown> {
+  if (turn.assistantText !== '' || turn.attemptThinking.length === 0) return
+  run.persist.failThinkingSteps(turn.attemptThinking)
+  yield { type: 'thinking.interrupted', runId: run.input.runId, stepIds: [...turn.attemptThinking] }
 }
 
 /** 一次尝试中 provider 事件的读数，失败时供诊断与超时读数使用。 */
@@ -106,7 +137,7 @@ interface StreamProbe {
 }
 
 /**
- * ── 发送与消费：一次尝试，中断后携带当前上下文重新发送，至多 `RESEND_LIMIT` 次 ──
+ * ── 发送与消费：一次尝试，中断后携带当前上下文重新发送，次数上限见 `resendLimitOf` ──
  *
  * 断开时已收到的内容按两种情形处置，与 `runtime/transcript.ts` 的投影形式一致：
  *
@@ -132,13 +163,17 @@ export async function* sendTurn(
   /** 本轮已开的请求记录行数。`uq_provider_run_turn` 的第三列取该值。 */
   const ledger = { sendIndex: 0 }
   /**
-   * 本轮自动重发的次数。上限为 `RESEND_LIMIT`；携带上下文续发的一轮沿用上一轮的计数。
+   * 本轮自动重发的次数。上限为 `limit`；携带上下文继续发送的一轮沿用上一轮的计数。
    *
    * **不要用 `sendIndex` 代替它计数**：`sendIndex` 还会因压缩后重发而递增，共用同一计数
    * 会使每次压缩都消耗一次重发额度，界面上报告的次数也随之偏高。
    */
   let resends = run.carriedResends
   run.carriedResends = 0
+  const limit = resendLimitOf(run)
+  /** 本轮各次可重发失败的分类短语，按发生顺序；携带上下文继续发送的一轮一并沿用。用尽时写入报错。 */
+  const causes = run.carriedCauses
+  run.carriedCauses = []
   for (;;) {
     turn.attemptThinking = []
 
@@ -163,7 +198,7 @@ export async function* sendTurn(
       providerKind: adapter.kind,
       model: adapter.spec.id,
       measuredInputTokens: measured,
-      // 与 `request_prepared` 时交给界面的读数采用同一估算口径、同一数值。
+      // 与 `request_prepared` 时提供给界面的读数采用同一估算口径、同一数值。
       occupancyTokens: run.meter(measured).tokens,
       // 触发线随主请求写入：面板事后显示的刻度取自该值，不按读取时的设置重算。摘要请求不写。
       configuration: {
@@ -199,7 +234,7 @@ export async function* sendTurn(
         requestId: turn.requestId,
         phase: 'sent',
         attempt: resends,
-        max: RESEND_LIMIT,
+        max: limit,
         at: Date.now(),
       }
       yield* consumeStream(host, run, turn, stream, probe, resends)
@@ -234,7 +269,7 @@ export async function* sendTurn(
           silentMs,
           assistantChars: turn.assistantText.length,
           toolCallCount: turn.calls.length,
-          retry: { decision, attempt, max: RESEND_LIMIT, backoffMs, at },
+          retry: { decision, attempt, max: limit, backoffMs, at },
         })
       }
 
@@ -283,22 +318,24 @@ export async function* sendTurn(
         continue
       }
 
-      // 不在重发集合中的错误原样上抛：provider 已明确说明原因（参数错误、无权限、
+      // 不在重发集合中的错误原样抛出：provider 已明确说明原因（参数错误、无权限、
       // 模型不存在），重发得到的是同一个拒绝。
       if (!pe) {
         recordDecision('not_retryable')
+        yield* abandonThinking(run, turn)
         throw err
       }
-      const backoffMs = resendBackoffMs(pe, resends)
+      const backoffMs = resendBackoffMs(run, pe, resends)
       if (backoffMs === undefined) {
         recordDecision('not_retryable')
+        yield* abandonThinking(run, turn)
         throw err
       }
 
       /*
        * 传输层的原始错误形状只写日志。
        *
-       * `errno` 与 SDK 的英文原文是排查的依据，但对界面是噪音：传输层失败的正文只是分类说明，
+       * `errno` 与 SDK 的英文原文是排查的依据，不在界面显示：传输层失败的正文只是分类说明，
        * 不包含具体错误码。缺少这行日志时，账本中只有分类说明，
        * 事后无法区分 `ECONNRESET`（对端重置）与本地空闲超时中止。
        *
@@ -325,10 +362,11 @@ export async function* sendTurn(
       })
 
       /*
-       * **额度按整轮计算，不按错误码分别计数。** 一轮中先断流再被拒时，之前用掉的
+       * **额度按整轮计算，不按错误码分别计数。** 一轮中先断流再被拒时，之前已使用的
        * 次数照常计入：该轮已实际发送过这些次数，错误码变化不应使计数清零。
        */
-      if (resends < RESEND_LIMIT) {
+      causes.push(headlineOf(pe))
+      if (resends < limit) {
         // 等待起点只取一次，诊断与事件使用同一个值：两处分别取值会使刷新后的
         // 倒计时与实时倒计时相差这两行之间的毫秒数。
         const waitingSince = Date.now()
@@ -338,16 +376,16 @@ export async function* sendTurn(
           /*
            * 正文尚未显示：原样重发，并一并处置本次尝试留下的状态。
            *
-           * - 思考 step 置为失败终态。否则它们与重发那次的思考在同一个 run 中
+           * - 思考 step 置为失败终态（`abandonThinking`）。否则它们与重发那次的思考在同一个 run 中
            *   相邻，投影时被 `pendingReasoning` 拼接为一条回传给 provider。
            * - `open` 必须置空。不置空时，重发后第一个 thinking_delta 经 `stepFor`
            *   命中旧 id，新生成的内容被 `appendText` 拼接到已失败的 step。
            * - `thinkingText` 同理，不清空会导致两次生成首尾相接后一起写入
            *   `reasoningContent`。
-           * - 丢弃未接收完整的工具调用：流正常结束而没有 finish_reason 时，适配器会把它们
-           *   交出，参数可能不完整。
+           * - 丢弃未接收完整的工具调用：流正常结束而没有 finish_reason 时，适配器会产出
+           *   它们，参数可能不完整。
            */
-          persist.failThinkingSteps(turn.attemptThinking)
+          yield* abandonThinking(run, turn)
           turn.open = null
           turn.pendingText = ''
           turn.thinkingText = ''
@@ -359,11 +397,10 @@ export async function* sendTurn(
             runId: input.runId,
             requestId,
             attempt: resends,
-            max: RESEND_LIMIT,
+            max: limit,
             reason: pe.message,
             backoffMs,
             at: waitingSince,
-            failedThinkingStepIds: [...turn.attemptThinking],
           }
           await host.backoff(backoffMs, input.signal)
           continue
@@ -372,7 +409,7 @@ export async function* sendTurn(
         /*
          * 正文已显示：它是模型已输出的内容，作为上一条消息推进 transcript，再开始一轮使模型继续执行。
          * 形式与投影一致（`runtime/transcript.ts`）：正文作为 assistant 消息，未接收完整的
-         * 工具调用不带入。思考一并附上：自动继续后这一条与下一条 assistant 之间没有已落账的
+         * 工具调用不带入。思考一并附上：自动继续后这一条与下一条 assistant 之间没有已写入账本的
          * user 消息，DeepSeek 思考模式要求同一轮中每条 assistant 都带 reasoning_content
          * （与待办守卫自动继续时的理由相同）。
          */
@@ -387,26 +424,32 @@ export async function* sendTurn(
         run.stampUnit(unitStart)
         run.notify('上一条回复在此处中断，其后内容未送达。')
         run.carriedResends = resends
+        run.carriedCauses = causes
         run.turnIndex++
         yield {
           type: 'run.retrying',
           runId: input.runId,
           requestId,
           attempt: resends,
-          max: RESEND_LIMIT,
+          max: limit,
           reason: pe.message,
           backoffMs,
           at: waitingSince,
-          failedThinkingStepIds: [],
         }
         await host.backoff(backoffMs, input.signal)
         return 'continued'
       }
 
-      recordDecision(resends >= RESEND_LIMIT ? 'limit_exhausted' : 'not_retryable')
+      recordDecision(resends >= limit ? 'limit_exhausted' : 'not_retryable')
+      yield* abandonThinking(run, turn)
 
-      /* 分类短语 + 已证实的超时读数 + 自动重发次数，合并为一行。 */
-      const headline = pe.message.split(NEWLINE)[0]?.trim() || '模型服务出错'
+      /*
+       * 分类短语 + 已证实的超时读数 + 自动重发次数 + 此前各次不同的失败原因，合并为一行。
+       * 此前的原因不要省略：子 agent 的失败回执只带这一行，派发方据此判断是否改用其他接口或模型，
+       * 只写最后一次时，前几次的原因（如第三方接口拒绝访问）不出现在回执中。
+       */
+      const headline = headlineOf(pe)
+      const earlier = [...new Set(causes)].filter((cause) => cause !== headline)
       const facts = [
         headline,
         ...(pe.timedOut
@@ -418,6 +461,7 @@ export async function* sendTurn(
             ]
           : []),
         ...(resends > 0 ? [`已重发 ${resends} 次`] : []),
+        ...(earlier.length ? [`此前的失败：${earlier.join('；')}`] : []),
       ]
       throw new ProviderError({
         code: pe.code,
@@ -469,7 +513,7 @@ function rejectedForVideos(run: RunState, turn: TurnState, pe: ProviderError): b
 /**
  * ── 接口拒绝视频：改为抽取关键帧后重发一次 ──
  *
- * 与 `removeImages` 相同：被拒的事实连同接口返回的原因作为执行事实交给模型，本 run 随即停止原生发送视频
+ * 与 `removeImages` 相同：被拒的事实连同接口返回的原因作为执行事实提供给模型，本 run 随即停止原生发送视频
  * （本轮密度的 `video` 置为 null，物化时视频替换为指向 `read_file` 抽帧的说明），请求按同一装配重建。
  * 重发被接口接受后才写入执行事实（`settleRejectionNotices`），其中的接口名与模型 id 是之后的 run 停止原生发送视频的判据。
  */
@@ -514,10 +558,10 @@ function hasImage(m: WireMessage): boolean {
 /**
  * ── 接口拒绝图片：移除图片后重发一次 ──
  *
- * 被拒的事实作为执行事实交给模型，由模型决定下一步。本 run 随即停止发送图片，请求按同一装配重建，
+ * 被拒的事实作为执行事实提供给模型，由模型决定下一步。本 run 随即停止发送图片，请求按同一装配重建，
  * 物化时图片替换为说明。
  *
- * 执行事实只追加到 transcript，等重发被接口接受后才写入（`settleRejectionNotices`）：重发仍被拒说明原因不在图片，
+ * 执行事实只追加到 transcript，重发被接口接受后才写入（`settleRejectionNotices`）：重发仍被拒说明原因不在图片，
  * 该事实不成立；写入后，其中的接口名与模型 id 是之后的 run 停止发送图片的判据（`RunInput.imagesRejected`）。
  *
  * 最后一条 assistant 之后的工具图片从未送达模型，写入时对应 step 一并标记为未送达，供界面显示；
@@ -627,7 +671,7 @@ async function* consumeStream(
         break
       }
       case 'tool_call_progress':
-        // 参数进度只交给界面显示；空闲计时在传输层按字节计算，不依据事件。
+        // 参数进度只提供给界面显示；空闲计时在传输层按字节计算，不依据事件。
         yield { type: 'tool.generating', runId: input.runId, at: ev.at }
         break
       case 'response_started':
@@ -640,7 +684,7 @@ async function* consumeStream(
           requestId: turn.requestId,
           phase: 'headers',
           attempt: resends,
-          max: RESEND_LIMIT,
+          max: resendLimitOf(run),
           at: ev.headersAt,
         }
         break

@@ -54,7 +54,7 @@ function persistence(): LoopPersistence {
   }
 }
 
-/** 一轮即结束的假适配器，原样保存它收到的请求。 */
+/** 一轮即结束的模拟适配器，原样保存它收到的请求。 */
 function capturingAdapter(opts: { vision: boolean | null } = { vision: true }): LlmAdapter & {
   seen: ChatRequest[]
 } {
@@ -313,9 +313,9 @@ function storedShot(
 
 /**
  * 原始失败形状：历史中的工具图片在装配时全部解码为 base64（实测一条会话 526 MB），而请求只携带约 8 MB。
- * 引用形态下只在发送前读取请求中的图片：原图，以及缩小为缩略图的那些的原图。
+ * 引用形态下只在发送前读取请求中的图片：保留原图的图片，以及缩小为缩略图的图片的原图。
  */
-test('正文库中的工具图片：发送前只读取请求中保留的那些', async () => {
+test('正文库中的工具图片：发送前只读取请求中保留的图片', async () => {
   const MB = 1024 * 1024
   const tags = ['one', 'two', 'three', 'four']
   const bodies = new Map(tags.map((t, i) => [`rs_${t}`, Buffer.alloc(Math.round(2.8 * MB), i + 1)]))
@@ -364,7 +364,7 @@ test('正文缺失的引用替换为文字说明，不发送空图片', async ()
 
 /**
  * 轮内的工具消息由写入账本的记录生成：执行器返回的字节不留在上下文中，下一次请求从正文库读取。
- * 改回用执行器的结果生成时，长任务中每张截图的 base64 都在整个 run 期间常驻内存。
+ * 改为用执行器的结果生成时，长任务中每张截图的 base64 都在整个 run 期间常驻内存。
  */
 test('轮内的工具图片写入账本后以引用进入上下文，下一次请求从正文库读取', async () => {
   const shotBytes = Buffer.alloc(3000, 9)

@@ -118,7 +118,7 @@ export default function UsageSettings() {
                           <td class="num">{compact(input(r))}</td>
                           <td class="num">{compact(r.outputTokens)}</td>
                           {/* `null` 表示接口未返回该字段；显示为 0 会使「缓存未生效」
-                              看起来像「缓存生效但未命中」。术语与运行页相同。 */}
+                              与「缓存生效但未命中」无法区分。术语与运行页相同。 */}
                           <td class="num">
                             {r.cachedTokens === null ? NA : compact(r.cachedTokens)}
                           </td>

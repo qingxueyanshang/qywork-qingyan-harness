@@ -236,7 +236,7 @@ function finish(raw: string): string {
     .replace(/<\/table>/g, '</table></div>')
   return filterXSS(wrapped, {
     whiteList: WHITELIST,
-    // 返回空串表示去掉该属性：过滤后没有类名时不输出空的 class。返回 undefined 时按白名单处理。
+    // 返回空串表示删除该属性：过滤后没有类名时不输出空的 class。返回 undefined 时按白名单处理。
     onTagAttr(_tag, name, value, isWhiteAttr) {
       if (name !== 'class' || !isWhiteAttr) return undefined
       const kept = renderedClasses(value)

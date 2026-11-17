@@ -14,7 +14,7 @@ shell 的途径）。以下四条是这部分代码的约束，修改前先确�
    ConPTY 实现，而 Windows 是本项目的主要开发平台。`portable-pty` 在三个平台分别使用
    ConPTY / openpty，行为一致。
 2. **spawn 之后立即 drop slave 端，只保留 master。** 保留 slave 时，子进程退出后 master
-   的读端收不到 EOF，读线程会永久阻塞。因此不要保存整个 `PtyPair`。
+   的读端无法收到 EOF，读线程会永久阻塞。因此不要保存整个 `PtyPair`。
 3. **读取的字节按累积缓冲 lossy 解码，不能按 chunk 严格解码。** PTY 字节流会在多字节
    字符中间被切开，严格解码在中文输出上会随机报错。
 4. **默认 shell 固定为 `powershell.exe`，不读取 `COMSPEC`。** Windows 上该变量始终存在

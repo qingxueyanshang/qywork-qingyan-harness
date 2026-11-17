@@ -56,16 +56,16 @@ describe('注册期拒绝 provider 不接受的名称', () => {
 })
 
 describe('执行入口 fail-closed', () => {
-  test('缺少必填参数不会进入权限解析或工具函数，回执明确说明缺参', async () => {
+  test('缺少必填参数不会进入权限解析或工具函数，回执写明缺少的参数', async () => {
     const r = new ToolRegistry()
     r.register({
       ...spec('read_file'),
       parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
       actionKind: () => {
-        throw new Error('缺参不应进入动作解析')
+        throw new Error('缺少必填参数时不应进入动作解析')
       },
       fn: async () => {
-        throw new Error('缺参不应执行工具')
+        throw new Error('缺少必填参数时不应执行工具')
       },
     })
     const out = await r.execute('read_file', {}, {} as ToolContext)
@@ -103,7 +103,7 @@ describe('执行入口 fail-closed', () => {
     })
   })
 
-  test('声明了命令行的调用把命令交给权限裁决；未声明的调用不带该字段', async () => {
+  test('声明了命令行的调用把命令传给权限裁决；未声明的调用不带该字段', async () => {
     const r = new ToolRegistry()
     r.register({
       ...spec('runner'),

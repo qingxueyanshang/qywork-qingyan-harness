@@ -3,7 +3,7 @@
  *
  * 认领是一个写事务，不拆分为多段。重新读取任务、判定到期、查询上一轮是否仍在运行、创建会话、推进触发
  * 游标全部在同一个 `Store.tx()`（IMMEDIATE）中完成；只有提交成功的一方调用 `startRun`。
- * 拆成「先改内存快照 → 创建会话 → 开始执行 → 最后整表回写」时，中间每个 await 都是另一个
+ * 拆分为「先改内存快照 → 创建会话 → 开始执行 → 最后整表回写」时，中间每个 await 都是另一个
  * 服务实例可以对同一条到期任务再次开始执行的时间窗口。
  *
  * 忙态查询 runs 表，不查询进程内的 RunManager：跨进程的竞争只能由已写入磁盘的状态判定。
@@ -75,7 +75,7 @@ function readOne(store: Store, id: string): Schedule | null {
  * 绑定会话中最近一条 run 的终态。
  *
  * 会话被删除时该列已由 `ON DELETE SET NULL` 置空，因此此处读取的必然是仍存在的会话；
- * 查询不到 run 时如实返回 `runId: null`。边界见 `ScheduleLastRun`。
+ * 未查询到 run 时如实返回 `runId: null`。边界见 `ScheduleLastRun`。
  */
 function lastRunOf(store: Store, s: Schedule): ScheduleLastRun | null {
   const cid = s.conversationId

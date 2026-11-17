@@ -21,7 +21,7 @@ import type { Store } from './db.ts'
 
 /**
  * 合法的生命周期转移。`completed` 是终态，没有任何出边：
- * 已完成的目标如需继续，应新建一个目标；允许改回会使「完成」失去意义。
+ * 已完成的目标如需继续，应新建一个目标；允许改为其他状态会使「完成」失去意义。
  */
 const ALLOWED: Record<GoalStatus, GoalStatus[]> = {
   active: ['active', 'paused', 'completed', 'blocked'],
@@ -57,7 +57,7 @@ export function createGoal(
   }
 
   // 查询是否存在未完成的目标与追加必须在同一个写事务中：分开执行时，两个进程同时创建目标，
-  // 两边都查到没有，会同时出现两个进行中的目标（goal_id 不同，主键无法拦截）。
+  // 双方都未查到目标，会同时出现两个进行中的目标（goal_id 不同，主键无法拦截）。
   return store.tx(() => {
     const existing = currentGoal(store, input.conversationId)
     if (existing && existing.status !== 'completed') {
@@ -139,7 +139,7 @@ export function updateGoal(
 
     if (input.action === 'blocked') {
       const reason = (input.blockedReason ?? '').trim()
-      // 没有理由的 blocked 是最差的停止方式：循环已停止，却无人知道原因，
+      // 没有理由的 blocked 是最差的停止方式：循环已停止，却无从得知原因，
       // 界面上只显示「受阻」二字。
       if (!reason) {
         return {
@@ -152,7 +152,7 @@ export function updateGoal(
       patch.blockedReason = reason
     } else {
       // 离开 blocked 时一并清除理由。保留时，下一次因其他原因停止，
-      // 界面上会显示几轮之前的旧理由。
+      // 界面上会显示数轮之前的旧理由。
       patch.blockedCode = null
       patch.blockedReason = null
     }

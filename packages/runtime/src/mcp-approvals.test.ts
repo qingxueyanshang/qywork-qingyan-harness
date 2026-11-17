@@ -43,7 +43,7 @@ async function project(servers: Record<string, unknown>): Promise<string> {
   return root
 }
 
-/** 启动即写下标记文件的命令：标记存在即说明该命令被运行过。 */
+/** 启动即写入标记文件的命令：标记存在即说明该命令被运行过。 */
 const marking = (marker: string) => ({
   command: process.execPath,
   args: ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`],

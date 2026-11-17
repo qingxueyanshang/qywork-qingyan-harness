@@ -91,7 +91,7 @@ export class ConditionalFormats {
 
   /**
    * 差异样式的填充叠加到单元格原填充 `base` 上。WPS 实测：图案色缺失时为黑色；底色缺失时取单元格原填充的纯色，
-   * 没有纯色填充时为白色（只有 `fgColor` 的纯色差异样式因此不改变单元格的颜色，但照常遮住网格线）。
+   * 没有纯色填充时为白色（只有 `fgColor` 的纯色差异样式因此不改变单元格的颜色，但照常覆盖网格线）。
    */
   overlay(fill: DifferentialFill, base: CellFill | null): CellFill {
     if (fill.kind === 'gradient') return fill

@@ -22,13 +22,13 @@ import {
 const NEWLINE = String.fromCharCode(10)
 const CARRIAGE_RETURN = String.fromCharCode(13)
 
-/** 只取第一行：卡片顶部的标题是本次派发任务的名称，不是任务说明，多行会撑高卡片。 */
+/** 只取第一行：卡片顶部的标题是本次派发任务的名称，不是任务说明，多行会增加卡片高度。 */
 export function firstLine(text: string): string {
   const cut = text.indexOf(NEWLINE)
   return cut < 0 ? text : text.slice(0, cut)
 }
 
-/** 大数缩写为 12.3K / 1.2M：读数条供快速浏览，六位数字难以直接看出数量级。 */
+/** 大数缩写为 12.3K / 1.2M：读数条供快速浏览，六位数字难以直接判断数量级。 */
 export function compact(n: number): string {
   if (n < 1000) return String(n)
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`
@@ -60,7 +60,7 @@ interface UsageLike {
  * 始终偏高，命中量大时会超过 100%：794K 命中、2K 未命中会输出 39700%。正确的分母是
  * `未命中 + 命中 + 写入`。
  *
- * 取最后一次模型调用，而不是整轮累计。一轮中的第一次调用必然未命中，按累计计算会把它平摊进去，
+ * 取最后一次模型调用，而不是整轮累计。一轮中的第一次调用必然未命中，按累计计算会把它计入平均值，
  * 使长轮次的命中率偏低；而用户查看该数值是为了确认缓存当前是否生效。不要改为整轮累计：该字段的
  * 语义就是最近一次调用，同一行其余字段为累计值不构成修改它的理由。只有没有逐轮记录（旧数据、
  * 流中断）时才回落到整轮累计，且回落时不得显示 `—`：「有缓存但没有逐轮记录」与「没有缓存」含义不同。
@@ -117,7 +117,7 @@ export function displayTarget(target: string): string {
 /**
  * `read_file` 实际交付的行号范围（`395-448`），附加在路径之后。
  *
- * 同一文件分段读取时，不带范围的几行显示同一路径，与重复读取无法区分。
+ * 同一文件分段读取时，不带范围时各行显示同一路径，与重复读取无法区分。
  * 读取整个文件、或起始行超出文件末尾（结果为 0 行）时返回 null。
  */
 export function readRange(data: unknown): string | null {
@@ -133,7 +133,7 @@ export function readRange(data: unknown): string | null {
   return `${d.startLine}-${d.endLine}`
 }
 
-/** 终态文字。成功时为空字符串：一屏几十行都显示「成功」不提供任何信息。 */
+/** 终态文字。成功时为空字符串：一屏数十行都显示「成功」不提供任何信息。 */
 export function statusWord(
   status: 'running' | 'success' | 'failure' | undefined,
   imagesUndelivered?: boolean,
@@ -185,7 +185,7 @@ export interface ResultImage {
  *
  * 图片字节随结果原样写入 step 账本，供模型视觉输入与历史重建使用；是否展示由
  * `ToolOutcomeWire.presentation` 单独裁决。此处只接受模型接口同样支持的四种栅格格式，
- * 第三方工具写入任意 data URL 或 SVG 时不为其扩大执行面。
+ * 第三方工具写入任意 data URL 或 SVG 时不因此扩大攻击面。
  */
 export function resultImages(data: unknown): ResultImage[] {
   if (!data || typeof data !== 'object') return []
@@ -209,7 +209,7 @@ export function resultImages(data: unknown): ResultImage[] {
   return images
 }
 
-/** 参数表：跳过空值与超长值；长文本使用专用块显示，放入键值表会撑大卡片。 */
+/** 参数表：跳过空值与超长值；长文本使用专用块显示，放入键值表会使卡片尺寸过大。 */
 export function argsRows(args: Record<string, unknown>): [string, string][] {
   const rows: [string, string][] = []
   for (const [k, v] of Object.entries(args)) {
@@ -295,7 +295,7 @@ export function collapseCarriageReturns(text: string): string {
 
 export const CLAMP = 20_000
 
-/** 超长正文截断并注明剩余字数：只截断而不注明，会被理解为文件只有这么长。 */
+/** 超长正文截断并注明剩余字数：只截断而不注明，会被误认为文件只有该长度。 */
 export function clamp(text: string): string {
   return text.length <= CLAMP
     ? text
@@ -413,7 +413,7 @@ function appendFact(base: string, fact: string): string {
  */
 export function requestOutcome(q: RequestOutcomeLike): string {
   const base = outcomeText(q)
-  return q.hedge ? appendFact(base, q.hedge.won ? '采用补发的一份' : '已补发') : base
+  return q.hedge ? appendFact(base, q.hedge.won ? '采用补发的请求' : '已补发') : base
 }
 
 function outcomeText(q: RequestOutcomeLike): string {
@@ -478,7 +478,7 @@ export interface DelegateGraph {
  * 因此第一帧即可绘制完整的图，等待执行的节点也显示在图上。状态经由另一条路径提供（见 `WorkflowCard`）。
  *
  * 两端的两个节点是同一条会话的两个时刻：派出与收回。绘制为两个节点，而不是一个节点加一条
- * 返回边，是因为返回边须绕回起点，必然横穿已分好的层。
+ * 返回边，是因为返回边须绕回起点，必然横穿已划分的各层。
  */
 export function delegateGraph(item: {
   toolName?: string | undefined

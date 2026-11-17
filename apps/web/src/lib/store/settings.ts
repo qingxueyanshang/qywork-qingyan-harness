@@ -276,7 +276,7 @@ export interface LibraryModel {
   thinksByDefault: boolean
   /**
    * 价格的例外说明：分时段折扣、长上下文分档计价。上方各项价格是厂商公布的标准价。
-   * 它是能力边界，必须显示：只显示一个数字时，用户对照账单会发现不一致，
+   * 它是能力边界，必须显示：只显示一个数字时与账单不一致，
    * 差价可达两倍。
    */
   priceNotes?: string[]
@@ -807,7 +807,7 @@ export interface SkillSourceListing {
   locations: { name: string; path: string; directory: boolean }[]
 }
 
-/** 本机统一选择器；业务安装仍走 /api/skills/import。 */
+/** 本机统一选择器；安装仍经由 /api/skills/import。 */
 export function listSkillSources(path?: string): Promise<SkillSourceListing> {
   return tauriInvoke<SkillSourceListing>('list_skill_sources', { path: path ?? null })
 }

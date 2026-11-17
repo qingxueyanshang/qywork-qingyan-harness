@@ -15,10 +15,10 @@
  *
  * 硬约束：同时最多一条 in_progress。允许多条并行会使「当前在做什么」
  * 失去意义，而这正是该面板存在的理由。受阻与失败的条目不计入这一条。
- * 违反时拒绝并说明，不静默纠正：静默改写等于告诉模型清单已被原样接受。
+ * 违反时拒绝并说明，不静默纠正：静默改写时，模型会认为清单已被原样接受。
  *
  * 硬约束：blocked 必须带 `blocker`（`TODO_BLOCKERS` 之一）与 `need`，failed 必须带 `failure`（`TODO_FAILURES` 之一）、
- * `cause` 与 `attempts`，其余状态都不带。执行循环据此判定本轮是继续、停下等待用户还是结束（`agent/loop/turn-end.ts`），
+ * `cause` 与 `attempts`，其余状态都不带。执行循环据此判定本轮是继续、停止并等待用户还是结束（`agent/loop/turn-end.ts`），
  * 缺少原因的受阻与失败无法审计，也无法在最终回复中逐项说明。
  */
 
@@ -99,7 +99,7 @@ export const writeTodosTool: ToolSpec = {
    *
    * 全部完成后再提交一份视为新清单：它属于下一项任务，应返回「创建」。
    *
-   * 无法读取（`qy exec` 没有会话）时按 write 处理：显示「创建」至多把一次修订说轻了，
+   * 无法读取（`qy exec` 没有会话）时按 write 处理：显示「创建」至多低估一次修订，
    * 显示「编辑」则是在没有清单时声称修改了一份不存在的清单。
    *
    * 不为它新增 `plan` 动作：与对象「待办」组合后读作「规划待办」，动宾语义重复。
@@ -132,7 +132,7 @@ export const writeTodosTool: ToolSpec = {
 
     const todos = parsed.todos
 
-    // 事件由工具发出，而不是由 loop 推测：只有此处知道清单的确切内容。
+    // 事件由工具发出，而不是由 loop 推测：只有此处掌握清单的确切内容。
     ctx.port(TodoBroadcast)?.(todos)
 
     return { status: 'success', message: progressLine(todos), data: { todos } }
@@ -175,7 +175,7 @@ const REASON_FIELDS = {
 } as const
 const ALL_REASON_FIELDS = ['blocker', 'need', 'failure', 'cause', 'attempts'] as const
 
-/** 去掉首尾空白后的字符串；不是字符串时为空串。 */
+/** 去除首尾空白后的字符串；不是字符串时为空串。 */
 function trimmed(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -184,8 +184,8 @@ function trimmed(value: unknown): string {
  * 校验并归一化待办清单。
  *
  * 校验失败时返回结构化失败，由模型自行修正，不做静默纠正：
- * 静默把两条 in_progress 改成一条，等于告诉模型清单已被原样接受，
- * 下一轮它会继续按错误的理解推进。
+ * 静默把两条 in_progress 改成一条时，模型会认为清单已被原样接受，
+ * 下一轮继续按错误的理解推进。
  */
 function parseTodos(raw: unknown): ParseResult {
   if (!Array.isArray(raw)) return { ok: false, message: 'todos 必须是数组' }
@@ -231,7 +231,7 @@ function parseTodos(raw: unknown): ParseResult {
       if (!blocker || !need) {
         return {
           ok: false,
-          message: `第 ${i + 1} 条标为 blocked，必须填写 blocker（${TODO_BLOCKERS.join('、')} 之一）与 need（需要谁提供什么）。不是在等待用户的困难不是受阻：按失败的处理方式重试或调整，仍无法完成时标为 failed。`,
+          message: `第 ${i + 1} 条标为 blocked，必须填写 blocker（${TODO_BLOCKERS.join('、')} 之一）与 need（需要谁提供什么）。不需要等待用户的困难不属于受阻：按失败的处理方式重试或调整，仍无法完成时标为 failed。`,
         }
       }
       todos.push({ id, content, status, blocker, need })

@@ -361,7 +361,7 @@ test('登录表单：密码错误时显示原因；登录成功后弹窗显示�
   view.close()
 })
 
-test('使用记录满一页时可继续加载，续页位置为上一页最后一条的时间', async () => {
+test('使用记录满一页时可继续加载，下一页从上一页最后一条的时间开始', async () => {
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()
   pages = [Array.from({ length: 50 }, (_, i) => record(String(99 - i))), [record('1')]]
@@ -472,7 +472,7 @@ test('公告：未读时侧栏入口与账号窗口的铃铛带圆点，打开�
   // 已读位置写在云端账号上：另一端读取账号状态后同样没有圆点。
   await until(() => calls.includes('POST /api/cloud/announcements/seen'))
   expect((cloud as Extract<CloudState, { state: 'signed_in' }>).announcementSeen).toBe('7')
-  // 另一端读到了更新的一条公告之后，本端重新读取账号状态，圆点随之消失。
+  // 另一端阅读了较新的一条公告之后，本端重新读取账号状态，圆点随之消失。
   notices = [{ ...notices[0]!, id: '8' }]
   await feed.loadAnnouncements()
   expect(unread(side.host)).toBe(true)
@@ -487,7 +487,7 @@ test('公告：未读时侧栏入口与账号窗口的铃铛带圆点，打开�
   view.close()
 })
 
-test('使用记录读取超过 200 毫秒时显示占位，读取到后显示记录', async () => {
+test('使用记录读取超过 200 毫秒时显示占位，读取完成后显示记录', async () => {
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()
   let release!: () => void
@@ -574,7 +574,7 @@ test('首次启动且没有任何接口时显示登录页；已有接口时不�
   later.close()
 })
 
-test('Token 活动：53 列 × 7 行，今天之后不绘制，按有请求日子中的名次分档，月初所在列带月份', async () => {
+test('Token 活动：53 列 × 7 行，今天之后不绘制，按有请求各天中的名次分档，月初所在列带月份', async () => {
   const { activityCells } = await import('./ActivityGrid.tsx')
   const today = new Date(2026, 10, 4, 15) // 2026-11-04，周三
   const { cells, months } = activityCells(
@@ -883,7 +883,7 @@ test('可用模型可设为默认对话模型，写入与模型设置页同一�
   pick()?.click()
   await until(() => !configBusy() && pick()?.classList.contains('on') === false)
   expect(stored.active).toBeUndefined()
-  // 云端清单中有、配置的云端接口下还没有的型号不能设为默认。
+  // 云端清单中有、配置的云端接口下尚未包含的型号不能设为默认。
   delete (stored.providers as Record<string, { models: Record<string, unknown> }>).qywork!.models[
     'relay-model'
   ]

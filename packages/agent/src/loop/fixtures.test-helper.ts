@@ -1,5 +1,5 @@
 /**
- * `loop/` 下各测试共用的夹具：按脚本回放的假 adapter、不落库的持久化、最小 ToolContext，
+ * `loop/` 下各测试共用的夹具：按脚本回放的模拟 adapter、不落库的持久化、最小 ToolContext，
  * 以及重发退避的断言。其他包的测试经 `@qywork/agent/fixtures.test-helper` 导入。
  */
 
@@ -22,7 +22,7 @@ export function expectBackoff(actual: number | null | undefined, resends: number
   expect(actual).toBeLessThanOrEqual(step * BACKOFF_JITTER_MAX)
 }
 
-/** 按脚本回放的假 adapter：每次 stream() 产出预设的一轮。 */
+/** 按脚本回放的模拟 adapter：每次 stream() 产出预设的一轮。 */
 export function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'): LlmAdapter {
   let turn = 0
   const spec = lookupModel(

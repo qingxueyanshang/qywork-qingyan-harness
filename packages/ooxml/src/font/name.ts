@@ -50,7 +50,7 @@ function macRoman(bytes: Uint8Array): string {
  * 不使用 `TextDecoder`：Bun 的类型声明只接受三种编码名，按实际支持的编码名调用须绕过类型检查。
  * 平台 0（Unicode）与平台 3 的编码 0（符号）、1（BMP）、10（完整 Unicode）为 UTF-16BE；
  * 平台 1 只解码编码 0（Mac Roman）。平台 1 的中日韩编码与平台 3 的旧式双字节编码不解码：
- * 现行字体同时带有平台 3 的 Unicode 记录，家族名从那里取得。
+ * 现行字体同时带有平台 3 的 Unicode 记录，家族名取自这些记录。
  */
 function decoderFor(platform: number, encoding: number): ((bytes: Uint8Array) => string) | null {
   if (platform === 0) return utf16be

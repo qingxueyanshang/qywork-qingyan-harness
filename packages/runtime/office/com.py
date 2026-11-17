@@ -1,7 +1,7 @@
 """办公软件实例管理。
 
 只使用本调用新启动的进程：创建后核对 COM 对象对应的进程，确认是新进程才使用，并先把登记写入
-调用目录的 instances.json，再把对象交给调用方。
+调用目录的 instances.json，再把对象返回给调用方。
 
 文件一律只读打开，从不另存：WPS 的可写打开与另存会写入最近文档（RecentFiles 的 files、
 files_bak、Sequence）和账号的 openfilelist，且不识别 AddToRecentFiles / AddToMru 参数；
@@ -92,7 +92,7 @@ def _reg_value(root, path, name="", flags=0):
 
 
 def _server_exe(progid: str):
-    """ProgID 对应的本地服务程序路径。32 位与 64 位两个视图都查。"""
+    """ProgID 对应的本地服务程序路径。32 位与 64 位两个视图均查询。"""
     import winreg
 
     clsid = _reg_value(winreg.HKEY_CLASSES_ROOT, rf"{progid}\CLSID")

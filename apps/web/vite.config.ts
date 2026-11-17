@@ -27,12 +27,12 @@ export default defineConfig(({ command }) => ({
     // 「Waiting for your frontend dev server」直至 180s 超时。
     host: '127.0.0.1',
     // 端口被占用时直接失败，不要顺延到 5181：顺延后 vite 正常运行，但 Tauri 的 devUrl
-    // 仍指向 5180，现象与上一条的超时相同，排查方向会被误导。
+    // 仍指向 5180，`tauri dev` 同样停滞至超时，无法据此判断原因是端口占用。
     strictPort: true,
     ...(COORDINATED_RELOAD ? { hmr: false } : {}),
     // 开发时前端与 qy serve 分别运行，经代理转发，无需配置 CORS。
     // 端口跟随 `QYWORK_PORT`：`scripts/dev.ts` 无法占用 7717 时会顺延一个端口
-    // （之前的后台进程可能仍占用该端口），在此写死会代理到无服务监听的端口。
+    // （之前的后台进程可能仍占用该端口），在此固定端口会代理到无服务监听的端口。
     proxy: {
       '/api': { target: `http://127.0.0.1:${AGENT_PORT}`, changeOrigin: true },
       '/stream': { target: `ws://127.0.0.1:${AGENT_PORT}`, ws: true },

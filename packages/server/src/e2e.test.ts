@@ -1,7 +1,7 @@
 /**
  * `qy serve` 完整链路的端到端测试：**使用假 provider，不产生费用，纳入 `bun test`**。
  *
- * **本层的必要性。** `bun test`（免费、无网络、只测单元）与 `scripts/smoke-serve.ts`（真实
+ * **本层的必要性。** `bun test`（免费、无网络、只测试单元）与 `scripts/smoke-serve.ts`（真实
  * key、耗时五分钟、调用真实模型）之间存在覆盖空缺：`bun test`
  * 不覆盖 serve 的装配，smoke-serve 需要真实 key 才能运行、因此很少运行，失效的断言会长期
  * 未被发现。
@@ -183,7 +183,7 @@ afterAll(async () => {
 const base = () => `http://127.0.0.1:${handle.port}`
 const auth = () => ({ authorization: `Bearer ${handle.token}` })
 
-/** 只有索引的最小 mp4（10 秒、640×360）：读得出时长与尺寸的视频才原生发送。`bytes` 为文件总长的下限。 */
+/** 只有索引的最小 mp4（10 秒、640×360）：能读取时长与尺寸的视频才原生发送。`bytes` 为文件总长的下限。 */
 function indexedMp4(bytes = 4096): Buffer {
   const box = (type: string, ...payload: Buffer[]) => {
     const body = Buffer.concat(payload)
@@ -302,7 +302,7 @@ describe('HTTP 接口', () => {
    * 附件上传的自定义头必须在预检的允许列表中。
    *
    * 遗漏时整条上传链路全部失败，而前端只收到
-   * `TypeError: Failed to fetch`，没有状态码与响应体，无法看出请求是被浏览器
+   * `TypeError: Failed to fetch`，没有状态码与响应体，无法判断请求是被浏览器
    * 在发出之前拦截的。本断言锁定该头名。
    */
   test('预检放行附件上传的 x-attachment-name', async () => {
@@ -427,7 +427,7 @@ describe('HTTP 接口', () => {
     expect(attachment.path.startsWith(toPosixPath(home))).toBe(true)
     // 一律使用正斜杠：该值需要跨端传输，反斜杠在其他环境中会被当作转义符。
     expect(attachment.path).not.toContain(String.fromCharCode(92))
-    // 中文名安全化后仍须保留可读部分，不能被截成空字符串。
+    // 中文名安全化后仍须保留可读部分，不能被截断为空字符串。
     expect(attachment.path).toContain('.png')
     expect(await readFile(attachment.path)).toEqual(png)
 
@@ -527,7 +527,7 @@ describe('HTTP 接口', () => {
 
 describe('WebSocket 协议与一轮完整 run', () => {
   /**
-   * 原始失败形状：升级阶段以 401 拒绝错误令牌，浏览器无法读取该状态码，客户端只看到连接关闭，
+   * 原始失败形状：升级阶段以 401 拒绝错误令牌，浏览器无法读取该状态码，客户端只能观察到连接关闭，
    * 因此无限重连。改为在 hello 帧中校验并回复 `hello.err`，客户端据此进入终态。
    */
   test('hello 帧中的错误令牌：回复 hello.err 并关闭连接', async () => {
@@ -548,7 +548,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     ])
   })
 
-  test('未发送 hello 的连接收不到任何事件，指令被忽略', async () => {
+  test('未发送 hello 的连接不会收到任何事件，指令被忽略', async () => {
     const idle = new WebSocket(`ws://127.0.0.1:${handle.port}/stream?origin=desktop`)
     const frames: unknown[] = []
     idle.addEventListener('message', (e) => frames.push(JSON.parse(String(e.data))))
@@ -556,7 +556,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     idle.send(JSON.stringify({ type: 'subscribe', conversations: null }))
     // 产生一条会话事件：已握手的连接会收到 conversation 相关广播。
     await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
-    // 再发一帧无法解析的内容：它的应答在此前的广播之后经同一条连接到达。
+    // 再发送一帧无法解析的内容：它的应答在此前的广播之后经同一条连接到达。
     idle.send('不是 JSON')
     await until(() => frames.length > 0, '无法解析的帧得到应答')
     expect(frames).toEqual([expect.objectContaining({ type: 'error', message: 'bad json' })])
@@ -645,7 +645,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     if (sb?.backend === 'none') expect(sb.active).toBe(false)
 
     // 指令 fail-closed：未实现的指令必须有回执。
-    // 静默丢弃时，客户端永远收不到反馈，「服务端正在处理」与
+    // 静默丢弃时，客户端始终无法收到反馈，「服务端正在处理」与
     // 「服务端未收到」在界面上完全无法区分。
     ws.send(JSON.stringify({ type: 'no.such.command' }))
     await until(() => rejections.some((r) => r.reason === 'unknown_command'), '未知指令的回执')
@@ -653,7 +653,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     /*
      * **另开一个客户端，明确不订阅任何会话事件。**
      *
-     * 左栏会话行的运行指示依赖于此：客户端只订阅当前会话，其他会话运行时它收不到任何
+     * 左栏会话行的运行指示依赖于此：客户端只订阅当前会话，其他会话运行时它无法收到任何
      * run 事件，原始失败形状是「只有已打开的会话才显示运行指示」。
      * 忙闲状态必须是工作区级的（信封不带归属），而正文仍按订阅过滤。
      */
@@ -749,7 +749,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
    * 错误。真实运行中，SQLite 写入会因并发写锁、磁盘已满、库文件只读而失败。
    *
    * 断言到「连接仍在、后一条指令正常得到答复」为止：没有回执时，问题不在于报错形式，
-   * 而在于客户端收不到任何帧，界面停留在生成中直到重连。
+   * 而在于客户端无法收到任何帧，界面停留在生成中直到重连。
    */
   test('指令处理抛出异常：回执带指令名，连接保持，后续指令正常处理', async () => {
     const created = (await (
@@ -1050,11 +1050,11 @@ describe('图片附件', () => {
   /**
    * 回归测试：**非图片附件提供的是路径，不是字节**。
    *
-   * 图片只能内联（模型无法看到工具读不出的内容），其余附件只把路径
+   * 图片只能内联（模型无法获取工具无法读取的内容），其余附件只把路径
    * 写入正文，模型需要时自行调用 `read_file`。由此省去每一轮重放时的 base64：
    * provider 无状态，一份 200 KB 的文档在二十轮的会话中会被发送二十次。
    *
-   * 两个方向都要断言：路径**在**请求体中、内容**不在**。只测前者时，
+   * 两个方向都要断言：路径**在**请求体中、内容**不在**。只测试前者时，
    * 内容被一并写回请求，本用例仍会通过。
    */
   test('随消息发出的文档只提供路径，不提供字节', async () => {

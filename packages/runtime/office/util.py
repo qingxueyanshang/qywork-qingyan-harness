@@ -32,7 +32,7 @@ def read_json(path):
 
 
 def write_json(path, data) -> None:
-    """先写临时文件再替换：读方只会读到完整的 JSON。"""
+    """先写临时文件再替换：读取方只会读取到完整的 JSON。"""
     path = Path(path)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), "utf-8")
@@ -109,7 +109,7 @@ def _ole_entries(f):
 
     目录扇区经 FAT 链接；FAT 扇区的位置前 109 个在文件头中，其余在 DIFAT 扇区链中。长度小于文件头第 56 字节所记阈值的流
     位于迷你流（根存储项所指的普通流）中，以 64 字节为单位经迷你 FAT（起点与扇区数在文件头第 60、64 字节）链接。
-    扇区号越界、链成环或长度不足时返回已读到的部分。
+    扇区号越界、链成环或长度不足时返回已读取的部分。
     """
 
     def read_at(offset, size):

@@ -93,7 +93,7 @@ pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
 }
 
 /// `sysconf(_SC_CLK_TCK)` 的值。Linux 的 `/proc` 接口按 100 定义该换算，与内核
-/// 编译时的 `CONFIG_HZ` 无关，不要改成读 `CONFIG_HZ`。
+/// 编译时的 `CONFIG_HZ` 无关，不要改为读取 `CONFIG_HZ`。
 #[cfg(any(target_os = "linux", test))]
 const CLOCK_TICKS_PER_SEC: i64 = 100;
 

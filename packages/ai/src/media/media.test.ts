@@ -521,7 +521,7 @@ describe('Qwen-Image-2.1-Pro', () => {
           (i) => `data:image/png;base64,${Buffer.from(i.bytes).toString('base64')}`,
         )
         const params = { size, n: 2, prompt_extend: false, watermark: false, seed: 42 }
-        // 故意让回报张数与 URL 数不同，确认读取官方 image_count，而非总用收到的 URL 数代替。
+        // 回报张数与 URL 数有意设为不同，确认读取的是官方 image_count，而不是以收到的 URL 数代替。
         reply = () =>
           Response.json({
             ...(kind === 'dashscope_images'

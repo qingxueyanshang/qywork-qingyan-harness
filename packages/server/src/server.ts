@@ -244,7 +244,7 @@ export function serve(opts: ServeOptions) {
   /*
    * 宿主连接或断开时重新广播能力投影。
    *
-   * 握手只报告一次，而宿主在应用启动之后才连接：若只依赖握手中的值，界面需等到
+   * 握手只报告一次，而宿主在应用启动之后才连接：若只依赖握手中的值，界面需等待
    * 下一次重连才显示浏览器入口。判定与握手共用 `browserCapability`。
    */
   const offBrowserHost = browserBridge?.onHostChange(() => {
@@ -285,7 +285,7 @@ export function serve(opts: ServeOptions) {
   const office = createOfficeHost(() => opts.config)
   void office.refresh()
   const gitWatch = createGitWatch(opts.store, bus, opts.config)
-  // 令牌只有这一个持有者。外部注入的令牌也交给它，使鉴权只有一条路径。
+  // 令牌只有这一个持有者。外部注入的令牌也传给它，使鉴权只有一条路径。
   const pairing = new Pairing({
     deviceName: hostLabel(),
     ...(opts.token ? { token: opts.token } : {}),
@@ -322,7 +322,7 @@ export function serve(opts: ServeOptions) {
    *
    * 此处仍然 acquire：各个 Session 各自 acquire / release，引用计数保证
    * 子进程只启动一套；服务持有一份引用，使启动项目的插件不会在两轮之间反复启动与终止。
-   * 异步执行、不阻塞服务启动：单个慢插件不应导致整个服务无法启动。
+   * 异步执行、不阻塞服务启动：单个加载缓慢的插件不应导致整个服务无法启动。
    *
    * `stop()` 先中止仍在进行的加载（插件启动、MCP 握手），尚未完成的进程随之终止；之后仍等待加载结束
    * 再释放：句柄在加载结束后才取得，连接表也在加载结束时写入，提前释放无法关闭其后写入的进程。
@@ -523,7 +523,7 @@ export function serve(opts: ServeOptions) {
   // 只写第一个类型参数：Bun 的签名是 serve<WebSocketData, R extends string>，
   // 第二个参数是路由表的路径键，此处经由 fetch 手动分派，没有路由表。
   const handlers = {
-    // agent 的一轮可能运行很久，默认超时会断开 WebSocket。
+    // agent 的一轮可能运行较长时间，默认超时会断开 WebSocket。
     idleTimeout: 255,
     maxRequestBodySize: MAX_HTTP_REQUEST_BODY_BYTES,
 
@@ -593,7 +593,7 @@ export function serve(opts: ServeOptions) {
       if (url.pathname === '/stream') {
         /*
          * 令牌在 hello 帧中校验（`handshake.ts`），不在升级时校验：浏览器无法读取升级被拒的状态码，
-         * 客户端只能看到连接关闭，因此无限重连，用户无法得知原因。hello 通过之前，该连接不订阅事件，
+         * 客户端只能观察到连接关闭，因此无限重连，用户无法得知原因。hello 通过之前，该连接不订阅事件，
          * 指令一律忽略（`commands.ts`）；不发送 hello 的连接由空闲超时关闭。
          */
         const ok = srv.upgrade(req, {
@@ -722,7 +722,7 @@ export function serve(opts: ServeOptions) {
         const cmd = frame as ClientCommand
         /*
          * 指令处理抛出异常时也必须回执。此处 await 之外没有捕获方，抛出即成为一条
-         * unhandled rejection：客户端收不到任何帧，界面上无法区分「服务端正在处理」与
+         * unhandled rejection：客户端无法收到任何帧，界面上无法区分「服务端正在处理」与
          * 「服务端出错」。
          *
          * 只回执并记录日志，不重试：重试会把一次故障放大为一连串相同的失败。
@@ -866,6 +866,9 @@ export function serve(opts: ServeOptions) {
       // 后台命令同理：应用退出即结束全部命令。
       commands.stopAll()
       await canvas.stop()
+      // 被中止的轮次与子 agent 在此写入终态。调用方随后关闭账本并退出进程，不等待时它们停留在 running，
+      // 下次启动按进程退出回收，与正常关闭的轮次记为不同的结论。
+      await Promise.all([runs.idle(), subagents.idle()])
       offRunNotify()
       remote.stop()
       server.stop(true)

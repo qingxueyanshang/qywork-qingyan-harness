@@ -143,7 +143,7 @@ describe.skipIf(!LOCAL_FONTS)('正文文字的 ClearType 字形（本机字体�
   const simsun = () =>
     loadDocxFace(new Uint8Array(readFileSync(join(FONTS, 'simsun.ttc'))), '宋体', 0)
 
-  /** 原始失败形状：WPS 文字的正文为 GDI 自然宽度方式的 ClearType 绘制，此前一律以浏览器字体（`fillText`）绘制。 */
+  /** 原始失败形状：正文一律以浏览器字体（`fillText`）绘制，与 WPS 文字的 GDI 自然宽度方式 ClearType 绘制不一致。 */
   test('平滑字号的正文以 ClearType 字形写入画布像素，与 GDI 逐子像素相同；主机不使用 ClearType 时以 fillText 绘制', () => {
     // Times New Roman 12 磅（ppem 16）「Te」：首字在 13 像素处，第二个字在其后 11 像素，基线 20。
     const pg = page([paragraph([fragment({ text: 'Te', advances: [8, 6] })])])

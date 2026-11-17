@@ -44,7 +44,7 @@ import { json } from './types.ts'
  *
  * 与 `tools/src/memory.ts` 的 `safeName` 使用同一套规则。不接受含 `..` 或分隔符的 key，
  * 安全化之后仍需再经过一次工作区边界检查：安全化规则将来可能放宽，
- * 边界检查是最后一道防线。
+ * 边界检查不随之放宽。
  */
 function safeKey(raw: string): string | null {
   const cleaned = raw
@@ -97,13 +97,13 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
   if (p.startsWith('/api/memory/')) {
     const raw = decodeURIComponent(p.slice('/api/memory/'.length))
     const key = safeKey(raw)
-    if (!key) return json({ error: 'bad request', message: 'key 为空或全是非法字符' }, 400)
+    if (!key) return json({ error: 'bad request', message: 'key 为空或全部为非法字符' }, 400)
 
     const scope = writableScope(url.searchParams.get('scope'))
     if (!scope) {
       return json({ error: 'bad request', message: '只能删除项目层或全局层的条目' }, 400)
     }
-    // 项目层额外经过一次工作区边界检查：安全化规则将来可能放宽，这是最后一道防线。
+    // 项目层额外经过一次工作区边界检查：安全化规则将来可能放宽，边界检查不随之放宽。
     // 全局层不在工作区内，依靠 `safeKey` 已清除全部分隔符与 `..`。
     const file =
       scope === 'project'

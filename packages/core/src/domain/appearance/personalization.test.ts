@@ -94,7 +94,7 @@ describe('mergePersonalization', () => {
     )
   })
 
-  test('换背景类型时整组替换，不保留旧字段', () => {
+  test('更换背景类型时整组替换，不保留旧字段', () => {
     const r = mergePersonalization(sample, { background: { kind: 'color', color: '#101018' } })
     expect(r.ok && r.value.background).toEqual({ kind: 'color', color: '#101018' })
   })
@@ -111,7 +111,7 @@ test('默认值判定', () => {
   expect(isDefaultPersonalization({ ...DEFAULT_PERSONALIZATION, flow: '#16a34a' })).toBe(false)
 })
 
-test('背景层由看不到变为看得到且不透明度为 1 时改为 85%，其余情形不变', () => {
+test('背景层由不可见变为可见且不透明度为 1 时改为 85%，其余情形不变', () => {
   const opaque = { ...sample, opacity: 1 }
   expect(revealBackdrop(DEFAULT_PERSONALIZATION, opaque).opacity).toBe(REVEAL_OPACITY)
   expect(REVEAL_OPACITY).toBe(0.85)

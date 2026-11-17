@@ -60,7 +60,7 @@ export async function* driveLoop(
   }
 
   // run.started 必须由此处发送：没有发送方时客户端无法取得真实 runId，中断和重试
-  // 只能将步骤 id 当作 run id 使用，服务端查询不到时静默不执行任何操作。
+  // 只能将步骤 id 当作 run id 使用，服务端未查到时静默不执行任何操作。
   // 协议中有类型不等于有实现。
   yield {
     type: 'run.started',
@@ -106,6 +106,7 @@ export async function* driveLoop(
     cacheKey: conversationId,
     ...(userMessageId ? { userMessageId } : {}),
     signal: session.opts.signal,
+    ...(options?.transientResend ? { transientResend: true as const } : {}),
     // 传入上一轮的真值，使本轮开头使用同一计量基准。不传入时每个 run 的
     // 第一次请求只能报告估算值（系统性偏低），第二次起恢复为真值，
     // 读数在每轮开头出现一次下跌。

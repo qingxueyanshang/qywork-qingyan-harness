@@ -152,7 +152,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
     expect(contextPanel(store, conversationId!, model, 80).total).toBe(snapshot.total)
 
     for (const nextMode of ['reject', 'no-usage', 'after'] as const) {
-      // 模拟重新加载会话；状态必须从账本恢复，不能靠上次 Session 的内存。
+      // 模拟重新加载会话；状态必须从账本恢复，不能依赖上次 Session 的内存。
       await session.dispose()
       session = makeSession()
       mode = nextMode
@@ -191,7 +191,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
  * 压缩后的读数必须等于下一次请求的估算。
  *
  * 截图较多的会话中，较早的截图在压缩之前已被换出为缩略图（`evictedMedia`），请求中计入的是缩略图。
- * 回收量按账本原样（原尺寸截图）估算时偏高，压缩后读数低于下一次请求的估算，发出一条短消息后读数随即上跳。
+ * 回收量按账本原样（原尺寸截图）估算时偏高，压缩后读数低于下一次请求的估算，发出一条短消息后读数随即升高。
  */
 test('手动压缩后的读数与下一次请求的估算一致：被折叠的截图在压缩前已缩小为缩略图', async () => {
   const provider = Bun.serve({

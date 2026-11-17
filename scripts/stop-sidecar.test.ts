@@ -8,7 +8,7 @@
 import { expect, test } from 'bun:test'
 import { stopSidecar } from './stop-sidecar.ts'
 
-/** 读到 `stop` 行后以 0 退出的子进程；`ignore` 为真时从不读取标准输入。 */
+/** 读取到 `stop` 行后以 0 退出的子进程；`ignore` 为真时从不读取标准输入。 */
 function child(ignore: boolean) {
   const script = ignore
     ? 'setInterval(() => {}, 1000)'
@@ -20,7 +20,7 @@ function child(ignore: boolean) {
   })
 }
 
-test('读到停止指令后自行退出时不终止进程', async () => {
+test('读取到停止指令后自行退出时不终止进程', async () => {
   const proc = child(false)
   expect(await stopSidecar(proc, 10_000)).toBe(true)
   expect(proc.exitCode).toBe(0)

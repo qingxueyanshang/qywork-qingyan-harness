@@ -4,8 +4,8 @@
  * 分组规则共四条，修改前须评估代价：
  *
  * - 只有 assistant 正文（text）打断分组。连续的工具调用，无论 kind，
- *   也无论是否属于同一个 provider batch，都归并为一张工具组卡片。一轮执行几十个工具是常态，
- *   平铺会淹没正文。
+ *   也无论是否属于同一个 provider batch，都归并为一张工具组卡片。一轮执行数十个工具是常态，
+ *   平铺时正文被大量工具行分隔，难以连续阅读。
  * - thinking 不拆分工具组：位于首尾工具之间的思考进入工具组（展开后按顺序穿插），
  *   工具组之前与之后的思考单独成条。末尾的思考尤其不得并入工具折叠：它是回答正文之前的思考，
  *   折叠后用户无法找到。
@@ -92,7 +92,7 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
       continue
     }
     if (item.kind === 'receipt') {
-      // 回执是交给模型的输入，不渲染：结果显示在卡片的对应节点中。
+      // 回执是发给模型的输入，不渲染：结果显示在卡片的对应节点中。
       continue
     }
     if (item.kind === 'text') {
@@ -238,10 +238,10 @@ export function groupTitle(members: TranscriptItem[]): string {
 }
 
 /**
- * 动作动词。每个 kind 对应一个词，不多不少。
+ * 动作动词。每个 kind 恰好对应一个词。
  *
  * 不设「其他 / 未知」类别，也无需设置：动作由工具在注册时声明，注册表是唯一权威，
- * 本表覆盖全部七个合法值。查不到的情况如何被逐一排除，见 `actionLabel`。
+ * 本表覆盖全部七个合法值。未命中的情况如何被逐一排除，见 `actionLabel`。
  */
 const VERBS: Record<ActionKind, string> = {
   query: '查询',
@@ -272,7 +272,7 @@ export function verb(kind: ActionKind): string {
 /**
  * 单条工具卡片的完整文案：动词加对象。
  *
- * 此处不设后备文案，因为无法拼出文案的情况不存在。为缺少动作的行补充标题只会
+ * 此处不设后备文案，因为无法生成文案的情况不存在。为缺少动作的行补充标题只会
  * 掩盖上游错误。已逐条核实：
  *
  * - 未注册的调用不会成为 step：`agent/loop/tool-wave.ts` 在编排批次之前就将其拦截在执行链之外。

@@ -87,7 +87,7 @@ export interface TranscriptItem {
     compactedMessages?: number
     revision?: number
   }
-  /** kind='thinking' 专有：所属的请求失败后被重发取代。内容照常显示，标签注明已中断。 */
+  /** kind='thinking' 专有：所属的请求在输出正文之前失败（`thinking.interrupted`）。内容照常显示，标签注明已中断。 */
   interrupted?: true
   /** kind='user' 专有：该消息携带的附件，只保存定位信息，不保存字节。 */
   attachments?: Attachment[]
@@ -215,7 +215,7 @@ export interface ConversationView {
    * 取本机时钟，与本机 `Date.now()` 相减得到耗时。本机按下发送时写入按下的时刻（`sendMessage`），
    * `run.started` 到达后保留；其余情况由 `run.started` 或刷新快照写入服务端的开始时刻，
    * 经 `client.localTime` 换算为本机时刻。不要直接写入服务端时刻，也不要改为本机收到该事件的时刻：
-   * 前者使两台设备的时钟差计入耗时；该事件在准备阶段结束后才发出，后者漏计发送后的数秒等待。
+   * 前者使两台设备的时钟差计入耗时；该事件在准备阶段结束后才发出，后者未计入发送后的数秒等待。
    * 执行完毕或会话置闲时清空，执行完毕后耗时由条目记录。
    */
   runStartedAt: number | null
@@ -226,8 +226,8 @@ export interface ConversationView {
    * `null` 表示不知道有运行中的轮次。
    *
    * 已知一轮正在运行时，其他轮次的结束与报错事件不清空实时读数，只把收尾条写入会话流：
-   * 较早一轮迟到的收尾不能撤掉当前一轮的运行栏，「已有任务在执行」一类不属于任何轮次的报错
-   * 也不能写进当前一轮的收尾条。
+   * 较早一轮迟到的收尾不能移除当前一轮的运行栏，「已有任务在执行」一类不属于任何轮次的报错
+   * 也不能写入当前一轮的收尾条。
    */
   runId: string | null
   /**
@@ -312,7 +312,7 @@ export interface AppState {
   busyConversations: string[]
   /**
    * 上下文占用。`breakdown` 表示占用的构成，`omitted` 表示被移除的内容。
-   * 只有前者时信息不完整：用户看到占用下降，却无法得知下降的来源。
+   * 只有前者时信息不完整：占用下降时无法得知下降的来源。
    *
    * 计量来源只在服务端用于诊断，不进入界面状态。
    */
@@ -330,7 +330,7 @@ export interface AppState {
    * 上下文占用读取失败的原因（服务端原文），读取成功或收到实时读数时清空。
    *
    * 不要按空占用处理：服务端对「会话绑定的接口或模型已不在配置中」返回 409，按空处理时读数整体消失，
-   * 用户看不到原因。
+   * 且不显示原因。
    */
   contextError: string | null
   /**
@@ -377,7 +377,7 @@ export interface AppState {
   /**
    * 最近一条 `file.changed` 涉及的路径（工作区相对、正斜杠），与 `fileVersion` 同时写入；
    * `null` 表示路径未知（执行类工具只能确认可能写过文件）。事件逐条处理、不合批，
-   * 因此读取 `fileVersion` 的计算总是与对应的这一项同时看到。
+   * 因此读取 `fileVersion` 的计算总能同时读取对应的这一项。
    */
   fileTouched: string[] | null
   /**

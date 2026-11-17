@@ -110,14 +110,14 @@ export interface CompactionRunInput {
    * 两者使用同一个端口与同一份 manifest，只在边界选择与是否必须尝试摘要上不同。
    */
   trigger: 'automatic' | 'manual'
-  /** 当前主模型 id；与压缩后的面板快照绑定，换模型后不得继续沿用。 */
+  /** 当前主模型 id；与压缩后的面板快照绑定，更换模型后不得继续沿用。 */
   model: string
   /**
-   * 模型是否已看到最后一个单元的内容。
+   * 模型是否已读取最后一个单元的内容。
    *
    * 执行工具之前与手动压缩时为 true：模型已对最后一批结果作出响应。发送前与容量拒绝后为 false：
-   * 最后一批结果尚未发给模型。已看到且单独超过尾部保留量的单元在压缩时一并收纳；
-   * 未看到的最后一个单元始终整段保留，不要收纳它：模型尚未读取。
+   * 最后一批结果尚未发给模型。已读取且单独超过尾部保留量的单元在压缩时一并收纳；
+   * 模型尚未读取的最后一个单元始终整段保留，不要收纳它。
    */
   latestUnitSeen: boolean
   /**
@@ -154,7 +154,7 @@ export interface CompactionRunInput {
    * 会话主模型的估算密度，与 `estimatedOccupancy` 使用的相同。
    *
    * 不使用 summarizer 的密度：摘要可以由另一个模型生成，但这些数值描述的是主模型
-   * 看到的上下文，改用其他密度即用另一个 tokenizer 计量主模型的窗口。
+   * 读取的上下文，改用其他密度即用另一个 tokenizer 计量主模型的窗口。
    */
   density: TokenDensity
 }
@@ -384,6 +384,11 @@ export interface RunInput {
   effort?: ChatRequest['effort']
   cacheKey?: string
   signal: AbortSignal
+  /**
+   * 为 true 时一次请求按暂时故障的间隔表（`TRANSIENT_RETRY_DELAYS_MS`：30 秒、2 分钟、5 分钟）重发，次数为表的长度；
+   * 子 agent 的轮次传入。缺省按 `RESEND_LIMIT` 与 `resendDelay` 重发。
+   */
+  transientResend?: true
   /**
    * 本轮的自动压缩比例：窗口所在档已解析的设置值（`core` 的 `compactPercentOf`），由调用方在轮次开始时
    * 解析一次。触发判定、投递额度、压缩端口、请求行的 `compactAt` 与上下文事件都取这一个值，一轮之内不变。

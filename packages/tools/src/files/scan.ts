@@ -41,7 +41,7 @@ export interface Scan {
   readonly stopped: ScanStop | null
   /** 处理下一个条目之前调用。停止信号已触发时抛出；已停止或超过时限时返回 false。 */
   next(): boolean
-  /** 记下停止原因。先记下的原因保留。 */
+  /** 记录停止原因。先记录的原因保留。 */
   stop(reason: ScanStop): void
   /** 距时限的剩余毫秒数，不小于 0。交给子进程作为其总时限。 */
   remainingMs(): number

@@ -81,7 +81,7 @@ export default function SkillsSettings() {
   }
 
   /**
-   * 页面只保留一组动作，空状态不再重复导入入口。
+   * 页面只保留一组动作，空状态中不重复提供导入入口。
    */
   const Actions = () => (
     <>

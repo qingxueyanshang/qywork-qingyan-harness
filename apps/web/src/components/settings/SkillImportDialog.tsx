@@ -69,7 +69,7 @@ export function SkillImportDialog(props: {
         if (!busy()) props.onClose()
       }}
       onKeyDown={(e) => {
-        // Escape 只关闭本选择器，不把后面的设置窗口一起关闭。
+        // Escape 只关闭本选择器，不关闭其下层的设置窗口。
         if (e.key === 'Escape') e.stopPropagation()
       }}
     >

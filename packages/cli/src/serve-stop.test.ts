@@ -141,7 +141,7 @@ test('标准输入结束不停止服务', async () => {
   const serve = await startServe(home, workspace)
   try {
     await serve.proc.stdin.end()
-    // 读到标准输入结束时服务不产生任何可观察的事件，只能观察一段时长内未退出。
+    // 读取到标准输入结束时服务不产生任何可观察的事件，只能观察一段时长内未退出。
     expect(await exitWithin(serve.proc, 1_000)).toBeNull()
     const health = await fetch(`${serve.base}/api/health`, { signal: AbortSignal.timeout(2000) })
     expect(health.status).toBe(200)

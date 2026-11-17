@@ -15,7 +15,7 @@ describe('分帧', () => {
     expect(framer.end()).toBe('')
   })
 
-  test('\\r\\n 的 \\r 与空行原样交给调用方', () => {
+  test('\\r\\n 的 \\r 与空行原样返回给调用方', () => {
     const framer = createLineFramer(100)
     expect(framer.push('a\r\n\n\r\nb\n').lines).toEqual(['a\r', '', '\r', 'b'])
   })
@@ -30,7 +30,7 @@ describe('分帧', () => {
     expect(split.end()).toBe(whole.end())
   })
 
-  test('end 交出没有换行的末行并清空缓冲', () => {
+  test('end 返回没有换行的末行并清空缓冲', () => {
     const framer = createLineFramer(100)
     framer.push('a\nb')
     expect(framer.end()).toBe('b')
@@ -41,7 +41,7 @@ describe('分帧', () => {
 describe('单行上限', () => {
   /**
    * 原始失败形状：对端持续输出而不输出换行时，缓冲无限增长。
-   * 恰好等于上限的行照常交出，多一个字符即溢出，说明缓冲从不超过上限。
+   * 恰好等于上限的行照常返回，多一个字符即溢出，说明缓冲从不超过上限。
    */
   test('没有换行的输入超过上限时报告溢出，等于上限时不报告', () => {
     const exact = createLineFramer(8)
@@ -53,7 +53,7 @@ describe('单行上限', () => {
     expect(over.push('56789')).toEqual({ lines: [], overflow: true })
   })
 
-  test('同一分片中溢出之前已结束的行照常交出，溢出之后的输入一律丢弃', () => {
+  test('同一分片中溢出之前已结束的行照常返回，溢出之后的输入一律丢弃', () => {
     const framer = createLineFramer(4)
     expect(framer.push('ab\ncdefgh\nij\n')).toEqual({ lines: ['ab'], overflow: true })
     expect(framer.push('kl\n')).toEqual({ lines: [], overflow: false })

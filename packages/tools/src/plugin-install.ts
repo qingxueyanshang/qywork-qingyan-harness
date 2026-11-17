@@ -83,7 +83,7 @@ export const installPluginTool: ToolSpec = {
       }
     }
 
-    // 复制由端口执行：端口在安装前会再次读取清单，因为 inspect 与安装之间隔着模型的若干步，
+    // 复制由端口执行：端口在安装前会再次读取清单，因为 inspect 与安装之间相隔模型的若干步骤，
     // 目录内容可能已与 inspect 时不同。
     const done = await port.install(dir, { replace })
     if (!done.ok) {

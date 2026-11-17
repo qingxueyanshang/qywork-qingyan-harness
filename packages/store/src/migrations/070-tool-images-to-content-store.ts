@@ -46,8 +46,8 @@ export const migration070: Migration = {
   id: 70,
   name: 'tool_images_to_content_store',
   /**
-   * 工具结果中的图像字节移入正文库，见 `moveToolImagesBatch`。迁移前图像 base64 占 steps.payload 的九成以上，
-   * 同一张图每被读取或取回一次即存一份。本机 4.2 GB 的账本实测：后台 310 批共 41 秒，VACUUM 1.6 秒，
+   * 工具结果中的图像字节移入正文库，见 `moveToolImagesBatch`。迁移前图像 base64 占 steps.payload 的 90% 以上，
+   * 同一张图每被读取或取回一次即保存一份。本机 4.2 GB 的账本实测：后台 310 批共 41 秒，VACUUM 1.6 秒，
    * 主库降至 0.21 GB，正文库 1.76 GB（13,651 张引用去重为 8,872 份）；迁移前后每个会话重建出的请求历史逐字节相同。
    */
   background: moveToolImagesBatch,

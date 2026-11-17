@@ -1,6 +1,6 @@
 ﻿//! 宿主与 worker 之间的行分隔 JSON 协议：请求、回执、执行事实三态与派发前的准入判定。
 //!
-//! 本模块不调用任何 OS 接口，全部判定都能在没有图形会话的环境里测试。
+//! 本模块不调用任何 OS 接口，全部判定都能在没有图形会话的环境中测试。
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::{Geometry, Popup, ScreenPoint, ScreenRect};
 
-/// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 用同一个时基。
+/// Unix 纪元毫秒。请求的 deadline 与观察的 capturedAt 使用同一个时基。
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -37,7 +37,7 @@ pub struct Binding {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
-    /// requestId。解析失败的请求同样必须带着它回执，否则调用方的 pending 没有终态。
+    /// requestId。解析失败的请求同样必须携带它回执，否则调用方的 pending 没有终态。
     pub id: String,
     /// Unix 纪元毫秒的绝对时刻；缺省表示不设截止。
     ///
@@ -73,7 +73,7 @@ pub struct Bounds {
     pub time_budget_ms: u64,
 }
 
-/// 观察的范围与字段选择。全部缺省时读整窗、取全部字段。
+/// 观察的范围与字段选择。全部缺省时读取整窗与全部字段。
 ///
 /// 没有按角色或文字筛选的字段：读树返回本次范围内的全部节点，筛选只作用于提供给模型的
 /// 视图。在此处筛选会使筛选出的节点成为当前观察，其余控件的引用随之失效。
@@ -404,7 +404,7 @@ pub enum DragTarget {
 /// 一次动作的内容。
 ///
 /// 每种动作都携带完整的参数：若动作与参数分两处给出，缺少值的 `set_value` 也能转换为一条
-/// 合法请求，缺少的参数要到调用 provider 时才暴露。
+/// 合法请求，缺少的参数直到调用 provider 时才暴露。
 ///
 /// **后台语义动作与前台原始输入在同一个枚举中**，按 `foreground_only` 分别准入：
 /// 若分成两个枚举，定位、准入、可放弃等待与动作后重读都会出现重复实现。
@@ -857,7 +857,7 @@ pub struct Tree {
     /// 目标窗口当前在屏幕上完全不可见：已最小化，或被 z 序在其上方的窗口完全遮挡。
     ///
     /// 浏览器对载入后尚未在屏幕上显示过的页面不向 UIA 提供网页内容，此时控件表只有外框、
-    /// 也未达到上限，该字段是调用方能看到的唯一迹象。
+    /// 也未达到上限，该字段是调用方能取得的唯一迹象。
     pub window_covered: bool,
     pub completeness: Completeness,
     pub node_count: u32,
@@ -1093,7 +1093,7 @@ pub struct Node {
     pub text: bool,
     /// 该控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对。
     ///
-    /// 三项均不变而控件已被替换时无法核出，界面重排之后该引用不可靠。为真时调用方应当
+    /// 三项均不变而控件已被替换时无法识别，界面重排之后该引用不可靠。为真时调用方应当
     /// 重新观察，而不是复用旧引用。
     #[serde(skip_serializing_if = "not_set")]
     pub weak_identity: bool,
@@ -1136,7 +1136,7 @@ impl ActionEvidence {
 
 /// 一次动作调用的终态。`None` 表示尚无法判定，继续等待。
 ///
-/// `InvokePattern.Invoke()` 打开模态对话框时，provider 一侧要等对话框关闭才返回，
+/// `InvokePattern.Invoke()` 打开模态对话框时，provider 一侧在对话框关闭之后才返回，
 /// 客户端的本次调用因此阻塞至 UIA 连接超时。**不能据此记为未执行**：动作已经生效。
 /// 因此调用放在可以放弃等待的线程上，主路径改为判定可核实的事实：
 /// 目标窗口被禁用、已关闭，或同进程出现新的顶层窗口，三者任一成立即为 `submitted`。
@@ -1253,14 +1253,14 @@ pub struct AccessNotice<'a> {
 
 /// macOS：本进程不是受信任的辅助功能客户端。
 pub const ACCESSIBILITY_NOT_TRUSTED: &str = "accessibility_not_trusted";
-/// Linux：会话里未找到或无法连接无障碍总线。
+/// Linux：会话中未找到或无法连接无障碍总线。
 pub const ACCESSIBILITY_BUS_UNAVAILABLE: &str = "accessibility_bus_unavailable";
 /// macOS：本进程没有屏幕录制授权，截图被拒绝。它不阻止读取与动作（`Grant::ScreenRecording`），
 /// 但授权撤销同样需要由被拒绝的那次调用报告。
 pub const SCREEN_RECORDING_NOT_GRANTED: &str = "screen_recording_not_granted";
 
 /// 该拒绝原因是否属于操作系统未满足前提。是则服务循环即时查询一次授权事实：运行中撤销的
-/// 授权依靠它在下一次调用时报告。原因码位于原文开头，其后可以接 `: 说明`。
+/// 授权依靠它在下一次调用时报告。原因码位于原文开头，其后可以附加 `: 说明`。
 pub fn refused_for_grant(reason: &str) -> bool {
     [
         ACCESSIBILITY_NOT_TRUSTED,
@@ -1378,7 +1378,7 @@ pub fn admit(
 /// 一次动作请求的目标与模式判定。
 ///
 /// **前台模式关闭时前台动作在此处即被拒绝**：这是派发前的唯一准入判定，
-/// 移到执行路径中判定会多出第二处裁决。后台失败不会自动升级为前台，
+/// 移到执行路径中判定会产生第二处裁决。后台失败不会自动升级为前台，
 /// 本函数不考虑动作是否有后台替代方式。
 ///
 /// 目标有三种写法：控件、屏幕落点、两者都不给出。第三种只有 `targets_window` 的动作
@@ -2234,12 +2234,12 @@ mod tests {
         assert!(!satisfied(WaitUntil::Appears, None, Seen::Matches(0)));
         assert!(satisfied(WaitUntil::Window, None, Seen::Window(true)));
         assert!(!satisfied(WaitUntil::Window, None, Seen::Window(false)));
-        // 控件仍存在时不算消失，控件不存在时也不算值已满足。
+        // 控件仍存在时不视为消失，控件不存在时也不视为值已满足。
         assert!(!satisfied(WaitUntil::Value, Some(""), Seen::Missing));
         assert!(!satisfied(WaitUntil::Enabled, None, Seen::Missing));
     }
 
-    /// 原始失败形状：等待刚点击的链接的值，页面跳转后链接即不存在，此前会一直轮询至超时。
+    /// 原始失败形状：等待刚点击的链接的值，页面跳转后链接即不存在，轮询持续至超时。
     #[test]
     fn a_value_or_enabled_wait_on_a_missing_control_cannot_succeed() {
         assert!(!attainable(WaitUntil::Value, Seen::Missing));
@@ -2261,7 +2261,7 @@ mod tests {
     fn the_poll_interval_paces_itself_by_the_cost_of_the_last_probe() {
         let floor = Duration::from_millis(250);
         let plenty = Duration::from_secs(60);
-        // 判定耗时很短时按调用方给出的下限。
+        // 判定耗时较短时按调用方给出的下限。
         assert_eq!(next_poll(floor, Duration::from_millis(5), plenty), floor);
         assert_eq!(next_poll(floor, Duration::ZERO, plenty), floor);
         // 判定耗时超过下限时按耗时放大：230 ms 的一轮之后间隔 920 ms，占空比 20%。
@@ -2614,7 +2614,7 @@ mod tests {
         assert!(!Access::of(vec![Grant::Accessibility, Grant::ScreenRecording], None).authorized);
     }
 
-    /// 原因原文不写入协议，也不算事实变化：同一问题的错误文本每次可能不同。
+    /// 原因原文不写入协议，也不视为事实变化：同一问题的错误文本每次可能不同。
     #[test]
     fn the_access_notice_carries_the_facts_but_not_the_os_text() {
         let denied = Access::of(vec![Grant::AccessibilityBus], Some("连接会话总线失败".to_owned()));
@@ -2634,13 +2634,13 @@ mod tests {
         );
     }
 
-    /// 只接受原因码本身或「码: 说明」；原因码出现在其他位置或接在其他词之后都不算。
+    /// 只接受原因码本身或「码: 说明」；原因码出现在其他位置或接在其他词之后都不视为匹配。
     #[test]
     fn a_grant_refusal_is_recognised_by_its_leading_code() {
         assert!(refused_for_grant("accessibility_not_trusted"));
-        assert!(refused_for_grant("accessibility_not_trusted: 系统设置里没有允许"));
+        assert!(refused_for_grant("accessibility_not_trusted: 系统设置中未允许"));
         assert!(refused_for_grant("accessibility_bus_unavailable: 连接会话总线失败"));
-        assert!(refused_for_grant("screen_recording_not_granted: 系统设置里没有给屏幕录制权限"));
+        assert!(refused_for_grant("screen_recording_not_granted: 系统设置中未授予屏幕录制权限"));
         for other in [
             "ref_stale: 第 0 层没有下标 3 的子节点",
             "target_lost: accessibility_bus_unavailable",

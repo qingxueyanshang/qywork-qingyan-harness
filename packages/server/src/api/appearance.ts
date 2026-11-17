@@ -53,7 +53,7 @@ export const handleAppearanceApi: ApiHandler = async (url, req, d) => {
    *
    * 不拆为「上传图片」与「修改背景」两个请求：目录中只保留当前引用的图片（见 `savePersonalization`），
    * 单独上传的图片在下一次保存时即被删除。填充方式、遮罩与模糊沿用原图片背景的值，原背景不是图片时取默认值。
-   * 原先看不到背景时，不透明度在同一次保存中按 `revealBackdrop` 调整。
+   * 背景不可见时，不透明度在同一次保存中按 `revealBackdrop` 调整。
    */
   if (p === '/api/personalization/image' && req.method === 'PUT') {
     const name = url.searchParams.get('name') ?? ''

@@ -368,7 +368,7 @@ mod tests {
     fn a_well_known_name_without_an_owner_is_a_vanished_child() {
         let no_owner = zbus::fdo::Error::NameHasNoOwner("x".to_owned());
         let gone = Reference::parse(WEB_PROCESS, WEB_ROOT)
-            .resolve(|_| Err(Failure::from_zbus("查总线名的属主", &no_owner.into())))
+            .resolve(|_| Err(Failure::from_zbus("查询总线名的属主", &no_owner.into())))
             .expect("不是空引用")
             .expect_err("没有属主");
         assert!(gone.is_gone() && !gone.is_timeout());

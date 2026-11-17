@@ -49,7 +49,7 @@ describe('创建目标', () => {
 
   /**
    * 原始失败形状：两个目标并存时，无法确定自动继续哪一个；
-   * 而自动继续不经过用户，此时没有人可以询问。
+   * 而自动继续不经过用户，此时无法询问用户。
    */
   test('上一个目标未完成时不允许创建新目标，完成后才允许', () => {
     const { store, conversationId } = fresh()
@@ -116,7 +116,7 @@ describe('修改目标', () => {
     store.close()
   })
 
-  test('completed 是终态：无法改回', () => {
+  test('completed 是终态：无法改为其他状态', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
     const done = updateGoal(store, {
@@ -139,7 +139,7 @@ describe('修改目标', () => {
     store.close()
   })
 
-  /** blocked 必须附带理由：否则循环停止后无人知道原因。 */
+  /** blocked 必须附带理由：否则循环停止后无从得知原因。 */
   test('blocked 未提供理由时拒绝，提供理由后才写入', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
@@ -209,7 +209,7 @@ describe('修改目标', () => {
 describe('回放校验', () => {
   /**
    * 两种损坏形状都只能通过绕过本模块直接写表来构造。
-   * 应当抛出异常：以来源不明的状态继续自动运行，比停止并报错糟糕得多。
+   * 应当抛出异常：以来源不明的状态继续自动运行，后果比停止并报错严重得多。
    */
   test('revision 断号：抛出异常，不返回推测的值', () => {
     const { store, conversationId } = fresh()

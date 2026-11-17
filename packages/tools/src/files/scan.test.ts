@@ -122,7 +122,7 @@ describe('walkFiles', () => {
     const scan = startScan(stop.signal)
     const walking = (async () => {
       for await (const _ of walkFiles('/root', scan, descendAll, readDir)) {
-        // 只需遍历
+        // 只遍历，不处理条目
       }
     })()
     await expect(walking).rejects.toThrow()

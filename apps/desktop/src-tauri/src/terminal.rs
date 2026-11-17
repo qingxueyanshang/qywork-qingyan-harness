@@ -31,7 +31,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 const READ_CHUNK: usize = 8 * 1024;
 
 /// 回放缓冲的上限。**它用于重建屏幕，不是滚动历史**：能容纳一屏全屏 TUI 的
-/// 重绘（清屏 + 定位 + 满屏字符，几十 K 量级）并留出余量即可，历史记录由 xterm
+/// 重绘（清屏 + 定位 + 满屏字符，数十 K 量级）并留出余量即可，历史记录由 xterm
 /// 自身的 5000 行回滚缓冲管理。更大的上限只会占用常驻内存保存不会被查看的字节。
 const BACKLOG_CAP: usize = 256 * 1024;
 
@@ -62,7 +62,7 @@ struct Session {
     /// 最近输出的原样副本，供前端重新接入时回放。
     ///
     /// **前端的 xterm 实例随页面存在**：整页刷新后它是新的空白屏幕，而 shell
-    /// 仍在运行；不回放时，用户重新接入后只能看到空白屏幕。
+    /// 仍在运行；不回放时，重新接入后界面只显示空白屏幕。
     /// 保存原始字节序列（含转义序列）而不是渲染后的文本：回放即把这段字节重新写入
     /// xterm 解析，模式、颜色、光标位置随之恢复。
     backlog: Arc<Mutex<Backlog>>,
@@ -202,7 +202,7 @@ pub fn terminal_open(
         .slave
         .spawn_command(cmd)
         .map_err(|e| format!("无法启动 shell：{e}"))?;
-    // slave 端必须在此处立即释放。保留它时读端永远收不到 EOF：
+    // slave 端必须在此处立即释放。保留它时读端永远不会收到 EOF：
     // 子进程退出后读线程仍阻塞在 read() 上，终端停止响应。
     drop(pair.slave);
 
@@ -390,7 +390,7 @@ pub fn shutdown(state: &TerminalHandle) {
 ///
 /// 释放主端在 Windows 上即 ClosePseudoConsole，它等待 conhost 退出。conhost 中仍有未处理的输入时，
 /// conhost 不退出，该调用不返回（关闭之前写入 1 MB、shell 未读取输入，实测数分钟内不返回）。
-/// 因此释放在 `wait` 内未完成即终止 conhost：该调用随之返回，读线程读到 EOF 后退出，阻塞在写入上的
+/// 因此释放在 `wait` 内未完成即终止 conhost：该调用随之返回，读线程读取到 EOF 后退出，阻塞在写入上的
 /// 写线程因管道关闭而退出。不要把收尾移回调用方的线程：`terminal_close` 与退出处理在主线程执行，
 /// 主线程阻塞时外壳的全部命令停止响应。
 fn retire(session: Session, wait: Duration) -> Receiver<()> {
@@ -479,7 +479,7 @@ fn new_console_host(before: &std::collections::HashSet<u32>) -> Option<ForceClos
 /// 读线程：PTY → 事件。
 ///
 /// **不能对每个 chunk 直接调用 `from_utf8_lossy`。** 一个汉字占三个字节，读取的块可能
-/// 在字符中间断开，逐块解码会把断点两侧各变成一个替换字符，使中文输出出现乱码。
+/// 在字符中间断开，逐块解码会把断点两侧各变为一个替换字符，使中文输出出现乱码。
 /// 因此不完整的尾部字节保留在 `carry` 中，等待下一块。
 fn spawn_reader(
     id: String,
@@ -560,8 +560,8 @@ fn char_chunks(text: &str, size: usize) -> impl Iterator<Item = &str> {
 /// 向回放缓冲追加，超出上限时从头部截断。
 ///
 /// **截断点必须位于字符边界**，否则缓冲中会留下半个字符，回放时该位置显示为替换字符。
-/// 从头部截断可能把某条转义序列切成两半，回放的第一行可能出现几个乱码字符；
-/// 不为此增加对齐逻辑：全屏程序的下一次重绘会覆盖这些字符，普通输出中换行很多。
+/// 从头部截断可能把某条转义序列切成两半，回放的第一行可能出现数个乱码字符；
+/// 不为此增加对齐逻辑：全屏程序的下一次重绘会覆盖这些字符，普通输出中换行频繁。
 fn push_backlog(buf: &mut String, text: &str) {
     buf.push_str(text);
     if buf.len() <= BACKLOG_CAP {
@@ -576,9 +576,9 @@ fn push_backlog(buf: &mut String, text: &str) {
 
 /// 取出 `carry` 中全部完整的 UTF-8 字符，只把末尾不完整的字符保留在原处。
 ///
-/// 确实非法的字节（不是尚未读完，而是本身不是 UTF-8）换成替换字符后继续处理其后的字节：
+/// 确实非法的字节（不是尚未读完，而是本身不是 UTF-8）替换为替换字符后继续处理其后的字节：
 /// 留在缓冲区头部的非法字节会使后续所有输出都无法发出；在非法字节处停止处理时，
-/// 其后的合法字节要等到下一次输出才发出。
+/// 其后的合法字节直到下一次输出才发出。
 fn take_valid(carry: &mut Vec<u8>) -> String {
     let mut out = String::new();
     let mut start = 0;
@@ -592,7 +592,7 @@ fn take_valid(carry: &mut Vec<u8>) -> String {
             Err(e) => e,
         };
         let good = start + error.valid_up_to();
-        // 前 `valid_up_to` 个字节已经校验，不会取到缺省值。
+        // 前 `valid_up_to` 个字节已经校验，不会取得缺省值。
         out.push_str(std::str::from_utf8(&carry[start..good]).unwrap_or_default());
         match error.error_len() {
             Some(bad) => {
@@ -906,7 +906,7 @@ mod tests {
         }
     }
 
-    /// PTY 读端：阻塞到 `eof` 收到信号或发送端全部释放，然后读到 EOF，与宿主进程退出后相同。
+    /// PTY 读端：阻塞到 `eof` 收到信号或发送端全部释放，然后读取到 EOF，与宿主进程退出后相同。
     struct FakeReader(std::sync::mpsc::Receiver<()>);
 
     impl Read for FakeReader {

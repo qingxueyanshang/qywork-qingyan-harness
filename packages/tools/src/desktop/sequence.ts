@@ -184,7 +184,7 @@ function planSteps(raw: unknown): StepPlan[] {
 
 /**
  * 该步骤的动作。窗口形变动作单独给出说明：它们在 `desktop_act` 中可用，
- * 模型需要知道应改用哪个入口，而不只是得知该动作名无法识别。
+ * 模型需要得知应改用哪个入口，而不只是得知该动作名无法识别。
  */
 function stepKind(raw: unknown, index: number): DesktopActionKind {
   const value = String(raw ?? '')
@@ -372,7 +372,7 @@ function sequenceOutcome(
 /**
  * 上一步之后没有可用的控件表时的停止点。
  *
- * 在下一步开始前判定，而不是在产生它的那一步判定：那一步已经提交，是否失败只看执行事实；
+ * 在下一步开始前判定，而不是在产生它的那一步判定：那一步已经提交，是否失败只取决于执行事实；
  * 无法继续的是其后的步骤。最后一步之后没有重读不构成失败。
  */
 function unreadHalt(index: number, cursor: Cursor): Halt {

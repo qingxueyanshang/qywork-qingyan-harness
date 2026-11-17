@@ -63,7 +63,7 @@ function containerOf(fd: number, total: number): ReturnType<typeof movieMetadata
 }
 
 /**
- * 估算用的视频信息。文件不存在时返回 null；时长不为正数或读不出画面尺寸时对应项为 null。
+ * 估算用的视频信息。文件不存在时返回 null；时长不为正数或无法读取画面尺寸时对应项为 null。
  * 按路径、修改时间与大小缓存：请求装配每一步都会对历史中的视频调用本函数。
  */
 export function videoMetaOf(abs: string): VideoMeta | null {
@@ -83,7 +83,7 @@ export function videoMetaOf(abs: string): VideoMeta | null {
     try {
       movie = containerOf(fd, info.size)
     } catch {
-      // 读取中途出错按读不出处理：时长与尺寸为 null，字节数仍有效。
+      // 读取中途出错按无法读取处理：时长与尺寸为 null，字节数仍有效。
     }
     const meta: VideoMeta = {
       bytes: info.size,

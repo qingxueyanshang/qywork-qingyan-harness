@@ -99,7 +99,7 @@ describe('传输层失败必须可重试', () => {
  * 三个分支的分界。
  *
  * 本组锁定的是**每个错误码归入哪个分支**，而不是文案。分错的代价：
- * 「无法连接」会引导用户修改接口地址（而问题在于链路波动），「连接被断开」会让用户等待重发
+ * 「无法连接」会引导用户修改接口地址（而问题在于链路波动），「连接被断开」会引导用户等待重发
  * （而实际原因是 key 与端点不匹配）。
  *
  * 重点是 `ECONNREFUSED`（未建立连接）与 `ECONNRESET`（建立连接后被重置）：
@@ -139,7 +139,7 @@ describe('传输失败分为三个分支：无法连接 / 连接被断开 / 超�
     for (const err of [
       transport('ETIMEDOUT', 'The operation timed out.'),
       transport('UND_ERR_HEADERS_TIMEOUT', ''),
-      // SDK 自身的 60 秒超时产生的就是这条文案，没有 code。
+      // SDK 自身的 60 秒超时产生该文案，没有 code。
       new Error('Request timed out.'),
     ]) {
       expect(shapeOf(err)).toMatch(/超时/)
@@ -213,7 +213,7 @@ describe('SDK 包装保留具体的传输失败原因', () => {
     expect(transportFailureKind(new Error('invalid json'))).toBeNull()
   })
 
-  test('底层文案没有线索也能靠错误码识别连接重置', () => {
+  test('底层文案没有线索时依据错误码识别连接重置', () => {
     const wrapped = new APIConnectionError({
       cause: transport('ECONNRESET', 'read'),
     })
@@ -496,7 +496,7 @@ describe('按用户的下一步动作分类', () => {
 
   /**
    * Gemini API 的 OpenAI 兼容接口以只含一个元素的数组返回错误正文（开发者论坛中的实际答复；官方 SDK `google-genai` 的 `APIError`
-   * 同样先取出唯一的元素）。原始失败形状：数组中的 `RESOURCE_EXHAUSTED` 读取不到，限流按原文「You exceeded your current quota」
+   * 同样先取出唯一的元素）。原始失败形状：数组中的 `RESOURCE_EXHAUSTED` 无法读取，限流按原文「You exceeded your current quota」
    * 归为额度用尽、不重发，说明显示整段 JSON。预付费额度用尽同为 429 `RESOURCE_EXHAUSTED`，原文为「Your prepayment credits are depleted」。
    */
   test('Gemini 兼容接口的数组错误正文：读取其中的错误码与说明；预付费额度用尽按原文归为额度用尽', () => {
@@ -759,7 +759,7 @@ describe('按用户的下一步动作分类', () => {
     expect(e.code).toBe('provider_unavailable')
     expect(e.capacity).toBeUndefined()
     expect(e.message).toBe('HTTP 400 请求无效：Request contains an invalid argument.')
-    // SDK 的消息以状态码开头；整句匹配取的是去掉状态码之后的原文。
+    // SDK 的消息以状态码开头；整句匹配取的是去除状态码之后的原文。
     expect(
       classifyProviderError(P, http(400, '400 Request contains an invalid argument.')).code,
     ).toBe('provider_unavailable')

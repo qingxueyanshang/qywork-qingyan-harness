@@ -91,7 +91,7 @@ export const SUPPORTED_CAPABILITIES = ['tools', 'resources'] as const
  *
  * 判据有意从严：命中即降低版本重试，而对鉴权失败或命令不存在的错误
  * 重试四次，只会把真正的原因掩盖在四行日志之下。宁可漏判：
- * 漏判的后果是照常抛出该错误，用户仍能看到它。
+ * 漏判时照常抛出该错误，该错误仍会显示给用户。
  */
 function looksLikeVersionRejection(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
@@ -159,7 +159,7 @@ export class McpClient {
    * 必须保留：不能只取 `protocolVersion` 与 `serverInfo` 而丢弃 `capabilities`。
    * 丢弃后，只提供 `resources`（不提供 `tools`）的 server 会表现为
    * 连接成功、握手成功、`tools/list` 返回空数组、注册 0 个工具，且没有任何错误。
-   * 用户只看到已配置却没有任何效果，日志中也没有任何记录。
+   * 界面只显示已配置，却没有任何效果，日志中也没有任何记录。
    *
    * 客户端目前消费 `tools` 与 `resources`。已声明但未接入的能力（如 `prompts`）
    * 必须在加载时明确报告：该提示是用户唯一能取得的线索。
@@ -223,8 +223,8 @@ export class McpClient {
    * 发送 `initialize`，握手因版本被拒绝时逐级回退。
    *
    * 规范要求 server 收到无法识别的版本时返回自身支持的版本，而不是报错；
-   * 但实际实现未必遵循，客户端提高版本号后完全无法连接的 server，
-   * 在用户看来表现为此前正常、升级后无法连接。
+   * 但实际实现未必遵循：这类 server 在客户端提高版本号后完全无法连接，
+   * 表现为此前正常、升级后无法连接。
    *
    * 回退只针对看似版本问题的错误，且只向更旧的版本回退。其他错误
    * （命令不存在、鉴权失败）原样抛出：对它们重试只会掩盖真正的原因。
@@ -353,7 +353,7 @@ export class McpClient {
     return {
       content: Array.isArray(res?.content) ? res.content : [],
       // MCP 把工具执行失败放在结果中而不是 JSON-RPC error 中，
-      // 目的是让模型看到失败详情并自行重试。此处原样传递。
+      // 目的是使模型取得失败详情并自行重试。此处原样传递。
       isError: res?.isError === true,
       ...(res?.structuredContent !== undefined ? { structuredContent: res.structuredContent } : {}),
     }

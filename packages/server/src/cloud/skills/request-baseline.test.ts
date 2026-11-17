@@ -1,9 +1,9 @@
 /**
- * 未提供云端技能端口的会话：经请求装配与三家适配器序列化得到的请求体与期望值逐字节相同。
+ * 未提供云端技能端口的会话：经请求装配与三种协议的适配器序列化得到的请求体与期望值逐字节相同。
  *
  * 覆盖范围：`runtime/session.ts` 与 `runtime/session/turn/` 的装配（系统提示词、工具表、上下文末尾的技能索引、历史投影），
  * `read_skill` 与 `tools` 中识别云端技能路径的读取工具（`read_file`、`list_dir`、`glob`、`grep`）在未提供端口时的结果，
- * 以及 `ai` 三家适配器的序列化。模型由本进程内的端点按脚本回复。
+ * 以及 `ai` 三种协议的适配器的序列化。模型由本进程内的端点按脚本回复。
  *
  * 期望值是不含云端技能改动的代码对同一夹具的输出。请求体中随机器与运行变化的部分在比较前替换为占位：
  * 工作区路径、会话与运行的编号、日期、平台名称、运行环境一节、`grep` 的引擎名称，以及路径中的反斜杠。
@@ -34,9 +34,9 @@ const PROTOCOLS: { provider: string; kind: ProviderKind; model: string }[] = [
 
 /** 期望值：各协议全部请求体按顺序以换行连接、替换占位后的 SHA-256。 */
 const EXPECTED: Record<string, string> = {
-  anthropic: 'd8fa9cd1aef44e11bbe0e2228850d9df1aa544503a1c58b6efcd3214133331f7',
-  chat: '18f8fc7ebc8bdc4279df07c1a48d131d3cadb05f8f8321f38957886bff6dc06a',
-  responses: 'b2da2d62f40e001cb0f85270af5edf15fa02374d79f7cdb7e7b7a9df852b124d',
+  anthropic: '533c63a24c39df219fa6720b0965be8e36068190e2ed18ac7cbdfe6716db418b',
+  chat: '8bd491cc4bdc303aafd99b0277507fe809a46f4f2c4e44c8f9e9d58bf5631513',
+  responses: '63f5c82df0a4ff3c0078e90ef16ece633bb9b4c21f3f9753cb7f0ec82d5ac24c',
 }
 
 function sse(events: Record<string, unknown>[], named: boolean): string {
@@ -200,7 +200,7 @@ function normalize(raw: string, workspace: string): string {
     .replace(/(\\\\)+/g, '/')
 }
 
-test('未提供云端技能端口时三家协议的请求体与期望值逐字节相同', async () => {
+test('未提供云端技能端口时三种协议的请求体与期望值逐字节相同', async () => {
   const actual: Record<string, string> = {}
   for (const p of PROTOCOLS) {
     const workspace = await mkdtemp(join(root, 'ws-'))

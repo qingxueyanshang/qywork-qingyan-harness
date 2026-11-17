@@ -144,7 +144,7 @@ function settleOutput(
     : settled
 }
 
-/** 占位版本记下实际使用的接口与模型：使用默认模型发起时占位版本没有记下它们。占位版本已不在时原样返回副本。 */
+/** 占位版本记录实际使用的接口与模型：使用默认模型发起时占位版本未记录它们。占位版本已不在时原样返回副本。 */
 function withModel(doc: CanvasDoc, card: CardAt, provider: string, model: string): CanvasDoc {
   const next = structuredClone(doc)
   const node = next.nodes.find((n) => n.id === card.nodeId)
@@ -267,7 +267,7 @@ export class CanvasRuns {
   }
 
   /**
-   * 只调度本次指定的节点，不自动扩展到其他上游。执行仍走 run，共用状态、版本与计费。
+   * 只调度本次指定的节点，不自动扩展到其他上游。执行仍经由 run，共用状态、版本与计费。
    * 批内依赖失败时跳过下游，依赖已满足的节点全部同时提交，不设并发上限：并发由接口一侧决定；中止后已开始的节点照常生成（`CanvasRunOptions.signal`），
    * 等待中的节点不再派发。正在生成的节点不重复提交，等待该次生成的结果（`join`）。
    */
@@ -497,7 +497,7 @@ export class CanvasRuns {
           facts.provider = provider
           facts.model = model
           await this.remodel(ws.root, record, provider, model)
-          // 有任务号的生成停止时按任务号撤销（`cancel`）：视频，以及走云端的出图与音频（云端撤销尚未发往上游的任务，
+          // 有任务号的生成停止时按任务号撤销（`cancel`）：视频，以及经由云端的出图与音频（云端撤销尚未发往上游的任务，
           // 已发往上游的答复已开始）。Art 由对话模型生成，没有任务号。
           if (taskId && node.output !== 'art')
             this.submitted(entry, ws, rel, nodeId, {
@@ -532,7 +532,7 @@ export class CanvasRuns {
 
   /**
    * 产物已落盘：交给 `writeBack` 写回此刻引用任务记录的每一张卡，生成与取回共用。占位版本改为指向产物（`settleOutput`），
-   * 版本记下实际使用的接口与模型。
+   * 版本记录实际使用的接口与模型。
    */
   private async attachResult(
     root: string,
@@ -578,7 +578,7 @@ export class CanvasRuns {
     return back
   }
 
-  /** 任务号或图片来源到达时记下实际使用的接口与模型：使用默认模型发起时占位版本没有记下它们。写入失败不影响生成。 */
+  /** 任务号或图片来源到达时记录实际使用的接口与模型：使用默认模型发起时占位版本未记录它们。写入失败不影响生成。 */
   private async remodel(root: string, record: string, provider: string, model: string) {
     for (const card of (await this.cardsOf(root, record)).cards) {
       await this.docs
@@ -766,7 +766,7 @@ export class CanvasRuns {
     return entry
   }
 
-  /** 任务号落盘后即可对外读取，不必等生成结束或首次查询返回。 */
+  /** 任务号落盘后即可对外读取，不必等待生成结束或首次查询返回。 */
   private submitted(
     entry: RunEntry,
     ws: CanvasWorkspace,
@@ -808,7 +808,7 @@ export class CanvasRuns {
 
   /**
    * 请求被拒绝后的重试等待（`MediaCall.onRetry`），生成与取回共用：记在运行条目上供卡片显示，发送一条 `canvas.run`。
-   * 取回的重试来自云端一侧（走云端的任务在云端被上游拒绝后重试）。
+   * 取回的重试来自云端一侧（经由云端的任务在云端被上游拒绝后重试）。
    */
   private retrying(
     entry: RunEntry,
@@ -848,11 +848,11 @@ export class CanvasRuns {
    * 取消一张卡片正在进行的生成。
    *
    * 直连接口的图像、音频等单次请求没有远端任务可撤销：停止本地等待，收尾时记为结果未知，返回 `stopped`。
-   * 走云端的出图与音频有任务号，与视频相同按任务号撤销：云端撤销尚未发往上游的任务并退回积分，已发往上游的答复已开始。
+   * 经由云端的出图与音频有任务号，与视频相同按任务号撤销：云端撤销尚未发往上游的任务并退回积分，已发往上游的答复已开始。
    * 不要改为继续等待：生成请求不设静默上限，远端既不返回也不断开连接时，停止是结束这次生成的唯一途径。
    *
    * 视频生成请求尚未发出（包含上传素材中）时正常取消，返回 `not_submitted`，不产生生成费用。
-   * 请求发出但未取得任务号时立即停止本地等待，返回 `stopped`，不能无限等任务号。
+   * 请求发出但未取得任务号时立即停止本地等待，返回 `stopped`，不能无限等待任务号。
    * 此时无法确定平台是否已受理，不声称远端已撤销、不自动重发；若停止期间取得任务号，保留记录供取回。
    * 撤销由 `cancelTask` 按接口能力执行：撤销成功时停止本地等待，收尾时删除该版本与任务记录、不记录失败，返回 `cancelled`。
    * 无法撤销或撤销请求失败时仍暂停本地等待并保留任务；新生成和取回遵守相同的取消能力判断。
@@ -1004,7 +1004,7 @@ export class CanvasRuns {
 
   /**
    * 一次生成此刻的归属：工作区中引用该任务记录的每一个版本（画布被复制时可能有多张）。每次生成在提交之前写入任务记录，
-   * 卡片的占位版本引用它，因此归属只按记录判定，不以发起时记下的画布路径或卡片 id 推测：画布可能在生成期间被改名、移动、复制或删除。
+   * 卡片的占位版本引用它，因此归属只按记录判定，不以发起时记录的画布路径或卡片 id 推测：画布可能在生成期间被改名、移动、复制或删除。
    * 无法读取的画布列入 `unreadable`：其中是否引用该记录无法判定。
    */
   private async cardsOf(
@@ -1036,7 +1036,7 @@ export class CanvasRuns {
    * 供调用方核对结果：一次生成有多个产物时只有当前版本显示在卡片上；写回的画布不是发起时的画布（`rel`）时给出 `canvas`。
    *
    * `settled` 表示任务记录可以删除：已全部写回，或已确认没有画布引用该记录（卡片、版本或画布已删除，产物留在原位置，结果写明）。
-   * 有引用而写入失败、或没有找到引用而有画布无法读取时为 false：任务记录保留并写明已落盘的产物，画布恢复后对该卡取回即接上产物，
+   * 有引用而写入失败、或没有找到引用而有画布无法读取时为 false：任务记录保留并写明已落盘的产物，画布恢复后对该卡执行取回即可关联产物，
    * 不重新下载（`generateMedia` 的 `attach`）。
    */
   private async writeBack(
@@ -1095,7 +1095,7 @@ export class CanvasRuns {
       return {
         result: {
           ok: false,
-          message: `已生成，但回写画布失败（${reason}），产物位于 ${where}；任务记录 ${record} 已保留，画布恢复后对该卡取回即接上产物，不重新下载`,
+          message: `已生成，但回写画布失败（${reason}），产物位于 ${where}；任务记录 ${record} 已保留，画布恢复后对该卡执行取回即可关联产物，不重新下载`,
           pending: true,
         },
         settled: false,
@@ -1162,7 +1162,7 @@ export class CanvasRuns {
 }
 
 /**
- * 设计稿页面引用的工作区图片连到该 art 卡：未放上画布的先放上，已连接的不重复连接。
+ * 设计稿页面引用的工作区图片连到该 art 卡：未放置到画布上的先放置，已连接的不重复连接。
  * 连线使图片来源在画布上可见，重新生成时这些图片也作为参考图交给模型。
  * 不成立时（例如该卡已不存在）保持原文档：版本已写入，补连线不应使回写失败。
  */

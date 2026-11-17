@@ -109,10 +109,10 @@ export function closeRun(session: SessionState, ask: AskState): void {
   // step 也须写为终态，不只是 run。
   //
   // 只对 run 收尾不够：在 `tool.started` 的 yield 处被 `.return()` 中止时，
-  // step 已是 running 却无人 settle；run 随即被标为终态，因此该 step
+  // step 已是 running 却没有任何路径对其 settle；run 随即被标为终态，因此该 step
   // 永远不会被启动时的 `recoverStaleRuns` 处理（它只扫描 running/queued 的 run）。
   //
-  // 后果不限于界面上一张持续显示加载状态的卡片：历史投影必须跳过含未终结调用的整个 batch，
+  // 未终结的 step 使界面卡片持续显示加载状态；此外历史投影必须跳过含未终结调用的整个 batch，
   // 一条孤儿 step 会使同批次中已经成功的写文件结果一并从历史中消失。
   settleRunningSteps(store, run.id)
 }
@@ -154,7 +154,7 @@ function interruptionFrom(
 
 function interruptionMessage(interruption: RunInterruption | null): string | null {
   if (!interruption || interruption.source === 'user') return null
-  if (interruption.source === 'server_shutdown') return '服务正常关闭，本轮随之中断'
+  if (interruption.source === 'server_shutdown') return '服务已关闭，本轮中断'
   if (interruption.source === 'consumer_closed') return '执行流被调用方提前关闭，本轮中断'
   if (interruption.source === 'parent_agent') return '派发该子 agent 的会话停止了本轮'
   return null

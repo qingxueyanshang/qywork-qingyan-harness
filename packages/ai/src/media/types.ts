@@ -115,8 +115,8 @@ export interface MediaRunOptions {
   /** 在下载之前保存结果引用与计量；回调完成后才开始下载。 */
   onImageResult?: (result: MediaImageResult) => void | Promise<void>
   /**
-   * 取得远端任务号后立即交出：调用方将其落盘，停止、超时或进程退出之后仍可取回。
-   * 任务号由本机生成的协议（云端）在提交结果未知、提交请求已发出而应答到达之前停止时同样交出：远端可能已建立该任务。
+   * 取得远端任务号后立即回调：调用方将其落盘，停止、超时或进程退出之后仍可取回。
+   * 任务号由本机生成的协议（云端）在提交结果未知、提交请求已发出而应答到达之前停止时同样回调：远端可能已建立该任务。
    */
   onTask?: (taskId: string) => void | Promise<void>
   /** 状态变化时回报一次（排队、生成中），不按轮询次数回报。 */
@@ -133,7 +133,7 @@ export interface MediaRunOptions {
 /**
  * 按协议分派一次后，调用方只使用此接口。
  *
- * 不重试：生成按次计费，接口没有幂等键，断线后自动重发可能重复扣费。失败交还调用方。
+ * 不重试：生成按次计费，接口没有幂等键，断线后自动重发可能重复扣费。失败返回调用方。
  */
 export interface MediaAdapter {
   readonly kind: MediaKind

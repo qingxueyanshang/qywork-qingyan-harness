@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`compaction.ts` 全部：单元键与边界、收纳段、摘要段的预算与检查、
- * 事实包、投影；`loop/summary-trace.ts` 中一次压缩多次摘要请求的编号。接线（发送前检查 → 压缩 → 重新装配）见 `loop/compact.test.ts`。
+ * 事实包、投影；`loop/summary-trace.ts` 中一次压缩多次摘要请求的编号。与主循环的集成（发送前检查 → 压缩 → 重新装配）见 `loop/compact.test.ts`。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -141,7 +141,7 @@ describe('收纳段：只保留信封，保留部分逐字不变', () => {
       tool: 'run_command',
       status: 'success',
       executed: true,
-      summary: '跑完了',
+      summary: '执行完毕',
       resources: ['rs_abc'],
       result: { stdout: 'x'.repeat(8000) },
     }),
@@ -154,7 +154,7 @@ describe('收纳段：只保留信封，保留部分逐字不变', () => {
     expect(env.result_omitted).toBe(true)
     // 图像省略标记只用于实际丢弃了图像块的收纳，纯文本收纳不带该标记。
     expect(env.images_omitted).toBeUndefined()
-    expect(env.summary).toBe('跑完了')
+    expect(env.summary).toBe('执行完毕')
     expect(env.resources).toEqual(['rs_abc'])
     expect((out.content as string).length).toBeLessThan((toolMsg.content as string).length / 10)
   })
@@ -245,7 +245,7 @@ describe('收纳足够时不调用模型', () => {
     let calls = 0
     const r = await compact(input({ condenseOnly: true }), async () => {
       calls++
-      return '不该被调用'
+      return '不应被调用'
     })
     expect(calls).toBe(0)
     if (r.status !== 'compacted') throw new Error('应当落库')
@@ -460,7 +460,7 @@ describe('摘要块：旧块原样保留，新块只覆盖本次折叠的区段'
   })
   const isMerge = (prompt: string) => prompt.includes('把它们合并为一段')
 
-  /** 1.11 的失败形状：第二次摘要只写新区段时，第一块中的标识必须仍在投影中。 */
+  /** 失败形状：第二次摘要只写新区段时，第一块中的标识必须仍在投影中。 */
   test('第二次摘要追加新块，第一块逐字保留在投影中', async () => {
     const first = block('结论：构建缓存失效的问题编号为 QX-48213。', 'ms_000')
     let prompt = ''
@@ -822,7 +822,7 @@ describe('中断即丢弃', () => {
       input(),
       async () => {
         ac.abort()
-        return '一份没人等到的摘要'
+        return '中止之后生成的摘要'
       },
       ac.signal,
     )

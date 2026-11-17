@@ -195,7 +195,7 @@ describe('插件私有存储', () => {
     })
   })
 
-  test('未写入时返回 exists=false 而不是抛错', async () => {
+  test('未写入时返回 exists=false 而不是抛出异常', async () => {
     const { call } = await fixture()
     expect(await call('storage.get', { key: '没有' })).toMatchObject({ value: null, exists: false })
   })
@@ -284,7 +284,7 @@ describe('net.fetch 经过 SSRF 防护', () => {
 })
 
 describe('未登记的方法', () => {
-  test('明确抛错，不返回 null：返回 null 在插件侧表现为一次成功调用', async () => {
+  test('明确抛出异常，不返回 null：返回 null 在插件侧表现为一次成功调用', async () => {
     const { call } = await fixture()
     expect(call('fs.chmod', { path: 'a.txt' })).rejects.toThrow('尚未实现')
   })

@@ -417,7 +417,8 @@ describe('完成、停下等待用户与执行失败的判定', () => {
     for (const kind of TODO_FAILURES) expect(prompt.split(`- ${kind} `)).toHaveLength(2)
     for (const line of [
       '- transient 暂时故障（5xx、429 限流、请求得到应答之前连接中断）：以相同参数在 30 秒、2 分钟、5 分钟后各重试一次。',
-      '生成的提交与子 agent 的派发由系统自动重试，回执写明已做的重试；回执报告失败时，按其中的原因决定是否再次运行。',
+      '生成的提交由系统自动重试，回执写明已做的重试；回执报告失败时，按其中的原因决定是否再次运行。',
+      '子 agent 的请求已由系统按同一间隔自动重发，失败回执写明重发次数与各次的失败原因；同一接口反复失败时，优先改用其他接口或模型派发。',
       '- invalid_request 请求有误（4xx 参数校验失败、参考图数量不符、引用失效、参数取值无效）：按原因修改输入后重试；同一错误再次出现时换一种改法，共尝试 3 次。',
       '- denied 重试无法解决（余额或额度用尽、403 无访问权限、接口要求重新登录）：不重试。',
       '- unknown 结果未知（请求已发出，但没有收到应答或任务号，或发出后超时）：远端可能已经受理并计费，先取回，不重新提交',
@@ -544,7 +545,7 @@ describe('能力段', () => {
     // 自绘界面的处理路径须完整写明：observe 附带截图、按图动作的回执附带截图、连续动作使用 sequence。
     expect(prompt).toContain('缺少可操作控件')
     expect(prompt).toContain('使用观察结果附带的截图定位')
-    // 原始失败形状：模型看不到微信搜索框弹出的结果列表，改为请用户自行打开会话。截图已合成同一应用的弹出窗口。
+    // 原始失败形状：模型无法看到微信搜索框弹出的结果列表，改为请用户自行打开会话。截图已合成同一应用的弹出窗口。
     expect(prompt).toContain(
       '截图包含同一应用位于该窗口之上的下拉框、菜单与搜索结果等弹出窗口，回执写明其位置；输入文字后依据回执附带的截图查看弹出的内容，再按图点击其中的项目。',
     )
@@ -615,19 +616,19 @@ describe('能力段', () => {
   })
 
   /**
-   * 原始失败形状：用户要求打开页面查看，模型认为内置浏览器的页面用户看不到，用 `start` 启动系统 Chrome，
+   * 原始失败形状：用户要求打开页面查看，模型认为用户无法看到内置浏览器的页面，用 `start` 启动系统 Chrome，
    * 之后用电脑控制激活窗口、按 F5、截图。能力段缺少内置浏览器一行，而电脑控制一行写有完整用法。
    */
   test('注册了浏览器工具时写明页面显示在右侧面板、用户可见，并排在电脑控制之前；未注册时不出现', () => {
     const prompt = buildSystemPrompt(new Set(['browser_tabs', 'desktop_windows']))
     expect(prompt).toContain('- 内置浏览器：')
-    expect(prompt).toContain('打开的页面以页签显示在界面右侧面板中，用户可以直接看到')
+    expect(prompt).toContain('打开的页面以页签显示在界面右侧面板中，用户可以直接查看')
     expect(prompt.indexOf('- 内置浏览器：')).toBeLessThan(prompt.indexOf('- 电脑控制：'))
     expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('内置浏览器')
   })
 
   /**
-   * 原始失败形状：模型往用户已打开的 cmd 窗口输入「Docker Desktop」，又在 Windows Terminal 中按 Win+R，
+   * 原始失败形状：模型向用户已打开的 cmd 窗口输入「Docker Desktop」，又在 Windows Terminal 中按 Win+R，
    * 都是为了启动应用，最后用 run_command 的 `start` 才成功。电脑控制一行写明执行命令与启动应用的工具，
    * 以及需要操作终端窗口的情形。
    */
@@ -735,7 +736,7 @@ describe('审计真实的系统提示词', () => {
 
   /**
    * 复现原始失败形状：`run_command` / `subagent` / `workflow` / `load_tool`
-   * 按通道注册，固定写入提示词会使没有对应通道的会话读到不存在的工具。
+   * 按通道注册，固定写入提示词会使没有对应通道的会话读取到不存在的工具。
    */
   test('缺少通道时不发送对应行，其余照常', () => {
     const p = buildSystemPrompt(new Set(['write_memory', 'read_skill']))

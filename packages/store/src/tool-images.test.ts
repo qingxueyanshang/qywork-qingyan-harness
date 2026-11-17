@@ -75,7 +75,7 @@ function imagesOf(store: Store, runId: RunId, stepId: StepId): unknown {
 
 describe('工具结果的图像写入正文库，账本只存引用', () => {
   /**
-   * 原始失败形状：同一张图每被读取或取回一次，账本就存一份 base64，历史接口原样返回这些字节。
+   * 原始失败形状：同一张图每被读取或取回一次，账本就保存一份 base64，历史接口原样返回这些字节。
    */
   test('同一张图读取三次：正文只存一份，payload 与历史页不含字节，读取后逐字节还原', () => {
     const store = new Store({ path: ':memory:' })
@@ -145,7 +145,7 @@ describe('工具结果的图像写入正文库，账本只存引用', () => {
     expect(JSON.stringify(step?.payload ?? null).includes(PAGE)).toBe(false)
   })
 
-  test('正文缺失时不还原该图，imagesMissing 记下张数', () => {
+  test('正文缺失时不还原该图，imagesMissing 记录张数', () => {
     const store = new Store({ path: ':memory:' })
     const content = new ContentStore(':memory:')
     const { run, read } = fixture(store)
@@ -176,7 +176,7 @@ describe('迁移 70：已有执行记录中的图像字节移入正文库', () =
     const dir = mkdtempSync(join(tmpdir(), 'migration-70-'))
     const path = join(dir, 'qywork.sqlite3')
     try {
-      // 先建出完整结构，再写入旧形状的行并撤销迁移 70 的登记，模拟升级前的账本。
+      // 先建立完整结构，再写入旧形状的行并撤销迁移 70 的登记，模拟升级前的账本。
       const setup = new Store({ path })
       const { run } = fixture(setup)
       const old = Array.from({ length: 8 }, (_, i) => {
@@ -269,7 +269,7 @@ describe('迁移 70：已有执行记录中的图像字节移入正文库', () =
   })
 })
 
-describe('迁移 72：工具图片的引用补上像素宽高', () => {
+describe('迁移 72：工具图片的引用补充像素宽高', () => {
   /** 只有文件头合法的 1440×900 PNG，其后是填充字节。 */
   function png(): string {
     const b = Buffer.alloc(30_000, 9)
@@ -279,7 +279,7 @@ describe('迁移 72：工具图片的引用补上像素宽高', () => {
     return b.toString('base64')
   }
 
-  test('入库时记下尺寸；没有尺寸的旧引用由迁移补齐，文件头无法识别的记为 null', () => {
+  test('入库时记录尺寸；没有尺寸的旧引用由迁移补齐，文件头无法识别的记为 null', () => {
     const dir = mkdtempSync(join(tmpdir(), 'migration-72-'))
     const path = join(dir, 'qywork.sqlite3')
     try {
@@ -296,7 +296,7 @@ describe('迁移 72：工具图片的引用补上像素宽高', () => {
           size: { width: 1440, height: 900 },
         },
       ])
-      // 去掉尺寸并撤销迁移 72 的登记，模拟升级前写入的引用。
+      // 去除尺寸并撤销迁移 72 的登记，模拟升级前写入的引用。
       for (const id of [shot, blank]) {
         const row = setup.db
           .query<{ payload: string }, [string]>('SELECT payload FROM steps WHERE id = ?')

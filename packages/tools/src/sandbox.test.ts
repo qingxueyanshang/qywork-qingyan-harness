@@ -71,7 +71,7 @@ describe('bash 路径解析', () => {
       gitBash: () => 'C:/Program Files/Git/bin/bash.exe',
     })
     expect(got.path).toBeNull()
-    // 原因必须指明哪个变量指向错误，否则用户只看到「没有 bash」，而机器上实际装有 bash。
+    // 原因必须指明哪个变量指向错误，否则界面只显示「没有 bash」，而机器上实际已安装 bash。
     expect(got.reason).toContain(BASH_PATH_ENV)
     expect(got.reason).toContain('D:/nope/bash.exe')
   })
@@ -113,13 +113,13 @@ describe('bash 路径解析', () => {
 /**
  * 三级 shell 探测。
  *
- * **本机只可能命中其中一级**（开发机装有 Git Bash，第一步即返回），
+ * **本机只可能命中其中一级**（开发机已安装 Git Bash，第一步即返回），
  * 因此顺序、每一级的 argv 与语法提示全部依靠注入测试：真机上无法执行到的两级
  * 出现遗漏时不会有任何测试失败。
  */
 describe('命令 shell 三级探测', () => {
   const foundBash = (p: string) => () => ({ path: p, reason: '' })
-  const noBash = () => ({ path: null, reason: '这台机器没装 Git for Windows' })
+  const noBash = () => ({ path: null, reason: '本机未安装 Git for Windows' })
   const noWhich = () => null
   const env = { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows' }
   /** 5.1 是系统组件，按固定位置查找；pwsh 7 的候选路径以 `pwsh.exe` 结尾，不会被误判为 5.1。 */
@@ -166,7 +166,7 @@ describe('命令 shell 三级探测', () => {
   })
 
   test('只有 5.1 时使用它，位置由 SystemRoot 确定', () => {
-    // 系统盘不一定是 C:，写死 C:\Windows 时会在这类机器上误判为没有任何 shell。
+    // 系统盘不一定是 C:，固定为 C:\Windows 时会在这类机器上误判为没有任何 shell。
     const shell = resolveCommandShell({
       bash: noBash,
       which: noWhich,
@@ -449,7 +449,7 @@ describe('默认屏蔽清单', () => {
 
   test('不屏蔽整个家目录', () => {
     // 整体屏蔽时 ~/.gitconfig、~/.npmrc、nvm/rustup 全部不可见，
-    // git commit 因此没有作者，node 也可能无法定位；这样的沙箱用户开启一次就会关闭。
+    // git commit 因此没有作者，node 也可能无法定位，沙箱因此无法正常使用。
     expect(defaultMaskPaths('/home/u')).not.toContain('/home/u')
   })
 })
@@ -467,7 +467,7 @@ describe('seatbelt profile', () => {
     buildSeatbeltProfile(p, { exists: () => true })
 
   test('先全部放行，再收紧写权限', () => {
-    // 反过来（deny default）需要枚举能运行 node/git 的完整白名单，
+    // 采用相反的写法（deny default）需要枚举能运行 node/git 的完整白名单，
     // 而该名单必然有遗漏，遗漏时某个工具无法启动，且报错中没有原因。
     const s = P({ workspaceRoot: '/ws' })
     expect(s.indexOf('(allow default)')).toBeLessThan(s.indexOf('(deny file-write*)'))
@@ -615,7 +615,7 @@ describe('网络访问开关', () => {
   })
 
   test('断网不影响文件边界', () => {
-    // 两个维度相互独立。混在一起时，关闭其中一个会连带关闭另一个。
+    // 两个维度相互独立。合并为一项时，关闭其中一个会连带关闭另一个。
     const argv = buildBwrapArgv(
       { workspaceRoot: '/ws', readOnlySubdirs: ['.qy'], denyNetwork: true },
       inner,
@@ -627,17 +627,17 @@ describe('网络访问开关', () => {
 })
 
 /**
- * 树杀。**复现的是原始失败形状，不是验证新函数被调用。**
+ * 进程树终止。**复现的是原始失败形状，不是验证新函数被调用。**
  *
  * 原始形状（本机 Windows 实测，见 `killTree` 注释）：`proc.kill()` 只终止
  * spawn 出的 shell，实际执行的孙进程仍在监听端口并持有 stdout：
- * `shell.ts` 的 pump 永远等不到 EOF，该次 `registry.execute` 不再返回，
+ * `shell.ts` 的 pump 始终未收到 EOF，该次 `registry.execute` 不再返回，
  * 最终导致会话永久拒绝新任务并提示「已有任务在执行」。
  *
  * 因此本测试断言两点，缺一不可：
  *
- * 1. 树杀之后**端口不再监听**（孙进程确已退出）；
- * 2. 树杀之后**stdout 能收到 EOF**（管道关闭，pump 能结束）。
+ * 1. 终止进程树之后**端口不再监听**（孙进程确已退出）；
+ * 2. 终止进程树之后**stdout 能收到 EOF**（管道关闭，pump 能结束）。
  *
  * 只断言第 1 点会遗漏真正致命的情况：会话无响应。
  *
@@ -663,9 +663,9 @@ describe('killTree', () => {
     // 脚本一律用双引号包裹：`SERVER` 中全是单引号，用单引号包裹会在第一个内层引号处断开
     // （这种错误在未执行过的分支中不会暴露）。
     // `& wait` 使 shell 保持为父进程：`-c` 只有一条简单命令时 bash 直接 exec 它，
-    // 被终止的就是监听端口的进程本身，无法验证树杀是否成立。
+    // 被终止的即为监听端口的进程本身，无法验证进程树终止是否成立。
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器没有 bash，这条端到端跑不了')
+    if (shell === null) throw new Error('本机未找到 bash，无法执行本端到端用例')
     const inner = [...shell.argv, `node -e "${SERVER}" & wait`]
     const proc = Bun.spawn(inner, {
       stdout: 'pipe',
@@ -675,7 +675,7 @@ describe('killTree', () => {
     } as never)
 
     try {
-      // 等待端口开始监听。端口未监听时测试的已不是树杀，直接失败。
+      // 等待端口开始监听。端口未监听时测试的已不是进程树终止，直接失败。
       let up = false
       for (let i = 0; i < 30 && !up; i++) {
         await Bun.sleep(100)
@@ -894,10 +894,10 @@ describe('静默计时', () => {
     expect(got.timedOut).toBe(true)
   }, 20_000)
 
-  test('写入一行后静默，到期执行树杀，孙进程随之退出', async () => {
+  test('写入一行后静默，到期终止进程树，孙进程随之退出', async () => {
     // 与 killTree 一组的结构相同：spawn 的是 shell，监听端口的是其子进程。
     const shell = commandShell()
-    if (shell === null) throw new Error('这台机器没有 bash，这条端到端跑不了')
+    if (shell === null) throw new Error('本机未找到 bash，无法执行本端到端用例')
     const src =
       `require('http').createServer(function(_,r){r.end('alive')}).listen(${PORT},'127.0.0.1');` +
       `process.stdout.write('started'+String.fromCharCode(10))`
@@ -920,7 +920,7 @@ describe('静默计时', () => {
       })
 
       // 端口未开始监听时，测试的已不是静默计时，直接失败。等到端口可达或进程已结束：
-      // 固定只等 2 秒时，GitHub 的 Windows 机器上启动较慢会偶发失败。
+      // 固定只等待 2 秒时，GitHub 的 Windows 机器上启动较慢会偶发失败。
       let up = false
       while (!up && !settled) {
         await Bun.sleep(100)
@@ -933,7 +933,7 @@ describe('静默计时', () => {
       // 终止之前写出的那一行必须保留在结果中。
       expect(got.stdout).toContain('started')
 
-      // 必须执行树杀：只终止 shell 时，监听端口的进程仍在运行。
+      // 必须终止进程树：只终止 shell 时，监听端口的进程仍在运行。
       let down = false
       for (let i = 0; i < 20 && !down; i++) {
         await Bun.sleep(100)

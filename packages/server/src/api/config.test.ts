@@ -7,7 +7,7 @@
  * 这两个函数是「明文 key 不出进程」这一边界的全部实现，因此此处的测试比其他位置更细。
  * 最严重的情形不是 key 泄漏（泄漏可立即发现），而是「打开设置页、不做修改直接保存」
  * 时静默清除 key：保存时没有任何反馈，直到下一次调用模型才失败，
- * 此时已难以将失败与刚才修改的 baseUrl 关联起来。
+ * 此时难以将失败与此前修改的 baseUrl 关联。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -242,9 +242,8 @@ describe('回填', () => {
    * `apps/web` 无法引用 `@qywork/runtime`（层级不允许），因此界面手工复制了一份
    * `RedactedConfig`，其中缺少 `sandboxNetwork`：该字段只在配置文件中设置。
    *
-   * 因此失败形状是：用户在配置文件中设置 `sandboxNetwork: 'deny'`，
-   * 然后在设置页修改模型并保存，该项被清除。保存时没有任何反馈，
-   * 而它是一项安全设置，被发现时已有若干条命令在不受限的情况下执行。
+   * 失败形状：在配置文件中设置 `sandboxNetwork: 'deny'` 后，在设置页修改模型并保存，
+   * 该项被清除且没有任何反馈。它是安全设置，清除后命令在不受限的网络下执行。
    *
    * 该项不被清除，依靠的是 `mergeConfig` 中 `{ ...current, ...incoming }` 的展开：
    * incoming 没有该键时不会覆盖。但这只是一行代码的副作用，
@@ -531,7 +530,7 @@ describe('落盘门禁', () => {
       // 已写入磁盘：新接口存在，main 的 key 也未因 hasApiKey:true 被清除。
       expect(d.config.providers.newp?.models.m1).toBeDefined()
       expect(d.config.providers.main?.apiKey).toBe('sk-real-secret-value')
-      // 但须提示：GET 的 problems 包含缺少 key 的提示，用户可以看到尚未完成的步骤。
+      // 但须提示：GET 的 problems 包含缺少 key 的提示，界面据此显示尚未完成的步骤。
       expect((await get(d)).problems.some((p) => p.includes('未配置 API Key'))).toBe(true)
     } finally {
       if (prev === undefined) delete process.env.QYWORK_HOME

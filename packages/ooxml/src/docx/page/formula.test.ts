@@ -248,7 +248,7 @@ describe.skipIf(!HAS_FONTS)('公式的排版与分页', () => {
     for (const [i, x] of xs.entries()) expect(Math.abs(x - wps[i]!)).toBeLessThan(0.1)
   })
 
-  test('行内公式参与断行：其后的文字从公式右端开始；排不下时与公式前的汉字之间断开', async () => {
+  test('行内公式参与断行：其后的文字从公式右端开始；一行容纳不下时与公式前的汉字之间断开', async () => {
     const wide = omath(mr('x+y+z'))
     const doc = await parse(
       p(r('文字') + omath(FRAC) + r('字')) + p(r('汉'.repeat(43)) + wide) + SECT(),

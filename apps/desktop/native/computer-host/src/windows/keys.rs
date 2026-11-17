@@ -50,7 +50,7 @@ pub fn virtual_key(name: &str) -> Option<(u16, bool)> {
         "shift" => (0x10, false),
         "ctrl" => (0x11, false),
         "alt" => (0x12, false),
-        // 左 Windows 徽标键的扫描码带 E0 前缀，缺少该前缀时目标应用收不到该键。
+        // 左 Windows 徽标键的扫描码带 E0 前缀，缺少该前缀时目标应用不会收到该键。
         "meta" => (0x5B, true),
         _ => return None,
     };

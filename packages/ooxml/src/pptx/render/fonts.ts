@@ -104,7 +104,7 @@ function pick(list: readonly SlideFace[], bold: boolean, italic: boolean): Slide
 }
 
 /**
- * 按字体名登记的幻灯片字体（`SlideFonts`），宿主读取字体后交给它。`add` 登记的字体（还原的嵌入字体）此后的查询即取到；
+ * 按字体名登记的幻灯片字体（`SlideFonts`），宿主读取字体后交给它。`add` 登记的字体（还原的嵌入字体）此后的查询即可取得；
  * 缺少字体时的字体在创建时选定，此后不变。
  */
 export class SlideFontSet implements SlideFonts {

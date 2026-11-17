@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(ax_of(0, &axs, &cgs), Err(Unmatched::Ambiguous(2)));
     }
 
-    /// 一个 AX 窗口匹配两个 CG 窗口时同样不视为对应，即使从 CG 一侧看每个都只有一个候选。
+    /// 一个 AX 窗口匹配两个 CG 窗口时同样不视为对应，即使 CG 一侧每个窗口都只有一个候选。
     #[test]
     fn one_ax_window_against_two_cg_windows_is_ambiguous() {
         let cgs = [cg(41, 10, FRAME), cg(42, 10, FRAME)];

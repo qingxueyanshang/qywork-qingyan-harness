@@ -35,7 +35,7 @@ function compactionProgress(run: RunState, stepSeq: number, stage: CompactionSta
  * 权威：调用同一个 `CompactionPort.run()`、写入同一份 manifest。
  *
  * 主路径不采用「先发送、被 provider 拒绝后压缩、然后重发」：该方式每次触发都要
- * 先消耗一次必然失败的长请求，长 prompt 下耗时几秒到几十秒且产生费用。占用读数采用
+ * 先消耗一次必然失败的长请求，长 prompt 下耗时数秒至数十秒且产生费用。占用读数采用
  * 锚定估算（provider 真值 + 锚点之后一轮的本地增量），误差限制在单轮增量之内，
  * 足以用于发送前判断。
  *
@@ -77,8 +77,8 @@ export async function* compactBeforeSend(
  * 本次响应的输出使占用超过软阈值时照常压缩：不压缩时本次决策的额度为 0。
  *
  * **必须在打开第一条工具记录之前调用。** 压缩记录占用一个 step 序号，位于同一批次的工具记录之间时，
- * `runtime/transcript.ts` 的 `stepsToUnits` 只收集连续的同批次记录，本次决策会被拆成两个单元：
- * 重建的历史与实际对话结构不同，前一段的结果还可能在模型看到之前被折叠。位于本次响应的
+ * `runtime/transcript.ts` 的 `stepsToUnits` 只收集连续的同批次记录，本次决策会被拆分为两个单元：
+ * 重建的历史与实际对话结构不同，前一段的结果还可能在模型取得之前被折叠。位于本次响应的
  * text / thinking 与工具记录之间时仍是一个单元。
  *
  * 读数与发送前采用同一口径：有锚点时取锚点（响应后已包含本轮输出）；没有锚点时取上一次请求的估算
@@ -94,7 +94,7 @@ export async function* compactBeforeTools(
     estimateMessages(run.transcript.slice(turn.unitStart), run.density)
   const occupancy = run.meter(estimated).tokens
   const scale = occupancy > 0 ? Math.min(1, estimated / occupancy) : 1
-  // 上一次尝试已看到本次响应之前的全部历史：本次响应属于最后一个单元，不可折叠，不再重试。
+  // 上一次压缩已处理本次响应之前的全部历史：本次响应属于最后一个单元，不可折叠，不再重试。
   if (run.compactedAt >= turn.unitStart) return { occupancy, scale }
   // 本轮的编号已被刚完成的主请求占用：摘要请求占用下一个编号，下一轮主请求再顺延。
   // 上一次决策的账目在此之后才由 `openBatchBudget` 重开。
@@ -215,7 +215,7 @@ async function* compactOverSoftLimit(
      * 锚点作废。
      *
      * 锚点描述的是**折叠前**的前缀，折叠后仍用它计算会使读数不下降，
-     * 下一步再次越线、再次压缩：压缩变成每步一次的死循环。
+     * 下一步再次越线、再次压缩：压缩变为每步一次的无限循环。
      * 使用 manifest 的压缩后估算，按重建请求的本地差额推进；下一次真值到来即重新锚定。
      *
      * 此处不应用信封修正（`RunState.rebaseAnchor`）：压缩替换的是消息侧的主要部分，
@@ -230,7 +230,7 @@ async function* compactOverSoftLimit(
   } else {
     // 无法压缩不是致命错误：照常发送，由 provider 判定。
     // **skipped 与 failed 分开报告**：「没有可压缩的内容」不是失败，
-    // 将其显示为红色的压缩失败会使用户排查一个并不存在的故障。
+    // 将其记为压缩失败会报告一个并不存在的故障。
     const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
     if (phase === 'skipped' && !overLine) return 'unchanged'
     persist.recordCompaction(input.runId, stepSeq, {
@@ -257,7 +257,7 @@ async function* compactOverSoftLimit(
 
 /** 被容量拒绝的那次尝试的现场信息，由发送阶段传入。 */
 export interface OverflowAttempt {
-  /** 被拒的错误本身；恢复失败时原样上抛。 */
+  /** 被拒的错误本身；恢复失败时原样抛出。 */
   err: unknown
   pe: ProviderError
   /** 把本次尝试的重试裁决写入请求账。 */
@@ -273,7 +273,7 @@ export interface OverflowAttempt {
  * `CompactionPort.run()`、写入同一份 manifest、使用同一条落库路径、
  * 失败时仍报告 `context_overflow`。
  *
- * 必须保留本路径：本地估算可能低于真值（读不出时长或画面尺寸的视频不计入估算，未实测的 tokenizer 没有标定）。低估足够大时
+ * 必须保留本路径：本地估算可能低于真值（无法读取时长或画面尺寸的视频不计入估算，未实测的 tokenizer 没有标定）。低估足够大时
  * 发送前检查始终放行、provider 始终拒绝、重试得到的仍是同一个估算：**会话就此停滞，
  * 手动压缩也无法恢复**（附件在保留区中）。失败路径必须有终态。
  *
@@ -320,7 +320,7 @@ export async function* recoverFromOverflow(
   yield compactionProgress(run, stepSeq, 'preparing')
   /*
    * 被拒的那次已占用 (requestTurn, retry)。摘要请求记入下一个 turn；压缩后重发的
-   * 是另一份内容（历史已替换为摘要），不再算作同一 turn 的重试，同样另起一个 turn。
+   * 是另一份内容（历史已替换为摘要），不再计为同一 turn 的重试，同样另起一个 turn。
    */
   const trace = host.summaryTrace(run, run.requestTurn + 1)
   const outcome = yield* drainUntil(
@@ -395,8 +395,8 @@ export async function* recoverFromOverflow(
     }
   }
   /*
-   * **请求未变小时不重发。** 同一份字节再发一次只会得到同一个拒绝，
-   * 而那一次需要支付全额的长 prompt 费用。
+   * **请求未变小时不重发。** 同一份字节再次发送只会得到同一个拒绝，
+   * 且需要支付全额的长 prompt 费用。
    */
   const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
   const reasonCode = outcome.status === 'compacted' ? 'no_reduction' : outcome.reasonCode

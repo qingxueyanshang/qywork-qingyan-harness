@@ -137,7 +137,7 @@ export function flushPace(): void {
   thinkFrames.flush()
 }
 
-/** 丢弃积压内容。切换会话、整段重新拉取时使用：积压文字的归属已不存在。 */
+/** 丢弃积压内容。切换会话、整段重新获取时使用：积压文字的归属已不存在。 */
 export function discardPace(): void {
   pacer.discard()
   toolFrames.discard()

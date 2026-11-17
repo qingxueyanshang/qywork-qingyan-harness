@@ -39,7 +39,7 @@ export class CanvasAssets {
       const node =
         doc.nodes.find((n) => n.id === key) ?? doc.nodes.find((n) => displayNameOf(n) === key)
       if (!node) {
-        out.push({ name: key, failure: '画布上没有这张卡' })
+        out.push({ name: key, failure: '画布上没有该卡' })
         continue
       }
       const name = displayNameOf(node)

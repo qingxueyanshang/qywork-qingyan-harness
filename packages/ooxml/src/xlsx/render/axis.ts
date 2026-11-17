@@ -81,7 +81,7 @@ export class Axis {
     return this.offset(this.count)
   }
 
-  /** 包含偏移 `px` 的项。超出范围时夹到首项或末项；落在尺寸为 0 的项上时返回其前一个可见项。 */
+  /** 包含偏移 `px` 的项。超出范围时取首项或末项；落在尺寸为 0 的项上时返回其前一个可见项。 */
   indexAt(px: number): number {
     if (px < 0) return 0
     const n = this.explicitCount

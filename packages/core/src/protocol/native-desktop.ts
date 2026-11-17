@@ -70,7 +70,7 @@ export type DesktopWaitUntil =
   | 'window'
 
 /**
- * 执行事实。只描述本次请求要求的状态改变动作是否已交给 OS。
+ * 执行事实。只描述本次请求要求的状态改变动作是否已提交给 OS。
  *
  * 只读请求与 `cancel` 不改变状态，一律为 `not_dispatched`：成功时带 `observation`，
  * 失败时带 `reason`。因此 `submitted` 只有一个含义，不会与读取成功的回执混淆。
@@ -212,7 +212,7 @@ export type DesktopDelivery = 'background' | 'foreground'
  * 控件上的一个动作，以及它当前能否执行。
  *
  * `delivery` 为空表示当前无法执行，原因在 `unavailable` 中（如 `read_only`、`leaf_node`、
- * `not_scrollable`）。模式缺失的动作不列入该表：列出全部十几个动作会掩盖
+ * `not_scrollable`）。模式缺失的动作不列入该表：列出全部十余个动作会掩盖
  * 当前可执行的动作。
  */
 export interface DesktopNodeAction {
@@ -224,8 +224,8 @@ export interface DesktopNodeAction {
 /**
  * RangeValuePattern 读取的数值区间。动作前的越界判定以此为依据。
  *
- * 两个步长字段可能缺席：provider 对没有步长的控件无法给出有限数值。整个区间缺席表示
- * 值与边界都无法读取为有限数值，此时越界判定只能交给宿主。
+ * 两个步长字段可能缺失：provider 对没有步长的控件无法给出有限数值。整个区间缺失表示
+ * 值与边界都无法读取为有限数值，此时越界判定只能交由宿主完成。
  */
 export interface DesktopRangeState {
   value: number
@@ -238,7 +238,7 @@ export interface DesktopRangeState {
 /**
  * SelectionPattern 读取的容器约束与当前选中项。
  *
- * `selected` 是当前选中项的名称，没有选中项时缺席；`truncated` 为真表示列表不完整，
+ * `selected` 是当前选中项的名称，没有选中项时缺失；`truncated` 为真表示列表不完整，
  * 需要读取容器中的项才能获得全部。收起的组合框在控件表中没有子控件，其选中项只能从此处读取。
  */
 export interface DesktopSelectionState {
@@ -251,7 +251,7 @@ export interface DesktopSelectionState {
 /**
  * ScrollPattern 读取的滚动位置，单位为百分比。
  *
- * 某个方向无法滚动时，对应字段缺席。缺席不等于 0：0 表示位于顶端。
+ * 某个方向无法滚动时，对应字段缺失。缺失不等于 0：0 表示位于顶端。
  */
 export interface DesktopScrollState {
   horizontal?: number
@@ -326,7 +326,7 @@ export interface DesktopCompleteness {
  * 重新定位控件。
  *
  * 层级关系保留在展平的表中：`parentRef` 指向同一份表中的父控件，`depth` 是相对本次读取范围的
- * 层数。本次范围的根没有父控件，`parentRef` 缺席。
+ * 层数。本次范围的根没有父控件，`parentRef` 缺失。
  */
 export interface DesktopNode {
   ref: string
@@ -343,18 +343,18 @@ export interface DesktopNode {
    * 该控件当前持有键盘焦点。
    *
    * 文字与按键输入发往焦点所在位置，因此键盘动作只列在该控件上。前台接管关闭时
-   * 该字段一律缺席：此时它不在采集端的读取范围内。
+   * 该字段一律缺失：此时它不在采集端的读取范围内。
    */
   focused?: boolean
   /**
    * 控件的包围盒，与图像几何使用同一套坐标。
    *
-   * provider 不提供包围盒的控件缺席该字段。缺席不等于控件不存在，也不等于控件在屏幕外：
+   * provider 不提供包围盒的控件缺少该字段。缺少该字段不等于控件不存在，也不等于控件在屏幕外：
    * 后者由 `offscreen` 表示。
    */
   rect?: DesktopRect
   actions: DesktopNodeAction[]
-  /** RangeValuePattern 的数值区间。没有该模式时缺席。 */
+  /** RangeValuePattern 的数值区间。没有该模式时缺失。 */
   range?: DesktopRangeState
   /** TogglePattern 的当前状态。 */
   toggle?: DesktopToggleState
@@ -371,7 +371,7 @@ export interface DesktopNode {
   /**
    * 该控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对。
    *
-   * 三项均不变而控件已被替换时无法识别，界面重排后该引用不可靠。缺席表示身份正常。
+   * 三项均不变而控件已被替换时无法识别，界面重排后该引用不可靠。缺失表示身份正常。
    */
   weakIdentity?: boolean
 }
@@ -403,7 +403,7 @@ export interface DesktopTextBody {
 /**
  * 一次控件读取的全部内容。`tree` 与 `wait` 两种观察共用该结构。
  *
- * `scope` 是本次读取覆盖的范围：给出 ref 时只读取该子树（该控件即表中第一项），缺席时
+ * `scope` 是本次读取覆盖的范围：给出 ref 时只读取该子树（该控件即表中第一项），缺失时
  * 读取整个窗口。节点是该范围内遍历到的全部节点，不按角色或文字筛选。
  *
  * `windowEnabled` 为假表示目标窗口当前被模态窗口阻挡。`windowCovered` 为真表示该窗口当前在屏幕上
@@ -422,9 +422,9 @@ export interface DesktopTreeBody {
 }
 
 /**
- * 交给模型的图像所绑定的几何。
+ * 提供给模型的图像所绑定的几何。
  *
- * `imageWidth` / `imageHeight` 是模型实际看到的像素数，即采集端缩放后的尺寸；
+ * `imageWidth` / `imageHeight` 是模型实际取得的像素数，即采集端缩放后的尺寸；
  * `screen` 是该图像覆盖的屏幕物理像素矩形。两者之比即换算比例，调用方不要另用 `dpi`
  * 计算：`dpi` 是窗口所在显示器的缩放读数（96 = 100%），只用于说明图像是在哪一档
  * 缩放下采集的。
@@ -437,7 +437,7 @@ export interface DesktopTreeBody {
  * 两者的并集，并集中不属于任何窗口的部分为黑色。目前只有 Windows 合成弹出窗口，其他平台恒为空。
  *
  * 来源为 `portal_screen_cast` 时没有屏幕坐标：Wayland 不向客户端提供全局坐标，`screen` 是该流
- * 自身的逻辑坐标，原点为窗口左上角。按图定位的落点按同一换算交给 worker，只对该窗口有效。
+ * 自身的逻辑坐标，原点为窗口左上角。按图定位的落点按同一换算发送给 worker，只对该窗口有效。
  */
 export interface DesktopImageGeometry {
   imageWidth: number
@@ -501,7 +501,7 @@ export interface DesktopImageBody {
 export type DesktopObservation =
   | { kind: 'windows'; capturedAt: number; windows: DesktopWindow[] }
   | ({ kind: 'tree' } & DesktopTreeBody)
-  /** 一次等待的结果：是否等到目标条件，以及返回时读取到的状态。 */
+  /** 一次等待的结果：是否满足目标条件，以及返回时读取到的状态。 */
   | ({ kind: 'wait'; found: boolean; reason?: string } & DesktopTreeBody)
   | ({ kind: 'image' } & DesktopImageBody)
   | ({ kind: 'text' } & DesktopTextBody)
@@ -585,7 +585,7 @@ export function imageRectToScreen(
  * 作废旧执行实例名下的全部状态。`connectionEpoch` 由宿主在每次连接时自增。
  *
  * 该链路不设手写的协议版本。不要为该帧添加 `protocol` 字段供服务端比对：该值
- * 只在有人记得同步修改时才成立，不一致即拒绝整个连接，电脑控制的全部工具都不会注册。服务端、
+ * 只在每次修改都同步更新时才成立，不一致即拒绝整个连接，电脑控制的全部工具都不会注册。服务端、
  * 宿主外壳与 worker 三端出自同一次构建：开发环境中三者位于同一棵源码树，`build.rs` 在编译外壳的
  * 同一次构建中编译 worker；发行版中三者在同一次打包中产出。链路上不存在可独立升级的一端。
  *
@@ -667,23 +667,23 @@ export interface DesktopRequestFrame {
   action?: DesktopAction
   /** `read_text` 返回的 UTF-16 码元数上限。超出即截断并标记。 */
   maxChars?: number
-  /** `wait` 的 `until=value` 要等待的值。空串表示清空，与缺席含义不同。 */
+  /** `wait` 的 `until=value` 要等待的值。空串表示清空，与缺失含义不同。 */
   value?: string
   maxNodes?: number
   maxDepth?: number
   timeBudgetMs?: number
   /**
    * 读取范围的根：`read_tree` 只读取该 ref 下的子树，`act` 与 `wait` 结束时据此完整
-   * 重读。缺席表示整个窗口。
+   * 重读。缺失表示整个窗口。
    */
   root?: string
   /** `wait` 的 `until=appears` 要等待出现的控件角色。 */
   role?: string
   /** `wait` 的 `until=appears` 要等待出现的控件文字：名称、稳定标识或值包含该文字即可，不区分大小写。 */
   nameContains?: string
-  /** 是否读取控件当前值。缺席时读取。 */
+  /** 是否读取控件当前值。缺失时读取。 */
   includeValue?: boolean
-  /** 是否读取控件模式的状态细节。缺席时读取；为假时可用动作表不受影响。 */
+  /** 是否读取控件模式的状态细节。缺失时读取；为假时可用动作表不受影响。 */
   includeState?: boolean
   /** `wait` 的后置条件。 */
   until?: DesktopWaitUntil
@@ -693,7 +693,7 @@ export interface DesktopRequestFrame {
   pollMs?: number
   /** `wait` 的最长等待时间。`deadline` 是硬上界，宿主取先到者。 */
   timeoutMs?: number
-  /** `capture_image` 要采集的屏幕物理像素矩形。缺席表示整个窗口。 */
+  /** `capture_image` 要采集的屏幕物理像素矩形。缺失表示整个窗口。 */
   region?: DesktopRect
   /**
    * 要求窗口几何代际仍为该值。
@@ -710,10 +710,10 @@ export interface DesktopRequestFrame {
    */
   expectPopups?: DesktopImagePopup[]
   /**
-   * `capture_image` 交给模型的图像长边上限。
+   * `capture_image` 提供给模型的图像长边上限。
    *
    * 采集端据此缩放图像，因此几何在采集端即确定。上限由调用方提供，采集端不自带默认值：
-   * 两处各有一个默认值时，几何记录的尺寸与模型看到的尺寸会不一致。
+   * 两处各有一个默认值时，几何记录的尺寸与模型取得的尺寸会不一致。
    */
   maxEdge?: number
   /** `capture_image` 编码后的字节上限。超过即拒绝，不将超限的帧写入宿主连接。 */
@@ -749,7 +749,7 @@ export interface DesktopResultFrame {
   /**
    * 本次请求占用了用户的前台：经系统输入队列注入了指针或键盘事件，或使目标窗口成为前台窗口。
    * 窗口消息与控件接口不计入。由宿主按实际投递方式上报，与 `dispatch` 相互独立：窗口准备已提升
-   * 窗口而输入被拒绝时为 `not_dispatched` 且本字段为真。缺席即为假。
+   * 窗口而输入被拒绝时为 `not_dispatched` 且本字段为真。缺失即为假。
    */
   foreground?: true
 }

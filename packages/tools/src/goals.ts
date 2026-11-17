@@ -28,7 +28,7 @@ import { GoalPort } from './goals/port.ts'
  * 两个工具描述共用的一句：循环不会自动停止。
  *
  * 它是能力边界（CLAUDE.md B7），不是补充说明。不写时模型会假定存在轮数或
- * 预算上限，未完成即交回；而实际上除模型声明结束外，
+ * 预算上限，未完成即结束本轮；而实际上除模型声明结束外，
  * 只有用户手动停止能终止循环。
  */
 const BOUNDARY =
@@ -119,7 +119,7 @@ export const updateGoalTool: ToolSpec = {
       },
       blocked_reason: {
         type: 'string',
-        description: 'action=blocked 必填：受阻位置，以及需要用户做什么才能继续',
+        description: 'action=blocked 必填：受阻位置，以及继续执行所需的用户操作',
       },
     },
     required: ['goal_id', 'revision', 'action'],

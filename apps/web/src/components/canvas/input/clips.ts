@@ -104,7 +104,7 @@ export const addClips = async (
   ).flat()
   const n = canvas.byId(id)
   if (n?.type !== 'timeline') return
-  // 时长读取失败的视频不加入轨道，须写明是哪一个；不能报成「只有视频可以加入」。
+  // 时长读取失败的视频不加入轨道，须写明文件名；不得报告为「只有视频可以加入」。
   const unreadable = videos.filter((p) => !added.some((c) => c.path === p))
   if (unreadable.length) {
     canvas.setFault(`无法读取视频时长：${unreadable.map((p) => p.split('/').pop()).join('、')}`)

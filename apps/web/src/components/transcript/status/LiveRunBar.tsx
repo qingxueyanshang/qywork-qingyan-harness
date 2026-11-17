@@ -87,7 +87,7 @@ function liveStatus(now: number, conversationId: string): string {
       if (req.lastContentAt !== null && now - req.lastContentAt >= SILENT_MS) {
         return waiting(`已 ${Math.round((now - req.lastContentAt) / 1000)} 秒无新增内容`)
       }
-      // 上游仍在发送工具参数时，用户长时间看不到新内容的情况同样需要显示。
+      // 上游仍在发送工具参数、长时间没有可见的新内容时，同样需要显示等待时长。
       // 旧快照中的请求没有 `lastVisibleAt`，不以首个内容时刻推测可见进展。
       const visibleSince = req.lastVisibleAt ?? req.headersAt ?? req.sentAt
       if (req.lastContentKind != null && visibleSince !== null && now - visibleSince >= SILENT_MS) {
@@ -110,7 +110,7 @@ function liveStatus(now: number, conversationId: string): string {
  * 运行中的轮次。
  *
  * 只有它需要每 100ms 更新一次的计时器，因此单独成一层：执行完毕的条目不应
- * 各自持有定时器，几十轮的会话会产生几十个持续触发的 interval，
+ * 各自持有定时器，数十轮的会话会产生数十个持续触发的 interval，
  * 每次触发都使整个会话流重新计算。
  *
  * 停止原因恒为 null：本轮尚未停止。

@@ -18,7 +18,7 @@ export function createConversation(
   store: Store,
   input: {
     workspaceId: WorkspaceId
-    /** 接口名。与 `model` 成对，创建会话时即确定，不交给下游推测。 */
+    /** 接口名。与 `model` 成对，创建会话时即确定，不由下游推测。 */
     provider: string
     model: string
     title?: string
@@ -214,7 +214,7 @@ export function deleteConversation(store: Store, id: ConversationId): boolean {
  * 重命名。不修改 `updated_at`：改名不属于内容更新，推进该值会使列表重排，
  * 侧栏显示的时间与实际内容更新时间不一致。返回 null 表示会话不存在，或指定了 `onlyIfEmpty` 而标题非空。
  *
- * `onlyIfEmpty` 供自动生成标题使用：标题是否为空在写入的同一条语句中判断。不要改成调用方先读后写：
+ * `onlyIfEmpty` 供自动生成标题使用：标题是否为空在写入的同一条语句中判断。不要改为调用方先读后写：
  * 读写之间用户修改的名称会被自动标题覆盖。
  */
 export function setConversationTitle(

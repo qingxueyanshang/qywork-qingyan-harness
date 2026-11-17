@@ -105,7 +105,7 @@ test('构建失败时不通知换代、保留上一次产物，下一次变化�
   expect(s.builder.current()).toBe('b/3')
 })
 
-test('pruneBuilds 只删除序号小于保留目录的构建，其余条目不动', () => {
+test('pruneBuilds 只删除序号小于保留目录的构建，其余条目保持不变', () => {
   const root = mkdtempSync(join(tmpdir(), 'qywork-remote-web-'))
   try {
     for (const name of ['1', '2', '3', 'other']) mkdirSync(join(root, name))

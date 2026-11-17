@@ -7,7 +7,7 @@
 import { existsSync } from 'node:fs'
 import { join as joinNative } from 'node:path'
 
-/** 在 PATH 里查找一个可执行文件。未找到时返回 null。 */
+/** 在 PATH 中查找一个可执行文件。未找到时返回 null。 */
 export function whichSync(name: string): string | null {
   const paths = (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')
   for (const dir of paths) {
@@ -23,7 +23,7 @@ export function whichSync(name: string): string | null {
  *
  * Windows 上只采用该 bash：`resolveBashPath` 的 win32 分支只调用它（由 `probeBash` 注入）。
  *
- * 不查 PATH。本机 `where bash` 的第一条结果是
+ * 不查找 PATH。本机 `where bash` 的第一条结果是
  * `C:\Windows\System32\bash.exe`，即 WSL 启动器，它在另一个
  * 发行版的文件系统中运行命令（工作区在其中位于 `/mnt/c/...`），cwd 和路径全部不一致，
  * 且失败形式是「命令已执行但文件不存在」，比没有 bash 更难排查。
@@ -60,7 +60,7 @@ export const BASH_PATH_ENV = 'QYWORK_BASH_PATH'
  * bash 的探测结果。结构与 `SandboxStatus` 相同：未找到是可上报的状态，不是异常。
  *
  * 易错点：不要在模块加载时抛出异常。否则在没有 bash 的机器上整个 `qy serve` 无法启动，
- * 用户在浏览器中只看到无法连接。终端程序可以 `exit(1)` 输出一行后退出，带界面的
+ * 浏览器中只显示无法连接。终端程序可以 `exit(1)` 输出一行后退出，带界面的
  * 服务端不可以：它必须能启动，并如实报告本机没有 bash。
  *
  * 本类型只表示是否有 bash。没有 bash 时命令交给哪个 shell，
@@ -82,7 +82,7 @@ export interface CommandShell {
    * 命令写入脚本文件后的执行方式。提供此字段的 shell 在 Windows 上经脚本文件传递命令。
    *
    * 只有 bash 提供此字段。Windows 上 argv 需要经过一次命令行字符串的转换，而 MSYS
-   * 按自身规则解析时会去掉成对反斜杠的一半：实测发送 1/2/3/4 个，到达
+   * 按自身规则解析时会去除成对反斜杠的一半：实测发送 1/2/3/4 个，到达
    * 1/1/2/2 个（`ceil(n/2)`）。结果是模型写的 `'\\'` 传给 python 时变为 `'\'`，
    * 产生 `SyntaxError`，且无从得知命令已被修改；正则的 `\\d`、Windows 路径同理。
    * 经脚本文件传递时，1/2/3/4 个反斜杠原样到达。
@@ -125,7 +125,7 @@ function bashPrelude(statusFile: string, previous?: string): string {
 
 /**
  * 本机的 bash。未找到时返回 `null` 与原因，本函数不回退到其他 shell：
- * 回退到哪个 shell 由 `resolveCommandShell` 决定，只有那里能看到全部三种 shell。
+ * 回退到哪个 shell 由 `resolveCommandShell` 决定，只有该函数取得全部三种 shell 的探测结果。
  *
  * 必须提供环境变量入口。回退后的 PowerShell 语法与 bash 差异很大，因此 bash 安装在其他位置时，
  * 必须有一处用户可以自行指定的配置，否则 bash 安装在 scoop / MSYS2 / Cygwin / 自定义盘符的
@@ -134,7 +134,7 @@ function bashPrelude(statusFile: string, previous?: string): string {
  * 指定的路径不存在时返回 `null` 与原因，不静默回退到自动查找：回退会把路径配置错误变成
  * 「已运行，但运行的不是指定的 bash」，后者只能通过对比输出发现。
  *
- * 查找顺序：Windows 只采用 Git for Windows（不查 PATH 的原因见 `findGitBash`）。
+ * 查找顺序：Windows 只采用 Git for Windows（不查找 PATH 的原因见 `findGitBash`）。
  * 其余平台按位置查找，Homebrew 的 bash 5 排在 `/bin/bash` 之前：macOS 自带的
  * 是 bash 3.2（2007 年，停留在 GPLv2），没有 `declare -A`、`mapfile`、`${x,,}`，
  * 而模型按 bash 4+ 的语法编写。
@@ -217,7 +217,7 @@ function pwsh7Install(env: Record<string, string | undefined>): string {
 
 /**
  * Windows PowerShell 5.1 的固定位置。系统盘不一定是 C:，因此按 `SystemRoot` 确定；
- * 它是系统组件，不查 PATH：PATH 上名为 `powershell` 的可能是其他同名程序。
+ * 它是系统组件，不查找 PATH：PATH 上名为 `powershell` 的可能是其他同名程序。
  */
 function windowsPowerShellInstall(env: Record<string, string | undefined>): string {
   return joinNative(
@@ -230,7 +230,7 @@ function windowsPowerShellInstall(env: Record<string, string | undefined>): stri
 }
 
 /**
- * 选择执行命令的 shell，并给出模型必须知道的语法差异。
+ * 选择执行命令的 shell，并给出模型必须了解的语法差异。
  *
  * 顺序：bash → pwsh 7 → Windows PowerShell 5.1 → 无可用 shell。
  *
@@ -254,7 +254,7 @@ function windowsPowerShellInstall(env: Record<string, string | undefined>): stri
  * `hint` 是 `run_command` 描述的第一句，非 bash 时第一句即声明「不是 bash」。
  * 缓解不等于消除：`run_command` 这个名称本身不携带语法信息，而名称的影响强于描述。
  *
- * 收益是：未安装 Git Bash 的 Windows 机器上，agent 从无法运行任何命令变为可以运行。
+ * 收益是：未安装 Git Bash 的 Windows 机器上，agent 从无法执行任何命令变为可以执行命令。
  *
  * `hint` 原样写入 `run_command` 的工具说明，与 `spawnGuarded` 使用的 argv 来自同一对象：
  * 两处分别编写必然不一致，告知模型的 shell 与实际执行的 shell 不同，
@@ -279,7 +279,7 @@ export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
     }
   }
 
-  // pwsh 7 可安装在任意位置，因此优先查 PATH；已安装但未加入 PATH 时由默认安装位置查找。
+  // pwsh 7 可安装在任意位置，因此优先查找 PATH；已安装但未加入 PATH 时由默认安装位置查找。
   const installed = pwsh7Install(deps.env)
   const pwsh7 = deps.which('pwsh.exe') ?? (deps.exists(installed) ? installed : null)
   if (pwsh7 !== null) {

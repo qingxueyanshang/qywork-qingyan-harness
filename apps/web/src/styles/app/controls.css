@@ -184,7 +184,7 @@ select::picker(select) {
 }
 
 /*
- * 弹出层的滚动条与全局一致：细、无箭头（数值同 base.css）。全局的 `*::-webkit-scrollbar` 作用不到
+ * 弹出层的滚动条与全局一致：细、无箭头（数值同 base.css）。全局的 `*::-webkit-scrollbar` 不作用于
  * `::picker(select)` 这个伪元素，必须在它上面单独写。不要改用 `scrollbar-width` / `scrollbar-color`：
  * Chromium 识别到这两项后忽略 `::-webkit-scrollbar` 规则，退回带箭头按钮的系统滚动条。
  */
@@ -235,10 +235,10 @@ select option:hover {
  * 按令牌绘制：已填充段与圆钮取 `--range-fill`（缺省为 `--accent`），未填充段 `--border-default`，圆钮加内描边，
  * 强调色为白色时仍可辨认。中性色的滑块（画布时间线缩放）在区域内改写 `--range-fill`。
  * 不使用 `accent-color`：浏览器按自己的阈值推导未填充段的颜色，实测 Edge 在强调色相对亮度约 0.25 以上
- * 把未填充段画成 #3b3b3b，浅灰强调色上出现黑色轨道。
+ * 把未填充段绘制为 #3b3b3b，浅灰强调色上出现黑色轨道。
  *
  * 两段轨道由圆钮的 `border-image` 从圆钮两侧各向外延伸 100vw 绘制，输入框的 `overflow: hidden`
- * 裁去超出部分，进度无需由脚本写入。输入框高度等于圆钮直径，圆钮的描边画在内侧：
+ * 裁去超出部分，进度无需由脚本写入。输入框高度等于圆钮直径，圆钮的描边绘制于内侧：
  * 外侧的描边与投影会被裁去。区域内只改 `--range-thumb`（圆钮直径）、`--range-band`（轨道粗细）与 `--range-fill`。
  * 媒体上的白色滑块（画布视频播放条、取帧条）自绘轨道与圆钮，须清除本规则的 `border-image`。
  */

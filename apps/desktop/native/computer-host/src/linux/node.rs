@@ -107,7 +107,7 @@ const RADIO_NAMES: [&str; 5] = ["toggle", "click", "press", "activate", "select"
 /// 的方式选中该项。
 ///
 /// 不要改为经父对象的 Selection 选中 WebKit 下拉框的选项：这样会修改值但不触发 `change`，
-/// 页面脚本收不到本次选择。
+/// 页面脚本不会收到本次选择。
 const ITEM_SELECT_NAMES: [&str; 1] = [""];
 /// 可展开控件切换展开状态的动作名。GTK 的树表格单元提供 `expand or contract`，展开器提供
 /// `activate`，Qt 的组合框提供 `Press`。不含 `toggle`：Qt 树表格单元的 `Toggle` 切换的是选中状态。
@@ -240,7 +240,7 @@ pub fn text_selectable(facts: &Facts) -> bool {
             || facts.states.contains(State::SelectableText))
 }
 
-/// 可用：带 `enabled` 或 `sensitive` 之一。GTK 3 的中间态复选框去掉 `enabled` 而保留 `sensitive`。
+/// 可用：带 `enabled` 或 `sensitive` 之一。GTK 3 的中间态复选框移除 `enabled` 而保留 `sensitive`。
 pub fn enabled(states: StateSet) -> bool {
     states.contains(State::Enabled) || states.contains(State::Sensitive)
 }
@@ -1248,7 +1248,7 @@ mod tests {
         assert!(verify(&bare, KEY, &button).is_err());
     }
 
-    /// GTK 3 的中间态复选框去掉 `enabled` 而保留 `sensitive`，仍视为可用。
+    /// GTK 3 的中间态复选框移除 `enabled` 而保留 `sensitive`，仍视为可用。
     #[test]
     fn sensitive_alone_counts_as_enabled() {
         let mut s = StateSet::empty();

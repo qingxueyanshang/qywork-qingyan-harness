@@ -87,7 +87,7 @@ import type { GoalArm } from './runs.ts'
  *
  * 唯一用途是把用户发起与另外两种发起区分开：用户操作到达时立即清除自动继续标记
  * （用户消息优先）；目标自动继续与子 agent 回执都不是用户操作，它们若也清除标记，循环最多执行一轮。
- * 缺省 = 用户（发送消息、重试、定时触发）。
+ * 缺省值为用户（发送消息、重试、定时触发）。
  */
 export type RoundSource =
   | { kind: 'goal'; arm: GoalArm }
@@ -160,7 +160,7 @@ export async function startRun(
    * 忙碌时排入队列。
    *
    * 会话已有一轮在运行时不发布 `run.error`：该报错不属于任何轮次，没有等待它的请求方，
-   * 发布后客户端会把它写进正在运行那一轮的收尾条。应用更新期间没有运行中的轮次，报错照常发布。
+   * 发布后客户端会把它写入正在运行的那一轮的收尾条。应用更新期间没有运行中的轮次，报错照常发布。
    *
    * 中止句柄随占位一并登记：准备阶段收到的停止指令由此生效。
    */
@@ -287,7 +287,7 @@ export async function startRun(
         })
       }
 
-      // 子 agent 与后台命令的回执可能在本轮结束很久之后才到达，那时该 Session 已经 dispose：
+      // 子 agent 与后台命令的回执可能在本轮结束较长时间之后才到达，此时该 Session 已经 dispose：
       // 投递经由会话级路径，与用户发送消息使用同一个函数。
       const deliverReceipt = (followUp: FollowUp): void => {
         void submitMessage(conversationId, followUp, deps).catch((err) => {
@@ -429,7 +429,7 @@ export async function startRun(
       })
       const interrupted = controller.signal.aborted || stopReason === 'user_interrupt'
       /*
-       * 「调整方向」只对发出它的那一轮有效。本轮结束后，未赶上 step 边界的
+       * 「调整方向」只对发出它的那一轮有效。本轮结束后，未在 step 边界取出的
        * 用户条目已无处注入；保留标记时，下一轮开始时会把它们注入到用户
        * 并未针对的执行中。带 `origin` 的回执不在此列，原因见 `resetSteer`。
        */
@@ -533,7 +533,7 @@ function continuableAfterLastRun(
 }
 
 /**
- * 停止原因的说明。**每一种都必须有说明**：没有原因的 blocked 最难处理：
+ * 停止原因的说明。**每一种都必须有说明**。没有原因的 blocked 最难处理：
  * 循环已停止，而界面上只显示「受阻」。
  */
 const STOP_NOTE: Record<string, string> = {
@@ -550,7 +550,7 @@ const STOP_NOTE: Record<string, string> = {
  * - 被中断 → 目标置 `paused`，解除标记。取消之后不自动重启，这是硬规则；
  * - 非正常结束（provider 报错、连续无进展等）→ 目标置 `blocked`，
  *   解除标记。**不重试**：隐式重试会把一次故障放大为一连串相同的失败，
- *   而用户只能看到会话持续自行运行；
+ *   而界面只显示会话持续自行运行；
  * - 正常结束 → 排队启动下一轮。
  *
  * 没有自动继续标记时直接返回：说明该会话不在自动循环中
@@ -647,7 +647,7 @@ function queueGoalRound(
  *
  * **发起之前重新读取目标**：排队期间用户可能插入了消息（标记已被清除），
  * 模型可能已修改或完成目标。预留（goalId + revision）不一致时**丢弃本次排队**：
- * 按几秒前的版本继续执行，执行的就不再是用户当前的要求。
+ * 按数秒前的版本继续执行时，执行的已不是用户当前的要求。
  */
 async function fireGoalRound(
   conversationId: ConversationId,
@@ -818,7 +818,7 @@ function goalRoundPrompt(goal: Goal): string {
  * 在对话循环之外抛出的错误在 `run.error` 中的错误码与正文，`startRun` 与 `compactConversation` 共用。
  *
  * 错误码取抛出处的 `ProviderError.code`（配置错误为 `no_api_key`、`invalid_request` 等），其余为 `internal_error`。
- * 不要硬编码 `internal_error`：错误码供前端决定引导操作，「未配置 key」在 CLI 中报 no_api_key、在桌面端报
+ * 不要硬编码 `internal_error`：错误码供前端决定引导操作，「未配置 key」在 CLI 中报告 no_api_key、在桌面端报告
  * internal_error 时，前端的「去配置」引导不会触发。桌面端用户不一定有终端，无法执行「运行 qy init」，
  * 因此未配置 key 与鉴权失败时附上配置文件路径，用户可以直接打开该文件。
  */
@@ -882,7 +882,7 @@ export async function compactConversation(
  * 在已占用的会话上执行一次手动压缩，返回写入压缩 run 行的停止原因；未写入 run 行时返回 null。
  *
  * 事件经由总线广播，而不是只返回给发起方：压缩改变了会话此后的行为，
- * 在另一端打开同一会话的用户必须能看到。
+ * 在另一端打开的同一会话必须同步显示。
  */
 async function compactReserved(
   conversationId: ConversationId,
@@ -1049,7 +1049,7 @@ async function compactReserved(
         ...(outcome.reasonCode ? { reasonCode: outcome.reasonCode } : {}),
       })
       // 手动压缩后没有下一次 request_prepared 事件，必须从刚落库的同一份 manifest
-      // 重算并广播；否则模型下一轮已看到压缩投影，面板仍显示压缩前的数值。
+      // 重算并广播；否则模型下一轮已收到压缩投影，面板仍显示压缩前的数值。
       const updated = contextPanel(deps.store, conversationId, route, compactPercent)
       emit({
         type: 'context',

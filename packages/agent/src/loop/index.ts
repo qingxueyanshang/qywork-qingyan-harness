@@ -66,7 +66,7 @@ export class AgentLoop {
    */
   private readonly compaction: CompactionPort
 
-  /** 交给各阶段的能力，见 `LoopHost`。 */
+  /** 提供给各阶段的能力，见 `LoopHost`。 */
   private readonly host: LoopHost
 
   constructor(private readonly deps: LoopDeps) {
@@ -78,7 +78,7 @@ export class AgentLoop {
      * 退避等待。缺省为可中断的真实计时。
      *
      * 等待必须随信号结束：用户在退避的数十秒内点击停止时，不中断等待会使停止按钮无响应。
-     * 中止时须同时清除计时器（`waitOrAbort`）：计时器残留时一次性执行的进程要等到期才退出。
+     * 中止时须同时清除计时器（`waitOrAbort`）：计时器残留时，一次性执行的进程在计时器到期后才退出。
      * 中止后的拒绝值是信号的中止原因，调用方只依据 `signal.aborted` 判定停止，不依据拒绝值。
      */
     const backoff = deps.sleep ?? waitOrAbort
@@ -111,7 +111,7 @@ export class AgentLoop {
     )
   }
 
-  /** 装配完成的请求按模型能力物化媒体后交给适配器。工具图片经本轮工具上下文的 `sink` 从正文库读取。 */
+  /** 装配完成的请求按模型能力物化媒体后提供给适配器。工具图片经本轮工具上下文的 `sink` 从正文库读取。 */
   private async openStream(run: RunState, req: ChatRequest): Promise<AsyncIterable<ProviderEvent>> {
     const materialized = await materialize(
       req,
@@ -142,7 +142,7 @@ export class AgentLoop {
 
         if ((yield* compactBeforeSend(host, run, turn)) === 'interrupted') break
 
-        // 前缀漂移只记录日志，不拦截请求：拦截会把计费问题变成功能故障。
+        // 前缀漂移只记录日志，不拦截请求：拦截会把计费问题变为功能故障。
         // 但必须记录：缓存失效本身不产生任何报错，不记录则无法发现。
         const drift = this.audit.observe(input.cacheKey ?? input.runId, turn.req.system)
         if (drift) log.warn('agent', describeDrift(drift))
@@ -233,7 +233,7 @@ export class AgentLoop {
      * 用同一估算方法分别计量投影前后再相减：原文始终保留在 Message/Step 中（压缩是投影，不销毁数据），
      * 因此可以计量。整条被折叠与只被替换为信封在此处同样处理：差额都计为省略。
      * 面板中「省略上下文」的两行即来自此处；只说明占用的构成而不说明省略量时，
-     * 用户看到占用下降却无法得知下降的来源。
+     * 界面显示占用下降，但无法说明下降的来源。
      */
     const omitted = emptyOmitted()
     const account = (list: readonly WireMessage[], sign: 1 | -1): void => {
@@ -306,7 +306,7 @@ export class AgentLoop {
      *
      * 在装配之前标记，随投影一起传递：投影之后 history 与 transcript 之间
      * 没有分界标记，事后无法再定位。投影若折叠该条消息，断点随之消失，
-     * 只是少一个断点，不影响正确性。
+     * 仅减少一个断点，不影响正确性。
      */
     const history = input.history.length
       ? [
@@ -348,7 +348,7 @@ export class AgentLoop {
  * ── 跟进消息注入 ──
  *
  * 执行位置在装配请求之前、本步的其余动作之前，因此本步发出的请求
- * 即包含跟进消息，模型在下一次响应时即可看到。
+ * 即包含跟进消息，模型在下一次响应时即可取得。
  *
  * 追加在 transcript 末尾（上一工具波次的结果之后）。运行上下文已固定在 history
  * 中所属的用户消息上，因此此前的 `[history][transcript…]` 逐字节不变。

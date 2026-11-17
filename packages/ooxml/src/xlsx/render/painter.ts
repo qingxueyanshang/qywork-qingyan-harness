@@ -1,12 +1,12 @@
 /**
- * 工作表绘制：给定工作表上的一块像素区域，绘制到 Canvas 2D 上下文。只访问区域内（以及可能溢出进来的）单元格。
+ * 工作表绘制：给定工作表上的一块像素区域，绘制到 Canvas 2D 上下文。只访问区域内的单元格，以及文字可能溢出到区域内的单元格。
  *
  * 坐标：第 c 列的左网格线位于 x = X_c（`cols.offset(c)`），该列占 [X_c, X_{c+1})；行同理。
  * 绘制顺序与覆盖规则（对照 WPS 屏幕显示）：
  * 1. 白色底。
  * 2. 网格线（`showGridLines` 为真时）：未指定 `gridColor` 时为 `#e6e6e6` 实线，指定时为该颜色的点线，
  *    横线在相对区域左沿的偶数像素、竖线在相对区域上沿的偶数像素着色（WPS 实测，区域起点换为奇数坐标时随之平移）。
- *    与有填充的单元格相邻的线段、合并区域内部的线段、被溢出文字覆盖的竖线段不画。
+ *    与有填充的单元格相邻的线段、合并区域内部的线段、被溢出文字覆盖的竖线段不绘制。
  * 3. 填充：覆盖单元格内部及其四周的网格线，区域左沿（上沿）恰为网格线时不覆盖该线。图案填充见 `PATTERN_BITS`。按填充分组绘制，
  *    组的先后为区域内按行优先首次出现的先后，两种填充之间的线因此取后出现者的颜色（与两格的左右上下位置无关）。
  * 4. 数据条，5. 边框（同一条边两侧都指定时取较粗者），6. 文字，7. 绘图对象（图片、形状与图表，按锚点在绘图部件中的顺序，
@@ -247,7 +247,7 @@ export function paintRegion(
   ctx.fillStyle = WHITE
   ctx.fillRect(originX, originY, region.width + 1, region.height + 1)
 
-  // 区域外一圈的单元格也取信息：相邻填充决定网格线，相邻边框参与同一条边的取舍。
+  // 区域外相邻一圈单元格的信息同样读取：相邻填充决定网格线，相邻边框参与同一条边的取舍。
   const info = new Map<number, CellInfo>()
   const key = (r: number, c: number) => r * 16_384 + c
   const infoAt = (r: number, c: number): CellInfo => {
@@ -368,7 +368,7 @@ export function pageExtent(scene: PageScene): {
 }
 
 /**
- * 按冻结窗格分四块绘制可见区域：冻结的行与列固定，其余随滚动量移动；冻结边界画一条细线。图表工作表没有冻结窗格。
+ * 按冻结窗格分四块绘制可见区域：冻结的行与列固定，其余随滚动量移动；冻结边界绘制一条细线。图表工作表没有冻结窗格。
  */
 export function paintView(
   ctx: PaintContext,
@@ -515,7 +515,7 @@ function insideMerge(m: CellRange | null, r: number, c: number): boolean {
   return m !== null && r >= m.top && r <= m.bottom && c >= m.left && c <= m.right
 }
 
-/** 指定颜色的网格线：隔一像素一点，周期起点为区域沿线方向的起点。 */
+/** 指定颜色的网格线：间隔一像素的点线，周期起点为区域沿线方向的起点。 */
 const GRID_DOTS: Dash = { period: 2, on: [[0, 1]] }
 
 function drawGridLines(
@@ -620,7 +620,7 @@ function patternStyle(
   for (let y = 0; y < 8; y++) {
     for (let x = 0; x < 8; x++) if (bits[y]! & (0x80 >> x)) c.fillRect(x, y, 1, 1)
   }
-  // 单元画完后再创建平铺：浏览器在 createPattern 时复制图层的当前像素，之后的绘制不进入平铺。
+  // 单元绘制完成后再创建平铺：浏览器在 createPattern 时复制图层的当前像素，之后的绘制不进入平铺。
   const pattern = ctx.createPattern(tile, 'repeat')
   if (pattern === null) return fill.bg
   pattern.setTransform({ a: 1, b: 0, c: 0, d: 1, e: source.x, f: source.y })
@@ -652,8 +652,8 @@ function fillStyleOf(
 }
 
 /**
- * 填充按 `CellFill` 对象分组，组按首次出现的先后绘制（`Map` 保持插入顺序）。不要改回逐格绘制：
- * 两种填充之间的线归后出现的那一组，与哪一格在左（上）无关，逐格绘制总是归右（下）侧。
+ * 填充按 `CellFill` 对象分组，组按首次出现的先后绘制（`Map` 保持插入顺序）。不要改为逐格绘制：
+ * 两种填充之间的线归属于后出现的组，与单元格的左右（上下）位置无关；逐格绘制时总是归属于右（下）侧。
  * WPS 屏幕显示实测（构造文件经 `Range.CopyPicture`）：交换两格位置、交换 fillId 与 xf 的顺序、改变缩放比例、
  * 隐藏网格线都不改变归属，只有改变区域内首次出现的先后才改变。
  * 边界：一行中多种填充连续相间（构造文件中整行逐列轮换三种颜色）时 WPS 的竖线归左侧单元格，不符合本规则，机制未查明。
@@ -810,7 +810,7 @@ const SLANT_LOWER: Dash = {
 
 /**
  * WPS 屏幕显示实测（构造文件经 `Range.CopyPicture`）：图案沿整条线连续，不在单元格边界重新开始；
- * 相位以绘制区域的左沿（竖线为上沿）之后 1 像素为周期起点，与工作表坐标无关（同一条线换一个区域起点，图案随之平移）。
+ * 相位以绘制区域的左沿（竖线为上沿）之后 1 像素为周期起点，与工作表坐标无关（同一条线更换区域起点时图案随之平移）。
  * 斜点划线上一行（左一列）的图案与点划线相同，下一行见 `SLANT_LOWER`。
  */
 function dashOf(style: BorderLineStyle): Dash | null {
@@ -865,7 +865,7 @@ function dashRuns(dash: Dash, from: number, length: number, origin: number): [nu
 }
 
 /**
- * 画一条水平或竖直的边框线；`x`、`y` 为网格线像素，`length` 沿线方向，`origin` 为绘制区域沿线方向的起点像素。
+ * 绘制一条水平或竖直的边框线；`x`、`y` 为网格线像素，`length` 沿线方向，`origin` 为绘制区域沿线方向的起点像素。
  * 粗线两端各延长 1 像素（实测：单独一条粗线的墨迹比网格线两端各长 1 像素）。
  */
 function drawLine(
@@ -1090,7 +1090,7 @@ function drawText(
  * 以单色字形逐字绘制一段文字（WPS 经 GDI 在 ClearType 下的点阵模式，见 `EmbeddedBitmaps.screenMode`）：
  * strike 中的点阵、提示后光栅化的轮廓，要求斜体而字体没有斜体字形时为倾斜的轮廓。
  * 字符位置按排版宽度累加，与测宽一致；字体没有粗体字形时按 GDI 的方式加粗。
- * 取不到单色字形（字体没有 TrueType 轮廓）的字以 `fillText` 绘制。
+ * 未取得单色字形（字体没有 TrueType 轮廓）的字以 `fillText` 绘制。
  */
 function drawBitmapSegment(
   ctx: PaintContext,
@@ -1260,7 +1260,7 @@ function intersects(a: Rect, region: PaintRegion): boolean {
 /**
  * 按上下次序绘制图片、形状与图表。形状文字与图表文字的字体（`shapeFaces`、`chartFaces`）在区域内第一个形状与图表处
  * 取得，字体集中没有可用字体时形状文字与图表不绘制；显示器使用 ClearType 时两者的平滑字号以 ClearType 字形绘制，
- * 像素裁到区域之内。
+ * 像素裁剪至区域之内。
  */
 function drawDrawings(
   ctx: PaintContext,
@@ -1297,7 +1297,7 @@ interface Layer {
   readonly parent: Matrix
 }
 
-/** 区域中形状与图表文字的 ClearType 设置，像素裁到区域之内；显示器不使用 ClearType 时为 `null`。 */
+/** 区域中形状与图表文字的 ClearType 设置，像素裁剪至区域之内；显示器不使用 ClearType 时为 `null`。 */
 function regionClearType(
   ctx: PaintContext,
   fonts: FontSet,

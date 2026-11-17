@@ -417,7 +417,7 @@ impl Failure {
         matches!(self, Self::Timeout(_))
     }
 
-    /// 目标控件已不存在：元素消失、应用退出，或按 `ref` 定位时该位置已换成其他控件。
+    /// 目标控件已不存在：元素消失、应用退出，或按 `ref` 定位时该位置已是其他控件。
     pub fn is_gone(&self) -> bool {
         match self {
             Self::Gone { .. } => true,

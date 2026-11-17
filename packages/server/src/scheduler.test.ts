@@ -147,7 +147,7 @@ async function listViaTool(store: Store, workspaceRoot: string): Promise<string>
       provide(SchedulePort, {
         list: () => listSchedules(store, workspaceRoot, Date.now()),
         create: () => {
-          throw new Error('本次只读')
+          throw new Error('本用例只读取')
         },
         remove: () => null,
       }),
@@ -201,7 +201,7 @@ test('E04：以 A 启动的服务同样触发 B 的到期任务，401 终态在 
              FROM runs r WHERE r.status NOT IN ('queued','running')`,
           )
           .get(),
-      '定时任务的 Run 落终态',
+      '定时任务的 Run 进入终态',
     )
 
     runId = run.id
@@ -243,7 +243,7 @@ test('E04：以 A 启动的服务同样触发 B 的到期任务，401 终态在 
     // 刷新后读取到相同结果：投影每次实时计算，不存在另一份缓存。
     expect(await fetchB()).toEqual(first)
 
-    // 模型工具读到同一个终态。
+    // 模型工具读取到同一个终态。
     const toolText = await listViaTool(store, dirB)
     expect(toolText).toContain('B 的日报')
     expect(toolText).toContain('失败：')
@@ -456,6 +456,8 @@ test('目标会话正忙时触发排入跟进队列，不产生 run.error', asyn
       '执行 忙的时候到点',
     ])
   } finally {
+    // 本用例代替占用方占位，同样须释放：`stop()` 等待全部占用释放后才返回。
+    handle.runs.release(home)
     await handle.stop()
     store.close()
   }
@@ -551,7 +553,7 @@ test('E05：同一到期时机两个 serve() 实例只产生一条会话、一�
         one.db
           .query<{ id: string }, []>("SELECT id FROM runs WHERE status NOT IN ('queued','running')")
           .get(),
-      '两个实例中有一个把 Run 跑到终态',
+      '两个实例之一使 Run 进入终态',
     )
     // 进入终态后再等待几个 tick：若存在第二次触发，会在这段时间内出现。第二次触发的会话、
     // Run 与模型请求都在认领之后异步产生，没有可等待的完成标志。

@@ -6,7 +6,7 @@
  * 1. **确定性序列化。** schema 按名称排序输出：工具定义位于 prompt 最前部，
  *    任何顺序变化都会使整个前缀缓存失效。
  * 2. **fail-closed。** 未注册的工具名返回结构化失败（executed=false），
- *    不伪装成功，也不静默跳过。
+ *    不报告为成功，也不静默跳过。
  * 3. **重名即装配错误。** 同名注册直接抛出异常，不静默覆盖：覆盖会丢弃整个插件的工具。
  */
 
@@ -83,7 +83,7 @@ export interface ToolContext {
   contextWindow: number
   /**
    * 本轮的估算密度（`loop/request.ts` 的 `runDensity`）。投递预算的扣减使用它，与请求一侧采用同一计量标准；
-   * 其中的 `video` 是本轮原生视频的规则与发送范围，null 表示不原生发送，`read_file` 据此决定交出视频还是抽帧。
+   * 其中的 `video` 是本轮原生视频的规则与发送范围，null 表示不原生发送，`read_file` 据此决定返回视频还是抽帧。
    *
    * 理由同 `contextWindow`：上限按执行时的模型计算，结果按算出的上限截断后落库，
    * 投影只读取已落库的 payload。两侧计量标准不同时，同一份结果在投递检查处与在请求中
@@ -142,7 +142,7 @@ export interface ToolContext {
    * 才产生，装配方无法构造。
    *
    * 用途有两个：工具向服务端告知进度事件所属的卡片（`workflow` 的图卡依靠它认领 `team.member`）；
-   * `run_command` 转入后台时把它交给 `CommandPort.adopt`，命令结束时的文件改动追加到这条 step。
+   * `run_command` 转入后台时把它传给 `CommandPort.adopt`，命令结束时的文件改动追加到这条 step。
    * 不要将它作为本次调用的身份传给其他消费者。
    *
    * 可选而不是必填：直接构造 `ToolContext` 的位置（测试夹具）不应被迫编造 id。
@@ -163,12 +163,12 @@ export interface ToolContext {
     command?: string
   }): Promise<PermissionVerdict>
   /**
-   * 已知凭证：交给子进程之前须剥离的值。
+   * 已知凭证：传给子进程之前须剥离的值。
    *
    * `values` 是 key 明文。启动子进程的工具（目前只有 `run_command`）**必须**
    * 用它过滤环境变量与输出。
    *
-   * 此处有意写成结构类型而不是 `import type { SecretSet } from '@qywork/tools'`：
+   * 此处有意写为结构类型而不是 `import type { SecretSet } from '@qywork/tools'`：
    * tools 依赖 agent，反向 import 会形成环。不值得为一个单字段对象引入循环依赖。
    *
    * 可选是为了使现有测试装配无需全部修改；**但工具侧不能因其缺失而跳过脱敏**，
@@ -186,7 +186,7 @@ export interface ToolContext {
    *    只接入一层时配置不生效，且三层各自的错误信息完全不同。
    * 2. **只接受绝对路径**，且已经过 `normalizeAdditionalDirectories` 校验。
    * 3. **它是 `auto` 的机制。** `full` 下完全不设路径边界，是否配置此清单结果相同，
-   *    不要写成「`full` 不豁免它」：那与 `unrestrictedPaths` 的语义相反。
+   *    不要写为「`full` 不豁免它」：那与 `unrestrictedPaths` 的语义相反。
    */
   additionalDirectories?: string[]
   /**
@@ -239,7 +239,7 @@ export type ToolContextBase = Omit<ToolContext, 'emit' | 'stepId' | 'unrestricte
  * 授权裁决。
  *
  * 拒绝**必须**带理由。这是两种模式设计的直接结果：`auto` 下没有弹窗，
- * 拒绝信息只能经由工具结果交给模型，而模型只有取得理由才能改用其他做法
+ * 拒绝信息只能经由工具结果提供给模型，而模型只有取得理由才能改用其他做法
  * （「无法写入工作区外的路径」→ 改为写入工作区内）。
  *
  * 放行时带上本次调用的路径范围：模式与路径边界取自同一次读取。
@@ -280,7 +280,7 @@ export interface ToolOutcome {
  *
  * `mcp` 与 `plugins` 各自是一个领域：MCP server 提供的工具一律归入 `mcp`，插件提供的工具
  * 一律归入 `plugins`，因为它们的类目由第三方决定；内置工具中只有管理 MCP 配置的归入 `mcp`、
- * 安装插件的归入 `plugins`。两者不是后备类目：内置工具漏标时注册直接失败，不会归入其中。
+ * 安装插件的归入 `plugins`。两者不是后备类目：内置工具未标注类目时注册直接失败，不会归入其中。
  *
  * 枚举顺序即界面呈现顺序。
  */
@@ -373,8 +373,8 @@ export interface ToolSpec {
   /** 从参数提取稳定目标（通常是文件路径），供进度判定与并行冲突检测使用。 */
   targetExtractor?: (args: Record<string, unknown>) => string | null
   /**
-   * 每组参数至少给出一个，如 `[['ops_json', 'ops_path']]`。schema 的 `required` 表达不了二选一，
-   * 与 `required` 一样在权限解析之前核对：缺参的调用不询问权限。
+   * 每组参数至少给出一个，如 `[['ops_json', 'ops_path']]`。schema 的 `required` 无法表达二选一，
+   * 与 `required` 一样在权限解析之前核对：缺少参数的调用不询问权限。
    */
   requireOneOf?: readonly (readonly string[])[]
   permissionEffect: PermissionEffect | ((args: Record<string, unknown>) => PermissionEffect)
@@ -397,7 +397,7 @@ export interface ToolSpec {
   /** 本次调用涉及的资源键，用于同一波次内的冲突检测（同一文件不能并行写入）。 */
   resourceKeys?: (args: Record<string, unknown>) => string[]
   /**
-   * 能力大类。注册时必填：漏标即注册失败，不提供默认值。
+   * 能力大类。注册时必填：缺少即注册失败，不提供默认值。
    *
    * 提供默认值（例如默认 `session`）会使新增工具静默归入
    * 无关的类目，而分类表看起来仍然完整。校验放在注册期，不放在读取时。
@@ -438,7 +438,7 @@ export function resolveAction(
  * 两条轴正交（见 `ToolCategory` 的注释）：动作轴描述「做了什么」，权限轴描述「有什么副作用」。
  * 以 `kind === 'delete'` 反推权限会把一条轴耦合到另一条轴上：同一个工具的权限会随
  * 参数在两条规则之间切换，而声明值反而不起作用。需要经过 delete 权限检查的工具，
- * 在 `permissionEffect` 中直接写 `delete`（门面工具写成按参数返回的函数）。
+ * 在 `permissionEffect` 中直接写 `delete`（门面工具写为按参数返回的函数）。
  */
 export function resolvePermissionEffect(
   spec: ToolSpec,
@@ -528,7 +528,7 @@ export class ToolRegistry {
       }
     }
 
-    // required 与发给模型的 schema 同源，缺参时不进入权限解析或工具执行。
+    // required 与发给模型的 schema 同源，缺少参数时不进入权限解析或工具执行。
     const required = spec.parameters.required
     const missing = Array.isArray(required)
       ? required.filter((key): key is string => typeof key === 'string' && args[key] === undefined)
@@ -572,7 +572,7 @@ export class ToolRegistry {
         // executed=false 是必需的：被拒的调用没有产生任何副作用，
         // 后续的崩溃恢复与重试逻辑依赖这一事实。
         //
-        // 理由须原样交给模型。`auto` 模式下这是模型能取得的唯一信号：
+        // 理由须原样返回给模型。`auto` 模式下这是模型能取得的唯一信号：
         // 只返回「已拒绝」时模型只能原样重试，而重试必然再次被拒。
         return {
           status: 'failure',
@@ -611,7 +611,7 @@ export class ToolRegistry {
           return { status: 'failure', executed: false, message: err.message, errorKind: declared }
         }
       }
-      // 真实异常不得导致整轮 run 失败：转为结构化失败交给模型，由模型决定重试或改用其他做法。
+      // 真实异常不得导致整轮 run 失败：转为结构化失败返回给模型，由模型决定重试或改用其他做法。
       return {
         status: 'failure',
         executed: true,
@@ -663,7 +663,7 @@ function validate(spec: ToolSpec): void {
   if (!spec.permissionEffect) {
     throw new Error(`[qywork] 工具 ${spec.name} 未声明 permissionEffect`)
   }
-  // 三条轴同等处理：漏标即装配错误，立即抛出。提供默认值时新工具会静默归入
+  // 三条轴同等处理：缺少即装配错误，立即抛出。提供默认值时新工具会静默归入
   // 无关的类目，而分类表看起来仍然完整，此类错误无法被发现。
   if (!TOOL_CATEGORIES.includes(spec.category)) {
     throw new Error(

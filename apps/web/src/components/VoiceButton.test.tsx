@@ -84,7 +84,7 @@ async function mount() {
   const button = host.querySelector('button') as HTMLButtonElement
   click(button)
   const recognition = RecognitionStub.latest
-  if (!recognition) throw new Error('语音识别实例没有创建')
+  if (!recognition) throw new Error('未创建语音识别实例')
   return {
     button,
     dispose: () => {

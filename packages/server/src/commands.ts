@@ -2,7 +2,7 @@
  * 客户端指令的入口：鉴权、更新期间的拒绝与按指令类型分派。各类指令的处理器在 `commands/` 下，
  * 由 `commands/table.ts` 的 `COMMAND_HANDLERS` 按类型静态合并。
  *
- * 未实现的分支必须明确拒绝，不得静默 return：客户端发送后得不到任何反馈，
+ * 未实现的分支必须明确拒绝，不得静默 return：客户端发送后没有任何反馈，
  * 在界面上与「服务端正在处理」无法区分。
  */
 
@@ -35,7 +35,7 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
       : undefined
   if (!handler) {
     // 协议中不存在的 type。来源是版本高于服务端的客户端或伪造流量，两种情况都必须回执；
-    // 静默丢弃会使前者的功能时而生效时而无效，后者则完全得不到反馈。
+    // 静默丢弃会使前者的功能时而生效时而无效，后者则完全没有反馈。
     reject(deps.ws, String(type ?? '(missing)'), 'unknown_command', '服务端无法识别该指令')
     return
   }

@@ -12,7 +12,7 @@ Get-CimInstance Win32_Process -Filter "ParentProcessId=<外壳进程的 pid>"
 ```
 
 一条存活的终端会话在 Windows 上是 `conhost.exe --headless --inheritcursor --width N --height N`
-加一个 `powershell.exe`，两者都是外壳进程的直接子进程。外壳进程在开发实例中是 `qywork-dev.exe`，安装版中是 `qywork.exe`。只剩 `msedgewebview2.exe` = Rust 侧的会话表为空，
+加一个 `powershell.exe`，两者都是外壳进程的直接子进程。外壳进程在开发实例中是 `qywork-dev.exe`，安装版中是 `qywork.exe`。只有 `msedgewebview2.exe` = Rust 侧的会话表为空，
 界面显示与实际不符。会话被移除时 master 一并 drop，conhost 随之退出，因此「没有 conhost」这一判据是可靠的。
 
-反向同样成立：新开一条终端后进程树中没有多出这两个进程，说明 `terminal_open` 进入了「这个 id 已存在」的提前返回分支。
+反向同样成立：新建一条终端后进程树中没有多出这两个进程，说明 `terminal_open` 进入了「这个 id 已存在」的提前返回分支。

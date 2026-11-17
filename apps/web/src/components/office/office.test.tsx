@@ -8,7 +8,7 @@
  * `office/OfficePicker.tsx` 与 `lib/file-search.ts` 的 `office` 筛选、
  * `SidePanel.tsx` 看板的 Word 行、PPT 行、Excel 行、`side-panel/FileBrowser.tsx` 的文件预览页、`lib/store/ui.ts` 的 `openFileTab`。
  *
- * happy-dom 没有 Canvas（`getContext` 返回 `null`）与 `FontFace`：绘制由对比基准与浏览器实测验证，这里只断言界面状态、
+ * happy-dom 没有 Canvas（`getContext` 返回 `null`）与 `FontFace`：绘制由对比基准与浏览器实测验证，此处只断言界面状态、
  * 画布的创建与释放、绘制的调用对象，以及替身上下文记录的填充（`recordContexts`）；`FontFace` 与 `document.fonts`
  * 替换为记录注册与删除的替身。
  * `Worker` 替换为按请求回复的替身，断言 Worker 以模块方式从同源文件加载；解析本身由 `@qywork/ooxml` 的测试覆盖。
@@ -1790,7 +1790,7 @@ describe('看板的 Office 行', () => {
     expect(host.querySelector('.tab-pane.active .preview-head')?.textContent).toBe(
       'C:\\work\\books\\b.xlsm',
     )
-    // 页签上已有 ×，标题条不再放第二个关闭按钮。
+    // 页签上已有 ×，标题条不另设第二个关闭按钮。
     expect(host.querySelector('.tab-pane.active .preview-head [aria-label="关闭"]')).toBeNull()
 
     // 再次选中同一文件时切换到已有页，不新建第二页。

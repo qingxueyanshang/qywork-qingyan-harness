@@ -8,7 +8,7 @@
  * 请求历史直接使用引用（`agent` 的 `imagesOf` 按 `isStoredToolImage` 识别），发出前只读取未被换出的那些；
  * 界面、导出与 `read_history` 需要字节，经 `loadToolImages` 还原。
  *
- * 不要把字节写回 payload：同一张图被读取、经 `read_history` 取回时各存一份 base64，
+ * 不要把字节写回 payload：同一张图被读取、经 `read_history` 取回时各保存一份 base64，
  * 账本随图片读取次数线性增长，而历史接口与 `read_history` 每次都要解析全部字节。
  *
  * 键名保持 `images`：发给模型的信封由 `envelopeResult` 整体剥离该键，两种形态下信封逐字相同；
@@ -106,8 +106,8 @@ export function storeToolImages(
 /**
  * 把 steps 中工具结果的图像引用还原为字节。没有引用的 step 原样返回。
  *
- * 正文缺失（正文库被删除或损坏）时该图不还原，`data.imagesMissing` 记下缺失的张数：
- * 它随信封交给模型，模型据此知道此处原有图像，而不是把这次调用当作没有返回图像。
+ * 正文缺失（正文库被删除或损坏）时该图不还原，`data.imagesMissing` 记录缺失的张数：
+ * 它随信封提供给模型，模型据此得知此处原有图像，而不是把这次调用当作没有返回图像。
  */
 export function loadToolImages(store: Store, content: ContentStore, steps: Step[]): Step[] {
   return steps.map((step) => {

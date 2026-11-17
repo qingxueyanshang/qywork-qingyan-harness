@@ -7,7 +7,7 @@
  * 分别计算必然产生偏差。
  *
  * 本测试锁定一条用户可见的链路：**sidecar 重启之后，必须告知重连的客户端
- * 重新拉取全量**。不告知时界面会一直停留在断线时刻：该轮持续显示执行中，
+ * 重新获取全量**。不告知时界面会一直停留在断线时刻：该轮持续显示执行中，
  * 而账本中它在新进程启动时已被 `recoverStaleRuns` 判定为中断。
  */
 
@@ -126,7 +126,7 @@ describe('断线重连的位置', () => {
 
   /**
    * **原始失败形状**：重启后 `seq` 从 0 重新计数，按 `lastSeq >= seq` 判定即得到
-   * 「已是最新」，因此 resync 为假、补发零条，客户端不会重新拉取，该轮的终态
+   * 「已是最新」，因此 resync 为假、补发零条，客户端不会重新获取，该轮的终态
    * 永远无法到达界面。
    */
   test('服务端已重启（流已更换）：必须 resync，而不是判定为已是最新', () => {
@@ -147,7 +147,7 @@ describe('断线重连的位置', () => {
     expect(sock.backlog()).toEqual([])
   })
 
-  test('hello.ok 报告本进程当前流的身份，客户端据此判断是否重新拉取', () => {
+  test('hello.ok 报告本进程当前流的身份，客户端据此判断是否重新获取', () => {
     const bus = new EventBus()
     expect(shake(bus, {}).ok().streamId).toBe(bus.streamId)
   })
@@ -168,7 +168,7 @@ async function until(ok: () => boolean): Promise<void> {
   while (!ok()) await yieldLoop()
 }
 
-/** 与 `server.ts` 相同的连接装配：消息交给 `handleHello`，关闭时退订。`closes` 记录服务端看到的关闭码。 */
+/** 与 `server.ts` 相同的连接装配：消息交给 `handleHello`，关闭时退订。`closes` 记录服务端观察到的关闭码。 */
 function wsServer(bus: EventBus) {
   const unsubscribers = new Map<string, () => void>()
   const closes: number[] = []
@@ -377,7 +377,7 @@ describe('运行环境', () => {
   describe('bash 行按机器环境归入哪一种情形', () => {
     const noBash = {
       path: null,
-      reason: '没找到 Git for Windows 自带的 bash。装 Git for Windows。',
+      reason: '未找到 Git for Windows 自带的 bash。安装 Git for Windows。',
     }
     const shell = (path: string): CommandShell => ({ path, argv: [path], hint: '' })
 
@@ -403,7 +403,7 @@ describe('运行环境', () => {
     test('三种都不存在：属于必需依赖缺失，后续操作按 bash 情形说明', () => {
       const row = resolveBashRow({ bash: () => noBash, shell: () => null })
       expect(row.required).toBe(true)
-      expect(row.hint).toContain('装 Git for Windows')
+      expect(row.hint).toContain('安装 Git for Windows')
     })
   })
 

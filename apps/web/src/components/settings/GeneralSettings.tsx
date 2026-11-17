@@ -55,8 +55,8 @@ const PERMISSION_MODES: { id: PermissionMode; label: string }[] = [
  * 运行环境：qywork 需要调用的外部程序是否已安装。
  *
  * 状态分为三种：已安装 / 需要安装 / 未安装（可选）。「未安装（可选）」这一档不能省略：缺少 rg 只会使搜索变慢
- * （由内置遍历替代），node 只在安装插件时使用；若把它们也标为「需要安装」，用户首次打开设置页看到的
- * 是大片红色警告，真正缺失的依赖被淹没其中。
+ * （由内置遍历替代），node 只在安装插件时使用；若把它们也标为「需要安装」，首次打开设置页时显示
+ * 大量红色警告，真正缺失的依赖难以辨认。
  *
  * 已安装时只显示路径，不显示用途。缺失的后果只在缺失时才需要阅读。依赖齐全的机器上本节应为
  * 四行路径，而不是四段说明（B7：删除这句后用户是否仍能使用？能 → 删除）。
@@ -91,10 +91,9 @@ function EnvironmentRows() {
       <Show when={environment() === null}>
         <LoadState error={environmentError()} onRetry={() => void reloadEnvironment()} />
       </Show>
-      {/* 使用行式布局，不使用 `stack`。按钮是宽度有限的控件，应在右缘对齐：
-          四行按钮各自换行排在左侧，会使本节高度增加一倍，而浏览时视线
-          只需扫过右缘（`Row.tsx` 的判据）。路径虽长，但它是说明而不是控件，
-          在左栏中被截断优于挤占按钮的位置。 */}
+      {/* 使用行式布局，不使用 `stack`。按钮是宽度有限的控件，应在右缘对齐成一列（`Row.tsx` 的判据）；
+          四行按钮各自换行排在左侧时，本节高度增加一倍。路径虽长，但它是说明而不是控件，
+          在左栏中被截断优于占用按钮的位置。 */}
       <For each={deps()}>
         {(d) => (
           <div class="setting-row" classList={{ warn: d.path === null && d.required }}>
@@ -269,7 +268,7 @@ export function GeneralSettings() {
 
       {/* 不嵌套在 `config()` 内部。配置无法读取时本节仍须显示：
           模型为何没有 run_command 与配置能否加载是两件事，
-          两者绑定时，配置一旦出错，用户将无法看到原因。 */}
+          两者绑定时，配置一旦出错，用户将无法得知原因。 */}
       <section class="settings-block">
         <h3 class="settings-block-head">运行环境</h3>
         <div class="setting-rows">
@@ -287,8 +286,8 @@ export function GeneralSettings() {
             <PathRow label="配置文件" value={configPath()} />
             <Show when={workspace()}>
               {(w) => (
-                /* 会话按工作区分表存储：用户在两个客户端看到不同的会话列表时，
-                   唯一可供自行诊断的线索就是这一行。 */
+                /* 会话按工作区分表存储：两个客户端显示的会话列表不同时，
+                   本行是用户唯一可用于自行诊断的信息。 */
                 <PathRow label="当前工作区" value={w().root} />
               )}
             </Show>

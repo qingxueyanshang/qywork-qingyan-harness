@@ -600,7 +600,7 @@ describe('原生思考块', () => {
     prefix: 'p',
   }
 
-  test('按位置锚原样插回，正文不再另行发送，锚定已丢弃调用的块排在末尾回放', async () => {
+  test('按位置锚原样重新插入，正文不再另行发送，锚定已丢弃调用的块排在末尾回放', async () => {
     const body = await send(
       [
         { role: 'user', content: '读 a.ts' },

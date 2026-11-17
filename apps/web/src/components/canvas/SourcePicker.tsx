@@ -63,7 +63,7 @@ export function SourcePicker(props: {
         <For each={nodes()}>
           {(n) => (
             <button type="button" onClick={() => props.onNode(n.id)}>
-              {/* 文本、音频等没有画面的文件卡显示文件类型图标，与下方的工作区文件相同；缩略图框中没有画面时只是一块深色方块。 */}
+              {/* 文本、音频等没有画面的文件卡显示文件类型图标，与下方的工作区文件相同；缩略图框在没有画面时只显示深色背景。 */}
               <Show
                 when={iconPathOf(n)}
                 fallback={<span class="canvas-menu-thumb">{props.thumb(n.id)}</span>}

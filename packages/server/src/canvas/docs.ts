@@ -423,7 +423,7 @@ export class CanvasDocs {
   /**
    * 应用一批界面操作并写入，整批成立才写入，返回应用后的文档与批内名称对照。
    * 文件节点的路径先按工作区核实，并规范化为正斜杠相对路径；运行中的卡片不能删除（409）。
-   * 大模型的操作走 `applyAgent`。
+   * 大模型的操作经由 `applyAgent`。
    */
   apply(
     workspaceRoot: string,
@@ -641,7 +641,7 @@ export class CanvasDocs {
     const abs = await this.existingFile(workspaceRoot, clip.path)
     const path = await this.relativeTo(workspaceRoot, abs)
     const duration = mediaDurationOfFile(abs)
-    // 容差为一帧：界面按播放器读取的时长裁剪，与 `mvhd` 的取整值可能相差几毫秒。
+    // 容差为一帧：界面按播放器读取的时长裁剪，与 `mvhd` 的取整值可能相差数毫秒。
     if (duration !== null && clip.out > duration + 1 / 30) {
       throw new CanvasFailure(
         `片段超出视频时长：${path} 时长为 ${Math.round(duration * 100) / 100} 秒，出点为 ${clip.out} 秒`,

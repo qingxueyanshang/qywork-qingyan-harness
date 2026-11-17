@@ -90,18 +90,18 @@ export const DEFAULT_PERSONALIZATION: Personalization = {
 }
 
 /**
- * 背景层从看不到改为看得到时采用的界面不透明度。背景与雾面位于界面骨架之下，
- * 不透明度为 1 时被完全遮住，设置了背景却看不到变化。
+ * 背景层从不可见变为可见时采用的界面不透明度。背景与雾面位于界面骨架之下，
+ * 不透明度为 1 时被完全遮住，设置背景后界面没有变化。
  */
 export const REVEAL_OPACITY = 0.85
 
-/** 是否看得到背景层：纯色背景的颜色为 null 且没有雾面时，骨架下方只有页面底色。 */
+/** 背景层是否可见：纯色背景的颜色为 null 且没有雾面时，骨架下方只有页面底色。 */
 export function backdropVisible(p: Personalization): boolean {
   return !(p.background.kind === 'color' && p.background.color === null) || p.fog !== null
 }
 
 /**
- * 一次修改使背景层从看不到变为看得到、且界面不透明度为 1 时，同一次修改把不透明度改为 `REVEAL_OPACITY`。
+ * 一次修改使背景层从不可见变为可见、且界面不透明度为 1 时，同一次修改把不透明度改为 `REVEAL_OPACITY`。
  * 设置页的编辑与设置背景图片的接口共用本规则。不要改为先保存修改、再单独保存不透明度：
  * 第一次保存的广播触发其他读取，读取结果晚于第二次的预览到达时覆盖预览，界面停留在不透明度 1。
  */
@@ -218,8 +218,8 @@ function personalizationOf(raw: unknown): Personalization {
     fog: fog(o.fog),
     opacity: num(o.opacity, 'opacity', PERSONAL_LIMITS.opacity),
     accent: o.accent === null ? null : color(o.accent, 'accent'),
-    // `flow` 晚于其他字段加入：此前保存的个性化文件没有该字段，缺省按 null（默认的紫色）读取，
-    // 不要改为必填，否则这些文件无法读取，用户的个性化随之失效。
+    // 已保存的个性化文件可能没有 `flow` 字段，缺省按 null（默认的紫色）读取。
+    // 不要改为必填：这些文件将无法读取，个性化随之失效。
     flow: o.flow === undefined || o.flow === null ? null : color(o.flow, 'flow'),
   }
 }

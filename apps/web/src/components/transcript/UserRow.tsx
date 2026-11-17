@@ -9,7 +9,7 @@ export function UserRow(props: { id: string; item: TranscriptItem }) {
   return (
     <div class="row user" data-turn={props.id}>
       <div class="user-col">
-        {/* 附件位于气泡上方：附件是该消息的上下文，阅读顺序应为先看附件再看文字。 */}
+        {/* 附件位于气泡上方：附件是该消息的上下文，阅读顺序应为先查看附件、再阅读文字。 */}
         <Show when={props.item.attachments?.length}>
           <div class="attach-row sent">
             <For each={props.item.attachments}>

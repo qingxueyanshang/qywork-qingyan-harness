@@ -42,7 +42,7 @@ describe('提取答案', () => {
     expect(extract(out, { output: 'jsonl', resultField: 'item.text' }, '')).toBe('0.1.0')
   })
 
-  test('路径中途不是对象时跳过该行，不抛错', () => {
+  test('路径中途不是对象时跳过该行，不抛出异常', () => {
     const out = jsonl([{ item: '不是对象' }, { item: { text: '答案' } }])
     expect(extract(out, { output: 'jsonl', resultField: 'item.text' }, '')).toBe('答案')
   })
@@ -495,7 +495,7 @@ describe('从流中提取正文', () => {
 
   /**
    * 复现的失败形状：进程在中途被终止，流中没有 `result` 行。回退整段 stdout 时
-   * 模型取得的是几十万字符的事件流，而不是子 agent 已输出的正文。
+   * 模型取得的是数十万字符的事件流，而不是子 agent 已输出的正文。
    */
   test('被中断时回执是已输出的正文', async () => {
     const controller = new AbortController()

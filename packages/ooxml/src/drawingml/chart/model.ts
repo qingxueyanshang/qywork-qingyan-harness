@@ -34,7 +34,7 @@ export interface ManualLayout {
 }
 
 export interface ChartTitle {
-  /** 文字已解决样式：标题文字取自 `c:rich`，自动标题按系列名生成。 */
+  /** 文字的样式已解决：标题文字取自 `c:rich`，自动标题按系列名生成。 */
   readonly text: TextBody
   readonly overlay: boolean
   readonly layout: ManualLayout | null
@@ -80,7 +80,7 @@ export interface DataPoint {
 }
 
 /**
- * 线性趋势线：按最小二乘拟合系列各点（横坐标取点在分类轴上的位置），自第一个分类画到最后一个分类，绘制在系列之上；
+ * 线性趋势线：按最小二乘拟合系列各点（横坐标取点在分类轴上的位置），自第一个分类延伸到最后一个分类，绘制在系列之上；
  * 图例项排在全部系列之后（WPS 实测）。
  */
 export interface Trendline {

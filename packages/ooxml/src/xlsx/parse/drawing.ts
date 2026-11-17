@@ -225,7 +225,7 @@ function readGraphicFrame(x: Scanner, rels: Relationships): RawOther {
   return { kind: 'other', counted: chart ? 'chart' : 'graphic', chart: part }
 }
 
-/** 在锚点或组合的子对象的开始标签处调用；不认识的元素返回 `null`。 */
+/** 在锚点或组合的子对象的开始标签处调用；无法识别的元素返回 `null`。 */
 function readObject(
   x: Scanner,
   local: string,

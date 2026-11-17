@@ -257,7 +257,7 @@ export class BrowserBridge {
     }
     const tab = this.#tabs.get(frame.tabId)
     // 新页进入存活集合的唯一途径。AI 创建的页与用户新开的页经由同一路径：
-    // 缺少后者时，模型在 `browser_tabs` 中看不到用户的页。
+    // 缺少后者时，模型在 `browser_tabs` 中无法看到用户的页。
     if (frame.kind === 'opened') {
       // 没有工作区的新页不进入存活表：填入空字符串会使它不属于任何工作区
       // 却在所有工作区中可见。该页因此对服务端不存在，界面上的投影仍由宿主推送。

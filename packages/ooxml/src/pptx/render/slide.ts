@@ -7,10 +7,10 @@
  * - 绘制顺序：背景（没有背景时为白色）、各形状按文档顺序。
  * - 文字的行高与基线按演示文稿的规则，字形按点阵条件绘制（`./fonts.ts` 的 `slideGlyphs`）；`SlideResources.clearType`
  *   不为 `null` 时其余字号以 ClearType 字形写入画布像素（`slideClearType`），画布宜以 `willReadFrequently: true` 创建。
- *   旋转的文字、没有 TrueType 轮廓的字体、半透明的文字与画到图层上的文字以 `fillText` 绘制（见 `TextClearType`）。
+ *   旋转的文字、没有 TrueType 轮廓的字体、半透明的文字与绘制到图层上的文字以 `fillText` 绘制（见 `TextClearType`）。
  *   形状与表格的文字暂存，在下一个不是只有文字的形状与表格边框之前一并混合；图表与 SmartArt 的文字与其他绘制交错，
  *   每段立即混合。
- * - 图片的外部阴影、发光、柔化边缘与映像取图片区域与线条（`../../drawingml/paint/effects.ts`），内部阴影画在图片区域内、线条之下。图片可以是位图或图元文件（`../../drawingml/paint/picture.ts`），
+ * - 图片的外部阴影、发光、柔化边缘与映像取图片区域与线条（`../../drawingml/paint/effects.ts`），内部阴影绘制于图片区域内、线条之下。图片可以是位图或图元文件（`../../drawingml/paint/picture.ts`），
  *   图元文件文字的字体取自幻灯片字体（`slideMetafileFonts`）。
  * - 三维效果（相机旋转、透视与光照）见 `../../drawingml/three/paint.ts`，图片与自选图形相同。
  * - 图表见 `../../drawingml/chart/paint.ts`，SmartArt 见 `../../drawingml/diagram/paint.ts`，墨迹见 `./ink.ts`。
@@ -89,7 +89,7 @@ interface SlideScene extends ShapeScene {
   readonly immediate: TextSettings
 }
 
-/** 只画文字的形状（没有填充、线条、三维效果与作用于文本框的映像、柔化边缘）：其文字可以与前后形状的文字一并混合。 */
+/** 只绘制文字的形状（没有填充、线条、三维效果与作用于文本框的映像、柔化边缘）：其文字可以与前后形状的文字一并混合。 */
 function textOnly(shape: Shape): boolean {
   return (
     shape.kind === 'shape' &&

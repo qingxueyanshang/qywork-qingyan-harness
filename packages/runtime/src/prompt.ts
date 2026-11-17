@@ -29,7 +29,7 @@ import type { MediaModelEntry } from './config.ts'
 
 export const SYSTEM_LAYER = `你是 qywork 的 harness agent，运行在用户本机，读写用户工作区中的文件，调用工具完成用户交付的任务。
 
-你的输出渲染在图形界面中，用户可以看到每一次工具调用及其结果。
+你的输出渲染在图形界面中，界面显示每一次工具调用及其结果。
 
 完成任务，而不是描述如何完成任务。需要修改文件或执行测试时直接执行。需求存在几种理解时，按最接近用户意图的一种执行，并在最终回复中说明所作的选择；只在「工作方式」所列的受阻情形中停下等待用户。`
 
@@ -60,7 +60,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 - irreversible：不可撤回的对外操作（删除、发送给他人、提交），其对象或内容存在不止一种理解，且观察无法确定。
 
 执行失败不是受阻，不等待用户。一项工作通常包含多次运行，其中一次失败时，先读取失败原因并按原因处理，其间继续执行不依赖它的其余项。按下列方式处理用尽后仍无法完成的项，用 write_todos 标为 failed，failure 填写对应的类别，cause 写失败原因，attempts 写做过的尝试及每次的改动：
-- transient 暂时故障（5xx、429 限流、请求得到应答之前连接中断）：以相同参数在 ${retryScheduleText()}后各重试一次。生成的提交与子 agent 的派发由系统自动重试，回执写明已做的重试；回执报告失败时，按其中的原因决定是否再次运行。
+- transient 暂时故障（5xx、429 限流、请求得到应答之前连接中断）：以相同参数在 ${retryScheduleText()}后各重试一次。生成的提交由系统自动重试，回执写明已做的重试；回执报告失败时，按其中的原因决定是否再次运行。子 agent 的请求已由系统按同一间隔自动重发，失败回执写明重发次数与各次的失败原因；同一接口反复失败时，优先改用其他接口或模型派发。
 - invalid_request 请求有误（4xx 参数校验失败、参考图数量不符、引用失效、参数取值无效）：按原因修改输入后重试；同一错误再次出现时换一种改法，共尝试 3 次。
 - denied 重试无法解决（余额或额度用尽、403 无访问权限、接口要求重新登录）：不重试。
 - unknown 结果未知（请求已发出，但没有收到应答或任务号，或发出后超时）：远端可能已经受理并计费，先取回，不重新提交；取回无果时标为失败。
@@ -73,9 +73,9 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 
 注释写用途与约束：这段代码负责什么、调用方必须遵守什么。不要逐行复述代码，不要写变更经过，变更经过属于提交记录。
 
-命令失败时先读完整个输出再确定修改方案，不要立即重复执行同一条命令。
+命令失败时先读取完整的输出再确定修改方案，不要立即重复执行同一条命令。
 
-工具结果与用户附件中的图像和视频保留在后续请求中，需要时直接查看历史中的原图和视频，无需重新读取。合计超过约 8 MB 时，最早的一批图片缩小为长边 768 像素的缩略图，信封中带 images_reduced；缩略图合计超过约 5 MB 时，最早的一批替换为带 images_omitted 的说明。需要原尺寸的细节时，用 read_file 的 region 截取局部，或用 read_history 按 call_id 取回原图；取回的原图同样计入上限。需要对比的画面较多时，优先每看完一组即写下结论，再读取下一组。`
+工具结果与用户附件中的图像和视频保留在后续请求中，需要时直接查看历史中的原图和视频，无需重新读取。合计超过约 8 MB 时，最早的一批图片缩小为长边 768 像素的缩略图，信封中带 images_reduced；缩略图合计超过约 5 MB 时，最早的一批替换为带 images_omitted 的说明。需要原尺寸的细节时，用 read_file 的 region 截取局部，或用 read_history 按 call_id 取回原图；取回的原图同样计入上限。需要对比的画面较多时，优先在每查看完一组后记录结论，再读取下一组。`
 
 /**
  * 能力段。每个类目都须逐条告知模型：未告知时模型不会使用该能力，
@@ -91,7 +91,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 const CAPABILITY_LINES: { tool: string; line: string }[] = [
   {
     tool: 'run_command',
-    line: '- 命令：用 run_command 执行 shell 命令。临时文件与缓存放在本会话临时目录（运行上下文中列出，命令的 TMP、TEMP、TMPDIR 指向它），该目录不计入变更。待办全部完成后系统删除该目录，交给用户的文件与之后还要用到的文件放在工作区的其他位置。启动 Chrome 时必须指定 --user-data-dir=.tmp/chrome，否则每次启动都会在临时目录留下一份无法删除的崩溃指标文件。',
+    line: '- 命令：用 run_command 执行 shell 命令。临时文件与缓存放在本会话临时目录（运行上下文中列出，命令的 TMP、TEMP、TMPDIR 指向它），该目录不计入变更。待办全部完成后系统删除该目录，交付给用户的文件与后续仍需使用的文件放在工作区的其他位置。启动 Chrome 时必须指定 --user-data-dir=.tmp/chrome，否则每次启动都会在临时目录留下一份无法删除的崩溃指标文件。',
   },
   {
     tool: 'background_command',
@@ -135,7 +135,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'browser_tabs',
-    line: '- 内置浏览器：browser_tabs、browser_navigate、browser_observe、browser_act 操作应用内置的浏览器。打开的页面以页签显示在界面右侧面板中，用户可以直接看到；打开网页或本地 HTML 供用户查看或核对时使用它。',
+    line: '- 内置浏览器：browser_tabs、browser_navigate、browser_observe、browser_act 操作应用内置的浏览器。打开的页面以页签显示在界面右侧面板中，用户可以直接查看；打开网页或本地 HTML 供用户查看或核对时使用它。',
   },
   {
     tool: 'desktop_windows',
@@ -213,7 +213,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'stop_subagent',
-    line: '- 停止子 agent：正在执行的子 agent 需要停下时（派发有误、任务重复、需要改派），用 stop_subagent 停止；其会话保留，之后按 subagentId 再次派发即在原会话中继续。',
+    line: '- 停止子 agent：正在执行的子 agent 需要停止时（派发有误、任务重复、需要改派），用 stop_subagent 停止；其会话保留，之后按 subagentId 再次派发即在原会话中继续。',
   },
   {
     tool: 'wait_subagents',
@@ -313,7 +313,7 @@ export type TailNote = RunContextSegment
  * MCP 与插件的 `summary` 即第三方提供的 description 原文，可能包含多段。
  * 实测（2026-08-16，四个真实 server 共 41 个工具）：原样拼接为 2620 token，
  * 截断到 100 字为 1187 token。截断的是清单而不是工具本身：完整说明由
- * `load_tool` 按需加载，清单只用于让模型知道该工具存在。
+ * `load_tool` 按需加载，清单只用于告知模型该工具存在。
  */
 const SUMMARY_MAX_CHARS = 100
 
@@ -396,7 +396,7 @@ export function mediaModelsNote(
   if (!models.some((m) => !m.delisted)) return `## ${heading}\n当前没有可用的生成模型。`
   const sections: string[] = []
   for (const output of MEDIA_OUTPUTS) {
-    // 已下架的型号提交即被拒绝，不列给大模型。
+    // 已下架的型号提交即被拒绝，不提供给大模型。
     const rows = models.filter((m) => m.output === output && !m.delisted)
     if (!rows.length) continue
     const lines = [`### ${MEDIA_LABEL[output]} · ${MEDIA_TOOLS[output].name}`]
@@ -459,7 +459,7 @@ export function buildTailNotes(input: {
    * 本轮开始时的上下文占用（`context-panel.ts` 的 `contextPanel`：与运行中读数、压缩触发同一口径）、
    * 窗口与本轮的压缩触发线（`softLimit`，与循环的触发判定取同一比例），单位 token。
    *
-   * 必须告知模型：未告知时模型只能凭感觉判断剩余空间，实测 1M 窗口的模型在 50–67 万时多次向用户声称
+   * 必须告知模型：未告知时模型只能自行推测剩余空间，实测 1M 窗口的模型在 50–67 万时多次向用户声称
    * 「上下文快耗尽」，跳过验证并提前结束任务，而压缩在触发线处自动执行。
    */
   context?: { used: number; window: number; compactAt: number }
@@ -558,7 +558,7 @@ export function buildTailNotes(input: {
   ]
 
   /*
-   * 模型清单放在动态快照中，不放在冻结 system 前缀中：设置页保存后，下一轮即应看到新配置，
+   * 模型清单放在动态快照中，不放在冻结 system 前缀中：设置页保存后，下一轮即应取得新配置，
    * 同一 run 内则必须保持不变。接口与模型始终分列：两者都允许自由文本，任何分隔符
    * 都可能出现在名称中，拼接为一个选择串后无法保证结构上无歧义。
    */
@@ -616,7 +616,7 @@ export function buildTailNotes(input: {
 
   //
   // 技能与记忆都只放标题：放入全部正文时，十余条即可占用数万 token，而一次任务
-  // 通常只用到其中一两条。标题的成本与条数成正比而与内容无关，全部列出也能容纳；
+  // 通常只使用其中一至两条。标题的成本与条数成正比而与内容无关，全部列出也能容纳；
   // 需要展开哪一条由模型根据标题判断：模型掌握当前任务的全部细节，
   // 而任何按当轮文本打分的召回只能衡量字面重合度。
   if (input.skills?.length) {
@@ -634,7 +634,7 @@ export function buildTailNotes(input: {
     })
   }
   // 外部工具与技能、记忆的处理方式相同：清单常驻，参数说明按需加载。它归入 `mcpTools` 分组，
-  // 与这些工具的 schema 同组：面板上「外部工具」一行显示的就是这部分开销。
+  // 与这些工具的 schema 同组：面板上「外部工具」一行显示的即这部分开销。
   if (input.externalTools?.length) {
     const list = input.externalTools.map((t) => `- ${t.name}：${oneLine(t.summary)}`).join('\n')
     notes.push({

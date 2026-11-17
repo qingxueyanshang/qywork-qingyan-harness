@@ -1,5 +1,5 @@
 /**
- * `provider_requests` 表（逐请求账）的读写，以及按模型统计的请求完成率。
+ * `provider_requests` 表（逐请求账本）的读写，以及按模型统计的请求完成率。
  */
 
 import {
@@ -173,7 +173,7 @@ export function markProviderRequestFirstEvent(store: Store, id: ProviderRequestI
  * 一段非空思考、正文或新增工具参数到达。
  *
  * 每一段都调用，`at` 由适配器在解析该段时观测，不要在此处取当前时刻：
- * 事件传到此处已延迟若干毫秒，而 `last_content_at` 的用途正是计算当前已静默多久。
+ * 事件传到此处已延迟若干毫秒，而 `last_content_at` 的用途正是计算当前已静默的时长。
  * 首值由 `COALESCE` 保留在 `first_content_at`，末值每次覆盖 `last_content_at`，
  * 两列在一次更新中写入：分成两条语句时，中途失败会使两列不一致。
  */
@@ -257,7 +257,7 @@ export function recordProviderRequestDiagnostic(
  * 本会话最近一次已发送的主请求。面板的分组明细取自本函数。
  *
  * 只取主请求，`latestAnchoredProviderRequest` 相同：摘要请求发送的是摘要提示词，
- * 其输入量与会话占用无关，用作依据会把面板读数变成摘要请求的大小。
+ * 其输入量与会话占用无关，用作依据会使面板读数变为摘要请求的大小。
  */
 export function latestSentProviderRequest(
   store: Store,

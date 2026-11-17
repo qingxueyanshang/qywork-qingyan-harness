@@ -77,7 +77,7 @@ export interface CanvasPort {
     signal: AbortSignal,
   ): Promise<CanvasRunResult>
   /**
-   * 取消一张卡正在进行的生成，与界面卡片上的取消相同：有任务号的生成（视频，以及走云端的出图与音频）按接口能力撤销，
+   * 取消一张卡正在进行的生成，与界面卡片上的取消相同：有任务号的生成（视频，以及经由云端的出图与音频）按接口能力撤销，
    * 无法撤销时停止等待并保留任务。该卡未在生成时抛出。
    */
   cancel(path: string, nodeId: string): Promise<CanvasCancelOutcome>

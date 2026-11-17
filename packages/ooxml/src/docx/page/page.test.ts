@@ -265,7 +265,7 @@ describe('paginate：行与段距', () => {
           SECT(),
       ),
     )
-    // 第一段占到 743，第二段 1.5 倍行高 29.175：整行越过底边 3.3 磅，文字部分（19.45）可容纳。
+    // 第一段排至 743，第二段 1.5 倍行高 29.175：整行越过底边 3.3 磅，文字部分（19.45）可容纳。
     const w = where(paginate(d, layout([[671], [29.175]]), options()))
     expect(w.get(1)!.page).toBe(1)
   })
@@ -373,7 +373,7 @@ describe('paginate：分页符与分栏符', () => {
   })
 
   test('只有分页符的行在页底容纳不下时留在本页，其后的行从下一页开始（WPS：.doc 语料 zju-doc-060 不多出空白页）', async () => {
-    // 前 34 段各 20 磅，排到 752 磅；第 35 段以分页符开始，第一行 20 磅超出正文区底边 769.9 磅。
+    // 前 34 段各 20 磅，排至 752 磅；第 35 段以分页符开始，第一行 20 磅超出正文区底边 769.9 磅。
     const d = tweak(await doc(paras(35) + SECT()), { text: (b) => (b === 34 ? '\fx' : null) })
     const heights = Array.from({ length: 35 }, (_, i) => (i === 34 ? [20, 20] : [20]))
     const pages = paginate(d, layout(heights), options())
@@ -554,7 +554,7 @@ describe('paginate：表格', () => {
         .map((it) => ({ page: i + 1, it })),
     )
 
-  test('无法容纳的行移到下一页，续页先重复标题行（WPS：续页顶部为标题行，其后接着放其余各行）', async () => {
+  test('无法容纳的行移到下一页，续页先重复标题行（WPS：续页顶部为标题行，其后依次放置其余各行）', async () => {
     const d = tweak(await doc(`${p(r('a'))}${TABLE}${p(r('b'))}${SECT()}`))
     const rows = [
       { height: 30, header: true },
@@ -562,7 +562,7 @@ describe('paginate：表格', () => {
     ]
     const pages = paginate(d, layout([[20], [20]], [], [0, 2]), options({ 1: tableOf(rows) }))
     const [first, second] = parts(pages)
-    // 本页 72+20 起放标题行与 16 行（30 + 16×40 = 670），续页先占 30 磅标题行。
+    // 本页 72+20 起放置标题行与 16 行（30 + 16×40 = 670），续页先占 30 磅标题行。
     expect([first!.page, first!.it.top, first!.it.height, first!.it.end]).toEqual([
       1,
       92,
@@ -579,7 +579,7 @@ describe('paginate：表格', () => {
     expect(second!.it.segments[1]).toMatchObject({ row: 17, top: 102, repeat: false })
   })
 
-  test('行内切开：单元格中底边不超过正文区底边的行留在本页，其余行在下一页接着显示', async () => {
+  test('行内切开：单元格中底边不超过正文区底边的行留在本页，其余行在下一页继续显示', async () => {
     const d = tweak(await doc(`${p(r('a'))}${TABLE}${p(r('b'))}${SECT()}`))
     const lines = Array.from({ length: 40 }, () => 20)
     const t = tableOf([{ height: 800, lines }])

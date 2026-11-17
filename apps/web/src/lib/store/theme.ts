@@ -93,7 +93,7 @@ export { painted as paintedPersonalization, theme }
 
 /**
  * 写入 `data-theme`。必须在修改对应信号**之前**调用：信号写入后监听者（终端）同步重新取色，
- * 此时属性仍为旧值，取到的是上一套明暗的令牌。
+ * 此时属性仍为旧值，取得的是上一套明暗的令牌。
  */
 function applyDataTheme(pref: ThemePref): void {
   const root = document.documentElement
@@ -171,7 +171,7 @@ function writeVariables(p: Personalization | null): void {
   const content = token('--bg-app')
   if (p.opacity < 1 && frame && content) {
     // 外框比内容低一层：不透明度取界面不透明度的平方，透出的背景多于内容区（85% 时为 28% 对 15%），
-    // 任何背景下两层都有可辨认的差别。两者取同一不透明度时，强烈的背景压过两层底色本身的差别，
+    // 任何背景下两层都有可辨认的差别。两者取同一不透明度时，对比强烈的背景掩盖两层底色本身的差别，
     // 会话栏、会话区与面板显示为同一种颜色。卡片、输入框与浮层不透明，位于内容之上。
     style.setProperty('--frame-bg', toCss(withAlpha(frame, p.opacity * p.opacity)))
     style.setProperty('--content-bg', toCss(withAlpha(content, p.opacity)))

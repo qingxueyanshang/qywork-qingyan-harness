@@ -74,7 +74,7 @@ describe('个性化', () => {
     expect(await personalImagePath('b.png')).not.toBeNull()
   })
 
-  test('文件被手动改坏时返回错误而不是默认值', async () => {
+  test('文件被手动修改为不合法内容时返回错误而不是默认值', async () => {
     await mkdir(personalizationDir(), { recursive: true })
     await writeFile(join(personalizationDir(), 'personalization.json'), '{"opacity": 9}')
     const r = await readPersonalization()

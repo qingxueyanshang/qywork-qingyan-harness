@@ -1281,7 +1281,7 @@ describe('对应型号与接口价格', () => {
     expect(priceAt(formula, { now: offPeakMonday }).input).toBe(0.5)
   })
 
-  /** 原始失败形状：云端型号以单价写入，币种改为积分后长上下文档被去掉，272K 以上的请求按基础档计价。 */
+  /** 原始失败形状：云端型号以单价写入，币种改为积分后长上下文档被移除，272K 以上的请求按基础档计价。 */
   test('倍率覆盖按倍率换算单价与各档，币种改为积分时保留分档与时段折扣', () => {
     const sol = lookupModel('gpt-6.1-sol', 'openai_responses')
     const cloud = applySpecOverride(sol, { scale: 0.5, currency: 'CREDIT' })

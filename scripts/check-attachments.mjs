@@ -4,7 +4,7 @@
  *
  * **本脚本的用途。** 该链路中**有四项行为 `bun test` 无法覆盖**：浏览器的粘贴与拖放事件、
  * 跨源预检、CSS 固定尺寸，以及「附件目录随会话一起删除」这一跨进程副作用。
- * 这四项出错时都不报错：粘贴之后无任何反应、缩略图撑高所在行、
+ * 这四项出错时都不报错：粘贴之后无任何反应、缩略图使所在行变高、
  * 目录残留在磁盘上，只能通过人工检查发现。
  *
  * 装配方式与 `shoot-ui.mjs` 相同：**Node 驱动 Playwright、Bun 启动服务**。Bun 在 Windows 上
@@ -128,7 +128,7 @@ const { proc, token, port } = await startServer()
 const browser = await chromium.launch()
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
-  page.on('pageerror', (e) => bad(`页面抛异常：${e.message.slice(0, 120)}`))
+  page.on('pageerror', (e) => bad(`页面抛出异常：${e.message.slice(0, 120)}`))
 
   // 令牌经由 fragment 传递，与手机扫码进入的路径一致。
   // **不使用 `networkidle`**：WebSocket 是常驻连接，该条件永远不会满足，
@@ -137,8 +137,8 @@ try {
   await page.waitForSelector('.composer-input', { timeout: 20_000 })
   await page.waitForTimeout(1200)
   if ((await page.locator('.conn-bar').count()) > 0) {
-    bad(`没连上：${await page.locator('.conn-bar').first().textContent()}`)
-  } else ok('页面起来了，WebSocket 已连上')
+    bad(`未连接：${await page.locator('.conn-bar').first().textContent()}`)
+  } else ok('页面已加载，WebSocket 已连接')
 
   // ── 粘贴 ──
   // 该步骤同时验证 CORS 预检：`x-attachment-name` 不在允许列表中时，
@@ -156,20 +156,20 @@ try {
 
   const names = await page.locator('.attach-chip .truncate').allInnerTexts()
   const shown = names.map((n) => n.trim()).filter(Boolean)
-  if (shown.length === 2) ok(`两个 chip 各有名字：${shown.join(' / ')}`)
-  else bad(`chip 名字只渲染出 ${shown.length} 个：${JSON.stringify(names)}`)
+  if (shown.length === 2) ok(`两个 chip 均显示名称：${shown.join(' / ')}`)
+  else bad(`只渲染了 ${shown.length} 个 chip 名称：${JSON.stringify(names)}`)
 
   // ── 固定尺寸（B9：尺寸不随内容变化）──
   const thumbs = await page.locator('.attach-chip .attach-thumb').all()
-  if (thumbs.length < 2) bad(`缩略图格子只有 ${thumbs.length} 个`)
+  if (thumbs.length < 2) bad(`缩略图只有 ${thumbs.length} 个`)
   const boxes = await Promise.all(thumbs.map((t) => t.boundingBox()))
   if (boxes.every((b) => b && Math.round(b.width) === 20 && Math.round(b.height) === 20)) {
-    ok('待发缩略图都是 20×20 定尺')
-  } else bad(`缩略图尺寸不齐：${JSON.stringify(boxes)}`)
+    ok('待发送的缩略图均为固定尺寸 20×20')
+  } else bad(`缩略图尺寸不一致：${JSON.stringify(boxes)}`)
 
   const imgs = await page.locator('.attach-chip .attach-thumb img').count()
-  if (imgs === 2) ok('两个格子里都是真图，不是占位图标')
-  else bad(`只有 ${imgs} 个格子渲染出了图`)
+  if (imgs === 2) ok('两个缩略图均为实际图片，不是占位图标')
+  else bad(`只有 ${imgs} 个缩略图渲染了图片`)
 
   // ── 发送 ──
   // 乐观插入先把带附件的用户消息加入会话流，不等待服务端回执。
@@ -177,23 +177,23 @@ try {
   await page.locator('.composer-input').fill('看这两张图')
   await page.locator('.composer-input').press('Enter')
   await page.waitForSelector('.attach-row.sent .attach-chip', { timeout: 15_000 })
-  ok('发送：会话流里出现带附件的用户消息')
+  ok('发送：会话流中出现带附件的用户消息')
 
   const sentBox = await page.locator('.attach-row.sent .attach-thumb').first().boundingBox()
-  if (sentBox && Math.round(sentBox.width) === 44) ok('会话流里的缩略图是 44×44 定尺')
-  else bad(`会话流缩略图尺寸不对：${JSON.stringify(sentBox)}`)
+  if (sentBox && Math.round(sentBox.width) === 44) ok('会话流中的缩略图为固定尺寸 44×44')
+  else bad(`会话流缩略图尺寸错误：${JSON.stringify(sentBox)}`)
 
   // ── 落盘位置 ──
   const dir = join(WS, 'attachments')
   if (!existsSync(dir)) {
-    bad('附件没有落在 QYWORK_HOME/attachments/')
+    bad('附件未保存在 QYWORK_HOME/attachments/')
   } else {
     const cids = readdirSync(dir)
     const cid = cids[0]
-    ok(`落点 QYWORK_HOME/attachments/${cid}/ —— 与会话库同一棵树`)
+    ok(`保存位置 QYWORK_HOME/attachments/${cid}/，与会话库位于同一目录树`)
     ok(`目录内容：${readdirSync(join(dir, cid)).join(', ')}`)
-    if (existsSync(join(WS, '.qy', 'attachments'))) bad('工作区里仍然被创建了 .qy/attachments')
-    else ok('工作区里没有 .qy/attachments（旧落点已废弃）')
+    if (existsSync(join(WS, '.qy', 'attachments'))) bad('工作区中创建了 .qy/attachments')
+    else ok('工作区中没有 .qy/attachments')
 
     // ── 删除会话 → 目录随之删除 ──
     const status = await page.evaluate(
@@ -206,9 +206,9 @@ try {
       },
       [port, token, cid],
     )
-    if (status !== 200) bad(`删会话回了 ${status}`)
-    else if (existsSync(join(dir, cid))) bad('删会话之后附件目录还在')
-    else ok('删会话之后附件目录跟着没了')
+    if (status !== 200) bad(`删除会话返回 ${status}`)
+    else if (existsSync(join(dir, cid))) bad('删除会话后附件目录仍然存在')
+    else ok('删除会话后附件目录已一并删除')
   }
 } finally {
   clearTimeout(hard)
@@ -217,5 +217,5 @@ try {
   await rm(WS, { recursive: true, force: true }).catch(() => {})
 }
 
-console.log(failed === 0 ? '\n附件链路：全绿' : `\n附件链路：${failed} 项没过`)
+console.log(failed === 0 ? '\n附件链路：全部通过' : `\n附件链路：${failed} 项未通过`)
 process.exit(failed === 0 ? 0 : 1)

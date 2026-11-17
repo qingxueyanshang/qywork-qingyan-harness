@@ -7,7 +7,7 @@ export const migration004: Migration = {
    * 账本的 kind 增加 `classifier`（权限裁决所用的小模型调用）。
    *
    * **新增 kind 必须同时新增迁移**：`kind` 上有 CHECK 约束，只修改 TS 类型时插入会
-   * 违反约束并抛错；`recordUsage` 只忽略唯一约束冲突，其余错误输出到 stderr。
+   * 违反约束并抛出异常；`recordUsage` 只忽略唯一约束冲突，其余错误输出到 stderr。
    * 若该 catch 被放宽为忽略全部错误，分类器与命令放行均正常，
    * 账本却没有任何记录，且任何地方都不报错。
    *

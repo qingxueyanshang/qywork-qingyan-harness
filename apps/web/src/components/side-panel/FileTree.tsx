@@ -23,7 +23,7 @@ export interface FileNode {
 export interface TreeCtx {
   expanded(): ReadonlySet<string>
   toggle(node: FileNode): void
-  /** `null` 表示该层尚未取回（刷新会将其清为 `null`，已展开的目录自行重取）。 */
+  /** `null` 表示该层尚未取回（刷新会将其清为 `null`，已展开的目录自行重新获取）。 */
   childrenOf(path: string): FileNode[] | null
   load(path: string): void
   selected(): string | null
@@ -50,7 +50,7 @@ export const treeIndent = (depth: number): number => depth * 10 + 2
  * 按名称搜索的结果，扁平列出，替代文件树显示。
  *
  * **搜索跳过依赖目录与构建产物**（服务端 `findByName`），而文件树不跳过。该边界必须
- * 显示出来，否则搜索不到 `node_modules` 中的文件会被理解为文件不存在。
+ * 显示出来，否则 `node_modules` 中的文件不在搜索结果中时，会被理解为文件不存在。
  */
 export function SearchHits(props: { ctx: TreeCtx; query: string }) {
   const [debounced, setDebounced] = createSignal(props.query)
@@ -68,7 +68,7 @@ export function SearchHits(props: { ctx: TreeCtx; query: string }) {
 
   // 使用 `loaded()`：每次修改搜索词都会更换 source，`hits()` 会在两批结果之间进入 Suspense，
   // 使面板连同上方的搜索框一起移出 DOM，输入第二个字符时搜索框已不存在。
-  // 重取期间保留上一批结果，新结果返回后再替换。
+  // 重新获取期间保留上一批结果，新结果返回后再替换。
   const matches = () => loaded(hits)
 
   return (
@@ -218,7 +218,7 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
   const editing = () => props.ctx.renaming() === props.node.path
 
   // 已展开且该层尚未取回时发起获取。**获取的触发条件是「已展开且缺少数据」**，
-  // 不是点击动作：刷新清空缓存后，已展开的目录依靠该条件自行重取。
+  // 不是点击动作：刷新清空缓存后，已展开的目录依靠该条件自行重新获取。
   createEffect(() => {
     if (open() && children() === null) props.ctx.load(props.node.path)
   })

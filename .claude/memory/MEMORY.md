@@ -6,13 +6,13 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 对整台机器都成立的陷阱（Windows 编码、Playwright 不可用、npm shim）和跨项目的工作偏好，
 写入全局 `~/.claude/projects/.../memory/`。写新记忆前先读本文件，避免重复。
 
-- [命中率只看最后一次调用](hit-rate-shows-latest-call.md) — 用户确定的口径，不要改成整轮累计；可以调整的只有「没回报按 0 算」那一处
-- [排查先查本地数据库](diagnose-from-the-local-db.md) — `~/.qywork/qywork.sqlite3` 有每次工具调用的完整 args 与 outcome；`permission_audit` 空表 = 一次权限裁决都没发生过
+- [命中率只取最后一次调用](hit-rate-shows-latest-call.md) — 用户确定的口径，不要改为整轮累计；可以调整的只有「没回报按 0 算」那一处
+- [排查先查本地数据库](diagnose-from-the-local-db.md) — `~/.qywork/qywork.sqlite3` 有每次工具调用的完整 args 与 outcome；`permission_audit` 为空表 = 未发生过任何权限裁决
 - [dev server 必须显式绑定 IPv4](dev-server-must-bind-ipv4.md) — vite 不设 host 时只监听 `::1`，Tauri/PowerShell 探测 localhost 使用 IPv4，现象为 `tauri dev` 停滞 180 秒；`strictPort` 同样必须开启
-- [桌面端 WebView 连接 CDP](tauri-webview-no-cdp.md) — 开发构建设置 `QYWORK_WEBVIEW_DEBUG_PORT` 并另起隔离实例；环境变量与策略注册表都不生效
+- [桌面端 WebView 连接 CDP](tauri-webview-no-cdp.md) — 开发构建设置 `QYWORK_WEBVIEW_DEBUG_PORT` 并另行启动隔离实例；环境变量与策略注册表都不生效
 - [修改 terminal.rs 前先读这四条](pty-lessons-before-removal.md) — PTY 必须在 Rust 侧、slave 端立即释放、字节流按累积缓冲 lossy 解码、默认 shell 固定为 powershell 且不读 COMSPEC
-- [dev 状态下修改源码会作用于用户正在使用的窗口](dev-edits-hit-the-running-app.md) — 修改前端触发热更新、修改 core 触发整页刷新、修改 packages 在运行中的 run 结束后重启 dev.ts 的 sidecar、修改 Rust 重启整个应用；取证须另起隔离实例
-- [PTY 是否存活以进程树为准](pty-alive-check-by-process-tree.md) — 外壳进程（开发实例 `qywork-dev.exe`）下有 `conhost.exe --headless` + shell 才算存活；只剩 webview 说明界面显示与实际不符
+- [dev 状态下修改源码会作用于用户正在使用的窗口](dev-edits-hit-the-running-app.md) — 修改前端触发热更新、修改 core 触发整页刷新、修改 packages 在运行中的 run 结束后重启 dev.ts 的 sidecar、修改 Rust 重启整个应用；取证须另行启动隔离实例
+- [PTY 是否存活以进程树为准](pty-alive-check-by-process-tree.md) — 外壳进程（开发实例 `qywork-dev.exe`）下有 `conhost.exe --headless` + shell 才视为存活；只有 webview 说明界面显示与实际不符
 - [本地打包产物收集到 .tmp/installer/](local-installer-lands-in-tmp.md) — `tauri:build` 末尾自动收集；正式发布通过 GitHub Actions 草稿 Release，不要把本地 exe 当作发布产物
 - [计时测试在机器高负载时成批超时](timing-tests-fail-under-machine-load.md) — followup / goal-loop / 插件 e2e 的 10s 上限；套件总时长翻倍且只有这几条失败即为负载所致，待负载回落后重新运行
 - [在不影响用户窗口的前提下复现前端问题](probe-ui-with-isolated-instance.md) — 复制数据库到 .tmp/probe/home 并启动隔离 sidecar，`#t=token` 配对，用 Node 驱动 Playwright 获取 pageerror；外壳实例须用 `TAURI_CONFIG` 把 devUrl 改为 5181 再编译
@@ -25,7 +25,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [执行 qy 必须隔离数据目录](qy-needs-isolated-home.md) — 同一条命令中设置 `QYWORK_HOME` 指向 .tmp；钩子 `scripts/guard-real-home.ts` 拦截未设置的命令；单个测试文件用 `bun run test <文件>`，不要进入包目录再 `bun test`（不加载预载）；误用过三次用户真实数据
 - [Git Bash 的 /tmp 指向已删除的测试目录](git-bash-tmp-points-at-deleted-test-dir.md) — bash 先输出「could not find /tmp」、shell 工具测试报「投递额度未开账」；用 `mount` 查看指向并重建该目录，不结束其他会话的 sh
 - [与并行会话修改了同一批文件时只提交本会话的段](partial-commit-shared-files.md) — 按内容判定归属、从 HEAD 构造内容写入索引、临时工作树自检、按索引提交；带 pathspec 会把对方的段一并提交
-- [常驻动画只能动 transform / opacity](continuous-animation-cost.md) — 用户显示器 180Hz，CSS 重绘型动画开销为 60Hz 的三倍；画布流动虚线由 WebGL 绘制（抗锯齿虚线曲线的光栅化随条数增长），删除视觉效果前先问用户
+- [常驻动画只能修改 transform / opacity](continuous-animation-cost.md) — 用户显示器 180Hz，CSS 重绘型动画开销为 60Hz 的三倍；画布流动虚线由 WebGL 绘制（抗锯齿虚线曲线的光栅化随条数增长），删除视觉效果前先问用户
 - [刷新恢复的测试方法](refresh-restore-testing.md) — 带查询串重新导入模块模拟刷新；组件测试 afterEach 清空记录；性能对照构建把 sessionSignal 换成 createSignal
 - [画布卡顿须在桌面外壳中按用户布局测量](canvas-perf-measure-in-shell.md) — 无头 Chrome 与窄面板都无法复现；先截取用户窗口核对缩放与主题；瓶颈是 180Hz 下 GPU 进程的光栅化，测量脚本在 .tmp/perf-gen/ 与 .tmp/perf-drag/
 - [画布改写手写编号须可见](canvas-prompt-no-hidden-rewrite.md) — 发送前按型号写法改写手写编号，读取画布、回执与生成面板逐卡显示「发送时改写」；不可见的改写被否决过
@@ -33,6 +33,6 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [截断内容沿用原有悬停提示](reuse-existing-hover-tooltip.md) — 显示全文用 `data-tip`，不新增点击浮层；用户以现有界面为参照时按参照的形式实现
 - [.tmp/scratch 由并行会话共用](scratch-dir-shared-between-sessions.md) — 提交说明不用固定文件名，写入本会话私有的临时目录；曾被对方的同名文件覆盖导致说明错误
 - [估算系数的实测方法](token-density-calibration.md) — 新增或补测型号用 .tmp/ctx-probe 脚本；Claude 第三方直连读首个事件，Qwen 关闭思考；三档未测仍用默认档
-- [模型绕路时修复缺陷而不是加限制](fix-capability-gap-not-prompt-ban.md) — 查出模型只能绕路的原因（缺能力、看不到结果）并修复；不在提示词或工具说明中写禁令，用户否决过「电脑控制只用于 qywork 以外」
+- [模型绕行时修复缺陷而不是添加限制](fix-capability-gap-not-prompt-ban.md) — 查明模型只能绕行的原因（缺少能力、无法看到结果）并修复；不在提示词或工具说明中写禁令，用户否决过「电脑控制只用于 qywork 以外」
 - [Rust 源码不按 rustfmt 排版](rust-sources-not-rustfmt-formatted.md) — 不运行 cargo fmt：文件参数不限定范围，整个包被改写并混入其他会话未提交的改动；含还原方法
 - [会话流触摸滑动须实测](touch-scroll-probe.md) — 修改底部跟随后用 .tmp/probe/touch-follow.mjs 与 touch-static.mjs 以真实触摸序列实测；synthesizeScrollGesture 在无头模式下不派发 touchmove

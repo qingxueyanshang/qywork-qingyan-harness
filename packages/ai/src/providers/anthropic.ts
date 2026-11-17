@@ -131,7 +131,7 @@ export class AnthropicAdapter implements LlmAdapter {
        * 使用 SDK 构造请求、鉴权与 beta 头，响应体由本地读取。
        *
        * `asResponse()` 返回原始 `Response`，SSE 由共用读取器解析。不要改为
-       * `messages.stream()` + `finalMessage()`：该方式须读到 HTTP EOF 才 resolve，
+       * `messages.stream()` + `finalMessage()`：该方式须读取到 HTTP EOF 才 resolve，
        * 对端发送 `message_stop` 后不关闭连接时，工具调用与用量将无法交付。
        */
       const res = await this.client
@@ -383,7 +383,7 @@ export class AnthropicAdapter implements LlmAdapter {
   }
 }
 
-// ───────────────────────── 形状翻译 ─────────────────────────
+// ───────────────────────── 形状转换 ─────────────────────────
 
 function buildSystem(req: ChatRequest) {
   return req.system
@@ -611,13 +611,13 @@ function buildMessages(
 /**
  * assistant 消息的内容块。
  *
- * 有原生思考块时按采集时记录的位置插回：本仓库将正文合并为一段、排在全部工具调用之前，
+ * 有原生思考块时按采集时记录的位置重新插入：本仓库将正文合并为一段、排在全部工具调用之前，
  * 因此锚定正文的块排在正文前，锚定某个工具调用的块排在该 `tool_use` 前，
  * 原本位于末尾的块排在最后。签名对轮内位置敏感，不要改为统一排在最前。
  *
  * 锚定的工具调用已不在消息中（`max_tokens` 截断后整批丢弃）时，该块排在末尾照常回放，
- * 其后的思考块全部不回放：签名绑定块之前的内容，去掉该调用只改变其后各块的前缀，
- * 从末尾去掉的块不影响前面的块。不要改为将该块一并丢弃：续写时模型会失去截断前的全部思考。
+ * 其后的思考块全部不回放：签名绑定块之前的内容，移除该调用只改变其后各块的前缀，
+ * 从末尾移除的块不影响前面的块。不要改为将该块一并丢弃：续写时模型会失去截断前的全部思考。
  *
  * 边界：同一次响应中正文被思考块分隔为两段时，两段合并后无法恢复原顺序。
  */

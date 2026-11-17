@@ -59,8 +59,8 @@ export interface BrowserTabSnapshot {
    * 页面所属的工作区 id。创建页面时确定，此后不变：页面不在工作区之间移动。
    *
    * 用户页也有该字段：没有会话归属不等于没有工作区归属。界面据此决定页面是否显示在
-   * 当前标签栏上，协调器据此决定模型能否看到该页面。缺席不是合法状态，
-   * 不带该字段的页面一律拒收，不以空串填充。
+   * 当前标签栏上，协调器据此决定模型能否访问该页面。缺少该字段不是合法状态，
+   * 不带该字段的页面一律拒绝，不以空串填充。
    */
   workspaceId: string
   /**
@@ -116,7 +116,7 @@ export type BrowserUnavailableReason = 'not_found' | 'exited' | 'in_use'
  * 宿主已连接但没有可用的浏览器。该帧代替 `host.ready` 作为首帧，也在浏览器进程退出时
  * 于同一连接上发出；浏览器重新启动后宿主再发送一次 `host.ready`。
  *
- * 收到该帧时，上一份快照与待决调用全部作废，能力按「没有宿主」发布，原因随能力一并交给界面。
+ * 收到该帧时，上一份快照与待决调用全部作废，能力按「没有宿主」发布，原因随能力一并提供给界面。
  */
 export interface HostUnavailableFrame {
   type: 'host.unavailable'
@@ -141,7 +141,7 @@ export interface BrowserRequestFrame {
   /**
    * 目标工作区，`create` 与 `bind` 必须携带且非空。
    *
-   * 宿主按 op 校验，缺席时直接拒绝：回退到「当前工作区」需要宿主自行保存一份当前状态，
+   * 宿主按 op 校验，缺少时直接拒绝：回退到「当前工作区」需要宿主自行保存一份当前状态，
    * 而当前查看的是哪个工作区只有界面知道。`bind` 据此拒绝跨工作区接管。
    */
   workspaceId?: string
@@ -182,7 +182,7 @@ export interface BrowserResultFrame {
  * 宿主事件。`seq` 单调递增，出现缺口时需重新获取快照，不重放有副作用的命令。
  *
  * `opened` 是新页面进入存活集合的唯一途径，用户自行打开的页面也经由该事件；
- * 否则服务端只识别 AI 创建的页面，模型在 `browser_tabs` 中看不到用户的页面。
+ * 否则服务端只识别 AI 创建的页面，模型在 `browser_tabs` 中无法取得用户的页面。
  */
 export interface BrowserEventFrame {
   type: 'browser.event'
@@ -198,7 +198,7 @@ export interface BrowserEventFrame {
    * `opened` 必须携带：页面所属的工作区。
    *
    * 新页面只经由该事件进入服务端存活表，缺少该字段时页面没有工作区归属；服务端按协议错误
-   * 拒收，不推测当前工作区，也不填充空串。导航、标题与 `control` 事件不带该字段，工作区不变。
+   * 拒绝，不推测当前工作区，也不填充空串。导航、标题与 `control` 事件不带该字段，工作区不变。
    */
   workspaceId?: string
   /** `opened` 的初始归属与 `control`（`bind` 之后）的新归属。`null` 表示用户页。 */
@@ -210,7 +210,7 @@ export interface BrowserEventFrame {
   /**
    * `download.finished` / `download.blocked` 专有：宿主已消费的授权的身份。
    *
-   * 缺席表示本次下载未匹配任何授权（用户页的下载，或 AI 页面上未经授权的下载），
+   * 缺失表示本次下载未匹配任何授权（用户页的下载，或 AI 页面上未经授权的下载），
    * 此时该事件不得结算任何工具调用。
    */
   downloadId?: string

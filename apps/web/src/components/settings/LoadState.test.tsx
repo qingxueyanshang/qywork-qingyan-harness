@@ -41,7 +41,7 @@ describe('读取中的占位不先于数据显示', () => {
   test('数据在阈值内返回时，占位不渲染', async () => {
     const { host, dispose } = await mount({ error: undefined })
     expect(host.innerHTML).toBe('')
-    // 本机取数实测在一帧（约 30ms）内返回。此处推进的时长远超一帧，但仍在阈值内。
+    // 本机读取实测在一帧（约 30ms）内返回。此处推进的时长远超一帧，但仍在阈值内。
     jest.advanceTimersByTime(80)
     expect(host.innerHTML).toBe('')
     dispose()

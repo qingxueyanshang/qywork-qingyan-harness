@@ -37,7 +37,7 @@ pub fn children(conn: &Connection, obj: &Obj) -> Result<Vec<Result<Obj, Failure>
     let refs: Vec<(String, OwnedObjectPath)> = accessible
         .inner()
         .call("GetChildren", &())
-        .map_err(dbus("取子节点"))?;
+        .map_err(dbus("读取子节点"))?;
     Ok(refs
         .iter()
         .filter_map(|(name, path)| {

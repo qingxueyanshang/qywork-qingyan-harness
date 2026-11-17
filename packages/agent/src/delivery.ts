@@ -93,7 +93,7 @@ export function tailRetain(threshold: CompactThreshold): number {
  * 余额不足时单次不超过预留量。
  *
  * 不要放宽到全部余额：填满余额的结果使占用达到软阈值，下一次发送前即越线，而此时该结果尚未
- * 被模型看到、不能收纳，只能调用模型写摘要。实测 1M 窗口读取约 3 倍窗口大小的文件：不留余量时
+ * 被模型读取、不能收纳，只能调用模型写摘要。实测 1M 窗口读取约 3 倍窗口大小的文件：不留余量时
  * 11 次压缩中有 5 次是模型摘要。
  *
  * 按该上限截短的投递记为触及上限（`batchCapped`）：下一次决策开始前，执行工具之前的检查点先收纳该段，
@@ -164,7 +164,7 @@ export function deliveredTokens(text: string, density: TokenDensity): number {
 }
 
 /**
- * 按一张图片的宽高扣除投递额度。余量不足以容纳时仍然投递并记下用量：报告失败的回合不产出内容，
+ * 按一张图片的宽高扣除投递额度。余量不足以容纳时仍然投递并记录用量：报告失败的回合不产出内容，
  * 超出的部分由下一次发送前的压缩回收。
  */
 export function chargeImage(
@@ -205,7 +205,7 @@ function outcomeVideoMeta(entry: unknown): VideoMeta | null {
  * 图片按宽高、视频按时长与画面尺寸计（`estimateImage`、`estimateVideo`），附带文本块按声明的特征计数计
  * （`loop/request.ts` 的 `textsOf`，经 `estimateContent`），与请求侧的计算方法一致。
  *
- * 信封中 `call_id` / `tool` / `status` 等固定键约几十 token，不在此计算，由软阈值以上的预留空间覆盖。
+ * 信封中 `call_id` / `tool` / `status` 等固定键约数十 token，不在此计算，由软阈值以上的预留空间覆盖。
  */
 export function outcomeTokens(
   parts: { message: string; data?: Record<string, unknown> | undefined },
@@ -247,7 +247,7 @@ export function tokensToBytes(tokens: number, density: TokenDensity): number {
 /**
  * 实测正文每 token 对应的最大字节数取整后加余量：各模型各类真实样本中最高为英文思考正文的 5.3（2026-10-27）。
  *
- * 不按系数反算下界：连续空白只计一次段起点，按系数反算时一大段空白的下界趋近于 0，换算结果没有上限。
+ * 不按系数反算下界：连续空白只计一次段起点，按系数反算时，较长的连续空白的下界趋近于 0，换算结果没有上限。
  */
 const MAX_BYTES_PER_TOKEN = 8
 

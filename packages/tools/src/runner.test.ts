@@ -135,7 +135,7 @@ describe('命令由 runner 代为执行', () => {
 
       const reader = proc.stdout.getReader()
       expect(new TextDecoder().decode((await reader.read()).value)).toBe('hi')
-      // 中间进程退出之后才使孙进程写入：流随退出关闭时，此处读到 EOF 而不是 `late`。
+      // 中间进程退出之后才使孙进程写入：流随退出关闭时，此处读取到 EOF 而不是 `late`。
       await writeFile(trigger, '')
       expect(new TextDecoder().decode((await reader.read()).value)).toBe('late')
       // 读端取消后这条流才结束：结束读取由读端决定，不是退出码的副作用。

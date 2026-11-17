@@ -265,7 +265,7 @@ export function Timeline(props: TimelineProps) {
   }
   const splittable = () => canSplit(props.node.clips, session.playhead(), session.playing())
 
-  // 全屏：Space 播放、Delete 删片段、Esc 退出；Ctrl+滚轮缩放时间轴，滚轮横向滚动。
+  // 全屏：Space 播放、Delete 删除片段、Esc 退出；Ctrl+滚轮缩放时间轴，滚轮横向滚动。
   onMount(() => {
     if (props.mode !== 'full') return
     const onKey = (e: KeyboardEvent) => {

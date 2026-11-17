@@ -26,7 +26,7 @@ function open(root: string, opts: Omit<ChangeWindowOptions, 'env'> = {}) {
 const CLOCK_PROBE = join(tmpdir(), `qywork-watch-clock-${process.pid}`)
 
 /**
- * 等待文件时间戳越过此刻的 `Date.now()`。窗口起点不晚于此刻；起点回退到 `Date.now()` 时，
+ * 等待文件时间戳越过此刻的 `Date.now()`。窗口起点不晚于此刻；起点改用 `Date.now()` 时，
  * 文件时间戳比它落后至多一个刻度，打开后立即写入的文件早于起点，不进入结果。
  */
 async function clockPast(): Promise<void> {
@@ -176,7 +176,7 @@ describe('执行窗口内的工作区变更', () => {
 
   /**
    * 反方向：打开前同一刻度内写入的文件不属于本窗口，本窗口修改它时判定为 modified。
-   * 连续两条命令之间只间隔几毫秒，把起点前移以抵消刻度会使上一条命令的文件在此处重复报告或判定为 created。
+   * 连续两条命令之间只间隔数毫秒，把起点前移以抵消刻度会使上一条命令的文件在此处重复报告或判定为 created。
    *
    * 两条断言都不依赖事件：打开前的写入早于 watcher，三个平台都不投递；kept.txt 由收尾扫描的
    * 时间下界排除，edited.txt 由收尾扫描按 mtime 取得。打开后先等待事件流开始投递再修改，使修改与屏障标记
@@ -541,7 +541,7 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, '.tmp'), 'not a directory')
 
     const window = open(root)
-    // 标记无法写入，投递进度无从确认；a.txt 由收尾扫描按 mtime 取得，起点回退为 `Date.now()`。
+    // 标记无法写入，投递进度无从确认；a.txt 由收尾扫描按 mtime 取得，起点改用 `Date.now()`。
     await clockPast()
     await writeFile(join(root, 'a.txt'), '1')
     const got = await window.close()
@@ -551,7 +551,7 @@ describe('执行窗口内的工作区变更', () => {
   })
 
   /**
-   * 原始失败形状：macOS 的 FSEvents 按真实路径报告事件，watch 符号链接路径时收不到任何事件，
+   * 原始失败形状：macOS 的 FSEvents 按真实路径报告事件，watch 符号链接路径时无法收到任何事件，
    * 删除无法报告，收尾的屏障等待到上限、结果判定为不完整。Windows 上使用目录联接，创建它不需要特权。
    */
   test('经符号链接打开的工作区照常收到事件，路径相对调用方传入的根', async () => {
@@ -680,7 +680,7 @@ describe('收尾时的 git 环境', () => {
     process.env.QY_WATCH_TEST_TOKEN = 'watch-secret-value'
     process.env.QY_WATCH_TEST_PLAIN = 'watch-plain-value'
     try {
-      // 对照：以本进程的完整环境启动时，该命令读到凭证。
+      // 对照：以本进程的完整环境启动时，该命令读取到凭证。
       expect(await seenBy(process.env, 'a.txt')).toContain('watch-secret-value')
       const scrubbed = await seenBy(scrubbedEnv({}), 'b.txt')
       expect(scrubbed).toContain('watch-plain-value')

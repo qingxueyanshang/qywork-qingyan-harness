@@ -4,10 +4,10 @@
  * 覆盖范围：`api/mcp.ts` 的 `/api/mcp/import`。`/api/mcp` GET 需要实际连接一批 server，
  * 不在此处测试。
  *
- * 锁定三种静默失败：它们都不报错，只会让用户面对一个没有任何变化的界面长时间排查。
+ * 锁定三种静默失败：它们都不报错，界面也没有任何变化。
  *
- * - 指定了错误的文件（其中解析不出任何 server）必须返回 422，不能报告导入成功而列表不变。
- * - 同名 server 必须返回 409，不能覆盖：覆盖会抹掉用户自己配置的条目。
+ * - 指定了错误的文件（其中无法解析出任何 server）必须返回 422，不能报告导入成功而列表不变。
+ * - 同名 server 必须返回 409，不能覆盖：覆盖会删除用户自行配置的条目。
  * - 写回时必须使用本层已在使用的键：解析器同时识别 `servers` 与 `mcpServers`，
  *   但只取其中一个且 `servers` 优先，写错键时合并进来的条目会被整体忽略。
  */
@@ -73,7 +73,7 @@ describe('导入现有的 MCP 配置', () => {
     expect(res!.status).toBe(422)
   })
 
-  test('解析不出任何 server 时拒绝，不报告导入成功而列表不变', async () => {
+  test('未解析出任何 server 时拒绝，不报告导入成功而列表不变', async () => {
     const { root, file } = await workspace()
     // 既没有 command 也没有 url，解析器会忽略整个条目。
     const res = await call(root, '/api/mcp/import?scope=project', {

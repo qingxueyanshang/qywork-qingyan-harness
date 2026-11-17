@@ -100,7 +100,7 @@ export async function runPlugins(args: string[]): Promise<number> {
 
     for (const f of reg.failures) {
       // 路径改为相对工作区的形式。`f.reason` 中通常已含清单的绝对路径，
-      // 若再输出 `f.dir` 的绝对路径，同一路径在一行中出现两次、各占七八十列，
+      // 若再输出 `f.dir` 的绝对路径，同一路径在一行中出现两次、各占约 80 列，
       // 关键信息（如「缺少 version」）会被推出可见范围。
       const where = relative(workspaceRoot, f.dir) || f.dir
       const why = f.reason.split(`${f.dir}\\`).join('').split(`${f.dir}/`).join('')

@@ -1,12 +1,12 @@
 /**
- * 图层效果：外部阴影、发光（`glow`）、柔化边缘（`softEdge`）与映像（`reflection`）。内容先画到图层，效果按图层计算。
+ * 图层效果：外部阴影、发光（`glow`）、柔化边缘（`softEdge`）与映像（`reflection`）。内容先绘制到图层，效果按图层计算。
  *
- * - 发光：图层的不透明度以圆形结构元膨胀 `d = max(1, ⌊0.425 r⌋)` 个设备像素后高斯模糊，乘以发光颜色，画在内容之下
+ * - 发光：图层的不透明度以圆形结构元膨胀 `d = max(1, ⌊0.425 r⌋)` 个设备像素后高斯模糊，乘以发光颜色，绘制于内容之下
  *   （`r` 为半径的设备像素数）。柔化边缘：不透明度以同样的结构元腐蚀 `⌊0.83 r⌋` 个设备像素后高斯模糊，再乘到内容上。
  *   两者的模糊 σ 只取决于该整数：σ = 0.325 d + 0.27。WPS 演示实测（导出图，矩形、椭圆、圆角矩形、只有线条的矩形与图片，
  *   发光 2–28 磅、柔化边缘 2–24 磅）：边缘剖面按膨胀或腐蚀加高斯模糊拟合，均方根误差约 1/255，拟合的膨胀与腐蚀量都是整数，
  *   相同整数的 σ 相同；转角处圆形结构元的误差小于方形。发光在形状内部同样存在（半透明填充之下可见）。
- * - 映像：内容按与外部阴影相同的变换（`shadowMatrix`：缩放、倾斜、对齐点与距离）画出；不透明度沿映像自对称轴向外，
+ * - 映像：内容按与外部阴影相同的变换（`shadowMatrix`：缩放、倾斜、对齐点与距离）绘制；不透明度沿映像自对称轴向外，
  *   在 `stPos` 处为 `stA`、`endPos` 处为 `endA`，其间线性变化，位置以映像的高度计（`sy` 为 −50% 时渐变范围随之减半）。
  *   模糊 σ 为 `blurRad` 设备像素数的三分之一。WPS 演示实测（160 × 100 像素矩形，距离、模糊、起止位置与透明度、`sy`）。
  * - 合成顺序自下而上：映像、外部阴影、发光、内容。柔化边缘先作用于内容，映像、阴影与发光都取柔化后的内容。
@@ -276,7 +276,7 @@ function glowLayer(
   return out.canvas
 }
 
-/** 把发光画在 `ctx` 上（图层位于 `bounds`）。`spread` 为膨胀量；图层不能逐像素读写时不绘制。 */
+/** 把发光绘制到 `ctx` 上（图层位于 `bounds`）。`spread` 为膨胀量；图层不能逐像素读写时不绘制。 */
 export function paintGlow(
   ctx: PaintContext,
   layer: PaintCanvas,
@@ -296,7 +296,7 @@ export function glowReach(spread: number): number {
   return spread + blurReach(morphSigma(spread))
 }
 
-/** 渐变方向：`fadeDir` 在映像中的方向换回内容的局部坐标（翻转的轴取反）。 */
+/** 渐变方向：`fadeDir` 在映像中的方向换算回内容的局部坐标（翻转的轴取反）。 */
 function fadeVector(r: Reflection): { x: number; y: number } {
   const a = (r.fadeDirection * Math.PI) / 180
   return { x: Math.cos(a) * Math.sign(r.scaleX || 1), y: Math.sin(a) * Math.sign(r.scaleY || 1) }
@@ -384,8 +384,8 @@ function blurPixels(c: PixelContext, w: number, h: number, sigma: number): void 
 }
 
 /**
- * 带图层效果绘制：`draw` 把内容画到图层（`offset` 须左乘到其使用的设备变换上，填充改用传入的 `res`：其 `origin` 为图层
- * 左上角的位置），随后按映像、外部阴影、发光、内容的顺序画到 `ctx`。`bounds` 为内容在设备坐标中的外接矩形；有发光时图层向
+ * 带图层效果绘制：`draw` 把内容绘制到图层（`offset` 须左乘到其使用的设备变换上，填充改用传入的 `res`：其 `origin` 为图层
+ * 左上角的位置），随后按映像、外部阴影、发光、内容的顺序绘制到 `ctx`。`bounds` 为内容在设备坐标中的外接矩形；有发光时图层向
  * 四周扩展发光的范围。
  */
 export function paintWithEffects(
@@ -403,7 +403,7 @@ export function paintWithEffects(
     effects.softEdge === null
       ? 0
       : softEdgeInset((effects.softEdge.radius / EMU_PER_PX) * frame.scale)
-  // 图层四周外扩发光与柔化边缘的作用范围，可以超出画布：`bounds` 已裁到画布之内，画布之外紧邻的内容同样参与运算，
+  // 图层四周外扩发光与柔化边缘的作用范围，可以超出画布：`bounds` 已裁剪到画布之内，画布之外紧邻的内容同样参与运算，
   // 不扩展时柔化边缘会把画布边缘当作内容的边缘。
   const reach = Math.max(
     glow === null ? 0 : glowReach(spread),

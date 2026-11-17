@@ -12,7 +12,7 @@ const nameOf = (provider: string, model: string) => basename(wsFor({ provider, m
 
 describe('工作区目录名', () => {
   /**
-   * 原始失败形状：`[^\w.-]` 漏写反斜杠成为 `[^w.-]` 时，`w` 由「单词字符」变为
+   * 原始失败形状：`[^\w.-]` 遗漏反斜杠成为 `[^w.-]` 时，`w` 由「单词字符」变为
    * 字面的字母 w，除 w、点、连字符之外的每个字符都被替换为下划线，
    * `deepseek-deepseek-v4-pro` 变为 `________-________-__-___`。
    * 面板上的 work 名称与磁盘目录名均变为下划线串。
@@ -37,7 +37,7 @@ describe('工作区目录名', () => {
 })
 
 describe('重复开头按 run 隔离', () => {
-  test('两个任务各出现一次相同编号不算重复', () => {
+  test('两个任务各出现一次相同编号不视为重复', () => {
     expect(repeatedOpenersInRuns(['继续第 5 项。', '继续第 5 项。'])).toEqual([])
   })
 

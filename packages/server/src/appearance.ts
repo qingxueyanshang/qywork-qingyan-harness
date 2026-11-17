@@ -2,7 +2,7 @@
  * 外观的服务端装配：个性化与宠物库变更的广播，以及注入会话的 `PersonalizationPort` / `PetPort`。
  *
  * HTTP 接口（`api/appearance.ts`）与 `personalize` / `pet` 工具都经由此处广播：
- * 两条修改路径各自广播时，一处遗漏即使其他屏幕无法更新。
+ * 两条修改路径各自广播时，一处遗漏即导致其他屏幕无法更新。
  */
 
 import {

@@ -4,7 +4,7 @@
  * 与本地工具不同的两条约束：
  *
  * 1. 必须经过 SSRF 防护（`net-safety.ts`）。URL 来自模型，模型的 URL 来自它读取的
- *    网页内容；不拦截内网地址，等于把 SSRF 能力交给模型。
+ *    网页内容；不拦截内网地址时，模型可以经本工具发起 SSRF 请求。
  * 2. 产出进入 sink。网页正文是典型的不可重放内容：同一个 URL 次日获取的
  *    不是同一份字节。截断丢弃的部分无法再取回，因此必须先落盘。
  */
@@ -154,7 +154,7 @@ export function htmlToText(html: string): string {
       .replace(/<!--[\s\S]*?-->/g, '')
       .replace(/<(script|style|noscript|svg)\b[\s\S]*?<\/\1>/gi, '')
       // 开闭标签都替换为换行：只替换闭标签时相邻段落之间只有一个换行，
-      // 段落分隔丢失（正文读起来像一整段）。多出的空行由后续步骤压缩。
+      // 段落分隔丢失（各段正文连成一段）。多出的空行由后续步骤压缩。
       .replace(/<\/?(p|div|section|article|tr|h[1-6]|blockquote|pre)\b[^>]*>/gi, '\n')
       .replace(/<\/li>/gi, '\n')
       .replace(/<(br|hr)\s*\/?>/gi, '\n')
@@ -180,7 +180,7 @@ export function htmlToText(html: string): string {
  *
  * 使用 DuckDuckGo 的 HTML 端点：不需要 API Key，用户无需先申请即可使用。
  * 代价是解析的是 HTML 而不是结构化响应，站点改版后会失效；因此解析失败时
- * 明确报告解析失败，而不是返回空结果：空结果在模型看来等同于未搜到。
+ * 明确报告解析失败，而不是返回空结果：模型会将空结果视为没有搜索结果。
  */
 export const webSearchTool: ToolSpec = {
   name: 'web_search',
@@ -293,7 +293,7 @@ export function parseDuckDuckGo(html: string, limit: number): SearchHit[] {
     const title = htmlToText(m[2]!).replace(/\s+/g, ' ').trim()
     if (!href || !title) continue
 
-    // 摘要位于结果块之后，尽量提取，提取不到不算失败。
+    // 摘要位于结果块之后，尽量提取，未提取到不视为失败。
     const tail = html.slice(m.index, m.index + 2000)
     const snipMatch = /class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i.exec(tail)
     const snippet = snipMatch ? htmlToText(snipMatch[1]!).replace(/\s+/g, ' ').trim() : ''

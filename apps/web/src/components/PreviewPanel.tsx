@@ -60,8 +60,8 @@ export default function PreviewPanel(props: { id: string }) {
      * 其他 scheme 在此处拒绝，不要交给 iframe。
      *
      * 交给 iframe 时，地址仍会填入、iframe 仍会创建，随后内核直接拒绝加载：
-     * 用户看到的是一块没有任何说明的空白（实测 `file:` 只在控制台输出一句
-     * `Not allowed to load local resource`，`ftp:` 连这一句也没有）。
+     * 该区域显示为没有任何说明的空白（实测 `file:` 只在控制台输出一句
+     * `Not allowed to load local resource`，`ftp:` 不输出任何信息）。
      * 使用输入框自身的校验气泡提示，不另设错误区域。
      */
     if (!/^https?:\/\//i.test(next)) {

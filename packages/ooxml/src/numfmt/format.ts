@@ -333,7 +333,7 @@ function lastDateToken(tokens: readonly Token[]): string | null {
 
 /**
  * `m` 与 `mm` 紧跟在小时之后或紧接在秒之前时表示分钟，否则表示月份。
- * 「紧跟」只看相邻的日期时间代码，中间的分隔符不计。分钟改写为 `M` 与 `MM`。
+ * 「紧跟」只考虑相邻的日期时间代码，中间的分隔符不计。分钟改写为 `M` 与 `MM`。
  */
 function resolveMinutes(tokens: Token[]): Token[] {
   const out = [...tokens]
@@ -671,7 +671,7 @@ function formatScientific(tokens: readonly Token[], layout: NumberLayout, v: num
     else if (i < expAt) decPlaceholders.push(t.s)
     else expPlaceholders.push(t.s)
   })
-  // 一个整数占位：尾数在 [1, 10)。多个占位且全为 0（`00.0E+0`）：尾数恰有这么多位整数。
+  // 一个整数占位：尾数在 [1, 10)。多个占位且全为 0（`00.0E+0`）：尾数的整数位数等于占位数。
   // 多个占位且含 `#`（`##0.0E+0`）：指数取占位数的整数倍。
   const groupSize = Math.max(1, intPlaceholders.length)
   const allZero = intPlaceholders.every((p) => p === '0')
@@ -685,7 +685,7 @@ function formatScientific(tokens: readonly Token[], layout: NumberLayout, v: num
     exponent = step > 1 ? Math.floor(e / step) * step : e - (groupSize - 1)
     const mantissa = (exp: number) => fixedParts(Number(`0.${d.digits}e${d.point - exp}`), decimals)
     parts0 = mantissa(exponent)
-    // 尾数舍入后进位到下一个指数区间（9.996 → 10.00）时，指数前进一档。
+    // 尾数舍入后进位到下一个指数区间（9.996 → 10.00）时，指数加 1。
     if (parts0.int.length > groupSize) {
       exponent += step
       parts0 = mantissa(exponent)

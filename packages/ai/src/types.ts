@@ -41,7 +41,7 @@ export type TextFeatureCounts = Readonly<Record<TextFeature, number>>
  *   触发：实测（2026-09-07，Bun 1.3.14）静默 300.6 秒后流被中止，deepseek-v4-pro max 档一轮
  *   思考期间静默 320 秒即因此失败。两个 SDK 把它合并进每次 fetch 的 init，手写 fetch 的
  *   位置（`openai-responses.ts` 与生成接口的 `media/http.ts`）需要自行展开。标准 `RequestInit` 没有这个键，SDK 的 `fetchOptions` 又不接受
- *   body / headers / method / signal 四个键，因此类型声明为去掉这四个键的 `RequestInit`。
+ *   body / headers / method / signal 四个键，因此类型声明为去除这四个键的 `RequestInit`。
  */
 export const PROVIDER_HTTP = {
   timeout: 600_000,
@@ -136,7 +136,7 @@ export interface ChatRequest {
  *
  * **`null` 由调用方决定，不由规格决定。** 规格未经测定（`spec` 为 `null`）
  * 而调用方给出具体数值时，照常发送该数值：`qy probe` 的探针属于这种情况，它以
- * `maxOutputTokens: 16` 把每次探测的费用压到接近零；若按规格改为不申报，
+ * `maxOutputTokens: 16` 使每次探测的费用接近零；若按规格改为不申报，
  * 每次运行探针都会收到完整的回答。
  */
 export function outputCap(requested: number | null, spec: number | null): number | null {
@@ -146,7 +146,7 @@ export function outputCap(requested: number | null, spec: number | null): number
 
 export interface SystemBlock {
   text: string
-  /** true = 在这里放一个缓存断点。 */
+  /** true = 在此处设置一个缓存断点。 */
   cacheBreakpoint?: boolean
 }
 
@@ -238,7 +238,7 @@ export type VideoSource = MediaSource
 
 /**
  * 视频文件的字节数、时长（秒）与画面尺寸，取自容器索引（`agent` 的 `videoMetaOf`），不解码画面。
- * 时长或尺寸读不出时为 null（不写时长的 WebM、不完整的文件），这类视频不原生发送。估算（`estimateVideo`）据此计数。
+ * 时长或尺寸无法读取时为 null（不写时长的 WebM、不完整的文件），这类视频不原生发送。估算（`estimateVideo`）据此计数。
  */
 export interface VideoMeta {
   bytes: number
@@ -263,7 +263,7 @@ export type ContentBlock =
   | { type: 'text'; text: string; features?: TextFeatureCounts }
   /**
    * `thumbnail` 只在请求装配中出现：换出把较早的图片标记为缩略图（`agent` 的 `omitImages`），
-   * `materialize` 据此生成缩略图字节并去掉该字段，适配器不会收到它。
+   * `materialize` 据此生成缩略图字节并去除该字段，适配器不会收到它。
    */
   | { type: 'image'; mimeType: string; source: ImageSource; thumbnail?: true }
   /** `meta` 只用于估算，适配器不发送；文件已不存在时为 null。 */
@@ -430,7 +430,7 @@ export interface ProviderUsage {
 export interface LlmAdapter {
   /**
    * 工厂解析后的实际端点。用于诊断，以及按端点计数同时在途的请求（`agent` 的 `send-limit.ts`）；
-   * 持久化与写入日志时必须去掉认证段与查询串。
+   * 持久化与写入日志时必须去除认证段与查询串。
    */
   readonly endpoint?: string
   readonly kind: ProviderKind

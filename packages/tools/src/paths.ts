@@ -27,9 +27,9 @@ import { defaultMaskPaths, detectSandbox } from './process/sandbox.ts'
  * 切换到完全访问或加入 additionalDirectories」，其中没有一项可执行：
  * 该路径是工作区内的相对路径，模型无法据此判断文件不存在还是名称有误。
  *
- * 实测后果（会话 `cv_0mt0x92q10000mx0dff`）：模型读取不存在的
- * `client/src/battle/battle-snapshot.js`，收到权限提示后改用其他方式，
- * 却在回复中把该文件列为「已用 read_file 校验最新版」，与界面上「读取 2 个文件、1 个失败」不一致。
+ * 实测记录（会话 `cv_0mt0x92q10000mx0dff`）：模型读取不存在的
+ * `client/src/battle/battle-snapshot.js` 时收到权限提示，随后改用其他方式，
+ * 并在回复中将该文件列为「已用 read_file 校验最新版」，与界面上「读取 2 个文件、1 个失败」不一致。
  */
 export class PathNotFoundError extends Error {
   readonly errorKind = 'path_not_found'
@@ -129,9 +129,9 @@ export interface WorkspaceRoots {
    * 这不是路径层的后门，而是与其他层使用同一个定义。`full` 的语义是「不裁决」：
    * 同一模式下 `run_command` 已全部放行（`runtime/session/permission.ts` 的 `decide` 在入口处直接返回 allowed，
    * 不执行静态规则），shell 中一个 `cd` 即可离开工作区。路径层单独拦截不会更安全，
-   * 只会形成**两套边界**：模型的 `read_file` 被拒后改用 `run_command` 读到同一文件，账本中有一次实际记录。
+   * 只会形成**两套边界**：模型的 `read_file` 被拒后改用 `run_command` 读取到同一文件，账本中有一次实际记录。
    *
-   * 也不新增暴露面：`full` 下能用 shell 读到的文件，本来同样能读到。
+   * 也不新增暴露面：`full` 下能用 shell 读取到的文件，本来同样可以读取。
    */
   unrestricted?: boolean
   /**
@@ -167,7 +167,7 @@ export type RootsInput = string | WorkspaceRoots
  * 从 `ToolContext` 取得根目录清单。参数写成结构类型：调用方只需提供这几个字段。
  *
  * 每个工具各自构造 `{ workspaceRoot: ctx.workspaceRoot, additional: ... }` 时，
- * 遗漏 `additional` 的工具会退回只认工作区，形成配置只部分生效的问题。
+ * 遗漏 `additional` 的工具只接受工作区，形成配置只部分生效的问题。
  * 统一经由本函数即可避免遗漏。
  */
 export function rootsOf(ctx: {
@@ -191,8 +191,8 @@ export function rootsOf(ctx: {
  * 这是唯一入口，配置检查与装配使用同一份判定：两处各写一份必然出现分歧，
  * 表现为「检查通过，运行时不生效」。
  *
- * 拒绝而不是静默修正：被静默忽略的额外目录会让用户看到「已配置但仍被拒绝」，
- * 而错误出在用户自己的配置项上，本可用一句提示说明。
+ * 拒绝而不是静默修正：静默忽略额外目录时，结果是「已配置但仍被拒绝」，
+ * 而错误位于用户的配置项中，一句提示即可说明。
  */
 export function normalizeAdditionalDirectories(raw: readonly string[] | undefined): {
   dirs: string[]
@@ -289,7 +289,7 @@ async function resolveScoped(
 
   // 相对路径的基准始终是工作区，不是额外根目录；额外根目录只能用绝对路径访问。
   // 否则 `read_file("notes.md")` 会在多个根目录中逐个尝试，
-  // 命中哪一个取决于目录内容，同一调用两次可能读到不同的文件。
+  // 命中哪一个取决于目录内容，同一调用两次可能读取到不同的文件。
   const joined = isAbsolute(raw) ? resolve(raw) : resolve(workspaceRoot, raw)
 
   /*
@@ -320,7 +320,7 @@ async function resolveScoped(
 
   // 工作区根无法解析属于装配错误，原样抛出：ENOENT 指向真正的问题，
   // 改报「路径越界」会把排查方向引向用户输入。
-  // 额外根目录不同：用户配错一条不应使整次解析失败，跳过即可。
+  // 额外根目录不同：用户配置错误的一项不应使整次解析失败，跳过即可。
   const workspaceReal = await realpathOf(workspaceRoot)
   const rootReals = [workspaceReal]
   for (const extra of additional ?? []) {
@@ -349,7 +349,7 @@ async function resolveScoped(
   if (granted || (commandScope && (access === 'read' || place === 'other'))) {
     if (opts.mustExist) await assertExists(targetReal, candidate, opts.param)
     // 判定与返回使用同一个路径。两者不同时，判定的是 A、写入的是 B，
-    // 边界检查形同虚设；调用方按返回值记录读取状态时也会与读取路径不一致
+    // 边界检查失效；调用方按返回值记录读取状态时也会与读取路径不一致
     // （`files.ts` 的本轮已读判定在软链根目录下会始终判为 stale）。
     return { path: targetReal, workspaceReal }
   }
@@ -505,8 +505,8 @@ export const PROTECTED_DIRS: readonly string[] = ['.qy']
  * 使各处对「该目录是否存在」给出不同答案：`list_dir` 列出 `coverage/` 而 `grep` 不搜索它，
  * 模型据此把构建产物当作源码读取，或报告「在 coverage/lcov-report/x.html 中找到」。
  *
- * **界面文件树不使用它**（`server/files.ts`）：那是用户自己的文件浏览器，磁盘上
- * 有什么就列出什么。两者不一致时只允许界面比模型看到的多，否则用户
+ * **界面文件树不使用它**（`server/files.ts`）：它是用户的文件浏览器，列出磁盘上的
+ * 全部条目。两者不一致时只允许界面列出的条目多于模型可见的条目，否则用户
  * 无法核对模型的说法。
  *
  * 它与 `PROTECTED_DIRS` 用途不同，不要合并：后者是**安全边界**（拦截自我提权），
@@ -563,7 +563,7 @@ export function isProtectedPath(workspaceRoot: string, resolved: string): boolea
  * 写入路径解析：先经过根目录约束，再拦截受保护目录。
  *
  * `.qy/` 的保护**只按工作区判定**，与额外根目录无关：它是工作区内的
- * 路径判定。额外根目录再多也不会使 `<工作区>/.qy/` 变为可写。
+ * 路径判定。无论配置多少额外根目录，`<工作区>/.qy/` 都不可写。
  *
  * 「完全访问」下不设这一层：它拦截的是「为自身添加工具」，而同一模式下模型
  * 的 `run_command` 全部放行，`echo > .agents/x` 一行即可写入。
@@ -593,7 +593,7 @@ export async function resolveWritablePath(
  * 一条会话的临时目录：`<工作区>/.tmp/<会话 id>`。命令与 Office 执行程序的临时文件、Office 调用目录都在其中。
  *
  * 按会话划分，清理时只删除该目录：任务的待办全部完成后由 `Session` 删除，删除会话时由会话接口删除。
- * 子 agent 使用自己子会话的目录，随父会话一并删除。工作区观察器硬性排除 `.tmp`，其中的文件不进入变更清单。
+ * 子 agent 使用自己子会话的目录，随父会话一并删除。工作区观察器固定排除 `.tmp`，其中的文件不进入变更清单。
  */
 export function conversationTempDir(workspaceRoot: string, conversationId: string): string {
   return join(workspaceRoot, '.tmp', conversationId)
@@ -601,7 +601,7 @@ export function conversationTempDir(workspaceRoot: string, conversationId: strin
 
 /**
  * 工作区 Python 环境：`<工作区>/.tmp/python`，继承本机 Python 全部包的虚拟环境。auto 模式下由 runtime 在每轮开始前
- * 确保存在，命令中的 `python` 与 `pip` 指向它（`commandEnv`），装入的包之后的命令与会话可直接导入。
+ * 确保存在，命令中的 `python` 与 `pip` 指向它（`commandEnv`），其中安装的包在之后的命令与会话中可直接导入。
  * 不随会话删除：它不是会话临时目录。
  */
 export function workspacePythonDir(workspaceRoot: string): string {

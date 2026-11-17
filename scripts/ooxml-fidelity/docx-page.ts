@@ -3,7 +3,7 @@
  *
  * 页面向 `window` 暴露 `renderPage(id, n, width, height, clearType)`（`n` 从 1 起，`clearType` 为采集时显示器的
  * ClearType 设置，返回本方总页数与该页统计）与 `pageCount(id)`；截图由 Node 驱动的 Playwright 完成。
- * 本文件只声明用到的浏览器接口，不引入 DOM 类型库。
+ * 本文件只声明使用的浏览器接口，不引入 DOM 类型库。
  * 字体按 `requiredFonts` 的字体名取得，含公式所用的数学字体；主机字体的族名（`/families`）与界面相同，供前缀匹配。
  * 文档的嵌入字体按 `embeddedFaces` 选出，与界面相同：每个以新的族名注册，排版时以其家族名引用，绘制时换算为注册的族名。
  */

@@ -2,7 +2,7 @@
  * 排版与绘制共用的字体集：排版宽度只取自字体文件，绘制以 `family` 引用调用方注册的同名 `FontFace`。
  *
  * - `source` 交给 `layoutDocument`。请求粗体而字体没有粗体字形时，返回已按仿粗体换算（`emboldened`）的字形并标为粗体，
- *   使排版结果中的每个 `TextFace` 都是本字体集登记过的对象，分页时可由 `ref` 找回字体与字形。
+ *   使排版结果中的每个 `TextFace` 都是本字体集登记过的对象，分页时可由 `ref` 取回字体与字形。
  * - 主机没有的字体由 `layoutDocument` 按替代字体（`../resolve/fonts.ts` 的 `substitutes`）排版并记入 `missingFonts`，
  *   没有替代字体时改用 `fallback`。WPS 按自带度量排版的字体（`../../text/wps-fonts.ts`）由 `source.metric` 给出：度量取自
  *   数据表，字形登记为数据表中的绘制字体。字体集中有该字体名的字体（嵌入字体）时由 `source.face` 给出，`fixed` 的字体
@@ -125,14 +125,14 @@ export interface EmbeddedFace {
 }
 
 /**
- * 排版与绘制所用的嵌入字体：每个嵌入字体以其按主机界面语言取的家族名（`localFamilyName`）为字体名，主机有该字体名时不用。
+ * 排版与绘制所用的嵌入字体：每个嵌入字体以其按主机界面语言取的家族名（`localFamilyName`）为字体名，主机有该字体名时不使用。
  * WPS 实测（构造文档 f2-emb、f2-emb3：Comic Sans MS 与等线改名后嵌入，中文界面）：
  * - 字体表条目的 `w:name` 不起作用：家族名为 QyEmbInner、`w:name` 为 QyEmbB 时，字段字体 QyEmbB 按主机没有替代，QyEmbInner
- *   用该嵌入字体；家族名为 FZXiaoBiaoSong-B05S（英文）与方正小标宋简体（简体中文）时，方正小标宋简体用该嵌入字体，
+ *   使用该嵌入字体；家族名为 FZXiaoBiaoSong-B05S（英文）与方正小标宋简体（简体中文）时，方正小标宋简体使用该嵌入字体，
  *   FZXiaoBiaoSong-B05S 按主机没有替代。
- * - 主机有的字体名（Arial）用主机字体。
- * - WPS 按自带度量排版的字体名（Helvetica、Arial Narrow、Helvetica Neue、方正小标宋简体）用嵌入字体的字形与宽度。
- * - 只嵌入粗体的字体名，常规字段同样用该粗体字形；请求粗体而只嵌入常规字形时按仿粗体。
+ * - 主机有的字体名（Arial）使用主机字体。
+ * - WPS 按自带度量排版的字体名（Helvetica、Arial Narrow、Helvetica Neue、方正小标宋简体）使用嵌入字体的字形与宽度。
+ * - 只嵌入粗体的字体名，常规字段同样使用该粗体字形；请求粗体而只嵌入常规字形时按仿粗体。
  */
 export function embeddedFaces(doc: DocxDocument, host: HostFamilies): EmbeddedFace[] {
   const present = new Set(host.names)

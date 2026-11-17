@@ -48,7 +48,7 @@ describe('待办清单', () => {
     dispose()
   })
 
-  test('失败条目带失败标记，并在名称下方显示失败类别、原因与做过的尝试', async () => {
+  test('失败条目带失败标记，并在名称下方显示失败类别、原因与已进行的尝试', async () => {
     const { host, dispose } = await mount([
       {
         id: 'todo_1',

@@ -109,8 +109,8 @@ const sent = (extra: Partial<DispatchResult> = {}): DispatchResult => ({
 })
 
 /**
- * 原始失败形状：「留一盏灯」等会话中模型把子 agent id 抄错一位（cv_0mvuo06700000mz0tj 写成 cv_0mvumoo0670000mz0tj），
- * 或用名称当 id，报错只说「本会话中没有子 agent X」，模型继续推测 id。
+ * 原始失败形状：「留一盏灯」等会话中模型把子 agent id 写错一位（cv_0mvuo06700000mz0tj 写成 cv_0mvumoo0670000mz0tj），
+ * 或把名称作为 id，报错只说「本会话中没有子 agent X」，模型继续推测 id。
  */
 describe('按 id 或名称引用子 agent', () => {
   test('名称唯一时解析为 id 后派发；id 原样派发', async () => {
@@ -369,7 +369,7 @@ describe('派发单个子 agent', () => {
   })
 
   /**
-   * 原始失败形状：模型填了 name、model 与 task 而未填 kind，4 次被拒「必须填写 kind（role / temp / cli）或 subagent」。
+   * 原始失败形状：模型填了 name、model 与 task 而未填 kind，4 次被拒绝「必须填写 kind（role / temp / cli）或 subagent」。
    * 种类由字段决定后该组合即为新建临时子 agent；同时填写两种目标时仍无法确定，报错。
    */
   test('种类由填写的字段决定：只填 name 即临时子 agent；role 与 cli 同填时报错', async () => {

@@ -1,7 +1,7 @@
 /**
  * HTTP 响应契约。
  *
- * 此处只放服务端与前端共同依赖的响应结构。服务端有一百多个 `json(...)`，绝大多数只有一个
+ * 此处只放服务端与前端共同依赖的响应结构。服务端有超过 100 个 `json(...)`，绝大多数只有一个
  * 消费者，结构写在处理函数中即可。移入此处的判据只有一条：同一个响应的结构已在两处以上分别定义。
  * 两个用量响应即属此类：服务端、设置页、运行面板各有一份，三份互不校验，修改一个字段名时
  * 另外两份不会报类型错误。
@@ -85,7 +85,7 @@ export interface ConversationHistoryPageResponse extends ConversationHistoryPage
    * 会话当前正在运行的轮次与请求。
    *
    * 落库账本无法回答当前请求处于哪一阶段，而事件环容量有限，长时间断线后无法补发，
-   * 因此刷新只能从此处恢复。该字段由服务端从 RunManager 的当前 run 与同一份请求账
+   * 因此刷新只能从此处恢复。该字段由服务端从 RunManager 的当前 run 与同一份请求账本
    * 实时读取，不是第二份状态：每个字段都能在 `provider_requests` 的对应行中找到来源。
    */
   live: ConversationLiveSnapshot
@@ -211,7 +211,7 @@ export type CloudState =
       /** 云端已开通微信支付充值；false 时账号窗口不显示「充值」。云端暂时无法访问时为 false。 */
       recharge: boolean
       /**
-       * 本账号读到的最新一条公告的 id，保存在云端账号上，官网与各台电脑读写同一个值；没有记录时为 null。
+       * 本账号已读的最新一条公告的 id，保存在云端账号上，官网与各台电脑读写同一个值；没有记录时为 null。
        * 云端暂时无法访问时为本设备上一次取得的值；本次运行中从未取得时缺省，界面不据此判定未读。
        */
       announcementSeen?: string | null
@@ -339,11 +339,11 @@ export interface ConversationUsageResponse {
 /**
  * `GET /api/conversations/:id/requests[?after=<请求编号>]`：本会话的主请求序列，即逐请求趋势所需的部分。
  * 用量、各阶段时刻、工具耗时与金额在 `/request-details`，两者按 `id` 对应。不要合为一个响应：
- * 合并后每行约 800 字节，一千三百次请求的会话整段读取即超过 1 MB。
+ * 合并后每行约 800 字节，1300 次请求的会话整段读取即超过 1 MB。
  *
  * 只含本会话自身轮次的主请求：摘要请求不发送会话上下文，子会话各是一个会话，均不在其中。
  * 带 `after` 时 `requests` 是该请求之后的行，`compactions` 是创建时刻晚于该请求创建时刻的记录，
- * 内容与整段读取的对应部分相同；客户端删去本地序列中该请求之后的部分再追加。
+ * 内容与整段读取的对应部分相同；客户端删除本地序列中该请求之后的部分再追加。
  * `tools` 每次都是整个会话的合计。
  */
 export interface ConversationRequestsResponse {
@@ -429,9 +429,9 @@ export interface RequestItemsResponse {
   diff: { added: RequestItem[]; removed: RequestItem[] } | null
   /** 本轮的用户消息，取开头一段。 */
   userMessage: string | null
-  /** 这次新进入的内容：`diff.added` 中各消息的名称，取开头一段。 */
+  /** 本次新进入的内容：`diff.added` 中各消息的名称，取开头一段。 */
   entered: string | null
-  /** 这次的回复：本请求产生的正文，取开头一段；只调用了工具时为 null。 */
+  /** 本次的回复：本请求产生的正文，取开头一段；只调用了工具时为 null。 */
   reply: string | null
 }
 

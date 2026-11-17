@@ -13,7 +13,7 @@ import type { IntermediateResourceRow } from './rows.ts'
 export type ResourceStatus = 'complete' | 'partial' | 'failed'
 
 /**
- * 覆盖范围：模型看到的片段在完整正文中的位置与占比。
+ * 覆盖范围：模型取得的片段在完整正文中的位置与占比。
  *
  * 这些数值必须提供给模型。只提供截断后的正文而不说明「这是 2.3 MB 中的前 4 KB」时，
  * 模型会将其视为全部内容，并基于不完整的信息下结论，后果比不提供正文更严重。

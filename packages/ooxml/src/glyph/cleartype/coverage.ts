@@ -78,7 +78,7 @@ export function emboldenSamples(s: SampleRaster): SampleRaster {
   return { ...s, width, pixels }
 }
 
-/** 前缀和两端补零的取样点数：取样窗口最多越出点阵 9 个取样点。 */
+/** 前缀和两端补零的取样点数：取样窗口最多超出点阵 9 个取样点。 */
 const PAD = 10
 
 /** 由取样点阵计算子像素覆盖。`rows` 为每像素的纵向取样点数。 */

@@ -2,7 +2,7 @@
  * TrueType 指令提示与单色光栅化。覆盖 `interpreter.ts`（取整、MDAP、IUP、DELTAP、各字形之间状态的隔离）、`raster.ts`（丢失控制）、
  * `glyph.ts` 与 `index.ts`（字形装入、幻影点、合成斜体），以及 `../bitmap.ts` 中点阵模式下没有点阵的字形。
  *
- * 本机字体的期望值取自 WPS 表格的屏幕显示（`Range.CopyPicture` 的位图）中宋体对应字号的字，裁到墨迹框；
+ * 本机字体的期望值取自 WPS 表格的屏幕显示（`Range.CopyPicture` 的位图）中宋体对应字号的字，裁剪到墨迹框；
  * 其他平台跳过这些用例。
  */
 
@@ -40,7 +40,7 @@ function zone(xs: number[]) {
   return z
 }
 
-/** 点阵裁到墨迹框后按行转为 `#` 与 `.`。 */
+/** 点阵裁剪到墨迹框后按行转为 `#` 与 `.`。 */
 function ink(g: BitmapGlyph): string[] {
   let x0 = g.width
   let x1 = -1

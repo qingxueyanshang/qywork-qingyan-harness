@@ -24,7 +24,7 @@ async function fill(limiter: SendLimiter, key: string, n: number) {
 }
 
 describe('同时在途的请求数上限', () => {
-  test('从未被拒过的端点不限制', async () => {
+  test('从未被拒绝的端点不限制', async () => {
     const limiter = new SendLimiter()
     const slots = await fill(limiter, 'k', 50)
     expect(slots).toHaveLength(50)
@@ -34,7 +34,7 @@ describe('同时在途的请求数上限', () => {
    * 原始失败形状：在途 20 个时第三方报告并发超限，其余在途请求随后陆续被拒；
    * 不收紧时每次重发都在同样的在途数下发出，37% 再次被拒。
    */
-  test('被拒时降到在途数的四分之三；同一批拒绝只收紧一次；之后发出的请求被拒再收紧', async () => {
+  test('被拒时降到在途数的四分之三；同一批拒绝只收紧一次；之后发出的请求被拒时再次收紧', async () => {
     const limiter = new SendLimiter()
     const slots = await fill(limiter, 'k', 20)
     slots[0]!('concurrency_rejected')
@@ -130,7 +130,7 @@ describe('同时在途的请求数上限', () => {
 })
 
 describe('并发超限的识别', () => {
-  test('只认第三方在流内错误中给出的 code，不按报错文字推测', () => {
+  test('只识别第三方在流内错误中给出的 code，不按报错文字推测', () => {
     // 流内错误事件：分类器把事件的 code 写入 detail.providerCode（账本诊断中的 provider.code 即取自此处，
     // 实测 1,353 次均为该值）。
     const inStream = new ProviderError({

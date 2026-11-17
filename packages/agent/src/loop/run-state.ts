@@ -32,7 +32,7 @@ import type { ToolContextBase, ToolRegistry } from '../registry.ts'
 import { type CompactThreshold, envelopeHashOf, runDensity } from './request.ts'
 import type { CompactionPort, LoopDeps, LoopPersistence, RunInput } from './types.ts'
 
-/** 相同轮次第二次出现时交给模型的事实，文本陈述的是第三次即停止的规则。 */
+/** 相同轮次第二次出现时提供给模型的事实，文本陈述的是第三次即停止的规则。 */
 const REPEAT_NOTICE = '工具调用与结果已连续两轮重复，未取得进展；连续三轮重复时本次运行停止。'
 
 /** 各阶段从 `AgentLoop` 取用的能力。由 `AgentLoop` 构造，每个实例一份。 */
@@ -86,11 +86,11 @@ export class RunState {
   /*
    * 上下文读数的唯一锚点：最后一次 provider 真值 + 锚点后的本地结构增量。
    *
-   * 易错点：不要写成 `max(全量估算, 真值)`。两个数值的计量方式不同，锚点一旦失效，显示值即从
+   * 易错点：不要写为 `max(全量估算, 真值)`。两个数值的计量方式不同，锚点一旦失效，显示值即从
    * provider 真值降为系统性偏低的本地估算，会话内容未变而数值下降三成（实测 33%→20%）。
    *
    * `uncovered` 是锚点之后新增的历史消息（本轮的新用户消息）。锚点只覆盖到
-   * 上一轮，不计入这部分就会漏算。
+   * 上一轮，不计入这部分会遗漏这部分的占用。
    */
   anchor: ContextAnchor | null
   /** 来自压缩 manifest 的估算基准，不冒充 provider 真值。 */
@@ -133,13 +133,15 @@ export class RunState {
    * 都重新计数，重发没有上限。正常结束的一轮将其清零。
    */
   carriedResends = 0
+  /** 与 `carriedResends` 同时转入与清零：此前各次可重发失败的分类短语，用尽重发时写入报错。 */
+  carriedCauses: string[] = []
   /**
    * 本 run 是否已停止发送图片。初值来自 `RunInput.imagesRejected`；本 run 内请求因图片被接口拒绝时置为 true，
    * 之后不复位。请求物化（`mediaCapabilitiesOf`）与工具上下文（`tool-wave.ts` 的 `withStep`）都读取它。
    */
   imagesRejected: boolean
   /**
-   * 已交给模型、尚未写入的「接口拒绝图片」执行事实（`attempt.ts` 的 `removeImages`）。
+   * 已提供给模型、尚未写入的「接口拒绝图片」执行事实（`attempt.ts` 的 `removeImages`）。
    * 移除图片后的重发被接口接受时写入并清空；重发仍被拒时不写入。
    */
   pendingImagesNotice: { seq: number; text: string; toolCallIds: string[] } | null = null
@@ -148,7 +150,7 @@ export class RunState {
    * 之后不复位。为 true 时 `density.video` 为 null，物化与工具上下文据此写出「接口拒绝视频输入」的说明。
    */
   videosRejected: boolean
-  /** 已交给模型、尚未写入的「接口拒绝视频」执行事实（`attempt.ts` 的 `removeVideos`），写入时机同图片。 */
+  /** 已提供给模型、尚未写入的「接口拒绝视频」执行事实（`attempt.ts` 的 `removeVideos`），写入时机同图片。 */
   pendingVideosNotice: { seq: number; text: string } | null = null
 
   // 每个 run 只创建一个 ToolContext。工具写入 ctx.state 的状态
@@ -259,7 +261,7 @@ export class RunState {
     return this.meter(this.anchor ? 0 : estimateRequest(req, this.density)).tokens
   }
 
-  /** 无进展判据：重复满三次即停止；满两次时先将重复的事实交给模型。 */
+  /** 无进展判据：重复满三次即停止；满两次时先将重复的事实提供给模型。 */
   stalled(): boolean {
     if (repeatsNoProgress(this.progress)) return true
     if (repeatsNoProgress(this.progress, MAX_CYCLE_WIDTH, 2)) this.notify(REPEAT_NOTICE)
@@ -267,7 +269,7 @@ export class RunState {
   }
 
   /**
-   * 交给模型的执行事实（待办未完成、重复告警、流中断后继续）：写入一条不显示的用户 step，
+   * 提供给模型的执行事实（待办未完成、重复告警、流中断后继续）：写入一条不显示的用户 step，
    * 并追加到 transcript 末尾，此后每次请求都在原位置携带它。
    *
    * 不要改为只附在下一次请求末尾：此后的请求不含它时，前缀与产生该轮响应时不同，
@@ -305,7 +307,7 @@ export class RunState {
    * 本地估算，而未收录模型上的本地估算实测偏高 1.4 倍：真实占用
    * 54.5% 的会话显示为 80.0%，距软阈值只差 56 token。
    *
-   * 换模型时只能作废：tokenizer 不同，替换头部也无法修正。
+   * 更换模型时只能作废：tokenizer 不同，替换头部也无法修正。
    *
    * 修正引入的是头部部分的系数误差（数个百分点），而不是整份请求的误差（约 25%）。
    *
@@ -412,9 +414,8 @@ export class TurnState {
  * 使 await 能被中止信号提前结束。
  *
  * abort 只设置信号，等待方不检查信号时等待不会结束。provider 一侧的等待受传输层的
- * 字节空闲上限约束，工具与压缩两侧没有该约束：
- * 其中任何一方不返回，整轮就阻塞在该 await 上，停止按钮无响应：
- * 不报错、加载状态持续、日志无输出，只能重启应用。
+ * 字节空闲上限约束，工具与压缩两侧没有该约束：其中任何一方不返回时，整轮阻塞于该 await，
+ * 停止按钮无响应且没有报错与日志，只能重启应用。
  *
  * 返回之后，被放弃的工作仍在后台执行，这是有意设计：`ctx.signal` 已经 abort，响应信号的
  * 工具会自行结束；不能结束的，由会话结束时将其 step 写为「执行期间被中断，结果未知」，

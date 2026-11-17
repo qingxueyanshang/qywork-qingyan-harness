@@ -12,7 +12,7 @@
 //!
 //! 1. **只有六种 op 会被翻译并下发**（`FORWARDED_OPS`）。worker 的 `handshake` / `bind_connection` / `cancel`
 //!    由宿主自行发起，服务端无法发送这三种 op，因此它们的观察（`ready` / `cancel_registered` /
-//!    `connection_bound`）不可能出现在服务端请求的回执里。
+//!    `connection_bound`）不可能出现在服务端请求的回执中。
 //! 2. **缺省字段一律使用 `Option` + `skip_serializing_if`。** 多发送一个 `null` 会使接收端的
 //!    可选字段判定从「不存在」变为「存在且为空」。
 
@@ -909,8 +909,8 @@ mod tests {
         );
     }
 
-    /// 这几种 op 由宿主自行发起或已删除，服务端无法发送。翻译层放行它们等于让
-    /// worker 的 `ready` / `cancel_registered` / `connection_bound` 观察传到服务端。
+    /// 这几种 op 由宿主自行发起或已删除，服务端无法发送。翻译层放行它们等于使
+    /// worker 的 `ready` / `cancel_registered` / `connection_bound` 观察传递到服务端。
     #[test]
     fn host_only_ops_do_not_translate() {
         for op in [
@@ -929,7 +929,7 @@ mod tests {
         }
     }
 
-    /// 字段不合法的请求仍须回执：服务端按请求 id 与三项身份配对，取不出这四项时回执无法完成任何调用。
+    /// 字段不合法的请求仍须回执：服务端按请求 id 与三项身份配对，无法取出这四项时回执无法完成任何调用。
     #[test]
     fn an_invalid_request_still_yields_its_identity_for_the_refusal() {
         let raw = json!({

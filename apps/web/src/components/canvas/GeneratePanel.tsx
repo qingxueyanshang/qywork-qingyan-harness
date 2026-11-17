@@ -338,7 +338,7 @@ export function GeneratePanel(props: {
   const key = `qywork.canvas.card:${workspace()?.id ?? ''}:${props.view.path}:${nodeId}`
   /**
    * 未提交的草稿与其所依据的提示词。依据的提示词已被修改时（模型或另一端编辑）丢弃草稿：
-   * 恢复后失焦即提交，会覆盖那次修改。
+   * 恢复后失焦即提交，会覆盖该修改。
    */
   const kept = readSession<{ base: string; text: string }>(`${key}.draft`)
   const [draft, setDraft] = createSignal(kept?.base === saved ? kept.text : saved)
@@ -551,7 +551,7 @@ export function GeneratePanel(props: {
     el.classList.toggle('broken', !!broken)
     const media = mediaOf(props.view, id)
     const path = media.kind === 'image' ? (media.path ?? '') : ''
-    // 只在引用的图片版本或其文件内容变化时替换缩略图；重读文档和修改名称不重新取图。
+    // 只在引用的图片版本或其文件内容变化时替换缩略图；重新读取文档与修改名称时不重新获取图片。
     const preview = path && `${path}|${props.view.revisions?.[path] ?? ''}`
     if ((el.dataset.preview ?? '') !== preview) {
       el.dataset.preview = preview
@@ -574,7 +574,7 @@ export function GeneratePanel(props: {
   }
 
   function render(prompt: string) {
-    // 上传、连线、任务进度都会返回新的画布快照，提示词未变时不能清空输入框再填回。
+    // 上传、连线、任务进度都会返回新的画布快照，提示词未变时不得清空输入框后重新填入。
     if (promptOfEditor(editor) === prompt) {
       for (const el of editor.querySelectorAll<HTMLElement>('.canvas-chip[data-node]')) {
         chip(el.dataset.node!, el)
@@ -603,7 +603,7 @@ export function GeneratePanel(props: {
     const ops: CanvasOp[] =
       d === props.node.prompt ? [] : [{ op: 'update', id: props.node.id, prompt: d }]
     // 未选定型号的卡片由服务端取默认型号。默认型号已下架时按钮显示的是另一个型号，
-    // 先把显示的型号写入卡片，发送的即是界面上看到的型号。
+    // 先把显示的型号写入卡片，发送的即是界面上显示的型号。
     const m = model()
     if (props.node.output !== 'art' && !props.node.model && m && !m.isDefault)
       ops.push({ op: 'update', id: props.node.id, provider: m.provider, model: m.id })
@@ -862,7 +862,7 @@ export function GeneratePanel(props: {
   /**
    * 换模型时沿用当前的宽高比，返回写入后的全部参数；不需要改动时为 undefined。
    * 各模型表示宽高比的参数不同（例如一个渠道用 `aspect_ratio` 取「16:9」，另一个用 `size` 取「1280x720」），
-   * 参数名不同时卡片上保留的旧取值对新模型不起作用，新模型按自己的缺省宽高比出图。
+   * 参数名不同时卡片上保留的旧取值对新模型不起作用，新模型按其缺省宽高比生成。
    * 按对照表换算为新模型中同一宽高比的取值，档位相同的优先；新模型没有该宽高比时不改。
    */
   const ratioCarriedTo = (next: CardModel): Record<string, unknown> | undefined => {
@@ -1193,7 +1193,7 @@ export function GeneratePanel(props: {
             when={mode() === 'first_last'}
             fallback={
               <>
-                {/* 按连线 id 保留素材；每次 JSON 响应里的连线对象都是新对象。 */}
+                {/* 按连线 id 保留素材；每次 JSON 响应中的连线对象都是新对象。 */}
                 <For each={edges().map((e) => e.id)}>
                   {(id) => (
                     <Show when={edges().find((e) => e.id === id)}>
@@ -1259,7 +1259,7 @@ export function GeneratePanel(props: {
 
       {/*
         运行前须修正的问题由服务端判定（`promptInputProblems` 等，与运行时的拒绝相同），换模型后即显示，不等点击生成。
-        只占一行、全文在悬停提示中：面板高度固定，多行提示会把提示词区挤没。
+        只占一行、全文在悬停提示中：面板高度固定，多行提示会占满提示词区。
       */}
       <Show when={props.view.references?.[props.node.id]?.join('；')}>
         {(text) => (

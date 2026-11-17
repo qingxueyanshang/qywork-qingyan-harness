@@ -195,7 +195,7 @@ async function waitFor(what: (e: AgentEvent) => boolean, ms = 10_000): Promise<A
 /**
  * 等待该会话的这一轮结束，且没有待发起的自动继续。
  *
- * 自动继续只在标记存在时排队，标记解除之后不会再发起新一轮；用例结束之前必须等到这一步，
+ * 自动继续只在标记存在时排队，标记解除之后不会再发起新一轮；用例结束之前必须等待到这一步，
  * 否则本轮余下的请求会进入下一条用例的 `bodies`。
  */
 async function idle(cv: ConversationId): Promise<void> {
@@ -232,7 +232,7 @@ function seed(cv: ConversationId) {
  * 设立目标并**立即发起第一轮**：对应用户 `/goal` 的路径。
  *
  * 直接写入账本再调用 `resumeGoal`（与 `setGoal` 收尾使用同一个排队入口），
- * 这样用例可以精确控制起点，无需先模拟一遍指令分发。
+ * 用例因此可以精确控制起点，无需先模拟一次指令分发。
  */
 function startLoop(cv: ConversationId) {
   const goal = seed(cv)
@@ -378,7 +378,7 @@ describe('连续执行多轮', () => {
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'blocked')
     await idle(cv)
 
-    // 五轮全都在目标 active 的状态下执行完毕，不存在默认 12 轮的上限。
+    // 五轮均在目标 active 的状态下执行完毕，不存在默认 12 轮的上限。
     expect(seen).toEqual(Array(ROUNDS).fill('active'))
     expect(runs.armedOf(cv)).toBeNull()
   }, 20_000)
@@ -429,7 +429,7 @@ describe('四条防失控规则', () => {
 
     // 排队的那一次到期时比对版本，不一致即解除标记并返回，此后不会再发起。
     await until(() => runs.armedOf(cv) === null, '排队的自动继续被判定为陈旧')
-    // 未发出任何请求：按数秒前的版本继续执行，执行的就不再是当前的目标。
+    // 未发出任何请求：按数秒前的版本继续执行时，执行的已不是当前的目标。
     expect(bodies).toHaveLength(0)
     expect(runs.hasRun(cv)).toBe(false)
   }, 20_000)
@@ -439,7 +439,7 @@ describe('四条防失控规则', () => {
    * `run.finished{stopReason:'provider_error'}`：只识别异常时，一次故障会被
    * 判定为「正常执行完毕」并继续自动执行，把一次失败放大为一连串失败。
    */
-  test('provider 报错之后停在 blocked，不再自动重试', async () => {
+  test('provider 报错之后停留在 blocked，不再自动重试', async () => {
     const cv = conversation()
     script = [() => new Response('boom', { status: 500 })]
 
@@ -498,7 +498,7 @@ describe('四条防失控规则', () => {
 
 /**
  * 指令入口。`handleCommand` 的分支只有一行，但**未实现或被拒绝的分支不得静默 return**：
- * 静默 return 时客户端发送后收不到任何反馈，
+ * 静默 return 时客户端发送后无法收到任何反馈，
  * 界面上与「服务端正在处理」无法区分。
  */
 describe('goal.set 指令', () => {
@@ -750,7 +750,7 @@ describe('用户点击继续', () => {
  *
  * **原始失败形状**：一条 `stop_reason = 'provider_error'` 的 run，账本中的
  * `error_message` 为 `null`：两列自建表起即存在、`RunRecord` 也一直输出它们，
- * 但从未有代码写入。刷新之后「停止原因」只剩「模型服务出错」，
+ * 但从未有代码写入。刷新之后「停止原因」只显示「模型服务出错」，
  * 连接失败、key 错误、上下文已满三种情形无法区分。
  */
 describe('报错正文写入账本', () => {

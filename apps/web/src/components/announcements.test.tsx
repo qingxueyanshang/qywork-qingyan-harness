@@ -112,7 +112,7 @@ test('最新一条未读时显示圆点；打开后记为已读并写入云端�
   ]
   await feed.loadAnnouncements()
   expect(feed.announcementsUnread()).toBe(true)
-  // 另一端（官网或另一台设备上打开的界面）读过之后，本端重新读取账号状态即为已读。
+  // 另一端（官网或另一台设备上打开的界面）标记已读之后，本端重新读取账号状态即为已读。
   account = { ...account, announcementSeen: '3' }
   await cloudStore.refreshCloudState()
   expect(feed.announcementsUnread()).toBe(false)
@@ -120,9 +120,9 @@ test('最新一条未读时显示圆点；打开后记为已读并写入云端�
 
 /**
  * 原始失败形状：云端读取失败时账号状态的已读位置为 null，与「未读过任何公告」相同，最新一条被判为未读，
- * 窗口每次获得焦点时的读取失败一次，圆点就重新出现。
+ * 窗口每次获得焦点时都会读取，每失败一次，圆点即重新出现。
  */
-test('账号状态 成功 → 失败 → 成功：已读位置未取得时不算未读，沿用的值照常判定；退出后不算未读', async () => {
+test('账号状态 成功 → 失败 → 成功：已读位置未取得时不视为未读，沿用的值照常判定；退出后不视为未读', async () => {
   reply = [notice('2', '2026-11-05T08:00:00.000Z'), RELEASE]
   await feed.loadAnnouncements()
   account = { ...account, announcementSeen: '2' }
@@ -165,7 +165,7 @@ test('已读位置未取得时打开公告窗口同样写入已读位置', async
   account = unknown
   await cloudStore.refreshCloudState()
   expect(feed.announcementsUnread()).toBe(false)
-  // 写入请求在 `openAnnouncements` 返回前即已发出（替身同步记下已读位置）。
+  // 写入请求在 `openAnnouncements` 返回前即已发出（替身同步记录已读位置）。
   feed.openAnnouncements()
   expect(calls).toContain('/api/cloud/announcements/seen')
   expect(account.announcementSeen).toBe('2')
@@ -173,7 +173,7 @@ test('已读位置未取得时打开公告窗口同样写入已读位置', async
   expect(feed.announcementsUnread()).toBe(false)
 })
 
-test('读取失败时保留上一次的列表；没有公告时不算未读', async () => {
+test('读取失败时保留上一次的列表；没有公告时不视为未读', async () => {
   reply = [RELEASE]
   await feed.loadAnnouncements()
   reply = new Error('无法连接账号服务')

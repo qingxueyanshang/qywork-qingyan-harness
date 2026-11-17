@@ -100,7 +100,7 @@ export default function AgentsSettings() {
 
   /**
    * 角色区段的操作按钮。区段标题与空状态框共用同一份定义：两处分别编写时，
-   * 修改时容易只改一处，而列表为空时用户看到的是空状态框中的那一份。
+   * 修改时容易只改一处，而列表为空时界面显示的是空状态框中的定义。
    */
   const RoleActions = () => (
     <button class="btn-ghost sm" type="button" onClick={() => askInChat(`${ROLE_COMMAND} `)}>
@@ -119,7 +119,7 @@ export default function AgentsSettings() {
                 该功能不存在。 */}
           <Show when={t().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
           {/* 表单修改的是这份原文解析出的对象。无法读取它而不提示时，下一次保存会把
-                编排图与规则一并清空，因此这条失败必须显示，并提供重试入口。 */}
+                编排图与规则一并清空，因此该失败必须显示，并提供重试入口。 */}
           <Show when={file.error}>
             <LoadState error={file.error} onRetry={() => void refetchRaw()} />
           </Show>

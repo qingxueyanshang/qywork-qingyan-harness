@@ -17,7 +17,7 @@
  * 收尾扫描也各自进行，同一次改动可能同时出现在两份结果中。因此并行执行时的归属是估算。
  *
  * **工作区根先取 realpath，watch、共享键、标记路径、扫描与 stat 都使用该路径。** FSEvents 按真实路径
- * 报告事件，watch 的路径经过符号链接时前缀不一致，收不到任何事件，收尾的屏障只能等待到上限。
+ * 报告事件，watch 的路径经过符号链接时前缀不一致，无法收到任何事件，收尾的屏障只能等待到上限。
  * 因此同一目录的不同写法共用一个 watcher。结果中的路径相对工作区根，与调用方使用的写法无关。
  * 必须使用 `realpathSync.native`：Windows 上非 native 版本保留调用方传入的大小写，仅大小写不同的两种写法
  * 会各打开一个 watcher。
@@ -83,7 +83,7 @@ import { collectProcess } from './process/collect.ts'
 export interface ObservedChanges {
   changes: FileChange[]
   /**
-   * 观察范围不完整：收尾时未等到在途事件全部交付、Git 判定未执行成功，或收尾扫描达到上限后停止。
+   * 观察范围不完整：收尾时在途事件未全部交付、Git 判定未执行成功，或收尾扫描达到上限后停止。
    *
    * 调用方必须把它告知上游：不告知时，一次未执行完的过滤与一次确无改动
    * 在结果中完全相同。
@@ -95,7 +95,7 @@ export interface ChangeWindow {
   /** 收尾：停止归集，按此刻的磁盘状态判定每个路径的变更类型。 */
   close(): Promise<ObservedChanges>
   /**
-   * 转为后台观察：与 `close` 相同地交出至今的改动并让出队列，此后继续收集事件，直到返回的后台观察收尾。
+   * 转为后台观察：与 `close` 相同地返回至今的改动并让出队列，此后继续收集事件，直到返回的后台观察收尾。
    * 后台观察收尾时只报告转入后台之后的改动，`reported` 沿用打开窗口时传入的集合。
    */
   detach(): Promise<{ observed: ObservedChanges; background: Pick<ChangeWindow, 'close'> }>
@@ -113,7 +113,7 @@ export interface ChangeWindowOptions {
   walkLimit?: number
   /**
    * 收尾时启动 git 所用的环境。调用方传入与所观察的命令相同的凭证剥离结果（`scrubbedEnv`）：
-   * `core.fsmonitor` 等配置项可由模型写入，`check-ignore` 与 `ls-files` 执行它们时传入的就是这份环境。
+   * `core.fsmonitor` 等配置项可由模型写入，`check-ignore` 与 `ls-files` 执行它们时传入的即为这份环境。
    */
   env: Record<string, string | undefined>
 }
@@ -135,7 +135,7 @@ const CLOCK_SLACK_MS = 1_000
 const GIT_TIMEOUT_MS = 15_000
 /**
  * 等待标记事件的上限。正常交付在毫秒级，macOS 上最多增加一个 50 ms 的合批周期；
- * 超时仍未收到时按未等到处理。
+ * 超时仍未收到时按等待超时处理。
  */
 const BARRIER_TIMEOUT_MS = 5_000
 /**
@@ -489,14 +489,14 @@ function stampTick(root: string): number {
     }
     rmSync(probe, { force: true })
   } catch {
-    // 无法写入时回退到 `Date.now()`；无法删除的探针留在 `.tmp` 中，该目录一律不报告。
+    // 无法写入时改用 `Date.now()`；无法删除的探针留在 `.tmp` 中，该目录一律不报告。
   }
   return stamp ?? Date.now()
 }
 
 /**
- * 写入一个标记文件，等待 watcher 交付其事件。返回 false = 未等到：标记无法写入、watcher 已报错，
- * 或达到上限。`onSettled` 在等到或放弃时同步调用，排在标记之后交付的事件不再归属调用方。
+ * 写入一个标记文件，等待 watcher 交付其事件。返回 false = 未收到：标记无法写入、watcher 已报错，
+ * 或达到上限。`onSettled` 在收到或放弃时同步调用，排在标记之后交付的事件不再归属调用方。
  *
  * 标记放在 `.tmp` 下：该目录一律不报告，标记自身的事件不进入任何窗口。
  */
@@ -526,7 +526,7 @@ function barrier(root: string, owner: Shared, onSettled: () => void = () => {}):
 
 /**
  * 等待 `workspaceRoot` 上的 watcher 交付此刻之前发生的全部事件，并等待这些路径首次报告时的 stat 完成。
- * 返回 false = 没有打开的窗口，或未等到。
+ * 返回 false = 没有打开的窗口，或未收到。
  *
  * 供测试在窗口打开期间建立「观察器已观察到某路径」这一前提；生产代码只经由 `close()` 使用该屏障。
  */
@@ -546,7 +546,7 @@ function releaseIfIdle(root: string, owner: Shared): void {
   if (shared.get(root) === owner) shared.delete(root)
 }
 
-/** 窗口收尾时的结果。`settled` 为 false 表示收尾前未等到在途事件全部交付，结果标记为 `incomplete`。 */
+/** 窗口收尾时的结果。`settled` 为 false 表示收尾前在途事件未全部交付，结果标记为 `incomplete`。 */
 async function collect(
   root: string,
   owner: Shared,
@@ -560,8 +560,8 @@ async function collect(
   let walked = await touchedSince(root, window.startedAt, until, limit)
   /*
    * 达到上限时剪去 Git 忽略的目录后重扫一遍。被忽略目录中的未跟踪文件本就不报告，
-   * 而渲染产物、缓存这类目录动辄数万个文件，不剪枝时扫描耗尽上限，每条命令都标记观察范围不完整，
-   * 真正需要提示的情况被淹没。剪去的目录与运行产物目录相同，其中已跟踪的文件仍由索引补齐。
+   * 而渲染产物、缓存这类目录常有数万个文件，不剪枝时扫描耗尽上限，每条命令都标记观察范围不完整，
+   * 确需提示的情况因此无法区分。剪去的目录与运行产物目录相同，其中已跟踪的文件仍由索引补齐。
    * 重扫后仍达到上限的是未被忽略的文件过多，照常标记不完整。
    */
   if (walked.truncated && owner.repoRoot !== null) {
@@ -684,8 +684,8 @@ export function openChangeWindow(workspaceRoot: string, opts: ChangeWindowOption
   owner.windows.push(window)
 
   /**
-   * 让出队列。排在最前的窗口先等待在途事件全部交付，`onLeave` 与让出在等到或放弃时同步执行；
-   * 事件只进入排在最前的窗口，排队中的窗口直接让出。返回 false = 未等到。
+   * 让出队列。排在最前的窗口先等待在途事件全部交付，`onLeave` 与让出在收到或放弃时同步执行；
+   * 事件只进入排在最前的窗口，排队中的窗口直接让出。返回 false = 未收到。
    */
   const leaveQueue = async (closedAt: number, onLeave: () => void = () => {}) => {
     const leave = () => {

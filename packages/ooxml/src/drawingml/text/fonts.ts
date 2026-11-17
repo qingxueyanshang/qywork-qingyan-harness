@@ -210,7 +210,7 @@ export interface ClearTypeGlyph {
 
 /**
  * 平滑字号按 ClearType 绘制（WPS 经 GDI 的屏幕显示，见 `../../glyph/cleartype/`）：`ScreenText.bitmap` 返回 `null` 的字
- * 按 `glyph` 的覆盖写入 `target` 的像素。只用于 `target`：画到图层（文字阴影、三维效果、带阴影的组合）上的文字以
+ * 按 `glyph` 的覆盖写入 `target` 的像素。只用于 `target`：绘制到图层（文字阴影、三维效果、带阴影的组合）上的文字以
  * `fillText` 绘制，图层透明，按底色混合的像素没有底色。
  * - 每段文字的字形段交给 `paint`；实现方可以暂存，在 `flush` 时一并混合：每次读写像素都要先完成此前的全部绘制，
  *   读写的次数决定绘制耗时。`paintBody` 在自己的非文字绘制（底纹、阴影、非纯色填充、轮廓、下划线）与
@@ -350,7 +350,7 @@ export class FaceCache {
    * 为 GB2312 时不做前缀匹配）。
    * WPS 演示实测（构造文件 p10-d，与参照行逐像素相同）：`charset` 为 0 或未写时 `Calibri Light Fake` 为 Calibri、`Courier`
    * 为 Courier New，为 GB2312 时两者都为宋体。名称含「黑」「楷」的字体名 WPS 演示另取黑体或宋体（`微软雅黑 Fake` 为黑体，
-   * `华文楷体 Fake` 为宋体，先于前缀匹配），本方未实现。
+   * `华文楷体 Fake` 为宋体，先于前缀匹配），此规则未实现。
    */
   latin(
     name: string,

@@ -222,10 +222,10 @@ describe('经 AgentLoop 的占用读数、锚点准入与投递额度', () => {
       history: [{ role: 'user', content: '读取技能' }],
       signal: new AbortController().signal,
     })) {
-      // 只检查请求账与工具一侧的额度
+      // 只检查请求记录与工具一侧的额度
     }
 
-    // 第二次请求带着附带文本块发出，标记本身只有几十个字符。
+    // 第二次请求带着附带文本块发出，标记本身只有数十个字符。
     expect(sent).toHaveLength(2)
     expect(JSON.stringify(sent[1]!.messages)).toContain(MARKER)
     const body = estimateText(BODY, d)

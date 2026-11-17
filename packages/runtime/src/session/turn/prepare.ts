@@ -44,7 +44,7 @@ export async function prepareTurn(
 
   // 模型优先级：本轮显式指定 > 会话当前模型 > 配置默认。
   // 会话是权威：config 只在会话尚无模型时作为回退，否则用户在界面上切换模型后，
-  // 下一轮又会被配置文件中的默认值静默改回。使用 `||` 而不是 `??`：未配置模型的会话
+  // 下一轮又会被配置文件中的默认值静默覆盖。使用 `||` 而不是 `??`：未配置模型的会话
   // provider/model 存储为空串，空串须视为未设置并继续回退。
   const prior = existing ? getConversation(store, existing) : undefined
   const model = options?.model || prior?.model || config.active?.model
@@ -88,7 +88,7 @@ export async function prepareTurn(
    * 重建，因此上下文字节不会随执行波次变化。
    */
   // 本轮的规格只在此处解析一次：工具上下文、摘要与记账都使用这一份。各自重新解析时，
-  // 轮次进行中保存配置会使它们取得不同的规格，接口被删除时记账一步抛出异常。
+  // 轮次进行中保存配置会使它们取得不同的规格，接口被删除时记账步骤抛出异常。
   const profile = resolveProfile(session, target)
   const adapter = buildAdapter(profile)
   /*
@@ -160,7 +160,7 @@ export async function prepareTurn(
     mode,
     skills,
     memories,
-    // 派发工具存在时才提供；成员会话没有 delegate，既看不到清单也无法递归派发任务。
+    // 派发工具存在时才提供；成员会话没有 delegate，既无法取得清单，也无法递归派发任务。
     ...(canAssignModels
       ? {
           models: Object.entries(config.providers).flatMap(([provider, stored]) =>

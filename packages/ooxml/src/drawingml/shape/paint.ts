@@ -12,7 +12,7 @@
  *   没有填充与线条的文本框，形状的发光不显示，映像为整个文本框的镜像）。组合的效果取全部后代。
  * - 锚定居中与底端：内容高度另加首行的 `BodyLayout.overhang`。
  * - 自动调整：`normAutofit` 的缩放见 `../text/body.ts`；`spAutoFit` 不改变形状尺寸，按文件中保存的尺寸绘制。
- * - 竖排：`vert` 与 `eaVert` 顺时针转 90°、`vert270` 逆时针转 90° 绘制，`eaVert` 的东亚文字直立（见 `../text/body.ts`）；
+ * - 竖排：`vert` 与 `eaVert` 顺时针旋转 90°、`vert270` 逆时针旋转 90° 绘制，`eaVert` 的东亚文字直立（见 `../text/body.ts`）；
  *   不绘制竖排方式为 `wordArtVert` 等的文字（求值时已登记）。
  */
 
@@ -141,7 +141,7 @@ export function innerShadowsOf(effects: readonly Effect[]): InnerShadow[] {
   return effects.filter((e): e is InnerShadow => e.kind === 'innerShadow')
 }
 
-/** 内部阴影画在全部有填充的路径合成的区域内。 */
+/** 内部阴影绘制于全部有填充的路径合成的区域内。 */
 export function paintInnerShadowsOf(
   ctx: PaintContext,
   outline: ShapeOutline,
@@ -167,7 +167,7 @@ export function strokeMargin(shape: { line: Line | null }, placed: Placed): numb
   return w * 2 + Math.max(w, 2) * 5 + 2
 }
 
-/** `fill` 为 `null` 时只画线条（连接线）；`inner` 为内部阴影，形状有填充时绘制。 */
+/** `fill` 为 `null` 时只绘制线条（连接线）；`inner` 为内部阴影，形状有填充时绘制。 */
 function paintGeometry(
   scene: ShapeScene,
   ctx: PaintContext,
@@ -277,8 +277,8 @@ export function paintAutoShape(scene: ShapeScene, shape: PaintableShape, parent:
 }
 
 /**
- * 带三维效果的自选图形（见 `../three/paint.ts`）：填充、线条与文字按平面画到图层后投影并着色，外部阴影取投影后的轮廓
- * （形状没有填充与线条时阴影作用于文字，在投影之前画出）。
+ * 带三维效果的自选图形（见 `../three/paint.ts`）：填充、线条与文字按平面绘制到图层后投影并着色，外部阴影取投影后的轮廓
+ * （形状没有填充与线条时阴影作用于文字，在投影之前绘制）。
  */
 export function paintAutoShapeThreeD(
   scene: ShapeScene,
@@ -377,7 +377,7 @@ export function paintConnector(scene: ShapeScene, shape: PaintableConnector, par
 
 /**
  * 组合：`paintChildren` 以组合对后代施加的变换绘制全部子形状。组合有图层效果（外部阴影、发光、柔化边缘、映像）时，
- * 子形状先画到图层，效果取图层中全部后代。
+ * 子形状先绘制到图层，效果取图层中全部后代。
  */
 export function paintGroup<S extends ShapeScene>(
   scene: S,

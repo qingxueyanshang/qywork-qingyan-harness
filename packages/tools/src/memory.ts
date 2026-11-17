@@ -137,7 +137,7 @@ export const readMemoryTool: ToolSpec = {
 
   async fn(args, ctx) {
     const key = requireKey(args)
-    if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
+    if (!key) return { status: 'failure', message: 'key 为空或全部为非法字符' }
     const requested = args.scope === undefined ? null : writableScope(args.scope)
     if (args.scope !== undefined && !requested) {
       return { status: 'failure', message: 'scope 只能是 project 或 global' }
@@ -197,7 +197,7 @@ export const writeMemoryTool: ToolSpec = {
 
   async fn(args, ctx) {
     const key = requireKey(args)
-    if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
+    if (!key) return { status: 'failure', message: 'key 为空或全部为非法字符' }
     const content = String(args.content ?? '').trim()
     if (!content) return { status: 'failure', message: 'content 为空' }
     if (content.length > MAX_ENTRY_CHARS) {
@@ -260,7 +260,7 @@ export const deleteMemoryTool: ToolSpec = {
 
   async fn(args, ctx) {
     const key = requireKey(args)
-    if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
+    if (!key) return { status: 'failure', message: 'key 为空或全部为非法字符' }
     const scope = writableScope(args.scope)
     if (!scope) return { status: 'failure', message: 'scope 只能是 project 或 global' }
     const file = await memoryFile(ctx.workspaceRoot, scope, key)
@@ -316,7 +316,7 @@ export const moveMemoryTool: ToolSpec = {
 
   async fn(args, ctx) {
     const key = requireKey(args)
-    if (!key) return { status: 'failure', message: 'key 为空或全是非法字符' }
+    if (!key) return { status: 'failure', message: 'key 为空或全部为非法字符' }
     const from = writableScope(args.from_scope)
     const to = writableScope(args.to_scope)
     if (!from || !to) return { status: 'failure', message: '作用域只能是 project 或 global' }
@@ -371,11 +371,11 @@ export interface MemoryEntry {
  * 列出一层的记忆索引。
  *
  * 只返回**首行摘要**，不返回全文：索引进入上下文末尾的注记，每轮都会发送。
- * 放入全部正文时，几十条记忆即可占用可观的上下文，而模型多数情况下只需
+ * 放入全部正文时，数十条记忆即可占用可观的上下文，而模型多数情况下只需
  * 知道有哪些记忆，需要时再单独读取。
  *
  * 摘要即首行原文，不做加工：加工后的摘要与文件中的原句不一致时，
- * 用户在设置页看到的内容将与模型看到的不一致。
+ * 设置页显示的内容将与模型收到的内容不一致。
  */
 export async function listEntries(dir: string, scope: Scope = 'project'): Promise<MemoryEntry[]> {
   const names = await readdir(dir).catch(() => [] as string[])
@@ -396,7 +396,7 @@ export async function listEntries(dir: string, scope: Scope = 'project'): Promis
 /**
  * 三层合并后的记忆索引。同一 key 只保留优先级最高的条目。
  *
- * **加载器与设置页共用此函数**：界面列出的条目必须就是模型实际看到的条目。
+ * **加载器与设置页共用此函数**：界面列出的条目必须与模型实际收到的条目相同。
  * 两处各自扫描时，可能界面显示全局层的条目、模型读取项目层的条目，而两者内容不同。
  */
 export function listScopedEntries(roots: ScopeRoots): Promise<MemoryEntry[]> {
@@ -407,7 +407,7 @@ export function listScopedEntries(roots: ScopeRoots): Promise<MemoryEntry[]> {
  * 每一层各自的记忆，包括被遮蔽的条目。
  *
  * 设置页按层分列时使用此结果：`listScopedEntries` 去重后，被项目层遮蔽的全局记忆
- * 不再出现，用户在全局一栏看不到它，也就无法得知修改为何未生效。
+ * 不再出现，全局一栏不显示它，用户因此无法得知修改为何未生效。
  */
 export function listAllScopedEntries(roots: ScopeRoots): Promise<ScopedItem<MemoryEntry>[]> {
   return scanAllScopes(roots, MEMORY_SUBDIR, listEntries, (e) => e.key)

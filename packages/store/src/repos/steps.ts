@@ -126,7 +126,7 @@ const SETTLED_PHASES: ReadonlySet<NodePhase> = new Set(['done', 'failed', 'skipp
  * `json_patch` 是逐字段合并，直接写入时上一状态的字段（如中断留下的 `error`）会残留在新状态中。
  *
  * 节点 id 由模型给出，可能含点号或方括号，因此用 `json_object` 构造键再以 `json_patch` 写入。
- * 不要改成把 id 拼入 JSON 路径字符串：这类 id 会被解释为路径分隔符。
+ * 不要改为把 id 拼接到 JSON 路径字符串中：这类 id 会被解释为路径分隔符。
  */
 export function setStepNodeState(store: Store, id: StepId, nodeId: string, state: NodeState): void {
   store.db
@@ -205,7 +205,7 @@ export function settleToolStep(
 
 /**
  * 把后台命令转入后台之后的文件改动追加到发起它的 step 的 `outcome.fileChanges`，返回实际追加的改动与该 step 所属的 run。
- * step 已不存在（会话已删除）时返回 null；尚未写入结果时抛出，不要改为跳过：那样改动会静默丢失。
+ * step 已不存在（会话已删除）时返回 null；尚未写入结果时抛出异常，不要改为跳过：跳过时改动会静默丢失。
  *
  * 同一会话中该 step 及其后的 step 已报告为新建或修改的路径不再追加：后台观察与转入后台前的窗口在交界处重叠，
  * 与其间打开的观察窗口、文件工具也会观察到同一次改动，重复追加时合计中的行数计入两次。删除照常追加。
@@ -375,7 +375,7 @@ export function stepInExecution(store: Store, runId: RunId): boolean {
  *
  * - 非空：已进入执行器。工具可能已执行完毕并产生副作用，也可能刚进入就崩溃，
  *   两者无法区分。因此写 `executed: true`（保守假设已执行）与「结果未知」。
- *   向模型断言未执行等于让它重做；若该工具是 `write_file` 或 `run_command`，
+ *   向模型断言未执行等于要求它重做；若该工具是 `write_file` 或 `run_command`，
  *   会产生重复副作用。
  * - 为空：未进入执行器。这是确定未发生的事，如实标记 `executed: false`。
  *   同样写成「结果未知」会使模型在每次中断后都用一轮核实所有工具，
@@ -389,7 +389,7 @@ export function stepInExecution(store: Store, runId: RunId): boolean {
  * 解析，前端无法推测）；整份 payload 替换为只含 outcome 的对象后，该 step 在会话流中
  * 只显示一个红色的「失败」，没有动词、对象与目标，用户无法判断中断发生在哪一步。
  *
- * payload 不是合法 JSON 的行先只写状态、payload 原样保留：`json_set` 对它抛出，整条语句随之失败。
+ * payload 不是合法 JSON 的行先只写状态、payload 原样保留：`json_set` 对它抛出异常，整条语句随之失败。
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {
   store.db
@@ -429,8 +429,8 @@ export function settleRunningSteps(store: Store, runId: RunId): void {
 }
 
 /**
- * 交给 SQLite JSON 函数的 payload 表达式：`column` 为合法 JSON 时取其值，否则为 NULL。
- * JSON 函数对不合法的 JSON 抛出，一行损坏的 payload 会使整条语句失败；经本表达式后该行按没有该字段处理。
+ * 传给 SQLite JSON 函数的 payload 表达式：`column` 为合法 JSON 时取其值，否则为 NULL。
+ * JSON 函数对不合法的 JSON 抛出异常，一行损坏的 payload 会使整条语句失败；经本表达式后该行按没有该字段处理。
  * 用 `CASE` 而不是在 WHERE 中并列 `json_valid(...) AND`：SQLite 不保证 WHERE 各项的求值顺序。
  */
 export function validPayload(column: string): string {
@@ -441,7 +441,7 @@ export function validPayload(column: string): string {
  * 将该轮派发任务卡上未进入终态的节点标记为中断，返回改动过的节点。
  *
  * 不在 run 收尾时调用。子 agent 的生命周期与会话一致，不随派发它的轮次结束：
- * 收尾时扫描会把仍在运行的节点记为中断，而其回执几分钟后才到达。
+ * 收尾时扫描会把仍在运行的节点记为中断，而其回执数分钟后才到达。
  * 调用点只有两处：用户停止会话，以及重启回收（进程中已无接收方处理这些回执）。
  *
  * 不限于仍为 running 的卡：派发后立即返回，节点的终态写在一张已返回的卡上。

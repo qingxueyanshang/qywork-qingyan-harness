@@ -96,7 +96,7 @@ describe('搜索结果解析', () => {
     expect(parseDuckDuckGo(page, 10)[0]!.title).toBe('示例 文档')
   })
 
-  test('摘要尽量提取，提取不到不算失败', () => {
+  test('摘要尽量提取，未提取到不视为失败', () => {
     expect(parseDuckDuckGo(page, 10)[0]!.snippet).toBe('这是一段摘要')
     expect(parseDuckDuckGo(page, 10)[1]!.snippet).toBe('')
   })

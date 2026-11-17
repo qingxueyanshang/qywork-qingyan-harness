@@ -51,7 +51,7 @@ export default function MemorySettings() {
 
   /**
    * 本页的操作按钮。路径行与空状态框共用同一份定义：两处分别编写时容易只修改
-   * 一处，而列表为空时用户看到的是空状态框中的那一份。
+   * 一处，而列表为空时界面显示的是空状态框中的定义。
    */
   const Actions = () => (
     <button class="btn-ghost sm" type="button" onClick={() => askInChat(newMemoryPrompt(scope()))}>

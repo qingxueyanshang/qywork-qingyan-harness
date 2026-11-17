@@ -50,7 +50,7 @@ function fogStyle(p: Personalization): JSX.CSSProperties | null {
 }
 
 export function PersonalBackdrop() {
-  // 窗口不可见时暂停雾面动画：后台运行的合成动画持续占用 GPU，而没有人在看。
+  // 窗口不可见时暂停雾面动画：合成动画在窗口不可见时仍持续占用 GPU。
   const [hidden, setHidden] = createSignal(document.hidden)
   onMount(() => {
     const sync = () => setHidden(document.hidden)

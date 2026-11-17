@@ -119,7 +119,7 @@ for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
       })
       const pending = summarize('生成摘要', 128, h.trace)
       if (mode === 'abort') {
-        // 记下响应头之后再中止。不要改回在服务端收到请求时计时中止：负载高时中止先于响应头到达客户端，headersAt 为空。
+        // 记录响应头之后再中止。不要改为在服务端收到请求时计时中止：负载高时中止先于响应头到达客户端，headersAt 为空。
         while (!listProviderRequests(h.store, h.run.id)[0]?.headersAt) await Bun.sleep(5)
         controller.abort()
       }

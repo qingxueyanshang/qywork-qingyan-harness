@@ -3,7 +3,7 @@
  *
  * 每项修改立即预览、停顿后保存（`editPersonalization`），没有保存按钮。窗口尺寸固定（B9），
  * 高度容纳行数最多的情形，切换背景类型、设置雾面时按钮位置不变。
- * 弹窗没有遮罩：修改时需要看到窗口四周的效果，设置窗口自身已有遮罩。
+ * 弹窗没有遮罩：修改时需要在窗口四周查看效果，设置窗口自身已有遮罩。
  */
 
 import {
@@ -151,7 +151,7 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
 
   const p = currentPersonalization
 
-  /** 合并一项修改并预览。修改使背景层变为看得到时，不透明度按 `revealBackdrop` 调整。 */
+  /** 合并一项修改并预览。修改使背景层变为可见时，不透明度按 `revealBackdrop` 调整。 */
   const edit = (patch: Record<string, unknown>) => {
     const before = p()
     const merged = mergePersonalization(before, patch)
@@ -275,7 +275,7 @@ export function PersonalizationDialog(props: { onClose: () => void }) {
         props.onClose()
       }}
       onKeyDown={(e) => {
-        // Escape 只关闭本窗口，不把后面的设置窗口一起关闭。
+        // Escape 只关闭本窗口，不关闭其下层的设置窗口。
         if (e.key === 'Escape') e.stopPropagation()
       }}
     >

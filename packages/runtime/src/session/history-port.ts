@@ -130,7 +130,7 @@ export function historyPortFor(
             /*
              * run 内注入的用户消息按**消息**报告，不按执行记录报告：正文在 `content`
              * 列而不在 payload 中，取回也由 `message` 负责。报告为 step 时，
-             * 摘录显示的是空 payload，而模型用该 id 调用 `step` 只会得到 null。
+             * 摘录显示的是空 payload，而模型用该 id 调用 `step` 只会取得 null。
              */
             // 助手正文同理：正文位于 text step 的 `content` 中，按消息报告、由 `message` 取回。
             if (st.kind === 'user' || st.kind === 'text') {

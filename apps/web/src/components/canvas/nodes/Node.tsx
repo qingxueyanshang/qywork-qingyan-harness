@@ -26,7 +26,7 @@ const catalogModel = (provider: string | undefined, id: string) =>
 
 /**
  * 标题栏的模型名：有结果时为正在显示的版本实际使用的模型（`made`），没有结果时为卡片选定的模型。
- * 不要改回优先取卡片选定的模型：同一张卡换过模型、切换到旧版本时，画面与模型名不对应。下次生成所用的模型见生成面板。
+ * 不要改为优先取卡片选定的模型：同一张卡更换过模型、切换到旧版本时，画面与模型名不对应。下次生成所用的模型见生成面板。
  */
 const modelLabel = (n: CanvasGenerateNode): string => {
   const made = currentOf(n)?.made
@@ -54,7 +54,7 @@ const NODE_BODIES: {
 
 /**
  * 按 id 取节点：每次写操作返回的文档都是新对象，按对象挂载时每修改一处都会重建全部节点、重新解码全部图片。
- * 删除节点的那次更新中，组件内的计算可能先于列表重新计算，此时沿用最后一次取得的节点。
+ * 在删除节点的更新中，组件内的计算可能先于列表重新计算，此时沿用最后一次取得的节点。
  */
 export function Node(p: { id: string }) {
   const canvas = useCanvas()
