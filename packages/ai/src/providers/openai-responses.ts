@@ -71,7 +71,7 @@ import type {
   ToolSchema,
   WireMessage,
 } from '../types.ts'
-import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
+import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP, settleUsage } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
 import { normalizeBaseUrl, restoreStrictCalls, sendsStrict, strictify } from './openai-compat.ts'
 import { collectToolCalls } from './tool-calls.ts'
@@ -362,7 +362,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           provider: 'openai_responses',
           // 用量已到达而终态未到达时附带真实值。`source` 仍为 `estimated`
           // 表示 provider 未回报任何用量，此时不附带，否则会将零作为真实值记入账本。
-          ...(usage.source === 'provider' ? { usage } : {}),
+          ...(usage.source === 'provider' ? { usage: settleUsage(usage) } : {}),
         })
       }
     } catch (err) {
@@ -397,7 +397,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       yield { type: 'tool_calls', calls, at: Date.now() }
     }
 
-    yield { type: 'usage', usage }
+    yield { type: 'usage', usage: settleUsage(usage) }
     yield { type: 'done', stopReason, rawStopReason: rawFinish }
   }
 
@@ -604,13 +604,10 @@ export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | un
    * Responses 的 `input_tokens` 是合计值：缓存命中、缓存写入与其余输入之和，
    * 与 Anthropic 的排他口径相反。必须同时减去命中与写入两项才得到排他口径；只减去命中时，
    * 写入部分同时计入 inputTokens 与 cacheWriteTokens，按 1.0x 与 1.25x
-   * 重复计费。
-   *
-   * 已回报用量而缺少命中或写入字段时记为 0，不记为 null：Gemini 未命中时省略整个
-   * `input_tokens_details`，不返回 0；未列入明细的输入按普通输入计费。
+   * 重复计费。未回报保持 null，返回时由 `settleUsage` 记为 0。
    */
-  acc.cachedTokens = typeof cached === 'number' ? cached : 0
-  acc.cacheWriteTokens = typeof written === 'number' ? written : 0
+  acc.cachedTokens = typeof cached === 'number' ? cached : null
+  acc.cacheWriteTokens = typeof written === 'number' ? written : null
   acc.inputTokens = Math.max(0, input - (acc.cachedTokens ?? 0) - (acc.cacheWriteTokens ?? 0))
   acc.outputTokens = Number(raw.output_tokens ?? 0)
   acc.reasoningTokens = Number(outDetails?.reasoning_tokens ?? 0)

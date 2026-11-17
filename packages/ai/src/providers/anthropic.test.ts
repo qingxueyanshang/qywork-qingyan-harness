@@ -808,4 +808,37 @@ describe('缓存写入的档位', () => {
     }
     expect((await usageOf(textTurn({}, { output_tokens: 5 }))).source).toBe('provider')
   })
+
+  /**
+   * 原始失败形状：第三方渠道不缓存时 usage 中没有任何缓存字段，`input_tokens` 为完整输入；
+   * 命中与写入记为 null，运行页显示 N/A。数值取自本机账本中该渠道的一次请求。
+   */
+  test('已回报用量而没有缓存字段时，命中与写入为 0', async () => {
+    const usage = await usageOf(
+      textTurn({ input_tokens: 498_036, output_tokens: 0 }, { output_tokens: 5 }),
+    )
+    expect(usage).toMatchObject({
+      inputTokens: 498_036,
+      cachedTokens: 0,
+      cacheWriteTokens: 0,
+      source: 'provider',
+    })
+  })
+
+  /** 缺少的字段在返回时才记为 0：逐块记为 0 时，`message_delta` 中较晚到达的分档会被忽略。 */
+  test('message_start 没有缓存字段时，message_delta 中的命中与分档照常读出', async () => {
+    const usage = await usageOf(
+      textTurn(
+        { input_tokens: 10, output_tokens: 0 },
+        {
+          output_tokens: 5,
+          cache_read_input_tokens: 800,
+          cache_creation: { ephemeral_5m_input_tokens: 300, ephemeral_1h_input_tokens: 700 },
+        },
+      ),
+    )
+    expect(usage.cachedTokens).toBe(800)
+    expect(usage.cacheWriteTokens).toBe(1000)
+    expect(usage.cacheWrite1hTokens).toBe(700)
+  })
 })

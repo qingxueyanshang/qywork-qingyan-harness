@@ -51,7 +51,7 @@ import type {
   ToolSchema,
   WireMessage,
 } from '../types.ts'
-import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
+import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP, settleUsage } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
 import { collectToolCalls } from './tool-calls.ts'
 
@@ -272,7 +272,7 @@ export class AnthropicAdapter implements LlmAdapter {
           detail: { model: req.model },
           // `message_start` 已回报输入用量时附带真实值。`source` 仍为 `estimated`
           // 表示 provider 未回报任何用量，此时不附带，否则会将零作为真实值记入账本。
-          ...(usage.source === 'provider' ? { usage } : {}),
+          ...(usage.source === 'provider' ? { usage: settleUsage(usage) } : {}),
         })
       }
 
@@ -306,7 +306,7 @@ export class AnthropicAdapter implements LlmAdapter {
       )
     }
 
-    yield { type: 'usage', usage }
+    yield { type: 'usage', usage: settleUsage(usage) }
     yield {
       type: 'done',
       stopReason,
@@ -431,7 +431,7 @@ function buildTools(tools: ToolSchema[]) {
  * 另建登记表会形成第二处声明协议维度的位置。各协议由各自的适配器描述。
  */
 
-/** usage 的各项数值。每个都可能缺失，缺失与 0 含义不同（见 `applyUsage`）。 */
+/** usage 的各项数值。每个都可能缺失，累加期间缺失与 0 含义不同（见 `applyUsage`）。 */
 interface AnthropicUsage {
   input_tokens?: number
   output_tokens?: number
@@ -723,8 +723,8 @@ function normalizeStopReason(raw: string): ProviderStopReason {
 /**
  * usage 累加。各字段出现即覆盖，缺失时保留此前的值：`message_start` 与 `message_delta` 各自只带一部分字段。
  *
- * `cachedTokens` 以 null 表示「provider 未回报」，与真实的 0 命中严格区分。
- * 两者混为 0 会使「缓存从未生效」与「缓存生效但未命中」无法区分，误导缓存问题的排查。
+ * 累加期间 `cachedTokens` 与 `cacheWriteTokens` 以 null 表示该字段尚未出现，下方的写入合计依据它判断；
+ * 返回时由 `settleUsage` 记为 0。
  *
  * 缓存写入的合计以回报的合计为准，合计未回报而分档已回报时取两档之和；1 小时档大于合计时取合计。
  * 分档未回报时 `cacheWrite1hTokens` 不写入，计价按全部为 5 分钟档处理。

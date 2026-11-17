@@ -117,8 +117,7 @@ export default function UsageSettings() {
                           {/* 汇总值可达亿级，逐位对账使用运行页的逐请求表，此处以 K/M 缩写显示。 */}
                           <td class="num">{compact(input(r))}</td>
                           <td class="num">{compact(r.outputTokens)}</td>
-                          {/* `null` 表示接口未返回该字段；显示为 0 会使「缓存未生效」
-                              与「缓存生效但未命中」无法区分。术语与运行页相同。 */}
+                          {/* `null` 表示没有用量回报，显示为 0 是编造数据。术语与运行页相同。 */}
                           <td class="num">
                             {r.cachedTokens === null ? NA : compact(r.cachedTokens)}
                           </td>

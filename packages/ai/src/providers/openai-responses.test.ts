@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { lookupModel } from '../catalog.ts'
-import type { ProviderUsage, WireMessage } from '../types.ts'
+import { type ProviderUsage, settleUsage, type WireMessage } from '../types.ts'
 import { applyUsage, buildInput, buildTools } from './openai-responses.ts'
 
 describe('input 是条目序列，不是消息序列', () => {
@@ -355,12 +355,10 @@ describe('用量口径', () => {
    * 原始失败形状：Gemini 未命中时省略整个 `input_tokens_details`，命中记为 null，
    * 运行页的命中与写入两列显示 N/A。
    */
-  test('已回报用量而没有缓存明细时，命中与写入记为 0', () => {
+  test('已回报用量而没有缓存明细时，返回的命中与写入为 0', () => {
     const u = fresh()
     applyUsage(u, { input_tokens: 100, output_tokens: 10 })
-    expect(u.cachedTokens).toBe(0)
-    expect(u.cacheWriteTokens).toBe(0)
-    expect(u.inputTokens).toBe(100)
+    expect(settleUsage(u)).toMatchObject({ cachedTokens: 0, cacheWriteTokens: 0, inputTokens: 100 })
   })
 
   /**
@@ -379,14 +377,14 @@ describe('用量口径', () => {
     expect(u.inputTokens).toBe(200)
   })
 
-  test('没有 cache_write_tokens 时是 0，且不影响 inputTokens', () => {
+  test('没有 cache_write_tokens 时返回 0，且不影响 inputTokens', () => {
     const u = fresh()
     applyUsage(u, {
       input_tokens: 1000,
       input_tokens_details: { cached_tokens: 800 },
       output_tokens: 10,
     })
-    expect(u.cacheWriteTokens).toBe(0)
+    expect(settleUsage(u).cacheWriteTokens).toBe(0)
     expect(u.inputTokens).toBe(200)
   })
 

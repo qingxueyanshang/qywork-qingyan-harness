@@ -414,15 +414,34 @@ export interface RefusalDetail {
 export interface ProviderUsage {
   inputTokens: number
   outputTokens: number
-  /** null = provider 未回报，与实际命中 0 不同，不得混同。 */
+  /** 适配器返回的用量中，null 只出现在 `source` 为 `estimated` 时，见 `settleUsage`。 */
   cachedTokens: number | null
-  /** 缓存写入合计，含 1 小时档。 */
+  /** 缓存写入合计，含 1 小时档。null 的含义同 `cachedTokens`。 */
   cacheWriteTokens: number | null
   /** 其中按 1 小时档写入的部分。缺失表示上游未回报分档，与 0 含义不同。 */
   cacheWrite1hTokens?: number
   reasoningTokens: number
   /** 用量来自 provider 回报还是本地估算。 */
   source: 'provider' | 'estimated'
+}
+
+/**
+ * 适配器返回用量前的收尾，三种协议共用：上游已回报用量时，未列出的缓存命中与缓存写入记为 0。
+ *
+ * 三种协议都只在明细中列出命中与写入，未列出的输入按普通输入计费。上游省略这两个字段的实测形状：
+ * Gemini 与 Kimi 未命中时省略命中字段；第三方渠道不缓存时省略全部缓存字段，`input_tokens` 为完整输入。
+ * 记为 null 时界面显示 N/A，与上游的计费结果不一致。只有没有任何用量回报时保留 null。
+ *
+ * 不要移入各协议的 `applyUsage`：累加期间 null 表示该字段尚未出现，Anthropic 的缓存写入依据它
+ * 判断合计是否已回报，逐块记为 0 会使之后到达的分档被忽略。
+ */
+export function settleUsage(usage: ProviderUsage): ProviderUsage {
+  if (usage.source !== 'provider') return usage
+  return {
+    ...usage,
+    cachedTokens: usage.cachedTokens ?? 0,
+    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+  }
 }
 
 // ─────────────────────────────── 适配器 ───────────────────────────────

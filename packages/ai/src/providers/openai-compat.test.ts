@@ -1365,6 +1365,12 @@ describe('缓存命中用量', () => {
           '{"prompt_tokens":8549,"completion_tokens":12,"total_tokens":8561,"prompt_tokens_details":{"cached_tokens":4078}}',
         ),
       ).toMatchObject({ inputTokens: 4471, cachedTokens: 4078, cacheWriteTokens: 0 })
+      // 没有任何用量回报时保留 null，界面显示 N/A。
+      expect(await usageOf('{}')).toMatchObject({
+        cachedTokens: null,
+        cacheWriteTokens: null,
+        source: 'estimated',
+      })
     } finally {
       await relay.stop(true)
     }

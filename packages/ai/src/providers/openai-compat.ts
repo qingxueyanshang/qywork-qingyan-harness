@@ -39,7 +39,14 @@ import type {
   WireMessage,
   WireToolCall,
 } from '../types.ts'
-import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP, videoData } from '../types.ts'
+import {
+  imageData,
+  outputCap,
+  PROVIDER_HEADERS,
+  PROVIDER_HTTP,
+  settleUsage,
+  videoData,
+} from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
 import { ArgumentsScanner, collectToolCalls } from './tool-calls.ts'
 
@@ -338,7 +345,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
           detail: { model: req.model },
           // 用量 chunk 已到达而结束 chunk 未到达时附带真实值。`source` 仍为 `estimated`
           // 表示 provider 未回报任何用量，此时不附带，否则会将零作为真实值记入账本。
-          ...(usage.source === 'provider' ? { usage } : {}),
+          ...(usage.source === 'provider' ? { usage: settleUsage(usage) } : {}),
         })
       }
       if (this.spec.chatReasoningProtocol === 'google_signatures') {
@@ -368,7 +375,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       )
     }
 
-    yield { type: 'usage', usage }
+    yield { type: 'usage', usage: settleUsage(usage) }
     yield { type: 'done', stopReason, rawStopReason: rawFinish }
   }
 
@@ -1195,7 +1202,7 @@ function applyUsage(acc: ProviderUsage, u: CompatUsage) {
   if (typeof u.completion_tokens === 'number') acc.outputTokens = u.completion_tokens
 
   // 各厂商字段名不统一：DeepSeek 是 prompt_cache_hit_tokens，OpenAI 是
-  // prompt_tokens_details.cached_tokens，Step 是根级 cached_tokens。
+  // prompt_tokens_details.cached_tokens，Step 是根级 cached_tokens；未回报保持 null，返回时由 `settleUsage` 记为 0。
   let cached: number | null = null
   if (typeof u.prompt_cache_hit_tokens === 'number') {
     cached = u.prompt_cache_hit_tokens
@@ -1204,20 +1211,18 @@ function applyUsage(acc: ProviderUsage, u: CompatUsage) {
   } else if (typeof u.cached_tokens === 'number') {
     cached = u.cached_tokens
   }
+  if (cached !== null) acc.cachedTokens = cached
   // Kimi：缓存命中、缓存写入与其余输入互斥，三者之和为 `prompt_tokens`。
   const written =
     typeof details?.cache_write_tokens === 'number' ? details.cache_write_tokens : null
-  // 已回报用量而缺少命中或写入字段时记为 0，不记为 null：Gemini 与 Kimi 未命中时省略命中字段，
-  // 不返回 0；未列入明细的输入按普通输入计费。同一请求中较早的块已回报的值保留。
-  acc.cachedTokens = cached ?? acc.cachedTokens ?? 0
-  acc.cacheWriteTokens = written ?? acc.cacheWriteTokens ?? 0
+  if (written !== null) acc.cacheWriteTokens = written
 
   if (typeof u.prompt_cache_miss_tokens === 'number') {
     // 供应商直接提供了未命中量，最为可靠。
     acc.inputTokens = u.prompt_cache_miss_tokens
   } else if (typeof u.prompt_tokens === 'number') {
-    // 只有总量时自行相减。写入量不减去时同时计入输入与写入，重复计费。
-    acc.inputTokens = Math.max(0, u.prompt_tokens - acc.cachedTokens - acc.cacheWriteTokens)
+    // 只有总量时自行相减。未回报缓存量时按全部未命中处理。写入量不减去时同时计入输入与写入，重复计费。
+    acc.inputTokens = Math.max(0, u.prompt_tokens - (cached ?? 0) - (written ?? 0))
   }
   if (outDetails && typeof outDetails.reasoning_tokens === 'number') {
     acc.reasoningTokens = outDetails.reasoning_tokens
