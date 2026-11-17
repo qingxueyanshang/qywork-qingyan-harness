@@ -35,4 +35,9 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [估算系数的实测方法](token-density-calibration.md) — 新增或补测型号用 .tmp/ctx-probe 脚本；Claude 第三方直连读首个事件，Qwen 关闭思考；三档未测仍用默认档
 - [模型绕行时修复缺陷而不是添加限制](fix-capability-gap-not-prompt-ban.md) — 查明模型只能绕行的原因（缺少能力、无法看到结果）并修复；不在提示词或工具说明中写禁令，用户否决过「电脑控制只用于 qywork 以外」
 - [Rust 源码不按 rustfmt 排版](rust-sources-not-rustfmt-formatted.md) — 不运行 cargo fmt：文件参数不限定范围，整个包被改写并混入其他会话未提交的改动；含还原方法
+- [浏览器控制的真实模型评测与真实外壳验证](browser-live-eval.md) — `.tmp/browser-live/harness.ts` 11 个场景对照改动前后；`.tmp/popup-window-verify/` 用独立数据目录的开发外壳验证 WebView2 行为
+- [放弃一项须以事实为理由](review-drop-reasons.md) — 「改动大」「与事故无关」「账本没有实例」不是理由；大改写明规模交用户确认，不改写为取消
+- [业务选择不设默认值](no-default-for-business-choices.md) — 网页确认框等由工具报告、模型判断；不向用户提出「默认确定还是取消」
+- [上下文只由压缩改变](no-trimming-model-context.md) — 到阈值自动或用户手动压缩是唯一入口；在其外折叠旧工具结果是并列入口且前提错误；慢的问题从调用次数入手
+- [浏览器点击无响应先比较落点坐标](browser-click-lands-on-ancestor.md) — 命中判定接受祖先元素，落在圆角外缘的点击仍判为成功；全零 `point` 已按元素中心处理
 - [会话流触摸滑动须实测](touch-scroll-probe.md) — 修改底部跟随后用 .tmp/probe/touch-follow.mjs 与 touch-static.mjs 以真实触摸序列实测；synthesizeScrollGesture 在无头模式下不派发 touchmove
