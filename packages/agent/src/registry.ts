@@ -260,6 +260,11 @@ export interface ToolOutcome {
   /** 明确的用户界面展示意图；缺省结果只进入模型上下文与账本。 */
   presentation?: { images?: 'inline' }
   fileChanges?: FileChange[]
+  /**
+   * 执行器确认本次调用没有产生任何效果，例如浏览器动作之后未跳转、未发出请求、DOM 未变化且元素表不变。
+   * 只能由掌握这些事实的执行器设置；缺省表示不确定，不表示有效果。连续无进展判定据此计数（`provablyNoEffect`）。
+   */
+  noEffect?: true
   /** 本次调用落盘的中间资源。必须原样写入账本：压缩层据此判断正文是否仍然存在。 */
   resources?: IntermediateResourceRef[]
   errorKind?: string
@@ -593,6 +598,7 @@ export class ToolRegistry {
         ...(out.data ? { data: out.data } : {}),
         ...(out.presentation ? { presentation: out.presentation } : {}),
         ...(out.fileChanges ? { fileChanges: out.fileChanges } : {}),
+        ...(out.noEffect ? { noEffect: out.noEffect } : {}),
         ...(out.resources?.length ? { resources: out.resources } : {}),
         ...(out.errorKind ? { errorKind: out.errorKind } : {}),
       }

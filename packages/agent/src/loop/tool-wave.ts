@@ -354,13 +354,14 @@ export function planWaves(
  * 本次调用是否确定没有产生副作用。约定见 `ProgressEvidence.noProgress`：
  * 只有明确事实参与无进展判定，不确定的情况一律视为可能有副作用。
  *
- * `fileChanges` 非空直接判定为有副作用；`executed: false` 表示没有进入执行器；
- * 其余只识别注册期声明为纯 `read` 的工具。不要放宽到 `execute` / `network` /
+ * `fileChanges` 非空直接判定为有副作用；`executed: false` 表示没有进入执行器；`noEffect` 是执行器
+ * 依据自身掌握的事实给出的确认；其余只识别注册期声明为纯 `read` 的工具。不要放宽到 `execute` / `network` /
  * `internal_control`：它们即使返回失败也可能已修改外部状态（写入一半后抛出同样是失败），
  * 字段缺失不能视为明确没有变更。
  */
 export function provablyNoEffect(effect: PermissionEffect, outcome: ToolOutcome): boolean {
   if (outcome.fileChanges?.length) return false
   if (outcome.executed === false) return true
+  if (outcome.noEffect === true) return true
   return effect === 'read'
 }

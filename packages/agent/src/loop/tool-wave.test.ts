@@ -635,6 +635,64 @@ describe('重复无进展', () => {
     expect(finished?.stopDetail).toBe('连续三轮工具调用没有进展：stuck')
   })
 
+  /**
+   * 原始失败形状：同一个按钮被点击 190 次，每次结果相同。点击的效果声明为 `browser`，
+   * 不是纯读取，判定从不计数；执行器确认没有效果（`noEffect`）之后按同一规则提醒并停止。
+   */
+  test('执行器确认没有效果的非读取调用同样计入无进展：第二次提醒，第三次停止', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'press_button',
+      description: '点击一个没有响应的按钮。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'call',
+      objectLabel: '页面',
+      category: 'browser',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'browser',
+      fn: async () => ({
+        status: 'success' as const,
+        message: 'click 已发出：开通。动作之后：未跳转、未发出请求、DOM 无变化。',
+        noEffect: true as const,
+      }),
+    })
+    const loop = new AgentLoop({
+      adapter: fakeAdapter(Array.from({ length: 10 }, () => [call('press_button')])),
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    let finished: Extract<AgentEvent, { type: 'run.finished' }> | null = null
+    let calls = 0
+    for await (const ev of loop.run({
+      compactPercent: 80,
+      runId: 'rn_no_effect' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'tool.started') calls++
+      if (ev.type === 'run.finished') finished = ev
+    }
+    expect(finished?.stopReason).toBe('no_progress')
+    expect(finished?.stopDetail).toBe('连续三轮工具调用没有进展：press_button')
+    expect(calls).toBeLessThanOrEqual(3)
+  })
+
+  test('执行器未确认没有效果的非读取调用不计入无进展', () => {
+    const outcome = { status: 'success' as const, message: 'click 已发出' }
+    expect(provablyNoEffect('browser', outcome)).toBe(false)
+    expect(provablyNoEffect('browser', { ...outcome, noEffect: true })).toBe(true)
+    expect(
+      provablyNoEffect('browser', {
+        ...outcome,
+        noEffect: true,
+        fileChanges: [{ path: 'a.txt', kind: 'modified' } as never],
+      }),
+    ).toBe(false)
+  })
+
   test('连续三轮收到相同 pause_turn 时按无进展停止', async () => {
     let requests = 0
     const base = fakeAdapter([])
