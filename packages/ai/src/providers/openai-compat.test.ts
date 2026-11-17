@@ -3,7 +3,8 @@
  * 与 `createThinkingSplitter`（将正文中带思考标签的内容移到思考通道）、strict 参数约束与参数还原（`restoreStrictCalls`）、
  * `buildMessages` 对工具结果媒体的编码（观察消息），
  * 判定百炼官方端点所用的 `@qywork/core` 的 `channelVendorOf`，以及百炼临时上传（`uploadDashScopeMedia`、
- * 上传失败后同一适配器再次发送时重新上传、OSS 以 403 拒绝时重新取凭证、上传失败按百炼的错误码归类）。
+ * 上传失败后同一适配器再次发送时重新上传、OSS 以 403 拒绝时重新取凭证、上传失败按百炼的错误码归类），
+ * 以及用量归一中缓存命中与缓存写入的取值。
  *
  * 必须检查真实请求体，不能只测试纯函数：目录声明了档位、界面渲染了控件
  * 而请求中没有对应字段时，两端均正确而取值在中间环节丢失，
@@ -1301,6 +1302,69 @@ describe('缓存写入用量', () => {
       expect(await sourceOf('{}')).toBe('estimated')
       expect(await sourceOf('{"prompt_tokens":"10","completion_tokens":null}')).toBe('estimated')
       expect(await sourceOf('{"completion_tokens":3}')).toBe('provider')
+    } finally {
+      await relay.stop(true)
+    }
+  })
+})
+
+describe('缓存命中用量', () => {
+  /**
+   * 原始失败形状：Gemini 经第三方接口未命中缓存时，usage 中没有 `prompt_tokens_details`，不返回 0；
+   * 命中记为 null，运行页的命中与写入两列显示 N/A。两段 usage 均为第三方接口返回的原文。
+   */
+  test('未命中时省略明细的上游，命中与写入记为 0', async () => {
+    let usageJson = ''
+    const relay = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          [
+            'data: {"choices":[{"delta":{"content":"好"},"finish_reason":"stop"}]}',
+            `data: {"object":"chat.completion.chunk","model":"gemini-3.8-flash","choices":[],"usage":${usageJson}}`,
+            'data: [DONE]',
+            '',
+          ].join('\n\n'),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+    })
+    const usageOf = async (raw: string) => {
+      usageJson = raw
+      const adapter = new OpenAICompatAdapter(
+        {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-x',
+          model: 'gemini-3.8-flash',
+          baseUrl: `http://127.0.0.1:${relay.port}/v1`,
+        },
+        lookupModel('gemini-3.8-flash', 'openai_chat_completions'),
+      )
+      for await (const event of adapter.stream({
+        model: 'gemini-3.8-flash',
+        system: [],
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+        maxOutputTokens: 64,
+        idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+      })) {
+        if (event.type === 'usage') return event.usage
+      }
+      return null
+    }
+    try {
+      expect(
+        await usageOf('{"prompt_tokens":259,"completion_tokens":13,"total_tokens":272}'),
+      ).toMatchObject({
+        inputTokens: 259,
+        cachedTokens: 0,
+        cacheWriteTokens: 0,
+        source: 'provider',
+      })
+      expect(
+        await usageOf(
+          '{"prompt_tokens":8549,"completion_tokens":12,"total_tokens":8561,"prompt_tokens_details":{"cached_tokens":4078}}',
+        ),
+      ).toMatchObject({ inputTokens: 4471, cachedTokens: 4078, cacheWriteTokens: 0 })
     } finally {
       await relay.stop(true)
     }

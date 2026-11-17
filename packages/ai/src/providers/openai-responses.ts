@@ -605,9 +605,12 @@ export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | un
    * 与 Anthropic 的排他口径相反。必须同时减去命中与写入两项才得到排他口径；只减去命中时，
    * 写入部分同时计入 inputTokens 与 cacheWriteTokens，按 1.0x 与 1.25x
    * 重复计费。
+   *
+   * 已回报用量而缺少命中或写入字段时记为 0，不记为 null：Gemini 未命中时省略整个
+   * `input_tokens_details`，不返回 0；未列入明细的输入按普通输入计费。
    */
-  acc.cachedTokens = typeof cached === 'number' ? cached : null
-  acc.cacheWriteTokens = typeof written === 'number' ? written : null
+  acc.cachedTokens = typeof cached === 'number' ? cached : 0
+  acc.cacheWriteTokens = typeof written === 'number' ? written : 0
   acc.inputTokens = Math.max(0, input - (acc.cachedTokens ?? 0) - (acc.cacheWriteTokens ?? 0))
   acc.outputTokens = Number(raw.output_tokens ?? 0)
   acc.reasoningTokens = Number(outDetails?.reasoning_tokens ?? 0)
