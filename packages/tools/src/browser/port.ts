@@ -29,14 +29,12 @@ export interface BrowserSelectOption {
 }
 
 /**
- * 一页选项。观察的 `optionsFor` 模式返回该结构，不产生新的观察编号。
+ * 一页选项。观察的 `optionsFor` 模式返回该结构，不采集新观察。
  *
- * `observationId` 与 `ref` 指向读取时所用的旧观察。`items` 按当前 DOM 实时读取，
- * 选项增删之后须重新读取：两次读取的结果合并后不是同一时刻的快照。
+ * `items` 按当前 DOM 实时读取，选项增删之后须重新读取：两次读取的结果合并后不是同一时刻的快照。
  */
 export interface BrowserOptionsPage {
   tabId: string
-  observationId: string
   ref: string
   items: BrowserSelectOption[]
   /** 该 select 当前的选项总数。 */
@@ -49,8 +47,8 @@ export interface BrowserOptionsPage {
 /**
  * 一次观察中的一个元素。
  *
- * `ref` 仅在**同一次观察、同一 tab、同一帧、同一份文档**内有效。导航、重连、
- * 重新观察之后旧编号全部作废，实现方在执行动作前复核节点仍处于连接状态且身份匹配。
+ * `ref` 在**同一 tab 的同一份文档**内固定：同一个节点在各次观察中是同一个编号，重新观察不更换编号。
+ * 文档更换之后旧编号全部作废，且不会再发放给新文档中的元素。实现方在执行动作前复核节点仍处于连接状态且身份匹配。
  */
 export interface BrowserElement {
   ref: string
@@ -87,8 +85,6 @@ export interface BrowserObservation {
   /** 页面当前的实际地址，不是请求时的地址。 */
   url: string
   title: string
-  /** 观察编号。动作必须携带该编号；重新观察即更换编号，旧编号作废。 */
-  observationId: string
   elements: BrowserElement[]
   /** 元素数超过上限而被截断。调用方须得知本页不是全部元素。 */
   truncated: boolean
@@ -114,6 +110,7 @@ export type BrowserActionKind =
   | 'scroll'
   | 'press'
   | 'drag'
+  | 'dialog'
 
 /** 元素上的一个点：相对元素矩形左上角的 CSS 像素偏移。 */
 export interface BrowserPoint {
@@ -140,7 +137,6 @@ export interface BrowserPathStep {
 
 export interface BrowserActInput {
   tabId: string
-  observationId: string
   action: BrowserActionKind
   /** 元素引用。`scroll` 与 `press` 可省略，此时作用于文档；`drag` 时为起点。 */
   ref?: string
@@ -163,6 +159,8 @@ export interface BrowserActInput {
   deltaX?: number
   /** `scroll` 的滚动量，向下为正。 */
   deltaY?: number
+  /** `dialog` 的选择：true 为确定，false 为取消。prompt 对话框的输入文字取自 `text`。 */
+  accept?: boolean
   /** 动作之后的观察附带截图。动作未完成时同样附带。 */
   screenshot?: boolean
 }
@@ -240,7 +238,47 @@ export interface BrowserWaitReceipt {
   reason?: string
 }
 
-export type BrowserActResult = BrowserActReceipt & FollowUpObservation
+/**
+ * 动作期间页面上发生的事。从动作开始前订阅，到动作之后的观察取得为止。
+ *
+ * 范围是顶层页会话：主文档与同进程帧。跨站 iframe 的请求与 DOM 变化在其子会话上，不在统计之内，
+ * 因此页面含 iframe 时各项为零不能证明动作没有任何效果。
+ */
+export interface BrowserActivity {
+  /** 主文档已更换（跳转、刷新）。动作之后未取得观察时省略：无法判定。 */
+  navigated?: boolean
+  /** 动作开始之后页面发出的网络请求数，各类型均计入，含 WebSocket 发送的帧。 */
+  requests: number
+  /** 动作开始之后 DOM 有变化。探针失效而无法判定时为 true。 */
+  domChanged: boolean
+  /** 本次动作期间页面打开、归属本会话的新标签页。 */
+  opened?: BrowserTabInfo[]
+  /** 本次动作期间被宿主拦截的下载（未经 `browser_download` 授权）。 */
+  downloadsBlocked?: { reason: string; suggestedName?: string }[]
+  /**
+   * 动作使页面弹出 JavaScript 对话框。对话框打开期间页面脚本停止执行，动作结果不带观察，
+   * 由调用方以 `dialog` 动作选择确定或取消。
+   */
+  dialog?: {
+    type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'
+    message: string
+    defaultPrompt?: string
+  }
+  /** 动作使页面要求选择文件。系统的选择窗口未打开，以不带 ref 的 `upload` 提交文件。 */
+  fileChooser?: { multiple: boolean }
+}
+
+/** 对话框类型在结果中的名称。工具结果与协调器的拒绝说明共用，两处名称一致。 */
+export const BROWSER_DIALOG_NAMES: Record<NonNullable<BrowserActivity['dialog']>['type'], string> =
+  {
+    alert: '提示框',
+    confirm: '确认框',
+    prompt: '输入框',
+    beforeunload: '离开页面确认框',
+  }
+
+export type BrowserActResult = BrowserActReceipt &
+  FollowUpObservation & { activity?: BrowserActivity }
 
 export type BrowserWaitResult = BrowserWaitReceipt & FollowUpObservation
 
@@ -260,6 +298,8 @@ export interface BrowserDownloadResult {
  * `browser_disconnected` 需先对原页重新观察；`browser_busy` 需等待持有者释放；
  * `invalid_argument` 需修正参数；`browser_unavailable` 表示用户已关闭浏览器控制，重试无效；
  * `credential_path` 表示页面中已加载读取范围之外的本机文件（`localFiles`），重新加载或离开该页之后才能读取。
+ * `stale_ref` 表示观察或元素编号已不指向原节点；`target_blocked` 表示目标此刻无法接收事件（被遮挡、尺寸为 0、
+ * 不在可视区）。两者都需要重新观察。
  */
 export interface BrowserRefusal {
   errorKind:
@@ -268,6 +308,8 @@ export interface BrowserRefusal {
     | 'browser_disconnected'
     | 'browser_unavailable'
     | 'credential_path'
+    | 'stale_ref'
+    | 'target_blocked'
   executed: false
 }
 
@@ -346,12 +388,12 @@ export interface BrowserPort {
     /** 只返回名称、正文或值包含该文字的元素，不区分大小写。翻页与 `truncated` 按筛选后的元素表计算。 */
     query?: string
     /**
-     * 读取一个 `select` 的选项：按该旧观察中的 `ref` 定位，实时读取。
+     * 读取一个 `select` 的选项：按 `ref` 定位，实时读取。
      *
      * 不采集新观察、不分配编号、不移动页面；引用失效时要求重新观察。与 `frame` /
      * `screenshot` / `offset` 互斥：本模式返回选项页，不返回元素表。
      */
-    optionsFor?: { observationId: string; ref: string; offset?: number }
+    optionsFor?: { ref: string; offset?: number }
   }): Promise<BrowserObservation | BrowserOptionsPage>
   /** 在已观察的元素上执行一次有限动作，并返回动作之后的观察。 */
   act(input: BrowserActInput): Promise<BrowserActResult>
@@ -375,8 +417,8 @@ export interface BrowserPort {
    */
   upload(input: {
     tabId: string
-    observationId: string
-    ref: string
+    /** 文件输入框的编号。缺省时提交给本页待处理的选择文件请求（`BrowserActivity.fileChooser`）。 */
+    ref?: string
     paths: string[]
   }): Promise<{ files: string[] }>
   /**
@@ -387,7 +429,6 @@ export interface BrowserPort {
    */
   download(input: {
     tabId: string
-    observationId: string
     ref: string
     absolutePath: string
     timeoutMs: number

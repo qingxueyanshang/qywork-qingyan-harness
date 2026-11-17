@@ -16,6 +16,7 @@ import type { LocalFileCheck } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import {
   allowedMethod,
+  BrowserArgumentError,
   CdpCancelledError,
   CdpClient,
   CdpError,
@@ -549,6 +550,28 @@ test('等待器运行时不在当前文档中时先补注入再登记，不返�
   expect(
     evaluated.findIndex((e, i) => i > inject && e.startsWith('window.__qyworkWait(')),
   ).toBeGreaterThan(inject)
+})
+
+/** 原始失败形状：选择器语法错误被当作运行时缺失，提示「请重新观察后再等待」，调用方以同一选择器重试。 */
+test('选择器语法错误按参数错误拒绝，不补注入运行时', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  endpoint.replies.set('Runtime.evaluate', (cmd) => {
+    const expression = String(cmd.params?.expression ?? '')
+    if (expression === 'window.__qyworkTab') return { result: { value: 'marker-a' } }
+    if (expression.startsWith('window.__qyworkWait(')) {
+      return { result: { value: { badSelector: "'div[' is not a valid selector." } } }
+    }
+    return { result: { value: { waiters: 0, observers: 0, timers: 0 } } }
+  })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+
+  const err = await failure(
+    client.startWaiter(sessionId, { selector: 'div[', state: 'visible' }, 5_000),
+  )
+  expect(err).toBeInstanceOf(BrowserArgumentError)
+  expect(err).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+  expect(err.message).toContain('不是合法的 CSS 选择器')
 })
 
 test('补注入后回包仍不是对象时返回可判定的失败，不解引用 undefined', async () => {

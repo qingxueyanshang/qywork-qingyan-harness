@@ -27,7 +27,9 @@ import { webFetchTool, webSearchTool } from './web.ts'
 // 端口：接口与键定义在使用它的工具所在的目录，装配方（runtime、server、cli）据此提供实现
 export { PersonalizationPort, PetPort } from './appearance/port.ts'
 export {
+  BROWSER_DIALOG_NAMES,
   type BrowserActInput,
+  type BrowserActivity,
   type BrowserActReceipt,
   type BrowserActResult,
   type BrowserDownloadResult,

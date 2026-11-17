@@ -25,12 +25,14 @@ import type {
   BrowserOptionsPage,
   BrowserPathStep,
   BrowserPoint,
+  BrowserRefusal,
   BrowserSelectOption,
   BrowserWaitReceipt,
   BrowserWaitState,
 } from '@qywork/tools'
-import { type CdpClient, CdpError } from './cdp.ts'
+import { BrowserArgumentError, type CdpClient, CdpError } from './cdp.ts'
 import {
+  ACTION_BUDGET_MS,
   aimAt,
   EVENT_TIMEOUT_MS,
   Execution,
@@ -113,6 +115,13 @@ const MAX_FRAME_DEPTH = 8
 
 /** `type` 一次最多输入的 Unicode 码点数。整段预检通过后才发送第一个事件。 */
 const MAX_TYPE_UNITS = 2_000
+/**
+ * 逐字输入每个码点的期限预算。每个码点三次往返（复核焦点、按下、抬起），耗时取决于页面自身的按键处理：
+ * 账本实测网页终端上为每字 32–50 ms。期限按单元数计算、不低于 `ACTION_BUDGET_MS`，上限为
+ * `MAX_TYPE_UNITS` 乘以该值。不要改回固定期限：约 700 字以上的输入在固定的 30 s 内完成不了，
+ * 以「结果未知」结束而禁止重发。
+ */
+const TYPE_UNIT_BUDGET_MS = 60
 /** 拖动按下之后每一段终点最多推进的滚动次数。 */
 const MAX_DRAG_SCROLLS = 2
 /** 有时长的拖动段中相邻两次移动的间隔，约一帧。 */
@@ -120,10 +129,21 @@ const DRAG_STEP_MS = 16
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-/** 元素引用已不再指向原节点。调用方必须重新观察，不能改写编号重试。 */
-export class BrowserStaleRefError extends CdpError {}
+/**
+ * 元素引用已不再指向原节点。调用方必须重新观察，不能改写编号重试。
+ *
+ * 两类引用错误只在发出第一个事件之前抛出（`actOnPage` 的约定），因此声明 `executed:false`。
+ * 不要在事件发出之后抛出它们：调用方会据此判定页面未被修改并重放动作。
+ */
+export class BrowserStaleRefError extends CdpError implements BrowserRefusal {
+  readonly errorKind = 'stale_ref' as const
+  readonly executed = false as const
+}
 /** 命中点位于其他元素上。页面结构已改变或被浮层遮挡，同样要求重新观察。 */
-export class BrowserAmbiguousRefError extends CdpError {}
+export class BrowserAmbiguousRefError extends CdpError implements BrowserRefusal {
+  readonly errorKind = 'target_blocked' as const
+  readonly executed = false as const
+}
 /** 预算内未能采集到前后一致的快照。调用方保留已经发出的动作回执，不重新执行动作。 */
 export class BrowserObserveTimeoutError extends CdpError {}
 
@@ -150,10 +170,15 @@ interface RefRecord {
   identity: string
 }
 
+/**
+ * 本次执行在一页上取得的定位信息：编号 → 节点。
+ *
+ * 协调器按页保存，同一文档内的各次观察合并进来；编号本身由 `RefNumbering` 发放，跨执行不变，
+ * 定位信息含本次连接的会话编号，只在本次执行内有效。
+ */
 export interface ObservationRecord {
-  observationId: string
   tabId: string
-  /** 文档令牌。导航更换文档时该值随之改变，据此判断整份观察是否已经失效。 */
+  /** 文档令牌。导航更换文档时该值随之改变，据此判断这些编号是否仍属于当前文档。 */
   docToken: string
   refs: Map<string, RefRecord>
 }
@@ -171,6 +196,22 @@ const DOC_TOKEN = `(() => {
 })()`
 
 /**
+ * 页内的「不可用」与「只读」判定，各页内函数共用这一份，嵌入函数体中使用。
+ *
+ * 不可用：自身或祖先为 `:disabled`（含 `fieldset disabled` 中的控件）、`aria-disabled="true"` 或 `inert`。
+ * 只读：`readOnly` 或 `aria-readonly="true"`。文本节点按其父元素判定。
+ * 不要在各函数中另写判定：分别判定时同一个元素在点击、填写、选择与逐字输入中的结论不一致，
+ * 观察中标为不可用的按钮点击仍报告成功。
+ */
+const STATE_JS = `const qyState = (el) => {
+    const node = el.nodeType === 3 ? el.parentElement : el
+    if (!node || !node.closest) return { disabled: false, readonly: false }
+    const disabled = !!node.closest(':disabled, [aria-disabled="true"], [inert]')
+    const readonly = node.readOnly === true || (node.getAttribute && node.getAttribute('aria-readonly') === 'true')
+    return { disabled, readonly }
+  }`
+
+/**
  * 页内复核：节点是否仍连接、身份是否一致、矩形位置，以及命中点落在哪个元素上。
  *
  * 一次往返回答全部问题。分成多次时，两次之间页面可能已经变化，
@@ -181,8 +222,12 @@ const DOC_TOKEN = `(() => {
  *
  * 指定 `px` / `py` 时测量的是自元素矩形左上角偏移的点，否则测量中心；`inBox` 表示该点是否位于
  * 当前矩形内：元素尺寸在观察之后可能已经改变。
+ *
+ * 命中点落在祖先上只在目标的 `pointer-events` 为 `none` 时成立：此时事件按设计交给祖先。
+ * 不要无条件接受祖先：圆角控件的角、被裁剪的部分与父元素的伪元素都命中祖先，事件发往祖先而控件不响应。
  */
 export const INSPECT_FN = `function qyInspect(px, py) {
+  ${STATE_JS}
   const el = this
   const text = el.nodeType === 3
   const tag = (el.tagName || '').toLowerCase()
@@ -209,7 +254,7 @@ export const INSPECT_FN = `function qyInspect(px, py) {
   const scope = typeof root.elementFromPoint === 'function' ? root : el.ownerDocument
   const hit = inView ? scope.elementFromPoint(x, y) : null
   let sameTree = false
-  if (hit) sameTree = text ? inBox && hit === el.parentElement : hit === el || el.contains(hit) || hit.contains(el)
+  if (hit) sameTree = text ? inBox && hit === el.parentElement : hit === el || el.contains(hit) || (hit.contains(el) && view.getComputedStyle(el).pointerEvents === 'none')
   return {
     connected: true,
     identity,
@@ -222,7 +267,7 @@ export const INSPECT_FN = `function qyInspect(px, py) {
     sameTree,
     hit: hit ? (hit.tagName || '').toLowerCase() : null,
     hitLabel: hit ? (((hit.getAttribute && hit.getAttribute('aria-label')) || (hit.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) : '',
-    disabled: text ? !!el.parentElement?.closest(':disabled, [aria-disabled="true"], [inert]') : el.disabled === true,
+    disabled: qyState(el).disabled,
     label: ((text ? el.nodeValue.trim() : (el.getAttribute && el.getAttribute('aria-label')) || (el.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) || tag,
   }
 }`
@@ -232,6 +277,7 @@ export const INSPECT_FN = `function qyInspect(px, py) {
  *
  * 加上的是内容盒左上角，不是边框盒：iframe 的内容从内边距内侧开始，按边框盒计算会整体
  * 偏移一个边框宽度。父层遮罩覆盖 iframe 时 `sameTree` 为假，该层即为遮挡点。
+ * 只有命中 iframe 本身才成立：命中其祖先时事件不进入该帧。
  */
 const FRAME_POINT_FN = `function qyFramePoint(x, y) {
   const el = this
@@ -243,7 +289,7 @@ const FRAME_POINT_FN = `function qyFramePoint(x, y) {
   const inView = px >= 0 && py >= 0 && px <= view.innerWidth && py <= view.innerHeight
   const hit = inView ? el.ownerDocument.elementFromPoint(px, py) : null
   let sameTree = false
-  if (hit) sameTree = hit === el || el.contains(hit) || hit.contains(el)
+  if (hit) sameTree = hit === el
   return {
     x: px,
     y: py,
@@ -285,9 +331,11 @@ const OPTIONS_FN = `function qyOptions(start, limit) {
  * 无法选中时只返回原因、总数与有界样例。**不要改成返回完整选项表**：上千项的
  * `select` 会占满整份工具输出，继续读取使用 `optionsFor`。
  */
-const SELECT_FN = `function qySelect(value) {
+export const SELECT_FN = `function qySelect(value) {
+  ${STATE_JS}
   const el = this
   if (el.tagName !== 'SELECT') return { ok: false, reason: 'not_select' }
+  if (qyState(el).disabled) return { ok: false, reason: 'disabled' }
   const all = el.options
   let index = -1
   for (let i = 0; i < all.length; i++) {
@@ -313,6 +361,11 @@ const SELECT_FN = `function qySelect(value) {
   el.selectedIndex = index
   el.dispatchEvent(new Event('input', { bubbles: true }))
   el.dispatchEvent(new Event('change', { bubbles: true }))
+  // 页面的监听器可能随即改回原值：按实际值回读，不按写入的值报告。
+  if (el.selectedIndex !== index) {
+    const now = all[el.selectedIndex]
+    return { ok: false, reason: 'rejected', label: now ? (now.label || now.text || '').trim().slice(0, ${MAX_LABEL}) : '' }
+  }
   return { ok: true, value: el.value }
 }`
 
@@ -327,11 +380,13 @@ const SELECT_FN = `function qySelect(value) {
  * 访问器，直接赋值时它无法收到本次变化，框架状态与页面显示此后不一致。
  * `range` 将越界值静默钳制到边界且不报错，因此它的「规范化后不等于原值」按约束不满足处理。
  */
-const FILL_FN = `function qyFill(value) {
+export const FILL_FN = `function qyFill(value) {
+  ${STATE_JS}
   const el = this
   const tag = (el.tagName || '').toLowerCase()
-  if (el.disabled === true) return { ok: false, reason: 'disabled' }
-  if (el.readOnly === true) return { ok: false, reason: 'readonly' }
+  const state = qyState(el)
+  if (state.disabled) return { ok: false, reason: 'disabled' }
+  if (state.readonly) return { ok: false, reason: 'readonly' }
   const cut = (s) => String(s).slice(0, ${MAX_TEXT})
   const fire = () => {
     el.dispatchEvent(new Event('input', { bubbles: true }))
@@ -339,12 +394,15 @@ const FILL_FN = `function qyFill(value) {
   }
   if (tag !== 'input' && tag !== 'textarea') {
     if (el.isContentEditable !== true) return { ok: false, reason: 'not_fillable' }
+    // 只聚焦并选中全部内容，文字由调用方以输入事件写入：富文本编辑器只接受经由输入事件的改动，
+    // 直接改写 textContent 时编辑器的内部状态不变，提交时仍是旧内容。
     el.focus()
-    el.textContent = value
-    fire()
-    const after = el.textContent === null ? '' : el.textContent
-    if (after !== value) return { ok: false, reason: 'rejected', value: cut(after) }
-    return { ok: true, type: 'contenteditable', value: cut(after), normalized: false }
+    const range = el.ownerDocument.createRange()
+    range.selectNodeContents(el)
+    const selection = el.ownerDocument.getSelection()
+    selection.removeAllRanges()
+    selection.addRange(range)
+    return { ok: true, type: 'contenteditable' }
   }
   const type = tag === 'textarea' ? 'textarea' : String(el.type || 'text').toLowerCase()
   if (value === '' && (type === 'range' || type === 'color')) {
@@ -396,13 +454,15 @@ const FILL_FN = `function qyFill(value) {
  * 每个码点发送前执行一次。缺少该复核时，节点被替换或焦点转移之后，后续字符会输入到另一个控件，
  * 而这段输入的去向在回执中无法体现。
  */
-const TYPING_GUARD_FN = `function qyTypingTarget() {
+export const TYPING_GUARD_FN = `function qyTypingTarget() {
+  ${STATE_JS}
   const el = this
   const tag = (el.tagName || '').toLowerCase()
   const identity = [tag, el.id || '', el.getAttribute ? el.getAttribute('name') || '' : '', el.getAttribute ? el.getAttribute('type') || '' : ''].join('|')
   const root = el.getRootNode()
   const active = root && root.activeElement ? root.activeElement : el.ownerDocument.activeElement
-  return { connected: el.isConnected === true, identity, focused: active === el }
+  const state = qyState(el)
+  return { connected: el.isConnected === true, identity, focused: active === el, disabled: state.disabled, readonly: state.readonly }
 }`
 
 interface DomNode {
@@ -422,7 +482,11 @@ interface DomNode {
 }
 
 /** 元素节点在 DOM 快照中的标签与属性。 */
-type DomInfo = { tag: string; attrs: Record<string, string>; text?: string }
+/** `inControl`：节点位于 input、textarea 或 select 之内（含其内部的浏览器自带结构）。 */
+type DomInfo = { tag: string; attrs: Record<string, string>; text?: string; inControl?: true }
+
+/** 内部结构由控件自身表达的元素：其中的文字与原生选项已由控件的 value 与选项摘要给出。 */
+const CONTROL_TAGS = new Set(['input', 'textarea', 'select'])
 
 interface AxNode {
   ignored?: boolean
@@ -523,6 +587,7 @@ export async function observePage(
     query?: string
     deadline?: number
   },
+  numbering: RefNumbering,
 ): Promise<{ observation: BrowserObservation; record: ObservationRecord }> {
   const { client, sessionId, tabId } = page
   const deadline = opts.deadline ?? Date.now() + OBSERVE_BUDGET_MS
@@ -532,11 +597,18 @@ export async function observePage(
     }
     const before = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
     const collected = await collectAll(client, sessionId, opts, deadline)
+    if (numbering.docToken !== before.token) {
+      numbering.docToken = before.token
+      numbering.byNode.clear()
+    }
+    // 全部采集到的元素都发放编号，不只是本页返回的部分：翻页与查询取得的编号指向同一个节点。
+    const numbered = collected.items.map((i) => ({
+      element: { ref: numberOf(numbering, i.ref), ...i.element },
+      ref: i.ref,
+    }))
     const pending = collected.pending
     const query = opts.query
-    const all = query
-      ? collected.items.filter((i) => matchesQuery(i.element, query))
-      : collected.items
+    const all = query ? numbered.filter((i) => matchesQuery(i.element, query)) : numbered
     const offset = opts.offset ?? 0
     const shown = all.slice(offset, offset + MAX_ELEMENTS)
     await attachOptions(client, shown, deadline)
@@ -546,19 +618,13 @@ export async function observePage(
     if (after.token !== before.token || after.url !== before.url) continue
 
     const refs = new Map<string, RefRecord>()
-    for (const item of shown) refs.set(item.element.ref, item.ref)
-    const record: ObservationRecord = {
-      observationId: `ob_${after.token}_${offset}_${Date.now().toString(36)}`,
-      tabId,
-      docToken: after.token,
-      refs,
-    }
+    for (const item of numbered) refs.set(item.element.ref, item.ref)
+    const record: ObservationRecord = { tabId, docToken: after.token, refs }
     return {
       observation: {
         tabId,
         url: after.url,
         title: after.title,
-        observationId: record.observationId,
         elements: shown.map((i) => i.element),
         truncated: offset + shown.length < all.length,
         ...(pending.length > 0 ? { framesPending: pending } : {}),
@@ -661,6 +727,40 @@ async function scanFrames(
   return { shots, pending }
 }
 
+/** 观察时列出的可用帧编号的上限。帧很多的页面只列前若干个与总数。 */
+const MAX_LISTED_FRAMES = 10
+
+/**
+ * `frame` 参数必须是本页的帧：快照中 iframe 的帧编号，或已就位的跨站子会话。
+ *
+ * 不存在时拒绝并列出可用的帧。不要按筛选结果为空返回成功：调用方会据此认为该帧没有内容。
+ * 判据取自快照而不是 `Page.getFrameTree`，理由见 `pendingFrames`。
+ */
+function assertKnownFrame(
+  frame: string,
+  shots: Iterable<DomNode>,
+  children: readonly { targetId: string }[],
+): void {
+  const known = new Set(children.map((c) => c.targetId))
+  const walk = (node: DomNode): void => {
+    if (node.frameId !== undefined && node.nodeName.toLowerCase() === 'iframe')
+      known.add(node.frameId)
+    if (node.contentDocument?.frameId !== undefined) known.add(node.contentDocument.frameId)
+    for (const child of node.children ?? []) walk(child)
+    for (const shadow of node.shadowRoots ?? []) walk(shadow)
+    if (node.contentDocument) walk(node.contentDocument)
+  }
+  for (const shot of shots) walk(shot)
+  if (known.has(frame)) return
+  const list = [...known]
+  const shown = list.slice(0, MAX_LISTED_FRAMES).join('、')
+  throw new BrowserArgumentError(
+    list.length === 0
+      ? `本页没有 iframe，frame ${JSON.stringify(frame)} 不存在；观察整页时不提供 frame`
+      : `frame ${JSON.stringify(frame)} 不在本页；本页的帧：${shown}${list.length > MAX_LISTED_FRAMES ? ` 等 ${list.length} 个` : ''}`,
+  )
+}
+
 /**
  * 主文档与范围内的子帧各采集一次，合成一张元素表。
  *
@@ -671,7 +771,7 @@ async function collectAll(
   sessionId: string,
   opts: { frame?: string },
   deadline: number,
-): Promise<{ items: { element: BrowserElement; ref: RefRecord }[]; pending: string[] }> {
+): Promise<{ items: Collected[]; pending: string[] }> {
   // 指定帧时只等待该帧：其他帧未就位不应阻塞「只看这个 iframe」的观察。
   const inScope = (frames: string[]) =>
     opts.frame ? frames.filter((f) => f === opts.frame) : frames
@@ -682,6 +782,8 @@ async function collectAll(
   let scan = { shots: new Map<string, DomNode>(), pending: [] as string[] }
   if (!onReadyFrame) {
     scan = await scanFrames(client, sessionId, deadline)
+    if (opts.frame !== undefined)
+      assertKnownFrame(opts.frame, scan.shots.values(), client.childSessionsOf(sessionId))
     // 重新查询共用同一份预算，不为每一层帧各分配完整额度。
     const until = Math.min(deadline, Date.now() + FRAME_ATTACH_TOTAL_MS)
     while (inScope(scan.pending).length > 0 && leftMs(until) > 0) {
@@ -699,7 +801,7 @@ async function collectAll(
   const named = opts.frame ? sessions.find((s) => s.frame === opts.frame) : undefined
   const scope = named ? [named] : sessions
 
-  const all: { element: BrowserElement; ref: RefRecord }[] = []
+  const all: Collected[] = []
   for (const s of scope) {
     const shot = scan.shots.get(s.sessionId)
     if (s.frame === undefined) {
@@ -748,18 +850,32 @@ function splitDocs(
   session: { sessionId: string; frame?: string },
 ): { scope: FrameScope; nodes: Map<number, DomInfo> }[] {
   const out: { scope: FrameScope; nodes: Map<number, DomInfo> }[] = []
-  const walk = (node: DomNode, scope: FrameScope, nodes: Map<number, DomInfo>): void => {
+  const walk = (
+    node: DomNode,
+    scope: FrameScope,
+    nodes: Map<number, DomInfo>,
+    inControl = false,
+  ): void => {
+    const mark = inControl ? { inControl: true as const } : {}
+    let below = inControl
     if (node.nodeType === 1) {
       const attrs: Record<string, string> = {}
       const flat = node.attributes ?? []
       for (let i = 0; i + 1 < flat.length; i += 2) attrs[flat[i] as string] = flat[i + 1] as string
-      nodes.set(node.backendNodeId, { tag: node.nodeName.toLowerCase(), attrs })
+      const tag = node.nodeName.toLowerCase()
+      nodes.set(node.backendNodeId, { tag, attrs, ...mark })
+      below ||= CONTROL_TAGS.has(tag)
     } else if (node.nodeType === 3) {
-      nodes.set(node.backendNodeId, { tag: '#text', attrs: {}, text: node.nodeValue ?? '' })
+      nodes.set(node.backendNodeId, {
+        tag: '#text',
+        attrs: {},
+        text: node.nodeValue ?? '',
+        ...mark,
+      })
     }
-    for (const child of node.children ?? []) walk(child, scope, nodes)
-    for (const shadow of node.shadowRoots ?? []) walk(shadow, scope, nodes)
-    for (const pseudo of node.pseudoElements ?? []) walk(pseudo, scope, nodes)
+    for (const child of node.children ?? []) walk(child, scope, nodes, below)
+    for (const shadow of node.shadowRoots ?? []) walk(shadow, scope, nodes, below)
+    for (const pseudo of node.pseudoElements ?? []) walk(pseudo, scope, nodes, below)
     const inner = node.contentDocument
     if (!inner) return
     const frame = node.frameId ?? inner.frameId
@@ -801,7 +917,7 @@ async function collectSession(
   deadline: number,
   capMs: number,
   root?: DomNode,
-): Promise<{ element: BrowserElement; ref: RefRecord }[]> {
+): Promise<Collected[]> {
   const { sessionId } = session
   const limit = () => within(deadline, capMs)
   // pierce 穿透 shadow root 与同进程 iframe；跨站 iframe 经由其自身的会话采集。
@@ -825,7 +941,7 @@ async function collectSession(
       )
     ).nodes
 
-  const out: { element: BrowserElement; ref: RefRecord }[] = []
+  const out: Collected[] = []
   for (const doc of docs) {
     const sub = doc.scope.owners !== undefined
     if (sub) {
@@ -833,7 +949,7 @@ async function collectSession(
         log.warn('browser', `同进程帧观察跳过：${err instanceof Error ? err.message : String(err)}`)
         return null
       })
-      if (nodes) out.push(...dedupeAndNumber(axCandidates(nodes, doc.nodes, doc.scope), doc.scope))
+      if (nodes) out.push(...dedupe(axCandidates(nodes, doc.nodes, doc.scope)))
       continue
     }
     let candidates = axCandidates(await fetchAx(), doc.nodes, doc.scope)
@@ -851,7 +967,7 @@ async function collectSession(
       }
       if (candidates.length === 0) candidates = domCandidates(doc.nodes, doc.scope)
     }
-    out.push(...dedupeAndNumber(candidates, doc.scope))
+    out.push(...dedupe(candidates))
   }
   return out
 }
@@ -868,6 +984,9 @@ function axCandidates(
     const backendNodeId = node.backendDOMNodeId
     if (backendNodeId === undefined) continue
     const domInfo = byBackend.get(backendNodeId)
+    // 控件内部的节点不单列：原生选项已在 select 的选项摘要中，可用 optionsFor 继续读取；
+    // 输入框内部的文字即其 value。单列时它们挤占元素数上限，选项行的点击也因尺寸为 0 被拒绝。
+    if (domInfo?.inControl) continue
     const role = node.role?.value ?? ''
     const tag = domInfo?.tag ?? ''
     const name = (node.name?.value ?? '').trim()
@@ -1007,11 +1126,8 @@ function domCandidates(byBackend: Map<number, DomInfo>, frame: FrameScope): Cand
   return out
 }
 
-/** 候选去重并发放编号。 */
-function dedupeAndNumber(
-  candidates: Candidate[],
-  frame: FrameScope,
-): { element: BrowserElement; ref: RefRecord }[] {
+/** 候选去重。编号不在此处发放，见 `RefNumbering`。 */
+function dedupe(candidates: Candidate[]): Collected[] {
   /*
    * 与某个可操作元素同名的正文节点不列入表中。
    *
@@ -1022,16 +1138,44 @@ function dedupeAndNumber(
   const actionableNames = new Set(
     candidates.filter((c) => c.actionable && c.element.name).map((c) => c.element.name),
   )
-  const out: { element: BrowserElement; ref: RefRecord }[] = []
-  let seq = 0
+  const out: Collected[] = []
   for (const c of candidates) {
     if (!c.actionable && actionableNames.has(c.element.name)) continue
     if (!c.actionable && !c.element.name) continue
-    seq += 1
-    const ref = frame.frame ? `f${frame.frame.slice(0, 4)}e${seq}` : `e${seq}`
-    out.push({ element: { ref, ...c.element }, ref: c.ref })
+    out.push({ element: c.element, ref: c.ref })
   }
   return out
+}
+
+/** 采集到的一个元素。编号在 `observePage` 中按该页的编号表发放。 */
+type Collected = { element: Omit<BrowserElement, 'ref'>; ref: RefRecord }
+
+/**
+ * 一页的元素编号表：同一份文档内，同一个节点始终是同一个编号。
+ *
+ * 由协调器按标签页保存，跨执行保留。文档更换时清空映射，计数不回退：旧文档的编号此后不指向
+ * 新文档中的任何元素，按编号失效拒绝，不会作用于另一个元素。不要在文档更换时把计数归零。
+ * 键取帧编号与 `backendNodeId`，两者在 CDP 连接之间不变；会话编号随每次执行的连接变化，不能作为键。
+ */
+export interface RefNumbering {
+  docToken: string | null
+  next: number
+  byNode: Map<string, string>
+}
+
+export function newNumbering(): RefNumbering {
+  return { docToken: null, next: 0, byNode: new Map() }
+}
+
+/** 该节点在本文档中的编号，第一次出现时发放。帧中的元素带帧前缀。 */
+function numberOf(numbering: RefNumbering, ref: RefRecord): string {
+  const key = `${ref.frame ?? ''}|${ref.backendNodeId}`
+  const known = numbering.byNode.get(key)
+  if (known !== undefined) return known
+  numbering.next += 1
+  const assigned = ref.frame ? `f${ref.frame.slice(0, 4)}e${numbering.next}` : `e${numbering.next}`
+  numbering.byNode.set(key, assigned)
+  return assigned
 }
 
 /**
@@ -1156,7 +1300,6 @@ export async function readSelectOptions(
   const next = offset + read.items.length
   return {
     tabId: page.tabId,
-    observationId: record.observationId,
     ref,
     items: read.items,
     total: read.total,
@@ -1234,7 +1377,7 @@ function matchesQuery(element: BrowserElement, query: string): boolean {
 async function assertDoc(page: PageHandle, record: ObservationRecord): Promise<void> {
   const doc = await readDocument(page)
   if (doc.token !== record.docToken) {
-    throw new BrowserStaleRefError('页面已更换文档，本次观察的元素编号全部失效，请重新观察')
+    throw new BrowserStaleRefError('页面已更换文档，此前的元素编号全部失效，请重新观察')
   }
 }
 
@@ -1255,7 +1398,8 @@ async function resolveRef(
 ): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection }> {
   const { client } = page
   const entry = record.refs.get(ref)
-  if (!entry) throw new BrowserStaleRefError(`本次观察中没有元素 ${ref}，请重新观察`)
+  if (!entry)
+    throw new BrowserStaleRefError(`编号 ${ref} 已失效：本页当前的编号中没有它，请重新观察`)
   if (!entry.actionable && !pointer) {
     throw new CdpError(`元素 ${ref} 是正文，不支持控件操作；可使用指针动作点击文字`)
   }
@@ -1361,17 +1505,17 @@ async function prepareAction(
     assertSameNode(ref, entry, view, '滚动后')
   }
   if (opts.point && view.inBox === false) throw outsideBox(ref, opts.point, view)
-  if (opts.hit && view.disabled === true) throw new CdpError(`元素 ${ref} 当前不可用`)
+  if (opts.hit && view.disabled === true) throw new BrowserArgumentError(`元素 ${ref} 当前不可用`)
   if (opts.hit) assertHittable(`元素 ${ref}`, view)
   const points = await pointerPoints(page, entry, view, ref, deadline, opts.hit)
   return { entry, objectId, inspect: view, ...points }
 }
 
 /** 落点不在元素当前的矩形内。返回当前尺寸，调用方据此改用其他落点。 */
-function outsideBox(ref: string, point: BrowserPoint, view: Inspection): CdpError {
+function outsideBox(ref: string, point: BrowserPoint, view: Inspection): BrowserArgumentError {
   const w = Math.round(view.width ?? 0)
   const h = Math.round(view.height ?? 0)
-  return new CdpError(
+  return new BrowserArgumentError(
     `元素 ${ref} 上的点 (${point.x}, ${point.y}) 超出元素范围，元素当前宽 ${w}、高 ${h}`,
   )
 }
@@ -1636,13 +1780,17 @@ export async function actOnPage(
       if (!value.ok) throw selectFailure(ref, input.text ?? '', value)
       return { element: inspect.label ?? ref }
     }
+    case 'dialog':
+      // 对话框打开期间页面脚本停止执行，不经过页内定位，由协调器直接处理。
+      throw new CdpError('dialog 动作由协调器处理，不在页内执行')
   }
 }
 
 /**
- * 滚轮。指定 ref 时在元素的落点上滚动，否则在页面左上角附近滚动；两个方向都未指定时向下 400。
+ * 滚轮。指定 ref 时在元素的落点上滚动，否则在视口中心滚动；两个方向都未指定时向下 400。
  *
  * 落点不做可命中裁决：滚轮事件作用于被遮挡的位置时同样能够滚动。
+ * 不指定元素时不要改回页面左上角：那里常是固定的顶栏或侧栏，滚轮作用于它们时内容区不滚动。
  */
 async function scrollOnPage(
   page: PageHandle,
@@ -1659,7 +1807,13 @@ async function scrollOnPage(
         ...(input.point ? { point: input.point } : {}),
       })
     : null
-  const at = target?.point ?? { x: 10, y: 10 }
+  // 不为指定的元素滚动页面；落点在可视区外时滚轮不作用于任何内容，在发出之前拒绝，不报告成功。
+  if (target && target.inspect.inView === false) {
+    throw new BrowserAmbiguousRefError(
+      `元素 ${input.ref} 不在可视区内，滚轮无法作用于它；不指定 ref 时滚动整页`,
+    )
+  }
+  const at = target?.point ?? (await viewportCenter(page))
   await client.send(
     'Input.dispatchMouseEvent',
     { type: 'mouseWheel', x: at.x, y: at.y, deltaX, deltaY, button: 'none' },
@@ -1667,6 +1821,16 @@ async function scrollOnPage(
   )
   if (!target || !input.ref) return {}
   return { element: target.inspect.label ?? input.ref, point: target.point }
+}
+
+/** 顶层视口的中心，CSS 像素。读取失败时抛出错误，此时尚未发出事件。 */
+async function viewportCenter(page: PageHandle): Promise<Point> {
+  const metrics = await page.client.send<{
+    cssLayoutViewport?: { clientWidth: number; clientHeight: number }
+  }>('Page.getLayoutMetrics', {}, { sessionId: page.sessionId, timeoutMs: PREPARE_TIMEOUT_MS })
+  const view = metrics.cssLayoutViewport
+  if (!view) throw new CdpError('未能读取视口尺寸，本次滚动未执行')
+  return { x: view.clientWidth / 2, y: view.clientHeight / 2 }
 }
 
 /**
@@ -1680,18 +1844,25 @@ function selectFailure(
   wanted: string,
   value: { reason?: string; total?: number; sample?: string[]; label?: string },
 ): CdpError {
+  // 写入之后被页面改回：选择已经发生，按已执行报告。其余原因都在写入之前判定，页面未被改动。
+  if (value.reason === 'rejected') {
+    return new CdpError(
+      `选择已发送到页面，但选中项随即变为 ${value.label ?? ''}（选择的是 ${wanted}），本次选择未被接受`,
+    )
+  }
   if (value.reason === 'no_option') {
     const sample = (value.sample ?? []).join('、')
-    return new CdpError(
+    return new BrowserArgumentError(
       `不存在该选项：${wanted}（共 ${value.total ?? 0} 项` +
         (sample ? `，前几项：${sample}` : '') +
         `；使用 optionsFor 按 ${ref} 读取全部选项）`,
     )
   }
   if (value.reason === 'option_disabled') {
-    return new CdpError(`选项 ${value.label ?? wanted} 当前不可选`)
+    return new BrowserArgumentError(`选项 ${value.label ?? wanted} 当前不可选`)
   }
-  return new CdpError(`元素 ${ref} 不是选择框`)
+  if (value.reason === 'disabled') return new BrowserArgumentError(`元素 ${ref} 当前不可用，未选择`)
+  return new BrowserArgumentError(`元素 ${ref} 不是选择框`)
 }
 
 /**
@@ -1902,6 +2073,30 @@ function planType(text: string): TypeUnit[] {
   return units
 }
 
+interface TypingTarget {
+  connected: boolean
+  identity: string
+  focused: boolean
+  disabled: boolean
+  readonly: boolean
+}
+
+async function readTypingTarget(
+  client: CdpClient,
+  entry: RefRecord,
+  objectId: string,
+  deadline: number,
+): Promise<TypingTarget | null> {
+  const read = await client
+    .send<{ result: { value: TypingTarget } }>(
+      'Runtime.callFunctionOn',
+      { objectId, functionDeclaration: TYPING_GUARD_FN, returnByValue: true },
+      { sessionId: entry.sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
+    )
+    .catch(() => null)
+  return read ? read.result.value : null
+}
+
 /** 目标仍存在、身份未变、焦点仍在该目标上。任一项不成立即停止输入。 */
 async function onTypingTarget(
   client: CdpClient,
@@ -1909,16 +2104,8 @@ async function onTypingTarget(
   objectId: string,
   deadline: number,
 ): Promise<boolean> {
-  const read = await client
-    .send<{ result: { value: { connected: boolean; identity: string; focused: boolean } } }>(
-      'Runtime.callFunctionOn',
-      { objectId, functionDeclaration: TYPING_GUARD_FN, returnByValue: true },
-      { sessionId: entry.sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
-    )
-    .catch(() => null)
-  if (!read) return false
-  const view = read.result.value
-  return view.connected && view.identity === entry.identity && view.focused
+  const view = await readTypingTarget(client, entry, objectId, deadline)
+  return view !== null && view.connected && view.identity === entry.identity && view.focused
 }
 
 /**
@@ -1936,8 +2123,12 @@ async function typeOnPage(
 ): Promise<BrowserActReceipt> {
   const units = planType(text)
   const { client } = page
-  const run = new Execution()
+  const run = new Execution(Math.max(ACTION_BUDGET_MS, units.length * TYPE_UNIT_BUDGET_MS))
   const { entry, objectId, inspect } = await resolveRef(page, record, ref, run.deadline)
+  // 不可用或只读的目标在发出第一个按键之前拒绝：逐字输入不会报错，只是每个字都被忽略。
+  const target = await readTypingTarget(client, entry, objectId, run.deadline)
+  if (target?.disabled) throw new BrowserArgumentError(`元素 ${ref} 当前不可用，未输入`)
+  if (target?.readonly) throw new BrowserArgumentError(`元素 ${ref} 为只读，未输入`)
   await client.send(
     'DOM.focus',
     { backendNodeId: entry.backendNodeId },
@@ -2014,6 +2205,8 @@ async function fillOnPage(
   )
   const outcome = r.result.value
   if (!outcome.ok) throw fillFailure(ref, text, outcome)
+  if (outcome.type === 'contenteditable')
+    return fillEditable(page, entry, objectId, ref, inspect, text)
   // 回执带写入后的实际值及其是否经过规范化：日期截秒、时间补零等改写在页面上可见，
   // 若不返回，调用方只能再观察一次才能得知控件的当前值。
   return {
@@ -2023,29 +2216,76 @@ async function fillOnPage(
   }
 }
 
-/** 写入失败的说明。格式不合法、超出取值范围、约束不满足、页面不接受分别说明，后续操作各不相同。 */
+/** 可编辑区域回读文字时保留的最大字数。 */
+const MAX_EDITABLE_READ = 2_000
+
+/**
+ * 向可编辑区域写入：内容已由 `FILL_FN` 全部选中，以输入事件替换。空文本以 Delete 键删除选中内容。
+ *
+ * 回执带写入之后区域中的文字（`innerText`），与给定文本不一致时 `normalized` 为真，不按失败报告：
+ * 富文本编辑器会按段落重排换行与空白，逐字比较会把正常的写入判为失败。
+ */
+async function fillEditable(
+  page: PageHandle,
+  entry: RefRecord,
+  objectId: string,
+  ref: string,
+  inspect: Inspection,
+  text: string,
+): Promise<BrowserActReceipt> {
+  const { client } = page
+  const opts = { sessionId: entry.sessionId, timeoutMs: EVENT_TIMEOUT_MS }
+  if (text === '') {
+    const key = { key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 }
+    await client.send('Input.dispatchKeyEvent', { type: 'keyDown', ...key }, opts)
+    await client.send('Input.dispatchKeyEvent', { type: 'keyUp', ...key }, opts)
+  } else {
+    await client.send('Input.insertText', { text }, opts)
+  }
+  const read = await client
+    .send<{ result: { value?: string } }>(
+      'Runtime.callFunctionOn',
+      {
+        objectId,
+        functionDeclaration: `function () { return String(this.innerText || '').slice(0, ${MAX_EDITABLE_READ}) }`,
+        returnByValue: true,
+      },
+      { sessionId: entry.sessionId, timeoutMs: PREPARE_TIMEOUT_MS },
+    )
+    .catch(() => null)
+  const value = read?.result.value
+  return {
+    element: inspect.label ?? ref,
+    ...(value === undefined ? {} : { value, normalized: value.replace(/\n$/, '') !== text }),
+  }
+}
+
+/**
+ * 填写失败的说明。除 `rejected` 之外的原因都在写入之前判定（原值未改动），按执行前拒绝报告；
+ * `rejected` 是写入之后被页面改回，页面已经收到写入，按已执行报告。
+ */
 function fillFailure(ref: string, wanted: string, outcome: FillOutcome): CdpError {
   const type = outcome.type ?? ''
   switch (outcome.reason) {
     case 'disabled':
-      return new CdpError(`元素 ${ref} 当前不可用，未写入`)
+      return new BrowserArgumentError(`元素 ${ref} 当前不可用，未写入`)
     case 'readonly':
-      return new CdpError(`元素 ${ref} 为只读，未写入`)
+      return new BrowserArgumentError(`元素 ${ref} 为只读，未写入`)
     case 'not_fillable':
-      return new CdpError(`元素 ${ref} 不是可输入的控件`)
+      return new BrowserArgumentError(`元素 ${ref} 不是可输入的控件`)
     case 'no_empty':
-      return new CdpError(`${type} 类型没有空值，无法清空；请提供合法值`)
+      return new BrowserArgumentError(`${type} 类型没有空值，无法清空；请提供合法值`)
     case 'bad_type':
-      return new CdpError(`无法识别的输入类型 ${type}`)
+      return new BrowserArgumentError(`无法识别的输入类型 ${type}`)
     case 'bad_format':
-      return new CdpError(`${wanted} 不是 ${type} 类型接受的格式，原值未改动`)
+      return new BrowserArgumentError(`${wanted} 不是 ${type} 类型接受的格式，原值未改动`)
     case 'clamped':
-      return new CdpError(
+      return new BrowserArgumentError(
         `${wanted} 超出 ${type} 的取值范围，可写入的值为 ${outcome.value ?? ''}，原值未改动`,
       )
     case 'constraint':
       // 报告控件上设置的限制，不报告「可写入的值」：number 不钳制，该值会与被拒绝的值相同。
-      return new CdpError(
+      return new BrowserArgumentError(
         `${wanted} 不满足 ${type} 的约束${limitsText(outcome.limits)}，原值未改动`,
       )
     case 'rejected':

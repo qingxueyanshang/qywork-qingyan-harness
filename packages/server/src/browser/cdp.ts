@@ -17,7 +17,7 @@
  */
 
 import { log } from '@qywork/core'
-import type { LocalFileCheck } from '@qywork/tools'
+import type { BrowserRefusal, LocalFileCheck } from '@qywork/tools'
 
 /** 允许发出的域。增加一个域即扩大模型可访问的协议范围，须单独评估。 */
 const ALLOWED_DOMAINS = new Set([
@@ -73,8 +73,23 @@ export class CdpDisconnectedError extends CdpError {
     )
   }
 }
+/** 一个未处理的 JavaScript 对话框。`message` 与 `defaultPrompt` 是页面给出的文字，按上限截断。 */
+export interface JsDialog {
+  type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'
+  message: string
+  defaultPrompt?: string
+}
+
+/** 对话框文字保留的最大字数：页面给出的文字长度没有上限，会经由动作结果进入 message。 */
+const MAX_DIALOG_TEXT = 300
+
 /** 会话初始化命令被拒绝。调用方必须撤销控制，不换用其他命令重试。 */
 export class CdpInitError extends CdpError {}
+/** 参数在页面上不成立（帧不存在、选择器语法错误）。判定先于任何页面动作，因此声明 `executed:false`。 */
+export class BrowserArgumentError extends CdpError implements BrowserRefusal {
+  readonly errorKind = 'invalid_argument' as const
+  readonly executed = false as const
+}
 
 export interface SendOptions {
   sessionId?: string
@@ -196,6 +211,7 @@ const WAITER_RUNTIME = `(() => {
     value: (el, want) => el !== null && 'value' in el && String(el.value) === want,
   }
   window.__qyworkWait = (selector, timeoutMs, state, expected) => {
+    try { document.querySelector(selector) } catch (e) { return { badSelector: String((e && e.message) || e) } }
     const rec = make()
     const id = rec.id
     const test = states[state]
@@ -270,6 +286,13 @@ export class CdpClient {
    * `frameDetached` 移除；跨站帧提交时切换渲染进程，以 detach 的形式离开父会话。
    */
   #frameLoads = new Map<string, { root: string; loading: Set<string> }>()
+  /**
+   * 页会话 → 当前未处理的 JavaScript 对话框（alert、confirm、prompt、beforeunload）。
+   *
+   * 只按 `Page.javascriptDialogOpening` / `Page.javascriptDialogClosed` 维护，不另行推断。
+   * 对话框打开期间页面脚本停止执行，页内求值与输入事件都不会返回，调用方据此先处理对话框。
+   */
+  #dialogs = new Map<string, JsDialog>()
   /**
    * 本客户端按下、尚未确认抬起的键，键为 `会话|code`。取消与收尾据此补发 keyUp。
    *
@@ -562,6 +585,7 @@ export class CdpClient {
     }
     this.#pageSessions.delete(pageSessionId)
     this.#frameLoads.delete(pageSessionId)
+    this.#dialogs.delete(pageSessionId)
     for (const [key, held] of [...this.#heldKeys]) {
       if (held.sessionId === pageSessionId) this.#heldKeys.delete(key)
     }
@@ -690,7 +714,12 @@ export class CdpClient {
     return r.result.value ?? { gone: true }
   }
 
-  /** 登记一个等待器并返回它的页内 id。返回后调用方使用 `awaitWaiter` 等待结果。 */
+  /**
+   * 登记一个等待器并返回它的页内 id。返回后调用方使用 `awaitWaiter` 等待结果。
+   *
+   * 选择器语法错误由页内运行时先行判定并返回 `badSelector`，按参数错误拒绝。不要让它作为页内异常抛出：
+   * `#evalObject` 会把异常当作运行时缺失，报告「请重新观察后再等待」，调用方随后以同一选择器重试。
+   */
   async startWaiter(
     sessionId: string,
     spec: { selector: string; state: string; expected?: string },
@@ -699,10 +728,13 @@ export class CdpClient {
     const args = [spec.selector, timeoutMs, spec.state, spec.expected ?? null]
       .map((arg) => JSON.stringify(arg))
       .join(', ')
-    const created = await this.#evalObject<{ id?: number }>(
+    const created = await this.#evalObject<{ id?: number; badSelector?: string }>(
       sessionId,
       `window.__qyworkWait(${args})`,
     )
+    if (created.badSelector !== undefined) {
+      throw new BrowserArgumentError(`${JSON.stringify(spec.selector)} 不是合法的 CSS 选择器`)
+    }
     const id = created.id
     if (typeof id !== 'number') throw new CdpError('页内等待器登记失败')
     return id
@@ -822,6 +854,7 @@ export class CdpClient {
     this.#childSessions.clear()
     this.#pageSessions.clear()
     this.#frameLoads.clear()
+    this.#dialogs.clear()
     return { rejectedPending, waiterStats, keysReleased, mouseReleased, detached }
   }
 
@@ -1041,6 +1074,7 @@ export class CdpClient {
       return
     }
     this.#trackFrameLoad(msg)
+    this.#trackDialog(msg)
     if (!msg.method) return
     const event: CdpEvent = { method: msg.method, params: msg.params ?? {} }
     for (const watcher of [...this.#watchers]) {
@@ -1076,6 +1110,39 @@ export class CdpClient {
     await answer.catch((err: unknown) => {
       log.info('browser', `file 请求未能应答：${err instanceof Error ? err.message : String(err)}`)
     })
+  }
+
+  #trackDialog(msg: CdpMessage): void {
+    const sessionId = msg.sessionId ?? ''
+    if (msg.method === 'Page.javascriptDialogOpening') {
+      const p = msg.params ?? {}
+      this.#dialogs.set(sessionId, {
+        type: String(p.type ?? 'alert') as JsDialog['type'],
+        message: String(p.message ?? '').slice(0, MAX_DIALOG_TEXT),
+        ...(typeof p.defaultPrompt === 'string' && p.defaultPrompt
+          ? { defaultPrompt: p.defaultPrompt.slice(0, MAX_DIALOG_TEXT) }
+          : {}),
+      })
+    }
+    if (msg.method === 'Page.javascriptDialogClosed') this.#dialogs.delete(sessionId)
+  }
+
+  /** 该页会话当前未处理的对话框，没有时为 `null`。 */
+  dialogOf(sessionId: string): JsDialog | null {
+    return this.#dialogs.get(sessionId) ?? null
+  }
+
+  /**
+   * 处理该页会话上的对话框：确定或取消，prompt 可附带文字。处理之后按 `javascriptDialogClosed` 清除记录；
+   * 此处同时清除，避免关闭事件晚于下一次调用到达时仍被判定为有对话框。
+   */
+  async handleDialog(sessionId: string, accept: boolean, promptText?: string): Promise<void> {
+    await this.send(
+      'Page.handleJavaScriptDialog',
+      { accept, ...(promptText === undefined ? {} : { promptText }) },
+      { sessionId },
+    )
+    this.#dialogs.delete(sessionId)
   }
 
   /**

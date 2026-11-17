@@ -52,7 +52,12 @@ export type Point = { x: number; y: number }
  */
 export class Execution {
   /** 本次动作的绝对期限。定位、布局复核、业务事件与按住时长共用它。 */
-  readonly deadline = Date.now() + ACTION_BUDGET_MS
+  readonly deadline: number
+
+  /** `budgetMs` 缺省为 `ACTION_BUDGET_MS`；只有单元数与耗时成正比的动作（逐字输入）按单元数计算。 */
+  constructor(budgetMs = ACTION_BUDGET_MS) {
+    this.deadline = Date.now() + budgetMs
+  }
   #confirmed = 0
   #unknown = false
   #finished = false

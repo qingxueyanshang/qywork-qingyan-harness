@@ -36,7 +36,9 @@ import {
   type ToolSpec,
 } from '@qywork/agent'
 import {
+  BROWSER_DIALOG_NAMES,
   type BrowserActionKind,
+  type BrowserActivity,
   type BrowserExecution,
   type BrowserKeyPhase,
   type BrowserObservation,
@@ -48,8 +50,14 @@ import {
   type FollowUpObservation,
   type LocalFileCheck,
 } from './browser/port.ts'
-import { browserResult, isOptionsPage, MAX_META_CHARS } from './browser-results.ts'
-import { blank } from './desktop/shared/args.ts'
+import {
+  type BrowserChanges,
+  browserResult,
+  isOptionsPage,
+  MAX_META_CHARS,
+} from './browser-results.ts'
+// 参数判定与电脑控制共用一份（`given` 的理由见文件头第 3 条）：两份判据会逐渐不一致，同一个填充值在两类工具中结论不同。
+import { ArgError, blank, given, oneOf, str } from './desktop/shared/args.ts'
 import { resolveInWorkspace, resolveWritablePath, rootsOf } from './paths.ts'
 
 /** 单次等待的上限。超过该值的请求按上限截断，不接受任意时长。 */
@@ -93,41 +101,6 @@ const MAX_UPLOAD_FILES = 10
 /** `type` 单次输入的 Unicode 码点上限。 */
 const MAX_TYPE_POINTS = 2000
 
-/**
- * 调用端口之前判定的参数错误。
- *
- * 带 `errorKind` 是为了与路径拒绝（`PathEscapeError` 等）使用同一个出口：
- * 两者都是判定结果而不是故障，结果中 `executed` 必须为 `false`。
- */
-class ArgError extends Error {
-  readonly errorKind = 'invalid_argument'
-  constructor(message: string) {
-    super(message)
-    this.name = 'ArgError'
-  }
-}
-
-/** 判断可选参数是否已提供。`null`、空串与字符串 `"null"` 视为缺失，理由见文件头第 3 条。 */
-function given(raw: unknown): boolean {
-  if (raw === undefined || raw === null) return false
-  const text = String(raw).trim()
-  return text !== '' && text.toLowerCase() !== 'null'
-}
-
-function str(raw: unknown, field: string): string {
-  const value = String(raw ?? '').trim()
-  if (!value) throw new ArgError(`缺少 ${field}`)
-  return value
-}
-
-function oneOf<T extends string>(raw: unknown, allowed: readonly T[], field: string): T {
-  const value = String(raw ?? '')
-  if (!allowed.includes(value as T)) {
-    throw new ArgError(`${field} 只能是 ${allowed.join(' / ')}，收到 ${JSON.stringify(raw)}`)
-  }
-  return value as T
-}
-
 /** 先判断有限性再截断：`NaN` 与 `Infinity` 一旦透传，端口侧计算出的时限没有上限。 */
 function finite(raw: unknown, field: string): number {
   const value = Number(raw)
@@ -150,7 +123,7 @@ function nonNegative(raw: unknown, field: string): number {
  */
 function optionsForArg(
   args: Record<string, unknown>,
-): { observationId: string; ref: string; offset?: number } | undefined {
+): { ref: string; offset?: number } | undefined {
   const raw = args.optionsFor
   if (raw === undefined || raw === null) return undefined
   if (typeof raw !== 'object' || Array.isArray(raw)) {
@@ -166,7 +139,6 @@ function optionsForArg(
   }
   const one = raw as Record<string, unknown>
   return {
-    observationId: str(one.observationId, 'optionsFor.observationId'),
     ref: str(one.ref, 'optionsFor.ref'),
     ...(given(one.offset) ? { offset: nonNegative(one.offset, 'optionsFor.offset') } : {}),
   }
@@ -189,6 +161,7 @@ const ACT_FIELDS: Record<BrowserActionKind, readonly string[]> = {
   scroll: ['ref', 'point', 'deltaX', 'deltaY'],
   press: ['ref', 'phases'],
   drag: ['ref', 'point', 'keys', 'path'],
+  dialog: ['accept', 'text'],
 }
 
 const ACT_KINDS = Object.keys(ACT_FIELDS) as BrowserActionKind[]
@@ -204,6 +177,7 @@ const ACT_OPTIONAL = [
   'path',
   'deltaX',
   'deltaY',
+  'accept',
 ] as const
 
 /** 判断值是否为对象（不含数组）。 */
@@ -273,7 +247,9 @@ function pathArg(raw: unknown): BrowserPathStep[] {
     if (!isRecord(one)) throw new ArgError(`path[${i}] 必须是 {ref, point, durationMs} 对象`)
     return {
       ref: str(one.ref, `path[${i}].ref`),
-      ...(isRecord(one.point) ? { point: pointArg(one.point, `path[${i}].point`) } : {}),
+      ...(isRecord(one.point) && !blank(one.point)
+        ? { point: pointArg(one.point, `path[${i}].point`) }
+        : {}),
       ...(given(one.durationMs)
         ? { durationMs: finite(one.durationMs, `path[${i}].durationMs`) }
         : {}),
@@ -521,30 +497,43 @@ function optionsLine(page: BrowserOptionsPage): string {
 /**
  * 将动作回执与后续观察合成为一个结果。
  *
- * 有观察时展开到 `data` 顶层，其中的 `observationId` 可直接用于下一次动作；
+ * 有观察时展开到 `data` 顶层，其中的元素编号可直接用于下一次动作；多数元素未变化时只列变化（`changes`）。
  * 观察缺失时结果为失败而 `executed` 为真：动作已发送到网站，重复一次等于多提交一次。
- * 缺失时不沿用旧的 `observationId`。
+ *
+ * 提供 `activity` 时（`browser_act`）在 message 中写明动作之后页面上发生的事；全部为零且元素表与上次相同时
+ * 声明 `noEffect`，由连续无进展判定读取（`provablyNoEffect`）。
  */
 function withFollowUp(
   ctx: ToolContext,
   toolName: string,
   receipt: Record<string, unknown>,
   follow: FollowUpObservation,
-  opts: { lead: string; ok: boolean; advice: string },
+  opts: { lead: string; ok: boolean; advice: string; activity?: BrowserActivity },
 ): ToolOutcome {
   if (follow.observation) {
     const ob = follow.observation
+    const facts = opts.activity ? activityLine(opts.activity) : ''
+    const { changes, ...parts } = browserResult({
+      ctx,
+      toolName,
+      page: ob,
+      receipt,
+      ...(follow.settle ? { settle: follow.settle } : {}),
+      lead: `${opts.lead}${facts}${observationLine(ob)}`,
+      whole: true,
+      incremental: true,
+    })
+    const none = opts.ok && opts.activity !== undefined && noEffect(opts.activity, ob, changes)
     return {
       status: opts.ok ? 'success' : 'failure',
       ...(opts.ok ? {} : { executed: true }),
-      ...browserResult({
-        ctx,
-        toolName,
-        page: ob,
-        receipt,
-        ...(follow.settle ? { settle: follow.settle } : {}),
-        lead: `${opts.lead}${observationLine(ob)}`,
-      }),
+      ...parts,
+      ...(none
+        ? { message: `${parts.message}。这次动作没有产生可观察的效果`, noEffect: true }
+        : {}),
+      ...(!none && opts.activity && hasCanvas(ob)
+        ? { message: `${parts.message}。${CANVAS_NOTE}` }
+        : {}),
     }
   }
   return {
@@ -554,6 +543,103 @@ function withFollowUp(
     data: { ...receipt, observationError: follow.observationError },
     errorKind: 'browser_observation_unavailable',
   }
+}
+
+/**
+ * 动作之后页面上发生的事，写入 message。各项都是协调器统计的事实，不做推断。
+ */
+function activityLine(a: BrowserActivity): string {
+  const parts: string[] = []
+  if (a.navigated === true) parts.push('已跳转到新文档')
+  else if (a.navigated === false) parts.push('未跳转')
+  parts.push(a.requests > 0 ? `发出请求 ${a.requests} 个` : '未发出请求')
+  parts.push(a.domChanged ? 'DOM 有变化' : 'DOM 无变化')
+  for (const t of a.opened ?? []) {
+    parts.push(`打开了新标签页 ${t.tabId}（${clip(t.url, MAX_URL_CHARS)}）`)
+  }
+  if (a.fileChooser) {
+    parts.push(
+      `页面要求选择文件（${a.fileChooser.multiple ? '可多选' : '单个文件'}），用不带 ref 的 browser_upload 提交`,
+    )
+  }
+  for (const d of a.downloadsBlocked ?? []) {
+    parts.push(`下载被拦截（${d.reason}${d.suggestedName ? `：${d.suggestedName}` : ''}）`)
+  }
+  return `动作之后：${parts.join('、')}。`
+}
+
+/**
+ * 动作使页面弹出对话框。动作已送达（页面以对话框响应），页面在对话框处理之前无法读取，结果不带观察。
+ * 结果为成功：对话框是页面对本次动作的正常响应，需要模型决定确定或取消，不设默认选择。
+ */
+function dialogOpened(
+  action: BrowserActionKind,
+  receipt: Record<string, unknown>,
+  dialog: NonNullable<BrowserActivity['dialog']>,
+): ToolOutcome {
+  const name = BROWSER_DIALOG_NAMES[dialog.type]
+  return {
+    status: 'success',
+    message:
+      `${action} 已发出。页面弹出${name}：「${dialog.message}」。处理之前页面无法读取或操作；` +
+      '用 browser_act action=dialog 选择：accept=true 确定，accept=false 取消' +
+      (dialog.type === 'prompt' ? '，输入的文字放在 text' : ''),
+    data: receipt,
+  }
+}
+
+/** 处理页面上的对话框：确定或取消，prompt 附带 text。之后与其他动作相同地返回观察。 */
+async function answerDialog(
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+  browser: BrowserPort,
+  send: PortCall,
+): Promise<ToolOutcome> {
+  if (typeof args.accept !== 'boolean') {
+    throw new ArgError('dialog 必须提供 accept：true 确定，false 取消')
+  }
+  const input = {
+    tabId: str(args.tabId, 'tabId'),
+    action: 'dialog' as const,
+    accept: args.accept,
+    ...(given(args.text) ? { text: String(args.text) } : {}),
+    ...(args.screenshot === true ? { screenshot: true } : {}),
+  }
+  const r = await send(() => browser.act(input))
+  return withFollowUp(ctx, 'browser_act', receiptOf(r), r, {
+    lead: `已${args.accept ? '确定' : '取消'}${r.element ?? '对话框'}。`,
+    ok: true,
+    advice: '对话框已处理，先 browser_observe 确认页面状态。',
+    ...(r.activity ? { activity: r.activity } : {}),
+  })
+}
+
+/** 页面以 canvas 呈现内容时，有效的操作不改变元素表与 DOM。 */
+const CANVAS_NOTE = '页面含 canvas，画面的变化不反映在元素表中，需要时使用 screenshot=true'
+
+function hasCanvas(ob: BrowserObservation): boolean {
+  return ob.elements.some((e) => e.tag === 'canvas')
+}
+
+/**
+ * 能否确定这次动作没有产生任何效果：未跳转、未发出请求、DOM 未变化、没有新页与被拦截的下载，
+ * 且元素表与上一次观察逐字相同。
+ *
+ * 页面含 canvas 或 iframe 时不作此判定：canvas 的画面与跨站 iframe 内的请求和变化都不在统计之内。
+ * 不要放宽这些条件：该判定会使连续三次相同的动作停止本次运行。
+ */
+function noEffect(
+  a: BrowserActivity,
+  ob: BrowserObservation,
+  changes: BrowserChanges | null,
+): boolean {
+  if (a.navigated !== false || a.requests > 0 || a.domChanged) return false
+  if (a.opened?.length || a.downloadsBlocked?.length || a.fileChooser) return false
+  if (!changes || changes.added.length || changes.changed.length || changes.removed.length) {
+    return false
+  }
+  if (hasCanvas(ob) || ob.framesPending?.length) return false
+  return !ob.elements.some((e) => e.frame !== undefined)
 }
 
 /** 后续观察的三个键由 `withFollowUp` 单独投递，不属于回执字段。 */
@@ -583,6 +669,7 @@ function incompleteAct(
   execution: BrowserExecution,
   receipt: Record<string, unknown>,
   follow: FollowUpObservation,
+  activity: BrowserActivity | undefined,
 ): ToolOutcome {
   const partial = execution.state === 'partial'
   const units =
@@ -597,19 +684,17 @@ function incompleteAct(
   const advice = '先 browser_observe 确认页面实际状态，不要重放该动作。'
   const errorKind = partial ? 'browser_partial' : 'browser_unknown'
   if (follow.observation) {
-    return {
-      status: 'failure',
-      executed: true,
-      ...browserResult({
-        ctx,
-        toolName: 'browser_act',
-        page: follow.observation,
-        receipt,
-        ...(follow.settle ? { settle: follow.settle } : {}),
-        lead: `${lead}${observationLine(follow.observation)}。${advice}`,
-      }),
-      errorKind,
-    }
+    const { changes: _changes, ...parts } = browserResult({
+      ctx,
+      toolName: 'browser_act',
+      page: follow.observation,
+      receipt,
+      ...(follow.settle ? { settle: follow.settle } : {}),
+      lead: `${lead}${activity ? activityLine(activity) : ''}${observationLine(follow.observation)}。${advice}`,
+      whole: true,
+      incremental: true,
+    })
+    return { status: 'failure', executed: true, ...parts, errorKind }
   }
   return {
     status: 'failure',
@@ -628,7 +713,7 @@ function tabTarget(args: Record<string, unknown>): string | null {
 /** 元素内落点的参数形状，`point` 与 `path[].point` 共用。 */
 const POINT_SCHEMA = {
   type: 'object',
-  description: '元素内的落点：相对元素左上角的 CSS 像素偏移，缺省为元素中心',
+  description: '元素内的落点：相对元素左上角的 CSS 像素偏移，缺省或 x、y 均为 0 时为元素中心',
   properties: { x: { type: 'number' }, y: { type: 'number' } },
   required: ['x', 'y'],
   additionalProperties: false,
@@ -650,7 +735,7 @@ export const browserTabsTool: ToolSpec = {
     'create 打开的页由本会话控制，同时以页签显示在界面右侧面板中，用户可以直接查看；后续消息可直接对其 observe 与 act；' +
     '简单 HTML 可直接传入本地路径或 file URL，无需启动服务；依赖开发服务器、模块加载或接口的项目使用 http/https 地址。' +
     'tabId 由 create 的返回值给出，同一轮中无法预知；create 已按 url 加载页面，无需再 navigate。' +
-    '打开页面不附带观察，先 browser_observe 或 browser_wait 再操作。' +
+    'create 的结果直接附带该页的观察（元素表），可据此操作；页面仍在加载时用 browser_wait 等待目标出现。' +
     'list 返回的 controlled=false 是用户手动打开的页，' +
     '只有用户明确要求使用该页时才用 action=bind 接管。其他会话的页不在列表内。',
   parameters: {
@@ -683,9 +768,26 @@ export const browserTabsTool: ToolSpec = {
       if (action === 'create') {
         const url = await browserUrl(args.url, ctx)
         const tab = await send(() => browser.open(url))
+        const opened = `已打开 ${tab.tabId}：${clip(tab.url, MAX_URL_CHARS)}。`
+        // 建页之后直接观察一次：账本中新开的页绝大多数紧接着一次观察，分两次调用即多一轮模型请求。
+        // 观察失败不改变建页的结论，说明原因并由调用方再观察。
+        const ob = await browser
+          .observe({ tabId: tab.tabId })
+          .catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+        if (typeof ob !== 'string' && !isOptionsPage(ob)) {
+          const { changes: _changes, ...parts } = browserResult({
+            ctx,
+            toolName: 'browser_tabs',
+            page: ob,
+            receipt: { tab },
+            lead: `${opened}${observationLine(ob)}`,
+            whole: true,
+          })
+          return { status: 'success', ...parts }
+        }
         return {
           status: 'success',
-          message: `已打开 ${tab.tabId}：${clip(tab.url, MAX_URL_CHARS)}。先 browser_observe 或 browser_wait 再操作。`,
+          message: `${opened}未取得观察：${typeof ob === 'string' ? ob : '返回的不是元素表'}。先 browser_observe 或 browser_wait 再操作。`,
           data: { tab },
         }
       }
@@ -725,8 +827,8 @@ export const browserNavigateTool: ToolSpec = {
   description:
     '在已控制的标签页里跳转、后退、前进或重新加载。' +
     '简单 HTML 可直接打开本地路径或 file URL；需要服务的项目使用 http/https 地址。' +
-    '取得新观察时结果中直接返回元素表与 observationId，据此继续下一步，不必再调用 browser_observe。' +
-    'observationId 与元素 ref 属于产生它们的那次观察及其文档，文档更换后须使用新的观察。' +
+    '取得新观察时结果中直接返回元素表，据此继续下一步，不必再调用 browser_observe。' +
+    '元素 ref 属于其所在的文档，跳转更换文档之后旧编号作废，使用结果中的新编号。' +
     '未取得观察时结果为失败，先 browser_observe 确认当前页面，不要重复跳转。',
   parameters: {
     type: 'object',
@@ -768,7 +870,8 @@ export const browserObserveTool: ToolSpec = {
   ...BASE,
   name: 'browser_observe',
   description:
-    '返回页面的实际地址、标题、可操作元素与正文。返回的 observationId 与元素 ref 是 act 的前提。' +
+    '返回页面的实际地址、标题、可操作元素与正文。返回的元素 ref 是 act 的前提。' +
+    '同一份文档内同一个元素的 ref 固定，重新观察不更换编号；文档更换（跳转、刷新）之后旧编号作废。' +
     'query 只返回名称、正文或值包含该文字的元素，已知查找目标时优先使用。' +
     'truncated=true 时用 offset 获取后续元素。' +
     '元素较多时结果中只包含前一部分，delivery 注明返回了多少、本次采集了多少；' +
@@ -780,7 +883,7 @@ export const browserObserveTool: ToolSpec = {
     '浏览器自动填充的账号密码在页面上发生点击或按键之前无法读取，输入框 value 为空不代表未填写，点击输入框后再读取。' +
     '元素上的 optionsTruncated=true 表示该 select 的选项未列全：' +
     '用 optionsFor 按该元素继续读取，返回的是选项页而不是新观察，' +
-    'observationId 与 ref 沿用原观察；optionsFor 不能与 frame、screenshot、offset 同时提供。',
+    'optionsFor 不能与 frame、screenshot、offset 同时提供。',
   parameters: {
     type: 'object',
     properties: {
@@ -793,11 +896,10 @@ export const browserObserveTool: ToolSpec = {
         type: 'object',
         description: '读取一个 select 的选项，不产生新观察，也不移动页面',
         properties: {
-          observationId: { type: 'string', description: '该 ref 所属的观察' },
           ref: { type: 'string', description: 'select 元素的编号' },
           offset: { type: 'integer', description: '从第几个选项开始读取，默认 0' },
         },
-        required: ['observationId', 'ref'],
+        required: ['ref'],
         additionalProperties: false,
       },
     },
@@ -820,15 +922,19 @@ export const browserObserveTool: ToolSpec = {
         ...(optionsFor ? { optionsFor } : {}),
       }
       const r = await send(() => browser.observe(input))
-      return {
-        status: 'success',
-        ...browserResult({
-          ctx,
-          toolName: 'browser_observe',
-          page: r,
-          lead: isOptionsPage(r) ? optionsLine(r) : observationLine(r),
-        }),
-      }
+      const whole =
+        !optionsFor &&
+        input.frame === undefined &&
+        input.query === undefined &&
+        (input.offset ?? 0) === 0
+      const { changes: _changes, ...parts } = browserResult({
+        ctx,
+        toolName: 'browser_observe',
+        page: r,
+        lead: isOptionsPage(r) ? optionsLine(r) : observationLine(r),
+        whole,
+      })
+      return { status: 'success', ...parts }
     }),
 }
 
@@ -838,9 +944,8 @@ export const browserActTool: ToolSpec = {
   description:
     '对观察返回的元素执行动作：click 点击、dblclick 双击、rightclick 右键、hover 悬停、' +
     'fill 覆盖输入框内容、type 在当前光标处逐字输入、select 选择下拉项、scroll 滚动、' +
-    'press 按键、drag 拖动。' +
+    'press 按键、drag 拖动、dialog 处理页面弹出的对话框。' +
     '文字引用（包括 StaticText）也支持指针动作，按文字实际位置命中；fill、type、select 仍要求对应控件。' +
-    'observationId 取自 observe、act、navigate 或 wait 的返回结果。' +
     'press 用 phases 表达有时序的按键：每个阶段是该时段内按住的完整键集合与持续毫秒数，' +
     '切换阶段时只按下新增的键、松开移除的键，最后全部松开，按住期间不自动重复。' +
     '例如按住 W 1.2 秒并在其间轻点空格：' +
@@ -851,21 +956,28 @@ export const browserActTool: ToolSpec = {
     `单段不超过 ${INPUT_LIMITS.phaseMs} 毫秒、合计不超过 ${INPUT_LIMITS.totalMs} 毫秒；` +
     '更长的操作分多次调用，每次查看结果后再继续。' +
     'point 是元素内相对左上角的 CSS 像素偏移，用于 canvas 等同一元素内的不同位置，' +
-    '范围见元素的 size，缺省为元素中心，文本节点取实际文字片段中心。' +
+    '范围见元素的 size，缺省或 x、y 均为 0 时为元素中心，文本节点取实际文字片段中心。' +
     'holdMs 是 click / rightclick 的按住时长；keys 是指针动作期间按住的键，如 ["ShiftLeft"]。' +
     'drag 在 ref（与 point）处按下，沿 path 逐段移动后松开，每段指定终点 ref、可选的 point 与 durationMs。' +
     'scroll 的 deltaY 向下为正、deltaX 向右为正。' +
     'execution.state=completed 只表示输入已全部发出并确认，不代表网站业务完成；' +
     'partial 或 unknown 时查看 reason 与 unreleased，先观察确认，不要重放。' +
-    '动作之后取得新观察时，结果中直接返回新的元素表与 observationId，据此继续下一步，' +
+    '动作之后取得新观察时，结果中直接返回新的元素表，据此继续下一步，' +
     '不必再调用 browser_observe。' +
+    '多数元素与上一次观察相同时，结果只给出变化：changes.added 与 changes.changed 是新增与改变的元素，' +
+    'changes.removed 是消失的编号，未列出的元素与上一次观察逐字相同、编号继续有效。' +
+    'message 写明动作之后页面上发生的事：是否跳转、发出的请求数、DOM 是否变化、打开的新标签页、' +
+    '页面要求选择文件、被拦截的下载；各项均为零且元素表不变时写明「这次动作没有产生可观察的效果」。' +
+    '页面弹出对话框（提示框、确认框、输入框）时结果不带观察，页面在处理之前无法读取或操作；' +
+    '用 action=dialog 处理：accept=true 确定，accept=false 取消，输入框的文字放在 text。' +
+    '确定或取消由任务决定，确认框通常表示一次不可撤销的操作。' +
+    '页面要求选择文件时，用不带 ref 的 browser_upload 提交文件。' +
     'settle=quiet 表示动作之后页面发出的 XHR / fetch 请求均已结束且页面短暂没有变化；' +
     'deadline 表示到达等待上限时仍有请求未结束或页面仍在变化；' +
     '两者都不代表网站业务已完成，后续目标尚未出现时用 browser_wait。' +
     'screenshot=true 时动作之后的新观察附带截图，仅在元素表不足以判断画面时使用。' +
-    '页面未跳转时先前观察的元素编号仍然有效，同一个 observationId 可以在同一轮中发出多个动作，' +
-    '按发出顺序依次执行；同一轮中前一个动作失败不会阻止后续动作执行。' +
-    '输入后页面重建了节点时，后续动作因编号失效被拒绝，用最新的 observationId 重发。' +
+    '同一份文档内元素编号固定，同一轮中可以发出多个动作，按发出顺序依次执行；同一轮中前一个动作失败不会阻止后续动作执行。' +
+    '页面删除或替换了某个节点时，对它的动作因编号失效被拒绝，重新观察后使用新编号。' +
     'hover 之后的观察是采集时刻的页面，延时展开的层可能尚未出现，用 browser_wait 等待其出现。' +
     'type 的非键盘字符按文本插入，不产生完整的键盘与输入法事件。' +
     'drag 只覆盖指针事件驱动的拖动，不支持 HTML5 原生拖放。' +
@@ -875,7 +987,6 @@ export const browserActTool: ToolSpec = {
     type: 'object',
     properties: {
       tabId: { type: 'string' },
-      observationId: { type: 'string' },
       action: { type: 'string', enum: ACT_KINDS },
       ref: {
         type: 'string',
@@ -926,9 +1037,13 @@ export const browserActTool: ToolSpec = {
       },
       deltaX: { type: 'number', description: 'scroll 的横向滚动量，向右为正' },
       deltaY: { type: 'number', description: 'scroll 的滚动量，向下为正' },
+      accept: {
+        type: 'boolean',
+        description: 'action=dialog 时的选择：true 确定，false 取消',
+      },
       screenshot: { type: 'boolean' },
     },
-    required: ['tabId', 'observationId', 'action'],
+    required: ['tabId', 'action'],
     additionalProperties: false,
   },
   actionKind: 'call',
@@ -945,14 +1060,16 @@ export const browserActTool: ToolSpec = {
           throw new ArgError(`${action} 不接受 ${field}`)
         }
       }
+      if (action === 'dialog') return answerDialog(args, ctx, browser, send)
       const ref = given(args.ref) ? str(args.ref, 'ref') : undefined
       // 元素动作缺少 ref 时无法定位，drag 缺少路径时无法确定终点：均在调用端口前判定，
       // 否则一次必然失败的调用会被记为「动作已发出」，而该状态禁止重试。
       if (ref === undefined && action !== 'scroll' && action !== 'press') {
         throw new ArgError(`${action} 必须提供 ref`)
       }
-      // 没有 ref 时 `{ x: 0, y: 0 }` 是填充值，按未提供处理；有 ref 时它是元素的左上角，照常使用。
-      const pointGiven = given(args.point) && !(ref === undefined && blank(args.point))
+      // `{ x: 0, y: 0 }` 与缺省相同，取元素中心（`blank`）：strict schema 下模型在每次动作中填写该值。
+      // 不要按元素左上角执行：圆角控件的左上角命中父元素，命中判定接受祖先，动作发出而控件不响应。
+      const pointGiven = given(args.point) && !blank(args.point)
       if (pointGiven && ref === undefined) throw new ArgError('point 必须与 ref 一起提供')
       const point = pointGiven ? pointArg(args.point, 'point') : undefined
       const path = action === 'drag' ? pathArg(args.path) : undefined
@@ -963,7 +1080,6 @@ export const browserActTool: ToolSpec = {
 
       const input = {
         tabId: str(args.tabId, 'tabId'),
-        observationId: str(args.observationId, 'observationId'),
         action,
         ...(ref !== undefined ? { ref } : {}),
         ...(point ? { point } : {}),
@@ -978,14 +1094,16 @@ export const browserActTool: ToolSpec = {
       }
       const r = await send(() => browser.act(input))
       const receipt = receiptOf(r)
+      if (r.activity?.dialog) return dialogOpened(action, receipt, r.activity.dialog)
       if (r.execution && r.execution.state !== 'completed') {
-        return incompleteAct(ctx, action, r.execution, receipt, r)
+        return incompleteAct(ctx, action, r.execution, receipt, r, r.activity)
       }
       return withFollowUp(ctx, 'browser_act', receipt, r, {
         // `element` 已由采集侧按标签上限截断，此处直接输出，不要再增加长度检查。
         lead: `${action} 已发出${r.element ? `：${r.element}` : ''}。`,
         ok: true,
         advice: '动作已发出，先 browser_observe 确认页面状态，不要重复动作。',
+        ...(r.activity ? { activity: r.activity } : {}),
       })
     }),
 }
@@ -1000,7 +1118,7 @@ export const browserWaitTool: ToolSpec = {
     'text / value 是文本（空白归一）或控件值与 expected 完全相等，这两种必须提供 expected。' +
     '不提供 selector 时等待 timeoutMs 后再观察，用于等待页面中的动画、计时或脚本运行一段时间。' +
     `默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS} 毫秒。` +
-    '取得新观察时结果中直接返回元素表与 observationId，据此继续下一步，不必再调用 browser_observe；' +
+    '取得新观察时结果中直接返回元素表，据此继续下一步，不必再调用 browser_observe；' +
     '未取得观察时先 browser_observe 确认页面状态。' +
     '选择器只查询主文档，iframe 中的元素用 browser_observe 的 frame 参数。',
   parameters: {
@@ -1078,18 +1196,22 @@ export const browserUploadTool: ToolSpec = {
   ...BASE,
   name: 'browser_upload',
   description:
-    '把本机文件交给页面上的文件输入框，ref 必须指向 input[type=file]。' +
+    '把本机文件交给页面上的文件输入框，ref 指向 input[type=file]。' +
+    '点击上传按钮之后结果写明「页面要求选择文件」时不提供 ref，文件交给该请求：' +
+    '页面常把真正的文件输入框隐藏，它不在元素表中。' +
     `路径按 read_file 的读取范围裁决，范围外拒绝。一次最多 ${MAX_UPLOAD_FILES} 个文件。` +
     '结果不附带观察，需要读取页面状态时再调用 browser_observe。',
   parameters: {
     type: 'object',
     properties: {
       tabId: { type: 'string' },
-      observationId: { type: 'string' },
-      ref: { type: 'string' },
+      ref: {
+        type: 'string',
+        description: '文件输入框的编号；提交给「页面要求选择文件」的请求时省略',
+      },
       paths: { type: 'array', items: { type: 'string' } },
     },
-    required: ['tabId', 'observationId', 'ref', 'paths'],
+    required: ['tabId', 'paths'],
     additionalProperties: false,
   },
   actionKind: 'call',
@@ -1109,8 +1231,7 @@ export const browserUploadTool: ToolSpec = {
       }
       const input = {
         tabId: str(args.tabId, 'tabId'),
-        observationId: str(args.observationId, 'observationId'),
-        ref: str(args.ref, 'ref'),
+        ...(given(args.ref) ? { ref: str(args.ref, 'ref') } : {}),
         paths,
       }
       const r = await send(() => browser.upload(input))
@@ -1133,11 +1254,10 @@ export const browserDownloadTool: ToolSpec = {
     type: 'object',
     properties: {
       tabId: { type: 'string' },
-      observationId: { type: 'string' },
       ref: { type: 'string', description: '触发下载的元素编号' },
       path: { type: 'string', description: '工作区内的目标路径' },
     },
-    required: ['tabId', 'observationId', 'ref', 'path'],
+    required: ['tabId', 'ref', 'path'],
     additionalProperties: false,
   },
   actionKind: 'call',
@@ -1151,7 +1271,6 @@ export const browserDownloadTool: ToolSpec = {
       const absolutePath = await resolveWritablePath(rootsOf(ctx), str(args.path, 'path'))
       const input = {
         tabId: str(args.tabId, 'tabId'),
-        observationId: str(args.observationId, 'observationId'),
         ref: str(args.ref, 'ref'),
         absolutePath,
         timeoutMs: DOWNLOAD_TIMEOUT_MS,

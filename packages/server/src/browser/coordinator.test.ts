@@ -191,6 +191,8 @@ function fakeDevtools(marker: string): Devtools {
   let clicks = 0
   let keys = 0
   let mutations = 0
+  // 文档代数：每次导航加一，文档令牌随之更换。夹具只有一个页面。
+  let docGen = 1
   let commands = 0
   let requests = 0
   let linkName = '下载'
@@ -269,6 +271,8 @@ function fakeDevtools(marker: string): Devtools {
           if (cmd.method === 'Page.navigate' && state.navigateError) {
             result = { frameId: 'frame-1', errorText: state.navigateError }
           } else {
+            // 导航提交即更换文档：新文档的令牌不同，与真实浏览器相同。
+            docGen += 1
             result = { frameId: 'frame-1', loaderId: 'loader-1' }
             ws.send(
               JSON.stringify({
@@ -387,7 +391,7 @@ function fakeDevtools(marker: string): Devtools {
           else if (expr.includes('__qyworkDoc')) {
             result = {
               result: {
-                value: { token: 'doc-1', url: 'http://127.0.0.1:1/page', title: '夹具页' },
+                value: { token: `doc-${docGen}`, url: 'http://127.0.0.1:1/page', title: '夹具页' },
               },
             }
           } else if (expr.includes('__qyworkProbeRead')) {
@@ -708,13 +712,11 @@ test('同一会话的两个执行者各自打开页面，观察与动作各自�
   const [actA, actB] = await Promise.all([
     first?.act({
       tabId: tabA?.tabId ?? '',
-      observationId: obA?.observationId ?? '',
       action: 'click',
       ref: firstRef(obA),
     }),
     second?.act({
       tabId: tabB?.tabId ?? '',
-      observationId: obB?.observationId ?? '',
       action: 'click',
       ref: firstRef(obB),
     }),
@@ -726,7 +728,7 @@ test('同一会话的两个执行者各自打开页面，观察与动作各自�
   // 一方释放不影响另一方：控制槽按执行者划分，收尾只处理自身的控制槽。
   await first?.release()
   const again = await second?.observe({ tabId: tabB?.tabId ?? '' })
-  expect(again?.observationId).toBeTruthy()
+  expect(again?.tabId).toBeTruthy()
 })
 
 /**
@@ -740,7 +742,7 @@ test('页面被占用后，另一个执行者的每种页面操作均被拒绝�
   const holder = handle.browser?.portFor('cv_1', WS)
   const other = handle.browser?.portFor('cv_1', WS)
   const tab = await holder?.open('http://127.0.0.1:1/page')
-  const ob = await holder?.observe({ tabId: tab?.tabId ?? '' })
+  await holder?.observe({ tabId: tab?.tabId ?? '' })
   const tabId = tab?.tabId ?? ''
 
   const frames = host.received.length
@@ -750,12 +752,11 @@ test('页面被占用后，另一个执行者的每种页面操作均被拒绝�
     other?.bind(tabId),
     other?.observe({ tabId }),
     other?.navigate({ tabId, action: 'reload' }),
-    other?.act({ tabId, observationId: ob?.observationId ?? '', action: 'click', ref: '' }),
+    other?.act({ tabId, action: 'click', ref: '' }),
     other?.wait({ tabId, selector: '#x', state: 'visible', timeoutMs: 1_000 }),
-    other?.upload({ tabId, observationId: ob?.observationId ?? '', ref: '', paths: [target] }),
+    other?.upload({ tabId, ref: '', paths: [target] }),
     other?.download({
       tabId,
-      observationId: ob?.observationId ?? '',
       ref: '',
       absolutePath: target,
       timeoutMs: 1_000,
@@ -774,12 +775,12 @@ test('页面被占用后，另一个执行者的每种页面操作均被拒绝�
   // 另开一页不受影响：互斥范围为页面，而非会话。
   const mine = await other?.open('http://127.0.0.1:1/other')
   const obOther = await other?.observe({ tabId: mine?.tabId ?? '' })
-  expect(obOther?.observationId).toBeTruthy()
+  expect(obOther?.tabId).toBeTruthy()
 
   // 持有者释放之后可以接手。`release` 在收尾结束、控制槽移出表之后才返回。
   await holder?.release()
   const taken = await other?.observe({ tabId })
-  expect(taken?.observationId).toBeTruthy()
+  expect(taken?.tabId).toBeTruthy()
 })
 
 /**
@@ -907,7 +908,7 @@ test('持有者正在收尾时，接手者等待其结束后再占用页面，�
 
   g.open()
   await releasing
-  expect((await pending)?.observationId).toBeTruthy()
+  expect((await pending)?.tabId).toBeTruthy()
 })
 
 /**
@@ -926,7 +927,7 @@ test('建页不占用页面：其他执行者先操作该页时，创建者随�
   await listed(handle, 'bt_1', true, WS, 'cv_1')
   // 回包尚未到达，`opened` 已到达：另一个执行者据此占用该页。
   const ob = await rival?.observe({ tabId: 'bt_1' })
-  expect(ob?.observationId).toBeTruthy()
+  expect(ob?.tabId).toBeTruthy()
 
   g.open()
   expect((await opening)?.tabId).toBe('bt_1')
@@ -1012,7 +1013,7 @@ test('同一会话的三个执行者逐个释放后控制槽全部清空，页�
   expect((await next?.tabs())?.map((t) => t.tabId).sort()).toEqual([...tabs].sort())
   // 三页均不再被占用：新执行者可逐个接手。
   for (const tabId of tabs) {
-    expect((await next?.observe({ tabId }))?.observationId).toBeTruthy()
+    expect((await next?.observe({ tabId }))?.tabId).toBeTruthy()
   }
 })
 
@@ -1163,8 +1164,8 @@ test('停止指令收回每个成员的控制槽，页面保留在宿主上供�
   // 接手者的观察等待各自的收尾结束后才返回。
   const next = handle.browser?.portFor(parent, workspaceId)
   expect((await next?.tabs())?.map((t) => t.tabId).sort()).toEqual(['bt_1', 'bt_2'])
-  expect((await next?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
-  expect((await next?.observe({ tabId: 'bt_2' }))?.observationId).toBeTruthy()
+  expect((await next?.observe({ tabId: 'bt_1' }))?.tabId).toBeTruthy()
+  expect((await next?.observe({ tabId: 'bt_2' }))?.tabId).toBeTruthy()
 
   // 停止之后不再向宿主发送帧，也不关闭页面：停止只收回控制权。观察只经调试端点，不向宿主发帧；
   // 收尾已在上面两次观察返回之前结束，收尾发出的帧此时都已到达。
@@ -1243,13 +1244,11 @@ test('两条会话各自建页、观察、执行动作，互不影响', async ()
   const [actA, actB] = await Promise.all([
     a?.act({
       tabId: tabA?.tabId ?? '',
-      observationId: obA?.observationId ?? '',
       action: 'click',
       ref: firstRef(obA),
     }),
     b?.act({
       tabId: tabB?.tabId ?? '',
-      observationId: obB?.observationId ?? '',
       action: 'click',
       ref: firstRef(obB),
     }),
@@ -1266,7 +1265,6 @@ test('两条会话各自建页、观察、执行动作，互不影响', async ()
       await failure(
         b?.act({
           tabId: tabA?.tabId ?? '',
-          observationId: obB?.observationId ?? '',
           action: 'click',
           ref: firstRef(obB),
         }),
@@ -1288,7 +1286,6 @@ test('一条会话释放不影响另一条：B 的页、观察与连接均保留
   expect((await failure(a?.observe({ tabId: tabA?.tabId ?? '' }))).message).toMatch(/已经结束/)
   const acted = await b?.act({
     tabId: tabB?.tabId ?? '',
-    observationId: obB?.observationId ?? '',
     action: 'click',
     ref: firstRef(obB),
   })
@@ -1321,12 +1318,11 @@ test('停止之后同一会话立即重新启动，新执行不受上一次收�
   const second = handle.browser?.portFor('cv_1', WS)
   const ob = await second?.observe({ tabId: 'bt_1' })
   await releasing
-  expect(ob?.observationId).toBeTruthy()
+  expect(ob?.tabId).toBeTruthy()
 
   // 收尾属于旧控制槽，不能清除新控制槽的观察表。旧控制槽的收尾已随 `releasing` 结束。
   const acted = await second?.act({
     tabId: 'bt_1',
-    observationId: ob?.observationId ?? '',
     action: 'click',
     ref: firstRef(ob),
   })
@@ -1353,7 +1349,7 @@ test('宿主断开使全部控制作废，重连之后的新执行照常创建�
   // 旧控制槽的收尾按槽对象删除表项，不会删除重连之后新建的控制槽。旧槽没有调试连接，
   // 收尾只含微任务，在断开被处理时即已结束。
   const ob = await after?.observe({ tabId: tab?.tabId ?? '' })
-  expect(ob?.observationId).toBeTruthy()
+  expect(ob?.tabId).toBeTruthy()
 })
 
 test('CDP 单独断连后，同一执行可观察原页和新页，旧观察失效且其他执行不受影响', async () => {
@@ -1372,23 +1368,16 @@ test('CDP 单独断连后，同一执行可观察原页和新页，旧观察失�
   expect(handle.browser?.available()).toBe(true)
   expect(host.owners.get('bt_1')).toBe('cv_1')
   const restored = await port?.observe({ tabId: 'bt_1' })
-  expect(restored?.observationId).toBeTruthy()
-  expect(restored?.observationId).not.toBe(old?.observationId)
-  const stale = await failure(
-    port?.act({
-      tabId: 'bt_1',
-      observationId: old?.observationId ?? '',
-      action: 'click',
-      ref: firstRef(old),
-    }),
-  )
-  expect(stale.message).toContain('重新观察')
-  expect(devtools.clicks()).toBe(0)
+  expect(restored?.tabId).toBeTruthy()
+  // 文档未更换：重连之后同一个节点仍是原编号，断开之前取得的编号照常可用。
+  expect(firstRef(restored)).toBe(firstRef(old))
+  const again = await port?.act({ tabId: 'bt_1', action: 'click', ref: firstRef(old) })
+  expect(again?.element).toBe('dl')
+  expect(devtools.clicks()).toBe(1)
   expect(
     (
       await other?.act({
         tabId: 'bt_2',
-        observationId: unaffected?.observationId ?? '',
         action: 'click',
         ref: firstRef(unaffected),
       })
@@ -1421,7 +1410,7 @@ test('控制连接建立失败明确声明页面操作未执行，端点恢复�
   expect(result?.message).toContain('未执行')
   expect(devtools.commands()).toBe(0)
   devtools.rejectConnections = false
-  expect((await port?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
+  expect((await port?.observe({ tabId: 'bt_1' }))?.tabId).toBeTruthy()
 })
 
 /**
@@ -1557,7 +1546,6 @@ test('点击发出后 CDP 断连时保留结果不明，不重放点击，下一
   const result = await registry.get('browser_act')?.fn(
     {
       tabId: 'bt_1',
-      observationId: ob?.observationId ?? '',
       action: 'click',
       ref: firstRef(ob),
     },
@@ -1576,7 +1564,7 @@ test('点击发出后 CDP 断连时保留结果不明，不重放点击，下一
   expect(result?.message).toContain('不要直接重复')
   expect(devtools.clicks()).toBe(1)
   devtools.onCommand = null
-  expect((await port?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
+  expect((await port?.observe({ tabId: 'bt_1' }))?.tabId).toBeTruthy()
   expect(devtools.clicks()).toBe(1)
 })
 
@@ -1593,7 +1581,6 @@ test('不属于本会话的标签页在发送请求之前被拦截，属于本�
       await failure(
         port?.download({
           tabId: 'bt_9',
-          observationId: ob?.observationId ?? '',
           ref: firstRef(ob),
           absolutePath: target,
           timeoutMs: 5_000,
@@ -1607,7 +1594,6 @@ test('不属于本会话的标签页在发送请求之前被拦截，属于本�
   // 属于本会话的页照常发送到宿主，并携带本会话 id。
   const pending = port?.download({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     ref: firstRef(ob),
     absolutePath: target,
     timeoutMs: 5_000,
@@ -1633,7 +1619,7 @@ test('归属跨消息稳定：同一会话的下一条消息直接操作，不�
   // 第二条消息：新端口，同一会话。直接调用 observe 即可：该页仍属于 cv_1。
   const second = handle.browser?.portFor('cv_1', WS)
   const ob = await second?.observe({ tabId: 'bt_1' })
-  expect(ob?.observationId).toBeTruthy()
+  expect(ob?.tabId).toBeTruthy()
   // 全程没有 bind、没有交接：宿主只收到过一次 create。
   expect(host.ops()).toEqual(['create'])
   // 归属保留，该页对 cv_1 可控。
@@ -1675,7 +1661,7 @@ test('用户打开的页默认不可操作，点名 bind 后才归属本会话',
   ])
   // 接管之后可直接操作。
   const ob = await port?.observe({ tabId: 'bt_u' })
-  expect(ob?.observationId).toBeTruthy()
+  expect(ob?.tabId).toBeTruthy()
 })
 
 /** AI 主动关页与其他页面操作经由同一准入检查：归属、工作区、页级占用均须校验。 */
@@ -1860,7 +1846,6 @@ test('释放之后旧端口的观察与动作一并失败', async () => {
       await failure(
         port?.act({
           tabId: tab?.tabId ?? '',
-          observationId: ob?.observationId ?? '',
           action: 'click',
           ref: firstRef(ob),
         }),
@@ -1886,7 +1871,6 @@ test('下载：先授权再点击，等待宿主返回终态，最后核对磁�
 
   const pending = port?.download({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     ref: firstRef(ob),
     absolutePath: target,
     timeoutMs: 5_000,
@@ -1913,7 +1897,6 @@ test('被拦截的下载如实写入结果，不误报成功', async () => {
 
   const pending = port?.download({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     ref: firstRef(ob),
     absolutePath: join(tmpdir(), 'never-written.bin'),
     timeoutMs: 5_000,
@@ -1939,42 +1922,8 @@ test('导航一次即作废旧观察，动作无法使用过期编号', async ()
       await failure(
         port?.act({
           tabId: tab?.tabId ?? '',
-          observationId: ob?.observationId ?? '',
           action: 'click',
           ref: firstRef(ob),
-        }),
-      )
-    ).message,
-  ).toMatch(/失效/)
-})
-
-test('导航只作废目标页的观察，其他标签页的编号照常可用', async () => {
-  const { handle } = await ready()
-  const port = handle.browser?.portFor('cv_1', WS)
-  const one = await port?.open('http://127.0.0.1:1/page')
-  const two = await port?.open('http://127.0.0.1:1/other')
-  const obOne = await port?.observe({ tabId: one?.tabId ?? '' })
-  const obTwo = await port?.observe({ tabId: two?.tabId ?? '' })
-
-  await port?.navigate({ tabId: one?.tabId ?? '', action: 'reload' })
-
-  // 另一页未受本次导航影响，其编号仍指向有效节点。
-  const other = await port?.act({
-    tabId: two?.tabId ?? '',
-    observationId: obTwo?.observationId ?? '',
-    action: 'click',
-    ref: firstRef(obTwo),
-  })
-  expect(other?.element).toBe('dl')
-  // 发生导航的页面旧编号作废。
-  expect(
-    (
-      await failure(
-        port?.act({
-          tabId: one?.tabId ?? '',
-          observationId: obOne?.observationId ?? '',
-          action: 'click',
-          ref: firstRef(obOne),
         }),
       )
     ).message,
@@ -1989,19 +1938,18 @@ test('动作之后直接返回新观察，据此再次执行动作时无需另�
 
   const first = await port?.act({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     action: 'click',
     ref: firstRef(ob),
   })
   if (!first || first.observation === null) throw new Error('本次动作本应返回观察')
   expect(first.element).toBe('dl')
   expect(first.settle).toBe('quiet')
-  expect(first.observation.observationId).not.toBe(ob?.observationId)
+  // 同一份文档内编号固定：动作之后的观察中同一个节点仍是原编号。
+  expect(first.observation.elements[0]?.ref).toBe(firstRef(ob))
 
   // 取回的编号直接使用：其间没有任何一次 observe。
   const second = await port?.act({
     tabId: tab?.tabId ?? '',
-    observationId: first.observation.observationId,
     action: 'click',
     ref: first.observation.elements[0]?.ref ?? '',
   })
@@ -2010,17 +1958,16 @@ test('动作之后直接返回新观察，据此再次执行动作时无需另�
 })
 
 /**
- * `browser_act` 的说明允许模型在同一轮中使用同一个 observationId 连续发送多个输入。
- * 动作后的自动观察只登记新编号，不作废同一文档里先前的那一份。
+ * `browser_act` 的说明允许模型在同一轮中按先前取得的编号连续发送多个输入。
+ * 动作后的自动观察合并进同一文档的定位信息，不作废先前取得的编号。
  */
-test('动作之后先前的观察仍可用：同一个 observationId 连续执行两次动作', async () => {
+test('动作之后先前取得的编号仍可用：同一个编号连续执行两次动作', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
   const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
   const input = {
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     action: 'click' as const,
     ref: firstRef(ob),
   }
@@ -2041,7 +1988,6 @@ test('动作发出后无法取得观察时保留回执，并说明未能观察�
   devtools.failObserve = true
   const r = await port?.act({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     action: 'click',
     ref: firstRef(ob),
   })
@@ -2062,7 +2008,6 @@ test('探针读数缺少字段时不报告静默，按阶段上限如实标注',
   devtools.blindProbe = true
   const r = await port?.act({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     action: 'click',
     ref: firstRef(ob),
   })
@@ -2087,7 +2032,6 @@ async function clickOnce(networkLimitMs?: number): Promise<{
   const click = () =>
     port.act({
       tabId: tab.tabId,
-      observationId: ob.observationId,
       action: 'click',
       ref: firstRef(ob),
     })
@@ -2164,15 +2108,14 @@ test('取消之后不再开始新观察，仍能返回动作回执', async () =>
   const tab = await port?.open('http://127.0.0.1:1/page')
   const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
 
-  // 点击已发出、静默探针刚登记时释放控制：此后不得再开始新观察。
+  // 点击已发出、静默采样第一次读取探针时释放控制：此后不得再开始新观察。探针在点击之前登记，不能以登记作为触发点。
   devtools.onCommand = (_method, expression) => {
-    if (!expression.includes('__qyworkProbe(')) return
+    if (!expression.includes('__qyworkProbeRead(')) return
     devtools.onCommand = null
     void port?.release()
   }
   const r = await port?.act({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     action: 'click',
     ref: firstRef(ob),
   })
@@ -2180,6 +2123,28 @@ test('取消之后不再开始新观察，仍能返回动作回执', async () =>
   expect(r.element).toBe('dl')
   expect(r.observationError).toMatch(/取消/)
   expect(devtools.clicks()).toBe(1)
+})
+
+/**
+ * 原始失败形状：主文档加载超过静默阶段上限（1.5 s）时，导航之后的观察在页面加载到一半时采集，
+ * 账本中跳转之后紧接一次观察或等待的占 77/170。主文档仍在加载时与未结束的请求一样顺延上限。
+ */
+test('导航之后主文档仍在加载时等待加载结束再观察，结果为静默而不是到期', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  await port?.observe({ tabId: tab?.tabId ?? '' })
+  devtools.onCommand = (method) => {
+    if (method !== 'Page.reload') return
+    devtools.onCommand = null
+    devtools.emit('Page.frameStartedLoading', { frameId: 'frame-1' })
+    setTimeout(() => devtools.emit('Page.frameStoppedLoading', { frameId: 'frame-1' }), 1_800)
+  }
+  const started = Date.now()
+  const r = await port?.navigate({ tabId: tab?.tabId ?? '', action: 'reload' })
+  expect(Date.now() - started).toBeGreaterThanOrEqual(1_800)
+  if (!r || r.observation === null) throw new Error('本次导航本应返回观察')
+  expect(r.settle).toBe('quiet')
 })
 
 test('导航返回导航之后的观察，不再另外返回标签信息', async () => {
@@ -2247,7 +2212,6 @@ test('同一页上一次调用的迟到终态不结算本次调用，无授权�
 
   const pending = port?.download({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     ref: firstRef(ob),
     absolutePath: target,
     timeoutMs: 3_000,
@@ -2292,7 +2256,6 @@ test('两条会话下载到同一路径时后一份授权被拒绝，路径不�
 
   const held = a?.download({
     tabId: tabA?.tabId ?? '',
-    observationId: obA?.observationId ?? '',
     ref: firstRef(obA),
     absolutePath: shared,
     timeoutMs: 5_000,
@@ -2305,7 +2268,6 @@ test('两条会话下载到同一路径时后一份授权被拒绝，路径不�
       await failure(
         b?.download({
           tabId: tabB?.tabId ?? '',
-          observationId: obB?.observationId ?? '',
           ref: firstRef(obB),
           absolutePath: shared,
           timeoutMs: 5_000,
@@ -2317,7 +2279,6 @@ test('两条会话下载到同一路径时后一份授权被拒绝，路径不�
   // 路径不同时不冲突：授权照常登记，点击照常发出。
   const other = b?.download({
     tabId: tabB?.tabId ?? '',
-    observationId: obB?.observationId ?? '',
     ref: firstRef(obB),
     absolutePath: join(dir, 'other.bin'),
     timeoutMs: 5_000,
@@ -2339,7 +2300,6 @@ test('释放撤销未消费的授权，正在等待终态的下载按未确认�
 
   const pending = port?.download({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     ref: firstRef(ob),
     absolutePath: join(tmpdir(), 'qywork-never.bin'),
     timeoutMs: 30_000,
@@ -2372,7 +2332,6 @@ test('点击发送途中释放，下载同样按未确认终态返回，授权�
   const outcome = failure(
     port?.download({
       tabId: tab?.tabId ?? '',
-      observationId: ob?.observationId ?? '',
       ref: firstRef(ob),
       absolutePath: join(tmpdir(), 'qywork-never-click.bin'),
       timeoutMs: 30_000,
@@ -2394,7 +2353,7 @@ test('点击发送途中释放，下载同样按未确认终态返回，授权�
   }
 })
 
-test('optionsFor 按原观察读取一页选项，不产生新的观察编号', async () => {
+test('optionsFor 按编号读取一页选项，不改变元素编号', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -2404,40 +2363,37 @@ test('optionsFor 按原观察读取一页选项，不产生新的观察编号', 
 
   const options = await port?.observe({
     tabId: tab?.tabId ?? '',
-    optionsFor: { observationId: ob.observationId, ref: pick?.ref ?? '' },
+    optionsFor: { ref: pick?.ref ?? '' },
   })
   if (!options || 'elements' in options) throw new Error('本次读取本应返回选项页')
-  expect(options.observationId).toBe(ob.observationId)
   expect(options.total).toBe(3)
   expect(options.items).toHaveLength(3)
 
   // 未分配新编号：原观察中的动作照常可用。
   const acted = await port?.act({
     tabId: tab?.tabId ?? '',
-    observationId: ob.observationId,
     action: 'click',
     ref: firstRef(ob),
   })
   expect(acted?.element).toBe('dl')
 })
 
-test('optionsFor 使用过期观察时明确失败，不改为采集新观察', async () => {
+test('optionsFor 使用本页没有的编号时明确失败，不改为采集新观察', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
   const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
 
-  expect(
-    (
-      await failure(
-        port?.observe({
-          tabId: tab?.tabId ?? '',
-          optionsFor: { observationId: 'ob_gone', ref: 'e1' },
-        }),
-      )
-    ).message,
-  ).toMatch(/失效/)
-  expect(ob?.observationId).toBeTruthy()
+  const gone = await failure(
+    port?.observe({
+      tabId: tab?.tabId ?? '',
+      optionsFor: { ref: 'e999' },
+    }),
+  )
+  expect(gone.message).toMatch(/失效/)
+  // 判定先于任何帧：按执行前拒绝声明，调用方据此知道页面未被改动。
+  expect(gone).toMatchObject({ executed: false, errorKind: 'stale_ref' })
+  expect(ob?.tabId).toBeTruthy()
 })
 
 test('多事件动作中途失败时仍返回后续观察，回执如实标注未完成', async () => {
@@ -2450,7 +2406,6 @@ test('多事件动作中途失败时仍返回后续观察，回执如实标注�
   devtools.failKeyAt = 3
   const r = await port?.act({
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     action: 'type',
     ref: firstRef(ob),
     text: 'ab',
@@ -2458,7 +2413,148 @@ test('多事件动作中途失败时仍返回后续观察，回执如实标注�
   if (!r || r.observation === null) throw new Error('本次动作本应返回观察')
   expect(r.execution).toMatchObject({ state: 'partial', confirmedUnits: 1 })
   expect(r.execution?.reason).toContain('Input.dispatchKeyEvent')
-  expect(r.observation.observationId).not.toBe(ob?.observationId)
+  expect(r.observation.elements.length).toBeGreaterThan(0)
+})
+
+/**
+ * 动作期间页面上发生的事（`activity`）。原始失败形状：点击之后结果只有「已发出」，模型无从得知页面没有任何反应。
+ */
+test('动作结果给出动作期间的事实：未跳转、未发出请求、DOM 未变化', async () => {
+  const { click } = await clickOnce()
+  const r = await click()
+  expect(r.activity).toEqual({ navigated: false, requests: 0, domChanged: false })
+})
+
+test('动作之后发出的请求与 DOM 变化计入动作期间的事实', async () => {
+  const { devtools, click } = await clickOnce()
+  devtools.request = { type: 'XHR', finishMs: 50 }
+  const r = await click()
+  expect(r.activity?.requests).toBe(1)
+  expect(r.activity?.domChanged).toBe(true)
+  expect(r.activity?.navigated).toBe(false)
+})
+
+test('动作期间页面打开的本会话新页与未授权的被拦截下载计入动作期间的事实', async () => {
+  const { handle, host, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
+  devtools.onCommand = (method) => {
+    if (method !== 'Input.dispatchMouseEvent') return
+    devtools.onCommand = null
+    host.emit({
+      kind: 'opened',
+      tabId: 'bt_9',
+      url: 'http://127.0.0.1:1/popup',
+      title: '弹出页',
+      marker: 'marker-9',
+      workspaceId: WS,
+      conversationId: 'cv_1',
+    })
+    host.emit({
+      kind: 'download.blocked',
+      tabId: tab?.tabId ?? '',
+      reason: 'unauthorized',
+      suggestedName: 'a.zip',
+    })
+    // 另一条会话的新页与已授权下载的终态不属于本次动作。
+    host.emit({
+      kind: 'opened',
+      tabId: 'bt_8',
+      url: 'x',
+      title: '',
+      marker: 'm8',
+      workspaceId: WS,
+      conversationId: 'cv_2',
+    })
+  }
+  const r = await port?.act({ tabId: tab?.tabId ?? '', action: 'click', ref: firstRef(ob) })
+  expect(r?.activity?.opened?.map((t) => t.tabId)).toEqual(['bt_9'])
+  expect(r?.activity?.downloadsBlocked).toEqual([
+    { reason: 'unauthorized', suggestedName: 'a.zip' },
+  ])
+})
+
+/**
+ * 原始失败形状：点击弹出确认框之后，输入事件 5 秒后结果未知，此后每次读取页面都超时，模型只能请用户处理。
+ */
+test('动作弹出对话框时立即返回对话框的文字，处理之前拒绝读取，由 dialog 动作选择确定', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const tabId = tab?.tabId ?? ''
+  const ob = await port?.observe({ tabId })
+  devtools.onCommand = (method) => {
+    if (method !== 'Input.dispatchMouseEvent') return
+    devtools.onCommand = null
+    devtools.emit('Page.javascriptDialogOpening', { type: 'confirm', message: '确定删除？' })
+  }
+  const r = await port?.act({ tabId, action: 'click', ref: firstRef(ob) })
+  expect(r?.observation).toBeNull()
+  expect(r?.activity?.dialog).toEqual({ type: 'confirm', message: '确定删除？' })
+
+  // 对话框打开期间页面无法读取：在发出任何命令之前拒绝，并说明如何处理。
+  const before = devtools.commands()
+  const blocked = await failure(port?.observe({ tabId }))
+  expect(blocked.message).toContain('确认框：「确定删除？」')
+  expect(blocked).toMatchObject({ executed: false, errorKind: 'target_blocked' })
+  expect(devtools.commands()).toBe(before)
+
+  const answered = await port?.act({ tabId, action: 'dialog', accept: true })
+  const sent = devtools.calls.filter((c) => c.method === 'Page.handleJavaScriptDialog')
+  expect(sent.map((c) => c.params)).toEqual([{ accept: true }])
+  expect(answered?.element).toBe('确认框')
+  expect(answered?.observation).not.toBeNull()
+  expect((await port?.observe({ tabId }))?.tabId).toBe(tabId)
+})
+
+test('页面上没有对话框时 dialog 动作按参数错误拒绝，不发送处理命令', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  await port?.observe({ tabId: tab?.tabId ?? '' })
+  const err = await failure(port?.act({ tabId: tab?.tabId ?? '', action: 'dialog', accept: false }))
+  expect(err).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+  expect(devtools.calls.some((c) => c.method === 'Page.handleJavaScriptDialog')).toBe(false)
+})
+
+/**
+ * 原始失败形状：页面把文件输入框隐藏，只显示样式按钮；点击按钮弹出系统选择窗口，模型无法操作，
+ * 隐藏的输入框不在元素表中，上传工具没有目标。
+ */
+test('动作期间页面要求选择文件时写入动作事实，不带 ref 的上传交给该请求', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const tabId = tab?.tabId ?? ''
+  const ob = await port?.observe({ tabId })
+  devtools.onCommand = (method) => {
+    if (method !== 'Input.dispatchMouseEvent') return
+    devtools.onCommand = null
+    devtools.emit('Page.fileChooserOpened', {
+      frameId: 'frame-1',
+      mode: 'selectSingle',
+      backendNodeId: 77,
+    })
+  }
+  const r = await port?.act({ tabId, action: 'click', ref: firstRef(ob) })
+  expect(r?.activity?.fileChooser).toEqual({ multiple: false })
+  // 只在动作期间拦截：动作前开启，动作后关闭。关闭命令不等待回包，按到达判定。
+  const toggles = () =>
+    devtools.calls
+      .filter((c) => c.method === 'Page.setInterceptFileChooserDialog')
+      .map((c) => c.params.enabled)
+  await until(() => toggles().length === 2, '拦截已关闭')
+  expect(toggles()).toEqual([true, false])
+
+  const single = await failure(port?.upload({ tabId, paths: ['C:/a.txt', 'C:/b.txt'] }))
+  expect(single.message).toContain('只接受一个文件')
+  expect(await port?.upload({ tabId, paths: ['C:/a.txt'] })).toEqual({ files: ['C:/a.txt'] })
+  const set = devtools.calls.filter((c) => c.method === 'DOM.setFileInputFiles')
+  expect(set.map((c) => c.params)).toEqual([{ files: ['C:/a.txt'], backendNodeId: 77 }])
+  // 请求已提交：再次不带 ref 上传时没有目标。
+  const again = await failure(port?.upload({ tabId, paths: ['C:/a.txt'] }))
+  expect(again).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
 })
 
 test('动作缺省 screenshot 时观察不带截图，也不发出截图命令', async () => {
@@ -2476,7 +2572,6 @@ test('screenshot=true 的动作回执观察带截图；动作未完成时同样�
   const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
   const base = {
     tabId: tab?.tabId ?? '',
-    observationId: ob?.observationId ?? '',
     ref: firstRef(ob),
     screenshot: true,
   }

@@ -16,6 +16,7 @@ import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
 import { openBatchBudget, Ports, provide } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
+  type BrowserActInput,
   type BrowserActResult,
   type BrowserObservation,
   type BrowserOptionsPage,
@@ -38,7 +39,6 @@ const OB: BrowserObservation = {
   tabId: 'bt_1',
   url: 'https://a/',
   title: 'A',
-  observationId: 'ob_1',
   elements: [{ ref: 'e1', role: 'button', name: '提交', tag: 'button' }],
   truncated: false,
 }
@@ -93,7 +93,6 @@ function fakeBrowser(over: Partial<BrowserPort> = {}): {
       if (!input.optionsFor) return OB
       return {
         tabId: input.tabId,
-        observationId: input.optionsFor.observationId,
         ref: input.optionsFor.ref,
         items: [
           { label: 'A', value: 'a' },
@@ -218,7 +217,7 @@ describe('发送动作之前的终态', () => {
     const ac = new AbortController()
     ac.abort()
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', action: 'click', ref: 'e1' },
+      { tabId: 'bt_1', action: 'click', ref: 'e1' },
       ctxWith('/w', port, ac.signal),
     )
     expect(r.status).toBe('failure')
@@ -246,7 +245,10 @@ describe('发送动作之前的终态', () => {
     for (const url of ['https://a/', 'http://localhost:8766/pelican-bike.html']) {
       const ok = await browserTabsTool.fn({ action: 'create', url }, ctx)
       expect(ok.status).toBe('success')
-      expect(calls.at(-1)).toEqual({ method: 'open', input: url })
+      expect(calls.filter((c) => c.method === 'open').at(-1)).toEqual({
+        method: 'open',
+        input: url,
+      })
     }
   })
 
@@ -260,7 +262,10 @@ describe('发送动作之前的终态', () => {
     for (const input of [name, absolute, url]) {
       const r = await browserTabsTool.fn({ action: 'create', url: input }, ctxWith(root, port))
       expect(r.status).toBe('success')
-      expect(calls.at(-1)).toEqual({ method: 'open', input: url })
+      expect(calls.filter((c) => c.method === 'open').at(-1)).toEqual({
+        method: 'open',
+        input: url,
+      })
     }
     const withSuffix = `${url}?preview=1#scene`
     const r = await browserNavigateTool.fn(
@@ -341,7 +346,10 @@ describe('发送动作之前的终态', () => {
     for (const url of [outsideFile, pathToFileURL(outsideFile).href, join(link, 'a.txt')]) {
       const r = await browserTabsTool.fn({ action: 'create', url }, ctxWith(root, port))
       expect(r.status).toBe('success')
-      expect(calls.at(-1)).toEqual({ method: 'open', input: pathToFileURL(outsideFile).href })
+      expect(calls.filter((c) => c.method === 'open').at(-1)).toEqual({
+        method: 'open',
+        input: pathToFileURL(outsideFile).href,
+      })
     }
   })
 
@@ -380,7 +388,7 @@ describe('发送动作之前的终态', () => {
   test('无法识别的动作名直接拒绝，不推测近似的动作', async () => {
     const { port, calls } = fakeBrowser()
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', action: 'swipe', ref: 'e1' },
+      { tabId: 'bt_1', action: 'swipe', ref: 'e1' },
       ctxWith('/w', port),
     )
     expect(r.message).toContain('action 只能是')
@@ -391,26 +399,17 @@ describe('发送动作之前的终态', () => {
   test('元素动作缺少 ref、press 缺少 phases 时在调用端口前拒绝', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
-    const noRef = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', action: 'click' },
-      ctx,
-    )
+    const noRef = await browserActTool.fn({ tabId: 'bt_1', action: 'click' }, ctx)
     expect(noRef.executed).toBe(false)
     expect(noRef.message).toContain('ref')
 
-    const noKey = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', action: 'press' },
-      ctx,
-    )
+    const noKey = await browserActTool.fn({ tabId: 'bt_1', action: 'press' }, ctx)
     expect(noKey.executed).toBe(false)
     expect(noKey.message).toContain('phases')
     expect(calls).toHaveLength(0)
 
     // scroll 不带 ref 是合法的，作用于整页。
-    const scroll = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', action: 'scroll', deltaY: 300 },
-      ctx,
-    )
+    const scroll = await browserActTool.fn({ tabId: 'bt_1', action: 'scroll', deltaY: 300 }, ctx)
     expect(scroll.status).toBe('success')
     expect(calls.at(-1)?.input).toMatchObject({ action: 'scroll', deltaY: 300 })
   })
@@ -423,7 +422,7 @@ describe('发送动作之前的终态', () => {
     expect(bad.message).toContain('timeoutMs')
 
     const inf = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', action: 'scroll', deltaY: Number.POSITIVE_INFINITY },
+      { tabId: 'bt_1', action: 'scroll', deltaY: Number.POSITIVE_INFINITY },
       ctx,
     )
     expect(inf.executed).toBe(false)
@@ -432,7 +431,7 @@ describe('发送动作之前的终态', () => {
 })
 
 describe('动作的适用范围', () => {
-  const base = { tabId: 'bt_1', observationId: 'ob_1' }
+  const base = { tabId: 'bt_1' }
 
   test('schema 的动作枚举与运行时接受的动作一致', () => {
     const actionEnum = (browserActTool.parameters as { properties: { action: { enum: string[] } } })
@@ -448,6 +447,7 @@ describe('动作的适用范围', () => {
       'scroll',
       'press',
       'drag',
+      'dialog',
     ])
   })
 
@@ -531,7 +531,12 @@ describe('动作的适用范围', () => {
 
     // 同一元素上的两个不同点构成合法的拖动，canvas 依赖它绘制线条。
     const line = await browserActTool.fn(
-      { ...drag, ref: 'e1', point: { x: 0, y: 0 }, path: [{ ref: 'e1', point: { x: 50, y: 0 } }] },
+      {
+        ...drag,
+        ref: 'e1',
+        point: { x: 10, y: 10 },
+        path: [{ ref: 'e1', point: { x: 50, y: 10 } }],
+      },
       ctx,
     )
     expect(line.status).toBe('success')
@@ -599,6 +604,30 @@ describe('动作的适用范围', () => {
       expect(r.message).not.toContain('不接受')
     }
     expect(calls).toHaveLength(cases.length)
+  })
+
+  /**
+   * 原始失败形状取自会话账本：模型每次点击都附带下列填充值，`point: {x:0,y:0}` 按元素左上角执行，
+   * 圆角按钮的左上角命中父元素，同一个按钮连续点击 190 次没有响应。落点缺省时端口取元素中心。
+   */
+  test('ref 与 path 上的 point 取 {x:0,y:0} 时按缺省处理，落点为元素中心', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const filler = { deltaX: 0, deltaY: 0, holdMs: 0, keys: [], path: [], phases: [], text: '' }
+    const click = await browserActTool.fn(
+      { ...base, ...filler, action: 'click', ref: 'e40', point: { x: 0, y: 0 }, screenshot: false },
+      ctx,
+    )
+    expect(click.status).toBe('success')
+    const drag = await browserActTool.fn(
+      { ...base, action: 'drag', ref: 'e1', path: [{ ref: 'e2', point: { x: 0, y: 0 } }] },
+      ctx,
+    )
+    expect(drag.status).toBe('success')
+    const [clicked, dragged] = calls.map((c) => c.input as BrowserActInput)
+    expect(clicked).not.toHaveProperty('point')
+    expect(dragged).not.toHaveProperty('point')
+    expect(dragged?.path).toEqual([{ ref: 'e2' }])
   })
 
   test('type 的长度与控制字符在调用端口前校验', async () => {
@@ -700,7 +729,7 @@ describe('部分完成与结果未知', () => {
       }),
     })
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_0', action: 'type', ref: 'e1', text: '一二三' },
+      { tabId: 'bt_1', action: 'type', ref: 'e1', text: '一二三' },
       ctxWith('/w', port),
     )
     expect(r.status).toBe('failure')
@@ -711,7 +740,6 @@ describe('部分完成与结果未知', () => {
     expect(data(r)).toMatchObject({
       element: 'textarea 备注',
       execution: { state: 'partial', confirmedUnits: 12 },
-      observationId: 'ob_1',
       settle: 'quiet',
     })
     expect(data(r).elements).toHaveLength(1)
@@ -728,7 +756,6 @@ describe('部分完成与结果未知', () => {
     const r = await browserActTool.fn(
       {
         tabId: 'bt_1',
-        observationId: 'ob_0',
         action: 'press',
         phases: [{ keys: ['KeyW'], durationMs: 1000 }],
       },
@@ -757,14 +784,13 @@ describe('部分完成与结果未知', () => {
       }),
     })
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_0', action: 'dblclick', ref: 'e1' },
+      { tabId: 'bt_1', action: 'dblclick', ref: 'e1' },
       ctxWith('/w', port),
     )
     expect(r.status).toBe('success')
     expect(r.errorKind).toBeUndefined()
     expect(data(r)).toMatchObject({
       execution: { state: 'completed', confirmedUnits: 2 },
-      observationId: 'ob_1',
     })
   })
 
@@ -779,7 +805,7 @@ describe('部分完成与结果未知', () => {
     } as BrowserActResult
     const { port } = fakeBrowser({ act: async () => receipt })
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_0', action: 'fill', ref: 'e1', text: '2026-09-16' },
+      { tabId: 'bt_1', action: 'fill', ref: 'e1', text: '2026-09-16' },
       ctxWith('/w', port),
     )
     expect(data(r)).toMatchObject({
@@ -805,16 +831,10 @@ describe('null 与空字符串的缺失语义', () => {
   test('fill 的空字符串表示清空，只有 null 表示未提供', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
-    await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', action: 'fill', ref: 'e1', text: '' },
-      ctx,
-    )
+    await browserActTool.fn({ tabId: 'bt_1', action: 'fill', ref: 'e1', text: '' }, ctx)
     expect(calls.at(-1)?.input).toMatchObject({ text: '' })
 
-    await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', action: 'fill', ref: 'e1', text: null },
-      ctx,
-    )
+    await browserActTool.fn({ tabId: 'bt_1', action: 'fill', ref: 'e1', text: null }, ctx)
     expect(calls.at(-1)?.input).not.toHaveProperty('text')
   })
 
@@ -840,16 +860,15 @@ describe('观察的投递', () => {
     expect(JSON.stringify({ ...data(r), images: null })).not.toContain('QUJD')
   })
 
-  test('动作返回观察时展开到顶层，observationId 可直接使用', async () => {
+  test('动作返回观察时展开到顶层，元素编号可直接使用', async () => {
     const { port } = fakeBrowser()
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' },
+      { tabId: 'bt_1', action: 'click', ref: 'e1' },
       ctxWith('/w', port),
     )
     expect(r.status).toBe('success')
     expect(data(r)).toMatchObject({
       element: 'button 提交',
-      observationId: 'ob_1',
       url: 'https://a/',
       settle: 'quiet',
     })
@@ -870,7 +889,7 @@ describe('观察的投递', () => {
     })
     const ctx = ctxWith('/w', port)
     const clicked = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1', screenshot: true },
+      { tabId: 'bt_1', action: 'click', ref: 'e1', screenshot: true },
       ctx,
     )
     expect(calls.at(-1)?.input).toMatchObject({ screenshot: true })
@@ -880,7 +899,6 @@ describe('观察的投递', () => {
     const pressed = await browserActTool.fn(
       {
         tabId: 'bt_1',
-        observationId: 'ob_0',
         action: 'press',
         phases: [{ keys: ['Enter'] }],
         screenshot: true,
@@ -892,7 +910,7 @@ describe('观察的投递', () => {
 
     for (const screenshot of [undefined, null, false]) {
       const plain = await browserActTool.fn(
-        { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1', screenshot },
+        { tabId: 'bt_1', action: 'click', ref: 'e1', screenshot },
         ctx,
       )
       expect(calls.at(-1)?.input).not.toHaveProperty('screenshot')
@@ -913,7 +931,6 @@ describe('观察的投递', () => {
     const r = await browserActTool.fn(
       {
         tabId: 'bt_1',
-        observationId: 'ob_0',
         action: 'type',
         ref: 'e1',
         text: 'ab',
@@ -932,7 +949,7 @@ describe('观察的投递', () => {
       ctxWith('/w', port),
     )
     expect(r.status).toBe('success')
-    expect(data(r)).toMatchObject({ observationId: 'ob_1', url: 'https://a/' })
+    expect(data(r)).toMatchObject({ url: 'https://a/' })
     expect(data(r)).not.toHaveProperty('tab')
   })
 
@@ -945,13 +962,13 @@ describe('观察的投递', () => {
       }),
     })
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' },
+      { tabId: 'bt_1', action: 'click', ref: 'e1' },
       ctxWith('/w', port),
     )
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
     expect(data(r)).toEqual({ element: 'button 提交', observationError: '采集超时' })
-    expect(data(r)).not.toHaveProperty('observationId')
+    expect(data(r)).not.toHaveProperty('elements')
     expect(r.message).toContain('采集超时')
     expect(r.message).toContain('不要重复动作')
   })
@@ -963,7 +980,7 @@ describe('观察的投递', () => {
     const r = await browserWaitTool.fn({ tabId: 'bt_1', selector: '#x' }, ctxWith('/w', port))
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
-    expect(data(r)).toMatchObject({ met: false, reason: 'timeout', observationId: 'ob_1' })
+    expect(data(r)).toMatchObject({ met: false, reason: 'timeout' })
     expect(r.message).toContain('未等到 #x')
   })
 
@@ -1012,7 +1029,7 @@ describe('观察的投递', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(140)
     expect(r.status).toBe('success')
     expect(calls).toEqual([{ method: 'observe', input: { tabId: 'bt_1' } }])
-    expect(data(r)).toMatchObject({ waitedMs: 150, observationId: 'ob_1' })
+    expect(data(r)).toMatchObject({ waitedMs: 150 })
     expect(r.message).toContain('已等待 150 毫秒')
   })
 
@@ -1039,7 +1056,7 @@ describe('观察的投递', () => {
       },
     })
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' },
+      { tabId: 'bt_1', action: 'click', ref: 'e1' },
       ctxWith('/w', port),
     )
     expect(r.status).toBe('failure')
@@ -1063,7 +1080,7 @@ describe('观察的投递', () => {
         },
       })
       const result = await browserActTool.fn(
-        { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' },
+        { tabId: 'bt_1', action: 'click', ref: 'e1' },
         ctxWith('/w', port),
       )
       expect(result).toMatchObject({
@@ -1092,10 +1109,7 @@ describe('观察的投递', () => {
       close: async () => refuse(),
     })
     const outcomes = [
-      await browserActTool.fn(
-        { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' },
-        ctxWith('/w', port),
-      ),
+      await browserActTool.fn({ tabId: 'bt_1', action: 'click', ref: 'e1' }, ctxWith('/w', port)),
       await browserObserveTool.fn({ tabId: 'bt_1' }, ctxWith('/w', port)),
       await browserTabsTool.fn({ action: 'close', tabId: 'bt_1' }, ctxWith('/w', port)),
     ]
@@ -1144,21 +1158,21 @@ describe('选项读取', () => {
   test('optionsFor 传到端口，选项页展开到 data，范围与下一页写入消息', async () => {
     const { port, calls } = fakeBrowser()
     const r = await browserObserveTool.fn(
-      { tabId: 'bt_1', optionsFor: { observationId: 'ob_1', ref: 'e3', offset: 0 } },
+      { tabId: 'bt_1', optionsFor: { ref: 'e3', offset: 0 } },
       ctxWith('/w', port),
     )
     expect(r.status).toBe('success')
     expect(calls).toEqual([
       {
         method: 'observe',
-        input: { tabId: 'bt_1', optionsFor: { observationId: 'ob_1', ref: 'e3', offset: 0 } },
+        input: { tabId: 'bt_1', optionsFor: { ref: 'e3', offset: 0 } },
       },
     ])
     expect(data(r)).toMatchObject({ ref: 'e3', total: 42, offset: 0, nextOffset: 2 })
     expect(data(r).items).toHaveLength(2)
-    // 选项页不是观察：不返回元素表，也不生成新的 observationId。
+    // 选项页不是观察：不返回元素表，也不改变元素编号。
     expect(data(r)).not.toHaveProperty('elements')
-    expect(data(r).observationId).toBe('ob_1')
+    expect(data(r).ref).toBe('e3')
     expect(r.message).toContain('1-2/42')
     expect(r.message).toContain('optionsFor.offset=2')
   })
@@ -1170,7 +1184,7 @@ describe('选项读取', () => {
   test('optionsFor 附带取 0 与空值的无关参数时照常读取；拒绝时只列出实际提供的参数', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
-    const optionsFor = { observationId: 'ob_1', ref: 'e3', offset: 0 }
+    const optionsFor = { ref: 'e3', offset: 0 }
     const ok = await browserObserveTool.fn(
       { tabId: 'bt_1', optionsFor, offset: 0, query: '', screenshot: false, frame: '' },
       ctx,
@@ -1188,7 +1202,7 @@ describe('选项读取', () => {
   test('optionsFor 与 frame、screenshot、offset 同时提供时在调用端口前拒绝', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
-    const optionsFor = { observationId: 'ob_1', ref: 'e3' }
+    const optionsFor = { ref: 'e3' }
     for (const extra of [{ frame: 'f1' }, { screenshot: true }, { offset: 10 }]) {
       const r = await browserObserveTool.fn({ tabId: 'bt_1', optionsFor, ...extra }, ctx)
       expect(r.status).toBe('failure')
@@ -1202,10 +1216,10 @@ describe('选项读取', () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const cases = [
-      { optionsFor: { ref: 'e3' } },
-      { optionsFor: { observationId: 'ob_1' } },
-      { optionsFor: { observationId: 'ob_1', ref: 'e3', offset: -1 } },
-      { optionsFor: { observationId: 'ob_1', ref: 'e3', offset: 'abc' } },
+      { optionsFor: { ref: '' } },
+      { optionsFor: {} },
+      { optionsFor: { ref: 'e3', offset: -1 } },
+      { optionsFor: { ref: 'e3', offset: 'abc' } },
       { optionsFor: 'e3' },
     ]
     for (const args of cases) {
@@ -1223,7 +1237,7 @@ describe('路径裁决', () => {
     const root = await workspace()
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith(root, port)
-    const args = { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1' }
+    const args = { tabId: 'bt_1', ref: 'e1' }
 
     const ok = await browserUploadTool.fn({ ...args, paths: ['a.txt'] }, ctx)
     expect(ok.status).toBe('success')
@@ -1241,7 +1255,7 @@ describe('路径裁决', () => {
     const root = await workspace()
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith(root, port)
-    const args = { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1' }
+    const args = { tabId: 'bt_1', ref: 'e1' }
 
     const none = await browserUploadTool.fn({ ...args, paths: [] }, ctx)
     expect(none.executed).toBe(false)
@@ -1262,7 +1276,7 @@ describe('路径裁决', () => {
     const root = await workspace()
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith(root, port)
-    const args = { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1' }
+    const args = { tabId: 'bt_1', ref: 'e1' }
 
     const ok = await browserDownloadTool.fn({ ...args, path: 'out.bin' }, ctx)
     expect(ok.status).toBe('success')
@@ -1294,7 +1308,7 @@ describe('路径裁决', () => {
       download: async () => ({ blocked: '目标已存在', suggestedName: 'report.bin' }),
     })
     const r = await browserDownloadTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1', path: 'out.bin' },
+      { tabId: 'bt_1', ref: 'e1', path: 'out.bin' },
       ctxWith(root, port),
     )
     expect(r.status).toBe('failure')
@@ -1334,7 +1348,226 @@ describe('标签页', () => {
     expect(r.status).toBe('success')
     expect(r.message.length).toBeLessThan(300)
     expect(r.message).toContain('https://a/pppp')
-    expect(calls).toEqual([{ method: 'open', input: url }])
+    // 建页之后直接观察一次，结果附带该页的元素表。
+    expect(calls).toEqual([
+      { method: 'open', input: url },
+      { method: 'observe', input: { tabId: 'bt_9' } },
+    ])
+    expect(data(r).elements).toEqual(OB.elements)
     expect((data(r) as { tab: { url: string } }).tab.url).toBe(url)
+  })
+})
+
+/**
+ * 动作结果写明页面上发生的事，并与上一次整页观察比较。
+ * 原始失败形状：同一个按钮被点击 190 次，每次结果只有「已发出」与一份相同的整表，模型无从判断点击没有生效。
+ */
+describe('动作结果写明发生了什么', () => {
+  const quiet = { navigated: false, requests: 0, domChanged: false }
+
+  /** 先整页观察一次作为基底，再执行一次返回指定观察与动作事实的点击。 */
+  async function observeThenClick(
+    after: BrowserObservation,
+    activity: Record<string, unknown> = quiet,
+  ): Promise<ToolOutcome> {
+    const { port } = fakeBrowser({
+      act: async () => ({ element: '开通', observation: after, settle: 'quiet', activity }),
+    } as unknown as Partial<BrowserPort>)
+    const ctx = ctxWith('/w', port)
+    await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    return browserActTool.fn({ tabId: 'bt_1', action: 'click', ref: 'e1' }, ctx)
+  }
+
+  test('页面没有任何变化时写明各项事实，只列变化，并声明没有效果', async () => {
+    const r = await observeThenClick(OB)
+    expect(r.message).toContain('动作之后：未跳转、未发出请求、DOM 无变化')
+    expect(r.message).toContain('元素表与上次观察相同')
+    expect(r.message).toContain('这次动作没有产生可观察的效果')
+    expect(r.noEffect).toBe(true)
+    expect(data(r)).not.toHaveProperty('elements')
+    expect(data(r).changes).toEqual({ unchanged: 1, added: [], changed: [], removed: [] })
+  })
+
+  test('发出了请求或 DOM 有变化时不声明没有效果', async () => {
+    const sent = await observeThenClick(OB, { ...quiet, requests: 2 })
+    expect(sent.message).toContain('发出请求 2 个')
+    expect(sent.noEffect).toBeUndefined()
+    const dom = await observeThenClick(OB, { ...quiet, domChanged: true })
+    expect(dom.message).toContain('DOM 有变化')
+    expect(dom.noEffect).toBeUndefined()
+  })
+
+  test('元素变化逐项列出，未变化的元素不重复投递', async () => {
+    const after: BrowserObservation = {
+      ...OB,
+      elements: [
+        { ref: 'e1', role: 'button', name: '已开通', tag: 'button' },
+        { ref: 'e2', role: 'StaticText', name: '开通成功', tag: '#text' },
+      ],
+    }
+    const base = {
+      ...OB,
+      elements: [
+        ...OB.elements,
+        { ref: 'e3', role: 'link', name: '一', tag: 'a' },
+        { ref: 'e4', role: 'link', name: '二', tag: 'a' },
+        { ref: 'e5', role: 'link', name: '三', tag: 'a' },
+      ],
+    }
+    const { port } = fakeBrowser({
+      observe: async () => base,
+      act: async () => ({
+        element: '开通',
+        observation: { ...after, elements: [...after.elements, ...base.elements.slice(1)] },
+        settle: 'quiet',
+        activity: { ...quiet, requests: 1, domChanged: true },
+      }),
+    } as unknown as Partial<BrowserPort>)
+    const ctx = ctxWith('/w', port)
+    await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    const r = await browserActTool.fn({ tabId: 'bt_1', action: 'click', ref: 'e1' }, ctx)
+    expect(r.message).toContain('与上次观察相比：新增 1、改变 1、消失 0')
+    const changes = data(r).changes as {
+      changed: { name: string }[]
+      added: { name: string }[]
+      unchanged: number
+    }
+    expect(changes.changed.map((e) => e.name)).toEqual(['已开通'])
+    expect(changes.added.map((e) => e.name)).toEqual(['开通成功'])
+    expect(changes.unchanged).toBe(3)
+    expect(r.noEffect).toBeUndefined()
+  })
+
+  test('页面含 canvas 时不声明没有效果，并说明画面变化不在元素表中', async () => {
+    const canvas: BrowserObservation = {
+      ...OB,
+      elements: [{ ref: 'e1', role: 'canvas', name: '', tag: 'canvas' }],
+    }
+    const { port } = fakeBrowser({
+      observe: async () => canvas,
+      act: async () => ({
+        element: 'canvas',
+        observation: canvas,
+        settle: 'quiet',
+        activity: quiet,
+      }),
+    } as unknown as Partial<BrowserPort>)
+    const ctx = ctxWith('/w', port)
+    await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    const r = await browserActTool.fn({ tabId: 'bt_1', action: 'click', ref: 'e1' }, ctx)
+    expect(r.noEffect).toBeUndefined()
+    expect(r.message).toContain('canvas')
+  })
+
+  test('动作打开的新标签页与被拦截的下载写入结果', async () => {
+    const r = await observeThenClick(OB, {
+      ...quiet,
+      requests: 1,
+      opened: [{ tabId: 'bt_7', url: 'https://a/new', title: '新页', controlled: true }],
+      downloadsBlocked: [{ reason: 'unauthorized', suggestedName: 'a.zip' }],
+    })
+    expect(r.message).toContain('打开了新标签页 bt_7（https://a/new）')
+    expect(r.message).toContain('下载被拦截（unauthorized：a.zip）')
+    expect(r.noEffect).toBeUndefined()
+  })
+
+  test('本次执行中尚未整页观察过该页时整份投递元素表', async () => {
+    const { port } = fakeBrowser({
+      act: async () => ({ element: '开通', observation: OB, settle: 'quiet', activity: quiet }),
+    } as unknown as Partial<BrowserPort>)
+    const r = await browserActTool.fn(
+      { tabId: 'bt_1', action: 'click', ref: 'e1' },
+      ctxWith('/w', port),
+    )
+    expect(data(r).elements).toEqual(OB.elements)
+    expect(r.noEffect).toBeUndefined()
+  })
+})
+
+describe('对话框', () => {
+  test('动作弹出对话框时结果为成功，写明对话框文字与处理方法，不设默认选择', async () => {
+    const { port } = fakeBrowser({
+      act: async () => ({
+        observation: null,
+        observationError: '页面弹出对话框，处理之前无法读取页面',
+        activity: {
+          requests: 0,
+          domChanged: true,
+          dialog: { type: 'confirm', message: '确定删除？' },
+        },
+      }),
+    } as unknown as Partial<BrowserPort>)
+    const r = await browserActTool.fn(
+      { tabId: 'bt_1', action: 'click', ref: 'e1' },
+      ctxWith('/w', port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('页面弹出确认框：「确定删除？」')
+    expect(r.message).toContain('accept=true 确定，accept=false 取消')
+  })
+
+  test('dialog 动作必须明确提供 accept，提供后原样传给端口', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const missing = await browserActTool.fn({ tabId: 'bt_1', action: 'dialog' }, ctx)
+    expect(missing.executed).toBe(false)
+    expect(missing.message).toContain('accept')
+    await browserActTool.fn({ tabId: 'bt_1', action: 'dialog', accept: false }, ctx)
+    expect(calls.map((c) => c.input)).toEqual([{ tabId: 'bt_1', action: 'dialog', accept: false }])
+  })
+
+  test('其他动作附带 accept 的填充值 false 时照常执行，附带 true 时按不适用的参数拒绝', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    await browserActTool.fn({ tabId: 'bt_1', action: 'click', ref: 'e1', accept: false }, ctx)
+    const wrong = await browserActTool.fn(
+      { tabId: 'bt_1', action: 'click', ref: 'e1', accept: true },
+      ctx,
+    )
+    expect(wrong.message).toContain('click 不接受 accept')
+    expect(calls).toHaveLength(1)
+  })
+})
+
+describe('建页附带观察', () => {
+  test('建页之后观察失败时建页仍为成功，写明未取得观察的原因', async () => {
+    const { port } = fakeBrowser({
+      observe: async () => {
+        throw new Error('标签页 bt_9 正被另一个任务操作')
+      },
+    })
+    const r = await browserTabsTool.fn({ action: 'create', url: 'https://a/' }, ctxWith('/w', port))
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('已打开 bt_9')
+    expect(r.message).toContain('未取得观察：标签页 bt_9 正被另一个任务操作')
+    expect(data(r)).toHaveProperty('tab')
+    expect(data(r)).not.toHaveProperty('elements')
+  })
+})
+
+describe('换成另一份文档之后不比较', () => {
+  /** 原始失败形状：刷新之后编号全部更换，结果写「新增 5、消失 5」，读起来像页面内容被改动。 */
+  test('刷新或跳转之后与上次观察没有共同元素时不写变化计数，整份投递', async () => {
+    const reloaded: BrowserObservation = {
+      ...OB,
+      elements: [{ ref: 'e9', role: 'button', name: '提交', tag: 'button' }],
+    }
+    const { port } = fakeBrowser({
+      navigate: async () => ({ observation: reloaded, settle: 'quiet' }),
+    })
+    const ctx = ctxWith('/w', port)
+    await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    const r = await browserNavigateTool.fn({ tabId: 'bt_1', action: 'reload' }, ctx)
+    expect(r.message).not.toContain('与上次观察相比')
+    expect(data(r).elements).toEqual(reloaded.elements)
+  })
+
+  test('两次都没有元素时仍写明相同', async () => {
+    const empty: BrowserObservation = { ...OB, elements: [] }
+    const { port } = fakeBrowser({ observe: async () => empty })
+    const ctx = ctxWith('/w', port)
+    await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    const r = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    expect(r.message).toContain('元素表与上次观察相同')
   })
 })

@@ -16,6 +16,7 @@
  */
 
 import {
+  compactionEpoch,
   deliveredTokens,
   recordBatchSpent,
   type ToolContext,
@@ -23,7 +24,7 @@ import {
 } from '@qywork/agent'
 import type { TokenDensity } from '@qywork/ai'
 import type { IntermediateResourceRef, ResourceId } from '@qywork/core'
-import type { BrowserObservation, BrowserOptionsPage } from './browser/port.ts'
+import type { BrowserElement, BrowserObservation, BrowserOptionsPage } from './browser/port.ts'
 import { deliver, type LandedResult, observationResultBudget, viewLimit } from './sink.ts'
 
 /** 存盘正文：每行一个 JSON 值。 */
@@ -79,6 +80,98 @@ export interface BrowserResultInput {
   lead: string
   /** 上限，缺省取 `observationResultBudget(ctx.contextWindow)` 与剩余额度的较小者。 */
   limit?: number
+  /**
+   * 本次观察覆盖整页的第一页（未指定 offset、query、frame）。只有这样的观察参与与上一次观察的比较，
+   * 并成为下一次比较的基底：部分观察与整页观察相比，未列出的元素会被误报为消失。
+   */
+  whole?: boolean
+  /** 动作、导航与等待之后的观察：多数元素未变化时只投递变化。`browser_observe` 始终整份投递。 */
+  incremental?: boolean
+}
+
+/** 与上一次整页观察相比的变化。`unchanged` 是逐字未变的元素数，这些元素不在结果中，编号继续有效。 */
+export interface BrowserChanges {
+  unchanged: number
+  added: BrowserElement[]
+  changed: BrowserElement[]
+  removed: string[]
+}
+
+/** `ctx.state` 中记录比较基底的键。`ctx.state` 是 run 级的：新 run 的第一次投递必然是整份投递。 */
+const BASES_KEY = 'browser:bases'
+/**
+ * 逐字未变的元素不足该比例时整份投递：变化过多时只列变化反而更难读。
+ * 与电脑控制的同名判据取值相同（`desktop-results.ts`）。
+ */
+const MIN_UNCHANGED_SHARE = 0.5
+
+/** tabId → 上一次投递给模型的整页元素表。`epoch` 是投递时的压缩次数。 */
+interface Base {
+  url: string
+  rows: Map<string, string>
+  epoch: number
+}
+
+function basesOf(ctx: BrowserResultContext): Map<string, Base> {
+  const known = ctx.state.get(BASES_KEY) as Map<string, Base> | undefined
+  if (known) return known
+  const bases = new Map<string, Base>()
+  ctx.state.set(BASES_KEY, bases)
+  return bases
+}
+
+/**
+ * 与基底相比的变化。基底不可用时返回 `null`：没有基底、压缩之后（基底可能已被替换为信封）、
+ * 地址不同，或任一方被截断（截断的表只是页面的前一部分，元素移入移出窗口会被误报为增删）。
+ */
+function changesOf(ctx: BrowserResultContext, page: BrowserObservation): BrowserChanges | null {
+  const base = basesOf(ctx).get(page.tabId)
+  if (!base || base.epoch !== compactionEpoch(ctx.state) || base.url !== page.url) return null
+  if (page.truncated) return null
+  const added: BrowserElement[] = []
+  const changed: BrowserElement[] = []
+  let unchanged = 0
+  const seen = new Set<string>()
+  for (const e of page.elements) {
+    seen.add(e.ref)
+    const before = base.rows.get(e.ref)
+    if (before === undefined) added.push(e)
+    else if (before === JSON.stringify(e)) unchanged++
+    else changed.push(e)
+  }
+  // 没有任何共同的元素：页面已换成另一份文档（刷新、跳转之后编号全部更换），比较不提供信息，
+  // 「新增 N、消失 M」反而像是页面内容被改动。两次都为空时属于相同。
+  if (unchanged === 0 && changed.length === 0 && page.elements.length + base.rows.size > 0) {
+    return null
+  }
+  const removed = [...base.rows.keys()].filter((ref) => !seen.has(ref))
+  return { unchanged, added, changed, removed }
+}
+
+/** message 中的变化计数。 */
+export function changesLine(changes: BrowserChanges): string {
+  if (!changes.added.length && !changes.changed.length && !changes.removed.length) {
+    return '元素表与上次观察相同'
+  }
+  return `与上次观察相比：新增 ${changes.added.length}、改变 ${changes.changed.length}、消失 ${changes.removed.length}`
+}
+
+/** 本次结果投递之后更新基底：整份或只列变化地完整投递了整页时，模型已知的就是这一份。 */
+function rememberBase(
+  ctx: BrowserResultContext,
+  page: BrowserObservation,
+  complete: boolean,
+): void {
+  const bases = basesOf(ctx)
+  if (!complete || page.truncated) {
+    bases.delete(page.tabId)
+    return
+  }
+  bases.set(page.tabId, {
+    url: page.url,
+    rows: new Map(page.elements.map((e) => [e.ref, JSON.stringify(e)])),
+    epoch: compactionEpoch(ctx.state),
+  })
 }
 
 /** 结果中由本次观察确定的三个字段。 */
@@ -89,7 +182,57 @@ export type BrowserResultParts = Pick<ToolOutcome, 'message' | 'data' | 'resourc
  *
  * 无法保存的部分如实说明：没有 sink 或写入失败时不提供地址，动作回执不做任何修改。
  */
-export function browserResult(input: BrowserResultInput): BrowserResultParts {
+export function browserResult(input: BrowserResultInput): BrowserResultParts & {
+  changes: BrowserChanges | null
+} {
+  const { ctx, page } = input
+  if (isOptionsPage(page) || input.whole !== true) {
+    return { ...deliverPage(input), changes: null }
+  }
+  const changes = changesOf(ctx, page)
+  const lead = changes ? `${input.lead} · ${changesLine(changes)}` : input.lead
+  const most = Math.max(
+    changes ? changes.unchanged + changes.changed.length + changes.removed.length : 0,
+    page.elements.length,
+  )
+  if (input.incremental === true && changes && changes.unchanged >= MIN_UNCHANGED_SHARE * most) {
+    const limit = input.limit ?? viewLimit(ctx, observationResultBudget(ctx.contextWindow))
+    const parts = changesOnly({ ...input, lead }, page, changes)
+    if (tokensOf(parts, ctx.density) <= limit) {
+      rememberBase(ctx, page, true)
+      return { ...recorded(ctx, parts), changes }
+    }
+  }
+  const parts = deliverPage({ ...input, lead })
+  // 大页只投递了前一部分（结果带 `delivery`）时模型未见全表，不作为基底。
+  rememberBase(ctx, page, parts.data?.delivery === undefined)
+  return { ...parts, changes }
+}
+
+/**
+ * 只列变化的结果：页面元数据与整份投递相同，元素表替换为 `changes`。
+ * 未列出的元素与上一次观察逐字相同，编号继续有效。
+ */
+function changesOnly(
+  input: BrowserResultInput,
+  page: BrowserObservation,
+  changes: BrowserChanges,
+): BrowserResultParts {
+  const { image, elements: _elements, ...meta } = page
+  return {
+    message: input.lead,
+    data: {
+      ...input.receipt,
+      ...meta,
+      changes,
+      ...(image ? { images: [image] } : {}),
+      ...(input.settle ? { settle: input.settle } : {}),
+    },
+  }
+}
+
+/** 整份投递：小页面整份内联，大页面写入正文库并投递前一部分。 */
+function deliverPage(input: BrowserResultInput): BrowserResultParts {
   const { ctx, page } = input
   const limit = input.limit ?? viewLimit(ctx, observationResultBudget(ctx.contextWindow))
   const { list } = split(page)

@@ -97,7 +97,6 @@ const 小页: BrowserObservation = {
   tabId: 'bt_1',
   url: 'https://a/',
   title: 'A',
-  observationId: 'ob_1',
   elements: [{ ref: 'e1', role: 'button', name: '提交', tag: 'button' }],
   truncated: false,
 }
@@ -106,7 +105,6 @@ const 大页: BrowserObservation = {
   tabId: 'bt_1',
   url: 'https://a/list',
   title: '合成长列表',
-  observationId: 'ob_2',
   elements: 大页元素,
   truncated: true,
   framesPending: ['f9c1'],
@@ -118,7 +116,6 @@ function bigOption(i: number): BrowserSelectOption {
 
 const 大选项页: BrowserOptionsPage = {
   tabId: 'bt_1',
-  observationId: 'ob_1',
   ref: 'e3',
   items: [
     ...Array.from({ length: 58 }, (_, i) => bigOption(i)),
@@ -236,7 +233,7 @@ function fromJsonl(body: Uint8Array): Record<string, unknown> {
   return { meta, rows }
 }
 
-const CLICK = { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' }
+const CLICK = { tabId: 'bt_1', action: 'click', ref: 'e1' }
 
 describe('小页整份内联', () => {
   test('observe 的 data 与端口返回的内容逐字相同，不带投递说明，也不存盘', async () => {
@@ -330,7 +327,7 @@ describe('大页只投递前一部分', () => {
     const 前缀 = elementsOf(await browserObserveTool.fn({ tabId: 'bt_1' }, ctx))
     const 动作后 = elementsOf(
       await browserActTool.fn(
-        { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e120' },
+        { tabId: 'bt_1', action: 'click', ref: 'e120' },
         context(fakeBrowser(), fakeSink()),
       ),
     )
@@ -361,7 +358,6 @@ describe('大页只投递前一部分', () => {
       tabId: string
       url: string
       title: string
-      observationId: string
       truncated: boolean
       framesPending: string[]
     }
@@ -369,7 +365,6 @@ describe('大页只投递前一部分', () => {
     expect(data.tabId).toBe('bt_1')
     expect(data.url).toBe('https://a/list')
     expect(data.title).toBe('合成长列表')
-    expect(data.observationId).toBe('ob_2')
     expect(data.truncated).toBe(true)
     expect(data.framesPending).toEqual(['f9c1'])
     expect(deliveryOf(r)?.delivered).toBeLessThan(大页元素.length)
@@ -470,7 +465,6 @@ describe('存盘正文与资源引用', () => {
       tabId: 'bt_1',
       url: 'https://a/list',
       title: '合成长列表',
-      observationId: 'ob_2',
       truncated: true,
       framesPending: ['f9c1'],
     })
@@ -548,13 +542,12 @@ describe('存盘正文与资源引用', () => {
 })
 
 describe('选项页', () => {
-  const 读选项 = { tabId: 'bt_1', optionsFor: { observationId: 'ob_1', ref: 'e3', offset: 40 } }
+  const 读选项 = { tabId: 'bt_1', optionsFor: { ref: 'e3', offset: 40 } }
 
-  test('只投递前一部分选项，所属观察与翻页位置保持原样', async () => {
+  test('只投递前一部分选项，元素编号与翻页位置保持原样', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     const r = await browserObserveTool.fn(读选项, ctx)
     const data = r.data as {
-      observationId: string
       ref: string
       total: number
       offset: number
@@ -562,7 +555,6 @@ describe('选项页', () => {
       items: BrowserSelectOption[]
     }
 
-    expect(data.observationId).toBe('ob_1')
     expect(data.ref).toBe('e3')
     expect(data.total).toBe(420)
     expect(data.offset).toBe(40)
@@ -589,7 +581,6 @@ describe('选项页', () => {
 
     expect(meta).toEqual({
       tabId: 'bt_1',
-      observationId: 'ob_1',
       ref: 'e3',
       total: 420,
       offset: 40,
@@ -600,7 +591,7 @@ describe('选项页', () => {
 })
 
 describe('动作回执的结论不因归档而改变', () => {
-  const 打字 = { tabId: 'bt_1', observationId: 'ob_0', action: 'type', ref: 'e1', text: '一二三' }
+  const 打字 = { tabId: 'bt_1', action: 'type', ref: 'e1', text: '一二三' }
 
   test('partial 仍是失败，确认数量保留，观察按上限投递', async () => {
     const ctx = context(
@@ -624,7 +615,6 @@ describe('动作回执的结论不因归档而改变', () => {
     expect(r.data).toMatchObject({
       element: 'textarea 备注',
       execution: { state: 'partial', confirmedUnits: 12 },
-      observationId: 'ob_2',
       settle: 'quiet',
     })
     expect(deliveryOf(r)?.resourceId).toBe('rs_1')
@@ -662,7 +652,7 @@ describe('动作回执的结论不因归档而改变', () => {
 
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
-    expect(r.data).toMatchObject({ met: false, reason: 'timeout', observationId: 'ob_2' })
+    expect(r.data).toMatchObject({ met: false, reason: 'timeout' })
     expect(deliveryOf(r)?.resourceId).toBe('rs_1')
   })
 })
@@ -767,7 +757,7 @@ describe('短回执不存盘', () => {
     await writeFile(join(root, 'a.txt'), 'abc', 'utf8')
     const sink = fakeSink()
     const ctx = context(fakeBrowser(), sink, { workspaceRoot: root })
-    const args = { tabId: 'bt_1', observationId: 'ob_1', ref: 'e1' }
+    const args = { tabId: 'bt_1', ref: 'e1' }
 
     const tabs = await browserTabsTool.fn({ action: 'list' }, ctx)
     const upload = await browserUploadTool.fn({ ...args, paths: ['a.txt'] }, ctx)

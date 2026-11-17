@@ -20,7 +20,8 @@ import { afterEach, expect, test } from 'bun:test'
 import { until } from '@qywork/core/until.test-helper'
 import type { BrowserActInput, BrowserObservation } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
-import { CdpClient } from './cdp.ts'
+import { BrowserArgumentError, CdpClient } from './cdp.ts'
+import { ACTION_BUDGET_MS, Execution } from './input.ts'
 import {
   actOnPage,
   BrowserAmbiguousRefError,
@@ -28,9 +29,11 @@ import {
   BrowserStaleRefError,
   clickForDownload,
   INSPECT_FN,
+  newNumbering,
   type ObservationRecord,
   observePage,
   type PageHandle,
+  type RefNumbering,
   readSelectOptions,
   uploadToPage,
   waitOnPage,
@@ -749,6 +752,10 @@ class FakePage {
         }
         return { result: { value: null } }
       }
+      case 'Page.getLayoutMetrics': {
+        const { width, height } = this.model.docs[0]?.viewport ?? { width: 0, height: 0 }
+        return { cssLayoutViewport: { clientWidth: width, clientHeight: height } }
+      }
       default:
         return {}
     }
@@ -1012,15 +1019,26 @@ async function newPage(
   return { fake, handle }
 }
 
-const observe = (handle: PageHandle, opts: Parameters<typeof observePage>[1] = {}) =>
-  observePage(handle, opts)
+/** 每个页句柄一张编号表，与协调器按标签页保存编号表相同。 */
+const numberings = new WeakMap<PageHandle, RefNumbering>()
+function numberingOf(handle: PageHandle): RefNumbering {
+  let numbering = numberings.get(handle)
+  if (!numbering) {
+    numbering = newNumbering()
+    numberings.set(handle, numbering)
+  }
+  return numbering
+}
 
-/** 在当前观察上执行一次动作。本组用例共用同一个 tab 与观察编号，无需逐条重写。 */
+const observe = (handle: PageHandle, opts: Parameters<typeof observePage>[1] = {}) =>
+  observePage(handle, opts, numberingOf(handle))
+
+/** 在当前观察上执行一次动作。本组用例共用同一个 tab，无需逐条重写。 */
 const act = (
   handle: PageHandle,
   record: ObservationRecord,
-  input: Omit<BrowserActInput, 'tabId' | 'observationId'>,
-) => actOnPage(handle, record, { tabId: 'bt_1', observationId: record.observationId, ...input })
+  input: Omit<BrowserActInput, 'tabId'>,
+) => actOnPage(handle, record, { tabId: 'bt_1', ...input })
 
 /** 添加一个表单控件并为它添加一行 AX，返回其可访问名。 */
 function addField(
@@ -1063,6 +1081,56 @@ test('观察将 AX 语义与节点属性合成一张元素表，无角色的容�
   expect(observation.truncated).toBe(false)
   // 观察只读：不发送任何滚动命令。
   expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
+})
+
+/**
+ * 原始失败形状：编号按采集顺序发放，页面在上方插入提示条之后全部编号后移，
+ * 模型按先前的编号点击，落到另一个元素上，或因编号失效再观察一轮。
+ */
+test('同一份文档内编号按节点固定：上方插入元素之后既有元素的编号不变，新元素取新编号', async () => {
+  const { fake, handle } = await newPage()
+  const first = await observe(handle)
+  const submit = refOf(first.observation, '提交')
+  const keyword = refOf(first.observation, '关键词')
+
+  const doc = fake.model.docs[0] as DocModel
+  doc.nodes.unshift({
+    backendNodeId: 90,
+    tag: 'button',
+    attrs: { id: 'notice' },
+    box: { x: 0, y: 300, width: 80, height: 20 },
+  })
+  doc.ax.unshift({ backendDOMNodeId: 90, role: 'button', name: '关闭提示' })
+
+  const second = await observe(handle)
+  expect(second.observation.elements[0]?.name).toBe('关闭提示')
+  expect(refOf(second.observation, '提交')).toBe(submit)
+  expect(refOf(second.observation, '关键词')).toBe(keyword)
+  const notice = refOf(second.observation, '关闭提示')
+  expect(first.observation.elements.map((e) => e.ref)).not.toContain(notice)
+
+  // 先前取得的编号仍指向原节点（id 为 go 的按钮）。
+  const r = await act(handle, second.record, { action: 'click', ref: submit })
+  expect(r.element).toBe('go')
+})
+
+test('文档更换之后旧编号不再发放给新文档的元素，按失效拒绝且不发送事件', async () => {
+  const { fake, handle } = await newPage()
+  const first = await observe(handle)
+  const submit = refOf(first.observation, '提交')
+
+  fake.model.token = 'doc-2'
+  const second = await observe(handle)
+  // 计数不回退：新文档中的元素都取新编号。
+  const before = new Set(first.observation.elements.map((e) => e.ref))
+  expect(second.observation.elements.every((e) => !before.has(e.ref))).toBe(true)
+
+  const err = await act(handle, second.record, { action: 'click', ref: submit }).catch(
+    (e: Error) => e,
+  )
+  expect(err).toBeInstanceOf(BrowserStaleRefError)
+  expect(err).toMatchObject({ executed: false, errorKind: 'stale_ref' })
+  expect(fake.mouse()).toHaveLength(0)
 })
 
 /**
@@ -1311,7 +1379,6 @@ test('点击视口外的元素时先滚动到可见处，再按滚动后的实�
 
   const r = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: bottom?.ref ?? '',
   })
@@ -1335,11 +1402,11 @@ test('无法滚动的视口外元素报告位于可视区外，不报告被遮�
 
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: bottom?.ref ?? '',
   }).catch((e: Error) => e)
   expect(err).toBeInstanceOf(BrowserAmbiguousRefError)
+  expect(err).toMatchObject({ executed: false, errorKind: 'target_blocked' })
   expect(String((err as Error).message)).toContain('可视区外')
   expect(fake.mouse()).toHaveLength(0)
 })
@@ -1357,11 +1424,11 @@ test('滚动触发节点替换时判定失效，要求重新观察，不按原�
 
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: bottom?.ref ?? '',
   }).catch((e: Error) => e)
   expect(err).toBeInstanceOf(BrowserStaleRefError)
+  expect(err).toMatchObject({ executed: false, errorKind: 'stale_ref' })
   expect(String((err as Error).message)).toContain('滚动后')
   expect(fake.mouse()).toHaveLength(0)
 })
@@ -1403,7 +1470,6 @@ test('被浮层遮挡时报告遮挡元素的标签与名称，不发送任何�
 
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: go?.ref ?? '',
   }).catch((e: Error) => e)
@@ -1428,7 +1494,6 @@ test('零尺寸与禁用分别说明，不一律报告为被遮挡', async () =>
 
   const zero = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: observation.elements.find((e) => e.name === '零尺寸')?.ref ?? '',
   }).catch((e: Error) => e.message)
@@ -1436,7 +1501,6 @@ test('零尺寸与禁用分别说明，不一律报告为被遮挡', async () =>
 
   const off = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: observation.elements.find((e) => e.name === '提交')?.ref ?? '',
   }).catch((e: Error) => e.message)
@@ -1451,7 +1515,6 @@ test('点击命中时按元素中心发送按下与抬起两条事件', async ()
 
   const r = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: go?.ref ?? '',
   })
@@ -1490,6 +1553,19 @@ test('observe 指定同进程帧时只返回该帧的元素', async () => {
 
   expect(observation.elements.map((e) => e.name)).toEqual(['框架内按钮', '框架内正文'])
   expect(observation.elements.every((e) => e.frame === 'FRAME5AME')).toBe(true)
+})
+
+/** 原始失败形状：模型为 frame 填写占位值 "?"，观察返回 0 个元素并报告成功。 */
+test('observe 指定本页不存在的帧时按参数错误拒绝，并列出本页的帧', async () => {
+  const { handle } = await newPage(addSameFrame)
+  const err = await observe(handle, { frame: '?' }).catch((e: Error) => e)
+  expect(err).toBeInstanceOf(BrowserArgumentError)
+  expect(err).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+  expect((err as Error).message).toContain('FRAME5AME')
+
+  const plain = await newPage()
+  const none = await observe(plain.handle, { frame: '?' }).catch((e: Error) => e)
+  expect((none as Error).message).toContain('本页没有 iframe')
 })
 
 test('父层浮层遮挡同进程 iframe 时按遮挡拒绝，不发送任何鼠标事件', async () => {
@@ -1642,7 +1718,6 @@ test('父页滚动之后，跨站帧输入使用子会话坐标，回执保留�
   ;(fake.model.docs[0] as DocModel).scrollY = 200
   const r = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: inner?.ref ?? '',
   })
@@ -1728,7 +1803,6 @@ test('iframe 整体位于可视区外时同时滚动父页，再按实时获取�
 
   const r = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: inner?.ref ?? '',
   })
@@ -1747,7 +1821,6 @@ test('父层浮层遮挡 iframe 时按遮挡拒绝，不将事件发送到浮层
 
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: inner?.ref ?? '',
   }).catch((e: Error) => e)
@@ -1765,7 +1838,6 @@ test('未找到帧的 owner 时报告定位失败，不按偏移 0 点击页面�
   fake.model.ownerGone.add('frame-a')
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: inner?.ref ?? '',
   }).catch((e: Error) => e)
@@ -1782,7 +1854,6 @@ test('文档更换之后整份观察失效，不重新定位到同名元素', as
   fake.model.token = 'doc-2'
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: go?.ref ?? '',
   }).catch((e: Error) => e)
@@ -1797,7 +1868,6 @@ test('文档更换之后不带元素的 press 同样被拒绝，不发送任何�
   fake.model.token = 'doc-2'
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'press',
     phases: [{ keys: ['Enter'] }],
   }).catch((e: Error) => e)
@@ -1812,7 +1882,6 @@ test('文档更换之后不带元素的 scroll 同样被拒绝，不发送任何
   fake.model.token = 'doc-2'
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'scroll',
     deltaY: 200,
   }).catch((e: Error) => e)
@@ -1829,14 +1898,16 @@ test('采集中途更换文档时整份丢弃并重新采集，不登记旧令�
   // 重新采集一次，登记的是更换文档之后的结果。
   expect(fake.sent('DOM.getDocument')).toHaveLength(2)
   expect(record.docToken).toBe('doc-2')
-  expect(observation.observationId).toContain('doc-2')
+  expect(observation.elements.length).toBeGreaterThan(0)
 })
 
 test('预算已经耗尽时不发送采集命令，报告可判定的失败', async () => {
   const { fake, handle } = await newPage()
   const before = fake.sent('DOM.getDocument').length
 
-  const err = await observePage(handle, { deadline: Date.now() - 1 }).catch((e: Error) => e)
+  const err = await observePage(handle, { deadline: Date.now() - 1 }, newNumbering()).catch(
+    (e: Error) => e,
+  )
   expect(err).toBeInstanceOf(BrowserObserveTimeoutError)
   expect(fake.sent('DOM.getDocument')).toHaveLength(before)
 })
@@ -1854,7 +1925,6 @@ test('同一个编号指向另一个节点时判定失效，不按原编号点�
   }
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: go?.ref ?? '',
   }).catch((e: Error) => e)
@@ -1870,7 +1940,6 @@ test('节点已从文档移除时报告失效', async () => {
   fake.model.gone.add(10)
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'click',
     ref: go?.ref ?? '',
   }).catch((e: Error) => e)
@@ -1927,30 +1996,47 @@ test('scroll 未指定元素时作用于整页', async () => {
 
   await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'scroll',
     deltaY: 300,
   })
   const wheel = fake.sent('Input.dispatchMouseEvent')[0]
   expect(wheel?.params?.type).toBe('mouseWheel')
   expect(wheel?.params?.deltaY).toBe(300)
+  // 原始失败形状：落点固定在 (10,10)，固定侧栏的布局中滚轮作用于侧栏，内容区不滚动而回执为成功。
+  expect([wheel?.params?.x, wheel?.params?.y]).toEqual([400, 300])
 })
 
 test('scroll 指定元素时使用实时坐标，但不为它滚动页面', async () => {
+  const { fake, handle } = await newPage()
+  const { record, observation } = await observe(handle)
+  const submit = observation.elements.find((e) => e.name === '提交')
+
+  await actOnPage(handle, record, {
+    tabId: 'bt_1',
+    action: 'scroll',
+    ref: submit?.ref ?? '',
+    deltaY: 120,
+  })
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
+  expect(fake.sent('Input.dispatchMouseEvent')[0]?.params?.type).toBe('mouseWheel')
+})
+
+/** 原始失败形状：元素已在可视区外，滚轮落在视口之外不作用于任何内容，回执仍为成功。 */
+test('scroll 指定的元素不在可视区内时在发出之前拒绝，不滚动页面也不发送滚轮', async () => {
   const { fake, handle } = await newPage()
   addBottomButton(fake)
   const { record, observation } = await observe(handle)
   const bottom = observation.elements.find((e) => e.name === '表单底部')
 
-  await actOnPage(handle, record, {
+  const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'scroll',
     ref: bottom?.ref ?? '',
     deltaY: 120,
-  })
+  }).catch((e: Error) => e)
+  expect(err).toMatchObject({ executed: false, errorKind: 'target_blocked' })
   expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
-  expect(fake.sent('Input.dispatchMouseEvent')[0]?.params?.type).toBe('mouseWheel')
+  expect(fake.sent('Input.dispatchMouseEvent')).toHaveLength(0)
 })
 
 test('等待只观察，结束后清除页内等待器', async () => {
@@ -2060,7 +2146,6 @@ test('optionsFor 按旧观察读取后续选项，不发放新编号，也不移
   expect(first.items).toHaveLength(30)
   expect(first.offset).toBe(0)
   expect(first.nextOffset).toBe(30)
-  expect(first.observationId).toBe(record.observationId)
   expect(first.tabId).toBe('bt_1')
 
   const rest = await readSelectOptions(handle, record, el?.ref ?? '', 30)
@@ -2105,7 +2190,6 @@ test('select 无法选中时只返回总数、有界样例与继续读取的方�
 
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'select',
     ref: el?.ref ?? '',
     text: '不存在',
@@ -2133,7 +2217,6 @@ test('select 选中被禁用的选项时明确拒绝，不报告为该选项不�
 
   const err = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'select',
     ref: el?.ref ?? '',
     text: 'b',
@@ -2142,7 +2225,6 @@ test('select 选中被禁用的选项时明确拒绝，不报告为该选项不�
 
   const ok = await actOnPage(handle, record, {
     tabId: 'bt_1',
-    observationId: record.observationId,
     action: 'select',
     ref: el?.ref ?? '',
     text: '可选',
@@ -2998,4 +3080,15 @@ test('scroll 只指定 deltaX 时纵向为 0，两个方向都未指定时向下
     [300, 0],
     [0, 400],
   ])
+})
+
+/**
+ * 原始失败形状：逐字输入接受 2000 个字符，期限却固定为 30 秒；真实页面约 40–50 ms/字，
+ * 约 700 字以上的输入以「结果未知」结束。期限按单元数计算，缺省仍为 `ACTION_BUDGET_MS`。
+ */
+test('动作期限缺省为固定值，按单元数计算的动作可以给出更长的期限', () => {
+  const before = Date.now()
+  expect(new Execution().deadline - before).toBeGreaterThanOrEqual(ACTION_BUDGET_MS)
+  expect(new Execution().deadline - before).toBeLessThan(ACTION_BUDGET_MS + 1_000)
+  expect(new Execution(120_000).deadline - before).toBeGreaterThanOrEqual(120_000)
 })

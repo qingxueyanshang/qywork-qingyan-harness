@@ -284,7 +284,6 @@ const 大页: BrowserObservation = {
   tabId: 'bt_1',
   url: 'https://合成站点.invalid/list',
   title: '合成长列表 🙂',
-  observationId: 'ob_2',
   elements: [
     ...Array.from({ length: 116 }, (_, i) => 大元素(i + 1)),
     状态齐全,
@@ -299,7 +298,6 @@ const 大页: BrowserObservation = {
 /** 30 项是采集侧单次返回的选项上限，每项的 label 与 value 各按 200 字填满。 */
 const 大选项页: BrowserOptionsPage = {
   tabId: 'bt_1',
-  observationId: 'ob_1',
   ref: 'e119',
   items: [
     ...Array.from({ length: 28 }, (_, i) => ({
@@ -598,7 +596,7 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读取'
     const ctx = toolCtx({ h, browser: browserPort(大页) })
     const r = await h.registry.execute(
       'browser_observe',
-      { tabId: 'bt_1', optionsFor: { observationId: 'ob_1', ref: 'e119' } },
+      { tabId: 'bt_1', optionsFor: { ref: 'e119' } },
       ctx,
     )
     expect(r.status).toBe('success')

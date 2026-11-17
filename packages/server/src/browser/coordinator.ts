@@ -24,29 +24,40 @@
 import { stat } from 'node:fs/promises'
 import type { BrowserEventFrame } from '@qywork/core'
 import { ART_POSTER_MS, log } from '@qywork/core'
-import type {
-  BrowserActInput,
-  BrowserActResult,
-  BrowserDownloadResult,
-  BrowserObservation,
-  BrowserOptionsPage,
-  BrowserPort,
-  BrowserRefusal,
-  BrowserTabInfo,
-  BrowserWaitResult,
-  BrowserWaitState,
-  FollowUpObservation,
-  LocalFileCheck,
+import {
+  BROWSER_DIALOG_NAMES,
+  type BrowserActInput,
+  type BrowserActivity,
+  type BrowserActResult,
+  type BrowserDownloadResult,
+  type BrowserObservation,
+  type BrowserOptionsPage,
+  type BrowserPort,
+  type BrowserRefusal,
+  type BrowserTabInfo,
+  type BrowserWaitResult,
+  type BrowserWaitState,
+  type FollowUpObservation,
+  type LocalFileCheck,
 } from '@qywork/tools'
 import { ART_HOST_PATH, ART_LIB_PATH, prepareArtForRender } from '../art.ts'
 import { type BrowserBridge, BrowserBridgeError, type NativeBrowserHost } from './bridge.ts'
-import { CdpClient, CdpDisconnectedError, CdpInitError } from './cdp.ts'
+import {
+  BrowserArgumentError,
+  CdpClient,
+  CdpDisconnectedError,
+  CdpInitError,
+  type JsDialog,
+} from './cdp.ts'
 import {
   actOnPage,
+  BrowserStaleRefError,
   clickForDownload,
+  newNumbering,
   type ObservationRecord,
   observePage,
   type PageHandle,
+  type RefNumbering,
   readDocument,
   readSelectOptions,
   uploadToPage,
@@ -124,9 +135,6 @@ class BrowserConnectionError extends Error implements BrowserRefusal {
     )
   }
 }
-
-/** 协调器保留的观察份数上限。只保留最近几份：旧编号本身即要求重新观察。 */
-const MAX_OBSERVATIONS = 8
 
 /** 浏览器工具从未设置本机文件裁决时的拒绝理由（`Lease.files`）。 */
 const NO_FILE_SCOPE = '本次执行没有本机文件的读取范围'
@@ -209,6 +217,11 @@ interface NavWatch {
    * 在响应头到达时移出，理由相同。
    */
   requests(): number
+  /**
+   * 订阅建立之后页会话发出的网络请求总数：各类型均计入（重定向按同一个请求计一次），另加 WebSocket 发送的帧。
+   * 动作结果据此报告「是否发出了请求」，与只统计在途 XHR / fetch 的 `requests` 用途不同。
+   */
+  sent(): number
   /** 已收到导航提交的证据。 */
   committed(): boolean
   /** 导航提交时兑现；等待导航确认时使用它，不轮询。 */
@@ -240,8 +253,10 @@ interface Control {
    * 执行者会同时通过检查，并各自向同一页发送输入。
    */
   attaching: Map<string, Promise<void>>
-  /** 观察编号 → 该次观察的 ref 表。动作只接受此表中的编号。 */
-  observations: Map<string, ObservationRecord>
+  /** tabId → 本次执行在该页当前文档上取得的定位信息。动作只接受其中的编号。 */
+  records: Map<string, ObservationRecord>
+  /** tabId → 本槽的动作期间截获、尚未提交文件的选择文件请求。文档更换或该页关闭时作废。 */
+  choosers: Map<string, FileChooser>
   /** downloadId → tabId。本槽已登记、尚未被宿主裁决的下载授权，释放时按 id 撤销。 */
   arms: Map<string, string>
   /** 本槽在途的下载等待。释放时逐条终止，不等待各自的期限。 */
@@ -279,6 +294,35 @@ export function meetsRuntimeFloor(version: string, floor = MIN_CHROMIUM_MAJOR): 
   return Number.isFinite(major) && major >= floor
 }
 
+/** 动作期间截获的选择文件请求：页面中承载它的文件输入框，以及能否多选。 */
+interface FileChooser {
+  backendNodeId: number
+  multiple: boolean
+}
+
+/**
+ * 页面上有尚未处理的对话框。对话框打开期间页面脚本停止执行，读取与输入都不会返回，
+ * 因此在发出任何命令之前拒绝，声明 `executed:false`。
+ */
+export class BrowserDialogOpenError extends Error implements BrowserRefusal {
+  readonly errorKind = 'target_blocked' as const
+  readonly executed = false as const
+
+  constructor(dialog: JsDialog) {
+    super(
+      `页面上有尚未处理的${BROWSER_DIALOG_NAMES[dialog.type]}：「${dialog.message}」。处理之前页面无法读取或操作；` +
+        `用 browser_act action=dialog 处理：accept=true 确定，accept=false 取消` +
+        (dialog.type === 'prompt' ? '，输入的文字放在 text' : ''),
+    )
+  }
+}
+
+/** 页面上有未处理的对话框时拒绝本次操作。处理对话框的动作不经过此判定。 */
+function assertNoDialog(page: PageHandle): void {
+  const dialog = page.client.dialogOf(page.sessionId)
+  if (dialog) throw new BrowserDialogOpenError(dialog)
+}
+
 export class BrowserCoordinator {
   #bridge: BrowserBridge
   #enabled: () => boolean
@@ -286,6 +330,11 @@ export class BrowserCoordinator {
   #sidecar: () => string
   /** owner → 控制槽。每次执行一个，彼此独立；访问同一页时才互斥。 */
   #controls = new Map<number, Control>()
+  /**
+   * tabId → 该页的元素编号表。按页保存、跨执行保留：同一份文档内同一个节点在每次执行中都是同一个编号。
+   * 定位信息不在其中（含每次执行各自连接的会话编号），见 `Control.records`。
+   */
+  #numbering = new Map<string, RefNumbering>()
   #nextOwner = 0
   #nextDownload = 0
   /** 内部渲染页（`renderArt`）。不列入模型的页清单。 */
@@ -585,7 +634,8 @@ export class BrowserCoordinator {
       connecting: null,
       sessions: new Map(),
       attaching: new Map(),
-      observations: new Map(),
+      records: new Map(),
+      choosers: new Map(),
       arms: new Map(),
       waits: new Set(),
       releasing: null,
@@ -631,6 +681,7 @@ export class BrowserCoordinator {
 
   /** 从持有该页的控制槽中移除它的会话与观察。宿主的关闭页事件与本地 close 均调用此方法。 */
   #forget(tabId: string): void {
+    this.#numbering.delete(tabId)
     for (const control of this.#controls.values()) {
       const sessionId = control.sessions.get(tabId)
       if (sessionId === undefined) continue
@@ -640,11 +691,19 @@ export class BrowserCoordinator {
     }
   }
 
-  /** 使一页的全部观察编号失效。失效范围仅限该页，其他标签页的编号仍然有效。 */
+  /** 丢弃本次执行在一页上的定位信息。范围仅限该页；编号表不清除，文档更换时由观察清空。 */
   #dropObservations(control: Control, tabId: string): void {
-    for (const [id, record] of [...control.observations]) {
-      if (record.tabId === tabId) control.observations.delete(id)
+    control.records.delete(tabId)
+    control.choosers.delete(tabId)
+  }
+
+  #numberingOf(tabId: string): RefNumbering {
+    let numbering = this.#numbering.get(tabId)
+    if (!numbering) {
+      numbering = newNumbering()
+      this.#numbering.set(tabId, numbering)
     }
+    return numbering
   }
 
   /**
@@ -706,11 +765,17 @@ export class BrowserCoordinator {
     return null
   }
 
-  #recordOf(control: Control, tabId: string, observationId: string): ObservationRecord {
-    const record = control.observations.get(observationId)
-    if (!record || record.tabId !== tabId) {
-      throw new BrowserBridgeError(`观察 ${observationId} 已经失效，请重新观察`)
-    }
+  /**
+   * 本次执行在该页上的定位信息。本次执行尚未观察该页时（编号来自上一条消息）先采集一次：
+   * 只读取页面，不改变页面。编号由按页保存的编号表决定，采集之后同一个节点仍是原编号；
+   * 文档已经更换时编号表随之清空，原编号按失效拒绝。
+   */
+  async #recordOf(control: Control, page: PageHandle): Promise<ObservationRecord> {
+    const known = control.records.get(page.tabId)
+    if (known) return known
+    await this.#observeInto(control, page, {})
+    const record = control.records.get(page.tabId)
+    if (!record) throw new BrowserStaleRefError('未能取得本页的元素编号，请重新观察')
     return record
   }
 
@@ -725,6 +790,7 @@ export class BrowserCoordinator {
     input: { tabId: string; action: 'goto' | 'back' | 'forward' | 'reload'; url?: string },
   ): Promise<FollowUpObservation> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
+    assertNoDialog(page)
     // 更换文档即更换观察：旧编号指向的节点已不存在。只清除该页的观察：其他标签页不受本次导航影响。
     this.#dropObservations(control, input.tabId)
     const { client, sessionId } = page
@@ -760,7 +826,7 @@ export class BrowserCoordinator {
       }
       const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
       const committed = await this.#awaitCommit(page, watch, baseline, deadline)
-      const settle = await this.#quietWait(page, watch, deadline)
+      const { settle } = await this.#quietWait(page, watch, deadline, { whileLoading: true })
       // 未确认提交时不报告 quiet：此时的静默可能属于尚未被替换的旧文档。
       return await this.#followUp(control, page, deadline, committed ? settle : 'deadline')
     } finally {
@@ -782,15 +848,16 @@ export class BrowserCoordinator {
       screenshot?: boolean
       offset?: number
       query?: string
-      optionsFor?: { observationId: string; ref: string; offset?: number }
+      optionsFor?: { ref: string; offset?: number }
     },
   ): Promise<BrowserObservation | BrowserOptionsPage> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
+    assertNoDialog(page)
     if (input.optionsFor) {
       await this.#assertLocalFiles(control, page)
       return readSelectOptions(
         page,
-        this.#recordOf(control, input.tabId, input.optionsFor.observationId),
+        await this.#recordOf(control, page),
         input.optionsFor.ref,
         input.optionsFor.offset ?? 0,
       )
@@ -821,16 +888,16 @@ export class BrowserCoordinator {
     },
   ): Promise<BrowserObservation> {
     await this.#assertLocalFiles(control, page, opts.deadline)
-    const { observation, record } = await observePage(page, opts)
+    const { observation, record } = await observePage(page, opts, this.#numberingOf(page.tabId))
     if (!this.#alive(control)) {
       throw new BrowserReleasedError('本次执行的浏览器控制已经结束，本次观察不登记')
     }
-    control.observations.set(record.observationId, record)
-    // 只保留最近几份。旧编号本身即要求重新观察，保留它们只会使内存随轮数增长。
-    while (control.observations.size > MAX_OBSERVATIONS) {
-      const oldest = control.observations.keys().next().value
-      if (oldest === undefined) break
-      control.observations.delete(oldest)
+    // 同一文档内合并：翻页、查询与按帧观察各自取得一部分编号，此前取得的编号仍然可用。
+    const known = control.records.get(page.tabId)
+    if (known && known.docToken === record.docToken) {
+      for (const [ref, entry] of record.refs) known.refs.set(ref, entry)
+    } else {
+      control.records.set(page.tabId, record)
     }
     return observation
   }
@@ -877,6 +944,8 @@ export class BrowserCoordinator {
     let committed = false
     // 重定向沿用同一个 requestId，按集合去重。
     const requests = new Set<string>()
+    const issued = new Set<string>()
+    let frames = 0
     let settle: () => void = () => {}
     const commit = new Promise<void>((resolve) => {
       settle = resolve
@@ -886,7 +955,12 @@ export class BrowserCoordinator {
       const params = event.params
       const frame = params.frame as { id?: string } | undefined
       if (event.method === 'Network.requestWillBeSent') {
+        issued.add(String(params.requestId))
         if (params.type === 'XHR' || params.type === 'Fetch') requests.add(String(params.requestId))
+        return
+      }
+      if (event.method === 'Network.webSocketFrameSent') {
+        frames += 1
         return
       }
       if (event.method === 'Network.loadingFinished' || event.method === 'Network.loadingFailed') {
@@ -921,6 +995,7 @@ export class BrowserCoordinator {
       events: () => events,
       loading: () => inflight > 0,
       requests: () => requests.size,
+      sent: () => issued.size + frames,
       committed: () => committed,
       commit,
       stop: off,
@@ -957,29 +1032,45 @@ export class BrowserCoordinator {
    * 至多到动作完成后 `#networkLimitMs`。跨站 iframe 的请求在子会话上，不计入。
    *
    * 探针读数缺少字段时按未静默处理：将缺失视为 complete 会使仍在加载的页面通过。
+   *
+   * `probe` 是调用方在动作之前登记的探针，此处负责清理；缺省时在此登记。`mutations` 是该探针的
+   * 最后一次读数，即动作开始以来的 DOM 变更数；探针随旧文档失效或从未读取到读数时为 `null`。
+   * `whileLoading` 只用于地址栏导航（订阅只看主框架）：主文档仍在加载时与未结束的请求一样顺延阶段上限，
+   * 不在加载到一半时采集。动作的订阅包含全部框架，持续加载的广告框架会使每次动作都等到上限，因此不顺延。
    */
   async #quietWait(
     page: PageHandle,
     watch: NavWatch,
     deadline: number,
-  ): Promise<'quiet' | 'deadline'> {
+    opts: { probe?: number | null; whileLoading?: boolean } = {},
+  ): Promise<{ settle: 'quiet' | 'deadline'; mutations: number | null }> {
     const { client, sessionId } = page
-    if (client.cancelled) return 'deadline'
+    let probe = opts.probe ?? null
+    let mutations: number | null = null
+    // 只有动作之前登记的探针从动作开始计数；此处新登记的探针缺少动作初期的变化，读数不作为变更数。
+    let fresh = probe !== null
+    if (client.cancelled) {
+      if (probe !== null) await client.disposeWaiter(sessionId, probe).catch(() => {})
+      return { settle: 'deadline', mutations }
+    }
     const network = Math.min(deadline, Date.now() + this.#networkLimitMs)
     let stage = Math.min(deadline, Date.now() + QUIET_LIMIT_MS)
     try {
-      let probe = await client.startProbe(sessionId, probeTimeout(deadline))
+      probe ??= await client.startProbe(sessionId, probeTimeout(deadline))
       try {
         let previous: { ready: string; mutations: number } | null = null
         let seen = watch.events()
         while (leftMs(stage) > 0) {
           await sleep(Math.min(QUIET_SAMPLE_MS, leftMs(stage)))
           const read = await client.readProbe(sessionId, probe, probeTimeout(deadline))
+          if (fresh && typeof read.mutations === 'number') mutations = read.mutations
           const moved = watch.events() !== seen
           seen = watch.events()
           const requesting = watch.requests() > 0
+          const loading =
+            opts.whileLoading === true && (watch.loading() || read.ready !== 'complete')
           // 请求结束之后仍须连续两次采样无变化，三个采样间隔为此留出余量。
-          if (requesting) {
+          if (requesting || loading) {
             stage = Math.min(network, Math.max(stage, Date.now() + 3 * QUIET_SAMPLE_MS))
           }
           if (moved || watch.loading() || requesting) {
@@ -987,8 +1078,10 @@ export class BrowserCoordinator {
             continue
           }
           if (read.gone === true) {
-            // 探针随旧文档一同销毁。只读等待器可以重建，动作一律不重发。
+            // 探针随旧文档一同销毁。只读等待器可以重建，动作一律不重发。重建的探针不从动作开始计数。
             previous = null
+            fresh = false
+            mutations = null
             if (leftMs(stage) <= 0) break
             probe = await client.startProbe(sessionId, probeTimeout(deadline))
             continue
@@ -1003,7 +1096,7 @@ export class BrowserCoordinator {
             read.ready === 'complete' &&
             previous.mutations === read.mutations
           ) {
-            return 'quiet'
+            return { settle: 'quiet', mutations }
           }
           previous = { ready: read.ready, mutations: read.mutations }
         }
@@ -1013,21 +1106,169 @@ export class BrowserCoordinator {
     } catch (err) {
       log.warn('browser', `已跳过静默等待：${err instanceof Error ? err.message : String(err)}`)
     }
-    return 'deadline'
+    return { settle: 'deadline', mutations }
   }
 
+  /**
+   * 执行一次动作，返回回执、动作之后的观察与动作期间页面上发生的事（`BrowserActivity`）。
+   *
+   * 订阅与探针都在动作之前建立：点击触发的导航、请求、DOM 变化与新开页可能在动作响应之前发生。
+   * 动作在发出前被拒绝时，探针随之清理，不留在页面中。
+   *
+   * 动作使页面弹出对话框时立即返回：对话框打开期间页面脚本停止执行，输入事件在对话框关闭之后才返回，
+   * 页内读取同样不返回。此时不等待动作的回包，也不读取页面，结果带对话框的类型与文字，由调用方以 `dialog` 动作处理。
+   *
+   * 选择文件窗口只在动作期间拦截：用户在同一页上手动上传时系统窗口照常打开。
+   */
   async #act(lease: Lease, input: BrowserActInput): Promise<BrowserActResult> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
-    const record = this.#recordOf(control, input.tabId, input.observationId)
-    // 订阅必须先于动作建立：点击触发的导航可能在动作响应之前开始。
+    if (input.action === 'dialog') return this.#answerDialog(control, page, input)
+    assertNoDialog(page)
+    const record = await this.#recordOf(control, page)
+    const { client, sessionId } = page
+    const watch = this.#watchNav(page)
+    const opened: BrowserTabInfo[] = []
+    const blocked: { reason: string; suggestedName?: string }[] = []
+    const offEvents = this.#bridge.onEvent((frame) => {
+      if (frame.kind === 'opened' && frame.conversationId === control.conversationId) {
+        opened.push({
+          tabId: frame.tabId,
+          url: frame.url ?? '',
+          title: frame.title ?? '',
+          controlled: true,
+        })
+      }
+      // 带 downloadId 的是 `browser_download` 登记的下载，由该工具自行结算。
+      if (
+        frame.kind === 'download.blocked' &&
+        frame.tabId === page.tabId &&
+        frame.downloadId === undefined
+      ) {
+        blocked.push({
+          reason: frame.reason ?? '',
+          ...(frame.suggestedName ? { suggestedName: frame.suggestedName } : {}),
+        })
+      }
+    })
+    const chosen: FileChooser[] = []
+    let showDialog: (dialog: JsDialog) => void = () => {}
+    const dialogShown = new Promise<JsDialog>((resolve) => {
+      showDialog = resolve
+    })
+    const offPage = client.onSessionEvent(sessionId, (event) => {
+      if (event.method === 'Page.fileChooserOpened') {
+        const node = Number(event.params.backendNodeId)
+        if (Number.isFinite(node)) {
+          chosen.push({ backendNodeId: node, multiple: event.params.mode === 'selectMultiple' })
+        }
+      }
+      if (event.method === 'Page.javascriptDialogOpening') {
+        const dialog = client.dialogOf(sessionId)
+        if (dialog) showDialog(dialog)
+      }
+    })
+    const intercepting = await client
+      .send(
+        'Page.setInterceptFileChooserDialog',
+        { enabled: true },
+        { sessionId, timeoutMs: PROBE_TIMEOUT_MS },
+      )
+      .then(
+        () => true,
+        () => false,
+      )
+    const probe = await client.startProbe(sessionId, PROBE_TIMEOUT_MS).catch(() => null)
+    const facts = (): Omit<BrowserActivity, 'domChanged'> => {
+      const chooser = chosen.at(-1)
+      return {
+        requests: watch.sent(),
+        ...(opened.length ? { opened } : {}),
+        ...(blocked.length ? { downloadsBlocked: blocked } : {}),
+        ...(chooser ? { fileChooser: { multiple: chooser.multiple } } : {}),
+      }
+    }
+    try {
+      const acting = actOnPage(page, record, input)
+      let first: { receipt: Awaited<typeof acting> } | { dialog: JsDialog }
+      try {
+        first = await Promise.race([
+          acting.then((receipt) => ({ receipt })),
+          dialogShown.then((dialog) => ({ dialog })),
+        ])
+      } catch (err) {
+        if (probe !== null) await client.disposeWaiter(sessionId, probe).catch(() => {})
+        throw err
+      }
+      if ('dialog' in first) {
+        // 输入事件在对话框关闭之后才返回，其结果不再使用；探针在页面恢复之后随本槽的收尾清理。
+        acting.catch(() => {})
+        return {
+          observation: null,
+          observationError: '页面弹出对话框，处理之前无法读取页面',
+          activity: { ...facts(), domChanged: true, dialog: first.dialog },
+        }
+      }
+      const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
+      const quiet = await this.#quietWait(page, watch, deadline, { probe })
+      const follow = await this.#followUp(control, page, deadline, quiet.settle, input.screenshot)
+      const after = follow.observation ? control.records.get(page.tabId) : undefined
+      const chooser = chosen.at(-1)
+      if (chooser) control.choosers.set(page.tabId, chooser)
+      return {
+        ...first.receipt,
+        ...follow,
+        activity: {
+          ...(after ? { navigated: after.docToken !== record.docToken } : {}),
+          ...facts(),
+          domChanged: quiet.mutations === null || quiet.mutations > 0,
+        },
+      }
+    } finally {
+      offPage()
+      offEvents()
+      watch.stop()
+      // 不等待回包：对话框打开期间该命令可能要到页面恢复之后才应答。
+      if (intercepting) {
+        void client
+          .send('Page.setInterceptFileChooserDialog', { enabled: false }, { sessionId })
+          .catch(() => {})
+      }
+    }
+  }
+
+  /**
+   * 处理页面上的对话框：确定或取消，prompt 附带 `text`。之后与其他动作相同，等待静默并取得观察。
+   * 页面上没有对话框时按参数错误拒绝，不发送任何命令。
+   */
+  async #answerDialog(
+    control: Control,
+    page: PageHandle,
+    input: BrowserActInput,
+  ): Promise<BrowserActResult> {
+    const dialog = page.client.dialogOf(page.sessionId)
+    if (!dialog) throw new BrowserArgumentError('页面上没有待处理的对话框')
+    const before = control.records.get(page.tabId)?.docToken
     const watch = this.#watchNav(page)
     try {
-      const receipt = await actOnPage(page, record, input)
+      await page.client.handleDialog(
+        page.sessionId,
+        input.accept === true,
+        dialog.type === 'prompt' ? input.text : undefined,
+      )
       const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
-      const settle = await this.#quietWait(page, watch, deadline)
+      const quiet = await this.#quietWait(page, watch, deadline)
+      const follow = await this.#followUp(control, page, deadline, quiet.settle, input.screenshot)
+      const after = follow.observation ? control.records.get(page.tabId) : undefined
       return {
-        ...receipt,
-        ...(await this.#followUp(control, page, deadline, settle, input.screenshot)),
+        element: BROWSER_DIALOG_NAMES[dialog.type],
+        execution: { state: 'completed', confirmedUnits: 1 },
+        ...follow,
+        activity: {
+          ...(after && before !== undefined ? { navigated: after.docToken !== before } : {}),
+          requests: watch.sent(),
+          // 探针在对话框关闭之后才登记，读数不包含关闭之初的变化，按有变化报告。
+          domChanged: true,
+        },
       }
     } finally {
       watch.stop()
@@ -1045,6 +1286,7 @@ export class BrowserCoordinator {
     },
   ): Promise<BrowserWaitResult> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
+    assertNoDialog(page)
     await this.#assertLocalFiles(control, page)
     const receipt = await waitOnPage(
       page,
@@ -1060,17 +1302,35 @@ export class BrowserCoordinator {
     return { ...receipt, ...(await this.#followUp(control, page, deadline)) }
   }
 
+  /**
+   * 将文件交给文件输入框。不带 ref 时交给本页动作期间截获的选择文件请求：页面常把真正的输入框隐藏，
+   * 只显示一个样式按钮，隐藏的输入框不在元素表中，没有编号。
+   */
   async #upload(
     lease: Lease,
-    input: { tabId: string; observationId: string; ref: string; paths: string[] },
+    input: { tabId: string; ref?: string; paths: string[] },
   ): Promise<{ files: string[] }> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
-    return uploadToPage(
-      page,
-      this.#recordOf(control, input.tabId, input.observationId),
-      input.ref,
-      input.paths,
+    assertNoDialog(page)
+    if (input.ref !== undefined) {
+      return uploadToPage(page, await this.#recordOf(control, page), input.ref, input.paths)
+    }
+    const chooser = control.choosers.get(page.tabId)
+    if (!chooser) {
+      throw new BrowserArgumentError(
+        '缺少 ref：本页没有待处理的选择文件请求，请提供文件输入框的编号',
+      )
+    }
+    if (!chooser.multiple && input.paths.length > 1) {
+      throw new BrowserArgumentError('该选择文件请求只接受一个文件')
+    }
+    await page.client.send(
+      'DOM.setFileInputFiles',
+      { files: input.paths, backendNodeId: chooser.backendNodeId },
+      { sessionId: page.sessionId },
     )
+    control.choosers.delete(page.tabId)
+    return { files: input.paths }
   }
 
   /**
@@ -1085,14 +1345,14 @@ export class BrowserCoordinator {
     lease: Lease,
     input: {
       tabId: string
-      observationId: string
       ref: string
       absolutePath: string
       timeoutMs: number
     },
   ): Promise<BrowserDownloadResult> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
-    const record = this.#recordOf(control, input.tabId, input.observationId)
+    assertNoDialog(page)
+    const record = await this.#recordOf(control, page)
     this.#nextDownload += 1
     const downloadId = `dl_${this.#nextDownload}`
 
