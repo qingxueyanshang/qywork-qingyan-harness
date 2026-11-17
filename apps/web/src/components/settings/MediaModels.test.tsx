@@ -456,6 +456,43 @@ test('手动添加目录 id 加后缀的名称：识别为生成型号并保存�
   }
 })
 
+test('手动添加以内置型号 id 为前缀的对话模型：写入模型库覆盖的对应型号；名称本身是内置型号时不写', async () => {
+  const { render } = await import('solid-js/web')
+  const store = await import('../../lib/store/index.ts')
+  const { configBusy, reloadConfig } = await import('./configStore.ts')
+  const { ModelSettings } = await import('./ModelSettings.tsx')
+  const state = { stored: relayConfig() }
+  relayApi(store, state)
+  await reloadConfig()
+  await store.reloadModelCatalog()
+
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <ModelSettings />, host as unknown as HTMLElement)
+  try {
+    fire(
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
+        (b) => b.textContent === 'providerf',
+      )!,
+      'click',
+    )
+    const input = host.querySelector<HTMLInputElement>('.model-row.add input')!
+    for (const id of ['deepseek-flash-high', 'deepseek-flash']) {
+      input.value = id
+      fire(input, 'keydown', { key: 'Enter' })
+      expect(await until(() => !configBusy() && !!state.stored.providers.providerf?.models[id])).toBe(
+        true,
+      )
+    }
+    expect(state.stored.catalog).toEqual({
+      'deepseek-flash-high|openai_chat_completions': { base: 'deepseek-flash' },
+    })
+  } finally {
+    dispose()
+    host.remove()
+  }
+})
+
 test('拉取模型：带后缀的生成型号预选对应型号，改选生成型号后移到该类别页签', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
@@ -540,6 +577,59 @@ test('拉取模型：带后缀的生成型号预选对应型号，改选生成�
     })
     expect(state.stored.providers.providerf?.models).toEqual({})
     expect(state.stored.catalog).toBeUndefined()
+  } finally {
+    dispose()
+    host.remove()
+  }
+})
+
+test('拉取模型：以模型库 id 为前缀的对话型号预选对应型号，添加后写入模型库覆盖', async () => {
+  const { render } = await import('solid-js/web')
+  const store = await import('../../lib/store/index.ts')
+  const { configBusy, reloadConfig } = await import('./configStore.ts')
+  const { ModelSettings } = await import('./ModelSettings.tsx')
+  const state = { stored: relayConfig() }
+  relayApi(store, state, {
+    source: 'models',
+    models: [{ id: 'deepseek-flash-high', output: 'chat', known: false, base: 'deepseek-flash' }],
+  })
+  await reloadConfig()
+  await store.reloadModelCatalog()
+
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <ModelSettings />, host as unknown as HTMLElement)
+  try {
+    fire(
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
+        (b) => b.textContent === 'providerf',
+      )!,
+      'click',
+    )
+    fire(host.querySelector<HTMLButtonElement>('.pull-open')!, 'click')
+    expect(await until(() => !!document.querySelector('.pull-dialog .pull-row'))).toBe(true)
+    const dialog = document.querySelector<HTMLElement>('.pull-dialog')!
+    expect(
+      dialog.querySelector<HTMLSelectElement>('select[aria-label="对应型号 deepseek-flash-high"]')!
+        .value,
+    ).toBe('deepseek-flash')
+    const box = dialog.querySelector<HTMLInputElement>('.pull-row input[type="checkbox"]')!
+    box.checked = true
+    box.dispatchEvent(new Event('change', { bubbles: true }))
+    fire(
+      Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
+        (b) => b.textContent === '添加',
+      )!,
+      'click',
+    )
+    expect(
+      await until(
+        () => !configBusy() && !!state.stored.providers.providerf?.models['deepseek-flash-high'],
+      ),
+    ).toBe(true)
+    expect(state.stored.catalog).toEqual({
+      'deepseek-flash-high|openai_chat_completions': { base: 'deepseek-flash' },
+    })
   } finally {
     dispose()
     host.remove()

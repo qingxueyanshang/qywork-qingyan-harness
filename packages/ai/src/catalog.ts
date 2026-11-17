@@ -2271,7 +2271,7 @@ export interface SpecOverride {
   cacheRouting?: CacheRouting
   /**
    * 对应型号：模型库中的 id。第三方接口的自定义名称按该型号的目录条目作为 seed（`lookupModel` 的 `base`），
-   * 由用户在拉取模型时选择，不按名称推测。
+   * 在拉取模型时选择；名称以模型库 id 为前缀时预选该 id（`catalogPrefixOf`），由用户确认或改选。
    */
   base?: string
   /** 来源标记：显示名称、对应型号、窗口与输出上限由云端同步写入。`applySpecOverride` 不读取该项。 */

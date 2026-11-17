@@ -171,6 +171,7 @@ export {
   CLOUD_MEDIA_KINDS,
   type CloudMediaKind,
   type CloudMediaSpec,
+  catalogPrefixOf,
   channelImageSpecProblem,
   channelSpecOf,
   channelVideoSpecProblem,

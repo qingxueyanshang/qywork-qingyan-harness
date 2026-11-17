@@ -390,15 +390,28 @@ export function defaultMediaKind(
   }
 }
 
-/** 名称与目录 id 之间允许的分隔符：第三方接口在官方名称后追加的分辨率、版本或日期后缀以此开头。 */
-const SUFFIX_SEPARATORS = ['-', '.', '_']
+/** 目录 id 作为名称前缀时其后允许的分隔符：第三方接口在官方名称后追加的分辨率、思考档位、版本或日期以此开头。 */
+const PREFIX_SEPARATORS = ['-', '.', '_']
+
+/**
+ * 按前缀识别名称对应的目录 id：`ids` 中是 `id` 的前缀且其后紧接分隔符的条目，多个成立时取最长的一个；
+ * 都不成立时返回 undefined。生成模型（`identifyMediaModel`）与拉取时的对话型号共用此规则，
+ * 例如 `gpt-image-2.5-sunburst-4k` 对应 `gpt-image-2.5-sunburst`，`gemini-4-argon-high` 对应 `gemini-4-argon`。
+ */
+export function catalogPrefixOf(id: string, ids: Iterable<string>): string | undefined {
+  let base: string | undefined
+  for (const c of ids) {
+    if (!id.startsWith(c) || !PREFIX_SEPARATORS.includes(id.charAt(c.length))) continue
+    if (!base || c.length > base.length) base = c
+  }
+  return base
+}
 
 /**
  * 按名称识别生成模型。与目录 id 完全一致时使用目录协议；接口地址是第三方接口且该条目登记了通用协议的兼容映射（`kinds`）时
  * 改用通用协议：第三方接口以自身的接口格式提供该名称，不提供厂商的原生路径（New API 对百炼原生路径返回 404）。
- * 没有兼容映射的条目（如 Gemini 图像）与未填写接口地址时沿用目录协议。目录 id 之后带分隔符与后缀时
- * （第三方接口的自定义名称，如 `gpt-image-2.5-sunburst-4k`），`base` 为该目录 id，协议按接口地址取默认值。
- * 多个目录 id 都是前缀时取最长的一个；都不成立时返回 undefined。
+ * 没有兼容映射的条目（如 Gemini 图像）与未填写接口地址时沿用目录协议。名称以目录 id 为前缀时（`catalogPrefixOf`，
+ * 第三方接口的自定义名称），`base` 为该目录 id，协议按接口地址取默认值；不成立时返回 undefined。
  *
  * 拉取模型与手动添加共用此函数：两处各写一份时，同一个名称在两处可能识别为不同类别。
  */
@@ -415,11 +428,11 @@ export function identifyMediaModel(
     if (relay && exact.kinds?.includes(generic)) return { output, kind: generic }
     return { output, kind: defaultMediaKind(output, baseUrl, exact.kind) }
   }
-  let base: { id: string; kind: MediaKind } | undefined
-  for (const m of catalog) {
-    if (!id.startsWith(m.id) || !SUFFIX_SEPARATORS.includes(id.charAt(m.id.length))) continue
-    if (!base || m.id.length > base.id.length) base = m
-  }
+  const prefix = catalogPrefixOf(
+    id,
+    catalog.map((m) => m.id),
+  )
+  const base = catalog.find((m) => m.id === prefix)
   if (!base) return undefined
   const output = MEDIA_KIND_OUTPUT[base.kind]
   return { output, kind: defaultMediaKind(output, baseUrl), base: base.id }

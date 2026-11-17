@@ -490,7 +490,14 @@ export function probeModel(provider: string, model: string): Promise<ProbeResult
 
 /** 拉取得到的一个型号。字段与服务端 `PulledModel` 一致。 */
 export type PulledModel =
-  | { id: string; output: 'chat'; kind?: ProviderKind; known: boolean; price?: ChatPrice }
+  | {
+      id: string
+      output: 'chat'
+      kind?: ProviderKind
+      known: boolean
+      base?: string
+      price?: ChatPrice
+    }
   | {
       id: string
       output: MediaOutput

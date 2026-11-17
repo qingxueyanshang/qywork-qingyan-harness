@@ -11,6 +11,7 @@
 import {
   type ChannelSpec,
   type ChannelVideoSpec,
+  catalogPrefixOf,
   channelVendorOf,
   defaultMediaKind,
   identifyMediaModel,
@@ -21,7 +22,7 @@ import {
   VIDEO_CHANNELS,
   type VideoChannel,
 } from '@qywork/core'
-import { lookupModel } from '../catalog.ts'
+import { builtinCatalog, lookupModel } from '../catalog.ts'
 import { bodyMessage, httpStatusName } from '../errors.ts'
 import { mediaCatalog, mediaKindsOf } from '../media/catalog.ts'
 import {
@@ -60,6 +61,8 @@ export type PulledModel =
       kind?: ProviderKind
       /** 模型库中有同名型号，规格按模型库取得。 */
       known: boolean
+      /** 名称以模型库 id 为前缀时对应的模型库 id，见 `chatFields`。 */
+      base?: string
       price?: PulledPrice
     }
   | {
@@ -68,7 +71,7 @@ export type PulledModel =
       kind: MediaKind
       /** 生成目录中有同名型号，或有渠道规格。 */
       known: boolean
-      /** 名称是目录 id 加后缀时对应的目录 id，见 `identifyMediaModel`。 */
+      /** 名称以目录 id 为前缀时对应的目录 id，见 `identifyMediaModel`。 */
       base?: string
       spec?: ChannelSpec
     }
@@ -176,8 +179,21 @@ function tiersOf(id: string, spec: ChannelVideoSpec): Record<string, Record<stri
 }
 
 /**
+ * 对话型号是否已收录：名称在模型库中即已收录。不在时按前缀识别（`catalogPrefixOf`），
+ * 名称以模型库 id 为前缀时给出该 id 作为对应型号（第三方接口的自定义名称，如 `gemini-4-argon-high`），添加时规格按它取得。
+ */
+function chatFields(id: string, kind: ProviderKind): { known: boolean; base?: string } {
+  if (lookupModel(id, kind).catalogued !== false) return { known: true }
+  const base = catalogPrefixOf(
+    id,
+    builtinCatalog().map((m) => m.id),
+  )
+  return base ? { known: false, base } : { known: false }
+}
+
+/**
  * 计费清单中的生成型号是否已收录：有渠道规格，或名称与同类别的目录 id 完全一致。
- * 名称是同类别的目录 id 加后缀时给出对应型号。
+ * 名称以同类别的目录 id 为前缀时给出对应型号。
  */
 function catalogFields(
   id: string,
@@ -317,7 +333,7 @@ async function fromPricing(
         id,
         output: 'chat',
         ...(kind ? { kind } : {}),
-        known: lookupModel(id, kind ?? target.kind).catalogued !== false,
+        ...chatFields(id, kind ?? target.kind),
         ...(price ? { price } : {}),
       })
     }
@@ -375,7 +391,8 @@ function declaredOutput(entry: Record<string, unknown>): 'chat' | MediaOutput | 
 
 /**
  * 型号列表接口：条目带类别时按类别归类；只有名称时，生成目录中的名称（`identifyMediaModel`）归入对应类别，
- * 模型库中的名称归入对话，其余归为未知。列表中没有的厂商自有协议型号按目录补齐（`ownProtocolModels`）。
+ * 模型库中的名称与以模型库 id 为前缀的名称（`chatFields`）归入对话，其余归为未知。
+ * 列表中没有的厂商自有协议型号按目录补齐（`ownProtocolModels`）。
  * 类别为生成而目录中没有该名称时，协议按接口地址取默认值（`defaultMediaKind`），不带规格。
  */
 function fromModelList(
@@ -390,13 +407,13 @@ function fromModelList(
     const declared = declaredOutput(entry)
     if (declared === null) continue
     const media = identifyMediaModel(id, mediaLibrary(), target.baseUrl)
-    const known = lookupModel(id, target.kind).catalogued !== false
-    const output = declared ?? media?.output ?? (known ? 'chat' : 'unknown')
+    const chat = chatFields(id, target.kind)
+    const output = declared ?? media?.output ?? (chat.known || chat.base ? 'chat' : 'unknown')
     if (output === 'unknown') {
       listed.set(id, { id, output })
     } else if (output === 'chat') {
       const price = prices?.get(id)
-      listed.set(id, { id, output, known, ...(price ? { price } : {}) })
+      listed.set(id, { id, output, ...chat, ...(price ? { price } : {}) })
     } else if (media?.output === output) {
       listed.set(id, {
         id,

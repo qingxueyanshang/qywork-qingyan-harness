@@ -1,6 +1,7 @@
 /**
  * 覆盖 `index.ts`（拉取型号）：本地服务按 2026-10-21 取得的服务商B与 2026-10-27 取得的 providera 响应片段应答，
- * 核对分类、渠道规格、价格，没有计费清单时退回型号列表、按条目自带的类别归类，以及官方接口按目录补齐自有协议的生成型号。
+ * 核对分类、渠道规格、价格，没有计费清单时退回型号列表、按条目自带的类别归类，名称按前缀对应模型库与生成目录的型号，
+ * 以及官方接口按目录补齐自有协议的生成型号。
  */
 
 import { afterAll, afterEach, expect, spyOn, test } from 'bun:test'
@@ -309,6 +310,53 @@ test('型号列表中带后缀的生成型号按目录 id 识别，协议按接�
   expect(by.get('gemini-3-pro-image-preview')).toMatchObject({ base: 'gemini-3-pro-image' })
   // 目录 id 之后不是分隔符时不识别，名称也不在模型库中，归为未知。
   expect(by.get('gpt-image-2x')).toEqual({ id: 'gpt-image-2x', output: 'unknown' })
+})
+
+// 本机请求记录中 providere 渠道的 Gemini 名称为 `gemini-4-argon-high`，型号列表只有名称，曾归为未知。
+test('型号列表中以模型库 id 为前缀的对话型号归入对话，对应型号为该 id；前缀之后不是分隔符时仍为未知', async () => {
+  const { target } = site({
+    '/v1/models': {
+      data: [
+        { id: 'gemini-4-argon' },
+        { id: 'gemini-4-argon-high' },
+        { id: 'gemini-3.1-pro-preview-low' },
+        { id: 'gemini-4-argonx' },
+      ],
+    },
+  })
+  const by = new Map((await pullModels(target, signal())).models.map((m) => [m.id, m]))
+  expect(by.get('gemini-4-argon')).toEqual({ id: 'gemini-4-argon', output: 'chat', known: true })
+  expect(by.get('gemini-4-argon-high')).toEqual({
+    id: 'gemini-4-argon-high',
+    output: 'chat',
+    known: false,
+    base: 'gemini-4-argon',
+  })
+  expect(by.get('gemini-3.1-pro-preview-low')).toMatchObject({
+    output: 'chat',
+    base: 'gemini-3.1-pro-preview',
+  })
+  expect(by.get('gemini-4-argonx')).toEqual({ id: 'gemini-4-argonx', output: 'unknown' })
+})
+
+test('计费清单中以模型库 id 为前缀的对话型号带对应型号', async () => {
+  const { target } = site({
+    '/api/pricing': {
+      data: [
+        {
+          model_name: 'claude-opus-4-7-thinking',
+          quota_type: 0,
+          model_ratio: 1,
+          enable_groups: ['default'],
+          supported_endpoint_types: ['openai'],
+        },
+      ],
+      group_ratio: { default: 1 },
+    },
+    '/api/status': { data: {} },
+  })
+  const [model] = (await pullModels(target, signal())).models
+  expect(model).toMatchObject({ output: 'chat', known: false, base: 'claude-opus-4-7' })
 })
 
 // 2026-10-27 api.minimax.cn 的 /v1/models 原样（节选）：只列出对话型号，没有计费清单。

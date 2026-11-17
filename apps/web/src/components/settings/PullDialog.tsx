@@ -29,7 +29,8 @@ const TAB_LABEL: Record<Category | 'unknown', string> = {
 /**
  * 拉取接口上的型号，勾选后添加。打开即读取；读取成功时先按结果刷新已添加型号的规格、价格与已下架标记。
  * 未收录的型号可选对应型号：对话型号可选模型库中的内置型号与生成目录，所选型号决定该型号所在的页签与添加时的类别；
- * 生成型号只可选同类别的生成目录。未知型号须先选类别，选定后移到该类别的页签，再按该类别添加。
+ * 生成型号只可选同类别的生成目录。名称以模型库或生成目录的 id 为前缀时预选该 id（拉取结果的 `base`）。
+ * 未知型号须先选类别，选定后移到该类别的页签，再按该类别添加。
  *
  * 窗口尺寸固定（CLAUDE.md B9）：读取完成、切换页签时型号数量变化，列表在框内滚动，按钮位置不变。
  */
@@ -106,9 +107,7 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
         if (!open) return
         setBases(
           Object.fromEntries(
-            r.models.flatMap((m) =>
-              m.output !== 'chat' && m.output !== 'unknown' && m.base ? [[m.id, m.base]] : [],
-            ),
+            r.models.flatMap((m) => (m.output !== 'unknown' && m.base ? [[m.id, m.base]] : [])),
           ),
         )
         setResult(r)

@@ -1,4 +1,5 @@
 import {
+  catalogPrefixOf,
   channelSpecOf,
   identifyMediaModel,
   MEDIA_KIND_OUTPUT,
@@ -211,7 +212,8 @@ export function ModelSettings() {
    * 在此处另存窗口与价格会形成第二份记录。
    *
    * 按名称识别为生成模型时（`identifyMediaModel`）添加为生成模型，此后以保存的接入方式为准；
-   * 该类别尚无默认模型时，它成为默认模型。其余 id 添加为对话模型。
+   * 该类别尚无默认模型时，它成为默认模型。其余 id 添加为对话模型；不在模型库中而以内置型号 id 为前缀时
+   * （`catalogPrefixOf`），该 id 写入模型库覆盖的对应型号，与拉取模型的预选相同。
    */
   const addModel = (provider: string, id: string) => {
     const base = config()
@@ -249,15 +251,23 @@ export function ModelSettings() {
       })
       return
     }
+    const builtin = (modelCatalog()?.library ?? []).flatMap((v) =>
+      v.models.flatMap((m) => (m.builtin ? [m.id] : [])),
+    )
+    const prefix = builtin.includes(id) ? undefined : catalogPrefixOf(id, builtin)
     void replaceConfig((cur) => {
       const owner = cur.providers[provider]
       if (!owner || id in owner.models) return null
+      const key = `${id}|${owner.kind}`
       return {
         ...cur,
         providers: {
           ...cur.providers,
           [provider]: { ...owner, models: { ...owner.models, [id]: {} } },
         },
+        ...(prefix
+          ? { catalog: { ...cur.catalog, [key]: { ...cur.catalog?.[key], base: prefix } } }
+          : {}),
         // 接口没有模型时不可用。添加第一个模型时将默认模型切换到它，
         // 使添加立即生效。
         ...(Object.keys(owner.models).length === 0 ? { active: { provider, model: id } } : {}),
