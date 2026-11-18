@@ -24,6 +24,7 @@ import {
   REASONING_ECHOES,
   THINKING_MODES,
   TOOL_SCHEMA_MODES,
+  VIDEO_CHANNEL_KIND,
   VIDEO_CHANNELS,
 } from '@qywork/core'
 import {
@@ -148,7 +149,7 @@ export function sampleConfig(): QyConfig {
     if ('media-openai_videos' in media) {
       for (const [c, channel] of VIDEO_CHANNELS.entries()) {
         media[`channel-${channel}`] = {
-          kind: 'openai_videos',
+          kind: VIDEO_CHANNEL_KIND[channel],
           spec: {
             channel,
             seconds: [4, 5, 30],
