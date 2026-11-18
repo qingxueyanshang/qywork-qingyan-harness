@@ -19,7 +19,8 @@ use tauri::{
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Deferral, ICoreWebView2DownloadOperation,
     ICoreWebView2DownloadStartingEventArgs, ICoreWebView2Environment, ICoreWebView2Environment5,
-    ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2_11, ICoreWebView2_4,
+    ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Settings5, ICoreWebView2_11,
+    ICoreWebView2_4,
     COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
     COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
 };
@@ -242,6 +243,10 @@ impl Engine {
             .additional_browser_args(&args)
             // AI 创建的页不切换系统焦点。默认值为 true，必须显式关闭。
             .focused(false)
+            // 用户可以用 Ctrl+滚轮与 Ctrl+加减号缩放页面。默认值为 false，页面宽于面板或弹窗高于面板时无法看全。
+            // 页面缩放后，模型按元素位置发出的点击仍然准确（2026-11-18 在真实 WebView2 中按 80% 与 125% 实测）。
+            // 该选项同时打开双指缩放，由 `disable_pinch_zoom` 关闭。
+            .zoom_hotkeys_enabled(true)
             .initialization_script(marker_script(spec.marker))
             .on_navigation(move |url| {
                 if let Some(host) = super::host() {
@@ -532,7 +537,8 @@ fn bind_hooks(
     view.with_webview(move |platform| {
         watch_popups(&platform);
         remember_environment(&platform);
-        let registered = register_downloads(&platform, tab.clone())
+        let registered = disable_pinch_zoom(&platform)
+            .and_then(|()| register_downloads(&platform, tab.clone()))
             .and_then(|()| register_context_menu(&platform, tab.clone()))
             .and_then(|()| register_new_window(&platform, tab.clone()))
             .and_then(|()| register_close(&platform, tab))
@@ -542,6 +548,20 @@ fn bind_hooks(
     .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
     rx.recv_timeout(HOOK_WAIT)
         .map_err(|_| "内置浏览器的页面未在期限内创建完成".to_owned())?
+}
+
+/// 关闭双指缩放，只保留页面缩放。双指缩放改变可视视口，可视视口缩放后模型点击的落点未经验证，不要打开。
+/// 在主线程上执行。
+fn disable_pinch_zoom(platform: &PlatformWebview) -> Result<(), String> {
+    unsafe {
+        platform
+            .controller()
+            .CoreWebView2()
+            .and_then(|core| core.Settings())
+            .and_then(|settings| settings.cast::<ICoreWebView2Settings5>())
+            .and_then(|settings| settings.SetIsPinchZoomEnabled(false))
+            .map_err(|e| format!("无法关闭双指缩放：{e}"))
+    }
 }
 
 /// 尚未记录 environment 时记录该页的 environment，并在其浏览器进程退出时清除。在主线程上执行。
