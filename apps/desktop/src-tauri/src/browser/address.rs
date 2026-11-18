@@ -30,7 +30,8 @@ pub fn navigation_url(raw: &str) -> Result<Url, String> {
     } else {
         Url::parse(value)
     }
-    .map_err(|e| format!("地址无法解析：{e}"))?;
+    // 不附带解析库的错误原文：它是英文的内部描述，用户无法据此改正地址。
+    .map_err(|_| "地址无法解析".to_owned())?;
     if matches!(parsed.scheme(), "http" | "https" | "file") || parsed.as_str() == BLANK {
         Ok(parsed)
     } else {
@@ -55,6 +56,26 @@ mod tests {
         assert_eq!(navigation_url(&format!("\"{path}\"")).unwrap(), url);
         let with_suffix = format!("{url}?preview=1#scene");
         assert_eq!(navigation_url(&with_suffix).unwrap().as_str(), with_suffix);
+    }
+
+    /// 地址栏把本地文件地址中的非 ASCII 字符与空格解码显示，`%23` 与 `%25` 保持转义。
+    /// 原样提交该文字时打开的是同一个文件。
+    #[test]
+    fn decoded_file_urls_from_the_address_bar_open_the_same_file() {
+        #[cfg(windows)]
+        let (shown, path) =
+            ("file:///C:/Users/test/鹈鹕 骑车 %23100%2520.html", r"C:\Users\test\鹈鹕 骑车 #100%20.html");
+        #[cfg(not(windows))]
+        let (shown, path) =
+            ("file:///home/test/鹈鹕 骑车 %23100%2520.html", "/home/test/鹈鹕 骑车 #100%20.html");
+        let url = navigation_url(shown).unwrap();
+        assert_eq!(url.to_file_path().unwrap(), std::path::PathBuf::from(path));
+        assert_eq!(url, navigation_url(path).unwrap());
+    }
+
+    #[test]
+    fn unparsable_addresses_report_a_fixed_message() {
+        assert_eq!(navigation_url("hello world").unwrap_err(), "地址无法解析");
     }
 
     #[test]

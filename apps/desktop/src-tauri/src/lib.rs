@@ -652,6 +652,7 @@ pub fn run() {
             browser::commands::browser_open,
             browser::commands::browser_close,
             browser::commands::browser_navigate,
+            browser::commands::browser_zoom,
             browser::commands::browser_activate,
             browser::commands::browser_layout,
             pet::pet_window_show,

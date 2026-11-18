@@ -9,8 +9,8 @@
 
 use serde::Serialize;
 
-/// 界面可见的页面。**只有 id / 地址 / 标题 / 工作区 / 创建序号**：会话归属由协调器负责，
-/// 工具栏是标准浏览器 chrome，不区分人工页面与 AI 页面。
+/// 界面可见的页面。**只有 id / 地址 / 标题 / 工作区 / 创建序号 / 缩放比例 / 能否后退与前进 / 打开它的页 / 是否隐藏**：
+/// 会话归属由协调器负责，工具栏是标准浏览器 chrome，不区分人工页面与 AI 页面。
 /// 包含工作区，是因为界面按它决定该页面是否显示在当前页签条上；
 /// 创建序号与终端会话共用一个计数器，界面按它把两份清单合并排列为一条页签条。
 #[derive(Clone, Serialize)]
@@ -21,6 +21,15 @@ pub struct TabView {
     pub title: String,
     pub workspace_id: String,
     pub created_seq: u64,
+    /// 1 为 100%。页面位于独立窗口中时恒为 1，界面不显示。
+    pub zoom: f64,
+    /// 页面位于独立窗口中时恒为假，界面不据此禁用按钮。
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    /// 页面请求的新窗口为打开它的页，其余为 `None`。打开它的页显示在面板中时，界面切换到新页。
+    pub opener_tab_id: Option<String>,
+    /// 不列入页签条的页：文件页的 HTML 预览与服务端内部渲染用的页。界面只摆放自己打开的隐藏页。
+    pub hidden: bool,
 }
 
 #[cfg(not(desktop))]
@@ -39,6 +48,7 @@ pub fn browser_tabs() -> Vec<TabView> {
 }
 
 /// 新建页面。`url` 缺省时为空白标签页；`workspaceId` 为必填，该页面此后归属该工作区。
+/// `hidden` 为真时不列入页签条，由打开它的界面组件摆放与关闭（文件页的 HTML 预览）。
 ///
 /// **必须是 async**：新建页面需要等待主线程或 CDP 响应，同步命令运行在主线程上会死锁。
 #[tauri::command]
@@ -46,18 +56,19 @@ pub async fn browser_open(
     app: tauri::AppHandle,
     url: Option<String>,
     workspace_id: String,
+    hidden: Option<bool>,
 ) -> Result<TabView, String> {
     #[cfg(desktop)]
     {
         tauri::async_runtime::spawn_blocking(move || {
-            super::user_open(&app, url.as_deref(), &workspace_id)
+            super::user_open(&app, url.as_deref(), &workspace_id, hidden.unwrap_or(false))
         })
         .await
         .map_err(|e| format!("新建页面任务失败：{e}"))?
     }
     #[cfg(not(desktop))]
     {
-        let _ = (app, url, workspace_id);
+        let _ = (app, url, workspace_id, hidden);
         Err(UNSUPPORTED.to_owned())
     }
 }
@@ -95,6 +106,28 @@ pub async fn browser_navigate(
     #[cfg(not(desktop))]
     {
         let _ = (tab_id, action, url);
+        Err(UNSUPPORTED.to_owned())
+    }
+}
+
+/// 按档位放大（`in`）或缩小（`out`）页面，`reset` 恢复为 100%。只有页面嵌在面板中的 Windows 支持；
+/// 主线程执行缩放期间阻塞等待，理由同新建页面。
+#[tauri::command]
+pub async fn browser_zoom(tab_id: String, action: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || super::user_zoom(&tab_id, &action))
+            .await
+            .map_err(|e| format!("缩放任务失败：{e}"))?
+    }
+    #[cfg(all(desktop, not(windows)))]
+    {
+        let _ = (tab_id, action);
+        Err("浏览器页面位于独立窗口中，在该窗口中缩放".to_owned())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (tab_id, action);
         Err(UNSUPPORTED.to_owned())
     }
 }

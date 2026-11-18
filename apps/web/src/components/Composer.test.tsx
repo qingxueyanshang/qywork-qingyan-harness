@@ -2,7 +2,8 @@
  * 覆盖右侧面板放大时的输入区停靠交互。
  *
  * CSS 负责「隐藏位置与浮出方式」，本文件锁定状态边界：空输入默认收起、悬浮时展开并延迟
- * 收起；草稿属于用户未提交的数据，鼠标离开时也不得替用户隐藏。
+ * 收起；草稿属于用户未提交的数据，鼠标离开时也不得替用户隐藏。悬停或聚焦而展开的输入区按浮层计数，
+ * 内置浏览器的原生子视图据此让位；只因草稿保持展开时不计数。
  *
  * 另锁定主按钮的一条判据：忙态包含运行中的子 agent，此时主按钮仍是停止。
  * 补全菜单以输入框定位，运行位置行的显隐不改变定位基准，选择候选不提交表单。
@@ -417,6 +418,34 @@ describe('放大面板中的输入区', () => {
       dispose()
       jest.useRealTimers()
     }
+  })
+
+  /**
+   * 原始失败形状：面板放大且显示内置浏览器页时，展开的输入区绘制在原生子视图的矩形内，被网页遮挡，
+   * 正在输入的内容不可见。
+   */
+  test('悬停或聚焦而展开时按浮层计数；鼠标离开且失焦后只因草稿保持展开时不计数', async () => {
+    const store = await import('../lib/store/index.ts')
+    const { dispose, reveal, textarea, wrap } = await mountComposer()
+    try {
+      expect(store.overlayOpen()).toBe(false)
+      pointer(wrap, 'pointerenter')
+      expect(store.overlayOpen()).toBe(true)
+
+      click(reveal)
+      input(textarea, '还没发送的草稿')
+      jest.useFakeTimers()
+      textarea.blur()
+      pointer(wrap, 'pointerleave')
+      await new Promise((resolve) => setImmediate(resolve))
+      jest.advanceTimersByTime(200)
+      expect(wrap.classList.contains('panel-dock-open')).toBe(true)
+      expect(store.overlayOpen()).toBe(false)
+    } finally {
+      dispose()
+      jest.useRealTimers()
+    }
+    expect(store.overlayOpen()).toBe(false)
   })
 
   /** 原始失败形状：整页刷新后未发送的草稿与附件丢失。刷新以 `flushSession` 后重新挂载模拟。 */

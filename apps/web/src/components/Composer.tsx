@@ -12,6 +12,7 @@ import {
   dropFollowUp,
   extensionsRevision,
   followUpMode,
+  holdOverlay,
   interrupt,
   isDesktopShell,
   isRunning,
@@ -112,6 +113,12 @@ export function Composer(props: { empty: boolean }) {
   const panelDockPinned = () => hasInput() || uploading() > 0 || dragOver()
   const panelDockVisible = () =>
     panelMaximized() && (panelDockOpen() || panelDockFocused() || panelDockPinned())
+  /*
+   * 悬停或聚焦期间展开的输入区按浮层计数，内置浏览器的原生子视图随之移出可视区。不改为让出输入区所占的矩形：
+   * 输入区高度随草稿变化，补全列表、模型菜单与提示从输入区向上弹出，高度不定，让出的矩形无法覆盖它们。
+   * 只因草稿保持展开时不计数：鼠标离开输入区后网页恢复显示，草稿经底部触发条再次展开。
+   */
+  holdOverlay(() => panelMaximized() && (panelDockOpen() || panelDockFocused()))
   let ta!: HTMLTextAreaElement
   let wrap: HTMLDivElement | undefined
   let stopVoiceForSubmit = () => {}
@@ -138,9 +145,9 @@ export function Composer(props: { empty: boolean }) {
   const closePanelDockSoon = () => {
     if (!panelMaximized()) return
     clearPanelDockClose()
+    // `panelDockOpen` 只表示指针停留在输入区：聚焦与草稿另由 `panelDockVisible` 保持展开。
     panelDockCloseTimer = setTimeout(() => {
       panelDockCloseTimer = undefined
-      if (panelDockFocused() || panelDockPinned()) return
       setPanelDockOpen(false)
     }, 160)
   }

@@ -1,5 +1,5 @@
 import type { Component, JSX } from 'solid-js'
-import { createSignal, For, lazy, onCleanup, Show, Suspense } from 'solid-js'
+import { createMemo, createSignal, For, lazy, onCleanup, Show, Suspense } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import type { OfficeFormat } from '../lib/file-search.ts'
 import {
@@ -485,25 +485,7 @@ export default function SidePanel() {
              */}
             <div class="side-stack" classList={{ hidden: board() }}>
               <Dynamic component={viewPane()} />
-
-              {/*
-               * 可多开的页**全部保持挂载，只显示当前页**（`.tab-pane.active`）。
-               *
-               * 不采用只挂载当前页的做法：终端中的命令需继续运行、滚动历史需保留，
-               * iframe 中的页面不应因切换页签而重新加载。
-               *
-               * 每一页自带 `Suspense`：xterm 的包体积超过 300 kB，没有边界时组件挂起会使
-               * 整棵树短暂变空（同 `App.tsx` 中的处理）。
-               */}
-              <For each={panelTabs()}>
-                {(t) => (
-                  <div class="tab-pane" classList={{ active: activePanelTab() === t.id }}>
-                    <Suspense fallback={<div class="pane-loading" />}>
-                      <Dynamic component={tabView(t)} tab={t} />
-                    </Suspense>
-                  </div>
-                )}
-              </For>
+              <TabPanes />
             </div>
             <Show when={board()}>
               <PreviewBoard onPick={() => setBoard(false)} />
@@ -524,6 +506,40 @@ export default function SidePanel() {
         </Show>
       </aside>
     </Show>
+  )
+}
+
+/**
+ * 可多开的页的正文。一页在本次挂载中首次成为当前页时挂载，此后**保持挂载，只显示当前页**（`.tab-pane.active`）。
+ * 面板收起或切换工作区时整体卸载，再次挂载后同样按首次显示挂载各页。
+ *
+ * 终端与外部 CLI 页立即挂载：它们是运行中的进程，不随重启恢复。按首次显示挂载时，进程在显示之前退出，
+ * 显示时会另起一个新进程，而不是显示已退出。
+ *
+ * 不要改为全部挂载：应用重启后恢复的页在显示之前不应读取文件或新建网页，全部挂载时恢复 N 个画布页即在启动时
+ * 读取 N 个文件。也不要改为只挂载当前页：终端中的命令需继续运行、滚动历史需保留，iframe 中的页面不应因切换页签
+ * 而重新加载。
+ *
+ * 每一页自带 `Suspense`：xterm 的包体积超过 300 kB，没有边界时组件挂起会使
+ * 整棵树短暂变空（同 `App.tsx` 中的处理）。
+ */
+function TabPanes() {
+  const shown = createMemo<ReadonlySet<string>>((seen) => {
+    const id = activePanelTab()
+    return id === null || seen.has(id) ? seen : new Set([...seen, id])
+  }, new Set())
+  return (
+    <For each={panelTabs()}>
+      {(t) => (
+        <Show when={t.kind === 'terminal' || t.kind === 'cli' || shown().has(t.id)}>
+          <div class="tab-pane" classList={{ active: activePanelTab() === t.id }}>
+            <Suspense fallback={<div class="pane-loading" />}>
+              <Dynamic component={tabView(t)} tab={t} />
+            </Suspense>
+          </div>
+        </Show>
+      )}
+    </For>
   )
 }
 

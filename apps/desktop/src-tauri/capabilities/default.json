@@ -28,6 +28,7 @@
     "allow-browser-open",
     "allow-browser-close",
     "allow-browser-navigate",
+    "allow-browser-zoom",
     "allow-browser-activate",
     "allow-browser-layout",
     "allow-pet-window-show",

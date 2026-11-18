@@ -31,6 +31,7 @@ const APP_COMMANDS: &[&str] = &[
     "browser_open",
     "browser_close",
     "browser_navigate",
+    "browser_zoom",
     "browser_activate",
     "browser_layout",
     "pet_window_show",

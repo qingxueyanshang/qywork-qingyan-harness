@@ -12,6 +12,7 @@
 import type { BrowserCapability } from '@qywork/core'
 import { type Accessor, createMemo, createRoot, createSignal } from 'solid-js'
 import {
+  activateBrowserPage,
   BLANK_PAGE,
   closeBrowserPage,
   listBrowserTabs,
@@ -23,7 +24,16 @@ import {
 import { localHtmlUrl } from '../links.ts'
 import { isDesktopShell } from './shell.ts'
 import { setState, state } from './state.ts'
-import { holdPanelTab, openPreviewTab, showPanelTab, syncBrowserTabs, workspace } from './ui.ts'
+import {
+  adoptBrowserTab,
+  holdPanelTab,
+  openPreviewTab,
+  panelTabs,
+  restoredBrowserTab,
+  showPanelTab,
+  syncBrowserTabs,
+  workspace,
+} from './ui.ts'
 
 type Presentation = NonNullable<BrowserCapability['presentation']>
 
@@ -96,19 +106,23 @@ export function browserTabLabel(tabId: string): string | undefined {
   return tab ? labelOf(tab) : undefined
 }
 
+/** 隐藏页（文件页的 HTML 预览等）留在镜像中供其打开者读取缩放比例，不进入页签条，也不随页签关闭。 */
 function project(list: NativeTab[]): void {
   setTabs(list)
+  const shown = list.filter((t) => !t.hidden)
   syncBrowserTabs(
-    list.map((t) => ({
+    shown.map((t) => ({
       id: t.tabId,
       title: labelOf(t),
+      url: t.url,
       workspaceId: t.workspaceId,
       createdSeq: t.createdSeq,
+      ...(t.openerTabId ? { opener: t.openerTabId } : {}),
     })),
   )
   // 关闭页签时一并关闭原生页面。宿主中已不存在的页面在 `syncBrowserTabs` 中
   // 已先移除登记，不会执行到此处。
-  for (const t of list) holdPanelTab(t.tabId, () => void closeBrowserPage(t.tabId).catch(() => {}))
+  for (const t of shown) holdPanelTab(t.tabId, () => void closeBrowserPage(t.tabId).catch(() => {}))
 }
 
 /**
@@ -134,17 +148,53 @@ export async function openBrowserTab(url?: string): Promise<void> {
 }
 
 /**
+ * 加载应用启动时恢复的页：按记录的地址在该页所属的工作区新建页面，原位换为宿主的页（`adoptBrowserTab`）。
+ * 只在该页显示时调用，未显示的页不在后台新建页面。
+ *
+ * 工作区由调用方在请求之前给出，理由同 `openBrowserTab`。新建期间该页被关闭时关闭新建的页面：
+ * 用户关闭的是这一页，保留时该页面作为另一页留在页签条上。
+ */
+export async function loadRestoredTab(workspaceId: string, id: string): Promise<void> {
+  const entry = restoredBrowserTab(workspaceId, id)
+  if (!entry) return
+  const tab = await openBrowserPage(entry.url, workspaceId)
+  if (!adoptBrowserTab(workspaceId, id, tab.tabId)) {
+    void closeBrowserPage(tab.tabId).catch(() => {})
+    return
+  }
+  project(await listBrowserTabs())
+}
+
+/**
+ * 比较用的地址：统一解析后解码。宿主上报的地址与界面生成的地址对同一字符的转义可能不同，
+ * 例如一方转义中文与空格而另一方不转义。无法解析时按原文比较。
+ */
+function comparableUrl(url: string): string {
+  try {
+    return decodeURI(new URL(url).href)
+  } catch {
+    return url
+  }
+}
+
+/**
  * 在右侧面板中打开正文中的链接。
  *
  * 桌面外壳中本地 HTML 与 HTTP 链接都交给内置浏览器，页面嵌在面板中还是位于独立窗口中由宿主决定；
  * 其他客户端的 HTTP 链接使用网页预览。宿主不可用或打开页面失败时投递已有的错误通知，
  * 不把 file URL 交给远端 iframe。
+ *
+ * 当前工作区已有页显示该地址时切换到该页，不新建第二页（同 `openPreviewTab`）。页面位于独立窗口中时
+ * 一并把该页所在的窗口置于前台：只切换页签时，浏览器窗口没有任何变化。应用启动时恢复、尚未加载的页
+ * 不在宿主中，按其记录的地址比较，切换到该页后由该页自行加载。
  */
 export function openLinkInPanel(url: string): void {
-  const local = localHtmlUrl(url, workspace()?.root ?? '/')
+  const ws = workspace()
+  const local = localHtmlUrl(url, ws?.root ?? '/')
   const failed = (message: string) => setState('notice', { reason: 'preview_failed', message })
+  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
   if (isDesktopShell()) {
-    if (!workspace()) {
+    if (!ws) {
       failed('请先打开工作区。')
       return
     }
@@ -153,8 +203,28 @@ export function openLinkInPanel(url: string): void {
       failed(reason ? `${reason}。` : '内置浏览器尚未连接，请稍后重试。')
       return
     }
-    void openBrowserTab(local ?? url).catch((error: unknown) => {
-      failed(`无法打开预览：${error instanceof Error ? error.message : String(error)}`)
+    const target = local ?? url
+    const open = tabs().find(
+      (t) => !t.hidden && t.workspaceId === ws.id && comparableUrl(t.url) === comparableUrl(target),
+    )
+    if (open) {
+      showPanelTab(ws.id, open.tabId)
+      if (browserPresentation() === 'window') {
+        void activateBrowserPage(open.tabId).catch((error: unknown) => {
+          failed(`无法显示窗口：${errorText(error)}`)
+        })
+      }
+      return
+    }
+    const restored = panelTabs().find(
+      (t) => t.kind === 'browser' && !t.live && comparableUrl(t.url) === comparableUrl(target),
+    )
+    if (restored) {
+      showPanelTab(ws.id, restored.id)
+      return
+    }
+    void openBrowserTab(target).catch((error: unknown) => {
+      failed(`无法打开预览：${errorText(error)}`)
     })
     return
   }

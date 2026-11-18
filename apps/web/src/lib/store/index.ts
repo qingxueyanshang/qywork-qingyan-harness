@@ -78,6 +78,7 @@ export {
   browserTab,
   browserTabLabel,
   browserUnavailableText,
+  loadRestoredTab,
   openBrowserTab,
   openLinkInPanel,
 } from './browser.ts'
@@ -261,6 +262,7 @@ export {
   panelTabUrl,
   panelWidth,
   resizePanel,
+  restoredBrowserTab,
   restoreTerminalTabs,
   type SettingsPage,
   seedFoldOpen,

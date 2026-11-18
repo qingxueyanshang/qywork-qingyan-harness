@@ -21,6 +21,8 @@ const DELAY = 350
  * 靠近视口下边缘时改为显示在上方。
  *
  * **边界**：
+ * - 默认显示在下方，下方容纳不下时显示在上方。触发元素带 `data-tip-place="above"` 时优先显示在上方，
+ *   上方容纳不下时才显示在下方：触发元素下方是原生子视图（内置浏览器的地址栏）时，下方的提示被它遮挡。
  * - 禁用的表单控件不派发指针事件，设在其上的 `data-tip` 不会显示。
  *   需要在禁用状态说明原因时，把提示设在外层容器上。
  * - 触摸设备不显示提示：触摸设备没有悬停状态，显示的提示会遮挡手指下方的内容。
@@ -44,7 +46,8 @@ export function Tooltip() {
     const r = t.getBoundingClientRect()
     const w = el.offsetWidth
     const h = el.offsetHeight
-    const below = r.bottom + GAP + h <= innerHeight
+    const below =
+      t.dataset.tipPlace === 'above' ? r.top - GAP - h < 0 : r.bottom + GAP + h <= innerHeight
     const y = below ? r.bottom + GAP : r.top - GAP - h
     const x = Math.min(Math.max(GAP, r.left + r.width / 2 - w / 2), innerWidth - w - GAP)
     el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`

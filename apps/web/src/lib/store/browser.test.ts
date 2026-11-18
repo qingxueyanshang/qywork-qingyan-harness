@@ -11,7 +11,8 @@
  * 访问几个浏览器全局对象，因此此处先补齐这些对象再动态 import（理由同 `store.test.ts`）。
  *
  * 覆盖范围（B6）：`store/browser.ts` 的 `initBrowserProjection`、`openBrowserTab`、`browserTabLabel`、
- * `openLinkInPanel` 与 `browserUnavailableText`，以及它们经由 `store/ui.ts` 按工作区记录的部分。
+ * `openLinkInPanel`、`loadRestoredTab` 与 `browserUnavailableText`，以及它们经由 `store/ui.ts` 按工作区记录的部分（含
+ * `syncBrowserTabs` 切换到新窗口、应用启动时恢复的浏览器页与 `adoptBrowserTab`）。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -33,12 +34,66 @@ g.localStorage ??= {
   removeItem: (k: string) => stored.delete(k),
 }
 
-const { browserTabLabel, initBrowserProjection, openBrowserTab, openLinkInPanel } = await import(
-  './browser.ts'
+/**
+ * 上次运行留下的面板记录：每个工作区一个画布页与两个浏览器页，当前页是第一个浏览器页。sessionStorage 中没有记录，
+ * 模块加载即为应用启动，这些浏览器页恢复为未加载的页。每条用例使用其中一个工作区。
+ */
+const RESTORED = [
+  'ws_restore_load',
+  'ws_restore_race',
+  'ws_restore_closed',
+  'ws_restore_fail',
+  'ws_restore_link',
+]
+stored.set(
+  'qywork.panel.tabs',
+  JSON.stringify(
+    Object.fromEntries(
+      RESTORED.map((id) => [
+        id,
+        {
+          tabs: [
+            {
+              id: 'canvas-a.canvas.json',
+              kind: 'canvas',
+              title: 'a',
+              path: 'a.canvas.json',
+              createdSeq: 1,
+            },
+            {
+              id: 'bt_7',
+              kind: 'browser',
+              title: '甲',
+              url: 'http://a.test/',
+              live: true,
+              createdSeq: 7,
+            },
+            {
+              id: 'bt_8',
+              kind: 'browser',
+              title: '乙',
+              url: 'http://b.test/',
+              live: true,
+              createdSeq: 8,
+            },
+          ],
+          page: { tab: 'bt_7' },
+        },
+      ]),
+    ),
+  ),
 )
-const { panelTabs, setSidePanel, setWorkspace, sidePanel, syncBrowserTabs } = await import(
-  './ui.ts'
-)
+
+const {
+  browserTab,
+  browserTabLabel,
+  initBrowserProjection,
+  loadRestoredTab,
+  openBrowserTab,
+  openLinkInPanel,
+} = await import('./browser.ts')
+const { closePanelTab, panelTabs, setSidePanel, setWorkspace, sidePanel, syncBrowserTabs } =
+  await import('./ui.ts')
 const { setState, state } = await import('./state.ts')
 
 interface Invoke {
@@ -84,6 +139,8 @@ interface HostTab {
   title: string
   workspaceId: string
   createdSeq: number
+  openerTabId?: string | null
+  hidden?: boolean
 }
 
 let seq = 0
@@ -227,7 +284,13 @@ describe('内置浏览器页面按工作区记录', () => {
       return undefined
     })
     syncBrowserTabs([
-      { id: bTab.tabId, title: '浏览器 1', workspaceId: WS_B.id, createdSeq: bTab.createdSeq },
+      {
+        id: bTab.tabId,
+        title: '浏览器 1',
+        url: 'about:blank',
+        workspaceId: WS_B.id,
+        createdSeq: bTab.createdSeq,
+      },
     ])
     setWorkspace(WS_B)
     setSidePanel({ tab: bTab.tabId })
@@ -260,6 +323,41 @@ describe('内置浏览器页面按工作区记录', () => {
 
     expect(panelTabs()).toEqual([])
     expect(sidePanel()).toBe('files')
+  })
+
+  /**
+   * 原始失败形状：面板中显示的页打开新窗口（`target=_blank` 链接、`window.open`）后，新页只追加到页签条，
+   * 面板仍显示原页，新打开的页不可见。
+   */
+  test('面板中显示的页打开的新窗口切换为当前页；其他页打开的新窗口与 AI 新建的页不切换', async () => {
+    reset()
+    let host: HostTab[] = [hostTab('bt_a1', WS_A.id), hostTab('bt_a2', WS_A.id)]
+    restore = asShell([], (cmd) => (cmd === 'browser_tabs' ? Promise.resolve(host) : undefined))
+    setWorkspace(WS_A)
+    initBrowserProjection()
+    await flush()
+    setSidePanel({ tab: 'bt_a1' })
+
+    host = [
+      ...host,
+      { ...hostTab('bt_a3', WS_A.id), openerTabId: 'bt_a2' },
+      hostTab('bt_a4', WS_A.id),
+    ]
+    initBrowserProjection()
+    await flush()
+    expect(sidePanel()).toEqual({ tab: 'bt_a1' })
+
+    host = [...host, { ...hostTab('bt_a5', WS_A.id), openerTabId: 'bt_a1' }]
+    initBrowserProjection()
+    await flush()
+    expect(sidePanel()).toEqual({ tab: 'bt_a5' })
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1', 'bt_a2', 'bt_a3', 'bt_a4', 'bt_a5'])
+
+    // 已在页签条上的新窗口不再改变当前页。
+    setSidePanel({ tab: 'bt_a1' })
+    initBrowserProjection()
+    await flush()
+    expect(sidePanel()).toEqual({ tab: 'bt_a1' })
   })
 
   test('没有活动工作区时不打开页面', async () => {
@@ -322,6 +420,59 @@ describe('正文链接交给内置浏览器', () => {
     expect(state.notice?.reason).not.toBe('preview_failed')
   })
 
+  /** 原始失败形状：在正文中连续三次点击同一个网页文件的链接，面板中出现三个显示同一文件的页。 */
+  test('当前工作区已有页显示同一地址时切换到该页，转义写法不同也视为同一地址', async () => {
+    reset()
+    const shown = { ...hostTab('bt_same', WS_A.id), url: 'file:///C:/a/%E4%B8%AD%E6%96%87.html' }
+    const invokes: Invoke[] = []
+    restore = asShell(invokes, (cmd) =>
+      cmd === 'browser_tabs' ? Promise.resolve([shown]) : undefined,
+    )
+    setState(
+      'capabilities',
+      caps({ connected: true, runtimeSupported: true, presentation: 'embedded' }),
+    )
+    setWorkspace(WS_A)
+    initBrowserProjection()
+    await flush()
+
+    for (const href of ['中文.html', 'file:///C:/a/中文.html']) {
+      setSidePanel('files')
+      openLinkInPanel(href)
+      await flush()
+      expect(sidePanel()).toEqual({ tab: 'bt_same' })
+    }
+    expect(invokes.some((i) => i.cmd === 'browser_open' || i.cmd === 'browser_activate')).toBe(
+      false,
+    )
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_same'])
+  })
+
+  test('页面位于独立窗口的宿主：切换到已有页时把该页的窗口置于前台', async () => {
+    reset()
+    const shown = { ...hostTab('bt_same_win', WS_A.id), url: 'https://example.com/a' }
+    const invokes: Invoke[] = []
+    restore = asShell(invokes, (cmd) =>
+      cmd === 'browser_tabs' ? Promise.resolve([shown]) : undefined,
+    )
+    setState(
+      'capabilities',
+      caps({ connected: true, runtimeSupported: true, presentation: 'window' }),
+    )
+    setWorkspace(WS_A)
+    initBrowserProjection()
+    await flush()
+
+    openLinkInPanel('https://example.com/a')
+    await flush()
+
+    expect(sidePanel()).toEqual({ tab: 'bt_same_win' })
+    expect(invokes.filter((i) => i.cmd === 'browser_activate').map((i) => i.args)).toEqual([
+      { tabId: 'bt_same_win' },
+    ])
+    expect(invokes.some((i) => i.cmd === 'browser_open')).toBe(false)
+  })
+
   test('宿主报告未找到浏览器：提示原因，不打开页面', () => {
     reset()
     const invokes: Invoke[] = []
@@ -353,5 +504,157 @@ describe('正文链接交给内置浏览器', () => {
 
     expect(state.notice?.message).toBe('另一个 qywork 正在使用内置浏览器。')
     expect(invokes.some((i) => i.cmd === 'browser_open')).toBe(false)
+  })
+})
+
+/**
+ * 应用重启后恢复的浏览器页只在显示时新建页面（`loadRestoredTab`），新建后原位换为宿主的页。
+ *
+ * 原始失败形状：恢复的页沿用旧的 tabId，与新进程中新建的页重复；或首次显示时新页追加在页签条末尾，
+ * 恢复的页仍留在原位，同一网页出现两次。
+ */
+describe('恢复的浏览器页', () => {
+  let restore: (() => void) | undefined
+  afterEach(() => {
+    restore?.()
+    restore = undefined
+    setWorkspace(null)
+  })
+
+  /** 该工作区恢复的页：未加载，id 不是宿主的 tabId。 */
+  function restoredIn(wsId: string) {
+    setWorkspace({ id: wsId, root: 'C:/r', name: 'R' })
+    const tabs = panelTabs()
+    const [first, second] = tabs.filter((t) => t.kind === 'browser')
+    return { first: first!, second: second!, tabs }
+  }
+
+  test('应用启动时不新建页面；首次显示时按记录的地址新建，原位换为宿主的页并保持为当前页', async () => {
+    const wsId = 'ws_restore_load'
+    const { first, second, tabs } = restoredIn(wsId)
+    expect([first, second]).toMatchObject([
+      { title: '甲', url: 'http://a.test/', live: false },
+      { title: '乙', url: 'http://b.test/', live: false },
+    ])
+    expect(sidePanel()).toEqual({ tab: first.id })
+
+    const invokes: Invoke[] = []
+    const opened = { ...hostTab('bt_1', wsId), url: 'http://a.test/', title: '甲' }
+    restore = asShell(invokes, (cmd) => {
+      if (cmd === 'browser_open') return Promise.resolve(opened)
+      if (cmd === 'browser_tabs') return Promise.resolve([opened])
+      return undefined
+    })
+    await loadRestoredTab(wsId, first.id)
+
+    expect(invokes.filter((i) => i.cmd === 'browser_open').map((i) => i.args)).toEqual([
+      { workspaceId: wsId, url: 'http://a.test/' },
+    ])
+    expect(panelTabs().map((t) => t.id)).toEqual([tabs[0]!.id, 'bt_1', second.id])
+    expect(panelTabs()[1]).toMatchObject({ live: true, title: '甲' })
+    expect(sidePanel()).toEqual({ tab: 'bt_1' })
+  })
+
+  test('宿主推送的清单先于新建结果到达：页签条上只有一页', async () => {
+    const wsId = 'ws_restore_race'
+    const { first, second, tabs } = restoredIn(wsId)
+    const opened = { ...hostTab('bt_1', wsId), url: 'http://a.test/', title: '甲' }
+    restore = asShell([], (cmd) => {
+      if (cmd === 'browser_open') {
+        syncBrowserTabs([
+          {
+            id: 'bt_1',
+            title: '甲',
+            url: opened.url,
+            workspaceId: wsId,
+            createdSeq: opened.createdSeq,
+          },
+        ])
+        return Promise.resolve(opened)
+      }
+      if (cmd === 'browser_tabs') return Promise.resolve([opened])
+      return undefined
+    })
+    await loadRestoredTab(wsId, first.id)
+
+    expect(panelTabs().map((t) => t.id)).toEqual([tabs[0]!.id, 'bt_1', second.id])
+    expect(sidePanel()).toEqual({ tab: 'bt_1' })
+  })
+
+  test('新建期间该页被关闭：关闭新建的页面，不留下页签', async () => {
+    const wsId = 'ws_restore_closed'
+    const { first, second, tabs } = restoredIn(wsId)
+    const invokes: Invoke[] = []
+    const opened = hostTab('bt_1', wsId)
+    restore = asShell(invokes, (cmd) => {
+      if (cmd === 'browser_open') {
+        closePanelTab(first.id)
+        return Promise.resolve(opened)
+      }
+      return undefined
+    })
+    await loadRestoredTab(wsId, first.id)
+
+    expect(invokes.filter((i) => i.cmd === 'browser_close').map((i) => i.args)).toEqual([
+      { tabId: 'bt_1' },
+    ])
+    expect(panelTabs().map((t) => t.id)).toEqual([tabs[0]!.id, second.id])
+  })
+
+  test('新建失败：该页保持未加载，与宿主清单对账时不移除', async () => {
+    const wsId = 'ws_restore_fail'
+    const { first, tabs } = restoredIn(wsId)
+    restore = asShell([], (cmd) =>
+      cmd === 'browser_open' ? Promise.reject('只能打开 HTTP、HTTPS 或本地文件') : undefined,
+    )
+    await expect(loadRestoredTab(wsId, first.id)).rejects.toBe('只能打开 HTTP、HTTPS 或本地文件')
+    syncBrowserTabs([])
+    expect(panelTabs()).toEqual(tabs)
+    expect(sidePanel()).toEqual({ tab: first.id })
+  })
+
+  /** 原始失败形状：正文中的链接指向恢复的页记录的地址时，再新建一页，同一地址出现两个页签。 */
+  test('正文链接指向恢复的页记录的地址：切换到该页，不新建页面', async () => {
+    const { second } = restoredIn('ws_restore_link')
+    setSidePanel('files')
+    const invokes: Invoke[] = []
+    restore = asShell(invokes)
+    const previous = state.capabilities
+    setState('capabilities', {
+      sandbox: { backend: 'none', active: false, reason: '' },
+      browser: { connected: true, runtimeSupported: true, presentation: 'embedded' },
+    } as never)
+    try {
+      openLinkInPanel('http://b.test/')
+      await flush()
+      expect(sidePanel()).toEqual({ tab: second.id })
+      expect(invokes.some((i) => i.cmd === 'browser_open')).toBe(false)
+    } finally {
+      setState('capabilities', previous)
+    }
+  })
+})
+
+describe('隐藏页', () => {
+  let restore: (() => void) | undefined
+  afterEach(() => {
+    restore?.()
+    restore = undefined
+    reset()
+  })
+
+  /** 文件页的 HTML 预览是隐藏页：它出现在页签条上时，可以被当作浏览器页签切换与关闭。 */
+  test('隐藏页留在镜像中供打开者读取缩放比例，不进入页签条', async () => {
+    const invokes: Invoke[] = []
+    const shown = hostTab('bt_shown', WS_A.id)
+    const preview = { ...hostTab('bt_preview', WS_A.id), hidden: true }
+    restore = asShell(invokes, (cmd) =>
+      cmd === 'browser_tabs' ? Promise.resolve([shown, preview]) : undefined,
+    )
+    setWorkspace(WS_A)
+    initBrowserProjection()
+    await flush()
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_shown'])
+    expect(browserTab('bt_preview')?.hidden).toBe(true)
   })
 })

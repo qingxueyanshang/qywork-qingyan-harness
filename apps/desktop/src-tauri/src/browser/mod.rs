@@ -123,9 +123,16 @@ struct Tab {
     created_seq: u64,
     /// 拥有该页的会话 id；`None` 表示用户手动打开的页。归属由会话决定，跨消息保持不变。
     conversation_id: Option<String>,
-    /// 服务端内部渲染用的页（设计稿按卡片尺寸截图）：不列入界面的页签条，界面因此从不摆放它，
-    /// 它始终在可视区外，面板中显示的页不受影响。
+    /// 不列入界面页签条的页：服务端内部渲染用的页（设计稿按卡片尺寸截图）始终在可视区外；文件页的 HTML 预览由打开它的
+    /// 文件页摆放与关闭。两者都不影响页签条上的页。
     hidden: bool,
+    /// 页面缩放比例，1 为 100%。只由引擎的缩放事件写入（`note_zoom`）；页面位于独立窗口中的引擎不上报，保持为 1。
+    zoom: f64,
+    /// 能否后退与前进。只由引擎的历史事件写入（`note_history`）；页面位于独立窗口中的引擎不上报，保持为假。
+    can_go_back: bool,
+    can_go_forward: bool,
+    /// 打开该页的页：页面请求的新窗口为打开它的页，其余为 `None`。界面据此决定是否切换到新页。
+    opener: Option<String>,
 }
 
 #[cfg(desktop)]
@@ -160,7 +167,7 @@ struct HostState {
     connection_epoch: u64,
     seq: u64,
     next_tab: u64,
-    /// 置位后连接线程不再重连。这是区分正常退出与异常断开的唯一依据。
+    /// 置位后连接线程不再重连，也不再向界面推送清单（`changed`）。这是区分正常退出与异常断开的唯一依据。
     stopping: bool,
 }
 
@@ -311,7 +318,7 @@ impl BrowserHost {
         }
     }
 
-    /// 界面使用的标签页清单，只包含 id、地址、标题与工作区：marker 与会话归属由 CDP 与
+    /// 界面使用的标签页清单，字段见 `TabView`：marker 与会话归属由 CDP 与
     /// 协调器处理，工具栏是标准浏览器 chrome，不区分用户页与 AI 页。
     /// 包含工作区是因为界面需要按它判断该页是否显示在当前页签条上。
     fn views(&self) -> Vec<TabView> {
@@ -319,13 +326,17 @@ impl BrowserHost {
         let mut list: Vec<TabView> = state
             .tabs
             .iter()
-            .filter(|(_, tab)| !tab.hidden)
             .map(|(id, tab)| TabView {
                 tab_id: id.clone(),
                 url: tab.url.clone(),
                 title: tab.title.clone(),
                 workspace_id: tab.workspace_id.clone(),
                 created_seq: tab.created_seq,
+                zoom: tab.zoom,
+                can_go_back: tab.can_go_back,
+                can_go_forward: tab.can_go_forward,
+                opener_tab_id: tab.opener.clone(),
+                hidden: tab.hidden,
             })
             .collect();
         // HashMap 的遍历顺序不固定。按创建序号排序，与前端页签条的排序规则一致。
@@ -334,7 +345,13 @@ impl BrowserHost {
     }
 
     /// 把标签页清单推送给界面。存活页、地址、标题与归属只有这一个生产者。
+    ///
+    /// 应用退出期间不推送：退出时宿主清空页面表并关闭全部页面，而界面仍在运行，收到的清单不含这些页时
+    /// 会把它们当作已关闭的页从页签记录中移除，应用重启后无法恢复。
     fn changed(&self) {
+        if self.is_stopping() {
+            return;
+        }
         let list = self.views();
         if let Err(e) = self.app.emit("browser:tabs", list) {
             log::warn!("标签页清单推送失败：{e}");
@@ -413,20 +430,21 @@ impl BrowserHost {
         conversation_id: Option<String>,
         hidden: bool,
     ) -> Result<(ResultData, u64), String> {
-        self.open_tab(url, workspace_id, conversation_id, hidden, |spec| {
+        self.open_tab(url, workspace_id, conversation_id, hidden, None, |spec| {
             self.engine.open(app, spec)
         })
     }
 
     /// 分配 tabId、创建序号与标记，由 `build` 在引擎中创建页面，再进入存活集合。
     /// 宿主请求、用户新建与嵌入式引擎中页面打开的新窗口都经由此处，三者的标记注入、
-    /// 首个文档等待与 `opened` 上报相同。
+    /// 首个文档等待与 `opened` 上报相同。`opener` 只在页面请求的新窗口中存在。
     fn open_tab(
         &self,
         url: &str,
         workspace_id: String,
         conversation_id: Option<String>,
         hidden: bool,
+        opener: Option<String>,
         build: impl FnOnce(OpenSpec) -> Result<Opened, String>,
     ) -> Result<(ResultData, u64), String> {
         // 序号与 tabId 在同一次加锁中分配：分开分配时，并发创建页面会使 `bt_N` 的编号
@@ -455,12 +473,18 @@ impl BrowserHost {
             created_seq,
             conversation_id,
             hidden,
+            zoom: 1.0,
+            can_go_back: false,
+            can_go_forward: false,
+            opener,
         };
         Ok((self.admit(tab_id, tab), created_seq))
     }
 
     /// 页面进入存活集合。服务端只能从 `opened` 事件得知新页，用户新建的页同样经由此处。
     fn admit(&self, tab_id: String, tab: Tab) -> ResultData {
+        #[cfg(windows)]
+        let page = tab.page.clone();
         let snapshot = {
             let mut state = self.state.lock().expect("宿主状态锁被污染");
             let entry = state.tabs.entry(tab_id.clone()).or_insert(tab);
@@ -474,6 +498,8 @@ impl BrowserHost {
             f.conversation_id = Some(snapshot.conversation_id.clone());
         });
         self.changed();
+        #[cfg(windows)]
+        self.engine.report_zoom(&page);
         ResultData {
             tab_id: Some(snapshot.tab_id),
             url: Some(snapshot.url),
@@ -627,6 +653,35 @@ impl BrowserHost {
         self.changed();
     }
 
+    /// 记录引擎回传的缩放比例，只推送给界面：服务端按元素位置操作页面，与缩放比例无关。
+    #[cfg(windows)]
+    fn note_zoom(&self, tab_id: &str, zoom: f64) {
+        {
+            let mut state = self.state.lock().expect("宿主状态锁被污染");
+            let Some(tab) = state.tabs.get_mut(tab_id) else { return };
+            if (tab.zoom - zoom).abs() < f64::EPSILON {
+                return;
+            }
+            tab.zoom = zoom;
+        }
+        self.changed();
+    }
+
+    /// 记录引擎回传的能否后退与前进，只推送给界面，地址栏据此禁用后退与前进按钮。
+    #[cfg(windows)]
+    fn note_history(&self, tab_id: &str, can_go_back: bool, can_go_forward: bool) {
+        {
+            let mut state = self.state.lock().expect("宿主状态锁被污染");
+            let Some(tab) = state.tabs.get_mut(tab_id) else { return };
+            if tab.can_go_back == can_go_back && tab.can_go_forward == can_go_forward {
+                return;
+            }
+            tab.can_go_back = can_go_back;
+            tab.can_go_forward = can_go_forward;
+        }
+        self.changed();
+    }
+
     /// 下载开始时的裁决。授权表是唯一判据，被拦截的下载当场发送 `download.blocked`。
     ///
     /// `tab_id` 为 `None` 表示本次下载不来自任何存活页（用户在浏览器窗口中自行打开的页），
@@ -698,7 +753,8 @@ impl BrowserHost {
             let opener = state.tabs.get(opener_tab).ok_or("打开新窗口的页已关闭")?;
             (opener.workspace_id.clone(), opener.conversation_id.clone(), opener.hidden)
         };
-        self.open_tab(url, workspace_id, conversation_id, hidden, |spec| {
+        let opener = Some(opener_tab.to_owned());
+        self.open_tab(url, workspace_id, conversation_id, hidden, opener, |spec| {
             self.engine.open_window(&self.app, spec, window)
         })
         .map(|_| ())
@@ -742,6 +798,10 @@ impl BrowserHost {
                 created_seq: crate::next_created_seq(),
                 conversation_id,
                 hidden,
+                zoom: 1.0,
+                can_go_back: false,
+                can_go_forward: false,
+                opener: Some(opener_tab.to_owned()),
             };
             (tab_id, tab)
         };
@@ -813,20 +873,30 @@ pub fn tab_views() -> Vec<TabView> {
 /// 同一套下载裁决。**不要另写用户专用的新建页面路径**：两条路径会在启动参数、
 /// 标记注入与首个文档等待上逐渐不一致。
 #[cfg(desktop)]
-pub fn user_open(app: &AppHandle, url: Option<&str>, workspace_id: &str) -> Result<TabView, String> {
+pub fn user_open(
+    app: &AppHandle,
+    url: Option<&str>,
+    workspace_id: &str,
+    hidden: bool,
+) -> Result<TabView, String> {
     let host = host().ok_or(NO_HOST)?;
     if workspace_id.is_empty() {
         return Err("新建标签页缺少工作区".to_owned());
     }
     // 不提供地址时创建空白标签页，地址由用户在地址栏中输入。
     let target = url.unwrap_or(address::BLANK);
-    let (data, created_seq) = host.create(app, target, workspace_id.to_owned(), None, false)?;
+    let (data, created_seq) = host.create(app, target, workspace_id.to_owned(), None, hidden)?;
     Ok(TabView {
         tab_id: data.tab_id.unwrap_or_default(),
         url: data.url.unwrap_or_default(),
         title: data.title.unwrap_or_default(),
         workspace_id: workspace_id.to_owned(),
         created_seq,
+        zoom: 1.0,
+        can_go_back: false,
+        can_go_forward: false,
+        opener_tab_id: None,
+        hidden,
     })
 }
 
@@ -835,12 +905,20 @@ pub fn user_close(tab_id: &str) -> Result<(), String> {
     host().ok_or(NO_HOST)?.close(tab_id).map(|_| ())
 }
 
-/// 用户导航。由引擎执行导航，地址由引擎的导航事件回传，此处不修改状态。
+/// 用户导航。由引擎执行导航，地址由引擎的地址变化事件回传，此处不修改状态。
 #[cfg(desktop)]
 pub fn user_navigate(tab_id: &str, action: &str, url: Option<&str>) -> Result<(), String> {
     let host = host().ok_or(NO_HOST)?;
     let page = host.page(tab_id)?;
     host.engine.navigate(&page, action, url)
+}
+
+/// 用户按档位缩放页面。只有页面嵌在面板中的引擎支持此操作，新比例由引擎上报。
+#[cfg(windows)]
+pub fn user_zoom(tab_id: &str, action: &str) -> Result<(), String> {
+    let host = host().ok_or(NO_HOST)?;
+    let page = host.page(tab_id)?;
+    host.engine.zoom(&page, action)
 }
 
 /// 用户查看某一页：把该页所在的浏览器窗口置于前台。只有页面位于独立窗口的引擎支持此操作。

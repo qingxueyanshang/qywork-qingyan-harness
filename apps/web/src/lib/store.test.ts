@@ -14,7 +14,7 @@
  * `localStorage` 同理：面板宽度需要落盘，缺少它时整个写入路径进入 catch。
  *
  * 覆盖范围（B6：一个 test 覆盖多个源文件时须在此列明）：`store/ui.ts` 的面板宽度、
- * 页签与刷新后的恢复、`store/browser.ts` 的内置浏览器归属、`store/connection.ts` 的 `applyEvent`
+ * 页签与刷新及应用重启后的恢复、`store/browser.ts` 的内置浏览器归属、`store/connection.ts` 的 `applyEvent`
  * 归属过滤、`store/events/` 的事件处理器（含能力投影替换）、`store/views/` 的会话投影与变更分页、
  * `store/actions.ts` 切换会话时的队列重置、`store/settings.ts` 的 API 错误解释与模型目录的重新读取。
  *
@@ -34,7 +34,7 @@ g.location = {
   pathname: '/',
   origin: 'http://127.0.0.1:5180',
 }
-// 右侧面板的页签与当前页保存在 sessionStorage 中，刷新恢复的用例读取这份记录。
+// 刷新恢复的用例读取 sessionStorage 中的记录；应用重启的用例清空它。
 const session = new Map<string, string>()
 g.sessionStorage = {
   getItem: (k: string) => session.get(k) ?? null,
@@ -46,7 +46,7 @@ g.sessionStorage = {
   },
 }
 g.matchMedia = () => ({ matches: false })
-// 面板宽度相关用例需要：localStorage 是其落盘位置。
+// 面板宽度与右侧面板的页签记录在 localStorage 中。
 const stored = new Map<string, string>()
 g.localStorage = {
   getItem: (k: string) => stored.get(k) ?? null,
@@ -90,10 +90,13 @@ const {
   loadOlderConversationChanges,
   openPreviewTab,
   openCanvasTab,
+  openCliTab,
   openConversationTab,
+  openFileTab,
   openView,
   openPanel,
   openPanelTab,
+  openWorkbenchTab,
   PANEL_MIN,
   panelMaximized,
   panelTabs,
@@ -456,8 +459,8 @@ describe('可多开的页：+ 新建，× 关闭', () => {
   test('内置浏览器页签与宿主的存活页同步', () => {
     reset()
     syncBrowserTabs([
-      { id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
-      { id: 'bt_2', title: '浏览器 2', workspaceId: WS_A.id, createdSeq: 2 },
+      { id: 'bt_1', title: '浏览器 1', url: 'about:blank', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'bt_2', title: '浏览器 2', url: 'about:blank', workspaceId: WS_A.id, createdSeq: 2 },
     ])
     expect(panelTabs().map((t) => [t.id, t.kind, t.title])).toEqual([
       ['bt_1', 'browser', '浏览器 1'],
@@ -472,7 +475,9 @@ describe('可多开的页：+ 新建，× 关闭', () => {
     })
 
     // 宿主侧关闭 bt_2：页签随之移除，切换到左侧相邻页，且不再执行收尾。
-    syncBrowserTabs([{ id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 }])
+    syncBrowserTabs([
+      { id: 'bt_1', title: '浏览器 1', url: 'about:blank', workspaceId: WS_A.id, createdSeq: 1 },
+    ])
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_1'])
     expect(activePanelTab()).toBe('bt_1')
     expect(closed).toBe(0)
@@ -481,8 +486,8 @@ describe('可多开的页：+ 新建，× 关闭', () => {
   test('两个工作区各有一页时只显示各自的页', () => {
     reset()
     syncBrowserTabs([
-      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
-      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id, createdSeq: 2 },
+      { id: 'bt_a1', title: '浏览器 1', url: 'about:blank', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'bt_b1', title: '浏览器 2', url: 'about:blank', workspaceId: WS_B.id, createdSeq: 2 },
     ])
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
     setWorkspace(WS_B)
@@ -496,14 +501,16 @@ describe('可多开的页：+ 新建，× 关闭', () => {
   test('后台工作区的最后一页关闭后，该条目的页签清空，当前页随之修正', () => {
     reset()
     syncBrowserTabs([
-      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
-      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id, createdSeq: 2 },
+      { id: 'bt_a1', title: '浏览器 1', url: 'about:blank', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'bt_b1', title: '浏览器 2', url: 'about:blank', workspaceId: WS_B.id, createdSeq: 2 },
     ])
     setWorkspace(WS_B)
     setSidePanel({ tab: 'bt_b1' })
     setWorkspace(WS_A)
 
-    syncBrowserTabs([{ id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 }])
+    syncBrowserTabs([
+      { id: 'bt_a1', title: '浏览器 1', url: 'about:blank', workspaceId: WS_A.id, createdSeq: 1 },
+    ])
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
     setWorkspace(WS_B)
     expect(panelTabs()).toEqual([])
@@ -514,8 +521,8 @@ describe('可多开的页：+ 新建，× 关闭', () => {
     reset()
     setWorkspace(null)
     syncBrowserTabs([
-      { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
-      { id: 'bt_b1', title: '浏览器 2', workspaceId: WS_B.id, createdSeq: 2 },
+      { id: 'bt_a1', title: '浏览器 1', url: 'about:blank', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'bt_b1', title: '浏览器 2', url: 'about:blank', workspaceId: WS_B.id, createdSeq: 2 },
     ])
     setWorkspace(WS_A)
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_a1'])
@@ -617,7 +624,9 @@ describe('可多开的页：+ 新建，× 关闭', () => {
 
     setWorkspace(WS_A)
     openPreviewTab('http://localhost:9100')
-    syncBrowserTabs([{ id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 }])
+    syncBrowserTabs([
+      { id: 'bt_a1', title: '浏览器 1', url: 'about:blank', workspaceId: WS_A.id, createdSeq: 1 },
+    ])
 
     setWorkspace(WS_B)
     expect(panelTabs().map((t) => t.id)).toEqual(bTabs)
@@ -714,8 +723,20 @@ describe('外壳中仍在运行的终端按项目恢复页签', () => {
       { id: 'terminal-203', workspaceId: WS_A.id, createdSeq: 203 },
     ]
     const browsers = [
-      { id: 'bt_202', title: '浏览器 202', workspaceId: WS_A.id, createdSeq: 202 },
-      { id: 'bt_204', title: '浏览器 204', workspaceId: WS_A.id, createdSeq: 204 },
+      {
+        id: 'bt_202',
+        title: '浏览器 202',
+        url: 'about:blank',
+        workspaceId: WS_A.id,
+        createdSeq: 202,
+      },
+      {
+        id: 'bt_204',
+        title: '浏览器 204',
+        url: 'about:blank',
+        workspaceId: WS_A.id,
+        createdSeq: 204,
+      },
     ]
     const created = ['terminal-201', 'bt_202', 'terminal-203', 'bt_204']
 
@@ -819,6 +840,166 @@ describe('整页刷新后恢复页面状态', () => {
     toggleSidebar()
     closeSettings()
     setOpenFile(null)
+  })
+
+  test('整页刷新时浏览器页保持宿主的 id，宿主中已关闭的页在对账时移除', async () => {
+    reset()
+    syncBrowserTabs([
+      { id: 'bt_31', title: '甲', url: 'http://a.test/', workspaceId: WS_A.id, createdSeq: 31 },
+      { id: 'bt_32', title: '乙', url: 'http://b.test/', workspaceId: WS_A.id, createdSeq: 32 },
+    ])
+    setSidePanel({ tab: 'bt_31' })
+    const ui = await refresh()
+    expect(ui.panelTabs()).toMatchObject([
+      { id: 'bt_31', live: true },
+      { id: 'bt_32', live: true },
+    ])
+    ui.syncBrowserTabs([
+      { id: 'bt_32', title: '乙', url: 'http://b.test/', workspaceId: WS_A.id, createdSeq: 32 },
+    ])
+    expect(ui.panelTabs().map((t) => t.id)).toEqual(['bt_32'])
+    expect(ui.activePanelTab()).toBe('bt_32')
+  })
+})
+
+/**
+ * 原始失败形状：应用重启后右侧面板的页签全部消失。
+ *
+ * 重启以「清空 sessionStorage + 以带查询串的路径重新导入 `store/ui.ts`」模拟：页签记录在 localStorage 中，
+ * 随应用重启保留；sessionStorage 属于主窗口的 WebView，重启后为空。新模块实例中没有活动工作区，
+ * 用例先设置工作区再读取页签。
+ */
+async function restart(): Promise<typeof import('./store/ui.ts')> {
+  flushSession()
+  session.clear()
+  refreshes += 1
+  const ui = await import(`./store/ui.ts?refresh=${refreshes}`)
+  ui.setWorkspace(WS_A)
+  return ui
+}
+
+describe('应用重启后恢复面板的页签', () => {
+  const reset = () => {
+    for (const ws of [WS_A, WS_B]) {
+      setWorkspace(ws)
+      for (const t of panelTabs()) closePanelTab(t.id)
+      setSidePanel(null)
+    }
+    setWorkspace(WS_A)
+  }
+
+  test('画布、文件、网页预览、工作台与子会话页按原顺序恢复，终端与外部 CLI 页移除', async () => {
+    reset()
+    openCanvasTab('a.canvas.json', 'a')
+    openPanelTab('terminal')
+    openFileTab('docs/b.docx')
+    openPreviewTab('http://localhost:7100')
+    openCliTab('st_1', 'node', 'CLI')
+    openWorkbenchTab('p/w', '工作台')
+    openConversationTab('cv_sub', '子 agent')
+    setSidePanel({ tab: 'canvas-a.canvas.json' })
+    const preview = panelTabs().find((t) => t.kind === 'preview')!
+    const ui = await restart()
+    expect(ui.panelTabs()).toMatchObject([
+      { kind: 'canvas', title: 'a', path: 'a.canvas.json' },
+      { kind: 'file', title: 'b.docx', path: 'docs/b.docx' },
+      { kind: 'preview', title: preview.title, url: 'http://localhost:7100' },
+      { kind: 'plugin', title: '工作台', workbench: 'p/w' },
+      { kind: 'conversation', title: '子 agent', id: 'conversation-cv_sub' },
+    ])
+    expect(ui.panelTabs()).toHaveLength(5)
+    expect(ui.activePanelTab()).toBe('canvas-a.canvas.json')
+  })
+
+  test('当前页是终端页时改为右侧相邻页', async () => {
+    reset()
+    openCanvasTab('a.canvas.json', 'a')
+    openPanelTab('terminal')
+    openFileTab('c.xlsx')
+    setSidePanel({ tab: panelTabs()[1]!.id })
+    const ui = await restart()
+    expect(ui.activePanelTab()).toBe('file-c.xlsx')
+  })
+
+  /**
+   * 原始失败形状之二：宿主的 tabId 随新进程从 `bt_1` 重新计数，恢复的页沿用旧 id 时与新建的页重复；
+   * 恢复的页沿用上次运行的创建序号时，新建的页按序号插入到它们之间。
+   */
+  test('内置浏览器页改为未加载的记录，保留标题、地址与位置，新建的页排在末尾', async () => {
+    reset()
+    syncBrowserTabs([
+      { id: 'bt_1', title: '甲', url: 'http://a.test/', workspaceId: WS_A.id, createdSeq: 5 },
+    ])
+    openCanvasTab('d.canvas.json', 'd')
+    // 外壳的序号与本地序号共用一个顺序：新建的外壳页序号大于此前的全部页。
+    const later = panelTabs().at(-1)!.createdSeq + 1
+    syncBrowserTabs([
+      { id: 'bt_1', title: '甲', url: 'http://a.test/x', workspaceId: WS_A.id, createdSeq: 5 },
+      { id: 'bt_2', title: '乙', url: 'http://b.test/', workspaceId: WS_A.id, createdSeq: later },
+    ])
+    setSidePanel({ tab: 'bt_1' })
+    const ui = await restart()
+    const [first, canvas, second] = ui.panelTabs()
+    expect([first, canvas, second]).toMatchObject([
+      { kind: 'browser', title: '甲', url: 'http://a.test/x', live: false },
+      { kind: 'canvas' },
+      { kind: 'browser', title: '乙', url: 'http://b.test/', live: false },
+    ])
+    expect(first!.id.startsWith('bt_')).toBe(false)
+    expect(second!.id).not.toBe(first!.id)
+    expect(ui.activePanelTab()).toBe(first!.id)
+
+    ui.syncBrowserTabs([
+      { id: 'bt_1', title: '新页', url: 'http://c.test/', workspaceId: WS_A.id, createdSeq: 1 },
+    ])
+    ui.openPanelTab('preview')
+    const tabs = ui.panelTabs()
+    expect(tabs.slice(0, 4).map((t) => t.id)).toEqual([first!.id, canvas!.id, second!.id, 'bt_1'])
+    expect(tabs).toHaveLength(5)
+    expect(tabs[4]).toMatchObject({ kind: 'preview' })
+    expect(ui.activePanelTab()).toBe(tabs[4]!.id)
+  })
+
+  test('与宿主清单对账时保留未加载的页；本次运行中打开的页在宿主中关闭后移除，地址随宿主更新', async () => {
+    reset()
+    syncBrowserTabs([
+      { id: 'bt_1', title: '甲', url: 'http://a.test/', workspaceId: WS_A.id, createdSeq: 1 },
+    ])
+    const ui = await restart()
+    const restored = ui.panelTabs()[0]!.id
+    const host = (url: string) => ({
+      id: 'bt_1',
+      title: '新页',
+      url,
+      workspaceId: WS_A.id,
+      createdSeq: 1,
+    })
+    ui.syncBrowserTabs([host('http://c.test/')])
+    ui.syncBrowserTabs([host('http://c.test/next')])
+    expect(ui.panelTabs()).toMatchObject([
+      { id: restored, live: false, url: 'http://a.test/' },
+      { id: 'bt_1', live: true, url: 'http://c.test/next' },
+    ])
+    ui.setSidePanel({ tab: 'bt_1' })
+    ui.syncBrowserTabs([])
+    expect(ui.panelTabs().map((t) => t.id)).toEqual([restored])
+    expect(ui.activePanelTab()).toBe(restored)
+  })
+
+  test('整页刷新不改写恢复的记录，再次重启时恢复的页仍为未加载', async () => {
+    reset()
+    syncBrowserTabs([
+      { id: 'bt_1', title: '甲', url: 'http://a.test/', workspaceId: WS_A.id, createdSeq: 1 },
+    ])
+    const started = await restart()
+    const restored = started.panelTabs()[0]!.id
+    const refreshed = await refresh()
+    refreshed.setWorkspace(WS_A)
+    expect(refreshed.panelTabs()).toMatchObject([{ id: restored, live: false }])
+    const again = await restart()
+    expect(again.panelTabs()).toMatchObject([
+      { kind: 'browser', title: '甲', url: 'http://a.test/', live: false },
+    ])
   })
 })
 

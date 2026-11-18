@@ -12,7 +12,10 @@
 
 import { tauriInvoke, tauriListen } from './store/shell.ts'
 
-/** 界面可见的一个页面。与 Rust `TabView` 结构相同：只有 id / 地址 / 标题 / 工作区 / 创建序号。 */
+/**
+ * 界面可见的一个页面。与 Rust `TabView` 结构相同：只有 id / 地址 / 标题 / 工作区 / 创建序号 / 缩放比例 /
+ * 能否后退与前进 / 打开它的页 / 是否隐藏。
+ */
 export interface NativeTab {
   tabId: string
   url: string
@@ -21,6 +24,15 @@ export interface NativeTab {
   workspaceId: string
   /** 外壳进程中的创建序号，与终端会话共用一个计数器。页签条按它排序。 */
   createdSeq: number
+  /** 页面缩放比例，1 为 100%。页面位于独立窗口中时恒为 1。 */
+  zoom: number
+  /** 页面位于独立窗口中时恒为 false：该宿主不上报历史。 */
+  canGoBack: boolean
+  canGoForward: boolean
+  /** 页面请求的新窗口为打开它的页，其余为 null。 */
+  openerTabId: string | null
+  /** 不列入页签条的页：文件页的 HTML 预览（`HtmlPreview`）与服务端内部渲染用的页。 */
+  hidden: boolean
 }
 
 /** 用户新建的空标签页使用该地址。地址栏对它显示为空。 */
@@ -31,8 +43,16 @@ export function listBrowserTabs(): Promise<NativeTab[]> {
 }
 
 /** 新建页面。不提供地址时为空标签页；工作区为必填项，页面此后归属该工作区。 */
-export function openBrowserPage(url: string | undefined, workspaceId: string): Promise<NativeTab> {
-  return tauriInvoke<NativeTab>('browser_open', { workspaceId, ...(url ? { url } : {}) })
+export function openBrowserPage(
+  url: string | undefined,
+  workspaceId: string,
+  hidden = false,
+): Promise<NativeTab> {
+  return tauriInvoke<NativeTab>('browser_open', {
+    workspaceId,
+    ...(url ? { url } : {}),
+    ...(hidden ? { hidden } : {}),
+  })
 }
 
 export function closeBrowserPage(tabId: string): Promise<void> {
@@ -47,6 +67,11 @@ export function navigateBrowserPage(
   url?: string,
 ): Promise<void> {
   return tauriInvoke<void>('browser_navigate', { tabId, action, ...(url ? { url } : {}) })
+}
+
+/** 按档位放大或缩小页面。新比例由宿主经 `browser:tabs` 推送，此处不写入。只适用于页面嵌在面板中的宿主。 */
+export function zoomBrowserPage(tabId: string, action: 'in' | 'out' | 'reset'): Promise<void> {
+  return tauriInvoke<void>('browser_zoom', { tabId, action })
 }
 
 export function onBrowserTabs(handler: (tabs: NativeTab[]) => void): Promise<void> {

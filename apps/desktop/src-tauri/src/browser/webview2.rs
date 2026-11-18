@@ -17,7 +17,7 @@ use tauri::{
     Webview, WebviewUrl, Wry,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Deferral, ICoreWebView2DownloadOperation,
+    ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2DownloadOperation,
     ICoreWebView2DownloadStartingEventArgs, ICoreWebView2Environment, ICoreWebView2Environment5,
     ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Settings5, ICoreWebView2_11,
     ICoreWebView2_4,
@@ -26,16 +26,17 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 use webview2_com::{
     take_pwstr, BrowserProcessExitedEventHandler, ContextMenuRequestedEventHandler,
-    DownloadStartingEventHandler, NewWindowRequestedEventHandler, StateChangedEventHandler,
-    WindowCloseRequestedEventHandler,
+    DownloadStartingEventHandler, HistoryChangedEventHandler, NewWindowRequestedEventHandler,
+    SourceChangedEventHandler, StateChangedEventHandler, WindowCloseRequestedEventHandler,
+    ZoomFactorChangedEventHandler,
 };
-use windows::core::{Interface, BOOL, HSTRING, PWSTR};
+use windows::core::{w, Interface, BOOL, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetAncestor, GetWindow, PostMessageW, CHILDID_SELF, EVENT_OBJECT_SHOW,
-    GA_ROOT, GW_OWNER, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    WM_CANCELMODE,
+    EnumChildWindows, FindWindowExW, GetAncestor, GetWindow, PostMessageW, SetWindowPos,
+    CHILDID_SELF, EVENT_OBJECT_SHOW, GA_ROOT, GW_OWNER, HWND_TOP, OBJID_WINDOW, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CANCELMODE,
 };
 
 use super::address::{navigation_url, BLANK};
@@ -70,6 +71,27 @@ const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
 /// 只在之后以「该页的下载全部按未授权取消」的形式出现。`add_child` 不报告创建失败（Tauri 只写入日志，
 /// 子视图不存在时闭包不会执行），到期未收到回执即表示子视图未创建完成。
 const HOOK_WAIT: Duration = Duration::from_secs(10);
+
+/// 地址栏缩放按钮的档位，与页面中 Ctrl+加减号的档位相同，两者交替使用时比例不会落在档位之间。
+const ZOOM_LEVELS: [f64; 17] = [
+    0.25,
+    1.0 / 3.0,
+    0.5,
+    2.0 / 3.0,
+    0.75,
+    0.8,
+    0.9,
+    1.0,
+    1.1,
+    1.25,
+    1.5,
+    1.75,
+    2.0,
+    2.5,
+    3.0,
+    4.0,
+    5.0,
+];
 
 /// 跨线程传递的 environment。只在主线程上调用其方法；工作线程只把它交给 `WebviewBuilder`，
 /// 与 Tauri 在构建参数中跨线程传递 environment 的方式相同。
@@ -234,7 +256,6 @@ impl Engine {
 
         // WebView2 不为 `about:blank` 触发 `on_page_load`（实测会等待完整的 20 秒），因此空白页不等待。
         let blank_target = spec.url == BLANK;
-        let event_tab = spec.tab_id.to_owned();
         let title_tab = spec.tab_id.to_owned();
         let (loaded_tx, loaded_rx) = channel::<()>();
         let loaded_tx = Arc::new(Mutex::new(Some(loaded_tx)));
@@ -248,12 +269,6 @@ impl Engine {
             // 该选项同时打开双指缩放，由 `disable_pinch_zoom` 关闭。
             .zoom_hotkeys_enabled(true)
             .initialization_script(marker_script(spec.marker))
-            .on_navigation(move |url| {
-                if let Some(host) = super::host() {
-                    host.note_navigated(&event_tab, url.as_str());
-                }
-                true
-            })
             .on_document_title_changed(move |_webview, title| {
                 if let Some(host) = super::host() {
                     host.note_title(&title_tab, &title);
@@ -295,7 +310,7 @@ impl Engine {
             return Err(e);
         }
 
-        // 不等待时子视图仍是 `about:blank`，返回请求的地址；实际地址随导航事件更新。
+        // 不等待时子视图仍是 `about:blank`，返回请求的地址；实际地址随地址变化事件更新。
         let url = if spec.await_document && !blank_target {
             if loaded_rx.recv_timeout(FIRST_LOAD_WAIT).is_err() {
                 log::warn!("子视图 {} 未在期限内加载首个文档", spec.tab_id);
@@ -316,7 +331,7 @@ impl Engine {
         close_view(page.webview);
     }
 
-    /// 用户导航。地址使用引擎自身的导航接口，前进与后退使用历史接口，`on_navigation` 照常回传。
+    /// 用户导航。地址使用引擎自身的导航接口，前进与后退使用历史接口，新地址由 `SourceChanged` 回传。
     pub fn navigate(&self, page: &Page, action: &str, url: Option<&str>) -> Result<(), String> {
         let view = &page.webview;
         match action {
@@ -329,6 +344,50 @@ impl Engine {
             "back" => view.eval("history.back()").map_err(|e| e.to_string()),
             "forward" => view.eval("history.forward()").map_err(|e| e.to_string()),
             other => Err(format!("无法识别的导航动作 {other}")),
+        }
+    }
+
+    /// 用户按档位放大（`in`）或缩小（`out`）页面，已在端点时不变；`reset` 恢复为 100%。
+    ///
+    /// 新比例在此处上报：经属性设置缩放比例时 WebView2 不触发 `ZoomFactorChanged`。
+    pub fn zoom(&self, page: &Page, action: &str) -> Result<(), String> {
+        let step = match action {
+            "in" => Some(true),
+            "out" => Some(false),
+            "reset" => None,
+            other => return Err(format!("无法识别的缩放动作 {other}")),
+        };
+        let tab = page.webview.label().to_owned();
+        let (tx, rx) = channel::<Result<(), String>>();
+        page.webview
+            .with_webview(move |platform| {
+                let controller = platform.controller();
+                let set = unsafe {
+                    let mut current = 1.0;
+                    controller
+                        .ZoomFactor(&mut current)
+                        .and_then(|()| {
+                            controller.SetZoomFactor(step.map_or(1.0, |zoom_in| zoom_step(current, zoom_in)))
+                        })
+                };
+                let reported = set.and_then(|()| report_zoom(&tab, &controller));
+                let _ = tx.send(reported.map_err(|e| format!("缩放页面失败：{e}")));
+            })
+            .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
+        rx.recv_timeout(HOOK_WAIT).map_err(|_| "缩放页面未在期限内完成".to_owned())?
+    }
+
+    /// 上报该页当前的缩放比例。页进入存活集合之后调用：此前触发的 `ZoomFactorChanged` 因表中尚无该页而被忽略，
+    /// 而页面打开时 WebView2 按站点恢复上次的缩放比例。
+    pub fn report_zoom(&self, page: &Page) {
+        let tab = page.webview.label().to_owned();
+        let posted = page.webview.with_webview(move |platform| {
+            if let Err(e) = report_zoom(&tab, &platform.controller()) {
+                log::warn!("读取 {tab} 的缩放比例失败：{e}");
+            }
+        });
+        if let Err(e) = posted {
+            log::warn!("读取缩放比例失败：{e}");
         }
     }
 
@@ -524,7 +583,7 @@ unsafe extern "system" fn popup_shown(
     }
 }
 
-/// 在该页的 WebView2 上注册下载、右键菜单、新窗口与关闭钩子，并记录其 environment；
+/// 在该页的 WebView2 上注册地址、历史、下载、右键菜单、新窗口与关闭钩子，并记录其 environment；
 /// 首次调用时注册弹出窗口事件。`window` 存在时在钩子注册之后交给该请求：此后新页开始加载，
 /// 加载前钩子必须已经存在。
 fn bind_hooks(
@@ -537,7 +596,11 @@ fn bind_hooks(
     view.with_webview(move |platform| {
         watch_popups(&platform);
         remember_environment(&platform);
+        raise_resize_borders(&platform);
         let registered = disable_pinch_zoom(&platform)
+            .and_then(|()| register_source(&platform, tab.clone()))
+            .and_then(|()| register_history(&platform, tab.clone()))
+            .and_then(|()| register_zoom(&platform, tab.clone()))
             .and_then(|()| register_downloads(&platform, tab.clone()))
             .and_then(|()| register_context_menu(&platform, tab.clone()))
             .and_then(|()| register_new_window(&platform, tab.clone()))
@@ -548,6 +611,95 @@ fn bind_hooks(
     .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
     rx.recv_timeout(HOOK_WAIT)
         .map_err(|_| "内置浏览器的页面未在期限内创建完成".to_owned())?
+}
+
+/// 主窗口四边的缩放边框窗口的类名。该窗口由 Tauri 为无装饰窗口创建，覆盖整个客户区，区域只保留四条边。
+const RESIZE_BORDERS_CLASS: PCWSTR = w!("TAURI_DRAG_RESIZE_BORDERS");
+
+/// 把缩放边框窗口移到全部子视图之上。在主线程上执行。
+///
+/// 新建的子视图插入在同级窗口的最上层，Tauri 只在主窗口尺寸变化时把边框窗口移回最上层：不移动时，
+/// 紧贴窗口边缘摆放的页面遮住该处的边框，窗口在下一次尺寸变化之前无法从这些边拖动缩放。
+/// 边框窗口的区域只有四条边，位于页面之上不影响页面其余部分接收输入。
+fn raise_resize_borders(platform: &PlatformWebview) {
+    unsafe {
+        let mut container = HWND::default();
+        if platform.controller().ParentWindow(&mut container).is_err() {
+            return;
+        }
+        let main = GetAncestor(container, GA_ROOT);
+        // 有系统标题栏的窗口没有该窗口，此时无需移动。
+        let Ok(borders) = FindWindowExW(Some(main), None, RESIZE_BORDERS_CLASS, PCWSTR::null())
+        else {
+            return;
+        };
+        let raised = SetWindowPos(
+            borders,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        if let Err(e) = raised {
+            log::warn!("移动窗口缩放边框失败，紧贴页面的窗口边暂时无法拖动缩放：{e}");
+        }
+    }
+}
+
+/// 注册 `SourceChanged`：页面的地址变化时交给宿主，宿主据此更新界面与服务端记录的地址。在主线程上执行。
+///
+/// 不要改用 `WebviewBuilder::on_navigation`：它对应 `NavigationStarting`，在导航开始时按请求的地址触发。
+/// `pushState`、锚点跳转与同文档的后退不触发它，返回 204 而未提交的导航却触发它，记录的地址随之错误。
+fn register_source(platform: &PlatformWebview, tab_id: String) -> Result<(), String> {
+    let mut token = 0i64;
+    unsafe {
+        platform
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| format!("无法取得 CoreWebView2：{e}"))?
+            .add_SourceChanged(
+                &SourceChangedEventHandler::create(Box::new(move |core, _| {
+                    let Some(core) = core else { return Ok(()) };
+                    let mut raw = PWSTR::null();
+                    core.Source(&mut raw)?;
+                    let url = take_pwstr(raw);
+                    if let Some(host) = super::host() {
+                        host.note_navigated(&tab_id, &url);
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )
+            .map_err(|e| format!("注册地址变化事件失败：{e}"))
+    }
+}
+
+/// 注册 `HistoryChanged`：会话历史变化时读取能否后退与前进并交给宿主。在主线程上执行。
+fn register_history(platform: &PlatformWebview, tab_id: String) -> Result<(), String> {
+    let mut token = 0i64;
+    unsafe {
+        platform
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| format!("无法取得 CoreWebView2：{e}"))?
+            .add_HistoryChanged(
+                &HistoryChangedEventHandler::create(Box::new(move |core, _| {
+                    let Some(core) = core else { return Ok(()) };
+                    let mut back = BOOL::default();
+                    let mut forward = BOOL::default();
+                    core.CanGoBack(&mut back)?;
+                    core.CanGoForward(&mut forward)?;
+                    if let Some(host) = super::host() {
+                        host.note_history(&tab_id, back.as_bool(), forward.as_bool());
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )
+            .map_err(|e| format!("注册历史变化事件失败：{e}"))
+    }
 }
 
 /// 关闭双指缩放，只保留页面缩放。双指缩放改变可视视口，可视视口缩放后模型点击的落点未经验证，不要打开。
@@ -562,6 +714,44 @@ fn disable_pinch_zoom(platform: &PlatformWebview) -> Result<(), String> {
             .and_then(|settings| settings.SetIsPinchZoomEnabled(false))
             .map_err(|e| format!("无法关闭双指缩放：{e}"))
     }
+}
+
+/// 注册 `ZoomFactorChanged`：用户在页面中按 Ctrl+滚轮或 Ctrl+加减号缩放、导航后按站点恢复缩放比例时上报。
+/// 在主线程上执行。
+fn register_zoom(platform: &PlatformWebview, tab_id: String) -> Result<(), String> {
+    let mut token = 0i64;
+    unsafe {
+        platform
+            .controller()
+            .add_ZoomFactorChanged(
+                &ZoomFactorChangedEventHandler::create(Box::new(move |controller, _| {
+                    controller.map_or(Ok(()), |controller| report_zoom(&tab_id, &controller))
+                })),
+                &mut token,
+            )
+            .map_err(|e| format!("注册缩放事件失败：{e}"))
+    }
+}
+
+/// 读取该页的缩放比例并交给宿主。在主线程上执行。
+fn report_zoom(tab_id: &str, controller: &ICoreWebView2Controller) -> windows::core::Result<()> {
+    let mut zoom = 1.0;
+    unsafe { controller.ZoomFactor(&mut zoom)? };
+    if let Some(host) = super::host() {
+        host.note_zoom(tab_id, zoom);
+    }
+    Ok(())
+}
+
+/// 当前比例的上一档或下一档；比例不在档位上时取其上方或下方最近的一档，已在端点时不变。
+fn zoom_step(current: f64, zoom_in: bool) -> f64 {
+    const EPSILON: f64 = 1e-3;
+    let next = if zoom_in {
+        ZOOM_LEVELS.iter().copied().find(|z| *z > current + EPSILON)
+    } else {
+        ZOOM_LEVELS.iter().rev().copied().find(|z| *z < current - EPSILON)
+    };
+    next.unwrap_or(current)
 }
 
 /// 尚未记录 environment 时记录该页的 environment，并在其浏览器进程退出时清除。在主线程上执行。
@@ -827,4 +1017,24 @@ fn watch_state(
     }
     token.set(fresh);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{zoom_step, ZOOM_LEVELS};
+
+    #[test]
+    fn zoom_step_moves_one_level_and_stops_at_the_ends() {
+        assert_eq!(zoom_step(1.0, true), 1.1);
+        assert_eq!(zoom_step(1.0, false), 0.9);
+        assert_eq!(zoom_step(5.0, true), 5.0);
+        assert_eq!(zoom_step(0.25, false), 0.25);
+    }
+
+    #[test]
+    fn zoom_step_from_between_levels_takes_the_adjacent_level() {
+        assert_eq!(zoom_step(1.2, true), 1.25);
+        assert_eq!(zoom_step(1.2, false), 1.1);
+        assert_eq!(zoom_step(ZOOM_LEVELS[1] + 1e-9, true), 0.5);
+    }
 }

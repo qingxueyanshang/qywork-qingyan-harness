@@ -2,8 +2,8 @@
  * 纯界面状态：右侧面板、浮层与当前工作区。
  *
  * 这些状态与服务端无关，不放入 `state`：放入业务 store 会使每次事件推送都需要跳过大量与服务端无关的字段。
- * 表示页面位置与可见内容的状态经 `sessionSignal` 记录，整页刷新后恢复；浮层计数等
- * 一次操作过程中的状态不记录。
+ * 表示页面位置与可见内容的状态经 `sessionSignal` 记录，整页刷新后恢复；右侧面板的页签与当前页
+ * 记录在 localStorage 中，应用重启后同样恢复（`panels`）。浮层计数等一次操作过程中的状态不记录。
  */
 
 import { createEffect, createSignal, onCleanup } from 'solid-js'
@@ -28,7 +28,8 @@ export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
  * 可多开的页类型。
  *
  * `terminal` 仅桌面端存在（PTY 是本机进程与一对系统句柄）。`browser` 是 Windows
- * 桌面外壳中的内置浏览器，每页对应一个原生子 WebView，页签 id 由宿主分配；
+ * 桌面外壳中的内置浏览器，每页对应一个原生子 WebView，页签 id 由宿主分配（应用重启后恢复、
+ * 尚未显示的页除外，见其 `live` 字段）；
  * `preview` 是其他端上的 HTTP 网页预览，每页对应一个 iframe，地址由用户输入。
  * 两者不是同一功能的两个档位：前者可由 AI 操作并保留登录状态，后者只能浏览。
  * 本层不判断运行端：判断在入口处（`SidePanel` 的看板）完成，本层只记录打开了哪些页。
@@ -68,6 +69,9 @@ interface PanelTabBase {
    * 外壳创建的页（终端、内置浏览器）使用外壳进程计数器的值：两份清单分别异步返回，
    * 按到达顺序追加会使整页刷新后的页签顺序与创建顺序不同，而 `terminal-N` 与 `bt_N`
    * 是两个互不相关的计数，无法跨类型比较。纯前端的页使用 `nextLocalSeq`。
+   *
+   * 应用重启时恢复的页改为不大于 0 的值并保持原顺序（`restoredPanels`）：新的外壳进程从 1 开始计数，
+   * 沿用上次运行的值时，新建的页按序号插入到恢复的页之间，而不是排在末尾。
    */
   createdSeq: number
 }
@@ -78,7 +82,21 @@ interface PanelTabBase {
  */
 export type PanelTab = PanelTabBase &
   (
-    | { kind: 'terminal' | 'browser' | 'conversation' | 'cli' }
+    | { kind: 'terminal' | 'conversation' | 'cli' }
+    | {
+        kind: 'browser'
+        /**
+         * 网页的地址。宿主中有该页时是宿主上报地址的投影（`alignBrowserTabs` 写入），以宿主为准；
+         * 应用重启后宿主中已没有该页，此地址是重新打开它的唯一记录。
+         */
+        url: string
+        /**
+         * 宿主中是否有该页。为 `false` 的页由应用启动时恢复（`restoredPanels`），id 由本层分配而不是宿主的
+         * tabId，与宿主清单对账时不移除；首次显示时按 `url` 新建页面，原位换为宿主的页（`adoptBrowserTab`）。
+         * 一个 id 的该值不会改变：换为宿主的页时 id 一并改变。
+         */
+        live: boolean
+      }
     | {
         kind: 'preview'
         /**
@@ -86,7 +104,7 @@ export type PanelTab = PanelTabBase &
          * 若地址保存在组件内，再次展开时地址栏为空。新建时未给出地址则没有该字段。
          *
          * 只记录地址，不保留页面状态：iframe 从 DOM 移除后再插入即重新加载，
-         * 这是浏览器的行为，前端无法规避。内置浏览器页的地址由原生宿主维护，不在此记录。
+         * 这是浏览器的行为，前端无法规避。内置浏览器页的地址由原生宿主维护，`browser` 的 `url` 只是其投影。
          */
         url?: string
       }
@@ -133,26 +151,120 @@ const EMPTY_PANEL: WorkspacePanel = { tabs: [], page: null }
  * 键只能是 `WorkspaceInfo.id`。没有活动工作区时不创建条目：空字符串键的条目
  * 在任何工作区下都无法读取，其中登记的 PTY 与原生页此后没有任何界面可以访问。
  *
- * 刷新后全部页签与当前页按记录恢复。终端与内置浏览器页的权威在外壳，恢复的页签随后与宿主清单对账
- * （`restoreTerminalTabs` / `syncBrowserTabs`），外壳中已不存在的页在对账时移除。
+ * 记录保存在 localStorage 中，整页刷新与应用重启后都按记录恢复全部页签与当前页，两种情况的处理不同。
+ * 整页刷新时外壳进程仍在，终端与内置浏览器页的权威在外壳，恢复的页签随后与宿主清单对账
+ * （`restoreTerminalTabs` / `syncBrowserTabs`），外壳中已不存在的页在对账时移除。应用启动时外壳进程是新的，
+ * 记录先经 `restoredPanels` 改写，再与宿主清单对账。
  */
-const [panels, setPanels] = sessionSignal<Readonly<Record<string, WorkspacePanel>>>(
-  'qywork.panel.tabs',
-  {},
-)
+const PANELS_KEY = 'qywork.panel.tabs'
+
+/**
+ * 本次页面加载是否为应用启动，而不是整页刷新。
+ *
+ * sessionStorage 属于主窗口的 WebView，整页刷新时保留，应用重启后为空，因此首次加载时写入一个标记，
+ * 之后的加载读取到它即为刷新。标记直接写入，不经 `sessionSignal` 在 `pagehide` 时写入：页面异常退出后
+ * 重新加载时不触发 `pagehide`，而外壳进程与其中的页面仍在。
+ *
+ * 无法访问 sessionStorage 时按刷新处理：刷新只按宿主清单移除已不存在的页，不改写记录。
+ */
+function appStarting(): boolean {
+  const key = 'qywork.panel.started'
+  try {
+    if (sessionStorage.getItem(key) !== null) return false
+    sessionStorage.setItem(key, '1')
+    return true
+  } catch {
+    return false
+  }
+}
+
+function readPanels(): Record<string, WorkspacePanel> {
+  try {
+    const raw = localStorage.getItem(PANELS_KEY)
+    return raw === null ? {} : (JSON.parse(raw) as Record<string, WorkspacePanel>)
+  } catch {
+    // 隐私模式下 localStorage 会直接抛出异常；记录无法读取或解析时没有可恢复的页。
+    return {}
+  }
+}
+
+/**
+ * 写入记录。每次修改同步写入，不在 `pagehide` 时批量写入：应用被强制结束时页面不触发 `pagehide`。
+ * 修改来自新建、关闭与切换页以及网页标题与地址的变化，不随拖动或输入逐帧发生。
+ */
+function savePanels(all: Readonly<Record<string, WorkspacePanel>>): void {
+  try {
+    localStorage.setItem(PANELS_KEY, JSON.stringify(all))
+  } catch {
+    // 同上：本次修改已生效，保存失败只影响下次启动。
+  }
+}
+
+/** 应用启动时须立即写入改写后的记录：此后整页刷新读取的是该记录，读取到改写前的记录时会按旧 id 对账。 */
+function initialPanels(): Record<string, WorkspacePanel> {
+  const saved = readPanels()
+  if (!appStarting()) return saved
+  const restored = restoredPanels(saved)
+  savePanels(restored)
+  return restored
+}
+
+const [panels, setPanels] = createSignal<Readonly<Record<string, WorkspacePanel>>>(initialPanels())
 
 function panelOf(wsId: string | undefined): WorkspacePanel {
   return (wsId ? panels()[wsId] : undefined) ?? EMPTY_PANEL
 }
 
 /**
- * 按显式指定的工作区修改条目。
+ * 按显式指定的工作区修改条目。这是修改面板状态的唯一入口，修改后写入记录（`savePanels`）。
  *
  * 宿主投影与异步响应必须使用资源自带的工作区调用它，不要在 await 之后读取当前工作区：
  * 请求期间用户可能已切换工作区，响应时的当前工作区可能是 B，写入会把 A 的页记入 B 的条目。
  */
 function updatePanel(wsId: string, next: (cur: WorkspacePanel) => WorkspacePanel): void {
   setPanels((all) => ({ ...all, [wsId]: next(all[wsId] ?? EMPTY_PANEL) }))
+  savePanels(panels())
+}
+
+/**
+ * 应用启动时由上次运行的记录得到的面板。外壳进程是新的，上次运行中的 PTY、子进程与原生页面都已不存在：
+ *
+ * - 终端页与外部 CLI 页移除。前者的进程已结束；后者显示上次运行中的进程的输出，且按当前会话的记录定位，
+ *   而当前会话不随应用重启恢复。
+ * - 内置浏览器页改为宿主中没有对应页面的记录（`live: false`），保留标题、地址与位置，id 改由本层分配：
+ *   宿主的 tabId 随新进程从 `bt_1` 重新计数，沿用旧 id 会与新建的页重复。已是该状态的页同样重新分配 id。
+ * - 其余页原样保留：它们的内容按路径、地址或标识重新读取。
+ * - 全部页的创建序号改为不大于 0 的值并保持原顺序，理由见 `createdSeq`。
+ *
+ * 当前页被移除时按 `pageWithout` 改为相邻页。
+ */
+function restoredPanels(
+  saved: Readonly<Record<string, WorkspacePanel>>,
+): Record<string, WorkspacePanel> {
+  let seq = -Object.values(saved).reduce((n, panel) => n + panel.tabs.length, 0)
+  let browsers = 0
+  const next: Record<string, WorkspacePanel> = {}
+  for (const [wsId, panel] of Object.entries(saved)) {
+    const gone = panel.tabs.filter((t) => t.kind === 'terminal' || t.kind === 'cli')
+    const ids = new Map<string, string>()
+    const tabs = panel.tabs
+      .filter((t) => !gone.includes(t))
+      .map((t): PanelTab => {
+        seq += 1
+        if (t.kind !== 'browser') return { ...t, createdSeq: seq }
+        browsers += 1
+        const id = `browser-${browsers}`
+        ids.set(t.id, id)
+        return { ...t, id, createdSeq: seq, live: false }
+      })
+    const page = pageWithout(panel, gone)
+    next[wsId] = {
+      tabs,
+      page:
+        page !== null && typeof page === 'object' ? { tab: ids.get(page.tab) ?? page.tab } : page,
+    }
+  }
+  return next
 }
 
 /** 当前工作区打开的可多开页。顺序即页签条上的顺序。 */
@@ -331,16 +443,29 @@ export function setPanelTabUrl(id: string, url: string): void {
  * 而该页已经关闭，再次调用会对不存在的 tabId 重复执行关闭。
  */
 export function syncBrowserTabs(
-  tabs: readonly { id: string; title: string; workspaceId: string; createdSeq: number }[],
+  tabs: readonly {
+    id: string
+    title: string
+    url: string
+    workspaceId: string
+    createdSeq: number
+    opener?: string
+  }[],
 ): void {
   const groups = new Map<string, HostTab[]>()
   for (const [wsId, panel] of Object.entries(panels())) {
-    if (panel.tabs.some((t) => t.kind === 'browser')) groups.set(wsId, [])
+    if (panel.tabs.some((t) => t.kind === 'browser' && t.live)) groups.set(wsId, [])
   }
   for (const t of tabs) {
     noteHostSeq(t.createdSeq)
     const list = groups.get(t.workspaceId) ?? []
-    list.push({ id: t.id, title: t.title, createdSeq: t.createdSeq })
+    list.push({
+      id: t.id,
+      title: t.title,
+      url: t.url,
+      createdSeq: t.createdSeq,
+      ...(t.opener ? { opener: t.opener } : {}),
+    })
     groups.set(t.workspaceId, list)
   }
   for (const [wsId, list] of groups) alignBrowserTabs(wsId, list)
@@ -349,21 +474,30 @@ export function syncBrowserTabs(
 interface HostTab {
   id: string
   title: string
+  url: string
   createdSeq: number
+  /** 打开该页的页。只有页面请求的新窗口有该字段。 */
+  opener?: string
 }
 
 /**
  * 将一个工作区的浏览器页签同步到给定清单。只按传入的工作区寻址，不读取当前工作区。
- * 页签名取清单中的 `title`：它是网页标题的投影，页面导航后会变化。
+ * 页签名与地址取清单中的 `title` 与 `url`：两者是宿主的投影，页面导航后会变化。
+ * 未变化的页签保留原对象：页签条与正文按对象区分各页，替换对象会使该页的正文重建。
+ *
+ * 应用启动时恢复、宿主中尚无对应页面的页（`live: false`）不在清单中，不移除也不更新。
  *
  * 新页按 `createdSeq` 插入而不是追加到末尾：本清单与终端清单分别异步返回，
  * 追加会使整页刷新后的页签顺序取决于返回先后。
+ *
+ * 面板中显示的页打开了新窗口（`target=_blank` 链接、`window.open`）时切换到新页，与浏览器打开新页签的行为一致；
+ * 其余新页（AI 创建的页、后台页打开的新窗口）只加入页签条，不改变当前页。
  */
 function alignBrowserTabs(wsId: string, tabs: readonly HostTab[]): void {
   const cur = panelOf(wsId)
-  const wanted = new Set(tabs.map((t) => t.id))
+  const hosted = new Map(tabs.map((t) => [t.id, t]))
   const known = new Set(cur.tabs.map((t) => t.id))
-  const gone = cur.tabs.filter((t) => t.kind === 'browser' && !wanted.has(t.id))
+  const gone = cur.tabs.filter((t) => t.kind === 'browser' && t.live && !hosted.has(t.id))
   const added = tabs
     .filter((t) => !known.has(t.id))
     .map(
@@ -371,20 +505,30 @@ function alignBrowserTabs(wsId: string, tabs: readonly HostTab[]): void {
         id: t.id,
         kind: 'browser',
         title: t.title,
+        url: t.url,
+        live: true,
         createdSeq: t.createdSeq,
       }),
     )
-  const titles = new Map(tabs.map((t) => [t.id, t.title]))
-  const retitled = cur.tabs.some((t) => t.kind === 'browser' && titles.get(t.id) !== t.title)
-  if (!gone.length && !added.length && !retitled) return
+  /** 宿主上报的标题或地址与页签不同时为更新后的页签，否则为 `undefined`。 */
+  const updated = (t: PanelTab): PanelTab | undefined => {
+    if (t.kind !== 'browser' || !t.live) return undefined
+    const h = hosted.get(t.id)
+    if (!h || (h.title === t.title && h.url === t.url)) return undefined
+    return { ...t, title: h.title, url: h.url }
+  }
+  if (!gone.length && !added.length && !cur.tabs.some(updated)) return
   for (const t of gone) tabDisposers.delete(t.id)
   const list = insertBySeq(
-    cur.tabs
-      .filter((t) => !gone.includes(t))
-      .map((t) => (t.kind === 'browser' ? { ...t, title: titles.get(t.id) ?? t.title } : t)),
+    cur.tabs.filter((t) => !gone.includes(t)).map((t) => updated(t) ?? t),
     added,
   )
-  updatePanel(wsId, () => ({ tabs: list, page: pageWithout(cur, gone) }))
+  const shown = activeTabOf(cur)
+  const popup = tabs.find((t) => !known.has(t.id) && shown !== null && t.opener === shown)
+  updatePanel(wsId, () => ({
+    tabs: list,
+    page: popup ? { tab: popup.id } : pageWithout(cur, gone),
+  }))
 }
 
 /**
@@ -397,6 +541,37 @@ function pageWithout(cur: WorkspacePanel, gone: readonly PanelTab[]): PanelPage 
   const i = cur.tabs.indexOf(orphaned)
   const next = cur.tabs[i + 1] ?? cur.tabs[i - 1]
   return next && !gone.includes(next) ? { tab: next.id } : 'files'
+}
+
+/** 应用启动时恢复、宿主中尚无对应页面的浏览器页（`live: false`）。其他页与不存在的页为 `undefined`。 */
+export function restoredBrowserTab(
+  wsId: string | undefined,
+  id: string,
+): (PanelTab & { kind: 'browser' }) | undefined {
+  const tab = panelOf(wsId).tabs.find((t) => t.id === id)
+  return tab?.kind === 'browser' && !tab.live ? tab : undefined
+}
+
+/**
+ * 把恢复的页换为宿主新建的页 `tabId`：位置与标题不变，显示的是该页时当前页随之换为新 id。
+ *
+ * 宿主新建页面时同时推送清单，该清单可能先于新建结果到达，投影已把新页作为另一页插入页签条，
+ * 此处一并移除该项，否则同一页面在页签条上出现两次。
+ *
+ * 返回 `false` 表示恢复的页已不在条目中（新建期间被关闭），由调用方关闭新建的页面。
+ */
+export function adoptBrowserTab(wsId: string, id: string, tabId: string): boolean {
+  const cur = panelOf(wsId)
+  const entry = restoredBrowserTab(wsId, id)
+  if (!entry) return false
+  const shown = activeTabOf(cur)
+  updatePanel(wsId, () => ({
+    tabs: cur.tabs
+      .filter((t) => t.id !== tabId)
+      .map((t) => (t === entry ? { ...entry, id: tabId, live: true } : t)),
+    page: shown === id || shown === tabId ? { tab: tabId } : cur.page,
+  }))
+  return true
 }
 
 /**
@@ -569,7 +744,7 @@ export function closePanelTab(id: string): void {
 }
 
 /**
- * 当前打开的浮层数量（设置、确认框、新建项目）。
+ * 当前打开的浮层数量（设置、确认框、新建项目、面板放大时悬停或聚焦而展开的输入区）。
  *
  * 原生子视图据此让位：内置浏览器页是窗口的子 HWND，绘制在所有 DOM 之上，
  * 浮层的 `z-index` 对它无效，不让位时浮层被网页遮挡。
