@@ -185,6 +185,7 @@ async function readThrough() {
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: 'c1',
     userMessageId: ask.id,
@@ -387,6 +388,7 @@ async function readScript(window: number, files: { name: string; tokens: number 
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: 'c1',
     userMessageId: ask.id,

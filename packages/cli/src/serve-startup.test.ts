@@ -185,6 +185,7 @@ test('经标准输入交付的凭据与上次退出信息被采用，且不出�
   const stale = createRun(ledger, {
     conversationId: conv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

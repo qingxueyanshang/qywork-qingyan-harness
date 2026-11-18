@@ -16,6 +16,7 @@ import {
   findMediaModel,
   type LongContextTier,
   lookupModel,
+  type MediaModelSpec,
   type ModelSpec,
   type OffPeakDiscount,
   ProviderError,
@@ -34,6 +35,7 @@ import {
   compactPercentProblems,
   EFFORT_ORDER,
   type EffortLevel,
+  type GenerateOutput,
   isCloudMediaKind,
   MEDIA_KIND_OUTPUT,
   MEDIA_KINDS,
@@ -784,6 +786,33 @@ export function listMediaModels(cfg: QyConfig): MediaModelEntry[] {
     }
   }
   return rows
+}
+
+/**
+ * 模型选择中生成模型的名称：保存的显示名称；没有时为 `lookupMediaModel` 给出的名称（生成目录或渠道规格）；
+ * 都没有时为型号 id。`/api/models` 的 `label` 与提供给大模型的生成模型清单使用同一名称。
+ */
+export function mediaModelLabel(
+  m: Pick<MediaModelEntry, 'model' | 'displayName'>,
+  spec: MediaModelSpec,
+): string {
+  return m.displayName ?? (spec.catalogued ? spec.displayName : m.model)
+}
+
+/**
+ * 接口下为该模型保存的显示名称（`StoredModel.displayName` / `StoredMediaModel.displayName`，由云端同步写入）；
+ * 没有时为 undefined。`art` 使用对话模型，按 `models` 查找，其余类别按 `media` 查找。
+ * 向用户提及模型的文字经 `modelMention` 使用它。
+ */
+export function savedDisplayName(
+  cfg: QyConfig,
+  output: GenerateOutput,
+  ref: ModelRef,
+): string | undefined {
+  const provider = cfg.providers[ref.provider]
+  return output === 'art'
+    ? provider?.models[ref.model]?.displayName
+    : provider?.media?.[ref.model]?.displayName
 }
 
 /**

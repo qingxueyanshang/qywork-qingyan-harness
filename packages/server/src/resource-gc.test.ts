@@ -73,6 +73,7 @@ function conversationWithRun(store: Store, workspaceId: WorkspaceId) {
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId,
+    provider: 'p',
     model: 'm',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

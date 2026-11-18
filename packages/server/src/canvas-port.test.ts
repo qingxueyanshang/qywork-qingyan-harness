@@ -76,6 +76,7 @@ describe('画布端口', () => {
       path,
       [refs.$a!, refs.$b!],
       {
+        displayName: () => undefined,
         generate: async () => ({
           ok: true,
           provider: 'q',
@@ -175,6 +176,7 @@ describe('画布端口', () => {
       PATH,
       refs.$g!,
       {
+        displayName: () => undefined,
         generate: async (call) => {
           calls.push({ prompt: call.prompt, inputs: call.inputs.map((i) => i.path) })
           return {
@@ -529,6 +531,45 @@ describe('画布端口', () => {
     ).toMatchObject({ provider: 'relay', model: 'gpt-image-2.5-sunburst' })
   })
 
+  /**
+   * 原始失败形状：云端型号的参数不存在时报错写「qywork / <型号 id>的可用参数」，型号 id 含上游渠道的标识。
+   * 保存了显示名称的模型只写该名称（`displayNameOf`）。
+   */
+  test('参数不存在的报错中，保存了显示名称的模型只写该名称', async () => {
+    const root = await workspace()
+    const specs: MediaParamDefinition[] = [
+      { name: 'output_format', type: 'enum', values: ['png', 'jpeg'] },
+    ]
+    const service = new CanvasService({
+      publish: () => {},
+      paramSpecsOf: () => specs,
+      displayNameOf: (output, pick) =>
+        output === 'image' && pick.provider === 'qywork' && pick.model === 'img-x1'
+          ? '云端图像'
+          : undefined,
+    })
+    const port = canvasPort(service, { id: 'ws', root })
+    const add = (name: string, model: string) =>
+      skippedOf(
+        port.edit(PATH, [
+          {
+            op: 'add_generate',
+            output: 'image',
+            name,
+            provider: 'qywork',
+            model,
+            params: { quality: 'max' },
+          },
+        ]),
+      )
+    const named = await add('甲', 'img-x1')
+    expect(named).toContain('「甲」的参数 quality 不存在。云端图像 的可用参数：output_format')
+    expect(named).not.toContain('img-x1')
+    expect(await add('乙', 'img-x2')).toContain(
+      '「乙」的参数 quality 不存在。qywork / img-x2 的可用参数：output_format',
+    )
+  })
+
   /** 原始失败形状：同一批中先删除「P01 封面」再把另一张卡改名为「P01 封面」，被拒为名称已被另一张卡使用。 */
   test('同一批中先删除或修改的卡片让出名称、文件与摘录；同一批中重复的名称、文件与摘录仍被拒绝', async () => {
     const root = await workspace()
@@ -658,6 +699,7 @@ describe('画布端口', () => {
       submitted = resolve
     })
     const media: MediaPort = {
+      displayName: () => undefined,
       generate: (call) =>
         new Promise((resolve) => {
           finish = resolve
@@ -740,6 +782,7 @@ function heldPort(): { port: MediaPort; calls: Held[]; next(): Promise<Held> } {
   const waiters: ((held: Held) => void)[] = []
   let claimed = 0
   const port: MediaPort = {
+    displayName: () => undefined,
     generate: (call, signal) =>
       new Promise((resolve, reject) => {
         if (!call.resumeTaskId) call.onSubmit?.()

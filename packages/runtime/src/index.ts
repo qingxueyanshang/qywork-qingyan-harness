@@ -52,6 +52,7 @@ export {
   loadConfig,
   type MediaModelEntry,
   type ModelRef,
+  mediaModelLabel,
   modelSpecOf,
   NO_MODEL_MESSAGE,
   type QyConfig,
@@ -63,6 +64,7 @@ export {
   type StoredModel,
   type StoredProvider,
   saveConfig,
+  savedDisplayName,
 } from './config.ts'
 // 上下文面板：按会话实时计算，切换会话或刷新后仍可查询
 export { type ContextPanel, contextPanel } from './context-panel.ts'

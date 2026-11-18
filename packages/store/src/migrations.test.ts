@@ -2094,3 +2094,31 @@ describe('迁移 78：manifest 的摘要改为块列表', () => {
     db.close()
   })
 })
+
+describe('迁移 79：轮次记录所用的接口', () => {
+  test('请求只记录了一个接口名的旧轮次补写该接口；没有请求或有多个接口名时为空串', () => {
+    const db = dbBefore(79)
+    db.exec(`
+INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, created_at, status)
+  VALUES ('rn_one', 'cv', 'ws', 'm', 'r1', 0, 'done'),
+         ('rn_two', 'cv', 'ws', 'm', 'r2', 0, 'done'),
+         ('rn_none', 'cv', 'ws', 'm', 'r3', 0, 'done');
+INSERT INTO provider_requests
+  (id, run_id, turn_index, retry_index, purpose, provider_name, model, status, measured_input_tokens,
+   sent_categories, omitted_categories, payload_hash, created_at)
+VALUES ('pr_1', 'rn_one', 0, 0, 'turn', 'qywork', 'm', 'received', 1, '{}', '{}', 'h', 0),
+       ('pr_2', 'rn_one', 1, 0, 'turn', NULL, 'm', 'received', 1, '{}', '{}', 'h', 0),
+       ('pr_3', 'rn_one', 2, 0, 'turn', 'qywork', 'm', 'received', 1, '{}', '{}', 'h', 0),
+       ('pr_4', 'rn_two', 0, 0, 'turn', 'qywork', 'm', 'received', 1, '{}', '{}', 'h', 0),
+       ('pr_5', 'rn_two', 1, 0, 'turn', 'relay', 'm', 'received', 1, '{}', '{}', 'h', 0);
+`)
+    applyOne(db, 79)
+
+    expect(db.query('SELECT id, provider FROM runs ORDER BY id').all()).toEqual([
+      { id: 'rn_none', provider: '' },
+      { id: 'rn_one', provider: 'qywork' },
+      { id: 'rn_two', provider: '' },
+    ])
+    db.close()
+  })
+})

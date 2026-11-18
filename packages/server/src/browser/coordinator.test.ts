@@ -1110,6 +1110,7 @@ test('停止指令收回每个成员的控制槽，页面保留在宿主上供�
   const runId = createRun(store, {
     conversationId: parent,
     workspaceId,
+    provider: 'p',
     model: 'm',
     clientRequestId: 'stop-link',
     userMessageId: null,

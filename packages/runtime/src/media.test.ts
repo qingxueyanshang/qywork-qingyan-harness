@@ -217,6 +217,28 @@ describe('生成端口', () => {
   })
 
   /**
+   * 原始失败形状：云端型号报错时消息为「qywork / providerc-video-x8c728c9ab4b785f5：HTTP 400 …」，型号 id 含上游渠道的标识。
+   * 接口下保存了显示名称时，报错与可选模型只写该名称，不出现型号 id。
+   */
+  test('保存了显示名称的模型：报错与可选模型只写该名称，不出现型号 id', async () => {
+    reply = () =>
+      Response.json({ code: 'InvalidParameter', message: 'size 不合法' }, { status: 400 })
+    const named = config()
+    named.providers.qwen!.media!['qwen-image-3.0'] = {
+      kind: 'dashscope_images',
+      displayName: '云端图像',
+    }
+    const port = makeMediaPort(named)
+    const out = await port.generate(call(), signal())
+    expect(!out.ok && out.message).toBe('云端图像：HTTP 400 请求无效：size 不合法')
+    const missing = await port.generate(call({ provider: 'qwen', model: '没有' }), signal())
+    expect(!missing.ok && missing.message).toContain('可选：云端图像、qwen / wan2.7-image')
+    expect(!missing.ok && missing.message).not.toContain('qwen-image-3.0')
+    expect(port.displayName('image', 'qwen', 'qwen-image-3.0')).toBe('云端图像')
+    expect(port.displayName('image', 'qwen', 'wan2.7-image')).toBeUndefined()
+  })
+
+  /**
    * 原始失败形状：画布运行记录与工具结果中只有报错文字与请求诊断，没有失败码，无法判断为什么没有重试、为什么显示这句话。
    * 诊断带上失败码（`MediaError.code`）。
    */
@@ -800,6 +822,27 @@ describe('参数表快照', () => {
     expect(text).toContain('model `wan2.7-image`：生成、修改，参考图最多 9 张')
     // 参数表排在工作区状态行之前：参数表排在最后时，紧随其后的用户请求会被模型视为参数表的一部分。
     expect(text.indexOf('可用的生成模型')).toBeLessThan(text.indexOf('工作区：'))
+  })
+
+  /** 每行写明界面上的名称：保存的显示名称，没有时为目录名称；大模型向用户提及模型时使用该名称。 */
+  test('每个模型附上界面上的名称：保存的显示名称优先，没有时为目录名称', () => {
+    const named = config()
+    named.providers.qwen!.media!['qwen-image-3.0'] = {
+      kind: 'dashscope_images',
+      displayName: '云端图像',
+    }
+    const text = buildTailNotes({
+      workspaceRoot: '/w',
+      platform: 'linux',
+      mode: 'auto',
+      mediaModels: listMediaModels(named),
+    })
+      .map((n) => n.content)
+      .join('\n')
+    expect(text).toContain('- 名称「云端图像」；provider `qwen`；model `qwen-image-3.0`（默认）')
+    const wan = lookupMediaModel('wan2.7-image', 'dashscope_images').displayName
+    expect(text).toContain(`- 名称「${wan}」；provider \`qwen\`；model \`wan2.7-image\``)
+    expect(text).toContain('向用户提及模型时优先使用名称')
   })
 
   test('没有生成模型时不输出该节', () => {

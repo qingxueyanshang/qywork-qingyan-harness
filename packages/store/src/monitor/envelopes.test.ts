@@ -27,6 +27,7 @@ function newRun(store: Store, conversationId: ConversationId, key: string): RunI
   return createRun(store, {
     conversationId,
     workspaceId: upsertWorkspace(store, 'C:/ws', 'ws').id,
+    provider: 'p',
     model: 'm',
     clientRequestId: key,
     userMessageId: null,

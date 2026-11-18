@@ -619,6 +619,7 @@ describe('发送前检查：唯一的压缩触发', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'req-overflow',
       userMessageId: null,
@@ -1979,6 +1980,7 @@ function storedRun() {
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: 'req-summary',
     userMessageId: null,

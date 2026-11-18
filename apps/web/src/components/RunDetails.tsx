@@ -12,7 +12,7 @@ import { createMemo, createResource, For, Show } from 'solid-js'
 import { createRefreshKey, loaded } from '../lib/resource.ts'
 import { sessionSignal } from '../lib/session.ts'
 import { compact, requestOutcome, stopReasonLabel } from '../lib/step-view.ts'
-import { client, ledgerRevision, openSettings, state } from '../lib/store/index.ts'
+import { client, ledgerRevision, modelName, openSettings, state } from '../lib/store/index.ts'
 import { IconChevron } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
 
@@ -239,7 +239,7 @@ function RunRow(props: {
         {/* 派发对象。本会话自身的轮次不显示该字段：这些行属于用户当前查看的会话。 */}
         <Show when={props.name}>{(name) => <span class="run-role truncate">{name()}</span>}</Show>
         {/* 宽度不足时模型名最先截断，收缩顺序见 panel.css 的 `.run-row`。 */}
-        <span class="run-model truncate">{r().model}</span>
+        <span class="run-model truncate">{modelName(r().provider, r().model)}</span>
         <span class="run-meta">{r().stepCount} 步</span>
         <Show when={elapsed()}>{(e) => <span class="run-meta">{e()}</span>}</Show>
         <Show when={mark()}>
@@ -363,7 +363,7 @@ function RequestLedger(props: { run: Run; revision: string }) {
                 同样计费），页面是否取得由画布卡片与工具回执报告。结果列表示请求已完成并计费，显示「已完成」。 */}
             <For each={media()}>
               {(m) => (
-                <tr data-tip={m.model}>
+                <tr data-tip={modelName(m.provider, m.model)}>
                   <td>{MEDIA_REQUEST[m.output]}</td>
                   <td>{NA}</td>
                   <td>

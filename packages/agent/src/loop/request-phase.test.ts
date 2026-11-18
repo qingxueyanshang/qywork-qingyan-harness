@@ -44,6 +44,7 @@ function ledger(): Ledger {
   const run = createRun(store, {
     conversationId: cv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: 'phase-ledger',
     userMessageId: null,

@@ -35,6 +35,7 @@ async function fixture(todos: Todo[] | null) {
   const run = createRun(store, {
     conversationId: parent,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: `temp-${parent}`,
     userMessageId: null,

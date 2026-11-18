@@ -394,6 +394,7 @@ describe('摘要长度统计', () => {
     const run = createRun(s, {
       conversationId: cv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'pct',
       userMessageId: null,

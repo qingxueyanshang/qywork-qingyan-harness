@@ -18,7 +18,7 @@ export function openRun(
   options: AskOptions | undefined,
 ): AskState {
   const { store } = session.opts
-  const { contextSnapshot, conversation, conversationId, model, startedAt } = plan
+  const { contextSnapshot, conversation, conversationId, model, resolvedTarget, startedAt } = plan
   /*
    * 追加用户消息、生成标题、创建轮次、标记 running 在同一个写事务中完成。`createRun` 发现该会话被
    * 另一个进程占用时抛出 `ConversationBusyError`，整个事务回滚：被拒绝的消息不写入数据库，
@@ -48,6 +48,7 @@ export function openRun(
     const created = createRun(store, {
       conversationId,
       workspaceId: session.workspaceId as never,
+      provider: resolvedTarget?.provider ?? '',
       model,
       clientRequestId: options?.clientRequestId ?? crypto.randomUUID(),
       userMessageId,

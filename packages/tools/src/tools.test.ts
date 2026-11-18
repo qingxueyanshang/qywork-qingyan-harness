@@ -482,7 +482,7 @@ const ctx = {
   state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
   sink: null,
   port: new Ports([
-    provide(MediaPort, { generate: async () => ({ ok: false, message: '不应重新取回' }) }),
+    provide(MediaPort, { displayName: () => undefined, generate: async () => ({ ok: false, message: '不应重新取回' }) }),
   ]).get,
   signal: new AbortController().signal,
   emit: () => {},

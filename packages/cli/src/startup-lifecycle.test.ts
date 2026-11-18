@@ -93,6 +93,7 @@ async function fixture(name: string): Promise<Fixture> {
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: workspace.id,
+    provider: 'p',
     model: 'deepseek-v4-flash',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

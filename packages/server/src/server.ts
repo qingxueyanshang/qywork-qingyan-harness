@@ -36,6 +36,7 @@ import {
   listMediaModels,
   releaseExtensions,
   resolveMediaModel,
+  savedDisplayName,
 } from '@qywork/runtime'
 import type { ProcessExitObservation, ScheduleClaim, Store } from '@qywork/store'
 import {
@@ -218,6 +219,7 @@ export function serve(opts: ServeOptions) {
         : listMediaModels(opts.config)
             .filter((m) => m.output === output && m.model === model)
             .map((m) => m.provider),
+    displayNameOf: (output, pick) => savedDisplayName(opts.config, output, pick),
     publish: (event) => bus.publish(event),
     updating: () => runs.updating,
     // 撤销请求最长等待 10 秒：超时按撤销失败处理，停止本地等待并保留任务。

@@ -116,6 +116,11 @@ export interface CanvasDocsDeps {
   ): readonly MediaParamDefinition[] | undefined
   /** 已配置模型 `model` 的接口名，大模型只给出 model 时据此补上 provider（`prepareAgentOps`）。 */
   providersOf?(output: GenerateOutput, model: string): readonly string[]
+  /** 接口下为该模型保存的显示名称，核对大模型的修改时报错中按它提及模型（`prepareAgentOps`）。 */
+  displayNameOf?(
+    output: GenerateOutput,
+    pick: { provider: string; model: string },
+  ): string | undefined
   /** 发送一条全局事件（不带会话 id）。 */
   publish(event: AgentEvent): void
   /** 本次生成所用模型在提示词中指代素材的方式；未提供时按节点名写入提示词。 */
@@ -477,7 +482,13 @@ export class CanvasDocs {
       const specs = this.deps.paramSpecsOf
       const attempt = (doc: CanvasDoc, list: CanvasOp[], newId?: () => string): CanvasResult => {
         try {
-          const prepared = prepareAgentOps(doc, list, specs, this.deps.providersOf)
+          const prepared = prepareAgentOps(
+            doc,
+            list,
+            specs,
+            this.deps.providersOf,
+            this.deps.displayNameOf,
+          )
           this.refuseRemovingRunning(workspaceRoot, path, doc, prepared)
           const applied = applyCanvasOps(doc, prepared, newId)
           if (applied.ok) checkActiveParams(doc, applied.doc, prepared, specs)

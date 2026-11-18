@@ -383,6 +383,7 @@ function harness(): Harness {
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,
@@ -773,6 +774,7 @@ function anotherRun(h: Harness): RunId {
   return createRun(h.store, {
     conversationId: h.conversationId,
     workspaceId: h.workspaceId,
+    provider: 'p',
     model: 'm',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

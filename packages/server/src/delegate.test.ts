@@ -323,6 +323,7 @@ function run(conversationId: ConversationId, key: string): RunId {
   return createRun(store, {
     conversationId,
     workspaceId: workspaceId as never,
+    provider: 'p',
     model: 'deepseek-v4-flash',
     clientRequestId: `${key}-${conversationId}`,
     userMessageId: null,
@@ -1959,6 +1960,7 @@ describe('变更页合并子 agent 与外部 CLI 的写入', () => {
     const runId = createRun(store, {
       conversationId: cid,
       workspaceId: workspaceId as never,
+      provider: 'p',
       model: 'deepseek-v4-flash',
       clientRequestId: `changes-${cid}`,
       userMessageId: user.id,

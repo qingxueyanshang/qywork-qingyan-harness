@@ -266,6 +266,7 @@ export {
   type Message,
   matchesToolCallCheck,
   mimeOf,
+  modelMention,
   type NodePhase,
   type NodeState,
   type PermissionMode,

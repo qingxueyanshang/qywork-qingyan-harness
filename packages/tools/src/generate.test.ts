@@ -34,6 +34,8 @@ let calls: MediaCall[] = []
 let answer: MediaCallResult = { ok: true, provider: 'qwen', model: 'qwen-image-3.0', files: [] }
 /** 端口返回之前执行的操作：视频测试在此触发任务号回调。 */
 let during: (call: MediaCall) => Promise<void> = async () => {}
+/** 端口给出的显示名称，键为「类别|接口|型号」。 */
+let names: Record<string, string> = {}
 
 function ctx(root: string): ToolContext {
   return {
@@ -48,6 +50,7 @@ function ctx(root: string): ToolContext {
     sink: null,
     port: new Ports([
       provide(MediaPort, {
+        displayName: (type, provider, model) => names[`${type}|${provider}|${model}`],
         async generate(call) {
           calls.push(call)
           await during(call)
@@ -66,6 +69,7 @@ const run = (root: string, args: Record<string, unknown>) => generateImageTool.f
 beforeEach(() => {
   calls = []
   during = async () => {}
+  names = {}
   answer = {
     ok: true,
     provider: 'qwen',
@@ -198,6 +202,19 @@ describe('generate_image', () => {
     expect(calls).toHaveLength(0)
   })
 
+  /**
+   * 原始失败形状：云端型号生成成功时回执为「已生成 1 张（qywork / <型号 id>）」，型号 id 含上游渠道的标识。
+   * 端口给出显示名称时回执只写该名称；没有时为「接口 / 型号」。
+   */
+  test('回执中的模型：有显示名称时只写该名称，没有时为接口 / 型号', async () => {
+    const plain = await run(await mkdtemp(join(tmpdir(), 'qy-gen-')), { prompt: '一只猫' })
+    expect(plain.message).toContain('已生成 1 张（qwen / qwen-image-3.0）')
+    names['image|qwen|qwen-image-3.0'] = '云端图像'
+    const named = await run(await mkdtemp(join(tmpdir(), 'qy-gen-')), { prompt: '一只猫' })
+    expect(named.message).toContain('已生成 1 张（云端图像）')
+    expect(named.message).not.toContain('qwen-image-3.0')
+  })
+
   test('端口的失败消息原样交给模型，工作区不留下文件', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
     answer = { ok: false, message: '没有发出请求：\n- 参数 n 的值 9 不合法：范围 1–6' }
@@ -309,8 +326,11 @@ describe('generate_video', () => {
       model: 'wan3.0-video',
       files: [{ bytes: MP4, mime: 'video/mp4' }],
     }
+    names['video|qwen|wan3.0-video'] = '云端视频'
     const out = await retrieveMediaTool.fn({ path: 'wave.task.json' }, ctx(root))
     expect(out.status).toBe('success')
+    // 取回的类别取自任务记录（记录没有类别、有任务号时为视频），回执按该类别取得显示名称。
+    expect(out.message).toContain('已生成产物（云端视频）')
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
       provider: 'qwen',
@@ -580,6 +600,7 @@ describe('generateMedia / landFiles', () => {
     const outcome = await generateMedia({
       roots: root,
       media: {
+        displayName: () => undefined,
         async generate(call) {
           await call.onTask?.({ taskId: 't', provider: 'ark', model: 'seedance' })
           return { ok: false, message: '等待超时', pendingTaskId: 't' }
@@ -655,6 +676,7 @@ describe('generateMedia / landFiles', () => {
     await writeFile(join(root, 'a.png'), PNG)
     const seen: MediaCall[] = []
     const media = {
+      displayName: () => undefined,
       async generate(call: MediaCall): Promise<MediaCallResult> {
         seen.push(call)
         return {

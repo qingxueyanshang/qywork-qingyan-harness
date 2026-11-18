@@ -82,6 +82,7 @@ test('思考密文从数据库步骤恢复，工具轮及纯文本轮原样保�
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'grok-4.7',
       clientRequestId: 'cipher-test',
       userMessageId: msg.id,
@@ -359,6 +360,7 @@ describe('历史装配', () => {
       createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: `c${Math.random()}`,
         userMessageId,

@@ -35,6 +35,7 @@ import {
   type MediaOutput,
   type MediaSpend,
   mimeOf,
+  modelMention,
   type RetryWait,
   retryAttemptText,
   retryCauseText,
@@ -339,6 +340,8 @@ export interface GenerateRequest {
 /** 已落盘的产物。 */
 export interface GenerateSuccess {
   ok: true
+  /** 生成类别，回执按它取得模型的显示名称（`MediaPort.displayName`）。 */
+  type: GenerateOutput
   provider: string
   model: string
   files: GeneratedFile[]
@@ -479,6 +482,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
     }
     return await settle(
       req.roots,
+      req.type,
       result,
       slot.target,
       recordPath,
@@ -548,11 +552,13 @@ export async function resumeMedia(req: {
     return refused(`${req.record} 缺少任务号、接口或模型`, 'invalid_tool_arguments')
   }
   const { provider, model } = record
+  const type = record.type ?? (record.imageResult ? 'image' : 'video')
   await writeFile(recordPath, `${JSON.stringify({ ...record, ownerPid: process.pid }, null, 2)}\n`)
   if (present && landed) {
     return deliver(
       {
         ok: true,
+        type,
         provider,
         model,
         files: landed.files,
@@ -564,7 +570,7 @@ export async function resumeMedia(req: {
   }
   // 图片来源与任务号是两种取回方式，记录中有图片来源时按它重新下载，否则按任务号查询。
   const call: MediaCall = {
-    type: record.type ?? (record.imageResult ? 'image' : 'video'),
+    type,
     prompt: '',
     inputs: [],
     params: record.params ?? {},
@@ -579,7 +585,7 @@ export async function resumeMedia(req: {
   }
   if (req.onStatus) call.onStatus = req.onStatus
   const result = await req.media.generate(call, req.signal)
-  return settle(req.roots, result, record.output, recordPath, record.params, req.attach)
+  return settle(req.roots, type, result, record.output, recordPath, record.params, req.attach)
 }
 
 /**
@@ -626,6 +632,7 @@ async function deliver(
  */
 async function settle(
   roots: RootsInput,
+  type: GenerateOutput,
   result: MediaCallResult,
   target: string,
   recordPath: string | null,
@@ -661,6 +668,7 @@ async function settle(
   return deliver(
     {
       ok: true,
+      type,
       provider: result.provider,
       model: result.model,
       files,
@@ -763,6 +771,7 @@ function receipt(
   outcome: GenerateOutcome,
   noun: (count: number) => string,
   roots: RootsInput,
+  media: MediaPort,
 ): ToolOutcome {
   if (!outcome.ok) {
     return {
@@ -791,10 +800,14 @@ function receipt(
   const listed = files.map((f) =>
     f.duration === undefined ? f.path : `${f.path}（${Math.round(f.duration * 100) / 100} 秒）`,
   )
+  const model = modelMention(
+    outcome,
+    media.displayName(outcome.type, outcome.provider, outcome.model),
+  )
   return {
     status: 'success',
     message:
-      `已生成${noun(outcome.files.length)}（${outcome.provider} / ${outcome.model}）：${listed.join('、')}` +
+      `已生成${noun(outcome.files.length)}（${model}）：${listed.join('、')}` +
       (outcome.warning ? `\n${outcome.warning}` : ''),
     data: {
       provider: outcome.provider,
@@ -906,7 +919,7 @@ export const generateImageTool: ToolSpec = {
       ...progressOf(ctx),
       logFields: callFields(ctx, 'generate_image'),
     })
-    return receipt(outcome, (n) => ` ${n} 张`, rootsOf(ctx))
+    return receipt(outcome, (n) => ` ${n} 张`, rootsOf(ctx), media)
   },
 }
 
@@ -987,7 +1000,7 @@ export const generateVideoTool: ToolSpec = {
       ...progressOf(ctx),
       logFields: callFields(ctx, 'generate_video'),
     })
-    return receipt(outcome, () => '视频', rootsOf(ctx))
+    return receipt(outcome, () => '视频', rootsOf(ctx), media)
   },
 }
 
@@ -1025,7 +1038,7 @@ export const retrieveMediaTool: ToolSpec = {
       ...progressOf(ctx),
       logFields: callFields(ctx, 'retrieve_media'),
     })
-    return receipt(outcome, () => '产物', rootsOf(ctx))
+    return receipt(outcome, () => '产物', rootsOf(ctx), media)
   },
 }
 
@@ -1088,7 +1101,7 @@ export const generateAudioTool: ToolSpec = {
       ...progressOf(ctx),
       logFields: callFields(ctx, 'generate_audio'),
     })
-    return receipt(outcome, () => '音频', rootsOf(ctx))
+    return receipt(outcome, () => '音频', rootsOf(ctx), media)
   },
 }
 

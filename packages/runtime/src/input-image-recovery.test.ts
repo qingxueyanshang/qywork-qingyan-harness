@@ -170,6 +170,7 @@ function newRun(h: Harness, clientRequestId: string): RunId {
   return createRun(h.store, {
     conversationId: h.conversationId,
     workspaceId: h.workspaceId,
+    provider: 'p',
     model: 'm',
     clientRequestId,
     userMessageId: null,

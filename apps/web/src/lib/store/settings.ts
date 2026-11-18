@@ -378,6 +378,20 @@ let catalogSeq = 0
 
 export { modelCatalog, modelCatalogError, modelCatalogLoading }
 
+/**
+ * 模型在界面上的名称：取模型目录中该接口下的显示名称（`/api/models` 的 `label`），与输入框的模型选择相同；
+ * 目录中没有时（尚未同步到本机配置、已下架或已删除）为型号本身。按「接口 × 型号」查找，不要只按 id 查找：
+ * 两个接口提供同一型号 id 时名称可能不同。
+ */
+export function modelName(provider: string, id: string): string {
+  const catalog = modelCatalog()
+  return (
+    catalog?.providers.find((p) => p.name === provider)?.models.find((m) => m.id === id)?.label ??
+    catalog?.media.find((m) => m.provider === provider && m.id === id)?.label ??
+    id
+  )
+}
+
 /** 首次有组件使用时获取一次。已取得或正在获取时不重复请求。 */
 export function ensureModelCatalog(): Promise<void> {
   if (modelCatalog() || modelCatalogLoading()) return Promise.resolve()

@@ -53,6 +53,7 @@ function fakePort(): { port: MediaPort; calls: Pending[]; next(): Promise<Pendin
   const calls: Pending[] = []
   const waiters: ((p: Pending) => void)[] = []
   const port: MediaPort = {
+    displayName: () => undefined,
     generate(call, signal) {
       if (!call.resumeTaskId) call.onSubmit?.()
       return new Promise((resolve, reject) => {
@@ -201,7 +202,7 @@ describe('画布批量运行', () => {
   test('上游本次失败时下游不使用旧版本继续运行；独立节点不受影响', async () => {
     const { ws, svc, ids } = await setup(ops)
     const first = await svc.runs.run(ws, PATH, ids.$a!, {
-      media: { generate: async () => success },
+      media: { displayName: () => undefined, generate: async () => success },
     })
     await first.done
     const fake = fakePort()
@@ -224,7 +225,11 @@ describe('画布批量运行', () => {
     const absent = await svc.runs.runBatch(ws, PATH, [ids.$b!], { media: fake.port })
     expect(absent[0]).toMatchObject({ skipped: true, result: { ok: false } })
     expect(fake.calls).toHaveLength(0)
-    await (await svc.runs.run(ws, PATH, ids.$a!, { media: { generate: async () => success } })).done
+    await (
+      await svc.runs.run(ws, PATH, ids.$a!, {
+        media: { displayName: () => undefined, generate: async () => success },
+      })
+    ).done
     const batch = svc.runs.runBatch(ws, PATH, [ids.$b!], { media: fake.port })
     ;(await fake.next()).finish(success)
     expect((await batch)[0]!.result.ok).toBe(true)
@@ -1620,6 +1625,7 @@ describe('画布运行：取消', () => {
       entered = resolve
     })
     const media: MediaPort = {
+      displayName: () => undefined,
       async generate(call, signal) {
         const aborted = new Promise<void>((resolve) =>
           signal.addEventListener('abort', () => resolve(), { once: true }),

@@ -27,6 +27,7 @@ function fixture(store: Store) {
   const run = createRun(store, {
     conversationId: cv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: 'images',
     userMessageId: null,

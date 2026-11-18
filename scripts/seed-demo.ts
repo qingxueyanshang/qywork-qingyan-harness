@@ -63,6 +63,7 @@ const user = appendMessage(store, {
 const run = createRun(store, {
   conversationId: conv.id,
   workspaceId: ws.id,
+  provider: REF.provider,
   model: REF.model,
   clientRequestId: crypto.randomUUID(),
   userMessageId: user.id,

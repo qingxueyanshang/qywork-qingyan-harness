@@ -31,6 +31,7 @@ function newRun(store: Store, conversationId: ConversationId, workspaceId: strin
   return createRun(store, {
     conversationId,
     workspaceId: workspaceId as never,
+    provider: 'p',
     model: 'm',
     clientRequestId: key,
     userMessageId: null,
@@ -151,6 +152,7 @@ describe('待办读取', () => {
       const run = createRun(store, {
         conversationId,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: origin ?? 'user',
         userMessageId: message.id,

@@ -38,6 +38,7 @@ function newRun(store: Store, conversationId: ConversationId, workspaceId: strin
   return createRun(store, {
     conversationId,
     workspaceId: workspaceId as never,
+    provider: 'p',
     model: 'm',
     clientRequestId: key,
     userMessageId: null,

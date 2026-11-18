@@ -63,6 +63,7 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: ref.provider,
       model: ref.model,
       clientRequestId: crypto.randomUUID(),
       userMessageId: user.id,
@@ -120,6 +121,7 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
       const run = createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
+        provider: ref.provider,
         model: ref.model,
         clientRequestId: crypto.randomUUID(),
         userMessageId: user.id,
@@ -176,6 +178,7 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
     const run = createRun(store, {
       conversationId: parent.id,
       workspaceId: ws.id,
+      provider: ref.provider,
       model: ref.model,
       clientRequestId: crypto.randomUUID(),
       userMessageId: user.id,
@@ -238,6 +241,7 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
       const childRun = createRun(store, {
         conversationId: child.id,
         workspaceId: ws.id,
+        provider: ref.provider,
         model: ref.model,
         clientRequestId: crypto.randomUUID(),
         userMessageId: null,

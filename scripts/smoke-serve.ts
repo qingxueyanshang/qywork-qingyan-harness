@@ -402,6 +402,7 @@ async function main(): Promise<number> {
     const stale = createRun(store2, {
       conversationId: conv2.id,
       workspaceId: ws2.id,
+      provider: 'deepseek',
       model: 'deepseek-flash',
       clientRequestId: crypto.randomUUID(),
       userMessageId: null,

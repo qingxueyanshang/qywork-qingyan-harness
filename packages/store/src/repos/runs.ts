@@ -63,6 +63,8 @@ export function createRun(
   input: {
     conversationId: ConversationId
     workspaceId: WorkspaceId
+    /** 本轮使用的接口，见 `Run.provider`。 */
+    provider: string
     model: string
     clientRequestId: string
     userMessageId: MessageId | null
@@ -118,6 +120,7 @@ function insertRun(store: Store, input: Parameters<typeof createRun>[1]): Run {
     workspaceId: input.workspaceId,
     userMessageId: input.userMessageId,
     messageIdUpperBound: input.messageIdUpperBound,
+    provider: input.provider,
     model: input.model,
     clientRequestId: input.clientRequestId,
     dispatchStepId: input.dispatch?.stepId ?? null,
@@ -136,10 +139,10 @@ function insertRun(store: Store, input: Parameters<typeof createRun>[1]): Run {
     .query(
       `INSERT INTO runs
        (id, conversation_id, workspace_id, user_message_id, message_id_upper_bound,
-        model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
+        provider, model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
          cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
          context_snapshot, created_at, finished_at, owner_pid, owner_kind, heartbeat_at, dispatch_step_id, dispatch_node_id)
-        VALUES (?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,?,NULL,?,?,?,?,?)`,
+        VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,?,NULL,?,?,?,?,?)`,
     )
     .run(
       run.id,
@@ -147,6 +150,7 @@ function insertRun(store: Store, input: Parameters<typeof createRun>[1]): Run {
       run.workspaceId,
       run.userMessageId,
       run.messageIdUpperBound,
+      run.provider,
       run.model,
       run.clientRequestId,
       run.status,
@@ -595,6 +599,7 @@ export function rowToRun(r: RunRow): Run {
     workspaceId: r.workspace_id,
     userMessageId: r.user_message_id,
     messageIdUpperBound: r.message_id_upper_bound,
+    provider: r.provider,
     model: r.model,
     clientRequestId: r.client_request_id,
     status: r.status,

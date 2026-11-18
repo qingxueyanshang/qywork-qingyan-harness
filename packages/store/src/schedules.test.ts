@@ -79,6 +79,7 @@ function runFor(conversationId: ConversationId, workspaceId: WorkspaceId): RunId
   return createRun(store, {
     conversationId,
     workspaceId,
+    provider: 'p',
     model: 'm',
     clientRequestId: `req_${conversationId}`,
     userMessageId: null,

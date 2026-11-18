@@ -237,6 +237,7 @@ async function conversation() {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'deepseek-flash',
       clientRequestId: prompt,
       userMessageId: user.id,
@@ -451,6 +452,7 @@ describe('边界未知与摘要请求', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'deepseek-flash',
       clientRequestId: 'c',
       userMessageId: user.id,

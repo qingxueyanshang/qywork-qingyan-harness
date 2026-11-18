@@ -47,6 +47,7 @@ function newRun(store: Store, ws: { id: string }, conv: { id: string }) {
   return createRun(store, {
     conversationId: conv.id as never,
     workspaceId: ws.id as never,
+    provider: 'p',
     model: 'claude-opus-5',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,
@@ -504,6 +505,7 @@ describe('终态 run 下的孤儿 step', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'c1',
       userMessageId: null,

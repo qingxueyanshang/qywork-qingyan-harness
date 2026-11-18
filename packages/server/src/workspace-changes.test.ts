@@ -133,6 +133,7 @@ async function turn(conversationId: ConversationId, text: string, tags: string[]
   const run = createRun(store, {
     conversationId,
     workspaceId: workspaceId as WorkspaceId,
+    provider: 'p',
     model: 'm',
     clientRequestId: `changes-${tags.join('-')}-${message.id}`,
     userMessageId: message.id,

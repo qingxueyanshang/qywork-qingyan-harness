@@ -507,6 +507,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   const summaryRun = createRun(store, {
     conversationId: conv as ConversationId,
     workspaceId: getConversation(store, conv as ConversationId)!.workspaceId,
+    provider: profile.provider,
     model: profile.model,
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

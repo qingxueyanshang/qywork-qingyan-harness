@@ -39,6 +39,7 @@ import {
   explainApiError,
   holdOverlay,
   modelCatalog,
+  modelName,
   openLinkInPanel,
   setAccountOpen,
 } from '../../lib/store/index.ts'
@@ -330,19 +331,6 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
         </Show>
       </div>
     </>
-  )
-}
-
-/**
- * 云端型号在界面上的名称：取模型目录（`modelCatalog`）中该接口下的显示名称，与输入框的模型选择相同；
- * 目录中没有时（尚未同步到本机配置、或已下架）为型号本身。
- */
-function modelName(provider: string, id: string): string {
-  const catalog = modelCatalog()
-  return (
-    catalog?.providers.find((p) => p.name === provider)?.models.find((m) => m.id === id)?.label ??
-    catalog?.media.find((m) => m.provider === provider && m.id === id)?.label ??
-    id
   )
 }
 

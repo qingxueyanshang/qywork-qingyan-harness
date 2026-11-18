@@ -157,7 +157,10 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
   }
 }
 
-const media: MediaPort = { generate: async () => ({ ok: false, message: '不应直接调用' }) }
+const media: MediaPort = {
+  displayName: () => undefined,
+  generate: async () => ({ ok: false, message: '不应直接调用' }),
+}
 
 const DONE: Awaited<ReturnType<CanvasPort['run']>> = { ok: true, outputs: [], params: {} }
 
@@ -314,6 +317,31 @@ describe('canvas 工具', () => {
     }
     const lone = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
     expect(lone.message).toContain('输入：无，只按提示词生成')
+  })
+
+  /**
+   * 原始失败形状：概况写「qywork / <型号 id>」，大模型向用户转述卡片所用模型时照抄型号 id。
+   * 生成端口给出显示名称时只写该名称；没有显示名称或没有生成端口时为「接口 / 型号」。
+   */
+  test('read 的概况中，卡片所选模型有显示名称时只写该名称', async () => {
+    const { port } = fakePort(DONE)
+    port.read = async () => {
+      const v = view()
+      const nodes = v.doc.nodes.map((n) =>
+        n.type === 'generate' ? { ...n, provider: 'qywork', model: 'vid-x1' } : n,
+      )
+      return { ...v, doc: { ...v.doc, nodes } }
+    }
+    const plain = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
+    expect(plain.message).toContain('生成卡「视频1」（组：视频）qywork / vid-x1，0 版')
+    const named: MediaPort = {
+      ...media,
+      displayName: (type, provider, model) =>
+        type === 'video' && provider === 'qywork' && model === 'vid-x1' ? '云端视频' : undefined,
+    }
+    const one = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port, named))
+    expect(one.message).toContain('生成卡「视频1」（组：视频）云端视频，0 版')
+    expect(one.message).not.toContain('vid-x1')
   })
 
   test('read 列出摘录卡的摘录，并在概况与全文中标出失效的摘录卡与引用它的卡', async () => {

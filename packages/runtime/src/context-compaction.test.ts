@@ -247,6 +247,7 @@ test('手动压缩后的读数与下一次请求的估算一致：被折叠的�
     const run = createRun(store, {
       conversationId,
       workspaceId,
+      provider: 'p',
       model: model.id,
       clientRequestId: 'screenshots',
       userMessageId: message.id,

@@ -21,6 +21,7 @@ function newRun(
   return createRun(store, {
     conversationId,
     workspaceId,
+    provider: 'p',
     model: 'm',
     clientRequestId: key,
     userMessageId: null,

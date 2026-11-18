@@ -31,13 +31,14 @@ import {
   artSizeOf,
   log,
   type MediaSpend,
+  modelMention,
   RESEND_LIMIT,
   resendDelay,
   waitOrAbort,
   withArtViewport,
 } from '@qywork/core'
 import type { MediaCall, MediaCallResult } from '@qywork/tools'
-import { type QyConfig, resolveModel } from './config.ts'
+import { type ModelRef, type QyConfig, resolveModel, savedDisplayName } from './config.ts'
 
 /** 页面可用的 three.js 附加模块。与 sidecar 的 `/art/lib/addons/` 一一对应，修改时两处同时修改。 */
 export const ART_ADDONS = [
@@ -90,16 +91,20 @@ export async function generateArt(
     call.provider !== undefined && call.model !== undefined
       ? { provider: call.provider, model: call.model }
       : undefined
+  /** 消息中提及模型的写法，与生成模型的消息相同（`modelMention`）。 */
+  const named = (r: ModelRef) => modelMention(r, savedDisplayName(config, 'art', r))
   const target = resolveModel(config, ref)
   if (!target) {
     const choices =
       Object.entries(config.providers)
-        .flatMap(([name, p]) => Object.keys(p.models).map((m) => `${name} / ${m}`))
+        .flatMap(([name, p]) =>
+          Object.keys(p.models).map((m) => named({ provider: name, model: m })),
+        )
         .join('、') || '（无）'
     return {
       ok: false,
       message: ref
-        ? `未找到该对话模型：${ref.provider} / ${ref.model}。可选：${choices}`
+        ? `未找到该对话模型：${named(ref)}。可选：${choices}`
         : `没有默认的对话模型，请通过 provider 与 model 指定。可选：${choices}`,
     }
   }
@@ -148,7 +153,7 @@ export async function generateArt(
     signal,
   }
 
-  const label = `${target.provider} / ${target.model}`
+  const label = named(target)
   let text = ''
   let usage: ProviderUsage | null = null
   let truncated = false

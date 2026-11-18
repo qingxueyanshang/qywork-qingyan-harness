@@ -44,6 +44,7 @@ function seed() {
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

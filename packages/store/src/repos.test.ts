@@ -99,6 +99,7 @@ test('压缩进度在空会话中也可恢复，中断收尾保留压缩类型',
     const run = createRun(store, {
       conversationId: cv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'compact',
       userMessageId: null,
@@ -149,6 +150,7 @@ test('历史页带上早于本页的全部用户输入：含运行中途追加�
     const run = createRun(store, {
       conversationId: cv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'turns',
       userMessageId: first.id,
@@ -215,6 +217,7 @@ test('手动压缩随历史分页恢复，每条记录只属于一页', () => {
       const run = createRun(store, {
         conversationId: cv.id,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: `${at}`,
         userMessageId: null,
@@ -249,6 +252,7 @@ describe('逐请求传输证据', () => {
     const run = createRun(store, {
       conversationId: cv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'transport-evidence',
       userMessageId: null,
@@ -334,6 +338,7 @@ describe('run 幂等', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: key,
       userMessageId: null,
@@ -346,6 +351,7 @@ describe('run 幂等', () => {
       createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: key,
         userMessageId: null,
@@ -369,6 +375,7 @@ describe('run 上下文快照', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'snapshot',
       userMessageId: user.id,
@@ -382,6 +389,27 @@ describe('run 上下文快照', () => {
     expect(Object.hasOwn(getRun(store, run.id) as object, 'contextSnapshot')).toBe(false)
     store.close()
   })
+})
+
+/** 界面按「接口 × 模型」取得模型名称：轮次只保存模型时只能按 id 推测接口。 */
+test('轮次保存所用的接口，读取时与模型成对返回', () => {
+  const { store, ws } = fresh()
+  try {
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'qywork', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      provider: 'qywork',
+      model: 'vid-x1',
+      clientRequestId: 'provider',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    expect(getRun(store, run.id)).toMatchObject({ provider: 'qywork', model: 'vid-x1' })
+  } finally {
+    store.close()
+  }
 })
 
 describe('消息来源', () => {
@@ -466,6 +494,7 @@ describe('会话历史分页', () => {
         const run = createRun(store, {
           conversationId: conv.id,
           workspaceId: ws.id,
+          provider: 'p',
           model: 'm',
           clientRequestId: `dense-${index}`,
           userMessageId: user.id,
@@ -508,6 +537,7 @@ describe('会话历史分页', () => {
       const run = createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: `page-${i}`,
         userMessageId: user.id,
@@ -567,6 +597,7 @@ describe('历史页返回被引用的 workflow 首次派发', () => {
       const run = createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: `wf-${content}`,
         userMessageId: user.id,
@@ -621,6 +652,7 @@ describe('工具 step 原地更新', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'r',
       userMessageId: null,
@@ -656,6 +688,7 @@ describe('工具 step 原地更新', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'child-entry',
       userMessageId: null,
@@ -701,6 +734,7 @@ describe('工具 step 原地更新', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'r',
       userMessageId: null,
@@ -742,6 +776,7 @@ describe('工具 step 原地更新', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'r',
       userMessageId: null,
@@ -774,6 +809,7 @@ describe('run 结束', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'r',
       userMessageId: null,
@@ -794,6 +830,7 @@ describe('run 结束', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'r',
       userMessageId: null,
@@ -966,6 +1003,7 @@ describe('归档与硬删除', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'req-del',
       userMessageId: msg.id,
@@ -998,6 +1036,7 @@ describe('思考 step 写入失败终态', () => {
     const run = createRun(store, {
       conversationId: cv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: `req_${cv.id}`,
       userMessageId: null,
@@ -1033,6 +1072,7 @@ describe('接口拒绝图片的记录', () => {
       createRun(store, {
         conversationId,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: key,
         userMessageId: null,
@@ -1109,6 +1149,7 @@ describe('按模型统计的请求完成率', () => {
     const run = createRun(store, {
       conversationId: cv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: `req_${cv.id}`,
       userMessageId: null,
@@ -1148,6 +1189,7 @@ describe('按模型统计的请求完成率', () => {
     const run = createRun(store, {
       conversationId: cv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: `req_${cv.id}`,
       userMessageId: null,
@@ -1177,6 +1219,7 @@ describe('卡片返回后节点仍可写入终态', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'returned-card',
       userMessageId: null,
@@ -1257,6 +1300,7 @@ describe('摘要请求与主请求分开统计', () => {
     const run = createRun(store, {
       conversationId: cv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'anchor-vs-summary',
       userMessageId: null,
@@ -1319,6 +1363,7 @@ describe('变更页按写入过文件的轮次分页', () => {
       const run = createRun(store, {
         conversationId,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: 'changes-' + String(++seq),
         userMessageId: user.id,
@@ -1429,6 +1474,7 @@ describe('后台命令结束时追加文件改动', () => {
       return createRun(store, {
         conversationId,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: `append-${++seq}`,
         userMessageId: user.id,
@@ -1489,6 +1535,7 @@ describe('后台命令结束时追加文件改动', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'append-running',
       userMessageId: user.id,
@@ -1533,6 +1580,7 @@ describe('变更页合并子 agent 与外部 CLI 的写入', () => {
       const run = createRun(store, {
         conversationId: child.id,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: 'child-' + String(++seq),
         userMessageId: user.id,
@@ -1566,6 +1614,7 @@ describe('变更页合并子 agent 与外部 CLI 的写入', () => {
       const run = createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: key,
         userMessageId: user.id,

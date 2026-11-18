@@ -103,6 +103,7 @@ test('上限为 1 且名额被占用时，摘要请求排队，释放后才发�
   const run = createRun(store, {
     conversationId: cv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model,
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

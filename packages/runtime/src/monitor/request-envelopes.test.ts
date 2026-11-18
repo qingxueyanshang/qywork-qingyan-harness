@@ -151,6 +151,7 @@ function fixture() {
   const run = createRun(store, {
     conversationId: cv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: 'envelopes',
     userMessageId: null,

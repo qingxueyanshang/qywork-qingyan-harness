@@ -22,6 +22,7 @@ function fresh() {
   const run = createRun(store, {
     conversationId: conversation.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: 'req_1',
     userMessageId: null,

@@ -30,6 +30,7 @@ import {
   mediaOperationFor,
   mediaParamProblem,
   mediaParamValues,
+  modelMention,
   ratioOf,
   resolveMediaParam,
 } from '@qywork/core'
@@ -41,6 +42,12 @@ export type ParamSpecsOf = (
 
 /** 已配置模型 `model` 的接口名：生成卡为配置了该生成模型的接口，art 卡为提供该对话模型的接口。 */
 export type ProvidersOf = (output: GenerateOutput, model: string) => readonly string[]
+
+/** 接口下为该模型保存的显示名称；没有时为 undefined。报错中按 `modelMention` 提及模型。 */
+export type DisplayNameOf = (
+  output: GenerateOutput,
+  pick: { provider: string; model: string },
+) => string | undefined
 
 /** 本批进行中的一张卡：名称，文件卡另有路径与摘录。名称未定（新卡的缺省名称在应用时才分配）时为 undefined。 */
 interface Held {
@@ -60,6 +67,7 @@ export function prepareAgentOps(
   ops: readonly CanvasOp[],
   specsOf: ParamSpecsOf | undefined,
   providersOf: ProvidersOf | undefined,
+  displayNameOf: DisplayNameOf | undefined,
 ): CanvasOp[] {
   // 键为节点 id；本批新增的卡为其批内名称，没有批内名称时为条目序号（无法被引用）。
   const cards = new Map<string, Held>(doc.nodes.map((n) => [n.id, heldOf(n)]))
@@ -120,7 +128,8 @@ export function prepareAgentOps(
       }
       const pick = op.provider && op.model ? { provider: op.provider, model: op.model } : undefined
       const specs = specsOf?.(op.output, pick)
-      if (op.params && specs) checkParams(label, op.params, specs, pick)
+      if (op.params && specs)
+        checkParams(label, op.params, specs, sourceOf(op.output, pick, displayNameOf))
       const shape =
         op.w === undefined && op.h === undefined && specs
           ? shapeOf(op.output, op.params ?? {}, specs)
@@ -149,7 +158,7 @@ export function prepareAgentOps(
           op = { ...op, provider: providerFor(node.name, node.output, op.model, providersOf) }
         }
         if (op.params) {
-          out.push(updateWithShape(op, node, specsOf))
+          out.push(updateWithShape(op, node, specsOf, displayNameOf))
           continue
         }
       }
@@ -298,29 +307,38 @@ function updateWithShape(
   op: Extract<CanvasOp, { op: 'update' }>,
   node: CanvasGenerateNode,
   specsOf: ParamSpecsOf | undefined,
+  displayNameOf: DisplayNameOf | undefined,
 ): CanvasOp {
   const provider = op.provider === undefined ? node.provider : (op.provider ?? undefined)
   const model = op.model === undefined ? node.model : (op.model ?? undefined)
   const pick = provider && model ? { provider, model } : undefined
   const specs = specsOf?.(node.output, pick)
   if (!specs || !op.params) return op
-  checkParams(node.name, op.params, specs, pick)
+  checkParams(node.name, op.params, specs, sourceOf(node.output, pick, displayNameOf))
   if (node.versions.length > 0 || op.w !== undefined || op.h !== undefined) return op
   const shape = shapeOf(node.output, op.params, specs)
   return shape ? { ...op, ...fitBox(node, shape) } : op
 }
 
-/** 按 `pick` 的参数表核对参数；`pick` 缺省时为默认模型的参数表。报错写明核对所用的模型。 */
+/** 报错中核对所用的模型：指定了模型时按 `modelMention` 提及，未指定时为默认模型。 */
+function sourceOf(
+  output: GenerateOutput,
+  pick: { provider: string; model: string } | undefined,
+  displayNameOf: DisplayNameOf | undefined,
+): string {
+  return pick ? `${modelMention(pick, displayNameOf?.(output, pick))} ` : '默认模型'
+}
+
+/** 按核对所用模型的参数表核对参数，`source` 为该模型在报错中的写法（`sourceOf`）。 */
 function checkParams(
   label: string,
   params: Record<string, unknown>,
   specs: readonly MediaParamDefinition[],
-  pick: { provider: string; model: string } | undefined,
+  source: string,
 ): void {
   for (const [name, value] of Object.entries(params)) {
     const spec = specs.find((p) => p.name === name)
     if (!spec) {
-      const source = pick ? `${pick.provider} / ${pick.model} ` : '默认模型'
       throw new Error(
         `「${label}」的参数 ${name} 不存在。${source}的可用参数：${specs.map((p) => p.name).join('、')}`,
       )

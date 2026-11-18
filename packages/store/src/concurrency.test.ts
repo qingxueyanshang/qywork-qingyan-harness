@@ -174,6 +174,7 @@ function runInput(conversationId: string, workspaceId: string) {
   return {
     conversationId: conversationId as never,
     workspaceId: workspaceId as never,
+    provider: 'p',
     model: 'm',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

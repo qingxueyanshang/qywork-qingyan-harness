@@ -32,6 +32,7 @@ function fresh() {
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'm',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,
@@ -218,6 +219,7 @@ describe('正文定稿与引用登记之间的交错', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: crypto.randomUUID(),
       userMessageId: null,

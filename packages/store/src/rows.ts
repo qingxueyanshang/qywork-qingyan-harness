@@ -84,6 +84,8 @@ export interface RunRow {
   workspace_id: WorkspaceId
   user_message_id: MessageId | null
   message_id_upper_bound: MessageId | null
+  /** 空串见 `Run.provider`。 */
+  provider: string
   model: string
   client_request_id: string
   /** `CHECK (status IN ('queued','running','done','failed','interrupted'))`。 */
@@ -295,6 +297,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'dispatch_step_id',
     'dispatch_node_id',
     'media_usage',
+    'provider',
   ],
   steps: [
     'id',

@@ -26,10 +26,17 @@ import {
   type MediaOutput,
   type MediaSpend,
   mediaOperationFor,
+  modelMention,
 } from '@qywork/core'
 import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/tools'
 import { generateArt } from './art.ts'
-import { listMediaModels, type QyConfig, resolveMediaModel } from './config.ts'
+import {
+  listMediaModels,
+  type ModelRef,
+  type QyConfig,
+  resolveMediaModel,
+  savedDisplayName,
+} from './config.ts'
 
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
 
@@ -88,6 +95,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
   // 端口按一轮执行创建；结果未知或待取回时，本轮只允许恢复该类产物，避免自动重发计费请求。
   const unresolved = new Set<MediaOutput>()
   return {
+    displayName: (type, provider, model) => savedDisplayName(config, type, { provider, model }),
     async generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult> {
       // art 使用对话模型，不经生成目录。
       if (call.type === 'art') return generateArt(config, call, signal, onSpend)
@@ -104,11 +112,13 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
       }
       const type = call.type
       const label = OUTPUT_LABEL[type]
+      // 消息同时提供给用户阅读：模型一律按 `modelMention` 提及，大模型按清单中的名称对应 provider 与 model。
+      const mention = (ref: ModelRef) => modelMention(ref, savedDisplayName(config, type, ref))
       const candidates = listMediaModels(config).filter((m) => m.output === type)
       const choices =
         candidates
           .filter((m) => !m.delisted)
-          .map((m) => `${m.provider} / ${m.model}`)
+          .map(mention)
           .join('、') || '（无）'
       const ref =
         call.provider !== undefined && call.model !== undefined
@@ -120,7 +130,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
           ok: false,
           executed: false,
           message: ref
-            ? `未找到该${label}模型：${ref.provider} / ${ref.model}。可选：${choices}`
+            ? `未找到该${label}模型：${mention(ref)}。可选：${choices}`
             : `没有默认的${label}模型，请通过 provider 与 model 指定。可选：${choices}`,
         }
       }
@@ -136,7 +146,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         return {
           ok: false,
           executed: false,
-          message: `${target.provider} / ${target.model} 已下架，未发出请求。可选：${choices}`,
+          message: `${mention(target)} 已下架，未发出请求。可选：${choices}`,
         }
       }
 
@@ -167,7 +177,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
               (m) =>
                 !m.delisted && lookupMediaModel(m.model, m.kind, m.spec).operations.includes(op),
             )
-            .map((m) => `${m.provider} / ${m.model}`)
+            .map(mention)
           return {
             ok: false,
             executed: false,
@@ -281,7 +291,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         })
         return {
           ok: false,
-          message: `${target.provider} / ${target.model}：${err.message}`,
+          message: `${mention(target)}：${err.message}`,
           ...(err.pendingTaskId ? { pendingTaskId: err.pendingTaskId } : {}),
           ...(receivedImage || call.resumeImageResult ? { recoverable: true } : {}),
           ...(diagnostic ? { diagnostic } : {}),
@@ -307,7 +317,7 @@ export async function cancelMediaTask(
   })
   if (!target?.apiKey) {
     throw new MediaError(
-      `接口 ${task.provider} / ${task.model} 不在配置中或未配置 API Key，未执行撤销`,
+      `${modelMention(task, savedDisplayName(config, task.type, task))} 不在配置中或未配置 API Key，未执行撤销`,
     )
   }
   const adapter = buildMediaAdapter({

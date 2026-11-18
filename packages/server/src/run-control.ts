@@ -926,6 +926,7 @@ async function compactReserved(
   const run = createRun(deps.store, {
     conversationId,
     workspaceId: conversation.workspaceId,
+    provider: providerName,
     model: conversation.model,
     clientRequestId: `compact:${crypto.randomUUID()}`,
     userMessageId: null,

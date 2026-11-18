@@ -3,7 +3,7 @@
  *
  * 锁定的失败形状：四个子 agent 运行数十分钟、产生数元费用，而运行页只查询当前会话，
  * 这些费用均未显示。子会话的轮次必须以与本会话轮次相同的行格式出现在清单中，
- * 并计入合计；行上须标明该轮派发给哪个角色。另覆盖逐请求表结果列的悬停全文。
+ * 并计入合计；行上须标明该轮派发给哪个角色。另覆盖逐请求表结果列的悬停全文，以及轮次行与生成行按模型目录显示的模型名称。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -448,5 +448,83 @@ describe('运行页', () => {
       ['模型执行出错，多次重复，已暂停', true],
       ['等待用户回复', false],
     ])
+  })
+
+  /**
+   * 原始失败形状：轮次行与生成行的悬停提示显示型号 id（云端型号的 id 含上游渠道的标识），
+   * 而输入框的模型选择显示后台填写的名称。两处按「接口 × 型号」取模型目录中的同一名称；目录中没有时为型号 id。
+   */
+  test('轮次行的模型与生成行的悬停提示显示模型目录中的名称', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    const cloud = {
+      ...run('rn_cloud', 1, 'USD'),
+      provider: 'qywork',
+      model: 'chat-x1',
+      usage: {
+        cost: 1,
+        currency: 'USD',
+        turns: [],
+        media: [
+          {
+            kind: 'qywork_videos',
+            provider: 'qywork',
+            model: 'vid-x1',
+            output: 'video',
+            quantity: 5,
+            cost: 2,
+            currency: 'USD',
+            at: 1_700_000_001_000,
+          },
+        ],
+      },
+    }
+    const own = { ...run('rn_own', 1, 'USD'), provider: 'relay', model: 'own-model' }
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path: string,
+    ) => {
+      if (path === '/api/models') {
+        return {
+          providers: [{ name: 'qywork', models: [{ id: 'chat-x1', label: '云端对话' }] }],
+          media: [{ provider: 'qywork', id: 'vid-x1', output: 'video', label: '云端视频' }],
+          active: null,
+          library: [],
+          mediaLibrary: [],
+        }
+      }
+      if (path.endsWith('/runs')) return { runs: [own, cloud], childRuns: [] }
+      if (path.endsWith('/requests')) return { requests: [] }
+      if (path.endsWith('/usage')) return { totals: { entries: 0, cost: {} }, entries: [] }
+      if (path.startsWith('/api/usage')) return { totals: { cost: {} } }
+      return {}
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: unknown }).api = originalApi
+    }
+    await store.reloadModelCatalog()
+    store.setState({ activeConversation: 'cv_parent', connection: 'ready' })
+
+    const { render } = await import('solid-js/web')
+    const { default: RunDetails } = await import('./RunDetails.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <RunDetails />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => host.querySelectorAll('.run-row').length === 2,
+      () => `清单中有 ${host.querySelectorAll('.run-row').length} 行`,
+    )
+    const models = [...host.querySelectorAll('.run-model')].map((el) => el.textContent)
+    expect(models.sort()).toEqual(['own-model', '云端对话'])
+    const row = [...host.querySelectorAll<HTMLButtonElement>('.run-row')].find(
+      (el) => el.querySelector('.run-model')?.textContent === '云端对话',
+    )!
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await waitFor(
+      () => host.querySelectorAll('.run-req tbody tr').length === 1,
+      () => `逐请求表有 ${host.querySelectorAll('.run-req tbody tr').length} 行`,
+    )
+    expect(host.querySelector('.run-req tbody tr')?.getAttribute('data-tip')).toBe('云端视频')
+    expect(host.textContent).not.toContain('chat-x1')
   })
 })

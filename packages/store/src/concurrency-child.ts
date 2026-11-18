@@ -27,6 +27,7 @@ function newRun(store: Store) {
   return createRun(store, {
     conversationId: conversationId as ConversationId,
     workspaceId: workspaceId as WorkspaceId,
+    provider: 'p',
     model: 'm',
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

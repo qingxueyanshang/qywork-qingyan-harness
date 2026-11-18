@@ -124,6 +124,7 @@ async function main(): Promise<number> {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: profile.provider,
       model: profile.model,
       clientRequestId: crypto.randomUUID(),
       userMessageId: user.id,
@@ -220,6 +221,7 @@ async function main(): Promise<number> {
   const summaryRun = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,
+    provider: profile.provider,
     model: profile.model,
     clientRequestId: crypto.randomUUID(),
     userMessageId: null,

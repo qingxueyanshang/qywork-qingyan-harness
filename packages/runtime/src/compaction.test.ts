@@ -59,6 +59,7 @@ function turn(
     const run = createRun(store, {
       conversationId: conversationId as never,
       workspaceId: workspaceId as never,
+      provider: 'p',
       model: 'm',
       clientRequestId: `reply-${message.id}`,
       userMessageId: message.id,
@@ -238,6 +239,7 @@ describe('压缩记录不进入历史投影', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'after-compaction',
       userMessageId: message.id,
@@ -319,6 +321,7 @@ describe('投影三区', () => {
     createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'context-pin',
       userMessageId: ids[0]!,
@@ -353,6 +356,7 @@ describe('投影三区', () => {
       createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: `dedupe-${i}`,
         userMessageId,
@@ -385,6 +389,7 @@ describe('投影三区', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'todo-pin',
       userMessageId: ids[0]!,
@@ -441,6 +446,7 @@ describe('投影三区', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'todo-summary',
       userMessageId: ids[0]!,
@@ -496,6 +502,7 @@ describe('投影三区', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'todo-subagent-pin',
       userMessageId: ids[0]!,
@@ -578,6 +585,7 @@ describe('投影三区', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'todo-same-batch',
       userMessageId: ids[0]!,
@@ -683,6 +691,7 @@ describe('投影三区', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'todo-estimate',
       userMessageId: ids[0]!,
@@ -774,6 +783,7 @@ describe('投影三区', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
@@ -843,6 +853,7 @@ describe('投影三区', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
@@ -894,6 +905,7 @@ describe('长 run 少消息的会话必须可以压缩', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: crypto.randomUUID(),
       userMessageId: m1,
@@ -915,6 +927,7 @@ describe('切分边界不会分开 tool_call 与 tool_result', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
@@ -961,6 +974,7 @@ describe('仅收纳段即足够时不调用模型', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
@@ -1020,6 +1034,7 @@ describe('事实提取', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
@@ -1057,6 +1072,7 @@ describe('事实提取', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: crypto.randomUUID(),
       userMessageId: ids[0]!,
@@ -1096,6 +1112,7 @@ describe('模型已查看的超大单元在压缩时一并收纳', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'huge-read',
       userMessageId: ids[0]!,
@@ -1142,6 +1159,7 @@ describe('附带文本块按声明的大小选界与回收', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'declared-read',
       userMessageId: ids[0]!,
@@ -1216,6 +1234,7 @@ describe('软阈值以下只执行回收量足够大的收纳', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'bulky-tools',
       userMessageId: ids[0]!,
@@ -1376,6 +1395,7 @@ describe('注入的用户消息与压缩', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: 'ws' as never,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'c1',
       userMessageId: ids[0] ?? null,
@@ -1413,6 +1433,7 @@ describe('注入的用户消息与压缩', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: 'ws' as never,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'c1',
       userMessageId: ids[0] ?? null,
@@ -1462,6 +1483,7 @@ describe('两种计量口径不得直接相减', () => {
       const run = createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
+        provider: 'p',
         model: 'm',
         clientRequestId: `req-${contextWindow}`,
         userMessageId: ids[0]!,

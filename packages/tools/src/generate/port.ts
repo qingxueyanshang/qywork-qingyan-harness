@@ -13,6 +13,11 @@ import type { GenerateOutput, MediaDiagnostic, MediaSpend, RetryWait } from '@qy
  */
 export interface MediaPort {
   generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult>
+  /**
+   * 接口下为该模型保存的显示名称（由云端同步写入）；没有时为 undefined。`type` 为 `art` 时按对话模型查找。
+   * 回执中提及模型时经 `modelMention` 使用它：有显示名称时只写该名称。
+   */
+  displayName(type: GenerateOutput, provider: string, model: string): string | undefined
 }
 
 export const MediaPort = definePort<MediaPort>('media')

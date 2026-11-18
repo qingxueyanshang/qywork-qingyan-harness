@@ -43,6 +43,7 @@ function fixture(): { store: Store; conversationId: ConversationId } {
   const run = createRun(store, {
     conversationId: conv.id,
     workspaceId: ws.id,
+    provider: 'p',
     model: 'deepseek-v4-flash',
     clientRequestId: crypto.randomUUID(),
     userMessageId: msg.id,
@@ -454,6 +455,7 @@ describe('诊断导出', () => {
     const childRun = createRun(store, {
       conversationId: child.id,
       workspaceId,
+      provider: 'p',
       model: 'child-model',
       clientRequestId: crypto.randomUUID(),
       userMessageId: childMessage.id,
@@ -496,6 +498,7 @@ describe('诊断导出', () => {
     const grandchildRun = createRun(store, {
       conversationId: grandchild.id,
       workspaceId,
+      provider: 'p',
       model: 'child-model',
       clientRequestId: crypto.randomUUID(),
       userMessageId: grandchildMessage.id,

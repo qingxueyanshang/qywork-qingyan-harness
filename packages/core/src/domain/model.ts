@@ -179,6 +179,17 @@ export interface ResponseReasoning {
   prefix?: string
 }
 
+/**
+ * 向用户提及一个模型时使用的名称：接口下保存了显示名称（`displayName`，由云端同步写入）时只用该名称，
+ * 否则为「接口 / 型号」。不要在显示名称之后附上型号 id：云端型号的 id 含上游渠道的标识。
+ */
+export function modelMention(
+  ref: { provider: string; model: string },
+  displayName: string | undefined,
+): string {
+  return displayName ?? `${ref.provider} / ${ref.model}`
+}
+
 // ─────────────────────────────── 会话 ───────────────────────────────
 
 export interface Conversation {
@@ -480,6 +491,11 @@ export interface Run {
    * 不得进入本 run 的历史。
    */
   messageIdUpperBound: MessageId | null
+  /**
+   * 本轮使用的接口（`config.providers` 的键），与 `model` 成对，理由同 `Conversation.provider`。
+   * 空串表示迁移 79 之前创建、且逐请求账本中没有唯一接口名的轮次。
+   */
+  provider: string
   model: string
   /** 前端执行意图幂等键，(conversationId, clientRequestId) 唯一。 */
   clientRequestId: string

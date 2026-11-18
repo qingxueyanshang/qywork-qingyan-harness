@@ -235,6 +235,7 @@ test('文件校验期间取得更新占位，生成在实际调用接口之前�
   const service = new CanvasService({ publish() {}, updating: () => updating })
   const run = service.runs.run({ id: 'ws', root }, PATH, seeded.refs.$v!, {
     media: {
+      displayName: () => undefined,
       generate: async () => {
         called = true
         return { ok: false, message: '不应调用' }

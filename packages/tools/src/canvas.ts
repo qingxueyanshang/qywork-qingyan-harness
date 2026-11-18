@@ -29,6 +29,7 @@ import {
   frameLabel,
   imageSizeOf,
   layoutOf,
+  modelMention,
   parseCanvasOps,
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
@@ -70,8 +71,11 @@ function inputsText(view: CanvasView, id: string): string {
   return inputs.length ? inputs.join('、') : '无，只按提示词生成'
 }
 
-/** 节点的首行：id、类型、名称、组、模型、版本与状态。 */
-function headLine(view: CanvasView, n: CanvasNode): string {
+/**
+ * 节点的首行：id、类型、名称、组、模型、版本与状态。模型按 `modelMention` 提及：有保存的显示名称时只写该名称，
+ * 名称取自本轮的生成端口；没有生成端口时为「接口 / 型号」。
+ */
+function headLine(view: CanvasView, n: CanvasNode, media: MediaPort | null): string {
   const status = statusOf(view, n)
   const group = n.type !== 'timeline' && n.group ? `（组：${n.group}）` : ''
   if (n.type === 'file') {
@@ -86,7 +90,13 @@ function headLine(view: CanvasView, n: CanvasNode): string {
     )
   }
   const current = n.versions.find((v) => v.id === n.current)
-  const model = n.provider && n.model ? `${n.provider} / ${n.model}` : '默认模型'
+  const model =
+    n.provider && n.model
+      ? modelMention(
+          { provider: n.provider, model: n.model },
+          media?.displayName(n.output, n.provider, n.model),
+        )
+      : '默认模型'
   return (
     `- ${n.id} ${n.output} 生成卡「${n.name}」${group}${model}，${n.versions.length} 版` +
     `${current ? `，当前 ${current.path}` : ''}（${status}）`
@@ -94,8 +104,8 @@ function headLine(view: CanvasView, n: CanvasNode): string {
 }
 
 /** 节点的全文：生成卡含提示词、参数、已提交的任务与输入，时间线含全部片段。 */
-function nodeLines(view: CanvasView, n: CanvasNode): string[] {
-  const lines = [headLine(view, n)]
+function nodeLines(view: CanvasView, n: CanvasNode, media: MediaPort | null): string[] {
+  const lines = [headLine(view, n, media)]
   if (n.type === 'timeline') {
     lines.push(...n.clips.map((c, i) => `  ${i + 1}. ${c.path} ${c.in}–${c.out} 秒`))
     return lines
@@ -132,13 +142,13 @@ function nodeLines(view: CanvasView, n: CanvasNode): string[] {
 }
 
 /** 概况中的一行：生成卡写参数、输入与提示词字数，不写提示词正文；发送时的改写只写前三项与种数。 */
-function overviewLine(view: CanvasView, n: CanvasNode): string {
-  if (n.type !== 'generate') return nodeLines(view, n).join('\n')
+function overviewLine(view: CanvasView, n: CanvasNode, media: MediaPort | null): string {
+  if (n.type !== 'generate') return nodeLines(view, n, media).join('\n')
   const broken = view.references?.[n.id]
   const relabeled = view.relabels?.[n.id] ?? []
   const shown = relabeled.slice(0, 3).join('、') + (relabeled.length > 3 ? ' 等' : '')
   return (
-    `${headLine(view, n)}；参数：${paramsText(n.params)}；输入：${inputsText(view, n.id)}；` +
+    `${headLine(view, n, media)}；参数：${paramsText(n.params)}；输入：${inputsText(view, n.id)}；` +
     `提示词 ${n.prompt.length} 字` +
     (relabeled.length ? `；发送时改写 ${relabeled.length} 种写法：${shown}` : '') +
     (broken?.length ? `；运行前须修正：${broken.join('；')}` : '')
@@ -194,18 +204,18 @@ function layoutLines(view: CanvasView): string[] {
  * 指定节点时为这些节点的全文。不要恢复为默认列出全部提示词：二十张卡的回执达数万字，
  * 模型因此改用脚本读写画布文件，跳过画布的全部核对。
  */
-function describe(view: CanvasView, ids?: readonly string[]): string {
+function describe(view: CanvasView, media: MediaPort | null, ids?: readonly string[]): string {
   if (ids) {
     const lines = [countsLine(view)]
     for (const id of ids) {
       const n = view.doc.nodes.find((x) => x.id === id)
-      if (n) lines.push(...nodeLines(view, n))
+      if (n) lines.push(...nodeLines(view, n, media))
     }
     return lines.join('\n')
   }
   return [
     countsLine(view),
-    ...view.doc.nodes.map((n) => overviewLine(view, n)),
+    ...view.doc.nodes.map((n) => overviewLine(view, n, media)),
     ...edgeLines(view),
     ...layoutLines(view),
     '生成卡的提示词全文用 read_canvas 的 node 按卡片名称读取。',
@@ -344,7 +354,7 @@ export const readCanvasTool: ToolSpec = {
         if (!found.ok) return failure(found.error, 'invalid_tool_arguments')
         ids.push(found.id)
       }
-      const read = describe(view, ids.length ? ids : undefined)
+      const read = describe(view, ctx.port(MediaPort), ids.length ? ids : undefined)
       const wanted = Array.isArray(args.render) ? args.render.map((r) => String(r)) : []
       if (!wanted.length) return { status: 'success', message: read, data: { view } }
       if (!canvas.render) return failure('内置浏览器不可用，无法渲染设计稿')
@@ -438,6 +448,7 @@ function editReceipt(
   rejected: readonly { label: string; error: string }[],
   result: CanvasEditResult | null,
   view: CanvasView | null,
+  media: MediaPort | null,
 ): string {
   const skipped = [
     ...rejected,
@@ -463,7 +474,7 @@ function editReceipt(
       lines.push('改动的卡：')
       for (const id of result.changed) {
         const n = view.doc.nodes.find((x) => x.id === id)
-        if (n) lines.push(...nodeLines(view, n))
+        if (n) lines.push(...nodeLines(view, n, media))
       }
     }
     const moved = result.moved.flatMap((id) => {
@@ -632,14 +643,17 @@ export const editCanvasTool: ToolSpec = {
       }
       const { planned, rejected } = await planOps(raws, () => canvas.read(path))
       if (!planned.length) {
-        return failure(editReceipt(planned, rejected, null, null), 'invalid_tool_arguments')
+        return failure(
+          editReceipt(planned, rejected, null, null, ctx.port(MediaPort)),
+          'invalid_tool_arguments',
+        )
       }
       const result = await canvas.edit(
         path,
         planned.map((p) => p.op),
       )
       const done = planned.length - result.skipped.length
-      const message = editReceipt(planned, rejected, result, result.view)
+      const message = editReceipt(planned, rejected, result, result.view, ctx.port(MediaPort))
       return done > 0
         ? { status: 'success', message, data: { refs: result.refs } }
         : { status: 'failure', executed: false, message, errorKind: 'invalid_tool_arguments' }

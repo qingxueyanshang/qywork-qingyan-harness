@@ -1602,6 +1602,7 @@ describe('会话历史分页接口', () => {
       const run = createRun(d.store, {
         conversationId: conv.id,
         workspaceId: workspaceId as never,
+        provider: 'p',
         model: 'm',
         clientRequestId: `history-${i}`,
         userMessageId: msg.id,
@@ -1659,6 +1660,7 @@ describe('会话历史分页接口', () => {
     const run = createRun(d.store, {
       conversationId: conv.id,
       workspaceId: workspaceId as never,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'live-1',
       userMessageId: msg.id,
@@ -1741,6 +1743,7 @@ describe('会话历史分页接口', () => {
     const run = createRun(d.store, {
       conversationId: conv.id,
       workspaceId: workspaceId as never,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'live-2',
       userMessageId: null,
@@ -1802,6 +1805,7 @@ describe('会话历史分页接口', () => {
     const run = createRun(d.store, {
       conversationId: conv.id,
       workspaceId: workspaceId as never,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'images',
       userMessageId: msg.id,
@@ -1915,6 +1919,7 @@ describe('会话诊断导出接口', () => {
     const run = createRun(d.store, {
       conversationId: conv.id,
       workspaceId: workspaceId as never,
+      provider: 'p',
       model: 'm',
       clientRequestId: crypto.randomUUID(),
       userMessageId: message.id,
@@ -2053,6 +2058,7 @@ describe('会话诊断导出接口', () => {
       const run = createRun(d.store, {
         conversationId: conversation.id,
         workspaceId: d.wsId as never,
+        provider: 'p',
         model: 'm',
         clientRequestId: `req_${conversation.id}`,
         userMessageId: null,
@@ -2217,6 +2223,7 @@ describe('会话变更分页接口', () => {
       const run = createRun(d.store, {
         conversationId: conv.id,
         workspaceId: workspaceId as never,
+        provider: 'p',
         model: 'm',
         clientRequestId: `changes-${i}`,
         userMessageId: msg.id,
@@ -2309,6 +2316,7 @@ describe('会话级逐请求接口', () => {
     const run = createRun(d.store, {
       conversationId: conv.id,
       workspaceId: d.wsId as never,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'requests',
       userMessageId: null,
@@ -2392,6 +2400,7 @@ describe('单次主请求的消息条目接口', () => {
     const run = createRun(d.store, {
       conversationId: conv.id,
       workspaceId: d.wsId as never,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'items',
       userMessageId: user.id,

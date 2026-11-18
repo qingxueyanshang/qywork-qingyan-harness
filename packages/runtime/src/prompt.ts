@@ -14,7 +14,7 @@ import {
   type WorkflowProjection,
 } from '@qywork/core'
 import { MEDIA_TOOLS } from '@qywork/tools'
-import type { MediaModelEntry } from './config.ts'
+import { type MediaModelEntry, mediaModelLabel } from './config.ts'
 
 /**
  * 三层冻结前缀：system → environment → rules。
@@ -415,7 +415,7 @@ export function mediaModelsNote(
         .filter(Boolean)
         .join('、')
       lines.push(
-        `- provider \`${m.provider}\`；model \`${m.model}\`${m.isDefault ? '（默认）' : ''}：${ops}${limits ? `，${limits}` : ''}`,
+        `- 名称「${mediaModelLabel(m, spec)}」；provider \`${m.provider}\`；model \`${m.model}\`${m.isDefault ? '（默认）' : ''}：${ops}${limits ? `，${limits}` : ''}`,
         ...(spec.mention ? [`  - ${mentionNote(spec.mention)}`] : []),
         ...spec.params.map((p) => `  - ${describeParam(p)}`),
       )
@@ -426,6 +426,7 @@ export function mediaModelsNote(
     `## ${heading}\n${sections.join('\n\n')}\n\n` +
     'params_json 仅使用所选模型列出的参数，取值依据用户要求（尺寸、比例、清晰度、数量等）或自行判断，无需设置的参数省略；' +
     'provider 与 model 须取自同一行，两者均省略时使用默认模型。' +
+    '名称是界面上显示的模型名称，向用户提及模型时优先使用名称。' +
     '本清单为本轮开始时的配置；用户在本轮进行中更改配置时，当前清单随其消息附上。生成工具按当前配置校验 provider 与 model。'
   )
 }

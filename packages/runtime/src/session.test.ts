@@ -746,6 +746,7 @@ describe('未完成 workflow 的运行快照', () => {
     const run = createRun(store, {
       conversationId,
       workspaceId: listRecentConversations(store, 1)[0]!.workspaceId,
+      provider: 'p',
       model: 'deepseek-v4-flash',
       clientRequestId: 'seed-graph',
       userMessageId: null,
@@ -1391,6 +1392,7 @@ describe('会话标题', () => {
     const old = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'deepseek-v4-flash',
       clientRequestId: 'old-completed-todos',
       userMessageId: null,
@@ -1476,6 +1478,7 @@ describe('注入消息的读取', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'c1',
       userMessageId: null,
@@ -1520,6 +1523,7 @@ describe('注入消息的读取', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'c1',
       userMessageId: null,
@@ -1583,6 +1587,7 @@ describe('带图执行记录的读取', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'c1',
       userMessageId: null,
@@ -1657,6 +1662,7 @@ describe('带图执行记录的读取', () => {
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
+      provider: 'p',
       model: 'm',
       clientRequestId: 'c1',
       userMessageId: null,
