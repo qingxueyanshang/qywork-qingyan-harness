@@ -20,6 +20,7 @@ export const CHANNEL_VENDORS = [
   'opencode',
   'providera',
   'providerb',
+  'providerc',
   'zhipu',
 ] as const
 export type ChannelVendor = (typeof CHANNEL_VENDORS)[number]
@@ -51,6 +52,8 @@ const HOSTS: Readonly<Record<ChannelVendor, readonly (string | RegExp)[]>> = {
   providera: ['providera.example.com'],
   // 第三方接口服务商B。拉取时读取 `/docs/catalog-models.json`，视频、图像按服务商B格式提交。
   providerb: ['providerb.example.com'],
+  // 第三方接口服务商C AI。拉取时读取带凭证的模型目录 `/api/v1/models`，视频按服务商C AI 的协议（`providerc_videos`）提交。
+  providerc: ['providerc.example.com'],
   // 智谱开放平台。对话的业务错误码按智谱的含义归类（`@qywork/ai` 的 `upstreamFailureCode`）。
   zhipu: ['open.bigmodel.cn'],
 }

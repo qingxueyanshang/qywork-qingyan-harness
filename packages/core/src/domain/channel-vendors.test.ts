@@ -17,6 +17,7 @@ test('各渠道商的官方地址与第三方接口地址判定为对应渠道�
     ['https://opencode.ai/zen/v1', 'opencode'],
     ['https://providera.example.com', 'providera'],
     ['https://providerb.example.com/v1', 'providerb'],
+    ['https://providerc.example.com/api/v1', 'providerc'],
     ['https://open.bigmodel.cn/api/paas/v4', 'zhipu'],
   ]
   for (const [url, vendor] of cases) expect([url, channelVendorOf(url)]).toEqual([url, vendor])

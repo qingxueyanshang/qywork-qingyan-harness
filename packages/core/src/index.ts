@@ -197,6 +197,7 @@ export {
   type MediaUnit,
   type StoredMediaSpec,
   type UnitPrice,
+  VIDEO_CHANNEL_KIND,
   VIDEO_CHANNELS,
   type VideoChannel,
 } from './domain/media.ts'

@@ -27,6 +27,7 @@ export const MEDIA_KINDS = [
   'veo_videos',
   'xai_videos',
   'minimax_videos',
+  'providerc_videos',
   'openai_speech',
   'dashscope_speech',
   'minimax_speech',
@@ -58,8 +59,18 @@ export type UnitPrice = number | Readonly<Record<string, number>>
  * 型号的时长、画幅、素材上限与价格来自拉取时的渠道目录，保存在该型号的配置中（`ChannelVideoSpec`）。
  * 图像只有 providerb 一种格式（`ChannelImageSpec`）。
  */
-export const VIDEO_CHANNELS = ['providera', 'providerb'] as const
+export const VIDEO_CHANNELS = ['providera', 'providerb', 'providerc'] as const
 export type VideoChannel = (typeof VIDEO_CHANNELS)[number]
+
+/**
+ * 各渠道的视频规格所属的协议：providera 与服务商B按 `/v1/videos` 的形状提交，服务商C AI 使用自有协议。
+ * 配置校验据此拒绝协议与渠道不一致的规格，规格解析（`@qywork/ai` 的 `lookupMediaModel`）只在一致时使用渠道规格。
+ */
+export const VIDEO_CHANNEL_KIND: Readonly<Record<VideoChannel, MediaKind>> = {
+  providera: 'openai_videos',
+  providerb: 'openai_videos',
+  providerc: 'providerc_videos',
+}
 
 /**
  * 渠道公布的价格。金额按渠道充值价与分组倍率折算，币种为渠道的计价币种。图像每次请求生成一张，按次即按张。
@@ -77,6 +88,8 @@ export interface ChannelPrice {
  */
 export interface ChannelVideoSpec {
   channel: VideoChannel
+  /** 渠道目录中的型号名称。型号 id 是渠道编号（服务商C AI 的 `providerc-video-x…`）时，界面显示此名称。 */
+  label?: string
   /** 可选时长（秒），升序；第一项为默认值。 */
   seconds: number[]
   /** 宽高比；第一项为默认值。 */
@@ -113,7 +126,9 @@ export interface ChannelImageSpec {
   price?: ChannelPrice
 }
 
-/** 生成型号保存的渠道规格。类别由该型号的协议决定：`openai_videos` 为视频，`openai_images` 为图像。 */
+/**
+ * 生成型号保存的渠道规格。类别由该型号的协议决定：`openai_videos` 与 `providerc_videos` 为视频，`openai_images` 为图像。
+ */
 export type ChannelSpec = ChannelVideoSpec | ChannelImageSpec
 
 /**
@@ -166,12 +181,20 @@ function channelPriceProblem(p: unknown, resolutions: string[]): string | null {
     : 'price 必须包含 per（request 或 second）、amount（正数，或每个分辨率档位各一个正数）与 currency'
 }
 
-/** 配置中保存的渠道规格不合法时返回原因。配置写入前校验，不合法的规格不落盘。 */
-export function channelVideoSpecProblem(value: unknown): string | null {
+/**
+ * 配置中保存的渠道规格不合法时返回原因。配置写入前校验，不合法的规格不落盘。
+ * `kind` 是该型号的协议，渠道须属于该协议（`VIDEO_CHANNEL_KIND`）。
+ */
+export function channelVideoSpecProblem(value: unknown, kind: MediaKind): string | null {
   if (!value || typeof value !== 'object') return '不是对象'
   const s = value as Partial<ChannelVideoSpec>
-  if (!VIDEO_CHANNELS.includes(s.channel as VideoChannel))
-    return `channel 必须是 ${VIDEO_CHANNELS.join('、')} 之一`
+  const channels = VIDEO_CHANNELS.filter((c) => VIDEO_CHANNEL_KIND[c] === kind)
+  if (!channels.includes(s.channel as VideoChannel))
+    return channels.length
+      ? `${kind} 协议的 channel 必须是 ${channels.join('、')} 之一`
+      : `${kind} 协议不能保存视频渠道规格`
+  if (s.label !== undefined && (typeof s.label !== 'string' || !s.label.trim()))
+    return 'label 必须是非空字符串'
   if (
     !Array.isArray(s.seconds) ||
     !s.seconds.length ||
@@ -317,6 +340,7 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   veo_videos: 'video',
   xai_videos: 'video',
   minimax_videos: 'video',
+  providerc_videos: 'video',
   openai_speech: 'audio',
   dashscope_speech: 'audio',
   minimax_speech: 'audio',
@@ -381,6 +405,7 @@ export function defaultMediaKind(
       if (vendor === 'alibaba') return 'dashscope_videos'
       if (vendor === 'minimax') return 'minimax_videos'
       if (vendor === 'volcengine') return 'ark_videos'
+      if (vendor === 'providerc') return 'providerc_videos'
       return vendor === 'kling' ? 'kling_videos' : 'openai_videos'
     case 'audio':
       if (vendor === 'alibaba') return 'dashscope_speech'

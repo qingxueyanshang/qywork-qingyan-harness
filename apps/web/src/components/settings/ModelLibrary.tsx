@@ -37,6 +37,7 @@ export const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
   minimax_speech: 'MiniMax',
   minimax_images: 'MiniMax',
   minimax_videos: 'MiniMax',
+  providerc_videos: '服务商C AI',
   mimo_speech: 'MiMo',
   gemini_speech: 'Gemini',
   qywork_images: '账号订阅',

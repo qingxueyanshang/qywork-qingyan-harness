@@ -3,7 +3,14 @@
  * 两个函数都只计算新的配置对象，由调用方经 `replaceConfig` 保存；没有变化时返回 null。
  */
 
-import { defaultMediaKind, formatMoney, MEDIA_KIND_OUTPUT, type MediaOutput } from '@qywork/core'
+import {
+  channelSpecOf,
+  defaultMediaKind,
+  formatMoney,
+  MEDIA_KIND_OUTPUT,
+  type MediaOutput,
+  type StoredMediaSpec,
+} from '@qywork/core'
 import type {
   MediaLibraryModel,
   PulledModel,
@@ -148,6 +155,15 @@ export function addPulled(
       ? { active: { provider, model: firstChat } }
       : {}),
   }
+}
+
+/**
+ * 生成型号的显示名称：渠道规格带目录中的型号名称时取该名称（服务商C AI 的型号 id 是 `providerc-video-x…` 形式的渠道编号），
+ * 否则为 id。拉取对话框与接口页的型号行共用。
+ */
+export function mediaName(id: string, spec: StoredMediaSpec | undefined): string {
+  const channel = channelSpecOf(spec)
+  return (channel && 'label' in channel && channel.label) || id
 }
 
 /** 可选时长。没有渠道规格或是图像规格时为空串。 */

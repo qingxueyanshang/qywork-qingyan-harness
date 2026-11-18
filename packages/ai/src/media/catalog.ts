@@ -31,6 +31,7 @@ import {
   type MentionStyle,
   type StoredMediaSpec,
   type UnitPrice,
+  VIDEO_CHANNEL_KIND,
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import { MIMO_AUDIO_MODELS, MIMO_SPEECH_DEFAULT } from './catalog-mimo-audio.ts'
@@ -1838,6 +1839,24 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     ],
     catalogued: false,
   },
+  /* 服务商C AI 未经拉取的型号：时长、画幅与分辨率的可选值只在模型目录中，此处只提供通用文生字段。 */
+  providerc_videos: {
+    vendor: null,
+    kind: 'providerc_videos',
+    operations: ['text_to_video'],
+    inputs: { maxImages: 0, maxVideos: 0, transport: 'multipart' },
+    params: [
+      { name: 'duration', type: 'integer', min: 1, description: '时长（秒）' },
+      {
+        name: 'ratio',
+        label: '画幅',
+        type: 'string',
+        shapes: [{}, { ratio: '16:9', value: '16:9' }, { ratio: '9:16', value: '9:16' }],
+        description: '宽高比，如 16:9、9:16',
+      },
+    ],
+    catalogued: false,
+  },
   ark_videos: {
     vendor: null,
     kind: 'ark_videos',
@@ -1913,6 +1932,7 @@ const METER_PARAMS: Readonly<
   veo_videos: { seconds: 'durationSeconds', resolution: 'resolution' },
   xai_videos: { seconds: 'duration', resolution: 'resolution' },
   minimax_videos: { seconds: 'duration', resolution: 'resolution' },
+  providerc_videos: { seconds: 'duration', resolution: 'resolution' },
   openai_speech: {},
   dashscope_speech: {},
   minimax_speech: {},
@@ -2045,8 +2065,9 @@ export function mediaKindsOf(spec: MediaModelSpec): MediaKind[] {
 /**
  * 模型在指定协议上的规格。顺序唯一：配置中保存的规格 → 同协议的目录条目 → 已登记的协议映射 → 协议默认。
  *
- * `saved` 是保存在该型号配置中的规格（`StoredMediaModel.spec`）。渠道规格由拉取时的渠道目录得到，用于 `openai_videos` 与
- * `openai_images`；配置校验保证视频协议保存视频规格、图像协议保存图像规格。保存的规格先于目录：第三方的型号可与内置型号同名
+ * `saved` 是保存在该型号配置中的规格（`StoredMediaModel.spec`）。渠道规格由拉取时的渠道目录得到，用于 `openai_videos`、
+ * `providerc_videos` 与 `openai_images`；配置校验保证视频协议保存所属渠道的视频规格（`VIDEO_CHANNEL_KIND`）、图像协议保存图像规格，
+ * 视频渠道规格的协议取自渠道。保存的规格先于目录：第三方的型号可与内置型号同名
  * （如 gpt-image-2），请求结构与价格以渠道为准。对应型号 `{ base }` 按该目录 id 在同一协议上取规格，id 与显示名称为自定义名称，
  * 不带单价。
  * 生成工具、画布、提示词与适配器都经由本函数取得规格，调用方必须传入同一份保存的规格，否则各处参数不一致。
@@ -2066,7 +2087,12 @@ export function lookupMediaModel(
     const { price: _price, ...rest } = lookupMediaModel(saved.base, kind)
     return { ...rest, id, displayName: id }
   }
-  if (saved && kind === 'openai_videos') return channelMediaSpec(id, saved as ChannelVideoSpec)
+  if (
+    saved &&
+    'channel' in saved &&
+    VIDEO_CHANNEL_KIND[(saved as ChannelVideoSpec).channel] === kind
+  )
+    return channelMediaSpec(id, saved as ChannelVideoSpec)
   if (saved && kind === 'openai_images') return channelImageMediaSpec(id, saved as ChannelImageSpec)
   const exact = SEEDS.find((m) => m.id === id && m.kind === kind)
   if (exact) return exact

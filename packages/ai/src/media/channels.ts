@@ -5,7 +5,14 @@
  * 代码中不登记具体型号。目录字段缺失或取值不合法时返回 null，不补默认值：补出的上限会使画布开放渠道不接受的素材。
  */
 
-import type { ChannelImageSpec, ChannelPrice, ChannelVideoSpec } from '@qywork/core'
+import {
+  type ChannelImageSpec,
+  type ChannelPrice,
+  type ChannelVideoSpec,
+  type MentionStyle,
+  VIDEO_CHANNEL_KIND,
+  type VideoChannel,
+} from '@qywork/core'
 import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
 import type { MediaUsage } from './types.ts'
 
@@ -104,6 +111,97 @@ export function providerbVideoSpec(entry: Record<string, unknown>): ChannelVideo
   }
 }
 
+const record = (v: unknown) =>
+  v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined
+const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0
+
+/**
+ * 服务商C AI 模型目录（带凭证请求 `/api/v1/models`）中的一条视频型号（`type: video`）。
+ * 时长为 `durations` 数组或 `durationRange` 的「[最小, 最大]」；分辨率为 `resolutions`，只有一档时可能只给 `fixedResolution`；
+ * 三类素材上限在 `limits` 中。`label` 是型号名称，型号 id 是渠道编号（`providerc-video-x…`）。
+ */
+export function providercVideoSpec(entry: Record<string, unknown>): ChannelVideoSpec | null {
+  if (entry.type !== 'video') return null
+  const bounds = Array.isArray(entry.durationRange) ? entry.durationRange.map(count) : []
+  const seconds = Array.isArray(entry.durations)
+    ? entry.durations.filter((n): n is number => Number.isInteger(n) && n > 0)
+    : bounds.length === 2
+      ? range(bounds[0] ?? 0, bounds[1] ?? 0)
+      : []
+  const ratios = Array.isArray(entry.ratios)
+    ? entry.ratios.filter((r): r is string => typeof r === 'string' && /^\d+:\d+$/.test(r))
+    : []
+  const resolutions = Array.isArray(entry.resolutions)
+    ? entry.resolutions.filter((r): r is string => typeof r === 'string' && r !== '')
+    : typeof entry.fixedResolution === 'string' && entry.fixedResolution
+      ? [entry.fixedResolution]
+      : []
+  const limits = record(entry.limits)
+  const maxImages = count(limits?.images)
+  const maxVideos = count(limits?.videos)
+  const maxAudios = count(limits?.audios)
+  if (
+    !seconds.length ||
+    !ratios.length ||
+    !resolutions.length ||
+    maxImages === null ||
+    maxVideos === null ||
+    maxAudios === null
+  )
+    return null
+  const label = typeof entry.label === 'string' ? entry.label.trim() : ''
+  const price = providercPrice(record(entry.billing), resolutions, maxVideos)
+  return {
+    channel: 'providerc',
+    ...(label ? { label } : {}),
+    seconds: [...new Set(seconds)].sort((a, b) => a - b),
+    ratios,
+    resolutions,
+    maxImages,
+    maxVideos,
+    maxAudios,
+    ...(price ? { price } : {}),
+  }
+}
+
+/**
+ * 服务商C AI 目录的 `billing`，金额为人民币元，已是用户售价：`fixed` 按次（`amount`），`resolutionFixed` 按次分档（`amounts`），
+ * `resolutionSecond` 按秒分档（`rates[档位].base`）。`withVideo` 是带参考视频时的秒价，与 `base` 不同且型号接受参考视频时
+ * 单价取决于输入，价格不明。各档金额相同时保存为一个数。其余计费方式与缺少任一档位的金额时价格不明。
+ */
+function providercPrice(
+  billing: Record<string, unknown> | undefined,
+  resolutions: readonly string[],
+  maxVideos: number,
+): ChannelPrice | undefined {
+  const tiered = (per: ChannelPrice['per'], amountOf: (r: string) => unknown) => {
+    const amounts = resolutions.map(amountOf)
+    if (!amounts.every(positive)) return undefined
+    const amount = amounts.every((a) => a === amounts[0])
+      ? amounts[0]!
+      : Object.fromEntries(resolutions.map((r, i) => [r, amounts[i]!]))
+    return { per, amount, currency: 'CNY' as const }
+  }
+  switch (billing?.kind) {
+    case 'fixed':
+      return positive(billing.amount)
+        ? { per: 'request', amount: billing.amount, currency: 'CNY' }
+        : undefined
+    case 'resolutionFixed':
+      return tiered('request', (r) => record(billing.amounts)?.[r])
+    case 'resolutionSecond': {
+      const rates = record(billing.rates)
+      const varies = resolutions.some(
+        (r) => record(rates?.[r])?.withVideo !== record(rates?.[r])?.base,
+      )
+      if (maxVideos && varies) return undefined
+      return tiered('second', (r) => record(rates?.[r])?.base)
+    }
+    default:
+      return undefined
+  }
+}
+
 /**
  * 服务商B目录中的一条图像型号（`image_json_v1`）。目录给出最长边下限（`min_long_edge`）时移除未达到下限的尺寸：
  * 渠道拒绝这些尺寸。
@@ -128,13 +226,17 @@ export function providerbImageSpec(entry: Record<string, unknown>): ChannelImage
   return { channel: 'providerb', resolutions, sizes, maxImages }
 }
 
-function secondsParam(seconds: readonly number[]): MediaParamSpec {
-  const values = seconds.map(String)
+/**
+ * 时长参数。`text`：取值为字符串（`/v1/videos` 的 `seconds`）；否则为整数（服务商C AI 的 `duration`）。
+ */
+function secondsParam(name: string, seconds: readonly number[], text: boolean): MediaParamSpec {
+  const values = text ? seconds.map(String) : [...seconds]
   const first = seconds[0]!
   const last = seconds[seconds.length - 1]!
   const contiguous = last - first + 1 === seconds.length
+  const unit = text ? '，使用字符串' : ''
   return {
-    name: 'seconds',
+    name,
     label: '时长',
     type: 'enum',
     values,
@@ -142,20 +244,47 @@ function secondsParam(seconds: readonly number[]): MediaParamSpec {
     default: values[0]!,
     description:
       seconds.length === 1
-        ? `固定 ${first} 秒，使用字符串 "${first}"`
+        ? `固定 ${first} 秒${text ? `，使用字符串 "${first}"` : ''}`
         : contiguous
-          ? `${first}–${last} 秒整数，使用字符串`
-          : `可选 ${values.join('、')} 秒，使用字符串`,
+          ? `${first}–${last} 秒整数${unit}`
+          : `可选 ${seconds.join('、')} 秒${unit}`,
   }
 }
 
+function ratioParam(name: string, ratios: readonly string[]): MediaParamSpec {
+  return {
+    name,
+    label: '画幅',
+    type: 'string',
+    shapes: ratios.map((ratio) => ({ ratio, value: ratio })),
+    default: ratios[0]!,
+    description: `支持 ${ratios.join('、')}`,
+  }
+}
+
+function resolutionParam(resolutions: readonly string[]): MediaParamSpec {
+  return {
+    name: 'resolution',
+    label: '分辨率',
+    type: 'enum',
+    values: resolutions,
+    default: resolutions[0]!,
+    description:
+      resolutions.length === 1 ? `固定 ${resolutions[0]}` : `可选 ${resolutions.join('、')}`,
+  }
+}
+
+const resolutionValue = (params: Record<string, unknown>) =>
+  typeof params.resolution === 'string' ? params.resolution : undefined
+
 /**
  * `resolutionOf` 按请求参数取分辨率档位。按档位定价时计量须带档位：任务查询未取得档位时，
- * 账本中该次金额不明；发送前的报价按所选参数计算。
+ * 账本中该次金额不明；发送前的报价按所选参数计算。`secondsName` 是按秒计价时读取的时长参数。
  */
 function priceOf(
   price: ChannelPrice | undefined,
   resolutionOf: (params: Record<string, unknown>) => string | undefined,
+  secondsName = 'seconds',
 ): MediaPrice | undefined {
   if (!price) return undefined
   const { amount, currency } = price
@@ -177,7 +306,7 @@ function priceOf(
           const r = rate(u)
           return u.seconds === undefined || r === undefined ? null : u.seconds * r
         },
-        usageOf: (params) => ({ ...tier(params), seconds: Number(params.seconds) }),
+        usageOf: (params) => ({ ...tier(params), seconds: Number(params[secondsName]) }),
       }
 }
 
@@ -193,80 +322,103 @@ function sizeFor(ratio: string, [w, h]: [number, number]): string | undefined {
   return undefined
 }
 
-function provideraParams(spec: ChannelVideoSpec): MediaParamSpec[] {
-  return [
-    secondsParam(spec.seconds),
-    {
-      name: 'aspect_ratio',
-      label: '画幅',
-      type: 'string',
-      shapes: spec.ratios.map((ratio) => ({ ratio, value: ratio })),
-      default: spec.ratios[0]!,
-      description: `支持 ${spec.ratios.join('、')}`,
-    },
-    {
-      name: 'resolution',
-      label: '分辨率',
-      type: 'enum',
-      values: spec.resolutions,
-      default: spec.resolutions[0]!,
-      description:
-        spec.resolutions.length === 1
-          ? `固定 ${spec.resolutions[0]}`
-          : `可选 ${spec.resolutions.join('、')}`,
-    },
-  ]
+/** 渠道规格对应的参数表，以及计价时读取的分辨率档位与时长参数。 */
+interface ChannelShape {
+  params: MediaParamSpec[]
+  resolutionOf: (params: Record<string, unknown>) => string | undefined
+  secondsName: string
+  /** 档位由尺寸决定时，各尺寸所属的档位（`MediaModelSpec.resolutionBySize`）。 */
+  resolutionBySize?: Record<string, string>
 }
 
-/** 服务商B各分辨率档位、各画幅的像素尺寸，档位在前。 */
-function providerbSizes(spec: ChannelVideoSpec) {
-  return spec.resolutions.flatMap((resolution) =>
+/** 服务商B的参数表：时长与各分辨率档位、各画幅的像素尺寸（档位在前）；档位由所选尺寸决定。 */
+function providerbShape(spec: ChannelVideoSpec): ChannelShape {
+  const sizes = spec.resolutions.flatMap((resolution) =>
     spec.ratios.flatMap((ratio) => {
       const value = sizeFor(ratio, spec.sizes![resolution]!)
       return value ? [{ ratio, resolution, value }] : []
     }),
   )
-}
-
-function providerbParams(
-  spec: ChannelVideoSpec,
-  sizes: ReturnType<typeof providerbSizes>,
-): MediaParamSpec[] {
   const shapes = sizes.map(({ ratio, resolution, value }) => ({
     ratio,
     tier: resolution.toUpperCase(),
     value,
   }))
-  return [
-    secondsParam(spec.seconds),
-    {
-      name: 'size',
-      label: '尺寸',
-      type: 'string',
-      shapes,
-      default: shapes[0]!.value,
-      description: `宽x高，可选 ${shapes.map((s) => s.value).join('、')}`,
-    },
-  ]
+  return {
+    params: [
+      secondsParam('seconds', spec.seconds, true),
+      {
+        name: 'size',
+        label: '尺寸',
+        type: 'string',
+        shapes,
+        default: shapes[0]!.value,
+        description: `宽x高，可选 ${shapes.map((s) => s.value).join('、')}`,
+      },
+    ],
+    resolutionOf: (params) => sizes.find((s) => s.value === params.size)?.resolution,
+    secondsName: 'seconds',
+    resolutionBySize: Object.fromEntries(sizes.map((s) => [s.value, s.resolution])),
+  }
 }
 
-/** 保存的渠道规格对应的生成规格。只用于 `openai_videos` 协议：两个渠道都按该协议的任务接口提交与查询。 */
+/**
+ * 各渠道的格式：厂商名、参数表与提示词中引用素材的写法。`videoFormat` 是 `openai_videos` 上的请求结构，
+ * 使用自有协议的渠道（服务商C AI）省略；`multipart`：参考素材一律以表单文件随提交上传。协议见 `VIDEO_CHANNEL_KIND`。
+ */
+const CHANNEL_FORMATS: Readonly<
+  Record<
+    VideoChannel,
+    {
+      vendor: string
+      videoFormat?: 'providera' | 'providerb'
+      multipart?: true
+      mention?: MentionStyle
+      shape: (spec: ChannelVideoSpec) => ChannelShape
+    }
+  >
+> = {
+  providera: {
+    vendor: 'providera',
+    videoFormat: 'providera',
+    mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' },
+    shape: (spec) => ({
+      params: [
+        secondsParam('seconds', spec.seconds, true),
+        ratioParam('aspect_ratio', spec.ratios),
+        resolutionParam(spec.resolutions),
+      ],
+      resolutionOf: resolutionValue,
+      secondsName: 'seconds',
+    }),
+  },
+  providerb: { vendor: 'providerb', videoFormat: 'providerb', shape: providerbShape },
+  providerc: {
+    vendor: '服务商C AI',
+    multipart: true,
+    shape: (spec) => ({
+      params: [
+        secondsParam('duration', spec.seconds, false),
+        ratioParam('ratio', spec.ratios),
+        resolutionParam(spec.resolutions),
+      ],
+      resolutionOf: resolutionValue,
+      secondsName: 'duration',
+    }),
+  },
+}
+
+/** 保存的渠道规格对应的生成规格，协议按渠道取得（`VIDEO_CHANNEL_KIND`）。显示名称取目录中的型号名称，没有时为 id。 */
 export function channelMediaSpec(id: string, spec: ChannelVideoSpec): MediaModelSpec {
-  const providera = spec.channel === 'providera'
-  const sizes = providera ? [] : providerbSizes(spec)
-  const price = priceOf(spec.price, (params) =>
-    providera
-      ? typeof params.resolution === 'string'
-        ? params.resolution
-        : undefined
-      : sizes.find((s) => s.value === params.size)?.resolution,
-  )
+  const format = CHANNEL_FORMATS[spec.channel]
+  const shape = format.shape(spec)
+  const price = priceOf(spec.price, shape.resolutionOf, shape.secondsName)
   return {
     id,
-    displayName: id,
-    vendor: providera ? 'providera' : 'providerb',
-    kind: 'openai_videos',
-    videoFormat: spec.channel,
+    displayName: spec.label ?? id,
+    vendor: format.vendor,
+    kind: VIDEO_CHANNEL_KIND[spec.channel],
+    ...(format.videoFormat ? { videoFormat: format.videoFormat } : {}),
     operations: [
       'text_to_video',
       ...(spec.maxImages || spec.maxAudios ? ['reference_to_video' as const] : []),
@@ -276,17 +428,13 @@ export function channelMediaSpec(id: string, spec: ChannelVideoSpec): MediaModel
       maxImages: spec.maxImages,
       maxVideos: spec.maxVideos,
       maxAudios: spec.maxAudios,
-      transport: spec.multipart ? 'multipart' : 'json',
+      transport: format.multipart || spec.multipart ? 'multipart' : 'json',
       ...(spec.publicUrls ? { publicUrls: true } : {}),
     },
-    params: providera ? provideraParams(spec) : providerbParams(spec, sizes),
-    ...(providera
-      ? {}
-      : { resolutionBySize: Object.fromEntries(sizes.map((s) => [s.value, s.resolution])) }),
+    params: shape.params,
+    ...(shape.resolutionBySize ? { resolutionBySize: shape.resolutionBySize } : {}),
     ...(spec.resolutionField ? { resolutionField: true as const } : {}),
-    ...(providera
-      ? { mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' } }
-      : {}),
+    ...(format.mention ? { mention: format.mention } : {}),
     ...(price ? { price } : {}),
     catalogued: true,
   }

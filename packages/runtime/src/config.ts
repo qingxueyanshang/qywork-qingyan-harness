@@ -238,7 +238,8 @@ export interface StoredMediaModel {
   kind: MediaKind
   /**
    * 该型号的规格来源，解析顺序见 `lookupMediaModel`。
-   * 渠道规格由拉取时的渠道目录得到：`openai_videos` 保存视频规格，`openai_images` 保存图像规格；第三方渠道的型号只在此处有规格，
+   * 渠道规格由拉取时的渠道目录得到：`openai_videos` 与 `providerc_videos` 保存视频规格（渠道与协议的对应见 `VIDEO_CHANNEL_KIND`），
+   * `openai_images` 保存图像规格；第三方渠道的型号只在此处有规格，
    * 每次拉取时按渠道目录更新。对应型号 `{ base }` 是同类别的生成目录 id，拉取或手动添加时按名称识别得到。
    */
   spec?: StoredMediaSpec
@@ -1051,11 +1052,11 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
           ? cloudMediaSpecProblem(m.spec, m.kind)
           : m.spec && typeof m.spec === 'object' && 'base' in m.spec
             ? mediaBaseProblem(m.spec, m.kind)
-            : m.kind === 'openai_videos'
-              ? channelVideoSpecProblem(m.spec)
-              : m.kind === 'openai_images'
-                ? channelImageSpecProblem(m.spec)
-                : '只有 openai_videos 与 openai_images 协议可以保存渠道规格'
+            : m.kind === 'openai_images'
+              ? channelImageSpecProblem(m.spec)
+              : MEDIA_KIND_OUTPUT[m.kind] === 'video'
+                ? channelVideoSpecProblem(m.spec, m.kind)
+                : '图像只有 openai_images 协议可以保存渠道规格，音频协议不能保存渠道规格'
         if (problem)
           problems.push(
             `${name} / ${id} 的规格不合法：${problem}。\n` +

@@ -577,7 +577,7 @@ MiniMax 官方的 `/v1/models` 只列出对话型号。拉取模型时，若接�
 
 ### 拉取模型
 
-接口页「模型」右侧的「拉取模型」读取该接口上的型号，勾选后添加。适用于 New API 部署的第三方接口：
+接口页「模型」右侧的「拉取模型」读取该接口上的型号，勾选后添加。以下适用于 New API 部署的第三方接口，服务商C AI 见下文：
 
 - 型号清单与类别来自第三方的公开计费清单 `/api/pricing`（不需要 Key）：接口类型含 `openai-video` 的为视频，
   含 `image-generation` 的为图像，其余对话类接口为对话。没有该接口时改读 `{Base URL}/models`（带 Key），
@@ -635,6 +635,27 @@ providera 与服务商B的型号不再写在代码中，模型库也不列出。
   `async: true`，参考图为 `images` 中的 base64 数据地址；返回任务号时查询 `/images/generations/tasks/{id}`，成功后读取
   `data[0].url` 下载，直接出图的型号同步返回图片。渠道按请求中的 `resolution` 计价，账本按发送的档位记账。
 
+服务商C AI（Base URL：`https://providerc.example.com/api/v1`）不是 New API，视频使用自有协议 `providerc_videos`：
+
+- **拉取**：只读取带 Key 的模型目录 `/api/v1/models`，不请求 `/api/pricing`。目录列出该 Key 可调用的全部型号与用户售价
+  （人民币，已含站点加价），来源按计费清单处理，目录中没有的已添加型号标为「已下架」。条目按 `type` 归类：`chat` 为对话，
+  只提供 Chat Completions，价格取 `inputYuanPerMillion` 等四项，`priceTiers` 为长上下文档，带 `pricingNote`（随时段变化）的价格不明；
+  `video` 为视频。图像（含 Midjourney）、Suno 与视频擦除使用各自的任务接口与询价确认流程，没有对应的生成协议，不列出。
+- **视频规格**：时长为 `durations` 或 `durationRange`，分辨率为 `resolutions`，只有一档时可能只给 `fixedResolution`，
+  素材上限为 `limits` 的 `images`、`videos`、`audios`，型号名称 `label` 保存为 `spec.label`，界面以它代替 `providerc-video-x…` 编号。
+  价格：`fixed` 按次，`resolutionFixed` 按次分档，`resolutionSecond` 按秒分档；带参考视频的秒价 `withVideo` 与基础秒价不同且型号
+  接受参考视频时价格不明，其余计费方式价格不明。`referenceRules`（最少图片数、音频须搭配图片）与 `promptMax` 不在本地校验，
+  由接口在扣费前拒绝。
+- **请求**：路径固定在站点根之下。`POST /api/v1/video/generate` 带 `X-Confirm-Charge: true` 与每次运行一个的
+  `Idempotency-Key`，被拒绝后的重试沿用同一个；字段为 `model`、`prompt`、`duration`（整数秒）、`ratio`、`resolution`。
+  有参考素材时以表单提交，素材放入可重复的文件字段 `images`、`videos`、`audios`。查询 `GET /api/v1/video/status?jobId=`：
+  `terminal: false` 为进行中，`progressPhase` 归并为排队中与生成中；`status` 为 `success` 且 `videoUrl` 非空才下载
+  `GET /api/v1/video/download?jobId=`（带 Key）；`failed`、`expired` 为终态，其余状态保留任务号供取回。
+  计量按提交的时长与分辨率，查询结果带 `job.chargedAmount`（元）时按它记账。查询不存在的任务返回 404 与
+  `{"ok":false,"error":"…"}`。2026-11-18 经本适配器实测一次：特价渠道 Wan 3.0、720p、4 秒，提交返回 202，`job.requestId`
+  即幂等键；查询 18 次均为 `terminal: false`、`progressPhase: processing`，约 5 分钟后为 `success`，`videoUrl` 为站内相对地址；
+  `chargedAmount` 自提交起即为 0.68，与 4 秒 × ¥0.17 一致；成片 1280×720、4.04 秒、含音轨。
+
 升级前已添加的 9 个渠道型号（providera 4 个、服务商B 5 个，含两个服务商B下架型号）在加载配置时补上与升级前相同的参数，
 随下一次保存落盘；重新拉取后按渠道目录更新。服务商B 007 系列在补上的参数中保留 10 段 MP3 参考音频，重新拉取后按目录改为 0。
 
@@ -671,7 +692,7 @@ providera 与服务商B的型号不再写在代码中，模型库也不列出。
 | 生成请求已发出但尚未收到任务号（全部视频协议） | 立即中止本地等待并解锁卡片；显示远端结果未知，不声称撤销成功。中止期间收到的任务号仍保留供取回 |
 | 方舟 `ark_videos` | 已接入排队任务撤销，执行中不能撤销；先查询，避免删除已结束的任务记录 |
 | 百炼 `dashscope_videos` | 已接入排队任务撤销；百炼上的万相、可灵共用此行为 |
-| OpenAI 视频兼容（含 providerb）、可灵原生、Gemini、Veo、xAI、MiniMax | 当前适配器未接入远端取消；停止键暂停本地等待并保留任务供取回，说明可能继续计费 |
+| OpenAI 视频兼容（含 providerb）、可灵原生、Gemini、Veo、xAI、MiniMax、服务商C AI | 当前适配器未接入远端取消；停止键暂停本地等待并保留任务供取回，说明可能继续计费 |
 | 方舟、百炼已执行或撤销请求异常 | 同样允许暂停本地等待，保留任务及撤销失败原因，不将停止键永久禁用 |
 | xAI | `pending` 表示仍在生成，按生成中展示；不能沿用百炼 `PENDING` 的排队含义 |
 | Veo 原生 | 长任务只有是否完成，未完成按处理中展示，不宣称已取得排队位置 |

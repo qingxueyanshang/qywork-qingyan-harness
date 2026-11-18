@@ -1,7 +1,7 @@
 /**
- * 覆盖 `index.ts`（拉取型号）：本地服务按 2026-10-21 取得的服务商B与 2026-10-27 取得的 providera 响应片段应答，
- * 核对分类、渠道规格、价格，没有计费清单时退回型号列表、按条目自带的类别归类，名称按前缀对应模型库与生成目录的型号，
- * 以及官方接口按目录补齐自有协议的生成型号。
+ * 覆盖 `index.ts`（拉取型号）与 `providerc.ts`（服务商C AI 对话价格）：本地服务按 2026-10-21 取得的服务商B、2026-10-27 取得的 providera
+ * 响应片段与 2026-11-18 取得的服务商C AI 模型目录应答，核对分类、渠道规格、价格，没有计费清单时退回型号列表、按条目自带的类别归类，
+ * 名称按前缀对应模型库与生成目录的型号，以及官方接口按目录补齐自有协议的生成型号。
  */
 
 import { afterAll, afterEach, expect, spyOn, test } from 'bun:test'
@@ -183,6 +183,62 @@ test('providera：型号列表的 parameters 给出规格，价格按计费清�
   })
   expect(seen.find((s) => s.path === '/v1/models')?.auth).toBe('Bearer sk-test')
   expect(seen.filter((s) => s.path.startsWith('/api/')).every((s) => s.auth === null)).toBe(true)
+})
+
+test('服务商C AI：只带凭证读取模型目录，对话与视频按 type 归类，图像、音频与视频擦除不列出', async () => {
+  const { seen } = site({ '/api/v1/models': fixture('providerc-models.json') }, 'providerc.example.com')
+  const target = {
+    kind: 'openai_chat_completions' as const,
+    baseUrl: 'https://providerc.example.com/api/v1',
+    apiKey: 'dza_live_test',
+  }
+  const result = await pullModels(target, signal())
+  expect(seen).toEqual([{ path: '/api/v1/models', auth: 'Bearer dza_live_test' }])
+  // 目录列出密钥可调用的全部型号，可据此标记已下架。
+  expect(result.source).toBe('pricing')
+  const count = (output: string) => result.models.filter((m) => m.output === output).length
+  expect([count('chat'), count('video'), result.models.length]).toEqual([13, 19, 32])
+  const by = new Map(result.models.map((m) => [m.id, m]))
+  // 每百万 Token 的人民币售价；`priceTiers` 为长上下文档。
+  expect(by.get('gpt-6-astra')).toMatchObject({
+    output: 'chat',
+    price: {
+      input: 4.455,
+      output: 22.275,
+      cacheRead: 0.4455,
+      cacheWrite: 5.56875,
+      currency: 'CNY',
+      longContext: [
+        {
+          thresholdTokens: 272_001,
+          input: 8.91,
+          output: 33.4125,
+          cacheRead: 0.891,
+          cacheWrite5m: 11.1375,
+          cacheWrite1h: 11.1375,
+          note: '提示词超过 272,000 token 后整条请求按 ¥8.91 / ¥33.4125（缓存 ¥0.891）计价',
+        },
+      ],
+    },
+  })
+  expect(by.get('kimi-k3')).toMatchObject({
+    price: { input: 2.7, output: 13.5, cacheRead: 0.27, cacheWrite: 0, currency: 'CNY' },
+  })
+  // 价格随调用时段变化（`pricingNote`），四项单价不足以计价。
+  expect(by.get('deepseek-v4.1-flash')).not.toHaveProperty('price')
+  expect(by.get('providerc-video-17')).toMatchObject({
+    output: 'video',
+    kind: 'providerc_videos',
+    known: true,
+    spec: { channel: 'providerc', label: '特价渠道 Seedance 2.0 mini 720p', seconds: [5, 10, 15] },
+  })
+  for (const id of ['providerc-image-01', 'providerc-MJ', 'suno', 'soundview-subtitle-remove'])
+    expect(by.has(id)).toBe(false)
+  // 接口的协议不是 Chat Completions 时，对话型号带上它支持的协议。
+  const responses = await pullModels({ ...target, kind: 'openai_responses' }, signal())
+  expect(responses.models.find((m) => m.id === 'kimi-k3')).toMatchObject({
+    kind: 'openai_chat_completions',
+  })
 })
 
 test('不是已收录的第三方接口时不读取渠道目录：返回同名字段也不当作渠道，型号不带规格', async () => {

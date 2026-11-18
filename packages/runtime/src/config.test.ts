@@ -103,9 +103,23 @@ test('保存的渠道规格不合法时阻止保存', () => {
     maxAudios: 0,
   }
   expect(bad(ok)).toEqual([])
-  expect(bad(ok, 'ark_videos')[0]).toContain(
-    '只有 openai_videos 与 openai_images 协议可以保存渠道规格',
-  )
+  expect(bad(ok, 'ark_videos')[0]).toContain('ark_videos 协议不能保存视频渠道规格')
+  expect(bad(ok, 'openai_speech')[0]).toContain('音频协议不能保存渠道规格')
+  // 渠道须属于型号的协议：服务商C AI 的规格只用于 providerc_videos，providera 与服务商B的只用于 openai_videos。
+  const providerc = {
+    channel: 'providerc',
+    label: 'Seedance 2.0 · 720p',
+    seconds: [5],
+    ratios: ['16:9'],
+    resolutions: ['720p'],
+    maxImages: 9,
+    maxVideos: 3,
+    maxAudios: 0,
+  }
+  expect(bad(providerc, 'providerc_videos')).toEqual([])
+  expect(bad(providerc)[0]).toContain('openai_videos 协议的 channel 必须是 providera、providerb 之一')
+  expect(bad(ok, 'providerc_videos')[0]).toContain('providerc_videos 协议的 channel 必须是 providerc')
+  expect(bad({ ...providerc, label: ' ' }, 'providerc_videos')[0]).toContain('label 必须是非空字符串')
   // 视频协议不接受图像规格，反之亦然。
   expect(bad(ok, 'openai_images')[0]).toContain('sizes 必须是「宽x高」的非空数组')
   expect(bad({ ...ok, multipart: true, publicUrls: true })[0]).toContain(

@@ -7,6 +7,7 @@ import {
   addPulled,
   type ClassifiedModel,
   durationSummary,
+  mediaName,
   priceSummary,
   referenceSummary,
   refreshPulled,
@@ -186,7 +187,9 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                       onChange={(e) => toggle(m.id, e.currentTarget.checked)}
                     />
                     <span class="pull-id" data-tip={m.id}>
-                      {m.id}
+                      {m.output === 'chat' || m.output === 'unknown'
+                        ? m.id
+                        : mediaName(m.id, m.spec)}
                     </span>
                   </label>
                   {/* 各列的单元格始终存在：行按共用的列宽对齐，空单元格保留该列的位置。

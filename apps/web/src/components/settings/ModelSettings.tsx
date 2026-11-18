@@ -42,6 +42,7 @@ import { LoadState } from './LoadState.tsx'
 import { MEDIA_KIND_LABEL, ModelLibrary } from './ModelLibrary.tsx'
 import { ProviderTabs } from './ProviderTabs.tsx'
 import { PullDialog } from './PullDialog.tsx'
+import { mediaName } from './pulled.ts'
 import { Field, Row } from './Row.tsx'
 
 /**
@@ -63,7 +64,11 @@ const probeKey = (provider: string, model: string) => JSON.stringify([provider, 
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
 
 /** 拉取得到渠道规格的型号，接入方式即该渠道的请求格式，名称与模型库厂商列相同。 */
-const CHANNEL_LABEL: Record<VideoChannel, string> = { providera: 'providera', providerb: 'providerb' }
+const CHANNEL_LABEL: Record<VideoChannel, string> = {
+  providera: 'providera',
+  providerb: 'providerb',
+  providerc: '服务商C AI',
+}
 
 /**
  * 模型配置分为接口与模型两层。
@@ -600,7 +605,12 @@ export function ModelSettings() {
                                     void replaceConfig((cur) => withoutMediaDefault(cur, output))
                                   }
                                 />
-                                <span class="model-id">{id}</span>
+                                <span
+                                  class="model-id"
+                                  data-tip={mediaName(id, m.spec) === id ? undefined : id}
+                                >
+                                  {mediaName(id, m.spec)}
+                                </span>
                                 <span class="model-output">{OUTPUT_LABEL[output]}</span>
                                 <Show when={m.delisted}>
                                   <span class="model-delisted">已下架</span>

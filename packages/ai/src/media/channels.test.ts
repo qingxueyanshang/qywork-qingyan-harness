@@ -1,16 +1,18 @@
 /**
  * 覆盖 `channels.ts`：渠道目录条目 → 保存的规格 → 生成规格。
- * 数据是从 providera（2026-10-27，型号列表需带凭证）与服务商B（2026-10-21）接口取得的响应片段（`../fixtures/newapi-*.json`）。
+ * 数据是从 providera（2026-10-27，型号列表需带凭证）与服务商B（2026-10-21）接口取得的响应片段（`../fixtures/newapi-*.json`），
+ * 以及 2026-11-18 带凭证取得的服务商C AI 完整模型目录（`../fixtures/providerc-models.json`）。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChannelVideoSpec } from '@qywork/core'
-import { quoteMedia } from './catalog.ts'
+import { lookupMediaModel, quoteMedia } from './catalog.ts'
 import {
   channelImageMediaSpec,
   channelMediaSpec,
+  providercVideoSpec,
   provideraVideoSpec,
   providerbImageSpec,
   providerbVideoSpec,
@@ -186,5 +188,109 @@ describe('服务商B', () => {
     expect(quoteMedia(spec, { seconds: '30' }, none)?.cost).toBeCloseTo(12)
     expect(spec.price?.cost({ seconds: 10 })).toBeNull()
     expect(spec.price?.cost({ seconds: 10, resolution: '720p' })).toBeCloseTo(6)
+  })
+})
+
+describe('服务商C AI', () => {
+  const catalog = (
+    JSON.parse(readFileSync(join(import.meta.dir, '../fixtures/providerc-models.json'), 'utf8')) as {
+      data: Record<string, unknown>[]
+    }
+  ).data
+  const entry = (id: string) => catalog.find((e) => e.id === id)!
+  const none = { images: 0, videos: 0 }
+
+  test('目录 → 保存的规格：时长写为数组或范围，只有固定分辨率时取该档，价格为人民币售价', () => {
+    // 按秒分档、时长为范围；带参考视频的秒价与基础秒价相同，型号也不接受参考视频。
+    expect(providercVideoSpec(entry('providerc-video-x8c728c9ab4b785f5'))).toEqual({
+      channel: 'providerc',
+      label: 'Seedance 2.5 满血按秒 480/720p （原生非超分）',
+      seconds: Array.from({ length: 27 }, (_, i) => i + 4),
+      ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
+      resolutions: ['480p', '720p'],
+      maxImages: 30,
+      maxVideos: 0,
+      maxAudios: 10,
+      price: { per: 'second', amount: { '480p': 0.22, '720p': 0.31 }, currency: 'CNY' },
+    })
+    // 按次、不连续的时长数组、只有 `fixedResolution`。
+    expect(providercVideoSpec(entry('providerc-video-17'))).toMatchObject({
+      seconds: [5, 10, 15],
+      resolutions: ['720p'],
+      price: { per: 'request', amount: 1.6, currency: 'CNY' },
+    })
+    // 按次分档；各档金额相同时保存为一个数。
+    expect(providercVideoSpec(entry('providerc-video-xfa7c14da94a94631'))?.price).toEqual({
+      per: 'request',
+      amount: { '480p': 5, '720p': 7 },
+      currency: 'CNY',
+    })
+    expect(providercVideoSpec(entry('providerc-video-x3951c3746331c227'))?.price).toEqual({
+      per: 'request',
+      amount: 5.775,
+      currency: 'CNY',
+    })
+    // 视频擦除、图像与对话条目不是视频型号。
+    for (const id of ['soundview-subtitle-remove', 'providerc-image-01', 'gpt-6-astra'])
+      expect(providercVideoSpec(entry(id))).toBeNull()
+    // 目录中的全部视频条目都能取得规格与价格。
+    const videos = catalog.filter((e) => e.type === 'video')
+    expect(videos.map((e) => providercVideoSpec(e)?.price !== undefined)).toEqual(
+      videos.map(() => true),
+    )
+  })
+
+  test('带参考视频的秒价与基础秒价不同、型号接受参考视频时价格不明；无法识别的计费方式价格不明', () => {
+    const wan = entry('providerc-video-x50d0e9583535a814')
+    const billing = {
+      kind: 'resolutionSecond',
+      rates: { '720p': { base: 0.17, withVideo: 0.3 }, '1080p': { base: 0.17, withVideo: 0.3 } },
+    }
+    expect(providercVideoSpec({ ...wan, billing })?.price).toBeUndefined()
+    expect(
+      providercVideoSpec({ ...wan, billing, limits: { images: 9, videos: 0, audios: 3 } })?.price,
+    ).toEqual({ per: 'second', amount: 0.17, currency: 'CNY' })
+    expect(
+      providercVideoSpec({ ...wan, billing: { kind: 'durationFixed', amounts: {} } })?.price,
+    ).toBeUndefined()
+    expect(providercVideoSpec({ ...wan, limits: {} })).toBeNull()
+  })
+
+  test('生成规格：协议、显示名称、参数名与按所选参数报价', () => {
+    const spec = channelMediaSpec(
+      'providerc-video-x8c728c9ab4b785f5',
+      providercVideoSpec(entry('providerc-video-x8c728c9ab4b785f5'))!,
+    )
+    expect(spec.kind).toBe('providerc_videos')
+    expect(spec.displayName).toBe('Seedance 2.5 满血按秒 480/720p （原生非超分）')
+    expect(spec.videoFormat).toBeUndefined()
+    expect(spec.mention).toBeUndefined()
+    expect(spec.operations).toEqual(['text_to_video', 'reference_to_video'])
+    expect(spec.inputs).toEqual({
+      maxImages: 30,
+      maxVideos: 0,
+      maxAudios: 10,
+      transport: 'multipart',
+    })
+    expect(spec.params.map((p) => [p.name, p.default])).toEqual([
+      ['duration', 4],
+      ['ratio', '16:9'],
+      ['resolution', '480p'],
+    ])
+    expect(quoteMedia(spec, { duration: 10, resolution: '720p' }, none)?.cost).toBeCloseTo(3.1)
+    // 未填写时取默认值：4 秒、480p。
+    expect(quoteMedia(spec, {}, none)?.cost).toBeCloseTo(0.88)
+    const fixed = channelMediaSpec(
+      'providerc-video-x4ede44f3ff68c869',
+      providercVideoSpec(entry('providerc-video-x4ede44f3ff68c869'))!,
+    )
+    expect(fixed.operations).toEqual(['text_to_video', 'reference_to_video', 'video_to_video'])
+    expect(quoteMedia(fixed, { duration: 15 }, none)?.cost).toBeCloseTo(3.5)
+    // 渠道规格只在所属协议上使用；其他视频协议按协议默认。
+    const saved = providercVideoSpec(entry('providerc-video-17'))!
+    expect(lookupMediaModel('providerc-video-17', 'providerc_videos', saved).displayName).toBe(
+      '特价渠道 Seedance 2.0 mini 720p',
+    )
+    expect(lookupMediaModel('providerc-video-17', 'openai_videos', saved).catalogued).toBe(false)
   })
 })
