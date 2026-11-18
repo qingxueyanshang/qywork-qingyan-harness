@@ -2218,11 +2218,9 @@ describe('画布：生成卡与生成面板', () => {
   }
 
   test.each([
-    { id: 'TTseadanco2.5-720', min: '5', defaultSeconds: '5' },
-    { id: 'TTsedanco2.5-480', min: '5', defaultSeconds: '5' },
-    { id: 'GGseadanco2.5/720', min: '5', defaultSeconds: '5' },
-    { id: 'seedance-2.5-yy-720p', min: '4', defaultSeconds: '4' },
-  ])('providera 隐藏固定参数，时长按型号规格提交：$id', async ({ id, min, defaultSeconds }) => {
+    { id: 'video-a', min: '5', defaultSeconds: '5' },
+    { id: 'video-b', min: '4', defaultSeconds: '4' },
+  ])('隐藏固定参数，时长按型号规格提交：$id', async ({ id, min, defaultSeconds }) => {
     const resolution = {
       name: 'resolution',
       label: '分辨率',
@@ -2235,7 +2233,7 @@ describe('画布：生成卡与生成面板', () => {
       ...MODELS,
       media: [
         {
-          provider: 'providera',
+          provider: 'relay',
           id,
           kind: 'openai_videos',
           output: 'video',
@@ -2328,88 +2326,93 @@ describe('画布：生成卡与生成面板', () => {
     { min: '5', max: '30', portrait: '720x1280' },
     { min: '4', max: '30', portrait: '720x1280' },
     { min: '30', max: '30', portrait: '720x1280' },
-  ])('providerb 隐藏固定清晰度，按型号保存时长与横竖屏：%j', async ({ min, max, portrait }) => {
-    const id = `sd2.5-${min}`
-    const size = {
-      name: 'size',
-      label: '尺寸',
-      type: 'string',
-      shapes: [
-        { ratio: '16:9', tier: '720P', value: '1280x720' },
-        { ratio: '9:16', tier: '720P', value: '720x1280' },
-      ],
-      default: '1280x720',
-      description: '宽x高，可选 1280x720、720x1280',
-    }
-    const catalog = {
-      ...MODELS,
-      media: [
-        {
-          ...MODELS.media[0],
-          id,
-          label: id,
-          params: [channelSeconds(Number(min), Number(max)), size],
+  ])(
+    '按尺寸给出画幅的型号隐藏固定清晰度，按型号保存时长与横竖屏：%j',
+    async ({ min, max, portrait }) => {
+      const id = `video-${min}`
+      const size = {
+        name: 'size',
+        label: '尺寸',
+        type: 'string',
+        shapes: [
+          { ratio: '16:9', tier: '720P', value: '1280x720' },
+          { ratio: '9:16', tier: '720P', value: '720x1280' },
+        ],
+        default: '1280x720',
+        description: '宽x高，可选 1280x720、720x1280',
+      }
+      const catalog = {
+        ...MODELS,
+        media: [
+          {
+            ...MODELS.media[0],
+            id,
+            label: id,
+            params: [channelSeconds(Number(min), Number(max)), size],
+          },
+        ],
+      }
+      const { host, server, refs } = await mount(
+        [
+          {
+            op: 'add_generate',
+            ref: '$g',
+            output: 'video',
+            params: {},
+          },
+        ],
+        {},
+        catalog,
+      )
+      await select(host, refs.$g!)
+      host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
+      const input = () => document.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
+      if (min === max) expect(input()).toBeNull()
+      else expect([input().min, input().max, input().value]).toEqual([min, max, min])
+      expect(
+        [...document.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
+      ).toEqual(min === max ? ['宽高比'] : ['时长', '宽高比'])
+      expect(document.querySelector('.canvas-params-panel')?.textContent).not.toMatch(/720P|480P/)
+      expect(host.querySelector('.canvas-bar .mode-chip.model')?.textContent).toContain(id)
+      const ratio = [
+        ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
+      ].find((b) => b.textContent === '9:16')!
+      ratio.click()
+      await waitFor(
+        () => {
+          const node = server.doc().nodes[0]
+          return node?.type === 'generate' && node.params.size === portrait
         },
-      ],
-    }
-    const { host, server, refs } = await mount(
-      [
-        {
-          op: 'add_generate',
-          ref: '$g',
-          output: 'video',
-          params: {},
+        () => JSON.stringify(server.ops),
+      )
+      expect(document.querySelector('.canvas-param-notice')).toBeNull()
+      if (min === max) {
+        expect(server.doc().nodes[0]).toMatchObject({ params: { size: portrait } })
+        expect(server.doc().nodes[0]).not.toHaveProperty('params.seconds')
+        return
+      }
+      input().value = '99'
+      input().dispatchEvent(new Event('change', { bubbles: true }))
+      expect(input().value).toBe(max)
+      await waitFor(
+        () => {
+          const node = server.doc().nodes[0]
+          return node?.type === 'generate' && node.params.seconds === max
         },
-      ],
-      {},
-      catalog,
-    )
-    await select(host, refs.$g!)
-    host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
-    const input = () => document.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
-    if (min === max) expect(input()).toBeNull()
-    else expect([input().min, input().max, input().value]).toEqual([min, max, min])
-    expect(
-      [...document.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
-    ).toEqual(min === max ? ['宽高比'] : ['时长', '宽高比'])
-    expect(document.querySelector('.canvas-params-panel')?.textContent).not.toMatch(/720P|480P/)
-    expect(host.querySelector('.canvas-bar .mode-chip.model')?.textContent).toContain(id)
-    const ratio = [
-      ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
-    ].find((b) => b.textContent === '9:16')!
-    ratio.click()
-    await waitFor(
-      () => {
-        const node = server.doc().nodes[0]
-        return node?.type === 'generate' && node.params.size === portrait
-      },
-      () => JSON.stringify(server.ops),
-    )
-    expect(document.querySelector('.canvas-param-notice')).toBeNull()
-    if (min === max) {
-      expect(server.doc().nodes[0]).toMatchObject({ params: { size: portrait } })
-      expect(server.doc().nodes[0]).not.toHaveProperty('params.seconds')
-      return
-    }
-    input().value = '99'
-    input().dispatchEvent(new Event('change', { bubbles: true }))
-    expect(input().value).toBe(max)
-    await waitFor(
-      () => {
-        const node = server.doc().nodes[0]
-        return node?.type === 'generate' && node.params.seconds === max
-      },
-      () => JSON.stringify(server.ops),
-    )
-    document.querySelector<HTMLButtonElement>('.canvas-stepper button[aria-label="减少"]')!.click()
-    await waitFor(
-      () => input().value === String(Number(max) - 1),
-      () => JSON.stringify(server.ops),
-    )
-    expect(server.doc().nodes[0]).toMatchObject({
-      params: { seconds: String(Number(max) - 1), size: portrait },
-    })
-  })
+        () => JSON.stringify(server.ops),
+      )
+      document
+        .querySelector<HTMLButtonElement>('.canvas-stepper button[aria-label="减少"]')!
+        .click()
+      await waitFor(
+        () => input().value === String(Number(max) - 1),
+        () => JSON.stringify(server.ops),
+      )
+      expect(server.doc().nodes[0]).toMatchObject({
+        params: { seconds: String(Number(max) - 1), size: portrait },
+      })
+    },
+  )
 
   test('固定 30 秒与 720P 不显示，底栏与面板只保留可选宽高比', async () => {
     const { host, refs } = await mount(
@@ -3005,7 +3008,7 @@ describe('画布：生成卡与生成面板', () => {
       isDefault: false,
       delisted: true,
     }
-    const live = { ...video, provider: 'relay', id: 'video-2.5', label: 'video 2.5', isDefault: false }
+    const live = { ...video, provider: 'relay', id: 'video-b', label: '视频 B', isDefault: false }
     const catalog = {
       ...MODELS,
       media: [{ ...gone, isDefault: true }, usedGone, live, { ...video, isDefault: false }],
@@ -3065,12 +3068,12 @@ describe('画布：生成卡与生成面板', () => {
     )
     expect(items().some((t) => t.includes('SX-2.5'))).toBe(false)
     expect(items()).toContain('SD-2.5（已下架）')
-    expect(items()).toContain('video 2.5')
+    expect(items()).toContain('视频 B')
     chip()!.click()
 
     await select(host, refs.$new!)
     await waitFor(
-      () => chip()?.textContent === 'video 2.5',
+      () => chip()?.textContent === '视频 B',
       () => chip()?.textContent ?? '',
     )
     host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.click()
@@ -3079,7 +3082,7 @@ describe('画布：生成卡与生成面板', () => {
       () => JSON.stringify(server.runs),
     )
     expect(server.runs[0]?.ops).toEqual([
-      { op: 'update', id: refs.$new!, provider: 'relay', model: 'video-2.5' },
+      { op: 'update', id: refs.$new!, provider: 'relay', model: 'video-b' },
     ])
   })
 

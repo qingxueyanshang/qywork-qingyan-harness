@@ -209,6 +209,33 @@ describe('生成端口', () => {
     expect(hits).toEqual([])
   })
 
+  test('已下架的型号不提交、不列给大模型；已提交的任务仍可取回', async () => {
+    const cfg = config()
+    cfg.providers.qwen!.media!['qwen-image-3.0']!.delisted = true
+    const out = await makeMediaPort(cfg).generate(call(), signal())
+    expect(out).toMatchObject({ ok: false, executed: false })
+    expect(!out.ok && out.message).toContain('已下架')
+    expect(hits).toEqual([])
+    const text = buildTailNotes({
+      workspaceRoot: '/w',
+      platform: 'win32',
+      mode: 'auto',
+      mediaModels: listMediaModels(cfg),
+    })
+      .map((n) => n.content)
+      .join('\n')
+    expect(text).not.toContain('qwen-image-3.0')
+    expect(text).toContain('wan2.7-image')
+    const resumed = await makeMediaPort(cfg).generate(
+      call({
+        resumeImageResult: { sources: [{ url: `http://127.0.0.1:${server.port}/files/out.jpg` }] },
+      }),
+      signal(),
+    )
+    expect(resumed).toMatchObject({ ok: true, files: [{ bytes: JPEG }] })
+    expect(hits).toEqual([])
+  })
+
   test('接口报错时附带模型名与接口原文', async () => {
     reply = () =>
       Response.json({ code: 'InvalidParameter', message: 'size 不合法' }, { status: 400 })
@@ -217,7 +244,7 @@ describe('生成端口', () => {
   })
 
   /**
-   * 原始失败形状：云端型号报错时消息为「qywork / providerc-video-x8c728c9ab4b785f5：HTTP 400 …」，型号 id 含上游渠道的标识。
+   * 原始失败形状：云端型号报错时消息为「qywork / <型号 id>：HTTP 400 …」，型号 id 含上游的标识。
    * 接口下保存了显示名称时，报错与可选模型只写该名称，不出现型号 id。
    */
   test('保存了显示名称的模型：报错与可选模型只写该名称，不出现型号 id', async () => {
@@ -1052,7 +1079,7 @@ describe('生成模型协议映射', () => {
     expect(hits).toEqual(['/v1/videos', '/v1/videos/wan-task', '/v1/videos/wan-task/content'])
   })
 
-  test('Seedance 2.5 的单独音频能到达第三方，2.0 的同类输入在发送前拒绝', async () => {
+  test('Seedance 2.5 的单独音频能到达第三方接口，2.0 的同类输入在发送前拒绝', async () => {
     let body: Record<string, unknown> = {}
     reply = async (req) => {
       body = (await req.json()) as Record<string, unknown>
@@ -1121,7 +1148,7 @@ describe('生成模型协议映射', () => {
     expect(hits).toHaveLength(0)
   })
 
-  test('Veo 第三方传递首帧和参数，千问多图兼容请求使用 JSON 并保留所有参考图', async () => {
+  test('Veo 经第三方接口传递首帧和参数，千问多图兼容请求使用 JSON 并保留所有参考图', async () => {
     let body: Record<string, unknown> = {}
     reply = async (req) => {
       body = (await req.json()) as Record<string, unknown>

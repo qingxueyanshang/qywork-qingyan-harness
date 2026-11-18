@@ -1,8 +1,42 @@
 /** 覆盖 `units.ts`：按计费单位从请求参数取得计量、按档位取单价，以及上架时的校验。 */
 
 import { expect, test } from 'bun:test'
-import type { ChannelVideoSpec } from '@qywork/core'
+import { registerMediaChannel } from './extension.ts'
 import { meterMedia, unitAmount, unitProblem } from './units.ts'
+
+/** 登记的渠道：时长参数为字符串，档位由尺寸决定（`resolutionBySize`）。 */
+registerMediaChannel({
+  id: 'units-example',
+  spec: (id, kind) =>
+    kind === 'openai_videos'
+      ? {
+          id,
+          displayName: id,
+          vendor: null,
+          kind,
+          operations: ['text_to_video'],
+          inputs: { maxImages: 0, maxVideos: 0, transport: 'json' },
+          params: [
+            {
+              name: 'seconds',
+              type: 'enum',
+              values: ['5', '10'],
+              default: '5',
+              description: '时长',
+            },
+            {
+              name: 'size',
+              type: 'string',
+              shapes: [{ value: '1280x720' }, { value: '1080x1920' }],
+              default: '1280x720',
+              description: '尺寸',
+            },
+          ],
+          resolutionBySize: { '1280x720': '720p', '1080x1920': '1080p' },
+          catalogued: true,
+        }
+      : undefined,
+})
 
 const request = (params: Record<string, unknown>, prompt = '') => ({ params, prompt })
 
@@ -30,37 +64,14 @@ test('按秒：时长取协议的时长参数；按档位定价时取分辨率�
   expect(meterMedia(veo, 'second', 100, request({ durationSeconds: 6 }))?.units).toBe(6)
 })
 
-test('第三方渠道规格：时长参数为字符串，按渠道规格的默认值计量', () => {
-  const spec: ChannelVideoSpec = {
-    channel: 'providera',
-    seconds: [5, 10],
-    ratios: ['16:9'],
-    resolutions: ['720p', '1080p'],
-    maxImages: 1,
-    maxVideos: 0,
-    maxAudios: 0,
+test('登记的渠道规格：时长参数为字符串，档位由尺寸决定，按规格的默认值计量与上架', () => {
+  const model = {
+    id: 'video-a',
+    kind: 'openai_videos' as const,
+    spec: { channel: 'units-example' },
   }
-  const model = { id: 'relay-video', kind: 'openai_videos' as const, spec }
   expect(meterMedia(model, 'second', 1000, request({}))).toEqual({ units: 5 })
   expect(meterMedia(model, 'second', 1000, request({ seconds: '10' }))).toEqual({ units: 10 })
-  expect(meterMedia(model, 'request', { '720p': 7, '1080p': 9 }, request({}))).toEqual({
-    units: 1,
-    resolution: '720p',
-  })
-})
-
-test('档位由尺寸决定的渠道规格：按尺寸所属的档位计量与上架', () => {
-  const spec: ChannelVideoSpec = {
-    channel: 'providerb',
-    seconds: [5, 10],
-    ratios: ['16:9', '9:16'],
-    resolutions: ['720p', '1080p'],
-    sizes: { '720p': [1280, 720], '1080p': [1920, 1080] },
-    maxImages: 1,
-    maxVideos: 0,
-    maxAudios: 0,
-  }
-  const model = { id: 'relay-video', kind: 'openai_videos' as const, spec }
   const prices = { '720p': 4_900_000, '1080p': 6_000_000 }
   expect(unitProblem(model, 'video', 'request', prices)).toBeNull()
   expect(unitProblem(model, 'video', 'request', { '720p': 1 })).toBe('缺少分辨率档位的单价：1080p')

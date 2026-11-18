@@ -1,16 +1,9 @@
 /**
- * 拉取结果写入配置：刷新接口上已添加型号的规格、价格与已下架标记；添加用户选定的型号。
+ * 拉取结果写入配置：刷新接口上已添加型号的价格与已下架标记；添加用户选定的型号。
  * 两个函数都只计算新的配置对象，由调用方经 `replaceConfig` 保存；没有变化时返回 null。
  */
 
-import {
-  channelSpecOf,
-  defaultMediaKind,
-  formatMoney,
-  MEDIA_KIND_OUTPUT,
-  type MediaOutput,
-  type StoredMediaSpec,
-} from '@qywork/core'
+import { defaultMediaKind, formatMoney, type MediaOutput, mediaKindOutput } from '@qywork/core'
 import type {
   MediaLibraryModel,
   PulledModel,
@@ -21,8 +14,8 @@ import type {
 } from '../../lib/store/index.ts'
 
 /**
- * 拉取结果中有的型号：对话型号更新价格（价格不明时删除旧价格），生成型号在取得规格时更新规格，二者都清除已下架标记。
- * 拉取结果中没有的型号：只有来源是第三方的计费清单时标记已下架，型号列表不完整，不据此标记。
+ * 拉取结果中有的型号：对话型号更新价格（价格不明时删除旧价格），对话与生成型号都清除已下架标记。
+ * 拉取结果中没有的型号：只有来源是第三方接口的计费清单时标记已下架，型号列表不完整，不据此标记。
  */
 export function refreshPulled(
   cur: RedactedConfig,
@@ -46,15 +39,9 @@ export function refreshPulled(
   )
   const media = Object.fromEntries(
     Object.entries(owner.media ?? {}).map(([id, m]): [string, RedactedMediaModel] => {
-      const hit = pulled.get(id)
       const { delisted: _delisted, ...rest } = m
-      if (!hit) return [id, complete ? { ...m, delisted: true } : m]
-      return [
-        id,
-        hit.output !== 'chat' && hit.output !== 'unknown' && hit.spec
-          ? { ...rest, spec: hit.spec }
-          : rest,
-      ]
+      if (!pulled.has(id)) return [id, complete ? { ...m, delisted: true } : m]
+      return [id, rest]
     }),
   )
   const next = {
@@ -103,7 +90,7 @@ export function withBase(
 }
 
 /**
- * 添加选定的型号。对话型号写入价格，对应型号写入模型库覆盖（「型号 × 协议」）；生成型号写入协议与规格，
+ * 添加选定的型号。对话型号写入价格，对应型号写入模型库覆盖（「型号 × 协议」）；生成型号写入协议，
  * 对应型号写入 `spec: { base }`。
  * 接口原本没有对话型号时，第一个添加的对话型号成为默认模型；某一类生成没有默认模型时，第一个添加的成为默认。
  */
@@ -131,9 +118,8 @@ export function addPulled(
       }
       continue
     }
-    const spec = model.spec ?? (base ? { base } : undefined)
-    media[model.id] = { kind: model.kind, ...(spec ? { spec } : {}) }
-    const output = MEDIA_KIND_OUTPUT[model.kind]
+    media[model.id] = { kind: model.kind, ...(base ? { spec: { base } } : {}) }
+    const output = mediaKindOutput(model.kind)
     mediaDefaults[output] ??= { provider, model: model.id }
   }
   if (
@@ -157,31 +143,7 @@ export function addPulled(
   }
 }
 
-/**
- * 生成型号的显示名称：渠道规格带目录中的型号名称时取该名称（服务商C AI 的型号 id 是 `providerc-video-x…` 形式的渠道编号），
- * 否则为 id。拉取对话框与接口页的型号行共用。
- */
-export function mediaName(id: string, spec: StoredMediaSpec | undefined): string {
-  const channel = channelSpecOf(spec)
-  return (channel && 'label' in channel && channel.label) || id
-}
-
-/** 可选时长。没有渠道规格或是图像规格时为空串。 */
-export function durationSummary(model: PulledModel): string {
-  if (
-    model.output === 'chat' ||
-    model.output === 'unknown' ||
-    !model.spec ||
-    !('seconds' in model.spec)
-  )
-    return ''
-  const { seconds } = model.spec
-  const first = seconds[0]!
-  const last = seconds[seconds.length - 1]!
-  return first === last ? `${first}秒` : `${first}–${last}秒`
-}
-
-/** 参考素材上限的写法，如「图≤30、视频≤10、音频≤10」；为 0 或省略的项不写。拉取对话框与账号窗口共用。 */
+/** 参考素材上限的写法，如「图≤30、视频≤10、音频≤10」；为 0 或省略的项不写。 */
 export function referenceLimits(l: {
   maxImages?: number
   maxVideos?: number
@@ -196,34 +158,15 @@ export function referenceLimits(l: {
     .join('、')
 }
 
-/** 参考素材上限，写法与模型库表格相同。没有渠道规格时为空串。 */
-export function referenceSummary(model: PulledModel): string {
-  if (model.output === 'chat' || model.output === 'unknown' || !model.spec) return ''
-  return referenceLimits(model.spec)
-}
-
 /**
- * 价格摘要：对话为每百万 Token 的输入与输出（有分时段折扣时为高峰价并注明折扣），
- * 生成为每次、每秒或每张（按分辨率定价时逐档列出）。价格不明时为空串。
+ * 对话型号的价格摘要：每百万 Token 的输入与输出（有分时段折扣时为高峰价并注明折扣）。生成型号与价格不明时为空串。
  */
 export function priceSummary(model: PulledModel): string {
-  if (model.output === 'chat') {
-    const price = model.price
-    if (!price) return ''
-    if ('scale' in price) return `官方价 × ${price.scale}`
-    const discount = price.offPeak
-      ? ` · 空闲时段 ${Math.round(price.offPeak.rate * 100) / 10} 折`
-      : ''
-    return `输入 ${formatMoney(price.input, price.currency)} · 输出 ${formatMoney(price.output, price.currency)} /百万${discount}`
-  }
-  if (model.output === 'unknown') return ''
-  const price = model.spec?.price
-  if (!price) return ''
-  const unit = model.output === 'image' ? '张' : price.per === 'request' ? '次' : '秒'
-  if (typeof price.amount === 'number')
-    return `${formatMoney(price.amount, price.currency)}/${unit}`
-  const tiers = Object.entries(price.amount).map(
-    ([r, a]) => `${r} ${formatMoney(a, price.currency)}`,
-  )
-  return `${tiers.join(' · ')} /${unit}`
+  if (model.output !== 'chat' || !model.price) return ''
+  const price = model.price
+  if ('scale' in price) return `官方价 × ${price.scale}`
+  const discount = price.offPeak
+    ? ` · 空闲时段 ${Math.round(price.offPeak.rate * 100) / 10} 折`
+    : ''
+  return `输入 ${formatMoney(price.input, price.currency)} · 输出 ${formatMoney(price.output, price.currency)} /百万${discount}`
 }

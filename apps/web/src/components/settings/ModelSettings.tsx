@@ -1,15 +1,13 @@
 import {
   catalogPrefixOf,
-  channelSpecOf,
   identifyMediaModel,
-  MEDIA_KIND_OUTPUT,
   type MediaKind,
   type MediaOutput,
   matchesToolCallCheck,
+  mediaKindOutput,
   PROVIDER_KINDS,
   type ProviderKind,
   type ToolCallCheck,
-  type VideoChannel,
 } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import { composing } from '../../lib/input/composing.ts'
@@ -42,7 +40,6 @@ import { LoadState } from './LoadState.tsx'
 import { MEDIA_KIND_LABEL, ModelLibrary } from './ModelLibrary.tsx'
 import { ProviderTabs } from './ProviderTabs.tsx'
 import { PullDialog } from './PullDialog.tsx'
-import { mediaName } from './pulled.ts'
 import { Field, Row } from './Row.tsx'
 
 /**
@@ -62,13 +59,6 @@ const probeKey = (provider: string, model: string) => JSON.stringify([provider, 
 
 /** 生成模型行上的类别名。同一列中既有对话模型的「默认」，也有各类生成模型的「默认」，缺少类别名时无法区分各自的用途。 */
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
-
-/** 拉取得到渠道规格的型号，接入方式即该渠道的请求格式，名称与模型库厂商列相同。 */
-const CHANNEL_LABEL: Record<VideoChannel, string> = {
-  providera: 'providera',
-  providerb: 'providerb',
-  providerc: '服务商C AI',
-}
 
 /**
  * 模型配置分为接口与模型两层。
@@ -575,7 +565,7 @@ export function ModelSettings() {
 
                       <For each={Object.entries(p().media ?? {})}>
                         {([id, m]) => {
-                          const output = MEDIA_KIND_OUTPUT[m.kind]
+                          const output = mediaKindOutput(m.kind)
                           const kinds = () => {
                             const spec = modelCatalog()?.mediaLibrary.find(
                               (entry) => entry.id === id,
@@ -605,62 +595,46 @@ export function ModelSettings() {
                                     void replaceConfig((cur) => withoutMediaDefault(cur, output))
                                   }
                                 />
-                                <span
-                                  class="model-id"
-                                  data-tip={mediaName(id, m.spec) === id ? undefined : id}
-                                >
-                                  {mediaName(id, m.spec)}
-                                </span>
+                                <span class="model-id">{id}</span>
                                 <span class="model-output">{OUTPUT_LABEL[output]}</span>
                                 <Show when={m.delisted}>
                                   <span class="model-delisted">已下架</span>
                                 </Show>
-                                <Show
-                                  when={channelSpecOf(m.spec)}
-                                  fallback={
-                                    <label class="model-access">
-                                      接入方式
-                                      <select
-                                        aria-label={`接入方式 ${id}`}
-                                        value={m.kind}
-                                        disabled={configBusy() || kinds().length < 2}
-                                        onChange={(e) => {
-                                          const provider = name()
-                                          const kind = e.currentTarget.value as MediaKind
-                                          void replaceConfig((cur) => {
-                                            const owner = cur.providers[provider]
-                                            if (!owner?.media?.[id]) return null
-                                            return {
-                                              ...cur,
-                                              providers: {
-                                                ...cur.providers,
-                                                [provider]: {
-                                                  ...owner,
-                                                  media: {
-                                                    ...owner.media,
-                                                    [id]: { ...owner.media[id], kind },
-                                                  },
-                                                },
+                                <label class="model-access">
+                                  接入方式
+                                  <select
+                                    aria-label={`接入方式 ${id}`}
+                                    value={m.kind}
+                                    disabled={configBusy() || kinds().length < 2}
+                                    onChange={(e) => {
+                                      const provider = name()
+                                      const kind = e.currentTarget.value as MediaKind
+                                      void replaceConfig((cur) => {
+                                        const owner = cur.providers[provider]
+                                        if (!owner?.media?.[id]) return null
+                                        return {
+                                          ...cur,
+                                          providers: {
+                                            ...cur.providers,
+                                            [provider]: {
+                                              ...owner,
+                                              media: {
+                                                ...owner.media,
+                                                [id]: { ...owner.media[id], kind },
                                               },
-                                            }
-                                          })
-                                        }}
-                                      >
-                                        <For each={kinds()}>
-                                          {(kind) => (
-                                            <option value={kind}>{MEDIA_KIND_LABEL[kind]}</option>
-                                          )}
-                                        </For>
-                                      </select>
-                                    </label>
-                                  }
-                                >
-                                  {(spec) => (
-                                    <span class="model-access">
-                                      接入方式 {CHANNEL_LABEL[spec().channel]}
-                                    </span>
-                                  )}
-                                </Show>
+                                            },
+                                          },
+                                        }
+                                      })
+                                    }}
+                                  >
+                                    <For each={kinds()}>
+                                      {(kind) => (
+                                        <option value={kind}>{MEDIA_KIND_LABEL[kind]}</option>
+                                      )}
+                                    </For>
+                                  </select>
+                                </label>
                                 {/* 生成模型不提供「检测」：每次探测都会实际执行一次生成并计费。 */}
                                 <button
                                   class="icon-btn"
@@ -766,7 +740,7 @@ function firstMediaRef(
 ): { provider: string; model: string } | null {
   for (const [provider, p] of Object.entries(providers)) {
     for (const [model, m] of Object.entries(p.media ?? {})) {
-      if (MEDIA_KIND_OUTPUT[m.kind] === output) return { provider, model }
+      if (mediaKindOutput(m.kind) === output) return { provider, model }
     }
   }
   return null

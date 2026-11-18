@@ -275,7 +275,7 @@ const MEDIA_TYPE: Record<MediaInput['role'], string> = {
   audio: 'reference_audio',
 }
 
-/** 原生与第三方共用百炼的素材类型及参数层级，地址由各自的传输提供。 */
+/** 原生接口与第三方接口共用百炼的素材类型及参数层级，地址由各自的传输提供。 */
 export async function dashScopeVideoPayload(
   req: MediaRequest,
   spec: MediaModelSpec,

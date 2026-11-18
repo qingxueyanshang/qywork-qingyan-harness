@@ -82,7 +82,7 @@ export type TaskState<T = TaskOutput> =
 export type TaskPhase = 'queued' | 'running'
 
 const PHASES: Record<string, TaskPhase> = {
-  // 百炼 PENDING / RUNNING，方舟与 OpenAI queued，可灵 submitted / processing，providerb pending；
+  // 百炼 PENDING / RUNNING，方舟与 OpenAI queued，可灵 submitted / processing，第三方接口 pending；
   // xAI 的 pending 由适配器按其含义转换为 processing，不能共用百炼的排队语义。
   // Gemini 交互 queued / in_progress。Veo 未完成时只有 processing，无法区分排队，按生成中处理。
   pending: 'queued',

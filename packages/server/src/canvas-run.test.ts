@@ -966,8 +966,8 @@ describe('画布运行：文本卡引用', () => {
   })
 
   /**
-   * 原始失败形状：视频卡改用 providera（声明 @ImageN）后，提示词与文本卡中仍是 @图片N、参照图片N，
-   * 编号与连线一致，每张卡片须逐处改写后才能运行。更换模型后读取画布不标记问题，发送时按 providera 的写法改写，卡片与文件不改写。
+   * 原始失败形状：视频卡改用声明 @ImageN 的模型后，提示词与文本卡中仍是 @图片N、参照图片N，
+   * 编号与连线一致，每张卡片须逐处改写后才能运行。更换模型后读取画布不标记问题，发送时按新模型的写法改写，卡片与文件不改写。
    */
   test('更换模型后手写的素材编号按新模型的写法发送：读取画布不标记问题，卡片与文本卡不改写', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-canvas-run-'))
@@ -993,16 +993,14 @@ describe('画布运行：文本卡引用', () => {
     const svc = new CanvasService({
       publish: () => {},
       mentionStyleOf: (_o, pick) =>
-        pick?.provider === 'providera' ? { image: '@Image{n}' } : { image: '@图片{n}' },
+        pick?.provider === 'relay' ? { image: '@Image{n}' } : { image: '@图片{n}' },
     })
     const ws = { id: 'ws1', root }
     const v = r.refs.$v!
     const before = await svc.docs.read(root, PATH)
     expect(before.relabels).toBeUndefined()
     expect(before.mentions).toEqual({ [v]: { image: '@图片{n}' } })
-    await svc.docs.apply(root, PATH, [
-      { op: 'update', id: v, provider: 'providera', model: 'TTseadanco2.5-720' },
-    ])
+    await svc.docs.apply(root, PATH, [{ op: 'update', id: v, provider: 'relay', model: 'video-a' }])
     const after = await svc.docs.read(root, PATH)
     expect(after.references).toBeUndefined()
     expect(after.relabels).toEqual({ [v]: ['@图片1→@Image1', '图片1→Image1'] })

@@ -72,7 +72,7 @@ describe('上下文末尾注记', () => {
       ...base,
       models: [
         { provider: '智谱', model: 'glm-5.3-flash' },
-        { provider: '官方/第三方', model: 'qwen/model-3.8' },
+        { provider: '官方/兼容', model: 'qwen/model-3.8' },
         { provider: '接口甲', model: 'shared-model' },
         { provider: '接口乙', model: 'shared-model' },
       ],
@@ -81,7 +81,7 @@ describe('上下文末尾注记', () => {
 
     expect(models).toContain('provider 参数 `智谱`；model 参数 `glm-5.3-flash`')
     // 两列分开后，即使接口名与模型 id 含有斜杠，也无需解析分隔符。
-    expect(models).toContain('provider 参数 `官方/第三方`；model 参数 `qwen/model-3.8`')
+    expect(models).toContain('provider 参数 `官方/兼容`；model 参数 `qwen/model-3.8`')
     // 同名模型由 provider 列区分，model 字段仍是配置中的原始 id。
     expect(models).toContain('provider 参数 `接口甲`；model 参数 `shared-model`')
     expect(models).toContain('provider 参数 `接口乙`；model 参数 `shared-model`')

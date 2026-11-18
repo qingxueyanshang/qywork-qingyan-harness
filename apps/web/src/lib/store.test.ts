@@ -3529,7 +3529,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
 describe('读取配置后模型目录随之重新计算', () => {
   test('外部配置增删模型后，设置与画布使用同一份最新模型列表', async () => {
     const originalApi = client.api
-    let diskIds = ['seedance2.5-aa-count', 'GGsedanco2.5/480']
+    let diskIds = ['video-a', 'video-b']
     let adoptedIds = [...diskIds]
     client.api = async <T>(path: string): Promise<T> => {
       if (path === '/api/config') {
@@ -3537,7 +3537,7 @@ describe('读取配置后模型目录随之重新计算', () => {
         return {
           config: {
             providers: {
-              providera: {
+              relay: {
                 kind: 'openai_chat_completions',
                 hasApiKey: true,
                 models: {},
@@ -3553,7 +3553,7 @@ describe('读取配置后模型目录随之重新计算', () => {
       if (path === '/api/models') {
         return {
           providers: [],
-          media: adoptedIds.map((id) => ({ provider: 'providera', id, output: 'video' })),
+          media: adoptedIds.map((id) => ({ provider: 'relay', id, output: 'video' })),
           mediaLibrary: [],
           library: [],
         } as T
@@ -3563,14 +3563,9 @@ describe('读取配置后模型目录随之重新计算', () => {
     try {
       await reloadModelCatalog()
       expect(modelCatalog()?.media.map((m) => m.id)).toEqual(diskIds)
-      diskIds = [
-        'seedance-2.5-yy-720p',
-        'GGseadanco2.5/720',
-        'TTseadanco2.5-720',
-        'TTsedanco2.5-480',
-      ]
+      diskIds = ['video-c', 'video-d', 'video-e', 'video-f']
       const fresh = await loadServerConfig()
-      expect(Object.keys(fresh.config.providers.providera!.media!)).toEqual(diskIds)
+      expect(Object.keys(fresh.config.providers.relay!.media!)).toEqual(diskIds)
       expect(modelCatalog()?.media.map((m) => m.id)).toEqual(diskIds)
     } finally {
       client.api = originalApi

@@ -2302,7 +2302,7 @@ describe('画布：文本卡引用', () => {
   })
 
   /**
-   * 原始失败形状：视频卡从声明「@图片N」的模型切换到 providera（声明「@ImageN」）后，文本卡中仍写 @图片1、参照图片1，
+   * 原始失败形状：视频卡从声明「@图片N」的模型切换到声明「@ImageN」的模型后，文本卡中仍写 @图片1、参照图片1，
    * 编号与连线数量一致，每张卡与其文本卡须逐处改写后才能运行。编译时按所选模型的写法改写，运行前核对不报告写法。
    */
   test('编译：手写的素材编号按所选模型的写法发送，编号不变；「如图1」、前接字母的英文写法与未登记写法的模型保持原文', () => {
@@ -2311,31 +2311,31 @@ describe('画布：文本卡引用', () => {
       { op: 'connect', from: '小满', to: '1-2 入梦', role: 'reference' },
     ])
     const written = '@图片1用于阿七的脸，参照图片1的阿七推门，如图1所示。'
-    const providerd = new Map([['a1', written]])
-    const providera = { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' }
-    expect(compilePrompt(doc, 'a3', providera, providerd)).toBe(
+    const written1 = new Map([['a1', written]])
+    const english = { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' }
+    expect(compilePrompt(doc, 'a3', english, written1)).toBe(
       '@Image1用于阿七的脸，参照Image1的阿七推门，如图1所示。',
     )
-    expect(promptInputProblems(doc, 'a3', providerd)).toEqual([])
+    expect(promptInputProblems(doc, 'a3', written1)).toEqual([])
     // 改写清单与发送的文字出自同一次改写：读取画布时告知 agent 与界面。
-    expect(promptRelabels(doc, 'a3', providera, providerd)).toEqual(['@图片1→@Image1', '图片1→Image1'])
-    expect(promptRelabels(doc, 'a3', {}, providerd)).toEqual([])
-    expect(relabelInputs(written, providera)).toEqual({
+    expect(promptRelabels(doc, 'a3', english, written1)).toEqual(['@图片1→@Image1', '图片1→Image1'])
+    expect(promptRelabels(doc, 'a3', {}, written1)).toEqual([])
+    expect(relabelInputs(written, english)).toEqual({
       text: '@Image1用于阿七的脸，参照Image1的阿七推门，如图1所示。',
       changes: ['@图片1→@Image1', '图片1→Image1'],
     })
     const native = new Map([['a1', '@Image 1用于阿七的脸，参照Image1的阿七，MyImage1不是编号。']])
-    expect(compilePrompt(doc, 'a3', providera, native)).toBe(
+    expect(compilePrompt(doc, 'a3', english, native)).toBe(
       '@Image1用于阿七的脸，参照Image1的阿七，MyImage1不是编号。',
     )
     expect(compilePrompt(doc, 'a3', { image: '@图片{n}' }, native)).toBe(
       '@图片1用于阿七的脸，参照图片1的阿七，MyImage1不是编号。',
     )
     // 万相声明「图{n}」：带 @ 与不带 @ 的编号都改为「图1」。
-    expect(compilePrompt(doc, 'a3', { image: '图{n}' }, providerd)).toBe(
+    expect(compilePrompt(doc, 'a3', { image: '图{n}' }, written1)).toBe(
       '图1用于阿七的脸，参照图1的阿七推门，如图1所示。',
     )
-    expect(compilePrompt(doc, 'a3', {}, providerd)).toBe(written)
+    expect(compilePrompt(doc, 'a3', {}, written1)).toBe(written)
   })
 
   test('运行前核对：引用展开后的文本仍含 @[…] 时报告', () => {

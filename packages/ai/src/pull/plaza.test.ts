@@ -1,6 +1,6 @@
 /**
  * 覆盖 `plaza.ts`（模型广场的价格折算），以及 `index.ts` 在没有计费清单时把广场价格附到型号列表中的对话型号。
- * 广场数据的形状取自 2026-11-04 读取的 providere.example.com `/api/v1/model-plaza`，价格为每 token 的美元基础价。
+ * 广场数据的形状取自 2026-11-04 读取的某第三方接口的 `/api/v1/model-plaza`，价格为每 token 的美元基础价。
  */
 
 import { afterAll, expect, test } from 'bun:test'

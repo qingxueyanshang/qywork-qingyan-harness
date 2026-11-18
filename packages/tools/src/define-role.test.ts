@@ -152,12 +152,12 @@ describe('创建角色', () => {
   test('配置中的接口与模型作为两个字段校验并落盘', async () => {
     const root = await ws()
     const res = await defineRoleTool.fn(
-      { ...role, provider: '智谱/第三方', model: 'glm/model-5.3-flash' },
-      withModels(root, [{ provider: '智谱/第三方', model: 'glm/model-5.3-flash' }]),
+      { ...role, provider: '智谱/兼容', model: 'glm/model-5.3-flash' },
+      withModels(root, [{ provider: '智谱/兼容', model: 'glm/model-5.3-flash' }]),
     )
     expect(res.status).toBe('success')
     const doc = JSON.parse(await readFile(join(root, '.qy', 'team.json'), 'utf8'))
-    expect(doc.roles[0].provider).toBe('智谱/第三方')
+    expect(doc.roles[0].provider).toBe('智谱/兼容')
     expect(doc.roles[0].model).toBe('glm/model-5.3-flash')
   })
 

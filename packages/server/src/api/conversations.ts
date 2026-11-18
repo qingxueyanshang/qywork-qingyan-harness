@@ -33,7 +33,7 @@ import type {
   RunId,
   ToolSchemaMode,
 } from '@qywork/core'
-import { MEDIA_KIND_OUTPUT, RESEND_LIMIT } from '@qywork/core'
+import { mediaKindOutput, RESEND_LIMIT } from '@qywork/core'
 import {
   catalogKey,
   compactPercentFor,
@@ -140,7 +140,7 @@ export interface MediaModelRow {
   output: MediaOutput
   /**
    * 接口下该模型保存的显示名称（`StoredMediaModel.displayName`）；没有时为 `lookupMediaModel` 给出的显示名
-   * （生成目录或渠道规格），未收录时为 id 本身。
+   * （生成目录），未收录时为 id 本身。
    */
   label: string
   operations: MediaOperation[]
@@ -421,7 +421,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       vendor: spec.vendor,
       kind: spec.kind,
       kinds: mediaKindsOf(spec),
-      output: MEDIA_KIND_OUTPUT[spec.kind],
+      output: mediaKindOutput(spec.kind),
       operations: [...spec.operations],
       maxImages: spec.inputs.maxImages,
       maxVideos: spec.inputs.maxVideos,

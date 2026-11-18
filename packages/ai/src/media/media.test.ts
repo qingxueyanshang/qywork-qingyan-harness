@@ -9,8 +9,8 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
-import { activeMediaParams, MEDIA_KINDS, type MediaKind } from '@qywork/core'
-import { findMediaModel, lookupMediaModel, mediaCatalog, mediaCost, quoteMedia } from './catalog.ts'
+import { activeMediaParams, BUILTIN_MEDIA_KINDS, type MediaKind } from '@qywork/core'
+import { findMediaModel, lookupMediaModel, mediaCost, quoteMedia } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
 import { validateMediaCall } from './params.ts'
 import { MediaError, type MediaUsage } from './types.ts'
@@ -68,11 +68,7 @@ beforeEach(() => {
 const signal = () => new AbortController().signal
 
 describe('目录查找', () => {
-  test('服务商D渠道与专用协议已移除，其他视频模型仍可用', () => {
-    expect(MEDIA_KINDS).not.toContain('binguo_videos')
-    expect(findMediaModel('Seedance 2.5 720p')).toBeUndefined()
-    expect(mediaCatalog().some((m) => m.vendor === '服务商D')).toBe(false)
-    expect(findMediaModel('seedance2.5-V')).toBeUndefined()
+  test('按 id 查找目录条目，不区分协议', () => {
     expect(findMediaModel('doubao-seedance-2-5-260628')?.kind).toBe('ark_videos')
   })
 
@@ -221,7 +217,7 @@ describe('界面参数', () => {
   }
 
   test('字符串参数提供选项、尺寸表，或受长度限制的高级文本输入', () => {
-    for (const kind of MEDIA_KINDS) {
+    for (const kind of BUILTIN_MEDIA_KINDS) {
       for (const p of lookupMediaModel('some-relay-model', kind).params) {
         if (p.label && p.type === 'string')
           expect(p.presets ?? p.shapes ?? (p.advanced && p.maxLength)).toBeTruthy()
@@ -387,7 +383,7 @@ describe('openai_images', () => {
     expect(out.files).toEqual([{ bytes: JPEG, mime: 'image/jpeg' }])
   })
 
-  // 2026-11-10 providerg.example.com 转发 qwen-image-3.0-pro 的响应形状：两个字段都写，b64_json 为空串，图片在 url。
+  // 第三方接口转发 qwen-image-3.0-pro 的响应形状：两个字段都写，b64_json 为空串，图片在 url。
   test('b64_json 为空串时按 url 下载，不当作空图片', async () => {
     reply = () =>
       Response.json({
@@ -829,7 +825,7 @@ describe('计价', () => {
     expect(cost('gpt-4o-mini-tts', 'openai_speech', {}).cost).toBe(0)
   })
 
-  /** 经第三方接口调用的价格以第三方接口为准，回退时不保留目录中的官方价。 */
+  /** 经第三方接口调用的价格以该接口为准，回退时不保留目录中的官方价。 */
   test('按 id 回退到其他协议时不带单价', () => {
     expect(lookupMediaModel('doubao-seedance-2-5-260628', 'openai_videos').price).toBeUndefined()
   })

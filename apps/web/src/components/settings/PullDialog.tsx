@@ -6,10 +6,7 @@ import { Skeleton } from './LoadState.tsx'
 import {
   addPulled,
   type ClassifiedModel,
-  durationSummary,
-  mediaName,
   priceSummary,
-  referenceSummary,
   refreshPulled,
   withBase,
   withCategory,
@@ -187,15 +184,11 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                       onChange={(e) => toggle(m.id, e.currentTarget.checked)}
                     />
                     <span class="pull-id" data-tip={m.id}>
-                      {m.output === 'chat' || m.output === 'unknown'
-                        ? m.id
-                        : mediaName(m.id, m.spec)}
+                      {m.id}
                     </span>
                   </label>
                   {/* 各列的单元格始终存在：行按共用的列宽对齐，空单元格保留该列的位置。
                       类别、对应型号只在未添加时出现，与「已添加」不会同时出现，共用最后一列。 */}
-                  <span class="pull-cell">{durationSummary(m)}</span>
-                  <span class="pull-cell">{referenceSummary(m)}</span>
                   <span class="pull-cell">{priceSummary(m)}</span>
                   <Switch fallback={<span class="pull-cell" />}>
                     <Match when={done()}>

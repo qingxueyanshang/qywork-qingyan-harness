@@ -49,7 +49,7 @@ const ROLE: Record<MediaInput['role'], string> = {
   audio: 'reference_audio',
 }
 
-/** 方舟原生、第三方与 MiniMax H3 共用的素材类型、用途及 Base64 格式。 */
+/** 方舟原生接口、第三方接口与 MiniMax H3 共用的素材类型、用途及 Base64 格式。 */
 export function arkVideoContent(req: MediaRequest): Record<string, unknown>[] {
   return [
     { type: 'text', text: req.prompt },

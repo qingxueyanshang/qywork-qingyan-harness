@@ -261,7 +261,7 @@ function reportedCounts(text: string): {
       scope: 'input',
       reversed: false,
     },
-    // OpenAI/第三方接口：maximum context length is LIMIT ... requested/resulted REQ，数字顺序相反
+    // OpenAI 与第三方接口：maximum context length is LIMIT ... requested/resulted REQ，数字顺序相反
     {
       re: new RegExp(
         `(?:maximum|max)\\s+context\\s+(?:length|window)[^0-9]{0,50}${NUM}[\\s\\S]{0,180}?(?:requested|resulted\\s+in|input)[^0-9]{0,50}${NUM}`,
@@ -270,7 +270,7 @@ function reportedCounts(text: string): {
       scope: 'context_total',
       reversed: true,
     },
-    // 第三方接口变体：请求量在前。
+    // 第三方接口的变体：请求量在前。
     {
       re: new RegExp(
         `(?:requested|input|prompt)[^0-9]{0,40}${NUM}\\s*tokens?[\\s\\S]{0,120}?(?:maximum|max|limit)[^0-9]{0,40}${NUM}`,

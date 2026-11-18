@@ -540,7 +540,7 @@ function buildMessages(
       // Anthropic 的工具结果是 user 轮中的 tool_result block。
       // 同一轮的多个结果必须合并为一条 user 消息；拆成多条会使模型
       // 倾向于不再并行调用工具。
-      // 图片不放入 tool_result：部分第三方渠道在 tool_result 同时含文本与图片时丢弃文本，
+      // 图片不放入 tool_result：部分第三方接口在 tool_result 同时含文本与图片时丢弃文本，
       // 模型只收到图片。图片改为同一条 user 消息中排在全部 tool_result 之后的并列块，
       // 每组之前用一个文本块注明所属的调用。协议要求 tool_result 排在该消息的最前。
       const blocks = typeof m.content === 'string' ? [] : toBlocks(m.content)

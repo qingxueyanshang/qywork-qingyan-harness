@@ -5,8 +5,7 @@
  * 字段与对话目录不同：生成模型没有上下文窗口与思考档位，只有操作与参数表。
  *
  * 只收录官方模型：各厂商当前最新一代，以及第三方接口仍普遍提供的上一代（gpt-image-2、gpt-image-2.5）。
- * 第三方渠道的型号不在此登记：拉取时由渠道目录生成规格并保存在配置中（`channels.ts`）。
- * 未收录的型号仍可经接口调用，使用协议默认的参数表。
+ * 未收录的型号仍可经接口调用，使用协议默认的参数表；扩展渠道保存的规格由登记的渠道解析（`extension.ts`）。
  *
  * 参数使用接口自身的字段名，不做跨厂商统一。生成质量 `quality` 与分辨率 `size` 分别声明；
  * 火山的尺寸可写 `size: 2K`，百炼可写 `size: 2048*2048`，各自遵守接口约束。
@@ -20,11 +19,11 @@
  */
 
 import {
-  type ChannelImageSpec,
-  type ChannelVideoSpec,
+  type BuiltinMediaKind,
+  type ChannelSpec,
   type CloudModelSpec,
   type Currency,
-  MEDIA_KIND_OUTPUT,
+  isBuiltinMediaKind,
   type MediaInputLimits,
   type MediaKind,
   type MediaMeterParams,
@@ -33,9 +32,9 @@ import {
   type MediaQuote,
   type MediaUnit,
   type MentionStyle,
+  mediaKindOutput,
   type StoredMediaSpec,
   type UnitPrice,
-  VIDEO_CHANNEL_KIND,
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import { MIMO_AUDIO_MODELS, MIMO_SPEECH_DEFAULT } from './catalog-mimo-audio.ts'
@@ -43,7 +42,7 @@ import { MINIMAX_AUDIO_MODELS, MINIMAX_VOICE } from './catalog-minimax-audio.ts'
 import { MINIMAX_IMAGE_DEFAULT, MINIMAX_IMAGE_MODELS } from './catalog-minimax-image.ts'
 import { MINIMAX_VIDEO_DEFAULT, MINIMAX_VIDEO_MODELS } from './catalog-minimax-video.ts'
 import { QWEN_AUDIO_MODELS } from './catalog-qwen-audio.ts'
-import { channelImageMediaSpec, channelMediaSpec } from './channels.ts'
+import { type MediaAdapterFactory, mediaChannelOf, mediaProtocolOf } from './extension.ts'
 import type { MediaUsage } from './types.ts'
 
 /**
@@ -121,16 +120,12 @@ export interface MediaModelSpec {
   /** 已核实的其他协议映射；未声明的协议不继承原生参数与能力。 */
   mappings?: Partial<Record<MediaKind, MediaMapping>>
   /** 通用视频端点中厂商扩展字段的请求结构。 */
-  videoFormat?: 'dashscope' | 'ark' | 'veo' | 'kling-omni' | 'providerb' | 'providera'
-  /** 通用图像端点中渠道的请求结构：providerb 以 JSON 提交、按任务查询结果。 */
-  imageFormat?: 'providerb'
+  videoFormat?: 'dashscope' | 'ark' | 'veo' | 'kling-omni'
   /**
    * 各尺寸所属的分辨率档位：键为 `size` 的取值。参数表中没有分辨率参数、档位由尺寸决定的型号声明，
    * 计量按此取得档位（`meterParamsOf`）。
    */
   resolutionBySize?: Readonly<Record<string, string>>
-  /** 提交时随尺寸发送 `resolution`，取值为 `resolutionBySize` 中该尺寸的档位：渠道按该字段出图与计价，不按尺寸推断。 */
-  resolutionField?: true
   /** 百炼新音频端点及输入结构；省略时使用原有 Qwen-TTS 多模态端点。 */
   speechFormat?: 'qwen-audio-tts' | 'qwen-audio-next'
 }
@@ -1278,7 +1273,7 @@ const spec = (
   ...(mappings ? { mappings } : {}),
 })
 
-/** 万相视频的第三方只接受内联图像；本机视频、音频需要百炼原生的临时上传。 */
+/** 万相视频经第三方接口转发时只接受内联图像；本机视频、音频需要百炼原生的临时上传。 */
 const WAN_VIDEO_MAPPING: MediaModelSpec['mappings'] = {
   openai_videos: {
     videoFormat: 'dashscope',
@@ -1721,7 +1716,7 @@ const cloudDefault = (
   catalogued: false,
 })
 
-const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayName'>> = {
+const PROTOCOL_DEFAULTS: Record<BuiltinMediaKind, Omit<MediaModelSpec, 'id' | 'displayName'>> = {
   ...GOOGLE_XAI_DEFAULTS,
   qywork_images: cloudDefault('qywork_images', IMAGE_OPERATIONS),
   qywork_videos: cloudDefault('qywork_videos', VIDEO_OPERATIONS),
@@ -1794,24 +1789,6 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     ],
     catalogued: false,
   },
-  /* 服务商C AI 未经拉取的型号：时长、画幅与分辨率的可选值只在模型目录中，此处只提供通用文生字段。 */
-  providerc_videos: {
-    vendor: null,
-    kind: 'providerc_videos',
-    operations: ['text_to_video'],
-    inputs: { maxImages: 0, maxVideos: 0, transport: 'multipart' },
-    params: [
-      { name: 'duration', type: 'integer', min: 1, description: '时长（秒）' },
-      {
-        name: 'ratio',
-        label: '画幅',
-        type: 'string',
-        shapes: [{}, { ratio: '16:9', value: '16:9' }, { ratio: '9:16', value: '9:16' }],
-        description: '宽高比，如 16:9、9:16',
-      },
-    ],
-    catalogued: false,
-  },
   ark_videos: {
     vendor: null,
     kind: 'ark_videos',
@@ -1869,12 +1846,11 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
   },
 }
 
-/** 内置的全部生成模型，供模型库页使用。 */
 /**
- * 各协议中表示张数、时长（秒）与分辨率档位的参数名。协议决定请求形状，同一协议的参数名相同。
- * 计量的唯一来源：云端型号的计量参数名由云端按上游协议从本表取得（`cloudModelSpec`）。
+ * 各内置协议中表示张数、时长（秒）与分辨率档位的参数名。协议决定请求形状，同一协议的参数名相同。
+ * 登记的协议在登记时给出（`registerMediaProtocol`）；读取一律经 `meterParamsFor`。
  */
-export const METER_PARAMS: Readonly<Record<MediaKind, MediaMeterParams>> = {
+const METER_PARAMS: Readonly<Record<BuiltinMediaKind, MediaMeterParams>> = {
   openai_images: { count: 'n', resolution: 'resolution' },
   dashscope_images: { count: 'n' },
   gemini_images: { resolution: 'image_size' },
@@ -1888,7 +1864,6 @@ export const METER_PARAMS: Readonly<Record<MediaKind, MediaMeterParams>> = {
   veo_videos: { seconds: 'durationSeconds', resolution: 'resolution' },
   xai_videos: { seconds: 'duration', resolution: 'resolution' },
   minimax_videos: { seconds: 'duration', resolution: 'resolution' },
-  providerc_videos: { seconds: 'duration', resolution: 'resolution' },
   openai_speech: {},
   dashscope_speech: {},
   minimax_speech: {},
@@ -1898,6 +1873,17 @@ export const METER_PARAMS: Readonly<Record<MediaKind, MediaMeterParams>> = {
   qywork_images: {},
   qywork_videos: {},
   qywork_speech: {},
+}
+
+/**
+ * 协议的计量参数名。计量的唯一来源：云端型号的计量参数名由云端按上游协议取得（`cloudModelSpec`）。
+ * 协议未登记时抛出（`mediaKindOutput` 同理）。
+ */
+export function meterParamsFor(kind: MediaKind): MediaMeterParams {
+  if (isBuiltinMediaKind(kind)) return METER_PARAMS[kind]
+  const registered = mediaProtocolOf(kind)
+  if (!registered) throw new Error(`生成协议 ${kind} 未登记`)
+  return registered.meter
 }
 
 /** 型号在指定上游协议与保存规格下交给电脑端的规格（`CloudModelSpec`），由云端调用。 */
@@ -1914,7 +1900,7 @@ export function cloudModelSpec(
     ...(spec.maxPromptLength ? { maxPromptLength: spec.maxPromptLength } : {}),
     ...(spec.mention ? { mention: spec.mention } : {}),
     ...(spec.resolutionBySize ? { resolutionBySize: spec.resolutionBySize } : {}),
-    meter: { ...METER_PARAMS[kind] },
+    meter: { ...meterParamsFor(kind) },
   }
 }
 
@@ -1945,7 +1931,7 @@ function meterTier(spec: MediaModelSpec, resolution: MediaParamSpec | undefined)
 
 /**
  * 型号规格中的计量参数与分辨率档位；规格中没有的为 undefined。`names` 为计量参数名：目录与渠道型号取协议的
- * `METER_PARAMS`，云端型号取云端规格中的 `meter`。档位的 `values` 为型号可选的全部档位，`of` 按请求参数取得档位。
+ * `meterParamsFor`，云端型号取云端规格中的 `meter`。档位的 `values` 为型号可选的全部档位，`of` 按请求参数取得档位。
  */
 export function meterParamsOf(spec: MediaModelSpec, names: MediaMeterParams) {
   const param = (name: string | undefined) =>
@@ -2021,6 +2007,7 @@ function unitMediaPrice(
   }
 }
 
+/** 内置的全部生成模型，供模型库页使用。 */
 export function mediaCatalog(): readonly MediaModelSpec[] {
   return SEEDS
 }
@@ -2038,9 +2025,8 @@ export function mediaKindsOf(spec: MediaModelSpec): MediaKind[] {
 /**
  * 模型在指定协议上的规格。顺序唯一：配置中保存的规格 → 同协议的目录条目 → 已登记的协议映射 → 协议默认。
  *
- * `saved` 是保存在该型号配置中的规格（`StoredMediaModel.spec`）。渠道规格由拉取时的渠道目录得到，用于 `openai_videos`、
- * `providerc_videos` 与 `openai_images`；配置校验保证视频协议保存所属渠道的视频规格（`VIDEO_CHANNEL_KIND`）、图像协议保存图像规格，
- * 视频渠道规格的协议取自渠道。保存的规格先于目录：第三方的型号可与内置型号同名
+ * `saved` 是保存在该型号配置中的规格（`StoredMediaModel.spec`）。渠道规格由登记该渠道的使用方解析
+ * （`registerMediaChannel`），渠道不使用该协议时按目录与协议默认解析；保存的规格先于目录：渠道的型号可与内置型号同名
  * （如 gpt-image-2），请求结构与价格以渠道为准。对应型号 `{ base }` 按该目录 id 在同一协议上取规格，id 与显示名称为自定义名称，
  * 不带单价。云端规格 `{ cloud }` 中的参数表与能力由云端型号清单下发，单价为积分，按其中的计量参数名计量；
  * id 与显示名称为型号 id，不带厂商。
@@ -2052,6 +2038,22 @@ export function lookupMediaModel(
   kind: MediaKind,
   saved?: StoredMediaSpec,
 ): MediaModelSpec {
+  return resolveMediaModel(id, kind, saved).spec
+}
+
+/**
+ * 规格与构造适配器的方式：渠道规格适用且渠道给出适配器时为渠道的适配器，登记的协议为协议的适配器，
+ * 内置协议为 undefined（`buildMediaAdapter` 按协议构造）。两者由同一次解析得出：分开判断时，
+ * 适配器可能按渠道构造而规格取自目录。
+ */
+export function resolveMediaModel(
+  id: string,
+  kind: MediaKind,
+  saved?: StoredMediaSpec,
+): { spec: MediaModelSpec; adapter?: MediaAdapterFactory } {
+  const protocolAdapter = mediaProtocolOf(kind)?.adapter
+  const resolved = (spec: MediaModelSpec, adapter = protocolAdapter) =>
+    adapter ? { spec, adapter } : { spec }
   if (saved && 'cloud' in saved) {
     const { spec, unit, unitPrice } = saved.cloud
     const model: MediaModelSpec = {
@@ -2067,33 +2069,30 @@ export function lookupMediaModel(
       ...(spec.mention ? { mention: spec.mention } : {}),
       ...(spec.resolutionBySize ? { resolutionBySize: spec.resolutionBySize } : {}),
     }
-    return { ...model, price: unitMediaPrice(model, spec.meter, unit, unitPrice) }
+    return resolved({ ...model, price: unitMediaPrice(model, spec.meter, unit, unitPrice) })
   }
   if (saved && 'base' in saved) {
     const { price: _price, ...rest } = lookupMediaModel(saved.base, kind)
-    return { ...rest, id, displayName: id }
+    return resolved({ ...rest, id, displayName: id })
   }
-  if (
-    saved &&
-    'channel' in saved &&
-    VIDEO_CHANNEL_KIND[(saved as ChannelVideoSpec).channel] === kind
-  )
-    return channelMediaSpec(id, saved as ChannelVideoSpec)
-  if (saved && kind === 'openai_images') return channelImageMediaSpec(id, saved as ChannelImageSpec)
+  const channel = mediaChannelOf(saved)
+  const fromChannel = channel?.spec(id, kind, saved as ChannelSpec)
+  if (channel && fromChannel) return resolved(fromChannel, channel.adapter ?? protocolAdapter)
   const exact = SEEDS.find((m) => m.id === id && m.kind === kind)
-  if (exact) return exact
-  const base = PROTOCOL_DEFAULTS[kind]
-  const byId = SEEDS.find(
-    (m) => m.id === id && MEDIA_KIND_OUTPUT[m.kind] === MEDIA_KIND_OUTPUT[kind],
-  )
+  if (exact) return resolved(exact)
+  const byId = SEEDS.find((m) => m.id === id && mediaKindOutput(m.kind) === mediaKindOutput(kind))
   const mapping = byId?.mappings?.[kind]
   if (byId && mapping) {
     const { price: _price, mappings: _mappings, ...rest } = byId
-    return {
-      ...rest,
-      ...mapping,
-      kind,
-    }
+    return resolved({ ...rest, ...mapping, kind })
   }
-  return { ...base, id, displayName: id }
+  return resolved({ ...protocolDefault(kind), id, displayName: id })
+}
+
+/** 协议默认的规格；登记的协议取登记时给出的默认规格。协议未登记时抛出。 */
+function protocolDefault(kind: MediaKind): Omit<MediaModelSpec, 'id' | 'displayName'> {
+  if (isBuiltinMediaKind(kind)) return PROTOCOL_DEFAULTS[kind]
+  const registered = mediaProtocolOf(kind)
+  if (!registered) throw new Error(`生成协议 ${kind} 未登记`)
+  return { ...registered.defaults, kind }
 }

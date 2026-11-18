@@ -69,7 +69,7 @@ describe('Base URL 留空时按模型库解析官方地址', () => {
     }
   })
 
-  test('显式第三方、套餐和本地地址始终优先，不按已知模型改换厂商', async () => {
+  test('第三方接口、套餐和本地地址始终优先，不按已知模型改换厂商', async () => {
     const original = globalThis.fetch
     let actual = ''
     globalThis.fetch = (async (input) => {

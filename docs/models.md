@@ -4,7 +4,7 @@
 内置模型目录提供默认规格，不限制你添加其他 model id。
 
 接口支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
-选择协议时，以所连接端点提供的接口为准。通过第三方接口接入时，使用第三方接口给出的地址与凭证。
+选择协议时，以所连接端点提供的接口为准。通过第三方接口接入时，使用该接口给出的地址与凭证。
 
 ## GPT-6.2 Astra 与 GPT-6.2 Sol
 
@@ -237,7 +237,7 @@ xAI 优先采用响应中的 `usage.cost_in_usd_ticks` 实际扣费。
 Veo 的生成响应未提供计价所需的实际时长、分辨率，用量账本金额显示 N/A；
 发送前可按选择的时长与分辨率显示目录报价。任何接口缺少计量时均不估填实际金额。
 第三方接口沿用其兼容协议，仅使用目录已核实的映射；未登记的组合采用协议默认规格，
-官方单价不自动用于不同协议的第三方账单。
+官方单价不自动用于不同协议的第三方接口账单。
 
 2026-10-01 核对：[Gemini 图片](https://ai.google.dev/gemini-api/docs/image-generation)、
 [Omni](https://ai.google.dev/gemini-api/docs/omni)、[Veo](https://ai.google.dev/gemini-api/docs/veo)、
@@ -458,18 +458,18 @@ bun run packages/cli/src/index.ts probe my-model --save
 每类第一个成为该类的默认模型。
 生成模型不出现在对话的模型选择里，也没有「检测」按钮：检测一次就是真实生成一次。
 
-新增生成模型默认使用模型库的原生协议，不根据第三方域名改变协议。每个生成模型行的「接入方式」
+新增生成模型默认使用模型库的原生协议，不根据第三方接口的域名改变协议。每个生成模型行的「接入方式」
 只列出该模型已实现的原生协议与兼容映射，保存后由 `media[id].kind` 决定调用方式。
 修改 Base URL 不会覆盖已保存的选择；上方「对话协议」只作用于对话模型。
 未收录的自定义模型使用所选协议的默认规格。
 
 第三方接口的 `/v1/videos` 按已核实的模型映射发送素材：万相使用 `metadata.input.media`，
 Seedance 使用 `metadata.content`，Veo 使用 `images` 首帧字段。其他型号采用通用文生参数。
-这三类扩展已与 New API 官方仓库的转换器核对；所接第三方接口仍须提供相同接口扩展。
-gatewaysoft 提供 xAI 格式的 Grok 视频与方舟格式的 Seedance 接口时，分别选择「xAI」「火山方舟」，
+这三类扩展已与 New API 官方仓库的转换器核对；所接的第三方接口仍须提供相同接口扩展。
+第三方接口提供 xAI 格式的 Grok 视频与方舟格式的 Seedance 接口时，分别选择「xAI」「火山方舟」，
 复用现有适配器。Grok 返回相对结果地址时按接口地址解析，同源下载携带鉴权，跨域下载不携带接口凭证。
 百炼原生接口保留 Base URL 中的部署路径前缀（例如 `/ali`），上传、生成和任务查询使用相同前缀。
-这些接入方式不探测第三方缺少的参数，不静默删参数或降级重试；第三方须实现所选接口的约定。
+这些接入方式不探测第三方接口缺少的参数，不静默删参数或降级重试；第三方接口须实现所选接口的约定。
 
 2026-10-14 补充 `qwen-image-2.1-pro`（千问图像 2.1 Pro），支持文生图、图像编辑及最多 10 张参考图。
 透明背景、透明图层编辑或提取主体直接写在提示词中，返回 PNG；不提供独立的 `background`、`output_format` 或 `mask` 参数。
@@ -572,14 +572,11 @@ MiniMax 官方的 `/v1/models` 只列出对话型号。拉取模型时，若接�
 已覆盖本地请求捕获、默认值补齐、错误码与计费回归，尚未进行真实云端生成。
 依据：[文生图](https://platform.minimax.cn/docs/api-reference/image-generation-t2i)、[图生图](https://platform.minimax.cn/docs/api-reference/image-generation-i2i)、[创建视频生成任务](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimax.cn/docs/api-reference/video-generation-v2-query)、[价格](https://platform.minimax.cn/docs/guides/pricing-paygo)。
 
-服务商D渠道及 `Seedance 2.5 720p` 已于 2026-10-13 移除，不再提供模型目录、协议选择、生成或任务取回。
-该渠道专用的影币计价与展示已一并移除。
-
 ### 拉取模型
 
-接口页「模型」右侧的「拉取模型」读取该接口上的型号，勾选后添加。以下适用于 New API 部署的第三方接口，服务商C AI 见下文：
+接口页「模型」右侧的「拉取模型」读取该接口上的型号，勾选后添加。以下适用于 New API 部署的第三方接口：
 
-- 型号清单与类别来自第三方的公开计费清单 `/api/pricing`（不需要 Key）：接口类型含 `openai-video` 的为视频，
+- 型号清单与类别来自公开计费清单 `/api/pricing`（不需要 Key）：接口类型含 `openai-video` 的为视频，
   含 `image-generation` 的为图像，其余对话类接口为对话。没有该接口时改读 `{Base URL}/models`（带 Key），
   只有型号名：与生成目录 id 相同的按目录归类；目录 id 之后带 `-`、`.` 或 `_` 开头的后缀的（如 `gpt-image-2.5-sunburst-4k`、
   `gemini-3-pro-image-preview`）按该目录 id 归类，取最长的目录 id，协议按接口地址取默认值；其余作为对话型号。
@@ -590,82 +587,21 @@ MiniMax 官方的 `/v1/models` 只列出对话型号。拉取模型时，若接�
   `model_ratio × 2`，按次、按秒为 `model_price`；公式计费（`tiered_expr`）在本地求值。
   对话只取基础档，不折算长上下文档。公式中的 `weekday(时区)`、`hour(时区)` 按一月与七月各一个参考周每 15 分钟求值，
   折算为高峰价与 UTC 高峰时段（`models[id].price.offPeak`），账本按请求时刻计价；多档折扣、各天高峰时段不同或时区有夏令时
-  无法用一组时段表示，价格不明。视频与图像价格逐个分辨率档位求值（计量中的 `resolution` 取该档位，图像按 `n = 1`），
-  各档金额不同时按档位分别保存（`spec.price.amount` 为「档位 → 金额」），报价按所选尺寸或分辨率计算。可见分组倍率不一致时
-  价格不明，价格列留空。2026-10-21 核对：providera 与服务商B两站算出的价格与各自的计费说明逐项一致，含服务商B deepseek-v4.1-flash
-  的高峰价与优惠时段、007 系列 480P/720P 的两档单价、gpt-image-2 每张 0.052 元与 2.5 系列每张 3.64 积分。
-- 视频型号的时长、画幅、分辨率与素材上限来自渠道目录：providera 为 `/api/workbench-models`，
-  服务商B为 `/docs/catalog-models.json`；图像型号的尺寸、分辨率档位与参考图上限来自服务商B目录。参数保存在该型号的配置中
-  （`media[id].spec`），画布、生成工具与提示词都按它取得规格，且先于同名的内置型号（服务商B的 `gpt-image-2.5-flare` 等与 OpenAI
-  官方同名）；默认时长取最短时长。providera 目录的时长写为「最小-最大」，固定时长只写一个数（如 `30`）。
-  目录中没有的型号不保存参数，按协议默认规格。
-- 对话型号名称与模型库相同时沿用模型库的窗口与思考档位；名称是第三方自定义的，在窗口中选择「对应型号」，
-  该型号的规格写入模型库覆盖（`catalog[id|协议].base`）。第三方价格只写入该接口的型号配置（`models[id].price`），
+  无法用一组时段表示，价格不明。可见分组倍率不一致时价格不明，价格列留空。
+- 生成型号不带价格与参数：画布、生成工具与提示词按生成目录或协议默认规格取得参数表。
+- 对话型号名称与模型库相同时沿用模型库的窗口与思考档位；名称是第三方接口自定义的，在窗口中选择「对应型号」，
+  该型号的规格写入模型库覆盖（`catalog[id|协议].base`）。拉取到的价格只写入该接口的型号配置（`models[id].price`），
   不影响同名同协议的其他接口。
 - 对话型号的「对应型号」选项为模型库中的内置型号与生成目录；用户添加的条目不列出，配置校验只接受内置型号。
   选择生成目录中的型号时，该行移到对应类别的页签，按该类别添加，
   对应型号写入 `media[id].spec.base`，参数表与能力取自该型号，不带官方单价；按目录 id 加后缀识别的生成型号已预选对应型号。
   生成型号的类别来自计费清单的接口类型或生成目录的名称识别，选项只有同类别的生成目录。
-  配置写入前校验：`base` 必须是与该型号协议同类别的生成目录 id，且不能与渠道规格字段同时出现。
-- 打开窗口即按结果刷新已添加型号的参数与价格。来源是计费清单时，清单中没有的已添加型号标为「已下架」：
-  生成工具不再向它提交，已提交的任务仍可取回；目录没有新旧型号名的对应关系，下架后由用户重新选择。
+  配置写入前校验：`base` 必须是与该型号协议同类别的生成目录 id，且不能混入其他字段。
+- 打开窗口即按结果刷新已添加型号的价格。来源是计费清单时，清单中没有的已添加型号标为「已下架」：
+  生成工具不再向它提交，已提交的任务仍可取回；下架后由用户重新选择。
 
-providera 与服务商B的型号不再写在代码中，模型库也不列出。代码只保留两个渠道的请求格式：
-
-- **providera**（Base URL：`https://providera.example.com`）：素材先上传到 `/refhost/upload`，
-  再将公网地址通过 `reference_images`、`reference_videos`、`reference_audios` 提交到 `/v1/videos`；
-  同一组地址另写入 `metadata.__workbench_refs`（`reference_image_urls` 等，附本次的 `trace_id`），分辨率与画幅写入
-  `metadata.__workbench_passthrough`：渠道网关对部分线路丢弃顶层的参考素材字段，由参考透传服务按这份 metadata 交给上游。
-  2026-10-21 服务商Aseedance-2.5-GG-ndwx-6 只发顶层字段时，两次均以「提示词引用的参考素材缺失」失败。
-  参数为 `seconds`、`duration`（整数秒）、`aspect_ratio`（同时发送 `ratio`）与 `resolution`，提示词以 `@Image1`、`@Video1`、`@Audio1` 引用素材。
-  按秒型号的报价按所选时长计算，生成费用按接口回报秒数计量；缺少回报时长时不推算费用。
-- **服务商B**（Base URL：`https://providerb.example.com/v1`）：使用 `/videos` 提交、`/video/generations/{id}` 查询，
-  成功后从文件列表 `/tasks/{id}/artifacts` 取得视频文件的签名地址下载，接口凭证不携带到外部成片地址。
-  查询回执中的 `data.data` 是上游原始回执，2026-11-03 核对：video-sd25-30s 的成功回执没有 `download_url`，
-  同一任务的文件列表含有视频文件。`seconds` 使用字符串整数，尺寸为 `宽x高`。
-  目录的素材传递方式为 `public_urls` 时，本地图片经 `PUT /v1/studio/assets/{sha256}` 上传原始字节，校验回执中的哈希、大小与
-  同源签名地址后放入 `images`；为 `json` 时以含 MIME 的 base64 数据地址直接提交；为 `multipart`（sd-2.0-vip）时
-  参数作为表单文本字段，参考图逐张放入同名文件字段 `input_reference`，没有参考图时按 JSON 提交。计费清单的
-  `billing_usage_schema` 含 `resolution` 的型号，提交时同时发送与所选尺寸对应的 `resolution`：渠道说明「不传分辨率时为720p」。
-  目录只给出参考图数量，参考视频与参考音频按 0 处理，待渠道补充字段后开放。不添加未开放的 `face`、帧率或聊天采样参数。
-  查询接口的 `NOT_START` 表示任务尚未开始，按排队阶段继续等待原任务。任务成功时按任务记录的 `quota`（实际扣费额度，含分组倍率）
-  记账：额度 ÷ 站点状态的 `quota_per_unit` × 充值价；站点状态无法读取时按单价计算。2026-10-21 用三个历史任务核对，
-  额度 256849、513699、547945 分别为 ¥3.75、¥7.50、¥8.00；各上游回执中的时长、尺寸字段不一致，常缺失，不作为计量来源。
-- **服务商B图像**（`image_json_v1`）：JSON 提交到 `/images/generations`，字段为 `n: 1`、`size`、`resolution`、`response_format: "url"`、
-  `async: true`，参考图为 `images` 中的 base64 数据地址；返回任务号时查询 `/images/generations/tasks/{id}`，成功后读取
-  `data[0].url` 下载，直接出图的型号同步返回图片。渠道按请求中的 `resolution` 计价，账本按发送的档位记账。
-
-服务商C AI（Base URL：`https://providerc.example.com/api/v1`）不是 New API，视频使用自有协议 `providerc_videos`：
-
-- **拉取**：只读取带 Key 的模型目录 `/api/v1/models`，不请求 `/api/pricing`。目录列出该 Key 可调用的全部型号与用户售价
-  （人民币，已含站点加价），来源按计费清单处理，目录中没有的已添加型号标为「已下架」。条目按 `type` 归类：`chat` 为对话，
-  只提供 Chat Completions，价格取 `inputYuanPerMillion` 等四项，`priceTiers` 为长上下文档，带 `pricingNote`（随时段变化）的价格不明；
-  `video` 为视频。图像（含 Midjourney）、Suno 与视频擦除使用各自的任务接口与询价确认流程，没有对应的生成协议，不列出。
-- **视频规格**：时长为 `durations` 或 `durationRange`，分辨率为 `resolutions`，只有一档时可能只给 `fixedResolution`，
-  素材上限为 `limits` 的 `images`、`videos`、`audios`，型号名称 `label` 保存为 `spec.label`，界面以它代替 `providerc-video-x…` 编号。
-  价格：`fixed` 按次，`resolutionFixed` 按次分档，`resolutionSecond` 按秒分档；带参考视频的秒价 `withVideo` 与基础秒价不同且型号
-  接受参考视频时价格不明，其余计费方式价格不明。`referenceRules`（最少图片数、音频须搭配图片）与 `promptMax` 不在本地校验，
-  由接口在扣费前拒绝。
-- **请求**：路径固定在站点根之下。`POST /api/v1/video/generate` 带 `X-Confirm-Charge: true` 与每次运行一个的
-  `Idempotency-Key`，被拒绝后的重试沿用同一个；字段为 `model`、`prompt`、`duration`（整数秒）、`ratio`、`resolution`。
-  有参考素材时以表单提交，素材放入可重复的文件字段 `images`、`videos`、`audios`。查询 `GET /api/v1/video/status?jobId=`：
-  `terminal: false` 为进行中，`progressPhase` 归并为排队中与生成中；`status` 为 `success` 且 `videoUrl` 非空才下载
-  `GET /api/v1/video/download?jobId=`（带 Key）；`failed`、`expired` 为终态，其余状态保留任务号供取回。
-  计量按提交的时长与分辨率，查询结果带 `job.chargedAmount`（元）时按它记账。查询不存在的任务返回 404 与
-  `{"ok":false,"error":"…"}`。2026-11-18 经本适配器实测一次：特价渠道 Wan 3.0、720p、4 秒，提交返回 202，`job.requestId`
-  即幂等键；查询 18 次均为 `terminal: false`、`progressPhase: processing`，约 5 分钟后为 `success`，`videoUrl` 为站内相对地址；
-  `chargedAmount` 自提交起即为 0.68，与 4 秒 × ¥0.17 一致；成片 1280×720、4.04 秒、含音轨。
-
-升级前已添加的 9 个渠道型号（providera 4 个、服务商B 5 个，含两个服务商B下架型号）在加载配置时补上与升级前相同的参数，
-随下一次保存落盘；重新拉取后按渠道目录更新。服务商B 007 系列在补上的参数中保留 10 段 MP3 参考音频，重新拉取后按目录改为 0。
-
-渠道格式的实测记录：
-
-- 2026-10-17 服务商B 30 秒、横屏 720P 实测两次：一次被渠道以版权保护拒绝（拒绝原因只在任务接口的 `fail_reason` 中），
-  一次成功生成 1280×720、约 30.04 秒、24 fps 的视频。渠道内容转发接口下载长时间未完成，同一任务的直链约 3 秒完成下载。
-- 2026-10-18 服务商B原生上传：原图散列一致，仅上传一次、提交一次，生成与取回约 675 秒，音视频完整解码通过。
-  同日 providera 以同一参考图与 30 秒参数完成生成与下载，成片 1280×720、约 30.04 秒、24 fps，响应未返回计费秒数或实扣金额。
-- 2026-10-20 服务商B原生上传接口只接受图片：有效 MP4 和 MP3 均以 HTTP 400 `Image data or checksum is invalid` 拒绝。
+生成型号的配置只保存内置协议与对应型号（`spec.base`）或云端规格（`spec.cloud`）。加载配置时，协议不是内置协议、
+或保存了其他规格的生成型号连同指向它们的默认模型一并删除，随下一次保存落盘。
 
 可灵也可以经百炼调用，模型 ID 形如 `kling/kling-v3-video-generation`，仅北京地域，需先在百炼控制台开通。
 可灵官方接口的视频素材只接受网络地址，因此以参考视频编辑只能经百炼调用。
@@ -692,15 +628,14 @@ providera 与服务商B的型号不再写在代码中，模型库也不列出。
 | 生成请求已发出但尚未收到任务号（全部视频协议） | 立即中止本地等待并解锁卡片；显示远端结果未知，不声称撤销成功。中止期间收到的任务号仍保留供取回 |
 | 方舟 `ark_videos` | 已接入排队任务撤销，执行中不能撤销；先查询，避免删除已结束的任务记录 |
 | 百炼 `dashscope_videos` | 已接入排队任务撤销；百炼上的万相、可灵共用此行为 |
-| OpenAI 视频兼容（含 providerb）、可灵原生、Gemini、Veo、xAI、MiniMax、服务商C AI | 当前适配器未接入远端取消；停止键暂停本地等待并保留任务供取回，说明可能继续计费 |
+| OpenAI 视频兼容、可灵原生、Gemini、Veo、xAI、MiniMax | 当前适配器未接入远端取消；停止键暂停本地等待并保留任务供取回，说明可能继续计费 |
 | 方舟、百炼已执行或撤销请求异常 | 同样允许暂停本地等待，保留任务及撤销失败原因，不将停止键永久禁用 |
 | xAI | `pending` 表示仍在生成，按生成中展示；不能沿用百炼 `PENDING` 的排队含义 |
 | Veo 原生 | 长任务只有是否完成，未完成按处理中展示，不宣称已取得排队位置 |
 
 xAI 用 `request_id`，Veo 用长任务 `name`；其他协议按各自的 `id` 或 `output.task_id` 读取。
-providerb 的参数、音频素材及查询端点由其目录声明单独处理；这些差异不改变保存任务、停止等待和取回的共用规则。
 xAI 状态含义依据[官方视频生成文档](https://docs.x.ai/developers/model-capabilities/video/generation)。
-本次验证覆盖本地 HTTP 端点、恢复记录、画布及工具回归；不代表所有渠道均已完成真实付费成片验收。
+本次验证覆盖本地 HTTP 端点、恢复记录、画布及工具回归；不代表所有接口均已完成真实付费成片验收。
 
 ### 生成模型核查（2026-10-03）
 
@@ -746,13 +681,12 @@ Google、xAI、可灵及千问语音的其他兼容组合未取得对应转换�
 - xAI：[图片](https://docs.x.ai/developers/model-capabilities/images/generation)、[视频](https://docs.x.ai/developers/model-capabilities/video/generation)、[参考素材视频](https://docs.x.ai/developers/model-capabilities/video/reference-to-video)。
 - 可灵：[能力表](https://kling.ai/document-api/guides/capability-map/video)、[Omni 文生视频](https://kling.ai/document-api/api/video/3-0-omni/text-to-video)、[Omni 图片输入](https://kling.ai/document-api/api/video/3-0-omni/image-to-video)、[Omni 多模态](https://kling.ai/document-api/api/video/3-0-omni/video-omni)。
 - New API 项目官方源码：[阿里云转换器](https://github.com/QuantumNous/new-api/blob/main/plugins/tasks/alibaba/plugin.js)、[火山转换器](https://github.com/QuantumNous/new-api/blob/main/plugins/tasks/doubao/plugin.js)、[Google 转换器](https://github.com/QuantumNous/new-api/blob/main/plugins/tasks/google/plugin.js)。
-- gatewaysoft 项目官方源码：[生成接口路由](https://example.com/gateway)、[Seedance 原生接口](https://example.com/gateway)。
 
 已通过本地运行时请求捕获和 13 个型号的官方转换器对照。后续使用本机配置完成了 GPT Image、
 千问图像、Grok 视频及万相双参考图视频的真实生成、下载和解码；万相实测型号为 `wan3.0-video`，
 不将结果扩展为 Prime 或全部 32 个型号的云端验收。语音尚未进行真实调用。
-GPT Image 的该次第三方调用请求尺寸为 `1024x1024`，返回文件为 `1254x1254`，因此只确认生成与下载成功，
-未确认该第三方遵守全部参数。客户端未据此修改参数或缩放产物。
+GPT Image 的该次第三方接口调用请求尺寸为 `1024x1024`，返回文件为 `1254x1254`，因此只确认生成与下载成功，
+未确认该接口遵守全部参数。客户端未据此修改参数或缩放产物。
 
 对话中，模型通过 `generate_image`、`generate_video`、`generate_audio` 调用生成模型，
 按「模型库」里该模型的参数表自行填写尺寸、时长、音色等参数；参数不合法时在发出请求前拦下。

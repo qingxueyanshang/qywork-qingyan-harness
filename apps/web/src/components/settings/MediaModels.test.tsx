@@ -6,7 +6,7 @@
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import { MEDIA_KIND_OUTPUT, type MediaKind } from '@qywork/core'
+import { type MediaKind, mediaKindOutput } from '@qywork/core'
 import type { MediaLibraryModel, PullResult, RedactedConfig } from '../../lib/store/index.ts'
 
 beforeAll(() => GlobalRegistrator.register({ url: 'http://localhost/' }))
@@ -150,7 +150,7 @@ test('官方模型使用目录协议，模型库显示对应页签', async () =>
     ...QWEN_IMAGE,
     ...m,
     label: m.id,
-    output: MEDIA_KIND_OUTPUT[m.kind],
+    output: mediaKindOutput(m.kind),
     kinds: [m.kind],
   }))
   for (const model of cases.flatMap((m) => [m, { ...m, baseUrl: 'https://relay.example/v1' }])) {
@@ -200,7 +200,7 @@ test('官方模型使用目录协议，模型库显示对应页签', async () =>
       expect(await until(() => !configBusy())).toBe(true)
       expect(stored.providers.native?.media?.[model.id]).toEqual({ kind: model.kind })
       expect(config()?.providers.native?.models).toEqual({})
-      const output = MEDIA_KIND_OUTPUT[model.kind]
+      const output = mediaKindOutput(model.kind)
       expect(stored.mediaDefaults?.[output]).toEqual({ provider: 'native', model: model.id })
       fire(
         Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find((b) =>
@@ -399,9 +399,9 @@ function relayApi(
 
 const relayConfig = (): RedactedConfig => ({
   providers: {
-    providerf: {
+    relay: {
       kind: 'openai_chat_completions',
-      baseUrl: 'https://providerf.example.com/',
+      baseUrl: 'https://relay.example.com/',
       hasApiKey: true,
       models: {},
     },
@@ -424,7 +424,7 @@ test('手动添加目录 id 加后缀的名称：识别为生成型号并保存�
   try {
     fire(
       Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
-        (b) => b.textContent === 'providerf',
+        (b) => b.textContent === 'relay',
       )!,
       'click',
     )
@@ -432,18 +432,18 @@ test('手动添加目录 id 加后缀的名称：识别为生成型号并保存�
     input.value = 'gpt-image-2.5-sunburst-4k'
     fire(input, 'keydown', { key: 'Enter' })
     expect(await until(() => !configBusy())).toBe(true)
-    expect(state.stored.providers.providerf?.media).toEqual({
+    expect(state.stored.providers.relay?.media).toEqual({
       'gpt-image-2.5-sunburst-4k': {
         kind: 'openai_images',
         spec: { base: 'gpt-image-2.5-sunburst' },
       },
     })
-    expect(state.stored.providers.providerf?.models).toEqual({})
+    expect(state.stored.providers.relay?.models).toEqual({})
     expect(config()?.mediaDefaults?.image).toEqual({
-      provider: 'providerf',
+      provider: 'relay',
       model: 'gpt-image-2.5-sunburst-4k',
     })
-    // 对应型号不是渠道规格：行上仍是接入方式下拉框。
+    // 对应型号的行上是接入方式下拉框。
     const row = Array.from(host.querySelectorAll<HTMLElement>('.model-row')).find((r) =>
       r.textContent?.includes('gpt-image-2.5-sunburst-4k'),
     )!
@@ -472,7 +472,7 @@ test('手动添加以内置型号 id 为前缀的对话模型：写入模型库�
   try {
     fire(
       Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
-        (b) => b.textContent === 'providerf',
+        (b) => b.textContent === 'relay',
       )!,
       'click',
     )
@@ -480,7 +480,7 @@ test('手动添加以内置型号 id 为前缀的对话模型：写入模型库�
     for (const id of ['deepseek-flash-high', 'deepseek-flash']) {
       input.value = id
       fire(input, 'keydown', { key: 'Enter' })
-      expect(await until(() => !configBusy() && !!state.stored.providers.providerf?.models[id])).toBe(
+      expect(await until(() => !configBusy() && !!state.stored.providers.relay?.models[id])).toBe(
         true,
       )
     }
@@ -521,7 +521,7 @@ test('拉取模型：带后缀的生成型号预选对应型号，改选生成�
   try {
     fire(
       Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
-        (b) => b.textContent === 'providerf',
+        (b) => b.textContent === 'relay',
       )!,
       'click',
     )
@@ -566,16 +566,16 @@ test('拉取模型：带后缀的生成型号预选对应型号，改选生成�
       'click',
     )
     expect(
-      await until(() => !configBusy() && !!state.stored.providers.providerf?.media?.['banana-pro']),
+      await until(() => !configBusy() && !!state.stored.providers.relay?.media?.['banana-pro']),
     ).toBe(true)
-    expect(state.stored.providers.providerf?.media).toEqual({
+    expect(state.stored.providers.relay?.media).toEqual({
       'gpt-image-2.5-sunburst-4k': {
         kind: 'openai_images',
         spec: { base: 'gpt-image-2.5-sunburst' },
       },
       'banana-pro': { kind: 'openai_images', spec: { base: 'gpt-image-2.5-sunburst' } },
     })
-    expect(state.stored.providers.providerf?.models).toEqual({})
+    expect(state.stored.providers.relay?.models).toEqual({})
     expect(state.stored.catalog).toBeUndefined()
   } finally {
     dispose()
@@ -602,7 +602,7 @@ test('拉取模型：以模型库 id 为前缀的对话型号预选对应型号�
   try {
     fire(
       Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
-        (b) => b.textContent === 'providerf',
+        (b) => b.textContent === 'relay',
       )!,
       'click',
     )
@@ -624,7 +624,7 @@ test('拉取模型：以模型库 id 为前缀的对话型号预选对应型号�
     )
     expect(
       await until(
-        () => !configBusy() && !!state.stored.providers.providerf?.models['deepseek-flash-high'],
+        () => !configBusy() && !!state.stored.providers.relay?.models['deepseek-flash-high'],
       ),
     ).toBe(true)
     expect(state.stored.catalog).toEqual({
@@ -652,7 +652,7 @@ test('拉取模型：未知型号的类别下拉框初始为占位项，选定�
   try {
     fire(
       Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
-        (b) => b.textContent === 'providerf',
+        (b) => b.textContent === 'relay',
       )!,
       'click',
     )
@@ -709,10 +709,8 @@ test('模型库按类别分页签；生成类一张表，厂商是一列，参�
 })
 
 test.each([
-  ['GGseadanco2.5/720', 30, 10, 10, '5–30 秒整数，使用字符串'],
-  ['seedance-2.5-yy-720p', 30, 0, 10, '4–30 秒整数，使用字符串'],
-  ['TTseadanco2.5-720', 30, 10, 10, '5–30 秒整数，使用字符串'],
-  ['TTsedanco2.5-480', 30, 10, 10, '5–30 秒整数，使用字符串'],
+  ['video-a', 30, 10, 10, '5–30 秒整数，使用字符串'],
+  ['video-b', 30, 0, 10, '4–30 秒整数，使用字符串'],
 ] as const)(
   '模型库分别显示各类参考素材上限：%s',
   async (id, maxImages, maxVideos, maxAudios, duration) => {
@@ -721,7 +719,7 @@ test.each([
     const model: MediaLibraryModel = {
       id,
       label: id,
-      vendor: 'providera',
+      vendor: 'Example',
       kind: 'openai_videos',
       kinds: ['openai_videos'],
       output: 'video',
@@ -763,34 +761,23 @@ test.each([
   },
 )
 
-test('拉取模型：打开即刷新已添加型号，勾选后写入规格与对应型号，渠道型号的接入方式显示渠道名', async () => {
+test('拉取模型：打开即刷新已添加型号，勾选后写入协议与对应型号', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
   const { config, configBusy, reloadConfig } = await import('./configStore.ts')
   const { ModelSettings } = await import('./ModelSettings.tsx')
-  const spec = {
-    channel: 'providerb' as const,
-    seconds: [30],
-    ratios: ['16:9', '9:16'],
-    resolutions: ['720p'],
-    sizes: { '720p': [1280, 720] as [number, number] },
-    maxImages: 30,
-    maxVideos: 0,
-    maxAudios: 0,
-    price: { per: 'request' as const, amount: 7, currency: 'CNY' as const },
-  }
   const result: PullResult = {
     source: 'pricing',
     models: [
       { id: 'deepseek-v4.1-flash', output: 'chat', known: false },
-      { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', known: true, spec },
+      { id: 'video-a', output: 'video', kind: 'openai_videos', known: false },
     ],
   }
   let stored: RedactedConfig = {
     providers: {
-      providerb: {
+      relay: {
         kind: 'openai_chat_completions',
-        baseUrl: 'https://providerb.example.com/v1',
+        baseUrl: 'https://relay.example.com/v1',
         hasApiKey: true,
         models: {},
         media: { 'old-video': { kind: 'openai_videos' } },
@@ -840,7 +827,7 @@ test('拉取模型：打开即刷新已添加型号，勾选后写入规格与�
   try {
     fire(
       Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
-        (b) => b.textContent === 'providerb',
+        (b) => b.textContent === 'relay',
       )!,
       'click',
     )
@@ -850,7 +837,7 @@ test('拉取模型：打开即刷新已添加型号，勾选后写入规格与�
     // 计费清单中没有的已添加型号标记已下架，接口页行上显示。
     expect(
       await until(
-        () => !configBusy() && !!config()?.providers.providerb?.media?.['old-video']?.delisted,
+        () => !configBusy() && !!config()?.providers.relay?.media?.['old-video']?.delisted,
       ),
     ).toBe(true)
     expect(host.textContent).toContain('已下架')
@@ -878,29 +865,29 @@ test('拉取模型：打开即刷新已添加型号，勾选后写入规格与�
     check('deepseek-v4.1-flash').dispatchEvent(new Event('change', { bubbles: true }))
 
     fire(tabs()[1]!, 'click')
-    expect(dialog.textContent).toContain('¥7.00/次')
-    check('X-SD25-301010').checked = true
-    check('X-SD25-301010').dispatchEvent(new Event('change', { bubbles: true }))
+    check('video-a').checked = true
+    check('video-a').dispatchEvent(new Event('change', { bubbles: true }))
 
     const add = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
       (b) => b.textContent === '添加',
     )!
     fire(add, 'click')
     expect(
-      await until(() => !configBusy() && !!config()?.providers.providerb?.media?.['X-SD25-301010']),
+      await until(() => !configBusy() && !!config()?.providers.relay?.media?.['video-a']),
     ).toBe(true)
     expect(document.querySelector('.pull-dialog')).toBeNull()
-    expect(stored.providers.providerb?.models).toEqual({ 'deepseek-v4.1-flash': {} })
-    expect(stored.providers.providerb?.media?.['X-SD25-301010']).toEqual({ kind: 'openai_videos', spec })
+    expect(stored.providers.relay?.models).toEqual({ 'deepseek-v4.1-flash': {} })
+    expect(stored.providers.relay?.media?.['video-a']).toEqual({ kind: 'openai_videos' })
     expect(stored.catalog).toEqual({
       'deepseek-v4.1-flash|openai_chat_completions': { base: 'deepseek-flash' },
     })
-    expect(stored.active).toEqual({ provider: 'providerb', model: 'deepseek-v4.1-flash' })
+    expect(stored.active).toEqual({ provider: 'relay', model: 'deepseek-v4.1-flash' })
     const row = Array.from(host.querySelectorAll<HTMLElement>('.model-row')).find((r) =>
-      r.textContent?.includes('X-SD25-301010'),
+      r.textContent?.includes('video-a'),
     )!
-    expect(row.textContent).toContain('接入方式 providerb')
-    expect(row.querySelector('select')).toBeNull()
+    expect(
+      row.querySelector<HTMLSelectElement>('select[aria-label="接入方式 video-a"]')?.value,
+    ).toBe('openai_videos')
   } finally {
     dispose()
     host.remove()

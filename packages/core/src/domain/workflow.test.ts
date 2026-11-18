@@ -231,7 +231,7 @@ describe('workflow 调用判别', () => {
             id: 'a',
             name: 'a',
             task: '先做',
-            provider: '官方/第三方',
+            provider: '官方/兼容',
             model: 'anthropic/claude-opus-5',
           },
         ],
@@ -239,7 +239,7 @@ describe('workflow 调用判别', () => {
     ).toMatchObject({
       ok: true,
       call: {
-        nodes: [{ provider: '官方/第三方', model: 'anthropic/claude-opus-5' }],
+        nodes: [{ provider: '官方/兼容', model: 'anthropic/claude-opus-5' }],
       },
     })
     expect(

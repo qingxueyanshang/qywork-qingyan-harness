@@ -178,7 +178,7 @@ async function refusalOf(
 }
 
 /**
- * 正文是否为接口的错误对象：JSON 对象带 `error`（OpenAI 格式的接口与第三方接口为对象，部分接口为字符串）
+ * 正文是否为接口的错误对象：JSON 对象带 `error`（OpenAI 格式的官方接口与第三方接口为对象，部分接口为字符串）
  * 或顶层错误码 `code`（百炼、可灵）。接口前的网关返回 HTML 页、空正文或只有 `message` 的 JSON，不满足。
  */
 function apiError(body: unknown): boolean {

@@ -173,7 +173,7 @@ describe('SDK 包装保留具体的传输失败原因', () => {
       '无法连接接口',
       false,
     ],
-    ['ENOTFOUND', 'getaddrinfo ENOTFOUND providere.example.com', '无法连接接口', false],
+    ['ENOTFOUND', 'getaddrinfo ENOTFOUND api.example.com', '无法连接接口', false],
     ['ETIMEDOUT', 'The operation timed out.', '请求超时', true],
     ['', 'unknown certificate verification error', 'TLS 握手失败', false],
     ['', 'The socket connection was closed unexpectedly.', '连接被断开', false],
@@ -278,7 +278,7 @@ describe('按用户的下一步动作分类', () => {
     expect(byType('overloaded_error')).toBe('provider_unavailable')
     expect(byType('server_error')).toBe('provider_unavailable')
     expect(byType('api_error')).toBe('provider_unavailable')
-    expect(byType('这家第三方自己编的码')).toBe('provider_unavailable')
+    expect(byType('第三方接口自定义的错误码')).toBe('provider_unavailable')
   })
 
   /** 分类码只表示错误类别，不包含 provider 的报错内容。原文丢失后无法从其他位置取回。 */
@@ -508,9 +508,9 @@ describe('按用户的下一步动作分类', () => {
     expect(relayed('SetLimitExceeded', 'Your account has reached the set usage limit.')).toBe(
       'insufficient_quota',
     )
-    // 百炼兼容接口的 `insufficient_quota` 与 OpenAI 的取值、原文都相同，经第三方接口时无法区分，按 OpenAI 的含义。
+    // 百炼兼容接口的 `insufficient_quota` 与 OpenAI 的取值、原文都相同，经第三方接口转发时无法区分，按 OpenAI 的含义。
     expect(relayed('insufficient_quota')).toBe('insufficient_quota')
-    // `QuotaExceeded` 是通用词，经第三方接口时按状态码与原文：原文为排队任务数超限，429 为限流。
+    // `QuotaExceeded` 是通用词，经第三方接口转发时按状态码与原文：原文为排队任务数超限，429 为限流。
     expect(relayed('QuotaExceeded', 'The request has exceeded the quota.')).toBe('rate_limited')
     expect(relayed('1308', '已达到 5 小时 的使用上限')).toBe('rate_limited')
     // 直连原厂时结果不变。
@@ -749,7 +749,7 @@ describe('按用户的下一步动作分类', () => {
   })
 
   /**
-   * 原始失败形状：第三方接口后付费合约只包含文本，正文是顶层 `{code, message}`。
+   * 原始失败形状：第三方接口的后付费合约只包含文本，正文是顶层 `{code, message}`。
    * OpenAI SDK 只从 `error` 字段取说明，消息退化为「400 status code (no body)」；
    * Anthropic SDK 的消息是「400 + 空格 + 说明」。两种情形都必须显示正文中的原文。
    */

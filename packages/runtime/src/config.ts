@@ -28,8 +28,6 @@ import {
   type CompactPercentSetting,
   CURRENCIES,
   type Currency,
-  channelImageSpecProblem,
-  channelVideoSpecProblem,
   cloudMediaSpecProblem,
   compactPercentOf,
   compactPercentProblems,
@@ -37,12 +35,13 @@ import {
   type EffortLevel,
   type GenerateOutput,
   isCloudMediaKind,
+  isMediaKind,
   log,
-  MEDIA_KIND_OUTPUT,
-  MEDIA_KINDS,
   MEDIA_OUTPUTS,
   type MediaKind,
   type MediaOutput,
+  mediaKindOutput,
+  mediaKinds,
   type PermissionMode,
   PROVIDER_KINDS,
   type ProviderKind,
@@ -240,15 +239,13 @@ export interface StoredMediaModel {
   /** 生成请求使用的协议。添加时默认取目录协议，保存后不随接口地址变化。 */
   kind: MediaKind
   /**
-   * 该型号的规格来源，解析顺序见 `lookupMediaModel`。
-   * 渠道规格由拉取时的渠道目录得到：`openai_videos` 与 `providerc_videos` 保存视频规格（渠道与协议的对应见 `VIDEO_CHANNEL_KIND`），
-   * `openai_images` 保存图像规格；第三方渠道的型号只在此处有规格，
-   * 每次拉取时按渠道目录更新。对应型号 `{ base }` 是同类别的生成目录 id，拉取或手动添加时按名称识别得到。
-   * 云端协议保存云端型号清单下发的规格与单价（`CloudMediaSpec`），不含上游协议与渠道规格。
+   * 该型号的规格来源，解析顺序见 `lookupMediaModel`。只有两种：对应型号 `{ base }` 是同类别的生成目录 id，
+   * 拉取或手动添加时按名称识别得到；云端协议保存云端型号清单下发的规格与单价（`CloudMediaSpec`），不含上游协议与渠道规格。
+   * 渠道规格不保存在电脑端的配置中（`diagnoseConfig` 拒绝）。
    */
   spec?: StoredMediaSpec
   /**
-   * 界面上该型号在本接口下显示的名称；缺省时取 `lookupMediaModel` 给出的名称（生成目录或渠道规格）或型号 id。
+   * 界面上该型号在本接口下显示的名称；缺省时取 `lookupMediaModel` 给出的名称（生成目录）或型号 id。
    * 由云端同步写入。
    */
   displayName?: string
@@ -384,7 +381,7 @@ export interface StoredModel {
   /** 该接口对控制参数的透传能力；不属于全局模型能力。 */
   transport?: TransportCapabilities
   /**
-   * 该接口的实际价格，由拉取模型时从第三方的公开价格折算，每百万 Token。
+   * 该接口的实际价格，由拉取模型时从第三方接口的公开价格折算，每百万 Token。
    *
    * 不写入模型库覆盖层（`catalog`）：覆盖层按「型号 × 协议」保存、与接口无关，写入后同名同协议的官方接口也会改价。
    * `resolveModel` 把它合成进该接口的覆盖对象，适配器与账本读取的仍是同一个对象。
@@ -395,7 +392,7 @@ export interface StoredModel {
    * 不写入模型库覆盖层：覆盖层与接口无关，写入后同名同协议的其他接口也显示该名称。
    */
   displayName?: string
-  /** 上一次拉取时第三方的计费清单中已没有该型号。 */
+  /** 上一次拉取时第三方接口的计费清单中已没有该型号。 */
   delisted?: true
 }
 
@@ -568,7 +565,17 @@ export async function loadConfig(): Promise<QyConfig> {
   const cfg: QyConfig = { ...structuredClone(DEFAULT_CONFIG), ...parsed }
   // 迁移只修改内存中的配置，下一次保存时随整份写回。
   for (const n of migrateCloudMediaSpecs(cfg)) log.warn('config', n)
+  for (const n of migrateChannelMediaModels(cfg)) log.warn('config', n)
   return cfg
+}
+
+/** 删除接口下的一个生成型号与指向它的默认生成模型。 */
+function dropMediaModel(cfg: QyConfig, name: string, id: string): void {
+  delete cfg.providers[name]!.media![id]
+  for (const output of MEDIA_OUTPUTS) {
+    const ref = cfg.mediaDefaults?.[output]
+    if (ref?.provider === name && ref.model === id) delete cfg.mediaDefaults![output]
+  }
 }
 
 /**
@@ -581,12 +588,26 @@ function migrateCloudMediaSpecs(cfg: QyConfig): string[] {
     for (const [id, stored] of Object.entries(provider?.media ?? {})) {
       const cloud = (stored?.spec as { cloud?: { kind?: unknown } } | undefined)?.cloud
       if (cloud?.kind === undefined) continue
-      delete provider.media![id]
-      for (const output of MEDIA_OUTPUTS) {
-        const ref = cfg.mediaDefaults?.[output]
-        if (ref?.provider === name && ref.model === id) delete cfg.mediaDefaults![output]
-      }
+      dropMediaModel(cfg, name, id)
       notices.push(`已删除云端生成型号 ${name} / ${id}，同步型号清单时按清单重新写入。`)
+    }
+  }
+  return notices
+}
+
+/**
+ * 删除协议不是有效值或保存了渠道规格的生成型号，及指向它们的默认生成模型：电脑端只支持内置的生成协议，
+ * 型号规格只保存对应型号或云端规格。这些条目无法按其协议或规格发送请求。
+ */
+function migrateChannelMediaModels(cfg: QyConfig): string[] {
+  const notices: string[] = []
+  for (const [name, provider] of Object.entries(cfg.providers)) {
+    for (const [id, stored] of Object.entries(provider?.media ?? {})) {
+      const spec = stored?.spec as object | undefined
+      if (isMediaKind(stored?.kind) && !(spec && typeof spec === 'object' && 'channel' in spec))
+        continue
+      dropMediaModel(cfg, name, id)
+      notices.push(`已删除生成型号 ${name} / ${id}：电脑端不支持该型号保存的协议或规格。`)
     }
   }
   return notices
@@ -764,7 +785,7 @@ export function resolveMediaModel(
   if (!target) return undefined
   const provider = cfg.providers[target.provider]
   const stored = provider?.media?.[target.model]
-  if (!provider || !stored || MEDIA_KIND_OUTPUT[stored.kind] !== output) return undefined
+  if (!provider || !stored || mediaKindOutput(stored.kind) !== output) return undefined
   return {
     provider: target.provider,
     model: target.model,
@@ -797,7 +818,7 @@ export function listMediaModels(cfg: QyConfig): MediaModelEntry[] {
   const rows: MediaModelEntry[] = []
   for (const [provider, p] of Object.entries(cfg.providers)) {
     for (const [model, m] of Object.entries(p.media ?? {})) {
-      const output = MEDIA_KIND_OUTPUT[m.kind]
+      const output = mediaKindOutput(m.kind)
       const d = cfg.mediaDefaults?.[output]
       rows.push({
         provider,
@@ -815,7 +836,7 @@ export function listMediaModels(cfg: QyConfig): MediaModelEntry[] {
 }
 
 /**
- * 模型选择中生成模型的名称：保存的显示名称；没有时为 `lookupMediaModel` 给出的名称（生成目录或渠道规格）；
+ * 模型选择中生成模型的名称：保存的显示名称；没有时为 `lookupMediaModel` 给出的名称（生成目录）；
  * 都没有时为型号 id。`/api/models` 的 `label` 与提供给大模型的生成模型清单使用同一名称。
  */
 export function mediaModelLabel(
@@ -889,7 +910,7 @@ function mediaBaseProblem(spec: object, kind: MediaKind): string | null {
   const { base, ...rest } = spec as { base?: unknown }
   if (Object.keys(rest).length) return '对应型号只能包含 base'
   const entry = typeof base === 'string' ? findMediaModel(base) : undefined
-  return entry && MEDIA_KIND_OUTPUT[entry.kind] === MEDIA_KIND_OUTPUT[kind]
+  return entry && mediaKindOutput(entry.kind) === mediaKindOutput(kind)
     ? null
     : 'base 必须是生成目录中与该型号同类别的型号'
 }
@@ -1106,28 +1127,24 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
    */
   for (const [name, p] of Object.entries(cfg.providers)) {
     for (const [id, m] of Object.entries(p.media ?? {})) {
-      if (!MEDIA_KINDS.includes(m?.kind)) {
+      if (!isMediaKind(m?.kind)) {
         problems.push(
           `${name} / ${id} 的生成协议 "${String(m?.kind)}" 不是有效值。\n` +
-            `  可选：${MEDIA_KINDS.join('、')}\n` +
+            `  可选：${mediaKinds().join('、')}\n` +
             `  修改 ${configPath()} 中该接口 "media" 下的对应条目。`,
         )
       }
-      // 保存的规格直接决定请求字段与素材上限，不合法的规格会使画布开放渠道不接受的素材。
+      // 保存的规格直接决定请求字段与素材上限，不合法的规格会使画布开放接口不接受的素材。
       // 云端协议的参数表与单价都在云端规格中，没有规格时无法校验参数与报价。
-      if (m && MEDIA_KINDS.includes(m.kind) && isCloudMediaKind(m.kind) && m.spec === undefined) {
+      if (m && isMediaKind(m.kind) && isCloudMediaKind(m.kind) && m.spec === undefined) {
         problems.push(`${name} / ${id} 缺少云端规格；退出账号后重新登录即可写入。`)
       }
-      if (m?.spec !== undefined) {
+      if (m?.spec !== undefined && isMediaKind(m.kind)) {
         const problem = isCloudMediaKind(m.kind)
           ? cloudMediaSpecProblem(m.spec, m.kind)
           : m.spec && typeof m.spec === 'object' && 'base' in m.spec
             ? mediaBaseProblem(m.spec, m.kind)
-            : m.kind === 'openai_images'
-              ? channelImageSpecProblem(m.spec)
-              : MEDIA_KIND_OUTPUT[m.kind] === 'video'
-                ? channelVideoSpecProblem(m.spec, m.kind)
-                : '图像只有 openai_images 协议可以保存渠道规格，音频协议不能保存渠道规格'
+            : '只能保存对应型号（base）'
         if (problem)
           problems.push(
             `${name} / ${id} 的规格不合法：${problem}。\n` +
@@ -1149,7 +1166,7 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         `默认生成模型 "${ref?.provider} / ${ref?.model}" 不在配置中。\n` +
           `  修改 ${configPath()} 中的 "mediaDefaults"。`,
       )
-    } else if (MEDIA_KIND_OUTPUT[stored.kind] !== output) {
+    } else if (!isMediaKind(stored.kind) || mediaKindOutput(stored.kind) !== output) {
       problems.push(`默认生成模型 "${ref.provider} / ${ref.model}" 不属于 ${output} 类别。`)
     }
   }

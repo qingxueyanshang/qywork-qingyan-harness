@@ -660,7 +660,10 @@ test.each([
     '百炼免费额度用尽',
     '{"code":"Throttling.AllocationQuota","message":"Free allocated quota exceeded.","request_id":"r"}',
   ],
-  ['第三方接口余额不足', '{"error":{"message":"用户额度不足，剩余额度：0","type":"new_api_error"}}'],
+  [
+    '第三方接口余额不足',
+    '{"error":{"message":"用户额度不足，剩余额度：0","type":"new_api_error"}}',
+  ],
 ] as const)('429 正文为「%s」：额度类只发送一次，不重试', async (_, body) => {
   reply = () => new Response(body, { status: 429, headers: { 'retry-after': '0' } })
   const error = await failure(postJson(url(), {}, {}, signal()))
@@ -674,7 +677,7 @@ test.each([
     '{"code":"Throttling.AllocationQuota","message":"Allocated quota exceeded, please increase your quota limit.","request_id":"r"}',
   ],
   [
-    '第三方接口上游限流',
+    '第三方接口的上游限流',
     '{"error":{"message":"Upstream rate limit exceeded, please retry later","type":"rate_limit_error"}}',
   ],
 ] as const)('429 正文为「%s」：限流类重试 5 次', async (_, body) => {

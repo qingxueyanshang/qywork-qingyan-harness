@@ -44,7 +44,7 @@ const PRESETS: Preset[] = [
   },
   {
     key: 'openai',
-    label: 'OpenAI 或任意 OpenAI 兼容第三方接口',
+    label: 'OpenAI 或任意 OpenAI 兼容接口',
     provider: {
       kind: 'openai_chat_completions',
       baseUrl: 'https://api.openai.com/v1',

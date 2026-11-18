@@ -1,20 +1,12 @@
 /**
- * 覆盖 `index.ts`（拉取型号）与 `providerc.ts`（服务商C AI 对话价格）：本地服务按 2026-10-21 取得的服务商B、2026-10-27 取得的 providera
- * 响应片段与 2026-11-18 取得的服务商C AI 模型目录应答，核对分类、渠道规格、价格，没有计费清单时退回型号列表、按条目自带的类别归类，
- * 名称按前缀对应模型库与生成目录的型号，以及官方接口按目录补齐自有协议的生成型号。
+ * 覆盖 `index.ts`（拉取型号）：本地服务按计费清单与型号列表应答，核对分类、价格，没有计费清单时退回型号列表、
+ * 按条目自带的类别归类，名称按前缀对应模型库与生成目录的型号，官方接口按目录补齐自有协议的生成型号，
+ * 以及登记的渠道（`registerPullChannel`）给出规格或完成整个拉取。站点与条目为合成数据。
  */
 
 import { afterAll, afterEach, expect, spyOn, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { identifyMediaModel } from '@qywork/core'
-import { PullError, pullModels } from './index.ts'
-
-const fixture = (name: string) =>
-  JSON.parse(readFileSync(join(import.meta.dir, '../fixtures', name), 'utf8')) as Record<
-    string,
-    unknown
-  >
+import { PullError, pullModels, registerPullChannel } from './index.ts'
 
 const servers: ReturnType<typeof Bun.serve>[] = []
 afterAll(async () => {
@@ -65,215 +57,51 @@ function site(routes: Record<string, unknown>, host?: string) {
 
 const signal = () => new AbortController().signal
 
-test('服务商B：计费清单区分对话、图像与视频，视频带渠道规格与价格', async () => {
-  const data = fixture('newapi-providerb.json')
-  const { target, seen } = site(
-    {
-      '/api/pricing': data.pricing,
-      '/api/status': data.status,
-      '/docs/catalog-models.json': data.catalog,
-    },
-    'providerb.example.com',
-  )
-  const result = await pullModels(target, signal())
-  expect(result.source).toBe('pricing')
-  const by = new Map(result.models.map((m) => [m.id, m]))
-  expect(by.get('X-SD25-301010')).toEqual({
-    id: 'X-SD25-301010',
-    output: 'video',
-    kind: 'openai_videos',
-    known: true,
-    spec: {
-      channel: 'providerb',
-      seconds: [30],
-      ratios: ['16:9', '9:16'],
-      resolutions: ['720p'],
-      sizes: { '720p': [1280, 720] },
-      maxImages: 30,
-      maxVideos: 0,
-      maxAudios: 0,
-      publicUrls: true,
-      price: { per: 'request', amount: 7, currency: 'CNY' },
-    },
-  })
-  // 按尺寸分档的型号按分辨率档位分别保存单价。
-  expect(by.get('007系列/sd2.5(30图10音/480P/720P)')).toMatchObject({
-    output: 'video',
-    spec: {
-      resolutions: ['480p', '720p'],
-      price: { per: 'second', amount: { '480p': 0.4, '720p': 0.6 }, currency: 'CNY' },
-    },
-  })
-  // 表单上传；计费清单按请求中的 resolution 计价，规格标记提交时发送该字段，两档分别定价。
-  expect(by.get('sd-2.0-vip')).toMatchObject({
-    output: 'video',
-    spec: {
-      multipart: true,
-      resolutionField: true,
-      price: { per: 'second', amount: { '720p': 0.676, '1080p': 1.56 }, currency: 'CNY' },
-    },
-  })
-  // 渠道说明：每次生成 1 张，0.052 元。
-  expect(by.get('gpt-image-2')).toMatchObject({
-    output: 'image',
-    kind: 'openai_images',
-    spec: {
-      channel: 'providerb',
-      resolutions: ['1K', '2K', '4K'],
-      maxImages: 10,
-      price: { per: 'request', amount: 0.052, currency: 'CNY' },
-    },
-  })
-  expect(by.get('claude-sonnet-5-5')).toMatchObject({
-    output: 'chat',
-    known: true,
-    price: { input: 1.8, output: 9, currency: 'CNY' },
-  })
-  expect(by.get('deepseek-v4.1-flash')).toMatchObject({
-    id: 'deepseek-v4.1-flash',
-    output: 'chat',
-    known: false,
-    price: { input: 1.04, output: 4.16, offPeak: { rate: 0.5 } },
-  })
-  // 公开接口不携带凭证，型号列表带凭证。
-  expect(seen.filter((s) => s.path !== '/v1/models').every((s) => s.auth === null)).toBe(true)
+/** 计费清单中的一条：默认分组、按倍率计费。 */
+const priced = (model_name: string, types: string[], fields: Record<string, unknown> = {}) => ({
+  model_name,
+  quota_type: 0,
+  model_ratio: 1.5,
+  enable_groups: ['default'],
+  supported_endpoint_types: types,
+  ...fields,
 })
 
-// 2026-10-27 providera 的视频规格只在带凭证的型号列表中（条目的 `parameters`），工作台目录需要登录。
-test('providera：型号列表的 parameters 给出规格，价格按计费清单折算', async () => {
-  const data = fixture('newapi-providera.json')
-  const { target, seen } = site(
-    {
-      '/api/pricing': data.pricing,
-      '/api/status': data.status,
-      '/v1/models': data.models,
-    },
-    'providera.example.com',
-  )
-  const by = new Map((await pullModels(target, signal())).models.map((m) => [m.id, m]))
-  expect(by.get('TTseadanco2.5-720')).toMatchObject({
-    output: 'video',
-    known: true,
-    spec: {
-      channel: 'providera',
-      ratios: ['16:9', '9:16', '1:1'],
-      maxVideos: 10,
-      price: { per: 'second', amount: 0.42, currency: 'CNY' },
-    },
-  })
-  expect(by.get('seedance2.5-yx-stable')).toMatchObject({
-    spec: {
-      seconds: expect.arrayContaining([4, 30]),
-      price: { per: 'request', amount: 7.2, currency: 'CNY' },
-    },
-  })
-  expect(by.get('sedanco2.0-300秒必出')).toMatchObject({
-    spec: { seconds: [15], resolutions: ['480p'], maxVideos: 0, maxAudios: 3 },
-  })
-  // 型号列表的 `pricing` 写为按条，计费清单为按秒：以计费清单为准。
-  expect(by.get('TTsedanco2.0-720')).toMatchObject({
-    spec: { price: { per: 'second', amount: 0.3 } },
-  })
-  // 型号列表中没有 parameters 的型号不带规格。
-  expect(by.get('bb2.5')).toEqual({
-    id: 'bb2.5',
-    output: 'video',
-    kind: 'openai_videos',
-    known: false,
-  })
-  expect(seen.find((s) => s.path === '/v1/models')?.auth).toBe('Bearer sk-test')
-  expect(seen.filter((s) => s.path.startsWith('/api/')).every((s) => s.auth === null)).toBe(true)
-})
-
-test('服务商C AI：只带凭证读取模型目录，对话与视频按 type 归类，图像、音频与视频擦除不列出', async () => {
-  const { seen } = site({ '/api/v1/models': fixture('providerc-models.json') }, 'providerc.example.com')
-  const target = {
-    kind: 'openai_chat_completions' as const,
-    baseUrl: 'https://providerc.example.com/api/v1',
-    apiKey: 'dza_live_test',
-  }
-  const result = await pullModels(target, signal())
-  expect(seen).toEqual([{ path: '/api/v1/models', auth: 'Bearer dza_live_test' }])
-  // 目录列出密钥可调用的全部型号，可据此标记已下架。
-  expect(result.source).toBe('pricing')
-  const count = (output: string) => result.models.filter((m) => m.output === output).length
-  expect([count('chat'), count('video'), result.models.length]).toEqual([13, 19, 32])
-  const by = new Map(result.models.map((m) => [m.id, m]))
-  // 每百万 Token 的人民币售价；`priceTiers` 为长上下文档。
-  expect(by.get('gpt-6-astra')).toMatchObject({
-    output: 'chat',
-    price: {
-      input: 4.455,
-      output: 22.275,
-      cacheRead: 0.4455,
-      cacheWrite: 5.56875,
-      currency: 'CNY',
-      longContext: [
-        {
-          thresholdTokens: 272_001,
-          input: 8.91,
-          output: 33.4125,
-          cacheRead: 0.891,
-          cacheWrite5m: 11.1375,
-          cacheWrite1h: 11.1375,
-          note: '提示词超过 272,000 token 后整条请求按 ¥8.91 / ¥33.4125（缓存 ¥0.891）计价',
-        },
-      ],
-    },
-  })
-  expect(by.get('kimi-k3')).toMatchObject({
-    price: { input: 2.7, output: 13.5, cacheRead: 0.27, cacheWrite: 0, currency: 'CNY' },
-  })
-  // 价格随调用时段变化（`pricingNote`），四项单价不足以计价。
-  expect(by.get('deepseek-v4.1-flash')).not.toHaveProperty('price')
-  expect(by.get('providerc-video-17')).toMatchObject({
-    output: 'video',
-    kind: 'providerc_videos',
-    known: true,
-    spec: { channel: 'providerc', label: '特价渠道 Seedance 2.0 mini 720p', seconds: [5, 10, 15] },
-  })
-  for (const id of ['providerc-image-01', 'providerc-MJ', 'suno', 'soundview-subtitle-remove'])
-    expect(by.has(id)).toBe(false)
-  // 接口的协议不是 Chat Completions 时，对话型号带上它支持的协议。
-  const responses = await pullModels({ ...target, kind: 'openai_responses' }, signal())
-  expect(responses.models.find((m) => m.id === 'kimi-k3')).toMatchObject({
-    kind: 'openai_chat_completions',
-  })
-})
-
-test('不是已收录的第三方接口时不读取渠道目录：返回同名字段也不当作渠道，型号不带规格', async () => {
-  const providera = fixture('newapi-providera.json')
-  const providerb = fixture('newapi-providerb.json')
+test('计费清单区分对话、图像与视频，对话价格按站点充值价折算，不携带凭证', async () => {
   const { target, seen } = site({
-    '/api/pricing': providera.pricing,
-    '/api/status': providera.status,
-    '/v1/models': providera.models,
-    '/docs/catalog-models.json': providerb.catalog,
+    '/api/pricing': {
+      data: [
+        priced('claude-sonnet-5-5', ['openai']),
+        priced('video-a', ['openai-video'], { quota_type: 1, model_price: 1 }),
+        priced('gpt-image-2', ['openai', 'image-generation'], { quota_type: 1, model_price: 0.01 }),
+        priced('embedding-a', ['embeddings']),
+      ],
+      group_ratio: { default: 1 },
+    },
+    '/api/status': { data: { price: 7.3 } },
   })
-  const by = new Map((await pullModels(target, signal())).models.map((m) => [m.id, m]))
-  expect(by.get('TTseadanco2.5-720')).toEqual({
-    id: 'TTseadanco2.5-720',
-    output: 'video',
-    kind: 'openai_videos',
-    known: false,
-  })
-  expect(seen.map((s) => s.path).sort()).toEqual(['/api/pricing', '/api/status'])
+  const result = await pullModels(target, signal())
+  expect(result.source).toBe('pricing')
+  expect(result.models).toEqual([
+    {
+      id: 'claude-sonnet-5-5',
+      output: 'chat',
+      known: true,
+      price: { input: 21.9, output: 21.9, cacheRead: 21.9, cacheWrite: 21.9, currency: 'CNY' },
+    },
+    { id: 'video-a', output: 'video', kind: 'openai_videos', known: false },
+    { id: 'gpt-image-2', output: 'image', kind: 'openai_images', known: true },
+  ])
+  expect(seen.every((s) => s.auth === null)).toBe(true)
 })
 
 test('型号不支持接口的协议时带上它支持的协议；同时支持接口协议的型号不带', async () => {
-  const entry = (model_name: string, types: string[]) => ({
-    model_name,
-    quota_type: 0,
-    model_ratio: 1.5,
-    enable_groups: ['default'],
-    supported_endpoint_types: types,
-  })
   const { target } = site({
     '/api/pricing': {
       data: [
-        entry('claude-sonnet-5-5', ['anthropic']),
-        entry('gpt-5', ['openai-response']),
-        entry('both', ['openai', 'anthropic']),
+        priced('claude-sonnet-5-5', ['anthropic']),
+        priced('gpt-5', ['openai-response']),
+        priced('both', ['openai', 'anthropic']),
       ],
       group_ratio: { default: 1 },
     },
@@ -286,14 +114,94 @@ test('型号不支持接口的协议时带上它支持的协议；同时支持�
 })
 
 test('站点状态读取失败时价格不明，型号照常列出', async () => {
-  const data = fixture('newapi-providerb.json')
-  const { target } = site({ '/api/pricing': data.pricing })
+  const { target } = site({
+    '/api/pricing': {
+      data: [priced('claude-sonnet-5-5', ['openai'])],
+      group_ratio: { default: 1 },
+    },
+  })
   const result = await pullModels(target, signal())
   expect(result.models.find((m) => m.id === 'claude-sonnet-5-5')).toEqual({
     id: 'claude-sonnet-5-5',
     output: 'chat',
     known: true,
   })
+})
+
+test('登记的渠道按目录给出生成型号的规格：只在接口地址属于该渠道时读取目录', async () => {
+  registerPullChannel({
+    matches: (baseUrl) => new URL(baseUrl).host === 'catalog.example.com',
+    async specs(ctx) {
+      const body = (await ctx.getJson(`${ctx.origin}/catalog.json`, {})) as {
+        models: { id: string; seconds: number[] }[]
+      }
+      const listed = new Map(body.models.map((m) => [m.id, m]))
+      return (entry, output) => {
+        const hit = listed.get(entry.model_name)
+        return output === 'video' && hit ? { channel: 'example', seconds: hit.seconds } : undefined
+      }
+    },
+  })
+  const routes = {
+    '/api/pricing': {
+      data: [priced('video-a', ['openai-video']), priced('video-b', ['openai-video'])],
+      group_ratio: { default: 1 },
+    },
+    '/api/status': { data: {} },
+    '/catalog.json': { models: [{ id: 'video-a', seconds: [5, 10] }] },
+  }
+  const channel = site(routes, 'catalog.example.com')
+  const by = new Map((await pullModels(channel.target, signal())).models.map((m) => [m.id, m]))
+  expect(by.get('video-a') as object).toEqual({
+    id: 'video-a',
+    output: 'video',
+    kind: 'openai_videos',
+    known: true,
+    spec: { channel: 'example', seconds: [5, 10] },
+  })
+  expect(by.get('video-b')).toEqual({
+    id: 'video-b',
+    output: 'video',
+    kind: 'openai_videos',
+    known: false,
+  })
+  // 其他地址返回同名目录也不读取，型号不带规格。
+  const other = site(routes)
+  const plain = await pullModels(other.target, signal())
+  expect(plain.models.find((m) => m.id === 'video-a')).not.toHaveProperty('spec')
+  expect(other.seen.map((s) => s.path).sort()).toEqual(['/api/pricing', '/api/status'])
+})
+
+test('登记的渠道可完成整个拉取：条目经通用的对话与生成条目构造，带凭证请求', async () => {
+  registerPullChannel({
+    matches: (baseUrl) => new URL(baseUrl).host === 'own.example.com',
+    async pull(ctx) {
+      await ctx.getJson(`${ctx.origin}/own/models`, ctx.auth)
+      return {
+        source: 'pricing',
+        models: [
+          ctx.chat('gpt-5.6-sol', ['openai']),
+          ctx.media('video-a', 'video', 'openai_videos', { channel: 'example' }),
+        ],
+      }
+    },
+  })
+  const { target, seen } = site({ '/own/models': {} }, 'own.example.com')
+  const result = await pullModels({ ...target, kind: 'openai_responses' }, signal())
+  expect(result).toEqual({
+    source: 'pricing',
+    models: [
+      { id: 'gpt-5.6-sol', output: 'chat', kind: 'openai_chat_completions', known: true },
+      {
+        id: 'video-a',
+        output: 'video',
+        kind: 'openai_videos',
+        known: true,
+        spec: { channel: 'example' },
+      },
+    ],
+  })
+  expect(seen).toEqual([{ path: '/own/models', auth: 'Bearer sk-test' }])
 })
 
 test('没有计费清单时退回型号列表，带凭证请求，按生成目录归类', async () => {
@@ -311,7 +219,7 @@ test('没有计费清单时退回型号列表，带凭证请求，按生成目�
   expect(seen.find((s) => s.path === '/v1/models')?.auth).toBe('Bearer sk-test')
 })
 
-// 2026-11-10 providerg.example.com：按目录协议添加为百炼图像，原生路径 /api/v1/services/aigc/multimodal-generation/generation 返回 404。
+// 第三方接口按目录协议添加为百炼图像时，原生路径 /api/v1/services/aigc/multimodal-generation/generation 返回 404。
 test('第三方接口上与目录 id 相同、登记了兼容映射的厂商型号使用通用协议，官方地址与未填地址仍用厂商协议', async () => {
   const { target } = site({
     '/v1/models': { data: [{ id: 'qwen-image-3.0-pro' }, { id: 'wan2.7-image' }] },
@@ -335,7 +243,7 @@ test('第三方接口上与目录 id 相同、登记了兼容映射的厂商型�
   })
 })
 
-// 2026-10-22 providerf.example.com 的 /v1/models 原样：只有名称，没有计费清单；其中 5 个曾被归为对话。
+// 第三方接口的 /v1/models 只有名称，没有计费清单。
 test('型号列表中带后缀的生成型号按目录 id 识别，协议按接口地址取默认值', async () => {
   const ids = [
     'gpt-image-2',
@@ -361,14 +269,14 @@ test('型号列表中带后缀的生成型号按目录 id 识别，协议按接�
   expect(by.get('gpt-image-2')).toMatchObject({ known: true })
   expect(by.get('gpt-image-2')).not.toHaveProperty('base')
   expect(by.get('gpt-image-2.0-4k')).toMatchObject({ known: false, base: 'gpt-image-2' })
-  // 取最长的目录前缀；Gemini 名称经第三方时不使用目录中的 Gemini 原生协议。
+  // 取最长的目录前缀；Gemini 名称经第三方接口时不使用目录中的 Gemini 原生协议。
   expect(by.get('gpt-image-2.5-sunburst-4k')).toMatchObject({ base: 'gpt-image-2.5-sunburst' })
   expect(by.get('gemini-3-pro-image-preview')).toMatchObject({ base: 'gemini-3-pro-image' })
   // 目录 id 之后不是分隔符时不识别，名称也不在模型库中，归为未知。
   expect(by.get('gpt-image-2x')).toEqual({ id: 'gpt-image-2x', output: 'unknown' })
 })
 
-// 本机请求记录中 providere 渠道的 Gemini 名称为 `gemini-4-argon-high`，型号列表只有名称，曾归为未知。
+// 第三方接口的 Gemini 名称带思考档位后缀（如 `gemini-4-argon-high`），型号列表只有名称。
 test('型号列表中以模型库 id 为前缀的对话型号归入对话，对应型号为该 id；前缀之后不是分隔符时仍为未知', async () => {
   const { target } = site({
     '/v1/models': {

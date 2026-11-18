@@ -159,7 +159,7 @@ export async function generateArt(
   let truncated = false
   for (let resends = 0; ; resends++) {
     let failed: ProviderError | null = null
-    // 与对话请求取得同一个在途名额：第三方的并发按请求方计算（`sendLimiter`）。
+    // 与对话请求取得同一个在途名额：第三方接口的并发按请求方计算（`sendLimiter`）。
     let release: ((outcome: SendOutcome) => void) | null = null
     try {
       const granted = await sendLimiter.acquire(sendLane(adapter), signal)

@@ -33,7 +33,7 @@ const PNG_1X1 = Buffer.from(
   'base64',
 )
 
-/** 第三方接口后付费合约只包含文本时返回的正文，取自 2026-10-13 的失败记录。 */
+/** 第三方接口的后付费合约只包含文本时返回的正文，取自 2026-10-13 的失败记录。 */
 const CONTRACT_REJECTION = {
   code: 'POSTPAID_REQUEST_NOT_INCLUDED',
   message: 'This contract currently includes text input and output only',

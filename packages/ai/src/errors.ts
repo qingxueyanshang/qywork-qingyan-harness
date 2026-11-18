@@ -799,7 +799,7 @@ export function httpFailureCode(status: number, error: unknown, message: string)
  * 第三方接口将后端的 5xx 转为 400 是常见做法，仅凭状态码无法区分，文案是唯一线索
  * （判据优先级见文件头第 3 项）。命中的归为可重发的码，其余按 4xx 的本义处理。
  *
- * `Request contains an invalid argument.` 是另一种第三方接口通用拒绝：没有参数名、字段位置
+ * `Request contains an invalid argument.` 是第三方接口的另一种通用拒绝：没有参数名、字段位置
  * 或任何可供用户修正的细节。两段实际失败的历史按完全相同的装配结果重放后均被同一第三方接口
  * 接受，说明该文案在此并不稳定地代表真正的参数错误。只精确匹配 400 的整句文案，不把任何
  * 带具体参数信息的 4xx 放入重发表。
@@ -811,7 +811,7 @@ function looksRetryableRejection(status: number, message: string): boolean {
   const normalized = message.trim()
   if (status === 400 && /^request contains an invalid argument\.?$/i.test(normalized)) return true
   /*
-   * 聚合第三方接口会把所选上游渠道返回的 403 包装为 400 / 422。它与配置端点
+   * 聚合多个上游渠道的第三方接口会把所选渠道返回的 403 包装为 400 / 422。它与配置端点
    * 直接返回 403 不同：前者在下一次请求时可能切换到可用渠道，后者才是当前 Key
    * 对该端点的稳定权限拒绝。只收录实际出现过的整句文案，不能放行所有普通 403。
    */

@@ -1,10 +1,9 @@
 /**
- * 渠道商表：接口地址的主机名 → 渠道商。按渠道商处理的兼容差异（协议默认值、请求头、素材上传方式、错误码的含义、
- * 拉取时读取的渠道目录与提交格式）一律经 `channelVendorOf` 判定，不在各处另写主机名判断：
- * 分散的判断在渠道商更换域名时容易只修改其中一处。
+ * 渠道商表：接口地址的主机名 → 渠道商。按渠道商处理的兼容差异（协议默认值、请求头、素材上传方式、错误码的含义）
+ * 一律经 `channelVendorOf` 判定，不在各处另写主机名判断：分散的判断在渠道商更换域名时容易只修改其中一处。
  *
  * 只按接口地址判定，不按接口返回的字段或模型名推断：第三方接口可能返回与某渠道同名的字段，
- * 经第三方调用的模型名也与官方相同，按它们推断会套用不适用的格式。
+ * 经第三方接口调用的模型名也与官方相同，按它们推断会套用不适用的格式。
  * 表中只收录有兼容处理的渠道商；未收录的地址按通用协议处理。
  * 渠道商 id 与 `@qywork/ai` 的 `VENDORS` 中同一厂商的 id 一致。
  */
@@ -18,9 +17,6 @@ export const CHANNEL_VENDORS = [
   'google',
   'xai',
   'opencode',
-  'providera',
-  'providerb',
-  'providerc',
   'zhipu',
 ] as const
 export type ChannelVendor = (typeof CHANNEL_VENDORS)[number]
@@ -48,48 +44,23 @@ const HOSTS: Readonly<Record<ChannelVendor, readonly (string | RegExp)[]>> = {
   xai: ['api.x.ai'],
   // OpenCode Zen。请求附带会话标识。
   opencode: ['opencode.ai'],
-  // 第三方接口 providera。拉取时读取带凭证型号列表的 `parameters`，视频按 providera 格式提交。
-  providera: ['providera.example.com'],
-  // 第三方接口服务商B。拉取时读取 `/docs/catalog-models.json`，视频、图像按服务商B格式提交。
-  providerb: ['providerb.example.com'],
-  // 第三方接口服务商C AI。拉取时读取带凭证的模型目录 `/api/v1/models`，视频按服务商C AI 的协议（`providerc_videos`）提交。
-  providerc: ['providerc.example.com'],
   // 智谱开放平台。对话的业务错误码按智谱的含义归类（`@qywork/ai` 的 `upstreamFailureCode`）。
   zhipu: ['open.bigmodel.cn'],
 }
 
-/** 是否为第三方接口。新增渠道商时必须标明：第三方接口的 id 与主机名不得出现在发布说明中（`scripts/release-config.test.ts`）。 */
-const RELAY: Readonly<Record<ChannelVendor, boolean>> = {
-  alibaba: false,
-  volcengine: false,
-  kling: false,
-  minimax: false,
-  xiaomi: false,
-  google: false,
-  xai: false,
-  opencode: false,
-  providera: true,
-  providerb: true,
-  providerc: true,
-  zhipu: false,
-}
-
-/** 第三方接口的 id 与完整主机名（正则写法的主机名不列出）。 */
-export function relayVendors(): { id: ChannelVendor; hosts: string[] }[] {
-  return CHANNEL_VENDORS.filter((v) => RELAY[v]).map((id) => ({
-    id,
-    hosts: HOSTS[id].filter((h): h is string => typeof h === 'string'),
-  }))
+/** 接口地址的主机名（小写）；地址无效时返回 null。 */
+export function hostOf(baseUrl: string | undefined): string | null {
+  try {
+    return new URL(baseUrl ?? '').hostname.toLowerCase()
+  } catch {
+    return null
+  }
 }
 
 /** 接口地址所属的渠道商；地址无效或不在表中时返回 null。 */
 export function channelVendorOf(baseUrl: string | undefined): ChannelVendor | null {
-  let host: string
-  try {
-    host = new URL(baseUrl ?? '').hostname.toLowerCase()
-  } catch {
-    return null
-  }
+  const host = hostOf(baseUrl)
+  if (host === null) return null
   for (const vendor of CHANNEL_VENDORS) {
     if (HOSTS[vendor].some((h) => (typeof h === 'string' ? h === host : h.test(host))))
       return vendor

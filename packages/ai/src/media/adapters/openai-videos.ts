@@ -1,15 +1,15 @@
 /**
  * `openai_videos`：第三方接口的 `/v1/videos`（New API 等按 OpenAI 视频接口的形状转发各家视频模型）。
  *
- * 提交 `POST {base}/videos`，查询 `GET {base}/videos/{id}`（providerb 为 `GET {base}/video/generations/{id}`），
- * 通用视频从 `GET {base}/videos/{id}/content` 取回，providerb 使用渠道文件列表中的成片地址（`providerbArtifact`）。
- * 厂商扩展结构由目录声明，素材与参数按对应结构发送。
+ * 提交 `POST {base}/videos`，查询 `GET {base}/videos/{id}`，成片从 `GET {base}/videos/{id}/content` 取回。
+ * 厂商扩展结构由目录声明，素材与参数按对应结构发送。登记的渠道可另给请求结构与任务查询（`VideoRequestFormat`），
+ * 任务的提交、等待与取回仍由本适配器负责。
  */
 
 import { mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, sniffMime, uploadName } from '../http.ts'
+import { count, dataUri, defined, download, getJson } from '../http.ts'
 import {
   afterSubmit,
   failureDetail,
@@ -18,105 +18,86 @@ import {
   type TaskState,
   waitTask,
 } from '../task.ts'
-import {
-  type MediaAdapter,
-  MediaError,
-  type MediaProfile,
-  type MediaRequest,
-  type MediaResult,
-  type MediaRunOptions,
-  type MediaUsage,
+import type {
+  MediaAdapter,
+  MediaProfile,
+  MediaRequest,
+  MediaResult,
+  MediaRunOptions,
+  MediaUsage,
 } from '../types.ts'
 import { arkVideoContent, ENDED } from './ark-videos.ts'
 import { dashScopeVideoPayload } from './dashscope.ts'
-import { provideraVideoPayload } from './providera.ts'
-import { providerbArtifact, providerbBilled, uploadproviderbReference } from './providerb.ts'
+
+/** 一次运行的连接参数，交给请求结构的实现。 */
+export interface VideoTaskContext {
+  profile: MediaProfile
+  spec: MediaModelSpec
+  /** 规范化的接口地址（`normalizeBaseUrl`）。 */
+  base: string
+  auth: Record<string, string>
+  signal: AbortSignal
+}
 
 /**
- * 按目录声明构造已核实的第三方请求；未知型号只发送通用字段。
- * 返回 JSON 字段时由调用方补上 `model` 与 `prompt`；返回表单时表单已包含全部字段。
+ * `/v1/videos` 上的一种请求结构。`payload` 返回 JSON 字段时由适配器补上 `model` 与 `prompt`，返回表单时表单已包含全部字段；
+ * `check` 省略时按 `GET {base}/videos/{id}` 查询。`submittedSeconds` 是提交参数中的时长（含目录默认值）。
  */
-async function payloadOf(
-  req: MediaRequest,
-  spec: MediaModelSpec,
-  profile: MediaProfile,
-  signal: AbortSignal,
-): Promise<Record<string, unknown> | FormData> {
-  switch (spec.videoFormat) {
-    case 'providerb': {
-      const images: string[] = []
-      const videos: string[] = []
-      const audios: string[] = []
-      // 先校验完整输入，避免后续素材无效时已上传前面的文件。
-      for (const input of req.inputs) {
-        if (
-          !(
-            (input.role === 'reference' && spec.inputs.maxImages) ||
-            (input.role === 'video' && spec.inputs.maxVideos) ||
-            (input.role === 'audio' && spec.inputs.maxAudios)
-          )
-        )
-          throw new MediaError('该模型尚未接通此类参考素材；未提交生成')
-        if (input.role === 'audio' && sniffMime(input.bytes) !== 'audio/mpeg')
-          throw new MediaError('该模型的参考音频仅支持 MP3，请先转换为 MP3；未提交生成')
-      }
-      // 画布省略处于默认值的参数；该渠道仍显式发送目录中声明的时长和尺寸。
-      const params = mediaParamValues(spec.params, req.params)
-      const resolution = spec.resolutionField && spec.resolutionBySize?.[String(params.size)]
-      const fields = resolution ? { ...params, resolution } : params
-      // 表单提交：参数为文本字段，参考图逐张放入同名文件字段 `input_reference`。没有参考素材时按 JSON 提交。
-      if (spec.inputs.transport === 'multipart' && req.inputs.length) {
-        const form = new FormData()
-        form.set('model', profile.model)
-        form.set('prompt', req.prompt)
-        for (const [key, value] of Object.entries(fields)) form.set(key, String(value))
-        for (const input of req.inputs)
-          form.append(
-            'input_reference',
-            new Blob([input.bytes], { type: input.mime }),
-            uploadName(input),
-          )
-        return form
-      }
-      for (const input of req.inputs) {
-        const value = spec.inputs.publicUrls
-          ? await uploadproviderbReference(
-              input,
-              normalizeBaseUrl(profile.baseUrl),
-              { authorization: `Bearer ${profile.apiKey}`, ...profile.headers },
-              signal,
-            )
-          : dataUri(input.bytes, input.role === 'audio' ? 'audio/mpeg' : input.mime)
-        if (input.role === 'reference' && spec.inputs.maxImages) {
-          images.push(value)
-        } else if (input.role === 'video' && spec.inputs.maxVideos) {
-          videos.push(value)
-        } else if (input.role === 'audio' && spec.inputs.maxAudios) {
-          audios.push(value)
+export interface VideoRequestFormat {
+  payload(req: MediaRequest, ctx: VideoTaskContext): Promise<Record<string, unknown> | FormData>
+  check?(
+    taskId: string,
+    ctx: VideoTaskContext,
+    submittedSeconds: number | undefined,
+  ): Promise<TaskState>
+}
+
+/** 按目录声明构造已核实的请求；未知型号只发送通用字段。 */
+const CATALOG_FORMAT: VideoRequestFormat = {
+  async payload(req, { spec }) {
+    switch (spec.videoFormat) {
+      case 'dashscope':
+        return { metadata: await dashScopeVideoPayload(req, spec, (i) => dataUri(i.bytes, i.mime)) }
+      case 'ark':
+        return { metadata: { ...req.params, content: arkVideoContent(req) } }
+      case 'veo':
+        return {
+          ...(req.params.durationSeconds !== undefined
+            ? { seconds: String(req.params.durationSeconds) }
+            : {}),
+          ...(req.inputs.length ? { images: req.inputs.map((i) => dataUri(i.bytes, i.mime)) } : {}),
+          metadata: req.params,
         }
-      }
-      return {
-        ...fields,
-        ...(images.length ? { images } : {}),
-        ...(videos.length ? { videos } : {}),
-        ...(audios.length ? { audios } : {}),
-      }
+      default:
+        return req.params
     }
-    case 'dashscope':
-      return { metadata: await dashScopeVideoPayload(req, spec, (i) => dataUri(i.bytes, i.mime)) }
-    case 'ark':
-      return { metadata: { ...req.params, content: arkVideoContent(req) } }
-    case 'veo':
-      return {
-        ...(req.params.durationSeconds !== undefined
-          ? { seconds: String(req.params.durationSeconds) }
-          : {}),
-        ...(req.inputs.length ? { images: req.inputs.map((i) => dataUri(i.bytes, i.mime)) } : {}),
-        metadata: req.params,
-      }
-    default:
-      return req.params
+  },
+}
+
+/** `GET {base}/videos/{id}` 查询；完成后从 `{id}/content` 取回。 */
+async function checkVideo(
+  taskId: string,
+  { base, auth, signal }: VideoTaskContext,
+  submittedSeconds: number | undefined,
+): Promise<TaskState> {
+  const path = `${base}/videos/${encodeURIComponent(taskId)}`
+  const body = await getJson(path, auth, signal)
+  const status = String(body.status ?? '')
+  // 视频对象只包含时长 `seconds`（字符串），没有用量与金额字段。
+  // 部分渠道不返回时长，而按提交的时长计费：此时按提交时长计量。不要留空，按秒计价的型号会因此记为 0。
+  if (status === 'completed') {
+    return {
+      state: 'done',
+      url: `${path}/content`,
+      usage: defined<MediaUsage>({ seconds: count(body.seconds) ?? submittedSeconds }),
+    }
   }
+  const ended = ENDED[status]
+  if (ended) {
+    const error = body.error as { code?: unknown; message?: unknown } | undefined
+    return { state: 'failed', message: failureDetail(error?.code, error?.message, ended) }
+  }
+  return pendingTask(status, ['queued', 'in_progress'])
 }
 
 export class OpenAIVideosAdapter implements MediaAdapter {
@@ -125,106 +106,52 @@ export class OpenAIVideosAdapter implements MediaAdapter {
   constructor(
     private readonly profile: MediaProfile,
     readonly spec: MediaModelSpec,
+    private readonly format: VideoRequestFormat = CATALOG_FORMAT,
   ) {}
 
   async run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult> {
     const { signal } = opts
-    const base = normalizeBaseUrl(this.profile.baseUrl)
-    const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
+    const ctx: VideoTaskContext = {
+      profile: this.profile,
+      spec: this.spec,
+      base: normalizeBaseUrl(this.profile.baseUrl),
+      auth: { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers },
+      signal,
+    }
     let taskId = opts.resumeTaskId
     if (!taskId) {
-      const payload =
-        this.spec.videoFormat === 'providera'
-          ? await provideraVideoPayload(req, this.spec, base, auth, signal)
-          : await payloadOf(req, this.spec, this.profile, signal)
+      const payload = await this.format.payload(req, ctx)
       const submitted = await postTask(
-        `${base}/videos`,
+        `${ctx.base}/videos`,
         payload instanceof FormData
           ? payload
           : { model: this.profile.model, prompt: req.prompt, ...payload },
-        auth,
+        ctx.auth,
         opts,
         (body) => body.id,
       )
       taskId = submitted.taskId
     }
     const id = taskId
+    // 提交参数中的时长（含目录默认值）；取回时由调用方传入任务记录中的提交参数。
     const submittedSeconds = count(mediaParamValues(this.spec.params, req.params).seconds)
+    const check = this.format.check ?? checkVideo
     return afterSubmit(id, signal, async () => {
-      const done = await waitTask(() => this.check(base, id, auth, signal, submittedSeconds), opts)
+      const done = await waitTask(() => check(id, ctx, submittedSeconds), opts)
       const url = new URL(done.url)
       return {
-        files: [await download(url.href, signal, url.origin === new URL(base).origin ? auth : {})],
+        files: [
+          await download(url.href, signal, url.origin === new URL(ctx.base).origin ? ctx.auth : {}),
+        ],
         ...(done.usage ? { usage: done.usage } : {}),
       }
     })
   }
-
-  /** `submittedSeconds`：提交参数中的时长（含目录默认值），取回时由调用方传入任务记录中的提交参数。 */
-  private async check(
-    base: string,
-    taskId: string,
-    auth: Record<string, string>,
-    signal: AbortSignal,
-    submittedSeconds: number | undefined,
-  ): Promise<TaskState> {
-    const path = `${base}/videos/${encodeURIComponent(taskId)}`
-    if (this.spec.videoFormat === 'providerb') {
-      // 任务失败时 `/videos/{id}` 只返回「The video generation task failed.」，拒绝原因（如版权保护拒绝）
-      // 只在任务接口的 `fail_reason` 中。成功后的成片地址取自渠道文件列表（`providerbArtifact`）。
-      // 扣费取任务记录的 `quota`：各上游回执中的时长、尺寸字段不一致，常常缺失。
-      const body = await getJson(
-        `${base}/video/generations/${encodeURIComponent(taskId)}`,
-        auth,
-        signal,
-      )
-      const task = (body.data ?? {}) as {
-        status?: unknown
-        fail_reason?: unknown
-        quota?: unknown
-        data?: { duration?: unknown }
-      }
-      const status = String(task.status ?? '').toLowerCase()
-      if (status === 'success') {
-        const url = await providerbArtifact(base, taskId, auth, signal)
-        const quota = typeof task.quota === 'number' && task.quota > 0 ? task.quota : undefined
-        const billed = quota === undefined ? undefined : await providerbBilled(base, quota, signal)
-        return {
-          state: 'done',
-          url,
-          usage: defined<MediaUsage>({ seconds: count(task.data?.duration), billed }),
-        }
-      }
-      if (status === 'failure') {
-        return { state: 'failed', message: failureDetail(undefined, task.fail_reason, '任务失败') }
-      }
-      // providerb 实际返回 NOT_START：任务已创建、尚未开始，继续等待原任务。
-      if (status === 'not_start') return { state: 'pending', status: 'queued' }
-      return pendingTask(status, [
-        'queued',
-        'pending',
-        'submitted',
-        'in_progress',
-        'processing',
-        'running',
-      ])
-    }
-    const body = await getJson(path, auth, signal)
-    const status = String(body.status ?? '')
-    // 视频对象只包含时长 `seconds`（字符串），没有用量与金额字段。
-    // 部分渠道不返回时长，而按提交的时长计费：此时按提交时长计量。不要留空，按秒计价的型号会因此记为 0。
-    if (status === 'completed') {
-      return {
-        state: 'done',
-        url: `${path}/content`,
-        usage: defined<MediaUsage>({ seconds: count(body.seconds) ?? submittedSeconds }),
-      }
-    }
-    const ended = ENDED[status]
-    if (ended) {
-      const error = body.error as { code?: unknown; message?: unknown } | undefined
-      return { state: 'failed', message: failureDetail(error?.code, error?.message, ended) }
-    }
-    return pendingTask(status, ['queued', 'in_progress'])
-  }
 }
+
+/** 以登记渠道的请求结构构造 `/v1/videos` 的适配器（`registerMediaChannel` 的 `adapter`）。 */
+export const openAIVideosAdapter = (
+  profile: MediaProfile,
+  spec: MediaModelSpec,
+  format: VideoRequestFormat,
+): MediaAdapter => new OpenAIVideosAdapter(profile, spec, format)

@@ -16,7 +16,6 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
-import { relayVendors } from '@qywork/core'
 import { findPython } from '@qywork/runtime'
 import { probeBash } from '../packages/tools/src/process/command-shell.ts'
 import { collect } from './collect-installer.ts'
@@ -503,28 +502,16 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * 更新说明是发布页、应用内更新与云端版本公告共用的正文，对全部用户公开，不写第三方接口、渠道与上游供应商（CLAUDE.md D5）。
-   * 词表：泛指第三方与渠道的词，第三方接口的 id 与主机名（`relayVendors`），以及第三方接口的中文名称。「上游」只允许出现在「」引用的界面原文中。
+   * 更新说明是发布页、应用内更新与云端版本公告共用的正文，对全部用户公开，不写渠道与上游供应商（CLAUDE.md D5）。
+   * 词表只含泛指的词；「上游」只允许出现在「」引用的界面原文中。
    */
-  test('更新说明不出现第三方接口、渠道与上游供应商的信息', () => {
+  test('更新说明不出现渠道与上游供应商的信息', () => {
     const dir = new URL('../.github/release-notes/', import.meta.url)
-    const words = [
-      '第三方',
-      '渠道',
-      ...relayVendors().flatMap((v) => [v.id, ...v.hosts]),
-      '服务商C',
-      '服务商B',
-      '服务商A',
-      '服务商D',
-    ]
     const hits: string[] = []
     for (const name of readdirSync(dir).filter((f) => f.endsWith('.md'))) {
       const text = readFileSync(new URL(name, dir), 'utf8')
-      const outsideQuotes = text.replace(/「[^」]*」/g, '')
-      for (const word of words) {
-        if (text.toLowerCase().includes(word.toLowerCase())) hits.push(`${name}：${word}`)
-      }
-      if (outsideQuotes.includes('上游')) hits.push(`${name}：上游`)
+      if (text.includes('渠道')) hits.push(`${name}：渠道`)
+      if (text.replace(/「[^」]*」/g, '').includes('上游')) hits.push(`${name}：上游`)
     }
     expect(hits).toEqual([])
   })

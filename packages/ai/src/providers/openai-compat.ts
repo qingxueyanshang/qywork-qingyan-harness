@@ -327,7 +327,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 会将其记为正常完成，使思考中断的一轮被记为成功，
        * 账本上该轮为 0 token、无法对账，与 `chunks === 0` 属于同一类静默失败。
        *
-       * 实测形状（2026-08-21，某第三方端点）：带 tools 的长思考请求
+       * 实测形状（2026-08-21，某第三方接口）：带 tools 的长思考请求
        * 约一半次数在 reasoning 中途结束响应体，既没有 `finish_reason`
        * 也没有 `[DONE]`；同一请求的另一半次数正常结束。
        *
@@ -403,7 +403,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
        * 本仓库已有该字段（`ChatRequest.cacheKey`，即会话 id），`openai-responses`
        * 始终发送；deepseek 与各第三方接口均使用本路径。
        *
-       * 不要将其视为解决缓存不命中的手段。2026-08-19 在某第三方端点上做过配对交替
+       * 不要将其视为解决缓存不命中的手段。2026-08-19 在某第三方接口上做过配对交替
        * 实测（同一时间窗内逐轮交替发送有键与无键请求，
        * 各 12 轮）：无键 5/12 实际命中，有键 0/12；更换时间窗后结果相反。
        * 同一请求形状在相邻两分钟内给出 3008 / 192 / 字段缺失三种结果，
@@ -454,7 +454,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
  * 将用户填写的 Base URL 归一为带版本段的 OpenAI 兼容根地址。
  *
  * 此处不是兼容代码，而是消除一个静默故障。实测形状：用户填写
- * `https://第三方接口/`（缺少 `/v1`），SDK 因此请求 `https://第三方接口/chat/completions`，
+ * `https://api.example.com/`（缺少 `/v1`），SDK 因此请求 `https://api.example.com/chat/completions`，
  * 而第三方接口对该错误路径返回 200 与 HTML 首页。SSE 解析器无法从 HTML 中
  * 解析出任何事件且不报错，该轮记为 0 token、0 步骤、`completed`，
  * 消息已发送而没有任何输出，账本中也无法查到原因。
@@ -1119,7 +1119,7 @@ const THINKING_CLOSE = '</thinking>'
  *
  * 这是第三方接口发送推理内容的第三种形式。前两种是字段名（`reasoning_content` / `reasoning`），
  * 此形式将推理摘要放入 `content` 并自行添加标签：实测 gpt-5.6-terra 经 OpenAI
- * 协议第三方，一个 run 的 12 次调用中有 3 次如此发送，其余使用 `reasoning_content`。
+ * 协议转发，一个 run 的 12 次调用中有 3 次如此发送，其余使用 `reasoning_content`。
  * 通道归属的权威是适配器，因此在此处识别；混入回答后再由下游清除，只是处理症状。
  *
  * 只识别一种形状：从本次调用正文的第 0 个字符开始、成对闭合、只识别一次。

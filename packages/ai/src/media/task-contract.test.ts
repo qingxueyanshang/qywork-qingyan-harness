@@ -1,6 +1,6 @@
 /** 各协议未识别的状态不得被当作排队中或终态失败；恢复必须沿用原任务，不发出新的 POST。 */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import type { ChannelVideoSpec, MediaKind } from '@qywork/core'
+import type { MediaKind } from '@qywork/core'
 import { buildMediaAdapter } from './index.ts'
 import { taskPhase } from './task.ts'
 import { MediaError } from './types.ts'
@@ -24,64 +24,13 @@ beforeAll(() => {
 })
 afterAll(() => server.stop(true))
 const request = { operation: 'text_to_video' as const, prompt: '', inputs: [], params: {} }
-/** 服务商B型号拉取后保存的规格；格式由 `spec.channel` 决定，与型号名无关。 */
-const providerb: ChannelVideoSpec = {
-  channel: 'providerb',
-  seconds: [5],
-  ratios: ['16:9'],
-  resolutions: ['720p'],
-  sizes: { '720p': [1280, 720] },
-  maxImages: 0,
-  maxVideos: 0,
-  maxAudios: 0,
-}
 const taskId = 'saved-task'
-
-test.each([false, true])(
-  'providerb 提交不重发，缺失回执或保存失败保留准确状态：id=%s',
-  async (hasId) => {
-    calls = []
-    reply = hasId ? { id: taskId } : {}
-    const adapter = buildMediaAdapter({
-      kind: 'openai_videos',
-      model: 'seedance2.5-V',
-      apiKey: 'test',
-      baseUrl: `http://127.0.0.1:${server.port}`,
-      spec: providerb,
-    })
-    let submits = 0
-    const error = await adapter
-      .run(request, {
-        signal: new AbortController().signal,
-        onSubmit: () => {
-          submits++
-        },
-        onTask: async () => {
-          throw new Error('save failed')
-        },
-      })
-      .catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(MediaError)
-    expect(calls).toEqual(['POST'])
-    expect(submits).toBe(1)
-    if (hasId) expect((error as MediaError).pendingTaskId).toBe(taskId)
-    else expect((error as MediaError).diagnostic?.outcome).toBe('unknown')
-  },
-)
 
 const cases: {
   kind: MediaKind
-  model?: string
-  spec?: ChannelVideoSpec
   body: (status?: string) => Record<string, unknown>
 }[] = [
   { kind: 'openai_videos', body: (status) => ({ status }) },
-  {
-    kind: 'openai_videos',
-    model: 'seedance2.5-V',
-    spec: providerb,
-    body: (status) => ({ data: { status } }),
-  },
   { kind: 'ark_videos', body: (status) => ({ status }) },
   { kind: 'dashscope_videos', body: (status) => ({ output: { task_status: status } }) },
   { kind: 'kling_videos', body: (status) => ({ code: 0, data: [{ id: taskId, status }] }) },
@@ -94,15 +43,14 @@ for (const item of cases) {
     'unrecognized-status',
     ...(item.kind === 'dashscope_videos' ? ['UNKNOWN'] : []),
   ]) {
-    test(`${item.model ?? item.kind} ${status ?? '缺失状态'} 保留任务号且不显示为排队中`, async () => {
+    test(`${item.kind} ${status ?? '缺失状态'} 保留任务号且不显示为排队中`, async () => {
       calls = []
       reply = item.body(status)
       const adapter = buildMediaAdapter({
         kind: item.kind,
-        model: item.model ?? 'test',
+        model: 'test',
         apiKey: 'test',
         baseUrl: `http://127.0.0.1:${server.port}`,
-        ...(item.spec ? { spec: item.spec } : {}),
       })
       const phases: string[] = []
       const error = await adapter

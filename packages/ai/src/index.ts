@@ -59,6 +59,12 @@ export {
 } from './errors.ts'
 // 唯一的 adapter 构造入口
 export { buildAdapter } from './factory.ts'
+export { readImages } from './media/adapters/openai-images.ts'
+export {
+  openAIVideosAdapter,
+  type VideoRequestFormat,
+  type VideoTaskContext,
+} from './media/adapters/openai-videos.ts'
 // 云端任务号的格式：本机生成，云端按同一格式校验
 export { CLOUD_JOB_ID, newCloudJobId } from './media/adapters/qywork.ts'
 // 生成模型：目录（设置页与生成工具共用）、参数校验、发送前的花费、唯一的生成适配器构造入口
@@ -72,12 +78,41 @@ export {
   mediaCatalog,
   mediaCost,
   mediaKindsOf,
+  meterParamsFor,
   quoteMedia,
 } from './media/catalog.ts'
-export { isImageResult } from './media/image-result.ts'
+// 内置协议之外的生成协议与渠道：使用方启动时登记；登记的适配器使用下方的请求、任务与结果步骤，与内置适配器同一套
+export {
+  type MediaAdapterFactory,
+  type MediaChannel,
+  type MediaProtocol,
+  registerMediaChannel,
+  registerMediaProtocol,
+} from './media/extension.ts'
+export {
+  count,
+  dataUri,
+  defined,
+  download,
+  getJson,
+  postJson,
+  sendJson,
+  sniffMime,
+  uploadName,
+} from './media/http.ts'
+export { isImageResult, resolveImages } from './media/image-result.ts'
 export { buildMediaAdapter } from './media/index.ts'
 export { describeParam, operationLabel, validateMediaCall } from './media/params.ts'
-export { type TaskPhase, taskPhase } from './media/task.ts'
+export {
+  afterSubmit,
+  failureDetail,
+  pendingTask,
+  postTask,
+  type TaskPhase,
+  type TaskState,
+  taskPhase,
+  waitTask,
+} from './media/task.ts'
 export {
   type MediaAdapter,
   type MediaCancel,
@@ -112,14 +147,27 @@ export {
 export { normalizeBaseUrl } from './providers/openai-compat.ts'
 // 拉取模型：设置页的「拉取模型」按钮
 export {
+  type PullChannel,
+  type PullContext,
   PullError,
   type PulledModel,
   type PullResult,
+  type PullSpecOf,
   type PullTarget,
   pullModels,
+  registerPullChannel,
 } from './pull/index.ts'
 export type { PulledPrice } from './pull/plaza.ts'
-export type { ChatPrice } from './pull/pricing.ts'
+export {
+  type ChatPrice,
+  chatPriceOf,
+  imagePriceOf,
+  type NewApiPricingEntry,
+  type PriceBasis,
+  priceBasis,
+  quotaAmount,
+  videoPriceOf,
+} from './pull/pricing.ts'
 // 模型网关只转发适配器会发送的请求字段
 export { REQUEST_FIELDS } from './request-fields.ts'
 // 云端技能标记：云端签发、校验与替换，本机解析与回传

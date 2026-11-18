@@ -301,29 +301,6 @@
           },
           "media-dashscope_speech": {
             "kind": "dashscope_speech"
-          },
-          "channel-image": {
-            "kind": "openai_images",
-            "spec": {
-              "channel": "providerb",
-              "resolutions": [
-                "1K",
-                "2K"
-              ],
-              "sizes": [
-                "1024x1024",
-                "1536x1024"
-              ],
-              "maxImages": 10,
-              "price": {
-                "per": "request",
-                "amount": {
-                  "1K": 0.36,
-                  "2K": 0.52
-                },
-                "currency": "CNY"
-              }
-            }
           }
         }
       },
@@ -618,87 +595,6 @@
           },
           "media-minimax_speech": {
             "kind": "minimax_speech"
-          },
-          "channel-providera": {
-            "kind": "openai_videos",
-            "spec": {
-              "channel": "providera",
-              "seconds": [
-                4,
-                5,
-                30
-              ],
-              "ratios": [
-                "16:9",
-                "9:16"
-              ],
-              "resolutions": [
-                "480p",
-                "720p"
-              ],
-              "sizes": {
-                "480p": [
-                  854,
-                  480
-                ],
-                "720p": [
-                  1280,
-                  720
-                ]
-              },
-              "maxImages": 30,
-              "maxVideos": 0,
-              "maxAudios": 10,
-              "publicUrls": true,
-              "price": {
-                "per": "request",
-                "amount": 7,
-                "currency": "CNY"
-              }
-            },
-            "delisted": true
-          },
-          "channel-providerb": {
-            "kind": "openai_videos",
-            "spec": {
-              "channel": "providerb",
-              "seconds": [
-                4,
-                5,
-                30
-              ],
-              "ratios": [
-                "16:9",
-                "9:16"
-              ],
-              "resolutions": [
-                "480p",
-                "720p"
-              ],
-              "sizes": {
-                "480p": [
-                  854,
-                  480
-                ],
-                "720p": [
-                  1280,
-                  720
-                ]
-              },
-              "maxImages": 30,
-              "maxVideos": 1,
-              "maxAudios": 10,
-              "multipart": true,
-              "resolutionField": true,
-              "price": {
-                "per": "second",
-                "amount": {
-                  "480p": 0.4,
-                  "720p": 0.6
-                },
-                "currency": "CNY"
-              }
-            }
           }
         }
       },
@@ -3015,33 +2911,6 @@
         "isDefault": false
       },
       {
-        "provider": "sample-anthropic_messages",
-        "model": "channel-image",
-        "kind": "openai_images",
-        "output": "image",
-        "isDefault": false,
-        "spec": {
-          "channel": "providerb",
-          "resolutions": [
-            "1K",
-            "2K"
-          ],
-          "sizes": [
-            "1024x1024",
-            "1536x1024"
-          ],
-          "maxImages": 10,
-          "price": {
-            "per": "request",
-            "amount": {
-              "1K": 0.36,
-              "2K": 0.52
-            },
-            "currency": "CNY"
-          }
-        }
-      },
-      {
         "provider": "sample-openai_chat_completions",
         "model": "media-dashscope_images",
         "kind": "dashscope_images",
@@ -3075,95 +2944,6 @@
         "kind": "minimax_speech",
         "output": "audio",
         "isDefault": false
-      },
-      {
-        "provider": "sample-openai_chat_completions",
-        "model": "channel-providera",
-        "kind": "openai_videos",
-        "output": "video",
-        "isDefault": false,
-        "spec": {
-          "channel": "providera",
-          "seconds": [
-            4,
-            5,
-            30
-          ],
-          "ratios": [
-            "16:9",
-            "9:16"
-          ],
-          "resolutions": [
-            "480p",
-            "720p"
-          ],
-          "sizes": {
-            "480p": [
-              854,
-              480
-            ],
-            "720p": [
-              1280,
-              720
-            ]
-          },
-          "maxImages": 30,
-          "maxVideos": 0,
-          "maxAudios": 10,
-          "publicUrls": true,
-          "price": {
-            "per": "request",
-            "amount": 7,
-            "currency": "CNY"
-          }
-        },
-        "delisted": true
-      },
-      {
-        "provider": "sample-openai_chat_completions",
-        "model": "channel-providerb",
-        "kind": "openai_videos",
-        "output": "video",
-        "isDefault": false,
-        "spec": {
-          "channel": "providerb",
-          "seconds": [
-            4,
-            5,
-            30
-          ],
-          "ratios": [
-            "16:9",
-            "9:16"
-          ],
-          "resolutions": [
-            "480p",
-            "720p"
-          ],
-          "sizes": {
-            "480p": [
-              854,
-              480
-            ],
-            "720p": [
-              1280,
-              720
-            ]
-          },
-          "maxImages": 30,
-          "maxVideos": 1,
-          "maxAudios": 10,
-          "multipart": true,
-          "resolutionField": true,
-          "price": {
-            "per": "second",
-            "amount": {
-              "480p": 0.4,
-              "720p": 0.6
-            },
-            "currency": "CNY"
-          }
-        }
       },
       {
         "provider": "sample-openai_responses",

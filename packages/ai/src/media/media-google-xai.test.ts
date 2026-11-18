@@ -1,6 +1,6 @@
 /** Google 与 xAI 生成接口的请求、任务恢复、错误终态及计价回归。 */
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test'
-import { defaultMediaKind, MEDIA_KIND_OUTPUT, type MediaKind } from '@qywork/core'
+import { defaultMediaKind, type MediaKind, mediaKindOutput } from '@qywork/core'
 import { findMediaModel, lookupMediaModel, mediaCatalog, mediaCost, quoteMedia } from './catalog.ts'
 import { download } from './http.ts'
 import { buildMediaAdapter } from './index.ts'
@@ -99,7 +99,7 @@ describe('Google 与 xAI 目录', () => {
       const spec = findMediaModel(id)!
       expect(spec.catalogued).toBe(true)
       expect(mediaCatalog().filter((m) => m.id === id)).toHaveLength(1)
-      expect(MEDIA_KIND_OUTPUT[spec.kind]).toBe(/image|banana/.test(id) ? 'image' : 'video')
+      expect(mediaKindOutput(spec.kind)).toBe(/image|banana/.test(id) ? 'image' : 'video')
       expect(buildMediaAdapter({ kind: spec.kind, model: id, apiKey: 'key' }).spec.id).toBe(id)
     }
     expect(findMediaModel('gemini-2.5-flash-image')).toBeUndefined()
@@ -130,9 +130,9 @@ describe('Google 与 xAI 目录', () => {
     )
     for (const spec of mediaCatalog()) {
       expect(
-        defaultMediaKind(MEDIA_KIND_OUTPUT[spec.kind], 'https://relay.example/v1', spec.kind),
+        defaultMediaKind(mediaKindOutput(spec.kind), 'https://relay.example/v1', spec.kind),
       ).toBe(spec.kind)
-      expect(defaultMediaKind(MEDIA_KIND_OUTPUT[spec.kind], undefined, spec.kind)).toBe(spec.kind)
+      expect(defaultMediaKind(mediaKindOutput(spec.kind), undefined, spec.kind)).toBe(spec.kind)
     }
     expect(lookupMediaModel('grok-imagine-video-1.5', 'openai_videos').price).toBeUndefined()
   })

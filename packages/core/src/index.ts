@@ -129,7 +129,7 @@ export {
   CHANNEL_VENDORS,
   type ChannelVendor,
   channelVendorOf,
-  relayVendors,
+  hostOf,
 } from './domain/channel-vendors.ts'
 // 自动压缩的触发比例：设置页的滑块范围、配置校验与运行侧的解析共用
 export {
@@ -168,28 +168,26 @@ export {
 export { type ImageSize, imageSizeOf } from './domain/image-size.ts'
 export { matroskaMetadataOf } from './domain/matroska.ts'
 export {
-  type ChannelImageSpec,
+  BUILTIN_MEDIA_KINDS,
+  type BuiltinMediaKind,
   type ChannelPrice,
   type ChannelSpec,
-  type ChannelVideoSpec,
   CLOUD_MEDIA_KIND,
   CLOUD_MEDIA_KINDS,
   type CloudMediaKind,
   type CloudMediaSpec,
   type CloudModelSpec,
   catalogPrefixOf,
-  channelImageSpecProblem,
-  channelSpecOf,
-  channelVideoSpecProblem,
   cloudMediaSpecProblem,
   defaultMediaKind,
+  type ExtensionMediaKind,
   GENERATE_OUTPUTS,
   type GenerateOutput,
   identifyMediaModel,
+  isBuiltinMediaKind,
   isCloudMediaKind,
+  isMediaKind,
   MEDIA_INPUT_ROLES,
-  MEDIA_KIND_OUTPUT,
-  MEDIA_KINDS,
   MEDIA_OUTPUT_UNIT,
   MEDIA_OUTPUTS,
   MEDIA_UNITS,
@@ -203,11 +201,11 @@ export {
   type MediaQuote,
   type MediaSpend,
   type MediaUnit,
+  mediaKindOutput,
+  mediaKinds,
+  registerMediaKind,
   type StoredMediaSpec,
   type UnitPrice,
-  VIDEO_CHANNEL_KIND,
-  VIDEO_CHANNELS,
-  type VideoChannel,
 } from './domain/media.ts'
 export { mediaBoxAt, movieMetadataOf, videoMetadataOf } from './domain/media-container.ts'
 export {

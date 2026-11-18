@@ -634,8 +634,8 @@ describe('思考强度', () => {
       JSON.stringify({
         roles: [
           {
-            id: 'providerc',
-            name: '服务商C',
+            id: 'director',
+            name: '小导',
             description: '总导演',
             systemPrompt: '统筹进度',
             provider: '推理接口',
@@ -655,7 +655,7 @@ describe('思考强度', () => {
     const cid = conversation()
     router = recording({ 排期: '已排期' })
     const res = await delegate(cid).dispatch({
-      target: { kind: 'role', role: 'providerc' },
+      target: { kind: 'role', role: 'director' },
       task: '排期',
       ...spot(cid),
     })
@@ -695,7 +695,7 @@ describe('思考强度', () => {
     const cid = conversation()
     router = recording({ 换模型: '已完成' })
     const res = await delegate(cid).dispatch({
-      target: { kind: 'role', role: 'providerc' },
+      target: { kind: 'role', role: 'director' },
       task: '换模型',
       provider: 'fake',
       model: 'deepseek-v4-flash',

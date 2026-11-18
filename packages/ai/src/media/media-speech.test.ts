@@ -228,7 +228,7 @@ describe('minimax_speech', () => {
   test('MiniMax 官方地址上的语音默认使用 minimax_speech', () => {
     expect(defaultMediaKind('audio', 'https://api.minimax.cn/v1')).toBe('minimax_speech')
     expect(defaultMediaKind('audio', 'https://api.minimax.io/v1')).toBe('minimax_speech')
-    expect(defaultMediaKind('audio', 'https://providerf.example.com/')).toBe('openai_speech')
+    expect(defaultMediaKind('audio', 'https://relay.example.com/')).toBe('openai_speech')
   })
 })
 

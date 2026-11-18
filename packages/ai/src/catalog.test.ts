@@ -413,7 +413,7 @@ describe('模型库覆盖', () => {
     expect(cost).toBe(300)
   })
 
-  /** 原始失败形状：第三方接口型号的目录价是占位的 0，上游回报 1 小时档写入时该部分按 0 计价。 */
+  /** 原始失败形状：第三方接口上型号的目录价是占位的 0，上游回报 1 小时档写入时该部分按 0 计价。 */
   test('覆盖单价而未填 1 小时档写入价时，1 小时档写入按 5 分钟档的写入价计', () => {
     const relayPrice = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
     const usage = {
@@ -441,13 +441,16 @@ describe('模型库覆盖', () => {
   })
 
   test('填写 1 小时档写入价时按该价计', () => {
-    const relay = applySpecOverride(lookupModel('第三方接口上的某个模型', 'openai_chat_completions'), {
-      input: 3,
-      output: 15,
-      cacheRead: 0.3,
-      cacheWrite: 3.75,
-      cacheWrite1h: 6,
-    })
+    const relay = applySpecOverride(
+      lookupModel('第三方接口上的某个模型', 'openai_chat_completions'),
+      {
+        input: 3,
+        output: 15,
+        cacheRead: 0.3,
+        cacheWrite: 3.75,
+        cacheWrite1h: 6,
+      },
+    )
     // 1000 × 3 + 1000 × 15 + 4 万 × 3.75 + 6 万 × 6 = 0.528。
     expect(
       computeCost(relay, {
@@ -529,7 +532,7 @@ describe('模型库覆盖', () => {
  *
  * 三态的含义：`null` 表示厂商规格页未写明，门控按放行处理；
  * 只有 `false` 会使 `agent` 将图像块替换为文本注记，并使界面隐藏图片入口。
- * 将 `null` 合并为 `false` 时，一批实际接受图片的第三方接口模型会被拦截。
+ * 将 `null` 合并为 `false` 时，第三方接口上一批实际接受图片的模型会被拦截。
  */
 describe('图片输入', () => {
   test('未收录模型不裁决', () => {
@@ -1263,7 +1266,7 @@ describe('对应型号与接口价格', () => {
     ).toBe(false)
   })
 
-  /** 原始失败形状：第三方接口按官方价 0.33 倍以美元单价写入，30 万 token 的请求按官方长档全价 $4 / $15 记账。 */
+  /** 原始失败形状：第三方接口的价格按官方价 0.33 倍以美元单价写入，30 万 token 的请求按官方长档全价 $4 / $15 记账。 */
   test('单价覆盖不分档、不随时段打折，币种与目录相同时同样如此', () => {
     const gpt = lookupModel('gpt-6-sol', 'openai_responses')
     expect(gpt.longContext?.length).toBeGreaterThan(0)

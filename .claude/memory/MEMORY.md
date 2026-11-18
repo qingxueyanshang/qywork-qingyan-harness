@@ -29,10 +29,10 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [刷新恢复的测试方法](refresh-restore-testing.md) — 带查询串重新导入模块模拟刷新；组件测试 afterEach 清空记录；性能对照构建把 sessionSignal 换成 createSignal
 - [画布卡顿须在桌面外壳中按用户布局测量](canvas-perf-measure-in-shell.md) — 无头 Chrome 与窄面板都无法复现；先截取用户窗口核对缩放与主题；瓶颈是 180Hz 下 GPU 进程的光栅化，测量脚本在 .tmp/perf-gen/ 与 .tmp/perf-drag/
 - [画布改写手写编号须可见](canvas-prompt-no-hidden-rewrite.md) — 发送前按型号写法改写手写编号，读取画布、回执与生成面板逐卡显示「发送时改写」；不可见的改写被否决过
-- [第三方目录不提供引用写法](relay-catalog-no-mention-syntax.md) — providera 与服务商B的目录、计费清单都没有「@Image1 / @图片1」字段，拉取无法检测
+- [拉取结果不提供引用写法](pull-no-mention-syntax.md) — 计费清单与第三方接口的型号目录都没有「@Image1 / @图片1」字段，拉取无法检测
 - [截断内容沿用原有悬停提示](reuse-existing-hover-tooltip.md) — 显示全文用 `data-tip`，不新增点击浮层；用户以现有界面为参照时按参照的形式实现
 - [.tmp/scratch 由并行会话共用](scratch-dir-shared-between-sessions.md) — 提交说明不用固定文件名，写入本会话私有的临时目录；曾被对方的同名文件覆盖导致说明错误
-- [估算系数的实测方法](token-density-calibration.md) — 新增或补测型号用 .tmp/ctx-probe 脚本；Claude 第三方直连读首个事件，Qwen 关闭思考；三档未测仍用默认档
+- [估算系数的实测方法](token-density-calibration.md) — 新增或补测型号用 .tmp/ctx-probe 脚本；Claude 经第三方接口时直接请求并读取首个事件，Qwen 关闭思考；三档未测仍用默认档
 - [模型绕行时修复缺陷而不是添加限制](fix-capability-gap-not-prompt-ban.md) — 查明模型只能绕行的原因（缺少能力、无法看到结果）并修复；不在提示词或工具说明中写禁令，用户否决过「电脑控制只用于 qywork 以外」
 - [Rust 源码不按 rustfmt 排版](rust-sources-not-rustfmt-formatted.md) — 不运行 cargo fmt：文件参数不限定范围，整个包被改写并混入其他会话未提交的改动；含还原方法
 - [浏览器控制的真实模型评测与真实外壳验证](browser-live-eval.md) — `.tmp/browser-live/harness.ts` 11 个场景对照改动前后；`.tmp/popup-window-verify/` 用独立数据目录的开发外壳验证 WebView2 行为

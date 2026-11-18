@@ -13,22 +13,20 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { join } from 'node:path'
 import { builtinCatalog, CHAT_REASONING_PROTOCOLS, type TransportCapabilities } from '@qywork/ai'
 import {
+  BUILTIN_MEDIA_KINDS,
   CACHE_ROUTINGS,
   type CloudModelSpec,
   CURRENCIES,
   EFFORT_ORDER,
   isCloudMediaKind,
-  MEDIA_KIND_OUTPUT,
-  MEDIA_KINDS,
   MEDIA_OUTPUTS,
   type MediaOperation,
   type MediaOutput,
+  mediaKindOutput,
   PROVIDER_KINDS,
   REASONING_ECHOES,
   THINKING_MODES,
   TOOL_SCHEMA_MODES,
-  VIDEO_CHANNEL_KIND,
-  VIDEO_CHANNELS,
 } from '@qywork/core'
 import {
   listMediaModels,
@@ -161,7 +159,7 @@ export function sampleConfig(): QyConfig {
       n++
     }
     const media: Record<string, StoredMediaModel> = {}
-    for (const [m, mediaKind] of MEDIA_KINDS.entries()) {
+    for (const [m, mediaKind] of BUILTIN_MEDIA_KINDS.entries()) {
       if (m % PROVIDER_KINDS.length !== p) continue
       // 云端协议的条目必须带云端规格。
       media[`media-${mediaKind}`] = isCloudMediaKind(mediaKind)
@@ -169,7 +167,7 @@ export function sampleConfig(): QyConfig {
             kind: mediaKind,
             spec: {
               cloud: {
-                spec: sampleCloudSpec(MEDIA_KIND_OUTPUT[mediaKind]),
+                spec: sampleCloudSpec(mediaKindOutput(mediaKind)),
                 unit: 'request',
                 unitPrice: { '720p': 1, '1080p': 2 },
               },
@@ -177,43 +175,6 @@ export function sampleConfig(): QyConfig {
             displayName: `Sample ${mediaKind}`,
           }
         : { kind: mediaKind }
-    }
-    if ('media-openai_videos' in media) {
-      for (const [c, channel] of VIDEO_CHANNELS.entries()) {
-        media[`channel-${channel}`] = {
-          kind: VIDEO_CHANNEL_KIND[channel],
-          spec: {
-            channel,
-            seconds: [4, 5, 30],
-            ratios: ['16:9', '9:16'],
-            resolutions: ['480p', '720p'],
-            sizes: { '480p': [854, 480], '720p': [1280, 720] },
-            maxImages: 30,
-            maxVideos: c,
-            maxAudios: 10,
-            ...(c === 0 ? { publicUrls: true as const } : { multipart: true as const }),
-            ...(c === 1 ? { resolutionField: true as const } : {}),
-            price: {
-              per: pick(['request', 'second'] as const, c),
-              amount: c === 0 ? 7 : { '480p': 0.4, '720p': 0.6 },
-              currency: 'CNY',
-            },
-          },
-          ...(c === 0 ? { delisted: true as const } : {}),
-        }
-      }
-    }
-    if ('media-openai_images' in media) {
-      media['channel-image'] = {
-        kind: 'openai_images',
-        spec: {
-          channel: 'providerb',
-          resolutions: ['1K', '2K'],
-          sizes: ['1024x1024', '1536x1024'],
-          maxImages: 10,
-          price: { per: 'request', amount: { '1K': 0.36, '2K': 0.52 }, currency: 'CNY' },
-        },
-      }
     }
     providers[`sample-${kind}`] = {
       kind,
@@ -226,7 +187,7 @@ export function sampleConfig(): QyConfig {
   }
   const mediaDefaults: QyConfig['mediaDefaults'] = {}
   for (const output of MEDIA_OUTPUTS) {
-    const kind = MEDIA_KINDS.find((k) => MEDIA_KIND_OUTPUT[k] === output)!
+    const kind = BUILTIN_MEDIA_KINDS.find((k) => mediaKindOutput(k) === output)!
     const provider = Object.keys(providers).find(
       (name) => `media-${kind}` in providers[name]!.media,
     )!

@@ -201,7 +201,7 @@ export interface Conversation {
    * 该会话使用的接口（`config.providers` 的键）。
    *
    * 与 `model` 成对保存，不能只保存其一。两个接口提供同一个模型 id 是常见情况
-   * （两家第三方接口都提供 `claude-opus-5`），只保存模型时，会话的归属在落盘时
+   * （两个第三方接口都提供 `claude-opus-5`），只保存模型时，会话的归属在落盘时
    * 即已丢失，此后各层只能按 id 反查，结果取决于对象键的枚举顺序。
    *
    * 新建会话一律写入实际接口名。迁移 37 只按历史请求中的唯一证据补全旧会话；仍为空串说明
@@ -586,7 +586,7 @@ export interface RunUsage {
   outputTokens: number
   /** 缓存读取命中。null 表示 provider 未回报，与真实的 0 命中含义不同。 */
   cachedTokens: number | null
-  /** 缓存写入，与读取分离，便于与第三方账单对账。 */
+  /** 缓存写入，与读取分离，便于与第三方接口的账单对账。 */
   cacheWriteTokens: number | null
   reasoningTokens: number
   /**

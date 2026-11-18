@@ -1867,11 +1867,11 @@ textarea.code-area::placeholder {
   margin: 4px 0 10px;
 }
 
-/* 各行共用列宽（行用 subgrid）：型号、时长、参考素材、价格、状态或对应型号。某一行缺少某项时，其他列不随之移动。 */
+/* 各行共用列宽（行用 subgrid）：型号、价格、状态或对应型号。某一行缺少某项时，其他列不随之移动。 */
 .pull-list {
   display: grid;
   flex: 1;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-content: start;
   column-gap: var(--s-3);
   min-height: 0;

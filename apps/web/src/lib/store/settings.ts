@@ -7,7 +7,6 @@
 
 import type {
   Attachment,
-  ChannelSpec,
   CompactPercentSetting,
   Conversation,
   Currency,
@@ -62,7 +61,7 @@ export interface RedactedModel {
   }
   /** 该接口的实际价格，拉取模型时写入。 */
   price?: ChatPrice
-  /** 上一次拉取时第三方的计费清单中已没有该型号。 */
+  /** 上一次拉取时第三方接口的计费清单中已没有该型号。 */
   delisted?: true
 }
 
@@ -238,7 +237,7 @@ export interface ModelOption {
   vision: boolean | null
   /** 是否支持通过当前协议直接输入视频。 */
   video: boolean
-  /** false 表示内置目录中没有该模型，来自用户自行配置的模型 id（自建端点 / 第三方）。 */
+  /** false 表示内置目录中没有该模型，来自用户自行配置的模型 id（自建端点 / 第三方接口）。 */
   known: boolean
 }
 
@@ -502,7 +501,7 @@ export function probeModel(provider: string, model: string): Promise<ProbeResult
   })
 }
 
-/** 拉取得到的一个型号。字段与服务端 `PulledModel` 一致。 */
+/** 拉取得到的一个型号。字段与服务端 `PulledModel` 一致，不含电脑端不会收到的渠道规格 `spec`。 */
 export type PulledModel =
   | {
       id: string
@@ -518,12 +517,11 @@ export type PulledModel =
       kind: MediaKind
       known: boolean
       base?: string
-      spec?: ChannelSpec
     }
   | { id: string; output: 'unknown' }
 
 export interface PullResult {
-  /** `pricing` 是第三方的完整计费清单，只有它可以用来标记已下架。 */
+  /** `pricing` 是第三方接口的完整计费清单，只有它可以用来标记已下架。 */
   source: 'pricing' | 'models'
   models: PulledModel[]
 }

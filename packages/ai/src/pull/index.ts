@@ -1,49 +1,30 @@
 /**
- * 拉取接口上的型号：第三方的公开计费清单（New API 的 `/api/pricing`）优先，没有时退回 OpenAI 兼容的 `{base}/models`；
+ * 拉取接口上的型号：第三方接口的公开计费清单（New API 的 `/api/pricing`）优先，没有时退回 OpenAI 兼容的 `{base}/models`；
  * 退回时若站点有模型广场（`/api/v1/model-plaza`），对话型号的价格按 `plaza.ts` 折算。
- * 服务商C AI 不是 New API，只读取它的模型目录（`fromproviderc`）。
  *
  * 计费清单给出每个型号的接口类型，据此区分对话、图像与视频；价格按 `pricing.ts` 折算。
- * 接口地址是渠道商表中的第三方接口（`channelVendorOf`）时，视频型号再按该渠道的目录（providera 型号列表的 `parameters`、
- * 服务商B目录）、图像型号按服务商B目录取得保存的规格；其余第三方接口与目录中没有的型号不带规格，使用协议默认。
+ * 接口地址属于登记的渠道（`registerPullChannel`）时，由该渠道完成拉取，或按渠道目录给出生成型号保存的规格；
+ * 其余站点的生成型号不带规格，使用协议默认。
  * 只读：不写配置，写入由调用方经配置接口完成。
  */
 
 import {
   type ChannelSpec,
-  type ChannelVideoSpec,
   catalogPrefixOf,
-  channelVendorOf,
   defaultMediaKind,
   identifyMediaModel,
-  MEDIA_KIND_OUTPUT,
   type MediaKind,
   type MediaOutput,
+  mediaKindOutput,
   type ProviderKind,
-  type VideoChannel,
 } from '@qywork/core'
 import { builtinCatalog, lookupModel } from '../catalog.ts'
 import { bodyMessage, httpStatusName } from '../errors.ts'
 import { mediaCatalog, mediaKindsOf } from '../media/catalog.ts'
-import {
-  channelMediaSpec,
-  providercVideoSpec,
-  provideraVideoSpec,
-  providerbImageSpec,
-  providerbVideoSpec,
-} from '../media/channels.ts'
 import { normalizeBaseUrl } from '../providers/openai-compat.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
-import { providercChatPrice } from './providerc.ts'
 import { type PulledPrice, plazaPrices } from './plaza.ts'
-import {
-  chatPriceOf,
-  imagePriceOf,
-  type NewApiPricingEntry,
-  type PriceBasis,
-  priceBasis,
-  videoPriceOf,
-} from './pricing.ts'
+import { chatPriceOf, type NewApiPricingEntry, type PriceBasis, priceBasis } from './pricing.ts'
 
 export interface PullTarget {
   kind: ProviderKind
@@ -75,6 +56,7 @@ export type PulledModel =
       known: boolean
       /** 名称以目录 id 为前缀时对应的目录 id，见 `identifyMediaModel`。 */
       base?: string
+      /** 登记的渠道给出的保存规格（`registerPullChannel`）。 */
       spec?: ChannelSpec
     }
   /** 未知：条目没有类别，名称也不在模型库与生成目录中，由用户选定类别后添加。 */
@@ -82,7 +64,7 @@ export type PulledModel =
 
 export interface PullResult {
   /**
-   * `pricing`：列出全部可计费型号的清单（第三方的计费清单、服务商C AI 的模型目录），可据此标记已下架；
+   * `pricing`：列出全部可计费型号的清单（第三方接口的计费清单、渠道的完整目录），可据此标记已下架；
    * `models`：型号列表接口，官方接口可能不列出别名，不能据此标记已下架。
    */
   source: 'pricing' | 'models'
@@ -91,6 +73,49 @@ export interface PullResult {
 
 /** 两种来源都无法读取。消息说明失败的地址与原因，不含凭证。 */
 export class PullError extends Error {}
+
+/** 登记的渠道拉取时使用的连接参数与条目构造。 */
+export interface PullContext {
+  target: PullTarget
+  /** 站点根地址。 */
+  origin: string
+  /** 规范化的接口地址（`normalizeBaseUrl`）。 */
+  base: string
+  /** 带凭证的请求头。 */
+  auth: Record<string, string>
+  signal: AbortSignal
+  /** 读取 JSON。连接失败、HTTP 错误与无法解析时抛出 `PullError`，消息含路径与原因。 */
+  getJson(url: string, headers: Record<string, string>): Promise<unknown>
+  /** 对话型号的条目。`types` 是条目支持的接口类型（New API 的取值），决定是否写明协议（`chatKindOf`）。 */
+  chat(id: string, types: readonly string[], price?: PulledPrice): PulledModel
+  /** 生成型号的条目：有保存规格时为已收录，否则按生成目录识别。 */
+  media(id: string, output: MediaOutput, kind: MediaKind, spec?: ChannelSpec): PulledModel
+}
+
+/** 按 New API 计费清单中的条目取得生成型号保存的规格；渠道目录中没有该型号时返回 undefined。 */
+export type PullSpecOf = (
+  entry: NewApiPricingEntry,
+  output: 'image' | 'video',
+  basis: PriceBasis | null,
+) => ChannelSpec | undefined
+
+/**
+ * 有自有目录的渠道。站点不是 New API 时由 `pull` 完成整个拉取；站点是 New API 而另有渠道目录时，
+ * `specs` 读取目录（读取失败时返回的函数对每个条目都给出 undefined），计费清单中的生成型号按它取得保存的规格。
+ */
+export interface PullChannel {
+  /** 接口地址属于该渠道。只按接口地址判定，不按返回的字段判定：其他站点可能返回同名字段。 */
+  matches(baseUrl: string): boolean
+  pull?(ctx: PullContext): Promise<PullResult>
+  specs?(ctx: PullContext): Promise<PullSpecOf>
+}
+
+const PULL_CHANNELS: PullChannel[] = []
+
+/** 登记有自有目录的渠道。电脑端不登记任何渠道。 */
+export function registerPullChannel(channel: PullChannel): void {
+  PULL_CHANNELS.push(channel)
+}
 
 /** 单个请求的上限。拉取由用户点击触发，等待过久时按失败处理，由用户重试。 */
 const TIMEOUT_MS = 20_000
@@ -146,7 +171,7 @@ async function getJson(
   }
 }
 
-/** 读取失败时返回 null：渠道目录与站点状态是可选来源。 */
+/** 读取失败时返回 null：站点状态是可选来源。 */
 const optional = (p: Promise<unknown>) =>
   p.catch((err) => {
     if (!(err instanceof PullError)) throw err
@@ -159,25 +184,6 @@ const record = (v: unknown) =>
 function listOf(body: unknown, key: string): Record<string, unknown>[] | undefined {
   const list = record(body)?.[key]
   return Array.isArray(list) ? list.flatMap((e) => (record(e) ? [record(e)!] : [])) : undefined
-}
-
-/**
- * 渠道规格中各分辨率档位对应的参数可选值，用于按公式逐档求价；时长单独传入。
- * 计量中的 `resolution` 取该档位：渠道按它计价时请求可能只发送尺寸。
- */
-function tiersOf(id: string, spec: ChannelVideoSpec): Record<string, Record<string, string[]>> {
-  const tiers: Record<string, Record<string, string[]>> = {}
-  for (const resolution of spec.resolutions) {
-    const choices: Record<string, string[]> = {}
-    for (const p of channelMediaSpec(id, { ...spec, resolutions: [resolution] }).params) {
-      if (p.name === 'seconds') continue
-      const values = p.shapes?.flatMap((s) => (s.value === undefined ? [] : [s.value])) ?? p.values
-      if (values?.length) choices[p.name] = values.map(String)
-    }
-    choices.resolution ??= [resolution]
-    tiers[resolution] = choices
-  }
-  return tiers
 }
 
 /**
@@ -213,111 +219,49 @@ function catalogFields(
 const mediaLibrary = () =>
   mediaCatalog().map((m) => ({ id: m.id, kind: m.kind, kinds: mediaKindsOf(m) }))
 
-/** 以 New API 计费清单拉取、另有渠道目录的渠道。服务商C AI 不经计费清单，见 `fromproviderc`。 */
-type NewApiChannel = Exclude<VideoChannel, 'providerc'>
-
-/** 接口地址所属渠道商有自己的视频格式时返回该渠道，其余返回 null。 */
-function videoChannelOf(baseUrl: string): NewApiChannel | null {
-  const vendor = channelVendorOf(baseUrl)
-  return vendor === 'providera' || vendor === 'providerb' ? vendor : null
-}
-
-/** 渠道目录中的一条及其所属渠道，渠道决定按哪种目录格式解析。 */
-interface ChannelEntry {
-  channel: NewApiChannel
-  entry: Record<string, unknown>
-}
-
-function videoOf(
-  entry: NewApiPricingEntry,
-  basis: PriceBasis | null,
-  listed: ChannelEntry | undefined,
-  baseUrl: string,
-): PulledModel {
-  const id = entry.model_name
-  let spec =
-    (listed &&
-      (listed.channel === 'providera'
-        ? provideraVideoSpec(listed.entry)
-        : providerbVideoSpec(listed.entry))) ||
-    undefined
-  // 服务商B按请求中的 resolution 计价的型号，不传时渠道按默认档位出图，提交时须发送与尺寸对应的档位。
-  if (spec?.channel === 'providerb' && entry.billing_usage_schema?.resolution)
-    spec = { ...spec, resolutionField: true }
-  const price = spec && basis && videoPriceOf(entry, basis, spec.seconds, tiersOf(id, spec))
-  if (spec && price) spec = { ...spec, price }
+function contextOf(target: PullTarget, signal: AbortSignal): PullContext {
+  const base = normalizeBaseUrl(target.baseUrl)
   return {
-    id,
-    output: 'video',
-    kind: 'openai_videos',
-    ...catalogFields(id, 'video', spec, baseUrl),
-    ...(spec ? { spec } : {}),
+    target,
+    origin: new URL(base).origin,
+    base,
+    auth: {
+      ...(target.kind === 'anthropic_messages'
+        ? { 'x-api-key': target.apiKey, 'anthropic-version': '2023-06-01' }
+        : { authorization: `Bearer ${target.apiKey}` }),
+      ...target.headers,
+    },
+    signal,
+    getJson: (url, headers) => getJson(url, headers, signal),
+    chat(id, types, price) {
+      const kind = chatKindOf(types, target.kind)
+      return {
+        id,
+        output: 'chat',
+        ...(kind ? { kind } : {}),
+        ...chatFields(id, kind ?? target.kind),
+        ...(price ? { price } : {}),
+      }
+    },
+    media: (id, output, kind, spec) => ({
+      id,
+      output,
+      kind,
+      ...catalogFields(id, output, spec, target.baseUrl),
+      ...(spec ? { spec } : {}),
+    }),
   }
-}
-
-function imageOf(
-  entry: NewApiPricingEntry,
-  basis: PriceBasis | null,
-  listed: ChannelEntry | undefined,
-  baseUrl: string,
-): PulledModel {
-  const id = entry.model_name
-  let spec = (listed?.channel === 'providerb' && providerbImageSpec(listed.entry)) || undefined
-  const price = spec && basis && imagePriceOf(entry, basis, spec.resolutions)
-  if (spec && price) spec = { ...spec, price }
-  return {
-    id,
-    output: 'image',
-    kind: 'openai_images',
-    ...catalogFields(id, 'image', spec, baseUrl),
-    ...(spec ? { spec } : {}),
-  }
-}
-
-/**
- * 渠道目录：型号 → 目录条目。各渠道目录的位置与条目格式不同，只读取接口地址所属渠道商的目录。
- * 读取失败时目录为空，型号不带规格。
- */
-async function channelCatalog(
-  channel: NewApiChannel | null,
-  origin: string,
-  base: string,
-  auth: Record<string, string>,
-  signal: AbortSignal,
-): Promise<Map<string, ChannelEntry>> {
-  if (!channel) return new Map()
-  // providera 的视频规格只在带凭证的型号列表中（条目的 `parameters`）。价格仍按计费清单折算：
-  // 同一条目的 `pricing` 是展示字段，存在与实际计费方式不一致的条目。
-  const listed =
-    channel === 'providera'
-      ? (listOf(await optional(getJson(`${base}/models`, auth, signal)), 'data') ?? []).flatMap(
-          (e) => (record(e.parameters) ? [{ id: e.id, entry: record(e.parameters)! }] : []),
-        )
-      : (
-          listOf(
-            await optional(getJson(`${origin}/docs/catalog-models.json`, {}, signal)),
-            'models',
-          ) ?? []
-        ).map((e) => ({ id: e.id, entry: e }))
-  return new Map(
-    listed.flatMap(({ id, entry }) =>
-      typeof id === 'string' ? [[id, { channel, entry }] as const] : [],
-    ),
-  )
 }
 
 async function fromPricing(
   entries: NewApiPricingEntry[],
   pricing: unknown,
-  origin: string,
-  base: string,
-  auth: Record<string, string>,
-  target: PullTarget,
-  signal: AbortSignal,
+  ctx: PullContext,
+  channel: PullChannel | undefined,
 ): Promise<PullResult> {
-  const [status, catalog] = await Promise.all([
-    optional(getJson(`${origin}/api/status`, {}, signal)),
-    channelCatalog(videoChannelOf(target.baseUrl), origin, base, auth, signal),
+  const [status, specOf] = await Promise.all([
+    optional(ctx.getJson(`${ctx.origin}/api/status`, {})),
+    channel?.specs?.(ctx),
   ])
   // 站点状态读取失败时无法确定充值价与币种，价格不明。
   const statusData = record(record(status)?.data)
@@ -328,53 +272,11 @@ async function fromPricing(
     if (models.has(id)) continue
     const types = entry.supported_endpoint_types ?? []
     if (types.includes('openai-video')) {
-      models.set(id, videoOf(entry, basis, catalog.get(id), target.baseUrl))
+      models.set(id, ctx.media(id, 'video', 'openai_videos', specOf?.(entry, 'video', basis)))
     } else if (types.includes('image-generation')) {
-      models.set(id, imageOf(entry, basis, catalog.get(id), target.baseUrl))
+      models.set(id, ctx.media(id, 'image', 'openai_images', specOf?.(entry, 'image', basis)))
     } else if (types.some((t) => CHAT_ENDPOINTS.includes(t))) {
-      const price = basis ? chatPriceOf(entry, basis) : undefined
-      const kind = chatKindOf(types, target.kind)
-      models.set(id, {
-        id,
-        output: 'chat',
-        ...(kind ? { kind } : {}),
-        ...chatFields(id, kind ?? target.kind),
-        ...(price ? { price } : {}),
-      })
-    }
-  }
-  return { source: 'pricing', models: [...models.values()] }
-}
-
-/**
- * 服务商C AI 的模型目录（带凭证请求 `/api/v1/models`）：列出当前密钥可调用的全部型号与用户售价，按条目的 `type` 归类。
- * 对话只提供 Chat Completions，价格见 `providercChatPrice`；视频的规格与价格见 `providercVideoSpec`。
- * 图像、音频与视频擦除使用各自的任务接口，没有对应的生成协议，不列出。
- */
-function fromproviderc(entries: Record<string, unknown>[], target: PullTarget): PullResult {
-  const models = new Map<string, PulledModel>()
-  for (const entry of entries) {
-    const id = entry.id
-    if (typeof id !== 'string' || models.has(id)) continue
-    if (entry.type === 'chat') {
-      const kind = chatKindOf(['openai'], target.kind)
-      const price = providercChatPrice(entry)
-      models.set(id, {
-        id,
-        output: 'chat',
-        ...(kind ? { kind } : {}),
-        ...chatFields(id, kind ?? target.kind),
-        ...(price ? { price } : {}),
-      })
-    } else if (entry.type === 'video') {
-      const spec = providercVideoSpec(entry) ?? undefined
-      models.set(id, {
-        id,
-        output: 'video',
-        kind: 'providerc_videos',
-        ...catalogFields(id, 'video', spec, target.baseUrl),
-        ...(spec ? { spec } : {}),
-      })
+      models.set(id, ctx.chat(id, types, basis ? chatPriceOf(entry, basis) : undefined))
     }
   }
   return { source: 'pricing', models: [...models.values()] }
@@ -386,7 +288,7 @@ function fromproviderc(entries: Record<string, unknown>[], target: PullTarget): 
  */
 function ownProtocolModels(baseUrl: string): PulledModel[] {
   return mediaCatalog().flatMap((m): PulledModel[] => {
-    const output = MEDIA_KIND_OUTPUT[m.kind]
+    const output = mediaKindOutput(m.kind)
     const own = defaultMediaKind(output, baseUrl)
     if (own !== m.kind || own === defaultMediaKind(output, undefined)) return []
     return [{ id: m.id, output, kind: m.kind, known: true }]
@@ -475,30 +377,20 @@ function fromModelList(
 }
 
 export async function pullModels(target: PullTarget, signal: AbortSignal): Promise<PullResult> {
-  const base = normalizeBaseUrl(target.baseUrl)
-  const origin = new URL(base).origin
-  const auth: Record<string, string> = {
-    ...(target.kind === 'anthropic_messages'
-      ? { 'x-api-key': target.apiKey, 'anthropic-version': '2023-06-01' }
-      : { authorization: `Bearer ${target.apiKey}` }),
-    ...target.headers,
-  }
-  if (channelVendorOf(target.baseUrl) === 'providerc') {
-    const entries = listOf(await getJson(`${origin}/api/v1/models`, auth, signal), 'data')
-    if (!entries) throw new PullError('/api/v1/models 返回的格式无法识别')
-    return fromproviderc(entries, target)
-  }
-  const pricing = await optional(getJson(`${origin}/api/pricing`, {}, signal))
+  const ctx = contextOf(target, signal)
+  const channel = PULL_CHANNELS.find((c) => c.matches(target.baseUrl))
+  if (channel?.pull) return channel.pull(ctx)
+  const pricing = await optional(ctx.getJson(`${ctx.origin}/api/pricing`, {}))
   const entries = listOf(pricing, 'data')?.filter(
     (e): e is Record<string, unknown> & NewApiPricingEntry => typeof e.model_name === 'string',
   )
-  if (entries?.length) return fromPricing(entries, pricing, origin, base, auth, target, signal)
+  if (entries?.length) return fromPricing(entries, pricing, ctx, channel)
 
   const [listed, plaza] = await Promise.all([
-    getJson(`${base}/models`, auth, signal),
-    optional(getJson(`${origin}/api/v1/model-plaza`, {}, signal)),
+    ctx.getJson(`${ctx.base}/models`, ctx.auth),
+    optional(ctx.getJson(`${ctx.origin}/api/v1/model-plaza`, {})),
   ])
   const models = listOf(listed, 'data')
-  if (!models) throw new PullError(`${new URL(base).pathname}/models 返回的格式无法识别`)
+  if (!models) throw new PullError(`${new URL(ctx.base).pathname}/models 返回的格式无法识别`)
   return fromModelList(models, target, plaza ? plazaPrices(plaza, target.kind) : null)
 }

@@ -620,54 +620,6 @@ describe('模型目录', () => {
     }
   })
 
-  test.each([
-    [
-      'seedance2.5-V',
-      Array.from({ length: 26 }, (_, i) => String(i + 5)),
-      '5',
-      '720P',
-      ['1280x720', '720x1280'],
-    ],
-  ] as const)(
-    'SD2.5 按保存的渠道规格把素材上限和原生时长选项同步到画布，模型库不收录：%s',
-    async (id, durations, defaultDuration, tier, sizes) => {
-      const d = withConfig('openai_chat_completions', 'm')
-      d.config.providers.p!.media = {
-        [id]: {
-          kind: 'openai_videos',
-          spec: {
-            channel: 'providerb',
-            seconds: durations.map(Number),
-            ratios: ['16:9', '9:16'],
-            resolutions: ['720p'],
-            sizes: { '720p': [1280, 720] },
-            maxImages: 30,
-            maxVideos: 0,
-            maxAudios: 0,
-            publicUrls: true,
-          },
-        },
-      }
-      const response = await body(d)
-      expect(response.mediaLibrary.some((m) => m.vendor === 'providerb')).toBe(false)
-      const model = response.media.find((m) => m.id === id)!
-      expect(model.maxAudios).toBe(0)
-      expect(model.operations).toEqual(['text_to_video', 'reference_to_video'])
-      const seconds = model.params.find((p) => p.name === 'seconds')!
-      expect(seconds.type).toBe('enum')
-      expect(seconds.default).toBe(defaultDuration)
-      expect(seconds.values).toEqual(durations)
-      expect(seconds.valueLabels?.[durations.at(-1)!]).toBe(`${durations.at(-1)}秒`)
-      expect(model.params.find((p) => p.name === 'size')?.shapes).toEqual([
-        { ratio: '16:9', tier, value: sizes[0] },
-        { ratio: '9:16', tier, value: sizes[1] },
-      ])
-      expect(seconds.rules).toBeUndefined()
-      expect(model.label).toBe(id)
-      expect(model.params.map((p) => p.name)).toEqual(['seconds', 'size'])
-    },
-  )
-
   /** 原始失败形状：只配置了视频模型的接口在输入框的模型选择中显示为一个没有模型的分组。 */
   test('只配置了生成模型的接口不列入对话模型，其生成模型照常列出', async () => {
     const d = withConfig('openai_chat_completions', 'm')
@@ -742,11 +694,11 @@ describe('模型目录', () => {
       active: { provider: '官方', model: 'deepseek-flash' },
       providers: {
         官方: { kind: 'openai_chat_completions', models: { 'deepseek-flash': {} } },
-        第三方接口: { kind: 'openai_chat_completions', models: { 'deepseek-flash': {} } },
+        第三方: { kind: 'openai_chat_completions', models: { 'deepseek-flash': {} } },
       },
     }
     const b = await body(d)
-    expect(b.providers.map((p) => p.name)).toEqual(['官方', '第三方接口'])
+    expect(b.providers.map((p) => p.name)).toEqual(['官方', '第三方'])
     // 同一模型 id 配置在两个接口下是常见情况，两条都须保留，分别归入各自的分组。
     expect(b.providers.every((p) => p.models[0]?.id === 'deepseek-flash')).toBe(true)
     expect(b.active).toEqual({ provider: '官方', model: 'deepseek-flash' })
@@ -757,12 +709,17 @@ describe('模型目录', () => {
     ;(d as { config: unknown }).config = {
       active: { provider: 'p', model: 'claude-opus-5' },
       providers: {
-        p: { kind: 'anthropic_messages', models: { 'claude-opus-5': {}, 第三方接口上的某个模型: {} } },
+        p: {
+          kind: 'anthropic_messages',
+          models: { 'claude-opus-5': {}, 第三方接口上的某个模型: {} },
+        },
       },
     }
     const list = await models(d)
     expect(list.find((m) => m.id === 'claude-opus-5')?.label).toBe('Claude Opus 5')
-    expect(list.find((m) => m.id === '第三方接口上的某个模型')?.label).toBe('第三方接口上的某个模型')
+    expect(list.find((m) => m.id === '第三方接口上的某个模型')?.label).toBe(
+      '第三方接口上的某个模型',
+    )
     expect(list.find((m) => m.id === '第三方接口上的某个模型')?.known).toBe(false)
   })
 

@@ -13,7 +13,7 @@
  *     图片项目符号不进入排版模块：正文的首行起点按图片宽度换算（见 `layoutBody`），图片与底纹同时绘制。
  *   - 公式为行内对象（见 `math.ts`）。独占一行的 `m:oMath`（见 `standalone`）按显示样式排版，所在各行按 `m:jc` 平移
  *     （行内公式缺省为 `centerGroup`）；其余按行内样式排版，随段落对齐。
- * - `eaVert`：排版与 `vert` 相同（调用方旋转文本区域），绘制时东亚文字在字框第三方回直立（见 `orientation`）。
+ * - `eaVert`：排版与 `vert` 相同（调用方旋转文本区域），绘制时东亚文字在字框内转回直立（见 `orientation`）。
  * - `wrap` 为假时不断行：按不限宽度排版后，各行在文本区域内按段落对齐方式整体平移。
  * - 字段 `slidenum` 显示 `TextSettings.slideNumber`（为 `null` 时与其余字段相同），日期字段按 `TextSettings.date` 显示
  *   （见 `date.ts`，没有时与其余字段相同），其余字段显示文件中保存的文字。
@@ -148,7 +148,7 @@ export interface BodyLayout {
   readonly height: number
   /** 锚定居中与底端时内容高度另加的部分（磅，见 `anchorOverhang`）；屏幕显示的排版为 0。 */
   readonly overhang: number
-  /** 东亚文字直立（`eaVert`）：调用方按 `vert` 旋转文本区域，东亚文字在各自的字框第三方回直立（见 `orientation`）。 */
+  /** 东亚文字直立（`eaVert`）：调用方按 `vert` 旋转文本区域，东亚文字在各自的字框内转回直立（见 `orientation`）。 */
   readonly upright: boolean
 }
 
@@ -653,7 +653,7 @@ interface Area {
 }
 
 /**
- * 竖排（`eaVert`）中字的方向：`flow` 随文字方向旋转（西文、数字、括号、破折号、长音符号等），`upright` 在字框第三方回直立
+ * 竖排（`eaVert`）中字的方向：`flow` 随文字方向旋转（西文、数字、括号、破折号、长音符号等），`upright` 在字框内转回直立
  * （汉字、假名、谚文与全角字母），`raised` 直立并移到字框右上角（顿号、句号、全角逗号与句点）。WPS 演示实测（宋体、
  * 黑体、微软雅黑 20–32 磅）。
  */

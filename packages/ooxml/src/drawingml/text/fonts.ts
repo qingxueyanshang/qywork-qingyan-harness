@@ -39,7 +39,7 @@ export interface FaceLine {
   readonly descent: number
   readonly center: number
   /**
-   * 竖排中直立的字在字框第三方回直立时，旋转中心在基线以上的距离与字号之比：`OS/2` 的 `sTypoAscender` 与 `sTypoDescender`
+   * 竖排中直立的字在字框内转回直立时，旋转中心在基线以上的距离与字号之比：`OS/2` 的 `sTypoAscender` 与 `sTypoDescender`
    * 的中点。WPS 演示实测（`eaVert`，20、32、48 磅「国」的列位置）：Microsoft JhengHei、Yu Gothic、Noto Sans SC 的列中心与
    * typo 中点相差不超过 1 像素（与 win 中点相差 1–4 像素），微软雅黑与 Yu Gothic UI 与 typo 中点相差 1–3 像素（与 win 中点
    * 相差 3–9 像素）；`USE_TYPO_METRICS` 均未设置。宋体、MS Gothic、等线的两种中点相同。

@@ -118,23 +118,23 @@ describe('将指定的模型解析为接口与模型', () => {
 
   test('带斜杠的接口只能通过结构化 provider 与 model 选择', () => {
     const legacy = {
-      active: { provider: '官方/第三方', model: 'm' },
-      providers: { '官方/第三方': { models: { m: {} } } },
+      active: { provider: '官方/兼容', model: 'm' },
+      providers: { '官方/兼容': { models: { m: {} } } },
     } as unknown as QyConfig
-    expect(resolveModel('官方/第三方/m', legacy)).toMatchObject({
+    expect(resolveModel('官方/兼容/m', legacy)).toMatchObject({
       error: expect.stringContaining('配置中没有模型'),
     })
   })
 
   test('结构化的接口与模型不受名称中斜杠的影响', () => {
     const slash = {
-      active: { provider: '官方/第三方', model: 'anthropic/claude-opus-5' },
+      active: { provider: '官方/兼容', model: 'anthropic/claude-opus-5' },
       providers: {
-        '官方/第三方': { models: { 'anthropic/claude-opus-5': {} } },
+        '官方/兼容': { models: { 'anthropic/claude-opus-5': {} } },
       },
     } as unknown as QyConfig
-    expect(resolveModel('anthropic/claude-opus-5', slash, '官方/第三方')).toEqual({
-      provider: '官方/第三方',
+    expect(resolveModel('anthropic/claude-opus-5', slash, '官方/兼容')).toEqual({
+      provider: '官方/兼容',
       model: 'anthropic/claude-opus-5',
     })
   })

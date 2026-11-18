@@ -7,15 +7,16 @@
 
 import type { ErrorCode } from '../protocol/events.ts'
 import type { MentionStyle } from './canvas.ts'
-import { channelVendorOf } from './channel-vendors.ts'
+import { channelVendorOf, hostOf } from './channel-vendors.ts'
 import type { MediaOperation, MediaParamSpec } from './media-params.ts'
 import type { Currency, ProviderKind } from './model.ts'
 
 /**
  * 一个值 = 一种请求形状，不是一个厂商：火山方舟的图片生成接口与 OpenAI 同形状，同属 `openai_images`。
- * 新增值时须同时新增该协议的适配器、`MEDIA_KIND_OUTPUT` 中的一行与目录中的协议默认值。
+ * 新增值时须同时新增该协议的适配器、`BUILTIN_KIND_OUTPUT` 中的一行与目录中的协议默认值。
+ * 本列表之外的协议经 `registerMediaKind` 登记（`ExtensionMediaKind`）。
  */
-export const MEDIA_KINDS = [
+export const BUILTIN_MEDIA_KINDS = [
   'openai_images',
   'dashscope_images',
   'gemini_images',
@@ -29,7 +30,6 @@ export const MEDIA_KINDS = [
   'veo_videos',
   'xai_videos',
   'minimax_videos',
-  'providerc_videos',
   'openai_speech',
   'dashscope_speech',
   'minimax_speech',
@@ -39,7 +39,18 @@ export const MEDIA_KINDS = [
   'qywork_videos',
   'qywork_speech',
 ] as const
-export type MediaKind = (typeof MEDIA_KINDS)[number]
+export type BuiltinMediaKind = (typeof BUILTIN_MEDIA_KINDS)[number]
+
+declare const extension: unique symbol
+/**
+ * 经 `registerMediaKind` 登记的协议。只能由登记的返回值或 `isMediaKind` 取得：字符串字面量不能赋值给它，
+ * 未登记的取值在运行时被 `isMediaKind` 拒绝。
+ */
+export type ExtensionMediaKind = string & { readonly [extension]: true }
+export type MediaKind = BuiltinMediaKind | ExtensionMediaKind
+
+export const isBuiltinMediaKind = (kind: unknown): kind is BuiltinMediaKind =>
+  (BUILTIN_MEDIA_KINDS as readonly unknown[]).includes(kind)
 
 /**
  * 经云端生成的三种协议，每个类别一种：电脑端把请求提交到云端的生成任务接口，云端以上游接口运行原协议的适配器。
@@ -57,26 +68,8 @@ export type MediaUnit = (typeof MEDIA_UNITS)[number]
 export type UnitPrice = number | Readonly<Record<string, number>>
 
 /**
- * 第三方渠道的视频请求格式。请求字段、素材上传与任务查询由 `@qywork/ai` 按格式实现；
- * 型号的时长、画幅、素材上限与价格来自拉取时的渠道目录，保存在该型号的配置中（`ChannelVideoSpec`）。
- * 图像只有 providerb 一种格式（`ChannelImageSpec`）。
- */
-export const VIDEO_CHANNELS = ['providera', 'providerb', 'providerc'] as const
-export type VideoChannel = (typeof VIDEO_CHANNELS)[number]
-
-/**
- * 各渠道的视频规格所属的协议：providera 与服务商B按 `/v1/videos` 的形状提交，服务商C AI 使用自有协议。
- * 配置校验据此拒绝协议与渠道不一致的规格，规格解析（`@qywork/ai` 的 `lookupMediaModel`）只在一致时使用渠道规格。
- */
-export const VIDEO_CHANNEL_KIND: Readonly<Record<VideoChannel, MediaKind>> = {
-  providera: 'openai_videos',
-  providerb: 'openai_videos',
-  providerc: 'providerc_videos',
-}
-
-/**
- * 渠道公布的价格。金额按渠道充值价与分组倍率折算，币种为渠道的计价币种。图像每次请求生成一张，按次即按张。
- * 各分辨率档位单价不同时 `amount` 为「档位 → 金额」，键与规格的 `resolutions` 一致。
+ * 第三方接口公布的价格。金额按站点充值价与分组倍率折算，币种为站点的计价币种。图像每次请求生成一张，按次即按张。
+ * 各分辨率档位单价不同时 `amount` 为「档位 → 金额」。
  */
 export interface ChannelPrice {
   per: 'request' | 'second'
@@ -85,53 +78,12 @@ export interface ChannelPrice {
 }
 
 /**
- * 拉取模型时由渠道目录得到的视频型号规格，保存在该型号的配置中。
- * 只保存目录中的事实；参数名、默认值与说明由 `@qywork/ai` 按渠道格式生成。
+ * 扩展渠道保存的型号规格：`channel` 是登记该规格的渠道（`@qywork/ai` 的 `registerMediaChannel`），
+ * 其余字段由该渠道定义与校验。电脑端的配置不保存渠道规格（`diagnoseConfig` 拒绝）。
  */
-export interface ChannelVideoSpec {
-  channel: VideoChannel
-  /** 渠道目录中的型号名称。型号 id 是渠道编号（服务商C AI 的 `providerc-video-x…`）时，界面显示此名称。 */
-  label?: string
-  /** 可选时长（秒），升序；第一项为默认值。 */
-  seconds: number[]
-  /** 宽高比；第一项为默认值。 */
-  ratios: string[]
-  /** 分辨率档位，如 `720p`。 */
-  resolutions: string[]
-  /** 各档位的横屏像素尺寸 `[宽, 高]`。按像素尺寸提交的格式（providerb）必须提供。 */
-  sizes?: Record<string, [number, number]>
-  maxImages: number
-  maxVideos: number
-  maxAudios: number
-  /** 参考素材先上传到渠道，请求中只发送地址；省略时内联发送（providerb）。 */
-  publicUrls?: true
-  /** 参考图以表单文件随提交上传；省略时按 JSON 提交（providerb）。不能与 `publicUrls` 同时设置。 */
-  multipart?: true
-  /** 提交时同时发送与所选尺寸对应的分辨率档位 `resolution`：渠道按该字段生成与计价，不按尺寸推断（providerb）。 */
-  resolutionField?: true
-  /** 省略表示价格不明。 */
-  price?: ChannelPrice
+export interface ChannelSpec {
+  channel: string
 }
-
-/**
- * 拉取模型时由渠道目录得到的图像型号规格，保存在该型号的配置中（providerb）。
- * 尺寸与分辨率档位是两个独立参数，渠道分别据此计价与生成；只保存目录中的事实。
- */
-export interface ChannelImageSpec {
-  channel: 'providerb'
-  /** 分辨率档位，如 `1K`；第一项为默认值。 */
-  resolutions: string[]
-  /** 像素尺寸 `宽x高`；第一项为默认值。 */
-  sizes: string[]
-  maxImages: number
-  /** 省略表示价格不明。 */
-  price?: ChannelPrice
-}
-
-/**
- * 生成型号保存的渠道规格。类别由该型号的协议决定：`openai_videos` 与 `providerc_videos` 为视频，`openai_images` 为图像。
- */
-export type ChannelSpec = ChannelVideoSpec | ChannelImageSpec
 
 /**
  * 型号对应的生成目录条目：第三方接口的自定义名称（如 `gpt-image-2.5-sunburst-4k`）按该条目取得参数表与能力，
@@ -203,87 +155,7 @@ export interface CloudMediaSpec {
 /** 生成型号保存的规格来源：渠道规格、对应的目录型号或云端规格。三者互斥，保存在同一字段（`spec`）中。 */
 export type StoredMediaSpec = ChannelSpec | MediaBaseSpec | CloudMediaSpec
 
-/** 保存的规格是渠道规格时返回它；对应型号或未保存时返回 undefined。 */
-export function channelSpecOf(spec: StoredMediaSpec | undefined): ChannelSpec | undefined {
-  return spec && 'channel' in spec ? spec : undefined
-}
-
 const isCount = (v: unknown) => Number.isInteger(v) && (v as number) >= 0
-const isTextList = (v: unknown) =>
-  Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string' && x !== '')
-
-function channelPriceProblem(p: unknown, resolutions: string[]): string | null {
-  if (p === undefined) return null
-  const price = p as Partial<ChannelPrice> | null
-  const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0
-  const amount = price?.amount
-  return price &&
-    ['request', 'second'].includes(price.per as string) &&
-    (positive(amount) ||
-      (amount &&
-        typeof amount === 'object' &&
-        Object.keys(amount).length === resolutions.length &&
-        resolutions.every((r) => positive(amount[r])))) &&
-    ['USD', 'CNY'].includes(price.currency as string)
-    ? null
-    : 'price 必须包含 per（request 或 second）、amount（正数，或每个分辨率档位各一个正数）与 currency'
-}
-
-/**
- * 配置中保存的渠道规格不合法时返回原因。配置写入前校验，不合法的规格不落盘。
- * `kind` 是该型号的协议，渠道须属于该协议（`VIDEO_CHANNEL_KIND`）。
- */
-export function channelVideoSpecProblem(value: unknown, kind: MediaKind): string | null {
-  if (!value || typeof value !== 'object') return '不是对象'
-  const s = value as Partial<ChannelVideoSpec>
-  const channels = VIDEO_CHANNELS.filter((c) => VIDEO_CHANNEL_KIND[c] === kind)
-  if (!channels.includes(s.channel as VideoChannel))
-    return channels.length
-      ? `${kind} 协议的 channel 必须是 ${channels.join('、')} 之一`
-      : `${kind} 协议不能保存视频渠道规格`
-  if (s.label !== undefined && (typeof s.label !== 'string' || !s.label.trim()))
-    return 'label 必须是非空字符串'
-  if (
-    !Array.isArray(s.seconds) ||
-    !s.seconds.length ||
-    !s.seconds.every((n, i) => Number.isInteger(n) && n > 0 && (i === 0 || n > s.seconds![i - 1]!))
-  )
-    return 'seconds 必须是升序的正整数数组'
-  if (!isTextList(s.ratios)) return 'ratios 必须是非空字符串数组'
-  if (!isTextList(s.resolutions)) return 'resolutions 必须是非空字符串数组'
-  if (
-    s.sizes !== undefined &&
-    (!s.sizes ||
-      typeof s.sizes !== 'object' ||
-      !Object.values(s.sizes).every(
-        (d) => Array.isArray(d) && d.length === 2 && d.every((n) => Number.isInteger(n) && n > 0),
-      ))
-  )
-    return 'sizes 必须是「档位 → [宽, 高]」'
-  if (s.channel === 'providerb' && !(s.resolutions as string[]).every((r) => s.sizes?.[r]))
-    return 'providerb 的每个分辨率档位都必须提供 sizes'
-  if (!isCount(s.maxImages) || !isCount(s.maxVideos) || !isCount(s.maxAudios))
-    return 'maxImages、maxVideos、maxAudios 必须是非负整数'
-  if (s.publicUrls !== undefined && s.publicUrls !== true) return 'publicUrls 只能为 true'
-  if (s.multipart !== undefined && s.multipart !== true) return 'multipart 只能为 true'
-  if (s.multipart && s.publicUrls) return 'multipart 与 publicUrls 不能同时设置'
-  if (s.resolutionField !== undefined && s.resolutionField !== true)
-    return 'resolutionField 只能为 true'
-  return channelPriceProblem(s.price, s.resolutions as string[])
-}
-
-/** 配置中保存的图像渠道规格不合法时返回原因。 */
-export function channelImageSpecProblem(value: unknown): string | null {
-  if (!value || typeof value !== 'object') return '不是对象'
-  const s = value as Partial<ChannelImageSpec>
-  if (s.channel !== 'providerb') return 'channel 必须是 providerb'
-  if (!isTextList(s.resolutions)) return 'resolutions 必须是非空字符串数组'
-  if (!isTextList(s.sizes) || !(s.sizes as string[]).every((v) => /^\d+x\d+$/.test(v)))
-    return 'sizes 必须是「宽x高」的非空数组'
-  if (!isCount(s.maxImages)) return 'maxImages 必须是非负整数'
-  if (s.price?.per === 'second') return '图像的 price 只能按次'
-  return channelPriceProblem(s.price, s.resolutions as string[])
-}
 
 /** 生成的产物类别。顺序即模型库页签顺序。 */
 export const MEDIA_OUTPUTS = ['image', 'video', 'audio'] as const
@@ -373,8 +245,8 @@ export interface MediaDiagnostic {
   errorCode?: ErrorCode
 }
 
-/** 协议决定类别。配置中不另存类别：两处各存一份可能导致不一致。 */
-export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
+/** 内置协议决定类别。配置中不另存类别：两处各存一份可能导致不一致。 */
+const BUILTIN_KIND_OUTPUT: Readonly<Record<BuiltinMediaKind, MediaOutput>> = {
   openai_images: 'image',
   dashscope_images: 'image',
   gemini_images: 'image',
@@ -388,7 +260,6 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   veo_videos: 'video',
   xai_videos: 'video',
   minimax_videos: 'video',
-  providerc_videos: 'video',
   openai_speech: 'audio',
   dashscope_speech: 'audio',
   minimax_speech: 'audio',
@@ -397,6 +268,42 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   qywork_images: 'image',
   qywork_videos: 'video',
   qywork_speech: 'audio',
+}
+
+/** 登记的协议：所属类别，以及以该协议为该类别默认协议的接口地址主机名。 */
+const EXTENSION_KINDS = new Map<string, { output: MediaOutput; hosts: readonly string[] }>()
+
+/**
+ * 登记内置协议之外的生成协议，返回可用作 `MediaKind` 的协议名。`hosts` 中的主机名添加该类别的型号时默认使用该协议
+ * （`defaultMediaKind`）。协议名已存在时抛出：两次登记的类别或主机名可能不同。
+ * 适配器、协议默认规格与计量参数名由 `@qywork/ai` 的 `registerMediaProtocol` 登记，它调用本函数。
+ */
+export function registerMediaKind(
+  kind: string,
+  output: MediaOutput,
+  hosts: readonly string[] = [],
+): ExtensionMediaKind {
+  if (isBuiltinMediaKind(kind) || EXTENSION_KINDS.has(kind))
+    throw new Error(`生成协议 ${kind} 已存在`)
+  EXTENSION_KINDS.set(kind, { output, hosts: hosts.map((h) => h.toLowerCase()) })
+  return kind as ExtensionMediaKind
+}
+
+/** 是否为内置或已登记的协议。读取配置与数据库中的协议名时据此校验。 */
+export const isMediaKind = (kind: unknown): kind is MediaKind =>
+  isBuiltinMediaKind(kind) || (typeof kind === 'string' && EXTENSION_KINDS.has(kind))
+
+/** 内置协议与已登记的协议。 */
+export function mediaKinds(): MediaKind[] {
+  return [...BUILTIN_MEDIA_KINDS, ...(EXTENSION_KINDS.keys() as Iterable<ExtensionMediaKind>)]
+}
+
+/** 协议所属的类别。协议未登记时抛出：没有类别的协议无法分派。 */
+export function mediaKindOutput(kind: MediaKind): MediaOutput {
+  if (isBuiltinMediaKind(kind)) return BUILTIN_KIND_OUTPUT[kind]
+  const registered = EXTENSION_KINDS.get(kind)
+  if (!registered) throw new Error(`生成协议 ${kind} 未登记`)
+  return registered.output
 }
 
 /** 各类别的云端生成协议。 */
@@ -480,7 +387,7 @@ function cloudModelSpecProblem(value: unknown, output: MediaOutput): string | nu
 export function cloudMediaSpecProblem(value: unknown, kind: MediaKind): string | null {
   const c = (value as Partial<CloudMediaSpec> | null)?.cloud
   if (!c || typeof c !== 'object') return '缺少 cloud'
-  const spec = cloudModelSpecProblem(c.spec, MEDIA_KIND_OUTPUT[kind])
+  const spec = cloudModelSpecProblem(c.spec, mediaKindOutput(kind))
   if (spec) return spec
   if (!MEDIA_UNITS.includes(c.unit as MediaUnit)) return '计费单位不是有效值'
   const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0
@@ -499,7 +406,8 @@ export function cloudMediaSpecProblem(value: unknown, kind: MediaKind): string |
 }
 
 /**
- * 已收录模型默认使用目录协议；未收录时按类别与官方地址给出默认值。
+ * 已收录模型默认使用目录协议；未收录时按类别与接口地址给出默认值：登记了该主机名的协议（`registerMediaKind`）优先，
+ * 其次按官方地址所属的厂商。
  * 仅在添加时使用。请求以保存的 `media[id].kind` 为准，修改地址不改变协议。
  */
 export function defaultMediaKind(
@@ -507,7 +415,12 @@ export function defaultMediaKind(
   baseUrl: string | undefined,
   catalogKind?: MediaKind,
 ): MediaKind {
-  if (catalogKind && MEDIA_KIND_OUTPUT[catalogKind] === output) return catalogKind
+  if (catalogKind && mediaKindOutput(catalogKind) === output) return catalogKind
+  const host = hostOf(baseUrl)
+  for (const [kind, registered] of EXTENSION_KINDS) {
+    if (registered.output === output && host && registered.hosts.includes(host))
+      return kind as ExtensionMediaKind
+  }
   const vendor = channelVendorOf(baseUrl)
   switch (output) {
     case 'image':
@@ -522,7 +435,6 @@ export function defaultMediaKind(
       if (vendor === 'alibaba') return 'dashscope_videos'
       if (vendor === 'minimax') return 'minimax_videos'
       if (vendor === 'volcengine') return 'ark_videos'
-      if (vendor === 'providerc') return 'providerc_videos'
       return vendor === 'kling' ? 'kling_videos' : 'openai_videos'
     case 'audio':
       if (vendor === 'alibaba') return 'dashscope_speech'
@@ -550,10 +462,11 @@ export function catalogPrefixOf(id: string, ids: Iterable<string>): string | und
 }
 
 /**
- * 按名称识别生成模型。与目录 id 完全一致时使用目录协议；接口地址是第三方接口且该条目登记了通用协议的兼容映射（`kinds`）时
- * 改用通用协议：第三方接口以自身的接口格式提供该名称，不提供厂商的原生路径（New API 对百炼原生路径返回 404）。
- * 没有兼容映射的条目（如 Gemini 图像）与未填写接口地址时沿用目录协议。名称以目录 id 为前缀时（`catalogPrefixOf`，
- * 第三方接口的自定义名称），`base` 为该目录 id，协议按接口地址取默认值；不成立时返回 undefined。
+ * 按名称识别生成模型。与目录 id 完全一致时使用目录协议；接口地址的默认协议是通用协议（第三方接口）且该条目登记了
+ * 通用协议的兼容映射（`kinds`）时改用通用协议：第三方接口以自身的接口格式提供该名称，不提供厂商的原生路径
+ * （New API 对百炼原生路径返回 404）。没有兼容映射的条目（如 Gemini 图像）与未填写接口地址时沿用目录协议。
+ * 名称以目录 id 为前缀时（`catalogPrefixOf`，第三方接口的自定义名称），`base` 为该目录 id，协议按接口地址取默认值；
+ * 不成立时返回 undefined。
  *
  * 拉取模型与手动添加共用此函数：两处各写一份时，同一个名称在两处可能识别为不同类别。
  */
@@ -564,7 +477,7 @@ export function identifyMediaModel(
 ): { output: MediaOutput; kind: MediaKind; base?: string } | undefined {
   const exact = catalog.find((m) => m.id === id)
   if (exact) {
-    const output = MEDIA_KIND_OUTPUT[exact.kind]
+    const output = mediaKindOutput(exact.kind)
     const generic = defaultMediaKind(output, undefined)
     const relay = !!baseUrl?.trim() && defaultMediaKind(output, baseUrl) === generic
     if (relay && exact.kinds?.includes(generic)) return { output, kind: generic }
@@ -576,6 +489,6 @@ export function identifyMediaModel(
   )
   const base = catalog.find((m) => m.id === prefix)
   if (!base) return undefined
-  const output = MEDIA_KIND_OUTPUT[base.kind]
+  const output = mediaKindOutput(base.kind)
   return { output, kind: defaultMediaKind(output, baseUrl), base: base.id }
 }

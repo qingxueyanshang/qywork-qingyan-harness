@@ -16,9 +16,9 @@ import type { RunState, TurnState } from './run-state.ts'
  * 回报的输入量的上限：超过时该回执不描述本次请求，锚点与静默溢出判定都不使用它，账本行也不标为锚点。
  *
  * 超出的部分不是本次发送的内容，压缩也无法回收：以这类回执为锚点时读数虚高，每次发送前都触发自动压缩并以
- * 「无可压缩内容」跳过，工具结果的投递额度降为 0（实测一个第三方每次多报约 61 万缓存命中）。
+ * 「无可压缩内容」跳过，工具结果的投递额度降为 0（实测一个第三方接口每次多报约 61 万缓存命中）。
  *
- * 取本地估算的 1.5 倍加 2 万：已标定型号单段内容 90% 的偏差在 14% 以内、图片在 5% 以内；第三方在请求前注入的
+ * 取本地估算的 1.5 倍加 2 万：已标定型号单段内容 90% 的偏差在 14% 以内、图片在 5% 以内；第三方接口在请求前注入的
  * 隐藏系统提示实测约 8,600 token。原生发送的视频都能读取时长与尺寸，同样计入本地估算。
  */
 function inputLimit(turn: TurnState): number {
@@ -32,7 +32,7 @@ function inputLimit(turn: TurnState): number {
  * provider_error 停止。作为锚点时读数远低于发送量，自动压缩不再触发，而模型在每一轮都缺少历史。
  *
  * 取系统提示词、工具定义与图片视频之外的部分减 2 万后的四分之一：账本中各型号正常回执与估算之比的最小值为 0.35
- * （2026-11-16 统计约 5 万次请求），第三方丢弃历史时为 0.03 至 0.28（只计入系统提示词、工具定义与最后一条用户消息之后的内容）。
+ * （2026-11-16 统计约 5 万次请求），第三方接口丢弃历史时为 0.03 至 0.28（只计入系统提示词、工具定义与最后一条用户消息之后的内容）。
  * 不计系统提示词与工具定义：部分兼容接口回报的输入不含工具定义，而历史很短时差额只是这一部分。
  * 不计图片与视频：它们按像素上限估算，只能偏高，截图多而文字少的请求按总量判定时会误判。
  */
@@ -83,7 +83,7 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
     ? turnUsage.inputTokens + (turnUsage.cachedTokens ?? 0) + (turnUsage.cacheWriteTokens ?? 0)
     : 0
   const total = prompt + (turnUsage?.outputTokens ?? 0)
-  // 0 不是可用的用量回执（部分第三方对所有请求回报 0），不据此判定。
+  // 0 不是可用的用量回执（部分第三方接口对所有请求回报 0），不据此判定。
   const dropped = prompt > 0 && prompt < inputFloor(run, turn)
   const plausible = prompt <= inputLimit(turn) && !dropped
 

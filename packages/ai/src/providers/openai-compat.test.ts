@@ -1179,8 +1179,8 @@ describe('不应发送时不发送任何多余字节', () => {
 /**
  * Base URL 归一。
  *
- * 已复现的故障：用户填写 `https://第三方接口/`（缺少 `/v1`），SDK 因此请求
- * `https://第三方接口/chat/completions`，第三方接口对该错误路径返回 200 与 HTML 首页。
+ * 已复现的故障：用户填写 `https://api.example.com/`（缺少 `/v1`），SDK 因此请求
+ * `https://api.example.com/chat/completions`，第三方接口对该错误路径返回 200 与 HTML 首页。
  * 解析器无法读取任何 chunk 且不报错，该轮记为 0 token、0 步骤、`completed`，
  * 消息已发送而没有任何输出。
  */

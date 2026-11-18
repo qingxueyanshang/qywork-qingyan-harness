@@ -80,7 +80,7 @@ test('保存的默认权限原样读取，非法权限值不能通过校验', as
   }
 })
 
-test('保存的渠道规格不合法时阻止保存', () => {
+test('生成型号只能保存对应型号或云端规格，协议须为有效值', () => {
   const bad = (spec: unknown, kind = 'openai_videos') =>
     diagnoseConfig(
       cfg({
@@ -88,86 +88,27 @@ test('保存的渠道规格不合法时阻止保存', () => {
           ds: {
             kind: 'openai_chat_completions',
             models: {},
-            media: { v: { kind, spec } as never },
+            media: { v: { kind, ...(spec === undefined ? {} : { spec }) } as never },
           },
         },
       }),
     )
-  const ok = {
-    channel: 'providerb',
-    seconds: [5],
-    ratios: ['16:9'],
-    resolutions: ['720p'],
-    sizes: { '720p': [1280, 720] },
-    maxImages: 1,
-    maxVideos: 0,
-    maxAudios: 0,
-  }
-  expect(bad(ok)).toEqual([])
-  expect(bad(ok, 'ark_videos')[0]).toContain('ark_videos 协议不能保存视频渠道规格')
-  expect(bad(ok, 'openai_speech')[0]).toContain('音频协议不能保存渠道规格')
-  // 渠道须属于型号的协议：服务商C AI 的规格只用于 providerc_videos，providera 与服务商B的只用于 openai_videos。
-  const providerc = {
-    channel: 'providerc',
-    label: 'Seedance 2.0 · 720p',
-    seconds: [5],
-    ratios: ['16:9'],
-    resolutions: ['720p'],
-    maxImages: 9,
-    maxVideos: 3,
-    maxAudios: 0,
-  }
-  expect(bad(providerc, 'providerc_videos')).toEqual([])
-  expect(bad(providerc)[0]).toContain('openai_videos 协议的 channel 必须是 providera、providerb 之一')
-  expect(bad(ok, 'providerc_videos')[0]).toContain('providerc_videos 协议的 channel 必须是 providerc')
-  expect(bad({ ...providerc, label: ' ' }, 'providerc_videos')[0]).toContain('label 必须是非空字符串')
-  // 视频协议不接受图像规格，反之亦然。
-  expect(bad(ok, 'openai_images')[0]).toContain('sizes 必须是「宽x高」的非空数组')
-  expect(bad({ ...ok, multipart: true, publicUrls: true })[0]).toContain(
-    'multipart 与 publicUrls 不能同时设置',
-  )
-  expect(bad({ ...ok, resolutionField: 1 })[0]).toContain('resolutionField 只能为 true')
-  expect(bad({ ...ok, channel: 'other' })[0]).toContain('channel 必须是')
-  expect(bad({ ...ok, seconds: [10, 5] })[0]).toContain('seconds 必须是升序的正整数数组')
-  expect(bad({ ...ok, sizes: {} })[0]).toContain('providerb 的每个分辨率档位都必须提供 sizes')
-  expect(bad({ ...ok, price: { per: 'request', amount: 0, currency: 'CNY' } })[0]).toContain(
-    'price 必须包含',
-  )
-  // 按分辨率定价时每个档位各有一个金额。
-  const two = {
-    ...ok,
-    resolutions: ['480p', '720p'],
-    sizes: { '480p': [854, 480], '720p': [1280, 720] },
-  }
-  const tiered = (amount: unknown) => ({
-    ...two,
-    price: { per: 'second', amount, currency: 'CNY' },
-  })
-  expect(bad(tiered({ '480p': 0.4, '720p': 0.6 }))).toEqual([])
-  expect(bad(tiered({ '480p': 0.4 }))[0]).toContain('price 必须包含')
-  expect(bad(tiered({ '480p': 0.4, '1080p': 0.6 }))[0]).toContain('price 必须包含')
+  // 渠道规格不保存在电脑端的配置中。
+  const channel = { channel: 'example', seconds: [5], ratios: ['16:9'], resolutions: ['720p'] }
+  expect(bad(channel)[0]).toContain('只能保存对应型号（base）')
+  expect(bad(channel, 'openai_images')[0]).toContain('只能保存对应型号（base）')
+  expect(bad(undefined, 'example_videos')[0]).toContain('生成协议 "example_videos" 不是有效值')
+  expect(bad(undefined)).toEqual([])
 
-  // 对应型号：任一协议均可保存，必须是同类别的生成目录 id，且不能与渠道规格混合。
+  // 对应型号：任一协议均可保存，必须是同类别的生成目录 id，且不能混入其他字段。
   expect(bad({ base: 'gpt-image-2.5-sunburst' }, 'openai_images')).toEqual([])
   expect(bad({ base: 'gemini-3-pro-image' }, 'openai_images')).toEqual([])
   expect(bad({ base: 'gpt-image-2.5-sunburst' }, 'openai_videos')[0]).toContain(
     'base 必须是生成目录中与该型号同类别的型号',
   )
   expect(bad({ base: 'not-in-catalog' }, 'openai_images')[0]).toContain('base 必须是')
-  expect(bad({ ...ok, base: 'doubao-seedance-2-5-260628' })[0]).toContain('对应型号只能包含 base')
-
-  const image = {
-    channel: 'providerb',
-    resolutions: ['1K', '2K'],
-    sizes: ['1024x1024'],
-    maxImages: 10,
-    price: { per: 'request', amount: { '1K': 0.36, '2K': 0.52 }, currency: 'CNY' },
-  }
-  expect(bad(image, 'openai_images')).toEqual([])
-  expect(bad(image)[0]).toContain('seconds 必须是升序的正整数数组')
-  expect(bad({ ...image, sizes: ['1K'] }, 'openai_images')[0]).toContain('sizes 必须是')
-  expect(bad({ ...image, price: { ...image.price, per: 'second' } }, 'openai_images')[0]).toContain(
-    '图像的 price 只能按次',
+  expect(bad({ ...channel, base: 'doubao-seedance-2-5-260628' })[0]).toContain(
+    '对应型号只能包含 base',
   )
 })
 
@@ -1064,14 +1005,14 @@ describe('生成模型', () => {
         apiKey: 'qyd_key',
         models: {},
         media: {
-          'providerc-video-xfa7c14da94a94631': {
+          'video-upstream-a': {
             kind: 'qywork_videos',
             spec: {
               cloud: {
-                kind: 'providerc_videos',
+                kind: 'example_videos',
                 spec: {
-                  channel: 'providerc',
-                  label: 'Seedance 2.5 满血按次 480/720p',
+                  channel: 'example',
+                  label: '示例视频',
                   seconds: [4, 5],
                   ratios: ['16:9'],
                   resolutions: ['480p', '720p'],
@@ -1092,7 +1033,7 @@ describe('生成模型', () => {
       }
       config.mediaDefaults = {
         image: { provider: 'qwen', model: 'qwen-image-3.0' },
-        video: { provider: 'qywork', model: 'providerc-video-xfa7c14da94a94631' },
+        video: { provider: 'qywork', model: 'video-upstream-a' },
       }
       await writeFile(join(home, 'config.json'), JSON.stringify(config))
       const loaded = await loadConfig()
@@ -1101,7 +1042,49 @@ describe('生成模型', () => {
       expect(loaded.providers.qwen?.media).toEqual(config.providers.qwen?.media)
       expect(diagnoseConfig(loaded)).toEqual([])
       await saveConfig(loaded)
-      expect(await readFile(join(home, 'config.json'), 'utf8')).not.toContain('providerc')
+      expect(await readFile(join(home, 'config.json'), 'utf8')).not.toContain('example_videos')
+    } finally {
+      if (previousHome === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * 原始失败形状：配置中留有电脑端不支持的生成协议或渠道规格时，配置校验报告结构问题，保存被拒绝，
+   * 用户无法在设置页修改任何一项。
+   */
+  test('加载配置时删除协议不是有效值或保存了渠道规格的生成型号及指向它们的默认模型', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-channel-media-'))
+    const previousHome = process.env.QYWORK_HOME
+    try {
+      process.env.QYWORK_HOME = home
+      const config = withMedia()
+      config.providers.relay = {
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-relay',
+        baseUrl: 'https://relay.example.com/v1',
+        models: {},
+        media: {
+          'video-a': { kind: 'example_videos' as never },
+          'video-b': {
+            kind: 'openai_videos',
+            spec: { channel: 'example', seconds: [5] } as never,
+          },
+          'image-a': { kind: 'openai_images', spec: { channel: 'example' } as never },
+          'video-c': { kind: 'openai_videos' },
+        },
+      }
+      config.mediaDefaults = {
+        image: { provider: 'relay', model: 'image-a' },
+        video: { provider: 'relay', model: 'video-a' },
+      }
+      await writeFile(join(home, 'config.json'), JSON.stringify(config))
+      const loaded = await loadConfig()
+      expect(loaded.providers.relay?.media).toEqual({ 'video-c': { kind: 'openai_videos' } })
+      expect(loaded.mediaDefaults).toEqual({})
+      expect(loaded.providers.qwen?.media).toEqual(config.providers.qwen?.media)
+      expect(diagnoseConfig(loaded)).toEqual([])
     } finally {
       if (previousHome === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = previousHome

@@ -1,7 +1,10 @@
 /**
  * 生成适配器的唯一构造入口：按 `profile.kind` 分派一次，之后调用方只使用 `MediaAdapter`。
+ * 登记的协议与渠道（`extension.ts`）由解析规格时得出的构造方式构造，内置协议按下方的分派构造。
  * 具体类不导出，理由与对话适配器（`../factory.ts`）相同。
  */
+
+import { isBuiltinMediaKind } from '@qywork/core'
 
 import { ArkVideosAdapter } from './adapters/ark-videos.ts'
 import {
@@ -9,7 +12,6 @@ import {
   DashScopeSpeechAdapter,
   DashScopeVideosAdapter,
 } from './adapters/dashscope.ts'
-import { providercVideosAdapter } from './adapters/providerc.ts'
 import { GeminiMediaAdapter, GeminiSpeechAdapter, VeoVideosAdapter } from './adapters/google.ts'
 import { KlingVideosAdapter } from './adapters/kling.ts'
 import { MiMoSpeechAdapter } from './adapters/mimo.ts'
@@ -23,7 +25,7 @@ import { OpenAISpeechAdapter } from './adapters/openai-speech.ts'
 import { OpenAIVideosAdapter } from './adapters/openai-videos.ts'
 import { CloudMediaAdapter } from './adapters/qywork.ts'
 import { XaiImagesAdapter, XaiVideosAdapter } from './adapters/xai.ts'
-import { lookupMediaModel } from './catalog.ts'
+import { resolveMediaModel } from './catalog.ts'
 import { reportingRetries } from './http.ts'
 import type { MediaAdapter, MediaProfile } from './types.ts'
 
@@ -39,7 +41,9 @@ export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {
 }
 
 function construct(profile: MediaProfile): MediaAdapter {
-  const spec = lookupMediaModel(profile.model, profile.kind, profile.spec)
+  const { spec, adapter } = resolveMediaModel(profile.model, profile.kind, profile.spec)
+  if (adapter) return adapter(profile, spec)
+  if (!isBuiltinMediaKind(profile.kind)) throw new Error(`生成协议 ${profile.kind} 未登记`)
   switch (profile.kind) {
     case 'gemini_images':
     case 'gemini_videos':
@@ -72,8 +76,6 @@ function construct(profile: MediaProfile): MediaAdapter {
       return new MiniMaxImagesAdapter(profile, spec)
     case 'minimax_videos':
       return new MiniMaxVideosAdapter(profile, spec)
-    case 'providerc_videos':
-      return new providercVideosAdapter(profile, spec)
     case 'mimo_speech':
       return new MiMoSpeechAdapter(profile, spec)
     case 'gemini_speech':
