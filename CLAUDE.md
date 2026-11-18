@@ -576,7 +576,14 @@ sidecar 这一步拦截的是只在打包时才暴露的失败（例如 Bun 升�
 - 公开代码只实现通用协议；需要某个供应商的专用处理时，在公开包中补通用的注册接口，实现写在云端仓库。
 - 测试使用虚构的主机（`api.example.com`）与型号名，不使用供应商的真实目录或响应样本。
 - 提交说明同样不写供应商名称。
-- 由云端门禁的 `server/src/relays/public-repo.test.ts` 检查本仓库全部受跟踪的文件与路径；词表在云端仓库中维护。
+- 三道检查，词表都在云端仓库（`server/src/relays/public-words.ts`）：
+  - **推送前**：本仓库的 pre-push 钩子运行云端仓库的 `check-public-repo.ts`，检查每个推送提交的改动（含删除的行）与提交说明，
+    以及推送后的文件内容与路径，命中即拒绝推送；未找到云端仓库或 bun 时同样拒绝。钩子不受版本跟踪，新克隆执行一次
+    `bun run ../qywork-cloud/server/src/relays/install-hook.ts`。
+  - **云端门禁**：`public-repo.test.ts` 检查本仓库的文件内容、路径与全部历史的提交说明；部署前必经。
+  - **本仓库门禁**：`scripts/release-config.test.ts` 只检查发布说明中泛指的词。
+- 新接入的渠道写入云端的 `RELAYS` 即进入词表；后台新增上游接口时，把其名称与主机名补入 `public-words.ts` 的 `OTHER_WORDS`。
+- 历史中一旦出现，只能改写全部历史并强制推送、删除受影响的发布与构建记录，并向 GitHub 支持申请清除缓存。
 
 ---
 
