@@ -10,6 +10,8 @@
  * - 写入或删除云端接口后调用 `onChange`：远程访问据此启停隧道。
  * - 云端型号清单（`/v1/catalog`）中带规格的型号，规格写入模型库覆盖层（`catalog`），只写本机模型库没有的型号，
  *   写入的条目带 `cloud` 标记；覆盖层仍是模型库之上唯一的一层，所有权规则见 `withSpecs`。
+ * - 每个型号的显示名称写入云端接口下该型号的条目（`displayName`），不写入覆盖层：覆盖层为所有接口共用，
+ *   写入后用户自建接口中的同名型号也显示云端的名称。
  */
 
 import { httpStatusName, lookupModel, transportFailureKind } from '@qywork/ai'
@@ -47,9 +49,11 @@ export const CLOUD_PROVIDER = 'qywork'
 /** 云端接口的默认协议；网关上协议不同的型号带各自的 `kind`。 */
 const DEFAULT_KIND = 'anthropic_messages'
 
-/** 云端 `/v1/catalog` 中的一个生成型号：原协议、规格来源、计费单位与单价（积分 / 单位）。 */
+/** 云端 `/v1/catalog` 中的一个生成型号：显示名称、原协议、规格来源、计费单位与单价（积分 / 单位）。 */
 interface CatalogMediaModel {
   id: string
+  /** 后台填写的显示名称。 */
+  displayName: string
   output: MediaOutput
   protocol: MediaKind
   spec?: ChannelSpec | MediaBaseSpec
@@ -80,6 +84,7 @@ function storedMedia(list: readonly CatalogMediaModel[]): Record<string, StoredM
           unitPrice: m.unitPrice,
         },
       },
+      displayName: m.displayName,
     }
   }
   return media
@@ -88,18 +93,20 @@ function storedMedia(list: readonly CatalogMediaModel[]): Record<string, StoredM
 /** 云端 `/v1/catalog` 中的一个型号。单价为基础档单价乘以倍率，单位为积分 / 百万 token。 */
 interface CatalogModel {
   id: string
+  /** 后台填写的显示名称。 */
+  displayName: string
   protocol: ProviderKind
   /** 售价倍率。 */
   ratio: number
   /** true：云端按模型库的官方价乘以倍率计价；false：按后台填写的单价乘以倍率计价。 */
   official: boolean
   price: { input: number; output: number; cacheRead: number; cacheWrite: number }
-  /** 云端为模型库中没有的型号填写的规格。 */
-  spec?: { displayName: string; base?: string; contextWindow?: number; maxOutputTokens?: number }
+  /** 云端为模型库中没有的型号填写的规格。其中的显示名称不读取，以顶层的 `displayName` 为准。 */
+  spec?: { base?: string; contextWindow?: number; maxOutputTokens?: number }
 }
 
 /**
- * 云端型号在配置中的形状：协议与默认协议不同时带 `kind`，价格记为积分，与账号余额同一单位。
+ * 云端型号在配置中的形状：带后台填写的显示名称，协议与默认协议不同时带 `kind`，价格记为积分，与账号余额同一单位。
  * 云端按官方价计价、且本机模型库有该型号单价时只写倍率：运行面板按模型库的长上下文分档计算，与云端扣费一致。
  * 其余写单价。
  */
@@ -115,12 +122,13 @@ function storedModels(list: readonly CatalogModel[]): Record<string, StoredModel
     models[m.id] = {
       ...(m.protocol !== DEFAULT_KIND ? { kind: m.protocol } : {}),
       price: scaled ? { scale: m.ratio, currency: 'CREDIT' } : { ...m.price, currency: 'CREDIT' },
+      displayName: m.displayName,
     }
   }
   return models
 }
 
-/** 去掉云端写入的四项与 `cloud` 标记，保留其余字段；不剩任何字段时为 undefined。 */
+/** 去掉归云端同步所有的四项与 `cloud` 标记，保留其余字段；不剩任何字段时为 undefined。 */
 function withoutCloud(entry: StoredCatalogEntry): StoredCatalogEntry | undefined {
   const {
     displayName: _displayName,
@@ -136,7 +144,8 @@ function withoutCloud(entry: StoredCatalogEntry): StoredCatalogEntry | undefined
 const known = (id: string, kind: ProviderKind) => lookupModel(id, kind).catalogued !== false
 
 /**
- * 云端规格写入模型库覆盖层后的 `catalog`。带 `cloud` 标记的条目中，显示名称、对应型号、窗口与输出上限四项归云端同步所有：
+ * 云端规格写入模型库覆盖层后的 `catalog`。带 `cloud` 标记的条目中，显示名称、对应型号、窗口与输出上限四项归云端同步所有，
+ * 同步只写入后三项：显示名称写在云端接口的型号条目上（`storedModels`），写入覆盖层会使用户自建接口中的同名型号也显示云端的名称。
  * - 本机模型库已收录该型号时删除这四项，不论该型号是否仍在清单中：否则旧值（尤其是对应型号）继续优先于内置模型库；
  * - 本机模型库没有该型号时，四项与清单一致：清单给出规格则整体替换，不再给出则删除。对应型号不在本机模型库中时
  *   不写该项（配置校验会拒绝）。
@@ -162,19 +171,14 @@ function withSpecs(
     const key = catalogKey(m.id, m.protocol)
     const entry = next[key]
     const rest = entry?.cloud ? withoutCloud(entry) : entry
-    if (!m.spec) {
-      if (entry?.cloud) put(key, rest)
-      continue
-    }
-    const { displayName, base, contextWindow, maxOutputTokens } = m.spec
-    put(key, {
-      ...rest,
-      displayName,
+    const { base, contextWindow, maxOutputTokens } = m.spec ?? {}
+    const owned = {
       ...(base && known(base, m.protocol) ? { base } : {}),
       ...(contextWindow ? { contextWindow } : {}),
       ...(maxOutputTokens ? { maxOutputTokens } : {}),
-      cloud: true,
-    })
+    }
+    if (Object.keys(owned).length) put(key, { ...rest, ...owned, cloud: true })
+    else if (entry?.cloud) put(key, rest)
   }
   return Object.keys(next).length ? next : undefined
 }
@@ -639,7 +643,7 @@ export class CloudAccount {
   }
 
   /**
-   * 更新配置中网关上的型号：协议与价格随清单更新，用户的思考档位等设置保留；新增的型号加入；
+   * 更新配置中网关上的型号：协议、价格与显示名称随清单更新，用户的思考档位等设置保留；新增的型号加入；
    * 网关上已停用的型号标记 `delisted`；型号规格写入模型库覆盖层（`withSpecs`）。
    * 每个进程首次确认已登录时执行一次，账号弹窗每次读取可用模型时再执行一次。
    */
@@ -678,7 +682,7 @@ export class CloudAccount {
         models[id] = { ...rest, ...hit }
       }
       for (const [id, m] of Object.entries(provider.models)) models[id] ??= { ...m, delisted: true }
-      // 生成型号的协议与规格全部由清单决定；清单中已没有的型号标记已下架。顺序与对话型号相同。
+      // 生成型号的协议、规格与显示名称全部由清单决定；清单中已没有的型号标记已下架。顺序与对话型号相同。
       const media: Record<string, StoredMediaModel> = { ...listedMedia }
       for (const [id, m] of Object.entries(provider.media ?? {}))
         media[id] ??= { ...m, delisted: true }

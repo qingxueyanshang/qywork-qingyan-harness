@@ -1000,4 +1000,24 @@ describe('生成模型', () => {
     expect(problems.some((p) => p.includes('默认生成模型 "qwen / qwen-image-3.0"'))).toBe(true)
     expect(diagnoseConfig(withMedia())).toEqual([])
   })
+
+  test('对话与生成型号的显示名称只接受非空字符串；生成型号的显示名称随清单列出', () => {
+    const named = withMedia()
+    named.providers.ds!.models['deepseek-v4-flash'] = { displayName: '对话一号' }
+    named.providers.qwen!.media!['qwen-image-3.0'] = {
+      kind: 'dashscope_images',
+      displayName: '图像一号',
+    }
+    expect(diagnoseConfig(named)).toEqual([])
+    expect(listMediaModels(named)[0]?.displayName).toBe('图像一号')
+    named.providers.ds!.models['deepseek-v4-flash'] = { displayName: '' }
+    named.providers.qwen!.media!['qwen-image-3.0'] = {
+      kind: 'dashscope_images',
+      displayName: 7 as never,
+    }
+    expect(diagnoseConfig(named)).toEqual([
+      'ds / deepseek-v4-flash 的 displayName 必须是非空字符串。',
+      'qwen / qwen-image-3.0 的 displayName 必须是非空字符串。',
+    ])
+  })
 })

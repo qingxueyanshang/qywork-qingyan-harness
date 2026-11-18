@@ -29,6 +29,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         models: [
           {
             id: 'claude-sonnet-5-5',
+            displayName: 'Claude Sonnet 5.5',
             protocol: 'anthropic_messages',
             ratio: 1,
             official: true,

@@ -1,15 +1,17 @@
 /**
- * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`，`api/cloud.ts` 的错误返回、充值、本版说明与公告列表。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
+ * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`，`api/cloud.ts` 的错误返回、充值、本版说明与公告列表，
+ * `api/conversations.ts` 的 `/api/models` 中云端型号的显示名称。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
 
 import { afterAll, beforeEach, expect, test } from 'bun:test'
 import { stat, utimes } from 'node:fs/promises'
 import { lookupMediaModel, quoteMedia } from '@qywork/ai'
-import type { Announcement } from '@qywork/core'
+import type { Announcement, ChannelVideoSpec } from '@qywork/core'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
 import { handleCloudApi } from '../api/cloud.ts'
 import { writeConfig } from '../api/config.ts'
+import { handleConversationsApi, type ModelsResponse } from '../api/conversations.ts'
 import type { ApiRequestDeps } from '../api/types.ts'
 import { CLOUD_PROVIDER, CloudAccount, CloudAccountError } from './account.ts'
 import { cloudOrigin } from './origin.ts'
@@ -36,6 +38,20 @@ const ANNOUNCEMENTS: Announcement[] = [
   },
 ]
 
+/** 服务商C AI 渠道的视频型号：型号 id 是渠道编号，渠道规格带渠道目录中的型号名称。 */
+const providerc_VIDEO = 'providerc-video-xfa7c14da94a94631'
+const providerc_SPEC: ChannelVideoSpec = {
+  channel: 'providerc',
+  label: 'Seedance 2.5 满血按次 480/720p （原生非超分）',
+  seconds: [4, 5],
+  ratios: ['16:9'],
+  resolutions: ['480p', '720p'],
+  maxImages: 9,
+  maxVideos: 0,
+  maxAudios: 0,
+  multipart: true,
+}
+
 const cloud = {
   /** `down`：只有 `/v1/me` 以 503 失败，其余接口照常。 */
   me: 'ok' as 'ok' | 'revoked' | 'invalid' | 'down',
@@ -54,6 +70,9 @@ const cloud = {
   nextBase: 'claude-sonnet-5-5',
   /** 后上架的型号（模型库已收录）是否带规格。 */
   opusSpec: false,
+  /** 后台为后上架的型号与服务商C AI 渠道型号填写的显示名称。 */
+  opusName: '旗舰对话',
+  providercName: 'sd2.5-满血通道1-480/720p',
   avatar: null as string | null,
   /** 账号的用户名；未设置时为空字符串。 */
   name: '',
@@ -216,14 +235,16 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         models: [
           {
             id: 'claude-sonnet-5-5',
+            displayName: 'Claude Sonnet 5.5',
             protocol: 'anthropic_messages',
             ratio: cloud.sonnetRatio,
             official: true,
             price,
           },
-          { id: 'gpt-5', protocol: 'openai_responses', ...flat },
+          { id: 'gpt-5', displayName: 'GPT-5', protocol: 'openai_responses', ...flat },
           {
             id: 'claude-next',
+            displayName: 'Claude Next',
             protocol: 'anthropic_messages',
             ...flat,
             ...(cloud.nextSpec
@@ -241,10 +262,11 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
             ? [
                 {
                   id: 'claude-opus-5-5',
+                  displayName: cloud.opusName,
                   protocol: 'anthropic_messages',
                   price,
                   ...(cloud.opusSpec
-                    ? { spec: { displayName: 'Opus', base: 'claude-sonnet-5-5' } }
+                    ? { spec: { displayName: cloud.opusName, base: 'claude-sonnet-5-5' } }
                     : {}),
                 },
               ]
@@ -254,10 +276,20 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
           ? [
               {
                 id: 'doubao-seedance-2-0-260128',
+                displayName: 'Seedance 2.0',
                 output: 'video',
                 protocol: 'ark_videos',
                 unit: 'second',
                 unitPrice: { '480p': 0.1, '720p': 0.2, '1080p': 0.4, '4k': 0.8 },
+              },
+              {
+                id: providerc_VIDEO,
+                displayName: cloud.providercName,
+                output: 'video',
+                protocol: 'providerc_videos',
+                spec: providerc_SPEC,
+                unit: 'request',
+                unitPrice: { '480p': 1, '720p': 2 },
               },
             ]
           : [],
@@ -287,6 +319,8 @@ beforeEach(async () => {
     nextSpec: true,
     nextBase: 'claude-sonnet-5-5',
     opusSpec: false,
+    opusName: '旗舰对话',
+    providercName: 'sd2.5-满血通道1-480/720p',
     avatar: null,
     name: '',
     announcementSeen: null,
@@ -631,11 +665,10 @@ async function setCatalog(key: string, entry: Record<string, unknown>): Promise<
   await writeConfig(live, (c) => ({ ...c, catalog: { ...c.catalog, [key]: entry } }))
 }
 
-test('模型库没有的型号：云端规格带来源标记写入覆盖层；云端修改规格后四项整体替换，清空后删除，其余字段保留', async () => {
+test('模型库没有的型号：云端规格带来源标记写入覆盖层，不含显示名称；云端修改规格后整体替换，清空后删除，其余字段保留', async () => {
   await account.login('me@example.com', PASSWORD)
   const key = 'claude-next|anthropic_messages'
   expect(live.catalog?.[key]).toEqual({
-    displayName: 'Claude Next',
     base: 'claude-sonnet-5-5',
     contextWindow: 2_000_000,
     maxOutputTokens: 128_000,
@@ -645,12 +678,16 @@ test('模型库没有的型号：云端规格带来源标记写入覆盖层；�
   expect(live.catalog?.['claude-sonnet-5-5|anthropic_messages']).toBeUndefined()
   expect((await loadConfig()).catalog?.[key]?.contextWindow).toBe(2_000_000)
 
-  await setCatalog(key, { ...live.catalog?.[key], thinksByDefault: true })
+  // 带来源标记的条目中的显示名称归同步所有：同步时删除。
+  await setCatalog(key, {
+    ...live.catalog?.[key],
+    displayName: 'Claude Next',
+    thinksByDefault: true,
+  })
   // 对应型号不在本机模型库中：不写该项，也不保留此前写入的对应型号。
   cloud.nextBase = 'model-unknown-here'
   await account.models()
   expect(live.catalog?.[key]).toEqual({
-    displayName: 'Claude Next',
     contextWindow: 2_000_000,
     maxOutputTokens: 128_000,
     thinksByDefault: true,
@@ -661,7 +698,7 @@ test('模型库没有的型号：云端规格带来源标记写入覆盖层；�
   expect(live.catalog?.[key]).toEqual({ thinksByDefault: true })
 })
 
-test('本机模型库已收录的型号：带来源标记的条目删除云端写入的四项，不论是否仍在清单中；不带标记的条目不变', async () => {
+test('本机模型库已收录的型号：带来源标记的条目删除归同步所有的四项，不论是否仍在清单中；不带标记的条目不变', async () => {
   await account.login('me@example.com', PASSWORD)
   const opus = 'claude-opus-5-5|anthropic_messages'
   const haiku = 'claude-haiku-5-5|anthropic_messages'
@@ -682,6 +719,76 @@ test('本机模型库已收录的型号：带来源标记的条目删除云端�
   expect(live.catalog?.[haiku]).toBeUndefined()
   expect(live.catalog?.[sonnet]).toEqual({ base: 'claude-haiku-5-5' })
   expect((await loadConfig()).catalog?.[haiku]).toBeUndefined()
+})
+
+/** 以当前配置读取 `/api/models`。 */
+async function listModels(): Promise<ModelsResponse> {
+  const res = await handleConversationsApi(
+    new URL('http://x/api/models'),
+    new Request('http://x/api/models'),
+    { config: live } as unknown as ApiRequestDeps,
+  )
+  return (await res!.json()) as ModelsResponse
+}
+
+/**
+ * 原始失败形状：后台为型号填写的显示名称不显示。模型库已收录的型号（`claude-opus-5-5`）显示模型库的名称，
+ * 服务商C AI 渠道型号显示渠道目录的名称；名称写入模型库覆盖层时，用户自建接口中的同名型号也显示云端的名称。
+ */
+test('后台填写的显示名称：写入云端接口下的型号条目，模型列表按它显示；不写入覆盖层，自建接口的同名型号不变；改名后随同步替换', async () => {
+  cloud.extraModel = true
+  cloud.media = true
+  await account.login('me@example.com', PASSWORD)
+  await writeConfig(live, (c) => ({
+    ...c,
+    providers: {
+      ...c.providers,
+      mine: {
+        kind: 'anthropic_messages',
+        apiKey: 'sk-mine',
+        models: { 'claude-opus-5-5': {} },
+      },
+    },
+  }))
+  const chatLabel = (body: ModelsResponse, provider: string, id: string) =>
+    body.providers.find((p) => p.name === provider)?.models.find((m) => m.id === id)?.label
+  const mediaLabel = (body: ModelsResponse, id: string) =>
+    body.media.find((m) => m.provider === CLOUD_PROVIDER && m.id === id)?.label
+
+  let body = await listModels()
+  expect(chatLabel(body, CLOUD_PROVIDER, 'claude-opus-5-5')).toBe('旗舰对话')
+  expect(chatLabel(body, CLOUD_PROVIDER, 'claude-next')).toBe('Claude Next')
+  expect(chatLabel(body, 'mine', 'claude-opus-5-5')).toBe('Claude Opus 5.5')
+  expect(mediaLabel(body, providerc_VIDEO)).toBe('sd2.5-满血通道1-480/720p')
+  expect(mediaLabel(body, 'doubao-seedance-2-0-260128')).toBe('Seedance 2.0')
+  expect(live.catalog?.['claude-opus-5-5|anthropic_messages']?.displayName).toBeUndefined()
+  expect(live.catalog?.['claude-next|anthropic_messages']?.displayName).toBeUndefined()
+
+  // 后台改名：同步后名称替换，用户为该型号选定的档位保留。
+  await writeConfig(live, (c) => {
+    const p = c.providers[CLOUD_PROVIDER]!
+    const opus = { ...p.models['claude-opus-5-5']!, effort: 'high' as const }
+    return {
+      ...c,
+      providers: {
+        ...c.providers,
+        [CLOUD_PROVIDER]: { ...p, models: { ...p.models, 'claude-opus-5-5': opus } },
+      },
+    }
+  })
+  cloud.opusName = '旗舰对话二代'
+  cloud.providercName = 'sd2.5-满血通道2'
+  await account.syncModels()
+  expect(live.providers[CLOUD_PROVIDER]?.models['claude-opus-5-5']).toMatchObject({
+    displayName: '旗舰对话二代',
+    effort: 'high',
+  })
+  body = await listModels()
+  expect(chatLabel(body, CLOUD_PROVIDER, 'claude-opus-5-5')).toBe('旗舰对话二代')
+  expect(mediaLabel(body, providerc_VIDEO)).toBe('sd2.5-满血通道2')
+  expect((await loadConfig()).providers[CLOUD_PROVIDER]?.media?.[providerc_VIDEO]?.displayName).toBe(
+    'sd2.5-满血通道2',
+  )
 })
 
 test('公告已读位置：以设备密钥写入云端账号，状态中带该位置', async () => {
@@ -815,6 +922,7 @@ test('生成型号：登录时写入云端生成协议，规格带原协议与�
         unitPrice: { '480p': 0.1, '720p': 0.2, '1080p': 0.4, '4k': 0.8 },
       },
     },
+    displayName: 'Seedance 2.0',
   })
   const spec = lookupMediaModel('doubao-seedance-2-0-260128', 'qywork_videos', stored?.spec)
   expect(spec.kind).toBe('qywork_videos')

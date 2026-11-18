@@ -90,6 +90,7 @@ export function sampleConfig(): QyConfig {
             },
           ],
         },
+        displayName: `Sample model ${n}`,
         delisted: true,
       }
       catalog[`${id}|${kind}`] = {
@@ -143,6 +144,7 @@ export function sampleConfig(): QyConfig {
                 unitPrice: { '720p': 1, '1080p': 2 },
               },
             },
+            displayName: `Sample ${mediaKind}`,
           }
         : { kind: mediaKind }
     }

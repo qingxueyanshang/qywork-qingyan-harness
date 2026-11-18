@@ -243,6 +243,11 @@ export interface StoredMediaModel {
    * 每次拉取时按渠道目录更新。对应型号 `{ base }` 是同类别的生成目录 id，拉取或手动添加时按名称识别得到。
    */
   spec?: StoredMediaSpec
+  /**
+   * 界面上该型号在本接口下显示的名称；缺省时取 `lookupMediaModel` 给出的名称（生成目录或渠道规格）或型号 id。
+   * 由云端同步写入。
+   */
+  displayName?: string
   /** 上一次拉取时渠道的计费清单中已没有该型号。生成工具不再向它提交。 */
   delisted?: true
 }
@@ -329,8 +334,9 @@ export interface StoredCatalogEntry {
   /** 对应型号：第三方接口的自定义名称按模型库中该型号的规格取得窗口、档位与能力。由拉取模型时选择。 */
   base?: string
   /**
-   * 本条的显示名称、对应型号、窗口与输出上限由云端同步写入，归同步所有：本机模型库收录该型号后同步删除这四项，
-   * 云端修改或清空规格后同步替换或删除。其余字段不受影响。不参与规格合并。
+   * 本条的显示名称、对应型号、窗口与输出上限归云端同步所有：本机模型库收录该型号后同步删除这四项，
+   * 云端修改或清空规格后同步替换或删除。同步只写入后三项：云端型号的显示名称写在云端接口的型号条目上
+   * （`StoredModel.displayName`）。其余字段不受影响。不参与规格合并。
    */
   cloud?: true
 }
@@ -380,6 +386,11 @@ export interface StoredModel {
    * `resolveModel` 把它合成进该接口的覆盖对象，适配器与账本读取的仍是同一个对象。
    */
   price?: ModelPrice
+  /**
+   * 界面上该型号在本接口下显示的名称；缺省时取模型库中的名称或型号 id。由云端同步写入。
+   * 不写入模型库覆盖层：覆盖层与接口无关，写入后同名同协议的其他接口也显示该名称。
+   */
+  displayName?: string
   /** 上一次拉取时第三方的计费清单中已没有该型号。 */
   delisted?: true
 }
@@ -748,6 +759,8 @@ export interface MediaModelEntry {
   isDefault: boolean
   /** 保存的规格，取规格时传给 `lookupMediaModel`。 */
   spec?: StoredMediaSpec
+  /** 保存的显示名称，见 `StoredMediaModel.displayName`。 */
+  displayName?: string
   delisted?: true
 }
 
@@ -765,6 +778,7 @@ export function listMediaModels(cfg: QyConfig): MediaModelEntry[] {
         output,
         isDefault: d?.provider === provider && d.model === model,
         ...(m.spec ? { spec: m.spec } : {}),
+        ...(m.displayName ? { displayName: m.displayName } : {}),
         ...(m.delisted ? { delisted: true as const } : {}),
       })
     }
@@ -959,6 +973,8 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
       }
       if (m.delisted !== undefined && m.delisted !== true)
         problems.push(`${name} / ${id} 的 delisted 只能为 true。`)
+      if (m.displayName !== undefined && (typeof m.displayName !== 'string' || !m.displayName))
+        problems.push(`${name} / ${id} 的 displayName 必须是非空字符串。`)
       const check = m.transport?.toolCalls
       if (
         check !== undefined &&
@@ -1065,6 +1081,8 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
       }
       if (m?.delisted !== undefined && m.delisted !== true)
         problems.push(`${name} / ${id} 的 delisted 只能为 true。`)
+      if (m?.displayName !== undefined && (typeof m.displayName !== 'string' || !m.displayName))
+        problems.push(`${name} / ${id} 的 displayName 必须是非空字符串。`)
     }
   }
   for (const [output, ref] of Object.entries(cfg.mediaDefaults ?? {})) {
