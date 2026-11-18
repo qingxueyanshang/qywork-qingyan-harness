@@ -30,7 +30,11 @@ import type {
   ProviderKind,
   ProviderTransportReading,
 } from '@qywork/core'
-import { type CapacityRejection, classifyCapacityRejection } from './capacity.ts'
+import {
+  type CapacityRejection,
+  classifyCapacityRejection,
+  classifyStreamCapacity,
+} from './capacity.ts'
 import type { ProviderUsage } from './types.ts'
 
 export class ProviderError extends Error {
@@ -603,6 +607,20 @@ export function classifyStreamError(
   }
   const build = (errorCode: ErrorCode) =>
     new ProviderError({ code: errorCode, message, provider, detail, rejected: true })
+
+  // 上下文超限先于错误码表判定，并携带 capacity：上层据此压缩后重发，与 `classifyProviderError` 相同。
+  // 云端网关先行返回响应头之后，上游的超限答复以流内错误事件到达（错误码 `context_length_exceeded`）。
+  const capacity = classifyStreamCapacity(event)
+  if (capacity) {
+    return new ProviderError({
+      code: 'context_overflow',
+      message: capacityMessage(capacity),
+      provider,
+      capacity,
+      detail,
+      rejected: true,
+    })
+  }
 
   const tabled = upstreamFailureCode(vendor, [event], message)
   if (tabled) return build(tabled)

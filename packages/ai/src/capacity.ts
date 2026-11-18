@@ -36,7 +36,8 @@ export interface CapacityRejection {
   code: 'context_overflow'
   /** provider 原生错误码；只在消息匹配时可能为 null。 */
   providerCode: string | null
-  status: number
+  /** HTTP 状态码；流内错误事件没有状态码，为 null（`classifyStreamCapacity`）。 */
+  status: number | null
   /** provider 自报的输入 token 数。无法取得时为 null，**不要用本地估算填充**。 */
   reportedInputTokens: number | null
   /** provider 自报的上限。 */
@@ -55,13 +56,28 @@ export interface CapacityRejection {
 /**
  * 仅在**证据充分**时返回容量事实，否则返回 null，由调用方进入通用失败路径。
  *
- * 判定链：状态码在白名单 → 有原生容量码 **或** 消息强匹配 → 提取自报数字。
+ * 判定链：状态码在白名单 → 有原生容量码 **或** 消息强匹配 → 提取自报数字。流内错误事件见 `classifyStreamCapacity`。
  */
 export function classifyCapacityRejection(err: unknown): CapacityRejection | null {
   const status = statusOf(err)
   if (status === null) return null
+  return capacityOf(status, err, payloadsOf(err))
+}
 
-  const payloads = payloadsOf(err)
+/**
+ * 流内错误事件（`streamErrorOf` 取出的错误对象）中的容量拒绝，`status` 为 null。判据为原生容量码或消息强匹配，
+ * 与 `classifyCapacityRejection` 相同；事件没有状态码，状态码白名单排除的鉴权、限流与服务端故障在事件中既没有容量码，
+ * 消息也不满足强匹配。
+ */
+export function classifyStreamCapacity(event: Record<string, unknown>): CapacityRejection | null {
+  return capacityOf(null, event, [event])
+}
+
+function capacityOf(
+  status: number | null,
+  err: unknown,
+  payloads: unknown[],
+): CapacityRejection | null {
   const codes = codesOf(err, payloads)
   const nativeCode = codes.find((c) => CAPACITY_CODES.has(c)) ?? null
 

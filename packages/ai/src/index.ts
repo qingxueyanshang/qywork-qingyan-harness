@@ -161,7 +161,7 @@ export {
   videoOutOfRange,
 } from './tokens.ts'
 // 流空闲上限的基准：agent 按思考档位放宽该值，runtime 的摘要直接使用该值
-export { CLOUD_REQUEST_ID_HEADER, STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
+export { CLOUD_REQUEST_ID_HEADER, HEDGE_AFTER_MS, STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 // 协议无关的请求与事件形状
 export type {
   ChatRequest,
@@ -180,4 +180,4 @@ export type {
   WireToolCall,
 } from './types.ts'
 
-export { diagnosticEndpoint, providerContentKind } from './types.ts'
+export { diagnosticEndpoint, PROVIDER_HTTP, providerContentKind } from './types.ts'

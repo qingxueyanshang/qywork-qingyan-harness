@@ -298,6 +298,30 @@ describe('按用户的下一步动作分类', () => {
     expect(e.status).toBeUndefined()
   })
 
+  /**
+   * 原始失败形状：容量分类只认 HTTP 400 / 413 / 422，上游以流内错误事件报告上下文超限时归为暂时不可用，重发 5 次后失败而不压缩。
+   * 云端网关先行返回响应头之后，上游的超限答复以这种形式到达（错误码 `context_length_exceeded`）。
+   */
+  test('流内 error 报告上下文超限时归为 context_overflow 并带容量事实，输出上限的参数校验不在其中', () => {
+    const prompt = 'prompt is too long: 250000 tokens > 200000 maximum'
+    const byCode = classifyStreamError(P, {
+      type: 'context_length_exceeded',
+      code: 'context_length_exceeded',
+      message: prompt,
+    })
+    expect(byCode.code).toBe('context_overflow')
+    expect(byCode.capacity).toMatchObject({ status: null, matchSource: 'provider_code' })
+    const byMessage = classifyStreamError(P, { type: 'invalid_request_error', message: prompt })
+    expect(byMessage.code).toBe('context_overflow')
+    expect(byMessage.capacity?.matchSource).toBe('provider_message')
+    expect(
+      classifyStreamError(P, {
+        type: 'invalid_request_error',
+        message: 'max_tokens: 100000 > 64000, which is the maximum allowed',
+      }).code,
+    ).toBe('invalid_request')
+  })
+
   test('流内事件按分类码归入限速、无权访问时仍保留原文', () => {
     const limited = classifyStreamError(P, {
       type: 'rate_limit_error',
