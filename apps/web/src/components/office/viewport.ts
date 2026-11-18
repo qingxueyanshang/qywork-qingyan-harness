@@ -11,6 +11,8 @@
  *   不放行 `pinch-zoom`：放行后浏览器缩放整个页面。
  */
 
+import { wheelFactor } from '../preview/zoom-input.ts'
+
 export interface ViewPosition {
   /** 滚动容器左上角的内容坐标。 */
   readonly scrollX: number
@@ -22,8 +24,6 @@ export interface ViewPosition {
 /** 缩放范围，与 Excel、WPS 的缩放范围相同。 */
 export const MIN_ZOOM = 0.1
 export const MAX_ZOOM = 4
-/** 滚轮每像素对应的缩放指数：滚轮一格（约 100 像素）缩放约 16%。 */
-const WHEEL_ZOOM_RATE = 0.0015
 
 export interface ZoomScrollHooks {
   measure(zoom: number): { readonly scale: number; readonly originX: number }
@@ -36,6 +36,8 @@ export interface ZoomScrollHooks {
 export interface ZoomScroll {
   moveTo(at: ViewPosition): void
   position(): ViewPosition
+  /** 以滚动容器中心为锚点缩放到 `zoom`：加减按钮与 Ctrl+加减号。 */
+  zoomCentered(zoom: number): void
   destroy(): void
 }
 
@@ -100,14 +102,8 @@ export function createZoomScroll(scroller: HTMLElement, hooks: ZoomScrollHooks):
   const onWheel = (e: WheelEvent) => {
     if (!e.ctrlKey) return
     e.preventDefault()
-    const unit =
-      e.deltaMode === WheelEvent.DOM_DELTA_LINE
-        ? 16
-        : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
-          ? scroller.clientHeight
-          : 1
     const p = local(e.clientX, e.clientY)
-    zoomAround(zoom * Math.exp(-e.deltaY * unit * WHEEL_ZOOM_RATE), p.x, p.y, contentPoint(p))
+    zoomAround(zoom * wheelFactor(e, scroller.clientHeight), p.x, p.y, contentPoint(p))
   }
 
   /** 双指捏合开始时的缩放比例、两指距离与中点下的内容点。 */
@@ -153,6 +149,10 @@ export function createZoomScroll(scroller: HTMLElement, hooks: ZoomScrollHooks):
     },
     position() {
       return { scrollX: sx, scrollY: sy, zoom }
+    },
+    zoomCentered(next) {
+      const p = { x: scroller.clientWidth / 2, y: scroller.clientHeight / 2 }
+      zoomAround(next, p.x, p.y, contentPoint(p))
     },
     destroy() {
       resize.disconnect()

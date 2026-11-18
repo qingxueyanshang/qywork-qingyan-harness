@@ -87,7 +87,7 @@ export function openLink(e: MouseEvent): void {
   const file = workspaceFile(href, workspace()?.root ?? '')
   if (file) {
     e.preventDefault()
-    openFileInPanel(file, href)
+    openFileInPanel(file)
     return
   }
   if (/^https?:\/\//i.test(href) || localHtmlUrl(href, '/')) {

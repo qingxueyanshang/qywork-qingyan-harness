@@ -40,6 +40,7 @@ import {
 } from '@qywork/ooxml/pptx'
 import type { HostFamilies } from '@qywork/ooxml/text'
 import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
+import { readView, writeView } from '../../preview/view-state.ts'
 import {
   boundaryText,
   connectWorker,
@@ -55,6 +56,7 @@ import {
   registerFace,
 } from '../fonts.ts'
 import type { ViewPosition } from '../viewport.ts'
+import { officeZoom } from '../zoom.tsx'
 import type { PptxReplies, PptxRequest } from './pptx-worker.ts'
 import { createSlideViewport, type SlideViewport } from './slide-viewport.ts'
 
@@ -277,7 +279,13 @@ export default function SlideView(props: { path: string; mtime: number }) {
     )
   }
 
-  /** 下一次显示时的位置：改写后重新加载时为原位置，首次显示时为 `null`。 */
+  /** 位置或比例改变后更新工具栏，并按路径记录（`view-state.ts`）：切换到其他文件再切回时恢复。 */
+  const onChange = (at: ViewPosition) => {
+    zoom.note(at)
+    writeView(props.path, at)
+  }
+
+  /** 下一次显示时的位置：改写后重新加载时为原位置；首次显示时为 `null`，取按路径记录的位置。 */
   let nextPosition: ViewPosition | null = null
 
   const showDoc = (next: Doc) => {
@@ -301,9 +309,12 @@ export default function SlideView(props: { path: string; mtime: number }) {
   createEffect(
     on(doc, (d) => {
       if (!d) return
-      viewport ??= createSlideViewport({ scroller, extent }, { prepare, paint })
+      viewport ??= createSlideViewport({ scroller, extent, onChange }, { prepare, paint })
       const { width, height } = d.presentation
-      viewport.show({ count: d.presentation.slides.length, aspect: height / width }, nextPosition)
+      viewport.show(
+        { count: d.presentation.slides.length, aspect: height / width },
+        nextPosition ?? readView<ViewPosition>(props.path) ?? null,
+      )
       nextPosition = null
       // 在视口处理第一帧之后开始还原：视口的帧回调先于此回调注册，可见幻灯片的图片请求先于字体请求到达 Worker；
       // Worker 按到达顺序处理，首次绘制不等待字体解码。
@@ -324,6 +335,11 @@ export default function SlideView(props: { path: string; mtime: number }) {
   }
 
   const ready = () => doc() !== null && error() === null
+  const zoom = officeZoom(
+    () => scroller,
+    () => viewport,
+    ready,
+  )
 
   return (
     <div class="slide-view">

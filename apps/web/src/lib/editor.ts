@@ -53,7 +53,8 @@ export async function languageFor(path: string): Promise<Extension[]> {
 export const theme = EditorView.theme({
   '&': {
     height: '100%',
-    fontSize: 'var(--fs-sm)',
+    // 文件预览按 `--text-zoom` 缩放字号；未设置时为 1。
+    fontSize: 'calc(var(--fs-sm) * var(--text-zoom, 1))',
     backgroundColor: 'var(--bg-app)',
     color: 'var(--text-primary)',
   },
@@ -72,6 +73,7 @@ export async function createReadonlyEditor(
   parent: HTMLElement,
   doc: string,
   path: string,
+  wrap: boolean,
 ): Promise<EditorView> {
   const lang = await languageFor(path)
   return new EditorView({
@@ -86,7 +88,8 @@ export async function createReadonlyEditor(
         // 只读预览：不提供编辑能力，避免出现可修改但无法保存的编辑器。
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
-        EditorView.lineWrapping,
+        // 表格文本不换行：换行后一行记录折成多行，单元格从中间断开。
+        ...(wrap ? [EditorView.lineWrapping] : []),
         theme,
         ...lang,
       ],

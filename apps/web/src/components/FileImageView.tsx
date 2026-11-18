@@ -1,19 +1,27 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
-import { readSession, writeSession } from '../lib/session.ts'
+import { usePreviewTools } from './preview/tools.ts'
+import { readView, writeView } from './preview/view-state.ts'
+import ZoomControl from './preview/ZoomControl.tsx'
+import { bindZoomInputs, ZOOM_STEP } from './preview/zoom-input.ts'
 
 type Mode = 'fit' | 'width' | number
 
-/** 当前图片的缩放模式与滚动位置。只记录一张，按地址区分：刷新后同一张图片按记录恢复。 */
-const VIEW_KEY = 'qywork.file.image'
+/** 缩放比例的范围，按钮、滚轮与快捷键共用。 */
+const MIN_SCALE = 0.01
+const MAX_SCALE = 8
+
+/** 图片的缩放模式与滚动位置，按文件路径记录（`view-state.ts`）。 */
 interface ViewRecord {
-  src: string
   mode: Mode
   left: number
   top: number
 }
 
-/** 图片的缩放只依赖原始尺寸与预览区尺寸，文件树和路径栏不参与计算。 */
-export default function FileImageView(props: { src: string; alt: string }) {
+/**
+ * 图片的缩放只依赖原始尺寸与预览区尺寸，文件树和路径栏不参与计算。缩放控件经 `usePreviewTools` 放在文件页的标题行中。
+ * `src` 带有修改时间作为版本，文件改写后变化；视图状态按 `path` 记录，改写后保留缩放与位置。
+ */
+export default function FileImageView(props: { src: string; path: string }) {
   let viewport!: HTMLDivElement
   let image!: HTMLImageElement
   const [size, setSize] = createSignal({ width: 0, height: 0 })
@@ -22,13 +30,14 @@ export default function FileImageView(props: { src: string; alt: string }) {
   /** 待恢复的滚动位置，在图片尺寸取得后应用一次。 */
   let restoring: ViewRecord | null = null
   const save = () =>
-    writeSession(VIEW_KEY, {
-      src: source(),
+    writeView(props.path, {
       mode: mode(),
       left: viewport.scrollLeft,
       top: viewport.scrollTop,
     } satisfies ViewRecord)
   const [failed, setFailed] = createSignal(false)
+  /** 图片与预览区的尺寸都已取得：此前缩放比例无从计算，缩放控件与快捷键都不响应。 */
+  const ready = () => size().width > 0 && space().width > 0 && !failed()
   const source = createMemo(() => props.src)
   const scale = createMemo(() => {
     const current = mode()
@@ -49,20 +58,35 @@ export default function FileImageView(props: { src: string; alt: string }) {
       if (entry) setSpace({ width: entry.contentRect.width, height: entry.contentRect.height })
     })
     observer.observe(viewport)
-    onCleanup(() => observer.disconnect())
+    const unbind = bindZoomInputs(
+      viewport,
+      {
+        ready,
+        zoomBy: (factor, at) =>
+          at ? zoomTo(scale() * factor, at.clientX, at.clientY) : zoom(factor),
+        reset: () => selectMode('fit'),
+      },
+      { wheel: true },
+    )
+    onCleanup(() => {
+      observer.disconnect()
+      unbind()
+    })
   })
 
   let zoomFrame = 0
+  /** 本帧待调整滚动位置的锚点：图像中的相对位置，以及它缩放后应位于的视口坐标。 */
+  let anchor: { x: number; y: number; clientX: number; clientY: number } | null = null
   onCleanup(() => cancelAnimationFrame(zoomFrame))
   const resetScroll = () => {
     cancelAnimationFrame(zoomFrame)
+    anchor = null
     viewport.scrollLeft = 0
     viewport.scrollTop = 0
   }
   createEffect(
-    on(source, (src) => {
-      const saved = readSession<ViewRecord>(VIEW_KEY)
-      restoring = saved?.src === src ? saved : null
+    on(source, () => {
+      restoring = readView<ViewRecord>(props.path) ?? null
       setSize({ width: 0, height: 0 })
       setMode(restoring?.mode ?? 'fit')
       setFailed(false)
@@ -75,59 +99,79 @@ export default function FileImageView(props: { src: string; alt: string }) {
     setMode(next)
     resetScroll()
   }
-  const zoom = (factor: number) => {
-    const bounds = viewport.getBoundingClientRect()
-    const before = image.getBoundingClientRect()
-    const centerX = bounds.left + viewport.clientLeft + viewport.clientWidth / 2
-    const centerY = bounds.top + viewport.clientTop + viewport.clientHeight / 2
-    const x = (centerX - before.left) / before.width
-    const y = (centerY - before.top) / before.height
-    setMode(Math.min(8, Math.max(0.01, scale() * factor)))
+  /** 缩放到 `next`，使视口坐标 (`clientX`, `clientY`) 处的图像位置缩放后仍在该处。 */
+  const zoomTo = (next: number, clientX: number, clientY: number) => {
+    // 同一帧内的多次缩放（连续滚轮）沿用第一次的锚点：此时滚动位置尚未调整，按当前布局计算的锚点已偏离。
+    if (!anchor) {
+      const before = image.getBoundingClientRect()
+      anchor = {
+        x: (clientX - before.left) / before.width,
+        y: (clientY - before.top) / before.height,
+        clientX,
+        clientY,
+      }
+    }
+    setMode(Math.min(MAX_SCALE, Math.max(MIN_SCALE, next)))
     cancelAnimationFrame(zoomFrame)
-    // 缩放后按比例调整滚动位置，使视口中心仍对应缩放前的图像位置。
     zoomFrame = requestAnimationFrame(() => {
+      const at = anchor
+      anchor = null
+      if (!at) return
       const after = image.getBoundingClientRect()
-      viewport.scrollLeft += after.left + x * after.width - centerX
-      viewport.scrollTop += after.top + y * after.height - centerY
+      viewport.scrollLeft += after.left + at.x * after.width - at.clientX
+      viewport.scrollTop += after.top + at.y * after.height - at.clientY
     })
   }
+  /** 以视口中心为锚点按倍数缩放。 */
+  const zoom = (factor: number) => {
+    const bounds = viewport.getBoundingClientRect()
+    zoomTo(
+      scale() * factor,
+      bounds.left + viewport.clientLeft + viewport.clientWidth / 2,
+      bounds.top + viewport.clientTop + viewport.clientHeight / 2,
+    )
+  }
+
+  usePreviewTools(() => (
+    <>
+      <button
+        class="preview-tools-fit"
+        type="button"
+        disabled={!ready()}
+        aria-pressed={mode() === 'fit'}
+        onClick={() => selectMode('fit')}
+      >
+        适应窗口
+      </button>
+      <button
+        class="preview-tools-extra"
+        type="button"
+        disabled={!ready()}
+        aria-pressed={mode() === 'width'}
+        onClick={() => selectMode('width')}
+      >
+        适应宽度
+      </button>
+      <button
+        class="preview-tools-extra"
+        type="button"
+        disabled={!ready()}
+        aria-pressed={mode() === 1}
+        onClick={() => selectMode(1)}
+      >
+        100%
+      </button>
+      <ZoomControl
+        ratio={ready() ? scale() : 0}
+        min={MIN_SCALE}
+        max={MAX_SCALE}
+        onStep={(direction) => zoom(direction > 0 ? ZOOM_STEP : 1 / ZOOM_STEP)}
+      />
+    </>
+  ))
 
   return (
     <div class="image-preview">
-      <fieldset
-        class="image-preview-tools"
-        aria-label="图片缩放"
-        disabled={!size().width || !space().width || failed()}
-      >
-        <button type="button" aria-pressed={mode() === 'fit'} onClick={() => selectMode('fit')}>
-          适应窗口
-        </button>
-        <button type="button" aria-pressed={mode() === 'width'} onClick={() => selectMode('width')}>
-          适应宽度
-        </button>
-        <button type="button" aria-pressed={mode() === 1} onClick={() => selectMode(1)}>
-          100%
-        </button>
-        <span class="image-preview-zoom">
-          <button
-            type="button"
-            aria-label="缩小图片"
-            disabled={scale() <= 0.01}
-            onClick={() => zoom(1 / 1.25)}
-          >
-            −
-          </button>
-          <output aria-label="缩放比例">{scale() ? `${Math.round(scale() * 100)}%` : '—'}</output>
-          <button
-            type="button"
-            aria-label="放大图片"
-            disabled={!scale() || scale() >= 8}
-            onClick={() => zoom(1.25)}
-          >
-            +
-          </button>
-        </span>
-      </fieldset>
       <div class="image-preview-viewport" ref={viewport} data-mode={mode()} onScroll={save}>
         <Show when={failed()}>
           <div class="preview-note">无法加载图片</div>
@@ -137,7 +181,7 @@ export default function FileImageView(props: { src: string; alt: string }) {
             ref={image}
             class="preview-media"
             src={source()}
-            alt={props.alt}
+            alt={props.path}
             draggable={false}
             style={{
               width: `${size().width * scale()}px`,

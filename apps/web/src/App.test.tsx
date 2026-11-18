@@ -56,7 +56,8 @@ describe('正文中的链接', () => {
     store.setWorkspace(null)
   })
 
-  test('点击真实 Markdown 本地 HTML 链接，在当前工作区的内置浏览器中打开', async () => {
+  /** HTML 与 Markdown 相同，在文件页中打开，由文件页提供预览与源码；工作区以外的 HTML 仍由内置浏览器打开。 */
+  test('点击真实 Markdown 中的本地 HTML 链接：工作区中的在文件页打开，工作区以外的在内置浏览器中打开', async () => {
     const store = await freshWorkspace()
     const { renderMarkdown } = await import('./lib/markdown.ts')
     const g = globalThis as Record<string, unknown>
@@ -96,15 +97,19 @@ describe('正文中的链接', () => {
         )
         await new Promise((r) => setTimeout(r, 0))
         expect(event.defaultPrevented).toBe(true)
-        expect(opened.at(-1)).toEqual({
-          url: 'file:///C:/ws/flying-bird.html',
-          workspaceId: 'ws_link',
-        })
-        expect(store.activePanelTab()).toBe(`bt_link_${opened.length}`)
-        expect(store.panelTabs().at(-1)?.kind).toBe('browser')
+        expect(store.openFile()).toBe('flying-bird.html')
+        expect(store.sidePanel()).toBe('files')
+        store.setOpenFile(null)
       }
-      expect(opened).toHaveLength(4)
+      expect(opened).toHaveLength(0)
+
+      const outside = await clickLink(renderMarkdown('[页面](D:/other/flying-bird.html)'))
+      await new Promise((r) => setTimeout(r, 0))
+      expect(outside.defaultPrevented).toBe(true)
+      expect(opened).toEqual([{ url: 'file:///D:/other/flying-bird.html', workspaceId: 'ws_link' }])
+      expect(store.panelTabs().at(-1)?.kind).toBe('browser')
     } finally {
+      store.setOpenFile(null)
       for (const t of store.panelTabs()) store.closePanelTab(t.id)
       store.setWorkspace(null)
       store.setState('capabilities', previousCapabilities)
@@ -141,7 +146,7 @@ describe('正文中的链接', () => {
   test('没有原生浏览器的客户端明确提示本地预览不可用，并阻止默认跳转', async () => {
     const store = await freshWorkspace()
     const { renderMarkdown } = await import('./lib/markdown.ts')
-    const event = await clickLink(renderMarkdown('[预览](flying-bird.html)'))
+    const event = await clickLink(renderMarkdown('[预览](D:/other/flying-bird.html)'))
     expect(event.defaultPrevented).toBe(true)
     expect(store.panelTabs()).toHaveLength(0)
     expect(store.state.notice?.message).toBe('本地网页预览需要桌面端。')

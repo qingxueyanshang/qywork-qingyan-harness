@@ -1724,6 +1724,56 @@ describe('文档预览', () => {
     expect(Number.parseFloat(extent.style.width)).toBeCloseTo(VIEW_W * zoom, 3)
     expect(scroller.scrollTop).toBeCloseTo(1500, 6)
   })
+
+  /**
+   * 原始失败形状：文档只能用 Ctrl+滚轮缩放，界面不显示比例，Ctrl+0 与 Ctrl+- 没有反应，无法回到打开时的比例；
+   * 切换到其他文件再切回，缩放与位置回到初始。
+   */
+  test('工具栏显示比例，按钮与 Ctrl+加减号缩放，Ctrl+0 回到打开时的比例；重新打开同一文件时恢复', async () => {
+    fakeWorker()
+    await fakeServer({ bytes: () => 'report', mtime: () => 1 })
+    sizeScrollers()
+    const host = await mountFileView(
+      () => 'report.docx',
+      () => 0,
+    )
+    await waitFor(
+      () => host.querySelector('.preview-tools output') !== null,
+      () => host.innerHTML.slice(0, 300),
+    )
+    const extent = host.querySelector<HTMLElement>('.doc-extent')!
+    const ratio = () => host.querySelector('.preview-tools output')?.textContent
+    const opened = ratio()
+    const openedWidth = Number.parseFloat(extent.style.width)
+    const press = (key: string) =>
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true, cancelable: true }),
+      )
+
+    press('=')
+    expect(Number.parseFloat(extent.style.width)).toBeCloseTo(openedWidth * 1.25, 3)
+    host.querySelector<HTMLButtonElement>('.preview-tools button[aria-label="放大"]')!.click()
+    expect(Number.parseFloat(extent.style.width)).toBeCloseTo(openedWidth * 1.25 * 1.25, 3)
+    press('-')
+    expect(Number.parseFloat(extent.style.width)).toBeCloseTo(openedWidth * 1.25, 3)
+    expect(ratio()).not.toBe(opened)
+    press('0')
+    expect(Number.parseFloat(extent.style.width)).toBeCloseTo(openedWidth, 3)
+    expect(ratio()).toBe(opened)
+
+    press('=')
+    const zoomed = ratio()
+    dispose?.()
+    document.body.replaceChildren()
+    const again = await mountFileView(
+      () => 'report.docx',
+      () => 0,
+    )
+    await waitFor(
+      () => again.querySelector('.preview-tools output')?.textContent === zoomed,
+      () => again.innerHTML.slice(0, 300),
+    )
+  })
 })
 
 /** 打开看板，点击标签为 `label` 的行。 */
@@ -1787,7 +1837,7 @@ describe('看板的 Office 行', () => {
     expect(store.panelTabs().map((t) => [t.kind, t.title, t.kind === 'file' && t.path])).toEqual([
       ['file', 'b.xlsm', 'books/b.xlsm'],
     ])
-    expect(host.querySelector('.tab-pane.active .preview-head')?.textContent).toBe(
+    expect(host.querySelector('.tab-pane.active .preview-head code')?.textContent).toBe(
       'C:\\work\\books\\b.xlsm',
     )
     // 页签上已有 ×，标题条不另设第二个关闭按钮。

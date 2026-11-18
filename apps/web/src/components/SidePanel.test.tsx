@@ -1664,15 +1664,22 @@ describe('文件预览的 Markdown 与归档', () => {
     expect(img).toContain('&v=7')
 
     const button = (name: string) =>
-      [...host.querySelectorAll<HTMLButtonElement>('.preview-mode button')].find(
-        (b) => b.textContent === name,
+      [...host.querySelectorAll<HTMLButtonElement>('.preview-tools button')].find(
+        (b) => b.textContent === name || b.getAttribute('aria-label') === name,
       )
+    // 渲染结果与源码共用一个字号比例。
+    button('放大')?.click()
+    expect(host.querySelector('.preview-tools output')?.textContent).toBe('125%')
+    expect(host.querySelector<HTMLElement>('.preview')?.style.getPropertyValue('--text-zoom')).toBe(
+      '1.25',
+    )
     button('源码')?.click()
     await waitFor(
       () => host.querySelector('.cm-editor') !== null,
       () => `html=${host.innerHTML.slice(0, 300)}`,
     )
     expect(host.querySelector('.markdown-file')).toBeNull()
+    expect(host.querySelector('.preview-tools output')?.textContent).toBe('125%')
     button('预览')?.click()
     await waitFor(
       () => host.querySelector('.markdown-file h1') !== null,
@@ -1680,7 +1687,7 @@ describe('文件预览的 Markdown 与归档', () => {
     )
   })
 
-  test('非 Markdown 的文本不显示预览与源码切换', async () => {
+  test('非 Markdown 的文本不显示预览与源码切换，只有缩放', async () => {
     const host = await mount({
       path: 'a.txt',
       kind: 'text',
@@ -1694,7 +1701,182 @@ describe('文件预览的 Markdown 与归档', () => {
       () => host.querySelector('.cm-editor') !== null,
       () => `html=${host.innerHTML.slice(0, 300)}`,
     )
-    expect(host.querySelector('.preview-mode')).toBeNull()
+    const labels = [...host.querySelectorAll('.preview-tools button')].map(
+      (b) => b.getAttribute('aria-label') ?? b.textContent,
+    )
+    expect(labels).toEqual(['缩小', '放大'])
+  })
+
+  /** 原始失败形状：点击 HTML 文件后跳转到内置浏览器，文件页中没有与 Markdown 相同的预览与源码切换。 */
+  test('HTML 在文件页中预览：打开隐藏页并摆放在预览区域，切换到源码时关闭该页', async () => {
+    const store = await import('../lib/store/index.ts')
+    const g = globalThis as Record<string, unknown>
+    const previousTauri = g.__TAURI_INTERNALS__
+    const previousCapabilities = store.state.capabilities
+    const previousWorkspace = store.workspace()
+    const invokes: { cmd: string; args: Record<string, unknown> | undefined }[] = []
+    g.__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string, args: Record<string, unknown> | undefined) => {
+        invokes.push({ cmd, args })
+        if (cmd === 'browser_open')
+          return {
+            tabId: 'bt_html',
+            url: args?.url,
+            title: '',
+            workspaceId: args?.workspaceId,
+            createdSeq: 1,
+            zoom: 1,
+            canGoBack: false,
+            canGoForward: false,
+            openerTabId: null,
+            hidden: true,
+          }
+        if (cmd === 'browser_tabs') return []
+      },
+      transformCallback: () => 1,
+    }
+    store.setState('capabilities', {
+      sandbox: { backend: 'none', active: false, reason: '' },
+      browser: { connected: true, runtimeSupported: true, presentation: 'embedded' },
+    } as never)
+    store.setWorkspace({ id: 'ws_html', root: 'C:/ws', name: 'ws' })
+    const rect = HTMLElement.prototype.getBoundingClientRect
+    HTMLElement.prototype.getBoundingClientRect = () =>
+      ({ left: 10, top: 64, width: 400, height: 300 }) as DOMRect
+    try {
+      const host = await mount({
+        path: 'page.html',
+        kind: 'text',
+        mime: 'text/html',
+        size: 20,
+        mtime: 5,
+        content: '<h1>页</h1>',
+        language: 'html',
+        truncated: false,
+      })
+      await waitFor(
+        () => invokes.some((i) => i.cmd === 'browser_layout' && i.args?.tabId === 'bt_html'),
+        () => JSON.stringify(invokes),
+      )
+      expect(invokes.find((i) => i.cmd === 'browser_open')?.args).toEqual({
+        workspaceId: 'ws_html',
+        url: 'file:///C:/ws/page.html',
+        hidden: true,
+      })
+      const button = (name: string) =>
+        [...host.querySelectorAll<HTMLButtonElement>('.preview-tools button')].find(
+          (b) => b.textContent === name,
+        )
+      expect(button('预览')?.getAttribute('aria-pressed')).toBe('true')
+      expect(host.querySelector('.cm-editor')).toBeNull()
+
+      button('源码')?.click()
+      await waitFor(
+        () => host.querySelector('.cm-editor') !== null,
+        () => `html=${host.innerHTML.slice(0, 300)}`,
+      )
+      expect(invokes.some((i) => i.cmd === 'browser_close' && i.args?.tabId === 'bt_html')).toBe(
+        true,
+      )
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = rect
+      store.setWorkspace(previousWorkspace)
+      store.setState('capabilities', previousCapabilities)
+      g.__TAURI_INTERNALS__ = previousTauri
+    }
+  })
+
+  /** 原始失败形状：宽表格的每条记录折成多行，单元格从中间断开。 */
+  test('表格文本不自动换行，普通文本自动换行', async () => {
+    const table = await mount({
+      path: 'wide.csv',
+      kind: 'tabular',
+      mime: 'text/csv',
+      size: 3,
+      mtime: 1,
+      content: 'a,b',
+      truncated: false,
+    })
+    await waitFor(
+      () => table.querySelector('.cm-content') !== null,
+      () => `html=${table.innerHTML.slice(0, 300)}`,
+    )
+    expect(table.querySelector('.cm-content')?.classList.contains('cm-lineWrapping')).toBe(false)
+    dispose?.()
+    document.body.replaceChildren()
+
+    const text = await mount({
+      path: 'b.txt',
+      kind: 'text',
+      mime: 'text/plain',
+      size: 1,
+      mtime: 1,
+      content: 'x',
+      truncated: false,
+    })
+    await waitFor(
+      () => text.querySelector('.cm-content') !== null,
+      () => `html=${text.innerHTML.slice(0, 300)}`,
+    )
+    expect(text.querySelector('.cm-content')?.classList.contains('cm-lineWrapping')).toBe(true)
+  })
+
+  /** 原始失败形状：SVG 与 Markdown 同样有渲染结果与源码两种视图，但只能查看渲染结果。 */
+  test('SVG 在同一行工具栏中提供预览与源码切换，源码另行读取原始字节', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalRaw = store.client.raw
+    ;(store.client as unknown as { raw: () => Promise<Response> }).raw = async () =>
+      new Response('<svg xmlns="http://www.w3.org/2000/svg"/>')
+    try {
+      const host = await mount({
+        path: 'logo.svg',
+        kind: 'image',
+        mime: 'image/svg+xml',
+        size: 40,
+        mtime: 3,
+        truncated: false,
+      })
+      await waitFor(
+        () => host.querySelector('.image-preview') !== null,
+        () => `html=${host.innerHTML.slice(0, 300)}`,
+      )
+      const button = (name: string) =>
+        [...host.querySelectorAll<HTMLButtonElement>('.preview-tools button')].find(
+          (b) => b.textContent === name,
+        )
+      expect(button('适应窗口')).toBeDefined()
+      button('源码')?.click()
+      await waitFor(
+        () => host.querySelector('.cm-editor') !== null,
+        () => `html=${host.innerHTML.slice(0, 300)}`,
+      )
+      expect(host.querySelector('.cm-content')?.textContent).toContain('<svg')
+      expect(host.querySelector('.image-preview')).toBeNull()
+    } finally {
+      ;(store.client as unknown as { raw: typeof originalRaw }).raw = originalRaw
+    }
+  })
+
+  /** 原始失败形状：无法解码的视频只留下一个空的播放器，没有任何说明。 */
+  test('视频无法解码时显示说明', async () => {
+    const host = await mount({
+      path: 'bad.mp4',
+      kind: 'video',
+      mime: 'video/mp4',
+      size: 10,
+      mtime: 1,
+      truncated: false,
+    })
+    await waitFor(
+      () => host.querySelector('video') !== null,
+      () => `html=${host.innerHTML.slice(0, 300)}`,
+    )
+    host.querySelector('video')?.dispatchEvent(new Event('error'))
+    await waitFor(
+      () => host.querySelector('video') === null,
+      () => `html=${host.innerHTML.slice(0, 300)}`,
+    )
+    expect(host.querySelector('.preview-note')?.textContent).toBe('无法播放此文件')
   })
 
   test('ZIP 归档列出成员', async () => {

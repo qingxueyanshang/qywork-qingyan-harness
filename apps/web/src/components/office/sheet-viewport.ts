@@ -35,6 +35,10 @@ export interface SheetViewport {
   setImages(images: readonly (PaintPicture | null)[]): void
   /** 当前位置；尚未显示工作表时为 `null`。 */
   position(): ViewPosition | null
+  /** 以可视区中心为锚点按倍数缩放；尚未显示内容时不执行。 */
+  zoomBy(factor: number): void
+  /** 以可视区中心为锚点回到打开时的比例。 */
+  reset(): void
   destroy(): void
 }
 
@@ -50,10 +54,12 @@ const WHITE = '#ffffff'
 const createCanvas: CreateCanvas = (width, height) =>
   new OffscreenCanvas(Math.max(1, width), Math.max(1, height)) as unknown as PaintCanvas
 
+/** `onChange` 在位置或缩放比例改变后调用，含用户滚动。 */
 export function createSheetViewport(els: {
   scroller: HTMLElement
   extent: HTMLElement
   canvas: HTMLCanvasElement
+  onChange: (at: ViewPosition) => void
 }): SheetViewport {
   const { scroller, extent, canvas } = els
   let scene: PageScene | null = null
@@ -112,15 +118,21 @@ export function createSheetViewport(els: {
   const view = createZoomScroll(scroller, {
     measure: (zoom) => ({ scale: zoom, originX: 0 }),
     fit: fitExtent,
-    changed: schedule,
+    changed: () => {
+      schedule()
+      els.onChange(view.position())
+    },
   })
+  /** 工作表保存的打开比例，`reset` 回到该比例。 */
+  let home = 1
 
   return {
     show(next, at, display) {
       scene = next
       clearType = display
       images = []
-      view.moveTo(at ?? { ...initialScroll(next), zoom: next.sheet.view.zoom / 100 })
+      home = next.sheet.view.zoom / 100
+      view.moveTo(at ?? { ...initialScroll(next), zoom: home })
     },
     setImages(next) {
       images = next
@@ -128,6 +140,12 @@ export function createSheetViewport(els: {
     },
     position() {
       return scene ? view.position() : null
+    },
+    zoomBy(factor) {
+      if (scene) view.zoomCentered(view.position().zoom * factor)
+    },
+    reset() {
+      if (scene) view.zoomCentered(home)
     },
     destroy() {
       if (frame) cancelAnimationFrame(frame)

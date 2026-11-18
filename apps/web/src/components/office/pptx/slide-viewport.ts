@@ -42,6 +42,10 @@ export interface SlideViewport {
   repaint(index: number): void
   /** 当前位置；尚未显示时为 `null`。 */
   position(): ViewPosition | null
+  /** 以可视区中心为锚点按倍数缩放；尚未显示内容时不执行。 */
+  zoomBy(factor: number): void
+  /** 以可视区中心为锚点回到打开时的比例。 */
+  reset(): void
   destroy(): void
 }
 
@@ -52,7 +56,7 @@ interface Page {
 }
 
 export function createSlideViewport(
-  els: { scroller: HTMLElement; extent: HTMLElement },
+  els: { scroller: HTMLElement; extent: HTMLElement; onChange: (at: ViewPosition) => void },
   painter: SlidePainter,
 ): SlideViewport {
   const { scroller, extent } = els
@@ -91,7 +95,12 @@ export function createSlideViewport(
     if (!frame) frame = requestAnimationFrame(render)
   }
 
+  /** 打开时的比例，`reset` 回到该比例。 */
+  const home = 1
+
+  /** 位置或缩放比例改变后调用，含用户滚动；`els.onChange` 在此转告视图。 */
   const changed = () => {
+    els.onChange(view.position())
     const { zoom } = view.position()
     if (zoom !== lastZoom) {
       lastZoom = zoom
@@ -169,7 +178,7 @@ export function createSlideViewport(
       layout = next
       generation += 1
       for (const index of [...pages.keys()]) if (index >= next.count) release(index)
-      const start = at ?? { scrollX: 0, scrollY: 0, zoom: 1 }
+      const start = at ?? { scrollX: 0, scrollY: 0, zoom: home }
       lastZoom = start.zoom
       view.moveTo(start)
       schedule()
@@ -181,6 +190,12 @@ export function createSlideViewport(
     },
     position() {
       return layout ? view.position() : null
+    },
+    zoomBy(factor) {
+      if (layout) view.zoomCentered(view.position().zoom * factor)
+    },
+    reset() {
+      if (layout) view.zoomCentered(home)
     },
     destroy() {
       if (frame) cancelAnimationFrame(frame)

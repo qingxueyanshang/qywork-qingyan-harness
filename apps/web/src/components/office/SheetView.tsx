@@ -21,10 +21,19 @@ import {
   type Workbook,
 } from '@qywork/ooxml/xlsx'
 import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js'
+import { readView, writeView } from '../preview/view-state.ts'
 import { boundaryText, connectWorker, createDocumentLoader, failureText } from './document.ts'
 import { type HostFace, loadClearType, loadHostFaces } from './fonts.ts'
 import { createSheetViewport, type SheetViewport } from './sheet-viewport.ts'
 import type { ViewPosition } from './viewport.ts'
+import { officeZoom } from './zoom.tsx'
+
+/** 按路径记录的视图状态（`view-state.ts`）：当前工作表与其中的位置。 */
+interface SheetRecord {
+  sheet: string
+  at: ViewPosition
+}
+
 import type { XlsxReplies, XlsxRequest } from './xlsx-worker.ts'
 
 interface Doc {
@@ -130,8 +139,17 @@ export default function SheetView(props: { path: string; mtime: number }) {
   let viewport: SheetViewport | null = null
   /** 下一次显示工作表时的位置：改写后重新加载同一工作表时为原位置，其余为 `null`（取工作表保存的打开位置）。 */
   let nextPosition: ViewPosition | null = null
+  /** 本次挂载首次显示时恢复的记录：切换到其他文件再切回时回到原工作表与位置。首次显示后清除。 */
+  let saved = readView<SheetRecord>(props.path) ?? null
 
   onCleanup(() => viewport?.destroy())
+
+  /** 位置或比例改变后更新工具栏，并按路径记录当前工作表与位置。 */
+  const onChange = (at: ViewPosition) => {
+    zoom.note(at)
+    const sheet = doc()?.workbook.sheets[sheetIndex()]?.name
+    if (sheet) writeView(props.path, { sheet, at } satisfies SheetRecord)
+  }
 
   /** 换上新解析的工作簿：同名的可见工作表仍在时保留它与位置，否则显示工作簿的活动工作表。 */
   const showDoc = (next: Doc) => {
@@ -139,12 +157,17 @@ export default function SheetView(props: { path: string; mtime: number }) {
     const previous = doc()?.workbook.sheets[sheetIndex()]?.name
     const kept = sheets.findIndex((s) => s.name === previous && s.state === 'visible')
     const active = sheets[next.workbook.activeSheet]?.state === 'visible'
+    const remembered = saved
+      ? sheets.findIndex((s) => s.name === saved?.sheet && s.state === 'visible')
+      : -1
     const index =
       kept >= 0
         ? kept
-        : active
-          ? next.workbook.activeSheet
-          : sheets.findIndex((s) => s.state === 'visible')
+        : remembered >= 0
+          ? remembered
+          : active
+            ? next.workbook.activeSheet
+            : sheets.findIndex((s) => s.state === 'visible')
     nextPosition = kept >= 0 ? (viewport?.position() ?? null) : null
     setDoc(next)
     setSheetIndex(index)
@@ -170,8 +193,10 @@ export default function SheetView(props: { path: string; mtime: number }) {
     on([doc, sheetIndex], ([d, index]) => {
       const sheet = d?.workbook.sheets[index]
       if (!d || !sheet) return
-      viewport ??= createSheetViewport({ scroller, extent, canvas })
-      viewport.show(createScene(d.workbook, sheet, d.fonts), nextPosition, d.clearType)
+      viewport ??= createSheetViewport({ scroller, extent, canvas, onChange })
+      const at = nextPosition ?? (saved?.sheet === sheet.name ? saved.at : null)
+      saved = null
+      viewport.show(createScene(d.workbook, sheet, d.fonts), at, d.clearType)
       nextPosition = null
       const mine = ++decoding
       setUndecoded(0)
@@ -207,6 +232,11 @@ export default function SheetView(props: { path: string; mtime: number }) {
   }
 
   const ready = () => doc() !== null && error() === null
+  const zoom = officeZoom(
+    () => scroller,
+    () => viewport,
+    ready,
+  )
 
   return (
     <div class="sheet-view">

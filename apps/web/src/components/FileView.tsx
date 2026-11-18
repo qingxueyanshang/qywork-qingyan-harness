@@ -9,6 +9,7 @@ import {
   Match,
   on,
   onCleanup,
+  onMount,
   Show,
   Suspense,
   Switch,
@@ -18,17 +19,22 @@ import { createReadonlyEditor, scrollToLine, selectRange, topLine } from '../lib
 import type { OfficeFormat } from '../lib/file-search.ts'
 import { renderMarkdown } from '../lib/markdown.ts'
 import { loaded } from '../lib/resource.ts'
-import { readSession, writeSession } from '../lib/session.ts'
 import {
   absPath,
   client,
   explainApiError,
   fileSelectRequest,
+  isDesktopShell,
   setFileSelectRequest,
   workspace,
 } from '../lib/store/index.ts'
 import FileImageView from './FileImageView.tsx'
 import { IconX } from './Icons.tsx'
+import HtmlPreview from './preview/HtmlPreview.tsx'
+import { type PreviewTools, PreviewToolsContext, type ToolsRender } from './preview/tools.ts'
+import { patchView, readView } from './preview/view-state.ts'
+import ZoomControl from './preview/ZoomControl.tsx'
+import { bindZoomInputs, ZOOM_STEP } from './preview/zoom-input.ts'
 
 // 懒加载：表格、演示文稿与文档的解析与绘制代码只在打开对应文件时下载。
 const SheetView = lazy(() => import('./office/SheetView.tsx'))
@@ -71,17 +77,90 @@ export default function FileView(props: { path: string; refresh?: number; onClos
     () => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(props.path)}`),
   )
 
-  /** Markdown 显示源码而不是渲染结果。不随文件切换重置。 */
+  /**
+   * Markdown 与 SVG 显示源码而不是渲染结果。文件页按路径重新挂载本组件，切换文件后回到渲染结果；
+   * 文件预览页的路径不变，刷新时保留。
+   */
   const [source, setSource] = createSignal(false)
   const markdown = () => loaded(result)?.language === 'markdown'
+  const svg = () => loaded(result)?.kind === 'image' && /\.svg$/i.test(props.path)
+  /** HTML 的预览由内置浏览器的引擎显示（`HtmlPreview`），只在桌面端提供；其他客户端只显示源码。 */
+  const html = () => loaded(result)?.language === 'html' && isDesktopShell()
   // 选中请求（画布摘录卡）按源码位置计算，只能在源码视图中执行；请求可能先于预览结果到达，两者都就绪后再判断。
   createEffect(() => {
     const req = fileSelectRequest()
     if (req && markdown() && req.path === loaded(result)?.path) setSource(true)
   })
 
+  /** 以文本显示的内容：代码、表格文本、Markdown 的两种视图与 SVG 源码。它们按字号缩放，共用一个比例。 */
+  const textual = () => {
+    const r = loaded(result)
+    if (!r) return false
+    if (html() && !source()) return false
+    return r.kind === 'text' || r.kind === 'tabular' || (svg() && source())
+  }
+  const [textZoom, setTextZoom] = createSignal(readView<TextView>(props.path)?.zoom ?? 1)
+  let body!: HTMLDivElement
+  /** 缩放后按比例恢复滚动位置：字号变化后内容总高度随之变化。代码视图按行恢复（`CodeView`）。 */
+  const zoomText = (next: number) => {
+    const zoom = Math.min(TEXT_ZOOM_MAX, Math.max(TEXT_ZOOM_MIN, next))
+    const ratio = body.scrollHeight ? body.scrollTop / body.scrollHeight : 0
+    setTextZoom(zoom)
+    patchView(props.path, { zoom })
+    requestAnimationFrame(() => {
+      body.scrollTop = ratio * body.scrollHeight
+    })
+  }
+  onMount(() => {
+    const unbind = bindZoomInputs(
+      body,
+      {
+        ready: textual,
+        zoomBy: (factor) => zoomText(textZoom() * factor),
+        reset: () => zoomText(1),
+      },
+      { wheel: true },
+    )
+    onCleanup(unbind)
+  })
+
+  /** Markdown 渲染结果的阅读位置：内容渲染后恢复一次，之后随滚动记录。 */
+  let restoreTop = readView<TextView>(props.path)?.top
+  const rendered = () => {
+    const top = restoreTop
+    restoreTop = undefined
+    if (top !== undefined)
+      requestAnimationFrame(() => {
+        body.scrollTop = top
+      })
+  }
+  const onBodyScroll = () => {
+    if (markdown() && !source()) patchView(props.path, { top: body.scrollTop })
+  }
+
+  /** 图片、Office 与 HTML 的视图提供的控件（`usePreviewTools`）。 */
+  const [viewTools, setViewTools] = createSignal<ToolsRender | null>(null)
+  const previewTools: PreviewTools = {
+    show: (render) => setViewTools(() => render),
+    hide: (render) => {
+      if (viewTools() === render) setViewTools(null)
+    },
+  }
+
+  /** 渲染结果与源码的切换。 */
+  const ModeToggle = () => (
+    <Show when={markdown() || svg() || html()}>
+      <button type="button" aria-pressed={!source()} onClick={() => setSource(false)}>
+        预览
+      </button>
+      <button type="button" aria-pressed={source()} onClick={() => setSource(true)}>
+        源码
+      </button>
+    </Show>
+  )
+
   return (
-    <div class="preview">
+    <div class="preview" style={{ '--text-zoom': String(textZoom()) }}>
       <header class="preview-head">
         {/* 显示完整的本机路径，而不是工作区相对路径：根目录下文件的相对路径只剩
             文件名，无法看出所属项目。空间不足时从左侧截断：末尾的文件名比盘符更重要。 */}
@@ -91,16 +170,21 @@ export default function FileView(props: { path: string; refresh?: number; onClos
           <span dir="ltr">{absPath(props.path)}</span>
         </code>
         <span class="spacer" />
-        <Show when={markdown()}>
-          <span class="preview-mode">
-            <button type="button" aria-pressed={!source()} onClick={() => setSource(false)}>
-              预览
-            </button>
-            <button type="button" aria-pressed={source()} onClick={() => setSource(true)}>
-              源码
-            </button>
-          </span>
-        </Show>
+        {/* 各类型的控件与路径同一行：渲染结果与源码的切换、文本缩放，以及视图经 `usePreviewTools` 提供的控件。 */}
+        <span class="preview-tools">
+          <ModeToggle />
+          <Show when={textual()}>
+            <ZoomControl
+              ratio={textZoom()}
+              min={TEXT_ZOOM_MIN}
+              max={TEXT_ZOOM_MAX}
+              onStep={(direction) =>
+                zoomText(textZoom() * (direction > 0 ? ZOOM_STEP : 1 / ZOOM_STEP))
+              }
+            />
+          </Show>
+          {viewTools()?.()}
+        </span>
         <Show when={props.onClose}>
           <button
             class="icon-btn"
@@ -113,76 +197,144 @@ export default function FileView(props: { path: string; refresh?: number; onClos
         </Show>
       </header>
 
-      <div class="preview-body">
-        {/* 获取失败时必须给出说明。使用 `loaded()` 而不是 `result()`：后者出错时会 `throw`，
+      <PreviewToolsContext.Provider value={previewTools}>
+        <div class="preview-body" ref={body} onScroll={onBodyScroll}>
+          {/* 获取失败时必须给出说明。使用 `loaded()` 而不是 `result()`：后者出错时会 `throw`，
             而这一层外部只有供 `lazy()` 使用的 Suspense，无法捕获抛出的错误，
             该区域会一直停留在加载状态。 */}
-        <Show
-          when={loaded(result)}
-          fallback={
-            <Show when={result.error} fallback={<div class="preview-loading" />}>
-              {(e) => <div class="preview-note">{explainApiError(e(), '无法打开此文件')}</div>}
-            </Show>
-          }
-        >
-          {(r) => (
-            <Switch fallback={<div class="preview-note">{r().note ?? '无法预览'}</div>}>
-              <Match when={markdown() && !source()}>
-                <MarkdownView content={r().content ?? ''} path={r().path} mtime={r().mtime} />
-              </Match>
-              <Match when={r().kind === 'text' || r().kind === 'tabular'}>
-                <CodeView content={r().content ?? ''} path={r().path} />
-              </Match>
-              <Match when={r().kind === 'pdf'}>
-                <PdfView path={r().path} mtime={r().mtime} />
-              </Match>
-              <Match when={r().office === 'xlsx'}>
-                <Suspense fallback={<div class="preview-loading" />}>
-                  <SheetView path={r().path} mtime={r().mtime} />
-                </Suspense>
-              </Match>
-              <Match when={r().office === 'pptx'}>
-                <Suspense fallback={<div class="preview-loading" />}>
-                  <SlideView path={r().path} mtime={r().mtime} />
-                </Suspense>
-              </Match>
-              <Match when={r().office === 'docx'}>
-                <Suspense fallback={<div class="preview-loading" />}>
-                  <DocView path={r().path} mtime={r().mtime} />
-                </Suspense>
-              </Match>
-              <Match when={r().kind === 'image'}>
-                <FileImageView src={client.fileUrl(r().path, r().mtime)} alt={r().path} />
-              </Match>
-              <Match when={r().kind === 'video'}>
-                <div class="preview-video">
-                  <video
-                    class="preview-media"
-                    src={client.fileUrl(r().path, r().mtime)}
-                    controls
-                    playsinline
+          <Show
+            when={loaded(result)}
+            fallback={
+              <Show when={result.error} fallback={<div class="preview-loading" />}>
+                {(e) => <div class="preview-note">{explainApiError(e(), '无法打开此文件')}</div>}
+              </Show>
+            }
+          >
+            {(r) => (
+              <Switch fallback={<div class="preview-note">{r().note ?? '无法预览'}</div>}>
+                <Match when={markdown() && !source()}>
+                  <MarkdownView
+                    content={r().content ?? ''}
+                    path={r().path}
+                    version={`${r().mtime}.${props.refresh ?? 0}`}
+                    onRendered={rendered}
                   />
-                </div>
-              </Match>
-              <Match when={r().kind === 'audio'}>
-                <audio class="preview-audio" src={client.fileUrl(r().path, r().mtime)} controls />
-              </Match>
-              <Match when={r().entries}>
-                {(entries) => (
-                  <ul class="archive-list">
-                    <For each={entries()}>{(entry) => <li>{entry}</li>}</For>
-                  </ul>
-                )}
-              </Match>
-            </Switch>
-          )}
-        </Show>
-      </div>
+                </Match>
+                <Match when={html() && !source()}>
+                  <HtmlPreview path={r().path} mtime={r().mtime} />
+                </Match>
+                <Match when={r().kind === 'text' || r().kind === 'tabular'}>
+                  <CodeView
+                    content={r().content ?? ''}
+                    path={r().path}
+                    wrap={r().kind !== 'tabular'}
+                    zoom={textZoom()}
+                  />
+                </Match>
+                <Match when={svg() && source()}>
+                  <SvgSource path={r().path} mtime={r().mtime} zoom={textZoom()} />
+                </Match>
+                <Match when={r().kind === 'pdf'}>
+                  <PdfView path={r().path} mtime={r().mtime} />
+                </Match>
+                <Match when={r().office === 'xlsx'}>
+                  <Suspense fallback={<div class="preview-loading" />}>
+                    <SheetView path={r().path} mtime={r().mtime} />
+                  </Suspense>
+                </Match>
+                <Match when={r().office === 'pptx'}>
+                  <Suspense fallback={<div class="preview-loading" />}>
+                    <SlideView path={r().path} mtime={r().mtime} />
+                  </Suspense>
+                </Match>
+                <Match when={r().office === 'docx'}>
+                  <Suspense fallback={<div class="preview-loading" />}>
+                    <DocView path={r().path} mtime={r().mtime} />
+                  </Suspense>
+                </Match>
+                <Match when={r().kind === 'image'}>
+                  <FileImageView src={client.fileUrl(r().path, r().mtime)} path={r().path} />
+                </Match>
+                <Match when={r().kind === 'video'}>
+                  <MediaView kind="video" src={client.fileUrl(r().path, r().mtime)} />
+                </Match>
+                <Match when={r().kind === 'audio'}>
+                  <MediaView kind="audio" src={client.fileUrl(r().path, r().mtime)} />
+                </Match>
+                <Match when={r().entries}>
+                  {(entries) => (
+                    <ul class="archive-list">
+                      <For each={entries()}>{(entry) => <li>{entry}</li>}</For>
+                    </ul>
+                  )}
+                </Match>
+              </Switch>
+            )}
+          </Show>
+        </div>
+      </PreviewToolsContext.Provider>
 
       <Show when={loaded(result)?.truncated}>
         <footer class="preview-foot">内容已截断</footer>
       </Show>
     </div>
+  )
+}
+
+/** 视频与音频。无法解码时显示说明，不留下一个无法播放的空播放器。 */
+function MediaView(props: { kind: 'video' | 'audio'; src: string }) {
+  const [failed, setFailed] = createSignal(false)
+  createEffect(
+    on(
+      () => props.src,
+      () => setFailed(false),
+      { defer: true },
+    ),
+  )
+  return (
+    <Show when={!failed()} fallback={<div class="preview-note">无法播放此文件</div>}>
+      <Show
+        when={props.kind === 'video'}
+        fallback={
+          <audio class="preview-audio" src={props.src} controls onError={() => setFailed(true)} />
+        }
+      >
+        <div class="preview-video">
+          <video
+            class="preview-media"
+            src={props.src}
+            controls
+            playsinline
+            onError={() => setFailed(true)}
+          />
+        </div>
+      </Show>
+    </Show>
+  )
+}
+
+/** SVG 的源码：预览接口对图片只返回类型，源码另行读取原始字节。 */
+function SvgSource(props: { path: string; mtime: number; zoom: number }) {
+  const [text] = createResource(
+    () => JSON.stringify([props.path, props.mtime]),
+    async () => {
+      const url = `/api/files/raw?path=${encodeURIComponent(props.path)}`
+      const res = await client.raw(url)
+      if (!res.ok) throw new ApiError(res.status, url, await res.text().catch(() => ''))
+      return res.text()
+    },
+  )
+  return (
+    <Show
+      when={loaded(text) !== undefined}
+      fallback={
+        <Show when={text.error} fallback={<div class="preview-loading" />}>
+          {(e) => <div class="preview-note">{explainApiError(e(), '无法读取源码')}</div>}
+        </Show>
+      }
+    >
+      <CodeView content={loaded(text) ?? ''} path={props.path} wrap zoom={props.zoom} />
+    </Show>
   )
 }
 
@@ -254,28 +406,42 @@ function PdfView(props: { path: string; mtime: number }) {
 
 /**
  * Markdown 的渲染结果。链接点击由根节点的 `openLink` 处理；相对地址按文件所在目录解析，
- * 工作区内的图片以直链内嵌。直链的版本取 Markdown 文件的修改时间：图片被改写而 Markdown 未改写时仍显示原图。
+ * 工作区内的图片以直链内嵌。直链的版本 `version` 包含文件页的失效序号：只取 Markdown 自身的修改时间时，
+ * 图片被改写而 Markdown 未改写，仍显示原图。`onRendered` 在每次写入渲染结果后调用。
  */
-function MarkdownView(props: { content: string; path: string; mtime: number }) {
+function MarkdownView(props: {
+  content: string
+  path: string
+  version: string
+  onRendered: () => void
+}) {
   const html = createMemo(() => {
     const slash = props.path.lastIndexOf('/')
     return renderMarkdown(props.content, {
       dir: slash < 0 ? '' : props.path.slice(0, slash),
       root: workspace()?.root ?? '',
-      url: (path) => client.fileUrl(path, props.mtime),
+      url: (path) => client.fileUrl(path, props.version),
     })
   })
+  createEffect(on(html, () => props.onRendered()))
   return <div class="markdown markdown-file" innerHTML={html()} />
 }
 
-/** 当前文本文件视口顶部的行。只记录一个文件，按路径区分：刷新后同一文件按记录恢复。 */
-const SCROLL_KEY = 'qywork.file.scroll'
-interface ScrollRecord {
-  path: string
-  line: number
+/**
+ * 文本类预览按路径记录的视图状态（`view-state.ts`）：字号比例、代码视图顶部的行、Markdown 渲染结果的滚动位置。
+ * 代码视图按行而不是按像素记录，理由见 `scrollToLine`。
+ */
+interface TextView {
+  zoom?: number
+  line?: number
+  top?: number
 }
+/** 文本字号比例的范围。 */
+const TEXT_ZOOM_MIN = 0.5
+const TEXT_ZOOM_MAX = 3
 
-function CodeView(props: { content: string; path: string }) {
+/** 只读代码视图。`wrap` 为假时长行横向滚动（表格文本）；`zoom` 变化后保持顶部的行不变。 */
+function CodeView(props: { content: string; path: string; wrap: boolean; zoom: number }) {
   let host!: HTMLDivElement
   let view: EditorView | null = null
   let mountedPath: string | null = null
@@ -312,7 +478,7 @@ function CodeView(props: { content: string; path: string }) {
     }
 
     void (async () => {
-      const next = await createReadonlyEditor(host, content, path)
+      const next = await createReadonlyEditor(host, content, path, props.wrap)
       if (mine !== generation) {
         next.destroy()
         return
@@ -320,14 +486,27 @@ function CodeView(props: { content: string; path: string }) {
       view?.destroy()
       view = next
       mountedPath = path
-      const saved = readSession<ScrollRecord>(SCROLL_KEY)
-      if (saved?.path === path) scrollToLine(next, saved.line)
+      const line = readView<TextView>(path)?.line
+      if (line !== undefined) scrollToLine(next, line)
       applySelect()
-      next.scrollDOM.addEventListener('scroll', () =>
-        writeSession(SCROLL_KEY, { path, line: topLine(next) } satisfies ScrollRecord),
-      )
+      next.scrollDOM.addEventListener('scroll', () => patchView(path, { line: topLine(next) }))
     })()
   })
+
+  // 字号由外层的 `--text-zoom` 决定。编辑器按缓存的行高定位，字号变化后须重新测量，再滚动到缩放前位于顶部的行。
+  createEffect(
+    on(
+      () => props.zoom,
+      () => {
+        const current = view
+        if (!current) return
+        const line = topLine(current)
+        current.requestMeasure()
+        requestAnimationFrame(() => scrollToLine(current, line))
+      },
+      { defer: true },
+    ),
+  )
 
   onCleanup(() => view?.destroy())
 
