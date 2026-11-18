@@ -42,7 +42,8 @@ const handle = serve({
 // 等到有一方认领并建立运行记录（上限 30 秒）后再保持 `holdMs`。不要改回启动后固定等待：
 // 慢机器上并行执行测试时，首次认领可能晚于固定的等待时间，两个进程都未认领即退出，用例误判失败。
 const deadline = Date.now() + 30_000
-while (Date.now() < deadline && !store.db.query('SELECT 1 FROM runs LIMIT 1').get()) await Bun.sleep(20)
+while (Date.now() < deadline && !store.db.query('SELECT 1 FROM runs LIMIT 1').get())
+  await Bun.sleep(20)
 await Bun.sleep(Number(holdMs))
 handle.stop()
 store.close()
