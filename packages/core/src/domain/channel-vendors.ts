@@ -58,6 +58,30 @@ const HOSTS: Readonly<Record<ChannelVendor, readonly (string | RegExp)[]>> = {
   zhipu: ['open.bigmodel.cn'],
 }
 
+/** 是否为第三方接口。新增渠道商时必须标明：第三方接口的 id 与主机名不得出现在发布说明中（`scripts/release-config.test.ts`）。 */
+const RELAY: Readonly<Record<ChannelVendor, boolean>> = {
+  alibaba: false,
+  volcengine: false,
+  kling: false,
+  minimax: false,
+  xiaomi: false,
+  google: false,
+  xai: false,
+  opencode: false,
+  providera: true,
+  providerb: true,
+  providerc: true,
+  zhipu: false,
+}
+
+/** 第三方接口的 id 与完整主机名（正则写法的主机名不列出）。 */
+export function relayVendors(): { id: ChannelVendor; hosts: string[] }[] {
+  return CHANNEL_VENDORS.filter((v) => RELAY[v]).map((id) => ({
+    id,
+    hosts: HOSTS[id].filter((h): h is string => typeof h === 'string'),
+  }))
+}
+
 /** 接口地址所属的渠道商；地址无效或不在表中时返回 null。 */
 export function channelVendorOf(baseUrl: string | undefined): ChannelVendor | null {
   let host: string

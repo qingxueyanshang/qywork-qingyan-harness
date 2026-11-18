@@ -125,7 +125,12 @@ export {
 } from './domain/canvas.ts'
 export { CARD_GAP, type CanvasLayout, layoutOf } from './domain/canvas-arrange.ts'
 // 生成模型的协议与类别：配置校验、目录、设置页共用
-export { CHANNEL_VENDORS, type ChannelVendor, channelVendorOf } from './domain/channel-vendors.ts'
+export {
+  CHANNEL_VENDORS,
+  type ChannelVendor,
+  channelVendorOf,
+  relayVendors,
+} from './domain/channel-vendors.ts'
 // 自动压缩的触发比例：设置页的滑块范围、配置校验与运行侧的解析共用
 export {
   COMPACT_PERCENT_DEFAULT,

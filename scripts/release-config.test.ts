@@ -1,13 +1,22 @@
 /**
  * 发布链路的回归测试。覆盖范围：`apps/desktop/src-tauri/tauri.conf.json`、`.github/` 下的
- * 工作流与两个共用 composite action、`package.json` 的门禁与资产入口，以及
+ * 工作流与两个共用 composite action、`package.json` 的门禁与资产入口、`.github/release-notes/` 的更新说明，以及
  * `scripts/collect-installer.ts` 的收集与清理。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
+import { relayVendors } from '@qywork/core'
 import { findPython } from '@qywork/runtime'
 import { probeBash } from '../packages/tools/src/process/command-shell.ts'
 import { collect } from './collect-installer.ts'
@@ -491,6 +500,33 @@ describe('桌面发布清单', () => {
     for (const name of RELEASE_WORKFLOWS) {
       expect(workflowText(name)).toContain('releaseBody: $' + '{{ steps.prepare.outputs.notes }}')
     }
+  })
+
+  /**
+   * 更新说明是发布页、应用内更新与云端版本公告共用的正文，对全部用户公开，不写第三方接口、渠道与上游供应商（CLAUDE.md D5）。
+   * 词表：泛指第三方与渠道的词，第三方接口的 id 与主机名（`relayVendors`），以及第三方接口的中文名称。「上游」只允许出现在「」引用的界面原文中。
+   */
+  test('更新说明不出现第三方接口、渠道与上游供应商的信息', () => {
+    const dir = join(ROOT, '.github', 'release-notes')
+    const words = [
+      '第三方',
+      '渠道',
+      ...relayVendors().flatMap((v) => [v.id, ...v.hosts]),
+      '服务商C',
+      '服务商B',
+      '服务商A',
+      '服务商D',
+    ]
+    const hits: string[] = []
+    for (const name of readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+      const text = readFileSync(join(dir, name), 'utf8')
+      const outsideQuotes = text.replace(/「[^」]*」/g, '')
+      for (const word of words) {
+        if (text.toLowerCase().includes(word.toLowerCase())) hits.push(`${name}：${word}`)
+      }
+      if (outsideQuotes.includes('上游')) hits.push(`${name}：上游`)
+    }
+    expect(hits).toEqual([])
   })
 
   /** 发布只从 master 进行，判定写在共用 action 中，三条工作流不各自重复判定。 */
