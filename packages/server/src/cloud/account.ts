@@ -17,16 +17,14 @@
 import { httpStatusName, lookupModel, transportFailureKind } from '@qywork/ai'
 import {
   type Announcement,
-  type ChannelSpec,
   CLOUD_MEDIA_KIND,
   type CloudModel,
+  type CloudModelSpec,
   type CloudRechargeOrder,
   type CloudRechargeStatus,
   type CloudRequest,
   type CloudState,
   type CloudUsage,
-  type MediaBaseSpec,
-  type MediaKind,
   type MediaOutput,
   type MediaUnit,
   type ProviderKind,
@@ -49,14 +47,17 @@ export const CLOUD_PROVIDER = 'qywork'
 /** 云端接口的默认协议；网关上协议不同的型号带各自的 `kind`。 */
 const DEFAULT_KIND = 'anthropic_messages'
 
-/** 云端 `/v1/catalog` 中的一个生成型号：显示名称、原协议、规格来源、计费单位与单价（积分 / 单位）。 */
+/**
+ * 云端 `/v1/catalog` 中的一个生成型号：对外编号、显示名称、云端下发的规格、计费单位与单价（积分 / 单位）。
+ * 清单中的上游协议与规格来源（`protocol`、`spec`）不读取：配置中不保存上游协议与渠道规格。
+ */
 interface CatalogMediaModel {
   id: string
   /** 后台填写的显示名称。 */
   displayName: string
   output: MediaOutput
-  protocol: MediaKind
-  spec?: ChannelSpec | MediaBaseSpec
+  /** 参数表、能力与计量参数名，不含上游协议与渠道。 */
+  cloudSpec: CloudModelSpec
   unit: MediaUnit
   unitPrice: UnitPrice
 }
@@ -68,22 +69,15 @@ interface Catalog {
 }
 
 /**
- * 云端生成型号在配置中的形状：协议为该类别的云端生成协议，规格中记录原协议、原协议的规格来源与单价，
- * 参数表按原协议取得（`lookupMediaModel`）。
+ * 云端生成型号在配置中的形状：协议为该类别的云端生成协议，规格中记录云端下发的规格与单价，
+ * 参数表、能力与报价由此取得（`lookupMediaModel`）。
  */
 function storedMedia(list: readonly CatalogMediaModel[]): Record<string, StoredMediaModel> {
   const media: Record<string, StoredMediaModel> = {}
   for (const m of list) {
     media[m.id] = {
       kind: CLOUD_MEDIA_KIND[m.output],
-      spec: {
-        cloud: {
-          kind: m.protocol,
-          ...(m.spec ? { spec: m.spec } : {}),
-          unit: m.unit,
-          unitPrice: m.unitPrice,
-        },
-      },
+      spec: { cloud: { spec: m.cloudSpec, unit: m.unit, unitPrice: m.unitPrice } },
       displayName: m.displayName,
     }
   }
@@ -101,7 +95,10 @@ interface CatalogModel {
   /** true：云端按模型库的官方价乘以倍率计价；false：按后台填写的单价乘以倍率计价。 */
   official: boolean
   price: { input: number; output: number; cacheRead: number; cacheWrite: number }
-  /** 云端为模型库中没有的型号填写的规格。其中的显示名称不读取，以顶层的 `displayName` 为准。 */
+  /**
+   * 对应型号（`base`，模型库 id，能力与官方价据此取得）与后台填写的窗口、输出上限。型号 id 是对外编号，不在模型库中。
+   * 其中的显示名称不读取，以顶层的 `displayName` 为准。
+   */
   spec?: { base?: string; contextWindow?: number; maxOutputTokens?: number }
 }
 

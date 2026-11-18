@@ -22,10 +22,14 @@
 import {
   type ChannelImageSpec,
   type ChannelVideoSpec,
+  type CloudModelSpec,
   type Currency,
   MEDIA_KIND_OUTPUT,
+  type MediaInputLimits,
   type MediaKind,
-  type MediaParamDefinition,
+  type MediaMeterParams,
+  type MediaOperation,
+  type MediaParamSpec,
   type MediaQuote,
   type MediaUnit,
   type MentionStyle,
@@ -40,32 +44,7 @@ import { MINIMAX_IMAGE_DEFAULT, MINIMAX_IMAGE_MODELS } from './catalog-minimax-i
 import { MINIMAX_VIDEO_DEFAULT, MINIMAX_VIDEO_MODELS } from './catalog-minimax-video.ts'
 import { QWEN_AUDIO_MODELS } from './catalog-qwen-audio.ts'
 import { channelImageMediaSpec, channelMediaSpec } from './channels.ts'
-import type { MediaInput, MediaUsage } from './types.ts'
-
-/**
- * 生成操作。由调用时提供的输入推定，不由大模型选择。
- *
- * 图像：`generate` 按提示词生成，`edit` 在参考图上修改。
- * 视频：`text_to_video` 文生视频，`image_to_video` 首帧生视频，`first_last_frame` 首尾帧生视频，
- * `reference_to_video` 参考素材生视频，`video_to_video` 以参考视频为输入（编辑、延长或参考由模型的原生参数或提示词决定）。
- * 语音：`speech` 文字转语音。
- */
-export type MediaOperation =
-  | 'generate'
-  | 'edit'
-  | 'text_to_video'
-  | 'image_to_video'
-  | 'first_last_frame'
-  | 'reference_to_video'
-  | 'video_to_video'
-  | 'speech'
-
-export interface MediaParamSpec extends MediaParamDefinition {
-  /** 参数的含义与约束，用一句话写成，供大模型阅读。 */
-  description: string
-  /** 仅在这些操作下有效。省略时对全部操作有效。 */
-  operations?: readonly MediaOperation[]
-}
+import type { MediaUsage } from './types.ts'
 
 /**
  * 界面上一项「宽高比 × 分辨率」对应的尺寸取值。省略 `ratio` 表示宽高比由模型决定；省略 `tier` 表示没有档位；
@@ -125,31 +104,7 @@ export interface MediaModelSpec {
    * OpenAI 的修改使用 multipart `/edits`，其余均放入 JSON。
    * `types`：同一协议下各厂商的素材类型名不同时（百炼上的万相与可灵），写明各用途在请求中的类型名；省略时使用协议的类型名。
    */
-  inputs: {
-    maxImages: number
-    maxVideos: number
-    /** 参考音频的段数上限。省略表示不接受参考音频（总时长上限由各厂商另行规定，本地不校验，由接口判定）。 */
-    maxAudios?: number
-    audioMimeTypes?: readonly string[]
-    maxAudioBytes?: number
-    transport: 'multipart' | 'json'
-    /** JSON 素材必须使用公网地址，不能内联文件字节。 */
-    publicUrls?: boolean
-    types?: Partial<Record<MediaInput['role'], string>>
-    /** 允许尾帧单独输入，或首尾帧与参考素材组合。省略时各组合互斥且尾帧需要首帧。 */
-    lastFrameAlone?: boolean
-    framesWithReferences?: boolean
-    /** 音频必须同时带参考图或参考视频。 */
-    audioRequiresVisual?: boolean
-    /** 百炼中仅接受图像地址的模型也使用临时上传。 */
-    inlineImages?: boolean
-    /** 允许的素材用途组合；参数条件按目录默认值求值。 */
-    combinations?: readonly {
-      roles: readonly MediaInput['role'][]
-      maxImages?: number
-      params?: Readonly<Record<string, string>>
-    }[]
-  }
+  inputs: MediaInputLimits
   params: readonly MediaParamSpec[]
   /** false 表示协议默认规格：目录与保存的渠道规格中都没有该型号。 */
   catalogued: boolean
@@ -1752,7 +1707,7 @@ const SEEDS: readonly MediaModelSpec[] = [
  * 参数表取保守写法：多声明一个接口不接受的字段会导致请求被拒绝；少声明一个字段只使大模型少一个可调参数。
  */
 /**
- * 云端协议的协议默认：只在配置中缺少云端规格时使用（配置校验拒绝这种情形）。有云端规格时参数表取原协议的规格。
+ * 云端协议的协议默认：只在配置中缺少云端规格时使用（配置校验拒绝这种情形）。有云端规格时参数表取自云端规格。
  */
 const cloudDefault = (
   kind: MediaKind,
@@ -1915,10 +1870,11 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
 }
 
 /** 内置的全部生成模型，供模型库页使用。 */
-/** 各协议中表示张数、时长（秒）与分辨率档位的参数名。协议决定请求形状，同一协议的参数名相同。 */
-const METER_PARAMS: Readonly<
-  Record<MediaKind, { count?: string; seconds?: string; resolution?: string }>
-> = {
+/**
+ * 各协议中表示张数、时长（秒）与分辨率档位的参数名。协议决定请求形状，同一协议的参数名相同。
+ * 计量的唯一来源：云端型号的计量参数名由云端按上游协议从本表取得（`cloudModelSpec`）。
+ */
+export const METER_PARAMS: Readonly<Record<MediaKind, MediaMeterParams>> = {
   openai_images: { count: 'n', resolution: 'resolution' },
   dashscope_images: { count: 'n' },
   gemini_images: { resolution: 'image_size' },
@@ -1938,28 +1894,13 @@ const METER_PARAMS: Readonly<
   minimax_speech: {},
   mimo_speech: {},
   gemini_speech: {},
-  // 云端协议按原协议计量（`lookupMediaModel` 的云端规格）。
+  // 云端协议的计量参数名在云端规格中（`CloudModelSpec.meter`）。
   qywork_images: {},
   qywork_videos: {},
   qywork_speech: {},
 }
 
-/**
- * 云端生成型号交给电脑端的规格：云端按型号的上游协议与保存的规格查表（`lookupMediaModel`）后取出电脑端需要的部分，
- * 不含上游协议、渠道、厂商与型号名。电脑端据此显示参数、校验素材与报价，请求经云端协议提交，由云端按上游协议发出。
- */
-export interface CloudModelSpec {
-  operations: MediaOperation[]
-  inputs: MediaModelSpec['inputs']
-  params: MediaParamSpec[]
-  maxPromptLength?: number
-  mention?: MentionStyle
-  resolutionBySize?: Readonly<Record<string, string>>
-  /** 计量取值的参数名：张数、时长与分辨率档位（`METER_PARAMS`）。 */
-  meter: { count?: string; seconds?: string; resolution?: string }
-}
-
-/** 型号在指定上游协议与保存规格下交给电脑端的规格（`CloudModelSpec`）。 */
+/** 型号在指定上游协议与保存规格下交给电脑端的规格（`CloudModelSpec`），由云端调用。 */
 export function cloudModelSpec(
   id: string,
   kind: MediaKind,
@@ -2003,11 +1944,10 @@ function meterTier(spec: MediaModelSpec, resolution: MediaParamSpec | undefined)
 }
 
 /**
- * 型号规格中的计量参数与分辨率档位；规格中没有的为 undefined。`kind` 为规格所属的协议（云端型号为原协议）。
- * 档位的 `values` 为型号可选的全部档位，`of` 按请求参数取得档位。
+ * 型号规格中的计量参数与分辨率档位；规格中没有的为 undefined。`names` 为计量参数名：目录与渠道型号取协议的
+ * `METER_PARAMS`，云端型号取云端规格中的 `meter`。档位的 `values` 为型号可选的全部档位，`of` 按请求参数取得档位。
  */
-export function meterParamsOf(spec: MediaModelSpec, kind: MediaKind) {
-  const names = METER_PARAMS[kind]
+export function meterParamsOf(spec: MediaModelSpec, names: MediaMeterParams) {
   const param = (name: string | undefined) =>
     name === undefined ? undefined : spec.params.find((p) => p.name === name)
   return {
@@ -2024,13 +1964,13 @@ export function meterParamsOf(spec: MediaModelSpec, kind: MediaKind) {
  */
 export function meterFromParams(
   spec: MediaModelSpec,
-  kind: MediaKind,
+  names: MediaMeterParams,
   unit: MediaUnit,
   price: UnitPrice,
   params: Record<string, unknown>,
   prompt: string | null,
 ): { units: number; resolution?: string } | null {
-  const p = meterParamsOf(spec, kind)
+  const p = meterParamsOf(spec, names)
   const value = (param: { name: string; default?: unknown } | undefined) =>
     param === undefined ? undefined : (params[param.name] ?? param.default)
   let resolution: string | undefined
@@ -2054,7 +1994,7 @@ export function meterFromParams(
  */
 function unitMediaPrice(
   spec: MediaModelSpec,
-  kind: MediaKind,
+  names: MediaMeterParams,
   unit: MediaUnit,
   price: UnitPrice,
 ): MediaPrice {
@@ -2063,7 +2003,7 @@ function unitMediaPrice(
   return {
     currency: 'CREDIT',
     usageOf(params) {
-      const m = meterFromParams(spec, kind, unit, price, params, null)
+      const m = meterFromParams(spec, names, unit, price, params, null)
       if (!m) return null
       const tier = m.resolution !== undefined ? { resolution: m.resolution } : {}
       if (unit === 'image') return { images: m.units, ...tier }
@@ -2102,7 +2042,8 @@ export function mediaKindsOf(spec: MediaModelSpec): MediaKind[] {
  * `providerc_videos` 与 `openai_images`；配置校验保证视频协议保存所属渠道的视频规格（`VIDEO_CHANNEL_KIND`）、图像协议保存图像规格，
  * 视频渠道规格的协议取自渠道。保存的规格先于目录：第三方的型号可与内置型号同名
  * （如 gpt-image-2），请求结构与价格以渠道为准。对应型号 `{ base }` 按该目录 id 在同一协议上取规格，id 与显示名称为自定义名称，
- * 不带单价。
+ * 不带单价。云端规格 `{ cloud }` 中的参数表与能力由云端型号清单下发，单价为积分，按其中的计量参数名计量；
+ * id 与显示名称为型号 id，不带厂商。
  * 生成工具、画布、提示词与适配器都经由本函数取得规格，调用方必须传入同一份保存的规格，否则各处参数不一致。
  * 没有映射的组合使用协议默认，不继承无法正确序列化的原生参数、输入能力或官方单价。
  */
@@ -2112,9 +2053,21 @@ export function lookupMediaModel(
   saved?: StoredMediaSpec,
 ): MediaModelSpec {
   if (saved && 'cloud' in saved) {
-    const { kind: original, spec, unit, unitPrice } = saved.cloud
-    const { price: _price, mappings: _mappings, ...rest } = lookupMediaModel(id, original, spec)
-    return { ...rest, kind, price: unitMediaPrice(rest, original, unit, unitPrice) }
+    const { spec, unit, unitPrice } = saved.cloud
+    const model: MediaModelSpec = {
+      id,
+      displayName: id,
+      vendor: null,
+      kind,
+      operations: spec.operations,
+      inputs: spec.inputs,
+      params: spec.params,
+      catalogued: true,
+      ...(spec.maxPromptLength ? { maxPromptLength: spec.maxPromptLength } : {}),
+      ...(spec.mention ? { mention: spec.mention } : {}),
+      ...(spec.resolutionBySize ? { resolutionBySize: spec.resolutionBySize } : {}),
+    }
+    return { ...model, price: unitMediaPrice(model, spec.meter, unit, unitPrice) }
   }
   if (saved && 'base' in saved) {
     const { price: _price, ...rest } = lookupMediaModel(saved.base, kind)

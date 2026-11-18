@@ -4,7 +4,8 @@
  * 经对话接口合成：朗读文本为 assistant 消息，`instructions` 为 user 消息，其余参数放入 `audio`。
  * 三个型号限时免费，官方未公布单价，目录不记单价。
  */
-import type { MediaModelSpec, MediaParamSpec } from './catalog.ts'
+import type { MediaParamSpec } from '@qywork/core'
+import type { MediaModelSpec } from './catalog.ts'
 
 const FORMAT: MediaParamSpec = {
   name: 'format',

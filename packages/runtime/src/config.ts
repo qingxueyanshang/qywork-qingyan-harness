@@ -37,6 +37,7 @@ import {
   type EffortLevel,
   type GenerateOutput,
   isCloudMediaKind,
+  log,
   MEDIA_KIND_OUTPUT,
   MEDIA_KINDS,
   MEDIA_OUTPUTS,
@@ -243,6 +244,7 @@ export interface StoredMediaModel {
    * 渠道规格由拉取时的渠道目录得到：`openai_videos` 与 `providerc_videos` 保存视频规格（渠道与协议的对应见 `VIDEO_CHANNEL_KIND`），
    * `openai_images` 保存图像规格；第三方渠道的型号只在此处有规格，
    * 每次拉取时按渠道目录更新。对应型号 `{ base }` 是同类别的生成目录 id，拉取或手动添加时按名称识别得到。
+   * 云端协议保存云端型号清单下发的规格与单价（`CloudMediaSpec`），不含上游协议与渠道规格。
    */
   spec?: StoredMediaSpec
   /**
@@ -563,7 +565,31 @@ export async function loadConfig(): Promise<QyConfig> {
   if (parsed.providers !== undefined && !isRecord(parsed.providers)) {
     throw new Error(`配置文件中的 providers 必须是对象，修复后重新启动。文件：${path}`)
   }
-  return { ...structuredClone(DEFAULT_CONFIG), ...parsed }
+  const cfg: QyConfig = { ...structuredClone(DEFAULT_CONFIG), ...parsed }
+  // 迁移只修改内存中的配置，下一次保存时随整份写回。
+  for (const n of migrateCloudMediaSpecs(cfg)) log.warn('config', n)
+  return cfg
+}
+
+/**
+ * 删除带上游协议的云端生成型号（云端规格中有 `kind`）及指向它们的默认生成模型：云端规格改为云端下发的参数表，
+ * 电脑端不保存上游协议与渠道规格。这些条目只由云端同步写入，下一次同步型号清单时按清单重新写入。
+ */
+function migrateCloudMediaSpecs(cfg: QyConfig): string[] {
+  const notices: string[] = []
+  for (const [name, provider] of Object.entries(cfg.providers)) {
+    for (const [id, stored] of Object.entries(provider?.media ?? {})) {
+      const cloud = (stored?.spec as { cloud?: { kind?: unknown } } | undefined)?.cloud
+      if (cloud?.kind === undefined) continue
+      delete provider.media![id]
+      for (const output of MEDIA_OUTPUTS) {
+        const ref = cfg.mediaDefaults?.[output]
+        if (ref?.provider === name && ref.model === id) delete cfg.mediaDefaults![output]
+      }
+      notices.push(`已删除云端生成型号 ${name} / ${id}，同步型号清单时按清单重新写入。`)
+    }
+  }
+  return notices
 }
 
 /** 重命名遇到读方占用时的重试上限。读取配置只占用文件数十微秒。 */

@@ -3,7 +3,8 @@
  *
  * 参数平铺，名称与接口字段相同；适配器将 `style_type` 放入 `style`，参考图放入 `subject_reference`。
  */
-import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
+import type { MediaParamSpec } from '@qywork/core'
+import type { MediaModelSpec, MediaPrice } from './catalog.ts'
 
 const RATIOS = ['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16']
 

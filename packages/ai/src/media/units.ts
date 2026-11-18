@@ -2,13 +2,14 @@
  * 按计费单位计价：云端的生成型号以「计费单位 + 单价」售卖，计量由请求参数决定，与上游的计费口径无关。
  *
  * 计量参数按协议写明（`catalog.ts` 的 `METER_PARAMS`）：协议决定请求形状，同一协议的张数、时长与分辨率参数名相同。
+ * 电脑端取云端规格中的计量参数名，该参数名由云端按上游协议从同一张表取得。
  * 型号的参数表中没有该参数时：张数按 1，时长不明；档位由尺寸决定的型号按尺寸所属的档位，其余档位不明。
  * 音频的字符数按提示词的字符计。
  * 云端结算、后台上架校验与电脑端发送前的报价（云端规格的 `price`）都经 `meterFromParams`，三处口径一致。
  */
 
 import type { MediaKind, MediaOutput, MediaUnit, StoredMediaSpec, UnitPrice } from '@qywork/core'
-import { lookupMediaModel, meterFromParams, meterParamsOf } from './catalog.ts'
+import { lookupMediaModel, METER_PARAMS, meterFromParams, meterParamsOf } from './catalog.ts'
 
 export { MEDIA_UNITS, type MediaUnit, type UnitPrice } from '@qywork/core'
 
@@ -39,7 +40,14 @@ export function meterMedia(
   request: { params: Record<string, unknown>; prompt: string },
 ): UnitMeter | null {
   const spec = lookupMediaModel(model.id, model.kind, model.spec)
-  return meterFromParams(spec, model.kind, unit, price, request.params, request.prompt)
+  return meterFromParams(
+    spec,
+    METER_PARAMS[model.kind],
+    unit,
+    price,
+    request.params,
+    request.prompt,
+  )
 }
 
 /** 计量对应的金额，单位与单价相同。 */
@@ -59,7 +67,10 @@ export function unitProblem(
   price: UnitPrice,
 ): string | null {
   if (!UNITS_BY_OUTPUT[output].includes(unit)) return '计费单位与类别不符'
-  const p = meterParamsOf(lookupMediaModel(model.id, model.kind, model.spec), model.kind)
+  const p = meterParamsOf(
+    lookupMediaModel(model.id, model.kind, model.spec),
+    METER_PARAMS[model.kind],
+  )
   if (unit === 'second' && !p.seconds) return '该型号没有时长参数，不能按秒计费'
   if (typeof price !== 'number') {
     if (!p.resolution) return '该型号没有分辨率参数，不能按档位定价'

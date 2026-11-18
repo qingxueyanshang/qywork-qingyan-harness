@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildAdapter, priceAt } from '@qywork/ai'
+import type { CloudModelSpec } from '@qywork/core'
 import {
   catalogKey,
   collectSecrets,
@@ -999,6 +1000,113 @@ describe('生成模型', () => {
     expect(problems.some((p) => p.includes('生成协议 "dalle"'))).toBe(true)
     expect(problems.some((p) => p.includes('默认生成模型 "qwen / qwen-image-3.0"'))).toBe(true)
     expect(diagnoseConfig(withMedia())).toEqual([])
+  })
+
+  const cloudSpec = (): CloudModelSpec => ({
+    operations: ['text_to_video', 'reference_to_video'],
+    inputs: { maxImages: 9, maxVideos: 0, maxAudios: 0, transport: 'multipart' },
+    params: [
+      {
+        name: 'resolution',
+        label: '分辨率',
+        type: 'enum',
+        values: ['480p', '720p'],
+        default: '480p',
+        description: '可选 480p、720p',
+      },
+    ],
+    meter: { seconds: 'duration', resolution: 'resolution' },
+  })
+  const withCloud = (spec: unknown): QyConfig => {
+    const config = withMedia()
+    config.providers.qywork = {
+      kind: 'anthropic_messages',
+      apiKey: 'qyd_key',
+      models: {},
+      media: { 'qy-1a2b3c4d5e6f7a8b': { kind: 'qywork_videos', spec: spec as never } },
+    }
+    return config
+  }
+
+  test('云端规格：只接受云端下发的参数表、计费单位与单价；操作须属于该型号的类别', () => {
+    const ok = {
+      cloud: { spec: cloudSpec(), unit: 'request', unitPrice: { '480p': 1, '720p': 2 } },
+    }
+    expect(diagnoseConfig(withCloud(ok))).toEqual([])
+    const problem = (change: (s: ReturnType<typeof cloudSpec>) => unknown, unit = 'request') =>
+      diagnoseConfig(withCloud({ cloud: { spec: change(cloudSpec()), unit, unitPrice: 1 } }))[0]
+    expect(problem(() => undefined)).toContain('缺少 spec')
+    expect(problem((s) => ({ ...s, operations: ['generate'] }))).toContain(
+      'operations 必须是该类别的生成操作',
+    )
+    expect(
+      problem((s) => ({ ...s, inputs: { maxImages: -1, maxVideos: 0, transport: 'json' } })),
+    ).toContain('inputs 必须包含')
+    expect(problem((s) => ({ ...s, params: [{ name: 'resolution', type: 'enum' }] }))).toContain(
+      'params 中的每个参数必须有',
+    )
+    expect(problem((s) => ({ ...s, params: [...s.params, ...s.params] }))).toContain(
+      'params 中的每个参数必须有',
+    )
+    expect(problem((s) => ({ ...s, meter: { seconds: 5 } }))).toContain('meter 必须是')
+    expect(problem((s) => s, 'minute')).toContain('计费单位不是有效值')
+  })
+
+  /** 原始失败形状：带上游协议的云端规格（`cloud.kind`、渠道规格）留在配置中，配置文件中可以读出云端的上游渠道。 */
+  test('加载配置时删除带上游协议的云端生成型号及指向它的默认模型，其余生成型号保留', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cloud-media-'))
+    const previousHome = process.env.QYWORK_HOME
+    try {
+      process.env.QYWORK_HOME = home
+      const config = withMedia()
+      config.providers.qywork = {
+        kind: 'anthropic_messages',
+        apiKey: 'qyd_key',
+        models: {},
+        media: {
+          'providerc-video-xfa7c14da94a94631': {
+            kind: 'qywork_videos',
+            spec: {
+              cloud: {
+                kind: 'providerc_videos',
+                spec: {
+                  channel: 'providerc',
+                  label: 'Seedance 2.5 满血按次 480/720p',
+                  seconds: [4, 5],
+                  ratios: ['16:9'],
+                  resolutions: ['480p', '720p'],
+                  maxImages: 9,
+                  maxVideos: 0,
+                  maxAudios: 0,
+                },
+                unit: 'request',
+                unitPrice: { '480p': 1, '720p': 2 },
+              },
+            } as never,
+          },
+          'qy-1a2b3c4d5e6f7a8b': {
+            kind: 'qywork_videos',
+            spec: { cloud: { spec: cloudSpec(), unit: 'request', unitPrice: 1 } },
+          },
+        },
+      }
+      config.mediaDefaults = {
+        image: { provider: 'qwen', model: 'qwen-image-3.0' },
+        video: { provider: 'qywork', model: 'providerc-video-xfa7c14da94a94631' },
+      }
+      await writeFile(join(home, 'config.json'), JSON.stringify(config))
+      const loaded = await loadConfig()
+      expect(Object.keys(loaded.providers.qywork?.media ?? {})).toEqual(['qy-1a2b3c4d5e6f7a8b'])
+      expect(loaded.mediaDefaults).toEqual({ image: { provider: 'qwen', model: 'qwen-image-3.0' } })
+      expect(loaded.providers.qwen?.media).toEqual(config.providers.qwen?.media)
+      expect(diagnoseConfig(loaded)).toEqual([])
+      await saveConfig(loaded)
+      expect(await readFile(join(home, 'config.json'), 'utf8')).not.toContain('providerc')
+    } finally {
+      if (previousHome === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
   })
 
   test('对话与生成型号的显示名称只接受非空字符串；生成型号的显示名称随清单列出', () => {

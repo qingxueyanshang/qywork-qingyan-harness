@@ -5,8 +5,15 @@
  * 不符合预期的结果，两种情形均已计费。返回的消息中包含合法取值，供大模型在下一步自行修正。
  */
 
-import { mediaParamProblem, mediaParamValues, resolveMediaParam, shapeChoices } from '@qywork/core'
-import type { MediaModelSpec, MediaOperation, MediaParamSpec } from './catalog.ts'
+import {
+  type MediaOperation,
+  type MediaParamSpec,
+  mediaParamProblem,
+  mediaParamValues,
+  resolveMediaParam,
+  shapeChoices,
+} from '@qywork/core'
+import type { MediaModelSpec } from './catalog.ts'
 import type { MediaRequest } from './types.ts'
 
 const OPERATION_LABEL: Record<MediaOperation, string> = {

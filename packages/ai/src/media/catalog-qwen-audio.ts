@@ -1,5 +1,6 @@
 /** 千问音频 3.1，2026-10-14 核对官方 HTTP API、音色列表和北京地域价格；Plus 于 2026-11-11 核对。 */
-import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
+import type { MediaParamSpec } from '@qywork/core'
+import type { MediaModelSpec, MediaPrice } from './catalog.ts'
 import { QWEN_AUDIO_VOICES } from './catalog-qwen-voices.ts'
 
 const price = (input: number): MediaPrice => {

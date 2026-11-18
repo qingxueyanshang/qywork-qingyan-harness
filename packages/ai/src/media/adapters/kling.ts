@@ -11,8 +11,8 @@
  * 图片按 base64 发送，不带 `data:` 前缀；视频素材接口只接受 URL，因此该协议不接受参考视频。
  */
 
-import type { Currency } from '@qywork/core'
-import type { MediaModelSpec, MediaOperation } from '../catalog.ts'
+import type { Currency, MediaOperation } from '@qywork/core'
+import type { MediaModelSpec } from '../catalog.ts'
 import { count, defined, download, getJson } from '../http.ts'
 import {
   afterSubmit,

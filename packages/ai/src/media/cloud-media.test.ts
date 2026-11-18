@@ -1,12 +1,13 @@
 /**
- * 覆盖 `adapters/qywork.ts`（云端生成协议，含按任务号确认的日志）与 `catalog.ts` 中云端规格的取得：参数表按原协议、报价按云端单价。
+ * 覆盖 `adapters/qywork.ts`（云端生成协议，含按任务号确认的日志）与 `catalog.ts` 中云端规格的取得：参数表取自云端下发的规格，
+ * 报价按云端单价与规格中的计量参数名。
  * 云端是本文件中的模拟服务，按云端 `/v1/media/jobs` 的形状应答。
  */
 
 import { afterAll, expect, jest, test } from 'bun:test'
 import { formatLogLine, type LogRecord, type StoredMediaSpec, setLogSink } from '@qywork/core'
 import { CLOUD_JOB_ID } from './adapters/qywork.ts'
-import { lookupMediaModel, quoteMedia } from './catalog.ts'
+import { cloudModelSpec, lookupMediaModel, quoteMedia } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
 import { MediaError, type MediaRunOptions } from './types.ts'
 
@@ -103,9 +104,9 @@ const server = Bun.serve({
 })
 afterAll(() => server.stop(true))
 
-const spec: StoredMediaSpec = {
-  cloud: { kind: 'openai_images', spec: { base: 'gpt-image-2' }, unit: 'image', unitPrice: 0.2 },
-}
+/** 云端下发的规格：云端按上游协议与对应型号查表得到（`cloudModelSpec`）。 */
+const cloudSpec = cloudModelSpec('cloud-image', 'openai_images', { base: 'gpt-image-2' })
+const spec: StoredMediaSpec = { cloud: { spec: cloudSpec, unit: 'image', unitPrice: 0.2 } }
 const adapter = (model: string) =>
   buildMediaAdapter({
     kind: 'qywork_images',
@@ -125,10 +126,17 @@ const run = (model: string, opts: Partial<MediaRunOptions> = {}) =>
     { signal: new AbortController().signal, ...opts },
   )
 
-test('云端规格：参数表与操作按原协议取得，协议为云端协议；发送前按云端单价报价', () => {
-  const s = lookupMediaModel('cloud-image', 'qywork_images', spec)
-  expect(s.kind).toBe('qywork_images')
+test('云端规格：参数表与操作取自云端下发的规格，协议为云端协议，不带厂商；发送前按云端单价报价', () => {
+  const s = lookupMediaModel('qy-1a2b3c4d5e6f7a8b', 'qywork_images', spec)
+  expect(s).toMatchObject({
+    id: 'qy-1a2b3c4d5e6f7a8b',
+    displayName: 'qy-1a2b3c4d5e6f7a8b',
+    vendor: null,
+    kind: 'qywork_images',
+    catalogued: true,
+  })
   expect(s.operations).toEqual(['generate', 'edit'])
+  expect(s.params).toEqual(cloudSpec.params)
   expect(s.params.map((p) => p.name)).toContain('n')
   expect(quoteMedia(s, { n: 3 }, { images: 0, videos: 0 })).toEqual({
     cost: 0.6000000000000001,

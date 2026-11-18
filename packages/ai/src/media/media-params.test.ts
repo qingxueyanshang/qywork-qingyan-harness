@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { activeMediaParams, mediaParamValues, resolveMediaParam } from '@qywork/core'
-import { findMediaModel, lookupMediaModel, type MediaOperation } from './catalog.ts'
+import {
+  activeMediaParams,
+  type MediaOperation,
+  mediaParamValues,
+  resolveMediaParam,
+} from '@qywork/core'
+import { findMediaModel, lookupMediaModel } from './catalog.ts'
 import { describeParam, validateMediaCall } from './params.ts'
 
 const active = (

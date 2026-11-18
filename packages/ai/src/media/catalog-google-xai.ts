@@ -1,5 +1,6 @@
 /** Google 与 xAI 生成模型规格，2026-10-01 核对官方生成指南与价格页。 */
-import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
+import type { MediaParamSpec } from '@qywork/core'
+import type { MediaModelSpec, MediaPrice } from './catalog.ts'
 
 const ratios = ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const choice = (

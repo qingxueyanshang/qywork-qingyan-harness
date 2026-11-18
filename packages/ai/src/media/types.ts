@@ -10,10 +10,11 @@ import type {
   MediaDiagnostic,
   MediaInputRole,
   MediaKind,
+  MediaOperation,
   RetryWait,
   StoredMediaSpec,
 } from '@qywork/core'
-import type { MediaModelSpec, MediaOperation } from './catalog.ts'
+import type { MediaModelSpec } from './catalog.ts'
 
 /** 发送生成请求所需的端点与凭证。 */
 export interface MediaProfile {

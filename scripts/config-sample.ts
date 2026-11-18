@@ -14,12 +14,15 @@ import { join } from 'node:path'
 import { builtinCatalog, CHAT_REASONING_PROTOCOLS, type TransportCapabilities } from '@qywork/ai'
 import {
   CACHE_ROUTINGS,
+  type CloudModelSpec,
   CURRENCIES,
   EFFORT_ORDER,
   isCloudMediaKind,
   MEDIA_KIND_OUTPUT,
   MEDIA_KINDS,
   MEDIA_OUTPUTS,
+  type MediaOperation,
+  type MediaOutput,
   PROVIDER_KINDS,
   REASONING_ECHOES,
   THINKING_MODES,
@@ -44,6 +47,36 @@ export const SAMPLES_DIR = join(ROOT, 'scripts', 'config-samples')
 
 /** 取第 `i` 项，超出长度时循环。 */
 const pick = <T>(list: readonly T[], i: number): T => list[i % list.length]!
+
+/** 云端规格中各类别的生成操作。 */
+const CLOUD_OPERATION: Record<MediaOutput, MediaOperation> = {
+  image: 'generate',
+  video: 'text_to_video',
+  audio: 'speech',
+}
+
+/** 覆盖 `CloudModelSpec` 全部字段的云端规格。 */
+function sampleCloudSpec(output: MediaOutput): Required<CloudModelSpec> {
+  return {
+    operations: [CLOUD_OPERATION[output]],
+    inputs: { maxImages: 2, maxVideos: 1, maxAudios: 1, transport: 'json' },
+    params: [
+      {
+        name: 'resolution',
+        label: '分辨率',
+        type: 'enum',
+        values: ['720p', '1080p'],
+        default: '720p',
+        description: '分辨率档位',
+      },
+      { name: 'size', type: 'string', description: '像素尺寸，如 1280x720' },
+    ],
+    maxPromptLength: 2000,
+    mention: { image: '图{n}' },
+    resolutionBySize: { '1280x720': '720p', '1920x1080': '1080p' },
+    meter: { count: 'n', seconds: 'duration', resolution: 'resolution' },
+  }
+}
 
 /** 覆盖全部字段与全部词表取值的配置。 */
 export function sampleConfig(): QyConfig {
@@ -130,16 +163,13 @@ export function sampleConfig(): QyConfig {
     const media: Record<string, StoredMediaModel> = {}
     for (const [m, mediaKind] of MEDIA_KINDS.entries()) {
       if (m % PROVIDER_KINDS.length !== p) continue
-      // 云端协议的条目必须带云端规格：原协议取同类别的第一个上游协议。
+      // 云端协议的条目必须带云端规格。
       media[`media-${mediaKind}`] = isCloudMediaKind(mediaKind)
         ? {
             kind: mediaKind,
             spec: {
               cloud: {
-                kind: MEDIA_KINDS.find(
-                  (k) =>
-                    !isCloudMediaKind(k) && MEDIA_KIND_OUTPUT[k] === MEDIA_KIND_OUTPUT[mediaKind],
-                )!,
+                spec: sampleCloudSpec(MEDIA_KIND_OUTPUT[mediaKind]),
                 unit: 'request',
                 unitPrice: { '720p': 1, '1080p': 2 },
               },

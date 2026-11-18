@@ -1,15 +1,23 @@
 /** 生成参数的声明与条件约束；目录、服务端校验和画布控件共用。 */
 import type { GenerateOutput, MediaInputRole, MediaOutput } from './media.ts'
 
-type MediaOperation =
-  | 'edit'
+/**
+ * 生成操作。由调用时提供的输入推定，不由大模型选择。
+ *
+ * 图像：`generate` 按提示词生成，`edit` 在参考图上修改。
+ * 视频：`text_to_video` 文生视频，`image_to_video` 首帧生视频，`first_last_frame` 首尾帧生视频，
+ * `reference_to_video` 参考素材生视频，`video_to_video` 以参考视频为输入（编辑、延长或参考由模型的原生参数或提示词决定）。
+ * 语音：`speech` 文字转语音。
+ */
+export type MediaOperation =
   | 'generate'
-  | 'speech'
-  | 'video_to_video'
-  | 'reference_to_video'
-  | 'first_last_frame'
-  | 'image_to_video'
+  | 'edit'
   | 'text_to_video'
+  | 'image_to_video'
+  | 'first_last_frame'
+  | 'reference_to_video'
+  | 'video_to_video'
+  | 'speech'
 
 /**
  * 从输入用途推导生成模式；素材组合是否合法仍由生成入口校验。`art` 只有一种模式，
@@ -83,6 +91,14 @@ export interface MediaParamDefinition extends MediaParamLimits {
       imageCount?: number
     }
   })[]
+}
+
+/** 型号参数表中的一个参数：取值约束加上供大模型阅读的说明。生成目录与云端型号清单使用同一形状。 */
+export interface MediaParamSpec extends MediaParamDefinition {
+  /** 参数的含义与约束，用一句话写成，供大模型阅读。 */
+  description: string
+  /** 仅在这些操作下有效。省略时对全部操作有效。 */
+  operations?: readonly MediaOperation[]
 }
 
 export function mediaParamValues(

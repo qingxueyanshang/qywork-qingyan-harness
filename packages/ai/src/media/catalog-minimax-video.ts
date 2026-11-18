@@ -4,8 +4,8 @@
  * 分辨率与时长为必填字段，画布省略默认值时由适配器按当前操作补齐（`resolveMediaParam` 的缺省值）。
  * 首尾帧与参考素材互斥；只有尾帧时按尾帧生成。
  */
-import type { MentionStyle } from '@qywork/core'
-import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
+import type { MediaParamSpec, MentionStyle } from '@qywork/core'
+import type { MediaModelSpec, MediaPrice } from './catalog.ts'
 
 const OPERATIONS: MediaModelSpec['operations'] = [
   'text_to_video',

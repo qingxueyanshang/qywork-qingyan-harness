@@ -5,10 +5,10 @@
  */
 
 import { afterAll, beforeEach, expect, test } from 'bun:test'
-import { stat, utimes } from 'node:fs/promises'
-import { lookupMediaModel, quoteMedia } from '@qywork/ai'
+import { readFile, stat, utimes } from 'node:fs/promises'
+import { cloudModelSpec, lookupMediaModel, lookupModel, quoteMedia } from '@qywork/ai'
 import type { Announcement, ChannelVideoSpec } from '@qywork/core'
-import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
+import { catalogKey, configPath, loadConfig, modelSpecOf, type QyConfig } from '@qywork/runtime'
 import { handleCloudApi } from '../api/cloud.ts'
 import { writeConfig } from '../api/config.ts'
 import { handleConversationsApi, type ModelsResponse } from '../api/conversations.ts'
@@ -38,8 +38,12 @@ const ANNOUNCEMENTS: Announcement[] = [
   },
 ]
 
-/** 服务商C AI 渠道的视频型号：型号 id 是渠道编号，渠道规格带渠道目录中的型号名称。 */
+/** 服务商C AI 渠道的视频型号在云端的内部 id：型号 id 是渠道编号，渠道规格带渠道目录中的型号名称。 */
 const providerc_VIDEO = 'providerc-video-xfa7c14da94a94631'
+/** 云端型号的对外编号：随机生成，本机模型库中没有。内部 id 与上游协议只在云端。 */
+const SEEDANCE_PUBLIC = 'qy-1a2b3c4d5e6f7a8b'
+const providerc_PUBLIC = 'qy-0f1e2d3c4b5a6978'
+const OPUS_PUBLIC = 'qy-9a8b7c6d5e4f3a2b'
 const providerc_SPEC: ChannelVideoSpec = {
   channel: 'providerc',
   label: 'Seedance 2.5 满血按次 480/720p （原生非超分）',
@@ -85,6 +89,8 @@ const cloud = {
   catalogReads: 0,
   /** 型号清单中是否有生成型号。 */
   media: false,
+  /** 型号清单中是否有以对外编号列出、对应 claude-opus-5-5 的对话型号。 */
+  publicChat: false,
 }
 
 const server: ReturnType<typeof Bun.serve> = Bun.serve({
@@ -240,23 +246,28 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
             ratio: cloud.sonnetRatio,
             official: true,
             price,
+            spec: { displayName: 'Claude Sonnet 5.5', base: 'claude-sonnet-5-5' },
           },
-          { id: 'gpt-5', displayName: 'GPT-5', protocol: 'openai_responses', ...flat },
+          {
+            id: 'gpt-5',
+            displayName: 'GPT-5',
+            protocol: 'openai_responses',
+            ...flat,
+            spec: { displayName: 'GPT-5' },
+          },
           {
             id: 'claude-next',
             displayName: 'Claude Next',
             protocol: 'anthropic_messages',
             ...flat,
-            ...(cloud.nextSpec
+            spec: cloud.nextSpec
               ? {
-                  spec: {
-                    displayName: 'Claude Next',
-                    base: cloud.nextBase,
-                    contextWindow: 2_000_000,
-                    maxOutputTokens: 128_000,
-                  },
+                  displayName: 'Claude Next',
+                  base: cloud.nextBase,
+                  contextWindow: 2_000_000,
+                  maxOutputTokens: 128_000,
                 }
-              : {}),
+              : { displayName: 'Claude Next' },
           },
           ...(cloud.extraModel
             ? [
@@ -265,27 +276,45 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
                   displayName: cloud.opusName,
                   protocol: 'anthropic_messages',
                   price,
-                  ...(cloud.opusSpec
-                    ? { spec: { displayName: cloud.opusName, base: 'claude-sonnet-5-5' } }
-                    : {}),
+                  spec: {
+                    displayName: cloud.opusName,
+                    base: cloud.opusSpec ? 'claude-sonnet-5-5' : 'claude-opus-5-5',
+                  },
+                },
+              ]
+            : []),
+          ...(cloud.publicChat
+            ? [
+                {
+                  id: OPUS_PUBLIC,
+                  displayName: '旗舰对话',
+                  protocol: 'anthropic_messages',
+                  ratio: 0.6,
+                  official: true,
+                  price,
+                  spec: { displayName: '旗舰对话', base: 'claude-opus-5-5' },
                 },
               ]
             : []),
         ],
+        // 与云端相同：`cloudSpec` 由云端按内部 id、上游协议与规格查表得到；`protocol` 与 `spec` 只供已安装的旧版本读取。
         media: cloud.media
           ? [
               {
-                id: 'doubao-seedance-2-0-260128',
+                id: SEEDANCE_PUBLIC,
                 displayName: 'Seedance 2.0',
                 output: 'video',
+                cloudSpec: cloudModelSpec('doubao-seedance-2-0-260128', 'ark_videos'),
                 protocol: 'ark_videos',
+                spec: { base: 'doubao-seedance-2-0-260128' },
                 unit: 'second',
                 unitPrice: { '480p': 0.1, '720p': 0.2, '1080p': 0.4, '4k': 0.8 },
               },
               {
-                id: providerc_VIDEO,
+                id: providerc_PUBLIC,
                 displayName: cloud.providercName,
                 output: 'video',
+                cloudSpec: cloudModelSpec(providerc_VIDEO, 'providerc_videos', providerc_SPEC),
                 protocol: 'providerc_videos',
                 spec: providerc_SPEC,
                 unit: 'request',
@@ -328,6 +357,7 @@ beforeEach(async () => {
     sonnetRatio: 0.5,
     catalogReads: 0,
     media: false,
+    publicChat: false,
   })
   live = await loadConfig()
   delete live.catalog
@@ -759,8 +789,8 @@ test('后台填写的显示名称：写入云端接口下的型号条目，模�
   expect(chatLabel(body, CLOUD_PROVIDER, 'claude-opus-5-5')).toBe('旗舰对话')
   expect(chatLabel(body, CLOUD_PROVIDER, 'claude-next')).toBe('Claude Next')
   expect(chatLabel(body, 'mine', 'claude-opus-5-5')).toBe('Claude Opus 5.5')
-  expect(mediaLabel(body, providerc_VIDEO)).toBe('sd2.5-满血通道1-480/720p')
-  expect(mediaLabel(body, 'doubao-seedance-2-0-260128')).toBe('Seedance 2.0')
+  expect(mediaLabel(body, providerc_PUBLIC)).toBe('sd2.5-满血通道1-480/720p')
+  expect(mediaLabel(body, SEEDANCE_PUBLIC)).toBe('Seedance 2.0')
   expect(live.catalog?.['claude-opus-5-5|anthropic_messages']?.displayName).toBeUndefined()
   expect(live.catalog?.['claude-next|anthropic_messages']?.displayName).toBeUndefined()
 
@@ -785,8 +815,8 @@ test('后台填写的显示名称：写入云端接口下的型号条目，模�
   })
   body = await listModels()
   expect(chatLabel(body, CLOUD_PROVIDER, 'claude-opus-5-5')).toBe('旗舰对话二代')
-  expect(mediaLabel(body, providerc_VIDEO)).toBe('sd2.5-满血通道2')
-  expect((await loadConfig()).providers[CLOUD_PROVIDER]?.media?.[providerc_VIDEO]?.displayName).toBe(
+  expect(mediaLabel(body, providerc_PUBLIC)).toBe('sd2.5-满血通道2')
+  expect((await loadConfig()).providers[CLOUD_PROVIDER]?.media?.[providerc_PUBLIC]?.displayName).toBe(
     'sd2.5-满血通道2',
   )
 })
@@ -909,35 +939,105 @@ test('云端地址：去掉首尾空白与末尾斜杠；带路径或多个地�
   }
 })
 
-test('生成型号：登录时写入云端生成协议，规格带原协议与单价，参数表按原协议取得；清单中没有后标记已下架', async () => {
+/**
+ * 原始失败形状：清单中的生成型号带上游协议与渠道规格（`protocol: 'providerc_videos'`、`channel: 'providerc'`），
+ * 电脑端把它们写入配置，配置文件中可以读出云端的上游渠道、上游协议与渠道目录中的型号名称。
+ */
+test('生成型号：登录时写入云端生成协议与云端下发的规格，配置中没有上游协议、渠道规格与内部 id；清单中没有后标记已下架', async () => {
   cloud.media = true
   await account.login('me@example.com', PASSWORD)
-  const stored = live.providers[CLOUD_PROVIDER]?.media?.['doubao-seedance-2-0-260128']
-  expect(stored).toEqual({
+  const media = live.providers[CLOUD_PROVIDER]?.media ?? {}
+  expect(Object.keys(media)).toEqual([SEEDANCE_PUBLIC, providerc_PUBLIC])
+  expect(media[providerc_PUBLIC]).toEqual({
     kind: 'qywork_videos',
     spec: {
       cloud: {
-        kind: 'ark_videos',
-        unit: 'second',
-        unitPrice: { '480p': 0.1, '720p': 0.2, '1080p': 0.4, '4k': 0.8 },
+        spec: cloudModelSpec(providerc_VIDEO, 'providerc_videos', providerc_SPEC),
+        unit: 'request',
+        unitPrice: { '480p': 1, '720p': 2 },
       },
     },
-    displayName: 'Seedance 2.0',
+    displayName: 'sd2.5-满血通道1-480/720p',
   })
-  const spec = lookupMediaModel('doubao-seedance-2-0-260128', 'qywork_videos', stored?.spec)
-  expect(spec.kind).toBe('qywork_videos')
-  expect(spec.params.map((p) => p.name)).toContain('duration')
-  // 发送前报价：10 秒 720p × 0.2 积分。
-  expect(quoteMedia(spec, { duration: 10, resolution: '720p' }, { images: 0, videos: 0 })).toEqual({
-    cost: 2,
-    currency: 'CREDIT',
-  })
+  const written = await readFile(configPath(), 'utf8')
+  for (const word of [
+    'providerc',
+    '服务商C',
+    'ark_videos',
+    '"channel"',
+    '"protocol"',
+    'doubao-seedance-2-0-260128',
+    providerc_SPEC.label!,
+  ])
+    expect(written).not.toContain(word)
+
   const models = await account.models()
   expect(models.find((m) => m.output === 'video')).toMatchObject({
-    id: 'doubao-seedance-2-0-260128',
+    id: SEEDANCE_PUBLIC,
     unit: 'second',
   })
   cloud.media = false
   await account.models()
-  expect(live.providers[CLOUD_PROVIDER]?.media?.['doubao-seedance-2-0-260128']?.delisted).toBe(true)
+  expect(live.providers[CLOUD_PROVIDER]?.media?.[SEEDANCE_PUBLIC]?.delisted).toBe(true)
+})
+
+/**
+ * 原始失败形状：对外编号不在本机生成目录中，参数表、素材上限与报价按云端协议的默认规格取得：没有参数、不接受参考图，
+ * 按秒与按档位计价的型号发送前没有报价。
+ */
+test('生成型号：参数表、素材上限与报价取自云端下发的规格；按秒与按档位计价经规格中的计量参数名计算', async () => {
+  cloud.media = true
+  await account.login('me@example.com', PASSWORD)
+  const media = live.providers[CLOUD_PROVIDER]?.media ?? {}
+  const none = { images: 0, videos: 0 }
+
+  // 服务商C AI 渠道型号：按次、按分辨率档位定价，档位参数为 resolution，默认取第一个档位。
+  const providerc = cloudModelSpec(providerc_VIDEO, 'providerc_videos', providerc_SPEC)
+  const channel = lookupMediaModel(providerc_PUBLIC, 'qywork_videos', media[providerc_PUBLIC]?.spec)
+  expect(channel.operations).toEqual(providerc.operations)
+  expect(channel.params).toEqual(providerc.params)
+  expect(channel.inputs).toMatchObject({ maxImages: 9, maxVideos: 0, transport: 'multipart' })
+  expect(quoteMedia(channel, { resolution: '720p' }, none)).toEqual({ cost: 2, currency: 'CREDIT' })
+  expect(quoteMedia(channel, {}, none)).toEqual({ cost: 1, currency: 'CREDIT' })
+
+  // Seedance 2.0：按秒、按分辨率档位定价，时长参数为 duration。10 秒 720p × 0.2 积分。
+  const seedance = lookupMediaModel(SEEDANCE_PUBLIC, 'qywork_videos', media[SEEDANCE_PUBLIC]?.spec)
+  expect(seedance.params.map((p) => p.name)).toContain('duration')
+  expect(quoteMedia(seedance, { duration: 10, resolution: '720p' }, none)).toEqual({
+    cost: 2,
+    currency: 'CREDIT',
+  })
+  expect(quoteMedia(seedance, { duration: 5, resolution: '4k' }, none)).toEqual({
+    cost: 4,
+    currency: 'CREDIT',
+  })
+})
+
+/**
+ * 原始失败形状：对话型号以对外编号列出后本机模型库中没有该 id，能力按未收录型号取得（没有思考档位、窗口为默认值），
+ * 价格无法按倍率换算官方价。
+ */
+test('对外编号的对话型号：能力按清单的对应型号取得，与模型库中的该型号相同；价格按倍率换算官方价', async () => {
+  cloud.publicChat = true
+  await account.login('me@example.com', PASSWORD)
+  expect(live.providers[CLOUD_PROVIDER]?.models[OPUS_PUBLIC]).toEqual({
+    price: { scale: 0.6, currency: 'CREDIT' },
+    displayName: '旗舰对话',
+  })
+  expect(live.catalog?.[catalogKey(OPUS_PUBLIC, 'anthropic_messages')]).toEqual({
+    base: 'claude-opus-5-5',
+    cloud: true,
+  })
+  const opus = lookupModel('claude-opus-5-5', 'anthropic_messages')
+  const spec = modelSpecOf(live, { provider: CLOUD_PROVIDER, model: OPUS_PUBLIC })!
+  expect(spec.catalogued).not.toBe(false)
+  expect(spec.contextWindow).toBe(opus.contextWindow)
+  expect(spec.maxOutputTokens).toBe(opus.maxOutputTokens)
+  expect(spec.effortLevels).toEqual(opus.effortLevels)
+  expect(spec.effortLevels.length).toBeGreaterThan(0)
+  expect(spec.thinking).toBe(opus.thinking)
+  expect(spec.pricing.currency).toBe('CREDIT')
+  expect(spec.pricing.input).toBeCloseTo(opus.pricing.input! * 0.6, 6)
+  expect(spec.pricing.output).toBeCloseTo(opus.pricing.output! * 0.6, 6)
+  expect(spec.pricing.cacheRead).toBeCloseTo(opus.pricing.cacheRead! * 0.6, 6)
 })

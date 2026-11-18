@@ -9,11 +9,12 @@ import {
   type ChannelImageSpec,
   type ChannelPrice,
   type ChannelVideoSpec,
+  type MediaParamSpec,
   type MentionStyle,
   VIDEO_CHANNEL_KIND,
   type VideoChannel,
 } from '@qywork/core'
-import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
+import type { MediaModelSpec, MediaPrice } from './catalog.ts'
 import type { MediaUsage } from './types.ts'
 
 const DURATION = /^(\d+)(?:\s*-\s*(\d+))?$/

@@ -3790,23 +3790,6 @@
       },
       {
         "provider": "sample-anthropic_messages",
-        "model": "media-qywork_speech",
-        "kind": "qywork_speech",
-        "output": "audio",
-        "isDefault": false,
-        "spec": {
-          "cloud": {
-            "kind": "openai_speech",
-            "unit": "request",
-            "unitPrice": {
-              "720p": 1,
-              "1080p": 2
-            }
-          }
-        }
-      },
-      {
-        "provider": "sample-anthropic_messages",
         "model": "channel-image",
         "kind": "openai_images",
         "output": "image",
@@ -3875,23 +3858,6 @@
         "isDefault": false
       },
       {
-        "provider": "sample-openai_chat_completions",
-        "model": "media-qywork_images",
-        "kind": "qywork_images",
-        "output": "image",
-        "isDefault": false,
-        "spec": {
-          "cloud": {
-            "kind": "openai_images",
-            "unit": "request",
-            "unitPrice": {
-              "720p": 1,
-              "1080p": 2
-            }
-          }
-        }
-      },
-      {
         "provider": "sample-openai_responses",
         "model": "media-gemini_images",
         "kind": "gemini_images",
@@ -3932,23 +3898,6 @@
         "kind": "mimo_speech",
         "output": "audio",
         "isDefault": false
-      },
-      {
-        "provider": "sample-openai_responses",
-        "model": "media-qywork_videos",
-        "kind": "qywork_videos",
-        "output": "video",
-        "isDefault": false,
-        "spec": {
-          "cloud": {
-            "kind": "openai_videos",
-            "unit": "request",
-            "unitPrice": {
-              "720p": 1,
-              "1080p": 2
-            }
-          }
-        }
       },
       {
         "provider": "sample-openai_responses",

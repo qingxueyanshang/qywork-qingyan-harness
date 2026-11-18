@@ -7,9 +7,18 @@
  * 或判断 kind，这正是 B1「里氏替换」禁止的做法。
  */
 
-// 这四个词表的真源在 core 的「共享词表」段：配置、协议、界面三方都使用它们，
-// 只有 L0 层能被三方共同引用。此处只做具名再导出，便于 ai 的使用方就近引用。
-export type { CacheRouting, ProviderKind, ReasoningEcho, ThinkingMode } from '@qywork/core'
+// 四个词表（CacheRouting、ProviderKind、ReasoningEcho、ThinkingMode）的真源在 core 的「共享词表」段：
+// 配置、协议、界面三方都使用它们，只有 L0 层能被三方共同引用。生成型号的三个数据形状的真源同样在 core：
+// 配置中保存的云端规格引用它们。此处只做具名再导出，便于 ai 的使用方就近引用。
+export type {
+  CacheRouting,
+  CloudModelSpec,
+  MediaOperation,
+  MediaParamSpec,
+  ProviderKind,
+  ReasoningEcho,
+  ThinkingMode,
+} from '@qywork/core'
 // 容量拒绝：agent 的压缩循环据此决定是否压缩
 export type { CapacityRejection } from './capacity.ts'
 // 模型目录与计价：装配、读数、探测三处使用
@@ -54,14 +63,11 @@ export { buildAdapter } from './factory.ts'
 export { CLOUD_JOB_ID, newCloudJobId } from './media/adapters/qywork.ts'
 // 生成模型：目录（设置页与生成工具共用）、参数校验、发送前的花费、唯一的生成适配器构造入口
 export {
-  type CloudModelSpec,
   cloudModelSpec,
   findMediaModel,
   lookupMediaModel,
   type MediaInputCount,
   type MediaModelSpec,
-  type MediaOperation,
-  type MediaParamSpec,
   type MediaPrice,
   mediaCatalog,
   mediaCost,

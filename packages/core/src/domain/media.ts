@@ -6,7 +6,9 @@
  */
 
 import type { ErrorCode } from '../protocol/events.ts'
+import type { MentionStyle } from './canvas.ts'
 import { channelVendorOf } from './channel-vendors.ts'
+import type { MediaOperation, MediaParamSpec } from './media-params.ts'
 import type { Currency, ProviderKind } from './model.ts'
 
 /**
@@ -139,14 +141,60 @@ export interface MediaBaseSpec {
   base: string
 }
 
+/** 型号接受的参考素材：数量上限（首尾帧不计入）与传递方式。 */
+export interface MediaInputLimits {
+  maxImages: number
+  maxVideos: number
+  /** 参考音频的段数上限。省略表示不接受参考音频（总时长上限由各厂商另行规定，本地不校验，由接口判定）。 */
+  maxAudios?: number
+  audioMimeTypes?: readonly string[]
+  maxAudioBytes?: number
+  transport: 'multipart' | 'json'
+  /** JSON 素材必须使用公网地址，不能内联文件字节。 */
+  publicUrls?: boolean
+  /** 同一协议下各厂商的素材类型名不同时，各用途在请求中的类型名；省略时使用协议的类型名。 */
+  types?: Partial<Record<MediaInputRole, string>>
+  /** 允许尾帧单独输入，或首尾帧与参考素材组合。省略时各组合互斥且尾帧需要首帧。 */
+  lastFrameAlone?: boolean
+  framesWithReferences?: boolean
+  /** 音频必须同时带参考图或参考视频。 */
+  audioRequiresVisual?: boolean
+  /** 百炼中仅接受图像地址的模型也使用临时上传。 */
+  inlineImages?: boolean
+  /** 允许的素材用途组合；参数条件按目录默认值求值。 */
+  combinations?: readonly {
+    roles: readonly MediaInputRole[]
+    maxImages?: number
+    params?: Readonly<Record<string, string>>
+  }[]
+}
+
+/** 计量取值的参数名：张数、时长与分辨率档位。参数表中没有该参数时省略。 */
+export interface MediaMeterParams {
+  count?: string
+  seconds?: string
+  resolution?: string
+}
+
 /**
- * 云端生成型号的规格：原协议、原协议上的规格来源，以及云端的计费单位与单价（积分）。由云端型号清单写入。
- * 参数表与能力按原协议取得（`lookupMediaModel`），请求经云端协议提交。
+ * 云端生成型号交给电脑端的规格（云端型号清单的 `cloudSpec`）：云端按型号的上游协议查表后取出电脑端需要的部分，
+ * 不含上游协议、渠道、厂商与型号名。电脑端据此显示参数、校验素材与报价，请求经云端协议提交。
  */
+export interface CloudModelSpec {
+  operations: MediaOperation[]
+  inputs: MediaInputLimits
+  params: MediaParamSpec[]
+  maxPromptLength?: number
+  mention?: MentionStyle
+  /** 各尺寸所属的分辨率档位，键为 `size` 的取值；档位由尺寸决定的型号据此计量。 */
+  resolutionBySize?: Readonly<Record<string, string>>
+  meter: MediaMeterParams
+}
+
+/** 云端生成型号保存的规格：云端下发的规格，以及计费单位与单价（积分）。由云端型号清单写入。 */
 export interface CloudMediaSpec {
   cloud: {
-    kind: MediaKind
-    spec?: ChannelSpec | MediaBaseSpec
+    spec: CloudModelSpec
     unit: MediaUnit
     unitPrice: UnitPrice
   }
@@ -358,13 +406,82 @@ export const CLOUD_MEDIA_KIND: Record<MediaOutput, CloudMediaKind> = {
   audio: 'qywork_speech',
 }
 
-/** 配置中保存的云端规格不合法时返回原因。原协议须与云端协议同类别，且不能是云端协议。 */
+/** 各生成操作所属的类别。 */
+const OPERATION_OUTPUT: Record<MediaOperation, MediaOutput> = {
+  generate: 'image',
+  edit: 'image',
+  text_to_video: 'video',
+  image_to_video: 'video',
+  first_last_frame: 'video',
+  reference_to_video: 'video',
+  video_to_video: 'video',
+  speech: 'audio',
+}
+
+const PARAM_TYPES: Record<MediaParamSpec['type'], true> = {
+  enum: true,
+  integer: true,
+  number: true,
+  string: true,
+  boolean: true,
+}
+
+const isText = (v: unknown) => typeof v === 'string' && v !== ''
+const isTextRecord = (v: unknown) =>
+  !!v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).every(isText)
+
+/**
+ * 云端下发的规格不合法时返回原因。只校验电脑端读取的字段：操作须属于该型号的类别，素材上限为非负整数，
+ * 参数须有名称、类型与说明，计量参数名为字符串。其余字段不校验：云端新增字段时，已安装的版本仍能写入清单。
+ */
+function cloudModelSpecProblem(value: unknown, output: MediaOutput): string | null {
+  if (!value || typeof value !== 'object') return '缺少 spec'
+  const s = value as Partial<Record<keyof CloudModelSpec, unknown>>
+  if (
+    !Array.isArray(s.operations) ||
+    !s.operations.length ||
+    !s.operations.every((op) => OPERATION_OUTPUT[op as MediaOperation] === output)
+  )
+    return 'operations 必须是该类别的生成操作'
+  const inputs = s.inputs as Partial<MediaInputLimits> | undefined
+  if (
+    !inputs ||
+    !isCount(inputs.maxImages) ||
+    !isCount(inputs.maxVideos) ||
+    (inputs.maxAudios !== undefined && !isCount(inputs.maxAudios)) ||
+    !['multipart', 'json'].includes(inputs.transport as string)
+  )
+    return 'inputs 必须包含非负整数 maxImages、maxVideos 与 transport（multipart 或 json）'
+  const names = new Set<string>()
+  for (const p of Array.isArray(s.params) ? (s.params as Partial<MediaParamSpec>[]) : [null]) {
+    if (
+      !p ||
+      !isText(p.name) ||
+      names.has(p.name as string) ||
+      !Object.hasOwn(PARAM_TYPES, p.type as string) ||
+      typeof p.description !== 'string'
+    )
+      return 'params 中的每个参数必须有不重复的 name、有效的 type 与 description'
+    names.add(p.name as string)
+  }
+  if (
+    s.maxPromptLength !== undefined &&
+    !(Number.isInteger(s.maxPromptLength) && (s.maxPromptLength as number) > 0)
+  )
+    return 'maxPromptLength 必须是正整数'
+  if (s.mention !== undefined && !isTextRecord(s.mention)) return 'mention 必须是「类别 → 写法」'
+  if (s.resolutionBySize !== undefined && !isTextRecord(s.resolutionBySize))
+    return 'resolutionBySize 必须是「尺寸 → 档位」'
+  if (!s.meter || !isTextRecord(s.meter)) return 'meter 必须是「计量项 → 参数名」'
+  return null
+}
+
+/** 配置中保存的云端规格不合法时返回原因。`kind` 是该型号的云端协议，规格中的操作须属于其类别。 */
 export function cloudMediaSpecProblem(value: unknown, kind: MediaKind): string | null {
   const c = (value as Partial<CloudMediaSpec> | null)?.cloud
   if (!c || typeof c !== 'object') return '缺少 cloud'
-  if (!MEDIA_KINDS.includes(c.kind as MediaKind) || isCloudMediaKind(c.kind as MediaKind))
-    return '原协议不是有效值'
-  if (MEDIA_KIND_OUTPUT[c.kind as MediaKind] !== MEDIA_KIND_OUTPUT[kind]) return '原协议与类别不符'
+  const spec = cloudModelSpecProblem(c.spec, MEDIA_KIND_OUTPUT[kind])
+  if (spec) return spec
   if (!MEDIA_UNITS.includes(c.unit as MediaUnit)) return '计费单位不是有效值'
   const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0
   const price = c.unitPrice

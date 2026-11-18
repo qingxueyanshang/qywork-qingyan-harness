@@ -3,7 +3,8 @@
  *
  * 参数平铺，名称与接口字段相同；适配器按接口结构放入 `voice_setting` 与 `audio_setting`。
  */
-import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
+import type { MediaParamSpec } from '@qywork/core'
+import type { MediaModelSpec, MediaPrice } from './catalog.ts'
 import { MINIMAX_VOICES } from './catalog-minimax-voices.ts'
 
 /** 音色必填，协议默认与目录条目共用。粤语音色只在 `language_boost` 为 `Chinese,Yue` 时生效。 */
