@@ -1944,6 +1944,39 @@ const METER_PARAMS: Readonly<
   qywork_speech: {},
 }
 
+/**
+ * 云端生成型号交给电脑端的规格：云端按型号的上游协议与保存的规格查表（`lookupMediaModel`）后取出电脑端需要的部分，
+ * 不含上游协议、渠道、厂商与型号名。电脑端据此显示参数、校验素材与报价，请求经云端协议提交，由云端按上游协议发出。
+ */
+export interface CloudModelSpec {
+  operations: MediaOperation[]
+  inputs: MediaModelSpec['inputs']
+  params: MediaParamSpec[]
+  maxPromptLength?: number
+  mention?: MentionStyle
+  resolutionBySize?: Readonly<Record<string, string>>
+  /** 计量取值的参数名：张数、时长与分辨率档位（`METER_PARAMS`）。 */
+  meter: { count?: string; seconds?: string; resolution?: string }
+}
+
+/** 型号在指定上游协议与保存规格下交给电脑端的规格（`CloudModelSpec`）。 */
+export function cloudModelSpec(
+  id: string,
+  kind: MediaKind,
+  saved?: StoredMediaSpec,
+): CloudModelSpec {
+  const spec = lookupMediaModel(id, kind, saved)
+  return {
+    operations: [...spec.operations],
+    inputs: spec.inputs,
+    params: [...spec.params],
+    ...(spec.maxPromptLength ? { maxPromptLength: spec.maxPromptLength } : {}),
+    ...(spec.mention ? { mention: spec.mention } : {}),
+    ...(spec.resolutionBySize ? { resolutionBySize: spec.resolutionBySize } : {}),
+    meter: { ...METER_PARAMS[kind] },
+  }
+}
+
 /** 参数的取值：请求中未填写时取默认值。 */
 function paramValue(p: MediaParamSpec, params: Record<string, unknown>): string | undefined {
   const v = params[p.name] ?? p.default

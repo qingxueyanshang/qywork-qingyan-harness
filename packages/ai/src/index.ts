@@ -54,6 +54,8 @@ export { buildAdapter } from './factory.ts'
 export { CLOUD_JOB_ID, newCloudJobId } from './media/adapters/qywork.ts'
 // 生成模型：目录（设置页与生成工具共用）、参数校验、发送前的花费、唯一的生成适配器构造入口
 export {
+  type CloudModelSpec,
+  cloudModelSpec,
   findMediaModel,
   lookupMediaModel,
   type MediaInputCount,
