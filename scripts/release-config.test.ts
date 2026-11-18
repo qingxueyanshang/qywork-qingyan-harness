@@ -507,7 +507,7 @@ describe('桌面发布清单', () => {
    * 词表：泛指第三方与渠道的词，第三方接口的 id 与主机名（`relayVendors`），以及第三方接口的中文名称。「上游」只允许出现在「」引用的界面原文中。
    */
   test('更新说明不出现第三方接口、渠道与上游供应商的信息', () => {
-    const dir = join(ROOT, '.github', 'release-notes')
+    const dir = new URL('../.github/release-notes/', import.meta.url)
     const words = [
       '第三方',
       '渠道',
@@ -519,7 +519,7 @@ describe('桌面发布清单', () => {
     ]
     const hits: string[] = []
     for (const name of readdirSync(dir).filter((f) => f.endsWith('.md'))) {
-      const text = readFileSync(join(dir, name), 'utf8')
+      const text = readFileSync(new URL(name, dir), 'utf8')
       const outsideQuotes = text.replace(/「[^」]*」/g, '')
       for (const word of words) {
         if (text.toLowerCase().includes(word.toLowerCase())) hits.push(`${name}：${word}`)
