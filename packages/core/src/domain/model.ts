@@ -336,6 +336,26 @@ export function mimeOf(pathOrName: string): string {
   return 'application/octet-stream'
 }
 
+const EXTENSION_OF_MIME: Readonly<Record<string, string>> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/webm': 'webm',
+  'video/x-matroska': 'mkv',
+  'audio/wav': 'wav',
+  'audio/mpeg': 'mp3',
+  'audio/ogg': 'ogg',
+  'text/html': 'html',
+}
+
+/** mime → 扩展名（不含点），`mimeOf` 的反向映射；不在其中的类型为 null。新增类型时两处一并修改。 */
+export function extensionOf(mime: string): string | null {
+  return EXTENSION_OF_MIME[mime.toLowerCase()] ?? null
+}
+
 /** 附件分类。判据与 `isInlineImage` 同源，不要在别处另行判定。 */
 export function attachmentTypeOf(pathOrName: string): Attachment['type'] {
   if (isInlineImage(pathOrName)) return 'image'

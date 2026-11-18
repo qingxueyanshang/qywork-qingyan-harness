@@ -1,5 +1,5 @@
 /**
- * 会话标题与附件分类口径。覆盖 `domain/model.ts` 的对应纯函数。
+ * 会话标题与附件分类口径。覆盖 `domain/model.ts` 的对应纯函数（含 `mimeOf` 与 `extensionOf`）。
  *
  * 标题函数是全项目**唯一**产生会话标题的位置（`runtime/session/turn/open-run.ts` 在第一条用户消息
  * 落库之后调用它）。在此处而不是在 session 上测试，是因为 session 路径需要实际运行一轮才能到达，
@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { attachmentTypeOf, deriveConversationTitle, mimeOf } from './model.ts'
+import { attachmentTypeOf, deriveConversationTitle, extensionOf, mimeOf } from './model.ts'
 
 describe('从第一句话提取标题', () => {
   test('短句原样保留', () => {
@@ -53,5 +53,30 @@ describe('附件分类', () => {
     expect(attachmentTypeOf('clip.webm')).toBe('video')
     expect(attachmentTypeOf('clip.txt')).toBe('file')
     expect(mimeOf('clip.mp4')).toBe('video/mp4')
+  })
+
+  test('extensionOf 是 mimeOf 的反向映射：按扩展名得到的类型都能取回同一类型的扩展名', () => {
+    for (const ext of [
+      'png',
+      'jpg',
+      'jpeg',
+      'gif',
+      'webp',
+      'mp4',
+      'mov',
+      'webm',
+      'mkv',
+      'wav',
+      'mp3',
+      'ogg',
+      'opus',
+      'html',
+    ]) {
+      const mime = mimeOf(`a.${ext}`)
+      const back = extensionOf(mime)
+      expect(back === null ? null : mimeOf(`a.${back}`)).toBe(mime)
+    }
+    expect(extensionOf('IMAGE/PNG')).toBe('png')
+    expect(extensionOf('application/octet-stream')).toBeNull()
   })
 })

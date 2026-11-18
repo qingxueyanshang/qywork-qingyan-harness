@@ -11,11 +11,10 @@
  * 请求异步任务并按 `/images/generations/tasks/{id}` 查询；直接出图的型号同步返回图片，没有任务号。
  */
 
-import { basename } from 'node:path'
 import { channelVendorOf, mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, getJson, postJson, sendJson } from '../http.ts'
+import { count, dataUri, defined, getJson, postJson, sendJson, uploadName } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
 import { afterSubmit, failureDetail, pendingTask, type TaskState, waitTask } from '../task.ts'
 import {
@@ -52,7 +51,7 @@ export class OpenAIImagesAdapter implements MediaAdapter {
       form.set('model', this.profile.model)
       form.set('prompt', req.prompt)
       for (const input of req.inputs) {
-        form.append('image[]', new Blob([input.bytes], { type: input.mime }), basename(input.path))
+        form.append('image[]', new Blob([input.bytes], { type: input.mime }), uploadName(input))
       }
       for (const [key, value] of Object.entries(req.params)) form.set(key, String(value))
       body = await sendJson(

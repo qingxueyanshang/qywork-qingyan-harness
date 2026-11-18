@@ -6,11 +6,10 @@
  * 厂商扩展结构由目录声明，素材与参数按对应结构发送。
  */
 
-import { basename } from 'node:path'
 import { mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, sniffMime } from '../http.ts'
+import { count, dataUri, defined, download, getJson, sniffMime, uploadName } from '../http.ts'
 import {
   afterSubmit,
   failureDetail,
@@ -75,7 +74,7 @@ async function payloadOf(
           form.append(
             'input_reference',
             new Blob([input.bytes], { type: input.mime }),
-            basename(input.path),
+            uploadName(input),
           )
         return form
       }

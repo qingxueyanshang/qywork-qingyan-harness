@@ -1,8 +1,10 @@
 /** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { basename } from 'node:path'
 import {
   type ChannelVendor,
   type ErrorCode,
+  extensionOf,
   log,
   type MediaDiagnostic,
   RESEND_LIMIT,
@@ -19,7 +21,7 @@ import {
   upstreamFailureCode,
 } from '../errors.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
-import { MediaError, type MediaRunOptions } from './types.ts'
+import { MediaError, type MediaInput, type MediaRunOptions } from './types.ts'
 
 /**
  * 各阶段的静默上限：连续该时长没有收到任何数据（响应头或正文字节）即判定连接已失效，数据仍在到达时不中止。
@@ -559,6 +561,18 @@ export function count(value: unknown): number | undefined {
 /** 删除值为 `undefined` 的键：`exactOptionalPropertyTypes` 下可选字段不接受 `undefined`。 */
 export function defined<T extends object>(value: { [K in keyof T]?: T[K] | undefined }): T {
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T
+}
+
+/**
+ * 表单上传素材的文件名：路径的文件名去掉扩展名，再按 `mime` 补上扩展名；类型没有对应的扩展名时为路径的文件名。
+ * 渠道按文件名的扩展名判断格式。不要直接取路径的文件名：云端保存的素材文件名不带扩展名（`in-<n>`）。
+ */
+export function uploadName(input: Pick<MediaInput, 'path' | 'mime'>): string {
+  const name = basename(input.path)
+  const ext = extensionOf(input.mime)
+  if (!ext) return name
+  const dot = name.lastIndexOf('.')
+  return `${dot > 0 ? name.slice(0, dot) : name}.${ext}`
 }
 
 /** `data:<mime>;base64,<...>`。火山要求类型小写。 */

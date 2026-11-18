@@ -240,6 +240,7 @@ export {
   emptyBreakdown,
   emptyOmitted,
   envelopeHeadTokens,
+  extensionOf,
   type FileChange,
   type FileReadProgress,
   type FoldedFileChange,
