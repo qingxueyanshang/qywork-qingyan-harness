@@ -77,6 +77,7 @@ test('历史推理发送规则按协议与目录声明', () => {
   expect(rule('grok-4.7', 'openai_responses')).toEqual({ opaque: true, text: 'none' })
   expect(rule('gpt-6-sol', 'openai_responses')).toEqual({ opaque: false, text: 'none' })
   expect(rule('gpt-6.1-sol', 'openai_responses')).toEqual({ opaque: false, text: 'none' })
+  expect(rule('gpt-6.2-astra', 'openai_responses')).toEqual({ opaque: false, text: 'none' })
   expect(rule('deepseek-flash', 'openai_chat_completions')).toEqual({ opaque: false, text: 'all' })
   expect(rule('grok-4.7', 'openai_chat_completions')).toEqual({
     opaque: false,
@@ -778,8 +779,10 @@ describe('长上下文阶梯价', () => {
     expect(computeCost(astra, { ...usage, cacheWriteTokens: 72_001 })).toBe(4.750025)
   })
 
-  test('GPT-6 Sol、GPT-6.1 Sol、GPT-6.1 Terra 与 Luna 在 272K 边界切换完整计费档', () => {
+  test('GPT-6.2 Astra 与 Sol、GPT-6.1 Sol 与 Terra、GPT-6 Sol 与 Luna 在 272K 边界切换完整计费档', () => {
     for (const [id, short, long] of [
+      ['gpt-6.2-astra', [8, 40, 0.4, 10], [16, 60, 0.8, 20]],
+      ['gpt-6.2-sol', [2, 10, 0.1, 2.5], [4, 15, 0.2, 5]],
       ['gpt-6-sol', [2, 10, 0.2, 2.5], [4, 15, 0.4, 5]],
       ['gpt-6.1-sol', [2, 10, 0.1, 2.5], [4, 15, 0.2, 5]],
       ['gpt-6.1-terra', [1, 5, 0.05, 1.25], [2, 7.5, 0.1, 2.5]],
@@ -798,6 +801,13 @@ describe('长上下文阶梯价', () => {
       expect([after.input, after.output, after.cacheRead, after.cacheWrite5m]).toEqual([...long])
       expect(before.cacheWrite1h).toBe(short[3])
       expect(after.cacheWrite1h).toBe(long[3])
+    }
+  })
+
+  test('GPT-6.2 沿用 GPT-6 系列实测的估算系数', () => {
+    const measured = lookupModel('gpt-6.1-sol', 'openai_responses').density
+    for (const id of ['gpt-6.2-astra', 'gpt-6.2-sol']) {
+      expect(lookupModel(id, 'openai_responses').density).toEqual(measured)
     }
   })
 

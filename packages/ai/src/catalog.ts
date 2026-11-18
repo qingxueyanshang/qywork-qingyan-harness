@@ -207,7 +207,7 @@ export interface Vendor {
 /*
  * 各 tokenizer 的实测系数（2026-10-27，方法见 `tokens.ts` 的 `TokenDensity`）。每档 30–33 段样本，
  * 留一交叉验证的中位偏差 1.9%–3.0%，90% 的样本在 14% 以内。测得相同系数的型号共用一档；
- * 未实测的型号使用 `DEFAULT_DENSITY`，不按名称推断为同一档。不接受视频的档 `video` 为 null；
+ * 未实测的型号使用 `DEFAULT_DENSITY`，GPT-6.2 例外（见 `GPT_6_DENSITY`）。不接受视频的档 `video` 为 null；
  * 视频规则按合成视频与生成的成片实测（GLM、Qwen Flash、Omni 各约 40 段），中位偏差 0.3% 以内，最大 1.1%（GLM），
  * 两档 Qwen 约 10%（恰好半秒的时长）。
  */
@@ -246,7 +246,10 @@ const CLAUDE_OPUS_5_5_DENSITY: TokenDensity = {
   video: null,
 }
 
-/** gpt-6-astra 与 gpt-6.1-sol。 */
+/**
+ * gpt-6-astra 与 gpt-6.1-sol 实测。两者分属 6 与 6.1 两代而系数相同，gpt-6.2-astra 与 gpt-6.2-sol 未实测，沿用此档；
+ * 实测后与此档不同时另建一档。
+ */
 const GPT_6_DENSITY: TokenDensity = {
   cjk: 0.778,
   rareCjk: 2.002,
@@ -632,7 +635,19 @@ const GPT_6_SOL_LONG: LongContextTier = {
   note: '提示词超过 272K token 后整条请求按 $4 / $15（缓存 $0.4）计价',
 }
 
-const GPT_61_SOL_LONG: LongContextTier = {
+/** GPT-6.2 Astra 的价目页（2026-11-17 核对）：提示词超过 272K 后输入与缓存 2 倍、输出 1.5 倍。 */
+const GPT_62_ASTRA_LONG: LongContextTier = {
+  thresholdTokens: 272_001,
+  input: 16,
+  output: 60,
+  cacheRead: 0.8,
+  cacheWrite5m: 20,
+  cacheWrite1h: 20,
+  note: '提示词超过 272K token 后整条请求按 $16 / $60（缓存 $0.8）计价',
+}
+
+/** gpt-6.1-sol 与 gpt-6.2-sol。 */
+const GPT_61_62_SOL_LONG: LongContextTier = {
   thresholdTokens: 272_001,
   input: 4,
   output: 15,
@@ -1411,6 +1426,38 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     {
       ...base,
       ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
+      id: 'gpt-6.2-astra',
+      displayName: 'GPT-6.2 Astra',
+      density: GPT_6_DENSITY,
+      vendor: 'openai',
+      // 2026-11-17 核对：https://developers.openai.com/api/docs/models/gpt-6.2-astra
+      // 工具调用要求 Responses；拒绝 none，缓存读取价为输入价的 5%。
+      provider: 'openai_responses',
+      vision: true,
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(8, 40, 0.4, 10),
+      longContext: [GPT_62_ASTRA_LONG],
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
+      id: 'gpt-6.2-sol',
+      displayName: 'GPT-6.2 Sol',
+      density: GPT_6_DENSITY,
+      vendor: 'openai',
+      // 2026-11-17 核对：https://developers.openai.com/api/docs/models/gpt-6.2-sol
+      // 工具调用要求 Responses；拒绝 none，缓存读取价为输入价的 5%。
+      provider: 'openai_responses',
+      vision: true,
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(2, 10, 0.1, 2.5),
+      longContext: [GPT_61_62_SOL_LONG],
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
       id: 'gpt-6-astra',
       displayName: 'GPT-6 Astra',
       density: GPT_6_DENSITY,
@@ -1437,7 +1484,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
       pricing: usd(2, 10, 0.1, 2.5),
-      longContext: [GPT_61_SOL_LONG],
+      longContext: [GPT_61_62_SOL_LONG],
     },
     {
       ...base,

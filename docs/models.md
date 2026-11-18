@@ -6,6 +6,35 @@
 接口支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
 选择协议时，以所连接端点提供的接口为准。通过第三方接口接入时，使用第三方接口给出的地址与凭证。
 
+## GPT-6.2 Astra 与 GPT-6.2 Sol
+
+内置收录 `gpt-6.2-astra` 与 `gpt-6.2-sol`，显示为 **GPT-6.2 Astra** 与 **GPT-6.2 Sol**，原有 GPT-6 与 GPT-6.1 型号独立保留。
+选择 OpenAI Responses，官方 Base URL 为 `https://api.openai.com/v1`；官方 Chat Completions 不支持这两个型号的工具调用。
+
+支持文本、图片输入和文本输出；上下文 1,050,000 token（输入最多 922,000），最大输出 128,000 token。
+官方只写明拒绝 `none`，未列出档位与默认值；产品提供 `low / medium / high / xhigh / max` 思考档位。
+tokenizer 密度未单独实测，沿用 GPT-6 Astra 与 GPT-6.1 Sol 实测的同一档。
+
+目录采用标准处理价格，单位为美元 / 百万 token：
+
+| 模型 | 提示词总 token | 未命中输入 | 缓存读取 | 缓存写入 | 输出 |
+|---|---|---:|---:|---:|---:|
+| `gpt-6.2-astra` | ≤ 272,000 | 8 | 0.40 | 10 | 40 |
+| `gpt-6.2-astra` | > 272,000 | 16 | 0.80 | 20 | 60 |
+| `gpt-6.2-sol` | ≤ 272,000 | 2 | 0.10 | 2.50 | 10 |
+| `gpt-6.2-sol` | > 272,000 | 4 | 0.20 | 5 | 15 |
+
+缓存写入按 30 分钟保留档记录，当前请求使用该档；官方另有 12 小时档（Astra 20、Sol 5）。
+提示词总量包括缓存读取与写入；超过分界后，整条请求使用长上下文价格。
+`gpt-6.2-astra-law` 为法律专用配置，未收录。两个型号均未用官方端点实测。
+
+2026-11-17 核对：[GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra)、
+[GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol)、
+[迁移说明](https://developers.openai.com/api/docs/guides/latest-model)、
+[思考](https://developers.openai.com/api/docs/guides/reasoning)、
+[缓存规则](https://developers.openai.com/api/docs/guides/prompt-caching)、
+[价格](https://developers.openai.com/api/docs/pricing)。
+
 ## Claude Sonnet 5.5
 
 模型 ID 为 `claude-sonnet-5-5`，选择 Anthropic Messages；官方 Base URL 为

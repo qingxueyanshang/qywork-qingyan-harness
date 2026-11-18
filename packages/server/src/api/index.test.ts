@@ -1000,6 +1000,8 @@ describe('模型目录', () => {
   test('Claude、GPT-6 与 Qwen 新型号进入模型库和已配置列表', async () => {
     for (const [kind, id, vendor, label] of [
       ['anthropic_messages', 'claude-opus-5-5', 'anthropic', 'Claude Opus 5.5'],
+      ['openai_responses', 'gpt-6.2-astra', 'openai', 'GPT-6.2 Astra'],
+      ['openai_responses', 'gpt-6.2-sol', 'openai', 'GPT-6.2 Sol'],
       ['openai_responses', 'gpt-6-sol', 'openai', 'GPT-6 Sol'],
       ['openai_responses', 'gpt-6-luna', 'openai', 'GPT-6 Luna'],
       ['openai_chat_completions', 'qwen3.8-omni-flash', 'alibaba', 'Qwen3.8 Omni Flash'],
