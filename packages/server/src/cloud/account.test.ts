@@ -663,8 +663,9 @@ test('同步型号清单：后台调价后配置中的倍率随之更新；清�
 /**
  * 原始失败形状：同步时按配置中已有的顺序写入，新上架的型号排在最后，已下架的型号仍在原位，
  * 输入框的模型列表与账号窗口中按清单排列的型号表顺序不同。
+ * 没有显示名称的条目是使用对外编号之前按内部 id 写入的，同步时删除，指向它的默认模型改为清单中的第一个型号。
  */
-test('同步型号清单：配置中的型号按清单的顺序排列，已下架的排在最后；用户的档位保留', async () => {
+test('同步型号清单：配置中的型号按清单的顺序排列，已下架的排在最后；用户的档位保留；没有显示名称的旧条目删除', async () => {
   await account.login('me@example.com', PASSWORD)
   await writeConfig(live, (c) => {
     const p = c.providers[CLOUD_PROVIDER]!
@@ -675,12 +676,14 @@ test('同步型号清单：配置中的型号按清单的顺序排列，已下�
         [CLOUD_PROVIDER]: {
           ...p,
           models: {
-            'claude-old': {},
+            'claude-old': { displayName: 'Claude Old' },
+            'relay-internal-id': {},
             'claude-next': p.models['claude-next']!,
             'gpt-5': { ...p.models['gpt-5']!, effort: 'high' },
           },
         },
       },
+      active: { provider: CLOUD_PROVIDER, model: 'relay-internal-id' },
     }
   })
   await account.syncModels()
@@ -688,6 +691,8 @@ test('同步型号清单：配置中的型号按清单的顺序排列，已下�
   expect(Object.keys(stored)).toEqual(['claude-sonnet-5-5', 'gpt-5', 'claude-next', 'claude-old'])
   expect(stored['claude-old']?.delisted).toBe(true)
   expect(stored['gpt-5']?.effort).toBe('high')
+  expect(live.active).toEqual({ provider: CLOUD_PROVIDER, model: 'claude-sonnet-5-5' })
+  expect(JSON.stringify(await loadConfig())).not.toContain('relay-internal-id')
 })
 
 /** 以配置接口写入一条模型库覆盖，与用户在模型库中修改的写入路径相同。 */
@@ -695,7 +700,7 @@ async function setCatalog(key: string, entry: Record<string, unknown>): Promise<
   await writeConfig(live, (c) => ({ ...c, catalog: { ...c.catalog, [key]: entry } }))
 }
 
-test('模型库没有的型号：云端规格带来源标记写入覆盖层，不含显示名称；云端修改规格后整体替换，清空后删除，其余字段保留', async () => {
+test('模型库没有的型号：云端规格带来源标记写入覆盖层，不含显示名称；云端修改规格后整体替换，清空后删除，其余字段保留；清单中已没有的型号删除', async () => {
   await account.login('me@example.com', PASSWORD)
   const key = 'claude-next|anthropic_messages'
   expect(live.catalog?.[key]).toEqual({
@@ -726,6 +731,12 @@ test('模型库没有的型号：云端规格带来源标记写入覆盖层，�
   cloud.nextSpec = false
   await account.models()
   expect(live.catalog?.[key]).toEqual({ thinksByDefault: true })
+
+  // 清单中已没有的型号（使用对外编号之前按内部 id 写入的条目）：删除归同步所有的四项。
+  const gone = 'relay-internal-id|anthropic_messages'
+  await setCatalog(gone, { base: 'claude-sonnet-5-5', contextWindow: 9, cloud: true })
+  await account.models()
+  expect(live.catalog?.[gone]).toBeUndefined()
 })
 
 test('本机模型库已收录的型号：带来源标记的条目删除归同步所有的四项，不论是否仍在清单中；不带标记的条目不变', async () => {

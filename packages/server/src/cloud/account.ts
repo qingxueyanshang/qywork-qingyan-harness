@@ -145,7 +145,8 @@ const known = (id: string, kind: ProviderKind) => lookupModel(id, kind).catalogu
  * 同步只写入后三项：显示名称写在云端接口的型号条目上（`storedModels`），写入覆盖层会使用户自建接口中的同名型号也显示云端的名称。
  * - 本机模型库已收录该型号时删除这四项，不论该型号是否仍在清单中：否则旧值（尤其是对应型号）继续优先于内置模型库；
  * - 本机模型库没有该型号时，四项与清单一致：清单给出规格则整体替换，不再给出则删除。对应型号不在本机模型库中时
- *   不写该项（配置校验会拒绝）。
+ *   不写该项（配置校验会拒绝）；
+ * - 清单中已没有该型号时删除这四项：云端型号使用对外编号之前按内部 id 写入的条目随之清除，内部 id 可能透露上游供应商。
  * 条目的其余字段保留。不按值比较判断哪些字段由云端写入：云端修改或清空规格后，旧值无从比较。
  */
 function withSpecs(
@@ -157,9 +158,13 @@ function withSpecs(
     if (entry) next[key] = entry
     else delete next[key]
   }
+  const listed = new Set(list.map((m) => catalogKey(m.id, m.protocol)))
   for (const [key, entry] of Object.entries(next)) {
     const at = key.lastIndexOf('|')
-    if (entry.cloud && known(key.slice(0, at), key.slice(at + 1) as ProviderKind)) {
+    if (
+      entry.cloud &&
+      (!listed.has(key) || known(key.slice(0, at), key.slice(at + 1) as ProviderKind))
+    ) {
       put(key, withoutCloud(entry))
     }
   }
@@ -678,24 +683,45 @@ export class CloudAccount {
         const { kind: _kind, price: _price, delisted: _delisted, ...rest } = kept
         models[id] = { ...rest, ...hit }
       }
-      for (const [id, m] of Object.entries(provider.models)) models[id] ??= { ...m, delisted: true }
-      // 生成型号的协议、规格与显示名称全部由清单决定；清单中已没有的型号标记已下架。顺序与对话型号相同。
+      // 清单中已没有的型号标记已下架，引用它的设置显示已下架。没有显示名称的条目是云端型号使用对外编号之前按内部 id 写入的，
+      // 删除：内部 id 可能透露上游供应商，且不会再出现在清单中。
+      for (const [id, m] of Object.entries(provider.models))
+        if (m.displayName) models[id] ??= { ...m, delisted: true }
+      // 生成型号的规格与显示名称全部由清单决定；清单中已没有的型号标记已下架，规则同上。顺序与对话型号相同。
       const media: Record<string, StoredMediaModel> = { ...listedMedia }
       for (const [id, m] of Object.entries(provider.media ?? {}))
-        media[id] ??= { ...m, delisted: true }
+        if (m.displayName) media[id] ??= { ...m, delisted: true }
       const catalog = withSpecs(current.catalog, list.models)
+      // 默认对话模型与默认生成模型指向已删除的条目时：对话改为清单中的第一个型号，生成删除该类别的默认。
+      const gone = (ref: { provider: string; model: string } | undefined, kept: object) =>
+        ref?.provider === CLOUD_PROVIDER && !(ref.model in kept)
+      const first = Object.keys(listed)[0]
+      const active = gone(current.active, models)
+        ? first
+          ? { provider: CLOUD_PROVIDER, model: first }
+          : undefined
+        : current.active
+      const mediaDefaults = current.mediaDefaults
+        ? Object.fromEntries(
+            Object.entries(current.mediaDefaults).filter(([, ref]) => !gone(ref, media)),
+          )
+        : undefined
       if (
         JSON.stringify(models) === JSON.stringify(provider.models) &&
         JSON.stringify(media) === JSON.stringify(provider.media ?? {}) &&
-        JSON.stringify(catalog) === JSON.stringify(current.catalog)
+        JSON.stringify(catalog) === JSON.stringify(current.catalog) &&
+        active === current.active &&
+        JSON.stringify(mediaDefaults) === JSON.stringify(current.mediaDefaults)
       ) {
         return current
       }
-      const { catalog: _catalog, ...rest } = current
+      const { catalog: _catalog, active: _active, mediaDefaults: _mediaDefaults, ...rest } = current
       const { media: _media, ...base } = provider
       return {
         ...rest,
         ...(catalog ? { catalog } : {}),
+        ...(active ? { active } : {}),
+        ...(mediaDefaults && Object.keys(mediaDefaults).length ? { mediaDefaults } : {}),
         providers: {
           ...current.providers,
           [CLOUD_PROVIDER]: { ...base, models, ...(Object.keys(media).length ? { media } : {}) },
