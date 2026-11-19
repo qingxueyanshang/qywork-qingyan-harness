@@ -521,7 +521,10 @@ export function buildTailNotes(input: {
    */
   workflows?: WorkflowProjection[]
 }): TailNote[] {
-  const today = new Date().toISOString().slice(0, 10)
+  // 取本机时区的日期。不要改用 `toISOString`：它给出 UTC 日期，东八区 0 时至 8 时得到前一天。
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
   const lines = [
     `工作区：${input.workspaceRoot}`,
     `平台：${osName(input.platform)}`,

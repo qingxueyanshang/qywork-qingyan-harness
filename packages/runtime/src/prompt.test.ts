@@ -12,7 +12,7 @@
  * 只会导致费用升高、缓存命中率降低。
  */
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, setSystemTime, test } from 'bun:test'
 import { auditFrozenText, ToolRegistry } from '@qywork/agent'
 import { TODO_BLOCKERS, TODO_FAILURES } from '@qywork/core'
 import { registerToolCatalog } from '@qywork/tools'
@@ -254,6 +254,21 @@ describe('上下文末尾注记', () => {
 
     // 未收录的取值原样传递：虚构名称的危害大于给出原值。
     expect(state('freebsd')).toContain('平台：freebsd')
+  })
+
+  test('当前日期取本机时区：东八区凌晨不写成前一天', () => {
+    const before = process.env.TZ
+    process.env.TZ = 'Asia/Shanghai'
+    // UTC 2026-11-18 17:30 即东八区 2026-11-19 01:30。
+    setSystemTime(new Date('2026-11-18T17:30:00Z'))
+    try {
+      const state = note(buildTailNotes(base), 'workspaceState')?.content ?? ''
+      expect(state).toContain('当前日期：2026-11-19')
+    } finally {
+      setSystemTime()
+      if (before === undefined) delete process.env.TZ
+      else process.env.TZ = before
+    }
   })
 
   /**
