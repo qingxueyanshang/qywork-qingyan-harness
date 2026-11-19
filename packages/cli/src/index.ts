@@ -17,7 +17,7 @@ import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { isatty } from 'node:tty'
 import { Ports, provide } from '@qywork/agent'
-import type { AgentEvent } from '@qywork/core'
+import type { AgentEvent, ConversationId, FollowUp } from '@qywork/core'
 import { formatMoney, log, setLogSink } from '@qywork/core'
 import {
   collectResourceGarbage,
@@ -35,6 +35,8 @@ import {
   Session,
 } from '@qywork/runtime'
 import {
+  CommandTaskTable,
+  commandPortOf,
   directoryAssets,
   embeddedAssets,
   fileSource,
@@ -44,6 +46,7 @@ import {
 } from '@qywork/server'
 import { ContentStore, contentPathFor, type ProcessExitObservation, Store } from '@qywork/store'
 import {
+  CommandPort,
   detectSandbox,
   OfficePort,
   runCommandRunner,
@@ -195,6 +198,28 @@ ${USAGE}`)
   return 2
 }
 
+/** `qy exec` 的任务表中本会话的键。任务表按会话分组，本进程只执行一个会话；该键只在进程内使用，不写入账本。 */
+const EXEC_CONVERSATION = 'cv_exec' as ConversationId
+
+/** `qy exec` 执行期间用户不会发来消息：跟进队列恒为空，等待队列变化时只在到期或中止时返回。 */
+const NO_FOLLOW_UPS = {
+  queueOf: (): FollowUp[] => [],
+  changed: (_conversationId: ConversationId, timeoutMs: number, signal: AbortSignal) => {
+    if (signal.aborted) return Promise.reject(signal.reason)
+    return new Promise<boolean>((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer)
+        reject(signal.reason)
+      }
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(false)
+      }, timeoutMs)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+  },
+}
+
 async function runExec(args: string[]): Promise<number> {
   const flags = parseFlags(args)
   const bad = rejectUnknown(flags)
@@ -257,25 +282,64 @@ async function runExec(args: string[]): Promise<number> {
   const office = createOfficeHost(() => config)
   await office.refresh()
   const officePort = office.port()
+  // 后台命令与 `qy serve` 使用同一个任务表与端口。命令结束时的回执在本轮结束之后作为下一轮的消息执行，
+  // 与 `qy serve` 中会话空闲时收到回执相同。
+  const commands = new CommandTaskTable(() => {}, store)
+  const receipts: FollowUp[] = []
+  const commandPort = commandPortOf(commands, NO_FOLLOW_UPS, EXEC_CONVERSATION, (f) =>
+    receipts.push(f),
+  )
   const session = new Session({
     store,
     config,
     content,
     workspaceRoot,
     signal: controller.signal,
-    ports: new Ports(officePort ? [provide(OfficePort, officePort)] : []),
+    ports: new Ports([
+      ...(officePort ? [provide(OfficePort, officePort)] : []),
+      provide(CommandPort, commandPort),
+    ]),
   })
+  /** 取出已投递的回执，合为下一轮的消息。 */
+  const takeReceipts = () =>
+    receipts
+      .splice(0)
+      .map((r) => r.content)
+      .join('\n\n')
 
   let exitCode = 0
   try {
-    const options = flags.model ? { model: flags.model } : undefined
-    for await (const ev of session.ask(prompt, undefined, options)) {
-      if (json) {
-        process.stdout.write(`${JSON.stringify(ev)}\n`)
-      } else {
-        renderHuman(ev)
+    const model = flags.model ? { model: flags.model } : {}
+    let conversationId: ConversationId | undefined
+    let message = prompt
+    let origin: { origin?: 'command' } = {}
+    for (;;) {
+      for await (const ev of session.ask(message, conversationId, { ...model, ...origin })) {
+        if (ev.type === 'run.started') conversationId = ev.conversationId
+        if (json) {
+          process.stdout.write(`${JSON.stringify(ev)}\n`)
+        } else {
+          renderHuman(ev)
+        }
+        if (ev.type === 'run.finished' && ev.status === 'failed') exitCode = 1
       }
-      if (ev.type === 'run.finished' && ev.status === 'failed') exitCode = 1
+      if (controller.signal.aborted) break
+      origin = { origin: 'command' }
+      if (receipts.length > 0) {
+        message = takeReceipts()
+        continue
+      }
+      // 仍在运行的后台命令在退出前停止：其输出与回执只经由本进程读取，进程退出后无人接收。
+      const left = commands.listOf(EXEC_CONVERSATION)
+      if (left.length === 0) break
+      commands.stopAll()
+      await Promise.all(left.map((c) => commands.ended(EXEC_CONVERSATION, c.id)))
+      process.stderr.write(
+        `[qy] 已停止仍在运行的后台命令：${left.map((c) => `${c.id}（${c.command}）`).join('、')}\n`,
+      )
+      // 停止之前自行结束的命令已投递回执，照常执行一轮；被停止的命令没有回执。
+      if (receipts.length === 0) break
+      message = takeReceipts()
     }
   } catch (err) {
     process.stderr.write(`\n[qy] ${err instanceof Error ? err.message : String(err)}\n`)
@@ -283,6 +347,7 @@ async function runExec(args: string[]): Promise<number> {
   } finally {
     process.off('SIGINT', onSignal)
     process.off('SIGTERM', onSignal)
+    commands.stopAll()
     // 插件与 MCP server 都是子进程。若不回收，`qy exec` 退出后它们可能仍在运行，
     // 导致 CI 中命令已执行完毕而脚本阻塞不返回。
     await session.dispose()
