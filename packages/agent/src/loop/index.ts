@@ -9,7 +9,8 @@
  * 向客户端传输（由 server 负责）。
  *
  * 上下文装配的硬约束（由代码保证，不依赖提示词）：
- * - 冻结前缀 = system.md + environment.md + rules.md，跨 run 逐字节稳定。
+ * - 冻结前缀 = runtime `buildSystemPrompt` 的产物（`SYSTEM_LAYER`、`ENVIRONMENT_LAYER` 与按已注册工具生成的能力段、
+ *   `RULES_LAYER`），工具表与模型不变时跨 run 逐字节稳定。
  * - 日期、技能清单、记忆不进入冻结前缀；runtime 按 run 冻结它们并与用户消息绑定。
  * - 工具 schema 按名称排序（由 registry 保证）并排在最前，顺序变化即导致缓存全部失效。
  */
