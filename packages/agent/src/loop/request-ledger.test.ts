@@ -134,7 +134,7 @@ async function runAgainst(
     model: string
   },
   /**
-   * 退避等待。默认实现立即返回：耗尽五次重发的两个用例按真实退避需等待约一分钟，
+   * 退避等待。默认实现立即返回：耗尽五次重发的两个用例按真实退避需等待约两分钟，
    * 而它们断言的是账本的行数与列值，不是等待时长。
    */
   sleep: (ms: number, signal: AbortSignal) => Promise<void> = async () => {},

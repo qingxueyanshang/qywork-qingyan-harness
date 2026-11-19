@@ -57,11 +57,11 @@ describe('重发的等待', () => {
     return wait
   }
 
-  test('没有 Retry-After 时 2 秒起每次加倍，不超过 30 秒，随机延后至多十分之一', () => {
+  test('没有 Retry-After 时 4 秒起每次加倍，不超过 60 秒，随机延后至多十分之一', () => {
     expect([0, 1, 2, 3, 4, 5].map((n) => at(n, null))).toEqual([
-      2_000, 4_000, 8_000, 16_000, 30_000, 30_000,
+      4_000, 8_000, 16_000, 32_000, 60_000, 60_000,
     ])
-    expect(at(0, null, 1)).toBe(2_200)
+    expect(at(0, null, 1)).toBe(4_400)
   })
 
   /**
@@ -70,8 +70,8 @@ describe('重发的等待', () => {
    */
   test('有 Retry-After 时按其等待，不短于退避间隔，不超过 60 秒', () => {
     expect(at(0, 10_000)).toBe(10_000)
-    expect(at(0, 0)).toBe(2_000)
-    expect(at(2, 1_000)).toBe(8_000)
+    expect(at(0, 0)).toBe(4_000)
+    expect(at(2, 1_000)).toBe(16_000)
     expect(at(0, 600_000)).toBe(60_000)
   })
 })

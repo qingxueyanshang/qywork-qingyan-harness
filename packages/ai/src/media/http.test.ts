@@ -1,7 +1,7 @@
 /**
  * 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、失败码与对话请求同一分类（`errors.ts` 的 `httpFailureCode`，
  * 查询与下载阶段的 404 除外）、
- * 提交被限流、请求未发出与素材上传暂时不可用时按 2 秒起加倍的间隔重试（假计时器推进等待）、结果未知不重试、下载重试及取消，
+ * 提交被限流、请求未发出与素材上传暂时不可用时按 4 秒起加倍的间隔重试（假计时器推进等待）、结果未知不重试、下载重试及取消，
  * 以及在正文中给出错误码的上游（MiniMax、可灵、百炼、火山方舟、Gemini API 的适配器，按接口地址判定上游的 OpenAI 形状出图，
  * 与 `errors.ts` 的 `upstreamFailureCode`）在提交与查询中按其错误码重试或不重试，以及百炼视频适配器的临时上传
  * （`adapters/dashscope.ts` 经 `send` 调用 `providers/openai-compat.ts` 的 `uploadDashScopeMedia`）的重试与 OSS 以 403 拒绝时的重新取凭证，
@@ -71,8 +71,8 @@ function retryClock() {
     },
   }
 }
-/** 被限流、请求未发出或上传暂时不可用后的五次等待：与对话请求的重发相同，2 秒起每次加倍，不超过 30 秒。 */
-const BACKOFF = [2_000, 4_000, 8_000, 16_000, 30_000] as const
+/** 被限流、请求未发出或上传暂时不可用后的五次等待：与对话请求的重发相同，4 秒起每次加倍，不超过 60 秒。 */
+const BACKOFF = [4_000, 8_000, 16_000, 32_000, 60_000] as const
 const BACKOFF_EXHAUSTED = '；已自动重试 5 次，仍失败'
 async function failure(work: Promise<unknown>): Promise<MediaError> {
   try {
@@ -238,10 +238,10 @@ test.each([false, true])(
 )
 
 /**
- * 上传在提交生成之前，连接中断不会重复提交或计费：与对话请求的重发相同，按 2 秒起加倍的间隔重试 5 次，用尽后仍报告未提交生成。
+ * 上传在提交生成之前，连接中断不会重复提交或计费：与对话请求的重发相同，按 4 秒起加倍的间隔重试 5 次，用尽后仍报告未提交生成。
  * 原始失败形状：上传的连接失败按 30 秒、2 分钟、5 分钟重试，短时断网约 7.5 分钟后才报告失败。
  */
-test('上传的连接失败和无效响应均不误报生成结果未知，连接失败按 2 秒起加倍的间隔重试', async () => {
+test('上传的连接失败和无效响应均不误报生成结果未知，连接失败按 4 秒起加倍的间隔重试', async () => {
   let connections = 0
   const closed = Bun.listen({
     hostname: '127.0.0.1',
@@ -292,7 +292,7 @@ test('上传的连接失败和无效响应均不误报生成结果未知，连�
  * 素材上传得到接口的 408 / 5xx 答复：接口已答复，不是连接失败，与连接失败分开计数；次数与间隔与对话请求对 5xx 的重发相同。
  * 原始失败形状：按 30 秒、2 分钟、5 分钟重试，上传服务持续 503 时约 7.5 分钟后才报告失败。
  */
-test('上传得到 503 时按 2 秒起加倍的间隔重试 5 次，用尽后报告已做的重试', async () => {
+test('上传得到 503 时按 4 秒起加倍的间隔重试 5 次，用尽后报告已做的重试', async () => {
   const clock = retryClock()
   try {
     reply = () => new Response('busy', { status: 503 })
@@ -383,7 +383,7 @@ const limited = () =>
  * 429 表示未受理。接口立即答复拒绝，生成的提交按对话请求重发的次数与间隔重试；等待未满时不发出请求。
  * 按 30 秒、2 分钟、5 分钟的间隔重试时，约 7.5 分钟后才用尽。
  */
-test('生成遇到限流按 2 秒起加倍的间隔重试，受理后返回结果；每次等待的开始与结束各回报一次', async () => {
+test('生成遇到限流按 4 秒起加倍的间隔重试，受理后返回结果；每次等待的开始与结束各回报一次', async () => {
   const clock = retryClock()
   try {
     let left = 3
@@ -406,8 +406,8 @@ test('生成遇到限流按 2 秒起加倍的间隔重试，受理后返回结�
     }
     expect(await work).toEqual({ output: { task_id: 't-1' } })
     expect(hits).toEqual(['POST', 'POST', 'POST', 'POST'])
-    expect(clock.warnings()[0]).toContain('2 秒后第 1 次重试')
-    expect(clock.warnings()[2]).toContain('8 秒后第 3 次重试')
+    expect(clock.warnings()[0]).toContain('4 秒后第 1 次重试')
+    expect(clock.warnings()[2]).toContain('16 秒后第 3 次重试')
     const reason = 'HTTP 429 请求过多：Requests rate limit exceeded, please try again later.'
     expect(reports).toEqual([
       { attempt: 1, max: 5, reason },
@@ -470,7 +470,7 @@ test('重试用尽后报告原文与已做的重试，判为被拒绝；上传�
 test('限流时按 Retry-After 等待：长于 60 秒时等待 60 秒，短于退避间隔时按退避间隔', async () => {
   const clock = retryClock()
   try {
-    const waits = ['90', '1', '10']
+    const waits = ['90', '1', '20']
     reply = () => {
       const after = waits.shift()
       return after === undefined
@@ -480,12 +480,12 @@ test('限流时按 Retry-After 等待：长于 60 秒时等待 60 秒，短于�
     const work = postJson(url(), {}, {}, signal())
     await clock.waiting(1)
     await clock.elapse(60_000)
-    // 第 2 次的退避间隔 4 秒长于 Retry-After 1 秒。
+    // 第 2 次的退避间隔 8 秒长于 Retry-After 1 秒。
     await clock.waiting(2)
     await clock.elapse(BACKOFF[1])
-    // 第 3 次的退避间隔 8 秒短于 Retry-After 10 秒。
+    // 第 3 次的退避间隔 16 秒短于 Retry-After 20 秒。
     await clock.waiting(3)
-    await clock.elapse(10_000)
+    await clock.elapse(20_000)
     expect(await work).toEqual({ ok: true })
     expect(hits).toHaveLength(4)
   } finally {
@@ -525,7 +525,7 @@ test('限流与请求未发出交替出现时各自计数：间隔、上限与�
       [4, 5],
       [5, 5],
     ])
-    expect(clock.warnings()[1]).toContain('2 秒后第 1 次重试')
+    expect(clock.warnings()[1]).toContain('4 秒后第 1 次重试')
   } finally {
     await own.stop(true)
     clock.restore()
@@ -600,7 +600,7 @@ test('重试等待的日志带上本次运行的日志标识，不含接口密�
     expect(warn.mock.calls).toEqual([
       [
         'media',
-        'HTTP 429 请求过多：Requests rate limit exceeded, please try again later.；2 秒后第 1 次重试',
+        'HTTP 429 请求过多：Requests rate limit exceeded, please try again later.；4 秒后第 1 次重试',
         { stage: 'generate', host: `127.0.0.1:${server.port}`, ...logFields },
       ],
     ])
@@ -698,10 +698,10 @@ test.each([
 
 /**
  * 连接未建立时请求没有发出：端口拒绝连接与 TLS 握手失败均为被拒绝，不显示 Bun 的英文提示。
- * 请求未发出不会重复提交，与对话请求的重发相同，按 2 秒起加倍的间隔重试 5 次。
+ * 请求未发出不会重复提交，与对话请求的重发相同，按 4 秒起加倍的间隔重试 5 次。
  * 原始失败形状：请求未发出时按 30 秒、2 分钟、5 分钟重试，短时断网约 7.5 分钟后才报告失败。
  */
-test('连接被拒绝或 TLS 握手失败时请求未发出，判为被拒绝并按 2 秒起加倍的间隔重试', async () => {
+test('连接被拒绝或 TLS 握手失败时请求未发出，判为被拒绝并按 4 秒起加倍的间隔重试', async () => {
   const clock = retryClock()
   const plain = Bun.listen({
     hostname: '127.0.0.1',
@@ -1065,7 +1065,7 @@ test.each([
 )
 
 /** 火山方舟 `QuotaExceeded` 的「The request has exceeded the quota」是排队中的任务数超过限制，文档要求稍后重试。 */
-test('火山方舟视频提交 429 QuotaExceeded 的排队任务数超限为限流，按 2 秒起加倍的间隔重试 5 次', async () => {
+test('火山方舟视频提交 429 QuotaExceeded 的排队任务数超限为限流，按 4 秒起加倍的间隔重试 5 次', async () => {
   const clock = retryClock()
   try {
     reply = () =>
@@ -1346,7 +1346,7 @@ async function dashScopeUpload(
 
 /**
  * 原始失败形状：百炼的临时上传直接调用 fetch，取凭证被限流或上传到 OSS 得到 503 时一次失败即整张卡失败。
- * 两次请求经 `send`（阶段为上传）：与其他上游的素材上传同样按 2 秒起加倍的间隔重试；重试时同一份表单重新发出，
+ * 两次请求经 `send`（阶段为上传）：与其他上游的素材上传同样按 4 秒起加倍的间隔重试；重试时同一份表单重新发出，
  * OSS 第二次收到的文件内容完整。
  */
 test('百炼临时上传：取凭证被限流、上传到 OSS 得到 503 时各自重试，重试发出的文件内容完整，受理后提交生成', async () => {
@@ -1372,8 +1372,8 @@ test('百炼临时上传：取凭证被限流、上传到 OSS 得到 503 时各�
     const result = await upload.run
     expect(result.files[0]?.bytes).toEqual(MP4)
     expect(clock.warnings()).toEqual([
-      '素材上传失败，未提交生成：HTTP 429 请求过多：Requests rate limit exceeded, please try again later.；2 秒后第 1 次重试',
-      `素材上传失败，未提交生成：HTTP 503 服务不可用：${OSS_BUSY}；2 秒后第 1 次重试`,
+      '素材上传失败，未提交生成：HTTP 429 请求过多：Requests rate limit exceeded, please try again later.；4 秒后第 1 次重试',
+      `素材上传失败，未提交生成：HTTP 503 服务不可用：${OSS_BUSY}；4 秒后第 1 次重试`,
     ])
     expect(upload.received).toHaveLength(2)
     for (const bytes of upload.received) expect(bytes.equals(Buffer.from(upload.video))).toBe(true)

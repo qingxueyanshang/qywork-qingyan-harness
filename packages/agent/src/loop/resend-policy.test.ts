@@ -4,10 +4,10 @@
  * 三协议故障端点执行真实 HTTP 请求。
  *
  * 退避经注入的 `sleep` 执行，断言其收到的毫秒序列：实际等待时，
- * 耗尽一次预算约需一分钟。停止相关的用例例外，它们需要真实计时；其中进程退出时机的一例
+ * 耗尽一次预算约需两分钟。停止相关的用例例外，它们需要真实计时；其中进程退出时机的一例
  * 在子进程 `backoff-exit-child.ts` 中运行。
  *
- * 退避档位（2 / 4 / 8 / 16 / 30 秒）在本文件中独立列出，不从 `loop/attempt.ts` 导入：
+ * 退避档位（4 / 8 / 16 / 32 / 60 秒）在本文件中独立列出，不从 `loop/attempt.ts` 导入：
  * 导入后的断言等于用实现校验实现自身。
  *
  * 另覆盖发往各家官方地址的请求：拦截 fetch，以按官方错误码文档构造的正文答复，经真实的适配器、
@@ -28,7 +28,7 @@ import { RESEND_LIMIT } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContextBase } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
 
-const BACKOFF_STEPS = [2_000, 4_000, 8_000, 16_000, 30_000] as const
+const BACKOFF_STEPS = [4_000, 8_000, 16_000, 32_000, 60_000] as const
 const BACKOFF_JITTER_MAX = 1.1
 
 function expectBackoff(actual: number | undefined, resends: number): void {

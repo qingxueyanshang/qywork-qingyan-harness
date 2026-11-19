@@ -13,7 +13,7 @@ import type { LoopPersistence, ToolContextBase } from '../index.ts'
  *
  * 数值在此处独立定义，不从 `attempt.ts` 导入：导入后的断言等于用实现校验实现本身。
  */
-export const BACKOFF_STEPS = [2_000, 4_000, 8_000, 16_000, 30_000] as const
+export const BACKOFF_STEPS = [4_000, 8_000, 16_000, 32_000, 60_000] as const
 export const BACKOFF_JITTER_MAX = 1.1
 
 export function expectBackoff(actual: number | null | undefined, resends: number): void {

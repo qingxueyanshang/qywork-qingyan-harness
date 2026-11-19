@@ -150,7 +150,7 @@ describe('Art 生成', () => {
         await new Promise<void>((resolve) => setImmediate(resolve))
       }
       expect(reports).toEqual([{ attempt: 1, max: 5, reason: 'HTTP 429 请求过多：busy' }])
-      jest.advanceTimersByTime(1_999)
+      jest.advanceTimersByTime(3_999)
       for (let i = 0; i < 50; i++) await new Promise<void>((resolve) => setImmediate(resolve))
       expect(bodies).toHaveLength(1)
       jest.advanceTimersByTime(1)
@@ -194,13 +194,13 @@ describe('Art 生成', () => {
       for (let i = 0; i < 20_000 && art().length === 0; i++) {
         await new Promise<void>((resolve) => setImmediate(resolve))
       }
-      jest.advanceTimersByTime(2_000)
+      jest.advanceTimersByTime(4_000)
       expect((await work).ok).toBe(true)
       expect(art()).toEqual([
         [
           'art',
           '请求失败：HTTP 429 请求过多：busy',
-          { retry: 1, code: 'rate_limited', waitSeconds: 2, ...logFields },
+          { retry: 1, code: 'rate_limited', waitSeconds: 4, ...logFields },
         ],
       ])
       const written = JSON.stringify(warn.mock.calls)

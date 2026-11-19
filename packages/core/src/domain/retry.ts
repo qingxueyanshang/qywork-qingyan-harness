@@ -79,17 +79,17 @@ export function retryCauseText(reason: string): string {
 export const RESEND_LIMIT = 5
 
 /** 重发退避的首个间隔。对端故障的恢复为秒级，更短的首个间隔等于不退避地反复请求对端。 */
-const RESEND_BACKOFF_BASE_MS = 2_000
+const RESEND_BACKOFF_BASE_MS = 4_000
 
-/** 单次退避上限。取 30 秒时，首发加五次重发的总等待时间约为一分钟。 */
-const RESEND_BACKOFF_MAX_MS = 30_000
+/** 单次退避上限。五次重发前依次等待约 4、8、16、32、60 秒，合计约两分钟。 */
+const RESEND_BACKOFF_MAX_MS = 60_000
 
 /** 按上游给出的 Retry-After 等待的上限。超过时等待该上限后重发，次数用尽即报告失败，避免一次请求长时间处于等待状态。 */
 const RETRY_AFTER_MAX_MS = 60_000
 
 /**
  * 第 `resends` 次重发（从 0 起）之前的等待毫秒数。对话请求的重发与生成的重试只经本函数计算等待，两处不另行处理 Retry-After。
- * - 退避间隔：2 秒起每次加倍，不超过 30 秒，另加至多十分之一的随机延后，使同时被拒的多个请求错开重发时刻。
+ * - 退避间隔：4 秒起每次加倍，不超过 60 秒，另加至多十分之一的随机延后，使同时被拒的多个请求错开重发时刻。
  * - 上游给出等待时间（`retryAfterMs`）时按其等待，不短于退避间隔，不超过 60 秒。给出 0 时按退避间隔：
  *   立即重发会在数毫秒内用尽次数。
  */

@@ -215,7 +215,7 @@ async function readBody(res: Response, heard: () => void): Promise<Uint8Array> {
  * - `rate_limited`：被限流（失败码 `rate_limited`：429 且不是额度用尽，或上游在正文中以限流的错误码拒绝），接口立即答复拒绝。
  * - `connection`：生成的提交在发出请求之前连接失败，以及素材上传的连接失败与中断（上传在提交生成之前）。
  * - `unavailable`：素材上传得到接口的暂时不可用答复（失败码 `provider_unavailable`：408 / 5xx 等）。
- * 三类都按对话请求重发的次数与间隔重试（`RESEND_LIMIT`、`resendDelay`），用尽约一分钟：对话请求对 5xx 同样如此，
+ * 三类都按对话请求重发的次数与间隔重试（`RESEND_LIMIT`、`resendDelay`），用尽约两分钟：对话请求对 5xx 同样如此，
  * 上传失败时生成尚未提交，用户等待的是一次可以立即重新发起的请求，不需要更长的恢复时间。
  * 三类不要共用一个计数：同一次请求中几类交替出现时，各按自己的次数与回执计算（`send` 中的 `retries`），
  * 限流与连接失败的原因与次数分开报告。

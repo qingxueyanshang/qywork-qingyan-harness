@@ -73,7 +73,7 @@ export interface LoopDeps {
   streamIdleTimeoutMs?: number
   /**
    * 重发前的退避等待。未传入时按真实计时器等待，并随中止信号提前结束。
-   * 仅供重发回归测试断言退避毫秒数，而无需实际等待一分钟。
+   * 仅供重发回归测试断言退避毫秒数，而无需实际等待约两分钟。
    */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>
 }
