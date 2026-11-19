@@ -51,6 +51,7 @@ function ctx(root: string): ToolContext {
     port: new Ports([
       provide(MediaPort, {
         displayName: (type, provider, model) => names[`${type}|${provider}|${model}`],
+        parameterTable: () => '',
         async generate(call) {
           calls.push(call)
           await during(call)
@@ -601,6 +602,7 @@ describe('generateMedia / landFiles', () => {
       roots: root,
       media: {
         displayName: () => undefined,
+        parameterTable: () => '',
         async generate(call) {
           await call.onTask?.({ taskId: 't', provider: 'ark', model: 'seedance' })
           return { ok: false, message: '等待超时', pendingTaskId: 't' }
@@ -677,6 +679,7 @@ describe('generateMedia / landFiles', () => {
     const seen: MediaCall[] = []
     const media = {
       displayName: () => undefined,
+      parameterTable: () => '',
       async generate(call: MediaCall): Promise<MediaCallResult> {
         seen.push(call)
         return {

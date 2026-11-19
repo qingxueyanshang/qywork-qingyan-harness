@@ -77,6 +77,7 @@ describe('画布端口', () => {
       [refs.$a!, refs.$b!],
       {
         displayName: () => undefined,
+        parameterTable: () => '',
         generate: async () => ({
           ok: true,
           provider: 'q',
@@ -177,6 +178,7 @@ describe('画布端口', () => {
       refs.$g!,
       {
         displayName: () => undefined,
+        parameterTable: () => '',
         generate: async (call) => {
           calls.push({ prompt: call.prompt, inputs: call.inputs.map((i) => i.path) })
           return {
@@ -700,6 +702,7 @@ describe('画布端口', () => {
     })
     const media: MediaPort = {
       displayName: () => undefined,
+      parameterTable: () => '',
       generate: (call) =>
         new Promise((resolve) => {
           finish = resolve
@@ -783,6 +786,7 @@ function heldPort(): { port: MediaPort; calls: Held[]; next(): Promise<Held> } {
   let claimed = 0
   const port: MediaPort = {
     displayName: () => undefined,
+    parameterTable: () => '',
     generate: (call, signal) =>
       new Promise((resolve, reject) => {
         if (!call.resumeTaskId) call.onSubmit?.()

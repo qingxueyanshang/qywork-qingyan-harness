@@ -190,14 +190,11 @@ export { SkillSourcePaths } from './skills/port.ts'
 // 技能：runtime/session/turn/prepare.ts 扫描索引，server/api 为设置页列出技能
 export { SKILLS_SUBDIR, type SkillMeta, scanAllSkills, scanSkills } from './skills.ts'
 export { TodoBroadcast } from './todos/port.ts'
-// 外部工具按需加载：runtime/session/extension-tools.ts 计量一次，决定全部常驻还是放入工具池；
-// server/api 只取静态规格，不建立工具池
+// 外部工具按总量分档：runtime/session/extension-tools.ts 计量一次，决定全部常驻还是全部按需
 export {
+  deferExternal,
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
-  LOAD_TOOL_SPEC,
-  makeLoadToolTool,
-  PendingToolPool,
 } from './tool-pool.ts'
 export { type ChangeWindow, openChangeWindow } from './workspace-watch.ts'
 
@@ -223,6 +220,7 @@ import { openInPanelTool } from './panel.ts'
 import { installPluginTool } from './plugin-install.ts'
 import { stopSubagentTool } from './stop-subagent.ts'
 import { subagentTool } from './subagent.ts'
+import { makeLoadToolTool } from './tool-pool.ts'
 import { waitSubagentsTool } from './wait-subagents.ts'
 import { workflowTool } from './workflow.ts'
 
@@ -258,6 +256,8 @@ export function registerBuiltinTools(
   for (const spec of builtinCandidates(ports, opts)) {
     if (spec.requires?.every((key) => ports.has(key)) ?? true) registry.register(spec)
   }
+  // 读取按需工具的定义。始终注册：按需工具也可能由其后追加的外部工具提供（`deferExternal`）。
+  registry.register(makeLoadToolTool(registry))
 }
 
 type BuiltinOptions = NonNullable<Parameters<typeof registerBuiltinTools>[2]>

@@ -37,6 +37,7 @@ import {
   resolveMediaModel,
   savedDisplayName,
 } from './config.ts'
+import { mediaParameterTable } from './prompt.ts'
 
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
 
@@ -96,6 +97,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
   const unresolved = new Set<MediaOutput>()
   return {
     displayName: (type, provider, model) => savedDisplayName(config, type, { provider, model }),
+    parameterTable: (output) => mediaParameterTable(listMediaModels(config), output),
     async generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult> {
       // art 使用对话模型，不经生成目录。
       if (call.type === 'art') return generateArt(config, call, signal, onSpend)

@@ -221,6 +221,7 @@ export const readSkillTool: ToolSpec = {
 
 export const writeSkillTool: ToolSpec = {
   name: 'write_skill',
+  deferred: { brief: '新增或更新一个 qywork 技能' },
   description:
     '创建或更新一个 qywork 技能。默认写入项目层；用户明确要求全局时 scope 必须传 global。content 是 SKILL.md 的正文，不含前置元信息；附带脚本或模板放在 files。',
   parameters: {
@@ -317,6 +318,7 @@ export const writeSkillTool: ToolSpec = {
 
 export const moveSkillTool: ToolSpec = {
   name: 'move_skill',
+  deferred: { brief: '在项目层与全局层之间迁移一个技能' },
   description:
     '把一个技能目录从项目层迁移到全局层，或从全局层迁回项目层。成功后只保留目标副本；目标层已有同目录时拒绝且保留原件。',
   parameters: {
@@ -383,6 +385,7 @@ export const moveSkillTool: ToolSpec = {
 
 export const importSkillTool: ToolSpec = {
   name: 'import_skill',
+  deferred: { brief: '安装现成的技能目录或 ZIP 包' },
   description:
     '安装现成技能目录或 ZIP，完整保留脚本、模板和二进制资源。程序计算安装目录并验证扫描读取；不要运行包内安装脚本。默认安装到项目层，明确要求全局时传 global；用户授权替换已有版本时传 replace=true。',
   parameters: {

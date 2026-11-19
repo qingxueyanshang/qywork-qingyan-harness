@@ -10,7 +10,6 @@ import {
   createRun,
   finishRun,
   openProviderRequest,
-  recordLoadedTools,
   registerResource,
   Store,
   settleProviderRequest,
@@ -56,7 +55,6 @@ function fixture(): { store: Store; conversationId: ConversationId } {
     ],
   })
   createGoal(store, { conversationId: conv.id, objective: '修好 calc.js' })
-  recordLoadedTools(store, conv.id, ['mcp__docs__search'])
 
   const ok = appendStep(store, {
     runId: run.id,
@@ -150,7 +148,6 @@ describe('采集', () => {
     expect(b.conversation?.id).toBe(conversationId)
     expect(b.messages).toHaveLength(1)
     expect(b.sessionState.goal?.objective).toBe('修好 calc.js')
-    expect(b.sessionState.loadedTools).toEqual(['mcp__docs__search'])
     expect(b.runs).toHaveLength(1)
     expect(b.runs[0]!.contextSnapshot.map((s) => s.group)).toEqual([
       'workspaceState',

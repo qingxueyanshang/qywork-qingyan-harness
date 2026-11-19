@@ -582,7 +582,7 @@ export const editCanvasTool: ToolSpec = {
     '要按顺序成行排列（如逐页的幻灯片）时用 perRow 的 arrange；移动单张已有的卡用 update 的 x、y。' +
     '整理已有画布的布局时每一列写一条 perColumn 的 arrange：视频列为每栏行数，其他列不小于该列的行数，不换栏；' +
     '整理之后各行按对象名的数字顺序排列。不要用脚本计算并改写坐标。' +
-    'add_generate 可选 provider、model、params：取值见本轮「可用的生成模型」，只写 model 时按提供该模型的接口补上 provider，有多个接口提供时须写明 provider；' +
+    'add_generate 的 provider、model 取自本轮「可用的生成模型」，该类别有标为（默认）的模型时可省略；params 可选，参数用 load_tool 读取对应生成工具（generate_image、generate_video、generate_audio）时随参数表返回；只写 model 时按提供该模型的接口补上 provider，有多个接口提供时须写明 provider；' +
     '参数名与取值按所用模型与卡片的输入核对，不合法或在当前输入下不可用时该条不执行并说明原因；' +
     'update 的 params 整体替换卡片参数，未写出的参数恢复缺省；read_canvas 列出的参数即实际发送的参数，与参数面板一致。' +
     '宽高比或尺寸参数同时决定卡片形状；未给出时卡片为方形，出图后按结果的比例改变形状，相邻的卡随之移开。' +
@@ -837,6 +837,7 @@ export const runCanvasTool: ToolSpec = {
 
 export const retrieveCanvasTool: ToolSpec = {
   name: 'retrieve_canvas',
+  deferred: { brief: '取回画布上生成卡已在远端完成的视频结果' },
   description:
     '取回画布上 node 指定生成卡仍在远端的视频结果，不重新提交、不重复计费。' +
     '先用 read_canvas 查看待取回的节点与版本；version 省略时取当前版或最新的待取回版。',
@@ -903,6 +904,7 @@ function cancelReceipt(
 
 export const cancelCanvasTool: ToolSpec = {
   name: 'cancel_canvas',
+  deferred: { brief: '取消画布上生成卡正在进行的生成' },
   description:
     '取消画布上 node 指定生成卡正在进行的生成，与界面卡片上的取消相同，生成由界面、本轮或之前的轮次发起均可。' +
     '视频任务在接口支持撤销时向服务商发出撤销请求，撤销后删除本次的占位版本；接口不支持撤销或撤销失败时停止等待，' +
@@ -973,6 +975,7 @@ function videoOf(node: CanvasNode): { path: string } | { error: string } {
 
 export const captureCanvasFrameTool: ToolSpec = {
   name: 'capture_canvas_frame',
+  deferred: { brief: '从画布上的视频卡截取一帧，作为图片卡放在画布上' },
   description:
     '从画布上的视频卡截取一帧，保存为 generated/ 下的 PNG，并作为图片卡放在该视频卡右侧，与界面中的取帧相同。' +
     'node 是视频生成卡或视频文件卡的名称，生成卡取当前版本；at 是秒数，0 为首帧，不小于视频时长时为尾帧。' +
@@ -1046,6 +1049,7 @@ export const captureCanvasFrameTool: ToolSpec = {
 
 export const exportTimelineTool: ToolSpec = {
   name: 'export_timeline',
+  deferred: { brief: '把画布上的时间线导出为成片视频' },
   description:
     '把画布上的一条时间线导出为成片并等待完成：由界面执行与「导出」按钮相同的编码（界面会打开该画布并显示进度），' +
     '成片保存为 generated/<时间线名称>.mp4（重名时加 -2），时间线右侧新增引用它的视频卡。' +

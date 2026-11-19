@@ -181,7 +181,7 @@ export function makeLoop(
         }
       : {}),
     beforeRequest: async () => {
-      await loadExtensionTools(session, adapter.spec.density, conversationId)
+      await loadExtensionTools(session, adapter.spec.density)
     },
     makeToolContext: (runId, emit) =>
       makeToolContext(session, runId, emit, target, adapter, conversationId as ConversationId),

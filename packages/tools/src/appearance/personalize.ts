@@ -82,6 +82,7 @@ async function withImage(
 
 export const personalizeTool: ToolSpec = {
   name: 'personalize',
+  deferred: { brief: '读取或修改 qywork 界面的个性化设置（背景、透明度、强调色、字体等）' },
   description:
     '读取与修改 qywork 界面的个性化。个性化由背景、流动雾面、界面不透明度、强调色与流动色组成，' +
     '作用于界面外框、会话区与右侧面板；浅色或深色由用户的主题设置决定，不属于个性化。' +

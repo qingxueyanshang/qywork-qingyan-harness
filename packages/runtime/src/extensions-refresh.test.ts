@@ -132,7 +132,7 @@ test('连接失败后重新提交相同配置会重新握手，不永久复用�
   expect((await call(await acquire(), 'mcp__probe__ping')).status).toBe('success')
 })
 
-test('同一 Session 的大 schema 进入池，升级后已加载的旧工具与缓存同时移除', async () => {
+test('同一 Session 的大 schema 改为按需，升级后旧工具与缓存同时移除', async () => {
   const service = mcp()
   const store = new Store({ path: ':memory:' })
   const session = new Session({
@@ -157,12 +157,11 @@ test('同一 Session 的大 schema 进入池，升级后已加载的旧工具与
     })
     await runtime.loadExtensionTools(DEFAULT_DENSITY)
     expect(runtime.registry.has('load_tool')).toBe(true)
-    expect(runtime.registry.has('mcp__probe__ping')).toBe(false)
-    expect(runtime.registry.get('load_tool')?.description).toContain('mcp__probe__ping')
+    expect(runtime.registry.get('mcp__probe__ping')?.deferred).toBeDefined()
     expect(
       (await runtime.registry.execute('load_tool', { names: ['mcp__probe__ping'] }, context()))
-        .status,
-    ).toBe('success')
+        .message,
+    ).toContain('## mcp__probe__ping')
     const initial = runtime.registry.schemas()
     await port.writeServer({
       name: 'probe',
@@ -171,7 +170,7 @@ test('同一 Session 的大 schema 进入池，升级后已加载的旧工具与
     })
     await runtime.loadExtensionTools(DEFAULT_DENSITY)
     expect(runtime.registry.has('mcp__probe__ping')).toBe(false)
-    expect(runtime.registry.has('load_tool')).toBe(false)
+    expect(runtime.registry.get('mcp__probe__pong')?.deferred).toBeUndefined()
     expect(runtime.registry.schemas()).not.toBe(initial)
     expect((await runtime.registry.execute('mcp__probe__pong', {}, context())).message).toContain(
       '/second:pong',

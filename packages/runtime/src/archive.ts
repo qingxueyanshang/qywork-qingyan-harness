@@ -28,7 +28,6 @@ import {
   getConversation,
   getWorkspace,
   latestTodos,
-  listLoadedTools,
   listMessages,
   listProviderRequests,
   listResourcesForRun,
@@ -63,7 +62,6 @@ export interface ArchiveBundle {
   sessionState: {
     goal: ReturnType<typeof currentGoal>
     todos: NonNullable<ReturnType<typeof latestTodos>>
-    loadedTools: string[]
   }
   runs: (Run & {
     contextSnapshot: RunContextSegment[]
@@ -123,9 +121,6 @@ export function collect(store: Store, conversationId: ConversationId): ArchiveBu
     sessionState: {
       goal: bestEffort('sessionState.goal', null, () => currentGoal(store, conversationId)),
       todos: bestEffort('sessionState.todos', [], () => latestTodos(store, conversationId) ?? []),
-      loadedTools: bestEffort('sessionState.loadedTools', [], () =>
-        [...listLoadedTools(store, conversationId)].sort(),
-      ),
     },
     runs: bestEffort('runs', [], () => listRuns(store, conversationId)).map((r) => ({
       ...r,

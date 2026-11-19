@@ -20,6 +20,7 @@ import type {
   ToolOutcomeWire,
 } from '@qywork/core'
 import type { PortKey } from './ports/key.ts'
+import { normalizeArgs, schemaProblems } from './schema/check.ts'
 
 // ─────────────────────────────── 执行上下文 ───────────────────────────────
 
@@ -416,6 +417,13 @@ export interface ToolSpec {
   /** 一句话用途，面向用户（工具清单中的用途列）。不面向模型：面向模型的是 `description`。 */
   summary: string
   /**
+   * 按需加载。工具表中只放桩定义：名称、`brief` 与任意对象参数；完整的 `description` 与 `parameters` 由 `load_tool`
+   * 作为工具结果返回，执行前按完整定义核对参数（`execute`）。用于使用率低的工具：工具定义位于请求最前部、每次请求都携带。
+   * `brief` 是面向模型的一句用途，写明何时需要该工具。`detail` 返回随定义一并读取的、依配置变化的内容
+   * （生成工具的当前模型与参数表）；读取时按当前配置生成，没有时为 null。
+   */
+  deferred?: { brief: string; detail?: (ctx: ToolContext) => string | null }
+  /**
    * 工具必需的端口。任一未提供时内置工具不注册：没有该能力时工具没有降级形态。
    * 缺失时仍能降级工作的端口不写在此处，工具经 `ctx.port` 取用并自行判空。
    */
@@ -508,19 +516,28 @@ export class ToolRegistry {
     if (this.schemaCache) return this.schemaCache
     this.schemaCache = [...this.tools.values()]
       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-      .map((t) => ({
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-        strict: t.strict !== false,
-      }))
+      .map((t) =>
+        t.deferred
+          ? {
+              name: t.name,
+              description: `${t.deferred.brief}${DEFERRED_NOTE}`,
+              parameters: DEFERRED_PARAMETERS,
+              strict: false,
+            }
+          : {
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters,
+              strict: t.strict !== false,
+            },
+      )
     return this.schemaCache
   }
 
   /** 唯一执行入口。任何路径都不得绕过此处直接调用 spec.fn。 */
   async execute(
     name: string,
-    args: Record<string, unknown>,
+    rawArgs: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolOutcomeWire> {
     const spec = this.tools.get(name)
@@ -532,6 +549,10 @@ export class ToolRegistry {
         errorKind: 'unregistered_tool_call',
       }
     }
+    // 按需工具的参数先按完整定义规范化，其后的核对、权限判定与执行都使用规范化后的参数（`normalizeArgs`）。
+    const args = spec.deferred
+      ? (normalizeArgs(spec.parameters, rawArgs) as Record<string, unknown>)
+      : rawArgs
 
     // required 与发给模型的 schema 同源，缺少参数时不进入权限解析或工具执行。
     const required = spec.parameters.required
@@ -545,8 +566,22 @@ export class ToolRegistry {
       return {
         status: 'failure',
         executed: false,
-        message: `工具 ${name} 缺少必填参数：${missing.join('、')}。请按工具定义传入 JSON 参数。`,
+        message:
+          `工具 ${name} 缺少必填参数：${missing.join('、')}。请按工具定义传入 JSON 参数。` +
+          (spec.deferred ? deferredDefinition(spec) : ''),
         errorKind: 'invalid_tool_arguments',
+      }
+    }
+    // 按需工具的桩定义不约束参数，在此按完整定义核对；不符合时附上完整定义，模型据此改正后重新调用。
+    if (spec.deferred) {
+      const problems = schemaProblems(spec.parameters, args)
+      if (problems.length) {
+        return {
+          status: 'failure',
+          executed: false,
+          message: `工具 ${name} 的参数不符合定义，未执行：${problems.join('；')}。${deferredDefinition(spec)}`,
+          errorKind: 'invalid_tool_arguments',
+        }
       }
     }
 
@@ -655,6 +690,25 @@ export function sanitizeToolName(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
 }
 
+/** 按需工具桩定义的说明后缀。 */
+const DEFERRED_NOTE = '。参数说明未列出：调用前先用 load_tool 读取完整定义，再按定义调用。'
+
+/** 按需工具桩定义的参数：任意对象。不要改为空对象的 strict 形状：strict 下空对象只接受 `{}`，调用将无法传参。 */
+const DEFERRED_PARAMETERS: Record<string, unknown> = {
+  type: 'object',
+  properties: {},
+  additionalProperties: true,
+}
+
+/**
+ * 按需工具的完整定义，供 `load_tool` 与参数不符时的报错使用。两处使用同一份文本，模型在两处读取到的定义一致。
+ */
+export function deferredDefinition(
+  spec: Pick<ToolSpec, 'name' | 'description' | 'parameters'>,
+): string {
+  return `\n## ${spec.name}\n${spec.description}\n参数定义（JSON Schema）：${JSON.stringify(spec.parameters)}`
+}
+
 function validate(spec: ToolSpec): void {
   if (!spec.name.trim()) throw new Error('[qywork] 工具缺少 name')
   if (!TOOL_NAME_PATTERN.test(spec.name)) {
@@ -679,4 +733,7 @@ function validate(spec: ToolSpec): void {
   }
   if (!spec.facet?.trim()) throw new Error(`[qywork] 工具 ${spec.name} 未声明 facet`)
   if (!spec.summary?.trim()) throw new Error(`[qywork] 工具 ${spec.name} 未声明 summary`)
+  if (spec.deferred && !spec.deferred.brief.trim()) {
+    throw new Error(`[qywork] 按需工具 ${spec.name} 未声明 deferred.brief`)
+  }
 }

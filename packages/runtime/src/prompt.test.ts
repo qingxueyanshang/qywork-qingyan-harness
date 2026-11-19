@@ -61,16 +61,6 @@ describe('上下文末尾注记', () => {
     expect(skills).toContain('read_skill')
   })
 
-  test('待加载的外部工具同理：工具名与一句摘要，参数说明通过 load_tool 加载', () => {
-    const notes = buildTailNotes({
-      ...base,
-      externalTools: [{ name: 'mcp__github__search', summary: '搜仓库' }],
-    })
-    const tools = note(notes, 'mcpTools')?.content ?? ''
-    expect(tools).toContain('- mcp__github__search：搜仓库')
-    expect(tools).toContain('load_tool')
-  })
-
   test('把模糊模型意图约束到本轮真实配置，并给出可直接调用的精确参数', () => {
     const notes = buildTailNotes({
       ...base,
@@ -100,43 +90,6 @@ describe('上下文末尾注记', () => {
 
     const unavailable = buildTailNotes(base)
     expect(unavailable.some((item) => item.content.includes('可分配给子 agent'))).toBe(false)
-  })
-
-  /**
-   * MCP 与插件的 summary 即第三方提供的 description 原文，可能包含多段。
-   * 不截断时，这份用于节省 token 的清单本身就会增长到数千 token：实测四个真实
-   * server 共 41 个工具，原样拼接为 2620 token，截断到 100 字为 1187 token。
-   */
-  test('外部工具的摘要只取首行并截断，不放入整段 description', () => {
-    const notes = buildTailNotes({
-      ...base,
-      externalTools: [{ name: 'mcp__x__fat', summary: `第一行\n第二行\n${'长'.repeat(500)}` }],
-    })
-    const tools = note(notes, 'mcpTools')?.content ?? ''
-    expect(tools).toContain('- mcp__x__fat：第一行')
-    expect(tools).not.toContain('第二行')
-
-    const long = buildTailNotes({
-      ...base,
-      externalTools: [{ name: 'mcp__x__fat', summary: '长'.repeat(500) }],
-    })
-    expect((note(long, 'mcpTools')?.content ?? '').length).toBeLessThan(200)
-  })
-
-  /**
-   * 复现原始失败形状：第三方 description 以空行或 `## Overview` 开头时，
-   * 清单中该行只剩工具名，模型无法据此判断是否需要 `load_tool`。
-   */
-  test('摘要跳过空行与标题行，取第一行有内容的文本', () => {
-    const line = (summary: string) => {
-      const notes = buildTailNotes({ ...base, externalTools: [{ name: 'mcp__x__t', summary }] })
-      return note(notes, 'mcpTools')?.content ?? ''
-    }
-    expect(line('\n\nSearch repositories.')).toContain('- mcp__x__t：Search repositories.')
-    expect(line('## Overview\n\nSearch repositories.')).toContain(
-      '- mcp__x__t：Search repositories.',
-    )
-    expect(line('## Overview\n\nSearch repositories.')).not.toContain('## Overview')
   })
 
   /**
@@ -236,7 +189,7 @@ describe('上下文末尾注记', () => {
       ...base,
       skills: [{ name: 'a', description: 'x' }],
       memories: [{ key: 'b', preview: 'y' }],
-      externalTools: [{ name: 'mcp__d__c', summary: 'z' }],
+      pendingMcp: [{ name: 'd', command: 'z' }],
     })
     expect(full.map((n) => n.group)).toEqual(['workspaceState', 'skills', 'memory', 'mcpTools'])
   })
@@ -796,7 +749,7 @@ describe('审计真实的系统提示词', () => {
     expect(p).toContain('/role')
     expect(p).toContain('可长期复用')
     expect(p).not.toContain('`@subagent`')
-    expect(p).toContain('直接调用该工具')
+    expect(p).toContain('先用 load_tool 读取完整定义')
   })
 
   /**

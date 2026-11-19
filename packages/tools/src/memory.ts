@@ -238,6 +238,7 @@ export const writeMemoryTool: ToolSpec = {
 
 export const deleteMemoryTool: ToolSpec = {
   name: 'delete_memory',
+  deferred: { brief: '删除一条长期记忆' },
   description: '删除一条长期记忆。默认删除项目层；用户明确要求删除全局记忆时 scope 必须传 global。',
   parameters: {
     type: 'object',
@@ -289,6 +290,7 @@ export const deleteMemoryTool: ToolSpec = {
 
 export const moveMemoryTool: ToolSpec = {
   name: 'move_memory',
+  deferred: { brief: '在项目层与全局层之间迁移一条记忆' },
   description:
     '把一条记忆从项目层迁移到全局层，或从全局层迁回项目层。迁移成功后只保留目标副本；目标层已有同名记忆时拒绝迁移，两层均不修改。',
   parameters: {

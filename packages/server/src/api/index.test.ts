@@ -1405,12 +1405,14 @@ describe('工具清单', () => {
     expect(row?.params).toEqual([])
   })
 
-  test('load_tool 出现在清单中：它不在 registerBuiltinTools 中，遗漏时页面缺少一行', async () => {
-    const row = (await tools()).find((t) => t.name === 'load_tool')
-    expect(row?.source).toBe('builtin')
-    expect(row?.params).toEqual([{ name: 'names', required: true }])
-    // 它不是常驻工具，用途中必须写明这一边界，否则页面描述与实际不符
-    expect(row?.summary).toContain('超过阈值')
+  test('load_tool 与按需工具都列在清单中', async () => {
+    const rows = await tools()
+    const load = rows.find((t) => t.name === 'load_tool')
+    expect(load?.source).toBe('builtin')
+    expect(load?.params).toEqual([{ name: 'names', required: true }])
+    expect(load?.summary).toContain('按需工具')
+    // 按需工具同样可以调用，清单照常列出，参数按完整定义显示。
+    expect(rows.find((t) => t.name === 'create_schedule')?.params.length).toBeGreaterThan(0)
   })
 
   /**

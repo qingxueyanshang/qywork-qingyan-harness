@@ -21,6 +21,7 @@ import { PluginPort } from './plugin-install/port.ts'
 
 export const installPluginTool: ToolSpec = {
   name: 'install_plugin',
+  deferred: { brief: '把编写好的插件目录安装为 qywork 插件' },
   description:
     '把工作区中已编写好的插件目录安装到本机的插件目录。' +
     '目录中必须有合法的 qywork.plugin.json。安装后从下一条消息起生效，不立即生效。' +

@@ -90,7 +90,10 @@ export class Session {
       registerBuiltinTools(all, ports, builtin)
       const allow = new Set(opts.allowedTools)
       for (const spec of all.list()) {
-        if (allow.has(spec.name)) registry.register(spec)
+        // 角色列出的工具预期可以直接调用，一律以完整定义注册，不按需。
+        if (!allow.has(spec.name)) continue
+        const { deferred: _deferred, ...full } = spec
+        registry.register(full)
       }
     }
     const ws = upsertWorkspace(opts.store, opts.workspaceRoot, basename(opts.workspaceRoot))
@@ -100,7 +103,6 @@ export class Session {
       workspaceId: ws.id,
       seqCounter: new Map(),
       extensions: null,
-      pendingTools: null,
       externalToolNames: new Set(),
       extraDirs,
       skillDirs: [],

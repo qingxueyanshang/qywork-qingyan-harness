@@ -26,6 +26,7 @@ const ID_OK = /^[a-zA-Z0-9_-]{1,40}$/
 
 export const defineRoleTool: ToolSpec = {
   name: 'define_role',
+  deferred: { brief: '用户明确要求创建或修改角色时（含 /role 命令），把角色定义写入工作区' },
   description:
     '用户明确要求创建或修改角色时（/role 命令或明确的文字要求），把角色写入工作区的 .qy/team.json；' +
     '用户未要求时不创建。角色是持久定义：有自己的系统提示词、可选的模型、思考强度与工具范围，' +

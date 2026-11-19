@@ -12,7 +12,6 @@ import { MEDIA_TOOLS } from './generate.ts'
 import { registerToolCatalog } from './index.ts'
 import { CommandPort } from './shell/port.ts'
 import { backgroundCommandTool } from './shell.ts'
-import { makeLoadToolTool, PendingToolPool } from './tool-pool.ts'
 
 const TASK = 'cmd_1b583aa7'
 /** 账本中记录的原始参数：strict 形状下模型为不提供的 `wait_seconds` 填写 null。 */
@@ -177,11 +176,10 @@ describe.each(['openai_responses', 'openai_chat_completions'] as const)(
   },
 )
 
-/** 注册全部内置工具，包括只在提供端口时注册的工具与按需加载入口。 */
+/** 注册全部内置工具，包括只在提供端口时注册的工具与按需工具的读取入口。 */
 function builtinSchemas(): ToolSchema[] {
   const registry = new ToolRegistry()
   registerToolCatalog(registry, Object.keys(MEDIA_TOOLS) as MediaOutput[])
-  registry.register(makeLoadToolTool(new PendingToolPool({ registry, onLoaded: () => {} })))
   return registry.schemas()
 }
 
@@ -264,6 +262,11 @@ describe('全部内置工具的可选参数', () => {
     expect(schemas.length).toBeGreaterThan(50)
     const cases: { label: string; name: string; withNull: unknown; omitted: unknown }[] = []
     for (const tool of schemas) {
+      // 按需工具在请求中只有桩定义，不以 strict 发送；完整定义由 load_tool 以文本返回，参数不经 strict 还原。
+      if (tool.parameters.additionalProperties === true) {
+        expect(tool.strict).toBe(false)
+        continue
+      }
       expect(tool.strict).toBe(true)
       for (const { at, schema } of optionalProperties(tool.parameters)) {
         const type = schema.type

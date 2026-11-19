@@ -25,6 +25,7 @@ function writableScope(raw: unknown): 'project' | 'global' | null {
 
 export const writeMcpServerTool: ToolSpec = {
   name: 'write_mcp_server',
+  deferred: { brief: '新增或更新一个 MCP 服务的配置' },
   description:
     '新增或更新一个 MCP server。config_json 只写单个 server 的配置对象。默认写项目层；用户明确要求全局时 scope 必须传 global。保存后连接并发现工具，回执区分配置保存与连接结果。',
   parameters: {
@@ -83,6 +84,7 @@ export const writeMcpServerTool: ToolSpec = {
 
 export const moveMcpServerTool: ToolSpec = {
   name: 'move_mcp_server',
+  deferred: { brief: '在项目层与全局层之间迁移一个 MCP 服务的配置' },
   description:
     '把一个 MCP server 从项目层迁移到全局层，或从全局层迁回项目层。成功后只保留目标层配置；目标层已有同名服务时拒绝且不修改来源层。',
   parameters: {
@@ -139,6 +141,7 @@ export const moveMcpServerTool: ToolSpec = {
 
 export const enableMcpServerTool: ToolSpec = {
   name: 'enable_mcp_server',
+  deferred: { brief: '取得用户同意后，启用项目配置（.agents/mcp.json）中尚未启用的 MCP 服务' },
   description:
     '启用项目配置（.agents/mcp.json）中尚未启用的 MCP 服务。项目文件中的服务经用户确认后才启动；启用即以用户权限运行其命令，因此先向用户列出该命令并取得同意，再调用本工具。服务内容此后被修改时回到未启用。',
   parameters: {

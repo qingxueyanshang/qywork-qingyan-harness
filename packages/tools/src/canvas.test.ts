@@ -159,6 +159,7 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
 
 const media: MediaPort = {
   displayName: () => undefined,
+  parameterTable: () => '',
   generate: async () => ({ ok: false, message: '不应直接调用' }),
 }
 

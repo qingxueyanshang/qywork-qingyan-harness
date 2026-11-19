@@ -30,7 +30,7 @@ import { CanvasPort, generateMedia, type MediaPort, OfficePort, resumeMedia } fr
 import type { QyConfig } from './config.ts'
 import { listMediaModels } from './config.ts'
 import { makeMediaPort, operationOf } from './media.ts'
-import { buildTailNotes } from './prompt.ts'
+import { buildTailNotes, mediaParameterTable } from './prompt.ts'
 import { Session } from './session.ts'
 
 const blobs = new ContentStore(':memory:')
@@ -834,8 +834,9 @@ describe('画布与生成开关', () => {
   })
 })
 
-describe('参数表快照', () => {
-  test('按类别列出模型、默认标记与该模型的原生参数', () => {
+describe('生成模型清单与参数表', () => {
+  /** 原始失败形状：参数表合计数千字写入每一轮的快照，随每次请求携带，代码任务同样承担。 */
+  test('快照按类别列出模型与默认标记，不含参数表；参数表由该类别的 mediaParameterTable 给出', () => {
     const notes = buildTailNotes({
       workspaceRoot: '/w',
       platform: 'linux',
@@ -845,10 +846,16 @@ describe('参数表快照', () => {
     const text = notes.map((n) => n.content).join('\n')
     expect(text).toContain('### 图像 · generate_image')
     expect(text).toContain('model `qwen-image-3.0`（默认）：生成、修改，参考图最多 3 张')
-    expect(text).toContain('  - prompt_extend：true | false')
     expect(text).toContain('model `wan2.7-image`：生成、修改，参考图最多 9 张')
-    // 参数表排在工作区状态行之前：参数表排在最后时，紧随其后的用户请求会被模型视为参数表的一部分。
+    expect(text).not.toContain('prompt_extend')
+    expect(text).toContain('用 load_tool 读取对应的生成工具时一并返回')
+    // 清单排在工作区状态行之前：清单排在最后时，紧随其后的用户请求会被模型视为清单的一部分。
     expect(text.indexOf('可用的生成模型')).toBeLessThan(text.indexOf('工作区：'))
+
+    const table = mediaParameterTable(listMediaModels(config()), 'image')
+    expect(table).toContain('model `qwen-image-3.0`（默认）：生成、修改，参考图最多 3 张')
+    expect(table).toContain('  - prompt_extend：true | false')
+    expect(table).not.toContain('generate_video')
   })
 
   /** 每行写明界面上的名称：保存的显示名称，没有时为目录名称；大模型向用户提及模型时使用该名称。 */
@@ -877,12 +884,9 @@ describe('参数表快照', () => {
     expect(notes.map((n) => n.content).join('\n')).not.toContain('可用的生成模型')
   })
 
-  test('登记了指代写法的模型额外输出一行写法，未登记的不输出', () => {
-    const notes = buildTailNotes({
-      workspaceRoot: '/w',
-      platform: 'linux',
-      mode: 'auto',
-      mediaModels: [
+  test('参数表中登记了指代写法的模型额外输出一行写法，未登记的不输出', () => {
+    const text = mediaParameterTable(
+      [
         {
           provider: 'ark',
           model: 'doubao-seedance-2-5-260628',
@@ -905,8 +909,8 @@ describe('参数表快照', () => {
           isDefault: false,
         },
       ],
-    })
-    const text = notes.map((n) => n.content).join('\n')
+      'video',
+    )
     expect(text).toContain(
       '提示词中指代参考素材：图像写「@图片1」「@图片2」，视频写「@视频1」「@视频2」',
     )

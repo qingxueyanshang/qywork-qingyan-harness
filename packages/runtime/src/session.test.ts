@@ -49,7 +49,7 @@ import {
 import { BrowserPort, FileReadPort, HistoryPort } from '@qywork/tools'
 import { NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
 import { approveMcpServers } from './mcp-approvals.ts'
-import { buildTailNotes, outputLimitNote } from './prompt.ts'
+import { outputLimitNote } from './prompt.ts'
 import { withAttachments } from './session/attachments.ts'
 import { loadExtensionTools } from './session/extension-tools.ts'
 import * as permission from './session/permission.ts'
@@ -1082,6 +1082,46 @@ async function workspaceWithMcp(
  * 而「名称是否写错」的判定如果在扩展加载之前执行，合法的
  * `mcp__demo__ping` 会被报告为未知，导致用户排查一个不存在的问题。
  */
+describe('allowedTools 与按需工具', () => {
+  /** 角色列出的工具预期可以直接调用：按需的内置工具在角色会话中以完整定义注册，不需要先读取定义。 */
+  test('allowedTools 列出的按需工具以完整定义注册', async () => {
+    const store = new Store({ path: ':memory:' })
+    const s = new Session({
+      content: blobs,
+      store,
+      config,
+      workspaceRoot: process.cwd(),
+      signal: new AbortController().signal,
+      allowedTools: ['read_file', 'create_schedule'],
+    })
+    const registry = stateOf(s).registry
+    expect(registry.get('create_schedule')?.deferred).toBeUndefined()
+    const schema = registry.schemas().find((t) => t.name === 'create_schedule')
+    expect(
+      Object.keys((schema?.parameters as { properties: object }).properties).length,
+    ).toBeGreaterThan(0)
+    expect(registry.has('load_tool')).toBe(false)
+    await s.dispose()
+    store.close()
+  })
+
+  test('没有限定时同一工具为按需形态，load_tool 常驻', async () => {
+    const store = new Store({ path: ':memory:' })
+    const s = new Session({
+      content: blobs,
+      store,
+      config,
+      workspaceRoot: process.cwd(),
+      signal: new AbortController().signal,
+    })
+    const registry = stateOf(s).registry
+    expect(registry.get('create_schedule')?.deferred).toBeDefined()
+    expect(registry.has('load_tool')).toBe(true)
+    await s.dispose()
+    store.close()
+  })
+})
+
 describe('allowedTools 与扩展工具', () => {
   test('allowedTools 中可以指定 MCP 工具，且只放行指定的工具', async () => {
     const store = new Store({ path: ':memory:' })
@@ -1108,15 +1148,14 @@ describe('allowedTools 与扩展工具', () => {
 })
 
 /**
- * 外部工具的 schema 按总量转为按需加载。
+ * 外部工具的 schema 按总量转为按需。
  *
- * 锁定的是超出预算时这些 schema 确实未进入请求：该约束失效时不会报错，
- * 只会使费用不变，按需加载失去作用且无法察觉。
+ * 锁定两条：超出预算时完整定义确实未进入请求（失效时不报错，只会使费用不变）；读取定义不改变工具表，
+ * 下一条消息新建的 Session 中工具表逐字节相同（失效时缓存整段不命中，同样不报错）。
  *
- * 阈值与实测数据在 `tools/tool-pool.ts`。此处的大体积 server 用长描述增加总量，
- * 不依赖具体阈值，只依赖总量超出预算。
+ * 阈值与实测数据在 `tools/tool-pool.ts`。此处的大体积 server 用长描述增加总量，不依赖具体阈值，只依赖总量超出预算。
  */
-describe('外部工具按总量转为按需加载', () => {
+describe('外部工具按总量转为按需', () => {
   const fatTools = Array.from({ length: 8 }, (_, i) => ({
     name: `t${i}`,
     description: 'x'.repeat(800),
@@ -1125,47 +1164,38 @@ describe('外部工具按总量转为按需加载', () => {
   async function assemble() {
     const store = new Store({ path: ':memory:' })
     const root = await workspaceWithMcp('fat', fatTools)
-    const ws = upsertWorkspace(store, root, 'ws')
-    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
-
-    const s = new Session({
-      content: blobs,
-      store,
-      config,
-      workspaceRoot: root,
-      signal: new AbortController().signal,
-    })
-    await loadExtensionTools(stateOf(s), DEFAULT_DENSITY, conv.id)
-
-    const registry = stateOf(s).registry
-    const nextSnapshot = () => {
-      const pending = stateOf(s).pendingTools
-      return (
-        buildTailNotes({
-          workspaceRoot: root,
-          platform: process.platform,
-          mode: 'auto',
-          externalTools: pending?.index() ?? [],
-        }).find((note) => note.group === 'mcpTools')?.content ?? ''
-      )
+    const open = async () => {
+      const s = new Session({
+        content: blobs,
+        store,
+        config,
+        workspaceRoot: root,
+        signal: new AbortController().signal,
+      })
+      await loadExtensionTools(stateOf(s), DEFAULT_DENSITY)
+      return s
     }
-    return { store, s, conv, registry, nextSnapshot }
+    const s = await open()
+    return { store, s, registry: stateOf(s).registry, open }
   }
 
-  test('超出预算时外部工具不进入 schemas，只出现一个 load_tool', async () => {
-    const { store, s, registry, nextSnapshot } = await assemble()
-    const names = registry.schemas().map((t) => t.name)
+  test('超出预算时外部工具以桩定义进入 schemas，完整说明不进入请求', async () => {
+    const { store, s, registry } = await assemble()
+    const fat = registry.schemas().filter((t) => t.name.startsWith('mcp__fat__'))
 
-    expect(names).toContain('load_tool')
-    expect(names.filter((n) => n.startsWith('mcp__fat__'))).toEqual([])
-    // 但下一次 run 冻结快照时仍能取得待加载清单。
-    expect(nextSnapshot()).toContain('mcp__fat__t0')
+    expect(fat).toHaveLength(8)
+    for (const t of fat) {
+      expect(t.description).not.toContain('x'.repeat(200))
+      expect(t.description).toContain('load_tool')
+      expect(t.strict).toBe(false)
+    }
     await s.dispose()
     store.close()
   }, 20_000)
 
-  test('load_tool 加载后即进入 schemas，下一次 run 的快照不再列出该工具', async () => {
-    const { store, s, registry, nextSnapshot } = await assemble()
+  test('load_tool 返回完整定义，工具表不变；下一条消息的工具表逐字节相同', async () => {
+    const { store, s, registry, open } = await assemble()
+    const before = JSON.stringify(registry.schemas())
     const out = await registry.execute(
       'load_tool',
       { names: ['mcp__fat__t0'] },
@@ -1173,40 +1203,11 @@ describe('外部工具按总量转为按需加载', () => {
     )
 
     expect(out.status).toBe('success')
-    expect(registry.schemas().map((t) => t.name)).toContain('mcp__fat__t0')
-    expect(nextSnapshot()).not.toContain('mcp__fat__t0：')
-    await s.dispose()
-    store.close()
-  }, 20_000)
+    expect(out.message).toContain('x'.repeat(800))
+    expect(JSON.stringify(registry.schemas())).toBe(before)
 
-  /**
-   * 每条消息新建一个 Session，进程内的「已加载」集合无法跨消息保留。
-   * 只有写入账本才有效，否则模型每轮都须重新加载。
-   */
-  test('已加载的工具在下一条消息中直接位于工具表内', async () => {
-    const { store, s, conv, registry } = await assemble()
-    await registry.execute(
-      'load_tool',
-      { names: ['mcp__fat__t0'] },
-      toolContext(s, 'rn_x', 'm', 'cv_x') as never,
-    )
-    const root = stateOf(s)
-
-    const next = new Session({
-      content: blobs,
-      store,
-      config,
-      workspaceRoot: root.opts.workspaceRoot,
-      signal: new AbortController().signal,
-    })
-    await loadExtensionTools(stateOf(next), DEFAULT_DENSITY, conv.id)
-
-    const names = stateOf(next)
-      .registry.schemas()
-      .map((t) => t.name)
-    expect(names).toContain('mcp__fat__t0')
-    // 只恢复已加载的工具，其余仍待加载。
-    expect(names).not.toContain('mcp__fat__t1')
+    const next = await open()
+    expect(JSON.stringify(stateOf(next).registry.schemas())).toBe(before)
     await next.dispose()
     await s.dispose()
     store.close()

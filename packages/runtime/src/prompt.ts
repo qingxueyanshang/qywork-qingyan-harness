@@ -201,7 +201,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'load_tool',
-    line: '- 外部工具：MCP 与插件的工具不在工具表里，末尾清单仅列出名称，用 load_tool 加载后才能调用。用户用 `@工具注册名` 明确点名时，加载并调用该工具。',
+    line: '- 按需工具：使用较少的工具与总量较大的 MCP、插件工具在工具表中只有一句用途，说明中写有「调用前先用 load_tool 读取完整定义」。需要使用时先用 load_tool 读取完整定义，再以原名调用；参数不符合定义时，报错中附有完整定义，按它改正后重新调用。',
   },
   {
     tool: 'define_role',
@@ -285,7 +285,7 @@ export function buildSystemPrompt(toolNames: ReadonlySet<string>, outputLimit?: 
    */
   if ([...toolNames].some((name) => name.startsWith('mcp__') || name.includes('__'))) {
     caps.push(
-      '- 点名调用：用户用 `@工具注册名` 明确选择已在工具表中的 MCP 或插件工具时，直接调用该工具。',
+      '- 点名调用：用户用 `@工具注册名` 明确选择 MCP 或插件工具时调用该工具；它在工具表中只有一句用途时，先用 load_tool 读取完整定义。',
     )
   }
   const environment = caps.length
@@ -308,21 +308,13 @@ export function buildSystemPrompt(toolNames: ReadonlySet<string>, outputLimit?: 
 export type TailNote = RunContextSegment
 
 /**
- * 外部工具清单中每行摘要的截断长度。
- *
- * MCP 与插件的 `summary` 即第三方提供的 description 原文，可能包含多段。
- * 实测（2026-08-16，四个真实 server 共 41 个工具）：原样拼接为 2620 token，
- * 截断到 100 字为 1187 token。截断的是清单而不是工具本身：完整说明由
- * `load_tool` 按需加载，清单只用于告知模型该工具存在。
+ * 运行上下文中逐行列出的说明（角色、未启用的 MCP 服务的命令、目标）的截断长度。
+ * 这些原文由用户或第三方提供，可能包含多段；清单只用于告知模型该项存在，完整内容另有读取途径。
  */
 const SUMMARY_MAX_CHARS = 100
 
 /**
- * 取摘要中第一行有内容的文本。
- *
- * 必须跳过空行与 markdown 标题行：第三方 description 常以空行或 `## Overview`
- * 开头，只取第一行会使清单中该行只剩工具名，
- * 模型无法据此判断是否需要 `load_tool`。
+ * 取摘要中第一行有内容的文本。必须跳过空行与 markdown 标题行：原文常以空行或标题开头，只取第一行时该行只剩名称。
  */
 function oneLine(text: string): string {
   const first = text
@@ -385,9 +377,30 @@ function mentionNote(style: MentionStyle): string {
   return `提示词中指代参考素材：${kinds.join('，')}，按类别分别计数，顺序与参数中的 images / videos / audios 相同`
 }
 
+/** 一个生成模型在清单中的一行：名称、provider、model、可做的操作与输入上限。已下架的型号由调用方排除。 */
+function mediaModelLine(m: MediaModelEntry): string {
+  const spec = lookupMediaModel(m.model, m.kind, m.spec)
+  const ops = spec.operations.map(operationLabel).join('、')
+  const limits = [
+    spec.inputs.maxImages ? `参考图最多 ${spec.inputs.maxImages} 张` : '',
+    spec.inputs.maxVideos ? `参考视频最多 ${spec.inputs.maxVideos} 个` : '',
+    spec.inputs.maxAudios ? `参考音频最多 ${spec.inputs.maxAudios} 段` : '',
+    spec.maxPromptLength ? `提示词最多 ${spec.maxPromptLength} 个字符` : '',
+    spec.inputs.maxAudioBytes
+      ? `每段参考音频最多 ${spec.inputs.maxAudioBytes / 1024 / 1024} MB`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('、')
+  return `- 名称「${mediaModelLabel(m, spec)}」；provider \`${m.provider}\`；model \`${m.model}\`${m.isDefault ? '（默认）' : ''}：${ops}${limits ? `，${limits}` : ''}`
+}
+
 /**
- * 生成模型及其参数表。参数名是接口原生字段，原样写入 `params_json`。
- * 轮次开始时写入快照；轮次进行中配置变化时，以另一标题随注入的用户消息附上（`runtime/session/turn/known-context.ts`）。
+ * 生成模型清单：每个模型一行，不含参数表。轮次开始时写入快照；轮次进行中配置变化时，以另一标题随注入的用户消息附上
+ * （`runtime/session/turn/known-context.ts`）。
+ *
+ * 参数表由 `load_tool` 读取对应生成工具时返回（`mediaParameterTable`）。不要把参数表放回快照：配置了生成模型时
+ * 参数表合计数千字，每次请求都携带，代码任务同样承担这部分费用。
  */
 export function mediaModelsNote(
   models: MediaModelEntry[],
@@ -399,35 +412,42 @@ export function mediaModelsNote(
     // 已下架的型号提交即被拒绝，不提供给大模型。
     const rows = models.filter((m) => m.output === output && !m.delisted)
     if (!rows.length) continue
-    const lines = [`### ${MEDIA_LABEL[output]} · ${MEDIA_TOOLS[output].name}`]
-    for (const m of rows) {
-      const spec = lookupMediaModel(m.model, m.kind, m.spec)
-      const ops = spec.operations.map(operationLabel).join('、')
-      const limits = [
-        spec.inputs.maxImages ? `参考图最多 ${spec.inputs.maxImages} 张` : '',
-        spec.inputs.maxVideos ? `参考视频最多 ${spec.inputs.maxVideos} 个` : '',
-        spec.inputs.maxAudios ? `参考音频最多 ${spec.inputs.maxAudios} 段` : '',
-        spec.maxPromptLength ? `提示词最多 ${spec.maxPromptLength} 个字符` : '',
-        spec.inputs.maxAudioBytes
-          ? `每段参考音频最多 ${spec.inputs.maxAudioBytes / 1024 / 1024} MB`
-          : '',
-      ]
-        .filter(Boolean)
-        .join('、')
-      lines.push(
-        `- 名称「${mediaModelLabel(m, spec)}」；provider \`${m.provider}\`；model \`${m.model}\`${m.isDefault ? '（默认）' : ''}：${ops}${limits ? `，${limits}` : ''}`,
-        ...(spec.mention ? [`  - ${mentionNote(spec.mention)}`] : []),
-        ...spec.params.map((p) => `  - ${describeParam(p)}`),
-      )
-    }
-    sections.push(lines.join('\n'))
+    sections.push(
+      [
+        `### ${MEDIA_LABEL[output]} · ${MEDIA_TOOLS[output].name}`,
+        ...rows.map(mediaModelLine),
+      ].join('\n'),
+    )
   }
   return (
     `## ${heading}\n${sections.join('\n\n')}\n\n` +
-    'params_json 仅使用所选模型列出的参数，取值依据用户要求（尺寸、比例、清晰度、数量等）或自行判断，无需设置的参数省略；' +
-    'provider 与 model 须取自同一行，两者均省略时使用默认模型。' +
+    '各模型的参数（params_json 的字段与取值）用 load_tool 读取对应的生成工具时一并返回；画布生成卡的参数同样如此。' +
+    'provider 与 model 须取自同一行，两者均省略时使用标为（默认）的模型；该类别没有标为（默认）的模型时须写明 provider 与 model。' +
     '名称是界面上显示的模型名称，向用户提及模型时优先使用名称。' +
     '本清单为本轮开始时的配置；用户在本轮进行中更改配置时，当前清单随其消息附上。生成工具按当前配置校验 provider 与 model。'
+  )
+}
+
+/**
+ * 某一类别当前配置的生成模型及其参数表。参数名是接口原生字段，原样写入 `params_json`。
+ * 由 `MediaPort.parameterTable` 在 `load_tool` 读取生成工具时调用，按调用时的配置生成。
+ */
+export function mediaParameterTable(models: MediaModelEntry[], output: MediaOutput): string {
+  const rows = models.filter((m) => m.output === output && !m.delisted)
+  if (!rows.length) return `当前没有可用的${MEDIA_LABEL[output]}模型。`
+  const lines = [`## 当前可用的${MEDIA_LABEL[output]}模型与参数`]
+  for (const m of rows) {
+    const spec = lookupMediaModel(m.model, m.kind, m.spec)
+    lines.push(
+      mediaModelLine(m),
+      ...(spec.mention ? [`  - ${mentionNote(spec.mention)}`] : []),
+      ...spec.params.map((p) => `  - ${describeParam(p)}`),
+    )
+  }
+  return (
+    `${lines.join('\n')}\n\n` +
+    'params_json 仅使用所选模型列出的参数，取值依据用户要求（尺寸、比例、清晰度、数量等）或自行判断，无需设置的参数省略；' +
+    'provider 与 model 须取自同一行，两者均省略时使用标为（默认）的模型；该类别没有标为（默认）的模型时须写明 provider 与 model。'
   )
 }
 
@@ -480,8 +500,8 @@ export function buildTailNotes(input: {
    */
   models?: { provider: string; model: string }[]
   /**
-   * 已配置的生成模型。只在注册了生成工具时传入：大模型据此选择模型、按参数表填写 `params_json`。
-   * 参数表取自生成目录，与发送前的校验使用同一份数据，不会出现参数表列出而校验拒绝的情况。
+   * 已配置的生成模型。只在注册了生成工具时传入：大模型据此选择模型；参数表由 `load_tool` 读取生成工具时返回
+   * （`mediaParameterTable`），取自生成目录，与发送前的校验使用同一份数据。
    */
   mediaModels?: MediaModelEntry[]
   /** 发送消息时界面右侧面板显示的工作区文件（`SendMessageCommand.viewing`）。 */
@@ -500,12 +520,6 @@ export function buildTailNotes(input: {
   }
   /** 本会话已有的子 agent。`undefined` = 本会话没有任务派发能力。 */
   subagents?: SubagentSummary[]
-  /**
-   * 待加载的外部工具：只含工具名与一句摘要，完整参数说明由模型按需通过 load_tool 加载。
-   *
-   * 该清单属于 run 快照，不能放入冻结 system 前缀：它随用户安装或卸载 MCP / 插件而变化。
-   */
-  externalTools?: { name: string; summary: string }[]
   /**
    * 项目配置（`.agents/mcp.json`）中尚未启用的 MCP 服务与其命令行。属于 run 快照：随项目文件与用户的确认变化。
    */
@@ -555,8 +569,8 @@ export function buildTailNotes(input: {
   }
 
   /*
-   * 生成模型的参数表排在最前，工作区状态行在其后。快照与用户消息合并在同一条消息中，
-   * 参数表若是最后一节，紧随其后的用户请求会被视为参数表的一部分：实测中模型回复「没有说要画什么」。
+   * 生成模型清单排在最前，工作区状态行在其后。快照与用户消息合并在同一条消息中，
+   * 清单若是最后一节，紧随其后的用户请求会被视为清单的一部分：实测中模型回复「没有说要画什么」。
    */
   const notes: TailNote[] = [
     ...(input.mediaModels?.length
@@ -642,15 +656,6 @@ export function buildTailNotes(input: {
     notes.push({
       content: `## 长期记忆（需要正文时用 read_memory 读取）\n${list}`,
       group: 'memory',
-    })
-  }
-  // 外部工具与技能、记忆的处理方式相同：清单常驻，参数说明按需加载。它归入 `mcpTools` 分组，
-  // 与这些工具的 schema 同组：面板上「外部工具」一行显示的即这部分开销。
-  if (input.externalTools?.length) {
-    const list = input.externalTools.map((t) => `- ${t.name}：${oneLine(t.summary)}`).join('\n')
-    notes.push({
-      content: `## 可加载的外部工具（调用前先用 load_tool 加载参数说明）\n${list}`,
-      group: 'mcpTools',
     })
   }
   if (input.pendingMcp?.length) {

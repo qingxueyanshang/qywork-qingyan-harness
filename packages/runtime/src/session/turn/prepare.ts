@@ -99,7 +99,7 @@ export async function prepareTurn(
    */
   const compactPercent = compactPercentFor(config, adapter.spec)
   if (!session.extensions) {
-    await loadExtensionTools(session, adapter.spec.density, conversationId)
+    await loadExtensionTools(session, adapter.spec.density)
   }
   const roots = scopeRoots(session.opts.workspaceRoot)
   const skills = await scanSkills(roots).catch(() => [])
@@ -176,7 +176,6 @@ export async function prepareTurn(
     // 参数表随生成工具提供：工具未注册（未配置模型、角色未指定）时不提供。
     ...(mediaModels.length ? { mediaModels } : {}),
     ...(options?.viewing ? { viewing: options.viewing } : {}),
-    externalTools: session.pendingTools?.index() ?? [],
     pendingMcp: session.extensions?.mcpConfig.pending ?? [],
     todos: latestTodos(store, conversationId),
     // 未执行完毕的任务图随快照一并冻结。没有派发通道时不存在任务图，无需查询。

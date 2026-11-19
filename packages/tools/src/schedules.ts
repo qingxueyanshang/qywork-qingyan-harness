@@ -96,6 +96,7 @@ const BOUNDARY =
 
 export const createScheduleTool: ToolSpec = {
   name: 'create_schedule',
+  deferred: { brief: '创建定时任务：在设定的时间把一段提示作为消息发送给会话' },
   description:
     '排定一条定时任务：到达设定时间时把 prompt 作为一条用户消息发送到当前会话，上下文延续，' +
     '不再需要时用 delete_schedule 停止。' +
@@ -201,6 +202,7 @@ export const createScheduleTool: ToolSpec = {
 
 export const listSchedulesTool: ToolSpec = {
   name: 'list_schedules',
+  deferred: { brief: '列出本工作区的定时任务' },
   description:
     '列出当前工作区已排定的定时任务：触发方式、发回原会话还是每次新建会话、下次预计时刻、' +
     '上次执行的时间与结果。' +
@@ -256,6 +258,7 @@ export const listSchedulesTool: ToolSpec = {
 
 export const deleteScheduleTool: ToolSpec = {
   name: 'delete_schedule',
+  deferred: { brief: '删除一个定时任务' },
   description:
     '删除一条定时任务，id 取自 list_schedules。只能删除当前工作区的任务：' +
     '任务表由全机共享，其他工作区的任务在此不可见、不可删除。',

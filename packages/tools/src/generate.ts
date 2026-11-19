@@ -852,8 +852,16 @@ function callFields(ctx: ToolContext, tool: string): Record<string, string> {
 
 /** 三个生成工具共用的参数说明。 */
 const PARAMS_NOTE =
-  'params_json 仅使用本轮「可用的生成模型」中该模型列出的参数，取值依据用户要求或自行判断，无需设置的参数省略。' +
-  'provider 与 model 须取自该清单的同一行；两者均省略时使用默认模型。'
+  'params_json 仅使用下方参数表中该模型列出的参数，取值依据用户要求或自行判断，无需设置的参数省略。' +
+  'provider 与 model 须取自参数表或本轮「可用的生成模型」的同一行；两者均省略时使用标为（默认）的模型；该类别没有标为（默认）的模型时须写明 provider 与 model。'
+
+/**
+ * 生成工具的按需声明：工具表中只放一句用途，完整定义与当前配置的模型参数表由 `load_tool` 一并读取
+ * （`MediaPort.parameterTable`）。生成工具使用率低于 1%，参数表合计数千字，不随每次请求携带。
+ */
+function deferredMedia(output: MediaOutput, brief: string): NonNullable<ToolSpec['deferred']> {
+  return { brief, detail: (ctx) => ctx.port(MediaPort)?.parameterTable(output) ?? null }
+}
 
 /**
  * 生成文件在会话中的唯一展示入口是回复中的路径链接，点击后由正文链接的处理逻辑交给右侧文件预览。
@@ -865,6 +873,7 @@ const DISPLAY_NOTE =
 
 export const generateImageTool: ToolSpec = {
   name: 'generate_image',
+  deferred: deferredMedia('image', '用已配置的图像模型生成或修改图片'),
   description:
     '调用已配置的图像生成模型执行文生图或图像编辑，生成的文件写入工作区，结果仅返回文件路径。' +
     '未提供 images 时按提示词生成；提供 images（工作区内的图片路径）时以这些图片为基础进行编辑或参考生成，编辑的部位与方式在 prompt 中说明。' +
@@ -882,7 +891,7 @@ export const generateImageTool: ToolSpec = {
       },
       params_json: {
         type: 'string',
-        description: '该模型的参数，JSON 对象，字段与取值见本轮「可用的生成模型」',
+        description: '该模型的参数，JSON 对象，字段与取值见读取本工具定义时一并返回的参数表',
       },
       provider: { type: 'string', description: '接口名' },
       model: { type: 'string', description: '模型 id' },
@@ -925,6 +934,7 @@ export const generateImageTool: ToolSpec = {
 
 export const generateVideoTool: ToolSpec = {
   name: 'generate_video',
+  deferred: deferredMedia('video', '用已配置的视频模型生成视频'),
   description:
     '调用已配置的视频生成模型生成视频，生成的文件写入工作区，结果仅返回文件路径。远端任务需排队处理，通常耗时数分钟。' +
     '任务类型由提供的输入决定：均未提供时为文生视频；提供 first_frame 为首帧生视频；同时提供 last_frame 为首尾帧生视频；' +
@@ -952,7 +962,7 @@ export const generateVideoTool: ToolSpec = {
       },
       params_json: {
         type: 'string',
-        description: '该模型的参数，JSON 对象，字段与取值见本轮「可用的生成模型」',
+        description: '该模型的参数，JSON 对象，字段与取值见读取本工具定义时一并返回的参数表',
       },
       provider: { type: 'string', description: '接口名' },
       model: { type: 'string', description: '模型 id' },
@@ -1044,6 +1054,7 @@ export const retrieveMediaTool: ToolSpec = {
 
 export const generateAudioTool: ToolSpec = {
   name: 'generate_audio',
+  deferred: deferredMedia('audio', '用已配置的音频模型生成语音、音乐等音频'),
   description:
     '调用已配置的音频模型生成语音、对话或音效，生成的文件写入工作区，结果仅返回文件路径。' +
     '音色、语种、语气等在 params_json 中设置；支持参考音频的模型可通过 audios 提供素材，按该模型声明的写法引用。' +
@@ -1064,7 +1075,7 @@ export const generateAudioTool: ToolSpec = {
       },
       params_json: {
         type: 'string',
-        description: '该模型的参数，JSON 对象，字段与取值见本轮「可用的生成模型」',
+        description: '该模型的参数，JSON 对象，字段与取值见读取本工具定义时一并返回的参数表',
       },
       provider: { type: 'string', description: '接口名' },
       model: { type: 'string', description: '模型 id' },

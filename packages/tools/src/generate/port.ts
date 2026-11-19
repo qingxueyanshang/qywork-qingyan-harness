@@ -1,6 +1,12 @@
 import { definePort } from '@qywork/agent'
 import type { MediaFile, MediaImageResult, MediaInput } from '@qywork/ai'
-import type { GenerateOutput, MediaDiagnostic, MediaSpend, RetryWait } from '@qywork/core'
+import type {
+  GenerateOutput,
+  MediaDiagnostic,
+  MediaOutput,
+  MediaSpend,
+  RetryWait,
+} from '@qywork/core'
 
 /**
  * 生成端口：生成工具与画布的运行经由它调用生成模型。
@@ -18,6 +24,11 @@ export interface MediaPort {
    * 回执中提及模型时经 `modelMention` 使用它：有显示名称时只写该名称。
    */
   displayName(type: GenerateOutput, provider: string, model: string): string | undefined
+  /**
+   * 该类别当前配置的生成模型与参数表（文本），按调用时的配置生成。`load_tool` 读取生成工具时一并返回：
+   * 参数表不随每次请求携带，模型需要生成或建生成卡时读取。
+   */
+  parameterTable(output: MediaOutput): string
 }
 
 export const MediaPort = definePort<MediaPort>('media')

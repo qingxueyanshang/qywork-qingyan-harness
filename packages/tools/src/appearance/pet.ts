@@ -29,6 +29,7 @@ const summaryOf = (e: PetEntry) => `「${e.pack.name}」（${e.id}）`
 
 export const petTool: ToolSpec = {
   name: 'pet',
+  deferred: { brief: '查看、新建或切换 qywork 界面上的宠物形象与动画' },
   description:
     '读取、创建与切换 qywork 的宠物。宠物显示在侧栏底部，用五个状态表现任务进度：' +
     'desktop（AI 正在操作电脑）、failed（任务出错）、working（任务运行中）、done（任务完成）、idle（空闲）。' +

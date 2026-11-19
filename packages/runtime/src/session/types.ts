@@ -13,7 +13,6 @@ import type {
   StepId,
 } from '@qywork/core'
 import type { ContentStore, Store } from '@qywork/store'
-import type { PendingToolPool } from '@qywork/tools'
 import type { QyConfig } from '../config.ts'
 import type { Extensions } from '../extensions.ts'
 
@@ -127,12 +126,7 @@ export interface SessionState {
   /** 已加载的扩展。null = 尚未加载（首次 ask 时加载）。 */
   extensions: Extensions | null
 
-  /**
-   * 外部工具的待加载池。null 表示本会话外部工具的 schema 总量在预算内，全部常驻。
-   *
-   * 待加载池中的工具不在注册表中，因此不进入请求；模型通过 `load_tool` 加载。
-   */
-  pendingTools: PendingToolPool | null
+  /** 本会话工具表中由扩展提供的工具名。重新加载扩展时按它替换这一批工具，不触及内置工具。 */
   externalToolNames: Set<string>
 
   /**

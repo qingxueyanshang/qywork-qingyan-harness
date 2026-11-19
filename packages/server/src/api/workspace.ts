@@ -283,7 +283,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    */
   if (p === '/api/tools') {
     const { ToolRegistry, TOOL_CATEGORIES } = await import('@qywork/agent')
-    const { registerToolCatalog, LOAD_TOOL_SPEC } = await import('@qywork/tools')
+    const { registerToolCatalog } = await import('@qywork/tools')
     const { acquireExtensions, releaseExtensions, pluginToolPrefix, toolNamePrefix } = await import(
       '@qywork/runtime'
     )
@@ -291,13 +291,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
     const registry = new ToolRegistry()
     // 设置页列出各通道的完整工具目录；会话实际可用的工具仍由端口与配置决定。
     registerToolCatalog(registry, MEDIA_OUTPUTS)
-    /*
-     * `load_tool` 需要手动补入一行：它只在会话建立待加载池时注册，不在 `registerBuiltinTools`
-     * 中，此处新建的注册表无法列出它。不要在此处重新计算分档（统计 schema 总量、超过阈值才列出）：
-     * 该判断的真源在建立待加载池处，计算两次即形成两本账。因此此处使用不带实现的规格，
-     * 「只在超过阈值时注册」这条边界写在它的用途中。
-     */
-    const rows = [...registry.list(), LOAD_TOOL_SPEC].map((s) => toolRow(s, 'builtin'))
+    const rows = registry.list().map((s) => toolRow(s, 'builtin'))
 
     const ext = await acquireExtensions(d.workspaceRoot)
     try {

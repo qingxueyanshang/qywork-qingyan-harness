@@ -13,7 +13,6 @@ export { type RunOwner, Store } from './db.ts'
 // 目标与自动继续：runtime 经由端口提供给工具，server 在 run 结束处判定是否自动继续
 export { createGoal, currentGoal, updateGoal } from './goals.ts'
 // 按需加载的外部工具：runtime 在装配工具表时读取、在 load_tool 成功后写入
-export { listLoadedTools, recordLoadedTools } from './loaded-tools.ts'
 // 落盘 schema 版本。真源位于 migrations/index.ts，不设中心登记表（CLAUDE.md D2）
 export { SCHEMA_VERSION } from './migrations/index.ts'
 // 请求信封的明细：runtime 的请求持久化层随主请求写入，按指纹读取
