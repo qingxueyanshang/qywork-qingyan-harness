@@ -327,7 +327,7 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
 
         <Show when={!requestsFailed()}>
           <h3 class="account-section">使用记录</h3>
-          <RequestTable provider={props.signed.provider} pages={requests} />
+          <RequestTable pages={requests} />
         </Show>
       </div>
     </>
@@ -562,8 +562,14 @@ function createRequestPages() {
   return { rows, done, loading, error, more }
 }
 
+/** 与画布相同：已不在型号清单中的型号在名称后标出「（已下架）」。 */
+function recordModel(r: CloudRequest): string {
+  if (r.model === null) return r.delisted ? '已下架的型号' : '—'
+  return r.delisted ? `${r.model}（已下架）` : r.model
+}
+
 /** 逐条请求记录。「输入」含缓存命中与缓存写入，与「用量」页同一口径。 */
-function RequestTable(props: { provider: string; pages: ReturnType<typeof createRequestPages> }) {
+function RequestTable(props: { pages: ReturnType<typeof createRequestPages> }) {
   const { rows, done, loading, error, more } = props.pages
 
   return (
@@ -591,7 +597,7 @@ function RequestTable(props: { provider: string; pages: ReturnType<typeof create
                   {(r) => (
                     <tr>
                       <td>{when(r.startedAt)}</td>
-                      <td>{r.modelId === null ? '—' : modelName(props.provider, r.modelId)}</td>
+                      <td>{recordModel(r)}</td>
                       {/* 生成任务没有 token，三列合为一格显示计量。 */}
                       <Show
                         when={r.mediaMeter}

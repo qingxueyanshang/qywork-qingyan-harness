@@ -67,12 +67,16 @@ function record(
   id: string,
   failure: string | null = null,
   terms: Partial<
-    Pick<CloudRequest, 'longContext' | 'offPeak' | 'cacheWrite1hTokens' | 'mediaMeter' | 'modelId'>
+    Pick<
+      CloudRequest,
+      'longContext' | 'offPeak' | 'cacheWrite1hTokens' | 'mediaMeter' | 'model' | 'delisted'
+    >
   > = {},
 ): CloudRequest {
   return {
     id,
-    modelId: 'claude-sonnet-5-5',
+    model: 'Claude Sonnet 5.5',
+    delisted: false,
     failure,
     inputTokens: 10,
     outputTokens: 5,
@@ -895,7 +899,7 @@ test('可用模型可设为默认对话模型，写入与模型设置页同一�
   view.close()
 })
 
-test('可用模型、生成模型与使用记录显示模型目录中的名称，生成模型列出时长与素材上限；目录中没有的型号显示型号本身', async () => {
+test('可用模型与生成模型显示模型目录中的名称，生成模型列出时长与素材上限；目录中没有的型号显示型号本身', async () => {
   const row = (id: string, label: string) => ({
     id,
     label,
@@ -955,8 +959,6 @@ test('可用模型、生成模型与使用记录显示模型目录中的名称�
     expect(first('relay-model')).toBe(true)
     expect(view.text()).not.toContain('claude-opus-5-5')
     expect(view.text()).not.toContain('doubao-seedance-2-0-260128')
-    // 使用记录的型号同样显示名称。
-    expect(view.text()).not.toContain('claude-sonnet-5-5')
   } finally {
     view.close()
     providers = []
@@ -972,7 +974,7 @@ test('使用记录中的生成任务：三个 token 列合为一格显示计量�
     [
       record('2', null, { mediaMeter: { units: 30, unit: 'second', resolution: '720p' } }),
       record('1', '结果不明，积分已退回', { mediaMeter: { units: 2, unit: 'image' } }),
-      record('0', '积分不足', { modelId: null }),
+      record('0', '积分不足', { model: null }),
     ],
   ]
   const view = await dialog()
@@ -985,5 +987,31 @@ test('使用记录中的生成任务：三个 token 列合为一格显示计量�
   expect(cells('2 张')?.[4]?.textContent).toBe('结果不明，积分已退回')
   // 读取请求之前被拒时型号未知。
   expect(cells('积分不足')?.[1]?.textContent).toBe('—')
+  view.close()
+})
+
+/**
+ * 原始失败形状：已下架的对话型号不在本机模型目录中，使用记录显示它的对外编号；云端已删除的型号显示「—」。
+ * 名称改由云端随记录给出，本机目录中没有该型号时同样显示名称。
+ */
+test('使用记录的型号名称取自记录：已下架的型号标出「（已下架）」，删除时未记录名称的为「已下架的型号」', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  pages = [
+    [
+      record('3', null, { model: 'GPT-6 Astra', delisted: true }),
+      record('2', '连接中断', { model: null, delisted: true }),
+      record('1', null, { model: 'Claude Sonnet 5.5' }),
+    ],
+  ]
+  const view = await dialog()
+  await until(() => view.text().includes('连接中断'))
+  const model = (text: string) =>
+    [...view.host.querySelectorAll('tbody tr')]
+      .filter((r) => r.textContent?.includes(text))
+      .map((r) => r.querySelectorAll('td')[1]?.textContent)
+  expect(model('GPT-6 Astra')).toEqual(['GPT-6 Astra（已下架）'])
+  expect(model('连接中断')).toEqual(['已下架的型号'])
+  expect(model('Claude Sonnet 5.5')).toEqual(['Claude Sonnet 5.5'])
   view.close()
 })

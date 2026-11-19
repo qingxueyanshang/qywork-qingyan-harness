@@ -296,8 +296,13 @@ export type CloudModel =
 /** `GET /api/cloud/requests`：云端的一条请求记录，按时间倒序分页。 */
 export interface CloudRequest {
   id: string
-  /** 余额不大于 0 时云端在读取请求之前拒绝，型号未知，为 null。 */
-  modelId: string | null
+  /**
+   * 型号的显示名称，由云端给出：型号已不在型号清单中时本机目录中没有它。为 null 时型号未知（余额不大于 0 时
+   * 云端在读取请求之前拒绝），或云端删除该型号时未记录名称（此时 `delisted` 为 true）。
+   */
+  model: string | null
+  /** 型号已不在云端的型号清单中。 */
+  delisted: boolean
   /** 失败原因（如「429 请求过多」「连接中断」）；成功为 null。 */
   failure: string | null
   inputTokens: number
