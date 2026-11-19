@@ -276,11 +276,16 @@ describe('派发任务工具的注册条件', () => {
     expect(offenders).toEqual([])
   })
 
-  test('workflow schema 使用扁平的判别字段，不依赖 oneOf/anyOf', () => {
+  /**
+   * workflow 按需：工具表中是桩，完整定义由 load_tool 返回，执行前按完整定义核对（`schemaProblems` 不支持 oneOf/anyOf）。
+   * 因此判别字段保持扁平，检查对象是完整定义。
+   */
+  test('workflow 的完整定义使用扁平的判别字段，不依赖 oneOf/anyOf', () => {
     const r = new ToolRegistry()
     registerBuiltinTools(r, new Ports([provide(DelegatePort, stub(sent()).port)]))
-    const schema = r.schemas().find((entry) => entry.name === 'workflow')
-    expect(schema?.strict).toBe(true)
+    expect(r.schemas().find((entry) => entry.name === 'workflow')?.strict).toBe(false)
+    const schema = r.get('workflow')
+    expect(schema?.deferred).toBeDefined()
     const encoded = JSON.stringify(schema?.parameters)
     expect(encoded).not.toContain('oneOf')
     expect(encoded).not.toContain('anyOf')

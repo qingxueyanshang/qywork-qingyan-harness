@@ -1184,7 +1184,9 @@ function deepseekCatalog(): ModelSpec[] {
     video: false,
     reasoningEcho: 'none',
     chatReasoningProtocol: 'deepseek_preserved',
-    chatToolSchema: 'openai_strict',
+    // 不要改为 openai_strict：strict 形状要求写出每个可选参数，该型号偶尔把「不提供」写成字符串 "null"（基准 1,279 次调用中 3 次，
+    // 原生形状 1,370 次中 0 次），参数错误也多于原生形状。
+    chatToolSchema: 'native',
     effortLevels: ['low', 'high', 'max'],
     thinksByDefault: true,
     minCacheablePrefix: 0,

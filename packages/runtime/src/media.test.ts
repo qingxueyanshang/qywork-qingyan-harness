@@ -844,7 +844,7 @@ describe('生成模型清单与参数表', () => {
       mediaModels: listMediaModels(config()),
     })
     const text = notes.map((n) => n.content).join('\n')
-    expect(text).toContain('### 图像 · generate_image')
+    expect(text).toContain('### 图像 · generate_image\n')
     expect(text).toContain('model `qwen-image-3.0`（默认）：生成、修改，参考图最多 3 张')
     expect(text).toContain('model `wan2.7-image`：生成、修改，参考图最多 9 张')
     expect(text).not.toContain('prompt_extend')
@@ -856,6 +856,27 @@ describe('生成模型清单与参数表', () => {
     expect(table).toContain('model `qwen-image-3.0`（默认）：生成、修改，参考图最多 3 张')
     expect(table).toContain('  - prompt_extend：true | false')
     expect(table).not.toContain('generate_video')
+  })
+
+  /**
+   * 原始失败形状（2026-11-19 真实模型回归）：配置中没有默认的生成模型，模型添加画布生成卡时省略 provider 与 model，
+   * 15 次中 7 次首次 edit_canvas 被跳过。该类别没有默认模型时在标题上写明。
+   */
+  test('类别中没有默认模型时，标题写明须写出 provider 与 model', () => {
+    const cfg = config()
+    cfg.mediaDefaults = {}
+    const text = buildTailNotes({
+      workspaceRoot: '/w',
+      platform: 'linux',
+      mode: 'auto',
+      mediaModels: listMediaModels(cfg),
+    })
+      .map((n) => n.content)
+      .join('\n')
+    expect(text).toContain('### 图像 · generate_image（没有默认模型，须写明 provider 与 model）')
+    const rows = text.split('\n').filter((line) => line.startsWith('- 名称'))
+    expect(rows).toHaveLength(2)
+    expect(rows.some((line) => line.includes('（默认）'))).toBe(false)
   })
 
   /** 每行写明界面上的名称：保存的显示名称，没有时为目录名称；大模型向用户提及模型时使用该名称。 */

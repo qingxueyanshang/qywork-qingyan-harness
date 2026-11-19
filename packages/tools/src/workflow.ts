@@ -14,6 +14,7 @@ import {
 
 export const workflowTool: ToolSpec = {
   name: 'workflow',
+  deferred: { brief: '把两个及以上子 agent 的任务按依赖关系一次提交并编排执行' },
   description:
     '把两个及以上子 agent 的任务按 DAG 一次提交。子 agent 节点按 needs 并行或串行执行，' +
     'checkpoint 节点把上一批回执返回当前会话。' +

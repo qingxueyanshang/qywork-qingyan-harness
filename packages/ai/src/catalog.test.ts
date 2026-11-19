@@ -1355,3 +1355,8 @@ describe('对应型号与接口价格', () => {
     expect(computeCost(deepseek, usage, idle)).toBe(computeCost(deepseek, usage, peak) / 2)
   })
 })
+
+/** DeepSeek V4.1 Flash 以原生形状发送工具定义：strict 形状下该型号会把不提供的可选参数写成字符串 "null"。经云端时同样取这一条目。 */
+test('DeepSeek V4.1 Flash 的工具定义使用原生形状', () => {
+  expect(lookupModel('deepseek-flash', 'openai_chat_completions').chatToolSchema).toBe('native')
+})

@@ -345,6 +345,7 @@ function withOffice(
 
 export const readOfficeGuideTool: ToolSpec = {
   name: 'read_office_guide',
+  deferred: { brief: '获取 Word / PPT / Excel 文件的制作说明，制作前先读取' },
   description:
     '获取 Word / PPT / Excel 文件的制作说明。制作前先读取对应格式的说明，' +
     '然后将制作代码保存为工作区中的 Python 脚本，用 write_office 执行，最后用 view_office 检查页面。',
@@ -370,6 +371,7 @@ export const readOfficeGuideTool: ToolSpec = {
 
 export const readOfficeTool: ToolSpec = {
   name: 'read_office',
+  deferred: { brief: '读取 Word / PPT / Excel 文件的结构与文字，修改已有文件前先读取' },
   description:
     '读取 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）的结构与文字。' +
     '修改已有文件前必须先读取，用于写入时的版本冲突检查。查看页面使用 view_office。',
@@ -400,6 +402,7 @@ export const readOfficeTool: ToolSpec = {
 
 export const writeOfficeTool: ToolSpec = {
   name: 'write_office',
+  deferred: { brief: '执行工作区中的 Python 脚本，制作或修改 Word / PPT / Excel 文件' },
   description:
     '执行工作区中的 Python 脚本，制作或修改 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）。' +
     '先用 read_office_guide 获取该格式的操作说明；修改已有文件前先用 read_office 读取。' +
@@ -440,6 +443,7 @@ export const writeOfficeTool: ToolSpec = {
 
 export const viewOfficeTool: ToolSpec = {
   name: 'view_office',
+  deferred: { brief: '把 Word / PPT / Excel / PDF 的指定页面渲染为图片，检查版式、图表与扫描件' },
   description:
     '将 Word / PPT / Excel / PDF 文件的指定页面渲染为图片，用于检查版式、图表和扫描件。' +
     '交付文档前应查看页面，当前模型须支持图片输入。读取结构与文字使用 read_office。' +

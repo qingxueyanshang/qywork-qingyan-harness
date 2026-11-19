@@ -523,6 +523,22 @@ describe('能力段', () => {
   })
 
   /**
+   * 原始失败形状（2026-11-19 真实模型回归）：Office 一行写「制作前先用 read_office_guide 获取说明」，read_office_guide 按需，
+   * DeepSeek 与 Claude 按该行直接以空参数调用，报「缺少必填参数：format」后才读取定义。
+   */
+  test('按需工具对应的能力行注明先用 load_tool 读取定义，常驻工具的行不变', () => {
+    const prompt = buildSystemPrompt(
+      new Set(['run_command', 'read_office_guide', 'load_tool']),
+      undefined,
+      new Set(['read_office_guide']),
+    )
+    const office = prompt.split('\n').find((line) => line.startsWith('- Office 操作说明'))
+    expect(office).toContain('read_office_guide 为按需工具，调用前先用 load_tool 读取定义。')
+    const command = prompt.split('\n').find((line) => line.startsWith('- 命令：'))
+    expect(command).not.toContain('按需工具')
+  })
+
+  /**
    * 桌面工具组注册后才输出该行。缺少该行的后果已实测确认：模型具备这组工具，
    * 仍用 run_command 执行自行编写的截图与按坐标点击脚本。
    */

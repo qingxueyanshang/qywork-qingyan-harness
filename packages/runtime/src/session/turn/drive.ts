@@ -147,9 +147,11 @@ export function makeLoop(
 ): AgentLoop {
   // 能力段按已注册的工具名过滤：shell、任务派发、编排、外部工具都按通道注册。
   const { outputLimitNote, maxOutputTokens } = adapter.spec
+  const tools = session.registry.list()
   const base = buildSystemPrompt(
-    new Set(session.registry.list().map((s) => s.name)),
+    new Set(tools.map((s) => s.name)),
     outputLimitNote && maxOutputTokens ? maxOutputTokens : undefined,
+    new Set(tools.filter((s) => s.deferred).map((s) => s.name)),
   )
   const providerName = resolveModel(session.opts.config, target)?.provider
   return new AgentLoop({

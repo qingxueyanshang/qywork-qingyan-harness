@@ -260,6 +260,7 @@ const CANVAS_NOTE =
 
 export const createCanvasTool: ToolSpec = {
   name: 'create_canvas',
+  deferred: { brief: '在工作区新建空画布（*.canvas.json）' },
   description:
     '在工作区指定路径创建空画布，path 必须以 .canvas.json 结尾。自动创建父目录，已有文件不覆盖。' +
     '随后使用 edit_canvas 添加节点与连线，使用 run_canvas 运行生成卡。',
@@ -297,6 +298,7 @@ export const createCanvasTool: ToolSpec = {
 
 export const readCanvasTool: ToolSpec = {
   name: 'read_canvas',
+  deferred: { brief: '读取画布（*.canvas.json）的节点、提示词、参数与连线' },
   description:
     '读取画布。' +
     CANVAS_NOTE +
@@ -542,6 +544,7 @@ async function planOps(
 
 export const editCanvasTool: ToolSpec = {
   name: 'edit_canvas',
+  deferred: { brief: '修改画布的节点、提示词、参数与连线，不发起生成' },
   description:
     '修改画布的节点、提示词、参数与连线，不发起生成。' +
     CANVAS_NOTE +
@@ -771,6 +774,7 @@ function batchReceipt(results: CanvasBatchRunResult): ToolOutcome {
 
 export const runCanvasTool: ToolSpec = {
   name: 'run_canvas',
+  deferred: { brief: '运行画布上的生成卡并等待结果' },
   description:
     '运行画布上 node 指定的生成卡并等待结果；node 是生成卡名称的数组，单张卡写成一个元素的数组。' +
     '批量时只运行指定的卡（重复的只运行一次），批内上游完成后才运行下游。' +

@@ -1817,7 +1817,7 @@ describe('strict 工具定义', () => {
   })
 
   test('请求体中带 strict，且发送重排后的 schema', async () => {
-    const body = await send('deepseek-flash', undefined, [readFile])
+    const body = await send('qwen3.8-max', undefined, [readFile])
     const tool = (body.tools as { function: Record<string, unknown> }[])[0]!.function
     expect(tool.strict).toBe(true)
     expect((tool.parameters as Record<string, unknown>).required).toEqual([

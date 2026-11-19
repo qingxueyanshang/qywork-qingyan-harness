@@ -218,10 +218,11 @@ describe('外部工具的一句用途', () => {
 
 describe('内置工具分档', () => {
   /**
-   * 分档依据账本 60 天 2,686 次 run 的使用率：低于 1% 的工具按需。目标的两个工具与 stop_subagent 低于 1% 仍常驻：
-   * 进行中的目标靠 update_goal 推进，子 agent 运行时主会话须能直接停止它。浏览器与电脑控制参数复杂、一次会话连续调用，常驻。
+   * 两类按需：使用率低于 1% 的通用工具（账本 60 天 2,686 次 run），以及领域工具（画布、Office、工作流）：
+   * 是否使用取决于用户的业务领域，本机近 60 天 638 个会话中约九成不使用画布工具。目标的两个工具与 stop_subagent 低于 1% 仍常驻：
+   * 进行中的目标靠 update_goal 推进，子 agent 运行时主会话须能直接停止它。
    */
-  test('按需的内置工具恰为这 22 个（19 个低使用率工具与 3 个生成工具），目标、停止子 agent、浏览器与电脑控制常驻', () => {
+  test('按需的内置工具恰为下列各项（低使用率工具、生成工具与画布、Office、工作流领域工具），通用工具与目标、停止子 agent 常驻', () => {
     const registry = new ToolRegistry()
     registerToolCatalog(registry, Object.keys(MEDIA_TOOLS) as MediaOutput[])
     const deferred = registry
@@ -233,10 +234,12 @@ describe('内置工具分档', () => {
       [
         'cancel_canvas',
         'capture_canvas_frame',
+        'create_canvas',
         'create_schedule',
         'define_role',
         'delete_memory',
         'delete_schedule',
+        'edit_canvas',
         'enable_mcp_server',
         'export_timeline',
         'generate_audio',
@@ -250,8 +253,15 @@ describe('内置工具分档', () => {
         'move_skill',
         'personalize',
         'pet',
+        'read_canvas',
+        'read_office',
+        'read_office_guide',
         'retrieve_canvas',
+        'run_canvas',
+        'view_office',
+        'workflow',
         'write_mcp_server',
+        'write_office',
         'write_skill',
       ].sort(),
     )
@@ -263,7 +273,7 @@ describe('内置工具分档', () => {
       'browser_act',
       'desktop_act',
       'run_command',
-      'edit_canvas',
+      'read_file',
       'load_tool',
     ]) {
       expect(registry.get(name)?.deferred).toBeUndefined()

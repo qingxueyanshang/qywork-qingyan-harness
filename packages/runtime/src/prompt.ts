@@ -35,7 +35,12 @@ export const SYSTEM_LAYER = `你是 qywork 的 harness agent，运行在用户�
 
 export const ENVIRONMENT_LAYER = `## 工作方式
 
-执行任务前先分析用户意图、拆解需求并评估需求规模，据此确定修改幅度。需求为大幅调整时不要只做轻微改动，需求为小幅优化时不要大范围修改。
+执行任务前先分析用户的指令，判断任务的难度与规模，按以下三档确定做法：
+- 轻度：目标明确、改动集中、有直接的检查方法，例如修改一项配置、修复一处已定位的错误。直接修改，运行对应的检查。
+- 中度：需要排查原因或涉及多个文件，做法明确。先定位再修改，按要求逐项核对。
+- 重度：目标开放（例如性能优化、方案设计）、需要尝试与比较，或跨模块的大幅调整。先用 write_todos 拆解，先实施一个能满足要求的做法并核对，确认满足之后再决定是否继续改进。
+
+修改幅度与档位一致：需求为大幅调整时不要只做轻微改动，需求为小幅优化时不要大范围修改。执行中发现档位判断有误时随即调整。
 
 用户追问某项工作为什么没有执行、为什么中止、结果为什么未达到要求时，该追问即要求完成这项工作：先简要说明原因，再在同一轮中执行。用户只询问信息、所问内容与当前任务无关或明确要求暂停时，只作回答。用户的消息包含问题时，开始执行之前先简要回答。
 
@@ -276,9 +281,19 @@ Instead, when the person has asked for a long or effort-intensive deliverable su
 /**
  * `toolNames` 是当前注册表中的工具名，决定能力段输出哪些行。
  * `outputLimit` 存在时在末尾附加 `outputLimitNote`，是否提供由模型目录的 `outputLimitNote` 决定。
+ * `deferredTools` 是其中按需的工具：对应行末尾注明先用 load_tool 读取定义。不注明时模型按该行直接调用，
+ * 工具表中只有桩，参数为空即被拒绝（Office 一行实测三个模型中两个首次调用以空参数失败）。
  */
-export function buildSystemPrompt(toolNames: ReadonlySet<string>, outputLimit?: number): string {
-  const caps = CAPABILITY_LINES.filter((c) => toolNames.has(c.tool)).map((c) => c.line)
+export function buildSystemPrompt(
+  toolNames: ReadonlySet<string>,
+  outputLimit?: number,
+  deferredTools: ReadonlySet<string> = new Set(),
+): string {
+  const caps = CAPABILITY_LINES.filter((c) => toolNames.has(c.tool)).map((c) =>
+    deferredTools.has(c.tool)
+      ? `${c.line}${c.tool} 为按需工具，调用前先用 load_tool 读取定义。`
+      : c.line,
+  )
   /*
    * 外部 schema 小于预算时直接注册，不存在 `load_tool`。此时同样需要解释输入区的
    * `@注册名`，判据是注册表中出现了扩展命名的工具，不能只绑定 load_tool。
@@ -412,9 +427,13 @@ export function mediaModelsNote(
     // 已下架的型号提交即被拒绝，不提供给大模型。
     const rows = models.filter((m) => m.output === output && !m.delisted)
     if (!rows.length) continue
+    // 该类别没有默认模型时在标题上写明：只写在说明末尾的通用规则，模型添加画布生成卡时多数情况下仍省略 provider 与 model。
+    const noDefault = rows.some((m) => m.isDefault)
+      ? ''
+      : '（没有默认模型，须写明 provider 与 model）'
     sections.push(
       [
-        `### ${MEDIA_LABEL[output]} · ${MEDIA_TOOLS[output].name}`,
+        `### ${MEDIA_LABEL[output]} · ${MEDIA_TOOLS[output].name}${noDefault}`,
         ...rows.map(mediaModelLine),
       ].join('\n'),
     )
