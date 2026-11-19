@@ -446,7 +446,6 @@ export function buildTailNotes(input: {
   workspaceRoot: string
   /** `process.platform` 的原值。可读名称由 `osName` 在此处转换，调用方无需预先转换。 */
   platform: string
-  gitBranch?: string | null
   /** 本会话临时目录，工作区相对路径。只在会话已确定时传入。 */
   tempDir?: string
   /** 运行环境一节（`environment.ts` 的 `describeEnvironment`），每轮读取本机目录生成。 */
@@ -531,7 +530,6 @@ export function buildTailNotes(input: {
     `当前日期：${today}`,
   ]
   if (input.viewing) lines.push(viewingLine(input.viewing))
-  if (input.gitBranch) lines.push(`git 分支：${input.gitBranch}`)
   if (input.tempDir) lines.push(`本会话临时目录：${input.tempDir}`)
   lines.push(
     input.mode === 'full'

@@ -31,6 +31,7 @@ import {
   fileLogSink,
   loadConfig,
   MCP_CONFIG,
+  resolveModel,
   Session,
 } from '@qywork/runtime'
 import {
@@ -72,6 +73,7 @@ const USAGE = `qy —— qywork 编码 agent
 
   qy exec "<任务>"        在当前目录执行一次任务
     --cwd <路径>          指定工作区（默认当前目录）
+    --model <模型名>      本次使用的模型（默认取配置中的默认模型）
     --json                输出 JSONL 事件流（供 CI 使用）
 
   qy serve                启动本地服务（桌面端与手机端均连接此服务）
@@ -219,6 +221,13 @@ async function runExec(args: string[]): Promise<number> {
     for (const p of problems) process.stderr.write(`\n${RED}✗${RESET} ${p}\n`)
     return 2
   }
+  // 接口按 `resolveModel` 确定；无法确定（多个非默认接口都配置了该模型）时在此停止，不建库、不发请求。
+  if (flags.model && !resolveModel(config, flags.model)) {
+    process.stderr.write(
+      `\n${RED}✗${RESET} 无法确定模型 ${flags.model} 所属的接口。请在设置中检查模型归属和默认接口。\n`,
+    )
+    return 2
+  }
   // 提醒**不阻断**执行。`mode: "full"` 是用户自己的决定，提示一次即可；
   // 并入上方的 problems 会使「开启完全访问」导致「任何命令都无法执行」。
   for (const n of configNotices(config)) process.stderr.write(`\n${YELLOW}⚠${RESET} ${n}\n`)
@@ -259,7 +268,8 @@ async function runExec(args: string[]): Promise<number> {
 
   let exitCode = 0
   try {
-    for await (const ev of session.ask(prompt)) {
+    const options = flags.model ? { model: flags.model } : undefined
+    for await (const ev of session.ask(prompt, undefined, options)) {
       if (json) {
         process.stdout.write(`${JSON.stringify(ev)}\n`)
       } else {
@@ -525,39 +535,56 @@ interface Flags {
   printToken?: boolean
   parentPid?: number
   credentialsStdin?: boolean
+  model?: string
+}
+
+/** 带值的参数。值取下一个不以 `--` 开头的词；缺少时不调用处理器。 */
+const VALUE_FLAGS: Record<string, (out: Flags, v: string) => void> = {
+  '--cwd': (out, v) => {
+    if (v) out.cwd = v
+  },
+  '--host': (out, v) => {
+    if (v) out.host = v
+  },
+  '--static': (out, v) => {
+    if (v) out.static = v
+  },
+  '--model': (out, v) => {
+    if (v) out.model = v
+  },
+  '--port': (out, v) => {
+    out.port = Number(v)
+  },
+  '--parent-pid': (out, v) => {
+    if (Number.isFinite(Number(v))) out.parentPid = Number(v)
+  },
+}
+
+/** 不带值的参数。 */
+const SWITCH_FLAGS: Record<string, (out: Flags) => void> = {
+  '--json': (out) => {
+    out.json = true
+  },
+  '--print-token': (out) => {
+    out.printToken = true
+  },
+  '--credentials-stdin': (out) => {
+    out.credentialsStdin = true
+  },
 }
 
 function parseFlags(args: string[]): Flags {
   const out: Flags = { positional: [], unknown: [] }
-  const takeValue = (i: number): [string | undefined, number] => {
-    const v = args[i + 1]
-    return v !== undefined && !v.startsWith('--') ? [v, i + 1] : [undefined, i]
-  }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
-    if (a === '--cwd') {
-      const [v, ni] = takeValue(i)
-      if (v) out.cwd = v
-      i = ni
-    } else if (a === '--host') {
-      const [v, ni] = takeValue(i)
-      if (v) out.host = v
-      i = ni
-    } else if (a === '--static') {
-      const [v, ni] = takeValue(i)
-      if (v) out.static = v
-      i = ni
-    } else if (a === '--port') {
-      const [v, ni] = takeValue(i)
-      if (v !== undefined) out.port = Number(v)
-      i = ni
-    } else if (a === '--parent-pid') {
-      const [v, ni] = takeValue(i)
-      if (v !== undefined && Number.isFinite(Number(v))) out.parentPid = Number(v)
-      i = ni
-    } else if (a === '--json') out.json = true
-    else if (a === '--print-token') out.printToken = true
-    else if (a === '--credentials-stdin') out.credentialsStdin = true
+    const withValue = VALUE_FLAGS[a]
+    if (withValue) {
+      const v = args[i + 1]
+      if (v !== undefined && !v.startsWith('--')) {
+        withValue(out, v)
+        i++
+      }
+    } else if (SWITCH_FLAGS[a]) SWITCH_FLAGS[a](out)
     else if (/^--?[A-Za-z][\w-]*$/.test(a)) out.unknown.push(a)
     else out.positional.push(a)
   }

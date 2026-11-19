@@ -1385,7 +1385,7 @@ describe('文件工具', () => {
     expect(again.status).toBe('success')
   })
 
-  test('部分项未命中时写入其余项，回执逐项列出未写入的项', async () => {
+  test('部分项未命中时写入其余项，回执写明已写入与未写入的项', async () => {
     const root = await workspace()
     await writeFile(join(root, 'units.md'), 'a1\nb1\nc1\nc1\n')
     const r = registry()
@@ -1406,7 +1406,7 @@ describe('文件工具', () => {
     )
     expect(out.status).toBe('failure')
     expect(out.errorKind).toBe('no_match')
-    expect(out.message).toContain('2/4 项已写入')
+    expect(out.message).toContain('编辑 units.md：已写入第 1、3 项，共 4 项')
     expect(out.message).toContain('第 2 项未写入：old_string 未在文件中找到')
     expect(out.message).toContain('第 4 项未写入：old_string 命中 2 处')
     expect(out.fileChanges?.[0]?.path).toBe('units.md')

@@ -971,8 +971,12 @@ export const editFileTool: ToolSpec = {
       changeType: 'modified',
       ...countDiff(current, next),
     }
+    // 部分写入时写明已写入项的序号：只给出数量时模型须自行推算，会重新提交已写入的项。
+    const writtenItems = edits.flatMap((_, i) => (skipped.some((s) => s.index === i) ? [] : [i + 1]))
     const written =
-      `编辑 ${change.path}（${edits.length - skipped.length}/${edits.length} 项已写入）` +
+      (first
+        ? `编辑 ${change.path}：已写入第 ${writtenItems.join('、')} 项，共 ${edits.length} 项`
+        : `编辑 ${change.path}（${edits.length}/${edits.length} 项已写入）`) +
       (await canvasNote(ctx, change.path))
     // 部分写入记为失败：文件已改动，但请求未全部完成；fileChanges 照常记录实际改动。
     if (first) {
