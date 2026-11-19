@@ -52,6 +52,17 @@ interface Offset {
   height: number
 }
 
+/** 决定光标位置的元素状态：文字、光标所在的字符位置、元素内部的滚动与元素的尺寸。 */
+type Basis = readonly [string, number | null, number, number, number, number]
+
+function basisOf(el: Field): Basis {
+  return [el.value, el.selectionStart, el.scrollLeft, el.scrollTop, el.clientWidth, el.clientHeight]
+}
+
+function sameBasis(a: Basis, b: Basis): boolean {
+  return a.every((v, i) => v === b[i])
+}
+
 /** 该元素的光标是否由本模块绘制。 */
 export function tracksCaret(el: Element | null): el is Field {
   if (!el || el.closest('.xterm')) return false
@@ -116,14 +127,14 @@ export function installCaret(): () => void {
   document.body.append(mirror, caret)
 
   let field: Field | null = null
-  let offset: Offset | null = null
-  let dirty = false
+  /**
+   * 测量结果与测量时的元素状态，每帧比较，状态不同时重新测量。不要改为由事件标记失效：
+   * 脚本把 `value` 赋为空串时，Chromium 不触发 input 与 selectionchange，光标停在原文字的末尾。
+   */
+  let measured: { basis: Basis; offset: Offset } | null = null
   let frame = 0
   let blinkTimer: ReturnType<typeof setTimeout> | undefined
   let last = ''
-  const resize = new ResizeObserver(() => {
-    dirty = true
-  })
 
   const show = (on: boolean) => {
     if (!topLayer) caret.hidden = !on
@@ -134,26 +145,26 @@ export function installCaret(): () => void {
   const release = () => {
     if (!field) return
     field.classList.remove('custom-caret')
-    resize.disconnect()
     cancelAnimationFrame(frame)
     clearTimeout(blinkTimer)
     field = null
-    offset = null
+    measured = null
     last = ''
     show(false)
   }
 
-  /** 每帧按元素当前的位置放置光标：元素随滚动、动画与布局变化移动时没有事件可以监听。 */
+  /** 每帧按元素当前的位置与状态放置光标：元素随滚动、动画与布局变化移动时没有事件可以监听。 */
   const paint = () => {
     const el = field
     if (!el) return
     frame = requestAnimationFrame(paint)
-    if (dirty || !offset) {
+    const basis = basisOf(el)
+    if (!measured || !sameBasis(measured.basis, basis)) {
       // 高度取自样式（`.text-caret` 的 `height`，随界面字号设置缩放）。
       const height = Number.parseFloat(getComputedStyle(caret).height) || FALLBACK_HEIGHT
-      offset = measure(el, mirror, height)
-      dirty = false
+      measured = { basis, offset: measure(el, mirror, height) }
     }
+    const { offset } = measured
     const box = el.getBoundingClientRect()
     // 光标所在的行滚动到元素可见范围之外时不绘制。
     const visible =
@@ -180,25 +191,19 @@ export function installCaret(): () => void {
       release()
       return
     }
-    dirty = true
     if (field === el) return
     release()
     field = el
     el.classList.add('custom-caret')
-    resize.observe(el)
     // 重新放入顶层：其后打开的模态对话框在顶层中位于光标之上。
     show(false)
     frame = requestAnimationFrame(paint)
   }
 
-  const markDirty = () => {
-    dirty = true
-  }
   document.addEventListener('selectionchange', sync)
   document.addEventListener('focusin', sync)
   document.addEventListener('focusout', sync)
   document.addEventListener('input', sync, true)
-  document.addEventListener('scroll', markDirty, true)
   window.addEventListener('blur', release)
   window.addEventListener('focus', sync)
   sync()
@@ -209,7 +214,6 @@ export function installCaret(): () => void {
     document.removeEventListener('focusin', sync)
     document.removeEventListener('focusout', sync)
     document.removeEventListener('input', sync, true)
-    document.removeEventListener('scroll', markDirty, true)
     window.removeEventListener('blur', release)
     window.removeEventListener('focus', sync)
     caret.remove()
