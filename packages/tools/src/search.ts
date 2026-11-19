@@ -27,7 +27,7 @@ import {
 } from './files/scan.ts'
 import { displayPath, hiddenInScan, IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './process/collect.ts'
-import { redactSecrets } from './secrets.ts'
+import { redactSecrets, type SecretSet } from './secrets.ts'
 
 /** 结果不完整时 glob 与 grep 回执中缩小范围的方法。 */
 const NARROW = '用 path 指定更小的目录，或使用更具体的模式'
@@ -88,9 +88,119 @@ const RG_MAX_COLUMNS = 4096
 function clipMatch(line: string): string {
   const m = /^(.*?):(\d+):(.*)$/s.exec(line)
   if (!m) return line.length > MAX_MATCH_CHARS ? `${line.slice(0, MAX_MATCH_CHARS)}…` : line
-  const body = m[3]!.trim()
-  const clipped = body.length > MAX_MATCH_CHARS ? `${body.slice(0, MAX_MATCH_CHARS)}…` : body
-  return `${m[1]}:${m[2]}:${clipped}`
+  return `${m[1]}:${m[2]}:${clipBody(m[3]!)}`
+}
+
+function clipBody(body: string): string {
+  const trimmed = body.trim()
+  return trimmed.length > MAX_MATCH_CHARS ? `${trimmed.slice(0, MAX_MATCH_CHARS)}…` : trimmed
+}
+
+/** `context` 的上限。前后各取更多行时结果接近整段正文，应改用 read_file 按行号读取。 */
+const MAX_CONTEXT = 10
+
+/** 解析 `context`：缺省为 0；不是 0 到 `MAX_CONTEXT` 的整数时返回 null。 */
+function contextArg(raw: unknown): number | null {
+  if (raw === undefined || raw === null) return 0
+  const n = typeof raw === 'number' ? raw : Number(raw)
+  return Number.isInteger(n) && n >= 0 && n <= MAX_CONTEXT ? n : null
+}
+
+/** 结果中的一项与其中的命中行数。不带上下文时一项即一行命中；带上下文时一项是合并后的一段。 */
+interface GrepItem {
+  text: string
+  hits: number
+}
+
+/**
+ * 同一文件的命中按行号补上前后 `context` 行，重叠或相邻的范围合并为一段，每段是结果中的一项。
+ * 命中行写作 `路径:行号:正文`，上下文行写作 `路径-行号-正文`，与 ripgrep `-C` 的输出相同。
+ *
+ * 两种引擎共用：ripgrep 只给出命中行，上下文由调用方读取同一文件后交给本函数，结果不随是否安装 ripgrep 而不同。
+ */
+function contextBlocks(
+  path: string,
+  rows: readonly string[],
+  hits: readonly number[],
+  context: number,
+  secrets: SecretSet,
+): GrepItem[] {
+  const hitSet = new Set(hits)
+  const blocks: GrepItem[] = []
+  let start = 0
+  let end = -1
+  let count = 0
+  const flush = () => {
+    if (end < start) return
+    const lines: string[] = []
+    for (let n = start; n <= end; n++) {
+      const sep = hitSet.has(n) ? ':' : '-'
+      lines.push(redactSecrets(`${path}${sep}${n}${sep}${clipBody(rows[n - 1] ?? '')}`, secrets))
+    }
+    blocks.push({ text: lines.join('\n'), hits: count })
+  }
+  for (const hit of [...hitSet].sort((a, b) => a - b)) {
+    const from = Math.max(1, hit - context)
+    const to = Math.min(rows.length, hit + context)
+    if (end >= start && from <= end + 1) {
+      end = Math.max(end, to)
+      count++
+    } else {
+      flush()
+      start = from
+      end = to
+      count = 1
+    }
+  }
+  flush()
+  return blocks
+}
+
+/** 结果的命中行数：只计按额度保留下来的各项。 */
+function keptHits(items: readonly GrepItem[], kept: number): number {
+  return items.slice(0, kept).reduce((sum, item) => sum + item.hits, 0)
+}
+
+/**
+ * 为 ripgrep 的命中补上下文：按文件分组，读取该文件后交给 `contextBlocks`。文件按首次出现的顺序输出。
+ * 文件无法读取或超过 2 MB 时只输出该文件的命中行，与内置遍历跳过大文件的界限相同。
+ */
+async function ripgrepContext(
+  lines: readonly string[],
+  cwd: string,
+  workspaceRoot: string,
+  context: number,
+  secrets: SecretSet,
+): Promise<GrepItem[]> {
+  const byFile = new Map<string, { hits: number[]; lines: string[] }>()
+  for (const line of lines) {
+    const m = /^(.*?):(\d+):/s.exec(line)
+    if (!m) continue
+    const entry = byFile.get(m[1]!) ?? { hits: [], lines: [] }
+    entry.hits.push(Number(m[2]))
+    entry.lines.push(line)
+    byFile.set(m[1]!, entry)
+  }
+  const items: GrepItem[] = []
+  for (const [file, entry] of byFile) {
+    const abs = resolve(cwd, file)
+    const size = (await stat(abs).catch(() => null))?.size ?? Number.POSITIVE_INFINITY
+    const text = size <= 2 * 1024 * 1024 ? await readFile(abs, 'utf8').catch(() => null) : null
+    if (text === null) {
+      for (const line of entry.lines) {
+        items.push({
+          text: clipMatch(redactSecrets(rebaseLine(line, cwd, workspaceRoot), secrets)),
+          hits: 1,
+        })
+      }
+      continue
+    }
+    const rows = toLf(text).split('\n')
+    items.push(
+      ...contextBlocks(displayPath(workspaceRoot, abs), rows, entry.hits, context, secrets),
+    )
+  }
+  return items
 }
 
 export const globTool: ToolSpec = {
@@ -233,6 +343,10 @@ export const grepTool: ToolSpec = {
       path: { type: 'string', description: '搜索起点（工作区相对路径），默认为工作区根' },
       glob: { type: 'string', description: '文件名过滤，如 *.ts' },
       case_insensitive: { type: 'boolean', description: '忽略大小写' },
+      context: {
+        type: 'integer',
+        description: `命中行前后各返回的行数，0–${MAX_CONTEXT}，缺省 0。上下文行写作 文件-行号-内容`,
+      },
     },
     required: ['pattern'],
     additionalProperties: false,
@@ -246,8 +360,16 @@ export const grepTool: ToolSpec = {
   permissionEffect: 'read',
   parallelSafe: true,
   async fn(args, ctx) {
+    const context = contextArg(args.context)
+    if (context === null) {
+      return {
+        status: 'failure',
+        message: `context 必须是 0 到 ${MAX_CONTEXT} 的整数`,
+        errorKind: 'invalid_args',
+      }
+    }
     const cloud = cloudTarget(ctx, args.path)
-    if (cloud) return 'status' in cloud ? cloud : grepCloud(ctx, cloud, args)
+    if (cloud) return 'status' in cloud ? cloud : grepCloud(ctx, cloud, args, context)
     const roots = rootsOf(ctx)
     const target = await resolveInWorkspace(roots, String(args.path ?? '.'), { mustExist: true })
     // 命中行是文件正文，与 read_file 的正文一样先脱敏再交给模型。
@@ -282,17 +404,27 @@ export const grepTool: ToolSpec = {
     ctx.signal.throwIfAborted()
     if (viaRg) {
       // rg 不跟随符号链接，输出的路径即真实路径。
-      const clipped: string[] = []
+      const visible: string[] = []
       for (const line of viaRg.lines) {
         const file = /^(.*?):\d+:/s.exec(line)?.[1]
         if (file !== undefined && (await hiddenInScan(roots, resolve(cwd, file)))) continue
-        clipped.push(clipMatch(redactSecrets(rebaseLine(line, cwd, ctx.workspaceRoot), secrets)))
+        visible.push(line)
       }
-      const fit = fitBudget(ctx, clipped)
+      const items =
+        context > 0
+          ? await ripgrepContext(visible, cwd, ctx.workspaceRoot, context, secrets)
+          : visible.map((line) => ({
+              text: clipMatch(redactSecrets(rebaseLine(line, cwd, ctx.workspaceRoot), secrets)),
+              hits: 1,
+            }))
+      const fit = fitBudget(
+        ctx,
+        items.map((item) => item.text),
+      )
       return {
         status: 'success',
         message:
-          `命中 ${fit.items.length} 行（ripgrep）` +
+          `命中 ${keptHits(items, fit.items.length)} 行（ripgrep）` +
           truncationNote(scan.stopped, fit.trimmed, SCAN_LIMITS.results, NARROW),
         data: {
           matches: fit.items,
@@ -305,7 +437,10 @@ export const grepTool: ToolSpec = {
     // 降级路径。结果中明确标出 engine，以说明速度较慢的原因。
     const re = new RegExp(pattern, ci ? 'i' : '')
     const globMatcher = fileGlob ? new Bun.Glob(fileGlob) : null
-    const lines: string[] = []
+    const items: GrepItem[] = []
+    let total = 0
+    // 已有 `SCAN_LIMITS.results` 条命中时又遇到一条：结果超过上限，与 rg 一侧多取一条的判据相同。
+    let overflow = false
     let perFileCapped = false
 
     const scanFile = async (abs: string): Promise<void> => {
@@ -321,40 +456,52 @@ export const grepTool: ToolSpec = {
       const rel = displayPath(ctx.workspaceRoot, abs)
       // 先去除 CR：CRLF 文件中每行末尾都有 `\r`，`foo$` 这类锚定模式将全部无法匹配。
       const rows = toLf(text).split('\n')
-      let inFile = 0
-      rows.forEach((line, i) => {
-        // 多取一条，用于判定结果超过上限，与 rg 一侧的判据相同。
-        if (lines.length > SCAN_LIMITS.results) return
-        if (!re.test(line)) return
-        // 单文件上限与 ripgrep 使用同一数值，截断后同样必须报告 truncated。
-        if (inFile >= MAX_PER_FILE) {
-          perFileCapped = true
-          return
+      const hits: number[] = []
+      for (let i = 0; i < rows.length; i++) {
+        if (!re.test(rows[i]!)) continue
+        if (total >= SCAN_LIMITS.results) {
+          overflow = true
+          break
         }
-        inFile++
-        lines.push(clipMatch(redactSecrets(`${rel}:${i + 1}:${line}`, secrets)))
-      })
+        // 单文件上限与 ripgrep 使用同一数值，截断后同样必须报告 truncated。
+        if (hits.length >= MAX_PER_FILE) {
+          perFileCapped = true
+          break
+        }
+        hits.push(i + 1)
+        total++
+      }
+      if (context > 0) {
+        items.push(...contextBlocks(rel, rows, hits, context, secrets))
+        return
+      }
+      for (const n of hits) {
+        items.push({
+          text: clipMatch(redactSecrets(`${rel}:${n}:${rows[n - 1]}`, secrets)),
+          hits: 1,
+        })
+      }
     }
 
     if (isDir) {
       const descend = (name: string) => !IGNORED_DIRS.has(name) && !name.startsWith('.')
       for await (const file of walkFiles(target, scan, descend)) {
         await scanFile(file.abs)
-        if (lines.length > SCAN_LIMITS.results) break
+        if (overflow) break
       }
     } else {
       await scanFile(target)
     }
-    if (lines.length > SCAN_LIMITS.results) {
-      scan.stop('limit')
-      lines.length = SCAN_LIMITS.results
-    }
+    if (overflow) scan.stop('limit')
 
-    const fit = fitBudget(ctx, lines)
+    const fit = fitBudget(
+      ctx,
+      items.map((item) => item.text),
+    )
     return {
       status: 'success',
       message:
-        `命中 ${fit.items.length} 行（内置遍历，未找到 ripgrep）` +
+        `命中 ${keptHits(items, fit.items.length)} 行（内置遍历，未找到 ripgrep）` +
         truncationNote(scan.stopped, fit.trimmed, SCAN_LIMITS.results, NARROW),
       data: {
         matches: fit.items,
@@ -412,7 +559,15 @@ async function grepCloud(
   ctx: ToolContext,
   target: CloudTarget,
   args: Record<string, unknown>,
+  context: number,
 ): Promise<ToolOutcome> {
+  if (context > 0) {
+    return {
+      status: 'failure',
+      message: '云端技能的检索只返回位置，不支持 context；内容用 read_file 按行号读取',
+      errorKind: 'invalid_args',
+    }
+  }
   const literal = literalOf(String(args.pattern ?? ''))
   if (literal === null) {
     return {

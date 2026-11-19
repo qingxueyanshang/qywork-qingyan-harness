@@ -2283,19 +2283,16 @@ describe('写路径的软链边界', () => {
 describe('grep 的单条上界', () => {
   const MINIFIED = `!function(t){"use strict";${'x'.repeat(50_000)}/* bug */}(this)`
 
+  /*
+   * 带前瞻断言的模式 rg 不支持（退出码 2），必然使用内置遍历；两个模式命中同一行。
+   * 不要改为清空 PATH：Windows 上清空进程内的 PATH 之后仍能启动 rg，两次调用都经由 ripgrep。
+   */
   const bothEngines = async (root: string) => {
     const { grepTool } = await import('./search.ts')
-    const viaRg = await grepTool.fn!({ pattern: 'bug', path: '.' }, ctx(root))
-    // 清空 PATH 迫使其使用内置遍历：未找到 rg 时的降级路径即由此触发。
-    const prevPath = process.env.PATH
-    process.env.PATH = ''
-    let viaBuiltin: Awaited<ReturnType<NonNullable<typeof grepTool.fn>>>
-    try {
-      viaBuiltin = await grepTool.fn!({ pattern: 'bug', path: '.' }, ctx(root))
-    } finally {
-      process.env.PATH = prevPath
+    return {
+      viaRg: await grepTool.fn!({ pattern: 'bug', path: '.' }, ctx(root)),
+      viaBuiltin: await grepTool.fn!({ pattern: 'bug(?= )', path: '.' }, ctx(root)),
     }
-    return { viaRg, viaBuiltin }
   }
 
   test('压缩过的整行不会完整进入上下文，两种引擎使用同一个上界', async () => {
@@ -2303,6 +2300,8 @@ describe('grep 的单条上界', () => {
     await writeFile(join(root, 'vendor.min.js'), MINIFIED, 'utf8')
 
     const { viaRg, viaBuiltin } = await bothEngines(root)
+    expect((viaRg.data as { engine: string }).engine).toBe('ripgrep')
+    expect((viaBuiltin.data as { engine: string }).engine).toBe('builtin')
 
     for (const [name, out] of [
       ['ripgrep', viaRg],
@@ -2317,6 +2316,59 @@ describe('grep 的单条上界', () => {
       // 路径与行号必须完整保留：模型依据它们调用 read_file 读取原文。
       expect(matches[0], name).toMatch(/^vendor\.min\.js:\d+:/)
     }
+  })
+})
+
+/**
+ * 原始失败形状：grep 只返回命中行，账本中 668 次 grep 之后紧接着读取不超过 80 行、且其后未修改该文件，
+ * 每次多一轮模型请求。`context` 返回命中行前后的行，两种引擎输出相同。
+ */
+describe('grep 的上下文行', () => {
+  const TEXT = ['a', 'b', 'needle 1', 'c', 'd', 'e', 'f', 'needle 2', 'g'].join('\n')
+
+  // 带前瞻断言的模式 rg 不支持（退出码 2），必然使用内置遍历；两个模式命中相同的行。
+  const bothEngines = async (root: string, args: Record<string, unknown>) => {
+    const { grepTool } = await import('./search.ts')
+    return {
+      viaRg: await grepTool.fn!({ ...args, pattern: 'needle' }, ctx(root)),
+      viaBuiltin: await grepTool.fn!({ ...args, pattern: 'needle(?= )' }, ctx(root)),
+    }
+  }
+
+  test('命中行前后各补 context 行，两种引擎输出相同', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-ctx-')))
+    await writeFile(join(root, 'ctx.txt'), TEXT, 'utf8')
+    const { viaRg, viaBuiltin } = await bothEngines(root, { context: 1 })
+    expect((viaRg.data as { engine: string }).engine).toBe('ripgrep')
+    expect((viaBuiltin.data as { engine: string }).engine).toBe('builtin')
+    for (const out of [viaRg, viaBuiltin]) {
+      expect(out.status).toBe('success')
+      expect(out.message).toStartWith('命中 2 行')
+      expect((out.data as { matches: string[] }).matches).toEqual([
+        'ctx.txt-2-b\nctx.txt:3:needle 1\nctx.txt-4-c',
+        'ctx.txt-7-f\nctx.txt:8:needle 2\nctx.txt-9-g',
+      ])
+    }
+  })
+
+  test('范围重叠时合并为一段', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-ctx-')))
+    await writeFile(join(root, 'ctx.txt'), TEXT, 'utf8')
+    const { viaRg, viaBuiltin } = await bothEngines(root, { context: 3 })
+    for (const out of [viaRg, viaBuiltin]) {
+      const matches = (out.data as { matches: string[] }).matches
+      expect(matches).toHaveLength(1)
+      expect(matches[0]!.split('\n')).toHaveLength(9)
+      expect(out.message).toStartWith('命中 2 行')
+    }
+  })
+
+  test('context 超出 0–10 时不执行搜索，报告参数错误', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-ctx-')))
+    const { grepTool } = await import('./search.ts')
+    const out = await grepTool.fn!({ pattern: 'needle', context: 11 }, ctx(root))
+    expect(out.status).toBe('failure')
+    expect(out.errorKind).toBe('invalid_args')
   })
 })
 

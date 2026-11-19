@@ -244,21 +244,19 @@ describe('条数上限', () => {
     expect(out.message).toContain('上限')
   })
 
-  /** 清空 PATH 时 rg 不可用，使用内置遍历。两种引擎在超过条数上限时给出同一个上界与说明。 */
+  /**
+   * 两种引擎在超过条数上限时给出同一个上界与说明。带前瞻断言的模式 rg 不支持，必然使用内置遍历；
+   * 不要改为清空 PATH：Windows 上清空进程内的 PATH 之后仍能启动 rg。
+   */
   test('grep 超过条数上限时两种引擎都返回上限条数并说明', async () => {
     const body = Array.from({ length: 60 }, (_, i) => `needle ${i}`).join('\n')
     const root = await tree(
       Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`f${i}.txt`, body])),
     )
     const viaRg = await registry().execute('grep', { pattern: 'needle' }, ctx(root))
-    const prevPath = process.env.PATH
-    process.env.PATH = ''
-    let viaBuiltin: Awaited<ReturnType<ToolRegistry['execute']>>
-    try {
-      viaBuiltin = await registry().execute('grep', { pattern: 'needle' }, ctx(root))
-    } finally {
-      process.env.PATH = prevPath
-    }
+    const viaBuiltin = await registry().execute('grep', { pattern: 'needle(?= )' }, ctx(root))
+    expect(viaRg.data?.engine).toBe('ripgrep')
+    expect(viaBuiltin.data?.engine).toBe('builtin')
     for (const out of [viaRg, viaBuiltin]) {
       expect((out.data?.matches as string[]).length).toBe(SCAN_LIMITS.results)
       expect(out.data?.truncated).toBe(true)
