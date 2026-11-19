@@ -5,7 +5,8 @@
  * `run_command` 转入后台与后台输出的保留上限、`tools/src/workspace-watch.ts` 的后台观察、
  * `store/src/repos/steps.ts` 的 `appendStepFileChanges`、`store/src/repos/messages.ts` 的 `listConversationChangesPage`、
  * `run-control.ts` 的端口装配与回执入口、`commands.ts` 的 `command.stop`、
- * `runtime/session/tool-context.ts` 的通道注入与 `runtime/session/permission.ts` 的权限裁决、`agent/loop` 在工具结束后注入「调整方向」消息。
+ * `runtime/session/tool-context.ts` 的通道注入与 `runtime/session/permission.ts` 的权限裁决、`agent/loop` 在工具结束后注入「调整方向」消息，
+ * `team-run.ts` 中子 agent 会话的后台命令端口与轮次之间的处理（`settleAfterRound`）。
  * `background_command` 的取舍由 `tools/src/shell.test.ts` 覆盖，此处只覆盖它经由任务表在本轮内等待命令结束。
  *
  * 必须使用真实链路与真实进程：被测的行为是「工具等待结束而进程仍存活」「停止本轮不结束后台命令」，
@@ -513,6 +514,70 @@ describe('前台命令超过等待上限转入后台', () => {
     commands.stop(cv, ids.Q4!)
     await until(() => !alive(pidQ4), 'Q4 的进程结束')
     await until(() => commands.listOf(cv).length === 0, '任务表移除')
+  }, 30_000)
+})
+
+/**
+ * 子 agent 会话与顶层会话使用同一个任务表与端口。原始失败形状：子 agent 会话没有后台命令端口，一条持续占用 CPU、没有输出的前台命令
+ * 使工具调用一直不返回，子 agent 无从干预，派发它的父会话随之一直等待。父会话的第一轮依次调用 subagent 与 wait_subagents，
+ * 子 agent 的各次请求因此在父会话的下一次请求之前按顺序到达假 provider。
+ */
+describe('子 agent 会话中的后台命令', () => {
+  const dispatch = (task: string) =>
+    callsTurn([
+      { id: 'call_d', name: 'subagent', args: { name: '执行者', task } },
+      { id: 'call_w', name: 'wait_subagents', args: { timeout_seconds: 25 } },
+    ])
+
+  test('前台命令超过等待上限时交回子 agent；本轮结束后等到命令结束，以回执执行下一轮，再向父会话回执', async () => {
+    const cv = conversation()
+    script.push(
+      dispatch('运行查询 M1'),
+      callsTurn([run('call_m', { command: spin('M1'), timeout_ms: 1000, wait_seconds: 1 })]),
+      textTurn('查询仍在后台运行。'),
+      textTurn('查询已完成。'),
+      textTurn('子 agent 已完成。'),
+    )
+
+    void startRun(cv, '派发查询', undefined, deps())
+    const pid = await pidOf('M1')
+    await until(() => bodies.length >= 3, '子 agent 在等待上限之后的请求')
+    expect(bodies[2]).toContain('命令在 1 秒内没有结束，已转入后台继续运行')
+    expect(alive(pid)).toBe(true)
+
+    // 子 agent 本轮已结束，派发仍未返回：等待由前台转入后台的命令。
+    await Bun.sleep(300)
+    expect(bodies.length).toBe(3)
+    await writeFile(join(dir, 'M1.go'), '')
+    await until(() => bodies.length >= 4, '回执发起的子 agent 下一轮')
+    expect(bodies[3]).toContain('[后台命令回执] 任务 cmd_')
+    expect(bodies[3]).toContain('已结束：命令执行成功')
+    await until(() => bodies.length === 5, '父会话收到子 agent 回执后的请求')
+    expect(bodies[4]).toContain('[子 agent 回执]')
+    expect(bodies[4]).toContain('查询仍在后台运行。')
+    expect(bodies[4]).toContain('查询已完成。')
+    expect(bodies[4]).not.toContain('停止了仍在运行的后台命令')
+    await idle(cv)
+    expect(alive(pid)).toBe(false)
+  }, 30_000)
+
+  test('以 background 启动的命令在子 agent 结束时停止，并写入返回父会话的回执', async () => {
+    const cv = conversation()
+    script.push(
+      dispatch('启动服务 M2'),
+      callsTurn([run('call_h', { command: hold('M2'), timeout_ms: 1000, background: true })]),
+      textTurn('服务已启动。'),
+      textTurn('子 agent 已完成。'),
+    )
+
+    void startRun(cv, '派发服务', undefined, deps())
+    const pid = await pidOf('M2')
+    await until(() => bodies.length === 4, '父会话收到子 agent 回执后的请求')
+    expect(bodies[3]).toContain('服务已启动。')
+    expect(bodies[3]).toContain('子 agent 结束时停止了仍在运行的后台命令：cmd_')
+    expect(bodies[3]).toContain('hold.ts M2')
+    await idle(cv)
+    await until(() => !alive(pid), 'M2 的进程结束')
   }, 30_000)
 })
 

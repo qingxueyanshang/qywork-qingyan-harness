@@ -132,6 +132,11 @@ export class CommandTaskTable {
     return 'written'
   }
 
+  /** 结束该会话的全部后台命令。被停止的命令不投递回执。 */
+  stopOf(conversationId: ConversationId): void {
+    for (const task of this.byConversation.get(conversationId)?.values() ?? []) task.stop()
+  }
+
   /** 服务退出：结束全部后台命令。被停止的命令不投递回执。 */
   stopAll(): void {
     for (const table of this.byConversation.values()) {
@@ -181,6 +186,37 @@ export class CommandTaskTable {
       conversationId,
     )
   }
+}
+
+/**
+ * 无人接收回执的会话（`qy exec` 与子 agent）一轮结束之后的后台命令处理。两者的回执只在本次执行内作为下一轮的消息执行，
+ * 不发起顶层会话的一轮；执行结束之后没有人读取后台命令的输出与回执。
+ *
+ * 由前台等待转入后台的命令预期自行结束：等到其中一条结束（回执随之投递，`hasReceipts` 变为真）后返回空数组，
+ * 调用方以回执执行下一轮。不要改为直接停止：转入后台只交回控制权，不改变命令的结局，直接停止时超过等待上限的构建在本轮结束时被终止。
+ * 没有这类命令时停止其余命令（以 background 启动的服务与监听进程），等它们结束后返回被停止的命令；停止之前自行结束的命令已投递回执，
+ * 调用方照常以回执执行一轮，被停止的命令没有回执。`signal` 中止时立即返回空数组。
+ */
+export async function settleAfterRound(
+  table: CommandTaskTable,
+  conversationId: ConversationId,
+  hasReceipts: () => boolean,
+  signal: AbortSignal,
+): Promise<BackgroundCommand[]> {
+  const aborted = new Promise((resolve) =>
+    signal.addEventListener('abort', resolve, { once: true }),
+  )
+  while (!hasReceipts() && !signal.aborted) {
+    const finishing = table.handedOffOf(conversationId)
+    if (finishing.length === 0) break
+    await Promise.race([...finishing.map((c) => table.ended(conversationId, c.id)), aborted])
+  }
+  if (signal.aborted || hasReceipts()) return []
+  const left = table.listOf(conversationId)
+  if (left.length === 0) return []
+  table.stopOf(conversationId)
+  await Promise.all(left.map((c) => table.ended(conversationId, c.id)))
+  return left
 }
 
 /**

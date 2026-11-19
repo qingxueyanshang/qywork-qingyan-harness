@@ -13,9 +13,11 @@ import { Ports, provide } from '@qywork/agent'
 import { transmittableEffortLevels } from '@qywork/ai'
 import type {
   AgentEvent,
+  BackgroundCommand,
   ConversationId,
   EffortLevel,
   ErrorCode,
+  FollowUp,
   RunId,
   StepId,
   StopReason,
@@ -29,8 +31,9 @@ import {
 } from '@qywork/runtime'
 import { getConversation } from '@qywork/store'
 import type { Role } from '@qywork/team'
-import { BrowserPort, CanvasPort, DesktopPort } from '@qywork/tools'
+import { BrowserPort, CanvasPort, CommandPort, DesktopPort } from '@qywork/tools'
 import { artRenderOf, canvasPort } from './canvas/port.ts'
+import { commandPortOf, settleAfterRound } from './command-tasks/table.ts'
 import { type CommandDeps, officePortOf } from './deps.ts'
 
 /**
@@ -243,6 +246,10 @@ export async function runBuiltinMember(
   let detail: string | null = null
   let code: ErrorCode | null = null
   let session: Session | null = null
+  /** 本次派发中后台命令的回执：作为成员的下一轮消息执行，不发起顶层会话的一轮（`settleAfterRound`）。 */
+  const receipts: FollowUp[] = []
+  /** 本次派发结束时被停止的后台命令，写入返回给父会话的产出。 */
+  let stopped: BackgroundCommand[] = []
 
   // 装配 Session 同样在 try 中：账本读取或装配抛出时以失败结束，由下方收尾。
   try {
@@ -305,44 +312,94 @@ export async function runBuiltinMember(
               ),
             ]
           : []),
+        /*
+         * 后台命令与顶层会话使用同一个任务表与端口：前台命令超过等待上限时转入后台，控制权交回成员。
+         * 回执在本次派发内作为成员的下一轮消息执行，与 `qy exec` 相同；不经由 `submitMessage`，那条入口发起的是顶层会话的一轮。
+         */
+        ...(deps.commands
+          ? [
+              provide(
+                CommandPort,
+                commandPortOf(deps.commands, deps.runs, conversationId, (f) => receipts.push(f)),
+              ),
+            ]
+          : []),
       ]),
       // 父会话向正在执行的成员派发的任务排入成员自己的队列（`delegate.ts`），在成员的 step 边界注入。
       followUps: (id) => deps.runs.takeSteered(id),
     })
 
     // 会话已存在，接口与模型记录在该会话行上；此处不再传递模型名。
-    for await (const ev of session.ask(input.prompt, conversationId, {
-      ...(input.dispatch ? { dispatch: input.dispatch } : {}),
-      ...(input.effort ? { effort: input.effort } : {}),
-      transientResend: true,
-    })) {
-      if (ev.type === 'run.started') {
-        runId = ev.runId
-        // 先补入 runId，再暴露子会话入口。用户取得入口后立即打开时，加载侧已能从
-        // 同一张权威表取得当前轮次，不依赖是否恰好收到 run.started。
-        deps.runs.register(conversationId, runId)
-      } else if (ev.type === 'text.delta') text += ev.delta
-      else if (ev.type === 'run.error') {
-        error = `[${ev.code}] ${ev.message}`
-        code = ev.code
-      } else if (ev.type === 'run.finished') {
-        stop = ev.stopReason
-        detail = ev.stopDetail ?? null
+    let message = input.prompt
+    let origin: { origin?: 'command' } = {}
+    for (;;) {
+      for await (const ev of session.ask(message, conversationId, {
+        ...(input.dispatch ? { dispatch: input.dispatch } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        transientResend: true,
+        ...origin,
+      })) {
+        if (ev.type === 'run.started') {
+          runId = ev.runId
+          // 先补入 runId，再暴露子会话入口。用户取得入口后立即打开时，加载侧已能从
+          // 同一张权威表取得当前轮次，不依赖是否恰好收到 run.started。
+          deps.runs.register(conversationId, runId)
+        } else if (ev.type === 'text.delta') text += ev.delta
+        else if (ev.type === 'run.error') {
+          error = `[${ev.code}] ${ev.message}`
+          code = ev.code
+        } else if (ev.type === 'run.finished') {
+          stop = ev.stopReason
+          detail = ev.stopDetail ?? null
+        }
+        ctx.onEvent?.(ev, conversationId)
       }
-      ctx.onEvent?.(ev, conversationId)
+      // 两轮之间没有进行中的轮次：等待后台命令期间不显示已结束的一轮。
+      if (runId) deps.runs.register(conversationId, null)
+      runId = null
+      // 本轮未正常结束时不再以回执继续，剩余命令在 finally 中停止。
+      if (!deps.commands || input.signal.aborted || error || stop !== 'completed') break
+      stopped = await settleAfterRound(
+        deps.commands,
+        conversationId,
+        () => receipts.length > 0,
+        input.signal,
+      )
+      if (input.signal.aborted || receipts.length === 0) break
+      message = receipts
+        .splice(0)
+        .map((r) => r.content)
+        .join(ROUND_SEPARATOR)
+      origin = { origin: 'command' }
+      if (text) text += ROUND_SEPARATOR
     }
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)
   } finally {
     if (runId) deps.runs.register(conversationId, null)
+    // 本次派发结束（含失败与中止）时仍在运行的命令一并停止：成员此后不再执行，没有人读取其输出与回执。
+    const left = deps.commands?.listOf(conversationId) ?? []
+    if (deps.commands && left.length > 0) {
+      deps.commands.stopOf(conversationId)
+      await Promise.all(left.map((c) => deps.commands?.ended(conversationId, c.id)))
+      stopped = [...stopped, ...left]
+    }
     await session?.dispose().catch((reason) => {
       error = `扩展关闭失败：${String(reason)}`
     })
   }
 
   const output = text.trim()
-  return { ...memberOutcome({ error, stop, detail, output }), output, stop, code }
+  const outcome = memberOutcome({ error, stop, detail, output })
+  // 被停止的命令写在产出末尾，父会话据此得知；成败仍按本轮终态与正文判定。
+  const notice = stopped.length
+    ? `子 agent 结束时停止了仍在运行的后台命令：${stopped.map((c) => `${c.id}（${c.command}）`).join('、')}`
+    : ''
+  return { ...outcome, output: [output, notice].filter(Boolean).join(ROUND_SEPARATOR), stop, code }
 }
+
+/** 多轮正文、多条回执与停止说明之间的分隔。 */
+const ROUND_SEPARATOR = '\n\n'
 
 /**
  * 判断一个成员是否算作成功。

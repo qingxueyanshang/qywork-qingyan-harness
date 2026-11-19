@@ -320,7 +320,7 @@ export async function startRun(
               deliver: deliverReceipt,
             }),
           ),
-          // 后台命令同样只提供给顶层会话：回执发起的一轮只能属于顶层会话。
+          // 顶层会话的后台命令回执经 `submitMessage` 发起一轮；成员会话使用同一个任务表，回执在派发内执行（`team-run.ts`）。
           ...(deps.commands
             ? [
                 provide(
