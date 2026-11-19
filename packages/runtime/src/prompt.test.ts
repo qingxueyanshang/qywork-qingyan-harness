@@ -1,7 +1,7 @@
 /**
  * 上下文末尾注记的装配。
  *
- * 覆盖范围：`prompt.ts` 的 `buildTailNotes`，`buildSystemPrompt` 中能力段各行的措辞、
+ * 覆盖范围：`prompt.ts` 的 `buildTailNotes`，`session/turn/prepare.ts` 的 `projectInstructionFiles`，`buildSystemPrompt` 中能力段各行的措辞、
  * 完成的定义、停下等待用户的判定（受阻四类与不是受阻的情形）、执行失败的七类处理方式、追问的意图、
  * 内置工具说明中不出现第二种收尾写法（覆盖 `@qywork/tools` 全部内置工具的 description）
  * 与末尾的 `outputLimitNote`；以及用 `@qywork/agent` 的 `auditFrozenText` 审计真实的系统提示词：
@@ -13,10 +13,14 @@
  */
 
 import { describe, expect, setSystemTime, test } from 'bun:test'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { auditFrozenText, ToolRegistry } from '@qywork/agent'
 import { TODO_BLOCKERS, TODO_FAILURES } from '@qywork/core'
 import { registerToolCatalog } from '@qywork/tools'
 import { buildSystemPrompt, buildTailNotes, outputLimitNote } from './prompt.ts'
+import { projectInstructionFiles } from './session/turn/prepare.ts'
 
 const base = { workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' as const }
 const note = (notes: ReturnType<typeof buildTailNotes>, group: string) =>
@@ -254,6 +258,23 @@ describe('上下文末尾注记', () => {
 
     // 未收录的取值原样传递：虚构名称的危害大于给出原值。
     expect(state('freebsd')).toContain('平台：freebsd')
+  })
+
+  /**
+   * 原始失败形状：仓库根的 AGENTS.md / CLAUDE.md 不进入上下文，qywork 工作区中模型 13 次直接运行 `bun test`，
+   * 而 CLAUDE.md 写明了测试命令。快照只列文件与行数，正文由模型读取。
+   */
+  test('工作区根的项目说明文件列在工作区状态中，只列文件与行数，不含正文', async () => {
+    const root = await mkdtemp(join(process.env.QYWORK_TEST_TEMP ?? tmpdir(), 'instructions-'))
+    await writeFile(join(root, 'AGENTS.md'), '# 约定\n测试命令：bun run test\n', 'utf8')
+    const files = await projectInstructionFiles(root)
+    expect(files).toEqual([{ file: 'AGENTS.md', lines: 2 }])
+
+    const state = note(buildTailNotes({ ...base, projectInstructions: files }), 'workspaceState')
+    expect(state?.content).toContain('项目说明：AGENTS.md（2 行）')
+    expect(state?.content).not.toContain('bun run test')
+    expect(note(buildTailNotes(base), 'workspaceState')?.content).not.toContain('项目说明')
+    expect(await projectInstructionFiles(join(root, 'missing'))).toEqual([])
   })
 
   test('当前日期取本机时区：东八区凌晨不写成前一天', () => {

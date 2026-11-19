@@ -1,8 +1,10 @@
 /**
- * 准备阶段：解析本轮的模型与规格，冻结非对话上下文（扩展工具、技能、记忆、待办、运行环境）。
+ * 准备阶段：解析本轮的模型与规格，冻结非对话上下文（扩展工具、技能、记忆、项目说明文件、待办、运行环境）。
  * 在写入 run 行之前完成，抛出时不留下任何记录。
  */
 
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { DelegatePort, softLimit } from '@qywork/agent'
 import { buildAdapter, type ProviderProfile } from '@qywork/ai'
 import type { ConversationId, WorkflowProjection } from '@qywork/core'
@@ -103,6 +105,7 @@ export async function prepareTurn(
   const skills = await scanSkills(roots).catch(() => [])
   session.skillDirs = skills.map((s) => s.dir)
   const memories = await listScopedEntries(roots).catch(() => [])
+  const projectInstructions = await projectInstructionFiles(session.opts.workspaceRoot)
   const canAssignModels = ['define_role', 'subagent', 'workflow'].some((name) =>
     session.registry.has(name),
   )
@@ -158,6 +161,7 @@ export async function prepareTurn(
     ),
     platform: process.platform,
     mode,
+    ...(projectInstructions.length ? { projectInstructions } : {}),
     skills,
     memories,
     // 派发工具存在时才提供；成员会话没有 delegate，既无法取得清单，也无法递归派发任务。
@@ -241,4 +245,22 @@ function unfinishedWorkflows(store: Store, conversationId: ConversationId): Work
     if (folded.ok && folded.projection.phase !== 'completed') out.push(folded.projection)
   }
   return out
+}
+
+/** 仓库写给编码 agent 的说明文件，按此顺序列出。 */
+const PROJECT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md'] as const
+
+/** 工作区根目录中存在的项目说明文件与行数。只读取根目录：子目录中的同名文件属于各自的模块，由模型按需查找。 */
+export async function projectInstructionFiles(
+  workspaceRoot: string,
+): Promise<{ file: string; lines: number }[]> {
+  const found: { file: string; lines: number }[] = []
+  for (const file of PROJECT_INSTRUCTION_FILES) {
+    const text = await readFile(join(workspaceRoot, file), 'utf8').catch(() => null)
+    if (text === null) continue
+    // 末尾的换行不另计一行。
+    const lines = text === '' ? 0 : text.replace(/\r?\n$/, '').split('\n').length
+    found.push({ file, lines })
+  }
+  return found
 }

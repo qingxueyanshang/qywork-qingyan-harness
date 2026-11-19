@@ -448,6 +448,11 @@ export function buildTailNotes(input: {
   platform: string
   /** 本会话临时目录，工作区相对路径。只在会话已确定时传入。 */
   tempDir?: string
+  /**
+   * 工作区根目录中仓库写给编码 agent 的说明文件（AGENTS.md、CLAUDE.md）与行数。只列文件，不放正文：
+   * 快照每轮写入一份，正文放入时每轮重复一次（qywork 的 CLAUDE.md 约 5 万字节）。
+   */
+  projectInstructions?: { file: string; lines: number }[]
   /** 运行环境一节（`environment.ts` 的 `describeEnvironment`），每轮读取本机目录生成。 */
   environment?: string
   /**
@@ -530,6 +535,10 @@ export function buildTailNotes(input: {
     `当前日期：${today}`,
   ]
   if (input.viewing) lines.push(viewingLine(input.viewing))
+  if (input.projectInstructions?.length) {
+    const files = input.projectInstructions.map((f) => `${f.file}（${f.lines} 行）`).join('、')
+    lines.push(`项目说明：${files}，记录本仓库的构建与测试命令和约定，开始修改前用 read_file 读取`)
+  }
   if (input.tempDir) lines.push(`本会话临时目录：${input.tempDir}`)
   lines.push(
     input.mode === 'full'
