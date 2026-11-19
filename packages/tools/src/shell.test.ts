@@ -527,6 +527,29 @@ describe('后台命令的工具形态', () => {
     expect(outcome).toMatchObject({ status: 'failure', executed: false, errorKind: 'bad_request' })
   })
 
+  test('wait_seconds 只在有后台命令通道时提供；不是正数或与 background、probe_url 同时提供时不启动命令', async () => {
+    const keys = (spec: ReturnType<typeof makeShellTool>) =>
+      Object.keys((spec.parameters as { properties: object }).properties)
+    expect(keys(makeShellTool(shell))).not.toContain('wait_seconds')
+    expect(keys(makeShellTool(shell, { background: true }))).toContain('wait_seconds')
+
+    const { port } = fakePort({})
+    const tool = makeShellTool(shell, { background: true })
+    for (const args of [
+      { command: 'echo ok', wait_seconds: 0 },
+      { command: 'echo ok', wait_seconds: '30' },
+      { command: 'echo ok', wait_seconds: 30, background: true },
+      { command: 'echo ok', wait_seconds: 30, probe_url: 'http://127.0.0.1:3000/' },
+    ]) {
+      const outcome = await tool.fn(args, ctxWith(port))
+      expect(outcome).toMatchObject({
+        status: 'failure',
+        executed: false,
+        errorKind: 'bad_request',
+      })
+    }
+  })
+
   test('按任务编号读取至今的输出；编号不在本会话时列出运行中的命令', async () => {
     const { port, stopped } = fakePort({
       cmd_1: { command: 'npm run dev', stdout: 'ready on 3000\n', stderr: '' },

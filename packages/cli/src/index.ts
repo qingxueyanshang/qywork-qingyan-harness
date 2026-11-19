@@ -325,11 +325,24 @@ async function runExec(args: string[]): Promise<number> {
       }
       if (controller.signal.aborted) break
       origin = { origin: 'command' }
+      // 由前台等待转入后台的命令预期自行结束：等到其中一条结束，回执作为下一轮的消息执行，与 `qy serve` 中回执发起一轮相同。
+      // 不要改为直接停止：转入后台只交回控制权，不改变命令的结局；直接停止时，超过等待上限的构建在本轮结束时被终止。
+      while (receipts.length === 0 && !controller.signal.aborted) {
+        const finishing = commands.handedOffOf(EXEC_CONVERSATION)
+        if (finishing.length === 0) break
+        await Promise.race([
+          ...finishing.map((c) => commands.ended(EXEC_CONVERSATION, c.id)),
+          new Promise((resolve) =>
+            controller.signal.addEventListener('abort', resolve, { once: true }),
+          ),
+        ])
+      }
+      if (controller.signal.aborted) break
       if (receipts.length > 0) {
         message = takeReceipts()
         continue
       }
-      // 仍在运行的后台命令在退出前停止：其输出与回执只经由本进程读取，进程退出后无人接收。
+      // 其余仍在运行的后台命令（以 background 启动的服务与监听进程）在退出前停止：其输出与回执只经由本进程读取，进程退出后无人接收。
       const left = commands.listOf(EXEC_CONVERSATION)
       if (left.length === 0) break
       commands.stopAll()

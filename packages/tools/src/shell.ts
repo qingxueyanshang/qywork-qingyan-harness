@@ -357,7 +357,10 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       '在工作区中执行一条命令并返回 stdout/stderr 与退出码。' +
       '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
       (opts.background
-        ? '未指定 background 时等待命令结束；等待期间用户发来消息时，命令转入后台继续运行，本次结果给出任务编号与已产生的输出。' +
+        ? `未指定 background 时等待命令结束；等待超过 wait_seconds（缺省 ${FOREGROUND_WAIT_SECONDS} 秒）或等待期间用户发来消息时，` +
+          '命令转入后台继续运行，本次结果给出任务编号与已产生的输出。' +
+          '转入后台之后按已产生的输出与已用时长判断：需要结果时用 background_command 的 wait_seconds 继续等待，' +
+          '判断无法在合理时间内完成时停止该命令并调整做法。' +
           '后台命令结束时结果作为回执消息送达；用 background_command 按任务编号读取至今的输出、等待命令结束或停止命令。'
         : '') +
       `启动图形应用（带窗口、不自行退出的程序）用 ${LAUNCH_APP}：启动后立即返回，应用继续运行，不使用 background。` +
@@ -387,8 +390,8 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
           type: 'integer',
           description:
             `无输出时限（毫秒），默认 ${DEFAULT_TIMEOUT_MS}，上限 ${MAX_TIMEOUT_MS}，超过按上限执行。` +
-            '命令在该时长内没有输出时检查它的进程树：仍在占用 CPU 或读写磁盘就继续等待，' +
-            '两者都没有时才判定为停滞并终止。不限总时长',
+            '命令在该时长内没有输出时检查它的进程树：仍在占用 CPU 或读写磁盘就继续运行，' +
+            '两者都没有时才判定为停滞并终止。命令本身不限总时长',
         },
         probe_url: {
           type: 'string',
@@ -405,8 +408,15 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
                   '为 true 时命令启动后立即返回任务编号，命令在后台继续运行，标准输入保持打开，' +
                   '可用 background_command 的 input 写入（与 REPL、命令行向导等交互程序交互）。' +
                   '用于开发服务器、监听进程、交互程序等不自行退出的命令。' +
-                  '构建、测试、安装、远程命令等会自行结束的命令优先不指定：等待没有总时长上限，等待期间用户发来消息时命令自动转入后台。' +
-                  '后台命令不按 timeout_ms 判定停滞。不能与 probe_url 同时使用',
+                  '构建、测试、安装、远程命令等会自行结束的命令优先不指定：等待超过 wait_seconds 或用户发来消息时命令自动转入后台。' +
+                  '以 background 启动的命令不按 timeout_ms 判定停滞；其余命令转入后台之后仍按 timeout_ms 判定。不能与 probe_url 同时使用',
+              },
+              wait_seconds: {
+                type: 'number',
+                description:
+                  `前台最长等待秒数，缺省 ${FOREGROUND_WAIT_SECONDS}，上限 ${MAX_WAIT_SECONDS}。` +
+                  '到达该秒数时命令仍未结束则转入后台继续运行，本次结果给出任务编号与已产生的输出。' +
+                  '预计耗时较长的构建与完整测试可设为预计时长。不能与 background、probe_url 同时使用',
               },
             }
           : {}),
@@ -453,7 +463,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
         probeUrl = checked.url
       }
 
-      // 没有端口时规格中不含 `background`，参数即使出现也按前台执行。转入后台之后的文件改动归属本次调用的 step，
+      // 没有端口时规格中不含 `background` 与 `wait_seconds`，参数即使出现也按前台等到命令退出。转入后台之后的文件改动归属本次调用的 step，
       // 没有 step id（直接构造 ToolContext 的测试夹具）时同样只能前台执行。
       const port = ctx.port(CommandPort)
       const owner = port && ctx.stepId !== undefined ? { port, stepId: ctx.stepId } : null
@@ -466,6 +476,21 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
           errorKind: 'bad_request',
         }
       }
+      const waitArg = owner !== null ? args.wait_seconds : undefined
+      if (waitArg !== undefined) {
+        const why =
+          typeof waitArg !== 'number' || !Number.isFinite(waitArg) || waitArg <= 0
+            ? 'wait_seconds 必须是正数'
+            : background || probeUrl !== null
+              ? 'wait_seconds 不能与 background、probe_url 同时使用'
+              : null
+        if (why)
+          return { status: 'failure', executed: false, message: why, errorKind: 'bad_request' }
+      }
+      const waitSeconds = Math.min(
+        typeof waitArg === 'number' ? waitArg : FOREGROUND_WAIT_SECONDS,
+        MAX_WAIT_SECONDS,
+      )
 
       // 缺少 secrets 时按空集合处理：含义是没有已知凭证，而不是无需剥离。
       const secrets = ctx.secrets ?? { values: [] }
@@ -535,7 +560,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       ctx.signal.addEventListener('abort', haltWithRun, { once: true })
       // 启动进程的 await 期间收到的停止不再派发 abort 事件，注册之后须补查一次。
       if (ctx.signal.aborted) haltWithRun()
-      // 转入后台之后：输出不再回传到本次调用的工具卡，也不再按停滞终止。
+      // 转入后台之后：输出不再回传到本次调用的工具卡。
       let detached = false
       // 至今的输出（已脱敏），每条流只保留最近的一段；转入后台时随结果返回，之后按任务编号读取。
       const recent = { stdout: new RecentOutput(), stderr: new RecentOutput() }
@@ -560,13 +585,14 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       // 判据是「停滞」而不是「运行太久」：按总时长判定时，一条仍在逐页处理的长任务与一条停滞的
       // 命令在 600 秒时被同样终止，已完成的输出随之丢失（实测一套 25 页 PPT 的重建需要
       // 15–20 分钟，模型连续四次在 600 秒被终止后改为放到后台轮询，又重复启动一份）。
-      // 没有输出满 `timeout` 时检查进程树是否仍在占用 CPU 或读写磁盘，两者都没有时才终止。不设总时长：
-      // 仍在工作的命令没有理由被终止，持续输出却不会结束的命令由用户停止。
-      // 后台命令（服务进程、监听进程）长时间无输出是常态：转入后台之后不按停滞终止，
-      // 检查进程树期间转入后台的同样不终止。
+      // 没有输出满 `timeout` 时检查进程树是否仍在占用 CPU 或读写磁盘，两者都没有时才终止。命令本身不设总时长：
+      // 仍在工作的命令没有理由被终止；前台等待的上限只交回控制权（`foregroundWait`），不终止命令。
+      // 判定只看启动方式：以 background 启动的命令（服务进程、监听进程）长时间无输出是常态，不判定；
+      // 前台启动的命令声明了会自行结束，转入后台之后仍按停滞终止。不要改为按是否已转入后台判定：
+      // 阻塞于等待输入的命令在等待上限到期后转入后台，将永不结束。
       const collecting = collectProcess(proc, {
-        idleMs: timeout,
-        busy: async () => detached || (await treeBusy(proc.pid)) || detached,
+        ...(background ? {} : { idleMs: timeout }),
+        busy: () => treeBusy(proc.pid),
         signal: halt.signal,
         onText: (channel, text) => emit(channel, redactors[channel].push(text)),
         // 不调用 flush 会静默丢弃输出末尾，这比泄露更难发现，因为无人逐字节核对。
@@ -594,11 +620,14 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       }
 
       /*
-       * 等待在三种情况下结束：命令退出；`background` 为真（不等待）；等待期间本会话收到用户的
-       * 「调整方向」消息。后两种命令继续运行，句柄交给任务表，本次结果写明任务编号与已产生的输出。
+       * 等待在四种情况下结束：命令退出；`background` 为真（不等待）；等待到达 `waitSeconds`；等待期间本会话收到用户的
+       * 「调整方向」消息。后三种命令继续运行，句柄交给任务表，本次结果写明任务编号与已产生的输出。
        */
-      const handOff = owner !== null && (background || (await steeredFirst(owner.port, collecting)))
-      if (owner !== null && handOff) {
+      const ended =
+        owner === null || background
+          ? null
+          : await foregroundWait(owner.port, collecting, waitSeconds * 1000)
+      if (owner !== null && ended !== 'exited') {
         ctx.signal.removeEventListener('abort', haltWithRun)
         detached = true
         // 观察窗口转为后台观察：至今的改动随本次结果返回，之后的改动在命令结束时追加到本次调用的 step。
@@ -632,7 +661,11 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
         return {
           status: 'success',
           message:
-            (background ? '命令已在后台启动' : '等待期间用户发来消息，命令转入后台继续运行') +
+            (ended === 'waited'
+              ? `命令在 ${waitSeconds} 秒内没有结束，已转入后台继续运行`
+              : ended === 'message'
+                ? '等待期间用户发来消息，命令转入后台继续运行'
+                : '命令已在后台启动') +
             `，任务编号 ${id}；结束时结果作为回执消息送达，已产生的输出见 stdout / stderr` +
             droppedNote(now.dropped) +
             (watched.incomplete ? WATCH_INCOMPLETE : ''),
@@ -666,22 +699,31 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
 }
 
 /**
- * 前台等待：命令退出时兑现为 false；等待期间本会话收到用户的「调整方向」消息时兑现为 true。
+ * 前台等待：命令退出时为 `exited`，到达 `waitMs` 时为 `waited`，本会话收到用户的「调整方向」消息时为 `message`。
+ * 后两种由调用方把命令转入后台。
  *
- * `steered` 只因本函数的中止而拒绝；其他原因的拒绝同样按 false 处理，即继续等待命令退出，
- * 命令不因端口故障失去持有方。
+ * `steered` 只因本函数的中止而拒绝；其他原因的拒绝不结束等待，命令不因端口故障失去持有方，等待仍由退出或上限结束。
  */
-async function steeredFirst(port: CommandPort, collecting: Promise<unknown>): Promise<boolean> {
+async function foregroundWait(
+  port: CommandPort,
+  collecting: Promise<unknown>,
+  waitMs: number,
+): Promise<'exited' | 'waited' | 'message'> {
   const done = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
-      collecting.then(() => false),
+      collecting.then(() => 'exited' as const),
       port.steered(done.signal).then(
-        () => true,
-        () => false,
+        () => 'message' as const,
+        () => new Promise<never>(() => {}),
       ),
+      new Promise<'waited'>((resolve) => {
+        timer = setTimeout(() => resolve('waited'), waitMs)
+      }),
     ])
   } finally {
+    clearTimeout(timer)
     done.abort()
   }
 }
@@ -757,8 +799,18 @@ function receiptBody(
   return lines.join('\n')
 }
 
-/** `wait_seconds` 的上限（秒）。等待期间本轮保持运行，到达上限后由模型决定继续等待还是先做其他工作。 */
+/**
+ * `run_command` 与 `background_command` 的 `wait_seconds` 的上限（秒）。等待期间本轮保持运行，
+ * 到达上限后由模型决定继续等待还是先做其他工作。
+ */
 const MAX_WAIT_SECONDS = 1800
+
+/**
+ * `run_command` 前台等待的缺省上限（秒），到达时命令转入后台、控制权交回模型。
+ * 取值依据：本机账本 60 天前台命令 16,957 次中 97.1% 在 120 秒内结束；取 30 秒时 8.5% 的命令多一次模型请求，
+ * 取 300 秒时一条在 900 秒内无法完成的命令只交回 2 次控制权。
+ */
+const FOREGROUND_WAIT_SECONDS = 120
 
 /**
  * 在本轮内等待一条后台命令结束：命令结束、用户发来「调整方向」消息、到达 `timeoutMs` 三者中最先发生的一项。

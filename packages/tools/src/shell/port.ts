@@ -12,7 +12,7 @@ import type { FileChange } from '@qywork/core'
  * 命令结束时先把转入后台之后的文件改动追加到 `stepId` 的 `outcome.fileChanges`，再投递回执；
  * 被停止的命令同样追加改动，不投递回执。
  *
- * 未注入时 `run_command` 没有 `background` 参数，前台等待不会提前结束，`background_command` 不注册。
+ * 未注入时 `run_command` 没有 `background` 与 `wait_seconds` 参数，前台等待只在命令退出时结束，`background_command` 不注册。
  */
 export interface CommandPort {
   /**

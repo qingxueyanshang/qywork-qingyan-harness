@@ -86,14 +86,16 @@ function textTurn(text: string): string {
   ])
 }
 
-let script: string[] = []
+/** 每次请求取出一项；函数在请求到达时生成应答（用于引用工具结果返回之后才确定的任务编号）。 */
+let script: (string | (() => string))[] = []
 let bodies: string[] = []
 
 const provider = Bun.serve({
   port: 0,
   async fetch(req) {
     bodies.push(await req.text())
-    const next = script.shift()
+    const entry = script.shift()
+    const next = typeof entry === 'function' ? entry() : entry
     // 脚本耗尽时返回 401（`auth_failed`，立即终止且不重发）：多出的请求由 `bodies` 记录，用例据此断言没有多余的一轮。
     if (!next) return new Response('脚本已用完', { status: 401 })
     return new Response(next, { headers: SSE_HEADERS })
@@ -175,6 +177,25 @@ const timer = setInterval(async () => {
 `
 
 /**
+ * 持续占用 CPU、没有输出的命令：把 pid 写入 `<名称>.pid` 后循环计算；`<名称>.idle` 出现时停止计算、只每 50 毫秒检查一次文件，
+ * `<名称>.go` 出现时退出。停滞判定按进程树的 CPU 占用区分两种状态（`tree.ts` 的 `treeBusy`）。
+ */
+const SPIN_SCRIPT = `
+import { existsSync } from 'node:fs'
+const name = process.argv[2]
+await Bun.write(name + '.pid', String(process.pid))
+for (;;) {
+  if (existsSync(name + '.go')) process.exit(0)
+  if (existsSync(name + '.idle')) break
+  const until = Date.now() + 50
+  while (Date.now() < until) {}
+}
+setInterval(() => {
+  if (existsSync(name + '.go')) process.exit(0)
+}, 50)
+`
+
+/**
  * 交互程序：逐行读取标准输入，每行输出一行回应；输入关闭时输出结束行并退出。
  */
 const ANSWER_SCRIPT = [
@@ -191,6 +212,7 @@ beforeAll(async () => {
   await writeFile(join(dir, 'hold.ts'), HOLD_SCRIPT)
   await writeFile(join(dir, 'late.ts'), LATE_SCRIPT)
   await writeFile(join(dir, 'flood.ts'), FLOOD_SCRIPT)
+  await writeFile(join(dir, 'spin.ts'), SPIN_SCRIPT)
   await mkdir(join(dir, '.tmp'), { recursive: true })
   const dbPath = join(dir, 'bgcmd.sqlite3')
   store = new Store({ path: dbPath })
@@ -326,6 +348,7 @@ const late = (name: string, mode?: 'exit') =>
   `"${process.execPath.replaceAll('\\', '/')}" late.ts ${name}${mode ? ` ${mode}` : ''}`
 const answer = () => `"${process.execPath.replaceAll('\\', '/')}" answer.ts`
 const flood = (name: string) => `"${process.execPath.replaceAll('\\', '/')}" flood.ts ${name}`
+const spin = (name: string) => `"${process.execPath.replaceAll('\\', '/')}" spin.ts ${name}`
 
 /** 某次工具调用的 step id，取自 `tool.started` 事件。 */
 function stepOf(callId: string): string {
@@ -404,6 +427,92 @@ describe('前台命令在等待期间转入后台', () => {
     expect(bodies.length).toBe(2)
     await handleCommand(stop, { ...deps(), ws: sock.ws })
     expect(sock.sent.at(-1)).toMatchObject({ type: 'command.rejected', message: '该命令已结束' })
+  }, 30_000)
+})
+
+/**
+ * 原始失败形状：一条持续占用 CPU、没有输出的前台命令，停滞判定每次检查都认为它仍在工作，前台等待不设上限，
+ * 工具调用一直不返回，模型无从干预（基准 query-optimize 三次试验阻塞 660–840 秒直到时限）。
+ * 等待上限经 `wait_seconds` 取 1 秒，停滞判定经 `timeout_ms` 取 1 秒。
+ */
+describe('前台命令超过等待上限转入后台', () => {
+  const taskOf = (cv: ConversationId) => commands.listOf(cv)[0]?.id ?? ''
+  const bg = (id: string, args: Record<string, unknown>) => ({
+    id,
+    name: 'background_command',
+    args,
+  })
+
+  test('到达上限时工具返回，命令仍在运行；可经 background_command 读取与停止，被停止的命令没有回执', async () => {
+    const cv = conversation()
+    script.push(
+      callsTurn([run('call_s', { command: spin('Q1'), timeout_ms: 1000, wait_seconds: 1 })]),
+      () => callsTurn([bg('call_r', { task_id: taskOf(cv) })]),
+      () => callsTurn([bg('call_x', { task_id: taskOf(cv), stop: true })]),
+      textTurn('查询过慢，已停止。'),
+    )
+
+    void startRun(cv, '运行查询', undefined, deps())
+    const pid = await pidOf('Q1')
+    await until(() => bodies.length >= 2, '到达等待上限后的第二次请求')
+    const [task] = commands.listOf(cv)
+    expect(task?.command).toBe(spin('Q1'))
+    expect(bodies[1]).toContain(`命令在 1 秒内没有结束，已转入后台继续运行，任务编号 ${task!.id}`)
+    expect(alive(pid)).toBe(true)
+
+    await until(() => bodies.length === 4, '读取与停止之后的请求')
+    expect(bodies[2]).toContain(`后台命令 ${task!.id}（`)
+    expect(bodies[2]).toContain('）仍在运行，输出为至今的内容')
+    expect(bodies[3]).toContain(`已停止后台命令 ${task!.id}`)
+    await idle(cv)
+    await until(() => !alive(pid), '命令进程结束')
+    await until(() => commands.listOf(cv).length === 0, '任务表移除')
+    expect(bodies.length).toBe(4)
+  }, 30_000)
+
+  test('转入后台的命令结束时送达回执；不再占用 CPU 的命令仍按 timeout_ms 判定停滞并送达回执，以 background 启动的命令不判定', async () => {
+    const cv = conversation()
+    script.push(
+      callsTurn([
+        run('call_e', { command: spin('Q2'), timeout_ms: 1000, wait_seconds: 1 }),
+        run('call_i', { command: spin('Q3'), timeout_ms: 1000, wait_seconds: 1 }),
+        run('call_k', { command: hold('Q4'), timeout_ms: 1000, background: true }),
+      ]),
+      textTurn('三条命令在后台运行。'),
+      textTurn('Q2 已完成。'),
+      textTurn('Q3 已终止。'),
+    )
+
+    void startRun(cv, '运行三条命令', undefined, deps())
+    const pidQ2 = await pidOf('Q2')
+    const pidQ3 = await pidOf('Q3')
+    const pidQ4 = await pidOf('Q4')
+    await until(() => bodies.length === 2, '三条命令转入后台后的请求')
+    expect(bodies[1]).toContain('命令在 1 秒内没有结束，已转入后台继续运行')
+    await idle(cv)
+    const ids: Record<string, string> = Object.fromEntries(
+      commands.listOf(cv).map((c) => [c.command.split(' ').at(-1) as string, c.id]),
+    )
+
+    await writeFile(join(dir, 'Q2.go'), '')
+    await until(() => bodies.length === 3, 'Q2 的回执发起的一轮')
+    expect(bodies[2]).toContain(`[后台命令回执] 任务 ${ids.Q2} 已结束：命令执行成功`)
+    expect(alive(pidQ2)).toBe(false)
+    await idle(cv)
+
+    await writeFile(join(dir, 'Q3.idle'), '')
+    await until(() => bodies.length === 4, 'Q3 被判定停滞后的回执')
+    expect(bodies[3]).toContain(`[后台命令回执] 任务 ${ids.Q3} 已结束：命令连续 1 秒没有输出`)
+    expect(bodies[3]).toContain('判定为停滞，已终止')
+    await until(() => !alive(pidQ3), 'Q3 的进程结束')
+    await idle(cv)
+
+    // Q4 以 background 启动，同样每 20 毫秒检查一次文件、没有输出，在 Q3 被判定停滞之后仍在运行。
+    expect(alive(pidQ4)).toBe(true)
+    expect(commands.listOf(cv).map((c) => c.id)).toEqual([ids.Q4!])
+    commands.stop(cv, ids.Q4!)
+    await until(() => !alive(pidQ4), 'Q4 的进程结束')
+    await until(() => commands.listOf(cv).length === 0, '任务表移除')
   }, 30_000)
 })
 

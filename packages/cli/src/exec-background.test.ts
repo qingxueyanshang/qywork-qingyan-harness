@@ -1,5 +1,6 @@
 /**
- * `qy exec` 的后台命令：覆盖 `index.ts` 的 `runExec` 装配后台命令端口、本轮结束后执行回执与停止仍在运行的命令。
+ * `qy exec` 的后台命令：覆盖 `index.ts` 的 `runExec` 装配后台命令端口、本轮结束后执行回执、等待由前台转入后台的命令
+ * 与停止仍在运行的命令。
  * 任务表与端口本身由 `server/src/command-tasks/table.test.ts` 覆盖。
  *
  * 失败形状：`qy exec` 没有后台命令端口，`run_command` 不提供 `background`，需要先启动服务再连续执行的任务
@@ -82,12 +83,15 @@ const HOLD =
   "await Bun.write(process.argv[2] + '.pid', String(process.pid)); console.log('started'); setInterval(() => {}, 1000)"
 /** 输出一行后 300 毫秒退出。 */
 const SHORT = "console.log('short done'); setTimeout(() => process.exit(0), 300)"
+/** 3 秒后输出一行并退出。 */
+const SLOW = "setTimeout(() => { console.log('slow done'); process.exit(0) }, 3000)"
 
 async function exec(prompt: string) {
   const home = await mkdtemp(join(tmpdir(), 'qywork-exec-bg-'))
   const ws = await mkdtemp(join(tmpdir(), 'qywork-exec-bg-ws-'))
   await writeFile(join(ws, 'hold.ts'), HOLD)
   await writeFile(join(ws, 'short.ts'), SHORT)
+  await writeFile(join(ws, 'slow.ts'), SLOW)
   const config = {
     active: { provider: 'fake', model: 'deepseek-v4-flash' },
     providers: {
@@ -159,5 +163,25 @@ test('本轮中结束的后台命令的回执在本轮结束后作为下一轮�
   expect(bodies[2]).toContain('已结束，结果见下一条回执消息')
   expect(bodies[3]).toContain('[后台命令回执]')
   expect(bodies[3]).toContain('short done')
+  expect(r.err).not.toContain('已停止仍在运行的后台命令')
+}, 60_000)
+
+/**
+ * 失败形状：前台命令超过等待上限转入后台之后，模型结束本轮，`qy exec` 按「仍在运行的后台命令在退出前停止」终止该命令，
+ * 一条会自行结束的构建因此没有结果。
+ */
+test('由前台转入后台的命令在本轮结束后等到结束，回执作为下一轮的消息执行，不被停止', async () => {
+  script = [
+    callTurn('call_fg', 'run_command', { command: `"${BUN}" slow.ts`, wait_seconds: 1 }),
+    textTurn('命令在后台运行。'),
+    textTurn('已收到结果。'),
+  ]
+  bodies = []
+  const r = await exec('执行一条较慢的命令')
+  expect(r.code).toBe(0)
+  expect(bodies).toHaveLength(3)
+  expect(bodies[1]).toContain('命令在 1 秒内没有结束，已转入后台继续运行')
+  expect(bodies[2]).toContain('[后台命令回执]')
+  expect(bodies[2]).toContain('slow done')
   expect(r.err).not.toContain('已停止仍在运行的后台命令')
 }, 60_000)

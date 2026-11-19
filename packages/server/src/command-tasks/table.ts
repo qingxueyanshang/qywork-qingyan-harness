@@ -91,6 +91,16 @@ export class CommandTaskTable {
     )
   }
 
+  /**
+   * 其中由前台等待转入后台的命令：启动时没有输入管道（`CommandPort.adopt` 的 `input` 为 null，端口契约规定只有以
+   * background 启动的命令有输入管道）。这类命令预期自行结束，以 background 启动的服务与监听进程不在其中。
+   */
+  handedOffOf(conversationId: ConversationId): BackgroundCommand[] {
+    return [...(this.byConversation.get(conversationId) ?? new Map<string, Task>())]
+      .filter(([, task]) => task.input === null)
+      .map(([id, task]) => ({ id, command: task.command }))
+  }
+
   output(conversationId: ConversationId, id: string): ReturnType<CommandPort['output']> {
     const task = this.byConversation.get(conversationId)?.get(id)
     return task ? { command: task.command, ...task.output() } : null
