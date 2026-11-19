@@ -16,7 +16,7 @@
  * 真实 Shadow DOM 由端到端脚本覆盖，验证的是渲染引擎是否接受。
  */
 
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, expect, spyOn, test } from 'bun:test'
 import { until } from '@qywork/core/until.test-helper'
 import type { BrowserActInput, BrowserObservation } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
@@ -163,6 +163,8 @@ interface PageModel {
   dropInputAt?: number
   /** 每条 `Input.*` 命令应答后调用一次，参数为该命令的序号。用于在动作中途修改页面。 */
   onInput?: (nth: number) => void
+  /** `Input.*` 命令推迟应答的时长，模拟按键处理慢的页面。 */
+  inputDelayMs?: number
   /** `Target.attachedToTarget` 推迟发送的时长，模拟跨站帧的导航晚于主文档提交。 */
   attachDelayMs?: number
   /** 子会话的 `Accessibility.enable` 推迟应答的时长，模拟启用域尚未完成。 */
@@ -391,6 +393,8 @@ class FakePage {
             cmd.method === 'Accessibility.enable' &&
             cmd.sessionId !== MAIN
           if (slow) setTimeout(reply, self.model.childInitDelayMs)
+          else if (cmd.method.startsWith('Input.') && self.model.inputDelayMs)
+            setTimeout(reply, self.model.inputDelayMs)
           else reply()
           if (cmd.method.startsWith('Input.')) self.model.onInput?.(self.inputs)
         },
@@ -2514,6 +2518,58 @@ test('输入事件发出之后连接断开时返回 unknown，不缩减为已确
   expect(r.execution?.unreleased).toEqual(['KeyB'])
 })
 
+/**
+ * 原始失败形状：期限将尽时的事件以 1–10 ms 的超时发出，在页面应答之前超时，整次动作以 `unknown` 结束而禁止重发
+ * （账本中逐字输入 1041 字在第 894 字处、768 字在第 672 字处）。
+ */
+test('剩余期限不足一条事件的超时时停止发送，返回 partial 与已确认的单元数', async () => {
+  const { fake, handle } = await newPage()
+  const { record, observation } = await observe(handle)
+  const realNow = Date.now.bind(Date)
+  const started = realNow()
+  const clock = spyOn(Date, 'now')
+  // 第 3 条输入事件是第一轮的抬起：此后时钟推进到距期限约 20 ms，页面应答推迟 200 ms。
+  fake.model.onInput = (nth) => {
+    if (nth !== 3) return
+    const offset = started + ACTION_BUDGET_MS - 20 - realNow()
+    clock.mockImplementation(() => realNow() + offset)
+    fake.model.inputDelayMs = 200
+  }
+  try {
+    const r = await act(handle, record, { action: 'dblclick', ref: refOf(observation, '提交') })
+    expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 1, reason: '动作期限已到' })
+    expect(fake.mouseDetail().at(-1)).toMatchObject({ type: 'mouseReleased', clickCount: 1 })
+  } finally {
+    clock.mockRestore()
+  }
+})
+
+/**
+ * 原始失败形状：逐字输入的期限按估计的每字耗时一次算定，页面处理按键慢于估计值时，持续有进展的输入同样在中途停止。
+ */
+test('type 的期限按进展续期：每个字符耗时 20 秒、合计超过动作期限时仍一次完成', async () => {
+  const { fake, handle } = await newPage()
+  const { record, observation } = await observe(handle)
+  const realNow = Date.now.bind(Date)
+  let offset = 0
+  const clock = spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+  // 每条输入事件推进 10 秒：一个字符为按下与抬起两条，三个字符合计 60 秒，超过 `ACTION_BUDGET_MS`。
+  fake.model.onInput = () => {
+    offset += 10_000
+  }
+  try {
+    const r = await act(handle, record, {
+      action: 'type',
+      ref: refOf(observation, '关键词'),
+      text: 'abc',
+    })
+    expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 3 })
+    expect(fake.valueOf(11)).toBe('abc')
+  } finally {
+    clock.mockRestore()
+  }
+})
+
 test('type 中途取消之后不再发送业务事件，回执不报告完成', async () => {
   const { fake, handle } = await newPage()
   const { record, observation } = await observe(handle)
@@ -3082,13 +3138,20 @@ test('scroll 只指定 deltaX 时纵向为 0，两个方向都未指定时向下
   ])
 })
 
-/**
- * 原始失败形状：逐字输入接受 2000 个字符，期限却固定为 30 秒；真实页面约 40–50 ms/字，
- * 约 700 字以上的输入以「结果未知」结束。期限按单元数计算，缺省仍为 `ACTION_BUDGET_MS`。
- */
-test('动作期限缺省为固定值，按单元数计算的动作可以给出更长的期限', () => {
-  const before = Date.now()
-  expect(new Execution().deadline - before).toBeGreaterThanOrEqual(ACTION_BUDGET_MS)
-  expect(new Execution().deadline - before).toBeLessThan(ACTION_BUDGET_MS + 1_000)
-  expect(new Execution(120_000).deadline - before).toBeGreaterThanOrEqual(120_000)
+test('动作期限缺省为固定值，按单元续期的动作在每个单元完成时重新计算期限', () => {
+  const realNow = Date.now.bind(Date)
+  let offset = 0
+  const clock = spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+  try {
+    const fixed = new Execution()
+    const renewed = new Execution(ACTION_BUDGET_MS, { renewPerUnit: true })
+    const fixedDeadline = fixed.deadline
+    offset += 20_000
+    fixed.unit()
+    renewed.unit()
+    expect(fixed.deadline).toBe(fixedDeadline)
+    expect(renewed.deadline).toBe(Date.now() + ACTION_BUDGET_MS)
+  } finally {
+    clock.mockRestore()
+  }
 })

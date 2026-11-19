@@ -51,13 +51,26 @@ export type Point = { x: number; y: number }
  * 页面上生效，报告为未执行会导致调用方重放。收尾时未能确认释放的键同样使终态为 `unknown`。
  */
 export class Execution {
-  /** 本次动作的绝对期限。定位、布局复核、业务事件与按住时长共用它。 */
-  readonly deadline: number
+  #deadline: number
+  readonly #budgetMs: number
+  readonly #renewPerUnit: boolean
 
-  /** `budgetMs` 缺省为 `ACTION_BUDGET_MS`；只有单元数与耗时成正比的动作（逐字输入）按单元数计算。 */
-  constructor(budgetMs = ACTION_BUDGET_MS) {
-    this.deadline = Date.now() + budgetMs
+  /**
+   * `renewPerUnit` 为真时，期限自最近一次确认的单元起重新计算：单元数与耗时成正比的动作（逐字输入）持续有进展时
+   * 不因总耗时停止，连续 `budgetMs` 没有进展才停止。不要改回按估计速度一次算定总期限：页面处理按键慢于估计值时，
+   * 有进展的输入同样会在中途停止。
+   */
+  constructor(budgetMs = ACTION_BUDGET_MS, opts: { renewPerUnit?: boolean } = {}) {
+    this.#budgetMs = budgetMs
+    this.#renewPerUnit = opts.renewPerUnit === true
+    this.#deadline = Date.now() + budgetMs
   }
+
+  /** 本次动作的绝对期限。定位、布局复核、业务事件与按住时长共用它。 */
+  get deadline(): number {
+    return this.#deadline
+  }
+
   #confirmed = 0
   #unknown = false
   #finished = false
@@ -65,12 +78,15 @@ export class Execution {
   #unreleased: string[] = []
 
   /**
-   * 判断能否继续发送业务事件：未停止、客户端未取消、预算未耗尽。不能继续时记录原因。
+   * 判断能否继续发送业务事件：未停止、客户端未取消，且剩余期限不少于一条事件的超时上限。不能继续时记录原因。
+   *
+   * 不要放宽为「期限未过」：剩余期限不足时，`within` 把事件的超时缩短到剩余毫秒数，事件在页面应答之前超时，
+   * 整次动作以 `unknown` 结束而禁止重发；在此停止时终态为 `partial`，回执给出已确认的单元数。
    */
   open(client: CdpClient): boolean {
     if (this.#reason !== null) return false
     if (client.cancelled) this.stop('执行已停止')
-    else if (leftMs(this.deadline) <= 0) this.stop('动作期限已到')
+    else if (leftMs(this.deadline) < EVENT_TIMEOUT_MS) this.stop('动作期限已到')
     return this.#reason === null
   }
 
@@ -87,6 +103,7 @@ export class Execution {
   /** 完成一个单元。 */
   unit(): void {
     this.#confirmed += 1
+    if (this.#renewPerUnit) this.#deadline = Date.now() + this.#budgetMs
   }
 
   /**

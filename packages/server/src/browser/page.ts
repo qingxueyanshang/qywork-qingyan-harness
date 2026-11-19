@@ -115,13 +115,6 @@ const MAX_FRAME_DEPTH = 8
 
 /** `type` 一次最多输入的 Unicode 码点数。整段预检通过后才发送第一个事件。 */
 const MAX_TYPE_UNITS = 2_000
-/**
- * 逐字输入每个码点的期限预算。每个码点三次往返（复核焦点、按下、抬起），耗时取决于页面自身的按键处理：
- * 账本实测网页终端上为每字 32–50 ms。期限按单元数计算、不低于 `ACTION_BUDGET_MS`，上限为
- * `MAX_TYPE_UNITS` 乘以该值。不要改回固定期限：约 700 字以上的输入在固定的 30 s 内完成不了，
- * 以「结果未知」结束而禁止重发。
- */
-const TYPE_UNIT_BUDGET_MS = 60
 /** 拖动按下之后每一段终点最多推进的滚动次数。 */
 const MAX_DRAG_SCROLLS = 2
 /** 有时长的拖动段中相邻两次移动的间隔，约一帧。 */
@@ -2123,7 +2116,8 @@ async function typeOnPage(
 ): Promise<BrowserActReceipt> {
   const units = planType(text)
   const { client } = page
-  const run = new Execution(Math.max(ACTION_BUDGET_MS, units.length * TYPE_UNIT_BUDGET_MS))
+  // 每个码点三次往返（复核焦点、按下、抬起），耗时取决于页面自身的按键处理，期限按进展续期。
+  const run = new Execution(ACTION_BUDGET_MS, { renewPerUnit: true })
   const { entry, objectId, inspect } = await resolveRef(page, record, ref, run.deadline)
   // 不可用或只读的目标在发出第一个按键之前拒绝：逐字输入不会报错，只是每个字都被忽略。
   const target = await readTypingTarget(client, entry, objectId, run.deadline)
