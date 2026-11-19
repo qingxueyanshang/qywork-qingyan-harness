@@ -52,8 +52,9 @@ import type { CommandShell } from './process/command-shell.ts'
 import type { SandboxPolicy } from './process/sandbox.ts'
 import { spawnGuarded } from './process/spawn.ts'
 import { killTree, treeBusy } from './process/tree.ts'
+import type { ProcessInput } from './runner.ts'
 import { createStreamRedactor, scrubEnv } from './secrets.ts'
-import { CommandPort } from './shell/port.ts'
+import { type CommandOutput, CommandPort } from './shell/port.ts'
 import { deliver, excerptBytes } from './sink.ts'
 import { openChangeWindow } from './workspace-watch.ts'
 
@@ -401,8 +402,9 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
               background: {
                 type: 'boolean',
                 description:
-                  '为 true 时命令启动后立即返回任务编号，命令在后台继续运行。' +
-                  '用于开发服务器、监听进程等不自行退出的命令。' +
+                  '为 true 时命令启动后立即返回任务编号，命令在后台继续运行，标准输入保持打开，' +
+                  '可用 background_command 的 input 写入（与 REPL、命令行向导等交互程序交互）。' +
+                  '用于开发服务器、监听进程、交互程序等不自行退出的命令。' +
                   '构建、测试、安装、远程命令等会自行结束的命令优先不指定：等待没有总时长上限，等待期间用户发来消息时命令自动转入后台。' +
                   '后台命令不按 timeout_ms 判定停滞。不能与 probe_url 同时使用',
               },
@@ -504,12 +506,15 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       }
 
       // spawn 抛错时关闭观察窗口：不关闭则它始终排在最前，此后的窗口无法收到任何事件。
-      const { proc, sandbox } = await spawnGuarded({
+      // 以 background 启动的命令保留标准输入，之后经 `background_command` 的 `input` 写入；前台命令不保留：
+      // 读取输入的程序立即读取到输入结束，不会无人响应地等待。
+      const { proc, sandbox, input } = await spawnGuarded({
         shell,
         command,
         cwd,
         policy,
         env: pipe?.env ?? env,
+        ...(background ? { input: true } : {}),
       }).catch(async (e: unknown) => {
         await changeWindow.close()
         await pipe?.read()
@@ -604,6 +609,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
           command,
           stepId: owner.stepId,
           output: keptOutput,
+          input: input ? textInput(input) : null,
           stop: () => halt.abort(),
           settled: collecting.then(async (got) => {
             const late = await lateWindow.close()
@@ -790,6 +796,57 @@ async function endedFirst(
   }
 }
 
+/** 写入输入之后，输出连续该时长没有变化即视为程序已作出回应。 */
+const INPUT_QUIET_MS = 500
+/** 写入输入之后等待输出稳定的上限。 */
+const INPUT_WAIT_MS = 10_000
+
+/** 把进程输入写端包装为按文本写入并记录是否已关闭的形式（`CommandPort.adopt` 的 `input`）。 */
+function textInput(input: ProcessInput): { write(text: string): boolean; end(): void } {
+  const encoder = new TextEncoder()
+  let open = true
+  return {
+    write: (text) => {
+      if (!open) return false
+      if (text) input.write(encoder.encode(text))
+      return true
+    },
+    end: () => {
+      if (!open) return
+      open = false
+      input.end()
+    },
+  }
+}
+
+/**
+ * 写入输入之后等待程序回应：输出连续 `INPUT_QUIET_MS` 没有变化时为 `quiet`，命令结束时为 `ended`，
+ * 到达 `INPUT_WAIT_MS` 时为 `limit`。按输出量判断是否变化：保留的输出只截去头部，长度与截去量之和只增不减。
+ */
+async function outputSettled(
+  port: CommandPort,
+  id: string,
+  signal: AbortSignal,
+): Promise<'quiet' | 'ended' | 'limit'> {
+  const size = (o: CommandOutput) =>
+    o.stdout.length + o.stderr.length + o.dropped.stdout + o.dropped.stderr
+  const started = Date.now()
+  let changedAt = started
+  let last = -1
+  for (;;) {
+    signal.throwIfAborted()
+    const now = port.output(id)
+    if (now === null) return 'ended'
+    if (size(now) !== last) {
+      last = size(now)
+      changedAt = Date.now()
+    }
+    if (Date.now() - changedAt >= INPUT_QUIET_MS) return 'quiet'
+    if (Date.now() - started >= INPUT_WAIT_MS) return 'limit'
+    await new Promise((r) => setTimeout(r, 100))
+  }
+}
+
 /**
  * 读取、等待或停止本会话的一条后台命令。
  *
@@ -800,7 +857,8 @@ async function endedFirst(
 export const backgroundCommandTool: ToolSpec = {
   name: 'background_command',
   description:
-    '读取本会话一条后台命令至今的输出（stdout / stderr）；stop 为 true 时结束该命令的进程树，返回停止前的输出。' +
+    '读取本会话一条后台命令至今的输出（stdout / stderr）；stop 为 true 时结束该命令的进程树，返回停止前的输出；' +
+    'input 向以 background 启动的命令写入标准输入，用于与 REPL、命令行向导等交互程序交互。' +
     '后台命令由 run_command 转入后台，任务编号见其结果。命令结束时结果作为回执消息送达，被停止的命令不发送回执。' +
     '本轮后续工作需要该命令的结果时，用 wait_seconds 在本轮内等待它结束；等待期间不调用模型。',
   parameters: {
@@ -814,17 +872,35 @@ export const backgroundCommandTool: ToolSpec = {
           `最长等待秒数，上限 ${MAX_WAIT_SECONDS}。提供时等待该命令结束后返回，回执作为下一条消息送达；` +
           '用户发来消息或到达该秒数时返回至今的输出，命令继续运行。不能与 stop 同时使用',
       },
+      input: {
+        type: 'string',
+        description:
+          '写入该命令标准输入的文本，换行须写出（如 "print(1)\\n"）。只有以 background 启动的命令可写入。' +
+          `未提供 wait_seconds 时，写入之后等待输出连续 ${INPUT_QUIET_MS / 1000} 秒没有变化（至多 ${INPUT_WAIT_MS / 1000} 秒）再返回至今的输出。` +
+          '不能与 stop 同时使用',
+      },
+      close_input: {
+        type: 'boolean',
+        description:
+          '为 true 时（在写入 input 之后）关闭标准输入，程序随之读取到输入结束。不能与 stop 同时使用',
+      },
     },
     required: ['task_id'],
     additionalProperties: false,
   },
-  actionKind: (a) => (a.stop === true ? 'edit' : 'read'),
+  actionKind: (a) =>
+    a.stop === true
+      ? 'edit'
+      : typeof a.input === 'string' || a.close_input === true
+        ? 'run'
+        : 'read',
   objectLabel: '后台命令',
   category: 'code',
   facet: '执行',
-  summary: '读取、等待或停止后台命令',
+  summary: '读取、等待、停止后台命令或写入其输入',
   targetExtractor: (a) => (typeof a.task_id === 'string' ? a.task_id : null),
-  // 只读取或停止本会话自己转入后台的命令；命令启动时已经过权限判定。
+  // 只读取、停止或写入本会话自己转入后台的命令；命令启动时已经过权限判定。写入的输入与先写入脚本文件再执行等价，
+  // 有内核沙箱的平台上它随命令的进程在同一沙箱中执行。
   permissionEffect: 'internal_control',
   parallelSafe: false,
   requires: [CommandPort],
@@ -846,6 +922,25 @@ export const backgroundCommandTool: ToolSpec = {
     }
     const stopping = args.stop === true
     const wait = args.wait_seconds
+    const text = args.input
+    const closing = args.close_input === true
+    if (text !== undefined && typeof text !== 'string') {
+      return {
+        status: 'failure',
+        executed: false,
+        message: 'input 必须是字符串',
+        errorKind: 'bad_request',
+      }
+    }
+    const writing = text !== undefined || closing
+    if (writing && stopping) {
+      return {
+        status: 'failure',
+        executed: false,
+        message: 'input、close_input 与 stop 不能同时使用',
+        errorKind: 'bad_request',
+      }
+    }
     if (wait !== undefined) {
       if (stopping) {
         return {
@@ -866,6 +961,48 @@ export const backgroundCommandTool: ToolSpec = {
     }
     let state = '仍在运行，输出为至今的内容'
     let latest = found
+    if (writing) {
+      const written = port.write(id, text ?? '', closing)
+      if (written === 'no_input') {
+        return {
+          status: 'failure',
+          executed: false,
+          message: `后台命令 ${id} 由前台转入后台，启动时没有输入通道，无法写入；需要交互时以 background 重新启动`,
+          errorKind: 'bad_request',
+        }
+      }
+      if (written === 'closed') {
+        return {
+          status: 'failure',
+          executed: false,
+          message: `后台命令 ${id} 的标准输入已关闭，无法写入`,
+          errorKind: 'bad_request',
+        }
+      }
+      if (written === null) {
+        return {
+          status: 'success',
+          message: `后台命令 ${id} 已结束，未写入；结果见回执消息`,
+          data: { taskId: id },
+        }
+      }
+      if (wait === undefined) {
+        const settled = await outputSettled(port, id, ctx.signal)
+        const now = port.output(id)
+        if (settled === 'ended' || now === null) {
+          return {
+            status: 'success',
+            message: `已写入；后台命令 ${id} 随后结束，结果见下一条回执消息`,
+            data: { taskId: id },
+          }
+        }
+        latest = now
+        state =
+          settled === 'quiet'
+            ? `已写入${closing ? '并关闭输入' : ''}，输出已稳定，仍在运行，输出为至今的内容`
+            : `已写入${closing ? '并关闭输入' : ''}，${INPUT_WAIT_MS / 1000} 秒内输出仍在变化，仍在运行，输出为至今的内容`
+      }
+    }
     if (typeof wait === 'number') {
       const seconds = Math.min(wait, MAX_WAIT_SECONDS)
       const ended = port.ended(id)

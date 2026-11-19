@@ -762,6 +762,33 @@ describe('命令正文逐字节到达', () => {
     ).rejects.toThrow('没有可用的 shell')
   })
 
+  test('请求输入管道时经 shell 启动的程序读取写入的输入，未请求时读取到输入结束', async () => {
+    const reader = `${JSON.stringify(process.execPath)} -e 'process.stdin.on("data",(d)=>process.stdout.write("收到:"+d));process.stdin.on("end",()=>process.stdout.write("结束"))'`
+    const piped = await spawnGuarded({
+      shell: commandShell(),
+      command: reader,
+      cwd: process.cwd(),
+      policy: null,
+      env: process.env as Record<string, string>,
+      input: true,
+    })
+    if (!piped.input) throw new Error('请求输入管道时本应返回写端')
+    piped.input.write(new TextEncoder().encode('第一行\n'))
+    piped.input.end()
+    const got = await collectProcess(piped.proc, { timeoutMs: 20_000 })
+    expect(got.stdout).toBe('收到:第一行\n结束')
+
+    const closed = await spawnGuarded({
+      shell: commandShell(),
+      command: reader,
+      cwd: process.cwd(),
+      policy: null,
+      env: process.env as Record<string, string>,
+    })
+    expect(closed.input).toBeNull()
+    expect((await collectProcess(closed.proc, { timeoutMs: 20_000 })).stdout).toBe('结束')
+  }, 30_000)
+
   test('成对的反斜杠不被折减一半', async () => {
     const bs = String.fromCharCode(92)
     // 发送 4 个反斜杠，统计到达的数量。折减一半时为 2。

@@ -19,7 +19,7 @@ import { rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 // 临时脚本位于本机文件系统，使用平台原生的拼接。
 import { join as joinNative } from 'node:path'
-import type { CommandRunner, ProcessLike } from '../runner.ts'
+import { type CommandRunner, type ProcessInput, type ProcessLike, sinkInput } from '../runner.ts'
 import { type CommandShell, probeBash } from './command-shell.ts'
 import {
   buildBwrapArgv,
@@ -61,6 +61,11 @@ interface GuardedSpawnCommon {
    * 分别说明；合并为「无沙箱」时，排查中无法区分配置问题与环境问题。
    */
   policy: SandboxPolicy | null
+  /**
+   * 保留标准输入管道，返回值的 `input` 为其写端。缺省关闭标准输入：读取输入的程序立即读取到输入结束，
+   * 不会无人响应地等待至超时。
+   */
+  input?: boolean
 }
 
 export interface GuardedSpawn {
@@ -73,6 +78,8 @@ export interface GuardedSpawn {
    */
   proc: ProcessLike
   sandbox: SandboxStatus
+  /** 标准输入的写端；未请求输入管道时为 null。 */
+  input: ProcessInput | null
 }
 
 /**
@@ -165,9 +172,10 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
       cwd: input.cwd,
       env: input.env,
       detached: !isWindows,
+      input: input.input === true,
     })
     sweep(proc)
-    return { proc, sandbox: effective }
+    return { proc, sandbox: effective, input: proc.input }
   }
 
   /*
@@ -178,8 +186,8 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
     cwd: input.cwd,
     stdout: 'pipe',
     stderr: 'pipe',
-    // 关闭 stdin：交互式提示在此处无人响应，只会等待至超时。
-    stdin: 'ignore',
+    // 未请求输入管道时关闭 stdin：交互式提示在此处无人响应，只会等待至超时。
+    stdin: input.input === true ? 'pipe' : 'ignore',
     env: input.env,
     /*
      * 非 Windows 平台上子进程自成进程组，`killTree` 才能终止整个进程组。
@@ -191,9 +199,13 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
      * 且 detached 在 Windows 上表示脱离控制台，与此处目的无关。
      */
     ...(isWindows ? {} : { detached: true }),
-  } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>
+  } as Bun.SpawnOptions.OptionsObject<'pipe' | 'ignore', 'pipe', 'pipe'>
 
   const proc = Bun.spawn(argv, opts)
   sweep(proc)
-  return { proc, sandbox: effective }
+  return {
+    proc,
+    sandbox: effective,
+    input: input.input === true ? sinkInput(proc.stdin as Bun.FileSink) : null,
+  }
 }

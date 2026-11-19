@@ -85,6 +85,7 @@ function commandPort(stopped: string[]): CommandPort {
       stopped.push(id)
       return id === TASK ? running.command : null
     },
+    write: () => null,
   }
 }
 

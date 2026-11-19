@@ -174,8 +174,20 @@ const timer = setInterval(async () => {
 }, 20)
 `
 
+/**
+ * 交互程序：逐行读取标准输入，每行输出一行回应；输入关闭时输出结束行并退出。
+ */
+const ANSWER_SCRIPT = [
+  "import { createInterface } from 'node:readline'",
+  "process.stdout.write('ready' + String.fromCharCode(10))",
+  'const rl = createInterface({ input: process.stdin })',
+  "rl.on('line', (line) => process.stdout.write('答:' + line.toUpperCase() + String.fromCharCode(10)))",
+  "rl.on('close', () => { process.stdout.write('再见' + String.fromCharCode(10)); process.exit(0) })",
+].join(String.fromCharCode(10))
+
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'qywork-bgcmd-'))
+  await writeFile(join(dir, 'answer.ts'), ANSWER_SCRIPT)
   await writeFile(join(dir, 'hold.ts'), HOLD_SCRIPT)
   await writeFile(join(dir, 'late.ts'), LATE_SCRIPT)
   await writeFile(join(dir, 'flood.ts'), FLOOD_SCRIPT)
@@ -312,6 +324,7 @@ function socket() {
 const hold = (name: string) => `"${process.execPath.replaceAll('\\', '/')}" hold.ts ${name}`
 const late = (name: string, mode?: 'exit') =>
   `"${process.execPath.replaceAll('\\', '/')}" late.ts ${name}${mode ? ` ${mode}` : ''}`
+const answer = () => `"${process.execPath.replaceAll('\\', '/')}" answer.ts`
 const flood = (name: string) => `"${process.execPath.replaceAll('\\', '/')}" flood.ts ${name}`
 
 /** 某次工具调用的 step id，取自 `tool.started` 事件。 */
@@ -472,6 +485,49 @@ describe('在本轮内等待后台命令', () => {
     await idle(cv)
     expect(commands.listOf(cv)).toEqual([])
     expect(bodies.length).toBe(3)
+  }, 30_000)
+})
+
+describe('与后台命令交互', () => {
+  /** 原始失败形状：后台命令的标准输入关闭，交互程序启动即读取到输入结束，无法根据输出写入下一行。 */
+  test('background 启动的交互程序：写入一行后取得回应，关闭输入后程序结束并送达回执', async () => {
+    const cv = conversation()
+    script.push(
+      callsTurn([
+        run('call_a', { command: answer(), background: true }),
+        run('call_h', { command: hold('H') }),
+      ]),
+    )
+    void startRun(cv, '与交互程序对话', undefined, deps())
+    await pidOf('H')
+    await until(() => commands.listOf(cv).length === 1, '后台命令登记')
+    const [task] = commands.listOf(cv)
+    const nl = String.fromCharCode(10)
+    script.push(
+      callsTurn([
+        {
+          id: 'call_in',
+          name: 'background_command',
+          args: { task_id: task!.id, input: `hello${nl}` },
+        },
+      ]),
+      callsTurn([
+        {
+          id: 'call_end',
+          name: 'background_command',
+          args: { task_id: task!.id, input: `bye${nl}`, close_input: true },
+        },
+      ]),
+      textTurn('交互完成。'),
+    )
+    await writeFile(join(dir, 'H.go'), '')
+    await until(() => bodies.length === 4, '关闭输入之后的请求')
+    expect(bodies[2]).toContain('答:HELLO')
+    expect(bodies[3]).toContain(`后台命令 ${task!.id} 随后结束`)
+    expect(bodies[3]).toContain(`[后台命令回执] 任务 ${task!.id} 已结束`)
+    expect(bodies[3]).toContain('再见')
+    await idle(cv)
+    expect(commands.listOf(cv)).toEqual([])
   }, 30_000)
 })
 

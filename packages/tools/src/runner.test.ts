@@ -86,6 +86,44 @@ describe('命令由 runner 代为执行', () => {
     }
   })
 
+  /** 原始失败形状：runner 启动的命令标准输入一律关闭，交互程序读取到输入结束即退出，无法根据输出写入下一行。 */
+  test('请求输入管道时可分次写入标准输入，关闭后程序读取到输入结束', async () => {
+    const runner = startCommandRunner(RUNNER_ARGV)
+    try {
+      const proc = await runner.spawn({
+        argv: [
+          process.execPath,
+          '-e',
+          'let all="";process.stdin.on("data",(d)=>{all+=d});process.stdin.on("end",()=>process.stdout.write("收到:"+all+"结束"))',
+        ],
+        detached: false,
+        input: true,
+      })
+      if (!proc.input) throw new Error('请求输入管道时本应返回写端')
+      proc.input.write(new TextEncoder().encode('a\n'))
+      proc.input.write(new TextEncoder().encode('b\n'))
+      proc.input.end()
+      expect(await readAll(proc.stdout)).toBe('收到:a\nb\n结束')
+      expect(await proc.exited).toBe(0)
+    } finally {
+      runner.stop()
+    }
+  })
+
+  test('未请求输入管道时写端为 null', async () => {
+    const runner = startCommandRunner(RUNNER_ARGV)
+    try {
+      const proc = await runner.spawn({
+        argv: [process.execPath, '-e', 'process.stdout.write("ok")'],
+        detached: false,
+      })
+      expect(proc.input).toBeNull()
+      expect(await readAll(proc.stdout)).toBe('ok')
+    } finally {
+      runner.stop()
+    }
+  })
+
   test('stderr 与 stdout 分开', async () => {
     const runner = startCommandRunner(RUNNER_ARGV)
     try {

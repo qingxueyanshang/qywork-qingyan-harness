@@ -26,6 +26,11 @@ export interface CommandPort {
     /** 发起该命令的 `run_command` 调用的 step。转入后台之后的文件改动归属它。 */
     stepId: string
     output(): CommandOutput
+    /**
+     * 标准输入。只有以 `background: true` 启动的命令才有；由前台转入后台的命令启动时没有输入管道，为 null。
+     * `write` 在输入已关闭时返回 false，`end` 关闭输入。
+     */
+    input: { write(text: string): boolean; end(): void } | null
     /** 结束命令的进程树。之后 `settled` 兑现，`receipt` 为 null。 */
     stop(): void
     /**
@@ -40,6 +45,11 @@ export interface CommandPort {
   output(id: string): ({ command: string } & CommandOutput) | null
   /** 停止某条后台命令，返回其命令文本；不在任务表中时为 null。被停止的命令不发送回执。 */
   stop(id: string): string | null
+  /**
+   * 向某条后台命令的标准输入写入 `text`，`end` 为真时随后关闭输入。命令没有输入管道时为 `no_input`，
+   * 输入已关闭时为 `closed`；不在任务表中时为 null。
+   */
+  write(id: string, text: string, end: boolean): 'written' | 'no_input' | 'closed' | null
   /**
    * 某条后台命令结束并移出任务表后兑现：回执已进入投递队列时为 true，被停止而没有回执时为 false。
    * 不在任务表中时为 null。只报告结束，不返回回执内容：回执只经由队列送达。

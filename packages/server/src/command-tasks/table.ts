@@ -107,6 +107,21 @@ export class CommandTaskTable {
     return task.command
   }
 
+  /** 向该会话中一条后台命令的标准输入写入，见 `CommandPort.write`。 */
+  write(
+    conversationId: ConversationId,
+    id: string,
+    text: string,
+    end: boolean,
+  ): ReturnType<CommandPort['write']> {
+    const task = this.byConversation.get(conversationId)?.get(id)
+    if (!task) return null
+    if (!task.input) return 'no_input'
+    if (!task.input.write(text)) return 'closed'
+    if (end) task.input.end()
+    return 'written'
+  }
+
   /** 服务退出：结束全部后台命令。被停止的命令不投递回执。 */
   stopAll(): void {
     for (const table of this.byConversation.values()) {
@@ -183,6 +198,7 @@ export function commandPortOf(
     list: () => table.listOf(conversationId),
     output: (id) => table.output(conversationId, id),
     stop: (id) => table.stop(conversationId, id),
+    write: (id, text, end) => table.write(conversationId, id, text, end),
     ended: (id) => table.ended(conversationId, id),
   }
 }

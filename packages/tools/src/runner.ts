@@ -33,6 +33,33 @@ export interface ProcessLike {
   kill(): void
 }
 
+/**
+ * 进程标准输入的写端。只有启动时请求了输入管道的进程才有，见 `spawnGuarded` 的 `input`。
+ * 进程退出之后写入不报错、不生效：命令的结束由退出码记账，不由输入写端判断。
+ */
+export interface ProcessInput {
+  write(bytes: Uint8Array): void
+  /** 关闭写端，程序随之读取到输入结束。 */
+  end(): void
+}
+
+/** 包装 Bun 的输入写端。管道在进程退出后关闭，此后的写入与关闭按 `ProcessInput` 的约定忽略。 */
+export function sinkInput(sink: Bun.FileSink): ProcessInput {
+  const quietly = (work: () => unknown): void => {
+    try {
+      void Promise.resolve(work()).catch(() => {})
+    } catch {}
+  }
+  return {
+    write: (bytes) =>
+      quietly(() => {
+        sink.write(bytes)
+        return sink.flush()
+      }),
+    end: () => quietly(() => sink.end()),
+  }
+}
+
 interface SpawnRequest {
   t: 'spawn'
   id: number
@@ -41,6 +68,15 @@ interface SpawnRequest {
   env?: Record<string, string | undefined>
   /** 非 Windows 上自成进程组，按进程树终止时才能终止整个进程组（理由同 `spawnGuarded`）。 */
   detached: boolean
+  /** 保留标准输入管道，经 `InputRequest` 写入。缺省关闭标准输入。 */
+  input: boolean
+}
+/** 向某个调用的标准输入写入 `d`（base64），`end` 为真时随后关闭写端。 */
+interface InputRequest {
+  t: 'input'
+  id: number
+  d?: string
+  end?: boolean
 }
 interface KillRequest {
   t: 'kill'
@@ -55,7 +91,7 @@ interface DetachRequest {
   id: number
   ch: 'out' | 'err'
 }
-type Request = SpawnRequest | KillRequest | DetachRequest
+type Request = SpawnRequest | InputRequest | KillRequest | DetachRequest
 
 type Reply =
   | { t: 'pid'; id: number; pid: number }
@@ -91,7 +127,9 @@ export interface CommandRunner {
     cwd?: string
     env?: Record<string, string | undefined>
     detached: boolean
-  }): Promise<ProcessLike>
+    /** 保留标准输入管道，返回值的 `input` 为其写端；缺省关闭标准输入，`input` 为 null。 */
+    input?: boolean
+  }): Promise<ProcessLike & { input: ProcessInput | null }>
   stop(): void
 }
 
@@ -215,6 +253,7 @@ export function startCommandRunner(argv: string[]): CommandRunner {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.env ? { env: input.env } : {}),
         detached: input.detached,
+        input: input.input === true,
       })
 
       const pid = await pidReady.promise
@@ -227,6 +266,13 @@ export function startCommandRunner(argv: string[]): CommandRunner {
           return exitCode
         },
         kill: () => send({ t: 'kill', id }),
+        input:
+          input.input === true
+            ? {
+                write: (bytes) => send({ t: 'input', id, d: B64.encode(bytes) }),
+                end: () => send({ t: 'input', id, end: true }),
+              }
+            : null,
       }
     },
     stop() {
@@ -257,6 +303,8 @@ export function runCommandRunner(): void {
    */
   interface Call {
     proc: { pid: number; kill(): void }
+    /** 标准输入的写端；启动时未请求或已关闭时为 null。 */
+    stdin: ProcessInput | null
     /** 读端已放弃的流：不再转发，但继续读空；停止读取会使仍在写入的进程阻塞。 */
     dropped: { out: boolean; err: boolean }
     exited: boolean
@@ -314,27 +362,43 @@ export function runCommandRunner(): void {
       if (c) c.dropped[req.ch] = true
       return
     }
+    if (req.t === 'input') {
+      const c = live.get(req.id)
+      if (!c?.stdin) return
+      if (req.d) c.stdin.write(B64.decode(req.d))
+      if (req.end) {
+        c.stdin.end()
+        c.stdin = null
+      }
+      return
+    }
     try {
       /*
        * `windowsHide`：Windows 上 runner 没有控制台，不带该选项时 shell 每次启动都另开一个可见的控制台窗口。
        * 它只影响 shell 自身，命令再启动的程序收到的启动参数不变，图形应用照常显示。
        */
       const proc = Bun.spawn(req.argv, {
-        stdin: 'ignore',
+        stdin: req.input ? 'pipe' : 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
         windowsHide: true,
         ...(req.cwd ? { cwd: req.cwd } : {}),
         ...(req.env ? { env: req.env } : {}),
         ...(req.detached ? { detached: true } : {}),
-      } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>)
+      } as Bun.SpawnOptions.OptionsObject<'pipe' | 'ignore', 'pipe', 'pipe'>)
       /*
        * **与 runner 的生命周期解耦。** 不调用 unref 时，runner 退出时 Bun 会一并结束它启动的
        * 子进程，而这些正是命令留下的服务，用户需要它们继续运行。
        * runner 退出时终止哪些命令只由 `leave` 决定，不由 Bun 的子进程回收决定。
        */
       proc.unref()
-      const call: Call = { proc, dropped: { out: false, err: false }, exited: false, open: 2 }
+      const call: Call = {
+        proc,
+        stdin: req.input ? sinkInput(proc.stdin as Bun.FileSink) : null,
+        dropped: { out: false, err: false },
+        exited: false,
+        open: 2,
+      }
       live.set(req.id, call)
       reply({ t: 'pid', id: req.id, pid: proc.pid })
       for (const ch of ['out', 'err'] as const) {

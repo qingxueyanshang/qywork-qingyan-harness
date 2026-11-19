@@ -393,7 +393,10 @@ describe('run_command 的管道退出码', () => {
 })
 
 describe('后台命令的工具形态', () => {
-  /** 一个只记录调用的端口：任务表本身由服务端实现，此处只验证工具一侧的取舍。 */
+  /**
+   * 一个只记录调用的端口：任务表本身由服务端实现，此处只验证工具一侧的取舍。
+   * `respond` 给出写入一段输入之后追加到 stdout 的内容；`input` 为 false 表示该命令没有输入管道。
+   */
   function fakePort(
     running: Record<
       string,
@@ -402,11 +405,15 @@ describe('后台命令的工具形态', () => {
         stdout: string
         stderr: string
         dropped?: { stdout: number; stderr: number }
+        input?: false
+        closed?: boolean
+        respond?: (text: string) => string
       }
     >,
     waits: { ended?: Record<string, Promise<boolean>>; steered?: Promise<void> } = {},
   ) {
     const stopped: string[] = []
+    const writes: { id: string; text: string; end: boolean }[] = []
     const port: CommandPort = {
       steered: () => waits.steered ?? new Promise(() => {}),
       ended: (id) => (running[id] ? (waits.ended?.[id] ?? new Promise(() => {})) : null),
@@ -420,8 +427,24 @@ describe('后台命令的工具形态', () => {
         stopped.push(id)
         return running[id].command
       },
+      write: (id, text, end) => {
+        const r = running[id]
+        if (!r) return null
+        if (r.input === false) return 'no_input'
+        if (r.closed) return 'closed'
+        writes.push({ id, text, end })
+        if (end) r.closed = true
+        // 程序稍后作出回应：写入之后 200 ms 追加输出。
+        const reply = r.respond?.(text) ?? ''
+        if (reply) {
+          setTimeout(() => {
+            r.stdout += reply
+          }, 200)
+        }
+        return 'written'
+      },
     }
-    return { port, stopped }
+    return { port, stopped, writes }
   }
 
   function ctxWith(port: CommandPort | undefined): ToolContext {
@@ -599,6 +622,58 @@ describe('后台命令的工具形态', () => {
       expect(out).toMatchObject({ status: 'failure', executed: false, errorKind: 'bad_request' })
     }
     expect(stopped).toEqual([])
+  })
+
+  /** 原始失败形状：后台命令只能读取、等待或停止，交互程序无法根据输出写入下一次输入。 */
+  test('input 写入后台命令的标准输入，等待输出稳定后返回包含回应的输出', async () => {
+    const { port, writes } = fakePort({
+      cmd_1: {
+        command: 'python -i',
+        stdout: '>>> ',
+        stderr: '',
+        respond: (text) => (text === '2+2\n' ? '4\n>>> ' : ''),
+      },
+    })
+    const out = await backgroundCommandTool.fn({ task_id: 'cmd_1', input: '2+2\n' }, ctxWith(port))
+    expect(out.status).toBe('success')
+    expect(out.message).toContain('已写入，输出已稳定')
+    expect(out.data?.stdout).toBe('>>> 4\n>>> ')
+    expect(writes).toEqual([{ id: 'cmd_1', text: '2+2\n', end: false }])
+  })
+
+  test('close_input 在写入之后关闭输入；输入已关闭或命令没有输入管道时不写入并说明原因', async () => {
+    const { port, writes } = fakePort({
+      cmd_1: { command: 'sort', stdout: '', stderr: '' },
+      cmd_2: { command: 'npm run dev', stdout: '', stderr: '', input: false },
+    })
+    const closed = await backgroundCommandTool.fn(
+      { task_id: 'cmd_1', input: 'b\na\n', close_input: true },
+      ctxWith(port),
+    )
+    expect(closed.message).toContain('已写入并关闭输入')
+    expect(writes).toEqual([{ id: 'cmd_1', text: 'b\na\n', end: true }])
+
+    const again = await backgroundCommandTool.fn({ task_id: 'cmd_1', input: 'c\n' }, ctxWith(port))
+    expect(again).toMatchObject({ status: 'failure', executed: false, errorKind: 'bad_request' })
+    expect(again.message).toContain('标准输入已关闭')
+
+    const none = await backgroundCommandTool.fn({ task_id: 'cmd_2', input: 'x\n' }, ctxWith(port))
+    expect(none).toMatchObject({ status: 'failure', executed: false, errorKind: 'bad_request' })
+    expect(none.message).toContain('没有输入通道')
+    expect(writes).toHaveLength(1)
+  })
+
+  test('input 与 stop 同时提供时不写入也不停止', async () => {
+    const { port, stopped, writes } = fakePort({
+      cmd_1: { command: 'python -i', stdout: '', stderr: '' },
+    })
+    const out = await backgroundCommandTool.fn(
+      { task_id: 'cmd_1', input: 'exit()\n', stop: true },
+      ctxWith(port),
+    )
+    expect(out).toMatchObject({ status: 'failure', executed: false, errorKind: 'bad_request' })
+    expect(stopped).toEqual([])
+    expect(writes).toEqual([])
   })
 
   test('丢弃过输出时读取结果写明各流丢弃的字符数；没有丢弃时不附加说明', async () => {
