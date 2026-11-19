@@ -196,7 +196,9 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
 test('手动压缩后的读数与下一次请求的估算一致：被折叠的截图在压缩前已缩小为缩略图', async () => {
   const provider = Bun.serve({
     port: 0,
-    fetch: () => {
+    fetch: async (req) => {
+      // 先读完请求体再答复：请求体约 190 KB，未读完即答复时客户端仍在上传，连接被重置，请求以 Connection error 失败并进入重发等待。
+      await req.text()
       const events = [
         { choices: [{ delta: { content: '回答完成' }, finish_reason: null }] },
         { choices: [{ delta: {}, finish_reason: 'stop' }] },

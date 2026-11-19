@@ -310,12 +310,12 @@ describe('生成端口', () => {
       for (let i = 0; i < 20_000 && media().length === 0; i++) {
         await new Promise<void>((resolve) => setImmediate(resolve))
       }
-      jest.advanceTimersByTime(2_000)
+      jest.advanceTimersByTime(4_000)
       expect((await work).ok).toBe(true)
       expect(media()).toEqual([
         [
           'media',
-          'HTTP 429 请求过多：Requests rate limit exceeded；2 秒后第 1 次重试',
+          'HTTP 429 请求过多：Requests rate limit exceeded；4 秒后第 1 次重试',
           { stage: 'generate', host: `127.0.0.1:${server.port}`, ...logFields },
         ],
       ])
