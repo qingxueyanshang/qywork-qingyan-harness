@@ -1,5 +1,6 @@
 /**
- * 覆盖 `send-limit.ts`：按拒绝自适应的同时在途上限。经 `sendTurn` 的接入见 `loop/attempt.test.ts`。
+ * 覆盖 `send-limit.ts`：按拒绝自适应的同时在途上限，与成功完成的通知（`nextCompletion`）。
+ * 经 `sendTurn` 的接入见 `loop/attempt.test.ts`。
  */
 import { describe, expect, test } from 'bun:test'
 import { classifyProviderError, ProviderError } from '@qywork/ai'
@@ -126,6 +127,36 @@ describe('同时在途的请求数上限', () => {
     expect(await granted(waiting)).toBe(true)
     // 重复释放未使在途数变为负值：上限 1、在途 1 时新请求仍须排队。
     expect(await granted(limiter.acquire('k', signal()))).toBe(false)
+  })
+})
+
+describe('成功完成的通知', () => {
+  test('同一键上的请求成功完成时唤醒等待者；失败与其他键不唤醒', async () => {
+    const limiter = new SendLimiter()
+    const waiting = limiter.nextCompletion('k', signal())
+    const [failed, other] = await Promise.all([
+      limiter.acquire('k', signal()),
+      limiter.acquire('other', signal()),
+    ])
+    failed('failed')
+    other('completed')
+    expect(await granted(waiting)).toBe(false)
+    const ok = await limiter.acquire('k', signal())
+    ok('completed')
+    expect(await granted(waiting)).toBe(true)
+  })
+
+  test('中止时以中止原因拒绝，并退出等待', async () => {
+    const limiter = new SendLimiter()
+    const stop = new AbortController()
+    const waiting = limiter.nextCompletion('k', stop.signal)
+    stop.abort(new Error('停止'))
+    await expect(waiting).rejects.toThrow('停止')
+    // 已退出的等待者不再被唤醒；新的等待者照常唤醒。
+    const next = limiter.nextCompletion('k', signal())
+    const ok = await limiter.acquire('k', signal())
+    ok('completed')
+    expect(await granted(next)).toBe(true)
   })
 })
 

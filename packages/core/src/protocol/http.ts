@@ -112,6 +112,8 @@ export interface LiveRequestSnapshot {
   /** 本次故障链内的重发序号，首发为 0。与 `run.request` 口径相同。 */
   attempt: number
   max: number
+  /** 正处于等待服务恢复阶段，与 `run.retrying` / `run.request` 的 `recovery` 相同。 */
+  recovering: boolean
   /** 上次失败的分类说明，从同一故障链的请求诊断恢复。 */
   retryReason?: string | null
   status: ProviderRequestStatus

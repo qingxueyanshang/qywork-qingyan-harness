@@ -24,7 +24,7 @@ import {
   startFaultServer,
 } from '@qywork/ai/fault-server.test-helper'
 import type { AgentEvent, ProviderKind } from '@qywork/core'
-import { RESEND_LIMIT } from '@qywork/core'
+import { RECOVERY_WAITS_MS, RESEND_LIMIT } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContextBase } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
 
@@ -175,8 +175,8 @@ test.each([
   20_000,
 )
 
-/** 连接被拒时没有可用的等待时间，六次尝试之间按指数退避。 */
-test('连接被拒：首发加五次重发，间隔按 2 / 4 / 8 / 16 / 30 秒递增', async () => {
+/** 连接被拒时没有可用的等待时间：快速重发按指数退避，用尽后按恢复间隔表等待。 */
+test('连接被拒：快速重发按 4 / 8 / 16 / 32 / 60 秒递增，用尽后按恢复间隔表等待，全部用尽才报错', async () => {
   const backoffs: number[] = []
   const events = await runAgainst({
     baseUrl: `${closedPortBaseUrl()}/v1`,
@@ -186,13 +186,16 @@ test('连接被拒：首发加五次重发，间隔按 2 / 4 / 8 / 16 / 30 秒�
     },
   })
 
-  expect(backoffs).toHaveLength(RESEND_LIMIT)
-  backoffs.forEach((ms, i) => {
+  expect(backoffs).toHaveLength(RESEND_LIMIT + RECOVERY_WAITS_MS.length)
+  backoffs.slice(0, RESEND_LIMIT).forEach((ms, i) => {
     expectBackoff(ms, i)
   })
+  expect(backoffs.slice(RESEND_LIMIT)).toEqual([...RECOVERY_WAITS_MS])
   const err = events.find((e) => e.type === 'run.error')
   expect(err?.type === 'run.error' && err.code).toBe('network_error')
-  expect(err?.type === 'run.error' && err.message).toContain(`已重发 ${RESEND_LIMIT} 次`)
+  expect(err?.type === 'run.error' && err.message).toContain(
+    `已重发 ${RESEND_LIMIT + RECOVERY_WAITS_MS.length} 次`,
+  )
   const finished = events.find((e) => e.type === 'run.finished')
   expect(finished?.type === 'run.finished' && finished.stopReason).toBe('provider_error')
 }, 20_000)
@@ -460,7 +463,7 @@ test.each([
     'insufficient_quota',
   ],
 ] as const)(
-  '发往官方地址的对话请求：%s，协议 %s；按错误码文档归类，限流重发 5 次，其余不重发',
+  '发往官方地址的对话请求：%s，协议 %s；按错误码文档归类，限流重发并等待服务恢复，其余不重发',
   async (_, kind, baseUrl, status, body, expected) => {
     let requests = 0
     const answered = spyOn(globalThis, 'fetch').mockImplementation((async (
@@ -482,7 +485,7 @@ test.each([
       })
       const err = events.find((e) => e.type === 'run.error')
       expect(err?.type === 'run.error' && err.code).toBe(expected)
-      const resends = expected === 'rate_limited' ? RESEND_LIMIT : 0
+      const resends = expected === 'rate_limited' ? RESEND_LIMIT + RECOVERY_WAITS_MS.length : 0
       expect(backoffs).toHaveLength(resends)
       expect(requests).toBe(resends + 1)
     } finally {
@@ -497,7 +500,7 @@ test.each([
  * 电脑端连接云端时渠道商为 null，按该错误码归类。原始失败形状：百炼以 `insufficient_quota` 报告 TPM 限流，事件保留上游的
  * 类型与错误码，电脑端按错误码表归为额度用尽，不重发。改写后的事件（云端网关输出的字节）归为限流，重发 5 次。
  */
-test('经云端网关的流内错误事件：类型与错误码为网关归类所得的 rate_limited 时归为限流，重发 5 次', async () => {
+test('经云端网关的流内错误事件：类型与错误码为网关归类所得的 rate_limited 时归为限流，重发并等待服务恢复', async () => {
   let requests = 0
   const answered = spyOn(globalThis, 'fetch').mockImplementation((async () => {
     requests++
@@ -520,8 +523,8 @@ test('经云端网关的流内错误事件：类型与错误码为网关归类�
     })
     const err = events.find((e) => e.type === 'run.error')
     expect(err?.type === 'run.error' && err.code).toBe('rate_limited')
-    expect(backoffs).toHaveLength(RESEND_LIMIT)
-    expect(requests).toBe(RESEND_LIMIT + 1)
+    expect(backoffs).toHaveLength(RESEND_LIMIT + RECOVERY_WAITS_MS.length)
+    expect(requests).toBe(RESEND_LIMIT + RECOVERY_WAITS_MS.length + 1)
   } finally {
     answered.mockRestore()
   }

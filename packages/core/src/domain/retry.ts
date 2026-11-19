@@ -1,10 +1,11 @@
 /**
- * 自动重试的间隔与等待，共两套：
+ * 自动重试的间隔与等待，共三套：
  * - 暂时故障的间隔表（`TRANSIENT_RETRY_DELAYS_MS`、`transientRetryDelay`）：子 agent 一轮之内的重发
  *   （`agent/loop/attempt.ts`，`RunInput.transientResend`）按此等待，次数为表的长度；系统提示写给模型的重试间隔
  *   取自 `retryScheduleText`，两处使用同一份数值。
  * - 重发的退避（`RESEND_LIMIT`、`resendDelay`）：顶层会话一轮之内的重发，以及生成的提交与素材上传被限流、
  *   连接失败或上传得到暂时不可用答复后的重试。
+ * - 等待服务恢复的间隔（`RECOVERY_WAITS_MS`）：顶层会话的重发用尽之后，本轮继续等待对端恢复。
  *
  * 暂时故障指请求得到了表示暂时无法处理的应答（429 限流、5xx），或连接在请求发出之前失败。
  * 请求发出之后没有任何应答时远端可能已经受理并计费，不属于暂时故障，不得按本间隔重新提交。
@@ -77,6 +78,16 @@ export function retryCauseText(reason: string): string {
  * 两分钟，5 次不构成对上游的密集请求。
  */
 export const RESEND_LIMIT = 5
+
+/**
+ * 顶层会话的 `RESEND_LIMIT` 次重发用尽、失败仍属于暂时故障时，本轮继续等待对端恢复的各次最长等待：2、4、8、8、8 分钟，
+ * 合计 30 分钟。同一端点与模型上本进程任一请求成功时提前结束等待（`agent/send-limit.ts` 的 `nextCompletion`），
+ * 随后重发真实请求；表的长度即等待恢复期间的重发次数。
+ *
+ * 取 30 分钟：账本中服务侧失败之后，同一型号与接口的下一次成功请求在 2 分钟内的占 23%，30 分钟内的占 54%；
+ * 更晚的成功多来自用户之后重新发起的会话，无法区分对端何时恢复。
+ */
+export const RECOVERY_WAITS_MS: readonly number[] = [120_000, 240_000, 480_000, 480_000, 480_000]
 
 /** 重发退避的首个间隔。对端故障的恢复为秒级，更短的首个间隔等于不退避地反复请求对端。 */
 const RESEND_BACKOFF_BASE_MS = 4_000

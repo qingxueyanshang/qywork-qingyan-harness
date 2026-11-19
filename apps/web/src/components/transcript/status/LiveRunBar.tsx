@@ -60,10 +60,11 @@ function liveStatus(now: number, conversationId: string): string {
 
   const req = current.request
   if (!req) return '正在请求…'
+  // 等待服务恢复阶段的序号按恢复阶段计数，显示为第几次重试会与快速重发的次数混淆。
   const waiting = (message: string): string =>
     req.attempt > 0
       ? [
-          retryAttemptText(req),
+          req.recovering ? '等待服务恢复' : retryAttemptText(req),
           message,
           ...(req.retryReason ? [retryCauseText(req.retryReason)] : []),
         ].join(' · ')
@@ -72,6 +73,7 @@ function liveStatus(now: number, conversationId: string): string {
     case 'backoff': {
       if (req.backoffUntil === null) return waiting('等待重试…')
       // 倒计时仅用于显示：重发由服务端按同一截止时刻发起，前端在倒计时归零时不执行任何操作。
+      // 等待服务恢复时该时刻是最长等待，同一模型的其他请求成功时服务端提前重发。
       return waiting(`等待重试，${Math.max(0, Math.ceil((req.backoffUntil - now) / 1000))} 秒后…`)
     }
     case 'sent':

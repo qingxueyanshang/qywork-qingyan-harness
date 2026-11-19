@@ -1597,6 +1597,8 @@ export type ProviderRequestStatus = 'pending' | 'in_flight' | 'received' | 'unce
 
 export type ProviderRetryDecision =
   | 'resend'
+  /** 重发用尽而失败仍属于暂时故障：等待对端恢复后重发（`RECOVERY_WAITS_MS`）。 */
+  | 'recovery_wait'
   | 'interrupted'
   | 'not_retryable'
   | 'limit_exhausted'

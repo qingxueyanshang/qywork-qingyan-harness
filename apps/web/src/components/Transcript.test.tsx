@@ -708,6 +708,39 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
     store.setState('views', ids[0]!, 'request', 'headersAt', Date.now())
     progress(ids[0]!)
     expect(notes()[0]).toBe('第 1/5 次重试 · 等待响应… · 上次失败：连接被断开')
+
+    // 重发用尽之后等待服务恢复：不显示第几次重试，按恢复阶段的最长等待倒计时。
+    store.applyEvent({
+      at: Date.now(),
+      conversationId: ids[0],
+      event: {
+        type: 'run.retrying',
+        runId: 'rn_progress',
+        requestId: 'pr_retry',
+        attempt: 1,
+        max: 5,
+        recovery: true,
+        reason: '连接被断开',
+        backoffMs: 120_000,
+        at: Date.now(),
+      },
+    } as never)
+    expect(notes()[0]).toMatch(/^等待服务恢复 · 等待重试，(120|121) 秒后… · 上次失败：连接被断开$/)
+    store.applyEvent({
+      at: Date.now(),
+      conversationId: ids[0],
+      event: {
+        type: 'run.request',
+        runId: 'rn_progress',
+        requestId: 'pr_recover',
+        phase: 'sent',
+        attempt: 1,
+        max: 5,
+        recovery: true,
+        at: Date.now(),
+      },
+    } as never)
+    expect(notes()[0]).toBe('等待服务恢复 · 等待响应… · 上次失败：连接被断开')
     store.applyEvent({
       at: Date.now(),
       conversationId: ids[0],

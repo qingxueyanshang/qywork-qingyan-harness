@@ -36,9 +36,14 @@ import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
 
 /**
- * 重发前的等待取 0。本文件验证回执的交付，不验证退避时长；按真实退避等待时，耗尽一轮的重发预算约需一分钟。
+ * 重发前的等待与等待服务恢复的各次间隔取 0。本文件验证回执的交付，不验证等待时长；按真实间隔等待时，
+ * 耗尽一轮的重发与恢复等待约需半小时。
  */
-mock.module('@qywork/core', () => ({ ...core, resendDelay: () => 0 }))
+mock.module('@qywork/core', () => ({
+  ...core,
+  resendDelay: () => 0,
+  RECOVERY_WAITS_MS: core.RECOVERY_WAITS_MS.map(() => 0),
+}))
 
 // ───────────────────────── 假 provider ─────────────────────────
 

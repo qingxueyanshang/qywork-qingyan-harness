@@ -162,6 +162,8 @@ export interface RequestProjection {
   /** 本次故障链内的重发序号，首发 0。 */
   attempt: number
   max: number
+  /** 处于等待服务恢复阶段：`attempt` 与 `max` 按恢复阶段计数，界面显示「等待服务恢复」而不是第几次重试。 */
+  recovering: boolean
   /** 同一故障链上次失败的分类说明，响应恢复后不再显示。 */
   retryReason?: string | null
   phase: 'backoff' | 'sent' | 'headers' | 'content'

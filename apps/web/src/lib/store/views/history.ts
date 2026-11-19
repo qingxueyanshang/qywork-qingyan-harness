@@ -79,6 +79,7 @@ function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
     requestId: r.requestId,
     attempt: r.attempt,
     max: r.max,
+    recovering: r.recovering,
     retryReason: r.retryReason ?? null,
     phase,
     backoffUntil: r.backoffUntil,

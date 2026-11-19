@@ -309,6 +309,8 @@ export interface RunRequestEvent {
   attempt: number
   /** 重发上限。真源是 `RESEND_LIMIT`，界面不硬编码该值。 */
   max: number
+  /** 本次请求是等待服务恢复期间的重发：`attempt` 与 `max` 按 `RECOVERY_WAITS_MS` 计数。 */
+  recovery?: true
   /**
    * 该阶段的观察时刻。`headers` 取传输层记录的响应头到达时刻，不取事件产生时刻；
    * 两者之差即首包等待的毫秒数。
@@ -336,6 +338,11 @@ export interface RunRetryingEvent {
   attempt: number
   /** 重发上限。真源是 `RESEND_LIMIT`，界面不硬编码该值。 */
   max: number
+  /**
+   * 重发已用尽，正在等待服务恢复：`attempt` 与 `max` 按 `RECOVERY_WAITS_MS` 计数，`backoffMs` 是最长等待，
+   * 同一端点与模型上其他请求成功时提前重发。
+   */
+  recovery?: true
   /** 上次失败的分类说明，与请求诊断中的首个 cause 相同；旧服务端可省略。 */
   reason?: string
   /** 本次等待时长。0 表示上游要求立即重发。 */

@@ -10,6 +10,7 @@
  * 否则同一次饱和中到达的每一条拒绝各收紧一次，上限连乘四分之三，降到远低于第三方接口实际可承受的数量。
  *
  * 状态由本进程内的全部轮次共用（`sendLimiter`）：第三方接口的并发按请求方计算，不区分会话与子 agent。
+ * 同一份按键记账另提供成功完成的通知（`nextCompletion`），供等待服务恢复的轮次在对端恢复后立即重发。
  */
 
 import { diagnosticEndpoint, ProviderError } from '@qywork/ai'
@@ -32,6 +33,8 @@ interface Lane {
   /** 收紧的次数。请求记录发出时的值，据此判断其拒绝是否已被计入。 */
   generation: number
   waiting: (() => void)[]
+  /** 等待下一次成功完成的轮次（`nextCompletion`）。 */
+  completion: (() => void)[]
 }
 
 export class SendLimiter {
@@ -74,10 +77,32 @@ export class SendLimiter {
     }
   }
 
+  /**
+   * 该键上下一次成功完成的请求。`signal` 中止时退出等待并以中止原因拒绝。
+   *
+   * 等待服务恢复的轮次以它为唤醒条件：同一端点与模型上其他会话或子 agent 的请求成功，即对端已恢复。
+   */
+  nextCompletion(key: string, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(signal.reason)
+    const lane = this.lane(key)
+    return new Promise<void>((resolve, reject) => {
+      const done = () => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }
+      const onAbort = () => {
+        lane.completion.splice(lane.completion.indexOf(done), 1)
+        reject(signal.reason)
+      }
+      lane.completion.push(done)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
   private lane(key: string): Lane {
     let lane = this.lanes.get(key)
     if (!lane) {
-      lane = { inFlight: 0, limit: null, generation: 0, waiting: [] }
+      lane = { inFlight: 0, limit: null, generation: 0, waiting: [], completion: [] }
       this.lanes.set(key, lane)
     }
     return lane
@@ -99,6 +124,7 @@ export class SendLimiter {
     } else if (outcome === 'completed' && lane.limit !== null) {
       lane.limit += 1 / lane.limit
     }
+    if (outcome === 'completed') for (const wake of lane.completion.splice(0)) wake()
     // 名额直接交给排在最前的等待者（计入在途后再唤醒），新到达者不能在唤醒与恢复之间插队。
     while (lane.waiting.length && open(lane)) {
       lane.inFlight++

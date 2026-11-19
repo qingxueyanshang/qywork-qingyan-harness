@@ -1,5 +1,5 @@
 /**
- * 一轮请求的发送、事件消费与自动重发。重发策略（可重发的码、次数上限、退避）同样定义在本文件。
+ * 一轮请求的发送、事件消费与自动重发。重发策略（可重发的码、次数上限、退避、用尽后等待服务恢复）同样定义在本文件。
  */
 
 import type { ProviderEvent, WireMessage } from '@qywork/ai'
@@ -7,6 +7,7 @@ import { estimateRequest, failureDiagnostics, ProviderError, providerContentKind
 import type { AgentEvent, ProviderRetryDecision, StepId } from '@qywork/core'
 import {
   log,
+  RECOVERY_WAITS_MS,
   RESEND_LIMIT,
   resendDelay,
   TRANSIENT_RETRY_DELAYS_MS,
@@ -107,6 +108,47 @@ function resendLimitOf(run: RunState): number {
   return run.input.transientResend ? TRANSIENT_RETRY_DELAYS_MS.length : RESEND_LIMIT
 }
 
+/**
+ * 重发用尽之后等待服务恢复期间的重发次数。子 agent 的轮次（`transientResend`）为 0：失败回执立即交给派发方，
+ * 由它改用其他接口或模型。
+ */
+function recoveryLimitOf(run: RunState): number {
+  return run.input.transientResend ? 0 : RECOVERY_WAITS_MS.length
+}
+
+/**
+ * 第 `resends` 次发送（首发为 0）在界面事件中的序号与上限。超过重发上限的发送属于等待服务恢复阶段，
+ * 按 `RECOVERY_WAITS_MS` 另行计数，界面据 `recovery` 显示「等待服务恢复」而不是第几次重试。
+ */
+function attemptOf(
+  run: RunState,
+  resends: number,
+): { attempt: number; max: number; recovery?: true } {
+  const limit = resendLimitOf(run)
+  return resends > limit
+    ? { attempt: resends - limit, max: recoveryLimitOf(run), recovery: true }
+    : { attempt: resends, max: limit }
+}
+
+/**
+ * 等待服务恢复：最长 `ms` 毫秒；同一端点与模型上本进程任一请求成功时提前结束（`SendLimiter.nextCompletion`）。
+ * 中止时以中止原因拒绝，与 `LoopHost.backoff` 相同。返回之前取消尚未结束的一个等待，不遗留计时器或等待者。
+ */
+async function waitForRecovery(host: LoopHost, run: RunState, ms: number): Promise<void> {
+  const settled = new AbortController()
+  const signal = AbortSignal.any([run.input.signal, settled.signal])
+  const timer = host.backoff(ms, signal)
+  const peer = sendLimiter.nextCompletion(sendLane(run.adapter), signal)
+  // 落后的一个在取消后拒绝；此处先为两者添加处理器，它的拒绝不成为未处理的拒绝。
+  timer.catch(() => {})
+  peer.catch(() => {})
+  try {
+    await Promise.race([timer, peer])
+  } finally {
+    settled.abort()
+  }
+}
+
 /** 报错的第一行：分类短语。多行的报错正文只在第一行给出分类。 */
 function headlineOf(pe: ProviderError): string {
   return pe.message.split(NEWLINE)[0]?.trim() || '模型服务出错'
@@ -171,6 +213,7 @@ export async function* sendTurn(
   let resends = run.carriedResends
   run.carriedResends = 0
   const limit = resendLimitOf(run)
+  const recoveryLimit = recoveryLimitOf(run)
   /** 本轮各次可重发失败的分类短语，按发生顺序；携带上下文继续发送的一轮一并沿用。用尽时写入报错。 */
   const causes = run.carriedCauses
   run.carriedCauses = []
@@ -233,8 +276,7 @@ export async function* sendTurn(
         runId: input.runId,
         requestId: turn.requestId,
         phase: 'sent',
-        attempt: resends,
-        max: limit,
+        ...attemptOf(run, resends),
         at: Date.now(),
       }
       yield* consumeStream(host, run, turn, stream, probe, resends)
@@ -262,6 +304,7 @@ export async function* sendTurn(
         attempt: number | null = null,
         backoffMs: number | null = null,
         at: number | null = null,
+        max: number = limit,
       ): void => {
         persist.recordRequestDiagnostic(requestId, {
           ...failureDiagnostics(err),
@@ -269,7 +312,7 @@ export async function* sendTurn(
           silentMs,
           assistantChars: turn.assistantText.length,
           toolCallCount: turn.calls.length,
-          retry: { decision, attempt, max: limit, backoffMs, at },
+          retry: { decision, attempt, max, backoffMs, at },
         })
       }
 
@@ -366,12 +409,37 @@ export async function* sendTurn(
        * 次数照常计入：该轮已实际发送过这些次数，错误码变化不应使计数清零。
        */
       causes.push(headlineOf(pe))
-      if (resends < limit) {
+      /*
+       * 重发用尽之后不立即结束：失败仍属于暂时故障时进入等待服务恢复，计数接续 `resends`，
+       * 等待取 `RECOVERY_WAITS_MS` 并可被同一端点与模型上其他请求的成功提前结束（`waitForRecovery`）。
+       * 不要在等待期间改发探测请求：对端可能接受小请求而仍拒绝真实请求，只有真实请求能确认本次能否成功。
+       */
+      if (resends < limit + recoveryLimit) {
+        const recovering = resends >= limit
+        const waitMs = recovering ? RECOVERY_WAITS_MS[resends - limit]! : backoffMs
+        const counted = attemptOf(run, resends + 1)
         // 等待起点只取一次，诊断与事件使用同一个值：两处分别取值会使刷新后的
         // 倒计时与实时倒计时相差这两行之间的毫秒数。
         const waitingSince = Date.now()
-        recordDecision('resend', resends + 1, backoffMs, waitingSince)
+        recordDecision(
+          recovering ? 'recovery_wait' : 'resend',
+          counted.attempt,
+          waitMs,
+          waitingSince,
+          counted.max,
+        )
         resends++
+        const retrying: AgentEvent = {
+          type: 'run.retrying',
+          runId: input.runId,
+          requestId,
+          ...counted,
+          reason: pe.message,
+          backoffMs: waitMs,
+          at: waitingSince,
+        }
+        const wait = () =>
+          recovering ? waitForRecovery(host, run, waitMs) : host.backoff(waitMs, input.signal)
         if (turn.assistantText === '') {
           /*
            * 正文尚未显示：原样重发，并一并处置本次尝试留下的状态。
@@ -392,17 +460,8 @@ export async function* sendTurn(
           turn.responseReasoning = undefined
           turn.calls.length = 0
           // 界面此时的末条是失败那次未完成的思考，不发送该事件时它会持续显示「正在思考…」。
-          yield {
-            type: 'run.retrying',
-            runId: input.runId,
-            requestId,
-            attempt: resends,
-            max: limit,
-            reason: pe.message,
-            backoffMs,
-            at: waitingSince,
-          }
-          await host.backoff(backoffMs, input.signal)
+          yield retrying
+          await wait()
           continue
         }
 
@@ -426,21 +485,12 @@ export async function* sendTurn(
         run.carriedResends = resends
         run.carriedCauses = causes
         run.turnIndex++
-        yield {
-          type: 'run.retrying',
-          runId: input.runId,
-          requestId,
-          attempt: resends,
-          max: limit,
-          reason: pe.message,
-          backoffMs,
-          at: waitingSince,
-        }
-        await host.backoff(backoffMs, input.signal)
+        yield retrying
+        await wait()
         return 'continued'
       }
 
-      recordDecision(resends >= limit ? 'limit_exhausted' : 'not_retryable')
+      recordDecision('limit_exhausted')
       yield* abandonThinking(run, turn)
 
       /*
@@ -683,8 +733,7 @@ async function* consumeStream(
           runId: input.runId,
           requestId: turn.requestId,
           phase: 'headers',
-          attempt: resends,
-          max: resendLimitOf(run),
+          ...attemptOf(run, resends),
           at: ev.headersAt,
         }
         break

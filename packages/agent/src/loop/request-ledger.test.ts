@@ -28,7 +28,7 @@ import {
   startFaultServer,
 } from '@qywork/ai/fault-server.test-helper'
 import type { AgentEvent, ProviderRequest, RunId } from '@qywork/core'
-import { RESEND_LIMIT } from '@qywork/core'
+import { RECOVERY_WAITS_MS, RESEND_LIMIT } from '@qywork/core'
 import {
   createConversation,
   createRun,
@@ -231,7 +231,7 @@ test('连接被拒：每一行都不是 received，用量全为 null', async () 
       model: 'deepseek-flash',
     })
     const rows = led.rows()
-    expect(rows.length).toBe(RESEND_LIMIT + 1)
+    expect(rows.length).toBe(RESEND_LIMIT + RECOVERY_WAITS_MS.length + 1)
     for (const row of rows) {
       expect(row.status).not.toBe('received')
       // 连接未建立，响应头时刻为空：与远端拒绝是两种不同的失败。

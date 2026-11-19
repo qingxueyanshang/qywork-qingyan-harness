@@ -337,6 +337,7 @@ export {
   type CacheMissRequest,
 } from './domain/monitor/cache-miss.ts'
 export {
+  RECOVERY_WAITS_MS,
   RESEND_LIMIT,
   type RetryWait,
   resendDelay,

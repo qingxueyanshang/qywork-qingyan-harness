@@ -329,7 +329,8 @@ function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSn
   const settled = last.completedAt !== null
   const decided = settled ? last : rows.at(-2)
   const retry = decided?.diagnostic?.retry
-  const resend = retry?.decision === 'resend' ? retry : null
+  // 等待服务恢复与快速重发写入同一份诊断，次数、上限与截止点的读取方式相同。
+  const resend = retry?.decision === 'resend' || retry?.decision === 'recovery_wait' ? retry : null
   return {
     runId,
     seq,
@@ -337,6 +338,7 @@ function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSn
       requestId: last.id,
       attempt: resend?.attempt ?? 0,
       max: resend?.max ?? RESEND_LIMIT,
+      recovering: resend?.decision === 'recovery_wait',
       retryReason: resend ? (decided?.diagnostic?.causes[0]?.message ?? null) : null,
       status: last.status,
       sentAt: last.sentAt,

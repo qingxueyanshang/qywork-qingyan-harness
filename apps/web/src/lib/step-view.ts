@@ -364,6 +364,7 @@ export function stopReasonLabel(reason: string): string | null {
 
 const RETRY_LABELS: Record<ProviderRetryDecision, string> = {
   resend: '已自动重发',
+  recovery_wait: '等待服务恢复后重发',
   interrupted: '已中断，结果不明',
   not_retryable: '未重发',
   limit_exhausted: '重试已用尽',

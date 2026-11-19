@@ -1738,10 +1738,36 @@ describe('会话历史分页接口', () => {
       requestId: failed.id,
       attempt: 2,
       max: 5,
+      recovering: false,
       retryReason: '连接被断开',
       status: 'rejected',
       lastContentAt: null,
       backoffUntil: 1_700_000_060_000,
+    })
+
+    // 等待服务恢复写入同一份诊断：刷新后同样恢复倒计时，并标明处于恢复阶段。
+    recordProviderRequestDiagnostic(d.store, failed.id, {
+      causes: [{ name: 'ProviderError', code: 'network_error', message: '连接被断开' }],
+      providerEvents: 0,
+      silentMs: 0,
+      transport: null,
+      assistantChars: 0,
+      toolCallCount: 0,
+      retry: {
+        decision: 'recovery_wait',
+        attempt: 1,
+        max: 5,
+        backoffMs: 120_000,
+        at: 1_700_000_000_000,
+      },
+    })
+    const recovering = (await (
+      await call(`/api/conversations/${conv.id}/history`, undefined, d)
+    )?.json()) as ConversationHistoryPageResponse
+    expect(recovering.live?.request).toMatchObject({
+      attempt: 1,
+      recovering: true,
+      backoffUntil: 1_700_000_120_000,
     })
   })
 

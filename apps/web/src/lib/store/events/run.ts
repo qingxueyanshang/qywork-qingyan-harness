@@ -202,6 +202,7 @@ export const runEvents = handlers({
           requestId: ev.requestId,
           attempt: ev.attempt,
           max: ev.max,
+          recovering: ev.recovery === true,
           phase: ev.phase,
           retryReason:
             ev.attempt > 0 && ev.attempt === prev?.attempt ? (prev.retryReason ?? null) : null,
@@ -249,6 +250,7 @@ export const runEvents = handlers({
           requestId: ev.requestId,
           attempt: ev.attempt,
           max: ev.max,
+          recovering: ev.recovery === true,
           phase: 'backoff',
           retryReason: ev.reason ?? null,
           backoffUntil: ev.at + ev.backoffMs,
