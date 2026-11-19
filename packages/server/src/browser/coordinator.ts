@@ -47,6 +47,7 @@ import {
   CdpClient,
   CdpDisconnectedError,
   CdpInitError,
+  CdpTimeoutError,
   type JsDialog,
 } from './cdp.ts'
 import {
@@ -147,28 +148,29 @@ interface ResourceTreeNode {
 }
 
 /**
- * 动作与导航的后处理绝对预算：静默等待、导航确认与观察采集共用同一个截止时间。
+ * 动作或导航之后等待页面静默的总上限。
  *
- * 各阶段不重新分配完整额度，否则一条默认 15000 ms 的 CDP 命令即可使整次调用远超上限。
- * 导航命令本身的 30000 ms 不计入该预算。这些是工程预算，不保证网站已就绪。
+ * 等待按加载进展计时（见 `#quietWait`），本上限只约束不断请求新地址的页面；到达上限时照常采集观察并标注
+ * `deadline`，不是失败。之后的观察使用观察自己的期限，不从等待中扣除。
  */
-const FOLLOW_UP_BUDGET_MS = 10_000
-/** 静默等待的阶段上限。到时即采集，采集成功时按 `deadline` 如实标注。 */
-const QUIET_LIMIT_MS = 1_500
+const SETTLE_CEILING_MS = 30_000
+/** 没有未结束的新地址请求时，距最近一次加载进展的等待上限。到时即采集，采集成功时按 `deadline` 如实标注。 */
+const QUIET_IDLE_MS = 1_500
 /**
- * 有未结束的 XHR / fetch 请求时静默等待的上限，从动作完成时起算。
+ * 有未结束的新地址请求（导航时另含主文档仍在加载）时，距最近一次加载进展的等待上限。
  *
- * 取值依据：点击之后模型自选的等待时长 90% 不超过 5 秒。不要提高到接近 `FOLLOW_UP_BUDGET_MS`：
- * 该预算还要覆盖观察采集。
+ * 取值依据：点击之后模型自选的等待时长 90% 不超过 5 秒。长连接与长轮询发出之后没有进展，按本上限结束等待。
  */
-const NETWORK_LIMIT_MS = 5_000
+const NETWORK_IDLE_MS = 5_000
+/** 不计为加载进展的请求类型：页面加载完之后它们仍持续传输。 */
+const STREAMING_TYPES: ReadonlySet<string> = new Set(['Media', 'EventSource', 'WebSocket', 'Ping'])
 /** 静默采样间隔。 */
 const QUIET_SAMPLE_MS = 100
 /** 探针命令的单条上限；剩余预算更短时取剩余预算。 */
 const PROBE_TIMEOUT_MS = 2_000
 /** 等待导航提交事件的上限。 */
 const COMMIT_WAIT_MS = 3_000
-/** 导航命令本身的上限。 */
+/** 导航命令距该页最近一次协议事件的上限（`renewOnEvents`）：页面持续有网络与加载事件时导航命令不超时。 */
 const NAVIGATE_TIMEOUT_MS = 30_000
 /**
  * 一次释放的绝对清理预算：撤销授权、页内等待器清理、detach 与断开连接共用该预算。
@@ -185,6 +187,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const leftMs = (deadline: number) => deadline - Date.now()
 /** 探针命令的超时：取剩余预算与单条上限中的较小值。 */
 const probeTimeout = (deadline: number) => Math.max(1, Math.min(PROBE_TIMEOUT_MS, leftMs(deadline)))
+
+/**
+ * 请求的地址键：方法、域名与路径。查询参数与片段不计入：轮询常以时间戳参数区分各次请求。
+ * 没有地址或地址无法解析时返回 `null`，该请求不计为加载进展。
+ */
+function addressOf(request: unknown): string | null {
+  const { url, method } = (request ?? {}) as { url?: unknown; method?: unknown }
+  if (typeof url !== 'string' || !URL.canParse(url)) return null
+  const parsed = new URL(url)
+  return `${typeof method === 'string' ? method : 'GET'} ${parsed.origin}${parsed.pathname}`
+}
 
 /** 等待 `pending` 兑现，最长等待 `ms` 毫秒。兑现时清除定时器，不遗留未结束的计时。 */
 function firstOf(pending: Promise<void>, ms: number): Promise<boolean> {
@@ -222,6 +235,13 @@ interface NavWatch {
    * 动作结果据此报告「是否发出了请求」，与只统计在途 XHR / fetch 的 `requests` 用途不同。
    */
   sent(): number
+  /**
+   * 加载进展的累计次数：本次订阅中首次出现的地址（`addressOf`）的请求发出、收到响应或数据、结束，以及订阅范围内
+   * 框架的加载与导航事件。重复请求同一地址（定时刷新、轮询）与 `STREAMING_TYPES` 的请求不计入。
+   */
+  progress(): number
+  /** 首次出现的地址中尚未结束的请求数，范围与 `progress` 相同。 */
+  pending(): number
   /** 已收到导航提交的证据。 */
   committed(): boolean
   /** 导航提交时兑现；等待导航确认时使用它，不轮询。 */
@@ -341,19 +361,22 @@ export class BrowserCoordinator {
   #rendering = new Set<string>()
   #offHostChange: () => void
   #offClosed: () => void
-  /** 见 `NETWORK_LIMIT_MS`。只有回归测试传入其他值，以免按真实时间等待 5 秒。 */
-  #networkLimitMs: number
+  /** 见 `NETWORK_IDLE_MS`。只有回归测试传入其他值，以免按真实时间等待 5 秒。 */
+  #networkIdleMs: number
+  /** 见 `SETTLE_CEILING_MS`。只有回归测试传入其他值。 */
+  #settleCeilingMs: number
 
   constructor(
     bridge: BrowserBridge,
     enabled: () => boolean,
     sidecar: () => string,
-    networkLimitMs = NETWORK_LIMIT_MS,
+    settle: { networkIdleMs?: number; ceilingMs?: number } = {},
   ) {
     this.#bridge = bridge
     this.#enabled = enabled
     this.#sidecar = sidecar
-    this.#networkLimitMs = networkLimitMs
+    this.#networkIdleMs = settle.networkIdleMs ?? NETWORK_IDLE_MS
+    this.#settleCeilingMs = settle.ceilingMs ?? SETTLE_CEILING_MS
     // 断开与重连均使全部控制失效：重连后的调试端点已更换，旧连接上的页会话已不存在。
     this.#offHostChange = bridge.onHostChange(() => this.#dropAll())
     // 宿主侧关闭的页（用户关闭、按会话关闭）须从持有它的控制槽中移除会话，
@@ -651,14 +674,12 @@ export class BrowserCoordinator {
    * 受控期间的 file 请求已逐个裁决，此处处理的是拦截之外加载的内容，见 `BrowserLocalFileError`。
    * 加载失败的资源不计入：其中没有文件内容。跨站帧不在资源树中，它们不能加载 file 地址。
    */
-  async #assertLocalFiles(control: Control, page: PageHandle, deadline?: number): Promise<void> {
+  async #assertLocalFiles(control: Control, page: PageHandle): Promise<void> {
+    // 使用命令的缺省上限，不要改用探针上限：刚跳转、仍在加载的页面上该命令常需数秒才返回。
     const { frameTree } = await page.client.send<{ frameTree?: ResourceTreeNode }>(
       'Page.getResourceTree',
       {},
-      {
-        sessionId: page.sessionId,
-        ...(deadline === undefined ? {} : { timeoutMs: probeTimeout(deadline) }),
-      },
+      { sessionId: page.sessionId },
     )
     if (!frameTree) throw new BrowserBridgeError('页面的资源清单读取失败，本次不读取页面内容')
     const urls = new Set<string>()
@@ -807,12 +828,16 @@ export class BrowserCoordinator {
         const sent = await client.send<{ errorText?: string }>(
           'Page.navigate',
           { url: input.url ?? '' },
-          { sessionId, timeoutMs: NAVIGATE_TIMEOUT_MS },
+          { sessionId, timeoutMs: NAVIGATE_TIMEOUT_MS, renewOnEvents: true },
         )
         // errorText 表示本次导航失败，页面仍停留在原处。不得继续采集旧页快照并视为跳转成功。
         if (sent.errorText) throw new BrowserBridgeError(`导航失败：${sent.errorText}`)
       } else if (input.action === 'reload') {
-        await client.send('Page.reload', {}, { sessionId, timeoutMs: NAVIGATE_TIMEOUT_MS })
+        await client.send(
+          'Page.reload',
+          {},
+          { sessionId, timeoutMs: NAVIGATE_TIMEOUT_MS, renewOnEvents: true },
+        )
       } else {
         const history = await client.send<{
           currentIndex: number
@@ -822,13 +847,16 @@ export class BrowserCoordinator {
         const entry = history.entries[history.currentIndex + step]
         if (!entry)
           throw new BrowserBridgeError(`没有可${input.action === 'back' ? '后退' : '前进'}的历史`)
-        await client.send('Page.navigateToHistoryEntry', { entryId: entry.id }, { sessionId })
+        await client.send(
+          'Page.navigateToHistoryEntry',
+          { entryId: entry.id },
+          { sessionId, timeoutMs: NAVIGATE_TIMEOUT_MS, renewOnEvents: true },
+        )
       }
-      const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
-      const committed = await this.#awaitCommit(page, watch, baseline, deadline)
-      const { settle } = await this.#quietWait(page, watch, deadline, { whileLoading: true })
+      const committed = await this.#awaitCommit(page, watch, baseline)
+      const { settle } = await this.#quietWait(page, watch, { whileLoading: true })
       // 未确认提交时不报告 quiet：此时的静默可能属于尚未被替换的旧文档。
-      return await this.#followUp(control, page, deadline, committed ? settle : 'deadline')
+      return await this.#followUp(control, page, committed ? settle : 'deadline')
     } finally {
       watch.stop()
     }
@@ -884,10 +912,9 @@ export class BrowserCoordinator {
       screenshot?: boolean
       offset?: number
       query?: string
-      deadline?: number
     },
   ): Promise<BrowserObservation> {
-    await this.#assertLocalFiles(control, page, opts.deadline)
+    await this.#assertLocalFiles(control, page)
     const { observation, record } = await observePage(page, opts, this.#numberingOf(page.tabId))
     if (!this.#alive(control)) {
       throw new BrowserReleasedError('本次执行的浏览器控制已经结束，本次观察不登记')
@@ -907,11 +934,11 @@ export class BrowserCoordinator {
    *
    * 未取得观察时返回 `observationError` 而不是抛出异常：动作已经发出，抛出异常会使
    * 调用方无法区分「未执行操作」与「操作后未取得观察」，从而重复提交。取消之后不再发起新的观察。
+   * 观察使用观察自己的期限：不要改为与之前的等待共用一份预算，等待耗时较长时观察只剩数秒，跳转后的页面因此读取失败。
    */
   async #followUp(
     control: Control,
     page: PageHandle,
-    deadline: number,
     settle?: 'quiet' | 'deadline',
     screenshot?: boolean,
   ): Promise<FollowUpObservation> {
@@ -925,10 +952,7 @@ export class BrowserCoordinator {
       return { observation: null, observationError: '已取消，动作之后未再观察' }
     }
     try {
-      const observation = await this.#observeInto(control, page, {
-        deadline,
-        ...(screenshot ? { screenshot } : {}),
-      })
+      const observation = await this.#observeInto(control, page, screenshot ? { screenshot } : {})
       return settle === undefined ? { observation } : { observation, settle }
     } catch (err) {
       return {
@@ -946,6 +970,10 @@ export class BrowserCoordinator {
     const requests = new Set<string>()
     const issued = new Set<string>()
     let frames = 0
+    let progress = 0
+    // 本次订阅中出现过的地址，以及其中首次出现、尚未结束的请求。
+    const addresses = new Set<string>()
+    const fresh = new Set<string>()
     let settle: () => void = () => {}
     const commit = new Promise<void>((resolve) => {
       settle = resolve
@@ -954,9 +982,21 @@ export class BrowserCoordinator {
     const off = page.client.onSessionEvent(page.sessionId, (event) => {
       const params = event.params
       const frame = params.frame as { id?: string } | undefined
+      const requestId = String(params.requestId)
       if (event.method === 'Network.requestWillBeSent') {
-        issued.add(String(params.requestId))
-        if (params.type === 'XHR' || params.type === 'Fetch') requests.add(String(params.requestId))
+        issued.add(requestId)
+        if (params.type === 'XHR' || params.type === 'Fetch') requests.add(requestId)
+        // 重定向沿用同一个 requestId 而地址更换，新地址同样计为进展。
+        const address = addressOf(params.request)
+        if (
+          address !== null &&
+          !STREAMING_TYPES.has(String(params.type)) &&
+          !addresses.has(address)
+        ) {
+          addresses.add(address)
+          fresh.add(requestId)
+          progress += 1
+        }
         return
       }
       if (event.method === 'Network.webSocketFrameSent') {
@@ -964,18 +1004,28 @@ export class BrowserCoordinator {
         return
       }
       if (event.method === 'Network.loadingFinished' || event.method === 'Network.loadingFailed') {
-        requests.delete(String(params.requestId))
+        requests.delete(requestId)
+        if (fresh.delete(requestId)) progress += 1
+        return
+      }
+      if (event.method === 'Network.dataReceived') {
+        if (fresh.has(requestId)) progress += 1
         return
       }
       if (event.method === 'Network.responseReceived') {
+        if (fresh.has(requestId)) progress += 1
         // 以 fetch 读取的事件流不产生结束事件，响应头到达即不再等待。
         const mime = (params.response as { mimeType?: string } | undefined)?.mimeType
-        if (mime === 'text/event-stream') requests.delete(String(params.requestId))
+        if (mime === 'text/event-stream') {
+          requests.delete(requestId)
+          fresh.delete(requestId)
+        }
         return
       }
       if (event.method === 'Page.frameStartedLoading' && mine(params.frameId)) {
         events += 1
         inflight += 1
+        progress += 1
         return
       }
       if (event.method === 'Page.frameStoppedLoading' && mine(params.frameId)) {
@@ -988,6 +1038,7 @@ export class BrowserCoordinator {
       } else {
         return
       }
+      progress += 1
       committed = true
       settle()
     })
@@ -996,6 +1047,8 @@ export class BrowserCoordinator {
       loading: () => inflight > 0,
       requests: () => requests.size,
       sent: () => issued.size + frames,
+      progress: () => progress,
+      pending: () => fresh.size,
       committed: () => committed,
       commit,
       stop: off,
@@ -1012,36 +1065,36 @@ export class BrowserCoordinator {
     page: PageHandle,
     watch: NavWatch,
     baseline: { token: string; url: string },
-    deadline: number,
   ): Promise<boolean> {
     if (watch.committed()) return true
-    if (await firstOf(watch.commit, Math.min(leftMs(deadline), COMMIT_WAIT_MS))) return true
-    const head = await readDocument(page, probeTimeout(deadline)).catch(() => null)
+    if (await firstOf(watch.commit, COMMIT_WAIT_MS)) return true
+    const head = await readDocument(page, PROBE_TIMEOUT_MS).catch(() => null)
     return head !== null && (head.token !== baseline.token || head.url !== baseline.url)
   }
 
   /**
-   * 动作之后的有界静默等待。
+   * 动作或导航之后等待页面静默，按加载进展计时。
    *
    * 连续两次采样 `readyState` 均为 complete、DOM 变更计数不变，且订阅建立之后发出的
    * XHR / fetch 请求均已结束，才视为静默；期间收到导航事件即重新计数，正在加载的旧文档
    * 不得提前通过。静默只表示此刻可以采集快照：尚未发出的延迟请求无法预知，
    * 静默不表示网站业务已经完成。
    *
-   * 阶段上限为 `QUIET_LIMIT_MS`。采样时有未结束的请求，阶段上限顺延到此后三个采样间隔，
-   * 至多到动作完成后 `#networkLimitMs`。跨站 iframe 的请求在子会话上，不计入。
+   * 等待自最近一次加载进展（`NavWatch.progress` 增长或 `readyState` 变化）起计时：有未结束的新地址请求时
+   * 至多 `#networkIdleMs`，没有时至多 `QUIET_IDLE_MS`，到时以 `deadline` 结束。不要改回自动作完成起算的固定上限：
+   * 持续加载的页面会在加载到一半时被采集。不要把 DOM 变化或重复地址的请求计为进展：动画与定时刷新会使每次等待
+   * 都到达上限。不断请求新地址的页面以 `#settleCeilingMs` 为上限。跨站 iframe 的请求在子会话上，不计入。
    *
    * 探针读数缺少字段时按未静默处理：将缺失视为 complete 会使仍在加载的页面通过。
    *
    * `probe` 是调用方在动作之前登记的探针，此处负责清理；缺省时在此登记。`mutations` 是该探针的
    * 最后一次读数，即动作开始以来的 DOM 变更数；探针随旧文档失效或从未读取到读数时为 `null`。
-   * `whileLoading` 只用于地址栏导航（订阅只看主框架）：主文档仍在加载时与未结束的请求一样顺延阶段上限，
-   * 不在加载到一半时采集。动作的订阅包含全部框架，持续加载的广告框架会使每次动作都等到上限，因此不顺延。
+   * `whileLoading` 只用于地址栏导航（订阅只看主框架）：主文档仍在加载时与未结束的新地址请求一样按
+   * `#networkIdleMs` 计时。动作的订阅包含全部框架，持续加载的广告框架会使每次动作都按较长的时长等待，因此不使用。
    */
   async #quietWait(
     page: PageHandle,
     watch: NavWatch,
-    deadline: number,
     opts: { probe?: number | null; whileLoading?: boolean } = {},
   ): Promise<{ settle: 'quiet' | 'deadline'; mutations: number | null }> {
     const { client, sessionId } = page
@@ -1053,58 +1106,75 @@ export class BrowserCoordinator {
       if (probe !== null) await client.disposeWaiter(sessionId, probe).catch(() => {})
       return { settle: 'deadline', mutations }
     }
-    const network = Math.min(deadline, Date.now() + this.#networkLimitMs)
-    let stage = Math.min(deadline, Date.now() + QUIET_LIMIT_MS)
+    const ceiling = Date.now() + this.#settleCeilingMs
+    let progressAt = Date.now()
+    let progress = watch.progress()
+    let ready: string | null = null
+    const until = () => {
+      const loading = opts.whileLoading === true && (watch.loading() || ready !== 'complete')
+      const idle = watch.pending() > 0 || loading ? this.#networkIdleMs : QUIET_IDLE_MS
+      return Math.min(ceiling, progressAt + idle)
+    }
+    // 页面忙于加载或跳转时，采样命令在探针上限内不返回：这次采样按未静默处理，继续等待。不要改为结束整个等待：
+    // 点击后跳转期间读取旧文档会超时，结束等待将在新页面加载完之前采集观察。断开与取消照常结束等待。
+    const sample = <T>(pending: Promise<T>): Promise<T | null> =>
+      pending.catch((err: unknown) => {
+        if (err instanceof CdpTimeoutError) return null
+        throw err
+      })
     try {
-      probe ??= await client.startProbe(sessionId, probeTimeout(deadline))
-      try {
-        let previous: { ready: string; mutations: number } | null = null
-        let seen = watch.events()
-        while (leftMs(stage) > 0) {
-          await sleep(Math.min(QUIET_SAMPLE_MS, leftMs(stage)))
-          const read = await client.readProbe(sessionId, probe, probeTimeout(deadline))
-          if (fresh && typeof read.mutations === 'number') mutations = read.mutations
-          const moved = watch.events() !== seen
-          seen = watch.events()
-          const requesting = watch.requests() > 0
-          const loading =
-            opts.whileLoading === true && (watch.loading() || read.ready !== 'complete')
-          // 请求结束之后仍须连续两次采样无变化，三个采样间隔为此留出余量。
-          if (requesting || loading) {
-            stage = Math.min(network, Math.max(stage, Date.now() + 3 * QUIET_SAMPLE_MS))
-          }
-          if (moved || watch.loading() || requesting) {
-            previous = null
-            continue
-          }
-          if (read.gone === true) {
-            // 探针随旧文档一同销毁。只读等待器可以重建，动作一律不重发。重建的探针不从动作开始计数。
-            previous = null
-            fresh = false
-            mutations = null
-            if (leftMs(stage) <= 0) break
-            probe = await client.startProbe(sessionId, probeTimeout(deadline))
-            continue
-          }
-          if (typeof read.ready !== 'string' || typeof read.mutations !== 'number') {
-            log.warn('browser', '静默探针读数不完整，本次按未静默处理')
-            previous = null
-            continue
-          }
-          if (
-            previous?.ready === 'complete' &&
-            read.ready === 'complete' &&
-            previous.mutations === read.mutations
-          ) {
-            return { settle: 'quiet', mutations }
-          }
-          previous = { ready: read.ready, mutations: read.mutations }
+      let previous: { ready: string; mutations: number } | null = null
+      let seen = watch.events()
+      while (leftMs(until()) > 0) {
+        await sleep(Math.min(QUIET_SAMPLE_MS, leftMs(until())))
+        probe ??= await sample(client.startProbe(sessionId, probeTimeout(ceiling)))
+        const read =
+          probe === null
+            ? null
+            : await sample(client.readProbe(sessionId, probe, probeTimeout(ceiling)))
+        if (fresh && typeof read?.mutations === 'number') mutations = read.mutations
+        const advanced = typeof read?.ready === 'string' && ready !== null && read.ready !== ready
+        if (watch.progress() !== progress || advanced) {
+          progress = watch.progress()
+          progressAt = Date.now()
         }
-      } finally {
-        await client.disposeWaiter(sessionId, probe).catch(() => {})
+        if (typeof read?.ready === 'string') ready = read.ready
+        const moved = watch.events() !== seen
+        seen = watch.events()
+        if (read === null || moved || watch.loading() || watch.requests() > 0) {
+          previous = null
+          continue
+        }
+        if (read.gone === true) {
+          // 探针随旧文档一同销毁，下一次采样时重建。只读等待器可以重建，动作一律不重发。重建的探针不从动作开始计数。
+          previous = null
+          fresh = false
+          mutations = null
+          probe = null
+          continue
+        }
+        if (typeof read.ready !== 'string' || typeof read.mutations !== 'number') {
+          log.warn('browser', '静默探针读数不完整，本次按未静默处理')
+          previous = null
+          continue
+        }
+        if (
+          previous?.ready === 'complete' &&
+          read.ready === 'complete' &&
+          previous.mutations === read.mutations
+        ) {
+          return { settle: 'quiet', mutations }
+        }
+        previous = { ready: read.ready, mutations: read.mutations }
       }
     } catch (err) {
       log.warn('browser', `已跳过静默等待：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      if (probe !== null) await client.disposeWaiter(sessionId, probe).catch(() => {})
+    }
+    // 记录到达上限的次数：只有不断请求新地址的页面到达该上限，据此核对它的代价。
+    if (leftMs(ceiling) <= 0) {
+      log.info('browser', `动作之后的等待达到 ${this.#settleCeilingMs} ms 上限，页面仍在请求新地址`)
     }
     return { settle: 'deadline', mutations }
   }
@@ -1208,9 +1278,8 @@ export class BrowserCoordinator {
           activity: { ...facts(), domChanged: true, dialog: first.dialog },
         }
       }
-      const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
-      const quiet = await this.#quietWait(page, watch, deadline, { probe })
-      const follow = await this.#followUp(control, page, deadline, quiet.settle, input.screenshot)
+      const quiet = await this.#quietWait(page, watch, { probe })
+      const follow = await this.#followUp(control, page, quiet.settle, input.screenshot)
       const after = follow.observation ? control.records.get(page.tabId) : undefined
       const chooser = chosen.at(-1)
       if (chooser) control.choosers.set(page.tabId, chooser)
@@ -1255,9 +1324,8 @@ export class BrowserCoordinator {
         input.accept === true,
         dialog.type === 'prompt' ? input.text : undefined,
       )
-      const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
-      const quiet = await this.#quietWait(page, watch, deadline)
-      const follow = await this.#followUp(control, page, deadline, quiet.settle, input.screenshot)
+      const quiet = await this.#quietWait(page, watch)
+      const follow = await this.#followUp(control, page, quiet.settle, input.screenshot)
       const after = follow.observation ? control.records.get(page.tabId) : undefined
       return {
         element: BROWSER_DIALOG_NAMES[dialog.type],
@@ -1298,8 +1366,7 @@ export class BrowserCoordinator {
       input.timeoutMs,
     )
     // 等待结束后直接采集观察：选择器已是调用方给出的就绪判据，不再附加静默等待。
-    const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
-    return { ...receipt, ...(await this.#followUp(control, page, deadline)) }
+    return { ...receipt, ...(await this.#followUp(control, page)) }
   }
 
   /**

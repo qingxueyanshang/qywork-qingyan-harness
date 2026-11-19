@@ -150,6 +150,8 @@ interface PageModel {
   ownerGone: Set<string>
   /** 应答该命令后更换文档令牌，模拟采集中途发生导航。 */
   flipTokenAfter?: string
+  /** 每条命令应答之前调用一次，参数为方法名。用于在采集各步之间推进时钟或修改页面。 */
+  onCommand?: (method: string) => void
   /** 每次 `scrollIntoView` 之后调用一次，用于在滚动时修改页面。 */
   onScroll?: () => void
   /** 第几条 `Input.*` 命令返回错误。计数从 1 起，缺省表示全部正常应答。 */
@@ -374,6 +376,7 @@ class FakePage {
               else attach(doc)
             }
           }
+          self.model.onCommand?.(cmd.method)
           const out = self.answer(cmd)
           if (self.model.flipTokenAfter === cmd.method) {
             delete self.model.flipTokenAfter
@@ -1905,15 +1908,49 @@ test('采集中途更换文档时整份丢弃并重新采集，不登记旧令�
   expect(observation.elements.length).toBeGreaterThan(0)
 })
 
-test('预算已经耗尽时不发送采集命令，报告可判定的失败', async () => {
+/**
+ * 原始失败形状：观察的期限在开始时一次算定，各步采集较慢、合计超过期限时，其后的步骤因期限已过而跳过（元素缺少尺寸），
+ * 或以剩余的几毫秒为超时而失败。
+ */
+test('观察的期限按完成的采集步骤续期：各步合计超过期限时其后的步骤照常执行', async () => {
   const { fake, handle } = await newPage()
-  const before = fake.sent('DOM.getDocument').length
+  const realNow = Date.now.bind(Date)
+  let offset = 0
+  const clock = spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+  // 快照与 AX 树各推进 20 秒，合计 40 秒，超过 `OBSERVE_BUDGET_MS`。
+  fake.model.onCommand = (method) => {
+    if (method === 'DOM.getDocument' || method === 'Accessibility.getFullAXTree') offset += 20_000
+  }
+  try {
+    const { observation } = await observePage(handle, {}, newNumbering())
+    // 下拉框的选项摘要在快照与 AX 树之后读取：期限不续期时这一步被跳过，摘要缺失。
+    expect(observation.elements.find((e) => e.tag === 'select')?.optionsTotal).toBe(2)
+  } finally {
+    clock.mockRestore()
+  }
+})
 
-  const err = await observePage(handle, { deadline: Date.now() - 1 }, newNumbering()).catch(
-    (e: Error) => e,
-  )
-  expect(err).toBeInstanceOf(BrowserObserveTimeoutError)
-  expect(fake.sent('DOM.getDocument')).toHaveLength(before)
+test('文档持续更换时不续期，在期限内报告可判定的失败', async () => {
+  const { fake, handle } = await newPage()
+  const realNow = Date.now.bind(Date)
+  let offset = 0
+  const clock = spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+  // 每次采集 AX 树都推进 10 秒并更换文档：每一步都完成，但前后两次读取的文档始终不同。
+  let generation = 1
+  fake.model.onCommand = (method) => {
+    if (method !== 'Accessibility.getFullAXTree') return
+    offset += 10_000
+    generation += 1
+    fake.model.token = `doc-${generation}`
+  }
+  try {
+    const err = await observePage(handle, {}, newNumbering()).catch((e: Error) => e)
+    expect(err).toBeInstanceOf(BrowserObserveTimeoutError)
+    // 首次更换之后不再续期：至多再采集两轮。
+    expect(generation).toBeLessThanOrEqual(5)
+  } finally {
+    clock.mockRestore()
+  }
 })
 
 test('同一个编号指向另一个节点时判定失效，不按原编号点击', async () => {
@@ -2520,7 +2557,8 @@ test('输入事件发出之后连接断开时返回 unknown，不缩减为已确
 
 /**
  * 原始失败形状：期限将尽时的事件以 1–10 ms 的超时发出，在页面应答之前超时，整次动作以 `unknown` 结束而禁止重发
- * （账本中逐字输入 1041 字在第 894 字处、768 字在第 672 字处）。
+ * （账本中逐字输入 1041 字在第 894 字处、768 字在第 672 字处）。期限按确认的单元续期之后，第一个单元之前的
+ * 定位与移动仍共用初始期限，在此复现。
  */
 test('剩余期限不足一条事件的超时时停止发送，返回 partial 与已确认的单元数', async () => {
   const { fake, handle } = await newPage()
@@ -2528,17 +2566,39 @@ test('剩余期限不足一条事件的超时时停止发送，返回 partial �
   const realNow = Date.now.bind(Date)
   const started = realNow()
   const clock = spyOn(Date, 'now')
-  // 第 3 条输入事件是第一轮的抬起：此后时钟推进到距期限约 20 ms，页面应答推迟 200 ms。
+  // 第 1 条输入事件是移动指针：此后时钟推进到距期限约 20 ms，页面应答推迟 200 ms。
   fake.model.onInput = (nth) => {
-    if (nth !== 3) return
+    if (nth !== 1) return
     const offset = started + ACTION_BUDGET_MS - 20 - realNow()
     clock.mockImplementation(() => realNow() + offset)
     fake.model.inputDelayMs = 200
   }
   try {
     const r = await act(handle, record, { action: 'dblclick', ref: refOf(observation, '提交') })
-    expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 1, reason: '动作期限已到' })
-    expect(fake.mouseDetail().at(-1)).toMatchObject({ type: 'mouseReleased', clickCount: 1 })
+    expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 0, reason: '动作期限已到' })
+    expect(fake.mouseDetail().map((e) => e.type)).toEqual(['mouseMoved'])
+  } finally {
+    clock.mockRestore()
+  }
+})
+
+/**
+ * 原始失败形状：单步动作的期限在开始时一次算定，页面处理慢时，两轮点击之间已无剩余期限，第二轮不发送，以 `partial` 结束。
+ */
+test('dblclick 的期限按进展续期：两轮点击合计超过动作期限时仍完成', async () => {
+  const { fake, handle } = await newPage()
+  const { record, observation } = await observe(handle)
+  const realNow = Date.now.bind(Date)
+  let offset = 0
+  const clock = spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+  // 每条输入事件推进 10 秒：移动、两次按下与两次抬起合计 50 秒，超过 `ACTION_BUDGET_MS`。
+  fake.model.onInput = () => {
+    offset += 10_000
+  }
+  try {
+    const r = await act(handle, record, { action: 'dblclick', ref: refOf(observation, '提交') })
+    expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 2 })
+    expect(fake.mouseDetail().at(-1)).toMatchObject({ type: 'mouseReleased', clickCount: 2 })
   } finally {
     clock.mockRestore()
   }
@@ -3138,19 +3198,17 @@ test('scroll 只指定 deltaX 时纵向为 0，两个方向都未指定时向下
   ])
 })
 
-test('动作期限缺省为固定值，按单元续期的动作在每个单元完成时重新计算期限', () => {
+test('动作期限自最近一次确认的单元起计算，没有确认的单元时不推移', () => {
   const realNow = Date.now.bind(Date)
   let offset = 0
   const clock = spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
   try {
-    const fixed = new Execution()
-    const renewed = new Execution(ACTION_BUDGET_MS, { renewPerUnit: true })
-    const fixedDeadline = fixed.deadline
+    const run = new Execution()
+    const initial = run.deadline
     offset += 20_000
-    fixed.unit()
-    renewed.unit()
-    expect(fixed.deadline).toBe(fixedDeadline)
-    expect(renewed.deadline).toBe(Date.now() + ACTION_BUDGET_MS)
+    expect(run.deadline).toBe(initial)
+    run.unit()
+    expect(run.deadline).toBe(Date.now() + ACTION_BUDGET_MS)
   } finally {
     clock.mockRestore()
   }

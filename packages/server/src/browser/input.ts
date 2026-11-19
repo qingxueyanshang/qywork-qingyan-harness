@@ -21,11 +21,12 @@ import {
 } from './cdp.ts'
 
 /**
- * 一次输入动作的绝对期限。
+ * 一次输入动作的期限，自最近一次进展起计算：动作开始时与每确认一个单元时，期限重新计为此刻起的该时长，
+ * 连续该时长没有确认的单元才停止。
  *
- * 定位、布局复核、全部业务事件与按住时长共用该期限，单条命令取剩余预算与单条上限的较小值。**不要改成每条
- * 命令各分配一份额度**：2000 个码点乘以单条上限，一次调用可阻塞数十分钟。该期限须大于按住时长
- * 的合计上限（`INPUT_LIMITS.totalMs`），为定位与复核留出余量。
+ * 定位、布局复核、业务事件与按住时长共用当前期限，单条命令取剩余预算与单条上限的较小值。**不要改成每条
+ * 命令各分配一份额度**：已发出而未确认的命令不是进展，按命令续期时无响应的页面可使一次调用阻塞数十分钟。
+ * 该期限须大于单个阶段的按住时长上限（`INPUT_LIMITS.phaseMs`），为定位与复核留出余量。
  */
 export const ACTION_BUDGET_MS = 30_000
 /** 单条输入事件的上限。剩余预算更少时按剩余预算发。 */
@@ -53,20 +54,17 @@ export type Point = { x: number; y: number }
 export class Execution {
   #deadline: number
   readonly #budgetMs: number
-  readonly #renewPerUnit: boolean
 
   /**
-   * `renewPerUnit` 为真时，期限自最近一次确认的单元起重新计算：单元数与耗时成正比的动作（逐字输入）持续有进展时
-   * 不因总耗时停止，连续 `budgetMs` 没有进展才停止。不要改回按估计速度一次算定总期限：页面处理按键慢于估计值时，
-   * 有进展的输入同样会在中途停止。
+   * 期限自最近一次确认的单元起计算（`unit()` 重新计算）：持续有进展的动作不因总耗时停止，连续 `budgetMs`
+   * 没有进展才停止。不要改回在动作开始时一次算定总期限：页面处理慢于估计值时，有进展的动作同样会在中途停止。
    */
-  constructor(budgetMs = ACTION_BUDGET_MS, opts: { renewPerUnit?: boolean } = {}) {
+  constructor(budgetMs = ACTION_BUDGET_MS) {
     this.#budgetMs = budgetMs
-    this.#renewPerUnit = opts.renewPerUnit === true
     this.#deadline = Date.now() + budgetMs
   }
 
-  /** 本次动作的绝对期限。定位、布局复核、业务事件与按住时长共用它。 */
+  /** 本次动作的当前期限。定位、布局复核、业务事件与按住时长共用它，每确认一个单元向后推移。 */
   get deadline(): number {
     return this.#deadline
   }
@@ -100,10 +98,10 @@ export class Execution {
     this.#reason ??= reason
   }
 
-  /** 完成一个单元。 */
+  /** 完成一个单元，期限自此刻重新计算。 */
   unit(): void {
     this.#confirmed += 1
-    if (this.#renewPerUnit) this.#deadline = Date.now() + this.#budgetMs
+    this.#deadline = Date.now() + this.#budgetMs
   }
 
   /**

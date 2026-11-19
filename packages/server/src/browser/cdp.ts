@@ -96,6 +96,11 @@ export interface SendOptions {
   timeoutMs?: number
   /** 携带时按 teardown 发送；取消之后只有此类命令仍能发出。 */
   teardown?: TeardownTag
+  /**
+   * 为真时超时自该会话最近一次协议事件起计算：页面持续发出网络与加载事件时命令不超时，连续 `timeoutMs` 没有事件才超时。
+   * 用于导航命令：其耗时取决于对端与页面加载，持续有进展的导航不应因总耗时失败。
+   */
+  renewOnEvents?: boolean
 }
 
 interface Pending {
@@ -105,6 +110,8 @@ interface Pending {
   resolve: (value: Record<string, unknown>) => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout>
+  /** `renewOnEvents` 的命令：该会话收到事件时由 `#onMessage` 调用，重新计时。 */
+  renew?: { sessionId: string; restart: () => void }
 }
 
 /** `Page.getFrameTree` 的一层。`url` 为空表示该帧尚未提交任何文档。 */
@@ -422,17 +429,33 @@ export class CdpClient {
           ? this.#trackMouse(options.sessionId, params)
           : null
     const sent = new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const expire = () => {
         if (!this.#pending.delete(id)) return
-        reject(new CdpTimeoutError(`${method} 超过 ${timeoutMs}ms 未返回`))
-      }, timeoutMs)
-      this.#pending.set(id, {
+        reject(
+          new CdpTimeoutError(
+            options.renewOnEvents
+              ? `${method} 连续 ${timeoutMs}ms 没有页面事件且未返回`
+              : `${method} 超过 ${timeoutMs}ms 未返回`,
+          ),
+        )
+      }
+      const entry: Pending = {
         method,
         teardown: teardown !== undefined,
         resolve: resolve as (value: Record<string, unknown>) => void,
         reject,
-        timer,
-      })
+        timer: setTimeout(expire, timeoutMs),
+      }
+      if (options.renewOnEvents && options.sessionId) {
+        entry.renew = {
+          sessionId: options.sessionId,
+          restart: () => {
+            clearTimeout(entry.timer)
+            entry.timer = setTimeout(expire, timeoutMs)
+          },
+        }
+      }
+      this.#pending.set(id, entry)
       this.#socket.send(
         JSON.stringify({
           id,
@@ -1076,6 +1099,9 @@ export class CdpClient {
     this.#trackFrameLoad(msg)
     this.#trackDialog(msg)
     if (!msg.method) return
+    for (const { renew } of this.#pending.values()) {
+      if (renew && renew.sessionId === msg.sessionId) renew.restart()
+    }
     const event: CdpEvent = { method: msg.method, params: msg.params ?? {} }
     for (const watcher of [...this.#watchers]) {
       if (watcher.sessionId !== (msg.sessionId ?? '')) continue

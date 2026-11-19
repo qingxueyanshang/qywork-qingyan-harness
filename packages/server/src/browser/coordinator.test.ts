@@ -370,7 +370,11 @@ function fakeDevtools(marker: string): Devtools {
           requests += 1
           const requestId = `req-${requests}`
           const { type, finishMs, mimeType } = state.request
-          send('Network.requestWillBeSent', { requestId, type })
+          send('Network.requestWillBeSent', {
+            requestId,
+            type,
+            request: { url: 'http://127.0.0.1:1/api/data', method: 'GET' },
+          })
           if (mimeType) send('Network.responseReceived', { requestId, response: { mimeType } })
           if (finishMs !== null) {
             const timer = setTimeout(() => {
@@ -630,8 +634,8 @@ interface Fixture {
   workspaceId: WorkspaceId
 }
 
-/** `networkLimitMs` 缩短等待未结束请求的上限，请求不结束的用例据此不按真实时间等待 5 秒。 */
-function fresh(networkLimitMs?: number): Fixture {
+/** `settle` 缩短动作之后的等待上限，请求不结束的用例据此不按真实时间等待 5 秒或 30 秒。 */
+function fresh(settle?: { networkIdleMs?: number; ceilingMs?: number }): Fixture {
   const dir = mkdtempSync(join(tmpdir(), 'qywork-coord-'))
   const dbPath = join(dir, 'a.sqlite3')
   const store = new Store({ path: dbPath })
@@ -645,7 +649,7 @@ function fresh(networkLimitMs?: number): Fixture {
     port: 0,
     host: '127.0.0.1',
     hostKey: HOST_KEY,
-    ...(networkLimitMs === undefined ? {} : { browserNetworkLimitMs: networkLimitMs }),
+    ...(settle === undefined ? {} : { browserSettle: settle }),
   })
   cleanups.push(async () => {
     await handle.stop()
@@ -659,10 +663,11 @@ function fresh(networkLimitMs?: number): Fixture {
   return { handle, store, content, dir, workspaceId }
 }
 
-async function ready(
-  networkLimitMs?: number,
-): Promise<Fixture & { host: AutoHost; devtools: Devtools }> {
-  const fixture = fresh(networkLimitMs)
+async function ready(settle?: {
+  networkIdleMs?: number
+  ceilingMs?: number
+}): Promise<Fixture & { host: AutoHost; devtools: Devtools }> {
+  const fixture = fresh(settle)
   const host = await AutoHost.connect(fixture.handle.port)
   const devtools = fakeDevtools(host.marker)
   host.ready(devtools.port)
@@ -2020,12 +2025,12 @@ test('探针读数缺少字段时不报告静默，按阶段上限如实标注',
  * 打开一页、观察一次，返回点击第一个元素的调用。`observe` 再观察一次该页：调试端点在同一条连接上
  * 按序发送，它返回时，此前发出的协议事件都已被客户端处理。
  */
-async function clickOnce(networkLimitMs?: number): Promise<{
+async function clickOnce(settle?: { networkIdleMs?: number; ceilingMs?: number }): Promise<{
   devtools: Devtools
   click: () => ReturnType<BrowserPort['act']>
   observe: () => Promise<unknown>
 }> {
-  const { handle, devtools } = await ready(networkLimitMs)
+  const { handle, devtools } = await ready(settle)
   const port = handle.browser?.portFor('cv_1', WS)
   if (!port) throw new Error('浏览器端口本应可用')
   const tab = await port.open('http://127.0.0.1:1/page')
@@ -2058,7 +2063,7 @@ test('请求持续超过静默阶段上限时继续等待，请求结束后报�
 })
 
 test('请求不结束时到达上限报告 deadline，观察照常返回', async () => {
-  const { devtools, click } = await clickOnce(300)
+  const { devtools, click } = await clickOnce({ networkIdleMs: 300 })
   devtools.request = { type: 'Fetch', finishMs: null }
   const r = await click()
   if (r.observation === null) throw new Error('本次动作本应返回观察')
@@ -2067,7 +2072,7 @@ test('请求不结束时到达上限报告 deadline，观察照常返回', async
 })
 
 test('图片与 EventSource 请求不影响静默判定', async () => {
-  const { devtools, click } = await clickOnce(300)
+  const { devtools, click } = await clickOnce({ networkIdleMs: 300 })
   for (const type of ['Image', 'EventSource']) {
     devtools.request = { type, finishMs: null }
     const r = await click()
@@ -2076,8 +2081,138 @@ test('图片与 EventSource 请求不影响静默判定', async () => {
   }
 })
 
+/**
+ * 页面在动作之后依次请求多个新地址（请求 `count` 个，每个 `stepMs` 后结束并发出下一个），`url(k)` 给出第 k 个的地址，
+ * `overlapMs` 为前一个结束之前下一个已发出的时长。返回停止函数。
+ */
+function chainRequests(
+  devtools: Devtools,
+  opts: { count: number; stepMs: number; url: (k: number) => string; overlapMs?: number },
+): () => void {
+  const timers: ReturnType<typeof setTimeout>[] = []
+  let started = false
+  devtools.onCommand = (method) => {
+    if (method !== 'Input.dispatchMouseEvent' || started) return
+    started = true
+    for (let k = 0; k < opts.count; k++) {
+      const at = k * opts.stepMs
+      timers.push(
+        setTimeout(() => {
+          devtools.emit('Network.requestWillBeSent', {
+            requestId: `chain-${k}`,
+            type: 'XHR',
+            request: { url: opts.url(k), method: 'GET' },
+          })
+        }, at),
+        setTimeout(
+          () => devtools.emit('Network.loadingFinished', { requestId: `chain-${k}` }),
+          at + opts.stepMs + (opts.overlapMs ?? 0),
+        ),
+      )
+    }
+  }
+  return () => {
+    for (const t of timers) clearTimeout(t)
+  }
+}
+
+/**
+ * 原始失败形状：等待上限自动作完成起算，依次请求多个新地址的页面在总时长超过上限时以 `deadline` 返回加载到一半的页面，
+ * 账本中其后模型立即手动等待的占 47%。
+ */
+test('依次请求新地址、总时长超过等待上限时按进展继续等待，加载完后报告静默', async () => {
+  const { devtools, click } = await clickOnce({ networkIdleMs: 300 })
+  const stop = chainRequests(devtools, {
+    count: 5,
+    stepMs: 200,
+    url: (k) => `http://127.0.0.1:1/step/${k}`,
+  })
+  try {
+    const started = Date.now()
+    const r = await click()
+    if (r.observation === null) throw new Error('本次动作本应返回观察')
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_000)
+    expect(r.settle).toBe('quiet')
+  } finally {
+    stop()
+  }
+})
+
+test('重复请求同一地址（带不同查询参数）不计为进展，持续轮询的页面在最后一次进展后按静默时长返回', async () => {
+  const { devtools, click } = await clickOnce({ networkIdleMs: 3_000 })
+  // 每 100 ms 发出一次、各持续 150 ms：始终有请求未结束，页面不会静默。
+  const stop = chainRequests(devtools, {
+    count: 60,
+    stepMs: 100,
+    overlapMs: 50,
+    url: (k) => `http://127.0.0.1:1/poll?t=${k}`,
+  })
+  try {
+    const started = Date.now()
+    const r = await click()
+    if (r.observation === null) throw new Error('本次动作本应返回观察')
+    // 等待上限按 3 秒设置；首次请求结束后不再有进展，约 1.5 秒后返回。
+    expect(Date.now() - started).toBeLessThan(2_500)
+    expect(r.settle).toBe('deadline')
+  } finally {
+    stop()
+  }
+})
+
+test('不断请求新地址的页面在总上限处返回观察，标注 deadline', async () => {
+  const { devtools, click } = await clickOnce({ networkIdleMs: 300, ceilingMs: 800 })
+  const stop = chainRequests(devtools, {
+    count: 60,
+    stepMs: 100,
+    overlapMs: 50,
+    url: (k) => `http://127.0.0.1:1/item/${k}`,
+  })
+  try {
+    const started = Date.now()
+    const r = await click()
+    if (r.observation === null) throw new Error('本次动作本应返回观察')
+    expect(Date.now() - started).toBeGreaterThanOrEqual(800)
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(r.settle).toBe('deadline')
+  } finally {
+    stop()
+  }
+})
+
+/**
+ * 原始失败形状：点击后页面跳转期间，读取旧文档的静默采样超过探针上限，整个等待随之结束，
+ * 观察在新页面加载完之前采集（真实浏览器中点击链接跳转到首字节 2.5 秒的页面时复现）。
+ */
+test('静默采样超时时按未静默处理并继续等待，请求结束后报告静默', async () => {
+  const { devtools, click } = await clickOnce()
+  devtools.request = { type: 'XHR', finishMs: 3_000 }
+  let armed = false
+  // 动作的第一条鼠标事件之后，下一条页内读取是静默采样：推迟到探针上限之后才应答。
+  devtools.onCommand = (method) => {
+    if (method !== 'Input.dispatchMouseEvent' || armed) return
+    armed = true
+    devtools.hold = { method: 'Runtime.evaluate', gate: Bun.sleep(2_500) }
+  }
+  const r = await click()
+  if (r.observation === null) throw new Error('本次动作本应返回观察')
+  expect(r.settle).toBe('quiet')
+  expect(r.observation.elements[0]?.name).toBe('已加载')
+})
+
+/**
+ * 原始失败形状：点击「登录」后页面跳转，动作之后的观察只能使用等待剩下的时间，读取资源清单受 2 秒探针上限，
+ * 「Page.getResourceTree 超过 2000ms 未返回」，动作已发出而观察失败。
+ */
+test('动作之后读取资源清单超过 2 秒时观察照常完成', async () => {
+  const { devtools, click } = await clickOnce()
+  devtools.hold = { method: 'Page.getResourceTree', gate: Bun.sleep(2_500) }
+  const r = await click()
+  if (r.observation === null) throw new Error(`本次动作本应返回观察：${r.observationError}`)
+  expect(r.observation.elements.length).toBeGreaterThan(0)
+})
+
 test('以 fetch 读取的事件流在响应头到达后不再等待', async () => {
-  const { devtools, click } = await clickOnce(300)
+  const { devtools, click } = await clickOnce({ networkIdleMs: 300 })
   devtools.request = { type: 'Fetch', finishMs: null, mimeType: 'text/event-stream' }
   const r = await click()
   if (r.observation === null) throw new Error('本次动作本应返回观察')

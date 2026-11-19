@@ -330,6 +330,48 @@ test('超时由本地结算，之后到达的回包不会完成另一请求', as
   expect(await client.send('Browser.getVersion', {}, { timeoutMs: 2_000 })).toBeDefined()
 })
 
+/**
+ * 原始失败形状：导航命令的超时自发出时起算，页面持续加载时同样在总时长到达时失败。
+ */
+test('按事件续期的命令在该会话持续有事件时不超时，其他会话的事件不续期，事件停止后超时', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const { promise: released, resolve: release } = Promise.withResolvers<void>()
+  endpoint.holds.set('Page.navigate', released)
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+
+  const started = Date.now()
+  const navigating = client.send(
+    'Page.navigate',
+    { url: 'http://127.0.0.1:1/' },
+    { sessionId, timeoutMs: 150, renewOnEvents: true },
+  )
+  // 每 50 ms 一条本会话事件，持续 400 ms：总时长超过 150 ms 的超时，命令仍在等待。
+  for (let i = 0; i < 8; i++) {
+    endpoint.emit(sessionId, 'Network.dataReceived', { requestId: 'r1' })
+    await Bun.sleep(50)
+  }
+  release()
+  expect(await navigating).toBeDefined()
+  expect(Date.now() - started).toBeGreaterThanOrEqual(400)
+
+  endpoint.holds.set('Page.navigate', new Promise<void>(() => {}))
+  // 先登记失败的处理：超时发生在下方的循环期间。
+  const stalled = failure(
+    client.send(
+      'Page.navigate',
+      { url: 'http://127.0.0.1:1/' },
+      { sessionId, timeoutMs: 150, renewOnEvents: true },
+    ),
+  )
+  // 另一个会话的事件不属于该页的进展。
+  for (let i = 0; i < 6; i++) {
+    endpoint.emit('sess-other', 'Network.dataReceived', { requestId: 'r2' })
+    await Bun.sleep(50)
+  }
+  expect(await stalled).toBeInstanceOf(CdpTimeoutError)
+})
+
 test('取消之后业务命令不发出，teardown 仍能发出', async () => {
   const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
   const client = await connect(endpoint)

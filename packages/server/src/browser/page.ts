@@ -32,7 +32,6 @@ import type {
 } from '@qywork/tools'
 import { BrowserArgumentError, type CdpClient, CdpError } from './cdp.ts'
 import {
-  ACTION_BUDGET_MS,
   aimAt,
   EVENT_TIMEOUT_MS,
   Execution,
@@ -95,7 +94,10 @@ const FRAME_ATTACH_TOTAL_MS = 2_000
 /** 尚未提交导航的帧承载的地址。 */
 const BLANK_URL = 'about:blank'
 
-/** 调用方未指定截止时间时，一次观察的总预算。 */
+/**
+ * 一次观察的期限，自最近完成的一步采集起计算：每完成一步重新计为此刻起的该时长。采集期间文档更换之后不再续期，
+ * 持续更换文档的页面在该时长内以 `BrowserObserveTimeoutError` 结束。
+ */
 const OBSERVE_BUDGET_MS = 30_000
 /** 单条采集命令的上限。剩余预算更少时按剩余预算发送，不再分配完整额度。 */
 const COLLECT_TIMEOUT_MS = 15_000
@@ -565,8 +567,11 @@ export async function readDocument(
  * 中的偏移之后，才是可用于发送事件的坐标。
  *
  * **采集前后各核对一次主文档令牌与地址**：期间文档或地址发生变化时，结果中混有两个页面的
- * 元素，整份丢弃并在剩余预算内重新采集，不登记「旧令牌配新元素」的观察。预算耗尽时抛出
+ * 元素，整份丢弃并在剩余期限内重新采集，不登记「旧令牌配新元素」的观察。期限耗尽时抛出
  * `BrowserObserveTimeoutError`。采集一致不代表 DOM 与业务状态此后不再变化。
+ *
+ * 期限按进展续期（`OBSERVE_BUDGET_MS`）。不要在文档更换之后继续续期：每次重新采集的各步都会完成，
+ * 持续更换地址的页面（例如定时改写地址片段）将使观察永不结束。
  *
  * **观察只读，不滚动页面**：滚动由动作执行，见 `prepareAction`。返回的 select 另带一份
  * 当前选项摘要，合计有上限，未列全的使用 `readSelectOptions` 继续读取。
@@ -578,18 +583,23 @@ export async function observePage(
     screenshot?: boolean
     offset?: number
     query?: string
-    deadline?: number
   },
   numbering: RefNumbering,
 ): Promise<{ observation: BrowserObservation; record: ObservationRecord }> {
   const { client, sessionId, tabId } = page
-  const deadline = opts.deadline ?? Date.now() + OBSERVE_BUDGET_MS
+  let deadline = Date.now() + OBSERVE_BUDGET_MS
+  let stable = true
+  const step = () => {
+    if (stable) deadline = Date.now() + OBSERVE_BUDGET_MS
+  }
   for (;;) {
     if (leftMs(deadline) <= 0) {
       throw new BrowserObserveTimeoutError('未能在预算内采集到前后一致的观察，请重新观察')
     }
     const before = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
+    step()
     const collected = await collectAll(client, sessionId, opts, deadline)
+    step()
     if (numbering.docToken !== before.token) {
       numbering.docToken = before.token
       numbering.byNode.clear()
@@ -605,10 +615,16 @@ export async function observePage(
     const offset = opts.offset ?? 0
     const shown = all.slice(offset, offset + MAX_ELEMENTS)
     await attachOptions(client, shown, deadline)
+    step()
     await attachSizes(client, shown, deadline)
+    step()
     const image = opts.screenshot ? await capture(client, sessionId, deadline) : null
+    step()
     const after = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
-    if (after.token !== before.token || after.url !== before.url) continue
+    if (after.token !== before.token || after.url !== before.url) {
+      stable = false
+      continue
+    }
 
     const refs = new Map<string, RefRecord>()
     for (const item of numbered) refs.set(item.element.ref, item.ref)
@@ -2116,8 +2132,8 @@ async function typeOnPage(
 ): Promise<BrowserActReceipt> {
   const units = planType(text)
   const { client } = page
-  // 每个码点三次往返（复核焦点、按下、抬起），耗时取决于页面自身的按键处理，期限按进展续期。
-  const run = new Execution(ACTION_BUDGET_MS, { renewPerUnit: true })
+  // 每个码点三次往返（复核焦点、按下、抬起），耗时取决于页面自身的按键处理；期限按确认的单元续期。
+  const run = new Execution()
   const { entry, objectId, inspect } = await resolveRef(page, record, ref, run.deadline)
   // 不可用或只读的目标在发出第一个按键之前拒绝：逐字输入不会报错，只是每个字都被忽略。
   const target = await readTypingTarget(client, entry, objectId, run.deadline)
@@ -2364,19 +2380,18 @@ async function dragOnPage(
   const keys = heldKeysOf(opts.keys)
   const { client } = page
   const run = new Execution()
-  const deadline = run.deadline
   // 先以只读方式核对全部端点：任一端点已不存在时无需滚动页面，更不应按下鼠标。
-  await resolveRef(page, record, ref, deadline, opts.point, true)
+  await resolveRef(page, record, ref, run.deadline, opts.point, true)
   const ends: { entry: RefRecord; objectId: string; inspect: Inspection }[] = []
   for (const step of path)
-    ends.push(await resolveRef(page, record, step.ref, deadline, step.point, true))
+    ends.push(await resolveRef(page, record, step.ref, run.deadline, step.point, true))
   // 先滚动第一段的终点，再测量起点：滚动终点会使起点移到其他位置，先测得的起点坐标随之失效。
   const first = ends[0]
-  if (first) await scrollIntoView(client, first.entry, first.objectId, first.inspect, deadline)
+  if (first) await scrollIntoView(client, first.entry, first.objectId, first.inspect, run.deadline)
   const start = await prepareAction(page, record, ref, {
     scroll: true,
     hit: true,
-    deadline,
+    deadline: run.deadline,
     ...(opts.point ? { point: opts.point } : {}),
   })
   // 从按下到抬起属于同一输入会话，取消时也由该会话释放。
@@ -2401,14 +2416,14 @@ async function dragOnPage(
           modifiers: keyboard.modifiers,
           ...(type === 'mouseMoved' ? {} : { clickCount: 1 }),
         },
-        deadline,
+        run.deadline,
       ),
     )
   let at = start.point
   const sequence = async (): Promise<boolean> => {
-    if (!(await run.run(client, () => keyboard.to(keys, deadline)))) return false
+    if (!(await run.run(client, () => keyboard.to(keys, run.deadline)))) return false
     const aimed = await run.run(client, () =>
-      aimAt(client, sessionId, localPoint(at), keyboard.modifiers, deadline),
+      aimAt(client, sessionId, localPoint(at), keyboard.modifiers, run.deadline),
     )
     if (!aimed || !(await send('mousePressed', at, 1))) return false
     for (const [i, step] of path.entries()) {
@@ -2424,7 +2439,7 @@ async function dragOnPage(
         sessionId,
         { x: 0, y: 0 },
         ref,
-        deadline,
+        run.deadline,
         false,
       ).catch(() => null)
       if (!currentOrigin) {
@@ -2446,7 +2461,7 @@ async function dragOnPage(
       run.unit()
     }
     if (!(await send('mouseReleased', at, 0))) return false
-    return run.run(client, () => keyboard.to([], deadline))
+    return run.run(client, () => keyboard.to([], run.deadline))
   }
   if (await sequence()) run.finish()
   await settleInput(client, [sessionId], run)
