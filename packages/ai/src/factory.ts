@@ -20,7 +20,7 @@ import type { LlmAdapter, ProviderProfile } from './types.ts'
  * ollama 同样不豁免：它可能位于需要鉴权的反向代理之后，此时静默发送空 key
  * 只会返回 401，「未配置 key」会被报告为「key 无效」。
  */
-function isLocalEndpoint(baseUrl: string | undefined): boolean {
+export function isLocalEndpoint(baseUrl: string | undefined): boolean {
   if (!baseUrl) return false
   let host: string
   try {

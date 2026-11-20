@@ -201,24 +201,36 @@ export function setMode(mode: PermissionMode): void {
  *
  * 只负责落盘。界面上的对应行由调用方就地更新：模型目录的 signal 位于选择器组件中，
  * 从此处修改它需要反向依赖组件，会形成循环依赖。
+ *
+ * 写入带读取时的版本号，服务端以 409 拒绝期间被其他写入方修改过的配置时，按最新配置重放。不带版本号时，
+ * 读取与写入之间的云端型号同步或登录会被这次整份写回覆盖。
  */
 export async function setEffort(
   provider: string,
   model: string,
   effort: EffortLevel,
 ): Promise<void> {
-  const payload = await loadServerConfig()
-  const owner = payload.config.providers[provider]
-  if (!owner) return
-  const entry = { ...owner.models[model] }
-  entry.effort = effort
-  await saveServerConfig({
-    ...payload.config,
-    providers: {
-      ...payload.config.providers,
-      [provider]: { ...owner, models: { ...owner.models, [model]: entry } },
-    },
-  })
+  for (let attempt = 0; ; attempt++) {
+    const payload = await loadServerConfig()
+    const owner = payload.config.providers[provider]
+    if (!owner) return
+    const entry = { ...owner.models[model], effort }
+    try {
+      await saveServerConfig(
+        {
+          ...payload.config,
+          providers: {
+            ...payload.config.providers,
+            [provider]: { ...owner, models: { ...owner.models, [model]: entry } },
+          },
+        },
+        payload.version,
+      )
+      return
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 409) || attempt >= 5) throw e
+    }
+  }
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   type StoredProvider,
   saveConfig,
 } from '@qywork/runtime'
+import { renameConversationProvider } from '@qywork/store'
 import { DEFAULT_ENV_ALLOW, withFileLocks } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
@@ -202,6 +203,25 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
     })
     if (result instanceof Response) return result
     if ('problems' in result) return json({ error: 'invalid', problems: result.problems }, 422)
+    // 接口改名后，记录旧名的会话改为新名并逐一广播：会话按记录的接口发送，不改时它们的下一轮按不存在的接口失败。
+    // 角色与画布卡写在各工作区的文件中，不在此改写；它们在派发与生成时报告接口不存在。
+    if (body.renameProvider) {
+      const { from, to } = body.renameProvider
+      for (const conv of renameConversationProvider(d.store, from, to)) {
+        d.bus.publish(
+          {
+            type: 'conversation.updated',
+            conversationId: conv.id,
+            provider: conv.provider,
+            model: conv.model,
+            title: conv.title,
+            mode: conv.mode,
+            updatedAt: conv.updatedAt,
+          },
+          conv.id,
+        )
+      }
+    }
     return json({ ok: true, config: redactConfig(d.config), notices: configNotices(d.config) })
   }
 

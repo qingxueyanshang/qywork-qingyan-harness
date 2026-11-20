@@ -258,6 +258,19 @@ export function setConversationModel(
 }
 
 /**
+ * 接口改名：记录为旧名的会话（含子 agent 的会话）改为新名，返回改动后的会话。不修改 `updated_at`：会话内容没有变化。
+ * 不改时这些会话的下一轮按不存在的接口解析并失败。
+ */
+export function renameConversationProvider(store: Store, from: string, to: string): Conversation[] {
+  const ids = store.db
+    .query<{ id: string }, [string, string]>(
+      'UPDATE conversations SET provider = ? WHERE provider = ? RETURNING id',
+    )
+    .all(to, from)
+  return ids.flatMap(({ id }) => getConversation(store, id as ConversationId) ?? [])
+}
+
+/**
  * 切换会话的权限模式。不修改 `updated_at`，理由同 `setConversationTitle`。
  * 返回 null 表示会话不存在。
  */

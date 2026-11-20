@@ -1,5 +1,6 @@
 /**
- * 覆盖范围：`art.ts` 的 `generateArt`（经 `media.ts` 的 `makeMediaPort` 分派，含被限流时的重试与重试的日志）与 `extractHtml`。
+ * 覆盖范围：`art.ts` 的 `generateArt`（经 `media.ts` 的 `makeMediaPort` 分派，含被限流时的重试与重试的日志）、
+ * `resolveArtModel`（生成与画布参数表共用的模型判定）与 `extractHtml`。
  *
  * 对端是本机模拟的对话接口（OpenAI 兼容协议），按脚本返回 SSE 正文，并记录收到的请求体。
  */
@@ -7,7 +8,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, jest, spyOn, test } from 'bun:test'
 import type { MediaSpend } from '@qywork/core'
 import { artViewportOf, log } from '@qywork/core'
-import { extractHtml } from './art.ts'
+import { extractHtml, resolveArtModel } from './art.ts'
 import type { QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
 
@@ -239,6 +240,62 @@ describe('Art 生成', () => {
     if (result.ok) return
     expect(result.message).toContain('relay / chat-model、relay / other-model')
     expect(bodies).toHaveLength(0)
+  })
+
+  /** 原始失败形状：设计稿卡改换到接口下未配置的模型时，请求以该接口的地址与 key 发出该模型。 */
+  test('模型未配置在指定的接口下时不发出请求', async () => {
+    const result = await generate({ provider: 'relay', model: 'not-configured' })
+    expect(!result.ok && result.message).toContain('未找到该对话模型：relay / not-configured')
+    expect(bodies).toHaveLength(0)
+  })
+
+  /** 原始失败形状：云端换用新编号后，可选清单中有两个同名的型号，其中一个已下架。 */
+  test('已下架的模型不发出请求，可选清单不含已下架的模型', async () => {
+    const cfg = config()
+    cfg.providers.relay!.models['other-model'] = { delisted: true }
+    const result = await makeMediaPort(cfg).generate(
+      {
+        type: 'art',
+        prompt: '改',
+        inputs: [],
+        params: {},
+        provider: 'relay',
+        model: 'other-model',
+      },
+      new AbortController().signal,
+    )
+    expect(!result.ok && result.message).toBe(
+      'relay / other-model 已下架，未发出请求。可选：relay / chat-model',
+    )
+    expect(bodies).toHaveLength(0)
+  })
+
+  test('本机地址的接口不要求 key，与对话请求相同', async () => {
+    answer = '<!doctype html><html><body>页</body></html>'
+    const cfg = config()
+    delete cfg.providers.relay!.apiKey
+    const result = await makeMediaPort(cfg).generate(
+      { type: 'art', prompt: '改', inputs: [], params: {} },
+      new AbortController().signal,
+    )
+    expect(result.ok).toBe(true)
+    expect(bodies).toHaveLength(1)
+  })
+})
+
+/** 画布更新设计稿卡时按它判定模型是否已配置（`server.ts` 的 `paramSpecsOf`），生成时同样按它解析。 */
+describe('resolveArtModel', () => {
+  test('只接受接口下已配置的对话模型；未指定时取默认对话模型', () => {
+    expect(resolveArtModel(config(), { provider: 'relay', model: 'other-model' })?.model).toBe(
+      'other-model',
+    )
+    expect(
+      resolveArtModel(config(), { provider: 'relay', model: 'not-configured' }),
+    ).toBeUndefined()
+    expect(resolveArtModel(config(), { provider: 'nope', model: 'chat-model' })).toBeUndefined()
+    expect(resolveArtModel(config(), undefined)?.model).toBe('chat-model')
+    const { active: _active, ...noDefault } = config()
+    expect(resolveArtModel(noDefault, undefined)).toBeUndefined()
   })
 })
 

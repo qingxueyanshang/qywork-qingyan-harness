@@ -14,12 +14,14 @@ import {
   CHAT_REASONING_PROTOCOLS,
   type ChatReasoningProtocol,
   findMediaModel,
+  isLocalEndpoint,
   type LongContextTier,
   lookupModel,
   type MediaModelSpec,
   type ModelSpec,
   type OffPeakDiscount,
   ProviderError,
+  type ProviderProfile,
   type TransportCapabilities,
 } from '@qywork/ai'
 import {
@@ -491,6 +493,8 @@ export interface ResolvedModel {
   /** 用户为该模型选定的思考档位。undefined 表示未选择，不发送思考字段。 */
   effort?: EffortLevel
   transport?: TransportCapabilities
+  /** 接口下该模型标为已下架（`StoredModel.delisted`）。 */
+  delisted?: true
 }
 
 /**
@@ -714,7 +718,50 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
     ...(declared?.effort ? { effort: declared.effort } : {}),
     ...(declared?.transport ? { transport: declared.transport } : {}),
     ...(spec ? { spec } : {}),
+    ...(declared?.delisted ? { delisted: true as const } : {}),
   }
+}
+
+/**
+ * 一次对话请求的接口画像：轮次与手动压缩共用，两处发出的请求使用同一组字段。
+ *
+ * 无法解析时抛出普通 `Error`，说明是接口不存在、模型配置在多个接口下还是未配置；已下架时抛出 `model_not_found`
+ * 并按名称提及模型。不要发出请求后等待接口拒绝：云端网关的拒绝正文只有型号的对外编号，用户无法判断是哪一个模型。
+ */
+export function profileOf(cfg: QyConfig, target?: string | ModelRef): ProviderProfile {
+  const stored = resolveModel(cfg, target)
+  if (!stored) throw new Error(unresolvedMessage(cfg, target))
+  if (stored.delisted) {
+    throw new ProviderError({
+      code: 'model_not_found',
+      message: `「${modelLabel(cfg, stored)}」已下架，请换用其他模型`,
+      provider: stored.kind,
+    })
+  }
+  return {
+    kind: stored.kind,
+    apiKey: stored.apiKey ?? '',
+    model: stored.model,
+    ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
+    ...(stored.headers ? { headers: stored.headers } : {}),
+    ...(stored.spec ? { spec: stored.spec } : {}),
+    ...(stored.transport ? { transport: stored.transport } : {}),
+  }
+}
+
+/** `resolveModel` 返回 undefined 的原因，与它的三种失败一一对应。 */
+function unresolvedMessage(cfg: QyConfig, target: string | ModelRef | undefined): string {
+  const providers = Object.keys(cfg.providers).join('、') || '（无）'
+  if (typeof target === 'object')
+    return `配置中没有名为「${target.provider}」的接口。可用：${providers}`
+  const model = target ?? cfg.active?.model
+  if (model === undefined) return NO_MODEL_MESSAGE
+  const owners = Object.keys(cfg.providers).filter((name) => cfg.providers[name]?.models[model])
+  if (owners.length > 1)
+    return `模型 ${model} 同时配置在多个接口下（${owners.join('、')}），请在模型选择中指定接口`
+  if (cfg.active?.provider)
+    return `配置中没有名为「${cfg.active.provider}」的接口。可用：${providers}`
+  return `配置中没有模型 ${model}`
 }
 
 /**
@@ -986,6 +1033,17 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
    * 并返回 400，而错误信息中只有 provider 的原文。
    */
   for (const [name, p] of Object.entries(cfg.providers)) {
+    // 接口的协议决定未单独声明协议的模型按哪种协议发送；不在词表中时每一轮都在装配适配器时失败。
+    if (!PROVIDER_KINDS.includes(p.kind)) {
+      problems.push(
+        `接口 ${name} 的协议 "${String(p.kind)}" 不是有效值。可选：${PROVIDER_KINDS.join('、')}`,
+      )
+    }
+    // 缺少模型表时其余校验无法进行，按不合格项报告，不抛出：抛出使写接口返回 500 而不是 422。
+    if (typeof p.models !== 'object' || p.models === null || Array.isArray(p.models)) {
+      problems.push(`接口 ${name} 的 models 必须是对象`)
+      continue
+    }
     for (const [id, m] of Object.entries(p.models)) {
       if (m.kind !== undefined && !PROVIDER_KINDS.includes(m.kind)) {
         problems.push(
@@ -1198,6 +1256,12 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         `  已有接口：${names.length ? names.join('、') : '（无）'}\n` +
         `  修改 ${configPath()} 中的 "active.provider"，或运行 qy init 重建配置。`,
     )
+  } else if (typeof stored.models === 'object' && !stored.models?.[cfg.active.model]) {
+    // 默认模型不在其接口下时，新会话按该接口发送这个模型，而按模型名解析的入口（`qy doctor`、配置提醒）指向另一个接口。
+    problems.push(
+      `默认模型 "${cfg.active.provider} / ${cfg.active.model}" 不在该接口的模型中。\n` +
+        `  在设置 → 模型中重新选择默认模型，或修改 ${configPath()} 中的 "active"。`,
+    )
   }
 
   return problems
@@ -1206,8 +1270,8 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
 /**
  * 运行前置检查：`active` 接口是否已配置 API Key。与 `diagnoseConfig` 区分——缺少 Key
  * 属配置过程中的合法中间态，仅阻止运行、不阻止保存：设置页据此提示，配置照常落盘；
- * `qy exec` 据此提前退出并给出配置文件路径，而非 provider 返回的 401。本机端点
- * （localhost / 127.0.0.1）不要求 Key。`active` 指向不存在的接口属结构性错误，
+ * `qy exec` 据此提前退出并给出配置文件路径，而非 provider 返回的 401。本机端点不要求 Key，
+ * 判定与发送请求时相同（`isLocalEndpoint`）。`active` 指向不存在的接口属结构性错误，
  * 由 `diagnoseConfig` 处理。
  */
 export function diagnoseRunnable(cfg: QyConfig): string[] {
@@ -1215,8 +1279,7 @@ export function diagnoseRunnable(cfg: QyConfig): string[] {
   if (!cfg.active) return []
   const stored = cfg.providers[cfg.active.provider]
   if (!stored) return []
-  const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1\]?)(:|\/|$)/i.test(stored.baseUrl ?? '')
-  if (stored.apiKey || local) return []
+  if (stored.apiKey || isLocalEndpoint(stored.baseUrl)) return []
   return [
     `未配置 API Key：接口 "${cfg.active.provider}" 的 apiKey 为空。\n` +
       `  配置文件：${configPath()}\n` +

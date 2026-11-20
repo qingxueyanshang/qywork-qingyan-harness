@@ -40,6 +40,7 @@ import { LoadState } from './LoadState.tsx'
 import { MEDIA_KIND_LABEL, ModelLibrary } from './ModelLibrary.tsx'
 import { ProviderTabs } from './ProviderTabs.tsx'
 import { PullDialog } from './PullDialog.tsx'
+import { withProviderPatch } from './provider-edit.ts'
 import { Field, Row } from './Row.tsx'
 
 /**
@@ -114,13 +115,10 @@ export function ModelSettings() {
     return names().includes(name) ? name : (names()[0] ?? null)
   }
 
+  // 协议与地址改变时的连带修改（检测结论、对应型号）见 `withProviderPatch`。
   const patchProvider = (name: string, p: Partial<RedactedProvider>) => {
     setProbes({})
-    void replaceConfig((cur) => {
-      const prev = cur.providers[name]
-      if (!prev) return null
-      return { ...cur, providers: { ...cur.providers, [name]: { ...prev, ...p } } }
-    })
+    void replaceConfig((cur) => withProviderPatch(cur, name, p))
   }
 
   const addProvider = () => {

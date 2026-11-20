@@ -121,6 +121,7 @@ export {
   archiveWorkspaceChats,
   attachmentBlobUrl,
   type ConfigPayload,
+  configChange,
   deleteMemory,
   deleteSchedule,
   deleteSkill,

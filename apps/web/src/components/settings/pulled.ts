@@ -12,10 +12,12 @@ import type {
   RedactedMediaModel,
   RedactedModel,
 } from '../../lib/store/index.ts'
+import { carryBase, type KindMove, withoutCalibration } from './provider-edit.ts'
 
 /**
- * 拉取结果中有的型号：对话型号更新价格（价格不明时删除旧价格），对话与生成型号都清除已下架标记。
+ * 拉取结果中有的型号：对话型号更新价格（价格不明时删除旧价格）与协议，对话与生成型号都清除已下架标记。
  * 拉取结果中没有的型号：只有来源是第三方接口的计费清单时标记已下架，型号列表不完整，不据此标记。
+ * 对话型号的协议改变时，对应型号复制到新协议的键下，思考参数的检测结论删除（`provider-edit.ts`）。
  */
 export function refreshPulled(
   cur: RedactedConfig,
@@ -26,6 +28,8 @@ export function refreshPulled(
   if (!owner) return null
   const pulled = new Map(result.models.map((m) => [m.id, m]))
   const complete = result.source === 'pricing'
+  /** 实际使用的协议改变的型号：对应型号与检测结论按 `provider-edit.ts` 的规则处理。 */
+  const moves: KindMove[] = []
   const models = Object.fromEntries(
     Object.entries(owner.models).map(([id, m]): [string, RedactedModel] => {
       const hit = pulled.get(id)
@@ -34,9 +38,14 @@ export function refreshPulled(
       const price = hit.output === 'chat' ? hit.price : m.price
       // 协议随每次拉取更新：型号改为支持接口的协议后，拉取结果不再带 `kind`，此处随之删除。
       const kind = hit.output === 'chat' ? hit.kind : m.kind
-      return [id, { ...rest, ...(kind ? { kind } : {}), ...(price ? { price } : {}) }]
+      const refreshed = { ...rest, ...(kind ? { kind } : {}), ...(price ? { price } : {}) }
+      const move = { id, from: m.kind ?? owner.kind, to: kind ?? owner.kind }
+      if (move.from === move.to) return [id, refreshed]
+      moves.push(move)
+      return [id, withoutCalibration(refreshed)]
     }),
   )
+  const catalog = carryBase(cur.catalog, moves)
   const media = Object.fromEntries(
     Object.entries(owner.media ?? {}).map(([id, m]): [string, RedactedMediaModel] => {
       const { delisted: _delisted, ...rest } = m
@@ -49,8 +58,12 @@ export function refreshPulled(
     models,
     ...(owner.media ? { media } : {}),
   }
-  if (JSON.stringify(next) === JSON.stringify(owner)) return null
-  return { ...cur, providers: { ...cur.providers, [provider]: next } }
+  if (JSON.stringify(next) === JSON.stringify(owner) && catalog === cur.catalog) return null
+  return {
+    ...cur,
+    providers: { ...cur.providers, [provider]: next },
+    ...(catalog ? { catalog } : {}),
+  }
 }
 
 /** 已确定类别的型号：未知型号须先选定类别（`withCategory`）。 */

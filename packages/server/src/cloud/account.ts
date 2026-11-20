@@ -696,7 +696,11 @@ export class CloudAccount {
       // 默认模型由用户选定，替换会静默改变新会话使用的模型与计费。
       const gone = (ref: { provider: string; model: string } | undefined, kept: object) =>
         ref?.provider === CLOUD_PROVIDER && !(ref.model in kept)
-      const active = gone(current.active, models) ? undefined : current.active
+      // 默认对话模型指向已下架的型号时同样删除：新会话的请求必然被拒绝，模型选择不列出已下架的型号，界面上无处显示该默认值。
+      // 默认生成模型不在此列：画布在默认型号已下架时显示并固定另一个可用的型号。
+      const retired =
+        current.active?.provider === CLOUD_PROVIDER && models[current.active.model]?.delisted
+      const active = gone(current.active, models) || retired ? undefined : current.active
       const mediaDefaults = current.mediaDefaults
         ? Object.fromEntries(
             Object.entries(current.mediaDefaults).filter(([, ref]) => !gone(ref, media)),
@@ -765,12 +769,17 @@ export class CloudAccount {
     }
   }
 
-  /** 删除本地的云端接口；`active` 与 `mediaDefaults` 指向它时一并删除，规则与设置页删除接口相同。 */
+  /**
+   * 删除本地的云端接口；`active` 与 `mediaDefaults` 指向它时一并删除，规则与设置页删除接口相同。
+   * 模型库覆盖层中由云端同步写入的字段按空清单清除（`withSpecs`），否则退出后模型库仍列出云端型号。
+   */
   private async remove(): Promise<void> {
     const result = await writeConfig(this.live, (current) => {
       if (!(CLOUD_PROVIDER in current.providers)) return current
+      const { catalog: _catalog, ...rest } = current
       const { [CLOUD_PROVIDER]: _removed, ...providers } = current.providers
-      const next: QyConfig = { ...current, providers }
+      const catalog = withSpecs(current.catalog, [])
+      const next: QyConfig = { ...rest, providers, ...(catalog ? { catalog } : {}) }
       if (next.active?.provider === CLOUD_PROVIDER) delete next.active
       if (next.mediaDefaults) {
         const kept = Object.fromEntries(

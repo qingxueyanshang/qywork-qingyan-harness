@@ -4,6 +4,7 @@
  * **覆盖范围**：`run-control.ts` 中 `startRun` 使用云端型号时的价格同步与本轮开始时刻的取值
  * （`runtime/session/turn/open-run.ts` 写入 run 行、`drive.ts` 发出 `run.started`），以及七个拒绝出口（占位失败、未找到项目
  * 目录、三处均无法取得模型、会话装配抛错、装配 adapter 抛错、压缩比例不合法、会话被另一个进程占用），
+ * 会话行没有记录接口时本轮写入并广播接口与模型，
  * 以及 `runs.ts` 在释放占位时的忙闲广播。这七个出口都不产生 run 行，因此**不会有 `run.finished`**，
  * 终态是 `conversation.busy: false`（约定写在 `core` 的 `RunErrorEvent` 上）。
  * 准备阶段收到停止不属于拒绝出口：它写入 run 行，以用户中断结束，序列与轮次中途的停止相同。
@@ -26,6 +27,7 @@ import {
   ContentStore,
   contentPathFor,
   createConversation,
+  getConversation,
   listMessages,
   listRuns,
   Store,
@@ -363,6 +365,38 @@ test('本轮的开始时刻取占位成功的时刻：准备阶段计入耗时�
     expect(started.startedAt).toBeGreaterThanOrEqual(before)
     expect(started.startedAt).toBeLessThanOrEqual(syncAt)
     expect(listRuns(store, cv).map((r) => r.createdAt)).toEqual([started.startedAt])
+  } finally {
+    await provider.stop(true)
+  }
+})
+
+/**
+ * 原始失败形状：创建时没有默认模型的会话按默认模型对话，会话行始终为空，上下文面板以 409 报告未选择模型，
+ * 模型选择也一直显示「选择模型」。
+ */
+test('会话行没有记录接口时，本轮写入默认的接口与模型并广播给界面', async () => {
+  // 返回 401（`auth_failed`）：本轮立即结束且不重发。
+  const provider = Bun.serve({ port: 0, fetch: () => new Response('未授权', { status: 401 }) })
+  try {
+    const cfg = config('sk-fake')
+    cfg.providers.fake!.baseUrl = `http://127.0.0.1:${provider.port}/v1`
+    // 前一个用例以另一名称登记了同一目录，模块级的项目 id 已失效，与相邻用例相同按目录重新登记。
+    const ws = upsertWorkspace(store, dir, 'bind-ws').id as never
+    events = []
+    const cv = createConversation(store, { workspaceId: ws, provider: '', model: '' }).id
+    const idle = waitForIdle(cv)
+    await startRun(cv, '你好', undefined, deps(cfg))
+    await idle
+    expect(getConversation(store, cv)).toMatchObject({
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+    })
+    const updated = events.map((f) => f.event).find((e) => e.type === 'conversation.updated')
+    expect(updated).toMatchObject({
+      conversationId: cv,
+      provider: 'fake',
+      model: 'deepseek-v4-flash',
+    })
   } finally {
     await provider.stop(true)
   }

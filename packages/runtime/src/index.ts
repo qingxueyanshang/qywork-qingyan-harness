@@ -34,7 +34,7 @@ export {
 // 会话导出：`qy export`
 export { exportConversation, exportConversationDiagnostics } from './archive.ts'
 // Art 页面可用的 three.js 附加模块：sidecar 按同一份清单提供库文件
-export { ART_ADDONS } from './art.ts'
+export { ART_ADDONS, resolveArtModel } from './art.ts'
 // 压缩端口：server 的手动压缩与 loop 的自动压缩共用
 export { RuntimeCompaction } from './compaction.ts'
 // 配置：CLI 与 server 的配置读写、诊断、脱敏
@@ -56,6 +56,7 @@ export {
   modelLabel,
   modelSpecOf,
   NO_MODEL_MESSAGE,
+  profileOf,
   type QyConfig,
   type ResolvedMediaModel,
   resolveMediaModel,

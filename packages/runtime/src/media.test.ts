@@ -204,9 +204,19 @@ describe('生成端口', () => {
     expect(!noDefault.ok && noDefault.message).toContain('没有默认的图像模型')
     const noKey = config()
     delete noKey.providers.qwen!.apiKey
+    noKey.providers.qwen!.baseUrl = 'https://api.example.com/compatible-mode/v1'
     const keyless = await makeMediaPort(noKey).generate(call(), signal())
     expect(!keyless.ok && keyless.message).toContain('未配置 API Key')
     expect(hits).toEqual([])
+  })
+
+  /** 原始失败形状：本机的模型服务不设 key 时对话可用，同一接口的生成以「未配置 API Key」失败。 */
+  test('本机地址的接口不要求 key，与对话请求相同', async () => {
+    const local = config()
+    delete local.providers.qwen!.apiKey
+    const out = await makeMediaPort(local).generate(call(), signal())
+    expect(out.ok).toBe(true)
+    expect(hits.length).toBeGreaterThan(0)
   })
 
   test('已下架的型号不提交、不列给大模型；已提交的任务仍可取回', async () => {

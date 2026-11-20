@@ -174,3 +174,113 @@ test('未配置任何模型时 chip 显示「选择模型」，模型面板给�
     host.remove()
   }
 })
+
+/** 原始失败形状：会话所用的云端型号下架后，模型目录去掉了这一行，选择器显示的是型号的对外编号。 */
+test('会话所用的型号已下架：显示名称并标出「（已下架）」，模型面板不列为可选', async () => {
+  const { render } = await import('solid-js/web')
+  const store = await import('../lib/store/index.ts')
+  const { ModelPicker } = await import('./ModelPicker.tsx')
+  const originalApi = store.client.api
+  const row = (id: string, label: string) => ({
+    id,
+    label,
+    effortLevels: [],
+    effort: null,
+    currency: 'USD',
+    vision: null,
+    video: false,
+    known: false,
+  })
+  const catalog = {
+    library: [],
+    providers: [
+      {
+        name: 'qywork',
+        models: [
+          row('qy-e0786e2614754b92', 'Claude Opus 5.5'),
+          { ...row('qy-b041c7d2e5f60918', 'Claude Opus 5.5'), delisted: true },
+        ],
+      },
+    ],
+  }
+  store.client.api = async <T,>(path: string) => {
+    if (path === '/api/models') return catalog as T
+    throw new Error(`unexpected ${path}`)
+  }
+  store.setState({
+    activeConversation: 'cv',
+    conversations: [{ id: 'cv', provider: 'qywork', model: 'qy-b041c7d2e5f60918' } as never],
+    busyConversations: [],
+    views: {},
+  })
+  await store.reloadModelCatalog()
+
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <ModelPicker />, host as unknown as HTMLElement)
+  try {
+    const chip = host.querySelector('.mode-chip') as HTMLButtonElement
+    expect(chip.textContent).toContain('Claude Opus 5.5（已下架）')
+    expect(chip.textContent).not.toContain('qy-b041c7d2e5f60918')
+    click(chip)
+    const modelEntry = Array.from(host.querySelectorAll<HTMLButtonElement>('.model-entry')).find(
+      (button) => button.textContent?.includes('模型'),
+    )!
+    click(modelEntry)
+    expect(
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.model-sub .model-item')).map(
+        (button) => button.textContent,
+      ),
+    ).toEqual(['Claude Opus 5.5自定义'])
+  } finally {
+    dispose()
+    store.client.api = originalApi
+    host.remove()
+  }
+})
+
+/** 原始失败形状：切换推理等级时整份写回不带版本号，读取与写入之间的云端同步被覆盖。 */
+test('切换推理等级带读取时的版本号；配置已被其他写入方修改时按最新配置重放', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { ApiError } = await import('../lib/client.ts')
+  const originalApi = store.client.api
+  const versions = ['v1', 'v2']
+  const puts: { baseVersion?: string; config: { providers: Record<string, unknown> } }[] = []
+  store.client.api = async <T,>(path: string, init?: RequestInit) => {
+    if (path === '/api/models') return { library: [], providers: [] } as T
+    if (path === '/api/config' && init?.method === 'PUT') {
+      const body = JSON.parse(String(init.body)) as (typeof puts)[number]
+      puts.push(body)
+      if (body.baseVersion === 'v1') throw new ApiError(409, path, '{"error":"conflict"}')
+      return { ok: true } as T
+    }
+    if (path === '/api/config') {
+      const version = versions.shift() ?? 'v2'
+      return {
+        path: 'config.json',
+        version,
+        config: {
+          providers: {
+            p: { kind: 'openai_chat_completions', hasApiKey: true, models: { m: {} } },
+            // 第二次读取时多出的接口代表期间由云端同步写入的内容。
+            ...(version === 'v2'
+              ? { qywork: { kind: 'anthropic_messages', hasApiKey: true, models: { x: {} } } }
+              : {}),
+          },
+        },
+        notices: [],
+        problems: [],
+        defaultEnvAllowList: [],
+      } as T
+    }
+    throw new Error(`unexpected ${path}`)
+  }
+  try {
+    await store.setEffort('p', 'm', 'high')
+    expect(puts.map((p) => p.baseVersion)).toEqual(['v1', 'v2'])
+    expect(Object.keys(puts[1]!.config.providers)).toEqual(['p', 'qywork'])
+    expect(puts[1]!.config.providers.p).toMatchObject({ models: { m: { effort: 'high' } } })
+  } finally {
+    store.client.api = originalApi
+  }
+})

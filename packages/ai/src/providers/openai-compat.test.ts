@@ -1898,6 +1898,29 @@ describe('运行上下文的发送形状', () => {
   })
 })
 
+/**
+ * 原始失败形状：电脑上设置了 `OPENAI_ORG_ID` 或 `OPENAI_PROJECT_ID`（OpenAI 官方 SDK 读取的常用设置）时，
+ * 所有 OpenAI 协议的请求另带 `OpenAI-Organization`、`OpenAI-Project`；组织与配置的 key 不属于同一账号时官方接口拒绝请求。
+ */
+describe('鉴权', () => {
+  test('只以配置中的 key 鉴权，不读取环境变量 OPENAI_ORG_ID 与 OPENAI_PROJECT_ID', async () => {
+    const prior = { org: process.env.OPENAI_ORG_ID, project: process.env.OPENAI_PROJECT_ID }
+    process.env.OPENAI_ORG_ID = 'org-from-environment'
+    process.env.OPENAI_PROJECT_ID = 'proj-from-environment'
+    try {
+      await send('deepseek-flash')
+      expect(requestHeaders[0]?.get('authorization')).toBe('Bearer sk-x')
+      expect(requestHeaders[0]?.get('openai-organization')).toBeNull()
+      expect(requestHeaders[0]?.get('openai-project')).toBeNull()
+    } finally {
+      if (prior.org === undefined) delete process.env.OPENAI_ORG_ID
+      else process.env.OPENAI_ORG_ID = prior.org
+      if (prior.project === undefined) delete process.env.OPENAI_PROJECT_ID
+      else process.env.OPENAI_PROJECT_ID = prior.project
+    }
+  })
+})
+
 describe('连接', () => {
   test('每次请求都声明不复用连接', async () => {
     await send('deepseek-flash')

@@ -84,15 +84,24 @@ export function ModelPicker() {
   const levels = () => activeModelRow()?.effortLevels ?? []
   const selected = () => activeModelRow()?.effort ?? null
   // 使用 `||` 而不是 `??`：未配置模型的会话 model 为空串，空串应显示为「选择模型」而不是空白。
-  const label = () => activeModelRow()?.label || activeModel()?.model || '选择模型'
+  // 已下架的型号标出「（已下架）」：本会话的下一轮会被拒绝，须在选择器中换用其他模型。
+  const label = () => {
+    const row = activeModelRow()
+    if (row?.delisted) return `${row.label}（已下架）`
+    return row?.label || activeModel()?.model || '选择模型'
+  }
 
   /** 已登录时账号的接口名；其模型排在最前。 */
   const accountProvider = () => {
     const s = cloudState()
     return s?.state === 'signed_in' ? s.provider : null
   }
+  // 已下架的型号不列为可选：选中后的请求必然被拒绝。目录保留它们只为显示名称。
   const groups = () => {
-    const all = modelCatalog()?.providers ?? []
+    const all = (modelCatalog()?.providers ?? []).map((p) => ({
+      ...p,
+      models: p.models.filter((m) => !m.delisted),
+    }))
     const mine = accountProvider()
     return mine
       ? [...all.filter((p) => p.name === mine), ...all.filter((p) => p.name !== mine)]
@@ -207,7 +216,7 @@ export function ModelPicker() {
                 )}
               </For>
               {/* 未配置任何模型时选择器没有可选项。此处说明配置位置，不显示空框。 */}
-              <Show when={modelCatalog()?.providers.every((p) => p.models.length === 0)}>
+              <Show when={modelCatalog() && groups().every((p) => p.models.length === 0)}>
                 <div class="model-menu-error">尚未配置模型，请在设置的「模型」中为接口添加模型</div>
               </Show>
             </div>

@@ -8,6 +8,7 @@
 
 import {
   buildMediaAdapter,
+  isLocalEndpoint,
   lookupMediaModel,
   type MediaCancel,
   MediaError,
@@ -136,7 +137,8 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
             : `没有默认的${label}模型，请通过 provider 与 model 指定。可选：${choices}`,
         }
       }
-      if (!target.apiKey) {
+      // 本机地址不要求 key，与对话请求相同（`isLocalEndpoint`）。
+      if (!target.apiKey && !isLocalEndpoint(target.baseUrl)) {
         return {
           ok: false,
           executed: false,
@@ -195,7 +197,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
       const adapter = buildMediaAdapter({
         kind: target.kind,
         model: target.model,
-        apiKey: target.apiKey,
+        apiKey: target.apiKey ?? '',
         ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
         ...(target.headers ? { headers: target.headers } : {}),
         ...(target.spec ? { spec: target.spec } : {}),
@@ -317,7 +319,7 @@ export async function cancelMediaTask(
     provider: task.provider,
     model: task.model,
   })
-  if (!target?.apiKey) {
+  if (!target || (!target.apiKey && !isLocalEndpoint(target.baseUrl))) {
     throw new MediaError(
       `${modelMention(task, savedDisplayName(config, task.type, task))} 不在配置中或未配置 API Key，未执行撤销`,
     )
@@ -325,7 +327,7 @@ export async function cancelMediaTask(
   const adapter = buildMediaAdapter({
     kind: target.kind,
     model: target.model,
-    apiKey: target.apiKey,
+    apiKey: target.apiKey ?? '',
     ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
     ...(target.headers ? { headers: target.headers } : {}),
     ...(target.spec ? { spec: target.spec } : {}),

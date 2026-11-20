@@ -512,7 +512,11 @@ describe('模型目录', () => {
   })
 
   /** 原始失败形状：云端已下架的 Claude Haiku 5.5 仍出现在输入框的模型列表中，选中后网关拒绝请求。 */
-  test('渠道已不再提供的型号不列出；接口下全部下架时整个接口不列出', async () => {
+  /**
+   * 原始失败形状：已下架的型号从目录中去掉后，仍在使用它的会话与历史轮次在界面上显示型号 id（云端为对外编号）。
+   * 已下架的型号带标记列出，选择器不列为可选；接口下全部下架时整个接口不列出。
+   */
+  test('渠道已不再提供的型号带已下架标记列出；接口下全部下架时整个接口不列出', async () => {
     const d = withConfig('anthropic_messages', 'claude-opus-5-5')
     d.config.providers.p!.models['claude-haiku-5-5'] = { delisted: true }
     d.config.providers.gone = {
@@ -521,7 +525,12 @@ describe('模型目录', () => {
     }
     const response = await body(d)
     expect(response.providers.map((p) => p.name)).toEqual(['p'])
-    expect(response.providers[0]?.models.map((m) => m.id)).toEqual(['claude-opus-5-5'])
+    expect(
+      response.providers[0]?.models.map((m) => ({ id: m.id, delisted: m.delisted ?? false })),
+    ).toEqual([
+      { id: 'claude-opus-5-5', delisted: false },
+      { id: 'claude-haiku-5-5', delisted: true },
+    ])
   })
 
   test('Seedream 模型库与画布均显示水印默认关闭', async () => {

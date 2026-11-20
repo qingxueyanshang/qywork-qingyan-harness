@@ -104,6 +104,8 @@ export interface ModelRow {
   video: boolean
   /** false 表示内置目录未收录，计价与能力按保守值计算。 */
   known: boolean
+  /** 渠道已不再提供该型号：选择器不列为可选，只用于显示仍在使用它的会话与历史轮次。 */
+  delisted?: true
 }
 
 /** 一个接口。名称由用户设定，界面按名称分组。 */
@@ -367,14 +369,18 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
      * 选择器中没有接口这一层时，配置了多个接口也无法切换。
      */
     const overrides = d.config.catalog ?? {}
-    // 渠道已不再提供的型号（`delisted`）不列出：选中后的请求必然被拒绝。
+    /*
+     * 渠道已不再提供的型号（`delisted`）带标记列出，选择器不列为可选：选中后的请求必然被拒绝。
+     * 不要从目录中去掉：仍在使用它的会话与历史轮次按目录显示名称，去掉后显示的是云端型号的对外编号。
+     * 只有已下架型号的接口不列出：界面据接口数判断是否配置了模型。
+     */
     const usable = (models: QyConfig['providers'][string]['models']) =>
-      Object.keys(models).filter((id) => !models[id]?.delisted)
+      Object.keys(models).some((id) => !models[id]?.delisted)
     const providers: ProviderRow[] = Object.entries(d.config.providers)
-      .filter(([, provider]) => usable(provider.models).length > 0)
+      .filter(([, provider]) => usable(provider.models))
       .map(([name, provider]) => ({
         name,
-        models: usable(provider.models).map((id) => {
+        models: Object.keys(provider.models).map((id) => {
           const declared = provider.models[id]
           // 与运行时、派发子 agent 时的档位校验使用同一份规格。接口与模型均取自配置本身，解析必然成功。
           const spec = modelSpecOf(d.config, { provider: name, model: id })!
@@ -395,6 +401,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
             vision: spec.vision,
             video: spec.video,
             known: spec.catalogued !== false,
+            ...(declared?.delisted ? { delisted: true as const } : {}),
           }
         }),
       }))

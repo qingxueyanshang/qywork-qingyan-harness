@@ -21,7 +21,6 @@ import {
   DEFAULT_DENSITY,
   type LlmAdapter,
   lookupModel,
-  type ProviderProfile,
   textFeatures,
 } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
@@ -33,6 +32,7 @@ import {
   createConversation,
   createRun,
   fileReadHash,
+  getConversation,
   getRun,
   listConversations,
   listMessages,
@@ -47,7 +47,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { BrowserPort, FileReadPort, HistoryPort } from '@qywork/tools'
-import { NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
+import { NO_MODEL_MESSAGE, profileOf, type QyConfig } from './config.ts'
 import { approveMcpServers } from './mcp-approvals.ts'
 import { outputLimitNote } from './prompt.ts'
 import { withAttachments } from './session/attachments.ts'
@@ -55,8 +55,7 @@ import { loadExtensionTools } from './session/extension-tools.ts'
 import * as permission from './session/permission.ts'
 import { makeToolContext } from './session/tool-context.ts'
 import * as drive from './session/turn/drive.ts'
-import { resolveProfile } from './session/turn/prepare.ts'
-import type { SessionState } from './session/types.ts'
+import type { AskOptions, SessionState } from './session/types.ts'
 import { Session } from './session.ts'
 
 const blobs = new ContentStore(':memory:')
@@ -99,8 +98,7 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
 /** 按 `ask` 的方式解析本轮规格，再构造工具上下文。 */
 function toolContext(s: Session, runId: string, target: string, conv: string): ToolContext {
   const state = stateOf(s)
-  const inner = { resolveProfile, makeToolContext } as unknown as {
-    resolveProfile(st: SessionState, t: string): ProviderProfile
+  const inner = { makeToolContext } as unknown as {
     makeToolContext(
       st: SessionState,
       r: string,
@@ -110,7 +108,7 @@ function toolContext(s: Session, runId: string, target: string, conv: string): T
       c: string,
     ): ToolContext
   }
-  const adapter = buildAdapter(inner.resolveProfile(state, target))
+  const adapter = buildAdapter(profileOf(state.opts.config, target))
   return inner.makeToolContext(state, runId, () => {}, target, adapter, conv)
 }
 
@@ -816,6 +814,56 @@ describe('顶层会话的可分配模型快照', () => {
  * 压缩会将工具结果缩减为 320 字摘录，workflowId 与 checkpointId 可能完全不在其中。
  * 快照必须将该任务图的 id 与各节点续接情况重新提供给模型，否则模型只能重新派发整张图。
  */
+/**
+ * 会话记录的接口与模型。原始失败形状：
+ * - 创建时没有默认模型的会话按默认模型对话，会话行始终为空，上下文面板与手动压缩报告未选择模型；
+ * - `--model` 指定的模型只在另一个接口下时，新会话记录默认接口，下一轮把该模型发往默认接口的地址与 key；
+ * - 裸模型名配置在两个非默认接口下时，报错指向一个存在的接口，且每次尝试都留下一条空会话。
+ */
+describe('本轮模型与会话记录', () => {
+  const p = config.providers.p!
+  const firstEvent = async (s: Session, conv?: ConversationId, options?: AskOptions) => {
+    for await (const ev of s.ask('你好', conv, options)) return ev
+    return null
+  }
+
+  test('会话行没有记录接口时写回本轮的接口与模型', async () => {
+    const { s, store } = await session()
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, { workspaceId: ws.id, provider: '', model: '' }).id
+    await firstEvent(s, conv)
+    expect(getConversation(store, conv)).toMatchObject({
+      provider: 'p',
+      model: 'deepseek-v4-flash',
+    })
+    store.close()
+  })
+
+  test('--model 指定的模型只在另一个接口下时，新会话记录该接口', async () => {
+    const { s, store } = await session({
+      config: { ...config, providers: { p, q: { ...p, models: { 'qwen/model-3.8': {} } } } },
+    })
+    await firstEvent(s, undefined, { model: 'qwen/model-3.8' })
+    expect(listRecentConversations(store, 1)[0]).toMatchObject({
+      provider: 'q',
+      model: 'qwen/model-3.8',
+    })
+    store.close()
+  })
+
+  test('裸模型名无法确定接口时写明原因，不创建会话', async () => {
+    const shared = { ...p, models: { x: {} } }
+    const { s, store } = await session({
+      config: { ...config, providers: { p, a: shared, b: shared } },
+    })
+    await expect(firstEvent(s, undefined, { model: 'x' })).rejects.toThrow(
+      '模型 x 同时配置在多个接口下（a、b）',
+    )
+    expect(listRecentConversations(store)).toEqual([])
+    store.close()
+  })
+})
+
 describe('未完成 workflow 的运行快照', () => {
   const seedWaitingGraph = (store: Store, conversationId: ConversationId) => {
     const run = createRun(store, {

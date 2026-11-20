@@ -12,6 +12,7 @@ import {
   diagnoseRunnable,
   listMediaModels,
   loadConfig,
+  profileOf,
   type QyConfig,
   resolveMediaModel,
   resolveModel,
@@ -33,6 +34,58 @@ function cfg(over: Partial<QyConfig> = {}): QyConfig {
     ...over,
   }
 }
+
+/**
+ * 原始失败形状：会话所用的云端型号下架后，请求照常发出，云端以「模型不可用：qy-…」拒绝，用户无从判断是哪一个模型；
+ * 裸模型名配置在两个非默认接口下时，报错写的是「没有名为 <默认接口> 的接口」，而该接口存在。
+ */
+describe('一次对话请求的接口画像', () => {
+  const cloud = (): QyConfig =>
+    cfg({
+      providers: {
+        ...cfg().providers,
+        qywork: {
+          kind: 'anthropic_messages',
+          apiKey: 'qyd_x',
+          models: {
+            'qy-b041c7d2e5f60918': { displayName: 'Claude Opus 5.5', delisted: true },
+            'qy-e0786e2614754b92': { displayName: 'Claude Opus 5.5' },
+          },
+        },
+      },
+    })
+
+  test('已下架的型号以 model_not_found 拒绝并按名称提及；未下架的型号照常返回画像', () => {
+    let thrown: unknown
+    try {
+      profileOf(cloud(), { provider: 'qywork', model: 'qy-b041c7d2e5f60918' })
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toMatchObject({ code: 'model_not_found' })
+    expect(String((thrown as Error).message)).toBe('「Claude Opus 5.5」已下架，请换用其他模型')
+    expect(profileOf(cloud(), { provider: 'qywork', model: 'qy-e0786e2614754b92' })).toMatchObject({
+      kind: 'anthropic_messages',
+      apiKey: 'qyd_x',
+      model: 'qy-e0786e2614754b92',
+    })
+  })
+
+  test('无法解析时写明原因：接口不存在、模型配置在多个接口下', () => {
+    expect(() => profileOf(cfg(), { provider: '甲', model: 'm' })).toThrow(
+      '配置中没有名为「甲」的接口',
+    )
+    const ds = cfg().providers.ds!
+    const twice = cfg({
+      providers: {
+        ds,
+        甲: { ...ds, models: { shared: {} } },
+        乙: { ...ds, models: { shared: {} } },
+      },
+    })
+    expect(() => profileOf(twice, 'shared')).toThrow('模型 shared 同时配置在多个接口下（甲、乙）')
+  })
+})
 
 /** 原始失败形状：手工编辑留下一处语法错误后，读取得到默认配置，下一次保存以默认配置覆盖原文件。 */
 test('配置文件无法解析或无法读取时抛出并写明路径；文件不存在时为默认配置', async () => {
@@ -87,7 +140,7 @@ test('生成型号只能保存对应型号或云端规格，协议须为有效�
         providers: {
           ds: {
             kind: 'openai_chat_completions',
-            models: {},
+            models: { 'deepseek-v4-flash': {} },
             media: { v: { kind, ...(spec === undefined ? {} : { spec }) } as never },
           },
         },
@@ -387,6 +440,24 @@ describe('配置诊断', () => {
     const [p] = diagnoseConfig(cfg({ active: { provider: '打错了', model: 'm' } }))
     expect(p).toContain('打错了')
     expect(p).toContain('ds')
+  })
+
+  /** 原始失败形状：默认模型只配置在另一个接口下时，新会话把它发往默认接口的地址与 key。 */
+  test('默认模型须配置在其接口下', () => {
+    const [p] = diagnoseConfig(cfg({ active: { provider: 'ds', model: 'gpt-6-sol' } }))
+    expect(p).toContain('默认模型 "ds / gpt-6-sol" 不在该接口的模型中')
+  })
+
+  /** 原始失败形状：接口级协议写错时保存返回 200，之后每一轮都以「未知 provider」失败。 */
+  test('接口级协议须为有效值；缺少模型表时报告为不合格项，不抛出', () => {
+    const ds = cfg().providers.ds!
+    expect(
+      diagnoseConfig(cfg({ providers: { ds: { ...ds, kind: 'openai' as never } } }))[0],
+    ).toContain('接口 ds 的协议 "openai" 不是有效值')
+    const missing = { ...ds, models: undefined as never }
+    expect(diagnoseConfig(cfg({ providers: { ds: missing } }))).toContain(
+      '接口 ds 的 models 必须是对象',
+    )
   })
 
   /** 非布尔值落盘后按真值判定，关闭状态会被读取为开启。 */

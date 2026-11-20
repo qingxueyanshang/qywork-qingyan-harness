@@ -318,3 +318,30 @@ describe('配置写串行化与乐观并发', () => {
     expect(configStore.configBusy()).toBe(false)
   })
 })
+
+/**
+ * 原始失败形状：设置页的配置只在首次打开时读取一次。登录、退出与云端型号同步由服务端写入配置，
+ * 之后账号窗口按旧配置判定型号是否已同步，退出后设置页仍列出云端接口。
+ */
+describe('服务端写入配置后刷新', () => {
+  test('配置落盘（config.changed）后重新读取', async () => {
+    const settings = await import('../../lib/store/settings.ts')
+    server = {
+      active: { provider: 'ds', model: 'm' },
+      mode: 'auto',
+      providers: { ds: { kind: 'openai_chat_completions' } },
+      updates: { autoCheck: true, autoDownload: true },
+    }
+    configStore.ensureConfig()
+    await configStore.reloadConfig()
+    expect(Object.keys(configStore.config()?.providers ?? {})).toEqual(['ds'])
+
+    // 云端登录写入的接口，不经过设置页。
+    server.providers = { ...server.providers, qywork: { kind: 'anthropic_messages', apiKey: 'k' } }
+    serverVersion++
+    settings.setConfigChange(1)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(Object.keys(configStore.config()?.providers ?? {})).toEqual(['ds', 'qywork'])
+  })
+})

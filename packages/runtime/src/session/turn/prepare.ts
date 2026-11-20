@@ -6,7 +6,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DelegatePort, softLimit } from '@qywork/agent'
-import { buildAdapter, type ProviderProfile } from '@qywork/ai'
+import { buildAdapter } from '@qywork/ai'
 import type { ConversationId, WorkflowProjection } from '@qywork/core'
 import { foldWorkflow } from '@qywork/core'
 import {
@@ -16,6 +16,7 @@ import {
   listWorkflowRecords,
   permissionModeOf,
   type Store,
+  setConversationModel,
   workflowIdsOf,
 } from '@qywork/store'
 import {
@@ -30,6 +31,7 @@ import {
   type ModelRef,
   modelLabel,
   NO_MODEL_MESSAGE,
+  profileOf,
   resolveModel,
 } from '../../config.ts'
 import { contextPanel } from '../../context-panel.ts'
@@ -60,33 +62,47 @@ export async function prepareTurn(
   // 服务端已在 `run-control` 中预先拦截并返回结构化的 `no_model`；此处是 CLI 与直接调用的后备处理。
   if (!model) throw new Error(NO_MODEL_MESSAGE)
 
+  /*
+   * 会话记录了接口名时按记录的接口与模型发送，不再按模型 id 反查：两个接口配置同一
+   * 模型 id 时反查结果取决于枚举顺序，出错时端点、key 与价目表都会改变，且不会报错。
+   * 单轮显式 `--model` 与没有记录接口的会话按 `resolveModel` 的裸模型名规则解析：默认接口配置了该模型时取默认接口。
+   */
+  const target: string | ModelRef =
+    !options?.model && prior?.provider ? { provider: prior.provider, model } : model
+  // 思考强度：派发子 agent 时传入的档位优先，否则取配置中「接口 × 模型」对应的条目。
+  // 不保存会话级的第二份，也不共用一个全局值：档位集合因模型而异（见 `StoredModel.effort`），
+  // 套用全局值必然不匹配。
+  const resolvedTarget = resolveModel(config, target)
+  const effort = options?.effort ?? resolvedTarget?.effort
+  /*
+   * 本轮的规格只在此处解析一次：工具上下文、摘要与记账都使用这一份。各自重新解析时，
+   * 轮次进行中保存配置会使它们取得不同的规格，接口被删除时记账步骤抛出异常。
+   * 在创建会话之前解析：无法解析、已下架或缺少 key 时抛出，不留下空会话。
+   */
+  const profile = profileOf(config, target)
+  const adapter = buildAdapter(profile)
+  // `profileOf` 在无法解析时已抛出，此处的接口必然存在。
+  const ref = { provider: resolvedTarget?.provider ?? '', model }
+
   const conversationId =
     existing ??
     createConversation(store, {
       workspaceId: session.workspaceId as never,
-      // 新会话记录默认的接口与模型；没有默认接口时按哪个接口配置了该模型反查。
-      provider: config.active?.provider || resolveModel(config, model)?.provider || '',
-      model,
+      // 新会话记录本轮解析出的接口：`--model` 指定的模型不在默认接口下时，记录默认接口会使下一轮把它发往默认接口。
+      ...ref,
       ...(options?.source ? { source: options.source } : {}),
       ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
       ...(options?.parentConversationId
         ? { parentConversationId: options.parentConversationId }
         : { mode: config.mode ?? 'auto' }),
     }).id
+  /*
+   * 创建时没有默认模型的会话没有记录接口与模型，本轮按默认模型发送。写回本轮的接口与模型：上下文面板与手动压缩
+   * 只读取会话行，不写回时两者对一个能正常对话的会话报告未选择模型。本轮显式指定的模型只作用于本轮，不写回。
+   */
+  if (prior && !prior.provider && !options?.model) setConversationModel(store, conversationId, ref)
 
   const conversation = getConversation(store, conversationId)
-  /*
-   * 会话记录了接口名时按记录的接口与模型发送，不再按模型 id 反查：两个接口配置同一
-   * 模型 id 时反查结果取决于枚举顺序，出错时端点、key 与价目表都会改变，且不会报错。
-   * 单轮显式 `--model` 是用户主动要求的裸模型选择，按 `resolveModel` 的裸模型名规则解析。
-   */
-  const target: string | ModelRef =
-    !options?.model && conversation?.provider ? { provider: conversation.provider, model } : model
-  // 思考强度：派发子 agent 时传入的档位优先，否则取配置中「接口 × 模型」对应的条目。
-  // 不保存会话级的第二份，也不共用一个全局值：档位集合因模型而异（见 `StoredModel.effort`），
-  // 套用全局值必然不匹配。
-  const resolvedTarget = resolveModel(config, target)
-  const effort = options?.effort ?? resolvedTarget?.effort
 
   /*
    * 冻结本 run 的非对话上下文。
@@ -95,10 +111,6 @@ export async function prepareTurn(
    * 同行写入数据库。loop 内任何一次 provider 请求都不再临时重新计算，重启也从同一份快照
    * 重建，因此上下文字节不会随执行波次变化。
    */
-  // 本轮的规格只在此处解析一次：工具上下文、摘要与记账都使用这一份。各自重新解析时，
-  // 轮次进行中保存配置会使它们取得不同的规格，接口被删除时记账步骤抛出异常。
-  const profile = resolveProfile(session, target)
-  const adapter = buildAdapter(profile)
   /*
    * 自动压缩比例在此解析一次，一轮之内不变：触发判定、压缩、请求行的触发线与写给模型的百分比都取这一个值。
    * 配置不合法时在写入轮次之前抛出配置错误，不改用缺省值。
@@ -221,39 +233,6 @@ export async function prepareTurn(
     compactPercent,
     known,
     contextSnapshot,
-  }
-}
-
-/**
- * 解析本轮使用的接口与凭证。
- *
- * 入参是 `ModelRef` 时接口已确定（会话自身记录了归属），是裸模型名时
- * 按模型 id 反查接口：后者用于 `qy ask --model x` 这类用户只指定模型、不指定接口
- * 的入口。规则只有 `resolveModel` 一处：界面上列出的协议与本轮实际
- * 发出的协议必须一致。
- *
- * 每次使用时实时解析：在构造函数中解析一次并固定时，会话级模型切换无法生效。
- */
-export function resolveProfile(
-  session: Pick<SessionState, 'opts'>,
-  target?: string | ModelRef,
-): ProviderProfile {
-  const { providers, active } = session.opts.config
-  const stored = resolveModel(session.opts.config, target)
-  if (!stored) {
-    const who = typeof target === 'object' ? target.provider : (active?.provider ?? '（未配置）')
-    throw new Error(
-      `配置中没有名为 "${who}" 的接口。可用：${Object.keys(providers).join(', ') || '（空）'}`,
-    )
-  }
-  return {
-    kind: stored.kind,
-    apiKey: stored.apiKey ?? '',
-    model: stored.model,
-    ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
-    ...(stored.headers ? { headers: stored.headers } : {}),
-    ...(stored.spec ? { spec: stored.spec } : {}),
-    ...(stored.transport ? { transport: stored.transport } : {}),
   }
 }
 

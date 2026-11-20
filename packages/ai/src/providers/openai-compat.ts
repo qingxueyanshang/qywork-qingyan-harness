@@ -109,6 +109,10 @@ export class OpenAICompatAdapter implements LlmAdapter {
     this.openCodeSession = this.vendor === 'opencode' ? crypto.randomUUID() : null
     this.client = new OpenAI({
       apiKey: this.apiKey,
+      // 必须显式为 null：缺省时 SDK 读取环境变量 OPENAI_ORG_ID 与 OPENAI_PROJECT_ID，以 `OpenAI-Organization`、
+      // `OpenAI-Project` 请求头发给所有接口；组织与 key 不属于同一账号时官方接口拒绝请求。
+      organization: null,
+      project: null,
       ...PROVIDER_HTTP,
       baseURL: this.baseUrl,
       defaultHeaders: { ...PROVIDER_HEADERS, ...profile.headers },

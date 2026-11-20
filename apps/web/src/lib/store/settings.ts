@@ -239,6 +239,8 @@ export interface ModelOption {
   video: boolean
   /** false 表示内置目录中没有该模型，来自用户自行配置的模型 id（自建端点 / 第三方接口）。 */
   known: boolean
+  /** 渠道已不再提供该型号：选择器不列为可选，只用于显示仍在使用它的会话与历史轮次的名称。 */
+  delisted?: true
 }
 
 /** 一个接口。名称由用户在设置中指定，选择器按名称分组。 */

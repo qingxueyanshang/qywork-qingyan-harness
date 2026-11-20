@@ -58,7 +58,7 @@ export {
   transportFailureKind,
 } from './errors.ts'
 // 唯一的 adapter 构造入口
-export { buildAdapter } from './factory.ts'
+export { buildAdapter, isLocalEndpoint } from './factory.ts'
 export { readImages } from './media/adapters/openai-images.ts'
 export {
   openAIVideosAdapter,

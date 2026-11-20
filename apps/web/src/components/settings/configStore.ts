@@ -1,6 +1,7 @@
-import { createSignal } from 'solid-js'
+import { createEffect, createRoot, createSignal, on } from 'solid-js'
 import {
   type ConfigPayload,
+  configChange,
   explainApiError,
   loadServerConfig,
   type ProviderRename,
@@ -55,11 +56,17 @@ export function reportConfigWriteError(message: string): void {
   setWriteError(message)
 }
 
-/** 首次有页面使用时才请求。重复调用无副作用。 */
+/**
+ * 首次有页面使用时才请求。重复调用无副作用。
+ *
+ * 此后每次配置落盘（`config.changed`）重新读取：登录、退出与云端型号同步由服务端写入配置，不经过本模块。
+ * 不重新读取时，账号窗口的「设为默认」按旧配置判定型号是否已同步，退出后设置页仍列出云端接口。
+ */
 export function ensureConfig(): void {
   if (started) return
   started = true
   void reloadConfig()
+  createRoot(() => createEffect(on(configChange, () => void reloadConfig(), { defer: true })))
 }
 
 export async function reloadConfig(): Promise<void> {

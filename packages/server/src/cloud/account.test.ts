@@ -537,13 +537,21 @@ test('网关返回 device_revoked 时删除本地接口并清除当前模型；�
   expect(live.active?.provider).not.toBe(CLOUD_PROVIDER)
 })
 
-test('退出时请求云端吊销本设备并删除本地接口', async () => {
+test('退出时请求云端吊销本设备并删除本地接口；模型库中由云端写入的条目一并删除，其余字段保留', async () => {
   await account.login('me@example.com', PASSWORD)
+  const key = 'claude-next|anthropic_messages'
+  expect(live.catalog?.[key]?.cloud).toBe(true)
+  await setCatalog(key, { ...live.catalog?.[key], thinksByDefault: true })
   await account.logout()
   expect(cloud.revoked).toBe(1)
   expect(live.providers[CLOUD_PROVIDER]).toBeUndefined()
   expect((await loadConfig()).providers[CLOUD_PROVIDER]).toBeUndefined()
+  // 原始失败形状：退出后模型库仍按云端型号的对外编号列出该条目。
+  expect(live.catalog?.[key]).toEqual({ thinksByDefault: true })
+  expect((await loadConfig()).catalog?.[key]).toEqual({ thinksByDefault: true })
   expect((await account.state()).state).toBe('signed_out')
+  // 覆盖层在磁盘上，`beforeEach` 只清除内存中的一份：删除本用例写入的条目，后续用例从空覆盖层开始。
+  await writeConfig(live, ({ catalog: _catalog, ...rest }) => rest)
 })
 
 test('用量与使用记录以设备密钥读取：用量带本机时区，记录带页长与续页位置，失败转为文字', async () => {
@@ -714,6 +722,32 @@ test('同步型号清单：配置中的型号按清单的顺序排列，已下�
   expect(stored['gpt-5']?.effort).toBe('high')
   expect(live.active).toBeUndefined()
   expect(JSON.stringify(await loadConfig())).not.toContain('relay-internal-id')
+})
+
+/**
+ * 原始失败形状：默认对话模型下架后仍是默认值，新会话都建在它上面、首次发送即被拒绝；模型选择不列出已下架的型号，
+ * 界面上无处显示这个默认值。
+ */
+test('同步型号清单：默认对话模型下架时清除默认值，不改用其他型号', async () => {
+  await account.login('me@example.com', PASSWORD)
+  await writeConfig(live, (c) => {
+    const p = c.providers[CLOUD_PROVIDER]!
+    return {
+      ...c,
+      providers: {
+        ...c.providers,
+        [CLOUD_PROVIDER]: {
+          ...p,
+          models: { ...p.models, 'claude-old': { displayName: 'Claude Old' } },
+        },
+      },
+      active: { provider: CLOUD_PROVIDER, model: 'claude-old' },
+    }
+  })
+  await account.syncModels()
+  expect(live.providers[CLOUD_PROVIDER]?.models['claude-old']?.delisted).toBe(true)
+  expect(live.active).toBeUndefined()
+  expect((await loadConfig()).active).toBeUndefined()
 })
 
 /** 以配置接口写入一条模型库覆盖，与用户在模型库中修改的写入路径相同。 */

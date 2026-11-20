@@ -2,7 +2,8 @@
  * 配置脱敏与回填。
  *
  * 覆盖范围：`config.ts` 的 `redactConfig` / `mergeConfig`，以及
- * `GET /api/config` 读取磁盘的时机、`PUT /api/config` 的落盘门禁与以磁盘内容为基准的版本校验。
+ * `GET /api/config` 读取磁盘的时机、`PUT /api/config` 的落盘门禁与以磁盘内容为基准的版本校验，
+ * 以及接口改名时会话记录随之改名（`store` 的 `renameConversationProvider`）。
  *
  * 这两个函数是「明文 key 不出进程」这一边界的全部实现，因此此处的测试比其他位置更细。
  * 最严重的情形不是 key 泄漏（泄漏可立即发现），而是「打开设置页、不做修改直接保存」
@@ -15,6 +16,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { QyConfig } from '@qywork/runtime'
+import { createConversation, getConversation, Store, upsertWorkspace } from '@qywork/store'
 import {
   handleConfigApi,
   mergeConfig,
@@ -401,17 +403,32 @@ describe('落盘门禁', () => {
     }
   })
 
-  test('脱敏配置连续改名保留密钥、模型和默认引用，改名关系不落盘', async () => {
+  /** 原始失败形状之一：改名后记录旧名的会话，下一轮以「配置中没有名为 main 的接口」失败。 */
+  test('脱敏配置连续改名保留密钥、模型和默认引用，改名关系不落盘；记录旧名的会话随之改名并广播', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-rename-'))
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home
+    const store = new Store({ path: ':memory:' })
     try {
       const initial = cfg()
       initial.providers.main!.baseUrl = 'https://relay.example/v1'
       initial.providers.main!.media = { video: { kind: 'openai_videos' } }
       initial.mediaDefaults = { video: { provider: 'main', model: 'video' } }
       await writeFile(join(home, 'config.json'), JSON.stringify(initial))
-      const d = { config: structuredClone(initial) } as unknown as ApiDeps
+      const ws = upsertWorkspace(store, home, 'ws')
+      const onMain = createConversation(store, {
+        workspaceId: ws.id,
+        provider: 'main',
+        model: 'claude-opus-5',
+      })
+      const onLocal = createConversation(store, {
+        workspaceId: ws.id,
+        provider: 'local',
+        model: 'm',
+      })
+      const published: { type: string; conversationId?: string; provider?: string }[] = []
+      const bus = { publish: (event: (typeof published)[number]) => published.push(event) }
+      const d = { config: structuredClone(initial), store, bus } as unknown as ApiDeps
       for (const [from, to] of [
         ['main', '即梦'],
         ['即梦', '即梦1'],
@@ -433,8 +450,17 @@ describe('落盘门禁', () => {
         expect(saved.mediaDefaults?.video).toEqual({ provider: to, model: 'video' })
         expect(saved).not.toHaveProperty('renameProvider')
         expect((await get(d)).config.providers[to]?.hasApiKey).toBe(true)
+        expect(getConversation(store, onMain.id)?.provider).toBe(to)
+        expect(published.at(-1)).toMatchObject({
+          type: 'conversation.updated',
+          conversationId: onMain.id,
+          provider: to,
+        })
       }
+      expect(getConversation(store, onLocal.id)?.provider).toBe('local')
+      expect(published).toHaveLength(2)
     } finally {
+      store.close()
       if (prev === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = prev
     }
@@ -447,7 +473,11 @@ describe('落盘门禁', () => {
     try {
       const initial = cfg()
       await writeFile(join(home, 'config.json'), JSON.stringify(initial))
-      const d = { config: structuredClone(initial) } as unknown as ApiDeps
+      const d = {
+        config: structuredClone(initial),
+        store: new Store({ path: ':memory:' }),
+        bus: { publish: () => {} },
+      } as unknown as ApiDeps
       const before = await get(d)
       const rename = (wire: RedactedConfig) => {
         wire.providers.renamed = wire.providers.main!

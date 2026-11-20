@@ -15,7 +15,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext, ToolRegistry } from '@qywork/agent'
-import { buildAdapter, type LlmAdapter, type ProviderProfile } from '@qywork/ai'
+import { buildAdapter, type LlmAdapter } from '@qywork/ai'
 import type { ConversationId } from '@qywork/core'
 import {
   ContentStore,
@@ -24,11 +24,11 @@ import {
   Store,
   setConversationMode,
 } from '@qywork/store'
+import { profileOf } from './config.ts'
 import { acquireExtensions, loadScopedMcpConfig } from './extensions.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { buildTailNotes } from './prompt.ts'
 import { makeToolContext } from './session/tool-context.ts'
-import { resolveProfile } from './session/turn/prepare.ts'
 import type { SessionState } from './session/types.ts'
 import { Session } from './session.ts'
 
@@ -143,9 +143,8 @@ test('auto 下启用或迁出项目层服务时，命中拒绝清单的命令被
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' }).id
     setConversationMode(store, conv as ConversationId, 'auto')
     const state = (s as unknown as { state: SessionState }).state
-    const inner = { registry: state.registry, resolveProfile, makeToolContext } as unknown as {
+    const inner = { registry: state.registry, makeToolContext } as unknown as {
       registry: ToolRegistry
-      resolveProfile(st: SessionState, t: string): ProviderProfile
       makeToolContext(
         st: SessionState,
         r: string,
@@ -155,7 +154,7 @@ test('auto 下启用或迁出项目层服务时，命中拒绝清单的命令被
         c: string,
       ): ToolContext
     }
-    const adapter = buildAdapter(inner.resolveProfile(state, 'm'))
+    const adapter = buildAdapter(profileOf(state.opts.config, 'm'))
     const ctx = {
       ...inner.makeToolContext(state, 'rn_x', () => {}, 'm', adapter, conv),
       emit: () => {},

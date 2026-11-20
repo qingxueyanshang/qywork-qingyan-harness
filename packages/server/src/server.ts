@@ -35,6 +35,7 @@ import {
   createOfficeHost,
   listMediaModels,
   releaseExtensions,
+  resolveArtModel,
   resolveMediaModel,
   savedDisplayName,
 } from '@qywork/runtime'
@@ -205,10 +206,10 @@ export function serve(opts: ServeOptions) {
     opts.store,
   )
   // 画布的写入与画布上的生成仅经由此实例；事件不带会话 id，推送给所有客户端。
-  // art 使用对话模型，参数表与指代写法是固定的，不查生成目录。
+  // art 使用对话模型，参数表与指代写法是固定的，不查生成目录；模型须配置在接口下，与生成时同一判定（`resolveArtModel`）。
   const canvas = new CanvasService({
     paramSpecsOf: (output, pick) => {
-      if (output === 'art') return [ART_SIZE_PARAM]
+      if (output === 'art') return resolveArtModel(opts.config, pick) ? [ART_SIZE_PARAM] : undefined
       const target = resolveMediaModel(opts.config, output, pick)
       return target ? lookupMediaModel(target.model, target.kind, target.spec).params : undefined
     },

@@ -3086,6 +3086,49 @@ describe('画布：生成卡与生成面板', () => {
     ])
   })
 
+  /**
+   * 原始失败形状：没有默认对话模型时，设计稿卡显示第一个可用的对话模型，发送时却不写入卡片，服务端以「没有默认的对话模型」拒绝。
+   * 已下架的对话模型不作为显示的模型。
+   */
+  test('设计稿卡：没有默认对话模型时发送界面上显示的模型，已下架的对话模型不作为显示的模型', async () => {
+    const chat = (id: string, label: string, delisted?: true) => ({
+      id,
+      label,
+      effortLevels: [],
+      effort: null,
+      currency: 'USD',
+      vision: null,
+      video: false,
+      known: true,
+      ...(delisted ? { delisted } : {}),
+    })
+    const catalog = {
+      ...MODELS,
+      providers: [
+        { name: 'relay', models: [chat('chat-old', '旧模型', true), chat('chat-b', '对话 B')] },
+      ],
+    }
+    const { host, server, refs } = await mount(
+      [{ op: 'add_generate', ref: '$a', output: 'art', prompt: '首页', x: 0, y: 0 }],
+      {},
+      catalog,
+    )
+    const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.model')
+    await select(host, refs.$a!)
+    await waitFor(
+      () => chip()?.textContent === '对话 B',
+      () => chip()?.textContent ?? '',
+    )
+    host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.click()
+    await waitFor(
+      () => server.runs.length === 1,
+      () => JSON.stringify(server.runs),
+    )
+    expect(server.runs[0]?.ops).toEqual([
+      { op: 'update', id: refs.$a!, provider: 'relay', model: 'chat-b' },
+    ])
+  })
+
   test('时长加减：到达下限后再减为「自动」，不经过下限以下的值；从「自动」增加时回到下限', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)

@@ -416,14 +416,16 @@ export function GeneratePanel(props: {
         .filter((m) => m.output === props.node.output)
         .map((m) => (m.delisted ? { ...m, label: `${m.label}（已下架）` } : m))
     }
+    // 已下架的对话型号与生成型号同样处理：带标记，名称后标出「（已下架）」，菜单按 `models` 的规则决定是否列出。
     return (catalog?.providers ?? []).flatMap((p) =>
       p.models.map((m) => ({
         provider: p.name,
         id: m.id,
-        label: m.label,
+        label: m.delisted ? `${m.label}（已下架）` : m.label,
         operations: [],
         isDefault: catalog?.active?.provider === p.name && catalog.active.model === m.id,
         params: [ART_SIZE_PARAM],
+        ...(m.delisted ? { delisted: true as const } : {}),
       })),
     )
   })
@@ -602,10 +604,10 @@ export function GeneratePanel(props: {
     const d = draft()
     const ops: CanvasOp[] =
       d === props.node.prompt ? [] : [{ op: 'update', id: props.node.id, prompt: d }]
-    // 未选定型号的卡片由服务端取默认型号。默认型号已下架时按钮显示的是另一个型号，
-    // 先把显示的型号写入卡片，发送的即是界面上显示的型号。
+    // 未选定型号的卡片由服务端取默认型号。没有默认型号或默认型号已下架时按钮显示的是另一个型号，
+    // 先把显示的型号写入卡片，发送的即是界面上显示的型号。art 卡同样如此：不写入时服务端以「没有默认的对话模型」拒绝。
     const m = model()
-    if (props.node.output !== 'art' && !props.node.model && m && !m.isDefault)
+    if (!props.node.model && m && !m.isDefault)
       ops.push({ op: 'update', id: props.node.id, provider: m.provider, model: m.id })
     props.run(ops)
   }
@@ -746,11 +748,13 @@ export function GeneratePanel(props: {
         e.preventDefault()
         openPicker(el)
       }
+      // 条件与生成按钮的可用条件相同：卡片的模型未配置时按钮不可用，快捷键同样不发送。
       if (
         e.key === 'Enter' &&
         (e.ctrlKey || e.metaKey) &&
         !composing(e) &&
         draft().trim() &&
+        model() &&
         !running()
       ) {
         e.preventDefault()

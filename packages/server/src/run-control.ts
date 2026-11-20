@@ -43,6 +43,7 @@ import {
   makeSummarizer,
   NO_MODEL_MESSAGE,
   nextRequestMeasure,
+  profileOf,
   RuntimeCompaction,
   requestPersistence,
   resolveModel,
@@ -397,6 +398,23 @@ export async function startRun(
         if ('runId' in ev && ev.runId && currentRunId === null) {
           currentRunId = ev.runId as RunId
           deps.runs.register(conversationId, currentRunId)
+          // 创建时没有默认模型的会话，准备阶段写入了本轮的接口与模型（`prepareTurn`）。广播给界面：
+          // 不广播时模型选择仍显示「选择模型」，而本轮已按默认模型发送。
+          const bound = conversation?.provider ? null : getConversation(deps.store, conversationId)
+          if (bound?.provider) {
+            deps.bus.publish(
+              {
+                type: 'conversation.updated',
+                conversationId: bound.id,
+                provider: bound.provider,
+                model: bound.model,
+                title: bound.title,
+                mode: bound.mode,
+                updatedAt: bound.updatedAt,
+              },
+              conversationId,
+            )
+          }
         }
         if (ev.type === 'run.finished') {
           stopReason = ev.stopReason
@@ -1136,26 +1154,12 @@ async function compactReserved(
 
 /**
  * 手动压缩使用会话绑定的接口与模型，同名模型不能借用全局默认接口。
- *
- * 字段集必须与 `Session.resolveProfile` 逐项相同：缺少任一项时，
- * 手动摘要按另一套参数发出，两条入口的产出不可比较。
+ * 画像与轮次同一个函数（`profileOf`）：两条入口的请求使用同一组字段，已下架的模型同样拒绝。
  */
 function summaryProfile(deps: CommandDeps, conversationId: ConversationId): ProviderProfile {
   const conversation = getConversation(deps.store, conversationId)
-  const model = conversation?.model
-  const stored = conversation?.provider
-    ? resolveModel(deps.config, { provider: conversation.provider, model: conversation.model })
-    : undefined
-  if (!stored) throw new Error(model ? `配置中没有模型 "${model}"` : NO_MODEL_MESSAGE)
-  return {
-    kind: stored.kind,
-    apiKey: stored.apiKey ?? '',
-    model: stored.model,
-    ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
-    ...(stored.headers ? { headers: stored.headers } : {}),
-    ...(stored.spec ? { spec: stored.spec } : {}),
-    ...(stored.transport ? { transport: stored.transport } : {}),
-  }
+  if (!conversation?.provider) throw new Error(NO_MODEL_MESSAGE)
+  return profileOf(deps.config, { provider: conversation.provider, model: conversation.model })
 }
 
 // ───────────────────────── HTTP API ─────────────────────────

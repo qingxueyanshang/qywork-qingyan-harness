@@ -22,6 +22,7 @@ import {
   type ChatRequest,
   type ContentBlock,
   computeCost,
+  isLocalEndpoint,
   ProviderError,
   type ProviderUsage,
   STREAM_IDLE_TIMEOUT_MS,
@@ -38,7 +39,13 @@ import {
   withArtViewport,
 } from '@qywork/core'
 import type { MediaCall, MediaCallResult } from '@qywork/tools'
-import { type ModelRef, type QyConfig, resolveModel, savedDisplayName } from './config.ts'
+import {
+  type ModelRef,
+  type QyConfig,
+  type ResolvedModel,
+  resolveModel,
+  savedDisplayName,
+} from './config.ts'
 
 /** 页面可用的 three.js 附加模块。与 sidecar 的 `/art/lib/addons/` 一一对应，修改时两处同时修改。 */
 export const ART_ADDONS = [
@@ -81,6 +88,22 @@ export function extractHtml(text: string): string | null {
   return text.slice(start, end + close.length)
 }
 
+/**
+ * 设计稿卡使用的对话模型：卡片指定的接口与模型，未指定时为默认对话模型；须配置在该接口下。
+ * 生成与画布的参数表共用，与生成模型相同：未配置的模型在画布更新时即被拒绝。
+ *
+ * 不要改用 `resolveModel`：它对写明接口的引用不要求模型配置在该接口下（会话可使用接口下未列出的型号），
+ * 设计稿卡改换到未配置的模型时，请求会以该接口的地址与 key 发出。已下架的型号照常返回，由生成时拒绝。
+ */
+export function resolveArtModel(
+  config: QyConfig,
+  ref: ModelRef | undefined,
+): ResolvedModel | undefined {
+  const target = ref ?? config.active
+  if (!target || !config.providers[target.provider]?.models[target.model]) return undefined
+  return resolveModel(config, target)
+}
+
 export async function generateArt(
   config: QyConfig,
   call: MediaCall,
@@ -93,14 +116,16 @@ export async function generateArt(
       : undefined
   /** 消息中提及模型的写法，与生成模型的消息相同（`modelMention`）。 */
   const named = (r: ModelRef) => modelMention(r, savedDisplayName(config, 'art', r))
-  const target = resolveModel(config, ref)
+  const choices =
+    Object.entries(config.providers)
+      .flatMap(([name, p]) =>
+        Object.entries(p.models)
+          .filter(([, m]) => !m.delisted)
+          .map(([m]) => named({ provider: name, model: m })),
+      )
+      .join('、') || '（无）'
+  const target = resolveArtModel(config, ref)
   if (!target) {
-    const choices =
-      Object.entries(config.providers)
-        .flatMap(([name, p]) =>
-          Object.keys(p.models).map((m) => named({ provider: name, model: m })),
-        )
-        .join('、') || '（无）'
     return {
       ok: false,
       message: ref
@@ -108,12 +133,17 @@ export async function generateArt(
         : `没有默认的对话模型，请通过 provider 与 model 指定。可选：${choices}`,
     }
   }
-  if (!target.apiKey) {
+  // 渠道已不再提供该型号，请求必然被拒绝；与生成模型的处理相同。
+  if (target.delisted) {
+    return { ok: false, message: `${named(target)} 已下架，未发出请求。可选：${choices}` }
+  }
+  // 本机地址不要求 key，与对话请求相同（`isLocalEndpoint`）。
+  if (!target.apiKey && !isLocalEndpoint(target.baseUrl)) {
     return { ok: false, message: `接口 ${target.provider} 未配置 API Key，请在设置 → 模型中填写` }
   }
   const adapter = buildAdapter({
     kind: target.kind,
-    apiKey: target.apiKey,
+    apiKey: target.apiKey ?? '',
     model: target.model,
     ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
     ...(target.headers ? { headers: target.headers } : {}),
