@@ -523,6 +523,17 @@ describe('工具说明不另写收尾方式', () => {
   }
 })
 
+/**
+ * 依据（2026-11-20 基准，与不含该句的版本同时运行，20 题 × 2 次）：通过 33 对 34、超时 6 对 6，
+ * 每题用时中位数 174 秒对 255 秒、模型回复 734 次对 854 次。删去该句时用时回到改动之前。
+ */
+test('工作方式写明思考先定大体方向、只推演到下一步所需的程度', () => {
+  const prompt = buildSystemPrompt(new Set(['run_command']))
+  expect(prompt).toContain(
+    '思考时先确定大体方向，只推演到下一步所需的程度；完整的流程在执行中根据每一步的结果逐步确定，不在动手之前全部推演完。',
+  )
+})
+
 describe('能力段', () => {
   test('有 run_command 时写明 Chrome 须指定 --user-data-dir，位于 .tmp/ 下', () => {
     const prompt = buildSystemPrompt(new Set(['run_command']))
