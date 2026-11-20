@@ -89,6 +89,9 @@ export class AnthropicAdapter implements LlmAdapter {
       // 缺少 key 的错误在首次发送请求时抛出，由 classifyProviderError 归类为
       // no_api_key，前端据此引导用户前往设置页。
       apiKey: profile.apiKey || 'unset',
+      // 必须显式为 null：缺省时 SDK 读取环境变量 ANTHROPIC_AUTH_TOKEN，在 x-api-key 之外另发 `Authorization: Bearer`，
+      // 以 Bearer 优先鉴权的接口（云端网关）会以该变量的值鉴权并拒绝请求。
+      authToken: null,
       ...PROVIDER_HTTP,
       ...(profile.baseUrl ? { baseURL: profile.baseUrl } : {}),
       defaultHeaders: { ...PROVIDER_HEADERS, ...profile.headers },

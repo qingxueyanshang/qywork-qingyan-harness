@@ -427,6 +427,26 @@ describe('工具结果带图片', () => {
   })
 })
 
+/**
+ * 原始失败形状：电脑上设置了 `ANTHROPIC_AUTH_TOKEN`（命令行工具接入第三方接口的常见设置）时，请求在 `x-api-key` 之外
+ * 另带 `Authorization: Bearer <该变量>`；云端网关优先读取 Bearer，以「设备密钥无效」拒绝 Claude 型号，OpenAI 协议的型号不受影响。
+ */
+describe('鉴权', () => {
+  test('只以配置中的 key 发送 x-api-key，不读取环境变量 ANTHROPIC_AUTH_TOKEN', async () => {
+    const prior = process.env.ANTHROPIC_AUTH_TOKEN
+    process.env.ANTHROPIC_AUTH_TOKEN = 'token-from-environment'
+    try {
+      requestHeaders.length = 0
+      await send([{ role: 'user', content: 'hi' }])
+      expect(requestHeaders[0]?.get('x-api-key')).toBe('sk-x')
+      expect(requestHeaders[0]?.get('authorization')).toBeNull()
+    } finally {
+      if (prior === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
+      else process.env.ANTHROPIC_AUTH_TOKEN = prior
+    }
+  })
+})
+
 describe('连接', () => {
   test('每次请求都声明不复用连接', async () => {
     requestHeaders.length = 0
