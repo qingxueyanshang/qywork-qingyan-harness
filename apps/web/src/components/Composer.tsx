@@ -331,8 +331,8 @@ export function Composer(props: { empty: boolean }) {
     })
   }
   const runSlash = (cmd: Command) => {
-    // 需要附带参数的命令（`/goal`）在面板中选中时不执行，只把命令名填入草稿：
-    // 此时用户尚未说明要做什么，执行只会得到一个空目标。
+    // 接受参数的命令（`/goal`、`/new`）在面板中选中时不执行，只把命令名填入草稿，由用户写下要求后回车提交：
+    // 此时用户尚未说明要做什么，执行只会得到一个空目标或一个空会话。
     if (cmd.arg) {
       setText(`/${cmd.slash} `)
       queueMicrotask(() => {

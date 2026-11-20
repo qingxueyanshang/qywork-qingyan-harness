@@ -9,6 +9,7 @@
 import { Ports, provide, type ToolRegistry, type ToolSpec } from '@qywork/agent'
 import { browserTools } from './browser.ts'
 import { CanvasPort } from './canvas/port.ts'
+import { newConversationTool } from './conversation/new-conversation.ts'
 import { desktopTools } from './desktop/tools.ts'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.ts'
 import { readGoalTool, updateGoalTool } from './goals.ts'
@@ -56,6 +57,7 @@ export {
   CloudSkillPort,
   type CloudSkillResult,
 } from './cloud-skills/port.ts'
+export { ConversationPort } from './conversation/port.ts'
 export {
   type DesktopActResult,
   type DesktopBlockingWindowInfo,
@@ -338,6 +340,7 @@ function builtinCandidates(ports: Ports, opts: BuiltinOptions): ToolSpec[] {
     listSchedulesTool,
     deleteScheduleTool,
     defineRoleTool,
+    newConversationTool,
     subagentTool,
     stopSubagentTool,
     waitSubagentsTool,

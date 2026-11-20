@@ -523,6 +523,21 @@ describe('能力段', () => {
   })
 
   /**
+   * 原始失败形状：用户要求「额外开一个分支会话」，模型只有 subagent 可用，派发了临时子 agent，
+   * 会话列表中没有出现新会话。
+   */
+  test('注册了 new_conversation 时写明新开会话的用法，并与子 agent 区分', () => {
+    const line = buildSystemPrompt(new Set(['new_conversation', 'subagent']))
+      .split('\n')
+      .find((l) => l.startsWith('- 新开会话：'))
+    expect(line).toContain('分支会话')
+    expect(line).toContain('new_conversation')
+    expect(line).toContain('会话列表')
+    expect(line).toContain('subagent')
+    expect(buildSystemPrompt(new Set(['subagent']))).not.toContain('new_conversation')
+  })
+
+  /**
    * 原始失败形状（2026-11-19 真实模型回归）：Office 一行写「制作前先用 read_office_guide 获取说明」，read_office_guide 按需，
    * DeepSeek 与 Claude 按该行直接以空参数调用，报「缺少必填参数：format」后才读取定义。
    */

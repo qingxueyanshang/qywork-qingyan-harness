@@ -86,7 +86,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
  * 能力段。每个类目都须逐条告知模型：未告知时模型不会使用该能力，
  * 这是当前模型不主动使用记忆、技能、任务派发、定时、电脑控制的直接原因。
  *
- * 每行绑定一个工具，该工具已注册时才输出这一行：subagent / workflow /
+ * 每行绑定一个工具，该工具已注册时才输出这一行：subagent / new_conversation / workflow /
  * load_tool / install_plugin / 五个桌面工具按通道注册（见 `tools/src/index.ts`），
  * 没有对应通道时输出该行等于指向一个不存在的工具。
  * 过滤结果在一个会话内固定，因此冻结前缀仍然逐字节稳定。
@@ -211,6 +211,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   {
     tool: 'define_role',
     line: '- 角色：用户明确要求创建或修改角色（/role 命令或明确的文字要求）时，用 define_role 把可长期复用的角色写进当前项目的 Agent Team；未提出要求时不创建。角色是持久定义，之后建子 agent 时按 role id 引用。',
+  },
+  {
+    tool: 'new_conversation',
+    line: '- 新开会话：用户要求新开、另开会话（新会话、新对话、分支会话）时，用 new_conversation 新建一条会话。它显示在左侧会话列表中，用户在其中直接对话，产出不送回本会话；它无法读取本会话，背景与要求写入 message。把任务交给子 agent 执行、并需要在本会话收到结果时，用 subagent。',
   },
   {
     tool: 'subagent',

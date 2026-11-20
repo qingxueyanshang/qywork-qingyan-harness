@@ -319,6 +319,62 @@ test('补全菜单的定位基准不受运行位置行影响，选择候选不�
   }
 })
 
+/** 原始失败形状：在补全菜单中选中 /new 即新建会话，用户无法先写下新会话要做的事。 */
+test('选中 /new 只填入命令；写下要求后提交，新建会话并把要求作为第一条消息发送', async () => {
+  const store = await import('../lib/store/index.ts')
+  const conversationsBefore = [...store.state.conversations]
+  store.setState({
+    activeConversation: 'cv_slash_from',
+    busyConversations: [],
+    followUps: [],
+    conversations: [{ id: 'cv_slash_from', provider: 'test', model: 'test-model' }] as never,
+  })
+  const { dispose, host, textarea } = await mountComposer(false)
+  const mountedApi = store.client.api
+  const created: string[] = []
+  store.client.api = async <T,>(path: string, init?: RequestInit) => {
+    if (path === '/api/conversations' && init?.method === 'POST') {
+      created.push(path)
+      return {
+        conversation: { id: 'cv_slash_opened', provider: 'test', model: 'test-model' },
+      } as T
+    }
+    if (path === '/api/models') return mountedApi.call(store.client, path, init) as Promise<T>
+    // 切换到新会话后读取其内容的请求不在本用例的范围内：直接失败，由切换会话的处理记录为该会话的错误。
+    throw new Error(`本用例未提供 ${path}`)
+  }
+  const beforeSend = store.client.send
+  const commands: { type: string; conversationId?: string; content?: string }[] = []
+  store.client.send = (command) => commands.push(command as (typeof commands)[number])
+  try {
+    input(textarea, '/')
+    const option = Array.from(
+      host.querySelectorAll<HTMLButtonElement>('[role="listbox"] [role="option"]'),
+    ).find((item) => item.querySelector('code')?.textContent === '/new')!
+    click(option)
+    expect(textarea.value).toBe('/new ')
+    await new Promise((done) => setTimeout(done, 0))
+    expect(created).toEqual([])
+
+    input(textarea, '/new 排查登录超时')
+    click(host.querySelector('.send-btn') as HTMLButtonElement)
+    await until(() => commands.some((c) => c.type === 'message.send'), '新会话的第一条消息')
+    expect(created).toHaveLength(1)
+    expect(commands.filter((c) => c.type === 'message.send')).toEqual([
+      expect.objectContaining({ conversationId: 'cv_slash_opened', content: '排查登录超时' }),
+    ])
+  } finally {
+    store.client.send = beforeSend
+    dispose()
+    store.setState({
+      activeConversation: null,
+      busyConversations: [],
+      followUps: [],
+      conversations: conversationsBefore,
+    })
+  }
+})
+
 describe('放大面板中的输入区', () => {
   test('上下文详情不显示计量来源字段', async () => {
     const { dispose, host } = await mountComposer(false)

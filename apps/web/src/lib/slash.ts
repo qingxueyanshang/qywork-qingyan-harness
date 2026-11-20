@@ -46,10 +46,10 @@ export type SlashDispatch<T> =
 /**
  * 使发送按钮、移动端提交与键盘回车采用同一种命令语义。
  *
- * 已知的无参命令直接执行；已知的带参命令缺少参数时保留在草稿中，等待用户补充；
+ * 已知的无参命令与参数可省略的命令直接执行；已知的带参命令缺少必填参数时保留在草稿中，等待用户补充；
  * 未知命令或为无参命令附带参数时，仍按正文发送，不得静默丢弃用户输入。
  */
-export function slashDispatch<T extends { slash?: string; arg?: unknown }>(
+export function slashDispatch<T extends { slash?: string; arg?: { optional?: boolean } }>(
   draft: string,
   commands: readonly T[],
 ): SlashDispatch<T> {
@@ -57,7 +57,9 @@ export function slashDispatch<T extends { slash?: string; arg?: unknown }>(
   if (!call) return { kind: 'message' }
   const command = commands.find((item) => item.slash === call.name)
   if (!command) return { kind: 'message' }
-  if (command.arg && !call.arg) return { kind: 'await_argument', command }
+  if (command.arg && !command.arg.optional && !call.arg) {
+    return { kind: 'await_argument', command }
+  }
   if (!command.arg && call.arg) return { kind: 'message' }
   return { kind: 'run', command, ...(call.arg ? { arg: call.arg } : {}) }
 }

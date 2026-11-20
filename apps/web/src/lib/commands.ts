@@ -28,9 +28,10 @@ export interface Command {
   hint?: string
   icon: (p: { size?: number }) => JSX.Element
   /**
-   * 该命令需要参数。选中时只把 `/名字 ` 填入草稿，由用户输入参数后回车提交。
+   * 该命令接受参数。选中时只把 `/名字 ` 填入草稿，由用户输入参数后回车提交。
+   * `optional` 为 true 时参数可省略：不写参数直接回车即执行。
    */
-  arg?: { placeholder: string }
+  arg?: { placeholder: string; optional?: true }
   run(arg?: string): void
 }
 
@@ -42,13 +43,19 @@ export function buildCommands(): Command[] {
       slash: 'new',
       hint: '当前对话保留在列表中',
       icon: IconNewChat,
-      run: () =>
-        void newConversation().catch((e: unknown) =>
-          setState('notice', {
-            reason: 'new_conversation_failed',
-            message: `无法新建会话：${explainApiError(e, '请求失败')}`,
-          }),
-        ),
+      // 参数是新会话的第一条消息：回车后新建会话并发送；不写参数直接回车只新建会话。
+      arg: { placeholder: '新会话的第一条消息', optional: true },
+      run: (message) =>
+        void newConversation()
+          .then(() => {
+            if (message) sendMessage(message)
+          })
+          .catch((e: unknown) =>
+            setState('notice', {
+              reason: 'new_conversation_failed',
+              message: `无法新建会话：${explainApiError(e, '请求失败')}`,
+            }),
+          ),
     },
     {
       id: 'compact',

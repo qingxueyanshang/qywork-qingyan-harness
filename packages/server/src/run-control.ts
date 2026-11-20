@@ -66,6 +66,7 @@ import {
   BrowserPort,
   CanvasPort,
   CommandPort,
+  ConversationPort,
   DesktopPort,
   PersonalizationPort,
   PetPort,
@@ -76,6 +77,7 @@ import { personalizationPort, petPort } from './appearance.ts'
 import { artRenderOf, canvasPort } from './canvas/port.ts'
 import { CLOUD_PROVIDER } from './cloud/account.ts'
 import { commandPortOf } from './command-tasks/table.ts'
+import { conversationPortOf } from './conversations/open.ts'
 import { makeDelegate } from './delegate.ts'
 import { type CommandDeps, officePortOf } from './deps.ts'
 import { publishGitState } from './http-util.ts'
@@ -331,6 +333,13 @@ export async function startRun(
             : []),
           // 插件安装端口同样只提供给顶层会话：成员会话不应为整台机器安装插件。
           provide(PluginPort, makePluginPort({ workspaceRoot: ws.rootPath })),
+          // 新开会话只提供给顶层会话：用户要求另开的会话由用户直接对话，成员会话没有面向用户的入口。
+          provide(
+            ConversationPort,
+            conversationPortOf(deps, conversationId, (to, text) =>
+              submitMessage(to, { id: crypto.randomUUID(), content: text, steer: false }, deps),
+            ),
+          ),
           /*
            * 浏览器控制**按当前宿主状态实时判定**，不缓存。
            *

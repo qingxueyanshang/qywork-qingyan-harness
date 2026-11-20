@@ -108,7 +108,8 @@ export type AgentEvent =
  *
  * 负载是完整的 `Conversation`，客户端直接插入列表，无需重新请求列表。
  *
- * 只在定时任务认领新建会话时发出：用户点击「新对话」经由 HTTP，响应体中已包含该会话。
+ * 在服务端新建会话时发出：定时任务认领新建会话，与模型以 `new_conversation` 新开会话。
+ * 用户点击「新对话」经由 HTTP，响应体中已包含该会话，不发出本事件。
  */
 export interface ConversationCreatedEvent {
   type: 'conversation.created'

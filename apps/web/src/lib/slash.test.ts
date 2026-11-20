@@ -62,14 +62,21 @@ describe('带参数的命令', () => {
 describe('提交分派', () => {
   const commands = [
     { slash: 'compact' },
-    { slash: 'new' },
+    { slash: 'new', arg: { placeholder: '第一条消息', optional: true } },
     { slash: 'goal', arg: { placeholder: '目标' } },
     { slash: 'role', arg: { placeholder: '角色描述' } },
   ]
 
   test('无参命令通过发送按钮提交时也直接执行', () => {
     expect(slashDispatch('/compact', commands).kind).toBe('run')
-    expect(slashDispatch('/new   ', commands).kind).toBe('run')
+  })
+
+  test('参数可省略的命令：不写参数直接执行，写了参数时连同参数执行', () => {
+    expect(slashDispatch('/new   ', commands)).toEqual({ kind: 'run', command: commands[1]! })
+    expect(slashDispatch('/new 排查登录超时', commands)).toMatchObject({
+      kind: 'run',
+      arg: '排查登录超时',
+    })
   })
 
   test('带参命令缺参数时等待输入，参数完整时执行', () => {
