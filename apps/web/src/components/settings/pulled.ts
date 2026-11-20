@@ -92,7 +92,8 @@ export function withBase(
 /**
  * 添加选定的型号。对话型号写入价格，对应型号写入模型库覆盖（「型号 × 协议」）；生成型号写入协议，
  * 对应型号写入 `spec: { base }`。
- * 接口原本没有对话型号时，第一个添加的对话型号成为默认模型；某一类生成没有默认模型时，第一个添加的成为默认。
+ * 没有默认对话模型时，第一个添加的对话型号成为默认模型；某一类生成没有默认模型时，第一个添加的成为默认。
+ * 已有的默认值不改变。
  */
 export function addPulled(
   cur: RedactedConfig,
@@ -136,10 +137,8 @@ export function addPulled(
     },
     ...(Object.keys(catalog).length ? { catalog } : {}),
     ...(Object.keys(mediaDefaults).length ? { mediaDefaults } : {}),
-    // 与手动添加相同：接口没有对话模型时不可用，添加第一个即切换到它。
-    ...(Object.keys(owner.models).length === 0 && firstChat
-      ? { active: { provider, model: firstChat } }
-      : {}),
+    // 与手动添加相同：只在没有默认对话模型时设置。
+    ...(!cur.active && firstChat ? { active: { provider, model: firstChat } } : {}),
   }
 }
 

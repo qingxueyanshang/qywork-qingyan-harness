@@ -171,12 +171,15 @@ test('添加：生成型号的对应型号写入 spec.base', () => {
   expect(next.catalog).toBeUndefined()
 })
 
-test('接口原本没有对话型号时，第一个添加的成为默认模型', () => {
+test('没有默认对话模型时第一个添加的成为默认；已有默认模型时，向空接口添加不改变默认', () => {
   const cfg = base()
   cfg.providers.relay!.models = {}
-  const next = addPulled(cfg, 'relay', [{ model: RESULT.models[0]! }])!
+  const kept = addPulled(cfg, 'relay', [{ model: RESULT.models[0]! }])!
+  expect(kept.active).toEqual({ provider: 'other', model: 'x' })
+  expect(kept.providers.relay!.models['claude-sonnet-5-5']).toEqual({ price: PRICE })
+  const { active: _active, ...unset } = cfg
+  const next = addPulled(unset, 'relay', [{ model: RESULT.models[0]! }])!
   expect(next.active).toEqual({ provider: 'relay', model: 'claude-sonnet-5-5' })
-  expect(next.providers.relay!.models['claude-sonnet-5-5']).toEqual({ price: PRICE })
 })
 
 test('未知型号按选定的类别归类，协议按接口地址取默认值；未选定时不变', () => {

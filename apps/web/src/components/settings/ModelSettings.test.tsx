@@ -127,6 +127,48 @@ for (const [index, output] of ['chat', 'video'].entries()) {
   })
 }
 
+/** 原始失败形状：新建接口并添加模型后删除该接口，默认对话模型由用户设定的型号变为第一个接口的第一个模型。 */
+test('新建接口、添加模型再删除该接口，默认对话与生成模型保持用户设定的值', async () => {
+  await settingsFixture(async ({ host, stored, idle }) => {
+    host.querySelector<HTMLButtonElement>('.tab-chip.add')!.click()
+    await idle()
+    const input = host.querySelector<HTMLInputElement>('.model-row.add input')!
+    input.value = 'claude-opus-5-5'
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await idle()
+    expect(stored().providers.新接口?.models).toEqual({ 'claude-opus-5-5': {} })
+    expect(stored().active).toEqual({ provider: 'second', model: 'chat' })
+
+    host.querySelector<HTMLButtonElement>('[aria-label="删除接口 新接口"]')!.click()
+    document.querySelector<HTMLButtonElement>('.confirm-dialog .btn-primary')!.click()
+    await idle()
+    expect(stored().providers.新接口).toBeUndefined()
+    expect(stored().active).toEqual({ provider: 'second', model: 'chat' })
+    expect(stored().mediaDefaults).toEqual({ video: { provider: 'second', model: 'video' } })
+  })
+})
+
+test('删除默认模型所在的接口或默认模型本身，默认值删除，不改用其他模型', async () => {
+  await settingsFixture(async ({ host, stored, idle }) => {
+    const tab = (name: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>('.tab-chip')].find(
+        (button) => button.textContent === name,
+      )!
+    tab('second').click()
+    await idle()
+    host.querySelector<HTMLButtonElement>('[aria-label="删除模型 chat"]')!.click()
+    await idle()
+    expect(stored().active).toBeUndefined()
+
+    host.querySelector<HTMLButtonElement>('[aria-label="删除接口 second"]')!.click()
+    document.querySelector<HTMLButtonElement>('.confirm-dialog .btn-primary')!.click()
+    await idle()
+    expect(Object.keys(stored().providers)).toEqual(['first'])
+    expect(stored().active).toBeUndefined()
+    expect(stored().mediaDefaults).toBeUndefined()
+  })
+})
+
 test('重名和空名称恢复原名并显示错误，不留下看似已经保存的输入值', async () => {
   await settingsFixture(async ({ host, stored, idle }) => {
     for (const value of ['second', '   ']) {

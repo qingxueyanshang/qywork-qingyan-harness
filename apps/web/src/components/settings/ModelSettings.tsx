@@ -152,14 +152,9 @@ export function ModelSettings() {
     void replaceConfig((cur) => {
       const { [name]: _drop, ...rest } = cur.providers
       const next: RedactedConfig = { ...cur, providers: rest }
-      // 删除的是当前默认接口时须同时修改 active，否则服务端拒绝保存，
-      // 且报错「active 指向不存在的接口」与删除操作无法对应。
-      // 没有其他接口可选时不设默认值：删除最后一个接口即恢复为未配置，这是合法状态。
-      if (cur.active?.provider === name) {
-        const fallback = firstModelRef(rest)
-        if (fallback) next.active = fallback
-        else delete next.active
-      }
+      // 删除的是当前默认接口时同时删除 active，否则服务端以「active 指向不存在的接口」拒绝保存。
+      // 不要改用其他模型：默认模型由用户选定，替换为接口表中的第一个模型会静默改变新会话使用的模型与计费。
+      if (cur.active?.provider === name) delete next.active
       return withMediaDefaults(next, (ref) => ref.provider === name)
     })
   }
@@ -263,9 +258,8 @@ export function ModelSettings() {
         ...(prefix
           ? { catalog: { ...cur.catalog, [key]: { ...cur.catalog?.[key], base: prefix } } }
           : {}),
-        // 接口没有模型时不可用。添加第一个模型时将默认模型切换到它，
-        // 使添加立即生效。
-        ...(Object.keys(owner.models).length === 0 ? { active: { provider, model: id } } : {}),
+        // 没有默认对话模型时，添加的模型成为默认模型。已有默认模型时不改变它。
+        ...(cur.active ? {} : { active: { provider, model: id } }),
       }
     })
   }
@@ -292,14 +286,8 @@ export function ModelSettings() {
         ...cur,
         providers: { ...cur.providers, [provider]: { ...owner, models } },
       }
-      // 删除的是默认模型时，依次改用本接口与其他接口的第一个模型，不保留指向已删除模型的 active。
-      // 所有接口均无模型时不设默认值：删除最后一个模型即恢复为未配置，这是合法状态。
-      if (cur.active?.provider === provider && cur.active.model === id) {
-        const fallback = Object.keys(models)[0]
-        const nextActive = fallback ? { provider, model: fallback } : firstModelRef(next.providers)
-        if (nextActive) next.active = nextActive
-        else delete next.active
-      }
+      // 删除的是默认模型时同时删除 active，不改用其他模型，理由同删除接口。
+      if (cur.active?.provider === provider && cur.active.model === id) delete next.active
       return next
     })
   }
@@ -710,51 +698,19 @@ export function baseUrlPlaceholder(urls: readonly (string | undefined)[]): strin
 }
 
 /**
- * 删除生成模型或接口后更新默认生成模型：`gone` 命中的类别以同类的第一个模型作为默认值，同类没有模型时删除该类别的键，
- * 所有类别均被删除时省略整个字段。保存时以这份配置为准，保留指向已删除模型的默认值会使保存被 422 拒绝。
+ * 删除生成模型或接口后更新默认生成模型：删除 `gone` 命中的类别，所有类别均被删除时省略整个字段。
+ * 保留指向已删除模型的默认值会使保存被 422 拒绝；不要改用同类的其他模型，理由同删除默认对话模型。
  */
 function withMediaDefaults(
   next: RedactedConfig,
   gone: (ref: { provider: string; model: string }) => boolean,
 ): RedactedConfig {
   if (!next.mediaDefaults) return next
-  const defaults: Partial<Record<MediaOutput, { provider: string; model: string }>> = {}
-  for (const [output, ref] of Object.entries(next.mediaDefaults) as [
-    MediaOutput,
-    { provider: string; model: string },
-  ][]) {
-    if (!gone(ref)) {
-      defaults[output] = ref
-      continue
-    }
-    const fallback = firstMediaRef(next.providers, output)
-    if (fallback) defaults[output] = fallback
-  }
+  const defaults = Object.fromEntries(
+    Object.entries(next.mediaDefaults).filter(([, ref]) => !gone(ref)),
+  )
   const { mediaDefaults: _drop, ...rest } = next
   return Object.keys(defaults).length ? { ...rest, mediaDefaults: defaults } : rest
-}
-
-function firstMediaRef(
-  providers: Record<string, RedactedProvider>,
-  output: MediaOutput,
-): { provider: string; model: string } | null {
-  for (const [provider, p] of Object.entries(providers)) {
-    for (const [model, m] of Object.entries(p.media ?? {})) {
-      if (mediaKindOutput(m.kind) === output) return { provider, model }
-    }
-  }
-  return null
-}
-
-/** 接口表中第一个已添加的模型。删除当前默认接口或默认模型后，用它选择新的默认值。 */
-function firstModelRef(
-  providers: Record<string, RedactedProvider>,
-): { provider: string; model: string } | null {
-  for (const [provider, p] of Object.entries(providers)) {
-    const model = Object.keys(p.models)[0]
-    if (model) return { provider, model }
-  }
-  return null
 }
 
 /**

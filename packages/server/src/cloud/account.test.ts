@@ -684,7 +684,7 @@ test('同步型号清单：后台调价后配置中的倍率随之更新；清�
 /**
  * 原始失败形状：同步时按配置中已有的顺序写入，新上架的型号排在最后，已下架的型号仍在原位，
  * 输入框的模型列表与账号窗口中按清单排列的型号表顺序不同。
- * 没有显示名称的条目是使用对外编号之前按内部 id 写入的，同步时删除，指向它的默认模型改为清单中的第一个型号。
+ * 没有显示名称的条目是使用对外编号之前按内部 id 写入的，同步时删除，指向它的默认模型一并删除，不改用其他型号。
  */
 test('同步型号清单：配置中的型号按清单的顺序排列，已下架的排在最后；用户的档位保留；没有显示名称的旧条目删除', async () => {
   await account.login('me@example.com', PASSWORD)
@@ -712,7 +712,7 @@ test('同步型号清单：配置中的型号按清单的顺序排列，已下�
   expect(Object.keys(stored)).toEqual(['claude-sonnet-5-5', 'gpt-5', 'claude-next', 'claude-old'])
   expect(stored['claude-old']?.delisted).toBe(true)
   expect(stored['gpt-5']?.effort).toBe('high')
-  expect(live.active).toEqual({ provider: CLOUD_PROVIDER, model: 'claude-sonnet-5-5' })
+  expect(live.active).toBeUndefined()
   expect(JSON.stringify(await loadConfig())).not.toContain('relay-internal-id')
 })
 

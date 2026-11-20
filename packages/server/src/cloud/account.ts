@@ -692,15 +692,11 @@ export class CloudAccount {
       for (const [id, m] of Object.entries(provider.media ?? {}))
         if (m.displayName) media[id] ??= { ...m, delisted: true }
       const catalog = withSpecs(current.catalog, list.models)
-      // 默认对话模型与默认生成模型指向已删除的条目时：对话改为清单中的第一个型号，生成删除该类别的默认。
+      // 默认对话模型与默认生成模型指向已删除的条目时删除该默认值。不要改用清单中的其他型号：
+      // 默认模型由用户选定，替换会静默改变新会话使用的模型与计费。
       const gone = (ref: { provider: string; model: string } | undefined, kept: object) =>
         ref?.provider === CLOUD_PROVIDER && !(ref.model in kept)
-      const first = Object.keys(listed)[0]
-      const active = gone(current.active, models)
-        ? first
-          ? { provider: CLOUD_PROVIDER, model: first }
-          : undefined
-        : current.active
+      const active = gone(current.active, models) ? undefined : current.active
       const mediaDefaults = current.mediaDefaults
         ? Object.fromEntries(
             Object.entries(current.mediaDefaults).filter(([, ref]) => !gone(ref, media)),
