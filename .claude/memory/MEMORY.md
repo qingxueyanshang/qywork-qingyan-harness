@@ -19,6 +19,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [真机电脑控制任务会操作任何已打开的窗口](desktop-live-runs-can-type-into-this-session.md) — 曾输入 `exit` 结束主会话、曾导航用户的 Edge；运行前确认 run-task.ts 会隐藏运行前已打开的全部窗口，结束后用 scan-touched.ts 检查
 - [参照用的 agent 仓库位于 view-agent](reference-agents-in-view-agent.md) — 「看看开源项目」指桌面 view-agent 下的 pi / prime / cc-haha / deepseek-harness 四个仓库；出处只写入 docs/plans
 - [云端仓库只用本地 git](cloud-repo-local-only.md) — `Desktop\qywork-cloud` 不推送、不建远程；用户未要求时不构建安装包，服务器由用户准备
+- [云端仓库格式化须指定 biome 配置](cloud-biome-config-path.md) — 云端仓库没有 biome.json，不加 `--config-path ../qywork/biome.json` 会按默认配置重排整个文件，且无法再格式化恢复
 - [商业化云服务使用独立账号](commercial-cloud-standalone-accounts.md) — 邮箱加密码注册登录，不接第三方登录；后台录入模型接口并查看用户数据
 - [前一版本未发布时不升版本号](version-bump-only-after-publish.md) — v0.1.20 未公开时新改动并入 0.1.20，本地打包安装使用同一版本号，版本说明修改当前版本的那一份
 - [正式发布经接口脚本完成](publish-release-via-api.md) — `.tmp/scratch/release-api.ps1` 用凭据管理器的令牌触发三个发布工作流并公开草稿，不需要 gh；Git Bash 中设置 `MSYS_NO_PATHCONV=1`
