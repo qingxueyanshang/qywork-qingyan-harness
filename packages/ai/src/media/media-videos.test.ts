@@ -1,8 +1,8 @@
 /**
- * 视频生成：四个视频适配器与任务等待。
+ * 视频生成：四个视频适配器与任务等待；可灵图像与可灵视频共用任务接口，一并在此覆盖。
  *
  * 覆盖范围：`media/adapters/dashscope.ts` 的 `DashScopeVideosAdapter`、`media/adapters/ark-videos.ts`、
- * `media/adapters/openai-videos.ts`、`media/adapters/kling.ts` 实际发出的提交与查询、`media/task.ts` 对终态与可接续失败的区分，
+ * `media/adapters/openai-videos.ts`、`media/adapters/kling.ts`（视频与图像）实际发出的提交与查询、`media/task.ts` 对终态与可接续失败的区分，
  * `media/catalog.ts` 视频模型按 id 回退时的操作交集与按型号区分的参数表，以及 `@qywork/core` 的 `defaultMediaKind` 对视频的选择；
  * 百炼与方舟的任务撤销（`cancel`），以及各厂商进行中状态词归并为排队中 / 生成中（`taskPhase`）。
  *
@@ -732,6 +732,92 @@ describe('kling_videos', () => {
       ),
     )
     expect(refused.message).toContain('model not supported')
+  })
+})
+
+describe('kling_images', () => {
+  const adapter = () =>
+    buildMediaAdapter({
+      kind: 'kling_images',
+      model: 'kling-4.0',
+      apiKey: 'kling-key',
+      baseUrl: origin(),
+    })
+
+  test('参考图依次命名为 ref_1 起，参数放入 settings；取 outputs 中全部图片与实际扣费', async () => {
+    submit = () => Response.json({ code: 0, data: { id: 'ki-1', status: 'submitted' } })
+    polls = [
+      () =>
+        Response.json({
+          code: 0,
+          data: [
+            {
+              id: 'ki-1',
+              status: 'succeeded',
+              outputs: [
+                { type: 'image', url: `${origin()}/files/last.jpg` },
+                { type: 'image', url: `${origin()}/files/last.jpg` },
+              ],
+              billing: [{ charge_type: 'cash', amount: '0.4', currency: 'CNY' }],
+            },
+          ],
+        }),
+    ]
+    const saved: unknown[] = []
+    const out = await adapter().run(
+      {
+        operation: 'edit',
+        prompt: '@ref_2 中的包放在 @ref_1 的桌上',
+        inputs: [
+          { role: 'reference', bytes: PNG, mime: 'image/png', path: '/w/a.png' },
+          { role: 'reference', bytes: JPEG, mime: 'image/jpeg', path: '/w/b.jpg' },
+        ],
+        params: { resolution: '4k', aspect_ratio: '3:4', n: 2 },
+      },
+      opts({ onImageResult: (r: unknown) => void saved.push(r) }),
+    )
+    const post = seen.find((s) => s.method === 'POST')!
+    expect(post.path).toBe('/image-generation/kling-4.0')
+    expect(post.headers.authorization).toBe('Bearer kling-key')
+    expect(post.json).toEqual({
+      contents: [
+        { type: 'prompt', text: '@ref_2 中的包放在 @ref_1 的桌上' },
+        { type: 'refer_image', url: Buffer.from(PNG).toString('base64'), id: 'ref_1' },
+        { type: 'refer_image', url: Buffer.from(JPEG).toString('base64'), id: 'ref_2' },
+      ],
+      settings: { resolution: '4k', aspect_ratio: '3:4', n: 2 },
+    })
+    expect(seen.some((s) => s.path === '/tasks' && s.search === '?task_ids=ki-1')).toBe(true)
+    expect(out.files.map((f) => f.bytes)).toEqual([JPEG, JPEG])
+    expect(out.usage).toEqual({ images: 2, billed: { amount: 0.4, currency: 'CNY' } })
+    expect(saved).toHaveLength(1)
+  })
+
+  test('文生图不带参考图；远端失败是终态；成功但没有图片时保留任务号', async () => {
+    submit = () => Response.json({ code: 0, data: { id: 'ki-2' } })
+    polls = [
+      () =>
+        Response.json({ code: 0, data: [{ id: 'ki-2', status: 'failed', message: '内容不合规' }] }),
+    ]
+    const generate = { operation: 'generate' as const, prompt: '海边', inputs: [], params: {} }
+    const failed = await rejection(adapter().run(generate, opts()))
+    expect(seen.find((s) => s.method === 'POST')?.json).toEqual({
+      contents: [{ type: 'prompt', text: '海边' }],
+    })
+    expect(failed.message).toBe('远端任务失败：内容不合规')
+    expect(failed.pendingTaskId).toBeUndefined()
+
+    polls = [
+      () => Response.json({ code: 0, data: [{ id: 'ki-3', status: 'succeeded', outputs: [] }] }),
+    ]
+    const empty = await rejection(adapter().run(generate, opts({ resumeTaskId: 'ki-3' })))
+    expect(empty.message).toContain('任务成功但没有返回图片')
+    expect(empty.pendingTaskId).toBe('ki-3')
+  })
+
+  test('添加图像模型时可灵官方地址使用可灵图像协议', () => {
+    expect(defaultMediaKind('image', 'https://api-beijing.klingai.com')).toBe('kling_images')
+    expect(lookupMediaModel('kling-4.0', 'kling_images').catalogued).toBe(true)
   })
 })
 

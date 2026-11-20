@@ -13,7 +13,7 @@ import {
   DashScopeVideosAdapter,
 } from './adapters/dashscope.ts'
 import { GeminiMediaAdapter, GeminiSpeechAdapter, VeoVideosAdapter } from './adapters/google.ts'
-import { KlingVideosAdapter } from './adapters/kling.ts'
+import { KlingImagesAdapter, KlingVideosAdapter } from './adapters/kling.ts'
 import { MiMoSpeechAdapter } from './adapters/mimo.ts'
 import {
   MiniMaxImagesAdapter,
@@ -64,6 +64,8 @@ function construct(profile: MediaProfile): MediaAdapter {
       return new ArkVideosAdapter(profile, spec)
     case 'dashscope_videos':
       return new DashScopeVideosAdapter(profile, spec)
+    case 'kling_images':
+      return new KlingImagesAdapter(profile, spec)
     case 'kling_videos':
       return new KlingVideosAdapter(profile, spec)
     case 'openai_speech':

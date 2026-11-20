@@ -1,19 +1,22 @@
 /**
- * `kling_videos`：可灵开放平台在路径中指定模型的视频接口。
+ * 可灵开放平台在路径中指定模型的接口：`kling_videos` 视频，`kling_images` 图像。
  *
- * 路径按操作选择：文生视频 `/text-to-video/{model}`，首帧与首尾帧 `/image-to-video/{model}`，参考图 `/omni-video/{model}`。
- * 文生视频只发送 `prompt`；其余操作将文字与图片一起放入 `contents[]`。参数原样放入 `settings`。
- * 查询 `GET /tasks?task_ids={id}`，状态 `submitted / processing / succeeded / failed`，视频位于 `outputs[]` 中 `type: video` 的条目。
+ * 视频路径按操作选择：文生视频 `/text-to-video/{model}`，首帧与首尾帧 `/image-to-video/{model}`，参考图 `/omni-video/{model}`。
+ * 文生视频只发送 `prompt`；其余操作将文字与图片一起放入 `contents[]`。
+ * 图像只有 `/image-generation/{model}`：文字与参考图都放入 `contents[]`，参考图的 `id` 依次为 `ref_1`、`ref_2`…，
+ * 提示词以 `@ref_1` 指代（目录的 `mention` 与此一致）。参数原样放入 `settings`。
+ * 查询 `GET /tasks?task_ids={id}`，状态 `submitted / processing / succeeded / failed`，产物位于 `outputs[]`，按 `type` 区分视频与图片。
  *
  * 提交与查询的失败以 HTTP 状态码与正文的业务码 `code` 同时报告，业务码按可灵的错误码归类（`upstreamFailureCode`）：
  * 429 同时用于限流、欠费与账户异常。
  * 鉴权只使用 API Key（`Authorization: Bearer`）。AccessKey / SecretKey 签名只适用于按 `model_name` 字段选择模型的接口，此处不使用。
- * 图片按 base64 发送，不带 `data:` 前缀；视频素材接口只接受 URL，因此该协议不接受参考视频。
+ * 图片按 base64 发送，不带 `data:` 前缀；视频素材接口只接受 URL，因此视频协议不接受参考视频。
  */
 
 import type { Currency, MediaOperation } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, defined, download, getJson } from '../http.ts'
+import { resolveImages } from '../image-result.ts'
 import {
   afterSubmit,
   failureDetail,
@@ -25,6 +28,7 @@ import {
 import {
   type MediaAdapter,
   MediaError,
+  type MediaImageResult,
   type MediaInput,
   type MediaProfile,
   type MediaRequest,
@@ -44,23 +48,95 @@ const CONTENT_TYPE: Partial<Record<MediaInput['role'], string>> = {
   reference: 'refer_image',
 }
 
+interface Connection {
+  base: string
+  auth: Record<string, string>
+}
+
+function connection(profile: MediaProfile): Connection {
+  return {
+    base: (profile.baseUrl ?? '').trim().replace(/\/+$/, '') || DEFAULT_BASE,
+    auth: { authorization: `Bearer ${profile.apiKey}`, ...profile.headers },
+  }
+}
+
+const base64 = (input: MediaInput) => Buffer.from(input.bytes).toString('base64')
+const settingsOf = (params: Record<string, unknown>) =>
+  Object.keys(params).length ? { settings: params } : {}
+
+/** 提交到 `{path}/{model}`，返回任务号。正文的业务码不为 0 时按接口拒绝处理。 */
+async function submitTask(
+  conn: Connection,
+  path: string,
+  model: string,
+  payload: Record<string, unknown>,
+  opts: MediaRunOptions,
+): Promise<string> {
+  const submitted = await postTask(
+    `${conn.base}/${path}/${encodeURIComponent(model)}`,
+    payload,
+    conn.auth,
+    opts,
+    (body) => (body.code === 0 ? (body.data as { id?: unknown } | undefined)?.id : undefined),
+    {
+      ...UPSTREAM,
+      refused: (body) =>
+        typeof body.code === 'number' && body.code !== 0
+          ? `接口拒绝生成：${failureDetail(body.code, body.message, '未提供原因')}`
+          : undefined,
+    },
+  )
+  return submitted.taskId
+}
+
+/** 等待任务结束，返回成功的任务。 */
+function waitSucceeded(
+  conn: Connection,
+  taskId: string,
+  opts: MediaRunOptions,
+): Promise<{ task: Record<string, unknown> }> {
+  return waitTask(async (): Promise<TaskState<{ task: Record<string, unknown> }>> => {
+    const body = await getJson(
+      `${conn.base}/tasks?task_ids=${encodeURIComponent(taskId)}`,
+      conn.auth,
+      opts.signal,
+      { upstream: UPSTREAM },
+    )
+    const tasks = Array.isArray(body.data) ? (body.data as Record<string, unknown>[]) : []
+    const task = tasks.find((t) => t.id === taskId)
+    const status = String(task?.status ?? '')
+    if (task && status === 'succeeded') return { state: 'done', task }
+    if (status === 'failed') {
+      return { state: 'failed', message: failureDetail(undefined, task?.message, '任务失败') }
+    }
+    return pendingTask(status, ['submitted', 'processing'])
+  }, opts)
+}
+
+/** 任务 `outputs[]` 中该类型且带地址的产物。 */
+function outputsOf(
+  task: Record<string, unknown>,
+  type: 'video' | 'image',
+): (Record<string, unknown> & { url: string })[] {
+  const outputs = Array.isArray(task.outputs) ? (task.outputs as Record<string, unknown>[]) : []
+  return outputs.flatMap((o) =>
+    o.type === type && typeof o.url === 'string' && o.url ? [{ ...o, url: o.url }] : [],
+  )
+}
+
 /**
- * 任务的计量。金额取 `billing[]` 中从余额扣除的条目（`charge_type: cash`，`amount` 为实扣金额，`currency` 为 CNY / USD）；
- * 从资源包扣除的条目（`charge_type: unit`）只有单位数、没有金额，不记录金额。秒数取视频条目的 `duration`。
+ * 实际扣费金额：`billing[]` 中从余额扣除的条目（`charge_type: cash`，`amount` 为实扣金额，`currency` 为 CNY / USD）之和；
+ * 从资源包扣除的条目（`charge_type: unit`）只有单位数、没有金额，不记录金额。
  */
-function taskUsage(video: Record<string, unknown>, billing: unknown): MediaUsage {
+function billedOf(billing: unknown): MediaUsage['billed'] {
   const cash = (Array.isArray(billing) ? (billing as Record<string, unknown>[]) : []).filter(
     (b) => b.charge_type === 'cash' && (b.currency === 'CNY' || b.currency === 'USD'),
   )
   const currency = cash[0]?.currency as Currency | undefined
   const amounts = cash.filter((b) => b.currency === currency).map((b) => count(b.amount))
-  return defined<MediaUsage>({
-    seconds: count(video.duration),
-    billed:
-      currency && amounts.every((a) => a !== undefined)
-        ? { amount: amounts.reduce<number>((sum, a) => sum + (a ?? 0), 0), currency }
-        : undefined,
-  })
+  return currency && amounts.every((a) => a !== undefined)
+    ? { amount: amounts.reduce<number>((sum, a) => sum + (a ?? 0), 0), currency }
+    : undefined
 }
 
 function pathOf(operation: MediaOperation): string {
@@ -78,16 +154,13 @@ export class KlingVideosAdapter implements MediaAdapter {
   ) {}
 
   async run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult> {
-    const { signal } = opts
-    const base = (this.profile.baseUrl ?? '').trim().replace(/\/+$/, '') || DEFAULT_BASE
-    const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
+    const conn = connection(this.profile)
     let taskId = opts.resumeTaskId
     if (!taskId) {
-      const settings = Object.keys(req.params).length ? { settings: req.params } : {}
       const omni = this.spec.videoFormat === 'kling-omni'
       const payload =
         req.operation === 'text_to_video' && !omni
-          ? { prompt: req.prompt, ...settings }
+          ? { prompt: req.prompt, ...settingsOf(req.params) }
           : {
               contents: [
                 { type: 'prompt', text: req.prompt },
@@ -95,67 +168,75 @@ export class KlingVideosAdapter implements MediaAdapter {
                   const type = CONTENT_TYPE[input.role]
                   if (!type)
                     throw new MediaError('可灵官方接口的视频素材只接受地址，不接受本机文件')
-                  return { type, url: Buffer.from(input.bytes).toString('base64') }
+                  return { type, url: base64(input) }
                 }),
               ],
-              ...settings,
+              ...settingsOf(req.params),
             }
-      const submitted = await postTask(
-        `${base}/${omni ? 'omni-video' : pathOf(req.operation)}/${encodeURIComponent(this.profile.model)}`,
-        payload,
-        auth,
-        opts,
-        (body) => (body.code === 0 ? (body.data as { id?: unknown } | undefined)?.id : undefined),
-        {
-          ...UPSTREAM,
-          refused: (body) =>
-            typeof body.code === 'number' && body.code !== 0
-              ? `接口拒绝生成：${failureDetail(body.code, body.message, '未提供原因')}`
-              : undefined,
-        },
-      )
-      taskId = submitted.taskId
+      const path = omni ? 'omni-video' : pathOf(req.operation)
+      taskId = await submitTask(conn, path, this.profile.model, payload, opts)
     }
     const id = taskId
-    return afterSubmit(id, signal, async () => {
-      const done = await waitTask(() => this.check(base, id, auth, signal), opts)
+    return afterSubmit(id, opts.signal, async () => {
+      const { task } = await waitSucceeded(conn, id, opts)
+      const video = outputsOf(task, 'video')[0]
+      if (!video) throw new MediaError('任务成功但没有返回视频地址')
       return {
-        files: [await download(done.url, signal)],
-        ...(done.usage ? { usage: done.usage } : {}),
+        files: [await download(video.url, opts.signal)],
+        usage: defined<MediaUsage>({
+          seconds: count(video.duration),
+          billed: billedOf(task.billing),
+        }),
       }
     })
   }
+}
 
-  private async check(
-    base: string,
-    taskId: string,
-    auth: Record<string, string>,
-    signal: AbortSignal,
-  ): Promise<TaskState> {
-    const body = await getJson(
-      `${base}/tasks?task_ids=${encodeURIComponent(taskId)}`,
-      auth,
-      signal,
-      {
-        upstream: UPSTREAM,
-      },
-    )
-    const tasks = Array.isArray(body.data) ? (body.data as Record<string, unknown>[]) : []
-    const task = tasks.find((t) => t.id === taskId)
-    const status = String(task?.status ?? '')
-    if (status === 'succeeded') {
-      const outputs = Array.isArray(task?.outputs)
-        ? (task.outputs as Record<string, unknown>[])
-        : []
-      const video = outputs.find((o) => o.type === 'video')
-      if (typeof video?.url === 'string') {
-        return { state: 'done', url: video.url, usage: taskUsage(video, task?.billing) }
-      }
-      throw new MediaError('任务成功但没有返回视频地址')
-    }
-    if (status === 'failed') {
-      return { state: 'failed', message: failureDetail(undefined, task?.message, '任务失败') }
-    }
-    return pendingTask(status, ['submitted', 'processing'])
+/** 只使用单张模式：不发送 `result_type`，张数由 `n` 决定。 */
+export class KlingImagesAdapter implements MediaAdapter {
+  readonly kind = 'kling_images' as const
+
+  constructor(
+    private readonly profile: MediaProfile,
+    readonly spec: MediaModelSpec,
+  ) {}
+
+  async run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult> {
+    const conn = connection(this.profile)
+    const id =
+      opts.resumeTaskId ??
+      (await submitTask(
+        conn,
+        'image-generation',
+        this.profile.model,
+        {
+          contents: [
+            { type: 'prompt', text: req.prompt },
+            ...req.inputs.map((input, n) => ({
+              type: 'refer_image',
+              url: base64(input),
+              id: `ref_${n + 1}`,
+            })),
+          ],
+          ...settingsOf(req.params),
+        },
+        opts,
+      ))
+    return afterSubmit(id, opts.signal, async () => {
+      const { task } = await waitSucceeded(conn, id, opts)
+      const images = outputsOf(task, 'image')
+      if (!images.length) throw new MediaError('任务成功但没有返回图片')
+      return resolveImages(
+        {
+          sources: images.map((o) => ({ url: o.url })),
+          usage: defined<MediaUsage>({ images: images.length, billed: billedOf(task.billing) }),
+        },
+        opts,
+      )
+    })
+  }
+
+  resumeImage(result: MediaImageResult, opts: MediaRunOptions): Promise<MediaResult> {
+    return resolveImages(result, opts)
   }
 }

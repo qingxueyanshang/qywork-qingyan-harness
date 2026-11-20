@@ -267,17 +267,23 @@ const gptImagePrice = imageTokenPrice('USD', 5, 8, 30)
 // MiniMax 价格页（2026-11-11 核对）：H3-Image 文本输入 ¥15、图片输入 ¥10、图片输出 ¥25，每百万 token；
 // Highspeed 的图片输入 ¥20、图片输出 ¥50。4K 的限时五折截至 2026-11-18，不计入。
 // 火山方舟「模型价格」：Seedream 5.0 Pro 单图 ≤ 261 万像素 ¥0.30、> 261 万像素 ¥0.60，输入图首张免费、第 2 张起 ¥0.02；
+// Seedream 5.5（2026-11-20 核对）单图 ≤ 261 万像素 ¥0.13、> 261 万像素 ¥0.23，输入图每张 ¥0.05。
 // 像素按 `output_tokens`（像素总数 / 256）折算每张。Flash 每张 ¥0.12，输入图免费。
-const seedreamProPrice = perImage(
-  'CNY',
-  (u) =>
-    u.outputTokens === undefined || !u.images
-      ? undefined
-      : (u.outputTokens * 256) / u.images <= 2_610_000
-        ? 0.3
-        : 0.6,
-  { rate: 0.02, firstInputFree: true },
-)
+const seedreamTieredPrice = (
+  low: number,
+  high: number,
+  input: { rate: number; firstInputFree?: boolean },
+) =>
+  perImage(
+    'CNY',
+    (u) =>
+      u.outputTokens === undefined || !u.images
+        ? undefined
+        : (u.outputTokens * 256) / u.images <= 2_610_000
+          ? low
+          : high,
+    input,
+  )
 const seedreamFlashPrice: MediaPrice = {
   ...perImage('CNY', () => 0.12),
   // 每次生成一张，输入图免费。
@@ -318,6 +324,7 @@ const wanVideoPrice = (rates: Record<string, number>): MediaPrice => ({
   },
 })
 // 火山方舟「模型价格」：Seedance 每百万 token，按输出分辨率与输入是否含视频分档；480p 与 720p 同价。
+// 2.5 的 4K 与 2.5 Flash 于 2026-11-20 核对。
 const seedancePrice = (rates: Record<string, [number, number]>) =>
   perMillionOutputTokens('CNY', (u) => {
     const pair = rates[seedanceTier(u.resolution) ?? '']
@@ -642,6 +649,23 @@ const seedreamParams: readonly MediaParamSpec[] = [
   },
 ]
 
+// Seedream 5.5（2026-11-20 核对方舟「图片生成 API」与「Seedream 5.5」教程）：尺寸与水印同 5.0，输出格式默认 png。
+// 透明背景不限输入：文生图与参考图生图均可，参考图不需要透明通道；auto 由模型按提示词与输出格式决定。
+// jpeg 与 transparent 同时出现时接口报错。不支持组图与流式输出。
+const seedream55Params: readonly MediaParamSpec[] = seedreamParams.map((p): MediaParamSpec => {
+  if (p.name === 'output_format') return { ...p, default: 'png' }
+  if (p.name !== 'background') return p
+  const { operations: _operations, available: _available, ...rest } = p
+  return {
+    ...rest,
+    values: ['auto', 'transparent', 'opaque'],
+    valueLabels: { auto: '自动', transparent: '透明', opaque: '不透明' },
+    default: 'auto',
+    rules: [{ when: { params: { output_format: ['jpeg'] } }, values: ['auto', 'opaque'] }],
+    description: '背景；transparent 输出带透明通道的 png，auto 由模型按提示词与输出格式决定',
+  }
+})
+
 // ── 百炼千问图像 3.0（2026-09-25 核对「千问图像生成与编辑 API」）──
 const qwenImageParams: readonly MediaParamSpec[] = [
   {
@@ -860,83 +884,91 @@ const wanVideoParams: readonly MediaParamSpec[] = [
   },
 ]
 
-// ── 火山方舟 Seedance 2.5（2026-09-25 核对方舟「创建视频生成任务 API」与模型列表）──
-const seedanceParams: readonly MediaParamSpec[] = [
-  {
-    name: 'ratio',
-    label: '宽高比',
-    type: 'enum',
-    values: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
-    default: 'adaptive',
-    description: '画幅；首帧、首尾帧、编辑、延长时只能取 adaptive',
-    rules: [
-      { when: { operations: ['image_to_video', 'first_last_frame'] }, values: ['adaptive'] },
-      { when: { params: { omni_reference_task_type: ['edit', 'extend'] } }, values: ['adaptive'] },
-    ],
-  },
-  {
-    name: 'resolution',
-    label: '分辨率',
-    type: 'enum',
-    values: ['480p', '720p', '1080p'],
-    default: '720p',
-    description: '分辨率',
-  },
-  {
-    name: 'duration',
-    label: '时长',
-    type: 'integer',
-    min: 4,
-    max: 30,
-    auto: -1,
-    default: -1,
-    description: '时长（秒），4 到 30；-1 表示由模型决定；编辑时只能取 -1',
-    rules: [{ when: { params: { omni_reference_task_type: ['edit'] } }, values: [-1] }],
-  },
-  {
-    name: 'omni_reference_task_type',
-    label: '任务类型',
-    type: 'enum',
-    values: ['auto', 'reference', 'edit', 'extend'],
-    valueLabels: { auto: '自动', reference: '参考生成', edit: '编辑', extend: '延长' },
-    default: 'auto',
-    operations: ['reference_to_video', 'video_to_video'],
-    rules: [{ when: { operations: ['reference_to_video'] }, values: ['auto', 'reference'] }],
-    description:
-      '有参考素材时的任务类型：reference 参考生成、edit 编辑参考视频、extend 延长参考视频；显式指定时，参数不合规会在提交时报错，不扣费',
-  },
-  {
-    name: 'generate_audio',
-    label: '声音',
-    type: 'boolean',
-    default: true,
-    description: '是否生成同步声音',
-  },
-  {
-    name: 'return_last_frame',
-    label: '返回尾帧',
-    type: 'boolean',
-    default: false,
-    description: '同时返回尾帧图（jpeg，与视频同尺寸、无水印），可用作下一段视频的首帧',
-  },
-  {
-    name: 'output_format',
-    type: 'enum',
-    label: '输出格式',
-    advanced: true,
-    values: ['mp4', 'mov'],
-    default: 'mp4',
-    description: '输出格式；mov 色彩精度高、播放兼容性差',
-  },
-  {
-    name: 'watermark',
-    label: '水印',
-    advanced: true,
-    type: 'boolean',
-    default: false,
-    description: '在右下角添加「AI 生成」水印',
-  },
-]
+/**
+ * 火山方舟 Seedance 2.5 系列（2026-09-25 核对方舟「创建视频生成任务 API」与模型列表；2026-11-20 核对「Seedance 2.5」教程）。
+ * 2.5 与 2.5 Flash 的参数与任务限制相同，只有可用清晰度不同，由调用方传入：2.5 为 480p 至 4k，Flash 为 480p 与 720p。
+ */
+function seedance25Params(resolutions: readonly string[]): readonly MediaParamSpec[] {
+  return [
+    {
+      name: 'ratio',
+      label: '宽高比',
+      type: 'enum',
+      values: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
+      default: 'adaptive',
+      description: '画幅；首帧、首尾帧、编辑、延长时只能取 adaptive',
+      rules: [
+        { when: { operations: ['image_to_video', 'first_last_frame'] }, values: ['adaptive'] },
+        {
+          when: { params: { omni_reference_task_type: ['edit', 'extend'] } },
+          values: ['adaptive'],
+        },
+      ],
+    },
+    {
+      name: 'resolution',
+      label: '分辨率',
+      type: 'enum',
+      values: resolutions,
+      default: '720p',
+      description: '分辨率',
+    },
+    {
+      name: 'duration',
+      label: '时长',
+      type: 'integer',
+      min: 4,
+      max: 30,
+      auto: -1,
+      default: -1,
+      description: '时长（秒），4 到 30；-1 表示由模型决定；编辑时只能取 -1',
+      rules: [{ when: { params: { omni_reference_task_type: ['edit'] } }, values: [-1] }],
+    },
+    {
+      name: 'omni_reference_task_type',
+      label: '任务类型',
+      type: 'enum',
+      values: ['auto', 'reference', 'edit', 'extend'],
+      valueLabels: { auto: '自动', reference: '参考生成', edit: '编辑', extend: '延长' },
+      default: 'auto',
+      operations: ['reference_to_video', 'video_to_video'],
+      rules: [{ when: { operations: ['reference_to_video'] }, values: ['auto', 'reference'] }],
+      description:
+        '有参考素材时的任务类型：reference 参考生成、edit 编辑参考视频、extend 延长参考视频；显式指定时，参数不合规会在提交时报错，不扣费',
+    },
+    {
+      name: 'generate_audio',
+      label: '声音',
+      type: 'boolean',
+      default: true,
+      description: '是否生成同步声音',
+    },
+    {
+      name: 'return_last_frame',
+      label: '返回尾帧',
+      type: 'boolean',
+      default: false,
+      description: '同时返回尾帧图（jpeg，与视频同尺寸、无水印），可用作下一段视频的首帧',
+    },
+    {
+      name: 'output_format',
+      type: 'enum',
+      label: '输出格式',
+      advanced: true,
+      values: ['mp4', 'mov'],
+      default: 'mp4',
+      description: '输出格式；mov 色彩精度高、播放兼容性差',
+    },
+    {
+      name: 'watermark',
+      label: '水印',
+      advanced: true,
+      type: 'boolean',
+      default: false,
+      description: '在右下角添加「AI 生成」水印',
+    },
+  ]
+}
 
 /**
  * 火山方舟 Seedance 2.0 系列（2026-09-25 核对方舟「创建视频生成任务 API」逐参数的「模型支持」与模型列表）。
@@ -1132,6 +1164,40 @@ function klingParams(opts: {
   ]
 }
 
+/**
+ * 可灵开放平台官方接口的 Image 4.0（2026-11-20 核对 kling.ai/document-api 的 Image 4.0「图片生成」页）。
+ * 参数均在 `settings` 中。只接入单张模式：组图模式的张数由 `series_amount` 决定，与按 `n` 计量的张数不一致。
+ */
+const klingImageParams: readonly MediaParamSpec[] = [
+  {
+    name: 'resolution',
+    label: '分辨率',
+    type: 'enum',
+    values: ['2k', '4k', '8k'],
+    valueLabels: { '2k': '2K', '4k': '4K', '8k': '8K' },
+    default: '2k',
+    description: '分辨率',
+  },
+  {
+    name: 'aspect_ratio',
+    label: '宽高比',
+    type: 'enum',
+    values: ['auto', ...RATIOS],
+    valueLabels: { auto: '自动' },
+    default: 'auto',
+    description: '画幅；auto 按输入内容决定',
+  },
+  {
+    name: 'n',
+    label: '张数',
+    type: 'integer',
+    min: 1,
+    max: 9,
+    default: 1,
+    description: '一次生成的张数',
+  },
+]
+
 // ── OpenAI 语音（2026-09-25 核对 developers.openai.com 语音合成指南与 speech 参考）──
 const openaiSpeechParams: readonly MediaParamSpec[] = [
   {
@@ -1313,6 +1379,8 @@ const SEEDANCE_25_MENTION: MentionStyle = {
 // 百炼万相 3.0：「prompt中可以用"图1""视频1""音频1"等指代 media 数组中对应顺序的媒体素材」，「图和视频分别计数」。
 // 百炼上的可灵使用 `<<<>>>` 写法，文档未写明是否按类别分别计数，因此未登记。
 const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: '音频{n}' }
+// 可灵 Image 4.0：参考素材的 `id` 在任务内唯一，提示词以 `@id` 指代；适配器按输入顺序把 id 设为 ref_1 起。
+const KLING_IMAGE_MENTION: MentionStyle = { image: '@ref_{n}' }
 
 const SEEDS: readonly MediaModelSpec[] = [
   ...GOOGLE_XAI_MODELS,
@@ -1402,6 +1470,16 @@ const SEEDS: readonly MediaModelSpec[] = [
     imageTokenPrice('CNY', 15, 20, 50),
   ),
   spec(
+    'doubao-seedream-5-5-261028',
+    'Seedream 5.5',
+    '火山引擎',
+    'openai_images',
+    IMAGE_OPERATIONS,
+    { maxImages: 10, maxVideos: 0, transport: 'json' },
+    seedream55Params,
+    seedreamTieredPrice(0.13, 0.23, { rate: 0.05 }),
+  ),
+  spec(
     'doubao-seedream-5-0-pro-260628',
     'Seedream 5.0 Pro',
     '火山引擎',
@@ -1409,7 +1487,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 10, maxVideos: 0, transport: 'json' },
     seedreamParams,
-    seedreamProPrice,
+    seedreamTieredPrice(0.3, 0.6, { rate: 0.02, firstInputFree: true }),
   ),
   spec(
     'doubao-seedream-5-0-flash-260915',
@@ -1524,8 +1602,20 @@ const SEEDS: readonly MediaModelSpec[] = [
     'ark_videos',
     VIDEO_OPERATIONS,
     { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
-    seedanceParams,
-    seedancePrice({ '720p': [70, 42], '1080p': [77, 46] }),
+    seedance25Params(['480p', '720p', '1080p', '4k']),
+    seedancePrice({ '720p': [70, 42], '1080p': [77, 46], '4k': [31, 19] }),
+    SEEDANCE_25_MENTION,
+    ARK_VIDEO_MAPPING,
+  ),
+  spec(
+    'doubao-seedance-2-5-flash-261115',
+    'Seedance 2.5 Flash',
+    '火山引擎',
+    'ark_videos',
+    VIDEO_OPERATIONS,
+    { maxImages: 10, maxVideos: 5, maxAudios: 5, transport: 'json' },
+    seedance25Params(['480p', '720p']),
+    seedancePrice({ '720p': [46, 28] }),
     SEEDANCE_25_MENTION,
     ARK_VIDEO_MAPPING,
   ),
@@ -1613,6 +1703,17 @@ const SEEDS: readonly MediaModelSpec[] = [
     { ...NO_INPUTS, inlineImages: false },
     klingBailianParams({ modes: ['std', 'pro'], audio: false }),
     klingBailianPrice(() => ({ '720p': 0.8, '1080p': 1.0 })),
+  ),
+  spec(
+    'kling-4.0',
+    'Kling Image 4.0',
+    '快手',
+    'kling_images',
+    IMAGE_OPERATIONS,
+    { maxImages: 10, maxVideos: 0, transport: 'json' },
+    klingImageParams,
+    undefined,
+    KLING_IMAGE_MENTION,
   ),
   // Omni 的文生、首尾帧与参考图均使用同一端点；视频仍要求公网地址。
   {
@@ -1794,9 +1895,18 @@ const PROTOCOL_DEFAULTS: Record<BuiltinMediaKind, Omit<MediaModelSpec, 'id' | 'd
     kind: 'ark_videos',
     operations: VIDEO_OPERATIONS,
     inputs: { maxImages: 9, maxVideos: 3, transport: 'json' },
-    params: seedanceParams.filter((p) =>
+    params: seedance25Params(['480p', '720p', '1080p']).filter((p) =>
       ['resolution', 'ratio', 'duration', 'watermark'].includes(p.name),
     ),
+    catalogued: false,
+  },
+  kling_images: {
+    vendor: null,
+    kind: 'kling_images',
+    operations: IMAGE_OPERATIONS,
+    inputs: { maxImages: 10, maxVideos: 0, transport: 'json' },
+    // 分辨率档位因型号而异（Image 4.0 为 2K / 4K / 8K），未登记型号不提供。
+    params: klingImageParams.filter((p) => p.name !== 'resolution'),
     catalogued: false,
   },
   kling_videos: {
@@ -1856,6 +1966,7 @@ const METER_PARAMS: Readonly<Record<BuiltinMediaKind, MediaMeterParams>> = {
   gemini_images: { resolution: 'image_size' },
   xai_images: { count: 'n', resolution: 'resolution' },
   minimax_images: { count: 'n' },
+  kling_images: { count: 'n', resolution: 'resolution' },
   openai_videos: { seconds: 'seconds', resolution: 'resolution' },
   ark_videos: { seconds: 'duration', resolution: 'resolution' },
   dashscope_videos: { seconds: 'duration', resolution: 'resolution' },

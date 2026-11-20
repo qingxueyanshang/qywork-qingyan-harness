@@ -25,6 +25,7 @@ export const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
   dashscope_images: '百炼',
   gemini_images: 'Gemini',
   xai_images: 'xAI',
+  kling_images: '可灵',
   openai_videos: 'OpenAI 兼容视频',
   ark_videos: '火山方舟',
   dashscope_videos: '百炼',

@@ -27,11 +27,13 @@ describe('生成水印默认值', () => {
   })
 
   test.each([
+    ['doubao-seedream-5-5-261028', 'openai_images', 'image', []],
     ['doubao-seedream-5-0-pro-260628', 'openai_images', 'image', []],
     ['doubao-seedream-5-0-flash-260915', 'openai_images', 'image', []],
     ['qwen-image-3.0', 'dashscope_images', 'image', ['parameters']],
     ['qwen-image-3.0', 'openai_images', 'image', []],
     ['doubao-seedance-2-5-260628', 'ark_videos', 'video', []],
+    ['doubao-seedance-2-5-flash-261115', 'ark_videos', 'video', []],
     ['doubao-seedance-2-5-260628', 'openai_videos', 'video', ['metadata']],
     ['wan3.0-video', 'dashscope_videos', 'video', ['parameters']],
     ['wan3.0-video', 'openai_videos', 'video', ['metadata', 'parameters']],

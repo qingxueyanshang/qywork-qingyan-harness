@@ -158,6 +158,30 @@ Gemini 语音合成经 Interactions 接口同步返回 WAV（24 kHz、单声道�
 [Qwen-Audio-TTS 音色列表](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list)、
 [Gemini 语音生成](https://aistudio.google.com/docs/speech-generation)、[Google 价格](https://aistudio.google.com/docs/pricing)。
 
+## 2026-11-20 接入的生成型号
+
+| 类别 | 模型 ID | 接入方式 | 价格 |
+|---|---|---|---|
+| 图像 | `doubao-seedream-5-5-261028` | OpenAI 兼容图片，Base URL `https://ark.cn-beijing.volces.com/api/v3` | 每张输出：≤ 261 万像素 ¥0.13，> 261 万像素 ¥0.23；每张参考图 ¥0.05 |
+| 图像 | `kling-4.0` | 可灵，Base URL `https://api-beijing.klingai.com` | 取任务结果中的扣费金额 |
+| 视频 | `doubao-seedance-2-5-flash-261115` | 火山方舟 | 每百万 token：480p、720p 不含输入视频 ¥46，含输入视频 ¥28 |
+
+`doubao-seedance-2-5-260628` 增加 4K 分辨率（10bit 位深），每百万 token：不含输入视频 ¥31，含输入视频 ¥19。
+Seedance 2.5 Flash 的任务类型、参数与限制同 2.5，分辨率只有 480p 与 720p，素材上限为 10 张图、5 个视频、5 段音频，
+可只带音频；不支持样片模式。2.5 的样片模式（`draft`）需要两次提交，未接入。
+
+Seedream 5.5 支持文生图与最多 10 张参考图的修改，尺寸与 5.0 相同（1K / 1.5K / 2K 或「宽x高」），输出格式默认 png。
+透明背景（`background`）不限输入，取值增加 `auto`；jpeg 与透明背景不能同时使用。图层拆分（`layer_decomposition`）未接入。
+Kling Image 4.0 使用可灵官方接口 `POST /image-generation/kling-4.0`，与视频共用任务查询 `/tasks`；支持文生图与最多 10 张参考图，
+分辨率 2K / 4K / 8K，宽高比 8 档与 auto，每次 1–9 张。参考图在请求中依次命名为 `ref_1`、`ref_2`…，提示词以 `@ref_1` 指代。
+组图模式（`result_type: series`）与长图生成未接入。从可灵资源包扣费时金额显示 N/A。
+两个型号均通过本地请求捕获与计价回归，尚未用官方端点实测。
+
+依据：[方舟图片生成 API](https://ark.volcengine.com/region:cn-beijing/docs/image-generation-api)、
+[Seedream 5.5](https://ark.volcengine.com/region:cn-beijing/docs/seedream-5-5)、[方舟模型价格](https://docs.volcengine.com/docs/82379/1544106)、
+[可灵 Image 4.0 图片生成](https://kling.ai/document-api/api/image/4-0/image-generation)、
+[可灵 Image 4.0 使用指南](https://kling.ai/document-api/api/usage-guide/kling-image-4-0)、[可灵图片价格](https://kling.ai/document-api/pricing/base/image)。
+
 ## MiniMax M3.1 Flash 与 Step 5 Preview
 
 收录 `MiniMax-M3.1-Flash` 与 `step-5-preview`，不追加 MiniMax M2.x、Step 3.x 历史型号。

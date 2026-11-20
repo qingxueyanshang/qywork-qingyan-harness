@@ -95,6 +95,18 @@ describe('生成参数按模型和输入模式匹配', () => {
     ).toEqual({ background: 'transparent' })
   })
 
+  test('Seedream 5.5 的透明背景不限输入，与 jpeg 互斥', () => {
+    const id = 'doubao-seedream-5-5-261028'
+    const transparent = { background: 'transparent' }
+    expect(active(id, 'generate', transparent)).toEqual(transparent)
+    expect(active(id, 'edit', transparent, 3)).toEqual(transparent)
+    expect(active(id, 'generate', { ...transparent, output_format: 'jpeg' })).toEqual({})
+    expect(active(id, 'generate', { background: 'auto', output_format: 'jpeg' })).toEqual({
+      background: 'auto',
+      output_format: 'jpeg',
+    })
+  })
+
   test('视频任务、分辨率、音频限制自动过滤，原偏好仍可恢复', () => {
     const seedance = 'doubao-seedance-2-5-260628'
     const prefs = { ratio: '16:9', duration: 10, generate_audio: false }
@@ -106,6 +118,16 @@ describe('生成参数按模型和输入模式匹配', () => {
       active(seedance, 'video_to_video', { ...prefs, omni_reference_task_type: 'edit' }),
     ).toEqual({ generate_audio: false, omni_reference_task_type: 'edit' })
     expect(active(seedance, 'text_to_video', prefs)).toEqual(prefs)
+    expect(active(seedance, 'text_to_video', { resolution: '4k' })).toEqual({ resolution: '4k' })
+    expect(
+      active('doubao-seedance-2-5-flash-261115', 'text_to_video', { resolution: '1080p' }),
+    ).toEqual({})
+    expect(
+      active('doubao-seedance-2-5-flash-261115', 'video_to_video', {
+        ...prefs,
+        omni_reference_task_type: 'extend',
+      }),
+    ).toEqual({ duration: 10, generate_audio: false, omni_reference_task_type: 'extend' })
     expect(
       active('kling/kling-v3-omni-video-generation', 'video_to_video', {
         audio: true,

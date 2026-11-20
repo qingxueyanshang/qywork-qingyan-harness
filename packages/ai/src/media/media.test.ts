@@ -198,6 +198,11 @@ describe('界面参数', () => {
       tiers: ['1K', '2K', '4K'],
       side: 3840,
     },
+    'doubao-seedream-5-5-261028': {
+      area: [921600, 4624220],
+      ratio: 16,
+      tiers: ['1K', '1.5K', '2K'],
+    },
     'doubao-seedream-5-0-pro-260628': {
       area: [921600, 4624220],
       ratio: 16,
@@ -750,6 +755,21 @@ describe('计价', () => {
     expect(low).toEqual({ cost: 0.3, currency: 'CNY' })
   })
 
+  test('Seedream 5.5 按每张像素分档，每张参考图均收费', () => {
+    const high = cost('doubao-seedream-5-5-261028', 'openai_images', {
+      images: 2,
+      inputImages: 2,
+      outputTokens: (2 * 2048 * 2048) / 256,
+    })
+    expect(high).toEqual({ cost: expect.closeTo(0.56, 10), currency: 'CNY' })
+    const low = cost('doubao-seedream-5-5-261028', 'openai_images', {
+      images: 1,
+      inputImages: 1,
+      outputTokens: (1536 * 1536) / 256,
+    })
+    expect(low).toEqual({ cost: expect.closeTo(0.18, 10), currency: 'CNY' })
+  })
+
   test('千问图像按接口回报的输出档位计价，档位缺失时金额不明', () => {
     const usage = { images: 1, inputImages: 1, imageTier: 'qima_output_2k' }
     expect(cost('qwen-image-3.0-pro', 'dashscope_images', usage)).toEqual({
@@ -784,6 +804,14 @@ describe('计价', () => {
         videoInput: true,
       }).cost,
     ).toBeCloseTo(46, 6)
+    const million = (id: string, resolution: string, videoInput: boolean) =>
+      cost(id, 'ark_videos', { outputTokens: 1_000_000, resolution, videoInput }).cost
+    expect(million('doubao-seedance-2-5-260628', '4k', false)).toBeCloseTo(31, 6)
+    expect(million('doubao-seedance-2-5-260628', '4k', true)).toBeCloseTo(19, 6)
+    expect(million('doubao-seedance-2-5-flash-261115', '480p', false)).toBeCloseTo(46, 6)
+    expect(million('doubao-seedance-2-5-flash-261115', '720p', true)).toBeCloseTo(28, 6)
+    // Flash 没有 1080p 档位：接口回报表外的档位时金额不明。
+    expect(million('doubao-seedance-2-5-flash-261115', '1080p', false)).toBe(0)
   })
 
   test('千问语音合成按字符计价', () => {

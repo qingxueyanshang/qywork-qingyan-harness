@@ -22,6 +22,7 @@ export const BUILTIN_MEDIA_KINDS = [
   'gemini_images',
   'xai_images',
   'minimax_images',
+  'kling_images',
   'openai_videos',
   'ark_videos',
   'dashscope_videos',
@@ -252,6 +253,7 @@ const BUILTIN_KIND_OUTPUT: Readonly<Record<BuiltinMediaKind, MediaOutput>> = {
   gemini_images: 'image',
   xai_images: 'image',
   minimax_images: 'image',
+  kling_images: 'image',
   openai_videos: 'video',
   ark_videos: 'video',
   dashscope_videos: 'video',
@@ -427,6 +429,7 @@ export function defaultMediaKind(
       if (vendor === 'google') return 'gemini_images'
       if (vendor === 'xai') return 'xai_images'
       if (vendor === 'minimax') return 'minimax_images'
+      if (vendor === 'kling') return 'kling_images'
       // 火山方舟的图片生成接口与 OpenAI 形状相同，与第三方接口使用同一协议。
       return vendor === 'alibaba' ? 'dashscope_images' : 'openai_images'
     case 'video':
