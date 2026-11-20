@@ -516,12 +516,13 @@ export function buildTailNotes(input: {
   /** 记忆索引：只含 key 与首行摘要，正文由模型按需通过 read_memory 读取。 */
   memories?: { key: string; preview: string }[]
   /**
-   * 顶层会话可分配的真实模型。只传入接口名与模型 id，不将 key、端点、headers 写入提示词。
+   * 顶层会话可分配的真实模型。只传入接口名、模型 id 与名称（`modelLabel`），不将 key、端点、headers 写入提示词。
+   * `current` 标记本轮使用的模型：派发时不填模型即使用它。
    *
    * `undefined` = 本会话没有任务派发能力，不展示；空数组 = 有任务派发能力但当前未配置模型，
    * 两者不能合并，否则后者会导致模型无依据地生成一个名称。
    */
-  models?: { provider: string; model: string }[]
+  models?: { provider: string; model: string; label: string; current: boolean }[]
   /**
    * 已配置的生成模型。只在注册了生成工具时传入：大模型据此选择模型；参数表由 `load_tool` 读取生成工具时返回
    * （`mediaParameterTable`），取自生成目录，与发送前的校验使用同一份数据。
@@ -529,7 +530,10 @@ export function buildTailNotes(input: {
   mediaModels?: MediaModelEntry[]
   /** 发送消息时界面右侧面板显示的工作区文件（`SendMessageCommand.viewing`）。 */
   viewing?: string
-  /** 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有任务派发能力。 */
+  /**
+   * 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有任务派发能力。
+   * 角色同时指定了接口与模型时带该模型的名称（`modelLabel`）。
+   */
   team?: {
     roles: {
       id: string
@@ -537,12 +541,13 @@ export function buildTailNotes(input: {
       description: string
       provider?: string
       model?: string
+      label?: string
       effort?: EffortLevel
     }[]
     clis: { id: string; vendor: string; connected: boolean }[]
   }
-  /** 本会话已有的子 agent。`undefined` = 本会话没有任务派发能力。 */
-  subagents?: SubagentSummary[]
+  /** 本会话已有的子 agent 及其模型的名称（`modelLabel`）。`undefined` = 本会话没有任务派发能力。 */
+  subagents?: (SubagentSummary & { label: string })[]
   /**
    * 项目配置（`.agents/mcp.json`）中尚未启用的 MCP 服务与其命令行。属于 run 快照：随项目文件与用户的确认变化。
    */
@@ -613,14 +618,19 @@ export function buildTailNotes(input: {
   if (input.models) {
     const list = input.models.length
       ? input.models
-          .map((item) => `- provider 参数 \`${item.provider}\`；model 参数 \`${item.model}\``)
+          .map(
+            (item) =>
+              `- 名称「${item.label}」；provider 参数 \`${item.provider}\`；model 参数 \`${item.model}\`${item.current ? '（当前会话）' : ''}`,
+          )
           .join('\n')
       : '- 当前没有配置可用模型；不要填写 provider 或 model 参数。'
     notes.push({
       content:
         `## 可分配给子 agent 的已配置模型（本次运行快照）\n${list}\n\n` +
         'provider 与 model 两个参数只接受清单中同一行的值；用户指定模型时填入这两个参数，写在任务正文中不生效。' +
-        '用户提及的厂商、系列或简称（例如 glm）对应哪一行，按语义判断。',
+        '名称是界面上显示的模型名称；model 参数是配置中的型号 id，云端模型的 id 是编号，不表示厂商与型号。' +
+        '用户提及的模型（名称、厂商、系列或简称，例如 opus、glm）对应哪一行，按名称判断；向用户提及模型时使用名称。' +
+        '标为（当前会话）的是本轮使用的模型：不填 provider 与 model 时，子 agent 使用该模型（角色指定了模型时使用角色的模型）。',
       group: 'workspaceState',
     })
   }
@@ -628,8 +638,8 @@ export function buildTailNotes(input: {
   if (input.team) {
     const roles = input.team.roles.map(
       (role) =>
-        `- 角色 id \`${role.id}\`：${role.name}${role.description ? `，${oneLine(role.description)}` : ''}；模型 ${
-          role.provider && role.model ? `${role.provider} / ${role.model}` : '跟随会话'
+        `- 角色 id \`${role.id}\`：${role.name}${role.description ? `，${oneLine(role.description)}` : ''}；模型${
+          role.label ? `「${role.label}」` : '跟随会话'
         }${role.effort ? `，思考强度 ${role.effort}` : ''}`,
     )
     const clis = input.team.clis.map(
@@ -649,7 +659,9 @@ export function buildTailNotes(input: {
       input.subagents
         .map(
           (item) =>
-            `- subagentId \`${item.id}\`：${item.name}，${SUBAGENT_KIND_LABEL[item.kind]}，模型 ${item.provider} / ${item.model}，${SUBAGENT_STATUS[item.status]}${
+            `- subagentId \`${item.id}\`：${item.name}，${SUBAGENT_KIND_LABEL[item.kind]}，${
+              item.kind === 'cli' ? '使用该 CLI 自身的模型' : `模型「${item.label}」`
+            }，${SUBAGENT_STATUS[item.status]}${
               item.resumable ? '' : '，不可续接：缺少会话号，再次派发时不保留上一轮上下文'
             }`,
         )

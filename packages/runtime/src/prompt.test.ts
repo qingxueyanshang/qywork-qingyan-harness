@@ -65,23 +65,34 @@ describe('上下文末尾注记', () => {
     const notes = buildTailNotes({
       ...base,
       models: [
-        { provider: '智谱', model: 'glm-5.3-flash' },
-        { provider: '官方/兼容', model: 'qwen/model-3.8' },
-        { provider: '接口甲', model: 'shared-model' },
-        { provider: '接口乙', model: 'shared-model' },
+        { provider: '智谱', model: 'glm-5.3-flash', label: 'GLM-5.3 Flash', current: true },
+        { provider: '官方/兼容', model: 'qwen/model-3.8', label: 'qwen/model-3.8', current: false },
+        { provider: '接口甲', model: 'shared-model', label: 'shared-model', current: false },
+        { provider: '接口乙', model: 'shared-model', label: 'shared-model', current: false },
+        {
+          provider: 'qywork',
+          model: 'qy-e0786e2614754b92',
+          label: 'Claude Opus 5.5',
+          current: false,
+        },
       ],
     })
     const models = notes.find((item) => item.content.includes('## 可分配给子 agent'))?.content ?? ''
 
-    expect(models).toContain('provider 参数 `智谱`；model 参数 `glm-5.3-flash`')
+    expect(models).toContain(
+      '- 名称「GLM-5.3 Flash」；provider 参数 `智谱`；model 参数 `glm-5.3-flash`（当前会话）\n',
+    )
     // 两列分开后，即使接口名与模型 id 含有斜杠，也无需解析分隔符。
-    expect(models).toContain('provider 参数 `官方/兼容`；model 参数 `qwen/model-3.8`')
+    expect(models).toContain('provider 参数 `官方/兼容`；model 参数 `qwen/model-3.8`\n')
     // 同名模型由 provider 列区分，model 字段仍是配置中的原始 id。
     expect(models).toContain('provider 参数 `接口甲`；model 参数 `shared-model`')
     expect(models).toContain('provider 参数 `接口乙`；model 参数 `shared-model`')
-    expect(models).toContain('厂商、系列或简称')
+    // 云端型号的 id 是编号，名称与编号写在同一行，模型按名称确定填写哪一行。
+    expect(models).toContain(
+      '- 名称「Claude Opus 5.5」；provider 参数 `qywork`；model 参数 `qy-e0786e2614754b92`',
+    )
     expect(models).toContain('只接受清单中同一行的值')
-    expect(models).toContain('按语义判断')
+    expect(models).toContain('按名称判断')
   })
 
   test('有任务派发能力但没有配置模型时明确禁止编造，没有任务派发能力时不注入清单', () => {

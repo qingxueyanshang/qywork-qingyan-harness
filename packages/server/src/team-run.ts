@@ -24,6 +24,7 @@ import type {
 } from '@qywork/core'
 import {
   type ModelRef,
+  modelLabel,
   modelSpecOf,
   NO_MODEL_MESSAGE,
   type QyConfig,
@@ -125,10 +126,11 @@ export function memberEffort(
   const levels = effortLevelsOf(ref, config)
   if (levels.includes(effort)) return { effort }
   const what = requested ? `思考强度 ${effort}` : `角色 ${role?.id} 的思考强度 ${effort}`
+  const named = `「${modelLabel(config, ref)}」`
   return {
     error: levels.length
-      ? `${what} 不在 ${ref.provider} / ${ref.model} 可选的档位中：${levels.join('、')}`
-      : `${ref.provider} / ${ref.model} 无法调节思考强度，${what} 不能生效`,
+      ? `${what} 不在${named}可选的档位中：${levels.join('、')}`
+      : `${named}无法调节思考强度，${what} 不能生效`,
   }
 }
 
@@ -138,12 +140,16 @@ export function effortLevelsOf(ref: ModelRef, config: QyConfig): EffortLevel[] {
   return spec ? transmittableEffortLevels(spec) : []
 }
 
+/** 报错中列出的可用模型：名称在前，provider 与 model 是派发参数的取值。已下架的型号不列出，与运行快照的模型清单一致。 */
 function modelList(config: QyConfig): string {
   return Object.entries(config.providers)
     .flatMap(([provider, stored]) =>
-      Object.keys(stored.models).map(
-        (model) => `(provider=${JSON.stringify(provider)}, model=${JSON.stringify(model)})`,
-      ),
+      Object.entries(stored.models)
+        .filter(([, declared]) => !declared.delisted)
+        .map(
+          ([model]) =>
+            `「${modelLabel(config, { provider, model })}」(provider=${JSON.stringify(provider)}, model=${JSON.stringify(model)})`,
+        ),
     )
     .join('、')
 }

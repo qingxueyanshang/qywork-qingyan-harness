@@ -674,18 +674,93 @@ describe('顶层会话的可分配模型快照', () => {
     const snapshot = listRunContextSnapshots(store, conv.id)[0]!
       .segments.map((segment) => segment.content)
       .join('\n')
-    expect(snapshot).toContain('provider 参数 `智谱接口`；model 参数 `glm-5.3-flash`')
-    expect(snapshot).toContain('provider 参数 `千问接口`；model 参数 `qwen/model-3.8`')
-    // 角色、外部 CLI、本会话已有的子 agent 在同一份快照中给出，模型按 id 引用。
-    expect(snapshot).toContain('角色 id `reviewer`：审查员，看代码；模型 p / m')
-    expect(snapshot).toContain('外部 CLI id `codex`：OpenAI，本机进程，自带模型与账号，已登录')
-    expect(snapshot).toContain('subagentId `cv_sub`：查资料，临时，模型 p / m，空闲')
+    // 本轮使用的模型标为（当前会话）。
+    expect(snapshot).toContain('；provider 参数 `智谱接口`；model 参数 `glm-5.3-flash`（当前会话）')
     expect(snapshot).toContain(
-      'subagentId `cv_cli`：OpenAI codex，外部 CLI，模型 cli / codex，空闲，不可续接：缺少会话号，再次派发时不保留上一轮上下文',
+      '名称「qwen/model-3.8」；provider 参数 `千问接口`；model 参数 `qwen/model-3.8`\n',
+    )
+    // 角色、外部 CLI、本会话已有的子 agent 在同一份快照中给出，模型按名称写出；模型库未收录且没有显示名称时名称即型号 id。
+    expect(snapshot).toContain('角色 id `reviewer`：审查员，看代码；模型「m」')
+    expect(snapshot).toContain('外部 CLI id `codex`：OpenAI，本机进程，自带模型与账号，已登录')
+    expect(snapshot).toContain('subagentId `cv_sub`：查资料，临时，模型「m」，空闲')
+    expect(snapshot).toContain(
+      'subagentId `cv_cli`：OpenAI codex，外部 CLI，使用该 CLI 自身的模型，空闲，不可续接：缺少会话号，再次派发时不保留上一轮上下文',
     )
     expect(snapshot).not.toContain('sk-never-send-this')
     expect(snapshot).not.toContain('private-relay.example')
     expect(snapshot).not.toContain('also-secret')
+    store.close()
+  })
+
+  /**
+   * 原始失败形状：云端型号的 id 是编号（qy-…），快照中的已配置模型与子 agent 只写 id，
+   * 用户问「子 agent 用的是 Opus 吗」时模型无从判断，用户点名 Opus 时也无法确定填写哪一行。
+   */
+  test('云端型号按显示名称写出：已配置模型、当前会话与子 agent 所用模型均可按名称判断', async () => {
+    const opus = 'qy-e0786e2614754b92'
+    const sonnet = 'qy-5d42031f9a0c7e11'
+    // 云端换用新编号后，旧编号标为已下架并保留同一名称。
+    const retired = 'qy-b041c7d2e5f60918'
+    const cloudConfig: QyConfig = {
+      active: { provider: 'qywork', model: opus },
+      providers: {
+        qywork: {
+          kind: 'anthropic_messages',
+          apiKey: 'qyd_device_key',
+          baseUrl: 'https://api.example.com',
+          models: {
+            [opus]: { displayName: 'Claude Opus 5.5' },
+            [sonnet]: { displayName: 'Claude Sonnet 5.5' },
+            [retired]: { displayName: 'Claude Opus 5.5', delisted: true },
+          },
+        },
+      },
+    }
+    const cloudDelegate: DelegatePort = {
+      ...delegate,
+      targets: async () => ({
+        roles: [
+          { id: 'writer', name: '撰稿', description: '写稿', provider: 'qywork', model: sonnet },
+        ],
+        clis: [],
+      }),
+      subagents: async () => [
+        {
+          id: 'cv_render',
+          kind: 'temp',
+          name: '渲染管线',
+          provider: 'qywork',
+          model: opus,
+          status: 'running',
+          resumable: true,
+        },
+      ],
+    }
+    const { s, store } = await session({
+      config: cloudConfig,
+      ports: new Ports([provide(DelegatePort, cloudDelegate)]),
+    })
+
+    await firstEvent(s, '子 agent 用的是 opus 吗')
+
+    const conv = listRecentConversations(store, 1)[0]!
+    const snapshot = listRunContextSnapshots(store, conv.id)[0]!
+      .segments.map((segment) => segment.content)
+      .join('\n')
+    expect(snapshot).toContain(
+      `名称「Claude Opus 5.5」；provider 参数 \`qywork\`；model 参数 \`${opus}\`（当前会话）`,
+    )
+    expect(snapshot).toContain(
+      `名称「Claude Sonnet 5.5」；provider 参数 \`qywork\`；model 参数 \`${sonnet}\`\n`,
+    )
+    // 已下架的同名型号不列出：列出时清单中有两行「Claude Opus 5.5」，模型无法按名称确定填写哪一行。
+    expect(snapshot).not.toContain(retired)
+    expect(snapshot.match(/名称「Claude Opus 5\.5」/g)).toHaveLength(1)
+    expect(snapshot).toContain('角色 id `writer`：撰稿，写稿；模型「Claude Sonnet 5.5」')
+    expect(snapshot).toContain(
+      'subagentId `cv_render`：渲染管线，临时，模型「Claude Opus 5.5」，进行中',
+    )
+    expect(snapshot).not.toContain('qyd_device_key')
     store.close()
   })
 

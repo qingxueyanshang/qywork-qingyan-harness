@@ -25,7 +25,13 @@ import {
   scanSkills,
   scopeRoots,
 } from '@qywork/tools'
-import { compactPercentFor, type ModelRef, NO_MODEL_MESSAGE, resolveModel } from '../../config.ts'
+import {
+  compactPercentFor,
+  type ModelRef,
+  modelLabel,
+  NO_MODEL_MESSAGE,
+  resolveModel,
+} from '../../config.ts'
 import { contextPanel } from '../../context-panel.ts'
 import { describeEnvironment, ensureWorkspacePython } from '../../environment.ts'
 import { findPython } from '../../office.ts'
@@ -117,12 +123,25 @@ export async function prepareTurn(
     ...(options?.viewing ? { viewing: options.viewing } : {}),
   }
   // 角色、外部 CLI、本会话已有的子 agent：模型据此按 id 引用，不推测名称。
-  const delegate = session.ports.get(DelegatePort)
+  // 所用模型按名称写出（`modelLabel`）：云端型号的 id 是编号，只写 id 时无法判断是哪一个模型。
+  const delegate = canAssignModels ? session.ports.get(DelegatePort) : undefined
+  const team = await delegate?.targets()
+  const subagents = await delegate?.subagents()
   const delegateFacts =
-    canAssignModels && delegate
+    team && subagents
       ? {
-          team: await delegate.targets(),
-          subagents: await delegate.subagents(),
+          team: {
+            ...team,
+            roles: team.roles.map((role) =>
+              role.provider && role.model
+                ? {
+                    ...role,
+                    label: modelLabel(config, { provider: role.provider, model: role.model }),
+                  }
+                : role,
+            ),
+          },
+          subagents: subagents.map((item) => ({ ...item, label: modelLabel(config, item) })),
         }
       : {}
   // 运行环境随快照冻结。auto 模式下工作区 Python 环境在此确保存在，命令中的 python 与 pip 指向它
@@ -165,10 +184,18 @@ export async function prepareTurn(
     skills,
     memories,
     // 派发工具存在时才提供；成员会话没有 delegate，既无法取得清单，也无法递归派发任务。
+    // 已下架的型号不列出，与界面的模型选择一致：请求必然被拒绝，且云端型号换用新编号后旧编号保留同一名称，列出时出现两行同名。
     ...(canAssignModels
       ? {
           models: Object.entries(config.providers).flatMap(([provider, stored]) =>
-            Object.keys(stored.models).map((model) => ({ provider, model })),
+            Object.entries(stored.models)
+              .filter(([, declared]) => !declared.delisted)
+              .map(([model]) => ({
+                provider,
+                model,
+                label: modelLabel(config, { provider, model }),
+                current: resolvedTarget?.provider === provider && resolvedTarget.model === model,
+              })),
           ),
         }
       : {}),

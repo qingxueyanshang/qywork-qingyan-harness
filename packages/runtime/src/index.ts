@@ -53,6 +53,7 @@ export {
   type MediaModelEntry,
   type ModelRef,
   mediaModelLabel,
+  modelLabel,
   modelSpecOf,
   NO_MODEL_MESSAGE,
   type QyConfig,

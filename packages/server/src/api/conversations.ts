@@ -41,6 +41,7 @@ import {
   exportConversationDiagnostics,
   listMediaModels,
   mediaModelLabel,
+  modelLabel,
   modelSpecOf,
   type QyConfig,
   removeConversationTemp,
@@ -78,7 +79,7 @@ export interface ModelRow {
   id: string
   /** Base URL 留空时使用的官方地址；未登记时省略。 */
   defaultBaseUrl?: string
-  /** 接口下该模型保存的显示名称（`StoredModel.displayName`）；没有时为内置目录中的显示名，目录未收录时为 id 本身。 */
+  /** 模型名称（`modelLabel`）：保存的显示名称；没有时为内置目录中的显示名，目录未收录时为 id 本身。 */
   label: string
   /** 该模型支持的思考强度档位。空数组表示当前接口无法调节思考强度，界面据此不显示开关。 */
   effortLevels: EffortLevel[]
@@ -383,7 +384,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
             id,
             ...(defaultBaseUrl ? { defaultBaseUrl } : {}),
             chatToolSchema: spec.chatToolSchema,
-            label: declared?.displayName ?? (spec.catalogued === false ? id : spec.displayName),
+            label: modelLabel(d.config, { provider: name, model: id }),
             // 界面据此决定是否显示思考强度开关。空数组表示当前接口无法调节思考强度，
             // 此时显示的开关选择后不产生任何效果。
             effortLevels,

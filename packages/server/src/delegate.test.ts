@@ -3,7 +3,8 @@
  *
  * 覆盖范围：`delegate.ts` 的 `makeDelegate()`：派发后立即返回、完成回调写入节点状态与回执、
  * 回执正文的形状、按会话停止、图的推进（首次派发 → 一个节点执行完毕后派发下游 → 一个节点失败时先发送失败回执 →
- * 上游全部完成后发送检查点回执 → approve / revise）、子 agent 的思考强度（`team-run.ts` 的 `memberEffort`），
+ * 上游全部完成后发送检查点回执 → approve / revise）、子 agent 的思考强度（`team-run.ts` 的 `memberEffort`）、
+ * 角色清单中按派发规则求得的接口与模型（`targets`），
  * 子 agent 的模型请求失败时一轮内重发、用尽即发送列出各次失败原因的回执，以及 `subagents.ts` 的运行表。
  *
  * 使用真实链路的原因：该通道的行为是「派发之后，卡片上对应的节点随之更新，回执自动返回」。
@@ -779,6 +780,43 @@ describe('思考强度', () => {
     await invoke(parent, runId, 1, graph, parsedStart(graph))
     await until(() => receipts.some((r) => r.content.includes('检查点 验收')), '检查点回执')
     expect(effortFor('节点任务')).toBe('max')
+  })
+})
+
+/**
+ * 运行快照中的角色清单按角色实际使用的模型写出名称。原始失败形状：team.json 中只写了模型或只写了接口的角色，
+ * 派发时使用确定的模型，清单中却写「跟随会话」。
+ */
+describe('角色清单中的模型', () => {
+  const teamFile = () => join(dir, '.qy', 'team.json')
+
+  beforeAll(async () => {
+    await mkdir(dirname(teamFile()), { recursive: true })
+    await writeFile(
+      teamFile(),
+      JSON.stringify({
+        roles: [
+          { id: 'only-model', name: '只写模型', description: '甲', model: 'gpt-6-sol' },
+          { id: 'only-provider', name: '只写接口', description: '乙', provider: '另/接口' },
+          { id: 'follow', name: '跟随', description: '丙' },
+          { id: 'broken', name: '写错', description: '丁', model: '查无此模型' },
+        ],
+      }),
+    )
+  })
+  afterAll(async () => {
+    await rm(teamFile(), { force: true })
+  })
+
+  test('只写模型或只写接口的角色按派发规则给出实际使用的接口与模型，无法解析时给出原值', async () => {
+    const { roles } = await delegate(conversation()).targets()
+    const of = (id: string) => roles.find((r) => r.id === id)
+    expect(of('only-model')).toMatchObject({ provider: '推理接口', model: 'gpt-6-sol' })
+    expect(of('only-provider')).toMatchObject({ provider: '另/接口', model: 'qwen/model-3.8' })
+    expect(of('follow')?.provider).toBeUndefined()
+    expect(of('follow')?.model).toBeUndefined()
+    expect(of('broken')).toMatchObject({ model: '查无此模型' })
+    expect(of('broken')?.provider).toBeUndefined()
   })
 })
 

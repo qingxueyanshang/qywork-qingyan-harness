@@ -967,14 +967,20 @@ export function makeDelegate(ctx: {
     async targets() {
       const [{ roles }, clis] = await Promise.all([team(), detectClis()])
       return {
-        roles: roles.map((r) => ({
-          id: r.id,
-          name: r.name,
-          description: r.description,
-          ...(r.provider ? { provider: r.provider } : {}),
-          ...(r.model ? { model: r.model } : {}),
-          ...(r.effort ? { effort: r.effort } : {}),
-        })),
+        roles: roles.map((r) => {
+          // 接口与模型按派发时的同一规则（`memberModel`）求得：只写模型或只写接口的角色同样给出实际使用的模型。
+          // 无法解析时给出 team.json 中的原值，派发时由同一规则报告原因。
+          const pinned = r.provider || r.model ? memberModel(r, deps.config) : undefined
+          const ref = pinned && !('error' in pinned) ? pinned : r
+          return {
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            ...(ref.provider ? { provider: ref.provider } : {}),
+            ...(ref.model ? { model: ref.model } : {}),
+            ...(r.effort ? { effort: r.effort } : {}),
+          }
+        }),
         clis: clis.map((c) => ({ id: c.id, vendor: c.vendor, connected: c.connected })),
       }
     },

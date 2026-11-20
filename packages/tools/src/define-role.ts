@@ -51,7 +51,7 @@ export const defineRoleTool: ToolSpec = {
       model: {
         type: 'string',
         description:
-          '指定模型：逐字填写运行上下文「已配置模型」清单中的 model 参数，并同时填写 provider。留空时使用当前会话的模型',
+          '指定模型：按名称在运行上下文「已配置模型」清单中确定对应的一行，逐字填写该行的 model 参数，并同时填写 provider。留空时使用当前会话的模型',
       },
       effort: {
         type: 'string',
@@ -125,8 +125,8 @@ export const defineRoleTool: ToolSpec = {
         return {
           status: 'failure' as const,
           message: resolved.effortLevels.length
-            ? `${resolved.provider} / ${resolved.model} 可选的思考强度：${resolved.effortLevels.join('、')}，不包含 ${effort}`
-            : `${resolved.provider} / ${resolved.model} 无法调节思考强度`,
+            ? `所填模型可选的思考强度：${resolved.effortLevels.join('、')}，不包含 ${effort}`
+            : '所填模型无法调节思考强度',
         }
       }
       resolvedModel = { provider: resolved.provider, model: resolved.model }

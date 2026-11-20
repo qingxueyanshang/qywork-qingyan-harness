@@ -1,6 +1,6 @@
 /**
- * 覆盖范围：`team-run.ts` 的 `memberModel`（成员会话使用的「接口 × 模型」）、
- * `memberOutcome`（成员是否算作成功）与 `ownerWorkspace`（浏览器控制所属的工作区）。
+ * 覆盖范围：`team-run.ts` 的 `memberModel`（成员会话使用的「接口 × 模型」）、`resolveModel` 与
+ * `memberEffort` 的报错、`memberOutcome`（成员是否算作成功）与 `ownerWorkspace`（浏览器控制所属的工作区）。
  *
  * `runBuiltinMember` 本身需要完整的 `Session` 才能运行，由冒烟脚本
  * `scripts/smoke-delegate.ts` 在真机上覆盖；此处锁定的是它的模型选择规则。
@@ -13,7 +13,13 @@ import { join } from 'node:path'
 import type { ConversationId, WorkspaceId } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { createConversation, Store, upsertWorkspace } from '@qywork/store'
-import { memberModel, memberOutcome, ownerWorkspace, resolveModel } from './team-run.ts'
+import {
+  memberEffort,
+  memberModel,
+  memberOutcome,
+  ownerWorkspace,
+  resolveModel,
+} from './team-run.ts'
 
 const config = {
   active: { provider: '默认接口', model: 'm-default' },
@@ -157,6 +163,32 @@ describe('将指定的模型解析为接口与模型', () => {
   test('未配置的模型返回可用模型清单', () => {
     const r = resolveModel('查无此模型', config)
     expect('error' in r && r.error).toContain('provider="便宜接口", model="m-cheap"')
+  })
+
+  /** 云端型号的 id 是编号，按型号名填写必然失败；报错中的清单写出名称，模型据此改填对应的一行。 */
+  test('云端型号在可用模型清单与档位报错中按显示名称写出', () => {
+    const opus = 'qy-e0786e2614754b92'
+    const cloud = {
+      active: { provider: 'qywork', model: opus },
+      providers: {
+        qywork: {
+          kind: 'anthropic_messages',
+          models: {
+            [opus]: { displayName: 'Claude Opus 5.5' },
+            'qy-b041c7d2e5f60918': { displayName: 'Claude Opus 5.5', delisted: true },
+          },
+        },
+      },
+    } as unknown as QyConfig
+    const r = resolveModel('claude-opus-5-5', cloud)
+    expect('error' in r && r.error).toContain(
+      `「Claude Opus 5.5」(provider="qywork", model="${opus}")`,
+    )
+    // 已下架的型号不列为可用。
+    expect('error' in r && r.error).not.toContain('qy-b041c7d2e5f60918')
+    const effort = memberEffort({ provider: 'qywork', model: opus }, cloud, 'minimal', null)
+    expect('error' in effort && effort.error).toContain('「Claude Opus 5.5」')
+    expect('error' in effort && effort.error).not.toContain(opus)
   })
 })
 

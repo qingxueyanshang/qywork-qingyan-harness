@@ -847,6 +847,18 @@ export function mediaModelLabel(
 }
 
 /**
+ * 对话模型的名称：接口下保存的显示名称；没有时为模型库中的名称；模型库未收录时为型号 id。
+ * `/api/models` 的 `label`、提供给大模型的已配置模型清单、子 agent 与角色清单、派发报错使用同一名称。
+ * 不要让大模型按型号 id 判断模型：云端型号的 id 是对外编号，不含厂商与型号信息。
+ */
+export function modelLabel(cfg: QyConfig, ref: ModelRef): string {
+  const saved = cfg.providers[ref.provider]?.models[ref.model]?.displayName
+  if (saved) return saved
+  const spec = modelSpecOf(cfg, ref)
+  return spec && spec.catalogued !== false ? spec.displayName : ref.model
+}
+
+/**
  * 接口下为该模型保存的显示名称（`StoredModel.displayName` / `StoredMediaModel.displayName`，由云端同步写入）；
  * 没有时为 undefined。`art` 使用对话模型，按 `models` 查找，其余类别按 `media` 查找。
  * 向用户提及模型的文字经 `modelMention` 使用它。
