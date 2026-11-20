@@ -533,6 +533,21 @@ describe('模型目录', () => {
     ])
   })
 
+  /**
+   * 原始失败形状：登录后模型库列出云端型号的对外编号，与对应型号同名，单价为官方价，而扣费按积分；
+   * 这些条目由同步写入、随同步覆盖，在模型库中修改也不生效。
+   */
+  test('模型库不列出云端同步写入的条目；用户添加的条目照常列出', async () => {
+    const d = withConfig('anthropic_messages', 'claude-opus-5-5')
+    d.config.catalog = {
+      'qy-e0786e2614754b92|anthropic_messages': { base: 'claude-opus-5-5', cloud: true },
+      'my-opus|anthropic_messages': { base: 'claude-opus-5-5' },
+    }
+    const ids = (await body(d)).library.flatMap((v) => v.models.map((m) => m.id))
+    expect(ids).not.toContain('qy-e0786e2614754b92')
+    expect(ids).toContain('my-opus')
+  })
+
   test('Seedream 模型库与画布均显示水印默认关闭', async () => {
     const d = withConfig('openai_chat_completions', 'm')
     const ids = ['doubao-seedream-5-0-pro-260628', 'doubao-seedream-5-0-flash-260915']

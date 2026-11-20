@@ -263,9 +263,10 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
   const builtin = new Set(rows.keys())
   // 补入目录未收录的模型（用户自行添加的条目）：有对应型号时取该型号的规格，否则 `unknownModel`
   // 提供一组保守默认值，覆盖中填写的值按原样显示。此处丢弃键的第二维：用户添加的模型只可能有一个协议。
+  // 云端型号的条目（`cloud`）不列出：它由同步写入、随同步覆盖，列出时是对外编号与对应型号同名的一行，单价为官方价而扣费按积分。
   for (const [key, o] of Object.entries(overrides)) {
     const id = key.split('|')[0] ?? key
-    if (rows.has(id)) continue
+    if (rows.has(id) || o.cloud) continue
     rows.set(
       id,
       applySpecOverride(lookupModel(id, 'openai_chat_completions', undefined, o.base), o),
