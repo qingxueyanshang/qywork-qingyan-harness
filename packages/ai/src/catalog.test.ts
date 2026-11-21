@@ -75,9 +75,9 @@ test('历史推理发送规则按协议与目录声明', () => {
   expect(rule('claude-opus-5-5', 'anthropic_messages')).toEqual({ opaque: true, text: 'none' })
   expect(rule('mimo-v2.6-pro', 'anthropic_messages')).toEqual({ opaque: true, text: 'all' })
   expect(rule('grok-4.7', 'openai_responses')).toEqual({ opaque: true, text: 'none' })
-  expect(rule('gpt-6-sol', 'openai_responses')).toEqual({ opaque: false, text: 'none' })
-  expect(rule('gpt-6.1-sol', 'openai_responses')).toEqual({ opaque: false, text: 'none' })
-  expect(rule('gpt-6.2-astra', 'openai_responses')).toEqual({ opaque: false, text: 'none' })
+  expect(rule('gpt-6-sol', 'openai_responses')).toEqual({ opaque: true, text: 'none' })
+  expect(rule('gpt-6.1-sol', 'openai_responses')).toEqual({ opaque: true, text: 'none' })
+  expect(rule('gpt-6.2-astra', 'openai_responses')).toEqual({ opaque: true, text: 'none' })
   expect(rule('deepseek-flash', 'openai_chat_completions')).toEqual({ opaque: false, text: 'all' })
   expect(rule('grok-4.7', 'openai_chat_completions')).toEqual({
     opaque: false,
@@ -1359,4 +1359,11 @@ describe('对应型号与接口价格', () => {
 /** DeepSeek V4.1 Flash 以原生形状发送工具定义：strict 形状下该型号会把不提供的可选参数写成字符串 "null"。经云端时同样取这一条目。 */
 test('DeepSeek V4.1 Flash 的工具定义使用原生形状', () => {
   expect(lookupModel('deepseek-flash', 'openai_chat_completions').chatToolSchema).toBe('native')
+})
+
+/** GPT 系列经 Responses 回放加密推理条目；chat 协议不回放。 */
+test('GPT 系列在 Responses 上回放加密推理条目', () => {
+  for (const id of ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol', 'gpt-6-astra']) {
+    expect(lookupModel(id, 'openai_responses').reasoningEcho).toBe('encrypted_content')
+  }
 })

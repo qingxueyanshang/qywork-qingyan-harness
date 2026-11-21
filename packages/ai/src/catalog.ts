@@ -1373,6 +1373,14 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
  * 约定写在 `ModelSpec.vision` 上。
  */
 function openAiCompatCatalog(now: number): ModelSpec[] {
+  /*
+   * OpenAI 推理模型在 Responses 上以加密推理条目保留多轮工具调用之间的推理，回放后模型不必在每一轮重新推理。
+   * 端点没有返回加密内容时（例如官方接口未请求 include）没有条目可回放，请求不变。
+   */
+  const OPENAI_RESPONSES = {
+    provider: 'openai_responses' as const,
+    reasoningEcho: 'encrypted_content' as const,
+  }
   const base = {
     provider: 'openai_chat_completions' as const,
     minCacheablePrefix: 1024,
@@ -1434,7 +1442,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'openai',
       // 2026-11-17 核对：https://developers.openai.com/api/docs/models/gpt-6.2-astra
       // 工具调用要求 Responses；拒绝 none，缓存读取价为输入价的 5%。
-      provider: 'openai_responses',
+      ...OPENAI_RESPONSES,
       vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
@@ -1450,7 +1458,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'openai',
       // 2026-11-17 核对：https://developers.openai.com/api/docs/models/gpt-6.2-sol
       // 工具调用要求 Responses；拒绝 none，缓存读取价为输入价的 5%。
-      provider: 'openai_responses',
+      ...OPENAI_RESPONSES,
       vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
@@ -1465,7 +1473,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       density: GPT_6_DENSITY,
       vendor: 'openai',
       // Astra 的工具调用要求 Responses API。
-      provider: 'openai_responses',
+      ...OPENAI_RESPONSES,
       vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
@@ -1481,7 +1489,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'openai',
       // 2026-09-30 核对：https://developers.openai.com/api/docs/models/gpt-6.1-sol
       // 工具调用要求 Responses；不支持 none / minimal，缓存读取价为输入价的 5%。
-      provider: 'openai_responses',
+      ...OPENAI_RESPONSES,
       vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
@@ -1496,7 +1504,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'openai',
       // 2026-10-27 核对：https://developers.openai.com/api/docs/models/gpt-6.1-terra
       // 工具调用要求 Responses；官方另支持 none，产品只提供正向思考档位。
-      provider: 'openai_responses',
+      ...OPENAI_RESPONSES,
       vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
@@ -1510,7 +1518,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       displayName: 'GPT-6 Sol',
       vendor: 'openai',
       // 思考档位下的工具调用要求 Responses API。
-      provider: 'openai_responses',
+      ...OPENAI_RESPONSES,
       vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
@@ -1526,7 +1534,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       // 2026-10-02 核对：https://developers.openai.com/api/docs/models/gpt-6-luna
       // 官方另支持 none；产品只提供正向思考档位，未选择时沿用默认 medium。
       // 思考开启时的工具调用使用 Responses；Chat 仅在 none 下支持工具调用。
-      provider: 'openai_responses',
+      ...OPENAI_RESPONSES,
       vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
@@ -1542,7 +1550,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       vendor: 'openai',
       // 2026-11-11 核对：https://developers.openai.com/api/docs/models/gpt-6-cyber
       // 须经 Trusted Access 批准后才能调用。
-      provider: 'openai_responses',
+      ...OPENAI_RESPONSES,
       vision: true,
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
