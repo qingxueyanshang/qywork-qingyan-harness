@@ -2300,7 +2300,7 @@ describe('grep 的单条上界', () => {
     await writeFile(join(root, 'vendor.min.js'), MINIFIED, 'utf8')
 
     const { viaRg, viaBuiltin } = await bothEngines(root)
-    expect((viaRg.data as { engine: string }).engine).toBe('ripgrep')
+    if (Bun.which('rg')) expect((viaRg.data as { engine: string }).engine).toBe('ripgrep')
     expect((viaBuiltin.data as { engine: string }).engine).toBe('builtin')
 
     for (const [name, out] of [
@@ -2339,7 +2339,7 @@ describe('grep 的上下文行', () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-ctx-')))
     await writeFile(join(root, 'ctx.txt'), TEXT, 'utf8')
     const { viaRg, viaBuiltin } = await bothEngines(root, { context: 1 })
-    expect((viaRg.data as { engine: string }).engine).toBe('ripgrep')
+    if (Bun.which('rg')) expect((viaRg.data as { engine: string }).engine).toBe('ripgrep')
     expect((viaBuiltin.data as { engine: string }).engine).toBe('builtin')
     for (const out of [viaRg, viaBuiltin]) {
       expect(out.status).toBe('success')

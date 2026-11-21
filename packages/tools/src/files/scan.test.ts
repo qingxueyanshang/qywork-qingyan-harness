@@ -255,7 +255,7 @@ describe('条数上限', () => {
     )
     const viaRg = await registry().execute('grep', { pattern: 'needle' }, ctx(root))
     const viaBuiltin = await registry().execute('grep', { pattern: 'needle(?= )' }, ctx(root))
-    expect(viaRg.data?.engine).toBe('ripgrep')
+    if (Bun.which('rg')) expect(viaRg.data?.engine).toBe('ripgrep')
     expect(viaBuiltin.data?.engine).toBe('builtin')
     for (const out of [viaRg, viaBuiltin]) {
       expect((out.data?.matches as string[]).length).toBe(SCAN_LIMITS.results)
