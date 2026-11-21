@@ -5,7 +5,7 @@
  */
 
 import { afterAll, afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
@@ -423,15 +423,17 @@ describe('远程访问经 serve() 装配', () => {
   let dir = ''
   const previousCloud = process.env.QYWORK_CLOUD
 
+  /*
+   * 工作区目录不在此处删除：关闭数据库不保证释放文件句柄（见 `Store.close`），Windows 上同一进程内删除
+   * 会以 EBUSY 失败。整轮的临时目录由 `scripts/run-tests.ts` 在测试子进程退出之后统一清理。
+   */
   afterAll(async () => {
-    // 必须等待：`stop()` 是异步的，未结束时工作区目录仍被占用，随后的删除在 Windows 上以 EBUSY 失败。
     await handle?.stop()
     store?.close()
     content?.close()
     await cloud.stop()
     if (previousCloud === undefined) delete process.env.QYWORK_CLOUD
     else process.env.QYWORK_CLOUD = previousCloud
-    if (dir) await rm(dir, { recursive: true, force: true })
   })
 
   test('经隧道只能访问令牌保护的接口；/internal 与原生宿主路径返回 404；关闭开关后断开；设备被移除后删除云端接口', async () => {

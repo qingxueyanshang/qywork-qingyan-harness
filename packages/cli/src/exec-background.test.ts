@@ -81,6 +81,11 @@ afterAll(async () => {
 /** 把 pid 写入 `<名称>.pid` 后持续运行，直到被停止。 */
 const HOLD =
   "await Bun.write(process.argv[2] + '.pid', String(process.pid)); console.log('started'); setInterval(() => {}, 1000)"
+/**
+ * 等到 `<名称>.pid` 出现后退出。紧随后台命令执行：按脚本应答时本轮在毫秒内结束，停止命令时 shell 可能尚未
+ * 创建执行命令的子进程，Windows 上 `taskkill /T` 因此遗漏随后创建的子进程。
+ */
+const WAIT = "while (!(await Bun.file(process.argv[2] + '.pid').exists())) await Bun.sleep(10)"
 /** 输出一行后 300 毫秒退出。 */
 const SHORT = "console.log('short done'); setTimeout(() => process.exit(0), 300)"
 /** 3 秒后输出一行并退出。 */
@@ -90,6 +95,7 @@ async function exec(prompt: string) {
   const home = await mkdtemp(join(tmpdir(), 'qywork-exec-bg-'))
   const ws = await mkdtemp(join(tmpdir(), 'qywork-exec-bg-ws-'))
   await writeFile(join(ws, 'hold.ts'), HOLD)
+  await writeFile(join(ws, 'wait.ts'), WAIT)
   await writeFile(join(ws, 'short.ts'), SHORT)
   await writeFile(join(ws, 'slow.ts'), SLOW)
   const config = {
@@ -127,9 +133,19 @@ function alive(pid: number): boolean {
   }
 }
 
+/** Windows 上 `taskkill /F` 返回时进程的终止可能尚未完成，按时限等待其退出。 */
+async function exited(pid: number): Promise<boolean> {
+  for (let i = 0; i < 200; i += 1) {
+    if (!alive(pid)) return true
+    await Bun.sleep(25)
+  }
+  return false
+}
+
 test('本轮结束时仍在运行的后台命令被停止并列出，进程不残留', async () => {
   script = [
     callTurn('call_bg', 'run_command', { command: `"${BUN}" hold.ts H`, background: true }),
+    callTurn('call_wait', 'run_command', { command: `"${BUN}" wait.ts H` }),
     textTurn('服务已启动。'),
   ]
   bodies = []
@@ -139,9 +155,9 @@ test('本轮结束时仍在运行的后台命令被停止并列出，进程不�
   expect(r.err).toContain('已停止仍在运行的后台命令')
   const pidFile = join(r.ws, 'H.pid')
   expect(existsSync(pidFile)).toBe(true)
-  expect(alive(Number(readFileSync(pidFile, 'utf8')))).toBe(false)
+  expect(await exited(Number(readFileSync(pidFile, 'utf8')))).toBe(true)
   // 被停止的命令没有回执，不再执行一轮。
-  expect(bodies).toHaveLength(2)
+  expect(bodies).toHaveLength(3)
 }, 60_000)
 
 test('本轮中结束的后台命令的回执在本轮结束后作为下一轮的消息执行', async () => {

@@ -565,13 +565,20 @@ describe('子 agent 会话中的后台命令', () => {
     const cv = conversation()
     script.push(
       dispatch('启动服务 M2'),
-      callsTurn([run('call_h', { command: hold('M2'), timeout_ms: 1000, background: true })]),
+      // 前台命令 M2g 使子 agent 停留到取得 M2 的宿主 pid：按脚本应答时子 agent 在毫秒内结束并停止 M2，
+      // Linux 上之后已无法在进程表中找到它；Windows 上停止时 shell 可能尚未创建 M2 的进程。
+      callsTurn([
+        run('call_h', { command: hold('M2'), timeout_ms: 1000, background: true }),
+        run('call_g', { command: hold('M2g') }),
+      ]),
       textTurn('服务已启动。'),
       textTurn('子 agent 已完成。'),
     )
 
     void startRun(cv, '派发服务', undefined, deps())
     const pid = await pidOf('M2')
+    await pidOf('M2g')
+    await writeFile(join(dir, 'M2g.go'), '')
     await until(() => bodies.length === 4, '父会话收到子 agent 回执后的请求')
     expect(bodies[3]).toContain('服务已启动。')
     expect(bodies[3]).toContain('子 agent 结束时停止了仍在运行的后台命令：cmd_')
