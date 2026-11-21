@@ -2,7 +2,7 @@
  * 拉取接口上的型号：第三方接口的公开计费清单（New API 的 `/api/pricing`）优先，没有时退回 OpenAI 兼容的 `{base}/models`；
  * 退回时若站点有模型广场（`/api/v1/model-plaza`），对话型号的价格按 `plaza.ts` 折算。
  *
- * 计费清单给出每个型号的接口类型，据此区分对话、图像与视频；价格按 `pricing.ts` 折算。
+ * 计费清单与 New API 的型号列表给出每个型号的接口类型，类别按接口类型与名称确定（`categoryOf`）；价格按 `pricing.ts` 折算。
  * 接口地址属于登记的渠道（`registerPullChannel`）时，由该渠道完成拉取，或按渠道目录给出生成型号保存的规格；
  * 其余站点的生成型号不带规格，使用协议默认。
  * 只读：不写配置，写入由调用方经配置接口完成。
@@ -59,7 +59,7 @@ export type PulledModel =
       /** 登记的渠道给出的保存规格（`registerPullChannel`）。 */
       spec?: ChannelSpec
     }
-  /** 未知：条目没有类别，名称也不在模型库与生成目录中，由用户选定类别后添加。 */
+  /** 未知：条目没有类别，接口类型与名称也无法确定类别（`categoryOf`），由用户选定类别后添加。 */
   | { id: string; output: 'unknown' }
 
 export interface PullResult {
@@ -122,6 +122,49 @@ const TIMEOUT_MS = 20_000
 
 /** New API 的接口类型中，对话类请求的取值。 */
 const CHAT_ENDPOINTS = ['openai', 'openai-response', 'anthropic', 'gemini']
+
+/** 接口类型中生成类请求的取值。`video` 不是 New API 的取值，第三方接口用它标记视频型号。 */
+const MEDIA_ENDPOINTS: Readonly<Record<string, 'image' | 'video'>> = {
+  'openai-video': 'video',
+  video: 'video',
+  'image-generation': 'image',
+}
+
+/** 既不能对话、也没有对应生成协议的接口类型：只带这些类型的条目不列出。 */
+const UNLISTED_ENDPOINTS = [
+  'embeddings',
+  'jina-rerank',
+  'rerank',
+  'realtime',
+  'audio-transcription',
+]
+
+/**
+ * 条目的类别，计费清单与型号列表共用。依次按：接口类型中的生成类型；只带不可用的类型时不列出（返回 null）；
+ * 名称（生成目录 `identifyMediaModel`，模型库 `chatFields`）；接口类型全部为对话类型时归入对话；其余为未知。
+ * 名称先于对话类型：第三方接口常把生成型号也标为 `openai`。带有未登记类型（如第三方自定义的语音接口）的条目
+ * 不按对话类型归类，该条目上的 `openai` 不能说明它是对话型号。
+ */
+function categoryOf(
+  types: readonly string[],
+  media: { output: MediaOutput } | undefined,
+  chat: { known: boolean; base?: string },
+): 'chat' | MediaOutput | 'unknown' | null {
+  const typed = types.map((t) => MEDIA_ENDPOINTS[t])
+  if (typed.includes('video')) return 'video'
+  if (typed.includes('image')) return 'image'
+  if (types.length && types.every((t) => UNLISTED_ENDPOINTS.includes(t))) return null
+  if (media) return media.output
+  if (chat.known || chat.base) return 'chat'
+  if (types.length && types.every((t) => CHAT_ENDPOINTS.includes(t))) return 'chat'
+  return 'unknown'
+}
+
+/** 型号列表条目中的接口类型。New API 的型号列表与计费清单都带有该字段，其他站点没有。 */
+function endpointTypesOf(entry: Record<string, unknown>): string[] {
+  const types = entry.supported_endpoint_types
+  return Array.isArray(types) ? types.filter((t): t is string => typeof t === 'string') : []
+}
 
 /** 接口类型与协议的对应。`gemini` 没有对应的协议。 */
 const ENDPOINT_KIND: Readonly<Record<string, ProviderKind>> = {
@@ -271,12 +314,23 @@ async function fromPricing(
     const id = entry.model_name
     if (models.has(id)) continue
     const types = entry.supported_endpoint_types ?? []
-    if (types.includes('openai-video')) {
-      models.set(id, ctx.media(id, 'video', 'openai_videos', specOf?.(entry, 'video', basis)))
-    } else if (types.includes('image-generation')) {
-      models.set(id, ctx.media(id, 'image', 'openai_images', specOf?.(entry, 'image', basis)))
-    } else if (types.some((t) => CHAT_ENDPOINTS.includes(t))) {
+    const media = identifyMediaModel(id, mediaLibrary(), ctx.target.baseUrl)
+    const kind = chatKindOf(types, ctx.target.kind)
+    const output = categoryOf(types, media, chatFields(id, kind ?? ctx.target.kind))
+    if (output === null) continue
+    if (output === 'unknown') {
+      models.set(id, { id, output })
+    } else if (output === 'chat') {
       models.set(id, ctx.chat(id, types, basis ? chatPriceOf(entry, basis) : undefined))
+    } else {
+      // 接口类型给出类别时按站点的通用协议；只按名称识别时使用目录的识别结果。
+      const typed = types.some((t) => MEDIA_ENDPOINTS[t] === output)
+      const mediaKind =
+        !typed && media?.output === output
+          ? media.kind
+          : defaultMediaKind(output, ctx.target.baseUrl)
+      const spec = output === 'audio' ? undefined : specOf?.(entry, output, basis)
+      models.set(id, ctx.media(id, output, mediaKind, spec))
     }
   }
   return { source: 'pricing', models: [...models.values()] }
@@ -331,8 +385,7 @@ function declaredOutput(entry: Record<string, unknown>): 'chat' | MediaOutput | 
 }
 
 /**
- * 型号列表接口：条目带类别时按类别归类；只有名称时，生成目录中的名称（`identifyMediaModel`）归入对应类别，
- * 模型库中的名称与以模型库 id 为前缀的名称（`chatFields`）归入对话，其余归为未知。
+ * 型号列表接口：条目带类别（`declaredOutput`）时按类别归类，否则按接口类型与名称归类（`categoryOf`）。
  * 列表中没有的厂商自有协议型号按目录补齐（`ownProtocolModels`）。
  * 类别为生成而目录中没有该名称时，协议按接口地址取默认值（`defaultMediaKind`），不带规格。
  */
@@ -347,14 +400,23 @@ function fromModelList(
     if (typeof id !== 'string' || listed.has(id)) continue
     const declared = declaredOutput(entry)
     if (declared === null) continue
+    const types = endpointTypesOf(entry)
     const media = identifyMediaModel(id, mediaLibrary(), target.baseUrl)
-    const chat = chatFields(id, target.kind)
-    const output = declared ?? media?.output ?? (chat.known || chat.base ? 'chat' : 'unknown')
+    const kind = chatKindOf(types, target.kind)
+    const chat = chatFields(id, kind ?? target.kind)
+    const output = declared ?? categoryOf(types, media, chat)
+    if (output === null) continue
     if (output === 'unknown') {
       listed.set(id, { id, output })
     } else if (output === 'chat') {
       const price = prices?.get(id)
-      listed.set(id, { id, output, ...chat, ...(price ? { price } : {}) })
+      listed.set(id, {
+        id,
+        output,
+        ...(kind ? { kind } : {}),
+        ...chat,
+        ...(price ? { price } : {}),
+      })
     } else if (media?.output === output) {
       listed.set(id, {
         id,

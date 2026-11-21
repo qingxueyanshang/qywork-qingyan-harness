@@ -1,6 +1,6 @@
 /**
  * 覆盖 `index.ts`（拉取型号）：本地服务按计费清单与型号列表应答，核对分类、价格，没有计费清单时退回型号列表、
- * 按条目自带的类别归类，名称按前缀对应模型库与生成目录的型号，官方接口按目录补齐自有协议的生成型号，
+ * 按条目自带的类别与接口类型归类，名称按前缀对应模型库与生成目录的型号，官方接口按目录补齐自有协议的生成型号，
  * 以及登记的渠道（`registerPullChannel`）给出规格或完成整个拉取。站点与条目为合成数据。
  */
 
@@ -321,6 +321,74 @@ test('计费清单中以模型库 id 为前缀的对话型号带对应型号', a
   })
   const [model] = (await pullModels(target, signal())).models
   expect(model).toMatchObject({ output: 'chat', known: false, base: 'claude-opus-4-7' })
+})
+
+// New API 站点的计费清单需要登录（返回 401），型号列表的条目带 `supported_endpoint_types`。
+test('型号列表的条目带接口类型时按类型归类：生成类型优先，名称先于对话类型，只带不可用类型的不列出', async () => {
+  const typed = (id: string, types: string[]) => ({
+    id,
+    object: 'model',
+    owned_by: 'custom',
+    supported_endpoint_types: types,
+  })
+  const { target } = site({
+    '/v1/models': {
+      data: [
+        typed('kimi-k2.5', ['openai']),
+        typed('vendor-reasoner-1', ['openai-response']),
+        typed('kling-image-4.0', ['image-generation']),
+        typed('kling-v1', ['openai-video', 'openai']),
+        typed('kling-v1-5', ['video']),
+        typed('qwen-image-3.0-pro', ['openai']),
+        typed('vendor-tts-1', ['custom-tts', 'openai']),
+        typed('text-embedding-a', ['embeddings']),
+        typed('rerank-a', ['rerank']),
+        typed('voice-live-1', ['realtime']),
+      ],
+    },
+  })
+  const result = await pullModels(target, signal())
+  expect(result.source).toBe('models')
+  const by = new Map(result.models.map((m) => [m.id, m]))
+  expect(by.get('kimi-k2.5')).toEqual({ id: 'kimi-k2.5', output: 'chat', known: false })
+  expect(by.get('vendor-reasoner-1')).toEqual({
+    id: 'vendor-reasoner-1',
+    output: 'chat',
+    kind: 'openai_responses',
+    known: false,
+  })
+  expect(by.get('kling-image-4.0')).toEqual({
+    id: 'kling-image-4.0',
+    output: 'image',
+    kind: 'openai_images',
+    known: false,
+  })
+  for (const id of ['kling-v1', 'kling-v1-5'])
+    expect(by.get(id)).toMatchObject({ output: 'video', kind: 'openai_videos' })
+  // 同时标为 `openai` 的生成型号按名称归类。
+  expect(by.get('qwen-image-3.0-pro')).toMatchObject({ output: 'image', known: true })
+  // 带有未登记类型时，`openai` 不能说明它是对话型号。
+  expect(by.get('vendor-tts-1')).toEqual({ id: 'vendor-tts-1', output: 'unknown' })
+  for (const id of ['text-embedding-a', 'rerank-a', 'voice-live-1']) expect(by.has(id)).toBe(false)
+})
+
+test('计费清单与型号列表使用同一分类：标为 openai 的生成型号按名称归类，未登记类型的型号列为未知', async () => {
+  const { target } = site({
+    '/api/pricing': {
+      data: [
+        priced('qwen-image-3.0-pro', ['openai'], { quota_type: 1, model_price: 0.2 }),
+        priced('vendor-tts-1', ['custom-tts']),
+        priced('rerank-a', ['rerank']),
+      ],
+      group_ratio: { default: 1 },
+    },
+    '/api/status': { data: {} },
+  })
+  const result = await pullModels(target, signal())
+  expect(result.models).toEqual([
+    { id: 'qwen-image-3.0-pro', output: 'image', kind: 'openai_images', known: true },
+    { id: 'vendor-tts-1', output: 'unknown' },
+  ])
 })
 
 // 2026-10-27 api.minimax.cn 的 /v1/models 原样（节选）：只列出对话型号，没有计费清单。
