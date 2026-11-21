@@ -38,3 +38,10 @@ GitHub 令牌，直接调用仓库接口。该脚本在 `.tmp/` 下、不入库�
   输出又重定向到文件时界面没有任何进展，只显示运行中（v0.3.7 停滞了 79 分钟，由用户中断）。
   公开前后的核对改为不下载安装包：附件清单与前一个公开版本相同、全部 `uploaded`；只下载 `latest.json` 核对版本、链接与签名；
   公开后对各安装包的下载地址发送 HEAD 请求确认可访问。
+  2026-11-21（v0.3.24）实测完整下载核对在 15 分钟内完成；网络状况变化时仍按上一条处理。
+- `verify-desktop-release.ps1` 校验更新签名时调用 `.tmp/scratch/release-crypto.py verify <文件> <.sig> <公钥>`（只用公钥，
+  minisign 格式的 Ed25519 签名，依赖本机 Python 的 `cryptography`）。该文件曾在清理 `.tmp` 时被删除，2026-11-21 重写，
+  清理时保留它。
+- 被点源的 `release-api.ps1` 带有 `param()`，调用方脚本中与其参数同名的变量（如 `$OutFile`）会被清空，调用方改用其他变量名。
+- 官网的下载清单地址是 `https://qywork.io/download/latest.json`（单数 `download`），由服务器每 10 分钟同步一次，
+  同步记录在服务器的 `/opt/qywork-cloud/downloads/mirror.log`；同步后版本公告自动写入。
