@@ -41,6 +41,7 @@ export const REQUEST_FIELDS: Readonly<Record<ProviderKind, readonly string[]>> =
     'reasoning',
     'prompt_cache_key',
     'store',
+    'include',
     'stream',
   ],
 }

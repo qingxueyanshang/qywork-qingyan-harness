@@ -1375,7 +1375,8 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
 function openAiCompatCatalog(now: number): ModelSpec[] {
   /*
    * OpenAI 推理模型在 Responses 上以加密推理条目保留多轮工具调用之间的推理，回放后模型不必在每一轮重新推理。
-   * 端点没有返回加密内容时（例如官方接口未请求 include）没有条目可回放，请求不变。
+   * 端点没有返回加密内容时没有条目可回放，请求不变。
+   * GPT-5.4 起 Chat Completions 不支持思考档位不为 `none` 时调用工具，GPT-5.6 与 GPT-6 系列都只收录 Responses 条目。
    */
   const OPENAI_RESPONSES = {
     provider: 'openai_responses' as const,
@@ -1577,6 +1578,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...base,
       ...effort(GPT_56_EFFORTS),
       id: 'gpt-5.6-sol',
+      ...OPENAI_RESPONSES,
       displayName: 'GPT-5.6 Sol',
       vendor: 'openai',
       vision: true,
@@ -1588,6 +1590,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...base,
       ...effort(GPT_56_EFFORTS),
       id: 'gpt-5.6-terra',
+      ...OPENAI_RESPONSES,
       displayName: 'GPT-5.6 Terra',
       vendor: 'openai',
       vision: true,
@@ -1600,6 +1603,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...base,
       ...effort(GPT_56_EFFORTS),
       id: 'gpt-5.6-luna',
+      ...OPENAI_RESPONSES,
       displayName: 'GPT-5.6 Luna',
       vendor: 'openai',
       vision: true,
@@ -1612,6 +1616,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       ...base,
       ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
       id: 'gpt-5.6-cyber',
+      ...OPENAI_RESPONSES,
       displayName: 'GPT-5.6 Cyber',
       vendor: 'openai',
       vision: true,
@@ -1760,6 +1765,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       density: DEFAULT_DENSITY,
       contextWindow: 1_048_576,
       maxOutputTokens: 65_536,
+      chatReasoningProtocol: 'google_signatures',
       pricing: usd(2, 12, 0.2),
       longContext: [GEMINI_31_PRO_LONG],
     },
@@ -1773,6 +1779,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       density: DEFAULT_DENSITY,
       contextWindow: 1_048_576,
       maxOutputTokens: 65_536,
+      chatReasoningProtocol: 'google_signatures',
       pricing: geminiFlashPromo(now),
     },
     {
@@ -1785,6 +1792,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       density: DEFAULT_DENSITY,
       contextWindow: 1_048_576,
       maxOutputTokens: 65_536,
+      chatReasoningProtocol: 'google_signatures',
       pricing: geminiFlashPromo(now),
     },
 
@@ -2065,6 +2073,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
         ...effort(['low', 'high', 'max']),
         ...model,
         vendor: 'moonshot',
+        // 官方思考模型指南：保留式思考始终开启，多轮对话与工具调用都原样回传完整的 assistant 消息（含 `reasoning_content`）。
+        chatReasoningProtocol: 'preserved',
         vision: true,
         video: true,
         contextWindow: 1_048_576,
@@ -2153,6 +2163,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'glm-5.2',
       displayName: 'GLM-5.2',
       vendor: 'zhipu',
+      chatReasoningProtocol: 'glm_preserved',
       vision: false,
       contextWindow: 1_000_000,
       maxOutputTokens: 131_072,
@@ -2164,6 +2175,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'glm-4.7',
       displayName: 'GLM-4.7',
       vendor: 'zhipu',
+      chatReasoningProtocol: 'glm_preserved',
       vision: false,
       contextWindow: 200_000,
       maxOutputTokens: 128_000,
@@ -2226,6 +2238,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'MiniMax-M3',
       displayName: 'MiniMax M3',
       vendor: 'minimax',
+      chatReasoningProtocol: 'preserved',
       vision: true,
       video: true,
       contextWindow: 1_000_000,

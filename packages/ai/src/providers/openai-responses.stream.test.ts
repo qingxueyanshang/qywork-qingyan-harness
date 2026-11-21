@@ -228,6 +228,7 @@ interface SentBody {
   input?: { type: string }[]
   tools?: { strict?: boolean }[]
   store?: boolean
+  include?: string[]
   prompt_cache_key?: string
   reasoning?: { summary?: string; effort?: string }
 }
@@ -801,6 +802,41 @@ describe('发送的请求', () => {
   test('store 恒为 false，不将用户的对话保存在供应商一侧', async () => {
     await run(TEXT_RUN)
     expect(lastBody.store).toBe(false)
+  })
+
+  /** Meta 不请求 `include` 时推理条目不带密文，多轮工具调用之间没有可回放的推理。 */
+  test('加密推理的模型请求 include，返回原文的模型不请求', async () => {
+    const cases: [string, string[] | undefined][] = [
+      ['muse-spark-1.3', ['reasoning.encrypted_content']],
+      ['gpt-6.2-sol', ['reasoning.encrypted_content']],
+      ['grok-4.7', ['reasoning.encrypted_content']],
+      ['deepseek-flash', undefined],
+    ]
+    for (const [model, include] of cases) {
+      script = {
+        status: 200,
+        body: TEXT_RUN,
+        contentType: 'text/event-stream',
+        headers: {},
+        delayMs: 0,
+      }
+      const spec = lookupModel(model, 'openai_responses')
+      const a = new OpenAIResponsesAdapter(
+        { kind: 'openai_responses', apiKey: 'sk-test', baseUrl: BASE, model },
+        spec,
+      )
+      for await (const _ of a.stream({
+        model,
+        system: [],
+        messages: [{ role: 'user', content: '你好' }],
+        tools: [],
+        maxOutputTokens: 1024,
+        idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+      })) {
+        // 只检查请求体。
+      }
+      expect(lastBody.include).toEqual(include)
+    }
   })
 
   test('DeepSeek 自动管理缓存，不发送 prompt_cache_key', async () => {

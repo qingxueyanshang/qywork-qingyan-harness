@@ -1363,7 +1363,40 @@ test('DeepSeek V4.1 Flash 的工具定义使用原生形状', () => {
 
 /** GPT 系列经 Responses 回放加密推理条目；chat 协议不回放。 */
 test('GPT 系列在 Responses 上回放加密推理条目', () => {
-  for (const id of ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol', 'gpt-6-astra']) {
-    expect(lookupModel(id, 'openai_responses').reasoningEcho).toBe('encrypted_content')
+  for (const id of [
+    'gpt-6.2-sol',
+    'gpt-6.2-astra',
+    'gpt-6.1-sol',
+    'gpt-6-astra',
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
+    'gpt-5.6-cyber',
+  ]) {
+    const spec = lookupModel(id, 'openai_responses')
+    expect(spec.catalogued).not.toBe(false)
+    expect(spec.reasoningEcho).toBe('encrypted_content')
+  }
+})
+
+/** 各厂商文档对多轮工具调用中历史思考的要求，与目录条目的回放规则逐款对应。 */
+test('思考回放规则与厂商文档的要求一致', () => {
+  const chat = (id: string) => reasoningReplay(lookupModel(id, 'openai_chat_completions'))
+  // Gemini 3 与 4：工具调用缺少思考签名时返回 400。
+  for (const id of [
+    'gemini-3.1-pro-preview',
+    'gemini-3.8-flash',
+    'gemini-3.6-flash',
+    'gemini-4-argon',
+  ]) {
+    expect(chat(id).signatures).toBe('google_chat_signature')
+  }
+  // Kimi 保留式思考始终开启；MiniMax M3 须把完整的模型返回加入历史：每条 assistant 消息都带思考原文。
+  for (const id of ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3', 'MiniMax-M3']) {
+    expect(chat(id)).toEqual({ opaque: false, text: 'all' })
+  }
+  // GLM 的保留式思考在标准端点默认关闭，由 `clear_thinking: false` 开启。
+  for (const id of ['glm-5.2', 'glm-4.7', 'glm-5.3']) {
+    expect(lookupModel(id, 'openai_chat_completions').chatReasoningProtocol).toBe('glm_preserved')
   }
 })

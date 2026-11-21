@@ -423,6 +423,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         ? { prompt_cache_key: req.cacheKey }
         : {}),
       store: false,
+      // 无状态请求中，Meta 只在请求 `include` 时返回加密推理；OpenAI 与 xAI 默认返回，同样接受该字段。
+      // 不请求时 Meta 的推理条目不带密文，多轮工具调用之间没有可回放的推理，且不报错。
+      ...(this.spec.reasoningEcho === 'encrypted_content'
+        ? { include: ['reasoning.encrypted_content'] }
+        : {}),
     }
   }
 
