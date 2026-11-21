@@ -12,7 +12,7 @@ metadata:
   禁用控件、列表重渲染、慢加载、长文本、新开页，判定由测试站点记录。
   用法：`QYWORK_HOME=.tmp/browser-live/home bun run .tmp/browser-live/harness.ts --root <仓库或 worktree> --label <名称> --popups open --parallel 3 --mode auto --tools safe`，
   结果与汇总在 `.tmp/browser-live/results/<名称>/summary.md`，两次评测的对照表：`bun run .tmp/browser-live/compare.ts <前标签[,补测]> <后标签>`。
-  基线 worktree 在 `.tmp/browser-live/base`。不调用模型的检查：加 `--probe`（打开、观察、点击、每页截图）。
+  基线 worktree 按需创建：`git worktree add --detach .tmp/browser-live/base <基线提交>`，用完以「先解除链接再删除」的方式移除。不调用模型的检查：加 `--probe`（打开、观察、点击、每页截图）。
   并行运行时无头 Edge 偶发 `Page.captureScreenshot` 超时，用户账本中 317 次截图为 0 次超时，属于环境现象，两侧同样出现时不作为结论。
 - **真实外壳验证**：`.tmp/popup-window-verify/verify.ts`。开发外壳编译时替换 identifier 与 devUrl，WebView2 数据目录与用户正在运行的 qywork 分开，
   不影响用户窗口；用于验证只在 WebView2 中出现的行为（`verify.ts` 新窗口，`verify-dialog.ts` 对话框与选择文件）。

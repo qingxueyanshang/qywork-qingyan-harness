@@ -22,7 +22,7 @@ metadata:
 - **先取得用户的实际布局**：按截图或窗口区域截屏（`CopyFromScreen` 截取 qywork 主窗口矩形，只读，不连接用户实例）核对缩放、主题与视野。
   按 2026-10-19 的布局（缩放 67%）复现只得到 GPU 进程 45%，生成中的连线在视野外；用户实际为深色主题、缩放 32%、整张画布在视野内，
   按此复现得到与用户进程相同的约 103%。
-- 测量脚本 `.tmp/perf-gen/measure.mjs`：`setup.ts` 复制画布与其引用的文件并复制任务记录（去除 `ownerPid`），接口桩
+- 测量脚本 `.tmp/perf-gen/measure.mjs`（2026-11-21 清理临时目录时删除，会话记录已过期无法恢复；需要时按本条的方法重写）：`setup.ts` 复制画布与其引用的文件并复制任务记录（去除 `ownerPid`），接口桩
   `stub.ts`（7798）使任务保持生成中；服务端用安装版 `D:\qywork\qy.exe serve --static <构建目录>`，不受其他会话未提交的服务端修改影响；
   `THEME`、`ZOOM`、`WEB`（前端构建目录）、`WS_DIR`、`DRAG`（拖动的卡片 id）、`PICK` / `VARIANTS`（注入样式逐项对比）、
   `PROBE=mut`（统计 1 秒内连线层的属性修改次数）、`SHOTS`（按缩放截取同一区域对照外观）。进程占用由 `cpu.ps1`
@@ -30,6 +30,6 @@ metadata:
 
 **Why:** 用户显示器 2560×1440、180Hz，开销按刷新率放大，见 [[continuous-animation-cost]]。
 
-**How to apply:** 画布性能问题直接用 `.tmp/perf-drag/shell-drag.mjs`（`WIDE=1` 设置用户布局、`STUB=1` 使任务保持生成中、
-`HOME_DIR=home-real` 配合 `copy-db.ts` 复制的数据库副本打开同一会话、`CSSV=1` 逐项注入样式对比）测量，
+**How to apply:** 画布性能问题按以下参数重写测量脚本（原 `.tmp/perf-drag/shell-drag.mjs` 已于 2026-11-21 删除）：`WIDE=1` 设置用户布局、`STUB=1` 使任务保持生成中、
+`HOME_DIR=home-real` 配合 `copy-db.ts` 复制的数据库副本打开同一会话、`CSSV=1` 逐项注入样式对比；
 外壳 exe 与隔离方法见 [[tauri-webview-no-cdp]]。数据库副本含用户会话内容，测量结束即删除。
