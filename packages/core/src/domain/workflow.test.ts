@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { NodeState } from './model.ts'
 import {
+  CHECKPOINT_LABEL,
   DEFAULT_MAX_CONCURRENT,
   foldWorkflow,
   parseWorkflowCall,
@@ -90,6 +91,23 @@ describe('workflow 调用判别', () => {
         ],
         maxConcurrent: DEFAULT_MAX_CONCURRENT,
       },
+    })
+  })
+
+  // 原始失败形状：工具说明中 label 只是显示名称，模型未填写时整张图被拒绝。
+  test('检查点未填写 label 时使用默认显示名称，整张图照常解析', () => {
+    const got = parseWorkflowCall({
+      goal: '做完',
+      nodes: [
+        { id: 'a', name: 'a', task: '先做' },
+        { id: 'review', kind: 'checkpoint', needs: ['a'] },
+      ],
+    })
+    expect(got.ok && got.call.kind === 'start' && got.call.nodes[1]).toEqual({
+      id: 'review',
+      kind: 'checkpoint',
+      label: CHECKPOINT_LABEL,
+      needs: ['a'],
     })
   })
 

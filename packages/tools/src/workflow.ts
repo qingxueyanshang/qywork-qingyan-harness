@@ -6,6 +6,7 @@
  */
 import { DelegatePort, type ToolContext, type ToolSpec } from '@qywork/agent'
 import {
+  CHECKPOINT_LABEL,
   DEFAULT_MAX_CONCURRENT,
   EFFORT_ORDER,
   parseWorkflowCall,
@@ -60,11 +61,14 @@ export const workflowTool: ToolSpec = {
             subagent: {
               type: 'string',
               description:
-                '本会话已有子 agent 的 id。填写后该节点在该子 agent 的上下文中继续，不再填 role、cli；' +
+                '本会话已有子 agent 的 subagentId，即运行上下文子 agent 清单中反引号内的编号。填写后该节点在该子 agent 的上下文中继续，不再填 role、cli；' +
                 '节点任务与其现有名称不符时同时填写 name',
             },
             task: { type: 'string', description: '子 agent 节点任务' },
-            label: { type: 'string', description: 'checkpoint 显示名称' },
+            label: {
+              type: 'string',
+              description: `checkpoint 的显示名称，不填时为「${CHECKPOINT_LABEL}」`,
+            },
             needs: { type: 'array', items: { type: 'string' }, description: '依赖节点 ID' },
             passInput: { type: 'boolean', description: '是否把上游输出传入任务，默认 true' },
             provider: {

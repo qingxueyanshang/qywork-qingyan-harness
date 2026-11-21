@@ -25,11 +25,11 @@ import {
 } from '@qywork/core'
 import type { PlanNode } from './types.ts'
 
-/** 加载期校验引用所用的已知集合：角色 id、CLI id、本会话已有的子 agent id。 */
+/** 加载期校验引用所用的已知集合：角色 id、CLI id，本会话已有的子 agent（id 到名称）。 */
 export interface PlanKnown {
   roles: ReadonlySet<string>
   clis: ReadonlySet<string>
-  subagents: ReadonlySet<string>
+  subagents: ReadonlyMap<string, string>
 }
 
 export interface OrchestratorReview {
@@ -309,8 +309,15 @@ export function validatePlan(plan: PlanNode[], known: PlanKnown): void {
     } else {
       const target = node.target
       if ('subagent' in target) {
-        if (!known.subagents.has(target.subagent))
-          throw new Error(`节点 ${node.id} 指向的子 agent ${target.subagent} 不在本会话中`)
+        if (!known.subagents.has(target.subagent)) {
+          // 名称可在续接时更改，审查调用按首次派发的参数重新解析，因此只接受 id；填写的是名称时给出对应的 id。
+          const named = [...known.subagents].filter(([, name]) => name === target.subagent)
+          throw new Error(
+            named.length
+              ? `节点 ${node.id} 的 subagent 须填写 subagentId，不是名称：名称为「${target.subagent}」的子 agent 的 subagentId 是 ${named.map(([id]) => id).join('、')}`
+              : `节点 ${node.id} 指向的子 agent ${target.subagent} 不在本会话中`,
+          )
+        }
       } else if (target.kind === 'role' && !known.roles.has(target.role)) {
         throw new Error(`节点 ${node.id} 引用了不存在的角色 ${target.role}`)
       } else if (target.kind === 'cli' && !known.clis.has(target.cli)) {

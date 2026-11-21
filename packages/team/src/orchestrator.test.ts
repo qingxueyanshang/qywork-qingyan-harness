@@ -31,7 +31,7 @@ const checkpoint = (id: string, needs: string[]): PlanNode => ({
 const KNOWN = {
   roles: new Set(['r', 'dev', '设计', '实现', '评审', '构建', '测试', 'a', 'b']),
   clis: new Set(['codex']),
-  subagents: new Set(['cv_known']),
+  subagents: new Map([['cv_known', '底部页面状态']]),
 }
 
 /** 节点的终态。回执即终态，推进器不接受第二个来源。 */
@@ -88,6 +88,13 @@ describe('计划校验', () => {
     expect(() =>
       validatePlan([node('a', '', { target: { subagent: 'cv_other' } })], KNOWN),
     ).toThrow(/不在本会话中/)
+  })
+
+  // 原始失败形状：模型按清单中的名称填写 subagent，报错称该子 agent 不在本会话中，而它就在本会话中。
+  test('subagent 填写的是本会话子 agent 的名称时，报错给出对应的 subagentId', () => {
+    expect(() =>
+      validatePlan([node('a', '', { target: { subagent: '底部页面状态' } })], KNOWN),
+    ).toThrow('名称为「底部页面状态」的子 agent 的 subagentId 是 cv_known')
   })
 
   test('依赖不存在的节点直接拒绝', () => {

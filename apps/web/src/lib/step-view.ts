@@ -9,6 +9,7 @@
  */
 
 import {
+  CHECKPOINT_LABEL,
   type ProviderRequestStatus,
   type ProviderRetryDecision,
   type StopReason,
@@ -515,7 +516,7 @@ function childNodes(item: {
       if (o.kind === 'checkpoint') {
         return {
           key: id,
-          title: typeof o.label === 'string' && o.label.trim() ? o.label.trim() : '当前会话审查',
+          title: typeof o.label === 'string' && o.label.trim() ? o.label.trim() : CHECKPOINT_LABEL,
           kind: 'session' as const,
           needs,
         }

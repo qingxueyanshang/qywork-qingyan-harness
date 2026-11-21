@@ -69,6 +69,9 @@ export interface WorkflowRevision {
 /** 首次派发未指定 `maxConcurrent` 时同时运行的 agent 节点数。工具描述中写明的即为该值。 */
 export const DEFAULT_MAX_CONCURRENT = 4
 
+/** 检查点未填写 `label` 时的显示名称。解析与界面中的图共用此值。 */
+export const CHECKPOINT_LABEL = '当前会话审查'
+
 export type WorkflowCall =
   | { kind: 'start'; goal: string; nodes: WorkflowNode[]; maxConcurrent: number }
   | {
@@ -268,8 +271,7 @@ export function parseWorkflowCall(args: Record<string, unknown>): WorkflowParseR
       const needs = needsOf(node.needs)
       if (!needs) return { ok: false, error: `节点 ${id} 的 needs 必须是非空字符串数组` }
       if (wireText(node.kind) === 'checkpoint') {
-        const label = wireText(node.label)
-        if (!label) return { ok: false, error: `检查点 ${id} 必须有 label` }
+        const label = wireText(node.label) || CHECKPOINT_LABEL
         if (needs.length === 0) return { ok: false, error: `检查点 ${id} 必须依赖上一批节点` }
         // 扁平 strict schema 中 passInput 同时用于子 agent 节点；部分 provider 会把它
         // 补全为默认值 true，而不是 null。检查点不使用该字段，直接忽略：若因

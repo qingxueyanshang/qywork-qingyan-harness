@@ -1105,7 +1105,7 @@ export function makeDelegate(ctx: {
         validatePlan(projection.nodes, {
           roles: new Set(roles.map((r) => r.id)),
           clis: new Set(clis.map((c) => c.id)),
-          subagents: new Set(existing.map((c) => c.id)),
+          subagents: new Map(existing.map((c) => [c.id, c.title])),
         })
         result = advance({
           plan: projection.nodes,
