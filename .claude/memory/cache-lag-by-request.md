@@ -1,0 +1,17 @@
+---
+name: cache-lag-by-request
+description: 排查缓存命中偏低时按「上一次请求总输入减本次命中」逐次计算；固定差额等于系统提示词大小时，是上游把系统提示词放在了对话之后，客户端调整位置无效
+metadata:
+  type: project
+---
+
+缓存命中偏低时，从本机账本 `provider_requests` 逐次计算 `上一次的 (provider_input_tokens + provider_cached_tokens) − 本次的 provider_cached_tokens`
+（同一 run 内相邻的成功请求；该接口格式下 `provider_input_tokens` 是未命中部分）。前缀稳定时差额只有一百左右。
+差额固定、且与 `sent_categories.systemPrompt` 一致时，是上游把系统提示词放在对话之后：每一步系统提示词移到新的末尾，原位置的缓存失效。
+
+2026-11-21 实测：云端 GPT-6.2 两个型号经第三方上游时属于这种情况，同一上游的 GPT-6.1 正常。把系统提示词改为 `input` 的第一条消息（system 或 developer）同样被移到末尾，
+且上游在请求不带系统提示词字段时另补约 5K 的自有提示词，损失更大，因此客户端与云端都不改，由上游修正。
+探针：`.tmp/scratch/sys-position-probe.ts`（隔离目录 `QYWORK_HOME=.tmp/browser-live/home`，参数见文件头）。
+
+**How to apply:** 用户反映缓存「拉不上去」时先按上述方法区分：固定差额（位置问题）、偶发整段未命中（上游更换机器）、换模型后的首次请求（缓存不跨模型）。
+不要先归因于本地的请求前缀改动。相关：[[hit-rate-shows-latest-call]]。
