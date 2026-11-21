@@ -864,26 +864,39 @@ export function GeneratePanel(props: {
     if (hit) setParam(p, hit.value)
   }
   /**
-   * 换模型时沿用当前的宽高比，返回写入后的全部参数；不需要改动时为 undefined。
-   * 各模型表示宽高比的参数不同（例如一个渠道用 `aspect_ratio` 取「16:9」，另一个用 `size` 取「1280x720」），
-   * 参数名不同时卡片上保留的旧取值对新模型不起作用，新模型按其缺省宽高比生成。
-   * 按对照表换算为新模型中同一宽高比的取值，档位相同的优先；新模型没有该宽高比时不改。
+   * 换模型时沿用当前的宽高比与时长，返回写入后的全部参数；不需要改动时为 undefined。
+   * 各模型表示同一设置的参数不同：宽高比一个渠道用 `aspect_ratio` 取「16:9」，另一个用 `size` 取「1280x720」；
+   * 时长一个用 `seconds` 取字符串「28」，另一个用 `duration` 取整数 28。参数名或取值类型不同时，卡片上保留的
+   * 旧取值对新模型不起作用，新模型按其缺省值生成。
+   * 宽高比按对照表换算为新模型中同一宽高比的取值，档位相同的优先，新模型没有该宽高比时不改；
+   * 时长按新模型时长参数的取值类型写入同一秒数，新模型不接受该秒数时在使用时按其缺省值（`activeMediaParams`）。
    */
-  const ratioCarriedTo = (next: CardModel): Record<string, unknown> | undefined => {
+  const carriedTo = (next: CardModel): Record<string, unknown> | undefined => {
+    const params = { ...props.node.params }
+    let changed = false
+    const write = (p: MediaParamOption, value: unknown) => {
+      if ((params[p.name] ?? p.default) === value) return
+      params[p.name] = value
+      changed = true
+    }
     const from = modelParams()
       .map((p) => shapeAt(p, paramValue(p)))
       .find((s) => s?.ratio !== undefined)
-    if (!from) return undefined
-    const params = { ...props.node.params }
-    let changed = false
+    const durationParam = modelParams().find((p) => UNIT[p.name] === '秒')
+    const seconds = durationParam ? Number(paramValue(durationParam)) : Number.NaN
     for (const p of next.params) {
       const table = p.shapes ?? []
       const hit =
-        table.find((s) => s.ratio === from.ratio && s.tier === from.tier) ??
-        table.find((s) => s.ratio === from.ratio)
-      if (!hit || (params[p.name] ?? p.default) === hit.value) continue
-      params[p.name] = hit.value
-      changed = true
+        from &&
+        (table.find((s) => s.ratio === from.ratio && s.tier === from.tier) ??
+          table.find((s) => s.ratio === from.ratio))
+      if (hit) write(p, hit.value)
+      if (UNIT[p.name] === '秒' && Number.isFinite(seconds))
+        write(
+          p,
+          (p.values ?? p.presets)?.find((v) => Number(v) === seconds) ??
+            (p.type === 'integer' || p.type === 'number' ? seconds : String(seconds)),
+        )
     }
     return changed ? params : undefined
   }
@@ -1432,7 +1445,7 @@ export function GeneratePanel(props: {
                         aria-checked={o === model()}
                         onClick={() => {
                           setMenu(null)
-                          const carried = ratioCarriedTo(o)
+                          const carried = carriedTo(o)
                           void props.apply([
                             ...(!props.node.model && model()
                               ? [

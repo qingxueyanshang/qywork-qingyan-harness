@@ -2996,6 +2996,94 @@ describe('画布：生成卡与生成面板', () => {
     expect(params()).toEqual({ size: '1280x720', aspect_ratio: '16:9' })
   })
 
+  /**
+   * 原始失败形状：一个渠道的视频模型用 `seconds` 取字符串秒数（「28」），另一个用 `duration` 取整数；
+   * 换模型后卡片上只有 `seconds`，新模型按缺省时长显示和生成。
+   */
+  test('视频卡切换模型：表示时长的参数名或取值类型不同时写入同一秒数', async () => {
+    const video = (id: string, label: string, param: Record<string, unknown>) => ({
+      provider: 'relay',
+      id,
+      kind: 'openai_videos',
+      output: 'video',
+      label,
+      operations: ['text_to_video', 'reference_to_video'],
+      isDefault: false,
+      known: true,
+      params: [param],
+    })
+    const seconds = Array.from({ length: 27 }, (_, i) => String(i + 4))
+    const bySeconds = video('sd-seconds', 'SD Seconds', {
+      name: 'seconds',
+      label: '时长',
+      type: 'string',
+      default: '5',
+      values: seconds,
+    })
+    const byDuration = video('hc-duration', 'HC Duration', {
+      name: 'duration',
+      label: '时长',
+      type: 'integer',
+      default: 5,
+      min: 4,
+      max: 30,
+    })
+    const { host, server, refs } = await mount(
+      [
+        {
+          op: 'add_generate',
+          ref: '$v',
+          output: 'video',
+          provider: 'relay',
+          model: 'sd-seconds',
+          params: { seconds: '28' },
+        },
+        {
+          op: 'add_generate',
+          ref: '$w',
+          output: 'video',
+          provider: 'relay',
+          model: 'hc-duration',
+          params: { duration: 12 },
+        },
+      ],
+      {},
+      { ...MODELS, media: [...MODELS.media, bySeconds, byDuration] },
+    )
+    const params = (i: number) =>
+      (server.doc().nodes[i] as { params: Record<string, unknown> }).params
+    const switchTo = async (label: string) => {
+      host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.model')!.click()
+      await waitFor(
+        () => !!document.querySelector('.canvas-bar-menu'),
+        () => '',
+      )
+      ;[...document.querySelectorAll<HTMLButtonElement>('.canvas-bar-menu button')]
+        .find((b) => b.textContent === label)!
+        .click()
+      await waitFor(
+        () => host.querySelector('.canvas-bar .mode-chip.model')?.textContent === label,
+        () => host.textContent ?? '',
+      )
+    }
+    await select(host, refs.$v!)
+    await switchTo('HC Duration')
+    await waitFor(
+      () => params(0).duration === 28,
+      () => JSON.stringify(params(0)),
+    )
+    expect(params(0)).toEqual({ seconds: '28', duration: 28 })
+    expect(host.querySelector('.canvas-bar')?.textContent).toContain('28 秒')
+    // 反方向：整数时长换到字符串取值的模型，按其取值写入同一秒数。
+    await select(host, refs.$w!)
+    await switchTo('SD Seconds')
+    await waitFor(
+      () => params(1).seconds === '12',
+      () => JSON.stringify(params(1)),
+    )
+    expect(params(1)).toEqual({ duration: 12, seconds: '12' })
+  })
+
   /** 原始失败形状：在其他画布用过一次的已下架型号，出现在从未用过它的画布的菜单中。 */
   test('已下架的型号：当前画布有它的生成记录时列出并标出已下架，没有时不列出；默认型号下架时新卡发送界面上显示的型号', async () => {
     const video = MODELS.media[0]!
