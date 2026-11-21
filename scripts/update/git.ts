@@ -21,10 +21,12 @@ export function newerVersion(candidate: string, current: string): boolean {
 
 export async function git(root: string, args: string[], signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted()
+  // `windowsHide`：更新程序以 detached 启动，Windows 上没有控制台，不带该选项时每个子进程都另开一个可见的控制台窗口。
   const proc = Bun.spawn(['git', '-C', root, ...args], {
     stdout: 'pipe',
     stderr: 'pipe',
     stdin: 'ignore',
+    windowsHide: true,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   })
   const stop = () => proc.kill()
@@ -105,6 +107,7 @@ export async function applySource(
     stdin: 'ignore',
     stdout: 'inherit',
     stderr: 'inherit',
+    windowsHide: true,
   })
   const timeout = setTimeout(() => install.kill(), 10 * 60 * 1000)
   try {
