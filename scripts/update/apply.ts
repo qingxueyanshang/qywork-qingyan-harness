@@ -47,6 +47,8 @@ if (import.meta.main) {
         [
           join(request.root, 'scripts', 'dev.ts'),
           '--token-stdin',
+          // detached 启动的进程没有控制台，开发脚本据此使其子进程不另开可见的控制台窗口。
+          '--no-console',
           ...(request.mode === 'web' ? ['--web', '--no-open'] : []),
         ],
         {

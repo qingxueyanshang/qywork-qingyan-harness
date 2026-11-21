@@ -65,6 +65,12 @@ const TOKEN = process.argv.includes('--token-stdin')
   ? (await Bun.stdin.text()).trim()
   : randomBytes(24).toString('hex')
 const MODE = process.argv.includes('--web') ? 'web' : 'desktop'
+/**
+ * 本脚本没有控制台：源码更新后由更新程序以 detached 重新启动（`--no-console`，见 `update/apply.ts`）。
+ * 此时子进程带 `windowsHide`，否则每个子进程都另开一个可见的控制台窗口。在终端中运行时不带：子进程与本脚本共用
+ * 终端，关闭终端窗口时一并结束；各自持有隐藏的控制台时，关闭终端后 Vite 继续占用端口，下一次启动失败。
+ */
+const HIDE = process.argv.includes('--no-console') ? { windowsHide: true } : {}
 const UPDATE_KEY = randomBytes(24).toString('hex')
 /**
  * 原生宿主连接的凭据，同样每次重新生成。同一份凭据用于浏览器与电脑控制两条宿主路径。
@@ -173,6 +179,7 @@ async function ensureSidecarBin(): Promise<void> {
     stdout: 'inherit',
     stderr: 'inherit',
     stdin: 'ignore',
+    ...HIDE,
   })
   if ((await build.exited) !== 0) {
     process.stderr.write('[dev] sidecar 构建失败，详见上方输出\n')
@@ -196,7 +203,7 @@ const remoteWeb = createRemoteWebBuilder({
   build: async (dir) => {
     webBuild = Bun.spawn(
       [BUN, 'run', '--cwd', join(ROOT, 'apps/web'), 'build', '--outDir', dir, '--emptyOutDir'],
-      { cwd: ROOT, env, stdout: 'ignore', stderr: 'inherit', stdin: 'ignore' },
+      { cwd: ROOT, env, stdout: 'ignore', stderr: 'inherit', stdin: 'ignore', ...HIDE },
     )
     const code = await webBuild.exited
     webBuild = undefined
@@ -237,7 +244,7 @@ function spawnAgent() {
       // （否则用户的第一个项目会是 qywork 的源码树）。不传时由服务端决定：
       // 账本中有项目则使用最近打开的项目，没有任何项目时才创建默认工作区。
     ],
-    { cwd: ROOT, env, stdout: 'inherit', stderr: 'inherit', stdin: 'pipe' },
+    { cwd: ROOT, env, stdout: 'inherit', stderr: 'inherit', stdin: 'pipe', ...HIDE },
   )
   proc.stdin.write(CREDENTIALS)
   proc.stdin.flush()
@@ -368,6 +375,7 @@ function killTree(proc: ReturnType<typeof Bun.spawn>): void {
     Bun.spawnSync(['taskkill', '/PID', String(proc.pid), '/T', '/F'], {
       stdout: 'ignore',
       stderr: 'ignore',
+      ...HIDE,
     })
     return
   }
@@ -394,6 +402,7 @@ web = Bun.spawn([BUN, join(ROOT, 'apps/web/node_modules/vite/bin/vite.js')], {
   stdout: 'inherit',
   stderr: 'inherit',
   stdin: 'ignore',
+  ...HIDE,
 })
 
 shell =
@@ -404,6 +413,7 @@ shell =
         stdout: 'inherit',
         stderr: 'inherit',
         stdin: 'inherit',
+        ...HIDE,
       })
     : undefined
 
@@ -419,6 +429,7 @@ if (MODE === 'web') {
           stdin: 'ignore',
           stdout: 'ignore',
           stderr: 'ignore',
+          ...HIDE,
         })
       } catch {
         /* Vite 尚未就绪。 */

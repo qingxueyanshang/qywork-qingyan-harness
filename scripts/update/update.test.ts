@@ -137,7 +137,10 @@ for (const mode of ['web', 'desktop'] as const) {
     const deadline = Date.now() + 10_000
     while (!(await Bun.file(restarted).exists()) && Date.now() < deadline) await Bun.sleep(50)
     expect(await Bun.file(restarted).json()).toEqual({
-      argv: mode === 'web' ? ['--token-stdin', '--web', '--no-open'] : ['--token-stdin'],
+      argv:
+        mode === 'web'
+          ? ['--token-stdin', '--no-console', '--web', '--no-open']
+          : ['--token-stdin', '--no-console'],
       token: 'handoff-secret',
       port: '7799',
     })

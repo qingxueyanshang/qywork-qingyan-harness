@@ -18,7 +18,8 @@ export const BIN_DIR = join(ROOT, 'apps/desktop/src-tauri/bin')
 
 /** 本机的 Rust 目标三元组。 */
 export async function hostTriple(): Promise<string> {
-  const proc = Bun.spawn(['rustc', '-vV'], { stdout: 'pipe', stderr: 'pipe' })
+  // `windowsHide`：调用方可能没有控制台（更新程序重新启动的 `dev.ts`），不带时另开一个可见的控制台窗口。
+  const proc = Bun.spawn(['rustc', '-vV'], { stdout: 'pipe', stderr: 'pipe', windowsHide: true })
   const out = await new Response(proc.stdout).text()
   const code = await proc.exited
   if (code !== 0) {
