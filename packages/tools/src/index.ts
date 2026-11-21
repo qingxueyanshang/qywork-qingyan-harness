@@ -198,7 +198,7 @@ export {
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
 } from './tool-pool.ts'
-export { type ChangeWindow, openChangeWindow } from './workspace-watch.ts'
+export { type ChangeWindow, openChangeWindow, settleEvents } from './workspace-watch.ts'
 
 import type { MediaOutput } from '@qywork/core'
 import { personalizeTool } from './appearance/personalize.ts'

@@ -54,7 +54,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { findCli } from '@qywork/team'
-import { openChangeWindow } from '@qywork/tools'
+import { openChangeWindow, settleEvents } from '@qywork/tools'
 import { EventBus } from './bus.ts'
 import { makeDelegate } from './delegate.ts'
 import { RunManager } from './runs.ts'
@@ -2219,8 +2219,15 @@ console.log(JSON.stringify({ type: 'turn.completed' }));`,
 
     // 删除只能通过事件观察到，收尾扫描无法补充：前一个窗口未关闭时该删除无法报告。
     await writeFile(join(dir, 'doomed.txt'), 'x\n')
-    // 窗口打开后即接收事件；收尾经屏障等待在途事件交付完毕，无需另行等待。
     const window = openChangeWindow(dir, { env: process.env })
+    // macOS 的事件流在窗口打开之后异步启动，启动前的删除不产生事件：先等到一个屏障标记被交付。
+    for (
+      let i = 0;
+      !(await Promise.race([settleEvents(dir), Bun.sleep(100).then(() => false)]));
+      i++
+    ) {
+      if (i >= 100) throw new Error('观察器未开始投递事件')
+    }
     await rm(join(dir, 'doomed.txt'))
     const got = await window.close()
     expect(got.changes).toContainEqual({ path: 'doomed.txt', changeType: 'deleted' })
