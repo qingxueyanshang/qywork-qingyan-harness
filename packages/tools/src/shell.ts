@@ -35,9 +35,16 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import { delimiter, join } from 'node:path'
-import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
+import {
+  deliveredTokens,
+  recordBatchSpent,
+  type ToolContext,
+  type ToolOutcome,
+  type ToolSpec,
+} from '@qywork/agent'
 import type { FileChange, IntermediateResourceRef } from '@qywork/core'
 import { idArg } from './args.ts'
+import { writeWholeFile } from './files.ts'
 import { classifyAddress } from './net-safety.ts'
 import {
   conversationTempDir,
@@ -287,6 +294,68 @@ function pipelineExit(
   return { exitCode, note: `（管道各段退出码依次为 ${segments}）` }
 }
 
+/** `files` 参数的一项。 */
+interface FileToWrite {
+  path: string
+  content: string
+}
+
+/** 解析 `files` 参数，未提供时为空数组。不合法时返回说明。 */
+function filesArg(value: unknown): FileToWrite[] | string {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return 'files 必须是数组，每项为 {path, content}'
+  const files: FileToWrite[] = []
+  for (const [i, item] of value.entries()) {
+    const { path, content } = (item ?? {}) as Record<string, unknown>
+    if (typeof path !== 'string' || !path.trim() || typeof content !== 'string') {
+      return `files 第 ${i + 1} 项必须包含字符串 path 与 content`
+    }
+    files.push({ path, content })
+  }
+  return files
+}
+
+/**
+ * 执行命令前依次写入 `files`。每项经 `writeWholeFile`，与 `write_file` 同一实现：路径不存在时新建，已存在时按覆盖修改执行。
+ *
+ * 某项失败时不再写入其后的项，返回失败结果，命令不执行。已写入的项不回滚，其变更明细随失败结果返回；
+ * 这些文件已记入读取记录，修正后重新调用即可覆盖。没有任何写入时结果为未执行（`executed: false`）。
+ */
+async function writeFiles(
+  ctx: ToolContext,
+  files: readonly FileToWrite[],
+): Promise<{ changes: FileChange[]; notes: string[] } | ToolOutcome> {
+  const changes: FileChange[] = []
+  const notes: string[] = []
+  for (const [i, file] of files.entries()) {
+    // 路径越界等判定以带 `errorKind` 的异常抛出，在此转为本项的失败，使已写入项的明细随结果返回。
+    const out = await writeWholeFile(ctx, file.path, file.content, 'create', 'overwrite').catch(
+      (err: unknown): ToolOutcome => {
+        const declared = (err as { errorKind?: unknown } | null)?.errorKind
+        return {
+          status: 'failure',
+          message: err instanceof Error ? err.message : String(err),
+          errorKind: typeof declared === 'string' ? declared : 'tool_exception',
+        }
+      },
+    )
+    if (out.status !== 'success') {
+      return {
+        status: 'failure',
+        message: [
+          ...notes,
+          `files 第 ${i + 1} 项 ${file.path} 未写入，命令未执行：${out.message}`,
+        ].join('\n'),
+        ...(changes.length ? { fileChanges: changes } : { executed: false }),
+        ...(out.errorKind ? { errorKind: out.errorKind } : {}),
+      }
+    }
+    changes.push(...(out.fileChanges ?? []))
+    notes.push(out.message)
+  }
+  return { changes, notes }
+}
+
 /**
  * 子进程的临时目录，即本会话的临时目录（`conversationTempDir`）。
  *
@@ -356,6 +425,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       '执行其他解释器的脚本需显式调用对应解释器。' +
       '在工作区中执行一条命令并返回 stdout/stderr 与退出码。' +
       '用于构建、测试、包管理、git 等操作。命令会流式回传输出。' +
+      '需要写入脚本或配置文件后立即运行时，在同一次调用的 files 中给出这些文件：执行命令前依次写入，全部写入成功后才执行命令。' +
       (opts.background
         ? `未指定 background 时等待命令结束；等待超过 wait_seconds（缺省 ${FOREGROUND_WAIT_SECONDS} 秒）或等待期间用户发来消息时，` +
           '命令转入后台继续运行，本次结果给出任务编号与已产生的输出。' +
@@ -382,6 +452,22 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       type: 'object',
       properties: {
         command: { type: 'string', description: '要执行的完整命令' },
+        files: {
+          type: 'array',
+          description:
+            '执行命令前依次写入的文件，路径与 write_file 相同（工作区相对路径，不受 cwd 影响）。' +
+            '路径不存在时新建；已存在时覆盖，要求本会话此前读取或写入过该文件且之后未被修改，与 write_file 的 overwrite 相同。' +
+            '任一文件写入失败时不执行命令，结果写明失败的文件与原因。',
+          items: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: '工作区相对路径' },
+              content: { type: 'string', description: '文件完整内容' },
+            },
+            required: ['path', 'content'],
+            additionalProperties: false,
+          },
+        },
         cwd: {
           type: 'string',
           description: '工作目录：相对工作区的路径或绝对路径，默认工作区根',
@@ -491,6 +577,10 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
         typeof waitArg === 'number' ? waitArg : FOREGROUND_WAIT_SECONDS,
         MAX_WAIT_SECONDS,
       )
+      const files = filesArg(args.files)
+      if (typeof files === 'string') {
+        return { status: 'failure', executed: false, message: files, errorKind: 'bad_request' }
+      }
 
       // 缺少 secrets 时按空集合处理：含义是没有已知凭证，而不是无需剥离。
       const secrets = ctx.secrets ?? { values: [] }
@@ -512,8 +602,16 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       }
 
       const env = await commandEnv(ctx)
-      // 已收到停止时不启动命令，也不打开观察窗口。
+      // 已收到停止时不写入文件、不启动命令，也不打开观察窗口。
       ctx.signal.throwIfAborted()
+      const written = await writeFiles(ctx, files)
+      if ('status' in written) return written
+      // 写入的明细排在观察器的结果之前：命令随后改动同一文件时，按先后顺序折叠（`foldFileChanges`）。
+      const withWritten = (observed: FileChange[]) => {
+        const changes = [...written.changes, ...observed]
+        return changes.length ? { fileChanges: changes } : {}
+      }
+      const wrote = written.notes.map((note) => `${note}\n`).join('')
       const pipe = await pipeStatusFiles(
         shell,
         env,
@@ -522,6 +620,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
 
       // 命令修改了哪些文件由工作区观察器提供：shell 没有精确明细，路径与变更类型是能取得的全部信息。
       // 必须先打开观察窗口再启动进程：窗口起点之前写入的文件无法判定为本命令新建。
+      // `files` 在窗口打开之前写入，观察器不报告这些写入，明细取自写入结果。
       const reported = turnReported(ctx.state)
       const changeWindow = openChangeWindow(ctx.workspaceRoot, { reported, env })
       const closeWindow = async () => {
@@ -609,11 +708,12 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
         return {
           status: probe.ok ? 'success' : 'failure',
           message:
+            wrote +
             probe.message +
             (got.backgroundHeld ? BACKGROUND_HELD : '') +
             (watched.incomplete ? WATCH_INCOMPLETE : ''),
           data: { ...probe.data, ...delivered.data },
-          ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
+          ...withWritten(watched.changes),
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
           ...(probe.ok ? {} : { errorKind: 'probe_failed' as const }),
         }
@@ -661,6 +761,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
         return {
           status: 'success',
           message:
+            wrote +
             (ended === 'waited'
               ? `命令在 ${waitSeconds} 秒内没有结束，已转入后台继续运行`
               : ended === 'message'
@@ -670,7 +771,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
             droppedNote(now.dropped) +
             (watched.incomplete ? WATCH_INCOMPLETE : ''),
           data: { taskId: id, ...delivered.data },
-          ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
+          ...withWritten(watched.changes),
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
         }
       }
@@ -686,11 +787,11 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       return {
         // 非零退出码是事实而不是异常：模型需要取得失败输出才能修复。
         status: summary.ok ? 'success' : 'failure',
-        message: summary.message + watchNote,
+        message: wrote + summary.message + watchNote,
         data: got.timedOut
           ? { ...delivered.data, timedOut: true }
           : { exitCode: summary.exitCode, ...delivered.data },
-        ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
+        ...withWritten(watched.changes),
         ...(delivered.resources.length ? { resources: delivered.resources } : {}),
         ...(got.timedOut ? { errorKind: 'timeout' } : {}),
       }

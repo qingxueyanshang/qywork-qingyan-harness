@@ -98,7 +98,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 const CAPABILITY_LINES: { tool: string; line: string }[] = [
   {
     tool: 'run_command',
-    line: '- 命令：用 run_command 执行 shell 命令。临时文件与缓存放在本会话临时目录（运行上下文中列出，命令的 TMP、TEMP、TMPDIR 指向它），该目录不计入变更。待办全部完成后系统删除该目录，交付给用户的文件与后续仍需使用的文件放在工作区的其他位置。启动 Chrome 时必须指定 --user-data-dir=.tmp/chrome，否则每次启动都会在临时目录留下一份无法删除的崩溃指标文件。',
+    line: '- 命令：用 run_command 执行 shell 命令。需要写入脚本或配置后立即运行时，在同一次调用的 files 中给出这些文件，命令在全部写入之后执行。临时文件与缓存放在本会话临时目录（运行上下文中列出，命令的 TMP、TEMP、TMPDIR 指向它），该目录不计入变更。待办全部完成后系统删除该目录，交付给用户的文件与后续仍需使用的文件放在工作区的其他位置。启动 Chrome 时必须指定 --user-data-dir=.tmp/chrome，否则每次启动都会在临时目录留下一份无法删除的崩溃指标文件。',
   },
   {
     tool: 'background_command',

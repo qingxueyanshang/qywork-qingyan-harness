@@ -719,8 +719,6 @@ export const writeFileTool: ToolSpec = {
   targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
-    const cloud = cloudTarget(ctx, args.path)
-    if (cloud) return 'status' in cloud ? cloud : cloudReadOnly(cloud)
     const mode = args.mode
     const conflict = args.on_conflict ?? (mode === 'create' ? 'rename' : 'error')
     if (
@@ -736,100 +734,122 @@ export const writeFileTool: ToolSpec = {
         errorKind: 'invalid_tool_arguments',
       }
     }
-    const requested = String(args.path)
-    const content = String(args.content)
-    let abs: string
-    let existing: string | null = null
-    let bytes = content
-    /** 原名已被占用，已改用带后缀的名称。 */
-    let renamed = false
-    if (mode === 'create') {
-      const { dir, name, ext } = parse(requested)
-      for (let suffix = 1; ; suffix++) {
-        ctx.signal.throwIfAborted()
-        const candidate = suffix === 1 ? requested : join(dir, `${name}-${suffix}${ext}`)
-        abs = await resolveWritablePath(rootsOf(ctx), candidate, { followFinalSymlink: false })
-        await mkdir(dirname(abs), { recursive: true })
-        // 悬空符号链接同样占用名称，不能只依赖 wx 对目标存在性的检查。
-        const occupied = await lstat(abs).then(
-          () => true,
-          (err: NodeJS.ErrnoException) => {
-            if (err.code === 'ENOENT') return false
-            throw err
-          },
-        )
-        if (!occupied) {
-          try {
-            // 独占创建（`wx`）处理检查名称之后被其他创建者占用的情况；内容在本次调用内复用。
-            await writeFile(abs, bytes, { encoding: 'utf8', flag: 'wx' })
-            renamed = suffix > 1
-            break
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-          }
-        }
-        if (conflict === 'rename') continue
-        const parent = await resolveWritablePath(rootsOf(ctx), dirname(requested))
-        return {
-          status: 'failure',
-          executed: false,
-          message:
-            `${requested} 已存在，新建不会覆盖。先 list_dir ${JSON.stringify({ path: displayPath(ctx.workspaceRoot, parent) })} ` +
-            '核对目录中的文件名，再选择未占用的路径；若必须使用该名称，请先确认已有文件应如何处理。',
-          errorKind: 'file_exists',
-        }
-      }
-    } else {
-      abs = await resolveWritablePath(rootsOf(ctx), requested, { mustExist: true })
-      existing = await readFile(abs, 'utf8')
-      const seen = readHashes(ctx).get(abs)
-      if (seen === null) {
-        return {
-          status: 'failure',
-          executed: false,
-          message: `${requested} 尚未读取，已拒绝覆盖修改。先 read_file 再覆盖。`,
-          errorKind: 'stale_write',
-        }
-      }
-      if (seen !== hash(existing)) {
-        return {
-          status: 'failure',
-          executed: false,
-          message: `${requested} 在读取之后已被修改，已拒绝覆盖。请重新 read_file。`,
-          errorKind: 'stale_write',
-        }
-      }
-      bytes = fromLf(content, dominantEol(existing))
-      // r+ 不创建文件：目标被并发删除时不能把覆盖修改变成新建。
-      const file = await open(abs, 'r+')
-      try {
-        await file.writeFile(bytes, 'utf8')
-        await file.truncate(Buffer.byteLength(bytes, 'utf8'))
-      } finally {
-        await file.close()
-      }
-    }
-    // 记录的必须是落盘后的内容：记录 content 时，下一次 edit_file 会立即判定文件在读取后已被修改。
-    readHashes(ctx).set(abs, hash(bytes))
-
-    const change: FileChange = {
-      path: displayPath(ctx.workspaceRoot, abs),
-      changeType: existing === null ? 'created' : 'modified',
-      // 两侧都归一后再比较：否则整份行尾变化会被报告为每一行都已修改。
-      ...countDiff(toLf(existing ?? ''), toLf(bytes)),
-    }
-    return {
-      status: 'success',
-      message:
-        (existing !== null
-          ? `写入 ${change.path}`
-          : renamed
-            ? `${requested} 已存在，已创建 ${change.path}`
-            : `创建 ${change.path}`) + (await canvasNote(ctx, change.path)),
-      data: { path: change.path },
-      fileChanges: [change],
-    }
+    return writeWholeFile(ctx, String(args.path), String(args.content), mode, conflict)
   },
+}
+
+/**
+ * 整份写入一个文件。`write_file` 与 `run_command` 的 `files` 都经由本函数写入：路径判定（根目录、受保护目录、凭证文件）、
+ * 覆盖前的读取校验、重名处理、读取记录与变更明细只有这一份实现。
+ *
+ * `conflict` 为 `overwrite` 时，新建遇到已存在的路径即按覆盖修改执行，校验与 `mode: 'overwrite'` 相同。
+ * 路径越界等判定以带 `errorKind` 的异常抛出，与其他文件工具相同。
+ */
+export async function writeWholeFile(
+  ctx: ToolContext,
+  requested: string,
+  content: string,
+  mode: 'create' | 'overwrite',
+  conflict: 'error' | 'rename' | 'overwrite',
+): Promise<ToolOutcome> {
+  const cloud = cloudTarget(ctx, requested)
+  if (cloud) return 'status' in cloud ? cloud : cloudReadOnly(cloud)
+  let abs = ''
+  let existing: string | null = null
+  let bytes = content
+  /** 已独占创建；为 false 时按覆盖修改执行。 */
+  let created = false
+  /** 原名已被占用，已改用带后缀的名称。 */
+  let renamed = false
+  if (mode === 'create') {
+    const { dir, name, ext } = parse(requested)
+    for (let suffix = 1; ; suffix++) {
+      ctx.signal.throwIfAborted()
+      const candidate = suffix === 1 ? requested : join(dir, `${name}-${suffix}${ext}`)
+      abs = await resolveWritablePath(rootsOf(ctx), candidate, { followFinalSymlink: false })
+      await mkdir(dirname(abs), { recursive: true })
+      // 悬空符号链接同样占用名称，不能只依赖 wx 对目标存在性的检查。
+      const occupied = await lstat(abs).then(
+        () => true,
+        (err: NodeJS.ErrnoException) => {
+          if (err.code === 'ENOENT') return false
+          throw err
+        },
+      )
+      if (!occupied) {
+        try {
+          // 独占创建（`wx`）处理检查名称之后被其他创建者占用的情况；内容在本次调用内复用。
+          await writeFile(abs, bytes, { encoding: 'utf8', flag: 'wx' })
+          created = true
+          renamed = suffix > 1
+          break
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+        }
+      }
+      if (conflict === 'rename') continue
+      if (conflict === 'overwrite') break
+      const parent = await resolveWritablePath(rootsOf(ctx), dirname(requested))
+      return {
+        status: 'failure',
+        executed: false,
+        message:
+          `${requested} 已存在，新建不会覆盖。先 list_dir ${JSON.stringify({ path: displayPath(ctx.workspaceRoot, parent) })} ` +
+          '核对目录中的文件名，再选择未占用的路径；若必须使用该名称，请先确认已有文件应如何处理。',
+        errorKind: 'file_exists',
+      }
+    }
+  }
+  if (!created) {
+    abs = await resolveWritablePath(rootsOf(ctx), requested, { mustExist: true })
+    existing = await readFile(abs, 'utf8')
+    const seen = readHashes(ctx).get(abs)
+    if (seen === null) {
+      return {
+        status: 'failure',
+        executed: false,
+        message: `${requested} 尚未读取，已拒绝覆盖修改。先 read_file 再覆盖。`,
+        errorKind: 'stale_write',
+      }
+    }
+    if (seen !== hash(existing)) {
+      return {
+        status: 'failure',
+        executed: false,
+        message: `${requested} 在读取之后已被修改，已拒绝覆盖。请重新 read_file。`,
+        errorKind: 'stale_write',
+      }
+    }
+    bytes = fromLf(content, dominantEol(existing))
+    // r+ 不创建文件：目标被并发删除时不能把覆盖修改变成新建。
+    const file = await open(abs, 'r+')
+    try {
+      await file.writeFile(bytes, 'utf8')
+      await file.truncate(Buffer.byteLength(bytes, 'utf8'))
+    } finally {
+      await file.close()
+    }
+  }
+  // 记录的必须是落盘后的内容：记录 content 时，下一次 edit_file 会立即判定文件在读取后已被修改。
+  readHashes(ctx).set(abs, hash(bytes))
+
+  const change: FileChange = {
+    path: displayPath(ctx.workspaceRoot, abs),
+    changeType: existing === null ? 'created' : 'modified',
+    // 两侧都归一后再比较：否则整份行尾变化会被报告为每一行都已修改。
+    ...countDiff(toLf(existing ?? ''), toLf(bytes)),
+  }
+  return {
+    status: 'success',
+    message:
+      (existing !== null
+        ? `写入 ${change.path}`
+        : renamed
+          ? `${requested} 已存在，已创建 ${change.path}`
+          : `创建 ${change.path}`) + (await canvasNote(ctx, change.path)),
+    data: { path: change.path },
+    fileChanges: [change],
+  }
 }
 
 /**

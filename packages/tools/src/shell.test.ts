@@ -1,6 +1,9 @@
+/**
+ * 覆盖 `shell.ts`（`run_command`、`background_command`），以及 `run_command` 的 `files` 经由的 `files.ts` 的 `writeWholeFile`。
+ */
 import { describe, expect, test } from 'bun:test'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -87,6 +90,32 @@ describe('run_command 参数校验', () => {
       signal: new AbortController().signal,
     } as ToolContext)
     expect(outcome).toMatchObject({ status: 'failure', executed: false, message: '命令为空' })
+  })
+
+  test('files 不是数组或某项缺少 path、content 时不写入也不启动命令，明确回报未执行', async () => {
+    const tool = makeShellTool(shell)
+    const ctx = {
+      workspaceRoot: process.cwd(),
+      signal: new AbortController().signal,
+      port: () => null,
+    } as unknown as ToolContext
+    expect(await tool.fn({ command: 'echo ok', files: 'a.txt' }, ctx)).toMatchObject({
+      status: 'failure',
+      executed: false,
+      message: 'files 必须是数组，每项为 {path, content}',
+      errorKind: 'bad_request',
+    })
+    expect(
+      await tool.fn(
+        { command: 'echo ok', files: [{ path: 'a.txt', content: 'x' }, { path: 'b.txt' }] },
+        ctx,
+      ),
+    ).toMatchObject({
+      status: 'failure',
+      executed: false,
+      message: 'files 第 2 项必须包含字符串 path 与 content',
+      errorKind: 'bad_request',
+    })
   })
 
   /** 原始失败形状：模型把 cwd 写成字符串 "null"，回执只有「路径不存在：null」，无法判断是哪个参数。 */
@@ -739,4 +768,196 @@ describe('后台命令的输出缓冲', () => {
     expect(out.dropped).toBe(0)
     expect(out.text()).toBe(`${'a'.repeat(100_000)}b`)
   })
+})
+
+/**
+ * 原始失败形状：写文件与执行命令分为两个工具时，模型先在一次回复中写入脚本，下一次回复才运行它。
+ * `files` 在同一次调用中写入后执行，写入经 `writeWholeFile`，约束与变更明细须与 `write_file` 相同。
+ */
+describe('run_command 的 files', () => {
+  const found = commandShell()
+  const ctx = (root: string, approve = true) =>
+    ({
+      workspaceRoot: root,
+      signal: new AbortController().signal,
+      conversationId: 'cv_files',
+      emit: () => {},
+      sink: null,
+      port: () => null,
+      density: DEFAULT_DENSITY,
+      contextWindow: 200_000,
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY, 0),
+      requestPermission: async () =>
+        approve ? { allowed: true } : { allowed: false, reason: '夹具拒绝' },
+    }) as unknown as ToolContext
+  const registry = () => {
+    const r = new ToolRegistry()
+    registerBuiltinTools(r)
+    return r
+  }
+  /** 工作区中预置一个脚本：运行时写入标记文件 ran.txt，据此判断命令是否执行。 */
+  const withMarker = async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-shell-files-'))
+    await mkdir(join(root, 'tools'), { recursive: true })
+    await writeFile(
+      join(root, 'tools', 'mark.ts'),
+      "require('node:fs').writeFileSync('ran.txt', 'ran')\n",
+    )
+    return root
+  }
+  const pathsOf = (changes: { path: string; changeType: string }[] | undefined) =>
+    (changes ?? []).map((c) => [c.path, c.changeType])
+
+  test('写入之后执行命令，命令读取到刚写入的内容；新建与覆盖的变更明细与 write_file 相同', async () => {
+    if (!found) throw new Error('本机未找到 bash、pwsh 或 powershell，无法执行本测试')
+    const r = registry()
+    const root = await mkdtemp(join(tmpdir(), 'qywork-shell-files-'))
+    const c = ctx(root)
+    const show = {
+      path: 'tools/show.ts',
+      content: "console.log(require('node:fs').readFileSync('data.txt', 'utf8').trim())\n",
+    }
+    const command = 'bun tools/show.ts'
+
+    const first = await r.execute(
+      'run_command',
+      { command, files: [show, { path: 'data.txt', content: 'v1\n' }] },
+      c,
+    )
+    expect(first.status).toBe('success')
+    expect(String(first.data?.stdout).trim()).toBe('v1')
+    expect(first.message).toStartWith('创建 tools/show.ts\n创建 data.txt\n命令执行成功')
+
+    // 本会话写入过的文件可以覆盖。
+    const second = await r.execute(
+      'run_command',
+      { command, files: [{ path: 'data.txt', content: 'v2\nmore\n' }] },
+      c,
+    )
+    expect(second.status).toBe('success')
+    expect(String(second.data?.stdout).trim()).toBe('v2\nmore')
+    expect(second.message).toStartWith('写入 data.txt\n命令执行成功')
+
+    // 同一组写入经 write_file 执行，变更明细逐项相同。
+    const oc = ctx(await mkdtemp(join(tmpdir(), 'qywork-shell-files-')))
+    const created = [
+      await r.execute('write_file', { path: show.path, mode: 'create', content: show.content }, oc),
+      await r.execute('write_file', { path: 'data.txt', mode: 'create', content: 'v1\n' }, oc),
+    ]
+    const modified = await r.execute(
+      'write_file',
+      { path: 'data.txt', mode: 'overwrite', content: 'v2\nmore\n' },
+      oc,
+    )
+    expect(first.fileChanges).toEqual(created.flatMap((o) => o.fileChanges ?? []))
+    expect(second.fileChanges).toEqual(modified.fileChanges)
+    expect(second.fileChanges).toEqual([
+      { path: 'data.txt', changeType: 'modified', additions: 2, deletions: 1 },
+    ])
+  }, 30_000)
+
+  test('已存在且本会话未读取过的文件拒绝覆盖，其后的项不写入、命令不执行；读取之后重新调用即覆盖并执行', async () => {
+    if (!found) throw new Error('本机未找到 bash、pwsh 或 powershell，无法执行本测试')
+    const r = registry()
+    const root = await withMarker()
+    await writeFile(join(root, 'data.txt'), 'original\n')
+    const c = ctx(root)
+    const args = {
+      command: 'bun tools/mark.ts',
+      files: [
+        { path: 'new.txt', content: 'n\n' },
+        { path: 'data.txt', content: 'changed\n' },
+        { path: 'later.txt', content: 'l\n' },
+      ],
+    }
+
+    const refused = await r.execute('run_command', args, c)
+    expect(refused).toMatchObject({ status: 'failure', executed: true, errorKind: 'stale_write' })
+    expect(refused.message).toStartWith('创建 new.txt\nfiles 第 2 项 data.txt 未写入，命令未执行：')
+    expect(refused.message).toContain('尚未读取')
+    expect(refused.message).toContain('read_file')
+    // 已写入的第 1 项随结果返回。
+    expect(pathsOf(refused.fileChanges)).toEqual([['new.txt', 'created']])
+    expect(await readFile(join(root, 'data.txt'), 'utf8')).toBe('original\n')
+    expect(existsSync(join(root, 'later.txt'))).toBe(false)
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false)
+
+    // 首项即失败时没有任何写入，结果为未执行。
+    const none = await r.execute(
+      'run_command',
+      { command: args.command, files: [{ path: 'data.txt', content: 'changed\n' }] },
+      c,
+    )
+    expect(none).toMatchObject({ status: 'failure', executed: false, errorKind: 'stale_write' })
+    expect(none.fileChanges).toBeUndefined()
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false)
+
+    expect((await r.execute('read_file', { path: 'data.txt' }, c)).status).toBe('success')
+    const retried = await r.execute('run_command', args, c)
+    expect(retried.status).toBe('success')
+    expect(pathsOf(retried.fileChanges).slice(0, 3)).toEqual([
+      ['new.txt', 'modified'],
+      ['data.txt', 'modified'],
+      ['later.txt', 'created'],
+    ])
+    expect(await readFile(join(root, 'data.txt'), 'utf8')).toBe('changed\n')
+    expect(existsSync(join(root, 'ran.txt'))).toBe(true)
+
+    // 写入之后被外部修改的文件同样拒绝覆盖。
+    await writeFile(join(root, 'data.txt'), 'edited elsewhere\n')
+    const stale = await r.execute(
+      'run_command',
+      { command: args.command, files: [{ path: 'data.txt', content: 'again\n' }] },
+      c,
+    )
+    expect(stale).toMatchObject({ status: 'failure', executed: false, errorKind: 'stale_write' })
+    expect(stale.message).toContain('在读取之后已被修改')
+    expect(await readFile(join(root, 'data.txt'), 'utf8')).toBe('edited elsewhere\n')
+  }, 30_000)
+
+  test('写入位置被拒绝时命令不执行，判定与 write_file 相同；命令被权限拒绝时不写入文件', async () => {
+    if (!found) throw new Error('本机未找到 bash、pwsh 或 powershell，无法执行本测试')
+    const r = registry()
+    const root = await withMarker()
+    const c = ctx(root)
+
+    const guarded = await r.execute(
+      'run_command',
+      { command: 'bun tools/mark.ts', files: [{ path: '.qy/plugin.js', content: 'x' }] },
+      c,
+    )
+    const direct = await r.execute(
+      'write_file',
+      { path: '.qy/plugin.js', mode: 'create', content: 'x' },
+      c,
+    )
+    expect(guarded).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'protected_path',
+    })
+    expect(direct).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'protected_path',
+    })
+    expect(guarded.message).toBe(
+      `files 第 1 项 .qy/plugin.js 未写入，命令未执行：${direct.message}`,
+    )
+    expect(existsSync(join(root, '.qy'))).toBe(false)
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false)
+
+    const denied = await r.execute(
+      'run_command',
+      { command: 'bun tools/mark.ts', files: [{ path: 'new.txt', content: 'n\n' }] },
+      ctx(root, false),
+    )
+    expect(denied).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'permission_denied',
+    })
+    expect(existsSync(join(root, 'new.txt'))).toBe(false)
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false)
+  }, 30_000)
 })

@@ -529,6 +529,9 @@ export const IGNORED_DIRS: ReadonlySet<string> = new Set([
 ])
 
 export class ProtectedPathError extends Error {
+  /** 与 `PathEscapeError` 相同：注册表按判定返回（`executed: false`，不加「执行出错」前缀）。 */
+  readonly errorKind = 'protected_path'
+
   constructor(readonly attempted: string) {
     super(
       `拒绝写入 ${attempted}：该目录保存的是权限与扩展配置，` +
