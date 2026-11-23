@@ -7,6 +7,7 @@ import type { AgentEvent, CommandRejectedFrame, EventEnvelope } from '@qywork/co
 import { produce } from 'solid-js/store'
 import type { ConnectionState } from '../client.ts'
 import { wireClient } from './client.ts'
+import { flushReports, report, reportRequest } from './client-log.ts'
 import type { Entry } from './events/handler.ts'
 import { flushPace } from './events/pace.ts'
 import { EVENT_HANDLERS } from './events/table.ts'
@@ -19,9 +20,34 @@ import { reloadActiveConversation } from './views/history.ts'
  * 仍在线、已移除时改为显示对应状态。消息只含状态名、不含令牌，因此不限定接收方的来源。
  */
 export function onConnectionState(s: ConnectionState, detail?: string): void {
+  const previous = state.connection
   setState({ connection: s, connectionDetail: detail ?? '' })
   if ((s === 'unauthorized' || s === 'reconnecting') && window.parent !== window) {
     window.parent.postMessage({ type: 'qywork.connection', state: s }, '*')
+  }
+  recordConnection(previous, s, detail)
+}
+
+/** 本页是否连通过，以及最近一次断开的时刻。 */
+let everReady = false
+let downSince: number | null = null
+
+/**
+ * 连接变化写入运行记录：首次连通距页面加载多久、断线多久后恢复、握手被拒与放弃重连。
+ * 连通时上报累积的记录：断线期间与上次加载失败时产生的记录都在队列中。
+ */
+function recordConnection(previous: ConnectionState, s: ConnectionState, detail?: string): void {
+  if (s === 'ready' && previous !== 'ready') {
+    if (!everReady) report('info', '已连接', { sinceLoadMs: Math.round(performance.now()) })
+    else if (downSince !== null) report('info', '已重新连接', { downMs: Date.now() - downSince })
+    everReady = true
+    downSince = null
+    void flushReports()
+    return
+  }
+  if (s === 'reconnecting' && everReady && downSince === null) downSince = Date.now()
+  if ((s === 'unauthorized' || s === 'closed') && s !== previous) {
+    report('warn', s === 'unauthorized' ? '握手被拒' : '连接已关闭', { detail: detail ?? '' })
   }
 }
 
@@ -61,6 +87,7 @@ wireClient({
   },
   onEvent: (frame) => applyEvent(frame),
   onRejected: (frame) => applyRejected(frame),
+  onRequest: (timing) => reportRequest(timing),
 })
 
 /**

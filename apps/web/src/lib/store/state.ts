@@ -17,8 +17,8 @@ import type {
   CompactionStage,
   ContextBreakdown,
   ContextOmitted,
-  Conversation,
   ConversationChangeStep,
+  ConversationSummary,
   ConversationTurnRef,
   DesktopTargetEvent,
   FileChange,
@@ -294,7 +294,7 @@ export interface AppState {
   connectionDetail: string
   capabilities: ServerCapabilities | null
 
-  conversations: Conversation[]
+  conversations: ConversationSummary[]
   activeConversation: string | null
 
   /**

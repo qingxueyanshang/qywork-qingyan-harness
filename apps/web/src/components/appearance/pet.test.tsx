@@ -339,6 +339,7 @@ describe('宠物组件', () => {
     let next = 1
     const g = globalThis as Record<string, unknown>
     g.__TAURI_INTERNALS__ = {
+      metadata: { currentWebview: { label: 'main' } },
       transformCallback: (cb: (payload: unknown) => void) => {
         callbacks.set(next, cb)
         return next++

@@ -115,6 +115,7 @@ function asShell(
   const origTauri = g.__TAURI_INTERNALS__
   g.navigator = { userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' }
   g.__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label: 'main' } },
     invoke: (cmd: string, args: Record<string, unknown> | undefined) => {
       invokes.push({ cmd, args })
       const custom = reply?.(cmd, args)

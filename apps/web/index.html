@@ -15,19 +15,40 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>qywork</title>
     <script>
-      // 入口模块或其依赖未能取得时，入口脚本元素触发 error（不冒泡，在捕获阶段监听）：
-      // 显示加载失败并在 3 秒后重新加载。不处理时页面保持空白，外层页面也无法得知加载失败。
+      // 界面代码未能取得时显示加载失败，并在 3 秒后重新加载。不处理时页面保持空白或停在失效的界面上，
+      // 外层页面也无法得知加载失败。两个来源：
+      // - 入口模块或其静态依赖：入口脚本元素触发 error（不冒泡，在捕获阶段监听）。
+      // - 按需加载的模块：构建产物触发 `vite:preloadError`。电脑端更新后，已打开的旧页面请求的文件
+      //   已不存在，重新加载后入口页换为当前版本。
+      // 失败写入界面运行记录的队列，加载成功、连接可用后上报电脑端日志；键与条目形状与 `store/client-log.ts` 一致。
+      let reloading = false
+      const failed = (detail) => {
+        try {
+          const key = 'qywork.clientLog'
+          const queue = JSON.parse(sessionStorage.getItem(key) || '[]')
+          queue.push({
+            at: Date.now(),
+            level: 'error',
+            message: '界面代码加载失败',
+            fields: { detail: String(detail).slice(0, 300) },
+          })
+          sessionStorage.setItem(key, JSON.stringify(queue.slice(-50)))
+        } catch {}
+        if (reloading) return
+        reloading = true
+        const root = document.getElementById('root')
+        if (root) root.textContent = '加载失败，3 秒后重试'
+        setTimeout(() => location.reload(), 3000)
+      }
       addEventListener(
         'error',
         (e) => {
           const el = e.target
-          if (!el || el.tagName !== 'SCRIPT' || el.type !== 'module') return
-          const root = document.getElementById('root')
-          if (root) root.textContent = '加载失败，3 秒后重试'
-          setTimeout(() => location.reload(), 3000)
+          if (el && el.tagName === 'SCRIPT' && el.type === 'module') failed(el.src)
         },
         true,
       )
+      addEventListener('vite:preloadError', (e) => failed(e.payload?.message ?? e.payload))
     </script>
   </head>
   <body>

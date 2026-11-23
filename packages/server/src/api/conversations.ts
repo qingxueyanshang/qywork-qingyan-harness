@@ -31,9 +31,11 @@ import type {
   ProviderRequestId,
   RequestItemsResponse,
   RunId,
+  Step,
+  StepId,
   ToolSchemaMode,
 } from '@qywork/core'
-import { mediaKindOutput, RESEND_LIMIT } from '@qywork/core'
+import { conversationSummary, mediaKindOutput, RESEND_LIMIT } from '@qywork/core'
 import {
   catalogKey,
   compactPercentFor,
@@ -57,6 +59,7 @@ import {
   currentGoal,
   deleteConversation,
   getConversation,
+  getConversationStep,
   getWorkspace,
   listChildConversations,
   listConversationChangesPage,
@@ -70,6 +73,7 @@ import {
   usageTotals,
   workspaceOf,
 } from '@qywork/store'
+import { deferLargeData } from '../conversations/deferred.ts'
 import { attachmentsDirOf } from './attachments.ts'
 import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
 
@@ -359,6 +363,11 @@ function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSn
 }
 
 export const handleConversationsApi: ApiHandler = async (url, req, d) => {
+  /** 界面只显示声明 inline 的工具图像，只为这些 step 读取字节；其余 step 只带引用。 */
+  const withInlineImages = (step: Step): Step =>
+    step.payload?.kind === 'tool_result' && step.payload.outcome.presentation?.images === 'inline'
+      ? d.loadToolImages([step])[0]!
+      : step
   const p = url.pathname
 
   if (p === '/api/models') {
@@ -470,9 +479,11 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         ...(body.title ? { title: body.title } : {}),
         mode: d.config.mode ?? 'auto',
       })
-      return json({ conversation: conv })
+      return json({ conversation: conversationSummary(conv) })
     }
-    return json({ conversations: listConversations(d.store, d.workspaceId as never) })
+    return json({
+      conversations: listConversations(d.store, d.workspaceId as never).map(conversationSummary),
+    })
   }
 
   /*
@@ -522,7 +533,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         },
         id,
       )
-      return json({ conversation: conv })
+      return json({ conversation: conversationSummary(conv) })
     }
 
     /*
@@ -577,7 +588,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         return json({ error: 'conversation not found', message: '会话不存在' }, 404)
       const ws = getWorkspace(d.store, conversation.workspaceId)
       return json({
-        conversation,
+        conversation: conversationSummary(conversation),
         workspace: ws ? { id: ws.id, rootPath: ws.rootPath, name: ws.name } : null,
       })
     }
@@ -601,6 +612,21 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     })
   }
 
+  /*
+   * 一条 step 的完整记录：历史页中标记 `deferred` 的工具结果展开时从此读取。
+   * step 不属于该会话时返回 404，不跨会话读取。
+   */
+  const stepMatch = /^\/api\/conversations\/([^/]+)\/steps\/([^/]+)$/.exec(p)
+  if (stepMatch && req.method === 'GET') {
+    const step = getConversationStep(
+      d.store,
+      stepMatch[1] as ConversationId,
+      stepMatch[2] as StepId,
+    )
+    if (!step) return json({ error: 'step not found', message: '记录不存在' }, 404)
+    return json({ step: withInlineImages(step) })
+  }
+
   const convMatch =
     /^\/api\/conversations\/([^/]+)\/(history|changes|messages|runs|usage|queue|commands|requests|request-details)$/.exec(
       p,
@@ -620,18 +646,18 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         limit,
         before: before as MessageId | null,
       })
+      // 思考步骤只带正文：`response_reasoning` 是回传给模型接口的原始条目，界面不读取，实测占一页字节的三成以上。
+      // 工具结果中的大字段推迟到展开时读取（`deferLargeData`）。
+      const shown = (step: Step): Step => {
+        if (step.payload?.kind === 'response_reasoning') return { ...step, payload: null }
+        const full = withInlineImages(step)
+        const payload = full.payload
+        if (payload?.kind !== 'tool_result') return full
+        return { ...full, payload: { ...payload, outcome: deferLargeData(payload.outcome) } }
+      }
       const page: ConversationHistoryPageResponse = {
         ...history,
-        // 界面只显示声明 inline 的工具图像，只为这些 step 读取字节；其余 step 只带引用，页面不再携带图像字节。
-        // 思考步骤只带正文：`response_reasoning` 是回传给模型接口的原始条目，界面不读取，实测占一页字节的三成以上。
-        steps: history.steps.map((step) =>
-          step.payload?.kind === 'response_reasoning'
-            ? { ...step, payload: null }
-            : step.payload?.kind === 'tool_result' &&
-                step.payload.outcome.presentation?.images === 'inline'
-              ? d.loadToolImages([step])[0]!
-              : step,
-        ),
+        steps: history.steps.map(shown),
         live: liveSnapshot(d, id),
       }
       return json(page)

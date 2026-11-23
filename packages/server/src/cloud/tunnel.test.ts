@@ -12,6 +12,8 @@ import { gunzipSync, gzipSync } from 'node:zlib'
 import {
   decodeData,
   encodeData,
+  type LogRecord,
+  setLogSink,
   TUNNEL_CLOSE,
   TUNNEL_DATA,
   TUNNEL_PROTOCOL_VERSION,
@@ -320,6 +322,51 @@ describe('隧道客户端', () => {
       expect(hits).toEqual([])
     } finally {
       await other.stop(true)
+    }
+  })
+
+  test('日志记录连接、断开原因与慢请求；请求路径不带查询串', async () => {
+    const records: LogRecord[] = []
+    setLogSink((r) => {
+      if (r.scope === 'tunnel') records.push(r)
+    })
+    try {
+      statuses.length = 0
+      const c = new TunnelClient({
+        apiOrigin: cloud.origin,
+        key: 'qyd_key',
+        localPort: local.port ?? 0,
+        pairing: () => ({ token: 'tok', deviceName: '电脑' }),
+        onStatus: (s) => statuses.push(s),
+        backoffMs: () => 20,
+        slowRequestMs: 0,
+      })
+      client = c
+      c.start()
+      await until(() => c.status.state === 'online')
+      expect(records.at(-1)).toMatchObject({ message: '隧道已连接', fields: { attempt: 0 } })
+
+      const res = await cloud.request('GET', '/files/raw?token=secret')
+      await until(() => records.some((r) => r.message === '慢请求'))
+      const slow = records.find((r) => r.message === '慢请求')!
+      expect(slow.fields).toMatchObject({
+        method: 'GET',
+        path: '/files/raw',
+        status: 201,
+        bytes: res.body.length,
+      })
+      expect(JSON.stringify(slow)).not.toContain('secret')
+
+      cloud.ws?.close(4000, '测试断开')
+      await until(() => records.some((r) => r.message === '隧道已断开'))
+      expect(records.find((r) => r.message === '隧道已断开')?.fields).toMatchObject({
+        code: 4000,
+        reason: '测试断开',
+        attempt: 1,
+      })
+      await until(() => c.status.state === 'online')
+    } finally {
+      setLogSink(null)
     }
   })
 

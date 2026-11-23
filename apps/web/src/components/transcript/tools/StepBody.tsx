@@ -9,6 +9,7 @@ import {
   todosOf,
 } from '../../../lib/step-view.ts'
 import type { TranscriptItem } from '../../../lib/store/index.ts'
+import { deferredError, loadDeferredOutcome } from '../../../lib/store/views/deferred.ts'
 import { TodoList } from '../../TodoList.tsx'
 
 /**
@@ -61,9 +62,16 @@ function LiveOutput(props: { item: TranscriptItem }) {
 export function StepBody(props: { item: TranscriptItem }) {
   const args = () => props.item.args ?? {}
   const kind = () => props.item.action?.kind
+  // 历史页只带了结果的小字段：展开时读取完整结果（`views/deferred.ts`）。
+  createEffect(() => {
+    if (props.item.outcome?.deferred) void loadDeferredOutcome(props.item.id)
+  })
 
   return (
     <>
+      <Show when={deferredError(props.item.id)}>
+        {(message) => <pre class="fold-out err">无法读取完整结果：{message()}</pre>}
+      </Show>
       <Show when={props.item.status === 'failure'}>
         <pre class="fold-out err">{props.item.outcome?.message || '（无错误正文）'}</pre>
         <div class="fold-divider" />

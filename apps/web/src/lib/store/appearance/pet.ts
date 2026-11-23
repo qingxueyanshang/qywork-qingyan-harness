@@ -13,9 +13,9 @@
  */
 
 import {
-  type Conversation,
   type ConversationHistoryPageResponse,
   type ConversationRunsResponse,
+  type ConversationSummary,
   deriveConversationTitle,
   type PetEntry as PetPackEntry,
   type PetState,
@@ -171,7 +171,7 @@ async function loadMeta(id: string): Promise<ConversationMeta | null> {
   if (known) return known
   try {
     const r = await client.api<{
-      conversation: Conversation
+      conversation: ConversationSummary
       workspace: { id: string; rootPath: string } | null
     }>(`/api/conversations/${encodeURIComponent(id)}`)
     const meta = {

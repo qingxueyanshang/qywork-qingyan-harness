@@ -66,6 +66,7 @@ describe('正文中的链接', () => {
     const opened: { url: string; workspaceId: string }[] = []
     let hostTabs: Record<string, unknown>[] = []
     g.__TAURI_INTERNALS__ = {
+      metadata: { currentWebview: { label: 'main' } },
       invoke: async (cmd: string, args: { url: string; workspaceId: string }) => {
         if (cmd === 'browser_open') {
           opened.push(args)

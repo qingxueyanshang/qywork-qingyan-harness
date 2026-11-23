@@ -35,6 +35,7 @@ import { IconCheck, IconDownload, IconMenu, IconPanel } from './components/Icons
 import { LoginGate } from './components/LoginGate.tsx'
 import { WindowControls } from './components/WindowControls.tsx'
 import { announcementsOpen, loadAnnouncements } from './lib/store/announcements.ts'
+import { observeClientErrors, report } from './lib/store/client-log.ts'
 import { cloudState, refreshCloudState } from './lib/store/cloud.ts'
 import {
   accountOpen,
@@ -188,10 +189,9 @@ export function App() {
     const ready = state.connection === 'ready'
     if (ready && !wasReady) {
       void restoreWorkspaceSession().catch((error) => {
-        setState('notice', {
-          reason: 'restore_failed',
-          message: `恢复项目与会话失败：${error instanceof Error ? error.message : String(error)}`,
-        })
+        const message = `恢复项目与会话失败：${error instanceof Error ? error.message : String(error)}`
+        setState('notice', { reason: 'restore_failed', message })
+        report('warn', message)
       })
       // 侧栏的账号入口与首次启动的登录页依据账号状态显示，同样在每次连接可用时读取。
       void refreshCloudState().catch(() => {})
@@ -222,14 +222,23 @@ export function App() {
     }
     window.addEventListener('focus', refreshAccount)
     document.addEventListener('visibilitychange', refreshAccount)
+    // 页面回到前台或网络恢复时立即重连，不等待在后台期间增长的退避。
+    const resumeConnection = () => {
+      if (document.visibilityState === 'visible') client.reconnectNow()
+    }
+    document.addEventListener('visibilitychange', resumeConnection)
+    window.addEventListener('online', resumeConnection)
     onCleanup(() => {
       window.removeEventListener('focus', refreshAccount)
       document.removeEventListener('visibilitychange', refreshAccount)
+      document.removeEventListener('visibilitychange', resumeConnection)
+      window.removeEventListener('online', resumeConnection)
     })
     const stopUpdates = observeAppUpdate()
     onCleanup(stopUpdates)
     onCleanup(observePersonalization())
     onCleanup(observeModelCatalog())
+    onCleanup(observeClientErrors())
     // 宠物只显示在桌面外壳的宠物窗口中；其他端不推导，避免每次会话转为空闲时都读取一次轮次。
     if (isDesktopShell()) {
       onCleanup(observePet())

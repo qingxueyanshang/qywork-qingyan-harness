@@ -1,7 +1,7 @@
 /** 覆盖 `conversations/open.ts`：新开的会话的归属、模型与权限模式，列表广播，以及第一条消息的投递。 */
 
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import type { AgentEvent, ConversationId } from '@qywork/core'
+import { type AgentEvent, type ConversationId, conversationSummary } from '@qywork/core'
 import {
   createConversation,
   getConversation,
@@ -49,7 +49,9 @@ test('新会话与本会话同工作区、同模型与权限模式，显示在�
     parentConversationId: null,
   })
   expect(listConversations(store, workspace.id).map((c) => c.id)).toContain(conversation.id)
-  expect(published).toEqual([{ type: 'conversation.created', conversation }])
+  expect(published).toEqual([
+    { type: 'conversation.created', conversation: conversationSummary(conversation) },
+  ])
   // 先广播再投递：列表中出现该会话之后，它的第一轮事件才有归属。
   expect(sent).toEqual([{ to: conversation.id, text: '审计 src/ 的改动', listed: true }])
 })

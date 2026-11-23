@@ -1,5 +1,5 @@
 /**
- * 覆盖 `store/shell.ts` 的外壳拖放分发：按落点交给命中的接收方，悬停状态广播给全部接收方，注销后不再接收。
+ * 覆盖 `store/shell.ts`：只有外壳界面窗口按桌面端运行；外壳拖放分发按落点交给命中的接收方，悬停状态广播给全部接收方，注销后不再接收。
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
@@ -16,6 +16,7 @@ beforeAll(() => {
   let next = 0
   const callbacks = new Map<number, (raw: unknown) => void>()
   ;(globalThis as Record<string, unknown>).__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label: 'main' } },
     transformCallback: (fn: (raw: unknown) => void) => {
       next += 1
       callbacks.set(next, fn)
@@ -40,6 +41,50 @@ afterEach(() => {
 })
 
 const fire = (event: string, payload: unknown) => handlers.get(event)!({ payload })
+
+/**
+ * 原始失败形状：内置浏览器的子视图同样被注入 `__TAURI_INTERNALS__`，在其中打开的本界面按桌面端运行，
+ * 注册拖放时发出三次 `plugin:event|listen`，均被权限检查拒绝，成为三个未处理的拒绝。
+ */
+describe('只有外壳界面窗口按桌面端运行', () => {
+  test('内置浏览器子视图中不按桌面端运行：不调用任何命令，注册拖放不产生拒绝', async () => {
+    const g = globalThis as Record<string, unknown>
+    const shell = g.__TAURI_INTERNALS__
+    const invoked: string[] = []
+    g.__TAURI_INTERNALS__ = {
+      metadata: { currentWebview: { label: 'bt_5' } },
+      transformCallback: () => 1,
+      invoke: async (cmd: string) => {
+        invoked.push(cmd)
+        throw new Error(`Command ${cmd} not allowed by ACL`)
+      },
+    }
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown) => rejections.push(reason)
+    process.on('unhandledRejection', onRejection)
+    try {
+      const { isDesktopShell, registerDropSink, tauriInvoke } = await import('./shell.ts')
+      expect(isDesktopShell()).toBe(false)
+      await expect(tauriInvoke('remember_workspace')).rejects.toThrow('该功能仅在桌面端可用')
+      const dispose = registerDropSink({ hit: () => false, over: () => {}, paths: () => {} })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      dispose()
+      expect(invoked).toEqual([])
+      expect(rejections).toEqual([])
+
+      g.__TAURI_INTERNALS__ = {
+        ...(shell as object),
+        metadata: { currentWebview: { label: 'pet' } },
+      }
+      expect(isDesktopShell()).toBe(true)
+      g.__TAURI_INTERNALS__ = { ...(shell as object), metadata: undefined }
+      expect(isDesktopShell()).toBe(false)
+    } finally {
+      process.off('unhandledRejection', onRejection)
+      g.__TAURI_INTERNALS__ = shell
+    }
+  })
+})
 
 describe('外壳拖放分发', () => {
   test('拖放交给落点所在区域的接收方；悬停状态广播给全部接收方；注销后不再接收', async () => {

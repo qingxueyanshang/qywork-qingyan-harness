@@ -11,15 +11,28 @@
  * 切换项目不在此列：服务端同时服务多个项目，切换项目只需更换 `?ws=`
  * 参数，浏览器与手机上同样可以切换。此处只有选择本机目录需要外壳：
  * 它是系统对话框，Web 端无法调用。
+ *
+ * 判据是当前 WebView 的标签属于外壳的界面窗口（`SHELL_WEBVIEWS`），不是 `__TAURI_INTERNALS__` 是否存在：
+ * 外壳向它创建的每个 WebView 注入该对象，包括内置浏览器打开的外部网页；那些 WebView 没有任何命令权限，
+ * 在其中打开的本界面（如远程访问的页面）按桌面端运行时，每次调用都被权限检查拒绝。
  */
 export function isDesktopShell(): boolean {
-  return typeof (globalThis as Record<string, unknown>).__TAURI_INTERNALS__ === 'object'
+  const label = internals()?.metadata?.currentWebview?.label
+  return label !== undefined && SHELL_WEBVIEWS.has(label)
 }
+
+/**
+ * 外壳界面窗口的 WebView 标签，与 `apps/desktop/src-tauri/capabilities/` 中授权的 `webviews` 一致：
+ * 主窗口与桌面宠物的两个窗口。新增授权的界面窗口时两处一并修改。
+ */
+const SHELL_WEBVIEWS: ReadonlySet<string> = new Set(['main', 'pet', 'pet-box'])
 
 interface TauriInternals {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>
   /** 将 JS 回调转换为 Rust 侧可以通过 emit 回调的数字句柄。 */
   transformCallback(cb: (payload: unknown) => void, once?: boolean): number
+  /** 外壳在创建 WebView 时注入。 */
+  metadata?: { currentWebview?: { label?: string } }
 }
 
 function internals(): TauriInternals | undefined {
@@ -28,7 +41,7 @@ function internals(): TauriInternals | undefined {
 
 export function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const api = internals()
-  if (!api) return Promise.reject(new Error('该功能仅在桌面端可用'))
+  if (!api || !isDesktopShell()) return Promise.reject(new Error('该功能仅在桌面端可用'))
   return api.invoke(cmd, args) as Promise<T>
 }
 
@@ -44,7 +57,7 @@ export function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Pro
  */
 export function tauriListen<T>(event: string, handler: (payload: T) => void): Promise<void> {
   const api = internals()
-  if (!api) return Promise.reject(new Error('该功能仅在桌面端可用'))
+  if (!api || !isDesktopShell()) return Promise.reject(new Error('该功能仅在桌面端可用'))
   const id = api.transformCallback((raw) => handler((raw as { payload: T }).payload))
   return api.invoke('plugin:event|listen', {
     event,
@@ -59,7 +72,7 @@ export function tauriListen<T>(event: string, handler: (payload: T) => void): Pr
  */
 export function tauriEmitTo(label: string, event: string, payload: unknown): Promise<void> {
   const api = internals()
-  if (!api) return Promise.reject(new Error('该功能仅在桌面端可用'))
+  if (!api || !isDesktopShell()) return Promise.reject(new Error('该功能仅在桌面端可用'))
   return api.invoke('plugin:event|emit_to', {
     target: { kind: 'WebviewWindow', label },
     event,
@@ -100,8 +113,12 @@ function dropClientPosition(position: { x: number; y: number } | undefined) {
   return { x: position.x / scale, y: position.y / scale }
 }
 
+/**
+ * 只在桌面外壳中监听：系统拖放只由外壳发出。手机与浏览器中的界面同样登记接收方，在此处监听会得到
+ * 三个无人处理的拒绝。
+ */
 function wireShellDrop(): void {
-  if (dropWired) return
+  if (dropWired || !isDesktopShell()) return
   dropWired = true
   type DropPayload = { paths?: string[]; position?: { x: number; y: number } }
   void tauriListen<DropPayload>('tauri://drag-over', (pl) => {

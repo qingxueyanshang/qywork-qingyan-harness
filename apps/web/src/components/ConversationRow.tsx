@@ -1,4 +1,4 @@
-import type { Conversation } from '@qywork/core'
+import type { ConversationSummary } from '@qywork/core'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { composing } from '../lib/input/composing.ts'
 import { archiveConversation, deleteConversation, renameConversation } from '../lib/store/index.ts'
@@ -34,7 +34,7 @@ function fmtWhen(t: number): string {
  * 卡片使用 `AnchoredMenu` 的标准样式 `anchored-menu`，`conv-menu` 只设置宽度。
  */
 export function ConversationRow(props: {
-  conversation: Conversation
+  conversation: ConversationSummary
   active: boolean
   /** 该会话正在运行。列表中每一条都能判定，判据是 `state.busyConversations`。 */
   running: boolean

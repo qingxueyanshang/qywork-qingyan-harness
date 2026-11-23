@@ -18,6 +18,7 @@ import type {
 import { isNoticeStep } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { client } from '../client.ts'
+import { report } from '../client-log.ts'
 import { discardPace } from '../events/pace.ts'
 import {
   type ConversationView,
@@ -545,14 +546,16 @@ export async function reloadActiveConversation(): Promise<void> {
   } catch (error) {
     if (canceledByNewerRequest(lease)) return
     if (state.activeConversation === id) {
+      const message = historyErrorMessage(error, lease)
       setState(
         produce((s) => {
           const v = s.views[id]
           if (!v) return
           v.history.loading = null
-          v.history.error = { phase: 'initial', message: historyErrorMessage(error, lease) }
+          v.history.error = { phase: 'initial', message }
         }),
       )
+      report('warn', '历史记录加载失败', { message })
     }
   } finally {
     finishHistoryLoad(id, lease)

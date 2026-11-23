@@ -96,11 +96,11 @@ export function Sidebar(props: { onClose?: () => void }) {
     return ready
   }, state.connection === 'ready')
 
-  const go = async (path: string) => {
-    if (path === workspace()?.root) return
+  const go = async (target: KnownWorkspace) => {
+    if (target.rootPath === workspace()?.root) return
     setError(null)
     try {
-      await activateWorkspace({ path })
+      await activateWorkspace(target)
       setCollapsedPath(null)
       // 切换经由 upsert 完成，可能新增项目或恢复已移除的项目，因此重新获取项目列表。
       void refetchWorkspaces()
@@ -185,7 +185,7 @@ export function Sidebar(props: { onClose?: () => void }) {
                     if (isCurrent()) {
                       setCollapsedPath((path) => (path === w.rootPath ? null : w.rootPath))
                     } else {
-                      void go(w.rootPath)
+                      void go(w)
                     }
                   }}
                   onNewChat={() => {

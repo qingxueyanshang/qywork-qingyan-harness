@@ -30,6 +30,30 @@ import type {
   UsageTotals,
 } from '../domain/model.ts'
 import type { CacheMissAttribution } from '../domain/monitor/cache-miss.ts'
+import type { LogLevel } from '../log.ts'
+
+/**
+ * `POST /api/client-log`：界面上报的运行记录，写入电脑端的运行日志。
+ * 远程打开的界面在手机上运行，加载失败、断线与慢请求只有界面自己能观察到。
+ */
+export interface ClientLogEntry {
+  /** 界面一侧的毫秒时间戳；记录可能在恢复连接之后才送达。 */
+  at: number
+  level: LogLevel
+  message: string
+  fields?: Record<string, string | number | boolean | null>
+}
+
+export interface ClientLogRequest {
+  /** 界面所在的端：`desktop` 或 `mobile`（与事件流握手的 `origin` 相同）。 */
+  origin: string
+  /** 界面是否嵌入在云端网页中，即经云端远程打开。 */
+  embedded: boolean
+  entries: ClientLogEntry[]
+}
+
+/** 一次上报的条数上限，界面按它分批，服务端拒绝超出的请求。 */
+export const CLIENT_LOG_MAX_ENTRIES = 20
 
 /**
  * 插件工作台页面（`/plugin-ui/*`）的沙箱标志。服务端写入响应头 `Content-Security-Policy: sandbox`，

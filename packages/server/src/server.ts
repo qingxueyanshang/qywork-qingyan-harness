@@ -21,6 +21,7 @@ import type {
 import {
   ART_MENTION,
   ART_SIZE_PARAM,
+  conversationSummary,
   log,
   NATIVE_BROWSER_PATH,
   NATIVE_DESKTOP_PATH,
@@ -421,7 +422,12 @@ export function serve(opts: ServeOptions) {
    * 经由 `submitMessage` 则作为跟进消息排队，与手动发送消息使用同一路径。
    */
   const submitSchedule = (claim: ScheduleClaim): Promise<void> => {
-    if (claim.created) bus.publish({ type: 'conversation.created', conversation: claim.created })
+    if (claim.created) {
+      bus.publish({
+        type: 'conversation.created',
+        conversation: conversationSummary(claim.created),
+      })
+    }
     return submitMessage(
       claim.conversationId,
       { id: crypto.randomUUID(), content: claim.schedule.prompt, steer: false },

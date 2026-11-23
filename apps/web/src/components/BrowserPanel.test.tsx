@@ -88,6 +88,7 @@ function asShell(
   hostTabs = tabs
   const before = g.__TAURI_INTERNALS__
   g.__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label: 'main' } },
     invoke: (cmd: string, args: Record<string, unknown> | undefined) => {
       invokes.push({ cmd, args })
       // 每次返回新数组：镜像信号按引用比较，返回同一个数组时不更新。

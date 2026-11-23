@@ -33,6 +33,7 @@ let onOpen: (id: string) => Opened = () => {
 
 beforeAll(() => {
   g.__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label: 'main' } },
     transformCallback: (cb: (raw: unknown) => void) => callbacks.push(cb) - 1,
     invoke: async (cmd: string, args: { event?: string; handler?: number; id?: string }) => {
       if (cmd === 'plugin:event|listen') {

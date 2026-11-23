@@ -98,6 +98,7 @@ export {
   conversationRejectsImages,
   conversationRejectsVideos,
   failThinkingSteps,
+  getConversationStep,
   interruptRunningNodes,
   listSteps,
   markImagesUndelivered,

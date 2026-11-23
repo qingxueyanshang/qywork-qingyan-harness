@@ -3,7 +3,7 @@
 import { mkdir, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { MEDIA_OUTPUTS } from '@qywork/core'
+import { conversationSummary, MEDIA_OUTPUTS } from '@qywork/core'
 import { configDir } from '@qywork/runtime'
 import {
   archiveWorkspaceConversations,
@@ -148,7 +148,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
                     mode: d.config.mode ?? 'auto',
                   }),
                 ]
-          return { workspace, conversations }
+          return { workspace, conversations: conversations.map(conversationSummary) }
         })
 
       if (rawPath) {

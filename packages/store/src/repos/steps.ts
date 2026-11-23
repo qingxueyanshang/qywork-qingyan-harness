@@ -487,6 +487,20 @@ export function listSteps(store: Store, runId: RunId): Step[] {
     .map(rowToStep)
 }
 
+/** 读取一条 step。它不属于该会话（按所属 run 判定）或不存在时返回 null。 */
+export function getConversationStep(
+  store: Store,
+  conversationId: ConversationId,
+  id: StepId,
+): Step | null {
+  const row = store.db
+    .query<StepRow, [string, string]>(
+      'SELECT s.* FROM steps s JOIN runs r ON r.id = s.run_id WHERE s.id = ? AND r.conversation_id = ?',
+    )
+    .get(id, conversationId)
+  return row ? rowToStep(row) : null
+}
+
 /** 只在包内使用：历史页（`messages.ts`）按同一份映射读取 step 行。 */
 export function rowToStep(r: StepRow): Step {
   return {

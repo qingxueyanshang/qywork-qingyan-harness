@@ -12,6 +12,7 @@
 import {
   decodeData,
   encodeData,
+  log,
   parseControl,
   pumpBody,
   sendableCloseCode,
@@ -49,6 +50,8 @@ export interface TunnelClientOptions {
   onStatus: (status: TunnelStatus) => void
   /** 第 n 次重连前的等待时长（毫秒）。测试中缩短。 */
   backoffMs?: (attempt: number) => number
+  /** 耗时达到该值的请求写入日志（毫秒），缺省为 `SLOW_REQUEST_MS`。测试中缩短。 */
+  slowRequestMs?: number
 }
 
 interface HttpStream {
@@ -68,6 +71,18 @@ const OFFLINE_MESSAGE: Record<number, string> = {
   [TUNNEL_CLOSE.accountBanned]: '账号已被停用',
 }
 
+/**
+ * 耗时达到该值的请求写入日志（毫秒），失败与中途关闭的请求一律写入。不要改为逐条记录：远程页面加载媒体时请求密集，
+ * 日志只保留一个轮转文件，逐条记录会把更早的启动与错误记录挤出。
+ */
+const SLOW_REQUEST_MS = 1000
+
+/** 日志中的请求路径不带查询串：媒体直链的查询串含令牌。 */
+function pathOf(path: string): string {
+  const q = path.indexOf('?')
+  return q < 0 ? path : path.slice(0, q)
+}
+
 /** 退避：1 秒起每次加倍，上限 30 秒，另加至多 1 秒的随机量，使云端重启后各设备错开重连。 */
 function defaultBackoff(attempt: number): number {
   return Math.min(30_000, 1000 * 2 ** attempt) + Math.random() * 1000
@@ -81,6 +96,7 @@ export class TunnelClient {
   private retry: ReturnType<typeof setTimeout> | null = null
   private current: TunnelStatus = { state: 'connecting' }
   private readonly backoff: (attempt: number) => number
+  private readonly slowRequestMs: number
   private readonly sender: TunnelSender = {
     data: (frame) => this.ws?.send(frame),
     control: (frame) => this.send(frame),
@@ -88,6 +104,7 @@ export class TunnelClient {
 
   constructor(private readonly opts: TunnelClientOptions) {
     this.backoff = opts.backoffMs ?? defaultBackoff
+    this.slowRequestMs = opts.slowRequestMs ?? SLOW_REQUEST_MS
   }
 
   get status(): TunnelStatus {
@@ -128,8 +145,12 @@ export class TunnelClient {
     let lastFrame = Date.now()
     const heartbeat = setInterval(() => {
       // 休眠唤醒或网络切换后，失效的 TCP 连接可能没有关闭事件。
-      if (Date.now() - lastFrame > TUNNEL_DEAD_MS) ws.terminate()
-      else this.send({ type: 'ping' })
+      if (Date.now() - lastFrame > TUNNEL_DEAD_MS) {
+        log.warn('tunnel', '长时间未收到云端的帧，断开并重连', {
+          silentMs: Date.now() - lastFrame,
+        })
+        ws.terminate()
+      } else this.send({ type: 'ping' })
     }, TUNNEL_PING_MS)
     ws.onopen = () => {
       ws.send(
@@ -145,24 +166,30 @@ export class TunnelClient {
       clearInterval(heartbeat)
       if (this.ws !== ws) return
       this.ws = null
+      const streams = this.streams.size
       this.dropAll()
-      this.closed(e.code)
+      this.closed(e.code, e.reason, streams)
     }
   }
 
-  private closed(code: number): void {
+  /** `streams` 是断开时仍在进行、随之中止的流数。 */
+  private closed(code: number, reason: string, streams: number): void {
     if (this.stopped) return
+    const fields = { code, reason, streams }
     if (code === TUNNEL_CLOSE.deviceRevoked) {
+      log.warn('tunnel', '设备已被移除，不再重连', fields)
       this.stopped = true
       this.setStatus({ state: 'revoked' })
       return
     }
     if (code === TUNNEL_CLOSE.outdated) {
+      log.warn('tunnel', '云端要求更新应用，不再重连', fields)
       this.stopped = true
       this.setStatus({ state: 'outdated' })
       return
     }
     if (code === TUNNEL_CLOSE.replaced) {
+      log.warn('tunnel', '同一设备在别处连接，不再重连', fields)
       this.stopped = true
       this.setStatus({ state: 'replaced' })
       return
@@ -171,6 +198,11 @@ export class TunnelClient {
     const delay =
       code === TUNNEL_CLOSE.restarting ? Math.random() * 1000 : this.backoff(this.attempt)
     this.attempt = code === TUNNEL_CLOSE.restarting ? 0 : this.attempt + 1
+    log.warn('tunnel', '隧道已断开', {
+      ...fields,
+      attempt: this.attempt,
+      retryMs: Math.round(delay),
+    })
     this.retry = setTimeout(() => this.connect(), delay)
   }
 
@@ -179,6 +211,7 @@ export class TunnelClient {
     if (!frame) return
     switch (frame.type) {
       case 'welcome':
+        log.info('tunnel', '隧道已连接', { attempt: this.attempt })
         this.attempt = 0
         this.setStatus({ state: 'online' })
         return
@@ -227,6 +260,18 @@ export class TunnelClient {
 
   private openHttp(open: TunnelControl & { type: 'http.open' }): void {
     const { sid } = open
+    const started = Date.now()
+    let headMs: number | null = null
+    let status = 0
+    let bytes = 0
+    /** 耗时从云端打开流起算到响应体发完，包含按窗口等待云端读取的时间，反映电脑至云端线路的传输。 */
+    const record = (outcome: 'done' | 'closed' | 'failed') => {
+      const ms = Date.now() - started
+      if (outcome === 'done' && status < 500 && ms < this.slowRequestMs) return
+      const fields = { method: open.method, path: pathOf(open.path), status, bytes, headMs, ms }
+      if (outcome === 'done') log.info('tunnel', '慢请求', fields)
+      else log.warn('tunnel', outcome === 'closed' ? '请求中途关闭' : '请求失败', fields)
+    }
     const abort = new AbortController()
     const credit = new TunnelCredit()
     const inbound = new TunnelInbound(
@@ -247,19 +292,36 @@ export class TunnelClient {
     void fetch(`http://127.0.0.1:${this.opts.localPort}${open.path}`, init)
       .then(async (res) => {
         if (this.streams.get(sid)?.kind !== 'http') {
+          status = res.status
+          record('closed')
           await res.body?.cancel()
           return
         }
+        status = res.status
+        headMs = Date.now() - started
         this.send({
           type: 'http.head',
           sid,
           status: res.status,
           headers: tunnelHeaders(res.headers),
         })
-        if (await pumpBody(res.body, sid, credit, this.sender)) this.streams.delete(sid)
+        const counted =
+          res.body?.pipeThrough(
+            new TransformStream<Uint8Array, Uint8Array>({
+              transform(chunk, out) {
+                bytes += chunk.length
+                out.enqueue(chunk)
+              },
+            }),
+          ) ?? null
+        if (await pumpBody(counted, sid, credit, this.sender)) {
+          this.streams.delete(sid)
+          record('done')
+        } else record('closed')
       })
       .catch(() => {
-        if (!this.streams.has(sid)) return
+        if (!this.streams.has(sid)) return record('closed')
+        record('failed')
         this.drop(sid)
         this.send({ type: 'close', sid })
       })

@@ -30,6 +30,7 @@ function button(host: HTMLElement, name: string) {
 function mockPicker() {
   const calls: (string | null)[] = []
   ;(globalThis as Record<string, unknown>).__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label: 'main' } },
     invoke: async (cmd: string, args: { path: string | null }) => {
       expect(cmd).toBe('list_skill_sources')
       calls.push(args.path)

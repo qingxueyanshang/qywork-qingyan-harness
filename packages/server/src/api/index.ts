@@ -14,6 +14,7 @@ import { getWorkspace, mostRecentWorkspace } from '@qywork/store'
 import { handleAppearanceApi } from './appearance.ts'
 import { handleAttachmentsApi } from './attachments.ts'
 import { handleCanvasApi } from './canvas.ts'
+import { handleClientLogApi } from './client-log.ts'
 import { handleCloudApi } from './cloud.ts'
 import { handleConfigApi } from './config.ts'
 import { handleConversationsApi } from './conversations.ts'
@@ -78,6 +79,7 @@ const HANDLERS: ApiHandler[] = [
   handleFontsApi,
   handleCanvasApi,
   handleGitApi,
+  handleClientLogApi,
 ]
 
 /** 返回 `null` 表示没有任何域处理该路径，交给调用方进行静态托管或返回 404。 */

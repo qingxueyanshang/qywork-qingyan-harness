@@ -90,7 +90,7 @@ export function embeddedAssets(files: Readonly<Record<string, string>>): WebAsse
  */
 export type WebSource = (url: URL) => Promise<Response | null>
 
-/** 构建产物：按路径取文件，未知路径回退到 `index.html`。 */
+/** 构建产物：按路径取文件，未知路径回退到 `index.html`，`assets/` 下的未知文件返回 404。 */
 export function fileSource(web: WebAssets): WebSource {
   return (url) => serveStatic(web, url.pathname)
 }
@@ -99,9 +99,17 @@ export async function serveStatic(web: WebAssets, pathname: string): Promise<Res
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '')
   // 拦截路径穿越：`GET /../../etc/passwd` 不能生效。
   if (rel.includes('..')) return null
-  // SPA 回退：未知路径返回 index.html。
-  const file = (await web(rel)) ?? (await web('index.html'))
-  return file ? new Response(file) : null
+  const file = await web(rel)
+  if (file) return new Response(file)
+  /*
+   * `assets/` 下是带内容哈希的构建产物，缺失时返回 404，不要回退到 index.html：
+   * 云端界面缓存与浏览器按文件名长期缓存 200 响应，回退的 HTML 会以该文件名留存，
+   * 此后每次加载该模块都因类型不符而失败，重新加载页面也无法恢复。
+   */
+  if (rel.startsWith('assets/')) return new Response('文件不存在', { status: 404 })
+  // SPA 回退：其余未知路径返回 index.html。
+  const index = await web('index.html')
+  return index ? new Response(index) : null
 }
 
 export function hostLabel(): string {

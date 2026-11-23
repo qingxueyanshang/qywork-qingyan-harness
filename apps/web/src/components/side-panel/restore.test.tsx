@@ -93,6 +93,7 @@ async function asShell(
   const previous = g.__TAURI_INTERNALS__
   const capabilities = store.state.capabilities
   g.__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label: 'main' } },
     invoke: (cmd: string, args: Record<string, unknown> | undefined) => {
       invokes.push({ cmd, args })
       return reply(cmd, args) ?? Promise.resolve(undefined)

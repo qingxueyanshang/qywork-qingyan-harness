@@ -9,7 +9,7 @@
  * 不在此处导入 run-control，否则两个模块互相导入。
  */
 
-import type { ConversationId } from '@qywork/core'
+import { type ConversationId, conversationSummary } from '@qywork/core'
 import { createConversation, getConversation, type Store } from '@qywork/store'
 import type { ConversationPort } from '@qywork/tools'
 import type { EventBus } from '../bus.ts'
@@ -30,7 +30,10 @@ export function conversationPortOf(
         ...(title ? { title } : {}),
         mode: origin.mode,
       })
-      deps.bus.publish({ type: 'conversation.created', conversation })
+      deps.bus.publish({
+        type: 'conversation.created',
+        conversation: conversationSummary(conversation),
+      })
       await send(conversation.id, message)
       return { id: conversation.id, title: conversation.title }
     },

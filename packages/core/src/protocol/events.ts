@@ -17,7 +17,7 @@ import type {
   CompactionStage,
   ContextBreakdown,
   ContextOmitted,
-  Conversation,
+  ConversationSummary,
   FileChange,
   FollowUp,
   Goal,
@@ -106,14 +106,14 @@ export type AgentEvent =
  * 工作区级事件：信封上不带 `conversationId`。若按会话过滤下发，只有已订阅该会话的客户端
  * 能收到，而本事件要解决的正是该会话尚未出现在列表中的问题。
  *
- * 负载是完整的 `Conversation`，客户端直接插入列表，无需重新请求列表。
+ * 负载是会话列表中的一行（`ConversationSummary`），客户端直接插入列表，无需重新请求列表。
  *
  * 在服务端新建会话时发出：定时任务认领新建会话，与模型以 `new_conversation` 新开会话。
  * 用户点击「新对话」经由 HTTP，响应体中已包含该会话，不发出本事件。
  */
 export interface ConversationCreatedEvent {
   type: 'conversation.created'
-  conversation: Conversation
+  conversation: ConversationSummary
 }
 
 /**

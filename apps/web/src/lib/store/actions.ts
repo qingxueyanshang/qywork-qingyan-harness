@@ -5,12 +5,13 @@
  * 用户操作。两者都只经由 `setState` 修改同一份 store，不存在第二本账。
  */
 
-import type { Attachment, Conversation, EffortLevel, PermissionMode } from '@qywork/core'
+import type { Attachment, ConversationSummary, EffortLevel, PermissionMode } from '@qywork/core'
 import { batch } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { ApiError } from '../client.ts'
 import { readSession, writeSession } from '../session.ts'
 import { client } from './client.ts'
+import { report } from './client-log.ts'
 import { discardPace } from './events/pace.ts'
 import {
   addWorkspace,
@@ -23,7 +24,7 @@ import {
 } from './settings.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 import { hasRun, isRunning, LOCAL_ID_PREFIX, prepayBusy, setState, state } from './state.ts'
-import { setOpenFile, setWorkspace, viewingFile, workspace } from './ui.ts'
+import { setOpenFile, setWorkspace, viewingFile, type WorkspaceInfo, workspace } from './ui.ts'
 import { reloadActiveConversation } from './views/history.ts'
 import { syncViews } from './views/subscription.ts'
 
@@ -39,12 +40,10 @@ import { syncViews } from './views/subscription.ts'
  * 且空会话不占用额度、不发送请求。
  */
 export async function loadConversations(): Promise<void> {
-  const res = await client.api<{ conversations: Conversation[] }>('/api/conversations')
+  const res = await client.api<{ conversations: ConversationSummary[] }>('/api/conversations')
   setState('conversations', res.conversations)
   if (state.activeConversation) return
-  // 刷新后回到刷新前的会话；它已被删除或归档时不在列表中，改为第一条。
-  const saved = readSession<string>(conversationKey())
-  const pick = res.conversations.find((c) => c.id === saved) ?? res.conversations[0]
+  const pick = rememberedOr(res.conversations)
   if (pick) {
     await selectConversation(pick.id)
     return
@@ -53,8 +52,48 @@ export async function loadConversations(): Promise<void> {
 }
 
 /** 当前会话的记录键，按项目区分：会话 id 只在所属项目的列表中有效。 */
-function conversationKey(): string {
-  return `qywork.conversation:${workspace()?.id ?? ''}`
+function conversationKey(wsId = workspace()?.id ?? ''): string {
+  return `qywork.conversation:${wsId}`
+}
+
+/**
+ * 当前项目要打开的会话：本页在该项目中最后查看的会话（刷新与切换项目共用这条规则）；
+ * 它已被删除或归档、不在列表中时改为第一条。
+ */
+function rememberedOr(list: ConversationSummary[], wsId?: string): ConversationSummary | undefined {
+  const saved = readSession<string>(conversationKey(wsId))
+  return list.find((c) => c.id === saved) ?? list[0]
+}
+
+/** 切换的目标：列表中已知的项目，或新建、按路径打开的项目（`WorkspaceInput`）。 */
+export type WorkspaceTarget = WorkspaceInput | { id: string; rootPath: string; name: string }
+
+/** 每次切换项目递增；响应到达时序号已变说明期间又切换了项目，该响应作废。 */
+let activation = 0
+
+/**
+ * 把前端的当前项目换为 `info`。项目、会话列表、打开的文件、分支状态与当前会话在同一批更新中替换，
+ * 面板不会在新项目下先渲染上一项目的会话。`conversationId` 为 null 时不打开任何会话。
+ * 打开的文件与分支状态只在项目确实变化时清空：upsert 响应到达时以同一项目再次调用，
+ * 此前用户在新项目中打开的文件不应被关闭。
+ */
+function switchTo(
+  info: WorkspaceInfo,
+  conversations: ConversationSummary[],
+  conversationId: string | null,
+): Promise<void> {
+  return batch(() => {
+    if (workspace()?.id !== info.id) {
+      setOpenFile(null)
+      setState('git', null)
+    }
+    setWorkspace(info)
+    setState('conversations', conversations)
+    if (conversationId) return selectConversation(conversationId)
+    setState({ activeConversation: null, followUps: [], backgroundCommands: [], fileChanges: [] })
+    syncViews()
+    return Promise.resolve()
+  })
 }
 
 /**
@@ -67,7 +106,14 @@ function conversationKey(): string {
  * 顺序不能调换：先修改活动项目，再获取数据。`client.api` 按当前活动项目
  * 拼接 `?ws=`，顺序颠倒时取回的仍是上一个项目的会话。
  *
- * 项目与会话选择在同一批更新中切换，避免面板在新项目下先渲染旧会话或空会话。
+ * 切换到列表中已知的项目时不等待 upsert 的响应：立即换为该项目，并打开本页在该项目中最后查看的会话，
+ * 其历史与右侧面板的读取和 upsert 并行。经远程隧道时一次往返约 0.5–2 秒，先等 upsert 再读历史是两次串行往返。
+ * upsert 响应到达后换上服务端的会话列表；最后查看的会话已不在列表中或没有记录时改为第一条，
+ * 较早发出的历史请求由 `selectConversation` 取消。upsert 失败时回到切换前的项目与会话：否则界面停在
+ * 会话列表为空的新项目上，且点击当前项目只会收起列表，没有重试的入口。
+ * 新建与按路径打开的项目没有 id，只能在 upsert 之后切换。
+ *
+ * 等待期间又切换到其他项目时，本次的响应不再写入（`activation`），较早的响应不覆盖较晚的选择。
  *
  * 打开的文件同样须清空，理由相同：它是上一个项目中的相对路径。保留时新项目中
  * 通常没有该文件，面板会显示无法取得内容的空白区域，而旁边的文件树已属于新项目。
@@ -77,17 +123,35 @@ function conversationKey(): string {
  * 可多开的页面不在此处关闭。它们按项目分别记录（`ui.ts` 的 `panels`），切换项目只是
  * 换用另一个键读取：终端中的命令继续运行，浏览器页面保持不变，切回后仍是原状态。
  */
-export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
+export async function activateWorkspace(target: WorkspaceTarget): Promise<void> {
+  const seq = ++activation
+  const started = Date.now()
+  const previous = workspace()
+  const previousConversations = state.conversations
+  const previousActive = state.activeConversation
+  if ('id' in target) {
+    const saved = readSession<string>(conversationKey(target.id)) ?? null
+    void switchTo({ id: target.id, root: target.rootPath, name: target.name }, [], saved)
+  }
   // 新建与切换共用这一次 upsert；服务端同时保证至少有一条用户会话并返回完整列表。
-  const { workspace: ws, conversations } = await addWorkspace(input)
-  const first = conversations[0]
-  if (!first) throw new Error('项目没有可用会话')
-  await batch(() => {
-    setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
-    setOpenFile(null)
-    setState({ conversations, git: null })
-    return selectConversation(first.id)
-  })
+  let result: Awaited<ReturnType<typeof addWorkspace>>
+  try {
+    result = await addWorkspace('id' in target ? { path: target.rootPath } : target)
+  } catch (e) {
+    if (seq === activation && 'id' in target && previous) {
+      void switchTo(previous, previousConversations, previousActive)
+    }
+    throw e
+  }
+  if (seq !== activation) return
+  const { workspace: ws, conversations } = result
+  const info = { id: ws.id, root: ws.rootPath, name: ws.name }
+  // 记录键按响应中的项目读取：新建项目在此之前没有 id。
+  const pick = rememberedOr(conversations, ws.id)
+  if (!pick) throw new Error('项目没有可用会话')
+  await switchTo(info, conversations, pick.id)
+  const ms = Date.now() - started
+  if (ms >= 1000) report('info', '切换项目', { ms, conversations: conversations.length })
   // 桌面端记录最后打开的目录，下次启动时据此回到该项目。
   // 落盘失败不阻断切换：只影响下次启动的默认项目。
   if (isDesktopShell()) await rememberWorkspace(ws.rootPath).catch(() => {})
@@ -321,7 +385,7 @@ export function activeModelRow(): ModelOption | null {
 
 /** 重命名。空标题的校验只在服务端进行（返回 422 且不落盘），两端各写一份必然出现不一致。 */
 export async function renameConversation(id: string, title: string): Promise<void> {
-  const { conversation } = await client.api<{ conversation: Conversation }>(
+  const { conversation } = await client.api<{ conversation: ConversationSummary }>(
     `/api/conversations/${encodeURIComponent(id)}`,
     { method: 'PATCH', body: JSON.stringify({ title }) },
   )
@@ -410,10 +474,13 @@ async function dropConversation(id: string): Promise<void> {
 }
 
 export async function newConversation(): Promise<void> {
-  const { conversation } = await client.api<{ conversation: Conversation }>('/api/conversations', {
-    method: 'POST',
-    body: JSON.stringify({}),
-  })
+  const { conversation } = await client.api<{ conversation: ConversationSummary }>(
+    '/api/conversations',
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  )
   setState('conversations', (c) => [conversation, ...c])
   await selectConversation(conversation.id)
 }

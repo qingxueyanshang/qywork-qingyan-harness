@@ -55,6 +55,7 @@ function client(token = 'tk') {
       onCapabilities: () => {},
       onBusy: (ids) => busy.push(ids),
       onRejected: (f) => rejected.push(f),
+      onRequest: () => {},
     },
     {
       endpoint: { base: 'http://127.0.0.1:7717', token, origin: 'desktop' },
@@ -213,6 +214,30 @@ describe('正常断线仍然重连', () => {
     sockets[0]!.fire('close')
     expect(c.terminated).toBe(false)
     expect(states.at(-1)?.state).toBe('reconnecting')
+    c.close()
+  })
+
+  test('页面回到前台时立即重连，不等待已增长的退避；没有等待中的重连时不新建连接', () => {
+    const { c, sockets, states } = client()
+    c.connect()
+    // 后台期间连续失败五次：每次都立即重连以推进退避计数。
+    for (let i = 0; i < 5; i++) {
+      sockets.at(-1)!.fire('close')
+      c.reconnectNow()
+    }
+    sockets.at(-1)!.fire('close')
+    // 第六次退避已到上限 15 秒，抖动之后至少 10.5 秒。
+    expect(Number.parseFloat(states.at(-1)!.detail!)).toBeGreaterThanOrEqual(10)
+
+    const before = sockets.length
+    c.reconnectNow()
+    expect(sockets.length).toBe(before + 1)
+    expect(states.at(-1)?.state).toBe('reconnecting')
+
+    sockets.at(-1)!.fire('open')
+    sockets.at(-1)!.deliver({ type: 'hello.ok', capabilities: {}, currentSeq: 0, resync: false })
+    c.reconnectNow()
+    expect(sockets.length).toBe(before + 1)
     c.close()
   })
 })

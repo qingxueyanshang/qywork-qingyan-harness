@@ -239,6 +239,17 @@ export interface Conversation {
   updatedAt: number
 }
 
+/**
+ * 接口与事件交给客户端的会话：不含 `compactionManifest`。压缩清单只供运行时使用，界面不读取，
+ * 压缩过的会话每条可达数十 KB；会话列表随每次切换项目经远程隧道传输，携带它时列表的字节以清单为主。
+ */
+export type ConversationSummary = Omit<Conversation, 'compactionManifest'>
+
+export function conversationSummary(c: Conversation): ConversationSummary {
+  const { compactionManifest: _, ...summary } = c
+  return summary
+}
+
 /** 侧栏一行可容纳的字数。 */
 const TITLE_MAX = 30
 
@@ -1124,6 +1135,11 @@ export interface ToolOutcomeWire {
   /** 本次调用落盘的中间资源引用。只含定位事实，不携带正文。 */
   resources?: IntermediateResourceRef[]
   errorKind?: string
+  /**
+   * 只出现在会话历史页中：`data` 里较大的字段未随页返回，界面显示结果正文之前按 step 读取完整结果
+   * （`GET /api/conversations/:id/steps/:stepId`）。账本、事件流与发给模型的结果不带该字段。
+   */
+  deferred?: true
 }
 
 /**

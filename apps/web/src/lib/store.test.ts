@@ -254,7 +254,6 @@ describe('激活项目复用服务端返回的会话列表', () => {
               title: '',
               provider: 'p',
               model: 'm',
-              compactionManifest: null,
               cacheGeneration: 0,
               source: null,
               sourceRef: null,
@@ -280,6 +279,7 @@ describe('激活项目复用服务端返回的会话列表', () => {
     }
 
     g.__TAURI_INTERNALS__ = {
+      metadata: { currentWebview: { label: 'main' } },
       invoke: async (cmd: string) => {
         invokes.push(cmd)
       },
@@ -302,6 +302,142 @@ describe('激活项目复用服务端返回的会话列表', () => {
       { workspace: 'ws_before', conversation: 'cv_before', conversations: ['cv_before'] },
       { workspace: 'ws_created', conversation: 'cv_created', conversations: ['cv_created'] },
     ])
+  })
+})
+
+/**
+ * 切换到列表中已知的项目。原始失败形状：先等 `POST /api/workspaces` 响应再读取历史，经远程隧道是两次串行往返，
+ * 第一次往返期间界面没有任何变化。
+ */
+describe('切换到已知项目：立即切换，历史与 upsert 并行', () => {
+  const KNOWN = { id: 'ws_known', rootPath: 'C:/ws/known', name: '已知项目' }
+  const conv = (id: string, workspaceId: string) =>
+    ({ id, workspaceId, title: '', provider: 'p', model: 'm', createdAt: 1, updatedAt: 1 }) as never
+  const HISTORY = {
+    messages: [],
+    runs: [],
+    steps: [],
+    todos: [],
+    workflowStarts: [],
+    earlierTurns: [],
+    nextCursor: null,
+    live: NO_LIVE,
+  }
+
+  /** 每个 `POST /api/workspaces` 由用例按顺序结束；其余读取立即应答。 */
+  const stub = () => {
+    const calls: string[] = []
+    const upserts: { body: string; resolve: (v: unknown) => void; reject: (e: unknown) => void }[] =
+      []
+    const before = client.api
+    ;(client as unknown as { api: (p: string, i?: RequestInit) => Promise<unknown> }).api = (
+      path,
+      init,
+    ) => {
+      calls.push(`${init?.method ?? 'GET'} ${path}`)
+      if (path === '/api/workspaces') {
+        return new Promise((resolve, reject) => {
+          upserts.push({ body: String(init?.body), resolve, reject })
+        })
+      }
+      if (path.includes('/history')) return Promise.resolve(HISTORY)
+      if (path.includes('/goal')) return Promise.resolve({ goal: null })
+      if (path.includes('/queue')) return Promise.resolve({ queue: [] })
+      if (path.includes('/commands')) return Promise.resolve({ commands: [] })
+      return Promise.reject(new Error(`投影不可用：${path}`))
+    }
+    return {
+      calls,
+      upserts,
+      restore: () => {
+        ;(client as unknown as { api: typeof client.api }).api = before
+      },
+    }
+  }
+
+  const reply = (id: string, conversations: unknown[]) => ({
+    workspace: { id, rootPath: `C:/ws/${id}`, name: id, lastOpenedAt: 1, conversations: 1 },
+    conversations,
+  })
+
+  test('有最后查看的会话时，upsert 响应之前已切换项目并读取该会话的历史；响应后换上服务端的列表', async () => {
+    const { writeSession } = await import('./session.ts')
+    setWorkspace({ id: 'ws_before', name: '原项目', root: 'C:/ws/before' })
+    setState({ activeConversation: 'cv_before', conversations: [conv('cv_before', 'ws_before')] })
+    writeSession(`qywork.conversation:${KNOWN.id}`, 'cv_saved')
+    const api = stub()
+    try {
+      const done = activateWorkspace(KNOWN)
+      expect(workspace()?.id).toBe(KNOWN.id)
+      expect(state.activeConversation).toBe('cv_saved')
+      expect(api.calls).toContain('GET /api/conversations/cv_saved/history?limit=10')
+      expect(api.upserts).toHaveLength(1)
+      expect(JSON.parse(api.upserts[0]!.body)).toEqual({ path: KNOWN.rootPath })
+
+      api.upserts[0]!.resolve(
+        reply(KNOWN.id, [conv('cv_first', KNOWN.id), conv('cv_saved', KNOWN.id)]),
+      )
+      await done
+      expect(state.activeConversation).toBe('cv_saved')
+      expect(state.conversations.map((c) => String(c.id))).toEqual(['cv_first', 'cv_saved'])
+      expect(api.calls.filter((c) => c.includes('/history'))).toHaveLength(1)
+    } finally {
+      api.restore()
+      writeSession(`qywork.conversation:${KNOWN.id}`, undefined)
+    }
+  })
+
+  test('没有记录时先移除上一项目的会话，响应后打开第一条', async () => {
+    setWorkspace({ id: 'ws_before', name: '原项目', root: 'C:/ws/before' })
+    setState({ activeConversation: 'cv_before', conversations: [conv('cv_before', 'ws_before')] })
+    const api = stub()
+    try {
+      const done = activateWorkspace(KNOWN)
+      expect(workspace()?.id).toBe(KNOWN.id)
+      expect(state.activeConversation).toBeNull()
+      expect(state.conversations).toEqual([])
+      api.upserts[0]!.resolve(reply(KNOWN.id, [conv('cv_first', KNOWN.id)]))
+      await done
+      expect(state.activeConversation).toBe('cv_first')
+    } finally {
+      api.restore()
+    }
+  })
+
+  test('等待期间又切换到其他项目时，较早的响应不覆盖较晚的选择', async () => {
+    const OTHER = { id: 'ws_other', rootPath: 'C:/ws/other', name: '另一项目' }
+    setWorkspace({ id: 'ws_before', name: '原项目', root: 'C:/ws/before' })
+    const api = stub()
+    try {
+      const first = activateWorkspace(KNOWN)
+      const second = activateWorkspace(OTHER)
+      api.upserts[1]!.resolve(reply(OTHER.id, [conv('cv_other', OTHER.id)]))
+      await second
+      api.upserts[0]!.resolve(reply(KNOWN.id, [conv('cv_known', KNOWN.id)]))
+      await first
+      expect(workspace()?.id).toBe(OTHER.id)
+      expect(state.activeConversation).toBe('cv_other')
+      expect(state.conversations.map((c) => String(c.id))).toEqual(['cv_other'])
+    } finally {
+      api.restore()
+    }
+  })
+
+  test('upsert 失败时回到切换前的项目与会话，并把错误交给调用方', async () => {
+    setWorkspace({ id: 'ws_before', name: '原项目', root: 'C:/ws/before' })
+    setState({ activeConversation: 'cv_before', conversations: [conv('cv_before', 'ws_before')] })
+    const api = stub()
+    try {
+      const done = activateWorkspace(KNOWN)
+      expect(workspace()?.id).toBe(KNOWN.id)
+      api.upserts[0]!.reject(new Error('未收到服务响应'))
+      await expect(done).rejects.toThrow('未收到服务响应')
+      expect(workspace()?.id).toBe('ws_before')
+      expect(state.activeConversation).toBe('cv_before')
+      expect(state.conversations.map((c) => String(c.id))).toEqual(['cv_before'])
+    } finally {
+      api.restore()
+    }
   })
 })
 
@@ -1010,7 +1146,6 @@ describe('整页刷新后回到刷新前的会话', () => {
     title: '',
     provider: 'p',
     model: 'm',
-    compactionManifest: null,
     cacheGeneration: 0,
     source: null,
     sourceRef: null,
@@ -2019,7 +2154,6 @@ describe('事件按会话归属过滤', () => {
           title: '定时任务',
           provider: 'p',
           model: 'm',
-          compactionManifest: null,
           cacheGeneration: 0,
           source: null,
           sourceRef: null,

@@ -8,7 +8,7 @@
 import type {
   Attachment,
   CompactPercentSetting,
-  Conversation,
+  ConversationSummary,
   Currency,
   EffortLevel,
   EnvDependency,
@@ -631,8 +631,8 @@ export interface WorkspaceInput {
 
 export function addWorkspace(
   input: WorkspaceInput,
-): Promise<{ workspace: KnownWorkspace; conversations: Conversation[] }> {
-  return client.api<{ workspace: KnownWorkspace; conversations: Conversation[] }>(
+): Promise<{ workspace: KnownWorkspace; conversations: ConversationSummary[] }> {
+  return client.api<{ workspace: KnownWorkspace; conversations: ConversationSummary[] }>(
     '/api/workspaces',
     {
       method: 'POST',

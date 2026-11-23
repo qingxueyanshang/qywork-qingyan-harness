@@ -325,6 +325,7 @@ describe('在资源管理器中显示', () => {
     const g = globalThis as Record<string, unknown>
     const previousShell = g.__TAURI_INTERNALS__
     g.__TAURI_INTERNALS__ = {
+      metadata: { currentWebview: { label: 'main' } },
       invoke: (cmd: string, args: { path: string }) => {
         if (cmd !== 'reveal_workspace' && cmd !== 'reveal_file')
           throw new Error(`未预期命令：${cmd}`)
@@ -1716,6 +1717,7 @@ describe('文件预览的 Markdown 与归档', () => {
     const previousWorkspace = store.workspace()
     const invokes: { cmd: string; args: Record<string, unknown> | undefined }[] = []
     g.__TAURI_INTERNALS__ = {
+      metadata: { currentWebview: { label: 'main' } },
       invoke: async (cmd: string, args: Record<string, unknown> | undefined) => {
         invokes.push({ cmd, args })
         if (cmd === 'browser_open')

@@ -4239,6 +4239,7 @@ describe('画布：右键菜单', () => {
     const workspace = store.workspace()
     // 挂载完成后才启用菜单所用的桌面桥接，不占用外壳拖放测试的常驻事件订阅。
     g.__TAURI_INTERNALS__ = {
+      metadata: { currentWebview: { label: 'main' } },
       invoke: (cmd: string, args: { path: string }) => {
         if (cmd !== 'reveal_file') throw new Error(`未预期命令：${cmd}`)
         return reveal(args.path)

@@ -77,6 +77,19 @@ export interface ClientOptions {
    * 指令被服务端拒绝。必须实现：不处理即为静默丢弃，用户的操作没有任何反馈。
    */
   onRejected(frame: CommandRejectedFrame): void
+  /** 一个 REST 请求结束：收到响应或确认未收到响应。调用方求心于慢请求与失败并上报。 */
+  onRequest(timing: RequestTiming): void
+}
+
+/**
+ * 一个 REST 请求的耗时。`ms` 对 `api` 含读完响应体，对 `raw` 只到收到响应头；`status` 为 0 表示未收到响应。
+ * `path` 不带查询串。调用方自行中止的请求不报告。
+ */
+export interface RequestTiming {
+  method: string
+  path: string
+  status: number
+  ms: number
 }
 
 interface Endpoint {
@@ -240,6 +253,9 @@ export class QyClient {
   get base(): string {
     return this.endpoint.base
   }
+  get origin(): ClientOrigin {
+    return this.endpoint.origin
+  }
   get paired(): boolean {
     return this.endpoint.token.length > 0
   }
@@ -367,6 +383,17 @@ export class QyClient {
     ws.addEventListener('error', () => {})
   }
 
+  /**
+   * 等待中的重连立即进行。页面回到前台或网络恢复时调用：页面在后台期间重连持续失败，
+   * 退避已增长到上限，不处理时回到前台后仍要等待剩余的时长。没有等待中的重连时不做任何事。
+   */
+  reconnectNow(): void {
+    if (!this.reconnectTimer) return
+    clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+    this.connect()
+  }
+
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return
     this.attempt++
@@ -440,11 +467,16 @@ export class QyClient {
       given.set('content-type', 'application/json')
     }
     given.set('authorization', `Bearer ${this.endpoint.token}`)
-    const res = await this.request(path, init, given)
+    const started = Date.now()
+    const res = await this.request(path, init, given, started)
     if (!res.ok) {
-      throw new ApiError(res.status, path, await res.text().catch(() => ''))
+      const text = await res.text().catch(() => '')
+      this.timed(path, init, res.status, started)
+      throw new ApiError(res.status, path, text)
     }
-    return (await res.json()) as T
+    const body = (await res.json()) as T
+    this.timed(path, init, res.status, started)
+    return body
   }
 
   /**
@@ -454,23 +486,44 @@ export class QyClient {
    * 分别处理（404 表示文件不存在，413 表示超出大小上限，两者在界面上都表现为无法显示），
    * 在此处抛错会使调用方无法取得状态码。
    */
-  raw(path: string, init?: RequestInit): Promise<Response> {
+  async raw(path: string, init?: RequestInit): Promise<Response> {
     const given = new Headers(init?.headers ?? {})
     given.set('authorization', `Bearer ${this.endpoint.token}`)
-    return this.request(path, init, given)
+    const started = Date.now()
+    const res = await this.request(path, init, given, started)
+    this.timed(path, init, res.status, started)
+    return res
   }
 
   /**
-   * 发出请求。没有收到响应时 `fetch` 抛出 `TypeError`，转为状态 0 的 `ApiError`；
+   * 发出请求。没有收到响应时 `fetch` 抛出 `TypeError`，报告为状态 0 并转为状态 0 的 `ApiError`；
    * 中止请求抛出的 `AbortError` 原样抛出，调用方按它判断是否由自己取消。
    */
-  private async request(path: string, init: RequestInit | undefined, headers: Headers) {
+  private async request(
+    path: string,
+    init: RequestInit | undefined,
+    headers: Headers,
+    started: number,
+  ) {
     try {
       return await fetch(`${this.endpoint.base}${withWorkspace(path)}`, { ...init, headers })
     } catch (e) {
-      if (e instanceof TypeError) throw new ApiError(0, path, '')
+      if (e instanceof TypeError) {
+        this.timed(path, init, 0, started)
+        throw new ApiError(0, path, '')
+      }
       throw e
     }
+  }
+
+  private timed(path: string, init: RequestInit | undefined, status: number, started: number) {
+    const q = path.indexOf('?')
+    this.opts.onRequest({
+      method: init?.method ?? 'GET',
+      path: q < 0 ? path : path.slice(0, q),
+      status,
+      ms: Date.now() - started,
+    })
   }
 
   /**

@@ -24,6 +24,7 @@ export const client = new QyClient({
   onCapabilities: (caps) => wired().onCapabilities(caps),
   onBusy: (ids) => wired().onBusy(ids),
   onRejected: (frame) => wired().onRejected(frame),
+  onRequest: (timing) => wired().onRequest(timing),
 })
 
 /** 接入事件流的回调。只由 `connection.ts` 调用。 */

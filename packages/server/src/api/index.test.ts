@@ -30,7 +30,7 @@ import type {
   RequestItemsResponse,
   RunId,
 } from '@qywork/core'
-import { emptyBreakdown, emptyOmitted } from '@qywork/core'
+import { emptyBreakdown, emptyOmitted, type LogRecord, setLogSink } from '@qywork/core'
 import {
   appendMessage,
   appendStep,
@@ -51,6 +51,7 @@ import {
   recordProviderRequestDiagnostic,
   recordUsage,
   Store,
+  setCompactionManifest,
   setConversationTitle,
   settleProviderRequest,
   settleToolStep,
@@ -459,10 +460,86 @@ describe('移除项目', () => {
   })
 })
 
+describe('界面上报的运行记录', () => {
+  const post = (body: unknown) =>
+    call('/api/client-log', { method: 'POST', body: JSON.stringify(body) })
+
+  test('逐条写入运行日志：带上报端与界面一侧的时刻，只保留标量字段，正文截断', async () => {
+    const records: LogRecord[] = []
+    setLogSink((r) => void records.push(r))
+    try {
+      const res = await post({
+        origin: 'mobile',
+        embedded: true,
+        entries: [
+          { at: 0, level: 'warn', message: '慢请求', fields: { ms: 2500, nested: { a: 1 } } },
+          { at: 1, level: 'error', message: 'x'.repeat(2000) },
+        ],
+      })
+      expect(res?.status).toBe(200)
+    } finally {
+      setLogSink(null)
+    }
+    expect(records).toHaveLength(2)
+    expect(records[0]).toMatchObject({
+      level: 'warn',
+      scope: 'web',
+      message: '慢请求',
+      fields: { ms: 2500, origin: 'mobile', embedded: true, clientAt: '1970-01-01T00:00:00.000Z' },
+    })
+    expect(records[0]?.fields).not.toHaveProperty('nested')
+    expect(records[1]!.message.length).toBeLessThan(600)
+  })
+
+  test('格式不正确或超出单次条数时返回 422，不写入任何记录', async () => {
+    const records: LogRecord[] = []
+    setLogSink((r) => void records.push(r))
+    try {
+      const entry = { at: 0, level: 'info', message: '已连接' }
+      expect((await post({ entries: [{ ...entry, level: 'debug' }] }))?.status).toBe(422)
+      expect((await post({ entries: [{ ...entry, at: Number.NaN }] }))?.status).toBe(422)
+      expect((await post({ entries: Array(21).fill(entry) }))?.status).toBe(422)
+    } finally {
+      setLogSink(null)
+    }
+    expect(records).toEqual([])
+  })
+})
+
 describe('响应格式', () => {
   test('一律为 application/json 并带 charset：缺少 charset 时中文会按 ASCII 解析', async () => {
     const res = await call('/api/workspace')
     expect(res?.headers.get('content-type')).toBe('application/json; charset=utf-8')
+  })
+
+  test('会话的列表、读取、新建、改名与切换项目都不返回压缩清单，账本中的清单不变', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-summary-'))
+    try {
+      const d = deps(root)
+      const wsId = (d as unknown as { wsId: string }).wsId
+      const cv = createConversation(d.store, {
+        workspaceId: wsId as never,
+        provider: 'p',
+        model: 'm',
+      })
+      const manifest = { revision: 3, summaries: ['压缩摘要'.repeat(2000)] }
+      setCompactionManifest(d.store, cv.id, manifest as never)
+
+      const bodies = [
+        await call('/api/conversations', undefined, d),
+        await call(`/api/conversations/${cv.id}`, undefined, d),
+        await call('/api/conversations', { method: 'POST', body: '{}' }, d),
+        await call(`/api/conversations/${cv.id}`, { method: 'PATCH', body: '{"title":"改名"}' }, d),
+        await call('/api/workspaces', { method: 'POST', body: JSON.stringify({ path: root }) }, d),
+      ]
+      for (const res of bodies) {
+        expect(res?.status).toBe(200)
+        expect(await res!.text()).not.toContain('compactionManifest')
+      }
+      expect(getConversation(d.store, cv.id)?.compactionManifest).toEqual(manifest as never)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })
 
@@ -1874,6 +1951,91 @@ describe('会话历史分页接口', () => {
         size: null,
       },
     ])
+  })
+
+  /**
+   * 原始失败形状：历史页携带全部工具结果正文，实测一页可达 1 MB 以上，切换会话与项目时经远程隧道整页传输。
+   * 大的正文字段推迟到展开时按 step 读取，小字段与其他字段（标题行与 workflow 卡片读取）原样返回。
+   */
+  test('历史页推迟大的正文字段，按 step 读取完整结果；其他会话的 step 返回 404', async () => {
+    const d = deps()
+    const workspaceId = (d as unknown as { wsId: string }).wsId
+    const conv = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const other = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const msg = appendMessage(d.store, { conversationId: conv.id, role: 'user', content: '读文件' })
+    const run = createRun(d.store, {
+      conversationId: conv.id,
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+      clientRequestId: 'deferred',
+      userMessageId: msg.id,
+      messageIdUpperBound: msg.id,
+      contextSnapshot: [],
+    })
+    const big = '正文'.repeat(5000)
+    const step = appendStep(d.store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'read_file',
+      toolCallId: 'call_1',
+      providerBatchId: 'bt_1',
+      callIndex: 0,
+      status: 'running',
+    })
+    const data = {
+      content: big,
+      startLine: 1,
+      endLine: 200,
+      totalLines: 900,
+      workflowId: 'wf',
+      observation: { title: '窗口', elements: [big] },
+    }
+    settleToolStep(d.store, step.id, 'success', {
+      kind: 'tool_result',
+      args: { path: 'a.ts' },
+      outcome: { status: 'success', executed: true, message: '读取 a.ts', data },
+    } as never)
+    finishRun(d.store, run.id, { status: 'done', stopReason: 'completed' })
+
+    const page = (await (
+      await call(`/api/conversations/${conv.id}/history`, undefined, d)
+    )?.json()) as ConversationHistoryPageResponse
+    const listed = page.steps.find((s) => s.id === step.id)?.payload
+    expect(listed?.kind === 'tool_result' && listed.outcome).toEqual({
+      status: 'success',
+      executed: true,
+      message: '读取 a.ts',
+      data: {
+        startLine: 1,
+        endLine: 200,
+        totalLines: 900,
+        workflowId: 'wf',
+        observation: { title: '窗口' },
+      },
+      deferred: true,
+    })
+
+    const full = await call(`/api/conversations/${conv.id}/steps/${step.id}`, undefined, d)
+    const body = (await full?.json()) as { step: { payload: { outcome: unknown } } }
+    expect(body.step.payload.outcome).toEqual({
+      status: 'success',
+      executed: true,
+      message: '读取 a.ts',
+      data,
+    })
+    expect(
+      (await call(`/api/conversations/${other.id}/steps/${step.id}`, undefined, d))?.status,
+    ).toBe(404)
   })
 
   test('非法页大小返回 422，不静默改为其他值', async () => {

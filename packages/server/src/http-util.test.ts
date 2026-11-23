@@ -49,6 +49,18 @@ test('未知路径回退到 index.html，供前端路由处理', async () => {
   }
 })
 
+test('assets/ 下不存在的文件返回 404，不回退到 index.html，没有 index.html 时同样如此', async () => {
+  for (const web of [
+    embeddedAssets(embedded),
+    directoryAssets(join(dir, 'dist')),
+    directoryAssets(join(dir, 'missing')),
+  ]) {
+    const res = await serveStatic(web, '/assets/app-0ld.js')
+    expect(res?.status).toBe(404)
+    expect(res?.headers.get('content-type')).not.toStartWith('text/html')
+  }
+})
+
 test('含 .. 的路径不读取任何文件', async () => {
   expect(await serveStatic(directoryAssets(join(dir, 'dist')), '/../index-blob')).toBeNull()
 })

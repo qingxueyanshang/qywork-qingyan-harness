@@ -6,7 +6,7 @@
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import type { Conversation } from '@qywork/core'
+import type { ConversationSummary } from '@qywork/core'
 
 let store: typeof import('../store/index.ts')
 let state: typeof import('./state.ts')
@@ -38,7 +38,7 @@ afterAll(async () => {
 })
 
 const conversation = (id: string, provider: string, model: string) =>
-  ({ id, provider, model, title: '', mode: 'auto' }) as unknown as Conversation
+  ({ id, provider, model, title: '', mode: 'auto' }) as unknown as ConversationSummary
 
 test('会话没有记录模型时取配置的默认模型；记录了模型时以会话为准', () => {
   state.setState('conversations', [

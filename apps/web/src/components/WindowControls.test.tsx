@@ -25,6 +25,7 @@ test('窗口操作失败时写入通知', async () => {
   const { WindowControls } = await import('./WindowControls.tsx')
   const g = globalThis as Record<string, unknown>
   g.__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label: 'main' } },
     transformCallback: () => 1,
     invoke: async (cmd: string) => {
       if (cmd === 'window_is_maximized') return false

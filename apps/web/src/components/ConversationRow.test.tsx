@@ -18,7 +18,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import type { Conversation } from '@qywork/core'
+import type { ConversationSummary } from '@qywork/core'
 
 beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
@@ -29,13 +29,12 @@ beforeAll(async () => {
 let dispose: (() => void) | undefined
 let restoreApi: (() => void) | undefined
 
-const CONVERSATION: Conversation = {
-  id: 'cv_1' as Conversation['id'],
-  workspaceId: 'ws_1' as Conversation['workspaceId'],
+const CONVERSATION: ConversationSummary = {
+  id: 'cv_1' as ConversationSummary['id'],
+  workspaceId: 'ws_1' as ConversationSummary['workspaceId'],
   title: '删掉这一条',
   provider: 'fake',
   model: 'deepseek-v4-flash',
-  compactionManifest: null,
   cacheGeneration: 0,
   source: null,
   sourceRef: null,

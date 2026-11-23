@@ -92,6 +92,7 @@ async function mount(
   const previousShell = g.__TAURI_INTERNALS__
   if (shell) {
     g.__TAURI_INTERNALS__ = {
+      metadata: { currentWebview: { label: 'main' } },
       invoke: (cmd: string, args: unknown) => {
         invokes.push({ cmd, args })
         return shell(cmd)
