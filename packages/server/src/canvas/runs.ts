@@ -239,7 +239,21 @@ export class CanvasRuns {
             if (!view) continue
             for (const node of view.doc.nodes) {
               if (node.type !== 'generate') continue
-              const restored = await this.restoreMisjudged(ws.root, path, node, view.doc.runs ?? [])
+              // 补回失败（记录或画布无法写入）只影响该卡，不中断其余卡片与工作区的恢复。
+              const held = new Set(node.versions.flatMap((v) => view.tasks?.[v.id]?.taskId ?? []))
+              const restored = await this.restoreMisjudged(
+                ws.root,
+                path,
+                node,
+                view.doc.runs ?? [],
+                held,
+              ).catch((err: unknown) => {
+                log.warn('canvas', `补回误判为已撤销的任务失败：${String(err)}`, {
+                  canvas: path,
+                  node: node.id,
+                })
+                return []
+              })
               const versions = [
                 ...node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX)),
                 ...restored,
@@ -291,6 +305,8 @@ export class CanvasRuns {
     path: string,
     node: CanvasGenerateNode,
     runs: CanvasRunRecord[],
+    /** 已有版本引用的任务号：上次启动补回而未取回（如接口未配置）的版本仍在，不重复补回。 */
+    held: ReadonlySet<string>,
   ): Promise<CanvasVersion[]> {
     const last = new Map<string, CanvasRunRecord>()
     const made = new Map<string, CanvasRunRecord>()
@@ -305,6 +321,7 @@ export class CanvasRuns {
       const end = Date.parse(r.end)
       if (
         r.result !== 'cancelled' ||
+        held.has(taskId) ||
         !CLOUD_JOB_ID.test(taskId) ||
         !r.provider ||
         !r.model ||

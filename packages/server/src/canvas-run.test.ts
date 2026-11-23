@@ -1734,6 +1734,43 @@ describe('画布运行：取消', () => {
     }
   })
 
+  test('启动恢复：补回的版本未能取回（接口未配置）时保留为待取回，再次启动不重复补回', async () => {
+    setSystemTime(new Date('2026-11-23T06:00:00Z'))
+    try {
+      const { ws, svc, ids } = await setup(VIDEO_CARD)
+      const id = ids.$v!
+      const doc = await onDisk(ws.root)
+      doc.runs = [
+        {
+          node: id,
+          provider: 'qywork',
+          model: 'qy-0000000000000001',
+          action: 'run',
+          start: '2026-11-23T05:11:45.000Z',
+          end: '2026-11-23T05:29:13.000Z',
+          result: 'cancelled',
+          task: 'mj_00000000000000b1',
+          version: 'v1',
+        },
+      ]
+      await writeFile(join(ws.root, PATH), serializeCanvas(doc))
+      await svc.runs.recover([ws], () => undefined)
+      await new CanvasService({ publish: () => {} }).runs.recover([ws], () => undefined)
+      const after = await node(ws.root, id)
+      expect(after.versions).toHaveLength(1)
+      expect(after.versions[0]!.path).toEndWith('.task.json')
+      const fake = fakePort()
+      const third = new CanvasService({ publish: () => {} }).runs.recover([ws], () => fake.port)
+      const call = await fake.next()
+      expect(call.call.resumeTaskId).toBe('mj_00000000000000b1')
+      call.finish(finished)
+      await third
+      expect((await node(ws.root, id)).versions.map((v) => v.path.endsWith('.mp4'))).toEqual([true])
+    } finally {
+      setSystemTime()
+    }
+  })
+
   test('已有成片的卡片再次生成后暂停，取回失败时显示失败原因并保留原成片', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
