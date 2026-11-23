@@ -494,6 +494,27 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
   }
 }
 
+/**
+ * 为一个已提交的远端任务登记任务记录，返回记录路径，供 `resumeMedia` 取回。用于本地没有记录的任务（记录与画布版本已删除）。
+ * 只写记录，不提交生成；产物写入新的默认位置，不覆盖已有文件。
+ */
+export async function recordTask(
+  roots: RootsInput,
+  task: { type: GenerateOutput; provider: string; model: string; taskId: string },
+): Promise<string> {
+  const slot = await reserveDefault(roots)
+  try {
+    const abs = await writeRecord(roots, slot.target, {
+      ...task,
+      output: slot.target,
+      submittedAt: new Date().toISOString(),
+    })
+    return displayPath(workspaceOf(roots), abs)
+  } finally {
+    slot.release()
+  }
+}
+
 /** 按任务记录取回：只查询与下载，不重新提交、不重复扣费。 */
 export async function resumeMedia(req: {
   roots: RootsInput
@@ -1017,15 +1038,26 @@ export const generateVideoTool: ToolSpec = {
 export const retrieveMediaTool: ToolSpec = {
   name: 'retrieve_media',
   description:
-    '根据 generate_image、generate_video 或 generate_audio 返回的 .task.json 记录取回原结果，不重新提交生成、不重复计费。' +
-    '模型、结果引用与输出位置均从记录中读取；画布中的待取回版本使用 retrieve_canvas。' +
+    '取回已提交生成任务的原结果，只查询与下载，不重新提交、不重复计费。' +
+    `两种用法二选一：path 为 generate_image、generate_video 或 generate_audio 返回的 ${TASK_SUFFIX} 记录；` +
+    '或给出 task（远端任务号）、type、provider 与 model，用于本地没有记录的任务（如画布版本已删除），' +
+    '任务号与提交时的接口、型号取自 read_canvas 的生成记录。用户问远端任务的状态时用本工具查询，以回执为准；' +
+    '未调用时不得声称已查询远端。任务仍在生成时等待结果，等待结束后记录保留，可用返回的记录路径再次取回。' +
+    '结果写入新文件，不写回画布；画布中的待取回版本使用 retrieve_canvas。' +
     DISPLAY_NOTE,
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: `待取回任务的记录文件路径（${TASK_SUFFIX}）` },
+      task: { type: 'string', description: '远端任务号；与 path 二选一' },
+      type: {
+        type: 'string',
+        enum: ['image', 'video', 'audio'],
+        description: '任务的生成类别；给出 task 时必填',
+      },
+      provider: { type: 'string', description: '提交该任务的接口名；给出 task 时必填' },
+      model: { type: 'string', description: '提交该任务的模型 id；给出 task 时必填' },
     },
-    required: ['path'],
     additionalProperties: false,
   },
   actionKind: 'write',
@@ -1033,18 +1065,29 @@ export const retrieveMediaTool: ToolSpec = {
   category: 'media',
   facet: '生成',
   summary: '取回已有的图片、视频或音频结果',
-  targetExtractor: (a) => text(a.path) ?? null,
+  targetExtractor: (a) => text(a.path) ?? text(a.task) ?? null,
   permissionEffect: 'write',
   async fn(args, ctx) {
     const media = ctx.port(MediaPort)
     if (!media) return failure('本次执行没有生成通道')
     const path = text(args.path)
-    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+    const taskId = text(args.task)
+    if (!path === !taskId) return failure('path 与 task 须给出其中一项', 'invalid_tool_arguments')
+    let record = path
+    if (taskId) {
+      const type = text(args.type)
+      const provider = text(args.provider)
+      const model = text(args.model)
+      if ((type !== 'image' && type !== 'video' && type !== 'audio') || !provider || !model)
+        return failure('给出 task 时须同时给出 type、provider 与 model', 'invalid_tool_arguments')
+      record = await recordTask(rootsOf(ctx), { type, provider, model, taskId })
+      ctx.emit('progress', `已登记任务 ${taskId}，记录位于 ${record}\n`)
+    }
     const outcome = await resumeMedia({
       roots: rootsOf(ctx),
       media,
       signal: ctx.signal,
-      record: path,
+      record: record!,
       ...progressOf(ctx),
       logFields: callFields(ctx, 'retrieve_media'),
     })

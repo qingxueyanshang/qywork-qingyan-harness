@@ -5,7 +5,7 @@
  * 测试据此控制「生成进行到一半」的时刻。中止信号到达时调用以中止原因拒绝，与真实端口一致。
  */
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, setSystemTime, test } from 'bun:test'
 import { mkdir, mkdtemp, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -1577,6 +1577,162 @@ describe('画布运行：取消', () => {
       expect(fake.calls.filter((c) => !c.call.resumeTaskId)).toHaveLength(2)
     },
   )
+
+  /**
+   * 原始失败形状：同卡正在等待一个任务时取回另一个待取回版本，答复「该卡片正在生成」；界面禁用取回并提示先暂停，
+   * 用户点停止即向远端发出撤销，远端已成功的任务被判为已撤销而删除记录。
+   */
+  test('等待一个任务时取回另一版本：只结束本地等待，不向远端撤销，两个任务都可取回', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const id = ids.$v!
+    const old = await svc.runs.run(ws, PATH, id, { media: fake.port })
+    await (await fake.next()).submit('old-task')
+    await svc.runs.cancel(ws.root, PATH, id, async () => 'unsupported')
+    await old.done
+    const oldVersion = (await node(ws.root, id)).current!
+    const newer = await svc.runs.run(ws, PATH, id, { media: fake.port })
+    await (await fake.next()).submit('new-task')
+    const newVersion = (await node(ws.root, id)).current!
+    const retrieve = await svc.runs.retrieve(ws, PATH, id, oldVersion, { media: fake.port })
+    expect(await newer.done).toMatchObject({
+      ok: false,
+      pending: true,
+      message: expect.stringContaining(`改为取回版本 ${oldVersion}`),
+    })
+    const resuming = await fake.next()
+    expect(resuming.call.resumeTaskId).toBe('old-task')
+    resuming.finish(finished)
+    await retrieve.done
+    const final = await svc.docs.read(ws.root, PATH)
+    expect(final.tasks?.[newVersion]?.taskId).toBe('new-task')
+    expect(final.doc.runs?.map((r) => [r.action, r.task, r.result])).toEqual([
+      ['run', 'old-task', 'pending'],
+      ['run', 'new-task', 'pending'],
+      ['retrieve', 'old-task', 'done'],
+    ])
+  })
+
+  test('等待的任务尚未取得任务号时不切换取回：答复 409，提交照常进行', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const id = ids.$v!
+    const old = await svc.runs.run(ws, PATH, id, { media: fake.port })
+    await (await fake.next()).submit('old-task')
+    await svc.runs.cancel(ws.root, PATH, id, async () => 'unsupported')
+    await old.done
+    const oldVersion = (await node(ws.root, id)).current!
+    const newer = await svc.runs.run(ws, PATH, id, { media: fake.port })
+    const submitting = await fake.next()
+    const refused = await failure(svc.runs.retrieve(ws, PATH, id, oldVersion, { media: fake.port }))
+    expect(refused.status).toBe(409)
+    expect(refused.message).toContain('取得任务号之后')
+    await submitting.submit('new-task')
+    submitting.finish(finished)
+    expect((await newer.done).ok).toBe(true)
+  })
+
+  /**
+   * 原始失败形状：云端对已成功任务的撤销答复 200，被判为已撤销，任务记录与版本被删除，卡片上没有取回入口，
+   * 已扣费的视频只能由用户请 agent 按任务号取回。
+   */
+  test('启动恢复：误判为已撤销的云端任务补回版本并取回；确已撤销的只查询一次，不重复', async () => {
+    setSystemTime(new Date('2026-11-23T06:00:00Z'))
+    try {
+      const { ws, svc, ids } = await setup(VIDEO_CARD)
+      const id = ids.$v!
+      const doc = await onDisk(ws.root)
+      const at = (t: string) => `2026-11-23T05:${t}.000Z`
+      const base = { node: id, provider: 'qywork', model: 'qy-0000000000000001' }
+      doc.runs = [
+        {
+          ...base,
+          action: 'run',
+          start: at('11:45'),
+          end: at('12:02'),
+          result: 'pending',
+          task: 'mj_00000000000000a1',
+          version: 'v1',
+          prompt: '走出校门',
+          params: { seconds: '17' },
+          inputs: [],
+        },
+        {
+          ...base,
+          action: 'retrieve',
+          start: at('16:33'),
+          end: at('29:13'),
+          result: 'cancelled',
+          task: 'mj_00000000000000a1',
+          version: 'v1',
+        },
+        {
+          ...base,
+          action: 'run',
+          start: at('11:00'),
+          end: at('11:05'),
+          result: 'cancelled',
+          task: 'mj_00000000000000a2',
+          version: 'v2',
+        },
+        {
+          ...base,
+          action: 'run',
+          start: at('10:00'),
+          end: at('10:05'),
+          result: 'cancelled',
+          task: 'remote-direct',
+          version: 'v3',
+        },
+        {
+          ...base,
+          action: 'run',
+          start: '2026-11-10T00:00:00.000Z',
+          end: '2026-11-10T00:01:00.000Z',
+          result: 'cancelled',
+          task: 'mj_00000000000000a3',
+          version: 'v4',
+        },
+      ]
+      await writeFile(join(ws.root, PATH), serializeCanvas(doc))
+      const fake = fakePort()
+      const recovering = svc.runs.recover([ws], () => fake.port)
+      const answers: Record<string, MediaCallResult> = {
+        mj_00000000000000a1: finished,
+        mj_00000000000000a2: { ok: false, message: '任务已撤销' },
+      }
+      for (let i = 0; i < 2; i++) {
+        const call = await fake.next()
+        call.finish(answers[call.call.resumeTaskId!]!)
+      }
+      await recovering
+      expect(fake.calls.map((c) => c.call.resumeTaskId).sort()).toEqual([
+        'mj_00000000000000a1',
+        'mj_00000000000000a2',
+      ])
+      const restored = await node(ws.root, id)
+      expect(restored.versions).toHaveLength(1)
+      expect(restored.versions[0]!.path).toEndWith('.mp4')
+      expect(restored.versions[0]!.made).toMatchObject({
+        prompt: '走出校门',
+        params: { seconds: '17' },
+      })
+      const runs = (await onDisk(ws.root)).runs ?? []
+      expect(
+        runs
+          .slice(-2)
+          .map((r) => [r.task, r.result])
+          .sort(),
+      ).toEqual([
+        ['mj_00000000000000a1', 'done'],
+        ['mj_00000000000000a2', 'failed'],
+      ])
+      await new CanvasService({ publish: () => {} }).runs.recover([ws], () => fake.port)
+      expect(fake.calls).toHaveLength(2)
+    } finally {
+      setSystemTime()
+    }
+  })
 
   test('已有成片的卡片再次生成后暂停，取回失败时显示失败原因并保留原成片', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)

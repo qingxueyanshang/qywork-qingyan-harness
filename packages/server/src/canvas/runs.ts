@@ -6,7 +6,7 @@
 import { readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { mediaDurationOfFile } from '@qywork/agent'
-import { taskPhase } from '@qywork/ai'
+import { CLOUD_JOB_ID, taskPhase } from '@qywork/ai'
 import {
   activeMediaParams,
   addVersions,
@@ -44,6 +44,7 @@ import {
   type GenerateSuccess,
   generateMedia,
   type MediaPort,
+  recordTask,
   resumeMedia,
   TASK_SUFFIX,
   taskHeldElsewhere,
@@ -58,6 +59,14 @@ import {
   sizeField,
 } from './docs.ts'
 import { type CanvasStates, type CanvasTask, type CardAt, keyOf, type RunEntry } from './states.ts'
+
+/** 云端生成结果的保留时长，期满后结果文件删除。 */
+const CLOUD_RESULT_RETENTION_MS = 7 * 24 * 3600_000
+
+/**
+ * 此前结束的云端任务撤销记录可能是误判（见 `restoreMisjudged`）。取云端与电脑端都改为按任务状态判定撤销之后的时刻。
+ */
+const MISJUDGED_BEFORE = Date.parse('2026-11-26T00:00:00Z')
 
 /** 一次视频生成产物中的视频文件（同时返回的还可能有尾帧图）。 */
 function videoOf(files: GeneratedFile[]): GeneratedFile {
@@ -230,7 +239,11 @@ export class CanvasRuns {
             if (!view) continue
             for (const node of view.doc.nodes) {
               if (node.type !== 'generate') continue
-              const versions = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))
+              const restored = await this.restoreMisjudged(ws.root, path, node, view.doc.runs ?? [])
+              const versions = [
+                ...node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX)),
+                ...restored,
+              ]
               if (!versions.length) continue
               pending.push(
                 (async () => {
@@ -264,6 +277,70 @@ export class CanvasRuns {
       }
     })()
     return this.recovery
+  }
+
+  /**
+   * 为被误判为已撤销的云端任务补回待取回版本，由启动恢复取回。
+   * `MISJUDGED_BEFORE` 之前，云端对已结束任务的撤销答复 200，电脑端据此判为已撤销并删除任务记录与版本，已扣费的结果无法取回。
+   * 取回时以云端状态为准：已成功的写回画布；确已撤销的由收尾删除该版本并记录一次失败，此后该任务的最后一条不再是撤销，不会重复补回。
+   * 只处理 `MISJUDGED_BEFORE` 之前结束、且在云端结果保留期内的记录：之后的撤销记录都经云端确认（答复状态为已撤销），
+   * 不要去掉该限制，否则每次启动都会把用户确已撤销的任务重新查询一遍并在卡片上记为失败。超过保留期后本方法不再生效。
+   */
+  private async restoreMisjudged(
+    root: string,
+    path: string,
+    node: CanvasGenerateNode,
+    runs: CanvasRunRecord[],
+  ): Promise<CanvasVersion[]> {
+    const last = new Map<string, CanvasRunRecord>()
+    const made = new Map<string, CanvasRunRecord>()
+    for (const r of runs) {
+      if (r.node !== node.id || !r.task) continue
+      last.set(r.task, r)
+      if (r.action === 'run') made.set(r.task, r)
+    }
+    const earliest = Date.now() - CLOUD_RESULT_RETENTION_MS
+    const restored: CanvasVersion[] = []
+    for (const [taskId, r] of last) {
+      const end = Date.parse(r.end)
+      if (
+        r.result !== 'cancelled' ||
+        !CLOUD_JOB_ID.test(taskId) ||
+        !r.provider ||
+        !r.model ||
+        !(end >= earliest && end < MISJUDGED_BEFORE) ||
+        node.output === 'art'
+      )
+        continue
+      const source = made.get(taskId)
+      const record = await recordTask(root, {
+        type: node.output,
+        provider: r.provider,
+        model: r.model,
+        taskId,
+      })
+      const version: CanvasVersion = {
+        id: newCanvasId(),
+        path: record,
+        made: {
+          prompt: source?.prompt ?? '',
+          provider: r.provider,
+          model: r.model,
+          params: source?.params ?? {},
+          inputs: source?.inputs ?? [],
+          at: source?.start ?? r.start,
+        },
+      }
+      const added = await this.docs
+        .mutate(root, path, (d) => addVersions(d, node.id, [version]))
+        .then(
+          () => true,
+          () => false,
+        )
+      if (added) restored.push(version)
+      else await rm(join(root, record), { force: true })
+    }
+    return restored
   }
 
   /**
@@ -593,7 +670,7 @@ export class CanvasRuns {
 
   /**
    * 取回已有图片结果或视频任务：只查询与下载，不再提交。`versionId` 缺省时取当前版本，当前版本不是任务记录时取最新的任务记录版本。
-   * 远端已失败或结果已过期时删除该版本与任务记录。
+   * 该卡正在等待另一个任务时只结束那次本地等待（`release`）。远端已失败或结果已过期时删除该版本与任务记录。
    */
   async retrieve(
     ws: CanvasWorkspace,
@@ -613,7 +690,7 @@ export class CanvasRuns {
     if (running?.record?.key === keyOf(ws.root, version.path)) {
       return { done: this.joined(running, opts.signal) }
     }
-    if (running) throw new CanvasFailure('该卡片正在生成', 409)
+    if (running) await this.release(running, `改为取回版本 ${version.id}`)
 
     const facts: RunFacts = {
       action: 'retrieve',
@@ -678,6 +755,19 @@ export class CanvasRuns {
     })
     entry.done = done
     return { done: this.joined(entry, opts.signal) }
+  }
+
+  /**
+   * 结束同卡另一个已提交任务的本地等待，供取回其他版本：不向远端撤销，任务记录保留为待取回。
+   * 不要改为要求先停止（`cancel`）：停止先向远端发出撤销，撤销成功时任务记录与版本被删除。
+   * 尚未取得任务号时拒绝：此时结束等待会中止提交，远端可能已收到请求而本机没有任务号。
+   */
+  private async release(entry: RunEntry, reason: string): Promise<void> {
+    if (!entry.task)
+      throw new CanvasFailure('该卡片正在提交生成，取得任务号之后才能取回其他版本', 409)
+    entry.stopMessage = reason
+    entry.stop.abort()
+    await entry.done
   }
 
   /** 运行与取回共用的前置检查：画布、节点，以及该卡是否正在生成或取回（`entryOf`），由调用方决定并入还是拒绝。 */

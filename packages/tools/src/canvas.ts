@@ -19,6 +19,7 @@ import {
   type CanvasNode,
   type CanvasNodeState,
   type CanvasOp,
+  type CanvasRunRecord,
   type CanvasRunResult,
   type CanvasView,
   canvasFileKind,
@@ -103,7 +104,36 @@ function headLine(view: CanvasView, n: CanvasNode, media: MediaPort | null): str
   )
 }
 
-/** 节点的全文：生成卡含提示词、参数、已提交的任务与输入，时间线含全部片段。 */
+/** 全文中列出的生成记录条数。 */
+const RUN_LINES = 8
+
+const RUN_RESULT: Record<CanvasRunRecord['result'], string> = {
+  done: '已取得结果',
+  failed: '失败',
+  pending: '待取回',
+  cancelled: '已撤销或已取消',
+  unknown: '结果未知',
+}
+
+/**
+ * 最近的生成记录，每次生成或取回一行，写明任务号、版本与该次的结果。
+ * 不要只写卡片状态：卡片状态是最近一次失败的原文，同一张卡有多个任务时，模型会把一个任务的失败当作全部任务的结果。
+ */
+function runLines(view: CanvasView, id: string): string[] {
+  const runs = (view.doc.runs ?? []).filter((r) => r.node === id).slice(-RUN_LINES)
+  if (!runs.length) return []
+  return [
+    '  最近的生成记录（时间为 UTC，每个任务以其最后一行为准；记录与版本已删除的任务可用 retrieve_media 按任务号查询取回）：',
+    ...runs.map(
+      (r) =>
+        `  - ${r.end} ${r.action === 'run' ? '生成' : '取回'} 任务 ${r.task ?? '无任务号'}` +
+        `${r.version ? `（版本 ${r.version}）` : ''}${r.provider && r.model ? `，接口 ${r.provider}，模型 ${r.model}` : ''}` +
+        `：${RUN_RESULT[r.result]}${r.message ? `；${r.message}` : ''}`,
+    ),
+  ]
+}
+
+/** 节点的全文：生成卡含提示词、参数、已提交的任务、生成记录与输入，时间线含全部片段。 */
 function nodeLines(view: CanvasView, n: CanvasNode, media: MediaPort | null): string[] {
   const lines = [headLine(view, n, media)]
   if (n.type === 'timeline') {
@@ -133,6 +163,7 @@ function nodeLines(view: CanvasView, n: CanvasNode, media: MediaPort | null): st
           : '  尚未取得远端任务号，不能确认平台已受理；开始时间与用时仅为本地等待记录。',
     )
   }
+  lines.push(...runLines(view, n.id))
   lines.push(`  输入：${inputsText(view, n.id)}`)
   const relabeled = view.relabels?.[n.id]
   if (relabeled?.length) lines.push(`  发送时改写：${relabeled.join('、')}`)

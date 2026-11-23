@@ -85,6 +85,7 @@ export {
   generateMedia,
   landFiles,
   MEDIA_TOOLS,
+  recordTask,
   resumeMedia,
   TASK_SUFFIX,
   taskHeldElsewhere,

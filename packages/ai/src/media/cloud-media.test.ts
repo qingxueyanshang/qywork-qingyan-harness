@@ -99,6 +99,10 @@ const server = Bun.serve({
         { error: { code: 'already_started', message: '上游已开始生成，无法撤销' } },
         { status: 409 },
       )
+    if (path === '/v1/media/jobs/mj_done/cancel')
+      return Response.json({ status: 'succeeded', error: null, credits: 9.2, files: 1 })
+    if (path === '/v1/media/jobs/mj_revoked/cancel')
+      return Response.json({ status: 'cancelled', error: null, credits: 0, files: 0 })
     return new Response('not found', { status: 404 })
   },
 })
@@ -330,4 +334,11 @@ test('提交结果未知后按任务号确认的经过写入日志：带任务�
 
 test('撤销：云端答复上游已开始生成时为 started（按结果计费）', async () => {
   expect(await adapter('x').cancel?.('mj_started', new AbortController().signal)).toBe('started')
+})
+
+/** 原始失败形状：任务已在云端成功，撤销接口以 200 答复该任务，判为已撤销，画布随之删除任务记录与待取回版本。 */
+test('撤销：以答复中的任务状态判定，已成功的任务为 started，只有已撤销的任务为 cancelled', async () => {
+  const signal = new AbortController().signal
+  expect(await adapter('x').cancel?.('mj_done', signal)).toBe('started')
+  expect(await adapter('x').cancel?.('mj_revoked', signal)).toBe('cancelled')
 })

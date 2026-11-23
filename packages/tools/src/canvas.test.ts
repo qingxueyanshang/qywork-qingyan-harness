@@ -461,6 +461,61 @@ describe('canvas 工具', () => {
     expect((await readCanvasTool.fn(card, ctx(port))).message).toContain('生成中')
   })
 
+  /**
+   * 原始失败形状：同一张卡有多个任务，全文只给出卡片状态（最近一次失败的原文），
+   * 模型把一个任务的「任务未建立」当作全部任务的结果。
+   */
+  test('读取卡片全文时逐条列出最近的生成记录：任务号、版本与该次结果', async () => {
+    const { port } = fakePort(DONE)
+    const v = view()
+    port.read = async () => v
+    const at = (s: string) => `2026-11-23T05:${s}.000Z`
+    v.doc.runs = [
+      {
+        node: 'id2',
+        action: 'run',
+        start: at('11:38'),
+        end: at('11:41'),
+        result: 'pending',
+        task: 'mj_a',
+        version: 'va',
+        message: '已暂停等待',
+      },
+      {
+        node: 'id2',
+        action: 'run',
+        start: at('11:45'),
+        end: at('12:02'),
+        result: 'pending',
+        task: 'mj_b',
+        version: 'vb',
+      },
+      {
+        node: 'id2',
+        action: 'retrieve',
+        start: at('16:33'),
+        end: at('29:13'),
+        result: 'done',
+        task: 'mj_b',
+        version: 'vb',
+      },
+      {
+        node: 'id2',
+        action: 'retrieve',
+        start: at('29:15'),
+        end: at('29:16'),
+        result: 'failed',
+        task: 'mj_a',
+        version: 'va',
+        message: '任务未建立，未扣费',
+      },
+    ]
+    v.states.id2 = { state: 'failed', message: '任务未建立，未扣费' }
+    const out = (await readCanvasTool.fn({ path: v.path, node: ['视频1'] }, ctx(port))).message
+    expect(out).toContain(`- ${at('29:13')} 取回 任务 mj_b（版本 vb）：已取得结果`)
+    expect(out).toContain(`- ${at('29:16')} 取回 任务 mj_a（版本 va）：失败；任务未建立，未扣费`)
+  })
+
   test('edit 解析 ops_json 后交给端口；不是 JSON 数组或操作不合法时不调用端口', async () => {
     const { port, seen } = fakePort(DONE)
     const ok = await editCanvasTool.fn(

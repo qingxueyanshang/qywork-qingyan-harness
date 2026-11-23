@@ -109,23 +109,14 @@ export function GenerateBody(p: { node: CanvasGenerateNode; selected: boolean })
           {(s) => (
             <div class="canvas-media canvas-slot with-task-notice">
               <div class="canvas-task-progress">
-                {/* 提示设在外层：禁用的按钮不派发指针事件，设在按钮上时禁用期间的原因不显示。 */}
-                <span
-                  data-tip={
-                    st()?.state === 'running'
-                      ? '请先暂停当前等待，再取回此任务'
-                      : canvas.taskInfo(p.node.id, s().version).details
-                  }
+                <button
+                  class="canvas-ghost"
+                  type="button"
+                  data-tip={canvas.taskInfo(p.node.id, s().version).details}
+                  onClick={() => canvas.retrieve(p.node.id, s().version)}
                 >
-                  <button
-                    class="canvas-ghost"
-                    type="button"
-                    disabled={st()?.state === 'running'}
-                    onClick={() => canvas.retrieve(p.node.id, s().version)}
-                  >
-                    取回
-                  </button>
-                </span>
+                  取回
+                </button>
               </div>
               <TaskNotice nodeId={p.node.id} version={s().version} />
             </div>

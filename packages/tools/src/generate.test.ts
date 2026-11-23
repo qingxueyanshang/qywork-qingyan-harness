@@ -344,6 +344,57 @@ describe('generate_video', () => {
     expect(await readdir(root)).toEqual(['wave.mp4'])
   })
 
+  /**
+   * 原始失败形状：任务已在远端成功，本地记录与画布版本已删除，retrieve_media 只接受记录路径，
+   * 模型没有查询远端的途径，只能按画布状态推测远端结果。
+   */
+  test('按任务号取回：登记记录后只查询与下载，不重新提交，产物写入默认位置', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
+    answer = {
+      ok: true,
+      provider: 'qywork',
+      model: 'qy-0000000000000001',
+      files: [{ bytes: MP4, mime: 'video/mp4' }],
+    }
+    const out = await retrieveMediaTool.fn(
+      {
+        task: 'mj_937588aa77e448a1',
+        type: 'video',
+        provider: 'qywork',
+        model: 'qy-0000000000000001',
+      },
+      ctx(root),
+    )
+    expect(out.status).toBe('success')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      type: 'video',
+      provider: 'qywork',
+      model: 'qy-0000000000000001',
+      resumeTaskId: 'mj_937588aa77e448a1',
+    })
+    expect(calls[0]!.inputs).toEqual([])
+    const written = out.fileChanges?.map((c) => c.path) ?? []
+    expect(written).toHaveLength(1)
+    expect(written[0]).toMatch(/^generated\/.+\.mp4$/)
+    expect(await readdir(join(root, 'generated'))).toEqual([written[0]!.slice('generated/'.length)])
+  })
+
+  test('按任务号取回：path 与 task 须二选一，给出 task 时须有类别、接口与模型，否则不调用接口', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
+    for (const args of [
+      {},
+      { path: 'a.task.json', task: 'mj_1' },
+      { task: 'mj_1', type: 'video', provider: 'qywork' },
+      { task: 'mj_1', type: 'art', provider: 'qywork', model: 'm' },
+    ]) {
+      const out = await retrieveMediaTool.fn(args, ctx(root))
+      expect([out.status, out.errorKind]).toEqual(['failure', 'invalid_tool_arguments'])
+    }
+    expect(calls).toHaveLength(0)
+    expect(await readdir(root)).toEqual([])
+  })
+
   test('任务记录的归属：仅归属进程是另一个仍在运行的进程时视为被持有', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
     const record = join(root, 'wave.task.json')

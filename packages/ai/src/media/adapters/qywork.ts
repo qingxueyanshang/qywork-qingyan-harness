@@ -233,16 +233,20 @@ export class CloudMediaAdapter implements MediaAdapter {
     }
   }
 
+  /**
+   * 撤销任务。以答复中的任务状态判定：`cancelled` 为已撤销，其余状态与 409（上游已开始、不支持撤销、任务已结束）均为 `started`。
+   * 不要按 HTTP 状态判定：云端对已成功的任务可能以 200 答复该任务，判为已撤销时调用方删除任务记录，已扣费的结果无法取回。
+   */
   async cancel(taskId: string, signal: AbortSignal): Promise<MediaCancel> {
     try {
-      await sendJson(
+      const job = await sendJson(
         `${this.base()}/v1/media/jobs/${encodeURIComponent(taskId)}/cancel`,
         { method: 'POST', headers: this.auth() },
         signal,
       )
-      return 'cancelled'
+      return job.status === 'cancelled' ? 'cancelled' : 'started'
     } catch (err) {
-      // 上游已开始生成或不支持撤销：按结果计费（成功计费、失败退回），与「无法撤销」同义。
+      // 按结果计费（成功计费、失败退回），与「无法撤销」同义。
       if (err instanceof MediaError && err.status === 409) return 'started'
       throw err
     }

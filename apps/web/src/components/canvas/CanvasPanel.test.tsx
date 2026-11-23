@@ -1999,6 +1999,50 @@ describe('画布：生成卡与生成面板', () => {
     expect(labels()[1]).not.toContain('待取回')
   })
 
+  /** 原始失败形状：等待一个任务时其他待取回版本的「取回」被禁用并提示先暂停，而暂停会向远端发出撤销。 */
+  test('等待一个任务时可直接取回另一个待取回版本，不发出停止请求', async () => {
+    const { host, server, refs } = await mount(CARD)
+    const core = await import('@qywork/core')
+    const store = await import('../../lib/store/index.ts')
+    const id = refs.$v!
+    const made = {
+      prompt: '视频',
+      provider: 'qwen',
+      model: 'wan3.0-video',
+      params: {},
+      inputs: [],
+      at: '2026-10-12T10:00:00Z',
+    }
+    const added = core.addVersions(server.doc(), id, [
+      { id: 'old', path: 'generated/old.task.json', made },
+      { id: 'now', path: 'generated/now.task.json', made },
+    ])
+    if (!added.ok) throw new Error(added.error)
+    const shown = core.applyCanvasOps(added.doc, [{ op: 'update', id, current: 'old' }])
+    if (!shown.ok) throw new Error(shown.error)
+    server.setView({
+      doc: shown.doc,
+      states: { [id]: { state: 'running', startedAt: Date.now(), version: 'now' } },
+    })
+    store.setState('canvasVersion', (v) => v + 1)
+    const button = () =>
+      [...node(host, id).querySelectorAll<HTMLButtonElement>('button')].find(
+        (b) => b.textContent === '取回',
+      )
+    await waitFor(
+      () => !!button(),
+      () => node(host, id).textContent ?? '',
+    )
+    expect(button()!.disabled).toBe(false)
+    button()!.click()
+    await waitFor(
+      () => server.retrievals.length === 1,
+      () => JSON.stringify(server.retrievals),
+    )
+    expect(server.retrievals).toEqual([{ nodeId: id, version: 'old' }])
+    expect(server.cancels).toEqual([])
+  })
+
   test('待取回原因来自当前版本最新记录；重新生成和取回完成后不残留旧原因', async () => {
     const { host, server, refs } = await mount(CARD)
     const core = await import('@qywork/core')
