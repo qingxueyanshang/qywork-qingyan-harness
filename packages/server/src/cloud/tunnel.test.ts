@@ -357,6 +357,21 @@ describe('隧道客户端', () => {
       })
       expect(JSON.stringify(slow)).not.toContain('secret')
 
+      // 手机一侧以 1006 断开时云端转交 1000，原始关闭码在 `peerCode`；日志写出原因，路径同样不带查询串。
+      const sid = cloud.newSid()
+      cloud.send({ type: 'ws.open', sid, path: '/ws?token=secret', headers: [] })
+      await cloud.control('ws.accept', sid)
+      cloud.send({ type: 'close', sid, code: 1000, peerCode: 1006 })
+      await until(() => records.some((r) => r.message === '远程连接已由手机一侧关闭'))
+      const phoneClosed = records.find((r) => r.message === '远程连接已由手机一侧关闭')!
+      expect(phoneClosed.fields).toMatchObject({
+        path: '/ws',
+        peerCode: 1006,
+        cause: '未收到关闭帧即断开（网络中断、页面被系统冻结或杀掉）',
+        aliveMs: expect.any(Number),
+      })
+      expect(JSON.stringify(phoneClosed)).not.toContain('secret')
+
       cloud.ws?.close(4000, '测试断开')
       await until(() => records.some((r) => r.message === '隧道已断开'))
       expect(records.find((r) => r.message === '隧道已断开')?.fields).toMatchObject({

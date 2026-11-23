@@ -59,8 +59,14 @@ export type TunnelControl =
   | { type: 'ws.accept'; sid: number }
   /** 发送端的数据已全部发出。 */
   | { type: 'end'; sid: number }
-  /** 中止该流；对 WebSocket 流即关闭连接，`code` 与 `reason` 转交给另一端。 */
-  | { type: 'close'; sid: number; code?: number; reason?: string }
+  /**
+   * 中止该流；对 WebSocket 流即关闭连接，`code` 与 `reason` 转交给另一端。
+   *
+   * `peerCode`：云端在手机一侧观察到的原始关闭码，只供电脑端写入日志。`code` 须为可发送的关闭码，
+   * 1001（页面离开）与 1006（未收到关闭帧即断开，网络中断或页面被系统冻结）都记为 1000，
+   * 不另带此字段时电脑端无法区分断开的原因。旧版电脑端忽略未登记的字段。
+   */
+  | { type: 'close'; sid: number; code?: number; reason?: string; peerCode?: number }
   | { type: 'window'; sid: number; bytes: number }
   | { type: 'pair.request'; rid: string }
   | { type: 'pair.reply'; rid: string; token: string; deviceName: string }
@@ -83,7 +89,7 @@ const FIELDS: { [T in TunnelControl['type']]: Record<string, FieldKind> } = {
   'ws.open': { sid: 'number', path: 'path', headers: 'headers' },
   'ws.accept': { sid: 'number' },
   end: { sid: 'number' },
-  close: { sid: 'number', code: 'number?', reason: 'string?' },
+  close: { sid: 'number', code: 'number?', reason: 'string?', peerCode: 'number?' },
   window: { sid: 'number', bytes: 'number' },
   'pair.request': { rid: 'string' },
   'pair.reply': { rid: 'string', token: 'string', deviceName: 'string' },

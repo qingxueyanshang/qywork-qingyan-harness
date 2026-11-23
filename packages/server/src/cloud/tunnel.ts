@@ -64,6 +64,9 @@ interface HttpStream {
 interface WsStream {
   kind: 'ws'
   local: WebSocket
+  /** 去掉查询串的路径与打开时刻，只用于日志。 */
+  path: string
+  openedAt: number
 }
 
 const OFFLINE_MESSAGE: Record<number, string> = {
@@ -81,6 +84,15 @@ const SLOW_REQUEST_MS = 1000
 function pathOf(path: string): string {
   const q = path.indexOf('?')
   return q < 0 ? path : path.slice(0, q)
+}
+
+/** 手机一侧关闭码的含义，供查日志时不必对照关闭码表。旧版云端不带关闭码时为 null。 */
+function closeCause(code: number | undefined): string | null {
+  if (code === undefined) return null
+  if (code === 1000) return '页面主动关闭'
+  if (code === 1001) return '页面离开或刷新'
+  if (code === 1006) return '未收到关闭帧即断开（网络中断、页面被系统冻结或杀掉）'
+  return '其他'
 }
 
 /** 退避：1 秒起每次加倍，上限 30 秒，另加至多 1 秒的随机量，使云端重启后各设备错开重连。 */
@@ -234,9 +246,21 @@ export class TunnelClient {
         if (stream?.kind === 'http') stream.inbound.end()
         return
       }
-      case 'close':
+      case 'close': {
+        // 手机一侧关闭的连接：原因（`peerCode`）只有云端知道，电脑端的本机连接只会看到转交后的 1000。
+        const stream = this.streams.get(frame.sid)
+        if (stream?.kind === 'ws') {
+          log.info('tunnel', '远程连接已由手机一侧关闭', {
+            path: stream.path,
+            peerCode: frame.peerCode ?? null,
+            cause: closeCause(frame.peerCode),
+            reason: frame.reason || null,
+            aliveMs: Date.now() - stream.openedAt,
+          })
+        }
         this.drop(frame.sid, frame.code, frame.reason)
         return
+      }
       default:
         return
     }
@@ -333,7 +357,7 @@ export class TunnelClient {
       headers: Object.fromEntries(open.headers),
     })
     local.binaryType = 'arraybuffer'
-    this.streams.set(sid, { kind: 'ws', local })
+    this.streams.set(sid, { kind: 'ws', local, path: pathOf(open.path), openedAt: Date.now() })
     local.onopen = () => this.send({ type: 'ws.accept', sid })
     local.onmessage = (e) => {
       if (!this.ws) return
