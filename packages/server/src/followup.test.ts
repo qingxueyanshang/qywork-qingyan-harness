@@ -410,6 +410,18 @@ describe('收尾之后发起下一轮', () => {
     expect(listMessages(store, cv).map((m) => m.content)).toEqual(['第一句', '跑完再说这句'])
     expect(listRuns(store, cv)).toHaveLength(2)
     expect(runs.queueOf(cv)).toEqual([])
+
+    // 取出该条的快照带上它，客户端据此在移除卡片的同一次处理中把它显示到会话流；
+    // 该快照早于第二轮的 run.started，且取出之后没有再放回。
+    const item = { id: 'req-q', content: '跑完再说这句', steer: false }
+    const frames = events.map((f) => f.event)
+    expect(frames.filter((e) => e.type === 'queue.changed')).toEqual([
+      { type: 'queue.changed', conversationId: cv, queue: [item] },
+      { type: 'queue.changed', conversationId: cv, queue: [], started: item },
+    ])
+    const startedAt = frames.findIndex((e) => e.type === 'queue.changed' && 'started' in e)
+    const secondRun = frames.findLastIndex((e) => e.type === 'run.started')
+    expect(startedAt).toBeLessThan(secondRun)
   }, 30_000)
 
   test('中断收尾时不发起下一轮，条目留在队列且去向复位', async () => {
@@ -725,11 +737,18 @@ describe('队列卡片上的两个操作', () => {
     await idle(cv)
     expect(runs.queueOf(cv)).toHaveLength(1)
 
-    // 空闲时：同一条指令的语义变为「立即发送」。
+    // 空闲时：同一条指令的语义变为「立即发送」，取出该条的快照带上它。
     await handleCommand(
       { type: 'followup.steer', conversationId: cv, id: 'req-t', steer: true } as never,
       { ...deps(), ws: sock.ws },
     )
+    expect(events.map((f) => f.event).findLast((e) => e.type === 'queue.changed')).toEqual({
+      type: 'queue.changed',
+      conversationId: cv,
+      queue: [],
+      // 中断收尾时去向已复位为「加入队列」。
+      started: { id: 'req-t', content: '待定的一句', steer: false },
+    })
     await idle(cv)
     expect(listMessages(store, cv).map((m) => m.content)).toEqual(['第一句', '待定的一句'])
     expect(runs.queueOf(cv)).toEqual([])

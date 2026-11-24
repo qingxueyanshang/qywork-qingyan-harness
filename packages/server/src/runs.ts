@@ -281,10 +281,17 @@ export class RunManager {
    *
    * 发布时带 `conversationId`（与 `conversation.busy` 相反）：卡片只出现在已打开的
    * 该会话中，其他客户端收到后没有用途。
+   *
+   * `started` 是本次离开队列、随即作为新一轮开头发出的条目（`QueueChangedEvent.started`）。
    */
-  private announceQueue(conversationId: ConversationId): void {
+  private announceQueue(conversationId: ConversationId, started?: FollowUp): void {
     this.bus.publish(
-      { type: 'queue.changed', conversationId, queue: this.queueOf(conversationId) },
+      {
+        type: 'queue.changed',
+        conversationId,
+        queue: this.queueOf(conversationId),
+        ...(started ? { started } : {}),
+      },
       conversationId,
     )
     this.wake(conversationId)
@@ -310,7 +317,7 @@ export class RunManager {
   /**
    * 将一条已取出的消息放回队首。
    *
-   * **仅用于取出后未能发送的情况**（结束阶段发起时会话再次变为忙碌）。取出与
+   * **仅用于取出后未能发送的情况**（结束阶段取出后、发起前收到停止）。取出与
    * 是否跳过目标自动继续是同一个同步决定，因此取出不能延后；无法发送时必须放回，
    * 否则该消息既未执行也不在队列中，卡片消失而没有任何执行。
    */
@@ -320,12 +327,15 @@ export class RunManager {
     this.setQueue(conversationId, [item, ...list])
   }
 
-  /** 删除一条。返回 false 表示该条不在队列中（客户端点击时它已被消费）。 */
-  removeFollowUp(conversationId: ConversationId, id: string): boolean {
+  /**
+   * 删除一条。返回 false 表示该条不在队列中（客户端点击时它已被消费）。
+   * `start` 表示该条随即作为新一轮发起，快照中带上它（`QueueChangedEvent.started`）。
+   */
+  removeFollowUp(conversationId: ConversationId, id: string, start = false): boolean {
     const list = this.queues.get(conversationId)
     const next = (list ?? []).filter((f) => f.id !== id)
     if (!list || next.length === list.length) return false
-    this.setQueue(conversationId, next)
+    this.setQueue(conversationId, next, start ? list.find((f) => f.id === id) : undefined)
     return true
   }
 
@@ -352,12 +362,12 @@ export class RunManager {
     return taken
   }
 
-  /** 取出队首。run 结束时调用，取出的条目用于发起下一轮。 */
-  takeNext(conversationId: ConversationId): FollowUp | null {
+  /** 取出队首。`start` 表示取出的条目随即作为下一轮发起，快照中带上它（`QueueChangedEvent.started`）。 */
+  takeNext(conversationId: ConversationId, start = false): FollowUp | null {
     const list = this.queues.get(conversationId) ?? []
     const head = list[0]
     if (!head) return null
-    this.setQueue(conversationId, list.slice(1))
+    this.setQueue(conversationId, list.slice(1), start ? head : undefined)
     return head
   }
 
@@ -382,10 +392,10 @@ export class RunManager {
   }
 
   /** 空队列不保留空数组：`queueOf` 与「是否存在排队项」两处判据因此只有一种写法。 */
-  private setQueue(conversationId: ConversationId, next: FollowUp[]): void {
+  private setQueue(conversationId: ConversationId, next: FollowUp[], started?: FollowUp): void {
     if (next.length) this.queues.set(conversationId, next)
     else this.queues.delete(conversationId)
-    this.announceQueue(conversationId)
+    this.announceQueue(conversationId, started)
   }
 
   /**

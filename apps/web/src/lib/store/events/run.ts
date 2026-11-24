@@ -115,42 +115,37 @@ export const runEvents = handlers({
           const v = s.views[cid]
           if (!v) return
           /*
-           * 对齐本轮回答所对应的用户气泡。
+           * 对齐本轮开头的消息条目：用户气泡，或回执发起的一轮的回执条目。
            *
-           * 界面上按回车发送的气泡由客户端乐观插入，带有 `local_` 前缀的本地 id；
-           * 而目标自动继续、定时触发、跟进消息自动发送三条路径没有客户端动作，气泡只能来自该
-           * 事件。两种情况按同一规则处理：末条气泡带有本地 id 且正文一致时才把 id
+           * 按下发送与服务端取出排队消息时，条目由客户端乐观插入（`beginRoundDraft`），带有
+           * `local_` 前缀的本地 id；目标自动继续、定时触发与空闲时到达的回执没有客户端动作，条目只能
+           * 来自该事件。两种情况按同一规则处理：同类的末条带有本地 id 且正文一致时才把 id
            * 替换为账本中的真值，否则补充一条；补充后实时状态与刷新后从账本投影的状态
            * id 相同。
            *
            * 本地 id 条件不能省略。只比较正文时，若同一会话中重复发送同一段正文
            * （定时任务每次发送同一句 prompt），第二轮会认领上一轮已落库的
            * 气泡，界面上缺少本轮的用户消息。
-           *
-           * 由回执发起的轮次不做对齐：它没有乐观插入的气泡可对齐，形态也不是气泡。
            */
-          if (ev.userMessage && ev.userMessageId && ev.userMessage.origin) {
-            v.transcript.push({
-              id: ev.userMessageId,
-              kind: 'receipt',
-              text: ev.userMessage.content,
-              origin: ev.userMessage.origin,
-            })
-          } else if (ev.userMessage && ev.userMessageId) {
+          if (ev.userMessage && ev.userMessageId) {
+            const { content, origin, attachments } = ev.userMessage
+            const kind = origin ? 'receipt' : 'user'
             let last = v.transcript.length - 1
-            while (last >= 0 && v.transcript[last]!.kind !== 'user') last--
+            while (last >= 0 && v.transcript[last]!.kind !== kind) last--
             const hit = last >= 0 ? v.transcript[last]! : null
-            if (hit?.id.startsWith(LOCAL_ID_PREFIX) && hit.text === ev.userMessage.content) {
+            if (hit?.id.startsWith(LOCAL_ID_PREFIX) && hit.text === content) {
               hit.id = ev.userMessageId
             } else {
-              v.transcript.push({
-                id: ev.userMessageId,
-                kind: 'user',
-                text: ev.userMessage.content,
-                ...(ev.userMessage.attachments?.length
-                  ? { attachments: ev.userMessage.attachments }
-                  : {}),
-              })
+              v.transcript.push(
+                origin
+                  ? { id: ev.userMessageId, kind, text: content, origin }
+                  : {
+                      id: ev.userMessageId,
+                      kind,
+                      text: content,
+                      ...(attachments?.length ? { attachments } : {}),
+                    },
+              )
             }
           }
         }),

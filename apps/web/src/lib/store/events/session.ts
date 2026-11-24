@@ -6,7 +6,7 @@
  */
 
 import { produce } from 'solid-js/store'
-import { setState, state } from '../state.ts'
+import { beginRoundDraft, LOCAL_ID_PREFIX, setState, state } from '../state.ts'
 import { workspace } from '../ui.ts'
 import { reloadConversationChanges } from '../views/changes.ts'
 import { handlers } from './handler.ts'
@@ -14,8 +14,23 @@ import { handlers } from './handler.ts'
 export const sessionEvents = handlers({
   'queue.changed': {
     active(ev) {
-      // 整体替换：服务端发送的是队列的当前完整状态，本地的乐观卡片按相同 id 被覆盖。
-      setState('followUps', ev.queue)
+      setState(
+        produce((s) => {
+          // 整体替换：服务端发送的是队列的当前完整状态，本地的乐观卡片按相同 id 被覆盖。
+          s.followUps = ev.queue
+          /*
+           * 队列中的消息只显示为卡片。乐观显示到会话流、而该 id 在快照中的条目移出会话流：
+           * 按下发送时服务端已排入队列，或取出发起前收到停止而放回队首。
+           */
+          const v = s.views[ev.conversationId]
+          const queued = new Set(ev.queue.map((f) => `${LOCAL_ID_PREFIX}${f.id}`))
+          if (v?.transcript.some((t) => queued.has(t.id))) {
+            v.transcript = v.transcript.filter((t) => !queued.has(t.id))
+          }
+          // 发出的消息在移除卡片的同一次处理中进入会话流，理由见 `QueueChangedEvent.started`。
+          if (ev.started) beginRoundDraft(s, ev.conversationId, ev.started)
+        }),
+      )
     },
   },
 

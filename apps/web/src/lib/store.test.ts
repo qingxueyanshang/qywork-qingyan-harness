@@ -1713,6 +1713,77 @@ describe('事件按会话归属过滤', () => {
    * 原始失败形状：定时任务每次发送同一句 prompt，第二轮的 `run.started` 认领了上一轮
    * 已落库的气泡，界面上缺少本轮的用户消息。只与 `local_` 前缀的条目对齐即可避免。
    */
+  /*
+   * 原始失败形状：一轮结束时排队消息被发出，卡片随 `queue.changed` 消失，而气泡要等
+   * `run.started` 才出现；两者之间隔着服务端的准备阶段，输入框变矮使正文先下移，气泡出现后再上移，
+   * 这段时间内该消息在界面上不存在。
+   */
+  test('排队消息发出时，卡片与会话流条目在同一次处理中交接，run.started 只对齐 id', () => {
+    reset('cv_now')
+    const user = { id: 'req_q', content: '跑完再说这句', steer: false }
+    const receipt = {
+      id: 'req_r',
+      content: '[workflow 回执] 已返回',
+      steer: false,
+      origin: 'workflow' as const,
+    }
+    setState('followUps', [user, receipt])
+    const queueChanged = (queue: unknown[], started?: unknown) =>
+      applyEvent({
+        seq: 1,
+        at: 0,
+        conversationId: 'cv_now',
+        event: {
+          type: 'queue.changed',
+          conversationId: 'cv_now',
+          queue,
+          ...(started ? { started } : {}),
+        },
+      } as never)
+
+    queueChanged([receipt], user)
+    expect(state.followUps).toEqual([receipt])
+    expect(transcript().map((i) => [i.kind, i.text, i.id])).toEqual([
+      ['user', '跑完再说这句', 'local_req_q'],
+    ])
+    expect(view().runStartedAt).not.toBeNull()
+    applyEvent(runStarted('cv_now', 'ms_q', { content: '跑完再说这句' }))
+    expect(transcript().map((i) => [i.kind, i.id])).toEqual([['user', 'ms_q']])
+
+    // 回执发起的一轮同样交接，形态为回执条目。
+    queueChanged([], receipt)
+    expect(state.followUps).toEqual([])
+    applyEvent(
+      runStarted('cv_now', 'ms_r', { content: receipt.content, origin: 'workflow' } as never),
+    )
+    expect(transcript().map((i) => [i.kind, i.id, i.origin])).toEqual([
+      ['user', 'ms_q', undefined],
+      ['receipt', 'ms_r', 'workflow'],
+    ])
+  })
+
+  /*
+   * 发出前收到停止时，服务端把该条放回队首；按下发送时服务端已排入队列。两种情况下快照中都有该 id，
+   * 它只显示为卡片，会话流中乐观插入的同一条移除。
+   */
+  test('快照中仍在队列的消息移出会话流，只显示为卡片', () => {
+    reset('cv_now')
+    const item = { id: 'req_back', content: '放回队首的一句', steer: false }
+    setState('views', 'cv_now', 'transcript', [
+      { id: 'ms_0', kind: 'user', text: '上一句' },
+      { id: 'local_req_back', kind: 'user', text: '放回队首的一句' },
+    ])
+    applyEvent({
+      seq: 1,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'queue.changed', conversationId: 'cv_now', queue: [item] },
+    } as never)
+    expect(state.followUps).toEqual([item])
+    expect(transcript().map((i) => i.id)).toEqual(['ms_0'])
+    setState('followUps', [])
+  })
+
   test('同一会话连续两次相同正文的 run.started 生成两条用户气泡', () => {
     reset('cv_now')
     applyEvent(runStarted('cv_now', 'ms_1', { content: '检查一次群消息' }))

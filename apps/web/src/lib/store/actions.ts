@@ -23,7 +23,7 @@ import {
   type WorkspaceInput,
 } from './settings.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
-import { hasRun, isRunning, LOCAL_ID_PREFIX, prepayBusy, setState, state } from './state.ts'
+import { beginRoundDraft, hasRun, isRunning, prepayBusy, setState, state } from './state.ts'
 import { setOpenFile, setWorkspace, viewingFile, type WorkspaceInfo, workspace } from './ui.ts'
 import { reloadActiveConversation } from './views/history.ts'
 import { syncViews } from './views/subscription.ts'
@@ -515,32 +515,17 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
        * 空闲时该消息是下一轮的开头，进入会话流；忙碌时它在队列中，进入卡片区。
        * 若都插入会话流，会话流中会出现一段尚未发生的对话。
        *
-       * 卡片的 id 使用 `clientRequestId`，与服务端队列条目同源，
-       * 随后的快照整体覆盖时同一条目不会重复出现。
+       * 卡片与会话流条目的 id 都取自 `clientRequestId`，与服务端队列条目同源：
+       * 随后的快照整体覆盖时同一条目不会重复出现，服务端已排入队列的消息由快照移出会话流。
        */
-      if (queued) {
-        s.followUps.push({
-          id: requestId,
-          content,
-          ...(attachments?.length ? { attachments } : {}),
-          steer,
-        })
-      } else {
-        v?.transcript.push({
-          id: `${LOCAL_ID_PREFIX}${Date.now()}`,
-          kind: 'user',
-          text: content,
-          ...(attachments?.length ? { attachments } : {}),
-        })
-        /*
-         * 本轮从按下发送开始计时，取本机时钟；`run.started` 到达后保留该值。不要等到 `run.started`
-         * 才写入：服务端发出它之前还有数秒准备步骤，耗时栏与整轮状态条都以开始时刻为显示条件，
-         * 会在这段时间之后才出现，使下方布局移位。
-         * 文件读数随之清空，与 `run.started` 相同：状态条此时即显示，不清空时显示的是上一轮的读数。
-         */
-        if (v) v.runStartedAt = Date.now()
-        s.fileChanges = []
+      const message = {
+        id: requestId,
+        content,
+        ...(attachments?.length ? { attachments } : {}),
+        steer,
       }
+      if (queued) s.followUps.push(message)
+      else beginRoundDraft(s, id, message)
       if (v) v.error = null
     }),
   )

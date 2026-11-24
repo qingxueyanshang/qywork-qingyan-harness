@@ -168,6 +168,13 @@ export interface QueueChangedEvent {
   type: 'queue.changed'
   conversationId: ConversationId
   queue: FollowUp[]
+  /**
+   * 本次变更中离开队列、作为新一轮开头发出的条目：一轮收尾时取出的队首，或空闲时点击「发送」的条目。
+   *
+   * 客户端在移除卡片的同一次处理中把它显示到会话流。只由 `run.started` 显示时，两者之间隔着服务端的
+   * 准备阶段：卡片已消失而消息尚未出现，输入框变矮使正文先下移，消息出现后再上移。
+   */
+  started?: FollowUp
 }
 
 /**

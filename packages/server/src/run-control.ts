@@ -496,20 +496,21 @@ export async function startRun(
  * **同步取出、异步发起。** 取出与「是否跳过目标自动继续」是同一个决定，拆开后会出现
  * 「自动继续已被跳过，而该消息在 setTimeout 到期前被用户删除」的情形，两者都不会执行。
  *
- * 取出时会话已再次忙碌（收尾的 await 期间另一端发起了一轮），把它放回队首，不丢弃；该轮收尾时再取出。
- * 定时回调期间会话由本函数占用，不会被他方占用。到期之前收到停止时同样放回队首，
+ * 先占位再取出。会话已再次忙碌（收尾的 await 期间另一端发起了一轮）时不取出，条目留在队首，该轮收尾时再取出。
+ * 取出时的快照告知客户端该条已作为新一轮发出（`QueueChangedEvent.started`）：先取出、占位失败再放回时，
+ * 客户端已把它显示到会话流，卡片随后又出现。
+ * 定时回调期间会话由本函数占用，不会被他方占用。到期之前收到停止时放回队首，
  * 不发起：与被停止的一轮收尾时相同，条目留在队列。
  * 异步发起的原因与 `queueGoalRound` 相同：不嵌套在本轮的 `finally` 中执行。
  */
 function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDeps, 'ws'>): boolean {
-  const item = deps.runs.takeNext(conversationId)
+  const item = deps.runs.queueOf(conversationId)[0]
   if (!item) return false
   // 队首移交给定时回调期间仍属于待执行任务，复用会话占位阻止更新退出。
   const pending = new AbortController()
-  if (!deps.runs.reserve(conversationId, pending)) {
-    deps.runs.enqueueFront(conversationId, item)
-    return true
-  }
+  if (!deps.runs.reserve(conversationId, pending)) return true
+  // 与上方读取队首之间没有 await，取出的即 `item`。
+  deps.runs.takeNext(conversationId, true)
   setTimeout(() => {
     // release 与 startRun 的 reserve 之间没有 await，退出占位不能插入其中。
     deps.runs.release(conversationId)

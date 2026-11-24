@@ -53,7 +53,7 @@ export const messageCommands = handlers({
       }
       if (rejectChildConversation(deps, cmd.type, cmd.conversationId)) return
       const item = deps.runs.queueOf(cmd.conversationId).find((f) => f.id === cmd.id)
-      if (!item || !deps.runs.removeFollowUp(cmd.conversationId, cmd.id)) {
+      if (!item || !deps.runs.removeFollowUp(cmd.conversationId, cmd.id, true)) {
         reject(deps.ws, cmd.type, 'conflict', '该跟进消息已不在队列中')
         return
       }

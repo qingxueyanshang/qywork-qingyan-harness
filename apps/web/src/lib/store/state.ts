@@ -38,12 +38,40 @@ import { createStore, produce } from 'solid-js/store'
 import type { ConnectionState } from '../client.ts'
 
 /**
- * 乐观插入的用户气泡的 id 前缀。
+ * 乐观插入的消息条目的 id 前缀，后接该消息的 `clientRequestId`。
  *
- * 按回车时本地生成，`run.started` 到达后替换为账本中的真实 id。两侧必须使用同一个常量：
+ * 由 `beginRoundDraft` 插入，`run.started` 到达后替换为账本中的真实 id。两侧必须使用同一个常量：
  * 对齐判定依据它识别本地插入的条目；两侧各写一份字面量时，只修改其中一侧会使气泡重复为两条。
  */
 export const LOCAL_ID_PREFIX = 'local_'
+
+/**
+ * 乐观显示一轮的开头，在 `produce` 中调用：消息进入会话流，本轮从此刻开始计时，文件读数清空。
+ *
+ * 按下发送（`sendMessage`）与服务端取出排队消息发起一轮（`queue.changed` 的 `started`）使用同一处。
+ * 条目 id 为前缀加 `message.id`（即 `clientRequestId`）：`run.started` 按前缀与正文把它对齐为账本中的 id；
+ * 同一 id 出现在队列快照中时，该条目由快照移除。
+ *
+ * 计时取本机时钟，`run.started` 到达后保留该值。不要等到 `run.started` 才写入：服务端发出它之前还有准备步骤，
+ * 耗时栏与整轮状态条都以开始时刻为显示条件，会在这段时间之后才出现，使下方布局移位。
+ * 文件读数随之清空，与 `run.started` 相同：状态条此时即显示，不清空时显示的是上一轮的读数。
+ */
+export function beginRoundDraft(s: AppState, conversationId: string, message: FollowUp): void {
+  const v = s.views[conversationId]
+  const id = `${LOCAL_ID_PREFIX}${message.id}`
+  v?.transcript.push(
+    message.origin
+      ? { id, kind: 'receipt', text: message.content, origin: message.origin }
+      : {
+          id,
+          kind: 'user',
+          text: message.content,
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        },
+  )
+  if (v) v.runStartedAt = Date.now()
+  s.fileChanges = []
+}
 
 export interface TranscriptItem {
   id: string
