@@ -371,6 +371,64 @@ test('按下发送即开始计时，开始事件到达时计时连续且不重�
 })
 
 /**
+ * 原始失败形状：一轮运行期间写入待办后整轮状态条出现，`.transcript-inner` 的下内边距随之增加，
+ * 待办全部完成后又减少，贴底的正文与读数条随之上下移动（逐帧实测 4px；输入框顶部有排队消息时 32px）。
+ * 留白由 `.transcript-inner` 的类名与内联样式决定，两者在一轮的各个阶段都不变，即留白不变。
+ */
+test('整轮状态条与排队消息出现或消失时，会话流底部留白不变', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { render } = await import('solid-js/web')
+  const { Transcript } = await import('./Transcript.tsx')
+  const workspaceBefore = store.workspace()
+  const id = 'cv_run_status_slot'
+  store.setState({
+    activeConversation: id,
+    busyConversations: [],
+    views: {},
+    todos: [],
+    fileChanges: [],
+    followUps: [],
+  })
+  store.openView(id)
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+  const inner = host.querySelector('.transcript-inner')!
+  const layout = () => `${inner.className}|${inner.getAttribute('style')}`
+  const idle = layout()
+  const todo = (status: string) => [{ id: 't1', content: '裁剪视频', status }] as never
+  try {
+    store.setState('busyConversations', [id])
+    store.setState('views', id, 'runStartedAt', Date.now())
+    expect(layout()).toBe(idle)
+
+    store.setState('todos', todo('in_progress'))
+    expect(store.hasRunStatus()).toBe(true)
+    expect(layout()).toBe(idle)
+
+    store.setState('followUps', [{ id: 'fu_slot', content: '再处理一下', steer: false }])
+    expect(layout()).toBe(idle)
+
+    store.setState('todos', todo('completed'))
+    expect(store.hasRunStatus()).toBe(false)
+    expect(layout()).toBe(idle)
+
+    store.setState('views', id, 'runStartedAt', null)
+    store.setState('busyConversations', [])
+    expect(layout()).toBe(idle)
+
+    store.setState('followUps', [])
+    expect(layout()).toBe(idle)
+  } finally {
+    dispose()
+    host.remove()
+    store.setState('followUps', [])
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+  }
+})
+
+/**
  * 原始失败形状：本机时钟比服务端快 7 秒，服务端的开始时刻直接与本机时钟相减，
  * 由其他设备发起、已运行 3 秒的一轮显示为 10.0s。
  */

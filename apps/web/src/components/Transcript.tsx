@@ -2,8 +2,6 @@ import type { JSX } from 'solid-js'
 import { createMemo, Show } from 'solid-js'
 import { delegationStatus } from '../lib/render-items.ts'
 import {
-  composerStackAbove,
-  hasRunStatus,
   isRunning,
   runClosed,
   setState,
@@ -31,8 +29,6 @@ export function ConversationStream(props: {
   variant: 'main' | 'panel'
   leading?: JSX.Element
   trailing?: JSX.Element
-  stacked?: boolean
-  hasRunStatus?: boolean
 }) {
   const follow = createConversationScroll(() => props.conversationId)
   const main = () => props.variant === 'main'
@@ -53,8 +49,6 @@ export function ConversationStream(props: {
           classList={{
             'transcript-inner': main(),
             'child-cv-inner': !main(),
-            'with-stack': !!props.stacked,
-            'with-run-status': !!props.hasRunStatus,
           }}
           ref={follow.innerRef}
         >
@@ -112,8 +106,6 @@ export function Transcript() {
       live={isRunning}
       closed={runClosed}
       variant="main"
-      stacked={composerStackAbove()}
-      hasRunStatus={hasRunStatus()}
       trailing={
         <>
           {/*

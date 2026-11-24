@@ -510,8 +510,8 @@ export function activeDesktopTarget(): DesktopTargetEvent['targets'][number] | n
 /**
  * 本轮是否显示整轮状态条：存在未完成的待办、本轮修改过文件，或正在操作某个桌面应用。
  *
- * 判据放在此处而不是组件中：`RunStatus` 据此决定是否挂载，`Transcript` 据此决定
- * 底部留白高度，两处使用同一判据。
+ * 只决定 `RunStatus` 是否挂载。会话流的底部留白不读取它：留白始终容纳状态条，
+ * 按它切换时，状态条在一轮中途出现或消失会使贴底的正文与读数条整体上下移动。
  */
 export function hasRunStatus(): boolean {
   return (
@@ -537,22 +537,6 @@ export function hasRunStatus(): boolean {
 export function conversationRunClosed(id: string | null): boolean {
   const items = viewOf(id).transcript
   return viewOf(id).runStartedAt === null && items[items.length - 1]?.kind === 'run'
-}
-
-/**
- * 输入框上方是否存在附加块：整轮状态条 / 目标条 / 后台命令 / 排队中的跟进消息。
- *
- * 会话流底部的留白据此确定。下方紧邻附加块时贴近该块，间距与输入框上方
- * 各块之间的间距相同；下方直接是输入框时需为正文留出较大间距。
- * 两者相差一个量级，使用同一个值会使一种情况过窄、另一种情况过宽。
- */
-export function composerStackAbove(): boolean {
-  return (
-    hasRunStatus() ||
-    state.followUps.length > 0 ||
-    state.backgroundCommands.length > 0 ||
-    (state.goal !== null && state.goal.status !== 'completed')
-  )
 }
 
 /** 主会话与子会话共用收尾判据；lastRunId 在仅有后台子任务时重建为 null。 */

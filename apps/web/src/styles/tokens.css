@@ -195,7 +195,7 @@
   /*
    * 整轮状态条的高度。取固定值，不由内容决定：状态条悬浮，会话流按
    * 「间隙 + 状态条 + 间隙」在底部预留空间，该留白需要可计算的值。
-   * 修改此处时须同时检查 `.changes-chip` 与 `.transcript-inner.with-run-status`。
+   * 修改此处时须同时检查 `.changes-chip` 与 `.transcript-inner` 的下内边距。
    */
   --run-status-h: 28px;
 

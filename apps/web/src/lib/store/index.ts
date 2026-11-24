@@ -204,7 +204,6 @@ export {
   type ChangesView,
   type ChangeTurn,
   type ConversationView,
-  composerStackAbove,
   conversationRunClosed,
   dropView,
   hasRun,

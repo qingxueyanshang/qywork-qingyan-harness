@@ -56,20 +56,12 @@
   /* 横向边距 = 输入区的 s-5 加 `--composer-text-inset`：对齐的是输入框中的文字列，
      不是输入框边框（理由见 tokens.css 中该变量的注释）。 */
   /* 底部留白 = 滚动到末尾时正文与输入框之间的距离。设在此处而不是输入区的
-     padding-top，理由见 `.composer-wrap` 的注释。 */
-  padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset)) var(--s-8);
-}
-
-/* 输入框上方存在占据文档流的块（目标条、跟进卡片）时，正文紧接其上：底部留白改为
-   该列的间隙宽度，与各块之间的间隙相同。判定见 store 的 `composerStackAbove()`。 */
-.transcript-inner.with-stack {
-  padding-bottom: var(--composer-stack-gap);
-}
-/* 整轮状态条不占据文档流，悬浮在这段留白中，因此留白按「间隙 + 状态条 + 间隙」计算，
-   上下两道间隙才等宽。按 .with-stack 的值设置时状态条覆盖正文（实测 -27px）。
-   本条排在 .with-stack 之后：两个类同时存在时以本条为准。 */
-.transcript-inner.with-run-status {
-  padding-bottom: calc(var(--run-status-h) + var(--composer-stack-gap) * 2);
+     padding-top，理由见 `.composer-wrap` 的注释。
+     整轮状态条不占据文档流，悬浮在这段留白中，因此按「间隙 + 状态条 + 间隙」计算，上下两道间隙等宽。
+     该值为常量，不要按状态条是否显示、输入框顶部有无目标条或排队消息切换：状态条在一轮中途出现或消失，
+     留白随之变化时，贴底的正文与读数条整体上下移动（有排队消息时为 32px）。 */
+  padding: var(--s-6) calc(var(--s-5) + var(--composer-text-inset))
+    calc(var(--run-status-h) + var(--composer-stack-gap) * 2);
 }
 
 /* ── 会话索引 ──
@@ -1122,9 +1114,10 @@
   flex: 0 0 auto;
   min-width: 0;
 }
-/* 耗时按 ch 预留宽度：配合固定一位小数与 tabular-nums，秒数变化时右侧读数不移位。 */
+/* 耗时按 ch 预留宽度：配合固定一位小数与 tabular-nums，秒数变化时右侧读数不移位。
+   5.5ch 容纳到「999.9s」（实测 5.2ch）；按「99.9s」预留时，满 100 秒后右侧读数右移约 0.7ch。 */
 .run-elapsed {
-  min-width: 4.5ch;
+  min-width: 5.5ch;
 }
 .run-cost {
   color: var(--text-secondary);

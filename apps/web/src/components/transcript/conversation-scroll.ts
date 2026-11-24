@@ -239,10 +239,8 @@ export function createConversationScroll(conversationId: () => string | null) {
    * 两个容器都需要监听：除内容变高外，滚动区自身变矮（窗口缩小、输入框变高）同样会把
    * 末尾内容推到视口下方，此时 `inner` 的高度不变，只监听 `inner` 会遗漏这种情况。
    *
-   * 必须按 border box 监听 `inner`。默认的 content box 不含内边距，而 `inner` 的
-   * 下内边距随整轮状态条是否显示而变化（`transcript.css` 的三档留白）：状态条出现时
-   * 留白增加而 content box 不变，回调不触发，滚动位置停在原处，状态条遮住读数条，
-   * 需手动滚动才能恢复。
+   * 按 border box 监听 `inner`：下内边距计入滚动高度，而默认的 content box 不含内边距，
+   * 内边距变化时回调不触发。
    *
    * 本次高度变化之前视口已在底部时同样跟随，并恢复 `pinned`。只按 scroll 事件恢复时，
    * 用户滑回底部的那次 scroll 晚于内容增高派发，读取的距离已大于 2px，跟随不恢复，

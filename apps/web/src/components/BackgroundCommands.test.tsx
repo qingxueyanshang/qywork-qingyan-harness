@@ -2,7 +2,7 @@
  * 输入框顶部的后台命令栏。
  *
  * 覆盖范围（B6）：`BackgroundCommands.tsx`、`store/events/session.ts` 对 `commands.changed` 的折叠、
- * `store/actions.ts` 的 `stopBackgroundCommand`、`store/state.ts` 的 `composerStackAbove`。
+ * `store/actions.ts` 的 `stopBackgroundCommand`。
  */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -49,14 +49,12 @@ test('当前会话的快照每条命令一行，点击停止发送 command.stop�
   store.client.send = (command) => sent.push(command)
   try {
     expect(host.querySelector('.followup-card')).toBeNull()
-    expect(store.composerStackAbove()).toBe(false)
 
     snapshot('cv_bg', [{ id: 'cmd_1', command: 'npm run dev' }])
     snapshot('cv_other', [{ id: 'cmd_9', command: 'npm test' }])
     const rows = host.querySelectorAll('.followup-card')
     expect(rows).toHaveLength(1)
     expect(rows[0]?.textContent).toContain('npm run dev')
-    expect(store.composerStackAbove()).toBe(true)
 
     click(rows[0]!.querySelector('button') as HTMLButtonElement)
     expect(sent).toEqual([{ type: 'command.stop', conversationId: 'cv_bg', id: 'cmd_1' }])
@@ -64,7 +62,6 @@ test('当前会话的快照每条命令一行，点击停止发送 command.stop�
     expect(host.querySelectorAll('.followup-card')).toHaveLength(1)
     snapshot('cv_bg', [])
     expect(host.querySelector('.followup-card')).toBeNull()
-    expect(store.composerStackAbove()).toBe(false)
   } finally {
     store.client.send = send
     dispose()
