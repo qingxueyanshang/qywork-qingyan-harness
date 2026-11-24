@@ -9,7 +9,7 @@ import type {
 } from '@qywork/core'
 import { formatCosts, formatMoney, MEDIA_OUTPUT_UNIT, runCosts } from '@qywork/core'
 import { createMemo, createResource, For, Show } from 'solid-js'
-import { createRefreshKey, loaded } from '../lib/resource.ts'
+import { createRefreshKey, loaded, suspendUntil } from '../lib/resource.ts'
 import { sessionSignal } from '../lib/session.ts'
 import { compact, requestOutcome, stopReasonLabel } from '../lib/step-view.ts'
 import { client, ledgerRevision, modelName, openSettings, state } from '../lib/store/index.ts'
@@ -41,6 +41,7 @@ export default function RunDetails() {
       ? { totals: emptyTotals(), entries: [] as UsageLedgerRow[] }
       : await client.api<ConversationUsageResponse>(`/api/conversations/${k.scope}/usage`),
   )
+  suspendUntil(() => !runData.loading && !ledger.loading)
 
   // 使用 `loaded()` 而不是 `data()`：后者出错时 `throw`，而本应用没有 `ErrorBoundary`。
   const runs = createMemo(() => [...(loaded(runData)?.runs ?? [])].reverse())

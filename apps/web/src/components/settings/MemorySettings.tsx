@@ -1,5 +1,5 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
-import { loaded } from '../../lib/resource.ts'
+import { loaded, suspendUntil } from '../../lib/resource.ts'
 import { sessionSignal } from '../../lib/session.ts'
 import {
   askInChat,
@@ -30,6 +30,7 @@ import { newMemoryPrompt } from './ScopePrompts.ts'
 export default function MemorySettings() {
   // 会话中的记忆工具写入后 `extensionsRevision` 递增，本页随之重新读取。
   const [mem, { refetch }] = createResource(extensionsRevision, loadMemory)
+  suspendUntil(() => !mem.loading)
   /** 当前查看的层级。新建的条目也写入该层，因为用户正在查看它。 */
   const [scope, setScope] = sessionSignal<Scope>('qywork.settings.memory.scope', 'project')
   const [busy, setBusy] = createSignal(false)

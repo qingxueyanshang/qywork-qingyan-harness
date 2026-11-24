@@ -138,13 +138,14 @@ export function copyCode(e: MouseEvent): void {
 
 export function App() {
   // 尚未读取、加载中与加载失败都不能证明会话为空，保持最近一次已确认的布局。
+  // 没有当前会话同属尚未读取：切换项目时新项目的会话在 upsert 返回前为空。
   const emptyLayout = createMemo((previous: boolean) => {
-    if (!state.activeConversation) return true
+    if (!state.activeConversation) return previous
     const current = view()
     if (current.transcript.length > 0) return false
     if (current.history.loading !== null || current.history.error !== null) return previous
     return true
-  }, false)
+  }, true)
   // 抽屉只在窄屏出现；宽屏下侧栏常驻，该状态不参与布局。
   const [drawer, setDrawer] = createSignal(false)
   const [exportState, setExportState] = createSignal<'idle' | 'working' | 'done'>('idle')

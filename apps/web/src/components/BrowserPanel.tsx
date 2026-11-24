@@ -54,7 +54,8 @@ function shown(url: string): string {
   })
 }
 
-export default function BrowserPanel(props: { id: string }) {
+/** `visible`：面板是否正在显示本页，见 `EmbeddedView`。 */
+export default function BrowserPanel(props: { id: string; visible: boolean }) {
   // 一个 id 是否为恢复的页不会改变（见 `PanelTab` 的 `live`），因此只在创建时选择一次。
   if (restoredBrowserTab(workspace()?.id, props.id)) return <RestoredPage id={props.id} />
   const tab = () => browserTab(props.id)
@@ -173,7 +174,7 @@ export default function BrowserPanel(props: { id: string }) {
       {/* 宿主连接之前显示位置未知，该区域保持空白。 */}
       <Switch>
         <Match when={browserPresentation() === 'embedded'}>
-          <EmbeddedView id={props.id} />
+          <EmbeddedView id={props.id} visible={props.visible} />
         </Match>
         <Match when={browserPresentation() === 'window'}>
           <div class="web-window">
@@ -222,24 +223,39 @@ function RestoredPage(props: { id: string }) {
 /**
  * 嵌入式宿主的占位容器：把矩形报告给宿主，由宿主将原生子视图摆放到该位置。
  *
- * 原生子视图是窗口的子 HWND，渲染在所有 DOM 之上：浮层覆盖、切换到其他页签、
+ * 原生子视图是窗口的子 HWND，渲染在所有 DOM 之上：浮层覆盖、所在的页未显示、
  * 矩形测量为 0 时，都必须把它移出可视区，`z-index` 对它无效。
+ *
+ * 是否显示取 `visible`（面板正在显示的页），不取当前页签：切换到固定页签后，本页保持显示到固定页签的内容就绪，
+ * 按当前页签判断时网页先移走，该区域空白。也不要只依赖 ResizeObserver 报告的显示与隐藏：它在绘制前一刻才回调，
+ * 切换到本页的第一帧中网页尚未摆放，该区域空白一帧。
+ *
+ * 所在的页隐藏后，网页在其后的第二帧才移走：子视图移动由宿主立即执行，而主界面的新内容要到下一次合成才上屏，
+ * 立即移走时露出的是已隐藏的本页，该区域空白一帧。浮层打开时立即移走：网页会遮住浮层。
  */
-function EmbeddedView(props: { id: string }) {
+function EmbeddedView(props: { id: string; visible: boolean }) {
   let slot!: HTMLDivElement
+  let parking = 0
 
-  /** 把占位容器的矩形报告给宿主。切换到其他页签、浮层覆盖、矩形无法测量时移出可视区。 */
+  /** 把占位容器的矩形报告给宿主。所在的页未显示、浮层覆盖、矩形无法测量时移出可视区。 */
   const layout = () => {
-    const rect =
-      activePanelTab() === props.id && !overlayOpen()
-        ? viewRect(slot.getBoundingClientRect(), window.devicePixelRatio)
-        : null
+    cancelAnimationFrame(parking)
+    if (!props.visible) {
+      parking = requestAnimationFrame(() => {
+        parking = requestAnimationFrame(() => parkBrowserView(props.id))
+      })
+      return
+    }
+    const rect = overlayOpen()
+      ? null
+      : viewRect(slot.getBoundingClientRect(), window.devicePixelRatio)
     if (rect) placeBrowserView(props.id, rect)
     else parkBrowserView(props.id)
   }
 
-  // 当前页签与浮层是否打开共同决定本页是否显示。
+  // 所在的页是否显示与浮层是否打开共同决定本页是否摆放。
   createEffect(layout)
+  onCleanup(() => cancelAnimationFrame(parking))
 
   onMount(() => {
     // 面板拖宽、放大、窗口尺寸变化都会触发此回调；缩放比例变化时浏览器也会发出一次 resize。

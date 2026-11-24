@@ -429,6 +429,60 @@ test('整轮状态条与排队消息出现或消失时，会话流底部留白�
 })
 
 /**
+ * 原始失败形状：切换会话时先换为新会话、正文为空，首页历史返回后才显示，正文整屏消失一至数帧
+ * （逐帧实测主区元素数 349 → 44 → 213）。离开的会话视图随即被移除，保留须使用切换前取得的正文。
+ */
+test('切换会话时保留上一条会话的正文，新会话首页历史读取完成后一次替换', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { batch } = await import('solid-js')
+  const { render } = await import('solid-js/web')
+  const { Transcript } = await import('./Transcript.tsx')
+  const workspaceBefore = store.workspace()
+  const a = 'cv_hold_a'
+  const b = 'cv_hold_b'
+  store.setState({ activeConversation: a, busyConversations: [], views: {}, followUps: [] })
+  store.openView(a)
+  store.setState('views', a, {
+    transcript: [{ id: 'u-hold-a', kind: 'user', text: '会话甲的消息' }] as never,
+    history: { loading: null, nextCursor: null, earlierTurns: [], error: null },
+  })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const texts: string[] = []
+  const observer = new MutationObserver(() => texts.push(host.textContent ?? ''))
+  observer.observe(host, { childList: true, subtree: true, characterData: true })
+  const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+  try {
+    expect(host.textContent).toContain('会话甲的消息')
+    // 与 `selectConversation` 相同的顺序：先换当前会话并建表，离开的会话随即被移除。
+    batch(() => {
+      store.setState('activeConversation', b)
+      store.openView(b)
+      store.setState('views', b, 'history', 'loading', 'initial')
+      store.dropView(a)
+    })
+    await Promise.resolve()
+    expect(host.textContent).toContain('会话甲的消息')
+    expect(host.textContent).not.toContain('正在加载会话')
+
+    store.setState('views', b, {
+      transcript: [{ id: 'u-hold-b', kind: 'user', text: '会话乙的消息' }] as never,
+      history: { loading: null, nextCursor: null, earlierTurns: [], error: null },
+    })
+    await Promise.resolve()
+    expect(host.textContent).toContain('会话乙的消息')
+    expect(host.textContent).not.toContain('会话甲的消息')
+    expect(texts.every((t) => t.includes('会话甲的消息') !== t.includes('会话乙的消息'))).toBe(true)
+  } finally {
+    observer.disconnect()
+    dispose()
+    host.remove()
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+  }
+})
+
+/**
  * 原始失败形状：本机时钟比服务端快 7 秒，服务端的开始时刻直接与本机时钟相减，
  * 由其他设备发起、已运行 3 秒的一轮显示为 10.0s。
  */

@@ -728,7 +728,8 @@ describe('表格预览', () => {
       () => release !== undefined,
       () => host.innerHTML.slice(0, 300),
     )
-    expect(host.querySelector('.sheet-view .preview-loading')).not.toBeNull()
+    // 首次解析期间的加载条：未超过 `SLOW_MS` 时由 `FileView` 的边界显示，超过后由预览自身显示。
+    expect(host.querySelector('.preview-loading')).not.toBeNull()
     expect(host.querySelector('.sheet-tab')).toBeNull()
 
     release?.()
@@ -736,7 +737,7 @@ describe('表格预览', () => {
       () => tabNames(host).length > 0,
       () => host.innerHTML.slice(0, 300),
     )
-    expect(host.querySelector('.sheet-view .preview-loading')).toBeNull()
+    expect(host.querySelector('.preview-loading')).toBeNull()
     expect(workers.calls).toHaveLength(1)
     expect(workers.calls[0]!.type).toBe('module')
     expect(new URL(workers.calls[0]!.url).pathname.endsWith('/office/xlsx-worker.ts')).toBe(true)
@@ -1074,15 +1075,15 @@ describe('演示文稿预览', () => {
       () => release !== undefined,
       () => host.innerHTML.slice(0, 300),
     )
-    expect(host.querySelector('.slide-view .preview-loading')).not.toBeNull()
-    expect(host.querySelector<HTMLElement>('.slide-scroll')!.hidden).toBe(true)
+    expect(host.querySelector('.preview-loading')).not.toBeNull()
+    expect(host.querySelector<HTMLElement>('.slide-scroll')?.hidden ?? true).toBe(true)
 
     release?.()
     await waitFor(
       () => boundary(host) !== null,
       () => host.innerHTML.slice(0, 300),
     )
-    expect(host.querySelector('.slide-view .preview-loading')).toBeNull()
+    expect(host.querySelector('.preview-loading')).toBeNull()
     expect(host.querySelector<HTMLElement>('.slide-scroll')!.hidden).toBe(false)
     expect(workers.calls).toHaveLength(1)
     expect(workers.calls[0]!.type).toBe('module')
@@ -1485,15 +1486,15 @@ describe('文档预览', () => {
       () => release !== undefined,
       () => host.innerHTML.slice(0, 300),
     )
-    expect(host.querySelector('.doc-view .preview-loading')).not.toBeNull()
-    expect(host.querySelector<HTMLElement>('.doc-scroll')!.hidden).toBe(true)
+    expect(host.querySelector('.preview-loading')).not.toBeNull()
+    expect(host.querySelector<HTMLElement>('.doc-scroll')?.hidden ?? true).toBe(true)
 
     release?.()
     await waitFor(
       () => boundary(host) !== null,
       () => host.innerHTML.slice(0, 300),
     )
-    expect(host.querySelector('.doc-view .preview-loading')).toBeNull()
+    expect(host.querySelector('.preview-loading')).toBeNull()
     expect(host.querySelector<HTMLElement>('.doc-scroll')!.hidden).toBe(false)
     expect(workers.calls).toHaveLength(1)
     expect(workers.calls[0]!.type).toBe('module')

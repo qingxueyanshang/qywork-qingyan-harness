@@ -1,5 +1,6 @@
-import { createEffect, lazy, Match, onCleanup, Suspense, Switch } from 'solid-js'
+import { createEffect, lazy, Match, onCleanup, Switch } from 'solid-js'
 import { closeSettings, holdOverlay, settingsPage } from '../../lib/store/index.ts'
+import { HoldSwitch } from '../HoldSwitch.tsx'
 import { IconX } from '../Icons.tsx'
 import { AccessSettings } from './AccessSettings.tsx'
 import { GeneralSettings } from './GeneralSettings.tsx'
@@ -82,53 +83,49 @@ export function SettingsDialog() {
             <div class="settings-scroll">
               <div class="settings-inner">
                 {/*
-                 * 内容区自带 Suspense 边界，不要依赖外层边界。
-                 *
-                 * 每一页都通过 `createResource` 读取数据，而 Solid 的 Suspense 对子树中
-                 * 任何一个未完成的 resource 都会生效。此处不设边界时，最近的
-                 * 边界是 `App.tsx` 中供 `lazy()` 使用的边界：每次切换类目，整个弹窗
-                 * 连同遮罩的模糊层都会被移出 DOM 再重新挂载。
-                 *
-                 * 不设 fallback：内容区短暂留空；显示「读取中…」时
-                 * 只会造成一次闪烁。
+                 * 切换类目时保留上一页，新页的代码与首次读取完成后在同一次更新中替换（`HoldSwitch`）。
+                 * 每一项自带 Suspense，不要依赖外层边界：最近的外层边界是 `App.tsx` 中供 `lazy()` 使用的边界，
+                 * 挂起时整个弹窗连同遮罩的模糊层都会被移出 DOM 再重新挂载。
                  */}
-                <Suspense>
-                  <Switch>
-                    <Match when={settingsPage() === 'general'}>
-                      <GeneralSettings />
-                    </Match>
-                    <Match when={settingsPage() === 'models'}>
-                      <ModelSettings />
-                    </Match>
-                    <Match when={settingsPage() === 'usage'}>
-                      <UsageSettings />
-                    </Match>
-                    <Match when={settingsPage() === 'modules'}>
-                      <ModulesSettings />
-                    </Match>
-                    <Match when={settingsPage() === 'access'}>
-                      <AccessSettings />
-                    </Match>
-                    <Match when={settingsPage() === 'team'}>
-                      <AgentsSettings />
-                    </Match>
-                    <Match when={settingsPage() === 'memory'}>
-                      <MemorySettings />
-                    </Match>
-                    <Match when={settingsPage() === 'skills'}>
-                      <SkillsSettings />
-                    </Match>
-                    <Match when={settingsPage() === 'mcp'}>
-                      <McpSettings />
-                    </Match>
-                    <Match when={settingsPage() === 'plugins'}>
-                      <PluginsPanel />
-                    </Match>
-                    <Match when={settingsPage() === 'schedules'}>
-                      <SchedulesPanel />
-                    </Match>
-                  </Switch>
-                </Suspense>
+                <HoldSwitch key={settingsPage()}>
+                  {(page) => (
+                    <Switch>
+                      <Match when={page === 'general'}>
+                        <GeneralSettings />
+                      </Match>
+                      <Match when={page === 'models'}>
+                        <ModelSettings />
+                      </Match>
+                      <Match when={page === 'usage'}>
+                        <UsageSettings />
+                      </Match>
+                      <Match when={page === 'modules'}>
+                        <ModulesSettings />
+                      </Match>
+                      <Match when={page === 'access'}>
+                        <AccessSettings />
+                      </Match>
+                      <Match when={page === 'team'}>
+                        <AgentsSettings />
+                      </Match>
+                      <Match when={page === 'memory'}>
+                        <MemorySettings />
+                      </Match>
+                      <Match when={page === 'skills'}>
+                        <SkillsSettings />
+                      </Match>
+                      <Match when={page === 'mcp'}>
+                        <McpSettings />
+                      </Match>
+                      <Match when={page === 'plugins'}>
+                        <PluginsPanel />
+                      </Match>
+                      <Match when={page === 'schedules'}>
+                        <SchedulesPanel />
+                      </Match>
+                    </Switch>
+                  )}
+                </HoldSwitch>
               </div>
             </div>
           </div>

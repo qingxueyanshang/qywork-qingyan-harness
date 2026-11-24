@@ -69,13 +69,13 @@ export const theme = EditorView.theme({
   '.cm-selectionBackground, ::selection': { backgroundColor: 'var(--accent-soft)' },
 })
 
-export async function createReadonlyEditor(
+/** 只读编辑器。`lang` 取 `languageFor` 的结果：由调用方先读取，创建本身同步完成。 */
+export function createReadonlyEditor(
   parent: HTMLElement,
   doc: string,
-  path: string,
+  lang: Extension[],
   wrap: boolean,
-): Promise<EditorView> {
-  const lang = await languageFor(path)
+): EditorView {
   return new EditorView({
     parent,
     state: EditorState.create({

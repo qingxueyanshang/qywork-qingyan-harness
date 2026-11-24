@@ -101,6 +101,11 @@ pub struct OpenSpec<'a> {
     /// 标记在目标文档创建后才存在。用户新建的页为假：界面在返回后才显示面板，等待会使面板
     /// 推迟到网页加载完成后才出现（网络较慢时为数秒）；用户页只在 AI 接管时才按标记附加。
     pub await_document: bool,
+    /// 返回前等待目标文档加载完成（上限 `FIRST_LOAD_WAIT`），不只是开始加载。隐藏页（文件页的 HTML 预览）为真：
+    /// 界面在返回后立即把页面摆放到预览区域，加载完成之前摆放时显示的是引擎尚未绘制的背景。
+    /// 只有嵌入式引擎创建隐藏页，其他引擎忽略该字段。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub await_load: bool,
 }
 
 /// 引擎创建的页面：原生句柄，以及返回时的地址与标题。
@@ -463,6 +468,7 @@ impl BrowserHost {
             url,
             background: by_ai,
             await_document: by_ai,
+            await_load: hidden,
         })?;
         let tab = Tab {
             page: opened.page,

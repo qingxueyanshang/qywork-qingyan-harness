@@ -45,6 +45,8 @@ export const configNotices = () => payload()?.notices ?? []
 export const configProblems = () => payload()?.problems ?? []
 export const defaultEnvAllowList = () => payload()?.defaultEnvAllowList ?? []
 export const configError = error
+/** 已取得配置或已得知读取失败。 */
+export const configSettled = () => payload() !== null || error() !== null
 export const configWriteError = writeError
 export const configBusy = busy
 

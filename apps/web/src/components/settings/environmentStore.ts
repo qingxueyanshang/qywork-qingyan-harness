@@ -15,6 +15,8 @@ const [error, setError] = createSignal<unknown>(null)
 /** 尚未取得时为 null。 */
 export const environment = rows
 export const environmentError = error
+/** 已取得检测结果或已得知读取失败。 */
+export const environmentSettled = () => rows() !== null || error() !== null
 
 export async function reloadEnvironment(): Promise<void> {
   try {

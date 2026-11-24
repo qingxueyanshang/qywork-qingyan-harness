@@ -11,7 +11,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use tauri::webview::{PlatformWebview, WebviewBuilder};
+use tauri::webview::{PageLoadEvent, PlatformWebview, WebviewBuilder};
 use tauri::{
     AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Rect, Url,
     Webview, WebviewUrl, Wry,
@@ -59,7 +59,7 @@ const OFFSCREEN: (f64, f64) = (-8000.0, -8000.0);
 /// 子视图创建时的尺寸。尚未放置过的页移出可视区时也使用该尺寸。
 const DEFAULT_SIZE: (f64, f64) = (1280.0, 800.0);
 
-/// 创建页面后等待目标文档加载的时间上限，只用于 `OpenSpec::await_document` 为真的页。
+/// 创建页面后等待目标文档加载的时间上限，只用于 `OpenSpec::await_document` 或 `await_load` 为真的页。
 ///
 /// `add_child` 返回时子视图仍处于 `about:blank`，注入的标记在目标文档创建后才存在；
 /// 实测该间隔约为 700 ms。不等待就返回时，调用方无法立即按标记识别页面。
@@ -256,6 +256,7 @@ impl Engine {
 
         // WebView2 不为 `about:blank` 触发 `on_page_load`（实测会等待完整的 20 秒），因此空白页不等待。
         let blank_target = spec.url == BLANK;
+        let await_load = spec.await_load;
         let title_tab = spec.tab_id.to_owned();
         let (loaded_tx, loaded_rx) = channel::<()>();
         let loaded_tx = Arc::new(Mutex::new(Some(loaded_tx)));
@@ -274,9 +275,12 @@ impl Engine {
                     host.note_title(&title_tab, &title);
                 }
             })
-            // 等待的是目标文档：`about:blank` 是创建后的初始文档，不计入。
+            // 等待的是目标文档：`about:blank` 是创建后的初始文档，不计入。等待加载完成的页只计完成事件。
             .on_page_load(move |_webview, payload| {
                 if payload.url().as_str() == BLANK {
+                    return;
+                }
+                if await_load && !matches!(payload.event(), PageLoadEvent::Finished) {
                     return;
                 }
                 if let Ok(mut slot) = loaded_tx.lock() {
@@ -311,7 +315,7 @@ impl Engine {
         }
 
         // 不等待时子视图仍是 `about:blank`，返回请求的地址；实际地址随地址变化事件更新。
-        let url = if spec.await_document && !blank_target {
+        let url = if (spec.await_document || spec.await_load) && !blank_target {
             if loaded_rx.recv_timeout(FIRST_LOAD_WAIT).is_err() {
                 log::warn!("子视图 {} 未在期限内加载首个文档", spec.tab_id);
             }

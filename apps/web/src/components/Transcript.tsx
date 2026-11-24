@@ -1,14 +1,14 @@
 import type { JSX } from 'solid-js'
-import { createMemo, Show } from 'solid-js'
+import { createComputed, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
 import { delegationStatus } from '../lib/render-items.ts'
+import { createHeld } from '../lib/resource.ts'
 import {
-  isRunning,
-  runClosed,
+  conversationRunClosed,
+  isConversationRunning,
   setState,
   state,
   type TranscriptItem,
   transcript,
-  view,
   viewOf,
 } from '../lib/store/index.ts'
 import { ConversationIndex } from './ConversationIndex.tsx'
@@ -32,6 +32,28 @@ export function ConversationStream(props: {
 }) {
   const follow = createConversationScroll(() => props.conversationId)
   const main = () => props.variant === 'main'
+  /*
+   * 换为另一条会话的正文后，第一帧完整渲染全部条目（`.settling` 取消 `content-visibility`），绘制之后恢复。
+   * 不要去掉：新条目尚无记住的高度，按 80px 占位参与布局，底部跟随在同一帧内把视口移到底部，
+   * 新露出的条目在这一帧被判为屏幕外而不绘制，正文整屏空白一帧（逐帧录制中每次切换都出现）。
+   * 第二个 `requestAnimationFrame` 才移除：第一个在该帧渲染之前执行。
+   */
+  const [settling, setSettling] = createSignal(false)
+  let settleFrame = 0
+  createComputed(
+    on(
+      () => (props.items.length > 0 ? props.conversationId : null),
+      (id) => {
+        if (id === null) return
+        setSettling(true)
+        cancelAnimationFrame(settleFrame)
+        settleFrame = requestAnimationFrame(() => {
+          settleFrame = requestAnimationFrame(() => setSettling(false))
+        })
+      },
+    ),
+  )
+  onCleanup(() => cancelAnimationFrame(settleFrame))
   const background = createMemo(() =>
     props.live() && props.closed() ? delegationStatus(props.items) : null,
   )
@@ -49,6 +71,7 @@ export function ConversationStream(props: {
           classList={{
             'transcript-inner': main(),
             'child-cv-inner': !main(),
+            settling: settling(),
           }}
           ref={follow.innerRef}
         >
@@ -99,12 +122,34 @@ export function ConversationStream(props: {
  * 内容增长时读数条保持可见，依靠共享的底部跟随实现，而不是 CSS 固定定位。
  */
 export function Transcript() {
+  /*
+   * 切换会话时保留上一条会话的正文，新会话的首页历史读取完成后在同一次更新中替换，超过 `SLOW_MS` 时显示
+   * 新会话的加载提示；正在显示的正文为空时没有内容可保留，立即切换。离开的会话视图随即被 `syncViews` 移除，
+   * 保留的是切换前取得的正文数组本身。会话流中的其余内容（运行状态、错误）都按显示中的会话取值，
+   * 不按 `state.activeConversation`。
+   */
+  const shown = createHeld(
+    () => ({ id: state.activeConversation, items: transcript() }),
+    (current) => {
+      if (current.items.length === 0) return true
+      const id = state.activeConversation
+      if (!id) return false
+      const v = viewOf(id)
+      const loading = v.history.loading
+      return (
+        v.error !== null ||
+        v.history.error !== null ||
+        (loading !== 'initial' && loading !== 'unloaded')
+      )
+    },
+  )
+  const id = () => shown().id
   return (
     <ConversationStream
-      conversationId={state.activeConversation}
-      items={transcript()}
-      live={isRunning}
-      closed={runClosed}
+      conversationId={id()}
+      items={shown().items}
+      live={() => isConversationRunning(id())}
+      closed={() => conversationRunClosed(id())}
       variant="main"
       trailing={
         <>
@@ -120,7 +165,7 @@ export function Transcript() {
            * （`ai/src/errors.ts` 的分类文案按用户的下一步操作编写），
            * 再加一句即为重复；需要重新发送时使用输入框。
            */}
-          <Show when={view().error}>
+          <Show when={viewOf(id()).error}>
             {(e) => (
               <div class="error-card" role="alert">
                 {e().message}

@@ -1,6 +1,6 @@
 import { createEffect, createResource, createSignal, For, Show } from 'solid-js'
 import { embedded, postBack } from '../lib/embed.ts'
-import { loaded } from '../lib/resource.ts'
+import { createHeld, loaded } from '../lib/resource.ts'
 import { sessionSignal } from '../lib/session.ts'
 import { hasAppUpdate } from '../lib/store/app-update.ts'
 import {
@@ -96,6 +96,24 @@ export function Sidebar(props: { onClose?: () => void }) {
     return ready
   }, state.connection === 'ready')
 
+  /**
+   * 左栏显示的当前项目、会话列表与当前会话。切换项目时新项目的列表在 upsert 返回前为空，
+   * 此时保留上一个项目的展开与列表，新列表到达后在同一次更新中替换，不先收起再展开。
+   * 服务端保证每个项目至少有一条会话，换了项目而列表为空即尚未取得。同一项目内的变化（删除、归档后列表为空）
+   * 立即显示。
+   */
+  const shownList = createHeld(
+    () => ({
+      root: workspace()?.root,
+      conversations: state.conversations,
+      active: state.activeConversation,
+    }),
+    (current) =>
+      current.root === workspace()?.root ||
+      current.conversations.length === 0 ||
+      state.conversations.length > 0,
+  )
+
   const go = async (target: KnownWorkspace) => {
     if (target.rootPath === workspace()?.root) return
     setError(null)
@@ -173,13 +191,15 @@ export function Sidebar(props: { onClose?: () => void }) {
       <div class="sidebar-scroll">
         <For each={workspaces()}>
           {(w: KnownWorkspace) => {
+            // 展开与高亮按显示中的项目（`shownList`），点击按当前项目判定。
             const isCurrent = () => w.rootPath === workspace()?.root
-            const expanded = () => isCurrent() && collapsedPath() !== w.rootPath
+            const shownCurrent = () => w.rootPath === shownList().root
+            const expanded = () => shownCurrent() && collapsedPath() !== w.rootPath
             return (
               <div class="project">
                 <ProjectRow
                   workspace={w}
-                  current={isCurrent()}
+                  current={shownCurrent()}
                   expanded={expanded()}
                   onOpen={() => {
                     if (isCurrent()) {
@@ -208,12 +228,12 @@ export function Sidebar(props: { onClose?: () => void }) {
                 {/* 收起只改变左栏的显示，不取消当前会话，也不停止正在运行的任务。 */}
                 <Show when={expanded()}>
                   <ul class="nav-list">
-                    <For each={state.conversations}>
+                    <For each={shownList().conversations}>
                       {(c) => (
                         <li>
                           <ConversationRow
                             conversation={c}
-                            active={c.id === state.activeConversation}
+                            active={c.id === shownList().active}
                             running={state.busyConversations.includes(c.id)}
                             onOpen={() => {
                               void selectConversation(c.id)

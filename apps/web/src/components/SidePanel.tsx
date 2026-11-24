@@ -1,5 +1,5 @@
 import type { Component, JSX } from 'solid-js'
-import { createMemo, createSignal, For, lazy, onCleanup, Show, Suspense } from 'solid-js'
+import { createMemo, createSignal, For, lazy, onCleanup, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import type { OfficeFormat } from '../lib/file-search.ts'
 import {
@@ -31,6 +31,7 @@ import {
   workbenchKey,
   workspace,
 } from '../lib/store/index.ts'
+import { HoldBoundary, HoldSwitch } from './HoldSwitch.tsx'
 import {
   IconCanvas,
   IconExpand,
@@ -89,15 +90,9 @@ const VIEWS: { readonly [K in PanelView]: { label: string; pane: Component } } =
   files: { label: '文件', pane: FileBrowser },
   changes: { label: '变更', pane: ChangeRecord },
   // 运行排在末位：查看费用是事后操作，优先级低于当前执行状态。
-  runs: {
-    label: '运行',
-    // 自带 Suspense，理由同可多开的页：没有边界时，组件挂起会使整棵树短暂变空。
-    pane: () => (
-      <Suspense fallback={<div class="pane-loading" />}>
-        <RunDetails />
-      </Suspense>
-    ),
-  },
+  // 懒加载的代码由 `HoldSwitch` 每一项的 Suspense 承担，不要在此再包一层：内层边界会截住挂起，
+  // 切换时上一页不再保留，正文先变空。
+  runs: { label: '运行', pane: RunDetails },
 }
 
 /** 固定页签在页签栏上的顺序，即 `VIEWS` 的键的书写顺序。 */
@@ -107,10 +102,10 @@ const VIEW_ORDER = Object.keys(VIEWS) as PanelView[]
  * 每种可多开的页的正文。键是 `PanelTab['kind']` 的全集，缺少一种时类型检查失败。
  */
 const TAB_VIEWS: {
-  readonly [K in PanelTab['kind']]: Component<{ tab: PanelTab & { kind: K } }>
+  readonly [K in PanelTab['kind']]: Component<{ tab: PanelTab & { kind: K }; visible: boolean }>
 } = {
   terminal: (p) => <TerminalPanel id={p.tab.id} />,
-  browser: (p) => <BrowserPanel id={p.tab.id} />,
+  browser: (p) => <BrowserPanel id={p.tab.id} visible={p.visible} />,
   preview: (p) => <PreviewPanel id={p.tab.id} />,
   conversation: (p) => <ConversationPanel id={p.tab.id} />,
   cli: (p) => <CliPanel id={p.tab.id} />,
@@ -123,8 +118,8 @@ const TAB_VIEWS: {
  * 按页的类型取出正文组件。表以 `kind` 为键，每一项只接受该类型的页；TypeScript 无法把按 `tab.kind`
  * 取出的组件与 `tab` 本身关联，因此在这一处把组件类型放宽为接受全部页。
  */
-function tabView(tab: PanelTab): Component<{ tab: PanelTab }> {
-  return TAB_VIEWS[tab.kind] as Component<{ tab: PanelTab }>
+function tabView(tab: PanelTab): Component<{ tab: PanelTab; visible: boolean }> {
+  return TAB_VIEWS[tab.kind] as Component<{ tab: PanelTab; visible: boolean }>
 }
 
 /** 看板上的「无限画布」：在工作区根新建一张空画布并打开它。 */
@@ -317,11 +312,15 @@ export default function SidePanel() {
   /** 页签是否高亮。看板覆盖正文时所有页签均不高亮：此时正文不属于任何页签。 */
   const onView = (view: PanelView) => sidePanel() === view && !board()
   const onTab = (id: string) => activePanelTab() === id && !board()
-  /** 当前固定视图的正文；显示可多开的页时为 `undefined`。 */
-  const viewPane = () => {
+  /** 当前页的键，作为 `HoldSwitch` 的键：固定页签为 `<页签>:<项目 id>`，可多开的页为 `tab:<页 id>`。 */
+  const panelKey = (): string | undefined => {
     const page = sidePanel()
-    return typeof page === 'string' ? VIEWS[page].pane : undefined
+    if (page !== null && typeof page === 'object') return `tab:${page.tab}`
+    const ws = workspace()?.id
+    return page !== null && ws ? `${page}:${ws}` : undefined
   }
+  /** 正在显示的可多开的页，由 `HoldSwitch` 的显示项决定，最多比当前页晚 `SLOW_MS`。 */
+  const [shownTab, setShownTab] = createSignal<string | null>(null)
 
   return (
     <Show when={sidePanel()}>
@@ -462,7 +461,8 @@ export default function SidePanel() {
 
         <div class="side-body">
           {/*
-           * **切换项目时重新挂载整个区域**（`keyed` 的 Show 按项目 id）。
+           * **切换项目时重新挂载整个区域**：固定页签按「页签 + 项目」为键（`HoldSwitch`），可多开的页与看板
+           * 按项目 id（`keyed` 的 Show）。
            *
            * 面板中有多处按路径记录的状态：文件树展开的目录、子层缓存、选中的行、
            * 正在查看的 diff。它们都是局部状态，切换项目后每一项仍指向上一个项目：
@@ -471,22 +471,33 @@ export default function SidePanel() {
            * 逐项清除不可行：那需要维护一份全部局部状态的清单，每新增一个 signal 都可能遗漏。
            * 重新挂载是唯一不会遗漏的做法。`openFile` 不在此处，由 `activateWorkspace` 清除。
            *
+           * 切换到固定页签时保留上一页，新页的代码与首次读取完成后在同一次更新中替换。上一页是可多开的页时，
+           * 该页保持显示（`shownTab`），内置浏览器的网页随之保留在原位。
+           * 可多开的页的正文不在 `HoldSwitch` 中渲染，只以键参与切换：保留期间新旧两项同时挂载，而终端的
+           * xterm 实例按页 id 保存在模块级的 `panes` 中，两处会争用同一个宿主元素。
+           *
            * **重新挂载不关闭可多开的页**：它们按项目分别记录（`store/ui.ts` 的 `panels`），
-           * 只派生当前项目的页。终端的 xterm 实例保存在模块级的 `panes` 中、
-           * PTY 在 Rust 侧，重新挂载只是移入移出宿主元素，切回后命令仍在运行。
+           * 只派生当前项目的页。PTY 在 Rust 侧，重新挂载只是移入移出宿主元素，切回后命令仍在运行。
+           *
+           * 看板打开时 `.side-stack` 只**隐藏，不卸载**：终端页卸载会把 xterm 实例移出面板，
+           * 浏览器页的 iframe 一旦移出 DOM 就会重新加载。看板只是选择新页面的清单，不应导致已打开的页被重建。
            */}
+          <div class="side-stack" classList={{ hidden: board() }}>
+            <HoldSwitch
+              key={panelKey()}
+              onShow={(key) => setShownTab(key?.startsWith('tab:') ? key.slice(4) : null)}
+            >
+              {(key) => (
+                <Show when={key !== undefined && !key.startsWith('tab:') && key}>
+                  {(k) => <Dynamic component={VIEWS[k().split(':')[0] as PanelView].pane} />}
+                </Show>
+              )}
+            </HoldSwitch>
+            <Show when={workspace()?.id} keyed>
+              <TabPanes visible={shownTab()} />
+            </Show>
+          </div>
           <Show when={workspace()?.id} keyed>
-            {/*
-             * 看板打开时该层只**隐藏，不卸载**。
-             *
-             * 卸载有实际代价：终端页卸载会把 xterm 实例移出面板（见 `TerminalPanel.tsx` 的模块级
-             * `panes`），浏览器页的 iframe 一旦移出 DOM 就会重新加载。看板只是
-             * 选择新页面的清单，不应导致已打开的页被重建。
-             */}
-            <div class="side-stack" classList={{ hidden: board() }}>
-              <Dynamic component={viewPane()} />
-              <TabPanes />
-            </div>
             <Show when={board()}>
               <PreviewBoard onPick={() => setBoard(false)} />
             </Show>
@@ -510,7 +521,7 @@ export default function SidePanel() {
 }
 
 /**
- * 可多开的页的正文。一页在本次挂载中首次成为当前页时挂载，此后**保持挂载，只显示当前页**（`.tab-pane.active`）。
+ * 可多开的页的正文。一页在本次挂载中首次成为当前页时挂载，此后**保持挂载，只显示 `visible` 指定的页**（`.tab-pane.active`）。
  * 面板收起或切换工作区时整体卸载，再次挂载后同样按首次显示挂载各页。
  *
  * 终端与外部 CLI 页立即挂载：它们是运行中的进程，不随重启恢复。按首次显示挂载时，进程在显示之前退出，
@@ -520,10 +531,11 @@ export default function SidePanel() {
  * 读取 N 个文件。也不要改为只挂载当前页：终端中的命令需继续运行、滚动历史需保留，iframe 中的页面不应因切换页签
  * 而重新加载。
  *
- * 每一页自带 `Suspense`：xterm 的包体积超过 300 kB，没有边界时组件挂起会使
- * 整棵树短暂变空（同 `App.tsx` 中的处理）。
+ * 每一页自带边界（`HoldBoundary`）：xterm 的包体积超过 300 kB，没有边界时组件挂起会使
+ * 整棵树短暂变空（同 `App.tsx` 中的处理）。不要换成 Suspense：该页显示之后才创建的内容（文件页切换到源码）
+ * 声明的首次读取会使整页再次换为加载状态。
  */
-function TabPanes() {
+function TabPanes(props: { visible: string | null }) {
   const shown = createMemo<ReadonlySet<string>>((seen) => {
     const id = activePanelTab()
     return id === null || seen.has(id) ? seen : new Set([...seen, id])
@@ -532,10 +544,10 @@ function TabPanes() {
     <For each={panelTabs()}>
       {(t) => (
         <Show when={t.kind === 'terminal' || t.kind === 'cli' || shown().has(t.id)}>
-          <div class="tab-pane" classList={{ active: activePanelTab() === t.id }}>
-            <Suspense fallback={<div class="pane-loading" />}>
-              <Dynamic component={tabView(t)} tab={t} />
-            </Suspense>
+          <div class="tab-pane" classList={{ active: props.visible === t.id }}>
+            <HoldBoundary fallback={<div class="pane-loading" />}>
+              <Dynamic component={tabView(t)} tab={t} visible={props.visible === t.id} />
+            </HoldBoundary>
           </div>
         </Show>
       )}

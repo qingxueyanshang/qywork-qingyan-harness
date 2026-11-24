@@ -40,6 +40,7 @@ import {
 } from '@qywork/ooxml/pptx'
 import type { HostFamilies } from '@qywork/ooxml/text'
 import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
+import { suspendUntil } from '../../../lib/resource.ts'
 import { readView, writeView } from '../../preview/view-state.ts'
 import {
   boundaryText,
@@ -296,6 +297,7 @@ export default function SlideView(props: { path: string; mtime: number }) {
   }
 
   const error = createDocumentLoader(() => props, loadDoc, showDoc)
+  suspendUntil(() => doc() !== null || error() !== null)
 
   /** 嵌入字体 `typeface` 注册后，重绘用到它的幻灯片；视口只重绘其中可见的。 */
   const repaintUsing = (d: Doc, typeface: string) => {

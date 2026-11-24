@@ -125,7 +125,7 @@ async function mount(tabId: string, browser: BrowserCapability) {
   const { default: BrowserPanel } = await import('./BrowserPanel.tsx')
   const host = document.createElement('div')
   document.body.append(host)
-  dispose = render(() => <BrowserPanel id={tabId} />, host as unknown as HTMLElement)
+  dispose = render(() => <BrowserPanel id={tabId} visible />, host as unknown as HTMLElement)
   await flush()
   return { host, store }
 }

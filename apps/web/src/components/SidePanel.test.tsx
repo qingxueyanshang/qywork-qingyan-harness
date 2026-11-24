@@ -11,7 +11,7 @@
  * 另覆盖文件预览中 Markdown 的渲染与源码切换、ZIP 归档的成员列表。
  */
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, jest, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
@@ -1415,13 +1415,101 @@ describe('看板按当前端实际具备的能力列出各行', () => {
   })
 })
 
+describe('从可多开的页切换到固定页签', () => {
+  /**
+   * 原始失败形状：从内置浏览器页切换到「文件」「变更」「运行」「待办」时，可多开的页立即隐藏（网页随之移走），
+   * 固定页签的首次读取完成之前面板正文为空（真实外壳中逐帧实测 20 次中 6 次空白，持续 5 至 90 毫秒）。
+   * 用文件页代替浏览器页：两者显示与隐藏经同一个 `.tab-pane.active`，网页是否摆放由占位容器的矩形决定。
+   */
+  test('可多开的页保持显示到固定页签首次读取完成，两者在同一次更新中替换', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    let releaseTree: (() => void) | undefined
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path: string,
+    ) => {
+      if (path.startsWith('/api/files/tree')) {
+        await new Promise<void>((resolve) => {
+          releaseTree = resolve
+        })
+        return { nodes: [] }
+      }
+      if (!path.startsWith('/api/files/preview')) throw new Error(`未预期请求：${path}`)
+      return {
+        path: 'x.txt',
+        kind: 'text',
+        mime: 'text/plain',
+        size: 1,
+        mtime: 1,
+        content: '页中的正文',
+        truncated: false,
+      }
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+
+    store.setWorkspace({ id: 'ws_tab_hold', root: 'C:\\work', name: 'work' })
+    store.openFileTab('x.txt')
+
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+    const pane = () => host.querySelector('.tab-pane.active')?.textContent ?? ''
+    const browser = () => host.querySelector('.file-browser') !== null
+    await waitFor(
+      () => pane().includes('页中的正文'),
+      () => host.innerHTML.slice(0, 400),
+    )
+
+    const states: string[] = []
+    const observer = new MutationObserver(() =>
+      states.push(`${pane().includes('页中的正文')}|${browser()}`),
+    )
+    observer.observe(host, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+    })
+    const flush = async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+    }
+    jest.useFakeTimers()
+    try {
+      store.setSidePanel('files')
+      await flush()
+      jest.advanceTimersByTime(100)
+      await flush()
+      expect(releaseTree).toBeDefined()
+      expect(pane()).toContain('页中的正文')
+      expect(browser()).toBe(false)
+
+      releaseTree?.()
+      await flush()
+      expect(pane()).toBe('')
+      expect(browser()).toBe(true)
+      expect(states.length).toBeGreaterThan(0)
+      expect(states.every((st) => st === 'true|false' || st === 'false|true')).toBe(true)
+    } finally {
+      jest.useRealTimers()
+      observer.disconnect()
+    }
+  })
+})
+
 describe('文件预览的切换与 PDF', () => {
   /**
-   * 原始失败形状：点击另一个文件后正文仍显示上一个文件，直到新文件的预览取回；
-   * 加载较慢的文件看起来像点击没有响应。
+   * 原始失败形状有两种，分别锁定：
+   * - 点击另一个文件后正文先换为新文件的加载态，预览取回后再显示正文，正文区先收缩再展开（逐帧实测 1608 → 10 → 72 个元素）；
+   * - 点击后正文一直显示上一个文件，直到新文件的预览取回，加载较慢的文件看起来像点击没有响应。
+   * 预览在 `SLOW_MS` 内取回时两者在同一次更新中替换；超过时显示新文件的加载态，不再显示上一个文件的正文。
    */
-  test('切换文件后立即显示新文件的加载态，不保留上一个文件的正文', async () => {
+  test('切换文件时保留上一个文件直到新文件预览取回，超过 SLOW_MS 显示新文件的加载态', async () => {
     const store = await import('../lib/store/index.ts')
+    const { SLOW_MS } = await import('../lib/resource.ts')
     const originalApi = store.client.api
     let releaseB: (() => void) | undefined
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
@@ -1441,7 +1529,7 @@ describe('文件预览的切换与 PDF', () => {
         mime: 'text/markdown',
         size: 1,
         mtime: 1,
-        content: file === 'a.md' ? '甲文件正文' : '乙文件正文',
+        content: file === 'b.md' ? '乙文件正文' : '甲文件正文',
         truncated: false,
       }
     }
@@ -1458,26 +1546,60 @@ describe('文件预览的切换与 PDF', () => {
     const host = document.createElement('div')
     document.body.append(host)
     dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+    const body = () => host.querySelector('.cm-content')?.textContent ?? ''
+    const head = () => host.querySelector('.preview-head')?.textContent ?? ''
+    const loading = () => host.querySelector('.preview .preview-loading') !== null
+    const flush = async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+    }
 
     await waitFor(
-      () => host.querySelector('.cm-content')?.textContent?.includes('甲文件正文') === true,
+      () => body().includes('甲文件正文'),
       () => host.innerHTML.slice(0, 400),
     )
 
-    store.setOpenFile('b.md')
-    await waitFor(
-      () => releaseB !== undefined,
-      () => '未发出 b.md 的预览请求',
-    )
-    expect(host.querySelector('.preview-head')?.textContent).toContain('b.md')
-    expect(host.querySelector('.preview .preview-loading')).not.toBeNull()
-    expect(host.textContent).not.toContain('甲文件正文')
+    jest.useFakeTimers()
+    try {
+      store.setOpenFile('b.md')
+      await flush()
+      expect(releaseB).toBeDefined()
+      expect(head()).toContain('a.md')
+      expect(body()).toContain('甲文件正文')
+      expect(loading()).toBe(false)
 
+      jest.advanceTimersByTime(SLOW_MS)
+      await flush()
+      expect(head()).toContain('b.md')
+      expect(loading()).toBe(true)
+      expect(host.textContent).not.toContain('甲文件正文')
+    } finally {
+      jest.useRealTimers()
+    }
     releaseB?.()
     await waitFor(
-      () => host.querySelector('.cm-content')?.textContent?.includes('乙文件正文') === true,
+      () => body().includes('乙文件正文'),
       () => host.innerHTML.slice(0, 400),
     )
+
+    // 预览立即返回的文件：每个微任务检查点上都只有一个文件的正文，不出现加载态。
+    const states: string[] = []
+    const observer = new MutationObserver(() =>
+      states.push(`${head().includes('a.md') ? 'a' : 'b'}|${loading()}|${body()}`),
+    )
+    observer.observe(host, { childList: true, subtree: true, characterData: true })
+    try {
+      store.setOpenFile('a.md')
+      await waitFor(
+        () => body().includes('甲文件正文'),
+        () => host.innerHTML.slice(0, 400),
+      )
+      expect(states.length).toBeGreaterThan(0)
+      expect(states.every((st) => st === 'b|false|乙文件正文' || st === 'a|false|甲文件正文')).toBe(
+        true,
+      )
+    } finally {
+      observer.disconnect()
+    }
   })
 
   /**
@@ -1777,8 +1899,10 @@ describe('文件预览的 Markdown 与归档', () => {
         () => host.querySelector('.cm-editor') !== null,
         () => `html=${host.innerHTML.slice(0, 300)}`,
       )
-      expect(invokes.some((i) => i.cmd === 'browser_close' && i.args?.tabId === 'bt_html')).toBe(
-        true,
+      // 源码先上屏，其后第二帧才移走并关闭页面。
+      await waitFor(
+        () => invokes.some((i) => i.cmd === 'browser_close' && i.args?.tabId === 'bt_html'),
+        () => JSON.stringify(invokes.map((i) => i.cmd)),
       )
     } finally {
       HTMLElement.prototype.getBoundingClientRect = rect

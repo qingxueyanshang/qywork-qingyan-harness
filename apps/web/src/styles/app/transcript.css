@@ -48,6 +48,10 @@
     content-visibility: auto;
     contain-intrinsic-block-size: auto 80px;
   }
+  /* 换为另一条会话的正文后的第一帧完整渲染，原因见 `Transcript.tsx` 中 `settling` 的注释。 */
+  .conversation-stream-inner.settling > :is(.row, .fold, .wf-card, .run-strip) {
+    content-visibility: visible;
+  }
 }
 
 .transcript-inner {

@@ -21,6 +21,7 @@ import {
   type Workbook,
 } from '@qywork/ooxml/xlsx'
 import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js'
+import { suspendUntil } from '../../lib/resource.ts'
 import { readView, writeView } from '../preview/view-state.ts'
 import { boundaryText, connectWorker, createDocumentLoader, failureText } from './document.ts'
 import { type HostFace, loadClearType, loadHostFaces } from './fonts.ts'
@@ -187,6 +188,7 @@ export default function SheetView(props: { path: string; mtime: number }) {
     },
     showDoc,
   )
+  suspendUntil(() => doc() !== null || error() !== null)
 
   let decoding = 0
   createEffect(

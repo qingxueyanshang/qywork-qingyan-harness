@@ -1,6 +1,6 @@
 import { type FileChange, type FoldedFileChange, foldFileChanges } from '@qywork/core'
 import {
-  createEffect,
+  createComputed,
   createMemo,
   For,
   Match,
@@ -10,6 +10,7 @@ import {
   Show,
   Switch,
 } from 'solid-js'
+import { suspendUntil } from '../../lib/resource.ts'
 import { MAP_CODEC, SET_CODEC, sessionSignal } from '../../lib/session.ts'
 import { clamp, diffFrom, firstString } from '../../lib/step-view.ts'
 import {
@@ -117,11 +118,17 @@ function foldTurn(turn: ChangeTurn): ChangedFile[] {
 export function ChangeRecord() {
   const conversationId = () => state.activeConversation
   const changes = () => view().changes
-  createEffect(
+  // 用 `createComputed` 在创建时发起读取：`createEffect` 在 Suspense 挂起期间推迟执行，
+  // 读取要等到 `suspendUntil` 超时后才开始。
+  createComputed(
     on(conversationId, (id) => {
       if (id) void loadConversationChanges(id)
     }),
   )
+  suspendUntil(() => {
+    const c = changes()
+    return !conversationId() || (c !== null && c.loading !== 'initial')
+  })
   const retry = () => {
     const id = conversationId()
     if (id) void loadConversationChanges(id)

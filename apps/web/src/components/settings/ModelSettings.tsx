@@ -11,6 +11,7 @@ import {
 } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import { composing } from '../../lib/input/composing.ts'
+import { suspendUntil } from '../../lib/resource.ts'
 import { sessionSignal } from '../../lib/session.ts'
 import { cloudState, refreshCloudState } from '../../lib/store/cloud.ts'
 import {
@@ -30,6 +31,7 @@ import {
   config,
   configBusy,
   configError,
+  configSettled,
   ensureConfig,
   reloadConfig,
   replaceConfig,
@@ -81,6 +83,7 @@ const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视
  */
 export function ModelSettings() {
   ensureConfig()
+  suspendUntil(configSettled)
   void ensureModelCatalog()
 
   /** 正在编辑的接口。null 表示跟随 active。 */

@@ -1,4 +1,5 @@
 import { createSignal, For, onCleanup, Show } from 'solid-js'
+import { SLOW_MS } from '../../lib/resource.ts'
 import { explainApiError } from '../../lib/store/index.ts'
 
 /**
@@ -13,8 +14,6 @@ import { explainApiError } from '../../lib/store/index.ts'
  * 既不说明原因，也无法重试（实测原因是跨源预检被 401 拒绝，界面上无法判断请求未能发出）。
  * 失败不受阈值限制：它是终态，出现后立即渲染。
  */
-const SLOW_MS = 200
-
 /** 读取开始后超过 `SLOW_MS` 时为真。 */
 function useSlow(): () => boolean {
   const [slow, setSlow] = createSignal(false)

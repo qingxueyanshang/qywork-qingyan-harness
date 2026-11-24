@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import { suspendUntil } from '../lib/resource.ts'
 import { usePreviewTools } from './preview/tools.ts'
 import { readView, writeView } from './preview/view-state.ts'
 import ZoomControl from './preview/ZoomControl.tsx'
@@ -38,6 +39,21 @@ export default function FileImageView(props: { src: string; path: string }) {
   const [failed, setFailed] = createSignal(false)
   /** 图片与预览区的尺寸都已取得：此前缩放比例无从计算，缩放控件与快捷键都不响应。 */
   const ready = () => size().width > 0 && space().width > 0 && !failed()
+  /*
+   * 首次加载与解码声明为首次读取：切换文件时文件页保留上一个文件，到图片可以显示。
+   * 加载与解码在页面文档中另建的图片上进行，完成后写入尺寸：下方的 `<img>` 由 JSX 模板克隆，属于模板的文档，
+   * 所在区域挂起期间不加载，区域显示后才开始加载。另建的图片完成后，`<img>` 显示时从缓存取得。
+   */
+  const first = new Image()
+  first.src = props.src
+  first.decode().then(
+    () => {
+      if (size().width === 0 && first.naturalWidth > 0)
+        setSize({ width: first.naturalWidth, height: first.naturalHeight })
+    },
+    () => undefined,
+  )
+  suspendUntil(() => size().width > 0 || failed())
   const source = createMemo(() => props.src)
   const scale = createMemo(() => {
     const current = mode()
@@ -183,6 +199,8 @@ export default function FileImageView(props: { src: string; path: string }) {
             src={source()}
             alt={props.path}
             draggable={false}
+            // 绘制前完成解码：异步解码时，图片显示的第一帧中该区域为空白。
+            decoding="sync"
             style={{
               width: `${size().width * scale()}px`,
               height: `${size().height * scale()}px`,

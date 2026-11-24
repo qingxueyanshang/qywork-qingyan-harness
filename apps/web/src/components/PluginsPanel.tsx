@@ -1,5 +1,5 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
-import { loaded } from '../lib/resource.ts'
+import { loaded, suspendUntil } from '../lib/resource.ts'
 import {
   askInChat,
   client,
@@ -66,6 +66,7 @@ export function PluginsPanel() {
   const [data, { refetch }] = createResource(extensionsRevision, () =>
     client.api<PluginsPayload>('/api/plugins'),
   )
+  suspendUntil(() => !data.loading)
   const [busy, setBusy] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [okMsg, setOkMsg] = createSignal<string | null>(null)

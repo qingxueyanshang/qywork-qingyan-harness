@@ -44,3 +44,4 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [会话流触摸滑动须实测](touch-scroll-probe.md) — 修改底部跟随后用 .tmp/probe/touch-follow.mjs 与 touch-static.mjs 以真实触摸序列实测；synthesizeScrollGesture 在无头模式下不派发 touchmove
 - [CI 运行环境没有 rg](ci-runner-has-no-rg.md) — 断言 ripgrep 引擎的用例须以 Bun.which 为前提；0.3.23 发布门禁因此在三个平台失败
 - [按请求计算缓存差额](cache-lag-by-request.md) — 上一次总输入减本次命中；固定差额等于系统提示词大小时是上游把它放在对话之后，客户端调整位置无效
+- [闪烁以实际绘制帧定案](flicker-probe-by-painted-frames.md) — DOM 逐帧检测找候选，CDP 截帧定案；内置浏览器在外壳中截屏；区域显示后创建的组件不挂起；模板克隆的图片挂起期间不加载

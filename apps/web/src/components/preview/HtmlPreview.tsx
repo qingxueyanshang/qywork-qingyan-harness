@@ -8,7 +8,7 @@
  * - 页面位于浏览器独立窗口中的宿主（macOS 与 Linux）无法嵌入文件页，只提供在浏览器中打开的按钮。
  */
 
-import { createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import { createComputed, createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import {
   closeBrowserPage,
   navigateBrowserPage,
@@ -19,6 +19,7 @@ import {
   zoomBrowserPage,
 } from '../../lib/browser.ts'
 import { localHtmlUrl } from '../../lib/links.ts'
+import { suspendUntil } from '../../lib/resource.ts'
 import {
   absPath,
   browserPresentation,
@@ -49,7 +50,9 @@ export default function HtmlPreview(props: { path: string; mtime: number }) {
   let unmounted = false
   let opening = false
   // 宿主的显示方式在其连接服务端后才取得，可能晚于挂载：取得后打开一次。
-  createEffect(
+  // 创建时即打开（`createComputed`），并声明为首次读取：宿主在页面加载完成后才返回，切换文件时文件页保留上一个文件到
+  // 页面可以摆放。不要改为 `createEffect`：所在的 Suspense 挂起期间 effect 推迟执行，打开要等挂起超时后才开始。
+  createComputed(
     on(browserPresentation, (presentation) => {
       const ws = workspace()?.id
       const target = url()
@@ -67,6 +70,7 @@ export default function HtmlPreview(props: { path: string; mtime: number }) {
       )
     }),
   )
+  suspendUntil(() => tabId() !== null || error() !== '' || browserPresentation() !== 'embedded')
 
   onMount(() => {
     // 页面内的 Ctrl+滚轮由引擎处理；焦点在文件树等界面元素上时，按键经此缩放页面。
@@ -83,16 +87,24 @@ export default function HtmlPreview(props: { path: string; mtime: number }) {
     ro.observe(slot)
     window.addEventListener('resize', layout)
     onCleanup(() => {
-      unmounted = true
       unbind()
       ro.disconnect()
       window.removeEventListener('resize', layout)
-      const opened = tabId()
-      if (opened) {
-        parkBrowserView(opened)
-        void closeBrowserPage(opened).catch(() => {})
-      }
     })
+  })
+
+  // 关闭登记在组件上，不放在 `onMount` 中：页面在创建时打开，本组件可能在显示之前被替换（保留期间又切换到其他文件），
+  // 此时 `onMount` 从未执行。第二帧再移走并关闭页面：替换本预览的内容在下一次合成时才上屏，立即移走时露出空白的预览区域。
+  onCleanup(() => {
+    unmounted = true
+    const opened = tabId()
+    if (opened)
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          parkBrowserView(opened)
+          void closeBrowserPage(opened).catch(() => {})
+        }),
+      )
   })
 
   /** 把占位区域的矩形交给宿主；区域不可见或有浮层时移出可视区。 */

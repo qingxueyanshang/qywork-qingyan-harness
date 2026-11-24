@@ -13,7 +13,7 @@ import type { OpcFailure } from '@qywork/ooxml/opc'
 import {
   type Accessor,
   batch,
-  createEffect,
+  createComputed,
   createMemo,
   createSignal,
   on,
@@ -91,6 +91,9 @@ export function connectWorker<Req extends { readonly kind: string }, Replies>(
  * 按 `source` 的路径与修改时间取得文件字节并交给 `load`。`load` 返回字符串表示失败原因；返回文档时在同一批更新中
  * 清除失败原因并调用 `show`。返回当前的失败原因，没有失败时为 `null`。
  * 路径或修改时间再次变化、组件卸载时中止进行中的加载：`signal` 中止后 `load` 的结果不再采用。
+ *
+ * 加载在创建时开始（`createComputed`），调用方以 `suspendUntil` 声明首次加载，切换文件时文件页保留上一个文件。
+ * 不要改为 `createEffect`：所在的 Suspense 挂起期间 effect 推迟执行，加载要等挂起超时后才开始。
  */
 export function createDocumentLoader<T extends object>(
   source: () => { readonly path: string; readonly mtime: number },
@@ -103,7 +106,7 @@ export function createDocumentLoader<T extends object>(
     return JSON.stringify([s.path, s.mtime])
   })
   let loading: AbortController | null = null
-  createEffect(
+  createComputed(
     on(key, () => {
       loading?.abort()
       const controller = new AbortController()

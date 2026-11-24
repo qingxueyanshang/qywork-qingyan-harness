@@ -1,6 +1,6 @@
 import { ROLE_COMMAND } from '@qywork/core'
 import { createResource, createSignal, For, Show } from 'solid-js'
-import { loaded } from '../../lib/resource.ts'
+import { loaded, suspendUntil } from '../../lib/resource.ts'
 import {
   askInChat,
   loadTeam,
@@ -50,6 +50,7 @@ export default function AgentsSettings() {
   const [team, { refetch: refetchTeam }] = createResource(loadTeam)
   const [clis, { refetch: refetchClis }] = createResource(loadTeamClis)
   const [file, { refetch: refetchRaw }] = createResource(loadTeamRaw)
+  suspendUntil(() => !team.loading && !clis.loading && !file.loading)
   const [error, setError] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
 

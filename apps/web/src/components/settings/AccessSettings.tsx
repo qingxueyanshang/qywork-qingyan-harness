@@ -1,5 +1,6 @@
 import type { DesktopCapability, DesktopGrant } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
+import { suspendUntil } from '../../lib/resource.ts'
 import {
   browserUnavailableText,
   isDesktopShell,
@@ -10,6 +11,7 @@ import { ConfigStatus } from './ConfigStatus.tsx'
 import {
   config,
   configError,
+  configSettled,
   defaultEnvAllowList,
   ensureConfig,
   patchConfig,
@@ -64,6 +66,7 @@ function browserStatus(): string | null {
  */
 export function AccessSettings() {
   ensureConfig()
+  suspendUntil(configSettled)
   // 外壳未能打开系统设置的项。只记录最近一次：再次点击时清除并重试。
   const [openFailed, setOpenFailed] = createSignal<DesktopGrant | null>(null)
   const openSettings = (grant: DesktopGrant) => {

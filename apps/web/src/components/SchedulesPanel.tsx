@@ -1,6 +1,6 @@
 import type { ScheduleView } from '@qywork/core'
 import { createResource, createSignal, For, Show } from 'solid-js'
-import { loaded } from '../lib/resource.ts'
+import { loaded, suspendUntil } from '../lib/resource.ts'
 import {
   askInChat,
   deleteSchedule,
@@ -41,6 +41,7 @@ export function SchedulesPanel() {
     () => `${workspace()?.id ?? ''}|${state.busyConversations.join(',')}`,
     loadSchedules,
   )
+  suspendUntil(() => !data.loading)
   const [busy, setBusy] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
 

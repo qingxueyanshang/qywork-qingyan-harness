@@ -1,7 +1,7 @@
 import type { UsageResponse, UsageTotals } from '@qywork/core'
 import { formatCosts } from '@qywork/core'
 import { createResource, For, Show } from 'solid-js'
-import { loaded } from '../../lib/resource.ts'
+import { loaded, suspendUntil } from '../../lib/resource.ts'
 import { sessionSignal } from '../../lib/session.ts'
 import { compact } from '../../lib/step-view.ts'
 import { client } from '../../lib/store/index.ts'
@@ -48,6 +48,7 @@ export default function UsageSettings() {
     () => ({ days: days(), by: by() }),
     (q) => client.api<UsageResponse>(`/api/usage?days=${q.days}&by=${q.by}`),
   )
+  suspendUntil(() => !data.loading)
 
   return (
     <>

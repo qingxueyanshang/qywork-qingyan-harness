@@ -11,14 +11,19 @@ import {
   onCleanup,
   onMount,
   Show,
-  Suspense,
   Switch,
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
-import { createReadonlyEditor, scrollToLine, selectRange, topLine } from '../lib/editor.ts'
+import {
+  createReadonlyEditor,
+  languageFor,
+  scrollToLine,
+  selectRange,
+  topLine,
+} from '../lib/editor.ts'
 import type { OfficeFormat } from '../lib/file-search.ts'
 import { renderMarkdown } from '../lib/markdown.ts'
-import { loaded } from '../lib/resource.ts'
+import { loaded, suspendUntil } from '../lib/resource.ts'
 import {
   absPath,
   client,
@@ -29,6 +34,7 @@ import {
   workspace,
 } from '../lib/store/index.ts'
 import FileImageView from './FileImageView.tsx'
+import { HoldBoundary } from './HoldSwitch.tsx'
 import { IconX } from './Icons.tsx'
 import HtmlPreview from './preview/HtmlPreview.tsx'
 import { type PreviewTools, PreviewToolsContext, type ToolsRender } from './preview/tools.ts'
@@ -36,7 +42,8 @@ import { patchView, readView } from './preview/view-state.ts'
 import ZoomControl from './preview/ZoomControl.tsx'
 import { bindZoomInputs, ZOOM_STEP } from './preview/zoom-input.ts'
 
-// 懒加载：表格、演示文稿与文档的解析与绘制代码只在打开对应文件时下载。
+// 懒加载：表格、演示文稿与文档的解析与绘制代码只在打开对应文件时下载。使用处以 `HoldBoundary` 包裹，不要换成 Suspense：
+// 代码下载与首次解析要挂起到文件页的 `HoldSwitch`，切换文件时保留上一个文件；换成 Suspense 时先显示加载条。
 const SheetView = lazy(() => import('./office/SheetView.tsx'))
 const SlideView = lazy(() => import('./office/pptx/SlideView.tsx'))
 const DocView = lazy(() => import('./office/docx/DocView.tsx'))
@@ -76,6 +83,7 @@ export default function FileView(props: { path: string; refresh?: number; onClos
     () => `${props.path}:${props.refresh ?? 0}`,
     () => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(props.path)}`),
   )
+  suspendUntil(() => !result.loading)
 
   /**
    * Markdown 与 SVG 显示源码而不是渲染结果。文件页按路径重新挂载本组件，切换文件后回到渲染结果；
@@ -238,19 +246,19 @@ export default function FileView(props: { path: string; refresh?: number; onClos
                   <PdfView path={r().path} mtime={r().mtime} />
                 </Match>
                 <Match when={r().office === 'xlsx'}>
-                  <Suspense fallback={<div class="preview-loading" />}>
+                  <HoldBoundary fallback={<div class="preview-loading" />}>
                     <SheetView path={r().path} mtime={r().mtime} />
-                  </Suspense>
+                  </HoldBoundary>
                 </Match>
                 <Match when={r().office === 'pptx'}>
-                  <Suspense fallback={<div class="preview-loading" />}>
+                  <HoldBoundary fallback={<div class="preview-loading" />}>
                     <SlideView path={r().path} mtime={r().mtime} />
-                  </Suspense>
+                  </HoldBoundary>
                 </Match>
                 <Match when={r().office === 'docx'}>
-                  <Suspense fallback={<div class="preview-loading" />}>
+                  <HoldBoundary fallback={<div class="preview-loading" />}>
                     <DocView path={r().path} mtime={r().mtime} />
-                  </Suspense>
+                  </HoldBoundary>
                 </Match>
                 <Match when={r().kind === 'image'}>
                   <FileImageView src={client.fileUrl(r().path, r().mtime)} path={r().path} />
@@ -445,8 +453,13 @@ function CodeView(props: { content: string; path: string; wrap: boolean; zoom: n
   let host!: HTMLDivElement
   let view: EditorView | null = null
   let mountedPath: string | null = null
-  /** 只采用最后一次装配的结果：语言包是动态 import，两次改动间隔很短时，后发出的可能先完成。 */
-  let generation = 0
+  /**
+   * 语言包随组件创建开始读取，并声明为首次读取（`suspendUntil`）：编辑器在语言包到达后同步创建，
+   * 预览显示时代码区已有内容。不要改回在 effect 中 `await` 语言包：Suspense 挂起期间 effect 推迟执行，
+   * 预览显示之后才开始读取，代码区先空白、再出现正文。
+   */
+  const [lang] = createResource(() => props.path, languageFor)
+  suspendUntil(() => !lang.loading)
 
   /** 执行指向本文件的选中请求（`fileSelectRequest`）。请求可能先于编辑器装配完成到达，装配后再执行一次。 */
   const applySelect = () => {
@@ -465,7 +478,8 @@ function CodeView(props: { content: string; path: string; wrap: boolean; zoom: n
   createEffect(() => {
     const content = props.content
     const path = props.path
-    const mine = ++generation
+    // 换路径时等待该路径的语言包：重新读取期间 `latest` 仍是上一个路径的结果。
+    const extensions = lang.state === 'ready' ? lang.latest : undefined
 
     if (view && mountedPath === path) {
       if (view.state.doc.toString() === content) return
@@ -477,20 +491,15 @@ function CodeView(props: { content: string; path: string; wrap: boolean; zoom: n
       return
     }
 
-    void (async () => {
-      const next = await createReadonlyEditor(host, content, path, props.wrap)
-      if (mine !== generation) {
-        next.destroy()
-        return
-      }
-      view?.destroy()
-      view = next
-      mountedPath = path
-      const line = readView<TextView>(path)?.line
-      if (line !== undefined) scrollToLine(next, line)
-      applySelect()
-      next.scrollDOM.addEventListener('scroll', () => patchView(path, { line: topLine(next) }))
-    })()
+    if (extensions === undefined) return
+    const next = createReadonlyEditor(host, content, extensions, props.wrap)
+    view?.destroy()
+    view = next
+    mountedPath = path
+    const line = readView<TextView>(path)?.line
+    if (line !== undefined) scrollToLine(next, line)
+    applySelect()
+    next.scrollDOM.addEventListener('scroll', () => patchView(path, { line: topLine(next) }))
   })
 
   // 字号由外层的 `--text-zoom` 决定。编辑器按缓存的行高定位，字号变化后须重新测量，再滚动到缩放前位于顶部的行。

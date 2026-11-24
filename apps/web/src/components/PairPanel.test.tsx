@@ -105,12 +105,14 @@ test('未登录云端账号时整节不出现', async () => {
   expect(host.querySelector('.pair-section')).toBeNull()
 })
 
-test('打开开关后显示已连接，不显示二维码；外层 Suspense 始终不挂起', async () => {
+/** 首次读取按设计挂起外层一次（窗口打开后本节不再出现），之后的切换与重新读取不再挂起。 */
+test('打开开关后显示已连接，不显示二维码；开关切换期间外层 Suspense 不挂起', async () => {
   const { host, suspended } = await mount(signedIn())
   await waitFor(
     () => host.querySelector('.pair-toggle') !== null,
     () => host.innerHTML,
   )
+  const afterFirstRead = suspended.times
   expect(host.textContent).toContain('允许从云端网页使用这台电脑')
   const box = host.querySelector<HTMLInputElement>('.pair-toggle input')!
   box.checked = true
@@ -120,7 +122,7 @@ test('打开开关后显示已连接，不显示二维码；外层 Suspense 始�
     () => host.innerHTML,
   )
   expect(host.querySelector('svg')).toBeNull()
-  expect(suspended.times).toBe(0)
+  expect(suspended.times).toBe(afterFirstRead)
 })
 
 /** 原始失败形状：开关请求失败时没有任何提示，勾选框停留在点击后的状态，而远程访问并未开启。 */

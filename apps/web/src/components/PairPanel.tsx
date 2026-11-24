@@ -7,7 +7,7 @@ import {
   Show,
   Switch,
 } from 'solid-js'
-import { loaded } from '../lib/resource.ts'
+import { loaded, suspendUntil } from '../lib/resource.ts'
 import { client, explainApiError } from '../lib/store/index.ts'
 
 type TunnelStatus =
@@ -45,6 +45,8 @@ function Status(props: { tone: 'success' | 'muted' | 'danger' | 'warning'; text:
  */
 export default function PairPanel() {
   const [info, { refetch, mutate }] = createResource(() => client.api<RemoteInfo>('/api/pairing'))
+  // 首次读取完成之前挂起账号窗口的 Suspense：本节在读取后才出现，窗口打开后高度不应再变化。
+  suspendUntil(() => !info.loading)
   const [busy, setBusy] = createSignal(false)
   const [toggleError, setToggleError] = createSignal<string | null>(null)
 
@@ -93,7 +95,7 @@ export default function PairPanel() {
     }
   }
 
-  // 使用 `loaded()` 而不是 `info()`：后者出错时会 `throw`，获取期间会挂起设置内容区的 Suspense。
+  // 使用 `loaded()` 而不是 `info()`：后者出错时会 `throw`，且每次重新读取都会挂起外层的 Suspense。
   return (
     <Show when={loaded(info)?.available || info.error}>
       <section class="pair-section">

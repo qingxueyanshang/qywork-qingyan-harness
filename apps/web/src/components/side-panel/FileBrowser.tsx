@@ -7,9 +7,8 @@ import {
   onCleanup,
   onMount,
   Show,
-  Suspense,
 } from 'solid-js'
-import { createRefreshKey, loaded } from '../../lib/resource.ts'
+import { createRefreshKey, loaded, suspendUntil } from '../../lib/resource.ts'
 import { SET_CODEC, sessionSignal } from '../../lib/session.ts'
 import {
   client,
@@ -23,6 +22,7 @@ import {
   workspace,
 } from '../../lib/store/index.ts'
 import { ConfirmDialog } from '../ConfirmDialog.tsx'
+import { HoldSwitch } from '../HoldSwitch.tsx'
 import {
   IconChevron,
   IconCollapseAll,
@@ -69,6 +69,7 @@ export function FileBrowser() {
     treeSource,
     () => client.api<{ nodes: FileNode[] }>('/api/files/tree?depth=2'),
   )
+  suspendUntil(() => !tree.loading)
 
   /**
    * 文件树获取失败时显示的错误信息。
@@ -422,21 +423,24 @@ export function FileBrowser() {
       </div>
 
       {/*
-       * **按路径重新挂载**（`keyed`）：点击另一个文件时，正文立即切换为该文件的加载态。
-       * 不要去掉 `keyed`：资源重新获取期间 `loaded()` 返回上一个文件的结果，上一个文件的错误
-       * 也保留到新结果返回，正文会停留在旧文件上。刷新同一个文件时不重新挂载，阅读位置保留。
+       * **按路径重新挂载**（`HoldSwitch` 以路径为键）：点击另一个文件时，上一个文件保留到新文件的代码与预览
+       * 读取完成，再在同一次更新中替换，超过 `SLOW_MS` 时显示新文件的加载态。
+       * 不要改为同一个 `FileView` 随路径重新读取：重新获取期间 `loaded()` 返回上一个文件的结果，
+       * 上一个文件的错误、源码切换与缩放都会带到新文件。刷新同一个文件时不重新挂载，阅读位置保留。
        */}
-      <Show when={openFile()} keyed>
+      <HoldSwitch key={openFile()}>
         {(path) => (
-          <Suspense fallback={<div class="preview" />}>
-            <FileView
-              path={path}
-              refresh={manualRefresh() + refreshKey().revision}
-              onClose={() => setOpenFile(null)}
-            />
-          </Suspense>
+          <Show when={path}>
+            {(p) => (
+              <FileView
+                path={p()}
+                refresh={manualRefresh() + refreshKey().revision}
+                onClose={() => setOpenFile(null)}
+              />
+            )}
+          </Show>
         )}
-      </Show>
+      </HoldSwitch>
 
       <Show when={menuAt()}>
         {(at) => (

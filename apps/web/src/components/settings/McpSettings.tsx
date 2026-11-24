@@ -1,5 +1,5 @@
 import { createResource, createSignal, For, Match, Show, Switch } from 'solid-js'
-import { loaded } from '../../lib/resource.ts'
+import { loaded, suspendUntil } from '../../lib/resource.ts'
 import { sessionSignal } from '../../lib/session.ts'
 import {
   askInChat,
@@ -38,6 +38,7 @@ import { newMcpPrompt } from './ScopePrompts.ts'
 
 export default function McpSettings() {
   const [data, { refetch }] = createResource(() => [workspace()?.id, extensionsRevision()], loadMcp)
+  suspendUntil(() => !data.loading)
   const [scope, setScope] = sessionSignal<Scope>('qywork.settings.mcp.scope', 'project')
   const [error, setError] = createSignal<string | null>(null)
 

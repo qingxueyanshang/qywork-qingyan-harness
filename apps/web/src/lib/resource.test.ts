@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, jest, test } from 'bun:test'
-import { createRoot, createSignal } from 'solid-js'
-import { createRefreshKey } from './resource.ts'
+import { batch, createRoot, createSignal } from 'solid-js'
+import { createHeld, createRefreshKey, SLOW_MS } from './resource.ts'
 
 // 刷新间隔由假计时器推进：断言只取决于经过的间隔数，与机器负载无关。
 beforeEach(() => {
@@ -52,4 +52,54 @@ test('持续失效不会无限推迟刷新，卸载后不发布待执行的修�
   } finally {
     root.dispose()
   }
+})
+
+test('切换后保留上一个值直到就绪；超时后跟随当前值，直到下一次就绪', () => {
+  const root = createRoot((dispose) => {
+    const [value, setValue] = createSignal('a')
+    const [ready, setReady] = createSignal(true)
+    return { dispose, setValue, setReady, shown: createHeld(value, ready) }
+  })
+  const change = (value: string, ready: boolean) =>
+    batch(() => {
+      root.setValue(value)
+      root.setReady(ready)
+    })
+  try {
+    expect(root.shown()).toBe('a')
+    change('b', false)
+    expect(root.shown()).toBe('a')
+    root.setReady(true)
+    expect(root.shown()).toBe('b')
+
+    change('c', false)
+    jest.advanceTimersByTime(SLOW_MS - 1)
+    expect(root.shown()).toBe('b')
+    jest.advanceTimersByTime(1)
+    expect(root.shown()).toBe('c')
+    root.setValue('d')
+    expect(root.shown()).toBe('d')
+    root.setReady(true)
+    expect(root.shown()).toBe('d')
+
+    change('e', false)
+    expect(root.shown()).toBe('d')
+  } finally {
+    root.dispose()
+  }
+})
+
+test('卸载后不再按时限换值', () => {
+  const root = createRoot((dispose) => {
+    const [value, setValue] = createSignal('a')
+    const [ready, setReady] = createSignal(true)
+    return { dispose, setValue, setReady, shown: createHeld(value, ready) }
+  })
+  batch(() => {
+    root.setValue('b')
+    root.setReady(false)
+  })
+  root.dispose()
+  jest.advanceTimersByTime(SLOW_MS * 2)
+  expect(root.shown()).toBe('a')
 })

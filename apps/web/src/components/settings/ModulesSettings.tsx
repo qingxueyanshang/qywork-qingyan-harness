@@ -5,7 +5,7 @@ import {
   type CompactTier,
 } from '@qywork/core'
 import { createResource, createSignal, For, type JSX, Show } from 'solid-js'
-import { loaded } from '../../lib/resource.ts'
+import { loaded, suspendUntil } from '../../lib/resource.ts'
 import {
   client,
   explainApiError,
@@ -15,7 +15,7 @@ import {
   state,
 } from '../../lib/store/index.ts'
 import { IconChevron } from '../Icons.tsx'
-import { config, ensureConfig, patchConfig, replaceConfig } from './configStore.ts'
+import { config, configSettled, ensureConfig, patchConfig, replaceConfig } from './configStore.ts'
 import { environment, environmentError, reloadEnvironment } from './environmentStore.ts'
 import { LoadState, PendingText } from './LoadState.tsx'
 import { OnOff } from './OnOff.tsx'
@@ -429,6 +429,7 @@ export function ModulesSettings() {
   const [data, { refetch }] = createResource(extensionsRevision, () =>
     client.api<{ tools: ToolRow[] }>('/api/tools'),
   )
+  suspendUntil(() => !data.loading && configSettled())
 
   /** 后端已按类目排序，此处只分组，不重新排序；只有说明行、没有工具的模块追加在末尾。 */
   const groups = () => {

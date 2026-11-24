@@ -1,5 +1,6 @@
 import { isDefaultPersonalization, type PermissionMode } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
+import { suspendUntil } from '../../lib/resource.ts'
 import {
   client,
   currentPersonalization,
@@ -23,11 +24,17 @@ import {
   config,
   configError,
   configPath,
+  configSettled,
   ensureConfig,
   patchConfig,
   reloadConfig,
 } from './configStore.ts'
-import { environment, environmentError, reloadEnvironment } from './environmentStore.ts'
+import {
+  environment,
+  environmentError,
+  environmentSettled,
+  reloadEnvironment,
+} from './environmentStore.ts'
 import { LoadState } from './LoadState.tsx'
 import { OnOff } from './OnOff.tsx'
 import { PersonalizationDialog } from './PersonalizationDialog.tsx'
@@ -147,6 +154,7 @@ function EnvironmentRows() {
  */
 export function GeneralSettings() {
   ensureConfig()
+  suspendUntil(() => configSettled() && environmentSettled())
   const [personalOpen, setPersonalOpen] = createSignal(false)
   const [petError, setPetError] = createSignal<string | null>(null)
   if (isDesktopShell()) {

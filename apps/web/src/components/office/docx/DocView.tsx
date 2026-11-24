@@ -38,6 +38,7 @@ import {
   type PaintPicture,
 } from '@qywork/ooxml/drawingml'
 import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
+import { suspendUntil } from '../../../lib/resource.ts'
 import { readView, writeView } from '../../preview/view-state.ts'
 import { boundaryText, connectWorker, createDocumentLoader, failureText } from '../document.ts'
 import {
@@ -309,6 +310,7 @@ export default function DocView(props: { path: string; mtime: number }) {
   }
 
   const error = createDocumentLoader(() => props, loadDoc, showDoc)
+  suspendUntil(() => doc() !== null || error() !== null)
 
   createEffect(
     on(doc, (d) => {
